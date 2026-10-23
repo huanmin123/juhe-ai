@@ -139,7 +139,7 @@ func TestW14dContextStoreGuards(t *testing.T) {
 	}
 
 	// Expired compact (L224).
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys"}
 	expired := CodexContextCompactStateIndex{
 		CodexContextStateBoundary: boundary,
 		CompactID:                 "w14d-compact-expired",
@@ -562,7 +562,7 @@ func TestW14dBridgeStoreFailureArms(t *testing.T) {
 	attachBody(seedReq, map[string]any{"model": "gpt-5", "input": []any{}}, nil)
 	registry.Set(seedReq, &CodexResponsesContextRequestState{
 		RequestKind:           RequestKindResponses,
-		Boundary:              CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"},
+		Boundary:              CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"},
 		CanonicalBody:         map[string]any{"model": "gpt-5", "input": []any{}},
 		CurrentInput:          []any{},
 		MaterializedInput:     []any{},
@@ -620,7 +620,7 @@ func TestW14dBridgeManualRowRestoreArms(t *testing.T) {
 	service.Sink = &recordedSink{}
 	registry := NewContextRequestStateRegistry()
 	ctx := context.Background()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 
 	// Row whose payload reference points nowhere: restore renders the
 	// payload_unavailable failure (L320-338).

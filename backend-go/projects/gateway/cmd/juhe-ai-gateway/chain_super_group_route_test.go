@@ -36,20 +36,17 @@ func superSeedFixture(t *testing.T, second superMemberGroup) *chainFixture {
 			t.Fatalf("seed super fixture: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, 'openai', 1, 'personal')`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, 1, 'personal')`,
 		second.groupID, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', '超级成员账户', 'api_key', 'active', 1, ?, NULL)`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at) VALUES (?, ?, 'prof_1', 'openai', 'v1', '超级成员账户', 'api_key', 'active', 1, ?, NULL)`,
 		second.accountID, fixture.systemAccount, w1vEncrypt(t, map[string]any{"api_key": "sk-super-member-key"}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		second.groupID, fixture.systemAccount, second.accountID, now)
 	chainSeedAccountConnection(t, fixture.db, second.accountID, "https://super-member.example.invalid/v1")
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`,
 		second.accountID, now)
 
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, group_kind) VALUES ('grp_super', ?, 'openai', 1, 'personal', 'super')`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type, group_kind) VALUES ('grp_super', ?, 1, 'personal', 'super')`,
 		fixture.systemAccount)
 	seed(`INSERT INTO super_group_members (id, super_group_id, member_group_id, priority, enabled, created_at, updated_at)
 		VALUES ('sgm_a', 'grp_super', ?, 0, 1, ?, ?)`, fixture.groupID, now, now)

@@ -52,7 +52,7 @@ func TestPreflightSkipsNormalRouteForChatProvidedCandidatesBatch2(t *testing.T) 
 		options := &PreflightOptions{}
 		if withProvided {
 			// chat 覆盖注入形态：不设 Identity，仅注入绑定作用域收敛的候选。
-			options.CandidateAccounts = []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc-bound", ProviderCode: "openai"}}
+			options.CandidateAccounts = []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc-bound", VendorCode: "openai"}}
 			options.RecoverableCandidateScope = &CandidateRecoverableScope{GroupIDs: []string{"grp-bound"}}
 		}
 		result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
@@ -182,10 +182,10 @@ func TestWaitForRecoverableProvidedCandidateAccountsBatch2(t *testing.T) {
 	t.Run("group 模式按绑定组等待恢复", func(t *testing.T) {
 		cache := &batch2ScopedRuntimeCache{
 			activeByGroup:    map[string][]gatewayruntimecache.OpenAIAccountSecret{"grp-bound": {}},
-			recoverableByGrp: map[string][]gatewayruntimecache.OpenAIAccountSecret{"grp-bound": {{ID: "acc-cool", ProviderCode: "openai"}}},
+			recoverableByGrp: map[string][]gatewayruntimecache.OpenAIAccountSecret{"grp-bound": {{ID: "acc-cool", VendorCode: "openai"}}},
 		}
 		waiter := &batch2RecoveringWait{onWait: func() {
-			cache.setActive("grp-bound", []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc-cool", ProviderCode: "openai"}})
+			cache.setActive("grp-bound", []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc-cool", VendorCode: "openai"}})
 		}}
 		service := &Service{RuntimeCache: cache, Recoverable: waiter, Clock: clock}
 		input := recoveryInput{
@@ -216,8 +216,8 @@ func TestWaitForRecoverableProvidedCandidateAccountsBatch2(t *testing.T) {
 	t.Run("account 模式按目标账户收敛", func(t *testing.T) {
 		cache := &batch2ScopedRuntimeCache{
 			activeByGroup: map[string][]gatewayruntimecache.OpenAIAccountSecret{
-				"grp-a": {{ID: "acc-other", ProviderCode: "openai"}},
-				"grp-b": {{ID: "acc-target", ProviderCode: "openai"}},
+				"grp-a": {{ID: "acc-other", VendorCode: "openai"}},
+				"grp-b": {{ID: "acc-target", VendorCode: "openai"}},
 			},
 		}
 		service := &Service{RuntimeCache: cache, Recoverable: &batch2RecoveringWait{}, Clock: clock}

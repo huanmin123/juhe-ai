@@ -152,9 +152,9 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	// 连接身份（供应商与上游协议面重构设计 §1.1/§2.1）：vendor/driver 按账户行
 	// 新列投影（授权实例经来源账户 resource_* 别名）。B4 W2 收口：候选行
 	// provider_code 过渡投影与 chainCandidateRow 过渡字段已删除，运行时行为键
-	// 统一按 vendor 维度（§8：账户连接身份=vendor_code）。secret 的
-	// ProviderCode 是目录/媒体适配器读取的身份投影位，与 VendorCode 同值
-	// （generic 账户为空串）；账户 secret 结构字段本身待后续切片退役。
+	// 统一按 vendor 维度（§8：账户连接身份=vendor_code）。B4②：secret 的
+	// ProviderCode 冗余槽位已退役（与 VendorCode 恒同值），身份读取统一走
+	// VendorCode（generic 账户为空串）。
 	vendorCode := row.resourceVendorCode()
 	connectionDriverCode := row.resourceConnectionDriverCode()
 	protocolCode := row.resourceProtocolCode()
@@ -178,7 +178,6 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		ID:                               row.ID,
 		ConfigRevision:                   chainConfigRevisionOf(row.ConfigRevision),
 		DispatchRevision:                 nullInt64Ptr(row.DispatchRevision),
-		ProviderCode:                     vendorCode,
 		VendorCode:                       vendorCode,
 		ConnectionDriverCode:             connectionDriverCode,
 		ProviderProtocolProfileID:        providerProtocolProfileID,

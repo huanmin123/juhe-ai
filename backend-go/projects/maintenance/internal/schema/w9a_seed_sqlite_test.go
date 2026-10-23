@@ -224,14 +224,18 @@ func TestW9AEnsureAllSQLiteStatementFailures(t *testing.T) {
 	// business DDL 之后 EnsureSQLiteBusiness 守卫链还有一次 exec：api_keys
 	// scheduling_preference_id 守卫加列在本夹具上 PRAGMA 早退不产生 exec，其
 	// 后的绑定索引 CREATE INDEX 产生一次（调度偏好独立实体
-	// PLAN-20261012T033000000Z），stats 起各偏移 +1。
+	// PLAN-20261012T033000000Z），stats 起各偏移 +1。B4① provider 维度退役
+	// 守卫（business 删列 / model_id 重建 / codex 删列）在本夹具上 PRAGMA
+	// 早退不产生 exec；codex 侧 3 条 DROP INDEX IF EXISTS 无条件执行，dataset
+	// 起再 +3。
 	businessEnsureExecCount := len(sqliteBusinessScript) + 1
+	codexRetiredIndexExecCount := 3
 	offsets := map[string]int{
 		"stats":   businessEnsureExecCount,
 		"chat":    businessEnsureExecCount + len(sqliteStatsScript),
 		"codex":   businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript),
-		"dataset": businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript),
-		"usage":   businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + len(sqliteDatasetScript),
+		"dataset": businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + codexRetiredIndexExecCount,
+		"usage":   businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + codexRetiredIndexExecCount + len(sqliteDatasetScript),
 	}
 	needles := map[string]string{
 		"stats": "ensure sqlite stats schema", "chat": "ensure sqlite chat schema",

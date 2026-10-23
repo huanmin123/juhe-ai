@@ -43,7 +43,7 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 	responsesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/responses", `{"model":"gpt-5.3","input":"hi"}`)
 
 	t.Run("no constraint keeps account eligible", func(t *testing.T) {
-		account := gatewaydispatch.AccountCandidate{ID: "a1", ProtocolCode: "openai", ProviderCode: "glm", Type: "api_key"}
+		account := gatewaydispatch.AccountCandidate{ID: "a1", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key"}
 		if reason := driver.endpointModeMismatchReason(chatReq, account, ""); reason != "" {
 			t.Fatalf("reason = %q, want empty", reason)
 		}
@@ -51,7 +51,7 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 
 	t.Run("chat account rejected on responses shape", func(t *testing.T) {
 		account := gatewaydispatch.AccountCandidate{
-			ID: "a2", ProtocolCode: "openai", ProviderCode: "glm", Type: "api_key",
+			ID: "a2", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
 		}
 		if reason := driver.endpointModeMismatchReason(responsesReq, account, ""); reason != "endpoint_mode_unsupported" {
@@ -64,14 +64,14 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 
 	t.Run("codex responses client forces responses_sse", func(t *testing.T) {
 		account := gatewaydispatch.AccountCandidate{
-			ID: "a3", ProtocolCode: "openai", ProviderCode: "gpt", Type: "api_key",
+			ID: "a3", ProtocolCode: "openai", VendorCode: "gpt", Type: "api_key",
 			SupportedEndpointModes: []string{"responses_sse"},
 		}
 		if reason := driver.endpointModeMismatchReason(responsesReq, account, "codex_responses"); reason != "" {
 			t.Fatalf("reason = %q, want empty", reason)
 		}
 		chatOnly := gatewaydispatch.AccountCandidate{
-			ID: "a4", ProtocolCode: "openai", ProviderCode: "glm", Type: "api_key",
+			ID: "a4", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
 		}
 		if reason := driver.endpointModeMismatchReason(responsesReq, chatOnly, "codex_responses"); reason != "endpoint_mode_unsupported" {
@@ -81,7 +81,7 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 
 	t.Run("oauth gpt account eliminated on chat shape", func(t *testing.T) {
 		account := gatewaydispatch.AccountCandidate{
-			ID: "a5", ProtocolCode: "openai", ProviderCode: "gpt", Type: "oauth",
+			ID: "a5", ProtocolCode: "openai", VendorCode: "gpt", Type: "oauth",
 			SupportedEndpointModes: []string{"responses_json", "responses_sse"},
 		}
 		// Node accountSupportsOpenAIEndpointMode：chat 形态对 responses-only
@@ -100,7 +100,7 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 		// 行的组合），要求 chat_json 模式。
 		messagesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x","max_tokens":128}`)
 		anthropicUpstream := gatewaydispatch.AccountCandidate{
-			ID: "a6", ProtocolCode: "openai", ProviderCode: "hybrid", Type: "api_key",
+			ID: "a6", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse", "messages_json", "messages_sse"},
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{
 				{SourceModel: "claude-x", SourceEndpointFamily: "messages", UpstreamModel: "deepseek-v3", UpstreamEndpointFamily: "chat_completions", Enabled: true},
@@ -110,7 +110,7 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 			t.Fatalf("reason = %q, want empty", reason)
 		}
 		messagesOnly := gatewaydispatch.AccountCandidate{
-			ID: "a7", ProtocolCode: "anthropic", ProviderCode: "anthropic", Type: "api_key",
+			ID: "a7", ProtocolCode: "anthropic", VendorCode: "anthropic", Type: "api_key",
 			SupportedEndpointModes: []string{"messages_json", "messages_sse"},
 		}
 		if reason := driver.endpointModeMismatchReason(messagesReq, messagesOnly, ""); reason != "" {
@@ -138,7 +138,7 @@ func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
 		// 主回归：Codex CLI 请求 + chat-only 桥账户（显式 responses ->
 		// chat_completions 映射）不再被 responses_sse 强制淘汰，改闸 chat_sse。
 		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-1", ProtocolCode: "openai", ProtocolVersion: "v1", ProviderCode: "glm", Type: "api_key",
+			ID: "bug0179-1", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "glm", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
 			ModelMappings:          responsesToChatMapping,
 		}
@@ -155,7 +155,7 @@ func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
 		// 无映射 chat-only 账户仍被 codex_responses 强制分支淘汰（a3/a4 语义
 		// 保留，顺序调整未放松强制）。
 		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-2", ProtocolCode: "openai", ProviderCode: "glm", Type: "api_key",
+			ID: "bug0179-2", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
 		}
 		mode, required := driver.requiredSupportedEndpointMode(responsesReq, account, "codex_responses")
@@ -171,7 +171,7 @@ func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
 		// Node gpt driver account.type !== 'oauth' 守卫：OAuth + 映射不走映射
 		// 分支，裁决来自 codex_responses 强制分支（responses_sse 而非 chat_sse）。
 		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-3", ProtocolCode: "openai", ProtocolVersion: "v1", ProviderCode: "gpt", Type: "oauth",
+			ID: "bug0179-3", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "gpt", Type: "oauth",
 			SupportedEndpointModes: []string{"responses_json", "responses_sse"},
 			ModelMappings:          responsesToChatMapping,
 		}
@@ -196,7 +196,7 @@ func TestEndpointModeCodexResponsesMappingBranchPriority(t *testing.T) {
 		// 普通 Responses 客户端 + 映射账户：映射分支放行 chat_sse（确认顺序
 		// 调整不改变既有 openai_standard 语义）。
 		account := gatewaydispatch.AccountCandidate{
-			ID: "bug0179-4", ProtocolCode: "openai", ProtocolVersion: "v1", ProviderCode: "glm", Type: "api_key",
+			ID: "bug0179-4", ProtocolCode: "openai", ProtocolVersion: "v1", VendorCode: "glm", Type: "api_key",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
 			ModelMappings:          responsesToChatMapping,
 		}
@@ -214,7 +214,7 @@ func TestGatewayRequestCapabilityMismatchReasonForClientCompatibility(t *testing
 	driver := newChainProviderDriver()
 	oauthReq := newEndpointGateRequest(t, http.MethodPost, "/v1/responses", `{"model":"gpt-5.3","input":"hi"}`)
 	oauthAccount := gatewaydispatch.AccountCandidate{
-		ID: "oauth-1", ProtocolCode: "openai", ProviderCode: "gpt", Type: "oauth",
+		ID: "oauth-1", ProtocolCode: "openai", VendorCode: "gpt", Type: "oauth",
 		SupportedEndpointModes: []string{"responses_json", "responses_sse"},
 	}
 	// D-99 eliminated 裁决：oauth 账户不服务非 codex_responses 客户端形态。

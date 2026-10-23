@@ -25,7 +25,7 @@ import (
 func streamUsageInjectAccount() gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
 		ID:           "acc_chat_usage_inject",
-		ProviderCode: "openai",
+		VendorCode:   "openai",
 		ProtocolCode: "openai",
 		Type:         "api_key",
 		BaseURL:      "https://api.example",
@@ -169,7 +169,7 @@ func TestChainDriverSkipsInjectForNonOpenAIProtocol(t *testing.T) {
 	clientBody := `{"model":"claude-x","stream":true,"messages":[]}`
 	req := mappedURLTestRequest(t, http.MethodPost, "/v1/chat/completions", clientBody)
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_anthropic", ProviderCode: "anthropic", ProtocolCode: "anthropic",
+		ID: "acc_anthropic", VendorCode: "anthropic", ProtocolCode: "anthropic",
 		Type: "api_key", BaseURL: "https://ant.example", APIKey: "gk-2",
 	}
 	parts, err := driver.buildGatewayUpstreamRequestParts(context.Background(), req, account, gatewaydispatch.UsageIdentity{}, "")
@@ -187,7 +187,7 @@ func TestChainDriverSkipsInjectForNonOpenAIProtocol(t *testing.T) {
 func TestChainDriverInjectsForResponsesToChatBridge(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := streamUsageInjectAccount()
-	account.ProviderCode = "hybrid"
+	account.VendorCode = "hybrid"
 	account.ModelMappings = []gatewayruntimecache.AccountModelMapping{{
 		SourceModel:            "gpt-x",
 		SourceEndpointFamily:   "responses",
@@ -226,7 +226,7 @@ func TestChainDriverInjectsForResponsesToChatBridge(t *testing.T) {
 func TestChainDriverVolcengineSpeechMissingCredentialsIsLocal400(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_vol_tts_nocred", ProviderCode: "volcengine", VendorCode: "volcengine", ProtocolCode: "openai",
+		ID: "acc_vol_tts_nocred", VendorCode: "volcengine", ProtocolCode: "openai",
 		Type: "api_key", BaseURL: "https://ark.example", APIKey: "ark-key",
 	}
 	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",
@@ -264,7 +264,7 @@ func TestChainDriverVolcengineSpeechMissingCredentialsIsLocal400(t *testing.T) {
 func TestChainDriverVolcengineSpeechCredentialsRoundTrip(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_vol_tts_ok", ProviderCode: "volcengine", VendorCode: "volcengine", ProtocolCode: "openai",
+		ID: "acc_vol_tts_ok", VendorCode: "volcengine", ProtocolCode: "openai",
 		Type: "api_key", BaseURL: "https://ark.example", APIKey: "ark-key",
 		Credentials: map[string]any{"speech_token": "volc-tts-token-1"},
 	}

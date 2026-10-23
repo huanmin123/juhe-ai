@@ -33,7 +33,7 @@ func TestChainDriverGeminiSpeechUpstreamRoundTrip(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_gem_tts_live",
-		ProviderCode: "gemini",
+		VendorCode:   "gemini",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
 		BaseURL:      mock.URL,
@@ -143,7 +143,7 @@ func TestChainDriverGeminiSpeechUpstreamRoundTrip(t *testing.T) {
 func TestChainDriverGeminiSpeechFormatGateIsLocal400(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_gem_tts_400", ProviderCode: "gemini", ProtocolCode: "gemini",
+		ID: "acc_gem_tts_400", VendorCode: "gemini", ProtocolCode: "gemini",
 		Type: "api_key", BaseURL: "https://gem.example", APIKey: "gk-1",
 	}
 	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",
@@ -180,7 +180,7 @@ func TestChainDriverGeminiSpeechMissingVoiceLocal400(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_gem_tts_no_voice",
-		ProviderCode: "gemini",
+		VendorCode:   "gemini",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
 		BaseURL:      "https://generativelanguage.googleapis.invalid",

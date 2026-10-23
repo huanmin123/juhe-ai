@@ -96,8 +96,13 @@ import (
 // 679→686 恢复的 8 张旧表 ensure 建表（-8 TABLE juhe_business），配套旧
 // seed（pgSeedLegacyProviders/Profiles、旧 provider_model_catalog 目录种子）
 // 与 pgNullableText 同批删除；种子语句不计本 golden，总数变化仅 -8。
+// 682→683：用量记录压缩标记批——usage_records compaction_expected 幂等
+// ALTER 一条（使用记录延迟健康分档设计 §压缩请求识别；建表内联同位改写、
+// 不另计语句）。683→689：provider 维度持久列退役批（B4①）——juhe_business
+// +6 DROP COLUMN 幂等退役语句；codex 三表 -3 CREATE INDEX（boundary）+3
+// DROP COLUMN，组内合计不变。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 682
+const goldenPostgresSchemaStatementCount = 689
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -108,13 +113,18 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 第二笔恢复其余 7 张旧供应商表 ensure 建表（+7 TABLE）。321→313：A 路线
 	// 撤 shim 批一次性撤回上述 8 张旧表 ensure 建表（-8 TABLE）。313→316：
 	// 超级分组首批 +3（groups.group_kind 幂等 ALTER、super_group_members
-	// TABLE、idx_super_group_members_member_group INDEX）。
-	"juhe_business": 316,
+	// TABLE、idx_super_group_members_member_group INDEX）。53→54：用量记录
+	// 压缩标记批 +1（usage_records compaction_expected 幂等 ALTER）。
+	// 316→322：provider 维度持久列退役批（B4①）+6（business 六列幂等
+	// DROP COLUMN 退役语句）。
+	"juhe_business": 322,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
-	"juhe_usage":    53,
+	"juhe_usage":    54,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
-	"juhe_stats":         238,
+	"juhe_stats": 238,
+	// 16→16：provider 维度持久列退役批（B4①）-3 CREATE INDEX（codex boundary）
+	// +3 DROP COLUMN。
 	"juhe_codex_context": 16,
 }
 
@@ -224,15 +234,17 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 目标必须已存在，双方互引只能单边内联，同 api-keys-purpose DO 块守卫
 	// 模式）。2026-10-17 复审 blocker 修复批复用既有
 	// accounts-health-check-endpoint-mode-pg-check DO 块原位改写（词表
-	// 22→25 值），块数保持 6。其余口径不变：98 条 ADD COLUMN IF NOT EXISTS、
-	// 1 条 DROP COLUMN
-	// IF EXISTS（调度偏好 enabled 退役）、1 条 CREATE EXTENSION、2 个含
+	// 22→25 值），块数保持 6。100→101：用量记录压缩标记批
+	// （usage_records compaction_expected 幂等 ALTER）。其余口径不变：
+	// 1→10 条 DROP COLUMN
+	// IF EXISTS（调度偏好 enabled 退役 1 条 + B4① provider 维度退役 9 条：
+	// codex 三表 + business 六列）、1 条 CREATE EXTENSION、2 个含
 	// CREATE TRIGGER 的语句块。
-	if alterColumns != 100 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 100", alterColumns)
+	if alterColumns != 101 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 101", alterColumns)
 	}
-	if droppedColumns != 1 {
-		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 1", droppedColumns)
+	if droppedColumns != 10 {
+		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 10", droppedColumns)
 	}
 	if doBlocks != 6 {
 		t.Fatalf("DO block count = %d, want 6", doBlocks)
@@ -542,8 +554,10 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	// 71→72：+1 来自 2026-10-08 客户端版本自动跟版键（与 sqlite 侧钉值同源）；
 	// 72→71：-1 来自 2026-10-12 AI 问答简化批——生图总超时键
 	// chatImageGenerationTotalTimeoutSeconds 随生图工具退场。
-	if len(pgSeedSystemSettings) != 67 {
-		t.Fatalf("system settings = %d, want 67", len(pgSeedSystemSettings))
+	// 67→69：+2 来自调度慢失败直切与墙钟收尾修复设计 §5（快速失败耗时门槛
+	// 与尝试启动最小剩余窗口两键，与 sqlite 侧钉值同源）。
+	if len(pgSeedSystemSettings) != 69 {
+		t.Fatalf("system settings = %d, want 69", len(pgSeedSystemSettings))
 	}
 	for _, key := range []string{"appName", "appIcon"} {
 		found := false

@@ -153,16 +153,13 @@ func TestGatewayChainGroupFallbackAfterFirstGroupExhausted(t *testing.T) {
 		}
 	}
 	// fallback 分组 + 账户 + 绑定 + 模型 + 策略第二跳。
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('group_fb', ?, 'openai', 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_fb', ?, 1, 'personal')`, fixture.systemAccount)
 	fallbackCredentials := mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": fallbackUpstream.URL})
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-		) VALUES ('acc_fb', ?, 'openai', 'prof_1', 'openai', 'v1', 'fallback 账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_fb', ?, 'prof_1', 'openai', 'v1', 'fallback 账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
 		fixture.systemAccount, fallbackCredentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES ('group_fb', ?, 'acc_fb', 1, ?)`,
 		fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_fb', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_fb', 'gpt-test', 'mdl_gpt-test', ?)`, now)
 	// B4 第一批单连接事实源：acc_fb 需要 enabled 连接行才能水合。
 	chainSeedAccountConnection(t, fixture.db, "acc_fb", fallbackUpstream.URL)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)

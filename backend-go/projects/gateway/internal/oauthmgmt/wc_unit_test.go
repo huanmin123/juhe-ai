@@ -543,8 +543,7 @@ func TestWCRouteBodyHelpers(t *testing.T) {
 // TestWCParseManagedFields：托管字段 schema 的全分支矩阵。
 func TestWCParseManagedFields(t *testing.T) {
 	bad := []map[string]any{
-		{},
-		{"providerProtocolProfileId": "  "},
+		{"providerProtocolProfileId": 1.5},
 		{"providerProtocolProfileId": "p", "name": "  "},
 		{"providerProtocolProfileId": "p", "concurrencyLimit": 0.0},
 		{"providerProtocolProfileId": "p", "concurrencyLimit": "x"},
@@ -570,6 +569,16 @@ func TestWCParseManagedFields(t *testing.T) {
 		if _, ok := parseManagedFields(body); ok {
 			t.Fatalf("case %d 必须拒绝: %v", index, body)
 		}
+	}
+	// DTO 收口：profile 缺省（含空白串）不再拒绝，入参留空由创建链按 registry
+	// 派生（managedProfileID）；非字符串值仍拒绝（见 bad[0]）。
+	absent, ok := parseManagedFields(map[string]any{})
+	if !ok || absent.ProviderProtocolProfileID != "" {
+		t.Fatalf("缺省 profile 解析: %+v %v", absent, ok)
+	}
+	blank, ok := parseManagedFields(map[string]any{"providerProtocolProfileId": "   "})
+	if !ok || blank.ProviderProtocolProfileID != "" {
+		t.Fatalf("空白 profile 解析: %+v %v", blank, ok)
 	}
 	good, ok := parseManagedFields(map[string]any{
 		"providerProtocolProfileId": " p ", "name": " n ", "groupId": " g ",
@@ -853,24 +862,20 @@ func TestWCExtractOpenAICodeAndState(t *testing.T) {
 	if err != nil || code != "c1" || state != "s1" {
 		t.Fatalf("URL 形式: %q %q %v", code, state, err)
 	}
-	// 行为存疑：fragment 形式解析恒失败——normalizeText 只接受 string，
-	// 而 fragment["code"] 取出的是 url.Values 切片（疑似应使用 Get），
-	// Node 侧 new URLSearchParams(fragment).get('code') 可解析。按当前实际
-	// 行为断言，待主代理裁定。
+	// A7 已修复（BUG-0294）：fragment 形式经 parseQueryValues + Get 正常解析
+	// （原实现把 []string 传给只认 string 的 normalizeText 导致恒失败）。
 	code, state, err = extractOpenAICodeAndState("https://cb#code=c2&state=s2")
-	if err == nil || code != "" || state != "" {
-		t.Fatalf("fragment 形式（行为存疑）应按当前实现报错: %q %q %v", code, state, err)
+	if err != nil || code != "c2" || state != "s2" {
+		t.Fatalf("fragment 形式: %q %q %v", code, state, err)
 	}
 	code, state, err = extractOpenAICodeAndState("c3#s3")
 	if err != nil || code != "c3" || state != "s3" {
 		t.Fatalf("code#state 形式: %q %q %v", code, state, err)
 	}
-	// 行为存疑：裸 query 形式与 fragment 同因（normalizeText(query["code"])
-	// 取到 []string）恒失败，Node 的 URLSearchParams 形式可解析。按当前实际
-	// 行为断言。
+	// 裸 query 形式与 fragment 同批修复（A7）：Get 首元素 + 缺键空串。
 	code, state, err = extractOpenAICodeAndState("?code=c4&state=s4")
-	if err == nil || code != "" || state != "" {
-		t.Fatalf("裸 query 形式（行为存疑）应按当前实现报错: %q %q %v", code, state, err)
+	if err != nil || code != "c4" || state != "s4" {
+		t.Fatalf("裸 query 形式: %q %q %v", code, state, err)
 	}
 	if _, _, err := extractOpenAICodeAndState("https://cb?code=c5"); err == nil {
 		t.Fatalf("缺 state 必须报错")

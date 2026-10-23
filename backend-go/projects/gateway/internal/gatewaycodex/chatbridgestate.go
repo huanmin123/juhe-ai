@@ -447,7 +447,7 @@ func (s *ChatBridgeStateService) CompletionHandlerForRequest(
 			"previousResponseId":        requestState.PreviousResponseID,
 			"sessionId":                 sessionID,
 			"accountId":                 account.ID,
-			"providerCode":              account.ProviderCode,
+			"providerCode":              account.VendorCode,
 			"providerProtocolProfileId": account.ProviderProtocolProfileID,
 		}, "Codex Responses Chat bridge 状态已保存")
 	}
@@ -963,17 +963,14 @@ func isInternalCodexBridgeResponseID(value string) bool {
 	return internalBridgeResponseIDPattern.MatchString(value)
 }
 
-// codexContextBoundary mirrors the Node boundary construction. 供应商解耦 B4
-// W2：分组访问元数据的过渡 ProviderCode 已删除，boundary 不再读取该位；
-// CodexContextStateBoundary.ProviderCode 作为持久化边界维度保留（sqlite/pg
-// 行列 provider_code TEXT NOT NULL），恒写空串——与拆列前的实际行为一致，
-// 拆列属存储 schema 迁移，不在本批。
+// codexContextBoundary mirrors the Node boundary construction. 分组访问元数据
+// 与持久化 provider 维度均已退役（设计 §8 / B4① 存储迁移批）：boundary 按
+// sys/key/group 三元组承载，sqlite/pg 行列已无 provider_code。
 func codexContextBoundary(systemAccountID, apiKeyID, groupID string) CodexContextStateBoundary {
 	return CodexContextStateBoundary{
 		SystemAccountID: systemAccountID,
 		APIKeyID:        apiKeyID,
 		GroupID:         groupID,
-		ProviderCode:    "",
 	}
 }
 

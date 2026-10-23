@@ -756,6 +756,10 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "defaultTemporaryUnschedulableMinutes", ValueJSON: "2"},
 	{Key: "temporaryUnschedulableRetryIntervalSeconds", ValueJSON: "3"},
 	{Key: "temporaryUnschedulableRetryAttempts", ValueJSON: "2"},
+	// 调度慢失败直切与墙钟收尾修复设计 §5：同账户重试快速失败耗时门槛
+	// 10000ms、新尝试启动最小剩余墙钟窗口 30000ms（与 settings 包兼容默认同值）。
+	{Key: "sameAccountRetryFastFailMaxMs", ValueJSON: "10000"},
+	{Key: "gatewayAttemptStartMinWindowMs", ValueJSON: "30000"},
 	{Key: "textFirstResponseTimeoutSeconds", ValueJSON: "120"},
 	{Key: "textNonStreamFirstResponseTimeoutSeconds", ValueJSON: "600"},
 	{Key: "textStreamIdleTimeoutSeconds", ValueJSON: "30"},

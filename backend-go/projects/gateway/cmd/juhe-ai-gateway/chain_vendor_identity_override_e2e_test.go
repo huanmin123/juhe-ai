@@ -8,9 +8,9 @@ package main
 // 覆盖形状：
 //   - 新建目标形态：gpt 与 xai 两种 vendor（vendor_code + connection_driver_code，
 //     不写 provider_code 旧列）；
-//   - 存量迁移窗口：vendor_code 为 NULL、旧列 provider_code='gpt' 有值——
-//     身份必须水合为空串（禁止旧列回落），覆盖保持惰性（空 vendor 跳过
-//     gpt 枚举、不查目录、不改写 body）；
+//   - 存量形态等价臂：vendor_code 为 NULL——身份必须水合为空串（provider_code
+//     旧列已随存储迁移退役，禁止任何旧列回落路径），覆盖保持惰性（空 vendor
+//     跳过 gpt 枚举、不查目录、不改写 body）；
 //   - gpt 专属 wire 枚举按供应商生效：同一配置值（reasoning_effort_override
 //     = "ultra"）对 gpt 账户是请求级硬失败，对 xai 账户经目录能力门正常生效。
 //
@@ -78,37 +78,34 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 	// B4 目标形态：account_supported_models 读取收敛为 (account_id, model_id)
 	// JOIN models；夹具近似 DDL 保留 NOT NULL 旧 model 列，按值回填保持行合法
 	//（装载器只消费 model_id JOIN，见 loadSupportedModelsByAccountIds）。
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES ('acc_v_gpt', 'openai', 'gpt-test', 'mdl_v_gpt', ?), ('acc_v_xai', 'openai', 'grok-4', 'mdl_v_xai', ?)`, now, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES ('acc_v_gpt', 'gpt-test', 'mdl_v_gpt', ?), ('acc_v_xai', 'openai', 'grok-4', 'mdl_v_xai', ?)`, now, now)
 
-	// 四个账户行（目标形态不写 provider_code 旧列；存量臂显式写 'gpt' 证回落禁用）：
+	// 四个账户行（目标形态不写 provider_code 旧列；列已随存储迁移退役，
+	// vendor_code NULL 即身份空串——回落禁用由读面 COALESCE 保证）：
 	//   acc_v_gpt      gpt 形态，两覆盖配置值均在 gpt wire 枚举内；
 	//   acc_v_xai      xai 形态，reasoning_effort_override="ultra" 不在 gpt 枚举内；
 	//   acc_v_gpt_bad  gpt 形态，reasoning_effort_override="ultra"（枚举硬失败臂）；
-	//   acc_v_legacy   存量迁移窗口：vendor_code NULL + provider_code='gpt'。
+	//   acc_v_legacy   存量形态等价臂：vendor_code NULL → 身份水合为空串。
 	seedAccounts := map[string]struct {
-		vendorCode   any
-		providerCode any
-		credentials  map[string]any
+		vendorCode  any
+		credentials map[string]any
 	}{
-		"acc_v_gpt":     {vendorCode: "gpt", providerCode: nil, credentials: map[string]any{"api_key": "sk-v-gpt", "service_tier_override": "priority", "reasoning_effort_override": "high"}},
-		"acc_v_xai":     {vendorCode: "xai", providerCode: nil, credentials: map[string]any{"api_key": "sk-v-xai", "service_tier_override": "priority", "reasoning_effort_override": "ultra"}},
-		"acc_v_gpt_bad": {vendorCode: "gpt", providerCode: nil, credentials: map[string]any{"api_key": "sk-v-gpt-bad", "reasoning_effort_override": "ultra"}},
-		"acc_v_legacy":  {vendorCode: nil, providerCode: "gpt", credentials: map[string]any{"api_key": "sk-v-legacy", "reasoning_effort_override": "ultra"}},
+		"acc_v_gpt":     {vendorCode: "gpt", credentials: map[string]any{"api_key": "sk-v-gpt", "service_tier_override": "priority", "reasoning_effort_override": "high"}},
+		"acc_v_xai":     {vendorCode: "xai", credentials: map[string]any{"api_key": "sk-v-xai", "service_tier_override": "priority", "reasoning_effort_override": "ultra"}},
+		"acc_v_gpt_bad": {vendorCode: "gpt", credentials: map[string]any{"api_key": "sk-v-gpt-bad", "reasoning_effort_override": "ultra"}},
+		"acc_v_legacy":  {vendorCode: nil, credentials: map[string]any{"api_key": "sk-v-legacy", "reasoning_effort_override": "ultra"}},
 	}
 	for id, spec := range seedAccounts {
-		var vendorColumn, providerColumn any
+		var vendorColumn any
 		if spec.vendorCode != nil {
 			vendorColumn = spec.vendorCode
 		}
-		if spec.providerCode != nil {
-			providerColumn = spec.providerCode
-		}
 		seed(`INSERT INTO accounts (
-				id, system_account_id, vendor_code, connection_driver_code, provider_code, protocol_code, protocol_version,
+				id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 				name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-			) VALUES (?, ?, ?, ?, ?, 'openai', 'v1', ?, 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
-			id, fixture.systemAccount, vendorColumn, spec.vendorCode, providerColumn,
+			) VALUES (?, ?, ?, ?, 'openai', 'v1', ?, 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+			id, fixture.systemAccount, vendorColumn, spec.vendorCode,
 			"账户 "+id, encrypt(spec.credentials))
 		seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 			VALUES (?, ?, ?, 1, ?)`, fixture.groupID, fixture.systemAccount, id, now)
@@ -154,14 +151,14 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 		t.Fatalf("acc_v_xai vendor 水合 = %q/%q, want xai/xai", xaiSecret.VendorCode, xaiSecret.ConnectionDriverCode)
 	}
 
-	// ⑤ 存量迁移窗口：vendor_code NULL + provider_code='gpt' → 身份必须为空串
-	// （真实 SQL 投影层禁止旧列回落，与 oauthnormalizer 覆盖侧判据同源）。
+	// ⑤ 存量形态等价臂：vendor_code NULL → 身份必须为空串
+	// （provider_code 旧列已退役，投影层 COALESCE(vendor_code,'') 无回落来源）。
 	legacySecret := secrets["acc_v_legacy"]
 	if legacySecret == nil {
 		t.Fatalf("acc_v_legacy 未进候选窗口：accounts=%v", result.Accounts)
 	}
 	if legacySecret.VendorCode != "" {
-		t.Fatalf("存量行 vendor 水合 = %q, want 空串（禁止 provider_code 回落）", legacySecret.VendorCode)
+		t.Fatalf("存量行 vendor 水合 = %q, want 空串（无 vendor 身份来源）", legacySecret.VendorCode)
 	}
 
 	// ④ 覆盖改写出站 body：目录替身经 GptRequestOverrideRuntime 显式传入

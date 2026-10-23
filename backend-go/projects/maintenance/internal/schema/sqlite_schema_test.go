@@ -250,9 +250,11 @@ var goldenSchemaCounts = SQLiteResult{
 	Business: SchemaCounts{Tables: 74, Indexes: 205},
 	// 65/124→59/112：六监控表退役 -6 表 -12 索引（f1991b708 名单已删、
 	// 计数漏改；2026-10-17 专门批取证回正）。
-	Stats:        SchemaCounts{Tables: 59, Indexes: 112},
-	Chat:         SchemaCounts{Tables: 11, Indexes: 26},
-	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
+	Stats: SchemaCounts{Tables: 59, Indexes: 112},
+	Chat:  SchemaCounts{Tables: 11, Indexes: 26},
+	// 12→9：provider 维度持久列退役批（B4①）——codex 三表 boundary 索引
+	// 随 provider_code 列退役（-3 INDEX），建表不再声明该列。
+	CodexContext: SchemaCounts{Tables: 4, Indexes: 9},
 	Dataset:      SchemaCounts{Tables: 3, Indexes: 4},
 	UsageCatalog: SchemaCounts{Tables: 4, Indexes: 10},
 }
@@ -274,8 +276,9 @@ const goldenTotalTables = 153
 // guarded idx_api_keys_scheduling_preference created by EnsureSQLiteBusiness
 // (调度偏好独立实体 PLAN-20261012T033000000Z). 385→366：供应商与上游协议面
 // 重构批 business 索引 -23/+3；366→367：超级分组首批新增
-// idx_super_group_members_member_group。
-const goldenTotalIndexes = 367
+// idx_super_group_members_member_group。367→364：provider 维度持久列退役批
+// （B4①）codex 三表 boundary 索引 -3。
+const goldenTotalIndexes = 364
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {

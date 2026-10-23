@@ -211,23 +211,26 @@ func TestWCResolveProviderProtocolMismatch(t *testing.T) {
 }
 
 // TestWCPlanGuardsMissingFields：create-from-code 缺 sessionId/callbackUrl
-// 的 plan 守卫（路由层校验必填字段并以 400 呈现）。
+// 的 plan 守卫。创建端点 DTO 收口后 profile 缺省由 registry 派生，空 body 走
+// 到 plan 闭包校验：ValidationError 折叠为 502 兜底文案（openai/anthropic），
+// grok 用 grokOAuthError 逐字 400。
 func TestWCPlanGuardsMissingFields(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t, "root", "root-pass", "super_admin")
 	cases := []struct {
 		name    string
 		path    string
+		status  int
 		message string
 	}{
-		{"openai", "/__aisys__/api/openai-oauth/create-from-code", "OpenAI 授权码参数无效"},
-		{"anthropic", "/__aisys__/api/anthropic-oauth/create-from-code", "Anthropic 授权码参数无效"},
-		{"grok", "/__aisys__/api/grok-oauth/create-from-code", "Grok 授权码参数无效"},
+		{"openai", "/__aisys__/api/openai-oauth/create-from-code", http.StatusBadGateway, "OpenAI 授权码交换失败"},
+		{"anthropic", "/__aisys__/api/anthropic-oauth/create-from-code", http.StatusBadGateway, "Anthropic 授权码交换失败"},
+		{"grok", "/__aisys__/api/grok-oauth/create-from-code", http.StatusBadRequest, "sessionId 不能为空"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			code, payload := env.do(t, http.MethodPost, testCase.path, `{}`)
-			if code != http.StatusBadRequest || payload["message"] != testCase.message {
+			if code != testCase.status || payload["message"] != testCase.message {
 				t.Fatalf("%s: %d %v", testCase.name, code, payload)
 			}
 		})

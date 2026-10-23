@@ -336,7 +336,7 @@ func TestWhProxyHealthRecordExtras(t *testing.T) {
 	ctx := contextBackground()
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryProxyHealth(clock)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", proxyURL: stringPtrValue("http://proxy:9"), baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", proxyURL: stringPtrValue("http://proxy:9"), baseURL: "https://x.example.com"}.build()
 
 	// RecordGatewayProxyFailure 默认收敛到 proxy scope：桶键只有 proxy:*。
 	decision := service.RecordGatewayProxyFailure(a, "代理失败", FailureRecordOptions{})
@@ -505,8 +505,8 @@ func TestWhAsyncOrderDeletesVanishedBucketEntry(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	store := &whVanishingStore{MemoryRuntimeStateStore: NewMemoryRuntimeStateStore(clock.Now)}
 	service := NewProxyHealthService(clock.Now, store, ProxyHealthOptions{CASMaxAttempts: 3}, nil)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
-	b := accountFixture{id: "b", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
+	b := accountFixture{id: "b", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
 	if _, err := service.RecordGatewayUpstreamBucketFailureAsync(contextBackground(), a, "err", FailureRecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +528,7 @@ func TestWhAsyncOrderDeletesVanishedBucketEntry(t *testing.T) {
 func TestWhOrderBypassedWhenAllAvoided(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryProxyHealth(clock)
-	shared := accountFixture{systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}
+	shared := accountFixture{systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}
 	a := shared.build()
 	a.ID = "a"
 	b := shared.build()

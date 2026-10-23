@@ -263,7 +263,7 @@ func TestWIResolveGatewayUsageModel(t *testing.T) {
 	// 有映射 → 上游模型。
 	account := gatewayruntimecache.OpenAIAccountSecret{
 		// responses → chat_completions 的跨协议转换要求 openai 协议 profile。
-		ProviderCode:    "openai",
+		VendorCode:      "openai",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{

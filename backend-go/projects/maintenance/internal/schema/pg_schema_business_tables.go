@@ -414,7 +414,6 @@ var postgresSchemaBusinessTables = []PGStatement{
       id text PRIMARY KEY,
       account_id text NOT NULL,
       account_name text NOT NULL,
-      provider_code text NOT NULL,
       provider_protocol_profile_id text NOT NULL,
       protocol_code text NOT NULL,
       protocol_version text NOT NULL,
@@ -940,12 +939,14 @@ var postgresSchemaBusinessTables = []PGStatement{
 		// (account_id, model_id, created_at)，复合主键供映射与健康检查外键引用；
 		// models 物理删除 RESTRICT（设计 :181——仍被引用时禁止删除模型）。
 		// 迁移窗口 shim（provider_code / model 两列与 UNIQUE (account_id, model)
-		// 约束）已按 A 路线一次性收敛撤除。
+		// 约束）已按 A 路线一次性收敛撤除。model_id 声明 NOT NULL（B4① 补充，
+		// T52 复核：写面不产 NULL；PG 侧主键本就隐式 NOT NULL，声明只对齐
+		// fresh DDL 与 SQLite 形状，存量 PG 库无需迁移）。
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id text NOT NULL,
-      model_id text,
+      model_id text NOT NULL,
       created_at text NOT NULL,
       PRIMARY KEY (account_id, model_id),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
@@ -991,11 +992,10 @@ var postgresSchemaBusinessTables = []PGStatement{
     )`,
 	},
 	{
-		// account_list_availability_projections：本批只退役
-		// provider_protocol_profile_id → provider_protocol_profiles 的外键
-		//（目标表已从建表清单删除，fresh 库带此外键无法建表；设计 §9.11）。
-		// provider_code / provider_protocol_profile_id 两列本身属投影快照载荷，
-		// 随账户/连接面第 3 步批处理，本批不动。
+		// account_list_availability_projections：§9.11 已退役 profile 外键，
+		// 读面（jobs loader CTE）改由 accounts 投影 vendor；provider_code /
+		// provider_protocol_profile_id 两列随之在 B4① 存储迁移批拆除（列属
+		// 投影快照载荷，upsert 停写后为死负载，见尾部幂等退役语句）。
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_list_availability_projections (
@@ -1005,8 +1005,6 @@ var postgresSchemaBusinessTables = []PGStatement{
       authorization_id text,
       effective_status text NOT NULL,
       schedulable_bucket text NOT NULL CHECK (schedulable_bucket IN ('enabled', 'disabled', 'cooling')),
-      provider_code text NOT NULL,
-      provider_protocol_profile_id text NOT NULL,
       account_type text NOT NULL,
       bound_group_id text,
       name_sort_key text NOT NULL,
@@ -1036,8 +1034,6 @@ var postgresSchemaBusinessTables = []PGStatement{
       account_id text NOT NULL,
       effective_status text NOT NULL,
       schedulable_bucket text NOT NULL CHECK (schedulable_bucket IN ('enabled', 'disabled', 'cooling')),
-      provider_code text NOT NULL,
-      provider_protocol_profile_id text NOT NULL,
       account_type text NOT NULL,
       bound_group_id text,
       name_sort_key text NOT NULL,
@@ -2264,12 +2260,15 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
 	{
 		// media_jobs 异步媒体任务表（媒体设计 §8.2，M2）：id 是对外 job id
 		//（video_ 前缀，不用上游 id）；kind 覆盖视频与 M3 长音频两形态；
-		// account_id / provider_code / provider_protocol_profile_id 是账户亲和
-		// 三元组（§7：任务面不进派发循环）；artifact_json 只存定位指针与上游
-		// 时效时间，零资源存储（§8.1）。引用列沿表族事实（api_keys.id /
-		// accounts.id 均为 text）与 usage_records 记录表先例不加外键——账户
-		// 删除后任务行仍需存在（任务不可达错误语义），避免记录表反向阻断
-		// 账户物理清理。CREATE TABLE IF NOT EXISTS 幂等。
+		// account_id / provider_protocol_profile_id 是账户亲和二元组（§7：
+		// 任务面不进派发循环；provider_code 列已随 B4① 存储迁移批拆除——
+		// 列名是 provider 维度但语义已是 vendor，且对 gpt 账户持久化的是
+		// legacy token "openai"，读面供应商经 accounts.vendor_code 水合）；
+		// artifact_json 只存定位指针与上游时效时间，零资源存储（§8.1）。引用
+		// 列沿表族事实（api_keys.id / accounts.id 均为 text）与 usage_records
+		// 记录表先例不加外键——账户删除后任务行仍需存在（任务不可达错误
+		// 语义），避免记录表反向阻断账户物理清理。CREATE TABLE IF NOT EXISTS
+		// 幂等。
 		SchemaName: "juhe_business",
 		Source:     "media-jobs-table",
 		SQL: `CREATE TABLE IF NOT EXISTS media_jobs (
@@ -2277,7 +2276,6 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
       kind text NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
       api_key_id text NOT NULL,
       account_id text NOT NULL,
-      provider_code text NOT NULL,
       provider_protocol_profile_id text,
       upstream_job_id text NOT NULL,
       status text NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
@@ -2291,6 +2289,42 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
       created_at text NOT NULL,
       updated_at text NOT NULL
     )`,
+	},
+	{
+		// provider 维度持久列退役（B4① 存储迁移批，幂等存量库收列）：写入面
+		// 停写同批交付（jobs circuitstore upsert、gateway accountstest /
+		// media_jobs INSERT），fresh 库建表 DDL 已无这些列，DROP 仅对存量库
+		// 生效。维护链一次性执行（BUG-0307 纪律：schema 保证收敛到
+		// maintenance，ACCESS EXCLUSIVE 不进热路径）；发版顺序与回滚口径见
+		// docker/single-server/README.md。
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.account_list_availability_projections DROP COLUMN IF EXISTS provider_code`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.account_list_availability_projections DROP COLUMN IF EXISTS provider_protocol_profile_id`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.account_list_availability_projection_index DROP COLUMN IF EXISTS provider_code`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.account_list_availability_projection_index DROP COLUMN IF EXISTS provider_protocol_profile_id`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.account_test_tasks DROP COLUMN IF EXISTS provider_code`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.media_jobs DROP COLUMN IF EXISTS provider_code`,
 	},
 	{
 		SchemaName: "juhe_business",

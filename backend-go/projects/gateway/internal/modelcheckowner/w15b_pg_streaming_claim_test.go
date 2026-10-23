@@ -107,7 +107,6 @@ func w15bCoverPostgresDB(t *testing.T) *sql.DB {
 		`CREATE TABLE juhe_business.accounts (
 			id text PRIMARY KEY,
 			system_account_id text,
-			provider_code text,
 			config_revision int,
 			dispatch_revision int,
 			authorization_instance_source_account_id text,
@@ -199,8 +198,8 @@ func TestW15BClaimScheduledDueRowsUnderPgx(t *testing.T) {
 		{"acc-w15b-active", "active"},
 		{"acc-w15b-paused", "paused"},
 	} {
-		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, provider_code, config_revision, dispatch_revision, deleted_at, status, updated_at)
-			VALUES ($1, 'sys-w15b', 'openai', 1, 1, NULL, $2, $3)`, account.id, account.status, now.Format(time.RFC3339Nano)); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, config_revision, dispatch_revision, deleted_at, status, updated_at)
+			VALUES ($1, 'sys-w15b', 1, 1, NULL, $2, $3)`, account.id, account.status, now.Format(time.RFC3339Nano)); err != nil {
 			t.Fatalf("种子账户失败: %v", err)
 		}
 	}
@@ -274,8 +273,8 @@ func TestW15BClaimQualityRecoveryDueRowsUnderPgx(t *testing.T) {
 		{"acc-w15b-iso", "quality_isolated"},
 		{"acc-w15b-ok", "active"},
 	} {
-		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, provider_code, vendor_code, config_revision, dispatch_revision, deleted_at, status, health_check_model, updated_at)
-			VALUES ($1, 'sys-w15b', 'openai', 'gpt', 3, 5, NULL, $2, 'gpt-w15b-health', $3)`, account.id, account.status, stamp); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, config_revision, dispatch_revision, deleted_at, status, health_check_model, updated_at)
+			VALUES ($1, 'sys-w15b', 'gpt', 3, 5, NULL, $2, 'gpt-w15b-health', $3)`, account.id, account.status, stamp); err != nil {
 			t.Fatalf("种子账户失败: %v", err)
 		}
 	}

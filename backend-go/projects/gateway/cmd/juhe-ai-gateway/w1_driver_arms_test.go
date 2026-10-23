@@ -79,7 +79,7 @@ func TestW1GBuildGatewayUpstreamURLsForAccountArms(t *testing.T) {
 	t.Run("anthropic native messages builds base v1 url", func(t *testing.T) {
 		req := w1gNewDriverRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x","max_tokens":16}`)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_u4", ProtocolCode: "anthropic", ProviderCode: "anthropic",
+			ID: "acc_u4", ProtocolCode: "anthropic", VendorCode: "anthropic",
 			Type: "api_key", BaseURL: "https://ant.example",
 		}
 		urls, err := driver.BuildGatewayUpstreamURLsForAccount(ctx, account, req)
@@ -136,7 +136,7 @@ func TestW1GBuildGatewayUpstreamRequestPartsCodexOAuth(t *testing.T) {
 		req := w1gNewDriverRequest(t, http.MethodPost, "/v1/responses", `{"model":"gpt-5.3","input":"hello"}`)
 		req.HTTP.Header.Set("Session-Id", "sess-1")
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_c1", ProtocolCode: "openai", ProviderCode: "gpt", Type: "oauth",
+			ID: "acc_c1", ProtocolCode: "openai", VendorCode: "gpt", Type: "oauth",
 			APIKey:          "codex-oauth-token",
 			Credentials:     map[string]any{"account_id": "acct-77"},
 			BaseURL:         "https://chatgpt.example",
@@ -178,7 +178,7 @@ func TestW1GBuildGatewayUpstreamRequestPartsCodexOAuth(t *testing.T) {
 			State:   &gatewaybody.BodyState{JSONParseStatus: gatewaybody.JSONParseStatusInvalidJSON},
 		}
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_c2", ProtocolCode: "openai", ProviderCode: "gpt", Type: "oauth",
+			ID: "acc_c2", ProtocolCode: "openai", VendorCode: "gpt", Type: "oauth",
 			APIKey: "token-2",
 		}
 		if _, err := driver.BuildGatewayUpstreamRequestParts(ctx, req, account, gatewaydispatch.UsageIdentity{}, "codex_responses"); err == nil {
@@ -191,7 +191,7 @@ func TestW1GBuildGeminiCodeAssistRequestPartsArms(t *testing.T) {
 	driver := newChainProviderDriver()
 	nonGeneration := w1gNewDriverRequest(t, http.MethodPost, "/v1beta/models/gemini-x:countTokens", `{"contents":[]}`)
 	codeAssistAccount := gatewaydispatch.AccountCandidate{
-		ID: "acc_ga1", ProtocolCode: "gemini", ProviderCode: "gemini", Type: "google_oauth",
+		ID: "acc_ga1", ProtocolCode: "gemini", VendorCode: "gemini", Type: "google_oauth",
 		Credentials: map[string]any{"oauth_type": "code_assist", "project_id": "proj-1"},
 		BaseURL:     "https://cloudcode.example",
 	}
@@ -410,7 +410,7 @@ func TestW1GGatewayRequestCapabilityMismatchReasonArms(t *testing.T) {
 
 	t.Run("mapping admits unsupported model", func(t *testing.T) {
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_m3", ProtocolCode: "openai", ProviderCode: "hybrid", Type: "api_key",
+			ID: "acc_m3", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
 			SupportedModels: []string{"beta-model"},
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 				SourceModel: "gamma-model", SourceEndpointFamily: "chat_completions",
@@ -836,7 +836,7 @@ func TestW1GRequiredSupportedEndpointModeArms(t *testing.T) {
 		// 存储词汇是 messages / generate_content，NormalizeEndpointFamily 再切到
 		// anthropic_messages / gemini_generate_content。
 		responsesSource := gatewaydispatch.AccountCandidate{
-			ID: "acc_p6", ProtocolCode: "openai", ProviderCode: "hybrid", Type: "api_key",
+			ID: "acc_p6", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 				SourceModel: "m", SourceEndpointFamily: "responses",
 				UpstreamModel: "u", UpstreamEndpointFamily: "messages", Enabled: true,
@@ -847,7 +847,7 @@ func TestW1GRequiredSupportedEndpointModeArms(t *testing.T) {
 			t.Fatalf("anthropic bridge mode=%q required=%v, want messages_json", mode, required)
 		}
 		chatToGemini := gatewaydispatch.AccountCandidate{
-			ID: "acc_p7", ProtocolCode: "openai", ProviderCode: "hybrid", Type: "api_key",
+			ID: "acc_p7", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 				SourceModel: "m", SourceEndpointFamily: "chat_completions",
 				UpstreamModel: "u", UpstreamEndpointFamily: "generate_content", Enabled: true,
@@ -858,7 +858,7 @@ func TestW1GRequiredSupportedEndpointModeArms(t *testing.T) {
 			t.Fatalf("gemini bridge mode=%q required=%v, want generate_content_json", mode, required)
 		}
 		unknownUpstream := gatewaydispatch.AccountCandidate{
-			ID: "acc_p8", ProtocolCode: "openai", ProviderCode: "hybrid", Type: "api_key",
+			ID: "acc_p8", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 				SourceModel: "m", SourceEndpointFamily: "chat_completions",
 				UpstreamModel: "u", UpstreamEndpointFamily: "embeddings", Enabled: true,

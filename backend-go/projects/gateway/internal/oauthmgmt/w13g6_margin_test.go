@@ -439,10 +439,10 @@ func w13g6SeedOAuthAccount(t *testing.T, env *testEnv, id, owner, provider, prof
 	t.Helper()
 	const now = "2026-01-01T00:00:00.000Z"
 	if _, err := env.db.Exec(`INSERT INTO accounts (id, config_revision, system_account_id, vendor_code,
-		provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+		provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
 		credentials_encrypted, credential_mask, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '', ?, ?)`,
-		id, revision, owner, provider, provider, profile, protocol, version, "w13g6-"+id, accountType, creds, now, now); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '', ?, ?)`,
+		id, revision, owner, provider, profile, protocol, version, "w13g6-"+id, accountType, creds, now, now); err != nil {
 		t.Fatalf("seed account %s: %v", id, err)
 	}
 }
@@ -548,8 +548,9 @@ func TestW13g6RouteBodyArms(t *testing.T) {
 	if code, _ := w13g6Do(t, env, env.server, http.MethodPost, "/__aisys__/api/openai-oauth/auth-url", `null`); code != http.StatusOK {
 		t.Fatalf("auth-url null body: %d", code)
 	}
-	// create-from-code 空体 -> body==nil 归一后 strict 失败（562-567）。
-	if code, _ := w13g6Do(t, env, env.server, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code", ``); code != http.StatusBadRequest {
+	// create-from-code 空体 -> body==nil 归一（562-567）；DTO 收口后 profile
+	// 缺省派生放行，请求走到 plan 守卫/交换臂，ValidationError 折叠为 502 兜底。
+	if code, _ := w13g6Do(t, env, env.server, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code", ``); code != http.StatusBadGateway {
 		t.Fatalf("create empty body: %d", code)
 	}
 	// refresh 空 JSON 体（674-676）。
@@ -575,19 +576,25 @@ func TestW13g6RouteBodyArms(t *testing.T) {
 		t.Fatalf("reauth-refresh null body: %d", code)
 	}
 	// credentialsPatch 分发到各 plan 闭包（plans.go 15/106/191/363 + providers.go 75）。
+	// DTO 收口后 profile 缺省派生放行：patch 载荷必须通过 strict/managed 门并
+	// 分发进 plan 闭包（终态取决于会话/上游 mock，为 4xx/5xx），不得再在
+	// managed 门被「参数无效」400 短路（旧 400 来自 profile 必填门）。
 	for slug, patch := range map[string]string{
 		"openai":    `{"sessionId":"s","callbackUrl":"c","credentialsPatch":{"quota_recovery_policy":{"x":1}}}`,
 		"anthropic": `{"sessionId":"s","callbackUrl":"c","credentialsPatch":{"base_url":"https://a.b"}}`,
 		"gemini":    `{"sessionId":"s","callbackUrl":"c","credentialsPatch":{"base_url":"https://g.c"}}`,
 	} {
-		code, _ := w13g6Do(t, env, env.server, http.MethodPost, "/__aisys__/api/"+slug+"-oauth/create-from-code", patch)
-		if code != http.StatusBadRequest && code != http.StatusNotFound {
-			t.Fatalf("%s create with patch: %d", slug, code)
+		code, payload := w13g6Do(t, env, env.server, http.MethodPost, "/__aisys__/api/"+slug+"-oauth/create-from-code", patch)
+		message, _ := payload["message"].(string)
+		if code == http.StatusBadRequest && strings.HasSuffix(message, "参数无效") {
+			t.Fatalf("%s create with patch 被 managed 门拒绝: %d %v", slug, code, payload)
 		}
 	}
-	if code, _ := w13g6Do(t, env, env.server, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"r","credentialsPatch":{"quota_recovery_policy":{"x":1}}}`); code != http.StatusBadRequest {
-		t.Fatalf("grok create-refresh with patch: %d", code)
+	if code, payload := w13g6Do(t, env, env.server, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
+		`{"refreshToken":"r","credentialsPatch":{"quota_recovery_policy":{"x":1}}}`); code == http.StatusBadRequest {
+		if message, _ := payload["message"].(string); strings.HasSuffix(message, "参数无效") {
+			t.Fatalf("grok create-refresh with patch 被 managed 门拒绝: %d %v", code, payload)
+		}
 	}
 
 	// --- 自定义 Store 服务器：上游脚本 + 失败 advancer ----------------------
@@ -648,8 +655,10 @@ func TestW13g6RouteBodyArms(t *testing.T) {
 		t.Fatalf("gemini reauth-refresh: %d %v", code, payload)
 	}
 	// gemini create-from-refresh：无 safePatch 的 tokenOutcome（plans.go 252-254）。
+	// DTO 收口后 profile 缺省派生放行（旧 400 来自 profile 必填门），脚本上游
+	// 返回合法 token → 全链建户成功。
 	if code, payload := w13g6Do(t, env, server, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"r","clientId":"c"}`); code != http.StatusOK && code != http.StatusBadRequest {
+		`{"refreshToken":"r","clientId":"c"}`); code != http.StatusCreated {
 		t.Fatalf("gemini create-from-refresh: %d %v", code, payload)
 	}
 }

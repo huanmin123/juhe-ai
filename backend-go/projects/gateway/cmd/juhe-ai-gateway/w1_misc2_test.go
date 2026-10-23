@@ -150,7 +150,7 @@ func TestW1RoutingProjections(t *testing.T) {
 	}
 	// 账户投影：路由层只带身份与支持模型。
 	account := projectAccountForRouting(gatewayruntimecache.OpenAIAccountSecret{
-		ID: "acc_1", ProviderCode: "openai", SupportedModels: []string{"gpt-5"},
+		ID: "acc_1", VendorCode: "openai", SupportedModels: []string{"gpt-5"},
 	})
 	if account.ID != "acc_1" || len(account.SupportedModels) != 1 || account.SupportedModels[0] != "gpt-5" {
 		t.Fatalf("account = %+v", account)

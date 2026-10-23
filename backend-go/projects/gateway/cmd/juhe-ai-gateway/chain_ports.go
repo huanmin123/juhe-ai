@@ -122,6 +122,9 @@ func usageContextOf(context gatewaypreauth.GatewayFailureUsageContext) gatewayus
 		EffectiveServiceTier:     context.EffectiveServiceTier,
 		RequestedReasoningEffort: context.RequestedReasoningEffort,
 		EffectiveReasoningEffort: context.EffectiveReasoningEffort,
+		// 压缩期望（用量记录压缩标记设计 §压缩请求识别）：preflight 冻结值
+		// 直传，失败记账两条入口据此落 CompactionExpected。
+		CompactionExpected: context.CompactionExpected,
 	}
 }
 
@@ -525,6 +528,31 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		}, nil
 	}
 
+	// BUG-0326 语音上游 4xx 业务拒绝分级（问题档案修复设计）：音频同步 lane
+	// 的上游确定性业务拒绝 4xx（参数/内容审核 400、音色/模型不存在 404 等
+	// ——401/403/407/408/429 保留集除外）直接把上游错误透传给客户端
+	//（ReturnResponse），不换账户、不进重试循环（attemptCount=1）、不触发
+	// 账户错误策略状态变更与健康检查探测（请求侧业务拒绝不是账户故障，换
+	// 账户原样重演）。保留集维持既有失败派发语义：401/403 沿显式策略/系统
+	// 额度状态机与候选切换（耗尽仍 503）；429 受理前限流换账户重试（mock
+	// 契约 §3.2.4 既有钉面）；5xx/传输错误维持既有重试 + 耗尽 503。审计尝试
+	// 与 usage 失败记录已在上方按既有面落账；透传响应经链面非流式错误契约
+	// 原样转发（真实状态码 + 上游错误体），完成行归因 opaque_upstream。
+	if chainMediaSyncAudioRejectionShortCircuit(input.RequestLane, statusCode) {
+		input.AuditCapture.AddGatewayMetadata("media_sync_audio_rejection_short_circuit", map[string]any{
+			"accountId":   input.Account.ID,
+			"requestLane": input.RequestLane,
+			"statusCode":  statusCode,
+		})
+		return gatewaydispatch.FailedUpstreamResponseResult{
+			Action:                gatewaydispatch.FailedResponseActionReturnResponse,
+			Response:              chainRebuiltUpstreamErrorResponse(input.Response, bodyText),
+			FailureKind:           chainFailureKindOpaqueHTTP,
+			LastAttempt:           lastAttempt,
+			UpstreamStageRecorded: true,
+		}, nil
+	}
+
 	// failure-dispatch.ts:292-327: the codex encrypted-content compatibility
 	// recovery runs after the audit/usage records and before the policy
 	// branches. A retry_with_body_variant result short-circuits the skip flow
@@ -876,7 +904,6 @@ func (d *chainFailureDispatcher) scheduleStreamClientSourceAvoidance(ctx context
 		APIKeyID:                  input.UsageContext.APIKeyID,
 		GroupID:                   input.UsageContext.GroupID,
 		Endpoint:                  input.UsageContext.Endpoint,
-		ProviderCode:              input.Account.ProviderCode,
 		ProviderProtocolProfileID: input.Account.ProviderProtocolProfileID,
 		ProtocolCode:              input.Account.ProtocolCode,
 		ProtocolVersion:           input.Account.ProtocolVersion,
@@ -1024,7 +1051,7 @@ func chainUpstreamHeaderAccountOf(account gatewaydispatch.AccountCandidate) *gat
 		ID:                        account.ID,
 		APIKey:                    account.APIKey,
 		Type:                      account.Type,
-		ProviderCode:              account.ProviderCode,
+		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,
@@ -1151,7 +1178,7 @@ func failedResponseAttemptOf(input gatewaydispatch.FailedUpstreamResponseInput, 
 	}
 	attempt.AccountID = input.Account.ID
 	attempt.AccountName = input.Account.Name
-	attempt.ProviderCode = input.Account.ProviderCode
+	attempt.ProviderCode = input.Account.VendorCode
 	attempt.ProviderProtocolProfileID = input.Account.ProviderProtocolProfileID
 	attempt.ProtocolCode = input.Account.ProtocolCode
 	attempt.ProtocolVersion = input.Account.ProtocolVersion
@@ -1172,7 +1199,7 @@ func downstreamClosedAttemptOf(input gatewaydispatch.UpstreamRequestErrorInput) 
 	attempt := &gatewaydispatch.UpstreamAttempt{
 		AccountID:                 input.Account.ID,
 		AccountName:               input.Account.Name,
-		ProviderCode:              input.Account.ProviderCode,
+		ProviderCode:              input.Account.VendorCode,
 		ProviderProtocolProfileID: input.Account.ProviderProtocolProfileID,
 		ProtocolCode:              input.Account.ProtocolCode,
 		ProtocolVersion:           input.Account.ProtocolVersion,
@@ -1198,7 +1225,7 @@ func transportFailureAttemptOf(input gatewaydispatch.UpstreamRequestErrorInput, 
 	}
 	attempt.AccountID = input.Account.ID
 	attempt.AccountName = input.Account.Name
-	attempt.ProviderCode = input.Account.ProviderCode
+	attempt.ProviderCode = input.Account.VendorCode
 	attempt.ProviderProtocolProfileID = input.Account.ProviderProtocolProfileID
 	attempt.ProtocolCode = input.Account.ProtocolCode
 	attempt.ProtocolVersion = input.Account.ProtocolVersion
@@ -1679,7 +1706,6 @@ func (a clientStrategyAdapter) Resolve(req *gatewaypreauth.GatewayRequest, input
 		APIKeyID:        input.APIKeyID,
 		GroupID:         input.GroupID,
 		Endpoint:        input.Endpoint,
-		ProviderCode:    input.ProviderCode,
 		ClientIP:        input.ClientIP,
 	}
 	resolved := a.deps.ResolveOpenAIGatewayClientStrategy(req, identity)

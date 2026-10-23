@@ -193,13 +193,13 @@ func TestWBStoreProjectOutcomeItemDriftConflicts(t *testing.T) {
 // 空恢复模型 + 空健康模型的恢复任务必须被跳过而不是生成坏任务。
 func TestWBBusinessSchedulerSkipsBlankRecoveryModel(t *testing.T) {
 	db := wbOpenMemoryDB(t, []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,health_check_model TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,health_check_model TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`,
 	})
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai','gpt',4,1,NULL,NULL,'quality_isolated','')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','gpt',4,1,NULL,NULL,'quality_isolated','')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'','schedule')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {

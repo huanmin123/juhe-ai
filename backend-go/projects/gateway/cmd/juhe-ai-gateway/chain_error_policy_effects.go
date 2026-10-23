@@ -199,7 +199,7 @@ func newChainErrorPolicyEffectsBridge(composed *composition, secret string) (cha
 			merged["api_keys"] = account.APIKeys
 			credentials = merged
 		}
-		return keyStates.IsAccountAPIKeyPoolIsolationEnabled(account.ProviderCode, account.ProtocolCode, account.ProtocolVersion, account.Type, credentials) &&
+		return keyStates.IsAccountAPIKeyPoolIsolationEnabled(account.VendorCode, account.ProtocolCode, account.ProtocolVersion, account.Type, credentials) &&
 			account.SelectedAPIKeyFingerprint != nil
 	}
 	bridge := &chainErrorPolicyEffectsBridge{
@@ -292,7 +292,7 @@ func accountKeyTargetOf(account gatewaydispatch.AccountCandidate) accountkeystat
 		OwnerSystemAccountID:      account.AccountOwnerSystemAccountID,
 		CredentialSourceAccountID: stringValueOf(account.CredentialSourceAccountID),
 		SelectedAPIKeyFingerprint: stringValueOf(account.SelectedAPIKeyFingerprint),
-		ProviderCode:              account.ProviderCode,
+		ProviderCode:              account.VendorCode,
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,
 		AccountType:               account.Type,

@@ -542,7 +542,7 @@ func TestW1ZChainAttemptAuditSinkConvertsDispatchInputs(t *testing.T) {
 		State: &gatewaybody.BodyState{Model: &model},
 	}}
 	attemptID := sink.StartAttempt(gatewaydispatch.StartAttemptInput{
-		Account:                   gatewaydispatch.AccountCandidate{ID: "acc-w1z-sink", ProviderCode: "openai"},
+		Account:                   gatewaydispatch.AccountCandidate{ID: "acc-w1z-sink", VendorCode: "openai"},
 		AttemptIndex:              2,
 		UpstreamURL:               "http://127.0.0.1:9/v1/chat/completions",
 		Method:                    http.MethodPost,
@@ -567,7 +567,7 @@ func TestW1ZChainAttemptAuditSinkConvertsDispatchInputs(t *testing.T) {
 	}
 
 	sink.RecordFailedDispatchAttempt(gatewaydispatch.FailedDispatchAttemptInput{
-		Account:                   gatewaydispatch.AccountCandidate{ID: "acc-w1z-sink", ProviderCode: "openai"},
+		Account:                   gatewaydispatch.AccountCandidate{ID: "acc-w1z-sink", VendorCode: "openai"},
 		AttemptIndex:              3,
 		UpstreamURL:               "http://127.0.0.1:9/v1/chat/completions",
 		Method:                    http.MethodPost,

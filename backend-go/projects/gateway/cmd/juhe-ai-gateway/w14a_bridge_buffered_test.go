@@ -36,7 +36,7 @@ import (
 func w14aBridgeMappedAccount(sourceModel, sourceFamily, upstreamModel, upstreamFamily string) gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
 		ID:           "w14a-bridge-acc",
-		ProviderCode: "hybrid",
+		VendorCode:   "hybrid",
 		ProtocolCode: "gemini",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            sourceModel,
@@ -347,7 +347,7 @@ func TestW14aBridgeGuardsAndPassthrough(t *testing.T) {
 	// 无 mapping（请求缺 model 字段）→ chainBridgeResponseMappingOf 返回 nil，
 	// 非 Code Assist 账户透传。
 	noModel := w14aBridgeInput(t, "/v1/messages", `{"max_tokens":16,"messages":[]}`,
-		gatewaydispatch.AccountCandidate{ID: "w14a-plain", ProviderCode: "openai", ProtocolCode: "openai"},
+		gatewaydispatch.AccountCandidate{ID: "w14a-plain", VendorCode: "openai", ProtocolCode: "openai"},
 		newBridgeUpstreamResponse("application/json", io.NopCloser(strings.NewReader(payload))))
 	got, err = transformer.TransformUpstreamResponseForAccount(noModel)
 	if err != nil {

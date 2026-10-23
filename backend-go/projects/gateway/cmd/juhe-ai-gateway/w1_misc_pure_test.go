@@ -585,7 +585,6 @@ func TestW1UUsageModelAccountOfProjection(t *testing.T) {
 	account := gatewaydispatch.AccountCandidate{
 		ID:                               "acc-1",
 		Name:                             "账号一",
-		ProviderCode:                     "openai",
 		VendorCode:                       "openai",
 		ProviderProtocolProfileID:        "ppp-1",
 		ProtocolCode:                     "openai",

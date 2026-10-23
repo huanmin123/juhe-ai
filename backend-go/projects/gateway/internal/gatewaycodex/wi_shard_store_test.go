@@ -12,7 +12,7 @@ func TestWIShardStoreCRUDRoundTrip(t *testing.T) {
 	// 响应行往返：save 后按 ID 读回，字段一致。
 	row := CodexContextResponseStateIndex{
 		CodexContextStateBoundary: CodexContextStateBoundary{
-			SystemAccountID: "sys", GroupID: "group", ProviderCode: "openai",
+			SystemAccountID: "sys", GroupID: "group",
 		},
 		ResponseID:         "resp-1",
 		SessionID:          "session-1",

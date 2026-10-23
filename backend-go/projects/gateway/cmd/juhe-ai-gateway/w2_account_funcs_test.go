@@ -443,12 +443,12 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 
 	stale := time.Now().UTC().Add(-20 * time.Minute).Format("2006-01-02T15:04:05.000Z07:00")
 	if _, err := composedFull.DB.Exec(`INSERT INTO account_test_tasks (
-			id, account_id, account_name, provider_code, provider_protocol_profile_id,
+			id, account_id, account_name, provider_protocol_profile_id,
 			protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, diagnostics,
 			model, test_endpoint_mode, draft_account_encrypted,
 			status, status_message, cancel_requested, queued_at, created_at, updated_at, started_at
-		) VALUES ('task-w2b-resume', 'acct-w2b', '恢复任务', 'openai', 'profile-w2b',
+		) VALUES ('task-w2b-resume', 'acct-w2b', '恢复任务', 'profile-w2b',
 			'openai', 'v1', 'api_key',
 			'sys_admin', 'user', 'full',
 			'gpt-w2b', 'chat_json', 'junk-envelope',
@@ -746,10 +746,7 @@ func TestW2BChainAccountsSelectionArms(t *testing.T) {
 	seed(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
 			grantee_system_account_id, status) VALUES ('auth-w2b', 'account', 'acc_inst', ?, ?, 'active')`,
 		fixture.systemAccount, fixture.systemAccount)
-	seed(`INSERT INTO accounts (id, system_account_id, provider_code, protocol_code, protocol_version, name, type,
-			status, schedulable, credentials_encrypted, authorization_instance_authorization_id,
-			authorization_instance_source_account_id)
-			VALUES ('acc_inst', ?, 'openai', 'openai', 'v1', '授权实例', 'api_key', 'active', 1, ?, 'auth-w2b', ?)`,
+	seed(`INSERT INTO accounts (id, system_account_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, authorization_instance_authorization_id, authorization_instance_source_account_id) VALUES ('acc_inst', ?, 'openai', 'v1', '授权实例', 'api_key', 'active', 1, ?, 'auth-w2b', ?)`,
 		fixture.systemAccount, credentials, fixture.accountID)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 			VALUES (?, ?, 'acc_inst', 1, ?)`, fixture.groupID, fixture.systemAccount, now)
@@ -775,8 +772,7 @@ func TestW2BChainAccountsSelectionArms(t *testing.T) {
 
 	// 649：空 account_id 的绑定（accounts.id 也为空，INNER JOIN 成立）在模型
 	// 窗口去重处回退 row.ID。
-	seed(`INSERT INTO accounts (id, system_account_id, provider_code, protocol_code, protocol_version, name, type,
-			status, schedulable) VALUES ('', ?, 'openai', 'openai', 'v1', '空ID账户', 'api_key', 'active', 1)`,
+	seed(`INSERT INTO accounts (id, system_account_id, protocol_code, protocol_version, name, type, status, schedulable) VALUES ('', ?, 'openai', 'v1', '空ID账户', 'api_key', 'active', 1)`,
 		fixture.systemAccount)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 			VALUES (?, ?, '', 1, ?)`, fixture.groupID, fixture.systemAccount, now)
@@ -808,9 +804,7 @@ func TestW2BChainAccountsScanFaultArms(t *testing.T) {
 	seedChainBusinessSchema(t, plain)
 	seedChainStatsSchema(t, plain)
 	now := "2026-09-04T00:00:00.000Z"
-	if _, err := plain.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, protocol_code,
-			protocol_version, name, type, status, schedulable) VALUES ('acc-w2b', 'sys-owner', 'openai', 'openai',
-			'v1', 'W2B 账户', 'api_key', 'active', 1)`); err != nil {
+	if _, err := plain.Exec(`INSERT INTO accounts (id, system_account_id, protocol_code, protocol_version, name, type, status, schedulable) VALUES ('acc-w2b', 'sys-owner', 'openai', 'v1', 'W2B 账户', 'api_key', 'active', 1)`); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 	if _, err := plain.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)

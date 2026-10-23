@@ -27,14 +27,14 @@ func (d *fakeAnthropicUsageDispatcher) PersistAnthropicUsageHeaders(_ context.Co
 
 func TestPersistAnthropicUsageHeadersIfNeeded(t *testing.T) {
 	anthropicOAuthAccount := gatewayruntimecache.OpenAIAccountSecret{
-		ID:           "acc-1",
-		Type:         "oauth",
-		ProviderCode: "anthropic",
+		ID:         "acc-1",
+		Type:       "oauth",
+		VendorCode: "anthropic",
 	}
 	apiKeyAccount := anthropicOAuthAccount
 	apiKeyAccount.Type = "api_key"
 	nonAnthropic := anthropicOAuthAccount
-	nonAnthropic.ProviderCode = "openai"
+	nonAnthropic.VendorCode = "openai"
 	anthropicHeaders := http.Header{}
 	anthropicHeaders.Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.14")
 	plainHeaders := http.Header{}

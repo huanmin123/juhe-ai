@@ -2006,8 +2006,8 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 			started: -30 * time.Minute, ended: -29 * time.Minute},
 	}
 	for _, seed := range taskSeeds {
-		// provider 三元组随账户的连接事实（vendor + 主连接 preset + 协议面），
-		// 表上无外键，取 registry 允许组合的投影值。
+		// 协议二元组随账户的主连接 preset（vendor 维度已随 B4① 存储迁移批
+		// 退役：account_test_tasks 不再有 provider_code 列，种子不写）。
 		preset := seed.account.preset
 		if preset == "" {
 			preset = contracts.PresetGPTOpenAIV1
@@ -2017,13 +2017,9 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 			surface = contracts.SurfaceOpenAIV1
 		}
 		protocolCode, protocolVersion := protocolForSurface(surface)
-		vendor, _ := mockConnectorIdentity(&seed.account)
-		if vendor == "" {
-			vendor = guard.catalog.mainVendor
-		}
 		if err := w.put(tx, "account_test_tasks", map[string]any{
 			"id": CleanupIDPrefix + "test_task_" + seed.suffix, "account_id": seed.account.id,
-			"account_name": seed.account.name, "provider_code": vendor,
+			"account_name":                 seed.account.name,
 			"provider_protocol_profile_id": preset, "protocol_code": protocolCode,
 			"protocol_version": protocolVersion, "account_type": seed.account.typ,
 			"request_system_account_id": guard.adminID, "request_role": "super_admin",
@@ -3065,7 +3061,7 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		return nil
 	}
 	mediaAccountID := CleanupIDPrefix + "acc_media"
-	var accountID, vendorCode string
+	var accountID string
 	mediaAccount := false
 	for _, account := range accounts {
 		if account.id == mediaAccountID {
@@ -3073,24 +3069,21 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 			break
 		}
 	}
+	// provider_code 列已随 B4① 存储迁移批退役：媒体行只落 account_id 亲和，
+	// 读面供应商经 accounts.vendor_code 水合，种子不再写 vendor。
 	if mediaAccount {
-		if err := tx.QueryRow(`SELECT id, COALESCE(vendor_code, '')
-			FROM accounts WHERE id = ?`, mediaAccountID).Scan(&accountID, &vendorCode); err != nil {
+		if err := tx.QueryRow(`SELECT id
+			FROM accounts WHERE id = ?`, mediaAccountID).Scan(&accountID); err != nil {
 			return fmt.Errorf("读取媒体账户行: %w", err)
 		}
 	} else {
 		// 老库没有 acc_media 样本（样本表更新滞后）时回落第一个账户，保证
 		// media_jobs 行不缺席；外键仍指向真实存在的行。
 		fallback := accounts[0]
-		if err := tx.QueryRow(`SELECT id, COALESCE(vendor_code, '')
-			FROM accounts WHERE id = ?`, fallback.id).Scan(&accountID, &vendorCode); err != nil {
+		if err := tx.QueryRow(`SELECT id
+			FROM accounts WHERE id = ?`, fallback.id).Scan(&accountID); err != nil {
 			return fmt.Errorf("读取媒体账户回落行: %w", err)
 		}
-	}
-	if vendorCode == "" {
-		// generic 账户 vendor_code 为 SQL NULL；media_jobs.provider_code NOT NULL
-		// 兜底到 seed 目录的主 vendor（账户亲和三元组的记录面语义）。
-		vendorCode = guard.catalog.mainVendor
 	}
 	apiKeyID := keys["main"]
 	videoModel := guard.catalog.videoModelAt(0).name
@@ -3134,10 +3127,10 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		return w.put(tx, "media_jobs", map[string]any{
 			"id": id, "kind": kind,
 			"api_key_id": rowAPIKeyID, "account_id": accountID,
-			"provider_code": vendorCode, "provider_protocol_profile_id": nil,
-			"upstream_job_id":       "upstream_" + CleanupIDPrefix + id,
-			"status":                status,
-			"request_snapshot_json": requestJSON, "artifact_json": artifactJSON,
+			"provider_protocol_profile_id": nil,
+			"upstream_job_id":              "upstream_" + CleanupIDPrefix + id,
+			"status":                       status,
+			"request_snapshot_json":        requestJSON, "artifact_json": artifactJSON,
 			"error_json": errorJSON, "usage_json": usageJSON, "cost_usd": cost,
 			"params_applied_json": appliedJSON, "params_ignored_json": ignoredJSON,
 			"created_at": createdAt, "updated_at": updatedAt,

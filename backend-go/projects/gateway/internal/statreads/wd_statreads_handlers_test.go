@@ -149,8 +149,7 @@ func TestWdAccountUsageHandlerGuardsAndSelectedAccounts(t *testing.T) {
 	fixture.exec(t,
 		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
 			VALUES ('global', 'account', 'acct-sel', '2026-09-04', 3, 30, 20, 0.3)`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-sel', '选中账户', 'sys-owner-1', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-sel', '选中账户', 'sys-owner-1', 'api_key', 'openai', 'active')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 		`INSERT INTO providers (code, name) VALUES ('openai', 'OpenAI')`,
 		`INSERT INTO vendors (code, name) VALUES ('openai', 'OpenAI')`,
@@ -210,10 +209,8 @@ func TestWdAccountUsageOptionsContract(t *testing.T) {
 	fixture.exec(t,
 		`INSERT INTO providers (code, name) VALUES ('openai', 'OpenAI')`,
 		`INSERT INTO vendors (code, name) VALUES ('openai', 'OpenAI')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-a', 'Alpha', 'sys-owner-1', 'openai', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status, authorization_instance_authorization_id, authorization_instance_source_account_id, authorization_instance_owner_system_account_id)
-			VALUES ('acct-inst', 'Alpha 实例', 'sys-grantee', 'openai', 'api_key', 'openai', 'active', 'ra-1', 'acct-a', 'sys-owner-1')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-a', 'Alpha', 'sys-owner-1', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status, authorization_instance_authorization_id, authorization_instance_source_account_id, authorization_instance_owner_system_account_id) VALUES ('acct-inst', 'Alpha 实例', 'sys-grantee', 'api_key', 'openai', 'active', 'ra-1', 'acct-a', 'sys-owner-1')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-grantee', 'grantee', NULL)`,
 	)
@@ -276,14 +273,10 @@ func TestWdAccountUsageKeywordCallerAccountScope(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
 		// 过滤后的 admin（systemAccountId=sys-f）以 caller_account 视角检索。
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-own', 'AlphaOwn', 'sys-f', 'openai', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-foreign', 'AlphaForeign', 'sys-other', 'openai', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status, authorization_instance_authorization_id, authorization_instance_source_account_id)
-			VALUES ('acct-inst', 'InstanceB', 'sys-f', 'openai', 'api_key', 'openai', 'active', 'ra-2', 'acct-src')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-src', 'AlphaSource', 'sys-other', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-own', 'AlphaOwn', 'sys-f', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-foreign', 'AlphaForeign', 'sys-other', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status, authorization_instance_authorization_id, authorization_instance_source_account_id) VALUES ('acct-inst', 'InstanceB', 'sys-f', 'api_key', 'openai', 'active', 'ra-2', 'acct-src')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-src', 'AlphaSource', 'sys-other', 'api_key', 'openai', 'active')`,
 		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-1', 'AlphaGroup', 'sys-f')`,
 		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES ('acct-foreign', 'g-1', 'sys-f', 1)`,
 		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
@@ -324,8 +317,7 @@ func TestWdAccountUsageKeywordCallerAccountScope(t *testing.T) {
 func TestWdAccountUsageTrendDailySeries(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-t', 'TrendAccount', 'sys-owner-1', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-t', 'TrendAccount', 'sys-owner-1', 'api_key', 'openai', 'active')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, cache_read_tokens, cache_write_tokens, thinking_tokens, last_used_at)
 			VALUES ('global', 'account', 'acct-t', '2026-09-04', 7, 70, 35, 0.7, 1, 2, 3, '2026-09-04T10:00:00.000Z')`,
@@ -394,8 +386,7 @@ func TestWdAccountUsageSummaryAdminScoped(t *testing.T) {
 func TestWdAiPerformanceBaseHandler(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-p1', 'PerfAccount', 'sys-owner-1', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-p1', 'PerfAccount', 'sys-owner-1', 'api_key', 'openai', 'active')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 		`INSERT INTO usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
 			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-04T00:00:00.000Z', 1, 'acct-p1', 42)`,
@@ -444,12 +435,9 @@ func TestWdAiPerformanceBaseHandler(t *testing.T) {
 func TestWdAiPerformanceAccountsOptionsKeyword(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-k1', 'KeyAccount', 'sys-f', 'openai', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-k2', 'OtherAccount', 'sys-f', 'openai', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status, deleted_at)
-			VALUES ('acct-k3', 'KeyAccount', 'sys-f', 'openai', 'api_key', 'openai', 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-k1', 'KeyAccount', 'sys-f', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-k2', 'OtherAccount', 'sys-f', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status, deleted_at) VALUES ('acct-k3', 'KeyAccount', 'sys-f', 'api_key', 'openai', 'active', '2026-01-01T00:00:00.000Z')`,
 	)
 	handler := fixture.deps.aiPerformanceAccountsHandler(false)
 	if recorder := wdGet(t, handler, "/?limit=51", adminAuth("")); recorder.Code != http.StatusBadRequest {
@@ -472,8 +460,7 @@ func TestWdAiPerformanceAccountsOptionsKeyword(t *testing.T) {
 func TestWdAiPerformanceScopedKeywordGroupVisibility(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-vis', 'VisibleAccount', 'sys-other', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-vis', 'VisibleAccount', 'sys-other', 'api_key', 'openai', 'active')`,
 		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-v', 'VGroup', 'sys-f')`,
 		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES ('acct-vis', 'g-v', 'sys-f', 1)`,
 		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, expires_at, created_at, updated_at)
@@ -527,10 +514,8 @@ func TestWdUsageOverviewModelDistributionAndErrors(t *testing.T) {
 func TestWdAiHealthKeywordUsesSearchIndex(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-hit', 'SearchHit', 'sys-user-1', 'openai', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-miss', 'Unrelated', 'sys-user-1', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-hit', 'SearchHit', 'sys-user-1', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-miss', 'Unrelated', 'sys-user-1', 'api_key', 'openai', 'active')`,
 		// 3-gram 词表齐全才命中（"Search" → Sea/ear/arc/rch，HAVING 全量匹配）。
 		`INSERT INTO account_name_search_terms (system_account_id, account_id, term) VALUES ('sys-user-1', 'acct-hit', 'Sea')`,
 		`INSERT INTO account_name_search_terms (system_account_id, account_id, term) VALUES ('sys-user-1', 'acct-hit', 'ear')`,
@@ -549,8 +534,7 @@ func TestWdAiHealthKeywordUsesSearchIndex(t *testing.T) {
 func TestWdAiHealthHourDetailMergesJ1OutcomeSQLite(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-j1', 'J1Account', 'sys-owner-1', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-j1', 'J1Account', 'sys-owner-1', 'api_key', 'openai', 'active')`,
 		// 本地读侧已有该小时的失败观察（10:20），J1 outcome 更新（10:40）应胜出。
 		`INSERT INTO account_health_hourly (account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message)
 			VALUES ('acct-j1', '2026-09-04T10', 'failure', '2026-09-04T10:20:00.000Z', 502, 'upstream_error', 'upstream bad')`,
@@ -668,10 +652,8 @@ func TestWdUsageRecordsKeywordResolvesScopedAccountIds(t *testing.T) {
 	fixture, shardPath, _ := newWdShardFixture(t)
 	// self 面（user）钉到 sys-user-1：关键字经名称前缀/授权/分组四路并集解析。
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-w1', 'WidgetAccount', 'sys-user-1', 'openai', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, vendor_code, status)
-			VALUES ('acct-w2', 'WidgetGrouped', 'sys-other', 'openai', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-w1', 'WidgetAccount', 'sys-user-1', 'api_key', 'openai', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-w2', 'WidgetGrouped', 'sys-other', 'api_key', 'openai', 'active')`,
 		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-w', 'WidgetGroup', 'sys-user-1')`,
 		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES ('acct-w2', 'g-w', 'sys-user-1', 1)`,
 		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)

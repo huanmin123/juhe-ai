@@ -447,7 +447,7 @@ func TestW1FAccountAPIKeyWriterSQLite(t *testing.T) {
 	poolAccount := gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        "acc_w1f_writer",
 		SystemAccountID:           "sys_owner",
-		ProviderCode:              "openai",
+		VendorCode:                "openai",
 		ProtocolCode:              "openai",
 		Type:                      "api_key",
 		APIKeys:                   []string{"sk-pool-1", "sk-pool-2"},

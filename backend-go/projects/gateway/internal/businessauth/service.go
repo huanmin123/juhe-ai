@@ -78,6 +78,17 @@ func (s *Service) requireOwner() error {
 	return nil
 }
 
+// SetInitialPasswordGateDisabled forwards the dev-only
+// JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED switch to the underlying
+// authenticator; see modelcheckauth.Authenticator for the normalization
+// semantics.
+func (s *Service) SetInitialPasswordGateDisabled(disabled bool) {
+	if s == nil || s.auth == nil {
+		return
+	}
+	s.auth.SetInitialPasswordGateDisabled(disabled)
+}
+
 // CheckContract verifies the required Business relations without writing.
 func (s *Service) CheckContract(ctx context.Context) error {
 	if s == nil || s.auth == nil {

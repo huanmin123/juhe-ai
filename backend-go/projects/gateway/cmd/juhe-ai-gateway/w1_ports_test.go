@@ -170,7 +170,7 @@ func TestW1ResponseProjectionHelpers(t *testing.T) {
 
 func TestW1AttemptRebuildHelpers(t *testing.T) {
 	candidate := gatewaydispatch.AccountCandidate{
-		ID: "acc_1", Name: "账户一", ProviderCode: "openai", ProtocolCode: "responses",
+		ID: "acc_1", Name: "账户一", VendorCode: "openai", ProtocolCode: "responses",
 	}
 	upstream := gatewaydispatch.NewGatewayUpstreamResponseForTransform(http.StatusTooManyRequests, http.Header{}, io.NopCloser(strings.NewReader("")))
 	// 失败响应重建：携带上一尝试事实 + 覆盖账户与响应字段。
@@ -297,7 +297,7 @@ func (s w1ObservationPortStub) CaptureFailureObservation(gatewayruntimecache.Ope
 }
 
 func TestW1ObservationEpochAndHeaderAccount(t *testing.T) {
-	candidate := gatewaydispatch.AccountCandidate{ID: "acc_1", APIKey: "sk-x", Type: "api_key", ProviderCode: "openai"}
+	candidate := gatewaydispatch.AccountCandidate{ID: "acc_1", APIKey: "sk-x", Type: "api_key", VendorCode: "openai"}
 	// 观察纪元：缺席端口 / 空纪元 / 有纪元（十进制字符串）。
 	if got := chainObservationEpochOf(nil, candidate); got != "" {
 		t.Fatalf("nil port = %q", got)

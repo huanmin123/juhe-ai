@@ -16,6 +16,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -154,10 +155,15 @@ func TestGatewayChainCommittedStreamFailureRecordsSingleUsageRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/chat/completions: %v", err)
 	}
-	// 已提交后中断的流以连接截断收尾：读取到的那部分必须包含已提交的语义
-	// 输出；读取错误（unexpected EOF）属于该契约，不视为失败。
-	raw, _ := io.ReadAll(response.Body)
+	// 已提交后中断的流以真·网络级截断收尾（2026-10-23 契约收口：Hijack 后
+	// 直接 Close，无 chunked 终止帧）：读取到的那部分必须包含已提交的语义
+	// 输出，且读取以 unexpected EOF 网络级错误结束——干净 EOF 是「帧完整但缺
+	// 协议终止事件」的旧优雅收尾形态，属于契约回退。
+	raw, readErr := io.ReadAll(response.Body)
 	_ = response.Body.Close()
+	if !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("committed stream must end with io.ErrUnexpectedEOF (network-level interrupt), got %v", readErr)
+	}
 	if !strings.Contains(string(raw), "部分输出") {
 		t.Fatalf("committed semantic output missing from client body: %q", string(raw))
 	}

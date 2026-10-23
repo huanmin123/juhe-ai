@@ -155,6 +155,11 @@ type GatewayFailureUsageContext struct {
 	// RouteGroupID 是路由绑定的目标分组（超级分组目标时即超级分组本身），
 	// 与实际服务成员组 GroupID 一起构成响应/审计的双层身份（设计 §4.3）。
 	RouteGroupID                   string
+	// CompactionExpected 是请求侧压缩期望（用量记录压缩标记设计 §压缩请求
+	// 识别）：单点判定 gatewaycodex.CodexCompactionExpectedForRequest 在
+	// preflight 冻结的请求级值，经 usageContextOf 投影进入完成/失败用量记录。
+	// models / media / realtime 流量不经过该判定，天然 false。
+	CompactionExpected             bool
 	Endpoint                       string
 	RequestSnapshot                UsageRequestSnapshot
 	RequestedServiceTier           string

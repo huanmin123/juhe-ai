@@ -323,7 +323,7 @@ func TestPreflight_CandidateFallbackProducesRouteAction(t *testing.T) {
 }
 
 func TestPreflight_SuccessfulDispatchContext(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai", Status: "active"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai", Status: "active"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.Candidates = &fakeCandidates{
 			filterResult: CandidateFilterResult{
@@ -596,11 +596,11 @@ func TestPreflightErrorPropagation(t *testing.T) {
 		s.Candidates = &fakeCandidates{
 			filterResult: CandidateFilterResult{
 				Outcome:  CandidateOutcomeAccounts,
-				Accounts: []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_1", ProviderCode: "openai"}},
+				Accounts: []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_1", VendorCode: "openai"}},
 			},
 			preparation: DispatchPreparationResult{
 				Outcome:  CandidateOutcomeAccounts,
-				Accounts: []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_1", ProviderCode: "openai"}},
+				Accounts: []gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_1", VendorCode: "openai"}},
 			},
 		}
 	})

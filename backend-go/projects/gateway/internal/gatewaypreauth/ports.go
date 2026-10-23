@@ -108,13 +108,13 @@ type ClientStrategy interface {
 	AuditMetadata(strategy ClientStrategyContext) map[string]any
 }
 
-// ClientStrategyInput mirrors the resolution input.
+// ClientStrategyInput mirrors the resolution input. ProviderCode 维度已随
+// 供应商解耦退役（组访问元数据不携带 provider 身份，设计 §8）。
 type ClientStrategyInput struct {
 	SystemAccountID string
 	APIKeyID        string
 	GroupID         string
 	Endpoint        string
-	ProviderCode    string
 	ClientIP        string
 }
 

@@ -898,8 +898,8 @@ func TestW11DSQLRuntimeCompositionTailArms(t *testing.T) {
 	// uniqueInspectionScopes 空协议与重复臂。
 	scopes := uniqueInspectionScopes([]OpenAIAccountSecret{
 		{ProtocolCode: " "},
-		{ProtocolCode: "openai", ProviderCode: "gpt"},
-		{ProtocolCode: "openai", ProviderCode: "gpt"},
+		{ProtocolCode: "openai", VendorCode: "gpt"},
+		{ProtocolCode: "openai", VendorCode: "gpt"},
 	})
 	if len(scopes) != 1 {
 		t.Fatalf("scope 去重 = %v", scopes)

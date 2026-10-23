@@ -468,14 +468,11 @@ func seedRetryAttemptCountGroupAccounts(t *testing.T, fixture *chainFixture, gro
 	}
 	for index := 0; index < count; index++ {
 		accountID := fmt.Sprintf("acc_%s_%d", groupID, index)
-		seed(`INSERT INTO accounts (
-				id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-				name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model
-			) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
+		seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model) VALUES (?, ?, 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
 			accountID, fixture.systemAccount, fmt.Sprintf("重试账户 %d", index), w1vEncrypt(t, map[string]any{"api_key": "sk-retry-account-key", "base_url": baseURL}))
 		seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 			groupID, fixture.systemAccount, accountID, now)
-		seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
+		seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`,
 			accountID, now)
 		// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合。
 		chainSeedAccountConnection(t, fixture.db, accountID, baseURL)

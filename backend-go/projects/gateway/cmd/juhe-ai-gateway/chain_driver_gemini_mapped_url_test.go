@@ -33,7 +33,7 @@ func TestChainDriverGeminiModelMappedUpstreamURL(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_gem_map",
-		ProviderCode: "hybrid",
+		VendorCode:   "hybrid",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
 		BaseURL:      "https://gem.example",
@@ -85,7 +85,7 @@ func TestChainDriverGeminiModelMappedUpstreamURL(t *testing.T) {
 func TestChainDriverGeminiNativePathUnmappedKeepsRouteHelper(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_gem_native", ProviderCode: "google", ProtocolCode: "gemini",
+		ID: "acc_gem_native", VendorCode: "google", ProtocolCode: "gemini",
 		Type: "api_key", BaseURL: "https://gem.example", APIKey: "gk-1",
 	}
 	request := httptest.NewRequest(http.MethodPost, "/v1beta/models/gem-1:generateContent",

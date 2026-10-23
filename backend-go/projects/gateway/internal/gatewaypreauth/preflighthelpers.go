@@ -24,6 +24,9 @@ type usageContextInput struct {
 	groupUsageFields *GroupUsageMetadataFields
 	endpoint         string
 	requestSnapshot  UsageRequestSnapshot
+	// compactionExpected 是调用方冻结的请求侧压缩期望（用量记录压缩标记
+	// 设计 §压缩请求识别）；构造点统一取单点判定值，缺省 false。
+	compactionExpected bool
 }
 
 // BuildGatewayUsageContext mirrors buildGatewayUsageContext.
@@ -36,6 +39,7 @@ func (s *Service) BuildGatewayUsageContext(input usageContextInput) GatewayFailu
 		APIKeyID:                 input.identity.APIKeyID,
 		GroupID:                  input.identity.GroupID,
 		RouteGroupID:             input.identity.GroupID,
+		CompactionExpected:       input.compactionExpected,
 		Endpoint:                 input.endpoint,
 		RequestSnapshot:          input.requestSnapshot,
 		RequestedServiceTier:     input.requestSnapshot.RequestedServiceTier,
@@ -405,7 +409,7 @@ func (s *Service) accountModelsTargetImage(ctx context.Context, req *GatewayRequ
 		if IsOpenAIGatewayImageGenerationModel(upstreamModel) {
 			return true, nil
 		}
-		providerCode := strings.TrimSpace(account.ProviderCode)
+		providerCode := strings.TrimSpace(account.VendorCode)
 		if providerCode == "" {
 			continue
 		}

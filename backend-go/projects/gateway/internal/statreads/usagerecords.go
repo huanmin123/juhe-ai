@@ -422,7 +422,7 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 
 // usageRecordListSelectColumns mirror usageRecordListSelectColumns.
 const usageRecordListSelectColumns = `ur.id, ur.system_account_id, ur.trace_id, ur.traffic_source, ur.client_ip,
-	ur.api_key_id, ur.group_id, ur.route_group_id, ur.account_id, ur.provider_code, ur.endpoint, ur.model, ur.upstream_model,
+	ur.api_key_id, ur.group_id, ur.route_group_id, ur.compaction_expected, ur.account_id, ur.provider_code, ur.endpoint, ur.model, ur.upstream_model,
 	ur.upstream_response_model, ur.billed_service_tier, ur.effective_reasoning_effort,
 	ur.model_mapping_applied, ur.stream, ur.status_code, ur.success, ur.failure_attribution,
 	ur.error_code, ur.error_message, ur.first_token_ms, ur.duration_ms, ur.input_tokens,
@@ -770,6 +770,9 @@ func (d *Deps) mapUsageRecordListItem(row Row, scope AccessScope, apiKeyNames, g
 		ApiKeyId:                 row.nullText("api_key_id"),
 		GroupId:                  row.nullText("group_id"),
 		RouteGroupId:             row.nullText("route_group_id"),
+		// 压缩标记（用量记录压缩标记设计 §压缩请求识别）：boolLike 同时吃
+		// PG 原生 bool 与 SQLite integer 0/1；缺失列按 false。
+		CompactionExpected:       row.boolLike("compaction_expected"),
 		AccountId:                row.nullText("account_id"),
 		ProviderCode:             row.nullText("provider_code"),
 		Endpoint:                 row.nullText("endpoint"),
@@ -973,6 +976,7 @@ type usageRecordListItem struct {
 	GroupName                *string  `json:"groupName,omitempty"`
 	RouteGroupId             *string  `json:"routeGroupId,omitempty"`
 	RouteGroupName           *string  `json:"routeGroupName,omitempty"`
+	CompactionExpected       bool     `json:"compactionExpected"`
 	AccountId                *string  `json:"accountId,omitempty"`
 	AccountName              *string  `json:"accountName,omitempty"`
 	ProviderCode             *string  `json:"providerCode,omitempty"`

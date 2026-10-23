@@ -74,7 +74,6 @@ func (h *testDB) seedSchema(t *testing.T) {
       type TEXT NOT NULL DEFAULT 'api_key',
       status TEXT NOT NULL DEFAULT 'active',
       schedulable INTEGER NOT NULL DEFAULT 1,
-      provider_code TEXT NOT NULL DEFAULT 'openai',
       vendor_code TEXT,
       protocol_code TEXT,
       protocol_version TEXT,
@@ -156,10 +155,10 @@ func (h *testDB) seedAccount(t *testing.T, input struct {
 	}
 	h.exec(t, `
     INSERT INTO accounts (id, system_account_id, name, type, status, schedulable,
-      provider_code, vendor_code, protocol_code, protocol_version, config_revision, credentials_encrypted)
-    VALUES (?, 'sys-owner', ?, 'api_key', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      vendor_code, protocol_code, protocol_version, config_revision, credentials_encrypted)
+    VALUES (?, 'sys-owner', ?, 'api_key', ?, ?, ?, ?, ?, ?, ?)`,
 		input.id, "account-"+input.id, input.status, input.schedulable,
-		input.providerCode, input.providerCode, input.protocolCode, input.protocolVer, input.configRev, sealed)
+		input.providerCode, input.protocolCode, input.protocolVer, input.configRev, sealed)
 }
 
 func (h *testDB) seedState(t *testing.T, accountID, fingerprint string, overrides map[string]any) {

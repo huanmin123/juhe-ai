@@ -147,7 +147,7 @@ func groupStickyStaticRow() gatewayruntimecache.GatewayRuntime {
 		{ID: "binding_a", APIKeyID: row.ID, GroupID: "grp_a", Status: "active", GroupEnabled: 1},
 		{ID: "binding_b", APIKeyID: row.ID, GroupID: "grp_b", Status: "active", GroupEnabled: 1},
 	}
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_sticky", ProviderCode: "openai", Status: "active"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_sticky", VendorCode: "openai", Status: "active"}
 	return gatewayruntimecache.GatewayRuntime{
 		APIKey:               row,
 		Settings:             gatewayruntimecache.GatewaySettings{NoAvailableAccountWaitTimeoutSeconds: 30},

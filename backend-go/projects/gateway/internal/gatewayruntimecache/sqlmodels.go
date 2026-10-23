@@ -279,6 +279,13 @@ func projectGatewaySettings(raw map[string]any) (GatewaySettings, error) {
 	if out.TemporaryUnschedulableRetryAttempts, err = numberSetting(raw, "temporaryUnschedulableRetryAttempts", 0, 10); err != nil {
 		return GatewaySettings{}, err
 	}
+	// 调度慢失败直切与墙钟收尾修复设计 §5：值域与 settings 校验器同源。
+	if out.SameAccountRetryFastFailMaxMs, err = numberSetting(raw, "sameAccountRetryFastFailMaxMs", 0, 60_000); err != nil {
+		return GatewaySettings{}, err
+	}
+	if out.GatewayAttemptStartMinWindowMs, err = numberSetting(raw, "gatewayAttemptStartMinWindowMs", 0, 60_000); err != nil {
+		return GatewaySettings{}, err
+	}
 	if out.TextFirstResponseTimeoutSeconds, err = numberSetting(raw, "textFirstResponseTimeoutSeconds", 10, 3600); err != nil {
 		return GatewaySettings{}, err
 	}

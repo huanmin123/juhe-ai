@@ -448,7 +448,7 @@ func (c *gatewayChain) dialRealtimeUpstream(ctx context.Context, req *gatewaypre
 		}
 		c.observability.Logger().Warn("realtime_upstream_dial_failed", map[string]any{
 			"event": "realtime_upstream_dial_failed", "accountId": account.ID,
-			"providerCode": account.ProviderCode, "error": dialErr.Error(),
+			"providerCode": account.VendorCode, "error": dialErr.Error(),
 		}, "realtime 上游拨号失败（受理前，换下一候选）")
 	}
 	return nil, &realtimeDialFailure{
@@ -950,7 +950,7 @@ func (c *gatewayChain) finalizeRealtimeUpgradeAudit(capture gatewaypreauth.Audit
 		capture.AddGatewayMetadata("realtime_session", map[string]any{
 			"model":         session.model,
 			"accountId":     session.account.ID,
-			"providerCode":  session.account.ProviderCode,
+			"providerCode":  session.account.VendorCode,
 			"authSource":    session.authSource,
 			"durationMs":    session.usageDurationMs(),
 			"closeReason":   session.closeReason,

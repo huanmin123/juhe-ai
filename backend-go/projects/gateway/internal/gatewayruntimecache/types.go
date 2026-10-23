@@ -81,15 +81,19 @@ type GatewaySettings struct {
 	DefaultTemporaryUnschedulableMinutes       int64  `json:"defaultTemporaryUnschedulableMinutes"`
 	TemporaryUnschedulableRetryIntervalSeconds int64  `json:"temporaryUnschedulableRetryIntervalSeconds"`
 	TemporaryUnschedulableRetryAttempts        int64  `json:"temporaryUnschedulableRetryAttempts"`
-	StreamCircuitBreakerEnabled                bool   `json:"streamCircuitBreakerEnabled"`
-	TextFirstResponseTimeoutSeconds            int64  `json:"textFirstResponseTimeoutSeconds"`
-	TextNonStreamFirstResponseTimeoutSeconds   int64  `json:"textNonStreamFirstResponseTimeoutSeconds"`
-	TextStreamIdleTimeoutSeconds               int64  `json:"textStreamIdleTimeoutSeconds"`
-	TextUncommittedAttemptMaxLifetimeSeconds   int64  `json:"textUncommittedAttemptMaxLifetimeSeconds"`
-	ImageFirstResponseTimeoutSeconds           int64  `json:"imageFirstResponseTimeoutSeconds"`
-	ImageStreamIdleTimeoutSeconds              int64  `json:"imageStreamIdleTimeoutSeconds"`
-	ImageUncommittedAttemptMaxLifetimeSeconds  int64  `json:"imageUncommittedAttemptMaxLifetimeSeconds"`
-	ImageRequestWallTimeoutSeconds             int64  `json:"imageRequestWallTimeoutSeconds"`
+	// 调度慢失败直切与墙钟收尾修复设计 §5：同账户重试快速失败耗时门槛与
+	// 新尝试启动最小剩余墙钟窗口（值域与 settings 校验器同源 0~60000）。
+	SameAccountRetryFastFailMaxMs             int64 `json:"sameAccountRetryFastFailMaxMs"`
+	GatewayAttemptStartMinWindowMs            int64 `json:"gatewayAttemptStartMinWindowMs"`
+	StreamCircuitBreakerEnabled               bool  `json:"streamCircuitBreakerEnabled"`
+	TextFirstResponseTimeoutSeconds           int64 `json:"textFirstResponseTimeoutSeconds"`
+	TextNonStreamFirstResponseTimeoutSeconds  int64 `json:"textNonStreamFirstResponseTimeoutSeconds"`
+	TextStreamIdleTimeoutSeconds              int64 `json:"textStreamIdleTimeoutSeconds"`
+	TextUncommittedAttemptMaxLifetimeSeconds  int64 `json:"textUncommittedAttemptMaxLifetimeSeconds"`
+	ImageFirstResponseTimeoutSeconds          int64 `json:"imageFirstResponseTimeoutSeconds"`
+	ImageStreamIdleTimeoutSeconds             int64 `json:"imageStreamIdleTimeoutSeconds"`
+	ImageUncommittedAttemptMaxLifetimeSeconds int64 `json:"imageUncommittedAttemptMaxLifetimeSeconds"`
+	ImageRequestWallTimeoutSeconds            int64 `json:"imageRequestWallTimeoutSeconds"`
 	// 媒体车道独立超时档位（音频视频模型接入设计 §3）：audio 同步端点首响、
 	// video 创建请求快速返回 job 对象。
 	AudioFirstResponseTimeoutSeconds int64 `json:"audioFirstResponseTimeoutSeconds"`
@@ -294,7 +298,6 @@ type OpenAIAccountSecret struct {
 	ID                                string                               `json:"id"`
 	ConfigRevision                    *int64                               `json:"configRevision,omitempty"`
 	DispatchRevision                  *int64                               `json:"dispatchRevision,omitempty"`
-	ProviderCode                      string                               `json:"providerCode"`
 	ProviderProtocolProfileID         string                               `json:"providerProtocolProfileId"`
 	ProtocolCode                      string                               `json:"protocolCode"`
 	ProtocolVersion                   string                               `json:"protocolVersion"`

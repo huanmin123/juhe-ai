@@ -86,14 +86,14 @@ func gkmSeedAccount(t *testing.T, db *sql.DB, a gkmAccountSeed) {
 	if a.instanceAuthz != "" {
 		instanceAuthz = a.instanceAuthz
 	}
-	// 供应商解耦（设计 §2.1）：vendor_code 与旧 provider 值同名，是并集装载
-	// 器 factProvider 的事实来源；provider_code 旧列仅为禁改的调度水合投影保留。
+	// 供应商解耦（设计 §2.1）：vendor_code 是并集装载器 factProvider 的事实
+	// 来源；provider_code 旧列已随存储迁移退役，夹具只写 vendor_code。
 	_, err := db.Exec(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, deleted_at, account_expires_at, cooldown_until,
 			authorization_instance_source_account_id, authorization_instance_authorization_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.id, a.owner, a.provider, a.provider, a.profile, a.protocol, a.version,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.id, a.owner, a.provider, a.profile, a.protocol, a.version,
 		a.id, a.accountType, a.status, schedulable, deletedAt, expiresAt, cooldownUntil,
 		sourceID, instanceAuthz)
 	if err != nil {
@@ -101,10 +101,11 @@ func gkmSeedAccount(t *testing.T, db *sql.DB, a gkmAccountSeed) {
 	}
 }
 
-func gkmSeedGroup(t *testing.T, db *sql.DB, id, owner, provider string, enabled int) {
+func gkmSeedGroup(t *testing.T, db *sql.DB, id, owner string, enabled int) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, ?, ?, 'personal')`,
-		id, owner, provider, enabled); err != nil {
+	// groups.provider_code 列已随供应商解耦退役，分组不再带 provider 维度
+	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, ?, 'personal')`,
+		id, owner, enabled); err != nil {
 		t.Fatalf("seed group %s: %v", id, err)
 	}
 }
@@ -123,12 +124,12 @@ func gkmSeedBinding(t *testing.T, db *sql.DB, groupID, bindingOwner, accountID, 
 
 // gkmSeedSupportedModel 供应商解耦形态（设计 §3/§4）：models 单表行（内置
 // 语义 public=upstream 同名、active、chat 双 mode）+ account_supported_models
-// 经 model_id 外键引用；provider_code/model 旧列为禁改的调度水合投影保留。
+// 经 model_id 外键引用；provider_code 旧列已退役停写，model 列壳保留。
 func gkmSeedSupportedModel(t *testing.T, db *sql.DB, accountID, provider, model string) {
 	t.Helper()
 	gkmSeedModelRow(t, db, provider, model)
-	if _, err := db.Exec(`INSERT OR IGNORE INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, ?, ?, ?, ?)`,
-		accountID, provider, model, gkmModelID(model), gkmTS(gkmBase)); err != nil {
+	if _, err := db.Exec(`INSERT OR IGNORE INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, ?, ?, ?)`,
+		accountID, model, gkmModelID(model), gkmTS(gkmBase)); err != nil {
 		t.Fatalf("seed supported model %s/%s: %v", accountID, model, err)
 	}
 }
@@ -252,7 +253,7 @@ func TestGKMUnionLoaderOwnerDomainUnion(t *testing.T) {
 	}
 
 	// 跨属主组级授权：group_b 属 sys_other，调用方经有效组级授权可见。
-	gkmSeedGroup(t, db, "group_b", "sys_other", "openai", 1)
+	gkmSeedGroup(t, db, "group_b", "sys_other", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_b1", owner: "sys_other"})
 	gkmSeedSupportedModel(t, db, "acc_b1", "openai", "m3")
 	gkmSeedBinding(t, db, "group_b", "sys_other", "acc_b1", "", 1)
@@ -262,7 +263,7 @@ func TestGKMUnionLoaderOwnerDomainUnion(t *testing.T) {
 
 	// 不同属主域绑定不并入：group_c 属 sys_other2，绑定行却写在调用方域
 	//（ga.system_account_id = sys_owner ≠ g.system_account_id）→ 过滤。
-	gkmSeedGroup(t, db, "group_c", "sys_other2", "openai", 1)
+	gkmSeedGroup(t, db, "group_c", "sys_other2", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_c1", owner: "sys_other2"})
 	gkmSeedSupportedModel(t, db, "acc_c1", "openai", "m-c")
 	gkmSeedBinding(t, db, "group_c", "sys_owner", "acc_c1", "", 1)
@@ -282,7 +283,7 @@ func TestGKMUnionLoaderStaticGates(t *testing.T) {
 	db := fixture.db
 	loader := gkmUnionLoader(t, fixture)
 
-	gkmSeedGroup(t, db, "gkm_gates", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_gates", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_rate", owner: "sys_owner", status: "rate_limited", cooldownUntil: gkmBase.Add(time.Hour)})
 	gkmSeedSupportedModel(t, db, "acc_rate", "openai", "m-rate")
 	gkmSeedBinding(t, db, "gkm_gates", "sys_owner", "acc_rate", "", 1)
@@ -319,7 +320,7 @@ func TestGKMUnionLoaderStaticGates(t *testing.T) {
 	gkmAssertModels(t, entry, "m-ok", "m-rate", "m-temp")
 
 	// 禁用分组：整组不贡献。
-	gkmSeedGroup(t, db, "gkm_disabled", "sys_owner", "openai", 0)
+	gkmSeedGroup(t, db, "gkm_disabled", "sys_owner", 0)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_disabled_grp", owner: "sys_owner"})
 	gkmSeedSupportedModel(t, db, "acc_disabled_grp", "openai", "m-disabled")
 	gkmSeedBinding(t, db, "gkm_disabled", "sys_owner", "acc_disabled_grp", "", 1)
@@ -338,7 +339,7 @@ func TestGKMUnionLoaderInstanceFactSubjectAndBindingGate(t *testing.T) {
 	db := fixture.db
 	loader := gkmUnionLoader(t, fixture)
 
-	gkmSeedGroup(t, db, "gkm_inst", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_inst", "sys_owner", 1)
 	// 绑定一致：可见，模型取自来源账户。
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "src_ok", owner: "sys_owner"})
 	gkmSeedSupportedModel(t, db, "src_ok", "openai", "m-ok")
@@ -372,7 +373,7 @@ func TestGKMUnionLoaderInstanceArmExclusivity(t *testing.T) {
 	db := fixture.db
 	loader := gkmUnionLoader(t, fixture)
 
-	gkmSeedGroup(t, db, "gkm_excl", "sys_A", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_excl", "sys_A", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc16src", owner: "sys_A"})
 	gkmSeedSupportedModel(t, db, "acc16src", "openai", "m16inst")
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc16inst", owner: "sys_B", accountType: "oauth", sourceID: "acc16src", instanceAuthz: "authz16"})
@@ -400,7 +401,7 @@ func TestGKMUnionLoaderAuthorizationRevocation(t *testing.T) {
 	loader := gkmUnionLoader(t, fixture)
 
 	// 实例账户：账户级授权撤销/过期 → 模型消失。
-	gkmSeedGroup(t, db, "gkm_acc_authz", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_acc_authz", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "src_foreign", owner: "sys_other"})
 	gkmSeedSupportedModel(t, db, "src_foreign", "openai", "m-foreign")
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "inst_foreign", owner: "sys_owner", accountType: "oauth", sourceID: "src_foreign", instanceAuthz: "authz_acc"})
@@ -421,7 +422,7 @@ func TestGKMUnionLoaderAuthorizationRevocation(t *testing.T) {
 	gkmAssertModels(t, entry)
 
 	// 组级授权撤销 → 整组消失（即使组内有调用方自己的账户）。
-	gkmSeedGroup(t, db, "gkm_grp_authz", "sys_other", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_grp_authz", "sys_other", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_grp_owner", owner: "sys_other"})
 	gkmSeedSupportedModel(t, db, "acc_grp_owner", "openai", "m-grp")
 	gkmSeedBinding(t, db, "gkm_grp_authz", "sys_other", "acc_grp_owner", "", 1)
@@ -447,7 +448,7 @@ func TestGKMUnionLoaderGroupSettingsTriState(t *testing.T) {
 	db := fixture.db
 	loader := gkmUnionLoader(t, fixture)
 
-	gkmSeedGroup(t, db, "gkm_settings", "sys_other", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_settings", "sys_other", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_set", owner: "sys_other"})
 	gkmSeedSupportedModel(t, db, "acc_set", "openai", "m-set")
 	gkmSeedBinding(t, db, "gkm_settings", "sys_other", "acc_set", "", 1)
@@ -479,7 +480,7 @@ func TestGKMUnionLoaderMappingValidity(t *testing.T) {
 	db := fixture.db
 	loader := gkmUnionLoader(t, fixture)
 
-	gkmSeedGroup(t, db, "gkm_map", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_map", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_map", owner: "sys_owner"})
 	gkmSeedSupportedModel(t, db, "acc_map", "openai", "gpt-test")
 
@@ -513,7 +514,7 @@ func TestGKMUnionLoaderMappingValidity(t *testing.T) {
 	// 协议档案前置排除（§5.2 矩阵内族对按账户声明放行，替代约束为写侧
 	// §5.3 family 联动校验）；矩阵外族对（chat_completions → responses 之外的
 	// 逆向对，如 messages → responses）仍被矩阵拒绝。
-	gkmSeedGroup(t, db, "gkm_profile", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_profile", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_gemini", owner: "sys_owner", profile: "profile_gemini_openai_chat_v1beta"})
 	gkmSeedSupportedModel(t, db, "acc_gemini", "openai", "gpt-x")
 	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-kept", "messages", "gpt-x", "chat_completions", 1)
@@ -541,14 +542,14 @@ func TestGKMUnionLoaderValidUntil(t *testing.T) {
 	}
 
 	// 账户到期收窄。
-	gkmSeedGroup(t, db, "gkm_v_acc", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_v_acc", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_v", owner: "sys_owner", expiresAt: gkmBase.Add(30 * time.Minute)})
 	gkmSeedSupportedModel(t, db, "acc_v", "openai", "m-v")
 	gkmSeedBinding(t, db, "gkm_v_acc", "sys_owner", "acc_v", "", 1)
 	assertValidUntil("账户到期", gkmLoad(t, loader, "sys_owner", "gkm_v_acc"), gkmBase.Add(30*time.Minute))
 
 	// 来源账户到期收窄（实例臂）。
-	gkmSeedGroup(t, db, "gkm_v_src", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_v_src", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "src_v", owner: "sys_owner", expiresAt: gkmBase.Add(20 * time.Minute)})
 	gkmSeedSupportedModel(t, db, "src_v", "openai", "m-src")
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "inst_v", owner: "sys_owner", accountType: "oauth", sourceID: "src_v", instanceAuthz: "authz_v"})
@@ -557,7 +558,7 @@ func TestGKMUnionLoaderValidUntil(t *testing.T) {
 	assertValidUntil("来源账户到期", gkmLoad(t, loader, "sys_owner", "gkm_v_src"), gkmBase.Add(20*time.Minute))
 
 	// 组级授权到期收窄。
-	gkmSeedGroup(t, db, "gkm_v_grp", "sys_other", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_v_grp", "sys_other", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_vg", owner: "sys_other"})
 	gkmSeedSupportedModel(t, db, "acc_vg", "openai", "m-vg")
 	gkmSeedBinding(t, db, "gkm_v_grp", "sys_other", "acc_vg", "", 1)
@@ -566,7 +567,7 @@ func TestGKMUnionLoaderValidUntil(t *testing.T) {
 
 	// 账户级授权到期收窄（实例臂——owner 域预取 map 只含实例授权行，与调度
 	// loadAccountAuthorizationsForSelection 同款）。
-	gkmSeedGroup(t, db, "gkm_v_accauthz", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_v_accauthz", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "src_va", owner: "sys_other"})
 	gkmSeedSupportedModel(t, db, "src_va", "openai", "m-va")
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "inst_va", owner: "sys_owner", accountType: "oauth", sourceID: "src_va", instanceAuthz: "authz_va"})
@@ -575,7 +576,7 @@ func TestGKMUnionLoaderValidUntil(t *testing.T) {
 	assertValidUntil("账户级授权到期", gkmLoad(t, loader, "sys_owner", "gkm_v_accauthz"), gkmBase.Add(5*time.Minute))
 
 	// 已过期到期点忽略：保持基础 TTL。
-	gkmSeedGroup(t, db, "gkm_v_past", "sys_owner", "openai", 1)
+	gkmSeedGroup(t, db, "gkm_v_past", "sys_owner", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_vp", owner: "sys_owner", expiresAt: gkmBase.Add(-time.Minute)})
 	gkmSeedSupportedModel(t, db, "acc_vp", "openai", "m-vp")
 	gkmSeedBinding(t, db, "gkm_v_past", "sys_owner", "acc_vp", "", 1)

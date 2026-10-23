@@ -22,18 +22,18 @@ func TestGatewayUpstreamBucketKeys(t *testing.T) {
 		{
 			name: "oauth openai pins the codex base url",
 			fixture: accountFixture{
-				id: "acc1", systemAccountID: "sys1", providerCode: "openai",
+				id: "acc1", systemAccountID: "sys1", vendorCode: "gpt",
 				protocolCode: "openai", protocolVersion: "v1", baseURL: "https://api.openai.com", accountType: "oauth",
 			},
 			expected: []string{
 				"baseUrl:https://chatgpt.com/backend-api/codex:owner:sys1",
-				"provider:openai:owner:sys1",
+				"provider:gpt:owner:sys1",
 			},
 		},
 		{
 			name: "proxy profile and upstream keys with owner scope",
 			fixture: accountFixture{
-				id: "acc1", systemAccountID: "sys1", ownerAccountID: "owner1", providerCode: "openai",
+				id: "acc1", systemAccountID: "sys1", ownerAccountID: "owner1", vendorCode: "openai",
 				proxyProfileID: &proxyProfile, baseURL: "https://API.Example.com:8443/sub/",
 			},
 			expected: []string{
@@ -45,7 +45,7 @@ func TestGatewayUpstreamBucketKeys(t *testing.T) {
 		{
 			name: "proxy scope only returns the proxy key",
 			fixture: accountFixture{
-				id: "acc1", systemAccountID: "sys1", providerCode: "openai",
+				id: "acc1", systemAccountID: "sys1", vendorCode: "openai",
 				proxyProfileID: &proxyProfile, baseURL: "https://api.example.com",
 			},
 			scope:    BucketScopeProxy,
@@ -54,7 +54,7 @@ func TestGatewayUpstreamBucketKeys(t *testing.T) {
 		{
 			name: "upstream scope drops the proxy key",
 			fixture: accountFixture{
-				id: "acc1", systemAccountID: "sys1", providerCode: "openai",
+				id: "acc1", systemAccountID: "sys1", vendorCode: "openai",
 				proxyProfileID: &proxyProfile, baseURL: "https://api.example.com",
 			},
 			scope: BucketScopeUpstream,
@@ -66,7 +66,7 @@ func TestGatewayUpstreamBucketKeys(t *testing.T) {
 		{
 			name: "owner scope falls back to account id",
 			fixture: accountFixture{
-				id: "acc1", providerCode: "openai", baseURL: "https://api.example.com",
+				id: "acc1", vendorCode: "openai", baseURL: "https://api.example.com",
 			},
 			expected: []string{
 				"baseUrl:https://api.example.com/v1:owner:acc1",
@@ -103,49 +103,49 @@ func TestGatewayUpstreamBucketKeysVendorBoundary(t *testing.T) {
 		{
 			name: "xai oauth buckets by real base url",
 			fixture: accountFixture{
-				id: "acc_x1", systemAccountID: "sys1", providerCode: "openai",
+				id: "acc_x1", systemAccountID: "sys1",
 				protocolCode: "openai", protocolVersion: "v1", vendorCode: "xai",
 				baseURL: "https://cli-chat-proxy.grok.com/v1", accountType: "oauth",
 			},
 			expected: []string{
 				"baseUrl:https://cli-chat-proxy.grok.com/v1:owner:sys1",
-				"provider:openai:owner:sys1",
+				"provider:xai:owner:sys1",
 			},
 		},
 		{
 			name: "xai oauth base url still normalized like plain accounts",
 			fixture: accountFixture{
-				id: "acc_x2", systemAccountID: "sys1", providerCode: "openai",
+				id: "acc_x2", systemAccountID: "sys1",
 				protocolCode: "openai", protocolVersion: "v1", vendorCode: "xai",
 				baseURL: "https://cli-chat-proxy.grok.com", accountType: "oauth",
 			},
 			expected: []string{
 				"baseUrl:https://cli-chat-proxy.grok.com/v1:owner:sys1",
-				"provider:openai:owner:sys1",
+				"provider:xai:owner:sys1",
 			},
 		},
 		{
 			name: "gpt oauth keeps chatgpt codex constant bucket",
 			fixture: accountFixture{
-				id: "acc_g1", systemAccountID: "sys1", providerCode: "openai",
+				id: "acc_g1", systemAccountID: "sys1",
 				protocolCode: "openai", protocolVersion: "v1", vendorCode: "gpt",
 				baseURL: "https://chatgpt.com/backend-api", accountType: "oauth",
 			},
 			expected: []string{
 				"baseUrl:https://chatgpt.com/backend-api/codex:owner:sys1",
-				"provider:openai:owner:sys1",
+				"provider:gpt:owner:sys1",
 			},
 		},
 		{
 			name: "empty vendor oauth keeps chatgpt codex constant bucket",
 			fixture: accountFixture{
-				id: "acc_e1", systemAccountID: "sys1", providerCode: "openai",
+				id: "acc_e1", systemAccountID: "sys1",
 				protocolCode: "openai", protocolVersion: "v1",
 				baseURL: "https://api.openai.com", accountType: "oauth",
 			},
 			expected: []string{
 				"baseUrl:https://chatgpt.com/backend-api/codex:owner:sys1",
-				"provider:openai:owner:sys1",
+				"provider::owner:sys1",
 			},
 		},
 	}
@@ -204,8 +204,8 @@ func TestGatewayProxyKey(t *testing.T) {
 func TestOrderGatewayAccountsAvoidsSpecificBucket(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryProxyHealth(clock)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "openai", baseURL: "https://api.example.com"}.build()
-	b := accountFixture{id: "b", systemAccountID: "sys", providerCode: "openai", baseURL: "https://api.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "openai", baseURL: "https://api.example.com"}.build()
+	b := accountFixture{id: "b", systemAccountID: "sys", vendorCode: "openai", baseURL: "https://api.example.com"}.build()
 
 	result := service.OrderGatewayAccountsByUpstreamBucketHealth([]gatewayruntimecache.OpenAIAccountSecret{a, b}, nil)
 	if result.Applied {
@@ -227,7 +227,7 @@ func TestOrderGatewayAccountsAvoidsSpecificBucket(t *testing.T) {
 
 	// A distinct second failure crosses the threshold of 2 and避让 applies.
 	service.RecordGatewayUpstreamBucketFailure(b, "连接失败", FailureRecordOptions{})
-	c := accountFixture{id: "c", systemAccountID: "sys", providerCode: "other", baseURL: "https://other.example.com"}.build()
+	c := accountFixture{id: "c", systemAccountID: "sys", vendorCode: "other", baseURL: "https://other.example.com"}.build()
 	result = service.OrderGatewayAccountsByUpstreamBucketHealth([]gatewayruntimecache.OpenAIAccountSecret{a, b, c}, nil)
 	if !result.Applied {
 		t.Fatalf("suspected bucket must reorder: %+v", result)
@@ -243,7 +243,7 @@ func TestOrderGatewayAccountsAvoidsSpecificBucket(t *testing.T) {
 func TestProxyHealthDistinctThresholdBoundary(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryProxyHealth(clock)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
 	// Same account twice: evidence id dedupes, count stays 1, still below threshold 2.
 	service.RecordGatewayUpstreamBucketFailure(a, "err", FailureRecordOptions{})
 	service.RecordGatewayUpstreamBucketFailure(a, "err", FailureRecordOptions{})
@@ -251,7 +251,7 @@ func TestProxyHealthDistinctThresholdBoundary(t *testing.T) {
 		t.Fatal("below-threshold failures must not open avoidance")
 	}
 	// credentialSourceAccountId overrides the evidence identity.
-	b := accountFixture{id: "b", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com", credentialSourceID: stringPtrValue("root-a")}.build()
+	b := accountFixture{id: "b", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com", credentialSourceID: stringPtrValue("root-a")}.build()
 	decision := service.RecordGatewayUpstreamBucketFailure(b, "err", FailureRecordOptions{})
 	if !decision.Suspected {
 		t.Fatalf("two distinct evidence ids must open avoidance: %+v", decision)
@@ -263,8 +263,8 @@ func TestProxyHealthHalfOpenLifecycle(t *testing.T) {
 	service, _ := newMemoryProxyHealth(clock)
 	// Shared baseUrl, distinct provider buckets: after the avoidance TTL only
 	// one account can claim the half-open probe on the shared bucket.
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
-	b := accountFixture{id: "b", systemAccountID: "sys", providerCode: "q", baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
+	b := accountFixture{id: "b", systemAccountID: "sys", vendorCode: "q", baseURL: "https://x.example.com"}.build()
 	service.RecordGatewayUpstreamBucketFailure(a, "err", FailureRecordOptions{})
 	service.RecordGatewayUpstreamBucketFailure(b, "err", FailureRecordOptions{})
 
@@ -317,7 +317,7 @@ func TestProxyHealthHalfOpenLifecycle(t *testing.T) {
 func TestProxyHealthSharedBucketHalfOpenSingleProbe(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryProxyHealth(clock)
-	shared := accountFixture{systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}
+	shared := accountFixture{systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}
 	a := shared.build()
 	a.ID = "a"
 	b := shared.build()
@@ -353,7 +353,7 @@ func TestSuppressGatewayUpstreamBucketLocallyForSeconds(t *testing.T) {
 	log := &recordingLog{}
 	store := NewMemoryRuntimeStateStore(clock.Now)
 	service := NewProxyHealthService(clock.Now, store, ProxyHealthOptions{}, log.record)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", proxyURL: stringPtrValue("http://user:pass@proxy:9")}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", proxyURL: stringPtrValue("http://user:pass@proxy:9")}.build()
 
 	decision := service.SuppressGatewayUpstreamBucketLocallyForSeconds(a, 30, "维护避让", FailureRecordOptions{})
 	if !decision.Recorded || !decision.Suspected || decision.DistinctAccountCount == nil || *decision.DistinctAccountCount != 1 {
@@ -379,8 +379,8 @@ func TestProxyHealthRedisDriverPaths(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	store := NewMemoryRuntimeStateStore(clock.Now)
 	service := NewProxyHealthService(clock.Now, store, ProxyHealthOptions{CASMaxAttempts: 4}, nil)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
-	b := accountFixture{id: "b", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
+	b := accountFixture{id: "b", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
 
 	if decision, err := service.RecordGatewayUpstreamBucketFailureAsync(contextBackground(), a, "err", FailureRecordOptions{}); err != nil || decision.Suspected {
 		t.Fatalf("async single failure = %+v err=%v", decision, err)
@@ -441,8 +441,8 @@ func TestProxyHealthCASExhausted(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	store := &flakyRuntimeStateStore{MemoryRuntimeStateStore: NewMemoryRuntimeStateStore(clock.Now)}
 	service := NewProxyHealthService(clock.Now, store, ProxyHealthOptions{CASMaxAttempts: 2}, nil)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
-	b := accountFixture{id: "b", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
+	b := accountFixture{id: "b", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
 
 	// Open the bucket first (flaky disabled), then arm the failure counter so
 	// the half-open claim burns through its two attempts deterministically.
@@ -462,7 +462,7 @@ func TestProxyHealthCASExhausted(t *testing.T) {
 func TestProxyHealthConcurrentFailureRecording(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryProxyHealth(clock)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
@@ -478,7 +478,7 @@ func TestProxyHealthConcurrentFailureRecording(t *testing.T) {
 func TestProxyHealthPriorityTiersPreserved(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryProxyHealth(clock)
-	shared := accountFixture{systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}
+	shared := accountFixture{systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}
 	low := shared.build()
 	low.ID = "low"
 	low.Priority = 1

@@ -180,7 +180,7 @@ func (s *w1vChainCandidatePipeline) ResolveNextGroupFallbackCandidate(ctx contex
 		}
 		candidate.Accounts = append(candidate.Accounts, gatewaypreauth.AccountCandidate{
 			ID:              accountID,
-			ProviderCode:    "openai",
+			VendorCode:      "openai",
 			ProtocolCode:    "openai",
 			Type:            "api_key",
 			APIKey:          "sk-upstream-account-key",
@@ -332,16 +332,13 @@ func w1vSeedPlainGroup(t *testing.T, fixture *chainFixture, groupID, baseURL str
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, 'openai', 1, 'personal')`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, 1, 'personal')`,
 		groupID, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model
-		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', 'W1V 账户', 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model) VALUES (?, ?, 'prof_1', 'openai', 'v1', 'W1V 账户', 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
 		"acc_"+groupID, fixture.systemAccount, w1vEncrypt(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": baseURL}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		groupID, fixture.systemAccount, "acc_"+groupID, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`,
 		"acc_"+groupID, now)
 	// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合。
 	chainSeedAccountConnection(t, fixture.db, "acc_"+groupID, baseURL)
@@ -364,19 +361,16 @@ func w1vSeedMultiGroupKey(t *testing.T, fixture *chainFixture, groupIDs []string
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status) VALUES (?, ?, 'W1V 多组', 'normal', NULL, 'active')`,
 		strategyID, fixture.systemAccount)
 	for index, groupID := range groupIDs {
-		seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, 'openai', 1, 'personal')`,
+		seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, 1, 'personal')`,
 			groupID, fixture.systemAccount)
 		if withAccounts[index] {
 			accountID := "acc_" + groupID
 			baseURL := baseURLs[index]
-			seed(`INSERT INTO accounts (
-					id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-					name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model
-				) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', 'W1V 账户', 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
+			seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model) VALUES (?, ?, 'prof_1', 'openai', 'v1', 'W1V 账户', 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
 				accountID, fixture.systemAccount, w1vEncrypt(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": baseURL}))
 			seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 				groupID, fixture.systemAccount, accountID, now)
-			seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
+			seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`,
 				accountID, now)
 			// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合。
 			chainSeedAccountConnection(t, fixture.db, accountID, baseURL)
@@ -489,20 +483,17 @@ func w1vSeedSpeedFirstStack(t *testing.T, fixture *chainFixture, suffix, schedul
 	strategyID := "rs_w1v_speed_" + suffix
 	accountID := "acc_w1v_speed_" + suffix
 	secret := "sk-w1v-speed-" + suffix
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, scheduling_policy_json) VALUES (?, ?, 'openai', 1, 'high_concurrency', ?)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES (?, ?, 1, 'high_concurrency', ?)`,
 		groupID, fixture.systemAccount, schedulingPolicyJSON)
 	credentials := map[string]any{"api_key": "sk-upstream-account-key"}
 	if upstream != nil {
 		credentials["base_url"] = upstream.URL
 	}
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model
-		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', 'W1V 速度优先账户', 'api_key', 'active', 1, ?, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model) VALUES (?, ?, 'prof_1', 'openai', 'v1', 'W1V 速度优先账户', 'api_key', 'active', 1, ?, ?, NULL, 'gpt-test')`,
 		accountID, fixture.systemAccount, concurrencyLimit, w1vEncrypt(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		groupID, fixture.systemAccount, accountID, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, accountID, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`, accountID, now)
 	// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合（upstream 为
 	// nil 的臂无上游指向，连接行带占位 URL）。
 	if upstream != nil {
@@ -962,7 +953,7 @@ func w1vSeedInspectionRetry(t *testing.T, fixture *chainFixture, fallbackGroup s
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, 'openai', 1, 'personal')`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, 1, 'personal')`,
 		fallbackGroup, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_w1v_fb', 'rs_1', ?, ?, 2, 1, 'active', ?)`, fixture.systemAccount, fallbackGroup, now)
@@ -987,14 +978,11 @@ func TestW1VResponseInspectionRetryRotatesWithinGroup(t *testing.T) {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model
-		) VALUES ('acc_w1v_second', ?, 'openai', 'prof_1', 'openai', 'v1', '组内第二账户', 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_w1v_second', ?, 'prof_1', 'openai', 'v1', '组内第二账户', 'api_key', 'active', 1, 4, ?, NULL, 'gpt-test')`,
 		fixture.systemAccount, w1vEncrypt(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": goodUpstream.URL}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, 'acc_w1v_second', 1, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_w1v_second', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_w1v_second', 'gpt-test', 'mdl_gpt-test', ?)`, now)
 	// B4 第一批单连接事实源：第二账户需要 enabled 连接行才能水合。
 	chainSeedAccountConnection(t, fixture.db, "acc_w1v_second", goodUpstream.URL)
 

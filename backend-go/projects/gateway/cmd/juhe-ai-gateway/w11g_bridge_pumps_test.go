@@ -20,7 +20,7 @@ func w11gMappingAccount(source, upstream string) gatewaydispatch.AccountCandidat
 	enabled := true
 	return gatewaydispatch.AccountCandidate{
 		ID:           "acc_w11g_bridge",
-		ProviderCode: "hybrid",
+		VendorCode:   "hybrid",
 		ProtocolCode: "openai",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "client-model",

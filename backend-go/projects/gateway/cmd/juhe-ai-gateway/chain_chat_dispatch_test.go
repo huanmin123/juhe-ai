@@ -58,17 +58,13 @@ func seedChatDispatchPinGroup(t *testing.T, fixture *chainFixture, mainURL, pinU
 	// B4 第一批单连接事实源：上游指向同步改连接行。
 	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, mainURL)
 	pinCredentials := mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-pin-key", "base_url": pinURL})
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-		) VALUES ('acc_pin', ?, 'openai', 'prof_1', 'openai', 'v1', '绑定账户', 'api_key', ?, 1, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_pin', ?, 'prof_1', 'openai', 'v1', '绑定账户', 'api_key', ?, 1, ?, NULL, 'gpt-test')`,
 		fixture.systemAccount, accountStatus, pinCredentials)
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, scheduling_policy_json)
-		VALUES ('group_pin', ?, 'openai', 1, 'personal', NULL)`, fixture.systemAccount)
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('group_pin', ?, 1, 'personal', NULL)`, fixture.systemAccount)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_pin', ?, 'acc_pin', 1, ?)`, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES ('acc_pin', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES ('acc_pin', 'gpt-test', 'mdl_gpt-test', ?)`, now)
 	// B4 第一批单连接事实源：acc_pin 需要 enabled 连接行才能水合。
 	chainSeedAccountConnection(t, fixture.db, "acc_pin", pinURL)
 }
@@ -330,8 +326,7 @@ func TestChatDispatchAccountMultiGroupConvergesFullChain(t *testing.T) {
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "active")
 	// 第二个启用分组（启用但不含 acc_pin）：验证逐组解析跳过无命中组。
 	now := "2026-09-04T00:00:00.000Z"
-	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_other', ?, 'openai', 1, 'personal')`, fixture.systemAccount); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_other', ?, 1, 'personal')`, fixture.systemAccount); err != nil {
 		t.Fatalf("seed other group: %v", err)
 	}
 	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
@@ -401,8 +396,7 @@ func TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics(t *testing.
 	pin := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "active")
 	// 空承载分组：存在但无任何账户。
-	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_empty', ?, 'openai', 1, 'personal')`, fixture.systemAccount); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_empty', ?, 1, 'personal')`, fixture.systemAccount); err != nil {
 		t.Fatalf("seed empty group: %v", err)
 	}
 	withChatDispatchAccountGroups(t, "group_empty")
@@ -501,8 +495,7 @@ func TestChatDispatchPinnedDisabledAccountFullChain(t *testing.T) {
 func TestChatDispatchGroupContextAlignsPinnedPolicy(t *testing.T) {
 	fixture := newChainFixture(t)
 	now := "2026-09-04T00:00:00.000Z"
-	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, scheduling_policy_json)
-		VALUES ('group_hc', ?, 'openai', 1, 'high_concurrency', '{"weighted":{}}')`, fixture.systemAccount); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('group_hc', ?, 1, 'high_concurrency', '{"weighted":{}}')`, fixture.systemAccount); err != nil {
 		t.Fatalf("seed hc group: %v", err)
 	}
 	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)

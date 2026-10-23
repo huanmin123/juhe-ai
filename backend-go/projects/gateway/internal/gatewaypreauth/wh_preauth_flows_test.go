@@ -586,9 +586,9 @@ func TestWhOrchestrationHelpers(t *testing.T) {
 
 // 模型映射投影与 anthropic 桥接延迟判定。
 func TestWhModelMappingProjection(t *testing.T) {
-	// 跨协议转换是 hybrid 供应商账户能力：ProviderCode 必须是 hybrid。
+	// 跨协议转换是 hybrid 供应商账户能力：VendorCode 必须是 hybrid。
 	account := gatewayruntimecache.OpenAIAccountSecret{
-		ID: "acc1", ProviderCode: "hybrid", ProtocolCode: "anthropic", ProtocolVersion: "v1",
+		ID: "acc1", VendorCode: "hybrid", ProtocolCode: "anthropic", ProtocolVersion: "v1",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel: "gpt-4o", SourceEndpointFamily: EndpointFamilyChatCompletions,
 			UpstreamModel: "claude-3-5-sonnet", UpstreamEndpointFamily: EndpointFamilyMessages,
@@ -613,7 +613,7 @@ func TestWhModelMappingProjection(t *testing.T) {
 		t.Fatal("全 anthropic 候选必须延迟")
 	}
 	// 非 anthropic 账户 → 不延迟。
-	openaiAccount := gatewayruntimecache.OpenAIAccountSecret{ID: "acc2", ProviderCode: "hybrid", ProtocolCode: "openai", ProtocolVersion: "v1"}
+	openaiAccount := gatewayruntimecache.OpenAIAccountSecret{ID: "acc2", VendorCode: "hybrid", ProtocolCode: "openai", ProtocolVersion: "v1"}
 	if service.shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(req, []gatewayruntimecache.OpenAIAccountSecret{openaiAccount}, "") {
 		t.Fatal("openai 候选不得延迟")
 	}
@@ -636,7 +636,7 @@ func TestWhAccountModelsTargetImage(t *testing.T) {
 		s.RuntimeCache = &fakeRuntimeCache{catalog: catalog}
 	})
 	req := &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/chat/completions", nil), Body: &gatewaybody.Request{Body: map[string]any{"model": "gpt-image-1"}, State: gatewaybody.CreateBodyState(gatewaybody.BodyStateInput{JSONParseStatus: gatewaybody.JSONParseStatusParsed, ParsedBody: map[string]any{"model": "gpt-image-1"}})}}
-	accounts := []gatewayruntimecache.OpenAIAccountSecret{{ID: "a", ProviderCode: "openai"}}
+	accounts := []gatewayruntimecache.OpenAIAccountSecret{{ID: "a", VendorCode: "openai"}}
 	if isImage, err := service.accountModelsTargetImage(context.Background(), req, accounts, "sys"); err != nil || !isImage {
 		t.Fatalf("图像模型 = %v err=%v", isImage, err)
 	}

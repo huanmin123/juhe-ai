@@ -46,7 +46,7 @@ func newDetailEnv(t *testing.T) *testEnv {
 			updated_at TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (ip_hash, account_id, start_date, end_date)
 		)`,
-		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT 'gpt', account_expires_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, vendor_code TEXT NOT NULL DEFAULT 'gpt', account_expires_at TEXT)`,
 	} {
 		if _, err := env.db.Exec(statement); err != nil {
 			t.Fatal(err)

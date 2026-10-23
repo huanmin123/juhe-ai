@@ -251,7 +251,7 @@ func TestW1KUsageAttemptRecorderAdapterArms(t *testing.T) {
 		usageContext,
 		gatewaydispatch.AccountCandidate{
 			ID:                          "acc_w1k",
-			ProviderCode:                "openai",
+			VendorCode:                  "openai",
 			AccountOwnerSystemAccountID: "sys_w1k_acc",
 			GroupOwnerSystemAccountID:   "sys_w1k",
 			AccountAccessType:           "owner",

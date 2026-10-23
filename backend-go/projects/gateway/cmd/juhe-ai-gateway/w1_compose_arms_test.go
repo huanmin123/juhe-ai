@@ -114,7 +114,7 @@ func TestW1BuildUpstreamRequestPartsArms(t *testing.T) {
 	driver := newChainProviderDriver()
 	ctx := context.Background()
 	// nil 请求守卫。
-	if _, err := driver.BuildGatewayUpstreamRequestParts(ctx, nil, gatewaydispatch.AccountCandidate{ProviderCode: "openai"}, gatewaydispatch.UsageIdentity{}, ""); err == nil {
+	if _, err := driver.BuildGatewayUpstreamRequestParts(ctx, nil, gatewaydispatch.AccountCandidate{VendorCode: "openai"}, gatewaydispatch.UsageIdentity{}, ""); err == nil {
 		t.Fatal("nil 请求必须拒绝")
 	}
 	newReq := func(path, body string) *gatewaypreauth.GatewayRequest {
@@ -127,7 +127,7 @@ func TestW1BuildUpstreamRequestPartsArms(t *testing.T) {
 	}
 	// codex OAuth：type=oauth + openai 协议 → OAuth codex builder。
 	oauthAccount := gatewaydispatch.AccountCandidate{
-		ID: "acc_codex", ProviderCode: "openai", ProtocolCode: "openai", Type: "oauth",
+		ID: "acc_codex", VendorCode: "openai", ProtocolCode: "openai", Type: "oauth",
 		BaseURL: "https://upstream.example", APIKey: "sk-oauth",
 		Credentials: map[string]any{
 			"access_token": "tok", "account_id": "acct-1",
@@ -144,7 +144,7 @@ func TestW1BuildUpstreamRequestPartsArms(t *testing.T) {
 	}
 	// gemini code assist：google_oauth + code_assist + project_id。
 	geminiAccount := gatewaydispatch.AccountCandidate{
-		ID: "acc_gemini", ProviderCode: "google", ProtocolCode: "gemini", Type: "google_oauth",
+		ID: "acc_gemini", VendorCode: "google", ProtocolCode: "gemini", Type: "google_oauth",
 		BaseURL: "https://gemini.example", Credentials: map[string]any{"oauth_type": "code_assist", "project_id": "proj-1"},
 	}
 	geminiParts, err := driver.BuildGatewayUpstreamRequestParts(ctx, newReq("/v1beta/models/gemini-test:generateContent", `{"model":"gemini-test","contents":[]}`), geminiAccount, gatewaydispatch.UsageIdentity{}, "")
@@ -157,7 +157,7 @@ func TestW1BuildUpstreamRequestPartsArms(t *testing.T) {
 	// codex_responses 兼容：POST /responses + 客户端画像 → body 规范化。
 	compatParts, err := driver.BuildGatewayUpstreamRequestParts(ctx,
 		newReq("/v1/responses", `{"model":"gpt-test","input":"hi","instructions":"be brief"}`),
-		gatewaydispatch.AccountCandidate{ID: "acc_key", ProviderCode: "openai", ProtocolCode: "openai", Type: "api_key", BaseURL: "https://upstream.example", APIKey: "sk-x"},
+		gatewaydispatch.AccountCandidate{ID: "acc_key", VendorCode: "openai", ProtocolCode: "openai", Type: "api_key", BaseURL: "https://upstream.example", APIKey: "sk-x"},
 		gatewaydispatch.UsageIdentity{}, "codex_responses")
 	if err != nil {
 		t.Fatalf("codex_responses 兼容构建 = %v", err)

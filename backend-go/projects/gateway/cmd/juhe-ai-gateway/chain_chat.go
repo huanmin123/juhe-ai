@@ -226,7 +226,7 @@ func chatTransportAccountsFromSecrets(accounts []gatewayruntimecache.OpenAIAccou
 		out = append(out, chat.ChatTransportAccount{
 			ID:                     account.ID,
 			Type:                   account.Type,
-			ProviderCode:           account.ProviderCode,
+			ProviderCode:           account.VendorCode,
 			SupportedEndpointModes: account.SupportedEndpointModes,
 			SupportedModels:        account.SupportedModels,
 			ModelMappings:          mappings,

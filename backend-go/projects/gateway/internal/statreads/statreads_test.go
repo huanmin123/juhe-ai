@@ -109,8 +109,7 @@ const testSchema = `
 		resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL,
 		status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 	CREATE TABLE accounts (
-		id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL,
-		vendor_code TEXT,
+		id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, vendor_code TEXT,
 		type TEXT NOT NULL, status TEXT NOT NULL, deleted_at TEXT, proxy_profile_id TEXT,
 		authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT,
 		authorization_instance_owner_system_account_id TEXT, last_used_at TEXT,
@@ -397,10 +396,8 @@ func TestAccountUsagePageAggregatesAndPaginates(t *testing.T) {
 			VALUES ('global', 'account', 'acct-b', '2026-09-04', 30, 300, 200, 3.5, '2026-09-04T11:00:00.000Z')`,
 		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
 			VALUES ('global', 'account', 'acct-a', '2026-09-04', 10, 100, 50, 1)`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status)
-			VALUES ('acct-b', '账户B', 'sys-owner-2', 'openai', 'api_key', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status)
-			VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-b', '账户B', 'sys-owner-2', 'openai', 'api_key', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-2', 'owner2', 'Owner Two')`,
 	}
@@ -452,8 +449,7 @@ func TestAccountUsageSummaryScopedCaller(t *testing.T) {
 func TestAiHealthListReadsHourlyStrip(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status, last_used_at)
-			VALUES ('acct-a', '账户A', 'sys-user-1', 'openai', 'api_key', 'active', '2026-09-04T10:00:00.000Z')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status, last_used_at) VALUES ('acct-a', '账户A', 'sys-user-1', 'openai', 'api_key', 'active', '2026-09-04T10:00:00.000Z')`,
 		`INSERT INTO account_health_hourly (account_id, stat_hour, status, last_observed_at)
 			VALUES ('acct-a', '2026-09-04T10', 'success', '2026-09-04T10:30:00.000Z')`,
 		`INSERT INTO account_health_hourly (account_id, stat_hour, status, last_observed_at)
@@ -505,8 +501,7 @@ func TestAiPerformanceSeriesReadsHourly(t *testing.T) {
 	seed := []string{
 		`INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count, duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max)
 			VALUES ('global', 'account', 'acct-a', '2026-09-04T10', 4, 400, 4, 150, 800, 4, 300)`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status)
-			VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -576,8 +571,7 @@ func TestAccountUsageRowAuthorizationProjectionAndNFKCKeyword(t *testing.T) {
 	seed := []string{
 		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
 			VALUES ('global', 'account', 'acct-nfkc', '2026-09-04', 7, 70, 35, 0.7)`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status)
-			VALUES ('acct-nfkc', 'GPT账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-nfkc', 'GPT账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 	}
 	for _, statement := range seed {

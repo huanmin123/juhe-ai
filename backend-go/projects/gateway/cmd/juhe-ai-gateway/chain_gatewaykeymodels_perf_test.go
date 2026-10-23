@@ -82,9 +82,9 @@ func unionPerfSourceNameB(accountIndex, k int) string {
 func unionPerfMappingRowA(i, k int) (string, string, string, string) {
 	if k < unionPerfAdmissibleA {
 		return unionPerfSourceNameA(i, k), "responses",
-			unionPerfModelName((i*32+k*8)%unionPerfPoolSize), "chat_completions"
+			unionPerfModelName((i*32 + k*8) % unionPerfPoolSize), "chat_completions"
 	}
-	model := unionPerfModelName((i*32+62+k-unionPerfAdmissibleA)%unionPerfPoolSize)
+	model := unionPerfModelName((i*32 + 62 + k - unionPerfAdmissibleA) % unionPerfPoolSize)
 	return model, "chat_completions", model, "chat_completions"
 }
 
@@ -92,7 +92,7 @@ func unionPerfMappingRowA(i, k int) (string, string, string, string) {
 // 且 upstream = (i*32+k) ∈ 本账户 SM 窗口。
 func unionPerfMappingRowB(i, k int) (string, string, string, string) {
 	return unionPerfSourceNameB(i, k), "responses",
-		unionPerfModelName((i*32+k)%unionPerfPoolSize), "chat_completions"
+		unionPerfModelName((i*32 + k) % unionPerfPoolSize), "chat_completions"
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ func unionPerfSeed(t *testing.T, db *sql.DB) (sysID, providerCode, profileID str
 			for j := 0; j < unionPerfSMPerAccount; j++ {
 				smRows = append(smRows, []any{
 					unionPerfAccountID(group, index), providerCode,
-					unionPerfModelName((i*32+j)%unionPerfPoolSize), ts,
+					unionPerfModelName((i*32 + j) % unionPerfPoolSize), ts,
 				})
 			}
 		}

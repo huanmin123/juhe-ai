@@ -401,7 +401,7 @@ func TestW1PChainUpstreamHeaderAccountOf(t *testing.T) {
 		ID:                        "acc-1",
 		APIKey:                    "sk-up",
 		Type:                      "oauth",
-		ProviderCode:              "openai",
+		VendorCode:                "openai",
 		ProviderProtocolProfileID: "profile-7",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "2025-01",
@@ -547,7 +547,7 @@ func TestW1PReadUpstreamFailureBodyGuards(t *testing.T) {
 // TestW1PFailedResponseAttemptOf：无先前尝试新建 + 有先前尝试复制后覆盖。
 func TestW1PFailedResponseAttemptOf(t *testing.T) {
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc-2", Name: "账户二", ProviderCode: "openai",
+		ID: "acc-2", Name: "账户二", VendorCode: "openai",
 		ProviderProtocolProfileID: "profile-2", ProtocolCode: "openai", ProtocolVersion: "v2",
 	}
 	parsed := map[string]any{"error": map[string]any{"code": "rate_limited"}}
@@ -632,7 +632,7 @@ func TestW1PDownstreamClosedAttemptOf(t *testing.T) {
 // TestW1PTransportFailureAttemptOf：复制 + 覆盖 + 传输失败种类附加。
 func TestW1PTransportFailureAttemptOf(t *testing.T) {
 	input := gatewaydispatch.UpstreamRequestErrorInput{
-		Account:     gatewaydispatch.AccountCandidate{ID: "acc-3", Name: "账户三", ProviderCode: "openai"},
+		Account:     gatewaydispatch.AccountCandidate{ID: "acc-3", Name: "账户三", VendorCode: "openai"},
 		UpstreamURL: "https://up.example/v1/chat/completions",
 		LastAttempt: &gatewaydispatch.UpstreamAttempt{AccountID: "acc-old", ErrorCode: "E_KEEP"},
 	}
@@ -747,7 +747,7 @@ func TestW1PClientStrategyAdapter(t *testing.T) {
 	req := w1pGatewayRequest(http.MethodPost, "/v1/chat/completions", nil)
 	input := gatewaypreauth.ClientStrategyInput{
 		SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "g-1",
-		Endpoint: "/v1/chat/completions", ProviderCode: "openai", ClientIP: "127.0.0.1",
+		Endpoint: "/v1/chat/completions", ClientIP: "127.0.0.1",
 	}
 
 	degraded := clientStrategyAdapter{}.Resolve(req, input)
@@ -761,7 +761,7 @@ func TestW1PClientStrategyAdapter(t *testing.T) {
 	deps := &gatewaycodex.ClientStrategyDeps{}
 	resolved := deps.ResolveOpenAIGatewayClientStrategy(req, gatewaycodex.ClientStrategyIdentity{
 		SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "g-1",
-		Endpoint: "/v1/chat/completions", ProviderCode: "openai", ClientIP: "127.0.0.1",
+		Endpoint: "/v1/chat/completions", ClientIP: "127.0.0.1",
 	})
 	bridged := clientStrategyAdapter{deps: deps}.Resolve(req, input)
 	if bridged.ClientProfile != resolved.ClientProfile || bridged.DownstreamProtocol != resolved.DownstreamProtocol ||

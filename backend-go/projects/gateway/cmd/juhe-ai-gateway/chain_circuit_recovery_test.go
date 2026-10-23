@@ -122,11 +122,9 @@ func TestChainCircuitRecoveryTargetResolverResolve(t *testing.T) {
 		t.Fatalf("encrypt credentials: %v", encryptErr)
 	}
 	seed(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`, sysID)
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, 'openai', 1, 'personal')`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, 1, 'personal')`,
 		groupID, sysID)
-	seed(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model, dispatch_revision)
-			VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', '恢复探针账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test', ?)`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model, dispatch_revision) VALUES (?, ?, 'prof_1', 'openai', 'v1', '恢复探针账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test', ?)`,
 		accountID, sysID, credentials, revisionID)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, '2026-10-08T00:00:00.000Z')`,
 		groupID, sysID, accountID)
@@ -245,10 +243,10 @@ func TestChainCircuitRecoveryProbeRequestPinsModelBucket(t *testing.T) {
 }
 
 // recoveryLedgerTables 在 chain fixture 业务库上补 circuit control-plane 契约面
-//（DDL 与 chain_circuit_controlplane_test.go w17eOpenBusinessSQLite 同款，加法
+// （DDL 与 chain_circuit_controlplane_test.go w17eOpenBusinessSQLite 同款，加法
 // 应用到共享 fixture）；并补 fixture 缺失的两列：accounts.circuit_projection_
 // revision（CheckContract 与 outbox 投影水位回写需要）、group_accounts.updated_at
-//（proberepo 账户行读取引用，recoveryProbeStore 同款加法）。
+// （proberepo 账户行读取引用，recoveryProbeStore 同款加法）。
 func recoveryLedgerTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	statements := []string{
@@ -308,8 +306,8 @@ func TestChainCircuitRecoverySweepMutationHookPersistsLedger(t *testing.T) {
 		revisionID    = int64(7)
 	)
 	seed, seedErr := fixture.db.Exec(`INSERT INTO accounts
-		(id, system_account_id, provider_code, name, type, status, dispatch_revision)
-		VALUES (?, 'sys_owner', 'openai', '恢复 hook e2e 账户', 'api_key', 'active', ?)`,
+		(id, system_account_id, name, type, status, dispatch_revision)
+		VALUES (?, 'sys_owner', '恢复 hook e2e 账户', 'api_key', 'active', ?)`,
 		hookAccountID, revisionID)
 	if seedErr != nil {
 		t.Fatalf("seed account row: %v", seedErr)

@@ -111,7 +111,7 @@ func TestUpstreamModelObservedGeminiNativeRegression(t *testing.T) {
 	response, err := engine.PerformUpstreamRequestAttempt(context.Background(), gatewaydispatch.AttemptInput{
 		Req: request,
 		Account: gatewaydispatch.AccountCandidate{
-			ID: "acc_gemini_native", ProviderCode: "google", ProtocolCode: "gemini", Type: "api_key",
+			ID: "acc_gemini_native", VendorCode: "google", ProtocolCode: "gemini", Type: "api_key",
 		},
 		UpstreamURL:               server.URL + "/v1beta/models/gem-1:streamGenerateContent?alt=sse",
 		Headers:                   http.Header{},
@@ -150,7 +150,7 @@ func TestUpstreamModelObservedOpenAIRegression(t *testing.T) {
 	response, err := engine.PerformUpstreamRequestAttempt(context.Background(), gatewaydispatch.AttemptInput{
 		Req: request,
 		Account: gatewaydispatch.AccountCandidate{
-			ID: "acc_openai_native", ProviderCode: "gpt", ProtocolCode: "openai", Type: "api_key",
+			ID: "acc_openai_native", VendorCode: "gpt", ProtocolCode: "openai", Type: "api_key",
 		},
 		UpstreamURL:               server.URL + "/v1/chat/completions",
 		Headers:                   http.Header{},

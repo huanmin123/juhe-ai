@@ -965,3 +965,81 @@ func TestW1ConfirmClientIPAvoidanceAfterFinalFailure(t *testing.T) {
 	loop.current.ActiveGatewaySettings = gatewayruntimecache.GatewaySettings{}
 	loop.confirmClientIPAccountAvoidanceAfterFinalFailure(context.Background(), loop.current, "stream_server_retry_exhausted")
 }
+
+// TestW1ClientIPAccountAvoidanceRememberFunc 覆盖 B1 记账闭包（调度慢失败直切
+// 与墙钟收尾修复设计 §3）：探针/诊断流量与 tracker 缺席返回 nil 不记账；接通
+// 后同账户重复失败在 tracker 层去重覆盖。
+func TestW1ClientIPAccountAvoidanceRememberFunc(t *testing.T) {
+	loop, _ := w1LoopWithEngine(t, &w1FakeLocks{})
+	diagnostic := &gatewaypreauth.DispatchContext{}
+	diagnostic.UsageContext.TrafficSource = "manual_account_test"
+	if loop.clientIPAccountAvoidanceRememberFunc(diagnostic) != nil {
+		t.Fatal("诊断流量不得记账")
+	}
+	if loop.clientIPAccountAvoidanceRememberFunc(loop.current) != nil {
+		t.Fatal("tracker 缺席不得记账")
+	}
+	avoidance, err := gatewayclientip.NewAvoidance(gatewayclientip.AvoidanceOptions{})
+	if err != nil {
+		t.Fatalf("NewAvoidance = %v", err)
+	}
+	defer avoidance.Close()
+	loop.c.preauth.AccountAvoidance = avoidance
+	tracker := avoidance.CreateAvoidanceTracker(gatewayclientip.AvoidanceScopeInput{
+		SystemAccountID: "sys_1", GroupID: "grp_main", ClientIP: "203.0.113.5",
+	})
+	loop.current.ClientIPAccountAvoidance = tracker
+	remember := loop.clientIPAccountAvoidanceRememberFunc(loop.current)
+	if remember == nil {
+		t.Fatal("组件齐备应返回记账闭包")
+	}
+	remember("acc_1", gatewayclientip.AccountFailure{AccountName: "Acc 1", ErrorPhase: "upstream_request", Endpoint: "https://u.example/v1"})
+	remember("acc_1", gatewayclientip.AccountFailure{AccountName: "Acc 1", ErrorPhase: "upstream_response"})
+	if len(tracker.PendingFailures) != 1 {
+		t.Fatalf("同账户失败应去重覆盖, pending = %+v", tracker.PendingFailures)
+	}
+	if tracker.PendingFailures[0].AccountID != "acc_1" || tracker.PendingFailures[0].AccountName != "Acc 1" {
+		t.Fatalf("pending 身份不符: %+v", tracker.PendingFailures[0])
+	}
+	if tracker.PendingFailures[0].ErrorPhase != "upstream_response" {
+		t.Fatalf("去重应覆盖为最新失败: %+v", tracker.PendingFailures[0])
+	}
+}
+
+// TestW1ConfirmClientIPAccountAvoidanceAfterSuccess 覆盖 B2 成功侧确认（调度
+// 慢失败直切与墙钟收尾修复设计 §3）：诊断流量与组件缺席跳过；两次请求各一次
+// 失败确认后按既有阈值生效沉底。
+func TestW1ConfirmClientIPAccountAvoidanceAfterSuccess(t *testing.T) {
+	loop, _ := w1LoopWithEngine(t, &w1FakeLocks{})
+	diagnostic := &gatewaypreauth.DispatchContext{}
+	diagnostic.UsageContext.TrafficSource = "manual_account_test"
+	loop.confirmClientIPAccountAvoidanceAfterSuccess(context.Background(), diagnostic)
+	loop.confirmClientIPAccountAvoidanceAfterSuccess(context.Background(), loop.current)
+	avoidance, err := gatewayclientip.NewAvoidance(gatewayclientip.AvoidanceOptions{})
+	if err != nil {
+		t.Fatalf("NewAvoidance = %v", err)
+	}
+	defer avoidance.Close()
+	loop.c.preauth.AccountAvoidance = avoidance
+	scope := gatewayclientip.AvoidanceScopeInput{SystemAccountID: "sys_1", GroupID: "grp_main", ClientIP: "203.0.113.5"}
+	accounts := []gatewayruntimecache.OpenAIAccountSecret{
+		{ID: "acc_1", Priority: 5},
+		{ID: "acc_2", Priority: 1},
+	}
+	// 请求 1：中途一次上游归因失败 → 成功确认（FailureCount=1 < 2 不生效）。
+	loop.current.ClientIPAccountAvoidance = avoidance.CreateAvoidanceTracker(scope)
+	loop.current.ActiveGatewaySettings = gatewayruntimecache.GatewaySettings{}
+	avoidance.RememberPendingFailure(loop.current.ClientIPAccountAvoidance.(*gatewayclientip.AvoidanceTracker), "acc_1", "Acc 1", gatewayclientip.AccountFailure{ErrorPhase: "upstream_request"})
+	loop.confirmClientIPAccountAvoidanceAfterSuccess(context.Background(), loop.current)
+	if ordered := avoidance.OrderAccountsByClientIPAccountAvoidance(accounts, scope, nil); ordered.Applied {
+		t.Fatalf("一次确认低于阈值不得沉底: %+v", ordered)
+	}
+	// 请求 2：再一次失败确认 → FailureCount=2 生效沉底。
+	loop.current.ClientIPAccountAvoidance = avoidance.CreateAvoidanceTracker(scope)
+	avoidance.RememberPendingFailure(loop.current.ClientIPAccountAvoidance.(*gatewayclientip.AvoidanceTracker), "acc_1", "Acc 1", gatewayclientip.AccountFailure{ErrorPhase: "upstream_request"})
+	loop.confirmClientIPAccountAvoidanceAfterSuccess(context.Background(), loop.current)
+	ordered := avoidance.OrderAccountsByClientIPAccountAvoidance(accounts, scope, nil)
+	if !ordered.Applied || len(ordered.AvoidedAccountIDs) != 1 || ordered.AvoidedAccountIDs[0] != "acc_1" {
+		t.Fatalf("两次确认后应沉底: %+v", ordered)
+	}
+}

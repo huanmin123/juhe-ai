@@ -163,7 +163,7 @@ func TestWIProbeSettleFailureBranches(t *testing.T) {
 		Clock:       SystemClock{},
 	}
 	input := CodexTurnAvoidanceProbeInput{
-		Account:  gatewayruntimecache.OpenAIAccountSecret{ID: "acc-1", ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1"},
+		Account:  gatewayruntimecache.OpenAIAccountSecret{ID: "acc-1", VendorCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1"},
 		Strategy: avoidanceStrategy("wi-settle"),
 		Activation: CodexTurnFailureActivation{
 			AccountID: "acc-1", SourceGeneration: 3, SourceFenceID: "00000000-0000-4000-8000-00000000000f",

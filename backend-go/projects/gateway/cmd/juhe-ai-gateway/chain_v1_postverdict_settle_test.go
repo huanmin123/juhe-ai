@@ -174,8 +174,8 @@ func postVerdictMatrixCases() []postVerdictMatrixCase {
 		{
 			name: "explicit_user_policy_retry_framing_complete_and_unknown",
 			handling: gatewayresponse.UpstreamResponseHandlingResult{
-				RetryUpstream:     true,
-				RetryReason:       gatewayresponse.StreamServerRetryResponseInspection,
+				RetryUpstream: true,
+				RetryReason:   gatewayresponse.StreamServerRetryResponseInspection,
 				ResponseInspection: &gatewayresponse.ResponseInspectionDecision{
 					ReplayAuthority: "explicit_user_policy",
 				},
@@ -226,10 +226,10 @@ func postVerdictMatrixCases() []postVerdictMatrixCase {
 				ErrorCode:                "first_byte_timeout",
 				Message:                  "首字超时",
 			},
-			deadline:               &gatewayrouting.NormalRouteAttemptFirstByteDeadline{LimitingFactor: gatewayrouting.FirstByteLimitingFactorConfigured},
-			expectCircuitUnknown:    1,
-			expectKeyModelUnknown:   1,
-			expectLockFailures:      0,
+			deadline:              &gatewayrouting.NormalRouteAttemptFirstByteDeadline{LimitingFactor: gatewayrouting.FirstByteLimitingFactorConfigured},
+			expectCircuitUnknown:  1,
+			expectKeyModelUnknown: 1,
+			expectLockFailures:    0,
 		},
 		{
 			name: "transport_failure_with_downstream_closed_settles_nothing_on_circuit",
@@ -250,7 +250,7 @@ func postVerdictMatrixCases() []postVerdictMatrixCase {
 				AlreadyFinalized: true,
 				TransportFailure: &gatewayresponse.StreamTransportFailure{Kind: "timeout", Reason: "超时"},
 			},
-			abortedContext:        true,
+			abortedContext:         true,
 			expectCircuitTransport: 0,
 			expectCircuitUnknown:   0,
 			expectCircuitFraming:   0,
@@ -276,7 +276,7 @@ func postVerdictMatrixCases() []postVerdictMatrixCase {
 				RetryReason:        gatewayresponse.StreamServerRetryResponseInspection,
 				ResponseInspection: &gatewayresponse.ResponseInspectionDecision{ReplayAuthority: "system_default_retry_next_account"},
 			},
-			expectCircuitFraming: 1,
+			expectCircuitFraming:  1,
 			expectKeyModelNotComp: 1,
 		},
 		{
@@ -317,9 +317,9 @@ func TestV1PostVerdictSettlementMatrix(t *testing.T) {
 			lock := &postVerdictLockFake{}
 			observation := &gatewaydispatch.AccountLockObservation{Generation: 7, IncidentID: "incident_1"}
 			dispatched := gatewaydispatch.UpstreamDispatchResult{
-				Account:                  gatewaydispatch.AccountCandidate{ID: "acct_1"},
+				Account:                      gatewaydispatch.AccountCandidate{ID: "acct_1"},
 				NormalRouteFirstByteDeadline: testCase.deadline,
-				AccountLockObservation:   observation,
+				AccountLockObservation:       observation,
 			}
 			loop.settlePostVerdictUpstreamAttempts(ctx, dispatched, testCase.handling, circuit, keyModel, lock)
 

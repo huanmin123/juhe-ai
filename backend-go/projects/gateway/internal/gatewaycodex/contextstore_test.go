@@ -55,7 +55,7 @@ func TestCodexContextStateShardFilesCreated(t *testing.T) {
 	ctx := context.Background()
 	row := CodexContextResponseStateIndex{
 		CodexContextStateBoundary: CodexContextStateBoundary{
-			SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "group-1", ProviderCode: "openai",
+			SystemAccountID: "sys-1", APIKeyID: "key-1", GroupID: "group-1",
 		},
 		CodexContextPayloadReference: CodexContextPayloadReference{
 			StorageKey: "sessions/s/segments/1.json.gz", SHA256: "abc", Compression: "gzip", SchemaVersion: 2,
@@ -79,14 +79,14 @@ func TestCodexContextStateShardFilesCreated(t *testing.T) {
 	if err != nil || read == nil {
 		t.Fatalf("read row: %v %v", read, err)
 	}
-	if read.SessionID != row.SessionID || read.ProviderCode != "openai" || read.PreviousResponseID != "" {
+	if read.SessionID != row.SessionID || read.PreviousResponseID != "" {
 		t.Errorf("row mismatch: %+v", read)
 	}
 }
 
 func TestReadCodexContextResponseStateChainOutcomes(t *testing.T) {
 	ctx := context.Background()
-	base := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group", ProviderCode: "openai"}
+	base := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group"}
 	makeRow := func(id, previousID string, expiresAt string) CodexContextResponseStateIndex {
 		row := CodexContextResponseStateIndex{
 			CodexContextStateBoundary: base,
@@ -222,7 +222,7 @@ func TestReadCodexContextResponseStateChainOutcomes(t *testing.T) {
 func TestReadCodexContextCompactStateOutcomes(t *testing.T) {
 	store, _ := newSQLiteStore(t)
 	ctx := context.Background()
-	base := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group", ProviderCode: "openai"}
+	base := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group"}
 	row := CodexContextCompactStateIndex{
 		CodexContextStateBoundary: base,
 		CodexContextPayloadReference: CodexContextPayloadReference{
@@ -251,8 +251,9 @@ func TestReadCodexContextCompactStateOutcomes(t *testing.T) {
 	if err != nil || notFound.Outcome != CodexContextOutcomeNotFound {
 		t.Errorf("notFound = %+v err %v", notFound, err)
 	}
+	// provider_code 维度已退役（B4①），边界失配改由 apiKey 维度验证。
 	otherBoundary := base
-	otherBoundary.ProviderCode = "hybrid"
+	otherBoundary.APIKeyID = "key-other"
 	mismatch, err := ReadCodexContextCompactState(ctx, store, CompactStateReadInput{CompactID: "cmp_1", Boundary: otherBoundary, Now: "2026-09-05T00:00:00.000Z"})
 	if err != nil || mismatch.Outcome != CodexContextOutcomeBoundaryMismat {
 		t.Errorf("mismatch = %+v err %v", mismatch, err)

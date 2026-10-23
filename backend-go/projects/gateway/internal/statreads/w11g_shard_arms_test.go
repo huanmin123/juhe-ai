@@ -13,7 +13,7 @@ import (
 func TestW11GUsageRecordKeywordOwnerPaths(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status) VALUES
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES
 			('w11g-owned-acct', 'w11g-owned', 'sys-user-1', 'openai', 'api_key', 'active'),
 			('w11g-inst-src', 'w11g-inst-src', 'sys-other', 'openai', 'oauth', 'active'),
 			('w11g-inst-child', 'w11g-inst-child', 'sys-other', 'openai', 'oauth', 'active'),
@@ -57,7 +57,7 @@ func TestW11GUsageShardFileReadChain(t *testing.T) {
 	}
 	if _, err := shard.Exec(`CREATE TABLE usage_records (
 		id TEXT PRIMARY KEY, system_account_id TEXT, trace_id TEXT, traffic_source TEXT, client_ip TEXT,
-		api_key_id TEXT, group_id TEXT, route_group_id TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT, model TEXT, upstream_model TEXT,
+		api_key_id TEXT, group_id TEXT, route_group_id TEXT, compaction_expected INTEGER NOT NULL DEFAULT 0, account_id TEXT, provider_code TEXT, endpoint TEXT, model TEXT, upstream_model TEXT,
 		upstream_response_model TEXT, billed_service_tier TEXT, effective_reasoning_effort TEXT,
 		model_mapping_applied INTEGER, stream INTEGER, status_code INTEGER, success INTEGER,
 		failure_attribution TEXT, error_code TEXT, error_message TEXT, first_token_ms INTEGER,
@@ -78,7 +78,7 @@ func TestW11GUsageShardFileReadChain(t *testing.T) {
 		VALUES ('w11g-shard', '2026-09-04', 1, '` + shardPath + `', 'active')`); err != nil {
 		t.Fatal(err)
 	}
-	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, provider_code, type, status) VALUES ('w11g-owned-acct', 'w11g-owned', 'sys-admin-1', 'openai', 'api_key', 'active')`)
+	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('w11g-owned-acct', 'w11g-owned', 'sys-admin-1', 'openai', 'api_key', 'active')`)
 	// 完整读链：shard 文件 → 合并 → 名称水合（owner 面绕开 admin 过滤门）。
 	recorder := invoke(t, fixture.deps.usageRecordsListHandler(true), http.MethodGet, "/my-usage-records?startDate=2026-09-04&endDate=2026-09-04", adminAuth(""))
 	if recorder.Code != http.StatusOK {

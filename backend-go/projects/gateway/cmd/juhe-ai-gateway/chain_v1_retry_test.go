@@ -182,14 +182,11 @@ func newInspectionRetryChain(t *testing.T, fixture *chainFixture, badSSE string,
 		}
 	}
 	credentials := mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": goodUpstream.URL})
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-		) VALUES ('acc_good', ?, 'openai', 'prof_1', 'openai', 'v1', '备用账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_good', ?, 'prof_1', 'openai', 'v1', '备用账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, 'acc_good', 1, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_good', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_good', 'gpt-test', 'mdl_gpt-test', ?)`, now)
 	// B4 第一批单连接事实源：acc_good 需要 enabled 连接行才能水合。
 	chainSeedAccountConnection(t, fixture.db, "acc_good", goodUpstream.URL)
 }

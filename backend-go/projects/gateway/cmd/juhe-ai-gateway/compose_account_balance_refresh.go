@@ -325,10 +325,10 @@ func (r *gatewayManualBalanceRefresher) buildManualInput(ctx context.Context, ca
 		CredentialFingerprint: candidate.CredentialFingerprint,
 		ConfigJSON:            candidate.ConfigJSON,
 		ProxyProfileID:        strings.TrimSpace(candidate.ProxyProfileID.String),
-		APIKey:    accountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
-		Trigger:   accountbalance.TriggerManual,
-		IssuedAt:  now,
-		ExpiresAt: now.Add(manualBalanceInputTTL),
+		APIKey:                accountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
+		Trigger:               accountbalance.TriggerManual,
+		IssuedAt:              now,
+		ExpiresAt:             now.Add(manualBalanceInputTTL),
 		// 手动刷新没有 due fence（Node business fence 只约束周期恢复）。
 		NextRefreshAt: nil,
 	}

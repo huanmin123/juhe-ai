@@ -100,9 +100,7 @@ func TestW1ResetBridgeAuthorizationReads(t *testing.T) {
 		t.Fatalf("无实例 = %v, %v", ids, err)
 	}
 	// 授权实例账户命中。
-	instanceSeed := `INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable,
-		authorization_instance_authorization_id, deleted_at)
-		VALUES ('acc_instance', 'sys_caller', 'openai', '实例', 'api_key', 'active', 1, 'authz_r1', NULL)`
+	instanceSeed := `INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, authorization_instance_authorization_id, deleted_at) VALUES ('acc_instance', 'sys_caller', '实例', 'api_key', 'active', 1, 'authz_r1', NULL)`
 	if _, err := bridge.db.Exec(instanceSeed); err != nil {
 		t.Fatalf("seed instance: %v", err)
 	}

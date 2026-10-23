@@ -48,7 +48,7 @@ func whSuccessfulCandidates(account gatewayruntimecache.OpenAIAccountSecret) *fa
 
 // 运行态解析路径（Identity 为 nil）：从 API Key 解析到完整 DispatchContext。
 func TestWhPreflightRuntimeResolvedHappyPath(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai", Status: "active"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai", Status: "active"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = whSuccessfulCandidates(account)
@@ -152,7 +152,7 @@ func TestWhPreflightDeploymentSmoke(t *testing.T) {
 
 // 普通模型路由命中：请求被改写到目标分组并重查客户端 IP 熔断。
 func TestWhPreflightNormalRouteSelected(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_2", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_2", VendorCode: "openai"}
 	reroutedRow := validRuntimeRow()
 	reroutedRow.SelectedGroupID = "g2"
 	service, _, _ := newTestService(t, func(s *Service) {
@@ -238,7 +238,7 @@ func TestWhPreflightNormalRouteFailed(t *testing.T) {
 
 // 图像 lane 升级：目录命中图像后更新墙钟预算与路由计划。
 func TestWhPreflightImageLaneUpgrade(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_img", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_img", VendorCode: "openai"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = &fakeRuntimeCache{
 			runtimeByKey: map[string]gatewayruntimecache.GatewayRuntime{"sk-good": {
@@ -287,7 +287,7 @@ func TestWhPreflightImageLaneUpgrade(t *testing.T) {
 
 // 派发准备回退：候选通过但派发准备失败时返回 RouteAction。
 func TestWhPreflightDispatchPreparationFallback(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	service, _, sink := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = &fakeCandidates{
@@ -318,7 +318,7 @@ func TestWhPreflightDispatchPreparationFallback(t *testing.T) {
 
 // 可恢复候选等待：活跃账户直返、无可恢复返回空、等待后取最终快照。
 func TestWhWaitForRecoverableCandidates(t *testing.T) {
-	cooled := gatewayruntimecache.OpenAIAccountSecret{ID: "cool", ProviderCode: "openai"}
+	cooled := gatewayruntimecache.OpenAIAccountSecret{ID: "cool", VendorCode: "openai"}
 	buildInput := func(service *Service) recoveryInput {
 		return recoveryInput{
 			req: whNewRequest("POST", "/v1/chat/completions"), auditCapture: &fakeAuditCapture{},
@@ -389,7 +389,7 @@ func TestWhCandidateAndRecoverableLoaders(t *testing.T) {
 	}
 	// 亲和池标识：按 profile/provider 去重排序，空集合折叠为 empty。
 	if got := gatewayAffinityProviderProfilePool([]gatewayruntimecache.OpenAIAccountSecret{
-		{ProviderProtocolProfileID: "p2"}, {ProviderProtocolProfileID: "p1"}, {ProviderCode: "openai"},
+		{ProviderProtocolProfileID: "p2"}, {ProviderProtocolProfileID: "p1"}, {VendorCode: "openai"},
 	}); got != "pool:openai,p1,p2" {
 		t.Fatalf("亲和池 = %q", got)
 	}

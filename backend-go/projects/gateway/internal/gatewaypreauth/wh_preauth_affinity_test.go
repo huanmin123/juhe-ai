@@ -27,8 +27,8 @@ func whFullDispatchCandidates(account gatewayruntimecache.OpenAIAccountSecret) *
 
 // Gemini Interaction 账号亲和：命中亲和时请求锁定到原账号与原分组。
 func TestWhPreflightInteractionAffinityFound(t *testing.T) {
-	// 亲和绑定的有效性要求 ProviderCode 与 gemini 协议码一致。
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_aff", ProviderCode: "gemini", VendorCode: "gemini"}
+	// 亲和绑定的有效性要求 VendorCode 与 gemini 协议码一致。
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_aff", VendorCode: "gemini"}
 	affinity := gatewaygemini.NewInteractionAffinity(nil)
 	// 预绑定 interaction → 账号。
 	if _, err := affinity.Remember(context.Background(), "ia-1",
@@ -123,7 +123,7 @@ func TestWhPreflightInteractionAffinityAccountUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, _, sink := newTestService(t, func(s *Service) {
-		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_other", ProviderCode: "gemini"}})
+		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{{ID: "acc_other", VendorCode: "gemini"}})
 		s.Affinity = affinity
 	})
 	req, _, writer := newTestRequest("GET", "/v1beta/interactions/ia-3")
@@ -142,12 +142,12 @@ func TestWhPreflightInteractionAffinityAccountUnavailable(t *testing.T) {
 }
 
 func IDAndProvider(id string) gatewayruntimecache.OpenAIAccountSecret {
-	return gatewayruntimecache.OpenAIAccountSecret{ID: id, ProviderCode: "openai"}
+	return gatewayruntimecache.OpenAIAccountSecret{ID: id, VendorCode: "openai"}
 }
 
 // API Key 分组回退派发上下文：候选命中时切换分组并返回完整预检结果。
 func TestWhPrepareAPIKeyGroupFallbackDispatchFound(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_fb", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_fb", VendorCode: "openai"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = &fakeCandidates{
@@ -232,7 +232,7 @@ func (f *whCallbackRecoverable) WaitForRecoverableUnavailableState(ctx context.C
 // 可恢复等待回调闭包的直读路径。
 func TestWhWaitForRecoverableCallbacks(t *testing.T) {
 	cooled := gatewayruntimecache.OpenAIAccountSecret{
-		ID: "cool", ProviderCode: "openai",
+		ID: "cool", VendorCode: "openai",
 		CooldownUntil: whMillisecondsToISO(1_700_000_003_000),
 	}
 	service, _, _ := newTestService(t, func(s *Service) {

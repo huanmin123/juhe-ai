@@ -377,10 +377,10 @@ func TestAiPerformanceKeywordPostgresEscapeKeepsWildcardsLiteral(t *testing.T) {
 func TestAiPerformanceSeriesKeepsRequestedAccountOrder(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, vendor_code, type, status)
-			VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'openai', 'api_key', 'active'),
-			       ('acct-b', '账户B', 'sys-owner-1', 'openai', 'openai', 'api_key', 'active'),
-			       ('acct-c', '账户C', 'sys-owner-1', 'openai', 'openai', 'api_key', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status)
+			VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active'),
+			       ('acct-b', '账户B', 'sys-owner-1', 'openai', 'api_key', 'active'),
+			       ('acct-c', '账户C', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -427,7 +427,7 @@ func TestDefaultAiPerformanceAccountsNullRankSortsFirst(t *testing.T) {
 			PRIMARY KEY (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id));
 		CREATE TABLE accounts (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL,
-			provider_code TEXT NOT NULL, vendor_code TEXT, deleted_at TEXT,
+			vendor_code TEXT, deleted_at TEXT,
 			authorization_instance_authorization_id TEXT);
 		CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT);
 	`
@@ -440,7 +440,7 @@ func TestDefaultAiPerformanceAccountsNullRankSortsFirst(t *testing.T) {
 			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-01T00:00:00.000Z', 1, 'acct-a', 100)`,
 		`INSERT INTO usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
 			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-01T00:00:00.000Z', NULL, 'acct-z', 5)`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code)
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code)
 			VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai'),
 			       ('acct-z', '账户Z', 'sys-owner-1', 'openai')`,
 	}

@@ -509,3 +509,41 @@ func TestLoadRuntimeConfigQueueDriverConfigRemoved(t *testing.T) {
 		t.Fatalf("derived database path = %q", cfg.DatabasePath)
 	}
 }
+
+// TestLoadRuntimeConfigMustChangePasswordGateSwitch（2026-10-22，dev 联调）：
+// 首登强制改密门禁旁路的默认值按环境翻转——非生产默认旁路、生产默认硬门禁；
+// 显式配置三态：非生产可显式 true/false，生产显式 true 启动失败，非法布尔
+// 语法启动失败。
+func TestLoadRuntimeConfigMustChangePasswordGateSwitch(t *testing.T) {
+	env := developmentSecurityEnv(t)
+	cfg, err := loadRuntimeConfigEnv(t, env)
+	if err != nil {
+		t.Fatalf("base config: %v", err)
+	}
+	if !cfg.MustChangePasswordGateDisabled {
+		t.Fatal("non-production must default the gate bypass on")
+	}
+	env = productionSecurityEnv(t)
+	cfg, err = loadRuntimeConfigEnv(t, env)
+	if err != nil {
+		t.Fatalf("production base config: %v", err)
+	}
+	if cfg.MustChangePasswordGateDisabled {
+		t.Fatal("production must default the gate bypass off")
+	}
+	env = developmentSecurityEnv(t)
+	env["JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED"] = "false"
+	cfg, err = loadRuntimeConfigEnv(t, env)
+	if err != nil || cfg.MustChangePasswordGateDisabled {
+		t.Fatalf("non-production explicit false must keep the gate, got %v err=%v", cfg.MustChangePasswordGateDisabled, err)
+	}
+	env["JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED"] = "bogus"
+	if _, err = loadRuntimeConfigEnv(t, env); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED") {
+		t.Fatalf("invalid boolean must fail fast with the env name, got %v", err)
+	}
+	env = productionSecurityEnv(t)
+	env["JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED"] = "1"
+	if _, err = loadRuntimeConfigEnv(t, env); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED 不能在 NODE_ENV=production 时启用") {
+		t.Fatalf("production must refuse the bypass, got %v", err)
+	}
+}

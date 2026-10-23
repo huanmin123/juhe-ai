@@ -66,10 +66,7 @@ func seedRealtimeAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 			"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session",
 		},
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'gpt', 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
+	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'gpt', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials)); err != nil {
 		t.Fatalf("seed realtime account: %v", err)
 	}
@@ -77,8 +74,8 @@ func seedRealtimeAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 		VALUES (?, ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.groupID, fixture.systemAccount, id); err != nil {
 		t.Fatalf("seed realtime group binding: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'openai', 'gpt-realtime', 'cat_realtime_1', '2026-10-04T00:00:00.000Z')`, id); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'gpt-realtime', 'cat_realtime_1', '2026-10-04T00:00:00.000Z')`, id); err != nil {
 		t.Fatalf("seed realtime supported model: %v", err)
 	}
 	// B4 第一批单连接事实源：BaseURL 改连接行（credentials.base_url 不再消费）。

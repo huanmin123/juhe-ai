@@ -102,7 +102,7 @@ func newAccountLocksFixture(t *testing.T) *lockFixture {
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY,
 			system_account_id TEXT NOT NULL,
-			provider_code TEXT NOT NULL,
+			vendor_code TEXT,
 			name TEXT NOT NULL,
 			type TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -157,8 +157,7 @@ func (f *lockFixture) seedAccount(t *testing.T, id, status string, schedulable i
 	if deletedAt != "" {
 		deletedAtArg = deletedAt
 	}
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, updated_at, deleted_at)
-		VALUES (?, 'sys_owner', 'openai', ?, 'api_key', ?, ?, ?, ?)`,
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, updated_at, deleted_at) VALUES (?, 'sys_owner', ?, 'api_key', ?, ?, ?, ?)`,
 		id, nameOf(id), status, schedulable, isoMillisOf(f.clock.Now()), deletedAtArg); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}

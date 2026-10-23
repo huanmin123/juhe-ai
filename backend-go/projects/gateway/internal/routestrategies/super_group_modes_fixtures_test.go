@@ -41,8 +41,8 @@ func (e *modeFixtureEnv) createSuperGroup(t *testing.T, ownerID, name string, me
 	t.Helper()
 	id := "grp-super-" + name
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	e.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, group_kind, created_at, updated_at)
-		VALUES (?, ?, ?, 'openai', 1, 0, 'personal', 'super', ?, ?)`, id, ownerID, name, now, now)
+	e.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, group_kind, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 0, 'personal', 'super', ?, ?)`, id, ownerID, name, now, now)
 	for index, memberID := range memberIDs {
 		e.exec(t, `INSERT INTO super_group_members (id, super_group_id, member_group_id, priority, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 1, ?, ?)`, fmt.Sprintf("sgm-%s-%d", id, index), id, memberID, index, now, now)

@@ -69,7 +69,6 @@ func accountingMappedSecret() gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:                          "acc-accounting",
 		Name:                        "accounting-account",
-		ProviderCode:                "openai",
 		VendorCode:                  "openai",
 		ProviderProtocolProfileID:   "openai-default",
 		ProtocolCode:                gatewayopenai.ProtocolCode,
@@ -184,7 +183,7 @@ func TestChainFinalizationUsagePricingKeyIgnoresUpstreamResponseModel(t *testing
 			ProviderCode: "openai",
 		},
 		Account: gatewayresponse.OpenAIAccountView{Account: gatewayruntimecache.OpenAIAccountSecret{
-			ID: "acc-pricing", ProviderCode: "openai",
+			ID: "acc-pricing", VendorCode: "openai",
 		}},
 		Success:        true,
 		StatusCode:     200,
@@ -443,7 +442,7 @@ func TestUsageModelResolverRequiresSourceEndpointFamily(t *testing.T) {
 	resolver := usageModelResolverAdapter{}
 	account := usageModelAccountOf(gatewaydispatch.AccountCandidate{
 		ID:                        "acc-adapter-family",
-		ProviderCode:              "openai",
+		VendorCode:                "openai",
 		ProviderProtocolProfileID: "openai-default",
 		ProtocolCode:              gatewayopenai.ProtocolCode,
 		ProtocolVersion:           gatewayopenai.ProtocolVersion,
@@ -485,7 +484,7 @@ func TestUsageAttemptRecorderAdapterFailedAttemptCarriesSourceEndpointFamily(t *
 		},
 		gatewaydispatch.AccountCandidate{
 			ID:                        "acc-adapter-family",
-			ProviderCode:              "openai",
+			VendorCode:                "openai",
 			ProviderProtocolProfileID: "openai-default",
 			ProtocolCode:              gatewayopenai.ProtocolCode,
 			ProtocolVersion:           gatewayopenai.ProtocolVersion,
@@ -560,7 +559,7 @@ func TestNewAuditCaptureCarriesSourceEndpointFamilyForModelAccounting(t *testing
 	concrete.StartAttempt(gatewayusage.StartAttemptInput{
 		Account: usageModelAccountOf(gatewaydispatch.AccountCandidate{
 			ID:                        "acc-audit-family",
-			ProviderCode:              "openai",
+			VendorCode:                "openai",
 			ProviderProtocolProfileID: "openai-default",
 			ProtocolCode:              gatewayopenai.ProtocolCode,
 			ProtocolVersion:           gatewayopenai.ProtocolVersion,

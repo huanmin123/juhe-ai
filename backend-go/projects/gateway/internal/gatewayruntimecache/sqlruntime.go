@@ -174,7 +174,7 @@ func uniqueInspectionScopes(accounts []OpenAIAccountSecret) [][2]string {
 		if protocolCode == "" {
 			continue
 		}
-		providerCode := trimSpace(accounts[i].ProviderCode)
+		providerCode := trimSpace(accounts[i].VendorCode)
 		key := protocolCode + ":" + providerCode
 		if seen[key] {
 			continue

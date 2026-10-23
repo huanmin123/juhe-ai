@@ -626,7 +626,7 @@ func w1xSelectorAuthzFixture(t *testing.T) (*chainAccountsSelector, *sql.DB) {
 	t.Helper()
 	db := w1xOpenBareSQLite(t, "w1x-authz.sqlite3")
 	for _, statement := range []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
 			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT,
@@ -634,7 +634,7 @@ func w1xSelectorAuthzFixture(t *testing.T) (*chainAccountsSelector, *sql.DB) {
 		`CREATE TABLE group_authorization_settings (
 			authorization_id TEXT, system_account_id TEXT, group_id TEXT,
 			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
-		`INSERT INTO groups VALUES ('w1x-grp', 'sys_owner', 'openai', 1, 'personal', NULL)`,
+		`INSERT INTO groups VALUES ('w1x-grp', 'sys_owner', 1, 'personal', NULL)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed authz schema: %v", err)
@@ -938,9 +938,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 			authorization_instance_source_account_id = 'w1x-src-1' WHERE id = 'a-limit-acc'`); err != nil {
 			t.Fatalf("bind authz instance: %v", err)
 		}
-		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable,
-			concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at)
-			VALUES ('w1x-src-1', 'sys_admin', 'openai', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`); err != nil {
+		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('w1x-src-1', 'sys_admin', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`); err != nil {
 			t.Fatalf("seed source account: %v", err)
 		}
 		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
@@ -961,9 +959,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 			authorization_instance_source_account_id = 'w1x-src-1' WHERE id = 'a-limit-acc'`); err != nil {
 			t.Fatalf("bind authz instance: %v", err)
 		}
-		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable,
-			concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at)
-			VALUES ('w1x-src-1', 'sys_admin', 'openai', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`); err != nil {
+		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('w1x-src-1', 'sys_admin', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`); err != nil {
 			t.Fatalf("seed source account: %v", err)
 		}
 		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
@@ -1008,9 +1004,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 				`INSERT INTO resource_authorizations VALUES ('w1x-authz-1', 'account', 'w1x-src-1', 'sys_admin', 'sys_admin', 'active', NULL, NULL, NULL, NULL)`,
 				`UPDATE accounts SET authorization_instance_authorization_id = 'w1x-authz-1',
 					authorization_instance_source_account_id = 'w1x-src-1' WHERE id = 'a-limit-acc'`,
-				`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable,
-					concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at)
-					VALUES ('w1x-src-1', 'sys_admin', 'openai', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, '` + sealed + `', NULL)`,
+				`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at) VALUES ('w1x-src-1', 'sys_admin', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, '` + sealed + `', NULL)`,
 				// B4 第一批单连接事实源：模型事实主体（来源账户）需要 enabled
 				// 连接行，实例账户水合才不丢弃。
 				`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)

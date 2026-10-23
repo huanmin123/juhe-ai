@@ -221,6 +221,21 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteSchedulingPreferenceEnabledRetired(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure scheduling_preferences.enabled retirement: %w", err)
 	}
+	// provider 维度持久列退役（B4① 存储迁移批）：存量库守卫删列，新库建表
+	// DDL 已无这些列（守卫早退）。六列均无索引引用，SQLite DROP COLUMN
+	//（3.35+，modernc.org/sqlite 内嵌 SQLite 3.53）直接生效；写入面停写同批
+	// 交付。维护链一次性执行（BUG-0307 纪律），PRAGMA 读完再执行 ALTER
+	//（BUG-0308 纪律）。
+	if err := ensureSQLiteBusinessProviderDimensionRetired(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure business provider dimension retirement: %w", err)
+	}
+	// account_supported_models.model_id 收紧为 NOT NULL（B4① 补充，T52 复核）：
+	// SQLite 复合主键可空、无法 ALTER SET NOT NULL，存量库按重建守卫对齐
+	//（chat_assets 重建同模式）；写面不产 NULL，重建前发现存量 NULL 行即
+	// 报错交由人工核查，不静默弃行。
+	if err := ensureSQLiteAccountSupportedModelsModelIDNotNull(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure account_supported_models.model_id not null: %w", err)
+	}
 	// 超级分组（超级分组设计 §3.1）：新库由 groups 建表 DDL 直接声明
 	// group_kind；存量库按 PRAGMA table_info 早退守卫幂等补列。DEFAULT
 	// 'standard' 与建表 DDL 同构；常量 CHECK 词表在 ADD COLUMN 时合法，
@@ -654,6 +669,182 @@ func ensureSQLiteSchedulingPreferenceEnabledRetired(ctx context.Context, db *sql
 	return err
 }
 
+// ensureSQLiteBusinessProviderDimensionRetired 把存量库业务表的 provider
+// 维度投影列（B4① 存储迁移批退役）幂等删除：account_list_availability_
+// projections 与 account_list_availability_projection_index 的 provider_code /
+// provider_protocol_profile_id、account_test_tasks.provider_code、
+// media_jobs.provider_code。PRAGMA table_info 早退守卫（新库无列、或表尚未
+// 建时零操作）；表名/列名均为编译期常量，内联插值安全。
+func ensureSQLiteBusinessProviderDimensionRetired(ctx context.Context, db *sql.DB) error {
+	retirements := []struct{ table, column string }{
+		{"account_list_availability_projections", "provider_code"},
+		{"account_list_availability_projections", "provider_protocol_profile_id"},
+		{"account_list_availability_projection_index", "provider_code"},
+		{"account_list_availability_projection_index", "provider_protocol_profile_id"},
+		{"account_test_tasks", "provider_code"},
+		{"media_jobs", "provider_code"},
+	}
+	for _, retirement := range retirements {
+		exists, err := sqliteTableColumnExists(ctx, db, retirement.table, retirement.column)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE "+retirement.table+" DROP COLUMN "+retirement.column); err != nil {
+			return fmt.Errorf("drop %s.%s: %w", retirement.table, retirement.column, err)
+		}
+	}
+	return nil
+}
+
+// ensureSQLiteCodexContextProviderCodeRetired 把存量 codex context 三表的
+// provider_code 列（B4① 存储迁移批退役）幂等删除：boundary 索引引用该列，
+// SQLite DROP COLUMN 不能删被索引引用的列，先 DROP INDEX IF EXISTS 再守卫
+// 删列；新库无列无索引，全部零操作。
+func ensureSQLiteCodexContextProviderCodeRetired(ctx context.Context, db *sql.DB) error {
+	boundaryIndexes := []string{
+		"idx_codex_context_sessions_boundary",
+		"idx_codex_context_responses_boundary",
+		"idx_codex_context_compacts_boundary",
+	}
+	for _, index := range boundaryIndexes {
+		if _, err := db.ExecContext(ctx, "DROP INDEX IF EXISTS "+index); err != nil {
+			return fmt.Errorf("drop %s: %w", index, err)
+		}
+	}
+	for _, table := range []string{"codex_context_sessions", "codex_context_responses", "codex_context_compacts"} {
+		exists, err := sqliteTableColumnExists(ctx, db, table, "provider_code")
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE "+table+" DROP COLUMN provider_code"); err != nil {
+			return fmt.Errorf("drop %s.provider_code: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// sqliteTableColumnExists 报告表中列是否存在（表不存在视为 false；与
+// BUG-0308 纪律一致：PRAGMA 结果读完再执行后续 ALTER）。
+func sqliteTableColumnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	tableExists, columnExists := false, false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, declaredType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		tableExists = true
+		if name == column {
+			columnExists = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if !tableExists {
+		return false, nil
+	}
+	return columnExists, nil
+}
+
+// sqliteAccountSupportedModelsRebuildDDL 是 model_id NOT NULL 收紧后的
+// account_supported_models 形状（与建表 DDL 同构；列与外键奇偶由 schema
+// 测试钉住防漂移）。
+const sqliteAccountSupportedModelsRebuildDDL = `CREATE TABLE account_supported_models_migrating (
+      account_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, model_id),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
+    )`
+
+// ensureSQLiteAccountSupportedModelsModelIDNotNull 把存量库
+// account_supported_models.model_id（SQLite 复合主键声明可空）收紧为 NOT
+// NULL：PRAGMA table_info 早退守卫（新库已 NOT NULL、表尚未建时零操作），
+// 重建按 chat_assets 先例（foreign_keys=OFF + 迁移表回填 + DROP/RENAME）。
+// 重建发现 model_id 为 NULL 的存量行即报错交人工核查（写面不产 NULL，
+// NULL 行只能是历史缺陷产物，不静默弃行）。account_entry_mappings 等对
+// (account_id, model_id) 的外键引用由 RENAME 原子改写。
+func ensureSQLiteAccountSupportedModelsModelIDNotNull(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(account_supported_models)")
+	if err != nil {
+		return err
+	}
+	tableExists, modelIDColumn, modelIDNotNull := false, false, false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, declaredType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		tableExists = true
+		if name == "model_id" {
+			modelIDColumn = true
+			modelIDNotNull = notNull == 1
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if !tableExists || !modelIDColumn || modelIDNotNull {
+		return nil
+	}
+	var nullRows int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM account_supported_models WHERE model_id IS NULL").Scan(&nullRows); err != nil {
+		return fmt.Errorf("核查 account_supported_models.model_id NULL 行失败: %w", err)
+	}
+	if nullRows > 0 {
+		return fmt.Errorf("account_supported_models 有 %d 行 model_id 为 NULL：写面不产 NULL，须先人工核查并清理该批历史行再执行收列", nullRows)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("关闭 PRAGMA foreign_keys 失败: %w", err)
+	}
+	defer func() {
+		_, _ = db.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys=ON")
+	}()
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS account_supported_models_migrating"); err != nil {
+		return fmt.Errorf("清理上次重建残留失败: %w", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, sqliteAccountSupportedModelsRebuildDDL); err != nil {
+		return fmt.Errorf("创建 account_supported_models 重建表失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO account_supported_models_migrating (account_id, model_id, created_at)\nSELECT account_id, model_id, created_at FROM account_supported_models"); err != nil {
+		return fmt.Errorf("回填 account_supported_models 重建表数据失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DROP TABLE account_supported_models"); err != nil {
+		return fmt.Errorf("删除旧 account_supported_models 失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE account_supported_models_migrating RENAME TO account_supported_models"); err != nil {
+		return fmt.Errorf("重命名 account_supported_models 重建表失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // EnsureSQLiteStats applies the stats schema (quality/usage aggregations and process samples).
 func EnsureSQLiteStats(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
 	counts, err := sqliteStatsScript.ensure(ctx, db)
@@ -1060,7 +1251,17 @@ func ensureSQLiteChatAccountBindingColumns(ctx context.Context, db *sql.DB) erro
 
 // EnsureSQLiteCodexContext applies the codex context state schema.
 func EnsureSQLiteCodexContext(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
-	return sqliteCodexContextScript.ensure(ctx, db)
+	counts, err := sqliteCodexContextScript.ensure(ctx, db)
+	if err != nil {
+		return SchemaCounts{}, err
+	}
+	// provider_code 维度退役（B4① 存储迁移批）：存量库先删三个 boundary
+	// 索引再守卫删列（SQLite DROP COLUMN 不能删索引引用列）；新库无列无
+	// 索引，守卫早退。
+	if err := ensureSQLiteCodexContextProviderCodeRetired(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure codex context provider_code retirement: %w", err)
+	}
+	return counts, nil
 }
 
 // EnsureSQLiteDataset applies the dataset schema (public API logs and record cleanup targets).

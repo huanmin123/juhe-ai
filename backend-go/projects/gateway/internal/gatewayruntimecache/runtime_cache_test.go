@@ -251,7 +251,7 @@ func testAPIKeyRow(id string, mode string, groupIDs ...string) *GatewayAPIKeyRow
 
 func testAccount(id string, groupOwner string) OpenAIAccountSecret {
 	return OpenAIAccountSecret{
-		ID: id, ProviderCode: "gpt", ProviderProtocolProfileID: "pp1",
+		ID: id, VendorCode: "gpt", ProviderProtocolProfileID: "pp1",
 		ProtocolCode: "openai", ProtocolVersion: "v1",
 		SystemAccountID: groupOwner, AccountOwnerSystemAccountID: groupOwner, GroupOwnerSystemAccountID: groupOwner,
 		AccountAccessType: AccountAccessTypeOwner, GroupAccessType: GroupAccessTypeOwner,
@@ -1134,7 +1134,7 @@ func TestInspectionPoliciesLoadCacheAndForAccountsMerge(t *testing.T) {
 	}
 	// ForAccounts：账户作用域合并去重（acc1 协议层作用域、acc2 供应商层作用域）。
 	acc1 := testAccount("a1", "sys")
-	acc1.ProviderCode = ""
+	acc1.VendorCode = ""
 	acc2 := testAccount("a2", "sys")
 	merged, err := svc.ListCachedActiveResponseInspectionPoliciesForAccountsAsync(ctx, []OpenAIAccountSecret{acc1, acc2, acc1})
 	if err != nil {

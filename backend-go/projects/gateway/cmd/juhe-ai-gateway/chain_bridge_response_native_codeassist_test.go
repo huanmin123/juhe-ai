@@ -27,7 +27,7 @@ func nativeCodeAssistTransformerTestInput(t *testing.T, method, target, body str
 func codeAssistAccount() gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
 		ID:           "acc_ca_1",
-		ProviderCode: "google",
+		VendorCode:   "google",
 		ProtocolCode: "gemini",
 		Type:         "google_oauth",
 		Credentials: map[string]any{
@@ -122,7 +122,7 @@ func TestChainBridgeResponsePassthroughNonCodeAssistNilMapping(t *testing.T) {
 	input := gatewaydispatch.UpstreamResponseTransformInput{
 		Req: gatewaypreauth.NewGatewayRequest(request),
 		Account: gatewaydispatch.AccountCandidate{
-			ID: "acc_plain", ProviderCode: "google", ProtocolCode: "gemini", Type: "api_key",
+			ID: "acc_plain", VendorCode: "google", ProtocolCode: "gemini", Type: "api_key",
 		},
 		Response: response,
 	}

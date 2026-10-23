@@ -182,21 +182,21 @@ func TestApplyContextStatePreflightRestore(t *testing.T) {
 		{
 			name:             "restores internal chain",
 			previousResponse: "resp_chat_bridge_seed",
-			boundary:         CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"},
+			boundary:         CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"},
 			wantStateOK:      true,
 			wantRestored:     true,
 		},
 		{
 			name:             "boundary mismatch 403",
 			previousResponse: "resp_chat_bridge_seed",
-			boundary:         CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "other", GroupID: "group", ProviderCode: "openai"},
+			boundary:         CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "other", GroupID: "group"},
 			wantCompleted:    true,
 			wantFailureCode:  "codex_bridge_previous_response_boundary_mismatch",
 		},
 		{
 			name:             "not found 404",
 			previousResponse: "resp_chat_bridge_missing",
-			boundary:         CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"},
+			boundary:         CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"},
 			wantCompleted:    true,
 			wantFailureCode:  "codex_bridge_previous_response_not_found",
 		},
@@ -255,7 +255,7 @@ func TestApplyContextStatePreflightRestore(t *testing.T) {
 func TestApplyContextStatePreflightCompactReference(t *testing.T) {
 	service, registry, sink, _, clock := newBridgeService(t)
 	ctx := context.Background()
-	// ProviderCode 恒空串（供应商解耦 B4 W2，与生产 codexContextBoundary 同形）。
+	// boundary 按 sys/key/group 三元组承载（provider 维度已随 B4① 拆除，与生产 codexContextBoundary 同形）。
 	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 
 	// Seed a compact snapshot.
@@ -319,7 +319,7 @@ func TestApplyContextStatePreflightCompactReference(t *testing.T) {
 
 func TestPrepareCodexResponsesContextForAccount(t *testing.T) {
 	service, registry, _, _, _ := newBridgeService(t)
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 
 	bridgeAccount := gatewayruntimecache.OpenAIAccountSecret{
 		ID: "acc-bridge", ProtocolCode: "openai", ProtocolVersion: "v1",
@@ -396,7 +396,7 @@ func TestPrepareCodexResponsesContextForAccount(t *testing.T) {
 
 func TestPrepareCodexResponsesContextForAccountErrors(t *testing.T) {
 	service, registry, _, _, _ := newBridgeService(t)
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 	bridgeAccount := gatewayruntimecache.OpenAIAccountSecret{
 		ID: "acc-bridge", ProtocolCode: "openai", ProtocolVersion: "v1",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
@@ -556,7 +556,7 @@ func TestCompletionHandlerSkipsOtherAccounts(t *testing.T) {
 func TestCreateChatBridgeCompactSnapshot(t *testing.T) {
 	service, _, _, _, clock := newBridgeService(t)
 	ctx := context.Background()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 	result, err := service.CreateChatBridgeCompactSnapshot(ctx, CreateChatBridgeCompactSnapshotInput{
 		SessionID: "session-1", SourceResponseID: "resp_chat_bridge_seed", Boundary: boundary, Summary: "总结",
 		UpstreamAccountID: "acc", Model: "gpt-5", UpstreamModel: "chat-model",
@@ -584,7 +584,7 @@ func TestCreateChatBridgeCompactSnapshot(t *testing.T) {
 func TestRestoreChatBridgeInputForCompactFailures(t *testing.T) {
 	service, _, _, _, _ := newBridgeService(t)
 	ctx := context.Background()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 	result, err := service.RestoreChatBridgeInputForCompact(ctx, struct {
 		PreviousResponseID string
 		Boundary           CodexContextStateBoundary

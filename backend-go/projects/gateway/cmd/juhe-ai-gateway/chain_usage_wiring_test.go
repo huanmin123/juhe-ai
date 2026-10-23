@@ -345,7 +345,7 @@ func TestUsageModelAccountOfCarriesMappings(t *testing.T) {
 	candidate := gatewaydispatch.AccountCandidate{
 		ID:                        "acct-1",
 		Name:                      "acct",
-		ProviderCode:              "gpt",
+		VendorCode:                "gpt",
 		ProviderProtocolProfileID: "openai-default",
 		ProtocolCode:              gatewayopenai.ProtocolCode,
 		ProtocolVersion:           gatewayopenai.ProtocolVersion,

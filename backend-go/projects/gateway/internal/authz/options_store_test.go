@@ -22,7 +22,7 @@ func newOptionsFixture(t *testing.T) *Store {
 	statements := []string{
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE system_teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active')`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT 'openai', enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_kind TEXT NOT NULL DEFAULT 'standard', updated_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_kind TEXT NOT NULL DEFAULT 'standard', updated_at TEXT NOT NULL DEFAULT '')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sa-1', 'alice', 'Alice A'), ('sa-2', 'bob', 'Bob B'), ('sa-3', 'carol', 'Carol C')`,
 		`UPDATE system_accounts SET status = 'disabled' WHERE id = 'sa-3'`,
 		`INSERT INTO system_teams (id, name) VALUES ('team-1', 'Alpha'), ('team-2', 'Beta')`,

@@ -40,22 +40,19 @@ func seedSuperOuterFixture(t *testing.T, mode string, targets ...superOuterTarge
 		}
 	}
 	addAccount := func(groupID, accountID string) {
-		seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, 'openai', 1, 'personal')`,
+		seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, 1, 'personal')`,
 			groupID, fixture.systemAccount)
-		seed(`INSERT INTO accounts (
-				id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-				name, type, status, schedulable, credentials_encrypted, deleted_at
-			) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, ?, NULL)`,
+		seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at) VALUES (?, ?, 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, ?, NULL)`,
 			accountID, fixture.systemAccount, accountID, w1vEncrypt(t, map[string]any{"api_key": "sk-outer-" + accountID}))
 		seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 			groupID, fixture.systemAccount, accountID, now)
 		chainSeedAccountConnection(t, fixture.db, accountID, "https://outer-"+accountID+".example.invalid/v1")
-		seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
+		seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`,
 			accountID, now)
 	}
 	for _, target := range targets {
 		if target.kind == "super" {
-			seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, group_kind) VALUES (?, ?, 'openai', 1, 'personal', 'super')`,
+			seed(`INSERT INTO groups (id, system_account_id, enabled, group_type, group_kind) VALUES (?, ?, 1, 'personal', 'super')`,
 				target.groupID, fixture.systemAccount)
 			for index, member := range target.members {
 				addAccount(member.groupID, member.accountID)

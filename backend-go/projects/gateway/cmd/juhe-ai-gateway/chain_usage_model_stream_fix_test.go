@@ -157,7 +157,7 @@ func TestUsageAttemptRecorderAdapterNilRequestDoesNotPanic(t *testing.T) {
 
 	err := adapter.RecordFailedUpstreamAttempt(context.Background(), nil,
 		gatewaypreauth.GatewayFailureUsageContext{TrafficSource: gatewayTrafficSource},
-		gatewaydispatch.AccountCandidate{ID: "acc_1", ProviderCode: "openai"},
+		gatewaydispatch.AccountCandidate{ID: "acc_1", VendorCode: "openai"},
 		gatewaydispatch.FailedAttemptRecord{
 			UpstreamURL:        "concurrency:limit",
 			StartedAt:          1728000000000,

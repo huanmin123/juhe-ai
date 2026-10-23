@@ -47,15 +47,7 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt credentials: %v", err)
 	}
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority,
-			credentials_encrypted, proxy_profile_id, cooldown_until, last_error_message,
-			stream_failure_count, stream_failure_window_started_at, deleted_at, health_check_model, health_check_endpoint_mode
-		) VALUES ('acc_pool', ?, 'openai', 'prof_pool', 'openai', 'v1',
-			'池化账户', 'api_key', 'active', 1, 7, 3,
-			?, 'proxy_1', '2020-01-01T00:00:00.000Z', '上游已限流',
-			4, '2026-09-03T10:00:00.000Z', NULL, 'gpt-test', 'chat_json')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, proxy_profile_id, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, deleted_at, health_check_model, health_check_endpoint_mode) VALUES ('acc_pool', ?, 'prof_pool', 'openai', 'v1', '池化账户', 'api_key', 'active', 1, 7, 3, ?, 'proxy_1', '2020-01-01T00:00:00.000Z', '上游已限流', 4, '2026-09-03T10:00:00.000Z', NULL, 'gpt-test', 'chat_json')`,
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, created_at)
 		VALUES (?, ?, 'acc_pool', 1, 2, ?)`, fixture.groupID, fixture.systemAccount, now)
@@ -207,10 +199,7 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 	// Mapped account: serves gpt-test through an enabled mapping. B4 第一批
 	// 目标形态：映射行走 account_entry_mappings（target 经 models 外键解析），
 	// 账户带 enabled 连接行以通过 secret 单连接事实源水合。
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, protocol_code, protocol_version, name, type, status, schedulable,
-			credentials_encrypted, deleted_at, health_check_model
-		) VALUES ('acc_mapped', ?, 'openai', 'openai', 'v1', '映射账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_mapped', ?, 'openai', 'v1', '映射账户', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES (?, ?, 'acc_mapped', 1, ?)`, fixture.groupID, fixture.systemAccount, now)

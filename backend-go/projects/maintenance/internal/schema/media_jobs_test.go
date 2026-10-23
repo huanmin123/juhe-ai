@@ -29,11 +29,12 @@ func openMediaJobsSQLite(t *testing.T) *sql.DB {
 func TestMediaJobsTableShape(t *testing.T) {
 	db := openMediaJobsSQLite(t)
 
-	// 列集（含 NOT NULL DEFAULT 语义关键列）。
+	// 列集（含 NOT NULL DEFAULT 语义关键列）。provider_code 已随 B4① 存储
+	// 迁移批退役（读面供应商经 accounts.vendor_code 水合）。
 	required := map[string]bool{
 		"id": true, "kind": true, "api_key_id": true, "account_id": true,
-		"provider_code": true, "provider_protocol_profile_id": true,
-		"upstream_job_id": true, "status": true,
+		"provider_protocol_profile_id": true,
+		"upstream_job_id":              true, "status": true,
 		"request_snapshot_json": true, "artifact_json": true, "error_json": true,
 		"usage_json": true, "cost_usd": true,
 		"params_applied_json": true, "params_ignored_json": true,
@@ -53,9 +54,8 @@ func TestMediaJobsTableShape(t *testing.T) {
 	}
 
 	// 合法行：默认值落库（JSON '{}'/'[]'、cost_usd 0）。
-	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id, provider_code,
-      upstream_job_id, status, created_at, updated_at)
-      VALUES ('video_1', 'video', 'key_1', 'acct_1', 'gpt', 'job_up_1', 'queued', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id, upstream_job_id, status, created_at, updated_at)
+      VALUES ('video_1', 'video', 'key_1', 'acct_1', 'job_up_1', 'queued', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`); err != nil {
 		t.Fatalf("insert valid media job: %v", err)
 	}
 	var snapshot, artifact, params string
@@ -69,14 +69,12 @@ func TestMediaJobsTableShape(t *testing.T) {
 	}
 
 	// CHECK 词表：非法 kind / status 拒绝。
-	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id, provider_code,
-      upstream_job_id, status, created_at, updated_at)
-      VALUES ('video_2', 'image', 'key_1', 'acct_1', 'gpt', 'job_up_2', 'queued', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id, upstream_job_id, status, created_at, updated_at)
+      VALUES ('video_2', 'image', 'key_1', 'acct_1', 'job_up_2', 'queued', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`); err == nil {
 		t.Fatal("kind=image must be rejected by CHECK")
 	}
-	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id, provider_code,
-      upstream_job_id, status, created_at, updated_at)
-      VALUES ('video_3', 'video', 'key_1', 'acct_1', 'gpt', 'job_up_3', 'running', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id, upstream_job_id, status, created_at, updated_at)
+      VALUES ('video_3', 'video', 'key_1', 'acct_1', 'job_up_3', 'running', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`); err == nil {
 		t.Fatal("status=running must be rejected by CHECK")
 	}
 

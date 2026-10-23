@@ -93,6 +93,8 @@ var seedSystemSettings = map[string]any{
 	"defaultTemporaryUnschedulableMinutes":       2,
 	"temporaryUnschedulableRetryIntervalSeconds": 3,
 	"temporaryUnschedulableRetryAttempts":        2,
+	"sameAccountRetryFastFailMaxMs":              10000,
+	"gatewayAttemptStartMinWindowMs":             30000,
 	"textFirstResponseTimeoutSeconds":            120,
 	"textNonStreamFirstResponseTimeoutSeconds":   600,
 	"textStreamIdleTimeoutSeconds":               30,

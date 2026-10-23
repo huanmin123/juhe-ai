@@ -117,7 +117,7 @@ func TestChainFailureDispatcherAnthropicUsageHeadersFailureFace(t *testing.T) {
 	input := gatewayFailedResponseInput(response, sink, "gateway")
 	input.Account = gatewaydispatch.AccountCandidate{
 		ID: "acc_claude", Name: "claude 账户",
-		Type: "oauth", ProviderCode: "anthropic",
+		Type: "oauth", VendorCode: "anthropic",
 	}
 	input.AccountStateMutationEnabled = true
 	if _, err := dispatcher.HandleFailedUpstreamResponse(context.Background(), input); err != nil {
@@ -196,7 +196,7 @@ func TestPersistAnthropicUsageHeadersOnGatewayTraffic(t *testing.T) {
 	}
 	account := gatewaydispatch.AccountCandidate{
 		ID: "acc_claude", Name: "claude 账户",
-		Type: "oauth", ProviderCode: "anthropic",
+		Type: "oauth", VendorCode: "anthropic",
 	}
 
 	dispatcher := &fakeChainAnthropicHeadersDispatcher{}
@@ -230,7 +230,7 @@ func TestPersistAnthropicUsageHeadersOnGatewayTraffic(t *testing.T) {
 	// 非 anthropic 账户不派发（gatewaycodex 资格门）。
 	codexDispatcher := &fakeChainAnthropicHeadersDispatcher{}
 	persistAnthropicUsageHeadersOnGatewayTraffic(context.Background(), gatewayTrafficSource,
-		gatewaydispatch.AccountCandidate{ID: "acc_codex", Type: "oauth", ProviderCode: "openai"},
+		gatewaydispatch.AccountCandidate{ID: "acc_codex", Type: "oauth", VendorCode: "openai"},
 		anthropicHeaders, codexDispatcher)
 	codexDispatcher.mu.Lock()
 	codexCalls := len(codexDispatcher.accountIDs)

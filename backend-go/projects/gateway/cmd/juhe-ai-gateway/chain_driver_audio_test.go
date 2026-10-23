@@ -19,7 +19,7 @@ func TestChainDriverGeminiSpeechAdapterDispatch(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_gem_tts",
-		ProviderCode: "gemini",
+		VendorCode:   "gemini",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
 		BaseURL:      "https://gem.example",
@@ -63,7 +63,7 @@ func TestChainDriverGeminiSpeechAdapterDispatch(t *testing.T) {
 func TestChainDriverGeminiSpeechFormatGate(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_gem_tts", ProviderCode: "gemini", ProtocolCode: "gemini",
+		ID: "acc_gem_tts", VendorCode: "gemini", ProtocolCode: "gemini",
 		Type: "api_key", BaseURL: "https://gem.example", APIKey: "gk-1",
 	}
 	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",
@@ -79,7 +79,7 @@ func TestChainDriverGeminiTranscriptionStillNativeGated(t *testing.T) {
 	// 原生面淘汰（gemini_native_unsupported）。
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_gem", ProviderCode: "gemini", ProtocolCode: "gemini",
+		ID: "acc_gem", VendorCode: "gemini", ProtocolCode: "gemini",
 		Type: "api_key", BaseURL: "https://gem.example", APIKey: "gk-1",
 	}
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil))
@@ -92,7 +92,7 @@ func TestChainDriverOpenAISpeechStaysPassthrough(t *testing.T) {
 	// openai 族：/v1-suffixed base + 原样客户端 body（无 adapter 改写）。
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
-		ID: "acc_oai", ProviderCode: "gpt", ProtocolCode: "openai",
+		ID: "acc_oai", VendorCode: "gpt", ProtocolCode: "openai",
 		Type: "api_key", BaseURL: "https://api.openai.example", APIKey: "sk-1",
 	}
 	body := `{"model":"tts-1","input":"hi","voice":"alloy","response_format":"wav"}`

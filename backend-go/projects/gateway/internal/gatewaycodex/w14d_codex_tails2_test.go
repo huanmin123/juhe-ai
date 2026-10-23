@@ -396,7 +396,7 @@ func TestW14dBridgeCompactSummaryReadArms(t *testing.T) {
 	service.Sink = &recordedSink{}
 	registry := NewContextRequestStateRegistry()
 	ctx := context.Background()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 
 	// A stored compact whose summary digest does not match the payload
 	// renders payload_unavailable through the preflight (L663/671/678).

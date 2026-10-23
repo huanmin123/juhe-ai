@@ -463,7 +463,7 @@ func codexRecoveryResponsesInput(t *testing.T, response *gatewaydispatch.Gateway
 	input.Req = gatewaypreauth.NewGatewayRequest(raw)
 	input.Account = gatewaydispatch.AccountCandidate{
 		ID: "acc_1", Name: "账户一",
-		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+		VendorCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
 	}
 	input.RequestBody = []byte(requestBody)
 	return input
@@ -602,7 +602,7 @@ func avoidanceRecordRequestInput(t *testing.T, sink *failureDispatchAuditSink, t
 	input.UsageContext.ClientIP = "203.0.113.9"
 	input.Account = gatewaydispatch.AccountCandidate{
 		ID: "acc_1", Name: "账户一",
-		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+		VendorCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
 	}
 	return input
 }
@@ -642,7 +642,7 @@ func TestChainFailureDispatcherClientSourceAvoidanceRecordsTransportFailure(t *t
 	strategy := dispatcher.clientStrategy.ResolveOpenAIGatewayClientStrategy(input.Req, gatewaycodex.ClientStrategyIdentity{
 		SystemAccountID: "sys_1", APIKeyID: "key_1", GroupID: "grp_1",
 		Endpoint: "/v1/chat/completions", ClientIP: "203.0.113.9",
-		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+		ProtocolCode: "openai", ProtocolVersion: "v1",
 	})
 	if !strategy.AllowClientSourceAccountAvoidance {
 		t.Fatal("the resolved strategy must allow client-source avoidance")
@@ -875,16 +875,13 @@ func TestGatewayChain5xxFailsOverToNextCandidate(t *testing.T) {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-		) VALUES ('acc_2', ?, 'openai', 'prof_1', 'openai', 'v1', '账户二', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_2', ?, 'prof_1', 'openai', 'v1', '账户二', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
 		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": secondUpstream.URL}))
 	// local_priority 把首候选固定为 acc_1（chainPriorityRank 先读
 	// group_accounts.local_priority，低值在前，避免依赖 CJK 名称 collator）。
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, created_at) VALUES (?, ?, 'acc_2', 1, 10, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_2', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_2', 'gpt-test', 'mdl_gpt-test', ?)`, now)
 	// B4 第一批单连接事实源：acc_2 需要 enabled 连接行才能水合。
 	chainSeedAccountConnection(t, fixture.db, "acc_2", secondUpstream.URL)
 	seed(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
@@ -936,14 +933,11 @@ func TestGatewayChainAllUpstreamHTTPFailuresRenderExhaustion(t *testing.T) {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-		) VALUES ('acc_2', ?, 'openai', 'prof_1', 'openai', 'v1', '账户二', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_2', ?, 'prof_1', 'openai', 'v1', '账户二', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
 		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": upstream.URL}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, 'acc_2', 1, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_2', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_2', 'gpt-test', 'mdl_gpt-test', ?)`, now)
 	// B4 第一批单连接事实源：acc_2 需要 enabled 连接行才能水合。
 	chainSeedAccountConnection(t, fixture.db, "acc_2", upstream.URL)
 	seed(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
@@ -1100,7 +1094,7 @@ func errorPolicyAccount(credentials map[string]any) gatewaydispatch.AccountCandi
 	if credentials == nil {
 		credentials = map[string]any{}
 	}
-	return gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一", Type: "api_key", ProviderCode: "openai", Credentials: credentials}
+	return gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "账户一", Type: "api_key", VendorCode: "openai", Credentials: credentials}
 }
 
 // errorPolicyDecide 便捷入口：status + 失败体 → 决策。失败体事实与生产面
@@ -1340,7 +1334,7 @@ func newErrorPolicyEffectsFixture(t *testing.T) *errorPolicyEffectsFixture {
 	statements := []string{
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL DEFAULT 'sys_owner',
-			provider_code TEXT NOT NULL DEFAULT 'openai', protocol_code TEXT, protocol_version TEXT,
+			protocol_code TEXT, protocol_version TEXT,
 			name TEXT NOT NULL DEFAULT '账户', type TEXT NOT NULL DEFAULT 'api_key',
 			status TEXT NOT NULL DEFAULT 'active', schedulable INTEGER NOT NULL DEFAULT 1,
 			config_revision INTEGER NOT NULL DEFAULT 1,
@@ -1955,7 +1949,7 @@ func errorPolicyRuleAccount(rules ...map[string]any) gatewaydispatch.AccountCand
 		list = append(list, rule)
 	}
 	return gatewaydispatch.AccountCandidate{
-		ID: "acc_1", Name: "账户一", Type: "api_key", ProviderCode: "openai",
+		ID: "acc_1", Name: "账户一", Type: "api_key", VendorCode: "openai",
 		Credentials: map[string]any{"error_handling_rules": list},
 	}
 }
@@ -2389,7 +2383,7 @@ func TestChainFailureDispatcherKeyScopedMutationDisabledSkipsBothWrites(t *testi
 
 	input := gatewayFailedResponseInput(response, sink, "gateway")
 	input.Account = gatewaydispatch.AccountCandidate{
-		ID: "acc_neg", Name: "账户负例", Type: "api_key", ProviderCode: "openai",
+		ID: "acc_neg", Name: "账户负例", Type: "api_key", VendorCode: "openai",
 		APIKeys:                   []string{"key-a", "key-b"},
 		SelectedAPIKeyFingerprint: &fingerprint,
 	}

@@ -36,7 +36,7 @@ func snapshotFailureInput() gatewayresponse.CompletedAttemptInput {
 			TrafficSource: gatewaypreauth.TrafficSourceGateway,
 		},
 		Account: gatewayresponse.OpenAIAccountView{Account: gatewayruntimecache.OpenAIAccountSecret{
-			ID: "acc-snapshot", ProviderCode: "openai",
+			ID: "acc-snapshot", VendorCode: "openai",
 		}},
 		Success:        false,
 		StatusCode:     502,

@@ -34,7 +34,7 @@ func TestW1UsageAttemptRecorderRoundTrip(t *testing.T) {
 		APIKeyID: "key_1", GroupID: "grp_1", Endpoint: "chat_completions",
 	}
 	err := adapter.RecordFailedUpstreamAttempt(context.Background(), request, usageContext,
-		gatewaydispatch.AccountCandidate{ID: "acc_1", ProviderCode: "openai"},
+		gatewaydispatch.AccountCandidate{ID: "acc_1", VendorCode: "openai"},
 		gatewaydispatch.FailedAttemptRecord{
 			UpstreamURL: "https://u/v1/chat/completions", StartedAt: 1728000000000,
 			HasStatusCode: true, StatusCode: 502, ErrorMessage: "上游 502",

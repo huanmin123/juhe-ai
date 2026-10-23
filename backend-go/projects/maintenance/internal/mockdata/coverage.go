@@ -75,6 +75,8 @@ var coverageAllowEmptyExactTables = map[string]string{
 	// 域断言与业务表的非空硬门槛。
 	"account_quality_dirty_accounts":           "stats 脏账户队列：被 account-quality-refresh 消费后即空，重建完成后为空是正确状态",
 	"group_account_stats_dirty":                "business 分组账户统计脏标记队列：被 group-account-stats-refresh 消费后即空，重建完成后为空是正确状态",
+	"usage_overview_dirty_scopes":              "stats 用量概览脏 scope 队列：被 overview 聚合消费后即空，-run-jobs-once 重建完成后为空是正确状态（2026-10-22 造数取证补登记）",
+	"ai_performance_summary_dirty_system_accounts": "stats AI 性能汇总脏账户队列：被性能汇总聚合消费后即空，-run-jobs-once 重建完成后为空是正确状态（2026-10-22 造数取证补登记）",
 	"api_key_record_cleanup_targets":           "dataset 清理目标队列：被 api-key-record-cleanup-retry 消费后即空，重建完成后为空是正确状态",
 	"account_record_cleanup_targets":           "dataset 清理目标队列：被 account-record-cleanup-retry 消费后即空，重建完成后为空是正确状态",
 	"usage_record_cleanup_deductions":          "stats 清理扣减账本：造数清理会整表重置它，仅当发生真实记录清理时才有行",

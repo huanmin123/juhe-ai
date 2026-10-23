@@ -68,8 +68,8 @@ func TestChainCatalogListAccountSupportedModels(t *testing.T) {
 			'["chat_sse"]', 128000, '2026-01-01', '2026-01-01')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES ('acc-t36', '', 'custom-public', 'm-t36', '2026-01-01')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES ('acc-t36', 'custom-public', 'm-t36', '2026-01-01')`); err != nil {
 		t.Fatal(err)
 	}
 	source := &chainCatalogSource{db: db, postgres: false}

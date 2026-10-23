@@ -70,10 +70,11 @@ func TestWCCreateFromCodeBodyValidation(t *testing.T) {
 	if code != http.StatusBadRequest || payload["message"] != "OpenAI 授权码参数无效" {
 		t.Fatalf("未知键: %d %v", code, payload)
 	}
-	// sessionId 非字符串 → parseManagedFields 拒绝。
+	// sessionId 非字符串 → plan 守卫拒绝；DTO 收口后 profile 缺省派生放行，
+	// ValidationError 在路由 seam 折叠为 502 兜底（同 TestWCPlanGuardsMissingFields）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
 		`{"sessionId":123,"callbackUrl":"c"}`)
-	if code != http.StatusBadRequest || payload["message"] != "OpenAI 授权码参数无效" {
+	if code != http.StatusBadGateway || payload["message"] != "OpenAI 授权码交换失败" {
 		t.Fatalf("sessionId 类型: %d %v", code, payload)
 	}
 }

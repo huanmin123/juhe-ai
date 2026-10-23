@@ -20,7 +20,7 @@ func TestChainDriverVolcengineTTSAliasSpeechCapabilityPassthrough(t *testing.T) 
 	}}
 	account := gatewaydispatch.AccountCandidate{
 		ID:                     "acc_test",
-		ProviderCode:           "volcengine",
+		VendorCode:             "volcengine",
 		ProtocolCode:           "openai",
 		SupportedModels:        []string{"doubao-tts"},
 		SupportedEndpointModes: []string{"audio_speech"},

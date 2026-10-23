@@ -108,6 +108,12 @@ type runtimeConfig struct {
 	DevAutoLoginUsername       string
 	TemporaryAccessIPAllowlist []string
 
+	// MustChangePasswordGateDisabled mirrors
+	// JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED: dev-only bypass of the
+	// seeded initial-password gate (BUG-0224). Production refuses to start
+	// with the switch on, same fence as DevAutoLoginUsername.
+	MustChangePasswordGateDisabled bool
+
 	// SystemAPIEnabled gates the Go system-api composition
 	// (/__aisys__/api + /__aipublic__). 2026-09-19 起
 	// 默认开启（开源零配置可启动）：未配置时视为 true，显式 false 才关闭；
@@ -580,6 +586,27 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// non-production local isolated dev instance keeps working.
 	if production && cfg.DevAutoLoginUsername != "" {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_DEV_AUTO_LOGIN_USERNAME 不能在 NODE_ENV=production 时启用")
+	}
+	// JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED（2026-10-22，dev 联调）：
+	// 首登强制改密门禁（BUG-0224）的默认值按环境翻转——非生产默认旁路（本地
+	// 单人开发不被强制改密打断），生产默认硬门禁。旁路语义：Gateway 管理面与
+	// J3b 自助面在 actor/credentials 构造处把 must_change_password 归一为
+	// false，auth/me、session 403 gate 与登录面随之全部放行；业务库中的
+	// must_change_password 存储位不写，显式 false 或生产即恢复门禁。非生产
+	// 显式开启/关闭均可；生产显式 true 启动失败（与 dev 自动登录同一非生产
+	// 约束），生产默认恒为门禁生效。
+	gateRaw := strings.TrimSpace(getenv("JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED"))
+	if gateRaw != "" {
+		gateDisabled, gateDisabledErr := strictEnvBool("JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED", gateRaw, false)
+		if gateDisabledErr != nil {
+			return runtimeConfig{}, gateDisabledErr
+		}
+		if production && gateDisabled {
+			return runtimeConfig{}, fmt.Errorf("JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED 不能在 NODE_ENV=production 时启用")
+		}
+		cfg.MustChangePasswordGateDisabled = gateDisabled
+	} else {
+		cfg.MustChangePasswordGateDisabled = !production
 	}
 	// Node temporaryAccessIpAllowlistConfig (runtime.ts:969-979): each comma
 	// entry strips the ::ffff: prefix and must be a single IPv4/IPv6 address

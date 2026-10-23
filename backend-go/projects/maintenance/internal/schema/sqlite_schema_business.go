@@ -746,9 +746,12 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     -- 复合外键 ID 化。迁移窗口 shim（provider_code / model 两列与
     -- UNIQUE (account_id, model) 约束）已按 A 路线一次性收敛撤除；存量数据
     -- 迁移由迁移命令处理，ensure 不写 DROP。
+    -- model_id 声明 NOT NULL（B4① 补充，T52 复核：写面不产 NULL；PG 复合
+    -- 主键本就隐式 NOT NULL，SQLite 复合主键可空故建表声明收紧，存量库由
+    -- ensure 守卫重建（ensureSQLiteAccountSupportedModelsModelIDNotNull）。
     CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id TEXT NOT NULL,
-      model_id TEXT,
+      model_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       PRIMARY KEY (account_id, model_id),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
@@ -804,8 +807,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       authorization_id TEXT,
       effective_status TEXT NOT NULL,
       schedulable_bucket TEXT NOT NULL CHECK (schedulable_bucket IN ('enabled', 'disabled', 'cooling')),
-      provider_code TEXT NOT NULL,
-      provider_protocol_profile_id TEXT NOT NULL,
       account_type TEXT NOT NULL,
       bound_group_id TEXT,
       name_sort_key TEXT NOT NULL,
@@ -835,8 +836,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       account_id TEXT NOT NULL,
       effective_status TEXT NOT NULL,
       schedulable_bucket TEXT NOT NULL CHECK (schedulable_bucket IN ('enabled', 'disabled', 'cooling')),
-      provider_code TEXT NOT NULL,
-      provider_protocol_profile_id TEXT NOT NULL,
       account_type TEXT NOT NULL,
       bound_group_id TEXT,
       name_sort_key TEXT NOT NULL,
@@ -941,7 +940,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
       account_name TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       provider_protocol_profile_id TEXT NOT NULL,
       protocol_code TEXT NOT NULL,
       protocol_version TEXT NOT NULL,
@@ -1376,7 +1374,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
       api_key_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       provider_protocol_profile_id TEXT,
       upstream_job_id TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),

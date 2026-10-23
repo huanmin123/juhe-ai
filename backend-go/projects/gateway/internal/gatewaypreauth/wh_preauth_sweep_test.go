@@ -82,7 +82,7 @@ func (f *whCompletingCandidates) FilterCandidates(ctx context.Context, input Can
 
 // 协调器写入暂时阻塞失败后，Completed 结果必须折算为 RouteAction（temporarily_blocked）。
 func TestWhPreflightCoordinatorFailureProducesRouteAction(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	service, _, sink := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = &whCompletingCandidates{
@@ -138,7 +138,7 @@ func TestWhPreflightCoordinatorFailureProducesRouteAction(t *testing.T) {
 
 // codex compaction 请求：超时预算解除限制并记录审计元数据。
 func TestWhPreflightCompactionTimeoutsDisabled(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = whSuccessfulCandidates(account)
@@ -169,7 +169,7 @@ func TestWhPreflightCompactionTimeoutsDisabled(t *testing.T) {
 
 // codex 上下文状态预检就地完成请求。
 func TestWhPreflightCodexStateCompleted(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = whSuccessfulCandidates(account)
@@ -284,7 +284,7 @@ func TestWhPreflightModelsLoadFailureFinish(t *testing.T) {
 
 // 会话亲和键来源与禁用开关。
 func TestWhPreflightSessionAffinity(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	build := func(affinity *fakeSessionAffinity, disable bool) (*Service, *fakeAuditCapture) {
 		audit := &fakeAuditCapture{}
 		service, _, _ := newTestService(t, func(s *Service) {

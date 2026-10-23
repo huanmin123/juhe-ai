@@ -122,7 +122,7 @@ func TestW11GAiHealthSelfOnlyAndErrorArms(t *testing.T) {
 		t.Fatalf("self detail = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 	// 读链错误：seed 账户让页项非空后 drop health 表。
-	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, provider_code, type, status) VALUES ('w11g-acct-1', 'w11g 账户', 'sys-admin-1', 'openai', 'api_key', 'active')`)
+	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('w11g-acct-1', 'w11g 账户', 'sys-admin-1', 'openai', 'api_key', 'active')`)
 	if _, err := fixture.db.Exec(`DROP TABLE account_health_hourly`); err != nil {
 		t.Fatal(err)
 	}

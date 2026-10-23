@@ -433,8 +433,8 @@ func TestChainProxyHealthPortRecordsFailureAndAvoidsBucket(t *testing.T) {
 	// so the bucket keys off the shared proxy URL; the avoid applies once two
 	// distinct accounts failed.
 	shared := "https://proxy.internal:8080"
-	a1 := gatewaydispatch.AccountCandidate{ID: "a1", SystemAccountID: "sys", ProviderCode: "openai", BaseURL: "https://api.example.com", ProxyURL: strPtrOf(shared)}
-	a2 := gatewaydispatch.AccountCandidate{ID: "a2", SystemAccountID: "sys", ProviderCode: "openai", BaseURL: "https://api.example.com", ProxyURL: strPtrOf(shared)}
+	a1 := gatewaydispatch.AccountCandidate{ID: "a1", SystemAccountID: "sys", VendorCode: "openai", BaseURL: "https://api.example.com", ProxyURL: strPtrOf(shared)}
+	a2 := gatewaydispatch.AccountCandidate{ID: "a2", SystemAccountID: "sys", VendorCode: "openai", BaseURL: "https://api.example.com", ProxyURL: strPtrOf(shared)}
 	if err := port.RecordFailureAsync(context.Background(), a1, "connect failed"); err != nil {
 		t.Fatalf("RecordFailureAsync: %v", err)
 	}

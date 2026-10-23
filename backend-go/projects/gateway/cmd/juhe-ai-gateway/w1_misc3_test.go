@@ -347,8 +347,8 @@ func TestW1ResolveLocalSuppressionFilterArms(t *testing.T) {
 	ctx := context.Background()
 	capture := gatewaydispatch.AuditCapture{Context: preauthAuditCapture{inner: w1Capture()}}
 	accounts := []gatewaydispatch.AccountCandidate{
-		{ID: "acc_a", ProviderCode: "openai"},
-		{ID: "acc_b", ProviderCode: "openai"},
+		{ID: "acc_a", VendorCode: "openai"},
+		{ID: "acc_b", VendorCode: "openai"},
 	}
 	// 通道一：全部被配置策略避让 → CompleteFailure + completed=true。
 	futureMs := time.Now().Add(24 * time.Hour).UnixMilli()

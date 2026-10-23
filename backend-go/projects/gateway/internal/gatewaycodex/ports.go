@@ -38,7 +38,6 @@ func (p *ClientStrategyPort) Resolve(req *gatewaypreauth.GatewayRequest, input g
 		APIKeyID:        input.APIKeyID,
 		GroupID:         input.GroupID,
 		Endpoint:        input.Endpoint,
-		ProviderCode:    input.ProviderCode,
 		ClientIP:        input.ClientIP,
 	})
 	context := gatewaypreauth.ClientStrategyContext{

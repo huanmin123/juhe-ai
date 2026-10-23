@@ -432,14 +432,17 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       ON chat_image_generations(conversation_id, created_at DESC, asset_id DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_image_generations_expiry
       ON chat_image_generations(expires_at, asset_id);
+
 `
 
+// provider_code 维度已随 B4① 存储迁移批退役（写入面恒空串、boundary 比对
+// 恒真）：三表建表不再声明该列，三个 boundary 索引拆除；存量库由
+// ensureSQLiteCodexContextProviderCodeRetired 幂等收列（先删索引再删列）。
 const sqliteCodexContextDDL = `    CREATE TABLE IF NOT EXISTS codex_context_sessions (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       api_key_id TEXT,
       group_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       source_response_id TEXT,
       latest_response_id TEXT,
       latest_compact_id TEXT,
@@ -456,7 +459,6 @@ const sqliteCodexContextDDL = `    CREATE TABLE IF NOT EXISTS codex_context_sess
       system_account_id TEXT NOT NULL,
       api_key_id TEXT,
       group_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       upstream_account_id TEXT,
       model TEXT,
       upstream_model TEXT,
@@ -481,7 +483,6 @@ const sqliteCodexContextDDL = `    CREATE TABLE IF NOT EXISTS codex_context_sess
       system_account_id TEXT NOT NULL,
       api_key_id TEXT,
       group_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       upstream_account_id TEXT,
       model TEXT,
       upstream_model TEXT,
@@ -509,15 +510,12 @@ const sqliteCodexContextDDL = `    CREATE TABLE IF NOT EXISTS codex_context_sess
 
     CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_expires ON codex_context_sessions(expires_at ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_last_used ON codex_context_sessions(last_used_at ASC, id ASC);
-    CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_boundary ON codex_context_sessions(system_account_id, api_key_id, group_id, provider_code);
     CREATE INDEX IF NOT EXISTS idx_codex_context_responses_session ON codex_context_responses(session_id, created_at ASC, response_id);
     CREATE INDEX IF NOT EXISTS idx_codex_context_responses_previous ON codex_context_responses(previous_response_id) WHERE previous_response_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_codex_context_responses_expires ON codex_context_responses(expires_at ASC, response_id);
-    CREATE INDEX IF NOT EXISTS idx_codex_context_responses_boundary ON codex_context_responses(system_account_id, api_key_id, group_id, provider_code, response_id);
     CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_session ON codex_context_compacts(session_id, created_at ASC, compact_id);
     CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_source_response ON codex_context_compacts(source_response_id);
     CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_expires ON codex_context_compacts(expires_at ASC, compact_id);
-    CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_boundary ON codex_context_compacts(system_account_id, api_key_id, group_id, provider_code, compact_id);
     CREATE INDEX IF NOT EXISTS idx_codex_context_storage_cleanup_due ON codex_context_storage_cleanup_queue(next_attempt_at ASC, enqueued_at ASC, storage_key ASC);
 `
 

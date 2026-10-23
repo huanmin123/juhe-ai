@@ -71,16 +71,16 @@ func seedMediaVideoAccount(t *testing.T, db *sql.DB, fixture *chainFixture, id, 
 		}
 	}
 	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'gpt', 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
+		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, id, "2026-10-04T00:00:00.000Z")
 	// B4 第一批目标形态：支持模型经 models 单表 + model_id 外键解析。
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","responses_json","responses_sse","video_create"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'sora-2', 'mdl_sora2', ?)`,
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'sora-2', 'mdl_sora2', ?)`,
 		id, "2026-10-04T00:00:00.000Z")
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行（credentials.base_url 不再消费）。
 	chainSeedAccountConnection(t, db, id, baseURL, modes...)
@@ -678,11 +678,12 @@ func TestChainMediaJobRepoRoundTrip(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`CREATE TABLE media_jobs (
 		id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, account_id TEXT NOT NULL,
-		provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
+		provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
 		status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
 		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
 		params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
-		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+		CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`); err != nil {
 		t.Fatalf("create media_jobs: %v", err)
 	}
 	repo := gatewaymedia.NewMediaJobsRepo(db, false, time.Now)
@@ -752,7 +753,6 @@ func mediaJobRecordOf(id, apiKeyID, accountID string, seconds float64) gatewayme
 		Kind:          gatewaymedia.JobKindVideo,
 		APIKeyID:      apiKeyID,
 		AccountID:     accountID,
-		ProviderCode:  "openai",
 		UpstreamJobID: "up_1",
 		Status:        gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
@@ -829,7 +829,7 @@ func TestChainMediaJobTerminalUpdateRaceOnce(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`CREATE TABLE media_jobs (
 		id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, account_id TEXT NOT NULL,
-		provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
+		provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
 		status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
 		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
 		params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
@@ -1042,18 +1042,18 @@ func seedMediaHybridAccount(t *testing.T, db *sql.DB, fixture *chainFixture, bas
 			t.Fatalf("seed hybrid media row: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('group_hyb_vid', ?, 'hybrid', 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_hyb_vid', ?, 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES ('acc_hyb_vid', ?, 'gpt', 'hybrid', 'profile_hybrid_openai_chat_v1', 'openai', 'v1', '混合媒体账户', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES ('acc_hyb_vid', ?, 'openai', 'profile_hybrid_openai_chat_v1', 'openai', 'v1', '混合媒体账户', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES ('group_hyb_vid', ?, 'acc_hyb_vid', 1, ?)`,
 		fixture.systemAccount, now)
 	// B4 第一批目标形态：支持模型 + 入口映射走 models/account_entry_mappings。
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_hyb_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","video_create","video_get","video_content","video_cancel"]', ?, ?)`, now, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_hyb_vid', 'hybrid', 'sora-2', 'mdl_hyb_sora2', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_hyb_vid', 'sora-2', 'mdl_hyb_sora2', ?)`, now)
 	seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
 		VALUES ('entmap_hyb_sora2pro', 'acc_hyb_vid', 'sora-2-pro', 'video_generation', 'conn_acc_hyb_vid', 'mdl_hyb_sora2', 'video_generation', 1, ?, ?)`, now, now)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。

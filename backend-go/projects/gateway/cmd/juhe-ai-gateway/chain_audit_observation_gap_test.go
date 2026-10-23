@@ -233,7 +233,7 @@ func newAccountingCandidate() gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
 		ID:                        "acc-audit-gap",
 		Name:                      "audit-gap-account",
-		ProviderCode:              "openai",
+		VendorCode:                "openai",
 		ProviderProtocolProfileID: "openai-default",
 		ProtocolCode:              gatewayopenai.ProtocolCode,
 		ProtocolVersion:           gatewayopenai.ProtocolVersion,
@@ -253,7 +253,6 @@ func anthropicProtocolSecret() gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        "acc-anthropic-bridge",
 		Name:                      "anthropic-bridge-account",
-		ProviderCode:              "anthropic-bridge",
 		VendorCode:                "anthropic-bridge",
 		ProviderProtocolProfileID: "anthropic-default",
 		ProtocolCode:              "anthropic",

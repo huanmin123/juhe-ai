@@ -25,7 +25,7 @@ import (
 func glmBridgeAdjudicationAccount() gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
 		ID:                        "acc_glm_bridge_adjudication",
-		ProviderCode:              "glm",
+		VendorCode:                "glm",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		ProviderProtocolProfileID: "profile_glm_coding_openai_v1",

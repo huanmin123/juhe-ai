@@ -229,6 +229,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		// 简化批（生图工具退场）从 seed 删除。
 		// 71→67：2026-10-14 监控改造批删 systemMetrics*/tableMonitor* 四键
 		//（f1991b708 实现侧已删、本计数漏改；2026-10-17 专门批取证回正）。
+		// 67→69：+2 来自调度慢失败直切与墙钟收尾修复设计 §5（快速失败耗时
+		// 门槛与尝试启动最小剩余窗口两键，与 pg 侧钉值同源）。
 		// provider_model_catalog 214→203：2026-10-17 口径核对批 221 + 2025 前
 		// 模型清理批两阶段 -24 行（gpt 15 + 无日期疑似 2024 老模型 8 + 弃用
 		// glm-asr-2512 1）→ 197；同日目录缺口补录批 +3（Hailuo-2.3-Fast、
@@ -241,7 +243,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		//（doubao-embedding-vision-251215，现役唯一向量模型，multimodal 面）−2
 		// 官方退役死行（text-250515 Retiring 404 实证、seededit-250628 官方
 		// status=Shutdown，现役图生图由 seedream 原生 image 参数承接）→ 211；同日流式语音桥接批 seed-tts-2.0 +1 → 212。
-		"system_settings": 67,
+		"system_settings": 69,
 		"models":          212,
 	}
 	for table, want := range expectCounts {

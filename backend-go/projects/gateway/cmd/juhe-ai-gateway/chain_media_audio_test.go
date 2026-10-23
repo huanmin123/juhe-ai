@@ -86,19 +86,15 @@ func seedMediaQwenASRAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 			"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_qwen_asr', ?, 'qwen', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'qwen', 'qwen', 'profile_qwen_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_qwen_asr', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'qwen', 'profile_qwen_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_qwen_asr', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_qwen_paraformer', 'qwen', 'paraformer-v2', 'paraformer-v2', 'global', 'active', '["audio_job_create","audio_job_get","audio_job_content","audio_job_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'qwen', 'paraformer-v2', 'mdl_qwen_paraformer', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'paraformer-v2', 'mdl_qwen_paraformer', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
 	chainSeedAccountConnection(t, fixture.db, id, baseURL, "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
@@ -398,19 +394,15 @@ func seedMediaGlmSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL,
 			"audio_speech",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_glm_speech', ?, 'glm', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'glm', 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_glm_speech', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_glm_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_glm_cogtts', 'glm', 'cogtts', 'cogtts', 'global', 'active', '["audio_speech"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'glm', 'cogtts', 'mdl_glm_cogtts', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'cogtts', 'mdl_glm_cogtts', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
 	chainSeedAccountConnection(t, fixture.db, id, baseURL, "audio_speech")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
@@ -528,19 +520,15 @@ func seedMediaVolcengineSpeechAccount(t *testing.T, fixture *chainFixture, id, b
 	if withSpeechCredentials {
 		credentials["speech_token"] = "volc-tts-token-a"
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_volcengine_speech', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'volcengine', 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_volcengine_speech', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volcengine_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_volc_doubao_tts', 'volcengine', 'doubao-tts', 'doubao-tts', 'global', 'active', '["audio_speech"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'volcengine', 'doubao-tts', 'mdl_volc_doubao_tts', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'doubao-tts', 'mdl_volc_doubao_tts', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
 	chainSeedAccountConnection(t, fixture.db, id, baseURL, "audio_speech")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
@@ -683,19 +671,15 @@ func seedMediaOpenAISpeechAccount(t *testing.T, fixture *chainFixture, id, baseU
 			"audio_speech",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_openai_speech', ?, 'openai', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_openai_speech', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_openai_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_openai_tts1', 'openai', 'tts-1', 'tts-1', 'global', 'active', '["audio_speech"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'openai', 'tts-1', 'mdl_openai_tts1', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'tts-1', 'mdl_openai_tts1', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
 	chainSeedAccountConnection(t, fixture.db, id, baseURL, "audio_speech")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
@@ -780,7 +764,6 @@ func TestChainDriverMinimaxSpeechMissingVoiceValidationError(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_mnx_tts",
-		ProviderCode: "minimax",
 		VendorCode:   "minimax",
 		ProtocolCode: "openai",
 		Type:         "api_key",
@@ -807,7 +790,7 @@ func TestChainDriverMinimaxSpeechMissingVoiceValidationError(t *testing.T) {
 
 	openaiAccount := gatewaydispatch.AccountCandidate{
 		ID:           "acc_oai_tts",
-		ProviderCode: "gpt",
+		VendorCode:   "gpt",
 		ProtocolCode: "openai",
 		Type:         "api_key",
 		BaseURL:      "https://api.openai.example",
@@ -826,7 +809,6 @@ func TestChainDriverVolcengineSpeechMissingVoiceValidationError(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_volc_tts",
-		ProviderCode: "volcengine",
 		VendorCode:   "volcengine",
 		ProtocolCode: "openai",
 		Type:         "api_key",
@@ -915,19 +897,15 @@ func seedMediaVolcengineASRAccount(t *testing.T, fixture *chainFixture, id, apiK
 			"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_volc_asr', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'volcengine', 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_volc_asr', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volc_asr', ?, ?, 1, '2026-10-17T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_volc_seedasr', 'volcengine', 'volc.seedasr.auc', 'volc.seedasr.auc', 'global', 'active', '["audio_job_create","audio_job_get","audio_job_content","audio_job_cancel"]', '2026-10-17T00:00:00.000Z', '2026-10-17T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'volcengine', 'volc.seedasr.auc', 'mdl_volc_seedasr', '2026-10-17T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'volc.seedasr.auc', 'mdl_volc_seedasr', '2026-10-17T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行（volc ASR base_url
 	// 在凭据中固定为 ark 域名）。
 	chainSeedAccountConnection(t, fixture.db, id, "https://ark.cn-beijing.volces.com", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel")
@@ -1141,20 +1119,15 @@ func TestChainMediaVolcengineASRMissingCredentials(t *testing.T) {
 			"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_volc_asr_nc', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES ('acc_volc_asr_nc', ?, 'volcengine', 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1',
-			'acc_volc_asr_nc', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_volc_asr_nc', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES ('acc_volc_asr_nc', ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', 'acc_volc_asr_nc', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		fixture.systemAccount, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volc_asr_nc', ?, 'acc_volc_asr_nc', 1, '2026-10-17T00:00:00.000Z')`, fixture.systemAccount)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_volc_seedasr', 'volcengine', 'volc.seedasr.auc', 'volc.seedasr.auc', 'global', 'active', '["audio_job_create","audio_job_get","audio_job_content","audio_job_cancel"]', '2026-10-17T00:00:00.000Z', '2026-10-17T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES ('acc_volc_asr_nc', 'volcengine', 'volc.seedasr.auc', 'mdl_volc_seedasr', '2026-10-17T00:00:00.000Z')`)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES ('acc_volc_asr_nc', 'volc.seedasr.auc', 'mdl_volc_seedasr', '2026-10-17T00:00:00.000Z')`)
 	// B4 第一批单连接事实源：nc 账户也需要 enabled 连接行才能水合（缺的是
 	// speech_token 凭据，不是连接面）。
 	chainSeedAccountConnection(t, fixture.db, "acc_volc_asr_nc", "https://ark.cn-beijing.volces.com", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel")
@@ -1201,8 +1174,8 @@ func TestChainMediaVolcengineSpeechStreamFullChain(t *testing.T) {
 		VALUES ('mdl_volc_seedtts2', 'volcengine', 'seed-tts-2.0', 'seed-tts-2.0', 'global', 'active', '["audio_speech"]', '2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z')`); err != nil {
 		t.Fatalf("seed seed-tts-2.0 models row: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES ('acc_volcengine_speech_stream', 'volcengine', 'seed-tts-2.0', 'mdl_volc_seedtts2', '2026-10-18T00:00:00.000Z')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES ('acc_volcengine_speech_stream', 'seed-tts-2.0', 'mdl_volc_seedtts2', '2026-10-18T00:00:00.000Z')`); err != nil {
 		t.Fatalf("seed stream model: %v", err)
 	}
 	// 目录行（fixture DB 列集无媒体四维——字符价由 go:embed 静态层补齐，

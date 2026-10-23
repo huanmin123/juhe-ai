@@ -91,7 +91,7 @@ func w1yKeysDB(t *testing.T) *sql.DB {
 	for _, ddl := range []string{
 		`CREATE TABLE groups (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT,
-			provider_code TEXT, enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0,
+			enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0,
 			created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategies (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT,
@@ -123,8 +123,7 @@ func w1yKeysDB(t *testing.T) *sql.DB {
 func w1ySeedGPTDefault(t *testing.T, db *sql.DB, owner string) {
 	t.Helper()
 	now := "2026-09-14T12:00:00.000Z"
-	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('grp-w1y-gpt', ?, 'GPT 分组', 'gpt', 1, 1, ?, ?)`, owner, now, now)
+	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES ('grp-w1y-gpt', ?, 'GPT 分组', 1, 1, ?, ?)`, owner, now, now)
 	w1yExec(t, db, `INSERT INTO route_strategies (id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at)
 		VALUES ('rs-w1y-gpt', ?, 'GPT 路由', 'w1y 预置', 'normal', 'active', 1, NULL, ?, ?)`, owner, now, now)
 	w1yExec(t, db, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
@@ -317,8 +316,7 @@ func TestW1YDefaultGptRouteStrategyJoinDefect(t *testing.T) {
 func TestW1YEnsureChatAPIKeyFreshOwnerCreatesStrategyThenHitsDefect(t *testing.T) {
 	db := w1yKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "w1y-secret")
-	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('grp-w1y-fresh', 'own-fresh', 'GPT 分组', 'gpt', 1, 1, '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`)
+	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES ('grp-w1y-fresh', 'own-fresh', 'GPT 分组', 1, 1, '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`)
 
 	// 修复后契约（历史缺陷：GPT 默认策略 JOIN 错表曾使建键主链路全断）：
 	// 全新 owner 走通 默认分组 → 默认策略路由 → 绑定 → chat key 创建全链。
@@ -516,8 +514,7 @@ func TestW1YEnsureDefaultRouteStrategiesBindingInsertError(t *testing.T) {
 		id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL,
 		group_id TEXT NOT NULL, priority INTEGER, weight INTEGER, status TEXT DEFAULT 'active',
 		created_at TEXT, updated_at TEXT, CHECK (weight > 100))`)
-	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('grp-w1y-check', 'own-check', '检查分组', 'gpt', 1, 1, 'now', 'now')`)
+	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES ('grp-w1y-check', 'own-check', '检查分组', 1, 1, 'now', 'now')`)
 	provider := newChatAPIKeyProvider(db, false, "w1y-secret")
 	if err := provider.ensureDefaultRouteStrategies("own-check", "2026-09-14T00:00:00.000Z"); err == nil {
 		t.Fatalf("绑定行 CHECK 失败时 ensureDefaultRouteStrategies 未报错")
@@ -537,7 +534,7 @@ func w1yKeysSchemaOnProbe(t *testing.T, db *sql.DB) {
 	for _, ddl := range []string{
 		`CREATE TABLE groups (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT,
-			provider_code TEXT, enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0,
+			enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0,
 			created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategies (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT,
@@ -687,8 +684,7 @@ func TestW1YDefaultRouteStrategyGroupsScanError(t *testing.T) {
 	// 2026-10-07 默认资源收口（0e83a580b）后查询不再 SELECT provider_code，
 	// Scan 转换错误臂改由 NULL 主键（id 列 Scan 进 string）触发；词表过滤
 	// 仍要求 provider_code='gpt' 才能命中该行。
-	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES (NULL, 'own-nullname', '空主键', 'gpt', 1, 1, 'now', 'now')`)
+	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES (NULL, 'own-nullname', '空主键', 1, 1, 'now', 'now')`)
 	if _, err := provider.defaultRouteStrategyGroups("own-nullname"); err == nil ||
 		!strings.Contains(err.Error(), "converting NULL to string is unsupported") {
 		t.Fatalf("NULL id defaultRouteStrategyGroups = %v, want Scan 转换错误", err)
@@ -1017,7 +1013,7 @@ func TestW1YChatModelCatalogArms(t *testing.T) {
 			ID:                     "acc-w1y",
 			Type:                   "api_key",
 			Status:                 "active",
-			ProviderCode:           "openai",
+			VendorCode:             "openai",
 			SupportedEndpointModes: []string{"chat_completions"},
 			SupportedModels:        []string{"gpt-w1y"},
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{{

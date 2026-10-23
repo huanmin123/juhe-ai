@@ -72,6 +72,8 @@ var SystemSettingKeys = []string{
 	"defaultTemporaryUnschedulableMinutes",
 	"temporaryUnschedulableRetryIntervalSeconds",
 	"temporaryUnschedulableRetryAttempts",
+	"sameAccountRetryFastFailMaxMs",
+	"gatewayAttemptStartMinWindowMs",
 	"textFirstResponseTimeoutSeconds",
 	"textNonStreamFirstResponseTimeoutSeconds",
 	"textStreamIdleTimeoutSeconds",
@@ -163,16 +165,19 @@ var systemSettingSpecs = map[string]settingSpec{
 	"defaultTemporaryUnschedulableMinutes":       {integer: true, min: 1, max: 1440},
 	"temporaryUnschedulableRetryIntervalSeconds": {integer: true, min: 0, max: 3600},
 	"temporaryUnschedulableRetryAttempts":        {integer: true, min: 0, max: 10},
-	"textFirstResponseTimeoutSeconds":            {integer: true, min: 10, max: 3600},
-	"textNonStreamFirstResponseTimeoutSeconds":   {integer: true, min: 10, max: 3600},
-	"textStreamIdleTimeoutSeconds":               {integer: true, min: 1, max: 3600},
-	"textUncommittedAttemptMaxLifetimeSeconds":   {integer: true, min: 60, max: 86400},
-	"imageFirstResponseTimeoutSeconds":           {integer: true, min: 10, max: 3600},
-	"imageStreamIdleTimeoutSeconds":              {integer: true, min: 1, max: 3600},
-	"imageUncommittedAttemptMaxLifetimeSeconds":  {integer: true, min: 60, max: 86400},
-	"imageRequestWallTimeoutSeconds":             {integer: true, min: 60, max: 86400},
-	"audioFirstResponseTimeoutSeconds":           {integer: true, min: 10, max: 3600},
-	"videoCreateTimeoutSeconds":                  {integer: true, min: 10, max: 3600},
+	// 调度慢失败直切与墙钟收尾修复设计 §5：值域与 runtime cache 投影同源。
+	"sameAccountRetryFastFailMaxMs":             {integer: true, min: 0, max: 60000},
+	"gatewayAttemptStartMinWindowMs":            {integer: true, min: 0, max: 60000},
+	"textFirstResponseTimeoutSeconds":           {integer: true, min: 10, max: 3600},
+	"textNonStreamFirstResponseTimeoutSeconds":  {integer: true, min: 10, max: 3600},
+	"textStreamIdleTimeoutSeconds":              {integer: true, min: 1, max: 3600},
+	"textUncommittedAttemptMaxLifetimeSeconds":  {integer: true, min: 60, max: 86400},
+	"imageFirstResponseTimeoutSeconds":          {integer: true, min: 10, max: 3600},
+	"imageStreamIdleTimeoutSeconds":             {integer: true, min: 1, max: 3600},
+	"imageUncommittedAttemptMaxLifetimeSeconds": {integer: true, min: 60, max: 86400},
+	"imageRequestWallTimeoutSeconds":            {integer: true, min: 60, max: 86400},
+	"audioFirstResponseTimeoutSeconds":          {integer: true, min: 10, max: 3600},
+	"videoCreateTimeoutSeconds":                 {integer: true, min: 10, max: 3600},
 	// M5b realtime 会话生命周期键（Realtime 设计 §3；消费面随 M5b2 WS
 	// 桥接 handler 生效）。
 	"realtimeIdleTimeoutSeconds":                 {integer: true, min: 10, max: 3600},
@@ -253,6 +258,10 @@ var compatibleSystemSettingDefaults = map[string]any{
 	"realtimeIdleTimeoutSeconds":      120,
 	"realtimeMaxSessionSeconds":       1800,
 	"realtimeMaxConnectionsPerApiKey": 5,
+	// 调度慢失败直切与墙钟收尾修复设计 §5：存量库缺行按种子默认补齐，
+	// 与 pgSeedSystemSettings 一致。
+	"sameAccountRetryFastFailMaxMs":  10000,
+	"gatewayAttemptStartMinWindowMs": 30000,
 }
 
 // GlobalSettingKeys mirrors globalSettingKeys — the brand subset served by
@@ -302,6 +311,8 @@ var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 		"defaultTemporaryUnschedulableMinutes",
 		"temporaryUnschedulableRetryIntervalSeconds",
 		"temporaryUnschedulableRetryAttempts",
+		"sameAccountRetryFastFailMaxMs",
+		"gatewayAttemptStartMinWindowMs",
 		"textFirstResponseTimeoutSeconds",
 		"textNonStreamFirstResponseTimeoutSeconds",
 		"textStreamIdleTimeoutSeconds",

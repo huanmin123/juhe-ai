@@ -85,7 +85,7 @@ func newVolcengineRecordedUpstream(t *testing.T) (*volcengineUpstreamRecorder, *
 // seedMediaVolcengineAccount 种 volcengine 分组 + Seedance 测试账户 + 独立路由
 // 策略与 API Key（不复用 fixture 的 openai 组，避免跨 provider 候选串扰），
 // 返回网关 API Key 明文。凭据带 base_url 与 supported_endpoint_modes
-//（openai 族词表：video_* 四值，opt-in 语义；volcengine 档案 Capabilities
+// （openai 族词表：video_* 四值，opt-in 语义；volcengine 档案 Capabilities
 // 只声明视频，无 chat/audio 模式）。模型约束种 doubao-seedance-1-0-pro-250528。
 func seedMediaVolcengineAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
 	t.Helper()
@@ -103,19 +103,15 @@ func seedMediaVolcengineAccount(t *testing.T, fixture *chainFixture, id, baseURL
 			"video_create", "video_get", "video_content", "video_cancel",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_volcengine_media', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'volcengine', 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_volcengine_media', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volcengine_media', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_volc_seedance', 'volcengine', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-250528', 'global', 'active', '["video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'volcengine', 'doubao-seedance-1-0-pro-250528', 'mdl_volc_seedance', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'doubao-seedance-1-0-pro-250528', 'mdl_volc_seedance', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
 	chainSeedAccountConnection(t, fixture.db, id, baseURL, "video_create", "video_get", "video_content", "video_cancel")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
@@ -129,7 +125,7 @@ func seedMediaVolcengineAccount(t *testing.T, fixture *chainFixture, id, baseURL
 }
 
 // TestChainMediaVolcengineVideoFullFlowLifecycle 覆盖链路 1：创建
-//（contents/generations/tasks 报文改写 + Bearer 认证头 + /api/v3 服务根 URL +
+// （contents/generations/tasks 报文改写 + Bearer 认证头 + /api/v3 服务根 URL +
 // applied/ignored 回显）→ 轮询 queued → in_progress（running 归一）→
 // completed（content.video_url 进 artifact）→ content 绝对 URL 无凭据直连
 // mp4 → 终态 usage（上游回报计量：mock 轮询 succeeded 顶层 duration=5 →
@@ -376,7 +372,7 @@ func TestChainMediaVolcengineVideoCancel(t *testing.T) {
 
 // TestChainMediaVolcengineVideoCreateSizeRatioLocal400 覆盖链路 4：size 宽高比
 // 约分后不在火山 ratio 词表（16:9/9:16/1:1/4:3/3:4/21:9）→ 网关本地 400
-//（invalid_request_error，契约 §2.4 规则 2：不近似贴合不猜测），不打上游。
+// （invalid_request_error，契约 §2.4 规则 2：不近似贴合不猜测），不打上游。
 func TestChainMediaVolcengineVideoCreateSizeRatioLocal400(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, _, upstreamURL := newVolcengineRecordedUpstream(t)

@@ -43,7 +43,7 @@ import (
 // 2026-10-12 核对批起官方 sora-2 系已标停用（shutdown 2026-09-24，活跃目录
 // 与 hybrid 协议模型池都不再收录），而启用态自定义行只有文本价通道可过
 // validateCustomModelPricing（视频自定义行无价格通道恒不可启用）——故以
-//「text 模式 + video 协议 + 零价」的自定义行承载 openai 直通面的验收模型名。
+// 「text 模式 + video 协议 + 零价」的自定义行承载 openai 直通面的验收模型名。
 // 静态定价层无该行 → 终态 cost=0（不虚计）；正价视频计费断言由 glm（按次
 // $0.2）与 xai（$0.14/s）用例承载。
 const fullchainVideoMockModel = "fullchain-video-mock"
@@ -621,6 +621,7 @@ func TestFullchainMediaVideoGeminiVeo(t *testing.T) {
 // seconds 直达 glm 请求面（原生字段），size 原样透传；seed 对 glm 请求面
 // 不存在 → params_ignored 回显。
 const fullchainGlmVideoCreateBody = `{"model":"cogvideox-3","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"低清画质","seconds":"6","audio":true,"seed":42}`
+
 // fullchainCreateGlmVideoAccount 经管理面创建指向 mock 上游的 glm api_key
 // 账户并绑定分组（glm 供应商 + 通用 openai v1 档案；目录 seed 预置
 // cogvideox-3 行）；凭据显式声明 openai 族词表的 video_* 端点模式（opt-in，
@@ -814,7 +815,7 @@ func (f *fullchainFixture) fullchainCreateMinimaxVideoAccount(name, upstreamKey,
 // minimax、params 回显 seed 进 ignored / provider_options_applied 命中）→
 // 轮询 queued → queued → completed（status 归一 + file_download_url 冻结）→
 // content 经绝对 URL 无凭据直连下载 mp4 → 管理面 media-jobs 行终态
-//（按次计费口径 cost=roundCost(2/7)=0.2857142857，2026-10-05 按次计费批）→ 账户亲和（上游命中
+// （按次计费口径 cost=roundCost(2/7)=0.2857142857，2026-10-05 按次计费批）→ 账户亲和（上游命中
 // 只打 minimax 账户 key 的 video_generation/query/files 端点）。
 func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 	requireFullchainGate(t)
@@ -973,7 +974,7 @@ func (f *fullchainFixture) fullchainCreateVolcengineVideoAccount(name, upstreamK
 // 媒体档案无 chat 模式）→ 创建（contents/generations/tasks 报文改写、统一
 // job 对象、provider=volcengine、params 回显 negative_prompt/audio 进 ignored /
 // provider_options_applied 命中）→ 轮询 queued → in_progress → completed
-//（status 归一 + content.video_url 冻结）→ content 经绝对 URL 无凭据直连下载
+// （status 归一 + content.video_url 冻结）→ content 经绝对 URL 无凭据直连下载
 // mp4 → 管理面 media-jobs 行终态（duration 秒计量照抽，目录无秒价 cost=0
 // 不虚计）→ 账户亲和（上游命中只打 volcengine 账户 key 的 tasks 创建/轮询
 // 端点）。
@@ -1106,7 +1107,7 @@ const fullchainQwenVideoCreateBody = `{"model":"wan2.2-t2v-plus","prompt":"一�
 // fullchainCreateQwenVideoAccount 经管理面创建指向 mock 上游的 qwen api_key
 // 账户并绑定分组（qwen 供应商 + 媒体档案 profile_qwen_openai_v1；目录 seed
 // 预置 wan2.2-t2v-plus 行）；凭据显式声明 openai 族词表的 video_* 端点模式
-//（opt-in，qwen 档案 Capabilities 只声明视频——无 chat/audio 模式，本用例
+// （opt-in，qwen 档案 Capabilities 只声明视频——无 chat/audio 模式，本用例
 // 同时覆盖该写侧门禁）。
 func (f *fullchainFixture) fullchainCreateQwenVideoAccount(name, upstreamKey, groupID string) string {
 	f.t.Helper()
@@ -1135,7 +1136,7 @@ func (f *fullchainFixture) fullchainCreateQwenVideoAccount(name, upstreamKey, gr
 }
 
 // TestFullchainMediaVideoQwenWanx 验证 M3 第五批 qwen（万相）视频链主流程
-//（契约 §10.1）：管理面配置（qwen 分组 + 万相模型账户，媒体档案无 chat
+// （契约 §10.1）：管理面配置（qwen 分组 + 万相模型账户，媒体档案无 chat
 // 模式）→ 创建（video-synthesis 报文改写 + X-DashScope-Async 异步头——mock
 // 引擎对无头创建按上游语义拒绝 400，创建成功本身即异步头到达的行为断言、
 // 统一 job 对象、provider=qwen、params 回显 negative_prompt 生效 / audio 进
@@ -1304,7 +1305,7 @@ func (f *fullchainFixture) fullchainCreateHybridVideoAccount(name, upstreamKey, 
 // 管理面配置（hybrid 分组 + 媒体映射账户，写侧矩阵与协议模型池放行）→ 客户端
 // 请求 source 模型名 cogvideox-3 → 候选过滤经映射命中 → 创建链把出站 model
 // 改写为 upstream 名 fullchain-video-mock 打到中转 base_url 的 /v1/videos
-//（mock 命中记录断言）→ 统一 job 对象 provider=openai（hybrid 媒体执行面 =
+// （mock 命中记录断言）→ 统一 job 对象 provider=openai（hybrid 媒体执行面 =
 // 中转的 OpenAI 形态媒体端点）→ 轮询 completed → 管理面 media-jobs 行归因
 // hybrid 账户。
 func TestFullchainMediaVideoHybridMapped(t *testing.T) {
@@ -1435,7 +1436,7 @@ func (f *fullchainFixture) fullchainCreateXaiVideoAccount(name, upstreamKey, gro
 // URL 无凭据直连下载 mp4 → 终态 usage 行落账（video.duration=6 秒计量照抽，
 // 秒数值断言在链级 TestChainMediaXaiVideoFullFlowLifecycle 的 spool 记录）+
 // 管理面 media-jobs 行终态（目录未落 USD 秒价 cost=0，不虚计）→ 账户亲和
-//（上游命中只打 xai 账户 key 的 /v1/videos/generations 创建与 /v1/videos/
+// （上游命中只打 xai 账户 key 的 /v1/videos/generations 创建与 /v1/videos/
 // {request_id} 轮询端点）。
 func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
 	requireFullchainGate(t)

@@ -1208,7 +1208,7 @@ func AccountCircuitDispatchRevision(account gatewayruntimecache.OpenAIAccountSec
 	revisionPayload := map[string]any{
 		"accountRuntimeKey":         account.ID,
 		"credentialSourceAccountId": nilOrString(account.CredentialSourceAccountID),
-		"providerCode":              account.ProviderCode,
+		"providerCode":              account.VendorCode,
 		"providerProtocolProfileId": account.ProviderProtocolProfileID,
 		"protocolCode":              account.ProtocolCode,
 		"protocolVersion":           account.ProtocolVersion,

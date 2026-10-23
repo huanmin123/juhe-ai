@@ -113,7 +113,7 @@ func TestW16BDriverUnknownUpstreamFamilyArms(t *testing.T) {
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "w16b-acc",
 		ProtocolCode: "openai",
-		ProviderCode: "w16b-provider",
+		VendorCode:   "w16b-provider",
 		Type:         "api_key",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "w16b-mapped",

@@ -253,8 +253,6 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 			keySecretEncrypted, now, now)
 	}
 
-
-
 	// ---- 回读校验：关键行确实落库 ----
 	checks := []struct {
 		table, where string

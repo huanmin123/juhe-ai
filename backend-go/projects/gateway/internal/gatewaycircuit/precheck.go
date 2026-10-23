@@ -155,7 +155,7 @@ func (m *PrecheckSummaryMapper) MapFromGatewayPrecheckAccount(
 		ID:                           account.ID,
 		SystemAccountID:              systemAccountID,
 		OwnerSystemAccountID:         account.AccountOwnerSystemAccountID,
-		ProviderCode:                 account.ProviderCode,
+		ProviderCode:                 account.VendorCode,
 		ProviderProtocolProfileID:    account.ProviderProtocolProfileID,
 		ProtocolCode:                 gatewayAccountSummaryProtocolCode(account),
 		ProtocolVersion:              gatewayAccountSummaryProtocolVersion(account),

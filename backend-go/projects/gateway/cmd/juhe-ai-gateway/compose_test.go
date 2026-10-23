@@ -642,4 +642,3 @@ func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 		t.Fatalf("anonymous audit-logs status=%d want 401", anonymous.StatusCode)
 	}
 }
-

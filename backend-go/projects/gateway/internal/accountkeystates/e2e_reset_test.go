@@ -95,7 +95,6 @@ func e2eResetStore(t *testing.T) (*Store, *accounts.Store, *sql.DB, []string, fu
       credentials_encrypted TEXT NOT NULL DEFAULT '{}',
       client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
       schedulable INTEGER NOT NULL DEFAULT 1,
-      provider_code TEXT NOT NULL DEFAULT 'openai',
       vendor_code TEXT,
       provider_protocol_profile_id TEXT NOT NULL DEFAULT 'profile_openai_openai_v1',
       protocol_code TEXT NOT NULL DEFAULT 'openai',

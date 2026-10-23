@@ -85,7 +85,7 @@ func newMinimaxRecordedUpstream(t *testing.T) (*minimaxUpstreamRecorder, *platfo
 // seedMediaMinimaxAccount 种 minimax 分组 + Hailuo/speech 测试账户 + 独立路由
 // 策略与 API Key（不复用 fixture 的 openai 组，避免跨 provider 候选串扰），
 // 返回网关 API Key 明文。凭据带 base_url 与 supported_endpoint_modes
-//（openai 族词表：video_* 四值 + audio_speech，opt-in 语义；minimax 档案
+// （openai 族词表：video_* 四值 + audio_speech，opt-in 语义；minimax 档案
 // Capabilities 只声明媒体，无 chat 模式）。模型约束种 MiniMax-Hailuo-2.3 与
 // speech-02-turbo。
 func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
@@ -104,12 +104,8 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 			"audio_speech", "video_create", "video_get", "video_content", "video_cancel",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_minimax_media', ?, 'minimax', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'minimax', 'minimax', 'profile_minimax_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_minimax_media', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'minimax', 'profile_minimax_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_minimax_media', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -117,10 +113,10 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 		VALUES ('mdl_minimax_hailuo', 'minimax', 'MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3', 'global', 'active', '["audio_speech","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_minimax_speech', 'minimax', 'speech-02-turbo', 'speech-02-turbo', 'global', 'active', '["audio_speech","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'minimax', 'MiniMax-Hailuo-2.3', 'mdl_minimax_hailuo', '2026-10-04T00:00:00.000Z')`, id)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'minimax', 'speech-02-turbo', 'mdl_minimax_speech', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'MiniMax-Hailuo-2.3', 'mdl_minimax_hailuo', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'speech-02-turbo', 'mdl_minimax_speech', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
 	chainSeedAccountConnection(t, fixture.db, id, baseURL, "audio_speech", "video_create", "video_get", "video_content", "video_cancel")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
@@ -134,7 +130,7 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 }
 
 // TestChainMediaMinimaxVideoFullFlowLifecycle 覆盖链路 1：创建
-//（video_generation 报文改写 + Bearer 认证头 + /v1 openai 归一 URL + ignored
+// （video_generation 报文改写 + Bearer 认证头 + /v1 openai 归一 URL + ignored
 // 回显）→ 轮询 queued → queued → completed（file_download_url 进 artifact）
 // → content 绝对 URL 无凭据直连 mp4 → 终态 usage（按次计费：Hailuo 按条
 // 768P-6s 主档 2.00 元/次 ÷7.0（roundCost 0.2857142857），契约 §2.8 按次计费，2026-10-05 按次计费批。

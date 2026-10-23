@@ -76,7 +76,7 @@ func TestWhGatewayRequestNilSafety(t *testing.T) {
 
 // 派发候选窗口诊断元数据进入审计（runtime 提供诊断时）。
 func TestWhPreflightDispatchDiagnosticsMetadata(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	runtime := gatewayruntimecache.GatewayRuntime{
 		APIKey:      validRuntimeRow(),
 		Settings:    gatewayruntimecache.GatewaySettings{NoAvailableAccountWaitTimeoutSeconds: 30},
@@ -118,7 +118,7 @@ func TestWhPreflightDispatchDiagnosticsMetadata(t *testing.T) {
 
 // 候选过滤/派发准备的错误与完成分支。
 func TestWhPreflightCandidateOutcomeBranches(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	// 过滤错误传播。
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
@@ -196,7 +196,7 @@ func (f *whPreparingCandidates) PrepareDispatchAccounts(ctx context.Context, inp
 
 // 派发准备阶段协调器终态：Completed + 失败 → RouteAction。
 func TestWhPreflightPreparationCoordinatorFailure(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = &whPreparingCandidates{
@@ -250,7 +250,7 @@ func (c *whPoliciesErrCache) ListCachedActiveResponseInspectionPoliciesForAccoun
 
 // 热门质量探索结算与压缩预检完成/策略读取错误的清理路径。
 func TestWhPreflightSettleAndCleanupPaths(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	settled := []string{}
 	// 1. 派发账号命中探索预留 → 结算 dispatched。
 	called := false
@@ -333,7 +333,7 @@ func TestWhPreflightSettleAndCleanupPaths(t *testing.T) {
 
 // codex/claude_code/gemini_cli 画像写入 client_strategy 审计元数据。
 func TestWhPreflightClientStrategyAuditMetadata(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", ProviderCode: "openai"}
+	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.Candidates = whFullDispatchCandidates(account)

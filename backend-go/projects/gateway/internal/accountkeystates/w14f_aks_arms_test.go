@@ -765,8 +765,8 @@ func TestW14fSummaryDecryptFailureSkipsRow(t *testing.T) {
 	h.seedSchema(t)
 	// 池账户但凭据信封损坏 → 解密失败 continue（渲染空摘要）。
 	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, schedulable,
-      provider_code, vendor_code, protocol_code, protocol_version, config_revision, credentials_encrypted)
-    VALUES ('w14f-bad', 'sys-owner', 'w14f-bad', 'api_key', 'active', 1, 'openai', 'openai', 'openai', 'v1', 1, 'w14f-broken-envelope')`)
+      vendor_code, protocol_code, protocol_version, config_revision, credentials_encrypted)
+    VALUES ('w14f-bad', 'sys-owner', 'w14f-bad', 'api_key', 'active', 1, 'openai', 'openai', 'v1', 1, 'w14f-broken-envelope')`)
 	h.exec(t, `INSERT INTO group_accounts (group_id, account_id) VALUES ('w14f-group', 'w14f-bad')`)
 	summaries, err := h.store.LoadSummariesByAccountIds(context.Background(), []string{"w14f-bad"})
 	if err != nil {

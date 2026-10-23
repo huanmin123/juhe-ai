@@ -47,7 +47,7 @@ import (
 func gatewayruntimecacheAccountForCircuitAudit(id string) gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:              id,
-		ProviderCode:    "openai",
+		VendorCode:      "openai",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		Type:            "api_key",

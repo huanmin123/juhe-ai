@@ -185,9 +185,9 @@ func TestW14dSSOImportDuplicateNameFails(t *testing.T) {
 	// per item while the response stays 200.
 	successSteps := wcDeviceSuccessSteps(`{"access_token":"at","refresh_token":"rt","expires_in":3600,"token_type":"Bearer"}`)
 	env.sso.steps = append(append([]SSODeviceResponse{}, successSteps...), successSteps...)
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
-		VALUES ('w14d-sso-dup', (SELECT id FROM system_accounts WHERE username='root'), 'xai', 'xai', 'profile_xai_openai_v1',
+		VALUES ('w14d-sso-dup', (SELECT id FROM system_accounts WHERE username='root'), 'xai', 'profile_xai_openai_v1',
 		'openai', 'v1', 'w14d-sso-name', 'oauth', 'active', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
 		`{"ssoTokens":["tok-one"],"name":"w14d-sso-name","providerProtocolProfileId":"profile_xai_openai_v1"}`)

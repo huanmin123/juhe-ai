@@ -200,7 +200,6 @@ var testSchema = []string{
 		connection_driver_code TEXT,
 		oauth_type TEXT,
 		health_check_connection_id TEXT,
-		provider_code TEXT NOT NULL DEFAULT '',
 		provider_protocol_profile_id TEXT NOT NULL DEFAULT '',
 		protocol_code TEXT NOT NULL,
 		protocol_version TEXT NOT NULL,

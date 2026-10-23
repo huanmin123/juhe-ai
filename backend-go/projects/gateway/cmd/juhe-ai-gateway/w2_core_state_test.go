@@ -212,24 +212,27 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"temporaryUnschedulableRetryIntervalSeconds": "60",
 		"temporaryUnschedulableRetryAttempts":        "2",
 		"textFirstResponseTimeoutSeconds":            "60",
-		"textNonStreamFirstResponseTimeoutSeconds":   "600",
-		"textStreamIdleTimeoutSeconds":               "60",
-		"textUncommittedAttemptMaxLifetimeSeconds":   "300",
-		"imageFirstResponseTimeoutSeconds":           "60",
-		"imageStreamIdleTimeoutSeconds":              "60",
-		"imageUncommittedAttemptMaxLifetimeSeconds":  "300",
-		"imageRequestWallTimeoutSeconds":             "600",
-		"chatImageGenerationTotalTimeoutSeconds":     "300",
+		// 调度三刀批（设计 §5）：夹具值与 pg_schema 种子默认同源（10000/30000）。
+		"sameAccountRetryFastFailMaxMs":             "10000",
+		"gatewayAttemptStartMinWindowMs":            "30000",
+		"textNonStreamFirstResponseTimeoutSeconds":  "600",
+		"textStreamIdleTimeoutSeconds":              "60",
+		"textUncommittedAttemptMaxLifetimeSeconds":  "300",
+		"imageFirstResponseTimeoutSeconds":          "60",
+		"imageStreamIdleTimeoutSeconds":             "60",
+		"imageUncommittedAttemptMaxLifetimeSeconds": "300",
+		"imageRequestWallTimeoutSeconds":            "600",
+		"chatImageGenerationTotalTimeoutSeconds":    "300",
 		// M5b realtime 会话生命周期三键（Realtime 设计 §3）：夹具值与
 		// pg_schema 种子默认同源（120/1800/5）。
-		"realtimeIdleTimeoutSeconds":           "120",
-		"realtimeMaxSessionSeconds":            "1800",
-		"realtimeMaxConnectionsPerApiKey":      "5",
+		"realtimeIdleTimeoutSeconds":                 "120",
+		"realtimeMaxSessionSeconds":                  "1800",
+		"realtimeMaxConnectionsPerApiKey":            "5",
 		"audioFirstResponseTimeoutSeconds":           "120",
 		"videoCreateTimeoutSeconds":                  "60",
 		"noAvailableAccountWaitTimeoutSeconds":       "30",
-			"upstreamClientVersionOverrides":             "{}",
-			"upstreamClientVersionAutoOverrides":         "{}",
+		"upstreamClientVersionOverrides":             "{}",
+		"upstreamClientVersionAutoOverrides":         "{}",
 		"streamFailureThresholdCount":                "5",
 		"streamFailureThresholdWindowMinutes":        "5",
 		"operationLogRetentionDays":                  "30",
@@ -803,7 +806,7 @@ func TestW2AErrorPolicyEffectsBridgeClosures(t *testing.T) {
 	account := gatewaydispatch.AccountCandidate{
 		ID:                        "w2a-pool-acc",
 		SystemAccountID:           "sys_owner",
-		ProviderCode:              "openai",
+		VendorCode:                "openai",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		Type:                      "api_key",
@@ -843,9 +846,9 @@ func TestW2AErrorPolicyApplyDecisionErrorArms(t *testing.T) {
 func TestW2AErrorPolicyMarkCooldownHardUnavailable(t *testing.T) {
 	db, _ := w2aFixtureDatabases(t)
 	now := "2026-09-14T00:00:00.000Z"
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, concurrency_limit, deleted_at) VALUES ('w2a-hard', 'sys_owner', 'openai', 'W2A', 'api_key', 'error', 1, 1, NULL)`, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, deleted_at) VALUES ('w2a-hard', 'sys_owner', 'W2A', 'api_key', 'error', 1, 1, NULL)`, now); err != nil {
 		// 参数个数不匹配时退回无参插列。
-		if _, err2 := db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, concurrency_limit, deleted_at) VALUES ('w2a-hard', 'sys_owner', 'openai', 'W2A', 'api_key', 'error', 1, 1, NULL)`); err2 != nil {
+		if _, err2 := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, deleted_at) VALUES ('w2a-hard', 'sys_owner', 'W2A', 'api_key', 'error', 1, 1, NULL)`); err2 != nil {
 			t.Fatalf("seed hard account: %v / %v", err, err2)
 		}
 	}
@@ -1274,7 +1277,7 @@ func TestW2AComposeRuntimeInvalidationClosures(t *testing.T) {
 	account := gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        "w2a-compose-pool",
 		SystemAccountID:           "sys_owner",
-		ProviderCode:              "openai",
+		VendorCode:                "openai",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		Type:                      "api_key",

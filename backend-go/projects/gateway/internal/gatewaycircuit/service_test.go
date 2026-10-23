@@ -44,7 +44,7 @@ func newTestService(t *testing.T, store Store, mutate ServiceOptions) (*CircuitS
 func testAccount() gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        "acc",
-		ProviderCode:              "openai",
+		VendorCode:                "openai",
 		ProviderProtocolProfileID: "openai_profile",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",

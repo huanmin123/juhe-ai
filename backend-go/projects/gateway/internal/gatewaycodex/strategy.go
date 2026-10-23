@@ -114,7 +114,6 @@ type ClientStrategyIdentity struct {
 	APIKeyID                  string
 	GroupID                   string
 	Endpoint                  string
-	ProviderCode              string
 	ProviderProtocolProfileID string
 	ProtocolCode              string
 	ProtocolVersion           string

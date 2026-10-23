@@ -131,6 +131,35 @@ func TestAvoidanceActivationThresholdAndOrdering(t *testing.T) {
 	}
 }
 
+// TestAvoidanceTwoRequestConfirmationsSinkAndTTLRecovery 是调度慢失败直切与
+// 墙钟收尾修复设计 §7 的 B 生效用例：两个请求各一次失败确认后读侧沉底
+// （FailureCount=2 ≥ 阈值），TTL 过期后排序恢复原序（真实试探自愈）。
+func TestAvoidanceTwoRequestConfirmationsSinkAndTTLRecovery(t *testing.T) {
+	avoidance, clock := newTestAvoidance(t, nil)
+	scope := AvoidanceScopeInput{SystemAccountID: "sys", APIKeyID: "key", ClientIP: "10.0.0.7"}
+	accounts := []gatewayruntimecache.OpenAIAccountSecret{account("flaky", 5, false, false), account("good", 1, true, false)}
+	// 请求 1：flaky 失败一次 → 确认（FailureCount=1 < 2，排序不变）。
+	tracker1 := avoidance.CreateAvoidanceTracker(scope)
+	avoidance.RememberPendingFailure(tracker1, "flaky", "Flaky", AccountFailure{ErrorPhase: "upstream_request"})
+	avoidance.ConfirmAfterFinalFailure(tracker1, nil)
+	if ordered := avoidance.OrderAccountsByClientIPAccountAvoidance(accounts, scope, nil); ordered.Applied {
+		t.Fatalf("一次确认低于阈值不得沉底: %+v", ordered)
+	}
+	// 请求 2：又一次失败确认 → FailureCount=2 生效沉底。
+	tracker2 := avoidance.CreateAvoidanceTracker(scope)
+	avoidance.RememberPendingFailure(tracker2, "flaky", "Flaky", AccountFailure{ErrorPhase: "upstream_request"})
+	avoidance.ConfirmAfterFinalFailure(tracker2, nil)
+	ordered := avoidance.OrderAccountsByClientIPAccountAvoidance(accounts, scope, nil)
+	if !ordered.Applied || len(ordered.AvoidedAccountIDs) != 1 || ordered.AvoidedAccountIDs[0] != "flaky" {
+		t.Fatalf("两次确认后应沉底: %+v", ordered)
+	}
+	// TTL 过期（按上限 10 分钟推进覆盖任何配置档）：排序恢复原序。
+	clock.advance(time.Duration(clientIPAccountAvoidanceMaxTTL) * time.Millisecond)
+	if ordered := avoidance.OrderAccountsByClientIPAccountAvoidance(accounts, scope, nil); ordered.Applied {
+		t.Fatalf("TTL 过期后应恢复原序: %+v", ordered)
+	}
+}
+
 func TestAvoidanceMemoryExpiryAndEviction(t *testing.T) {
 	avoidance, clock := newTestAvoidance(t, nil)
 	scope := AvoidanceScopeInput{SystemAccountID: "sys", APIKeyID: "key", ClientIP: "10.0.0.1"}

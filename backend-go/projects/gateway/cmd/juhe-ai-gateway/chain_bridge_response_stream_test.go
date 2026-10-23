@@ -53,7 +53,7 @@ func bridgeStreamMappingAccount() gatewaydispatch.AccountCandidate {
 	enabled := true
 	return gatewaydispatch.AccountCandidate{
 		ID:           "acc_bridge_stream",
-		ProviderCode: "hybrid",
+		VendorCode:   "hybrid",
 		ProtocolCode: "gemini",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:          "client-model",

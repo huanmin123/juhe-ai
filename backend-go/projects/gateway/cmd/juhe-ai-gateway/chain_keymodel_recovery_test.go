@@ -224,6 +224,7 @@ func TestChainKeyModelProbeInputLoaderSQLite(t *testing.T) {
 //   - binding 子查询要求 ga.account_authorization_id = 授权 ID；
 //   - cooldown fence 列 + sourceID.Valid 臂 → fence.SourceConfigRevision 填
 //     source.config_revision（validCooldownFence 匹配面）。
+//
 // 负臂（下方 DelegatedBindingMismatch）：绑定授权失配 → Binding.Enabled=
 // false → ToInput fail-closed 报错 → 适配器 unknown——列名/谓词漂移在两个
 // 方向都会被真库抓住。
@@ -394,7 +395,7 @@ func TestChainKeyModelProbeInputLoaderSQLiteDelegated(t *testing.T) {
 
 // 委托负臂：group_accounts.account_authorization_id 与授权实例授权 ID 失配 →
 // binding 子查询谓词失配 → Binding.Enabled=false → ToInput fail-closed 报错
-//（消费方适配器按 unknown 中性）。
+// （消费方适配器按 unknown 中性）。
 func TestChainKeyModelProbeInputLoaderDelegatedBindingMismatch(t *testing.T) {
 	db, secret := newKeyModelRecoveryLoaderDB(t)
 	const (

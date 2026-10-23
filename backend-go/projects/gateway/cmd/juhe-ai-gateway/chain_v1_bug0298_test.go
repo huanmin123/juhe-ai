@@ -39,7 +39,7 @@ func bug0298SwitchHandling() gatewayresponse.UpstreamResponseHandlingResult {
 }
 
 // TestBug0298SameSignatureSwitchStops：同签名连续换号即停——第一次换号继续
-//（返回 false），第二次同签名失败不再级联候选（返回 true 并下发耗尽契约）；
+// （返回 false），第二次同签名失败不再级联候选（返回 true 并下发耗尽契约）；
 // 不同签名的失败不受影响照常继续。
 func TestBug0298SameSignatureSwitchStops(t *testing.T) {
 	ctx := context.Background()
@@ -87,7 +87,7 @@ func TestBug0298SameSignatureSwitchStops(t *testing.T) {
 }
 
 // TestBug0298SignatureGateSkipsInspectionNilSwitches：检查未命中换号
-//（ResponseInspection == nil）不进签名/避让门——连续两次照常继续，锁定
+// （ResponseInspection == nil）不进签名/避让门——连续两次照常继续，锁定
 // 该面行为不变。
 func TestBug0298SignatureGateSkipsInspectionNilSwitches(t *testing.T) {
 	ctx := context.Background()
@@ -111,7 +111,7 @@ func TestBug0298SignatureGateSkipsInspectionNilSwitches(t *testing.T) {
 }
 
 // TestBug0298StreamSwitchRecordsSourceAvoidance：换号被接受时记录来源级避让
-//（阈值激活后同层候选把失败账户后置）并对未装配协作方的组合保持降级。
+// （阈值激活后同层候选把失败账户后置）并对未装配协作方的组合保持降级。
 func TestBug0298StreamSwitchRecordsSourceAvoidance(t *testing.T) {
 	ctx := context.Background()
 	turnRetry := &gatewaycodex.TurnRetryService{Secret: "bug0298-turn-secret"}
@@ -131,14 +131,13 @@ func TestBug0298StreamSwitchRecordsSourceAvoidance(t *testing.T) {
 		Endpoint:        "responses",
 		ClientIP:        "203.0.113.9",
 	}
-	account := gatewaydispatch.AccountCandidate{ID: "acc-a", ProviderCode: "openai"}
+	account := gatewaydispatch.AccountCandidate{ID: "acc-a", VendorCode: "openai"}
 
 	identity := gatewaycodex.ClientStrategyIdentity{
 		SystemAccountID: usageContext.SystemAccountID,
 		APIKeyID:        usageContext.APIKeyID,
 		GroupID:         usageContext.GroupID,
 		Endpoint:        usageContext.Endpoint,
-		ProviderCode:    account.ProviderCode,
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		ClientIP:        usageContext.ClientIP,

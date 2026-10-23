@@ -29,10 +29,10 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
-		// groups.provider_code（2026-10-18 修复批迁移窗口）：列已在 fresh DDL
-		// 恢复（DEFAULT 'gpt' shim），分组访问/绑定投影随之恢复读取该列；
-		// 运行时迁移后由清理命令统一收口。
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, provider_code TEXT NOT NULL DEFAULT 'gpt')`,
+		// groups 目标形态（供应商与上游协议面重构设计 §8，迁移窗口 shim 已按
+		// A 路线一次性收敛撤除）：无 provider_code 列；owner 内名称唯一见
+		// idx_groups_owner_name_unique（与权威 DDL 同名同列）。
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
 		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`,
 		`CREATE TABLE group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
@@ -67,19 +67,22 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"defaultTemporaryUnschedulableMinutes":       "10",
 		"temporaryUnschedulableRetryIntervalSeconds": "5",
 		"temporaryUnschedulableRetryAttempts":        "3",
-		"textFirstResponseTimeoutSeconds":            "60",
-		"textNonStreamFirstResponseTimeoutSeconds":   "600",
-		"textStreamIdleTimeoutSeconds":               "30",
-		"textUncommittedAttemptMaxLifetimeSeconds":   "300",
-		"imageFirstResponseTimeoutSeconds":           "60",
-		"imageStreamIdleTimeoutSeconds":              "30",
-		"imageUncommittedAttemptMaxLifetimeSeconds":  "300",
-		"imageRequestWallTimeoutSeconds":             "600",
-		"audioFirstResponseTimeoutSeconds":           "120",
-		"videoCreateTimeoutSeconds":                  "60",
-		"noAvailableAccountWaitTimeoutSeconds":       "30",
-		"streamFailureThresholdCount":                "3",
-		"streamFailureThresholdWindowMinutes":        "5",
+		// 调度慢失败直切与墙钟收尾修复设计 §5（与 settings 种子默认同值）。
+		"sameAccountRetryFastFailMaxMs":             "10000",
+		"gatewayAttemptStartMinWindowMs":            "30000",
+		"textFirstResponseTimeoutSeconds":           "60",
+		"textNonStreamFirstResponseTimeoutSeconds":  "600",
+		"textStreamIdleTimeoutSeconds":              "30",
+		"textUncommittedAttemptMaxLifetimeSeconds":  "300",
+		"imageFirstResponseTimeoutSeconds":          "60",
+		"imageStreamIdleTimeoutSeconds":             "30",
+		"imageUncommittedAttemptMaxLifetimeSeconds": "300",
+		"imageRequestWallTimeoutSeconds":            "600",
+		"audioFirstResponseTimeoutSeconds":          "120",
+		"videoCreateTimeoutSeconds":                 "60",
+		"noAvailableAccountWaitTimeoutSeconds":      "30",
+		"streamFailureThresholdCount":               "3",
+		"streamFailureThresholdWindowMinutes":       "5",
 		// M5b realtime 会话生命周期键（Realtime 设计 §3；与 settings 种子默认同值）。
 		"realtimeIdleTimeoutSeconds":                 "120",
 		"realtimeMaxSessionSeconds":                  "1800",
@@ -141,6 +144,8 @@ func TestSQLReadGatewaySettingsProjection(t *testing.T) {
 	setSetting(t, db, "gatewayTextRawBodyLimitMegabytes", "16")
 	setSetting(t, db, "usageStatsTimezone", `"Asia/Shanghai"`)
 	setSetting(t, db, "gatewayUserRequestLimitPerMinute", "120")
+	setSetting(t, db, "sameAccountRetryFastFailMaxMs", "5000")
+	setSetting(t, db, "gatewayAttemptStartMinWindowMs", "20000")
 	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -160,6 +165,13 @@ func TestSQLReadGatewaySettingsProjection(t *testing.T) {
 	}
 	if !settings.StreamCircuitBreakerEnabled {
 		t.Fatal("streamCircuitBreakerEnabled must be pinned true")
+	}
+	// 调度慢失败直切与墙钟收尾修复设计 §5：两键经 SQL 投影按行值读取。
+	if settings.SameAccountRetryFastFailMaxMs != 5000 {
+		t.Fatalf("sameAccountRetryFastFailMaxMs = %d", settings.SameAccountRetryFastFailMaxMs)
+	}
+	if settings.GatewayAttemptStartMinWindowMs != 20000 {
+		t.Fatalf("gatewayAttemptStartMinWindowMs = %d", settings.GatewayAttemptStartMinWindowMs)
 	}
 }
 

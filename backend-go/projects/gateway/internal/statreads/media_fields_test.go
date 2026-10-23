@@ -25,7 +25,7 @@ func seedMediaUsageShard(t *testing.T, fixture *testFixture, shardDir, fileName 
 	defer shard.Close()
 	if _, err := shard.Exec(`CREATE TABLE usage_records (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
-		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT,
+		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT, compaction_expected INTEGER NOT NULL DEFAULT 0, account_id TEXT, provider_code TEXT, endpoint TEXT,
 		model TEXT, upstream_model TEXT, upstream_response_model TEXT, billed_service_tier TEXT,
 		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0, stream INTEGER DEFAULT 0,
 		status_code INTEGER, success INTEGER DEFAULT 0, failure_attribution TEXT,
@@ -91,8 +91,7 @@ func TestAccountUsagePageRangeUsageMediaFields(t *testing.T) {
 		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count,
 			input_tokens, output_tokens, total_cost_usd, input_audio_tokens, tts_input_chars, audio_input_seconds, output_video_seconds)
 			VALUES ('global', 'account', 'acct-media', '2026-09-04', 1, 0, 0, 0.1, 1200, 4567, 62.5, 4)`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status)
-			VALUES ('acct-media', '媒体账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-media', '媒体账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {

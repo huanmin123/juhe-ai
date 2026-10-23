@@ -104,8 +104,8 @@ func TestW16BBridgeMappingOfPointerArms(t *testing.T) {
 	// 回退面的读取条件。
 	request.Body.State = &gatewaybody.BodyState{Model: w2aModelPtr("w16b-model")}
 	mapping := chainBridgeResponseMappingOf(request, gatewaydispatch.AccountCandidate{
-		ID:           "w16b-bridge-acc",
-		ProviderCode: "hybrid",
+		ID:         "w16b-bridge-acc",
+		VendorCode: "hybrid",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "w16b-model",
 			SourceEndpointFamily:   "chat_completions",
@@ -125,8 +125,8 @@ func TestW16BBridgeMappingOfPointerArms(t *testing.T) {
 
 	// 反向臂：nil 指针保持空串（既有覆盖面，保持双臂都执行）。
 	nilMapping := chainBridgeResponseMappingOf(request, gatewaydispatch.AccountCandidate{
-		ID:           "w16b-bridge-acc",
-		ProviderCode: "hybrid",
+		ID:         "w16b-bridge-acc",
+		VendorCode: "hybrid",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "w16b-model",
 			SourceEndpointFamily:   "chat_completions",

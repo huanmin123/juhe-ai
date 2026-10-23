@@ -150,6 +150,11 @@ func main() {
 	if logSink != nil {
 		defer logSink.Close()
 	}
+	// 首登强制改密门禁旁路是 dev 联调专用能力(生产在 loadRuntimeConfig 处
+	// 直接启动失败),开启时保持与 dev 自动登录同级别的可见性。
+	if runtimeCfg.MustChangePasswordGateDisabled {
+		logger.Warn("首登强制改密门禁已关闭:JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED 仅限非生产环境使用", "event", "auth_must_change_password_gate_disabled")
+	}
 	if err := gateGatewayChain(runtimeCfg.ChainEnabled); err != nil {
 		fail(err)
 	}
@@ -238,6 +243,9 @@ func main() {
 		if authErr != nil {
 			fail(fmt.Errorf("create J3b Gateway authenticator: %w", authErr))
 		}
+		// 与 compose.go 主管理面同一开关同判：J3b 自助面的登录与 token 认证
+		// 都走本 authenticator,不得各自解析 env(布尔语法漂移同款约束)。
+		authenticator.SetInitialPasswordGateDisabled(runtimeCfg.MustChangePasswordGateDisabled)
 		if authErr := authenticator.CheckContract(context.Background()); authErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway auth contract: %w", authErr))
 		}

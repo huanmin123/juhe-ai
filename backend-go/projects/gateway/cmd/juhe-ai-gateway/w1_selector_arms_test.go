@@ -48,10 +48,10 @@ func TestW1ResolveGroupAccessEmptyOwner(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('g1', '', 'openai', 1, 'personal', NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('g1', '', 1, 'personal', NULL)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
@@ -74,10 +74,10 @@ func TestW1ResolveGroupAccessDisabledGroup(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('g2', 'sys', 'openai', 0, 'personal', NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('g2', 'sys', 0, 'personal', NULL)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
@@ -100,10 +100,10 @@ func TestW1ResolveGroupAccessBadGroupType(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('g3', 'sys', 'openai', 1, 'invalid-type', NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('g3', 'sys', 1, 'invalid-type', NULL)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
@@ -125,7 +125,7 @@ func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, resource_owner_system_account_id TEXT,
 			grantee_system_account_id TEXT, scope TEXT, status TEXT, expires_at TEXT,
@@ -140,7 +140,7 @@ func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
 			t.Fatalf("create table: %v", err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('g_auth', 'sys_owner', 'openai', 1, 'personal', NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('g_auth', 'sys_owner', 1, 'personal', NULL)`); err != nil {
 		t.Fatalf("insert group: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO resource_authorizations VALUES ('auth_1', 'group', 'g_auth', 'sys_owner', 'grantee_1', 'use', 'active', NULL, NULL, NULL, NULL)`); err != nil {
@@ -170,12 +170,7 @@ func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
 // 授权实例存在但 owner 与 caller 不匹配时，该账户被过滤。
 func TestW1ResolveChainAccountAccessAuthorizationInstanceOwnerMismatch(t *testing.T) {
 	fixture := newChainFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (
-		id, system_account_id, provider_code, name, type, status, schedulable,
-		authorization_instance_source_account_id, authorization_instance_authorization_id,
-		authorization_instance_owner_system_account_id, deleted_at
-	) VALUES ('acc_authz_inst', 'sys_owner', 'openai', '授权实例账户', 'api_key', 'active', 1,
-		'src_acc', 'authz_id_1', 'other_owner', NULL)`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id, deleted_at) VALUES ('acc_authz_inst', 'sys_owner', '授权实例账户', 'api_key', 'active', 1, 'src_acc', 'authz_id_1', 'other_owner', NULL)`); err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
 	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
@@ -237,9 +232,7 @@ func TestW1ResolveChainAccountAccessAuthorizedGroupNonOwnerFiltered(t *testing.T
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (
-		id, system_account_id, provider_code, name, type, status, schedulable, credentials_encrypted, deleted_at
-	) VALUES ('acc_other_owner', 'sys_other', 'openai', '第三方账户', 'api_key', 'active', 1, ?, NULL)`, credentials); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, credentials_encrypted, deleted_at) VALUES ('acc_other_owner', 'sys_other', '第三方账户', 'api_key', 'active', 1, ?, NULL)`, credentials); err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
 	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
@@ -353,11 +346,7 @@ func TestW1LoadAccountAuthorizationsForSelectionAuthorizedGroupReturnsNil(t *tes
 // TestW1ListAccountsHydrationDroppedCount 覆盖：无凭据账户被丢弃并计数。
 func TestW1ListAccountsHydrationDroppedCount(t *testing.T) {
 	fixture := newChainFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (
-		id, system_account_id, provider_code, name, type, status, schedulable,
-		credentials_encrypted, deleted_at
-	) VALUES ('acc_no_creds', 'sys_owner', 'openai', '无凭据账户', 'api_key', 'active', 1,
-		NULL, NULL)`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, credentials_encrypted, deleted_at) VALUES ('acc_no_creds', 'sys_owner', '无凭据账户', 'api_key', 'active', 1, NULL, NULL)`); err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
 	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)

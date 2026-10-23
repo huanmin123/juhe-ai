@@ -12,7 +12,7 @@ import (
 func TestWIReadCompactionSnapshotSummaryRoundTrip(t *testing.T) {
 	service, _, _, _, clock := newBridgeService(t)
 	ctx := context.Background()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group", ProviderCode: "openai"}
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group"}
 	summary := "会话压缩摘要"
 	created, err := service.CreateChatBridgeCompactSnapshot(ctx, CreateChatBridgeCompactSnapshotInput{
 		SessionID:         "session-1",
@@ -232,13 +232,13 @@ func TestWICompactAccountKindMatrix(t *testing.T) {
 	attachBody(req, map[string]any{"input": []any{}}, []byte(`{"input":[]}`))
 	// 无注册状态 → native 判定仍基于账号画像。
 	bridgeAccount := gatewayruntimecache.OpenAIAccountSecret{
-		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
+		VendorCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel: "m", UpstreamModel: "up", SourceEndpointFamily: "responses",
 			UpstreamEndpointFamily: "chat_completions", Enabled: true,
 		}},
 	}
-	nativeAccount := gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1"}
+	nativeAccount := gatewayruntimecache.OpenAIAccountSecret{VendorCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1"}
 	// 无状态 Get miss → codexResponsesCompactAccountKind 的 state nil 分支（model 从请求取）。
 	if got := service.codexResponsesCompactAccountKind(registry, req, nativeAccount); got != CompactAccountKindNative {
 		t.Fatalf("native kind=%q", got)
@@ -251,7 +251,7 @@ func TestWICompactAccountKindMatrix(t *testing.T) {
 		t.Fatalf("bridge kind=%q", got)
 	}
 	// 非 openai 协议画像 → unsupported。
-	weird := gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "weird"}
+	weird := gatewayruntimecache.OpenAIAccountSecret{VendorCode: "weird"}
 	if got := service.codexResponsesCompactAccountKind(registry, req, weird); got != CompactAccountKindUnsupported {
 		t.Fatalf("unsupported kind=%q", got)
 	}
@@ -358,7 +358,7 @@ func TestWIReplaceGatewayJSONBodyBaseline(t *testing.T) {
 		CurrentInput:         []any{"a"},
 	}
 	registry.Set(req, state)
-	account := gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1"}
+	account := gatewayruntimecache.OpenAIAccountSecret{VendorCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1"}
 	isBridge, err := service.PrepareCodexResponsesContextForAccount(registry, req, account)
 	if err != nil {
 		t.Fatalf("准备失败: %v", err)

@@ -325,8 +325,8 @@ func TestW11DGroupAccessAndInspectionArms(t *testing.T) {
 	}}
 	svc4 := newTestService(t, models2, newManualClock(), nil)
 	accounts := []OpenAIAccountSecret{
-		{ID: "a1", ProtocolCode: " openai ", ProviderCode: " gpt "},
-		{ID: "a2", ProtocolCode: "openai", ProviderCode: "gpt"},
+		{ID: "a1", ProtocolCode: " openai ", VendorCode: " gpt "},
+		{ID: "a2", ProtocolCode: "openai", VendorCode: "gpt"},
 		{ID: "a3", ProtocolCode: " "},
 	}
 	policies, err := svc4.ListCachedActiveResponseInspectionPoliciesForAccountsAsync(ctx, accounts)

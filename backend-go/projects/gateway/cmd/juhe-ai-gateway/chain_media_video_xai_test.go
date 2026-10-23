@@ -103,19 +103,15 @@ func seedMediaXaiAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 			"video_create", "video_get", "video_content", "video_cancel",
 		},
 	}
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
-		VALUES ('group_xai_media', ?, 'xai', 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'xai', 'xai', 'profile_xai_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_xai_media', ?, 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'xai', 'profile_xai_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_xai_media', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_xai_grok_imagine', 'xai', 'grok-imagine-video-1.5', 'grok-imagine-video-1.5', 'global', 'active', '["video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
-		VALUES (?, 'xai', 'grok-imagine-video-1.5', 'mdl_xai_grok_imagine', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'grok-imagine-video-1.5', 'mdl_xai_grok_imagine', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
 	chainSeedAccountConnection(t, fixture.db, id, baseURL, "video_create", "video_get", "video_content", "video_cancel")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)

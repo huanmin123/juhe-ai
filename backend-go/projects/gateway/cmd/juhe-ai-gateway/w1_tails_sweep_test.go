@@ -374,7 +374,7 @@ func TestW1TDriverEndpointModeBridgeArms(t *testing.T) {
 		for _, testCase := range cases {
 			req := w1tNewRequest(t, http.MethodPost, testCase.path, testCase.body)
 			account := gatewaydispatch.AccountCandidate{
-				ID: "acc_w1t_bridge", ProtocolCode: "openai", ProviderCode: "hybrid", Type: "api_key", BaseURL: "https://up.example",
+				ID: "acc_w1t_bridge", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key", BaseURL: "https://up.example",
 				SupportedEndpointModes: testCase.modes, ModelMappings: mapping(testCase.source, testCase.upstream),
 			}
 			if reason := driver.gatewayRequestCapabilityMismatchReasonFor(req, account, ""); reason != testCase.wantReason {

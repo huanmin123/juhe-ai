@@ -48,14 +48,12 @@ func seedChatKeysFallbackGroup(t *testing.T, db *sql.DB, id string, name any) {
 	t.Helper()
 	// 2026-10-07 默认资源收口：默认路由仅从 gpt 默认分组派生。
 	if name == nil {
-		if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-			VALUES (?, 'sys_owner', NULL, 'gpt', 1, 1, '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`, id); err != nil {
+		if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES (?, 'sys_owner', NULL, 1, 1, '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`, id); err != nil {
 			t.Fatalf("seed NULL-name group: %v", err)
 		}
 		return
 	}
-	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES (?, 'sys_owner', ?, 'gpt', 1, 1, '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`, id, name); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES (?, 'sys_owner', ?, 1, 1, '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`, id, name); err != nil {
 		t.Fatalf("seed group %v: %v", name, err)
 	}
 }

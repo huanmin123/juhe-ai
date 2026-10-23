@@ -191,7 +191,7 @@ func TestW1ProjectAPIKeyRowHelperArms(t *testing.T) {
 	if len(result.Accounts) != 1 || result.Accounts[0].ID != "a" {
 		t.Fatalf("capability filter = %+v", result)
 	}
-	full := projectAccountForRouting(gatewayruntimecache.OpenAIAccountSecret{ID: "acc_2", ProviderCode: "openai", SupportedModels: []string{"m"}})
+	full := projectAccountForRouting(gatewayruntimecache.OpenAIAccountSecret{ID: "acc_2", VendorCode: "openai", SupportedModels: []string{"m"}})
 	if full.ID != "acc_2" || len(full.SupportedModels) != 1 {
 		t.Fatalf("full = %+v", full)
 	}

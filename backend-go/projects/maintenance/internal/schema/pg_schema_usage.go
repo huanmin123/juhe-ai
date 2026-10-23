@@ -88,6 +88,7 @@ var postgresSchemaUsage = []PGStatement{
       api_key_id text,
       group_id text,
       route_group_id text,
+      compaction_expected integer NOT NULL DEFAULT 0,
       account_id text,
       endpoint text,
       provider_code text,
@@ -176,6 +177,13 @@ var postgresSchemaUsage = []PGStatement{
 		SchemaName: "juhe_usage",
 		Source:     "usage-records-super-group-route-columns",
 		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS route_group_id text`,
+	},
+	{
+		// 压缩请求标记（使用记录延迟健康分档设计 §压缩请求识别）：存量库幂等
+		// 补列，模式同 route_group_id。
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-compaction-expected",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS compaction_expected integer NOT NULL DEFAULT 0`,
 	},
 	{
 		// M2 视频计量列（媒体设计 §10）：视频任务输出秒数，任务终态回填；

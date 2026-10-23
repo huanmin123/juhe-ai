@@ -91,8 +91,8 @@ type EditDetail struct {
 }
 
 // OptionsQuery mirrors parseGroupOptionOptionListOptions after route
-// validation。ProviderCode 是兼容入参（接受但忽略）：组无 provider 维度
-//（供应商解耦设计 §8），不再生成 provider_code 过滤。
+// validation。providerCode 已随组供应商维度退役：出现即 400
+// legacy_group_provider_field（组无 provider 维度，供应商解耦设计 §8）。
 type OptionsQuery struct {
 	IDs            []string
 	Keyword        string

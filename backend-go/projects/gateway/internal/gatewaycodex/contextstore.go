@@ -29,9 +29,8 @@ import (
 type CodexContextStateBoundary struct {
 	SystemAccountID string `json:"systemAccountId"`
 	// APIKeyID empty mirrors the Node undefined api key.
-	APIKeyID     string `json:"apiKeyId,omitempty"`
-	GroupID      string `json:"groupId"`
-	ProviderCode string `json:"providerCode"`
+	APIKeyID string `json:"apiKeyId,omitempty"`
+	GroupID  string `json:"groupId"`
 }
 
 // CodexContextPayloadReference mirrors CodexContextPayloadReference.
@@ -261,12 +260,12 @@ func reverseResponseRows(rows []CodexContextResponseStateIndex) {
 }
 
 // codexContextBoundaryMatches mirrors matchesBoundary: an absent api key
-// compares as the empty string.
+// compares as the empty string. provider_code 维度已随 B4① 存储迁移退役
+// （写入面本就恒空串，比对恒真），边界按 sys/key/group 三元组严格比对。
 func codexContextBoundaryMatches(row, boundary *CodexContextStateBoundary) bool {
 	return row.SystemAccountID == boundary.SystemAccountID &&
 		row.APIKeyID == boundary.APIKeyID &&
-		row.GroupID == boundary.GroupID &&
-		row.ProviderCode == boundary.ProviderCode
+		row.GroupID == boundary.GroupID
 }
 
 func validateResponseStateIndex(row *CodexContextResponseStateIndex) error {
@@ -436,7 +435,7 @@ func (s *SQLiteShardContextStateStore) ReadResponseStateRow(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	row := db.QueryRowContext(ctx, `SELECT * FROM codex_context_responses WHERE response_id = ? LIMIT 1`, responseID)
+	row := db.QueryRowContext(ctx, codexContextResponseSelectColumns+"codex_context_responses WHERE response_id = ? LIMIT 1", responseID)
 	return scanResponseStateRow(row)
 }
 
@@ -446,7 +445,7 @@ func (s *SQLiteShardContextStateStore) ReadCompactStateRow(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	row := db.QueryRowContext(ctx, `SELECT * FROM codex_context_compacts WHERE compact_id = ? LIMIT 1`, compactID)
+	row := db.QueryRowContext(ctx, codexContextCompactSelectColumns+"codex_context_compacts WHERE compact_id = ? LIMIT 1", compactID)
 	return scanCompactStateRow(row)
 }
 
@@ -551,13 +550,13 @@ func (s *PostgresContextStateStore) SaveCompactStateRow(ctx context.Context, row
 
 // ReadResponseStateRow implements CodexContextRowStore.
 func (s *PostgresContextStateStore) ReadResponseStateRow(ctx context.Context, responseID string) (*CodexContextResponseStateIndex, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT * FROM `+codexContextTablePostgres("codex_context_responses")+` WHERE response_id = $1 LIMIT 1`, responseID)
+	row := s.db.QueryRowContext(ctx, codexContextResponseSelectColumns+codexContextTablePostgres("codex_context_responses")+` WHERE response_id = $1 LIMIT 1`, responseID)
 	return scanResponseStateRow(row)
 }
 
 // ReadCompactStateRow implements CodexContextRowStore.
 func (s *PostgresContextStateStore) ReadCompactStateRow(ctx context.Context, compactID string) (*CodexContextCompactStateIndex, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT * FROM `+codexContextTablePostgres("codex_context_compacts")+` WHERE compact_id = $1 LIMIT 1`, compactID)
+	row := s.db.QueryRowContext(ctx, codexContextCompactSelectColumns+codexContextTablePostgres("codex_context_compacts")+` WHERE compact_id = $1 LIMIT 1`, compactID)
 	return scanCompactStateRow(row)
 }
 
@@ -639,7 +638,7 @@ func sessionUpsertInputFromCompact(row CodexContextCompactStateIndex) sessionUps
 
 const codexContextSessionUpsertSQL = `
 INSERT INTO %s (
-  id, system_account_id, api_key_id, group_id, provider_code,
+  id, system_account_id, api_key_id, group_id,
   source_response_id, latest_response_id, latest_compact_id,
   created_at, updated_at, last_used_at, expires_at
 )
@@ -655,13 +654,13 @@ ON CONFLICT(id) DO UPDATE SET
 
 func upsertSessionRow(ctx context.Context, tx *sql.Tx, input sessionUpsertInput) error {
 	values := sessionUpsertValues(input)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextSessionUpsertSQL, "codex_context_sessions", sqlPlaceholders(12)), values...)
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextSessionUpsertSQL, "codex_context_sessions", sqlPlaceholders(11)), values...)
 	return err
 }
 
 func upsertSessionRowPostgres(ctx context.Context, tx *sql.Tx, input sessionUpsertInput) error {
 	values := sessionUpsertValues(input)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextSessionUpsertSQL, codexContextTablePostgres("codex_context_sessions"), postgresPlaceholders(12)), values...)
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextSessionUpsertSQL, codexContextTablePostgres("codex_context_sessions"), postgresPlaceholders(11)), values...)
 	return err
 }
 
@@ -671,7 +670,6 @@ func sessionUpsertValues(input sessionUpsertInput) []any {
 		input.boundary.SystemAccountID,
 		nullableText(input.boundary.APIKeyID),
 		input.boundary.GroupID,
-		input.boundary.ProviderCode,
 		nullableText(input.sourceResponseID),
 		nullableText(input.latestResponseID),
 		nullableText(input.latestCompactID),
@@ -684,20 +682,19 @@ func sessionUpsertValues(input sessionUpsertInput) []any {
 
 func upsertResponseStateRow(ctx context.Context, tx *sql.Tx, row *CodexContextResponseStateIndex) error {
 	values := responseStateValues(row)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextResponseUpsertSQL, "codex_context_responses", sqlPlaceholders(21)), values...)
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextResponseUpsertSQL, "codex_context_responses", sqlPlaceholders(20)), values...)
 	return err
 }
 
 func upsertResponseStateRowPostgres(ctx context.Context, tx *sql.Tx, row *CodexContextResponseStateIndex) error {
 	values := responseStateValues(row)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextResponseUpsertSQL, codexContextTablePostgres("codex_context_responses"), postgresPlaceholders(21)), values...)
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextResponseUpsertSQL, codexContextTablePostgres("codex_context_responses"), postgresPlaceholders(20)), values...)
 	return err
 }
 
 const codexContextResponseUpsertSQL = `
 INSERT INTO %s (
   response_id, session_id, previous_response_id, system_account_id, api_key_id, group_id,
-  provider_code,
   upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
   raw_size_bytes, compressed_size_bytes, compression, schema_version,
   created_at, updated_at, last_used_at, expires_at
@@ -729,7 +726,6 @@ func responseStateValues(row *CodexContextResponseStateIndex) []any {
 		row.SystemAccountID,
 		nullableText(row.APIKeyID),
 		row.GroupID,
-		row.ProviderCode,
 		nullableText(row.UpstreamAccountID),
 		nullableText(row.Model),
 		nullableText(row.UpstreamModel),
@@ -749,20 +745,20 @@ func responseStateValues(row *CodexContextResponseStateIndex) []any {
 
 func upsertCompactStateRow(ctx context.Context, tx *sql.Tx, row *CodexContextCompactStateIndex) error {
 	values := compactStateValues(row)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextCompactUpsertSQL, "codex_context_compacts", sqlPlaceholders(22)), values...)
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextCompactUpsertSQL, "codex_context_compacts", sqlPlaceholders(21)), values...)
 	return err
 }
 
 func upsertCompactStateRowPostgres(ctx context.Context, tx *sql.Tx, row *CodexContextCompactStateIndex) error {
 	values := compactStateValues(row)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextCompactUpsertSQL, codexContextTablePostgres("codex_context_compacts"), postgresPlaceholders(22)), values...)
+	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextCompactUpsertSQL, codexContextTablePostgres("codex_context_compacts"), postgresPlaceholders(21)), values...)
 	return err
 }
 
 const codexContextCompactUpsertSQL = `
 INSERT INTO %s (
   compact_id, session_id, source_response_id, summary_digest, system_account_id, api_key_id,
-  group_id, provider_code,
+  group_id,
   upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
   raw_size_bytes, compressed_size_bytes, compression, schema_version,
   created_at, updated_at, last_used_at, expires_at
@@ -796,7 +792,6 @@ func compactStateValues(row *CodexContextCompactStateIndex) []any {
 		row.SystemAccountID,
 		nullableText(row.APIKeyID),
 		row.GroupID,
-		row.ProviderCode,
 		nullableText(row.UpstreamAccountID),
 		nullableText(row.Model),
 		nullableText(row.UpstreamModel),
@@ -851,14 +846,15 @@ func withSQLTx(ctx context.Context, db *sql.DB, operation func(tx *sql.Tx) error
 
 // The codex context schema mirrors storage/schema/codex-context-state-schema.ts
 // (sqlite DDL); the postgres migration owns the equivalent SQL and the
-// runtime statements are compatible with both dialects.
+// runtime statements are compatible with both dialects. provider_code 维度已
+// 随 B4① 存储迁移退役（写入面恒空串、边界比对恒真）：建表不再声明该列，
+// boundary 索引同步拆除；存量 shard 文件由离线维护收列（部署文档口径）。
 const codexContextStateSchemaSQL = `
 CREATE TABLE IF NOT EXISTS codex_context_sessions (
   id TEXT PRIMARY KEY,
   system_account_id TEXT NOT NULL,
   api_key_id TEXT,
   group_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL,
   source_response_id TEXT,
   latest_response_id TEXT,
   latest_compact_id TEXT,
@@ -874,7 +870,6 @@ CREATE TABLE IF NOT EXISTS codex_context_responses (
   system_account_id TEXT NOT NULL,
   api_key_id TEXT,
   group_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL,
   upstream_account_id TEXT,
   model TEXT,
   upstream_model TEXT,
@@ -898,7 +893,6 @@ CREATE TABLE IF NOT EXISTS codex_context_compacts (
   system_account_id TEXT NOT NULL,
   api_key_id TEXT,
   group_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL,
   upstream_account_id TEXT,
   model TEXT,
   upstream_model TEXT,
@@ -916,20 +910,30 @@ CREATE TABLE IF NOT EXISTS codex_context_compacts (
 );
 CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_expires ON codex_context_sessions(expires_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_last_used ON codex_context_sessions(last_used_at ASC, id ASC);
-CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_boundary ON codex_context_sessions(system_account_id, api_key_id, group_id, provider_code);
 CREATE INDEX IF NOT EXISTS idx_codex_context_responses_session ON codex_context_responses(session_id, created_at ASC, response_id);
 CREATE INDEX IF NOT EXISTS idx_codex_context_responses_previous ON codex_context_responses(previous_response_id) WHERE previous_response_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_codex_context_responses_expires ON codex_context_responses(expires_at ASC, response_id);
-CREATE INDEX IF NOT EXISTS idx_codex_context_responses_boundary ON codex_context_responses(system_account_id, api_key_id, group_id, provider_code, response_id);
 CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_session ON codex_context_compacts(session_id, created_at ASC, compact_id);
 CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_source_response ON codex_context_compacts(source_response_id);
 CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_expires ON codex_context_compacts(expires_at ASC, compact_id);
-CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_boundary ON codex_context_compacts(system_account_id, api_key_id, group_id, provider_code, compact_id);
 `
 
 type rowScanner interface {
 	Scan(dest ...any) error
 }
+
+// codexContextResponseSelectColumns / codexContextCompactSelectColumns 是读面
+// 显式列清单（B4① 拆除 provider_code 后不再 SELECT *：列序由显式清单钉住，
+// 存量 shard 文件多出的旧列不影响读取）。
+const codexContextResponseSelectColumns = `SELECT response_id, session_id, previous_response_id, system_account_id, api_key_id, group_id,
+	upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
+	raw_size_bytes, compressed_size_bytes, compression, schema_version,
+	created_at, updated_at, last_used_at, expires_at FROM `
+
+const codexContextCompactSelectColumns = `SELECT compact_id, session_id, source_response_id, summary_digest, system_account_id, api_key_id, group_id,
+	upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
+	raw_size_bytes, compressed_size_bytes, compression, schema_version,
+	created_at, updated_at, last_used_at, expires_at FROM `
 
 func scanResponseStateRow(row rowScanner) (*CodexContextResponseStateIndex, error) {
 	index := &CodexContextResponseStateIndex{}
@@ -941,7 +945,6 @@ func scanResponseStateRow(row rowScanner) (*CodexContextResponseStateIndex, erro
 		&index.SystemAccountID,
 		&apiKeyID,
 		&index.GroupID,
-		&index.ProviderCode,
 		&upstreamAccountID,
 		&model,
 		&upstreamModel,
@@ -982,7 +985,6 @@ func scanCompactStateRow(row rowScanner) (*CodexContextCompactStateIndex, error)
 		&index.SystemAccountID,
 		&apiKeyID,
 		&index.GroupID,
-		&index.ProviderCode,
 		&upstreamAccountID,
 		&model,
 		&upstreamModel,

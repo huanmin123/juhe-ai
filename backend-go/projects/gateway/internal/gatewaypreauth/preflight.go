@@ -90,27 +90,27 @@ type DispatchContext struct {
 	// （策略路由分组会话亲和设计 §5.1）：键空串 = 范围外（无会话键 / 模式不
 	// 在范围 / 绑定数不足 / 功能未装配）。策略 ID 与键计算时的 apiKeyRecord
 	// 同源；跨组回退重入时键从 RouteAction 原样种子化（不重查）。
-	GroupAffinityKey                         string
-	RouteStrategyID                          string
-	ClientStrategy                           ClientStrategyContext
-	ClientIPAccountAvoidance                 ClientIPAccountAvoidanceTracker
-	ModelPriority                            *gatewayrouting.GatewayAccountModelPriority
-	RequestLane                              gatewayproto.RequestLane
-	GroupSchedulingPolicy                    *gatewayruntimecache.GroupSchedulingPolicy
-	NormalRouteFirstByteConfig               *NormalRouteFirstByteRuntimeConfig
-	NormalRouteSpeedFirstConfig              *NormalRouteSpeedFirstRuntimeConfig
-	ResponseInspectionPolicies               []gatewayruntimecache.ResponseInspectionPolicySummary
-	APIKeyRecord                             *gatewayruntimecache.GatewayAPIKeyRow
-	GroupFallbackAPIKeyRecord                *gatewayruntimecache.GatewayAPIKeyRow
-	SchedulingExclusions                     *SchedulingExclusions
-	DispatchSegments                         []DispatchSegment
-	PrecheckHalfOpenEligible                 bool
-	ServerRetryBudget                        *ServerRetryBudget
-	GatewayRequestWallBudget                 *gatewayrouting.GatewayRequestWallBudget
-	RouteCoordinationBudget                  *gatewayrouting.RouteCoordinationBudget
-	RequestAttemptTracker                    *gatewayrouting.GatewayRequestAttemptTracker
-	DownstreamCommitState                    *DownstreamCommitState
-	RoutePlanSnapshot                        gatewayrouting.RoutePlanSnapshot[string]
+	GroupAffinityKey            string
+	RouteStrategyID             string
+	ClientStrategy              ClientStrategyContext
+	ClientIPAccountAvoidance    ClientIPAccountAvoidanceTracker
+	ModelPriority               *gatewayrouting.GatewayAccountModelPriority
+	RequestLane                 gatewayproto.RequestLane
+	GroupSchedulingPolicy       *gatewayruntimecache.GroupSchedulingPolicy
+	NormalRouteFirstByteConfig  *NormalRouteFirstByteRuntimeConfig
+	NormalRouteSpeedFirstConfig *NormalRouteSpeedFirstRuntimeConfig
+	ResponseInspectionPolicies  []gatewayruntimecache.ResponseInspectionPolicySummary
+	APIKeyRecord                *gatewayruntimecache.GatewayAPIKeyRow
+	GroupFallbackAPIKeyRecord   *gatewayruntimecache.GatewayAPIKeyRow
+	SchedulingExclusions        *SchedulingExclusions
+	DispatchSegments            []DispatchSegment
+	PrecheckHalfOpenEligible    bool
+	ServerRetryBudget           *ServerRetryBudget
+	GatewayRequestWallBudget    *gatewayrouting.GatewayRequestWallBudget
+	RouteCoordinationBudget     *gatewayrouting.RouteCoordinationBudget
+	RequestAttemptTracker       *gatewayrouting.GatewayRequestAttemptTracker
+	DownstreamCommitState       *DownstreamCommitState
+	RoutePlanSnapshot           gatewayrouting.RoutePlanSnapshot[string]
 	// TargetOutcomes 承载解析期已尝试但未选中的超级分组目标分类（设计
 	// §4.2）：派发循环据此把它们并入目标级终态聚合，避免丢掉 capacity。
 	TargetOutcomes                           []NormalRouteTargetOutcome
@@ -276,10 +276,14 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		TrafficSource:   trafficSource,
 	})
 
+	// 压缩期望单点判定（用量记录压缩标记设计 §压缩请求识别）：与下方超时豁
+	// 免同一谓词，这里提前求值冻结进请求级用量上下文（完成/失败记录同源）。
+	compactionExpectedForUsage := s.Codex.CompactionExpectedForRequest(req)
 	baseUsageContext := s.BuildGatewayUsageContext(usageContextInput{
 		traceID: input.TraceID, clientIP: input.ClientIP, identity: *identity,
 		trafficSource: trafficSource, endpoint: input.Endpoint,
-		requestSnapshot: input.RequestSnapshot,
+		requestSnapshot:    input.RequestSnapshot,
+		compactionExpected: compactionExpectedForUsage,
 	})
 	activeSettings := gatewayruntimecache.GatewaySettings{}
 	if gatewaySettings != nil {
@@ -294,7 +298,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	if err != nil {
 		return PreflightResult{}, err
 	}
-	compactionTimeoutsDisabled := s.Codex.CompactionExpectedForRequest(req)
+	compactionTimeoutsDisabled := compactionExpectedForUsage
 	requestLane := options.RequestLane
 	if requestLane == "" {
 		requestLane = gatewayproto.LaneText
@@ -374,6 +378,8 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			groupUsageFields: groupUsageFieldsOr(groupAccess, runtimeGroupAccess),
 			endpoint:         input.Endpoint,
 			requestSnapshot:  input.RequestSnapshot,
+			// compactionExpectedForUsage 在闭包定义前已求值（preflight 单点判定）。
+			compactionExpected: compactionExpectedForUsage,
 		})
 	}
 
@@ -778,7 +784,9 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	usageContext := s.BuildGatewayUsageContext(usageContextInput{
 		traceID: input.TraceID, clientIP: input.ClientIP, identity: *identity,
 		trafficSource: trafficSource, groupUsageFields: &groupUsageFields,
-		endpoint: input.Endpoint, requestSnapshot: input.RequestSnapshot,
+		endpoint:           input.Endpoint,
+		requestSnapshot:    input.RequestSnapshot,
+		compactionExpected: compactionExpectedForUsage,
 	})
 
 	if bodyState := req.BodyState(); bodyState != nil && bodyState.JSONParseStatus == gatewaybody.JSONParseStatusInvalidJSON {
@@ -1688,7 +1696,7 @@ func gatewayAffinityProviderProfilePool(accounts []gatewayruntimecache.OpenAIAcc
 	for _, account := range accounts {
 		id := strings.TrimSpace(account.ProviderProtocolProfileID)
 		if id == "" {
-			id = strings.TrimSpace(account.ProviderCode)
+			id = strings.TrimSpace(account.VendorCode)
 		}
 		if seen[id] {
 			continue

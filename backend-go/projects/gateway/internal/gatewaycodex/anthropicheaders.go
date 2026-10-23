@@ -56,5 +56,5 @@ func PersistAnthropicUsageHeadersIfNeeded(
 // 判定（设计 §8.2：仅 provider_code='anthropic' AND type='oauth' 触发；
 // type 已由调用口先行判断）。
 func isAnthropicUsageAccount(account gatewayruntimecache.OpenAIAccountSecret) bool {
-	return normalizeProtocolToken(account.ProviderCode) == "anthropic"
+	return normalizeProtocolToken(account.VendorCode) == "anthropic"
 }

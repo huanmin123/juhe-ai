@@ -132,8 +132,8 @@ func projectAccountForRouting(account gatewayruntimecache.OpenAIAccountSecret) g
 	projected := gatewayrouting.UpstreamAccount{
 		ID: account.ID,
 		// B4 W2（设计 §8：行为键=vendor）：routing 层 ProviderCode 槽位承载
-		// vendor 身份（值域同名）；本投影统一取 VendorCode，不使用
-		// secret.ProviderCode 的同值投影。
+		// vendor 身份（值域同名）；本投影取 VendorCode（B4②：secret 侧
+		// ProviderCode 冗余槽位已退役，连接身份唯一承载于 VendorCode）。
 		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,
@@ -784,17 +784,16 @@ func projectBindingsForRuntime(projected []gatewayrouting.GroupBindingRow, origi
 // accountFromRoutingProjection rebuilds the minimal dispatchable secret when
 // the full re-hydration misses (the projection carries the identity columns
 // the dispatch layer keys on)。routing 层的 ProviderCode 槽位承载的是 vendor
-// 身份（见 projectAccountForRouting），因此必须同时回填 VendorCode——下游
-// 有多处按 VendorCode 判身份：切号冻结门（gatewaydispatch/switchtarget.go
-// 门 2）在空 vendor 时与任何非空目标都不相等，同供应商约束会失效；而
-// CodexOAuthVendorEligible / codexOAuthVendorBucketEligible 把空串当作
-// 「迁移期未回填」按 GPT 处理，会让 xAI 等非 gpt 的 OAuth 账户错误套用
-// Codex 归一化与 ChatGPT 桶键。只填 ProviderCode 会让回退路径上的账户
-// 同时踩这两个反向错误。
+// 身份（见 projectAccountForRouting），secret 侧统一以 VendorCode 承载该身份
+// （B4②：secret.ProviderCode 冗余槽位已退役）——下游有多处按 VendorCode 判身
+// 份：切号冻结门（gatewaydispatch/switchtarget.go 门 2）在空 vendor 时与任何
+// 非空目标都不相等，同供应商约束会失效；而 CodexOAuthVendorEligible /
+// codexOAuthVendorBucketEligible 把空串当作「迁移期未回填」按 GPT 处理，会让
+// xAI 等非 gpt 的 OAuth 账户错误套用 Codex 归一化与 ChatGPT 桶键。缺 VendorCode
+// 会让回退路径上的账户同时踩这两个反向错误。
 func accountFromRoutingProjection(account gatewayrouting.UpstreamAccount) gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        account.ID,
-		ProviderCode:              account.ProviderCode,
 		VendorCode:                account.ProviderCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,

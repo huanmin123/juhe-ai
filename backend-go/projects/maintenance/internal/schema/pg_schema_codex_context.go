@@ -18,7 +18,6 @@ var postgresSchemaCodexContext = []PGStatement{
       system_account_id text NOT NULL,
       api_key_id text,
       group_id text NOT NULL,
-      provider_code text NOT NULL,
       source_response_id text,
       latest_response_id text,
       latest_compact_id text,
@@ -38,7 +37,6 @@ var postgresSchemaCodexContext = []PGStatement{
       system_account_id text NOT NULL,
       api_key_id text,
       group_id text NOT NULL,
-      provider_code text NOT NULL,
       upstream_account_id text,
       model text,
       upstream_model text,
@@ -66,7 +64,6 @@ var postgresSchemaCodexContext = []PGStatement{
       system_account_id text NOT NULL,
       api_key_id text,
       group_id text NOT NULL,
-      provider_code text NOT NULL,
       upstream_account_id text,
       model text,
       upstream_model text,
@@ -108,11 +105,6 @@ var postgresSchemaCodexContext = []PGStatement{
 	{
 		SchemaName: "juhe_codex_context",
 		Source:     "codex-context",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_boundary ON codex_context_sessions(system_account_id, api_key_id, group_id, provider_code)`,
-	},
-	{
-		SchemaName: "juhe_codex_context",
-		Source:     "codex-context",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_responses_session ON codex_context_responses(session_id, created_at ASC, response_id)`,
 	},
 	{
@@ -124,11 +116,6 @@ var postgresSchemaCodexContext = []PGStatement{
 		SchemaName: "juhe_codex_context",
 		Source:     "codex-context",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_responses_expires ON codex_context_responses(expires_at ASC, response_id)`,
-	},
-	{
-		SchemaName: "juhe_codex_context",
-		Source:     "codex-context",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_responses_boundary ON codex_context_responses(system_account_id, api_key_id, group_id, provider_code, response_id)`,
 	},
 	{
 		SchemaName: "juhe_codex_context",
@@ -146,9 +133,23 @@ var postgresSchemaCodexContext = []PGStatement{
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_expires ON codex_context_compacts(expires_at ASC, compact_id)`,
 	},
 	{
+		// provider_code 维度退役（B4① 存储迁移批）：写入面恒空串、boundary
+		// 比对恒真，列与三个 boundary 索引（PG 随列删除自动移除）一并退役。
+		// 建表 DDL 已无该列，本组幂等 DROP 语句只对存量库生效（fresh 库列
+		// 不存在即零操作）。
 		SchemaName: "juhe_codex_context",
-		Source:     "codex-context",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_boundary ON codex_context_compacts(system_account_id, api_key_id, group_id, provider_code, compact_id)`,
+		Source:     "codex-context-provider-code-retirement",
+		SQL:        `ALTER TABLE juhe_codex_context.codex_context_sessions DROP COLUMN IF EXISTS provider_code`,
+	},
+	{
+		SchemaName: "juhe_codex_context",
+		Source:     "codex-context-provider-code-retirement",
+		SQL:        `ALTER TABLE juhe_codex_context.codex_context_responses DROP COLUMN IF EXISTS provider_code`,
+	},
+	{
+		SchemaName: "juhe_codex_context",
+		Source:     "codex-context-provider-code-retirement",
+		SQL:        `ALTER TABLE juhe_codex_context.codex_context_compacts DROP COLUMN IF EXISTS provider_code`,
 	},
 	{
 		SchemaName: "juhe_codex_context",

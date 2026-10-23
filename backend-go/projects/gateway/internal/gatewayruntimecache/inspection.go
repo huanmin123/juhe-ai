@@ -55,8 +55,8 @@ func (s *Service) ListCachedActiveResponseInspectionPoliciesForAccountsAsync(ctx
 			continue
 		}
 		providerCode := ""
-		if accounts[i].ProviderCode != "" {
-			providerCode = trimSpace(accounts[i].ProviderCode)
+		if accounts[i].VendorCode != "" {
+			providerCode = trimSpace(accounts[i].VendorCode)
 		}
 		key := protocolCode + ":" + providerCode
 		if seen[key] {

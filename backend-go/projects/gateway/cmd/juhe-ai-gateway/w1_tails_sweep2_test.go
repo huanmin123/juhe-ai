@@ -471,8 +471,7 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 		if credErr != nil {
 			t.Fatalf("加密凭据: %v", credErr)
 		}
-		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at)
-			VALUES ('acc-w1t-extra', 'sys_admin', 'openai', 'extra', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, ?, NULL)`, credentials); err != nil {
+		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at) VALUES ('acc-w1t-extra', 'sys_admin', 'extra', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, ?, NULL)`, credentials); err != nil {
 			t.Fatalf("seed 额外账户: %v", err)
 		}
 		if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acc-w1t-extra', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '2026-01-01T00:00:00.000Z')`); err != nil {
@@ -531,7 +530,7 @@ func w1tLocksOpenReadWrite(t *testing.T, name string) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, statement := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, name TEXT, type TEXT,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, type TEXT,
 			status TEXT, schedulable INTEGER DEFAULT 1, cooldown_until TEXT, updated_at TEXT, deleted_at TEXT)`,
 		`CREATE TABLE account_lock_states (account_id TEXT, enabled INTEGER, lock_state TEXT,
 			lock_death_timeout_seconds INTEGER, lock_retry_interval_seconds INTEGER, incident_id TEXT, generation INTEGER,
@@ -560,8 +559,7 @@ func w1tLocksInsertState(t *testing.T, db *sql.DB, row chainAccountLockRow) {
 
 func w1tLocksSeedAccount(t *testing.T, db *sql.DB, accountID string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, updated_at, deleted_at)
-		VALUES (?, 'sys-w1t', 'openai', 'acc', 'api_key', 'active', 1, '2026-09-14T00:00:00.000Z', NULL)`, accountID); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, updated_at, deleted_at) VALUES (?, 'sys-w1t', 'acc', 'api_key', 'active', 1, '2026-09-14T00:00:00.000Z', NULL)`, accountID); err != nil {
 		t.Fatalf("seed 账户(%s): %v", accountID, err)
 	}
 }

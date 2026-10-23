@@ -21,9 +21,10 @@ func billingTestSeconds(v float64) *float64 { return &v }
 func TestChainMediaJobTerminalCostUsdVideoPerCall(t *testing.T) {
 	// cogvideox 载体已随 2025 前模型清理批移除，按次机制载体换现役
 	// MiniMax-Hailuo-2.3（国内 768P-6s 主档 2.00 元/条 ÷7.0）。
+	// B4①：计价键取水合账户 vendor（media_jobs 不再持久化 provider_code）。
+	account := &chainMediaJobAccount{ProviderCode: "minimax"}
 	record := &gatewaymedia.MediaJobRecord{
-		Kind:         gatewaymedia.JobKindVideo,
-		ProviderCode: "minimax",
+		Kind: gatewaymedia.JobKindVideo,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
 			Model:   "MiniMax-Hailuo-2.3",
 			Seconds: billingTestSeconds(6),
@@ -31,12 +32,12 @@ func TestChainMediaJobTerminalCostUsdVideoPerCall(t *testing.T) {
 		ParamsApplied: []string{"model", "prompt", "seconds"},
 	}
 	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.2857142857 {
+	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0.2857142857 {
 		t.Fatalf("Hailuo-2.3 per-call cost = %v, want 0.2857142857（roundCost(2/7)，PerCall × 1）", cost)
 	}
 	// failed 不虚计（按次行同样只在 completed 计费）。
 	ir.Status = gatewaymedia.JobStatusFailed
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0 {
+	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0 {
 		t.Fatalf("failed per-call cost = %v, want 0", cost)
 	}
 }
@@ -46,9 +47,9 @@ func TestChainMediaJobTerminalCostUsdVideoPerCall(t *testing.T) {
 // 回报、创建请求 seconds 生效（ParamsApplied 含 seconds）→ 按快照请求秒数
 // × 目录秒价计费（usage_source=request 语义）；上游回报优先于请求自算。
 func TestChainMediaJobTerminalCostUsdRequestSelfComputedSeconds(t *testing.T) {
+	account := &chainMediaJobAccount{ProviderCode: "minimax"}
 	record := &gatewaymedia.MediaJobRecord{
-		Kind:         gatewaymedia.JobKindVideo,
-		ProviderCode: "minimax",
+		Kind: gatewaymedia.JobKindVideo,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
 			Model:   "MiniMax-H3", // 768P 0.50 元/s ÷ 7.0
 			Seconds: billingTestSeconds(4),
@@ -56,12 +57,12 @@ func TestChainMediaJobTerminalCostUsdRequestSelfComputedSeconds(t *testing.T) {
 		ParamsApplied: []string{"model", "prompt", "seconds", "input_reference"},
 	}
 	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.2857142857 {
+	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0.2857142857 {
 		t.Fatalf("self-computed cost = %v, want 0.2857142857（roundCost(4s × 0.5/7)）", cost)
 	}
 	// 上游回报优先：轮询响应带秒计量时以回报为准，请求值不覆盖。
 	ir.Usage.OutputVideoSeconds = billingTestSeconds(2)
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.1428571429 {
+	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0.1428571429 {
 		t.Fatalf("upstream usage wins = %v, want 0.1428571429（roundCost(2s × 0.5/7)）", cost)
 	}
 }
@@ -72,21 +73,20 @@ func TestChainMediaJobTerminalCostUsdRequestSelfComputedSeconds(t *testing.T) {
 // ——Veo 先例，即便模型落了秒价也不按 ignored 请求值计）。
 func TestChainMediaJobTerminalCostUsdUsageMissing(t *testing.T) {
 	// 无回报且请求未带 seconds → usage_missing（0）。
+	account := &chainMediaJobAccount{ProviderCode: "minimax"}
 	record := &gatewaymedia.MediaJobRecord{
 		Kind:            gatewaymedia.JobKindVideo,
-		ProviderCode:    "minimax",
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "MiniMax-H3"},
 		ParamsApplied:   []string{"model", "prompt"},
 	}
 	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0 {
+	if cost := chainMediaJobTerminalCostUsd(account, record, ir); cost != 0 {
 		t.Fatalf("no-basis cost = %v, want 0（usage_missing 不猜测）", cost)
 	}
 	// seconds 进了请求但属 ignored（Veo：SupportsSeconds=false）→ 不自算，
 	// 目录秒价（$0.40/s）不按未生效的用户值连乘。
 	veo := &gatewaymedia.MediaJobRecord{
-		Kind:         gatewaymedia.JobKindVideo,
-		ProviderCode: "gemini",
+		Kind: gatewaymedia.JobKindVideo,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
 			Model:   "veo-3.0-generate-preview",
 			Seconds: billingTestSeconds(8),
@@ -94,7 +94,7 @@ func TestChainMediaJobTerminalCostUsdUsageMissing(t *testing.T) {
 		ParamsApplied: []string{"model", "prompt", "size", "negative_prompt"},
 		ParamsIgnored: []string{"seconds"},
 	}
-	if cost := chainMediaJobTerminalCostUsd(veo, ir); cost != 0 {
+	if cost := chainMediaJobTerminalCostUsd(&chainMediaJobAccount{ProviderCode: "gemini"}, veo, ir); cost != 0 {
 		t.Fatalf("ignored seconds cost = %v, want 0（用户值不生效不构成计量基源）", cost)
 	}
 	// 助手级断言：ignored 场景 chainMediaJobVideoUsageSecondsOf 返回 nil

@@ -26,6 +26,7 @@ const sqliteUsageShardBaseDDL = `
       api_key_id TEXT,
       group_id TEXT,
       route_group_id TEXT,
+      compaction_expected INTEGER NOT NULL DEFAULT 0,
       account_id TEXT,
       endpoint TEXT,
       provider_code TEXT,

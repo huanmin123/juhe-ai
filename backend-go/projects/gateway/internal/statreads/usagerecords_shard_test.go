@@ -19,7 +19,7 @@ import (
 const shardSchema = `
 	CREATE TABLE usage_records (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
-		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT,
+		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT, compaction_expected INTEGER NOT NULL DEFAULT 0, account_id TEXT, provider_code TEXT, endpoint TEXT,
 		model TEXT, upstream_model TEXT, upstream_response_model TEXT, billed_service_tier TEXT,
 		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0, stream INTEGER DEFAULT 0,
 		status_code INTEGER, success INTEGER DEFAULT 0, failure_attribution TEXT,
@@ -43,11 +43,13 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 	}
 	seedRows := []string{
 		// 旧记录在前；两条记录跨同一 shard 验证倒序与水合。
+		// u-1 显式 compaction_expected=1（压缩标记 SQLite integer 臂），u-2 走
+		// 列默认 0。
 		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id,
 			account_id, provider_code, endpoint, model, stream, status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens,
-			cache_read_tokens, cost_usd, created_at) VALUES
+			cache_read_tokens, cost_usd, compaction_expected, created_at) VALUES
 			('u-1', 'sys-user-1', 'trace-1', 'gateway', '10.0.0.1', 'key-1', 'g-1', 'acct-1', 'openai', '/v1/chat', 'gpt-5.2',
-			 1, 200, 1, 120, 900, 100, 50, 10, 0.25, '2026-09-04T10:00:00.000Z')`,
+			 1, 200, 1, 120, 900, 100, 50, 10, 0.25, 1, '2026-09-04T10:00:00.000Z')`,
 		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, client_ip, error_code, error_message,
 			failure_attribution, success, status_code, created_at) VALUES
 			('u-2', 'sys-user-1', 'trace-2', 'gateway', '10.0.0.2', 'rate_limit_exceeded', NULL, 'gateway_policy',
@@ -82,7 +84,7 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 	for _, statement := range []string{
 		`INSERT INTO api_keys (id, name, system_account_id) VALUES ('key-1', '主 Key', 'sys-user-1')`,
 		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-1', '默认组', 'sys-user-1')`,
-		`INSERT INTO accounts (id, name, system_account_id, provider_code, type, status) VALUES ('acct-1', '账户A', 'sys-user-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-1', '账户A', 'sys-user-1', 'openai', 'api_key', 'active')`,
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-user-1', 'user1', 'User One')`,
 	} {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -115,6 +117,7 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 				FailureReason         *string `json:"failureReason"`
 				FailureAttribution    *string `json:"failureAttribution"`
 				UpstreamModelMismatch bool    `json:"upstreamModelMismatch"`
+				CompactionExpected    bool    `json:"compactionExpected"`
 				CreatedAt             string  `json:"createdAt"`
 			} `json:"items"`
 			Total int `json:"total"`
@@ -132,6 +135,13 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 	if items[0].ID != "u-2" || items[1].ID != "u-1" {
 		t.Fatalf("order wrong: %#v", items)
 	}
+	// 压缩标记映射（SQLite integer 臂）：u-1 显式 1 → true，u-2 默认 0 → false。
+	if !items[1].CompactionExpected {
+		t.Fatalf("u-1 compactionExpected = false, want true: %#v", items[1])
+	}
+	if items[0].CompactionExpected {
+		t.Fatalf("u-2 compactionExpected = true, want false: %#v", items[0])
+	}
 	failed := items[0]
 	if failed.FailureAttribution == nil || *failed.FailureAttribution != "gateway_policy" {
 		t.Fatalf("attribution wrong: %#v", failed.FailureAttribution)
@@ -148,7 +158,7 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 		items[1].GroupName == nil || *items[1].GroupName != "默认组" ||
 		items[1].AccountName == nil || *items[1].AccountName != "账户A" {
 		t.Fatalf("hydration wrong: %#v", items[1])
-}
+	}
 	if items[1].ProviderCode == nil || *items[1].ProviderCode != "openai" {
 		t.Fatalf("providerCode hydration wrong: %#v", items[1])
 	}

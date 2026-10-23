@@ -258,7 +258,6 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 	// volcengine：官方根 chat 请求按 /api/v3 服务根归一。
 	volcengineAccount := gatewaydispatch.AccountCandidate{
 		ID:              "acc_volc_chat",
-		ProviderCode:    "volcengine",
 		VendorCode:      "volcengine",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
@@ -277,7 +276,6 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 	// qwen：官方根 chat 请求按 /compatible-mode/v1 服务根归一。
 	qwenAccount := gatewaydispatch.AccountCandidate{
 		ID:              "acc_qwen_chat",
-		ProviderCode:    "qwen",
 		VendorCode:      "qwen",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
@@ -318,7 +316,7 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 	// openai /v1 归一拼接。
 	plainAccount := gatewaydispatch.AccountCandidate{
 		ID:              "acc_volc_plain",
-		ProviderCode:    "volcengine",
+		VendorCode:      "volcengine",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		Type:            "api_key",

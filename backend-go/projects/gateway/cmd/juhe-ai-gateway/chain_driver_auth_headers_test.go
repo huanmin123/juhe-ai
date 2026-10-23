@@ -37,7 +37,7 @@ func TestChainProviderDriverAnthropicAuthHeaderMatrix(t *testing.T) {
 	t.Run("api_key uses x-api-key and default version", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x"}`, nil)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_a1", ProtocolCode: "anthropic", ProviderCode: "anthropic",
+			ID: "acc_a1", ProtocolCode: "anthropic", VendorCode: "anthropic",
 			Type: "api_key", APIKey: "sk-ant-1", BaseURL: "https://anthropic.example",
 		}
 		parts, err := driver.BuildGatewayUpstreamRequestParts(ctx, req, account, gatewaydispatch.UsageIdentity{}, "")
@@ -62,7 +62,7 @@ func TestChainProviderDriverAnthropicAuthHeaderMatrix(t *testing.T) {
 	t.Run("client anthropic-version passes through", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x"}`, map[string]string{"Anthropic-Version": "2025-01-01"})
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_a2", ProtocolCode: "anthropic", ProviderCode: "anthropic",
+			ID: "acc_a2", ProtocolCode: "anthropic", VendorCode: "anthropic",
 			Type: "api_key", APIKey: "sk-ant-2", BaseURL: "https://anthropic.example",
 		}
 		parts, err := driver.BuildGatewayUpstreamRequestParts(ctx, req, account, gatewaydispatch.UsageIdentity{}, "")
@@ -77,7 +77,7 @@ func TestChainProviderDriverAnthropicAuthHeaderMatrix(t *testing.T) {
 	t.Run("oauth uses bearer access token with merged beta and cli identity", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x"}`, nil)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_a3", ProtocolCode: "anthropic", ProviderCode: "anthropic",
+			ID: "acc_a3", ProtocolCode: "anthropic", VendorCode: "anthropic",
 			Type:        "oauth",
 			APIKey:      "not-the-access-token",
 			Credentials: map[string]any{"access_token": "oauth-token-1"},
@@ -124,7 +124,7 @@ func TestChainProviderDriverAnthropicAuthHeaderMatrix(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x"}`,
 			map[string]string{"Anthropic-Beta": "oauth-2025-04-20, Custom-Beta"})
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_a4", ProtocolCode: "anthropic", ProviderCode: "anthropic",
+			ID: "acc_a4", ProtocolCode: "anthropic", VendorCode: "anthropic",
 			Type:        "oauth",
 			Credentials: map[string]any{"access_token": "oauth-token-2"},
 			BaseURL:     "https://anthropic.example",
@@ -144,7 +144,7 @@ func TestChainProviderDriverAnthropicAuthHeaderMatrix(t *testing.T) {
 	t.Run("glm coding profile uses bearer api key", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1/messages", `{"model":"glm-x"}`, nil)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_a5", ProtocolCode: "anthropic", ProviderCode: "glm",
+			ID: "acc_a5", ProtocolCode: "anthropic", VendorCode: "glm",
 			ProviderProtocolProfileID: "profile_glm_coding_anthropic_v1",
 			Type:                      "api_key", APIKey: "glm-key-1", BaseURL: "https://glm.example",
 		}
@@ -173,7 +173,7 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 	t.Run("api_key uses x-goog-api-key", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, geminiGenerateContentPath("gemini-2.5-flash"), body, nil)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_g1", ProtocolCode: "gemini", ProviderCode: "gemini",
+			ID: "acc_g1", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "api_key", APIKey: "gem-key-1", BaseURL: "https://gem.example",
 		}
 		parts, err := driver.BuildGatewayUpstreamRequestParts(ctx, req, account, gatewaydispatch.UsageIdentity{}, "")
@@ -195,7 +195,7 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 			"Content-Type":      "application/json",
 		})
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_g2", ProtocolCode: "gemini", ProviderCode: "gemini",
+			ID: "acc_g2", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "google_oauth", APIKey: "oa-token-1",
 			Credentials: map[string]any{"oauth_type": "ai_studio", "quota_project_id": "proj-quota"},
 			BaseURL:     "https://gem.example",
@@ -236,7 +236,7 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 			"X-Custom-Trace": "drop-me",
 		})
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_g3", ProtocolCode: "gemini", ProviderCode: "gemini",
+			ID: "acc_g3", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "google_oauth", APIKey: "oa-token-2",
 			Credentials: map[string]any{"oauth_type": "code_assist", "project_id": "proj-9"},
 			BaseURL:     "https://cloudcode.example",
@@ -280,7 +280,7 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 	t.Run("code assist legacy credentials without oauth type use project id", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, geminiGenerateContentPath("gemini-2.5-flash"), body, nil)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_g4", ProtocolCode: "gemini", ProviderCode: "gemini",
+			ID: "acc_g4", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "google_oauth", APIKey: "oa-token-3",
 			Credentials: map[string]any{"project_id": "proj-legacy"},
 			BaseURL:     "https://cloudcode.example",
@@ -297,7 +297,7 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 	t.Run("explicit ai studio with project id stays native", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, geminiGenerateContentPath("gemini-2.5-flash"), body, nil)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_g5", ProtocolCode: "gemini", ProviderCode: "gemini",
+			ID: "acc_g5", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "google_oauth", APIKey: "oa-token-4",
 			Credentials: map[string]any{"oauth_type": "ai_studio", "project_id": "proj-ignored"},
 			BaseURL:     "https://gem.example",
@@ -314,7 +314,7 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 	t.Run("code assist rejects non generation endpoints", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1beta/models/gemini-2.5-flash:countTokens", body, nil)
 		account := gatewaydispatch.AccountCandidate{
-			ID: "acc_g6", ProtocolCode: "gemini", ProviderCode: "gemini",
+			ID: "acc_g6", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "google_oauth", APIKey: "oa-token-5",
 			Credentials: map[string]any{"oauth_type": "code_assist", "project_id": "proj-9"},
 			BaseURL:     "https://cloudcode.example",

@@ -1502,7 +1502,7 @@ func seedCodexContextSection(w *chatCodexWriter, resources chatCodexResources) e
 				"response_id": response.id, "session_id": response.sessionID,
 				"previous_response_id": chatCodexNullable(response.previousID),
 				"system_account_id":    owner.ID, "api_key_id": chatCodexNullable(keyOrEmpty(key, hasKey)),
-				"group_id": session.groupID, "provider_code": account.Provider,
+				"group_id":            session.groupID,
 				"upstream_account_id": account.ID, "model": response.model, "upstream_model": response.model,
 				"storage_key": storageKey, "storage_offset_bytes": offset, "sha256": digest,
 				"raw_size_bytes": len(chatCodexMustJSON(response.payload)), "compressed_size_bytes": len(compressed),
@@ -1527,7 +1527,7 @@ func seedCodexContextSection(w *chatCodexWriter, resources chatCodexResources) e
 				"source_response_id": chatCodexNullable(compact.previousID),
 				"summary_digest":     chatCodexDigest([]byte(compact.id + "-summary")),
 				"system_account_id":  owner.ID, "api_key_id": chatCodexNullable(keyOrEmpty(key, hasKey)),
-				"group_id": session.groupID, "provider_code": account.Provider,
+				"group_id":            session.groupID,
 				"upstream_account_id": account.ID, "model": compact.model, "upstream_model": compact.model,
 				"storage_key": storageKey, "storage_offset_bytes": offset, "sha256": digest,
 				"raw_size_bytes": len(chatCodexMustJSON(compact.payload)), "compressed_size_bytes": len(compressed),
@@ -1541,7 +1541,7 @@ func seedCodexContextSection(w *chatCodexWriter, resources chatCodexResources) e
 		sessionShard := chatCodexShardIndex(session.id, shardCount)
 		appendRow(sessionShard, "codex_context_sessions", map[string]any{
 			"id": session.id, "system_account_id": owner.ID, "api_key_id": chatCodexNullable(keyOrEmpty(key, hasKey)),
-			"group_id": session.groupID, "provider_code": account.Provider,
+			"group_id":           session.groupID,
 			"source_response_id": chatCodexNullable(session.sourceRespID),
 			"latest_response_id": chatCodexNullable(latestResponse[session.id]),
 			"latest_compact_id":  chatCodexNullable(latestCompact[session.id]),

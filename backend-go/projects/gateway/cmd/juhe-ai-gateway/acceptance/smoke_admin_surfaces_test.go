@@ -141,10 +141,10 @@ func TestAdminSmokeSurfaces(t *testing.T) {
 			"healthCheckConnectionPresetCode": "gpt_openai_v1",
 			"healthCheckEndpointMode":         "chat_json",
 			"healthCheckModel":                "gpt-5.6-sol",
-			"credentials":               map[string]any{"api_key": "sk-acceptance-" + runTag, "base_url": "https://api.openai.com/v1"},
-			"supportedModels":           []string{"gpt-5.6-sol"},
-			"skipInitialHealthCheck":    true,
-			"groupId":                   "grp_default_gpt_sys_admin",
+			"credentials":                     map[string]any{"api_key": "sk-acceptance-" + runTag, "base_url": "https://api.openai.com/v1"},
+			"supportedModels":                 []string{"gpt-5.6-sol"},
+			"skipInitialHealthCheck":          true,
+			"groupId":                         "grp_default_gpt_sys_admin",
 		}, wantStatus(http.StatusCreated))
 		accountID := dataString(created, "id")
 		if accountID == "" {

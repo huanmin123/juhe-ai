@@ -236,7 +236,7 @@ func newW1ChatKeysFixture(t *testing.T) *w1ChatKeysFixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, statement := range []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, description TEXT, provider_code TEXT, enabled INTEGER, is_default INTEGER, created_at TEXT, updated_at TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, description TEXT, enabled INTEGER, is_default INTEGER, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, description TEXT, mode TEXT, status TEXT, is_default INTEGER, config_json TEXT, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT, system_account_id TEXT, group_id TEXT, priority INTEGER, weight INTEGER, status TEXT, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT, route_strategy_id TEXT, name TEXT, description TEXT, key_hash TEXT, key_prefix TEXT, key_suffix TEXT, key_secret_encrypted TEXT, status TEXT, is_default INTEGER, purpose TEXT, expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT, updated_at TEXT)`,
@@ -253,8 +253,7 @@ func newW1ChatKeysFixture(t *testing.T) *w1ChatKeysFixture {
 // seedDefaultGPTGroup 插入默认 gpt 分组，让默认策略路由可创建。
 func (f *w1ChatKeysFixture) seedDefaultGPTGroup(t *testing.T) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at)
-		VALUES (?, ?, 'GPT 分组', 'gpt', 1, 1, '2026-01-01T00:00:00.000Z')`, f.groupID, f.ownerID); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at) VALUES (?, ?, 'GPT 分组', 1, 1, '2026-01-01T00:00:00.000Z')`, f.groupID, f.ownerID); err != nil {
 		t.Fatalf("seed group: %v", err)
 	}
 }

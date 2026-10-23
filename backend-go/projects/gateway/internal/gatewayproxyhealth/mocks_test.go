@@ -46,7 +46,6 @@ type accountFixture struct {
 	id                 string
 	systemAccountID    string
 	ownerAccountID     string
-	providerCode       string
 	protocolCode       string
 	protocolVersion    string
 	vendorCode         string
@@ -65,10 +64,9 @@ func (f accountFixture) build() gatewayruntimecache.OpenAIAccountSecret {
 		ID:                          f.id,
 		SystemAccountID:             f.systemAccountID,
 		AccountOwnerSystemAccountID: f.ownerAccountID,
-		ProviderCode:                f.providerCode,
+		VendorCode:                  f.vendorCode,
 		ProtocolCode:                f.protocolCode,
 		ProtocolVersion:             f.protocolVersion,
-		VendorCode:                  f.vendorCode,
 		BaseURL:                     f.baseURL,
 		Type:                        f.accountType,
 		ProxyProfileID:              f.proxyProfileID,

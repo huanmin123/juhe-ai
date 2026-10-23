@@ -24,7 +24,6 @@ func TestGatewayBaseURLBucketKeyPinnedToCodexOAuthVendorEligible(t *testing.T) {
 		account := gatewayruntimecache.OpenAIAccountSecret{
 			ID:              "acc_pin",
 			SystemAccountID: "sys_pin",
-			ProviderCode:    "openai",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
 			VendorCode:      vendor,

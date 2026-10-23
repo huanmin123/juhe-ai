@@ -273,8 +273,8 @@ func extractOpenAICodeAndState(callbackURL string) (code, state string, err erro
 		state := normalizeText(query.Get("state"))
 		if code == "" && state == "" {
 			fragment := parseQueryValues(parsed.Fragment)
-			code = normalizeText(fragment["code"])
-			state = normalizeText(fragment["state"])
+			code = normalizeText(fragment.Get("code"))
+			state = normalizeText(fragment.Get("state"))
 		}
 		if code == "" || state == "" {
 			return "", "", errors.New("回调 URL 必须包含 code 和 state")
@@ -287,8 +287,8 @@ func extractOpenAICodeAndState(callbackURL string) (code, state string, err erro
 		state = normalizeText(callbackURL[index+1:])
 	} else {
 		query := parseQueryValues(callbackURL)
-		code = normalizeText(query["code"])
-		state = normalizeText(query["state"])
+		code = normalizeText(query.Get("code"))
+		state = normalizeText(query.Get("state"))
 	}
 	if code == "" || state == "" {
 		return "", "", errors.New("回调 URL 必须包含 code 和 state")

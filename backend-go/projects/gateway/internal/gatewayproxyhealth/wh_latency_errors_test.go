@@ -468,7 +468,7 @@ func TestWhProxyHealthAsyncOrderSweep(t *testing.T) {
 	clock := newFakeClock(1_000_000)
 	// 1. 无状态存储 → 异步入口回退内存路径。
 	memoryOnly := NewProxyHealthService(clock.Now, nil, ProxyHealthOptions{}, nil)
-	a := accountFixture{id: "a", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
+	a := accountFixture{id: "a", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
 	result, err := memoryOnly.OrderGatewayAccountsByUpstreamBucketHealthAsync(ctx, []gatewayruntimecache.OpenAIAccountSecret{a}, nil)
 	if err != nil || len(result.Accounts) != 1 {
 		t.Fatalf("内存回退 = %+v err=%v", result, err)
@@ -480,7 +480,7 @@ func TestWhProxyHealthAsyncOrderSweep(t *testing.T) {
 	// 3. Redis 语义路径：全员避让 → WithEntries 的 bypassed 汇总。
 	store := newWhLatencyStore(clock)
 	service := NewProxyHealthService(clock.Now, store, ProxyHealthOptions{CASMaxAttempts: 4}, nil)
-	b := accountFixture{id: "b", systemAccountID: "sys", providerCode: "p", baseURL: "https://x.example.com"}.build()
+	b := accountFixture{id: "b", systemAccountID: "sys", vendorCode: "p", baseURL: "https://x.example.com"}.build()
 	if _, err := service.RecordGatewayUpstreamBucketFailureAsync(ctx, a, "err", FailureRecordOptions{}); err != nil {
 		t.Fatal(err)
 	}

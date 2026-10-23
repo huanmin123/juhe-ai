@@ -305,7 +305,7 @@ func TestW1RAccountFromRoutingProjection(t *testing.T) {
 		SupportedModels:           []string{"gpt-pro"},
 	}
 	rebuilt := accountFromRoutingProjection(projection)
-	if rebuilt.ID != "acc_missing" || rebuilt.ProviderCode != "openai" || rebuilt.ProviderProtocolProfileID != "prof_2" ||
+	if rebuilt.ID != "acc_missing" || rebuilt.VendorCode != "openai" || rebuilt.ProviderProtocolProfileID != "prof_2" ||
 		rebuilt.ProtocolCode != "openai" || rebuilt.ProtocolVersion != "v1" {
 		t.Fatalf("重建账户 = %+v, want 身份列回填", rebuilt)
 	}
@@ -567,7 +567,7 @@ func TestW1RRehydrateAccounts(t *testing.T) {
 	if accounts[0].APIKey != "sk-upstream-account-key" {
 		t.Errorf("账户一凭据 = %q, want 缓存回源完整凭据", accounts[0].APIKey)
 	}
-	if accounts[1].ID != "acc_unknown" || accounts[1].APIKey != "" || accounts[1].ProviderCode != "openai" {
+	if accounts[1].ID != "acc_unknown" || accounts[1].APIKey != "" || accounts[1].VendorCode != "openai" {
 		t.Errorf("账户二 = %+v, want 投影回退（无凭据）", accounts[1])
 	}
 

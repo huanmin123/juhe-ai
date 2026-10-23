@@ -911,6 +911,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create business auth service: %w", err)
 	}
+	// Dev-only initial-password gate bypass: the switch is parsed once in
+	// loadRuntimeConfig (production refuses it there) and forwarded to the
+	// underlying authenticator so every actor/credential construction site
+	// normalizes must_change_password away.
+	businessAuth.SetInitialPasswordGateDisabled(cfg.MustChangePasswordGateDisabled)
 	// The system-account store is fail-closed behind the same business owner
 	// gate: without a proven handoff it never writes the business database
 	// (BUG-0169.3).
@@ -1374,9 +1379,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 不影响匹配（具体模式优先）。
 	if chainServices != nil && chainServices.LatencyDegradation != nil {
 		routeStrategyStore.SetSpeedFirstRuntimeFacade(routeStrategySpeedFirstFacade{
-				service:              chainServices.LatencyDegradation,
-				preferenceNameLookup: newSchedulingPreferenceNameLookup(composed),
-			})
+			service:              chainServices.LatencyDegradation,
+			preferenceNameLookup: newSchedulingPreferenceNameLookup(composed),
+		})
 	}
 	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink, Log: slog.Default()}).Mount(kern)
 

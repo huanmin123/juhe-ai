@@ -95,4 +95,3 @@ func (c *gatewayChain) renderRealtimeSecretsError(res *gatewaypreauth.TrackingWr
 func (c *gatewayChain) writeRealtimeSecretsJSON(res *gatewaypreauth.TrackingWriter, status int, body map[string]any) {
 	kernel.WriteJSON(res, status, body)
 }
-

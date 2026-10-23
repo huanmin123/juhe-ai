@@ -25,7 +25,7 @@ import (
 )
 
 // xaiCompatOAuthAccount 构造带 responses-only 端点模式集的 oauth 账户候选
-//（Grok OAuth 固定 responses_json/responses_sse，与运行时 oauth 缺省投影
+// （Grok OAuth 固定 responses_json/responses_sse，与运行时 oauth 缺省投影
 // 一致）；vendorCode 参数化以覆盖 gpt/空值对照形态。
 func xaiCompatOAuthAccount(vendorCode string) gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
@@ -82,7 +82,7 @@ func TestChainProviderDriverXaiOAuthClientCompatibilityGate(t *testing.T) {
 // 的改写形态：compat=codex_responses + POST /v1/responses 命中 D-99 兼容体
 // 改写（string input → message 数组、强制 SSE、store 关闭、归一化删除面删除、
 // instructions 注入）与 Accept/Content-Type 强制 + 合成 Codex 客户端头
-//（Originator），同时 xai 账户凭据不被吞掉（Authorization 保持 Bearer），且
+// （Originator），同时 xai 账户凭据不被吞掉（Authorization 保持 Bearer），且
 // grok 主机的 CLI 身份三头在头序末位仍生效（覆盖合成的 Codex UA）。
 func TestChainProviderDriverXaiOAuthCodexResponsesCompatRewrite(t *testing.T) {
 	driver := newChainProviderDriver()

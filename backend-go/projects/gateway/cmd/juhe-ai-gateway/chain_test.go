@@ -112,14 +112,11 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 	statements := []string{
 		`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 1, request_limits_json TEXT)`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
 		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE accounts (
-			-- provider_code 已随供应商解耦退役（设计 §8）：夹具放宽为可空，仅
-			-- 供未迁移的旧种子继续写入；目标形态种子只写 vendor_code /
-			-- connection_driver_code。
-			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT,
-			vendor_code TEXT, connection_driver_code TEXT, oauth_type TEXT, health_check_connection_id TEXT,
+			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
+			vendor_code TEXT, connection_driver_code TEXT, oauth_type TEXT, health_check_connection_id TEXT, 
 			provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT,
 			name TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL,
 			capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER NOT NULL DEFAULT 1,
@@ -161,7 +158,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 		`CREATE TABLE group_authorization_settings (
 			authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL,
 			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
-		`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, provider_code TEXT, model TEXT NOT NULL, model_id TEXT, created_at TEXT NOT NULL)`,
+		`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, model TEXT NOT NULL, model_id TEXT, created_at TEXT NOT NULL)`,
 		`CREATE TABLE account_api_key_runtime_states (
 			account_id TEXT NOT NULL, key_fingerprint TEXT NOT NULL, key_index INTEGER,
 			status TEXT NOT NULL, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT,
@@ -182,7 +179,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			PRIMARY KEY (account_id, source_model, source_endpoint_family))`,
 		`CREATE TABLE response_inspection_policies (
 			id TEXT PRIMARY KEY, name TEXT, enabled INTEGER NOT NULL, priority INTEGER NOT NULL,
-			scope_type TEXT NOT NULL, protocol_code TEXT, provider_code TEXT, match_json TEXT,
+			scope_type TEXT NOT NULL, protocol_code TEXT, match_json TEXT,
 			action TEXT, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		// Real-DDL shape (Node provider-model-catalog.repository.ts columns()
 		// + maintenance sqlite_schema.go): built-in catalog rows only. The
@@ -290,7 +287,6 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
 			api_key_id TEXT NOT NULL,
 			account_id TEXT NOT NULL,
-			provider_code TEXT NOT NULL,
 			provider_protocol_profile_id TEXT,
 			upstream_job_id TEXT NOT NULL,
 			status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
@@ -384,7 +380,7 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 		}
 	}
 	seed(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`, fixture.systemAccount)
-	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES (?, ?, 'openai', 1, 'personal')`, fixture.groupID, fixture.systemAccount)
+	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, 1, 'personal')`, fixture.groupID, fixture.systemAccount)
 	credentials, err := accounts.EncryptJSON("chain-test-secret", map[string]any{
 		"api_key":  "sk-upstream-account-key",
 		"base_url": "",
@@ -393,9 +389,9 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 		t.Fatalf("encrypt credentials: %v", err)
 	}
 	seed(`INSERT INTO accounts (
-			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-		) VALUES (?, ?, 'openai', 'openai', 'prof_1', 'openai', 'v1', '账户一', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', '账户一', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
 		fixture.accountID, fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, fixture.accountID, now)
@@ -414,7 +410,7 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 	seed(`UPDATE accounts SET health_check_connection_id = 'conn_acc_1' WHERE id = ?`, fixture.accountID)
 	// 供应商解耦形态（设计 §3/§4）：支持模型经 models 单表 + model_id 外键；
 	// 旧 provider_code/model 列保留供禁改的调度水合读取（chain_accounts.go）。
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-test', 'mdl_gpt-test', ?)`,
 		fixture.accountID, now)
 	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
 		VALUES ('mdl_gpt-test', 'openai', 'gpt-test', 'gpt-test', 'global', 'active', '["chat_json","chat_sse"]', 1.0, ?, ?)`, now, now)
@@ -532,7 +528,7 @@ func TestChainAccountsSelectorListsDispatchableAccounts(t *testing.T) {
 	// 运行时候选/secret 的 provider 投影位与 vendor 同值（供应商与上游协议面
 	// 重构设计 §8：账户连接身份=vendor_code；本夹具沿用 legacy vendor 值
 	// 'openai'，目标形态种子应写 9 个真实厂商之一）。
-	if account.ID != fixture.accountID || account.ProviderCode != account.VendorCode || account.VendorCode != "openai" || account.ProtocolCode != "openai" {
+	if account.ID != fixture.accountID || account.VendorCode != account.VendorCode || account.VendorCode != "openai" || account.ProtocolCode != "openai" {
 		t.Fatalf("account identity wrong: %#v", account)
 	}
 	if account.APIKey != "sk-upstream-account-key" {
@@ -630,7 +626,7 @@ func TestChainProviderDriverBuildsUpstreamRequests(t *testing.T) {
 	req := gatewaypreauth.NewGatewayRequest(request)
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_1",
-		ProviderCode: "openai",
+		VendorCode:   "openai",
 		ProtocolCode: "openai",
 		BaseURL:      "https://upstream.example",
 		APIKey:       "sk-upstream",
@@ -678,7 +674,7 @@ func TestChainProviderDriverCapabilityMismatchReason(t *testing.T) {
 	// 影响写侧端点模式默认集与读面投影。
 	account := gatewaydispatch.AccountCandidate{
 		ID:                  "acc_1",
-		ProviderCode:        "openai",
+		VendorCode:          "openai",
 		ProtocolCode:        "openai",
 		ClientCompatibility: "codex",
 	}
@@ -702,7 +698,7 @@ func TestChainProviderDriverClientCompatibilityNotADispatchGate(t *testing.T) {
 	messagesReq := gatewaypreauth.NewGatewayRequest(messagesRequest)
 	anthropicAccount := gatewaydispatch.AccountCandidate{
 		ID:                  "acc_anthropic",
-		ProviderCode:        "anthropic",
+		VendorCode:          "anthropic",
 		ProtocolCode:        "anthropic",
 		ClientCompatibility: "openai_standard",
 	}
@@ -720,7 +716,7 @@ func TestChainProviderDriverClientCompatibilityNotADispatchGate(t *testing.T) {
 	//（codex_responses）承接 openai_standard 请求——两个方向都不淘汰。
 	legacyAccount := gatewaydispatch.AccountCandidate{
 		ID:                  "acc_openai_legacy",
-		ProviderCode:        "gpt",
+		VendorCode:          "gpt",
 		ProtocolCode:        "openai",
 		ClientCompatibility: "openai_standard",
 	}
@@ -729,7 +725,7 @@ func TestChainProviderDriverClientCompatibilityNotADispatchGate(t *testing.T) {
 	}
 	derivedAccount := gatewaydispatch.AccountCandidate{
 		ID:                  "acc_openai_derived",
-		ProviderCode:        "gpt",
+		VendorCode:          "gpt",
 		ProtocolCode:        "openai",
 		ClientCompatibility: "codex_responses",
 	}
@@ -1339,9 +1335,9 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	statements := []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
 		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, vendor_code TEXT, connection_driver_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER, concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, last_health_success_at TEXT, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, health_check_connection_id TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, vendor_code TEXT, connection_driver_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER, concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, last_health_success_at TEXT, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, health_check_connection_id TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
 		`CREATE TABLE group_accounts (account_id TEXT, system_account_id TEXT, group_id TEXT, account_authorization_id TEXT, local_priority INTEGER, local_super_priority_enabled INTEGER, local_fallback_enabled INTEGER, enabled INTEGER, created_at TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT, model_id TEXT, created_at TEXT)`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT, source_model TEXT, source_endpoint_family TEXT, target_connection_id TEXT, target_model_id TEXT, target_endpoint_family TEXT, enabled INTEGER, created_at TEXT, updated_at TEXT)`,
@@ -1351,7 +1347,7 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 		`CREATE TABLE account_api_key_runtime_states (account_id TEXT, key_fingerprint TEXT, key_index INTEGER, status TEXT, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT)`,
 		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER, username TEXT, password_encrypted TEXT, enabled INTEGER)`,
 		`CREATE TABLE account_quality_scores (account_id TEXT PRIMARY KEY, quality_score REAL, quality_state TEXT, ewma_first_token_ms REAL, last_sample_at TEXT)`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, scheduling_policy_json) VALUES ('grp-limit', 'sys_admin', 'openai', 1, 'personal', NULL)`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('grp-limit', 'sys_admin', 1, 'personal', NULL)`,
 	}
 	now := "2026-01-01T00:00:00.000Z"
 	// 9 个候选超出 final limit 7，验证 hydration 上限消费注入值。
@@ -1359,7 +1355,7 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 	for i := 0; i < 9; i++ {
 		id := string(rune('a'+i)) + "-limit-acc"
 		statements = append(statements,
-			`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('`+id+`', 'sys_admin', 'openai', '`+id+`', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`,
+			`INSERT INTO accounts (id, system_account_id, vendor_code, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('`+id+`', 'sys_admin', 'openai', '`+id+`', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`,
 			`INSERT INTO group_accounts VALUES ('`+id+`', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '`+now+`')`,
 			`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at) VALUES ('conn-limit-`+id+`', '`+id+`', 'gpt_openai_v1', 'https://`+id+`.example.invalid/v1', 1, '`+now+`', '`+now+`')`)
 	}

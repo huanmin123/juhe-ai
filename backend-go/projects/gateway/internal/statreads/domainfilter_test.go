@@ -26,8 +26,7 @@ func newDomainFixture(t *testing.T) *wdFixture {
 // seedDomainAccount 插入一个指定域的账户。
 func seedDomainAccount(t *testing.T, fixture *wdFixture, id, name, domain string) {
 	t.Helper()
-	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, provider_code, type, status, capability_domain)
-		VALUES ('`+id+`', '`+name+`', 'sys-owner-1', 'openai', 'api_key', 'active', '`+domain+`')`)
+	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status, capability_domain) VALUES ('`+id+`', '`+name+`', 'sys-owner-1', 'openai', 'api_key', 'active', '`+domain+`')`)
 }
 
 func TestOptionalCapabilityDomainFilter(t *testing.T) {

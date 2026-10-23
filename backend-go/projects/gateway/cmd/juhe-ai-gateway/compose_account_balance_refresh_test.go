@@ -624,10 +624,10 @@ func TestGatewayManualBalanceRefresherSingleKeyInputShapePinned(t *testing.T) {
 		// 核据此打快照 inputDigest，读端摘要匹配的写端输入）。
 		CredentialFingerprint: candidate.CredentialFingerprint,
 		ConfigJSON:            candidate.ConfigJSON,
-		APIKey:    platformaccountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
-		Trigger:   platformaccountbalance.TriggerManual,
-		IssuedAt:  fixedNow.UTC(),
-		ExpiresAt: fixedNow.UTC().Add(manualBalanceInputTTL),
+		APIKey:                platformaccountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
+		Trigger:               platformaccountbalance.TriggerManual,
+		IssuedAt:              fixedNow.UTC(),
+		ExpiresAt:             fixedNow.UTC().Add(manualBalanceInputTTL),
 	}
 	if !reflect.DeepEqual(input, expected) {
 		t.Fatalf("single-key manual input shape changed:\n got %#v\nwant %#v", input, expected)
