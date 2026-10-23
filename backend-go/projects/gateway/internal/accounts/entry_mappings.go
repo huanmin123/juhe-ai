@@ -88,9 +88,49 @@ func entryModeSet(values []string) map[string]bool {
 }
 
 // resolveEntryConnectionID 按 (账户, preset) 解析 enabled 连接行（§8：preset
-// 是账户内自然键）。缺省、未知或停用 preset 都按显式 400 拒绝。
+// 是账户内自然键）。未知或停用的显式 preset 按显式 400 拒绝；缺省（空）preset
+// 回退为该账户唯一的启用连接——B1 断点批前全部连接行的 preset 均为空串，空
+// preset 恰好隐式命中（单连接隐式默认的历史行为）；B1 后连接行都携带真实
+// preset，隐式命中断裂为恒错。前端账户编辑对话框不暴露连接维度（单连接隐式
+// UI），空 preset 回退恢复该 UX；账户有多个启用连接时无法无歧义默认，按映射
+// 目标解析失败拒绝并列出候选（中文文案过 localize 直达用户）。
 func (s *Store) resolveEntryConnectionID(ctx context.Context, q queryer, accountID, preset string) (string, error) {
 	preset = strings.TrimSpace(preset)
+	if preset == "" {
+		rows, err := q.QueryContext(ctx, s.bind(`SELECT id, COALESCE(connection_preset_code,'') FROM `+s.table("account_connections")+`
+			WHERE account_id = ? AND enabled = 1 ORDER BY connection_preset_code, id`), accountID)
+		if err != nil {
+			return "", err
+		}
+		defer rows.Close()
+		type enabledConnection struct {
+			ID     string
+			Preset string
+		}
+		connections := []enabledConnection{}
+		for rows.Next() {
+			var connection enabledConnection
+			if err := rows.Scan(&connection.ID, &connection.Preset); err != nil {
+				return "", err
+			}
+			connections = append(connections, connection)
+		}
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		switch len(connections) {
+		case 1:
+			return connections[0].ID, nil
+		case 0:
+			return "", &ValidationError{Message: "mapping_target_unsupported: 账户没有启用的上游连接，无法解析映射目标连接"}
+		default:
+			candidates := make([]string, 0, len(connections))
+			for _, connection := range connections {
+				candidates = append(candidates, connection.Preset)
+			}
+			return "", &ValidationError{Message: "mapping_target_unsupported: 账户有多个启用的上游连接，映射行必须指定 targetConnectionPresetCode，候选：" + strings.Join(candidates, "、")}
+		}
+	}
 	var connectionID string
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("account_connections")+`
 		WHERE account_id = ? AND connection_preset_code = ? AND enabled = 1`), accountID, preset).Scan(&connectionID)

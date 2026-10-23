@@ -14,7 +14,6 @@ package accounts
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -433,13 +432,25 @@ func TestCreateWiresModelMappingCatalogAssertion(t *testing.T) {
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "responses")}), scope)
 	assertValidationError(t, err, "账号模型别名只支持同协议映射；跨协议 Chat Completions 到 Responses 请改用混合供应商账户")
 	// 同协议映射 + chat 端点能力：矩阵/目录门禁通过后，写入侧走
-	// account_entry_mappings 双解析（B4 W2）——管理面创建链尚无连接行，按
-	// mapping_target_unsupported 显式拒绝；连接面迁移归后续切片。
-	_, err = store.Create(context.Background(), catalogWiringCreateInput("mapping-hit",
+	// account_entry_mappings 双解析（B4 W2）。BUG-0337 起：载荷不带
+	// targetConnectionPresetCode 时，空 preset 回退到账户唯一启用连接（本
+	// fixture 即创建链写入的健康检查连接 gpt_openai_v1）——映射成功落库；
+	// 零连接/多连接的拒绝臂见 bug0337 回归测试。
+	created, err := store.Create(context.Background(), catalogWiringCreateInput("mapping-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"},
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")}), scope)
-	if err == nil || !strings.Contains(err.Error(), "mapping_target_unsupported: connection preset") {
-		t.Fatalf("mapping write must fail closed without a connection, got %v", err)
+	if err != nil {
+		t.Fatalf("唯一启用连接下空 preset 映射应回退落库: %v", err)
+	}
+	if hit := store.table("account_entry_mappings"); true {
+		var count int
+		if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+hit+
+			" WHERE account_id = ? AND target_connection_id IN (SELECT id FROM "+store.table("account_connections")+" WHERE account_id = ? AND connection_preset_code = 'gpt_openai_v1')", created.ID, created.ID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("映射应落库且 target_connection_id 回退命中唯一启用连接: %d", count)
+		}
 	}
 }
 
