@@ -27,8 +27,9 @@
         <CheckOutlined v-else />
       </button>
     </div>
+    <!-- 编辑态只显示输入控件：trigger 分支必须排除 editing，否则原始值按钮与编辑框并排漏出（2026-10-24 用户报障同源）。 -->
     <a-button
-      v-if="editable"
+      v-if="!editing && editable"
       class="account-priority-trigger"
       size="small"
       type="link"
@@ -37,7 +38,7 @@
       <span>{{ priority }}</span>
       <EditOutlined class="account-priority-edit-icon" />
     </a-button>
-    <span v-else class="account-priority-readonly">{{ priority }}</span>
+    <span v-else-if="!editing" class="account-priority-readonly">{{ priority }}</span>
   </div>
 </template>
 

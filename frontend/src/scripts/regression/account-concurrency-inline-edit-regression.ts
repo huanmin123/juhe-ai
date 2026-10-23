@@ -24,6 +24,9 @@ assert.match(editorSource, /<a-tag[\s\S]*color="blue"/, '非编辑态必须保�
 assert.doesNotMatch(editorSource, /<a-tooltip/, '并发编辑器展示态不得挂悬浮气泡（2026-10-23 用户裁决移除）')
 const priorityEditorSource = read('../../views/accounts/AccountPriorityEditor.vue')
 assert.doesNotMatch(priorityEditorSource, /<a-tooltip/, '优先级编辑器展示态同样不挂悬浮气泡')
+assert.doesNotMatch(editorSource, /v-if="editable && !mobile"/, '并发展示徽章必须排除 editing，编辑态下不得与输入控件并排（2026-10-24 用户报障）')
+assert.match(editorSource, /v-if="!editing && editable && !mobile"/, '并发 trigger 分支必须以 !editing 开头')
+assert.doesNotMatch(priorityEditorSource, /v-if="editable"/, '优先级 trigger 分支必须排除 editing（同源报障）')
 assert.match(editorSource, /:min="1"/, '并发上限输入必须限制最小值为 1')
 assert.match(editorSource, /并发上限必须是大于等于 1 的整数/, '并发上限必须校验为正整数并给出提示')
 

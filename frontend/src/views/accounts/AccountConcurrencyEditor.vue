@@ -27,8 +27,9 @@
         <CheckOutlined v-else />
       </button>
     </div>
+    <!-- 编辑态只显示输入控件：展示分支必须排除 editing，否则原始徽章与编辑框并排漏出（2026-10-24 用户报障）。 -->
     <a-tag
-      v-if="editable && !mobile"
+      v-if="!editing && editable && !mobile"
       class="account-concurrency-trigger"
       color="blue"
       role="button"
@@ -37,15 +38,15 @@
       @keydown.enter.prevent="startEditing"
     >{{ text }}</a-tag>
     <strong
-      v-else-if="editable && mobile"
+      v-else-if="!editing && editable && mobile"
       class="account-concurrency-mobile-trigger"
       role="button"
       tabindex="0"
       @click="startEditing"
       @keydown.enter.prevent="startEditing"
     >{{ text }}</strong>
-    <a-tag v-else-if="!mobile" color="blue">{{ text }}</a-tag>
-    <strong v-else>{{ text }}</strong>
+    <a-tag v-else-if="!editing && !mobile" color="blue">{{ text }}</a-tag>
+    <strong v-else-if="!editing">{{ text }}</strong>
   </div>
 </template>
 
