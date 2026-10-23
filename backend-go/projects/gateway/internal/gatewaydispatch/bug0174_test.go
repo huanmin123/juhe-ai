@@ -20,7 +20,7 @@ import (
 // key-model busy/blocked exclusion logic applies like it does in Node.
 func multiKeyTestAccount(id string, keys ...string) AccountCandidate {
 	account := testAccounts(id)[0]
-	account.ProviderCode = "openai"
+	account.VendorCode = "openai"
 	account.ProtocolCode = "openai"
 	account.ProtocolVersion = "v1"
 	account.APIKeys = keys

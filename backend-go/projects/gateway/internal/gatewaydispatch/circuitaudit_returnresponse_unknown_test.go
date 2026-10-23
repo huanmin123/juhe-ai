@@ -56,7 +56,7 @@ func newReturnResponseAuditConfirmation(t *testing.T, clock *int64) (*gatewaycir
 	}
 	account := gatewayruntimecache.OpenAIAccountSecret{
 		ID:              "circuit-audit-rr-acct",
-		ProviderCode:    "openai",
+		VendorCode:      "openai",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		Type:            "api_key",
@@ -190,7 +190,7 @@ func TestCircuitAuditReturnResponseBranchSettlesConfirmationAsUnknown(t *testing
 	retry, err := service.PrepareAttempt(context.Background(), gatewaycircuit.PrepareAttemptInput{
 		Account: gatewayruntimecache.OpenAIAccountSecret{
 			ID:              "circuit-audit-rr-acct",
-			ProviderCode:    "openai",
+			VendorCode:      "openai",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
 			Type:            "api_key",

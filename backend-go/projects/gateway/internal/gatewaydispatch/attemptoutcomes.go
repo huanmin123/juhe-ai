@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -48,6 +49,33 @@ func newConfirmGroupAffinityFunc(port GroupAffinityPort, ctx context.Context, gr
 	}
 }
 
+// rememberUpstreamAttemptFailure 结算现场构造来源避让 AccountFailure（调度慢
+// 失败直切与墙钟收尾修复设计 §3 B1）：回调未注入（测试/内部派发）不记账；
+// 状态码取自结算后的 lastAttempt（传输失败无状态码保持 nil），消息优先取
+// lastAttempt.Message，缺失回落调用方给定的原始错误文案。
+func rememberUpstreamAttemptFailure(args *FetchFirstAvailableUpstreamArgs, account AccountCandidate, upstreamURL, errorPhase string, lastAttempt *UpstreamAttempt, fallbackMessage string) {
+	if args == nil || args.RememberUpstreamAttemptFailure == nil {
+		return
+	}
+	failure := gatewayclientip.AccountFailure{
+		AccountName:  account.Name,
+		ErrorPhase:   errorPhase,
+		ErrorMessage: fallbackMessage,
+		Endpoint:     upstreamURL,
+	}
+	if lastAttempt != nil {
+		if lastAttempt.HasStatus && lastAttempt.Status > 0 {
+			status := int64(lastAttempt.Status)
+			failure.StatusCode = &status
+		}
+		failure.ErrorCode = lastAttempt.ErrorCode
+		if lastAttempt.Message != "" {
+			failure.ErrorMessage = lastAttempt.Message
+		}
+	}
+	args.RememberUpstreamAttemptFailure(account.ID, failure)
+}
+
 // handleUpstreamAttemptResponse mirrors the `if (response.ok) {...}` block
 // plus the failed-response tail of the attempt loop.
 func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAttemptResponseContext) (responseKind, responseStopKind, error) {
@@ -59,7 +87,7 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 	*in.lastAttempt = &UpstreamAttempt{
 		AccountID:                 c.account.ID,
 		AccountName:               c.account.Name,
-		ProviderCode:              c.account.ProviderCode,
+		ProviderCode:              c.account.VendorCode,
 		ProviderProtocolProfileID: c.account.ProviderProtocolProfileID,
 		ProtocolCode:              c.account.ProtocolCode,
 		ProtocolVersion:           c.account.ProtocolVersion,
@@ -197,6 +225,9 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		})
 		return responseKindContinue, responseStopNone, handleErr
 	}
+	// B1 记账（调度慢失败直切与墙钟收尾修复设计 §3）：上游归因响应失败在
+	// 结算点记入来源避让 PendingFailures，透传与跳过两臂同为上游归因失败。
+	rememberUpstreamAttemptFailure(in.args, c.account, c.upstreamURL, "upstream_response", failedResponseResult.LastAttempt, "")
 	explicitPolicyFailure := failedResponseResult.Action != FailedResponseActionReturnResponse &&
 		failedResponseResult.FailureKind == FailureKindExplicitPolicy
 	if failedResponseResult.Action != FailedResponseActionReturnResponse {
@@ -329,13 +360,25 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		failedResponseResult.Action == FailedResponseActionSkipAccount &&
 		failedResponseResult.FailureKind != FailureKindExplicitPolicy &&
 		isTransientSameAccountHttpStatus(lastStatusOf(failedResponseResult.LastAttempt)) {
-		sameAccountRetryID, retryErr := in.reserveSameAccountRetry(c.dispatchAttemptIdentity, "upstream_http_response", c.account.ID)
-		if retryErr != nil {
-			return responseKindContinue, responseStopNone, retryErr
-		}
-		if sameAccountRetryID != "" {
-			*in.activeSameAccountRetryID = sameAccountRetryID
-			return responseKindContinue, responseStopRetrySameAccount, nil
+		// 慢失败直切（调度慢失败直切与墙钟收尾修复设计 §2）：耗时达到
+		// SameAccountRetryFastFailMaxMs 的失败不再原地重试，直接轮换下一候选；
+		// 同账户重试预算上限 min(2, temporaryUnschedulableRetryAttempts) 不变。
+		if elapsedMs := gatewayupstream.NowMs() - c.attemptStartedAt; elapsedMs >= in.settings.SameAccountRetryFastFailMaxMs {
+			auditCapture.AddGatewayMetadata("same_account_retry_skipped_slow_failure", map[string]any{
+				"accountId":   c.account.ID,
+				"elapsedMs":   elapsedMs,
+				"thresholdMs": in.settings.SameAccountRetryFastFailMaxMs,
+				"retryReason": "upstream_http_response",
+			})
+		} else {
+			sameAccountRetryID, retryErr := in.reserveSameAccountRetry(c.dispatchAttemptIdentity, "upstream_http_response", c.account.ID)
+			if retryErr != nil {
+				return responseKindContinue, responseStopNone, retryErr
+			}
+			if sameAccountRetryID != "" {
+				*in.activeSameAccountRetryID = sameAccountRetryID
+				return responseKindContinue, responseStopRetrySameAccount, nil
+			}
 		}
 	}
 	if in.accountLockTrafficEnabled {
@@ -553,6 +596,10 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 	if requestErrorResult.LastAttempt != nil {
 		*in.lastAttempt = requestErrorResult.LastAttempt
 	}
+	// B1 记账（调度慢失败直切与墙钟收尾修复设计 §3）：上游归因传输失败在
+	// 结算点记入来源避让 PendingFailures；downstream_closed 分支（上方中止臂）
+	// 无上游失败不记。
+	rememberUpstreamAttemptFailure(in.args, c.account, c.upstreamURL, "upstream_request", *in.lastAttempt, err.Error())
 	if requestErrorResult.Action == FailedResponseActionSkipAccount && !retryAnotherAccountApiKey {
 		if *in.lastAttempt != nil {
 			failure := circuitTransportFailure(err, (*in.lastAttempt).Message)
@@ -568,16 +615,27 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 		}
 		if in.requestLane == "text" && provenStartedTransportFailure && !neutralFirstByteDeadline &&
 			!*c.firstByteDeadlineTriggeredRef && halfOpenLeaseUnclaimed(c.loop.halfOpenLease) {
-			sameAccountRetryID, retryErr := in.reserveSameAccountRetry(c.dispatchAttemptIdentity, "upstream_transport_failure", c.account.ID)
-			if retryErr != nil {
-				return errorKindHandled, errorStop{}, retryErr
-			}
-			if sameAccountRetryID != "" {
-				if c.keyModelAttempt != nil {
-					_ = c.keyModelAttempt.ReportUnknown(ctx)
+			// 慢失败直切（调度慢失败直切与墙钟收尾修复设计 §2）：与响应失败
+			// 预留点同门槛，慢传输失败直接轮换下一候选。
+			if elapsedMs := gatewayupstream.NowMs() - c.attemptStartedAt; elapsedMs >= in.settings.SameAccountRetryFastFailMaxMs {
+				auditCapture.AddGatewayMetadata("same_account_retry_skipped_slow_failure", map[string]any{
+					"accountId":   c.account.ID,
+					"elapsedMs":   elapsedMs,
+					"thresholdMs": in.settings.SameAccountRetryFastFailMaxMs,
+					"retryReason": "upstream_transport_failure",
+				})
+			} else {
+				sameAccountRetryID, retryErr := in.reserveSameAccountRetry(c.dispatchAttemptIdentity, "upstream_transport_failure", c.account.ID)
+				if retryErr != nil {
+					return errorKindHandled, errorStop{}, retryErr
 				}
-				*in.activeSameAccountRetryID = sameAccountRetryID
-				return errorKindHandled, errorStop{kind: errorStopRetrySameAccount}, nil
+				if sameAccountRetryID != "" {
+					if c.keyModelAttempt != nil {
+						_ = c.keyModelAttempt.ReportUnknown(ctx)
+					}
+					*in.activeSameAccountRetryID = sameAccountRetryID
+					return errorKindHandled, errorStop{kind: errorStopRetrySameAccount}, nil
+				}
 			}
 		}
 		in.failedAccountIDs[c.account.ID] = struct{}{}

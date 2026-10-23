@@ -62,7 +62,7 @@ func (e *Engine) PerformUpstreamRequestAttempt(ctx context.Context, input Attemp
 		e.ObserveUpstreamResponseModel(response, UpstreamResponseModelObservationInfo{
 			Headers:      headers,
 			UpstreamURL:  input.UpstreamURL,
-			ProviderCode: input.Account.ProviderCode,
+			ProviderCode: input.Account.VendorCode,
 			ProtocolCode: input.Account.ProtocolCode,
 			SSE: IsEffectiveOpenAIStreamRequest(input.Req, headerAccountOf(input.Account)) ||
 				strings.Contains(strings.ToLower(response.ContentType()), "text/event-stream"),
@@ -174,7 +174,7 @@ func headerAccountOf(account AccountCandidate) *UpstreamHeaderAccount {
 		ID:                        account.ID,
 		APIKey:                    account.APIKey,
 		Type:                      account.Type,
-		ProviderCode:              account.ProviderCode,
+		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,

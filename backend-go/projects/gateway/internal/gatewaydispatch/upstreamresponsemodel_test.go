@@ -87,7 +87,7 @@ func TestPerformUpstreamRequestAttemptObservesModelBeforeTransform(t *testing.T)
 	slot := &UpstreamResponseModelSlot{}
 	response, err := engine.PerformUpstreamRequestAttempt(context.Background(), AttemptInput{
 		Req:                       gatewaypreauth.NewGatewayRequest(request),
-		Account:                   AccountCandidate{ID: "acc_gem", ProviderCode: "hybrid", ProtocolCode: "gemini"},
+		Account:                   AccountCandidate{ID: "acc_gem", VendorCode: "hybrid", ProtocolCode: "gemini"},
 		UpstreamURL:               server.URL + "/v1/responses",
 		Headers:                   http.Header{},
 		Body:                      []byte(`{"model":"m","stream":true}`),
@@ -144,7 +144,7 @@ func TestPerformUpstreamRequestAttemptWithoutSlotSkipsObservation(t *testing.T) 
 		strings.NewReader(`{"model":"m"}`))
 	response, err := engine.PerformUpstreamRequestAttempt(context.Background(), AttemptInput{
 		Req:            gatewaypreauth.NewGatewayRequest(request),
-		Account:        AccountCandidate{ID: "acc_openai", ProviderCode: "gpt", ProtocolCode: "openai"},
+		Account:        AccountCandidate{ID: "acc_openai", VendorCode: "gpt", ProtocolCode: "openai"},
 		UpstreamURL:    server.URL + "/v1/chat/completions",
 		Headers:        http.Header{},
 		Body:           []byte(`{"model":"m"}`),

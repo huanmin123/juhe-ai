@@ -342,6 +342,11 @@ type chainFinalizationUsage struct {
 	requestedModel       string
 	sourceEndpointFamily string
 	models               gatewayusage.UsageModelResolver
+	// compactionExpected 是构造点从 context.UsageContext.CompactionExpected
+	// 注入的请求侧压缩期望（用量记录压缩标记设计 §压缩请求识别）：完成与失
+	// 败两条记账同源直传 UsageRecordInput.CompactionExpected，普通请求零值
+	// false。
+	compactionExpected bool
 	// enqueueFailures 统计 EnqueueUsageRecord 失败次数并驱动采样告警（前 10
 	// 条逐条、之后每 100 条一条，对齐本文件 spooledUsageRecorder 既有采样
 	// 模式）。方法为指针接收者：值接收者会在每次接口调用时复制接收者，计数
@@ -432,7 +437,7 @@ func (u *chainFinalizationUsage) resolveFinalizationPricingModel(providerCode, c
 // 供应商解耦切片起第一返回值承载 vendor 身份（供应商与上游协议面重构设计
 // §1.1/§2.1：vendor 值域与旧 providerCode 同名）——同时是 usage 行
 // ProviderCode 列的过渡填充值与同步计价目录的查找键；本函数只读账号视图的
-// VendorCode，不依赖 secret.ProviderCode 的同值投影。非 OpenAIAccountView 返回空。
+// VendorCode（B4②：secret.ProviderCode 冗余槽位已退役）。非 OpenAIAccountView 返回空。
 func finalizationAccountProviderOf(account gatewayresponse.AccountView) (providerCode, providerProtocolProfileID string) {
 	view, ok := account.(gatewayresponse.OpenAIAccountView)
 	if !ok {
@@ -501,8 +506,10 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		APIKeyID:        input.UsageContext.APIKeyID,
 		GroupID:         input.UsageContext.GroupID,
 		RouteGroupID:    input.UsageContext.RouteGroupID,
-		Endpoint:        input.UsageContext.Endpoint,
-		ProviderCode:    providerCode,
+		// 压缩期望随请求级上下文直传（与 RouteGroupID 同源）。
+		CompactionExpected: u.compactionExpected,
+		Endpoint:           input.UsageContext.Endpoint,
+		ProviderCode:       providerCode,
 		// 账号视图 provider 身份优先，空回落 usage context；协议档案 id 随账号
 		// 视图携带（Node input.account.providerProtocolProfileId）。
 		ProviderProtocolProfileID: providerProtocolProfileID,
@@ -762,8 +769,10 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 		SystemAccountID: input.UsageContext.SystemAccountID,
 		APIKeyID:        input.UsageContext.APIKeyID,
 		GroupID:         input.UsageContext.GroupID,
-		Endpoint:        input.UsageContext.Endpoint,
-		ProviderCode:    providerCode,
+		// 压缩期望随请求级上下文直传（与完成路径同源）。
+		CompactionExpected: u.compactionExpected,
+		Endpoint:           input.UsageContext.Endpoint,
+		ProviderCode:       providerCode,
 		// 账号视图协议档案 id（Node input.account.providerProtocolProfileId）。
 		ProviderProtocolProfileID: providerProtocolProfileID,
 		UsageSemantic:             finalizationUsageSemanticOf(input.Account),

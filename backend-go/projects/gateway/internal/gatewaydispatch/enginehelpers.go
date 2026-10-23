@@ -223,7 +223,7 @@ func attemptWithIdentity(account AccountCandidate, upstreamURL, message string) 
 	return &UpstreamAttempt{
 		AccountID:                 account.ID,
 		AccountName:               account.Name,
-		ProviderCode:              account.ProviderCode,
+		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,
@@ -339,15 +339,20 @@ func (e *Engine) accountApiKeyRequestRetryBudgetAvailable(
 }
 
 // assertGatewayRequestWallBudgetAvailableForAttempt mirrors
-// assertGatewayRequestWallBudgetAvailableForAttempt.
+// assertGatewayRequestWallBudgetAvailableForAttempt. minimumMeaningfulAttemptMs
+// 是新尝试启动门槛（调度慢失败直切与墙钟收尾修复设计 §4 C1，取
+// settings.GatewayAttemptStartMinWindowMs）：剩余预算扣渲染保留后不足以支撑
+// 一次有意义尝试时不启动，走既有 wall 终态路径主动收尾；0 = 旧行为。
 func (e *Engine) assertGatewayRequestWallBudgetAvailableForAttempt(
 	wallBudget *gatewayrouting.GatewayRequestWallBudget,
 	tracker *gatewayrouting.GatewayRequestAttemptTracker,
 	auditCapture AuditCapture,
 	finalResponseReserveMs int64,
+	minimumMeaningfulAttemptMs int64,
 ) error {
 	handoff, err := wallBudget.HandoffRequired(gatewayrouting.GatewayRequestWallBudgetDecision{
-		FinalResponseReserveMs: &finalResponseReserveMs,
+		FinalResponseReserveMs:     &finalResponseReserveMs,
+		MinimumMeaningfulAttemptMs: &minimumMeaningfulAttemptMs,
 	})
 	if err != nil {
 		return err
@@ -356,12 +361,16 @@ func (e *Engine) assertGatewayRequestWallBudgetAvailableForAttempt(
 		return nil
 	}
 	auditCapture.AddGatewayMetadata("gateway_upstream_attempt_blocked_wall_budget", map[string]any{
-		"reason":                 "gateway_request_wall_budget_exhausted",
-		"wallRemainingMs":        wallBudget.RemainingMs(gatewayupstream.NowMs()),
-		"finalResponseReserveMs": finalResponseReserveMs,
-		"attempts":               tracker.Snapshot().AttemptedAccountRuntimeKeys,
+		"reason":                     "gateway_request_wall_budget_exhausted",
+		"wallRemainingMs":            wallBudget.RemainingMs(gatewayupstream.NowMs()),
+		"finalResponseReserveMs":     finalResponseReserveMs,
+		"minimumMeaningfulAttemptMs": minimumMeaningfulAttemptMs,
+		"attempts":                   tracker.Snapshot().AttemptedAccountRuntimeKeys,
 	})
-	return &GatewayRequestWallBudgetExhaustedError{WallRemainingMs: wallBudget.RemainingMs(gatewayupstream.NowMs())}
+	return &GatewayRequestWallBudgetExhaustedError{
+		WallRemainingMs:            wallBudget.RemainingMs(gatewayupstream.NowMs()),
+		MinimumMeaningfulAttemptMs: minimumMeaningfulAttemptMs,
+	}
 }
 
 // shouldRetainTransportFailureForRecovery mirrors

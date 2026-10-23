@@ -83,7 +83,7 @@ func w13g3PoolAccount(id string) AccountCandidate {
 		Status:           "active",
 		ConcurrencyLimit: 4,
 		Priority:         1,
-		ProviderCode:     "openai",
+		VendorCode:       "openai",
 		ProtocolCode:     "openai",
 		ProtocolVersion:  "v1",
 		DispatchRevision: &revision,

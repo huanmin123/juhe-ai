@@ -12,6 +12,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -470,17 +471,23 @@ type FetchFirstAvailableUpstreamArgs struct {
 	RouteStrategyID                 string
 	Signal                          context.Context
 	ClientIPAccountAvoidanceTracker gatewaypreauth.ClientIPAccountAvoidanceTracker
-	RequestLane                     string // default 'text'
-	GroupSchedulingPolicy           *gatewayruntimecache.GroupSchedulingPolicy
-	AccountStateMutationEnabled     bool
-	RequestClientCompatibility      string
-	ModelPriority                   *gatewayrouting.GatewayAccountModelPriority
-	PreAcquiredConcurrency          *SpeedFirstCutoverReservationHandle
-	AllowPrecheckHalfOpen           bool
-	RequestCoordination             *RequestCoordinationContext
-	WaitForRecoverableFailures      bool
-	AccountCircuitConfirmation      *gatewaycircuit.Confirmation
-	BypassKeyModelAdmission         bool
+	// RememberUpstreamAttemptFailure 是来源避让记账回调（调度慢失败直切与墙钟
+	// 收尾修复设计 §3 B1）：chain 层从 DispatchContext.ClientIPAccountAvoidance
+	// tracker 构造闭包注入；nil = 不记账（测试/内部派发）。引擎只在失败结算点
+	// 对上游归因失败（upstream_request / upstream_response）调用；纯
+	// downstream_closed 不记。
+	RememberUpstreamAttemptFailure func(accountID string, failure gatewayclientip.AccountFailure)
+	RequestLane                    string // default 'text'
+	GroupSchedulingPolicy          *gatewayruntimecache.GroupSchedulingPolicy
+	AccountStateMutationEnabled    bool
+	RequestClientCompatibility     string
+	ModelPriority                  *gatewayrouting.GatewayAccountModelPriority
+	PreAcquiredConcurrency         *SpeedFirstCutoverReservationHandle
+	AllowPrecheckHalfOpen          bool
+	RequestCoordination            *RequestCoordinationContext
+	WaitForRecoverableFailures     bool
+	AccountCircuitConfirmation     *gatewaycircuit.Confirmation
+	BypassKeyModelAdmission        bool
 	// SchedulingExclusions 是准备层固化的通用调度排除集（设计 5.1）：nil =
 	// 无排除。SameAccountRetry 钉住目标与熔断确认路径豁免排除集（引擎内
 	// 清空，钉住/确认把候选窗口塌缩到单一账户）。
@@ -1340,7 +1347,7 @@ wholePoolRound:
 		lastAttempt = &UpstreamAttempt{
 			AccountID:                 firstAccountIDOr(args.Accounts, "local_suppression"),
 			AccountName:               firstAccountNameOr(args.Accounts),
-			ProviderCode:              first.ProviderCode,
+			ProviderCode:              first.VendorCode,
 			ProviderProtocolProfileID: first.ProviderProtocolProfileID,
 			ProtocolCode:              first.ProtocolCode,
 			ProtocolVersion:           first.ProtocolVersion,

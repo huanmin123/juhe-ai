@@ -13,7 +13,7 @@ func TestHistoryPrepPolicyForRequest(t *testing.T) {
 	apiKey := testAccounts("prep-policy-a")[0]
 	oauthGPTShape := testAccounts("prep-policy-o")[0]
 	oauthGPTShape.Type = "oauth"
-	oauthGPTShape.ProviderCode = "gpt"
+	oauthGPTShape.VendorCode = "gpt"
 	oauthGPTShape.VendorCode = "gpt"
 	oauthGPTShape.ProtocolCode = "openai"
 	oauthGPTShape.ProtocolVersion = "v1"
@@ -26,7 +26,7 @@ func TestHistoryPrepPolicyForRequest(t *testing.T) {
 	// 本批起为真实生产形态：xAI（Grok）OAuth 账户，协议码同为 openai。
 	oauthXaiShape := oauthGPTShape
 	oauthXaiShape.ID = "prep-policy-o-xai"
-	oauthXaiShape.ProviderCode = "xai"
+	oauthXaiShape.VendorCode = "xai"
 	oauthXaiShape.VendorCode = "xai"
 	oauthXaiShape.ProviderProtocolProfileID = "profile_xai_openai_v1"
 

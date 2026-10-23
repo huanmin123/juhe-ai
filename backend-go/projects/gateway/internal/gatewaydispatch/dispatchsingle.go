@@ -49,14 +49,14 @@ type dispatchSingleAccountInput struct {
 	lastAttempt                          **UpstreamAttempt
 	// semanticCommitFailure 在"上游响应已开始、正文传输失败"（proven body
 	// transport failure）时置位：此时请求语义已提交，不允许换目标重放。
-	semanticCommitFailure                *bool
-	agentGuidanceResponse                **gatewaypreauth.GatewayAgentGuidanceResponse
-	auditAttemptIndex                    *int
-	concurrencyRetryWaitBudgetMs         *int64
-	keyModelFailureBudget                *gatewayaccounteffects.GatewayKeyModelFailureBudget
-	accountCircuitAttempt                *gatewaycircuit.Attempt
-	reserveSameAccountRetry              func(identity gatewayrouting.GatewayDispatchAttemptIdentity, reason, accountID string) (string, error)
-	createAccountLockLeaseRelease        func(scheduleNextRetry bool) func(bool) bool
+	semanticCommitFailure         *bool
+	agentGuidanceResponse         **gatewaypreauth.GatewayAgentGuidanceResponse
+	auditAttemptIndex             *int
+	concurrencyRetryWaitBudgetMs  *int64
+	keyModelFailureBudget         *gatewayaccounteffects.GatewayKeyModelFailureBudget
+	accountCircuitAttempt         *gatewaycircuit.Attempt
+	reserveSameAccountRetry       func(identity gatewayrouting.GatewayDispatchAttemptIdentity, reason, accountID string) (string, error)
+	createAccountLockLeaseRelease func(scheduleNextRetry bool) func(bool) bool
 }
 
 // dispatchResultKind carries the loop control outcomes. M-2（BUG-0174）: the
@@ -546,10 +546,14 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				return attemptLoopExhausted, attemptStopNone, err
 			}
 			reserveMs := int64(0)
+			minimumMeaningfulAttemptMs := int64(0)
 			if in.coordination.Scope == CoordinationScopeGatewayRequest {
 				reserveMs = gatewayrouting.DefaultGatewayFinalResponseReserveMs
+				// C1 启动门槛（调度慢失败直切与墙钟收尾修复设计 §4）：剩余预算
+				// 扣渲染保留后小于一次有意义尝试的最小窗口时不启动新尝试。
+				minimumMeaningfulAttemptMs = in.settings.GatewayAttemptStartMinWindowMs
 			}
-			if err := e.assertGatewayRequestWallBudgetAvailableForAttempt(in.coordination.GatewayRequestWallBudget, in.coordination.RequestAttemptTracker, auditCapture, reserveMs); err != nil {
+			if err := e.assertGatewayRequestWallBudgetAvailableForAttempt(in.coordination.GatewayRequestWallBudget, in.coordination.RequestAttemptTracker, auditCapture, reserveMs, minimumMeaningfulAttemptMs); err != nil {
 				return attemptLoopExhausted, attemptStopNone, err
 			}
 			accountRuntimeKey, keyErr := gatewayAccountRuntimeKey(c.account)
@@ -606,6 +610,31 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 						return in.coordination.OnNormalRouteFirstByteDeadline(deadlineInput, c.account, *deadline, firstByteDeadlineCoordinator)
 					}
 					return FirstByteDeadlineActionAbort
+				}
+			}
+
+			// C2 尝试截止裁剪（调度慢失败直切与墙钟收尾修复设计 §4）：成本优先
+			// 默认路径此前只受单尝试首字超时约束，晚启动尝试可越过墙钟预算；
+			// 未装配速度优先截止时按墙钟预提交线（deadline − 最终响应保留）裁剪
+			// 首字超时（limiting-factor 同型，参照 speed_first
+			// ResolveNormalRouteAttemptFirstByteDeadline），到点走既有超时失败
+			// 结算。Unbounded（压缩）与 image lane 豁免不变（lane 门同 speed_first）。
+			attemptTimeoutProfile := in.timeoutProfile
+			if normalRouteFirstByteDeadline == nil && !in.timeoutsDisabled &&
+				gatewayrouting.NormalRouteFirstByteDeadlineAppliesToLane(gatewayprotoLane(in.requestLane)) &&
+				!in.coordination.GatewayRequestWallBudget.Unbounded {
+				wallPrecommitRemainingMs, wallErr := in.coordination.GatewayRequestWallBudget.PrecommitRemainingMs(gatewayrouting.PrecommitBudgetInput{
+					NowMs:                  &attemptStartedAt,
+					FinalResponseReserveMs: ptrInt64(gatewayrouting.DefaultGatewayFinalResponseReserveMs),
+				})
+				if wallErr != nil {
+					return attemptLoopExhausted, attemptStopNone, wallErr
+				}
+				if wallPrecommitRemainingMs < attemptTimeoutProfile.FirstResponseTimeoutMs {
+					attemptTimeoutProfile.FirstResponseTimeoutMs = wallPrecommitRemainingMs
+				}
+				if wallPrecommitRemainingMs < attemptTimeoutProfile.NonStreamFirstResponseTimeoutMs {
+					attemptTimeoutProfile.NonStreamFirstResponseTimeoutMs = wallPrecommitRemainingMs
 				}
 			}
 
@@ -880,7 +909,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				AuditAttemptIndex:          *in.auditAttemptIndex,
 				Headers:                    c.headers,
 				Body:                       c.body,
-				TimeoutProfile:             in.timeoutProfile,
+				TimeoutProfile:             attemptTimeoutProfile,
 				AttemptStartedAt:           attemptStartedAt,
 				FirstByteDeadlineMs:        deadlineMsPtr(normalRouteFirstByteDeadline),
 				OnFirstByteDeadline:        onFirstByteDeadline,

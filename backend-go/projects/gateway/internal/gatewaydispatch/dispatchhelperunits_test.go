@@ -669,7 +669,7 @@ func (f fakeHalfOpenLease) CompleteSuccess() (bool, error) { return true, nil }
 
 func TestAccountAttemptBuilders(t *testing.T) {
 	account := AccountCandidate{
-		ID: "a-1", Name: "账号 a-1", ProviderCode: "openai",
+		ID: "a-1", Name: "账号 a-1", VendorCode: "openai",
 		ProviderProtocolProfileID: "profile", ProtocolCode: "openai", ProtocolVersion: "v1",
 	}
 	attempt := accountApiKeyPoolUnavailableAttempt(account)
@@ -803,7 +803,7 @@ func TestAssertGatewayRequestWallBudgetAvailableForAttempt(t *testing.T) {
 	coordination := newTestCoordination(t)
 	sink := &fakeAuditSink{}
 	capture := AuditCapture{Context: &frozenAudit{sink: sink}, Sink: sink}
-	if err := engine.assertGatewayRequestWallBudgetAvailableForAttempt(coordination.GatewayRequestWallBudget, coordination.RequestAttemptTracker, capture, 2_000); err != nil {
+	if err := engine.assertGatewayRequestWallBudgetAvailableForAttempt(coordination.GatewayRequestWallBudget, coordination.RequestAttemptTracker, capture, 2_000, 0); err != nil {
 		t.Fatalf("预算充足不应报错: %v", err)
 	}
 	exhausted, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
@@ -813,10 +813,41 @@ func TestAssertGatewayRequestWallBudgetAvailableForAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wall budget: %v", err)
 	}
-	err = engine.assertGatewayRequestWallBudgetAvailableForAttempt(exhausted, coordination.RequestAttemptTracker, capture, 2_000)
+	err = engine.assertGatewayRequestWallBudgetAvailableForAttempt(exhausted, coordination.RequestAttemptTracker, capture, 2_000, 0)
 	var budgetErr *GatewayRequestWallBudgetExhaustedError
 	if !errorsAs(err, &budgetErr) {
 		t.Fatalf("预算耗尽应报错, got %v", err)
+	}
+}
+
+// TestAssertGatewayRequestWallBudgetAvailableForAttemptStartGate：C1 启动门槛
+// 差分（调度慢失败直切与墙钟收尾修复设计 §4）。剩余 40s 扣 2s 渲染保留后
+// 38s ≥ 30s 放行；剩余 20s 扣保留后 18s ≤ 30s 拒启并携带门槛值。
+func TestAssertGatewayRequestWallBudgetAvailableForAttemptStartGate(t *testing.T) {
+	engine, _, _ := newTestEngine(t)
+	coordination := newTestCoordination(t)
+	sink := &fakeAuditSink{}
+	capture := AuditCapture{Context: &frozenAudit{sink: sink}, Sink: sink}
+	newBudget := func(budgetMs int64) *gatewayrouting.GatewayRequestWallBudget {
+		budget, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
+			RequestAcceptedAtMs: gatewayupstream.NowMs(),
+			BudgetMs:            &budgetMs,
+		}, nil)
+		if err != nil {
+			t.Fatalf("wall budget: %v", err)
+		}
+		return budget
+	}
+	if err := engine.assertGatewayRequestWallBudgetAvailableForAttempt(newBudget(40_000), coordination.RequestAttemptTracker, capture, 2_000, 30_000); err != nil {
+		t.Fatalf("剩余 40s 应放行: %v", err)
+	}
+	err := engine.assertGatewayRequestWallBudgetAvailableForAttempt(newBudget(20_000), coordination.RequestAttemptTracker, capture, 2_000, 30_000)
+	var gateErr *GatewayRequestWallBudgetExhaustedError
+	if !errorsAs(err, &gateErr) {
+		t.Fatalf("剩余 20s 应拒启, got %v", err)
+	}
+	if gateErr.MinimumMeaningfulAttemptMs != 30_000 {
+		t.Fatalf("MinimumMeaningfulAttemptMs = %d", gateErr.MinimumMeaningfulAttemptMs)
 	}
 }
 

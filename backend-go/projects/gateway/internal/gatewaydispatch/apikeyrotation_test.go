@@ -56,7 +56,7 @@ func poolAccount(id, providerCode, protocolCode, protocolVersion string, credent
 		Name:            "账号 " + id,
 		Type:            "api_key",
 		Status:          "active",
-		ProviderCode:    providerCode,
+		VendorCode:      providerCode,
 		ProtocolCode:    protocolCode,
 		ProtocolVersion: protocolVersion,
 		Credentials:     credentials,

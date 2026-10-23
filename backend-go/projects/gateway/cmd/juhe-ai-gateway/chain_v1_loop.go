@@ -455,12 +455,15 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			RouteStrategyID:                 current.RouteStrategyID,
 			Signal:                          ctx,
 			ClientIPAccountAvoidanceTracker: current.ClientIPAccountAvoidance,
-			RequestLane:                     string(current.RequestLane),
-			GroupSchedulingPolicy:           current.GroupSchedulingPolicy,
-			AccountStateMutationEnabled:     current.UsageContext.TrafficSource == gatewayTrafficSource,
-			RequestClientCompatibility:      current.ClientStrategy.RequestClientCompatibility,
-			ModelPriority:                   current.ModelPriority,
-			AllowPrecheckHalfOpen:           current.PrecheckHalfOpenEligible,
+			// B1 记账回调（调度慢失败直切与墙钟收尾修复设计 §3）：从请求级来源
+			// 避让 tracker 构造；tracker 缺席或探针/诊断流量返回 nil（不记账）。
+			RememberUpstreamAttemptFailure: l.clientIPAccountAvoidanceRememberFunc(current),
+			RequestLane:                    string(current.RequestLane),
+			GroupSchedulingPolicy:          current.GroupSchedulingPolicy,
+			AccountStateMutationEnabled:    current.UsageContext.TrafficSource == gatewayTrafficSource,
+			RequestClientCompatibility:     current.ClientStrategy.RequestClientCompatibility,
+			ModelPriority:                  current.ModelPriority,
+			AllowPrecheckHalfOpen:          current.PrecheckHalfOpenEligible,
 			// 通用调度排除集 + 分派段（调度内核通用化设计 5.1，批次 1）：内核
 			// 按分派段推进，段内让位、普通候选耗尽后翻回，替代原 Codex turn
 			// 避让的整体过滤 + last-resort 翻回两段画像分支。
@@ -596,6 +599,10 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 					// (slow/success sampling) runs once the response completed
 					// without a server-retry verdict.
 					l.observeSpeedFirstResponseOutcome(ctx, current, dispatched, handling)
+					// B2 成功侧来源避让确认（调度慢失败直切与墙钟收尾修复设计
+					// §3）：途中上游归因失败账号在此计入避让，不受协议验证成功门
+					// 限制（2xx 透传亦算交付）。
+					l.confirmClientIPAccountAvoidanceAfterSuccess(ctx, current)
 					// routes.ts:2478-2486: the final protocol oracle confirms the
 					// pending sibling Key failures + the winning Key success.
 					l.confirmProtocolSuccessSideEffects(ctx, dispatched, handling)
@@ -2197,6 +2204,66 @@ func (l *v1DispatchLoop) confirmClientIPAccountAvoidanceAfterFinalFailure(ctx co
 	}, "请求失败已返回客户端，客户端 IP 级账号回避状态已立即确认")
 	l.auditCapture.AddGatewayMetadata("client_ip_account_avoidance_update", map[string]any{
 		"reason":              reason,
+		"confirmedAccountIds": result.ConfirmedAccountIDs,
+	})
+}
+
+// clientIPAccountAvoidanceRememberFunc 从请求级来源避让 tracker 构造引擎失败
+// 记账回调（调度慢失败直切与墙钟收尾修复设计 §3 B1）：探针/诊断流量与 tracker
+// 缺席返回 nil（不记账，测试/内部派发同形）；闭包只写 PendingFailures，排序
+// 仍由下一次请求的读侧消费。
+func (l *v1DispatchLoop) clientIPAccountAvoidanceRememberFunc(current *gatewaypreauth.DispatchContext) func(accountID string, failure gatewayclientip.AccountFailure) {
+	if gatewayusage.IsAccountDiagnosticTrafficSource(current.UsageContext.TrafficSource) {
+		return nil
+	}
+	avoidance, _ := l.c.preauth.AccountAvoidance.(*gatewayclientip.Avoidance)
+	tracker, _ := current.ClientIPAccountAvoidance.(*gatewayclientip.AvoidanceTracker)
+	if avoidance == nil || tracker == nil {
+		return nil
+	}
+	return func(accountID string, failure gatewayclientip.AccountFailure) {
+		avoidance.RememberPendingFailure(tracker, accountID, failure.AccountName, failure)
+	}
+}
+
+// confirmClientIPAccountAvoidanceAfterSuccess 是请求最终成功结算点的来源避让
+// 确认（调度慢失败直切与墙钟收尾修复设计 §3 B2）：请求中途有上游归因失败尝试
+// 时，成功交付同样确认 PendingFailures（不受协议验证成功门限制，2xx 透传亦算
+// 交付），与既有最终失败确认同构；无 pending 记录的确认是幂等空操作，正常号
+// 零扰动。
+func (l *v1DispatchLoop) confirmClientIPAccountAvoidanceAfterSuccess(ctx context.Context, context *gatewaypreauth.DispatchContext) {
+	if gatewayusage.IsAccountDiagnosticTrafficSource(context.UsageContext.TrafficSource) {
+		return
+	}
+	avoidance, _ := l.c.preauth.AccountAvoidance.(*gatewayclientip.Avoidance)
+	tracker, _ := context.ClientIPAccountAvoidance.(*gatewayclientip.AvoidanceTracker)
+	if avoidance == nil || tracker == nil {
+		return
+	}
+	settings := context.ActiveGatewaySettings
+	result, err := avoidance.ConfirmAfterFinalFailureAsync(ctx, tracker, &settings)
+	if err != nil {
+		// 与失败确认同语义：确认失败不得吞掉已完成响应，保留终态并留痕。
+		l.c.observability.Logger().Warn("gateway_client_ip_account_avoidance_confirm_failed", map[string]any{
+			"event":  "gateway_client_ip_account_avoidance_confirm_failed",
+			"reason": "request_success",
+			"error":  err.Error(),
+		}, "请求成功侧客户端 IP 级账号回避确认失败")
+		return
+	}
+	if len(result.ConfirmedAccountIDs) == 0 {
+		return
+	}
+	l.c.observability.Logger().Warn("gateway_client_ip_account_failure_confirmed_after_success", map[string]any{
+		"event":               "gateway_client_ip_account_failure_confirmed_after_success",
+		"confirmedAccountIds": result.ConfirmedAccountIDs,
+		"systemAccountId":     context.UsageContext.SystemAccountID,
+		"apiKeyId":            context.UsageContext.APIKeyID,
+		"groupId":             context.UsageContext.GroupID,
+		"clientIp":            context.UsageContext.ClientIP,
+	}, "请求成功交付，途中上游归因失败账号已计入来源避让")
+	l.auditCapture.AddGatewayMetadata("client_ip_account_avoidance_update", map[string]any{
+		"reason":              "request_success",
 		"confirmedAccountIds": result.ConfirmedAccountIDs,
 	})
 }

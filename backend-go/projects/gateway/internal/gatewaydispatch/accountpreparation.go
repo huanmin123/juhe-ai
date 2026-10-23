@@ -32,7 +32,7 @@ func (e *Engine) SkipAccountForFailedProxyDispatch(failedProxyDispatchKeys map[s
 	return &UpstreamAttempt{
 		AccountID:                 account.ID,
 		AccountName:               account.Name,
-		ProviderCode:              account.ProviderCode,
+		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,
@@ -110,7 +110,7 @@ func (e *Engine) HandleUnavailableProxyProfile(
 	lastAttempt := &UpstreamAttempt{
 		AccountID:                 account.ID,
 		AccountName:               account.Name,
-		ProviderCode:              account.ProviderCode,
+		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,
@@ -373,7 +373,7 @@ func isAccountApiKeyPoolIsolationEnabled(account AccountCandidate, entries []api
 	if account.Type != "api_key" {
 		return false
 	}
-	if !isAccountAPIKeyPoolProviderSupported(account.ProviderCode, account.ConnectionDriverCode, account.ProtocolCode, account.ProtocolVersion) {
+	if !isAccountAPIKeyPoolProviderSupported(account.VendorCode, account.ConnectionDriverCode, account.ProtocolCode, account.ProtocolVersion) {
 		return false
 	}
 	return len(entries) > 1

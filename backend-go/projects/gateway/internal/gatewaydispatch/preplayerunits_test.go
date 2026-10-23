@@ -286,7 +286,7 @@ func TestWrapCodexPreparationErrorRecordsUsage(t *testing.T) {
 	adapter := NewOpenAIOAuthCodexAdapterError("请求无效", WithCodexAdapterStatus(400))
 	oauthAccount := testAccounts("a-1")[0]
 	oauthAccount.Type = "oauth"
-	oauthAccount.ProviderCode = "gpt"
+	oauthAccount.VendorCode = "gpt"
 	oauthAccount.ProtocolCode = "openai"
 	oauthAccount.ProtocolVersion = "v1"
 	if got := engine.wrapCodexPreparationError(context.Background(), req, usageContext, oauthAccount, adapter); got != adapter {

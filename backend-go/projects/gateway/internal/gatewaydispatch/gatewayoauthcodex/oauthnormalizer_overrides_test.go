@@ -482,8 +482,10 @@ func TestResolveGptRequestOverrideModelCapabilitiesUsesVendorCodeIdentity(t *tes
 
 // gpt 专属枚举断言同样必须按 VendorCode 识别身份：只有 vendor 列时也要拦住
 // ultra（若运行时仍只读恒空的旧列，这条会因“未知供应商跳过枚举”而放行）。
-// 另两条判别臂钉死"禁止旧列回落"（功能开发指导 §5.1）：旧列有值但新列为空时
-// 必须保持惰性；两列同时有值时必须只认 VendorCode。
+// B4②：secret.ProviderCode 冗余列已从类型上退役，“禁止旧列回落”由编译器
+// 静态保证（原「旧列有值、新列为空」回落复活臂与「两列同值」双载体判别臂
+// 不可再构造，随之删除）；空身份惰性臂保留——空 vendor 必须跳过 gpt 专属
+// 枚举（不得按 gpt 兜底）。
 func TestApplyGptAccountRequestOverridesToUpstreamBodyUsesVendorCodeIdentity(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.3","input":"hi"}`)
 
@@ -498,21 +500,12 @@ func TestApplyGptAccountRequestOverridesToUpstreamBodyUsesVendorCodeIdentity(t *
 		t.Fatalf("错误文案 = %v", err)
 	}
 
-	// 回落复活判别：旧列有值、新列为空 → 身份为空，保持惰性（若实现里出现
-	// ProviderCode 回落，ultra 会被 gpt 枚举拒绝，本臂失败）。
-	legacyOnly := overrideAccount(map[string]any{"reasoning_effort_override": "ultra"})
-	legacyOnly.VendorCode = ""
-	legacyOnly.ProviderCode = "gpt"
-	if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, legacyOnly, "responses", false, "gpt-5.3", "", GptRequestOverrideRuntime{}); err != nil {
-		t.Fatalf("旧列必须不参与身份解析（禁止回落）：%v", err)
-	}
-
-	// 双载体判别：两列同时有值时只认 VendorCode（若回落到旧列 gpt，ultra 会被拒绝，本臂失败）。
-	vendorWins := overrideAccount(map[string]any{"reasoning_effort_override": "ultra"})
-	vendorWins.VendorCode = "deepseek"
-	vendorWins.ProviderCode = "gpt"
-	if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, vendorWins, "responses", false, "gpt-5.3", "", GptRequestOverrideRuntime{}); err != nil {
-		t.Fatalf("两列在场必须只认 VendorCode（禁止回落到旧列）：%v", err)
+	// 空身份惰性判别：VendorCode 为空 → 身份为空，gpt 专属枚举跳过（不得把
+	// 空 vendor 兜底按 gpt 处理，否则 ultra 会被误拒、本臂失败）。
+	emptyVendor := overrideAccount(map[string]any{"reasoning_effort_override": "ultra"})
+	emptyVendor.VendorCode = ""
+	if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, emptyVendor, "responses", false, "gpt-5.3", "", GptRequestOverrideRuntime{}); err != nil {
+		t.Fatalf("空 vendor 必须保持惰性（禁止按 gpt 兜底）：%v", err)
 	}
 }
 

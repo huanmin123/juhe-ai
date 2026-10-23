@@ -74,6 +74,9 @@ func gatewaySettingsForTest() gatewaySettingsType {
 	return gatewaySettingsType{
 		TemporaryUnschedulableRetryIntervalSeconds: 1,
 		TemporaryUnschedulableRetryAttempts:        2,
+		// 生产默认（调度慢失败直切与墙钟收尾修复设计 §5）：测试内失败尝试
+		// 均为快失败，同账户重试行为与改动前一致。
+		SameAccountRetryFastFailMaxMs:              10000,
 		AccountCircuitConfirmationFailuresRequired: 2,
 		TextFirstResponseTimeoutSeconds:            30,
 		TextStreamIdleTimeoutSeconds:               300,

@@ -128,7 +128,7 @@ func newRecordingCircuitAttempt(t *testing.T, accountID string) (*gatewaycircuit
 	preparation, err := service.PrepareAttempt(context.Background(), gatewaycircuit.PrepareAttemptInput{
 		Account: gatewayruntimecache.OpenAIAccountSecret{
 			ID:                        accountID,
-			ProviderCode:              "openai",
+			VendorCode:                "openai",
 			ProviderProtocolProfileID: "openai_profile",
 			ProtocolCode:              "openai",
 			ProtocolVersion:           "v1",
