@@ -21,10 +21,9 @@ type streamPipe struct {
 	logger      StreamLogger
 	nowMs       func() int64
 
-	committedProtocolFailureEventEnabled bool
-	interpretProtocolFailures            bool
-	captureSuccessPayloads               bool
-	passthroughUpstreamFailure           bool
+	interpretProtocolFailures  bool
+	captureSuccessPayloads     bool
+	passthroughUpstreamFailure bool
 	// suppressInjectedUsageChunk：网关注入 include_usage 的流（见
 	// StreamPipeOptions.SuppressGatewayInjectedUsageChunk），写下游前剥除
 	// usage-only SSE data 帧。
@@ -66,9 +65,6 @@ type streamPipe struct {
 	diagnosticCapture *LimitedCapture
 
 	clientClosed bool
-	// lastCommittedDisposition 记录最近一次 signalCommittedStreamFailure 结果
-	//（Node 局部返回值；日志分支需要）。
-	lastCommittedDisposition string
 	// lastInspection 保留最近一次 inspector 快照（body omission 汇总用）。
 	lastInspection gatewayproto.StreamInspection
 }
@@ -107,39 +103,34 @@ func newStreamPipe(input PipeUpstreamStreamInput) *streamPipe {
 	if commit == nil {
 		commit = &DownstreamCommitState{}
 	}
-	signalProtocolEvent := options.ClientRetryEnabled
-	if options.CommittedFailureSignalProtocolEvent != nil {
-		signalProtocolEvent = *options.CommittedFailureSignalProtocolEvent
-	}
 	captureLimit := -1
 	if options.CaptureSuccessPayloads {
 		captureLimit = StreamAuditCaptureBytes
 	}
 	return &streamPipe{
-		input:                                input,
-		body:                                 input.UpstreamBody,
-		downstream:                           input.Downstream,
-		profile:                              input.TimeoutProfile,
-		startedAt:                            input.StartedAtMs,
-		options:                              options,
-		driver:                               driver,
-		inspector:                            driver.NewStreamInspector(),
-		interceptor:                          options.Interceptor,
-		logger:                               logger,
-		nowMs:                                nowMs,
-		committedProtocolFailureEventEnabled: signalProtocolEvent,
-		interpretProtocolFailures:            options.InterpretProtocolFailures,
-		captureSuccessPayloads:               options.CaptureSuccessPayloads,
-		suppressInjectedUsageChunk:           options.SuppressGatewayInjectedUsageChunk,
-		waitingForFirstChunk:                 true,
-		lastUpstreamActivityAt:               input.StartedAtMs,
-		lastProgressLogAt:                    input.StartedAtMs,
-		downstreamCommit:                     commit,
-		preCommitBuffer:                      NewPreCommitBufferState(options.RetryBeforeDownstreamWriteUntilOutput),
-		preCommitSseEvidence:                 NewStreamPreCommitSseEvidence(),
-		responseCapture:                      NewLimitedCapture(captureLimit),
-		upstreamCapture:                      NewLimitedCapture(captureLimit),
-		diagnosticCapture:                    NewLimitedCapture(StreamDiagnosticCaptureBytes),
+		input:                      input,
+		body:                       input.UpstreamBody,
+		downstream:                 input.Downstream,
+		profile:                    input.TimeoutProfile,
+		startedAt:                  input.StartedAtMs,
+		options:                    options,
+		driver:                     driver,
+		inspector:                  driver.NewStreamInspector(),
+		interceptor:                options.Interceptor,
+		logger:                     logger,
+		nowMs:                      nowMs,
+		interpretProtocolFailures:  options.InterpretProtocolFailures,
+		captureSuccessPayloads:     options.CaptureSuccessPayloads,
+		suppressInjectedUsageChunk: options.SuppressGatewayInjectedUsageChunk,
+		waitingForFirstChunk:       true,
+		lastUpstreamActivityAt:     input.StartedAtMs,
+		lastProgressLogAt:          input.StartedAtMs,
+		downstreamCommit:           commit,
+		preCommitBuffer:            NewPreCommitBufferState(options.RetryBeforeDownstreamWriteUntilOutput),
+		preCommitSseEvidence:       NewStreamPreCommitSseEvidence(),
+		responseCapture:            NewLimitedCapture(captureLimit),
+		upstreamCapture:            NewLimitedCapture(captureLimit),
+		diagnosticCapture:          NewLimitedCapture(StreamDiagnosticCaptureBytes),
 	}
 }
 

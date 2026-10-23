@@ -40,7 +40,7 @@ func usageInjectTestRequest(t *testing.T, clientBody string) *gatewaypreauth.Gat
 func openaiInjectAccount() AccountView {
 	return OpenAIAccountView{Account: gatewayruntimecache.OpenAIAccountSecret{
 		ID:           "acc_usage_inject",
-		ProviderCode: "openai",
+		VendorCode:   "openai",
 		ProtocolCode: "openai",
 	}}
 }

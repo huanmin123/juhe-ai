@@ -3,6 +3,7 @@ package gatewayresponse
 import (
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -54,6 +55,76 @@ func TestW9CStreamPipeInterceptionAfterDownstreamWrite(t *testing.T) {
 	}
 	if result.ResponseInspection == nil || result.ResponseInspection.PolicyID != "default_openai_context_window_error" {
 		t.Fatalf("inspection = %+v", result.ResponseInspection)
+	}
+}
+
+// TestW9CStreamPipeCommittedInterceptionAlwaysInterrupts：主循环拦截命中且
+// 下游已提交（delta 已写出后 error 事件命中策略）时，处置恒为中断连接（
+// 2026-10-23 契约收口）——InterruptNow 恰好一次、不得向下游补发任何失败
+// 事件字节（原文 error 帧与改写失败帧都不出现），失败仍进入
+// HandleStreamFailure 且管道不向上层抛错。
+func TestW9CStreamPipeCommittedInterceptionAlwaysInterrupts(t *testing.T) {
+	recorder := &failureRecorder{}
+	var mu sync.Mutex
+	interrupts := 0
+	var written []byte
+	_, downstream := newDownstream()
+	body := NewSliceUpstreamBody([]byte(chatDeltaChunk), contextWindowErrorChunk)
+	result, err := PipeUpstreamStream(PipeUpstreamStreamInput{
+		UpstreamBody: body,
+		Downstream: StreamDownstream{
+			Res: &capturingWriter{inner: downstream.Res, onWrite: func(data []byte) {
+				mu.Lock()
+				written = append(written, data...)
+				mu.Unlock()
+			}},
+			Interrupt: func() {
+				mu.Lock()
+				interrupts++
+				mu.Unlock()
+			},
+		},
+		TimeoutProfile:      TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
+		StartedAtMs:         1000,
+		HandleStreamFailure: recorder.handle,
+		Signal:              staticSignal(),
+		Options: StreamPipeOptions{
+			ClientRetryEnabled:         true,
+			DownstreamProtocol:         "chat_completions_sse",
+			ResponseInspectionPolicies: []RuntimeResponseInspectionPolicy{interceptorMountPolicy},
+			ResponseInspectionContext:  &ResponseInspectionRuntimeContext{ClientProfile: "codex"},
+			NowMs:                      func() int64 { return 1000 },
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Completed {
+		t.Fatalf("intercepted stream must not complete: %+v", result)
+	}
+	if result.ResponseInspection == nil || result.ResponseInspection.PolicyID != "default_openai_context_window_error" {
+		t.Fatalf("inspection = %+v", result.ResponseInspection)
+	}
+	if result.DownstreamBytesWritten == 0 {
+		t.Fatal("delta chunk must reach downstream before interception")
+	}
+	// 恒中断：恰好一次，且无失败事件字节补发。
+	mu.Lock()
+	defer mu.Unlock()
+	if interrupts != 1 {
+		t.Fatalf("提交后拦截必须中断恰好一次, interrupts = %d", interrupts)
+	}
+	if !strings.Contains(string(written), "你好") {
+		t.Fatalf("delta 应已到达下游: %q", written)
+	}
+	if strings.Contains(string(written), "context_length_exceeded") || strings.Contains(string(written), "上下文长度超限") || strings.Contains(string(written), "upstream_retryable_error") {
+		t.Fatalf("中断处置不得向下游补发失败事件: %q", written)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("提交后拦截仍应记录一次失败: %d %v", recorder.count(), result)
+	}
+	if last := recorder.last(); last.errorCode != gatewayStreamClientRetryErrorCode {
+		t.Fatalf("失败记录 errorCode = %q", last.errorCode)
 	}
 }
 

@@ -306,8 +306,7 @@ func TestW14CStreamPipeDefaults(t *testing.T) {
 		},
 		StartedAtMs: 1000,
 		Options: StreamPipeOptions{
-			CommittedFailureSignalProtocolEvent: boolPtrW14C(true),
-			ClientRetryEnabled:                  true,
+			ClientRetryEnabled: true,
 		},
 	})
 	_ = pipe
@@ -316,8 +315,6 @@ func TestW14CStreamPipeDefaults(t *testing.T) {
 	}
 	_ = clock
 }
-
-func boolPtrW14C(value bool) *bool { return &value }
 
 func strPtrW14C(value string) *string { return &value }
 

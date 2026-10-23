@@ -104,9 +104,49 @@ func asStreamPreCommitExceeded(err error, target **StreamPreCommitBufferExceeded
 	return false
 }
 
+// EOF pending 拦截 + 下游已提交：处置恒为中断（2026-10-23 契约收口）——
+// InterruptNow 恰好一次、无失败事件字节补发、失败仍进入 HandleStreamFailure。
+func TestW11BEofFlushInterceptedCommittedAlwaysInterrupts(t *testing.T) {
+	pipe, recorder := w11bNewFinalPipe(t, func(o *StreamPipeOptions) {
+		o.ClientRetryEnabled = true
+		o.DownstreamProtocol = "responses_sse"
+	})
+	interrupts := 0
+	pipe.downstream.Interrupt = func() { interrupts++ }
+	// 预写一个语义分片表示下游已提交（退出提交前缓冲语义）。
+	if _, err := pipe.writeDownstreamChunk([]byte(chatDeltaChunk), true); err != nil {
+		t.Fatalf("预写下游分片失败: %v", err)
+	}
+	pipe.interceptor = &w11bPassInterceptor{onFlush: StreamInterceptorSseResult{Intercepted: &ResponseInspectionDecision{
+		Reason: "configured_response_policy", PolicyID: "p1", RewriteMessage: "EOF 提交后命中", DownstreamWritten: true,
+	}}}
+	result, err := pipe.eofFlushPhase()
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result == nil || result.Completed || result.ResponseInspection == nil {
+		t.Fatalf("result = %+v", result)
+	}
+	if !result.SemanticCommitted {
+		t.Fatalf("预写分片应已语义提交下游: %+v", result)
+	}
+	if interrupts != 1 {
+		t.Fatalf("提交后拦截应恰好中断一次连接，interrupts = %d", interrupts)
+	}
+	if want := int64(len(chatDeltaChunk)); pipe.totalResponseBytes != want {
+		t.Fatalf("中断处置不得新增下游字节，totalResponseBytes = %d want %d", pipe.totalResponseBytes, want)
+	}
+	if result.Message != "EOF 提交后命中" {
+		t.Fatalf("message = %q", result.Message)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("records = %d", recorder.count())
+	}
+}
+
 // ---- handleProtocolFailure 补充分支 ----
 
-func TestW11BHandleProtocolFailureDefaultCodeAndEofSignaled(t *testing.T) {
+func TestW11BHandleProtocolFailureDefaultCodeAndEofInterrupted(t *testing.T) {
 	// inspection 无 errorCode → 缺省 upstream_protocol_failure。
 	pipe, _ := w11bNewFinalPipe(t, nil)
 	result, err := pipe.handleProtocolFailure(gatewayproto.StreamInspection{FailedReceived: true, ErrorMessage: "boom"}, false)
@@ -117,30 +157,29 @@ func TestW11BHandleProtocolFailureDefaultCodeAndEofSignaled(t *testing.T) {
 		t.Fatalf("errorCode = %q", result.ErrorCode)
 	}
 
-	// EOF + 提交后 + signaled disposition 日志分支。
-	pipe2, _ := w11bNewFinalPipe(t, func(o *StreamPipeOptions) {
+	// EOF + 提交后：恒中断处置（InterruptNow 恰好一次，无失败事件补发）。
+	pipe2, recorder := w11bNewFinalPipe(t, func(o *StreamPipeOptions) {
 		o.ClientRetryEnabled = true
 		o.DownstreamProtocol = "responses_sse"
 	})
-	pipe2.lastCommittedDisposition = "signaled"
+	interrupts := 0
+	pipe2.downstream.Interrupt = func() { interrupts++ }
 	if _, err := pipe2.handleProtocolFailure(gatewayproto.StreamInspection{FailedReceived: true, ErrorCode: "e"}, true); err != nil {
 		t.Fatalf("err = %v", err)
 	}
-
-	// EOF + 提交前 signaled（TakeStreamPreCommitChunks 分支）。
-	pipe3, _ := w11bNewFinalPipe(t, func(o *StreamPipeOptions) { o.RetryBeforeDownstreamWriteUntilOutput = true })
-	pipe3.lastCommittedDisposition = "signaled"
-	if _, err := pipe3.handleProtocolFailure(gatewayproto.StreamInspection{FailedReceived: true}, true); err != nil {
-		t.Fatalf("err = %v", err)
+	if interrupts != 1 {
+		t.Fatalf("EOF 提交后失败应中断连接，interrupts = %d", interrupts)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("records = %d", recorder.count())
+	}
+	if pipe2.totalResponseBytes != 0 {
+		t.Fatalf("中断处置不得新增下游字节，totalResponseBytes = %d", pipe2.totalResponseBytes)
 	}
 
-	// 提交后 signalCommittedStreamFailure 回调失败仍继续发送。
-	pipe4, _ := w11bNewFinalPipe(t, func(o *StreamPipeOptions) {
-		o.ClientRetryEnabled = true
-		o.DownstreamProtocol = "responses_sse"
-		o.BeforeCommittedFailureSignal = func(CommittedStreamFailureSignalContext) error { return http.ErrAbortHandler }
-	})
-	if _, err := pipe4.handleProtocolFailure(gatewayproto.StreamInspection{FailedReceived: true}, false); err != nil {
+	// EOF + 提交前（TakeStreamPreCommitChunks 分支）。
+	pipe3, _ := w11bNewFinalPipe(t, func(o *StreamPipeOptions) { o.RetryBeforeDownstreamWriteUntilOutput = true })
+	if _, err := pipe3.handleProtocolFailure(gatewayproto.StreamInspection{FailedReceived: true}, true); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 }

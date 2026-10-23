@@ -84,12 +84,6 @@ func isServerRetryableSystemDefaultResponseInspectionDecision(decision *Response
 		serverRetryableSystemDefaultResponseInspectionPolicyIds[decision.PolicyID]
 }
 
-// ShouldInterruptCommittedGenericStream 对齐
-// shouldInterruptCommittedGenericStream。
-func ShouldInterruptCommittedGenericStream(protocolFailureEventEnabled bool, downstreamBytesWritten int64) bool {
-	return !protocolFailureEventEnabled && downstreamBytesWritten > 0
-}
-
 // IsTransientPrecommitUpstreamFailureDecision 对齐
 // isTransientPrecommitUpstreamFailureDecision。
 func IsTransientPrecommitUpstreamFailureDecision(decision *ResponseInspectionDecision) bool {

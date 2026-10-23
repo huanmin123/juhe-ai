@@ -485,12 +485,6 @@ func TestWdSseWaitHeartbeatFactoryAndLoop(t *testing.T) {
 }
 
 func TestWdRetryDecisionAndStreamSummaryHelpers(t *testing.T) {
-	if !ShouldInterruptCommittedGenericStream(false, 128) {
-		t.Fatal("无失败事件通道且已写字节应中断")
-	}
-	if ShouldInterruptCommittedGenericStream(true, 128) || ShouldInterruptCommittedGenericStream(false, 0) {
-		t.Fatal("中断条件错误")
-	}
 	summary := StreamBodyOmissionSummaryOf(StreamInspectionSummaryInput{
 		EventCount: 9, LastEventType: "message_stop",
 		RecentEventTypes: []string{"a", "b"}, ImageOutputReceived: true,

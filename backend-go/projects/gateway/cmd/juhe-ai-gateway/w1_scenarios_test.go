@@ -5,6 +5,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -272,13 +273,32 @@ func TestW1ScenarioStreamAbortedByUpstream(t *testing.T) {
 		// 直接断开（不写 [DONE]）。
 		panic(http.ErrAbortHandler)
 	})
-	status, body := chainV1ChatRequest(t, scenario.serverURL, scenario.apiKey,
-		`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"你好"}]}`)
-	if status != http.StatusOK {
-		t.Fatalf("中断流状态 = %d body=%s", status, body)
+	// 2026-10-23 契约收口：提交后的上游断流对客户端是真·网络级中断——已透传
+	// 的半截内容之后必须以 unexpected EOF（连接截断）收场，不再是「帧完整但缺
+	// 协议终止事件」的优雅收尾；客户端 HTTP 栈据此走自身的网络错误自动重试。
+	request, err := http.NewRequest(http.MethodPost, scenario.serverURL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"你好"}]}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+scenario.apiKey)
+	client := &http.Client{Timeout: 30 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("中断流状态 = %d body=%s", response.StatusCode, string(raw))
+	}
+	raw, readErr := io.ReadAll(response.Body)
+	if !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("提交后断流必须以网络级读错误（io.ErrUnexpectedEOF）收尾, got %v", readErr)
 	}
 	// 半截内容已透传给客户端。
-	if !strings.Contains(body, "半截") {
-		t.Fatalf("中断流内容 = %s", body)
+	if !strings.Contains(string(raw), "半截") {
+		t.Fatalf("中断流内容 = %s", string(raw))
 	}
 }

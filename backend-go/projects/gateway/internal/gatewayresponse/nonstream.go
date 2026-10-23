@@ -1016,25 +1016,17 @@ func (input *HandleUpstreamResponseInput) finalizeBufferedJSONProtocolFailure(
 
 // finalizeNonStreamResponseAfterSseHeartbeat 对齐
 // finalizeNonStreamResponseAfterSseHeartbeat。
+//
+// 2026-10-23 契约收口：SSE 保活连接上收到非流式上游响应属「下游提交后失败」，
+// 对全部客户端一律中断连接（不再补发脱敏协议失败事件）；客户端以网络级错误
+// 自行重试。
 func (input *HandleUpstreamResponseInput) finalizeNonStreamResponseAfterSseHeartbeat() (UpstreamResponseHandlingResult, error) {
 	message := "等待可用账户期间已建立 SSE 保活连接，但上游返回了非流式响应，请客户端重试"
 	input.UpstreamResponse.Body.Close()
-	driver := input.driver()
-	failureEvent := gatewaypreauth.BuildGatewayStreamFailureEventForProtocol(
-		gatewaypreauth.GatewayStreamClientRetryMessage,
-		gatewaypreauth.GatewayStreamClientRetryErrorCode,
-		gatewaypreauth.GatewayErrorProtocol(driver.ClientErrorProtocol()),
-		gatewaypreauth.OpenAIGatewayDownstreamProtocol(clientStrategyDownstreamProtocol(input.ClientStrategy)),
-	)
 	tracking, isTracking := input.Downstream.Res.(*gatewaypreauth.TrackingWriter)
 	writableEnded := isTracking && tracking.WritableEnded()
 	destroyed := input.Downstream.DestroyedNow()
-	if len(failureEvent) > 0 && !writableEnded && !destroyed {
-		_, _ = input.Downstream.Res.Write(failureEvent)
-		FlushGateway(input.Downstream.Res)
-		input.DownstreamCommitState.MarkSemanticCommitted(int64(len(failureEvent)))
-		input.Downstream.End()
-	} else if !writableEnded && !destroyed {
+	if !writableEnded && !destroyed {
 		input.Downstream.InterruptNow()
 	}
 	input.AuditCapture.CompleteAttempt(input.AuditAttemptID, AttemptAuditInput{
@@ -1070,7 +1062,6 @@ func (input *HandleUpstreamResponseInput) finalizeNonStreamResponseAfterSseHeart
 		Outcome:          "stream_failed",
 		Success:          false,
 		StatusCode:       input.Downstream.Res.StatusCode(),
-		ResponseBody:     string(failureEvent),
 		ResponsePartType: "gateway_response",
 		ErrorPhase:       "downstream",
 		ErrorCode:        "downstream_transport_conflict",

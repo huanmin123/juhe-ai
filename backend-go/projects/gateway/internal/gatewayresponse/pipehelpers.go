@@ -10,9 +10,6 @@ import (
 
 // 管道辅助：下游写、pre-commit、终态信号、结果组装与工具函数。
 
-// lastCommittedDisposition 记录最近一次 committed failure signal 结果。
-// （Node 用局部返回值；这里提到结构上以便日志分支读取。）
-
 func (p *streamPipe) responseState() PreCommitResponseState {
 	return PreCommitResponseState{
 		HeadersSent:   p.downstream.Res.HeadersSent(),
@@ -279,74 +276,15 @@ func (p *streamPipe) finishStreamResult(args finishArgs) StreamPipeResult {
 }
 
 // signalCommittedStreamFailure 对齐 signalCommittedStreamFailure。
-func (p *streamPipe) signalCommittedStreamFailure(inspection gatewayproto.StreamInspection, accountFailureEligible bool) (string, error) {
-	canSignalCommittedImageFailure := inspection.ImageOutputReceived && p.options.DownstreamProtocol == "responses_sse"
-	if p.terminalEventWritten || (!p.committedProtocolFailureEventEnabled && !canSignalCommittedImageFailure) {
-		p.interruptResponse()
-		p.lastCommittedDisposition = "interrupted"
-		return "interrupted", nil
-	}
-	// The stream has already crossed the downstream commit boundary. It
-	// cannot be replaced by another account, so expose the parsed upstream
-	// failure when available and otherwise identify the interruption itself.
-	clientMessage := "上游流式响应中断"
-	if inspection.OutputReceived {
-		clientMessage = "上游流式响应在输出后中断"
-	} else if inspection.ErrorMessage != "" {
-		clientMessage = inspection.ErrorMessage
-	}
-	clientErrorCode := inspection.ErrorCode
-	if clientErrorCode == "" {
-		clientErrorCode = "upstream_stream_interrupted"
-	}
-	if p.committedProtocolFailureEventEnabled {
-		clientErrorCode = gatewaypreauth.GatewayStreamClientRetryErrorCode
-	}
-	if p.options.BeforeCommittedFailureSignal != nil {
-		context := CommittedStreamFailureSignalContext{
-			StreamFailureContext:   p.streamFailureContext(p.totalResponseBytes, inspection.OutputReceived, p.interpretedProtocolFailure(inspection), p.interpretedProtocolFailure(inspection)),
-			Message:                clientMessage,
-			ErrorCode:              clientErrorCode,
-			SemanticCommitted:      p.downstreamCommit.SemanticCommitted,
-			AccountFailureEligible: accountFailureEligible,
-		}
-		if err := p.options.BeforeCommittedFailureSignal(context); err != nil {
-			p.logger.Warn("gateway_stream_committed_failure_signal_callback_failed", nil, "Codex turn 提交后失败状态记录失败，继续发送协议终态")
-		}
-	}
-	p.prepareDownstreamForWrite()
-	failureEvent := p.writeGatewayStreamFailureEventWithBackpressure(clientMessage, clientErrorCode)
-	if failureEvent == nil {
-		p.interruptResponse()
-		p.lastCommittedDisposition = "interrupted"
-		return "interrupted", nil
-	}
-	if !p.bodyCaptureOmitted {
-		p.responseCapture.Push(failureEvent)
-		p.diagnosticCapture.Push(failureEvent)
-	}
-	p.totalResponseBytes += int64(len(failureEvent))
-	p.downstreamCommit.MarkSemanticCommitted(int64(len(failureEvent)))
-	p.terminalEventWritten = true
-	p.endResponse()
-	p.lastCommittedDisposition = "signaled"
-	return "signaled", nil
-}
-
-func (p *streamPipe) writeGatewayStreamFailureEventWithBackpressure(message string, code string) []byte {
-	buffer := gatewaypreauth.BuildGatewayStreamFailureEventForProtocol(
-		message, code,
-		gatewaypreauth.GatewayErrorProtocol(p.driver.ClientErrorProtocol()),
-		gatewaypreauth.OpenAIGatewayDownstreamProtocol(p.options.DownstreamProtocol),
-	)
-	if buffer == nil {
-		return nil
-	}
-	if _, err := p.downstream.Res.Write(buffer); err != nil {
-		return nil
-	}
-	FlushGateway(p.downstream.Res)
-	return buffer
+//
+// 2026-10-23 契约收口：下游提交后的流式失败对全部客户端（generic 与精确画像）
+// 一律中断连接（真·网络级断开），由客户端以网络级错误自行重试；不再按客户端
+// 画像补发脱敏协议失败事件（原 committedFailureSignal=protocol_error_event
+// 的 signaled 分支已删除）。提交前（未向客户端写任何字节）的失败行为不变，
+// 仍走 writePreCommitStreamFailureToClient / RetryUpstream 换号路径。
+func (p *streamPipe) signalCommittedStreamFailure() error {
+	p.interruptResponse()
+	return nil
 }
 
 func (p *streamPipe) endResponse() {
@@ -513,5 +451,3 @@ func transportFailureKindOrNull(failure *StreamTransportFailure) any {
 	}
 	return failure.Kind
 }
-
-// lastCommittedDisposition 存放最近一次 signal 结果（日志分支用）。

@@ -122,7 +122,7 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		if err := p.input.HandleStreamFailure(failurePayload.Message, failurePayload.ErrorCode, p.streamFailureContext(p.totalResponseBytes, latestInspection.OutputReceived, false, false)); err != nil {
 			return nil, err
 		}
-		p.endResponse()
+		p.interruptResponse()
 		p.logger.Warn("gateway_response_inspected", map[string]any{
 			"elapsedMs":          p.nowMs() - p.startedAt,
 			"chunkCount":         p.chunkIndex,
@@ -135,7 +135,7 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 			"rewriteErrorCode":   decision.RewriteErrorCode,
 			"downstreamWritten":  decision.DownstreamWritten,
 			"eofPendingFlush":    true,
-		}, "网关已在上游 EOF 时命中响应检查策略并结束当前流")
+		}, "网关已在上游 EOF 时命中响应检查策略并中断当前流")
 		return p.inspectionFailureResult(decision, latestInspection), nil
 	}
 	if (eofWroteDownstream || len(p.preCommitBuffer.Chunks) > 0) &&
@@ -232,7 +232,7 @@ func (p *streamPipe) handleInterceptedAfterChunks(decision *ResponseInspectionDe
 	if err := p.input.HandleStreamFailure(failurePayload.Message, failurePayload.ErrorCode, p.streamFailureContext(p.totalResponseBytes, latestInspection.OutputReceived, false, false)); err != nil {
 		return nil, err, true
 	}
-	p.endResponse()
+	p.interruptResponse()
 	p.logger.Warn("gateway_response_inspected", map[string]any{
 		"elapsedMs":          p.nowMs() - p.startedAt,
 		"chunkCount":         p.chunkIndex,
@@ -244,7 +244,7 @@ func (p *streamPipe) handleInterceptedAfterChunks(decision *ResponseInspectionDe
 		"upstreamErrorCode":  decision.UpstreamErrorCode,
 		"rewriteErrorCode":   decision.RewriteErrorCode,
 		"downstreamWritten":  decision.DownstreamWritten,
-	}, "网关已命中响应检查策略并结束当前流")
+	}, "网关已命中响应检查策略并中断当前流")
 	return p.inspectionFailureResult(decision, latestInspection), nil, true
 }
 
@@ -282,7 +282,7 @@ func (p *streamPipe) handleProtocolFailure(latestInspection gatewayproto.StreamI
 	}
 	p.body.Close()
 	if !beforeDownstreamCommit {
-		if _, err := p.signalCommittedStreamFailure(latestInspection, true); err != nil {
+		if err := p.signalCommittedStreamFailure(); err != nil {
 			return nil, err
 		}
 	}
@@ -291,9 +291,6 @@ func (p *streamPipe) handleProtocolFailure(latestInspection gatewayproto.StreamI
 	if beforeDownstreamCommit {
 		event = "gateway_stream_failure_before_downstream_commit"
 		logMessage = "网关在下游提交前解析到流式失败，交由上层返回当前失败"
-	} else if p.lastCommittedDisposition == "signaled" {
-		event = "gateway_stream_failure_after_downstream_commit_signaled"
-		logMessage = "网关在下游提交后解析到流式失败，已补发包含上游错误摘要的协议失败事件"
 	}
 	fields := map[string]any{
 		"message":             message,
@@ -306,10 +303,8 @@ func (p *streamPipe) handleProtocolFailure(latestInspection gatewayproto.StreamI
 	}
 	if eofPendingFlush {
 		fields["eofPendingFlush"] = true
-		if !beforeDownstreamCommit && p.lastCommittedDisposition != "signaled" {
+		if !beforeDownstreamCommit {
 			logMessage = "网关在 EOF pending 下游提交后解析到流式失败，已中断当前连接"
-		} else if !beforeDownstreamCommit && p.lastCommittedDisposition == "signaled" {
-			logMessage = "网关在 EOF pending 下游提交后解析到流式失败，已补发包含上游错误摘要的协议失败事件"
 		} else {
 			logMessage = "网关在 EOF pending 下游提交前解析到流式失败，交由上层返回当前失败"
 		}
@@ -432,7 +427,7 @@ func (p *streamPipe) finalizeParserSkipped(inspection gatewayproto.StreamInspect
 		if err := p.input.HandleStreamFailure(message, errorCode, p.streamFailureContext(p.totalResponseBytes, inspection.OutputReceived, p.interpretedProtocolFailure(inspection), !p.completed || p.interpretedProtocolFailure(inspection))); err != nil {
 			return StreamPipeResult{}, err
 		}
-		if _, err := p.signalCommittedStreamFailure(inspection, false); err != nil {
+		if err := p.signalCommittedStreamFailure(); err != nil {
 			return StreamPipeResult{}, err
 		}
 	} else {
@@ -485,23 +480,16 @@ func (p *streamPipe) finalizeMissingTerminal(inspection gatewayproto.StreamInspe
 			imageOutputReceived:   inspection.ImageOutputReceived,
 		}), nil
 	}
-	disposition, err := p.signalCommittedStreamFailure(inspection, true)
-	if err != nil {
+	if err := p.signalCommittedStreamFailure(); err != nil {
 		return StreamPipeResult{}, err
 	}
-	event := "gateway_stream_missing_terminal_interrupted"
-	logMessage := "网关已因缺少终止事件中断连接"
-	if disposition == "signaled" {
-		event = "gateway_stream_missing_terminal_failure_signaled"
-		logMessage = "网关已因缺少终止事件补发一次脱敏失败终态"
-	}
-	p.logger.Warn(event, map[string]any{
+	p.logger.Warn("gateway_stream_missing_terminal_interrupted", map[string]any{
 		"errorCode":           errorCode,
 		"totalUpstreamBytes":  p.totalUpstreamBytes,
 		"totalResponseBytes":  p.totalResponseBytes,
 		"sseEventCount":       inspection.EventCount,
 		"recentSseEventTypes": inspection.RecentEventTypes,
-	}, logMessage)
+	}, "网关已因缺少终止事件中断连接")
 	return p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
 		outputReceived:        inspection.OutputReceived,
@@ -540,17 +528,10 @@ func (p *streamPipe) finalizeIncompleteOrFailed(inspection gatewayproto.StreamIn
 			imageOutputReceived:   inspection.ImageOutputReceived,
 		}), nil
 	}
-	disposition, err := p.signalCommittedStreamFailure(inspection, true)
-	if err != nil {
+	if err := p.signalCommittedStreamFailure(); err != nil {
 		return StreamPipeResult{}, err
 	}
-	event := "gateway_stream_finished_failed_interrupted"
-	logMessage := "网关已中断失败流"
-	if disposition == "signaled" {
-		event = "gateway_stream_finished_failed_signaled"
-		logMessage = "网关已为精确客户端补发一次脱敏失败终态"
-	}
-	p.logger.Warn(event, map[string]any{
+	p.logger.Warn("gateway_stream_finished_failed_interrupted", map[string]any{
 		"completed":           p.completed,
 		"elapsedMs":           p.nowMs() - p.startedAt,
 		"chunkCount":          p.chunkIndex,
@@ -562,7 +543,7 @@ func (p *streamPipe) finalizeIncompleteOrFailed(inspection gatewayproto.StreamIn
 		"sseEventCount":       inspection.EventCount,
 		"sseEventTypeCounts":  inspection.EventTypeCounts,
 		"recentSseEventTypes": inspection.RecentEventTypes,
-	}, logMessage)
+	}, "网关已中断失败流")
 	return p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
 		outputReceived:        inspection.OutputReceived,
@@ -737,24 +718,16 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 		})
 		return result, nil
 	}
-	accountFailureEligible := !gatewayLocalFailure
-	disposition, err := p.signalCommittedStreamFailure(inspection, accountFailureEligible)
-	if err != nil {
+	if err := p.signalCommittedStreamFailure(); err != nil {
 		return StreamPipeResult{}, err
 	}
-	event := "gateway_stream_failure_after_downstream_commit_interrupted"
-	logMessage := "网关已中断提交后的失败流"
-	if disposition == "signaled" {
-		event = "gateway_stream_failure_after_downstream_commit_signaled"
-		logMessage = "网关已为精确客户端补发一次脱敏失败终态"
-	}
-	p.logger.Warn(event, map[string]any{
+	p.logger.Warn("gateway_stream_failure_after_downstream_commit_interrupted", map[string]any{
 		"message":              message,
 		"errorCode":            errorCode,
 		"totalUpstreamBytes":   p.totalUpstreamBytes,
 		"totalResponseBytes":   p.totalResponseBytes,
 		"transportFailureKind": transportFailureKindOrNull(transportFailure),
-	}, logMessage)
+	}, "网关已中断提交后的失败流")
 	result := p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
 		outputReceived:        inspection.OutputReceived,

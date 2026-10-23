@@ -150,17 +150,12 @@ func TestW9CStreamDownstreamInterruptAndDestroyed(t *testing.T) {
 func TestW9CStreamPipeBeforeDownstreamCommitHook(t *testing.T) {
 	recorder := &failureRecorder{}
 	commits := []string{}
-	hookErrors := 0
 	body := NewSliceUpstreamBody([]byte(chatDeltaChunk), []byte(chatFinishChunk), []byte(chatDoneChunk))
 	result, err := runPipe(body, nil, StreamPipeOptions{
 		ClientRetryEnabled: true,
 		BeforeDownstreamCommit: func(responseResourceId string) error {
 			commits = append(commits, responseResourceId)
 			return nil
-		},
-		BeforeCommittedFailureSignal: func(CommittedStreamFailureSignalContext) error {
-			hookErrors++
-			return errors.New("signal hook boom")
 		},
 	}, recorder, 1000)
 	if err != nil {

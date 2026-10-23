@@ -588,6 +588,17 @@ func (c *gatewayChain) handleUpstreamResponse(
 	if upstream != nil && chainIsMediaJobCreateRequest(req) && chainVideoCreateDeterministicParamStatus(upstream.Status()) {
 		return c.handleVideoCreateUpstreamErrorPassthrough(res, req, upstream)
 	}
+	// BUG-0326 音频同步业务拒绝透传（问题档案修复设计）：失败派发器对音频同
+	// 步 lane 的确定性业务拒绝 4xx（401/403/407/408/429 保留集外）短路为
+	// ReturnResponse 后，在此错误透传分支渲染真实状态码与上游错误体——不进
+	// chat 语义的 JSON 检查管道（响应检查改写会把上游业务拒绝吞成 502
+	// response_inspection_failed，与上方视频创建参数短路同款裁决）。到达本
+	// 拦截的非 2xx 只能是失败派发器 ReturnResponse 透传（诊断/非网关流量同
+	// 臂受益：诊断必须观察上游真实终态）；401/403/407/408/429 与 5xx/网络
+	// 错误维持既有派发/重试语义，不会以业务拒绝状态进入本拦截。
+	if upstream != nil && chainMediaSyncAudioRejectionShortCircuit(string(context.RequestLane), upstream.Status()) {
+		return c.handleAudioSyncUpstreamErrorPassthrough(res, req, upstream)
+	}
 	streamRequest := gatewaypreauth.IsOpenAIStreamRequest(req)
 	// Node routes.ts:1550-1553: shouldHandleAsStream = upstreamResponse.ok &&
 	// shouldHandle... . A complete non-2xx is already the terminal upstream
@@ -630,9 +641,14 @@ func (c *gatewayChain) handleUpstreamResponse(
 	if attemptStartedAt == 0 {
 		attemptStartedAt = startedAt
 	}
+	// 2026-10-23 契约收口：提交后流式失败统一网络级断开。interrupt 把
+	// Hijack+Close 真断开接进管道（InterruptNow 不再是 no-op），destroyed 使
+	// 链面守卫（writableEndedOf / writePreCommitStreamFailureToClient /
+	// SendGatewayErrorResponse）在断开后立即生效——见 chain_downstream_interrupt.go。
+	interrupt, destroyed := newDownstreamInterrupt(res)
 	input := &gatewayresponse.HandleUpstreamResponseInput{
 		Req:              req,
-		Downstream:       gatewayresponse.StreamDownstream{Res: res},
+		Downstream:       gatewayresponse.StreamDownstream{Res: res, Interrupt: interrupt, Destroyed: destroyed},
 		Account:          gatewayresponse.OpenAIAccountView{Account: dispatched.Account},
 		UpstreamResponse: responseSnapshot,
 		UpstreamURL:      dispatched.UpstreamURL,
@@ -669,9 +685,11 @@ func (c *gatewayChain) handleUpstreamResponse(
 				enqueueFailures:    &c.finalizationEnqueueFailures,
 				// 请求模型、请求侧 endpoint family 与模型解析器按请求注入：
 				// finalize 侧映射记账必须与派发链改写同源（requestedModel 供
-				// 失败行使用，完成行自带 RequestedModel）。
+				// 失败行使用，完成行自带 RequestedModel）。压缩期望取 preflight
+				// 冻结的请求级值（用量记录压缩标记设计 §压缩请求识别）。
 				requestedModel:       requestModelHintOf(req),
 				sourceEndpointFamily: requestMappingSourceFamilyOf(req),
+				compactionExpected:   context.UsageContext.CompactionExpected,
 				models:               c.usageModelResolver,
 				resolveModelVendor:   c.resolveAccountModelVendor,
 			},

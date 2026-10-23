@@ -251,7 +251,7 @@ func TestW11BFinalizeIncompleteOrFailedBeforeCommit(t *testing.T) {
 	}
 }
 
-func TestW11BFinalizeIncompleteOrFailedAfterCommitSignaledAndInterrupted(t *testing.T) {
+func TestW11BFinalizeIncompleteOrFailedAfterCommitAlwaysInterrupted(t *testing.T) {
 	// 无 buffering → 提交后；无 clientRetry → interrupted。
 	pipe, _ := w11bNewFinalPipe(t, nil)
 	pipe.inspector = &w11bFakeInspector{snapshot: gatewayproto.StreamInspection{
@@ -265,15 +265,15 @@ func TestW11BFinalizeIncompleteOrFailedAfterCommitSignaledAndInterrupted(t *test
 	if result.Completed || result.ErrorCode != "upstream_protocol_failure" || result.Message != "上游流式响应返回失败终态" {
 		t.Fatalf("result = %+v", result)
 	}
-	if pipe.lastCommittedDisposition != "interrupted" {
-		t.Fatalf("disposition = %q", pipe.lastCommittedDisposition)
-	}
 
-	// clientRetry + responses_sse → 补发脱敏失败事件。
+	// clientRetry + responses_sse 精确客户端同样恒中断：无失败事件补发、
+	// 无下游新增字节、连接按 InterruptNow 关闭（2026-10-23 契约收口）。
 	pipe2, recorder := w11bNewFinalPipe(t, func(o *StreamPipeOptions) {
 		o.ClientRetryEnabled = true
 		o.DownstreamProtocol = "responses_sse"
 	})
+	interrupts := 0
+	pipe2.downstream.Interrupt = func() { interrupts++ }
 	pipe2.inspector = &w11bFakeInspector{snapshot: gatewayproto.StreamInspection{
 		TerminalReceived: true, FailedReceived: true, OutputReceived: true, ErrorCode: "e3",
 	}}
@@ -282,16 +282,22 @@ func TestW11BFinalizeIncompleteOrFailedAfterCommitSignaledAndInterrupted(t *test
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if pipe2.lastCommittedDisposition != "signaled" {
-		t.Fatalf("disposition = %q", pipe2.lastCommittedDisposition)
+	if result.Completed || result.ErrorCode != "upstream_protocol_failure" || result.Message != "上游流式响应返回失败终态" {
+		t.Fatalf("result = %+v", result)
+	}
+	if interrupts != 1 {
+		t.Fatalf("提交后失败应恰好中断一次连接，interrupts = %d", interrupts)
 	}
 	if recorder.count() != 1 || recorder.last().message != "上游流式响应返回失败终态" {
 		t.Fatalf("records = %+v", recorder.values)
 	}
-	// 补发事件进入响应捕获并结束下游。
+	// 中断处置不结束写面、不向下游补发任何字节。
 	tracking := pipe2.downstream.Res.(*gatewaypreauth.TrackingWriter)
-	if !tracking.WritableEnded() {
-		t.Fatal("signaled 后下游应结束")
+	if tracking.WritableEnded() {
+		t.Fatal("中断处置不得按写面结束下游")
+	}
+	if pipe2.totalResponseBytes != 0 {
+		t.Fatalf("中断处置不得新增下游字节，totalResponseBytes = %d", pipe2.totalResponseBytes)
 	}
 }
 
@@ -334,9 +340,8 @@ func TestW11BHandleProtocolFailureBranches(t *testing.T) {
 		t.Fatal("提交前失败应取走 pre-commit chunks")
 	}
 
-	// 提交后（非 eof）+ 前次 disposition=signaled 日志分支。
+	// 提交后（非 eof）分支：恒中断处置。
 	pipe2, _ := w11bNewFinalPipe(t, nil)
-	pipe2.lastCommittedDisposition = "signaled"
 	if _, err := pipe2.handleProtocolFailure(ins, false); err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -605,6 +610,45 @@ func TestW11BFinishTerminalSuccessDrainAndFailure(t *testing.T) {
 	}
 }
 
+// TestW11BFinishTerminalSuccessContradictoryFailureAlwaysInterrupts：成功终止
+// 事件后上游又给失败终态的矛盾失败臂，处置恒为中断（2026-10-23 契约收口）——
+// InterruptNow 恰好一次、无下游新增字节、失败仍进入 HandleStreamFailure 且
+// 不按写面结束下游。
+func TestW11BFinishTerminalSuccessContradictoryFailureAlwaysInterrupts(t *testing.T) {
+	pipe, recorder := w11bNewFinalPipe(t, func(o *StreamPipeOptions) {
+		o.ClientRetryEnabled = true
+		o.DownstreamProtocol = "responses_sse"
+	})
+	interrupts := 0
+	pipe.downstream.Interrupt = func() { interrupts++ }
+	// 预写一个语义分片表示成功终态前下游已提交。
+	if _, err := pipe.writeDownstreamChunk([]byte(chatDeltaChunk), true); err != nil {
+		t.Fatalf("预写下游分片失败: %v", err)
+	}
+	result, err := pipe.finishTerminalSuccess(gatewayproto.StreamInspection{
+		TerminalReceived: true, FailedReceived: true, OutputReceived: true, ErrorMessage: "成功终态后矛盾失败",
+	}, false, false)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Completed || result.ErrorCode != "upstream_protocol_failure" || result.Message != "成功终态后矛盾失败" {
+		t.Fatalf("result = %+v", result)
+	}
+	if interrupts != 1 {
+		t.Fatalf("矛盾失败应恰好中断一次连接，interrupts = %d", interrupts)
+	}
+	if want := int64(len(chatDeltaChunk)); pipe.totalResponseBytes != want {
+		t.Fatalf("中断处置不得新增下游字节，totalResponseBytes = %d want %d", pipe.totalResponseBytes, want)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("records = %d", recorder.count())
+	}
+	tracking := pipe.downstream.Res.(*gatewaypreauth.TrackingWriter)
+	if tracking.WritableEnded() {
+		t.Fatal("中断处置不得按写面结束下游")
+	}
+}
+
 func TestW11BDrainIteratorAfterTerminalErrorAndTimeout(t *testing.T) {
 	// 读错误立即结束排空。
 	inspector := &w11bFakeInspector{}
@@ -656,7 +700,7 @@ func TestW11BOmitBodyCaptureIfImageStreamAndSummary(t *testing.T) {
 	}
 }
 
-// ---- flushPreCommitChunks / writeGatewayStreamFailureEvent 写失败 ----
+// ---- flushPreCommitChunks 写失败 ----
 
 type w11bFailingWriter struct {
 	inner *gatewaypreauth.TrackingWriter
@@ -680,21 +724,6 @@ func TestW11BFlushPreCommitChunksWriteError(t *testing.T) {
 	pipe.preCommitBuffer.Chunks = nil
 	if err := pipe.flushPreCommitChunks(); err != nil {
 		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestW11BWriteGatewayStreamFailureEventFailingWriter(t *testing.T) {
-	pipe, _ := w11bNewFinalPipe(t, func(o *StreamPipeOptions) {
-		o.DownstreamProtocol = "responses_sse"
-	})
-	pipe.downstream.Res = &w11bFailingWriter{inner: gatewaypreauth.NewTrackingWriter(httptest.NewRecorder())}
-	if event := pipe.writeGatewayStreamFailureEventWithBackpressure("m", "c"); event != nil {
-		t.Fatalf("写失败应返回 nil，got %q", event)
-	}
-	// 非 responses_sse 的 OpenAI 协议无补发事件。
-	pipe2, _ := w11bNewFinalPipe(t, nil)
-	if event := pipe2.writeGatewayStreamFailureEventWithBackpressure("m", "c"); event != nil {
-		t.Fatalf("无协议事件应返回 nil，got %q", event)
 	}
 }
 

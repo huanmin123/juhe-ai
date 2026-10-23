@@ -69,15 +69,6 @@ type StreamFailureContext struct {
 	AvailabilityProbeEligibleSet    bool
 }
 
-// CommittedStreamFailureSignalContext 对齐 CommittedStreamFailureSignalContext。
-type CommittedStreamFailureSignalContext struct {
-	StreamFailureContext
-	Message                string
-	ErrorCode              string
-	SemanticCommitted      bool
-	AccountFailureEligible bool
-}
-
 // IncompleteClientAbortContext 对齐 IncompleteClientAbortContext。
 type IncompleteClientAbortContext struct {
 	StreamFailureContext
@@ -197,13 +188,10 @@ type StreamPipeOptions struct {
 	// TraceID / AccountID 是可选请求身份线索：由调用方从 usage context /
 	// 账户视图填入，仅注入管道日志 fields（空值省略键，不参与任何管道行为、
 	// 回调语义与数据流）。
-	TraceID            string
-	AccountID          string
-	ClientRetryEnabled bool
-	// CommittedFailureSignalProtocolEvent 对齐 committedFailureSignal ===
-	// 'protocol_error_event'；nil 表示按 clientRetryEnabled 推导。
-	CommittedFailureSignalProtocolEvent *bool
-	InterpretProtocolFailures           bool // 默认 true（构造时取反入参）
+	TraceID                   string
+	AccountID                 string
+	ClientRetryEnabled        bool
+	InterpretProtocolFailures bool // 默认 true（构造时取反入参）
 	// InterpretProtocolFailuresSet=false 表示调用方未显式传 false。
 	InterpretProtocolFailuresSet bool
 	OnFirstOutput                func()
@@ -226,7 +214,6 @@ type StreamPipeOptions struct {
 	TransformUpstreamChunk                func(chunk []byte) [][]byte
 	FlushTransformedUpstreamChunks        func() [][]byte
 	DownstreamCommitState                 *DownstreamCommitState
-	BeforeCommittedFailureSignal          func(context CommittedStreamFailureSignalContext) error
 	OnIncompleteClientAbort               func(context IncompleteClientAbortContext) error
 	// Driver 缺省为 openai 视图（Node responseProtocol ?? 'openai_v1'）。
 	Driver      StreamDriver

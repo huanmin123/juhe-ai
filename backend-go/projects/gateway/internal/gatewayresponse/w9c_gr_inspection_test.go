@@ -1,11 +1,10 @@
 package gatewayresponse
 
 import (
-	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -172,25 +171,48 @@ func nonEmptyChunks(chunks [][]byte) [][]byte {
 }
 
 // ---------------------------------------------------------------------------
-// 流管道：下游提交后的协议失败 → 补发失败事件。
+// 流管道：下游提交后的协议失败 → 恒中断连接（2026-10-23 契约收口，不再补发
+// 失败事件）。
 // ---------------------------------------------------------------------------
 
-func TestW9CStreamPipeCommittedFailureSignalsProtocolEvent(t *testing.T) {
+func TestW9CStreamPipeCommittedFailureAlwaysInterrupts(t *testing.T) {
 	recorder := &failureRecorder{}
+	var mu sync.Mutex
+	interrupts := 0
 	abortHooks := 0
+	var written []byte
+	_, downstream := newDownstream()
 	body := NewSliceUpstreamBody([]byte(chatDeltaChunk), contextWindowErrorChunk)
-	result, err := runPipe(body, nil, StreamPipeOptions{
-		ClientRetryEnabled: true,
-		DownstreamProtocol: "chat_completions_sse",
-		BeforeCommittedFailureSignal: func(CommittedStreamFailureSignalContext) error {
-			abortHooks++
-			return nil
+	result, err := PipeUpstreamStream(PipeUpstreamStreamInput{
+		UpstreamBody: body,
+		Downstream: StreamDownstream{
+			Res: &capturingWriter{inner: downstream.Res, onWrite: func(data []byte) {
+				mu.Lock()
+				written = append(written, data...)
+				mu.Unlock()
+			}},
+			Interrupt: func() {
+				mu.Lock()
+				interrupts++
+				mu.Unlock()
+			},
 		},
-		OnIncompleteClientAbort: func(IncompleteClientAbortContext) error {
-			abortHooks += 10
-			return nil
+		TimeoutProfile:      TimeoutProfile{FirstResponseTimeoutMs: 60_000, IdleTimeoutMs: 30_000, UncommittedAttemptMaxLifetimeMs: 300_000},
+		StartedAtMs:         1000,
+		HandleStreamFailure: recorder.handle,
+		Signal:              staticSignal(),
+		Options: StreamPipeOptions{
+			ClientRetryEnabled: true,
+			DownstreamProtocol: "chat_completions_sse",
+			OnIncompleteClientAbort: func(IncompleteClientAbortContext) error {
+				mu.Lock()
+				abortHooks += 10
+				mu.Unlock()
+				return nil
+			},
+			NowMs: func() int64 { return 1000 },
 		},
-	}, recorder, 1000)
+	})
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -204,13 +226,25 @@ func TestW9CStreamPipeCommittedFailureSignalsProtocolEvent(t *testing.T) {
 	if last.errorCode == "" {
 		t.Fatalf("failure record = %+v", last)
 	}
-	// The committed-failure signal context ran (not the incomplete-abort one).
-	if abortHooks == 0 || abortHooks >= 10 {
-		t.Fatalf("hook calls = %d", abortHooks)
+	// The committed-failure path ran (not the incomplete-abort one).
+	if abortHooks != 0 {
+		t.Fatalf("incomplete-abort hook must not run, calls = %d", abortHooks)
 	}
 	// Output was received before the failure, so the failure context marks it.
 	if !last.context.OutputReceived {
 		t.Fatalf("context = %+v", last.context)
 	}
-	_ = gatewaypreauth.NewTrackingWriter(httptest.NewRecorder())
+	// Constant disposition: exactly one network-level interrupt, and no
+	// failure event bytes reach the downstream.
+	mu.Lock()
+	defer mu.Unlock()
+	if interrupts != 1 {
+		t.Fatalf("committed failure must interrupt exactly once, interrupts = %d", interrupts)
+	}
+	if !strings.Contains(string(written), "你好") {
+		t.Fatalf("delta 应已到达下游: %q", written)
+	}
+	if strings.Contains(string(written), "context_length_exceeded") || strings.Contains(string(written), "upstream_retryable_error") {
+		t.Fatalf("中断处置不得向下游补发失败事件: %q", written)
+	}
 }

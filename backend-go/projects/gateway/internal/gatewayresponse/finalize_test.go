@@ -294,6 +294,9 @@ func TestFinalizeNonStreamResponseAfterSSEHeartbeat(t *testing.T) {
 	audit := input.AuditCapture.(*mockAuditCapture)
 	usage := &mockUsageRecords{}
 	input.Deps = &FinalizationDeps{UsageRecords: usage}
+	// 2026-10-23 契约收口：SSE 保活上收到非流式响应属提交后失败，恒中断连接。
+	interrupts := 0
+	input.Downstream.Interrupt = func() { interrupts++ }
 
 	result, err := HandleNonStreamUpstreamResponse(input)
 	if err != nil {
@@ -302,12 +305,18 @@ func TestFinalizeNonStreamResponseAfterSSEHeartbeat(t *testing.T) {
 	if !result.AlreadyFinalized {
 		t.Fatalf("result = %+v", result)
 	}
+	if interrupts != 1 {
+		t.Fatalf("提交后失败应恰好中断一次连接，interrupts = %d", interrupts)
+	}
 	body := recorder.Body.String()
-	if !strings.Contains(body, "response.failed") || !strings.Contains(body, "请重试") {
-		t.Fatalf("client body = %q", body)
+	if strings.Contains(body, "response.failed") || strings.Contains(body, "请重试") {
+		t.Fatalf("中断处置不得向下游写失败事件: %q", body)
 	}
 	if len(audit.finalized) != 1 || audit.finalized[0].ErrorCode != "downstream_transport_conflict" {
 		t.Fatalf("finalize = %+v", audit.finalized)
+	}
+	if audit.finalized[0].ResponseBody != "" {
+		t.Fatalf("审计正文不应再含失败事件: %q", audit.finalized[0].ResponseBody)
 	}
 }
 

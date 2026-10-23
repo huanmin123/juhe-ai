@@ -170,7 +170,7 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 当前关系规则：
 
 - `accounts.system_account_id` 表示当前账户行所属系统账户；账户所有者把 AI 账户授权给其他系统账户后，系统会为被授权人创建独立授权实例账户。
-- `accounts.provider_protocol_profile_id` 是账户自身接入类型、测试、模型映射和网关候选过滤的硬边界；分组只保存 `provider_code`，账户加入分组和授权实例绑定只按供应商一致性校验。本文账户档案覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，其他当前启用档案以 Anthropic、Gemini、GLM、DeepSeek 专题为准。
+- `accounts.provider_protocol_profile_id` 是账户自身接入类型、测试、模型映射和网关候选过滤的硬边界；分组实体已无供应商维度（`groups.provider_code` 已退役，账户加入分组和授权实例绑定不再按分组的供应商一致性校验，见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md)）。本文账户档案覆盖值为 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`，其他当前启用档案以 Anthropic、Gemini、GLM、DeepSeek 专题为准。
 - `group_accounts` 表示某个使用方的本地分组绑定；自有账户绑定自有账户 ID，授权账户绑定被授权人自己的授权实例账户 ID，并记录稳定的 `account_authorization_id`。
 - 一个账户在同一个使用方作用域内同一时间只保留一个有效分组绑定；自有账户在所有者作用域内创建 / 编辑时选择分组，被授权账户在授权创建时必须绑定被授权用户自己的本地分组，后续通过账户编辑弹窗调整分组和分组内优先级。
 - 账户标签按系统账户维度保存，一个账户可以绑定多个标签；新增和编辑弹窗支持从下拉选择已有标签，也支持直接输入新标签。下拉内可删除未绑定任何账户的标签；标签已绑定账户时禁止删除。
@@ -286,7 +286,7 @@ OpenAI 网关使用短期会话亲和，只影响账号排序，不绕过本地 
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。多 Key `api_key` 账户上，绑定进一步黏住账户内一把上游 Key：黏住 Key 仍健康时直接复用，最终协议成功后才把该次 Key 指纹写回绑定（见 [账户内 API Key 会话亲和设计](账户内APIKey会话亲和设计.md)）。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定保存在 Redis（cache driver 为 Redis 时，TTL 1 小时）或进程内存（memory 降级路径，TTL 24 小时）；服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
-- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 状态必须有可解析的 `turn_id`，并在官方会话身份或规范化 IP 软桶的严格来源边界内保存；识别不到时不使用 metadata session/thread、body、body hash、User-Agent、显式 profile 或 `x-client-request-id` 回退。后续同一 turn 到达时在所属分派段内避让已发生客户端可见失败的账号；段内普通候选全部耗尽或被硬门跳过后，被避让账号解除软排除按原顺序翻回尝试（每账号每次调度至多一次），不得跨段降级到更低分派段。正式请求热路径不执行额外同步探针：首次 activation 只把 HMAC source fence 交给后台 worker，worker success 仅精确清该来源账户避让；unknown/task failure 不改变账户状态，confirmed health failure 才进入既有健康阈值。后台探活仍保留 `20s -> 30s -> 40s` 档位（2026-10-07 自 `10s -> 20s -> 30s` 统一上调）。
+- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；提交后失败的避让证据来源为提交后中断处置与对应失败审计行（2026-10-23 契约收口：不再向 Codex 写出可见的 `response.failed/upstream_retryable_error` 失败事件）。Codex turn 状态必须有可解析的 `turn_id`，并在官方会话身份或规范化 IP 软桶的严格来源边界内保存；识别不到时不使用 metadata session/thread、body、body hash、User-Agent、显式 profile 或 `x-client-request-id` 回退。后续同一 turn 到达时在所属分派段内避让已发生客户端可见失败的账号；段内普通候选全部耗尽或被硬门跳过后，被避让账号解除软排除按原顺序翻回尝试（每账号每次调度至多一次），不得跨段降级到更低分派段。正式请求热路径不执行额外同步探针：首次 activation 只把 HMAC source fence 交给后台 worker，worker success 仅精确清该来源账户避让；unknown/task failure 不改变账户状态，confirmed health failure 才进入既有健康阈值。后台探活仍保留 `20s -> 30s -> 40s` 档位（2026-10-07 自 `10s -> 20s -> 30s` 统一上调）。
 
 ### OpenAI OAuth 额度进度
 
