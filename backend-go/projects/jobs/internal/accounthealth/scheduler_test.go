@@ -875,6 +875,36 @@ func TestApplyHealthTransitionCarriesExpectedAccountStatus(t *testing.T) {
 	}
 }
 
+// TestExplicitActivationProbeOnActiveAccountClassifiedAsActivation：直接以
+// active 落地创建的单 Key 账户，创建事务以 reason="activation" 派发首探；该
+// 显式请求成功必须分类为 activation_success（余额探测意图的唯一写入口，
+// 《AI账户上游余额查询设计》§5）。周期健康检查与其他 reason 的显式请求保持
+// health_success——旧账户与普通编辑不创建新意图。
+func TestExplicitActivationProbeOnActiveAccountClassifiedAsActivation(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}
+
+	explicit := Outcome{Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	applyExplicitRequestDecision(&explicit, input, ProbeRequest{Reason: "activation", MutateAccount: true}, prior, true, "health")
+	if explicit.Projection == nil || explicit.Projection.TransitionKind != "activation_success" || explicit.Projection.ExpectedAccountStatus != "active" {
+		t.Fatalf("显式激活首探成功必须分类为 activation_success: %#v", explicit.Projection)
+	}
+
+	scheduled := Outcome{Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	applyOutcomeDecision(&scheduled, input, prior, true, "scheduled_health")
+	if scheduled.Projection == nil || scheduled.Projection.TransitionKind != "health_success" {
+		t.Fatalf("周期健康成功必须保持 health_success: %#v", scheduled.Projection)
+	}
+
+	configuration := Outcome{Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	applyExplicitRequestDecision(&configuration, input, ProbeRequest{Reason: "configuration", MutateAccount: true}, prior, true, "health")
+	if configuration.Projection == nil || configuration.Projection.TransitionKind != "health_success" {
+		t.Fatalf("配置探活成功必须保持 health_success: %#v", configuration.Projection)
+	}
+}
+
 func TestActiveHealthFailureWaitsForConfiguredThreshold(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")

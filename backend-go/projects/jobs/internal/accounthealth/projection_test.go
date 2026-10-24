@@ -465,6 +465,46 @@ func TestProjectionActivationSuccessSchedulesBalance(t *testing.T) {
 	}
 }
 
+// TestProjectionDirectActiveActivationSuccessSchedulesBalance：创建直接以
+// active 落地的账户（reason="activation" 首探成功 → expected=active 的
+// activation_success），同样写入余额探测意图——否则探测意图永不登记、余额
+// 自动探测恒空转（T56 根因回归锁定）。
+func TestProjectionDirectActiveActivationSuccessSchedulesBalance(t *testing.T) {
+	fixture := newProjectionFixture(t)
+	credentials, err := exactkeyprobe.EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
+	if err != nil {
+		t.Fatalf("加密测试凭据失败: %v", err)
+	}
+	fixture.seedAccount(t, map[string]any{
+		"status":                    "active",
+		"schedulable":               1,
+		"type":                      "api_key",
+		"credentials_encrypted":     credentials,
+		"balance_query_enabled":     0,
+		"balance_query_config_json": "{}",
+	})
+	observed := projectionFixtureNow.Add(-time.Minute)
+	outcome := activationSuccessOutcome(observed)
+	outcome.Projection.ExpectedAccountStatus = "active"
+	fixture.insertOutcome(observed, outcome)
+
+	result := fixture.drain(t)
+	if result.Processed != 1 {
+		t.Fatalf("Processed = %d, 期望 1", result.Processed)
+	}
+	row := fixture.accountRow(t)
+	if row["balance_query_next_refresh_at"] == "" {
+		t.Fatalf("直接 active 账户的 activation_success 必须安排余额探测意图")
+	}
+	if row["status"] != "active" {
+		t.Fatalf("status = %v, 期望 active", row["status"])
+	}
+	disposition, _ := fixture.receipt(t, "outcome-activation-success")
+	if disposition != "applied" {
+		t.Fatalf("receipt = %s, 期望 applied", disposition)
+	}
+}
+
 // TestProjectionActivationSuccessOutsideScheduleWindow：账户处于计划外时段时
 // 不恢复 active/dispatch（57535d3ad），但保留 schedulable 并写下一次计划检查。
 func TestProjectionActivationSuccessOutsideScheduleWindow(t *testing.T) {
@@ -754,9 +794,29 @@ func TestValidateProjectionTruthTable(t *testing.T) {
 			expect: "rejected:projection_top_level_fence_mismatch",
 		},
 		{
-			name: "activation_success 期望状态必须是 pending_test",
+			name: "activation_success 期望状态必须是 pending_test 或 active",
+			build: func() Outcome {
+				return projection(func(p *Projection) {
+					p.TransitionKind = "activation_success"
+					p.ExpectedAccountStatus = "disabled"
+				})
+			},
+			expect: "rejected:projection_activation_expected_status_invalid",
+		},
+		{
+			name: "activation_success 期望 active 可投影（直接 active 创建首探）",
 			build: func() Outcome {
 				return projection(func(p *Projection) { p.TransitionKind = "activation_success" })
+			},
+		},
+		{
+			name: "activation_error 期望状态必须是 pending_test",
+			build: func() Outcome {
+				outcome := projection(func(p *Projection) {
+					p.TransitionKind = "activation_error"
+				})
+				outcome.Outcome = exactkeyprobe.OutcomeNeutral
+				return outcome
 			},
 			expect: "rejected:projection_activation_expected_status_invalid",
 		},

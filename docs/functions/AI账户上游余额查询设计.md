@@ -295,6 +295,8 @@ POST /__aisys__/api/accounts/balance/test-draft
 
 新建物理单 Key API Key 账户且用户没有开启余额查询时，首次激活健康检查成功必须在同一账户条件写入中保存 `balance_query_next_refresh_at=checkedAt` 作为探测意图；成功提交后再把任务投入 ops-worker 内存队列。投递是常数时间操作，创建 HTTP 请求不等待健康检查或余额请求。内存队列只是低延迟路径，不能是唯一事实源。
 
+「首次激活」按创建形态分两条等价路径：`pending_test` 创建的账户由待检查激活探活（转换 `activation_success`，期望状态 `pending_test`）写入意图；创建事务直接以 `active` 落地的账户由创建后派发的 `reason="activation"` 首探写入意图——该显式首探成功同样分类为 `activation_success`，投影期望状态为 `active`（2026-10-24 T56 修复前该形态被分类为 `health_success`，探测意图永不写入，余额自动探测恒空转）。`reason="activation"` 仅创建首探与 `pending_test` 重置两处派发，后者期望状态已是 `pending_test`，不依赖上述 active 分支。
+
 探测规则：
 
 1. 内存队列低并发、按账户 ID 去重以降低首次等待；ops-worker 每分钟再按持久到期意图有界扫描最多固定小批量，补偿进程重启、队列异常和临时上游失败。补偿只处理已有意图，不扫描所有旧账户或普通编辑账户。

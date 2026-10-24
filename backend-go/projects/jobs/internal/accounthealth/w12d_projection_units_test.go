@@ -71,7 +71,23 @@ func TestW12dValidateProjectionTruthTable(t *testing.T) {
 		},
 		{
 			name: "activation expected status invalid", terminal: true, dispose: ProjectionRejected, reason: "projection_activation_expected_status_invalid",
+			mutate: func(o *Outcome) { o.Projection.ExpectedAccountStatus = "disabled" },
+		},
+		{
+			// 直接 active 创建账户的 reason="activation" 首探成功同样按首次激
+			// 激活处理（《AI账户上游余额查询设计》§5）：activation_success 允许
+			// expected=active，本案例必须可投影（余额探测意图的唯一写入口）。
+			name: "activation success with active expectation passes",
 			mutate: func(o *Outcome) { o.Projection.ExpectedAccountStatus = "active" },
+		},
+		{
+			// activation_error 仍只认 pending_test：直接 active 账户探活失败走
+			// health_failure/temporary_unavailable 冷却族，不产生终态激活失败。
+			name: "activation error with active expectation invalid", terminal: true, dispose: ProjectionRejected, reason: "projection_activation_expected_status_invalid",
+			mutate: func(o *Outcome) {
+				o.Projection.TransitionKind = "activation_error"
+				o.Projection.ExpectedAccountStatus = "active"
+			},
 		},
 		{
 			name: "health success expected status invalid", terminal: true, dispose: ProjectionRejected, reason: "projection_active_expected_status_invalid",

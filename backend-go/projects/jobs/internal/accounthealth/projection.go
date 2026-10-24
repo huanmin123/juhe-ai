@@ -1131,7 +1131,14 @@ func validateProjection(outcome Outcome) projectionValidation {
 		}
 	}
 	transition := projection.TransitionKind
-	if (transition == "activation_success" || transition == "activation_error") && projection.ExpectedAccountStatus != "pending_test" {
+	// activation_success 允许 pending_test（常规待检查激活）与 active（创建
+	// 直接 active 落地账户的 reason="activation" 首探，设计《AI账户上游余额
+	// 查询》§5 首次激活语义）；activation_error 只认 pending_test——直接
+	// active 账户的探活失败走 health_failure/temporary_unavailable 冷却族。
+	if transition == "activation_success" && projection.ExpectedAccountStatus != "pending_test" && projection.ExpectedAccountStatus != "active" {
+		return terminalProjection(ProjectionRejected, "projection_activation_expected_status_invalid")
+	}
+	if transition == "activation_error" && projection.ExpectedAccountStatus != "pending_test" {
 		return terminalProjection(ProjectionRejected, "projection_activation_expected_status_invalid")
 	}
 	if (transition == "health_success" || transition == "temporary_unavailable") && projection.ExpectedAccountStatus != "active" {

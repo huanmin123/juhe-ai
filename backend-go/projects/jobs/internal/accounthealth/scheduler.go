@@ -626,6 +626,15 @@ func applyExplicitRequestDecision(outcome *Outcome, input exactkeyprobe.Input, r
 			// confirmation must not wait for the generic anti-flap threshold.
 			decisionKind = "request_failure_health"
 		}
+		// 直接以 active 落地的单 Key 新账户，创建事务以 reason="activation"
+		// 派发首探（余额探测意图的唯一写入口是 activation_success 投影分支）。
+		// 该首探成功必须按激活语义分类，否则探测意图永不写入、余额自动探测
+		// 恒空转（《AI账户上游余额查询设计》§5：首次激活健康检查成功必须保存
+		// 探测意图）。reason="activation" 仅创建首探与 pending_test 重置两处
+		// 派发，后者 priorStatus 已是 pending_test，不依赖本分支。
+		if request.Reason == "activation" && mutationKind == "health" {
+			decisionKind = "activation"
+		}
 		applyOutcomeDecision(outcome, input, prior, found, decisionKind)
 		return
 	}
@@ -1093,7 +1102,10 @@ func applyHealthDecision(outcome *Outcome, input exactkeyprobe.Input, prior Curr
 		outcome.FailureCount = 0
 		outcome.AccountStatus = "active"
 		transition := "health_success"
-		if priorStatus == "pending_test" {
+		// kind="activation" 只来自显式 reason="activation" 首探（创建直接
+		// active 落地的账户）；周期健康检查（scheduled/source）仍走
+		// health_success，不创建余额探测意图。
+		if priorStatus == "pending_test" || kind == "activation" {
 			transition = "activation_success"
 		}
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: transition, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: priorStatus, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
