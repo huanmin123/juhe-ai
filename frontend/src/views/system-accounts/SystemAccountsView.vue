@@ -6,7 +6,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1590" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileAccounts" @mobile-refresh="refreshMobileAccounts">
+    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1190" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileAccounts" @mobile-refresh="refreshMobileAccounts">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
           <a-tag :color="systemAccountRoleColor(record.role)">{{ systemAccountRoleLabel(record.role) }}</a-tag>
@@ -19,14 +19,6 @@
         </template>
         <template v-else-if="column.key === 'mustChangePassword'">
           <a-tag :color="record.mustChangePassword ? 'gold' : 'green'">{{ record.mustChangePassword ? '提醒' : '不提醒' }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'requestLimits'">
-          <span class="limit-cell" :class="{ 'muted-cell': systemAccountRequestLimitsText(record.requestLimits) === '继承全局' }">
-            {{ systemAccountRequestLimitsText(record.requestLimits) }}
-          </span>
-        </template>
-        <template v-else-if="column.key === 'accountLimits'">
-          <span class="limit-cell">{{ systemAccountAccountLimitsText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'lastLoginAt'">
           <span class="muted-cell">{{ formatDateTime(record.lastLoginAt) }}</span>
@@ -57,10 +49,6 @@
             <div class="mobile-list-meta-item">
               <span>最后登录</span>
               <strong>{{ formatDateTime(record.lastLoginAt) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>用户限制</span>
-              <strong>{{ systemAccountRequestLimitsText(record.requestLimits) }}；{{ systemAccountAccountLimitsText(record) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>说明</span>
@@ -163,7 +151,6 @@ import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus, UserRequestLimits } from '@/types/domain'
-import { systemAccountAccountLimitsText, systemAccountRequestLimitsText } from './systemAccountDisplay'
 import { buildSystemAccountEditablePatch, cloneSystemAccountEditableValues, hasSystemAccountEditableChanges, mergeSystemAccountPageItems, reconcileCreatedSystemAccount, reconcileSystemAccountMutationPage, type SystemAccountEditableValues } from './systemAccountEditForm'
 
 interface SystemAccountsPageState {
@@ -237,8 +224,6 @@ const baseColumns = [
   { title: '状态', key: 'status', width: 100 },
   { title: '图像生成', key: 'imageGenerationEnabled', width: 110 },
   { title: '改密提醒', key: 'mustChangePassword', width: 110 },
-  { title: '请求限额', key: 'requestLimits', width: 240 },
-  { title: '账户上限', key: 'accountLimits', width: 170 },
   { title: '最后登录', key: 'lastLoginAt', width: 180 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 }
 ]
@@ -666,15 +651,6 @@ watch(() => form.role, (role) => {
 <style scoped>
 .system-account-card {
   margin-top: 4px;
-}
-
-.limit-cell {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
 }
 
 .request-limit-editor {
