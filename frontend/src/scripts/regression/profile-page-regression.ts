@@ -36,8 +36,10 @@ assert.match(profileSource, /@click="savePassword"/, '密码修改必须使用�
 for (const marker of ['系统角色', '图像生成', '账户状态', '最近登录', '账户创建', '资料更新']) {
   assert(profileSource.includes(marker), `个人信息页面缺少展示项：${marker}`)
 }
-for (const marker of ['请求限制', '统计时区', '每分钟', '每日', '每周', '每月']) {
-  assert(!profileSource.includes(marker), `个人信息页面不应展示内部限制信息：${marker}`)
+// 2026-10-24 用户裁决恢复个人信息「请求限制」展示（对齐 docs/functions/用户请求限制设计.md §个人信息，
+// 原「不得展示内部限制信息」禁令随 906afe91d 的删除一起作废）。
+for (const marker of ['请求限制', '统计时区', '每分钟', '每日', '每周', '每月', '单独配置', '全局默认', '无限制']) {
+  assert(profileSource.includes(marker), `个人信息页面缺少请求限制展示项：${marker}`)
 }
 
 const layoutDirectory = fileURLToPath(new URL('../../layouts/', import.meta.url))

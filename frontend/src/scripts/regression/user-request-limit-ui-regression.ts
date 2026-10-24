@@ -42,6 +42,11 @@ assert.equal((systemAccountsSource.match(/:precision="0"/g) ?? []).length >= 5, 
 
 assert.match(identitySource, /export interface EffectiveUserRequestLimits/, '前端必须声明最终请求限制契约')
 assert.match(identitySource, /expiresOn\?: string[\s\S]*overrideActive: boolean/, '前端必须声明用户覆盖到期契约')
-assert.doesNotMatch(profileSource, /effectiveRequestLimits|请求限制|统计时区/, '个人信息页不得展示用户无需关心的请求限制与统计时区')
+// 2026-10-24 用户裁决恢复个人信息「请求限制」展示（与 docs/functions/用户请求限制设计.md §个人信息对齐），
+// 原「个人信息页不得展示」禁令作废，改为正向守卫。
+assert.match(profileSource, /title="请求限制"/, '个人信息页必须提供请求限制展示卡片')
+assert.match(profileSource, /effectiveRequestLimits\.timezone/, '请求限制卡片必须展示统计时区')
+assert.match(profileSource, /单独配置|全局默认/, '请求限制展示必须区分用户覆盖与全局继承')
+assert.match(profileSource, /overrideExpiresOn[\s\S]*overrideActive/, '到期覆盖必须展示有效至与已到期继承提示')
 
 console.log('USER_REQUEST_LIMIT_UI_REGRESSION_OK')
