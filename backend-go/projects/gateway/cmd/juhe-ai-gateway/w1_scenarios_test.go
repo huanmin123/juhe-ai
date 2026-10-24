@@ -9,13 +9,56 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
+
+
+// w1ShutdownAndDrainSpool 包装 shutdown：gateway 停机返回后，usage spool 的
+// 异步投递可能仍有在途写（提交后失败路径会估算入账并落 spool）；Windows 上
+// t.TempDir 的 RemoveAll 清理会与之竞争（"directory is not empty" / 路径不存在，
+// cleanup 失败直接判红）。轮询 spool 目录快照连续两次一致（无在途 .tmp、文件集
+// 稳定）即认为排空，上限 2s。
+func w1ShutdownAndDrainSpool(spoolDir string, shutdown func()) func() {
+	return func() {
+		shutdown()
+		snapshot := w1SpoolDirSnapshot(spoolDir)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(25 * time.Millisecond)
+			next := w1SpoolDirSnapshot(spoolDir)
+			if next == snapshot {
+				return
+			}
+			snapshot = next
+		}
+	}
+}
+
+func w1SpoolDirSnapshot(root string) string {
+	var b strings.Builder
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		b.WriteString(path)
+		if !d.IsDir() {
+			if info, infoErr := d.Info(); infoErr == nil {
+				b.WriteString(":")
+				b.WriteString(strconv.FormatInt(info.Size(), 10))
+			}
+		}
+		b.WriteString("\n")
+		return nil
+	})
+	return b.String()
+}
 
 // w1ScenarioChain 起一条完整 /v1 链，账户指向可编程 mock 上游。
 type w1ScenarioChain struct {
@@ -43,7 +86,7 @@ func newW1ScenarioChain(t *testing.T, upstream http.HandlerFunc) *w1ScenarioChai
 	if err != nil {
 		t.Fatalf("compose gateway chain: %v", err)
 	}
-	t.Cleanup(shutdown)
+	t.Cleanup(w1ShutdownAndDrainSpool(spoolDir, shutdown))
 	server := httptest.NewServer(chain)
 	t.Cleanup(server.Close)
 	return &w1ScenarioChain{serverURL: server.URL, apiKey: fixture.apiKeySecret, db: fixture.db}
@@ -170,7 +213,7 @@ func TestW1ScenarioDeadUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose: %v", err)
 	}
-	t.Cleanup(shutdown)
+	t.Cleanup(w1ShutdownAndDrainSpool(spoolDir, shutdown))
 	server := httptest.NewServer(chain)
 	t.Cleanup(server.Close)
 	status, body := chainV1ChatRequest(t, server.URL, fixture.apiKeySecret, w1ChatBody)
@@ -223,7 +266,7 @@ func TestW1ScenarioResponsesEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose: %v", err)
 	}
-	t.Cleanup(shutdown)
+	t.Cleanup(w1ShutdownAndDrainSpool(spoolDir, shutdown))
 	server := httptest.NewServer(chain)
 	t.Cleanup(server.Close)
 	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/responses",

@@ -384,14 +384,17 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 	inspection := p.publishInspection(p.inspector.Finish())
 	p.omitBodyCaptureIfImageStream(inspection, true)
 
-	// 异常终局判定（设计 §3.2.1 判定 3，互斥序先于 generic EOF 收敛臂与
-	// finalizeParserSkipped）：generic 客户端的流在协议终止事件前以干净 EOF
-	// 收尾、且 EOF 前存在解析失败事件——不再收敛 success，改按失败结算；先
-	// ParseError 后 Skipped 的流同样归因 abnormal_eof。精确画像
-	//（interpretProtocolFailures）与终止事件已到的流（判定 1）不落入本臂。
+	// 异常终局判定（设计 §3.2.1 判定 2+3，互斥序先于 generic EOF 收敛臂与
+	// finalizeParserSkipped）：generic 客户端的流以干净 EOF 收尾，且——
+	// ① EOF 前存在解析失败事件（判定 3，要求非真终止：终止事件已到的流
+	// 属上游自愈完成仍 success）；② Finish 冲出未收尾失败帧（判定 2：失败
+	// 帧缺终止空行时 FailedReceived 隐含 Terminal 置位，若不在此截流会漏进
+	// generic 收敛臂判 success，绕过失败归因）——均不再收敛 success，改按
+	// 失败结算；先 ParseError 后 Skipped 的流同样归因 abnormal_eof。精确画像
+	//（interpretProtocolFailures）不落入本臂。
 	if !p.interpretProtocolFailures && p.completed &&
-		!inspection.TerminalReceived && !inspection.FailedReceived &&
-		inspection.ParseErrorEventCount > 0 {
+		(inspection.FailedReceived ||
+			(!inspection.TerminalReceived && inspection.ParseErrorEventCount > 0)) {
 		return p.finalizeAbnormalStreamEOF(inspection)
 	}
 

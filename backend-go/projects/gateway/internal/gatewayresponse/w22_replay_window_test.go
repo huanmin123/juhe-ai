@@ -252,6 +252,33 @@ func TestW22AbnormalEOFBeforeCommitSettlesFailure(t *testing.T) {
 	}
 }
 
+// N1（终审复查）回归：可解析失败帧缺终止空行即 EOF——Finish 冲出
+// FailedReceived（隐含 Terminal），不得漏进 generic 收敛臂判 success，
+// 应归 abnormal_eof 失败结算（提交前形态：客户端零字节、换号裁决）。
+func TestW22AbnormalEOFUnfinishedTrailingFrameSettlesFailure(t *testing.T) {
+	recorder := &failureRecorder{}
+	result, written, interrupts, err := w22RunPipeWithCapture(t, [][]byte{
+		[]byte(chatDeltaChunk),
+		// 合法 JSON 失败帧，但无尾随空行即 EOF（inspector.Finish 冲出）
+		[]byte("data: {\"error\":{\"code\":\"e\",\"type\":\"upstream_error\"}}"),
+	}, w22WindowOptions(func() int64 { return 1000 }), recorder)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Completed {
+		t.Fatalf("失败帧缺空行收尾不得收敛 success: %+v", result)
+	}
+	if result.ErrorCode != UpstreamStreamAbnormalEOFCode {
+		t.Fatalf("errorCode = %q, want %q", result.ErrorCode, UpstreamStreamAbnormalEOFCode)
+	}
+	if len(written) != 0 || interrupts != 0 {
+		t.Fatalf("提交前异常终局客户端零字节且不中断: written=%q interrupts=%d", string(written), interrupts)
+	}
+	if last := recorder.last(); last.errorCode != UpstreamStreamAbnormalEOFCode {
+		t.Fatalf("失败归因 errorCode = %q", last.errorCode)
+	}
+}
+
 func TestW22AbnormalEOFAfterCommitInterruptsWithCleanBytes(t *testing.T) {
 	bigDelta := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"" + strings.Repeat("输", 3000) + "\"}}]}\n\n"
 	recorder := &failureRecorder{}
@@ -555,8 +582,8 @@ func TestW22IsolatorTailSurvivesEOFWithoutFurtherChunks(t *testing.T) {
 	result, written, _, err := w22RunPipeWithCapture(t, [][]byte{
 		[]byte(chatDeltaChunk),
 		// 合法 JSON 但无终止空行即 EOF：隔离器持有尾字节，EOF 段无后继分片；
-		// 尾字节随既有 generic 收敛 flush 到达客户端（若为非法 JSON 则归
-		// abnormal_eof 由 TestW22AbnormalEOFBeforeCommitSettlesFailure 覆盖）。
+		// 尾字节随既有 generic 收敛 flush 到达客户端（非法 JSON 尾字节形态由
+		// TestW22AbnormalEOFUnfinishedTrailingFrameSettlesFailure 覆盖）。
 		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial-tail\"}}]}"),
 	}, w22WindowOptions(func() int64 { return 1000 }), recorder)
 	if err != nil {
