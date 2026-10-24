@@ -266,7 +266,11 @@ func TestW1ScenarioStreamAbortedByUpstream(t *testing.T) {
 	scenario := newW1ScenarioChain(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"半截\"}}]}\n\n"))
+		// 首个 delta 超窗口缓冲上限 B（流式提交边界受限重放与异常终局处置设计
+		// §3.1 条件②追加前判定：超限 chunk 随 flush 写出、立即提交），固定本
+		// 用例「提交后断流」前提——B 内的小 delta 会先入窗、断流改走提交前
+		// 换号（候选耗尽 503 零业务字节，设计 §5.4 / 验收 1 的窗口版用例覆盖）。
+		_, _ = w.Write([]byte("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"半截" + strings.Repeat("输", 3000) + "\"}}]}\n\n"))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
