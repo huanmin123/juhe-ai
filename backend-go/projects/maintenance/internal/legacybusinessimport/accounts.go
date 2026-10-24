@@ -643,7 +643,65 @@ func importAuthorizations(ctx context.Context, source *sql.DB, tx *sql.Tx, group
 		sources++
 	}
 	report.Tables["resource_authorization_sources"] = sources
-	return sourceRows.Err()
+	if err := sourceRows.Err(); err != nil {
+		return fmt.Errorf("遍历旧授权来源: %w", err)
+	}
+	return importAuthorizationGrants(ctx, source, tx, groups, accounts, report)
+}
+
+// importAuthorizationGrants carries the authorization business master rows the
+// 授权操作 list reads and the team cascades drive off. The resource filter
+// mirrors the runtime rows: a grant whose resource did not survive the
+// groups/accounts import is dropped alongside its runtime row, while grants of
+// kept resources carry over even when their runtime row is already gone (a
+// terminal grant is business history worth keeping).
+func importAuthorizationGrants(ctx context.Context, source *sql.DB, tx *sql.Tx, groups, accounts map[string]struct{}, report *Report) error {
+	rows, err := source.QueryContext(ctx, `
+		SELECT id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+		       grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
+		       limits_json, created_by, created_at, revoked_by, revoked_at, updated_at
+		FROM juhe_business.resource_authorization_grants`)
+	if err != nil {
+		return fmt.Errorf("读取旧授权记录: %w", err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var id, resourceType, resourceID, owner, granteeType, scope, status, createdBy, createdAt, updatedAt string
+		var granteeUser, granteeTeam, remark, expiresAt, limits, revokedBy, revokedAt sql.NullString
+		if err := rows.Scan(&id, &resourceType, &resourceID, &owner, &granteeType, &granteeUser, &granteeTeam,
+			&scope, &status, &remark, &expiresAt, &limits, &createdBy, &createdAt, &revokedBy, &revokedAt, &updatedAt); err != nil {
+			return fmt.Errorf("扫描旧授权记录: %w", err)
+		}
+		switch resourceType {
+		case "group":
+			if _, ok := groups[resourceID]; !ok {
+				continue
+			}
+		case "account":
+			if _, ok := accounts[resourceID]; !ok {
+				continue
+			}
+		default:
+			return fmt.Errorf("授权记录 %s 使用了未知资源类型 %q", id, resourceType)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO juhe_business.resource_authorization_grants
+				(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+				 grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
+				 limits_json, created_by, created_at, revoked_by, revoked_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+			id, resourceType, resourceID, owner, granteeType, granteeUser, granteeTeam, scope, status,
+			remark, expiresAt, limits, createdBy, createdAt, revokedBy, revokedAt, updatedAt); err != nil {
+			return fmt.Errorf("写入授权记录 %s: %w", id, err)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历旧授权记录: %w", err)
+	}
+	report.Tables["resource_authorization_grants"] = count
+	return nil
 }
 
 func nowText() string { return timeNowUTC() }
