@@ -105,19 +105,6 @@ func perToken(usdPer1M float64) *float64 {
 	return &out
 }
 
-// usdPerMinuteToPerSecond 把官方按分钟标价的音频输入单价折算为每秒单价
-// （M1 STT 计量落秒，音频设计 §10/契约 §2.8；运行时除法保持来源可追溯）。
-func usdPerMinuteToPerSecond(usdPerMinute float64) *float64 {
-	out := usdPerMinute / 60
-	return &out
-}
-
-// perChar 把 USD/1M characters 官方字符价折算为每字符字面量（TTS 行
-// TtsInputCostPerChar 使用；算术与 perToken 相同，perMillion 回转无损）。
-func perChar(usdPer1MChars float64) *float64 {
-	return perToken(usdPer1MChars)
-}
-
 // toolsByProtocol 按静态快照的统一拆分口径，把一行的一维工具集分配到其
 // SupportedAPIProtocols 枚举下（6.4「协议 × 工具」矩阵，不新增协议枚举）：
 //   - chat_completions：恒只携带 function_calling（该行声明了它才出现）；

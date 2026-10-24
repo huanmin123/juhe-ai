@@ -40,37 +40,3 @@ package pricing
 // openAIReasoning + openAIAudio + openAIVideo (order preserved).
 var openAIModelPricingData = mustLoadProviderCatalogModels("gpt")
 
-// gpt5ToolsGpt5Dot6 mirrors the shared hosted tool list of the GPT-5.6 family
-// rows; the *ByProtocol matrices split it across the row protocols (responses
-// carries the hosted set, chat_completions only function_calling).
-var gpt5ToolsGpt5Dot6 = []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "computer_use", "mcp", "tool_search"}
-
-var gpt5ToolsGpt5Dot6ByProtocol = toolsByProtocol([]string{"chat_completions", "responses"}, gpt5ToolsGpt5Dot6)
-
-// gpt5ToolsGpt61Sol mirrors the GPT-6.1 Sol hosted tool list (same set as
-// the GPT-5.6 family), but the 2026-09-30 model page restricts tool calling
-// to the Responses API: Chat Completions is supported without tool calling,
-// so the matrix carries no chat_completions key (consumers treat a missing
-// protocol key as an empty tool set).
-var gpt5ToolsGpt61SolByProtocol = toolsByProtocol([]string{"responses"}, gpt5ToolsGpt5Dot6)
-
-// gpt5ToolsGpt55 mirrors the GPT-5.5 family hosted tool list.
-var gpt5ToolsGpt55 = []string{"function_calling", "web_search", "file_search", "tool_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "computer_use", "mcp"}
-
-var gpt5ToolsGpt55ByProtocol = toolsByProtocol([]string{"chat_completions", "responses"}, gpt5ToolsGpt55)
-
-// gpt5ToolsGpt54Mini mirrors the GPT-5.4/mini family tool list.
-var gpt5ToolsGpt54Mini = gpt5ToolsGpt55
-
-var gpt5ToolsGpt54MiniByProtocol = gpt5ToolsGpt55ByProtocol
-
-// gpt5ToolsGpt54Nano mirrors the GPT-5.4-nano tool list.
-var gpt5ToolsGpt54Nano = []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"}
-
-var gpt5ToolsGpt54NanoByProtocol = toolsByProtocol([]string{"chat_completions", "responses"}, gpt5ToolsGpt54Nano)
-
-// gpt5ToolsProCodex543 mirrors the GPT-5 pro / codex tool lists that share
-// the same content (responses-only rows).
-var gpt5ToolsProCodex543 = []string{"function_calling", "web_search", "file_search", "tool_search", "image_generation", "apply_patch", "computer_use", "mcp"}
-
-var gpt5ToolsProCodex543ByProtocol = toolsByProtocol([]string{"responses"}, gpt5ToolsProCodex543)

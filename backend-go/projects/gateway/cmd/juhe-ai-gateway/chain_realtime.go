@@ -142,10 +142,6 @@ func chainIsRealtimePath(req *gatewaypreauth.GatewayRequest) bool {
 	return chainStripGatewayVersionPrefix(path) == "/realtime"
 }
 
-// chainIsRealtimeUpgradeRequest 是 chain_v1 短路判定（含 GET 方法门）。
-func chainIsRealtimeUpgradeRequest(req *gatewaypreauth.GatewayRequest) bool {
-	return chainIsRealtimePath(req) && req.MethodUpper() == http.MethodGet
-}
 
 // serveRealtimeUpgrade 是 WS 桥接入口（chain_v1 在协议门后、preauth 前短
 // 路——?token= 浏览器形态没有 Bearer，不能先过 PreResolveGatewayRuntime 的

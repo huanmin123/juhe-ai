@@ -176,7 +176,3 @@ func newChainTurnRetryRedisStateStoreOrNil(client *redis.Client, namespace strin
 
 // compile-time: the adapter satisfies the turn-retry store port.
 var _ gatewaycodex.TurnRetryStateStore = (*chainTurnRetryRedisStateStore)(nil)
-
-// chainTurnRetryRedisDeadlineMS mirrors the Node runRedisOperationWithDeadline
-// default (3s); the call sites bound it through their own context deadlines.
-const chainTurnRetryRedisDeadlineMS = 3_000

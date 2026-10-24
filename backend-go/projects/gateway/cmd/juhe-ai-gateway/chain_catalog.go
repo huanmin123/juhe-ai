@@ -345,18 +345,6 @@ func chainCatalogCodeArgs(codes []string) []any {
 	return args
 }
 
-func chainDedupeCatalogCodes(values []string) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, value := range values {
-		if seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	return out
-}
 
 // catalogEndpointModeLegacyProjection 是 models.supported_endpoint_modes_json
 // 元素到旧目录行 (mode, supportedApiProtocols) 投影的读侧逆映射（与
