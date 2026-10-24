@@ -36,7 +36,6 @@ const (
 	groupAccountStatsAllCursorPrefix = "all_cursor:"
 	groupAccountStatsBatchLimit      = 1000
 
-	groupStatsJobName = "group-account-stats-refresh"
 )
 
 // GroupAccountStatsRefreshOptions carries the batch limit and the injected

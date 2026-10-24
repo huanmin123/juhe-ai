@@ -21,10 +21,8 @@ const (
 	RecoverySuccessMaxGap     = 2 * time.Minute
 	RecoveryProbeInterval     = 10 * time.Second
 	RecoverySuccessThreshold  = 3
-	ForegroundLimit           = 2
 	ContinuationGlobalReserve = 8
 	ContinuationSourceReserve = 1
-	ContinuationStartSLO      = 45 * time.Second
 	RecoveryGlobalLimit       = 32
 	RecoverySourceLimit       = 2
 )

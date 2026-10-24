@@ -47,10 +47,8 @@ const (
 	// settingsNumber('statsAggregationBatchSize', 100, 10000) etc.
 	StatsAggregationBatchSizeMin   = 100
 	StatsAggregationBatchSizeMax   = 10000
-	StatsAggregationBatchSizeDflt  = 2000
 	StatsAggregationMaxBatchesMin  = 1
 	StatsAggregationMaxBatchesMax  = 100
-	StatsAggregationMaxBatchesDflt = 5
 	// GroupAccountStatsRefreshLimit mirrors refreshGroupAccountStats(limit)
 	// from runGroupAccountStatsRefresh -> refreshGroupAccountStats.
 	GroupAccountStatsRefreshLimit = 1000

@@ -10,8 +10,6 @@ import (
 
 // 窗口计划常量对齐 usage-stats-window-helpers.ts。
 const (
-	HourMs               = 60 * 60 * 1000
-	DayMs                = 24 * HourMs
 	FixedRangeWindowDays = 31
 )
 
