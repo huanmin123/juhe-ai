@@ -29,6 +29,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -931,6 +932,14 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 		modelRankByAccountID[row.ID] = row.ModelRank
 		modelRankByAccountID[accountID] = row.ModelRank
 		unique = append(unique, row)
+	}
+	// T62 诊断日志（2026-10-24）：候选窗口 SQL 秩逐账户落盘，定位后可移除。
+	if len(modelRankByAccountID) > 0 {
+		slog.Info("chain_model_rank_window",
+			"groupId", groupID,
+			"model", model,
+			"sourceEndpointFamily", requestedEndpointFamily,
+			"ranks", modelRankByAccountID)
 	}
 	return unique, modelRankByAccountID, nil
 }

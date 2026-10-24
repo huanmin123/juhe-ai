@@ -698,6 +698,33 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 		// 仍透传给决策解释（决策日志 cacheRateStale）。
 		ratesForInput = nil
 	}
+	// T62 诊断日志（2026-10-24）：热质量排序的逐候选 tier 输入与映射族落盘，
+	// 定位自有账户超级优先/模型秩装配问题后可移除。
+	tierDetails := make([]map[string]any, 0, len(input.Accounts))
+	tierRankMap := modelPriorityRankMapOf(input.ModelPriority)
+	for _, account := range input.Accounts {
+		view := chainHotQualityAccountViewOf(account)
+		entry := map[string]any{
+			"id":        account.ID,
+			"modelRank": tierRankMap[account.ID],
+			"super":     view.SuperPriorityEnabled,
+			"fallback":  view.FallbackEnabled,
+			"priority":  view.Priority,
+		}
+		if len(account.ModelMappings) > 0 {
+			mappingShapes := make([]string, 0, len(account.ModelMappings))
+			for _, mapping := range account.ModelMappings {
+				mappingShapes = append(mappingShapes,
+					mapping.SourceModel+"["+mapping.SourceEndpointFamily+"→"+mapping.UpstreamEndpointFamily+"]")
+			}
+			entry["mappings"] = mappingShapes
+		}
+		tierDetails = append(tierDetails, entry)
+	}
+	slog.Info("chain_hotquality_tier_input",
+		"groupId", input.GroupID,
+		"model", input.Model,
+		"candidates", tierDetails)
 	result, err := gatewayhotquality.OrderGatewayAccountsByHotQuality(ctx, p.runtime, gatewayhotquality.GatewayHotQualityCandidateOrderInput[gatewaydispatch.AccountCandidate]{
 		Accounts:                     input.Accounts,
 		Base:                         chainHotQualityAccountViewOf,
