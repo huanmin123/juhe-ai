@@ -20,7 +20,6 @@ type managementRow struct {
 	id                                  string
 	configRevision                      sql.NullInt64
 	systemAccountID                     string
-	systemAccountName                   sql.NullString
 	ownerSystemAccountID                string
 	ownerSystemAccountName              sql.NullString
 	providerCode                        string
@@ -44,25 +43,15 @@ type managementRow struct {
 	cooldownUntil                       sql.NullString
 	lastErrorCode                       sql.NullString
 	lastErrorMessage                    sql.NullString
-	lastErrorTraceID                    sql.NullString
 	lastHealthCheckAt                   sql.NullString
 	nextHealthCheckAt                   sql.NullString
 	lastHealthCheckStatusCode           sql.NullInt64
 	lastHealthCheckErrorCode            sql.NullString
 	lastHealthCheckErrorMessage         sql.NullString
 	lastHealthCheckTraceID              sql.NullString
-	cooldownRetestLastAt                sql.NullString
-	cooldownRetestLastStatusCode        sql.NullInt64
-	cooldownRetestFailureCount          any
-	cooldownRetestObservationStartedAt  sql.NullString
 	healthCheckModel                    string
 	healthCheckEndpointMode             string
 	lastUsedAt                          sql.NullString
-	lastHealthSuccessAt                 sql.NullString
-	healthCheckFailureCount             any
-	healthCheckFailureStartedAt         sql.NullString
-	streamFailureCount                  any
-	streamFailureWindowStartedAt        sql.NullString
 	authorizationInstanceOwnerID        sql.NullString
 	authorizationInstanceSourceID       sql.NullString
 	configuredProxyProfileID            sql.NullString
@@ -140,25 +129,15 @@ const managementRowColumns = `
       account_rows.cooldown_until,
       account_rows.last_error_code,
       account_rows.last_error_message,
-      account_rows.last_error_trace_id,
       account_rows.last_health_check_at,
       account_rows.next_health_check_at,
       account_rows.last_health_check_status_code,
       account_rows.last_health_check_error_code,
       account_rows.last_health_check_error_message,
       account_rows.last_health_check_trace_id,
-      account_rows.cooldown_retest_last_at,
-      account_rows.cooldown_retest_last_status_code,
-      account_rows.cooldown_retest_failure_count,
-      account_rows.cooldown_retest_observation_started_at,
       account_rows.health_check_model,
       account_rows.health_check_endpoint_mode,
       account_rows.last_used_at,
-      account_rows.last_health_success_at,
-      account_rows.health_check_failure_count,
-      account_rows.health_check_failure_started_at,
-      account_rows.stream_failure_count,
-      account_rows.stream_failure_window_started_at,
       account_rows.authorization_instance_owner_system_account_id,
       account_rows.authorization_instance_source_account_id,
       account_rows.configured_proxy_profile_id,
@@ -192,7 +171,6 @@ const managementRowColumns = `
       account_rows.source_last_health_check_trace_id,
       account_rows.source_proxy_profile_id,
       account_rows.source_concurrency_limit,
-      COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_name,
       COALESCE(
         account_rows.authorization_resource_owner_system_account_id,
         account_rows.authorization_instance_owner_system_account_id,
@@ -446,25 +424,15 @@ func scanManagementRow(rows *sql.Rows) (managementRow, error) {
 		&row.cooldownUntil,
 		&row.lastErrorCode,
 		&row.lastErrorMessage,
-		&row.lastErrorTraceID,
 		&row.lastHealthCheckAt,
 		&row.nextHealthCheckAt,
 		&row.lastHealthCheckStatusCode,
 		&row.lastHealthCheckErrorCode,
 		&row.lastHealthCheckErrorMessage,
 		&row.lastHealthCheckTraceID,
-		&row.cooldownRetestLastAt,
-		&row.cooldownRetestLastStatusCode,
-		&row.cooldownRetestFailureCount,
-		&row.cooldownRetestObservationStartedAt,
 		&row.healthCheckModel,
 		&row.healthCheckEndpointMode,
 		&row.lastUsedAt,
-		&row.lastHealthSuccessAt,
-		&row.healthCheckFailureCount,
-		&row.healthCheckFailureStartedAt,
-		&row.streamFailureCount,
-		&row.streamFailureWindowStartedAt,
 		&row.authorizationInstanceOwnerID,
 		&row.authorizationInstanceSourceID,
 		&row.configuredProxyProfileID,
@@ -498,7 +466,6 @@ func scanManagementRow(rows *sql.Rows) (managementRow, error) {
 		&row.sourceLastHealthCheckTraceID,
 		&row.sourceProxyProfileID,
 		&row.sourceConcurrencyLimit,
-		&row.systemAccountName,
 		&row.ownerSystemAccountID,
 		&row.ownerSystemAccountName,
 		&row.bindingSystemAccountID,
