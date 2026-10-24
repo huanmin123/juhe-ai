@@ -8,26 +8,27 @@ package chat
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 )
 
 // targetAwareExecutor 记录 WithChatDispatchAccount 调用并透传 Dispatch，模拟
-// 组合根 chatGatewayExecutor 的覆盖端口实现。
+// 组合根 chatGatewayExecutor 的覆盖端口实现（accountID + ownerID 同源注入）。
 type targetAwareExecutor struct {
 	inner *mockExecutor
 
 	mu        sync.Mutex
 	withCalls int
 	accountID string
+	ownerID   string
 }
 
-func (e *targetAwareExecutor) WithChatDispatchAccount(accountID string) GenerationExecutor {
+func (e *targetAwareExecutor) WithChatDispatchAccount(accountID, ownerID string) GenerationExecutor {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.withCalls++
 	e.accountID = accountID
+	e.ownerID = ownerID
 	return e
 }
 
@@ -35,10 +36,10 @@ func (e *targetAwareExecutor) Dispatch(ctx context.Context, req GenerationDispat
 	return e.inner.Dispatch(ctx, req)
 }
 
-func (e *targetAwareExecutor) snapshot() (withCalls int, accountID string) {
+func (e *targetAwareExecutor) snapshot() (withCalls int, accountID, ownerID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.withCalls, e.accountID
+	return e.withCalls, e.accountID, e.ownerID
 }
 
 // dispatchPaths 返回已发生的派发路径序列。
@@ -50,15 +51,6 @@ func dispatchPaths(executor *mockExecutor) []string {
 		paths = append(paths, call.Path)
 	}
 	return paths
-}
-
-// inactiveChatKeys 让专用 Key 停用（鉴权主体失效语义）。
-type inactiveChatKeys struct {
-	mockChatKeys
-}
-
-func (m *inactiveChatKeys) FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecord, error) {
-	return &ChatAPIKeyRecord{ID: keyID, Name: "对话密钥", Secret: "chat-secret", Status: "inactive"}, nil
 }
 
 // scriptChatCompletions 装配一条 chat_completions 成功脚本。
@@ -76,8 +68,8 @@ func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
 	aware := &targetAwareExecutor{inner: env.executor}
 	env.deps.Executor = aware
 	// 账户启用的分组是 group-b：作用域证据 = 目录与账户候选只来自 group-b 的
-	// 快照收敛（mockModelCatalog/mockGatewayKeys 的 Key 视图分组是 group-a，
-	// 断言发送链不再读 Key 视图分组）。
+	// 快照收敛（mockModelCatalog 的默认账户视图分组是 group-a，断言发送链按
+	// 绑定账户的启用分组收敛，不再读任何 Key 视图）。
 	env.deps.AccountLookup = mockAccountLookup{groupsOfAccount: map[string][]string{"account-1": {"group-b"}}}
 	catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 		"group-b": {
@@ -108,10 +100,11 @@ func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
 		t.Fatalf("protocol dispatch paths = %v, want /v1/chat/completions", paths)
 	}
 	// 调度覆盖目标绑定到执行器视图（进程内通道；cmd 侧注入 context）。生产形
-	// 状：target 只携带账户 ID，承载分组由 /v1 消费侧（cmd
-	// resolveChatDispatchTargetScope）按账户启用分组解析，不在 chat 侧构造。
-	if withCalls, accountID := aware.snapshot(); withCalls != 1 || accountID != "account-1" {
-		t.Fatalf("account dispatch target = calls:%d %s", withCalls, accountID)
+	// 状：target 只携带账户 ID，ownerID 同源携带会话归属（内部身份通道），承载
+	// 分组由 /v1 消费侧（cmd resolveChatDispatchTargetScope）按账户启用分组
+	// 解析，不在 chat 侧构造。
+	if withCalls, accountID, ownerID := aware.snapshot(); withCalls != 1 || accountID != "account-1" || ownerID != routeTestOwner {
+		t.Fatalf("account dispatch target = calls:%d %s %s", withCalls, accountID, ownerID)
 	}
 }
 
@@ -149,46 +142,8 @@ func TestStreamBindValidationFailures(t *testing.T) {
 		if paths := dispatchPaths(env.executor); len(paths) == 0 || paths[0] != "/v1/chat/completions" {
 			t.Fatalf("停用账户派发路径 = %v, want /v1/chat/completions", paths)
 		}
-		if withCalls, accountID := aware.snapshot(); withCalls != 1 || accountID != "account-disabled" {
+		if withCalls, accountID, _ := aware.snapshot(); withCalls != 1 || accountID != "account-disabled" {
 			t.Fatalf("停用账户派发目标 = calls:%d %s", withCalls, accountID)
-		}
-	})
-
-	t.Run("会话 Key 不存在", func(t *testing.T) {
-		env := newGenerationEnv(t)
-		env.deps.AccountLookup = mockAccountLookup{}
-		env.deps.ChatKeys = &owningChatKeys{}
-		env.deps.ModelCatalog = mockModelCatalog{}
-		// 绑定账户合法，但鉴权主体（会话 api_key_id）指向不存在的 Key。
-		if _, err := env.fixture.store.CreateConversation(CreateConversationInput{
-			ID: prefix + "-keymissing", SystemAccountID: routeTestOwner,
-			APIKeyID: "missing_key", APIKeyNameSnapshot: "他人 Key",
-			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
-			Now:                     env.fixture.nowISO,
-			MaxConversationsPerUser: 30,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		response := env.streamPost(prefix+"-keymissing", routeTestOwner, streamPayload("cmid-km", "问题", "gpt-5"))
-		if response.status != http.StatusBadRequest || !strings.Contains(response.message(), "API Key 不存在或不可用") {
-			t.Fatalf("Key 不存在发送 = %d %s", response.status, response.rawString())
-		}
-	})
-
-	t.Run("专用 Key 停用后不能发送", func(t *testing.T) {
-		env := newGenerationEnv(t)
-		env.deps.AccountLookup = mockAccountLookup{}
-		env.deps.ChatKeys = &inactiveChatKeys{}
-		env.deps.ModelCatalog = mockModelCatalog{}
-		createBoundConversation(t, env.fixture, prefix+"-keydead", routeTestOwner, CreateConversationInput{
-			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
-		})
-		response := env.streamPost(prefix+"-keydead", routeTestOwner, streamPayload("cmid-gk", "问题", "gpt-5"))
-		if response.status != http.StatusBadRequest || !strings.Contains(response.message(), "API Key 不存在或不可用") {
-			t.Fatalf("专用 Key 停用发送 = %d %s", response.status, response.rawString())
-		}
-		if env.executor.callCount() != 0 {
-			t.Fatalf("Key 失效不得派发上游")
 		}
 	})
 
@@ -223,7 +178,7 @@ func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 		aware.withCalls = 0
 		aware.mu.Unlock()
 		if _, err := fixture.store.CreateConversation(CreateConversationInput{
-			ID: "comp_conv_account", SystemAccountID: routeTestOwner, APIKeyID: "chat_key_1",
+			ID: "comp_conv_account", SystemAccountID: routeTestOwner,
 			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 			Now: fixture.nowISO, MaxConversationsPerUser: 30,
 		}); err != nil {
@@ -234,8 +189,8 @@ func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 		if executorErr != nil || executor != GenerationExecutor(aware) {
 			t.Fatalf("绑定会话压缩必须绑定到覆盖执行器视图: %v", executorErr)
 		}
-		if withCalls, accountID := aware.snapshot(); withCalls != 1 || accountID != "account-1" {
-			t.Fatalf("compaction target = calls:%d %s", withCalls, accountID)
+		if withCalls, accountID, ownerID := aware.snapshot(); withCalls != 1 || accountID != "account-1" || ownerID != routeTestOwner {
+			t.Fatalf("compaction target = calls:%d %s %s", withCalls, accountID, ownerID)
 		}
 	})
 
@@ -245,7 +200,7 @@ func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 		aware.withCalls = 0
 		aware.mu.Unlock()
 		if _, err := fixture.store.CreateConversation(CreateConversationInput{
-			ID: "comp_conv_unbound", SystemAccountID: routeTestOwner, APIKeyID: "chat_key_1",
+			ID: "comp_conv_unbound", SystemAccountID: routeTestOwner,
 			Now: fixture.nowISO, MaxConversationsPerUser: 30,
 		}); err != nil {
 			t.Fatal(err)
@@ -255,7 +210,7 @@ func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 		if executorErr != nil || executor != GenerationExecutor(aware) {
 			t.Fatalf("未绑定会话压缩必须返回原执行器: %v", executorErr)
 		}
-		if withCalls, _ := aware.snapshot(); withCalls != 0 {
+		if withCalls, _, _ := aware.snapshot(); withCalls != 0 {
 			t.Fatalf("未绑定会话不得触碰覆盖端口, calls=%d", withCalls)
 		}
 	})
@@ -270,7 +225,7 @@ func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 		if executorErr == nil || executorErr.Error() != "chat_context_target_unavailable" || executor != nil {
 			t.Fatalf("会话缺失必须 fail-closed 返回跳过错误: executor=%v err=%v", executor, executorErr)
 		}
-		if withCalls, _ := aware.snapshot(); withCalls != 0 {
+		if withCalls, _, _ := aware.snapshot(); withCalls != 0 {
 			t.Fatalf("会话缺失不得触碰覆盖端口, calls=%d", withCalls)
 		}
 	})
@@ -338,7 +293,7 @@ func TestStreamUnboundConversationRejected(t *testing.T) {
 	if response.status != http.StatusBadRequest || response.code() != "chat_account_required" {
 		t.Fatalf("unbound stream = %d %s", response.status, response.rawString())
 	}
-	if withCalls, _ := aware.snapshot(); withCalls != 0 {
+	if withCalls, _, _ := aware.snapshot(); withCalls != 0 {
 		t.Fatalf("未绑定会话不得触碰覆盖端口，calls=%d", withCalls)
 	}
 	if env.executor.callCount() != 0 {

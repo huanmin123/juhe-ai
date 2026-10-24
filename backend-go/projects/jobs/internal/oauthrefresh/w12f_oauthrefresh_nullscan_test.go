@@ -15,19 +15,19 @@ func TestW12fNullCredentialsScanArms(t *testing.T) {
 	now := w12fBaseNow()
 	// credentials_encrypted 为非 JSON 垃圾内容 → DecryptJSON 失败传播。
 	seedAccountRow(t, db, accountRowSeed{ID: "w12f-null", ProviderCode: "gpt", Type: "oauth", Credentials: map[string]any{"refresh_token": "w12f-rt"}, Now: now})
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = 'w12f-garbage' WHERE id = 'w12f-null'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET credentials_encrypted = 'w12f-garbage' WHERE id = 'w12f-null'`); err != nil {
 		t.Fatal(err)
 	}
 	seedAccountRow(t, db, accountRowSeed{ID: "w12f-null2", ProviderCode: "gpt", Type: "oauth", Credentials: map[string]any{"refresh_token": "w12f-rt"}, Now: now})
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = 'w12f-garbage' WHERE id = 'w12f-null2'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET credentials_encrypted = 'w12f-garbage' WHERE id = 'w12f-null2'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{
-		AccountID:                         "w12f-null",
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedConfigRevision:            1,
-		Credentials:                       map[string]any{"refresh_token": "w12f-rt"},
+		AccountID:              "w12f-null",
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		ExpectedConfigRevision: 1,
+		Credentials:            map[string]any{"refresh_token": "w12f-rt"},
 	}); err == nil {
 		t.Fatal("垃圾密文必须报错")
 	}
@@ -37,10 +37,9 @@ func TestW12fNullCredentialsScanArms(t *testing.T) {
 }
 
 func TestW12fUpdateAndMarkArms(t *testing.T) {
-	store, db, _ := newTestStore(t)
+	store, db := newClearStateSQLiteStore(t)
 	ctx := context.Background()
-	now := w12fBaseNow()
-	seedOpenAIOAuthAccount(t, db, "w12f-upd", openAICredentials(expiresInMillis(0)), now)
+	seedClearStateAccount(t, db, "w12f-upd", "active", "")
 
 	// UpdateAccountCredentials：版本冲突。
 	if _, err := store.UpdateAccountCredentials(ctx, "w12f-upd", openAICredentials(expiresInMillis(0)), 99); err == nil {

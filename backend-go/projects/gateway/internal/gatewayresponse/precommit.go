@@ -3,11 +3,30 @@ package gatewayresponse
 // StreamPreCommitBufferMaxBytes 对齐 streamPreCommitBufferMaxBytes。
 const StreamPreCommitBufferMaxBytes = 256 * 1024
 
+// 受限重放窗口参数（流式提交边界受限重放与异常终局处置设计 §3.1，编译期
+// 常量，不设配置项）：B 是窗口缓冲字节护栏，T 是窗口真实截止时长。测试需要
+// 短 T 时直接覆写 streamPipe.replayWindowTimeoutMs（包内测试面）。
+const (
+	// StreamReplayWindowMaxBytes B：窗口缓冲字节上限，超限判定在追加该 chunk
+	// 之前进行——该 chunk 不入缓冲、直接随 flush 写出。
+	StreamReplayWindowMaxBytes = 8 * 1024
+	// StreamReplayWindowTimeoutMs T：窗口真实截止（time.Timer 到点强制关窗
+	// flush），不采用 chunk 驱动的惰性检查，保证首字延迟最多 +T。
+	StreamReplayWindowTimeoutMs = 2000
+)
+
 // PreCommitBufferState 对齐 StreamPreCommitBufferState。
 type PreCommitBufferState struct {
 	Buffering     bool
 	BufferedBytes int
 	Chunks        [][]byte
+	// 受限重放窗口阶段字段（设计 §3.1）：Windowing 置位期间语义 chunk 放行进
+	// 缓冲（首个语义事件不再立即提交）；WindowStartMs 是窗口开启时刻；
+	// WindowBytes 是窗口缓冲字节数（窗口期与 BufferedBytes 同源累计，独立持有
+	// 以表达窗口自身的 B 上限语义）。
+	Windowing     bool
+	WindowStartMs int64
+	WindowBytes   int
 }
 
 // NewPreCommitBufferState 对齐 createStreamPreCommitBufferState。
@@ -31,15 +50,26 @@ type PreCommitResponseState struct {
 }
 
 // CanKeepStreamPreCommitChunk 对齐 canKeepStreamPreCommitChunk。
+//
+// 受限重放窗口（设计 §3.1）：Windowing 置位期间放行语义 chunk（推迟语义提交
+// 点），但窗口缓冲达 B 的 chunk 不入缓冲（返回 false，随 flush 写出）；终态
+// 语义事件（Terminal/Failed/Skipped）在任何阶段都不入缓冲——先关窗、按既有
+// 语义处置（§3.1.2 不变量 1）。
 func CanKeepStreamPreCommitChunk(state *PreCommitBufferState, inspection PreCommitInspectionState, chunk []byte, totalResponseBytes int64, response PreCommitResponseState) bool {
-	return state.Buffering &&
+	base := state.Buffering &&
 		totalResponseBytes == 0 &&
-		!inspection.OutputReceived &&
 		!inspection.TerminalReceived &&
 		!inspection.FailedReceived &&
 		!inspection.Skipped &&
 		state.BufferedBytes+len(chunk) <= StreamPreCommitBufferMaxBytes &&
 		responseCanStillFailBeforeCommit(response)
+	if !base {
+		return false
+	}
+	if state.Windowing {
+		return state.WindowBytes+len(chunk) <= StreamReplayWindowMaxBytes
+	}
+	return !inspection.OutputReceived
 }
 
 // WouldExceedStreamPreCommitBuffer 对齐 wouldExceedStreamPreCommitBuffer。
@@ -51,6 +81,9 @@ func WouldExceedStreamPreCommitBuffer(state *PreCommitBufferState, chunk []byte)
 func AppendStreamPreCommitChunk(state *PreCommitBufferState, chunk []byte) {
 	state.Chunks = append(state.Chunks, chunk)
 	state.BufferedBytes += len(chunk)
+	if state.Windowing {
+		state.WindowBytes += len(chunk)
+	}
 }
 
 // ClearStreamPreCommitChunks 对齐 clearStreamPreCommitChunks。
@@ -63,6 +96,8 @@ func ClearStreamPreCommitChunks(state *PreCommitBufferState) {
 func TakeStreamPreCommitChunks(state *PreCommitBufferState) [][]byte {
 	state.Buffering = false
 	state.BufferedBytes = 0
+	state.Windowing = false
+	state.WindowBytes = 0
 	chunks := state.Chunks
 	state.Chunks = nil
 	return chunks

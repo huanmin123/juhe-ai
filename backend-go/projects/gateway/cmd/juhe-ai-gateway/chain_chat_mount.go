@@ -2,10 +2,10 @@ package main
 
 // G20 phase-3 my-chat route family assembly: the composition root wires the
 // chat database owner (the dedicated chat database / juhe_chat schema), the
-// generation-wave ports (chain_chat.go executor + chain_chat_keys.go key
-// provider + chain_chat_images.go image pipeline + chain_chat_observation.go
-// observation scheduler) and mounts Deps at ${systemApiPrefix}/my-chat
-// (Node chat.routes.ts router mount).
+// generation-wave ports (chain_chat.go executor + 内部身份通道
+// chain_chat_identity.go + chain_chat_images.go image pipeline +
+// chain_chat_observation.go observation scheduler) and mounts Deps at
+// ${systemApiPrefix}/my-chat (Node chat.routes.ts router mount).
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
@@ -73,8 +74,9 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		Executor:            executor,
 		ModelCatalog:        chatModelCatalog{cache: services.Cache},
 		AccountModelCatalog: chatModelCatalog{cache: services.Cache},
-		ChatKeys:            newChatAPIKeyProvider(composed.db, composed.pgDialect, cfg.Secret),
-		GatewayKeys:         chatGatewayKeyValidator{cache: services.Cache},
+		// 归属系统账户开关端口（生图开关载体，随 chat Key 退场从 gateway key
+		// 视图迁到 system_accounts 直读，保持原开关语义）。
+		SystemAccountFlags: chatSystemAccountFlags{db: composed.db, postgres: composed.pgDialect},
 		// AI 问答会话账户绑定的解析校验端口（accounts.Store 只读查询
 		// FindChatAccount）：账户选择/切换与发送前置校验的存在性 + 启用口径。
 		AccountLookup: accountLookup,
@@ -129,9 +131,43 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 	return deps, nil
 }
 
+// chatSystemAccountFlags 实现 chat.SystemAccountFlagsLookup：直读
+// system_accounts.image_generation_enabled（仅 active 账户生效）。免 Key 直调
+// 后生图开关从 gateway key 运行时视图迁到归属系统账户直读（与
+// chain_chat_image_proxy.go 同一 bind/table 方言处理），保持原开关语义；每轮
+// 发送一次直查（发送为低频操作，跟随开关变更，无缓存失效面）。账户不存在/
+// 非 active 返回 false（保守：不授予生图工具），查询错误原样上抛。
+type chatSystemAccountFlags struct {
+	db       *sql.DB
+	postgres bool
+}
+
+// ImageGenerationEnabled implements chat.SystemAccountFlagsLookup.
+func (f chatSystemAccountFlags) ImageGenerationEnabled(systemAccountID string) (bool, error) {
+	systemAccountID = strings.TrimSpace(systemAccountID)
+	if systemAccountID == "" {
+		return false, nil
+	}
+	bind := func(query string) string { return accountscore.SQLBind(f.postgres, query) }
+	table := "system_accounts"
+	if f.postgres {
+		table = "juhe_business.system_accounts"
+	}
+	var enabled int64
+	err := f.db.QueryRow(bind(`SELECT image_generation_enabled FROM `+table+`
+		WHERE id = ? AND status = 'active' LIMIT 1`), systemAccountID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return enabled == 1, nil
+}
+
 // chatMediaJobsLookupAdapter 把 gatewaymedia.MediaJobsRepo 适配为 chat 侧的
-// media_jobs 只读端口（FindChatMediaJob；GetByIDAndAPIKey 的归属校验语义
-// 原样透传——未命中/非本 Key 任务统一 not found，归属信息不泄露）。
+// media_jobs 只读端口（FindChatMediaJob；归属校验语义原样透传——未命中/非
+// 本归属任务统一 not found，归属信息不泄露）。
 type chatMediaJobsLookupAdapter struct {
 	repo *gatewaymedia.MediaJobsRepo
 }
@@ -145,9 +181,11 @@ func newChatMediaJobsLookup(chain *gatewayChain) chat.ChatMediaJobsLookup {
 	return &chatMediaJobsLookupAdapter{repo: chain.mediaJobs.repo}
 }
 
-// FindChatMediaJob implements chat.ChatMediaJobsLookup.
-func (a *chatMediaJobsLookupAdapter) FindChatMediaJob(jobID, apiKeyID string) (chat.ChatMediaJobSnapshot, bool, error) {
-	record, err := a.repo.GetByIDAndAPIKey(context.Background(), jobID, apiKeyID)
+// FindChatMediaJob implements chat.ChatMediaJobsLookup. ownerSystemAccountID
+// 是归属系统账户：repo 归属过滤已切到 owner_system_account_id 列（AI 问答免
+// Key 直调计划 §3.3），不经 api_keys join 推导。
+func (a *chatMediaJobsLookupAdapter) FindChatMediaJob(jobID, ownerSystemAccountID string) (chat.ChatMediaJobSnapshot, bool, error) {
+	record, err := a.repo.GetByIDAndOwner(context.Background(), jobID, ownerSystemAccountID)
 	if err != nil {
 		if errors.Is(err, gatewaymedia.ErrMediaJobNotFound) {
 			return chat.ChatMediaJobSnapshot{}, false, nil

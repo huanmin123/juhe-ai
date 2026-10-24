@@ -1,6 +1,7 @@
 package logreads
 
-// w9b blob 窗口、热搜索桶扫描与 grep 文件列举场景：内存 SQLite + 临时目录。
+// w9b blob 窗口、热搜索桶扫描与 grep 文件列举场景：pgtestkit PG 库 + 临时
+// 目录（组A迁移；blob metadata 表为生产 auditlog EnsureSchema 形状）。
 
 import (
 	"bytes"
@@ -18,25 +19,28 @@ import (
 
 func w9bBlobDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:w9b-blob-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE audit_payload_blobs (id TEXT PRIMARY KEY, storage_key TEXT, compression TEXT, raw_size_bytes INTEGER, compressed_size_bytes INTEGER)`); err != nil {
-		t.Fatal(err)
-	}
-	return db
+	return newLogreadsPGDatabase(t)
 }
 
 func w9bBlobReader(t *testing.T, db *sql.DB, blobDir string) *auditLogSQLReader {
 	t.Helper()
-	reader, err := NewAuditLogQueryReader(db, ReadSQLite, AuditQueryDirectories{PayloadBlobDirectory: blobDir})
+	reader, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{PayloadBlobDirectory: blobDir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return reader.(*auditLogSQLReader)
+}
+
+// w9bBlobInsert 写一行满足生产 NOT NULL 约束的 audit_payload_blobs metadata；
+// storageKey/compression/raw/compressed 之外列为约束占位值。
+func w9bBlobInsert(t *testing.T, db *sql.DB, id, storageKey, compression string, raw, compressed int64) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO juhe_dataset.audit_payload_blobs (id, storage_key, compression, raw_size_bytes,
+		compressed_size_bytes, sha256, content_type, first_seen_at, last_seen_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'application/json', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z')`,
+		id, storageKey, compression, raw, compressed, "sha-"+id); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestW9BReadBlobWindowStatusArms(t *testing.T) {
@@ -56,39 +60,31 @@ func TestW9BReadBlobWindowStatusArms(t *testing.T) {
 		t.Fatalf("缺失 metadata=%+v err=%v", window, err)
 	}
 	// storage_key 为空 → file_missing。
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('k1', '', 'none', 3, 0)`); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "k1", "", "none", 3, 0)
 	window, err = reader.readBlobWindow(ctx, "k1", 0, 10, false)
 	if err != nil || window.status != auditPayloadStatusFileMissing || window.totalBytes != 3 || window.limit != 10 {
 		t.Fatalf("空 storage_key=%+v err=%v", window, err)
 	}
 	// 文件缺失 → file_missing 且 full 读取 limit=rawSize。
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('k2', 'gone.bin', 'none', 9, 0)`); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "k2", "gone.bin", "none", 9, 0)
 	window, err = reader.readBlobWindow(ctx, "k2", 4, 10, true)
 	if err != nil || window.status != auditPayloadStatusFileMissing || window.limit != 9 || window.offset != 0 {
 		t.Fatalf("缺失文件=%+v err=%v", window, err)
 	}
 	// 压缩尺寸不一致。
 	payload := []byte("hello world")
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('k3', 'mismatch.bin', 'none', 11, 99)`); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(blobDir, "mismatch.bin"), payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	w9bBlobInsert(t, db, "k3", "mismatch.bin", "none", 11, 99)
 	if _, err := reader.readBlobWindow(ctx, "k3", 0, 10, false); err == nil || !strings.Contains(err.Error(), "尺寸与 metadata 不一致") {
 		t.Fatalf("压缩尺寸不一致=%v", err)
 	}
 	// 未知压缩方式。
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('k4', 'weird.bin', 'brotli', 2, 0)`); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(blobDir, "weird.bin"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	w9bBlobInsert(t, db, "k4", "weird.bin", "brotli", 2, 0)
 	if _, err := reader.readBlobWindow(ctx, "k4", 0, 10, false); err == nil || !strings.Contains(err.Error(), "未知压缩") {
 		t.Fatalf("未知压缩=%v", err)
 	}
@@ -101,12 +97,10 @@ func TestW9BReadBlobWindowStatusArms(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('k5', 'body.bin', 'gzip', 11, ?)`, gz.Len()); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(blobDir, "body.bin"), gz.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	w9bBlobInsert(t, db, "k5", "body.bin", "gzip", 11, int64(gz.Len()))
 	window, err = reader.readBlobWindow(ctx, "k5", 4, 5, false)
 	if err != nil || window.status != auditPayloadStatusAvailable || string(window.bytes) != "o wor" || !window.truncated || window.nextOffset == nil || *window.nextOffset != 9 {
 		t.Fatalf("gzip 窗口=%+v err=%v", window, err)
@@ -117,7 +111,7 @@ func TestW9BReadBlobWindowStatusArms(t *testing.T) {
 		t.Fatalf("gzip 全量=%+v err=%v", window, err)
 	}
 	// 解压后尺寸不一致。
-	if _, err := db.Exec(`UPDATE audit_payload_blobs SET raw_size_bytes=99 WHERE id='k5'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_dataset.audit_payload_blobs SET raw_size_bytes=99 WHERE id='k5'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reader.readBlobWindow(ctx, "k5", 0, 10, false); err == nil || !strings.Contains(err.Error(), "解压后尺寸") {

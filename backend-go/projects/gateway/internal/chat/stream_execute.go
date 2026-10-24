@@ -18,12 +18,12 @@ import (
 
 // chatDispatchTargetAware 是进程内调度覆盖通道在 chat 侧的可选扩展端口：
 // 组合根（cmd/juhe-ai-gateway）的 chatGatewayExecutor 实现它，把会话绑定
-// 账户绑定到执行器视图并在派发时注入请求 context；未绑定/归档会话不会进入
-// 生成链（发送预检拦截），此处未解析出账户时返回原执行器。internal/chat 不
-// 引用 cmd 包，经类型断言探测；未实现该端口的执行器（测试 mock）保持现状
-// 语义。
+// 账户与会话归属系统账户（内部身份通道）绑定到执行器视图并在派发时注入请求
+// context；未绑定/归档会话不会进入生成链（发送预检拦截），此处未解析出账户
+// 时返回原执行器。internal/chat 不引用 cmd 包，经类型断言探测；未实现该端口
+// 的执行器（测试 mock）保持现状语义。
 type chatDispatchTargetAware interface {
-	WithChatDispatchAccount(accountID string) GenerationExecutor
+	WithChatDispatchAccount(accountID, ownerID string) GenerationExecutor
 }
 
 // dispatchExecutorOf 解析执行器视图：input.executor 优先（stream_route 已按
@@ -36,7 +36,8 @@ func dispatchExecutorOf(input generationExecuteInput, fallback GenerationExecuto
 }
 
 // bindConversationDispatchTarget 按会话绑定账户解析执行器视图：会话绑定
-// 账户且执行器实现 chatDispatchTargetAware 时返回绑定目标的视图；无绑定
+// 账户且执行器实现 chatDispatchTargetAware 时返回绑定目标的视图（ownerID 取
+// 会话归属 SystemAccountID，免 Key 直调后派发鉴权走内部身份通道）；无绑定
 // 原样返回（不触碰端口）。
 func bindConversationDispatchTarget(executor GenerationExecutor, conversation *Conversation) GenerationExecutor {
 	if executor == nil || conversation == nil {
@@ -50,7 +51,7 @@ func bindConversationDispatchTarget(executor GenerationExecutor, conversation *C
 	if !ok {
 		return executor
 	}
-	return aware.WithChatDispatchAccount(accountID)
+	return aware.WithChatDispatchAccount(accountID, conversation.SystemAccountID)
 }
 
 type generationExecuteInput struct {
@@ -61,7 +62,6 @@ type generationExecuteInput struct {
 	// protocol 恒 chat_completions（工具体系设计 §11.1）；保留字段仅为
 	// Compactions.Schedule 等下游记账的协议枚举来源。
 	protocol ChatTransportProtocol
-	apiKey   *ChatAPIKeyRecord
 	// executor 是本轮生成的上游派发执行器：会话绑定账户的调度覆盖视图
 	//（stream_route 经 chatDispatchTargetAware 端口解析）；nil 回落
 	// rt.deps.Executor。
@@ -103,10 +103,11 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				return ChatToolModelTurn{}, &RequestError{Code: RequestBodyTooLarge, Message: "工具续答请求体超过安全上限，请减少上下文后重试"}
 			}
 			failureCode = GenErrUpstreamHTTP
+			// 鉴权经内部身份通道（执行器视图注入进程内 context，preauth 跳过
+			// API Key 鉴权），请求头只保留内容协商与追踪。
 			headers := map[string]string{
-				"authorization": "Bearer " + input.apiKey.Secret,
-				"content-type":  "application/json",
-				"accept":        "text/event-stream",
+				"content-type": "application/json",
+				"accept":       "text/event-stream",
 			}
 			if input.traceID != "" {
 				headers["x-trace-id"] = input.traceID
@@ -166,7 +167,6 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			TurnID:             turnID,
 			AssistantMessageID: messageID,
 			TraceID:            input.traceID,
-			APIKey:             input.apiKey.Secret,
 			DefaultImageModel:  input.defaultImageModel,
 			Aborted:            runCtx.Aborted,
 			LoadImageEditReferences: func(assetIDs []string) ([]ChatImageEditReference, error) {
@@ -211,7 +211,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if runCtx.Context != nil {
 					ctx = runCtx.Context
 				}
-				return CreateChatVideo(ctx, bindings.VideoExecutor, request, input.apiKey.Secret, input.traceID)
+				return CreateChatVideo(ctx, bindings.VideoExecutor, request, input.traceID)
 			},
 			AudioGeneration: func(request ChatAudioGenerationRequest) (ChatMediaArtifactResult, error) {
 				// M7 音频工具（TTS 同步）：未绑定 → binding_required 引导；
@@ -228,7 +228,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if runCtx.Context != nil {
 					ctx = runCtx.Context
 				}
-				return GenerateChatAudio(ctx, bindings.AudioExecutor, request, input.apiKey.Secret, input.traceID)
+				return GenerateChatAudio(ctx, bindings.AudioExecutor, request, input.traceID)
 			},
 			ImageGeneration: func(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
 				// 生图模型工具（契约 §6.2）：未绑定账户 → binding_required 引导；
@@ -248,7 +248,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if rt.deps.ImageDownloadProxy != nil {
 					downloadClient = rt.deps.ImageDownloadProxy(bindings.ImageAccountID)
 				}
-				generated, err := GenerateChatImage(ctx, bindings.ImageExecutor, request, input.apiKey.Secret, input.traceID, downloadClient)
+				generated, err := GenerateChatImage(ctx, bindings.ImageExecutor, request, input.traceID, downloadClient)
 				if err != nil {
 					return ChatImageGenerationToolResult{}, err
 				}
@@ -270,7 +270,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if toolContext != nil {
 					progress = toolContext.ToolProgress
 				}
-				return executeChatWebSearch(runCtx, bindings.SearchExecutor, input.apiKey.Secret, input.traceID, bindings.SearchModelID, query, progress)
+				return executeChatWebSearch(runCtx, bindings.SearchExecutor, input.traceID, bindings.SearchModelID, query, progress)
 			},
 		}
 		if rt.deps.ObjectStore != nil {
@@ -379,7 +379,6 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 					Targets:          targets,
 					ConversationID:   input.conversation.ID,
 					SystemAccountID:  identity.OwnerID,
-					APIKeySecret:     input.apiKey.Secret,
 					Model:            input.body.Model,
 					UserContent:      input.body.Content,
 					AssistantContent: assistantContent,
@@ -391,7 +390,6 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 					rt.deps.Compactions.Schedule(context.Background(), CompactionInput{
 						ConversationID:              input.conversation.ID,
 						SystemAccountID:             identity.OwnerID,
-						APIKeySecret:                input.apiKey.Secret,
 						Model:                       input.body.Model,
 						EffectiveContextLimitTokens: input.effectiveContextLimitTokens,
 					})

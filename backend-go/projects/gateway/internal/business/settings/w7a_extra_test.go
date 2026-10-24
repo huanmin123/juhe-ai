@@ -16,10 +16,7 @@ func TestW7AConstructorAndDialectArms(t *testing.T) {
 	if _, err := New(nil, SQLite, "", OwnerGate{}); err == nil {
 		t.Fatal("nil db must be rejected")
 	}
-	db, err := sql.Open("sqlite", "file:w7a-settings-ctor?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newSettingsPGDatabase(t)
 	defer db.Close()
 	if _, err := New(db, "oracle", "", OwnerGate{}); err == nil {
 		t.Fatal("invalid mode must be rejected")
@@ -104,8 +101,13 @@ func TestW7AGetSystemArms(t *testing.T) {
 }
 
 func TestW7APutValidationArms(t *testing.T) {
-	store, db := testStore(t)
-	defer db.Close()
+	// DSN 供 closed-pool 错误臂二次开池。
+	testDB := newSettingsPGTestDatabase(t)
+	db := testDB.DB
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{true, true, true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	if _, err := store.PutGlobal(ctx, " ", `1`, ""); err == nil {
 		t.Fatal("blank key must fail")
@@ -116,12 +118,12 @@ func TestW7APutValidationArms(t *testing.T) {
 	if _, err := store.PutGlobal(ctx, "k", `broken`, ""); err == nil {
 		t.Fatal("invalid json must fail")
 	}
-	// 关闭数据库后的查询/事务错误臂。
-	broken, err := sql.Open("sqlite", "file:w7a-settings-broken?mode=memory&cache=shared")
+	// 关闭数据库后的查询/事务错误臂（同一测试库的第二个连接池）。
+	broken, err := sql.Open("pgx", testDB.DSN)
 	if err != nil {
 		t.Fatal(err)
 	}
-	brokenStore, err := New(broken, SQLite, "", OwnerGate{true, true, true})
+	brokenStore, err := New(broken, Postgres, "juhe_business", OwnerGate{true, true, true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,10 +151,16 @@ func TestW7APutValidationArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW7AListAndReplaceCatalogArms(t *testing.T) {
-	store, db := testStore(t)
-	defer db.Close()
+	// DSN 供 closed-pool 错误臂二次开池。
+	testDB := newSettingsPGTestDatabase(t)
+	db := testDB.DB
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{true, true, true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO vendors(code,updated_at) VALUES ('openai','r')`); err != nil {
+	// vendors 为生产 8 列形态（id/code/name/created_at 非空），seed 补齐列。
+	if _, err := db.Exec(fixtureSQL(`INSERT INTO vendors(id,code,name,created_at,updated_at) VALUES ('openai','openai','openai','r','r')`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ListProviderModels(ctx, " ", false); err == nil {
@@ -205,12 +213,12 @@ func TestW7AListAndReplaceCatalogArms(t *testing.T) {
 		t.Fatalf("gate=%v", gateErr)
 	}
 	store.gate = OwnerGate{true, true, true}
-	// 关闭数据库后的目录替换错误臂。
-	broken, err := sql.Open("sqlite", "file:w7a-settings-cat?mode=memory&cache=shared")
+	// 关闭数据库后的目录替换错误臂（同一测试库的第二个连接池）。
+	broken, err := sql.Open("pgx", testDB.DSN)
 	if err != nil {
 		t.Fatal(err)
 	}
-	brokenStore, err := New(broken, SQLite, "", OwnerGate{true, true, true})
+	brokenStore, err := New(broken, Postgres, "juhe_business", OwnerGate{true, true, true})
 	if err != nil {
 		t.Fatal(err)
 	}

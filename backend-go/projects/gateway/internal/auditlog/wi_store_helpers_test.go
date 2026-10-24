@@ -266,12 +266,10 @@ func stringsRepeat2(ch string, n int) string {
 }
 
 func TestWICleanupHotSearchAndBucketParsing(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 
 	// 空 cutoff 必须报错。
 	if _, err := store.CleanupHotSearch(ctx, lease, time.Time{}, 0); err == nil {

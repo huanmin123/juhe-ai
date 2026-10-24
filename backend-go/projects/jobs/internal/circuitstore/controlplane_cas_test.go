@@ -31,11 +31,11 @@ func casTestInput(scopeKey, accountID, state string, generation, dispatchRevisio
 
 func mustAccount(t *testing.T, db *sql.DB, id string, dispatch int64, deleted bool) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id, dispatch_revision) VALUES (?, ?)`, id, dispatch); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, dispatch_revision) VALUES ($1, $2)`, id, dispatch); err != nil {
 		t.Fatal(err)
 	}
 	if deleted {
-		if _, err := db.Exec(`UPDATE accounts SET deleted_at = '2020-01-01T00:00:00Z' WHERE id = ?`, id); err != nil {
+		if _, err := db.Exec(`UPDATE juhe_business.accounts SET deleted_at = '2020-01-01T00:00:00Z' WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -68,14 +68,14 @@ func TestCompareAndSetIncidentApplyIdempotentConflict(t *testing.T) {
 		outboxType  string
 		outboxScope string
 	)
-	if err := db.QueryRow(`SELECT state, ledger_revision, projected_ledger_revision FROM account_circuit_incidents WHERE circuit_scope_key='sk-1'`).
+	if err := db.QueryRow(`SELECT state, ledger_revision, projected_ledger_revision FROM juhe_business.account_circuit_incidents WHERE circuit_scope_key='sk-1'`).
 		Scan(&state, &ledger, &projected); err != nil {
 		t.Fatal(err)
 	}
 	if state != "SUSPECT" || ledger != 1 || projected != 0 {
 		t.Fatalf("持久化行不符: %s %d %d", state, ledger, projected)
 	}
-	if err := db.QueryRow(`SELECT event_type, circuit_scope_key FROM account_circuit_outbox WHERE dedupe_key='incident:tr-sk-1'`).
+	if err := db.QueryRow(`SELECT event_type, circuit_scope_key FROM juhe_business.account_circuit_outbox WHERE dedupe_key='incident:tr-sk-1'`).
 		Scan(&outboxType, &outboxScope); err != nil {
 		t.Fatal(err)
 	}
@@ -172,11 +172,11 @@ func TestCompareAndSetIncidentAccountGates(t *testing.T) {
 	if stale.Status != opsjobs.IncidentCASStaleDispatchRevision || stale.CurrentDispatchRevision != 7 {
 		t.Fatalf("revision 失配应 stale_dispatch_revision: %+v", stale)
 	}
-	if _, err := db.Exec(`DELETE FROM account_circuit_incidents WHERE circuit_scope_key IN ('sk-m','sk-d','sk-s')`); err != nil {
+	if _, err := db.Exec(`DELETE FROM juhe_business.account_circuit_incidents WHERE circuit_scope_key IN ('sk-m','sk-d','sk-s')`); err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_incidents`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_circuit_incidents`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -234,9 +234,9 @@ func TestListActiveIncidentsPage(t *testing.T) {
 	repo, _, db := openControlPlaneFixture(t)
 	ctx := context.Background()
 	mustAccount(t, db, "acc-1", 5, false)
-	seedIncident(t, db, "sk-a", "acc-1", "acc-1", "OPEN", 1, 5, 1, 100)
-	seedIncident(t, db, "sk-b", "acc-1", "acc-1", "SUSPECT", 1, 5, 2, 100)
-	seedIncident(t, db, "sk-closed", "acc-1", "acc-1", "CLOSED", 1, 5, 3, 300)
+	kitSeedIncident(t, db, "sk-a", "acc-1", "acc-1", "OPEN", 1, 5, 1, 100)
+	kitSeedIncident(t, db, "sk-b", "acc-1", "acc-1", "SUSPECT", 1, 5, 2, 100)
+	kitSeedIncident(t, db, "sk-closed", "acc-1", "acc-1", "CLOSED", 1, 5, 3, 300)
 
 	first, err := repo.ListActiveIncidentsPage(ctx, -1, "", 1)
 	if err != nil {
@@ -264,22 +264,22 @@ func TestCleanupRetiresExpiredClosedIncidents(t *testing.T) {
 	ctx := context.Background()
 	mustAccount(t, db, "acc-1", 5, false)
 	// 可删：CLOSED、retained 已过、projected>=ledger、无 outbox。
-	seedIncident(t, db, "sk-gone", "acc-1", "acc-1", "CLOSED", 1, 5, 3, 100)
-	if _, err := db.Exec(`UPDATE account_circuit_incidents SET retained_until_ms = 500, projected_ledger_revision = 3, ledger_revision = 3 WHERE circuit_scope_key = 'sk-gone'`); err != nil {
+	kitSeedIncident(t, db, "sk-gone", "acc-1", "acc-1", "CLOSED", 1, 5, 3, 100)
+	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_incidents SET retained_until_ms = 500, projected_ledger_revision = 3, ledger_revision = 3 WHERE circuit_scope_key = 'sk-gone'`); err != nil {
 		t.Fatal(err)
 	}
 	// 保留：projected 落后。
-	seedIncident(t, db, "sk-behind", "acc-1", "acc-1", "CLOSED", 1, 5, 4, 100)
-	if _, err := db.Exec(`UPDATE account_circuit_incidents SET retained_until_ms = 500, projected_ledger_revision = 2, ledger_revision = 4 WHERE circuit_scope_key = 'sk-behind'`); err != nil {
+	kitSeedIncident(t, db, "sk-behind", "acc-1", "acc-1", "CLOSED", 1, 5, 4, 100)
+	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_incidents SET retained_until_ms = 500, projected_ledger_revision = 2, ledger_revision = 4 WHERE circuit_scope_key = 'sk-behind'`); err != nil {
 		t.Fatal(err)
 	}
 	// 保留：有未 dispatched outbox。
-	seedIncident(t, db, "sk-pending", "acc-1", "acc-1", "CLOSED", 1, 5, 1, 100)
-	if _, err := db.Exec(`UPDATE account_circuit_incidents SET retained_until_ms = 500, projected_ledger_revision = 1 WHERE circuit_scope_key = 'sk-pending'`); err != nil {
+	kitSeedIncident(t, db, "sk-pending", "acc-1", "acc-1", "CLOSED", 1, 5, 1, 100)
+	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_incidents SET retained_until_ms = 500, projected_ledger_revision = 1 WHERE circuit_scope_key = 'sk-pending'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO account_circuit_outbox (
+		INSERT INTO juhe_business.account_circuit_outbox (
 			event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
 			circuit_scope_key, incident_id, transition_id, dispatch_revision, status,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
@@ -288,12 +288,12 @@ func TestCleanupRetiresExpiredClosedIncidents(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 保留：保留期未到。
-	seedIncident(t, db, "sk-fresh", "acc-1", "acc-1", "CLOSED", 1, 5, 1, 100)
-	if _, err := db.Exec(`UPDATE account_circuit_incidents SET retained_until_ms = 5000, projected_ledger_revision = 1 WHERE circuit_scope_key = 'sk-fresh'`); err != nil {
+	kitSeedIncident(t, db, "sk-fresh", "acc-1", "acc-1", "CLOSED", 1, 5, 1, 100)
+	if _, err := db.Exec(`UPDATE juhe_business.account_circuit_incidents SET retained_until_ms = 5000, projected_ledger_revision = 1 WHERE circuit_scope_key = 'sk-fresh'`); err != nil {
 		t.Fatal(err)
 	}
 	// 保留：非 CLOSED。
-	seedIncident(t, db, "sk-open", "acc-1", "acc-1", "OPEN", 1, 5, 1, 100)
+	kitSeedIncident(t, db, "sk-open", "acc-1", "acc-1", "OPEN", 1, 5, 1, 100)
 
 	deleted, err := repo.Cleanup(ctx, 1000)
 	if err != nil {
@@ -304,7 +304,7 @@ func TestCleanupRetiresExpiredClosedIncidents(t *testing.T) {
 	}
 	for scopeKey, want := range map[string]bool{"sk-gone": false, "sk-behind": true, "sk-pending": true, "sk-fresh": true, "sk-open": true} {
 		var count int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_incidents WHERE circuit_scope_key = ?`, scopeKey).Scan(&count); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_circuit_incidents WHERE circuit_scope_key = $1`, scopeKey).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if (count > 0) != want {
@@ -323,15 +323,15 @@ func TestCleanupRetiresDeletedAccountIncidents(t *testing.T) {
 	mustAccount(t, db, "acc-live", 5, false)
 	mustAccount(t, db, "acc-deleted", 3, true)
 	// 可删：软删账户的活动行。
-	seedIncident(t, db, "sk-orphan-deleted", "acc-deleted", "acc-deleted", "OPEN", 1, 3, 1, 100)
+	kitSeedIncident(t, db, "sk-orphan-deleted", "acc-deleted", "acc-deleted", "OPEN", 1, 3, 1, 100)
 	// 可删：账户行缺失（物理级联缺口的防御臂）。
-	seedIncident(t, db, "sk-orphan-missing", "acc-missing", "acc-missing", "SUSPECT", 1, 1, 1, 200)
+	kitSeedIncident(t, db, "sk-orphan-missing", "acc-missing", "acc-missing", "SUSPECT", 1, 1, 1, 200)
 	// 保留：在册账户的活动行。
-	seedIncident(t, db, "sk-live", "acc-live", "acc-live", "OPEN", 1, 5, 1, 300)
+	kitSeedIncident(t, db, "sk-live", "acc-live", "acc-live", "OPEN", 1, 5, 1, 300)
 	// 保留：软删账户但有未 dispatched outbox。
-	seedIncident(t, db, "sk-orphan-pending", "acc-deleted", "acc-deleted", "OPEN", 1, 3, 1, 400)
+	kitSeedIncident(t, db, "sk-orphan-pending", "acc-deleted", "acc-deleted", "OPEN", 1, 3, 1, 400)
 	if _, err := db.Exec(`
-		INSERT INTO account_circuit_outbox (
+		INSERT INTO juhe_business.account_circuit_outbox (
 			event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
 			circuit_scope_key, incident_id, transition_id, dispatch_revision, status,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
@@ -354,7 +354,7 @@ func TestCleanupRetiresDeletedAccountIncidents(t *testing.T) {
 		"sk-orphan-pending": true,
 	} {
 		var count int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_incidents WHERE circuit_scope_key = ?`, scopeKey).Scan(&count); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_circuit_incidents WHERE circuit_scope_key = $1`, scopeKey).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if (count > 0) != want {

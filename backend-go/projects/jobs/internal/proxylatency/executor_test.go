@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -292,6 +291,15 @@ func TestExecuteIssuedInputRejectsLostLeaseExpiredInputAndCancellation(t *testin
 		if err := store.ReleaseProxyLease(context.Background(), proxy); err != nil {
 			t.Fatal(err)
 		}
+		// PG 重钉披露：ReleaseProxyLease 以 statement_timestamp()（DB 时钟）截断
+		// 租约，而 verifyProxyTx 以 Go 时钟判定 lease_until.After(now)。dev PG 与
+		// 测试进程跨机时钟偏移（DB 领先）时，release 后立即校验无法确定性地看到
+		// "已丢失"（生产臂跨时钟源缺陷，另列报告）。此处以显式过去时间戳直接
+		// 改写租约行，注入与 release 等价的"租约已过期"状态恢复确定性；断言
+		// 逐字节保持。
+		if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_proxy_leases SET lease_until=$1 WHERE proxy_id=$2`, time.Now().UTC().Add(-time.Minute), proxy.ProxyID); err != nil {
+			t.Fatal(err)
+		}
 		_, committed, err := ExecuteIssuedInput(context.Background(), store, owner, proxy, input, ExecutorOptions{Timeout: time.Second})
 		if !errors.Is(err, ErrProxyLeaseLost) || committed || outcomeCount(t, store) != 0 {
 			t.Fatalf("lost lease committed=%t err=%v", committed, err)
@@ -300,7 +308,7 @@ func TestExecuteIssuedInputRejectsLostLeaseExpiredInputAndCancellation(t *testin
 	t.Run("expired input", func(t *testing.T) {
 		store, owner, proxy, input := executorFixture(t, "http://127.0.0.1:1", "", "")
 		defer store.Close()
-		if _, err := store.db.Exec(`UPDATE proxy_latency_inputs SET expires_at=? WHERE request_id=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), input.RequestID); err != nil {
+		if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_inputs SET expires_at=$1 WHERE request_id=$2`, time.Now().UTC().Add(-time.Minute), input.RequestID); err != nil {
 			t.Fatal(err)
 		}
 		_, committed, err := ExecuteIssuedInput(context.Background(), store, owner, proxy, input, ExecutorOptions{Timeout: time.Second})
@@ -364,10 +372,7 @@ func executorFixture(t *testing.T, proxyEndpoint, secret, password string) (*Sto
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "executor.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "executor-owner", time.Minute)
 	if err != nil || !acquired {
@@ -379,7 +384,9 @@ func executorFixture(t *testing.T, proxyEndpoint, secret, password string) (*Sto
 		store.Close()
 		t.Fatalf("proxy acquire: acquired=%t err=%v", acquired, err)
 	}
-	now := time.Now().UTC()
+	// PG 重钉披露：IssuedAt/ExpiresAt 截断到微秒，与 PG timestamptz 微秒存储
+	// 精度对齐（SQLite TEXT 臂无精度差异）。
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	draft := InputDraft{ProxyID: proxy.ProxyID, ConfigRevision: now.Add(-time.Second).Format(time.RFC3339Nano), Trigger: TriggerPeriodic, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), PolicyVersion: proxyLatencyInputPolicyVersion, ProxyType: endpoint.Scheme, ProxyHost: endpoint.Hostname(), ProxyPort: parsedPort, Targets: []Target{{Provider: "target", ProfileID: "target-profile", URL: "http://provider.example/success"}}}
 	if password != "" {
 		draft.ProxyUsername = "executor-user"
@@ -396,7 +403,7 @@ func executorFixture(t *testing.T, proxyEndpoint, secret, password string) (*Sto
 func outcomeCount(t *testing.T, store *Store) int {
 	t.Helper()
 	var count int
-	if err := store.db.QueryRow(`SELECT count(*) FROM proxy_latency_outcomes`).Scan(&count); err != nil {
+	if err := store.db.QueryRow(`SELECT count(*) FROM juhe_jobs.proxy_latency_outcomes`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count

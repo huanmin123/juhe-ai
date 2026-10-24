@@ -54,7 +54,7 @@ func hotLine(id, createdAt, text string) string {
 // TestAuditLogReadsSearchHot covers the /search-hot scan, item hydration,
 // the empty-keyword contract, the strict range and the admin gate.
 func TestAuditLogReadsSearchHot(t *testing.T) {
-	env := newReadsTestEnv(t, auditReadsDDL, pinAuditHotClock, true)
+	env := newReadsTestEnv(t, pinAuditHotClock, true)
 	seedAuditReads(t, env)
 	// One bucket inside the pinned window: log-2 (newest) and log-1 match
 	// the "gpt" keyword, log-3 is internal probe traffic that the by-id
@@ -174,7 +174,7 @@ func seedPayloadBlobs(t *testing.T, env *readsTestEnv) (bodyText string) {
 // object, gzip body as bodyText, storage statuses and the 404/permission
 // contracts.
 func TestAuditLogReadsPayloadDetail(t *testing.T) {
-	env := newReadsTestEnv(t, auditReadsDDL, pinAuditHotClock, true)
+	env := newReadsTestEnv(t, pinAuditHotClock, true)
 	seedAuditReads(t, env)
 	body := seedPayloadBlobs(t, env)
 

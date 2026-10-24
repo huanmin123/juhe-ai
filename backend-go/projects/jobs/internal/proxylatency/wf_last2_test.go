@@ -8,7 +8,7 @@ import (
 )
 
 func TestWFStoreUncommittedReplayAndClaimGuards(t *testing.T) {
-	store := wfOpenJobsStore(t)
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, ok, err := store.AcquireOwnerLease(ctx, "wf-uncommitted", time.Hour)
 	if err != nil || !ok {

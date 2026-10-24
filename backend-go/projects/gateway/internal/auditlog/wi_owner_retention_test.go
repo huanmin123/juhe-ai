@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-func TestWIRenewOwnerLeaseSQLiteContract(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+func TestWIRenewOwnerLeaseContract(t *testing.T) {
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -39,8 +39,7 @@ func TestWIRenewOwnerLeaseSQLiteContract(t *testing.T) {
 }
 
 func TestWIRetainAliasMatchesCleanupRetention(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -76,7 +75,7 @@ func TestWIRetainAliasMatchesCleanupRetention(t *testing.T) {
 }
 
 func TestWILeaseKeeperRenewsAndReleases(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
@@ -111,7 +110,7 @@ func TestWILeaseKeeperRenewsAndReleases(t *testing.T) {
 func TestWILeaseKeeperRetriesTransportErrorsUntilGraceWindow(t *testing.T) {
 	// 修订后契约（2026-09-27）：续租传输错误不立即终态——租约仍可能未过期，
 	// keeper 在 2×TTL 放宽窗口内按周期重试；超过窗口才放弃所有权。
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	ctx := context.Background()
 	keeper, ok, err := StartLeaseKeeper(ctx, store, "wi-doomed", 3*time.Second, slog.Default())
 	if err != nil || !ok {
@@ -137,7 +136,7 @@ func TestWILeaseKeeperRetriesTransportErrorsUntilGraceWindow(t *testing.T) {
 }
 
 func TestWILeaseKeeperRefusesWhenHeld(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	first := acquireLease(t, store)
@@ -169,9 +168,8 @@ func TestWIMinDurationAndReportRetentionFatal(t *testing.T) {
 }
 
 func TestWIRunOwnerValidatesPolicyAndKeeper(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
-	cfg := sqliteConfig(t, t.TempDir())
 	// keeper 缺失必须报错。
 	if err := RunOwner(context.Background(), store, nil, cfg, slog.Default()); err == nil {
 		t.Fatal("缺 keeper 必须报错")
@@ -198,7 +196,7 @@ func TestWIRunOwnerValidatesPolicyAndKeeper(t *testing.T) {
 
 func TestWIRunRetentionMaintenanceReportsFatal(t *testing.T) {
 	// 每次到期执行都失败 → fatal 通道收到组件错误并停止 goroutine。
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	_ = store.Close() // 关闭底层库，让 CleanupRetention 失败。
 	cfg := Config{RetentionInterval: 10 * time.Millisecond}
 	fatal := make(chan error, 1)
@@ -219,7 +217,7 @@ func TestWIRunRetentionMaintenanceReportsFatal(t *testing.T) {
 		t.Fatal("maintenance goroutine 未退出")
 	}
 	// ctx 取消 → 正常退出且不上报 fatal。
-	quietStore := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	quietStore, _ := openPostgresStore(t)
 	defer quietStore.Close()
 	quietFatal := make(chan error, 1)
 	quietCtx, quietCancel := context.WithCancel(context.Background())

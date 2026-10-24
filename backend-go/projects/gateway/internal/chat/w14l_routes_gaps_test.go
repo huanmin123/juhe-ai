@@ -166,41 +166,6 @@ func TestW14LContextStatusArms(t *testing.T) {
 	}
 }
 
-// w14lQuirkyGatewayKeys 返回含重复/停用/空分组绑定的网关键视图。
-type w14lQuirkyGatewayKeys struct{}
-
-func (w14lQuirkyGatewayKeys) ValidateGatewayKey(secret string) (*GatewayKeyView, error) {
-	if secret == "" {
-		return nil, nil
-	}
-	return &GatewayKeyView{GroupBindings: []GatewayGroupBinding{
-		{GroupID: "group-a", Status: "active", GroupEnabled: true},
-		{GroupID: "group-a", Status: "active", GroupEnabled: true},
-		{GroupID: "group-b", Status: "disabled", GroupEnabled: true},
-		{GroupID: "", Status: "active", GroupEnabled: true},
-		{GroupID: "group-c", Status: "active", GroupEnabled: false},
-	}}, nil
-}
-
-// TestW14LModelsRouteBindingArms 覆盖分组绑定过滤与目录去重臂。
-func TestW14LModelsRouteBindingArms(t *testing.T) {
-	_, rt, conversationID := w14lRoutes(t)
-	rt.deps.GatewayKeys = w14lQuirkyGatewayKeys{}
-	call := func() *httptest.ResponseRecorder {
-		request := w14lJSON("GET", "/conversations/"+conversationID+"/models", "", routeTestOwner)
-		request.SetPathValue("conversationId", conversationID)
-		recorder := httptest.NewRecorder()
-		rt.listConversationModels(recorder, request)
-		return recorder
-	}
-	recorder := call()
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("奇怪绑定应仍可用 = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 网关键守卫断言已随账户唯一绑定收敛退场：models 列表按绑定账户作用域
-	// 解析，不再经 GatewayKeys（发送/工具执行路径仍校验）。
-}
-
 // TestW14LAssetUploadMatrix 覆盖资产上传的 multipart 与配额臂。
 func TestW14LAssetUploadMatrix(t *testing.T) {
 	env, rt, conversationID := w14lRoutes(t)

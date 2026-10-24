@@ -135,9 +135,8 @@ func TestW13G4ParseAndScanHotSearchBucket(t *testing.T) {
 
 // TestW13G4CleanupHotSearchFilesBefore 覆盖过期桶清理的目录与文件分支。
 func TestW13G4CleanupHotSearchFilesBefore(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, impl := openPostgresStore(t)
 	defer store.Close()
-	impl := store.(*sqlStore)
 
 	// 目录不存在 → 0, nil。
 	if deleted, err := impl.cleanupHotSearchFilesBefore(time.Now().UTC(), 10); err != nil || deleted != 0 {
@@ -173,7 +172,7 @@ func TestW13G4CleanupHotSearchFilesBefore(t *testing.T) {
 
 // TestW13G4CleanupHotSearchChain 覆盖 CleanupHotSearch 的参数与事务链。
 func TestW13G4CleanupHotSearchChain(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)

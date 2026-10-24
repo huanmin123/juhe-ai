@@ -4,18 +4,15 @@ package chat
 //  1. GenerationHub.Shutdown 多 runner 并发排空（Abort + 有界等待 + 终态收敛）。
 //  2. 手动压缩 claim 后立即返回 202：service 层 acceptance 时序 + handler 层
 //     请求 context 与压缩执行 context 脱钩（WithoutCancel）。
-//  4. requireChatAPIKeyForOwner 对停用/过期专用 Key 返回 400（查询失败仍 500）。
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -265,94 +262,5 @@ func TestCompactionTriggerHandlerDecoupledContextBatch2(t *testing.T) {
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
-	}
-}
-
-// --- 缺陷4：停用/过期专用 chat Key 返回 400 ---
-
-// batch2ChatKeys 是状态可控的 chat key 端口 fake：EnsureChatAPIKey 幂等返回
-// 固定 keyID，FindChatAPIKey 按测试注入返回。
-type batch2ChatKeys struct {
-	mu      sync.Mutex
-	record  *ChatAPIKeyRecord
-	findErr error
-	ensure  int32
-}
-
-func (b *batch2ChatKeys) EnsureChatAPIKey(string) (string, error) {
-	atomic.AddInt32(&b.ensure, 1)
-	return "chat_key_batch2", nil
-}
-
-func (b *batch2ChatKeys) FindChatAPIKey(string, string) (*ChatAPIKeyRecord, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.record, b.findErr
-}
-
-// batch2GroupLookup 已随 group 绑定模式退场删除（账户唯一绑定收敛）。
-
-func TestRequireChatAPIKeyForOwnerDisabledKeyBatch2(t *testing.T) {
-	env := newGenerationEnv(t)
-	rt := newChatRoutesForTest(env.deps)
-	t.Run("停用 Key 返回 400 可恢复输入错误", func(t *testing.T) {
-		keys := &batch2ChatKeys{record: &ChatAPIKeyRecord{ID: "chat_key_batch2", Secret: "s", Status: "disabled"}}
-		rt.deps.ChatKeys = keys
-		_, err := rt.requireChatAPIKeyForOwner(routeTestOwner)
-		if _, ok := err.(*invalidRequestError); !ok {
-			t.Fatalf("停用 Key 应为 invalidRequestError(400): %T %v", err, err)
-		}
-		if err.Error() != "专用对话 Key 已停用或过期，请在 API Key 页面恢复后重试" {
-			t.Fatalf("文案不符: %q", err.Error())
-		}
-	})
-	t.Run("缺失 Key 返回 400", func(t *testing.T) {
-		rt.deps.ChatKeys = &batch2ChatKeys{record: nil}
-		_, err := rt.requireChatAPIKeyForOwner(routeTestOwner)
-		if _, ok := err.(*invalidRequestError); !ok {
-			t.Fatalf("缺失 Key 应为 invalidRequestError(400): %T %v", err, err)
-		}
-	})
-	t.Run("查询失败保持 500", func(t *testing.T) {
-		rt.deps.ChatKeys = &batch2ChatKeys{findErr: errors.New("db down")}
-		_, err := rt.requireChatAPIKeyForOwner(routeTestOwner)
-		if _, ok := err.(*invalidRequestError); ok {
-			t.Fatalf("查询失败不应是 invalidRequestError: %v", err)
-		}
-		if err == nil || err.Error() != "db down" {
-			t.Fatalf("查询失败应保留原始错误: %v", err)
-		}
-	})
-	t.Run("端口未接线保持 500", func(t *testing.T) {
-		rt.deps.ChatKeys = nil
-		if _, err := rt.requireChatAPIKeyForOwner(routeTestOwner); err == nil {
-			t.Fatalf("ChatKeys 未接线应返回错误")
-		} else if _, ok := err.(*DomainError); !ok {
-			t.Fatalf("ChatKeys 未接线应为 DomainError(500)")
-		}
-	})
-}
-
-// TestCreateConversationDisabledChatKeyBatch2 覆盖 handler 级：创建会话（免
-// 请求体，鉴权主体恒为专用 chat Key）时专用 chat Key 停用 → 400 + 中文文案
-// （原为 500 不对称）。
-func TestCreateConversationDisabledChatKeyBatch2(t *testing.T) {
-	env := newGenerationEnv(t)
-	rt := newChatRoutesForTest(env.deps)
-	rt.deps.ChatKeys = &batch2ChatKeys{record: &ChatAPIKeyRecord{ID: "chat_key_batch2", Secret: "s", Status: "disabled"}}
-	request := w13bJSONRequest(t, "POST", "/conversations", "")
-	request = request.WithContext(authedContextW13B(routeTestOwner))
-	recorder := httptest.NewRecorder()
-	rt.createConversationHandler(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("停用专用 Key 的创建应为 400: %d %s", recorder.Code, recorder.Body.String())
-	}
-	body := map[string]any{}
-	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
-	if message, _ := body["message"].(string); message != "专用对话 Key 已停用或过期，请在 API Key 页面恢复后重试" {
-		t.Fatalf("400 文案不符: %v", body)
-	}
-	if code, _ := body["code"].(string); code != "chat_invalid_request" {
-		t.Fatalf("错误码不符: %v", body)
 	}
 }

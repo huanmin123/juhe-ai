@@ -211,41 +211,41 @@ func waitSettled(t *testing.T, pending *pendingRead) {
 func TestW9CRaceStreamReadWithDeadlines(t *testing.T) {
 	clock := &w9cClock{now: 1000}
 	// Plain read.
-	outcome := raceStreamReadWithDeadlines(w9cSettledPending(ChunkResult{Data: []byte("r")}, clock.NowMs), nil, nil, nil, nil)
+	outcome := raceStreamReadWithDeadlines(w9cSettledPending(ChunkResult{Data: []byte("r")}, clock.NowMs), nil, nil, nil, nil, nil)
 	if outcome.kind != raceRead || string(outcome.chunk.Data) != "r" {
 		t.Fatalf("read outcome = %+v", outcome)
 	}
 	// Closed pending bridge maps to interrupted read.
 	closed := make(chan ChunkResult)
 	close(closed)
-	outcome = raceStreamReadWithDeadlines(newPendingRead(closed, clock.NowMs), nil, nil, nil, nil)
+	outcome = raceStreamReadWithDeadlines(newPendingRead(closed, clock.NowMs), nil, nil, nil, nil, nil)
 	if outcome.kind != raceRead || !errorsIs(outcome.chunk.Err, io.ErrUnexpectedEOF) {
 		t.Fatalf("closed outcome = %+v", outcome)
 	}
 	// Plan timeout fires.
-	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, nil, int64PtrOf(5), nil)
+	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, nil, int64PtrOf(5), nil, nil)
 	if outcome.kind != racePlanTimeout {
 		t.Fatalf("plan timeout outcome = %+v", outcome)
 	}
 	// Soft timeout fires.
-	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, int64PtrOf(5), nil, nil)
+	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, int64PtrOf(5), nil, nil, nil)
 	if outcome.kind != raceSoftTimeout {
 		t.Fatalf("soft timeout outcome = %+v", outcome)
 	}
 	// Precommit coinciding with a soft timeout keeps the precommit attribution.
-	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, int64PtrOf(50), nil, int64PtrOf(5))
+	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, int64PtrOf(50), nil, int64PtrOf(5), nil)
 	if outcome.kind != raceResponsePrecommitTimeout {
 		t.Fatalf("precommit attribution outcome = %+v", outcome)
 	}
 	// Precommit alone.
-	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, nil, nil, int64PtrOf(5))
+	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), nil, nil, nil, int64PtrOf(5), nil)
 	if outcome.kind != raceResponsePrecommitTimeout {
 		t.Fatalf("precommit outcome = %+v", outcome)
 	}
 	// Abort signal.
 	signal := make(chan struct{})
 	close(signal)
-	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), signal, nil, int64PtrOf(60000), nil)
+	outcome = raceStreamReadWithDeadlines(w9cUnsettledPending(clock.NowMs), signal, nil, int64PtrOf(60000), nil, nil)
 	if outcome.kind != raceAbort {
 		t.Fatalf("abort outcome = %+v", outcome)
 	}

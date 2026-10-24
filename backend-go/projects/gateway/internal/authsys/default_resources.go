@@ -54,9 +54,10 @@ func NewSQLDefaultResources(store *AccountStore, sealer SecretSealer) *SQLDefaul
 // EnsureDefaultResources runs inside the account-create transaction and
 // provisions the narrowed default family (2026-10-07 默认资源收口; 2026-10-17
 // 设计 §8 去供应商化): ensureDefaultGroups (the single 默认分组) ->
-// ensureDefaultRouteStrategies -> ensureDefaultAPIKeys. The AI chat key is NOT
-// provisioned here anymore; it is created on demand by the chat-session ensure
-// chain (cmd/juhe-ai-gateway EnsureChatAPIKey).
+// ensureDefaultRouteStrategies -> ensureDefaultAPIKeys. AI 问答不创建 API Key
+// （2026-10-24 免 Key 直调改造）：历史 chat-session ensure 链
+// (cmd/juhe-ai-gateway chain_chat_keys.go EnsureChatAPIKey) 已整体删除，
+// 本函数与其它资源创建路径都不再补建 chat Key。
 func (e *SQLDefaultResources) EnsureDefaultResources(ctx context.Context, tx *sql.Tx, accountID, nowRFC3339 string) error {
 	if e == nil || e.store == nil {
 		return errors.New("default resource ensurer is not initialized")

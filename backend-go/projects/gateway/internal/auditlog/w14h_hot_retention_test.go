@@ -13,6 +13,14 @@ import (
 	"time"
 )
 
+// w14hPostgresStore 是 hot-search / retention 组A测试的 PG 建库入口；
+// w14hStore（SQLite，ref_count 断言的组B测试专用）保持原状。
+func w14hPostgresStore(t *testing.T) (*sqlStore, OwnerLease) {
+	t.Helper()
+	store, implementation := openPostgresStore(t)
+	return implementation, acquireLease(t, store)
+}
+
 func w14hStore(t *testing.T) (*sqlStore, OwnerLease) {
 	t.Helper()
 	cfg := sqliteConfig(t, t.TempDir())
@@ -126,7 +134,7 @@ func TestW14HPersistPayloadBlobLifecycle(t *testing.T) {
 
 func TestW14HHotSearchAppendAndSearch(t *testing.T) {
 	ctx := context.Background()
-	store, lease := w14hStore(t)
+	store, lease := w14hPostgresStore(t)
 	// 追加：正常 + 非持久化来源跳过 + 空 ID 跳过。
 	inputs := []AuditLogInput{w14hPayloadInput("w14h-hot-1", ""), fixture("w14h-hot-2", LifecycleFinalized)}
 	inputs[1].CreatedAt = time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
@@ -303,7 +311,7 @@ func TestW14HHotSearchPureArms(t *testing.T) {
 		t.Fatalf("去重=%v", got)
 	}
 	// CleanupRetention：失败日志按 failure cutoff 删除 + hot 文件清理。
-	store, lease := w14hStore(t)
+	store, lease := w14hPostgresStore(t)
 	failed := fixture("w14h-fail-1", LifecycleFinalized)
 	failed.Success = false
 	failed.AuditOutcome = AuditOutcomeGatewayFailed

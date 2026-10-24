@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // fakeGroupUsageSource records the requested scopes/statDates and serves the
@@ -40,35 +40,25 @@ func (f *fakeGroupUsageSource) GroupListUsageSummaries(_ context.Context, scopes
 }
 
 // newUsageHydrateFixture builds the minimal business schema ListPage /
-// FindDetail read: providers + system_accounts + groups + group_accounts +
-// accounts, the real-shape resource_authorizations + group_authorization_settings
-// the authorized UNION arm joins (same DDL as groups_test.go) and
-// group_account_stats so the stats hydrate reads an empty table instead of
-// warn-degrading on a missing one.
+// FindDetail read: system_accounts + groups + group_accounts + accounts, the
+// real-shape resource_authorizations + group_authorization_settings the
+// authorized UNION arm joins。夹具走 pgkit_test.go 的 PG 基建（组A 迁移）：
+// juhe_business 限定 + 生产 DDL 列集（FK/未消费列按读面夹具放宽）；stats
+// reader 未接线，juhe_stats.group_account_stats 不建（hydrate 对 nil reader
+// 整体跳过，与生产降级语义一致）。
 func newUsageHydrateFixture(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:groups-usage-hydrate-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE providers (code TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)`,
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT)`,
-		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE group_account_stats (system_account_id TEXT NOT NULL DEFAULT 'sys_admin', group_id TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, available INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, error INTEGER NOT NULL DEFAULT 0, rate_limited INTEGER NOT NULL DEFAULT 0, current_concurrency INTEGER NOT NULL DEFAULT 0, concurrency_limit INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, group_id))`,
-		`INSERT INTO providers (code, enabled) VALUES ('openai', 1)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return db
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '');
+	CREATE TABLE IF NOT EXISTS juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')), scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS juhe_business.group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id));
+	CREATE TABLE IF NOT EXISTS juhe_business.accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT);
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS juhe_business.group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);`)
+		return err
+	})
 }
 
 // TestListPageHydratesUsageSummaries locks the list half of the usage wiring:
@@ -78,7 +68,7 @@ func newUsageHydrateFixture(t *testing.T) *sql.DB {
 func TestListPageHydratesUsageSummaries(t *testing.T) {
 	db := newUsageHydrateFixture(t)
 	source := &fakeGroupUsageSource{}
-	store, err := NewStore(db, false, nil, nil, nil, WithUsageSource(source))
+	store, err := NewStore(db, true, nil, nil, nil, WithUsageSource(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +128,7 @@ func TestListPageHydratesUsageSummaries(t *testing.T) {
 func TestFindDetailHydratesUsage(t *testing.T) {
 	db := newUsageHydrateFixture(t)
 	source := &fakeGroupUsageSource{}
-	store, err := NewStore(db, false, nil, nil, nil, WithUsageSource(source))
+	store, err := NewStore(db, true, nil, nil, nil, WithUsageSource(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +165,7 @@ func TestFindDetailHydratesUsage(t *testing.T) {
 // groups_test.go is untouched.
 func TestListPageUsageNilSourceKeepsEmptyShape(t *testing.T) {
 	db := newUsageHydrateFixture(t)
-	store, err := NewStore(db, false, nil, nil, nil)
+	store, err := NewStore(db, true, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +195,7 @@ func TestListPageUsageNilSourceKeepsEmptyShape(t *testing.T) {
 func TestListPageUsageSourceErrorDegrades(t *testing.T) {
 	db := newUsageHydrateFixture(t)
 	source := &fakeGroupUsageSource{err: sql.ErrConnDone}
-	store, err := NewStore(db, false, nil, nil, nil, WithUsageSource(source))
+	store, err := NewStore(db, true, nil, nil, nil, WithUsageSource(source))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 // TestRunOwnerRejectsNilKeeper pins the shared-lease entry contract: the
 // resident owner fails fast without a keeper instead of running unfenced.
 func TestRunOwnerRejectsNilKeeper(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	if err := RunOwner(context.Background(), store, nil, Config{OwnerLease: time.Minute, RetentionInterval: time.Hour}, nil); err == nil {
 		t.Fatal("resident owner must refuse a nil keeper")
@@ -22,10 +22,9 @@ func TestRunOwnerRejectsNilKeeper(t *testing.T) {
 // returns nil, the keeper releases the row, and a successor can acquire it
 // immediately.
 func TestRunOwnerStopsWithContextAndReleasesLease(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	cfg.RetentionInterval = time.Hour
-	store := openSQLiteStore(t, cfg)
+	store, _, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
+	cfg.RetentionInterval = time.Hour
 
 	keeper, ok, err := StartLeaseKeeper(context.Background(), store, cfg.InstanceID, time.Minute, nil)
 	if err != nil || !ok {
@@ -57,10 +56,9 @@ func TestRunOwnerStopsWithContextAndReleasesLease(t *testing.T) {
 // re-acquires the row fresh once it is free again — instead of replaying the
 // stored error without touching the database.
 func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	cfg.RetentionInterval = time.Hour
-	store := openSQLiteStore(t, cfg)
+	store, implementation, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
+	cfg.RetentionInterval = time.Hour
 
 	keeper, ok, err := StartLeaseKeeper(context.Background(), store, cfg.InstanceID, 2*time.Second, nil)
 	if err != nil || !ok {
@@ -70,10 +68,9 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 
 	// 真实失租：把租约行置为过期，再由 rival 接管（fence 递增）；keeper 的
 	// 下一次续租 0 行更新 → 按既有语义终态 ErrOwnerLeaseLost。
-	implementation := store.(*sqlStore)
-	expired := dbTime(ModeSQLite, time.Now().UTC().Add(-time.Minute))
+	expired := dbTime(implementation.mode, time.Now().UTC().Add(-time.Minute))
 	if _, err := implementation.db.Exec(
-		`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id=?`,
+		implementation.bind(`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id=?`),
 		expired, cfg.InstanceID); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +95,7 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 	// rival 释放（行重新过期）后的下一次重启：入口重新 AcquireOwnerLease 成功，
 	// keeper 清空终态并以新 fence 恢复运行；取消上下文应优雅 nil 返回。
 	if _, err := implementation.db.Exec(
-		`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence'`,
+		implementation.bind(`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence'`),
 		expired); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +132,7 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 // 未过期租约的 owner_id 与获取方相同时直接接管并递增 fence；异 owner 的未过期
 // 行仍必须拒绝。同 owner 再获取只来自本实例自己的重启/失租恢复。
 func TestSameOwnerReacquiresUnexpiredLease(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
@@ -167,7 +164,8 @@ func TestSameOwnerReacquiresUnexpiredLease(t *testing.T) {
 // scheduled by the resident owner executes within the configured interval and
 // deletes an expired success log exactly like the retired listener loop.
 func TestRunOwnerRunsRetentionPass(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
+	store, _, cfg := openPostgresStoreConfig(t)
+	defer store.Close()
 	// Retention policy defaults (3 success days) cannot age the fixture; use
 	// the zero-success-retention mode so the cutoff is the hot window (1h)
 	// and the minimum valid interval (1s, validateRetentionPolicy floor) so
@@ -176,8 +174,6 @@ func TestRunOwnerRunsRetentionPass(t *testing.T) {
 	cfg.SuccessHotRetentionHours = 0
 	cfg.SuccessSampleRate = 0
 	cfg.RetentionInterval = time.Second
-	store := openSQLiteStore(t, cfg)
-	defer store.Close()
 
 	keeper, ok, err := StartLeaseKeeper(context.Background(), store, cfg.InstanceID, time.Minute, nil)
 	if err != nil || !ok {
@@ -200,7 +196,7 @@ func TestRunOwnerRunsRetentionPass(t *testing.T) {
 		t.Helper()
 		implementation := store.(*sqlStore)
 		var count int
-		if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE id=?`, input.ID).Scan(&count); err != nil {
+		if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs WHERE id=$1`, input.ID).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		return count
@@ -234,8 +230,10 @@ func ageAuditRow(t *testing.T, store Store, id string) error {
 	t.Helper()
 	implementation, ok := store.(*sqlStore)
 	if !ok {
-		t.Skip("retention ageing helper requires the SQLite store implementation")
+		t.Skip("retention ageing helper requires the sqlStore implementation")
 	}
-	_, err := implementation.db.Exec(`UPDATE audit_logs SET created_at='2000-01-01T00:00:00.000000000Z' WHERE id=?`, id)
+	_, err := implementation.db.Exec(
+		implementation.bind(`UPDATE `+implementation.table("audit_logs")+` SET created_at=? WHERE id=?`),
+		dbTime(implementation.mode, time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)), id)
 	return err
 }

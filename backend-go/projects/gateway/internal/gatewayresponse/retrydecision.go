@@ -138,7 +138,15 @@ func ShouldRetryPreCommitStreamFailureOnServer(result StreamPipeResult, response
 // PreCommitStreamServerRetryErrorCode 对齐 preCommitStreamServerRetryErrorCode。
 // clientStrategyPreCommitProtocolError 由调用方从 client strategy 读出
 // （retryCoordination.preCommitFailureSignal === 'protocol_error_event'）。
+// 例外：upstream_stream_abnormal_eof 原样透传（流式提交边界受限重放与异常
+// 终局处置设计 §3.2.2）——该 code 是 chain 面 classifyPostVerdictOutcome
+// 失败归因三面（circuit ReportUnknown / 账户锁 / 热质量）的判别键，经本函数
+// 可达 handling.ErrorCode；异常终局是真实的上游响应面失败，不按消息改写为
+// 通用 interrupted 文案。
 func PreCommitStreamServerRetryErrorCode(result StreamPipeResult, clientStrategyPreCommitProtocolError bool) string {
+	if result.ErrorCode == UpstreamStreamAbnormalEOFCode {
+		return UpstreamStreamAbnormalEOFCode
+	}
 	if clientStrategyPreCommitProtocolError {
 		return gatewayStreamClientRetryErrorCode
 	}

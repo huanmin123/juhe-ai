@@ -23,6 +23,11 @@
 // module 未检出（例如只单独检出 jobs module）时 t.Skip，monorepo 完整
 // 检出的开发与 CI 环境生效。
 //
+// 契约 1 跳过 `json:"-"` 字段：这类字段永不参与 JSON 序列化，不进入
+// spool 落盘形状，也不跨进程；若计入，gateway 侧新增任何进程内字段都会
+// 制造「读侧缺字段」的假漂移（当前例：SuppressUsage 是内部通道的抑制
+// 标记，只在本进程内消费）。两侧同名 tag 的漂移仍按位置严格比对。
+//
 // 负向自证（未实际破坏仓库文件；除推演外，已用独立临时目录脚本对篡改
 // 副本实测，脚本不进仓库）：任一侧漂移即失败——
 //   - 把 gateway 侧 UsageRecordInput 的 TraceID 改名 TraceIDX，或把 json
@@ -42,6 +47,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -176,6 +182,14 @@ func crossContractStructFieldShapes(t *testing.T, path, typeName string) []cross
 				tag := ""
 				if field.Tag != nil {
 					tag = field.Tag.Value
+				}
+				// json:"-" 字段不落盘、不跨进程，不属于本契约的形状面
+				// （见文件头契约 1 说明）。精确取 json tag 的值判定，避免
+				// 把 json:"-," 这类「字段名字面为 -、仍会序列化」的形态误判。
+				if field.Tag != nil {
+					if name, ok := reflect.StructTag(strings.Trim(field.Tag.Value, "`")).Lookup("json"); ok && name == "-" {
+						continue
+					}
 				}
 				for _, name := range field.Names {
 					shapes = append(shapes, crossContractFieldShape{Name: name.Name, Type: types.ExprString(field.Type), Tag: tag})

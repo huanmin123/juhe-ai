@@ -150,7 +150,7 @@ type Conversation struct {
 
 // ContentBlock is the union of ChatMessageContentBlock variants. Stored and
 // serialized as the tagged JSON objects Node produces. M7 问答音视频工具
-//（问答音视频工具设计 §3，2026-10-04）增两块形：output_audio（assetId +
+// （问答音视频工具设计 §3，2026-10-04）增两块形：output_audio（assetId +
 // mimeType，与 output_image 同族无尺寸）与 output_media_task（异步视频任务块：
 // jobId/kind/status/progress/model/promptSummary/assetId?/error?，status 词表为
 // media_jobs 任务状态 queued|in_progress|completed|failed）。
@@ -356,11 +356,11 @@ type CreateConversationInput struct {
 	ImageAccountID          string
 	DefaultImageModel       string
 	// M7 问答音视频工具继承列（问答音视频工具设计 §3）：空 = 未绑定/未设默认。
-	VideoAccountID    string
-	DefaultVideoModel string
-	AudioAccountID    string
-	DefaultAudioModel string
-	Now               string
+	VideoAccountID          string
+	DefaultVideoModel       string
+	AudioAccountID          string
+	DefaultAudioModel       string
+	Now                     string
 	MaxConversationsPerUser int
 }
 
@@ -632,10 +632,10 @@ type UpdateConversationInput struct {
 	BindAccountNameSnapshot string
 	// SearchAccountID/SearchModelID 成对携带（nil = 本次不改；非 nil 时空串 =
 	// 解绑，一体写两列）。Video/Audio 同为二元组一体写入。
-	SearchAccountID *string
-	SearchModelID   string
-	ImageAccountID  *string
-	VideoAccountID  *string
+	SearchAccountID   *string
+	SearchModelID     string
+	ImageAccountID    *string
+	VideoAccountID    *string
 	DefaultVideoModel string
 	AudioAccountID    *string
 	DefaultAudioModel string

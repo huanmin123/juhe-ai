@@ -2,19 +2,15 @@ package logreads
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
@@ -24,38 +20,29 @@ import (
 )
 
 type testEnv struct {
-	deps     *authsys.Deps
-	store    operationlog.Store
-	lease    operationlog.OwnerLease
-	business *sql.DB
-	server   *httptest.Server
-	jar      map[string]string
-	created  map[string]string
-	mu       sync.Mutex
+	deps    *authsys.Deps
+	store   operationlog.Store
+	lease   operationlog.OwnerLease
+	server  *httptest.Server
+	jar     map[string]string
+	created map[string]string
+	mu      sync.Mutex
 }
 
+// newTestEnv 装配 F4 operation-log 路由测试的生产 PG 形态：pgtestkit 隔离库
+// 承载 auth 面（juhe_business 夹具 schema）与 operationlog 的 PG 臂
+// （OpenStore ModePostgres，首用时 EnsureSchema 建 juhe_dataset schema，与
+// 生产启动时序一致）。PG 单库形态下 authsys 写入的 juhe_business.system_accounts
+// 全列行即 operationlog 镜像读（display_name 投影）的数据源，无独立镜像插入。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:logreads-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	testDB := newLogreadsPGTestDatabase(t)
+	db := testDB.DB
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS providers (code TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +50,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	// F4 store on a physically distinct SQLite pair; the business database
-	// mirrors system_accounts so list/detail keep the actor name projection.
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	business := createBusinessSettings(t, businessPath)
-	store, err := operationlog.OpenStore(operationlog.Config{Mode: operationlog.ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: businessPath})
+	// F4 store on the same PG database (single-database shape: the authsys
+	// rows double as the actor-name mirror).
+	store, err := operationlog.OpenStore(operationlog.Config{Enabled: true, InstanceID: "logreads-pgkit-owner", Mode: operationlog.ModePostgres, PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,20 +66,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	(&Deps{Reader: store, Auth: deps}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, store: store, lease: lease, business: business, server: server, jar: map[string]string{}, created: map[string]string{}}
-}
-
-func createBusinessSettings(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key)); CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	return db
+	return &testEnv{deps: deps, store: store, lease: lease, server: server, jar: map[string]string{}, created: map[string]string{}}
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {
@@ -139,7 +110,10 @@ func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]a
 }
 
 // login creates the account on first use and re-issues a session on every
-// call, so tests can switch actors without losing earlier account IDs.
+// call, so tests can switch actors without losing earlier account IDs. The
+// PG single-database shape keeps the actor name projection directly on the
+// authsys row (juhe_business.system_accounts carries display_name), so the
+// SQLite pair's separate mirror insert is gone.
 func (e *testEnv) login(t *testing.T, username, password, role string) string {
 	t.Helper()
 	id, ok := e.created[username]
@@ -148,9 +122,6 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 			Username: username, DisplayName: username + "_name", Password: password, Role: role,
 		})
 		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := e.business.Exec(`INSERT INTO system_accounts (id, username, display_name) VALUES (?, ?, ?)`, created.ID, username, username+"_name"); err != nil {
 			t.Fatal(err)
 		}
 		id = created.ID

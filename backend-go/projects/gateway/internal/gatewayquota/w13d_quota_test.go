@@ -5,8 +5,8 @@ package gatewayquota
 //
 // 本包测试范围内的不可达语句登记：
 //   - apikeyquota.go / authzquota.go 的 SQL rows.Scan 错误与 rows.Err 分支：
-//     schema 列类型与 Scan 目标一致（TEXT/REAL 对应 string/float64），
-//     modernc/sqlite 驱动下无法从公共 API 触发。
+//     schema 列类型与 Scan 目标一致（text/double precision 对应
+//     string/float64），pgx 驱动下无法从公共 API 触发。
 
 import (
 	"context"
@@ -92,7 +92,7 @@ func TestW13DAPIKeyQuotaConstructionAndGuards(t *testing.T) {
 		t.Fatalf("默认 Now 构造失败: %v", err)
 	}
 	// Stats 缺失时精确读取必须报错。
-	stats, err := NewStatsStore(newTestDB(t, "w13d-guard-stats"), false)
+	stats, err := NewStatsStore(newTestDB(t, "w13d-guard-stats"), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,13 +210,21 @@ func TestW13DAPIKeyQuotaExactAsyncPostgresBatch(t *testing.T) {
 	}
 	ctx := context.Background()
 	now := clock.Now()
-	// PG 模式批量成本装载限定 juhe_stats schema，SQLite 上必须报错（错误
-	// 路径透传），成功批量路径需要真实 PostgreSQL（登记不可达）。
-	if _, err := service.CheckAPIKeyQuotaExactAsync(ctx, w13dAPIKey("ak1"), now); err == nil {
-		t.Fatal("PG 批量成本装载在 SQLite 上必须报错")
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
+		[]any{"sys", "api_key", "ak1", "2026-09-04", 20})
+	// PG 模式批量成本装载限定 juhe_stats schema；真实 PostgreSQL 上批量装载
+	// 与限额判定完整生效（SQLite 时代依赖方言冲突注入错误并登记成功路径
+	// 不可达，迁真实 PG 后重钉为成功路径断言，登记随之解除）。
+	decision, err := service.CheckAPIKeyQuotaExactAsync(ctx, w13dAPIKey("ak1"), now)
+	if err != nil {
+		t.Fatalf("PG 批量成本装载必须成功: %v", err)
 	}
-	if _, err := service.ReadAPIKeyQuotaCostsExactAsync(ctx, w13dAPIKey("ak1"), now); err == nil {
-		t.Fatal("PG 批量成本读取在 SQLite 上必须报错")
+	if decision.Allowed || decision.Message != APIKeyQuotaExceededMessage {
+		t.Fatalf("PG 批量必须按真实成本拒绝: %+v", decision)
+	}
+	costs, err := service.ReadAPIKeyQuotaCostsExactAsync(ctx, w13dAPIKey("ak1"), now)
+	if err != nil || costs.Daily != 20 {
+		t.Fatalf("PG 批量成本读取 = (%+v, %v)", costs, err)
 	}
 	// 快照读取入口（无限额 → miss）。
 	if _, found, err := service.ReadAPIKeyQuotaCostsSnapshotAsync(ctx, w13dAPIKey("ak1")); err != nil || found {
@@ -228,7 +236,7 @@ func TestW13DAPIKeyQuotaSyncerAndSharedCache(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-syncer")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +319,7 @@ func TestW13DAPIKeyQuotaSyncerAndSharedCache(t *testing.T) {
 
 func TestW13DAPIKeyQuotaAsyncRedisServerRole(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	stats, err := NewStatsStore(newTestDB(t, "w13d-redis-server"), false)
+	stats, err := NewStatsStore(newTestDB(t, "w13d-redis-server"), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +388,7 @@ func TestW13DAPIKeyQuotaAsyncRedisServerRole(t *testing.T) {
 
 func TestW13DAPIKeyQuotaServerRoleMemoryFallbacks(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	stats, err := NewStatsStore(newTestDB(t, "w13d-mem-server"), false)
+	stats, err := NewStatsStore(newTestDB(t, "w13d-mem-server"), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +440,7 @@ func TestW13DAPIKeyQuotaServerRoleMemoryFallbacks(t *testing.T) {
 
 func TestW13DAuthorizationByIDsReadOnlyAndExact(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "w13d-byids")
+	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "w13d-byids")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 
@@ -461,7 +469,7 @@ func TestW13DAuthorizationByIDsReadOnlyAndExact(t *testing.T) {
 		t.Fatalf("超额必须拒绝: (%+v, %v)", decision, err)
 	}
 	// 坏时区透传。
-	brokenStats, err := NewStatsStore(statsDB, false)
+	brokenStats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,24 +484,26 @@ func TestW13DAuthorizationByIDsReadOnlyAndExact(t *testing.T) {
 		t.Fatal("坏时区必须报错")
 	}
 
-	// ExactAsync 非 postgres 回退同步路径。
+	// ExactAsync（PostgreSQL 模式）走批量精确装载，判定与同步一致。
+	// 非 postgres 回退同步分支需要 SQLite 业务库承载，PG 化测试基建下不可达
+	// （登记：随生产 sqlite 臂删除批次同批退役）。
 	exactDecision, err := service.CheckAuthorizationQuotaByIDsExactAsync(ctx, "ga1", "aa1", clock.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = exactDecision
-	// BatchByIDsExactAsync 非 postgres 回退。
+	// BatchByIDsExactAsync 批量精确入口。
 	batch, err := service.CheckAuthorizationQuotaBatchByIDsExactAsync(ctx, "ga1", []AccountRef{{AccountID: "u1", AccountAuthorizationID: "aa1"}}, clock.Now())
 	if err != nil || len(batch) != 1 {
 		t.Fatalf("batch=%+v err=%v", batch, err)
 	}
-	// ByIDsExactAsync 包装（postgres=false → 同步路径）。
+	// ByIDsExactAsync 包装（零值 now 回退服务时钟）。
 	if _, err := service.CheckAuthorizationQuotaByIDsExactAsync(ctx, "ga1", "aa1", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	// ServerRole 守卫：批量同步检查必须报错。
 	serverModes := Modes{ServerRole: true}
-	serverStats, err := NewStatsStore(statsDB, false)
+	serverStats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +525,7 @@ func TestW13DAuthorizationQuotaAsyncCacheBranches(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-cache-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +630,7 @@ func TestW13DAuthorizationServerRoleSnapshotFallbacks(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-srv-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +737,7 @@ func TestW13DAuthorizationHelpers(t *testing.T) {
 	ctx := context.Background()
 
 	// runtimeCacheKey 的时区错误透传。
-	helperStats, err := NewStatsStore(statsDB, false)
+	helperStats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}

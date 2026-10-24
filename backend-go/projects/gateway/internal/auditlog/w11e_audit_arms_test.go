@@ -209,7 +209,7 @@ func TestW11ERetentionConfigArms(t *testing.T) {
 }
 
 func TestW11ERetentionDeletesNonPersistedTrafficSources(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -219,9 +219,8 @@ func TestW11ERetentionDeletesNonPersistedTrafficSources(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, health); err != nil {
 		t.Fatal(err)
 	}
-	implementation := store.(*sqlStore)
 	// 旧写入器遗留的非持久化来源行必须被无条件清除。
-	if _, err := implementation.db.Exec(`UPDATE audit_logs SET traffic_source='account_health_check' WHERE id='w11e-health'`); err != nil {
+	if _, err := implementation.db.Exec(`UPDATE juhe_dataset.audit_logs SET traffic_source='account_health_check' WHERE id='w11e-health'`); err != nil {
 		t.Fatal(err)
 	}
 	result, err := store.CleanupRetention(ctx, lease, RetentionConfig{SuccessHotCutoff: time.Now().UTC(), SuccessCutoff: time.Now().UTC(), FailureCutoff: time.Now().UTC(), ErrorGroupCutoff: time.Now().UTC(), BatchSize: 10})
@@ -232,13 +231,13 @@ func TestW11ERetentionDeletesNonPersistedTrafficSources(t *testing.T) {
 		t.Fatalf("非持久化来源必须无条件删除: %+v", result)
 	}
 	var count int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE id LIKE 'w11e-%'`).Scan(&count); err != nil || count != 0 {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs WHERE id LIKE 'w11e-%'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("残留行=%d err=%v", count, err)
 	}
 }
 
 func TestW11ERetentionCleansErrorGroups(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -262,11 +261,10 @@ func TestW11ERetentionCleansErrorGroups(t *testing.T) {
 }
 
 func TestW11EPendingBlobGCArms(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 	// GC 行不存在 → false, nil。
 	missing, err := implementation.cleanupScheduledBlobFile(ctx, lease, pendingBlobGCRow{blobID: "w11e-missing", storageKey: ""})
 	if err != nil || missing {
@@ -286,7 +284,7 @@ func TestW11EPendingBlobGCArms(t *testing.T) {
 	if err := os.WriteFile(path, []byte("w11e"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := implementation.db.Exec(`INSERT INTO audit_payload_blob_gc (blob_id,storage_key,scheduled_at) VALUES ('w11e-no-meta',?,?)`, storageKey, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := implementation.db.Exec(`INSERT INTO juhe_dataset.audit_payload_blob_gc (blob_id,storage_key,scheduled_at) VALUES ('w11e-no-meta',$1,$2)`, storageKey, dbTime(implementation.mode, time.Now().UTC())); err != nil {
 		t.Fatal(err)
 	}
 	removed, err := implementation.cleanupScheduledBlobFile(ctx, lease, pendingBlobGCRow{blobID: "w11e-no-meta", storageKey: storageKey})
@@ -297,17 +295,17 @@ func TestW11EPendingBlobGCArms(t *testing.T) {
 		t.Fatalf("物理文件必须删除: %v", statErr)
 	}
 	var gcRows int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc WHERE blob_id='w11e-no-meta'`).Scan(&gcRows); err != nil || gcRows != 0 {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id='w11e-no-meta'`).Scan(&gcRows); err != nil || gcRows != 0 {
 		t.Fatalf("GC 行必须清理: %d %v", gcRows, err)
 	}
 	// 越界 storage key → 文件删除失败，GC 行保留可重试。
-	if _, err := implementation.db.Exec(`INSERT INTO audit_payload_blob_gc (blob_id,storage_key,scheduled_at) VALUES ('w11e-escape','../../escape.bin',?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := implementation.db.Exec(`INSERT INTO juhe_dataset.audit_payload_blob_gc (blob_id,storage_key,scheduled_at) VALUES ('w11e-escape','../../escape.bin',$1)`, dbTime(implementation.mode, time.Now().UTC())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := implementation.cleanupScheduledBlobFile(ctx, lease, pendingBlobGCRow{blobID: "w11e-escape", storageKey: "../../escape.bin"}); err == nil || !strings.Contains(err.Error(), "越界") {
 		t.Fatalf("越界 key 必须失败: %v", err)
 	}
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc WHERE blob_id='w11e-escape'`).Scan(&gcRows); err != nil || gcRows != 1 {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id='w11e-escape'`).Scan(&gcRows); err != nil || gcRows != 1 {
 		t.Fatalf("失败后 GC 行必须保留: %d %v", gcRows, err)
 	}
 }
@@ -395,7 +393,7 @@ func TestW11EHotSearchBuildArms(t *testing.T) {
 		t.Fatal("被占路径必须失败")
 	}
 	// CleanupHotSearch 零值 cutoff。
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	if _, err := store.CleanupHotSearch(context.Background(), OwnerLease{}, time.Time{}, 1); err == nil || !strings.Contains(err.Error(), "cutoff") {
 		t.Fatalf("零值 cutoff 必须拒绝: %v", err)

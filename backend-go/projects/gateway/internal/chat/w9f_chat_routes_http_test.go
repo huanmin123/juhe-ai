@@ -147,15 +147,6 @@ func TestW9FStreamRouteConflictsCover(t *testing.T) {
 	}
 	rt.deletePreparationIfMatches("chat_conv_cf", prep.token)
 
-	// gateway key 校验失败。
-	previousKeys := env.deps.GatewayKeys
-	env.deps.GatewayKeys = w9fFailingGatewayKeys{}
-	recorder = w9fInvokeStream(rt, "chat_conv_cf", streamPayload("cf-10", "hi", "gpt-5"))
-	env.deps.GatewayKeys = previousKeys
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("gateway fail = %d %s", recorder.Code, recorder.Body.String())
-	}
-
 	// 不存在的图片资产（合法格式）→ 422 chat_asset_unavailable（w9f 缺陷修复后契约）。
 	payload = `{"clientMessageId":"cf-11","content":"hi","model":"gpt-5","contentBlocks":[{"type":"input_text","text":"hi"},{"type":"input_image","assetId":"` + w9fHexAssetID(1) + `"}]}`
 	recorder = w9fInvokeStream(rt, "chat_conv_cf", payload)
@@ -163,16 +154,6 @@ func TestW9FStreamRouteConflictsCover(t *testing.T) {
 		t.Fatalf("missing asset = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
-
-type w9fFailingGatewayKeys struct{}
-
-func (w9fFailingGatewayKeys) ValidateGatewayKey(string) (*GatewayKeyView, error) {
-	return nil, errW9FGatewayDown{}
-}
-
-type errW9FGatewayDown struct{}
-
-func (errW9FGatewayDown) Error() string { return "gateway down" }
 
 // w9fEmptyModelCatalog：无账户也无目录。
 type w9fEmptyModelCatalog struct{}

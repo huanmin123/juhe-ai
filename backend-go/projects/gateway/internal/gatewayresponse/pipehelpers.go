@@ -48,6 +48,11 @@ func (p *streamPipe) writeDownstreamChunk(chunk []byte, semantic bool) (struct{ 
 	}
 	p.captureDownstreamChunk(chunk)
 	p.prepareDownstreamForWrite()
+	if p.downstreamFirstWriteMs == nil {
+		// 首个下游字节写出时刻（§3.3）：含窗口停留的客户端可感知首字延迟口径。
+		value := p.nowMs() - p.startedAt
+		p.downstreamFirstWriteMs = &value
+	}
 	started := p.nowMs()
 	if _, err := p.downstream.Res.Write(chunk); err != nil {
 		return out, err
@@ -92,6 +97,9 @@ func (p *streamPipe) appendPreCommitChunk(chunk []byte) {
 }
 
 func (p *streamPipe) flushPreCommitChunks() error {
+	// 窗口关闭点（设计 §3.1）：任何 flush 都意味着提交发生（一次性 flush +
+	// MarkSemanticCommitted），窗口使命结束；后续 chunk 按既有写路径直通。
+	p.closeReplayWindow()
 	chunks := TakeStreamPreCommitChunks(p.preCommitBuffer)
 	if len(chunks) == 0 {
 		return nil
@@ -103,6 +111,69 @@ func (p *streamPipe) flushPreCommitChunks() error {
 		}
 	}
 	return nil
+}
+
+// maybeOpenReplayWindow 在首个语义输出识别点开启受限重放窗口（设计 §3.1）：
+// 资格启用、仍处提交前缓冲、未见终态语义事件且未解析跳过时置位窗口并启动
+// 真实截止 Timer（T 到点强制关窗 flush，保证首字延迟最多 +T）。
+func (p *streamPipe) maybeOpenReplayWindow(inspection gatewayproto.StreamInspection) {
+	if !p.replayWindowEligible || p.replayWindowOpen || p.replayWindowClosed {
+		return
+	}
+	if !streamOutputReceived(inspection) {
+		return
+	}
+	if p.downstreamCommit.SemanticCommitted || p.totalResponseBytes > 0 || !p.preCommitBuffer.Buffering {
+		return
+	}
+	if inspection.TerminalReceived || inspection.FailedReceived || inspection.Skipped {
+		// 终态语义事件与解析跳过不入窗（§3.1.2 不变量 1），保持既有立即处置。
+		return
+	}
+	p.replayWindowOpen = true
+	p.preCommitBuffer.Windowing = true
+	p.preCommitBuffer.WindowStartMs = p.nowMs()
+	p.preCommitBuffer.WindowBytes = 0
+	timer := time.NewTimer(time.Duration(p.replayWindowTimeoutMs) * time.Millisecond)
+	p.replayWindowTimer = timer
+	p.replayWindowTimerCh = timer.C
+}
+
+// closeReplayWindow 关闭受限重放窗口（幂等）：记录窗口开启到关闭的时长
+// （§3.3 windowDurationMs），Stop 释放真实截止 Timer。
+func (p *streamPipe) closeReplayWindow() {
+	if p.replayWindowOpen {
+		duration := p.nowMs() - p.preCommitBuffer.WindowStartMs
+		if duration < 0 {
+			duration = 0
+		}
+		p.replayWindowDurationMs = &duration
+	}
+	p.replayWindowOpen = false
+	p.replayWindowClosed = true
+	p.preCommitBuffer.Windowing = false
+	p.preCommitBuffer.WindowBytes = 0
+	if p.replayWindowTimer != nil {
+		p.replayWindowTimer.Stop()
+		p.replayWindowTimer = nil
+	}
+	p.replayWindowTimerCh = nil
+}
+
+// flushReplayWindowAtDeadline 是窗口真实截止到点的强制关窗 flush（设计 §3.1
+// 条件③）：静默/慢滴流不依赖后续 chunk 驱动，T 到点即把已缓冲内容按既有
+// semantic 判定下发，其后 chunk 直接透传。
+func (p *streamPipe) flushReplayWindowAtDeadline() error {
+	if !p.replayWindowOpen {
+		return nil
+	}
+	p.logger.Info("gateway_stream_replay_window_deadline_flush", map[string]any{
+		"elapsedMs":     p.nowMs() - p.startedAt,
+		"windowBytes":   p.preCommitBuffer.WindowBytes,
+		"windowStartMs": p.preCommitBuffer.WindowStartMs,
+	}, "受限重放窗口到达真实截止，已把窗口缓冲内容提交下发")
+	p.closeReplayWindow()
+	return p.flushPreCommitChunks()
 }
 
 func (p *streamPipe) shouldFailBeforeDownstreamCommit() bool {
@@ -181,7 +252,34 @@ func (p *streamPipe) publishInspection(inspection gatewayproto.StreamInspection)
 		p.responseResourceId = inspection.ResponseResourceID
 	}
 	p.lastInspection = inspection
+	p.warnFirstParseErrorEvent(inspection)
 	return inspection
+}
+
+// warnFirstParseErrorEvent 在首个解析失败事件上发每请求一条 WARN（设计 §3.2.0
+// / §3.3）：计数与事件序号来自 inspector 快照，原始字节摘要由隔离器记录；
+// accountId/traceId 经 identityStreamLogger 统一注入，非 openai 直通管道
+// （无隔离器）只留计数证据。
+func (p *streamPipe) warnFirstParseErrorEvent(inspection gatewayproto.StreamInspection) {
+	if p.parseErrorWarnLogged || inspection.ParseErrorEventCount == 0 {
+		return
+	}
+	p.parseErrorWarnLogged = true
+	fields := map[string]any{
+		"endpoint":             string(p.options.EndpointFamily),
+		"eventIndex":           inspection.EventCount,
+		"parseErrorEventCount": inspection.ParseErrorEventCount,
+	}
+	if p.parseErrorIsolator != nil {
+		snippet, snippetIndex := p.parseErrorIsolator.firstDropped()
+		if snippet != "" {
+			fields["parseErrorSnippet"] = snippet
+		}
+		if snippetIndex > 0 {
+			fields["parseErrorEventIndex"] = snippetIndex
+		}
+	}
+	p.logger.Warn("gateway_stream_event_parse_error", fields, "上游流式事件无法 JSON 解析，已字节级隔离不向下游透传")
 }
 
 func (p *streamPipe) omitBodyCaptureIfImageStream(inspection gatewayproto.StreamInspection, eofPendingFlush bool) {
@@ -272,6 +370,12 @@ func (p *streamPipe) finishStreamResult(args finishArgs) StreamPipeResult {
 	})
 	result.GatewayLocalFailure = args.gatewayLocalFailure
 	result.TransportFailure = args.transportFailure
+	// 结算观测面（设计 §3.3）：解析失败事件计数取最终 inspector 快照；
+	// windowDurationMs 未开窗流省略（nil）；downstreamFirstWriteMs 是首个下游
+	// 字节写出时刻 − 请求开始。
+	result.ParseErrorEventCount = p.lastInspection.ParseErrorEventCount
+	result.WindowDurationMs = p.replayWindowDurationMs
+	result.DownstreamFirstWriteMs = p.downstreamFirstWriteMs
 	return result
 }
 

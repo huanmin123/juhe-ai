@@ -8,7 +8,6 @@ package chat
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,14 +73,7 @@ func TestW13BCreateConversationMatrix(t *testing.T) {
 	if recorder := post("", ""); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("unauth = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 专用 Key 查询失败。
-	rt.deps.ChatKeys = &failingChatKeysW13B{findErr: errors.New("key boom")}
-	if recorder := post("", routeTestOwner); recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("find error = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 空会话创建（鉴权主体为 EnsureChatAPIKey 幂等补齐的专用 Key，无绑定、无
-	// 默认模型）。
-	rt.deps.ChatKeys = &mockChatKeys{}
+	// 空会话创建（免 Key 直调后无鉴权 Key，无绑定、无默认模型）。
 	recorder := post("", routeTestOwner)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", recorder.Code, recorder.Body.String())
@@ -94,33 +86,9 @@ func TestW13BCreateConversationMatrix(t *testing.T) {
 	if _, has := data["bindAccountId"]; has {
 		t.Fatalf("空会话不应携带绑定: %s", recorder.Body.String())
 	}
-	if data["apiKeyId"] != "chat_key_provisioned" {
-		t.Fatalf("apiKeyId = %v", data["apiKeyId"])
+	if data["apiKeyId"] != nil {
+		t.Fatalf("apiKeyId = %v, want null（不再创建对话 Key）", data["apiKeyId"])
 	}
-	// ChatKeys nil → 专用 Key ensure 失败。
-	rt.deps.ChatKeys = nil
-	if recorder := post("", routeTestOwner); recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("nil chat keys = %d %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-type failingChatKeysW13B struct {
-	findErr error
-	ensure  error
-}
-
-func (f *failingChatKeysW13B) EnsureChatAPIKey(ownerID string) (string, error) {
-	if f.ensure != nil {
-		return "", f.ensure
-	}
-	return "key-1", nil
-}
-
-func (f *failingChatKeysW13B) FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecord, error) {
-	if f.findErr != nil {
-		return nil, f.findErr
-	}
-	return &ChatAPIKeyRecord{ID: keyID, Name: "n", Secret: "s", Status: "active"}, nil
 }
 
 func authedContextW13B(owner string) context.Context {
@@ -179,14 +147,8 @@ func TestW13BModelsRoutesMatrix(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown model = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 网关键守卫断言已随账户唯一绑定收敛退场：models 列表按绑定账户作用域
-	// 解析，不再经 GatewayKeys（发送/工具执行路径仍校验）。
-}
-
-type failingGatewayKeysW13B struct{}
-
-func (failingGatewayKeysW13B) ValidateGatewayKey(secret string) (*GatewayKeyView, error) {
-	return nil, errors.New("gateway boom")
+	// 网关键守卫已随 chat Key 供给链退场删除（W-B）：models 列表按绑定账户
+	// 作用域解析，鉴权经内部身份通道。
 }
 
 func TestW13BCompactionTriggerMatrix(t *testing.T) {
@@ -903,38 +865,6 @@ func TestW13BDepsTraceAndHelpers(t *testing.T) {
 	if got := rt.deps.traceID(request); got != "fn-trace" {
 		t.Fatalf("fn trace 失败: %q", got)
 	}
-	// requireOwnedApiKey 分支。
-	if _, err := rt.requireOwnedApiKey("", "o"); err == nil {
-		t.Fatalf("空 key id 应报错")
-	}
-	savedKeys := rt.deps.ChatKeys
-	rt.deps.ChatKeys = nil
-	if _, err := rt.requireOwnedApiKey("k", "o"); err == nil {
-		t.Fatalf("nil ChatKeys 应报错")
-	}
-	rt.deps.ChatKeys = &failingChatKeysW13B{findErr: errors.New("boom")}
-	if _, err := rt.requireOwnedApiKey("k", "o"); err == nil {
-		t.Fatalf("Find 错误应上抛")
-	}
-	rt.deps.ChatKeys = &inactiveChatKeysW13B{}
-	if _, err := rt.requireOwnedApiKey("k", "o"); err == nil {
-		t.Fatalf("非 active key 应报错")
-	}
-	rt.deps.ChatKeys = savedKeys
-	// requireChatAPIKeyForOwner 分支。
-	rt.deps.ChatKeys = nil
-	if _, err := rt.requireChatAPIKeyForOwner("o"); err == nil {
-		t.Fatalf("nil ChatKeys 应报错")
-	}
-	rt.deps.ChatKeys = &failingChatKeysW13B{ensure: errors.New("ensure boom")}
-	if _, err := rt.requireChatAPIKeyForOwner("o"); err == nil {
-		t.Fatalf("Ensure 错误应上抛")
-	}
-	rt.deps.ChatKeys = &inactiveChatKeysW13B{}
-	if _, err := rt.requireChatAPIKeyForOwner("o"); err == nil {
-		t.Fatalf("非 active 默认 key 应报错")
-	}
-	rt.deps.ChatKeys = &mockChatKeys{}
 	// convergeChatAccountScope nil catalog。
 	rt.deps.ModelCatalog = nil
 	if accounts := rt.convergeChatAccountScope(&ChatAccountRef{ID: "a", EnabledGroupIDs: []string{"g"}}, "o"); len(accounts) != 0 {
@@ -978,16 +908,6 @@ func TestW13BDepsTraceAndHelpers(t *testing.T) {
 	if rt.deps.maxConversationsPerUser() != defaultMaxConversationsPerUser {
 		t.Fatalf("默认上限失败")
 	}
-}
-
-type inactiveChatKeysW13B struct{}
-
-func (inactiveChatKeysW13B) EnsureChatAPIKey(ownerID string) (string, error) {
-	return "key-1", nil
-}
-
-func (inactiveChatKeysW13B) FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecord, error) {
-	return &ChatAPIKeyRecord{ID: keyID, Name: "n", Secret: "s", Status: "disabled"}, nil
 }
 
 func TestW13BStreamBodyTooLargeArms(t *testing.T) {

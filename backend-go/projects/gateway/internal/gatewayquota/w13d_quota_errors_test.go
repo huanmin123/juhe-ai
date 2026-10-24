@@ -8,8 +8,8 @@ package gatewayquota
 //     错误）：该分支走 memory.set，恒返回 nil。
 //   - authzquota.go:272-274（非 redis 分支的 setCacheEntryAsync 错误）：同上。
 //   - costs.go:340（rows.Scan 错误）、authzquota.go:1088/1138（rows.Scan
-//     错误）与 rows.Err 分支：schema 列类型与 Scan 目标一致，SQLite 驱动下
-//     无法从公共 API 触发。
+//     错误）与 rows.Err 分支：schema 列类型与 Scan 目标一致（text/double
+//     precision 对应 string/float64），pgx 驱动下无法从公共 API 触发。
 //   - rediscache.go:214-218（namespaceVersion 的 SetNX 竞争回读）：单客户端
 //     顺序调用下 SetNX 恒成功，竞争窗口需要真实并发写方。
 
@@ -56,9 +56,9 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-exact-fallback")
 	statsSchema(t, db)
-	// stats 用 SQLite 方言（无 schema 前缀表），配合 PostgresDatabase 模式走
-	// 批量装载成功路径。
-	stats, err := NewStatsStore(db, false)
+	// stats 用生产 PG 臂方言（juhe_stats 限定表 + $n 占位符），配合
+	// PostgresDatabase 模式走批量装载成功路径。
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 
 func TestW13DAPIKeyQuotaCheckCostErrors(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	// stats 用 PG 方言（juhe_stats 前缀表在 SQLite 不存在）→ LoadCosts 报错。
+	// 统计库不建表（无 juhe_stats 投影）→ LoadCosts 缺表报错。
 	pgStats, err := NewStatsStore(newTestDB(t, "w13d-cost-err"), true)
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-modes-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,8 +273,11 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
 
-	// 非 PG 模式：Async 走 ByIDs 同步路径并写 memory 缓存。
+	// Async 入口（内存快照模式）：走批量精确装载并写 memory 缓存。
+	// 非 PG 模式的 ByIDs 同步物化分支需要 SQLite 业务库承载，PG 化测试基建下
+	// 不可达（登记：随生产 sqlite 臂删除批次同批退役）。
 	memoryService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
+		Modes:    Modes{PostgresDatabase: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
@@ -291,7 +294,9 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 		t.Fatalf("memory 命中必须放行: (%+v, %v)", decision, err)
 	}
 
-	// PG 模式：Async 走 ByIDsExactAsync；业务表限定 schema，SQLite 上报错。
+	// PG 模式：Async 走 ByIDsExactAsync 批量精确路径，业务表/统计表经生产
+	// PG 臂方言真实查询（SQLite 时代依赖 schema 前缀表在 SQLite 不存在注入
+	// 错误，迁真实 PG 后重钉为成功路径断言）。
 	pgService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
 		Modes:    Modes{PostgresDatabase: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
@@ -300,8 +305,12 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pgService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("PG 业务表查询在 SQLite 上必须报错")
+	decision, err = pgService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
+	if err != nil {
+		t.Fatalf("PG 模式 Async 批量精确检查必须成功: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("PG 模式未超额必须放行: %+v", decision)
 	}
 
 	// 坏时区：Async 的 cacheKey 构造错误透传（两种模式）。
@@ -341,7 +350,7 @@ func TestW13DAuthorizationByIDsErrorPaths(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-byids-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +420,7 @@ func TestW13DAuthorizationRedisServerRoleSnapshotErrors(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-redis-role-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +727,7 @@ func TestW13DSnapshotDecisionFromSnapshotBranches(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-decision-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,21 +823,14 @@ func TestW13DStatWindowGuards(t *testing.T) {
 		t.Fatal("缺 db 必须报错")
 	}
 	db := newTestDB(t, "w13d-statwindow")
-	source, err := NewDBTimezoneSource(db, false, nil)
+	source, err := NewDBTimezoneSource(db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 系统设置表缺失 → 时区读取错误。
+	// 系统设置表缺失 → 时区读取错误（SQLite 时代另有 PG/SQLite 双方言区分
+	// 断言，迁真实 PG 后两分支同方言，去重后保留缺表断言）。
 	if _, err := source.StatsTimezone(context.Background()); err == nil {
 		t.Fatal("系统设置缺失必须报错")
-	}
-	// PG 方言在 SQLite 上读取必须报错。
-	pgSource, err := NewDBTimezoneSource(db, true, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pgSource.StatsTimezone(context.Background()); err == nil {
-		t.Fatal("PG 方言在 SQLite 上必须报错")
 	}
 }
 
@@ -871,7 +873,7 @@ func TestW13DAuthorizationBatchServerRoleSnapshotAvailable(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-batch-snap-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -974,7 +976,7 @@ func TestW13DCostsBatchTableCoverage(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-costs-batch")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,10 +1015,13 @@ func TestW13DCostsBatchTableCoverage(t *testing.T) {
 
 func TestW13DStatWindowTimezoneErrors(t *testing.T) {
 	db := newTestDB(t, "w13d-tz-errors")
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT, key TEXT, value_json TEXT)`); err != nil {
+	// 生产 PG 臂方言：juhe_business 限定，列照抄业务库 system_settings DDL。
+	if _, err := db.Exec(`CREATE TABLE juhe_business.system_settings (
+		system_account_id text NOT NULL, key text NOT NULL, value_json text NOT NULL, updated_at text NOT NULL,
+		PRIMARY KEY (system_account_id, key))`); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewDBTimezoneSource(db, false, nil)
+	source, err := NewDBTimezoneSource(db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1026,21 +1031,21 @@ func TestW13DStatWindowTimezoneErrors(t *testing.T) {
 		t.Fatal("缺行必须报错")
 	}
 	// 坏 JSON。
-	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin','usageStatsTimezone','{bad')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'usageStatsTimezone', '{bad', '2026-09-04T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.StatsTimezone(ctx); err == nil {
 		t.Fatal("坏 JSON 必须报错")
 	}
 	// 非法时区值。
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '"Not/AZone"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"Not/AZone"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.StatsTimezone(ctx); err == nil {
 		t.Fatal("非法时区必须报错")
 	}
 	// 合法时区 + 60s 缓存命中。
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '"Asia/Shanghai"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"Asia/Shanghai"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatal(err)
 	}
 	loc, err := source.StatsTimezone(ctx)
@@ -1093,7 +1098,7 @@ func TestW13DAuthorizationCacheWriteErrors(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-write-err-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1147,7 +1152,7 @@ func TestW13DAuthorizationCacheWriteErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	workerService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true},
+		Modes:    Modes{RedisCache: true, PostgresDatabase: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: snapshot, Shared: shared, Now: clock.Now,
 	})
@@ -1173,7 +1178,7 @@ func TestW13DAPIKeyQuotaCountingTimezoneErrors(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-counting-tz")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1264,7 +1269,7 @@ func TestW13DAPIKeyQuotaReadExactAsyncPGGuards(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-pg-guards")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1312,12 +1317,12 @@ func TestW13DAuthorizationWorkerBatchCacheWriteError(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-worker-batch-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true},
+		Modes:    Modes{RedisCache: true, PostgresDatabase: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, clock),
 		Shared:   shared, Now: clock.Now,
@@ -1376,7 +1381,7 @@ func TestW13DAuthorizationMemoryServerRoleBatch(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-mem-batch-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1433,7 +1438,7 @@ func TestW13DAuthorizationSnapshotFallbackAccountDimension(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-fallback-acct-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1496,7 +1501,7 @@ func TestW13DAuthorizationSnapshotFallbackAccountDimension(t *testing.T) {
 
 func TestW13DAuthorizationByIDsEmptyBatchAllowed(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _, _ := wjNewAuthzService(t, Modes{}, clock, "w13d-empty-batch")
+	service, _, _ := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "w13d-empty-batch")
 	ctx := context.Background()
 	// scope 列表非空但行不存在 → 决策空 → 包装层回落允许。
 	decision, err := service.CheckAuthorizationQuotaByIDs(ctx, "ghost", "ghost-acct", clock.Now())
@@ -1625,7 +1630,7 @@ func TestW13DQuotaConstructionAndFallbackGuards(t *testing.T) {
 	// Async 的 cacheKey 时区错误透传（brokenTZ + Async 组合）。
 	db := newTestDB(t, "w13d-async-tz")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatal(err)
 	}

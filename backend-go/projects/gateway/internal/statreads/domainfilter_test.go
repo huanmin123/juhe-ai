@@ -10,15 +10,13 @@ import (
 	"testing"
 )
 
-// newDomainFixture 在共享夹具上为 accounts 表补 capability_domain 列（测试
-// schema 与真实表形状的最小对齐），并预置两个系统账户与供应商。
+// newDomainFixture 直接使用 PG 夹具 accounts 表的生产 capability_domain 列
+// （maintenance business schema 同形态），并预置系统账户。
 func newDomainFixture(t *testing.T) *wdFixture {
 	t.Helper()
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`ALTER TABLE accounts ADD COLUMN capability_domain TEXT NOT NULL DEFAULT 'chat'`,
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
-		`INSERT INTO providers (code, name) VALUES ('openai', 'OpenAI')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 	)
 	return fixture
 }
@@ -26,7 +24,7 @@ func newDomainFixture(t *testing.T) *wdFixture {
 // seedDomainAccount 插入一个指定域的账户。
 func seedDomainAccount(t *testing.T, fixture *wdFixture, id, name, domain string) {
 	t.Helper()
-	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status, capability_domain) VALUES ('`+id+`', '`+name+`', 'sys-owner-1', 'openai', 'api_key', 'active', '`+domain+`')`)
+	fixture.exec(t, `INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status, capability_domain) VALUES ('`+id+`', '`+name+`', 'sys-owner-1', 'openai', 'api_key', 'active', '`+domain+`')`)
 }
 
 func TestOptionalCapabilityDomainFilter(t *testing.T) {
@@ -55,7 +53,7 @@ func TestWdAiHealthDomainFilter(t *testing.T) {
 	seedDomainAccount(t, fixture, "acct-chat", "ChatAccount", "chat")
 	seedDomainAccount(t, fixture, "acct-video", "VideoAccount", "video")
 	fixture.exec(t,
-		`INSERT INTO account_health_hourly (account_id, stat_hour, status, last_observed_at)
+		`INSERT INTO juhe_stats.account_health_hourly (account_id, stat_hour, status, last_observed_at)
 			VALUES ('acct-chat', '2026-09-04T10', 'success', '2026-09-04T10:20:00.000Z'),
 			       ('acct-video', '2026-09-04T10', 'failure', '2026-09-04T10:20:00.000Z')`,
 	)
@@ -92,11 +90,11 @@ func TestWdAiPerformanceDomainFilter(t *testing.T) {
 	seedDomainAccount(t, fixture, "acct-video", "VideoAccount", "video")
 	fixture.exec(t,
 		// last7d 快照：聊天账户请求量更高，默认账户集含两账户。
-		`INSERT INTO usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
+		`INSERT INTO juhe_stats.usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
 			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-04T00:00:00.000Z', 1, 'acct-chat', 90)`,
-		`INSERT INTO usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
+		`INSERT INTO juhe_stats.usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
 			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-04T00:00:00.000Z', 2, 'acct-video', 40)`,
-		`INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count)
+		`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count)
 			VALUES ('global', 'account', 'acct-chat', '2026-09-04T10', 5),
 			       ('global', 'account', 'acct-video', '2026-09-04T10', 2)`,
 	)
@@ -135,7 +133,7 @@ func TestWdAccountUsageDomainFilter(t *testing.T) {
 	seedDomainAccount(t, fixture, "acct-chat", "ChatAccount", "chat")
 	seedDomainAccount(t, fixture, "acct-video", "VideoAccount", "video")
 	fixture.exec(t,
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
+		`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
 			VALUES ('global', 'account', 'acct-chat', '2026-09-04', 3, 30, 20, 0.3),
 			       ('global', 'account', 'acct-video', '2026-09-04', 7, 70, 40, 0.7)`,
 	)

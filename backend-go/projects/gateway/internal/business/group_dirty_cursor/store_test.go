@@ -6,23 +6,14 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
+// testStore 走 pgkit_test.go 的隔离 PG 夹具与生产 store PG 臂
+// （juhe_business.group_account_stats_dirty，与 compose.go 生产装配同形态）。
 func testStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:group-dirty-cursor-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	_, err = db.Exec(`CREATE TABLE group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT NOT NULL); CREATE INDEX idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := New(db, SQLite, "", gate)
+	db := newGroupDirtyCursorPGDatabase(t)
+	s, err := New(db, Postgres, "juhe_business", gate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +33,7 @@ func TestOwnerGateBlocksAllWrites(t *testing.T) {
 		t.Fatalf("cursor err=%v", err)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM group_account_stats_dirty`).Scan(&count); err != nil || count != 0 {
+	if err := db.QueryRow(fixtureSQL(`SELECT count(*) FROM group_account_stats_dirty`)).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("count=%d err=%v", count, err)
 	}
 }
@@ -59,7 +50,7 @@ func TestMarkerUpsertAndCursorMonotonicity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var groupID, reason, updatedAt string
-	if err := db.QueryRow(`SELECT group_id,reason,updated_at FROM group_account_stats_dirty`).Scan(&groupID, &reason, &updatedAt); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT group_id,reason,updated_at FROM group_account_stats_dirty`)).Scan(&groupID, &reason, &updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	if groupID != GroupAccountStatsDirtyAll || reason != "later_reason" || updatedAt != clock.Format(time.RFC3339Nano) {
@@ -70,7 +61,7 @@ func TestMarkerUpsertAndCursorMonotonicity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cursorReason, cursorTime string
-	if err := db.QueryRow(`SELECT reason,updated_at FROM group_account_stats_dirty WHERE group_id=?`, GroupAccountStatsDirtyAll).Scan(&cursorReason, &cursorTime); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT reason,updated_at FROM group_account_stats_dirty WHERE group_id=?`), GroupAccountStatsDirtyAll).Scan(&cursorReason, &cursorTime); err != nil {
 		t.Fatal(err)
 	}
 	if cursorReason != AllCursorPrefix+"g10" || cursorTime != clock.Format(time.RFC3339Nano) {
@@ -80,7 +71,7 @@ func TestMarkerUpsertAndCursorMonotonicity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var equalTime string
-	if err := db.QueryRow(`SELECT updated_at FROM group_account_stats_dirty WHERE group_id=?`, GroupAccountStatsDirtyAll).Scan(&equalTime); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT updated_at FROM group_account_stats_dirty WHERE group_id=?`), GroupAccountStatsDirtyAll).Scan(&equalTime); err != nil {
 		t.Fatal(err)
 	}
 	if equalTime != cursorTime {
@@ -89,7 +80,7 @@ func TestMarkerUpsertAndCursorMonotonicity(t *testing.T) {
 	if err := s.UpdateAllCursor(ctx, "g09"); !errors.Is(err, ErrCursorRegressed) {
 		t.Fatalf("regression err=%v", err)
 	}
-	if err := db.QueryRow(`SELECT reason FROM group_account_stats_dirty WHERE group_id=?`, GroupAccountStatsDirtyAll).Scan(&cursorReason); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT reason FROM group_account_stats_dirty WHERE group_id=?`), GroupAccountStatsDirtyAll).Scan(&cursorReason); err != nil {
 		t.Fatal(err)
 	}
 	if cursorReason != AllCursorPrefix+"g10" {
@@ -99,7 +90,7 @@ func TestMarkerUpsertAndCursorMonotonicity(t *testing.T) {
 
 func TestDeleteUsesUpdatedAtFenceAndIsIdempotent(t *testing.T) {
 	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if _, err := db.Exec(`INSERT INTO group_account_stats_dirty(group_id,reason,updated_at) VALUES ('g1','r1','u1'),('g2','r2','u2')`); err != nil {
+	if _, err := db.Exec(fixtureSQL(`INSERT INTO group_account_stats_dirty(group_id,reason,updated_at) VALUES ('g1','r1','u1'),('g2','r2','u2')`)); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -116,14 +107,14 @@ func TestDeleteUsesUpdatedAtFenceAndIsIdempotent(t *testing.T) {
 		t.Fatalf("repeat deleted=%d err=%v", deleted, err)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM group_account_stats_dirty`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(fixtureSQL(`SELECT count(*) FROM group_account_stats_dirty`)).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("remaining=%d err=%v", count, err)
 	}
 }
 
 func TestDeleteBatchValidationRollsBackBeforeWrite(t *testing.T) {
 	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if _, err := db.Exec(`INSERT INTO group_account_stats_dirty(group_id,reason,updated_at) VALUES ('g1','r1','u1')`); err != nil {
+	if _, err := db.Exec(fixtureSQL(`INSERT INTO group_account_stats_dirty(group_id,reason,updated_at) VALUES ('g1','r1','u1')`)); err != nil {
 		t.Fatal(err)
 	}
 	_, err := s.DeleteRows(context.Background(), []DirtyRow{{GroupID: "g1", UpdatedAt: "u1"}, {GroupID: "", UpdatedAt: "u2"}})
@@ -131,7 +122,7 @@ func TestDeleteBatchValidationRollsBackBeforeWrite(t *testing.T) {
 		t.Fatal("malformed batch must fail")
 	}
 	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM group_account_stats_dirty`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(fixtureSQL(`SELECT count(*) FROM group_account_stats_dirty`)).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("rollback count=%d err=%v", count, err)
 	}
 }
@@ -141,7 +132,7 @@ func TestCursorRequiresExistingMarkerAndRejectsMalformedState(t *testing.T) {
 	if err := s.UpdateAllCursor(context.Background(), "g1"); !errors.Is(err, ErrDirtyRowMissing) {
 		t.Fatalf("missing marker err=%v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_account_stats_dirty(group_id,reason,updated_at) VALUES ('__all__','all_cursor:','u1')`); err != nil {
+	if _, err := db.Exec(fixtureSQL(`INSERT INTO group_account_stats_dirty(group_id,reason,updated_at) VALUES ('__all__','all_cursor:','u1')`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateAllCursor(context.Background(), "g1"); !errors.Is(err, ErrCursorMalformed) {

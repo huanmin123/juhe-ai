@@ -12,7 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// wiOpenSQLiteStore 构造已打开 schema 的 SQLite operation log store。
+// wiOpenSQLiteStore 构造已打开 schema 的 SQLite operation log store（组B：
+// SQLite-only 生产臂测试与方言 sqlite 分支继续使用，随生产臂删除批次退役）。
 func wiOpenSQLiteStore(t *testing.T, root string) Store {
 	t.Helper()
 	business := root + "/business.sqlite3"
@@ -25,8 +26,16 @@ func wiOpenSQLiteStore(t *testing.T, root string) Store {
 	return store
 }
 
+// wiOpenPostgresStore 构造已装配的 PG operation log store（组A 测试入口：
+// pgtestkit 独立库 + 生产 OpenStore ModePostgres，业务夹具与 SQLite 版同构）。
+func wiOpenPostgresStore(t *testing.T) Store {
+	t.Helper()
+	store, _ := openPostgresStore(t)
+	return store
+}
+
 func TestWILeaseKeeperLifecycle(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	ctx := context.Background()
 
 	keeper, ok, err := StartLeaseKeeper(ctx, store, "wi-keeper", 3*time.Second, slog.Default())
@@ -59,7 +68,7 @@ func TestWILeaseKeeperLifecycle(t *testing.T) {
 }
 
 func TestWILeaseKeeperTerminalWhenUsurped(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	ctx := context.Background()
 	keeper, ok, err := StartLeaseKeeper(ctx, store, "wi-doomed", 3*time.Second, slog.Default())
 	if err != nil || !ok {
@@ -68,7 +77,7 @@ func TestWILeaseKeeperTerminalWhenUsurped(t *testing.T) {
 	// 手工过期租约行，随后由 raider 抢占（fence 递增）。
 	implementation := store.(*sqlStore)
 	past := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
-	if _, err := implementation.db.Exec(`UPDATE operation_log_owner_leases SET lease_until=? WHERE lease_key='f4-operation-log-persistence' AND owner_id='wi-doomed'`, past); err != nil {
+	if _, err := implementation.db.Exec(`UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=$1 WHERE lease_key='f4-operation-log-persistence' AND owner_id='wi-doomed'`, past); err != nil {
 		t.Fatalf("过期租约失败: %v", err)
 	}
 	if _, acquired, err := store.AcquireOwnerLease(ctx, "raider", time.Minute); err != nil || !acquired {
@@ -102,7 +111,7 @@ func TestWILeaseKeeperFatalOnce(t *testing.T) {
 }
 
 func TestWIRunOwnerContract(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	ctx := context.Background()
 
 	// nil keeper 必须报错。
@@ -161,7 +170,7 @@ func TestWIRunOwnerContract(t *testing.T) {
 	// 同 owner 重取刚把 lease_until 续到未来，先把行置为过期，rival 才能按
 	// 跨 owner 契约拿到行（未过期的跨 owner 获取本来就应被拒）。
 	if _, err := store.(*sqlStore).db.Exec(
-		`UPDATE operation_log_owner_leases SET lease_until=? WHERE lease_key='f4-operation-log-persistence'`,
+		`UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=$1 WHERE lease_key='f4-operation-log-persistence'`,
 		storageTime(time.Now().Add(-time.Minute)),
 	); err != nil {
 		t.Fatalf("置过期 rival 前置行: %v", err)
@@ -184,7 +193,7 @@ func TestWIRunOwnerContract(t *testing.T) {
 }
 
 func TestWIRunOwnerRetentionPasses(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	ctx := context.Background()
 	keeper, ok, err := StartLeaseKeeper(ctx, store, "wi-cadence", time.Minute, slog.Default())
 	if err != nil || !ok {
@@ -209,7 +218,7 @@ func TestWIRunOwnerRetentionPasses(t *testing.T) {
 	}
 
 	// store 故障 → transient 失败跳过本轮（不终止组件）。
-	broken := wiOpenSQLiteStore(t, t.TempDir())
+	broken := wiOpenPostgresStore(t)
 	brokenKeeper, ok, err := StartLeaseKeeper(ctx, broken, "wi-broken", time.Minute, slog.Default())
 	if err != nil || !ok {
 		t.Fatalf("启动 keeper=%v err=%v", ok, err)
@@ -327,7 +336,7 @@ func TestWIPostgresCatalogOverSQLite(t *testing.T) {
 }
 
 func TestWIDetailAndListFilterContract(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	ctx := context.Background()
 	lease, ok, err := store.AcquireOwnerLease(ctx, "wi-filter", time.Minute)
 	if err != nil || !ok {

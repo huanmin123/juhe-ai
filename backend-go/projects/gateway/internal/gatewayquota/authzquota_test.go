@@ -8,19 +8,21 @@ import (
 	"time"
 )
 
-// authzSchema creates the business tables the quota joins.
+// authzSchema creates the business tables the quota joins（生产 PG 臂方言：
+// juhe_business 限定，列集按 groups pgkit 先例放宽为 authzquota 实际读写的
+// 列，类型照抄 maintenance 生产 DDL pg_schema_business_tables.go）。
 func authzSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	statements := []string{
-		`CREATE TABLE resource_authorizations (
-			id TEXT PRIMARY KEY, resource_owner_system_account_id TEXT, grantee_system_account_id TEXT,
-			resource_type TEXT, resource_id TEXT, effective_source_team_id TEXT, limits_json TEXT, status TEXT)`,
-		`CREATE TABLE accounts (
-			id TEXT PRIMARY KEY, system_account_id TEXT, authorization_instance_authorization_id TEXT,
-			authorization_instance_source_account_id TEXT)`,
-		`CREATE TABLE resource_authorization_grants (
-			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, grantee_type TEXT, grantee_team_id TEXT,
-			status TEXT, resource_owner_system_account_id TEXT, limits_json TEXT)`,
+		`CREATE TABLE juhe_business.resource_authorizations (
+			id text PRIMARY KEY, resource_owner_system_account_id text NOT NULL, grantee_system_account_id text NOT NULL,
+			resource_type text NOT NULL, resource_id text NOT NULL, effective_source_team_id text, limits_json text, status text NOT NULL DEFAULT 'active')`,
+		`CREATE TABLE juhe_business.accounts (
+			id text PRIMARY KEY, system_account_id text NOT NULL, authorization_instance_authorization_id text,
+			authorization_instance_source_account_id text)`,
+		`CREATE TABLE juhe_business.resource_authorization_grants (
+			id text PRIMARY KEY, resource_type text NOT NULL, resource_id text NOT NULL, grantee_type text NOT NULL, grantee_team_id text,
+			status text NOT NULL DEFAULT 'active', resource_owner_system_account_id text NOT NULL, limits_json text)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -31,9 +33,9 @@ func authzSchema(t *testing.T, db *sql.DB) {
 
 func seedAuthzRow(t *testing.T, db *sql.DB, id, owner, grantee, resourceType, resourceID, teamID, limitsJSON, status string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO resource_authorizations
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations
 		(id, resource_owner_system_account_id, grantee_system_account_id, resource_type, resource_id, effective_source_team_id, limits_json, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		id, owner, grantee, resourceType, resourceID, teamID, limitsJSON, status); err != nil {
 		t.Fatalf("seed resource_authorization %s: %v", id, err)
 	}
@@ -41,9 +43,9 @@ func seedAuthzRow(t *testing.T, db *sql.DB, id, owner, grantee, resourceType, re
 
 func seedGrantRow(t *testing.T, db *sql.DB, id, resourceType, resourceID, teamID, owner, limitsJSON string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO resource_authorization_grants
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorization_grants
 		(id, resource_type, resource_id, grantee_type, grantee_team_id, status, resource_owner_system_account_id, limits_json)
-		VALUES (?, ?, ?, 'team', ?, 'active', ?, ?)`,
+		VALUES ($1, $2, $3, 'team', $4, 'active', $5, $6)`,
 		id, resourceType, resourceID, teamID, owner, limitsJSON); err != nil {
 		t.Fatalf("seed grant %s: %v", id, err)
 	}
@@ -51,9 +53,9 @@ func seedGrantRow(t *testing.T, db *sql.DB, id, resourceType, resourceID, teamID
 
 func seedInstanceAccount(t *testing.T, db *sql.DB, id, systemAccountID, authorizationID, sourceAccountID string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts
 		(id, system_account_id, authorization_instance_authorization_id, authorization_instance_source_account_id)
-		VALUES (?, ?, ?, ?)`, id, systemAccountID, authorizationID, sourceAccountID); err != nil {
+		VALUES ($1, $2, $3, $4)`, id, systemAccountID, authorizationID, sourceAccountID); err != nil {
 		t.Fatalf("seed account %s: %v", id, err)
 	}
 }
@@ -72,7 +74,7 @@ func newAuthzFixture(t *testing.T, modes Modes, clock *fakeClock) *authzFixture 
 	statsDB := newTestDB(t, "authz-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -92,7 +94,7 @@ func newAuthzFixture(t *testing.T, modes Modes, clock *fakeClock) *authzFixture 
 }
 
 func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	// Group authorization ga1: owner sysA, grantee sysB, daily limit 10.
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
@@ -131,7 +133,7 @@ func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
 	}
 
 	// Drop the group cost below the limit: everything allows.
-	if _, err := fixture.statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 9 WHERE scope_id = 'ga1'`); err != nil {
+		if _, err := fixture.statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 9 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	decisions, err = fixture.service.CheckAuthorizationQuotaBatchByIDsReadOnly(ctx, "ga1", []AccountRef{
@@ -159,7 +161,7 @@ func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
 }
 
 func TestCheckAuthorizationQuotaMissingRowsAllow(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	decisions, err := fixture.service.CheckAuthorizationQuotaBatchByIDs(context.Background(), "ghost", []AccountRef{
 		{AccountID: "u1", AccountAuthorizationID: "phantom"},
 	}, fixture.clock.Now())
@@ -172,7 +174,7 @@ func TestCheckAuthorizationQuotaMissingRowsAllow(t *testing.T) {
 }
 
 func TestTeamGrantQuota(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	// The authorization itself has no limits; the team grant does.
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "team1", "", "active")
@@ -191,7 +193,7 @@ func TestTeamGrantQuota(t *testing.T) {
 }
 
 func TestTeamGrantAccountScopeUsesInstanceAccount(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "aa1", "sysA", "sysB", "account", "acc1", "team1", "", "active")
 	seedInstanceAccount(t, fixture.business, "inst1", "sysB", "aa1", "acc1")
@@ -211,7 +213,7 @@ func TestTeamGrantAccountScopeUsesInstanceAccount(t *testing.T) {
 }
 
 func TestCheckAuthorizationQuotaRuntimeCache(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -222,7 +224,7 @@ func TestCheckAuthorizationQuotaRuntimeCache(t *testing.T) {
 		t.Fatalf("first check: (%+v, %v)", first, err)
 	}
 	// Exceed the scope; the 5s runtime cache must keep allowing.
-	if _, err := fixture.statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 50 WHERE scope_id = 'ga1'`); err != nil {
+		if _, err := fixture.statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 50 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	second, err := fixture.service.CheckAuthorizationQuotaByIDs(ctx, "ga1", "", fixture.clock.Now())
@@ -299,7 +301,7 @@ func TestCheckAuthorizationQuotaAsyncSnapshotBranches(t *testing.T) {
 }
 
 func TestCheckAuthorizationQuotaBatchAsyncWorkerRole(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "aa1", "sysA", "sysB", "account", "acc1", "", `{"daily":{"enabled":true,"limit":5}}`, "active")
 	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -392,7 +394,7 @@ func TestCheckAuthorizationQuotaBatchAsyncServerRoleDBService(t *testing.T) {
 // on a malformed limits_json and the error propagates, so a parse failure must
 // return an error instead of being treated as "no limits" (allow).
 func TestCheckAuthorizationQuotaInvalidLimitsJSONFailsClosed(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "ga-bad", "sysA", "sysB", "group", "g1", "", `{invalid`, "active")
 

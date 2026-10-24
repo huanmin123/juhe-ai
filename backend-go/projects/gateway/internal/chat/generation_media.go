@@ -4,10 +4,9 @@ package chat
 // generate_video（异步任务：POST /v1/videos 创建后立即完成工具调用）与
 // generate_audio（同步 TTS：POST /v1/audio/speech，响应音频字节按 MIME 嗅探落
 // chat_assets）。子调用一律经进程内 /v1 链（GenerationExecutor 固定派发绑定
-// 账户；视频轮询/下载走任务面亲和——创建时归属 chat API Key，媒体任务行
-// api_key_id 校验天然成立），purpose 头 chat_media_generation 供审计区分。
-// 消息块投影（output_audio / output_media_task）与任务结算接口见
-// stream_execute.go 与 media_task_routes.go。
+// 账户；鉴权经内部身份通道，免 Key 直调后请求头不再携带 Bearer），purpose 头
+// chat_media_generation 供审计区分。消息块投影（output_audio /
+// output_media_task）与任务结算接口见 stream_execute.go 与 media_task_routes.go。
 
 import (
 	"bytes"
@@ -68,9 +67,9 @@ type ChatMediaArtifactResult struct {
 // ChatMediaTaskPollResult 是 GET /v1/videos/{id} 的任务面快照（进程内链实时
 // 查询并推进 media_jobs 状态）。
 type ChatMediaTaskPollResult struct {
-	JobID    string
-	Status   string // queued|in_progress|completed|failed|cancelled|expired
-	Progress *int64
+	JobID        string
+	Status       string // queued|in_progress|completed|failed|cancelled|expired
+	Progress     *int64
 	ErrorCode    string
 	ErrorMessage string
 }
@@ -95,7 +94,7 @@ func chatMediaArtifactOf(data []byte) (ChatMediaArtifactResult, error) {
 
 // GenerateChatAudio 经进程内 /v1/audio/speech 同步合成音频（设计 §4.3）：响应
 // 是音频字节本身（LimitReader 32MB 限额，超限失败不落资产）。
-func GenerateChatAudio(ctx requestContext, executor GenerationExecutor, input ChatAudioGenerationRequest, apiKey, traceID string) (ChatMediaArtifactResult, error) {
+func GenerateChatAudio(ctx requestContext, executor GenerationExecutor, input ChatAudioGenerationRequest, traceID string) (ChatMediaArtifactResult, error) {
 	model := trimSpace(input.Model)
 	text := trimSpace(input.Text)
 	if model == "" {
@@ -114,7 +113,7 @@ func GenerateChatAudio(ctx requestContext, executor GenerationExecutor, input Ch
 		payloadValues["response_format"] = audioFormat
 	}
 	payload, _ := json.Marshal(payloadValues)
-	headers := chatMediaDispatchHeaders(apiKey, traceID)
+	headers := chatMediaDispatchHeaders(traceID)
 	response, err := executor.Dispatch(ctx, GenerationDispatchRequest{
 		Path: "/v1/audio/speech", Method: http.MethodPost, Headers: headers, Body: payload,
 	})
@@ -166,7 +165,7 @@ func normalizeChatAudioFormat(value any) string {
 
 // CreateChatVideo 经进程内 POST /v1/videos 创建异步视频任务（设计 §4.3）：
 // 2xx + job id = 受理确立（/v1 链已落 media_jobs 并归一状态），立即返回。
-func CreateChatVideo(ctx requestContext, executor GenerationExecutor, input ChatVideoCreationRequest, apiKey, traceID string) (ChatVideoCreationResult, error) {
+func CreateChatVideo(ctx requestContext, executor GenerationExecutor, input ChatVideoCreationRequest, traceID string) (ChatVideoCreationResult, error) {
 	model := trimSpace(input.Model)
 	prompt := trimSpace(input.Prompt)
 	if model == "" {
@@ -184,7 +183,7 @@ func CreateChatVideo(ctx requestContext, executor GenerationExecutor, input Chat
 	}
 	payload, _ := json.Marshal(payloadValues)
 	response, err := executor.Dispatch(ctx, GenerationDispatchRequest{
-		Path: "/v1/videos", Method: http.MethodPost, Headers: chatMediaDispatchHeaders(apiKey, traceID), Body: payload,
+		Path: "/v1/videos", Method: http.MethodPost, Headers: chatMediaDispatchHeaders(traceID), Body: payload,
 	})
 	if err != nil {
 		return ChatVideoCreationResult{}, err
@@ -219,15 +218,15 @@ func CreateChatVideo(ctx requestContext, executor GenerationExecutor, input Chat
 }
 
 // PollChatMediaTask 经进程内 GET /v1/videos/{jobId} 轮询任务（任务面亲和：
-// media_jobs 行按 id + api_key_id 归属校验，创建时归属 chat API Key；未终态行
+// media_jobs 行按归属校验，免 Key 直调后归属为会话归属系统账户；未终态行
 // 由 /v1 链实时查上游并推进本地状态，终态行直接回本地对象）。
-func PollChatMediaTask(ctx requestContext, executor GenerationExecutor, jobID, apiKey, traceID string) (ChatMediaTaskPollResult, error) {
+func PollChatMediaTask(ctx requestContext, executor GenerationExecutor, jobID, traceID string) (ChatMediaTaskPollResult, error) {
 	jobID = trimSpace(jobID)
 	if jobID == "" {
 		return ChatMediaTaskPollResult{}, errors.New("媒体任务 ID 不能为空")
 	}
 	response, err := executor.Dispatch(ctx, GenerationDispatchRequest{
-		Path: "/v1/videos/" + jobID, Method: http.MethodGet, Headers: chatMediaDispatchHeaders(apiKey, traceID),
+		Path: "/v1/videos/" + jobID, Method: http.MethodGet, Headers: chatMediaDispatchHeaders(traceID),
 	})
 	if err != nil {
 		return ChatMediaTaskPollResult{}, err
@@ -268,15 +267,15 @@ func PollChatMediaTask(ctx requestContext, executor GenerationExecutor, jobID, a
 }
 
 // DownloadChatMediaContent 经进程内 GET /v1/videos/{jobId}/content 下载终态产物
-//（任务面亲和；completed 才可下载，上游 404/410 已由 /v1 链归一）。限额 64MB，
+// （任务面亲和；completed 才可下载，上游 404/410 已由 /v1 链归一）。限额 64MB，
 // 超限失败不落资产（设计 §2.1）。
-func DownloadChatMediaContent(ctx requestContext, executor GenerationExecutor, jobID, apiKey, traceID string) (ChatMediaArtifactResult, error) {
+func DownloadChatMediaContent(ctx requestContext, executor GenerationExecutor, jobID, traceID string) (ChatMediaArtifactResult, error) {
 	jobID = trimSpace(jobID)
 	if jobID == "" {
 		return ChatMediaArtifactResult{}, errors.New("媒体任务 ID 不能为空")
 	}
 	response, err := executor.Dispatch(ctx, GenerationDispatchRequest{
-		Path: "/v1/videos/" + jobID + "/content", Method: http.MethodGet, Headers: chatMediaDispatchHeaders(apiKey, traceID),
+		Path: "/v1/videos/" + jobID + "/content", Method: http.MethodGet, Headers: chatMediaDispatchHeaders(traceID),
 	})
 	if err != nil {
 		return ChatMediaArtifactResult{}, err
@@ -306,13 +305,12 @@ func DownloadChatMediaContent(ctx requestContext, executor GenerationExecutor, j
 	return artifact, nil
 }
 
-// chatMediaDispatchHeaders 组装媒体子调用的公共头（Bearer chat Key + purpose
-// 审计 + 可选 trace）。
-func chatMediaDispatchHeaders(apiKey, traceID string) map[string]string {
+// chatMediaDispatchHeaders 组装媒体子调用的公共头（accept + purpose 审计 +
+// 可选 trace；鉴权经内部身份通道，不再携带 Bearer）。
+func chatMediaDispatchHeaders(traceID string) map[string]string {
 	headers := map[string]string{
-		"authorization": "Bearer " + apiKey,
-		"accept":        "application/json",
-		"x-purpose":     chatMediaPurpose,
+		"accept":    "application/json",
+		"x-purpose": chatMediaPurpose,
 	}
 	if traceID != "" {
 		headers["x-trace-id"] = traceID
@@ -400,7 +398,7 @@ type storeGeneratedMediaSink struct {
 }
 
 // CommitGeneratedMedia 写 original 对象（无预览变体）并提交资产行
-//（source_kind=assistant_generated，媒体行无宽高/预览——schema M7 约束已放宽）。
+// （source_kind=assistant_generated，媒体行无宽高/预览——schema M7 约束已放宽）。
 func (s *storeGeneratedMediaSink) CommitGeneratedMedia(input GeneratedMediaCommitInput) (GeneratedMediaCommitResult, error) {
 	result := GeneratedMediaCommitResult{}
 	if s.routes.deps.ObjectStore == nil || s.routes.deps.Store == nil {
@@ -419,22 +417,22 @@ func (s *storeGeneratedMediaSink) CommitGeneratedMedia(input GeneratedMediaCommi
 		return result, err
 	}
 	asset, err := s.routes.deps.Store.CommitChatGeneratedMediaAsset(MediaAssetCommitInput{
-		ID:            assetID,
+		ID:              assetID,
 		SystemAccountID: s.ownerID,
-		ConversationID: s.conversationID,
-		TurnID:        s.turnID,
-		MessageID:     s.assistantMessageID,
-		ContentOrder:  s.nextContentOrder(),
-		MimeType:      input.Artifact.MimeType,
-		Bytes:         input.Artifact.Bytes,
-		Sha256:        input.Artifact.SHA256,
-		StorageKey:    originalKey,
-		Kind:          input.Kind,
-		Model:         input.Model,
-		Prompt:        input.Prompt,
-		SourceJobID:   input.SourceJobID,
-		Now:           s.routes.now(),
-		RetentionDays: s.routes.deps.RetentionDays,
+		ConversationID:  s.conversationID,
+		TurnID:          s.turnID,
+		MessageID:       s.assistantMessageID,
+		ContentOrder:    s.nextContentOrder(),
+		MimeType:        input.Artifact.MimeType,
+		Bytes:           input.Artifact.Bytes,
+		Sha256:          input.Artifact.SHA256,
+		StorageKey:      originalKey,
+		Kind:            input.Kind,
+		Model:           input.Model,
+		Prompt:          input.Prompt,
+		SourceJobID:     input.SourceJobID,
+		Now:             s.routes.now(),
+		RetentionDays:   s.routes.deps.RetentionDays,
 	})
 	if err != nil {
 		_ = s.routes.deps.ObjectStore.Delete([]string{originalKey})

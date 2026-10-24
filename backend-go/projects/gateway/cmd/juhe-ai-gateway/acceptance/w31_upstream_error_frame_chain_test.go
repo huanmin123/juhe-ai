@@ -69,7 +69,11 @@ func TestW31StreamTopLevelErrorFrameAfterCommitNeverReachesClient(t *testing.T) 
 		}
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-w31a","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{"role":"assistant","content":"W31-DELTA-ONE"},"finish_reason":null}]}`) + "\n\n"))
+		// 首个 delta 超窗口缓冲上限 B（流式提交边界受限重放与异常终局处置设计
+		// §3.1 条件②追加前判定：超限 chunk 随 flush 写出、立即提交），固定本
+		// 场景「提交后失败」前提——小 delta 会先入窗、error 帧改走提交前换号
+		//（耗尽即 503 零业务字节，由窗口版用例覆盖）。
+		_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-w31a","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{"role":"assistant","content":"W31-DELTA-ONE`+strings.Repeat("输", 3000)+`"},"finish_reason":null}]}`) + "\n\n"))
 		_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-w31a","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{"content":"W31-DELTA-TWO"},"finish_reason":null}]}`) + "\n\n"))
 		_, _ = w.Write([]byte(w31IncidentErrorFrame))
 	})

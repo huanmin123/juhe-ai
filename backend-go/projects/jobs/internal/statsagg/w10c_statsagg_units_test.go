@@ -13,7 +13,9 @@ import (
 // w10c_statsagg_units_test.go 覆盖统计聚合域的剩余单元臂：
 // 窗口计划纯函数、PG 聚合 map 组装纯函数、稳定水印序列化、RFC3339 工具、
 // 记录校验矩阵、排行快照 stage、job state 生命周期与窗口编排错误臂。
-// DB 相关断言全部使用 SQLite 测试库（newTestEnv，同包既有 fixture）。
+// DB 相关断言使用生产方言 PG 载体（newPGTestEnv，pgtestkit 隔离库；测试体
+// 内手写 SQL 按 PG 方言书写：juhe_ 前缀 schema 限定 + $n）；纯函数臂无
+// DB 依赖，保持原状。
 
 // ---- 窗口计划纯函数 ----
 
@@ -564,7 +566,7 @@ func (w10cErrorClock) StatsTimezone(context.Context) (*time.Location, error) {
 }
 
 func TestW10CAggregatorOptionErrors(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	env.seedGoldenPair()
 	aggregator := env.aggregator()
 
@@ -585,19 +587,19 @@ func TestW10CAggregatorOptionErrors(t *testing.T) {
 	}
 
 	// statsJobState：库里非法 cursor_created_at → 错误臂。
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
+	env.exec(`INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
 		VALUES ('global', '', 'usage_stats_aggregation', 'garbage', 'rec-1', '2026-04-18T12:00:00.000Z')`)
 	if _, err := aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{}); err == nil {
 		t.Fatalf("非法 cursor 应报错")
 	}
 }
 
-// ---- 排行快照 stage（SQLite）----
+// ---- 排行快照 stage（PG 生产方言载体）----
 
-func TestW10CRankSnapshotStagesSQLite(t *testing.T) {
-	env := newTestEnv(t)
+func TestW10CRankSnapshotStages(t *testing.T) {
+	env := newPGTestEnv(t)
 	// caller_account 7 日请求排行源数据（today=2026-04-18 → 窗口 >= 2026-04-12）。
-	env.exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, total_cost_usd, last_used_at, updated_at)
+	env.exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, total_cost_usd, last_used_at, updated_at)
 		VALUES
 		('alice', 'caller_account', 'acc-1', '2026-04-15', 3, 0.5, '2026-04-15T10:00:00.000Z', '2026-04-15T10:00:00.000Z'),
 		('alice', 'caller_account', 'acc-2', '2026-04-16', 5, 0.9, '2026-04-16T10:00:00.000Z', '2026-04-16T10:00:00.000Z'),
@@ -611,22 +613,22 @@ func TestW10CRankSnapshotStagesSQLite(t *testing.T) {
 		t.Fatalf("stage 结果错误: %+v", result.Stages)
 	}
 	// 窗口外行不参与，rank 按 request_count DESC。
-	if got := env.queryString(`SELECT scope_id FROM usage_rank_snapshots WHERE scope_type='caller_account' ORDER BY rank ASC`); len(got) != 2 || got[0] != "acc-2" || got[1] != "acc-1" {
+	if got := env.queryString(`SELECT scope_id FROM juhe_stats.usage_rank_snapshots WHERE scope_type='caller_account' ORDER BY rank ASC`); len(got) != 2 || got[0] != "acc-2" || got[1] != "acc-1" {
 		t.Fatalf("caller_account 排行错误: %v", got)
 	}
 
 	// 授权月成本排行：account_authorization 与 group_authorization 两个 scope。
-	env.exec(`INSERT INTO usage_stats_monthly (system_account_id, scope_type, scope_id, stat_month, request_count, total_cost_usd, last_used_at, updated_at)
+	env.exec(`INSERT INTO juhe_stats.usage_stats_monthly (system_account_id, scope_type, scope_id, stat_month, request_count, total_cost_usd, last_used_at, updated_at)
 		VALUES
 		('alice', 'account_authorization', 'auth-1', '2026-04', 2, 3.5, '2026-04-10T10:00:00.000Z', '2026-04-10T10:00:00.000Z'),
 		('alice', 'group_authorization', 'gauth-1', '2026-04', 1, 2.5, '2026-04-11T10:00:00.000Z', '2026-04-11T10:00:00.000Z')`)
 	if _, err := env.refresher().RunStages(context.Background(), []WindowStageName{StageAccountAuthorizationCurrentMonthRank, StageGroupAuthorizationCurrentMonthRank}, RefreshOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := env.queryString(`SELECT scope_id FROM usage_rank_snapshots WHERE scope_type='account_authorization'`); len(got) != 1 || got[0] != "auth-1" {
+	if got := env.queryString(`SELECT scope_id FROM juhe_stats.usage_rank_snapshots WHERE scope_type='account_authorization'`); len(got) != 1 || got[0] != "auth-1" {
 		t.Fatalf("account_authorization 排行错误: %v", got)
 	}
-	if got := env.queryString(`SELECT scope_id FROM usage_rank_snapshots WHERE scope_type='group_authorization'`); len(got) != 1 || got[0] != "gauth-1" {
+	if got := env.queryString(`SELECT scope_id FROM juhe_stats.usage_rank_snapshots WHERE scope_type='group_authorization'`); len(got) != 1 || got[0] != "gauth-1" {
 		t.Fatalf("group_authorization 排行错误: %v", got)
 	}
 
@@ -641,12 +643,12 @@ func TestW10CRankSnapshotStagesSQLite(t *testing.T) {
 	}
 }
 
-// ---- 账户健康 UPSERT（SQLite）----
+// ---- 账户健康 UPSERT（PG 生产方言载体）----
 
-func TestW10CAccountHealthUpsertSQLite(t *testing.T) {
-	env := newTestEnv(t)
+func TestW10CAccountHealthUpsert(t *testing.T) {
+	env := newPGTestEnv(t)
 	// 预置既有行：一条更新（10:00 < 10:30 → 覆盖）、一条拒绝（11:00 > 10:30 → 保留）。
-	env.exec(`INSERT INTO account_health_hourly (account_id, system_account_id, provider_code, stat_hour, status, last_observed_at, last_record_id, updated_at)
+	env.exec(`INSERT INTO juhe_stats.account_health_hourly (account_id, system_account_id, provider_code, stat_hour, status, last_observed_at, last_record_id, updated_at)
 		VALUES
 		('acc-older', 'alice', 'openai', '2026-04-18T10', 'failure', '2026-04-18T10:00:00.000Z', 'rec-old', '2026-04-18T10:00:00.000Z'),
 		('acc-newer', 'alice', 'openai', '2026-04-18T10', 'failure', '2026-04-18T11:00:00.000Z', 'rec-new', '2026-04-18T11:00:00.000Z')`)
@@ -661,19 +663,19 @@ func TestW10CAccountHealthUpsertSQLite(t *testing.T) {
 	if _, err := env.aggregator().AggregateUsageStatsBatch(context.Background(), AggregateOptions{BatchSize: 10}); err != nil {
 		t.Fatal(err)
 	}
-	older := env.queryString(`SELECT status || '|' || last_record_id FROM account_health_hourly WHERE account_id='acc-older'`)
+	older := env.queryString(`SELECT status || '|' || last_record_id FROM juhe_stats.account_health_hourly WHERE account_id='acc-older'`)
 	if len(older) != 1 || older[0] != "success|rec-h1" {
 		t.Fatalf("较旧既有行应被覆盖: %v", older)
 	}
-	newer := env.queryString(`SELECT status || '|' || last_record_id FROM account_health_hourly WHERE account_id='acc-newer'`)
+	newer := env.queryString(`SELECT status || '|' || last_record_id FROM juhe_stats.account_health_hourly WHERE account_id='acc-newer'`)
 	if len(newer) != 1 || newer[0] != "failure|rec-new" {
 		t.Fatalf("较新既有行应保留: %v", newer)
 	}
 	// 质量统计与脏账户同步落库（traffic source=gateway + account + api_key）。
-	if got := env.queryRowFloats(`SELECT COUNT(*) FROM account_quality_minute_stats WHERE account_id='acc-older'`); got[0] != 1 {
+	if got := env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.account_quality_minute_stats WHERE account_id='acc-older'`); got[0] != 1 {
 		t.Fatalf("质量统计未落库: %v", got)
 	}
-	if got := env.queryRowFloats(`SELECT COUNT(*) FROM account_quality_dirty_accounts`); got[0] != 2 {
+	if got := env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.account_quality_dirty_accounts`); got[0] != 2 {
 		t.Fatalf("质量脏账户未标记: %v", got)
 	}
 }
@@ -682,12 +684,12 @@ func TestW10CAccountHealthUpsertSQLite(t *testing.T) {
 
 func w10cSeedJobState(t *testing.T, env *testEnv, jobName, cursorCreatedAt, cursorID string) {
 	t.Helper()
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', ?, ?, ?, '2026-04-18T12:00:00.000Z')`, RankSnapshotJobStateScopeType, jobName, cursorCreatedAt, cursorID)
+	env.exec(`INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
+		VALUES ($1, '', $2, $3, $4, '2026-04-18T12:00:00.000Z')`, RankSnapshotJobStateScopeType, jobName, cursorCreatedAt, cursorID)
 }
 
 func TestW10CRankJobStateLifecycle(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	refresher := env.refresher()
 	ctx := context.Background()
 
@@ -754,7 +756,7 @@ func TestW10CRankJobStateLifecycle(t *testing.T) {
 }
 
 func TestW10CUpdateRankRefreshJobStateRoundtrip(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	refresher := env.refresher()
 	ctx := context.Background()
 
@@ -764,7 +766,7 @@ func TestW10CUpdateRankRefreshJobStateRoundtrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := env.queryString(`SELECT cursor_id FROM stats_job_state WHERE scope_type='global' AND job_name='w10c-rt'`); len(got) != 1 || got[0] != "2026-04-18" {
+	if got := env.queryString(`SELECT cursor_id FROM juhe_stats.stats_job_state WHERE scope_type='global' AND job_name='w10c-rt'`); len(got) != 1 || got[0] != "2026-04-18" {
 		t.Fatalf("主状态行错误: %v", got)
 	}
 
@@ -774,7 +776,7 @@ func TestW10CUpdateRankRefreshJobStateRoundtrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := env.queryString(`SELECT cursor_created_at FROM stats_job_state WHERE scope_type='global' AND job_name='w10c-rt'`); len(got) != 1 || got[0] != "2026-04-18T11:00:00.000Z" {
+	if got := env.queryString(`SELECT cursor_created_at FROM juhe_stats.stats_job_state WHERE scope_type='global' AND job_name='w10c-rt'`); len(got) != 1 || got[0] != "2026-04-18T11:00:00.000Z" {
 		t.Fatalf("主状态行应覆盖: %v", got)
 	}
 }
@@ -782,7 +784,7 @@ func TestW10CUpdateRankRefreshJobStateRoundtrip(t *testing.T) {
 // ---- 窗口编排错误臂 ----
 
 func TestW10CRunStagesOrchestration(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	refresher := env.refresher()
 	ctx := context.Background()
 

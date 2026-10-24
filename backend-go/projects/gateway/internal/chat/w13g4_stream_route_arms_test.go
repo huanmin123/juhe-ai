@@ -23,7 +23,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,17 +39,6 @@ func w13g4StreamPost(rt *chatRoutes, conversationID, owner, payload string) *htt
 	recorder := httptest.NewRecorder()
 	rt.streamTurn(recorder, request.WithContext(authsys.WithAuthContext(request.Context(), &authsys.AuthContext{SystemAccountID: owner})))
 	return recorder
-}
-
-// w13g4FailingChatKeys 让 FindChatAPIKey 失败，驱动 requireOwnedApiKey 错误臂。
-type w13g4FailingChatKeys struct{}
-
-func (w13g4FailingChatKeys) EnsureChatAPIKey(ownerID string) (string, error) {
-	return "", errors.New("w13g4 注入密钥故障")
-}
-
-func (w13g4FailingChatKeys) FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecord, error) {
-	return nil, errors.New("w13g4 注入密钥故障")
 }
 
 // TestW13G4StreamTurnPrologueArms 覆盖 streamTurn 前置链各错误臂。
@@ -79,15 +67,6 @@ func TestW13G4StreamTurnPrologueArms(t *testing.T) {
 	rt.mu.Lock()
 	delete(rt.preps, conversationID)
 	rt.mu.Unlock()
-
-	// ChatKeys 故障 → requireOwnedApiKey 错误臂（403-406）。
-	savedKeys := env.deps.ChatKeys
-	env.deps.ChatKeys = w13g4FailingChatKeys{}
-	recorder = w13g4StreamPost(rt, conversationID, routeTestOwner, streamPayload("w13g4-p3", "hi", "gpt-5"))
-	if recorder.Code < 400 {
-		t.Fatalf("密钥故障应 4xx/5xx = %d %s", recorder.Code, recorder.Body.String())
-	}
-	env.deps.ChatKeys = savedKeys
 
 	// TokenCount 巨化 → validateFixedChatInputBudget 超限（508-511）。
 	savedToken := env.deps.TokenCount

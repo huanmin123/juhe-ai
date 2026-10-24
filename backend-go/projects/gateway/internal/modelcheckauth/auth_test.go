@@ -5,39 +5,27 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"path/filepath"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 func TestAuthenticateBearerTouchesSessionAndRequiresAdmin(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "business.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT,status TEXT NOT NULL,role TEXT NOT NULL,must_change_password INTEGER NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT NOT NULL,expires_at TEXT NOT NULL,last_seen_at TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
+	db := newModelCheckAuthPGDatabase(t)
 	token := "juhe_tmp_" + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM1234"
 	if len(token) != len("juhe_tmp_")+43 {
 		t.Fatalf("test token length=%d", len(token))
 	}
 	digest := sha256.Sum256([]byte(token))
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO system_accounts VALUES ('sys-1','admin','Admin','active','admin',0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id,username,display_name,role,status,password_hash,must_change_password,created_at,updated_at) VALUES ('sys-1','admin','Admin','admin','active','fixture-hash',0,'','')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('session-1','sys-1',?,?,?)`, hex.EncodeToString(digest[:]), now.Add(time.Hour).Format(time.RFC3339Nano), now.Add(-2*time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_sessions (id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('session-1','sys-1',$1,$2,$3,$4)`, hex.EncodeToString(digest[:]), now.Add(time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Add(-2*time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := New(db, SQLite, func() time.Time { return now })
+	auth, err := New(db, Postgres, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +34,7 @@ func TestAuthenticateBearerTouchesSessionAndRequiresAdmin(t *testing.T) {
 		t.Fatalf("actor=%+v err=%v", actor, err)
 	}
 	var seen string
-	if err := db.QueryRow(`SELECT last_seen_at FROM system_sessions WHERE id='session-1'`).Scan(&seen); err != nil {
+	if err := db.QueryRow(`SELECT last_seen_at FROM juhe_business.system_sessions WHERE id='session-1'`).Scan(&seen); err != nil {
 		t.Fatal(err)
 	}
 	if seen != "2026-08-27T12:00:00.000Z" {
@@ -101,11 +89,10 @@ func TestResolveTokenFailsClosedOnEmptySessionCookie(t *testing.T) {
 func TestCheckContractRejectsMissingAuthRuntimeColumn(t *testing.T) {
 	for _, omitted := range []string{"display_name", "role", "must_change_password", "last_login_at", "updated_at"} {
 		t.Run(omitted, func(t *testing.T) {
-			db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "business.db")+"?mode=rwc")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
+			db := pgtestkit.New(t, func(ctx context.Context, raw *sql.DB) error {
+				_, err := raw.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`)
+				return err
+			})
 			accountColumns := []string{"id TEXT PRIMARY KEY", "username TEXT NOT NULL", "display_name TEXT", "status TEXT NOT NULL", "role TEXT NOT NULL", "must_change_password INTEGER NOT NULL", "password_hash TEXT NOT NULL", "last_login_at TEXT", "updated_at TEXT NOT NULL"}
 			filtered := make([]string, 0, len(accountColumns)-1)
 			for _, definition := range accountColumns {
@@ -114,13 +101,13 @@ func TestCheckContractRejectsMissingAuthRuntimeColumn(t *testing.T) {
 				}
 				filtered = append(filtered, definition)
 			}
-			if _, err := db.Exec(`CREATE TABLE system_accounts (` + joinDefinitions(filtered) + `)`); err != nil {
+			if _, err := db.Exec(`CREATE TABLE juhe_business.system_accounts (` + joinDefinitions(filtered) + `)`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec(`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,last_seen_at TEXT NOT NULL)`); err != nil {
+			if _, err := db.Exec(`CREATE TABLE juhe_business.system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,last_seen_at TEXT NOT NULL)`); err != nil {
 				t.Fatal(err)
 			}
-			auth, err := New(db, SQLite, time.Now)
+			auth, err := New(db, Postgres, time.Now)
 			if err != nil {
 				t.Fatal(err)
 			}

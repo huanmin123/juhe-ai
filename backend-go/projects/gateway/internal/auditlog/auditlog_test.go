@@ -70,12 +70,10 @@ func TestSQLiteSchemaAndWriterPragmas(t *testing.T) {
 }
 
 func TestOpenStoreDoesNotMutateBlobDirectory(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
+	_, _, cfg := openPostgresStoreConfig(t)
 	if _, err := os.Stat(cfg.PayloadBlobDirectory); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("test setup blob directory exists or stat failed: %v", err)
 	}
-	store := openSQLiteStore(t, cfg)
-	defer store.Close()
 	if _, err := os.Stat(cfg.PayloadBlobDirectory); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("OpenStore must not create or clean blob directory: %v", err)
 	}
@@ -90,7 +88,10 @@ func TestOpenStoreDoesNotMutateBlobDirectory(t *testing.T) {
 	if err := os.Chtimes(stale, old, old); err != nil {
 		t.Fatal(err)
 	}
-	second := openSQLiteStore(t, cfg)
+	second, err := OpenStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer second.Close()
 	if _, err := os.Stat(stale); err != nil {
 		t.Fatalf("OpenStore must not clean a stale blob temp before lease: %v", err)
@@ -191,8 +192,7 @@ func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
 }
 
 func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -218,10 +218,9 @@ func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
 	if err != nil || !retry.Ignored {
 		t.Fatalf("same finalized ID must be idempotent: result=%+v err=%v", retry, err)
 	}
-	implementation := store.(*sqlStore)
 	var lifecycle, outcome string
 	var attempts, payloads int
-	if err := implementation.db.QueryRow(`SELECT lifecycle_status,audit_outcome,attempt_count,payload_count FROM audit_logs WHERE id=?`, final.ID).Scan(&lifecycle, &outcome, &attempts, &payloads); err != nil {
+	if err := implementation.db.QueryRow(`SELECT lifecycle_status,audit_outcome,attempt_count,payload_count FROM juhe_dataset.audit_logs WHERE id=$1`, final.ID).Scan(&lifecycle, &outcome, &attempts, &payloads); err != nil {
 		t.Fatal(err)
 	}
 	if lifecycle != string(LifecycleFinalized) || outcome != string(AuditOutcomeSuccessAfterRetry) || attempts != 1 || payloads != 1 {
@@ -230,8 +229,7 @@ func TestPersistStreamLifecycleAndIdempotency(t *testing.T) {
 }
 
 func TestPersistRejectsInvalidAbsoluteTimesAndStoresCanonicalUTC(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
 
@@ -268,23 +266,24 @@ func TestPersistRejectsInvalidAbsoluteTimesAndStoresCanonicalUTC(t *testing.T) {
 	if _, err := store.Persist(context.Background(), lease, input); err != nil {
 		t.Fatal(err)
 	}
-	implementation := store.(*sqlStore)
-	var startedAt, endedAt, completedAt, createdAt string
-	if err := implementation.db.QueryRow(`SELECT started_at,ended_at,http_completed_at,created_at FROM audit_logs WHERE id=?`, input.ID).Scan(&startedAt, &endedAt, &completedAt, &createdAt); err != nil {
+	// PG 臂 timestamptz 以 time.Time 回读；断言语义不变：存储值必须是规范化
+	// UTC 时刻（12:00:00Z / 12:00:01Z / 12:00:00.5Z / 12:00:02Z）。
+	var startedAt, endedAt, completedAt, createdAt time.Time
+	if err := implementation.db.QueryRow(`SELECT started_at,ended_at,http_completed_at,created_at FROM juhe_dataset.audit_logs WHERE id=$1`, input.ID).Scan(&startedAt, &endedAt, &completedAt, &createdAt); err != nil {
 		t.Fatal(err)
 	}
-	if startedAt != "2026-08-09T12:00:00Z" || endedAt != "2026-08-09T12:00:01Z" || completedAt != "2026-08-09T12:00:00.5Z" || createdAt != "2026-08-09T12:00:02Z" {
-		t.Fatalf("main timestamps not canonical UTC: started=%q ended=%q completed=%q created=%q", startedAt, endedAt, completedAt, createdAt)
+	if !startedAt.Equal(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)) || !endedAt.Equal(time.Date(2026, 8, 9, 12, 0, 1, 0, time.UTC)) || !completedAt.Equal(time.Date(2026, 8, 9, 12, 0, 0, 500000000, time.UTC)) || !createdAt.Equal(time.Date(2026, 8, 9, 12, 0, 2, 0, time.UTC)) {
+		t.Fatalf("main timestamps not canonical UTC: started=%v ended=%v completed=%v created=%v", startedAt, endedAt, completedAt, createdAt)
 	}
-	var attemptStartedAt, attemptEndedAt, payloadCreatedAt string
-	if err := implementation.db.QueryRow(`SELECT started_at,ended_at FROM audit_log_attempts WHERE id='canonical-attempt'`).Scan(&attemptStartedAt, &attemptEndedAt); err != nil {
+	var attemptStartedAt, attemptEndedAt, payloadCreatedAt time.Time
+	if err := implementation.db.QueryRow(`SELECT started_at,ended_at FROM juhe_dataset.audit_log_attempts WHERE id='canonical-attempt'`).Scan(&attemptStartedAt, &attemptEndedAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := implementation.db.QueryRow(`SELECT created_at FROM audit_payload_refs WHERE id='canonical-payload'`).Scan(&payloadCreatedAt); err != nil {
+	if err := implementation.db.QueryRow(`SELECT created_at FROM juhe_dataset.audit_payload_refs WHERE id='canonical-payload'`).Scan(&payloadCreatedAt); err != nil {
 		t.Fatal(err)
 	}
-	if attemptStartedAt != "2026-08-09T12:00:00Z" || attemptEndedAt != "2026-08-09T12:00:01Z" || payloadCreatedAt != "2026-08-09T12:00:02Z" {
-		t.Fatalf("child timestamps not canonical UTC: attempt=%q/%q payload=%q", attemptStartedAt, attemptEndedAt, payloadCreatedAt)
+	if !attemptStartedAt.Equal(time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)) || !attemptEndedAt.Equal(time.Date(2026, 8, 9, 12, 0, 1, 0, time.UTC)) || !payloadCreatedAt.Equal(time.Date(2026, 8, 9, 12, 0, 2, 0, time.UTC)) {
+		t.Fatalf("child timestamps not canonical UTC: attempt=%v/%v payload=%v", attemptStartedAt, attemptEndedAt, payloadCreatedAt)
 	}
 }
 
@@ -340,8 +339,7 @@ func TestFinalizedLoserHasNoChildrenErrorGroupOrRefSideEffects(t *testing.T) {
 }
 
 func TestFinalizedReplacesAllNodeLifecycleFields(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
 	progress := fixture("audit-full-replace", LifecycleInProgress)
@@ -355,7 +353,7 @@ func TestFinalizedReplacesAllNodeLifecycleFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var accountID, query, ip, reason, lifecycle string
-	if err := store.(*sqlStore).db.QueryRow(`SELECT system_account_id,query_string,client_ip,sample_reason,lifecycle_status FROM audit_logs WHERE id=?`, final.ID).Scan(&accountID, &query, &ip, &reason, &lifecycle); err != nil {
+	if err := implementation.db.QueryRow(`SELECT system_account_id,query_string,client_ip,sample_reason,lifecycle_status FROM juhe_dataset.audit_logs WHERE id=$1`, final.ID).Scan(&accountID, &query, &ip, &reason, &lifecycle); err != nil {
 		t.Fatal(err)
 	}
 	if accountID != final.SystemAccountID || query != final.QueryString || ip != final.ClientIP || reason != final.SampleReason || lifecycle != string(LifecycleFinalized) {
@@ -402,8 +400,7 @@ func TestPersistAttemptsPayloadsAndBlobs(t *testing.T) {
 }
 
 func TestPersistWritesAndAssociatesErrorGroup(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	input := fixture("audit-error-group", LifecycleFinalized)
 	input.Success = false
@@ -415,14 +412,14 @@ func TestPersistWritesAndAssociatesErrorGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	var groupID string
-	if err := store.(*sqlStore).db.QueryRow(`SELECT error_group_id FROM audit_logs WHERE id=?`, input.ID).Scan(&groupID); err != nil {
+	if err := implementation.db.QueryRow(`SELECT error_group_id FROM juhe_dataset.audit_logs WHERE id=$1`, input.ID).Scan(&groupID); err != nil {
 		t.Fatal(err)
 	}
 	if groupID == "" {
 		t.Fatal("audit log did not retain its error group")
 	}
 	var count int
-	if err := store.(*sqlStore).db.QueryRow(`SELECT count FROM audit_error_groups WHERE id=?`, groupID).Scan(&count); err != nil {
+	if err := implementation.db.QueryRow(`SELECT count FROM juhe_dataset.audit_error_groups WHERE id=$1`, groupID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -434,13 +431,13 @@ func TestPersistWritesAndAssociatesErrorGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	var secondID string
-	if err := store.(*sqlStore).db.QueryRow(`SELECT error_group_id FROM audit_logs WHERE id=?`, second.ID).Scan(&secondID); err != nil {
+	if err := implementation.db.QueryRow(`SELECT error_group_id FROM juhe_dataset.audit_logs WHERE id=$1`, second.ID).Scan(&secondID); err != nil {
 		t.Fatal(err)
 	}
 	if secondID != groupID {
 		t.Fatalf("equivalent Node-style errors must share a group: first=%q second=%q", groupID, secondID)
 	}
-	if err := store.(*sqlStore).db.QueryRow(`SELECT count FROM audit_error_groups WHERE id=?`, groupID).Scan(&count); err != nil {
+	if err := implementation.db.QueryRow(`SELECT count FROM juhe_dataset.audit_error_groups WHERE id=$1`, groupID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
@@ -449,8 +446,7 @@ func TestPersistWritesAndAssociatesErrorGroup(t *testing.T) {
 }
 
 func TestPayloadRefsAllowDifferentPartTypesAtSameSequence(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	input := fixture("audit-same-sequence", LifecycleFinalized)
 	input.Payloads = []AuditLogPayloadInput{
@@ -461,7 +457,7 @@ func TestPayloadRefsAllowDifferentPartTypesAtSameSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err := store.(*sqlStore).db.QueryRow(`SELECT COUNT(*) FROM audit_payload_refs WHERE audit_log_id=?`, input.ID).Scan(&count); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, input.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
@@ -470,8 +466,7 @@ func TestPayloadRefsAllowDifferentPartTypesAtSameSequence(t *testing.T) {
 }
 
 func TestPersistRejectsStaleOwnerFence(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	first := acquireLease(t, store)
@@ -486,7 +481,7 @@ func TestPersistRejectsStaleOwnerFence(t *testing.T) {
 		t.Fatalf("stale owner must not write: %v", err)
 	}
 	var total int
-	if err := store.(*sqlStore).db.QueryRow(`SELECT COUNT(*) FROM audit_logs`).Scan(&total); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs`).Scan(&total); err != nil {
 		t.Fatal(err)
 	}
 	if total != 0 {
@@ -541,8 +536,7 @@ func TestFailedTransactionPreservesPublishedBlobAndCleansTemps(t *testing.T) {
 }
 
 func TestBlobTempsArePrivateUntilLeaseAndStaleTempsAreSafeToClean(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, _, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
 	input := fixture("audit-no-lease", LifecycleFinalized)
 	input.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, Body: PayloadBody{Bytes: []byte("private"), Present: true}}}
@@ -722,8 +716,7 @@ func TestLoadConfigRejectsCodexStateShardSymlinks(t *testing.T) {
 }
 
 func TestHashOnlyRetainsInputHashAndNonNegativeSize(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	size := int64(-42)
 	input := fixture("audit-hash-only", LifecycleFinalized)
@@ -733,7 +726,7 @@ func TestHashOnlyRetainsInputHashAndNonNegativeSize(t *testing.T) {
 	}
 	var hash string
 	var raw int64
-	if err := store.(*sqlStore).db.QueryRow(`SELECT body_sha256,raw_size_bytes FROM audit_payload_refs WHERE audit_log_id=?`, input.ID).Scan(&hash, &raw); err != nil {
+	if err := implementation.db.QueryRow(`SELECT body_sha256,raw_size_bytes FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, input.ID).Scan(&hash, &raw); err != nil {
 		t.Fatal(err)
 	}
 	if hash != "source-hash" || raw != 0 {
@@ -742,8 +735,7 @@ func TestHashOnlyRetainsInputHashAndNonNegativeSize(t *testing.T) {
 }
 
 func TestPayloadMatchesNodeExplicitMetadataAndGzipSemantics(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, impl := openPostgresStore(t)
 	defer store.Close()
 	explicitSize := int64(17)
 	largeJSON := []byte(`{"message":"` + strings.Repeat("compressible-content-", 800) + `"}`)
@@ -762,11 +754,10 @@ func TestPayloadMatchesNodeExplicitMetadataAndGzipSemantics(t *testing.T) {
 	if _, err := store.Persist(context.Background(), lease, input); err != nil {
 		t.Fatal(err)
 	}
-	impl := store.(*sqlStore)
 	var headersID, bodyID sql.NullString
 	var bodyHash string
 	var raw, compressed int64
-	if err := impl.db.QueryRow(`SELECT headers_blob_id,body_blob_id,body_sha256,raw_size_bytes,compressed_size_bytes FROM audit_payload_refs WHERE audit_log_id=?`, input.ID).Scan(&headersID, &bodyID, &bodyHash, &raw, &compressed); err != nil {
+	if err := impl.db.QueryRow(`SELECT headers_blob_id,body_blob_id,body_sha256,raw_size_bytes,compressed_size_bytes FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, input.ID).Scan(&headersID, &bodyID, &bodyHash, &raw, &compressed); err != nil {
 		t.Fatal(err)
 	}
 	if !headersID.Valid || !bodyID.Valid {
@@ -776,7 +767,7 @@ func TestPayloadMatchesNodeExplicitMetadataAndGzipSemantics(t *testing.T) {
 		t.Fatalf("explicit Node metadata must win: hash=%q raw=%d", bodyHash, raw)
 	}
 	var saved int64
-	if err := impl.db.QueryRow(`SELECT compression_saved_bytes FROM audit_logs WHERE id=?`, input.ID).Scan(&saved); err != nil {
+	if err := impl.db.QueryRow(`SELECT compression_saved_bytes FROM juhe_dataset.audit_logs WHERE id=$1`, input.ID).Scan(&saved); err != nil {
 		t.Fatal(err)
 	}
 	if saved != 0 {
@@ -784,13 +775,13 @@ func TestPayloadMatchesNodeExplicitMetadataAndGzipSemantics(t *testing.T) {
 	}
 	var compression, storageKey string
 	var storedSize int64
-	if err := impl.db.QueryRow(`SELECT compression,storage_key,compressed_size_bytes FROM audit_payload_blobs WHERE id=?`, bodyID.String).Scan(&compression, &storageKey, &storedSize); err != nil {
+	if err := impl.db.QueryRow(`SELECT compression,storage_key,compressed_size_bytes FROM juhe_dataset.audit_payload_blobs WHERE id=$1`, bodyID.String).Scan(&compression, &storageKey, &storedSize); err != nil {
 		t.Fatal(err)
 	}
 	if compression != "gzip" || storedSize >= int64(len(largeJSON)) || compressed != int64(len(`{}`))+storedSize {
 		t.Fatalf("gzip metadata/totals drift: compression=%q stored=%d ref=%d", compression, storedSize, compressed)
 	}
-	file, err := os.Open(filepath.Join(cfg.PayloadBlobDirectory, filepath.FromSlash(storageKey)))
+	file, err := os.Open(filepath.Join(impl.blobDir, filepath.FromSlash(storageKey)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +806,7 @@ func TestPayloadMatchesNodeExplicitMetadataAndGzipSemantics(t *testing.T) {
 	}
 	var secondID string
 	var secondCompressed int64
-	if err := impl.db.QueryRow(`SELECT body_blob_id,compressed_size_bytes FROM audit_payload_refs WHERE audit_log_id=?`, second.ID).Scan(&secondID, &secondCompressed); err != nil {
+	if err := impl.db.QueryRow(`SELECT body_blob_id,compressed_size_bytes FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, second.ID).Scan(&secondID, &secondCompressed); err != nil {
 		t.Fatal(err)
 	}
 	if secondID != bodyID.String || secondCompressed != storedSize {
@@ -829,8 +820,7 @@ func TestPayloadMatchesNodeExplicitMetadataAndGzipSemantics(t *testing.T) {
 }
 
 func TestCanonicalBlobMissingFileFailsWithoutRecompression(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, impl, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
 	body := []byte(`{"message":"` + strings.Repeat("node-gzip-canonical-", 600) + `"}`)
@@ -839,9 +829,8 @@ func TestCanonicalBlobMissingFileFailsWithoutRecompression(t *testing.T) {
 	if _, err := store.Persist(context.Background(), lease, first); err != nil {
 		t.Fatal(err)
 	}
-	impl := store.(*sqlStore)
 	var storageKey string
-	if err := impl.db.QueryRow(`SELECT storage_key FROM audit_payload_blobs`).Scan(&storageKey); err != nil {
+	if err := impl.db.QueryRow(`SELECT storage_key FROM juhe_dataset.audit_payload_blobs`).Scan(&storageKey); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(cfg.PayloadBlobDirectory, filepath.FromSlash(storageKey))); err != nil {
@@ -856,7 +845,7 @@ func TestCanonicalBlobMissingFileFailsWithoutRecompression(t *testing.T) {
 		t.Fatalf("missing canonical gzip file must fail instead of Go recompression: %v", err)
 	}
 	var rows int
-	if err := impl.db.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE id=?`, second.ID).Scan(&rows); err != nil {
+	if err := impl.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs WHERE id=$1`, second.ID).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 0 {
@@ -865,11 +854,9 @@ func TestCanonicalBlobMissingFileFailsWithoutRecompression(t *testing.T) {
 }
 
 func TestAttemptTempIDNeverCrossesAuditLogAndBlobConflictUsesCanonicalID(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, impl := openPostgresStore(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
-	impl := store.(*sqlStore)
 	first := fixture("audit-first", LifecycleFinalized)
 	first.Attempts = []AuditLogAttemptInput{{ID: "shared-attempt", TempID: "first", AttemptIndex: 0, UpstreamMethod: "POST", UpstreamURL: "https://one", StartedAt: first.StartedAt}}
 	first.Payloads = []AuditLogPayloadInput{{AttemptTempID: "first", PartType: PayloadPartUpstreamResponse, Body: PayloadBody{Bytes: []byte("same"), Present: true}}}
@@ -877,7 +864,7 @@ func TestAttemptTempIDNeverCrossesAuditLogAndBlobConflictUsesCanonicalID(t *test
 		t.Fatal(err)
 	}
 	var canonical string
-	if err := impl.db.QueryRow(`SELECT id FROM audit_payload_blobs`).Scan(&canonical); err != nil {
+	if err := impl.db.QueryRow(`SELECT id FROM juhe_dataset.audit_payload_blobs`).Scan(&canonical); err != nil {
 		t.Fatal(err)
 	}
 	second := fixture("audit-second", LifecycleFinalized)
@@ -889,7 +876,7 @@ func TestAttemptTempIDNeverCrossesAuditLogAndBlobConflictUsesCanonicalID(t *test
 		t.Fatal(err)
 	}
 	var attemptRef, bodyID sql.NullString
-	if err := impl.db.QueryRow(`SELECT attempt_id,body_blob_id FROM audit_payload_refs WHERE audit_log_id=?`, second.ID).Scan(&attemptRef, &bodyID); err != nil {
+	if err := impl.db.QueryRow(`SELECT attempt_id,body_blob_id FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, second.ID).Scan(&attemptRef, &bodyID); err != nil {
 		t.Fatal(err)
 	}
 	if attemptRef.Valid {
@@ -939,8 +926,7 @@ func TestErrorMessageNormalizationUsesJavaScriptUTF16Slice(t *testing.T) {
 }
 
 func TestErrorGroupUsesEventTimeForFirstAndLast(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
 	late := fixture("audit-event-late", LifecycleFinalized)
@@ -960,7 +946,7 @@ func TestErrorGroupUsesEventTimeForFirstAndLast(t *testing.T) {
 		t.Fatal(err)
 	}
 	var first, last string
-	if err := store.(*sqlStore).db.QueryRow(`SELECT first_event_id,last_event_id FROM audit_error_groups`).Scan(&first, &last); err != nil {
+	if err := implementation.db.QueryRow(`SELECT first_event_id,last_event_id FROM juhe_dataset.audit_error_groups`).Scan(&first, &last); err != nil {
 		t.Fatal(err)
 	}
 	if first != early.ID || last != late.ID {
@@ -987,8 +973,7 @@ func tempCount(t *testing.T, root string) int {
 }
 
 func TestPersistRejectsNodeExcludedTrafficSource(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	input := fixture("audit-excluded-source", LifecycleFinalized)
 	input.TrafficSource = TrafficSourceAccountHealthCheck

@@ -8,6 +8,10 @@ import (
 // w10c_statsagg_units2_test.go 覆盖统计聚合域第二轮剩余臂：
 // 错误/模型窗口聚合纯函数、聚合游标 lag、派生窗口脏标记冲突更新臂、
 // 授权查找 JOIN、系统指标采样批次与趋势窗口 stage 全链、配额重建句柄分派。
+// DB 相关断言使用生产方言 PG 载体（newPGTestEnv；测试体内手写 SQL 按 PG
+// 方言书写：juhe_ 前缀 schema 限定 + $n）；例外：TestW10CQuotaRebuildHandlesAndBindingFilter
+// 的被测对象是 SQLite 全量重建臂（BusinessDB 句柄分派），保持 SQLite 载体
+// 原状（组B，随生产 sqlite 臂删除批次退役）。
 
 // ---- 错误/模型窗口聚合纯函数 ----
 
@@ -72,7 +76,7 @@ func TestW10CAggregateErrorAndModelRowsPure(t *testing.T) {
 // ---- 聚合游标 lag（空批次 + 最新记录）----
 
 func TestW10CLatestUsageRecordLag(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	env.seedGoldenPair()
 	aggregator := env.aggregator()
 
@@ -87,7 +91,7 @@ func TestW10CLatestUsageRecordLag(t *testing.T) {
 	if err != nil || processed != 0 {
 		t.Fatalf("空批次 processed=%d err=%v", processed, err)
 	}
-	lag := env.queryRowFloats(`SELECT lag_seconds FROM stats_job_state WHERE job_name='usage_stats_aggregation'`)
+	lag := env.queryRowFloats(`SELECT lag_seconds FROM juhe_stats.stats_job_state WHERE job_name='usage_stats_aggregation'`)
 	if len(lag) != 1 || lag[0] != 0 {
 		t.Fatalf("空批次 lag = %v want 0", lag)
 	}
@@ -101,7 +105,7 @@ func TestW10CLatestUsageRecordLag(t *testing.T) {
 // ---- 派生窗口脏标记冲突更新臂 ----
 
 func TestW10CDerivedDirtyScopesConflict(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	aggregator := env.aggregator()
 
 	// 第一批：04-17 单日记录（system_account + account scope）。
@@ -124,14 +128,14 @@ func TestW10CDerivedDirtyScopesConflict(t *testing.T) {
 	if _, err := aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{BatchSize: 10}); err != nil {
 		t.Fatal(err)
 	}
-	overview := env.queryString(`SELECT min_changed_date || '|' || scope_id FROM usage_overview_dirty_scopes WHERE system_account_id='carol'`)
+	overview := env.queryString(`SELECT min_changed_date || '|' || scope_id FROM juhe_stats.usage_overview_dirty_scopes WHERE system_account_id='carol'`)
 	if len(overview) != 1 || overview[0] != "2026-04-17|carol" {
 		t.Fatalf("overview 冲突更新错误: %v", overview)
 	}
-	if got := env.queryRowFloats(`SELECT generation FROM usage_overview_dirty_scopes WHERE system_account_id='carol'`); got[0] != 2 {
+	if got := env.queryRowFloats(`SELECT generation FROM juhe_stats.usage_overview_dirty_scopes WHERE system_account_id='carol'`); got[0] != 2 {
 		t.Fatalf("overview generation = %v want 2", got)
 	}
-	ai := env.queryString(`SELECT min_stat_date || '|' || max_stat_date FROM ai_performance_summary_dirty_system_accounts WHERE system_account_id='carol'`)
+	ai := env.queryString(`SELECT min_stat_date || '|' || max_stat_date FROM juhe_stats.ai_performance_summary_dirty_system_accounts WHERE system_account_id='carol'`)
 	if len(ai) != 1 || ai[0] != "2026-04-17|2026-04-18" {
 		t.Fatalf("ai 冲突更新错误: %v", ai)
 	}
@@ -140,12 +144,12 @@ func TestW10CDerivedDirtyScopesConflict(t *testing.T) {
 // ---- 授权查找 JOIN ----
 
 func TestW10CAuthorizationLookupJoin(t *testing.T) {
-	env := newTestEnv(t)
-	// 授权 + 实例账户 fixture（SQLite 最小 schema：resource_authorizations
-	// 只有 id/resource_type/resource_id/grantee_system_account_id 四列）。
-	env.exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id)
+	env := newPGTestEnv(t)
+	// 授权 + 实例账户 fixture（PG 同池 juhe_business 最小表：授权查找消费列，
+	// 与 kit DDL 一致；授权查找经聚合事务 juhe_business. 前缀直查）。
+	env.exec(`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id)
 		VALUES ('auth-1', 'account', 'acc-instance', 'bob')`)
-	env.exec(`INSERT INTO accounts (id, system_account_id, authorization_instance_authorization_id)
+	env.exec(`INSERT INTO juhe_business.accounts (id, system_account_id, authorization_instance_authorization_id)
 		VALUES ('acc-instance', 'bob', 'auth-1')`)
 	// 授权调用记录 + 未知授权 id 记录（ErrNoRows continue 臂）。
 	env.seedUsageRecord(UsageStatsRecordRow{
@@ -164,12 +168,16 @@ func TestW10CAuthorizationLookupJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 未知授权 id 不中断聚合（continue 臂）。
-	if got := env.queryRowFloats(`SELECT COUNT(*) FROM usage_stats_totals`); got[0] == 0 {
+	if got := env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.usage_stats_totals`); got[0] == 0 {
 		t.Fatalf("聚合应完成")
 	}
 }
 
 // ---- 配额重建句柄分派与绑定过滤 ----
+//
+// 组B（SQLite 生产分支保留）：被测对象是 SQLite 全量重建臂的 BusinessDB
+// 句柄分派与绑定过滤（RunQuotaHourlyWindows 非 PG 分支固定
+// changed=true/hasMore=false），随生产 sqlite 臂删除批次退役（D17）。
 
 func TestW10CQuotaRebuildHandlesAndBindingFilter(t *testing.T) {
 	env := newTestEnv(t)
@@ -219,7 +227,7 @@ func TestW10CQuotaRebuildHandlesAndBindingFilter(t *testing.T) {
 // ---- RunStages 错误臂 ----
 
 func TestW10CRunStagesErrorArms(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	ctx := context.Background()
 
 	// Clock 失败 → RunStages 错误透传。
@@ -233,7 +241,7 @@ func TestW10CRunStagesErrorArms(t *testing.T) {
 	}
 
 	// 源表非法 updated_at → sourceState 错误臂。
-	env.exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, updated_at)
+	env.exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, updated_at)
 		VALUES ('alice', 'system_account', 'alice', '2026-04-18', 1, 'garbage')`)
 	if _, err := env.refresher().RunStages(ctx, []WindowStageName{StageUsageOverviewWindows}, RefreshOptions{}); err == nil {
 		t.Fatalf("非法 updated_at 应报错")

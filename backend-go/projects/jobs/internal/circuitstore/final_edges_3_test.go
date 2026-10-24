@@ -34,6 +34,8 @@ func TestRepoValidationBranches(t *testing.T) {
 }
 
 // TestLoadAccountLockViewMissingAccount 覆盖 DEAD_CONFIRMED 但账户行缺失的分支。
+// 组B保留（不迁 PG）：loader 族，loader PG 臂适配缺口取证见
+// final_edges_test.go TestHydratePageFailClosed 注释。
 func TestLoadAccountLockViewMissingAccount(t *testing.T) {
 	db := newLoaderTestDB(t)
 	loader := newTestLoader(db, stubConcurrency{}, stubRuntime{})
@@ -52,6 +54,8 @@ func TestLoadAccountLockViewMissingAccount(t *testing.T) {
 }
 
 // TestQuotaHourlyHoursDimension 覆盖 direct 限额的 hourly 自定义窗口维度。
+// 组B保留（不迁 PG）：loader 族，取证见 final_edges_test.go
+// TestHydratePageFailClosed 注释。
 func TestQuotaHourlyHoursDimension(t *testing.T) {
 	db := newLoaderTestDB(t)
 	loader := newTestLoader(db, stubConcurrency{}, stubRuntime{})

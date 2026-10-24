@@ -13,7 +13,17 @@ import (
 )
 
 // 本文件补齐 Store 的剩余分支：OpenStore 装配、EnsureSchema SQLite 路径、
-// schema 契约检查的各负向变体，以及 SQLite 租约的丢失语义。
+// schema 契约检查的各负向变体，以及租约的丢失语义。
+//
+// 迁移裁决（PLAN-20261024T051925945Z proxylatency 切片）：
+//   - TestWFStoreLeaseLostPaths 迁真实 PG（组A：被测对象 Acquire/Verify/
+//     Release/Renew 租约语义在 PG 臂逐字节保持，断言不变）。
+//   - TestWFOpenStoreBranches / TestWFEnsureSchemaSQLite 保持 SQLite 原状
+//     （组B：OpenStore 的 SQLite 装配校验分支与 EnsureSchema/CheckSchema 的
+//     SQLite 专属防御面——DROP TABLE sqlite_master 对象、sqlite fail-closed，
+//     随生产 sqlite 臂删除批次退役）。
+//   - TestWFStorePGSchemaNegativeVariants 为 scripted 录制驱动（PLAN §3 非
+//     目标），保持原状。
 
 func TestWFOpenStoreBranches(t *testing.T) {
 	if _, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: ""}); err == nil {
@@ -73,12 +83,8 @@ func TestWFEnsureSchemaSQLite(t *testing.T) {
 	}
 }
 
-func TestWFStoreSQLiteLeaseLostPaths(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "wf-lease.sqlite3")})
-	if err != nil {
-		t.Fatalf("OpenStore 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+func TestWFStoreLeaseLostPaths(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	if _, _, err := store.AcquireOwnerLease(ctx, "", time.Minute); err == nil {
 		t.Fatal("空 owner 必须拒绝")

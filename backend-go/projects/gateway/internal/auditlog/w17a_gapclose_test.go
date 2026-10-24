@@ -117,10 +117,9 @@ func TestW17ARunRetentionMaintenanceSilentExitOnCanceledContext(t *testing.T) {
 
 // ---- store/retention：SQLite 直连的 refs 与 blob GC 复核臂 ----
 
-func TestW17ARetentionDirectArmsOnSQLite(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+func TestW17ARetentionDirectArms(t *testing.T) {
+	store, impl := openPostgresStore(t)
 	defer store.Close()
-	impl := store.(*sqlStore)
 	ctx := context.Background()
 	lease := acquireLease(t, store)
 
@@ -128,14 +127,14 @@ func TestW17ARetentionDirectArmsOnSQLite(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, fixture("w17a-log", LifecycleFinalized)); err != nil {
 		t.Fatalf("基线 persist: %v", err)
 	}
-	now := dbTime(ModeSQLite, time.Now().UTC())
+	now := dbTime(impl.mode, time.Now().UTC())
 	if _, err := impl.db.Exec(
-		`INSERT INTO audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,compression,storage_key,first_seen_at,last_seen_at,created_at) VALUES ('w17a-blob-b','w17a-sha',1,1,'application/octet-stream','none','sha256/w17a-b.bin',?,?,?)`,
-		now, now, now); err != nil {
+		`INSERT INTO juhe_dataset.audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,compression,storage_key,first_seen_at,last_seen_at,created_at) VALUES ('w17a-blob-b','w17a-sha',1,1,'application/octet-stream','none','sha256/w17a-b.bin',$1,$1,$1)`,
+		now); err != nil {
 		t.Fatalf("插入 blob: %v", err)
 	}
 	if _, err := impl.db.Exec(
-		`INSERT INTO audit_payload_refs (id,audit_log_id,part_type,sequence_index,headers_blob_id,body_blob_id,capture_status,created_at) VALUES ('w17a-ref','w17a-log','client_request',0,NULL,'w17a-blob-b','complete',?)`,
+		`INSERT INTO juhe_dataset.audit_payload_refs (id,audit_log_id,part_type,sequence_index,headers_blob_id,body_blob_id,capture_status,created_at) VALUES ('w17a-ref','w17a-log','client_request',0,NULL,'w17a-blob-b','complete',$1)`,
 		now); err != nil {
 		t.Fatalf("插入 refs: %v", err)
 	}
@@ -174,9 +173,8 @@ func TestW17ARetentionDirectArmsOnSQLite(t *testing.T) {
 // POSIX 上 os.Stat 直接返回 ENOTDIR。两平台都进入各自报错臂。
 
 func TestW17AWriteBlobTempsBlockedDirectoryArm(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, impl := openPostgresStore(t)
 	defer store.Close()
-	impl := store.(*sqlStore)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "blocker.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -261,9 +259,8 @@ func TestW17AWindowsStaleTempRemoveFailureArms(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("POSIX 允许删除打开中的文件，无法触发 Remove 失败臂")
 	}
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, impl := openPostgresStore(t)
 	defer store.Close()
-	impl := store.(*sqlStore)
 	ctx := context.Background()
 
 	// fence 递增：先释放首租约再以新 owner 获取，保证存在 fence-1 的孤儿语义。

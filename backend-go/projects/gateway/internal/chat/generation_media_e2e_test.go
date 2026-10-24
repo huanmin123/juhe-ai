@@ -169,8 +169,8 @@ func TestChatAudioToolE2EViaMockUpstream(t *testing.T) {
 			!strings.Contains(request.Body, `"input":"早上好，世界"`) {
 			t.Fatalf("TTS 请求体异常: %s", request.Body)
 		}
-		if !strings.Contains(request.AuthHeader, "Bearer ") {
-			t.Fatalf("TTS 请求缺少 Bearer 头: %q", request.AuthHeader)
+		if strings.Contains(request.AuthHeader, "Bearer ") {
+			t.Fatalf("TTS 请求不应携带 Bearer 头（免 Key 直调）: %q", request.AuthHeader)
 		}
 	}
 	if !sawSpeech {

@@ -9,11 +9,10 @@ import (
 	"time"
 )
 
-func TestSQLiteHotSearchAppendSearchAndTrim(t *testing.T) {
-	root := t.TempDir()
-	cfg := sqliteConfig(t, root)
-	store := openSQLiteStore(t, cfg)
+func TestHotSearchAppendSearchAndTrim(t *testing.T) {
+	store, _, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
+	root := filepath.Dir(cfg.PayloadBlobDirectory)
 	ctx := context.Background()
 	lease := acquireLease(t, store)
 	input := fixture("hot-search-one", LifecycleFinalized)
@@ -43,9 +42,8 @@ func TestSQLiteHotSearchAppendSearchAndTrim(t *testing.T) {
 	}
 }
 
-func TestSQLiteHotSearchIndexesHotRetainedSuccessfulPayload(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+func TestHotSearchIndexesHotRetainedSuccessfulPayload(t *testing.T) {
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -77,9 +75,8 @@ func TestSQLiteHotSearchIndexesHotRetainedSuccessfulPayload(t *testing.T) {
 	}
 }
 
-func TestSQLiteHotSearchRejectsLostLeaseBeforeFileWrite(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+func TestHotSearchRejectsLostLeaseBeforeFileWrite(t *testing.T) {
+	store, _, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -91,7 +88,7 @@ func TestSQLiteHotSearchRejectsLostLeaseBeforeFileWrite(t *testing.T) {
 	if !errors.Is(err, ErrOwnerLeaseLost) {
 		t.Fatalf("lost lease error=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "search-hot")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.PayloadBlobDirectory), "search-hot")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("lost lease created hot directory: %v", err)
 	}
 }

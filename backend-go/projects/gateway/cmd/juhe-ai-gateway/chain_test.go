@@ -286,6 +286,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
 			api_key_id TEXT NOT NULL,
+			owner_system_account_id TEXT NOT NULL DEFAULT '',
 			account_id TEXT NOT NULL,
 			provider_protocol_profile_id TEXT,
 			upstream_job_id TEXT NOT NULL,

@@ -1,9 +1,9 @@
 package main
 
 // G20 phase-3 chat mount test: the my-chat family answers behind the session
-// middleware (401 without a session, 200 with the dev auto-login identity)
-// and provisions the purpose='chat' API key on first provision (POST
-// /conversations).
+// middleware (401 without a session, 200 with the dev auto-login identity);
+// 免 Key 直调（W-B）后 provision 不再创建任何 API Key——断言两次 provision 均
+// 201 且库中不存在 purpose='chat' 键。
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
@@ -90,7 +89,7 @@ func TestComposeSystemAPIMountsChatFamily(t *testing.T) {
 	}
 
 	// POST /conversations 免请求体直进空会话（账户唯一绑定契约）：任何请求体
-	// 内容都被服务端忽略；鉴权主体为 EnsureChatAPIKey 幂等补齐的专用 Key。
+	// 内容都被服务端忽略；免 Key 直调后不再创建任何 API Key。
 	provision, err := client.Post(server.URL+"/__aisys__/api/my-chat/conversations", "application/json",
 		strings.NewReader(`{"bindMode":"group","groupId":"legacy-ignored"}`))
 	if err != nil {
@@ -102,35 +101,18 @@ func TestComposeSystemAPIMountsChatFamily(t *testing.T) {
 		t.Fatalf("provision status=%d body=%s", provision.StatusCode, body)
 	}
 
-	// The chat key provider inserted exactly one purpose='chat' key with a
-	// sealed plaintext (Node ensureChatApiKeyForSystemAccountAsync).
-	var keyID string
-	if err := composed.DB.QueryRow(
-		`SELECT id FROM api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat' LIMIT 1`,
-	).Scan(&keyID); err != nil {
-		t.Fatalf("query chat api key: %v", err)
-	}
+	// 免 Key 直调：库中不得出现 purpose='chat' 键（供给链已删除）。
 	var count int
 	if err := composed.DB.QueryRow(
 		`SELECT COUNT(*) FROM api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat'`,
 	).Scan(&count); err != nil {
 		t.Fatalf("count chat api keys: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("chat api key count = %d", count)
-	}
-	var sealed string
-	if err := composed.DB.QueryRow(`SELECT key_secret_encrypted FROM api_keys WHERE id = ?`, keyID).Scan(&sealed); err != nil {
-		t.Fatalf("query sealed secret: %v", err)
-	}
-	var envelope struct {
-		Key string `json:"key"`
-	}
-	if err := apikeys.DecryptJSON("compose-test-secret", sealed, &envelope); err != nil || !strings.HasPrefix(envelope.Key, "sk-") {
-		t.Fatalf("sealed chat key round-trip failed: %v %q", err, envelope.Key)
+	if count != 0 {
+		t.Fatalf("chat api key count = %d, want 0（不再创建对话 Key）", count)
 	}
 
-	// Second provision reuses the same key (Node chatApiKeyIdForSystemAccount).
+	// Second provision 照常 201，且仍无 chat 键。
 	second, err := client.Post(server.URL+"/__aisys__/api/my-chat/conversations", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("second provision: %v", err)
@@ -145,7 +127,7 @@ func TestComposeSystemAPIMountsChatFamily(t *testing.T) {
 	).Scan(&count); err != nil {
 		t.Fatalf("recount chat api keys: %v", err)
 	}
-	if count != 1 {
+	if count != 0 {
 		t.Fatalf("chat api key count after second provision = %d", count)
 	}
 	_ = context.Background

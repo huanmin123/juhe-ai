@@ -129,7 +129,17 @@ func NewFinalizationDispatch(recorder UsageRecorder, overflow DispatchOverflowSp
 // DispatchUsageRecord mirrors dispatchUsageRecord: admit
 // enqueueUsageRecord(input) with the byte budget, spooling on overflow when
 // the performance-mode overflow factory is configured.
+//
+// 使用日志抑制（AI 问答免 Key 直调内部通道 §3.1）：抑制记录在这里丢弃，而不是
+// 只交给 recorder 的 EnqueueUsageRecord——本函数有两条投递臂（正常入队 task
+// 与队列满时的 overflowFactory），后者直接落 spool、不经过 recorder，只在
+// recorder 处设闸会让抑制记录在队列积压时逃逸（且 SuppressUsage 标记不序列化，
+// jobs 侧读回后无法识别，会按普通记录写 usage_records）。闸口设在本入口，
+// 两条臂都覆盖，是全部 usage 写入面的唯一持久化闸口。
 func (d *FinalizationDispatch) DispatchUsageRecord(ctx Ctx, input UsageRecordInput, bytes int) error {
+	if input.SuppressUsage {
+		return nil
+	}
 	task := func(ctx Ctx) error {
 		return d.recorder.EnqueueUsageRecord(ctx, input)
 	}

@@ -181,7 +181,6 @@ type chatToolExecutionContext struct {
 	TurnID                  string
 	AssistantMessageID      string
 	TraceID                 string
-	APIKey                  string
 	DefaultImageModel       string
 	Aborted                 func() bool
 	LoadImageEditReferences func(assetIDs []string) ([]ChatImageEditReference, error)
@@ -356,9 +355,11 @@ func buildChatSystemInstructions(internalToolNames []string) (version, text, has
 	return chatSystemInstructionsVersion, text, hash
 }
 
-// buildChatPromptCacheKey mirrors buildChatPromptCacheKey.
-func buildChatPromptCacheKey(systemAccountID, apiKeyID, conversationID string) string {
-	payload, _ := json.Marshal([]string{"juhe-ai-chat-prompt-cache-v1", systemAccountID, apiKeyID, conversationID})
+// buildChatPromptCacheKey mirrors buildChatPromptCacheKey. 键只用于上游
+// prompt cache 亲和（同一会话跨轮稳定），不进任何持久化身份；免 Key 直调后
+// 不再含 API Key 维度。
+func buildChatPromptCacheKey(systemAccountID, conversationID string) string {
+	payload, _ := json.Marshal([]string{"juhe-ai-chat-prompt-cache-v1", systemAccountID, conversationID})
 	digest := sha256.Sum256(payload)
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }

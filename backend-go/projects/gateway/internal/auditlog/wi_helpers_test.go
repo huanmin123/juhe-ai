@@ -132,9 +132,8 @@ func TestWIAppendHotSearchFileErrorPaths(t *testing.T) {
 }
 
 func TestWIListHotSearchFilesWindowAndTruncation(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
-	implementation := store.(*sqlStore)
 	// 目录不存在 → 空 + 未截断。
 	paths, truncated, err := implementation.listHotSearchFiles(time.Now().UTC(), time.Now().UTC(), 10)
 	if err != nil || len(paths) != 0 || truncated {
@@ -171,7 +170,7 @@ func TestWIListHotSearchFilesWindowAndTruncation(t *testing.T) {
 		t.Fatalf("截断=%v truncated=%v err=%v", paths, truncated, err)
 	}
 	// cleanupHotSearchFilesBefore：目录不存在安全返回 0。
-	emptyStore := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	emptyStore, _ := openPostgresStore(t)
 	defer emptyStore.Close()
 	if deleted, err := emptyStore.(*sqlStore).cleanupHotSearchFilesBefore(time.Now().UTC(), 5); err != nil || deleted != 0 {
 		t.Fatalf("空目录清理=%d err=%v", deleted, err)
@@ -240,7 +239,7 @@ func TestWILegacyMigrationPathHelpers(t *testing.T) {
 }
 
 func TestWILeaseKeeperLostWhenLeaseUsurped(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	keeper, ok, err := StartLeaseKeeper(ctx, store, "wi-usurped", 2*time.Second, slog.Default())
@@ -249,10 +248,9 @@ func TestWILeaseKeeperLostWhenLeaseUsurped(t *testing.T) {
 	}
 	// 手工把租约行置为过期，随后由另一个 owner 抢占（fence 递增）。
 	// keeper 的自动续租会不断延长 lease_until，无法靠等待过期。
-	implementation := store.(*sqlStore)
-	past := dbTime(ModeSQLite, time.Now().UTC().Add(-time.Minute))
+	past := dbTime(implementation.mode, time.Now().UTC().Add(-time.Minute))
 	if _, err := implementation.db.Exec(
-		`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id='wi-usurped'`,
+		implementation.bind(`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id='wi-usurped'`),
 		past); err != nil {
 		t.Fatalf("过期租约失败: %v", err)
 	}

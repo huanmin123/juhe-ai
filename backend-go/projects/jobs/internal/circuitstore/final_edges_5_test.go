@@ -6,15 +6,20 @@ package circuitstore
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
-	_ "modernc.org/sqlite"
 )
+
+// kitDropBusinessTable 生成带 juhe_business schema 限定的 DROP 语句（repo 族
+// PG fixture 中业务表位于 juhe_business schema，测试体 DROP 与生产 schema 限
+// 定对齐；loader 族组B保留 SQLite，不走本 helper）。
+func kitDropBusinessTable(table string) string {
+	return `DROP TABLE juhe_business.` + table
+}
 
 // TestRepoErrorSurfacesOnMissingTables 通过删表构造 SQL 失败，验证投影 repo
 // 各方法的错误出口。
@@ -116,7 +121,7 @@ func TestRepoErrorSurfacesOnMissingTables(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, db := openListAvailabilityFixture(t)
 			ctx := context.Background()
-			if _, err := db.Exec(`DROP TABLE ` + tc.drop); err != nil {
+			if _, err := db.Exec(kitDropBusinessTable(tc.drop)); err != nil {
 				t.Fatal(err)
 			}
 			if err := tc.action(repo, ctx); err == nil {
@@ -132,6 +137,9 @@ func replayInputHelper(accountID string, generation int64, token string) opsjobs
 
 // TestLoaderErrorSurfacesOnMissingTables 覆盖 loader 各读面在统计/业务表缺失
 // 时的 fail-closed 错误出口。
+// 组B保留（不迁 PG）：loader 的 PG 臂与生产 schema 存在适配缺口（timestamptz
+// 列裸扫 text 断言等，取证见 TestHydratePageFailClosed 注释），随 loader PG 臂
+// 修复批次再迁。
 func TestLoaderErrorSurfacesOnMissingTables(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -206,6 +214,7 @@ func TestLoaderErrorSurfacesOnMissingTables(t *testing.T) {
 
 // TestHydratePageFailsOnBrokenReads 覆盖水合链剩余读面（usage/quota/balance/
 // apiKey/circuit）失败的 fail-closed 行为。
+// 组B保留（不迁 PG）：loader 族，取证见 TestHydratePageFailClosed 注释。
 func TestHydratePageFailsOnBrokenReads(t *testing.T) {
 	cases := []struct {
 		name string
@@ -267,7 +276,7 @@ func TestControlPlaneErrorSurfacesOnMissingTables(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, _, db := openControlPlaneFixture(t)
 			ctx := context.Background()
-			if _, err := db.Exec(`DROP TABLE ` + tc.drop); err != nil {
+			if _, err := db.Exec(kitDropBusinessTable(tc.drop)); err != nil {
 				t.Fatal(err)
 			}
 			if err := tc.action(repo, ctx); err == nil {
@@ -281,7 +290,7 @@ func TestControlPlaneErrorSurfacesOnMissingTables(t *testing.T) {
 func TestAckAndReleaseErrorSurfaces(t *testing.T) {
 	repo, _, db := openControlPlaneFixture(t)
 	ctx := context.Background()
-	if _, err := db.Exec(`DROP TABLE account_circuit_outbox`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.account_circuit_outbox`); err != nil {
 		t.Fatal(err)
 	}
 	claim := opsjobs.OutboxEvent{EventID: "e", ClaimToken: "t", ProjectionKey: ProjectionKey}
@@ -300,7 +309,7 @@ func TestOverlayExistingAccountsOnMissingAccounts(t *testing.T) {
 	store := newOverlayStore(t, server)
 	reconciler := NewOverlayReconciler(store, repo)
 	ctx := context.Background()
-	if _, err := db.Exec(`DROP TABLE accounts`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.accounts`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reconciler.ExistingAccountIDs(ctx, []string{"acc-1"}); err == nil {
@@ -310,12 +319,8 @@ func TestOverlayExistingAccountsOnMissingAccounts(t *testing.T) {
 
 // TestControlPlaneCursorErrorSurface 覆盖游标 store 的错误出口。
 func TestControlPlaneCursorErrorSurface(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cursor.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := NewControlPlaneRepo(ControlPlaneConfig{DB: db})
+	db := openKitPostgresDB(t, func(ctx context.Context, raw *sql.DB) error { return nil })
+	repo, err := NewControlPlaneRepo(ControlPlaneConfig{DB: db, Postgres: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +331,7 @@ func TestControlPlaneCursorErrorSurface(t *testing.T) {
 	if err := repo.EnsureCursorSchema(context.Background()); err == nil {
 		t.Fatal("句柄关闭后建表必须报错")
 	}
-	s, err := NewReconcileCursorStore(ControlPlaneConfig{DB: db})
+	s, err := NewReconcileCursorStore(ControlPlaneConfig{DB: db, Postgres: true})
 	if err != nil {
 		t.Fatal(err)
 	}

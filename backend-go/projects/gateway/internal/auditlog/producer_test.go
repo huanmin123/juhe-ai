@@ -23,12 +23,15 @@ type fakeStore struct {
 	hotCalls     int
 	retractCalls int
 
-	renewOK    bool
-	renewErr   error
-	persistErr error
-	persistIgn bool
-	hotErr     error
-	retractErr error
+	renewOK  bool
+	renewErr error
+	// renewFailFirst 让前 N 次续约失败（w13g：复现首次续约超时、撤回路径
+	// 续约恢复的生产形态）；默认 0 不改变既有行为。
+	renewFailFirst int
+	persistErr     error
+	persistIgn     bool
+	hotErr         error
+	retractErr     error
 
 	persisted  []AuditLogInput
 	hotInputs  [][]AuditLogInput
@@ -76,8 +79,12 @@ func (f *fakeStore) AcquireOwnerLease(context.Context, string, time.Duration) (O
 
 func (f *fakeStore) RenewOwnerLease(context.Context, OwnerLease, time.Duration) (bool, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.renewCalls++
+	fail := f.renewCalls <= f.renewFailFirst
+	f.mu.Unlock()
+	if fail {
+		return false, errors.New("续约 F3 PostgreSQL owner lease 失败: timeout: context deadline exceeded")
+	}
 	return f.renewOK, f.renewErr
 }
 

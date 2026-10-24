@@ -112,6 +112,9 @@ func TestHandleStreamUpstreamResponseSuccess(t *testing.T) {
 
 func TestHandleStreamUpstreamResponseMissingTerminalFinalizes(t *testing.T) {
 	input, recorder := newInputFixture(NewSliceUpstreamBody([]byte(chatDeltaChunk)), 200, nil)
+	// 窗口资格外的现状语义固定（验收 8「窗口外 missing-terminal 行为不变」锚点）：
+	// delta 分片在首个语义事件即提交，missing-terminal 走提交后中断分支。
+	input.PreCommitReplayWindowDisabled = true
 	audit := input.AuditCapture.(*mockAuditCapture)
 	usage := &mockUsageRecords{}
 	effects := &mockAccountEffects{}

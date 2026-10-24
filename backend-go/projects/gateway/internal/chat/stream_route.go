@@ -421,21 +421,10 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(err)
 		return
 	}
-	// 发送前置校验（账户唯一绑定单一入口）：归属 Key 校验保持会话 api_key_id
-	//（鉴权主体明文来源）；绑定账户可用性与模型作用域经
-	// resolveChatBindingScope（数据范围内存在且启用，存量越权绑定与
-	//「不存在/停用」同型降级）。
-	apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
-	if err != nil {
-		failWith(err)
-		return
-	}
+	// 发送前置校验（账户唯一绑定单一入口）：鉴权经内部身份通道（免 Key 直调，
+	// W-A 批），发送面只校验绑定账户可用性与模型作用域——resolveChatBindingScope
+	//（数据范围内存在且启用，存量越权绑定与「不存在/停用」同型降级）。
 	scope, err := rt.resolveChatBindingScope(conversation, bindScope)
-	if err != nil {
-		failWith(err)
-		return
-	}
-	gatewayKey, err := rt.deps.gatewayKeyOrError(apiKey.Secret)
 	if err != nil {
 		failWith(err)
 		return
@@ -466,7 +455,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(accountSupportedProtocols) == 0 {
-		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
+		failWith(&ModelCapabilityError{Message: "当前账户没有可用于该模型的对话路由，请切换模型或检查账户映射"})
 		return
 	}
 	// 主对话恒 chat_completions（工具体系设计 §11.1）：协议不再由工具能力/图片
@@ -480,15 +469,27 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(filteredAccounts) == 0 {
-		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
+		failWith(&ModelCapabilityError{Message: "当前账户没有可用于该模型的对话路由，请切换模型或检查账户映射"})
 		return
 	}
 	routeModelOption := constrainChatModelOptionForAccounts(modelOption, body.Model, filteredAccounts, []ChatTransportProtocol{protocol})
 	if len(routeModelOption.SupportedAPIProtocols) == 0 {
-		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
+		failWith(&ModelCapabilityError{Message: "当前账户没有可用于该模型的对话路由，请切换模型或检查账户映射"})
 		return
 	}
-	imageGenerationEnabled := gatewayKey.ImageGenerationEnabled && rt.scopeHasImageGenerationRoute(scope, ownerID)
+	// 生图开关（免 Key 直调后的新载体）：原 gatewayKey.ImageGenerationEnabled
+	// 随 chat Key 退场，改为直读归属系统账户开关（SystemAccountFlags 端口，
+	// cmd 侧查 system_accounts.image_generation_enabled，保持原开关语义；端口
+	// 未装配视为关闭）。查询失败上抛（服务端问题，与原 Key 校验失败同处理面）。
+	imageFlagsEnabled := false
+	if rt.deps.SystemAccountFlags != nil {
+		imageFlagsEnabled, err = rt.deps.SystemAccountFlags.ImageGenerationEnabled(ownerID)
+		if err != nil {
+			failWith(err)
+			return
+		}
+	}
+	imageGenerationEnabled := imageFlagsEnabled && rt.scopeHasImageGenerationRoute(scope, ownerID)
 	environment := rt.deps.ToolEnvironment
 	if environment == "" {
 		environment = "development"
@@ -527,7 +528,9 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	promptCacheKey := ""
 	if routeModelOption.SupportsPromptCaching {
-		promptCacheKey = buildChatPromptCacheKey(ownerID, apiKey.ID, conversation.ID)
+		// 键只用于上游 prompt cache 亲和（同一会话跨轮稳定），不进任何持久化
+		// 身份；免 Key 直调后不再含 API Key 维度。
+		promptCacheKey = buildChatPromptCacheKey(ownerID, conversation.ID)
 	}
 	_, systemInstructionsText, _ := buildChatSystemInstructions(internalToolNames)
 	budgetInput := fixedChatBudgetInput{
@@ -544,7 +547,6 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	compactionInput := CompactionInput{
 		ConversationID:              conversation.ID,
 		SystemAccountID:             ownerID,
-		APIKeySecret:                apiKey.Secret,
 		Model:                       body.Model,
 		EffectiveContextLimitTokens: effectiveContextLimitTokens,
 	}
@@ -579,7 +581,6 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			Targets:          preparedContext.UnresolvedAssets,
 			ConversationID:   conversation.ID,
 			SystemAccountID:  ownerID,
-			APIKeySecret:     apiKey.Secret,
 			Model:            body.Model,
 			UserContent:      "补全此前对话中的图片语义说明",
 			AssistantContent: "",
@@ -716,7 +717,6 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			ownerID:                     ownerID,
 			userMessageID:               accepted.UserMessage.ID,
 			protocol:                    protocol,
-			apiKey:                      apiKey,
 			executor:                    dispatchExecutor,
 			traceID:                     traceID,
 			defaultImageModel:           string(conversation.DefaultImageModel),
@@ -921,21 +921,6 @@ func (rt *chatRoutes) waitForImageObservations(assetIDs []string, timeoutMs int6
 		return
 	}
 	rt.deps.ImageObservation.Wait(assetIDs, timeoutMs)
-}
-
-// gatewayKeyOrError validates a gateway key with the nil-port contract.
-func (d *Deps) gatewayKeyOrError(secret string) (*GatewayKeyView, error) {
-	if d.GatewayKeys == nil {
-		return nil, &DomainError{Message: "API Key 不存在或不可用"}
-	}
-	view, err := d.GatewayKeys.ValidateGatewayKey(secret)
-	if err != nil {
-		return nil, err
-	}
-	if view == nil {
-		return nil, &DomainError{Message: "会话绑定的 API Key 不可用"}
-	}
-	return view, nil
 }
 
 // scopeRouteAccounts 按绑定作用域解析指定协议的候选账户：直接使用收敛后的

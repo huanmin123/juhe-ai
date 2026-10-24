@@ -22,20 +22,24 @@ func createKitMinimalTable(t *testing.T, db *sql.DB, table, column string) {
 	execKitSchema(t, db, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" ("%s" TEXT)`, table, column))
 }
 
-// TestPublicApiLogsAndSessionsCleanup：rowid 批删语义（严格早于 cutoff、
-// 最旧优先、limit 上限）。
+// TestPublicApiLogsAndSessionsCleanup：ctid 批删语义（严格早于 cutoff、
+// 最旧优先、limit 上限）。真实建库走 pgtestkit 隔离 PG 库（PLAN
+// B1 POC#2），表建在生产 PG schema（juhe_dataset / juhe_business）下。
 func TestPublicApiLogsAndSessionsCleanup(t *testing.T) {
-	db := openKitSQLite(t, "public_logs")
-	execKitSchema(t, db.DB,
-		`CREATE TABLE public_api_logs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL)`,
-		`CREATE TABLE system_sessions (id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)`)
+	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error {
+		_, err := raw.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_dataset;
+CREATE SCHEMA IF NOT EXISTS juhe_business;
+CREATE TABLE juhe_dataset.public_api_logs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+CREATE TABLE juhe_business.system_sessions (id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)`)
+		return err
+	})
 	for _, id := range []string{"old-2", "old-1", "edge", "new"} {
 		createdAt := map[string]string{
 			"old-1": "2026-09-01T00:00:00.000Z", "old-2": "2026-08-01T00:00:00.000Z",
 			"edge": "2026-09-05T00:00:00.000Z", "new": "2026-09-20T00:00:00.000Z",
 		}[id]
-		mustExecKit(t, db, `INSERT INTO public_api_logs (id, created_at) VALUES (?, ?)`, id, createdAt)
-		mustExecKit(t, db, `INSERT INTO system_sessions (id, expires_at) VALUES (?, ?)`, id, createdAt)
+		mustExecKit(t, db, `INSERT INTO juhe_dataset.public_api_logs (id, created_at) VALUES ($1, $2)`, id, createdAt)
+		mustExecKit(t, db, `INSERT INTO juhe_business.system_sessions (id, expires_at) VALUES ($1, $2)`, id, createdAt)
 	}
 	logs := &PublicApiLogsStore{DB: db}
 	// limit=1：只删最旧的一行（old-2）。
@@ -43,7 +47,7 @@ func TestPublicApiLogsAndSessionsCleanup(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("limited deleted = %d, %v", deleted, err)
 	}
-	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM public_api_logs WHERE id = 'old-2'`); got != 0 {
+	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM juhe_dataset.public_api_logs WHERE id = 'old-2'`); got != 0 {
 		t.Fatalf("最旧行应先被删除")
 	}
 	// 放开 limit：删除剩余严格早于 cutoff 的行（old-1）；边界行（等于 cutoff）保留。
@@ -51,7 +55,7 @@ func TestPublicApiLogsAndSessionsCleanup(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("logs deleted = %d, %v", deleted, err)
 	}
-	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM public_api_logs WHERE id IN ('edge','new')`); got != 2 {
+	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM juhe_dataset.public_api_logs WHERE id IN ('edge','new')`); got != 2 {
 		t.Fatalf("边界行不应被删除")
 	}
 	sessions := &SystemSessionsStore{DB: db}
@@ -80,20 +84,25 @@ func TestPublicApiLogsAndSessionsCleanup(t *testing.T) {
 	}
 }
 
-// TestDeleteRowsBeforeAndQuoting：rowid/ctid 批删的引用与方言差异。
+// TestDeleteRowsBeforeAndQuoting：rowid/ctid 批删的引用与方言差异。真实库
+// 半区迁 pgtestkit（juhe_stats schema，deleteRowsBefore 传生产 PG schema 值）；
+// SQLite 引用分支为纯函数断言（无库）。
 func TestDeleteRowsBeforeAndQuoting(t *testing.T) {
-	db := openKitSQLite(t, "rows_before")
-	createKitMinimalTable(t, db.DB, "usage_stats_minute", "stat_minute")
-	mustExecKit(t, db, `INSERT INTO "usage_stats_minute" ("stat_minute") VALUES ('a'), ('b'), ('c')`)
+	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error {
+		_, err := raw.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;
+CREATE TABLE juhe_stats."usage_stats_minute" ("stat_minute" TEXT)`)
+		return err
+	})
+	mustExecKit(t, db, `INSERT INTO juhe_stats."usage_stats_minute" ("stat_minute") VALUES ('a'), ('b'), ('c')`)
 	// 严格早于 'b'：只删 'a'（'b' 自身为边界保留）。
-	deleted, err := deleteRowsBefore(context.Background(), db, "", "usage_stats_minute", "stat_minute", "b", 10)
+	deleted, err := deleteRowsBefore(context.Background(), db, kitPGSchemaStats, "usage_stats_minute", "stat_minute", "b", 10)
 	if err != nil || deleted != 1 {
 		t.Fatalf("deleted = %d, %v", deleted, err)
 	}
-	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM "usage_stats_minute"`); got != 2 {
+	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM juhe_stats."usage_stats_minute"`); got != 2 {
 		t.Fatalf("残余 = %d", got)
 	}
-	if got := quoteIdentifierTable(db, "t"); got != `"t"` {
+	if got := quoteIdentifierTable(&DB{}, "t"); got != `"t"` {
 		t.Fatalf("SQLite 引用 = %q", got)
 	}
 	pg := &DB{Postgres: true}
@@ -122,16 +131,26 @@ func TestDeleteRowsBeforeAndQuoting(t *testing.T) {
 	}
 }
 
-// TestCleanupUsageStatsRetentionSQLite：specs → 结果字段映射 + 批删 + checkpoint。
-func TestCleanupUsageStatsRetentionSQLite(t *testing.T) {
-	db := openKitSQLite(t, "stats_retention")
-	for _, spec := range usageStatsRetentionSpecs {
-		createKitMinimalTable(t, db.DB, spec.TableName, spec.Column)
-	}
+// TestCleanupUsageStatsRetention：specs → 结果字段映射 + 批删 + checkpoint。
+// 真实库半区走 pgtestkit（specs 全表建在 juhe_stats，与 schemaForStats 的
+// PG 方言值一致）。
+func TestCleanupUsageStatsRetention(t *testing.T) {
+	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error {
+		if _, err := raw.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats`); err != nil {
+			return err
+		}
+		for _, spec := range usageStatsRetentionSpecs {
+			if _, err := raw.ExecContext(ctx,
+				`CREATE TABLE IF NOT EXISTS juhe_stats.`+spec.TableName+` ("`+spec.Column+`" TEXT)`); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	// 种子：minute 桶 2 行、daily 1 行、rank snapshots 1 行。
-	mustExecKit(t, db, `INSERT INTO "usage_stats_minute" ("stat_minute") VALUES ('2020-01-01T00:00'), ('2020-02-01T00:00')`)
-	mustExecKit(t, db, `INSERT INTO "usage_stats_daily" ("stat_date") VALUES ('2020-01-01')`)
-	mustExecKit(t, db, `INSERT INTO "usage_rank_snapshots" ("snapshot_at") VALUES ('2020-01-01T00:00:00.000Z')`)
+	mustExecKit(t, db, `INSERT INTO juhe_stats."usage_stats_minute" ("stat_minute") VALUES ('2020-01-01T00:00'), ('2020-02-01T00:00')`)
+	mustExecKit(t, db, `INSERT INTO juhe_stats."usage_stats_daily" ("stat_date") VALUES ('2020-01-01')`)
+	mustExecKit(t, db, `INSERT INTO juhe_stats."usage_rank_snapshots" ("snapshot_at") VALUES ('2020-01-01T00:00:00.000Z')`)
 	checkpoints := 0
 	store := &StatsRetentionStore{DB: db, Checkpoint: func(context.Context) error { checkpoints++; return nil }}
 
@@ -162,11 +181,19 @@ func TestCleanupUsageStatsRetentionSQLite(t *testing.T) {
 
 // TestCleanupNonBusinessStatsData：cutoff 键计算 + 全表批删 + HasMore 语义。
 func TestCleanupNonBusinessStatsData(t *testing.T) {
-	db := openKitSQLite(t, "non_business_stats")
-	for _, rule := range nonBusinessStatsCleanupTables {
-		createKitMinimalTable(t, db.DB, rule.TableName, rule.TimeColumnName)
-	}
-	mustExecKit(t, db, `INSERT INTO "usage_stats_totals" ("updated_at") VALUES ('2026-01-01T00:00:00.000Z'), ('2026-02-01T00:00:00.000Z')`)
+	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error {
+		if _, err := raw.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats`); err != nil {
+			return err
+		}
+		for _, rule := range nonBusinessStatsCleanupTables {
+			if _, err := raw.ExecContext(ctx,
+				`CREATE TABLE IF NOT EXISTS juhe_stats.`+rule.TableName+` ("`+rule.TimeColumnName+`" TEXT)`); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	mustExecKit(t, db, `INSERT INTO juhe_stats."usage_stats_totals" ("updated_at") VALUES ('2026-01-01T00:00:00.000Z'), ('2026-02-01T00:00:00.000Z')`)
 	store := &StatsRetentionStore{DB: db}
 
 	counts, err := store.CleanupNonBusinessStatsData(context.Background(), kitUpdatedAt, 10, kitZone())

@@ -239,7 +239,6 @@ func w1ScheduleInput() chat.ScheduleObservationInput {
 	return chat.ScheduleObservationInput{
 		ConversationID:   "conv_1",
 		SystemAccountID:  "sys_1",
-		APIKeySecret:     "sk-obs",
 		Model:            "gpt-test",
 		UserContent:      "图片里有什么",
 		AssistantContent: "我看看",
@@ -331,8 +330,9 @@ func TestW1RunObservationSuccessFlow(t *testing.T) {
 	if f.executor.got.Path != "/v1/responses" || f.executor.got.Method != "POST" {
 		t.Fatalf("dispatch target = %s %s", f.executor.got.Method, f.executor.got.Path)
 	}
-	if f.executor.got.Headers["authorization"] != "Bearer sk-obs" {
-		t.Fatalf("authorization = %q", f.executor.got.Headers["authorization"])
+	// 免 Key 直调后请求头不再携带 Bearer（鉴权经内部身份通道）。
+	if _, has := f.executor.got.Headers["authorization"]; has {
+		t.Fatalf("authorization = %q, want 不携带", f.executor.got.Headers["authorization"])
 	}
 	var body map[string]any
 	if err := json.Unmarshal(f.executor.got.Body, &body); err != nil {
@@ -431,11 +431,13 @@ type w1TargetAwareExecutor struct {
 	w1FakeExecutor
 	withCalls int
 	accountID string
+	ownerID   string
 }
 
-func (e *w1TargetAwareExecutor) WithChatDispatchAccount(accountID string) chat.GenerationExecutor {
+func (e *w1TargetAwareExecutor) WithChatDispatchAccount(accountID, ownerID string) chat.GenerationExecutor {
 	e.withCalls++
 	e.accountID = accountID
+	e.ownerID = ownerID
 	return e
 }
 
@@ -498,8 +500,8 @@ func TestW1RunObservationDispatchTargetAware(t *testing.T) {
 	if err := bound.obs.runObservation(ctx, input, target); err != nil {
 		t.Fatalf("runObservation: %v", err)
 	}
-	if boundAware.withCalls != 1 || boundAware.accountID != "acc_pin" {
-		t.Fatalf("WithChatDispatchAccount = calls:%d %s", boundAware.withCalls, boundAware.accountID)
+	if boundAware.withCalls != 1 || boundAware.accountID != "acc_pin" || boundAware.ownerID != "sys_1" {
+		t.Fatalf("WithChatDispatchAccount = calls:%d %s %s", boundAware.withCalls, boundAware.accountID, boundAware.ownerID)
 	}
 	if boundAware.got == nil || boundAware.got.Path != "/v1/responses" {
 		t.Fatalf("dispatch = %v", boundAware.got)

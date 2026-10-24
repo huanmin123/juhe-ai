@@ -12,11 +12,14 @@ import (
 // 执行 → 投影 → 释放）的成功与失败路径，以及 AppendOutcome 的重放/冲突
 // 幂等语义。
 
-// wfCycleDraft 构造一个可用 store 正常签发的输入草稿。
+// wfCycleDraft 构造一个可用 store 正常签发的输入草稿。IssuedAt/ExpiresAt
+// 截断到微秒，与 PG timestamptz 微秒存储精度对齐（SQLite TEXT 臂无精度差异；
+// 纳秒精度会使 LoadCommittedOutcome/VerifyExecutionInput 的 issued_at 逐位
+// Equal 校验在 PG 臂上 fail closed——生产臂缺陷，另列报告，不在本切片修复）。
 func wfCycleDraft(proxyID string) InputDraft {
 	return InputDraft{
 		ProxyID: proxyID, ConfigRevision: wfProjRevision, Trigger: TriggerPeriodic,
-		IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+		IssuedAt: time.Now().UTC().Truncate(time.Microsecond), ExpiresAt: time.Now().UTC().Truncate(time.Microsecond).Add(5 * time.Minute),
 		PolicyVersion: proxyLatencyInputPolicyVersion,
 		ProxyType:     "http", ProxyHost: "127.0.0.1", ProxyPort: 1,
 		Targets: []Target{{Provider: "gpt", ProfileID: "profile-gpt", URL: "https://api.openai.com/v1"}},

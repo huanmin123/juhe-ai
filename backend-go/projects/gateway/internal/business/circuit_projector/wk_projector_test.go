@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,59 +11,59 @@ import (
 	runtime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_runtime"
 
 	"github.com/alicebob/miniredis/v2"
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// wkControlDB 构造与控制面契约一致的内存 SQLite：accounts/incidents/outbox 三张
-// 关系加 key_model capability 唯一索引，保证 CompareAndSetIncident/Advance 等写路径可用。
+// wkControlSchema 与 circuit_control_plane 生产 PG 臂的默认 schema 一致
+// （defaultBusinessSchema 未导出，此处按生产默认值限定测试手写 SQL）。
+const wkControlSchema = "juhe_business"
+
+// wkControlDB 构造与控制面契约一致的真实 PG 测试库（PLAN-20261024T051925945Z
+// 测试基建迁移切片；maintenance schema 包 internal 不可导入，此处按生产
+// juhe_business DDL 的 BIGINT 同构形态建表，与控制面包内 PG fixture 一致）：
+// accounts/incidents/outbox 三张关系加 key_model capability 唯一索引，保证
+// CompareAndSetIncident/Advance 等写路径可用。
 func wkControlDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:circuit-projector-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	ddls := []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, dispatch_revision INTEGER NOT NULL DEFAULT 1, circuit_projection_revision INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)`,
-		`CREATE TABLE account_circuit_incidents (
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		for _, ddl := range []string{
+			`CREATE SCHEMA IF NOT EXISTS ` + wkControlSchema,
+			`CREATE TABLE IF NOT EXISTS ` + wkControlSchema + `.accounts (id TEXT PRIMARY KEY, dispatch_revision BIGINT NOT NULL DEFAULT 1, circuit_projection_revision BIGINT NOT NULL DEFAULT 0, deleted_at TEXT)`,
+			`CREATE TABLE IF NOT EXISTS ` + wkControlSchema + `.account_circuit_incidents (
  circuit_scope_key TEXT PRIMARY KEY, account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, scope_kind TEXT NOT NULL,
  key_fingerprint TEXT, protocol_code TEXT, request_lane TEXT, model_family TEXT, client_model TEXT, capability_hash TEXT,
  credential_source_account_id TEXT, client_endpoint_family TEXT, final_upstream_model TEXT, upstream_endpoint_mode TEXT, incident_id TEXT NOT NULL,
  parent_incident_id TEXT, child_incident_ids_json TEXT NOT NULL, caused_by_terminal_outcome_id TEXT, state TEXT NOT NULL,
- failure_scope TEXT, generation INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, ledger_revision INTEGER NOT NULL,
- projected_ledger_revision INTEGER NOT NULL, transition_id TEXT NOT NULL, cooldown_observation_generation INTEGER NOT NULL,
- open_until_ms INTEGER, next_transition_at_ms INTEGER, lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
- lease_until_ms INTEGER, attempt_started_at_ms INTEGER, attempt_hard_deadline_ms INTEGER, upstream_attempt_observed INTEGER NOT NULL,
+ failure_scope TEXT, generation BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, ledger_revision BIGINT NOT NULL,
+ projected_ledger_revision BIGINT NOT NULL, transition_id TEXT NOT NULL, cooldown_observation_generation BIGINT NOT NULL,
+ open_until_ms BIGINT, next_transition_at_ms BIGINT, lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
+ lease_until_ms BIGINT, attempt_started_at_ms BIGINT, attempt_hard_deadline_ms BIGINT, upstream_attempt_observed INTEGER NOT NULL,
  backoff_level INTEGER NOT NULL, consecutive_failures INTEGER NOT NULL, confirmation_failures_required INTEGER NOT NULL,
  confirmation_failure_evidence_keys_json TEXT NOT NULL, recovering_successes INTEGER NOT NULL, last_failure_class TEXT,
- retained_until_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
-		`CREATE TABLE account_circuit_outbox (
+ retained_until_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS ` + wkControlSchema + `.account_circuit_outbox (
  event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
  account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, circuit_scope_key TEXT, incident_id TEXT, transition_id TEXT NOT NULL,
- dispatch_revision INTEGER NOT NULL, generation INTEGER, ledger_revision INTEGER, status TEXT NOT NULL, available_at_ms INTEGER NOT NULL,
- claim_token TEXT, claimed_by TEXT, claim_until_ms INTEGER, attempt_count INTEGER NOT NULL, last_error_class TEXT,
- acknowledged_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
-	}
-	for _, ddl := range ddls {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
+ dispatch_revision BIGINT NOT NULL, generation BIGINT, ledger_revision BIGINT, status TEXT NOT NULL, available_at_ms BIGINT NOT NULL,
+ claim_token TEXT, claimed_by TEXT, claim_until_ms BIGINT, attempt_count INTEGER NOT NULL, last_error_class TEXT,
+ acknowledged_at_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)`,
+			`CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON ` + wkControlSchema + `.account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`,
+			`INSERT INTO ` + wkControlSchema + `.accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a1',1,0)`,
+		} {
+			if _, err := db.ExecContext(ctx, ddl); err != nil {
+				return err
+			}
 		}
-	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a1',1,0)`); err != nil {
-		t.Fatal(err)
-	}
-	return db
+		return nil
+	})
 }
 
-// wkProjector 组装控制面（SQLite）+ 运行态（miniredis）双存储的投影服务，
+// wkProjector 组装控制面（真实 PG）+ 运行态（miniredis）双存储的投影服务，
 // 并通过 BackfillRuntimeIndex 把运行态索引置为 ready，使 CheckReady 放行。
 func wkProjector(t *testing.T) (*Service, *control.Store, *sql.DB, *miniredis.Miniredis) {
 	t.Helper()
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.SQLite, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +101,9 @@ func wkInsertOutbox(t *testing.T, db *sql.DB, eventID, eventType, scope, inciden
 	if incidentID != "" {
 		incidentArg = incidentID
 	}
-	_, err := db.Exec(`INSERT INTO account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES (?, 'account_circuit_runtime_v1', ?, ?, 'a1', 'a1', ?, ?, 'tr-'+?, ?, 1, 1, 'pending', 100, 0, 100, 100)`,
+	// transition_id 原 SQLite 写法 'tr-'+? 走数值 coercion 得到非预期值且不
+	// 被任何断言依赖；PG 无 text+text 操作符，重钉为 'tr-' || $6。
+	_, err := db.Exec(`INSERT INTO `+wkControlSchema+`.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ($1, 'account_circuit_runtime_v1', $2, $3, 'a1', 'a1', $4, $5, 'tr-' || $6, $7, 1, 1, 'pending', 100, 0, 100, 100)`,
 		eventID, "dedupe-"+eventID, eventType, scopeArg, incidentArg, eventID, dispatchRevision)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +118,7 @@ func TestNewRequiresStoresAndOwner(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runtimeStore.Close() })
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.SQLite, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,7 @@ func TestNilServiceAndUninitializedServiceFailClosed(t *testing.T) {
 
 func TestRunOnceFailsWhenRuntimeNotReady(t *testing.T) {
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.SQLite, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +269,7 @@ func TestRunOnceReleasesFailedProjections(t *testing.T) {
 		t.Fatalf("失败投影统计不符: %+v", result)
 	}
 	var lastError sql.NullString
-	if err := db.QueryRow(`SELECT last_error_class FROM account_circuit_outbox WHERE event_id='evt-bogus'`).Scan(&lastError); err != nil {
+	if err := db.QueryRow(`SELECT last_error_class FROM ` + wkControlSchema + `.account_circuit_outbox WHERE event_id='evt-bogus'`).Scan(&lastError); err != nil {
 		t.Fatal(err)
 	}
 	if lastError.String != "projection_failed" {
@@ -384,7 +385,7 @@ func TestRunOnceReleasesWhenAcknowledgeMisses(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE account_circuit_outbox SET projection_key='tampered' WHERE event_type='incident_changed'`); err != nil {
+	if _, err := db.Exec(`UPDATE ` + wkControlSchema + `.account_circuit_outbox SET projection_key='tampered' WHERE event_type='incident_changed'`); err != nil {
 		t.Fatal(err)
 	}
 	result, err := svc.RunOnce(ctx, time.UnixMilli(200), 10)
@@ -416,7 +417,7 @@ func TestRunOnceFailsWhenAcknowledgeErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 预先破坏投影键，dispatch 事件在投影层即失败并释放重放。
-	if _, err := db.Exec(`UPDATE account_circuit_outbox SET projection_key='tampered'`); err != nil {
+	if _, err := db.Exec(`UPDATE ` + wkControlSchema + `.account_circuit_outbox SET projection_key='tampered'`); err != nil {
 		t.Fatal(err)
 	}
 	result, err := svc.RunOnce(ctx, time.UnixMilli(200), 10)
@@ -430,7 +431,7 @@ func TestRunOnceFailsWhenAcknowledgeErrors(t *testing.T) {
 
 func TestBackfillRuntimeIndexFailsWhenGateNotReady(t *testing.T) {
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.SQLite, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}

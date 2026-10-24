@@ -38,9 +38,10 @@ func dedupFailureFixture(id, createdAt, body, accountID string) AuditLogInput {
 	return input
 }
 
-func dedupRefState(t *testing.T, db *sql.DB, auditLogID string) (headersBlobID, bodyBlobID, headersSHA, bodySHA sql.NullString, capture string, drop sql.NullString) {
+func dedupRefState(t *testing.T, implementation *sqlStore, auditLogID string) (headersBlobID, bodyBlobID, headersSHA, bodySHA sql.NullString, capture string, drop sql.NullString) {
 	t.Helper()
-	err := db.QueryRow(`SELECT headers_blob_id,body_blob_id,headers_sha256,body_sha256,capture_status,drop_reason FROM audit_payload_refs WHERE audit_log_id=?`, auditLogID).Scan(&headersBlobID, &bodyBlobID, &headersSHA, &bodySHA, &capture, &drop)
+	query := implementation.bind(`SELECT headers_blob_id,body_blob_id,headers_sha256,body_sha256,capture_status,drop_reason FROM ` + implementation.table("audit_payload_refs") + ` WHERE audit_log_id=?`)
+	err := implementation.db.QueryRow(query, auditLogID).Scan(&headersBlobID, &bodyBlobID, &headersSHA, &bodySHA, &capture, &drop)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func TestErrorGroupDedupKeepsOnlyLatestSampleAcrossWindows(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, first); err != nil {
 		t.Fatal(err)
 	}
-	firstHeaders, firstBody, _, _, _, _ := dedupRefState(t, implementation.db, first.ID)
+	firstHeaders, firstBody, _, _, _, _ := dedupRefState(t, implementation, first.ID)
 	if !firstHeaders.Valid || !firstBody.Valid {
 		t.Fatalf("旧样本 persist 后必须持有 blob 引用: headers=%v body=%v", firstHeaders, firstBody)
 	}
@@ -80,7 +81,7 @@ func TestErrorGroupDedupKeepsOnlyLatestSampleAcrossWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	headersBlobID, bodyBlobID, headersSHA, bodySHA, capture, drop := dedupRefState(t, implementation.db, first.ID)
+	headersBlobID, bodyBlobID, headersSHA, bodySHA, capture, drop := dedupRefState(t, implementation, first.ID)
 	if headersBlobID.Valid || bodyBlobID.Valid {
 		t.Fatalf("旧样本 blob 引用必须置空: headers=%v body=%v", headersBlobID, bodyBlobID)
 	}
@@ -91,7 +92,7 @@ func TestErrorGroupDedupKeepsOnlyLatestSampleAcrossWindows(t *testing.T) {
 		t.Fatalf("降级必须保留 sha: headers=%v body=%v", headersSHA, bodySHA)
 	}
 
-	newHeaders, newBody, _, _, newCapture, newDrop := dedupRefState(t, implementation.db, second.ID)
+	newHeaders, newBody, _, _, newCapture, newDrop := dedupRefState(t, implementation, second.ID)
 	if !newHeaders.Valid || !newBody.Valid || newCapture != string(PayloadCaptureComplete) || newDrop.Valid {
 		t.Fatalf("最新样本 refs 必须完整: headers=%v body=%v capture=%q drop=%v", newHeaders, newBody, newCapture, newDrop)
 	}
@@ -123,7 +124,7 @@ func TestErrorGroupDedupKeepsOnlyLatestSampleAcrossWindows(t *testing.T) {
 		t.Fatalf("SQLite 释放 blob ref_count=%d, want 0", refCount)
 	}
 
-	_, successBody, _, _, successCapture, _ := dedupRefState(t, implementation.db, success.ID)
+	_, successBody, _, _, successCapture, _ := dedupRefState(t, implementation, success.ID)
 	if !successBody.Valid || successCapture != string(PayloadCaptureComplete) {
 		t.Fatalf("成功事件 refs 不得受去重影响: body=%v capture=%q", successBody, successCapture)
 	}
@@ -146,7 +147,7 @@ func TestErrorGroupDedupHandsOverOnlyAcrossWindows(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, first); err != nil {
 		t.Fatal(err)
 	}
-	firstHeaders, firstBody, _, _, _, _ := dedupRefState(t, implementation.db, first.ID)
+	firstHeaders, firstBody, _, _, _, _ := dedupRefState(t, implementation, first.ID)
 	if !firstHeaders.Valid || !firstBody.Valid {
 		t.Fatalf("窗口首条 persist 后必须持有 blob 引用: headers=%v body=%v", firstHeaders, firstBody)
 	}
@@ -157,11 +158,11 @@ func TestErrorGroupDedupHandsOverOnlyAcrossWindows(t *testing.T) {
 	}
 
 	// 同窗口重复：首条不动、第二条出生即降级、样本仍是首条、无 GC 意图。
-	firstCapture := refState(t, implementation.db, first.ID)
+	firstCapture := refState(t, implementation, first.ID)
 	if firstCapture != string(PayloadCaptureComplete) {
 		t.Fatalf("同窗口重复不得降级窗口首条: capture=%q", firstCapture)
 	}
-	secondHeaders, secondBody, secondHeadersSHA, secondBodySHA, secondCapture, secondDrop := dedupRefState(t, implementation.db, second.ID)
+	secondHeaders, secondBody, secondHeadersSHA, secondBodySHA, secondCapture, secondDrop := dedupRefState(t, implementation, second.ID)
 	if secondHeaders.Valid || secondBody.Valid {
 		t.Fatalf("同窗口重复的响应部件不得落盘: headers=%v body=%v", secondHeaders, secondBody)
 	}
@@ -200,7 +201,7 @@ func TestErrorGroupDedupHandsOverOnlyAcrossWindows(t *testing.T) {
 	}
 
 	// 跨窗口移交：旧样本（窗口首条）降级并登记 GC，第三条完整。
-	headersBlobID, bodyBlobID, headersSHA, bodySHA, capture, drop := dedupRefState(t, implementation.db, first.ID)
+	headersBlobID, bodyBlobID, headersSHA, bodySHA, capture, drop := dedupRefState(t, implementation, first.ID)
 	if headersBlobID.Valid || bodyBlobID.Valid {
 		t.Fatalf("跨窗口旧样本 blob 引用必须置空: headers=%v body=%v", headersBlobID, bodyBlobID)
 	}
@@ -210,7 +211,7 @@ func TestErrorGroupDedupHandsOverOnlyAcrossWindows(t *testing.T) {
 	if !headersSHA.Valid || headersSHA.String == "" || !bodySHA.Valid || bodySHA.String == "" {
 		t.Fatalf("跨窗口降级必须保留 sha: headers=%v body=%v", headersSHA, bodySHA)
 	}
-	thirdHeaders, thirdBody, _, _, thirdCapture, thirdDrop := dedupRefState(t, implementation.db, third.ID)
+	thirdHeaders, thirdBody, _, _, thirdCapture, thirdDrop := dedupRefState(t, implementation, third.ID)
 	if !thirdHeaders.Valid || !thirdBody.Valid || thirdCapture != string(PayloadCaptureComplete) || thirdDrop.Valid {
 		t.Fatalf("新窗口样本 refs 必须完整: headers=%v body=%v capture=%q drop=%v", thirdHeaders, thirdBody, thirdCapture, thirdDrop)
 	}
@@ -254,10 +255,11 @@ func TestErrorGroupDedupHandsOverOnlyAcrossWindows(t *testing.T) {
 	}
 }
 
-func refState(t *testing.T, db *sql.DB, auditLogID string) string {
+func refState(t *testing.T, implementation *sqlStore, auditLogID string) string {
 	t.Helper()
 	var capture string
-	if err := db.QueryRow(`SELECT capture_status FROM audit_payload_refs WHERE audit_log_id=?`, auditLogID).Scan(&capture); err != nil {
+	query := implementation.bind(`SELECT capture_status FROM ` + implementation.table("audit_payload_refs") + ` WHERE audit_log_id=?`)
+	if err := implementation.db.QueryRow(query, auditLogID).Scan(&capture); err != nil {
 		t.Fatal(err)
 	}
 	return capture
@@ -267,12 +269,10 @@ func refState(t *testing.T, db *sql.DB, auditLogID string) string {
 // 在 5 分钟窗口假设下已跨窗（会触发移交），10 分钟窗口下必须仍是同窗口重复：
 // 首条保持样本与完整引用，第二条出生即降级，零 GC 意图。
 func TestErrorGroupDedupWindowIsTenMinutes(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 
 	first := dedupFailureFixture("window-pin-first", "2026-08-09T12:01:00.000Z", "first failure body", "account-1")
 	if _, err := store.Persist(ctx, lease, first); err != nil {
@@ -283,22 +283,22 @@ func TestErrorGroupDedupWindowIsTenMinutes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if refState(t, implementation.db, first.ID) != string(PayloadCaptureComplete) {
+	if refState(t, implementation, first.ID) != string(PayloadCaptureComplete) {
 		t.Fatal("10 分钟窗口下 12:06 与 12:01 同窗口，首条不得降级")
 	}
-	if refState(t, implementation.db, second.ID) != string(PayloadCaptureDeduped) {
+	if refState(t, implementation, second.ID) != string(PayloadCaptureDeduped) {
 		t.Fatal("同窗口重复必须出生即降级")
 	}
 	var count int
 	var sample string
-	if err := implementation.db.QueryRow(`SELECT count,sample_event_id FROM audit_error_groups`).Scan(&count, &sample); err != nil {
+	if err := implementation.db.QueryRow(`SELECT count,sample_event_id FROM juhe_dataset.audit_error_groups`).Scan(&count, &sample); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 || sample != first.ID {
 		t.Fatalf("样本必须保持窗口首条: count=%d sample=%q", count, sample)
 	}
 	var gcCount int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc`).Scan(&gcCount); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc`).Scan(&gcCount); err != nil {
 		t.Fatal(err)
 	}
 	if gcCount != 0 {
@@ -310,12 +310,10 @@ func TestErrorGroupDedupWindowIsTenMinutes(t *testing.T) {
 // 的重放（同 ID 再 Persist）被 upsertLog 幂等忽略，不重复触发跨窗口移交——
 // 窗口组数、样本指针与 GC 意图都保持移交后状态。
 func TestErrorGroupDedupIdempotentReplaySkipsHandover(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 
 	first := dedupFailureFixture("replay-first", "2026-08-09T12:01:00.000Z", "first failure body", "account-1")
 	if _, err := store.Persist(ctx, lease, first); err != nil {
@@ -332,21 +330,21 @@ func TestErrorGroupDedupIdempotentReplaySkipsHandover(t *testing.T) {
 	}
 
 	var groupCount int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_error_groups`).Scan(&groupCount); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_error_groups`).Scan(&groupCount); err != nil {
 		t.Fatal(err)
 	}
 	if groupCount != 2 {
 		t.Fatalf("重放不得新增窗口组: got %d", groupCount)
 	}
 	var sampleRows int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_error_groups WHERE sample_event_id=?`, second.ID).Scan(&sampleRows); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_error_groups WHERE sample_event_id=$1`, second.ID).Scan(&sampleRows); err != nil {
 		t.Fatal(err)
 	}
 	if sampleRows != 2 {
 		t.Fatalf("样本指针必须保持移交后状态: rows=%d", sampleRows)
 	}
 	var gcCount int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc`).Scan(&gcCount); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc`).Scan(&gcCount); err != nil {
 		t.Fatal(err)
 	}
 	if gcCount != 2 {
@@ -445,7 +443,7 @@ func TestErrorGroupDedupDoesNotTouchDifferentFingerprints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	headersBlobID, bodyBlobID, _, _, capture, _ := dedupRefState(t, implementation.db, first.ID)
+	headersBlobID, bodyBlobID, _, _, capture, _ := dedupRefState(t, implementation, first.ID)
 	if !headersBlobID.Valid || !bodyBlobID.Valid || capture != string(PayloadCaptureComplete) {
 		t.Fatalf("不同 fingerprint 不得降级既有样本: headers=%v body=%v capture=%q", headersBlobID, bodyBlobID, capture)
 	}
@@ -483,14 +481,14 @@ func TestErrorGroupDedupKeepsSharedCanonicalBlobForNewestEvent(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, first); err != nil {
 		t.Fatal(err)
 	}
-	firstHeaders, _, _, _, _, _ := dedupRefState(t, implementation.db, first.ID)
+	firstHeaders, _, _, _, _, _ := dedupRefState(t, implementation, first.ID)
 
 	second := dedupFailureFixture("shared-second", "2026-08-09T12:11:00.000Z", "identical failure body", "account-1")
 	if _, err := store.Persist(ctx, lease, second); err != nil {
 		t.Fatal(err)
 	}
 
-	_, sharedBody, _, _, _, _ := dedupRefState(t, implementation.db, second.ID)
+	_, sharedBody, _, _, _, _ := dedupRefState(t, implementation, second.ID)
 	if !sharedBody.Valid {
 		t.Fatal("最新事件必须持有共享 canonical body blob")
 	}
@@ -527,23 +525,21 @@ func TestErrorGroupDedupKeepsSharedCanonicalBlobForNewestEvent(t *testing.T) {
 // TestErrorGroupDedupedBlobsArePhysicallyCollectedByRetention 契约：降级后的
 // blob 在下一轮 CleanupRetention + cleanupScheduledBlobFiles 后文件被物理删除。
 func TestErrorGroupDedupedBlobsArePhysicallyCollectedByRetention(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 
 	first := dedupFailureFixture("gc-first", "2026-08-09T12:01:00.000Z", "old failure body", "account-1")
 	if _, err := store.Persist(ctx, lease, first); err != nil {
 		t.Fatal(err)
 	}
-	firstHeaders, firstBody, _, _, _, _ := dedupRefState(t, implementation.db, first.ID)
+	firstHeaders, firstBody, _, _, _, _ := dedupRefState(t, implementation, first.ID)
 	released := []string{firstHeaders.String, firstBody.String}
 	paths := make([]string, 0, len(released))
 	for _, blobID := range released {
 		var storageKey string
-		if err := implementation.db.QueryRow(`SELECT storage_key FROM audit_payload_blobs WHERE id=?`, blobID).Scan(&storageKey); err != nil {
+		if err := implementation.db.QueryRow(`SELECT storage_key FROM juhe_dataset.audit_payload_blobs WHERE id=$1`, blobID).Scan(&storageKey); err != nil {
 			t.Fatal(err)
 		}
 		paths = append(paths, filepath.Join(implementation.blobDir, filepath.FromSlash(storageKey)))
@@ -571,19 +567,19 @@ func TestErrorGroupDedupedBlobsArePhysicallyCollectedByRetention(t *testing.T) {
 		}
 	}
 	var blobRows, gcRows, logRows int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blobs WHERE id IN (?,?)`, released[0], released[1]).Scan(&blobRows); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blobs WHERE id IN ($1,$2)`, released[0], released[1]).Scan(&blobRows); err != nil {
 		t.Fatal(err)
 	}
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc`).Scan(&gcRows); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc`).Scan(&gcRows); err != nil {
 		t.Fatal(err)
 	}
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE id IN (?,?)`, first.ID, second.ID).Scan(&logRows); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs WHERE id IN ($1,$2)`, first.ID, second.ID).Scan(&logRows); err != nil {
 		t.Fatal(err)
 	}
 	if blobRows != 0 || gcRows != 0 || logRows != 2 {
 		t.Fatalf("GC 后状态: blobs=%d gc=%d logs=%d", blobRows, gcRows, logRows)
 	}
-	_, _, _, _, capture, _ := dedupRefState(t, implementation.db, first.ID)
+	_, _, _, _, capture, _ := dedupRefState(t, implementation, first.ID)
 	if capture != string(PayloadCaptureDeduped) {
 		t.Fatalf("降级 refs 行必须保留: capture=%q", capture)
 	}
@@ -594,12 +590,10 @@ func TestErrorGroupDedupedBlobsArePhysicallyCollectedByRetention(t *testing.T) {
 // blob 引用与 complete 状态——同组请求体 sha 一致共享 canonical blob，历史
 // 记录的请求原文打开即可见（读侧无感，BUG-0320 用户裁决）。
 func TestErrorGroupDedupPreservesRequestSidePayloads(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 
 	requestPayload := func() AuditLogPayloadInput {
 		return AuditLogPayloadInput{
@@ -648,7 +642,7 @@ func TestErrorGroupDedupPreservesRequestSidePayloads(t *testing.T) {
 
 	var firstRequestCapture, firstErrorCapture string
 	var requestHeaders, requestBody sql.NullString
-	if err := implementation.db.QueryRow(`SELECT headers_blob_id,body_blob_id,capture_status FROM audit_payload_refs WHERE audit_log_id=? AND part_type='client_request'`, first.ID).Scan(&requestHeaders, &requestBody, &firstRequestCapture); err != nil {
+	if err := implementation.db.QueryRow(`SELECT headers_blob_id,body_blob_id,capture_status FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1 AND part_type='client_request'`, first.ID).Scan(&requestHeaders, &requestBody, &firstRequestCapture); err != nil {
 		t.Fatal(err)
 	}
 	if !requestHeaders.Valid || !requestBody.Valid {
@@ -657,7 +651,7 @@ func TestErrorGroupDedupPreservesRequestSidePayloads(t *testing.T) {
 	if firstRequestCapture != string(PayloadCaptureComplete) {
 		t.Fatalf("请求部件 capture_status=%q, want complete", firstRequestCapture)
 	}
-	if err := implementation.db.QueryRow(`SELECT capture_status FROM audit_payload_refs WHERE audit_log_id=? AND part_type='gateway_error'`, first.ID).Scan(&firstErrorCapture); err != nil {
+	if err := implementation.db.QueryRow(`SELECT capture_status FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1 AND part_type='gateway_error'`, first.ID).Scan(&firstErrorCapture); err != nil {
 		t.Fatal(err)
 	}
 	if firstErrorCapture != string(PayloadCaptureDeduped) {
@@ -665,10 +659,10 @@ func TestErrorGroupDedupPreservesRequestSidePayloads(t *testing.T) {
 	}
 
 	var secondRequestCapture, secondErrorCapture string
-	if err := implementation.db.QueryRow(`SELECT capture_status FROM audit_payload_refs WHERE audit_log_id=? AND part_type='client_request'`, second.ID).Scan(&secondRequestCapture); err != nil {
+	if err := implementation.db.QueryRow(`SELECT capture_status FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1 AND part_type='client_request'`, second.ID).Scan(&secondRequestCapture); err != nil {
 		t.Fatal(err)
 	}
-	if err := implementation.db.QueryRow(`SELECT capture_status FROM audit_payload_refs WHERE audit_log_id=? AND part_type='gateway_error'`, second.ID).Scan(&secondErrorCapture); err != nil {
+	if err := implementation.db.QueryRow(`SELECT capture_status FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1 AND part_type='gateway_error'`, second.ID).Scan(&secondErrorCapture); err != nil {
 		t.Fatal(err)
 	}
 	if secondRequestCapture != string(PayloadCaptureComplete) || secondErrorCapture != string(PayloadCaptureComplete) {
@@ -677,7 +671,7 @@ func TestErrorGroupDedupPreservesRequestSidePayloads(t *testing.T) {
 
 	// 同组请求体 sha 一致：两条 client_request 指向同一 canonical blob。
 	var sharedBlobs int
-	if err := implementation.db.QueryRow(`SELECT COUNT(DISTINCT COALESCE(body_blob_id,'')) FROM audit_payload_refs WHERE audit_log_id IN (?,?) AND part_type='client_request'`, first.ID, second.ID).Scan(&sharedBlobs); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(DISTINCT COALESCE(body_blob_id,'')) FROM juhe_dataset.audit_payload_refs WHERE audit_log_id IN ($1,$2) AND part_type='client_request'`, first.ID, second.ID).Scan(&sharedBlobs); err != nil {
 		t.Fatal(err)
 	}
 	if sharedBlobs != 1 {
@@ -685,7 +679,7 @@ func TestErrorGroupDedupPreservesRequestSidePayloads(t *testing.T) {
 	}
 
 	var requestBlobGC int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc WHERE blob_id=?`, requestBody.String).Scan(&requestBlobGC); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id=$1`, requestBody.String).Scan(&requestBlobGC); err != nil {
 		t.Fatal(err)
 	}
 	if requestBlobGC != 0 {

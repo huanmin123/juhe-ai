@@ -30,6 +30,18 @@ type GatewayRequest struct {
 	// PreResolveGatewayRuntime and reused by later stages.
 	Runtime *gatewayruntimecache.GatewayRuntime
 
+	// InternalOwnerSystemAccountID 非空表示本请求来自进程内内部通道（AI 问答
+	// 免 Key 直调）：归属系统账户由此字段给出，preauth 跳过 API Key 抽取/校验/
+	// 熔断记录/用户请求限流。该字段只能由进程内代码在构造 GatewayRequest 后
+	// 赋值；外部 HTTP 请求经 NewGatewayRequest(r) 构造，没有任何 header / query /
+	// body 通道能写入它。
+	InternalOwnerSystemAccountID string
+
+	// SuppressUsage 表示本请求的全部使用日志必须丢弃（不落 usage_records、
+	// 不写 spool）。由内部通道入口按 InternalOwnerSystemAccountID 置位，随
+	// usage 上下文逐层传播到持久化闸口。
+	SuppressUsage bool
+
 	// AuthFailureErrorMessage / AuthFailureErrorCode mirror
 	// res.locals.gatewayAuthFailureErrorMessage / gatewayAuthFailureErrorCode:
 	// the audit copy of the auth failure that produced the response.

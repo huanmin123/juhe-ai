@@ -6,10 +6,10 @@ package groups
 // not exist → hydrate 错误被 hydrateListAccountStats 回退空投影 → 三列全 0）。
 // SQLite 分支保持裸表名不变。
 //
-// fixture 模式对齐 apikeys quota_hourly_dirty_test.go：SQLite 句柄 ATTACH
-// ':memory:' AS juhe_stats 承载生产同款限定形式（SetMaxOpenConns(1) 保证
-// ATTACH 对所有查询可见）；列定义照抄 maintenance pg_schema_stats.go 的
-// group_account_stats 建表。
+// PG 臂夹具（组A 迁移，PLAN-20261024T051925945Z）：pgtestkit 独立 PG 库 +
+// 生产同款 juhe_stats.group_account_stats 限定形式；列定义照抄 maintenance
+// pg_schema_stats.go 的 group_account_stats 建表。SQLite 裸表名分支（组B）
+// 保持 sqlite 夹具原状，随生产 sqlite 臂删除批次同批退役。
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "modernc.org/sqlite"
 )
 
@@ -37,20 +38,10 @@ const groupAccountStatsFixtureDDL = `CREATE TABLE juhe_stats.group_account_stats
 
 func newStatsReaderPGFixture(t *testing.T, insertSQL string, args ...any) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "group-stats-dialect.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		`ATTACH ':memory:' AS juhe_stats`,
-		groupAccountStatsFixtureDDL,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("fixture exec %q: %v", statement, err)
-		}
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;`+groupAccountStatsFixtureDDL)
+		return err
+	})
 	if _, err := db.Exec(insertSQL, args...); err != nil {
 		t.Fatal(err)
 	}

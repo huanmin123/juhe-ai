@@ -5,14 +5,24 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 )
 
-// 端到端 job 对账测试：SQLite 承载测试库（双模之一），SQL 语义与 PG 生产
-// 路径由 Dialect 单一来源生成。golden 期望值从 Node 源码逻辑推导并在断言处
-// 标注推导依据。
+// jobs_pg_test.go 是聚合域端到端 job 对账测试：PG 承载测试库（生产方言，
+// pgtestkit 隔离库 + statsagg_pgkit_test.go 生产对齐 DDL），SQL 语义由
+// Dialect 单一来源生成。golden 期望值从 Node 源码逻辑推导并在断言处标注
+// 推导依据。测试体内手写 SQL 按 PG 方言书写（juhe_ 前缀 schema 限定 + $n）。
+//
+// 本文件同时承载双模式共享的 testEnv 设施：
+//   - newPGTestEnv（statsagg_pgkit_test.go）：组A 迁移面的标准载体；
+//   - newTestEnv（SQLite 载体）：仅服务组B（SQLite-only 生产臂测试：配额
+//     全量重建、单写者并发竞争镜像 TestConcurrentWindowRefreshRace、w12f
+//     关闭句柄错误臂等），随生产 sqlite 臂删除批次一并退役；
+//   - scripted 假驱动由 w13g5_statsagg_kit_test.go 自建 testEnv，不经
+//     newTestEnv。
 
 type testEnv struct {
 	t       *testing.T
@@ -22,6 +32,8 @@ type testEnv struct {
 	zone    *time.Location
 }
 
+// newTestEnv 打开 SQLite 承载的测试环境（组B 保留载体；组A 迁移面用
+// newPGTestEnv）。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	db, err := OpenSQLiteTestDB(filepath.Join(t.TempDir(), "stats.sqlite3"))
@@ -102,6 +114,14 @@ func (e *testEnv) queryRowFloats(query string, args ...any) []float64 {
 			result = append(result, float64(typed))
 		case float64:
 			result = append(result, typed)
+		case string:
+			// PG numeric（SUM(bigint)/COALESCE(SUM,…) 等聚合结果）经 pgx 扫描
+			// 进 any 时为十进制字符串；语义仍是数值，解析后参与同一断言。
+			parsed, parseErr := strconv.ParseFloat(typed, 64)
+			if parseErr != nil {
+				e.t.Fatalf("non-numeric column value %v (%T)", value, value)
+			}
+			result = append(result, parsed)
 		default:
 			e.t.Fatalf("non-numeric column value %v (%T)", value, value)
 		}
@@ -144,7 +164,15 @@ func (e *testEnv) assertFloats(label string, got []float64, want ...float64) {
 
 func (e *testEnv) seedUsageRecord(record UsageStatsRecordRow) {
 	e.t.Helper()
-	e.exec(`INSERT INTO usage_records (
+	// 双模式共享 helper（对齐生产 Dialect 装配习语）：PG 模式落
+	// juhe_usage.usage_records 且占位符为 $n，SQLite 模式保持裸表名与 ?。
+	table := "usage_records"
+	values := placeholders(46)
+	if e.dialect.Postgres {
+		table = "juhe_usage.usage_records"
+		values = pgPlaceholders(46)
+	}
+	e.exec(`INSERT INTO `+table+` (
 		id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint,
 		provider_code, provider_protocol_profile_id, model, status_code, success, failure_attribution,
 		first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
@@ -154,7 +182,7 @@ func (e *testEnv) seedUsageRecord(record UsageStatsRecordRow) {
 		account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
 		account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
 		group_authorization_id, group_authorization_source_type, group_authorization_source_team_id, created_at
-	) VALUES (`+placeholders(46)+`)`,
+	) VALUES (`+values+`)`,
 		record.ID, record.SystemAccountID, record.TraceID, record.TrafficSource, record.ClientIP, record.APIKeyID,
 		record.GroupID, record.AccountID, record.Endpoint, record.ProviderCode, record.ProviderProtocolProfileID,
 		record.Model, record.StatusCode, record.Success, record.FailureAttribution,
@@ -196,7 +224,7 @@ func (e *testEnv) seedGoldenPair() {
 // 记录时间键（UTC）：r1 minute=2026-04-18T10:15 / hour=T10 / date=2026-04-18 /
 // week=2026-04-13（04-18 周六 → 周一起始 04-13）/ month=2026-04。
 func TestAggregateUsageStatsBatchGolden(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	env.seedGoldenPair()
 	aggregator := env.aggregator()
 	processed, err := aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{BatchSize: 100})
@@ -214,17 +242,17 @@ func TestAggregateUsageStatsBatchGolden(t *testing.T) {
 	env.assertFloats("alice totals",
 		env.queryRowFloats(`SELECT request_count, success_count, error_count, input_tokens, output_tokens, total_cost_usd,
 			duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max
-			FROM usage_stats_totals WHERE system_account_id='alice' AND scope_type='system_account' AND scope_id='alice'`),
+			FROM juhe_stats.usage_stats_totals WHERE system_account_id='alice' AND scope_type='system_account' AND scope_id='alice'`),
 		1, 1, 0, 100, 50, 0.02, 1200, 1, 1200, 250, 1, 250)
 	// global scope 聚合两条：request 2、input 105=100+5、cost 0.02。
 	env.assertFloats("global totals",
 		env.queryRowFloats(`SELECT request_count, success_count, error_count, input_tokens, output_tokens, total_cost_usd
-			FROM usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global'`),
+			FROM juhe_stats.usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global'`),
 		2, 1, 1, 105, 50, 0.02)
-	if got := env.queryString(`SELECT last_used_at FROM usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global'`); len(got) != 1 || got[0] != "2026-04-18T10:20:00.000Z" {
+	if got := env.queryString(`SELECT last_used_at FROM juhe_stats.usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global'`); len(got) != 1 || got[0] != "2026-04-18T10:20:00.000Z" {
 		t.Fatalf("global last_used_at = %v want r2 created_at", got)
 	}
-	if got := env.queryString(`SELECT last_error_at FROM usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global'`); len(got) != 1 || got[0] != "2026-04-18T10:20:00.000Z" {
+	if got := env.queryString(`SELECT last_error_at FROM juhe_stats.usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global'`); len(got) != 1 || got[0] != "2026-04-18T10:20:00.000Z" {
 		t.Fatalf("global last_error_at = %v want r2 created_at", got)
 	}
 	// group/account/provider/api_key/model/endpoint scope = r1 值（owner 均为 alice）。
@@ -234,43 +262,43 @@ func TestAggregateUsageStatsBatchGolden(t *testing.T) {
 	} {
 		env.assertFloats(fmt.Sprintf("alice %s/%s", scope.scopeType, scope.scopeID),
 			env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd
-				FROM usage_stats_totals WHERE system_account_id='alice' AND scope_type=? AND scope_id=?`,
+				FROM juhe_stats.usage_stats_totals WHERE system_account_id='alice' AND scope_type=$1 AND scope_id=$2`,
 				scope.scopeType, scope.scopeID),
 			1, 100, 0.02)
 	}
 	env.assertFloats("global account",
-		env.queryRowFloats(`SELECT request_count FROM usage_stats_totals WHERE system_account_id='global' AND scope_type='account' AND scope_id='acc-1'`),
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.usage_stats_totals WHERE system_account_id='global' AND scope_type='account' AND scope_id='acc-1'`),
 		1)
 
 	// 5 个时间桶逐桶锁定。
 	env.assertFloats("daily global",
-		env.queryRowFloats(`SELECT request_count, error_count FROM usage_stats_daily
+		env.queryRowFloats(`SELECT request_count, error_count FROM juhe_stats.usage_stats_daily
 			WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global' AND stat_date='2026-04-18'`),
 		2, 1)
 	env.assertFloats("hourly global",
-		env.queryRowFloats(`SELECT request_count, input_tokens FROM usage_stats_hourly
+		env.queryRowFloats(`SELECT request_count, input_tokens FROM juhe_stats.usage_stats_hourly
 			WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global' AND stat_hour='2026-04-18T10'`),
 		2, 105)
 	env.assertFloats("weekly alice",
-		env.queryRowFloats(`SELECT request_count FROM usage_stats_weekly
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.usage_stats_weekly
 			WHERE system_account_id='alice' AND scope_type='system_account' AND scope_id='alice' AND stat_week='2026-04-13'`),
 		1)
 	env.assertFloats("monthly global",
-		env.queryRowFloats(`SELECT request_count FROM usage_stats_monthly
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.usage_stats_monthly
 			WHERE system_account_id='global' AND scope_type='system_account' AND scope_id='global' AND stat_month='2026-04'`),
 		2)
 	env.assertFloats("minute alice",
-		env.queryRowFloats(`SELECT request_count FROM usage_stats_minute
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.usage_stats_minute
 			WHERE system_account_id='alice' AND scope_type='system_account' AND scope_id='alice' AND stat_minute='2026-04-18T10:15'`),
 		1)
 
 	// usage_model_daily：caller + global 两条模型行。
 	env.assertFloats("model alice",
-		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd FROM usage_model_daily
+		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd FROM juhe_stats.usage_model_daily
 			WHERE system_account_id='alice' AND stat_date='2026-04-18' AND provider_code='openai' AND model='gpt-5'`),
 		1, 100, 0.02)
 	env.assertFloats("model global",
-		env.queryRowFloats(`SELECT request_count, input_tokens FROM usage_model_daily
+		env.queryRowFloats(`SELECT request_count, input_tokens FROM juhe_stats.usage_model_daily
 			WHERE system_account_id='global' AND stat_date='2026-04-18' AND provider_code='openai' AND model='gpt-5'`),
 		2, 105)
 
@@ -278,7 +306,7 @@ func TestAggregateUsageStatsBatchGolden(t *testing.T) {
 	// 'unknown'，error_code = error_code || String(status_code) || 'unknown'；
 	// caller(bob) + global 两行。
 	env.assertFloats("error rows",
-		env.queryRowFloats(`SELECT COUNT(*), COALESCE(SUM(error_count), 0), COALESCE(SUM(request_count), 0) FROM usage_error_daily
+		env.queryRowFloats(`SELECT COUNT(*), COALESCE(SUM(error_count), 0), COALESCE(SUM(request_count), 0) FROM juhe_stats.usage_error_daily
 			WHERE error_group='openai' AND provider_code='openai' AND error_code='rate_limited' AND status_code=429`),
 		2, 2, 2)
 
@@ -286,35 +314,35 @@ func TestAggregateUsageStatsBatchGolden(t *testing.T) {
 	// first_token 250 → 桶 250；r1 的 10 个 scope 各 1 个样本。r2 无
 	// duration/first_token → 不产生样本。
 	env.assertFloats("latency duration buckets",
-		env.queryRowFloats(`SELECT COUNT(*) FROM usage_latency_daily WHERE metric_type='duration_ms' AND bucket_upper_bound_ms=2000 AND sample_count=1`),
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.usage_latency_daily WHERE metric_type='duration_ms' AND bucket_upper_bound_ms=2000 AND sample_count=1`),
 		10)
 	env.assertFloats("latency first token buckets",
-		env.queryRowFloats(`SELECT COUNT(*) FROM usage_latency_daily WHERE metric_type='first_token_ms' AND bucket_upper_bound_ms=250 AND sample_count=1`),
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.usage_latency_daily WHERE metric_type='first_token_ms' AND bucket_upper_bound_ms=250 AND sample_count=1`),
 		10)
 
 	// stats_job_state 游标推进到最后一条（created_at, id）。
-	if got := env.queryString(`SELECT cursor_created_at || '|' || cursor_id FROM stats_job_state WHERE scope_type='global' AND job_name='usage_stats_aggregation'`); len(got) != 1 || got[0] != "2026-04-18T10:20:00.000Z|rec-2" {
+	if got := env.queryString(`SELECT cursor_created_at || '|' || cursor_id FROM juhe_stats.stats_job_state WHERE scope_type='global' AND job_name='usage_stats_aggregation'`); len(got) != 1 || got[0] != "2026-04-18T10:20:00.000Z|rec-2" {
 		t.Fatalf("cursor = %v", got)
 	}
 	// 派生窗口脏标记：daily system_account → overview dirty；daily account →
 	// ai performance dirty；hourly quota scope 无 → quota dirty 空。
 	env.assertFloats("overview dirty",
-		env.queryRowFloats(`SELECT COUNT(*) FROM usage_overview_dirty_scopes WHERE system_account_id IN ('alice','global') AND min_changed_date='2026-04-18'`),
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.usage_overview_dirty_scopes WHERE system_account_id IN ('alice','global') AND min_changed_date='2026-04-18'`),
 		2)
 	env.assertFloats("ai dirty",
-		env.queryRowFloats(`SELECT COUNT(*) FROM ai_performance_summary_dirty_system_accounts WHERE system_account_id IN ('alice','global') AND min_stat_date='2026-04-18' AND max_stat_date='2026-04-18'`),
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.ai_performance_summary_dirty_system_accounts WHERE system_account_id IN ('alice','global') AND min_stat_date='2026-04-18' AND max_stat_date='2026-04-18'`),
 		2)
 	// quota dirty：rec-1 的 api_key scope 进入 usage_stats_hourly → 标记
 	// 1 条（api_key 属 quota scope types）。
 	env.assertFloats("quota dirty api_key",
-		env.queryRowFloats(`SELECT COUNT(*) FROM usage_quota_hourly_window_dirty_scopes WHERE scope_type='api_key'`),
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.usage_quota_hourly_window_dirty_scopes WHERE scope_type='api_key'`),
 		1)
 }
 
 // TestAggregateBatchEmptyIdempotentAndCursor：空输入、重复游标（幂等）、批量
 // 分页、乱序到达与 safeCreatedBefore 边界。
 func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	aggregator := env.aggregator()
 
 	// 空输入：processed=0，仍写 last_success_at（Node rows.length===0 分支）。
@@ -322,7 +350,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 	if err != nil || processed != 0 {
 		t.Fatalf("empty run processed=%d err=%v", processed, err)
 	}
-	if got := env.queryString(`SELECT last_success_at FROM stats_job_state WHERE job_name='usage_stats_aggregation'`); len(got) != 1 || got[0] != "2026-04-18T12:00:00.000Z" {
+	if got := env.queryString(`SELECT last_success_at FROM juhe_stats.stats_job_state WHERE job_name='usage_stats_aggregation'`); len(got) != 1 || got[0] != "2026-04-18T12:00:00.000Z" {
 		t.Fatalf("empty run last_success_at = %v want fixed now", got)
 	}
 
@@ -333,7 +361,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 		t.Fatalf("bounded run processed=%d err=%v", processed, err)
 	}
 	env.assertFloats("safe boundary totals",
-		env.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM usage_stats_totals`),
+		env.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM juhe_stats.usage_stats_totals`),
 		10) // 仅 r1 的 10 个 scope
 	// 重复游标：同参数重跑 → processed=0、聚合结果不变（游标幂等）。
 	processed, err = aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{BatchSize: 10, SafeCreatedBefore: "2026-04-18T10:16:00.000Z"})
@@ -341,7 +369,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 		t.Fatalf("duplicate cursor run processed=%d err=%v", processed, err)
 	}
 	env.assertFloats("idempotent totals",
-		env.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM usage_stats_totals`),
+		env.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM juhe_stats.usage_stats_totals`),
 		10)
 	// 批量分页：batch=1，两次跑完剩余 r2。
 	processed, _ = aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{BatchSize: 1, SafeCreatedBefore: "2026-04-18T11:00:00.000Z"})
@@ -353,7 +381,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 		t.Fatalf("paged run 2 should be empty, processed=%d", processed)
 	}
 	env.assertFloats("after pagination totals",
-		env.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account'`),
+		env.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM juhe_stats.usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account'`),
 		2)
 	// 乱序到达（迟到记录 created_at 早于游标）：游标单调推进，迟于游标的
 	// 记录不回补——与 Node 游标 WHERE 语义一致（ingest 保证写入序）。
@@ -367,7 +395,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 	}
 	// 新库中记录按 created_at 升序取批（ORDER BY created_at ASC, id ASC），
 	// 游标落在最晚一条。
-	env2 := newTestEnv(t)
+	env2 := newPGTestEnv(t)
 	env2.seedUsageRecord(UsageStatsRecordRow{
 		ID: "rec-b", SystemAccountID: "alice", TrafficSource: "gateway", ProviderCode: strPtr("openai"),
 		Success: 1, CreatedAt: "2026-04-18T10:20:00.000Z",
@@ -380,7 +408,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 	if err != nil || processed != 2 {
 		t.Fatalf("ordered fetch processed=%d err=%v", processed, err)
 	}
-	if got := env2.queryString(`SELECT cursor_id FROM stats_job_state WHERE job_name='usage_stats_aggregation'`); len(got) != 1 || got[0] != "rec-b" {
+	if got := env2.queryString(`SELECT cursor_id FROM juhe_stats.stats_job_state WHERE job_name='usage_stats_aggregation'`); len(got) != 1 || got[0] != "rec-b" {
 		t.Fatalf("cursor id = %v want rec-b", got)
 	}
 }
@@ -388,7 +416,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 // TestFilterAndAuthorizationDailyGolden：不可聚合行被跳过；带授权字段的行写入
 // 授权摘要日报（授权消耗明细读端的直读数据源）。
 func TestFilterAndAuthorizationDailyGolden(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	// 非法 access_type → shouldAggregate=false → 无聚合行。
 	env.seedUsageRecord(UsageStatsRecordRow{
 		ID: "rec-bad", SystemAccountID: "alice", TrafficSource: "gateway",
@@ -400,7 +428,7 @@ func TestFilterAndAuthorizationDailyGolden(t *testing.T) {
 		t.Fatalf("processed=%d err=%v (row fetched but filtered)", processed, err)
 	}
 	env.assertFloats("filtered rows",
-		env.queryRowFloats(`SELECT COUNT(*) FROM usage_stats_totals`), 0)
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.usage_stats_totals`), 0)
 
 	// 授权行：account 授权（team 来源）→ owner + global 双维度摘要。
 	// 推导（usage-stats-authorization-daily-writer.ts）：authorizationReportRows
@@ -420,43 +448,43 @@ func TestFilterAndAuthorizationDailyGolden(t *testing.T) {
 		t.Fatalf("auth run processed=%d err=%v", processed, err)
 	}
 	env.assertFloats("team summary rows",
-		env.queryRowFloats(`SELECT COUNT(*) FROM authorization_team_usage_summary_daily`),
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.authorization_team_usage_summary_daily`),
 		12)
 	env.assertFloats("user summary rows",
-		env.queryRowFloats(`SELECT COUNT(*) FROM authorization_user_usage_summary_daily`),
+		env.queryRowFloats(`SELECT COUNT(*) FROM juhe_stats.authorization_user_usage_summary_daily`),
 		24)
 	// 抽样对账：owner-1 全体键。
 	env.assertFloats("team summary all",
-		env.queryRowFloats(`SELECT request_count FROM authorization_team_usage_summary_daily
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.authorization_team_usage_summary_daily
 			WHERE system_account_id='owner-1' AND stat_date='2026-04-18' AND team_filter_id='' AND resource_filter_type='all' AND resource_filter_id=''`),
 		1)
 	env.assertFloats("team summary team-5",
-		env.queryRowFloats(`SELECT request_count FROM authorization_team_usage_summary_daily
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.authorization_team_usage_summary_daily
 			WHERE system_account_id='owner-1' AND stat_date='2026-04-18' AND team_filter_id='team-5' AND resource_filter_type='all' AND resource_filter_id=''`),
 		1)
 	env.assertFloats("user summary grantee",
-		env.queryRowFloats(`SELECT request_count FROM authorization_user_usage_summary_daily
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.authorization_user_usage_summary_daily
 			WHERE system_account_id='owner-1' AND grantee_filter_system_account_id='grantee-1' AND resource_filter_type='all' AND resource_filter_id=''`),
 		1)
 	// resource_authorizations 命中时 account_authorization_team scopeId 使用
 	// instance account（Node accountAuthorizationInstanceAccountIds 查找）。
-	env.exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id)
-		VALUES ('auth-2', 'account', 'acc-7', 'grantee-1')`)
-	env.exec(`INSERT INTO accounts (id, system_account_id, authorization_instance_authorization_id)
-		VALUES ('instance-1', 'grantee-1', 'auth-2')`)
+	env.exec(`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id)
+		VALUES ($1, 'account', 'acc-7', 'grantee-1')`, "auth-2")
+	env.exec(`INSERT INTO juhe_business.accounts (id, system_account_id, authorization_instance_authorization_id)
+		VALUES ($1, 'grantee-1', 'auth-2')`, "instance-1")
 }
 
 // TestWindowStagesGolden：排行快照、overview、scope range、authorization range、
 // ai performance 等窗口 stage 的聚合对账。
 func TestWindowStagesGolden(t *testing.T) {
-	env := newTestEnv(t)
-	env.exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, updated_at)
+	env := newPGTestEnv(t)
+	env.exec(`INSERT INTO juhe_stats.usage_stats_totals (system_account_id, scope_type, scope_id, request_count, updated_at)
 		VALUES ('alice','system_account','alice',3,'2026-04-18T09:00:00.000Z')`)
 	insertDaily := func(system, scopeType, scopeID, statDate string, request, input, cost float64) {
-		env.exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
+		env.exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
 			request_count, input_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
 			first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 			system, scopeType, scopeID, statDate, request, input, cost, 100*request, 1, 100, 50, 1, 50,
 			"2026-04-18T09:00:00.000Z", "2026-04-18T09:00:00.000Z")
 	}
@@ -465,8 +493,8 @@ func TestWindowStagesGolden(t *testing.T) {
 	insertDaily("alice", "account", "acc-1", "2026-04-18", 4, 40, 0.4)
 	insertDaily("bob", "system_account", "bob", "2026-04-18", 5, 50, 0.5)
 	insertMonthly := func(system, scopeType, scopeID, statMonth string, request, cost float64, lastUsed string) {
-		env.exec(`INSERT INTO usage_stats_monthly (system_account_id, scope_type, scope_id, stat_month,
-			request_count, total_cost_usd, last_used_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		env.exec(`INSERT INTO juhe_stats.usage_stats_monthly (system_account_id, scope_type, scope_id, stat_month,
+			request_count, total_cost_usd, last_used_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			system, scopeType, scopeID, statMonth, request, cost, lastUsed, "2026-04-18T09:00:00.000Z")
 	}
 	// 排行对账种子：metric（cost）并列时 last_used_at DESC 决定次序。
@@ -484,12 +512,12 @@ func TestWindowStagesGolden(t *testing.T) {
 	// stat_month = 当月（2026-04）桶只有 alice 三行；ROW_NUMBER ORDER BY
 	// metric_value DESC, last_used_at DESC, scope_id ASC → key-a、key-b、key-c；
 	// bob 只有 03 桶，不进本月排行。
-	if got := env.queryString(`SELECT scope_id FROM usage_rank_snapshots WHERE metric='total_cost_usd' AND window_key='current_month' ORDER BY rank ASC`); len(got) != 3 || got[0] != "key-a" || got[1] != "key-b" || got[2] != "key-c" {
+	if got := env.queryString(`SELECT scope_id FROM juhe_stats.usage_rank_snapshots WHERE metric='total_cost_usd' AND window_key='current_month' ORDER BY rank ASC`); len(got) != 3 || got[0] != "key-a" || got[1] != "key-b" || got[2] != "key-c" {
 		t.Fatalf("rank order = %v", got)
 	}
 	// metric_value 是 cost 列的 SUM：key-a/key-b 并列 1.0、key-c 0.1。
 	env.assertFloats("rank values",
-		env.queryFloats(`SELECT metric_value FROM usage_rank_snapshots WHERE metric='total_cost_usd' AND window_key='current_month' ORDER BY rank ASC`),
+		env.queryFloats(`SELECT metric_value FROM juhe_stats.usage_rank_snapshots WHERE metric='total_cost_usd' AND window_key='current_month' ORDER BY rank ASC`),
 		1.0, 1.0, 0.1)
 	// last7d 排行（usage_stats_daily，stat_date >= today-6 = 2026-04-12）。
 	if _, err := refresher.RunStages(context.Background(), []WindowStageName{StageAccountLast7dRequestRank}, RefreshOptions{}); err != nil {
@@ -499,18 +527,18 @@ func TestWindowStagesGolden(t *testing.T) {
 	//（Node refreshAccountLast7dRequestRankSnapshot）→ 种子中仅
 	// alice/account/acc-1（4）命中；bob 的 system_account 行不参与。
 	env.assertFloats("account last7d rank",
-		env.queryFloats(`SELECT metric_value FROM usage_rank_snapshots WHERE metric='request_count' AND window_key='last7d' ORDER BY rank ASC`),
+		env.queryFloats(`SELECT metric_value FROM juhe_stats.usage_rank_snapshots WHERE metric='request_count' AND window_key='last7d' ORDER BY rank ASC`),
 		4)
 
 	// usage-overview-windows-refresh（summary/trend/model rank/error rank）。
-	env.exec(`INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour,
+	env.exec(`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour,
 		request_count, error_count, input_tokens, output_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, updated_at)
 		VALUES ('alice','system_account','alice','2026-04-18T08',1,0,7,3,0.2,300,1,'2026-04-18T09:00:00.000Z'),
 		       ('alice','system_account','alice','2026-04-18T09',1,0,4,2,0.1,100,1,'2026-04-18T09:00:00.000Z')`)
-	env.exec(`INSERT INTO usage_model_daily (system_account_id, stat_date, provider_code, model, request_count, total_cost_usd, updated_at)
+	env.exec(`INSERT INTO juhe_stats.usage_model_daily (system_account_id, stat_date, provider_code, model, request_count, total_cost_usd, updated_at)
 		VALUES ('alice','2026-04-18','openai','gpt-5',5,0.5,'2026-04-18T09:00:00.000Z'),
 		       ('alice','2026-04-17','openai','gpt-4.1',3,0.4,'2026-04-18T09:00:00.000Z')`)
-	env.exec(`INSERT INTO usage_error_daily (system_account_id, stat_date, error_group, provider_code, error_code, status_code, error_count, updated_at)
+	env.exec(`INSERT INTO juhe_stats.usage_error_daily (system_account_id, stat_date, error_group, provider_code, error_code, status_code, error_count, updated_at)
 		VALUES ('alice','2026-04-18','openai','openai','rate_limited',429,2,'2026-04-18T09:00:00.000Z'),
 		       ('alice','2026-04-17','openai','openai','timeout',504,5,'2026-04-18T09:00:00.000Z')`)
 	if _, err := refresher.RunStages(context.Background(), []WindowStageName{StageUsageOverviewWindows}, RefreshOptions{}); err != nil {
@@ -518,31 +546,31 @@ func TestWindowStagesGolden(t *testing.T) {
 	}
 	// summary today：仅 04-18 行。
 	env.assertFloats("overview summary today",
-		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd FROM usage_overview_summary_windows
+		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd FROM juhe_stats.usage_overview_summary_windows
 			WHERE system_account_id='alice' AND window_key='2026-04-18:2026-04-18'`),
 		1, 7, 0.2)
 	// summary last7d：04-17（duration 200/1）+ 04-18（100/1）→ sum 300、
 	// count 2。Node 的 summary 窗口表没有 duration_ms_max 列（仅 sum/count）。
 	env.assertFloats("overview summary last7d",
 		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd, duration_ms_sum, duration_ms_count
-			FROM usage_overview_summary_windows WHERE system_account_id='alice' AND window_key='2026-04-12:2026-04-18'`),
+			FROM juhe_stats.usage_overview_summary_windows WHERE system_account_id='alice' AND window_key='2026-04-12:2026-04-18'`),
 		3, 17, 0.5, 300, 2)
 	// trend today：days=1 → 1h 桶，两桶。
 	env.assertFloats("overview trend today buckets",
-		env.queryRowFloats(`SELECT COUNT(*), COALESCE(SUM(request_count), 0) FROM usage_overview_trend_windows
+		env.queryRowFloats(`SELECT COUNT(*), COALESCE(SUM(request_count), 0) FROM juhe_stats.usage_overview_trend_windows
 			WHERE system_account_id='alice' AND window_key='2026-04-18:2026-04-18'`),
 		2, 2)
 	// trend last7d：days=7 → 24h 桶合并为 "2026-04-18"。
 	env.assertFloats("overview trend last7d bucket",
-		env.queryRowFloats(`SELECT request_count, input_tokens FROM usage_overview_trend_windows
+		env.queryRowFloats(`SELECT request_count, input_tokens FROM juhe_stats.usage_overview_trend_windows
 			WHERE system_account_id='alice' AND window_key='2026-04-12:2026-04-18' AND bucket_key='2026-04-18'`),
 		2, 11)
 	// model rank last7d：request DESC → gpt-5(5) rank1、gpt-4.1(3) rank2。
-	if got := env.queryString(`SELECT model FROM usage_model_rank_windows WHERE window_key='2026-04-12:2026-04-18' AND rank IN (1,2) ORDER BY rank ASC`); len(got) != 2 || got[0] != "gpt-5" || got[1] != "gpt-4.1" {
+	if got := env.queryString(`SELECT model FROM juhe_stats.usage_model_rank_windows WHERE window_key='2026-04-12:2026-04-18' AND rank IN (1,2) ORDER BY rank ASC`); len(got) != 2 || got[0] != "gpt-5" || got[1] != "gpt-4.1" {
 		t.Fatalf("model rank = %v", got)
 	}
 	// error rank last7d：error_count DESC → timeout(5) rank1、rate_limited(2) rank2。
-	if got := env.queryString(`SELECT error_code FROM usage_error_rank_windows WHERE window_key='2026-04-12:2026-04-18' AND rank IN (1,2) ORDER BY rank ASC`); len(got) != 2 || got[0] != "timeout" || got[1] != "rate_limited" {
+	if got := env.queryString(`SELECT error_code FROM juhe_stats.usage_error_rank_windows WHERE window_key='2026-04-12:2026-04-18' AND rank IN (1,2) ORDER BY rank ASC`); len(got) != 2 || got[0] != "timeout" || got[1] != "rate_limited" {
 		t.Fatalf("error rank = %v", got)
 	}
 
@@ -552,11 +580,11 @@ func TestWindowStagesGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.assertFloats("scope range alice system 7d",
-		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd, active_days FROM usage_scope_range_windows
+		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd, active_days FROM juhe_stats.usage_scope_range_windows
 			WHERE system_account_id='alice' AND scope_type='system_account' AND scope_id='alice' AND start_date='2026-04-12' AND end_date='2026-04-18'`),
 		3, 17, 0.5, 2)
 	env.assertFloats("scope range alice account today",
-		env.queryRowFloats(`SELECT request_count, active_days FROM usage_scope_range_windows
+		env.queryRowFloats(`SELECT request_count, active_days FROM juhe_stats.usage_scope_range_windows
 			WHERE system_account_id='alice' AND scope_type='account' AND start_date='2026-04-18' AND end_date='2026-04-18'`),
 		4, 1)
 
@@ -571,22 +599,22 @@ func TestWindowStagesGolden(t *testing.T) {
 	// alice account scope 04-18 一行（insertDaily 规则：duration
 	// sum=100×request、count=1；first_token sum=50、count=1）→ 4、400、1、50。
 	env.assertFloats("ai performance alice 7d",
-		env.queryRowFloats(`SELECT request_count, duration_ms_sum, duration_ms_count, first_token_ms_sum FROM ai_performance_summary_windows
+		env.queryRowFloats(`SELECT request_count, duration_ms_sum, duration_ms_count, first_token_ms_sum FROM juhe_stats.ai_performance_summary_windows
 			WHERE system_account_id='alice' AND window_key='2026-04-12:2026-04-18'`),
 		4, 400, 1, 50)
 	// global 行也存在（Node SQLite 全量重建对 uniqueSystemAccountIds + global
 	// 逐个执行，global 无 scope_type='account' 源行 → 0 值行）。
 	env.assertFloats("ai performance global 7d zero row",
-		env.queryRowFloats(`SELECT request_count FROM ai_performance_summary_windows
+		env.queryRowFloats(`SELECT request_count FROM juhe_stats.ai_performance_summary_windows
 			WHERE system_account_id='global' AND window_key='2026-04-12:2026-04-18'`),
 		0)
 }
 
 // TestWatermarkSkipSemantics：窗口 job 的 source watermark 跳过与日期翻转。
 func TestWatermarkSkipSemantics(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	refresher := env.refresher()
-	env.exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, updated_at)
+	env.exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, updated_at)
 		VALUES ('alice','system_account','alice','2026-04-18',1,'2026-04-18T09:00:00.000Z')`)
 	options := RefreshOptions{SkipIfUnchanged: true, JobName: "usage-scope-range-windows-refresh"}
 	// 第一次：无历史状态 → 执行。
@@ -596,7 +624,7 @@ func TestWatermarkSkipSemantics(t *testing.T) {
 	}
 	// 状态行：cursor_created_at = watermark、cursor_id = todayKey
 	//（Node updateUsageRankSnapshotRefreshJobState）。
-	if got := env.queryString(`SELECT cursor_created_at || '|' || cursor_id FROM stats_job_state WHERE job_name='usage-scope-range-windows-refresh'`); len(got) != 1 || got[0] != "2026-04-18T09:00:00.000Z|2026-04-18" {
+	if got := env.queryString(`SELECT cursor_created_at || '|' || cursor_id FROM juhe_stats.stats_job_state WHERE job_name='usage-scope-range-windows-refresh'`); len(got) != 1 || got[0] != "2026-04-18T09:00:00.000Z|2026-04-18" {
 		t.Fatalf("job state = %v", got)
 	}
 	// 第二次：watermark 与 refreshDate 均未变 → 跳过。
@@ -605,7 +633,7 @@ func TestWatermarkSkipSemantics(t *testing.T) {
 		t.Fatalf("second run = %+v err=%v", result, err)
 	}
 	// 源表更新 → watermark 推进 → 执行。
-	env.exec(`UPDATE usage_stats_daily SET updated_at='2026-04-18T10:30:00.000Z'`)
+	env.exec(`UPDATE juhe_stats.usage_stats_daily SET updated_at='2026-04-18T10:30:00.000Z'`)
 	result, err = refresher.RunStages(context.Background(), []WindowStageName{StageUsageScopeRangeWindows}, options)
 	if err != nil || result.Skipped {
 		t.Fatalf("third run should execute: %+v err=%v", result, err)
@@ -616,7 +644,7 @@ func TestWatermarkSkipSemantics(t *testing.T) {
 	if err != nil || result.Skipped {
 		t.Fatalf("date rollover run should execute: %+v err=%v", result, err)
 	}
-	if got := env.queryString(`SELECT cursor_id FROM stats_job_state WHERE job_name='usage-scope-range-windows-refresh'`); len(got) != 1 || got[0] != "2026-04-19" {
+	if got := env.queryString(`SELECT cursor_id FROM juhe_stats.stats_job_state WHERE job_name='usage-scope-range-windows-refresh'`); len(got) != 1 || got[0] != "2026-04-19" {
 		t.Fatalf("after rollover cursor_id = %v want 2026-04-19", got)
 	}
 	// hot window refresh = overview + scope range 两个固定阶段。
@@ -630,7 +658,13 @@ func TestWatermarkSkipSemantics(t *testing.T) {
 }
 
 // TestConcurrentWindowRefreshRace：并发窗口竞争。SQLite 单连接串行化镜像
-// 生产 stats-writer 单写者；断言并发下无重复行、终态一致（-race 检测竞争）。
+// 生产 stats-writer 单写者契约；断言并发下无重复行、终态一致（-race 检测竞争）。
+//
+// 组B（SQLite 载体保留）：被测对象是「单写者串行化」契约，其测试载体依赖
+// SQLite 单连接串行语义（OpenSQLiteTestDB SetMaxOpenConns(1)）；PG 生产臂
+// 的窗口刷新为行锁 + 事务并发，等价语义由 PG 行级锁承载，4 并发无错断言
+// 在真实 PG 上不可逐字节保持（并发 INSERT 同键行触发唯一约束等待/冲突），
+// 故不迁，随生产 sqlite 臂删除批次同批裁决（D17）。
 func TestConcurrentWindowRefreshRace(t *testing.T) {
 	env := newTestEnv(t)
 	env.exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, total_cost_usd, updated_at)

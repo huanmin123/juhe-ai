@@ -2,6 +2,7 @@ package cleanuprepo
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -9,17 +10,19 @@ import (
 // background_job_leases 此前全仓无删除路径，本节锁定滚动保留清理的
 // 删除边界（严格早于 cutoff、最旧优先、受 limit 约束）与双模方言形状。
 // DDL 只建清理谓词涉及的最小列（created_at / lease_until），与
-// taskruns.Store 冻结 schema 的时间列同名同 TEXT 语义。
+// taskruns.Store 冻结 schema 的时间列同名同 TEXT 语义。真实建库测试迁
+// pgtestkit 隔离 PG 库（PLAN-20261024T051925945Z B1 POC#2），表建在
+// 生产 PG schema juhe_stats 下，与 deleteRowsBefore 的 ctid 臂精确对齐。
 
 func createKitTaskRunsTables(t *testing.T, db *DB) {
 	t.Helper()
-	mustExecKit(t, db, `CREATE TABLE background_task_runs (
+	mustExecKit(t, db, `CREATE TABLE juhe_stats.background_task_runs (
 		run_id TEXT PRIMARY KEY,
 		job_name TEXT NOT NULL,
 		status TEXT NOT NULL,
 		created_at TEXT NOT NULL
 	)`)
-	mustExecKit(t, db, `CREATE TABLE background_job_leases (
+	mustExecKit(t, db, `CREATE TABLE juhe_stats.background_job_leases (
 		lease_key TEXT PRIMARY KEY,
 		job_name TEXT NOT NULL,
 		lease_until TEXT NOT NULL
@@ -28,12 +31,12 @@ func createKitTaskRunsTables(t *testing.T, db *DB) {
 
 func seedKitTaskRuns(t *testing.T, db *DB) {
 	t.Helper()
-	mustExecKit(t, db, `INSERT INTO background_task_runs (run_id, job_name, status, created_at) VALUES
+	mustExecKit(t, db, `INSERT INTO juhe_stats.background_task_runs (run_id, job_name, status, created_at) VALUES
 		('run-old-2', 'projection', 'completed', '2020-01-01T00:00:00.000Z'),
 		('run-old-1', 'projection', 'failed',    '2020-06-01T00:00:00.000Z'),
 		('run-edge',  'projection', 'completed', '2025-01-01T00:00:00.000Z'),
 		('run-new',   'projection', 'running',   '2100-01-01T00:00:00.000Z')`)
-	mustExecKit(t, db, `INSERT INTO background_job_leases (lease_key, job_name, lease_until) VALUES
+	mustExecKit(t, db, `INSERT INTO juhe_stats.background_job_leases (lease_key, job_name, lease_until) VALUES
 		('lease-expired-old', 'worker', '2020-01-01T00:00:00.000Z'),
 		('lease-expired-edge', 'worker', '2025-01-01T00:00:00.000Z'),
 		('lease-held', 'worker', '2100-01-01T00:00:00.000Z')`)
@@ -43,7 +46,10 @@ func seedKitTaskRuns(t *testing.T, db *DB) {
 // cutoff 的行删除（最旧优先、limit 截断），边界行与新鲜行保留；无候选时
 // 零删除幂等。
 func TestTaskRunsRetentionCleanupBeforeCutoff(t *testing.T) {
-	db := openKitSQLite(t, "taskruns_retention")
+	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error {
+		_, err := raw.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats`)
+		return err
+	})
 	createKitTaskRunsTables(t, db)
 	seedKitTaskRuns(t, db)
 	store := &TaskRunsRetentionStore{DB: db}
@@ -55,7 +61,7 @@ func TestTaskRunsRetentionCleanupBeforeCutoff(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("limited runs deleted = %d, %v", deleted, err)
 	}
-	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM background_task_runs WHERE run_id = 'run-old-2'`); got != 0 {
+	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM juhe_stats.background_task_runs WHERE run_id = 'run-old-2'`); got != 0 {
 		t.Fatalf("最旧运行历史行应先被删除")
 	}
 	// 放开 limit：run-old-1 删除；边界行 run-edge（等于 cutoff）与新鲜行保留。
@@ -63,7 +69,7 @@ func TestTaskRunsRetentionCleanupBeforeCutoff(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("runs deleted = %d, %v", deleted, err)
 	}
-	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM background_task_runs WHERE run_id IN ('run-edge','run-new')`); got != 2 {
+	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM juhe_stats.background_task_runs WHERE run_id IN ('run-edge','run-new')`); got != 2 {
 		t.Fatalf("边界行与新鲜运行历史不应被删除，残余 = %d", got)
 	}
 	// 再跑一轮：无严格早于 cutoff 的候选 → 零删除（幂等）。
@@ -78,7 +84,7 @@ func TestTaskRunsRetentionCleanupBeforeCutoff(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("leases deleted = %d, %v", deleted, err)
 	}
-	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM background_job_leases WHERE lease_key IN ('lease-expired-edge','lease-held')`); got != 2 {
+	if got := mustQueryCountKit(t, db, `SELECT COUNT(*) FROM juhe_stats.background_job_leases WHERE lease_key IN ('lease-expired-edge','lease-held')`); got != 2 {
 		t.Fatalf("边界租约与有效租约不应被删除，残余 = %d", got)
 	}
 	deleted, err = store.CleanupExpiredLeasesBefore(ctx, cutoff, 1000)

@@ -261,6 +261,10 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		return PreflightResult{}, nil
 	}
 
+	// 内部通道抑制标记（AI 问答免 Key 直调）：请求级取值一次，下方三个
+	// usage 上下文构造点统一冻结（完成/失败/网关失败记录经同一上下文传播到
+	// 持久化唯一闸口）。
+	suppressUsage := req.SuppressUsage
 	trafficSource := defaultTrafficSource(options.TrafficSource)
 	gatewayClientIP := ""
 	if trafficSource == TrafficSourceGateway {
@@ -284,6 +288,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		trafficSource: trafficSource, endpoint: input.Endpoint,
 		requestSnapshot:    input.RequestSnapshot,
 		compactionExpected: compactionExpectedForUsage,
+		suppressUsage:      suppressUsage,
 	})
 	activeSettings := gatewayruntimecache.GatewaySettings{}
 	if gatewaySettings != nil {
@@ -380,6 +385,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			requestSnapshot:  input.RequestSnapshot,
 			// compactionExpectedForUsage 在闭包定义前已求值（preflight 单点判定）。
 			compactionExpected: compactionExpectedForUsage,
+			suppressUsage:      suppressUsage,
 		})
 	}
 
@@ -787,6 +793,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		endpoint:           input.Endpoint,
 		requestSnapshot:    input.RequestSnapshot,
 		compactionExpected: compactionExpectedForUsage,
+		suppressUsage:      suppressUsage,
 	})
 
 	if bodyState := req.BodyState(); bodyState != nil && bodyState.JSONParseStatus == gatewaybody.JSONParseStatusInvalidJSON {

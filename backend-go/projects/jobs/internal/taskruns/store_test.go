@@ -2,40 +2,21 @@ package taskruns
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 func newTestStore(t *testing.T) (*Store, *FakeClock) {
 	t.Helper()
-	store, clock, err := newTestStoreE(t.TempDir())
-	if err != nil {
-		t.Fatalf("打开测试存储失败: %v", err)
-	}
-	return store, clock
-}
-
-func newTestStoreE(dir string) (*Store, *FakeClock, error) {
-	config := StoreConfig{Mode: ModeSQLite, DatabasePath: filepath.Join(dir, "taskruns.db")}
-	store, err := OpenStore(config)
-	if err != nil {
-		return nil, nil, err
-	}
+	store := openKitPostgresStore(t)
 	clock := NewFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	store.SetClock(clock)
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		return nil, nil, err
-	}
-	return store, clock, nil
+	return store, clock
 }
 
 func TestTaskRunStateMachine(t *testing.T) {
@@ -197,7 +178,7 @@ func TestAcquireLeaseExpiredTakeover(t *testing.T) {
 }
 
 func TestScheduledLeaseFencingToken(t *testing.T) {
-	store, clock := newTestStore(t)
+	store, _ := newTestStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
@@ -217,8 +198,10 @@ func TestScheduledLeaseFencingToken(t *testing.T) {
 	if err != nil || second.Acquired || second.Reason != AcquireLeaseHeld {
 		t.Fatalf("持有中应返回 lease_held: %+v %v", second, err)
 	}
-	// 持有中续租成功且身份不变。
-	renewed, err := store.RenewScheduledLease(ctx, *first.Lease, time.Minute)
+	// 持有中续租成功且身份不变。PG 臂租约时间由 DB clock_timestamp 驱动、
+	// 不消费注入时钟：此处以最小 TTL 续租把真实过期窗口收紧（原
+	// clock.Advance(2 * time.Minute) 的等价重钉），后续接管轮询据此快速命中。
+	renewed, err := store.RenewScheduledLease(ctx, *first.Lease, MinimumScheduledJobLeaseTTL)
 	if err != nil || renewed == nil {
 		t.Fatalf("续租应成功: %v %v", renewed, err)
 	}
@@ -228,11 +211,22 @@ func TestScheduledLeaseFencingToken(t *testing.T) {
 	if r, err := store.RenewScheduledLease(ctx, stale, time.Minute); err != nil || r != nil {
 		t.Fatalf("过期 token 续租应失败: %v %v", r, err)
 	}
-	// 到期后 owner-2 接管，token 自增。
-	clock.Advance(2 * time.Minute)
-	takeover, err := store.TryAcquireScheduledLease(ctx, ScheduledLeaseAcquireInput{JobName: "account-quality-refresh", OwnerID: "owner-2", TTL: time.Minute})
-	if err != nil || !takeover.Acquired {
-		t.Fatalf("过期接管应成功: %+v %v", takeover, err)
+	// 到期后 owner-2 接管，token 自增（PG 真实时钟：轮询等待过期；未过期
+	// 尝试返回 lease_held 且不推进 token，成功接管恰自增一次）。
+	var takeover AcquireResult
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		takeover, err = store.TryAcquireScheduledLease(ctx, ScheduledLeaseAcquireInput{JobName: "account-quality-refresh", OwnerID: "owner-2", TTL: time.Minute})
+		if err != nil {
+			t.Fatalf("过期接管应成功: %+v %v", takeover, err)
+		}
+		if takeover.Acquired {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("过期接管未在期限内成功: %+v", takeover)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if takeover.Lease.FencingToken != 2 {
 		t.Fatalf("接管后 token 应为 2: %d", takeover.Lease.FencingToken)
@@ -418,16 +412,8 @@ func mustCreateRunning(t *testing.T, store *Store, submittedAt time.Time, heartb
 
 // TestRunWithTaskRunLifecycle 走完 queued→running→completed，并验证心跳续租。
 func TestRunWithTaskRunLifecycle(t *testing.T) {
-	// 心跳时间戳需要真实推进（FakeClock 静止时 heartbeat_at 不变化）。
-	dir := t.TempDir()
-	store, err := OpenStore(StoreConfig{Mode: ModeSQLite, DatabasePath: filepath.Join(dir, "lifecycle.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	// 心跳时间戳需要真实推进（SystemClock；FakeClock 静止时 heartbeat_at 不变化）。
+	store := openKitPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
@@ -449,7 +435,7 @@ func TestRunWithTaskRunLifecycle(t *testing.T) {
 				return TaskRunResult{}, errors.New("未观察到心跳")
 			case <-poll.C:
 				var heartbeatAt string
-				if err := store.db.QueryRowContext(ctx, `SELECT heartbeat_at FROM background_job_leases WHERE lease_key = ?`, fence.LeaseKey).Scan(&heartbeatAt); err != nil {
+				if err := store.db.QueryRowContext(ctx, `SELECT heartbeat_at FROM juhe_stats.background_job_leases WHERE lease_key = $1`, fence.LeaseKey).Scan(&heartbeatAt); err != nil {
 					continue
 				}
 				if firstHeartbeat == "" {
@@ -569,7 +555,7 @@ func TestConcurrentTaskStartOnlyOneWinner(t *testing.T) {
 
 // TestRunWithScheduledLeaseLost 租约被接管后续租失败 → *ErrLeaseLost 取消任务。
 func TestRunWithScheduledLeaseLost(t *testing.T) {
-	store, clock := newTestStore(t)
+	store, _ := newTestStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
@@ -580,8 +566,11 @@ func TestRunWithScheduledLeaseLost(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// PG 臂租约时间由 DB clock_timestamp 驱动、不消费注入时钟：TTL 取
+		// 最小值、续租间隔大于 TTL，使首次续租必然命中过期租约（原
+		// clock.Advance(2 * time.Hour) 的等价重钉）。
 		_, runErr = RunWithScheduledLease(ctx, store, ScheduledLeaseRunnerOptions{
-			JobName: "account-quality-refresh", OwnerID: "holder", TTL: time.Hour, RenewInterval: 10 * time.Millisecond,
+			JobName: "account-quality-refresh", OwnerID: "holder", TTL: MinimumScheduledJobLeaseTTL, RenewInterval: 300 * time.Millisecond,
 		}, func(runCtx context.Context, lease LeaseIdentity) error {
 			started <- startedSignal{}
 			<-release
@@ -591,8 +580,6 @@ func TestRunWithScheduledLeaseLost(t *testing.T) {
 		})
 	}()
 	<-started
-	// 推进假时钟让租约过期（TTL=1h）。
-	clock.Advance(2 * time.Hour)
 	close(release)
 	<-done
 	var lost *ErrLeaseLost
@@ -625,5 +612,3 @@ func TestAdvisoryKeyMatchesNode(t *testing.T) {
 		t.Fatalf("advisory key 与 Node 算法不符: %d", key)
 	}
 }
-
-var _ = sql.ErrNoRows

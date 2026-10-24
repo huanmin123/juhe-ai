@@ -5,6 +5,7 @@ package modelcheckauth
 
 import (
 	"context"
+	"crypto/pbkdf2"
 	"crypto/sha256"
 	"crypto/sha512"
 	"database/sql"
@@ -12,13 +13,9 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"crypto/pbkdf2"
-	_ "modernc.org/sqlite"
 )
 
 func w11ePasswordHash(password string) string {
@@ -32,21 +29,8 @@ func w11ePasswordHash(password string) string {
 
 func w11eAuthDB(t *testing.T) *sql.DB {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "w11e-auth.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT,role TEXT NOT NULL,status TEXT NOT NULL,password_hash TEXT NOT NULL,must_change_password INTEGER NOT NULL,last_login_at TEXT,updated_at TEXT NOT NULL)`,
-		`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT UNIQUE,expires_at TEXT,created_at TEXT,last_seen_at TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO system_accounts VALUES ('w11e-acct','w11e-admin','管理员','admin','active',?,0,'','')`, w11ePasswordHash("w11e-password")); err != nil {
+	db := newModelCheckAuthPGDatabase(t)
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id,username,display_name,role,status,password_hash,must_change_password,last_login_at,updated_at,created_at) VALUES ('w11e-acct','w11e-admin','管理员','admin','active',$1,0,'','','')`, w11ePasswordHash("w11e-password")); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -54,7 +38,7 @@ func w11eAuthDB(t *testing.T) *sql.DB {
 
 func w11eAuth(t *testing.T, db *sql.DB, now time.Time) *Authenticator {
 	t.Helper()
-	auth, err := New(db, SQLite, func() time.Time { return now })
+	auth, err := New(db, Postgres, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,13 +163,13 @@ func TestW11ETemporaryAccessTokenArms(t *testing.T) {
 	}
 	// must_change_password 账户拒绝签发（重置换守卫绕开用户名锁）。
 	handler.Guard = NewLoginGuard(func() time.Time { return now })
-	if _, err := db.Exec(`UPDATE system_accounts SET must_change_password=1 WHERE id='w11e-acct'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_accounts SET must_change_password=1 WHERE id='w11e-acct'`); err != nil {
 		t.Fatal(err)
 	}
 	if recorder := post(`{"username":"w11e-admin","password":"w11e-password","ttlSeconds":120}`, "127.0.0.3:9000"); recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "初始密码") {
 		t.Fatalf("需改密=%d %s", recorder.Code, recorder.Body.String())
 	}
-	if _, err := db.Exec(`UPDATE system_accounts SET must_change_password=0 WHERE id='w11e-acct'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_accounts SET must_change_password=0 WHERE id='w11e-acct'`); err != nil {
 		t.Fatal(err)
 	}
 	// 撤销：非法令牌 / 无效令牌。
@@ -294,7 +278,7 @@ func TestW11EChangePasswordArms(t *testing.T) {
 		t.Fatalf("修改密码=%d %s", recorder.Code, recorder.Body.String())
 	}
 	// must_change_password 流程（新账户带初始密码）。
-	if _, err := db.Exec(`UPDATE system_accounts SET must_change_password=1 WHERE id='w11e-acct'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_accounts SET must_change_password=1 WHERE id='w11e-acct'`); err != nil {
 		t.Fatal(err)
 	}
 	login2 := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"username":"w11e-admin","password":"w11e-new-password"}`))
@@ -368,7 +352,7 @@ func TestW11ESessionStoreArms(t *testing.T) {
 	if _, err := auth.CleanupExpiredSessions(canceled, now, 10); err == nil {
 		t.Fatal("canceled 清理必须失败")
 	}
-	if _, err := db.Exec(`UPDATE system_sessions SET expires_at='2026-09-16T09:00:00Z'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_sessions SET expires_at='2026-09-16T09:00:00Z'`); err != nil {
 		t.Fatal(err)
 	}
 	deleted, err := auth.CleanupExpiredSessions(ctx, now, 10)
@@ -376,7 +360,7 @@ func TestW11ESessionStoreArms(t *testing.T) {
 		t.Fatalf("清理=%d err=%v", deleted, err)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM system_sessions`).Scan(&count); err != nil || count != 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.system_sessions`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("清理后=%d err=%v", count, err)
 	}
 	// ChangePassword 修订失配。
@@ -384,7 +368,7 @@ func TestW11ESessionStoreArms(t *testing.T) {
 		t.Fatalf("修订失配=%t err=%v", changed, err)
 	}
 	// 会话表被删后 Login 失败关闭。
-	if _, err := db.Exec(`DROP TABLE system_sessions`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.system_sessions`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := auth.Login(ctx, "w11e-admin", "w11e-password", 10); err == nil {

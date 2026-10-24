@@ -21,7 +21,7 @@ func TestP0ActivationHookObservesUncommittedFlipInSyncTx(t *testing.T) {
 	seedAccountWithSchedule(t, db, "acc-tx", availabilityScheduleJSON, "", "disabled", false)
 	seen := ""
 	hook := ActivationHookFunc(func(_ context.Context, tx *sql.Tx, accountID, _ string) error {
-		return tx.QueryRow(`SELECT status FROM accounts WHERE id = ?`, accountID).Scan(&seen)
+		return tx.QueryRow(`SELECT status FROM juhe_business.accounts WHERE id = $1`, accountID).Scan(&seen)
 	})
 	if _, err := store.SyncAccountScheduleStatuses(context.Background(), atStart, 0, hook); err != nil {
 		t.Fatal(err)

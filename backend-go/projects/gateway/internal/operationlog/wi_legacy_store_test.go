@@ -148,7 +148,7 @@ func TestWISQLStoreDialectHelpers(t *testing.T) {
 }
 
 func TestWIProducerWarnOnFailure(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	lease, ok, err := store.AcquireOwnerLease(context.Background(), "wi-producer", time.Minute)
 	if err != nil || !ok {
 		t.Fatalf("lease=%v err=%v", ok, err)
@@ -187,7 +187,7 @@ func waitForSlogWarn(t *testing.T, recorder *wiRecordingSlog) {
 }
 
 func TestWIRetentionFencedAndAccountNames(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	time.Sleep(100 * time.Millisecond) // 前一个测试的异步 Record 已结束。
 	ctx := context.Background()
 	lease, ok, err := store.AcquireOwnerLease(ctx, "wi-retention", time.Minute)

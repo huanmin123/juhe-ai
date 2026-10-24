@@ -1054,37 +1054,38 @@ func TestWdTimezoneLocationSourceError(t *testing.T) {
 }
 
 func TestWdSystemSettingsTimezoneSourceBranches(t *testing.T) {
-	// PG 方言只改表名前缀；SQLite 上直接调用会因限定表不存在而报错，
-	// 这正是"PG 走 juhe_business 前缀"的可观察差异。
-	pgSource := NewSystemSettingsTimezoneSource(newFixture(t).db, true)
-	if _, err := pgSource(nil); err == nil {
-		t.Fatalf("PG 限定表在 SQLite 测试库上应报错（验证表名前缀路径）")
-	}
+	// PG 方言只改表名前缀：postgres=false 读无前缀表（PG 夹具上不存在）应
+	// 报错，postgres=true 走 juhe_business.system_settings 读到已 seed 的
+	// UTC（原「PG 前缀在 SQLite 库上报错」的镜像断言，随夹具迁 PG 重钉）。
 	fixture := newFixture(t)
-	source := NewSystemSettingsTimezoneSource(fixture.db, false)
+	unqualified := NewSystemSettingsTimezoneSource(fixture.db, false)
+	if _, err := unqualified(nil); err == nil {
+		t.Fatalf("PG 测试库上无前缀 system_settings 应报错（验证表名前缀路径）")
+	}
+	source := NewSystemSettingsTimezoneSource(fixture.db, true)
 	if _, err := source(nil); err != nil {
 		t.Fatalf("已 seed UTC 的库应能解析时区: %v", err)
 	}
 	// NULL value_json → 明确的配置错误。
-	if _, err := fixture.db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'x', 'null', 't')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'x', 'null', 't')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := source(nil); err != nil {
 		t.Fatalf("无关键不应影响 usageStatsTimezone 读取: %v", err)
 	}
-	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = 'not-json' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := fixture.db.Exec(`UPDATE juhe_business.system_settings SET value_json = 'not-json' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, err := source(nil); err == nil || !strings.Contains(err.Error(), "无效") {
 		t.Fatalf("非法 JSON 应报无效: %v", err)
 	}
-	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '"   "' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := fixture.db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"   "' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, err := source(nil); err == nil || !strings.Contains(err.Error(), "非空字符串") {
 		t.Fatalf("空白时区应报非空: %v", err)
 	}
-	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '"Mars/Phobos"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := fixture.db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"Mars/Phobos"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, err := source(nil); err == nil || !strings.Contains(err.Error(), "时区不存在") {

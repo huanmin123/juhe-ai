@@ -59,26 +59,11 @@ func (m mockAccountLookup) FindChatAccount(scope ChatBindScope, accountID string
 	return nil, nil
 }
 
-// owningChatKeys 模拟 Key 属主校验：other_key 属于他人、missing_key 不存在，
-// find 返回 nil 走 requireOwnedApiKey 的"API Key 不存在或不可用"分支。
-type owningChatKeys struct {
-	mockChatKeys
-}
-
-func (m *owningChatKeys) FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecord, error) {
-	if keyID == "other_key" || keyID == "missing_key" {
-		return nil, nil
-	}
-	return &ChatAPIKeyRecord{ID: keyID, Name: "对话密钥", Secret: "chat-secret", Status: "active"}, nil
-}
-
 // createBoundConversation 直接经 Store 建立会话夹具（可携带绑定账户）。
 func createBoundConversation(t *testing.T, fixture *chatFixture, id, ownerID string, input CreateConversationInput) *Conversation {
 	t.Helper()
 	input.ID = id
 	input.SystemAccountID = ownerID
-	input.APIKeyID = "chat_key_1"
-	input.APIKeyNameSnapshot = "对话密钥"
 	input.Now = fixture.nowISO
 	input.MaxConversationsPerUser = 30
 	conversation, err := fixture.store.CreateConversation(input)
@@ -107,7 +92,7 @@ func setConversationLastModel(t *testing.T, fixture *chatFixture, conversationID
 
 // TestCreateConversationEmptyBody：免弹窗直进契约——空 body 与携带历史字段
 // （bindMode/apiKeyId/groupId/accountId）的 body 均创建空会话（bindAccountId
-// NULL、archived=false），鉴权主体为 EnsureChatAPIKey 幂等补齐的专用 Key。
+// NULL、archived=false）；免 Key 直调后不再创建任何 API Key（apiKeyId 恒空串）。
 func TestCreateConversationEmptyBody(t *testing.T) {
 	env := newGenerationEnv(t)
 	prefix := "/__aisys__/api/my-chat"
@@ -123,20 +108,14 @@ func TestCreateConversationEmptyBody(t *testing.T) {
 	if data["archived"] != false {
 		t.Fatalf("空会话 archived = %v, want false", data["archived"])
 	}
-	if data["apiKeyId"] != "chat_key_provisioned" || data["apiKeyNameSnapshot"] != "对话密钥" {
-		t.Fatalf("鉴权主体 payload = %v", data)
+	if data["apiKeyId"] != nil {
+		t.Fatalf("apiKeyId = %v, want null（不再创建对话 Key）", data["apiKeyId"])
 	}
 	if _, has := data["defaultModel"]; has {
 		t.Fatalf("空会话不应携带 defaultModel: %v", data)
 	}
 	if data["lastModel"] != nil {
 		t.Fatalf("空会话 lastModel = %v, want null", data["lastModel"])
-	}
-	env.chatKeys.mu.Lock()
-	ensureCount := env.chatKeys.ensureCount
-	env.chatKeys.mu.Unlock()
-	if ensureCount != 1 {
-		t.Fatalf("ensure count = %d, want 1", ensureCount)
 	}
 
 	// 历史字段按兼容口径忽略：携带 bindMode/accountId 的旧客户端请求体仍创建

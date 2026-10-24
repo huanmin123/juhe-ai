@@ -1,29 +1,94 @@
 package gatewayquota
 
+// testhelpers_test.go 是 gatewayquota 测试迁真实 PG 的共享基建
+// （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，gatewayquota 测试迁移
+// 切片）：pgtestkit 每测试独立库，测试建库走生产 store 的 PG 臂（StatsStore /
+// DBTimezoneSource postgres=true，juhe_stats / juhe_business schema 限定 + $n
+// 占位符，与生产 PG 装配同一方言）。
+//
+// 三组分类（D9/D17）：
+//   - 组A（被测对象有 PG 臂且断言可逐字节保持）：建库走本文件 newTestDB，
+//     statsSchema / seedCost / authzSchema 系列 seed 对齐生产 PG 臂方言；
+//     测试体断言逐字节保持。
+//   - 组B（SQLite-only 生产臂为被测对象）：本包生产读取器为双模实现，无
+//     SQLite-only 臂；ServerRole 同步守卫文案中的「SQLite」是生产契约本身，
+//     相关测试随生产双模实现保留。
+//   - scripted 假驱动与 fake（miniredis、mockDBService、wjMockShared、
+//     fakeClock、manualTimerQueue 等）不依赖真库，保持原状。
+//
+// 连接串由 pgtestkit 自 .local dev env 解析，内容不进入任何文件、日志或断言。
+
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// newTestDB opens an isolated in-memory SQLite database per test.
+// newTestDB 创建 pgtestkit 隔离 PG 测试库并注入 juhe_stats / juhe_business
+// schema（只建 schema 不建表：缺表错误注入类测试依赖空库前提）。label 参数
+// 为 SQLite 共享内存库时代的隔离标记，PG 每测试独立建库后不再需要，保留
+// 签名以免 80+ 调用点机械改名。
 func newTestDB(t *testing.T, label string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:gatewayquota-"+label+"-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`PRAGMA journal_mode=MEMORY`); err != nil {
-		t.Fatalf("pragma: %v", err)
-	}
-	return db
+	_ = label
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;
+CREATE SCHEMA IF NOT EXISTS juhe_business;`)
+		return err
+	})
 }
+
+// quotaStatsPGFixtureSchema 是配额读侧的 juhe_stats 夹具 schema：列集按
+// groups pgkit 先例放宽为本包实际读写的键列与配额口径成本列，类型照抄
+// maintenance 生产 DDL（pg_schema_stats.go）；省略生产计数列、updated_at 与
+// 主键（配额读侧无唯一约束依赖，seed 行不满足生产外键/默认值链）。
+const quotaStatsPGFixtureSchema = `
+	CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_totals (
+	  system_account_id text NOT NULL,
+	  scope_type text NOT NULL,
+	  scope_id text NOT NULL DEFAULT '',
+	  total_cost_usd double precision NOT NULL DEFAULT 0,
+	  success_cost_usd double precision NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_daily (
+	  system_account_id text NOT NULL,
+	  scope_type text NOT NULL,
+	  scope_id text NOT NULL DEFAULT '',
+	  stat_date text NOT NULL,
+	  total_cost_usd double precision NOT NULL DEFAULT 0,
+	  success_cost_usd double precision NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_weekly (
+	  system_account_id text NOT NULL,
+	  scope_type text NOT NULL,
+	  scope_id text NOT NULL DEFAULT '',
+	  stat_week text NOT NULL,
+	  total_cost_usd double precision NOT NULL DEFAULT 0,
+	  success_cost_usd double precision NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_monthly (
+	  system_account_id text NOT NULL,
+	  scope_type text NOT NULL,
+	  scope_id text NOT NULL DEFAULT '',
+	  stat_month text NOT NULL,
+	  total_cost_usd double precision NOT NULL DEFAULT 0,
+	  success_cost_usd double precision NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS juhe_stats.usage_quota_hourly_windows (
+	  system_account_id text NOT NULL,
+	  scope_type text NOT NULL,
+	  scope_id text NOT NULL DEFAULT '',
+	  window_hours integer NOT NULL,
+	  total_cost_usd double precision NOT NULL DEFAULT 0
+	);
+`
 
 // statsSchema creates the five usage projections the quota reads. The
 // usage_stats tables expose both cost columns: quota reads success_cost_usd
@@ -32,28 +97,20 @@ func newTestDB(t *testing.T, label string) *sql.DB {
 // 口径成本（statsagg 窗口刷新按 success_cost_usd 汇总写入）。
 func statsSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	statements := []string{
-		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_quota_hourly_windows (system_account_id TEXT, scope_type TEXT, scope_id TEXT, window_hours INTEGER, total_cost_usd REAL)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("create stats schema: %v", err)
-		}
+	if _, err := db.Exec(quotaStatsPGFixtureSchema); err != nil {
+		t.Fatalf("create stats schema: %v", err)
 	}
 }
 
-// seedCost inserts one cost row.
+// seedCost inserts one cost row into the juhe_stats projection named by
+// table（生产 PG 臂方言：schema 限定 + $n 占位符）。
 func seedCost(t *testing.T, db *sql.DB, table string, columns []string, values []any) {
 	t.Helper()
 	placeholders := make([]string, len(columns))
 	for i := range placeholders {
-		placeholders[i] = "?"
+		placeholders[i] = "$" + strconv.Itoa(i+1)
 	}
-	query := "INSERT INTO " + table + " (" + strings.Join(columns, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ")"
+	query := "INSERT INTO juhe_stats." + table + " (" + strings.Join(columns, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ")"
 	if _, err := db.Exec(query, values...); err != nil {
 		t.Fatalf("seed %s: %v", table, err)
 	}

@@ -98,9 +98,9 @@ func TestEnsureGatewaySQLiteStoragePreflight(t *testing.T) {
 		t.Fatalf("query api keys: %v", err)
 	}
 	// 2026-10-07 默认资源收口（0e83a580b）：种子只预置 GPT 一套默认分组 +
-	// 默认路由 + 默认 API Key，admin chat key 不再预置（由会话创建链按需
-	// EnsureChatAPIKey 自愈补建），与 maintenance sqlite_seed_test 的种子
-	// 契约计数（api_keys 1）同源。
+	// 默认路由 + 默认 API Key，admin chat key 不预置；免 Key 直调（W-B）后
+	// 会话创建链也不再补建，与 maintenance sqlite_seed_test 的种子契约计数
+	//（api_keys 1）同源。
 	if apiKeys != 1 {
 		t.Fatalf("api keys = %d, want 1 (2026-10-07 默认资源收口：仅 GPT 默认)", apiKeys)
 	}

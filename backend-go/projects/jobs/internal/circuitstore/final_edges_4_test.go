@@ -99,17 +99,17 @@ func TestApplyClaimsUpsertFailurePaths(t *testing.T) {
 			ctx := context.Background()
 			now := timeDateHelper()
 			nowMS := now.UnixMilli()
-			if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
+			if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.Exec(`
-				INSERT INTO account_list_availability_dirty (
+				INSERT INTO juhe_business.account_list_availability_dirty (
 					account_id, viewer_system_account_id, generation, applied_generation, reason,
 					available_at_ms, attempt_count, created_at_ms, updated_at_ms
-				) VALUES ('acc-1', 'viewer-1', 1, 0, 'projection_missing', 0, 0, ?, ?)`, nowMS, nowMS); err != nil {
+				) VALUES ('acc-1', 'viewer-1', 1, 0, 'projection_missing', 0, 0, $1, $1)`, nowMS); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec(`DROP TABLE ` + dropTable); err != nil {
+			if _, err := db.Exec(`DROP TABLE juhe_business.` + dropTable); err != nil {
 				t.Fatal(err)
 			}
 			claims, err := repo.ClaimDirty(ctx, "owner", 10, 30_000, nowMS)

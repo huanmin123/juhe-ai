@@ -15,62 +15,19 @@ import (
 
 // 本文件补齐 usagewriter 既有测试未覆盖的分支：体积估算限流/循环引用、
 // JSON 编解码错误臂、分片路由边界、快照截断、writer 队列保护与停机路径，
-// 以及门禁真实 PostgreSQL 的 PostgresShardStore.WriteBatch 全链路。
+// 以及 pgtestkit 隔离真实 PostgreSQL 的 PostgresShardStore.WriteBatch 全链路
+// （PLAN-20261024T051925945Z 测试迁移切片；原 W9G_TEST_POSTGRES_DSN /
+// shared.env 门禁共享覆盖库 juhe_ai_sub2api_dev_w1cover 的装配已退役，
+// 现为每测试独立库，PG 不可达时显式失败而非 skip）。
 
-// ---------- 门禁真实 PostgreSQL（W7D_TEST_POSTGRES_DSN 同款先例） ----------
-
-// w9gPostgresTarget 解析门禁真实 PG 的连接目标：
-//  1. 优先 W9G_TEST_POSTGRES_DSN；
-//  2. 回落读取本机私有 dev env（.local/project-resources/dev/env/shared.env
-//     的 JUHE_AI_POSTGRES_URL），把库名替换为一次性覆盖库
-//     juhe_ai_sub2api_dev_w1cover。
-//
-// 任何一步失败都 t.Skip（不可达环境不强跑）。DSN 全程不落入日志。
-func w9gPostgresTarget(t *testing.T) string {
-	t.Helper()
-	if dsn := os.Getenv("W9G_TEST_POSTGRES_DSN"); dsn != "" {
-		return dsn
-	}
-	envPath := filepath.Join("..", "..", "..", "..", "..", ".local", "project-resources", "dev", "env", "shared.env")
-	raw, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Skipf("dev env 不可读，跳过真实 PG 臂: %v", err)
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		if !strings.HasPrefix(line, "JUHE_AI_POSTGRES_URL=") {
-			continue
-		}
-		url := strings.TrimSpace(strings.TrimPrefix(line, "JUHE_AI_POSTGRES_URL="))
-		if index := strings.Index(url, "/juhe_ai_sub2api_dev?"); index >= 0 {
-			return url[:index] + "/juhe_ai_sub2api_dev_w1cover?" + url[index+len("/juhe_ai_sub2api_dev?"):]
-		}
-	}
-	t.Skip("dev env 缺少 JUHE_AI_POSTGRES_URL，跳过真实 PG 臂")
-	return ""
-}
-
-func w9gPostgresDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("pgx", w9gPostgresTarget(t))
-	if err != nil {
-		t.Skipf("打开 pg 失败，跳过真实 PG 臂: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		t.Skipf("ping pg 失败，跳过真实 PG 臂: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
+// ---------- pgtestkit 隔离真实 PostgreSQL（usagewriter_pgkit_test.go 装配） ----------
 
 // TestW9GPostgresStoreWriteBatch 覆盖 PostgresShardStore.WriteBatch 全链路：
 // 分区确保 → 事务 → 账户锁定 → 批量插入（ON CONFLICT DO NOTHING）→
 // last_used_at 副作用 → 提交；并覆盖空计划、无效 createdAt（原始
 // no-partition 错误上抛）与幂等重放。
 func TestW9GPostgresStoreWriteBatch(t *testing.T) {
-	db := w9gPostgresDB(t)
+	db := openKitPostgresDB(t)
 	store := NewPostgresShardStore(PostgresShardStoreConfig{
 		DB:         db,
 		ShardCount: 4,
@@ -93,16 +50,9 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 		return input
 	}
 
-	// 目标测试库可能仍是旧表结构：写入前按生产部署同款幂等 ALTER 补齐新列
-	// （生产由 maintenance --ensure-schema 承担）。
-	for _, statement := range []string{
-		`ALTER TABLE juhe_usage.usage_records ADD COLUMN IF NOT EXISTS route_group_id text`,
-		`ALTER TABLE juhe_usage.usage_records ADD COLUMN IF NOT EXISTS compaction_expected integer NOT NULL DEFAULT 0`,
-	} {
-		if _, err := db.ExecContext(ctx, statement); err != nil {
-			t.Fatalf("ensure column: %v", err)
-		}
-	}
+	// 隔离测试库由 usagewriter_pgkit_test.go 按当前生产形状新建（route_group_id
+	// / compaction_expected 等列齐备）；原共享覆盖库时代的存量旧表幂等补列
+	// ALTER 臂随门禁装配一并退役（生产由 maintenance --ensure-schema 承担）。
 
 	plan, err := BuildWritePlan(ctx, []UsageRecordInput{baseInput("a"), baseInput("b")}, WritePlanOptions{
 		Postgres:   true,
@@ -176,7 +126,7 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 // TestW9GPostgresStoreEnsurePartitionsInvalidDate 覆盖分区日期解析对
 // 非法值的静默跳过分支（ensure 层不报错，由 INSERT 承载错误）。
 func TestW9GPostgresStoreEnsurePartitionsInvalidDate(t *testing.T) {
-	db := w9gPostgresDB(t)
+	db := openKitPostgresDB(t)
 	ensured := &ensuredPartitionDateKeys{}
 	if err := ensurePostgresUsageRecordPartitions(context.Background(), db, ensured,
 		[]string{"not-a-date", ""}); err != nil {

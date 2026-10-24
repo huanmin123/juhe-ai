@@ -111,8 +111,11 @@ func TestGatewayChainCommittedStreamFailureRecordsSingleUsageRow(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		// 首个语义事件：内容 delta 提交下游（OutputReceived → 预提交缓冲放行）。
-		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-dedup\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"部分输出\"},\"finish_reason\":null}]}\n\n"))
+		// 首个语义事件：内容 delta 提交下游。首个 delta 超窗口缓冲上限 B（流式
+		// 提交边界受限重放与异常终局处置设计 §3.1 条件②追加前判定：超限 chunk
+		// 随 flush 写出、立即提交），固定「已提交后的流内协议失败」前提（小
+		// delta 会先入窗、失败帧改走提交前换号，由窗口版用例覆盖）。
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-dedup\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"部分输出" + strings.Repeat("输", 3000) + "\"},\"finish_reason\":null}]}\n\n"))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}

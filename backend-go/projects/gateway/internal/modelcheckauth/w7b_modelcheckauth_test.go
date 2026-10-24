@@ -9,31 +9,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const w7bPassword = "correcthorsebatterystaple"
 
-func w7bOpenAuth(t *testing.T, name string) (*sql.DB, *Authenticator, time.Time) {
+func w7bOpenAuth(t *testing.T) (*sql.DB, *Authenticator, time.Time) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), name+".db")+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT,role TEXT NOT NULL,status TEXT NOT NULL,password_hash TEXT NOT NULL,must_change_password INTEGER NOT NULL,last_login_at TEXT,updated_at TEXT NOT NULL)`,
-		`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT UNIQUE,expires_at TEXT,created_at TEXT,last_seen_at TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newModelCheckAuthPGDatabase(t)
 	salt := "MDEyMzQ1Njc4OWFiY2RlZg"
 	derived, err := pbkdf2.Key(sha512.New, w7bPassword, []byte(salt), 120000, 32)
 	if err != nil {
@@ -54,12 +41,12 @@ func w7bOpenAuth(t *testing.T, name string) (*sql.DB, *Authenticator, time.Time)
 		if row.id == "junk" {
 			hash = "garbage-hash"
 		}
-		if _, err := db.Exec(`INSERT INTO system_accounts VALUES (?,?,?,?,?,?,?, '', '')`, row.id, row.username, row.username, row.role, row.status, hash, row.mustChange); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id,username,display_name,role,status,password_hash,must_change_password,last_login_at,updated_at,created_at) VALUES ($1,$2,$2,$3,$4,$5,$6, '', '', '')`, row.id, row.username, row.role, row.status, hash, row.mustChange); err != nil {
 			t.Fatal(err)
 		}
 	}
 	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
-	auth, err := New(db, SQLite, func() time.Time { return now })
+	auth, err := New(db, Postgres, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,10 +55,10 @@ func w7bOpenAuth(t *testing.T, name string) (*sql.DB, *Authenticator, time.Time)
 
 // w7b：Authenticator 直驱面（会话生命周期 + 校验分支 + Postgres 语义适配）。
 func TestW7BAuthenticatorDirectSurface(t *testing.T) {
-	db, auth, now := w7bOpenAuth(t, "direct")
+	db, auth, now := w7bOpenAuth(t)
 	ctx := context.Background()
 
-	if _, err := New(nil, SQLite, nil); err == nil {
+	if _, err := New(nil, Postgres, nil); err == nil {
 		t.Fatal("nil db 必须报错")
 	}
 	if _, err := New(db, Mode(9), nil); err == nil {
@@ -80,11 +67,8 @@ func TestW7BAuthenticatorDirectSurface(t *testing.T) {
 	if err := auth.CheckContract(ctx); err != nil {
 		t.Fatalf("CheckContract = %v", err)
 	}
-	emptyDB, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "empty.db")+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	emptyAuth, err := New(emptyDB, SQLite, nil)
+	emptyDB := pgtestkit.New(t)
+	emptyAuth, err := New(emptyDB, Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,13 +132,13 @@ func TestW7BAuthenticatorDirectSurface(t *testing.T) {
 
 	// authenticateToken：过期/坏时间戳/touch CAS。
 	expiredAt := now.Add(-time.Hour).UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('expired','acct',?,?,?,?)`, hashString("expired-hash"), expiredAt, expiredAt, expiredAt); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_sessions (id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('expired','acct',$1,$2,$3,$4)`, hashString("expired-hash"), expiredAt, expiredAt, expiredAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AuthenticateToken(ctx, "expired-hash"); err == nil {
 		t.Fatal("过期会话必须报错")
 	}
-	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('broken','acct',?,'not-a-time','x','y')`, hashString("broken-hash")); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_sessions (id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('broken','acct',$1,'not-a-time','x','y')`, hashString("broken-hash")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AuthenticateTokenForSession(ctx, "broken-hash"); !strings.Contains(err.Error(), "过期") {
@@ -163,23 +147,23 @@ func TestW7BAuthenticatorDirectSurface(t *testing.T) {
 	// last_seen 61 秒前 → touch 写入新时间；窗口内 → 不写。
 	staleSeen := now.Add(-61 * time.Second).UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
 	freshSeen := now.Add(-10 * time.Second).UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('stale','acct',?, ?, ?, ?)`, hashString("stale-hash"), nodeISOTime(now.Add(time.Hour)), staleSeen, staleSeen); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_sessions (id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('stale','acct',$1, $2, $3, $4)`, hashString("stale-hash"), nodeISOTime(now.Add(time.Hour)), staleSeen, staleSeen); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('fresh','acct',?,?,?,?)`, hashString("fresh-hash"), nodeISOTime(now.Add(time.Hour)), freshSeen, freshSeen); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_sessions (id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('fresh','acct',$1,$2,$3,$4)`, hashString("fresh-hash"), nodeISOTime(now.Add(time.Hour)), freshSeen, freshSeen); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AuthenticateTokenForSession(ctx, "stale-hash"); err != nil {
 		t.Fatal(err)
 	}
 	var seenText string
-	if err := db.QueryRow(`SELECT last_seen_at FROM system_sessions WHERE id='stale'`).Scan(&seenText); err != nil || seenText != nodeISOTime(now) {
+	if err := db.QueryRow(`SELECT last_seen_at FROM juhe_business.system_sessions WHERE id='stale'`).Scan(&seenText); err != nil || seenText != nodeISOTime(now) {
 		t.Fatalf("touch CAS = %q err=%v", seenText, err)
 	}
 	if _, err := auth.AuthenticateTokenForSessionNoTouch(ctx, "fresh-hash"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT last_seen_at FROM system_sessions WHERE id='fresh'`).Scan(&seenText); err != nil || seenText != freshSeen {
+	if err := db.QueryRow(`SELECT last_seen_at FROM juhe_business.system_sessions WHERE id='fresh'`).Scan(&seenText); err != nil || seenText != freshSeen {
 		t.Fatalf("窗口内不得 touch = %q err=%v", seenText, err)
 	}
 	if actor, err := auth.AuthenticateTokenForSession(ctx, tmp.Token); err != nil || !actor.MustChangePassword == false {
@@ -251,7 +235,7 @@ func TestW7BAuthenticatorDirectSurface(t *testing.T) {
 		t.Fatal("limit 超限必须报错")
 	}
 	// RevokeOtherSessions 已清空 acct 会话：补插过期会话供清理。
-	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('w7b-expired','acct',?,?,?,?)`,
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_sessions (id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('w7b-expired','acct',$1,$2,$3,$4)`,
 		hashString("w7b-expired-token"), expiredAt, expiredAt, expiredAt); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +259,7 @@ func TestW7BAuthenticatorDirectSurface(t *testing.T) {
 		t.Fatalf("改密 = %v err=%v", changed, err)
 	}
 	var mustAfter int
-	if err := db.QueryRow(`SELECT must_change_password FROM system_accounts WHERE id='acct'`).Scan(&mustAfter); err != nil || mustAfter != 0 {
+	if err := db.QueryRow(`SELECT must_change_password FROM juhe_business.system_accounts WHERE id='acct'`).Scan(&mustAfter); err != nil || mustAfter != 0 {
 		t.Fatalf("改密后必须清除 must_change = %d err=%v", mustAfter, err)
 	}
 
@@ -350,7 +334,7 @@ func TestW7BAuthenticatorDirectSurface(t *testing.T) {
 
 // w7b：HTTP 错误路径矩阵（httptest）。
 func TestW7BHTTPHandlerErrorMatrix(t *testing.T) {
-	db, auth, _ := w7bOpenAuth(t, "http")
+	db, auth, _ := w7bOpenAuth(t)
 	var nilHandler *HTTPHandler
 	recorder := httptest.NewRecorder()
 	nilHandler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/me", nil))
@@ -446,7 +430,7 @@ func TestW7BHTTPHandlerErrorMatrix(t *testing.T) {
 	profile = httptest.NewRequest(http.MethodPatch, "/me", strings.NewReader(`{"displayName":"新名字"}`))
 	profile.AddCookie(cookie)
 	// 账户行被删除后 JOIN 失败 → 会话立即失效（fail-closed），不会进入改名分支。
-	if _, err := db.Exec(`DELETE FROM system_accounts WHERE id='acct'`); err != nil {
+	if _, err := db.Exec(`DELETE FROM juhe_business.system_accounts WHERE id='acct'`); err != nil {
 		t.Fatal(err)
 	}
 	recorder = httptest.NewRecorder()
@@ -454,7 +438,7 @@ func TestW7BHTTPHandlerErrorMatrix(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("profile 账户缺失 = %d", recorder.Code)
 	}
-	if _, err := db.Exec(`INSERT INTO system_accounts VALUES ('acct','admin','Admin','admin','active',(SELECT password_hash FROM system_accounts WHERE id='viewer'),0,'','')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id,username,display_name,role,status,password_hash,must_change_password,last_login_at,updated_at,created_at) VALUES ('acct','admin','Admin','admin','active',(SELECT password_hash FROM juhe_business.system_accounts WHERE id='viewer'),0,'','','')`); err != nil {
 		t.Fatal(err)
 	}
 	profile = httptest.NewRequest(http.MethodPatch, "/me", strings.NewReader(`{"displayName":"新名字"}`))
@@ -481,7 +465,7 @@ func TestW7BHTTPHandlerErrorMatrix(t *testing.T) {
 		t.Fatalf("旧密码含空格 = %d", recorder.Code)
 	}
 	adminHashRevision := ""
-	if err := db.QueryRow(`SELECT password_hash FROM system_accounts WHERE id='acct'`).Scan(&adminHashRevision); err != nil {
+	if err := db.QueryRow(`SELECT password_hash FROM juhe_business.system_accounts WHERE id='acct'`).Scan(&adminHashRevision); err != nil {
 		t.Fatal(err)
 	}
 	sum := hashString(adminHashRevision)
@@ -510,7 +494,7 @@ func TestW7BHTTPHandlerErrorMatrix(t *testing.T) {
 
 // w7b：临时访问令牌端点的校验矩阵（独立 handler 避免共享限流状态）。
 func TestW7BTemporaryAccessTokenMatrix(t *testing.T) {
-	_, auth, now := w7bOpenAuth(t, "temp")
+	_, auth, now := w7bOpenAuth(t)
 	handler := func() *HTTPHandler {
 		return &HTTPHandler{Auth: auth, TemporaryAccessIPAllowlist: []string{"127.0.0.1", "::ffff:192.0.2.5"}, Guard: NewLoginGuard(func() time.Time { return now })}
 	}

@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// publicReadsDDL 是 w11fFaultEnv 保留组（scripted SQLite 故障注入环境）专用
+// 的 F5 dataset SQLite DDL（见 pgkit_test.go 的三组分类说明）；组A环境的 F5
+// 表由 newLogreadsPGDatabase 按生产 PG DDL 建。
 var publicReadsDDL = []string{
 	`CREATE TABLE IF NOT EXISTS public_api_logs (
 	  id TEXT PRIMARY KEY,
@@ -58,7 +61,7 @@ func seedPublicReads(t *testing.T, env *readsTestEnv) {
 }
 
 func TestPublicApiLogReadsList(t *testing.T) {
-	env := newReadsTestEnv(t, publicReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	seedPublicReads(t, env)
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/public-api-logs", "")
@@ -160,7 +163,7 @@ func TestPublicApiLogReadsList(t *testing.T) {
 }
 
 func TestPublicApiLogReadsDetailSupplement(t *testing.T) {
-	env := newReadsTestEnv(t, publicReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	seedPublicReads(t, env)
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/public-api-logs/p-1", "")

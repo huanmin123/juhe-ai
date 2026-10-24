@@ -131,7 +131,7 @@ func (e *ChatImageGenerationRequestError) Error() string { return e.Message }
 // /v1/images/edits 只回 imgen.x.ai 临时链接，需按绑定账户的 proxy_profile
 // 出站）；nil 回落到带 DialGuard 的直连默认客户端（拒绝私网/保留地址、不跟
 // 随重定向）。
-func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input ChatImageGenerationRequest, apiKey, traceID string, downloadClient *http.Client) (ChatImageGenerationToolResult, error) {
+func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input ChatImageGenerationRequest, traceID string, downloadClient *http.Client) (ChatImageGenerationToolResult, error) {
 	result := ChatImageGenerationToolResult{}
 	model := trimSpace(input.Model)
 	prompt := trimSpace(input.Prompt)
@@ -159,9 +159,10 @@ func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input Ch
 	} else {
 		outputFormat = normalized
 	}
+	// 鉴权经内部身份通道（执行器视图注入进程内 context），请求头只保留内容
+	// 协商。
 	headers := map[string]string{
-		"authorization": "Bearer " + apiKey,
-		"accept":        "application/json",
+		"accept": "application/json",
 	}
 	if traceID != "" {
 		headers["x-trace-id"] = traceID

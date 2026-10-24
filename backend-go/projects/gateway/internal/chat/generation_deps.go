@@ -117,26 +117,6 @@ func (d *Deps) maxConversationsPerUser() int {
 	return defaultMaxConversationsPerUser
 }
 
-// requireOwnedApiKey mirrors requireOwnedApiKey. 用户引用的 Key 缺失/停用/
-// 已删除属于可恢复输入错误（400 chat_invalid_request）；ChatKeys 端口未接线
-// 属服务端问题，保持 DomainError（500）。
-func (rt *chatRoutes) requireOwnedApiKey(apiKeyID, ownerID string) (*ChatAPIKeyRecord, error) {
-	if apiKeyID == "" {
-		return nil, &invalidRequestError{Message: "会话绑定的 API Key 已删除"}
-	}
-	if rt.deps.ChatKeys == nil {
-		return nil, &DomainError{Message: "AI 对话专用 API Key 不存在、已停用或已过期"}
-	}
-	key, err := rt.deps.ChatKeys.FindChatAPIKey(apiKeyID, ownerID)
-	if err != nil {
-		return nil, err
-	}
-	if key == nil || key.Secret == "" || key.Status != "active" {
-		return nil, &invalidRequestError{Message: "API Key 不存在或不可用"}
-	}
-	return key, nil
-}
-
 func normalizeProviderToken(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	if normalized == "" {
@@ -334,12 +314,14 @@ func resolveChatModelOptionsFromAccountSnapshot(accounts []ChatTransportAccount,
 
 // createConversationHandler mirrors POST /conversations（免弹窗直进，设计 §5.1）：
 // 创建即空会话（bind_account_id NULL），任何请求体内容（含历史 bindMode/
-// apiKeyId/groupId/accountId 字段）按兼容口径忽略；鉴权主体仍是自动创建/复用
-// 的 chat 专用 Key（EnsureChatAPIKey 幂等不变）。账户选定经 PATCH accountId
-// 写入，模型默认推举由前端在账户选定后从模型列表取首项。用户工具偏好继承
-// （工具体系设计 §2.11，2026-10-02）：创建时把偏好行非空列写入绑定三列与
-// default_image_model 初值——创建时不校验候选，失效组合由读取侧 valid=false /
-// tool.binding_required 引导兜底；读偏好失败不阻断创建（按无偏好继续）。
+// apiKeyId/groupId/accountId 字段）按兼容口径忽略；AI 问答免 Key 直调后不再
+// 创建任何 API Key——api_key_id/api_key_name_snapshot 列保留存历史，新会话恒
+// 写空串（api_key_name_snapshot 是 NOT NULL 列，空串满足约束）。账户选定经
+// PATCH accountId 写入，模型默认推举由前端在账户选定后从模型列表取首项。
+// 用户工具偏好继承（工具体系设计 §2.11，2026-10-02）：创建时把偏好行非空列
+// 写入绑定三列与 default_image_model 初值——创建时不校验候选，失效组合由读取
+// 侧 valid=false / tool.binding_required 引导兜底；读偏好失败不阻断创建（按
+// 无偏好继续）。
 func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.Request) {
 	// 兼容忽略历史字段：仅做 JSON 合法性与大小校验（Express json() 同款），
 	// 内容不参与创建。
@@ -352,15 +334,8 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 		writeChatRouteError(w, err)
 		return
 	}
-	apiKey, err := rt.requireChatAPIKeyForOwner(ownerID)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
 	input := CreateConversationInput{
 		SystemAccountID:         ownerID,
-		APIKeyID:                apiKey.ID,
-		APIKeyNameSnapshot:      apiKey.Name,
 		Now:                     rt.now(),
 		MaxConversationsPerUser: rt.deps.maxConversationsPerUser(),
 	}
@@ -388,29 +363,6 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 // defaultStringLimit mirrors the apiKeyId string bound (Node has no explicit
 // max; the route uses 120 like other ids).
 const defaultStringLimit = 120
-
-// requireChatAPIKeyForOwner mirrors requireChatApiKeyForOwnerAsync.
-// 可靠性批次2（缺陷4）：EnsureChatAPIKey 幂等重建后 Key 仍缺失/停用/过期属于
-// 用户可恢复状态（API Key 页面可恢复），与 api_key 模式 requireOwnedApiKey 的
-// 停用口径对齐返回 400（invalidRequestError）；ChatKeys 端口未接线与查询失败
-// 仍是服务端问题，保持 DomainError（500）。
-func (rt *chatRoutes) requireChatAPIKeyForOwner(ownerID string) (*ChatAPIKeyRecord, error) {
-	if rt.deps.ChatKeys == nil {
-		return nil, &DomainError{Message: "AI 对话专用 API Key 不存在、已停用或已过期"}
-	}
-	keyID, err := rt.deps.ChatKeys.EnsureChatAPIKey(ownerID)
-	if err != nil {
-		return nil, err
-	}
-	key, err := rt.deps.ChatKeys.FindChatAPIKey(keyID, ownerID)
-	if err != nil {
-		return nil, err
-	}
-	if key == nil || key.Secret == "" || key.Status != "active" {
-		return nil, &invalidRequestError{Message: "专用对话 Key 已停用或过期，请在 API Key 页面恢复后重试"}
-	}
-	return key, nil
-}
 
 // requireOwnedChatModelScope mirrors requireOwnedChatModelAccessAsync with
 // the account-only binding: 会话归属 + 绑定账户可用性校验（请求者数据范围内
@@ -676,18 +628,13 @@ func (rt *chatRoutes) compactionTrigger(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(map[string]any{"message": "上下文压缩启动失败，请稍后重试", "code": "chat_context_compaction_failed", "serverTime": serverTime})
 }
 
-// resolveChatCompactionInput mirrors resolveChatCompactionInput. 鉴权主体恒
-// 为会话 api_key_id；绑定对象按请求者数据范围复核，模型能力按绑定作用域收敛。
-// 压缩调用恒 chat_completions（工具体系设计 §11.3：上下文压缩的协议偏好
-// 随主对话协议偏好一并删除）。
+// resolveChatCompactionInput mirrors resolveChatCompactionInput. 鉴权主体经
+// 内部身份通道（免 Key 直调，W-A 批）；绑定对象按请求者数据范围复核，模型能力
+// 按绑定作用域收敛。压缩调用恒 chat_completions（工具体系设计 §11.3：上下文
+// 压缩的协议偏好随主对话协议偏好一并删除）。
 func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bindScope ChatBindScope, model string) (CompactionInput, error) {
 	ownerID := bindScope.ViewerID
 	input := CompactionInput{ConversationID: conversation.ID, SystemAccountID: ownerID, Model: model}
-	apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
-	if err != nil {
-		return input, err
-	}
-	input.APIKeySecret = apiKey.Secret
 	scope, err := rt.resolveChatBindingScope(conversation, bindScope)
 	if err != nil {
 		return input, err
@@ -710,7 +657,7 @@ func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bin
 		}
 	}
 	if !chatReachable {
-		return input, &ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由"}
+		return input, &ModelCapabilityError{Message: "当前账户没有可用于该模型的对话路由"}
 	}
 	if option.MaxInputTokens != nil {
 		limit := *option.MaxInputTokens

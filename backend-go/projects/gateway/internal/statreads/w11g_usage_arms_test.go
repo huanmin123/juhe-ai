@@ -69,7 +69,7 @@ func repeat(text string, n int) string {
 func TestW11GAccountUsageErrorArms(t *testing.T) {
 	fixture := newWdFixture(t)
 	// keyword 检索失败：drop accounts 表（instr 检索底表）。
-	if _, err := fixture.db.Exec(`DROP TABLE accounts`); err != nil {
+	if _, err := fixture.db.Exec(`DROP TABLE juhe_business.accounts`); err != nil {
 		t.Fatal(err)
 	}
 	recorder := invoke(t, fixture.deps.accountUsageHandler(false), http.MethodGet, "/account-usage?keyword=w11g", adminAuth(""))
@@ -78,9 +78,9 @@ func TestW11GAccountUsageErrorArms(t *testing.T) {
 	}
 	// 元数据水合失败：先 seed 聚合行使 scope_ids 非空，再 drop accounts。
 	fixture = newWdFixture(t)
-	fixture.exec(t, `INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, total_cost_usd)
+	fixture.exec(t, `INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, total_cost_usd)
 		VALUES ('global', 'account', 'w11g-acct-1', '2026-09-04', 5, 0.5)`)
-	if _, err := fixture.db.Exec(`DROP TABLE accounts`); err != nil {
+	if _, err := fixture.db.Exec(`DROP TABLE juhe_business.accounts`); err != nil {
 		t.Fatal(err)
 	}
 	recorder = invoke(t, fixture.deps.accountUsageHandler(false), http.MethodGet, "/account-usage", adminAuth(""))
@@ -89,7 +89,7 @@ func TestW11GAccountUsageErrorArms(t *testing.T) {
 	}
 	// summary 与 trend 读链失败：drop 统计表。
 	fixture = newWdFixture(t)
-	if _, err := fixture.db.Exec(`DROP TABLE usage_stats_daily`); err != nil {
+	if _, err := fixture.db.Exec(`DROP TABLE juhe_stats.usage_stats_daily`); err != nil {
 		t.Fatal(err)
 	}
 	recorder = invoke(t, fixture.deps.accountUsageSummaryHandler(false), http.MethodGet, "/summary", adminAuth(""))
@@ -102,7 +102,7 @@ func TestW11GAccountUsageErrorArms(t *testing.T) {
 	}
 	// timezone 读取失败：drop settings。
 	fixture = newWdFixture(t)
-	if _, err := fixture.db.Exec(`DROP TABLE system_settings`); err != nil {
+	if _, err := fixture.db.Exec(`DROP TABLE juhe_business.system_settings`); err != nil {
 		t.Fatal(err)
 	}
 	recorder = invoke(t, fixture.deps.accountUsageSummaryHandler(false), http.MethodGet, "/summary", adminAuth(""))
@@ -122,8 +122,8 @@ func TestW11GAiHealthSelfOnlyAndErrorArms(t *testing.T) {
 		t.Fatalf("self detail = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 	// 读链错误：seed 账户让页项非空后 drop health 表。
-	fixture.exec(t, `INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('w11g-acct-1', 'w11g 账户', 'sys-admin-1', 'openai', 'api_key', 'active')`)
-	if _, err := fixture.db.Exec(`DROP TABLE account_health_hourly`); err != nil {
+	fixture.exec(t, `INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('w11g-acct-1', 'w11g 账户', 'sys-admin-1', 'openai', 'api_key', 'active')`)
+	if _, err := fixture.db.Exec(`DROP TABLE juhe_stats.account_health_hourly`); err != nil {
 		t.Fatal(err)
 	}
 	recorder = invoke(t, fixture.deps.aiHealthListHandler(false), http.MethodGet, "/ai-health", adminAuth(""))
@@ -158,7 +158,7 @@ func TestW11GAiPerformanceArms(t *testing.T) {
 	}
 	// 读链错误：drop 汇总表。
 	fixture = newWdFixture(t)
-	if _, err := fixture.db.Exec(`DROP TABLE ai_performance_summary_windows`); err != nil {
+	if _, err := fixture.db.Exec(`DROP TABLE juhe_stats.ai_performance_summary_windows`); err != nil {
 		t.Fatal(err)
 	}
 	recorder = invoke(t, fixture.deps.aiPerformanceBaseHandler(false), http.MethodGet, "/ai-performance", adminAuth(""))
@@ -205,16 +205,20 @@ func TestW11GUsageRecordDateRangeArms(t *testing.T) {
 }
 
 func TestW11GUsageRecordPGDialectArm(t *testing.T) {
+	// PG 夹具上的 PG 方言行读臂：usageRecordRowsPG 真实执行
+	// juhe_usage.usage_records 空母表查询（原 SQLite 夹具上断言 500 的前提
+	// 「非 PG 存储不承载限定表」已随 PG 迁移消失，按 PG 对应行为重钉为 200）。
 	fixture := newWdFixture(t)
 	fixture.deps.PGDialect = true
 	recorder := invoke(t, fixture.deps.usageRecordsListHandler(false), http.MethodGet, "/usage-records", adminAuth(""))
-	if recorder.Code != http.StatusInternalServerError {
+	if recorder.Code != http.StatusOK {
 		t.Fatalf("pg dialect rows = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
 func TestW11GUsageShardLocationArms(t *testing.T) {
-	fixture := newWdFixture(t)
+	// 组B：usage_record_shards 目录枚举是 SQLite 分片读臂的组成部分。
+	fixture := newWdSQLiteFixture(t)
 	fixture.deps.UsageCatalog = fixture.db
 	if _, err := fixture.db.Exec(`CREATE TABLE usage_record_shards (shard_key TEXT NOT NULL, bucket_date TEXT NOT NULL, shard_id INTEGER NOT NULL, file_path TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)

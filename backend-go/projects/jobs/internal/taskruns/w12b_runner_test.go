@@ -53,22 +53,16 @@ func TestW12bScheduledLeaseBusyAndDefaultRenewInterval(t *testing.T) {
 
 // TestW12bScheduledLeaseRenewalExtendsLease 真实时钟下续租协程按
 // RenewInterval 续约，lease_until 应被推迟；随后正常释放 → success。
+// （原 SQLite 建库已随测试基建统一迁 pgtestkit 隔离 PG 库，B6 切片。）
 func TestW12bScheduledLeaseRenewalExtendsLease(t *testing.T) {
-	dir := t.TempDir()
-	store, err := OpenStore(StoreConfig{Mode: ModeSQLite, DatabasePath: dir + "/w12b-renew.db"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitPostgresStore(t)
 	defer store.Close()
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
 
 	leaseUntil := func() (string, error) {
 		var until string
 		err := store.db.QueryRowContext(ctx,
-			`SELECT lease_until FROM background_job_leases WHERE lease_key = ?`,
+			`SELECT lease_until FROM juhe_stats.background_job_leases WHERE lease_key = $1`,
 			"w12b-renew-key").Scan(&until)
 		return until, err
 	}

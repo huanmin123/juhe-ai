@@ -226,6 +226,13 @@ type StreamPipeOptions struct {
 	// 照常），仅下游字节不含该帧。客户端显式要求 include_usage 的流不置位，
 	// chunk 照旧透传。
 	SuppressGatewayInjectedUsageChunk bool
+	// PreCommitReplayWindowDisabled 是受限重放窗口的资格排除面（流式提交边界
+	// 受限重放与异常终局处置设计 §3.1 窗口资格）：缺省启用（文本主路径），
+	// 调度层对媒体域请求、桥接流（下游协议 messages_sse / gemini 系 / responses
+	// 桥回转）与 x-juhe-ai-purpose: chat_web_search 副作用子调用显式置位——
+	// 排除面保持「首个语义事件即提交」的现状行为。窗口参数为包内常量
+	//（StreamReplayWindowMaxBytes / StreamReplayWindowTimeoutMs），不设开关。
+	PreCommitReplayWindowDisabled bool
 	// NowMs 注入时钟（Date.now 等价物）；nil 用真实时间。
 	NowMs func() int64
 }

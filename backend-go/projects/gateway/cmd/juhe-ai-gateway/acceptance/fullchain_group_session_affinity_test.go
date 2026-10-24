@@ -289,9 +289,9 @@ func TestFullchainGroupSessionAffinity(t *testing.T) {
 // TestFullchainGroupSessionAffinityRedisDriver 生产数据面的全链黏组证据。
 // 主测试夹具是 standalone memory 驱动（进程内 TTL 24h），生产 performance
 // 模式为 JUHE_AI_CACHE_DRIVER=redis（TTL 1h）——组亲和驱动与账户级同源
-//（chain_runtime.go redisCache 分支）。本测试以 miniredis 起 redis 缓存面
-//（网关子进程经 TCP 直连），验证：同一会话经真实 Redis 读写黏住；TTL 过期
-//（读不刷 TTL，快进即蒸发）后按模式重选一次并协议成功重绑，之后黏新组。
+// （chain_runtime.go redisCache 分支）。本测试以 miniredis 起 redis 缓存面
+// （网关子进程经 TCP 直连），验证：同一会话经真实 Redis 读写黏住；TTL 过期
+// （读不刷 TTL，快进即蒸发）后按模式重选一次并协议成功重绑，之后黏新组。
 // 重选落点不断言到具体组（rr 计数器与绑定同库，TTL 归零后轮转位不确定），
 // 黏住不变量以「重选后 5 连击全部同组」表达。
 func TestFullchainGroupSessionAffinityRedisDriver(t *testing.T) {

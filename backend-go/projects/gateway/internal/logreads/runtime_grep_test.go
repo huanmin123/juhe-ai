@@ -51,7 +51,7 @@ func grepItemID(fileName string, lineNumber int64, line string) string {
 // (all-keyword AND, search-request self-exclusion, level mapping, limit)
 // and grep-detail (ok / 404 / stale).
 func TestRuntimeLogGrepFamily(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	pinGrepClock(env)
 	first := `{"time":"2026-06-03T12:30:00.000Z","level":"error","traceId":"tr-grep","event":"gateway.request","msg":"payment crashed","errorMessage":"boom happened"}`
 	second := `{"time":"2026-06-03T12:20:00.000Z","level":50,"message":"payment retried"}`

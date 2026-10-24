@@ -15,6 +15,20 @@ import (
 // proxy_profiles CAS 围栏、manual no-targets/outbound 投影与 Ready 记账。
 // jobs Store 用真实 SQLite 实例提交 committed outcome；业务库用独立内存
 // SQLite 建三张投影表，PG 分支的 SQL 文本契约另用录制驱动断言。
+//
+// 组B保留（SQLite-only 生产臂，PLAN-20261024T051925945Z proxylatency 切片
+// 裁决，整文件不迁，随生产 sqlite 臂删除批次退役）。证据：
+//  1. projector.mode 继承 store.mode——迁 PG 必须 同时 将业务库换成 juhe_business
+//     真实 PG schema（PG CheckContract 需要 accounts 与 account_list_availability_*
+//     共 8 张表及触发器契约，DDL 复刻面大且无生产建表路径可复用）；
+//  2. proxy_profiles.updated_at 在 PG 为 timestamptz，CAS 围栏经
+//     `updated_at=$n::timestamptz` 强类型比较——本文件的"CAS 未命中（同刻不同
+//     文本，wfProjRevisionGranular）"变体是 SQLite TEXT 列特有语义，PG 下
+//     同刻不同文本被 cast 归一，断言无法逐字节保持；
+//  3. PG 臂时间形态（to_char 微秒文本围栏读出）与本文件 RFC3339Nano 文本
+//     断言不兼容，重钉面覆盖全部投影读断言。
+// 纯 Store 面（wf_runner_units/wf_outbound_success/w5 的 jobs-store 消费）
+// 已迁真实 PG（proxylatency_pgkit_test.go）。
 
 // wfProjBase 是测试固定的当前时间基准（贴近真实时钟，仅相对偏移参与断言；
 // jobs Store 的输入围栏按真实墙钟校验 input 有效期，不能用任意固定日期）。
@@ -57,7 +71,9 @@ func wfOpenBusinessDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// wfOpenJobsStore 打开独立 SQLite jobs Store。
+// wfOpenJobsStore 打开独立 SQLite jobs Store（组B保留：仅消费本文件的
+// projector SQLite 业务库真库面与 wf_store_tamper 畸形字节注入面使用；
+// 纯 Store 面测试已改用 openKitPostgresStore，见 proxylatency_pgkit_test.go）。
 func wfOpenJobsStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "wf-jobs.sqlite3")})

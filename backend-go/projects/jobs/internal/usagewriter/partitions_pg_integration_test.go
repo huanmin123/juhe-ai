@@ -1,40 +1,25 @@
 package usagewriter
 
+// TestEnsurePostgresUsageRecordPartitionsAgainstRealPG 在 pgtestkit 隔离
+// PostgreSQL 测试库上运行分区确保链（PLAN-20261024T051925945Z 测试迁移切片；
+// 原臂经 JUHE_AI_USAGE_WRITER_PARTITION_PG_URL 门禁直连 dev 库，现改为每
+// 测试独立库：分区母表由 usagewriter_pgkit_test.go 按生产形状装配，PG 不可
+// 达时显式失败而非 skip）。DDL 为加法幂等（CREATE TABLE IF NOT EXISTS ...
+// PARTITION OF），断言与原臂逐字节一致。
 import (
 	"context"
-	"database/sql"
-	"fmt"
-	"os"
 	"testing"
 	"time"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// TestEnsurePostgresUsageRecordPartitionsAgainstRealPG runs the partition
-// ensure chain against a live PostgreSQL (dev juhe_ai_sub2api_dev). Gated on
-// JUHE_AI_USAGE_WRITER_PARTITION_PG_URL; without it the test skips. The DDL
-// is additive and idempotent (CREATE TABLE IF NOT EXISTS ... PARTITION OF),
-// and the test only touches usage_records daily partitions.
 func TestEnsurePostgresUsageRecordPartitionsAgainstRealPG(t *testing.T) {
-	postgresURL := os.Getenv("JUHE_AI_USAGE_WRITER_PARTITION_PG_URL")
-	if postgresURL == "" {
-		t.Skip("requires JUHE_AI_USAGE_WRITER_PARTITION_PG_URL (isolated/dev PG)")
-	}
-	db, err := sql.Open("pgx", postgresURL)
-	if err != nil {
-		t.Fatalf("open pg: %v", err)
-	}
-	defer db.Close()
+	db := openKitPostgresDB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("ping pg: %v", err)
-	}
 
-	// The partitioned parent must exist in the dev database.
+	// The partitioned parent must exist in the test database.
 	var parentRelKind string
-	err = db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		`SELECT relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 		 WHERE n.nspname = 'juhe_usage' AND c.relname = 'usage_records'`).Scan(&parentRelKind)
 	if err != nil {
@@ -74,5 +59,4 @@ func TestEnsurePostgresUsageRecordPartitionsAgainstRealPG(t *testing.T) {
 			t.Fatalf("partition juhe_usage.%s must exist after ensure", partitionName)
 		}
 	}
-	fmt.Printf("partition ensure verified against live PG for %s / %s\n", today, tomorrow)
 }

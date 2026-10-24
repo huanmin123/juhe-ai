@@ -15,7 +15,7 @@ import (
 )
 
 func TestW11FGrepDetailAndFields(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	pinGrepClock(env)
 	line1 := `{"time":"2026-06-03T12:30:00.000Z","level":50,"traceId":"tr-1","event":"gateway.request","msg":"payment crashed","err":{"message":"boom wrapped"}}`
 	line2 := `{"time":1780182600000,"level":30,"message":"ok line"}`
@@ -112,7 +112,7 @@ func TestW11FGrepDetailAndFields(t *testing.T) {
 }
 
 func TestW11FGrepScanEdgeBranches(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	pinGrepClock(env)
 	ctx := context.Background()
 
@@ -168,7 +168,7 @@ func TestW11FGrepScanEdgeBranches(t *testing.T) {
 }
 
 func TestW11FHotSearchTruncationAndCancel(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	bucketStamp := func(name string) {
 		if err := os.MkdirAll(env.hotDir, 0o750); err != nil {
 			t.Fatal(err)
@@ -248,7 +248,7 @@ func TestW11FHotSearchHandlerTruncated(t *testing.T) {
 // TestW11FGrepSearchMessages 补 Search 消息臂: 并发占用、规范化错误、
 // 警告合并与过滤空集。
 func TestW11FGrepSearchMessages(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	pinGrepClock(env)
 	ctx := context.Background()
 	writeGrepLogFile(t, env, "w11f-msg.log", `{"time":"2026-06-03T12:30:00.000Z","message":"payment hit"}`)

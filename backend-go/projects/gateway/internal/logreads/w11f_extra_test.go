@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,17 +29,32 @@ func TestW11FBlobDetailArms(t *testing.T) {
 	reader := w9bBlobReader(t, db, blobDir)
 	ctx := context.Background()
 
-	// 建全 payload 所需表。
-	for _, statement := range []string{
-		`CREATE TABLE audit_logs (id TEXT PRIMARY KEY, traffic_source TEXT NOT NULL DEFAULT 'gateway', created_at TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE audit_payload_refs (id TEXT PRIMARY KEY, audit_log_id TEXT NOT NULL, part_type TEXT NOT NULL DEFAULT '', sequence_index INTEGER NOT NULL DEFAULT 0, attempt_id TEXT, content_type TEXT, content_encoding TEXT, headers_sha256 TEXT, body_sha256 TEXT, raw_size_bytes INTEGER NOT NULL DEFAULT 0, compressed_size_bytes INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT '', drop_reason TEXT, headers_blob_id TEXT, body_blob_id TEXT, created_at TEXT NOT NULL DEFAULT '')`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
+	// 满足生产 NOT NULL 约束的 audit_logs 行（EXISTS 子查询只读 id 与
+	// traffic_source，其余列为生产列约束占位）。
+	if _, err := db.Exec(`INSERT INTO juhe_dataset.audit_logs (id, traffic_source, trace_id, method, path,
+		audit_outcome, success, sample_bucket, sample_reason, capture_status, lifecycle_status, started_at, ended_at, created_at)
+		VALUES ('w11f-log', 'gateway', 'trace-w11f', 'POST', '/v1/chat/completions', 'success', true, 0, 'sampled',
+		'complete', 'finalized', '2026-06-02T10:00:00.000Z', '2026-06-02T10:00:00.100Z', '2026-06-02T10:00:01.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	// 满足生产 NOT NULL 约束的 audit_payload_refs 行。
+	w11fRefInsert := func(id, auditLogID string, extra map[string]any) {
+		t.Helper()
+		columns := `INSERT INTO juhe_dataset.audit_payload_refs (id, audit_log_id, part_type, sequence_index, capture_status, created_at`
+		values := `VALUES ($1, $2, 'client_request', 0, 'complete', '2026-06-01T10:00:01.000Z'`
+		args := []any{id, auditLogID}
+		index := 3
+		for _, column := range []string{"attempt_id", "headers_blob_id", "body_blob_id", "raw_size_bytes"} {
+			if value, ok := extra[column]; ok {
+				columns += ", " + column
+				values += ", $" + strconv.Itoa(index)
+				args = append(args, value)
+				index++
+			}
+		}
+		if _, err := db.Exec(columns+") "+values+")", args...); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := db.Exec(`INSERT INTO audit_logs (id, traffic_source, created_at) VALUES ('w11f-log', 'gateway', '2026-06-02T10:00:01.000Z')`); err != nil {
-		t.Fatal(err)
 	}
 
 	gzipBytes := func(raw []byte) []byte {
@@ -61,9 +77,7 @@ func TestW11FBlobDetailArms(t *testing.T) {
 		t.Fatalf("missing ref = %v/%v", detail, err)
 	}
 	// 无任何 blob → not_saved 细节。
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id, audit_log_id) VALUES ('p-plain', 'w11f-log')`); err != nil {
-		t.Fatal(err)
-	}
+	w11fRefInsert("p-plain", "w11f-log", nil)
 	detail, err := reader.GetAuditLogPayload(ctx, "w11f-log", "p-plain")
 	if err != nil || detail == nil || detail.BodyStorageStatus != auditPayloadStatusNotSaved {
 		t.Fatalf("plain detail = %+v/%v", detail, err)
@@ -77,15 +91,9 @@ func TestW11FBlobDetailArms(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(blobDir, "b.bin"), gzipBytes(bodyRaw), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('bh', 'h.bin', 'gzip', ?, ?)`, len(headerRaw), len(gzipBytes(headerRaw))); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('bb', 'b.bin', 'gzip', ?, ?)`, len(bodyRaw), len(gzipBytes(bodyRaw))); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id, audit_log_id, headers_blob_id, body_blob_id, raw_size_bytes) VALUES ('p-full', 'w11f-log', 'bh', 'bb', ?)`, len(bodyRaw)); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "bh", "h.bin", "gzip", int64(len(headerRaw)), int64(len(gzipBytes(headerRaw))))
+	w9bBlobInsert(t, db, "bb", "b.bin", "gzip", int64(len(bodyRaw)), int64(len(gzipBytes(bodyRaw))))
+	w11fRefInsert("p-full", "w11f-log", map[string]any{"headers_blob_id": "bh", "body_blob_id": "bb", "raw_size_bytes": int64(len(bodyRaw))})
 	detail, err = reader.GetAuditLogPayload(ctx, "w11f-log", "p-full")
 	if err != nil || detail == nil {
 		t.Fatalf("full detail = %+v/%v", detail, err)
@@ -101,12 +109,8 @@ func TestW11FBlobDetailArms(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(blobDir, "t.bin"), textBody, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('bt', 't.bin', 'none', ?, 0)`, len(textBody)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id, audit_log_id, body_blob_id, raw_size_bytes) VALUES ('p-text', 'w11f-log', 'bt', ?)`, len(textBody)); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "bt", "t.bin", "none", int64(len(textBody)), 0)
+	w11fRefInsert("p-text", "w11f-log", map[string]any{"body_blob_id": "bt", "raw_size_bytes": int64(len(textBody))})
 	detail, err = reader.GetAuditLogPayload(ctx, "w11f-log", "p-text")
 	if err != nil || detail == nil || detail.BodyText == nil || *detail.BodyText != string(textBody) {
 		t.Fatalf("text body = %+v/%v", detail, err)
@@ -116,12 +120,8 @@ func TestW11FBlobDetailArms(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(blobDir, "big.bin"), bigHeader, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('big', 'big.bin', 'none', ?, 0)`, len(bigHeader)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id, audit_log_id, headers_blob_id, raw_size_bytes) VALUES ('p-big', 'w11f-log', 'big', ?)`, len(bigHeader)); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "big", "big.bin", "none", int64(len(bigHeader)), 0)
+	w11fRefInsert("p-big", "w11f-log", map[string]any{"headers_blob_id": "big", "raw_size_bytes": int64(len(bigHeader))})
 	detail, err = reader.GetAuditLogPayload(ctx, "w11f-log", "p-big")
 	if err != nil || detail == nil {
 		t.Fatalf("big header = %+v/%v", detail, err)
@@ -130,12 +130,8 @@ func TestW11FBlobDetailArms(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(blobDir, "badgz.bin"), []byte("not-gzip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('bgz', 'badgz.bin', 'gzip', 8, 8)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id, audit_log_id, body_blob_id, raw_size_bytes) VALUES ('p-badgz', 'w11f-log', 'bgz', 8)`); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "bgz", "badgz.bin", "gzip", 8, 8)
+	w11fRefInsert("p-badgz", "w11f-log", map[string]any{"body_blob_id": "bgz", "raw_size_bytes": int64(8)})
 	if _, err := reader.GetAuditLogPayload(ctx, "w11f-log", "p-badgz"); err == nil {
 		t.Fatal("bad gzip must fail")
 	}
@@ -143,22 +139,14 @@ func TestW11FBlobDetailArms(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(blobDir, "rawmismatch.bin"), gzipBytes([]byte("12345")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('rm', 'rawmismatch.bin', 'gzip', 99, ?)`, len(gzipBytes([]byte("12345")))); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id, audit_log_id, body_blob_id, raw_size_bytes) VALUES ('p-rm', 'w11f-log', 'rm', 99)`); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "rm", "rawmismatch.bin", "gzip", 99, int64(len(gzipBytes([]byte("12345")))))
+	w11fRefInsert("p-rm", "w11f-log", map[string]any{"body_blob_id": "rm", "raw_size_bytes": int64(99)})
 	if _, err := reader.GetAuditLogPayload(ctx, "w11f-log", "p-rm"); err == nil {
 		t.Fatal("raw mismatch must fail")
 	}
 	// 越界 storage_key → resolveBlobPath 错误。
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs VALUES ('esc', '../escape.bin', 'none', 3, 3)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id, audit_log_id, body_blob_id, raw_size_bytes) VALUES ('p-esc', 'w11f-log', 'esc', 3)`); err != nil {
-		t.Fatal(err)
-	}
+	w9bBlobInsert(t, db, "esc", "../escape.bin", "none", 3, 3)
+	w11fRefInsert("p-esc", "w11f-log", map[string]any{"body_blob_id": "esc", "raw_size_bytes": int64(3)})
 	if _, err := reader.GetAuditLogPayload(ctx, "w11f-log", "p-esc"); err == nil {
 		t.Fatal("escaping storage_key must fail")
 	}

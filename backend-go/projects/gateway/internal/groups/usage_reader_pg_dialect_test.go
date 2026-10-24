@@ -1,10 +1,9 @@
 package groups
 
-// 分组面 usage summary 读口的 SQL 方言契约回归（fixture 模式沿用
-// stats_reader_pg_dialect_test.go：SQLite 句柄 ATTACH ':memory:' AS juhe_stats
-// 承载生产同款限定形式，SetMaxOpenConns(1) 保证 ATTACH 对所有查询可见；列
-// 定义照抄 maintenance pg_schema_stats.go 的 usage_stats_daily /
-// usage_stats_totals 建表，只保留读口 SELECT 的列）。
+// 分组面 usage summary 读口的 SQL 方言契约回归（PG 臂夹具沿用
+// stats_reader_pg_dialect_test.go 的组A 迁移形态：pgtestkit 独立 PG 库承载
+// 生产同款 juhe_stats. 限定形式；列定义照抄 maintenance pg_schema_stats.go
+// 的 usage_stats_daily / usage_stats_totals 建表，只保留读口 SELECT 的列）。
 //
 // 契约（docs/functions/统计指标与分层聚合设计.md）：PG 上必须以 juhe_stats.
 // 限定 usage_stats_daily / usage_stats_totals（生产 PG 无 search_path，裸表名
@@ -22,6 +21,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "modernc.org/sqlite"
 )
 
@@ -68,22 +68,11 @@ const groupUsageTotalsFixtureDDL = `CREATE TABLE juhe_stats.usage_stats_totals (
 
 func newGroupUsagePGFixture(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "group-usage-dialect.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		`ATTACH ':memory:' AS juhe_stats`,
-		groupUsageDailyFixtureDDL,
-		groupUsageTotalsFixtureDDL,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("fixture exec %q: %v", statement, err)
-		}
-	}
-	return db
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;` +
+			groupUsageDailyFixtureDDL + `;` + groupUsageTotalsFixtureDDL)
+		return err
+	})
 }
 
 // TestGroupListUsageSummariesPGDialectBranches locks the production dialect

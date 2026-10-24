@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -85,11 +84,7 @@ func TestWFMakeDraftTTLUpperBound(t *testing.T) {
 }
 
 func TestWFStoreLeaseParameterGuards(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "wf-guard2.sqlite3")})
-	if err != nil {
-		t.Fatalf("OpenStore 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	if _, _, err := store.AcquireOwnerLease(ctx, "wf", 0); err == nil {
 		t.Fatal("duration=0 必须拒绝")

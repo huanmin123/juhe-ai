@@ -38,7 +38,7 @@ func isTerminalProcessStatus(status string) bool {
 
 // assistantBlock mirrors AssistantContentBlock. Field order matches the Node
 // object literals so persisted JSON keeps the same shape. M7 媒体块字段
-//（问答音视频工具设计 §3）：JobID/MediaKind/Progress/Model/PromptSummary/
+// （问答音视频工具设计 §3）：JobID/MediaKind/Progress/Model/PromptSummary/
 // MediaError 是 output_media_task 的任务面字段（status 为 media_jobs 任务状态
 // 词表）。
 type assistantBlock struct {

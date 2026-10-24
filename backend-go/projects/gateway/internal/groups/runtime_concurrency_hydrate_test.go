@@ -11,7 +11,7 @@ import (
 	"errors"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // fakeConcurrencyReader records the requested account ids and serves a fixed
@@ -40,29 +40,22 @@ func (f statsFuncReader) ReadGroupAccountStats(ctx context.Context, groupIDs []s
 // newRuntimeConcurrencyFixture builds the minimal business schema (members +
 // accounts + authorizations joins behind groupAccountIDsByGroupIDs) and seeds
 // two groups: one with enabled members acc-1/acc-2 and one with no enabled
-// members.
+// members. 夹具走 pgkit_test.go 的 PG 基建（组A 迁移）：juhe_business 限定 +
+// $n 占位符与生产 PG 臂同方言；resource_authorizations 为成员过滤读口的
+// 放宽列集（id/status，生产全列见 maintenance pg_schema_business_tables.go）。
 func newRuntimeConcurrencyFixture(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:groups-runtime-concurrency-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE providers (code TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)`,
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT)`,
-		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, status TEXT NOT NULL)`,
-		`INSERT INTO providers (code, enabled) VALUES ('openai', 1)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store, err := NewStore(db, false, nil, nil, nil)
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '');
+	CREATE TABLE IF NOT EXISTS juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')), scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS juhe_business.group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id));
+	CREATE TABLE IF NOT EXISTS juhe_business.accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT);
+	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active');`)
+		return err
+	})
+	store, err := NewStore(db, true, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +73,7 @@ func newRuntimeConcurrencyFixture(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	for _, accountID := range []string{"acc-1", "acc-2", "acc-orphan-disabled"} {
-		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES (?, 'owner-1')`, accountID); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ($1, 'owner-1')`, accountID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -89,8 +82,8 @@ func newRuntimeConcurrencyFixture(t *testing.T) *Store {
 	for _, binding := range []struct{ groupID, accountID, enabled string }{
 		{grp.ID, "acc-1", "1"}, {grp.ID, "acc-2", "1"}, {empty.ID, "acc-orphan-disabled", "0"},
 	} {
-		if _, err := db.Exec(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-			VALUES ('owner-1', ?, ?, ?, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z')`,
+		if _, err := db.Exec(`INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+			VALUES ('owner-1', $1, $2, $3, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z')`,
 			binding.groupID, binding.accountID, binding.enabled); err != nil {
 			t.Fatal(err)
 		}

@@ -123,6 +123,14 @@ func IsStreamReadPlanTimeoutError(err error) bool {
 // StreamPreCommitBufferExceededCode 对齐 StreamPreCommitBufferExceededError.code。
 const StreamPreCommitBufferExceededCode = "stream_precommit_buffer_exceeded"
 
+// UpstreamStreamAbnormalEOFCode 是流异常终局失败的 error_code（流式提交边界
+// 受限重放与异常终局处置设计 §3.2.2）：generic 客户端的流在协议终止事件前以
+// 干净 EOF 收尾、且 EOF 前存在解析失败事件时，不再收敛 success，改按本 code
+// 失败结算。该 code 经 finalizeStreamFailure 可达 handling，chain 面
+// classifyPostVerdictOutcome 按它做失败归因三面（circuit ReportUnknown /
+// 账户锁失败记录 / 热质量 upstream_response_failure）。
+const UpstreamStreamAbnormalEOFCode = "upstream_stream_abnormal_eof"
+
 // StreamPreCommitBufferExceededError 对齐 StreamPreCommitBufferExceededError。
 type StreamPreCommitBufferExceededError struct{}
 

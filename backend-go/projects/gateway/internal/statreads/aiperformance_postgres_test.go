@@ -4,7 +4,8 @@ package statreads
 // usage-stats-ai-performance.repository.ts:711-791 的完整 SQL 逐字符断言
 // （捕获驱动 + 测试内独立 ?→$n 重写器，参照 jobs cleanuprepo 模式，避免
 // 循环论证）；显式账户请求顺序、rank NULL→0、ai-health 参数 400 门、
-// performance 角色导出与 worker:N 家族用真实内存库或纯函数互证。
+// performance 角色导出与 worker:N 家族用 PG 夹具、SQLite 夹具（NULL rank
+// 为生产 PG NOT NULL 不可表达形态，组B）或纯函数互证。
 
 import (
 	"context"
@@ -377,7 +378,7 @@ func TestAiPerformanceKeywordPostgresEscapeKeepsWildcardsLiteral(t *testing.T) {
 func TestAiPerformanceSeriesKeepsRequestedAccountOrder(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status)
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status)
 			VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active'),
 			       ('acct-b', '账户B', 'sys-owner-1', 'openai', 'api_key', 'active'),
 			       ('acct-c', '账户C', 'sys-owner-1', 'openai', 'api_key', 'active')`,

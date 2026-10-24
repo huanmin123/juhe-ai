@@ -8,53 +8,17 @@ import (
 	"testing"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	// 组B（wkSQLiteLegacyStoreLabeled/w9eDDLDB 的 SQLite-only 生产臂覆盖）仍
+	// 依赖 "sqlite" 驱动注册；组A 建库已迁 pgtestkit 真实 PG（pgkit_test.go）。
 	_ "modernc.org/sqlite"
 )
 
+// testStore 打开就绪控制面存储。建库已迁 pgtestkit 真实 PG（PLAN-20261024T051925945Z
+// 测试基建迁移切片），与 wkStoreLabeled 共用同一 PG fixture（pgkit_test.go）。
 func testStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:circuit-control-test?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	ddls := []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, dispatch_revision INTEGER NOT NULL DEFAULT 1, circuit_projection_revision INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)`,
-		`CREATE TABLE account_circuit_incidents (
- circuit_scope_key TEXT PRIMARY KEY, account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, scope_kind TEXT NOT NULL,
- key_fingerprint TEXT, protocol_code TEXT, request_lane TEXT, model_family TEXT, client_model TEXT, capability_hash TEXT,
- credential_source_account_id TEXT, client_endpoint_family TEXT, final_upstream_model TEXT, upstream_endpoint_mode TEXT, incident_id TEXT NOT NULL,
- parent_incident_id TEXT, child_incident_ids_json TEXT NOT NULL, caused_by_terminal_outcome_id TEXT, state TEXT NOT NULL,
- failure_scope TEXT, generation INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, ledger_revision INTEGER NOT NULL,
- projected_ledger_revision INTEGER NOT NULL, transition_id TEXT NOT NULL, cooldown_observation_generation INTEGER NOT NULL,
- open_until_ms INTEGER, next_transition_at_ms INTEGER, lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
- lease_until_ms INTEGER, attempt_started_at_ms INTEGER, attempt_hard_deadline_ms INTEGER, upstream_attempt_observed INTEGER NOT NULL,
- backoff_level INTEGER NOT NULL, consecutive_failures INTEGER NOT NULL, confirmation_failures_required INTEGER NOT NULL,
- confirmation_failure_evidence_keys_json TEXT NOT NULL, recovering_successes INTEGER NOT NULL, last_failure_class TEXT,
- retained_until_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
-		`CREATE TABLE account_circuit_outbox (
- event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
- account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, circuit_scope_key TEXT, incident_id TEXT, transition_id TEXT NOT NULL,
- dispatch_revision INTEGER NOT NULL, generation INTEGER, ledger_revision INTEGER, status TEXT NOT NULL, available_at_ms INTEGER NOT NULL,
- claim_token TEXT, claimed_by TEXT, claim_until_ms INTEGER, attempt_count INTEGER NOT NULL, last_error_class TEXT,
- acknowledged_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
-	}
-	for _, ddl := range ddls {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a1',1,0)`); err != nil {
-		t.Fatal(err)
-	}
-	s, err := New(db, SQLite, "", gate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s, db
+	return wkPGStoreLabeled(t, "", gate)
 }
 
 func TestOwnerGateBlocksWrites(t *testing.T) {
@@ -64,14 +28,14 @@ func TestOwnerGateBlocksWrites(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	var revision int
-	if err := db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id='a1'`).Scan(&revision); err != nil || revision != 1 {
+	if err := db.QueryRow(`SELECT dispatch_revision FROM ` + defaultBusinessSchema + `.accounts WHERE id='a1'`).Scan(&revision); err != nil || revision != 1 {
 		t.Fatalf("revision=%d err=%v", revision, err)
 	}
 }
 
 func TestListDispatchRevisionsIsOrderedAndFenced(t *testing.T) {
 	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a2',3,0),('a3',2,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a2',3,0),('a3',2,0)`); err != nil {
 		t.Fatal(err)
 	}
 	page, err := s.ListDispatchRevisions(context.Background(), "", 2)
@@ -152,7 +116,7 @@ func TestIncidentCASAndProjection(t *testing.T) {
 		t.Fatalf("ack=%v err=%v", ok, err)
 	}
 	var projected int
-	if err := db.QueryRow(`SELECT projected_ledger_revision FROM account_circuit_incidents WHERE circuit_scope_key='scope-1'`).Scan(&projected); err != nil || projected != 1 {
+	if err := db.QueryRow(`SELECT projected_ledger_revision FROM ` + defaultBusinessSchema + `.account_circuit_incidents WHERE circuit_scope_key='scope-1'`).Scan(&projected); err != nil || projected != 1 {
 		t.Fatalf("projected=%d err=%v", projected, err)
 	}
 }
@@ -164,7 +128,7 @@ func TestIncidentCASAndProjection(t *testing.T) {
 // 不写 incident/outbox。
 func TestIncidentCASAccountNotFoundTerminal(t *testing.T) {
 	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision,deleted_at) VALUES ('a-deleted',3,0,'2020-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.accounts(id,dispatch_revision,circuit_projection_revision,deleted_at) VALUES ('a-deleted',3,0,'2020-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -193,10 +157,10 @@ func TestIncidentCASAccountNotFoundTerminal(t *testing.T) {
 		t.Fatalf("deleted account stale fence = %+v err=%v", deletedStale, err)
 	}
 	var incidents, outbox int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_incidents`).Scan(&incidents); err != nil || incidents != 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ` + defaultBusinessSchema + `.account_circuit_incidents`).Scan(&incidents); err != nil || incidents != 0 {
 		t.Fatalf("terminal CAS must not write incidents: %d err=%v", incidents, err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_outbox`).Scan(&outbox); err != nil || outbox != 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ` + defaultBusinessSchema + `.account_circuit_outbox`).Scan(&outbox); err != nil || outbox != 0 {
 		t.Fatalf("terminal CAS must not write outbox: %d err=%v", outbox, err)
 	}
 }
@@ -209,20 +173,20 @@ func TestIncidentCASAccountNotFoundTerminal(t *testing.T) {
 // （含 retained closed 分支，围栏仍生效）。
 func TestListAccountSubqueriesFenceDeletedAccounts(t *testing.T) {
 	s, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision,deleted_at) VALUES ('a-deleted',3,0,'2020-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.accounts(id,dispatch_revision,circuit_projection_revision,deleted_at) VALUES ('a-deleted',3,0,'2020-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	retained := int64(999_999)
 	insertIncident := func(scope, accountID, state string, dispatch, ledger, projected, updated int64, retainedUntil *int64) {
 		t.Helper()
-		_, err := db.Exec(`INSERT INTO account_circuit_incidents (
+		_, err := db.Exec(`INSERT INTO `+defaultBusinessSchema+`.account_circuit_incidents (
       circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
       child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
       projected_ledger_revision, transition_id, cooldown_observation_generation,
       upstream_attempt_observed, backoff_level, consecutive_failures,
       confirmation_failures_required, confirmation_failure_evidence_keys_json,
       recovering_successes, retained_until_ms, created_at_ms, updated_at_ms
-    ) VALUES (?, ?, ?, 'account', ?, '[]', ?, 1, ?, ?, ?, ?, 0, 0, 0, 0, 1, '[]', 0, ?, ?, ?)`,
+    ) VALUES ($1, $2, $3, 'account', $4, '[]', $5, 1, $6, $7, $8, $9, 0, 0, 0, 0, 1, '[]', 0, $10, $11, $12)`,
 			scope, accountID, accountID, "inc-"+scope, state, dispatch, ledger, projected, "tr-"+scope,
 			retainedUntil, updated, updated)
 		if err != nil {
@@ -334,10 +298,10 @@ func TestCheckContractChecksCircuitColumns(t *testing.T) {
 	if err := store.CheckContract(context.Background()); err != nil {
 		t.Fatalf("complete circuit contract failed: %v", err)
 	}
-	if _, err := db.Exec(`DROP TABLE account_circuit_incidents`); err != nil {
+	if _, err := db.Exec(`DROP TABLE ` + defaultBusinessSchema + `.account_circuit_incidents`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE account_circuit_incidents (circuit_scope_key TEXT PRIMARY KEY)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE ` + defaultBusinessSchema + `.account_circuit_incidents (circuit_scope_key TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CheckContract(context.Background()); err == nil {
@@ -347,7 +311,7 @@ func TestCheckContractChecksCircuitColumns(t *testing.T) {
 
 func TestCheckContractRequiresKeyModelCapabilityIndex(t *testing.T) {
 	store, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if _, err := db.Exec(`DROP INDEX idx_account_circuit_incidents_key_model_capability`); err != nil {
+	if _, err := db.Exec(`DROP INDEX ` + defaultBusinessSchema + `.idx_account_circuit_incidents_key_model_capability`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CheckContract(context.Background()); err == nil {
@@ -357,14 +321,14 @@ func TestCheckContractRequiresKeyModelCapabilityIndex(t *testing.T) {
 
 func TestCheckContractRejectsMalformedSameNameCapabilityIndex(t *testing.T) {
 	tests := []struct{ name, ddl string }{
-		{"wrong columns", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(capability_hash,scope_kind) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`},
-		{"not unique", `CREATE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind,capability_hash) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`},
-		{"missing predicate", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind,capability_hash)`},
+		{"wrong columns", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON ` + defaultBusinessSchema + `.account_circuit_incidents(capability_hash,scope_kind) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`},
+		{"not unique", `CREATE INDEX idx_account_circuit_incidents_key_model_capability ON ` + defaultBusinessSchema + `.account_circuit_incidents(scope_kind,capability_hash) WHERE scope_kind='key_model' AND capability_hash IS NOT NULL`},
+		{"missing predicate", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON ` + defaultBusinessSchema + `.account_circuit_incidents(scope_kind,capability_hash)`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			store, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-			if _, err := db.Exec(`DROP INDEX idx_account_circuit_incidents_key_model_capability`); err != nil {
+			if _, err := db.Exec(`DROP INDEX ` + defaultBusinessSchema + `.idx_account_circuit_incidents_key_model_capability`); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.Exec(tc.ddl); err != nil {
@@ -427,7 +391,7 @@ func TestNilIncidentSlicesPersistAsEmptyArrays(t *testing.T) {
 		t.Fatalf("result slices were not normalized: %+v", result.Incident)
 	}
 	var children, evidence string
-	if err := db.QueryRow(`SELECT child_incident_ids_json,confirmation_failure_evidence_keys_json FROM account_circuit_incidents WHERE circuit_scope_key='scope-nil'`).Scan(&children, &evidence); err != nil {
+	if err := db.QueryRow(`SELECT child_incident_ids_json,confirmation_failure_evidence_keys_json FROM `+defaultBusinessSchema+`.account_circuit_incidents WHERE circuit_scope_key='scope-nil'`).Scan(&children, &evidence); err != nil {
 		t.Fatal(err)
 	}
 	if children != `[]` || evidence != `[]` {
@@ -446,7 +410,7 @@ func TestCircuitInputBoundsAndZeroTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	var available int64
-	if err := db.QueryRow(`SELECT available_at_ms FROM account_circuit_outbox WHERE dedupe_key='dispatch:zero-time'`).Scan(&available); err != nil {
+	if err := db.QueryRow(`SELECT available_at_ms FROM ` + defaultBusinessSchema + `.account_circuit_outbox WHERE dedupe_key='dispatch:zero-time'`).Scan(&available); err != nil {
 		t.Fatal(err)
 	}
 	if available != 0 {
@@ -576,7 +540,7 @@ func TestIncidentTextInputsAreTrimmedLikeNode(t *testing.T) {
 
 func TestIncidentScopeCannotChangeAccount(t *testing.T) {
 	store, db := testStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a2',1,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a2',1,0)`); err != nil {
 		t.Fatal(err)
 	}
 	firstID, secondID := "first", "second"
@@ -593,11 +557,6 @@ func TestIncidentScopeCannotChangeAccount(t *testing.T) {
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:circuit-control-schema-test?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	// 仅用于 New() 的 schema 校验（不触库），建库统一走 pgtestkit 真实 PG。
+	return pgtestkit.New(t)
 }

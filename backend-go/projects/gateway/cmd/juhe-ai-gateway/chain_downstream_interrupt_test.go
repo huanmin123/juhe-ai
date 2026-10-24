@@ -143,11 +143,15 @@ func TestGatewayChainCommittedStreamFailureInterruptsWithoutAccountSwitch(t *tes
 		}
 		switch r.Header.Get("Authorization") {
 		case "Bearer sk-upstream-account-key":
-			// 候选 1：先提交语义输出，再发流内失败帧，随后 EOF。
+			// 候选 1：先提交语义输出，再发流内失败帧，随后 EOF。首个 delta 超
+			// 窗口缓冲上限 B（流式提交边界受限重放与异常终局处置设计 §3.1 条件②
+			// 追加前判定：超限 chunk 随 flush 写出、立即提交），保证本用例固定
+			// 「提交后失败 → 网络级断开」契约的前提（小 delta 会先入窗、失败帧
+			// 走提交前换号——该形态由窗口版用例覆盖）。
 			failKeyHits.Add(1)
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-cut\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"部分输出\"},\"finish_reason\":null}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-cut\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"部分输出" + strings.Repeat("输", 3000) + "\"},\"finish_reason\":null}]}\n\n"))
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}

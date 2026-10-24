@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // fakeGroupStatsReader records the requested group ids and serves a fixed
@@ -30,30 +30,22 @@ func (f *fakeGroupStatsReader) ReadGroupAccountStats(_ context.Context, groupIDs
 // group_account_stats projection (counters plus the reader-owned
 // TodayUsage/Usage payloads) into its accountStats, and a nil reader (or a
 // reader error) keeps the empty projection instead of failing the page.
+// 夹具走 pgkit_test.go 的 PG 基建（组A 迁移）；system_accounts 为
+// systemAccountNames 读口的放宽列集（生产全列见 maintenance
+// pg_schema_business_tables.go）。
 func TestListPageHydratesAccountStats(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:groups-stats-hydrate-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE providers (code TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)`,
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO providers (code, enabled) VALUES ('openai', 1)`); err != nil {
-		t.Fatal(err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '');
+	CREATE TABLE IF NOT EXISTS juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')), scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);`)
+		return err
+	})
 
 	reader := &fakeGroupStatsReader{stats: map[string]AccountStats{
 		// Filled below once the group id exists.
 	}}
-	store, err := NewStore(db, false, nil, nil, nil, WithStatsReader(reader))
+	store, err := NewStore(db, true, nil, nil, nil, WithStatsReader(reader))
 	if err != nil {
 		t.Fatal(err)
 	}

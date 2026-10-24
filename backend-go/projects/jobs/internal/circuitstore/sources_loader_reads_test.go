@@ -4,6 +4,9 @@ package circuitstore
 // team 继承双检查、余额快照、api key 池运行态汇总、circuit 摘要账本读。
 // 复用 loader fixture（stats 与 business 同库），credentials_encrypted 列由
 // 本文件按需补齐（SQLite ALTER TABLE，不影响其他测试）。
+// 组B保留（不迁 PG）：loader 的 PG 臂与生产 schema 存在适配缺口（timestamptz
+// 列裸扫 text 断言等，取证见 final_edges_test.go TestHydratePageFailClosed
+// 注释），随 loader PG 臂修复批次再迁；测试名「SQLite」后缀在彼时一并更名。
 
 import (
 	"context"

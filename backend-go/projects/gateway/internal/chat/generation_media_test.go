@@ -86,7 +86,7 @@ func TestGenerateChatAudioDispatchAndSniff(t *testing.T) {
 	}}}
 	artifact, err := GenerateChatAudio(context.Background(), executor, ChatAudioGenerationRequest{
 		Model: "gpt-4o-mini-tts", Text: "你好世界", Voice: "alloy", Format: "wav",
-	}, "chat-secret", "trace-1")
+	}, "trace-1")
 	if err != nil {
 		t.Fatalf("GenerateChatAudio: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestGenerateChatAudioDispatchAndSniff(t *testing.T) {
 		t.Fatalf("artifact digest/bytes 异常: %+v", artifact)
 	}
 	call := recorder.calls[0]
-	if call.Path != "/v1/audio/speech" || call.Headers["x-purpose"] != chatMediaPurpose || call.Headers["authorization"] != "Bearer chat-secret" {
+	if call.Path != "/v1/audio/speech" || call.Headers["x-purpose"] != chatMediaPurpose {
 		t.Fatalf("dispatch 形态异常: %+v", call)
 	}
 	var body map[string]any
@@ -115,18 +115,18 @@ func TestGenerateChatAudioRejections(t *testing.T) {
 			return &GenerationDispatchResponse{Status: status, Body: io.NopCloser(strings.NewReader(payload))}
 		}}}}
 	}
-	if _, err := GenerateChatAudio(context.Background(), respond(200, `{"error":{"message":"quota"}}`), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, "k", ""); err == nil {
+	if _, err := GenerateChatAudio(context.Background(), respond(200, `{"error":{"message":"quota"}}`), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, ""); err == nil {
 		t.Fatal("2xx JSON 错误体应按无效音频格式失败")
 	}
 	oversize := make([]byte, chatMediaAudioMaxBytes+1)
 	copy(oversize, mediaMP3Fixture)
-	if _, err := GenerateChatAudio(context.Background(), respond(200, string(oversize)), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, "k", ""); err == nil || !strings.Contains(err.Error(), "32 MiB") {
+	if _, err := GenerateChatAudio(context.Background(), respond(200, string(oversize)), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, ""); err == nil || !strings.Contains(err.Error(), "32 MiB") {
 		t.Fatalf("超限音频应失败并携带限额文案: %v", err)
 	}
-	if _, err := GenerateChatAudio(context.Background(), respond(403, `{"error":{"message":"denied"}}`), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, "k", ""); err == nil || !strings.Contains(err.Error(), "denied") {
+	if _, err := GenerateChatAudio(context.Background(), respond(403, `{"error":{"message":"denied"}}`), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, ""); err == nil || !strings.Contains(err.Error(), "denied") {
 		t.Fatalf("上游错误应透传 message: %v", err)
 	}
-	if _, err := GenerateChatAudio(context.Background(), respond(200, string(mediaMP4Fixture)), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, "k", ""); err == nil {
+	if _, err := GenerateChatAudio(context.Background(), respond(200, string(mediaMP4Fixture)), ChatAudioGenerationRequest{Model: "tts-1", Text: "hi"}, ""); err == nil {
 		t.Fatal("视频字节不应作为音频产物接受")
 	}
 }
@@ -143,7 +143,7 @@ func TestCreateChatVideoDispatch(t *testing.T) {
 	seconds := 8.0
 	created, err := CreateChatVideo(context.Background(), executor, ChatVideoCreationRequest{
 		Model: "sora-2", Prompt: "一只猫在月球上跳舞", Seconds: &seconds, Size: "1280x720",
-	}, "chat-secret", "")
+	}, "")
 	if err != nil {
 		t.Fatalf("CreateChatVideo: %v", err)
 	}
@@ -165,13 +165,13 @@ func TestCreateChatVideoDispatch(t *testing.T) {
 	missingID := &mockExecutor{steps: []scriptStep{{respond: func(call dispatchCall) *GenerationDispatchResponse {
 		return &GenerationDispatchResponse{Status: 200, Body: io.NopCloser(strings.NewReader(`{"status":"queued"}`))}
 	}}}}
-	if _, err := CreateChatVideo(context.Background(), missingID, ChatVideoCreationRequest{Model: "sora-2", Prompt: "p"}, "k", ""); err == nil || !strings.Contains(err.Error(), "job id") {
+	if _, err := CreateChatVideo(context.Background(), missingID, ChatVideoCreationRequest{Model: "sora-2", Prompt: "p"}, ""); err == nil || !strings.Contains(err.Error(), "job id") {
 		t.Fatalf("缺 job id 应失败: %v", err)
 	}
 	rejected := &mockExecutor{steps: []scriptStep{{respond: func(call dispatchCall) *GenerationDispatchResponse {
 		return &GenerationDispatchResponse{Status: 400, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"size invalid"}}`))}
 	}}}}
-	if _, err := CreateChatVideo(context.Background(), rejected, ChatVideoCreationRequest{Model: "sora-2", Prompt: "p"}, "k", ""); err == nil || !strings.Contains(err.Error(), "size invalid") {
+	if _, err := CreateChatVideo(context.Background(), rejected, ChatVideoCreationRequest{Model: "sora-2", Prompt: "p"}, ""); err == nil || !strings.Contains(err.Error(), "size invalid") {
 		t.Fatalf("参数错误应透传: %v", err)
 	}
 }
@@ -188,21 +188,21 @@ func TestPollAndDownloadChatMediaTask(t *testing.T) {
 			return &GenerationDispatchResponse{Status: 404, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"Video not found"}}`))}
 		}},
 	}}
-	polled, err := PollChatMediaTask(context.Background(), executor, "video_abc", "k", "")
+	polled, err := PollChatMediaTask(context.Background(), executor, "video_abc", "")
 	if err != nil {
 		t.Fatalf("PollChatMediaTask: %v", err)
 	}
 	if polled.Status != "completed" || polled.Progress == nil || *polled.Progress != 100 {
 		t.Fatalf("polled = %+v", polled)
 	}
-	artifact, err := DownloadChatMediaContent(context.Background(), executor, "video_abc", "k", "")
+	artifact, err := DownloadChatMediaContent(context.Background(), executor, "video_abc", "")
 	if err != nil {
 		t.Fatalf("DownloadChatMediaContent: %v", err)
 	}
 	if artifact.MimeType != "video/mp4" {
 		t.Fatalf("mimeType = %q", artifact.MimeType)
 	}
-	if _, err := PollChatMediaTask(context.Background(), executor, "video_missing", "k", ""); err == nil || !strings.Contains(err.Error(), "不存在") {
+	if _, err := PollChatMediaTask(context.Background(), executor, "video_missing", ""); err == nil || !strings.Contains(err.Error(), "不存在") {
 		t.Fatalf("404 应归一为不存在: %v", err)
 	}
 }
@@ -213,13 +213,13 @@ func TestDownloadChatMediaContentLimits(t *testing.T) {
 	executor := &mockExecutor{steps: []scriptStep{{respond: func(call dispatchCall) *GenerationDispatchResponse {
 		return &GenerationDispatchResponse{Status: 200, Body: io.NopCloser(strings.NewReader(string(oversize)))}
 	}}}}
-	if _, err := DownloadChatMediaContent(context.Background(), executor, "video_abc", "k", ""); err == nil || !strings.Contains(err.Error(), "64 MiB") {
+	if _, err := DownloadChatMediaContent(context.Background(), executor, "video_abc", ""); err == nil || !strings.Contains(err.Error(), "64 MiB") {
 		t.Fatalf("超限视频应失败: %v", err)
 	}
 	notVideo := &mockExecutor{steps: []scriptStep{{respond: func(call dispatchCall) *GenerationDispatchResponse {
 		return &GenerationDispatchResponse{Status: 200, Body: io.NopCloser(strings.NewReader(string(mediaWAVFixture)))}
 	}}}}
-	if _, err := DownloadChatMediaContent(context.Background(), notVideo, "video_abc", "k", ""); err == nil || !strings.Contains(err.Error(), "视频格式") {
+	if _, err := DownloadChatMediaContent(context.Background(), notVideo, "video_abc", ""); err == nil || !strings.Contains(err.Error(), "视频格式") {
 		t.Fatalf("非视频字节应失败: %v", err)
 	}
 }
@@ -322,7 +322,7 @@ func TestChatAudioToolExecutionAndSink(t *testing.T) {
 			if request.Model == "" {
 				request.Model = "gpt-4o-mini-tts"
 			}
-			return GenerateChatAudio(context.Background(), executor, request, "k", "")
+			return GenerateChatAudio(context.Background(), executor, request, "")
 		},
 		MediaArtifactSink: sink,
 	}

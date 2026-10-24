@@ -19,29 +19,12 @@ func wkStoreNamed(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 	return wkStoreLabeled(t, "", gate)
 }
 
+// wkStoreLabeled 打开就绪存储。建库已迁 pgtestkit 真实 PG（PLAN-20261024T051925945Z
+// 测试基建迁移切片），label 仅保留调用点可读性；SQLite 内存实现保留在
+// wkSQLiteLegacyStoreLabeled（组B 专用）。
 func wkStoreLabeled(t *testing.T, label string, gate OwnerGate) (*Store, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+strings.ReplaceAll(t.Name(), "/", "-")+label+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range wkDDLs {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a1',1,0)`); err != nil {
-		t.Fatal(err)
-	}
-	s, err := New(db, SQLite, "", gate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s, db
+	return wkPGStoreLabeled(t, label, gate)
 }
 
 var wkDDLs = []string{
@@ -318,7 +301,7 @@ func TestAcknowledgeOutboxIncidentProjection(t *testing.T) {
 		t.Fatalf("ack: ok=%v err=%v", ok, err)
 	}
 	var projected int64
-	if err := db.QueryRow(`SELECT projected_ledger_revision FROM account_circuit_incidents WHERE circuit_scope_key='scope-ack'`).Scan(&projected); err != nil || projected != 1 {
+	if err := db.QueryRow(`SELECT projected_ledger_revision FROM ` + defaultBusinessSchema + `.account_circuit_incidents WHERE circuit_scope_key='scope-ack'`).Scan(&projected); err != nil || projected != 1 {
 		t.Fatalf("projected=%d err=%v", projected, err)
 	}
 }
@@ -339,7 +322,7 @@ func TestListForRebuildCursorPagination(t *testing.T) {
 	if _, err := s.CompareAndSetIncident(ctx, wkBaseIncident("scope-r3", "a1", 1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE account_circuit_incidents SET updated_at_ms=150 WHERE circuit_scope_key='scope-r3'`); err != nil {
+	if _, err := db.Exec(`UPDATE ` + defaultBusinessSchema + `.account_circuit_incidents SET updated_at_ms=150 WHERE circuit_scope_key='scope-r3'`); err != nil {
 		t.Fatal(err)
 	}
 	page, err := s.ListForRebuild(ctx, 10_000, 0, "", 2)
@@ -578,7 +561,7 @@ func TestAdvanceAndClaimValidationExtras(t *testing.T) {
 	defer db.Close()
 	ctx := context.Background()
 	// replay 身份冲突：同 transition id 不同账户身份。
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a2',5,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a2',5,0)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "t-replay", NowMS: 100}); err != nil {
@@ -617,7 +600,9 @@ func TestCheckContractGateBlocked(t *testing.T) {
 }
 
 func TestCheckContractPostgresModeOnSQLiteFails(t *testing.T) {
-	s, db := wkReadyStore(t)
+	// 组B：被测对象是"PG 模式契约查询落在 SQLite 生产臂上必然失败"的跨形态
+	// 守卫，必须保留 SQLite 建库（随生产 sqlite 臂删除批次同批退役）。
+	s, db := wkSQLiteLegacyStoreLabeled(t, "-pgmode", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	defer db.Close()
 	// Postgres 模式索引校验查询在 SQLite 上必然失败（缺 pg_catalog）。
 	s.mode = Postgres
@@ -788,7 +773,7 @@ func TestReadIncidentsRejectsCorruptRows(t *testing.T) {
 	defer db.Close()
 	ctx := context.Background()
 	// 直接注入 children JSON 为空的 incident 行，读取路径必须失败关闭。
-	if _, err := db.Exec(`INSERT INTO account_circuit_incidents (
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_incidents (
       circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
       child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
       projected_ledger_revision, transition_id, cooldown_observation_generation,

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +89,10 @@ func (f fakeInputReader) LoadDue(context.Context, int) ([]InputDraft, error) { r
 
 func testRuntimeConfig(t *testing.T) RuntimeConfig {
 	t.Helper()
-	return RuntimeConfig{Enabled: true, InstanceID: "test-owner", Store: StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "jobs.sqlite3")}, InputLimit: 10, InputTTL: time.Minute, Interval: time.Hour, OwnerLease: time.Minute, ProxyLease: 30 * time.Second, ProbeTimeout: time.Second, CredentialSecret: "test-secret", Now: time.Now}
+	// Store 装配由 openKitRuntimeStore 提供（pgtestkit 隔离 PG 库 + 生产
+	// EnsureSchema，见 proxylatency_pgkit_test.go）；本 helper 不再持有
+	// SQLite StoreConfig。
+	return RuntimeConfig{Enabled: true, InstanceID: "test-owner", InputLimit: 10, InputTTL: time.Minute, Interval: time.Hour, OwnerLease: time.Minute, ProxyLease: 30 * time.Second, ProbeTimeout: time.Second, CredentialSecret: "test-secret", Now: time.Now}
 }
 
 func testDraft(proxyID string) InputDraft {
@@ -100,10 +102,7 @@ func testDraft(proxyID string) InputDraft {
 
 func TestRunnerCycleOrdersLeasesAndIsolatesProxyFailures(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	reader := fakeInputReader{drafts: []InputDraft{{ProxyID: "bad", ProxyType: "bad"}, testDraft("good")}}
 	runner := NewRunner(cfg, store, reader, nil)
@@ -127,10 +126,7 @@ func TestRunnerCycleOrdersLeasesAndIsolatesProxyFailures(t *testing.T) {
 func TestRunnerCycleSkipsErrProxyLeaseHeldAndFillsTarget(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.BatchSize = 2
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{drafts: []InputDraft{testDraft("busy"), testDraft("available"), testDraft("available-2")}}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -158,10 +154,7 @@ func TestRunnerCycleSkipsErrProxyLeaseHeldAndFillsTarget(t *testing.T) {
 
 func TestRunnerStopsCycleWhenProxyLeaseAcquisitionLosesOwner(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{drafts: []InputDraft{testDraft("owner-lost-during-proxy-acquire")}}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -182,10 +175,7 @@ func TestRunnerStopsCycleWhenProxyLeaseAcquisitionLosesOwner(t *testing.T) {
 
 func TestRunnerPreservesPriorReleaseErrorWhenOwnerIsLostOnNextDraft(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	drafts := []InputDraft{testDraft("release-before-owner-loss"), testDraft("owner-loss-next-draft")}
 	runner := NewRunner(cfg, store, fakeInputReader{drafts: drafts}, nil)
@@ -197,8 +187,14 @@ func TestRunnerPreservesPriorReleaseErrorWhenOwnerIsLostOnNextDraft(t *testing.T
 	runner.executeIssuedInput = func(context.Context, *Store, OwnerLease, ProxyLease, IssuedInput, ExecutorOptions) (Outcome, bool, error) {
 		executeCount++
 		if executeCount == 1 {
-			if err := store.ReleaseOwnerLease(context.Background(), owner); err != nil {
-				t.Fatalf("release owner in test hook: %v", err)
+			// PG 重钉披露：ReleaseOwnerLease 以 statement_timestamp()（DB 时钟）
+			// 截断租约，而 verifyOwnerTx 以 Go 时钟判定 lease_until.After(now)；
+			// dev PG 与测试进程跨机时钟偏移（DB 领先）时 release 后立即校验无法
+			// 确定性地看到 owner 已丢失（生产臂跨时钟源缺陷，另列报告）。此处以
+			// 显式过去时间戳注入等价的 owner lease 丢失状态恢复确定性；后续
+			// 断言逐字节保持。
+			if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_owner_leases SET lease_until=$1 WHERE lease_key=$2`, time.Now().UTC().Add(-time.Minute), "proxy-latency-owner"); err != nil {
+				t.Fatalf("expire owner lease in test hook: %v", err)
 			}
 		}
 		return Outcome{}, false, nil
@@ -217,10 +213,7 @@ func TestRunnerPreservesPriorReleaseErrorWhenOwnerIsLostOnNextDraft(t *testing.T
 
 func TestRenewOwnerLeaseKeepsFenceAndRejectsLostOwner(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
 	if err != nil || !acquired {
@@ -264,10 +257,7 @@ func TestRunnerStopsImmediatelyWhenOwnerRenewalFails(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.OwnerLease = 30 * time.Millisecond
 	cfg.Interval = time.Hour
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -290,10 +280,7 @@ func TestRunnerRunClearsOwnerAfterRenewalFailure(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.OwnerLease = 30 * time.Millisecond
 	cfg.Interval = time.Hour
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -323,10 +310,7 @@ func TestRunnerRunClearsOwnerAfterRenewalFailure(t *testing.T) {
 
 func TestRunnerKeepsProxyReleaseErrorVisible(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{drafts: []InputDraft{testDraft("release-error")}}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -344,10 +328,7 @@ func TestRunnerKeepsProxyReleaseErrorVisible(t *testing.T) {
 
 func TestRunnerEarlyProxyReleaseErrorVisible(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{drafts: []InputDraft{{ProxyID: "early-release", ProxyType: "invalid"}}}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -530,10 +511,7 @@ func TestBoundedReleaseContextDetachesCancellation(t *testing.T) {
 func TestRunnerPreservesReleaseErrorWithExecutionError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.CredentialSecret = "wrong-secret"
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	draft := testDraft("release-and-exec-error")
 	draft.ProxyUsername = "proxy-user"
@@ -554,10 +532,7 @@ func TestRunnerPreservesReleaseErrorWithExecutionError(t *testing.T) {
 
 func TestRunnerPreservesReleaseErrorWithFatalExecutionError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{drafts: []InputDraft{testDraft("fatal-release-and-exec-error")}}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -582,10 +557,7 @@ func TestRunnerPreservesReleaseErrorWithFatalExecutionError(t *testing.T) {
 
 func TestRunnerCycleCancellationStopsBeforeIssue(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

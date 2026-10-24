@@ -8,7 +8,6 @@ package auditlog
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -64,14 +63,8 @@ func TestW13FRetractIgnoresEmptyIDAndNilProducer(t *testing.T) {
 
 func w13fStore(t *testing.T) (*sqlStore, OwnerLease) {
 	t.Helper()
-	cfg := sqliteConfig(t, t.TempDir())
-	cfg.HotSearchDirectory = filepath.Join(filepath.Dir(cfg.AuditDatabasePath), "w13f-hot")
-	store, err := OpenStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store.(*sqlStore), acquireLease(t, store)
+	store, implementation := openPostgresStore(t)
+	return implementation, acquireLease(t, store)
 }
 
 func TestW13FStoreRetractInProgressLifecycleGuard(t *testing.T) {
@@ -100,7 +93,7 @@ func TestW13FStoreRetractInProgressLifecycleGuard(t *testing.T) {
 		t.Fatalf("终态行不得被撤回: retracted=%v err=%v", retracted, err)
 	}
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE id = 'w13f-fin-1'`).Scan(&count); err != nil || count != 1 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs WHERE id = 'w13f-fin-1'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("终态行必须保留: count=%d err=%v", count, err)
 	}
 

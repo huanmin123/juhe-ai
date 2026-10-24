@@ -266,7 +266,7 @@ func TestW14CStatWindowTimezoneGaps(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewDBTimezoneSource(db, false, nil)
+	source, err := NewDBTimezoneSource(db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,14 +276,16 @@ func TestW14CStatWindowTimezoneGaps(t *testing.T) {
 
 	// 非法时区值 → LoadLocation 失败。
 	db2 := newTestDB(t, "w14c-tz-bad")
-	if _, err := db2.Exec(`CREATE TABLE system_settings (
-		system_account_id TEXT, key TEXT, value_json TEXT)`); err != nil {
+	// 生产 PG 臂方言：juhe_business 限定，列照抄业务库 system_settings DDL。
+	if _, err := db2.Exec(`CREATE TABLE juhe_business.system_settings (
+		system_account_id text NOT NULL, key text NOT NULL, value_json text NOT NULL, updated_at text NOT NULL,
+		PRIMARY KEY (system_account_id, key))`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db2.Exec(`INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"No/Such/Zone"')`); err != nil {
+	if _, err := db2.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'usageStatsTimezone', '"No/Such/Zone"', '2026-09-17T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
-	source2, err := NewDBTimezoneSource(db2, false, nil)
+	source2, err := NewDBTimezoneSource(db2, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,14 +294,14 @@ func TestW14CStatWindowTimezoneGaps(t *testing.T) {
 	}
 }
 
-// TestW14CCostsWeeklyAndScanErrors 覆盖 Weekly apply 闭包、Scan 错误与
-// ReadAPIKeyQuotaCostsExactAsync 的 LoadCostsBatch 错误透传。
+// TestW14CCostsWeeklyAndScanErrors 覆盖 Weekly apply 闭包、数值列写入期拒收
+// 与 ReadAPIKeyQuotaCostsExactAsync 的 LoadCostsBatch 错误透传。
 func TestW14CCostsWeeklyAndScanErrors(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC))
 	location := time.UTC
 	db := newTestDB(t, "w14c-costs-weekly")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,22 +318,19 @@ func TestW14CCostsWeeklyAndScanErrors(t *testing.T) {
 		t.Fatalf("weekly 行必须生效: (%+v, %v)", costs, err)
 	}
 
-	// success_cost_usd 为不可解析文本 → Scan 错误。
+	// PG 数值列（double precision）在写入期拒绝不可解析文本（SQLite 时代以
+	// TEXT-in-REAL 注入 rows.Scan 错误，迁真实 PG 后重钉为写入期拒收断言；
+	// rows.Scan 错误分支登记为 pgx 驱动下不可达）。
 	dbBad := newTestDB(t, "w14c-costs-bad")
 	statsSchema(t, dbBad)
-	statsBad, err := NewStatsStore(dbBad, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedCost(t, dbBad, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
-		[]any{"w14c-sys", ScopeTypeAPIKey, "w14c-ak", "not-a-number"})
-	if _, err := statsBad.LoadCostsBatch(context.Background(), []CostInput{input}, location); err == nil {
-		t.Fatal("非数值成本必须报 Scan 错误")
+	if _, err := dbBad.Exec(`INSERT INTO juhe_stats.usage_stats_totals (system_account_id, scope_type, scope_id, success_cost_usd)
+		VALUES ('w14c-sys', 'api_key', 'w14c-ak', 'not-a-number')`); err == nil {
+		t.Fatal("非数值成本必须被数值列拒收")
 	}
 
 	// PG 模式 ReadAPIKeyQuotaCostsExactAsync：stats 缺表 → LoadCostsBatch 错误。
 	dbNoTables := newTestDB(t, "w14c-costs-notable")
-	statsNoTables, err := NewStatsStore(dbNoTables, false)
+	statsNoTables, err := NewStatsStore(dbNoTables, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +358,7 @@ func TestW14CAuthzWrapperErrorPaths(t *testing.T) {
 	statsDB := newTestDB(t, "w14c-authz-wrap-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,12 +397,12 @@ func TestW14CAuthzWrapperErrorPaths(t *testing.T) {
 	seedAuthzRow(t, business, "w14c-ga", "w14c-owner", "w14c-grantee", "group", "w14c-g1", "",
 		`{"daily":{"enabled":true,"limit":10}}`, "active")
 	emptyStatsDB := newTestDB(t, "w14c-authz-wrap-empty")
-	emptyStats, err := NewStatsStore(emptyStatsDB, false)
+	emptyStats, err := NewStatsStore(emptyStatsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	emptyStatsService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Business: business, Stats: emptyStats, Timezone: mustTZ(t, time.UTC),
+		Modes: Modes{PostgresDatabase: true}, Business: business, Stats: emptyStats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
@@ -483,7 +482,7 @@ func TestW14CAuthzSnapshotFallbackSemantics(t *testing.T) {
 	statsDB := newTestDB(t, "w14c-authz-snap-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +584,7 @@ func TestW14CAuthzRedisWorkerWriteErrors(t *testing.T) {
 	statsDB := newTestDB(t, "w14c-authz-worker-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +623,7 @@ func TestW14CAuthzRedisWorkerWriteErrors(t *testing.T) {
 	// 批量 worker：missing 决策写缓存失败。
 	setFail := &w14cSharedFail{inner: shared, setErr: true}
 	setFailService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true, RedisRuntimeState: true},
+		Modes:    Modes{RedisCache: true, RedisRuntimeState: true, PostgresDatabase: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: snapshot, Shared: setFail, Now: clock.Now,
 	})
@@ -670,7 +669,7 @@ func TestW14CAuthzBatchServerRoleSnapshotErrors(t *testing.T) {
 	statsDB := newTestDB(t, "w14c-authz-bsr-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,13 +734,14 @@ func TestW14CQuotaDefaultNowAndNilCtx(t *testing.T) {
 	statsDB := newTestDB(t, "w14c-default-now-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Now=nil → time.Now 回退；Log=nil → noopLog 回退。
 	wallClock := newFakeClock(time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC))
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
+		Modes:    Modes{PostgresDatabase: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, wallClock),
 	})
@@ -756,7 +756,7 @@ func TestW14CQuotaDefaultNowAndNilCtx(t *testing.T) {
 	_ = decision
 
 	// nil ctx → context.Background() 回退（缓存命中路径，无数据库访问）。
-	tzSource, err := NewDBTimezoneSource(statsDB, false, time.Now)
+	tzSource, err := NewDBTimezoneSource(statsDB, true, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -422,6 +422,78 @@ func TestDispatchOverflowSpoolsInsteadOfBlocking(t *testing.T) {
 	}
 }
 
+// TestDispatchUsageRecordSuppressedSkipsBothArms 钉住使用日志抑制在两条投递臂
+// 上都生效（AI 问答免 Key 直调内部通道 §3.1）：正常入队臂与队列满时的溢出
+// 落 spool 臂都不得看到抑制记录。溢出臂是关键——它绕过 recorder 直接落盘，
+// 只把闸口设在 EnqueueUsageRecord 会让抑制记录在队列积压时逃逸，而抑制标记
+// 不序列化，jobs 侧读回后无法识别，会按普通记录写 usage_records。
+//
+// 队列容量判定只统计 queued 槽位（hasCapacityLocked 读 len(q.queued)，在途
+// active 任务不占位，与 Node 同口径），因此构造溢出必须让「1 个在途 + 1 个
+// 排队」把 maxItems=1 的容量占满：在途任务占住单并发槽位使排队项无法开跑，
+// 排队项本身占满唯一 queued 槽位；此后投递才会真正落到 overflowFactory。
+func TestDispatchUsageRecordSuppressedSkipsBothArms(t *testing.T) {
+	gate := &gatedRecorder{entered: make(chan struct{}, 8), release: make(chan struct{})}
+	spool := NewUsageRecordSpool(SpoolConfig{
+		Directory:  t.TempDir(),
+		InstanceID: "inst-suppress",
+		MaxItems:   100,
+		MaxBytes:   1024 * 1024,
+		Enabled:    true,
+	}, fixedClock{ms: 1700000000000}, nil)
+	overflow := &memoryOverflow{spool: spool}
+	// maxItems=1 / maxConcurrency=1：在途 trace-occupy 占住并发槽，排队
+	// trace-queued 占满满唯一的 queued 槽位 ⇒ 后续投递必然走溢出臂。
+	dispatch := NewFinalizationDispatch(gate, overflow, 1, 1)
+	dispatch.OverflowEnabled = true
+
+	suppressed := completedRecord("trace-suppressed")
+	suppressed.SuppressUsage = true
+	if err := dispatch.DispatchUsageRecord(context.Background(), suppressed, 100); err != nil {
+		t.Fatalf("suppressed normal-arm err = %v", err)
+	}
+	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-occupy"), 100); err != nil {
+		t.Fatalf("occupy err = %v", err)
+	}
+	<-gate.entered
+	// 在途项已占并发槽：本项进 queued（占满唯一槽位），不会开跑。
+	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-queued"), 100); err != nil {
+		t.Fatalf("queued err = %v", err)
+	}
+	if got := dispatch.Runtime().QueuedCount; got != 1 {
+		t.Fatalf("排队占位构造失败（溢出臂将不可达）: QueuedCount = %d, want 1", got)
+	}
+	// 容量已满：抑制记录必须仍被丢弃（入口闸口提前返回，不进溢出工厂）。
+	suppressedOverflow := completedRecord("trace-suppressed-overflow")
+	suppressedOverflow.SuppressUsage = true
+	if err := dispatch.DispatchUsageRecord(context.Background(), suppressedOverflow, 100); err != nil {
+		t.Fatalf("suppressed overflow-arm err = %v", err)
+	}
+	// 对照：非抑制记录在同容量状态下确实落到溢出臂，证明本场景真的在测溢出。
+	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-overflow-control"), 100); err != nil {
+		t.Fatalf("overflow control err = %v", err)
+	}
+	if runtime := dispatch.Runtime(); runtime.OverflowSpoolCount != 1 {
+		t.Fatalf("对照组必须落到溢出臂（否则本测试未覆盖目标场景）; runtime=%+v", runtime)
+	}
+	close(gate.release)
+	if !dispatch.WaitForIdle(2000) {
+		t.Fatal("not idle")
+	}
+	// 溢出 spool 里必须只有对照组那一条，抑制记录一条都不能有。
+	waitForSpoolSettled(t, spool, 1)
+	spooled := overflow.snapshot()
+	if len(spooled) != 1 || spooled[0].TraceID != "trace-overflow-control" {
+		t.Fatalf("溢出 spool 必须只含对照组记录: %+v", spooled)
+	}
+	if !gate.seenTrace("trace-occupy") || !gate.seenTrace("trace-queued") {
+		t.Fatalf("非抑制记录必须正常投递: %v", gate.seenSnapshot())
+	}
+	if gate.seenTrace("trace-suppressed") || gate.seenTrace("trace-suppressed-overflow") {
+		t.Fatalf("抑制记录到达 recorder: %v", gate.seenSnapshot())
+	}
+}
+
 // gatedRecorder is a UsageRecorder port mock with controllable delivery.
 type gatedRecorder struct {
 	entered chan struct{}

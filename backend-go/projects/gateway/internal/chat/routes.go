@@ -109,10 +109,9 @@ type Deps struct {
 	// AccountModelCatalog resolves the exact models bound to one account; used
 	// when the account has no vendor (generic_http). Optional.
 	AccountModelCatalog AccountModelCatalog
-	// ChatKeys provisions and resolves the chat-scoped API key.
-	ChatKeys ChatAPIKeyProvider
-	// GatewayKeys validates gateway API keys (group bindings + image flag).
-	GatewayKeys GatewayKeyValidator
+	// SystemAccountFlags 读取归属系统账户开关（当前仅生图开关）。Optional；
+	// nil 视为全部关闭（内部对话不授予生图工具）。
+	SystemAccountFlags SystemAccountFlagsLookup
 	// AccountLookup resolves the conversation's bound account object（会话账户
 	// 唯一绑定的选择/切换校验，internal/accounts 实现）。Optional; nil 让绑定
 	// 校验返回显式错误。

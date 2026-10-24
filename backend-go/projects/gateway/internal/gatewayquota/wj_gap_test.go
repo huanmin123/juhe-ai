@@ -115,15 +115,22 @@ func TestWJAuthzBatchMaterializeError(t *testing.T) {
 	business := newTestDB(t, "wj-materialize-biz")
 	authzSchema(t, business)
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	// 统计库以 PostgreSQL 方言构造：批量装载在 SQLite 上无法执行。
+	// 统计库以真实 PostgreSQL 构造后关闭连接池注入批量装载失败（SQLite 时代
+	// 依赖「PG 方言在 SQLite 上无法执行」，迁真实 PG 后重钉为池关闭失败，
+	// 断言保持不变）。
 	pgStatsDB := newTestDB(t, "wj-materialize-stats")
 	statsSchema(t, pgStatsDB)
+	if err := pgStatsDB.Close(); err != nil {
+		t.Fatalf("close stats db: %v", err)
+	}
 	pgStats, err := NewStatsStore(pgStatsDB, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{},
+		// 业务库查询走生产 PG 臂方言（业务库方言由 Modes.PostgresDatabase 决定，
+		// 测试业务库已是真实 PG）。
+		Modes:    Modes{PostgresDatabase: true},
 		Business: business,
 		Stats:    pgStats,
 		Timezone: mustTZ(t, time.UTC),
@@ -142,7 +149,7 @@ func TestWJAuthzBatchMaterializeError(t *testing.T) {
 // 限制的 grant 跳过 team 检查；账户维度 grant 在实例账户缺失时同样跳过。
 func TestWJAuthzTeamRowLimitShapes(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "teamshape")
+	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "teamshape")
 	ctx := context.Background()
 
 	// grant 无启用限制 → team 检查为空 → 允许。
@@ -168,7 +175,7 @@ func mustStats(t *testing.T) *StatsStore {
 	t.Helper()
 	db := newTestDB(t, "wj-must-stats")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}

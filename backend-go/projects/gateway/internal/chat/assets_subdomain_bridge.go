@@ -124,7 +124,7 @@ func (s *Store) CommitChatGeneratedAsset(input GeneratedAssetCommitInput) (*Asse
 }
 
 // CommitChatGeneratedMediaAsset 把 M7 问答音视频工具产物提交为 ready 资产
-//（媒体行无预览/无宽高；见 chatassets.MediaAssetCommitInput）。
+// （媒体行无预览/无宽高；见 chatassets.MediaAssetCommitInput）。
 func (s *Store) CommitChatGeneratedMediaAsset(input MediaAssetCommitInput) (*Asset, error) {
 	return s.assets.CommitChatGeneratedMediaAsset(input)
 }

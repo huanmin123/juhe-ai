@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -127,7 +128,7 @@ func rewriteAccountCredentials(t *testing.T, db *sql.DB, id string, credentials 
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`UPDATE accounts SET credentials_encrypted = ?, config_revision = config_revision + 1, updated_at = ? WHERE id = ?`,
+	_, err = db.Exec(`UPDATE juhe_business.accounts SET credentials_encrypted = $1, config_revision = config_revision + 1, updated_at = $2 WHERE id = $3`,
 		sealed, isoMillis(defaultNow()), id)
 	return err
 }
@@ -251,9 +252,8 @@ func (s *w9hFailingFailureStore) CleanupBackoff(now int64) { s.memory.CleanupBac
 
 func seedUndecryptableAccount(t *testing.T, db *sql.DB, id string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
-		credentials_encrypted, config_revision, updated_at)
-		VALUES (?, 'gpt', 'gpt', 'openai', 'v1', ?, 'oauth', 'active', 'not-a-valid-envelope', 1, ?)`,
+	_, err := db.Exec(`INSERT INTO juhe_business.accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, credentials_encrypted, config_revision, updated_at, system_account_id, created_at)
+		VALUES ($1, 'gpt', 'gpt', 'openai', 'v1', $2, 'oauth', 'active', 'not-a-valid-envelope', 1, $3, 'sys_admin', $2)`,
 		id, "账户-"+id, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +318,7 @@ func TestW9HDecryptFailureWithEvidenceReachesTerminalStop(t *testing.T) {
 func readAccountLastMessage(t *testing.T, db *sql.DB, id string) string {
 	t.Helper()
 	var message sql.NullString
-	if err := db.QueryRow(`SELECT last_error_message FROM accounts WHERE id = ?`, id).Scan(&message); err != nil {
+	if err := db.QueryRow(`SELECT last_error_message FROM juhe_business.accounts WHERE id = $1`, id).Scan(&message); err != nil {
 		t.Fatal(err)
 	}
 	return message.String
@@ -481,7 +481,7 @@ func TestW9HKeepaliveConflictReloadArms(t *testing.T) {
 			if err := db.Exec; false {
 				_ = err
 			}
-			_, _ = db.Exec(`DELETE FROM accounts WHERE id = 'w9h-ka-conflict'`)
+			_, _ = db.Exec(`DELETE FROM juhe_business.accounts WHERE id = 'w9h-ka-conflict'`)
 			return nil, &RevisionConflictError{Message: "账户已被其他请求修改，请重试"}
 		}
 		return nil, &RevisionConflictError{Message: "账户已被其他请求修改，请重试"}
@@ -544,9 +544,8 @@ func TestW9HListDueKeepaliveAccountsSkipsUndecryptable(t *testing.T) {
 
 func seedUndecryptableKeepaliveRow(t *testing.T, db *sql.DB, id string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
-		credentials_encrypted, oauth_refresh_token_present, config_revision, updated_at)
-		VALUES (?, 'anthropic', 'anthropic', 'openai', 'v1', ?, 'oauth', 'active', 'garbage-envelope', 1, 1, ?)`,
+	_, err := db.Exec(`INSERT INTO juhe_business.accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, credentials_encrypted, oauth_refresh_token_present, config_revision, updated_at, system_account_id, created_at)
+		VALUES ($1, 'anthropic', 'anthropic', 'openai', 'v1', $2, 'oauth', 'active', 'garbage-envelope', 1, 1, $3, 'sys_admin', $2)`,
 		id, "账户-"+id, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)
@@ -635,7 +634,7 @@ func TestW9HFindRotationAccountArms(t *testing.T) {
 	_, store, db, clock, _ := newRefreshJobForTest(t)
 	seedOpenAIOAuthAccount(t, db, "w9h-find", openAICredentials(expiresInMillis(0)), clock.Now())
 	// Deleted row reads as absent.
-	if _, err := db.Exec(`UPDATE accounts SET deleted_at = ? WHERE id = 'w9h-find'`, isoMillis(clock.Now())); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET deleted_at = $1 WHERE id = 'w9h-find'`, isoMillis(clock.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if account, err := store.FindRotationAccount(context.Background(), "w9h-find"); err != nil || account != nil {
@@ -651,8 +650,8 @@ func TestW9HFindRotationAccountArms(t *testing.T) {
 }
 
 func TestW9HMarkAndClearFailureStateArms(t *testing.T) {
-	_, store, db, clock, _ := newRefreshJobForTest(t)
-	seedOpenAIOAuthAccount(t, db, "w9h-mark", openAICredentials(expiresInMillis(0)), clock.Now())
+	store, db := newClearStateSQLiteStore(t)
+	seedClearStateAccount(t, db, "w9h-mark", "active", "")
 	ctx := context.Background()
 	// Guard miss (wrong status) reports updated=false.
 	updated, err := store.MarkAccountFailureState(ctx, "w9h-mark", "code", "reason", 1, "disabled")
@@ -800,14 +799,14 @@ func TestW9HSyncApiKeyInvalidDisabledAdvancesOnly(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	var status, nextCheck string
-	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,'') FROM api_keys WHERE id = 'w9h-key-invalid-disabled'`).Scan(&status, &nextCheck); err != nil {
+	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,'') FROM juhe_business.api_keys WHERE id = 'w9h-key-invalid-disabled'`).Scan(&status, &nextCheck); err != nil {
 		t.Fatal(err)
 	}
 	if status != "disabled" {
 		t.Fatalf("status=%q", status)
 	}
 	// The empty schedule drops only the JSON; a nil next-check is fine.
-	_, _ = db.Exec(`UPDATE api_keys SET availability_schedule_json = NULL WHERE id = 'w9h-key-invalid-disabled'`)
+	_, _ = db.Exec(`UPDATE juhe_business.api_keys SET availability_schedule_json = NULL WHERE id = 'w9h-key-invalid-disabled'`)
 }
 
 func TestW9HSyncAccountDueEventOnDisabledActivates(t *testing.T) {
@@ -828,7 +827,7 @@ func TestW9HSyncAccountDueEventOnDisabledActivates(t *testing.T) {
 	}
 	// The first run advanced the next-check column past now; resetting it puts
 	// the row back into the scan while the dedupe event stays → skipped.
-	if _, err := db.Exec(`UPDATE accounts SET availability_schedule_next_check_at = NULL WHERE id = 'w9h-acc-end'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET availability_schedule_next_check_at = NULL WHERE id = 'w9h-acc-end'`); err != nil {
 		t.Fatal(err)
 	}
 	result, err = store.SyncAccountScheduleStatuses(context.Background(), atEnd, 0, nil)
@@ -838,4 +837,101 @@ func TestW9HSyncAccountDueEventOnDisabledActivates(t *testing.T) {
 	if result.Skipped != 1 {
 		t.Fatalf("dedupe result=%+v", result)
 	}
+}
+
+// --- 组B 保留装配（不迁 PG）：生产 ClearAccountFailureState 的 PG 臂存在
+// 占位符/参数计数缺陷（args 尾随无占位符的 status 字面量，pgx 报 mismatched
+// param and argument count；SQLite 驱动宽松忽略多余参数），以下装配仅供该
+// 缺陷覆盖面的三个测试使用，随生产臂修复批次再迁 PG。---
+
+const clearStateSQLiteSchema = `
+CREATE TABLE accounts (
+	id TEXT PRIMARY KEY,
+	system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+	vendor_code TEXT,
+	connection_driver_code TEXT NOT NULL DEFAULT 'gpt',
+	protocol_code TEXT NOT NULL DEFAULT 'openai',
+	protocol_version TEXT NOT NULL DEFAULT 'v1',
+	name TEXT NOT NULL,
+	type TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'active',
+	credentials_encrypted TEXT NOT NULL,
+	credential_fingerprint TEXT,
+	credential_mask TEXT NOT NULL DEFAULT '',
+	proxy_profile_id TEXT,
+	concurrency_limit INTEGER NOT NULL DEFAULT 0,
+	priority INTEGER NOT NULL DEFAULT 0,
+	super_priority_enabled INTEGER NOT NULL DEFAULT 0,
+	fallback_enabled INTEGER NOT NULL DEFAULT 0,
+	schedulable INTEGER NOT NULL DEFAULT 1,
+	account_expires_at TEXT,
+	cooldown_until TEXT,
+	last_error_code TEXT,
+	last_error_message TEXT,
+	health_check_model TEXT,
+	health_check_endpoint_mode TEXT,
+	oauth_access_token_expires_at TEXT,
+	oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
+	config_revision INTEGER NOT NULL DEFAULT 1,
+	authorization_instance_authorization_id TEXT,
+	deleted_at TEXT,
+	created_at TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL DEFAULT ''
+)`
+
+func newClearStateSQLiteStore(t *testing.T) (*Store, *sql.DB) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "clearstate.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(clearStateSQLiteSchema); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(db, StoreSQLite, cryptoTestSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, db
+}
+
+func seedClearStateAccount(t *testing.T, db *sql.DB, id, status, lastErrorCode string) {
+	t.Helper()
+	credentials := openAICredentials(expiresInMillis(0))
+	sealed, err := EncryptJSON(cryptoTestSecret, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := sql.NullString{}
+	if value, ok := credentials["expires_at"]; ok {
+		if canonical, ok2 := canonicalRFC3339(normalizeText(value)); ok2 {
+			expiresAt = sql.NullString{String: canonical, Valid: true}
+		}
+	}
+	lastErrorArg := sql.NullString{}
+	if lastErrorCode != "" {
+		lastErrorArg = sql.NullString{String: lastErrorCode, Valid: true}
+	}
+	_, err = db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
+		credentials_encrypted, credential_fingerprint, credential_mask, oauth_access_token_expires_at, oauth_refresh_token_present,
+		last_error_code, config_revision, created_at, updated_at)
+		VALUES (?, 'gpt', 'gpt', 'openai', 'v1', ?, ?, ?, ?, ?, '', ?, 1, ?, ?, ?, ?)`,
+		id, "账户-"+id, "oauth", status, sealed, "", expiresAt, lastErrorArg, 1,
+		isoMillis(defaultNow()), isoMillis(defaultNow()))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readClearStateAccountRow(t *testing.T, db *sql.DB, id string) (string, string, int64) {
+	t.Helper()
+	var status, lastError sql.NullString
+	var revision int64
+	if err := db.QueryRow(`SELECT status, last_error_code, config_revision FROM accounts WHERE id = ?`, id).
+		Scan(&status, &lastError, &revision); err != nil {
+		t.Fatal(err)
+	}
+	return status.String, lastError.String, revision
 }

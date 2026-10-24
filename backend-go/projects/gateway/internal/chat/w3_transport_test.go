@@ -476,8 +476,8 @@ func TestSystemInstructionsAndCacheKeyW3(t *testing.T) {
 	if strings.Contains(plain, "图片生成工具") || strings.Contains(plain, "避免重复调用") {
 		t.Fatalf("无工具时不应包含工具段落")
 	}
-	key1 := buildChatPromptCacheKey("owner", "key", "conv")
-	key2 := buildChatPromptCacheKey("owner", "key", "conv2")
+	key1 := buildChatPromptCacheKey("owner", "conv")
+	key2 := buildChatPromptCacheKey("owner", "conv2")
 	if key1 == "" || key1 == key2 || strings.ContainsAny(key1, "+/=") {
 		t.Fatalf("prompt cache key 派生不正确")
 	}

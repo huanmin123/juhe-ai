@@ -402,7 +402,7 @@ func GeneratedAssetExtension(mimeType string) string {
 }
 
 // MediaAssetCommitInput 是 M7 问答音视频工具产物落 chat_assets 的输入
-//（问答音视频工具设计 §2.1：与 generate_image 同一落库模式，original 对象即
+// （问答音视频工具设计 §2.1：与 generate_image 同一落库模式，original 对象即
 // 唯一对象，媒体行无预览变体/无宽高）。视频结算（media-tasks 轮询触达终态）
 // 与音频同步落库共用本入口。
 type MediaAssetCommitInput struct {

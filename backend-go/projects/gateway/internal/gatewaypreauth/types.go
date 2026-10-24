@@ -146,20 +146,25 @@ type UsageRequestSnapshot struct {
 // GatewayFailureUsageContext mirrors GatewayFailureUsageContext
 // (usage/records.ts).
 type GatewayFailureUsageContext struct {
-	TraceID                        string
-	TrafficSource                  string
-	ClientIP                       string
-	SystemAccountID                string
-	APIKeyID                       string
-	GroupID                        string
+	TraceID         string
+	TrafficSource   string
+	ClientIP        string
+	SystemAccountID string
+	APIKeyID        string
+	GroupID         string
 	// RouteGroupID 是路由绑定的目标分组（超级分组目标时即超级分组本身），
 	// 与实际服务成员组 GroupID 一起构成响应/审计的双层身份（设计 §4.3）。
-	RouteGroupID                   string
+	RouteGroupID string
 	// CompactionExpected 是请求侧压缩期望（用量记录压缩标记设计 §压缩请求
 	// 识别）：单点判定 gatewaycodex.CodexCompactionExpectedForRequest 在
 	// preflight 冻结的请求级值，经 usageContextOf 投影进入完成/失败用量记录。
 	// models / media / realtime 流量不经过该判定，天然 false。
-	CompactionExpected             bool
+	CompactionExpected bool
+	// SuppressUsage 是内部通道请求（AI 问答免 Key 直调）的使用日志丢弃标记：
+	// 构造点取自请求字段 req.SuppressUsage，经 usageContextOf 投影到 usage 侧，
+	// 最终在持久化唯一闸口（gatewayusage.FinalizationDispatch.DispatchUsageRecord
+	// 入口，覆盖正常入队与溢出 spool 两臂）丢弃。
+	SuppressUsage                  bool
 	Endpoint                       string
 	RequestSnapshot                UsageRequestSnapshot
 	RequestedServiceTier           string

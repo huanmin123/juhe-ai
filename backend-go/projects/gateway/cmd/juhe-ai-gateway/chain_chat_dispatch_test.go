@@ -190,19 +190,26 @@ func TestChatConversationDispatchTargetReadsBindColumn(t *testing.T) {
 const chatDispatchSmokeBody = `{"id":"chatcmpl-pin","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"CONTENT"},"finish_reason":"stop"}]}`
 
 // TestChatGatewayExecutorInjectsDispatchTargetContext：绑定账户目标的执行器
-// 视图在派发时把目标注入进程内 context；无绑定返回原实例且 context 无目标。
+// 视图在派发时把目标与内部身份同源注入进程内 context；无绑定返回原实例且
+// context 无目标、无内部身份。
 func TestChatGatewayExecutorInjectsDispatchTargetContext(t *testing.T) {
 	var seenTarget chatDispatchTarget
 	var sawKey bool
+	var sawIdentity bool
+	var seenOwner string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, sawKey = r.Context().Value(chatDispatchTargetContextKey{}).(chatDispatchTarget)
 		seenTarget, _ = chatDispatchTargetFromContext(r.Context())
+		if identity, ok := chatInternalIdentityFromContext(r.Context()); ok {
+			sawIdentity = true
+			seenOwner = identity.OwnerSystemAccountID
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	executor := newChatGatewayExecutor(handler)
 
 	// 无绑定账户：WithChatDispatchAccount 返回原实例，context 无目标。
-	same := executor.WithChatDispatchAccount("")
+	same := executor.WithChatDispatchAccount("", "")
 	if _, identical := same.(*chatGatewayExecutor); !identical {
 		t.Fatalf("空账户必须返回原执行器实例")
 	}
@@ -211,12 +218,12 @@ func TestChatGatewayExecutorInjectsDispatchTargetContext(t *testing.T) {
 	if _, err := executor.Dispatch(ctx, chatGenerationDispatchSmoke()); err != nil {
 		t.Fatalf("unbound dispatch: %v", err)
 	}
-	if sawKey || seenTarget.pinned() {
-		t.Fatalf("无绑定 context 不得携带目标: %v key=%v", seenTarget, sawKey)
+	if sawKey || seenTarget.pinned() || sawIdentity {
+		t.Fatalf("无绑定 context 不得携带目标或内部身份: %v key=%v identity=%v", seenTarget, sawKey, sawIdentity)
 	}
 
-	// 绑定账户：新实例 + context 注入目标。
-	bound := executor.WithChatDispatchAccount("acc_pin")
+	// 绑定账户：新实例 + context 注入目标与内部身份（同源）。
+	bound := executor.WithChatDispatchAccount("acc_pin", "owner_internal")
 	if bound == executor {
 		t.Fatalf("绑定账户必须返回目标的执行器视图")
 	}
@@ -226,6 +233,9 @@ func TestChatGatewayExecutorInjectsDispatchTargetContext(t *testing.T) {
 	}
 	if !sawKey || !seenTarget.pinned() || seenTarget.AccountID != "acc_pin" {
 		t.Fatalf("账户目标未注入 context: %v key=%v", seenTarget, sawKey)
+	}
+	if !sawIdentity || seenOwner != "owner_internal" {
+		t.Fatalf("内部身份未同源注入: identity=%v owner=%q", sawIdentity, seenOwner)
 	}
 }
 

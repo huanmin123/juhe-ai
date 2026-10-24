@@ -115,9 +115,15 @@ type HandleUpstreamResponseInput struct {
 	GroupAffinityKey           string
 	ClientStrategy             *ClientStrategyView
 	ResponseInspectionPolicies []gatewayruntimecache.ResponseInspectionPolicySummary
-	MarkFirstOutput            func()
-	DownstreamCommitState      *DownstreamCommitState
-	Driver                     ResponseDriverPort
+	// PreCommitReplayWindowDisabled 是受限重放窗口的资格排除面（流式提交边界
+	// 受限重放与异常终局处置设计 §3.1）：由调度层按媒体域 / 桥接流 /
+	// x-juhe-ai-purpose: chat_web_search 副作用子调用判定后传入，仅流式管道
+	// 消费；缺省（false）启用窗口。ParseError 隔离与异常终局判定不受本字段
+	// 影响（对所有原生 OpenAI 直通流生效）。
+	PreCommitReplayWindowDisabled bool
+	MarkFirstOutput               func()
+	DownstreamCommitState         *DownstreamCommitState
+	Driver                        ResponseDriverPort
 	// InteractionAffinityRemember 在 Gemini interactions 创建的下游提交前写入
 	// 账号亲和（Node finalization.ts:483 流式 beforeDownstreamCommit / :1054
 	// 非流式 res.send 前 rememberGeminiInteractionBeforeDownstreamCommit）。
@@ -342,7 +348,9 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 			// 由 inspector 消费原始分片照常生效。判定依据本次 attempt 实际发送
 			// 体（RequestBody）与客户端请求视图（Req），零跨包新增请求标记。
 			SuppressGatewayInjectedUsageChunk: gatewayInjectedChatStreamUsage(input.Req, input.RequestBody, input.Account),
-			NowMs:                             input.nowMs(),
+			// 受限重放窗口资格排除面（设计 §3.1）：调度层判定透传，缺省启用。
+			PreCommitReplayWindowDisabled: input.PreCommitReplayWindowDisabled,
+			NowMs:                         input.nowMs(),
 		},
 	})
 	if pipeErr != nil {

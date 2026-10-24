@@ -5,7 +5,6 @@ package logreads
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,14 +200,11 @@ func TestW9BGrepIsRuntimeLogSearchRequestLine(t *testing.T) {
 }
 
 func TestW9BAuditSearchHotScenarios(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:w9b-hot?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
+	// SearchHot 只扫 NDJSON 桶文件（hydration 在 handler 层），PG 库仅承载
+	// reader 构造与生产 ReadPostgres 方言。
+	db := w9bBlobDB(t)
 	hotDir := t.TempDir()
-	reader, err := NewAuditLogQueryReader(db, ReadSQLite, AuditQueryDirectories{HotSearchDirectory: hotDir})
+	reader, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{HotSearchDirectory: hotDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +244,7 @@ func TestW9BAuditSearchHotScenarios(t *testing.T) {
 		t.Fatalf("空关键词=%+v err=%v", scan, err)
 	}
 	// 目录未配置。
-	noDir, err := NewAuditLogQueryReader(db, ReadSQLite, AuditQueryDirectories{})
+	noDir, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +257,7 @@ func TestW9BAuditSearchHotScenarios(t *testing.T) {
 		t.Fatal("非法 endAt 必须报错")
 	}
 	// 目录不存在 → nil paths 消息。
-	emptyReader, err := NewAuditLogQueryReader(db, ReadSQLite, AuditQueryDirectories{HotSearchDirectory: filepath.Join(hotDir, "missing-subdir")})
+	emptyReader, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{HotSearchDirectory: filepath.Join(hotDir, "missing-subdir")})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -260,8 +260,9 @@ func TestRedisInt64Slice(t *testing.T) {
 	}
 }
 
-// TestOverlayReconcilerSQLite 覆盖对账半边的存在性检查与 overlay upsert。
-func TestOverlayReconcilerSQLite(t *testing.T) {
+// TestOverlayReconcilerPostgres 覆盖对账半边的存在性检查与 overlay upsert
+// （原 TestOverlayReconcilerSQLite，fixture 已迁 PG，按 D9 更名）。
+func TestOverlayReconcilerPostgres(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	server := miniredis.RunT(t)
 	t.Cleanup(func() { server.Close() })
@@ -274,7 +275,7 @@ func TestOverlayReconcilerSQLite(t *testing.T) {
 		t.Fatal("合法依赖必须返回 reconciler")
 	}
 	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -307,7 +308,7 @@ func TestOverlayReconcilerSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	var concurrency int64
-	if err := db.QueryRow(`SELECT current_concurrency FROM account_list_availability_runtime_overlays WHERE account_id = 'acc-1'`).Scan(&concurrency); err != nil {
+	if err := db.QueryRow(`SELECT current_concurrency FROM juhe_business.account_list_availability_runtime_overlays WHERE account_id = 'acc-1'`).Scan(&concurrency); err != nil {
 		t.Fatal(err)
 	}
 	if concurrency != 3 {
@@ -316,7 +317,7 @@ func TestOverlayReconcilerSQLite(t *testing.T) {
 		t.Fatalf("重复 accountId 按当前行为取首值: %d", concurrency)
 	}
 	var nextReconcile *string
-	if err := db.QueryRow(`SELECT next_reconcile_at FROM account_list_availability_runtime_overlays WHERE account_id = 'acc-2'`).Scan(&nextReconcile); err != nil {
+	if err := db.QueryRow(`SELECT next_reconcile_at FROM juhe_business.account_list_availability_runtime_overlays WHERE account_id = 'acc-2'`).Scan(&nextReconcile); err != nil {
 		t.Fatal(err)
 	}
 	if nextReconcile != nil {

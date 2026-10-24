@@ -378,11 +378,14 @@ func TestWJDBTimezoneSourceEdgeCases(t *testing.T) {
 	}
 
 	db := newTestDB(t, "wj-tz")
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT, key TEXT, value_json TEXT)`); err != nil {
+	// 生产 PG 臂方言：juhe_business 限定，列照抄业务库 system_settings DDL。
+	if _, err := db.Exec(`CREATE TABLE juhe_business.system_settings (
+		system_account_id text NOT NULL, key text NOT NULL, value_json text NOT NULL, updated_at text NOT NULL,
+		PRIMARY KEY (system_account_id, key))`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	source, err := NewDBTimezoneSource(db, false, clock.Now)
+	source, err := NewDBTimezoneSource(db, true, clock.Now)
 	if err != nil {
 		t.Fatalf("NewDBTimezoneSource: %v", err)
 	}
@@ -392,35 +395,35 @@ func TestWJDBTimezoneSourceEdgeCases(t *testing.T) {
 		t.Fatalf("缺行必须报错: %v", err)
 	}
 	// 空值。
-	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsTimezone', '')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'usageStatsTimezone', '', '2026-09-04T00:00:00.000Z')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := source.StatsTimezone(ctx); err == nil || !strings.Contains(err.Error(), "系统设置缺少 usageStatsTimezone") {
 		t.Fatalf("空值必须报错: %v", err)
 	}
 	// 非法 JSON。
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '{bad' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '{bad' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := source.StatsTimezone(ctx); err == nil || !strings.Contains(err.Error(), "系统设置 usageStatsTimezone 无效") {
 		t.Fatalf("非法 JSON 必须报错: %v", err)
 	}
 	// 非法时区名。
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '"No/SuchZone"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"No/SuchZone"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := source.StatsTimezone(ctx); err == nil || !strings.Contains(err.Error(), "系统设置 usageStatsTimezone 无效") {
 		t.Fatalf("非法时区必须报错: %v", err)
 	}
 	// 成功后 60s 内命中缓存（改库不生效）。
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '"UTC"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"UTC"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	loc, err := source.StatsTimezone(ctx)
 	if err != nil || loc.String() != "UTC" {
 		t.Fatalf("成功读取: (%v, %v)", loc, err)
 	}
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '"Asia/Shanghai"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"Asia/Shanghai"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if loc, err = source.StatsTimezone(ctx); err != nil || loc.String() != "UTC" {
@@ -555,11 +558,13 @@ func TestWJRedisStoreConstructionErrors(t *testing.T) {
 // 装载必须报错而不是当作零成本。
 func TestWJStatsStoreQueryErrors(t *testing.T) {
 	db := newTestDB(t, "wj-missing-tables")
-	// 只建 totals 表，其余投影缺失。
-	if _, err := db.Exec(`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`); err != nil {
+	// 只建 totals 表，其余投影缺失（生产 PG 臂方言：juhe_stats 限定）。
+	if _, err := db.Exec(`CREATE TABLE juhe_stats.usage_stats_totals (
+		system_account_id text NOT NULL, scope_type text NOT NULL, scope_id text NOT NULL DEFAULT '',
+		total_cost_usd double precision NOT NULL DEFAULT 0, success_cost_usd double precision NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -581,7 +586,7 @@ func TestWJConcurrentLoadCostsBatch(t *testing.T) {
 	statsSchema(t, db)
 	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"s", "api_key", "k", 3})
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}

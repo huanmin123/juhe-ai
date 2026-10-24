@@ -13,16 +13,16 @@ import (
 func TestW11GUsageRecordKeywordOwnerPaths(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES
 			('w11g-owned-acct', 'w11g-owned', 'sys-user-1', 'openai', 'api_key', 'active'),
 			('w11g-inst-src', 'w11g-inst-src', 'sys-other', 'openai', 'oauth', 'active'),
 			('w11g-inst-child', 'w11g-inst-child', 'sys-other', 'openai', 'oauth', 'active'),
 			('w11g-ra-acct', 'w11g-ra', 'sys-other', 'openai', 'api_key', 'active'),
 			('w11g-group-acct', 'w11g-group', 'sys-other', 'openai', 'api_key', 'active')`,
-		`UPDATE accounts SET authorization_instance_source_account_id = 'w11g-inst-src' WHERE id = 'w11g-inst-child'`,
-		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES
+		`UPDATE juhe_business.accounts SET authorization_instance_source_account_id = 'w11g-inst-src' WHERE id = 'w11g-inst-child'`,
+		`INSERT INTO juhe_business.group_accounts (account_id, group_id, system_account_id, enabled) VALUES
 			('w11g-group-acct', 'w11g-group-1', 'sys-other', 1)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
 			VALUES ('w11g-ra-1', 'account', 'w11g-ra-acct', 'sys-other', 'sys-user-1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
 			       ('w11g-ra-2', 'group', 'w11g-group-1', 'sys-other', 'sys-user-1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 	)
@@ -44,7 +44,9 @@ func TestW11GUsageRecordKeywordOwnerPaths(t *testing.T) {
 }
 
 func TestW11GUsageShardFileReadChain(t *testing.T) {
-	fixture := newWdFixture(t)
+	// 组B：真实 shard 文件读链（SQLite-only 臂），随 SQLite 生产臂删除批次
+	// 同批退役。
+	fixture := newWdSQLiteFixture(t)
 	fixture.deps.UsageCatalog = fixture.db
 	if _, err := fixture.db.Exec(`CREATE TABLE usage_record_shards (shard_key TEXT NOT NULL, bucket_date TEXT NOT NULL, shard_id INTEGER NOT NULL, file_path TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
@@ -91,7 +93,7 @@ func TestW11GUsageShardFileReadChain(t *testing.T) {
 		`DROP TABLE accounts`,
 		`DROP TABLE system_accounts`,
 	} {
-		fixtureShard := newWdFixture(t)
+		fixtureShard := newWdSQLiteFixture(t)
 		fixtureShard.deps.UsageCatalog = fixtureShard.db
 		if _, err := fixtureShard.db.Exec(`CREATE TABLE usage_record_shards (shard_key TEXT NOT NULL, bucket_date TEXT NOT NULL, shard_id INTEGER NOT NULL, file_path TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
 			t.Fatal(err)

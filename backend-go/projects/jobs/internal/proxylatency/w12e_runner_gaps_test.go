@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -45,10 +44,7 @@ func TestW12EReleaseHelpers(t *testing.T) {
 // TestW12ERunContextCancelled：Run 首轮即感知取消。
 func TestW12ERunContextCancelled(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -62,10 +58,7 @@ func TestW12ERunContextCancelled(t *testing.T) {
 func TestW12ERunAcquireContentionLoops(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.Interval = 5 * time.Millisecond
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()
@@ -90,10 +83,7 @@ func TestW12ERunAcquireContentionLoops(t *testing.T) {
 func TestW12ERunReleaseErrorJoins(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.Interval = 5 * time.Millisecond
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runErr := errors.New("w12e cycle fail")
 	releaseErr := errors.New("w12e release fail")
@@ -119,10 +109,7 @@ func TestW12ERunReleaseErrorJoins(t *testing.T) {
 func TestW12ERunWaitCancelledAfterCycle(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.Interval = time.Second
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := NewRunner(cfg, store, fakeInputReader{}, nil)
@@ -189,11 +176,8 @@ func TestW12ERunManualDeadlineMSFromRequest(t *testing.T) {
 
 // TestW12ERunManualStoreHooksFallback：RunManual 无钩子时回退 Store 方法。
 func TestW12ERunManualStoreHooksFallback(t *testing.T) {
-	cfg := RuntimeConfig{InstanceID: "w12e-manual", OwnerLease: time.Minute, ProxyLease: time.Minute, ManualDeadline: time.Second, Store: StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w12e-manual.sqlite3")}}
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := RuntimeConfig{InstanceID: "w12e-manual", OwnerLease: time.Minute, ProxyLease: time.Minute, ManualDeadline: time.Second}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := &Runner{cfg: cfg, store: store, logger: slog.Default()}
 	runner.SetResultProjector(&ResultProjector{})
@@ -396,10 +380,7 @@ func TestW12ERunOwnedRenewalRace(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.OwnerLease = 40 * time.Millisecond
 	cfg.Interval = time.Hour
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, nil, nil)
 	runner.renewOwnerLease = func(context.Context, OwnerLease, time.Duration) error { return ErrOwnerLeaseLost }
@@ -419,10 +400,7 @@ func TestW12ERunOwnedRenewalFailWhileIdle(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.OwnerLease = 60 * time.Millisecond
 	cfg.Interval = 5 * time.Second
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{}, nil)
 	runner.renewOwnerLease = func(context.Context, OwnerLease, time.Duration) error { return ErrOwnerLeaseLost }
@@ -438,15 +416,20 @@ func TestW12ERunOwnedRenewalFailWhileIdle(t *testing.T) {
 
 // TestW12ERunOwnedSecondCycleError：第二循环失败并与续租失败合并。
 func TestW12ERunOwnedSecondCycleError(t *testing.T) {
+	// PG 时序重钉披露：renewal ticker 周期为 OwnerLease/3，真实 PG 首轮
+	// runCycle + prune 的往返耗时会与 ticker 竞争——周期过短时续租失败取消
+	// 先于第二轮 runCycle 发生，第二轮 LoadDue 不再被调用。PG 形态下将
+	// OwnerLease 提到 300ms（ticker 100ms）并为 prune hook no-op 隔离真实
+	// DELETE 耗时抖动，保证第二轮先启动；断言逐字节保持。
 	cfg := testRuntimeConfig(t)
-	cfg.OwnerLease = 90 * time.Millisecond
+	cfg.OwnerLease = 300 * time.Millisecond
 	cfg.Interval = 20 * time.Millisecond
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, nil, nil)
+	runner.pruneExpiredFn = func(context.Context, time.Time, time.Duration) (PruneStats, error) {
+		return PruneStats{}, nil
+	}
 	runner.renewOwnerLease = func(context.Context, OwnerLease, time.Duration) error {
 		// 第一次续租成功，之后失败：保证第一轮完整跑完。
 		runner.renewOwnerLease = func(context.Context, OwnerLease, time.Duration) error { return ErrOwnerLeaseLost }
@@ -473,10 +456,7 @@ func TestW12ERunOwnedTimerReset(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	cfg.OwnerLease = time.Minute
 	cfg.Interval = 15 * time.Millisecond
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -503,10 +483,7 @@ func TestW12ERunCycleWorkerFallbacks(t *testing.T) {
 	cfg.WorkerConcurrency = 2
 	cfg.DBConcurrency = 2
 	cfg.DBQueueSize = 4
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := &Runner{cfg: cfg, store: store, logger: slog.Default()}
 	runner.reader = fakeInputReader{drafts: []InputDraft{testDraft("w12e-wa"), testDraft("w12e-wb"), testDraft("w12e-wc")}}
@@ -553,10 +530,7 @@ func TestW12ERunCycleWorkerFallbacks(t *testing.T) {
 // 也能落一个 outcome），覆盖 execute 回退与 claim 释放。
 func TestW12ERunCycleRealExecutor(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	draft := testDraft("w12e-real")
 	runner := &Runner{cfg: cfg, store: store, logger: slog.Default()}
@@ -577,10 +551,7 @@ func TestW12ERunCycleRealExecutor(t *testing.T) {
 // TestW12ERunCycleLoadDueError：候选读取失败 → 记录并返回错误。
 func TestW12ERunCycleLoadDueError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 	runner := NewRunner(cfg, store, fakeInputReader{err: errors.New("w12e load boom")}, nil)
 	owner, acquired, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, cfg.OwnerLease)
@@ -621,33 +592,29 @@ func TestW12EExecuteAcquireDBCancelled(t *testing.T) {
 
 // TestW12EExecuteWindowAndLoopCancels：执行窗口过期 / 循环中取消 / 循环后取消。
 func TestW12EExecuteWindowAndLoopCancels(t *testing.T) {
-	sqlite, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w12e-exec.sqlite3")})
+	store := openKitPostgresStore(t)
+	owner, _, err := store.AcquireOwnerLease(context.Background(), "w12e-owner", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sqlite.Close()
-	owner, _, err := sqlite.AcquireOwnerLease(context.Background(), "w12e-owner", time.Minute)
+	proxy, _, err := store.AcquireProxyLease(context.Background(), owner, "w12e-proxy", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy, _, err := sqlite.AcquireProxyLease(context.Background(), owner, "w12e-proxy", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	issued, err := sqlite.IssueInput(context.Background(), testInputDraft(proxy.ProxyID, TriggerPeriodic))
+	issued, err := store.IssueInput(context.Background(), testInputDraft(proxy.ProxyID, TriggerPeriodic))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 窗口过期：options.Now 返回过期之后的时间 → ErrInputFence，claim 释放
 	// 失败与既有错误合并（defer 分支）。
-	sqlite.releaseExecutionClaim = func(context.Context, string, string) error { return errors.New("w12e claim release boom") }
+	store.releaseExecutionClaim = func(context.Context, string, string) error { return errors.New("w12e claim release boom") }
 	expiredNow := func() time.Time { return issued.ExpiresAt.Add(time.Minute) }
-	if _, _, err := ExecuteIssuedInput(context.Background(), sqlite, owner, proxy, issued, ExecutorOptions{Timeout: time.Second, Now: expiredNow}); !errors.Is(err, ErrInputFence) {
+	if _, _, err := ExecuteIssuedInput(context.Background(), store, owner, proxy, issued, ExecutorOptions{Timeout: time.Second, Now: expiredNow}); !errors.Is(err, ErrInputFence) {
 		t.Fatalf("窗口过期应 ErrInputFence: %v", err)
 	}
-	sqlite.releaseExecutionClaim = nil
+	store.releaseExecutionClaim = nil
 	// 循环中取消：两个目标，now() 第一次调用即取消 ctx。
-	issued2, err := sqlite.IssueInput(context.Background(), testInputDraft(proxy.ProxyID, TriggerPeriodic))
+	issued2, err := store.IssueInput(context.Background(), testInputDraft(proxy.ProxyID, TriggerPeriodic))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,11 +627,11 @@ func TestW12EExecuteWindowAndLoopCancels(t *testing.T) {
 		}
 		return issued2.IssuedAt.Add(time.Millisecond)
 	}
-	if _, _, err := ExecuteIssuedInput(ctx, sqlite, owner, proxy, issued2, ExecutorOptions{Timeout: time.Second, Now: nowCancel}); !errors.Is(err, context.Canceled) {
+	if _, _, err := ExecuteIssuedInput(ctx, store, owner, proxy, issued2, ExecutorOptions{Timeout: time.Second, Now: nowCancel}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("循环取消应透传: %v", err)
 	}
 	// 循环后取消：单目标，now() 取消后循环正常结束，循环后检查命中。
-	issued3, err := sqlite.IssueInput(context.Background(), testInputDraft(proxy.ProxyID, TriggerPeriodic))
+	issued3, err := store.IssueInput(context.Background(), testInputDraft(proxy.ProxyID, TriggerPeriodic))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,23 +644,19 @@ func TestW12EExecuteWindowAndLoopCancels(t *testing.T) {
 		}
 		return issued3.IssuedAt.Add(time.Millisecond)
 	}
-	if _, _, err := ExecuteIssuedInput(ctx3, sqlite, owner, proxy, issued3, ExecutorOptions{Timeout: time.Second, Now: nowCancelAfter}); !errors.Is(err, context.Canceled) {
+	if _, _, err := ExecuteIssuedInput(ctx3, store, owner, proxy, issued3, ExecutorOptions{Timeout: time.Second, Now: nowCancelAfter}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("循环后取消应透传: %v", err)
 	}
 }
 
 // TestW12EExecuteAppendGateCancelled：append 阶段门排队被取消。
 func TestW12EExecuteAppendGateCancelled(t *testing.T) {
-	sqlite, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w12e-exec2.sqlite3")})
+	store := openKitPostgresStore(t)
+	owner, _, err := store.AcquireOwnerLease(context.Background(), "w12e-owner", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sqlite.Close()
-	owner, _, err := sqlite.AcquireOwnerLease(context.Background(), "w12e-owner", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy, _, err := sqlite.AcquireProxyLease(context.Background(), owner, "w12e-proxy", time.Minute)
+	proxy, _, err := store.AcquireProxyLease(context.Background(), owner, "w12e-proxy", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +665,7 @@ func TestW12EExecuteAppendGateCancelled(t *testing.T) {
 	// （签发后篡改 Targets 会破坏 digest 一致性校验）。
 	draft := testInputDraft(proxy.ProxyID, TriggerPeriodic)
 	draft.Targets = []Target{{Provider: "openai", ProfileID: "profile", ProbeError: targetProbeErrorInvalidURL}}
-	issued, err := sqlite.IssueInput(context.Background(), draft)
+	issued, err := store.IssueInput(context.Background(), draft)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +692,7 @@ func TestW12EExecuteAppendGateCancelled(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
-	if _, _, err := ExecuteIssuedInput(ctx, sqlite, owner, proxy, issued, options); err == nil {
+	if _, _, err := ExecuteIssuedInput(ctx, store, owner, proxy, issued, options); err == nil {
 		t.Fatalf("append 阶段门失败应透传")
 	}
 	wg.Wait()

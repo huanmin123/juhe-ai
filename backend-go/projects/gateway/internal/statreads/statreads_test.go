@@ -1,9 +1,14 @@
 package statreads
 
-// 契约测试：SQLite 内存库上直接驱动 handler（注入 authsys.AuthContext），
-// 覆盖权限门（my-stats 403 / usage-records 未过滤 400）、日期参数 400、
-// usage-overview 各段读数、account-usage 分页聚合、ai-performance 序列与
-// usage-window。表结构仅保留被测 SQL 需要的列。
+// 契约测试：pgtestkit 独立 PG 测试库上直接驱动 handler（注入
+// authsys.AuthContext），覆盖权限门（my-stats 403 / usage-records 未过滤
+// 400）、日期参数 400、usage-overview 各段读数、account-usage 分页聚合、
+// ai-performance 序列与 usage-window。夹具走生产 PG 臂形态（PGDialect=true、
+// juhe_stats/juhe_business schema 限定、juhe_usage 分区母表空形态）；列集与
+// 类型同 maintenance 生产 DDL，约束/默认值按夹具放宽（读面 seed 需要表达
+// NULL/缺省形态，读查询不依赖约束）。SQLite-only 读面（usage 分片文件走查
+// 等，组B）由 newSQLiteFixture 承接，随生产 sqlite 臂删除批次同批退役
+// （PLAN-20261024T051925945Z）。
 
 import (
 	"context"
@@ -18,8 +23,135 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "modernc.org/sqlite"
 )
+
+// pgTestSchema 是 PG 夹具的 minimal schema：schema 限定与表名同生产 PG 臂
+// （statsTable/businessTable 助手 + juhe_usage.usage_records 母表），列集与
+// 类型取自 maintenance 生产 DDL（pg_schema_stats.go / pg_schema_business_tables.go /
+// pg_schema_usage.go，含 M1/M2 计量补列）。约束、默认值与生成列按读面夹具
+// 放宽（seed 需要表达 NULL 形态，读查询不依赖约束）；juhe_usage.usage_records
+// 保留生产 PARTITION BY RANGE (created_at) 母表形态、不建分区（读面空母表
+// 查询合法返回空集）。providers 不在生产 PG schema（vendors 是 provider 名
+// 唯一来源），不建。
+const pgTestSchema = `
+	CREATE SCHEMA IF NOT EXISTS juhe_stats;
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE SCHEMA IF NOT EXISTS juhe_usage;
+	CREATE TABLE juhe_stats.usage_stats_daily (
+		system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT,
+		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
+		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
+		cache_read_cost_usd DOUBLE PRECISION DEFAULT 0, cache_write_tokens BIGINT DEFAULT 0,
+		cache_write_1h_tokens BIGINT DEFAULT 0, cache_write_cost_usd DOUBLE PRECISION DEFAULT 0,
+		thinking_tokens BIGINT DEFAULT 0, input_image_tokens BIGINT DEFAULT 0,
+		output_image_tokens BIGINT DEFAULT 0,
+		input_audio_tokens BIGINT DEFAULT 0, output_audio_tokens BIGINT DEFAULT 0,
+		tts_input_chars BIGINT DEFAULT 0, audio_input_seconds DOUBLE PRECISION DEFAULT 0,
+		output_video_seconds DOUBLE PRECISION DEFAULT 0,
+		total_cost_usd DOUBLE PRECISION DEFAULT 0,
+		duration_ms_sum BIGINT DEFAULT 0, duration_ms_count BIGINT DEFAULT 0, duration_ms_max BIGINT,
+		first_token_ms_sum BIGINT DEFAULT 0, first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT,
+		last_used_at TEXT, last_error_at TEXT, updated_at TEXT);
+	CREATE TABLE juhe_stats.usage_stats_hourly (
+		system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_hour TEXT,
+		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
+		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
+		cache_read_cost_usd DOUBLE PRECISION DEFAULT 0, cache_write_tokens BIGINT DEFAULT 0,
+		cache_write_1h_tokens BIGINT DEFAULT 0, cache_write_cost_usd DOUBLE PRECISION DEFAULT 0,
+		thinking_tokens BIGINT DEFAULT 0, input_image_tokens BIGINT DEFAULT 0,
+		output_image_tokens BIGINT DEFAULT 0,
+		input_audio_tokens BIGINT DEFAULT 0, output_audio_tokens BIGINT DEFAULT 0,
+		tts_input_chars BIGINT DEFAULT 0, audio_input_seconds DOUBLE PRECISION DEFAULT 0,
+		output_video_seconds DOUBLE PRECISION DEFAULT 0,
+		total_cost_usd DOUBLE PRECISION DEFAULT 0,
+		duration_ms_sum BIGINT DEFAULT 0, duration_ms_count BIGINT DEFAULT 0, duration_ms_max BIGINT,
+		first_token_ms_sum BIGINT DEFAULT 0, first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT,
+		last_used_at TEXT, last_error_at TEXT, updated_at TEXT);
+	CREATE TABLE juhe_stats.usage_scope_range_windows (
+		system_account_id TEXT, scope_type TEXT, scope_id TEXT, start_date TEXT, end_date TEXT,
+		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
+		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
+		cache_read_cost_usd DOUBLE PRECISION DEFAULT 0, cache_write_tokens BIGINT DEFAULT 0,
+		cache_write_1h_tokens BIGINT DEFAULT 0, cache_write_cost_usd DOUBLE PRECISION DEFAULT 0,
+		thinking_tokens BIGINT DEFAULT 0, input_image_tokens BIGINT DEFAULT 0,
+		output_image_tokens BIGINT DEFAULT 0,
+		total_cost_usd DOUBLE PRECISION DEFAULT 0,
+		duration_ms_sum BIGINT DEFAULT 0, duration_ms_count BIGINT DEFAULT 0, duration_ms_max BIGINT,
+		first_token_ms_sum BIGINT DEFAULT 0, first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT,
+		last_used_at TEXT, last_error_at TEXT, updated_at TEXT);
+	CREATE TABLE juhe_stats.usage_overview_summary_windows (
+		system_account_id TEXT, window_key TEXT, start_date TEXT, end_date TEXT,
+		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
+		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
+		total_cost_usd DOUBLE PRECISION DEFAULT 0, duration_ms_sum BIGINT DEFAULT 0,
+		duration_ms_count BIGINT DEFAULT 0, first_token_ms_sum BIGINT DEFAULT 0,
+		first_token_ms_count BIGINT DEFAULT 0, last_used_at TEXT);
+	CREATE TABLE juhe_stats.usage_overview_trend_windows (
+		system_account_id TEXT, window_key TEXT, start_date TEXT, end_date TEXT, bucket_key TEXT,
+		request_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0, duration_ms_sum BIGINT DEFAULT 0,
+		duration_ms_count BIGINT DEFAULT 0);
+	CREATE TABLE juhe_stats.usage_model_rank_windows (
+		system_account_id TEXT, window_key TEXT, start_date TEXT, end_date TEXT,
+		rank INTEGER, provider_code TEXT, model TEXT, request_count BIGINT DEFAULT 0,
+		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0,
+		total_cost_usd DOUBLE PRECISION DEFAULT 0);
+	CREATE TABLE juhe_stats.usage_error_rank_windows (
+		system_account_id TEXT, window_key TEXT, start_date TEXT, end_date TEXT,
+		rank INTEGER, provider_code TEXT, error_code TEXT, status_code INTEGER, error_message TEXT,
+		error_count BIGINT DEFAULT 0);
+	CREATE TABLE juhe_stats.usage_rank_snapshots (
+		system_account_id TEXT, scope_type TEXT, window_key TEXT, metric TEXT,
+		snapshot_at TEXT, rank INTEGER, scope_id TEXT, metric_value DOUBLE PRECISION DEFAULT 0);
+	CREATE TABLE juhe_stats.ai_performance_summary_windows (
+		system_account_id TEXT, window_key TEXT, start_date TEXT, end_date TEXT,
+		request_count BIGINT DEFAULT 0, first_token_ms_sum BIGINT DEFAULT 0,
+		first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT, duration_ms_sum BIGINT DEFAULT 0,
+		duration_ms_count BIGINT DEFAULT 0, duration_ms_max BIGINT);
+	CREATE TABLE juhe_stats.account_health_hourly (
+		account_id TEXT, system_account_id TEXT, provider_code TEXT, stat_hour TEXT,
+		status TEXT, last_observed_at TEXT, last_record_id TEXT, status_code INTEGER,
+		error_code TEXT, error_message TEXT, updated_at TEXT);
+	CREATE TABLE juhe_business.system_settings (
+		system_account_id TEXT, key TEXT, value_json TEXT, updated_at TEXT);
+	CREATE TABLE juhe_business.accounts (
+		id TEXT PRIMARY KEY, name TEXT, system_account_id TEXT, vendor_code TEXT,
+		type TEXT, status TEXT, deleted_at TEXT, proxy_profile_id TEXT,
+		capability_domain TEXT DEFAULT 'chat',
+		authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT,
+		authorization_instance_owner_system_account_id TEXT, last_used_at TEXT,
+		last_health_check_at TEXT, last_health_success_at TEXT, next_health_check_at TEXT);
+	CREATE TABLE juhe_business.system_accounts (id TEXT PRIMARY KEY, username TEXT, display_name TEXT);
+	CREATE TABLE juhe_business.vendors (code TEXT PRIMARY KEY, name TEXT);
+	CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, name TEXT, system_account_id TEXT);
+	CREATE TABLE juhe_business."groups" (id TEXT PRIMARY KEY, name TEXT, system_account_id TEXT);
+	CREATE TABLE juhe_business.group_accounts (
+		account_id TEXT, group_id TEXT, system_account_id TEXT, enabled INTEGER DEFAULT 1);
+	CREATE TABLE juhe_business.resource_authorizations (
+		id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
+		resource_owner_system_account_id TEXT, grantee_system_account_id TEXT,
+		status TEXT, expires_at TEXT, created_at TEXT, updated_at TEXT);
+	CREATE TABLE juhe_business.account_name_search_terms (
+		system_account_id TEXT, account_id TEXT, term TEXT);
+	CREATE TABLE juhe_business.account_name_search_documents (
+		system_account_id TEXT, account_id TEXT, normalized_name TEXT);
+	CREATE TABLE juhe_usage.usage_records (
+		id TEXT, system_account_id TEXT, trace_id TEXT, traffic_source TEXT,
+		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT,
+		compaction_expected INTEGER DEFAULT 0, account_id TEXT, provider_code TEXT, endpoint TEXT,
+		model TEXT, upstream_model TEXT, upstream_response_model TEXT, billed_service_tier TEXT,
+		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0,
+		stream INTEGER DEFAULT 0, status_code INTEGER, success INTEGER DEFAULT 0,
+		failure_attribution TEXT, error_code TEXT, error_message TEXT,
+		first_token_ms INTEGER, duration_ms INTEGER,
+		input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT,
+		input_audio_tokens INTEGER, output_audio_tokens INTEGER,
+		tts_input_chars BIGINT DEFAULT 0, audio_input_seconds DOUBLE PRECISION DEFAULT 0,
+		output_video_seconds DOUBLE PRECISION DEFAULT 0,
+		cost_usd DOUBLE PRECISION, created_at TEXT NOT NULL)
+		PARTITION BY RANGE (created_at);
+`
 
 const testSchema = `
 	CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key));
@@ -126,7 +258,36 @@ type testFixture struct {
 	now  time.Time
 }
 
+// newFixture 是组A测试的 PG 夹具入口：pgtestkit 每测试独立库 + pgTestSchema
+// （生产 PG 臂 schema 形态），PGDialect=true、时区源走 juhe_business 限定表
+// （与生产 PG 组合根一致）。连接串由 pgtestkit 自 .local dev env 解析，内容
+// 不进入任何文件、日志或断言。
 func newFixture(t *testing.T) *testFixture {
+	t.Helper()
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, pgTestSchema)
+		return err
+	})
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatalf("seed timezone: %v", err)
+	}
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	fixture := &testFixture{db: db, now: now}
+	fixture.deps = &Deps{
+		Business:  db,
+		Stats:     db,
+		PGDialect: true,
+		Now:       func() time.Time { return fixture.now },
+		Timezone:  NewSystemSettingsTimezoneSource(db, true),
+	}
+	return fixture
+}
+
+// newSQLiteFixture 是组B测试（usage 分片文件读面、PRAGMA 只读句柄、NULL rank
+// 快照形态等 SQLite-only 臂/形态）的夹具入口：原 :memory: SQLite 形态原样
+// 保留（无 schema 限定表、PGDialect=false、无前缀时区源），随生产 sqlite 臂
+// 删除批次同批退役，不得再新增消费方。
+func newSQLiteFixture(t *testing.T) *testFixture {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -195,7 +356,7 @@ func dataMap(t *testing.T, payload map[string]any) map[string]any {
 
 func TestUsageOverviewSummaryReadsTodayDailyBucket(t *testing.T) {
 	fixture := newFixture(t)
-	_, err := fixture.db.Exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
+	_, err := fixture.db.Exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
 		request_count, success_count, error_count, input_tokens, output_tokens, total_cost_usd,
 		duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count)
 		VALUES ('global', 'system_account', 'global', '2026-09-04', 10, 8, 2, 100, 50, 1.25, 4000, 10, 900, 9)`)
@@ -227,7 +388,7 @@ func TestUsageOverviewSummaryReadsTodayDailyBucket(t *testing.T) {
 func TestUsageOverviewSummaryHistoricalReadsSummaryWindow(t *testing.T) {
 	fixture := newFixture(t)
 	yesterday := "2026-09-01"
-	_, err := fixture.db.Exec(`INSERT INTO usage_overview_summary_windows (system_account_id, window_key, start_date, end_date,
+	_, err := fixture.db.Exec(`INSERT INTO juhe_stats.usage_overview_summary_windows (system_account_id, window_key, start_date, end_date,
 		request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
 		duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count)
 		VALUES ('global', '2026-09-01:2026-09-01', '2026-09-01', '2026-09-01', 4, 4, 0, 10, 5, 1, 0.5, 80, 4, 20, 2)`)
@@ -264,7 +425,7 @@ func TestUsageOverviewDateContract(t *testing.T) {
 
 func TestUsageOverviewDailyTrendFillsRange(t *testing.T) {
 	fixture := newFixture(t)
-	_, err := fixture.db.Exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
+	_, err := fixture.db.Exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
 		input_tokens, output_tokens, total_cost_usd) VALUES ('global', 'system_account', 'global', '2026-09-02', 7, 3, 2.5)`)
 	if err != nil {
 		t.Fatalf("seed daily: %v", err)
@@ -288,9 +449,9 @@ func TestUsageOverviewDailyTrendFillsRange(t *testing.T) {
 func TestUsageOverviewHourlyAndErrorsWindows(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO usage_overview_trend_windows (system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count, duration_ms_sum, duration_ms_count)
+		`INSERT INTO juhe_stats.usage_overview_trend_windows (system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count, duration_ms_sum, duration_ms_count)
 			VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', '2026-09-04T00', 6, 1, 3000, 6)`,
-		`INSERT INTO usage_error_rank_windows (system_account_id, window_key, start_date, end_date, rank, provider_code, error_code, status_code, error_message, error_count)
+		`INSERT INTO juhe_stats.usage_error_rank_windows (system_account_id, window_key, start_date, end_date, rank, provider_code, error_code, status_code, error_message, error_count)
 			VALUES ('global', '2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', 1, 'openai', 'rate_limit_exceeded', 429, 'slow down', 3)`,
 	}
 	for _, statement := range seed {
@@ -392,14 +553,14 @@ func TestAccountUsagePageAggregatesAndPaginates(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
 		// Owner account scope rows (global admin view): acct-b ranks first.
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, last_used_at)
+		`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, last_used_at)
 			VALUES ('global', 'account', 'acct-b', '2026-09-04', 30, 300, 200, 3.5, '2026-09-04T11:00:00.000Z')`,
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
+		`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
 			VALUES ('global', 'account', 'acct-a', '2026-09-04', 10, 100, 50, 1)`,
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-b', '账户B', 'sys-owner-2', 'openai', 'api_key', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-2', 'owner2', 'Owner Two')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-b', '账户B', 'sys-owner-2', 'openai', 'api_key', 'active')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sys-owner-2', 'owner2', 'Owner Two')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -431,7 +592,7 @@ func TestAccountUsagePageAggregatesAndPaginates(t *testing.T) {
 
 func TestAccountUsageSummaryScopedCaller(t *testing.T) {
 	fixture := newFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
 		VALUES ('sys-user-1', 'system_account', 'sys-user-1', '2026-09-04', 5, 10, 5, 0.5)`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -449,10 +610,10 @@ func TestAccountUsageSummaryScopedCaller(t *testing.T) {
 func TestAiHealthListReadsHourlyStrip(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status, last_used_at) VALUES ('acct-a', '账户A', 'sys-user-1', 'openai', 'api_key', 'active', '2026-09-04T10:00:00.000Z')`,
-		`INSERT INTO account_health_hourly (account_id, stat_hour, status, last_observed_at)
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status, last_used_at) VALUES ('acct-a', '账户A', 'sys-user-1', 'openai', 'api_key', 'active', '2026-09-04T10:00:00.000Z')`,
+		`INSERT INTO juhe_stats.account_health_hourly (account_id, stat_hour, status, last_observed_at)
 			VALUES ('acct-a', '2026-09-04T10', 'success', '2026-09-04T10:30:00.000Z')`,
-		`INSERT INTO account_health_hourly (account_id, stat_hour, status, last_observed_at)
+		`INSERT INTO juhe_stats.account_health_hourly (account_id, stat_hour, status, last_observed_at)
 			VALUES ('acct-a', '2026-09-04T09', 'failure', '2026-09-04T09:30:00.000Z')`,
 	}
 	for _, statement := range seed {
@@ -499,9 +660,9 @@ func TestAiHealthHourDetailContract(t *testing.T) {
 func TestAiPerformanceSeriesReadsHourly(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count, duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max)
+		`INSERT INTO juhe_stats.usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count, duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max)
 			VALUES ('global', 'account', 'acct-a', '2026-09-04T10', 4, 400, 4, 150, 800, 4, 300)`,
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -537,15 +698,9 @@ func TestAiPerformanceSeriesReadsHourly(t *testing.T) {
 }
 
 func TestTimezoneMissingFailsClosed(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	deps := &Deps{Business: db, Stats: db, Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Timezone: NewSystemSettingsTimezoneSource(db, false)}
+	// 空库（无 juhe_business.system_settings）：PG 臂时区源按缺行失败闭合。
+	db := pgtestkit.New(t)
+	deps := &Deps{Business: db, Stats: db, PGDialect: true, Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Timezone: NewSystemSettingsTimezoneSource(db, true)}
 	recorder := invoke(t, deps.usageWindowHandler, http.MethodGet, "/__aisys__/api/stats/usage-window", adminAuth(""))
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("missing timezone not 500: %d", recorder.Code)
@@ -569,21 +724,18 @@ var _ = url.Values{}
 func TestAccountUsageRowAuthorizationProjectionAndNFKCKeyword(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
+		`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
 			VALUES ('global', 'account', 'acct-nfkc', '2026-09-04', 7, 70, 35, 0.7)`,
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-nfkc', 'GPT账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-nfkc', 'GPT账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sys-owner-1', 'owner1', 'Owner One')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
 			t.Fatalf("seed %v", err)
 		}
 	}
-	// The keyword EXISTS subquery joins group_accounts; the shared fixture
-	// schema does not carry it.
-	if _, err := fixture.db.Exec(`CREATE TABLE group_accounts (account_id TEXT NOT NULL, group_id TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)`); err != nil {
-		t.Fatalf("seed group_accounts: %v", err)
-	}
+	// 关键字 EXISTS 子查询 join 的 group_accounts 已随 pgTestSchema 就位
+	// （juhe_business.group_accounts，生产 business schema 形态）。
 	handler := fixture.deps.accountUsageHandler(false)
 
 	// The full-width keyword ＧＰＴ NFKC-normalizes to GPT and matches.

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,8 +21,7 @@ func TestAcceptanceChatFlow(t *testing.T) {
 	base := chain.fixture.baseURL
 
 	// conversation 创建（chat/routes.go Register：POST /my-chat/conversations
-	// 免请求体创建空会话，历史字段兼容忽略；鉴权主体由服务端
-	// EnsureChatAPIKey 自动复用 seed chat key）。
+	// 免请求体创建空会话，历史字段兼容忽略；免 Key 直调后不创建任何 API Key）。
 	_, created := admin.do(http.MethodPost, "/__aisys__/api/my-chat/conversations", nil, 0)
 	conversation := data(created)
 	conversationID := str(conversation["id"])
@@ -114,6 +114,12 @@ func TestAcceptanceChatFlow(t *testing.T) {
 		t.Fatalf("user message missing: %#v", messages)
 	}
 
+	// 使用日志零记录（AI 问答免 Key 直调内部通道 §3.1）：对话流量不落
+	// usage_records，也不是落 NULL Key 行——usage 持久化唯一投递面（spool）
+	// 必须零文件。本断言成立的前提是 spool 链路本身在工作：末尾用一次外部
+	// /v1 请求做对照组，等它落 spool 后复查集合无新增（chat 记录不存在）。
+	assertUsageSpoolEmpty(t, chain, "chat 对话完成后")
+
 	// 资产上传边界：非图片内容被拒绝（chat/assets.go 契约），401 边界由
 	// 未登录客户端验证。
 	unauthorized := newClient(t, base)
@@ -134,4 +140,68 @@ func TestAcceptanceChatFlow(t *testing.T) {
 	if cleanupStatus >= 400 {
 		t.Fatalf("conversation delete failed: %d", cleanupStatus)
 	}
+
+	// 对照组：外部 /v1 请求经同一 usage recorder 落 spool，证明投递链路在工作；
+	// 随后复查 spool 中仍没有 chat 产生的记录（chat 流量已全部被内部通道抑制）。
+	controlRequest, _ := http.NewRequest(http.MethodPost,
+		base+"/v1/chat/completions",
+		bytes.NewReader([]byte(fmt.Sprintf(
+			`{"model":"%s","messages":[{"role":"user","content":"对照"}]}`, acceptanceModel))))
+	controlRequest.Header.Set("Content-Type", "application/json")
+	controlRequest.Header.Set("Authorization", "Bearer "+chain.defaultKey)
+	controlResponse, controlErr := http.DefaultClient.Do(controlRequest)
+	if controlErr != nil {
+		t.Fatalf("对照组 /v1/chat/completions: %v", controlErr)
+	}
+	controlBody := readAllBody(t, controlResponse)
+	_ = controlResponse.Body.Close()
+	if controlResponse.StatusCode != http.StatusOK {
+		t.Fatalf("对照组 /v1/chat/completions status=%d body=%s", controlResponse.StatusCode, controlBody)
+	}
+	waitUsageSpoolNonEmpty(t, chain, "对照组外部 /v1 请求后")
+}
+
+// assertUsageSpoolEmpty 断言 usage spool 目录为空。AI 问答内部通道的全部使用
+// 日志必须在持久化唯一闸口（gatewayusage.FinalizationDispatch.DispatchUsageRecord
+// 入口，覆盖正常入队与溢出 spool 两臂）被丢弃，记录不会进入缓冲、不会落 spool，
+// 也不会落 usage_records。
+//
+// spool 写入是异步的，因此调用方必须同时提供对照组（本测试在末尾跑一次外部
+// /v1 请求并等 spool 出现文件），否则「目录为空」可能只是投递面整体失效的
+// 假阳性。
+func assertUsageSpoolEmpty(t *testing.T, chain *chainFixture, phase string) {
+	t.Helper()
+	entries, err := os.ReadDir(chain.fixture.spoolDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("%s: 读取 usage spool 目录失败: %v", phase, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%s: usage spool 必须为空（内部通道不写使用日志），实际 %d 个文件: %v",
+			phase, len(entries), entryNames(entries))
+	}
+}
+
+// waitUsageSpoolNonEmpty 是对照组：等到 spool 出现至少一个文件，证明 usage
+// 投递链路在本夹具里确实工作（外部 /v1 流量走同一 recorder）。
+func waitUsageSpoolNonEmpty(t *testing.T, chain *chainFixture, phase string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(chain.fixture.spoolDir)
+		if err == nil && len(entries) > 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("%s: 对照组外部 /v1 请求后 usage spool 仍为空，投递链路未工作; dir=%s",
+		phase, chain.fixture.spoolDir)
+}
+
+// entryNames 提取目录条目名（断言失败时的可读证据）。
+func entryNames(entries []os.DirEntry) []string {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }

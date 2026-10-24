@@ -41,8 +41,8 @@ package main
 //
 // chat (my-chat family): the generation-wave port adapters live in
 // chain_chat.go (GenerationExecutor in-process bridge + ModelCatalog /
-// GatewayKeyValidator / ObjectStore / TokenCount), chain_chat_keys.go
-// (ChatAPIKeyProvider: the purpose='chat' key lifecycle), chain_chat_images.go
+// ObjectStore / TokenCount, 内部身份通道见 chain_chat_identity.go——免 Key
+// 直调后派发鉴权走内部身份通道，无 purpose='chat' API Key), chain_chat_images.go
 // (ImageProcessor: x/image decode + built-in lossless VP8L WebP encode) and
 // chain_chat_observation.go (ImageObservations). The family mounts together
 // with its chat database owner in chain_chat_mount.go — the mount matrix in

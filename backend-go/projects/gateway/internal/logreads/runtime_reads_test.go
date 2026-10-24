@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// runtimeReadsDDL 是 w11fFaultEnv 保留组（scripted SQLite 故障注入环境）专用
+// 的 F1 dataset SQLite DDL（见 pgkit_test.go 的三组分类说明）；组A环境的 F1
+// 表由 newLogreadsPGDatabase 按生产 PG DDL 建。
 var runtimeReadsDDL = []string{
 	`CREATE TABLE IF NOT EXISTS runtime_logs (
 	  id TEXT PRIMARY KEY, log_file TEXT, log_offset INTEGER, line_number INTEGER,
@@ -69,7 +72,7 @@ func pinRuntimeReadsNow(audit AuditLogReader, runtime RuntimeLogReader, public P
 }
 
 func TestRuntimeLogReadsList(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, pinRuntimeReadsNow, true)
+	env := newReadsTestEnv(t, pinRuntimeReadsNow, true)
 	seedRuntimeReads(t, env)
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/runtime-logs", "")
@@ -187,7 +190,7 @@ func TestRuntimeLogReadsList(t *testing.T) {
 }
 
 func TestRuntimeLogReadsFacetsAndDetail(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, pinRuntimeReadsNow, true)
+	env := newReadsTestEnv(t, pinRuntimeReadsNow, true)
 	seedRuntimeReads(t, env)
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/runtime-logs/facets", "")
@@ -240,7 +243,7 @@ func TestRuntimeLogReadsFacetsAndDetail(t *testing.T) {
 }
 
 func TestRuntimeLogReadsRetentionClamp(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, func(_ AuditLogReader, runtime RuntimeLogReader, _ PublicApiLogReader) {
+	env := newReadsTestEnv(t, func(_ AuditLogReader, runtime RuntimeLogReader, _ PublicApiLogReader) {
 		if concrete, ok := runtime.(*runtimeLogSQLReader); ok {
 			concrete.RetentionDays = func() int { return 500 }
 		}

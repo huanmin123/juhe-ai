@@ -10,6 +10,11 @@ import (
 // W5 杂项修复的两组回归：
 // 1) 恢复游标毒丸——确定性 rejected 行越过游标并留痕，不确定性错误保持重试；
 // 2) outcomes/inputs 运行态表的独立时间窗清理与 owner 循环挂靠。
+//
+// 迁移裁决（PLAN-20261024T051925945Z proxylatency 切片）：TestW5PruneExpiredRecords
+// 与两个 runner prune 调度测试迁真实 PG；前两个 Drain 测试保持 SQLite 原状
+// （组B：被测对象 ResultProjector 的 SQLite 业务库真库臂，随生产 sqlite 臂
+// 删除批次退役，证据见 wf_result_projector_test.go 文件头）。
 
 // TestW5DrainSkipsPoisonRowAndProjectsHealthyRow：坏行在前、好行在后，一次
 // Drain 必须同时完成"投影好行 + 越过坏行"，游标落在最后一行。
@@ -83,7 +88,7 @@ func TestW5DrainUncertainErrorDoesNotAdvanceCursor(t *testing.T) {
 // TestW5PruneExpiredRecords：清理按时间窗删除 outcomes/inputs，保留新行与
 // input_versions 计数器行。
 func TestW5PruneExpiredRecords(t *testing.T) {
-	store := wfOpenJobsStore(t)
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 
@@ -92,13 +97,14 @@ func TestW5PruneExpiredRecords(t *testing.T) {
 	fresh := committer.commitFunc("p-fresh", wfProjBase.Add(-time.Hour).UTC().Format(time.RFC3339Nano), nil)
 
 	// 把旧行的 stored_at/issued_at 直接改写为超过保留窗口；payload digest
-	// 校验不参与清理路径。
-	staleCutoff := now.Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := store.db.Exec(`UPDATE proxy_latency_outcomes SET stored_at=? WHERE outcome_id=?`, staleCutoff, old.OutcomeID); err != nil {
+	// 校验不参与清理路径。PG timestamptz 列以 time.Time 参数改写（SQLite
+	// 形态为 RFC3339Nano 文本）。
+	staleCutoff := now.Add(-48 * time.Hour).UTC()
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_outcomes SET stored_at=$1 WHERE outcome_id=$2`, staleCutoff, old.OutcomeID); err != nil {
 		t.Fatalf("改写旧 outcome 时间失败: %v", err)
 	}
 	for _, requestID := range []string{old.RequestID, fresh.RequestID} {
-		if _, err := store.db.Exec(`UPDATE proxy_latency_inputs SET issued_at=? WHERE request_id=?`, staleCutoff, requestID); err != nil {
+		if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_inputs SET issued_at=$1 WHERE request_id=$2`, staleCutoff, requestID); err != nil {
 			t.Fatalf("改写 input 时间失败: %v", err)
 		}
 	}
@@ -111,13 +117,13 @@ func TestW5PruneExpiredRecords(t *testing.T) {
 		t.Fatalf("清理统计=%+v want outcomes=1 inputs=2", stats)
 	}
 	var outcomes, inputs, versions int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM proxy_latency_outcomes`).Scan(&outcomes); err != nil || outcomes != 1 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.proxy_latency_outcomes`).Scan(&outcomes); err != nil || outcomes != 1 {
 		t.Fatalf("剩余 outcomes=%d err=%v", outcomes, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM proxy_latency_inputs`).Scan(&inputs); err != nil || inputs != 0 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.proxy_latency_inputs`).Scan(&inputs); err != nil || inputs != 0 {
 		t.Fatalf("剩余 inputs=%d err=%v", inputs, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM proxy_latency_input_versions`).Scan(&versions); err != nil || versions == 0 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.proxy_latency_input_versions`).Scan(&versions); err != nil || versions == 0 {
 		t.Fatalf("input_versions 计数器行必须保留 count=%d err=%v", versions, err)
 	}
 
@@ -130,10 +136,7 @@ func TestW5PruneExpiredRecords(t *testing.T) {
 // 不污染周期状态。
 func TestW5RunnerPruneDueScheduling(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 
 	ctx := context.Background()
@@ -179,10 +182,7 @@ func TestW5RunnerPruneDueScheduling(t *testing.T) {
 // TestW5RunnerPruneUsesConfiguredRetention：配置的保留窗口透传清理函数。
 func TestW5RunnerPruneUsesConfiguredRetention(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	store, err := OpenStore(cfg.Store)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openKitRuntimeStore(t, cfg)
 	defer store.Close()
 
 	cfg.Retention = 7 * 24 * time.Hour

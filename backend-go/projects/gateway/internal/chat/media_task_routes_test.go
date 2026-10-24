@@ -20,7 +20,7 @@ type fakeMediaJobs struct {
 	status string
 }
 
-func (f *fakeMediaJobs) FindChatMediaJob(jobID, apiKeyID string) (ChatMediaJobSnapshot, bool, error) {
+func (f *fakeMediaJobs) FindChatMediaJob(jobID, ownerSystemAccountID string) (ChatMediaJobSnapshot, bool, error) {
 	if jobID != "video_job1" {
 		return ChatMediaJobSnapshot{}, false, nil
 	}
@@ -28,7 +28,7 @@ func (f *fakeMediaJobs) FindChatMediaJob(jobID, apiKeyID string) (ChatMediaJobSn
 }
 
 // insertMediaTaskMessage 直插一条含 output_media_task 块的已完成助手消息
-//（绕过流式链路：结算只依赖消息行与块 JSON）。
+// （绕过流式链路：结算只依赖消息行与块 JSON）。
 func insertMediaTaskMessage(t *testing.T, env *generationEnv, conversationID, messageID, blockStatus string) {
 	t.Helper()
 	blocks := fmt.Sprintf(`[{"type":"output_text","blockId":"assistant_block_1","order":1,"text":"视频生成中"},{"type":"output_media_task","blockId":"assistant_block_2","order":2,"jobId":"video_job1","kind":"video","status":%q,"model":"sora-2","promptSummary":"跳舞的猫"}]`, blockStatus)
@@ -292,5 +292,48 @@ func TestCreateConversationInheritsMediaPreferences(t *testing.T) {
 	}
 	if data["audioAccountId"] != "account-1" || data["defaultAudioModel"] != "gpt-4o-mini-tts" {
 		t.Fatalf("创建继承音频绑定异常: %v", data)
+	}
+}
+
+// TestMediaTaskPollBindsConversationIdentity 钉住媒体任务面（poll / content
+// download）的派发执行器必须携带会话绑定账户 + 会话归属系统账户。
+//
+// 免 Key 直调后这是任务面鉴权的唯一来源：任务面是 chat 内部的二次 /v1 调用，
+// 若用原始零值执行器（不注入内部身份），/v1 任务面会因缺少 Bearer 直接 401，
+// 视频任务轮询恒失败、永不结算。发送链的身份解析与任务面同源，因此断言
+// WithChatDispatchAccount 收到 (会话绑定账户, 会话归属系统账户)。
+func TestMediaTaskPollBindsConversationIdentity(t *testing.T) {
+	env := newGenerationEnv(t)
+	aware := &targetAwareExecutor{inner: env.executor}
+	env.deps.Executor = aware
+	env.deps.MediaJobs = &fakeMediaJobs{status: "in_progress"}
+	conversation := env.fixture.createConversation("chat_conv_media_identity", "owner-a")
+	// insertMediaTaskMessage 的消息行 owner 固定为 owner-a（与上面创建一致），
+	// 绑定账户由夹具 createConversation 默认写入 account-1。
+	insertMediaTaskMessage(t, env, conversation.ID, "msg_asst_media_identity", "in_progress")
+	env.executor.steps = []scriptStep{
+		{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/videos/video_job1" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return &GenerationDispatchResponse{Status: 200, Body: io.NopCloser(strings.NewReader(`{"id":"video_job1","status":"in_progress","progress":40}`))}
+			},
+		},
+		{
+			match: func(call dispatchCall) bool { return strings.HasPrefix(call.Path, "/v1/videos/video_job1/content") },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return &GenerationDispatchResponse{Status: 200, Body: io.NopCloser(strings.NewReader(string(mediaMP4Fixture)))}
+			},
+		},
+	}
+	response := env.do("GET", mediaTaskURL(conversation.ID), "owner-a", "")
+	if response.status != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.status, response.rawString())
+	}
+	withCalls, accountID, ownerID := aware.snapshot()
+	if withCalls == 0 {
+		t.Fatal("媒体任务面必须解析绑定账户的执行器视图（否则内部身份缺失 → /v1 任务面 401）")
+	}
+	if accountID != "account-1" || ownerID != "owner-a" {
+		t.Fatalf("身份绑定异常: accountID=%q ownerID=%q, want account-1 / owner-a", accountID, ownerID)
 	}
 }

@@ -27,7 +27,26 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		p.logger.Info("gateway_response_inspection_parser_skipped", nil, "网关流式事件过大，兜底拦截停止解析并继续原样转发")
 	}
 	p.recordResponseInspectionObservations(eofInterceptResult.Observations)
-	if len(eofInterceptResult.Chunks) == 0 && eofInterceptResult.Intercepted == nil {
+	// EOF 阶段分片同样过 ParseError 隔离器（§3.2.0 与主循环同语义）。隔离器
+	// 持有的未完结事件尾字节不回灌 inspector（其 pending 行已持有同源字节，
+	// 重复推送会拼接成非法载荷），而是并入预提交缓冲走既有 flush/丢弃判定；
+	// 补投证据机使非语义帧清空判定与主循环同据（非 SSE 直通体等形态保持既有
+	// 提交前缓冲行为），尾字节也不随 EOF 空列表早退丢失。
+	eofChunks := eofInterceptResult.Chunks
+	if p.parseErrorIsolator != nil {
+		for index, chunk := range eofChunks {
+			if len(chunk) > 0 {
+				eofChunks[index] = p.parseErrorIsolator.push(chunk)
+			}
+		}
+		if tail := p.parseErrorIsolator.flushPending(); len(tail) > 0 {
+			if !p.preCommitSseEvidence.DataEventObserved && !p.downstreamCommit.SemanticCommitted {
+				p.preCommitSseEvidence.Push(tail)
+			}
+			p.appendPreCommitChunk(tail)
+		}
+	}
+	if len(eofChunks) == 0 && eofInterceptResult.Intercepted == nil {
 		return nil, nil
 	}
 	latestInspection := p.inspector.Snapshot()
@@ -36,9 +55,10 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 	}
 	eofWroteDownstream := false
 	eofCanEndAfterTerminal := false
-	for _, outbound := range eofInterceptResult.Chunks {
+	for _, outbound := range eofChunks {
 		// 与主循环同语义：网关注入 include_usage 的流在 inspector 消费原始分片
 		// 之后剥除 usage-only 帧；整片命中时下游零写入、不进预提交缓冲。
+		// ParseError 隔离已在上方 eofChunks 预处理完成，此处只消费过滤结果。
 		downstreamChunk := outbound
 		if p.suppressInjectedUsageChunk {
 			if filtered, dropped := filterGatewayInjectedUsageOnlySseFrames(outbound); dropped {
@@ -264,6 +284,9 @@ func (p *streamPipe) inspectionFailureResult(decision *ResponseInspectionDecisio
 // handleProtocolFailure 对齐 interpretedProtocolFailure 主分支（主循环 + EOF 段
 // 共用）；eofPendingFlush 只影响日志。
 func (p *streamPipe) handleProtocolFailure(latestInspection gatewayproto.StreamInspection, eofPendingFlush bool) (*StreamPipeResult, error) {
+	// 失败帧/失败终态是窗口关闭条件④（设计 §3.1 条件④ + §3.1.2 不变量 3）：
+	// 失败帧字节不经窗口 flush 透传，先关窗再按既有语义处置。
+	p.closeReplayWindow()
 	beforeDownstreamCommit := p.shouldFailBeforeDownstreamCommit()
 	if beforeDownstreamCommit {
 		TakeStreamPreCommitChunks(p.preCommitBuffer)
@@ -351,12 +374,26 @@ func (p *streamPipe) handlePassthroughTerminal(latestInspection gatewayproto.Str
 
 // finalizeAfterLoop 对齐 try 块之后（无异常、无提前 return）的终态判定。
 func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
+	// 上游 EOF 是窗口关闭条件④（设计 §3.1）：先关窗（时长与 Timer 收口），
+	// 已缓冲内容随后按各判定臂的既有 flush 语义处置。
+	p.closeReplayWindow()
 	p.preCommitSseEvidence.Finish()
 	if p.shouldKeepNonSemanticSseFramingPrivate() {
 		ClearStreamPreCommitChunks(p.preCommitBuffer)
 	}
 	inspection := p.publishInspection(p.inspector.Finish())
 	p.omitBodyCaptureIfImageStream(inspection, true)
+
+	// 异常终局判定（设计 §3.2.1 判定 3，互斥序先于 generic EOF 收敛臂与
+	// finalizeParserSkipped）：generic 客户端的流在协议终止事件前以干净 EOF
+	// 收尾、且 EOF 前存在解析失败事件——不再收敛 success，改按失败结算；先
+	// ParseError 后 Skipped 的流同样归因 abnormal_eof。精确画像
+	//（interpretProtocolFailures）与终止事件已到的流（判定 1）不落入本臂。
+	if !p.interpretProtocolFailures && p.completed &&
+		!inspection.TerminalReceived && !inspection.FailedReceived &&
+		inspection.ParseErrorEventCount > 0 {
+		return p.finalizeAbnormalStreamEOF(inspection)
+	}
 
 	// Generic clients keep opaque upstream SSE semantics: once at least one
 	// real SSE data event was observed, a clean transport EOF is sufficient
@@ -370,6 +407,21 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 			return StreamPipeResult{}, err
 		}
 		p.endResponse()
+		p.logger.Info("gateway_stream_finished_success", map[string]any{
+			"elapsedMs":              p.nowMs() - p.startedAt,
+			"chunkCount":             p.chunkIndex,
+			"totalUpstreamBytes":     p.totalUpstreamBytes,
+			"totalResponseBytes":     p.totalResponseBytes,
+			"firstTokenMs":           int64PtrValue(p.firstTokenMs),
+			"sseEventCount":          inspection.EventCount,
+			"sseEventTypeCounts":     inspection.EventTypeCounts,
+			"recentSseEventTypes":    inspection.RecentEventTypes,
+			"outputReceived":         inspection.OutputReceived,
+			"outputEventCount":       inspection.OutputEventCount,
+			"parseErrorEventCount":   inspection.ParseErrorEventCount,
+			"windowDurationMs":       int64PtrValue(p.replayWindowDurationMs),
+			"downstreamFirstWriteMs": int64PtrValue(p.downstreamFirstWriteMs),
+		}, "网关流式响应已成功结束")
 		return p.finishStreamResult(finishArgs{
 			completed: true, message: "已完成", usage: inspection.Usage,
 			outputReceived:        inspection.OutputReceived,
@@ -391,19 +443,72 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 	}
 	p.endResponse()
 	p.logger.Info("gateway_stream_finished_success", map[string]any{
-		"elapsedMs":           p.nowMs() - p.startedAt,
-		"chunkCount":          p.chunkIndex,
-		"totalUpstreamBytes":  p.totalUpstreamBytes,
-		"totalResponseBytes":  p.totalResponseBytes,
-		"firstTokenMs":        int64PtrValue(p.firstTokenMs),
-		"sseEventCount":       inspection.EventCount,
-		"sseEventTypeCounts":  inspection.EventTypeCounts,
-		"recentSseEventTypes": inspection.RecentEventTypes,
-		"outputReceived":      inspection.OutputReceived,
-		"outputEventCount":    inspection.OutputEventCount,
+		"elapsedMs":              p.nowMs() - p.startedAt,
+		"chunkCount":             p.chunkIndex,
+		"totalUpstreamBytes":     p.totalUpstreamBytes,
+		"totalResponseBytes":     p.totalResponseBytes,
+		"firstTokenMs":           int64PtrValue(p.firstTokenMs),
+		"sseEventCount":          inspection.EventCount,
+		"sseEventTypeCounts":     inspection.EventTypeCounts,
+		"recentSseEventTypes":    inspection.RecentEventTypes,
+		"outputReceived":         inspection.OutputReceived,
+		"outputEventCount":       inspection.OutputEventCount,
+		"parseErrorEventCount":   inspection.ParseErrorEventCount,
+		"windowDurationMs":       int64PtrValue(p.replayWindowDurationMs),
+		"downstreamFirstWriteMs": int64PtrValue(p.downstreamFirstWriteMs),
 	}, "网关流式响应已成功结束")
 	return p.finishStreamResult(finishArgs{
 		completed: true, message: "已完成", usage: inspection.Usage,
+		outputReceived:        inspection.OutputReceived,
+		estimatedOutputTokens: inspection.EstimatedOutputTokens,
+		imageOutputReceived:   inspection.ImageOutputReceived,
+	}), nil
+}
+
+// finalizeAbnormalStreamEOF 是 §3.2.1 判定 3 的异常终局失败结算（§3.2.2）：
+// generic 客户端的流在协议终止事件前以干净 EOF 收尾、且 EOF 前存在解析失败
+// 事件——不再收敛 success。复用 finalizeMissingTerminal 的提交前/提交后两
+// 分支骨架：提交前交由上层丢弃缓冲换号重放（客户端零字节）；提交后按
+// 2026-10-23 契约真·网络级断开（客户端以其自身重试语义恢复）。error_code
+// 固定 upstream_stream_abnormal_eof——它是 chain 面 classifyPostVerdictOutcome
+// 失败归因三面的判别键，不按客户端重试文案改写（StreamClientFailureCode 的
+// 客户端改写臂不适用）；探针不派发（availabilityProbeEligible=false：低质量
+// 渠道高频断流时避免探针风暴，失败统计由账户锁承担）；usage 仍按可见输出
+// 估算入账但 Success=false（finalizeStreamFailure 既有口径）。
+func (p *streamPipe) finalizeAbnormalStreamEOF(inspection gatewayproto.StreamInspection) (StreamPipeResult, error) {
+	message := "上游流在协议终止事件前以无法解析的异常事件收尾"
+	errorCode := UpstreamStreamAbnormalEOFCode
+	if err := p.input.HandleStreamFailure(message, errorCode, p.streamFailureContext(p.totalResponseBytes, inspection.OutputReceived, false, false)); err != nil {
+		return StreamPipeResult{}, err
+	}
+	fields := map[string]any{
+		"elapsedMs":              p.nowMs() - p.startedAt,
+		"chunkCount":             p.chunkIndex,
+		"totalUpstreamBytes":     p.totalUpstreamBytes,
+		"totalResponseBytes":     p.totalResponseBytes,
+		"firstTokenMs":           int64PtrValue(p.firstTokenMs),
+		"sseEventCount":          inspection.EventCount,
+		"sseEventTypeCounts":     inspection.EventTypeCounts,
+		"recentSseEventTypes":    inspection.RecentEventTypes,
+		"parseErrorEventCount":   inspection.ParseErrorEventCount,
+		"windowDurationMs":       int64PtrValue(p.replayWindowDurationMs),
+		"downstreamFirstWriteMs": int64PtrValue(p.downstreamFirstWriteMs),
+	}
+	if p.shouldFailBeforeDownstreamCommit() {
+		p.logger.Warn("gateway_stream_abnormal_eof_before_downstream_commit", fields, "网关在下游提交前识别到流异常终局，丢弃缓冲交由上层换号重放")
+		return p.finishStreamResult(finishArgs{
+			message: message, errorCode: errorCode, usage: inspection.Usage,
+			outputReceived:        inspection.OutputReceived,
+			estimatedOutputTokens: inspection.EstimatedOutputTokens,
+			imageOutputReceived:   inspection.ImageOutputReceived,
+		}), nil
+	}
+	if err := p.signalCommittedStreamFailure(); err != nil {
+		return StreamPipeResult{}, err
+	}
+	p.logger.Warn("gateway_stream_abnormal_eof_interrupted", fields, "网关已因流异常终局中断连接，客户端以网络级断开触发自身重试")
+	return p.finishStreamResult(finishArgs{
+		message: message, errorCode: errorCode, usage: inspection.Usage,
 		outputReceived:        inspection.OutputReceived,
 		estimatedOutputTokens: inspection.EstimatedOutputTokens,
 		imageOutputReceived:   inspection.ImageOutputReceived,
@@ -652,6 +757,9 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 
 	inspection := p.publishInspection(p.inspector.Finish())
 	p.omitBodyCaptureIfImageStream(inspection, true)
+	// 管道错误路径同样收口窗口（关闭条件④：读错误/失败信号），Timer 与时长
+	// 一并释放。
+	p.closeReplayWindow()
 	p.logger.Warn("gateway_stream_pipe_error", map[string]any{
 		"elapsedMs":           p.nowMs() - p.startedAt,
 		"chunkCount":          p.chunkIndex,

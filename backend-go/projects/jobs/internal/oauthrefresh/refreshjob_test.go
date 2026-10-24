@@ -209,7 +209,7 @@ func TestRefreshJobTableDriven(t *testing.T) {
 					t.Fatalf("status=%q code=%q", status, lastError)
 				}
 				var reason string
-				if err := db.QueryRow(`SELECT last_error_message FROM accounts WHERE id = ?`, "acc-local").Scan(&reason); err != nil {
+				if err := db.QueryRow(`SELECT last_error_message FROM juhe_business.accounts WHERE id = $1`, "acc-local").Scan(&reason); err != nil {
 					t.Fatal(err)
 				}
 				if !strings.HasPrefix(reason, "OpenAI OAuth 访问令牌连续 3 次因本地配置错误无法启动刷新，已停止自动刷新。") {
@@ -228,9 +228,8 @@ func TestRefreshJobTableDriven(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, name, type, status,
-					credentials_encrypted, config_revision, updated_at)
-					VALUES ('acc-decrypt', 'gpt', 'gpt', '账户-decrypt', 'oauth', 'active', ?, 1, ?)`,
+				if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, vendor_code, connection_driver_code, name, type, status, credentials_encrypted, config_revision, updated_at, system_account_id, protocol_code, protocol_version, created_at)
+					VALUES ('acc-decrypt', 'gpt', 'gpt', '账户-decrypt', 'oauth', 'active', $1, 1, $2, 'sys_admin', 'openai', 'v1', $2)`,
 					foreign, isoMillis(clock.Now())); err != nil {
 					t.Fatal(err)
 				}
@@ -262,9 +261,8 @@ func TestRefreshJobTableDriven(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, name, type, status,
-					credentials_encrypted, config_revision, updated_at)
-					VALUES ('acc-decrypt-sibling', 'gpt', 'gpt', '账户-decrypt-sibling', 'oauth', 'active', ?, 1, ?)`,
+				if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, vendor_code, connection_driver_code, name, type, status, credentials_encrypted, config_revision, updated_at, system_account_id, protocol_code, protocol_version, created_at)
+					VALUES ('acc-decrypt-sibling', 'gpt', 'gpt', '账户-decrypt-sibling', 'oauth', 'active', $1, 1, $2, 'sys_admin', 'openai', 'v1', $2)`,
 					foreign, isoMillis(clock.Now())); err != nil {
 					t.Fatal(err)
 				}
@@ -341,15 +339,14 @@ func TestRefreshJobTableDriven(t *testing.T) {
 }
 
 func TestRefreshJobRestoreAfterRecovery(t *testing.T) {
-	job, _, db, clock, exchanger := newRefreshJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{
-		ID: "acc-restore", ProviderCode: "gpt", Type: "oauth",
-		Status: "error", LastErrorCode: OpenAIOAuthTokenRefreshFailedErrorCode,
-		Credentials: openAICredentials(expiresInMillis(0)), Now: clock.Now(),
-	})
+	store, db := newClearStateSQLiteStore(t)
+	seedClearStateAccount(t, db, "acc-restore", "error", OpenAIOAuthTokenRefreshFailedErrorCode)
+	clock := &fixedClock{current: defaultNow()}
+	exchanger := &recordingExchanger{}
 	exchanger.respond = func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{StatusCode: 200, Body: `{"access_token":"at-new","refresh_token":"rt-new","expires_in":3600}`}, nil
 	}
+	job := NewRefreshJob(store.WithClock(func() time.Time { return clock.Now() }), exchanger, WithClock(clock))
 	result, err := job.RunOnce(context.Background(), RefreshOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +354,7 @@ func TestRefreshJobRestoreAfterRecovery(t *testing.T) {
 	if result.Refreshed != 1 || result.Cooldowned != 1 {
 		t.Fatalf("result=%+v", result)
 	}
-	status, lastError, _, _, _ := readAccountRow(t, db, "acc-restore")
+	status, lastError, _ := readClearStateAccountRow(t, db, "acc-restore")
 	if status != "active" || lastError != "" {
 		t.Fatalf("restored account=%q %q", status, lastError)
 	}
@@ -377,8 +374,8 @@ func TestRefreshJobRaceRecoveryKeepsFreshCredentials(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec(`UPDATE accounts SET config_revision = config_revision + 1,
-				credentials_encrypted = ?, oauth_access_token_expires_at = ? WHERE id = 'acc-race'`,
+			if _, err := db.Exec(`UPDATE juhe_business.accounts SET config_revision = config_revision + 1,
+				credentials_encrypted = $1, oauth_access_token_expires_at = $2 WHERE id = 'acc-race'`,
 				sealed, expiresInMillis(400_000)); err != nil {
 				t.Fatal(err)
 			}
@@ -414,7 +411,7 @@ func TestRotateCredentialsNoopReceiptKeepsRevision(t *testing.T) {
 	first, err := store.RotateCredentials(context.Background(), RotateCredentialsInput{
 		AccountID: "acc-noop", ExpectedConfigRevision: account.ConfigRevision,
 		ExpectedProviderCode: ProviderGPT, ExpectedAccountType: AccountTypeOAuth,
-		Credentials:                       account.Credentials,
+		Credentials: account.Credentials,
 	})
 	if err != nil {
 		t.Fatal(err)

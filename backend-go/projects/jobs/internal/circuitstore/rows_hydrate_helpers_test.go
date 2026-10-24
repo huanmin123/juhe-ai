@@ -3,6 +3,10 @@ package circuitstore
 // 投影行映射（buildBasePayload 系列）、水合辅助（status seed 派生）与
 // loader 小工具的纯函数/SQLite 测试。payload 形状与归档 Node
 // accountManagementListItemFromRow / getAccountStatusSnapshotFromProjections 对齐。
+// 组B说明：本文件的 loader 建库消费点（TestLoadAccountLockViewRecovery、
+// TestNewProjectionItemLoaderValidation、TestLoaderSmallHelpers）随 loader 族
+// 保留 SQLite（取证见 final_edges_test.go TestHydratePageFailClosed 注释）；
+// 纯函数测试不涉存储，不在迁移面。
 
 import (
 	"context"

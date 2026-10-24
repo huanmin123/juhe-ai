@@ -430,19 +430,19 @@ func (e *abortTestErrorW3) AbortError() bool { return true }
 // TestGenerateChatImageW3 用 Mock 执行器覆盖图片生成传输的完整链路。
 func TestGenerateChatImageW3(t *testing.T) {
 	t.Run("入参校验", func(t *testing.T) {
-		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Prompt: "p"}, "key", "", nil); err == nil {
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Prompt: "p"}, "", nil); err == nil {
 			t.Fatalf("空模型应报错")
 		}
-		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "gpt-image-2"}, "key", "", nil); err == nil {
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "gpt-image-2"}, "", nil); err == nil {
 			t.Fatalf("空提示词应报错")
 		}
-		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Size: "10x10"}, "key", "", nil); err == nil {
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Size: "10x10"}, "", nil); err == nil {
 			t.Fatalf("非法尺寸应报错")
 		}
-		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Quality: "ultra"}, "key", "", nil); err == nil {
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Quality: "ultra"}, "", nil); err == nil {
 			t.Fatalf("非法质量应报错")
 		}
-		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", OutputFormat: "gif"}, "key", "", nil); err == nil {
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", OutputFormat: "gif"}, "", nil); err == nil {
 			t.Fatalf("非法格式应报错")
 		}
 	})
@@ -456,7 +456,7 @@ func TestGenerateChatImageW3(t *testing.T) {
 				return jsonStatusResponse(200, body)
 			},
 		}}}
-		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: " gpt-image-2 ", Prompt: " 猫 "}, "secret", "trace-1", nil)
+		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: " gpt-image-2 ", Prompt: " 猫 "}, "trace-1", nil)
 		if err != nil {
 			t.Fatalf("生成失败: %v", err)
 		}
@@ -466,8 +466,11 @@ func TestGenerateChatImageW3(t *testing.T) {
 		if !strings.Contains(dispatched.Body, `"prompt":"猫"`) || !strings.Contains(dispatched.Body, `"quality":"auto"`) {
 			t.Fatalf("请求体不正确: %s", dispatched.Body)
 		}
-		if dispatched.Headers["x-trace-id"] != "trace-1" || dispatched.Headers["authorization"] != "Bearer secret" {
+		if dispatched.Headers["x-trace-id"] != "trace-1" {
 			t.Fatalf("请求头不正确: %v", dispatched.Headers)
+		}
+		if _, has := dispatched.Headers["authorization"]; has {
+			t.Fatalf("请求头不应携带 authorization（免 Key 直调）: %v", dispatched.Headers)
 		}
 	})
 	t.Run("编辑走 multipart", func(t *testing.T) {
@@ -482,7 +485,7 @@ func TestGenerateChatImageW3(t *testing.T) {
 		}}}
 		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{
 			Model: "m", Prompt: "p", References: []ChatImageEditReference{{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), Filename: "a.png"}},
-		}, "key", "", nil)
+		}, "", nil)
 		if err != nil {
 			t.Fatalf("编辑失败: %v", err)
 		}
@@ -503,7 +506,7 @@ func TestGenerateChatImageW3(t *testing.T) {
 			executor := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
 				return jsonStatusResponse(testCase.status, testCase.body)
 			}}}}
-			_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil)
+			_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "", nil)
 			var imageErr *ChatImageGenerationRequestError
 			if !errorsAs(err, &imageErr) {
 				t.Fatalf("status %d 应返回图片请求错误: %v", testCase.status, err)
@@ -520,25 +523,25 @@ func TestGenerateChatImageW3(t *testing.T) {
 		executor := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
 			return jsonStatusResponse(200, `{"data":[]}`)
 		}}}}
-		if _, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
+		if _, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "", nil); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
 			t.Fatalf("缺 b64_json 应报错: %v", err)
 		}
 		badBase64 := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
 			return jsonStatusResponse(200, `{"data":[{"b64_json":"!!!"}]}`)
 		}}}}
-		if _, err := GenerateChatImage(context.Background(), &badBase64, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); err == nil || !strings.Contains(err.Error(), "无法解码") {
+		if _, err := GenerateChatImage(context.Background(), &badBase64, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "", nil); err == nil || !strings.Contains(err.Error(), "无法解码") {
 			t.Fatalf("非法 base64 应报错: %v", err)
 		}
 		unknownBytes := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
 			return jsonStatusResponse(200, `{"data":[{"b64_json":"`+base64.StdEncoding.EncodeToString([]byte("hello"))+`"}]}`)
 		}}}}
-		if _, err := GenerateChatImage(context.Background(), &unknownBytes, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); err == nil {
+		if _, err := GenerateChatImage(context.Background(), &unknownBytes, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "", nil); err == nil {
 			t.Fatalf("未知图片字节应报错")
 		}
 	})
 	t.Run("执行器错误", func(t *testing.T) {
 		executor := failingExecutorW3{}
-		if _, err := GenerateChatImage(context.Background(), executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); !errors.Is(err, errExecutorFailedW3) {
+		if _, err := GenerateChatImage(context.Background(), executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "", nil); !errors.Is(err, errExecutorFailedW3) {
 			t.Fatalf("执行器错误应透传: %v", err)
 		}
 	})
@@ -715,7 +718,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 			},
 		}}}
 		for _, model := range grokModels {
-			if _, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: model, Prompt: "猫"}, "key", "", nil); err != nil {
+			if _, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: model, Prompt: "猫"}, "", nil); err != nil {
 				t.Fatalf("%s 生成失败: %v", model, err)
 			}
 		}
@@ -742,7 +745,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
 			},
 		}}}
-		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫", Quality: "low"}, "key", "", nil)
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫", Quality: "low"}, "", nil)
 		if err != nil {
 			t.Fatalf("生成失败: %v", err)
 		}
@@ -759,7 +762,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
 			},
 		}}}
-		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "gpt-image-2", Prompt: "猫"}, "key", "", nil)
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "gpt-image-2", Prompt: "猫"}, "", nil)
 		if err != nil {
 			t.Fatalf("生成失败: %v", err)
 		}
@@ -782,7 +785,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{
 			Model: "grok-imagine-image", Prompt: "改猫",
 			References: []ChatImageEditReference{{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), Filename: "a.png"}},
-		}, "key", "", nil)
+		}, "", nil)
 		if err != nil {
 			t.Fatalf("编辑失败: %v", err)
 		}
@@ -810,7 +813,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 				return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/img","mime_type":"image/png"}]}`)
 			},
 		}}}
-		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", server.Client())
+		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "", server.Client())
 		if err != nil {
 			t.Fatalf("url 回退失败: %v", err)
 		}
@@ -832,7 +835,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 		}}}
 		// 注入 server.Client()：httptest 地址被回退默认客户端的 SSRF 防护拒
 		// 绝，本用例需真实命中 404 才能钉 HTTP 状态收敛语义。
-		if _, err := GenerateChatImage(context.Background(), &notFound, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", server.Client()); err == nil || !strings.Contains(err.Error(), "下载失败") {
+		if _, err := GenerateChatImage(context.Background(), &notFound, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "", server.Client()); err == nil || !strings.Contains(err.Error(), "下载失败") {
 			t.Fatalf("url 下载失败应报错: %v", err)
 		}
 		missing := mockExecutor{steps: []scriptStep{{
@@ -841,7 +844,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 				return jsonStatusResponse(200, `{"data":[{"mime_type":"image/png"}]}`)
 			},
 		}}}
-		if _, err := GenerateChatImage(context.Background(), &missing, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", nil); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
+		if _, err := GenerateChatImage(context.Background(), &missing, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "", nil); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
 			t.Fatalf("双缺失应报错: %v", err)
 		}
 	})
@@ -913,7 +916,7 @@ func TestGenerateChatImageDownloadClientInjection(t *testing.T) {
 		},
 	}}}
 	request := ChatImageGenerationRequest{Model: "gpt-image-2", Prompt: "猫"}
-	if _, err := GenerateChatImage(context.Background(), &executor, request, "key", "", server.Client()); err != nil {
+	if _, err := GenerateChatImage(context.Background(), &executor, request, "", server.Client()); err != nil {
 		t.Fatalf("注入客户端下载失败: %v", err)
 	}
 	if downloaded != 1 {

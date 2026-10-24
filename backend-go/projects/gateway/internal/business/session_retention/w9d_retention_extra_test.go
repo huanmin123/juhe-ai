@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,7 +23,7 @@ func TestW9DNewRejectsNilDBAndDefaultsSchema(t *testing.T) {
 	if _, err := New(nil, SQLite, "", OwnerGate{}); err == nil || !strings.Contains(err.Error(), "database is required") {
 		t.Fatalf("nil db err=%v", err)
 	}
-	db := w9dSQLite(t)
+	db := openPG(t)
 	// Postgres 空 schema 时注入默认 schema。
 	store, err := New(db, Postgres, "  ", OwnerGate{})
 	if err != nil {
@@ -48,13 +46,9 @@ func TestW9DCheckContractArms(t *testing.T) {
 	if err := (&Store{}).CheckContract(ctx); !errors.Is(err, ErrOwnerGate) {
 		t.Fatalf("empty store contract err=%v", err)
 	}
-	// 查询失败（缺少关系）。
-	bare, err := sql.Open("sqlite", "file:w9d-retention-bare?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bare.Close()
-	store, err := New(bare, SQLite, "", OwnerGate{})
+	// 查询失败（缺少关系）：无任何关系的隔离 PG 库。
+	bare := openBarePG(t)
+	store, err := New(bare, Postgres, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +58,8 @@ func TestW9DCheckContractArms(t *testing.T) {
 }
 
 func TestW9DExpiryZeroTimeRejected(t *testing.T) {
-	db := w9dSQLite(t)
-	store, err := New(db, SQLite, "", OwnerGate{})
+	db := openPG(t)
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +69,8 @@ func TestW9DExpiryZeroTimeRejected(t *testing.T) {
 }
 
 func TestW9DCleanupLimitNormalizationAndAlias(t *testing.T) {
-	db := w9dSQLite(t)
-	store, err := New(db, SQLite, "", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	db := openPG(t)
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +84,7 @@ func TestW9DCleanupLimitNormalizationAndAlias(t *testing.T) {
 		t.Fatalf("alias cleanup deleted=%d err=%v", deleted, err)
 	}
 	// 失败透传臂。
-	blocked, err := New(db, SQLite, "", OwnerGate{})
+	blocked, err := New(db, Postgres, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,20 +251,6 @@ func TestW9DCleanupScriptedFailureArms(t *testing.T) {
 	if err := closeFail.CheckContract(context.Background()); err == nil {
 		t.Fatal("rows close failure must fail contract")
 	}
-}
-
-func w9dSQLite(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:w9d-retention-ctx?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	return db
 }
 
 var _ = time.Now

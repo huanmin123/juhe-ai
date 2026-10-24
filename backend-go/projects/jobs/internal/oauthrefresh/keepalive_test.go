@@ -131,7 +131,7 @@ func TestKeepaliveMissingRefreshTokenDoesNotWriteState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'an-nort'`, sealed); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET credentials_encrypted = $1 WHERE id = 'an-nort'`, sealed); err != nil {
 		t.Fatal(err)
 	}
 	result, err := job.RunOnce(context.Background(), KeepalivePlans()[0], 0)
@@ -144,7 +144,7 @@ func TestKeepaliveMissingRefreshTokenDoesNotWriteState(t *testing.T) {
 	// The keepalive family owns no terminal state writes; the failure is
 	// reported to the scheduler log only.
 	var lastMessage string
-	if err := db.QueryRow(`SELECT last_error_message FROM accounts WHERE id = 'an-nort'`).Scan(&lastMessage); err == nil && lastMessage != "" {
+	if err := db.QueryRow(`SELECT last_error_message FROM juhe_business.accounts WHERE id = 'an-nort'`).Scan(&lastMessage); err == nil && lastMessage != "" {
 		t.Fatalf("keepalive must not write terminal state: %q", lastMessage)
 	}
 }
@@ -169,8 +169,8 @@ func TestKeepaliveConflictAdoptsFreshConcurrentRefresh(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`UPDATE accounts SET config_revision = config_revision + 3,
-			credentials_encrypted = ?, oauth_access_token_expires_at = ? WHERE id = 'an-race'`,
+		if _, err := db.Exec(`UPDATE juhe_business.accounts SET config_revision = config_revision + 3,
+			credentials_encrypted = $1, oauth_access_token_expires_at = $2 WHERE id = 'an-race'`,
 			sealed, expiresInMillis(400_000)); err != nil {
 			t.Fatal(err)
 		}

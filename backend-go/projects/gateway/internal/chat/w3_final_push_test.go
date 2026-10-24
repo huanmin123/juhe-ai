@@ -20,7 +20,7 @@ func TestSummarizePageW3(t *testing.T) {
 	newService := func(executor GenerationExecutor) *CompactionService {
 		return NewCompactionService(newChatFixture(t).store, executor, func(text string) int { return len(text) }, func() string { return isoMillis(clock()) })
 	}
-	input := CompactionInput{ConversationID: "c", SystemAccountID: "o", APIKeySecret: "k", Model: "gpt-5"}
+	input := CompactionInput{ConversationID: "c", SystemAccountID: "o", Model: "gpt-5"}
 	messages := []any{map[string]any{"role": "user", "content": "问题"}}
 
 	t.Run("chat 协议成功", func(t *testing.T) {
@@ -303,32 +303,9 @@ func assertPanicMessageW3(t *testing.T, fn func(), contains string) {
 	fn()
 }
 
-// TestDepsGuardsW3 覆盖 deps 层密钥与目录守卫分支。
+// TestDepsGuardsW3 覆盖 deps 层账户绑定与目录守卫分支（密钥守卫已随 chat Key
+// 供给链退场删除）。
 func TestDepsGuardsW3(t *testing.T) {
-	rt := &chatRoutes{deps: &Deps{ChatKeys: &mockChatKeys{}}}
-	if _, err := rt.requireOwnedApiKey("", "owner"); err == nil || !strings.Contains(err.Error(), "已删除") {
-		t.Fatalf("空 key 应报已删除: %v", err)
-	}
-	noKeys := &chatRoutes{deps: &Deps{}}
-	if _, err := noKeys.requireOwnedApiKey("k", "owner"); err == nil {
-		t.Fatalf("ChatKeys 缺失应报错")
-	}
-	returnsNil := &stubKeysNilW3{}
-	nilKeys := &chatRoutes{deps: &Deps{ChatKeys: returnsNil}}
-	if _, err := nilKeys.requireOwnedApiKey("k", "owner"); err == nil {
-		t.Fatalf("nil 密钥应报错")
-	}
-	if _, err := nilKeys.requireChatAPIKeyForOwner("owner"); err == nil {
-		t.Fatalf("nil 密钥的自动开通应报错")
-	}
-	noGateway := &Deps{}
-	if _, err := noGateway.gatewayKeyOrError("s"); err == nil {
-		t.Fatalf("GatewayKeys 缺失应报错")
-	}
-	returnsNilView := &stubGatewayNilW3{}
-	if _, err := (&Deps{GatewayKeys: returnsNilView}).gatewayKeyOrError("s"); err == nil {
-		t.Fatalf("nil 视图应报错")
-	}
 	// 账户绑定作用域守卫：AccountLookup 缺失 → 500；未选账户 → 400 引导。
 	noAccountLookup := &chatRoutes{deps: &Deps{}}
 	if _, err := noAccountLookup.resolveChatBindingScope(&Conversation{}, ChatBindScope{ViewerID: "o"}); err == nil {
@@ -361,16 +338,6 @@ func TestDepsGuardsW3(t *testing.T) {
 		t.Fatalf("能力载荷不正确: %v", payload)
 	}
 }
-
-type stubKeysNilW3 struct{}
-
-func (stubKeysNilW3) EnsureChatAPIKey(string) (string, error) { return "k", nil }
-
-func (stubKeysNilW3) FindChatAPIKey(string, string) (*ChatAPIKeyRecord, error) { return nil, nil }
-
-type stubGatewayNilW3 struct{}
-
-func (stubGatewayNilW3) ValidateGatewayKey(string) (*GatewayKeyView, error) { return nil, nil }
 
 type emptyCatalogW3 struct{}
 

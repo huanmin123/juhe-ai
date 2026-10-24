@@ -273,6 +273,8 @@ func (s *Sink) sendModelsGatewayResponse(input gatewaypreauth.ModelsResponseInpu
 		FirstTokenMs:  elapsed,
 		DurationMs:    elapsed,
 		UsageSemantic: s.usageSemanticFor(input, providerCode),
+		// 内部通道抑制标记随 usage 上下文透传（持久化唯一闸口据此丢弃）。
+		SuppressUsage: input.UsageContext.SuppressUsage,
 	})
 	_ = responsePayload
 	return nil

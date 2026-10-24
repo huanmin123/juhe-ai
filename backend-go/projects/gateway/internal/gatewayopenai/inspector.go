@@ -205,6 +205,10 @@ func (i *StreamInspector) flushEvent() {
 
 func (i *StreamInspector) inspectParsedEvent(event ParsedStreamEvent, dataBytes int) {
 	if event.DataParseError {
+		// 解析失败事件计数（流式提交边界受限重放与异常终局处置设计 §3.2.0）：
+		// 管道按快照增量触发首个 WARN，拦截面按同一分类做字节级隔离；oversized
+		// 事件走 flushOversizedEvent 自有 summary，不进本计数。
+		i.inspection.ParseErrorEventCount++
 		i.recordEventSummary(gatewayproto.StreamEventSummary{
 			Type:       orDefault(event.EventName, "message"),
 			DataBytes:  dataBytes,

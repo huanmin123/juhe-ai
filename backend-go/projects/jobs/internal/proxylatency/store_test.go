@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// 组B保留（SQLite-only 生产臂，保持原状不迁）：本测试的被测对象是
+// checkSQLiteSchema 的 sqlite_master 对象检查与 EnsureSchema 的 SQLite 恢复
+// 臂（DROP INDEX sqlite 对象后 fail-closed、显式 maintenance 自愈），属于
+// SQLite 模式专属防御面，随生产 sqlite 臂删除批次退役
+// （PLAN-20261024T051925945Z proxylatency 切片裁决）。
 func TestSQLiteCheckSchemaFailsClosedWhenOwnedObjectIsMissing(t *testing.T) {
 	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-schema-check.sqlite3")})
 	if err != nil {
@@ -32,18 +37,10 @@ func TestSQLiteCheckSchemaFailsClosedWhenOwnedObjectIsMissing(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreOwnerProxyLeasesAndOutcomes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "proxy-latency.sqlite3")
-	first, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer first.Close()
-	second, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
+func TestPGStoreOwnerProxyLeasesAndOutcomes(t *testing.T) {
+	testDB := openKitPostgresTestDB(t)
+	first := openStoreOnKitDSN(t, testDB.DSN)
+	second := openStoreOnKitDSN(t, testDB.DSN)
 
 	ctx := context.Background()
 	ownerA, acquired, err := first.AcquireOwnerLease(ctx, "owner-a", time.Minute)
@@ -123,12 +120,8 @@ func TestSQLiteStoreOwnerProxyLeasesAndOutcomes(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreIssuesImmutableInputVersions(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-inputs.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreIssuesImmutableInputVersions(t *testing.T) {
+	store := openKitPostgresStore(t)
 	now := time.Date(2026, 8, 21, 5, 0, 0, 0, time.UTC)
 	draft := InputDraft{
 		ProxyID: "proxy-1", ConfigRevision: "2026-08-21T04:59:00Z", Trigger: TriggerPeriodic,
@@ -148,7 +141,7 @@ func TestSQLiteStoreIssuesImmutableInputVersions(t *testing.T) {
 		t.Fatalf("issued input identity invalid: first=%+v second=%+v", first, second)
 	}
 	var rowCount int
-	if err := store.db.QueryRow(`SELECT count(*) FROM proxy_latency_inputs WHERE proxy_id=?`, "proxy-1").Scan(&rowCount); err != nil {
+	if err := store.db.QueryRow(`SELECT count(*) FROM juhe_jobs.proxy_latency_inputs WHERE proxy_id=$1`, "proxy-1").Scan(&rowCount); err != nil {
 		t.Fatal(err)
 	}
 	if rowCount != 2 {
@@ -156,12 +149,8 @@ func TestSQLiteStoreIssuesImmutableInputVersions(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreAppendOutcomeRequiresIssuedInputAndMatchesFence(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-input-fence.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreAppendOutcomeRequiresIssuedInputAndMatchesFence(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
 	if err != nil || !acquired {
@@ -197,12 +186,8 @@ func TestSQLiteStoreAppendOutcomeRequiresIssuedInputAndMatchesFence(t *testing.T
 	}
 }
 
-func TestSQLiteStoreAppendOutcomeRejectsExpiredIssuedInput(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-expired-input.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreAppendOutcomeRejectsExpiredIssuedInput(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
 	if err != nil || !acquired {
@@ -225,12 +210,8 @@ func TestSQLiteStoreAppendOutcomeRejectsExpiredIssuedInput(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreReplayIgnoresCurrentLeaseAndInputExpiry(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-replay-expiry.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreReplayIgnoresCurrentLeaseAndInputExpiry(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
 	if err != nil || !acquired {
@@ -248,13 +229,14 @@ func TestSQLiteStoreReplayIgnoresCurrentLeaseAndInputExpiry(t *testing.T) {
 	if inserted, err := store.AppendOutcome(ctx, owner, proxy, outcome); err != nil || !inserted {
 		t.Fatalf("initial outcome: inserted=%t err=%v", inserted, err)
 	}
-	if _, err := store.db.Exec(`UPDATE proxy_latency_inputs SET expires_at=? WHERE request_id=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), issued.RequestID); err != nil {
+	// PG timestamptz 列以 time.Time 参数改写（SQLite 形态为 RFC3339Nano 文本）。
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_inputs SET expires_at=$1 WHERE request_id=$2`, time.Now().UTC().Add(-time.Minute), issued.RequestID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`UPDATE proxy_latency_owner_leases SET lease_until=? WHERE lease_key=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), "proxy-latency-owner"); err != nil {
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_owner_leases SET lease_until=$1 WHERE lease_key=$2`, time.Now().UTC().Add(-time.Minute), "proxy-latency-owner"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`UPDATE proxy_latency_proxy_leases SET lease_until=? WHERE proxy_id=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), proxy.ProxyID); err != nil {
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_proxy_leases SET lease_until=$1 WHERE proxy_id=$2`, time.Now().UTC().Add(-time.Minute), proxy.ProxyID); err != nil {
 		t.Fatal(err)
 	}
 	if inserted, err := store.AppendOutcome(ctx, owner, proxy, outcome); err != nil || inserted {
@@ -262,12 +244,8 @@ func TestSQLiteStoreReplayIgnoresCurrentLeaseAndInputExpiry(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsPoisonedCommittedOutcomeDigest(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-poisoned-outcome.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreRejectsPoisonedCommittedOutcomeDigest(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
 	if err != nil || !acquired {
@@ -286,14 +264,26 @@ func TestSQLiteStoreRejectsPoisonedCommittedOutcomeDigest(t *testing.T) {
 		t.Fatalf("initial outcome: inserted=%t err=%v", inserted, err)
 	}
 	var payload []byte
-	if err := store.db.QueryRow(`SELECT payload FROM proxy_latency_outcomes WHERE request_id=?`, issued.RequestID).Scan(&payload); err != nil {
+	if err := store.db.QueryRow(`SELECT payload FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1`, issued.RequestID).Scan(&payload); err != nil {
 		t.Fatal(err)
 	}
 	// Keep the original payload_digest while changing the bytes. Both direct
 	// replay and AdmitExecution must fail closed instead of trusting poisoned
 	// committed JSON.
-	payload = append(payload, byte(' '))
-	if _, err := store.db.Exec(`UPDATE proxy_latency_outcomes SET payload=? WHERE request_id=?`, payload, issued.RequestID); err != nil {
+	// PG 重钉披露：payload 列为 JSONB，SQLite 形态的"追加空白字节"会被 JSONB
+	// 规范化吸收（canonicalJSONDigest 对空白/键序不敏感是 PG 臂的既定契约），
+	// 因此以改变 payload 语义值（首条 item 延迟 12→13）且不更新 payload_digest
+	// 的方式注入污染，fail-closed 断言逐字节保持。
+	var decoded Outcome
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	decoded.Items[0].LatencyMS = 13
+	poisonedPayload, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_outcomes SET payload=$1 WHERE request_id=$2`, string(poisonedPayload), issued.RequestID); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err := store.LoadCommittedOutcome(ctx, issued); !errors.Is(err, ErrRequestConflict) || found {
@@ -304,12 +294,8 @@ func TestSQLiteStoreRejectsPoisonedCommittedOutcomeDigest(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreReplayAfterOwnerAndProxyLeaseTakeover(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-replay-takeover.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreReplayAfterOwnerAndProxyLeaseTakeover(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	ownerA, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
 	if err != nil || !acquired {
@@ -330,11 +316,11 @@ func TestSQLiteStoreReplayAfterOwnerAndProxyLeaseTakeover(t *testing.T) {
 	// Expire both leases, then let a successor acquire new fence tokens. The
 	// original immutable outcome still carries owner A/proxy A tokens; replay
 	// must be found before validating the successor caller shape.
-	expired := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
-	if _, err := store.db.Exec(`UPDATE proxy_latency_owner_leases SET lease_until=? WHERE lease_key=?`, expired, "proxy-latency-owner"); err != nil {
+	expired := time.Now().UTC().Add(-time.Minute)
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_owner_leases SET lease_until=$1 WHERE lease_key=$2`, expired, "proxy-latency-owner"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`UPDATE proxy_latency_proxy_leases SET lease_until=? WHERE proxy_id=?`, expired, proxyA.ProxyID); err != nil {
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_proxy_leases SET lease_until=$1 WHERE proxy_id=$2`, expired, proxyA.ProxyID); err != nil {
 		t.Fatal(err)
 	}
 	ownerB, acquired, err := store.AcquireOwnerLease(ctx, "owner-b", time.Minute)
@@ -353,12 +339,8 @@ func TestSQLiteStoreReplayAfterOwnerAndProxyLeaseTakeover(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsObservedAtExpiryBoundary(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-observed-boundary.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreRejectsObservedAtExpiryBoundary(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
 	if err != nil || !acquired {
@@ -379,7 +361,7 @@ func TestSQLiteStoreRejectsObservedAtExpiryBoundary(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsChangedInputAfterExecutionAdmission(t *testing.T) {
+func TestPGStoreRejectsChangedInputAfterExecutionAdmission(t *testing.T) {
 	store, owner, proxy, input := executorFixture(t, "http://127.0.0.1:1", "", "")
 	defer store.Close()
 	ctx := context.Background()
@@ -395,7 +377,7 @@ func TestSQLiteStoreRejectsChangedInputAfterExecutionAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(payload)
-	if _, err := store.db.Exec(`UPDATE proxy_latency_inputs SET payload=?, payload_digest=? WHERE request_id=?`, payload, hex.EncodeToString(digest[:]), resolved.RequestID); err != nil {
+	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_inputs SET payload=$1, payload_digest=$2 WHERE request_id=$3`, string(payload), hex.EncodeToString(digest[:]), resolved.RequestID); err != nil {
 		t.Fatal(err)
 	}
 	outcome := testOutcomeForIssued(stableOutcomeID(resolved.RequestID), resolved, owner, proxy)
@@ -405,12 +387,8 @@ func TestSQLiteStoreRejectsChangedInputAfterExecutionAdmission(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsNonUTCIssuedAtAndRevisionWhitespace(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-input-utc.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreRejectsNonUTCIssuedAtAndRevisionWhitespace(t *testing.T) {
+	store := openKitPostgresStore(t)
 	valid := testInputDraft("proxy-1", TriggerPeriodic)
 	for name, mutate := range map[string]func(*InputDraft){
 		"issued at non utc":   func(draft *InputDraft) { draft.IssuedAt = draft.IssuedAt.In(time.FixedZone("CST", 8*60*60)) },
@@ -427,12 +405,8 @@ func TestSQLiteStoreRejectsNonUTCIssuedAtAndRevisionWhitespace(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreCanonicalizesIssuedInputTargetsAndRevision(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-input-canonical.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreCanonicalizesIssuedInputTargetsAndRevision(t *testing.T) {
+	store := openKitPostgresStore(t)
 	draft := testInputDraft("proxy-1", TriggerPeriodic)
 	draft.ConfigRevision = "2026-08-21T05:00:00.123456789Z"
 	draft.Targets = []Target{{Provider: " OpenAI ", ProfileID: " profile-openai ", URL: " https://api.openai.com/v1 "}}
@@ -445,12 +419,8 @@ func TestSQLiteStoreCanonicalizesIssuedInputTargetsAndRevision(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreDoesNotPersistInvalidTargetURL(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-invalid-target.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreDoesNotPersistInvalidTargetURL(t *testing.T) {
+	store := openKitPostgresStore(t)
 	draft := testInputDraft("proxy-1", TriggerPeriodic)
 	draft.Targets = []Target{
 		{Provider: "valid", ProfileID: "profile-valid", URL: "https://example.test/v1"},
@@ -463,7 +433,7 @@ func TestSQLiteStoreDoesNotPersistInvalidTargetURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	var payload []byte
-	if err := store.db.QueryRow(`SELECT payload FROM proxy_latency_inputs WHERE request_id=?`, issued.RequestID).Scan(&payload); err != nil {
+	if err := store.db.QueryRow(`SELECT payload FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1`, issued.RequestID).Scan(&payload); err != nil {
 		t.Fatal(err)
 	}
 	for _, sentinel := range []string{"query-secret", "userinfo-secret", "fragment-secret"} {
@@ -485,12 +455,8 @@ func TestSQLiteStoreDoesNotPersistInvalidTargetURL(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreDropsPasswordOnlyCredentialLikeNode(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-password-only.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreDropsPasswordOnlyCredentialLikeNode(t *testing.T) {
+	store := openKitPostgresStore(t)
 	draft := testInputDraft("proxy-1", TriggerPeriodic)
 	draft.ProxyPassword = &CredentialEnvelope{Kind: "proxy_password", Ciphertext: "v1:MTIzNDU2Nzg5MDEy:MTIzNDU2Nzg5MDEyMzQ1Ng:Y2lwaGVydGV4dA"}
 	issued, err := store.IssueInput(context.Background(), draft)
@@ -502,12 +468,8 @@ func TestSQLiteStoreDropsPasswordOnlyCredentialLikeNode(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsInvalidInputDraft(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-invalid-input.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestPGStoreRejectsInvalidInputDraft(t *testing.T) {
+	store := openKitPostgresStore(t)
 	valid := testInputDraft("proxy-1", TriggerPeriodic)
 	for name, mutate := range map[string]func(*InputDraft){
 		"short ttl":          func(draft *InputDraft) { draft.ExpiresAt = draft.IssuedAt.Add(30 * time.Second) },
@@ -546,8 +508,8 @@ func TestCanonicalJSONDigestSurvivesJSONBKeyReordering(t *testing.T) {
 	issued := IssuedInput{
 		RequestID: "j3a-request", ProxyID: "proxy-1", InputVersion: 1,
 		ConfigRevision: "2026-08-21T04:59:00Z", Trigger: TriggerPeriodic,
-		IssuedAt:      time.Date(2026, 8, 21, 5, 0, 0, 0, time.UTC),
-		ExpiresAt:     time.Date(2026, 8, 21, 5, 5, 0, 0, time.UTC),
+		IssuedAt:     time.Date(2026, 8, 21, 5, 0, 0, 0, time.UTC),
+		ExpiresAt:    time.Date(2026, 8, 21, 5, 5, 0, 0, time.UTC),
 		PolicyVersion: proxyLatencyInputPolicyVersion, ProxyType: "http",
 		ProxyHost: "127.0.0.1", ProxyPort: 8080,
 		Targets: []Target{{Provider: "gpt", ProfileID: "profile-gpt", URL: "https://api.openai.com/v1"}},
@@ -612,7 +574,11 @@ func testOutcomeForIssued(outcomeID string, issued IssuedInput, owner OwnerLease
 }
 
 func testInputDraft(proxyID string, trigger Trigger) InputDraft {
-	now := time.Now().UTC()
+	// PG 重钉披露：IssuedAt/ExpiresAt 截断到微秒，与 PG timestamptz 微秒存储
+	// 精度对齐（SQLite TEXT 臂无精度差异）；纳秒精度会使 LoadCommittedOutcome/
+	// VerifyExecutionInput 的 issued_at 逐位 Equal 校验在 PG 臂上 fail closed
+	// （生产臂缺陷，另列报告，不在本切片修复）。
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	return InputDraft{
 		ProxyID: proxyID, ConfigRevision: now.Add(-time.Second).Format(time.RFC3339Nano), Trigger: trigger,
 		IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), PolicyVersion: proxyLatencyInputPolicyVersion,

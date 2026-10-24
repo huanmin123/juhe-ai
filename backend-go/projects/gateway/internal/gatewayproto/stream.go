@@ -11,14 +11,19 @@ type StreamInspection struct {
 	OutputEventCount      int
 	EstimatedOutputTokens int
 	EventCount            int
-	EventTypeCounts       map[string]int
-	LastEventType         string
-	RecentEventTypes      []string
-	PendingEvent          bool
-	Skipped               bool
-	SkipReason            string
-	ErrorCode             string
-	ErrorMessage          string
+	// ParseErrorEventCount 是数据载荷无法 JSON 解析的事件计数（DataParseError，
+	// 含粘连载荷残片；oversized 事件不计数）。流式提交边界受限重放与异常终局
+	// 处置设计 §3.2：EOF 终局判定按本计数收紧 generic 收敛，字节级隔离与
+	// WARN 观测由管道与拦截面消费。
+	ParseErrorEventCount int
+	EventTypeCounts      map[string]int
+	LastEventType        string
+	RecentEventTypes     []string
+	PendingEvent         bool
+	Skipped              bool
+	SkipReason           string
+	ErrorCode            string
+	ErrorMessage         string
 	// ResponseResourceID 是 Gemini interactions 创建流的资源 ID（inspector 从
 	// interaction.* 事件提取的协议内部元数据）；其余协议恒空。亲和写入
 	// （提交前 Remember）与后续资源路由依赖本字段的全链回带。

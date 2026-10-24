@@ -198,7 +198,7 @@ func TestW11GMarkAllAliasMethodsAndDefaultReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	var reason string
-	if err := db.QueryRow(`SELECT reason FROM group_account_stats_dirty WHERE group_id=?`, GroupAccountStatsDirtyAll).Scan(&reason); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT reason FROM group_account_stats_dirty WHERE group_id=?`), GroupAccountStatsDirtyAll).Scan(&reason); err != nil {
 		t.Fatal(err)
 	}
 	if reason != "write" {
@@ -207,7 +207,7 @@ func TestW11GMarkAllAliasMethodsAndDefaultReason(t *testing.T) {
 	if err := s.MarkAllDirty(ctx, "alias"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT reason FROM group_account_stats_dirty WHERE group_id=?`, GroupAccountStatsDirtyAll).Scan(&reason); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT reason FROM group_account_stats_dirty WHERE group_id=?`), GroupAccountStatsDirtyAll).Scan(&reason); err != nil {
 		t.Fatal(err)
 	}
 	if reason != "alias" {
@@ -360,7 +360,7 @@ func TestW11GConstructorAndContractGuards(t *testing.T) {
 	if err := (&Store{}).CheckContract(ctx); !errors.Is(err, ErrOwnerGate) {
 		t.Fatalf("nil db err=%v", err)
 	}
-	if _, err := db.Exec(`DROP TABLE group_account_stats_dirty`); err != nil {
+	if _, err := db.Exec(fixtureSQL(`DROP TABLE group_account_stats_dirty`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckContract(ctx); err == nil {

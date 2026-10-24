@@ -284,7 +284,7 @@ func TestWJAuthzBatchServerRoleSnapshotSecondLoop(t *testing.T) {
 // 的运行时缓存都命中时必须直接返回，不进入缺失装载。
 func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "allcached")
+	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "allcached")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -297,7 +297,7 @@ func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
 		t.Fatalf("first batch: %v", err)
 	}
 	// 第二次调用全部命中内存缓存；超库后仍保持放行以证明未重新装载。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	second, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
@@ -316,7 +316,7 @@ func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
 func TestWJAPIKeyExactAsyncSharedCacheHit(t *testing.T) {
 	db := newTestDB(t, "wj-apikey-sharedhit")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -397,11 +397,11 @@ func TestWJCostsMissingProjectionTables(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db := newTestDB(t, "wj-drop")
 			statsSchema(t, db)
-			stats, err := NewStatsStore(db, false)
+			stats, err := NewStatsStore(db, true)
 			if err != nil {
 				t.Fatalf("NewStatsStore: %v", err)
 			}
-			if _, err := db.Exec("DROP TABLE " + tt.drop); err != nil {
+			if _, err := db.Exec("DROP TABLE juhe_stats." + tt.drop); err != nil {
 				t.Fatalf("drop: %v", err)
 			}
 			now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
@@ -419,7 +419,7 @@ func TestWJCostsMissingProjectionTables(t *testing.T) {
 func TestWJCostsBatchNilContext(t *testing.T) {
 	db := newTestDB(t, "wj-nilctx")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}

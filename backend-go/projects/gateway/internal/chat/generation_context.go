@@ -15,37 +15,12 @@ import (
 // chat-asset-input.ts, chat-model-context.ts, chat-context-budget.ts and the
 // model-availability slices of chat.routes.ts.
 
-// ChatAPIKeyRecord mirrors the findChatApiKeySecretAsync row.
-type ChatAPIKeyRecord struct {
-	ID     string
-	Name   string
-	Secret string
-	Status string
-}
-
-// ChatAPIKeyProvider is the chat API key provision port (Node
-// ensureChatApiKeyForSystemAccountAsync + findChatApiKeySecretAsync).
-type ChatAPIKeyProvider interface {
-	EnsureChatAPIKey(ownerID string) (string, error)
-	FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecord, error)
-}
-
-// GatewayGroupBinding mirrors the group binding subset.
-type GatewayGroupBinding struct {
-	GroupID      string
-	Status       string
-	GroupEnabled bool
-}
-
-// GatewayKeyView mirrors validateGatewayApiKeyAsync.
-type GatewayKeyView struct {
-	GroupBindings          []GatewayGroupBinding
-	ImageGenerationEnabled bool
-}
-
-// GatewayKeyValidator is the gateway API key validation port.
-type GatewayKeyValidator interface {
-	ValidateGatewayKey(secret string) (*GatewayKeyView, error)
+// SystemAccountFlagsLookup 是归属系统账户的开关读取端口（AI 问答免 Key 直调
+// 后生图开关的新载体：原 gatewayKey.ImageGenerationEnabled 随 chat Key 退场，
+// 改为直读归属 system_accounts.image_generation_enabled，保持原开关语义）。
+// Optional：nil 视为 false（内部对话不授予生图工具）。
+type SystemAccountFlagsLookup interface {
+	ImageGenerationEnabled(systemAccountID string) (bool, error)
 }
 
 // ModelCatalog is the model directory port (Node
@@ -100,7 +75,6 @@ type ScheduleObservationInput struct {
 	Targets          []ObservationTarget
 	ConversationID   string
 	SystemAccountID  string
-	APIKeySecret     string
 	Model            string
 	UserContent      string
 	AssistantContent string

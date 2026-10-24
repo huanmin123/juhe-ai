@@ -149,7 +149,6 @@ func w1tObsInput(assetID string) chat.ScheduleObservationInput {
 	return chat.ScheduleObservationInput{
 		ConversationID:   "conv-w1t",
 		SystemAccountID:  "sys-w1t",
-		APIKeySecret:     "sk-w1t-obs",
 		Model:            "gpt-obs",
 		UserContent:      "看这张图",
 		AssistantContent: "这是回答",

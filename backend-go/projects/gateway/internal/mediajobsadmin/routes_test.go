@@ -50,7 +50,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`,
 		`CREATE TABLE media_jobs (
-			id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, account_id TEXT NOT NULL,
+			id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, owner_system_account_id TEXT NOT NULL DEFAULT '', account_id TEXT NOT NULL,
 			provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
 			status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
 			error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
@@ -494,18 +494,20 @@ func TestMyMediaJobsScopesToCaller(t *testing.T) {
 			t.Fatalf("seed api key: %v", err)
 		}
 	}
+	// 归属列（owner_system_account_id）按写入路径语义直接落属主；api_keys
+	// 行保留作 apiKeyId 回显对照（读面归属已不依赖它）。
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
-		ID: "video_owner_a", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", AccountID: "acc_a",
+		ID: "video_owner_a", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", OwnerSystemAccountID: userAID, AccountID: "acc_a",
 		UpstreamJobID: "up_a", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 A 任务一"},
 	})
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
-		ID: "video_owner_a2", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", AccountID: "acc_a",
+		ID: "video_owner_a2", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", OwnerSystemAccountID: userAID, AccountID: "acc_a",
 		UpstreamJobID: "up_a2", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 A 任务二"},
 	})
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
-		ID: "video_owner_b", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_b1", AccountID: "acc_b",
+		ID: "video_owner_b", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_b1", OwnerSystemAccountID: userBID, AccountID: "acc_b",
 		UpstreamJobID: "up_b", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 B 任务"},
 	})

@@ -137,10 +137,10 @@ func chainChatDispatchPinnedFetchOf() func(ctx context.Context, groupID, systemA
 }
 
 // chatDispatchTargetAwareExecutor 是 cmd 侧执行器覆盖端口的最小断言面
-// （与 internal/chat 的 chatDispatchTargetAware 同形），观察适配器据此在
-// 派发前绑定目标。
+// （与 internal/chat 的 chatDispatchTargetAware 同形：accountID + ownerID
+// 同源注入），观察适配器据此在派发前绑定目标。
 type chatDispatchTargetAwareExecutor interface {
-	WithChatDispatchAccount(accountID string) chat.GenerationExecutor
+	WithChatDispatchAccount(accountID, ownerID string) chat.GenerationExecutor
 }
 
 // chatConversationDispatchTarget 读会话绑定账户（chat 观察适配器的只读查询：
@@ -239,10 +239,18 @@ func (c *gatewayChain) applyChatDispatchGroupContext(ctx context.Context, system
 	return nil
 }
 
-// chatDispatchSystemAccountID 取请求的归属系统账户（preauth 已解析的运行时
-// 快照；缺失时返回空串，由调用方 fail-closed）。
+// chatDispatchSystemAccountID 取请求的归属系统账户：内部身份通道（AI 问答免
+// Key 直调）优先读 req.InternalOwnerSystemAccountID——内部通道没有 API Key
+// 快照（preauth 跳过 Key 鉴权，req.Runtime 恒 nil）；外部 Key 请求回落 preauth
+// 已解析的运行时快照。缺失时返回空串，由调用方 fail-closed。
 func chatDispatchSystemAccountID(req *gatewaypreauth.GatewayRequest) string {
-	if req == nil || req.Runtime == nil || req.Runtime.APIKey == nil {
+	if req == nil {
+		return ""
+	}
+	if req.InternalOwnerSystemAccountID != "" {
+		return req.InternalOwnerSystemAccountID
+	}
+	if req.Runtime == nil || req.Runtime.APIKey == nil {
 		return ""
 	}
 	return req.Runtime.APIKey.SystemAccountID

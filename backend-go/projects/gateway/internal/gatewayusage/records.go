@@ -11,19 +11,24 @@ import (
 // strings and nil pointers mean the Node undefined fields; Success, TraceID
 // and TrafficSource are always set by the record builders.
 type UsageRecordInput struct {
-	ID                               string   `json:"id,omitempty"`
-	SystemAccountID                  string   `json:"systemAccountId,omitempty"`
-	TraceID                          string   `json:"traceId"`
-	TrafficSource                    string   `json:"trafficSource"`
-	ClientIP                         string   `json:"clientIp,omitempty"`
-	APIKeyID                         string   `json:"apiKeyId,omitempty"`
-	GroupID                          string   `json:"groupId,omitempty"`
-	RouteGroupID                     string   `json:"routeGroupId,omitempty"`
+	ID              string `json:"id,omitempty"`
+	SystemAccountID string `json:"systemAccountId,omitempty"`
+	TraceID         string `json:"traceId"`
+	TrafficSource   string `json:"trafficSource"`
+	ClientIP        string `json:"clientIp,omitempty"`
+	APIKeyID        string `json:"apiKeyId,omitempty"`
+	GroupID         string `json:"groupId,omitempty"`
+	RouteGroupID    string `json:"routeGroupId,omitempty"`
 	// CompactionExpected 是请求侧压缩期望（用量记录压缩标记设计 §压缩请求
 	// 识别：/responses/compact 路径或 /responses 请求体含内联压缩触发器）：
 	// 非探针请求经 spool JSON 透传落列 compaction_expected。与 jobs
 	// usagewriter 镜像结构同名同 tag、字段序同样紧邻 RouteGroupID。
-	CompactionExpected               bool     `json:"compactionExpected"`
+	CompactionExpected bool `json:"compactionExpected"`
+	// SuppressUsage 是内部通道请求（AI 问答免 Key 直调）的使用日志丢弃标记：
+	// 只在进程内随记录传播到持久化唯一闸口（FinalizationDispatch.
+	// DispatchUsageRecord 入口第一步即丢弃，覆盖正常入队与溢出 spool 两臂），
+	// 永不序列化——`json:"-"` 保证 spool 落盘 JSON 契约一个字节都不变。
+	SuppressUsage                    bool     `json:"-"`
 	AccountID                        string   `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`
@@ -77,16 +82,16 @@ type UsageRecordInput struct {
 	// usage_missing 标记（上游无 usage 回报也无 duration）。
 	// M2 视频计量（媒体设计 §10）：OutputVideoSeconds 是视频任务输出秒数
 	//（任务参数 seconds 口径，网关自算；失败任务不虚计）。
-	TtsInputChars                    *int64   `json:"ttsInputChars,omitempty"`
-	AudioInputSeconds                *float64 `json:"audioInputSeconds,omitempty"`
-	OutputVideoSeconds               *float64 `json:"outputVideoSeconds,omitempty"`
-	UsageMissing                     bool     `json:"usageMissing,omitempty"`
-	CostUsd                          *float64 `json:"costUsd,omitempty"`
-	ErrorCode                        string   `json:"errorCode,omitempty"`
-	ErrorMessage                     string   `json:"errorMessage,omitempty"`
-	RequestSnapshot                  any      `json:"requestSnapshot,omitempty"`
-	ResponseSnapshot                 any      `json:"responseSnapshot,omitempty"`
-	CreatedAt                        string   `json:"createdAt,omitempty"`
+	TtsInputChars      *int64   `json:"ttsInputChars,omitempty"`
+	AudioInputSeconds  *float64 `json:"audioInputSeconds,omitempty"`
+	OutputVideoSeconds *float64 `json:"outputVideoSeconds,omitempty"`
+	UsageMissing       bool     `json:"usageMissing,omitempty"`
+	CostUsd            *float64 `json:"costUsd,omitempty"`
+	ErrorCode          string   `json:"errorCode,omitempty"`
+	ErrorMessage       string   `json:"errorMessage,omitempty"`
+	RequestSnapshot    any      `json:"requestSnapshot,omitempty"`
+	ResponseSnapshot   any      `json:"responseSnapshot,omitempty"`
+	CreatedAt          string   `json:"createdAt,omitempty"`
 }
 
 // UsageFailureAttribution mirrors the Node union.

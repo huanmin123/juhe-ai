@@ -63,7 +63,7 @@ func seedMediaUsageShard(t *testing.T, fixture *testFixture, shardDir, fileName 
 
 func TestAccountUsageSummaryMediaMeteringFields(t *testing.T) {
 	fixture := newFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date,
 		request_count, input_tokens, output_tokens, total_cost_usd,
 		input_audio_tokens, output_audio_tokens, tts_input_chars, audio_input_seconds, output_video_seconds)
 		VALUES ('sys-user-1', 'system_account', 'sys-user-1', '2026-09-04', 2, 10, 5, 0.5,
@@ -88,10 +88,10 @@ func TestAccountUsageSummaryMediaMeteringFields(t *testing.T) {
 func TestAccountUsagePageRangeUsageMediaFields(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count,
+		`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count,
 			input_tokens, output_tokens, total_cost_usd, input_audio_tokens, tts_input_chars, audio_input_seconds, output_video_seconds)
 			VALUES ('global', 'account', 'acct-media', '2026-09-04', 1, 0, 0, 0.1, 1200, 4567, 62.5, 4)`,
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-media', '媒体账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-media', '媒体账户', 'sys-owner-1', 'openai', 'api_key', 'active')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -116,7 +116,8 @@ func TestAccountUsagePageRangeUsageMediaFields(t *testing.T) {
 }
 
 func TestUsageRecordsListMediaFieldsFromShard(t *testing.T) {
-	fixture := newFixture(t)
+	// 组B：usage 分片文件读面（SQLite-only 臂）。
+	fixture := newSQLiteFixture(t)
 	shardDir := t.TempDir()
 	if err := seedMediaUsageShard(t, fixture, shardDir, "usage_20260904_s000.sqlite3"); err != nil {
 		t.Fatal(err)

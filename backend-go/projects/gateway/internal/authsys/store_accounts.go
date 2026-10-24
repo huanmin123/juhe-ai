@@ -599,8 +599,9 @@ func newID(prefix string) (string, error) {
 // composition always does) the narrowed ensure side effects
 // (ensureDefaultBuiltInGroups / ensureDefaultRouteStrategies /
 // ensureDefaultApiKeys — 2026-10-07 默认资源收口后仅 GPT 一套) run inside the
-// same transaction; the chat API key is provisioned on demand by the
-// chat-session ensure chain (EnsureChatAPIKey), not here.
+// same transaction. AI 问答不创建 API Key（2026-10-24 免 Key 直调改造）：
+// 历史 chat-session ensure 链已随 cmd/juhe-ai-gateway chain_chat_keys.go 整体
+// 删除，此处与其它资源创建路径都不再补建 chat Key。
 func (s *AccountStore) Create(ctx context.Context, input CreateInput) (AccountListItem, error) {
 	ctx = ensureCtx(ctx)
 	if err := s.requireOwner(); err != nil {

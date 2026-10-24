@@ -34,9 +34,8 @@ func seedGrantRow(t *testing.T, db *sql.DB, id, status, expiresAt, revokedAt, cr
 	if revokedAt != "" {
 		revokedArg = revokedAt
 	}
-	_, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id,
-		status, revoked_at, revoked_by, created_by, expires_at, updated_at)
-		VALUES (?, 'api_key', 'res', 'owner', 'system_account', 'grantee', ?, ?, '', ?, ?, ?)`,
+	_, err := db.Exec(`INSERT INTO juhe_business.resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, status, revoked_at, revoked_by, created_by, expires_at, updated_at, created_at)
+		VALUES ($1, 'api_key', 'res', 'owner', 'system_account', 'grantee', $2, $3, '', $4, $5, $6, $6)`,
 		id, status, revokedArg, createdBy, expiresArg, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +45,7 @@ func seedGrantRow(t *testing.T, db *sql.DB, id, status, expiresAt, revokedAt, cr
 func assertGrantStatus(t *testing.T, db *sql.DB, id, want string) {
 	t.Helper()
 	var status string
-	if err := db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, id).Scan(&status); err != nil {
+	if err := db.QueryRow(`SELECT status FROM juhe_business.resource_authorization_grants WHERE id = $1`, id).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != want {
@@ -86,7 +85,7 @@ func TestSweepExpiryBoundary(t *testing.T) {
 
 	// revoked_at = COALESCE(revoked_at, now).
 	var revokedAt string
-	if err := db.QueryRow(`SELECT revoked_at FROM resource_authorization_grants WHERE id = 'g-paused'`).Scan(&revokedAt); err != nil {
+	if err := db.QueryRow(`SELECT revoked_at FROM juhe_business.resource_authorization_grants WHERE id = 'g-paused'`).Scan(&revokedAt); err != nil {
 		t.Fatal(err)
 	}
 	if revokedAt != "keep-revoked-at" {

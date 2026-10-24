@@ -71,15 +71,15 @@ func (m *wjMockSyncer) SyncGatewayCacheInvalidations(context.Context) error {
 }
 
 // wjNewAuthzService 构造带完整依赖的授权配额服务（业务库/统计库/快照缓存）。
-// suffix 区分同一测试内的多个实例：内存 SQLite 以测试名+标签共享，重名会
-// 复用同一物理库导致建表冲突。
+// suffix 区分同一测试内的多个实例（SQLite 共享内存库时代的隔离标记，PG 每
+// 测试独立建库后仅作可读标签保留）。
 func wjNewAuthzService(t *testing.T, modes Modes, clock *fakeClock, suffix string) (*AuthorizationQuotaService, *sql.DB, *sql.DB) {
 	t.Helper()
 	business := newTestDB(t, "wj-authz-biz-"+suffix)
 	statsDB := newTestDB(t, "wj-authz-stats-"+suffix)
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -103,7 +103,7 @@ func wjNewAuthzService(t *testing.T, modes Modes, clock *fakeClock, suffix strin
 func TestWJAuthorizationQuotaConfigValidation(t *testing.T) {
 	business := newTestDB(t, "wj-cfg-biz")
 	statsDB := newTestDB(t, "wj-cfg-stats")
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -162,7 +162,7 @@ func wjNewAuthzRedisService(t *testing.T, clock *fakeClock, shared SharedJSONCac
 	t.Helper()
 	statsDB := newTestDB(t, "wj-authz-redis-stats")
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, false)
+	stats, err := NewStatsStore(statsDB, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -187,7 +187,7 @@ func wjNewAuthzRedisService(t *testing.T, clock *fakeClock, shared SharedJSONCac
 // 的包装语义：account 为 nil 时只按 group 维度判定，非 nil 时取其授权 ID。
 func TestWJCheckAuthorizationQuotaSyncWrapper(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "sync")
+	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "sync")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -201,7 +201,7 @@ func TestWJCheckAuthorizationQuotaSyncWrapper(t *testing.T) {
 
 	// 非 nil account 且 group 未超额 → 允许。先清缓存：首次判定已写入 5s
 	// 运行时缓存，不清会继续返回缓存的拒绝决策。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 1 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 1 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	service.ClearCache(ctx)
@@ -215,7 +215,7 @@ func TestWJCheckAuthorizationQuotaSyncWrapper(t *testing.T) {
 // 运行时内存缓存命中与失效同步器错误传播。
 func TestWJAuthorizationQuotaAsyncMemoryAndSyncer(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	base, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "mem")
+	base, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "mem")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -227,7 +227,7 @@ func TestWJAuthorizationQuotaAsyncMemoryAndSyncer(t *testing.T) {
 		t.Fatalf("首次检查必须允许: (%+v, %v)", first, err)
 	}
 	// 超额后 5s 运行时缓存必须继续放行（memory 命中分支）。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	second, err := base.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
@@ -543,7 +543,7 @@ func TestWJAuthorizationQuotaBatchServerRoleSharedAuthzDedup(t *testing.T) {
 // PostgreSQL 模式下走批量成本装载（SQLite 无法绑定 $n 占位符 → 错误传播）。
 func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "roex")
+	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "roex")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -555,7 +555,7 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 		t.Fatalf("只读未超额必须允许: (%+v, %v)", decision, err)
 	}
 	// 只读批量入口：超额 → 拒绝（不读缓存，直接查库）。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 10 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 10 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	decision, err = service.CheckAuthorizationQuotaByIDsReadOnly(ctx, "ga1", "", clock.Now())
@@ -563,23 +563,28 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 		t.Fatalf("只读超额必须拒绝: (%+v, %v)", decision, err)
 	}
 
-	// ExactAsync 非 PostgreSQL → 回退同步路径，决策与同步一致。
+	// ExactAsync（PostgreSQL 模式）走批量精确装载，判定与同步一致。
+	// 非 PostgreSQL 回退同步分支需要 SQLite 业务库承载，PG 化测试基建下不可达
+	// （登记：随生产 sqlite 臂删除批次同批退役）。
 	decision, err = service.CheckAuthorizationQuotaByIDsExactAsync(ctx, "ga1", "aa1", clock.Now())
 	if err != nil || decision.Allowed {
-		t.Fatalf("ExactAsync 回退必须拒绝: (%+v, %v)", decision, err)
+		t.Fatalf("ExactAsync 批量精确必须拒绝: (%+v, %v)", decision, err)
 	}
 	batch, err := service.CheckAuthorizationQuotaBatchByIDsExactAsync(ctx, "ga1", []AccountRef{{AccountID: "u1", AccountAuthorizationID: "aa1"}}, clock.Now())
 	if err != nil || len(batch) != 1 || batch[0].Allowed {
-		t.Fatalf("ExactAsync 批量回退必须拒绝: (%+v, %v)", batch, err)
+		t.Fatalf("ExactAsync 批量必须拒绝: (%+v, %v)", batch, err)
 	}
 
-	// PostgreSQL 模式：StatsStore 以 PG 方言执行（$n 占位符 + juhe_stats
-	// schema 限定表名），SQLite 无法执行 → 错误必须传播（生产中该路径由
-	// 真实 PostgreSQL 承载）。
+	// PostgreSQL 模式：StatsStore 以生产 PG 臂方言执行（$n 占位符 + juhe_stats
+	// schema 限定表名），真实 PostgreSQL 上批量精确判定完整生效（SQLite 时代
+	// 依赖方言冲突注入错误，迁真实 PG 后重钉为成功路径断言）。
 	pgBusiness := newTestDB(t, "wj-authz-pg-biz")
 	authzSchema(t, pgBusiness)
+	seedAuthzRow(t, pgBusiness, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	pgStatsDB := newTestDB(t, "wj-authz-pg-stats")
 	statsSchema(t, pgStatsDB)
+	seedCost(t, pgStatsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
+		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 10})
 	pgStats, err := NewStatsStore(pgStatsDB, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
@@ -595,8 +600,12 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthorizationQuotaService: %v", err)
 	}
-	if _, err := pgService.CheckAuthorizationQuotaBatchByIDsExactAsync(ctx, "ga1", []AccountRef{{AccountID: "u1"}}, clock.Now()); err == nil {
-		t.Fatal("PostgreSQL 模式批量成本装载在 SQLite 上必须报错")
+	pgDecisions, err := pgService.CheckAuthorizationQuotaBatchByIDsExactAsync(ctx, "ga1", []AccountRef{{AccountID: "u1"}}, clock.Now())
+	if err != nil {
+		t.Fatalf("PostgreSQL 模式批量成本装载必须成功: %v", err)
+	}
+	if len(pgDecisions) != 1 || pgDecisions[0].Allowed || pgDecisions[0].Message != AuthorizationQuotaExceededMessage {
+		t.Fatalf("PostgreSQL 模式批量精确判定必须按真实成本拒绝: %+v", pgDecisions)
 	}
 
 	// ClearCacheAsync 非 Redis 模式只清内存缓存。
@@ -655,7 +664,7 @@ func TestWJAuthorizationQuotaRedisCacheSetFailure(t *testing.T) {
 // 小时额度按归一化窗口小时数读取 hourly 投影，超出即拒绝。
 func TestWJTeamGrantHourlyLimit(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "teamhourly")
+	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "teamhourly")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "team1", "", "active")
 	seedGrantRow(t, business, "grant1", "group", "g1", "team1", "sysA", `{"hourly":{"enabled":true,"hours":6,"limit":2}}`)
@@ -682,7 +691,7 @@ func TestWJTeamGrantHourlyLimit(t *testing.T) {
 func TestWJAPIKeyQuotaAsyncWorkerAndShared(t *testing.T) {
 	db := newTestDB(t, "wj-apikey-worker")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, false)
+	stats, err := NewStatsStore(db, true)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -772,8 +781,8 @@ func TestWJAPIKeyQuotaAsyncWorkerAndShared(t *testing.T) {
 }
 
 // TestWJAPIKeyQuotaExactAsyncPostgresDialect 固定 PostgreSQL 模式精确批量：
-// 失效同步器先执行，PG 方言在 SQLite 上无法执行 → 错误传播（生产中由真实
-// PostgreSQL 承载该路径）。
+// 失效同步器先执行，批量装载在真实 PostgreSQL 上按 seed 成本完整判定
+// （SQLite 时代依赖方言冲突注入错误，迁真实 PG 后重钉为成功路径断言）。
 func TestWJAPIKeyQuotaExactAsyncPostgresDialect(t *testing.T) {
 	db := newTestDB(t, "wj-apikey-pg")
 	statsSchema(t, db)
@@ -796,19 +805,26 @@ func TestWJAPIKeyQuotaExactAsyncPostgresDialect(t *testing.T) {
 	}
 	ctx := context.Background()
 	apiKey := APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
-	if _, err := service.CheckAPIKeyQuotaAsync(ctx, apiKey); err == nil {
-		t.Fatal("PostgreSQL 精确批量在 SQLite 上必须报错")
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
+		[]any{"sys", "api_key", "ak", "2026-09-04", 20})
+	decision, err := service.CheckAPIKeyQuotaAsync(ctx, apiKey)
+	if err != nil {
+		t.Fatalf("PostgreSQL 精确批量必须成功: %v", err)
+	}
+	if decision.Allowed || decision.Message != APIKeyQuotaExceededMessage {
+		t.Fatalf("PostgreSQL 精确批量必须按真实成本拒绝: %+v", decision)
 	}
 	if syncer.calls != 2 {
 		t.Fatalf("ExactAsync 各入口都必须先同步失效, calls=%d", syncer.calls)
 	}
-	// 同步路径（ExactAsync 直调）同样传播装载错误。
-	if _, err := service.CheckAPIKeyQuotaExactAsync(ctx, apiKey, clock.Now()); err == nil {
-		t.Fatal("ExactAsync PG 方言在 SQLite 上必须报错")
+	// 同步路径（ExactAsync 直调）命中 memory 缓存返回同一拒绝决策。
+	if decision, err := service.CheckAPIKeyQuotaExactAsync(ctx, apiKey, clock.Now()); err != nil || decision.Allowed {
+		t.Fatalf("ExactAsync PG 直调必须拒绝: (%+v, %v)", decision, err)
 	}
-	// 精确成本读取同样走批量装载并传播错误。
-	if _, err := service.ReadAPIKeyQuotaCostsExactAsync(ctx, apiKey, clock.Now()); err == nil {
-		t.Fatal("ReadAPIKeyQuotaCostsExactAsync PG 方言必须报错")
+	// 精确成本读取同样走批量装载并返回真实成本。
+	costs, err := service.ReadAPIKeyQuotaCostsExactAsync(ctx, apiKey, clock.Now())
+	if err != nil || costs.Daily != 20 {
+		t.Fatalf("ReadAPIKeyQuotaCostsExactAsync PG = (%+v, %v)", costs, err)
 	}
 }
 

@@ -204,7 +204,7 @@ const chatWebSearchBindingHint = "搜索工具未配置：当前会话尚未绑�
 const chatImageBindingHint = "图片生成工具未配置：当前会话尚未绑定生图账户，无法生成图片。请直接告知用户在会话设置中绑定生图账户后重试，不要编造生成结果。"
 
 // chatVideoBindingHint 是 generate_video 未绑定时回喂主模型的 tool result 文案
-//（问答音视频工具设计 §3，沿 chatImageBindingHint 模式）。
+// （问答音视频工具设计 §3，沿 chatImageBindingHint 模式）。
 const chatVideoBindingHint = "视频生成工具未配置：当前会话尚未绑定视频生成账户，无法生成视频。请直接告知用户在会话设置中绑定视频生成账户后重试，不要编造生成结果。"
 
 // chatAudioBindingHint 是 generate_audio 未绑定时回喂主模型的 tool result 文案。
@@ -413,7 +413,7 @@ func executeGenerateImageTool(input map[string]any, context *chatToolExecutionCo
 
 // newGenerateVideoTool 注册 generate_video 模型工具（问答音视频工具设计 §3，
 // 2026-10-04）：kind=model——执行依赖会话的「视频账户 + 默认视频模型」绑定
-//（video_account_id + default_video_model）。模型词表是目录数据驱动的（无静态
+// （video_account_id + default_video_model）。模型词表是目录数据驱动的（无静态
 // 注册枚举）：model 参数为自由字符串，执行侧经 ConstrainVideoModel（BUG-0230
 // 模式）收敛到绑定账户可路由集合；工具创建任务后立即完成调用（jobId 随结果
 // 回喂主模型），异步结算由前端轮询 media-tasks 接口驱动（设计 §2.2）。

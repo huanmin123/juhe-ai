@@ -4,9 +4,9 @@ package chat
 // 2026-10-04）：GET /my-chat/conversations/{cid}/media-tasks/{jobId}。无后台
 // 常驻任务——前端对未终态 output_media_task 块轮询本接口；后端实时查
 // media_jobs（经组合根注入的只读端口），未终态经进程内 /v1 任务面 poll 上游
-//（任务面亲和：创建时归属 chat API Key），到达终态时幂等结算：
-// completed→GET content 下载（64MB 限额）落 chat_assets→更新消息任务块附
-// assetId；failed/cancelled/expired→块置终态错误。幂等性由三道闸保证：
+//（任务面亲和：免 Key 直调后归属为会话归属系统账户，W-C 批切列），到达终态
+// 时幂等结算：completed→GET content 下载（64MB 限额）落 chat_assets→更新消息
+// 任务块附 assetId；failed/cancelled/expired→块置终态错误。幂等性由三道闸保证：
 // media_jobs 终态唯一性（/v1 链）、分条互斥（同 job 并发请求串行化）与资产
 // digest 查重（重复结算复用既有资产行）。
 //
@@ -34,9 +34,11 @@ type ChatMediaJobSnapshot struct {
 }
 
 // ChatMediaJobsLookup 是 media_jobs 的只读查询端口（组合根用 gatewaymedia.
-// MediaJobsRepo 适配注入；nil 让任务接口返回显式错误）。
+// MediaJobsRepo 适配注入；nil 让任务接口返回显式错误）。第二参数是归属系统
+// 账户（免 Key 直调后任务面归属从 chat API Key 切到 owner_system_account_id，
+// W-C 批落地新列查询）。
 type ChatMediaJobsLookup interface {
-	FindChatMediaJob(jobID, apiKeyID string) (ChatMediaJobSnapshot, bool, error)
+	FindChatMediaJob(jobID, ownerSystemAccountID string) (ChatMediaJobSnapshot, bool, error)
 }
 
 // ChatMediaTaskBlockPatch 是任务块的定点终态补丁字段（nil = 不改）。
@@ -205,14 +207,10 @@ func (rt *chatRoutes) mediaTaskStatus(w http.ResponseWriter, r *http.Request) {
 		writeChatRouteError(w, &DomainError{Message: "媒体任务面暂不可用，请稍后重试"})
 		return
 	}
-	apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	// 归属校验：media_jobs 行按 id + api_key_id（创建时归属会话 chat Key）；
+	// 归属校验：media_jobs 行按 id + 归属系统账户（免 Key 直调后任务归属为
+	// 会话归属系统账户；W-C 批把 repo 归属过滤切到 owner_system_account_id）；
 	// 会话侧再以消息块复核（任务块必须属于本会话，跨会话 jobId 不泄露状态）。
-	snapshot, found, err := rt.deps.MediaJobs.FindChatMediaJob(jobID, apiKey.ID)
+	snapshot, found, err := rt.deps.MediaJobs.FindChatMediaJob(jobID, ownerID)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
@@ -237,7 +235,7 @@ func (rt *chatRoutes) mediaTaskStatus(w http.ResponseWriter, r *http.Request) {
 	// usage/计费回填，chat 不重复实现）；终态行不再 poll（幂等重开的重复轮询
 	// 直接回本地快照，不消耗上游配额）。
 	if !chatMediaJobStatusTerminal(status) {
-		polled, pollErr := PollChatMediaTask(r.Context(), rt.deps.Executor, jobID, apiKey.Secret, rt.deps.traceID(r))
+		polled, pollErr := PollChatMediaTask(r.Context(), mediaTaskExecutor(rt, conversation, ownerID), jobID, rt.deps.traceID(r))
 		if pollErr != nil {
 			writeMessageCode(w, http.StatusBadGateway, pollErr.Error(), "chat_media_task_poll_failed")
 			return
@@ -251,7 +249,6 @@ func (rt *chatRoutes) mediaTaskStatus(w http.ResponseWriter, r *http.Request) {
 	payload := rt.settleChatMediaTask(settleChatMediaTaskInput{
 		conversation: conversation,
 		ownerID:      ownerID,
-		apiKeySecret: apiKey.Secret,
 		traceID:      rt.deps.traceID(r),
 		jobID:        jobID,
 		status:       status,
@@ -274,11 +271,38 @@ func chatMediaBlockProgress(block map[string]any) *int64 {
 	return &progress
 }
 
+// mediaTaskExecutor 解析媒体任务面（poll / content download）的派发执行器
+// 视图。任务面请求是 chat 内部的二次 /v1 调用，与发送链同源：免 Key 直调后
+// 鉴权走内部身份通道，必须携带「会话绑定账户 + 会话归属系统账户」的执行器
+// 视图，否则 /v1 任务面会因缺少 Bearer 直接 401（原始 rt.deps.Executor 是
+// 零值视图，两条通道都不注入）。
+//
+// 未绑定账户的会话无法确定派发作用域：返回原执行器，由任务面按未认证语义
+// 失败（发送预检已阻止未绑定会话产生任务行，此分支只在存量数据异常时可达）。
+// 执行器未实现 chatDispatchTargetAware（测试 mock）时同样返回原执行器。
+func mediaTaskExecutor(rt *chatRoutes, conversation *Conversation, ownerID string) GenerationExecutor {
+	executor := rt.deps.Executor
+	if executor == nil || conversation == nil {
+		return executor
+	}
+	accountID := derefString(conversation.BindAccountID)
+	if accountID == "" {
+		return executor
+	}
+	aware, ok := executor.(chatDispatchTargetAware)
+	if !ok {
+		return executor
+	}
+	if ownerID == "" {
+		ownerID = conversation.SystemAccountID
+	}
+	return aware.WithChatDispatchAccount(accountID, ownerID)
+}
+
 // settleChatMediaTaskInput 是一次任务查询的结算上下文。
 type settleChatMediaTaskInput struct {
 	conversation *Conversation
 	ownerID      string
-	apiKeySecret string
 	traceID      string
 	jobID        string
 	status       string
@@ -345,7 +369,7 @@ func (rt *chatRoutes) settleChatMediaTask(input settleChatMediaTaskInput) map[st
 		}
 		switch input.status {
 		case "completed":
-			artifact, downloadErr := DownloadChatMediaContent(context.Background(), rt.deps.Executor, input.jobID, input.apiKeySecret, input.traceID)
+			artifact, downloadErr := DownloadChatMediaContent(context.Background(), mediaTaskExecutor(rt, input.conversation, input.ownerID), input.jobID, input.traceID)
 			if downloadErr != nil {
 				// 下载失败按 failed 结算；若并发方已写等价 completed 终态
 				// （equivalentCompleted），块内事实为准，保持 completed 响应，

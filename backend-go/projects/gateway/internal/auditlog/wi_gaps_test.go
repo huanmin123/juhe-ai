@@ -55,8 +55,7 @@ func TestWIValidateInputFieldMatrix(t *testing.T) {
 }
 
 func TestWISearchHotSearchContract(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -160,7 +159,7 @@ func TestWIBlobFileMetadataGuards(t *testing.T) {
 }
 
 func TestWIStoreCloseIsIdempotent(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	if err := store.Close(); err != nil {
 		t.Fatalf("首次关闭失败: %v", err)
 	}

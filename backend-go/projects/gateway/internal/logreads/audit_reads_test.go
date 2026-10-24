@@ -12,27 +12,29 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
-// readsAuthTables is the minimal auth schema required by authsys (mirrors the
-// groups test harness).
+// readsAuthTables 是 w11fFaultEnv 保留组（scripted SQLite 故障注入环境）专用
+// 的最小 auth schema（见 pgkit_test.go 的三组分类说明）；组A环境走
+// newLogreadsPGDatabase 的 PG 夹具。
 var readsAuthTables = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
 }
 
-// readsTestEnv is the shared route test harness: one in-memory SQLite handle
-// backing the auth tables, the dataset tables seeded per family, and the
-// logreads routes mounted behind the real requireAdmin chain.
+// readsTestEnv is the shared route test harness: one pgtestkit PG database
+// carrying the auth tables and the F1/F3/F5 production dataset schemas, and
+// the logreads routes mounted behind the real requireAdmin chain in the
+// production ReadPostgres dialect. The pg flag keeps exec() bilingual for the
+// retained w11fFaultEnv scripted environment (SQLite semantics).
 type readsTestEnv struct {
 	server   *httptest.Server
 	db       *sql.DB
+	pg       bool
 	jar      map[string]string
 	accounts *authsys.AccountStore
 	hotDir   string
@@ -41,28 +43,18 @@ type readsTestEnv struct {
 	grep     *RuntimeLogGrep
 }
 
-// newReadsTestEnv builds the env over the given dataset DDL. The optional
-// mutate hook runs after the readers are constructed and before Mount (used
-// to pin the runtime reader clock).
+// newReadsTestEnv builds the env over the production dataset schemas carried
+// by newLogreadsPGDatabase. The optional mutate hook runs after the readers
+// are constructed and before Mount (used to pin the runtime reader clock).
 
-func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader), login bool) *readsTestEnv {
+func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader), login bool) *readsTestEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:logreads-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newLogreadsPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range append(readsAuthTables, datasetDDL...) {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,18 +66,18 @@ func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditL
 	hotDir := filepath.Join(directories, "audit-hot")
 	blobDir := filepath.Join(directories, "audit-blobs")
 	logDir := filepath.Join(directories, "logs")
-	audit, err := NewAuditLogQueryReader(db, ReadSQLite, AuditQueryDirectories{
+	audit, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{
 		HotSearchDirectory:   hotDir,
 		PayloadBlobDirectory: blobDir,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeReader, err := NewRuntimeLogSQLReader(db, ReadSQLite)
+	runtimeReader, err := NewRuntimeLogSQLReader(db, ReadPostgres)
 	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := NewPublicApiLogSQLStore(db, ReadSQLite)
+	public, err := NewPublicApiLogSQLStore(db, ReadPostgres)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +90,7 @@ func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditL
 	(&ReadsDeps{Audit: audit, Runtime: runtimeReader, Public: public, Grep: grep, Auth: deps}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	env := &readsTestEnv{server: server, db: db, jar: map[string]string{}, accounts: accounts, hotDir: hotDir, blobDir: blobDir, logDir: logDir, grep: grep}
+	env := &readsTestEnv{server: server, db: db, pg: true, jar: map[string]string{}, accounts: accounts, hotDir: hotDir, blobDir: blobDir, logDir: logDir, grep: grep}
 	if login {
 		if _, err := accounts.Create(context.Background(), authsys.CreateInput{MustChangePassword: &mustChangeFalse,
 			Username: "admin", DisplayName: "admin_name", Password: "admin-password-123", Role: "admin",
@@ -158,6 +150,9 @@ func (e *readsTestEnv) do(t *testing.T, method, path, body string) (int, map[str
 
 func (e *readsTestEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
+	if e.pg {
+		statement = fixtureDatasetSQL(statement)
+	}
 	if _, err := e.db.Exec(statement, args...); err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +217,9 @@ func wantItems(t *testing.T, data map[string]any) []map[string]any {
 // Audit family
 // ---------------------------------------------------------------------------
 
+// auditReadsDDL 是 w11fFaultEnv 保留组（scripted SQLite 故障注入环境）专用的
+// F3 dataset SQLite DDL（见 pgkit_test.go 的三组分类说明）；组A环境的 F3 表
+// 由 auditlog 生产 EnsureSchema 经 newLogreadsPGDatabase 建。
 var auditReadsDDL = []string{
 	`CREATE TABLE IF NOT EXISTS audit_logs (
 	  id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
@@ -283,40 +281,40 @@ func seedAuditReads(t *testing.T, env *readsTestEnv) {
 		session_id, session_client_type, group_id, account_id, provider_code, method, path, model, upstream_model,
 		model_mapping_applied, stream, client_ip, audit_outcome, success, final_status_code, sample_bucket, sample_reason,
 		attempt_count, payload_count, raw_payload_bytes, compressed_payload_bytes, compression_saved_bytes,
-		lifecycle_status, started_at, ended_at, duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at)
+		capture_status, lifecycle_status, started_at, ended_at, duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at)
 		VALUES ('log-2', 'trace-abcd', 'gateway', 'sys-1', 'key-1', 'conv-2', 'sess-1', 'web', 'grp-1', 'acc-1', 'openai',
-		'POST', '/v1/chat/completions', 'gpt-4o', 'gpt-4o-2024', 1, 1, '10.0.0.1', 'success', 1, 200, 1, 'sampled',
-		0, 0, 512, 256, 256, 'finalized', '2026-06-02T10:00:00.000Z', '2026-06-02T10:00:00.200Z', 200,
+		'POST', '/v1/chat/completions', 'gpt-4o', 'gpt-4o-2024', true, true, '10.0.0.1', 'success', true, 200, 1, 'sampled',
+		0, 0, 512, 256, 256, 'complete', 'finalized', '2026-06-02T10:00:00.000Z', '2026-06-02T10:00:00.200Z', 200,
 		'2026-06-02T10:00:00.220Z', 220, 40, '2026-06-02T10:00:01.000Z')`)
 	// log-1: older gateway failure row tied to an error group, two attempts,
 	// two payload refs.
 	env.exec(t, `INSERT INTO audit_logs (id, trace_id, traffic_source, system_account_id, api_key_id, group_id, account_id,
 		provider_code, method, path, model, model_mapping_applied, stream, audit_outcome, success, final_status_code,
 		error_phase, error_code, error_message, sample_bucket, sample_reason, attempt_count, payload_count,
-		raw_payload_bytes, compressed_payload_bytes, error_group_id, capture_status, started_at, ended_at,
+		raw_payload_bytes, compressed_payload_bytes, error_group_id, capture_status, lifecycle_status, started_at, ended_at,
 		duration_ms, created_at)
 		VALUES ('log-1', 'trace-ffff', 'gateway', 'sys-1', 'key-1', 'grp-1', 'acc-1', 'openai', 'POST',
-		'/v1/chat/completions', 'gpt-4o', 0, 0, 'upstream_failed', 0, 502, 'upstream', 'upstream_error',
-		'upstream exploded', 2, 'error', 2, 2, 1024, 512, 'eg-1', 'complete', '2026-06-01T10:00:00.000Z',
+		'/v1/chat/completions', 'gpt-4o', false, false, 'upstream_failed', false, 502, 'upstream', 'upstream_error',
+		'upstream exploded', 2, 'error', 2, 2, 1024, 512, 'eg-1', 'complete', 'finalized', '2026-06-01T10:00:00.000Z',
 		'2026-06-01T10:00:00.900Z', 900, '2026-06-01T10:00:02.000Z')`)
 	// log-3: internal probe traffic that the persisted-traffic clause hides.
 	env.exec(t, `INSERT INTO audit_logs (id, trace_id, traffic_source, method, path, audit_outcome, success,
-		sample_bucket, sample_reason, started_at, ended_at, created_at)
-		VALUES ('log-3', 'trace-internal', 'account_health_check', 'GET', '/v1/models', 'success', 1, 0,
-		'internal', '2026-06-03T10:00:00.000Z', '2026-06-03T10:00:00.100Z', '2026-06-03T10:00:01.000Z')`)
+		sample_bucket, sample_reason, capture_status, lifecycle_status, started_at, ended_at, created_at)
+		VALUES ('log-3', 'trace-internal', 'account_health_check', 'GET', '/v1/models', 'success', true, 0,
+		'internal', 'complete', 'finalized', '2026-06-03T10:00:00.000Z', '2026-06-03T10:00:00.100Z', '2026-06-03T10:00:01.000Z')`)
 	env.exec(t, `INSERT INTO audit_log_attempts (id, audit_log_id, attempt_index, account_id,
 		account_owner_system_account_id, group_id, member_group_id, proxy_url, provider_code, attempt_model, attempt_upstream_model,
 		attempt_pricing_model, attempt_model_mapping_applied, attempt_model_mapping_source,
 		attempt_source_endpoint_family, attempt_upstream_endpoint_family, upstream_method, upstream_url,
 		upstream_status_code, success, error_phase, error_code, error_message, started_at, ended_at, duration_ms)
 		VALUES ('att-1', 'log-1', 0, 'acc-1', 'sys-1', 'grp-1', 'grp-member-1', 'http://proxy:8080', 'openai', 'gpt-4o-mini',
-		'gpt-4o-mini-2024', 'gpt-4o-mini-price', 1, 'alias', 'chat', 'chat', 'POST', 'https://upstream/v1/chat', 429,
-		0, 'upstream', 'rate_limited', '429', '2026-06-01T10:00:00.000Z', '2026-06-01T10:00:00.300Z', 300)`)
+		'gpt-4o-mini-2024', 'gpt-4o-mini-price', true, 'alias', 'chat', 'chat', 'POST', 'https://upstream/v1/chat', 429,
+		false, 'upstream', 'rate_limited', '429', '2026-06-01T10:00:00.000Z', '2026-06-01T10:00:00.300Z', 300)`)
 	env.exec(t, `INSERT INTO audit_log_attempts (id, audit_log_id, attempt_index, account_id, group_id, provider_code,
 		attempt_model, upstream_method, upstream_url, upstream_status_code, success, error_phase, error_code,
 		started_at, ended_at, duration_ms)
 		VALUES ('att-2', 'log-1', 1, 'acc-1', 'grp-1', 'openai', 'gpt-4o-mini', 'POST',
-		'https://upstream/v1/chat', 502, 0, 'upstream', 'bad_gateway', '2026-06-01T10:00:00.400Z',
+		'https://upstream/v1/chat', 502, false, 'upstream', 'bad_gateway', '2026-06-01T10:00:00.400Z',
 		'2026-06-01T10:00:00.900Z', 500)`)
 	env.exec(t, `INSERT INTO audit_payload_refs (id, audit_log_id, attempt_id, part_type, sequence_index, content_type,
 		content_encoding, headers_blob_id, body_blob_id, headers_sha256, body_sha256, raw_size_bytes,
@@ -338,7 +336,7 @@ func seedAuditReads(t *testing.T, env *readsTestEnv) {
 }
 
 func TestAuditLogReadsListContracts(t *testing.T) {
-	env := newReadsTestEnv(t, auditReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	seedAuditReads(t, env)
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/audit-logs", "")
@@ -465,7 +463,7 @@ func TestAuditLogReadsListContracts(t *testing.T) {
 }
 
 func TestAuditLogReadsRuntimeErrorGroupsAndDetail(t *testing.T) {
-	env := newReadsTestEnv(t, auditReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	seedAuditReads(t, env)
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/audit-logs/runtime", "")
@@ -473,7 +471,7 @@ func TestAuditLogReadsRuntimeErrorGroupsAndDetail(t *testing.T) {
 		t.Fatalf("runtime status: %d", code)
 	}
 	runtime := wantData(t, payload)
-	if wantString(t, runtime, "mode") != "sqlite" || !wantBool(t, runtime, "readOnly") ||
+	if wantString(t, runtime, "mode") != "postgres" || !wantBool(t, runtime, "readOnly") ||
 		!wantBool(t, runtime, "queryOnly") || !wantBool(t, runtime, "schemaReady") || !wantBool(t, runtime, "available") {
 		t.Fatalf("runtime payload: %v", runtime)
 	}
@@ -566,7 +564,7 @@ func TestAuditLogReadsRuntimeErrorGroupsAndDetail(t *testing.T) {
 }
 
 func TestAuditLogReadsRequireAdmin(t *testing.T) {
-	env := newReadsTestEnv(t, auditReadsDDL, nil, false)
+	env := newReadsTestEnv(t, nil, false)
 	for _, path := range []string{
 		"/__aisys__/api/audit-logs",
 		"/__aisys__/api/audit-logs/runtime",

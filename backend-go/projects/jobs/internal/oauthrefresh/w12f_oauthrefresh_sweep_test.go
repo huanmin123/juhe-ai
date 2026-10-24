@@ -28,8 +28,10 @@ func TestW12fSweepPGDialectAndClosedArms(t *testing.T) {
 	// pg 方言拼接 FOR UPDATE SKIP LOCKED 后缀（SQLite 不识别，报语法错误
 	// 即证明方言分支已执行；真实 PG 路径由门控测试覆盖）。
 	pgStore := &Store{db: db, pg: true, secret: "w12f", now: store.now}
-	if _, err := pgStore.RunAuthorizationExpirySweep(ctx, nil, 10); err == nil {
-		t.Fatal("SQLite 上执行 PG 方言必须报错")
+	if _, err := pgStore.RunAuthorizationExpirySweep(ctx, nil, 10); err != nil {
+		// 迁 PG 重钉：pg 方言臂现于真实 PG 上执行（FOR UPDATE SKIP LOCKED 合法），
+		// 成功即证方言分叉可达；SQLite 语法失败臂随生产 sqlite 臂删除批次退役。
+		t.Fatal(err)
 	}
 	// 句柄关闭：Begin 失败。
 	closed := w12fClosedStore(t)
@@ -61,11 +63,11 @@ func TestW12fRotateCredentialsSuccessTx(t *testing.T) {
 	next := openAICredentials(expiresInMillis(0))
 	next["access_token"] = "w12f-at-rotated"
 	result, err := store.RotateCredentials(ctx, RotateCredentialsInput{
-		AccountID:                         "w12f-rot-ok",
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedConfigRevision:            1,
-		Credentials:                       next,
+		AccountID:              "w12f-rot-ok",
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		ExpectedConfigRevision: 1,
+		Credentials:            next,
 	})
 	if err != nil || result == nil || !result.Changed {
 		t.Fatalf("旋转必须成功: %+v err=%v", result, err)

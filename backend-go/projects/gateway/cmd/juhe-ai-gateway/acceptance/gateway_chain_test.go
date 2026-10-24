@@ -29,7 +29,6 @@ type chainFixture struct {
 	upstream     *httptest.Server
 	upstreamHits *atomic.Int64
 	defaultKey   string
-	chatKey      string
 	// accountID 是 mock 上游账户 ID：会话账户唯一绑定契约下，chat 流程
 	// 需要它 PATCH 会话绑定账户后才有可路由模型列表。
 	accountID string
@@ -134,14 +133,15 @@ func startChainFixtureWithUpstream(t *testing.T, upstreamHandler http.HandlerFun
 	}
 
 	// 2026-10-07 默认资源收口：seed 只保留 GPT 分组 + GPT 默认路由 + GPT
-	// 默认 Key；chat key 不再随 seed 预置，改由 AI 问答会话创建链幂等补建
-	//（EnsureChatAPIKey）——此处走 my-chat provision 端点触发后再读取。
+	// 默认 Key；chat key 不再随 seed 预置。免 Key 直调（W-B）后 AI 问答会话
+	// 创建链也不再补建任何 API Key——此处走 my-chat provision 端点验证创建
+	// 正常后再读取 seed 默认 key。
 	admin.do(http.MethodPost, "/__aisys__/api/my-chat/conversations",
 		map[string]any{"bindMode": "group", "groupId": "grp_default_gpt_sys_admin"},
 		wantStatus(http.StatusCreated))
 	// seed 默认 key（maintenance seed 的 is_default key，绑定 seed 默认
-	// 策略 route_strategy_default_gpt_sys_admin）与上一步会话创建链补建的
-	// chat key（purpose=chat「AI 对话 API Key」）。
+	// 策略 route_strategy_default_gpt_sys_admin）；chat key 已随免 Key 直调
+	// 退场，不再出现。
 	_, listPayload := admin.do(http.MethodGet, "/__aisys__/api/api-keys?page=1&pageSize=100", nil, wantStatus(http.StatusOK))
 	listData := data(listPayload)
 	items, _ := listData["items"].([]any)
@@ -161,13 +161,19 @@ func startChainFixtureWithUpstream(t *testing.T, upstreamHandler http.HandlerFun
 			chatKeyID = str(item["id"])
 		}
 	}
-	if defaultKeyID == "" || chatKeyID == "" {
-		t.Fatalf("seed keys missing (default/chat): %#v", listPayload)
+	if defaultKeyID == "" {
+		t.Fatalf("seed default key missing: %#v", listPayload)
+	}
+	// 免 Key 直调契约（AI 问答免 Key 直调内部通道 §3.2）：AI 问答不再创建任何
+	// purpose='chat' 的 Key，API Key 列表不得出现该行；上面 my-chat 会话创建
+	// 已走过生产 provision 路径，这一断言同时覆盖「会话创建会自愈补建 Key」的
+	// 历史行为已删除。
+	if chatKeyID != "" {
+		t.Fatalf("purpose=chat api key must not exist after de-Key migration: %#v", listPayload)
 	}
 	chain := &chainFixture{
 		fixture: fixture, admin: admin, upstream: upstream, upstreamHits: &upstreamHits,
 		defaultKey: revealKeySecret(t, admin, defaultKeyID),
-		chatKey:    revealKeySecret(t, admin, chatKeyID),
 		accountID:  accountID,
 	}
 	return chain

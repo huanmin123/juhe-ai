@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-func TestSQLiteRetentionDeletesChildrenBeforeParentAndUnreferencedBlob(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+func TestRetentionDeletesChildrenBeforeParentAndUnreferencedBlob(t *testing.T) {
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -26,9 +25,8 @@ func TestSQLiteRetentionDeletesChildrenBeforeParentAndUnreferencedBlob(t *testin
 	if _, err := store.Persist(ctx, lease, input); err != nil {
 		t.Fatal(err)
 	}
-	implementation := store.(*sqlStore)
 	var storageKey string
-	if err := implementation.db.QueryRow(`SELECT storage_key FROM audit_payload_blobs`).Scan(&storageKey); err != nil {
+	if err := implementation.db.QueryRow(`SELECT storage_key FROM juhe_dataset.audit_payload_blobs`).Scan(&storageKey); err != nil {
 		t.Fatal(err)
 	}
 	blobPath := filepath.Join(implementation.blobDir, filepath.FromSlash(storageKey))
@@ -51,7 +49,7 @@ func TestSQLiteRetentionDeletesChildrenBeforeParentAndUnreferencedBlob(t *testin
 	}
 	for _, table := range []string{"audit_logs", "audit_log_attempts", "audit_payload_refs", "audit_payload_blobs", "audit_error_groups"} {
 		var count int
-		if err := implementation.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+		if err := implementation.db.QueryRow("SELECT COUNT(*) FROM juhe_dataset." + table).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 0 {
@@ -63,9 +61,8 @@ func TestSQLiteRetentionDeletesChildrenBeforeParentAndUnreferencedBlob(t *testin
 	}
 }
 
-func TestSQLiteRetentionTrimsSuccessHotDetailsButKeepsMetadata(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+func TestRetentionTrimsSuccessHotDetailsButKeepsMetadata(t *testing.T) {
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -87,20 +84,19 @@ func TestSQLiteRetentionTrimsSuccessHotDetailsButKeepsMetadata(t *testing.T) {
 	if result.SuccessHotTrimmed != 1 || result.DeletedLogs != 0 {
 		t.Fatalf("trim result=%+v", result)
 	}
-	implementation := store.(*sqlStore)
 	var lifecycle, capture string
 	var attempts, payloads int
-	if err := implementation.db.QueryRow(`SELECT lifecycle_status,capture_status,attempt_count,payload_count FROM audit_logs WHERE id=?`, input.ID).Scan(&lifecycle, &capture, &attempts, &payloads); err != nil {
+	if err := implementation.db.QueryRow(`SELECT lifecycle_status,capture_status,attempt_count,payload_count FROM juhe_dataset.audit_logs WHERE id=$1`, input.ID).Scan(&lifecycle, &capture, &attempts, &payloads); err != nil {
 		t.Fatal(err)
 	}
 	if lifecycle != string(LifecycleFinalized) || capture != string(AuditCaptureMetadataOnly) || attempts != 0 || payloads != 0 {
 		t.Fatalf("metadata after trim: lifecycle=%s capture=%s attempts=%d payloads=%d", lifecycle, capture, attempts, payloads)
 	}
 	var refs, child int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_refs`).Scan(&refs); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_refs`).Scan(&refs); err != nil {
 		t.Fatal(err)
 	}
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_log_attempts`).Scan(&child); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_log_attempts`).Scan(&child); err != nil {
 		t.Fatal(err)
 	}
 	if refs != 0 || child != 0 {
@@ -108,9 +104,8 @@ func TestSQLiteRetentionTrimsSuccessHotDetailsButKeepsMetadata(t *testing.T) {
 	}
 }
 
-func TestSQLiteRetentionRejectsLostLeaseWithoutMutation(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+func TestRetentionRejectsLostLeaseWithoutMutation(t *testing.T) {
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
@@ -128,9 +123,8 @@ func TestSQLiteRetentionRejectsLostLeaseWithoutMutation(t *testing.T) {
 	if !errors.Is(err, ErrOwnerLeaseLost) {
 		t.Fatalf("lost lease error=%v", err)
 	}
-	implementation := store.(*sqlStore)
 	var count int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_logs`).Scan(&count); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_logs`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -138,13 +132,11 @@ func TestSQLiteRetentionRejectsLostLeaseWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestSQLiteRetentionRemovesPreexistingUnreferencedBlob(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+func TestRetentionRemovesPreexistingUnreferencedBlob(t *testing.T) {
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 	if err := os.MkdirAll(implementation.blobDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +144,8 @@ func TestSQLiteRetentionRemovesPreexistingUnreferencedBlob(t *testing.T) {
 	if err := os.WriteFile(path, []byte("orphan"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := implementation.db.Exec(`INSERT INTO audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,storage_key,first_seen_at,last_seen_at,created_at) VALUES (?,?,?,?,?,?,?, ?,?)`, "orphan", "orphan-hash", 6, 6, "text/plain", "orphan.blob", now, now, now); err != nil {
+	now := dbTime(implementation.mode, time.Now().UTC())
+	if _, err := implementation.db.Exec(`INSERT INTO juhe_dataset.audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,storage_key,first_seen_at,last_seen_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7)`, "orphan", "orphan-hash", 6, 6, "text/plain", "orphan.blob", now); err != nil {
 		t.Fatal(err)
 	}
 	result, err := store.CleanupRetention(ctx, lease, RetentionConfig{SuccessHotCutoff: time.Now().Add(time.Hour), SuccessCutoff: time.Now().Add(-time.Hour), FailureCutoff: time.Now().Add(-time.Hour), ErrorGroupCutoff: time.Now().Add(-time.Hour), BatchSize: 10})
@@ -169,12 +161,10 @@ func TestSQLiteRetentionRemovesPreexistingUnreferencedBlob(t *testing.T) {
 }
 
 func TestPendingBlobGCNewReferencePreservesCanonicalFile(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 
 	old := fixture("pending-gc-old", LifecycleFinalized)
 	old.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, Body: PayloadBody{Bytes: []byte("shared canonical blob"), Present: true}}}
@@ -182,7 +172,7 @@ func TestPendingBlobGCNewReferencePreservesCanonicalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var blobID, storageKey string
-	if err := implementation.db.QueryRow(`SELECT id,storage_key FROM audit_payload_blobs`).Scan(&blobID, &storageKey); err != nil {
+	if err := implementation.db.QueryRow(`SELECT id,storage_key FROM juhe_dataset.audit_payload_blobs`).Scan(&blobID, &storageKey); err != nil {
 		t.Fatal(err)
 	}
 	blobPath := filepath.Join(implementation.blobDir, filepath.FromSlash(storageKey))
@@ -194,13 +184,13 @@ func TestPendingBlobGCNewReferencePreservesCanonicalFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`DELETE FROM audit_payload_refs WHERE audit_log_id=?`, old.ID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, old.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`DELETE FROM audit_log_attempts WHERE audit_log_id=?`, old.ID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id=$1`, old.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`DELETE FROM audit_logs WHERE id=?`, old.ID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM juhe_dataset.audit_logs WHERE id=$1`, old.ID); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := implementation.unreferencedBlobRows(ctx, tx, []string{blobID}, 1)
@@ -236,10 +226,10 @@ func TestPendingBlobGCNewReferencePreservesCanonicalFile(t *testing.T) {
 		t.Fatalf("new reference lost its canonical blob file: %v", err)
 	}
 	var refs, gcRows int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_refs WHERE audit_log_id=?`, newInput.ID).Scan(&refs); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_refs WHERE audit_log_id=$1`, newInput.ID).Scan(&refs); err != nil {
 		t.Fatal(err)
 	}
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc WHERE blob_id=?`, blobID).Scan(&gcRows); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id=$1`, blobID).Scan(&gcRows); err != nil {
 		t.Fatal(err)
 	}
 	if refs != 1 || gcRows != 0 {
@@ -248,12 +238,10 @@ func TestPendingBlobGCNewReferencePreservesCanonicalFile(t *testing.T) {
 }
 
 func TestRetentionBlobDeleteFailureKeepsRetryableGCLocator(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 	storageKey := "delete-failure.blob"
 	path := filepath.Join(implementation.blobDir, storageKey)
 	if err := os.MkdirAll(path, 0o750); err != nil {
@@ -262,8 +250,8 @@ func TestRetentionBlobDeleteFailureKeepsRetryableGCLocator(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "held"), []byte("block deletion"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := implementation.db.Exec(`INSERT INTO audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,storage_key,first_seen_at,last_seen_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, "delete-failure", "delete-failure-hash", 1, 1, "text/plain", storageKey, now, now, now); err != nil {
+	now := dbTime(implementation.mode, time.Now().UTC())
+	if _, err := implementation.db.Exec(`INSERT INTO juhe_dataset.audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,storage_key,first_seen_at,last_seen_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7)`, "delete-failure", "delete-failure-hash", 1, 1, "text/plain", storageKey, now); err != nil {
 		t.Fatal(err)
 	}
 	_, err := store.CleanupRetention(ctx, lease, RetentionConfig{SuccessHotCutoff: time.Now().Add(time.Hour), SuccessCutoff: time.Now().Add(-time.Hour), FailureCutoff: time.Now().Add(-time.Hour), ErrorGroupCutoff: time.Now().Add(-time.Hour), BatchSize: 10})
@@ -271,10 +259,10 @@ func TestRetentionBlobDeleteFailureKeepsRetryableGCLocator(t *testing.T) {
 		t.Fatalf("retention delete failure error=%v", err)
 	}
 	var blobs, gcRows int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blobs WHERE id='delete-failure'`).Scan(&blobs); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blobs WHERE id='delete-failure'`).Scan(&blobs); err != nil {
 		t.Fatal(err)
 	}
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blob_gc WHERE blob_id='delete-failure' AND storage_key=?`, storageKey).Scan(&gcRows); err != nil {
+	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id='delete-failure' AND storage_key=$1`, storageKey).Scan(&gcRows); err != nil {
 		t.Fatal(err)
 	}
 	if blobs != 1 || gcRows != 1 {

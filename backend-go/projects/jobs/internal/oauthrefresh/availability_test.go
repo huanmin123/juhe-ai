@@ -21,8 +21,8 @@ func seedApiKeyWithSchedule(t *testing.T, db *sql.DB, id, scheduleJSON, nextChec
 	if status == "" {
 		status = "active"
 	}
-	_, err := db.Exec(`INSERT INTO api_keys (id, status, availability_schedule_json, availability_schedule_next_check_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)`, id, status, scheduleArg, nextArg, isoMillis(defaultNow()))
+	_, err := db.Exec(`INSERT INTO juhe_business.api_keys (id, status, availability_schedule_json, availability_schedule_next_check_at, updated_at, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, created_at)
+		VALUES ($1, $2, $3, $4, $5, 'sys_admin', 'route-default', 'key', 'kh', 'kp', 'ks', 'enc', $5)`, id, status, scheduleArg, nextArg, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,9 +44,8 @@ func seedAccountWithSchedule(t *testing.T, db *sql.DB, id, scheduleJSON, nextChe
 	if deleted {
 		deletedArg = isoMillis(defaultNow())
 	}
-	_, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, name, type, status,
-		credentials_encrypted, availability_schedule_json, availability_schedule_next_check_at, deleted_at, updated_at)
-		VALUES (?, 'gpt', 'gpt', ?, 'api_key', ?, '{}', ?, ?, ?, ?)`,
+	_, err := db.Exec(`INSERT INTO juhe_business.accounts (id, vendor_code, connection_driver_code, name, type, status, credentials_encrypted, availability_schedule_json, availability_schedule_next_check_at, deleted_at, updated_at, system_account_id, protocol_code, protocol_version, created_at)
+		VALUES ($1, 'gpt', 'gpt', $2, 'api_key', $3, '{}', $4, $5, $6, $7, 'sys_admin', 'openai', 'v1', $7)`,
 		id, "账户-"+id, status, scheduleArg, nextArg, deletedArg, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +67,7 @@ func TestSyncApiKeyScheduleActivatesAtWindowStart(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	var status, nextCheck string
-	if err := db.QueryRow(`SELECT status, availability_schedule_next_check_at FROM api_keys WHERE id = 'key-1'`).Scan(&status, &nextCheck); err != nil {
+	if err := db.QueryRow(`SELECT status, availability_schedule_next_check_at FROM juhe_business.api_keys WHERE id = 'key-1'`).Scan(&status, &nextCheck); err != nil {
 		t.Fatal(err)
 	}
 	if status != "active" {
@@ -80,7 +79,7 @@ func TestSyncApiKeyScheduleActivatesAtWindowStart(t *testing.T) {
 	}
 	// The dedupe event row exists.
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM api_key_schedule_status_events WHERE event_key LIKE 'key-1:%' AND status = 'active'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.api_key_schedule_status_events WHERE event_key LIKE 'key-1:%' AND status = 'active'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -90,7 +89,7 @@ func TestSyncApiKeyScheduleActivatesAtWindowStart(t *testing.T) {
 	// Replaying the same minute skips the event and keeps the status. The
 	// row becomes due again by resetting its next check (as a fresh import
 	// would).
-	if _, err := db.Exec(`UPDATE api_keys SET availability_schedule_next_check_at = NULL WHERE id = 'key-1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.api_keys SET availability_schedule_next_check_at = NULL WHERE id = 'key-1'`); err != nil {
 		t.Fatal(err)
 	}
 	replay, err := store.SyncApiKeyScheduleStatuses(context.Background(), atStart, 0)
@@ -108,7 +107,7 @@ func TestSyncApiKeyScheduleActivatesAtWindowStart(t *testing.T) {
 
 func readApiKey(t *testing.T, db *sql.DB, id string) (status, nextCheckAt string, updatedAt string) {
 	t.Helper()
-	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,''), updated_at FROM api_keys WHERE id = ?`, id).Scan(&status, &nextCheckAt, &updatedAt); err != nil {
+	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,''), updated_at FROM juhe_business.api_keys WHERE id = $1`, id).Scan(&status, &nextCheckAt, &updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	return
@@ -210,7 +209,7 @@ func TestSyncAccountScheduleSemantics(t *testing.T) {
 
 	// Active account with an active disable enforcement stays disabled.
 	seedAccountWithSchedule(t, db, "acc-enforced", availabilityScheduleJSON, "", "disabled", false)
-	if _, err := db.Exec(`INSERT INTO account_quality_enforcements (account_id, state, action) VALUES ('acc-enforced', 'active', 'disable')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_quality_enforcements (account_id, state, action, system_account_id, enforcement_id, trigger_run_id, policy_revision, account_config_revision, before_status, after_status, started_at, created_at, updated_at) VALUES ('acc-enforced', 'active', 'disable', 'sys_admin', 'aqe-acc-enforced', 'w9h-run', 0, 1, 'w9h', 'w9h', 'w9h', 'w9h', 'w9h')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,7 +247,7 @@ func TestSyncAccountScheduleSemantics(t *testing.T) {
 func readAccountStatus(t *testing.T, db *sql.DB, id string) (string, string, string) {
 	t.Helper()
 	var status, nextCheck, deleted string
-	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,''), COALESCE(deleted_at,'') FROM accounts WHERE id = ?`, id).Scan(&status, &nextCheck, &deleted); err != nil {
+	if err := db.QueryRow(`SELECT status, COALESCE(availability_schedule_next_check_at,''), COALESCE(deleted_at,'') FROM juhe_business.accounts WHERE id = $1`, id).Scan(&status, &nextCheck, &deleted); err != nil {
 		t.Fatal(err)
 	}
 	return status, nextCheck, deleted

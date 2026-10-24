@@ -179,14 +179,14 @@ func TestW11CCheckContractIndexBranches(t *testing.T) {
 	s, db := testStore(t, w11cGate())
 	ctx := context.Background()
 	// A missing key-model capability index fails the contract check.
-	if _, err := db.ExecContext(ctx, "DROP INDEX idx_account_circuit_incidents_key_model_capability"); err != nil {
+	if _, err := db.ExecContext(ctx, "DROP INDEX "+defaultBusinessSchema+".idx_account_circuit_incidents_key_model_capability"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckContract(ctx); err == nil {
 		t.Fatalf("missing capability index must fail")
 	}
 	// Recreate it as a full (non-partial) index: the predicate check fails.
-	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash)"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON "+defaultBusinessSchema+".account_circuit_incidents(scope_kind, capability_hash)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CheckContract(ctx); err == nil {

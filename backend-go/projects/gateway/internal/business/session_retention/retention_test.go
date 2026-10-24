@@ -2,52 +2,18 @@ package sessionretention
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
-func openSQLite(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:session-retention-test?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`
-		CREATE TABLE system_sessions (
-			id TEXT PRIMARY KEY,
-			system_account_id TEXT NOT NULL,
-			token_hash TEXT NOT NULL,
-			expires_at TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			last_seen_at TEXT NOT NULL
-		);
-		CREATE INDEX idx_system_sessions_expires_at ON system_sessions(expires_at);
-	`); err != nil {
-		t.Fatal(err)
-	}
-	return db
-}
+// 建库夹具（openPG / openBarePG / insertSession）见 pgkit_test.go：pgtestkit
+// 隔离库 + 生产 store PG 臂（Postgres + juhe_business），断言逐字节保持。
 
-func insertSession(t *testing.T, db *sql.DB, id, expires string) {
-	t.Helper()
-	_, err := db.Exec(`INSERT INTO system_sessions
-		(id,system_account_id,token_hash,expires_at,created_at,last_seen_at)
-		VALUES (?,?,?,?,?,?)`, id, "account", id+"-hash", expires, expires, expires)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCleanupSQLiteStrictCutoffBoundedAndReplayable(t *testing.T) {
-	db := openSQLite(t)
-	store, err := New(db, SQLite, "", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+func TestCleanupPostgresStrictCutoffBoundedAndReplayable(t *testing.T) {
+	db := openPG(t)
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,15 +27,17 @@ func TestCleanupSQLiteStrictCutoffBoundedAndReplayable(t *testing.T) {
 	if err != nil || got != 1 {
 		t.Fatalf("first cleanup deleted=%d err=%v", got, err)
 	}
+	// PG 无 rowid 且 tid 无 MIN 聚合：下一行按生产 deleteSQL 同序
+	// （expires_at ASC, ctid ASC）取有界删除的后续目标。
 	var id string
-	if err := db.QueryRow("SELECT id FROM system_sessions WHERE rowid=(SELECT MIN(rowid) FROM system_sessions WHERE expires_at < ?)", cutoff).Scan(&id); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT id FROM system_sessions WHERE expires_at < ? ORDER BY expires_at ASC, ctid ASC LIMIT 1`), cutoff).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	if id != "old-2" {
 		t.Fatalf("bounded cleanup selected wrong next row %q", id)
 	}
 	var equalCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM system_sessions WHERE id='equal'").Scan(&equalCount); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT COUNT(*) FROM system_sessions WHERE id='equal'`)).Scan(&equalCount); err != nil {
 		t.Fatal(err)
 	}
 	if equalCount != 1 {
@@ -86,16 +54,16 @@ func TestCleanupSQLiteStrictCutoffBoundedAndReplayable(t *testing.T) {
 }
 
 func TestCleanupOwnerGateAndInputFailClosed(t *testing.T) {
-	db := openSQLite(t)
+	db := openPG(t)
 	insertSession(t, db, "old", "2020-01-01T00:00:00.000Z")
-	store, err := New(db, SQLite, "", OwnerGate{Confirmed: true, SchemaReady: true})
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Cleanup(context.Background(), CleanupInput{ExpiredBefore: "2021-01-01T00:00:00.000Z", Limit: 1}); !errors.Is(err, ErrOwnerGate) {
 		t.Fatalf("partial owner gate err=%v", err)
 	}
-	store, err = New(db, SQLite, "", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	store, err = New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +71,7 @@ func TestCleanupOwnerGateAndInputFailClosed(t *testing.T) {
 		t.Fatalf("invalid expiry err=%v", err)
 	}
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM system_sessions").Scan(&count); err != nil {
+	if err := db.QueryRow(fixtureSQL(`SELECT COUNT(*) FROM system_sessions`)).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -112,7 +80,7 @@ func TestCleanupOwnerGateAndInputFailClosed(t *testing.T) {
 }
 
 func TestPostgresSQLQualificationAndPlaceholders(t *testing.T) {
-	db := openSQLite(t)
+	db := openPG(t)
 	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
@@ -135,25 +103,25 @@ func TestPostgresSQLQualificationAndPlaceholders(t *testing.T) {
 }
 
 func TestPostgresSchemaValidationAndContract(t *testing.T) {
-	db := openSQLite(t)
+	db := openPG(t)
 	if _, err := New(db, Postgres, "bad.schema", OwnerGate{}); !errors.Is(err, ErrInvalidSchema) {
 		t.Fatalf("invalid schema err=%v", err)
 	}
 	if _, err := New(db, Mode("mysql"), "", OwnerGate{}); !errors.Is(err, ErrInvalidMode) {
 		t.Fatalf("invalid mode err=%v", err)
 	}
-	store, err := New(db, SQLite, "", OwnerGate{})
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CheckContract(context.Background()); err != nil {
-		t.Fatalf("sqlite contract err=%v", err)
+		t.Fatalf("contract err=%v", err)
 	}
 }
 
 func TestExpiryUsesNodeMillisecondRepresentation(t *testing.T) {
-	db := openSQLite(t)
-	store, err := New(db, SQLite, "", OwnerGate{})
+	db := openPG(t)
+	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}

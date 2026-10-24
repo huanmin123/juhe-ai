@@ -20,8 +20,8 @@ package main
 //     storage key under JUHE_AI_CHAT_ASSETS_ROOT).
 //   - gpt-tokenizer: token counting via the o200k tokenizer.
 //
-// G20 phase-3 mounts these ports together (chain_chat_keys.go ChatAPIKeyProvider,
-// chain_chat_images.go ImageProcessor, chain_chat_observation.go
+// G20 phase-3 mounts these ports together (chain_chat_identity.go 内部身份
+// 通道, chain_chat_images.go ImageProcessor, chain_chat_observation.go
 // ImageObservations, chain_chat_mount.go the chat database owner + Deps
 // assembly at ${systemApiPrefix}/my-chat).
 
@@ -56,6 +56,11 @@ type chatGatewayExecutor struct {
 	// dispatchTarget 是 AI 问答会话绑定账户的调度覆盖目标：绑定账户非空时
 	// Dispatch 注入进程内 context；零值（外部请求）调度行为与现状一致。
 	dispatchTarget chatDispatchTarget
+	// internalIdentity 是会话归属系统账户的内部身份（chatInternalIdentity，
+	// chain_chat_identity.go）：非零时 Dispatch 注入内部身份 context，/v1 链
+	// preauth 跳过 API Key 鉴权并抑制使用日志（W-A 批契约）；零值表示不走
+	// 内部通道（外部请求恒零值，两条通道都无法伪造）。
+	internalIdentity chatInternalIdentity
 }
 
 func newChatGatewayExecutor(chain http.Handler) *chatGatewayExecutor {
@@ -63,14 +68,15 @@ func newChatGatewayExecutor(chain http.Handler) *chatGatewayExecutor {
 }
 
 // WithChatDispatchAccount 实现聊天侧的调度覆盖端口
-// （chat.chatDispatchTargetAware 同形）：绑定账户非空返回目标的执行器视图；
+// （chat.chatDispatchTargetAware 同形）：绑定账户非空返回目标的执行器视图，
+// 同时携带 ownerID 作为内部身份（免 Key 直调后派发鉴权走内部身份通道）；
 // 空账户返回原执行器实例，不产生任何包装或行为差异。
-func (e *chatGatewayExecutor) WithChatDispatchAccount(accountID string) chat.GenerationExecutor {
+func (e *chatGatewayExecutor) WithChatDispatchAccount(accountID, ownerID string) chat.GenerationExecutor {
 	target := chatDispatchTarget{AccountID: accountID}
 	if !target.pinned() {
 		return e
 	}
-	return &chatGatewayExecutor{chain: e.chain, dispatchTarget: target}
+	return &chatGatewayExecutor{chain: e.chain, dispatchTarget: target, internalIdentity: chatInternalIdentity{OwnerSystemAccountID: ownerID}}
 }
 
 // chatPipeWriter is the http.ResponseWriter that streams the chain response
@@ -133,8 +139,13 @@ func (e *chatGatewayExecutor) Dispatch(ctx context.Context, req chat.GenerationD
 	}
 	// 调度覆盖通道：仅当本执行器携带绑定账户目标时注入进程内 context；外部
 	// HTTP 请求的 context 由服务端构造，无法携带该未导出 key，不存在伪造通道。
+	// 调度覆盖与内部身份同源注入（同一 per-session 视图，WithChatDispatchAccount
+	// 一并携带）；外部请求两条通道都恒空。
 	if e.dispatchTarget.pinned() {
 		ctx = contextWithChatDispatchTarget(ctx, e.dispatchTarget)
+		if e.internalIdentity.OwnerSystemAccountID != "" {
+			ctx = contextWithChatInternalIdentity(ctx, e.internalIdentity)
+		}
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, method, "http://chat-gateway.internal"+path, bytes.NewReader(req.Body))
 	if err != nil {
@@ -272,37 +283,6 @@ func chatCatalogItemsFromRuntime(items []gatewayruntimecache.ProviderModelCatalo
 	var out []chat.ProviderModelCatalogItem
 	_ = json.Unmarshal(encoded, &out)
 	return out
-}
-
-// chatGatewayKeyValidator implements chat.GatewayKeyValidator over the
-// runtime cache gateway key read (validateGatewayApiKeyAsync projection).
-type chatGatewayKeyValidator struct {
-	cache *gatewayruntimecache.Service
-}
-
-func (v chatGatewayKeyValidator) ValidateGatewayKey(secret string) (*chat.GatewayKeyView, error) {
-	if v.cache == nil {
-		return nil, errors.New("chat gateway key validator 未接线")
-	}
-	runtime, err := v.cache.ReadCachedGatewayRuntimeAsync(context.Background(), secret)
-	if err != nil {
-		return nil, err
-	}
-	if runtime.APIKey == nil {
-		return nil, nil
-	}
-	view := &chat.GatewayKeyView{
-		GroupBindings:          make([]chat.GatewayGroupBinding, 0, len(runtime.APIKey.GroupBindings)),
-		ImageGenerationEnabled: runtime.APIKey.SystemAccountImageGenerationEnabled == 1,
-	}
-	for _, binding := range runtime.APIKey.GroupBindings {
-		view.GroupBindings = append(view.GroupBindings, chat.GatewayGroupBinding{
-			GroupID:      binding.GroupID,
-			Status:       binding.Status,
-			GroupEnabled: binding.GroupEnabled == 1,
-		})
-	}
-	return view, nil
 }
 
 // chatAssetObjectStore implements chat.ObjectStore over the chat assets root

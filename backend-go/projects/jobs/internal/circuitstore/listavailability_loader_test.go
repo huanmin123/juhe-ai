@@ -3,6 +3,9 @@ package circuitstore
 // 投影 LoadItems 单元测试：SQLite 双模全链（seed → LoadItems → ProjectionItem
 // 断言）+ 状态机分类纯函数。运行态源以 Mock 注入（fail-closed 与分类分支
 // 可回放）。
+// 组B保留（不迁 PG）：loader 的 PG 臂与生产 schema 存在适配缺口（timestamptz
+// 列裸扫 text 断言等，取证见 final_edges_test.go TestHydratePageFailClosed
+// 注释），随 loader PG 臂修复批次再迁。
 
 import (
 	"context"

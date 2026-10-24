@@ -172,7 +172,13 @@ func mountResponseInspectionInterceptor(options StreamPipeOptions, driver Stream
 // 在返回前复制——透传 chunk 会被捕获器/预提交缓冲持有到流结束，不能引用
 // 本缓冲。
 func (i *OpenAIStreamInterceptor) shiftEvent() []byte {
-	data := i.pending
+	return shiftSseEvent(&i.pending)
+}
+
+// shiftSseEvent 是 SSE 事件分帧的共享实现（OpenAIStreamInterceptor 与
+// ParseError 事件隔离器同源）：事件边界 \n\n、\r\n\r\n、\r\r。
+func shiftSseEvent(pending *[]byte) []byte {
+	data := *pending
 	if len(data) == 0 {
 		return nil
 	}
@@ -185,7 +191,7 @@ func (i *OpenAIStreamInterceptor) shiftEvent() []byte {
 		if b == '\n' {
 			if index+1 < len(data) && data[index+1] == '\n' {
 				event := append([]byte(nil), data[:index+2]...)
-				i.consume(len(event))
+				consumeSseEvent(pending, len(event))
 				return event
 			}
 			continue
@@ -193,17 +199,17 @@ func (i *OpenAIStreamInterceptor) shiftEvent() []byte {
 		// '\r'
 		if index+1 < len(data) && data[index+1] == '\r' {
 			event := append([]byte(nil), data[:index+2]...)
-			i.consume(len(event))
+			consumeSseEvent(pending, len(event))
 			return event
 		}
 	}
 	return nil
 }
 
-// consume 原地把已取走事件之后的剩余字节前移（memmove 语义），容量复用、
-// 零分配。
-func (i *OpenAIStreamInterceptor) consume(count int) {
-	i.pending = append(i.pending[:0], i.pending[count:]...)
+// consumeSseEvent 原地把已取走事件之后的剩余字节前移（memmove 语义），容量
+// 复用、零分配。
+func consumeSseEvent(pending *[]byte, count int) {
+	*pending = append((*pending)[:0], (*pending)[count:]...)
 }
 
 // openAIEndpointFamilyOrUnknown 对齐 gatewayopenai 的 family 归一。
@@ -229,4 +235,107 @@ func interceptorFailureEvent(decision *ResponseInspectionDecision, clientRetryEn
 		errorCode = "response_inspection_matched"
 	}
 	return gatewaypreauth.BuildGatewayStreamFailureEvent(message, errorCode)
+}
+
+// ---------------------------------------------------------------------------
+// ParseError 事件字节隔离（流式提交边界受限重放与异常终局处置设计 §3.2.0）
+// ---------------------------------------------------------------------------
+
+// parseErrorEventSnippetMaxBytes 是首个被隔离事件的原始字节摘要上限（WARN
+// 观测面用，对齐 rolling tail 的量级）。
+const parseErrorEventSnippetMaxBytes = 256
+
+// parseErrorEventIsolatorMaxHoldBytes 是未完结事件的持有上限（对齐
+// StreamPreCommitBufferMaxBytes / inspector 单行上限）：越过即把持有字节原样
+// 放行回下游判定路径（超大帧保护、预提交缓冲语义照常生效），不为无界垃圾
+// 字节改变既有处置。
+const parseErrorEventIsolatorMaxHoldBytes = StreamPreCommitBufferMaxBytes
+
+// parseErrorEventIsolator 在写下游前按事件粒度隔离无法 JSON 解析的事件
+// （gatewayopenai.ParseSseEventText 的 DataParseError 分类，含 W22 的
+// 「半截 chunk + 错误帧粘连」残片）：与既有失败帧拦截同一时序保证——事件级
+// 分类先于写入。inspector 消费原始字节（计数照常），本隔离器只过滤下游字节；
+// 首个被隔离事件保留截断摘要供 WARN 观测。
+//
+// 快路径零改写：本批事件全部可解析时原样返回入参切片（不复制、不改变下游
+// 写出粒度），只有真实出现解析失败事件时才按事件边界重写后续字节。
+type parseErrorEventIsolator struct {
+	pending      []byte
+	dropped      int
+	snippet      string
+	snippetIndex int
+}
+
+// newParseErrorEventIsolatorForDriver 按 pipe 协议驱动装配隔离器：仅
+// gatewayopenai inspector 驱动的直通管道启用（Anthropic / Gemini native 流的
+// parse-error 有各自 summary 机制，为后续批次，设计 §1 非目标 4）。
+func newParseErrorEventIsolatorForDriver(driver StreamDriver) *parseErrorEventIsolator {
+	if driver == nil || driver.ClientErrorProtocol() != "openai" {
+		return nil
+	}
+	return &parseErrorEventIsolator{}
+}
+
+// push 过滤一个下游字节分片：返回当前可安全写出的字节序列。快路径（本批全部
+// 为完整且可解析的事件）原样返回入参切片——零复制、不改写下游写出粒度；出现
+// 解析失败事件时按事件边界重写，坏事件字节不进入返回值；跨 chunk 未完结事件
+// 的尾字节保留在 pending，完结后再判定（与拦截器挂载时的按事件边界写出粒度
+// 一致，保证坏事件前缀不泄漏）。持有越过 parseErrorEventIsolatorMaxHoldBytes
+// 时整段原样放行：超大帧不改变既有判定路径（pre-commit 保护照常生效）。
+func (iso *parseErrorEventIsolator) push(chunk []byte) []byte {
+	if len(chunk) == 0 {
+		return chunk
+	}
+	iso.pending = append(iso.pending, chunk...)
+	if len(iso.pending) > parseErrorEventIsolatorMaxHoldBytes {
+		held := iso.pending
+		iso.pending = nil
+		return held
+	}
+	droppedBefore := iso.dropped
+	var out []byte
+	for {
+		rawEvent := shiftSseEvent(&iso.pending)
+		if rawEvent == nil {
+			break
+		}
+		if gatewayopenai.ParseSseEventText(string(rawEvent)).DataParseError {
+			iso.rememberDroppedEvent(rawEvent)
+			continue
+		}
+		out = append(out, rawEvent...)
+	}
+	if iso.dropped == droppedBefore && len(iso.pending) == 0 {
+		return chunk
+	}
+	return out
+}
+
+// flushPending 在上游 EOF 时放行隔离器持有的未完结事件尾字节：未完结事件
+// 无法完成分类，按既有行为透传（不新造截断语义）。
+func (iso *parseErrorEventIsolator) flushPending() []byte {
+	if len(iso.pending) == 0 {
+		return nil
+	}
+	remaining := append([]byte(nil), iso.pending...)
+	iso.pending = iso.pending[:0]
+	return remaining
+}
+
+// firstDropped 返回首个被隔离事件的截断摘要与其事件序号（自 1 起计）。
+func (iso *parseErrorEventIsolator) firstDropped() (string, int) {
+	return iso.snippet, iso.snippetIndex
+}
+
+func (iso *parseErrorEventIsolator) rememberDroppedEvent(rawEvent []byte) {
+	iso.dropped++
+	if iso.snippetIndex != 0 {
+		return
+	}
+	iso.snippetIndex = iso.dropped
+	snippet := rawEvent
+	if len(snippet) > parseErrorEventSnippetMaxBytes {
+		snippet = snippet[:parseErrorEventSnippetMaxBytes]
+	}
+	iso.snippet = string(snippet)
 }

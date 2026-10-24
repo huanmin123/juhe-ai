@@ -4,6 +4,7 @@
 - 日期：2026-09-28
 - 修订（2026-10-10）：账户状态限制放开——账户列表、绑定与发送/模型列表不再要求账户生效 `active`（禁用/错误/限流/冷却/过期/禁调度账户均可选可测）；chat-pinned 派发改为按绑定账户 ID 直取运行时快照。详见 §5 修订标注与《AI 问答设计》§5.2。
 - 修订（2026-10-12，PLAN-20261012T121500000Z（已清理，git 历史可溯））：会话增加「账户 + 模型」锁定语义——首轮接受并提交后账户与模型一并锁定，锁定后实际改变或清空 `accountId` 返回 409 `chat_conversation_locked`，换模型发送返回 400 `chat_model_locked`，未锁定空会话仍可自由切换；「切换账户联动清空模型」机制随模型锁定删除。详见 §5/§6/§11 与《AI 问答设计》§5.2/§5.3。另：站内工具绑定体系（本文 §2.3、§4 工具绑定列、§7、§11.3、§12/§13 相关工具条目）已随该计划整体退场，相应章节为历史记录。
+- 修订（2026-10-24）：AI 问答免 Key 直调改造——不再有 chat 专用 Key（`EnsureChatAPIKey` 整条自愈链删除），`chat_conversations.api_key_id` 停止写入（列保留存历史）、`api_key_name_snapshot` 写空串；对话派发改走进程内「内部身份通道」，调度仍钉住会话绑定账户。涉及 §2.5、§4；设计见 [AI问答免Key直调内部通道计划](../plans/计划-20261024T045719079Z-AI问答免Key直调内部通道.md)。
 - 关联：《AI 问答设计》5.2（会话绑定规则）、《AI 问答工具体系与主子模型设计》6.3（工具绑定候选作用域，本设计将修订其口径）
 - 验证记录（2026-09-28）：免请求体创建 + 免弹窗直进、PATCH accountId 绑定/切换（lastModel 不可路由联动清空）、归档会话发送/切账户/工具绑定 403 + 详情只读展示、非候选工具绑定 400 候选返回、迁移命令 SQLite 预演（归档 3/备份 5/删列/表重建/幂等/回滚精确还原/回滚后重迁移循环安全）与 dev PostgreSQL 库真实迁移（ensure-schema 623 语句 → 0 行迁移 → 幂等复跑 alreadyMigrated）全通过。生产发布序列见《部署指南》与运维手册：先 `--ensure-schema`，再 `--migrate-chat-account-only-binding`（幂等可重入，报告含 rollbackSql）。
 
@@ -19,7 +20,7 @@
 2. 新建会话免弹窗：点击新建即进入空会话；会话内完成「选账户 → 选模型与参数 → 发送」的顺序流程，未选账户前不能发送。
 3. 工具子代理绑定候选的作用域放宽为**用户授权范围内的全部可派发账户**（不限于会话绑定的账户）——否则「grok 对话会话 + gpt 生图工具」这类跨账户组合无法成立。
 4. 不做向后兼容（延续工具体系设计的同一裁决）：生产发布即切换，直接处理存量数据；**遗留列一并删除**（DROP COLUMN），不停用不保留，风险按第 10 节识别与对策执行。
-5. 会话鉴权主体不变：仍是自动创建/复用的 chat 专用 Key（`EnsureChatAPIKey`），仅绑定模式收敛。供应时机（2026-10-07 默认资源收口）：chat 专用 Key 不再随账户创建预置，改为真正新建 AI 对话会话时由 `EnsureChatAPIKey` 幂等补建；默认 GPT 分组/默认 GPT 路由缺失时该链自愈重建后再补建。
+5. 会话鉴权主体（2026-10-24 免 Key 直调改造）：不再有 chat 专用 Key——`EnsureChatAPIKey` 整条自愈链已删除，`chat_conversations.api_key_id` 停止写入（列保留存历史）、`api_key_name_snapshot` 写空串。对话派发改走进程内「内部身份通道」：执行器注入会话归属系统账户，/v1 链 preauth 据此跳过 API Key 鉴权，preflight 走 Identity 注入分支（不计费不限额），调度仍钉住会话绑定账户。该通道只用未导出 context key，外部 HTTP 无法伪造；对话流量零使用日志（审计保留）。设计见 [AI问答免Key直调内部通道计划](../plans/计划-20261024T045719079Z-AI问答免Key直调内部通道.md)。
 
 ## 3. 非目标
 
@@ -32,7 +33,7 @@
 - `chat_conversations` 列变更（**删列，不留停用列**）：
   - 新增 `archived INTEGER NOT NULL DEFAULT 0`——存量旧模式会话的归档标记（1 = 只读归档）。
   - **删除列**：`bind_mode`、`bind_group_id`、`bind_group_name_snapshot`（读取投影与扫描结构体同步删除，全链不留引用）。
-  - 保留列：`bind_account_id` / `bind_account_name_snapshot`（会话唯一绑定载体）、`api_key_id`（chat 专用 Key 鉴权主体，语义不变）。
+  - 保留列：`bind_account_id` / `bind_account_name_snapshot`（会话唯一绑定载体）、`api_key_id`（历史保留列；2026-10-24 免 Key 直调改造后停止写入，新行为空串，不再有 chat 专用 Key）。
 - 新建会话即建行：`bind_account_id` 允许 NULL（「未选账户」状态），选定账户后 PATCH 写入；未选账户的会话不可发送（发送预检 400 `chat_account_required`）。
 - 工具绑定三列（`search_account_id`/`search_model_id`/`image_account_id`，见工具体系设计第 7 节）照常。
 - schema 执行方式：`maintenance` 新增一次性迁移命令（如 `--migrate-chat-account-only-binding`），幂等可重放：① `bind_mode IS NULL OR bind_mode != 'account'` 的行置 `archived=1`；② 备份将删三列数据到副表；③ 双方言 `DROP COLUMN`（SQLite 3.35+ / PostgreSQL 均支持）。dev 库按生命周期手册同命令处理。

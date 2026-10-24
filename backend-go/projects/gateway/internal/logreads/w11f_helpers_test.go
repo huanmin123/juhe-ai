@@ -308,7 +308,7 @@ func TestW11FGrepTimeRange(t *testing.T) {
 }
 
 func TestW11FGrepSearchBranches(t *testing.T) {
-	env := newReadsTestEnv(t, runtimeReadsDDL, nil, true)
+	env := newReadsTestEnv(t, nil, true)
 	pinGrepClock(env)
 	ctx := context.Background()
 

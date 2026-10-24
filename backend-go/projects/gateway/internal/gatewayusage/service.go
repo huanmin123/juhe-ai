@@ -50,6 +50,11 @@ type GatewayUsageContext struct {
 	// 识别）：由调用方从请求级上下文投影，失败记账两条入口直传
 	// UsageRecordInput.CompactionExpected。
 	CompactionExpected bool
+	// SuppressUsage 是内部通道请求（AI 问答免 Key 直调）的使用日志丢弃标记：
+	// 由调用方从请求级上下文（gatewaypreauth 经 usageContextOf 投影）传入，
+	// 失败记账两条入口直传 UsageRecordInput.SuppressUsage，在持久化唯一闸口
+	// 丢弃。
+	SuppressUsage bool
 }
 
 // GatewayFailureUsageContext mirrors GatewayFailureUsageContext (records.ts).
@@ -309,6 +314,7 @@ func (s *Service) RecordFailedUpstreamAttempt(ctx Ctx, usageContext GatewayUsage
 		APIKeyID:                         usageContext.APIKeyID,
 		GroupID:                          usageContext.GroupID,
 		CompactionExpected:               usageContext.CompactionExpected,
+		SuppressUsage:                    usageContext.SuppressUsage,
 		AccountID:                        account.ID,
 		AccountOwnerSystemAccountID:      account.UsageAccess.AccountOwnerSystemAccountID,
 		GroupOwnerSystemAccountID:        account.UsageAccess.GroupOwnerSystemAccountID,
@@ -436,6 +442,7 @@ func (s *Service) RecordGatewayFailure(ctx Ctx, usageContext GatewayFailureUsage
 		APIKeyID:                       usageContext.APIKeyID,
 		GroupID:                        groupID,
 		CompactionExpected:             usageContext.CompactionExpected,
+		SuppressUsage:                  usageContext.SuppressUsage,
 		GroupOwnerSystemAccountID:      groupOwnerSystemAccountID,
 		GroupAccessType:                groupAccessType,
 		GroupAuthorizationID:           groupAuthorizationID,

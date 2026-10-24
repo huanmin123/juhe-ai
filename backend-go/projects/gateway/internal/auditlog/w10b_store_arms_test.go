@@ -20,11 +20,12 @@ import (
 	"unicode/utf16"
 )
 
-func w10bSQLiteStore(t *testing.T) (Store, *sqlStore) {
+// w10bStore 打开 pgtestkit 隔离 PG 测试库上的生产 store（本文件错误臂均为
+// 方言中立：文件系统臂、关闭后错误臂、hot-search 臂与 Persist 错误臂在 PG
+// 臂上断言逐字节保持）。
+func w10bStore(t *testing.T) (Store, *sqlStore) {
 	t.Helper()
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
-	t.Cleanup(func() { _ = store.Close() })
-	return store, store.(*sqlStore)
+	return openPostgresStore(t)
 }
 
 func w10bLease(t *testing.T, store Store) OwnerLease {
@@ -43,7 +44,7 @@ func w10bBlobStorageKey(body []byte, contentType string) string {
 
 func TestW10BWriteBlobTempsErrorArms(t *testing.T) {
 	// 最终路径是目录 → 已发布 blob 与待写元数据不一致。
-	_, implementation := w10bSQLiteStore(t)
+	_, implementation := w10bStore(t)
 	root := t.TempDir()
 	implementation.blobDir = root
 	lease := OwnerLease{OwnerID: "w10b-temps", FenceToken: 7}
@@ -231,7 +232,7 @@ func TestW10BStaleTempCleanupMatrices(t *testing.T) {
 }
 
 func TestW10BTempCleanupWithLeaseArms(t *testing.T) {
-	store, implementation := w10bSQLiteStore(t)
+	store, implementation := w10bStore(t)
 	ctx := context.Background()
 	lease := w10bLease(t, store)
 
@@ -257,8 +258,7 @@ func TestW10BTempCleanupWithLeaseArms(t *testing.T) {
 
 func TestW10BClosedStoreArms(t *testing.T) {
 	// EnsureSchema 之后关闭：后续调用命中各 SQL 错误臂。
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
-	implementation := store.(*sqlStore)
+	store, implementation := w10bStore(t)
 	if err := store.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -294,10 +294,9 @@ func TestW10BClosedStoreArms(t *testing.T) {
 	}
 
 	// 从未 EnsureSchema 即关闭：EnsureSchema 命中初始化失败臂。
-	fresh := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
-	freshImplementation := fresh.(*sqlStore)
+	fresh, freshImplementation := w10bStore(t)
 	_ = fresh.Close()
-	if err := fresh.EnsureSchema(ctx); err == nil || !strings.Contains(err.Error(), "schema 失败") {
+	if err := fresh.EnsureSchema(ctx); err == nil || !strings.Contains(err.Error(), "F3 PostgreSQL schema 事务失败") {
 		t.Fatalf("关闭后 EnsureSchema 必须失败: %v", err)
 	}
 	if err := freshImplementation.db.QueryRow("SELECT 1").Scan(new(any)); err == nil {
@@ -306,7 +305,7 @@ func TestW10BClosedStoreArms(t *testing.T) {
 }
 
 func TestW10BHotSearchArms(t *testing.T) {
-	store, implementation := w10bSQLiteStore(t)
+	store, implementation := w10bStore(t)
 	ctx := context.Background()
 	lease := w10bLease(t, store)
 
@@ -439,8 +438,8 @@ func TestW10BNormalizeRetentionAndHelperArms(t *testing.T) {
 	}
 }
 
-func TestW10BPersistSQLiteArms(t *testing.T) {
-	store, implementation := w10bSQLiteStore(t)
+func TestW10BPersistArms(t *testing.T) {
+	store, implementation := w10bStore(t)
 	ctx := context.Background()
 	lease := w10bLease(t, store)
 

@@ -27,6 +27,10 @@ type usageContextInput struct {
 	// compactionExpected 是调用方冻结的请求侧压缩期望（用量记录压缩标记
 	// 设计 §压缩请求识别）；构造点统一取单点判定值，缺省 false。
 	compactionExpected bool
+	// suppressUsage 是内部通道请求的使用日志抑制标记（AI 问答免 Key 直调）：
+	// 构造点取自请求字段，冻结进 usage 上下文，经 usageContextOf 投影到
+	// usage 侧，最终在持久化唯一闸口丢弃记录。缺省 false。
+	suppressUsage bool
 }
 
 // BuildGatewayUsageContext mirrors buildGatewayUsageContext.
@@ -40,6 +44,7 @@ func (s *Service) BuildGatewayUsageContext(input usageContextInput) GatewayFailu
 		GroupID:                  input.identity.GroupID,
 		RouteGroupID:             input.identity.GroupID,
 		CompactionExpected:       input.compactionExpected,
+		SuppressUsage:            input.suppressUsage,
 		Endpoint:                 input.endpoint,
 		RequestSnapshot:          input.requestSnapshot,
 		RequestedServiceTier:     input.requestSnapshot.RequestedServiceTier,

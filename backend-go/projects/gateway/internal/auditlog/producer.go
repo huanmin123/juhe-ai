@@ -309,6 +309,9 @@ func (p *Producer) persistOne(input AuditLogInput) {
 		if err != nil || !renewed {
 			outcome = "error"
 			p.warn("F3 owner lease renewal failed; dropping audit capture", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
+			// W13 生产复核（2026-10-24）：丢弃采集时该 id 的 in_progress 信封
+			// 行可能已落库，不派发撤回就永久残留空壳；与 Cancel() 同口径。
+			p.Retract(input.ID)
 			return
 		}
 	}
@@ -316,6 +319,9 @@ func (p *Producer) persistOne(input AuditLogInput) {
 	if err != nil {
 		outcome = "error"
 		p.warn("F3 审计采集持久化失败", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
+		// 终态写入失败同样留下已落库的信封行（生产 13:16 blob 锁/元数据
+		// 超时形态）；lifecycle 守卫使撤回对无行/终态行都是无害 no-op。
+		p.Retract(input.ID)
 		return
 	}
 	if persistResult.Ignored {

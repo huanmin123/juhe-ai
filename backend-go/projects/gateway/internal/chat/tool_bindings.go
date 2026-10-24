@@ -66,12 +66,12 @@ type chatToolBindingRuntime struct {
 	ImageCandidates  []ChatToolBindingCandidate
 	// M7 问答音视频工具（问答音视频工具设计 §3）：video/audio 绑定 =
 	// 账户 + 默认模型列（默认模型列空时执行侧回落账户候选首项）。
-	VideoAccountID   string
-	VideoExecutor    GenerationExecutor
-	VideoCandidates  []ChatToolBindingCandidate
-	AudioAccountID   string
-	AudioExecutor    GenerationExecutor
-	AudioCandidates  []ChatToolBindingCandidate
+	VideoAccountID  string
+	VideoExecutor   GenerationExecutor
+	VideoCandidates []ChatToolBindingCandidate
+	AudioAccountID  string
+	AudioExecutor   GenerationExecutor
+	AudioCandidates []ChatToolBindingCandidate
 }
 
 // chatToolBindingCandidatesOf 取指定工具的候选摘要（nil 视图返回 nil）。
@@ -93,7 +93,7 @@ func chatToolBindingCandidatesOf(runtime *chatToolBindingRuntime, toolID string)
 }
 
 // chatSearchImageModelFamily 返回 provider 家族可路由的注册图像模型枚举
-//（候选白名单：GPT 系供应商（gpt/openai vendor）× gpt-image-2；Grok 系账户 ×
+// （候选白名单：GPT 系供应商（gpt/openai vendor）× gpt-image-2；Grok 系账户 ×
 // grok-imagine 系，契约 §6.3——目录声明 image_generation 的其他模型不进候选）。
 func chatSearchImageModelFamily(providerCode string) []string {
 	switch normalizeProviderToken(providerCode) {
@@ -382,10 +382,10 @@ type chatToolBindingSource struct {
 	EffectiveImageModel string
 	// M7 媒体绑定（问答音视频工具设计 §3）：账户 + 默认模型二元组（默认模型
 	// 空串时读取侧回落账户候选首项，写入侧原样存储）。
-	VideoAccountID   string
-	VideoModelID     string
-	AudioAccountID   string
-	AudioModelID     string
+	VideoAccountID string
+	VideoModelID   string
+	AudioAccountID string
+	AudioModelID   string
 }
 
 // buildChatToolBindingStatuses 按候选列表聚合两类模型工具的绑定状态（bound/
@@ -597,8 +597,9 @@ func writeChatToolBindingInvalid(w http.ResponseWriter, err *chatToolBindingInva
 
 // resolveChatToolBindingRuntime 解析发送链路的绑定运行时视图（stream_route）：
 // 绑定目标来自会话三列；候选摘要供 binding_required 引导事件；执行器按绑定
-// 账户解析固定派发视图（与绑定会话同款调度覆盖端口）。端口缺失（测试未接线）
-// 时降级为无候选视图——绑定列照常生效，候选摘要为空。
+// 账户解析固定派发视图（与绑定会话同款调度覆盖端口，ownerID 取 bindScope.
+// ViewerID 供内部身份通道注入）。端口缺失（测试未接线）时降级为无候选视图
+// ——绑定列照常生效，候选摘要为空。
 func (rt *chatRoutes) resolveChatToolBindingRuntime(bindScope ChatBindScope, conversation *Conversation) *chatToolBindingRuntime {
 	runtime := &chatToolBindingRuntime{}
 	if conversation.SearchAccountID != nil && conversation.SearchModelID != nil {
@@ -620,16 +621,17 @@ func (rt *chatRoutes) resolveChatToolBindingRuntime(bindScope ChatBindScope, con
 		runtime.VideoCandidates = candidates.video
 		runtime.AudioCandidates = candidates.audio
 	}
-	runtime.SearchExecutor = rt.toolDispatchExecutor(runtime.SearchAccountID)
-	runtime.ImageExecutor = rt.toolDispatchExecutor(runtime.ImageAccountID)
-	runtime.VideoExecutor = rt.toolDispatchExecutor(runtime.VideoAccountID)
-	runtime.AudioExecutor = rt.toolDispatchExecutor(runtime.AudioAccountID)
+	runtime.SearchExecutor = rt.toolDispatchExecutor(runtime.SearchAccountID, bindScope.ViewerID)
+	runtime.ImageExecutor = rt.toolDispatchExecutor(runtime.ImageAccountID, bindScope.ViewerID)
+	runtime.VideoExecutor = rt.toolDispatchExecutor(runtime.VideoAccountID, bindScope.ViewerID)
+	runtime.AudioExecutor = rt.toolDispatchExecutor(runtime.AudioAccountID, bindScope.ViewerID)
 	return runtime
 }
 
 // toolDispatchExecutor 解析工具子代理的固定派发执行器视图：绑定账户非空且
-// 执行器实现调度覆盖端口时返回目标视图，否则原样返回。
-func (rt *chatRoutes) toolDispatchExecutor(accountID string) GenerationExecutor {
+// 执行器实现调度覆盖端口时返回目标视图（accountID + ownerID 同源注入，内部
+// 身份通道鉴权），否则原样返回。
+func (rt *chatRoutes) toolDispatchExecutor(accountID, ownerID string) GenerationExecutor {
 	if accountID == "" || rt.deps.Executor == nil {
 		return rt.deps.Executor
 	}
@@ -637,7 +639,7 @@ func (rt *chatRoutes) toolDispatchExecutor(accountID string) GenerationExecutor 
 	if !ok {
 		return rt.deps.Executor
 	}
-	return aware.WithChatDispatchAccount(accountID)
+	return aware.WithChatDispatchAccount(accountID, ownerID)
 }
 
 // chatToolPreferencesDefaultImageModelFallback 是偏好行 default_image_model 为

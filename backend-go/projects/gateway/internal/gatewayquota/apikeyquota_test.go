@@ -100,7 +100,7 @@ const testQuotaLimits = `{"daily":{"enabled":true,"limit":10}}`
 func TestCheckAPIKeyQuotaBoundaries(t *testing.T) {
 	db := newTestDB(t, "apikeyquota")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, false)
+	stats, _ := NewStatsStore(db, true)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	tz, _ := NewStaticTimezoneSource(time.UTC)
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{Modes: Modes{}, Stats: stats, Timezone: tz, Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now})
@@ -149,7 +149,7 @@ func TestCheckAPIKeyQuotaBoundaries(t *testing.T) {
 func TestCheckAPIKeyQuotaInvalidConfig(t *testing.T) {
 	db := newTestDB(t, "apikey-invalid")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, false)
+	stats, _ := NewStatsStore(db, true)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	service, _ := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
@@ -163,7 +163,7 @@ func TestCheckAPIKeyQuotaInvalidConfig(t *testing.T) {
 func TestCheckAPIKeyQuotaCacheAndInvalidation(t *testing.T) {
 	db := newTestDB(t, "apikey-cache")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, false)
+	stats, _ := NewStatsStore(db, true)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
@@ -181,7 +181,7 @@ func TestCheckAPIKeyQuotaCacheAndInvalidation(t *testing.T) {
 	}
 
 	// Push the scope over the limit; the 5s runtime cache must still allow.
-	if _, err := db.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 51 WHERE system_account_id = 'sys' AND scope_type = 'api_key' AND scope_id = 'ak'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 51 WHERE system_account_id = 'sys' AND scope_type = 'api_key' AND scope_id = 'ak'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	if decision, err := service.CheckAPIKeyQuota(ctx, apiKey, clock.Now()); err != nil || !decision.Allowed {
@@ -228,7 +228,7 @@ func TestCheckAPIKeyQuotaCacheAndInvalidation(t *testing.T) {
 func TestCheckAPIKeyQuotaServerRoleRefusesSQLite(t *testing.T) {
 	db := newTestDB(t, "apikey-server")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, false)
+	stats, _ := NewStatsStore(db, true)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	service, _ := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes: Modes{ServerRole: true}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{ServerRole: true}, clock), Now: clock.Now,
@@ -242,7 +242,7 @@ func TestCheckAPIKeyQuotaServerRoleRefusesSQLite(t *testing.T) {
 func TestReadAPIKeyQuotaCostsExactAsyncSQLiteFallback(t *testing.T) {
 	db := newTestDB(t, "apikey-exact")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, false)
+	stats, _ := NewStatsStore(db, true)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	service, _ := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
@@ -394,7 +394,7 @@ func TestCheckAPIKeyQuotaAsyncServerRoleMemorySnapshot(t *testing.T) {
 	}
 	logs := &logRecorder{}
 	dbService := &mockDBService{}
-	db, _ := NewStatsStore(newTestDB(t, "server-mem"), false)
+	db, _ := NewStatsStore(newTestDB(t, "server-mem"), true)
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes:     Modes{ServerRole: true},
 		Stats:     db,

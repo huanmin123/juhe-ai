@@ -169,7 +169,7 @@ func TestWINormalizeInputMatrix(t *testing.T) {
 }
 
 func TestWIListFilterDimensions(t *testing.T) {
-	store := wiOpenSQLiteStore(t, t.TempDir())
+	store := wiOpenPostgresStore(t)
 	ctx := context.Background()
 	lease, ok, err := store.AcquireOwnerLease(ctx, "wi-filter2", time.Minute)
 	if err != nil || !ok {

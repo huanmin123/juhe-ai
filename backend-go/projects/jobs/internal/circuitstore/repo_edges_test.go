@@ -2,8 +2,9 @@ package circuitstore
 
 // 控制面与投影 repo 的边界补充测试：outbox claim 参数校验与租约过期再认领、
 // incident 行映射可选字段透传、JSON 数组解析守卫、投影 Enqueue/Claim/Apply
-// 的围栏与校验分支。全部走 SQLite fixture（PG 分支依赖数据库时钟，本地
-// 不覆盖，与现有测试约定一致）。
+// 的围栏与校验分支。全部走 PG fixture（ControlPlaneRepo 时间由参数驱动，
+// 断言逐字节保持；ListAvailabilityRepo 的 ClaimDirty/ReleaseForReplay PG 分支
+// DB 时钟语义见 circuitstore_pgkit_test.go 头注释）。
 
 import (
 	"context"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
-	_ "modernc.org/sqlite"
 )
 
 // TestControlPlaneClaimValidation 覆盖 outbox Claim 参数校验。
@@ -71,12 +71,12 @@ func TestControlPlaneClaimExpiredLeaseReclaim(t *testing.T) {
 func seedOutboxEvent(t *testing.T, db *sql.DB, eventID string, availableAtMS int64) {
 	t.Helper()
 	if _, err := db.Exec(`
-		INSERT INTO account_circuit_outbox (
+		INSERT INTO juhe_business.account_circuit_outbox (
 			event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
 			circuit_scope_key, transition_id, dispatch_revision, status, available_at_ms,
 			attempt_count, created_at_ms, updated_at_ms
-		) VALUES (?, 'account_circuit_runtime_v1', ?, 'dispatch_revision_changed', 'acc-1', 'acc-1',
-			'sk-1', 'tr-1', 9, 'pending', ?, 0, 1, 1)`, eventID, "dedupe:"+eventID, availableAtMS); err != nil {
+		) VALUES ($1, 'account_circuit_runtime_v1', $2, 'dispatch_revision_changed', 'acc-1', 'acc-1',
+			'sk-1', 'tr-1', 9, 'pending', $3, 0, 1, 1)`, eventID, "dedupe:"+eventID, availableAtMS); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -101,7 +101,7 @@ func TestControlPlaneAckTokenMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var availableAt int64
-	if err := db.QueryRow(`SELECT available_at_ms FROM account_circuit_outbox WHERE event_id = 'evt-ack'`).Scan(&availableAt); err != nil {
+	if err := db.QueryRow(`SELECT available_at_ms FROM juhe_business.account_circuit_outbox WHERE event_id = 'evt-ack'`).Scan(&availableAt); err != nil {
 		t.Fatal(err)
 	}
 	if availableAt != 3500 {
@@ -114,7 +114,7 @@ func TestControlPlaneIncidentRowOptionalColumns(t *testing.T) {
 	repo, _, db := openControlPlaneFixture(t)
 	ctx := context.Background()
 	if _, err := db.Exec(`
-		INSERT INTO account_circuit_incidents (
+		INSERT INTO juhe_business.account_circuit_incidents (
 			circuit_scope_key, account_id, account_runtime_key, scope_kind, key_fingerprint,
 			protocol_code, request_lane, model_family, incident_id, parent_incident_id,
 			child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
@@ -212,7 +212,7 @@ func TestParseEvidenceKeysGuards(t *testing.T) {
 func TestListByRuntimeKeysValidation(t *testing.T) {
 	repo, _, db := openControlPlaneFixture(t)
 	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO accounts (id, dispatch_revision) VALUES ('acc-1', 5)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, dispatch_revision) VALUES ('acc-1', 5)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.ListByRuntimeKeys(ctx, []string{"   "}, false, 1000); err == nil {
@@ -231,7 +231,7 @@ func TestListByRuntimeKeysValidation(t *testing.T) {
 
 	// retained tombstone：CLOSED + retained_until_ms 未来 → include 时保留。
 	if _, err := db.Exec(`
-		INSERT INTO account_circuit_incidents (
+		INSERT INTO juhe_business.account_circuit_incidents (
 			circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
 			child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
 			transition_id, retained_until_ms, created_at_ms, updated_at_ms
@@ -281,8 +281,13 @@ func TestNewControlPlaneRepoNilDB(t *testing.T) {
 }
 
 // TestEnqueueDueTransitionsDueProjections 覆盖到期投影转 dirty。
+// 组B保留（不迁 PG）：EnqueueDue 的 PG 分支经 instantParam 把 time.Time 参数
+// 与 next_transition_at（text 列）比较，真实 PG 上该比较恒不匹配（探针实测
+// `text <= $1(time.Time)` 无报错但恒 0 行，time.Time 以 Go 默认文本形态参与
+// 字典序比较），PG 模式到期转移静默失效——属生产 PG 臂缺陷，本切片不修，
+// 测试随该臂修复批次再迁 PG；此处保持 SQLite fixture 与断言原状。
 func TestEnqueueDueTransitionsDueProjections(t *testing.T) {
-	repo, db := openListAvailabilityFixture(t)
+	repo, db, _ := w13g5CircuitListFixture(t)
 	ctx := context.Background()
 	nowMS := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC).UnixMilli()
 	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('acc-due', 'viewer-1'), ('acc-later', 'viewer-1')`); err != nil {
@@ -345,15 +350,15 @@ func TestEnqueueMissingFilters(t *testing.T) {
 	ctx := context.Background()
 	nowMS := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC).UnixMilli()
 	if _, err := db.Exec(`
-		INSERT INTO accounts (id, system_account_id, created_at) VALUES
+		INSERT INTO juhe_business.accounts (id, system_account_id, created_at) VALUES
 			('acc-keep', 'viewer-1', '2026-01-01T00:00:00.000Z'),
 			('acc-deleted', 'viewer-1', '2026-01-02T00:00:00.000Z'),
 			('acc-paused-auth', 'viewer-1', '2026-01-03T00:00:00.000Z'),
 			('acc-revoked-auth', 'viewer-1', '2026-01-04T00:00:00.000Z');
-		UPDATE accounts SET deleted_at = '2026-02-01T00:00:00.000Z' WHERE id = 'acc-deleted';
-		UPDATE accounts SET authorization_instance_authorization_id = 'auth-paused' WHERE id = 'acc-paused-auth';
-		UPDATE accounts SET authorization_instance_authorization_id = 'auth-revoked' WHERE id = 'acc-revoked-auth';
-		INSERT INTO resource_authorizations (id, status) VALUES ('auth-paused', 'paused'), ('auth-revoked', 'revoked');`); err != nil {
+		UPDATE juhe_business.accounts SET deleted_at = '2026-02-01T00:00:00.000Z' WHERE id = 'acc-deleted';
+		UPDATE juhe_business.accounts SET authorization_instance_authorization_id = 'auth-paused' WHERE id = 'acc-paused-auth';
+		UPDATE juhe_business.accounts SET authorization_instance_authorization_id = 'auth-revoked' WHERE id = 'acc-revoked-auth';
+		INSERT INTO juhe_business.resource_authorizations (id, status) VALUES ('auth-paused', 'paused'), ('auth-revoked', 'revoked');`); err != nil {
 		t.Fatal(err)
 	}
 	enqueued, err := repo.EnqueueMissing(ctx, 10, nowMS)
@@ -364,7 +369,7 @@ func TestEnqueueMissingFilters(t *testing.T) {
 		t.Fatalf("只应入队 keep 与 paused-auth（revoked 不可见、deleted 跳过）: %d", enqueued)
 	}
 	var viewer string
-	if err := db.QueryRow(`SELECT viewer_system_account_id FROM account_list_availability_dirty WHERE account_id = 'acc-keep'`).Scan(&viewer); err != nil {
+	if err := db.QueryRow(`SELECT viewer_system_account_id FROM juhe_business.account_list_availability_dirty WHERE account_id = 'acc-keep'`).Scan(&viewer); err != nil {
 		t.Fatal(err)
 	}
 	if viewer != "viewer-1" {
@@ -376,7 +381,7 @@ func TestEnqueueMissingFilters(t *testing.T) {
 func TestMarkDirtyTxGuards(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -422,7 +427,7 @@ func TestApplyClaimsGuards(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 	nowMS := now.UnixMilli()
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
 		t.Fatal(err)
 	}
 	// 围栏无效（generation 0 / 空 token）→ 报错。
@@ -445,7 +450,7 @@ func TestApplyClaimsGuards(t *testing.T) {
 	}
 	// generation 被更高版本覆盖 → 报错。
 	if _, err := db.Exec(`
-		INSERT INTO account_list_availability_projections (
+		INSERT INTO juhe_business.account_list_availability_projections (
 			viewer_system_account_id, account_id, effective_status, schedulable_bucket,
 			account_type, name_sort_key,
 			priority_sort_key, super_priority_sort_key, fallback_sort_key, concurrency_sort_key,
@@ -455,10 +460,10 @@ func TestApplyClaimsGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO account_list_availability_dirty (
+		INSERT INTO juhe_business.account_list_availability_dirty (
 			account_id, viewer_system_account_id, generation, applied_generation, reason,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
-		) VALUES ('acc-1', 'viewer-1', 2, 0, 'projection_refresh_failed', ?, 0, ?, ?)`, nowMS, nowMS, nowMS); err != nil {
+		) VALUES ('acc-1', 'viewer-1', 2, 0, 'projection_refresh_failed', $1, 0, $1, $1)`, nowMS); err != nil {
 		t.Fatal(err)
 	}
 	claims, err := repo.ClaimDirty(ctx, "owner-1", 10, 30_000, nowMS)
@@ -492,10 +497,10 @@ func TestApplyDeletionClaimWithoutProjection(t *testing.T) {
 	ctx := context.Background()
 	nowMS := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC).UnixMilli()
 	if _, err := db.Exec(`
-		INSERT INTO account_list_availability_dirty (
+		INSERT INTO juhe_business.account_list_availability_dirty (
 			account_id, viewer_system_account_id, generation, applied_generation, reason,
 			available_at_ms, attempt_count, created_at_ms, updated_at_ms
-		) VALUES ('acc-2', 'viewer-1', 3, 0, 'projection_scope_removed', ?, 0, ?, ?)`, nowMS, nowMS, nowMS); err != nil {
+		) VALUES ('acc-2', 'viewer-1', 3, 0, 'projection_scope_removed', $1, 0, $1, $1)`, nowMS); err != nil {
 		t.Fatal(err)
 	}
 	claims, err := repo.ClaimDirty(ctx, "owner-1", 10, 30_000, nowMS)
@@ -511,7 +516,7 @@ func TestApplyDeletionClaimWithoutProjection(t *testing.T) {
 		t.Fatal("无投影行的删除型 claim 应返回 false")
 	}
 	var dirtyCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_list_availability_dirty`).Scan(&dirtyCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_list_availability_dirty`).Scan(&dirtyCount); err != nil {
 		t.Fatal(err)
 	}
 	if dirtyCount != 0 {

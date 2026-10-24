@@ -212,7 +212,7 @@ func TestRuntimeDependencyRemainingBranches(t *testing.T) {
 		t.Fatalf("healthy 状态 touch: %v", err)
 	}
 	// 全量重放会把 viewer health 置为非 current。
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('acc-1', 'viewer-1')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.EnqueueAllForRuntimeRecovery(ctx, 1000); err != nil {

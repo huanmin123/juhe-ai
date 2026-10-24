@@ -22,10 +22,8 @@ func seedInstanceAccount(t *testing.T, db *sql.DB, id, providerCode, accountType
 	if providerCode != "" {
 		vendorArg = providerCode
 	}
-	_, err := db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
-		protocol_code, protocol_version, name, type, status, credentials_encrypted,
-		config_revision, dispatch_revision, authorization_instance_source_account_id, deleted_at, updated_at)
-		VALUES (?, 'sys_admin', ?, 'gpt', 'openai', 'v1', ?, ?, 'active', 'enc', 3, 5, ?, ?, '')`,
+	_, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, credentials_encrypted, config_revision, dispatch_revision, authorization_instance_source_account_id, deleted_at, updated_at, created_at)
+		VALUES ($1, 'sys_admin', $2, 'gpt', 'openai', 'v1', $3, $4, 'active', 'enc', 3, 5, $5, $6, '', '')`,
 		id, vendorArg, id, accountType, sourceAccountID, deletedArg)
 	if err != nil {
 		t.Fatal(err)
@@ -126,9 +124,8 @@ func TestSweepRunsHealthFanoutInsideFinalizer(t *testing.T) {
 	store, db, clock := newSweepStore(t)
 	seedInstanceAccount(t, db, "inst-a", "gpt", "oauth", "acc-src", "")
 	// 过期的 account 授权 grant。
-	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id,
-		status, revoked_at, revoked_by, created_by, expires_at, updated_at)
-		VALUES ('g-fan', 'account', 'acc-src', 'owner', 'system_account', 'grantee', 'active', NULL, '', 'creator', ?, ?)`,
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, status, revoked_at, revoked_by, created_by, expires_at, updated_at, created_at)
+		VALUES ('g-fan', 'account', 'acc-src', 'owner', 'system_account', 'grantee', 'active', NULL, '', 'creator', $1, $2, $2)`,
 		isoMillis(clock.time().Add(-timeHour)), isoMillis(defaultNow())); err != nil {
 		t.Fatal(err)
 	}
@@ -147,13 +144,12 @@ func TestSweepRunsHealthFanoutInsideFinalizer(t *testing.T) {
 	}
 	// finalizer 写入失败（版本表缺失）必须使 sweep 本轮失败——Node in-tx
 	// 语义：下游副作用写入失败即整个 sweep 事务回滚。
-	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id,
-		status, revoked_at, revoked_by, created_by, expires_at, updated_at)
-		VALUES ('g-fan-2', 'account', 'acc-src', 'owner', 'system_account', 'grantee', 'active', NULL, '', 'creator', ?, ?)`,
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, status, revoked_at, revoked_by, created_by, expires_at, updated_at, created_at)
+		VALUES ('g-fan-2', 'account', 'acc-src', 'owner', 'system_account', 'grantee', 'active', NULL, '', 'creator', $1, $2, $2)`,
 		isoMillis(clock.time().Add(-timeHour)), isoMillis(defaultNow())); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DROP TABLE account_health_jobs_input_versions`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.account_health_jobs_input_versions`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RunAuthorizationExpirySweep(context.Background(), finalizer, 0); err == nil {

@@ -1,8 +1,9 @@
 package statreads
 
 // statreads 第二轮补充（wd_ 前缀，独占新增文件）：读错误→500 的降级契约、
-// PG 入口在无 PG 环境下的失败面、分页 hasMore、损坏 shard 的容错与系统账户
-// 名回退。全部使用确定性 SQLite/httptest。
+// PG outcome 入口不可达的失败面、分页 hasMore、损坏 shard 的容错与系统账户
+// 名回退。读错误契约用 pgtestkit 空 PG 库；分片/shard 容错（组B，SQLite-only
+// 臂）走 newWdShardFixture（SQLite）。
 
 import (
 	"context"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "modernc.org/sqlite"
 )
 
@@ -23,20 +25,18 @@ func wdErrTimezone() TimezoneSource {
 	return func(context.Context) (string, error) { return "", errors.New("系统设置缺少 usageStatsTimezone") }
 }
 
-// wdUTCOnlyDeps 只提供 UTC 时区、不给任何业务/统计表：所有读查询都会失败，
-// 用于锁定"读错误一律 500 服务器内部错误"的路由契约。
+// wdUTCOnlyDeps 只提供 UTC 时区、不给任何表：所有读查询都会失败（PG 空库上
+// 为 relation does not exist），用于锁定"读错误一律 500 服务器内部错误"的
+// 路由契约。
 func wdUTCOnlyDeps(t *testing.T) *Deps {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t)
 	return &Deps{
-		Business: db,
-		Stats:    db,
-		Now:      func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
-		Timezone: func(context.Context) (string, error) { return "UTC", nil },
+		Business:  db,
+		Stats:     db,
+		PGDialect: true,
+		Now:       func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
+		Timezone:  func(context.Context) (string, error) { return "UTC", nil },
 	}
 }
 
@@ -121,7 +121,7 @@ func TestWdAiHealthPostgresOutcomeUnavailableSurfaces500(t *testing.T) {
 	fixture := newWdFixture(t)
 	fixture.exec(t,
 		// 至少一个可见账户，j1OutcomesForAccounts 才会真正走到 PG 入口。
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-pg', 'PGAccount', 'sys-user-1', 'openai', 'api_key', 'active')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-pg', 'PGAccount', 'sys-user-1', 'openai', 'api_key', 'active')`,
 	)
 	// PG outcome 源在测试环境没有可达 PG：入口应在预算内失败并映射 500，
 	// 不产生挂起（连接拒绝是确定性的快速失败）。

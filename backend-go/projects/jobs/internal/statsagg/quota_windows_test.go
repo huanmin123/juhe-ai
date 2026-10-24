@@ -11,15 +11,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// 配额小时窗刷新测试（BUG-0175 D-48/D-75/D-86/D-229）。SQLite 承载测试库，
-// 双模 SQL 由 Dialect 单一来源生成；PG 分支的增量编排（除 FOR UPDATE SKIP
-// LOCKED 方言行）在 SQLite 上直接驱动，语义锚定
-// usage-stats.repository.ts:1783-1951 与 usage-stats-snapshot-helpers.ts:8-42。
+// 配额小时窗刷新测试（BUG-0175 D-48/D-75/D-86/D-229）。双载体：
+//   - 组A 增量族（PG 生产分支）：pgtestkit 隔离 PG 测试库 + 生产方言
+//     Dialect{Postgres: true}，真实覆盖 FOR UPDATE SKIP LOCKED 认领编排；
+//     绑定表经 juhe_business. 前缀落在同池（生产拓扑），种子 SQL 按 PG 方言
+//     书写（juhe_ 前缀 schema 限定 + $n）；
+//   - 组B 全量重建族（SQLite 生产分支）：SQLite 承载测试库 + BusinessDB
+//     独立业务库句柄（refreshQuotaHourlyWindowsRebuild 读绑定表必需），
+//     随生产 sqlite 臂删除批次同批退役（D17）。
 //
-// 绑定表连接说明：生产 PG 的增量消费经 juhe_business. 前缀在同一池内 JOIN
-// request_quota_hourly_window_scope_bindings；SQLite 驱动同一增量编排时该表
-// 以裸表名落在 stats 测试库（seedBindingBoth 写入镜像）。全量重建（SQLite
-// 生产分支）则经 BusinessDB 句柄读独立业务库，与生产拓扑一致。
+// 双模 SQL 由 Dialect 单一来源生成，语义锚定 usage-stats.repository.ts:1783-1951
+// 与 usage-stats-snapshot-helpers.ts:8-42。共享 helper（seedQuotaHourly /
+// quotaWindowRows / quotaDirtyCount）经生产同款 Dialect.bind / StatsTable
+// 生成 SQL，双载体透明；SQLite 专用 helper（createBindingTable / seedBinding）
+// 保持原状（组B 与 w13g5 scripted 用例消费）。
 //
 // 归档行为基线：
 //   - 全量重建（SQLite 生产分支）：读业务库绑定 → DELETE 全表 → 按 200 一批
@@ -44,7 +49,8 @@ func quotaTestBusinessDB(t *testing.T) *sql.DB {
 
 func createBindingTable(t *testing.T, db *sql.DB) {
 	t.Helper()
-	// 列集对齐 maintenance sqlite_schema.go:1221 的业务库绑定表。
+	// 列集对齐 maintenance sqlite_schema.go:1221 的业务库绑定表（SQLite 载体
+	// 专用：组B 全量重建与 w13g5 scripted 用例）。
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (
 		system_account_id TEXT NOT NULL,
 		scope_type TEXT NOT NULL,
@@ -69,6 +75,16 @@ func seedBinding(db *sql.DB, systemAccountID, scopeType, scopeID string, windowH
 	return err
 }
 
+// pgSeedQuotaBinding 把绑定写入 PG 同池的 juhe_business 绑定表（增量编排经
+// BusinessTable 前缀消费，生产拓扑；source_type 与 seedBinding 同值 api_key）。
+func pgSeedQuotaBinding(t *testing.T, e *testEnv, systemAccountID, scopeType, scopeID string, windowHours int) {
+	t.Helper()
+	e.exec(`INSERT INTO juhe_business.request_quota_hourly_window_scope_bindings (
+		system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+	) VALUES ($1, $2, $3, 'api_key', $4, $5, '2026-04-18T00:00:00.000Z', '2026-04-18T00:00:00.000Z')`,
+		systemAccountID, scopeType, scopeID, scopeID, windowHours)
+}
+
 func (e *testEnv) quotaRefresher(business *sql.DB) *WindowRefresher {
 	e.t.Helper()
 	return &WindowRefresher{
@@ -80,30 +96,19 @@ func (e *testEnv) quotaRefresher(business *sql.DB) *WindowRefresher {
 	}
 }
 
-// seedBindingBoth 把绑定同时写入业务库与 stats 镜像库（增量编排测试用，
-// 见文件头连接说明）。
-func (e *testEnv) seedBindingBoth(t *testing.T, business *sql.DB, systemAccountID, scopeType, scopeID string, windowHours int) {
-	t.Helper()
-	if err := seedBinding(business, systemAccountID, scopeType, scopeID, windowHours); err != nil {
-		t.Fatal(err)
-	}
-	if err := seedBinding(e.db, systemAccountID, scopeType, scopeID, windowHours); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func (e *testEnv) seedQuotaHourly(systemAccountID, scopeType, scopeID, statHour string, totalCostUsd float64) {
 	e.t.Helper()
 	e.seedQuotaHourlySplit(systemAccountID, scopeType, scopeID, statHour, totalCostUsd, totalCostUsd)
 }
 
 // seedQuotaHourlySplit 分别种入全量成本与成功口径成本（成功口径切换后窗口
-// 刷新按 usage_stats_hourly.success_cost_usd 汇总）。
+// 刷新按 usage_stats_hourly.success_cost_usd 汇总）。双载体 helper：SQL 经
+// 生产 Dialect 装配习语生成。
 func (e *testEnv) seedQuotaHourlySplit(systemAccountID, scopeType, scopeID, statHour string, totalCostUsd, successCostUsd float64) {
 	e.t.Helper()
-	e.exec(`INSERT INTO usage_stats_hourly (
+	e.exec(e.dialect.bind(`INSERT INTO `+e.dialect.StatsTable("usage_stats_hourly")+` (
 		system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, success_cost_usd, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, '2026-04-18T00:00:00.000Z')`,
+	) VALUES (?, ?, ?, ?, ?, ?, '2026-04-18T00:00:00.000Z')`),
 		systemAccountID, scopeType, scopeID, statHour, totalCostUsd, successCostUsd)
 }
 
@@ -118,7 +123,7 @@ type quotaWindowRow struct {
 func (e *testEnv) quotaWindowRows(t *testing.T) []quotaWindowRow {
 	t.Helper()
 	rows, err := e.db.Query(`SELECT system_account_id, scope_type, scope_id, window_hours, total_cost_usd
-		FROM usage_quota_hourly_windows
+		FROM ` + e.dialect.StatsTable("usage_quota_hourly_windows") + `
 		ORDER BY system_account_id, scope_type, scope_id, window_hours`)
 	if err != nil {
 		t.Fatal(err)
@@ -140,7 +145,7 @@ func (e *testEnv) quotaWindowRows(t *testing.T) []quotaWindowRow {
 
 func (e *testEnv) quotaDirtyCount(t *testing.T) int {
 	t.Helper()
-	counts := e.queryFloats(`SELECT COUNT(*) FROM usage_quota_hourly_window_dirty_scopes`)
+	counts := e.queryFloats(`SELECT COUNT(*) FROM ` + e.dialect.StatsTable("usage_quota_hourly_window_dirty_scopes"))
 	if len(counts) != 1 {
 		t.Fatalf("dirty count query returned %d rows", len(counts))
 	}
@@ -162,6 +167,9 @@ func assertQuotaWindowRows(t *testing.T, got []quotaWindowRow, want ...quotaWind
 // TestQuotaHourlyWindowsRebuildSQLite mirrors refreshUsageQuotaHourlyWindowsCache
 // （usage-stats.repository.ts:1783-1793）+ refreshUsageQuotaHourlyWindowSnapshots
 // （usage-stats-snapshot-helpers.ts:8-42）。
+//
+// 组B（SQLite 生产分支保留）：被测对象是 SQLite 全量重建臂（BusinessDB
+// 独立业务库读绑定），随生产 sqlite 臂删除批次同批退役（D17）。
 func TestQuotaHourlyWindowsRebuildSQLite(t *testing.T) {
 	e := newTestEnv(t)
 	business := quotaTestBusinessDB(t)
@@ -206,6 +214,8 @@ func TestQuotaHourlyWindowsRebuildSQLite(t *testing.T) {
 // TestQuotaHourlyWindowsRebuildSuccessCostOnly 钉住配额口径（业务拍板：客户端
 // 配额与账单只计成功交付的尝试）：窗口刷新只汇总 usage_stats_hourly 的
 // success_cost_usd，失败尝试携带的成本（只在 total_cost_usd）不进配额窗口。
+//
+// 组B（SQLite 生产分支保留，同 TestQuotaHourlyWindowsRebuildSQLite）。
 func TestQuotaHourlyWindowsRebuildSuccessCostOnly(t *testing.T) {
 	e := newTestEnv(t)
 	business := quotaTestBusinessDB(t)
@@ -238,19 +248,17 @@ func TestQuotaHourlyWindowsRebuildSuccessCostOnly(t *testing.T) {
 // refreshUsageQuotaHourlyWindowsCacheAsync 的消费段（:1871-1949）：
 // 脏范围输入 → 窗口重算 → 脏行按 generation 消费，消费方可读。
 func TestQuotaHourlyWindowsIncrementalConsumesDirtyScopes(t *testing.T) {
-	e := newTestEnv(t)
-	business := quotaTestBusinessDB(t)
-	refresher := e.quotaRefresher(business)
-	createBindingTable(t, e.db) // 增量编排 JOIN 的绑定表镜像（文件头连接说明）
+	e := newPGTestEnv(t)
+	refresher := e.quotaRefresher(nil)
 
-	e.seedBindingBoth(t, business, "sa1", "api_key", "keyA", 1)
-	e.seedBindingBoth(t, business, "sa1", "api_key", "keyB", 1)
+	pgSeedQuotaBinding(t, e, "sa1", "api_key", "keyA", 1)
+	pgSeedQuotaBinding(t, e, "sa1", "api_key", "keyB", 1)
 	e.seedQuotaHourly("sa1", "api_key", "keyA", "2026-04-18T11", 3)
 	// keyB：有绑定无 hourly，但残留旧窗口行 → 重算后归零消失（:1894-1901 删旧行）。
-	e.exec(`INSERT INTO usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at)
+	e.exec(`INSERT INTO juhe_stats.usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at)
 		VALUES ('sa1', 'api_key', 'keyB', 1, 5, '2026-04-17T00:00:00.000Z')`)
 	// keyC：脏标记存在但绑定已删（LEFT JOIN window_hours NULL）→ 只删不插。
-	e.exec(`INSERT INTO usage_quota_hourly_window_dirty_scopes (system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at)
+	e.exec(`INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at)
 		VALUES ('sa1', 'api_key', 'keyA', 2, '2026-04-18T10:00:00.000Z', '2026-04-18T10:00:00.000Z'),
 		       ('sa1', 'api_key', 'keyB', 1, '2026-04-18T10:00:00.000Z', '2026-04-18T10:00:00.000Z'),
 		       ('sa1', 'api_key', 'keyC', 1, '2026-04-18T10:00:00.000Z', '2026-04-18T10:00:00.000Z')`)
@@ -273,11 +281,10 @@ func TestQuotaHourlyWindowsIncrementalConsumesDirtyScopes(t *testing.T) {
 // TestQuotaHourlyWindowsIncrementalEmptyDirty mirrors :1890 空脏范围早退：
 // 不写窗口、不改状态。
 func TestQuotaHourlyWindowsIncrementalEmptyDirty(t *testing.T) {
-	e := newTestEnv(t)
-	refresher := e.quotaRefresher(quotaTestBusinessDB(t))
-	createBindingTable(t, e.db) // 增量编排 JOIN 的绑定表镜像（文件头连接说明）
+	e := newPGTestEnv(t)
+	refresher := e.quotaRefresher(nil)
 
-	e.exec(`INSERT INTO usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at)
+	e.exec(`INSERT INTO juhe_stats.usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at)
 		VALUES ('sa1', 'api_key', 'keyA', 1, 9, '2026-04-17T00:00:00.000Z')`)
 
 	result := QuotaHourlyWindowRefreshResult{}
@@ -295,17 +302,15 @@ func TestQuotaHourlyWindowsIncrementalEmptyDirty(t *testing.T) {
 // TestQuotaHourlyWindowsIncrementalPagination 用 ScopeLimit=2 覆盖 :1871/1948
 // 的分页续跑：消费满上限返回 hasMore=true，循环排空后为 false。
 func TestQuotaHourlyWindowsIncrementalPagination(t *testing.T) {
-	e := newTestEnv(t)
-	business := quotaTestBusinessDB(t)
-	refresher := e.quotaRefresher(business)
-	createBindingTable(t, e.db) // 增量编排 JOIN 的绑定表镜像（文件头连接说明）
+	e := newPGTestEnv(t)
+	refresher := e.quotaRefresher(nil)
 	refresher.ScopeLimit = 2
 
 	for _, keyID := range []string{"keyA", "keyB", "keyC"} {
-		e.seedBindingBoth(t, business, "sa1", "api_key", keyID, 1)
+		pgSeedQuotaBinding(t, e, "sa1", "api_key", keyID, 1)
 		e.seedQuotaHourly("sa1", "api_key", keyID, "2026-04-18T11", 1)
-		e.exec(`INSERT INTO usage_quota_hourly_window_dirty_scopes (system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at)
-			VALUES ('sa1', 'api_key', ?, 1, '2026-04-18T10:00:00.000Z', '2026-04-18T10:00:00.000Z')`, keyID)
+		e.exec(`INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at)
+			VALUES ('sa1', 'api_key', $1, 1, '2026-04-18T10:00:00.000Z', '2026-04-18T10:00:00.000Z')`, keyID)
 	}
 
 	first := QuotaHourlyWindowRefreshResult{}
@@ -340,11 +345,9 @@ func TestQuotaHourlyWindowsIncrementalPagination(t *testing.T) {
 // TestQuotaHourlyWindowsExpiryCursorAndSkipSameHour mirrors :1807-1869：
 // 小时翻转打脏 + 游标推进；同一小时重复运行不再打脏。
 func TestQuotaHourlyWindowsExpiryCursorAndSkipSameHour(t *testing.T) {
-	e := newTestEnv(t)
-	business := quotaTestBusinessDB(t)
-	refresher := e.quotaRefresher(business)
-	createBindingTable(t, e.db) // 增量编排 JOIN 的绑定表镜像（文件头连接说明）
-	e.seedBindingBoth(t, business, "sa1", "api_key", "keyA", 1)
+	e := newPGTestEnv(t)
+	refresher := e.quotaRefresher(nil)
+	pgSeedQuotaBinding(t, e, "sa1", "api_key", "keyA", 1)
 	// previousBoundary = now-1h = 11:00 → previousCutoff=10:00、currentCutoff=11:00；
 	// hourly@10:00 落在 [10:00, 11:00) → 打脏。
 	e.seedQuotaHourly("sa1", "api_key", "keyA", "2026-04-18T10", 2)
@@ -353,7 +356,7 @@ func TestQuotaHourlyWindowsExpiryCursorAndSkipSameHour(t *testing.T) {
 	if err := refresher.refreshQuotaHourlyWindowsIncremental(context.Background(), e.zone, &result); err != nil {
 		t.Fatal(err)
 	}
-	cursorIDs := e.queryString(`SELECT cursor_id FROM stats_job_state
+	cursorIDs := e.queryString(`SELECT cursor_id FROM juhe_stats.stats_job_state
 		WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_quota_hourly_windows_expiry'`)
 	if len(cursorIDs) != 1 || cursorIDs[0] != "2026-04-18T12" {
 		t.Fatalf("expiry cursor_id = %v, want [2026-04-18T12]", cursorIDs)
@@ -375,12 +378,10 @@ func TestQuotaHourlyWindowsExpiryCursorAndSkipSameHour(t *testing.T) {
 // TestQuotaHourlyWindowsExpiryCursorInvalidTimestamp mirrors :1816-1818：
 // 非法 cursor_created_at fail closed。
 func TestQuotaHourlyWindowsExpiryCursorInvalidTimestamp(t *testing.T) {
-	e := newTestEnv(t)
-	business := quotaTestBusinessDB(t)
-	refresher := e.quotaRefresher(business)
-	createBindingTable(t, e.db) // 增量编排 JOIN 的绑定表镜像（文件头连接说明）
-	e.seedBindingBoth(t, business, "sa1", "api_key", "keyA", 1)
-	e.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
+	e := newPGTestEnv(t)
+	refresher := e.quotaRefresher(nil)
+	pgSeedQuotaBinding(t, e, "sa1", "api_key", "keyA", 1)
+	e.exec(`INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
 		VALUES ('global', '', 'usage_quota_hourly_windows_expiry', 'not-a-time', '2026-04-18T11', '2026-04-18T11:00:00.000Z')`)
 
 	err := refresher.refreshQuotaHourlyWindowsIncremental(context.Background(), e.zone, &QuotaHourlyWindowRefreshResult{})
@@ -395,40 +396,41 @@ func TestQuotaHourlyWindowsExpiryCursorInvalidTimestamp(t *testing.T) {
 // TestQuotaHourlyWindowsFailureWritesJobState 覆盖 D-229 的失败可见性：
 // 刷新失败写 stats_job_state last_error_message；成功后清空并记
 // last_success_at。
+//
+// PG 生产分支：先以缺 juhe_business 绑定表的隔离库触发增量消费失败（真实
+// 场景：业务 schema 未迁移），补建绑定表后重跑成功；断言与原 SQLite 载体
+// 逐字节一致。
 func TestQuotaHourlyWindowsFailureWritesJobState(t *testing.T) {
-	e := newTestEnv(t)
-	// 业务库无绑定表 → 全量重建失败（真实场景：业务库 schema 未迁移）。
-	emptyBusiness, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "empty-business.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = emptyBusiness.Close() })
-	refresher := e.quotaRefresher(emptyBusiness)
+	e := newPGTestEnvWithDB(t, openKitStatsOnlyPostgresDB(t))
+	refresher := e.quotaRefresher(nil)
 
 	if _, err := refresher.RunQuotaHourlyWindows(context.Background()); err == nil {
 		t.Fatal("expected refresh failure against business db without bindings table")
 	}
-	messages := e.queryString(`SELECT last_error_message FROM stats_job_state
+	messages := e.queryString(`SELECT last_error_message FROM juhe_stats.stats_job_state
 		WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage-quota-hourly-windows-refresh'`)
 	if len(messages) != 1 || messages[0] == "" {
 		t.Fatalf("last_error_message after failure = %v, want non-empty", messages)
 	}
 
-	// 修复业务库后重跑成功 → last_error_message 清空、last_success_at 记录。
-	createBindingTable(t, emptyBusiness)
-	if err := seedBinding(emptyBusiness, "sa1", "api_key", "keyA", 1); err != nil {
-		t.Fatal(err)
-	}
+	// 补建绑定表（kitBusinessBindingDDL，生产对齐形状）后重跑成功 →
+	// last_error_message 清空、last_success_at 记录。PG 增量分支按脏范围
+	// 消费驱动重算（SQLite 重建分支由绑定全量驱动），成功段种入一条脏范围
+	// 触发窗口重建，断言与原 SQLite 载体逐字节一致。
+	e.exec(kitBusinessBindingDDL)
+	e.exec(`INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at)
+		VALUES ('sa1', 'api_key', 'keyA', 1, '2026-04-18T10:00:00.000Z', '2026-04-18T10:00:00.000Z')`)
+	pgSeedQuotaBinding(t, e, "sa1", "api_key", "keyA", 1)
 	e.seedQuotaHourly("sa1", "api_key", "keyA", "2026-04-18T11", 3)
 	if _, err := refresher.RunQuotaHourlyWindows(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	errorColumns := e.queryString(`SELECT COALESCE(last_error_message, '') FROM stats_job_state
+	errorColumns := e.queryString(`SELECT COALESCE(last_error_message, '') FROM juhe_stats.stats_job_state
 		WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage-quota-hourly-windows-refresh'`)
 	if len(errorColumns) != 1 || errorColumns[0] != "" {
 		t.Fatalf("last_error_message after success = %v, want empty", errorColumns)
 	}
-	successAt := e.queryString(`SELECT last_success_at FROM stats_job_state
+	successAt := e.queryString(`SELECT last_success_at FROM juhe_stats.stats_job_state
 		WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage-quota-hourly-windows-refresh'`)
 	if len(successAt) != 1 || successAt[0] == "" {
 		t.Fatalf("last_success_at after success = %v, want non-empty", successAt)

@@ -121,7 +121,6 @@ func newBindOptionsEnvWithRole(t *testing.T, role string) *generationEnv {
 	return &generationEnv{
 		routeEnv:  &routeEnv{t: t, server: server, fixture: fixture},
 		executor:  executor,
-		chatKeys:  &mockChatKeys{},
 		objectDir: t.TempDir(),
 		hub:       hub,
 		deps:      deps,

@@ -3,22 +3,16 @@ package operationlog
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
-// openKeeperTestStore opens an isolated SQLite F4 store for keeper tests.
+// openKeeperTestStore opens an isolated PG F4 store (pgtestkit 独立库 + 生产
+// OpenStore ModePostgres 装配，业务夹具与 createBusinessSettings 同构) for
+// keeper tests.
 func openKeeperTestStore(t *testing.T) Store {
 	t.Helper()
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	store, err := OpenStore(Config{Enabled: true, InstanceID: "keeper-owner", Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store, _ := openPostgresStore(t)
 	return store
 }
 
@@ -139,7 +133,7 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 	// 下一次续租 0 行更新 → 按既有语义终态 ErrOwnerLeaseLost。
 	expired := storageTime(time.Now().UTC().Add(-time.Minute))
 	if _, err := implementation.db.Exec(
-		`UPDATE operation_log_owner_leases SET lease_until=? WHERE lease_key='f4-operation-log-persistence' AND owner_id=?`,
+		`UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=$1 WHERE lease_key='f4-operation-log-persistence' AND owner_id=$2`,
 		expired, "keeper-owner"); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +158,7 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 	// rival 释放（行重新过期）后的下一次重启：入口重新 AcquireOwnerLease 成功，
 	// keeper 清空终态并以新 fence 恢复运行；取消上下文应优雅 nil 返回。
 	if _, err := implementation.db.Exec(
-		`UPDATE operation_log_owner_leases SET lease_until=? WHERE lease_key='f4-operation-log-persistence'`,
+		`UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=$1 WHERE lease_key='f4-operation-log-persistence'`,
 		expired); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +217,7 @@ func TestProducerFollowsRotatedFence(t *testing.T) {
 	// 真实失租 + 行空闲：expire → rival 接管 → rival 释放（行过期）。
 	expired := storageTime(time.Now().UTC().Add(-time.Minute))
 	if _, err := implementation.db.Exec(
-		`UPDATE operation_log_owner_leases SET lease_until=? WHERE lease_key='f4-operation-log-persistence' AND owner_id=?`,
+		`UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=$1 WHERE lease_key='f4-operation-log-persistence' AND owner_id=$2`,
 		expired, "keeper-owner"); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +230,7 @@ func TestProducerFollowsRotatedFence(t *testing.T) {
 		t.Fatal("租约被接管后 Lost 未关闭")
 	}
 	if _, err := implementation.db.Exec(
-		`UPDATE operation_log_owner_leases SET lease_until=? WHERE lease_key='f4-operation-log-persistence'`,
+		`UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=$1 WHERE lease_key='f4-operation-log-persistence'`,
 		expired); err != nil {
 		t.Fatal(err)
 	}

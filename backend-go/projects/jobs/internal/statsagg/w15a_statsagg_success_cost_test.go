@@ -50,12 +50,12 @@ func TestAccumulatorSuccessCostOnlyFromSuccessRecords(t *testing.T) {
 	}
 }
 
-// TestAggregateSuccessCostUsdSplitMixedAttempts 走真实聚合管线（SQLite 承载
-// 测试库，双模 SQL 由 Dialect 单一来源生成）：同一 api_key scope 上一条成功
-// 交付 + 一条带费用的失败尝试，聚合后 total_cost_usd 为全量、success_cost_usd
-// 只含成功交付。
+// TestAggregateSuccessCostUsdSplitMixedAttempts 走真实聚合管线（PG 生产方言
+// 载体：pgtestkit 隔离库，双模 SQL 由 Dialect 单一来源生成；测试体内手写
+// SQL 按 PG 方言 schema 限定）：同一 api_key scope 上一条成功交付 + 一条带
+// 费用的失败尝试，聚合后 total_cost_usd 为全量、success_cost_usd 只含成功交付。
 func TestAggregateSuccessCostUsdSplitMixedAttempts(t *testing.T) {
-	env := newTestEnv(t)
+	env := newPGTestEnv(t)
 	// 成功交付：cost 0.02（时间键 date=2026-04-18 / hour=2026-04-18T10）。
 	env.seedUsageRecord(UsageStatsRecordRow{
 		ID: "rec-ok", SystemAccountID: "alice", TraceID: "tr-ok", TrafficSource: "gateway",
@@ -87,15 +87,15 @@ func TestAggregateSuccessCostUsdSplitMixedAttempts(t *testing.T) {
 	// total 0.07 全量观测；success_cost 0.02 配额口径。
 	env.assertFloats("api_key totals mixed attempts",
 		env.queryRowFloats(`SELECT request_count, success_count, error_count, total_cost_usd, success_cost_usd
-			FROM usage_stats_totals WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1'`),
+			FROM juhe_stats.usage_stats_totals WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1'`),
 		2, 1, 1, 0.07, 0.02)
 	env.assertFloats("api_key daily mixed attempts",
 		env.queryRowFloats(`SELECT total_cost_usd, success_cost_usd
-			FROM usage_stats_daily WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_date='2026-04-18'`),
+			FROM juhe_stats.usage_stats_daily WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_date='2026-04-18'`),
 		0.07, 0.02)
 	env.assertFloats("api_key hourly mixed attempts",
 		env.queryRowFloats(`SELECT total_cost_usd, success_cost_usd
-			FROM usage_stats_hourly WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_hour='2026-04-18T10'`),
+			FROM juhe_stats.usage_stats_hourly WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1' AND stat_hour='2026-04-18T10'`),
 		0.07, 0.02)
 
 	// UPSERT 增量合并后的口径：重放同一批聚合（幂等场景由游标保证，这里
@@ -116,6 +116,6 @@ func TestAggregateSuccessCostUsdSplitMixedAttempts(t *testing.T) {
 	}
 	env.assertFloats("api_key totals after second batch",
 		env.queryRowFloats(`SELECT total_cost_usd, success_cost_usd
-			FROM usage_stats_totals WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1'`),
+			FROM juhe_stats.usage_stats_totals WHERE system_account_id='alice' AND scope_type='api_key' AND scope_id='key-1'`),
 		0.10, 0.05)
 }

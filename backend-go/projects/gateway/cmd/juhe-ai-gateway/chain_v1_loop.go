@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -337,6 +338,43 @@ func (l *v1DispatchLoop) stopCompactSseWaitHeartbeat() {
 func dispatchDomainStatelessMediaOf(current *gatewaypreauth.DispatchContext) bool {
 	return current != nil &&
 		gatewayproto.DispatchDomainOfLane(current.RequestLane) == gatewayproto.DispatchDomainStatelessMedia
+}
+
+// streamBridgeDownstreamProtocolOf 判定下游协议是否属于桥接流方向（流式提交
+// 边界受限重放与异常终局处置设计 §3.1 窗口资格）：chat 上游 → anthropic /
+// gemini 客户端（messages_sse / gemini 系 SSE），以及 responses_sse 且账户无
+// 原生 Responses 端点（codex responses 桥回转，与 chain_bridge_response.go
+// BUG-0178 的 accountHasNativeResponsesModes 守卫同源——原生直通不落桥）。
+// 桥接管道有自己的 EOF 合成收尾契约（W7），窗口会改变其时序前提。
+func streamBridgeDownstreamProtocolOf(downstreamProtocol string, account gatewaydispatch.AccountCandidate) bool {
+	switch downstreamProtocol {
+	case gatewaycodex.DownstreamMessagesSSE,
+		gatewaycodex.DownstreamGeminiStreamGenerateSSE,
+		gatewaycodex.DownstreamGeminiInteractionsSSE:
+		return true
+	case gatewaycodex.DownstreamResponsesSSE:
+		return !accountHasNativeResponsesModes(account)
+	default:
+		return false
+	}
+}
+
+// preCommitReplayWindowDisabledOf 投影受限重放窗口的资格排除面（流式提交边界
+// 受限重放与异常终局处置设计 §3.1 窗口资格）：缺省启用（文本主路径），显式
+// 排除——①媒体创建域请求（与 settleResponseStreamServerRetry 媒体域切断同源
+// 判定）；②桥接流（EOF 合成收尾契约）；③AI 问答 web_search hosted tool 子调用
+// （身份头 x-juhe-ai-purpose: chat_web_search，internal/chat/generation_websearch.go
+// 的既有读取）：副作用请求即使尚未输出也禁止隐式重放（调研文档 L123 硬禁令）。
+// nil 上下文按对话域处理；ParseError 隔离与异常终局判定不受本判定影响。
+func preCommitReplayWindowDisabledOf(req *gatewaypreauth.GatewayRequest, context *gatewaypreauth.DispatchContext, account gatewaydispatch.AccountCandidate) bool {
+	if dispatchDomainStatelessMediaOf(context) {
+		return true
+	}
+	if streamBridgeDownstreamProtocolOf(clientStrategyViewOf(context).DownstreamProtocol, account) {
+		return true
+	}
+	return req != nil &&
+		strings.EqualFold(strings.TrimSpace(req.Header("x-juhe-ai-purpose")), "chat_web_search")
 }
 
 // waitForRecoverableFailures 镜像 Node routes.ts:1281-1283：单分组（无备用
@@ -1735,6 +1773,12 @@ func (l *v1DispatchLoop) settleHotQualityTerminal(
 	case handling.RetryUpstream:
 		// response_inspection（非用户策略）/ pre_commit_stream_failure 等
 		// 响应期重试的当前 attempt 诊断终态。
+	case handling.ErrorCode == gatewayresponse.UpstreamStreamAbnormalEOFCode:
+		// 流异常终局失败（流式提交边界受限重放与异常终局处置设计 §3.2.2）：
+		// 热质量终态归上游响应面（upstream_response_failure / none /
+		// upstream_response），提交前换号与提交后断开两形态一致；AlreadyFinalized
+		// 渲染族的 unknown / request_lifecycle 臂不适用于该失败（它有明确的上游
+		// 归因），显式分支保持缺省终态。
 	case handling.TransportFailure != nil:
 		terminal = gatewaydispatch.HotQualityTerminal{
 			OutcomeClass: transportFailureOutcomeClass(handling.TransportFailure.Kind),
@@ -1885,6 +1929,14 @@ type postVerdictClassification struct {
 	explicitUserPolicyRetry      bool
 	requestLocalProtocolFailure  bool
 	protocolValidatedSuccess     bool
+	// upstreamStreamAbnormalEOF 标记流异常终局失败（error_code =
+	// upstream_stream_abnormal_eof，流式提交边界受限重放与异常终局处置设计
+	// §3.2.2）：circuit ReportUnknown（中性臂，不进 ReportFramingComplete——
+	// 干净 EOF 非 transport 失败，传输/opaque 分离契约保持，也不再当治愈证据）；
+	// 账户锁 RecordFailureAsync('upstream_stream_abnormal_eof') 计入失败统计
+	//（不直接熔断，阈值由既有机制管）；keyModel 维持默认臂
+	// ReportUpstreamNotComplete（ProtocolValidatedSuccess=false 既有落点）。
+	upstreamStreamAbnormalEOF bool
 }
 
 // classifyPostVerdictOutcome 对齐 Node routes.ts:1750-1803 的判定组。字段映射：
@@ -1906,6 +1958,9 @@ type postVerdictClassification struct {
 //   - BUG-0289 增补：codex 加密上下文清理重放轮（RetryReason =
 //     StreamServerRetryCodexEncryptedContentRecovery）并入 neutral
 //     （网关主动的同账户 body 变体重放，非传输失败也非帧完成证据）。
+//   - 流式提交边界受限重放与异常终局处置设计 §3.2.2 增补：error_code =
+//     upstream_stream_abnormal_eof（提交前换号与提交后断开两形态共用）→
+//     upstreamStreamAbnormalEOF，失败归因三面见该字段注释。
 func classifyPostVerdictOutcome(
 	dispatched gatewaydispatch.UpstreamDispatchResult,
 	handling gatewayresponse.UpstreamResponseHandlingResult,
@@ -1971,6 +2026,7 @@ func classifyPostVerdictOutcome(
 		explicitUserPolicyRetry:      explicitUserPolicyRetry,
 		requestLocalProtocolFailure:  requestLocalProtocolFailure,
 		protocolValidatedSuccess:     protocolValidatedSuccess,
+		upstreamStreamAbnormalEOF:    handling.ErrorCode == gatewayresponse.UpstreamStreamAbnormalEOFCode,
 	}
 }
 
@@ -1985,13 +2041,16 @@ func classifyPostVerdictOutcome(
 //	           但已中止/下游关闭 → 不结算（兜底 defer 以 unknown 收口，对齐
 //	           Node 同形态下 circuitDecision undefined 且第二支不触发）；
 //	           BUG-0289：codex 加密上下文清理重放轮并入 neutral（ReportUnknown），
-//	           不计治愈证据；
+//	           不计治愈证据；upstream_stream_abnormal_eof（流式提交边界受限
+//	           重放与异常终局处置设计 §3.2.2）同走 ReportUnknown 中性臂；
 //	keyModel = neutral || requestLocalProtocolFailure || explicitUserPolicyRetry
 //	           → ReportUnknown；protocolValidatedSuccess → ReportCompleteSuccess；
-//	           其余 → ReportUpstreamNotComplete；
+//	           其余（含 upstream_stream_abnormal_eof）→ ReportUpstreamNotComplete；
 //	账户锁   = transportFailure 且未中止且非 downstream_connection_closed 且
 //	           !neutral 且 !requestLocalProtocolFailure 且 !hardCutover →
-//	           RecordFailureAsync('upstream_body_transport_failure')。
+//	           RecordFailureAsync('upstream_body_transport_failure')；
+//	           upstream_stream_abnormal_eof 且未中止且非 downstream_connection_
+//	           closed → RecordFailureAsync('upstream_stream_abnormal_eof')。
 //
 // 与 Node 的顺序偏差（无行为耦合，各消费者独立记账）：Node 先锁记录（:1813）
 // 再 circuit transport-failure（:1839）；Go 本块整体在 settleHotQualityTerminal
@@ -2024,8 +2083,26 @@ func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 			}, "响应期传输失败的账户锁失败记录未完成")
 		}
 	}
+	// 流异常终局失败侧（设计 §3.2.2）：RecordFailureAsync 按
+	// upstream_stream_abnormal_eof 归因计入失败统计（不直接熔断，阈值由既有
+	// 机制管），修正「断流被记为治愈证据」的记账倒挂。
+	if class.upstreamStreamAbnormalEOF && !aborted && !downstreamClosed &&
+		lockRecorder != nil &&
+		l.current != nil && l.current.UsageContext.TrafficSource == gatewayTrafficSource {
+		if err := lockRecorder.RecordFailureAsync(ctx, dispatched.Account.ID, gatewayresponse.UpstreamStreamAbnormalEOFCode, dispatched.AccountLockObservation); err != nil {
+			l.c.observability.Logger().Warn("gateway_account_lock_failure_record_failed", map[string]any{
+				"event":     "gateway_account_lock_failure_record_failed",
+				"traceId":   l.traceID,
+				"accountId": dispatched.Account.ID,
+				"error":     err.Error(),
+			}, "流异常终局失败的账户锁失败记录未完成")
+		}
+	}
 
-	// circuit 结算（Node :1839-1848 + :1865-1869）。
+	// circuit 结算（Node :1839-1848 + :1865-1869）。upstream_stream_abnormal_eof
+	// 走中性臂 ReportUnknown（设计 §3.2.2：干净 EOF 非 transport 失败，不进
+	// ReportTransportFailure；也不得落入 transportFailure==nil 的
+	// ReportFramingComplete 治愈证据臂，BUG-0289 注释口径同源）。
 	if circuitAttempt != nil {
 		if class.transportFailure != nil && !aborted && !downstreamClosed {
 			if _, err := circuitAttempt.ReportTransportFailure(ctx, gatewaycircuit.TransportFailure{
@@ -2039,7 +2116,7 @@ func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 					"error":     err.Error(),
 				}, "账户熔断传输失败结算未完成")
 			}
-		} else if class.neutralSchedulingTermination {
+		} else if class.neutralSchedulingTermination || class.upstreamStreamAbnormalEOF {
 			if _, err := circuitAttempt.ReportUnknown(ctx); err != nil {
 				l.c.observability.Logger().Warn("gateway_account_circuit_unknown_report_failed", map[string]any{
 					"event":     "gateway_account_circuit_unknown_report_failed",

@@ -78,6 +78,19 @@ func (s *Service) PreResolveGatewayRuntimeWithOptions(ctx context.Context, res G
 		next()
 		return nil
 	}
+	// 内部身份通道（AI 问答免 Key 直调）的完整旁路：请求携带进程内注入的
+	// InternalOwnerSystemAccountID 时直接放行——不做 Key 抽取/校验、不消费
+	// 用户请求限流、不记录认证前熔断失败；IP 黑名单与认证前熔断检查（原本
+	// 位于下方）同样跳过——内部请求没有客户端 IP，两处按 ClientIP 空键本就
+	// 是 no-op，直接跳过最省。安全依据：该字段只能由进程内代码在构造
+	// GatewayRequest 后赋值，外部 HTTP 请求经 NewGatewayRequest 构造，没有
+	// 任何 header / query / body 通道能写入它，旁路不存在外部触达面。
+	if req != nil && req.InternalOwnerSystemAccountID != "" {
+		resolutionOutcome = "success"
+		resolutionReason = "internal_identity"
+		next()
+		return nil
+	}
 	runtime, err := s.ResolveGatewayRuntimeAsync(ctx, res, req, options)
 	if err != nil {
 		resolutionOutcome = "unexpected_failure"
@@ -124,6 +137,13 @@ func (s *Service) PreResolveGatewayRuntimeWithOptions(ctx context.Context, res G
 func (s *Service) ResolveGatewayRuntimeAsync(ctx context.Context, res GatewayResponseWriter, req *GatewayRequest, options ResolveGatewayRuntimeOptions) (*gatewayruntimecache.GatewayRuntime, error) {
 	if req.Runtime != nil && req.Runtime.APIKey != nil {
 		return req.Runtime, nil
+	}
+	// 内部身份通道（AI 问答免 Key 直调）：身份由调用方（preflight）经
+	// options.Identity 注入分支承载（不解析 runtime，无需 runtime 快照），
+	// 这里短路返回避免任何未注入 Identity 的调用路径继续走 Key 鉴权——内部
+	// 请求没有可校验的 Bearer，正常解析只会落入 401 分支。
+	if req != nil && req.InternalOwnerSystemAccountID != "" {
+		return nil, nil
 	}
 	clientIP, _ := ExtractClientIP(req)
 	authorization := req.Header("authorization")

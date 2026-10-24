@@ -52,11 +52,11 @@ type CompactionResult struct {
 }
 
 // CompactionInput mirrors the compactChatContextOnce input（压缩调用恒
-// chat_completions，工具体系设计 §11.3——Protocol 字段随协议偏好删除）。
+// chat_completions，工具体系设计 §11.3——Protocol 字段随协议偏好删除；鉴权经
+// 内部身份通道，免 Key 直调后无 Key 明文字段）。
 type CompactionInput struct {
 	ConversationID              string
 	SystemAccountID             string
-	APIKeySecret                string
 	Model                       string
 	EffectiveContextLimitTokens *int64
 }
@@ -144,7 +144,7 @@ func (s *CompactionService) dispatchExecutor(input CompactionInput) (GenerationE
 	if accountID == "" {
 		return executor, nil
 	}
-	return aware.WithChatDispatchAccount(accountID), nil
+	return aware.WithChatDispatchAccount(accountID, conversation.SystemAccountID), nil
 }
 
 // CompactOnce mirrors compactChatContextOnce.
@@ -631,8 +631,9 @@ func (s *CompactionService) summarizePage(ctx context.Context, input CompactionI
 		timeoutCtx, cancel = context.WithTimeout(ctx, compactionRequestTimeoutMs*time.Millisecond)
 		defer cancel()
 	}
+	// 鉴权经内部身份通道（执行器视图注入进程内 context），请求头只保留内容
+	// 协商与压缩用途审计。
 	headers := map[string]string{
-		"authorization":     "Bearer " + input.APIKeySecret,
 		"content-type":      "application/json",
 		"x-juhe-ai-purpose": "chat_context_compaction",
 	}

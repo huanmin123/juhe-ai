@@ -59,6 +59,13 @@ type StreamPipeResult struct {
 	TransportFailure                          *StreamTransportFailure
 	// GatewayLocalFailure 表示网关本地处理失败且无上游传输归因。
 	GatewayLocalFailure bool
+	// ParseErrorEventCount 是本流解析失败事件计数（设计 §3.3 结算观测面）。
+	ParseErrorEventCount int
+	// WindowDurationMs 是受限重放窗口开启到关闭的时长；未开窗流为 nil（省略）。
+	WindowDurationMs *int64
+	// DownstreamFirstWriteMs 是首个下游字节写出时刻 − 请求开始（客户端可感知
+	// 首字延迟的真口径，含窗口停留）。
+	DownstreamFirstWriteMs *int64
 }
 
 // 审计捕获上限，对齐 stream.ts 常量。

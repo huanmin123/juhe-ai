@@ -120,6 +120,13 @@ func newSpooledUsageRecorder(config usageBridgeConfig, spool *gatewayusage.Usage
 // 带稳定 id/createdAt，jobs usagespooldrain 的 parseSpoolRecord 契约（缺
 // id/createdAt 判损坏隔离）在无 Redis 的 spool 交接路径上成立。
 func (r *spooledUsageRecorder) EnqueueUsageRecord(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
+	// 使用日志结构性抑制（AI 问答内部通道）：抑制标记在记录上随请求传播。
+	// 主闸口在 FinalizationDispatch.DispatchUsageRecord 入口（覆盖正常入队与
+	// 队列满时溢出落 spool 两条投递臂）；这里再守一道，兜住绕过 finalization
+	// 直投 recorder 的路径，保证 spool 与 DB 都不会看到抑制记录。
+	if input.SuppressUsage {
+		return nil
+	}
 	normalized, err := gatewayusage.NormalizeUsageRecordInput(input, r.clock, r.idFactory)
 	if err != nil {
 		r.mu.Lock()
@@ -508,8 +515,10 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		RouteGroupID:    input.UsageContext.RouteGroupID,
 		// 压缩期望随请求级上下文直传（与 RouteGroupID 同源）。
 		CompactionExpected: u.compactionExpected,
-		Endpoint:           input.UsageContext.Endpoint,
-		ProviderCode:       providerCode,
+		// 内部通道抑制标记随 usage 上下文直传（持久化唯一闸口据此丢弃）。
+		SuppressUsage: input.UsageContext.SuppressUsage,
+		Endpoint:      input.UsageContext.Endpoint,
+		ProviderCode:  providerCode,
 		// 账号视图 provider 身份优先，空回落 usage context；协议档案 id 随账号
 		// 视图携带（Node input.account.providerProtocolProfileId）。
 		ProviderProtocolProfileID: providerProtocolProfileID,
@@ -771,8 +780,10 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 		GroupID:         input.UsageContext.GroupID,
 		// 压缩期望随请求级上下文直传（与完成路径同源）。
 		CompactionExpected: u.compactionExpected,
-		Endpoint:           input.UsageContext.Endpoint,
-		ProviderCode:       providerCode,
+		// 内部通道抑制标记随 usage 上下文直传（持久化唯一闸口据此丢弃）。
+		SuppressUsage: input.UsageContext.SuppressUsage,
+		Endpoint:      input.UsageContext.Endpoint,
+		ProviderCode:  providerCode,
 		// 账号视图协议档案 id（Node input.account.providerProtocolProfileId）。
 		ProviderProtocolProfileID: providerProtocolProfileID,
 		UsageSemantic:             finalizationUsageSemanticOf(input.Account),

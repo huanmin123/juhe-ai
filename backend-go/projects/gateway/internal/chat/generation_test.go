@@ -164,36 +164,12 @@ func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string
 func strPtrT(value string) *string { return &value }
 func int64PtrT(value int64) *int64 { return &value }
 
-type mockChatKeys struct {
-	mu          sync.Mutex
-	ensureCount int
-	keyID       string
-}
+// mockSystemAccountFlags 是归属系统账户开关的测试实现（默认 true，等价原
+// mockGatewayKeys 的 ImageGenerationEnabled:true 视图）。
+type mockSystemAccountFlags bool
 
-func (m *mockChatKeys) EnsureChatAPIKey(ownerID string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ensureCount++
-	if m.keyID == "" {
-		m.keyID = "chat_key_provisioned"
-	}
-	return m.keyID, nil
-}
-
-func (m *mockChatKeys) FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecord, error) {
-	return &ChatAPIKeyRecord{ID: keyID, Name: "对话密钥", Secret: "chat-secret", Status: "active"}, nil
-}
-
-type mockGatewayKeys struct{}
-
-func (mockGatewayKeys) ValidateGatewayKey(secret string) (*GatewayKeyView, error) {
-	if secret == "" {
-		return nil, nil
-	}
-	return &GatewayKeyView{
-		GroupBindings:          []GatewayGroupBinding{{GroupID: "group-a", Status: "active", GroupEnabled: true}},
-		ImageGenerationEnabled: true,
-	}, nil
+func (f mockSystemAccountFlags) ImageGenerationEnabled(string) (bool, error) {
+	return bool(f), nil
 }
 
 type stubImageProcessor struct{}
@@ -226,7 +202,6 @@ func (stubImageProcessor) CreatePreview(data []byte) (*ProcessedImage, error) {
 type generationEnv struct {
 	*routeEnv
 	executor    *mockExecutor
-	chatKeys    *mockChatKeys
 	objectDir   string
 	hub         *GenerationHub
 	compactions *CompactionService
@@ -249,7 +224,6 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 	t.Helper()
 	_, clock := fixedChatClock()
 	executor := &mockExecutor{}
-	chatKeys := &mockChatKeys{}
 	objectDir := t.TempDir()
 	objectStore, err := NewLocalObjectStore(objectDir)
 	if err != nil {
@@ -265,8 +239,7 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 		Hub:                     hub,
 		Executor:                executor,
 		ModelCatalog:            mockModelCatalog{},
-		ChatKeys:                chatKeys,
-		GatewayKeys:             mockGatewayKeys{},
+		SystemAccountFlags:      mockSystemAccountFlags(true),
 		// 账户唯一绑定契约：发送预检需校验绑定账户；默认接线 account-1 →
 		// group-a 的 mock（与夹具默认绑定一致）。专门测试校验失败的用例自行置 nil。
 		AccountLookup:              mockAccountLookup{},
@@ -298,7 +271,7 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 	t.Cleanup(server.Close)
 	return &generationEnv{
 		routeEnv: &routeEnv{t: t, server: server, fixture: fixture},
-		executor: executor, chatKeys: chatKeys, objectDir: objectDir, hub: hub, compactions: compactions,
+		executor: executor, objectDir: objectDir, hub: hub, compactions: compactions,
 		deps: deps,
 	}
 }
@@ -713,14 +686,15 @@ func TestStreamUpstreamHTTPFailureClassified(t *testing.T) {
 
 func TestProvisionConversationsIdempotent(t *testing.T) {
 	env := newGenerationEnv(t)
-	// 免弹窗直进：空 body 创建空会话，鉴权主体由 EnsureChatAPIKey 幂等确保。
+	// 免弹窗直进：空 body 创建空会话；免 Key 直调后不再创建/复用任何 API Key
+	//（api_key_id/api_key_name_snapshot 恒空串，列保留存历史）。
 	first := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "")
 	if first.status != http.StatusCreated {
 		t.Fatalf("create = %d %s", first.status, first.rawString())
 	}
 	data := first.dataMap()
-	if data["apiKeyId"] != "chat_key_provisioned" {
-		t.Fatalf("apiKeyId = %v", data["apiKeyId"])
+	if data["apiKeyId"] != nil {
+		t.Fatalf("apiKeyId = %v, want null（不再创建对话 Key）", data["apiKeyId"])
 	}
 	if _, has := data["bindAccountId"]; has {
 		t.Fatalf("空会话不应携带绑定: %v", data)
@@ -734,12 +708,6 @@ func TestProvisionConversationsIdempotent(t *testing.T) {
 	second := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "")
 	if second.status != http.StatusCreated {
 		t.Fatalf("second create = %d %s", second.status, second.rawString())
-	}
-	env.chatKeys.mu.Lock()
-	ensureCount := env.chatKeys.ensureCount
-	env.chatKeys.mu.Unlock()
-	if ensureCount != 2 {
-		t.Fatalf("chat key ensure count = %d, want 2", ensureCount)
 	}
 	// 未知键按兼容口径忽略（历史 bindMode/apiKeyId/groupId/accountId 字段与
 	// 任意旧客户端字段均不阻断创建）。
@@ -782,7 +750,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		env.fixture.createConversation("chat_conv_z", routeTestOwner)
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_z", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5",
+			Model: "gpt-5",
 		})
 		if result.Status != "skipped" || result.Reason != "no_compactable_turn" {
 			t.Fatalf("result = %+v", result)
@@ -803,7 +771,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		}}
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_y", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5",
+			Model: "gpt-5",
 		})
 		if result.Status != "installed" {
 			t.Fatalf("result = %+v", result)
@@ -833,7 +801,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		}}
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_w", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5",
+			Model: "gpt-5",
 		})
 		if result.Status != "failed" {
 			t.Fatalf("result = %+v", result)
@@ -860,7 +828,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		go func() {
 			done <- env.compactions.Start(context.Background(), CompactionInput{
 				ConversationID: "chat_conv_x", SystemAccountID: routeTestOwner,
-				APIKeySecret: "secret", Model: "gpt-5",
+				Model: "gpt-5",
 			})
 		}()
 		deadline := time.Now().Add(2 * time.Second)
@@ -875,7 +843,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		}
 		second := env.compactions.Start(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_x", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5",
+			Model: "gpt-5",
 		})
 		if second.Status != "already_running" {
 			t.Fatalf("second start = %+v", second)

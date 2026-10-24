@@ -239,6 +239,10 @@ func hydrateFailingLoader(t *testing.T, db *sql.DB, concurrency ConcurrencySourc
 }
 
 // TestHydratePageFailClosed 覆盖水合链各读面失败的 fail-closed 行为。
+// 组B保留（不迁 PG）：loader 的 PG 臂与生产 schema 存在适配缺口（如
+// juhe_stats.account_usage_snapshots 时间列生产为 timestamptz，loader 读 SQL
+// 裸扫 text 断言；与 EnqueueDue 的 instantParam 同族），本测试随 loader PG 臂
+// 修复批次再迁；此处保持 SQLite fixture 与断言原状。
 func TestHydratePageFailClosed(t *testing.T) {
 	db := newLoaderTestDB(t)
 	seedOwnerAccount(t, db)
@@ -425,12 +429,12 @@ func TestLoadSearchTermsAndScopesEdge(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	ctx := context.Background()
 	if _, err := db.Exec(`
-		INSERT INTO accounts (id, system_account_id, authorization_instance_authorization_id) VALUES
+		INSERT INTO juhe_business.accounts (id, system_account_id, authorization_instance_authorization_id) VALUES
 			('acc-t', 'viewer-1', NULL), ('acc-auth', 'viewer-1', 'auth-gone');
-		INSERT INTO system_accounts (id) VALUES ('viewer-1');
-		INSERT INTO resource_authorizations (id, status) VALUES ('auth-gone', 'active');
-		INSERT INTO account_name_search_documents (account_id) VALUES ('acc-t');
-		INSERT INTO account_name_search_terms (account_id, term) VALUES ('acc-t', '账'), ('acc-t', '账户');`); err != nil {
+		INSERT INTO juhe_business.system_accounts (id) VALUES ('viewer-1');
+		INSERT INTO juhe_business.resource_authorizations (id, status) VALUES ('auth-gone', 'active');
+		INSERT INTO juhe_business.account_name_search_documents (account_id) VALUES ('acc-t');
+		INSERT INTO juhe_business.account_name_search_terms (account_id, term) VALUES ('acc-t', '账'), ('acc-t', '账户');`); err != nil {
 		t.Fatal(err)
 	}
 	terms, err := repo.LoadSearchTerms(ctx, []string{"acc-t"})

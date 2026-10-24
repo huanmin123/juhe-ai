@@ -31,7 +31,8 @@ const shardSchema = `
 `
 
 func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
-	fixture := newFixture(t)
+	// 组B：usage 分片文件走查（SQLite-only 臂）。
+	fixture := newSQLiteFixture(t)
 	shardDir := t.TempDir()
 	shardPath := filepath.Join(shardDir, "usage_20260904_s000.sqlite3")
 	shardDB, err := sql.Open("sqlite", shardPath)

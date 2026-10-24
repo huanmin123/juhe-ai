@@ -20,7 +20,7 @@ func TestWFExecuteIssuedInputWithGateAndLogger(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
-	store := wfOpenJobsStore(t)
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 	owner, ok, err := store.AcquireOwnerLease(ctx, "wf-gate", time.Hour)
 	if err != nil || !ok {

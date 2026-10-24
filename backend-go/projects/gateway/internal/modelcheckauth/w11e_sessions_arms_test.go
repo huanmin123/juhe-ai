@@ -118,7 +118,7 @@ func TestW11ESessionStorageFailureArms(t *testing.T) {
 		t.Fatalf("修订=%q err=%v", revision, err)
 	}
 	// 会话表缺失：createSession persist 失败。
-	if _, err := db.Exec(`DROP TABLE system_sessions`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.system_sessions`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := auth.createSession(ctx, "w11e-acct", revision, time.Minute, false); err == nil || !strings.Contains(err.Error(), "persist session") {
@@ -138,10 +138,10 @@ func TestW11ESessionStorageFailureArms(t *testing.T) {
 		t.Fatalf("缺会话表改密=%t %v", changed, err)
 	}
 	// 账户表缺失：改密读取失败。
-	if _, err := db.Exec(`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT UNIQUE,expires_at TEXT,created_at TEXT,last_seen_at TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE juhe_business.system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT UNIQUE,expires_at TEXT,created_at TEXT,last_seen_at TEXT)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DROP TABLE system_accounts`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.system_accounts`); err != nil {
 		t.Fatal(err)
 	}
 	if changed, err := auth.ChangePassword(ctx, "w11e-acct", revision, "w11e-new-pass", "keep-session"); err == nil || changed {

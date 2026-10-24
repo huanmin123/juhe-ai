@@ -13,19 +13,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-func TestSQLitePersistIsIdempotentAndRetentionIsFenced(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	cfg := Config{Enabled: true, InstanceID: "test-owner", Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business}
-	store, err := OpenStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	lease, ok, err := store.AcquireOwnerLease(context.Background(), cfg.InstanceID, time.Minute)
+func TestPersistIsIdempotentAndRetentionIsFenced(t *testing.T) {
+	store, implementation := openPostgresStore(t)
+	lease, ok, err := store.AcquireOwnerLease(context.Background(), "test-owner", time.Minute)
 	if err != nil || !ok {
 		t.Fatalf("lease: ok=%v err=%v", ok, err)
 	}
@@ -38,9 +32,8 @@ func TestSQLitePersistIsIdempotentAndRetentionIsFenced(t *testing.T) {
 	if err != nil || !ignored {
 		t.Fatalf("duplicate persist: ignored=%v err=%v", ignored, err)
 	}
-	concrete := store.(*sqlStore)
 	var targets int
-	if err = concrete.db.QueryRow(`SELECT COUNT(*) FROM operation_log_targets WHERE operation_log_id=?`, input.ID).Scan(&targets); err != nil || targets != 1 {
+	if err = implementation.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.operation_log_targets WHERE operation_log_id=$1`, input.ID).Scan(&targets); err != nil || targets != 1 {
 		t.Fatalf("duplicate must not duplicate target rows: targets=%d err=%v", targets, err)
 	}
 	result, err := store.List(context.Background(), ListOptions{})
@@ -60,15 +53,8 @@ func TestSQLitePersistIsIdempotentAndRetentionIsFenced(t *testing.T) {
 	}
 }
 
-func TestSQLiteCreatedAtIsCanonicalUTCForOrderAndRetention(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	opened, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer opened.Close()
+func TestCreatedAtIsCanonicalUTCForOrderAndRetention(t *testing.T) {
+	opened, implementation := openPostgresStore(t)
 	lease, ok, err := opened.AcquireOwnerLease(context.Background(), "utc-order", time.Minute)
 	if err != nil || !ok {
 		t.Fatalf("lease: ok=%v err=%v", ok, err)
@@ -84,8 +70,8 @@ func TestSQLiteCreatedAtIsCanonicalUTCForOrderAndRetention(t *testing.T) {
 	if _, err = opened.Persist(context.Background(), lease, later); err != nil {
 		t.Fatal(err)
 	}
-	var storedCreatedAt string
-	if err = opened.(*sqlStore).db.QueryRow(`SELECT created_at FROM operation_logs WHERE id=?`, older.ID).Scan(&storedCreatedAt); err != nil || storedCreatedAt != "2026-08-13T00:00:00.100000000Z" {
+	var storedCreatedAt storageTimestamp
+	if err = implementation.db.QueryRow(`SELECT created_at FROM juhe_dataset.operation_logs WHERE id=$1`, older.ID).Scan(&storedCreatedAt); err != nil || storedCreatedAt != "2026-08-13T00:00:00.100000000Z" {
 		t.Fatalf("createdAt must use fixed-width UTC storage: value=%q err=%v", storedCreatedAt, err)
 	}
 	result, err := opened.List(context.Background(), ListOptions{})
@@ -102,15 +88,8 @@ func TestSQLiteCreatedAtIsCanonicalUTCForOrderAndRetention(t *testing.T) {
 	}
 }
 
-func TestSQLiteListRejectsInvalidAbsoluteTimesAndCanonicalizesOffsets(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	store, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+func TestListRejectsInvalidAbsoluteTimesAndCanonicalizesOffsets(t *testing.T) {
+	store, _ := openPostgresStore(t)
 	lease, ok, err := store.AcquireOwnerLease(context.Background(), "list-times", time.Minute)
 	if err != nil || !ok {
 		t.Fatalf("lease: ok=%v err=%v", ok, err)
@@ -229,14 +208,7 @@ func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
 }
 
 func TestViewerListAndSummaryDetailArePermissionBounded(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "12")
-	store, err := OpenStore(Config{Enabled: true, InstanceID: "viewer", Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store, implementation, _ := openPostgresStoreFixture(t, "12")
 	lease, ok, err := store.AcquireOwnerLease(context.Background(), "viewer", time.Minute)
 	if err != nil || !ok {
 		t.Fatal(err)
@@ -293,12 +265,7 @@ func TestViewerListAndSummaryDetailArePermissionBounded(t *testing.T) {
 	if days, err := store.RetentionDays(context.Background(), 365); err != nil || days != 12 {
 		t.Fatalf("retention setting=%d err=%v", days, err)
 	}
-	businessWriter, err := sql.Open("sqlite", business)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer businessWriter.Close()
-	if _, err := businessWriter.Exec(`UPDATE system_settings SET value_json='0' WHERE system_account_id='sys_admin' AND key='operationLogRetentionDays'`); err != nil {
+	if _, err := implementation.db.Exec(`UPDATE juhe_business.system_settings SET value_json='0' WHERE system_account_id='sys_admin' AND key='operationLogRetentionDays'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RetentionDays(context.Background(), 365); err == nil {
@@ -437,25 +404,22 @@ func TestPostgresSchemaValidationRejectsCompositeForeignKey(t *testing.T) {
 }
 
 func TestPostgresOperationLogStoreSmoke(t *testing.T) {
-	url := strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_POSTGRES_SMOKE_URL"))
-	if url == "" {
-		t.Skip("未设置 JUHE_AI_OPERATION_LOG_POSTGRES_SMOKE_URL；F4 PostgreSQL smoke 未执行")
-	}
+	testDB := pgtestkit.NewTestDatabase(t, prepareBusinessFixture("12"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	opened, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: url})
+	opened, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: testDB.DSN})
 	if err != nil {
-		t.Fatalf("打开 F4 PostgreSQL store 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("打开 F4 PostgreSQL store 失败: %v", err)
 	}
 	store := opened.(*sqlStore)
 	t.Cleanup(func() { _ = store.Close() })
 	var applicationName string
 	if err = store.db.QueryRowContext(ctx, "SHOW application_name").Scan(&applicationName); err != nil || applicationName != postgresApplicationName {
-		t.Fatalf("F4 PostgreSQL application_name=%q want %q err=%v", applicationName, postgresApplicationName, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL application_name=%q want %q err=%v", applicationName, postgresApplicationName, err)
 	}
 	timeoutTx, err := store.beginTx(ctx)
 	if err != nil {
-		t.Fatalf("开始 F4 PostgreSQL timeout transaction 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("开始 F4 PostgreSQL timeout transaction 失败: %v", err)
 	}
 	for setting, expected := range map[string]string{
 		"statement_timeout":                   postgresStatementTimeout,
@@ -465,62 +429,56 @@ func TestPostgresOperationLogStoreSmoke(t *testing.T) {
 		var actual string
 		if err = timeoutTx.QueryRowContext(ctx, "SHOW "+setting).Scan(&actual); err != nil || actual != expected {
 			_ = timeoutTx.Rollback()
-			t.Fatalf("F4 PostgreSQL transaction %s=%q want %q err=%v", setting, actual, expected, redactPostgresSmokeError(err, url))
+			t.Fatalf("F4 PostgreSQL transaction %s=%q want %q err=%v", setting, actual, expected, err)
 		}
 	}
 	if err = timeoutTx.Rollback(); err != nil {
-		t.Fatalf("结束 F4 PostgreSQL timeout transaction 失败: %v", redactPostgresSmokeError(err, url))
-	}
-	if _, err = store.db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business; CREATE TABLE IF NOT EXISTS juhe_business.system_settings (system_account_id text NOT NULL,key text NOT NULL,value_json jsonb NOT NULL,updated_at timestamptz NOT NULL,PRIMARY KEY(system_account_id,key)); CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (id text PRIMARY KEY,username text NOT NULL,display_name text NOT NULL)`); err != nil {
-		t.Fatalf("初始化 F4 smoke business schema 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("结束 F4 PostgreSQL timeout transaction 失败: %v", err)
 	}
 	if err = store.EnsureSchema(ctx); err != nil {
-		t.Fatalf("初始化 F4 PostgreSQL schema 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("初始化 F4 PostgreSQL schema 失败: %v", err)
 	}
 	for _, table := range []string{"operation_logs", "operation_log_targets", "operation_log_viewers", "operation_log_summary_search_terms", "operation_log_owner_leases"} {
 		var count int
 		if err = store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM juhe_dataset."+table).Scan(&count); err != nil || count != 0 {
-			t.Fatalf("F4 PostgreSQL smoke 必须使用空的专用数据库：table=%s count=%d err=%v", table, count, redactPostgresSmokeError(err, url))
+			t.Fatalf("F4 PostgreSQL smoke 必须使用空的专用数据库：table=%s count=%d err=%v", table, count, err)
 		}
-	}
-	if _, err = store.db.ExecContext(ctx, `INSERT INTO juhe_business.system_accounts (id,username,display_name) VALUES ('actor','actor','Actor'),('viewer','viewer','Viewer'),('owner','owner','Owner') ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username,display_name=EXCLUDED.display_name; INSERT INTO juhe_business.system_settings (system_account_id,key,value_json,updated_at) VALUES ('sys_admin','operationLogRetentionDays','12'::jsonb,clock_timestamp()) ON CONFLICT (system_account_id,key) DO UPDATE SET value_json=EXCLUDED.value_json,updated_at=EXCLUDED.updated_at`); err != nil {
-		t.Fatalf("写入 F4 smoke business settings 失败: %v", redactPostgresSmokeError(err, url))
 	}
 	lease, acquired, err := store.AcquireOwnerLease(ctx, "f4-postgres-smoke-owner", time.Minute)
 	if err != nil || !acquired {
-		t.Fatalf("F4 PostgreSQL owner lease 获取失败：acquired=%v err=%v", acquired, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL owner lease 获取失败：acquired=%v err=%v", acquired, err)
 	}
 	t.Cleanup(func() { _ = store.ReleaseOwnerLease(context.Background(), lease) })
 	if _, acquired, err = store.AcquireOwnerLease(ctx, "f4-postgres-smoke-other", time.Minute); err != nil || acquired {
-		t.Fatalf("未过期的 F4 PostgreSQL owner lease 不应被夺取：acquired=%v err=%v", acquired, redactPostgresSmokeError(err, url))
+		t.Fatalf("未过期的 F4 PostgreSQL owner lease 不应被夺取：acquired=%v err=%v", acquired, err)
 	}
 	visible := Input{ID: "f4-postgres-visible", ActorSystemAccountID: "actor", ActorRole: "user", Module: "accounts", Action: "update", OperationKey: "accounts.update", ResourceType: "account", ResourceID: "account-1", Summary: "更新 Alpha 账户", ClientIP: "203.0.113.1", CreatedAt: time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano), Targets: []Target{{TargetType: "account", TargetID: "account-1", TargetOwnerSystemAccountID: "owner", Relation: "primary"}}, Viewers: []Viewer{{SystemAccountID: "viewer", VisibilityReason: "actor_self", DetailLevel: "full"}}}
 	ignored, err := store.Persist(ctx, lease, visible)
 	if err != nil || ignored {
-		t.Fatalf("F4 PostgreSQL 首次写入失败：ignored=%v err=%v", ignored, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 首次写入失败：ignored=%v err=%v", ignored, err)
 	}
 	ignored, err = store.Persist(ctx, lease, visible)
 	if err != nil || !ignored {
-		t.Fatalf("F4 PostgreSQL 稳定 ID 幂等失败：ignored=%v err=%v", ignored, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 稳定 ID 幂等失败：ignored=%v err=%v", ignored, err)
 	}
 	var targetCount int
 	if err = store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM juhe_dataset.operation_log_targets WHERE operation_log_id=$1`, visible.ID).Scan(&targetCount); err != nil || targetCount != 1 {
-		t.Fatalf("F4 PostgreSQL 幂等写入重复了 targets：count=%d err=%v", targetCount, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 幂等写入重复了 targets：count=%d err=%v", targetCount, err)
 	}
 	list, err := store.List(ctx, ListOptions{ViewerID: "viewer", Module: "all", SummaryKeyword: "pha 账"})
 	if err != nil || len(list.Items) != 1 || list.Items[0].ID != visible.ID {
-		t.Fatalf("F4 PostgreSQL viewer/search list 失败：result=%+v err=%v", list, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL viewer/search list 失败：result=%+v err=%v", list, err)
 	}
 	allAffected, err := store.List(ctx, ListOptions{AffectedSystemAccountID: "all"})
 	if err != nil || len(allAffected.Items) != 1 || allAffected.Items[0].ID != visible.ID {
-		t.Fatalf("F4 PostgreSQL affected=all list 失败：result=%+v err=%v", allAffected, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL affected=all list 失败：result=%+v err=%v", allAffected, err)
 	}
 	targetedSameSecond := visible
 	targetedSameSecond.ID = "f4-postgres-targeted-same-second"
 	targetedSameSecond.Summary = "targeted same second"
 	targetedSameSecond.CreatedAt = "2026-08-13T00:00:00.100000000Z"
 	if _, err = store.Persist(ctx, lease, targetedSameSecond); err != nil {
-		t.Fatalf("F4 PostgreSQL targeted same-second 写入失败：%v", redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL targeted same-second 写入失败：%v", err)
 	}
 	globalSameSecond := targetedSameSecond
 	globalSameSecond.ID = "f4-postgres-global-same-second"
@@ -529,29 +487,29 @@ func TestPostgresOperationLogStoreSmoke(t *testing.T) {
 	globalSameSecond.VisibilityScope = "all_users"
 	globalSameSecond.Viewers = nil
 	if _, err = store.Persist(ctx, lease, globalSameSecond); err != nil {
-		t.Fatalf("F4 PostgreSQL all-users same-second 写入失败：%v", redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL all-users same-second 写入失败：%v", err)
 	}
 	personalSameSecond, err := store.List(ctx, ListOptions{ViewerID: "viewer"})
 	if err != nil || len(personalSameSecond.Items) < 2 || personalSameSecond.Items[0].ID != globalSameSecond.ID || personalSameSecond.Items[1].ID != targetedSameSecond.ID {
-		t.Fatalf("F4 PostgreSQL personal same-second 排序失败：result=%+v err=%v", personalSameSecond, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL personal same-second 排序失败：result=%+v err=%v", personalSameSecond, err)
 	}
 	detail, found, err := store.Detail(ctx, visible.ID, "viewer")
 	detailJSON, _ := json.Marshal(detail)
 	if err != nil || !found || detail.ClientIP != "" || len(detail.Targets) != 1 || detail.Targets[0].TargetOwnerSystemAccountName != "Owner" || bytes.Contains(detailJSON, []byte("targetOwnerSystemAccountId")) {
-		t.Fatalf("F4 PostgreSQL 个人详情裁剪失败：detail=%+v found=%v err=%v", detail, found, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 个人详情裁剪失败：detail=%+v found=%v err=%v", detail, found, err)
 	}
-	lockDB, err := sql.Open("pgx", url)
+	lockDB, err := sql.Open("pgx", testDB.DSN)
 	if err != nil {
-		t.Fatalf("打开 F4 PostgreSQL lock probe 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("打开 F4 PostgreSQL lock probe 失败: %v", err)
 	}
 	defer lockDB.Close()
 	lockTx, err := lockDB.BeginTx(ctx, nil)
 	if err != nil {
-		t.Fatalf("打开 F4 PostgreSQL lock transaction 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("打开 F4 PostgreSQL lock transaction 失败: %v", err)
 	}
 	if _, err = lockTx.ExecContext(ctx, "LOCK TABLE juhe_dataset.operation_logs IN ACCESS EXCLUSIVE MODE"); err != nil {
 		_ = lockTx.Rollback()
-		t.Fatalf("锁定 F4 PostgreSQL operation_logs 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("锁定 F4 PostgreSQL operation_logs 失败: %v", err)
 	}
 	blocked := visible
 	blocked.ID = "f4-postgres-lock-timeout"
@@ -559,38 +517,38 @@ func TestPostgresOperationLogStoreSmoke(t *testing.T) {
 	_, persistErr := store.Persist(ctx, lease, blocked)
 	elapsed := time.Since(started)
 	_ = lockTx.Rollback()
-	if persistErr == nil || elapsed >= 4*time.Second {
-		t.Fatalf("F4 PostgreSQL lock timeout 未生效：err=%v elapsed=%s", redactPostgresSmokeError(persistErr, url), elapsed)
+	// 上界须大于 BUG-0254 后的生产 lock_timeout=5s（本测试门禁化时代按旧值
+	// 1s 写死 4s，实测 55P03 在 ~5.03s 到达），同时远小于 statement_timeout
+	// 30s，证明失败来自 lock_timeout 而非语句超时。
+	if persistErr == nil || elapsed >= 10*time.Second {
+		t.Fatalf("F4 PostgreSQL lock timeout 未生效：err=%v elapsed=%s", persistErr, elapsed)
 	}
 	expired := visible
 	expired.ID = "f4-postgres-expired"
 	expired.CreatedAt = "2020-01-01T00:00:00Z"
 	if _, err = store.Persist(ctx, lease, expired); err != nil {
-		t.Fatalf("F4 PostgreSQL 过期记录写入失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 过期记录写入失败: %v", err)
 	}
 	deleted, err := store.CleanupRetention(ctx, lease, time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC), 100)
 	if err != nil || deleted != 1 {
-		t.Fatalf("F4 PostgreSQL 保留清理失败：deleted=%d err=%v", deleted, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 保留清理失败：deleted=%d err=%v", deleted, err)
 	}
 	if days, err := store.RetentionDays(ctx, 365); err != nil || days != 12 {
-		t.Fatalf("F4 PostgreSQL operationLogRetentionDays 读取失败：days=%d err=%v", days, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL operationLogRetentionDays 读取失败：days=%d err=%v", days, err)
 	}
 	var targetIndex bool
 	if err = store.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='juhe_dataset' AND tablename='operation_log_targets' AND indexname='idx_operation_log_targets_log')`).Scan(&targetIndex); err != nil || !targetIndex {
-		t.Fatalf("F4 PostgreSQL operation_log_targets 外键索引缺失：exists=%v err=%v", targetIndex, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL operation_log_targets 外键索引缺失：exists=%v err=%v", targetIndex, err)
 	}
 }
 
 func TestPostgresLegacyOperationLogMigrationSmoke(t *testing.T) {
-	url := strings.TrimSpace(os.Getenv("JUHE_AI_OPERATION_LOG_POSTGRES_LEGACY_MIGRATION_SMOKE_URL"))
-	if url == "" {
-		t.Skip("未设置 JUHE_AI_OPERATION_LOG_POSTGRES_LEGACY_MIGRATION_SMOKE_URL；F4 PostgreSQL 历史迁移 smoke 未执行")
-	}
+	testDB := pgtestkit.NewTestDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	opened, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: url})
+	opened, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: testDB.DSN})
 	if err != nil {
-		t.Fatalf("打开 F4 PostgreSQL 历史迁移 smoke store 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("打开 F4 PostgreSQL 历史迁移 smoke store 失败: %v", err)
 	}
 	store := opened.(*sqlStore)
 	t.Cleanup(func() { _ = store.Close() })
@@ -607,25 +565,25 @@ INSERT INTO juhe_dataset.operation_log_summary_search_terms VALUES ('legacy-oplo
 INSERT INTO juhe_dataset.operation_logs (id,actor_system_account_id,actor_role,mode,module,action,operation_key,resource_type,summary,detail_level,visibility_scope,changes_json,metadata_json,created_at)
 SELECT 'legacy-batch-' || gs::text,'actor','admin','self','accounts','update','accounts.update','account','legacy batch row ' || gs::text,'full','all_users','[]'::jsonb,'{}'::jsonb,clock_timestamp() + gs * interval '1 microsecond'
 FROM generate_series(1,250) AS gs;`); err != nil {
-		t.Fatalf("初始化旧 Node F4 PostgreSQL schema 失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("初始化旧 Node F4 PostgreSQL schema 失败: %v", err)
 	}
 	timeoutTx, err := store.beginLegacyMigrationTx(ctx)
 	if err != nil {
-		t.Fatalf("创建 F4 PostgreSQL 历史迁移事务失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("创建 F4 PostgreSQL 历史迁移事务失败: %v", err)
 	}
 	for setting, expected := range map[string]string{"statement_timeout": legacyMigrationStatementTimeout, "lock_timeout": legacyMigrationLockTimeout, "idle_in_transaction_session_timeout": legacyMigrationIdleTimeout} {
 		var actual string
 		if err = timeoutTx.QueryRowContext(ctx, "SHOW "+setting).Scan(&actual); err != nil || actual != expected {
 			_ = timeoutTx.Rollback()
-			t.Fatalf("F4 PostgreSQL 历史迁移 %s=%q，want %q, err=%v", setting, actual, expected, redactPostgresSmokeError(err, url))
+			t.Fatalf("F4 PostgreSQL 历史迁移 %s=%q，want %q, err=%v", setting, actual, expected, err)
 		}
 	}
 	if err = timeoutTx.Rollback(); err != nil {
-		t.Fatalf("回滚 F4 PostgreSQL 历史迁移超时检查失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("回滚 F4 PostgreSQL 历史迁移超时检查失败: %v", err)
 	}
 	factTx, err := store.beginLegacyMigrationTx(ctx)
 	if err != nil {
-		t.Fatalf("创建 F4 PostgreSQL 迁移事实校验事务失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("创建 F4 PostgreSQL 迁移事实校验事务失败: %v", err)
 	}
 	samples, err := snapshotPostgresLegacySamples(ctx, factTx)
 	if err == nil {
@@ -635,40 +593,33 @@ FROM generate_series(1,250) AS gs;`); err != nil {
 		err = verifyPostgresLegacySamples(ctx, factTx, samples)
 	}
 	if rollbackErr := factTx.Rollback(); rollbackErr != nil {
-		t.Fatalf("回滚 F4 PostgreSQL 迁移事实校验失败: %v", redactPostgresSmokeError(rollbackErr, url))
+		t.Fatalf("回滚 F4 PostgreSQL 迁移事实校验失败: %v", rollbackErr)
 	}
 	if err == nil || !strings.Contains(err.Error(), "业务事实不一致") {
-		t.Fatalf("F4 PostgreSQL 迁移必须拒绝被篡改的首尾业务事实: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 迁移必须拒绝被篡改的首尾业务事实: %v", err)
 	}
-	result, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: url}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
+	result, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
 	if err != nil {
-		t.Fatalf("F4 PostgreSQL 历史迁移失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 历史迁移失败: %v", err)
 	}
 	if result.NoOp || !result.SearchTermsRebuilt || result.MigratedOperationLogs != 251 || result.TargetCounts["operation_log_viewers"] != 1 {
 		t.Fatalf("unexpected F4 PostgreSQL historical migration result: %+v", result)
 	}
 	if err = validatePostgresSchema(ctx, postgresSQLCatalog{queryer: store.db}); err != nil {
-		t.Fatalf("F4 PostgreSQL 历史迁移后 catalog 校验失败: %v", redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 历史迁移后 catalog 校验失败: %v", err)
 	}
 	var detailLevel string
 	if err = store.db.QueryRowContext(ctx, `SELECT detail_level FROM juhe_dataset.operation_log_viewers WHERE operation_log_id='legacy-oplog' AND system_account_id='actor'`).Scan(&detailLevel); err != nil || detailLevel != "full" {
-		t.Fatalf("F4 PostgreSQL 历史 viewer 未保留: detail=%q err=%v", detailLevel, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 历史 viewer 未保留: detail=%q err=%v", detailLevel, err)
 	}
 	var rebuiltTerms int
 	if err = store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM juhe_dataset.operation_log_summary_search_terms WHERE operation_log_id='legacy-oplog'`).Scan(&rebuiltTerms); err != nil || rebuiltTerms == 0 {
-		t.Fatalf("F4 PostgreSQL 历史 search terms 未重建: count=%d err=%v", rebuiltTerms, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 历史 search terms 未重建: count=%d err=%v", rebuiltTerms, err)
 	}
-	repeated, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: url}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
+	repeated, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
 	if err != nil || !repeated.NoOp {
-		t.Fatalf("F4 PostgreSQL 历史迁移重复执行必须 no-op: result=%+v err=%v", repeated, redactPostgresSmokeError(err, url))
+		t.Fatalf("F4 PostgreSQL 历史迁移重复执行必须 no-op: result=%+v err=%v", repeated, err)
 	}
-}
-
-func redactPostgresSmokeError(err error, url string) string {
-	if err == nil {
-		return "<nil>"
-	}
-	return strings.ReplaceAll(err.Error(), url, "[redacted PostgreSQL URL]")
 }
 
 func TestSQLiteBusinessDatabaseMustBeDistinct(t *testing.T) {
@@ -713,14 +664,7 @@ func TestInputNormalizationBoundsViewersTargetsAndPersonalDetail(t *testing.T) {
 }
 
 func TestSearchTermsAndPersonalFullDetailRemainBounded(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	store, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store, _ := openPostgresStore(t)
 	lease, ok, err := store.AcquireOwnerLease(context.Background(), "search", time.Minute)
 	if err != nil || !ok {
 		t.Fatal(err)

@@ -13,14 +13,25 @@ import (
 )
 
 const proxyProfilesFixtureDDL = `
-CREATE TABLE proxy_profiles (
-	id TEXT PRIMARY KEY,
-	type TEXT NOT NULL,
-	host TEXT NOT NULL,
-	port INTEGER NOT NULL,
-	username TEXT,
-	password_encrypted TEXT,
-	enabled INTEGER NOT NULL DEFAULT 1
+CREATE TABLE juhe_business.proxy_profiles (
+	id text PRIMARY KEY,
+	system_account_id text NOT NULL,
+	name text NOT NULL,
+	description text,
+	type text NOT NULL,
+	host text NOT NULL,
+	port integer NOT NULL,
+	username text,
+	password_encrypted text,
+	enabled boolean NOT NULL DEFAULT true,
+	test_status text NOT NULL DEFAULT 'unknown',
+	latency_ms integer,
+	outbound_ip text,
+	outbound_region text,
+	last_test_message text,
+	last_tested_at timestamptz,
+	created_at timestamptz NOT NULL,
+	updated_at timestamptz NOT NULL
 )`
 
 type proxyProfileSeed struct {
@@ -40,9 +51,9 @@ func proxyEnabled(value bool) *bool { return &value }
 
 func seedProxyProfile(t *testing.T, db *sql.DB, seed proxyProfileSeed) {
 	t.Helper()
-	enabled := int64(1)
+	enabled := true
 	if seed.Enabled != nil && !*seed.Enabled {
-		enabled = 0
+		enabled = false
 	}
 	var sealed string
 	if seed.Password != "" {
@@ -52,8 +63,8 @@ func seedProxyProfile(t *testing.T, db *sql.DB, seed proxyProfileSeed) {
 		}
 		sealed = encrypted
 	}
-	if _, err := db.Exec(`INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted, enabled)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, type, host, port, username, password_encrypted, enabled, system_account_id, name, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'sys_admin', $1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		seed.ID, seed.Type, seed.Host, seed.Port,
 		sql.NullString{String: seed.Username, Valid: seed.Username != ""},
 		sql.NullString{String: sealed, Valid: sealed != ""},
@@ -122,7 +133,7 @@ func TestProxyProfileRequestURLArms(t *testing.T) {
 	}
 
 	// 密码 envelope 损坏 → 解密失败。
-	if _, err := db.Exec(`UPDATE proxy_profiles SET password_encrypted = 'v1:broken' WHERE id = 'pp-no-password'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.proxy_profiles SET password_encrypted = 'v1:broken' WHERE id = 'pp-no-password'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.proxyProfileRequestURL(ctx, "pp-no-password"); err == nil || !strings.Contains(err.Error(), "解密失败") {
@@ -138,7 +149,7 @@ func TestKeepalivePassesProxyURLToTokenExchange(t *testing.T) {
 	seedProxyProfile(t, db, proxyProfileSeed{ID: "pp-keepalive", Type: "socks5", Host: "proxy.example", Port: 1080, Username: "alice", Password: "secret"})
 	seedAccountRow(t, db, accountRowSeed{ID: "an-proxy", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
-	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id = 'pp-keepalive' WHERE id = 'an-proxy'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET proxy_profile_id = 'pp-keepalive' WHERE id = 'an-proxy'`); err != nil {
 		t.Fatal(err)
 	}
 	exchanger.respond = func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
@@ -164,7 +175,7 @@ func TestKeepaliveInvalidProxyProfileFailsWithoutDirectDial(t *testing.T) {
 	seedProxyProfile(t, db, proxyProfileSeed{ID: "pp-off", Type: "http", Host: "proxy.example", Port: 8080, Enabled: proxyEnabled(false)})
 	seedAccountRow(t, db, accountRowSeed{ID: "an-proxy-off", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
-	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id = 'pp-off' WHERE id = 'an-proxy-off'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET proxy_profile_id = 'pp-off' WHERE id = 'an-proxy-off'`); err != nil {
 		t.Fatal(err)
 	}
 	result, err := job.RunOnce(context.Background(), KeepalivePlans()[0], 0)
@@ -186,7 +197,7 @@ func TestRefreshJobPassesProxyURLToTokenExchange(t *testing.T) {
 	}
 	seedProxyProfile(t, db, proxyProfileSeed{ID: "pp-openai", Type: "http", Host: "proxy.example", Port: 8080, Username: "bob", Password: "pw"})
 	seedOpenAIOAuthAccount(t, db, "acc-proxy", openAICredentials(expiresInMillis(60_000)), clock.Now())
-	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id = 'pp-openai' WHERE id = 'acc-proxy'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET proxy_profile_id = 'pp-openai' WHERE id = 'acc-proxy'`); err != nil {
 		t.Fatal(err)
 	}
 	exchanger.respond = func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
@@ -210,7 +221,7 @@ func TestRefreshJobMissingProxyProfileIsLocalConfigurationFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 	seedOpenAIOAuthAccount(t, db, "acc-proxy-missing", openAICredentials(expiresInMillis(0)), clock.Now())
-	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id = 'pp-gone' WHERE id = 'acc-proxy-missing'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET proxy_profile_id = 'pp-gone' WHERE id = 'acc-proxy-missing'`); err != nil {
 		t.Fatal(err)
 	}
 	account, err := store.FindRotationAccount(context.Background(), "acc-proxy-missing")

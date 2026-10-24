@@ -2,7 +2,6 @@ package taskruns
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -11,20 +10,8 @@ import (
 // 缺陷3修复回归：RunWithTaskRun 的终态收口此前直接复用调用方 ctx——调度器
 // 停机取消 ctx 后 FinishTaskRun 以 context.Canceled 失败，background_task_runs
 // 行永久停留 running。修复后终态写/前置读走 WithoutCancel 的有限 ctx，
-// 停机窗口内取消父 ctx 终态仍写入。
-
-func wfixOpenStore(t *testing.T) *Store {
-	t.Helper()
-	store, err := OpenStore(StoreConfig{Mode: ModeSQLite, DatabasePath: filepath.Join(t.TempDir(), "wfix-finish.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	return store
-}
+// 停机窗口内取消父 ctx 终态仍写入。存储臂已随测试基建统一迁 pgtestkit 隔离
+// PG 库（B6 切片）。
 
 func wfxWaitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
@@ -42,7 +29,7 @@ func wfxWaitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 // 被取消（等价停机），fn 以 ctx 错误返回后终态仍必须落 failed 且
 // finished_at 非空，不得停留 running。
 func TestRunWithTaskRunFinishSurvivesCancelledParentContext(t *testing.T) {
-	store := wfixOpenStore(t)
+	store := openKitPostgresStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

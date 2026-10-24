@@ -105,7 +105,7 @@ func TestMyGroupsReturnAuthorization(t *testing.T) {
 	// The audit record carries the RUNTIME authorization id (Node
 	// authorization.id = resource_authorizations.id), not the grant id.
 	var runtimeAuthID string
-	if err := env.db.QueryRow(`SELECT id FROM resource_authorizations
+	if err := env.queryRow(`SELECT id FROM resource_authorizations
 		WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ?`,
 		groupID, granteeID).Scan(&runtimeAuthID); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestMyGroupsReturnAuthorization(t *testing.T) {
 		t.Fatalf("204 must carry no body: %v", payload)
 	}
 	var grantStatus string
-	if err := env.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&grantStatus); err != nil {
+	if err := env.queryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
 	if grantStatus != authz.StatusReturned {
@@ -237,7 +237,7 @@ func TestGroupsReturnAuthorizationContracts(t *testing.T) {
 		t.Fatalf("admin return: %d %v", code, payload)
 	}
 	var grantStatus, revokedBy string
-	if err := env.db.QueryRow(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&grantStatus, &revokedBy); err != nil {
+	if err := env.queryRow(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&grantStatus, &revokedBy); err != nil {
 		t.Fatal(err)
 	}
 	if grantStatus != authz.StatusReturned || revokedBy != rootID {

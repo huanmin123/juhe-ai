@@ -114,7 +114,7 @@ const (
 //     indexer keeps the schema).
 //   - /__aisys__/api/my-chat: mounted with the chain (G20 phase-3,
 //     composeChatFamily): the chat database owner + the generation-wave ports
-//     (Executor/ModelCatalog/ChatKeys/GatewayKeys/ObjectStore/ImageProcessor/
+//     (Executor/ModelCatalog/SystemAccountFlags/ObjectStore/ImageProcessor/
 //     ImageObservations/Compactions/TokenCount) dispatch into the internal
 //     gateway chain.
 //   - /__aipublic__ external-integrations legacy family -> aipublic.Deps.Mount

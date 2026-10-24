@@ -43,13 +43,16 @@ func newPendingRead(next <-chan ChunkResult, nowMs func() int64) *pendingRead {
 		defer read.closeOnce.Do(func() { close(read.ch) })
 		result, ok := <-next
 		if !ok {
-			read.settled.Store(true)
+			// 先记 settledAt 再置 settled：读取方以 settled 为可见门槛，
+			// 顺序相反会让读取方观察到 settled=true 而 settledAt 尚为 0
+			//（TestW9CPendingReadLifecycle 偶发失败根因）。
 			read.settledAt.Store(nowMs())
+			read.settled.Store(true)
 			read.ch <- ChunkResult{Err: io.ErrUnexpectedEOF}
 			return
 		}
-		read.settled.Store(true)
 		read.settledAt.Store(nowMs())
+		read.settled.Store(true)
 		read.ch <- result
 	}()
 	return read
@@ -142,7 +145,7 @@ func (p *streamPipe) readNextStreamChunk() (streamChunkReadResult, error) {
 		if readPlan != nil && readPlan.TimeoutMs <= 0 {
 			return streamChunkReadResult{}, p.streamReadPlanTimeoutError(readPlan)
 		}
-		race := raceStreamReadWithDeadlines(pending, p.signalChannel(), firstByteRemainingMs, planTimeoutMs(readPlan), responsePrecommitRemainingMs)
+		race := raceStreamReadWithDeadlines(pending, p.signalChannel(), firstByteRemainingMs, planTimeoutMs(readPlan), responsePrecommitRemainingMs, p.replayWindowTimerCh)
 		switch race.kind {
 		case raceRead:
 			if p.options.ResponsePrecommitDeadlineAtMs != nil && !p.semanticResultReceived {
@@ -156,6 +159,22 @@ func (p *streamPipe) readNextStreamChunk() (streamChunkReadResult, error) {
 				}
 			}
 			return streamChunkReadResult{chunk: race.chunk, firstByteDeadlineObserved: firstByteDeadlineObserved}, nil
+		case raceWindowDeadline:
+			// 受限重放窗口真实截止到点（设计 §3.1 条件③）：强制关窗并 flush
+			// 窗口缓冲。pending 读取保持归属——已 settle 则随本结果带回（窗口
+			// 已关，按直通 chunk 走既有写路径）；未 settle 则继续等待（下一轮
+			// 窗口已关，不再参与竞速）。
+			if err := p.flushReplayWindowAtDeadline(); err != nil {
+				return streamChunkReadResult{}, err
+			}
+			if pending.isSettled() {
+				chunk, ok := pending.receive()
+				if !ok {
+					return streamChunkReadResult{}, errors.New("上游流式响应已中断")
+				}
+				return streamChunkReadResult{chunk: chunk, firstByteDeadlineObserved: firstByteDeadlineObserved}, nil
+			}
+			continue
 		case raceAbort:
 			return streamChunkReadResult{}, &UpstreamRequestAbortedError{Message: ErrUpstreamRequestAbortedMessage, UpstreamRequestStarted: true}
 		case racePlanTimeout:
@@ -340,6 +359,9 @@ const (
 	racePlanTimeout
 	raceResponsePrecommitTimeout
 	raceAbort
+	// raceWindowDeadline 是受限重放窗口的真实截止到点（设计 §3.1 条件③）：
+	// 读取静默期间 T 到点强制关窗 flush，不依赖后续 chunk 驱动。
+	raceWindowDeadline
 )
 
 type raceOutcome struct {
@@ -360,9 +382,10 @@ func planTimeoutMs(plan *StreamReadPlan) *int64 {
 }
 
 // raceStreamReadWithDeadlines 对齐 raceStreamReadWithDeadlines：read / 软超时 /
-// plan 超时 / precommit 超时 / abort 竞速。软超时与 precommit 重合时保留
-// precommit 归因。
-func raceStreamReadWithDeadlines(pending *pendingRead, signal <-chan struct{}, softTimeoutMs *int64, planTimeout *int64, responsePrecommitTimeoutMs *int64) raceOutcome {
+// plan 超时 / precommit 超时 / abort / 受限重放窗口截止竞速。软超时与 precommit
+// 重合时保留 precommit 归因；replayWindowCh 为 nil（窗口未开启/已关闭）时不
+// 参与竞速。
+func raceStreamReadWithDeadlines(pending *pendingRead, signal <-chan struct{}, softTimeoutMs *int64, planTimeout *int64, responsePrecommitTimeoutMs *int64, replayWindowCh <-chan time.Time) raceOutcome {
 	var timers []raceTimer
 	if softTimeoutMs != nil {
 		timers = append(timers, raceTimer{raceSoftTimeout, timeAfter(*softTimeoutMs)})
@@ -372,6 +395,9 @@ func raceStreamReadWithDeadlines(pending *pendingRead, signal <-chan struct{}, s
 	}
 	if planTimeout != nil {
 		timers = append(timers, raceTimer{racePlanTimeout, timeAfter(*planTimeout)})
+	}
+	if replayWindowCh != nil {
+		timers = append(timers, raceTimer{raceWindowDeadline, replayWindowCh})
 	}
 
 	for {

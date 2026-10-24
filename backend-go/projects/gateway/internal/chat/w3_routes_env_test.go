@@ -586,16 +586,6 @@ func TestStreamTurnErrorBranchesW3(t *testing.T) {
 			t.Fatalf("轮次上限 = %d %s", response.status, response.rawString())
 		}
 	})
-	t.Run("网关密钥不可用", func(t *testing.T) {
-		previous := env.deps.GatewayKeys
-		env.deps.GatewayKeys = nil
-		response := env.streamPost("chat_conv_stream", routeTestOwner, streamPayload("cmid-nokey", "内容", "gpt-5"))
-		env.deps.GatewayKeys = previous
-		// GatewayKeys 未接线是服务端装配缺失（500），与 ChatKeys/GroupLookup nil 同口径。
-		if response.status != http.StatusInternalServerError {
-			t.Fatalf("网关密钥缺失 = %d %s", response.status, response.rawString())
-		}
-	})
 	t.Run("思考级别不支持", func(t *testing.T) {
 		response := env.streamPost("chat_conv_stream", routeTestOwner, `{"clientMessageId":"cmid-effort","content":"内容","model":"gpt-5","reasoningEffort":"max"}`)
 		if response.status != http.StatusUnprocessableEntity || response.message() != "当前模型不支持所选思考级别，请重新选择" {

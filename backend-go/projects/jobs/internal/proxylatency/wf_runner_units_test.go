@@ -120,7 +120,7 @@ func TestWFRunnerRunLoopBranches(t *testing.T) {
 }
 
 func TestWFRunnerRunCycleVerifyFailure(t *testing.T) {
-	store := wfOpenJobsStore(t)
+	store := openKitPostgresStore(t)
 	runner := NewRunner(RuntimeConfig{InstanceID: "wf", Interval: time.Hour, OwnerLease: time.Hour}, store, &wfFakeReader{}, nil)
 	runner.runOwnedFn = nil
 	// 直接走 runCycle：空 owner 表 → ErrOwnerLeaseLost，记入状态。
@@ -551,7 +551,7 @@ func TestWFManualOutboundProbe(t *testing.T) {
 }
 
 func TestWFStoreCommittedOutcomeReaders(t *testing.T) {
-	store := wfOpenJobsStore(t)
+	store := openKitPostgresStore(t)
 	committer := newWFCommitter(t, store)
 	outcome := committer.commit("p-1", wfProjRevision)
 	issued := committer.last

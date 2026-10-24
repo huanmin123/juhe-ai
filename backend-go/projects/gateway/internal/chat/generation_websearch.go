@@ -67,7 +67,7 @@ type chatWebSearchProgress struct {
 //   - progress 回调以节流窗口渐进下发过程增量（可为 nil，测试/降级场景）；
 //   - 最终结果 = completed 响应的回答文本 + 来源 URL 清单，裁剪到字节上限；
 //   - context 继承主轮次（用户停止时同步取消），整体超时 chatWebSearchTimeoutMs。
-func executeChatWebSearch(runCtx *ChatGenerationExecutionContext, executor GenerationExecutor, apiKeySecret, traceID, model, query string, progress func(chatWebSearchProgress)) (chatToolExecutionResult, error) {
+func executeChatWebSearch(runCtx *ChatGenerationExecutionContext, executor GenerationExecutor, traceID, model, query string, progress func(chatWebSearchProgress)) (chatToolExecutionResult, error) {
 	if executor == nil {
 		return chatToolExecutionResult{}, errors.New("搜索工具执行器未接线")
 	}
@@ -92,8 +92,9 @@ func executeChatWebSearch(runCtx *ChatGenerationExecutionContext, executor Gener
 	if err != nil {
 		return chatToolExecutionResult{}, err
 	}
+	// 鉴权经内部身份通道（执行器视图注入进程内 context），请求头只保留内容
+	// 协商与用途审计。
 	headers := map[string]string{
-		"authorization":     "Bearer " + apiKeySecret,
 		"content-type":      "application/json",
 		"accept":            "text/event-stream",
 		"x-juhe-ai-purpose": "chat_web_search",

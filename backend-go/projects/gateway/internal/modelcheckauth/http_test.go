@@ -4,46 +4,29 @@ import (
 	"crypto/pbkdf2"
 	"crypto/sha256"
 	"crypto/sha512"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestHTTPHandlerLoginMeLogoutLifecycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT,role TEXT NOT NULL,status TEXT NOT NULL,password_hash TEXT NOT NULL,must_change_password INTEGER NOT NULL,last_login_at TEXT,updated_at TEXT NOT NULL)`,
-		`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT UNIQUE,expires_at TEXT,created_at TEXT,last_seen_at TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newModelCheckAuthPGDatabase(t)
 	salt := "MDEyMzQ1Njc4OWFiY2RlZg"
 	derived, err := pbkdf2.Key(sha512.New, "correcthorsebatterystaple", []byte(salt), 120000, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
 	passwordHash := "pbkdf2$sha512$120000$" + salt + "$" + base64.RawURLEncoding.EncodeToString(derived)
-	if _, err := db.Exec(`INSERT INTO system_accounts VALUES ('acct','Admin','管理员','admin','active',?,1,'','')`, passwordHash); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id,username,display_name,role,status,password_hash,must_change_password,last_login_at,updated_at,created_at) VALUES ('acct','Admin','管理员','admin','active',$1,1,'','','')`, passwordHash); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	auth, err := New(db, SQLite, func() time.Time { return now })
+	auth, err := New(db, Postgres, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +73,7 @@ func TestHTTPHandlerLoginMeLogoutLifecycle(t *testing.T) {
 	digest := sha256.Sum256([]byte(cookie.Value))
 	tokenHash = hex.EncodeToString(digest[:])
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM system_sessions WHERE token_hash=?`, tokenHash).Scan(&count); err != nil || count != 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.system_sessions WHERE token_hash=$1`, tokenHash).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("revoked session count=%d err=%v", count, err)
 	}
 	temporary := httptest.NewRequest(http.MethodPost, "/temporary-access-tokens", strings.NewReader(`{"username":"admin","password":"newsecurepassword","ttlSeconds":120}`))

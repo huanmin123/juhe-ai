@@ -25,7 +25,7 @@ func TestW11ECheckContractArms(t *testing.T) {
 		t.Fatalf("契约必须通过: %v", err)
 	}
 	// 缺列必须拒绝。
-	if _, err := db.Exec(`ALTER TABLE system_sessions DROP COLUMN last_seen_at`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE juhe_business.system_sessions DROP COLUMN last_seen_at`); err != nil {
 		t.Fatal(err)
 	}
 	if err := auth.CheckContract(context.Background()); err == nil || !strings.Contains(err.Error(), "system_sessions") {
@@ -33,7 +33,7 @@ func TestW11ECheckContractArms(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := db.Exec(`ALTER TABLE system_sessions ADD COLUMN last_seen_at TEXT`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE juhe_business.system_sessions ADD COLUMN last_seen_at TEXT`); err != nil {
 		t.Fatal(err)
 	}
 	if err := auth.CheckContract(canceled); err == nil {
@@ -58,7 +58,7 @@ func TestW11EAuthenticateTokenArms(t *testing.T) {
 	handler := &HTTPHandler{Auth: auth}
 	cookie := w11eLoginSession(t, handler)
 	// 过期会话。
-	if _, err := db.Exec(`UPDATE system_sessions SET expires_at='2026-09-16T09:00:00Z'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_sessions SET expires_at='2026-09-16T09:00:00Z'`); err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/me", nil)
@@ -69,34 +69,34 @@ func TestW11EAuthenticateTokenArms(t *testing.T) {
 		t.Fatalf("过期会话=%d", recorder.Code)
 	}
 	// 损坏时间格式失败关闭。
-	if _, err := db.Exec(`UPDATE system_sessions SET expires_at='not-a-time'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_sessions SET expires_at='not-a-time'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AuthenticateTokenForSession(ctx, cookie.Value); err == nil {
 		t.Fatal("损坏过期时间必须失败关闭")
 	}
-	if _, err := db.Exec(`UPDATE system_sessions SET expires_at=?`, now.Add(time.Hour).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_sessions SET expires_at=$1`, now.Add(time.Hour).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE system_sessions SET last_seen_at='not-a-time'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_sessions SET last_seen_at='not-a-time'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AuthenticateTokenForSession(ctx, cookie.Value); err == nil {
 		t.Fatal("损坏 last_seen 必须失败关闭")
 	}
 	// touch 路径（last_seen 距今超过一分钟）。
-	if _, err := db.Exec(`UPDATE system_sessions SET last_seen_at=?`, now.Add(-2*time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_sessions SET last_seen_at=$1`, now.Add(-2*time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.AuthenticateTokenForSession(ctx, cookie.Value); err != nil {
 		t.Fatalf("touch 会话=%v", err)
 	}
 	var seen string
-	if err := db.QueryRow(`SELECT last_seen_at FROM system_sessions`).Scan(&seen); err != nil || seen == "" {
+	if err := db.QueryRow(`SELECT last_seen_at FROM juhe_business.system_sessions`).Scan(&seen); err != nil || seen == "" {
 		t.Fatalf("touch 后 last_seen=%q err=%v", seen, err)
 	}
 	// canceled touch 失败。
-	if _, err := db.Exec(`UPDATE system_sessions SET last_seen_at=?`, now.Add(-2*time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_sessions SET last_seen_at=$1`, now.Add(-2*time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	canceled, cancel := context.WithCancel(context.Background())
@@ -113,7 +113,7 @@ func TestW11EAuthenticateTokenArms(t *testing.T) {
 		t.Fatal("nil RequireAdmin 必须失败")
 	}
 	// 非管理员角色。
-	if _, err := db.Exec(`UPDATE system_accounts SET role='user'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_accounts SET role='user'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := auth.RequireAdmin(ctx, "Bearer "+cookie.Value, ""); err == nil {
@@ -128,7 +128,7 @@ func TestW11ELogoutAndJSONArms(t *testing.T) {
 	handler := &HTTPHandler{Auth: auth}
 	cookie := w11eLoginSession(t, handler)
 	// logout 撤销失败（会话表被删）。
-	if _, err := db.Exec(`DROP TABLE system_sessions`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.system_sessions`); err != nil {
 		t.Fatal(err)
 	}
 	logout := httptest.NewRequest(http.MethodPost, "/logout", nil)

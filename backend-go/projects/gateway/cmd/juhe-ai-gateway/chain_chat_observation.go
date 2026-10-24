@@ -277,23 +277,22 @@ func (o *chatImageObservations) runObservation(ctx context.Context, input chat.S
 		"stream": false,
 	})
 	// 调度覆盖通道：绑定账户会话的图片语义观察与发送链落在同一绑定作用域
-	//（执行器视图注入进程内 context）。会话读失败或会话缺失时无法确认绑定
-	// 作用域，按 fail-closed 跳过本次观察（fire-and-forget 增强观察，不派发
-	// 上游）；此处 claim 已持有，按本函数既有失败处理经 fail(...) 释放认领，
-	// 不新造状态分支。
+	//（执行器视图注入进程内 context，ownerID 取观察输入的归属系统账户，内部
+	// 身份通道同源注入）。会话读失败或会话缺失时无法确认绑定作用域，按
+	// fail-closed 跳过本次观察（fire-and-forget 增强观察，不派发上游）；此处
+	// claim 已持有，按本函数既有失败处理经 fail(...) 释放认领，不新造状态分支。
 	executor := o.executor
 	if aware, ok := executor.(chatDispatchTargetAwareExecutor); ok {
 		target, found, targetErr := chatConversationDispatchTarget(o.db, o.table("chat_conversations"), o.bind, input.ConversationID, input.SystemAccountID)
 		if targetErr != nil || !found {
 			return fail(errors.New("chat_image_observation_target_unavailable"))
 		}
-		executor = aware.WithChatDispatchAccount(target.AccountID)
+		executor = aware.WithChatDispatchAccount(target.AccountID, input.SystemAccountID)
 	}
 	response, err := executor.Dispatch(ctx, chat.GenerationDispatchRequest{
 		Path:   "/v1/responses",
 		Method: "POST",
 		Headers: map[string]string{
-			"authorization":     "Bearer " + input.APIKeySecret,
 			"content-type":      "application/json",
 			"x-juhe-ai-purpose": "chat_image_memory",
 		},

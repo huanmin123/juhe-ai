@@ -163,12 +163,11 @@ func TestW11ECompressAndBlobRecordArms(t *testing.T) {
 }
 
 func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
+	root := filepath.Dir(implementation.blobDir)
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 	body := strings.Repeat("w11e-payload-", 512)
 	first := fixture("w11e-blob-first", LifecycleFinalized)
 	first.AuditOutcome = AuditOutcomeGatewayFailed
@@ -179,7 +178,7 @@ func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	var storageKey string
-	if err := implementation.db.QueryRow(`SELECT storage_key FROM audit_payload_blobs`).Scan(&storageKey); err != nil {
+	if err := implementation.db.QueryRow(`SELECT storage_key FROM juhe_dataset.audit_payload_blobs`).Scan(&storageKey); err != nil {
 		t.Fatal(err)
 	}
 	blobPath := filepath.Join(implementation.blobDir, filepath.FromSlash(storageKey))
@@ -206,13 +205,13 @@ func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
 		t.Fatalf("缺失物理文件必须拒绝: %v", err)
 	}
 	// blob 根目录被文件占用 → 写临时文件失败。
-	if _, err := implementation.db.Exec(`DELETE FROM audit_payload_refs WHERE audit_log_id LIKE 'w11e-blob-%'`); err != nil {
+	if _, err := implementation.db.Exec(`DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id LIKE 'w11e-blob-%'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := implementation.db.Exec(`DELETE FROM audit_logs WHERE id LIKE 'w11e-blob-%'`); err != nil {
+	if _, err := implementation.db.Exec(`DELETE FROM juhe_dataset.audit_logs WHERE id LIKE 'w11e-blob-%'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := implementation.db.Exec(`DELETE FROM audit_payload_blobs`); err != nil {
+	if _, err := implementation.db.Exec(`DELETE FROM juhe_dataset.audit_payload_blobs`); err != nil {
 		t.Fatal(err)
 	}
 	blocker := filepath.Join(root, "blob-root-blocker")
@@ -226,14 +225,12 @@ func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
 }
 
 func TestW11EHotSearchDirectoryFailureArms(t *testing.T) {
-	root := t.TempDir()
-	store := openSQLiteStore(t, sqliteConfig(t, root))
+	store, implementation := openPostgresStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	lease := acquireLease(t, store)
-	implementation := store.(*sqlStore)
 	// hotDir 指向文件 → 追加与清理都失败关闭。
-	blocker := filepath.Join(root, "hot-blocker")
+	blocker := filepath.Join(filepath.Dir(implementation.hotDir), "hot-blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +247,7 @@ func TestW11EHotSearchDirectoryFailureArms(t *testing.T) {
 }
 
 func TestW11EPersistContextArms(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	store, _ := openPostgresStore(t)
 	defer store.Close()
 	lease := acquireLease(t, store)
 	canceled, cancel := context.WithCancel(context.Background())

@@ -59,7 +59,7 @@ func TestGroupListPageSizeNormalization(t *testing.T) {
 
 func TestGroupDefaultPolicyUsesInjectedGlobalMax(t *testing.T) {
 	env := newTestEnv(t)
-	store, err := NewStore(env.db, false, nil, nil, nil, WithGlobalConcurrencyMax(1234))
+	store, err := NewStore(env.db, true, nil, nil, nil, WithGlobalConcurrencyMax(1234))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestGroupDefaultPolicyUsesInjectedGlobalMax(t *testing.T) {
 		}
 	}
 	// Stores built without the option keep the 5000 default.
-	legacy, err := NewStore(env.db, false, nil, nil, nil)
+	legacy, err := NewStore(env.db, true, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestGroupPatchPolicyDeepEqualityNoop(t *testing.T) {
 	}
 	// The stored text stays untouched on a no-op.
 	var stored string
-	if err := env.db.QueryRow(`SELECT scheduling_policy_json FROM groups WHERE id = ?`, groupID).Scan(&stored); err != nil {
+	if err := env.queryRow(`SELECT scheduling_policy_json FROM groups WHERE id = ?`, groupID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored != reordered {

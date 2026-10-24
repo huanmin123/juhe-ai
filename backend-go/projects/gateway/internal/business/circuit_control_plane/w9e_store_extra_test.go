@@ -190,7 +190,7 @@ func TestW9EDedupeReceiptWithoutIncident(t *testing.T) {
 	defer db.Close()
 	ctx := context.Background()
 	// 先手工落下 dedupe 回执，但不写 incident 行。
-	if _, err := db.Exec(`INSERT INTO account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('evt','` + ProjectionKey + `','incident:tr-orphan','incident_changed','a1','a1','w9e-orphan','inc-w9e-orphan','tr-orphan',1,1,'pending',1,0,1,1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO ` + defaultBusinessSchema + `.account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('evt','` + ProjectionKey + `','incident:tr-orphan','incident_changed','a1','a1','w9e-orphan','inc-w9e-orphan','tr-orphan',1,1,'pending',1,0,1,1)`); err != nil {
 		t.Fatal(err)
 	}
 	mut := wkBaseIncident("w9e-orphan", "a1", 1)
@@ -230,7 +230,10 @@ func TestW9EExpressionIndexRejected(t *testing.T) {
 }
 
 func TestW9EClaimOutboxCorruptRowFails(t *testing.T) {
-	s, db := wkReadyStore(t)
+	// 组B：损坏行注入依赖 SQLite 弱类型（attempt_count 写入非数值文本），
+	// PG 强类型列在写入口即拒绝、场景不可构造；随生产 sqlite 臂删除批次
+	// 同批退役。
+	s, db := wkSQLiteLegacyStoreLabeled(t, "-corrupt", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	defer db.Close()
 	ctx := context.Background()
 	// attempt_count 写入非数值文本（WHERE 不涉及该列，行会被选出并在 scan 时失败）。
@@ -261,7 +264,10 @@ func TestW9EScanIncidentTimeValidationFailure(t *testing.T) {
 }
 
 func TestW9EListProjectionGapsCorruptAccountRow(t *testing.T) {
-	s, db := wkReadyStore(t)
+	// 组B：损坏账户行注入依赖 SQLite 弱类型（dispatch_revision 写入非数值
+	// 文本），PG 强类型列在写入口即拒绝、场景不可构造；随生产 sqlite 臂
+	// 删除批次同批退役。
+	s, db := wkSQLiteLegacyStoreLabeled(t, "-gapcorrupt", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	defer db.Close()
 	ctx := context.Background()
 	// dispatch_revision 写入非数值文本，缺口查询 scan 失败。

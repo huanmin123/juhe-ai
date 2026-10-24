@@ -648,8 +648,10 @@ func TestKitChangesAndExecChanged(t *testing.T) {
 	if _, err := changes(kitFailingResult{}); err == nil {
 		t.Fatalf("RowsAffected 失败应透传")
 	}
-	db := openKitSQLite(t, "exec_changed")
-	execKitSchema(t, db.DB, `CREATE TABLE t (v TEXT)`)
+	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error {
+		_, err := raw.ExecContext(ctx, `CREATE TABLE t (v TEXT)`)
+		return err
+	})
 	affected, err = execChanged(context.Background(), db, `INSERT INTO t (v) VALUES ('x')`)
 	if err != nil || affected != 1 {
 		t.Fatalf("execChanged = %d, %v", affected, err)

@@ -168,6 +168,10 @@ type ModelsUsageDispatchInput struct {
 	Success       bool
 	FirstTokenMs  int64
 	DurationMs    int64
+	// SuppressUsage 是内部通道请求（AI 问答免 Key 直调）的使用日志丢弃标记：
+	// 从 usage context 透传到持久化唯一闸口（spooledUsageRecorder.
+	// EnqueueUsageRecord）丢弃，不落 usage_records、不写 spool。
+	SuppressUsage bool
 }
 
 // UsageDispatcher 对齐 dispatchUsageRecord（G17）。

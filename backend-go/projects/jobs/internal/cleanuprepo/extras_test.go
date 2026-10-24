@@ -2,6 +2,7 @@ package cleanuprepo
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"strings"
@@ -213,7 +214,7 @@ func okInstant(value string) bool {
 
 // TestExecChangedQError：执行失败透传（覆盖 execChangedQ 错误分支）。
 func TestExecChangedQError(t *testing.T) {
-	db := openKitSQLite(t, "exec_q_error")
+	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error { return nil })
 	if _, err := execChangedQ(context.Background(), db, `INSERT INTO missing VALUES (1)`); err == nil {
 		t.Fatalf("SQL 失败应透传")
 	}

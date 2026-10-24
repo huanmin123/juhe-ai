@@ -3,6 +3,7 @@ package gatewayresponse
 import (
 	"errors"
 	"io"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
@@ -63,6 +64,31 @@ type streamPipe struct {
 	upstreamCapture   *LimitedCapture
 	diagnosticCapture *LimitedCapture
 
+	// 受限重放窗口状态（流式提交边界受限重放与异常终局处置设计 §3.1）：窗口
+	// 开启后语义 chunk 只进缓冲不写下游，关闭条件四项先到先关——①终态事件置位
+	// （终态 chunk 不入缓冲，先关窗按既有语义处置）②缓冲达 B（追加前判定）
+	// ③真实截止 T（replayWindowTimer 到点强制关窗 flush）④上游 EOF/失败信号。
+	// 关闭即一次性 flush + MarkSemanticCommitted（flushPreCommitChunks 既有
+	// semantic 判定承接）。replayWindowTimeoutMs 自包内常量初始化，包内测试
+	// 可覆写为短值验证真实截止。
+	replayWindowEligible   bool
+	replayWindowOpen       bool
+	replayWindowClosed     bool
+	replayWindowTimeoutMs  int64
+	replayWindowTimer      *time.Timer
+	replayWindowTimerCh    <-chan time.Time
+	replayWindowDurationMs *int64
+	// downstreamFirstWriteMs 是首个下游字节写出时刻 − 请求开始（§3.3：客户端
+	// 可感知首字延迟的真口径，含窗口停留）。
+	downstreamFirstWriteMs *int64
+	// gateway_stream_event_parse_error 每请求首个 WARN 的去重位。
+	parseErrorWarnLogged bool
+	// parseErrorIsolator 是 ParseError 事件字节隔离器（§3.2.0：分类为解析失败
+	// 的事件不写下游，与失败帧拦截同一「事件级分类先于写入」时序保证）。仅在
+	// gatewayopenai inspector 驱动的直通管道装配（非 openai 协议自有
+	// summary 机制，不在本设计范围）。
+	parseErrorIsolator *parseErrorEventIsolator
+
 	clientClosed bool
 	// lastInspection 保留最近一次 inspector 快照（body omission 汇总用）。
 	lastInspection gatewayproto.StreamInspection
@@ -121,21 +147,28 @@ func newStreamPipe(input PipeUpstreamStreamInput) *streamPipe {
 		interpretProtocolFailures:  options.InterpretProtocolFailures,
 		captureSuccessPayloads:     options.CaptureSuccessPayloads,
 		suppressInjectedUsageChunk: options.SuppressGatewayInjectedUsageChunk,
-		waitingForFirstChunk:       true,
-		lastUpstreamActivityAt:     input.StartedAtMs,
-		lastProgressLogAt:          input.StartedAtMs,
-		downstreamCommit:           commit,
-		preCommitBuffer:            NewPreCommitBufferState(options.RetryBeforeDownstreamWriteUntilOutput),
-		preCommitSseEvidence:       NewStreamPreCommitSseEvidence(),
-		responseCapture:            NewLimitedCapture(captureLimit),
-		upstreamCapture:            NewLimitedCapture(captureLimit),
-		diagnosticCapture:          NewLimitedCapture(StreamDiagnosticCaptureBytes),
+		// 窗口资格缺省启用（文本主路径），显式排除面关闭（设计 §3.1）。
+		replayWindowEligible:   !options.PreCommitReplayWindowDisabled,
+		replayWindowTimeoutMs:  StreamReplayWindowTimeoutMs,
+		parseErrorIsolator:     newParseErrorEventIsolatorForDriver(driver),
+		waitingForFirstChunk:   true,
+		lastUpstreamActivityAt: input.StartedAtMs,
+		lastProgressLogAt:      input.StartedAtMs,
+		downstreamCommit:       commit,
+		preCommitBuffer:        NewPreCommitBufferState(options.RetryBeforeDownstreamWriteUntilOutput),
+		preCommitSseEvidence:   NewStreamPreCommitSseEvidence(),
+		responseCapture:        NewLimitedCapture(captureLimit),
+		upstreamCapture:        NewLimitedCapture(captureLimit),
+		diagnosticCapture:      NewLimitedCapture(StreamDiagnosticCaptureBytes),
 	}
 }
 
 // run 对齐 Node 的 try → catch → finally → 后置收尾顺序。
 // loop 返回 (result, nil) 表示 try 块内直接 return；返回 (nil, err) 表示异常。
 func (p *streamPipe) run() (StreamPipeResult, error) {
+	// 受限重放窗口 Timer 的管道结束兜底释放（设计 §3.1 条件③：窗口因其他条件
+	// 关闭或管道结束时 Stop，防泄漏）；窗口已关闭时为幂等 no-op。
+	defer p.closeReplayWindow()
 	p.logger.Debug("gateway_stream_pipe_started", map[string]any{
 		"timeoutsDisabled":                boolOrNull(p.profile.TimeoutsDisabled),
 		"firstResponseTimeoutMs":          p.profile.FirstResponseTimeoutMs,
@@ -235,12 +268,20 @@ func (p *streamPipe) loop() (*StreamPipeResult, error) {
 					downstreamChunk = filtered
 				}
 			}
+			// ParseError 事件字节隔离（设计 §3.2.0）：inspector 下方消费原始分片
+			// 照常计数，解析失败事件的字节不进入下游可见字节。
+			if p.parseErrorIsolator != nil && len(downstreamChunk) > 0 {
+				downstreamChunk = p.parseErrorIsolator.push(downstreamChunk)
+			}
 			if !p.preCommitSseEvidence.DataEventObserved && !p.downstreamCommit.SemanticCommitted && len(downstreamChunk) > 0 {
 				p.preCommitSseEvidence.Push(downstreamChunk)
 			}
 			p.inspector.PushChunk(outbound)
 			latestInspection = p.publishInspection(p.inspector.Snapshot())
 			p.updateStreamInspectionProgress(latestInspection)
+			// 受限重放窗口开启点（设计 §3.1）：首个语义输出已识别、仍处提交前
+			// 缓冲时置位窗口，此后语义 chunk 只进缓冲不写下游，直至窗口关闭。
+			p.maybeOpenReplayWindow(latestInspection)
 			p.omitBodyCaptureIfImageStream(latestInspection, false)
 			if latestInspection.Skipped && !p.parserSkipLogged {
 				p.parserSkipLogged = true

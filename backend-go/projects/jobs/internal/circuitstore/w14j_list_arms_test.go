@@ -1,5 +1,7 @@
-// 波次 w14j：列表投影仓储状态机与校验臂收口（SQLite fixture）。
-// 依赖状态机全链路：标记不可用 → 重放入队 → claim → 投影/删除 → viewer 健康。
+// 波次 w14j：列表投影仓储状态机与校验臂收口（PG fixture；EnqueueDue 到期
+// 转移链组B保留 SQLite fixture，取证见 TestEnqueueDueTransitionsDueProjections
+// 注释）。依赖状态机全链路：标记不可用 → 重放入队 → claim → 投影/删除 →
+// viewer 健康。
 package circuitstore
 
 import (
@@ -18,7 +20,7 @@ func TestW14JDependencyRecoveryArms(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	ctx := context.Background()
 	updatedAt := time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('w14j-acc', 'w14j-viewer'); INSERT INTO system_accounts (id) VALUES ('w14j-viewer')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('w14j-acc', 'w14j-viewer'); INSERT INTO juhe_business.system_accounts (id) VALUES ('w14j-viewer')`); err != nil {
 		t.Fatal(err)
 	}
 	// MarkRuntimeDependencyUnavailable：无行时 upsert 插入 unavailable。
@@ -26,7 +28,7 @@ func TestW14JDependencyRecoveryArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT state FROM account_list_availability_projection_dependency_health`).Scan(&state); err != nil {
+	if err := db.QueryRow(`SELECT state FROM juhe_business.account_list_availability_projection_dependency_health`).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "unavailable" {
@@ -92,8 +94,11 @@ func TestW14JClaimDirtyValidationArms(t *testing.T) {
 
 // TestW14JEnqueueDueAndRefreshCandidates 覆盖到期转移入队、viewer 健康刷新
 // 候选与刷新路径。
+// 组B保留（不迁 PG）：EnqueueDue 的 PG 分支缺陷取证见
+// TestEnqueueDueTransitionsDueProjections 注释，整测试保持 SQLite fixture 与
+// 断言原状（viewer 健康面已被 PG 侧其余测试覆盖）。
 func TestW14JEnqueueDueAndRefreshCandidates(t *testing.T) {
-	repo, db := openListAvailabilityFixture(t)
+	repo, db, _ := w13g5CircuitListFixture(t)
 	ctx := context.Background()
 	now := time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC)
 	nowMS := now.UnixMilli()
