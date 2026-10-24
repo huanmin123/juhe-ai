@@ -12,7 +12,6 @@ import (
 const (
 	ChatRetentionInterval                = 10 * time.Minute
 	ChatRetentionInitialDelay            = 270 * time.Second
-	ChatRetentionSchedulerTimeout        = 2 * time.Minute
 	ChatRetentionLeaseTTL                = 5 * time.Minute
 	ChatRetentionDbServiceTimeout        = 60 * time.Second
 	ChatRetentionLimit                   = 1000

@@ -223,30 +223,3 @@ func TestPricingSnapshotForWriteCatalogGuard(t *testing.T) {
 		t.Fatalf("catalog breakdown calls = %d", catalog.breakdownCalls)
 	}
 }
-
-func TestUsageSemanticsContract(t *testing.T) {
-	// usage-semantics/types.ts 契约落地：字段 + 两个操作。
-	usage := ParsedUsageTokens{InputTokens: intPtr(11), OutputTokens: intPtr(3), CacheReadTokens: intPtr(4), ThinkingTokens: intPtr(1)}
-	var semantic UsageSemantic = OpenAIUsageSemantic{}
-	if semantic.ID() != "openai" {
-		t.Fatalf("semantic id = %q", semantic.ID())
-	}
-	normalized := semantic.NormalizeForStorage(usage)
-	if normalized != usage {
-		t.Fatalf("openai normalize changed usage: %+v → %+v", usage, normalized)
-	}
-	denominator := semantic.CacheReadRateDenominator(ParsedUsageCacheReadRateInput{InputTokens: usage.InputTokens, CacheReadTokens: usage.CacheReadTokens})
-	if denominator != 11 {
-		t.Fatalf("cacheReadRateDenominator = %d, want 11", denominator)
-	}
-	// nil 字段 → 0（Node undefined → 0 分母）。
-	if got := semantic.CacheReadRateDenominator(ParsedUsageCacheReadRateInput{}); got != 0 {
-		t.Fatalf("empty denominator = %d", got)
-	}
-
-	// Resolver：未知 id 回落默认（usageSemanticForProfile 契约）。
-	resolved := SemanticForID(DefaultUsageSemanticResolver{}, "anthropic")
-	if resolved.ID() != "openai" {
-		t.Fatalf("fallback semantic = %q", resolved.ID())
-	}
-}

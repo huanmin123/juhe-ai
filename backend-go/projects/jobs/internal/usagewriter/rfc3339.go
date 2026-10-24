@@ -31,11 +31,6 @@ func daysInMonth(year, month int) int {
 	return firstOfNext.AddDate(0, 0, -1).Day()
 }
 
-// canonicalizeRFC3339Instant mirrors canonicalizeRfc3339Instant.
-func canonicalizeRFC3339Instant(value string) (string, bool) {
-	return timefmt.CanonicalizeRFC3339Instant(value)
-}
-
 // requiredRFC3339Instant mirrors requiredRfc3339Instant, including the
 // Chinese error copy (逐字对齐 Node).
 func requiredRFC3339Instant(value string, label string) (string, error) {

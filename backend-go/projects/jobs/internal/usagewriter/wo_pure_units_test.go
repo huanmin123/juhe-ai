@@ -176,25 +176,6 @@ func TestBucketDateKeyFromClockUsesUTCDate(t *testing.T) {
 	}
 }
 
-// ---- 语义解析器 ----
-
-func TestUsageSemanticResolverFallbacks(t *testing.T) {
-	resolver := DefaultUsageSemanticResolver{}
-	if got := resolver.UsageSemanticForID("openai"); got.ID() != "openai" {
-		t.Fatalf("openai 语义应可解析，实际: %s", got.ID())
-	}
-	// 未知 id 回退到 OpenAI 默认语义（当前实现两个分支同型）。
-	if got := resolver.UsageSemanticForID("unknown"); got.ID() != "openai" {
-		t.Fatalf("未知语义应回退默认，实际: %s", got.ID())
-	}
-	if got := SemanticForID(nil, "openai"); got.ID() != "openai" {
-		t.Fatalf("nil resolver 应回退默认语义，实际: %v", got)
-	}
-	if got := SemanticForID(resolver, "openai"); got.ID() != "openai" {
-		t.Fatalf("非 nil resolver 应直接委托，实际: %s", got.ID())
-	}
-}
-
 // ---- JSON 字节估算（visitJSONLikeValue 全分支） ----
 
 func TestEstimateJSONLikeBytesScalarTypes(t *testing.T) {

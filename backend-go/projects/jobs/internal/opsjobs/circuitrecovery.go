@@ -64,9 +64,8 @@ type CircuitRecoverySweepResult struct {
 // （JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_BATCH_SIZE=200 /
 // _LEASE_DURATION_MS=180000）。
 const (
-	CircuitRecoveryBatchSize          = 200
-	CircuitRecoveryLeaseDurationMS    = 180_000
-	CircuitRecoveryDefaultConcurrency = 4
+	CircuitRecoveryBatchSize       = 200
+	CircuitRecoveryLeaseDurationMS = 180_000
 )
 
 // CircuitRecoveryServiceOptions 允许注入 clock/id 生成器；并发=0 时串行。

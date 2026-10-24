@@ -152,16 +152,9 @@ type CircuitStore interface {
 // ---- 契约常量（Node account-circuit-store.ts 导出值）----
 
 const (
-	CircuitDefaultConfirmationFailuresRequired     = 2
-	CircuitLegacyConfirmationFailuresRequired      = 1
-	CircuitConfirmationFailuresRequiredMin         = 1
-	CircuitConfirmationFailuresRequiredMax         = 5
-	CircuitEscalationDistinctScopeThresholdDefault = 3
-	CircuitEscalationDistinctScopeThresholdMin     = 3
-	CircuitEscalationDistinctScopeThresholdMax     = 64
-	CircuitEscalationWindowMSDefault               = 10 * 60_000
-	CircuitEscalationWindowMSMin                   = 60_000
-	CircuitEscalationWindowMSMax                   = 24 * 60 * 60_000
+	CircuitLegacyConfirmationFailuresRequired = 1
+	CircuitConfirmationFailuresRequiredMin    = 1
+	CircuitConfirmationFailuresRequiredMax    = 5
 )
 
 // CircuitBackoffMS 对齐 Node 默认 JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_BACKOFF_MS。
