@@ -376,7 +376,6 @@ type Bridge struct {
 	rebuildTotalTimeoutMs int64
 	now                   func() int64
 	monotonicNow          func() time.Duration
-	monotonicBase         time.Time
 	persistIncident       func(ctx context.Context, input CompareAndSetIncidentInput) (CompareAndSetIncidentResult, error)
 	loadRebuildPage       func(ctx context.Context, input RebuildPageInput) (RebuildPage, error)
 	loadAccountIncidents  func(ctx context.Context, accountRuntimeKey string) ([]IncidentRecord, error)

@@ -93,7 +93,6 @@ func (s *memoryRuntimeStateStore) Delete(_ context.Context, key string) error {
 type redisRuntimeStateStore struct {
 	client     *redis.Client
 	keyPrefix  string
-	encodeName func(value any) ([]byte, error)
 }
 
 // NewRedisRuntimeStateStore mirrors createRuntimeStateStore(name) with

@@ -12,7 +12,6 @@ import (
 type MemoryGatewayRoutingObservabilityStore struct {
 	mu             sync.Mutex
 	counters       map[string]int64
-	counterOrder   []string
 	recordedEvents int64
 	updatedAtMs    int64
 }

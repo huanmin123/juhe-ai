@@ -122,7 +122,6 @@ type Registry struct {
 	mu               sync.Mutex
 	publishRequested bool
 	session          *registrySession
-	stopPromiseErr   error
 	stopDone         chan struct{}
 }
 

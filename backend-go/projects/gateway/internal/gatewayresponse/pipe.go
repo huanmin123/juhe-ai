@@ -49,7 +49,6 @@ type streamPipe struct {
 	totalUpstreamBytes                 int64
 	totalResponseBytes                 int64
 	lastProgressLogAt                  int64
-	lastBackpressureLogAt              int64
 	terminalEventWritten               bool
 	bodyCaptureOmitted                 bool
 	downstreamPrepared                 bool

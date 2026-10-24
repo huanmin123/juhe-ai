@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
@@ -93,8 +92,6 @@ type UserRequestLimitCoordinator struct {
 	lastErrorLogAtMs    int64
 	lastCapacityLogAtMs int64
 	lastLoggedEvictions int64
-
-	loopStarted atomic.Bool
 }
 
 // NewUserRequestLimitCoordinator builds the coordinator for one counter.

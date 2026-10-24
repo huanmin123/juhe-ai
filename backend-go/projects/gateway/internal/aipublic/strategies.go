@@ -170,7 +170,6 @@ type strategyBindingRow struct {
 	weight          int
 	status          string
 	groupName       sql.NullString
-	groupEnabled    bool
 }
 
 // loadStrategyBindings mirrors loadRouteStrategyGroupBindingSummariesByRouteStrategyIds
