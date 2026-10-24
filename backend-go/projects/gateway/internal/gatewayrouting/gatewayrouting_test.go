@@ -775,6 +775,50 @@ func TestFilterAccountsByRequestedModel(t *testing.T) {
 	}
 }
 
+// TestFilterAccountsByRequestedModelFamilyArms 覆盖方案B（2026-10-24）：
+// 同一请求模型下，同族改名映射账户与直连账户同权 rank 0，跨协议转换映射
+// 账户保留 rank 1。同名同族恒等映射被拒绝后落直接匹配的臂见
+// internal/gatewaydispatch w62_model_rank_family_test.go。
+func TestFilterAccountsByRequestedModelFamilyArms(t *testing.T) {
+	sameFamilyRename := UpstreamAccount{
+		ID: "acc_same_family_rename", ProtocolCode: "openai", ProtocolVersion: "v1",
+		SupportedModels: []string{"up-alias"},
+		ModelMappings: []gatewayAccountModelMapping{{
+			SourceModel: "client-model", SourceEndpointFamily: EndpointFamilyChatCompletions,
+			UpstreamModel: "up-alias", UpstreamEndpointFamily: EndpointFamilyChatCompletions,
+		}},
+	}
+	crossProtocol := UpstreamAccount{
+		ID: "acc_cross_protocol", ProtocolCode: "openai", ProtocolVersion: "v1",
+		SupportedModels: []string{"up-cross"},
+		ModelMappings: []gatewayAccountModelMapping{{
+			SourceModel: "client-model", SourceEndpointFamily: EndpointFamilyChatCompletions,
+			UpstreamModel: "up-cross", UpstreamEndpointFamily: EndpointFamilyMessages,
+		}},
+	}
+	direct := UpstreamAccount{ID: "acc_direct", SupportedModels: []string{"client-model"}}
+
+	result := FilterAccountsByRequestedModel(
+		[]UpstreamAccount{sameFamilyRename, crossProtocol, direct},
+		"client-model", EndpointFamilyChatCompletions)
+	ranks := result.ModelPriority.RankByAccountID
+	if ranks["acc_same_family_rename"] != gatewayAccountModelPriorityRankDirect {
+		t.Fatalf("same-family rename rank = %d, want %d (ties with direct)",
+			ranks["acc_same_family_rename"], gatewayAccountModelPriorityRankDirect)
+	}
+	if ranks["acc_cross_protocol"] != gatewayAccountModelPriorityRankMapping {
+		t.Fatalf("cross-protocol rank = %d, want %d",
+			ranks["acc_cross_protocol"], gatewayAccountModelPriorityRankMapping)
+	}
+	if ranks["acc_direct"] != gatewayAccountModelPriorityRankDirect {
+		t.Fatalf("direct rank = %d, want %d", ranks["acc_direct"], gatewayAccountModelPriorityRankDirect)
+	}
+	if result.MappingMatchedCount != 2 || result.DirectMatchedCount != 1 {
+		t.Fatalf("counts = direct:%d mapping:%d, want direct:1 mapping:2",
+			result.DirectMatchedCount, result.MappingMatchedCount)
+	}
+}
+
 func TestGatewayModelFilterFailureMessage(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -13,8 +13,9 @@ func superGroupBinding(id, superGroupID string, memberGroupIDs []string, priorit
 }
 
 // 超级分组目标（设计 §4.2）：逐 enabled 成员展开候选，同一账号跨成员按
-// (route_rank, member_priority, member_group_id) 保留最小出现——后成员的
-// direct 命中必须胜过前成员的 mapping 命中；route_group 保持超级分组本身。
+// (route_rank, member_priority, member_group_id) 保留最小出现——方案B
+// （2026-10-24）后同族改名映射与 direct 同秩（均 0），同秩下成员顺序在前的
+// grp_a 映射出现胜出 dedup；route_group 保持超级分组本身。
 func TestSuperGroupRouteExpandsMembersAndDeduplicates(t *testing.T) {
 	cache := newFakeRuntimeCache()
 	cache.groupAccess["grp_super"] = routeTestAccess()
@@ -54,13 +55,15 @@ func TestSuperGroupRouteExpandsMembersAndDeduplicates(t *testing.T) {
 		t.Fatalf("selected group id must stay the super group: %+v", result.APIKeyRecord)
 	}
 	if result.RouteSource != RouteSourceCatalogProvider {
-		t.Fatalf("route source = %q, want catalog_provider (direct wins)", result.RouteSource)
+		t.Fatalf("route source = %q, want catalog_provider (direct hit still present)", result.RouteSource)
 	}
-	if got := accountIDs(result.Accounts); !equalStrings(got, []string{"acc_direct_only", "acc_shared"}) {
-		t.Fatalf("accounts = %v, want [acc_direct_only acc_shared] (dedup keeps direct)", got)
+	// 方案B：acc_shared 的映射出现（grp_a，成员顺序在前）与 direct 出现同秩，
+	// dedup 按 member 顺序保留 grp_a 出现；grp_b 余下 acc_direct_only。
+	if got := accountIDs(result.Accounts); !equalStrings(got, []string{"acc_shared", "acc_direct_only"}) {
+		t.Fatalf("accounts = %v, want [acc_shared acc_direct_only] (same-rank dedup keeps first member)", got)
 	}
-	if got := segmentSummary(result.GroupSegments); !equalStrings(got, []string{"grp_b:acc_direct_only,acc_shared"}) {
-		t.Fatalf("segments = %v, want [grp_b:acc_direct_only,acc_shared]", got)
+	if got := segmentSummary(result.GroupSegments); !equalStrings(got, []string{"grp_a:acc_shared", "grp_b:acc_direct_only"}) {
+		t.Fatalf("segments = %v, want [grp_a:acc_shared grp_b:acc_direct_only]", got)
 	}
 	for _, call := range cache.callsAccounts {
 		if call.groupID == "grp_super" {

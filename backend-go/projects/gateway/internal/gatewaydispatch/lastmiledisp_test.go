@@ -99,7 +99,8 @@ func TestFilterGatewayAccountsByRequestedModelRuntimeMapping(t *testing.T) {
 		}},
 	}}
 	result := FilterGatewayAccountsByRequestedModel(accounts, "gpt-test", gatewayrouting.EndpointFamilyChatCompletions)
-	if result.MappingMatchedCount != 1 || result.ModelPriority.RankByAccountID["mapped"] != ModelPriorityRankMapping {
+	// 方案B（2026-10-24）：chat→chat 同族改名映射与 direct 同权，rank 0。
+	if result.MappingMatchedCount != 1 || result.ModelPriority.RankByAccountID["mapped"] != ModelPriorityRankDirect {
 		t.Fatalf("result = %#v", result)
 	}
 	// 不支持的 input 类型 → invalidModelConstraint。

@@ -105,7 +105,8 @@ func TestVolcengineTTSModelAliasDispatchMappingPath(t *testing.T) {
 }
 
 // 等价组判定不改变 Rank 语义：等价命中沿用 direct / mapping 既有 rank，
-// 未命中仍 unsupported。
+// 未命中仍 unsupported。方案B（2026-10-24）：同族改名映射（chat→chat）与
+// direct 同权记 rank 0，rank 1 仅留给跨协议转换映射。
 func TestVolcengineTTSModelAliasDispatchRankUnchanged(t *testing.T) {
 	directResult := FilterGatewayAccountsByRequestedModel(
 		[]AccountCandidate{{ID: "direct-alias", SupportedModels: []string{"doubao-tts"}}},
@@ -124,8 +125,8 @@ func TestVolcengineTTSModelAliasDispatchRankUnchanged(t *testing.T) {
 				Enabled:                true,
 			}}}},
 		"gpt-test", gatewayrouting.EndpointFamilyChatCompletions)
-	if rank := mappingResult.ModelPriority.RankByAccountID["mapping-alias"]; rank != ModelPriorityRankMapping {
-		t.Fatalf("mapping-alias rank = %d, want %d", rank, ModelPriorityRankMapping)
+	if rank := mappingResult.ModelPriority.RankByAccountID["mapping-alias"]; rank != ModelPriorityRankDirect {
+		t.Fatalf("mapping-alias rank = %d, want %d (same-family rename ties with direct, plan B)", rank, ModelPriorityRankDirect)
 	}
 
 	unmatchedResult := FilterGatewayAccountsByRequestedModel(

@@ -180,8 +180,9 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 }
 
 // TestChainAccountsSelectorModelRankWindow covers the model-candidate
-// window: the direct-model account ranks before the mapping account and the
-// no-supported-model account, and unrelated accounts drop.
+// window: 方案B（2026-10-24）后同族改名映射（chat_completions→chat_completions）
+// 与直连同权 rank 0；无支持模型账户 rank 2；未命中模型（ELSE 3）由 base window
+// 兜底合流。
 func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 	fixture := newChainFixture(t)
 	db := fixture.db
@@ -222,6 +223,20 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 	}
 	if result.Diagnostics == nil || result.Diagnostics.EligibleRowCount != 2 {
 		t.Fatalf("diagnostics = %+v", result.Diagnostics)
+	}
+	// 方案B：同族改名映射（chat→chat 别名）rank 0，与直连同权；显式断言
+	// 候选窗口 SQL 的 rank 判定不再把同族改名降为 1。
+	groupAccess, err := fixture.selector.resolveGroupAccess(context.Background(), fixture.groupID, fixture.systemAccount)
+	if err != nil {
+		t.Fatalf("resolve group access: %v", err)
+	}
+	_, ranks, err := fixture.selector.listModelCandidateRows(context.Background(), fixture.groupID, groupAccess,
+		now, "gpt-pro", "chat_completions", false, false)
+	if err != nil {
+		t.Fatalf("list model candidate rows: %v", err)
+	}
+	if ranks["acc_mapped"] != 0 {
+		t.Fatalf("same-family rename mapping rank = %d, want 0 (plan B)", ranks["acc_mapped"])
 	}
 
 	// An unknown model ranks the no-supported-model account class first and

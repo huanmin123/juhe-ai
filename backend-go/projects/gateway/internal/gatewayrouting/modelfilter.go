@@ -7,7 +7,9 @@ import (
 )
 
 // Gateway account model priority ranks (dispatch/model-filter.ts
-// gatewayAccountModelPriorityRank).
+// gatewayAccountModelPriorityRank). 方案B（2026-10-24 用户裁决）：同族改名
+// 映射（source 与 upstream endpoint family 相同）与直接命中同权记 0；
+// rank 1 仅留给跨协议转换映射（两族不同，翻译有损，保留直连优先）。
 const (
 	gatewayAccountModelPriorityRankDirect      = 0
 	gatewayAccountModelPriorityRankMapping     = 1
@@ -69,7 +71,13 @@ func FilterAccountsByRequestedModel(accounts []UpstreamAccount, requestedModel s
 		if mapping != nil {
 			if isMappingAllowedBySupportedModels(mapping.UpstreamModel, supportedModels) {
 				mappingMatchedCount++
-				rankByAccountID[account.ID] = gatewayAccountModelPriorityRankMapping
+				// 方案B（2026-10-24）：同族改名映射与直连同权（rank 0）；恒等映射
+				// 已被 IsAdmissibleModelMapping 拒绝，故此处同族必为改名映射。
+				if mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
+					rankByAccountID[account.ID] = gatewayAccountModelPriorityRankDirect
+				} else {
+					rankByAccountID[account.ID] = gatewayAccountModelPriorityRankMapping
+				}
 				mappingMatchedAccounts = append(mappingMatchedAccounts, account)
 			} else {
 				skippedCount++

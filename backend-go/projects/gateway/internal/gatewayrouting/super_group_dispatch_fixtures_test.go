@@ -19,12 +19,19 @@ var superDispatchFixtureIDs = []string{
 }
 
 // collectSuperCandidates 直接驱动候选层，暴露 ModelFilter.ModelPriority
-// .RankByAccountID，用于断言 direct(0)/mapping(1) 排序。
+// .RankByAccountID，用于断言 direct(0)/同族改名(0)/跨协议映射(1) 排序。
 func collectSuperCandidates(t *testing.T, cache *fakeRuntimeCache, bindings ...GroupBindingRow) []ModelTargetGroupCandidate {
+	t.Helper()
+	return collectSuperCandidatesWithFamily(t, cache, "", bindings...)
+}
+
+// collectSuperCandidatesWithFamily 在 collectSuperCandidates 之上允许显式指定
+// 请求 endpoint family（跨族映射用例需要 source family 与映射行源族一致）。
+func collectSuperCandidatesWithFamily(t *testing.T, cache *fakeRuntimeCache, endpointFamily string, bindings ...GroupBindingRow) []ModelTargetGroupCandidate {
 	t.Helper()
 	selector := &TargetGroupSelector{RuntimeCache: cache, CapabilityFilter: PassthroughCapabilityFilter{}}
 	input := ModelTargetGroupInput{
-		Request:      routeTestRequest("gpt-4o"),
+		Request:      routeTestRequestWithFamily("gpt-4o", endpointFamily),
 		APIKeyRecord: routeTestAPIKey(RouteStrategyModeNormal, bindings...),
 		Bindings:     bindings,
 		TargetModel:  "gpt-4o",
@@ -36,12 +43,38 @@ func collectSuperCandidates(t *testing.T, cache *fakeRuntimeCache, bindings ...G
 	return candidates
 }
 
+// routeTestRequestWithFamily 构造带 EndpointFamilyOverride 的请求视图；空
+// family 退回 /v1/chat/completions 默认解析。
+func routeTestRequestWithFamily(model, endpointFamily string) RequestView {
+	request := routeTestRequest(model)
+	if endpointFamily != "" {
+		request.EndpointFamilyOverride = endpointFamily
+	}
+	return request
+}
+
+// mappingAccount 是同族改名映射账户（chat_completions→chat_completions 别名，
+// 方案B 后与直连同权 rank 0）。
 func mappingAccount(id, upstream string) UpstreamAccount {
 	return UpstreamAccount{
 		ID: id, ProviderCode: "anthropic",
 		ProtocolCode: "openai", ProtocolVersion: "v1",
 		ModelMappings: []gatewayAccountModelMapping{{
 			SourceModel: "gpt-4o", SourceEndpointFamily: EndpointFamilyChatCompletions,
+			UpstreamModel: upstream, UpstreamEndpointFamily: EndpointFamilyChatCompletions,
+		}},
+		SupportedModels: []string{upstream},
+	}
+}
+
+// crossFamilyMappingAccount 是跨协议转换映射账户（responses→chat_completions，
+// 方案B 后保留 rank 1 直连优先）。
+func crossFamilyMappingAccount(id, upstream string) UpstreamAccount {
+	return UpstreamAccount{
+		ID: id, ProviderCode: "anthropic",
+		ProtocolCode: "openai", ProtocolVersion: "v1",
+		ModelMappings: []gatewayAccountModelMapping{{
+			SourceModel: "gpt-4o", SourceEndpointFamily: EndpointFamilyResponses,
 			UpstreamModel: upstream, UpstreamEndpointFamily: EndpointFamilyChatCompletions,
 		}},
 		SupportedModels: []string{upstream},
@@ -80,12 +113,14 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 			t.Fatalf("candidates = %d, want 1", len(candidates))
 		}
 		candidate := candidates[0]
+		// 方案B：同族改名映射与直连同秩（均 rank 0）；segment 内先后由账户
+		// 比较器后续键（此处 member 顺序）决定，acc_direct 的成员在前。
 		if got := accountIDs(candidate.Accounts); !equalStrings(got, []string{"acc_direct", "acc_mapped"}) {
-			t.Fatalf("accounts = %v, want direct before mapping", got)
+			t.Fatalf("accounts = %v, want same-rank order by member order", got)
 		}
 		ranks := candidate.ModelFilter.ModelPriority.RankByAccountID
-		if ranks["acc_direct"] != 0 || ranks["acc_mapped"] != 1 {
-			t.Fatalf("route ranks = %v, want direct=0 mapping=1", ranks)
+		if ranks["acc_direct"] != 0 || ranks["acc_mapped"] != 0 {
+			t.Fatalf("route ranks = %v, want direct=0 same-family-rename=0", ranks)
 		}
 		if got := segmentSummary(candidate.GroupSegments); !equalStrings(got, []string{"grp_m1:acc_direct", "grp_m2:acc_mapped"}) {
 			t.Fatalf("segments = %v", got)
@@ -95,9 +130,11 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 	t.Run("dispatch-mapping", func(t *testing.T) {
 		cache := superDispatchCache(t)
 		cache.groupAccess["grp_map"] = routeTestAccess()
-		cache.accounts["grp_map"] = []UpstreamAccount{mappingAccount("acc_map_only", "up_m")}
+		cache.accounts["grp_map"] = []UpstreamAccount{crossFamilyMappingAccount("acc_map_only", "up_m")}
 
-		candidates := collectSuperCandidates(t, cache,
+		// 跨协议转换映射（responses→chat_completions）的源族必须与请求族一致
+		// 才能命中；请求视图覆盖为 responses family。
+		candidates := collectSuperCandidatesWithFamily(t, cache, EndpointFamilyResponses,
 			superGroupBinding("b1", "grp_super", []string{"grp_map"}, 1))
 		if len(candidates) != 1 {
 			t.Fatalf("candidates = %d, want 1", len(candidates))
@@ -107,7 +144,7 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 			t.Fatalf("accounts = %v", got)
 		}
 		if got := candidate.ModelFilter.ModelPriority.RankByAccountID["acc_map_only"]; got != 1 {
-			t.Fatalf("mapping route rank = %d, want 1", got)
+			t.Fatalf("cross-protocol mapping route rank = %d, want 1", got)
 		}
 		if candidate.ModelFilter.DirectMatchedCount != 0 || candidate.ModelFilter.MappingMatchedCount != 1 {
 			t.Fatalf("filter counts = direct:%d mapping:%d",
@@ -117,6 +154,9 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 
 	t.Run("dispatch-duplicate-account", func(t *testing.T) {
 		cache := superDispatchCache(t)
+		// 方案B：同族改名映射与直连同秩；dedup 按 (route_rank, member_priority,
+		// member_group_id) 保留优先成员——两处 rank 相同，成员顺序在前的
+		// grp_m1（映射出现）胜出，胜者 rank 0。
 		cache.groupAccess["grp_m1"] = routeTestAccess()
 		cache.accounts["grp_m1"] = []UpstreamAccount{mappingAccount("acc_shared", "up_m")}
 		cache.groupAccess["grp_m2"] = routeTestAccess()
@@ -131,11 +171,11 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 		if got := accountIDs(candidate.Accounts); !equalStrings(got, []string{"acc_shared"}) {
 			t.Fatalf("duplicate account must appear once: %v", got)
 		}
-		if got := segmentSummary(candidate.GroupSegments); !equalStrings(got, []string{"grp_m2:acc_shared"}) {
-			t.Fatalf("direct member must win: %v", got)
+		if got := segmentSummary(candidate.GroupSegments); !equalStrings(got, []string{"grp_m1:acc_shared"}) {
+			t.Fatalf("dedup must keep the first member occurrence at equal rank: %v", got)
 		}
 		if got := candidate.ModelFilter.ModelPriority.RankByAccountID["acc_shared"]; got != 0 {
-			t.Fatalf("dedup rank = %d, want 0 (direct)", got)
+			t.Fatalf("dedup rank = %d, want 0 (same-rank rename/direct)", got)
 		}
 	})
 

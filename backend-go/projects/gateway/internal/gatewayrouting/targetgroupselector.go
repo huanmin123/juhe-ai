@@ -251,6 +251,9 @@ func (s *TargetGroupSelector) resolveSuperGroupMemberCandidate(ctx context.Conte
 	best := make(map[string]superGroupAccountChoice)
 	for _, member := range members {
 		for _, account := range member.candidate.Accounts {
+			// 方案B（2026-10-24）：候选 Accounts 只含 rank 0（direct + 同族改名
+			// 映射，同层）与 rank 1（跨协议转换映射）；rank 2（不支持）不进候选，
+			// 钳位 `!=0 -> 1` 与新语义等价，比较器不动。
 			rank := member.candidate.ModelFilter.ModelPriority.RankByAccountID[account.ID]
 			if rank != 0 {
 				rank = 1
@@ -276,14 +279,17 @@ func (s *TargetGroupSelector) resolveSuperGroupMemberCandidate(ctx context.Conte
 	segments := make([]NormalRouteGroupSegment, 0, len(members))
 	pooled := make([]UpstreamAccount, 0, len(choices))
 	rankByAccountID := make(map[string]int, len(choices))
-	directCount, mappingCount := 0, 0
+	// 方案B（2026-10-24）：rank 0 = direct + 同族改名映射（同层），rank 1 =
+	// 跨协议转换映射。结构体字段名 DirectMatchedCount/MappingMatchedCount 是
+	// 既有消费契约不改；本地计数按 rank 桶命名以免误导。
+	rank0Count, rank1Count := 0, 0
 	for _, choice := range choices {
 		pooled = append(pooled, choice.account)
 		rankByAccountID[choice.account.ID] = choice.rank
 		if choice.rank == 0 {
-			directCount++
+			rank0Count++
 		} else {
-			mappingCount++
+			rank1Count++
 		}
 		index, exists := segmentIndex[choice.groupID]
 		if !exists {
@@ -299,8 +305,8 @@ func (s *TargetGroupSelector) resolveSuperGroupMemberCandidate(ctx context.Conte
 		Accounts:    pooled,
 		ModelFilter: GatewayModelAccountFilterResult{
 			Accounts:             pooled,
-			DirectMatchedCount:   directCount,
-			MappingMatchedCount:  mappingCount,
+			DirectMatchedCount:   rank0Count,
+			MappingMatchedCount:  rank1Count,
 			RequestedModel:       input.TargetModel,
 			SourceEndpointFamily: sourceEndpointFamily,
 			ModelPriority: GatewayAccountModelPriority{

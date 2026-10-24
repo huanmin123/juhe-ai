@@ -309,7 +309,7 @@
                         <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
                           <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
                         </a-form-item>
-                        <a-form-item label="特权">
+                        <a-form-item label="特权" tooltip="同族改名映射与直连同层参与调度排序；跨协议转换映射排在直连之后。超级优先只在其模型命中层级内提权。">
                           <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
                             <a-select-option value="normal">无</a-select-option>
                             <a-select-option value="super_priority">超级优先</a-select-option>

@@ -728,7 +728,11 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 // listModelCandidateRows ports listGatewayDispatchModelCandidateRows: the
 // CTE model-rank window (0 = direct supported model, 1 = enabled mapping,
 // 2 = no supported-model list, everything else dropped). mediaAdmission 仅由
-// video_generation 请求武装视频恢复准入臂。
+// video_generation 请求武装视频恢复准入臂。方案B（2026-10-24 用户裁决）：映射
+// 臂拆两档——同族改名映射（target_endpoint_family = source_endpoint_family，
+// 保留非恒等门）与直连同权记 0，跨协议转换映射（两族不同）记 1；口径与
+// gatewayrouting/gatewaydispatch 两层 Go 过滤器一致
+// （docs/functions/AI账户模型映射选择规则.md §2.4）。
 func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now, requestedModel, requestedEndpointFamily string, includeUnavailable bool, mediaAdmission bool) ([]chainCandidateRow, map[string]int, error) {
 	model := strings.TrimSpace(requestedModel)
 	if model == "" {
@@ -811,6 +815,32 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 							AND model_mappings.source_model = ?
 							AND model_mappings.source_endpoint_family = ?
 							AND model_mappings.enabled = 1
+							AND model_mappings.target_endpoint_family = model_mappings.source_endpoint_family
+							AND (
+								mapped_models.upstream_model <> model_mappings.source_model
+								OR model_mappings.target_endpoint_family <> model_mappings.source_endpoint_family
+							)
+							AND (
+								NOT EXISTS (
+									SELECT 1 FROM {supportedModels} limited_supported
+									WHERE limited_supported.account_id = eligible_rows.model_resource_account_id
+								)
+								OR EXISTS (
+									SELECT 1 FROM {supportedModels} mapped_supported
+									INNER JOIN {models} mapped_alias_models ON mapped_alias_models.id = mapped_supported.model_id
+									WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
+										AND ({mappedAliasPredicate})
+								)
+							)
+					) THEN 0
+					WHEN EXISTS (
+						SELECT 1 FROM {mappings} model_mappings
+						INNER JOIN {models} mapped_models ON mapped_models.id = model_mappings.target_model_id
+						WHERE model_mappings.account_id = eligible_rows.model_resource_account_id
+							AND model_mappings.source_model = ?
+							AND model_mappings.source_endpoint_family = ?
+							AND model_mappings.enabled = 1
+							AND model_mappings.target_endpoint_family <> model_mappings.source_endpoint_family
 							AND (
 								mapped_models.upstream_model <> model_mappings.source_model
 								OR model_mappings.target_endpoint_family <> model_mappings.source_endpoint_family
@@ -856,9 +886,13 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 	for _, variant := range directModelArgs {
 		args = append(args, variant)
 	}
-	args = append(args, model, requestedEndpointFamily)
-	for _, variant := range mappedAliasArgs {
-		args = append(args, variant)
+	// 方案B：同族改名臂与跨协议臂各带一份 (source_model, source_endpoint_family)
+	// 与 mappedAlias 等价组参数，顺序与 SQL 文本中两臂占位符出现顺序一致。
+	for arm := 0; arm < 2; arm++ {
+		args = append(args, model, requestedEndpointFamily)
+		for _, variant := range mappedAliasArgs {
+			args = append(args, variant)
+		}
 	}
 	args = append(args, s.candidateScanLimit)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)

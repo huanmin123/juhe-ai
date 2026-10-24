@@ -233,7 +233,7 @@
         <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。">
           <a-input-number v-model:value="form.priority" :disabled="authorizedEditing" :min="0" style="width: 100%" />
         </a-form-item>
-        <a-form-item label="特权">
+        <a-form-item label="特权" tooltip="同族改名映射与直连同层参与调度排序；跨协议转换映射排在直连之后。超级优先只在其模型命中层级内提权。">
           <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
             <a-select-option value="normal">无</a-select-option>
             <a-select-option value="super_priority">超级优先</a-select-option>
