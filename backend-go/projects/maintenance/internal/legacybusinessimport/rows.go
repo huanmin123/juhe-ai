@@ -688,4 +688,3 @@ func importQuotaWindows(ctx context.Context, source *sql.DB, tx *sql.Tx, report 
 	report.Tables["request_quota_hourly_window_scope_bindings"] = bindings
 	return bindingRows.Err()
 }
-

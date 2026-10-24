@@ -230,5 +230,3 @@ func effectiveModes(preset string, declared []string) []string {
 	vocabulary := presetVocabulary[presetSurfaces[preset]]
 	return append([]string(nil), vocabulary...)
 }
-
-
