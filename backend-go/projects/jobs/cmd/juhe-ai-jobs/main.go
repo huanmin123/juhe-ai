@@ -61,7 +61,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	version := flags.Bool("version", false, "print the jobs project contract version")
 	check := flags.Bool("check-boundary", false, "verify the scaffold boundary")
-	runtimeLegacyMigration := flags.Bool("migrate-runtime-log-legacy-sqlite", false, "offline F1 legacy SQLite migration")
 	runJobsOnce := flags.String("run-jobs-once", "", "run wired worker jobs once (comma-separated task names), print a JSON result array and exit")
 	healthAddress := flags.String("health-listen-address", envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305"), "loopback health listen address")
 	if err := flags.Parse(args); err != nil {
@@ -80,10 +79,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if flags.NArg() != 0 {
 		fmt.Fprintf(stderr, "unsupported jobs arguments: %v\n", flags.Args())
-		return 2
-	}
-	if *runJobsOnce != "" && *runtimeLegacyMigration {
-		fmt.Fprintln(stderr, "--run-jobs-once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
 		return 2
 	}
 
@@ -138,10 +133,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return failWith(stderr, fmt.Errorf("load F1 runtime-log-indexer config: %w", err))
 	}
 	if runtimeConfig.Once {
-		return failWith(stderr, errors.New("JUHE_AI_RUNTIME_LOG_ONCE=true is not supported by juhe-ai-jobs; use --migrate-runtime-log-legacy-sqlite for the explicit offline F1 migration"))
-	}
-	if *runtimeLegacyMigration {
-		return runRuntimeLegacyMigration(runtimeConfig, stdout, stderr)
+		return failWith(stderr, errors.New("JUHE_AI_RUNTIME_LOG_ONCE=true is not supported by juhe-ai-jobs"))
 	}
 	runtimeStore, err := runtimelog.OpenStore(context.Background(), runtimeConfig)
 	if err != nil {
@@ -1141,29 +1133,6 @@ func proxylatencyTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
-}
-
-func runRuntimeLegacyMigration(config runtimelog.Config, stdout io.Writer, stderr io.Writer) int {
-	store, err := runtimelog.OpenStore(context.Background(), config)
-	if err != nil {
-		return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
-	}
-	defer store.Close()
-	if err := runtimelog.EnsureSchema(context.Background(), store); err != nil {
-		return failWith(stderr, fmt.Errorf("initialize F1 runtime-log-indexer schema: %w", err))
-	}
-	if err := store.CheckSchema(context.Background()); err != nil {
-		return failWith(stderr, fmt.Errorf("verify F1 runtime-log-indexer schema: %w", err))
-	}
-	ctx, stop := hooksSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := runtimelog.RunWithOwnerLease(ctx, config, store, func(ownerCtx context.Context) error {
-		return runtimelog.MigrateLegacySQLite(ownerCtx, config, store)
-	}); err != nil {
-		return failWith(stderr, err)
-	}
-	fmt.Fprintln(stdout, "旧运行日志 SQLite 数据迁移和完整性校验完成")
-	return 0
 }
 
 func envOrDefault(name, fallback string) string {

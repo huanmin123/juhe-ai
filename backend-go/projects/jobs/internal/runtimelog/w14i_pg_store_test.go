@@ -3,105 +3,41 @@ package runtimelog
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
-// w14i_pg_store_test.go 以 w1cover 门禁覆盖库覆盖 postgresStore 全链路：
-// OpenStore 参数臂、游标读写、Commit（含 facet 累加）、Cleanup（记录批次与
-// 游标批次）、owner lease 生命周期、RuntimeRetentionDays 与错误注入臂。
+// w14i_pg_store_test.go 覆盖 postgresStore 全链路：OpenStore 参数臂、游标
+// 读写、Commit（含 facet 累加）、Cleanup（记录批次与游标批次）、owner lease
+// 生命周期、RuntimeRetentionDays 与错误注入臂。
 //
-// 共享库纪律：
-//   - 只写 w14i- 前缀的 log_file / 记录 ID，结束前全部删除；
-//   - owner lease 是共享单例行，测试用短租约并在结束时释放回空闲态；
-//   - facet 聚合是全局 bucket，本测试的增量与清理减量相互抵消；
-//   - 连接失败一律 t.Skip，不把环境问题当测试失败。
-//
-// w14i 波次不可达清单（PG 臂，均已核对）：
-//   - CheckSchema 缺表/缺索引/列校验错误臂：覆盖库 schema 冻结齐全，
-//     不允许在共享库上删表注入；
-//   - OpenStore 的 pool.Ping 失败臂：连接失败路径由 t.Skip 语义承接；
-//   - beginPostgresTx/rollback 的连接级故障臂：pgx 池无本地注入点。
-
-func w14iW1CoverPostgresURL(t *testing.T) string {
-	t.Helper()
-	raw, err := os.ReadFile(`F:\sub2api-lite\.local\project-resources\dev\env\shared.env`)
-	if err != nil {
-		t.Skip("w14i PG gated: shared.env 不可读")
-	}
-	base := ""
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "JUHE_AI_POSTGRES_URL=") {
-			base = strings.TrimPrefix(line, "JUHE_AI_POSTGRES_URL=")
-		}
-	}
-	if base == "" {
-		t.Skip("w14i PG gated: shared.env 缺少 JUHE_AI_POSTGRES_URL")
-	}
-	base = strings.Replace(base, ":6432/", ":5432/", 1)
-	base = strings.Replace(base, "/juhe_ai_sub2api_dev?", "/juhe_ai_sub2api_dev_w1cover?", 1)
-	return base
-}
-
-func w14iOpenPostgresStore(t *testing.T) *postgresStore {
-	t.Helper()
-	url := w14iW1CoverPostgresURL(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	opened, err := OpenStore(ctx, Config{Mode: ModePostgres, PostgresURL: url, PostgresMaxConns: 4})
-	if err != nil {
-		t.Skipf("w14i PG gated: 打开失败: %v", err)
-	}
-	store, ok := opened.(*postgresStore)
-	if !ok {
-		_ = opened.Close()
-		t.Fatalf("OpenStore(ModePostgres) 返回 %T", opened)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := EnsureSchema(ctx, store); err != nil {
-		t.Skipf("w14i PG gated: schema 不可用: %v", err)
-	}
-	return store
-}
-
-func w14iCleanupRows(t *testing.T, store *postgresStore, logFile string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for _, target := range []string{logFile, displacedIdentityPrefix + logFile} {
-		if _, err := store.pool.Exec(ctx, `DELETE FROM juhe_dataset.runtime_logs WHERE log_file = $1`, target); err != nil {
-			t.Errorf("清理 w14i 记录失败: %v", err)
-		}
-		if _, err := store.pool.Exec(ctx, `DELETE FROM juhe_dataset.runtime_log_file_cursors WHERE log_file = $1`, target); err != nil {
-			t.Errorf("清理 w14i 游标失败: %v", err)
-		}
-	}
-}
+// 建库走 pgtestkit 隔离 PG 测试库 + 生产 OpenStore/EnsureSchema
+// （PLAN-20261024T051925945Z B6 测试迁移半场），替代旧 w1cover 共享库 +
+// skip 门禁：每测试独立 fresh 库，PG 不可达显式失败而非跳过；隔离库随测试
+// 结束删除，不再需要共享库行级清理纪律。schema 校验/列校验错误臂、连接级
+// 故障臂仍由 wn_pgfake 脚本化臂覆盖（真实库上注入会破坏生产 DDL 形状）。
 
 func TestW14iOpenStorePostgresParameterArms(t *testing.T) {
 	if _, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: "w14i-not-a-url"}); err == nil {
 		t.Fatalf("非法 URL 应报错")
 	}
-	url := w14iW1CoverPostgresURL(t)
-	_, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: url, PostgresMaxConns: 2, PostgresMinConns: 4})
+	// MinConns>MaxConns 校验先于建池，合法但不可达的占位 DSN 不会被真正连接。
+	_, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: "postgres://127.0.0.1:1/w14i-param-arms?sslmode=disable", PostgresMaxConns: 2, PostgresMinConns: 4})
 	if err == nil || !strings.Contains(err.Error(), "min connections") {
 		t.Fatalf("MinConns>MaxConns 应报错: %v", err)
 	}
 }
 
 func TestW14iPostgresStoreFullLifecycle(t *testing.T) {
-	store := w14iOpenPostgresStore(t)
+	store, _ := openKitPostgresStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	logFile := "w14i-lifecycle.log"
-	t.Cleanup(func() { w14iCleanupRows(t, store, logFile) })
 
 	lease, acquired, err := store.AcquireOwnerLease(ctx, "w14i-pg-owner", time.Minute)
 	if err != nil || !acquired {
-		t.Skipf("w14i PG gated: 共享 owner lease 暂不可用: acquired=%t err=%v", acquired, err)
+		t.Fatalf("fresh 库 owner lease 必须可获得: acquired=%t err=%v", acquired, err)
 	}
 	t.Cleanup(func() {
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -192,30 +128,20 @@ func TestW14iPostgresStoreFullLifecycle(t *testing.T) {
 }
 
 func TestW14iPostgresCleanupBatches(t *testing.T) {
-	store := w14iOpenPostgresStore(t)
+	store, _ := openKitPostgresStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	logFile := "w14i-cleanup.log"
-	t.Cleanup(func() { w14iCleanupRows(t, store, logFile) })
 
 	lease, acquired, err := store.AcquireOwnerLease(ctx, "w14i-pg-owner", time.Minute)
 	if err != nil || !acquired {
-		t.Skipf("w14i PG gated: 共享 owner lease 暂不可用: acquired=%t err=%v", acquired, err)
+		t.Fatalf("fresh 库 owner lease 必须可获得: acquired=%t err=%v", acquired, err)
 	}
 	t.Cleanup(func() {
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer releaseCancel()
 		_ = store.ReleaseOwnerLease(releaseCtx, lease)
 	})
-
-	// 保护共享数据：确认批删窗口内没有非 w14i 行。
-	var foreign int
-	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM juhe_dataset.runtime_logs WHERE log_file <> $1 AND time < $2`, logFile, time.Now().UTC().Add(-24*time.Hour)).Scan(&foreign); err != nil {
-		t.Skipf("w14i PG gated: 读取共享记录失败: %v", err)
-	}
-	if foreign != 0 {
-		t.Skip("w14i PG gated: 共享库存在 24h 前的他人记录，跳过时间窗批删")
-	}
 
 	base := time.Now().UTC().Add(-48 * time.Hour)
 	records := make([]Record, 0, 3)

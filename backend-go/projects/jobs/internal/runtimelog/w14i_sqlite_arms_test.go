@@ -306,49 +306,6 @@ func TestW14iIndexerIdentityCursorRelocateCopyError(t *testing.T) {
 	}
 }
 
-// ---- Legacy 迁移补充臂 ----
-
-func TestW14iMigrateLegacyMismatchFailsVerification(t *testing.T) {
-	// 契约：目标库已存在同键不同值记录时，INSERT OR IGNORE 跳过复制，
-	// 迁移后值校验必须 fail-closed。
-	store, config := openTestSQLiteStore(t)
-	if err := EnsureSchema(context.Background(), store); err != nil {
-		t.Fatal(err)
-	}
-	dataset := filepath.Join(t.TempDir(), "w14i-legacy-conflict.sqlite3")
-	w12dCreateLegacyDataset(t, dataset, "2026-08-08T00:00:00.000Z")
-	// 目标库预置同 id 不同值的记录，制造迁移后不一致。
-	handle, err := sql.Open("sqlite", config.RuntimeLogDatabasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer handle.Close()
-	if _, err := handle.Exec(`INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at)
-		VALUES ('w12d-legacy-1', 'conflicting.log', 999, 9, '2026-08-08T00:00:00.000Z', 'error', '', 'conflict', 'conflict', '', '{}', '2026-08-08T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	var storeIface Store = store
-	if err := MigrateLegacySQLite(testOwnerContext(t, storeIface), w12dMigrationConfig(t, dataset), storeIface); err == nil || !strings.Contains(err.Error(), "字段值不一致") {
-		t.Fatalf("同键不同值应使迁移校验失败: %v", err)
-	}
-}
-
-func TestW14iMigrateLegacyRejectsInvalidRuntimeLogPath(t *testing.T) {
-	// 契约：RuntimeLogDatabasePath 非法（含 NUL）时，隔离校验必须报错。
-	store, _ := openTestSQLiteStore(t)
-	if err := EnsureSchema(context.Background(), store); err != nil {
-		t.Fatal(err)
-	}
-	var storeIface Store = store
-	dataset := filepath.Join(t.TempDir(), "w14i-legacy-invalid-path.sqlite3")
-	w12dCreateLegacyDataset(t, dataset, "2026-08-08T00:00:00.000Z")
-	config := w12dMigrationConfig(t, dataset)
-	config.RuntimeLogDatabasePath = "w14i-\x00-invalid.sqlite3"
-	if err := MigrateLegacySQLite(context.Background(), config, storeIface); err == nil || !strings.Contains(err.Error(), "隔离") {
-		t.Fatalf("非法路径应使隔离校验失败: %v", err)
-	}
-}
-
 func TestW14iCanonicalSQLitePathDetectsDanglingSymlink(t *testing.T) {
 	dir := t.TempDir()
 	dangling := filepath.Join(dir, "w14i-dangling.sqlite3")

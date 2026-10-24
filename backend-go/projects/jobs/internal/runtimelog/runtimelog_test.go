@@ -71,7 +71,7 @@ func TestParseLogFileNameMatchesNodeContract(t *testing.T) {
 }
 
 func TestCurrentFileStartsAtTailThenImportsAppend(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	currentPath := filepath.Join(config.LogDirectory, "juhe-ai.log")
 	writeTestFile(t, currentPath, logLine("before-start", "2026-08-08T00:00:00.000Z")+"\n")
@@ -79,14 +79,14 @@ func TestCurrentFileStartsAtTailThenImportsAppend(t *testing.T) {
 	if err := indexer.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 0)
+	assertKitRuntimeLogCount(t, store, 0)
 
 	appendTestFile(t, currentPath, logLine("after-start", "2026-08-08T00:00:01.000Z")+"\n")
 	if err := indexer.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 1)
-	cursor := findCursor(t, store, currentPath)
+	assertKitRuntimeLogCount(t, store, 1)
+	cursor := kitFindCursor(t, store, currentPath)
 	info, err := os.Stat(currentPath)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestCurrentFileStartsAtTailThenImportsAppend(t *testing.T) {
 }
 
 func TestRotatedFileIsIdempotent(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
 	writeTestFile(t, rotatedPath, logLine("first", "2026-08-08T00:00:00.000Z")+"\n"+logLine("second", "2026-08-08T00:00:01.000Z")+"\n")
@@ -108,15 +108,15 @@ func TestRotatedFileIsIdempotent(t *testing.T) {
 	if err := indexer.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 2)
-	cursor := findCursor(t, store, rotatedPath)
+	assertKitRuntimeLogCount(t, store, 2)
+	cursor := kitFindCursor(t, store, rotatedPath)
 	if cursor.LineNumber != 2 || cursor.LastErrorMessage != "" {
 		t.Fatalf("轮转文件 cursor 不正确: %#v", cursor)
 	}
 }
 
 func TestRunOnceProcessesFilesSerially(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	writeTestFile(t, filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log"), logLine("first", "2026-08-08T00:00:00.000Z")+"\n")
 	writeTestFile(t, filepath.Join(config.LogDirectory, "juhe-ai.20260721T121501Z.c3d4.log"), logLine("second", "2026-08-08T00:00:01.000Z")+"\n")
@@ -125,14 +125,14 @@ func TestRunOnceProcessesFilesSerially(t *testing.T) {
 	if err := NewIndexer(config, probe).RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 2)
+	assertKitRuntimeLogCount(t, store, 2)
 	if probe.maxConcurrentCommits != 1 {
 		t.Fatalf("同一次 RunOnce 的 Commit 必须串行执行，最大并发为 %d", probe.maxConcurrentCommits)
 	}
 }
 
 func TestIncompleteTailDoesNotAdvanceCursorUntilNewlineArrives(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
 	writeTestFile(t, rotatedPath, logLine("large-line", "2026-08-08T00:00:00.000Z"))
@@ -140,8 +140,8 @@ func TestIncompleteTailDoesNotAdvanceCursorUntilNewlineArrives(t *testing.T) {
 	if err := indexer.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 0)
-	cursor := findCursor(t, store, rotatedPath)
+	assertKitRuntimeLogCount(t, store, 0)
+	cursor := kitFindCursor(t, store, rotatedPath)
 	if cursor.CursorOffset != 0 || cursor.LineNumber != 0 {
 		t.Fatalf("物理 EOF 前没有换行的记录不得推进 cursor: %#v", cursor)
 	}
@@ -150,7 +150,7 @@ func TestIncompleteTailDoesNotAdvanceCursorUntilNewlineArrives(t *testing.T) {
 	if err := indexer.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 1)
+	assertKitRuntimeLogCount(t, store, 1)
 }
 
 func TestWriteFailureKeepsLastCommittedCursorAndRecovers(t *testing.T) {
@@ -184,7 +184,7 @@ func TestWriteFailureKeepsLastCommittedCursorAndRecovers(t *testing.T) {
 }
 
 func TestRunReturnsManagedImportGoroutinePanic(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
 	writeTestFile(t, rotatedPath, logLine("panic", "2026-08-08T00:00:00.000Z")+"\n")
@@ -196,7 +196,7 @@ func TestRunReturnsManagedImportGoroutinePanic(t *testing.T) {
 }
 
 func TestRunReturnsOrdinaryRuntimeFailureToSupervisor(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	configuredFailure := errors.New("runtime retention settings fixture failure")
 	indexer := NewIndexer(config, failingRuntimeRetentionStore{Store: store, err: configuredFailure})
@@ -207,7 +207,7 @@ func TestRunReturnsOrdinaryRuntimeFailureToSupervisor(t *testing.T) {
 }
 
 func TestRunWithOwnerLeaseReleasesLeaseAfterRunPanic(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	config.OwnerID = "panic-owner"
 	config.OwnerLease = time.Minute
 	err := RunWithOwnerLease(context.Background(), config, store, func(context.Context) error {
@@ -241,7 +241,7 @@ func (store failingRuntimeRetentionStore) RuntimeRetentionDays(context.Context, 
 }
 
 func TestCurrentLogReplacementPreservesDisplacedCursorAndIndexesNewFile(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	currentPath := filepath.Join(config.LogDirectory, "juhe-ai.log")
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
@@ -268,11 +268,11 @@ func TestCurrentLogReplacementPreservesDisplacedCursorAndIndexesNewFile(t *testi
 	if err != nil || newCursor == nil || newCursor.FileIdentity == oldCursor.FileIdentity {
 		t.Fatalf("替换后 current 必须有新 identity cursor: cursor=%v err=%v", newCursor, err)
 	}
-	assertRuntimeLogCount(t, store, 1)
+	assertKitRuntimeLogCount(t, store, 1)
 }
 
 func TestRetentionDeletesExpiredRecordsAndFacets(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
 	now := time.Now().UTC()
@@ -284,16 +284,16 @@ func TestRetentionDeletesExpiredRecordsAndFacets(t *testing.T) {
 	if err := indexer.RunRetention(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertRuntimeLogCount(t, store, 1)
+	assertKitRuntimeLogCount(t, store, 1)
 	var event string
-	if err := store.db.QueryRow("SELECT event FROM runtime_logs LIMIT 1").Scan(&event); err != nil {
+	if err := store.pool.QueryRow(context.Background(), "SELECT event FROM juhe_dataset.runtime_logs LIMIT 1").Scan(&event); err != nil {
 		t.Fatal(err)
 	}
 	if event != "retained" {
 		t.Fatalf("保留清理删除了错误记录: %q", event)
 	}
 	var total int
-	if err := store.db.QueryRow("SELECT total_count FROM runtime_log_facet_summary WHERE bucket_key = ?", facetBucketKey).Scan(&total); err != nil {
+	if err := store.pool.QueryRow(context.Background(), "SELECT total_count FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1", facetBucketKey).Scan(&total); err != nil {
 		t.Fatal(err)
 	}
 	if total != 1 {
@@ -338,7 +338,7 @@ func TestSQLiteCleanupPreservesCurrentCursorAndBoundsLargeRecordBatch(t *testing
 }
 
 func TestRotatedFileCleanupWaitsForDurableCursor(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
 	writeTestFile(t, rotatedPath, logLine("archived", "2026-08-08T00:00:00.000Z")+"\n")
@@ -373,7 +373,7 @@ func TestRotatedFileCleanupWaitsForDurableCursor(t *testing.T) {
 }
 
 func TestRotatedFileCleanupRejectsStaleOwnerLease(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	firstCtx := testOwnerContext(t, store)
 	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
 	writeTestFile(t, rotatedPath, logLine("archived", "2026-08-08T00:00:00.000Z")+"\n")
@@ -385,7 +385,7 @@ func TestRotatedFileCleanupRejectsStaleOwnerLease(t *testing.T) {
 	if err := indexer.RunOnce(firstCtx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec("UPDATE runtime_log_index_owner_leases SET lease_until = '2000-01-01T00:00:00.000Z' WHERE lease_key = ?", runtimeLogOwnerLeaseKey); err != nil {
+	if _, err := store.pool.Exec(context.Background(), "UPDATE juhe_dataset.runtime_log_index_owner_leases SET lease_until = '2000-01-01T00:00:00.000Z' WHERE lease_key = $1", runtimeLogOwnerLeaseKey); err != nil {
 		t.Fatal(err)
 	}
 	secondLease, acquired, err := store.AcquireOwnerLease(context.Background(), "replacement-owner", time.Minute)
@@ -411,18 +411,18 @@ func TestRotatedFileCleanupRejectsStaleOwnerLease(t *testing.T) {
 }
 
 func TestOwnerLeaseFenceBlocksReplacementUntilCallbackReturns(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	secondOpened, err := OpenStore(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, ok := secondOpened.(*sqliteStore)
+	second, ok := secondOpened.(*postgresStore)
 	if !ok {
-		t.Fatalf("测试预期第二个 SQLite Store，实际为 %T", secondOpened)
+		t.Fatalf("测试预期第二个 PostgreSQL Store，实际为 %T", secondOpened)
 	}
 	t.Cleanup(func() { _ = second.Close() })
 
-	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "fence-owner", 50*time.Millisecond)
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "fence-owner", 2*time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("fence owner 必须获得 lease: lease=%#v acquired=%t err=%v", lease, acquired, err)
 	}
@@ -455,9 +455,15 @@ func TestOwnerLeaseFenceBlocksReplacementUntilCallbackReturns(t *testing.T) {
 			close(releaseCallback)
 		}
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case err := <-fenceErr:
+		t.Fatalf("fence 在进入回调前失败: %v", err)
+	}
 	// Let the original lease expire while its fencing transaction remains open.
-	time.Sleep(100 * time.Millisecond)
+	// 2s lease / 2.5s wait：租约必须覆盖 fence 入口校验的 PG 往返延迟
+	//（实测每往返 ~10ms，入口需 5 个往返），等待须覆盖租约到期。
+	time.Sleep(2500 * time.Millisecond)
 
 	type acquireResult struct {
 		lease    OwnerLease
@@ -511,7 +517,7 @@ func TestPostgresTransactionGuardsAreBounded(t *testing.T) {
 }
 
 func TestRuntimeRetentionDaysReadsBusinessSetting(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
+	store, _ := openKitPostgresStore(t)
 	days, err := store.RuntimeRetentionDays(context.Background(), 7)
 	if err != nil {
 		t.Fatal(err)
@@ -640,8 +646,8 @@ func TestSQLiteStoreUsesNodeBusyTimeout(t *testing.T) {
 }
 
 func TestCheckSchemaRejectsMissingRuntimeLogIndex(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	if _, err := store.db.Exec("DROP INDEX idx_runtime_logs_trace_id_time"); err != nil {
+	store, _ := openKitPostgresStore(t)
+	if _, err := store.pool.Exec(context.Background(), "DROP INDEX juhe_dataset.idx_runtime_logs_trace_id_time"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CheckSchema(context.Background()); err == nil || !strings.Contains(err.Error(), "idx_runtime_logs_trace_id_time") {
@@ -679,8 +685,8 @@ func TestLoadConfigRejectsInvalidBoundedValues(t *testing.T) {
 	}
 }
 
-func TestSQLiteOwnerLeaseReleasePreservesMonotonicFenceToken(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
+func TestOwnerLeaseReleasePreservesMonotonicFenceToken(t *testing.T) {
+	store, _ := openKitPostgresStore(t)
 	first, acquired, err := store.AcquireOwnerLease(context.Background(), "first", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("首次获取必须成功: lease=%#v acquired=%t err=%v", first, acquired, err)
@@ -855,14 +861,14 @@ func assertRuntimeLogSQLiteConfigRejected(t *testing.T, values map[string]string
 }
 
 func TestOwnerLeaseRejectsSecondGoInstance(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
+	store, config := openKitPostgresStore(t)
 	secondOpened, err := OpenStore(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, ok := secondOpened.(*sqliteStore)
+	second, ok := secondOpened.(*postgresStore)
 	if !ok {
-		t.Fatalf("测试预期第二个 SQLite Store，实际为 %T", secondOpened)
+		t.Fatalf("测试预期第二个 PostgreSQL Store，实际为 %T", secondOpened)
 	}
 	t.Cleanup(func() { _ = second.Close() })
 	firstLease, acquired, err := store.AcquireOwnerLease(context.Background(), "first", time.Minute)
@@ -957,66 +963,6 @@ func TestSQLiteFenceTokenMigrationAndStaleWriterRejection(t *testing.T) {
 	assertRuntimeLogCount(t, store, 0)
 	if err := second.ReleaseOwnerLease(context.Background(), secondLease); err != nil {
 		t.Fatalf("当前 token 必须能释放自身 lease: %v", err)
-	}
-}
-
-func TestMigrateLegacySQLiteMovesFactsWithoutSharingNodeDatasetWriter(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	legacy, err := sql.Open("sqlite", config.DatasetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = legacy.Close() })
-	if _, err := legacy.Exec(`
-INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at)
-VALUES ('legacy-log', 'juhe-ai.log', 18, 2, '2026-08-09T00:00:00.000Z', 'info', 'legacy-trace', 'legacy-event', 'legacy message', NULL, '{}', '2026-08-09T00:00:00.000Z');
-INSERT INTO runtime_log_file_cursors (log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation, file_mtime_ms, last_read_at, last_error_message, created_at, updated_at)
-VALUES ('juhe-ai.log', 'legacy:1:1', 18, 2, 18, 0, 0, '2026-08-09T00:00:00.000Z', NULL, '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z');
-INSERT INTO runtime_log_facet_summary (bucket_key, total_count, earliest_time, latest_time, updated_at)
-VALUES ('current', 1, '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z');
-INSERT INTO runtime_log_level_facets (bucket_key, level, count, updated_at)
-VALUES ('current', 'info', 1, '2026-08-09T00:00:00.000Z');
-INSERT INTO runtime_log_event_facets (bucket_key, event, count, latest_time, updated_at)
-VALUES ('current', 'legacy-event', 1, '2026-08-09T00:00:00.000Z', '2026-08-09T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx := testOwnerContext(t, store)
-	if err := MigrateLegacySQLite(ctx, config, store); err != nil {
-		t.Fatal(err)
-	}
-	if err := MigrateLegacySQLite(ctx, config, store); err != nil {
-		t.Fatalf("幂等重跑旧 SQLite 迁移失败: %v", err)
-	}
-	assertRuntimeLogCount(t, store, 1)
-	var cursorOffset int64
-	if err := store.db.QueryRow("SELECT cursor_offset FROM runtime_log_file_cursors WHERE log_file = ?", "juhe-ai.log").Scan(&cursorOffset); err != nil {
-		t.Fatal(err)
-	}
-	if cursorOffset != 18 {
-		t.Fatalf("旧 cursor 未完整迁移: got %d, want 18", cursorOffset)
-	}
-	var eventCount int
-	if err := store.db.QueryRow("SELECT count FROM runtime_log_event_facets WHERE bucket_key = ? AND event = ?", facetBucketKey, "legacy-event").Scan(&eventCount); err != nil {
-		t.Fatal(err)
-	}
-	if eventCount != 1 {
-		t.Fatalf("旧 event facet 未完整迁移: got %d, want 1", eventCount)
-	}
-}
-
-func TestMigrateLegacySQLiteRejectsNonCanonicalAbsoluteTime(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	legacy, err := sql.Open("sqlite", config.DatasetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = legacy.Close() })
-	if _, err := legacy.Exec(`INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, raw_json, created_at) VALUES ('legacy-invalid-time', 'juhe-ai.log', 1, 1, '2026-08-09T00:00:00', 'info', '{}', '2026-08-09T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := MigrateLegacySQLite(testOwnerContext(t, store), config, store); err == nil {
-		t.Fatal("legacy offset-less absolute time must fail closed before copying rows")
 	}
 }
 

@@ -63,7 +63,7 @@ Remove-Item Env:J3A_PG_SCHEMA_CONTRACT_SMOKE_URL -ErrorAction SilentlyContinue
 
 它验证完整结构能被 runtime 接受、错误列会在启动 preflight 被拒绝；同样只适用于可销毁 scratch。
 
-离线迁移也按 owner 分开执行：F1 使用 `juhe-ai-jobs --migrate-runtime-log-legacy-sqlite`；F3/F4 使用 `juhe-ai-gateway --migrate-audit-log-legacy-sqlite`、`--migrate-operation-log-legacy-sqlite` 或 `--migrate-operation-log-legacy-postgres`。F3/F4 离线模式必须显式传入 `--node-stopped --go-stopped --backup-confirmed`，不得和相应常驻 owner 并发运行。
+离线迁移按 owner 分开执行：F3/F4 使用 `juhe-ai-gateway --migrate-audit-log-legacy-sqlite`、`--migrate-operation-log-legacy-sqlite` 或 `--migrate-operation-log-legacy-postgres`。F3/F4 离线模式必须显式传入 `--node-stopped --go-stopped --backup-confirmed`，不得和相应常驻 owner 并发运行。F1 运行日志的旧 SQLite 离线迁移命令 `--migrate-runtime-log-legacy-sqlite` 已于 2026-10-24 随 SQLite 退役批删除（用户裁决），存量旧库不再提供该迁移路径。
 
 ## F4：操作日志离线历史迁移
 
@@ -113,9 +113,7 @@ go run ./projects/jobs/cmd/juhe-ai-jobs
 
 已存在的 Node F1 索引数据不能在常驻启动时自动复制。先停止 Node 与 Go indexer，设置 `JUHE_AI_DATASET_DATABASE_PATH` 指向旧 dataset 文件，并提供所有 SQLite owner 路径以完成物理隔离校验，再执行：
 
-```powershell
-go run ./projects/jobs/cmd/juhe-ai-jobs --migrate-runtime-log-legacy-sqlite
-```
+> F1 运行日志的旧 SQLite 离线迁移（`--migrate-runtime-log-legacy-sqlite`）已于 2026-10-24 随 SQLite 退役批删除。
 
 该一次性命令会校验源库完整性、F1 表、数量、主键和字段值；失败时保留原文件，不能回退到 Node F1 或将 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 改成 dataset 文件。
 

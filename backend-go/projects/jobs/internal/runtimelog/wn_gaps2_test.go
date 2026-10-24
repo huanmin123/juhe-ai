@@ -2,7 +2,6 @@ package runtimelog
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -288,26 +287,6 @@ func TestCleanupRotatedFilesRejectsMissingLogDir(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacySQLiteRejectsNonCanonicalButValidTime 覆盖可解析但非 canonical 分支。
-func TestMigrateLegacySQLiteRejectsNonCanonicalButValidTime(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	legacy, err := sql.Open("sqlite", config.DatasetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.Exec(`INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, raw_json, created_at) VALUES ('offset-time', 'juhe-ai.log', 0, 0, '2026-08-09T00:00:00+00:00', 'info', '{}', '2026-08-09T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := MigrateLegacySQLite(testOwnerContext(t, store), config, store); err == nil || !strings.Contains(err.Error(), "canonical UTC") {
-		t.Fatalf("非 canonical 绝对时间必须要求离线清洗: %v", err)
-	}
-	detachLegacy(t, store)
-}
-
-// TestSQLiteCleanupSelectFailure 注入 runtime_logs 表缺失，覆盖查询失败分支。
 func TestSQLiteCleanupSelectFailure(t *testing.T) {
 	store, _ := openTestSQLiteStore(t)
 	lease := testOwnerLease(t, testOwnerContext(t, store))

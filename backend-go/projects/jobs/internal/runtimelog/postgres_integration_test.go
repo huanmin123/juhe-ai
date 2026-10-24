@@ -5,25 +5,21 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-const (
-	postgresSmokeURLVariable      = "JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_URL"
-	postgresSmokeRequiredVariable = "JUHE_AI_RUNTIME_LOG_POSTGRES_SMOKE_REQUIRED"
-)
+// TestPostgresRuntimeLogAdapterSmoke 在 pgtestkit 隔离 PG 测试库上验证
+// postgresStore 适配器全链路（PLAN-20261024T051925945Z B6 测试迁移半场）：
+// 连接、生产 EnsureSchema bootstrap、空表校验、owner lease 状态机、
+// Commit/Cleanup 与收尾清理。fresh 库天然满足「F1 表全空的专用可销毁数据库」
+// 前提；PG 不可达时显式失败，不再 skip 门禁。
 
 func TestPostgresRuntimeLogAdapterSmoke(t *testing.T) {
-	url := strings.TrimSpace(os.Getenv(postgresSmokeURLVariable))
-	if url == "" {
-		if postgresSmokeRequired(os.Getenv(postgresSmokeRequiredVariable)) {
-			t.Fatalf("%s=true/1 时必须设置 %s", postgresSmokeRequiredVariable, postgresSmokeURLVariable)
-		}
-		t.Skipf("未设置 %s；PostgreSQL adapter smoke 被显式跳过，不能视为 PostgreSQL 验证通过", postgresSmokeURLVariable)
-	}
+	url := pgtestkit.NewTestDatabase(t).DSN
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -123,10 +119,6 @@ WHERE lease_key = $2 AND owner_id = $3 AND fence_token = $4
 		t.Fatalf("Cleanup.RuntimeLogs = %d，期望仅清理 1 条过期 record", cleanupResult.RuntimeLogs)
 	}
 	assertPostgresRetainedState(t, ctx, store, cursor, records[1])
-}
-
-func postgresSmokeRequired(value string) bool {
-	return strings.EqualFold(strings.TrimSpace(value), "true") || strings.TrimSpace(value) == "1"
 }
 
 func postgresSmokePrefix(t *testing.T) string {

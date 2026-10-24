@@ -2,7 +2,6 @@ package runtimelog
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -409,92 +408,6 @@ func TestSQLiteWithOwnerLeaseFencePropagatesCallbackError(t *testing.T) {
 	if err := store.WithOwnerLeaseFence(context.Background(), lease, func() error { return callbackErr }); !errors.Is(err, callbackErr) {
 		t.Fatalf("callback 失败必须原样返回: %v", err)
 	}
-}
-
-// TestMigrateLegacySQLiteRejectsCorruptDataset 覆盖 ATTACH 失败分支。
-func TestMigrateLegacySQLiteRejectsCorruptDataset(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	if err := os.WriteFile(config.DatasetPath, []byte("this is not a sqlite database at all —— just garbage bytes"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err := MigrateLegacySQLite(testOwnerContext(t, store), config, store)
-	if err == nil || !strings.Contains(err.Error(), "附加旧运行日志数据库失败") {
-		t.Fatalf("损坏数据源必须拒绝迁移: %v", err)
-	}
-	detachLegacy(t, store)
-}
-
-// TestMigrateLegacySQLiteRejectsStaleLease 覆盖迁移前 lease 校验失败分支。
-func TestMigrateLegacySQLiteRejectsStaleLease(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	legacy, err := sql.Open("sqlite", config.DatasetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.Exec(sqliteSchema); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// 未持有 lease 的上下文已在参数校验后被 ownerLeaseFromContext 拒绝；
-	// 这里用低 fence token 触发 verifySQLiteOwnerLease 失败。
-	staleCtx := withOwnerLease(context.Background(), OwnerLease{OwnerID: "ghost", FenceToken: 99})
-	err = MigrateLegacySQLite(staleCtx, config, store)
-	if err == nil || !errors.Is(err, ErrOwnerLeaseFenced) {
-		t.Fatalf("旧 token 迁移必须被 fence 拒绝: %v", err)
-	}
-}
-
-// TestMigrateLegacySQLiteRejectsCopyFailure 覆盖复制阶段失败分支。
-func TestMigrateLegacySQLiteRejectsCopyFailure(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	detachLegacy(t, store)
-	// openTestSQLiteStore 已预建 dataset，缺列 schema 使用全新文件。
-	config.DatasetPath = filepath.Join(t.TempDir(), "partial-legacy.sqlite")
-	dataset, err := sql.Open("sqlite", config.DatasetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 复制语句按列名 SELECT：runtime_logs 缺少非瞬时列 trace_id 时，
-	// 瞬时列校验（只检查 time/created_at）先通过，复制阶段才会失败。
-	if _, err := dataset.Exec(`CREATE TABLE runtime_logs (id TEXT, log_file TEXT, log_offset INTEGER, line_number INTEGER, time TEXT, level TEXT, raw_json TEXT, created_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := dataset.Exec(`CREATE TABLE runtime_log_file_cursors (log_file TEXT, file_identity TEXT, cursor_offset INTEGER, line_number INTEGER, file_size INTEGER, truncation_generation INTEGER, file_mtime_ms INTEGER, last_read_at TEXT, last_error_message TEXT, created_at TEXT, updated_at TEXT); CREATE TABLE runtime_log_facet_summary (bucket_key TEXT, total_count INTEGER, earliest_time TEXT, latest_time TEXT, updated_at TEXT); CREATE TABLE runtime_log_level_facets (bucket_key TEXT, level TEXT, count INTEGER, updated_at TEXT); CREATE TABLE runtime_log_event_facets (bucket_key TEXT, event TEXT, count INTEGER, latest_time TEXT, updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := dataset.Exec(`INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, raw_json, created_at) VALUES ('x', 'juhe-ai.log', 0, 0, '2026-08-09T00:00:00.000Z', 'info', '{}', '2026-08-09T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := dataset.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = MigrateLegacySQLite(testOwnerContext(t, store), config, store)
-	if err == nil || !strings.Contains(err.Error(), "复制旧运行日志 SQLite 数据失败") {
-		t.Fatalf("复制失败必须拒绝迁移: %v", err)
-	}
-	detachLegacy(t, store)
-}
-
-// TestMigrateLegacySQLiteRejectsInvalidInstant 覆盖绝对时间非法分支。
-func TestMigrateLegacySQLiteRejectsInvalidInstant(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	legacy, err := sql.Open("sqlite", config.DatasetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.Exec(`INSERT INTO runtime_logs (id, log_file, log_offset, line_number, time, level, raw_json, created_at) VALUES ('bad-time', 'juhe-ai.log', 0, 0, 'not-a-date', 'info', '{}', '2026-08-09T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = MigrateLegacySQLite(testOwnerContext(t, store), config, store)
-	if err == nil || !strings.Contains(err.Error(), "非法") {
-		t.Fatalf("非法绝对时间必须拒绝迁移: %v", err)
-	}
-	detachLegacy(t, store)
 }
 
 // TestSameSQLitePathRejectsDanglingAlias 覆盖别名解析失败分支。

@@ -259,10 +259,6 @@ func TestW16HRunFlagArms(t *testing.T) {
 			t.Fatalf("stderr 逐字节断言失败：want %q got %q", want+"\n", stderr)
 		}
 	})
-	t.Run("run-jobs-once 与迁移互斥返回 2", func(t *testing.T) {
-		w16hRunArms(t, []string{"-run-jobs-once=usage-stats-aggregation", "-migrate-runtime-log-legacy-sqlite"}, 2,
-			"--run-jobs-once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
-	})
 }
 
 // TestW16HRunStartupFailArms 覆盖 logger/owner/F1 配置链错误臂。
@@ -307,17 +303,6 @@ func TestW16HRunStartupFailArms(t *testing.T) {
 		env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = garbage
 		w16hApplyEnv(t, env)
 		w16hRunArms(t, nil, 1, "open F1 runtime-log-indexer store")
-	})
-	t.Run("迁移分发臂 open store 失败返回 1", func(t *testing.T) {
-		env := w16hBaseEnv(t)
-		garbage := filepath.Join(t.TempDir(), "w16h-garbage-migrate.sqlite3")
-		if err := os.WriteFile(garbage, []byte("w16h not a sqlite database"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = garbage
-		w16hApplyEnv(t, env)
-		w16hRunArms(t, []string{"-migrate-runtime-log-legacy-sqlite"}, 1,
-			"open F1 runtime-log-indexer store")
 	})
 }
 
@@ -687,49 +672,6 @@ func w16hRunUntilReadyAndCancel(t *testing.T, env map[string]string, ready func(
 	}
 }
 
-// TestW16HRunLegacyMigrationFailArms 覆盖 runRuntimeLegacyMigration 的迁移
-// 执行失败臂：dataset 旧库缺 runtime-log schema 时 MigrateLegacySQLite 报错，
-// RunWithOwnerLease 传播为退出码 1。
-func TestW16HRunLegacyMigrationFailArms(t *testing.T) {
-	if testing.Short() {
-		t.Skip("legacy migration 失败臂 skipped in -short mode")
-	}
-	root := t.TempDir()
-	logsDirectory := filepath.Join(root, "logs")
-	if err := os.MkdirAll(logsDirectory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"business.sqlite3", "dataset.sqlite3", "stats.sqlite3", "usage-catalog.sqlite3"} {
-		w16hSeedSQLite(t, filepath.Join(root, name))
-	}
-	// dataset 旧库保持空 schema（不 seed runtime-log 表）→ 迁移失败。
-	env := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "w16h-legacy-fail",
-		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      filepath.Join(root, "runtime-log.sqlite3"),
-		"JUHE_AI_RUNTIME_LOG_OWNER_LEASE":        "15s",
-		"JUHE_AI_LOG_DIR":                        logsDirectory,
-		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite3"),
-		"JUHE_AI_STATS_DATABASE_PATH":            filepath.Join(root, "stats.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    filepath.Join(root, "usage-catalog.sqlite3"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": filepath.Join(root, "codex-state"),
-		"JUHE_AI_CHAT_ASSETS_ROOT":               filepath.Join(root, "chat-assets"),
-	}
-	w16hApplyEnv(t, env)
-	w16hInjectCancelSignal(t)
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"-migrate-runtime-log-legacy-sqlite"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("旧库缺 schema 的迁移必须返回 1，得到 %d stderr=%q", code, stderr.String())
-	}
-}
-
-// itoa 供测试内拼接端口号。
-func itoa(value int) string {
-	return strconv.Itoa(value)
-}
-
 // TestW16HJ1SqliteLayoutEnsureFailArm 锁定 main() sqlite 直读分支的布局前置
 // 失败臂：把 stats 库路径指到一个已存在的目录——可穿过各配置校验，SQLite
 // 打开/PRAGMA 必失败 → statsverify OpenStore 报错 → 布局 ensure 必须在打开
@@ -863,4 +805,9 @@ func TestW16HSqliteReadOnlyDSNParityArm(t *testing.T) {
 	if _, err := db.Exec("CREATE TABLE w16h_parity_probe (id TEXT)"); err == nil {
 		t.Fatal("mode=ro + query_only 句柄必须拒绝写入")
 	}
+}
+
+// itoa 供测试内拼接端口号。
+func itoa(value int) string {
+	return strconv.Itoa(value)
 }

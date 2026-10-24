@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"golang.org/x/sys/windows"
 )
@@ -410,70 +408,6 @@ func TestMainFlagEarlyReturnPaths(t *testing.T) {
 				t.Fatalf("输出必须包含 %q，得到 %q", test.contains, string(output[:read]))
 			}
 		})
-	}
-}
-
-// TestRunRuntimeLegacyMigrationCompletes 进程内覆盖 F1 旧库迁移入口
-// （RunWithOwnerLease 在回调返回后收口，无需外部信号）。
-func TestRunRuntimeLegacyMigrationCompletes(t *testing.T) {
-	root := t.TempDir()
-	env := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "wg-legacy-migration",
-		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      filepath.Join(root, "runtime-log.sqlite3"),
-		"JUHE_AI_RUNTIME_LOG_OWNER_LEASE":        "15s",
-		"JUHE_AI_LOG_DIR":                        filepath.Join(root, "logs"),
-		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite3"),
-		"JUHE_AI_STATS_DATABASE_PATH":            filepath.Join(root, "stats.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    filepath.Join(root, "usage-catalog.sqlite3"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": filepath.Join(root, "codex-state"),
-		"JUHE_AI_CHAT_ASSETS_ROOT":               filepath.Join(root, "chat-assets"),
-	}
-	// 迁移把业务/统计等库作为只读数据源访问，文件必须已存在。
-	for _, name := range []string{"business.sqlite3", "dataset.sqlite3", "stats.sqlite3", "usage-catalog.sqlite3"} {
-		db, dbErr := sql.Open("sqlite", filepath.Join(root, name))
-		if dbErr != nil {
-			t.Fatal(dbErr)
-		}
-		// Ping 触发物理建文件（sql.Open 惰性连接）。
-		if dbErr := db.Ping(); dbErr != nil {
-			t.Fatal(dbErr)
-		}
-		if dbErr := db.Close(); dbErr != nil {
-			t.Fatal(dbErr)
-		}
-	}
-	config, err := runtimelog.LoadConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("load runtime config: %v", err)
-	}
-	// 迁移把 dataset 库作为旧运行日志数据源 ATTACH，需要完整旧 schema：
-	// 用同一 runtimelog schema 在 dataset 文件上初始化这批表。
-	datasetConfig := config
-	datasetConfig.RuntimeLogDatabasePath = config.DatasetPath
-	seedStore, err := runtimelog.OpenStore(context.Background(), datasetConfig)
-	if err != nil {
-		t.Fatalf("打开旧库 schema 种子存储失败: %v", err)
-	}
-	if err := runtimelog.EnsureSchema(context.Background(), seedStore); err != nil {
-		t.Fatalf("初始化旧库 schema 失败: %v", err)
-	}
-	if err := seedStore.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// 捕获 stdout 完成标记（fail 路径在子进程场景覆盖）。
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	runRuntimeLegacyMigration(config, writer, io.Discard)
-	_ = writer.Close()
-	output := make([]byte, 1024)
-	read, _ := reader.Read(output)
-	_ = reader.Close()
-	if !strings.Contains(string(output[:read]), wgChildLegacyOutputLine) {
-		t.Fatalf("迁移完成标记缺失: %q", string(output[:read]))
 	}
 }
 

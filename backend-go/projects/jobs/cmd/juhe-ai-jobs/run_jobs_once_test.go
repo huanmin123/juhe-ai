@@ -132,21 +132,3 @@ func TestRunJobsOnceDispatchUnknownTaskExits2(t *testing.T) {
 		t.Fatalf("空片段 exit code = %d（期望 2）", code)
 	}
 }
-
-// TestRunJobsOnceMutuallyExclusiveFlags：--run-jobs-once 与
-// --migrate-runtime-log-legacy-sqlite 互斥，exit 2（经 run() 的 flag 校验臂）。
-func TestRunJobsOnceMutuallyExclusiveFlags(t *testing.T) {
-	for _, args := range [][]string{
-		{"-run-jobs-once=usage-stats-aggregation", "-migrate-runtime-log-legacy-sqlite"},
-		{"-migrate-runtime-log-legacy-sqlite", "-run-jobs-once=usage-stats-aggregation"},
-	} {
-		var stdout bytes.Buffer
-		var stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 2 {
-			t.Fatalf("args %v exit code = %d（期望 2）", args, code)
-		}
-		if !strings.Contains(stderr.String(), "mutually exclusive") {
-			t.Fatalf("args %v stderr 必须含互斥文案: %s", args, stderr.String())
-		}
-	}
-}
