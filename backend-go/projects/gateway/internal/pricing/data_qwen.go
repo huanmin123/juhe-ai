@@ -27,8 +27,8 @@ package pricing
 // （3.8-max $2/$6、3.8-flash $0.15/$0.47、3.7-plus $0.4/$1.6 首段、
 // 3.7-flash $0.030/$0.130 首段、vl-plus $0.2/$1.6、vl-flash $0.05/$0.4、
 // coder-plus $1/$5 首段、omni-flash text $0.43+音频 $3.81/输出 text
-// $1.66）、audio 3 行（tts-flash perChar(10)、cosyvoice-v3-flash
-// perChar(13)、asr-flash $0.000035/秒）、video 2 行（wan3.0-video
+// $1.66）、audio 3 行（tts-flash $10/1M 字符、cosyvoice-v3-flash
+// $13/1M 字符、asr-flash $0.000035/秒）、video 2 行（wan3.0-video
 // $0.10/秒 720p 牌价、wan2.7-t2v $0.10/秒 720p）、image 1 行
 // （qwen-image-3.0 $0.03/张）、embedding 1 行（text-embedding-v4
 // perToken(0.07)）。SourcePricingNote 改为国际站明文 + 国内人民币原句
@@ -47,4 +47,3 @@ package pricing
 //     无正值字段不报错、不填秒（该路径才落 usage_missing 标记，契约 §2.8
 //     兜底）。
 var qwenModelPricingData = mustLoadProviderCatalogModels("qwen")
-

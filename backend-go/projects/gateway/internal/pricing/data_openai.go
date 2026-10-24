@@ -36,7 +36,8 @@ package pricing
 // 行 $12.50/$1.25/-/$75 而渲染页无，models 页 404——两源矛盾，调用
 // 可用性未证明不落）。
 //
-// openAIModelPricingData = openAIGPT4 + openAIGPT5 + openAIImage +
-// openAIReasoning + openAIAudio + openAIVideo (order preserved).
+// 价格数据已迁移至 catalogdata/gpt.json（计划-20261005T230500000Z JSON
+// 单一数据源）：改价改 JSON，本文件只保留加载入口；原 Go 字面量组合
+// （openAIGPT4/openAIGPT5/openAIImage/openAIReasoning/openAIAudio/
+// openAIVideo 与 gpt5Tools* 矩阵）已随迁移退役。
 var openAIModelPricingData = mustLoadProviderCatalogModels("gpt")
-

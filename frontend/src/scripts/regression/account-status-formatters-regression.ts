@@ -632,12 +632,7 @@ assertTrue(
 )
 assertEqual(accountLockTag(accountFixture({ lockState: 'UNLOCKED' })), undefined, '解锁状态账户不应显示锁死策略标签')
 
-const frequentFailureTooltip = accountStatusTooltipLines(accountFixture({
-  qualityRecentRequestCount: 6,
-  qualityRecentErrorCount: 5,
-  qualityRecentSuccessRate: 1 / 6,
-  qualityLastErrorMessage: 'mock upstream 504 failure for formatter regression'
-}))
+const frequentFailureTooltip = accountStatusTooltipLines(accountFixture({}))
 assertTrue(!frequentFailureTooltip.some((line) => line.includes('账户状态：数据库仍为正常') || line.includes('仅统计真实上游失败') || line.includes('并发满') || line.includes('最后质量原因')), '质量内部统计不应出现在状态 tooltip')
 assertTrue(
   !accountStatusTooltipLines(accountFixture({

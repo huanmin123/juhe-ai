@@ -12,7 +12,6 @@
 //	                                                    snapshot bounding)、
 //	                                                    writer.go (队列/批量/
 //	                                                    重试/终态/统计)
-//	backend/src/modules/usage-semantics/types.ts      → semantics.go (15 行契约)
 //	backend/src/shared/rfc3339.ts                     → rfc3339.go
 //	backend/src/shared/queue-size.ts                  → size.go
 //

@@ -19,7 +19,7 @@ package pricing
 // 2026-10-05 复核批（官方国际站 z.ai 定价页 docs.z.ai/guides/overview/
 // pricing USD 明文覆盖）：6 行落官方 USD 明文价并删除换算三件套——
 // glm-4.6v $0.3/缓存读 $0.05/$0.9、glm-4.6v-flashx $0.04/$0.004/$0.4、
-// glm-ocr $0.03/$0.03、glm-asr-2512 perToken(0.03)（$0.03/MTok）、
+// glm-ocr $0.03/$0.03、glm-asr-2512 $0.03/MTok、
 // glm-image $0.015/张、cogview-4 $0.01/张。撤价 2 行——cogvideox-3 与
 // cogvideox-2 按次价（z.ai $0.2/video、国内 1 元/0.5 元/次）进不了每秒
 // 槽位语义，撤除 VideoOutputCostPerSecond 回无价（0 计费兜底 +
