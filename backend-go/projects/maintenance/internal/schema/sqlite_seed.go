@@ -158,7 +158,8 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 		return SQLiteSeedResult{}, err
 	}
 	// The admin chat API key seeding was removed with the 2026-10-07 默认资源
-	// 收口 — AI chat sessions provision it on demand (EnsureChatAPIKey).
+	// 收口; 2026-10-24 免 Key 直调改造后 AI 问答也不再创建 API Key
+	// (gateway EnsureChatAPIKey chain removed)，派发走内部身份通道。
 	if err := seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx, db, exec, options, now); err != nil {
 		return SQLiteSeedResult{}, err
 	}
@@ -816,8 +817,9 @@ func seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx context.Context, db *sq
 }
 
 // seedSQLiteAdminChatAPIKey was removed with the 2026-10-07 默认资源收口:
-// the sys_admin chat API key is no longer seeded. AI chat sessions provision
-// it on demand through the gateway EnsureChatAPIKey chain.
+// the sys_admin chat API key is no longer seeded. 2026-10-24 免 Key 直调改造后
+// AI 问答也不再创建任何 API Key（gateway EnsureChatAPIKey 链已删除），chat
+// 会话派发走内部身份通道。
 
 // seedSQLiteExternalIntegrationTestToken ports
 // seedBuiltInExternalIntegrationTestToken (SQLite variant).

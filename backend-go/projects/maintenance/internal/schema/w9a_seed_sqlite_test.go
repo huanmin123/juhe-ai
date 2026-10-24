@@ -221,14 +221,16 @@ func TestW9AEnsureAllSQLiteStatementFailures(t *testing.T) {
 	// 在 stats DDL 之后追加的六条回填 UPDATE 已卸载（成功成本历史回填治理，
 	// 2026-10-12），回填职责唯一收敛到 maintenance
 	// --apply-success-cost-backfill 子命令，各 schema 偏移回归纯 DDL 长度。
-	// business DDL 之后 EnsureSQLiteBusiness 守卫链还有一次 exec：api_keys
+	// business DDL 之后 EnsureSQLiteBusiness 守卫链还有两次 exec：api_keys
 	// scheduling_preference_id 守卫加列在本夹具上 PRAGMA 早退不产生 exec，其
 	// 后的绑定索引 CREATE INDEX 产生一次（调度偏好独立实体
-	// PLAN-20261012T033000000Z），stats 起各偏移 +1。B4① provider 维度退役
+	// PLAN-20261012T033000000Z）；media_jobs owner 列守卫加列同样 PRAGMA 早退
+	// 不产生 exec、其后的归属回填 UPDATE 无条件产生一次（AI 问答免 Key 直调
+	// 计划 §3.3）。stats 起各偏移 +2。B4① provider 维度退役
 	// 守卫（business 删列 / model_id 重建 / codex 删列）在本夹具上 PRAGMA
 	// 早退不产生 exec；codex 侧 3 条 DROP INDEX IF EXISTS 无条件执行，dataset
 	// 起再 +3。
-	businessEnsureExecCount := len(sqliteBusinessScript) + 1
+	businessEnsureExecCount := len(sqliteBusinessScript) + 2
 	codexRetiredIndexExecCount := 3
 	offsets := map[string]int{
 		"stats":   businessEnsureExecCount,

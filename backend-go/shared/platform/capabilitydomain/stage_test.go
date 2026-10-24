@@ -1,7 +1,8 @@
 // 阶段记录单元测试（随整包下沉自 maintenance internal/capabilitydomain
-// migration_test.go，2026-10 M2）：状态机全组合与条件更新互斥原语。这里只
-// 建阶段读写消费的 global_settings 最小形状（列与 maintenance 业务 DDL
-// 同构）；完整迁移执行器集成测试仍在 maintenance 侧。
+// migration_test.go，2026-10 M2）：状态机全组合与条件更新互斥原语。这里只在
+// pgtestkit 独立测试库上建阶段读写消费的 "juhe_business".global_settings
+// 最小形状（列与 maintenance 业务 DDL 同构）；完整迁移执行器集成测试仍在
+// maintenance 侧。
 package capabilitydomain
 
 import (
@@ -10,39 +11,22 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// openStageSettingsDB 打开只含 global_settings 最小形状的临时 SQLite 库。
+// openStageSettingsDB 在 pgtestkit 独立测试库上建 "juhe_business".
+// global_settings 最小形状（PG 方言阶段记录面的唯一消费表）。
 func openStageSettingsDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:capdom-stage-"+stringsReplaceAll(t.Name())+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE global_settings (
-      key TEXT PRIMARY KEY,
-      value_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )`); err != nil {
-		t.Fatalf("seed global_settings ddl: %v", err)
-	}
-	return db
-}
-
-// stringsReplaceAll 把测试名里的路径分隔符替换掉（shared cache 内存库命名）。
-func stringsReplaceAll(value string) string {
-	out := make([]byte, 0, len(value))
-	for i := 0; i < len(value); i++ {
-		if value[i] == '/' || value[i] == '\\' {
-			out = append(out, '-')
-			continue
-		}
-		out = append(out, value[i])
-	}
-	return string(out)
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS "juhe_business";
+CREATE TABLE "juhe_business"."global_settings" (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`)
+		return err
+	})
 }
 
 // TestPlanMigrationStateMachine 钉死状态机全组合。
@@ -81,7 +65,7 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err := ClaimNewStage(context.Background(), tx, DialectSQLite, StageM1Running, now)
+	acquired, err := ClaimNewStage(context.Background(), tx, DialectPostgres, StageM1Running, now)
 	if err != nil || !acquired {
 		t.Fatalf("首次领取应成功: acquired=%v err=%v", acquired, err)
 	}
@@ -93,7 +77,7 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err = ClaimNewStage(context.Background(), tx2, DialectSQLite, StageM1Running, now)
+	acquired, err = ClaimNewStage(context.Background(), tx2, DialectPostgres, StageM1Running, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +90,7 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err = TransitionStage(context.Background(), tx3, DialectSQLite, StageM1Complete, StageM2Running, now)
+	acquired, err = TransitionStage(context.Background(), tx3, DialectPostgres, StageM1Complete, StageM2Running, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,14 +103,14 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err = TransitionStage(context.Background(), tx4, DialectSQLite, StageM1Running, StageM1Complete, now)
+	acquired, err = TransitionStage(context.Background(), tx4, DialectPostgres, StageM1Running, StageM1Complete, now)
 	if err != nil || !acquired {
 		t.Fatalf("命中跃迁应成功: acquired=%v err=%v", acquired, err)
 	}
 	if err := tx4.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	record, ok, err := ReadRecord(context.Background(), db, DialectSQLite)
+	record, ok, err := ReadRecord(context.Background(), db, DialectPostgres)
 	if err != nil || !ok {
 		t.Fatalf("ReadRecord: ok=%v err=%v", ok, err)
 	}
@@ -140,7 +124,7 @@ func TestClaimTransitionRace(t *testing.T) {
 func TestReadRecordMissingAndCorrupt(t *testing.T) {
 	db := openStageSettingsDB(t)
 	ctx := context.Background()
-	if _, present, err := ReadRecord(ctx, db, DialectSQLite); present || err != nil {
+	if _, present, err := ReadRecord(ctx, db, DialectPostgres); present || err != nil {
 		t.Fatalf("无记录应 ok=false nil err: present=%v err=%v", present, err)
 	}
 	cases := []string{
@@ -149,30 +133,30 @@ func TestReadRecordMissingAndCorrupt(t *testing.T) {
 		`not-json`,
 	}
 	for _, valueJSON := range cases {
-		if _, _, err := ReadRecord(ctx, db, DialectSQLite); err == nil {
+		if _, _, err := ReadRecord(ctx, db, DialectPostgres); err == nil {
 			continue
 		} else {
 			_ = err
 		}
-		if _, err := db.Exec(`DELETE FROM global_settings`); err != nil {
+		if _, err := db.Exec(`DELETE FROM "juhe_business"."global_settings"`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`, MigrationSettingKey, valueJSON); err != nil {
+		if _, err := db.Exec(`INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, '2026-10-12T08:00:00Z')`, MigrationSettingKey, valueJSON); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := ReadRecord(ctx, db, DialectSQLite); err == nil {
+		if _, _, err := ReadRecord(ctx, db, DialectPostgres); err == nil {
 			t.Fatalf("损坏记录 %q 必须原样报错", valueJSON)
 		}
 	}
 	// 合法记录读取回放。
-	if _, err := db.Exec(`DELETE FROM global_settings`); err != nil {
+	if _, err := db.Exec(`DELETE FROM "juhe_business"."global_settings"`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`,
+	if _, err := db.Exec(`INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, '2026-10-12T08:00:00Z')`,
 		MigrationSettingKey, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`); err != nil {
 		t.Fatal(err)
 	}
-	record, present, err := ReadRecord(ctx, db, DialectSQLite)
+	record, present, err := ReadRecord(ctx, db, DialectPostgres)
 	if err != nil || !present {
 		t.Fatalf("已封存记录应可读: present=%v err=%v", present, err)
 	}

@@ -62,22 +62,12 @@ func runMaintenance(argv []string) int {
 	migrateChatBinding := fs.Bool("migrate-chat-account-only-binding", false, `one-shot idempotent migration of chat_conversations to the account-only binding model (docs/functions/AI问答会话账户唯一绑定设计.md): rows with bind_mode IS NULL OR bind_mode <> 'account' are stamped archived=1, the bind_mode/bind_group_id/bind_group_name_snapshot data is backed up to chat_conversations_bind_legacy_backup and the three columns are dropped (SQLite rebuilds the table because its table CHECK blocks DROP COLUMN; PostgreSQL uses DROP COLUMN IF EXISTS). Requires --driver sqlite --chat-sqlite-path FILE or --driver postgres --dsn URL. The report JSON carries the rollback SQL (recreate the three columns from the backup table after rolling the code back): SQLite = ALTER TABLE chat_conversations ADD COLUMN bind_mode TEXT NOT NULL DEFAULT 'api_key'; ADD COLUMN bind_group_id TEXT; ADD COLUMN bind_group_name_snapshot TEXT; UPDATE chat_conversations SET bind_mode = COALESCE((SELECT b.bind_mode FROM chat_conversations_bind_legacy_backup b WHERE b.id = chat_conversations.id), 'api_key'), bind_group_id = (SELECT b.bind_group_id FROM chat_conversations_bind_legacy_backup b WHERE b.id = chat_conversations.id), bind_group_name_snapshot = (SELECT b.bind_group_name_snapshot FROM chat_conversations_bind_legacy_backup b WHERE b.id = chat_conversations.id); PostgreSQL = ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS bind_mode text NOT NULL DEFAULT 'api_key'; ADD COLUMN IF NOT EXISTS bind_group_id text; ADD COLUMN IF NOT EXISTS bind_group_name_snapshot text; UPDATE juhe_chat.chat_conversations c SET bind_mode = COALESCE(b.bind_mode, 'api_key'), bind_group_id = b.bind_group_id, bind_group_name_snapshot = b.bind_group_name_snapshot FROM juhe_chat.chat_conversations_bind_legacy_backup b WHERE b.id = c.id`)
 	chatSQLitePath := fs.String("chat-sqlite-path", "", "explicit chat SQLite file path for --migrate-chat-account-only-binding (requires --driver sqlite)")
 	postgresSchemaSnapshot := fs.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY; PostgreSQL only, SQLite is rejected)")
-	businessDatasetExport := fs.Bool("export-business-dataset", false, "read-only export of the fixed 40-table business dataset from --business-dataset-url into --business-dataset-dir (requires --business-dataset-confirm-readonly=READ_ONLY; PostgreSQL only)")
-	businessDatasetImport := fs.Bool("import-business-dataset", false, "all-or-nothing import of the business dataset in --business-dataset-dir into the authoritative --business-dataset-url database; commits only when every manifest assertion verifies")
-	businessDatasetURL := fs.String("business-dataset-url", "", "explicit PostgreSQL URL for --export-business-dataset/--import-business-dataset")
-	businessDatasetDir := fs.String("business-dataset-dir", "", "business dataset directory: output dir for --export-business-dataset, input dir for --import-business-dataset")
-	businessDatasetConfirmReadOnly := fs.String("business-dataset-confirm-readonly", "", "must be READ_ONLY to enable --export-business-dataset")
-	var businessDatasetAllowMissing []string
-	fs.Var(&businessDatasetAllowMissingFlag{values: &businessDatasetAllowMissing}, "business-dataset-allow-missing-column", "table.column source column allowed to be missing in the target schema for --import-business-dataset (repeatable)")
-	businessDatasetExpectedTargetDB := fs.String("business-dataset-expected-target-db", "", "expected target database name (current_database()) for --import-business-dataset; strict fail-closed comparison, mismatch or unverifiable identity aborts as a usage error; PRODUCTION CUTOVER REQUIRES this flag together with --business-dataset-expected-source-db")
-	businessDatasetExpectedSourceDB := fs.String("business-dataset-expected-source-db", "", "expected manifest sourceIdentity (source current_database() recorded at export) for --import-business-dataset; placeholder or mismatch aborts as a usage error; PRODUCTION CUTOVER REQUIRES this flag together with --business-dataset-expected-target-db")
 	mockdataRun := fs.Bool("mockdata", false, "idempotently rebuild the local development mockdata set in the SQLite data root (cleanup by the documented mockdata markers, then seed every domain, then autofill uncovered tables)")
 	mockdataVerifyCoverage := fs.Bool("verify-mockdata-coverage", false, "read-only verify that every mockdata store table is non-empty (allowlisted runtime-state tables excepted) and that the key coverage assertions hold")
 	mockdataDataDir := fs.String("mockdata-data-dir", "", "mockdata data root (or JUHE_AI_DATA_DIR); every store path derives from it unless the matching explicit path env is set")
 	mockdataLogDir := fs.String("mockdata-log-dir", "", "mockdata log-file directory (or JUHE_AI_LOG_DIR; default <data root>/logs)")
 	mockdataDays := fs.Int("mockdata-days", mockdata.DefaultDays, "mockdata history span in days for detail and monitoring samples (1..90)")
 	mockdataDailyRequests := fs.Int("mockdata-daily-requests", mockdata.DefaultDailyRequests, "mockdata usage records generated per day (1..500)")
-	businessDatasetReplaceExisting := fs.Bool("business-dataset-replace-existing", false, "with --import-business-dataset, empty every whitelist data table in reverse foreign-key order (children before parents) inside the import transaction before INSERT so authoritative production rows replace built-in seed rows; REQUIRED when the target database is already seeded (production cutover section 6 step 3 imports after --seed); the three structural-only tables are never deleted; default false keeps insert-only behavior where any pre-existing row fails the import")
 	rebuildUsageStats := fs.Bool("rebuild-usage-stats", false, "offline rebuild of the usage statistics cache from usage_records (requires --confirm-offline or JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1; gateway/jobs must be stopped; business database and usage_records stay read-only; BUG-0182)")
 	confirmOffline := fs.Bool("confirm-offline", false, "confirm an offline window for --rebuild-usage-stats (gateway/jobs stopped); alternatively set JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1")
 	rebuildBatchSize := fs.Int("batch-size", 2000, "rebuild-usage-stats aggregation batch size (clamped to 1..50000; default 2000)")
@@ -116,7 +106,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "capability-domain migrate and verify flags are mutually exclusive")
 			return 2
 		}
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "capability domain migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -130,7 +120,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "scheduling-preferences migrate and verify flags are mutually exclusive")
 			return 2
 		}
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "scheduling preferences migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -140,52 +130,42 @@ func runMaintenance(argv []string) int {
 		return schedulingPreferencesVerifyResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *schedulingPreferencesCheck)
 	}
 	if *migrateMergeSuperGroups {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel {
 			fmt.Fprintln(os.Stderr, "merge→super migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return mergeSuperGroupsMigrationResult(*backfillDryRun, *bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *manifestOut, *migrationBatchID, *nodeStopped, *goStopped, *backupConfirmed)
 	}
 	if *importLegacyBusiness {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel || *migrateMergeSuperGroups {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel || *migrateMergeSuperGroups {
 			fmt.Fprintln(os.Stderr, "legacy business import flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return legacyBusinessImportResult(*backfillDryRun, *legacyDSN, *bootstrapDSN, *seedSecret)
 	}
 	if *migrateProviderConnectionModel {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "provider connection model migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return providerConnectionMigrationResult(*backfillDryRun, *bootstrapDriver, *bootstrapDSN, *manifestOut)
 	}
 	if *migrateChatBinding {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "chat account-only binding migration flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return chatAccountOnlyBindingMigrationResult(*bootstrapDriver, *chatSQLitePath, *bootstrapDSN)
 	}
 	if *postgresSchemaSnapshot {
-		if *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return postgresSchemaSnapshotResult()
 	}
-	if *businessDatasetExport || *businessDatasetImport {
-		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
-			fmt.Fprintln(os.Stderr, "business dataset export/import flags are mutually exclusive with other maintenance commands")
-			return 2
-		}
-		if *businessDatasetExport {
-			return businessDatasetExportResult(*businessDatasetURL, *businessDatasetDir, *businessDatasetConfirmReadOnly)
-		}
-		return businessDatasetImportResultWithReplace(*businessDatasetURL, *businessDatasetDir, businessDatasetAllowMissing, *businessDatasetExpectedTargetDB, *businessDatasetExpectedSourceDB, *businessDatasetReplaceExisting)
-	}
 	if *ensureSchema || *seedDefaults {
-		if *postgresSchemaSnapshot || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -196,7 +176,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "mockdata seeding and mockdata coverage verification flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "mockdata flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -212,14 +192,14 @@ func runMaintenance(argv []string) int {
 		})
 	}
 	if *rebuildUsageStats {
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "rebuild-usage-stats flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return rebuildUsageStatsResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *rebuildBatchSize, *rebuildMaxBatches, *confirmOffline)
 	}
 	if *applySuccessCostBackfill {
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *dropRetiredMonitoringTables {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "apply-success-cost-backfill flag is mutually exclusive with other maintenance commands")
 			return 2
 		}

@@ -100,9 +100,11 @@ import (
 // ALTER 一条（使用记录延迟健康分档设计 §压缩请求识别；建表内联同位改写、
 // 不另计语句）。683→689：provider 维度持久列退役批（B4①）——juhe_business
 // +6 DROP COLUMN 幂等退役语句；codex 三表 -3 CREATE INDEX（boundary）+3
-// DROP COLUMN，组内合计不变。
+// DROP COLUMN，组内合计不变。689→691：media_jobs 归属改列批（AI 问答免 Key
+// 直调计划 §3.3）——juhe_business +2（owner_system_account_id 幂等 ALTER 与
+// api_keys 归属回填 UPDATE 各一条）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 689
+const goldenPostgresSchemaStatementCount = 691
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -116,8 +118,9 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// TABLE、idx_super_group_members_member_group INDEX）。53→54：用量记录
 	// 压缩标记批 +1（usage_records compaction_expected 幂等 ALTER）。
 	// 316→322：provider 维度持久列退役批（B4①）+6（business 六列幂等
-	// DROP COLUMN 退役语句）。
-	"juhe_business": 322,
+	// DROP COLUMN 退役语句）。322→324：media_jobs 归属改列批（AI 问答免 Key
+	// 直调计划 §3.3）+2（owner 列幂等 ALTER 与归属回填 UPDATE）。
+	"juhe_business": 324,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
 	"juhe_usage":    54,
@@ -235,13 +238,14 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 模式）。2026-10-17 复审 blocker 修复批复用既有
 	// accounts-health-check-endpoint-mode-pg-check DO 块原位改写（词表
 	// 22→25 值），块数保持 6。100→101：用量记录压缩标记批
-	// （usage_records compaction_expected 幂等 ALTER）。其余口径不变：
+	// （usage_records compaction_expected 幂等 ALTER）。101→102：media_jobs
+	// 归属改列批（owner_system_account_id 幂等 ALTER）。其余口径不变：
 	// 1→10 条 DROP COLUMN
 	// IF EXISTS（调度偏好 enabled 退役 1 条 + B4① provider 维度退役 9 条：
 	// codex 三表 + business 六列）、1 条 CREATE EXTENSION、2 个含
 	// CREATE TRIGGER 的语句块。
-	if alterColumns != 101 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 101", alterColumns)
+	if alterColumns != 102 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 102", alterColumns)
 	}
 	if droppedColumns != 10 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 10", droppedColumns)

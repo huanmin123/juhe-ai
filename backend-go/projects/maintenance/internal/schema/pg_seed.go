@@ -682,8 +682,9 @@ func seedPostgresAdminDefaultRouteStrategiesAndAPIKeys(ctx context.Context, clie
 }
 
 // seedPostgresAdminChatAPIKey was removed with the 2026-10-07 默认资源收口:
-// the sys_admin chat API key is no longer seeded. AI chat sessions provision
-// it on demand through the gateway EnsureChatAPIKey chain.
+// the sys_admin chat API key is no longer seeded. 2026-10-24 免 Key 直调改造后
+// AI 问答也不再创建任何 API Key（gateway EnsureChatAPIKey 链已删除），chat
+// 会话派发走内部身份通道。
 
 // seedPostgresExternalIntegrationTestToken ports
 // seedBuiltInExternalIntegrationTestToken (PostgreSQL variant, including the

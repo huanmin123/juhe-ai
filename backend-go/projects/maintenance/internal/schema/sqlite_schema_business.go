@@ -1369,10 +1369,16 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
 
     -- media_jobs 异步媒体任务表（媒体设计 §8.2，M2）：与 PG 版同构，引用列
     -- 不加外键（usage_records 记录表先例：账户删除后任务行仍需存在）。
+    -- owner_system_account_id 是任务归属系统账户（会话 owner，AI 问答免 Key
+    -- 直调计划 §3.3）：AI 问答会话不再创建专用 API Key，归属不能经 api_keys
+    -- join 推导，读面直接按该列判定；api_key_id 保留为历史审计列（外部 /v1
+    -- 任务面仍按它做 Key 级隔离）。存量库由 EnsureSQLiteBusiness 的守卫补列
+    -- ensure 幂等加列并回填。
     CREATE TABLE IF NOT EXISTS media_jobs (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
       api_key_id TEXT NOT NULL,
+      owner_system_account_id TEXT NOT NULL DEFAULT '',
       account_id TEXT NOT NULL,
       provider_protocol_profile_id TEXT,
       upstream_job_id TEXT NOT NULL,

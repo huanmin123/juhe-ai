@@ -2267,14 +2267,18 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
 		// artifact_json 只存定位指针与上游时效时间，零资源存储（§8.1）。引用
 		// 列沿表族事实（api_keys.id / accounts.id 均为 text）与 usage_records
 		// 记录表先例不加外键——账户删除后任务行仍需存在（任务不可达错误
-		// 语义），避免记录表反向阻断账户物理清理。CREATE TABLE IF NOT EXISTS
-		// 幂等。
+		// 语义），避免记录表反向阻断账户物理清理。owner_system_account_id 是
+		// 任务归属系统账户（会话 owner，AI 问答免 Key 直调计划 §3.3）：AI 问答
+		// 会话不再创建专用 API Key，归属不能经 api_keys join 推导，读面直接按
+		// 该列判定；api_key_id 保留为历史审计列（外部 /v1 任务面仍按它做
+		// Key 级隔离）。CREATE TABLE IF NOT EXISTS 幂等。
 		SchemaName: "juhe_business",
 		Source:     "media-jobs-table",
 		SQL: `CREATE TABLE IF NOT EXISTS media_jobs (
       id text PRIMARY KEY,
       kind text NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
       api_key_id text NOT NULL,
+      owner_system_account_id text NOT NULL DEFAULT '',
       account_id text NOT NULL,
       provider_protocol_profile_id text,
       upstream_job_id text NOT NULL,
@@ -2289,6 +2293,24 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
       created_at text NOT NULL,
       updated_at text NOT NULL
     )`,
+	},
+	{
+		// media_jobs 归属改列（AI 问答免 Key 直调计划 §3.3）：加法式补列后把
+		// 存量行的归属从 api_keys.system_account_id 回填一次。api_key_id 为空的
+		// 新行（内部通道创建）不参与回填，创建路径直接写 owner 列。幂等：
+		// 已有非空 owner 的行不会被覆盖，重复执行零副作用。
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-owner-system-account-column",
+		SQL:        `ALTER TABLE juhe_business.media_jobs ADD COLUMN IF NOT EXISTS owner_system_account_id text NOT NULL DEFAULT ''`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-owner-system-account-column",
+		SQL: `UPDATE juhe_business.media_jobs mj
+      SET owner_system_account_id = ak.system_account_id
+      FROM juhe_business.api_keys ak
+      WHERE mj.api_key_id = ak.id
+        AND mj.owner_system_account_id = ''`,
 	},
 	{
 		// provider 维度持久列退役（B4① 存储迁移批，幂等存量库收列）：写入面

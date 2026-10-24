@@ -221,6 +221,13 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteSchedulingPreferenceEnabledRetired(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure scheduling_preferences.enabled retirement: %w", err)
 	}
+	// media_jobs 归属改列（AI 问答免 Key 直调计划 §3.3）：存量库守卫补列并从
+	// api_keys.system_account_id 回填归属一次（新库建表 DDL 已内联声明该列，
+	// 守卫早退后回填仍执行但零行命中）。维护链一次性执行（BUG-0307 纪律），
+	// PRAGMA 读完再执行 ALTER（BUG-0308 纪律）。
+	if err := ensureSQLiteMediaJobsOwnerColumn(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure media_jobs.owner_system_account_id: %w", err)
+	}
 	// provider 维度持久列退役（B4① 存储迁移批）：存量库守卫删列，新库建表
 	// DDL 已无这些列（守卫早退）。六列均无索引引用，SQLite DROP COLUMN
 	//（3.35+，modernc.org/sqlite 内嵌 SQLite 3.53）直接生效；写入面停写同批
@@ -695,6 +702,32 @@ func ensureSQLiteBusinessProviderDimensionRetired(ctx context.Context, db *sql.D
 		if _, err := db.ExecContext(ctx, "ALTER TABLE "+retirement.table+" DROP COLUMN "+retirement.column); err != nil {
 			return fmt.Errorf("drop %s.%s: %w", retirement.table, retirement.column, err)
 		}
+	}
+	return nil
+}
+
+// ensureSQLiteMediaJobsOwnerColumn 把 media_jobs 的归属列
+// owner_system_account_id（AI 问答免 Key 直调计划 §3.3）补齐到存量库并回填：
+// 新库由建表 DDL 直接声明（守卫早退），存量库按 PRAGMA table_info 早退守卫
+// 幂等加列（ensureSQLiteTableColumn 同模式）。回填把存量行归属从
+// api_keys.system_account_id 一次搬入 owner 列：EXISTS 守卫保证子查询无匹配
+// （api_key_id 悬空）的行不参与更新——相关子查询此时结果为 NULL，直接写会
+// 违反 NOT NULL；只更新 owner_system_account_id 仍为空串的行保证幂等（已有
+// 非空 owner 的行不被覆盖，重复执行零副作用）。回填后新版本代码读该列，保证
+// 存量行归属在新读面生效前可用。
+func ensureSQLiteMediaJobsOwnerColumn(ctx context.Context, db *sql.DB) error {
+	if err := ensureSQLiteTableColumn(ctx, db, "media_jobs", "owner_system_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, `UPDATE media_jobs
+		SET owner_system_account_id = (
+			SELECT ak.system_account_id FROM api_keys ak WHERE ak.id = media_jobs.api_key_id
+		)
+		WHERE owner_system_account_id = ''
+			AND api_key_id <> ''
+			AND EXISTS (SELECT 1 FROM api_keys ak WHERE ak.id = media_jobs.api_key_id)`)
+	if err != nil {
+		return fmt.Errorf("backfill media_jobs.owner_system_account_id: %w", err)
 	}
 	return nil
 }

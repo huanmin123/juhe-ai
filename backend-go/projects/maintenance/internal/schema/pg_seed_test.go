@@ -361,8 +361,9 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 		t.Fatalf("count seeded api keys: %v", err)
 	}
 	// 2026-10-07 默认资源收口：seed 只保留 GPT 一套 —— 默认 GPT 分组派生
-	// 1 把默认 Key（is_default=1、purpose='general'）；admin chat Key 不再
-	// 预置（AI 问答会话创建时由 EnsureChatAPIKey 幂等补建）。
+	// 1 把默认 Key（is_default=1、purpose='general'）；admin chat Key 不预置。
+	// 2026-10-24 免 Key 直调改造后 AI 问答也不再创建任何 Key（EnsureChatAPIKey
+	// 链已删除），上面的 purpose='chat' 谓词仅用于钉住「历史 seed 不再写该行」。
 	if defaultKeys != 1 {
 		t.Fatalf("seeded api keys = %d, want 1", defaultKeys)
 	}
