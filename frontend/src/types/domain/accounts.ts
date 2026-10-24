@@ -149,15 +149,6 @@ export interface AccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
   reason?: string
   since?: string
-  probePresentation?: AccountRuntimeProbePresentation
-}
-
-export interface AccountRuntimeProbePresentation {
-  lastObservation?: AccountProbeObservation
-  schedule: {
-    state: 'scheduled' | 'due_waiting' | 'running' | 'none'
-    nextAttemptAt?: string
-  }
 }
 
 export type AccountEffectiveAvailabilityStatus =
@@ -424,16 +415,6 @@ export interface AccountSummary {
   tags?: AccountTagSummary[]
   healthCheckModel: string
   healthCheckEndpointMode: AccountHealthCheckEndpointMode
-  qualityScore?: number
-  qualityState?: string
-  qualityEwmaFirstTokenMs?: number
-  qualityRecentAvgFirstTokenMs?: number
-  qualityRecentRequestCount?: number
-  qualityRecentErrorCount?: number
-  qualityRecentSuccessRate?: number
-  qualityLastErrorAt?: string
-  qualityLastErrorMessage?: string
-  qualityUpdatedAt?: string
   proxyProfileId?: string
   proxyProfileName?: string
   proxyProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
@@ -455,9 +436,6 @@ export interface AccountSummary {
   lastHealthCheckAt?: string
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
-  healthCheckFailureCount?: number
-  healthCheckFailureStartedAt?: string
-  lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
   lastHealthCheckTraceId?: string
@@ -476,10 +454,8 @@ export interface AccountSummary {
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
   authorizationInstanceSourceAccountId?: string
-  authorizationInstanceOwnerSystemAccountId?: string
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
-  authorizationInstanceSourceAccountAvailabilitySchedule?: AccountAvailabilitySchedule
   authorizationInstanceSourceAccountExpiresAt?: string
   authorizationInstanceSourceAccountCooldownUntil?: string
   authorizationInstanceSourceAccountLastErrorCode?: string
@@ -556,9 +532,6 @@ export interface AccountListItem {
   lastHealthCheckAt?: string
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
-  healthCheckFailureCount?: number
-  healthCheckFailureStartedAt?: string
-  lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
   lastHealthCheckTraceId?: string

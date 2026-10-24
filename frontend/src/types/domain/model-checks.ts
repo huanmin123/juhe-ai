@@ -184,8 +184,6 @@ export interface ModelQualityScheduleRunNowBatchResult {
 }
 
 export interface ModelQualityPolicySnapshot {
-  policyRevision: number
-  configSource?: 'manual' | 'schedule'
   profile: ModelCheckProfile
   manualEnforcementEnabled: boolean
   timeoutPenaltyEnabled: boolean
@@ -193,7 +191,6 @@ export interface ModelQualityPolicySnapshot {
   action: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
   scheduleId?: string
-  accountConfigRevision: number
 }
 
 export interface ModelQualityDecision {

@@ -101,8 +101,6 @@ const pendingHealthCheckFailedAccount = accountFixture({
   status: 'pending_test',
   lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
   nextHealthCheckAt: '2099-07-11T01:15:00.000Z',
-  healthCheckFailureCount: 1,
-  lastHealthCheckStatusCode: 401,
   lastHealthCheckErrorCode: 'invalid_api_key',
   lastHealthCheckErrorMessage: 'Invalid API key',
   effectiveAvailability: {
@@ -398,23 +396,6 @@ assertStatus('停调账户', accountFixture({
     reason: '账户暂时不可调用，恢复前不会参与调度'
   }
 }), '停调', 'orange')
-assertStatus('近窗口少量失败', accountFixture({
-  qualityRecentRequestCount: 3,
-  qualityRecentErrorCount: 2
-}), '可调度', 'green')
-assertStatus('近窗口不稳定', accountFixture({
-  qualityRecentRequestCount: 4,
-  qualityRecentErrorCount: 3,
-  qualityRecentSuccessRate: 0.25
-}), '可调度', 'green')
-assertStatus('近窗口频繁失败', accountFixture({
-  qualityRecentRequestCount: 6,
-  qualityRecentErrorCount: 5,
-  qualityRecentSuccessRate: 1 / 6,
-  qualityLastErrorAt: '2026-06-13T00:00:00.000Z',
-  qualityLastErrorMessage: 'mock upstream 504 failure for formatter regression',
-  qualityUpdatedAt: '2026-06-13T00:00:05.000Z'
-}), '可调度', 'green')
 assertStatus('运行态快照未到达时保留静态可调度状态', accountFixture({
   accountRuntimeAvailabilityAvailable: false
 }), '可调度', 'green')
@@ -472,28 +453,14 @@ assertStatus('运行态事前确认', accountFixture({
   runtimeAvailability: {
     status: 'precheck_pending',
     reason: 'mock precheck pending',
-    since: '2026-06-16T00:00:00.000Z',
-    probePresentation: {
-      lastObservation: {
-        observationId: 'precheck-pending',
-        attemptedAt: '2026-06-16T00:00:05.000Z',
-        result: 'failed',
-        reason: 'mock precheck pending',
-        traceId: 'trace-precheck-pending'
-      },
-      schedule: { state: 'scheduled', nextAttemptAt: '2099-06-16T00:01:00.000Z' }
-    }
+    since: '2026-06-16T00:00:00.000Z'
   }
 }), '待探针确认', 'blue')
 const precheckPresentationLines = accountStatusTooltipLines(accountFixture({
   effectiveAvailability: { available: false, status: 'runtime_precheck_pending', label: '待探针确认', color: 'blue', blockerScope: 'runtime', reason: 'mock precheck pending' },
   runtimeAvailability: {
     status: 'precheck_pending',
-    reason: 'mock precheck pending',
-    probePresentation: {
-      lastObservation: { observationId: 'precheck-pending', attemptedAt: '2026-06-16T00:00:05.000Z', result: 'failed', reason: 'mock precheck pending', traceId: 'trace-precheck-pending' },
-      schedule: { state: 'scheduled', nextAttemptAt: '2099-06-16T00:01:00.000Z' }
-    }
+    reason: 'mock precheck pending'
   },
   availabilityPresentation: {
     status: 'verifying',
