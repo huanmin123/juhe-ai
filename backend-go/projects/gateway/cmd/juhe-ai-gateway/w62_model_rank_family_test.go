@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
@@ -122,5 +123,67 @@ func TestW62ModelRankFamilyRenameSuperPriorityWins(t *testing.T) {
 	}
 	if ranks["acc_w62_rename"] != 0 || ranks[fixture.accountID] != 0 {
 		t.Fatalf("ranks = %v, want both 0", ranks)
+	}
+}
+
+// TestW62AccountLevelSuperPriorityWinsWithBoundLocalZero 自有账户形态（T62
+// 第二层根因）：调度标记写在 accounts.super_priority_enabled=1，绑定行
+// local_super_priority_enabled 显式 0——flag 合并语义是 OR，绑定的显式 0
+// 不得遮蔽账户级 1（COALESCE 取首非空会被 0 遮蔽，禁止回退到该写法）。
+func TestW62AccountLevelSuperPriorityWinsWithBoundLocalZero(t *testing.T) {
+	fixture := newChainFixture(t)
+	now := "2026-09-04T00:00:00.000Z"
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(query, args...); err != nil {
+			t.Fatalf("seed row: %v: %v: %v", query, args, err)
+		}
+	}
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_gpt-w62', 'openai', 'gpt-w62', 'gpt-w62', 'builtin', 'active', '["chat_json","chat_sse"]', ?, ?)`, now, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-w62', 'mdl_gpt-w62', ?)`,
+		fixture.accountID, now)
+	// local 显式 0 + 账户级 1（生产 tokenrhythm 形态）。
+	seedW62MappingAccount(t, fixture, "acc_w62_rename", "gpt-w62", "chat_completions", "up-w62-rename", "chat_completions", 0)
+	seed(`UPDATE accounts SET super_priority_enabled = 1 WHERE id = 'acc_w62_rename'`)
+
+	groupAccess, err := fixture.selector.resolveGroupAccess(context.Background(), fixture.groupID, fixture.systemAccount)
+	if err != nil {
+		t.Fatalf("resolve group access: %v", err)
+	}
+	rows, _, err := fixture.selector.listModelCandidateRows(context.Background(), fixture.groupID, groupAccess,
+		now, "gpt-w62", "chat_completions", false, false)
+	if err != nil {
+		t.Fatalf("list model candidate rows: %v", err)
+	}
+	if len(rows) != 2 || rows[0].AccountID != "acc_w62_rename" {
+		t.Fatalf("order = %s,%s; want account-level super-priority rename first", rows[0].AccountID, rows[1].AccountID)
+	}
+}
+
+// TestW62ChainSuperFallbackRankOrSemantics 链面比较器与 secret 同源的 flag
+// OR 语义：local_* 与 accounts.* 任一为真即生效；显式 0 不遮蔽账户级 1。
+func TestW62ChainSuperFallbackRankOrSemantics(t *testing.T) {
+	localSuper := sql.NullInt64{Int64: 1, Valid: true}
+	localZero := sql.NullInt64{Int64: 0, Valid: true}
+	localNull := sql.NullInt64{Valid: false}
+	cases := []struct {
+		name         string
+		row          chainCandidateRow
+		wantSuper    int
+		wantFallback int
+	}{
+		{"local only (authorized instance form)", chainCandidateRow{LocalSuperPriority: localSuper, LocalFallback: localSuper}, 1, 1},
+		{"account only, binding zero (own-account form)", chainCandidateRow{LocalSuperPriority: localZero, LocalFallback: localZero, SuperPriorityEnabled: 1, FallbackEnabled: 1}, 1, 1},
+		{"account only, binding null", chainCandidateRow{LocalSuperPriority: localNull, LocalFallback: localNull, SuperPriorityEnabled: 1}, 1, 0},
+		{"neither", chainCandidateRow{LocalSuperPriority: localZero, LocalFallback: localZero}, 0, 0},
+	}
+	for _, tc := range cases {
+		if got := chainSuperRank(&tc.row); got != tc.wantSuper {
+			t.Fatalf("%s: chainSuperRank = %d, want %d", tc.name, got, tc.wantSuper)
+		}
+		if got := chainFallbackRank(&tc.row); got != tc.wantFallback {
+			t.Fatalf("%s: chainFallbackRank = %d, want %d", tc.name, got, tc.wantFallback)
+		}
 	}
 }

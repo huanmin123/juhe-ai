@@ -694,8 +694,8 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 			NULL AS quality_score, NULL AS quality_state, NULL AS quality_ewma_first_token_ms
 			{from} {where}
 			ORDER BY
-				group_accounts.local_fallback_enabled ASC,
-				group_accounts.local_super_priority_enabled DESC,
+				(CASE WHEN COALESCE(group_accounts.local_fallback_enabled, 0) = 1 OR COALESCE(accounts.fallback_enabled, 0) = 1 THEN 1 ELSE 0 END) ASC,
+				(CASE WHEN COALESCE(group_accounts.local_super_priority_enabled, 0) = 1 OR COALESCE(accounts.super_priority_enabled, 0) = 1 THEN 1 ELSE 0 END) DESC,
 				group_accounts.local_priority ASC,
 				group_accounts.created_at ASC,
 				group_accounts.account_id ASC
@@ -871,8 +871,8 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 		WHERE model_rank < 3
 		ORDER BY
 			model_rank ASC,
-			local_fallback_enabled ASC,
-			local_super_priority_enabled DESC,
+			(CASE WHEN COALESCE(local_fallback_enabled, 0) = 1 OR COALESCE(fallback_enabled, 0) = 1 THEN 1 ELSE 0 END) ASC,
+			(CASE WHEN COALESCE(local_super_priority_enabled, 0) = 1 OR COALESCE(super_priority_enabled, 0) = 1 THEN 1 ELSE 0 END) DESC,
 			COALESCE(local_priority, priority, 0) ASC,
 			binding_created_at ASC,
 			account_id ASC
@@ -1016,12 +1016,15 @@ func chainModelRank(row *chainCandidateRow, modelRanks map[string]int) int {
 	return 3
 }
 
+// chainFallbackRank / chainSuperRank 与 dispatchPriority 同型回退：自有账户的
+// 调度标记写在 accounts.*（核心功能设计「更多」菜单节），local_* 仅授权实例
+// 分组绑定的门控；任一为真即生效（2026-10-24 T62 第二层根因修复）。
 func chainFallbackRank(row *chainCandidateRow) int {
-	return boolToInt(row.LocalFallback.Valid && row.LocalFallback.Int64 == 1)
+	return boolToInt((row.LocalFallback.Valid && row.LocalFallback.Int64 == 1) || row.FallbackEnabled == 1)
 }
 
 func chainSuperRank(row *chainCandidateRow) int {
-	return boolToInt(row.LocalSuperPriority.Valid && row.LocalSuperPriority.Int64 == 1)
+	return boolToInt((row.LocalSuperPriority.Valid && row.LocalSuperPriority.Int64 == 1) || row.SuperPriorityEnabled == 1)
 }
 
 func chainPriorityRank(row *chainCandidateRow) int {

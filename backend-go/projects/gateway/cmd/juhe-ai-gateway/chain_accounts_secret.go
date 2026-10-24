@@ -138,8 +138,13 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	if row.LocalPriority.Valid {
 		dispatchPriority = int(row.LocalPriority.Int64)
 	}
-	dispatchSuperPriorityEnabled := row.LocalSuperPriority.Valid && row.LocalSuperPriority.Int64 == 1
-	dispatchFallbackEnabled := row.LocalFallback.Valid && row.LocalFallback.Int64 == 1
+	// 超级优先/降级备用与 priority 同型回退：自有账户的调度标记写在
+	// accounts.super_priority_enabled / accounts.fallback_enabled（核心功能设计
+	// 「更多」菜单节），绑定级 local_* 列仅授权实例写入门控该使用方的分组绑定；
+	// 任一为真即生效。只读 local_* 会使自有账户两标记在链面恒不生效
+	// （2026-10-24 生产排查 T62 第二层根因）。
+	dispatchSuperPriorityEnabled := (row.LocalSuperPriority.Valid && row.LocalSuperPriority.Int64 == 1) || row.SuperPriorityEnabled == 1
+	dispatchFallbackEnabled := (row.LocalFallback.Valid && row.LocalFallback.Int64 == 1) || row.FallbackEnabled == 1
 	accountOwnerSystemAccountID := row.SystemAccountID
 	if isAccountAuthorized {
 		if access.accountOwnerID != nil && *access.accountOwnerID != "" {
