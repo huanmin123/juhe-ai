@@ -525,6 +525,16 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			return nil, err
 		}
 	}
+	// T62 深度排查（2026-10-24）：授权实例的调度字段（并发上限/优先级/超级
+	// 优先/降级备用）只允许经 authorized-dispatch 专用接口写入分组绑定的
+	// local_*（核心功能设计「授权实例」节；前端对应控件已禁用）——通用 PATCH
+	// 对实例行写 accounts.* 调度标记违反「实例不写账户级调度标记」契约，且会
+	// 经 BUG-0258 臂把实例 local_* 覆盖成实例 accounts 值，这里统一拒绝。
+	if row.authorizationID.Valid {
+		if input.ConcurrencyLimit != nil || input.Priority != nil || input.SuperPriorityEnabled != nil || input.FallbackEnabled != nil {
+			return nil, &ValidationError{Message: "授权实例的调度配置（并发上限/优先级/超级优先/降级备用）请使用授权实例专用接口修改", Code: "authorized_instance_dispatch_field_rejected"}
+		}
+	}
 	if input.ConcurrencyLimit != nil {
 		if *input.ConcurrencyLimit < 1 {
 			return nil, &ValidationError{Message: "并发限制必须是大于 0 的整数"}
@@ -1614,8 +1624,28 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	result.DispatchBindingChanged = dispatchBindingChanged
 	if groupChanged {
 		// 归档 :830-834：换组重建绑定携带调度字段 next 终值（非行内旧值）。
+		rebuildPriority, rebuildSuper, rebuildFallback := nextPriority, nextSuperPriority == 1, nextFallback == 1
+		if row.authorizationID.Valid {
+			// T62 深度排查（2026-10-24）：授权实例换绑时 bind-group 载荷不携带
+			// 调度字段，next 终值来自实例 accounts 行（恒为初始 0）——直接重建
+			// 会清掉 authorized-dispatch 写入的 local_* 调度编辑。改从既有启用
+			// 绑定行保留 local_*（无既有绑定行时落默认 0 值）。
+			var localPriority, localSuper, localFallback sql.NullInt64
+			err := tx.QueryRowContext(ctx, s.bind(`SELECT local_priority, local_super_priority_enabled, local_fallback_enabled
+				FROM `+s.table("group_accounts")+` WHERE account_id = ? AND system_account_id = ? AND enabled = 1
+				ORDER BY created_at ASC LIMIT 1`), row.id, row.systemAccountID).Scan(&localPriority, &localSuper, &localFallback)
+			if err == nil {
+				if localPriority.Valid {
+					rebuildPriority = int(localPriority.Int64)
+				}
+				rebuildSuper = localSuper.Int64 == 1
+				rebuildFallback = localFallback.Int64 == 1
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+		}
 		if err := s.replaceGroupBinding(ctx, tx, row.id, row.systemAccountID, row.authorizationID,
-			groupBindingTarget, nextPriority, nextSuperPriority == 1, nextFallback == 1, nowISO); err != nil {
+			groupBindingTarget, rebuildPriority, rebuildSuper, rebuildFallback, nowISO); err != nil {
 			return nil, err
 		}
 	} else if dispatchBindingChanged {

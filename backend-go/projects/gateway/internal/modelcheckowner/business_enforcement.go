@@ -135,6 +135,16 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return EnforcementOutcome{}, errors.New("J3b Business enforcement account changed before commit")
 	}
+	// T62 深度排查（2026-10-24）：惩罚改写账户级调度标记（fallback=1、
+	// super=0）时同步属主启用绑定行的 local_* 快照——与账户编辑 patch.go
+	// BUG-0258 臂同契约。处罚只针对自有账户（调度器显式排除授权实例），此处
+	// 绑定必为属主自有绑定；只写 accounts.* 会留下 local 分歧数据。
+	if _, err := tx.ExecContext(ctx, `UPDATE `+a.table("group_accounts")+` SET
+		local_fallback_enabled=`+a.placeholder(1)+`,local_super_priority_enabled=`+a.placeholder(2)+`,updated_at=`+a.placeholder(3)+`
+		WHERE account_id=`+a.placeholder(4)+` AND system_account_id=`+a.placeholder(5)+` AND enabled=1`,
+		nextFallback, nextPriority, now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID); err != nil {
+		return EnforcementOutcome{}, fmt.Errorf("sync J3b Business enforcement binding dispatch snapshot: %w", err)
+	}
 	enforcementID := newEnforcementID()
 	generation := 1
 	if priorFound {

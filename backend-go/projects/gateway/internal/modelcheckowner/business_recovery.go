@@ -269,6 +269,12 @@ func (a *BusinessRecoveryApplier) RestoreSchedulePenalties(ctx context.Context, 
 				outcome.Skipped++
 				continue
 			}
+			// T62 深度排查（2026-10-24）：恢复写回账户级标记时同步属主启用绑定
+			// 行的 local_* 快照（与 enforcement 侧同契约，消除分歧源）。
+			if _, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("group_accounts")+` SET local_fallback_enabled=?,local_super_priority_enabled=?,updated_at=? WHERE account_id=? AND system_account_id=? AND enabled=1`),
+				boolIntGateway(item.fallbackWasEnabled), boolIntGateway(item.superPriorityWasEnabled), now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID); err != nil {
+				return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("sync J3b schedule fallback binding dispatch snapshot: %w", err)
+			}
 			if !clearEnforcement(item, currentRevision) {
 				return SchedulePenaltyRestoreOutcome{}, errors.New("J3b schedule penalty restore enforcement CAS failed")
 			}

@@ -20,6 +20,7 @@ func wbBusinessQualityDDL(t *testing.T) []string {
 	t.Helper()
 	return []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,name TEXT,status TEXT NOT NULL DEFAULT 'active')`,
+		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,local_fallback_enabled INTEGER,local_super_priority_enabled INTEGER,enabled INTEGER,updated_at TEXT)`,
 		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
 		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,

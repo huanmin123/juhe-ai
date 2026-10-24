@@ -843,13 +843,17 @@ func (s *Store) listOrderClause(options NormalizedListOptions) string {
 }
 
 func listSortColumn(field, nowLiteral string) string {
+	// T62 深度排查（2026-10-24）：排序键取派发生效值——有绑定行的账户按
+	// local_*（链面派发的实际排序输入，自有账户由写侧镜像同步）、无绑定行按
+	// accounts.*；super/fallback 与链面读取同用 OR 合并。恒用 accounts.* 会让
+	// 实例行按恒 0 排序、与派发/展示不一致。
 	switch field {
 	case "priority":
-		return "accounts.priority"
+		return "COALESCE(group_bindings.local_priority, accounts.priority)"
 	case "superPriority":
-		return "accounts.super_priority_enabled"
+		return "(CASE WHEN COALESCE(group_bindings.local_super_priority_enabled, 0) = 1 OR COALESCE(accounts.super_priority_enabled, 0) = 1 THEN 1 ELSE 0 END)"
 	case "fallback":
-		return "accounts.fallback_enabled"
+		return "(CASE WHEN COALESCE(group_bindings.local_fallback_enabled, 0) = 1 OR COALESCE(accounts.fallback_enabled, 0) = 1 THEN 1 ELSE 0 END)"
 	case "name":
 		return "accounts.name"
 	case "type":
