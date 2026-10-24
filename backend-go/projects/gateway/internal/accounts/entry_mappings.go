@@ -2,9 +2,8 @@ package accounts
 
 // 账户入口映射写路径（供应商与上游协议面重构设计 §5.1/§5.2/§5.3/§8，B4 W2）：
 // account_model_mappings 旧表已随 A 路线撤除（fresh DDL 不再建表），本切片把
-// 管理面写路径收敛到 account_entry_mappings 目标形态。解析模式与
-// internal/business/accounts（资源账户聚合，W1 产物）同构、按本包词表字面量
-// 维护（两包互不依赖，禁造第二份可变注册表——矩阵演化时两处同批改）：
+// 管理面写路径收敛到 account_entry_mappings 目标形态。解析模式按本包词表
+// 字面量维护（唯一可变注册表——矩阵演化只改本处）：
 //
 //  1. targetConnectionPresetCode 按 (账户, preset) 解析 enabled
 //     account_connections 行（连接 ID 永不由客户端提交，§8）；
@@ -27,8 +26,7 @@ import (
 
 // entryMappingPairTargetModes 是设计 §5.2 固定 endpoint family 矩阵的 17 个
 // 允许 (source, target) pair 及其全部可执行 target mode 形态（§5.3 唯一选择
-// 函数的写侧输入）。矩阵外的 pair 一律拒绝。与
-// internal/business/accounts.mappingPairTargetModes 同表同语义（§5.2 权威）。
+// 函数的写侧输入）。矩阵外的 pair 一律拒绝（§5.2 权威，本包唯一实现）。
 var entryMappingPairTargetModes = map[string][]string{
 	"chat_completions\x00chat_completions":        {"chat_json", "chat_sse"},
 	"responses\x00chat_completions":               {"chat_sse"},
@@ -143,7 +141,6 @@ func (s *Store) resolveEntryConnectionID(ctx context.Context, q queryer, account
 // resolveEntryModelID 按 models 目标形态身份键把 target 模型名解析为
 // models.id：vendor_code + upstream_model + owner 可见性（personal 行必须归属
 // 该 owner，builtin/global 全局可见，owner personal 行优先）+ status=active。
-// 与 internal/business/accounts.resolveSupportedModelID 同键同序。
 func (s *Store) resolveEntryModelID(ctx context.Context, q queryer, vendor, owner, model string) (string, error) {
 	var id string
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("models")+`

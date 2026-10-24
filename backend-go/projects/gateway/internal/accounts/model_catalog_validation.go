@@ -4,8 +4,7 @@ package accounts
 // 供应商与上游协议面重构设计 §4/§5.1；#B1 剩余①的目录段）。models 单表身份
 // 键 = vendor_code + upstream_model + owner 可见性 + status=active，与写入面
 // replaceAccountSupportedModels / replaceAccountModelMappings 的
-// resolveEntryModelID 同键同序（同 internal/business/accounts.
-// resolveSupportedModelID 口径）。旧协议档案目录池（provider_protocol_profiles
+// resolveEntryModelID 同键同序。旧协议档案目录池（provider_protocol_profiles
 // 守卫 + AccountModelCatalogReader 端口读取 + supportedApiProtocols 成员判定）
 // 随 legacy 面拆除：模式声明联动由连接行词表（§2.2）、映射 §5.3 与健康检查
 // 三字段写侧校验承载。
@@ -95,8 +94,7 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 // assertAccountSupportedModelsInProviderCatalog 是支持模型目录断言（设计 §4，
 // 目录断言切 models 表）：每个支持模型必须解析到一行 owner 可见且 active 的
 // models 行（vendor_code + upstream_model 身份键，与
-// replaceAccountSupportedModels 的 resolveEntryModelID 同键同序、同
-// internal/business/accounts.resolveSupportedModelID 口径）；解析失败按
+// replaceAccountSupportedModels 的 resolveEntryModelID 同键同序）；解析失败按
 // ValidationError（400 族）列出越界样本。空集直通（非空由
 // assertSupportedModelsRequired 在各消费链前置拒绝）。
 func (s *Store) assertAccountSupportedModelsInProviderCatalog(ctx context.Context, q queryer, models []string, providerCode, systemAccountID string) error {

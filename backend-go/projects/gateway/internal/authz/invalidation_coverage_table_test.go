@@ -1,7 +1,6 @@
 // Static source contract for the 设计 6.3 "写路径 → 失效覆盖依据" coverage
 // table (网关模型列表账户并集设计). The behavior-level half of the contract lives
-// in this package (invalidation_test.go, invalidation_coverage_test.go) and in
-// internal/business/authorization (authorization_invalidation_test.go); the
+// in this package (invalidation_test.go, invalidation_coverage_test.go); the
 // write paths owned by accounts / accountstransfer / routestrategies /
 // apikeys / groups cannot be behaviorally injected from this package, so this
 // test pins their committed-write invalidation triggers as raw source
@@ -111,41 +110,6 @@ var invalidationCoverageTable = []coverageTableEntry{
 		why:  "授权实例调度恢复（账户 status/schedulable/config_revision + group_accounts 绑定）",
 		mustContain: []string{
 			`s.invalidator.InvalidateGatewayRuntime(accountPatchRuntimeInvalidationReason)`,
-		},
-	},
-	{
-		file: "../business/authorization/invalidation.go",
-		why:  "business 授权切片 ExpireDue 过期/撤销清理的 K5 总线端口",
-		mustContain: []string{
-			`invalidationReasonExpired = "resource_authorization_expired"`,
-			`inval.TopicGatewayRuntime`,
-			`inval.TopicAuthorizationQuota`,
-		},
-	},
-	{
-		file: "../business/authorization/authorization.go",
-		why:  "business 授权切片 ExpireDue（授权终态物化 + group_accounts/group_authorization_settings 清理）",
-		mustContain: []string{
-			`s.invalidateAfterExpiryCleanup(r)`,
-		},
-	},
-	{
-		file: "../business/account_cleanup/invalidation.go",
-		why:  "business 账户清理切片（孤儿实例墓碑/过期账户物理删除，改 accounts/group_accounts/映射与授权行，双 topic 对齐 ExpireDue）；该包当前无生产消费方，端口随 compose 接线生效",
-		mustContain: []string{
-			`invalidationReasonCleanupApplied = "account_cleanup_applied"`,
-			`s.invalidator.Invalidate(inval.TopicGatewayRuntime, invalidationReasonCleanupApplied)`,
-			`s.invalidator.Invalidate(inval.TopicAuthorizationQuota, invalidationReasonCleanupApplied)`,
-		},
-	},
-	{
-		file: "../business/accounts/invalidation.go",
-		why:  "business 账户管理切片（建户/更新/删除写 supportedModels/mappings 与账户行）；该包当前无生产消费方，端口随 compose 接线生效",
-		mustContain: []string{
-			`invalidationReasonCreated = "account_created"`,
-			`invalidationReasonPatched = "account_management_patch"`,
-			`invalidationReasonDeleted = "account_deleted"`,
-			`s.invalidator.Invalidate(inval.TopicGatewayRuntime, reason)`,
 		},
 	},
 }
