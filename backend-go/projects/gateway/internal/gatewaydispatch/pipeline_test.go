@@ -193,10 +193,10 @@ func TestFilterCandidatesModelMappingRank(t *testing.T) {
 	if result.DirectMatchedCount != 1 || result.MappingMatchedCount != 1 {
 		t.Fatalf("counts = %d/%d", result.DirectMatchedCount, result.MappingMatchedCount)
 	}
-	// Direct matches precede mapping matches in the filtered list (append
-	// order)；方案B（2026-10-24）后同族改名映射（chat→chat）rank 0 与 direct
-	// 同权，rank 消费方按 rank map 排序。
-	if result.Accounts[0].ID != "direct-account" {
+	// 方案B（2026-10-24）+ 单遍过滤：同族改名映射（chat→chat）rank 0 与
+	// direct 同权，输出序继承输入序（映射账户在输入序在前就保持在前，不再按
+	// 「直连桶+映射桶」重拼）；rank 消费方按 rank map 排序。
+	if result.Accounts[0].ID != "mapping-account" {
 		t.Fatalf("ordering = %#v", accountIDs(result.Accounts))
 	}
 	if result.ModelPriority.RankByAccountID["mapping-account"] != ModelPriorityRankDirect {

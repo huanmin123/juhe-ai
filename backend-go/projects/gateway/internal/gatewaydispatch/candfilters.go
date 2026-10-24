@@ -208,9 +208,14 @@ func FilterGatewayAccountsByRequestedModel(
 	var skippedCount, limitedAccountCount, invalidModelConstraintCount int
 	var directMatchedCount, mappingMatchedCount int
 	var skipped []AccountSkip
-	directMatchedAccounts := make([]AccountCandidate, 0, len(accounts))
-	mappingMatchedAccounts := make([]AccountCandidate, 0, len(accounts))
 	rankByAccountID := make(map[string]int, len(accounts))
+	// 方案B（2026-10-24）：单遍过滤、命中即按输入序保留——同族改名映射与直连
+	// 同秩（rank 0）后，输出序必须继承上游装配序（比较器已按 tier 排好），不得
+	// 按「直连桶在前、映射桶在后」分类重拼：桶拼接会摧毁同秩内的上游位置，把
+	// 秩 0 映射账户压到全部直连账户之后（T62 生产案例：tokenrhythm 超级优先被
+	// 桶序垫底）。下游各保序层（latency/proxyhealth/clientip/热质量展平）以本
+	// 数组顺序为基准层序。
+	filtered := make([]AccountCandidate, 0, len(accounts))
 
 	for _, account := range accounts {
 		supportedModels := account.SupportedModels
@@ -226,14 +231,13 @@ func FilterGatewayAccountsByRequestedModel(
 		if mapping != nil {
 			if isMappingAllowedBySupportedModels(mapping.UpstreamModel, supportedModels) {
 				mappingMatchedCount++
-				// 方案B（2026-10-24）：同族改名映射与直连同权（rank 0）；恒等映射
-				// 已被 IsAdmissibleModelMapping 拒绝，故此处同族必为改名映射。
+				// 恒等映射已被 IsAdmissibleModelMapping 拒绝，故此处同族必为改名映射。
 				if mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
 					rankByAccountID[account.ID] = ModelPriorityRankDirect
 				} else {
 					rankByAccountID[account.ID] = ModelPriorityRankMapping
 				}
-				mappingMatchedAccounts = append(mappingMatchedAccounts, account)
+				filtered = append(filtered, account)
 			} else {
 				skippedCount++
 				rankByAccountID[account.ID] = ModelPriorityRankUnsupported
@@ -244,14 +248,13 @@ func FilterGatewayAccountsByRequestedModel(
 		if resolveGatewayAccountModelMatch(model, supportedModels) {
 			directMatchedCount++
 			rankByAccountID[account.ID] = ModelPriorityRankDirect
-			directMatchedAccounts = append(directMatchedAccounts, account)
+			filtered = append(filtered, account)
 			continue
 		}
 		skippedCount++
 		rankByAccountID[account.ID] = ModelPriorityRankUnsupported
 		skipped = append(skipped, AccountSkip{AccountID: account.ID, Reason: ModelSkipReasonModelNotMatched})
 	}
-	filtered := append(append([]AccountCandidate{}, directMatchedAccounts...), mappingMatchedAccounts...)
 
 	requestedModelOut := ""
 	if model != "" {

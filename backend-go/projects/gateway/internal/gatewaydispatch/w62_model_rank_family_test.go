@@ -63,6 +63,56 @@ func TestFilterGatewayAccountsByRequestedModelFamilyArms(t *testing.T) {
 	}
 }
 
+// TestW62ModelFilterKeepsRankOrderNotBucketOrder 输出序按秩稳定排序而非
+// 「直连桶+映射桶」分类拼接（T62 生产案例：装配序在前的同秩映射账户不得被
+// 桶序压到全部直连账户之后——下游保序层以本数组顺序为基准层序）。
+func TestW62ModelFilterKeepsRankOrderNotBucketOrder(t *testing.T) {
+	sameFamilyRename := AccountCandidate{
+		ID:              "acc_rename_first",
+		SupportedModels: []string{"up-alias"},
+		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
+			SourceModel:            "client-model",
+			SourceEndpointFamily:   gatewayrouting.EndpointFamilyChatCompletions,
+			UpstreamModel:          "up-alias",
+			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyChatCompletions,
+			Enabled:                true,
+		}},
+	}
+	directA := AccountCandidate{ID: "acc_direct_a", SupportedModels: []string{"client-model"}}
+	directB := AccountCandidate{ID: "acc_direct_b", SupportedModels: []string{"client-model"}}
+	crossProtocol := AccountCandidate{
+		ID:              "acc_cross_last",
+		SupportedModels: []string{"up-cross"},
+		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
+			SourceModel:            "client-model",
+			SourceEndpointFamily:   gatewayrouting.EndpointFamilyChatCompletions,
+			UpstreamModel:          "up-cross",
+			UpstreamEndpointFamily: gatewayrouting.EndpointFamilyMessages,
+			Enabled:                true,
+		}},
+	}
+
+	// 输入序 = 上游装配序：同秩映射账户在最前（比较器已按超级优先置顶）。
+	result := FilterGatewayAccountsByRequestedModel(
+		[]AccountCandidate{sameFamilyRename, directA, directB, crossProtocol},
+		"client-model", gatewayrouting.EndpointFamilyChatCompletions)
+
+	got := make([]string, 0, len(result.Accounts))
+	for _, account := range result.Accounts {
+		got = append(got, account.ID)
+	}
+	t.Logf("ranks = %v", result.ModelPriority.RankByAccountID)
+	want := []string{"acc_rename_first", "acc_direct_a", "acc_direct_b", "acc_cross_last"}
+	if len(got) != len(want) {
+		t.Fatalf("accounts = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("filtered order = %v, want %v (rank-0 mapping stays ahead; rank-1 cross-protocol last)", got, want)
+		}
+	}
+}
+
 // TestFilterGatewayAccountsByRequestedModelSameFamilyIdentityFallsToDirect：
 // 同名同族恒等映射行仍被 IsAdmissibleModelMapping 拒绝，账户按直接匹配路径
 // 处理（rank 0，DirectMatchedCount 计数），不进入映射臂。

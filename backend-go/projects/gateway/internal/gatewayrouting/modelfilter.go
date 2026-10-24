@@ -54,9 +54,11 @@ func FilterAccountsByRequestedModel(accounts []UpstreamAccount, requestedModel s
 	model := trimModel(requestedModel)
 	var skippedCount, limitedAccountCount, invalidModelConstraintCount int
 	var directMatchedCount, mappingMatchedCount int
-	directMatchedAccounts := make([]UpstreamAccount, 0, len(accounts))
-	mappingMatchedAccounts := make([]UpstreamAccount, 0, len(accounts))
 	rankByAccountID := make(map[string]int)
+	// 方案B（2026-10-24）：单遍过滤、命中即按输入序保留（与 candfilters.go
+	// 同型）——同族改名映射与直连同秩后，输出序必须继承上游装配序，不得按
+	// 「直连桶+映射桶」分类重拼摧毁同秩内上游位置。
+	filtered := make([]UpstreamAccount, 0, len(accounts))
 
 	for _, account := range accounts {
 		supportedModels := account.SupportedModels
@@ -71,14 +73,13 @@ func FilterAccountsByRequestedModel(accounts []UpstreamAccount, requestedModel s
 		if mapping != nil {
 			if isMappingAllowedBySupportedModels(mapping.UpstreamModel, supportedModels) {
 				mappingMatchedCount++
-				// 方案B（2026-10-24）：同族改名映射与直连同权（rank 0）；恒等映射
-				// 已被 IsAdmissibleModelMapping 拒绝，故此处同族必为改名映射。
+				// 恒等映射已被 IsAdmissibleModelMapping 拒绝，故此处同族必为改名映射。
 				if mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
 					rankByAccountID[account.ID] = gatewayAccountModelPriorityRankDirect
 				} else {
 					rankByAccountID[account.ID] = gatewayAccountModelPriorityRankMapping
 				}
-				mappingMatchedAccounts = append(mappingMatchedAccounts, account)
+				filtered = append(filtered, account)
 			} else {
 				skippedCount++
 				rankByAccountID[account.ID] = gatewayAccountModelPriorityRankUnsupported
@@ -88,16 +89,12 @@ func FilterAccountsByRequestedModel(accounts []UpstreamAccount, requestedModel s
 		if resolveGatewayAccountModelMatch(model, supportedModels) {
 			directMatchedCount++
 			rankByAccountID[account.ID] = gatewayAccountModelPriorityRankDirect
-			directMatchedAccounts = append(directMatchedAccounts, account)
+			filtered = append(filtered, account)
 			continue
 		}
 		skippedCount++
 		rankByAccountID[account.ID] = gatewayAccountModelPriorityRankUnsupported
 	}
-
-	filtered := make([]UpstreamAccount, 0, len(directMatchedAccounts)+len(mappingMatchedAccounts))
-	filtered = append(filtered, directMatchedAccounts...)
-	filtered = append(filtered, mappingMatchedAccounts...)
 
 	reason := ""
 	if skippedCount > 0 && len(filtered) == 0 {
