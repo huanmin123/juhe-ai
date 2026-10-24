@@ -207,6 +207,12 @@ func TestSeedBusinessRequiredTables(t *testing.T) {
 		{name: "媒体任务行", query: "SELECT COUNT(*) FROM media_jobs WHERE kind = 'video'", min: 6},
 		{name: "媒体任务状态种类", query: "SELECT COUNT(DISTINCT status) FROM media_jobs WHERE kind = 'video'", min: 6},
 		{name: "媒体任务完成用量", query: "SELECT COUNT(*) FROM media_jobs WHERE status = 'completed' AND usage_json <> '{}' AND cost_usd > 0", min: 1},
+		// 归属列（AI 问答免 Key 直调计划 §3.3）：样本行必须与 api_key_id 同源
+		// 写 owner，且 owner 与 Key 属主一致——ensure-schema 的存量回填早于
+		// mockdata 播种，只写 api_key_id 的样本行 owner 会恒空串，用户面详情与
+		// 管理面按用户筛选都读不到（这些读面已切到 owner 列）。
+		{name: "媒体任务归属非空", query: "SELECT COUNT(*) FROM media_jobs WHERE owner_system_account_id <> ''", min: 6},
+		{name: "媒体任务归属与 Key 属主一致", query: "SELECT COUNT(*) FROM media_jobs mj JOIN api_keys ak ON ak.id = mj.api_key_id WHERE mj.owner_system_account_id = ak.system_account_id", min: 6},
 		{name: "音频分类模型", query: "SELECT COUNT(*) FROM models WHERE id = 'mockdata_model_global_audio' AND status = 'active'", min: 1},
 		// 媒体账户模型引用（媒体契约 §3.4）：media 账户支持模型按目录分类引用
 		// audio / video 模型（audioModelAt/videoModelAt 的取值口径：目录有该分类

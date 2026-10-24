@@ -294,18 +294,6 @@ func (c businessCatalog) modelAt(index int) businessModel {
 	return c.models[len(c.models)-1]
 }
 
-// imageModelAt 取第 index 个图像目录模型；目录里没有 image 分类模型时回落到
-// 造数自建的全域图像模型（两种取值都在账户支持模型里有定义）。
-func (c businessCatalog) imageModelAt(index int) businessModel {
-	if len(c.imageModels) == 0 {
-		return businessModel{name: mockCustomModelImage}
-	}
-	if index < len(c.imageModels) {
-		return c.imageModels[index]
-	}
-	return c.imageModels[len(c.imageModels)-1]
-}
-
 // audioModelAt 取第 index 个音频目录模型；目录里没有 audio 分类模型时回落到
 // 造数自建的全域音频模型（seedMockModels 有定义，账户支持模型可解析）。
 func (c businessCatalog) audioModelAt(index int) businessModel {
@@ -3086,6 +3074,15 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		}
 	}
 	apiKeyID := keys["main"]
+	// owner 列必须与 api_key_id 同源写入：ensure-schema 的存量回填发生在
+	// mockdata 播种之前，新播种行不会被回填覆盖，只写 api_key_id 会让这些
+	// 样本行 owner 恒空串——用户面详情（GetByOwnerAndID）与管理面按用户
+	// 筛选（owner_system_account_id 条件）都看不到它们。种子行归属统一取
+	// 「main」Key 的属主（与其它 mockdata 资源同口径管理账户）。
+	var ownerSystemAccountID string
+	if err := tx.QueryRow(`SELECT system_account_id FROM api_keys WHERE id = ?`, apiKeyID).Scan(&ownerSystemAccountID); err != nil {
+		return fmt.Errorf("读取主力 Key 属主: %w", err)
+	}
 	videoModel := guard.catalog.videoModelAt(0).name
 	// mediaJobContentDataURI 把内嵌样本字节编码为 data URI：零资源存储下
 	// artifact 只存定位指针，data URI 是自包含指针的合法形态，管理面详情
@@ -3127,6 +3124,7 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		return w.put(tx, "media_jobs", map[string]any{
 			"id": id, "kind": kind,
 			"api_key_id": rowAPIKeyID, "account_id": accountID,
+			"owner_system_account_id":      ownerSystemAccountID,
 			"provider_protocol_profile_id": nil,
 			"upstream_job_id":              "upstream_" + CleanupIDPrefix + id,
 			"status":                       status,

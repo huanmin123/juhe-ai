@@ -62,9 +62,8 @@ const (
 	// 内置外部来源系统与测试 Token（gateway/internal/aipublic 与
 	// maintenance/internal/schema 的 seed 常量一致）：is_test_token 的判定就是
 	// 「来源 id 或 Token id 命中这两个常量」。
-	observabilityBuiltInTestSourceID  = "extsrc_builtin_test"
-	observabilityBuiltInTestTokenID   = "exttok_builtin_test"
-	observabilityBuiltInTestNameASCII = "builtin-test"
+	observabilityBuiltInTestSourceID = "extsrc_builtin_test"
+	observabilityBuiltInTestTokenID  = "exttok_builtin_test"
 
 	// observabilitySearchTermMaxRunes / observabilitySearchTermLimit 是摘要检索词
 	// 展开的边界：F4 的 searchTerms 会枚举到 1500 条，造数只需要页面按摘要里的

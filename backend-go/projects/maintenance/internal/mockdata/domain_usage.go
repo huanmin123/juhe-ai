@@ -807,16 +807,6 @@ func (r usageResources) mappingFor(accountID, family string) (usageMappingRow, b
 	return usageMappingRow{}, false
 }
 
-// mappingAny 返回该账户的任一条启用映射（三连样本用；不限定端点族）。
-func (r usageResources) mappingAny(accountID string) (usageMappingRow, bool) {
-	for _, mapping := range r.mappings {
-		if mapping.accountID == accountID {
-			return mapping, true
-		}
-	}
-	return usageMappingRow{}, false
-}
-
 // keyForOwner 取该用户名下的一条 Key（授权场景用它把调用者绑定到被授权成员）。
 func (r usageResources) keyForOwner(owner string) (usageAPIKeyRow, bool) {
 	if owner == "" {
