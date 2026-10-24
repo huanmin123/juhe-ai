@@ -4,28 +4,13 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"time"
 )
 
-// RuntimeConfig keeps the historical config shape: jobs only reads Enabled and
-// fails closed for every enabled configuration (solution A makes Gateway the
-// sole J3b runtime owner).
+// RuntimeConfig 只保留 Enabled：Solution A 让 Gateway 成为 J3b 唯一运行时
+// owner，jobs 对任何 enabled 配置无条件 fail-closed，因此其余历史配置字段
+// （连接串、路径、密钥、探针版本等）已无消费者，不再声明。
 type RuntimeConfig struct {
-	Enabled              bool
-	InstanceID           string
-	StoreMode            string
-	JobsDatabasePath     string
-	DatasetDatabasePath  string
-	BusinessDatabasePath string
-	JobsPostgresURL      string
-	BusinessPostgresURL  string
-	CredentialSecret     string
-	IdentitySecret       string
-	ManagementAddress    string
-	ProbeSetVersion      string
-	Deadline             time.Duration
-	Heartbeat            time.Duration
-	RetryAttempts        int
+	Enabled bool
 }
 
 func LoadConfig(getenv func(string) string) (RuntimeConfig, error) {
