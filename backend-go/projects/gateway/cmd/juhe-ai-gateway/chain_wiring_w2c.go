@@ -698,8 +698,13 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 		// 仍透传给决策解释（决策日志 cacheRateStale）。
 		ratesForInput = nil
 	}
-	// T62 诊断日志（2026-10-24）：热质量排序的逐候选 tier 输入与映射族落盘，
-	// 定位自有账户超级优先/模型秩装配问题后可移除。
+	// 调度排序观测（T62，2026-10-24 引入，长期保留）：热质量排序的逐候选 tier
+	// 输入与映射族落盘。排序问题三段排查链的第二段——
+	//   chain_model_rank_window（SQL 窗口秩）→ 本日志（内存秩 + 特权标记 + 映射
+	//   族 + tier 输入序）→ gateway_dispatch_decision（最终候选序与选中），
+	// 三段以 groupId+model+requestId/时间对齐即可定位任何「为什么排到这个账户/
+	// 为什么特权没生效」类问题。requestId 即 UsageContext.TraceID，与决策日志
+	// traceId、审计 trace_id 同源。
 	tierDetails := make([]map[string]any, 0, len(input.Accounts))
 	tierRankMap := modelPriorityRankMapOf(input.ModelPriority)
 	for _, account := range input.Accounts {
@@ -724,6 +729,7 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 	slog.Info("chain_hotquality_tier_input",
 		"groupId", input.GroupID,
 		"model", input.Model,
+		"requestId", input.RequestID,
 		"candidates", tierDetails)
 	result, err := gatewayhotquality.OrderGatewayAccountsByHotQuality(ctx, p.runtime, gatewayhotquality.GatewayHotQualityCandidateOrderInput[gatewaydispatch.AccountCandidate]{
 		Accounts:                     input.Accounts,

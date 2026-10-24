@@ -933,7 +933,10 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 		modelRankByAccountID[accountID] = row.ModelRank
 		unique = append(unique, row)
 	}
-	// T62 诊断日志（2026-10-24）：候选窗口 SQL 秩逐账户落盘，定位后可移除。
+	// 调度排序观测（T62，2026-10-24 引入，长期保留）：候选窗口 SQL 秩逐账户
+	// 落盘，是排序问题三段排查链的第一段（后两段见 chain_wiring_w2c.go
+	// chain_hotquality_tier_input 与 gateway_dispatch_decision）——0=直连/同族
+	// 改名映射，1=跨协议转换映射，2=无支持模型放行档。
 	if len(modelRankByAccountID) > 0 {
 		slog.Info("chain_model_rank_window",
 			"groupId", groupID,
