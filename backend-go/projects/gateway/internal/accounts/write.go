@@ -901,12 +901,17 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, err
 	}
 	// J1 snapshot outbox (repositories.ts:2418-2432): health-capable
-	// gpt/openai api_key/oauth accounts reserve input version 1 and land the
-	// pending snapshot intent (reason 'account_created') in the same
-	// transaction, which is what puts the new account into the probe
-	// candidate join. Media domains have no conversation probe path.
+	// accounts reserve input version 1 and land the pending snapshot intent
+	// (reason 'account_created') in the same transaction, which is what puts
+	// the new account into the probe candidate join. Media domains have no
+	// conversation probe path. API Key accounts reserve for every vendor:
+	// J1 direct reader covers all vendors (deepseek/generic 等) — the legacy
+	// gpt/openai gate left non-GPT API Key accounts without an input-version
+	// row, so their creation probe was silently dropped by the jobs outbox
+	// drain (CurrentProbeInput !ok) and the balance detection intent never
+	// appeared (T56 第二层根因，2026-10-24)。OAuth 仍维持 gpt/openai 原范围。
 	if !accountscore.SkipsConversationHealthStateMachine(domain) &&
-		(providerCode == "gpt" || providerCode == "openai") && (accountType == "api_key" || accountType == "oauth") {
+		(accountType == "api_key" || ((providerCode == "gpt" || providerCode == "openai") && accountType == "oauth")) {
 		if err := s.reserveAndEnqueueAccountHealthSnapshot(ctx, tx, id, configRevision, dispatchRevision, nowISO); err != nil {
 			return nil, err
 		}

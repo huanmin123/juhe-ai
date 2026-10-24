@@ -374,3 +374,57 @@ func TestCreateBalanceNextRefreshSeeded(t *testing.T) {
 		t.Fatalf("disabled balance query refresh-at = %q, want NULL", got)
 	}
 }
+
+// TestCreateDeepseekApiKeyReservesHealthInputSnapshot 是 T56 第二层根因回归：
+// 创建链原条件只给 gpt/openai 预留 J1 input version，非 GPT 厂商的 API Key
+// 账户创建后没有版本行，jobs outbox drain 的 CurrentProbeInput 边界会静默
+// 吞掉创建首探（删行且不写 outcome），余额探测意图永不写入。API Key 账户
+// 必须对所有厂商预留版本并写 account_created 快照意图。
+func TestCreateDeepseekApiKeyReservesHealthInputSnapshot(t *testing.T) {
+	env := newTestEnv(t)
+	owner := "owner-0174d"
+	env.seedProviderAndDefaultGroup(t, owner)
+	env.seedOwnerWithLimit(t, owner, nil)
+	env.seedVendor(t, "deepseek")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('prov-deepseek', 'deepseek', 'DeepSeek', 1, '["deepseek-v4.1-flash"]', ?, ?)`, now, now)
+	env.exec(t, `INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status,
+		supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
+		VALUES ('mod-fixture-deepseek-v41f', 'deepseek', 'deepseek-v4.1-flash', 'deepseek-v4.1-flash',
+		'builtin', 'active', '["chat_json","chat_sse"]', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+
+	healthModel := "deepseek-v4.1-flash"
+	healthMode := "chat_sse"
+	healthPreset := "deepseek_openai_v1"
+	input := CreateInput{
+		ProviderCode:              "deepseek",
+		ProviderProtocolProfileID: "prof-deepseek",
+		Name:                      "chain-d",
+		AccountType:               "api_key",
+		Credentials:               Credentials{"api_key": "sk-deepseek-secret-1234567890", "base_url": "https://api.deepseek.com"},
+		SupportedModels:           []string{healthModel},
+		Status:                    CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true},
+		Connections: []ConnectionInput{{
+			ConnectionPresetCode: healthPreset,
+			BaseURL:              "https://api.deepseek.com",
+			EndpointModes:        []string{"chat_json", "chat_sse"},
+			Enabled:              true,
+		}},
+		HealthCheckConnectionPresetCode: &healthPreset,
+		HealthCheckEndpointMode:         &healthMode,
+		HealthCheckModel:                &healthModel,
+	}
+	result, err := env.store.Create(context.Background(), input, AccessScope{ViewerID: owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := env.queryCell(t, `SELECT current_version FROM account_health_jobs_input_versions WHERE account_id = ?`, result.ID); got != "1" {
+		t.Fatalf("deepseek api_key input_versions.current_version = %q, want 1（缺失会让 jobs 静默吞掉首探）", got)
+	}
+	if got := env.count(t, `SELECT COUNT(*) FROM account_health_jobs_input_outbox
+		WHERE account_id = ? AND event_kind = 'snapshot' AND reason = 'account_created'
+			AND status = 'pending' AND input_version = 1`, result.ID); got != 1 {
+		t.Fatalf("deepseek api_key snapshot outbox rows = %d, want 1", got)
+	}
+}
