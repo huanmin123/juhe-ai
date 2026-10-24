@@ -36,8 +36,8 @@ func seedW62MappingAccount(t *testing.T, fixture *chainFixture, accountID, sourc
 	connID := "conn_" + accountID
 	seed(`INSERT INTO accounts (id, system_account_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES (?, ?, 'openai', 'v1', ?, 'api_key', 'active', 1, ?, NULL, ?)`,
 		accountID, fixture.systemAccount, accountID, credentials, upstreamModel)
-	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_super_priority_enabled, created_at)
-		VALUES (?, ?, ?, 1, ?, ?)`, fixture.groupID, fixture.systemAccount, accountID, superPriority, now)
+	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, local_super_priority_enabled, local_fallback_enabled, created_at)
+		VALUES (?, ?, ?, 1, 0, ?, 0, ?)`, fixture.groupID, fixture.systemAccount, accountID, superPriority, now)
 	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
 		VALUES (?, ?, 'gpt_openai_v1', 'openai_v1', ?, 1, ?, ?)`, connID, accountID, "https://"+accountID+".example.invalid/v1", now, now)
 	seed(`UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`, connID, accountID)
