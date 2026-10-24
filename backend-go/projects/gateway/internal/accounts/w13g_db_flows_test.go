@@ -151,7 +151,7 @@ func TestW13GFindAdvancedDetailAuthorizedHappyPath(t *testing.T) {
 	if len(detail.ModelMappings) != 1 || detail.ModelMappings[0].SourceModel != "gpt-4o" {
 		t.Fatalf("authorized 映射：%+v", detail.ModelMappings)
 	}
-	if !detail.LockEnabled || detail.LockState != "ENGAGED" || detail.LockDeathTimeoutSeconds != 600 {
+	if detail.LockState != "ENGAGED" || detail.LockDeathTimeoutSeconds != 600 {
 		t.Fatalf("锁字段：%+v", detail)
 	}
 	if detail.BalanceQueryEnabled {

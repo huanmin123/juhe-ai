@@ -16,7 +16,6 @@ export interface UserDefaultRouteStrategyReference {
 export interface UserProviderDefaultReference {
   providerCode: ProviderCode
   defaultGroup: UserDefaultGroupReference
-  defaultRouteStrategy?: UserDefaultRouteStrategyReference
 }
 
 export interface UserReferenceData {

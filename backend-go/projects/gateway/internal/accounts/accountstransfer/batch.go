@@ -327,6 +327,8 @@ type BatchUpdateItem struct {
 // BatchUpdateResult mirrors the route response payload (the owner scope stays
 // internal for the operation log, like the Node service destructure).
 type BatchUpdateResult struct {
+	// BatchID 不进前端类型（列表/响应无 UI 消费），但路由层用它作操作日志
+	// ResourceID（m09_routes.go），字段随响应形状保留 Node 时代镜像。
 	BatchID       string            `json:"batchId"`
 	ChangedFields []string          `json:"changedFields"`
 	Items         []BatchUpdateItem `json:"items"`

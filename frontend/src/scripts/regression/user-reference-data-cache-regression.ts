@@ -32,8 +32,7 @@ function fixture(systemAccountId: string): UserReferenceData {
     systemAccountId,
     providerDefaults: [{
       providerCode: 'gpt',
-      defaultGroup: { id: `group-${systemAccountId}`, name: '默认 GPT 分组' },
-      defaultRouteStrategy: { id: `route-${systemAccountId}`, name: '默认 GPT 路由', mode: 'normal', status: 'active' }
+      defaultGroup: { id: `group-${systemAccountId}`, name: '默认 GPT 分组' }
     }],
     preferredDefaultRouteStrategy: { id: `route-${systemAccountId}`, name: '默认 GPT 路由', mode: 'normal', status: 'active' }
   }

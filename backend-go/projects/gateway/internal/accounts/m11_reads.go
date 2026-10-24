@@ -205,7 +205,6 @@ type AdvancedDetail struct {
 	BalanceQueryConfig                            map[string]any                      `json:"balanceQueryConfig,omitempty"`
 	AuthorizationInstanceSourceAccountStatus      *string                             `json:"authorizationInstanceSourceAccountStatus,omitempty"`
 	AuthorizationInstanceSourceAccountSchedulable *bool                               `json:"authorizationInstanceSourceAccountSchedulable,omitempty"`
-	LockEnabled                                   bool                                `json:"lockEnabled"`
 	LockState                                     string                              `json:"lockState"`
 	LockDeathTimeoutSeconds                       int                                 `json:"lockDeathTimeoutSeconds"`
 	LockRetryIntervalSeconds                      int                                 `json:"lockRetryIntervalSeconds"`
@@ -401,7 +400,6 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		AccountExpiresAt:             nullPtrString(row.accountExpiresAt),
 		TemporaryUnavailableContinuousProbeEnabled: row.probeEnabled == 1,
 		BalanceQueryEnabled:                        row.balanceQueryEnabled == 1,
-		LockEnabled:                                false,
 		LockState:                                  "UNLOCKED",
 		LockDeathTimeoutSeconds:                    300,
 		LockRetryIntervalSeconds:                   5,
@@ -446,7 +444,6 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		return nil, err
 	}
 	if lock != nil {
-		detail.LockEnabled = lock.enabled == 1
 		detail.LockState = lock.lockState
 		detail.LockDeathTimeoutSeconds = lock.deathTimeout
 		detail.LockRetryIntervalSeconds = lock.retryInterval

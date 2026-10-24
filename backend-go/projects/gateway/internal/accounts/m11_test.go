@@ -232,7 +232,7 @@ func TestM11AdvancedDetailContract(t *testing.T) {
 		}
 	}
 	// Lock defaults ride the projection.
-	if data["lockEnabled"] != false || data["lockState"] != "UNLOCKED" || data["lockDeathTimeoutSeconds"] != float64(300) {
+	if data["lockState"] != "UNLOCKED" || data["lockDeathTimeoutSeconds"] != float64(300) {
 		t.Fatalf("lock projection: %v", data)
 	}
 

@@ -2223,11 +2223,8 @@ function groupFixture(
 }
 
 function groupListItem(group: MockGroup): Record<string, unknown> {
-  const { accountIds, ...item } = groupResponse(group)
-  return {
-    ...item,
-    accountCount: accountIds.length
-  }
+  const { accountIds: _accountIds, ...item } = groupResponse(group)
+  return { ...item }
 }
 
 function groupResponse(group: MockGroup): Record<string, unknown> {

@@ -1176,7 +1176,7 @@ func TestAccountLockUnlockFamily(t *testing.T) {
 			lockItem = entry.(map[string]any)
 		}
 	}
-	if lockItem == nil || lockItem["lockEnabled"] != true || lockItem["lockState"] != "LOCKED_IDLE" ||
+	if lockItem == nil || lockItem["lockState"] != "LOCKED_IDLE" ||
 		lockItem["lockDeathTimeoutSeconds"] != float64(300) {
 		t.Fatalf("lock overlay: %v", lockItem)
 	}

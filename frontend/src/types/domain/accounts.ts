@@ -588,7 +588,6 @@ export interface AccountListItem {
   authorizationExpiresAt?: string
   authorizationLimits?: RequestQuotaLimits
   authorizationQuotaExceeded?: boolean
-  lockEnabled?: boolean
   lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
   lockDeathTimeoutSeconds?: number
   lockRetryIntervalSeconds?: number
@@ -655,7 +654,6 @@ export interface AccountAdvancedDetail {
   effectiveQuotaRecoveryPolicy?: Record<string, unknown>
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
-  lockEnabled?: boolean
   lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
   lockDeathTimeoutSeconds?: number
   lockRetryIntervalSeconds?: number
@@ -837,7 +835,6 @@ export interface AccountBatchEditRequest {
 }
 
 export interface AccountBatchEditResult {
-  batchId: string
   changedFields: string[]
   items: Array<{
     id: string
@@ -1180,10 +1177,8 @@ export interface GroupSummary {
   groupKind?: GroupKind
   schedulingPolicy?: GroupSchedulingPolicy
   accountIds?: string[]
-  accountCount?: number
   accountStats: GroupAccountStats
   accessType?: ResourceAccessType
-  groupAuthorizationId?: string
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
@@ -1261,6 +1256,9 @@ export interface GroupListResult {
   pageSize: number
 }
 
+// GroupOptionSummary 的字段白名单对应 options 端点（契约矩阵「分组 options」）：
+// 大部分键与分组列表共享，`groupAuthorizationId` 仅 options 附带（列表投影
+// 不发送），故独立声明而非从 GroupSummary Pick。
 export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pick<
   GroupSummary,
   | 'systemAccountId'
@@ -1273,12 +1271,13 @@ export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pic
   | 'groupKind'
   | 'schedulingPolicy'
   | 'accessType'
-  | 'groupAuthorizationId'
   | 'authorizationExpiresAt'
   | 'authorizationLimits'
   | 'authorizationStatus'
   | 'permissions'
->>
+>> & {
+  groupAuthorizationId?: string
+}
 
 export interface AccountGroupOptionSummary extends GroupOptionSummary {
   accountIds: string[]

@@ -195,7 +195,6 @@ func emptyTodayUsageSummary() TodayUsageSummary { return TodayUsageSummary{} }
 // stay omitted when the account has no lock row (Node only assigns them from
 // the lock-state map).
 type LockStatePublic struct {
-	LockEnabled              *bool   `json:"lockEnabled,omitempty"`
 	LockState                *string `json:"lockState,omitempty"`
 	LockDeathTimeoutSeconds  *int    `json:"lockDeathTimeoutSeconds,omitempty"`
 	LockRetryIntervalSeconds *int    `json:"lockRetryIntervalSeconds,omitempty"`
@@ -1253,7 +1252,7 @@ func (s *Store) hydrateLockStates(ctx context.Context, items []ListItem, ids []s
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT account_id, enabled, lock_state,
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT account_id, lock_state,
 			lock_death_timeout_seconds, lock_retry_interval_seconds
 		FROM `+s.table("account_lock_states")+`
 		WHERE account_id IN (`+placeholders(len(ids))+`)`), anySlice(ids)...)
@@ -1264,15 +1263,13 @@ func (s *Store) hydrateLockStates(ctx context.Context, items []ListItem, ids []s
 	byAccount := map[string]LockStatePublic{}
 	for rows.Next() {
 		var accountID, lockState string
-		var enabled, deathTimeout, retryInterval int64
-		if err := rows.Scan(&accountID, &enabled, &lockState, &deathTimeout, &retryInterval); err != nil {
+		var deathTimeout, retryInterval int64
+		if err := rows.Scan(&accountID, &lockState, &deathTimeout, &retryInterval); err != nil {
 			return err
 		}
-		lockEnabled := enabled == 1
 		death := normalizeLockRange(int(deathTimeout), defaultLockDeathTimeoutSeconds, 30, 3600)
 		retry := normalizeLockRange(int(retryInterval), defaultLockRetryIntervalSeconds, 5, 30)
 		byAccount[accountID] = LockStatePublic{
-			LockEnabled:              &lockEnabled,
 			LockState:                &lockState,
 			LockDeathTimeoutSeconds:  &death,
 			LockRetryIntervalSeconds: &retry,
