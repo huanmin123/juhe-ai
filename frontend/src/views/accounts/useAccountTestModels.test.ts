@@ -55,6 +55,21 @@ function draftPayloadFixture(): AccountDraftTestPayload['account'] {
   }
 }
 
+function savedAccountListItem(overrides: Partial<AccountListItem> = {}): AccountListItem {
+  return {
+    id: 'acct-saved-1',
+    providerCode: 'gpt',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    name: '已保存账户',
+    type: 'api_key',
+    status: 'active',
+    healthCheckModel: 'gpt-5.6',
+    healthCheckEndpointMode: 'chat_json',
+    ...overrides
+  } as AccountListItem
+}
+
 function setupTestModels(options: {
   isManagementView?: boolean
   scopeParams?: { systemAccountId: string }
@@ -70,6 +85,34 @@ function setupTestModels(options: {
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+describe('useAccountTestModels 已保存账户测试选项', () => {
+  it('initializeSavedAccountTestOptions 首开以本地推导的完整形态集初始化，检查形态优先选中', () => {
+    const { hook, testForm } = setupTestModels()
+    hook.initializeSavedAccountTestOptions(savedAccountListItem())
+    expect(hook.testEndpointModes.value).toEqual(['chat_json', 'chat_sse', 'responses_sse', 'responses_json'])
+    expect(testForm.model).toBe('gpt-5.6')
+    expect(testForm.testEndpointMode).toBe('chat_json')
+    expect(hook.testModelOptions.value).toEqual([
+      {
+        label: 'gpt-5.6',
+        value: 'gpt-5.6',
+        testEndpointModes: ['chat_json', 'chat_sse', 'responses_sse', 'responses_json']
+      }
+    ])
+    expect(hook.testModelsReady.value).toBe(true)
+  })
+
+  it('检查形态不在推导集内时回退首个可测形态', () => {
+    const { hook, testForm } = setupTestModels()
+    hook.initializeSavedAccountTestOptions(
+      savedAccountListItem({ healthCheckEndpointMode: 'images_json' as AccountListItem['healthCheckEndpointMode'] })
+    )
+    expect(hook.testEndpointModes.value).toEqual(['chat_sse', 'responses_sse', 'chat_json', 'responses_json'])
+    expect(testForm.testEndpointMode).toBe('chat_sse')
+    expect(hook.testModelsReady.value).toBe(true)
+  })
 })
 
 describe('useAccountTestModels 草稿测试选项', () => {

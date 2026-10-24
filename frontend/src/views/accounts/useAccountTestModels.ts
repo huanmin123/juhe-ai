@@ -11,6 +11,7 @@ import type {
 } from '@/api/domains/accounts'
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { accountTestEndpointModesForAccount } from './accountEndpointModes'
 import { accountOperationScopeParams } from './accountOperationScope'
 import type { AccountTestDraftMode } from './accountTestSessionClient'
 import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
@@ -55,17 +56,26 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     resetTestModels()
     selectedAccount = account
     defaultModel = healthCheckModel.trim()
+    // 首开零请求：请求形态先以本地推导的账户可测试形态集展示（检查形态
+    // 优先选中），模型下拉首次展开加载 options 后再按模型能力收敛。
+    const modes = accountTestEndpointModesForAccount(account)
+    testEndpointModes.value = modes.length ? modes : (healthCheckEndpointMode ? [healthCheckEndpointMode] : [])
+    let initialEndpointMode: AccountTestEndpointMode = 'account_default'
+    if (modes.includes(healthCheckEndpointMode)) {
+      initialEndpointMode = healthCheckEndpointMode
+    } else if (testEndpointModes.value[0]) {
+      initialEndpointMode = testEndpointModes.value[0]
+    }
+    input.testForm.testEndpointMode = initialEndpointMode
     testModelOptions.value = defaultModel
       ? [{
           label: defaultModel,
-          testEndpointModes: [healthCheckEndpointMode],
+          testEndpointModes: [...testEndpointModes.value],
           value: defaultModel
         }]
       : []
-    testEndpointModes.value = [healthCheckEndpointMode]
     input.testForm.model = defaultModel
-    input.testForm.testEndpointMode = healthCheckEndpointMode
-    testModelsReady.value = Boolean(defaultModel && healthCheckEndpointMode)
+    testModelsReady.value = Boolean(defaultModel && initialEndpointMode !== 'account_default')
   }
 
   async function loadTestModelOptions(

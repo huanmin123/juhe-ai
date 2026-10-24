@@ -9,6 +9,10 @@ export function apiKeyRouteStrategyName(apiKey: ApiKeySummary): string {
   return apiKey.routeStrategyName || apiKey.routeStrategyId || '-'
 }
 
+export function apiKeySchedulingPreferenceText(apiKey: ApiKeySummary): string {
+  return apiKey.schedulingPreferenceName?.trim() || '-'
+}
+
 export function apiKeyRouteStrategyModeText(mode?: RouteStrategyMode): string {
   if (mode === 'weighted') return '权重调度路由'
   if (mode === 'round_robin') return '轮询路由'

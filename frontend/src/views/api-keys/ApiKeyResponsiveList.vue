@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2020 : 1840"
+    :scroll-x="isManagementView ? 2180 : 2000"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -72,6 +72,14 @@
         <div class="route-strategy-cell">
           <span>{{ apiKeyRouteStrategyName(record) }}</span>
           <a-tag :color="apiKeyRouteStrategyTagColor(record)">{{ apiKeyRouteStrategyModeText(record.routeStrategyMode) }}</a-tag>
+        </div>
+      </template>
+      <template v-else-if="column.key === 'schedulingPreference'">
+        <div class="scheduling-preference-cell">
+          <span :class="apiKeySchedulingPreferenceText(record) === '-' ? 'muted-cell' : ''">
+            {{ apiKeySchedulingPreferenceText(record) }}
+          </span>
+          <a-tag v-if="record.schedulingPreferenceBuiltIn" color="blue">内置</a-tag>
         </div>
       </template>
       <template v-else-if="column.key === 'systemAccount'">
@@ -139,6 +147,10 @@
             <span>策略路由</span>
             <strong>{{ apiKeyRouteStrategyName(record) }} / {{ apiKeyRouteStrategyModeText(record.routeStrategyMode) }}</strong>
           </div>
+          <div v-if="record.schedulingPreferenceName" class="mobile-list-meta-item mobile-list-meta-wide">
+            <span>调度偏好</span>
+            <strong>{{ apiKeySchedulingPreferenceText(record) }}</strong>
+          </div>
           <div v-if="record.description" class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
             <strong>{{ record.description }}</strong>
@@ -170,6 +182,7 @@ import {
   apiKeyRouteStrategyTagColor,
   apiKeyScheduleSummary,
   apiKeyScheduleTagColor,
+  apiKeySchedulingPreferenceText,
   apiKeyStatusTagColor,
   apiKeyStatusTagLabel,
   apiKeyStatusTooltipLines,
@@ -236,6 +249,20 @@ const emit = defineEmits<{
 
 .route-strategy-cell span {
   max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduling-preference-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 160px;
+}
+
+.scheduling-preference-cell span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

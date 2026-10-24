@@ -44,6 +44,11 @@ async function verifyManagementLazyLoading(): Promise<void> {
   assert.equal(optionsCalls, 0, '管理端首开测试弹窗不得预取模型选项')
   assert.equal(modal.testForm.model, account.healthCheckModel, '首开默认模型必须使用当前账户检查模型')
   assert.equal(modal.testForm.testEndpointMode, account.healthCheckEndpointMode, '首开默认请求形态必须使用账户摘要中的检查形态')
+  assert.deepEqual(
+    modal.testEndpointModes.value,
+    ['responses_sse', 'chat_sse', 'chat_json', 'responses_json'],
+    '首开请求形态下拉必须立即给出本地推导的完整形态集，不得只剩检查形态一项'
+  )
 
   await modal.loadAccountTestModelOptions(true)
   assert.equal(optionsCalls, 1, '展开模型下拉应按需加载一次模型选项')
