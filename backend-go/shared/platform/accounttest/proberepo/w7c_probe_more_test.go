@@ -54,7 +54,7 @@ func TestW7CCredentialHelperMatrix(t *testing.T) {
 		t.Fatal("bool is not a float")
 	}
 
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	pool := map[string]any{"api_keys": []any{"a", "b"}}
 	// 供应商解耦后的等价词表：gpt 直取；空 vendor（generic_http）+ openai 协议
 	// 面承接旧 openai-compatible 语义。
@@ -76,7 +76,7 @@ func TestW7CCredentialHelperMatrix(t *testing.T) {
 }
 
 func TestW7CMutationPureHelpers(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	if sql, params := h.store.configFenceSQL(0), h.store.configFenceParams(0); sql != "" || params != nil {
 		t.Fatal("config fence below 1 must be empty")
 	}
@@ -129,7 +129,7 @@ func TestW7CMutationPureHelpers(t *testing.T) {
 }
 
 func TestW7CCanceledContextMutationArms(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
@@ -200,7 +200,7 @@ func TestW7CListDueForProbeFiltersBrokenCandidates(t *testing.T) {
 }
 
 func TestW7CLoadProbeViewMissingArms(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	_ = key1
 
@@ -215,12 +215,12 @@ func TestW7CLoadProbeViewMissingArms(t *testing.T) {
 	}
 	// loadSupportedModels skips blank and duplicate upstream names（新形状经
 	// models 外键解析，重名 = 两个 model_id 指向同一 upstream_model）。
-	h.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
-	    VALUES ('model-blank', 'gpt', '', '', 'global', 'active', ?)`, nowMillisText())
-	h.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES ('acc-1', 'model-blank', ?)`, nowMillisText())
-	h.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
-	    VALUES ('model-dup', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', ?)`, nowMillisText())
-	h.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES ('acc-1', 'model-dup', ?)`, nowMillisText())
+	h.exec(t, `INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+	    VALUES ('model-blank', 'gpt', '', '', 'global', 'active', $1)`, nowMillisText())
+	h.exec(t, `INSERT INTO juhe_business.account_supported_models (account_id, model_id, created_at) VALUES ('acc-1', 'model-blank', $1)`, nowMillisText())
+	h.exec(t, `INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+	    VALUES ('model-dup', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', $1)`, nowMillisText())
+	h.exec(t, `INSERT INTO juhe_business.account_supported_models (account_id, model_id, created_at) VALUES ('acc-1', 'model-dup', $1)`, nowMillisText())
 	account, err := h.store.LoadAccountForTest(context.Background(), "acc-1")
 	if err != nil || account == nil {
 		t.Fatalf("account: %v %v", account, err)
@@ -229,8 +229,8 @@ func TestW7CLoadProbeViewMissingArms(t *testing.T) {
 		t.Fatalf("models: %v", account.SupportedModels)
 	}
 	// loadAPIKeyRuntimeStatuses skips blank fingerprints.
-	h.exec(t, `INSERT INTO account_api_key_runtime_states (id, system_account_id, account_id, key_fingerprint, key_index, status, updated_at)
-	    VALUES ('blank-fp', 'sys-1', 'acc-1', '', 9, 'active', ?)`, nowMillisText())
+	h.exec(t, `INSERT INTO juhe_business.account_api_key_runtime_states (id, system_account_id, account_id, key_fingerprint, key_index, status, created_at, updated_at)
+	    VALUES ('blank-fp', 'sys-1', 'acc-1', '', 9, 'active', $1, $1)`, nowMillisText())
 	// blank fingerprints are invisible to the runtime map; the account stays
 	// available because one active pool key remains.
 	if !account.EffectiveAvailable {
@@ -242,7 +242,7 @@ func TestW7CLoadProbeViewMissingArms(t *testing.T) {
 	// Unfenced success against a state whose last_attempt_at lies in the
 	// future changes nothing (plain false, no stale reason).
 	h.seedRuntimeState(t, "acc-1", h.store.FingerprintAPIKey("a"), 0, "temporary_unavailable", plusMillis(600_000))
-	h.exec(t, `UPDATE account_api_key_runtime_states SET last_attempt_at = ? WHERE key_fingerprint = ?`,
+	h.exec(t, `UPDATE juhe_business.account_api_key_runtime_states SET last_attempt_at = $1 WHERE key_fingerprint = $2`,
 		plusMillis(300_000), h.store.FingerprintAPIKey("a"))
 	result, err := h.store.RecordKeySuccess(context.Background(), accountquality.KeySuccessInput{
 		AccountID: "acc-1", KeyFingerprint: h.store.FingerprintAPIKey("a"), TrafficSource: "cooldown_retest",

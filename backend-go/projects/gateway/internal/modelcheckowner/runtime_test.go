@@ -2,14 +2,12 @@ package modelcheckowner
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -95,6 +93,8 @@ func TestHasTerminalEvidenceExcludingTimeout(t *testing.T) {
 // BUG-0259 / §1.2：核心协议探针（tool）第三次仍非 HTTP 200 时整轮判
 // unavailable，且必须抑制质量判定（not_triggered、不处罚、不写健康事实），
 // 不得按部分证据正常计分为达标。
+//
+// 本用例走 w14mRuntimeDB failpoint 注入臂（随 w14m 批次迁移）。
 func TestRuntimeSuppressesQualityDecisionOnCoreProbeTerminalFailure(t *testing.T) {
 	server := w14mNewProbeServer(t, func(body string) (int, string) {
 		if strings.Contains(body, "record_model_check") {
@@ -150,20 +150,8 @@ func TestRuntimeSuppressesQualityDecisionOnCoreProbeTerminalFailure(t *testing.T
 }
 
 func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range runtimeTestDDL() {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, j3bRuntimeFixtureDDLs()...)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,11 +193,11 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 		t.Fatalf("quick profile trustFormed=%v, want explicit false", data["trustFormed"])
 	}
 	var status, targetName, targetOwner, groupID, traceID string
-	if err := store.db.QueryRow(`SELECT status,target_name,target_owner_system_account_id,group_id,trace_id FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status, &targetName, &targetOwner, &groupID, &traceID); err != nil || status != string(RunCompleted) || targetName != "Runtime Account" || targetOwner != "sys" || groupID != "group-runtime" || traceID == "" {
+	if err := store.db.QueryRow(j3bQ(`SELECT status,target_name,target_owner_system_account_id,group_id,trace_id FROM model_check_runs WHERE id=?`), result.RunID).Scan(&status, &targetName, &targetOwner, &groupID, &traceID); err != nil || status != string(RunCompleted) || targetName != "Runtime Account" || targetOwner != "sys" || groupID != "group-runtime" || traceID == "" {
 		t.Fatalf("run projection status=%s targetName=%q targetOwner=%q groupID=%q traceID=%q err=%v", status, targetName, targetOwner, groupID, traceID, err)
 	}
 	var requestSummary string
-	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT request_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&requestSummary); err != nil {
 		t.Fatal(err)
 	}
 	var snapshot map[string]any
@@ -217,24 +205,24 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 		t.Fatalf("request snapshot=%s err=%v", requestSummary, err)
 	}
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 8 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`), result.RunID).Scan(&count); err != nil || count != 8 {
 		t.Fatalf("item count=%d err=%v", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`), result.RunID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("quick observation count=%d err=%v, quick checks must be diagnostic-only", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_trust_observation_receipts`).Scan(&count); err != nil || count != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_trust_observation_receipts`)).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("quick trust receipt count=%d err=%v", count, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND aggregation_completed_at IS NOT NULL`, result.RunID).Scan(&count); err != nil || count != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND aggregation_completed_at IS NOT NULL`), result.RunID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("quick consumed observation count=%d err=%v", count, err)
 	}
 	var observationCount int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&observationCount); err != nil || observationCount != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`)).Scan(&observationCount); err != nil || observationCount != 0 {
 		t.Fatalf("quick trust latest rows=%d err=%v, quick checks must not update latest", observationCount, err)
 	}
 	var evidenceSummary string
-	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&evidenceSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT request_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&evidenceSummary); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(evidenceSummary, server.URL) {
@@ -263,15 +251,15 @@ func TestRuntimeKeepsHTTP200QualityFailureCompleted(t *testing.T) {
 		t.Fatalf("HTTP 200 quality failure must complete durably: result=%+v err=%v", result, err)
 	}
 	var status string
-	if err := store.db.QueryRow(`SELECT status FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status); err != nil || status != string(RunCompleted) {
+	if err := store.db.QueryRow(j3bQ(`SELECT status FROM model_check_runs WHERE id=?`), result.RunID).Scan(&status); err != nil || status != string(RunCompleted) {
 		t.Fatalf("durable status=%q err=%v, want completed", status, err)
 	}
 	var itemCount int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&itemCount); err != nil || itemCount == 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`), result.RunID).Scan(&itemCount); err != nil || itemCount == 0 {
 		t.Fatalf("quality result item count=%d err=%v, want at least one", itemCount, err)
 	}
 	var level string
-	if err := store.db.QueryRow(`SELECT level FROM model_check_runs WHERE id=?`, result.RunID).Scan(&level); err != nil || level == "likely" || level == "high_confidence" {
+	if err := store.db.QueryRow(j3bQ(`SELECT level FROM model_check_runs WHERE id=?`), result.RunID).Scan(&level); err != nil || level == "likely" || level == "high_confidence" {
 		t.Fatalf("negative HTTP 200 evidence level=%q err=%v, want non-positive quality level", level, err)
 	}
 }
@@ -313,7 +301,7 @@ func TestRuntimeWritesQualityDecisionV2Fields(t *testing.T) {
 		t.Fatalf("result data hardFailure=%v", data["hardFailure"])
 	}
 	var decision string
-	if err := store.db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&decision); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&decision); err != nil {
 		t.Fatal(err)
 	}
 	fields := map[string]any{}
@@ -367,7 +355,7 @@ func TestRuntimeWritesTimeoutPenaltyDecisionKeys(t *testing.T) {
 	readDecision := func(t *testing.T, runID string) map[string]any {
 		t.Helper()
 		var decision string
-		if err := store.db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, runID).Scan(&decision); err != nil {
+		if err := store.db.QueryRow(j3bQ(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`), runID).Scan(&decision); err != nil {
 			t.Fatal(err)
 		}
 		fields := map[string]any{}
@@ -379,7 +367,7 @@ func TestRuntimeWritesTimeoutPenaltyDecisionKeys(t *testing.T) {
 	readPolicySnapshot := func(t *testing.T, runID string) map[string]any {
 		t.Helper()
 		var snapshot string
-		if err := store.db.QueryRow(`SELECT policy_snapshot_json FROM model_check_runs WHERE id=?`, runID).Scan(&snapshot); err != nil {
+		if err := store.db.QueryRow(j3bQ(`SELECT policy_snapshot_json FROM model_check_runs WHERE id=?`), runID).Scan(&snapshot); err != nil {
 			t.Fatal(err)
 		}
 		fields := map[string]any{}
@@ -529,20 +517,8 @@ func TestRuntimeManualEnforcementRequiresEnabledPhysicalAccount(t *testing.T) {
 }
 
 func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime-mapped-model.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range runtimeTestDDL() {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, j3bRuntimeFixtureDDLs()...)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +581,7 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 	}
 	mu.Unlock()
 	var requestSummary string
-	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT request_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&requestSummary); err != nil {
 		t.Fatal(err)
 	}
 	var frozen map[string]any
@@ -613,26 +589,14 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 		t.Fatalf("frozen request=%s err=%v", requestSummary, err)
 	}
 	var observationCount int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observationCount); err != nil || observationCount != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`), result.RunID).Scan(&observationCount); err != nil || observationCount != 0 {
 		t.Fatalf("quick mapping observation count=%d err=%v", observationCount, err)
 	}
 }
 
 func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime-trusted-comparison.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range runtimeTestDDL() {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, j3bRuntimeFixtureDDLs()...)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +638,7 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		t.Fatalf("trusted comparison probe calls target=%d comparison=%d", targetRequests, comparisonRequests)
 	}
 	var requestSummary string
-	if err := store.db.QueryRow(`SELECT request_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT request_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&requestSummary); err != nil {
 		t.Fatal(err)
 	}
 	var frozen map[string]any
@@ -686,22 +650,22 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		t.Fatalf("frozen trusted comparison=%#v", frozen["trustedComparison"])
 	}
 	var trustedComparisonEnabled, trustedComparisonAvailable int
-	if err := store.db.QueryRow(`SELECT trusted_comparison_enabled,trusted_comparison_available FROM model_check_runs WHERE id=?`, result.RunID).Scan(&trustedComparisonEnabled, &trustedComparisonAvailable); err != nil || trustedComparisonEnabled != 1 || trustedComparisonAvailable != 1 {
+	if err := store.db.QueryRow(j3bQ(`SELECT trusted_comparison_enabled,trusted_comparison_available FROM model_check_runs WHERE id=?`), result.RunID).Scan(&trustedComparisonEnabled, &trustedComparisonAvailable); err != nil || trustedComparisonEnabled != 1 || trustedComparisonAvailable != 1 {
 		t.Fatalf("trusted comparison durable state enabled=%d available=%d err=%v", trustedComparisonEnabled, trustedComparisonAvailable, err)
 	}
 	var observations int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations < 10 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`), result.RunID).Scan(&observations); err != nil || observations < 10 {
 		t.Fatalf("observations=%d err=%v", observations, err)
 	}
 	var trusted int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family LIKE 'trusted_comparison.%'`, result.RunID).Scan(&trusted); err != nil || trusted != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=? AND probe_family LIKE 'trusted_comparison.%'`), result.RunID).Scan(&trusted); err != nil || trusted != 0 {
 		t.Fatalf("trusted comparison observations=%d err=%v", trusted, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='comparison-sys' AND account_id='comparison-acct' AND requested_model='gpt-5.6-sol'`).Scan(&trusted); err != nil || trusted != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='comparison-sys' AND account_id='comparison-acct' AND requested_model='gpt-5.6-sol'`)).Scan(&trusted); err != nil || trusted != 0 {
 		t.Fatalf("trusted comparison projection=%d err=%v", trusted, err)
 	}
 	var resultSummary string
-	if err := store.db.QueryRow(`SELECT result_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&resultSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT result_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&resultSummary); err != nil {
 		t.Fatal(err)
 	}
 	var summary map[string]json.RawMessage
@@ -717,7 +681,7 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 	}
 	var latestProtocol, latestIdentity string
 	var latestCoverage int
-	if err := store.db.QueryRow(`SELECT protocol_status,identity_status,evidence_coverage FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&latestProtocol, &latestIdentity, &latestCoverage); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT protocol_status,identity_status,evidence_coverage FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`)).Scan(&latestProtocol, &latestIdentity, &latestCoverage); err != nil {
 		t.Fatal(err)
 	}
 	if latestProtocol != report.ProtocolStatus || latestIdentity != report.IdentityStatus || latestCoverage != report.EvidenceCoverage {
@@ -815,21 +779,21 @@ func TestRuntimeFullRunFormsUniversalEvidenceBothWays(t *testing.T) {
 	assertFormedQualityFailure(t, RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ProviderCode: "openai", Threshold: 70, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "acct-2", TrustedComparisonSystemAccountID: "sys", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
 	// v6 第 7 族：两次 full 运行的 sampling_statistics 观测行必须为 complete。
 	var samplingComplete, samplingPartial int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE probe_family='sampling_statistics' AND observation_status='complete'`).Scan(&samplingComplete); err != nil || samplingComplete != 2 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE probe_family='sampling_statistics' AND observation_status='complete'`)).Scan(&samplingComplete); err != nil || samplingComplete != 2 {
 		t.Fatalf("sampling_statistics complete observations=%d err=%v", samplingComplete, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE probe_family='sampling_statistics' AND observation_status<>'complete'`).Scan(&samplingPartial); err != nil || samplingPartial != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE probe_family='sampling_statistics' AND observation_status<>'complete'`)).Scan(&samplingPartial); err != nil || samplingPartial != 0 {
 		t.Fatalf("sampling_statistics partial observations=%d err=%v", samplingPartial, err)
 	}
 	if enforcement.calls != 2 {
 		t.Fatalf("formed quality failures must reach the enforcement adapter: calls=%d", enforcement.calls)
 	}
 	var facts int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&facts); err != nil || facts != 1 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`)).Scan(&facts); err != nil || facts != 1 {
 		t.Fatalf("health facts=%d err=%v", facts, err)
 	}
 	var latest int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&latest); err != nil || latest != 1 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`)).Scan(&latest); err != nil || latest != 1 {
 		t.Fatalf("full trust latest rows=%d err=%v", latest, err)
 	}
 }
@@ -865,7 +829,7 @@ func TestRuntimeAllowsQuickTrustedComparison(t *testing.T) {
 		t.Fatalf("quick trusted comparison must probe both accounts: target=%d comparison=%d", targetRequests, comparisonRequests)
 	}
 	var trustedComparisonEnabled, trustedComparisonAvailable int
-	if err := store.db.QueryRow(`SELECT trusted_comparison_enabled,trusted_comparison_available FROM model_check_runs WHERE id=?`, result.RunID).Scan(&trustedComparisonEnabled, &trustedComparisonAvailable); err != nil || trustedComparisonEnabled != 1 || trustedComparisonAvailable != 1 {
+	if err := store.db.QueryRow(j3bQ(`SELECT trusted_comparison_enabled,trusted_comparison_available FROM model_check_runs WHERE id=?`), result.RunID).Scan(&trustedComparisonEnabled, &trustedComparisonAvailable); err != nil || trustedComparisonEnabled != 1 || trustedComparisonAvailable != 1 {
 		t.Fatalf("quick trusted comparison durable state enabled=%d available=%d err=%v", trustedComparisonEnabled, trustedComparisonAvailable, err)
 	}
 }
@@ -938,27 +902,15 @@ func TestEvaluationObservationStatusIsPartialForSkippedAndUnknown(t *testing.T) 
 }
 
 func TestAppendEvaluationObservationsPersistsFamilyRowsWithoutEvidencePayload(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "family-observations.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range runtimeTestDDL() {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := seed.Exec(`INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,account_id,model,profile,trigger_kind,schedule_id,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,trace_id,created_at,updated_at) VALUES ('run-family','sys','actor','openai','account','acct','acct','gpt-5.6','full','manual',NULL,'running','unavailable',0,100,'','{}','{}','{}','{}','j3b-v1','2026-08-28T00:00:00Z',NULL,'2026-08-28T00:00:00Z','2026-08-28T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, j3bRuntimeFixtureDDLs()...)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if _, err := store.db.Exec(j3bQ(`INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,account_id,model,profile,trigger_kind,schedule_id,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,trace_id,created_at,updated_at) VALUES ('run-family','sys','actor','openai','account','acct','acct','gpt-5.6','full','manual',NULL,'running','unavailable',0,100,'','{}','{}','{}','{}','j3b-v1','2026-08-28T00:00:00Z',NULL,'2026-08-28T00:00:00Z','2026-08-28T00:00:00Z')`)); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2026, 8, 28, 1, 2, 3, 0, time.UTC)
 	evaluations := []modelcheckprobe.Evaluation{
 		{Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"secret": "must-not-persist"}},
@@ -971,7 +923,7 @@ func TestAppendEvaluationObservationsPersistsFamilyRowsWithoutEvidencePayload(t 
 	if err := appendEvaluationObservations(context.Background(), store, "run-family", "sys", "acct", "openai", "requested", "mapped", "mapped", "passed", "unknown", 2, evaluations, now); err != nil {
 		t.Fatalf("exact family observation replay must be idempotent: %v", err)
 	}
-	rows, err := store.db.Query(`SELECT id,probe_family,observation_status,evidence_coverage,created_at FROM model_check_observations WHERE run_id=? ORDER BY id`, "run-family")
+	rows, err := store.db.Query(j3bQ(`SELECT id,probe_family,observation_status,evidence_coverage,created_at FROM model_check_observations WHERE run_id=? ORDER BY id`), "run-family")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1053,23 +1005,12 @@ func (t cancelRoundTripper) RoundTrip(request *http.Request) (*http.Response, er
 	return nil, request.Context().Err()
 }
 
+// newRuntimeTestStore 创建 PG 运行时全量夹具库（j3bRuntimeFixtureDDLs）并
+// 以生产 OpenStore postgres 臂打开。
 func newRuntimeTestStore(t *testing.T) *Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "runtime-failure.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range runtimeTestDDL() {
-		if _, err := seed.Exec(ddl); err != nil {
-			_ = seed.Close()
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, j3bRuntimeFixtureDDLs()...)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1079,14 +1020,14 @@ func newRuntimeTestStore(t *testing.T) *Store {
 func assertRuntimeTerminalDurability(t *testing.T, store *Store, runID string, status RunStatus, now time.Time) {
 	t.Helper()
 	var gotStatus, finished string
-	if err := store.db.QueryRow(`SELECT status,finished_at FROM model_check_runs WHERE id=?`, runID).Scan(&gotStatus, &finished); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT status,finished_at FROM model_check_runs WHERE id=?`), runID).Scan(&gotStatus, &finished); err != nil {
 		t.Fatal(err)
 	}
 	if gotStatus != string(status) || finished != now.Format(time.RFC3339Nano) {
 		t.Fatalf("run status=%q finished=%q, want %q at %s", gotStatus, finished, status, now.Format(time.RFC3339Nano))
 	}
 	var outcomes int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_outcomes WHERE input_id IN (SELECT input_id FROM model_check_inputs WHERE target_id='acct')`).Scan(&outcomes); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_outcomes WHERE input_id IN (SELECT input_id FROM model_check_inputs WHERE target_id='acct')`)).Scan(&outcomes); err != nil {
 		t.Fatal(err)
 	}
 	if outcomes != 1 {
@@ -1148,23 +1089,3 @@ func (runtimeTestModelLimits) Version() string { return "runtime-test-limits-v1"
 func (runtimeTestModelLimits) MaxInputTokens(string, string, modelcheckprofile.Protocol) (int, error) {
 	return 12000, nil
 }
-
-func runtimeTestDDL() []string {
-	return []string{
-		`CREATE TABLE model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version INTEGER NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, payload BLOB NOT NULL)`,
-		`CREATE TABLE model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, claim_until TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token INTEGER NOT NULL, observed_at TEXT NOT NULL, stored_at TEXT NOT NULL, payload BLOB NOT NULL, payload_digest TEXT NOT NULL, committed INTEGER NOT NULL)`,
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, message TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, error_code TEXT, error_message TEXT, quality_health_sync_status TEXT)`,
-		`CREATE TABLE model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL, error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, probe_family TEXT NOT NULL, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL, created_at TEXT NOT NULL, aggregation_completed_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, score INTEGER NOT NULL, threshold INTEGER NOT NULL, level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(account_id,stat_hour))`,
-		`CREATE TABLE model_account_trust_results (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, identity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', mapping_status TEXT NOT NULL DEFAULT 'unknown', usage_integrity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', protocol_status TEXT NOT NULL DEFAULT 'insufficient_evidence', evidence_status TEXT NOT NULL DEFAULT 'insufficient', evidence_coverage INTEGER NOT NULL DEFAULT 0, observation_count INTEGER NOT NULL DEFAULT 0, reason_codes_json TEXT NOT NULL DEFAULT '[]', last_observed_id TEXT, last_observed_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
-		`CREATE TABLE model_trust_latest_dirty_accounts (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, dirty_reason TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
-		`CREATE TABLE model_trust_observation_receipts (observation_id TEXT PRIMARY KEY, observation_created_at TEXT NOT NULL, processed_at TEXT NOT NULL)`,
-		`CREATE TABLE model_trust_aggregation_state (scope_key TEXT PRIMARY KEY, cursor_created_at TEXT, cursor_id TEXT, last_success_at TEXT, updated_at TEXT NOT NULL)`,
-	}
-}
-
-var _ = json.Valid
-var _ = strings.TrimSpace

@@ -15,7 +15,7 @@ import (
 
 // 每个入口在关闭句柄上必须返回错误（驱动层错误传播矩阵）。
 func TestW12HStoreClosedHandleMatrix(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	if err := h.db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestW12HStoreClosedHandleMatrix(t *testing.T) {
 
 // 缺表（未建 schema）时读写入口的失败面。
 func TestW12HStoreMissingSchemaArms(t *testing.T) {
-	h := openTestDB(t)
+	h := openBareTestDBPostgres(t)
 	ctx := context.Background()
 	if err := h.store.ValidateCoreTables(ctx); err == nil {
 		t.Fatal("未建 schema 时 ValidateCoreTables 必须失败")

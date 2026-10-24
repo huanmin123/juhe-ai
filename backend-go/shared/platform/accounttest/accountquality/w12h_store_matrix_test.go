@@ -2,6 +2,9 @@ package accountquality
 
 // w12h 补充 arms（二）：冷却决策解析助手、额度判定剩余臂、停机排空超时、
 // 统计存储坏表矩阵的错误传播。
+// 坏表矩阵与错误臂走 pgkit_test.go 的 newQualityStorePostgres（StatsPostgres
+// 生产臂）；依赖 SQLite Close 关闭语义与 PRAGMA 路径校验的臂保留在
+// TestW12HStoreSQLiteArmValidation（组B，见 pgkit_test.go 三组分类）。
 
 import (
 	"context"
@@ -176,12 +179,12 @@ func (r *w12hBlockingCooldownReader) HasAPIKeyEntry(ctx context.Context, candida
 
 func TestW12HStoreBrokenTableMatrix(t *testing.T) {
 	t.Run("分钟表缺失", func(t *testing.T) {
-		store, _, lookup := newQualityStore(t)
+		store, _, lookup := newQualityStorePostgres(t)
 		lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 		if err := store.MarkQualityDirty(context.Background(), "acc-1"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.db.Exec(`DROP TABLE account_quality_minute_stats`); err != nil {
+		if _, err := store.db.Exec(`DROP TABLE juhe_stats.account_quality_minute_stats`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.RefreshFromUsage(context.Background(), RefreshInput{WindowMinutes: 10, Timezone: "UTC", DirtyLimit: DirtyAccountBatchLimit}); err == nil {
@@ -190,13 +193,13 @@ func TestW12HStoreBrokenTableMatrix(t *testing.T) {
 	})
 
 	t.Run("分数表缺失中断刷新事务", func(t *testing.T) {
-		store, clock, lookup := newQualityStore(t)
+		store, clock, lookup := newQualityStorePostgres(t)
 		lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 		store.seedMinute(t, "acc-1", MinuteKey(clock.Now().Add(-time.Minute), time.UTC), 8, 6, 2, 500, 5, "")
 		if err := store.MarkQualityDirty(context.Background(), "acc-1"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.db.Exec(`DROP TABLE account_quality_scores`); err != nil {
+		if _, err := store.db.Exec(`DROP TABLE juhe_stats.account_quality_scores`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.RefreshFromUsage(context.Background(), RefreshInput{WindowMinutes: 10, Timezone: "UTC", DirtyLimit: DirtyAccountBatchLimit}); err == nil {
@@ -209,8 +212,8 @@ func TestW12HStoreBrokenTableMatrix(t *testing.T) {
 	})
 
 	t.Run("脏表缺失使 MarkQualityDirty 失败", func(t *testing.T) {
-		store, _, _ := newQualityStore(t)
-		if _, err := store.db.Exec(`DROP TABLE account_quality_dirty_accounts`); err != nil {
+		store, _, _ := newQualityStorePostgres(t)
+		if _, err := store.db.Exec(`DROP TABLE juhe_stats.account_quality_dirty_accounts`); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.MarkQualityDirty(context.Background(), "acc-1"); err == nil {
@@ -219,9 +222,9 @@ func TestW12HStoreBrokenTableMatrix(t *testing.T) {
 	})
 
 	t.Run("候选读取 limit/offset 钳制", func(t *testing.T) {
-		store, _, lookup := newQualityStore(t)
+		store, _, lookup := newQualityStorePostgres(t)
 		lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
-		if _, err := store.db.Exec(`INSERT INTO account_quality_scores (
+		if _, err := store.db.Exec(`INSERT INTO juhe_stats.account_quality_scores (
 			account_id, system_account_id, provider_code, quality_score, quality_state,
 			recent_request_count, recent_success_count, recent_error_count, success_rate,
 			window_started_at, window_ended_at, updated_at
@@ -234,7 +237,7 @@ func TestW12HStoreBrokenTableMatrix(t *testing.T) {
 			t.Fatalf("钳制后应命中: %+v %v", candidates, err)
 		}
 		// 空 account_id 行跳过。
-		if _, err := store.db.Exec(`INSERT INTO account_quality_scores (
+		if _, err := store.db.Exec(`INSERT INTO juhe_stats.account_quality_scores (
 			account_id, system_account_id, provider_code, quality_score, quality_state,
 			recent_request_count, recent_success_count, recent_error_count,
 			window_started_at, window_ended_at, updated_at
@@ -246,7 +249,12 @@ func TestW12HStoreBrokenTableMatrix(t *testing.T) {
 			t.Fatalf("空 account_id 行必须跳过: %+v %v", again, err)
 		}
 	})
+}
 
+// TestW12HStoreSQLiteArmValidation 是组B（StatsSQLite 生产臂专属语义）：
+// 关闭句柄后入口失败（PG 模式 Close 对注入句柄无操作，该臂仅 SQLite 成立）
+// 与 DatabasePath 是目录的 PRAGMA 校验。随 B3/B6 生产 sqlite 臂删除同批退役。
+func TestW12HStoreSQLiteArmValidation(t *testing.T) {
 	t.Run("关闭句柄后入口失败", func(t *testing.T) {
 		store, _, _ := newQualityStore(t)
 		if err := store.Close(); err != nil {
@@ -275,20 +283,14 @@ func (w12hFailingLookup) LoadAccountMetadataByIds(ctx context.Context, ids []str
 
 func TestW12HStoreMoreErrorArms(t *testing.T) {
 	// 业务元数据读取失败 → 刷新失败。
-	store, _, _ := newQualityStore(t)
+	store, _, _ := newQualityStorePostgres(t)
 	store.SetBusiness(w12hFailingLookup{})
 	if _, err := store.RefreshFromUsage(context.Background(), RefreshInput{WindowMinutes: 10, Timezone: "UTC"}); err == nil {
 		t.Fatal("业务元数据失败必须上抛")
 	}
 
-	// DatabasePath 是目录 → PRAGMA 失败。
-	dir := t.TempDir()
-	if _, err := OpenStatsStore(StatsStoreConfig{Mode: StatsSQLite, DatabasePath: dir}); err == nil {
-		t.Fatal("目录路径必须导致 PRAGMA 失败")
-	}
-
 	// DirtyLimit 越上界被钳制（不报错）。
-	store2, _, lookup2 := newQualityStore(t)
+	store2, _, lookup2 := newQualityStorePostgres(t)
 	lookup2.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	store2.seedMinute(t, "acc-1", MinuteKey(time.Now().Add(-time.Minute), time.UTC), 8, 6, 2, 500, 5, "")
 	if err := store2.MarkQualityDirty(context.Background(), "acc-1"); err != nil {
@@ -301,6 +303,14 @@ func TestW12HStoreMoreErrorArms(t *testing.T) {
 	// findFirstField 非对象输入。
 	if got := findFirstField(42, []string{"reset_at"}); got != nil {
 		t.Fatalf("非对象必须为 nil: %v", got)
+	}
+}
+
+// DatabasePath 是目录 → PRAGMA 失败（组B：StatsSQLite 生产臂构造校验）。
+func TestW12HStoreSQLitePathValidationArm(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := OpenStatsStore(StatsStoreConfig{Mode: StatsSQLite, DatabasePath: dir}); err == nil {
+		t.Fatal("目录路径必须导致 PRAGMA 失败")
 	}
 }
 

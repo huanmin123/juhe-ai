@@ -50,25 +50,17 @@ func TestW7CExecFailureInjectionArms(t *testing.T) {
 	// A tasks-table update abort fails markCanceledTx through Cancel.
 	cancelDBRepo, cancelDB, _ := openTestRepo(t)
 	seedTask(t, cancelDB, "w7c-abort-cancel", "queued", 0, time.Now().UTC())
-	if _, err := cancelDB.Exec(`CREATE TRIGGER w7c_abort_task_update BEFORE UPDATE ON account_test_tasks BEGIN SELECT RAISE(ABORT, 'w7c task update aborted'); END`); err != nil {
-		t.Fatal(err)
-	}
+	pgAbortTrigger(t, cancelDB, "w7c_abort_task_update", "UPDATE", "account_test_tasks", "w7c task update aborted")
 	if err := cancelDBRepo.Cancel(ctx, "w7c-abort-cancel", "m", nil); err == nil || !strings.Contains(err.Error(), "w7c task update aborted") {
 		t.Fatalf("aborted cancel: %v", err)
 	}
-	if _, err := cancelDB.Exec(`DROP TRIGGER w7c_abort_task_update`); err != nil {
-		t.Fatal(err)
-	}
-
 	// A tasks-table delete abort fails cleanupExpired through Maintenance.
 	cleanupRepo, cleanupDB, _ := openTestRepo(t)
 	seedTask(t, cleanupDB, "w7c-abort-cleanup", "success", 0, time.Now().UTC().Add(-48*time.Hour))
-	if _, err := cleanupDB.Exec(`UPDATE account_test_tasks SET finished_at = ? WHERE id = 'w7c-abort-cleanup'`, time.Now().UTC().Add(-48*time.Hour).Format(time.RFC3339Nano)); err != nil {
+	if _, err := cleanupDB.Exec(`UPDATE juhe_business.account_test_tasks SET finished_at = $1 WHERE id = 'w7c-abort-cleanup'`, time.Now().UTC().Add(-48*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cleanupDB.Exec(`CREATE TRIGGER w7c_abort_task_delete BEFORE DELETE ON account_test_tasks BEGIN SELECT RAISE(ABORT, 'w7c task delete aborted'); END`); err != nil {
-		t.Fatal(err)
-	}
+	pgAbortTrigger(t, cleanupDB, "w7c_abort_task_delete", "DELETE", "account_test_tasks", "w7c task delete aborted")
 	_, err := cleanupRepo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "sweep"})
 	if err == nil || !strings.Contains(err.Error(), "w7c task delete aborted") {
 		t.Fatalf("aborted cleanup: %v", err)
@@ -80,12 +72,10 @@ func TestW7CExecFailureInjectionArms(t *testing.T) {
 	now := time.Now().UTC()
 	seedTask(t, idleDB, "w7c-idle-done", "success", 0, now.Add(-time.Hour))
 	w7cSeedSession(t, idleDB, "w7c-abort-idle", "running", nil, now.Add(-time.Hour))
-	if _, err := idleDB.Exec(`UPDATE account_test_tasks SET finished_at = ? WHERE id = 'w7c-idle-done'`, now.Add(-time.Hour).Format(time.RFC3339Nano)); err != nil {
+	if _, err := idleDB.Exec(`UPDATE juhe_business.account_test_tasks SET finished_at = $1 WHERE id = 'w7c-idle-done'`, now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := idleDB.Exec(`CREATE TRIGGER w7c_abort_session_update BEFORE UPDATE ON account_test_sessions BEGIN SELECT RAISE(ABORT, 'w7c session update aborted'); END`); err != nil {
-		t.Fatal(err)
-	}
+	pgAbortTrigger(t, idleDB, "w7c_abort_session_update", "UPDATE", "account_test_sessions", "w7c session update aborted")
 	_, err = idleRepo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "sweep"})
 	if err == nil || !strings.Contains(err.Error(), "w7c session update aborted") {
 		t.Fatalf("aborted idle completion: %v", err)
@@ -94,9 +84,7 @@ func TestW7CExecFailureInjectionArms(t *testing.T) {
 	// A requeue-abort trigger fails the start action's interrupted recovery.
 	requeueRepo, requeueDB, _ := openTestRepo(t)
 	seedTask(t, requeueDB, "w7c-abort-requeue", "running", 0, now.Add(-time.Hour))
-	if _, err := requeueDB.Exec(`CREATE TRIGGER w7c_abort_requeue BEFORE UPDATE ON account_test_tasks BEGIN SELECT RAISE(ABORT, 'w7c requeue aborted'); END`); err != nil {
-		t.Fatal(err)
-	}
+	pgAbortTrigger(t, requeueDB, "w7c_abort_requeue", "UPDATE", "account_test_tasks", "w7c requeue aborted")
 	stale := int64(60_000)
 	if _, err := requeueRepo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "start", StaleRunningMS: &stale}); err == nil || !strings.Contains(err.Error(), "w7c requeue aborted") {
 		t.Fatalf("aborted requeue: %v", err)
@@ -105,9 +93,7 @@ func TestW7CExecFailureInjectionArms(t *testing.T) {
 	// listRunnable surfaces row-scan level failures through sweep as well.
 	failExpiredRepo, failExpiredDB, _ := openTestRepo(t)
 	seedTask(t, failExpiredDB, "w7c-abort-expired", "queued", 0, now.Add(-time.Hour))
-	if _, err := failExpiredDB.Exec(`CREATE TRIGGER w7c_abort_expire_update BEFORE UPDATE ON account_test_tasks BEGIN SELECT RAISE(ABORT, 'w7c expire aborted'); END`); err != nil {
-		t.Fatal(err)
-	}
+	pgAbortTrigger(t, failExpiredDB, "w7c_abort_expire_update", "UPDATE", "account_test_tasks", "w7c expire aborted")
 	result, err := failExpiredRepo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "sweep", MaxQueuedMS: 1000})
 	if err == nil || !strings.Contains(err.Error(), "w7c expire aborted") {
 		t.Fatalf("aborted expire: %v %v", result, err)

@@ -11,15 +11,8 @@ import (
 // manual RunManual from another owner must resolve to Skipped (never execute)
 // so the caller maps it to ErrAccountLeaseHeld (route 409 lease_busy).
 func TestRunManualSkipsWhenOwnerLeaseHeld(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\manual-conflict.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	secret := "manual-conflict-secret"
 	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
 	if err != nil {
@@ -57,15 +50,8 @@ func TestRunManualSkipsWhenOwnerLeaseHeld(t *testing.T) {
 // manual input older than the persisted snapshot must land in report.Stale so
 // the caller maps it to ErrOutcomeStale (route 409 配置已变化).
 func TestRunManualStaleSnapshotReportsStale(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\manual-stale.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	secret := "manual-stale-secret"
 	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
 	if err != nil {

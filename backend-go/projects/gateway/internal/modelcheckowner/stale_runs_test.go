@@ -36,6 +36,7 @@ func TestStaleRunSweepSQLConstruction(t *testing.T) {
 
 // TestStaleRunSweepSQLiteSQLConstruction 钉死 SQLite 方言收尾语句的构造：
 // 与 PG 方言同字段序，比较为纯文本字典序（SQLite 无 ::timestamptz cast）。
+// SQLite 收尾臂是 standalone 形态的生产臂，随 sqlite 臂退役批次一并退役。
 func TestStaleRunSweepSQLiteSQLConstruction(t *testing.T) {
 	query := staleRunSweepSQLiteSQL("model_check_runs")
 	for _, want := range []string{
@@ -61,36 +62,36 @@ func TestStaleRunSweepSQLiteSQLConstruction(t *testing.T) {
 	}
 }
 
-// TestSweepStaleRunsSQLiteMode 覆盖 SQLite 模式（standalone 正式部署模式）
-// 的启动收尾：超过阈值的遗留 running run 被收尾为 failed/owner_lost，
-// 阈值内的新鲜 run 不被波及。
-func TestSweepStaleRunsSQLiteMode(t *testing.T) {
+// TestSweepStaleRunsPostgresMode 覆盖 PG 模式（生产唯一形态）的启动收尾：
+// 超过阈值的遗留 running run 被收尾为 failed/owner_lost，阈值内的新鲜 run
+// 不被波及。
+func TestSweepStaleRunsPostgresMode(t *testing.T) {
 	store := newRuntimeTestStore(t)
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
-	stale := RunRecord{ID: "stale-sqlite-run", SystemAccountID: "sys", ActorSystemAccountID: "sys", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", TriggerKind: "manual", ProbeSetVersion: "p1", StartedAt: now.Add(-2 * time.Hour)}
+	stale := RunRecord{ID: "stale-pg-run", SystemAccountID: "sys", ActorSystemAccountID: "sys", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", TriggerKind: "manual", ProbeSetVersion: "p1", StartedAt: now.Add(-2 * time.Hour)}
 	if err := store.CreateRun(context.Background(), stale); err != nil {
 		t.Fatal(err)
 	}
-	fresh := RunRecord{ID: "fresh-sqlite-run", SystemAccountID: "sys", ActorSystemAccountID: "sys", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", TriggerKind: "manual", ProbeSetVersion: "p1", StartedAt: now}
+	fresh := RunRecord{ID: "fresh-pg-run", SystemAccountID: "sys", ActorSystemAccountID: "sys", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", TriggerKind: "manual", ProbeSetVersion: "p1", StartedAt: now}
 	if err := store.CreateRun(context.Background(), fresh); err != nil {
 		t.Fatal(err)
 	}
 	changed, err := store.SweepStaleRuns(context.Background(), now)
 	if err != nil || changed != 1 {
-		t.Fatalf("sqlite sweep changed=%d err=%v, want 1/nil", changed, err)
+		t.Fatalf("pg sweep changed=%d err=%v, want 1/nil", changed, err)
 	}
 	var status, errorCode string
-	if err := store.db.QueryRow(`SELECT status,error_code FROM model_check_runs WHERE id=?`, stale.ID).Scan(&status, &errorCode); err != nil || status != string(RunFailed) || errorCode != staleRunErrorCode {
-		t.Fatalf("stale sqlite run status=%q errorCode=%q err=%v, want failed/%s", status, errorCode, err, staleRunErrorCode)
+	if err := store.db.QueryRow(j3bQ(`SELECT status,error_code FROM model_check_runs WHERE id=?`), stale.ID).Scan(&status, &errorCode); err != nil || status != string(RunFailed) || errorCode != staleRunErrorCode {
+		t.Fatalf("stale pg run status=%q errorCode=%q err=%v, want failed/%s", status, errorCode, err, staleRunErrorCode)
 	}
-	if err := store.db.QueryRow(`SELECT status FROM model_check_runs WHERE id=?`, fresh.ID).Scan(&status); err != nil || status != string(RunRunning) {
-		t.Fatalf("fresh sqlite run status=%q err=%v, want untouched running", status, err)
+	if err := store.db.QueryRow(j3bQ(`SELECT status FROM model_check_runs WHERE id=?`), fresh.ID).Scan(&status); err != nil || status != string(RunRunning) {
+		t.Fatalf("fresh pg run status=%q err=%v, want untouched running", status, err)
 	}
 	// 幂等：重复执行自然空转。
 	changed, err = store.SweepStaleRuns(context.Background(), now)
 	if err != nil || changed != 0 {
-		t.Fatalf("idempotent sqlite sweep changed=%d err=%v, want 0/nil", changed, err)
+		t.Fatalf("idempotent pg sweep changed=%d err=%v, want 0/nil", changed, err)
 	}
 }
 

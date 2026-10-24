@@ -297,3 +297,256 @@ func TestWIPostgresContextStateStoreOverSQLite(t *testing.T) {
 		_ = tx.Rollback()
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PostgresContextStateStore 臂正测试（组A，pgkit_test.go 夹具）：与分片臂既有
+// 矩阵（contextstore_test.go / wi_shard_store_test.go，组B）断言逐字节一致。
+
+// TestWIPostgresContextStateStoreRowContract 镜像 TestWIShardStoreCRUDRoundTrip
+// 的行契约（分片特有的 Close 后文件重开尾部不适用 PG 臂，不迁移）。
+func TestWIPostgresContextStateStoreRowContract(t *testing.T) {
+	store := newPostgresContextStateStore(t)
+	ctx := context.Background()
+
+	row := CodexContextResponseStateIndex{
+		CodexContextStateBoundary: CodexContextStateBoundary{
+			SystemAccountID: "sys", GroupID: "group",
+		},
+		ResponseID:         "resp-1",
+		SessionID:          "session-1",
+		PreviousResponseID: "",
+		Model:              "gpt-5",
+		UpstreamModel:      "gpt-5",
+		CreatedAt:          "2026-01-01T00:00:00.000Z",
+		UpdatedAt:          "2026-01-01T00:00:00.000Z",
+		ExpiresAt:          "2026-01-02T00:00:00.000Z",
+	}
+	if err := store.SaveResponseStateRow(ctx, row); err != nil {
+		t.Fatalf("保存响应行失败: %v", err)
+	}
+	loaded, err := store.ReadResponseStateRow(ctx, "resp-1")
+	if err != nil {
+		t.Fatalf("读取响应行失败: %v", err)
+	}
+	if loaded.ResponseID != "resp-1" || loaded.SessionID != "session-1" || loaded.Model != "gpt-5" {
+		t.Fatalf("读回=%+v", loaded)
+	}
+	compact := CodexContextCompactStateIndex{
+		CodexContextStateBoundary: row.CodexContextStateBoundary,
+		CompactID:                 "compact-1",
+		SessionID:                 "session-1",
+		SummaryDigest:             stringsRepeat("a", 64),
+		UpdatedAt:                 "2026-01-01T00:00:00.000Z",
+		ExpiresAt:                 "2026-01-02T00:00:00.000Z",
+	}
+	if err := store.SaveCompactStateRow(ctx, compact); err != nil {
+		t.Fatalf("保存 compact 行失败: %v", err)
+	}
+	loadedCompact, err := store.ReadCompactStateRow(ctx, "compact-1")
+	if err != nil || loadedCompact.CompactID != "compact-1" || loadedCompact.SummaryDigest != stringsRepeat("a", 64) {
+		t.Fatalf("读回 compact=%+v err=%v", loadedCompact, err)
+	}
+	if err := store.TouchResponseChain(ctx, []CodexContextResponseStateIndex{row}, "2026-01-03T00:00:00.000Z", "2026-01-04T00:00:00.000Z"); err != nil {
+		t.Fatalf("touch 链失败: %v", err)
+	}
+	refreshed, err := store.ReadResponseStateRow(ctx, "resp-1")
+	if err != nil || refreshed.LastUsedAt != "2026-01-03T00:00:00.000Z" || refreshed.ExpiresAt != "2026-01-04T00:00:00.000Z" {
+		t.Fatalf("touch 后=%+v err=%v", refreshed, err)
+	}
+	if err := store.TouchCompact(ctx, compact, "2026-01-03T00:00:00.000Z", "2026-01-05T00:00:00.000Z"); err != nil {
+		t.Fatalf("touch compact 失败: %v", err)
+	}
+	refreshedCompact, err := store.ReadCompactStateRow(ctx, "compact-1")
+	if err != nil || refreshedCompact.ExpiresAt != "2026-01-05T00:00:00.000Z" {
+		t.Fatalf("compact touch 后=%+v err=%v", refreshedCompact, err)
+	}
+	if err := store.TouchResponseChain(ctx, nil, "now", "later"); err != nil {
+		t.Fatalf("空链 touch=%v", err)
+	}
+	if loadedMissing, err := store.ReadResponseStateRow(ctx, "missing"); err != nil || loadedMissing != nil {
+		t.Fatalf("缺失行=%+v err=%v", loadedMissing, err)
+	}
+	if loadedMissingCompact, err := store.ReadCompactStateRow(ctx, "missing"); err != nil || loadedMissingCompact != nil {
+		t.Fatalf("缺失 compact=%+v err=%v", loadedMissingCompact, err)
+	}
+}
+
+// TestWIPostgresContextStateStoreChainOutcomes 镜像
+// TestReadCodexContextResponseStateChainOutcomes 的链读矩阵（每子测独立库，
+// 与分片臂同构，行不得跨子测累积）。
+func TestWIPostgresContextStateStoreChainOutcomes(t *testing.T) {
+	ctx := context.Background()
+	base := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group"}
+	makeRow := func(id, previousID string, expiresAt string) CodexContextResponseStateIndex {
+		row := CodexContextResponseStateIndex{
+			CodexContextStateBoundary: base,
+			CodexContextPayloadReference: CodexContextPayloadReference{
+				StorageKey: "k", SHA256: "h", Compression: "gzip", SchemaVersion: 2,
+				RawSizeBytes: 1, CompressedSizeBytes: 1,
+			},
+			ResponseID: id,
+			SessionID:  "session-a",
+			CreatedAt:  "2026-09-04T00:00:00.000Z",
+			UpdatedAt:  "2026-09-04T00:00:00.000Z",
+			LastUsedAt: "2026-09-04T00:00:00.000Z",
+			ExpiresAt:  expiresAt,
+		}
+		if previousID != "" {
+			row.PreviousResponseID = previousID
+		}
+		return row
+	}
+	now := "2026-09-05T00:00:00.000Z"
+	fresh := "2026-09-20T00:00:00.000Z"
+
+	tests := []struct {
+		name        string
+		rows        []CodexContextResponseStateIndex
+		startAt     string
+		maxDepth    int
+		wantOutcome string
+		wantCount   int
+		wantFirstID string
+	}{
+		{
+			name:        "not found",
+			startAt:     "resp_missing",
+			wantOutcome: CodexContextOutcomeNotFound,
+		},
+		{
+			name:        "single row found",
+			rows:        []CodexContextResponseStateIndex{makeRow("resp_a", "", fresh)},
+			startAt:     "resp_a",
+			wantOutcome: CodexContextOutcomeFound,
+			wantCount:   1,
+			wantFirstID: "resp_a",
+		},
+		{
+			name: "chain found reversed",
+			rows: []CodexContextResponseStateIndex{
+				makeRow("resp_c", "resp_b", fresh),
+				makeRow("resp_b", "resp_a", fresh),
+				makeRow("resp_a", "", fresh),
+			},
+			startAt:     "resp_c",
+			wantOutcome: CodexContextOutcomeFound,
+			wantCount:   3,
+			wantFirstID: "resp_a",
+		},
+		{
+			name:        "chain broken",
+			rows:        []CodexContextResponseStateIndex{makeRow("resp_c", "resp_b", fresh)},
+			startAt:     "resp_c",
+			wantOutcome: CodexContextOutcomeChainBroken,
+		},
+		{
+			name:        "expired",
+			rows:        []CodexContextResponseStateIndex{makeRow("resp_e", "", "2026-09-04T12:00:00.000Z")},
+			startAt:     "resp_e",
+			wantOutcome: CodexContextOutcomeExpired,
+		},
+		{
+			name: "boundary mismatch",
+			rows: []CodexContextResponseStateIndex{func() CodexContextResponseStateIndex {
+				row := makeRow("resp_x", "", fresh)
+				row.APIKeyID = "other-key"
+				return row
+			}()},
+			startAt:     "resp_x",
+			wantOutcome: CodexContextOutcomeBoundaryMismat,
+		},
+		{
+			name: "chain too deep",
+			rows: []CodexContextResponseStateIndex{
+				makeRow("resp_deep_a", "resp_deep_b", fresh),
+				makeRow("resp_deep_b", "", fresh),
+			},
+			startAt:     "resp_deep_a",
+			maxDepth:    1,
+			wantOutcome: CodexContextOutcomeChainTooDeep,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPostgresContextStateStore(t)
+			for _, row := range tt.rows {
+				if err := SaveCodexContextResponseStateIndex(ctx, store, row); err != nil {
+					t.Fatalf("save %s: %v", row.ResponseID, err)
+				}
+			}
+			result, err := ReadCodexContextResponseStateChain(ctx, store, ResponseChainReadInput{
+				ResponseID: tt.startAt,
+				Boundary:   base,
+				MaxDepth:   tt.maxDepth,
+				Now:        now,
+			})
+			if err != nil {
+				t.Fatalf("read chain: %v", err)
+			}
+			if result.Outcome != tt.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", result.Outcome, tt.wantOutcome)
+			}
+			if tt.wantOutcome == CodexContextOutcomeFound {
+				if len(result.Responses) != tt.wantCount {
+					t.Fatalf("responses = %d, want %d", len(result.Responses), tt.wantCount)
+				}
+				if result.Responses[0].ResponseID != tt.wantFirstID {
+					t.Errorf("first = %q, want %q", result.Responses[0].ResponseID, tt.wantFirstID)
+				}
+				if result.SessionID != "session-a" {
+					t.Errorf("sessionId = %q", result.SessionID)
+				}
+				touched, err := store.ReadResponseStateRow(ctx, tt.startAt)
+				if err != nil {
+					t.Fatalf("read touched: %v", err)
+				}
+				if touched.ExpiresAt != "2026-09-05T00:00:00.000Z" {
+					t.Errorf("touch did not refresh expiresAt: %q", touched.ExpiresAt)
+				}
+			}
+		})
+	}
+}
+
+// TestWIPostgresContextStateStoreCompactOutcomes 镜像
+// TestReadCodexContextCompactStateOutcomes 的 compact 读矩阵。
+func TestWIPostgresContextStateStoreCompactOutcomes(t *testing.T) {
+	store := newPostgresContextStateStore(t)
+	ctx := context.Background()
+	base := CodexContextStateBoundary{SystemAccountID: "sys", GroupID: "group"}
+	row := CodexContextCompactStateIndex{
+		CodexContextStateBoundary: base,
+		CodexContextPayloadReference: CodexContextPayloadReference{
+			StorageKey: "k", SHA256: "h", Compression: "gzip", SchemaVersion: 2,
+			RawSizeBytes: 1, CompressedSizeBytes: 1,
+		},
+		CompactID:     "cmp_1",
+		SessionID:     "session-c",
+		SummaryDigest: stringsRepeat("a", 64),
+		CreatedAt:     "2026-09-04T00:00:00.000Z",
+		UpdatedAt:     "2026-09-04T00:00:00.000Z",
+		LastUsedAt:    "2026-09-04T00:00:00.000Z",
+		ExpiresAt:     "2026-09-20T00:00:00.000Z",
+	}
+	if err := SaveCodexContextCompactStateIndex(ctx, store, row); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	found, err := ReadCodexContextCompactState(ctx, store, CompactStateReadInput{CompactID: "cmp_1", Boundary: base, Now: "2026-09-05T00:00:00.000Z"})
+	if err != nil || found.Outcome != CodexContextOutcomeFound || found.Compact == nil {
+		t.Fatalf("found = %+v err %v", found, err)
+	}
+	if found.Compact.SessionID != "session-c" {
+		t.Errorf("sessionId = %q", found.Compact.SessionID)
+	}
+	notFound, err := ReadCodexContextCompactState(ctx, store, CompactStateReadInput{CompactID: "cmp_missing", Boundary: base, Now: "2026-09-05T00:00:00.000Z"})
+	if err != nil || notFound.Outcome != CodexContextOutcomeNotFound {
+		t.Errorf("notFound = %+v err %v", notFound, err)
+	}
+	// provider_code 维度已退役（B4①），边界失配改由 apiKey 维度验证。
+	otherBoundary := base
+	otherBoundary.APIKeyID = "key-other"
+	mismatch, err := ReadCodexContextCompactState(ctx, store, CompactStateReadInput{CompactID: "cmp_1", Boundary: otherBoundary, Now: "2026-09-05T00:00:00.000Z"})
+	if err != nil || mismatch.Outcome != CodexContextOutcomeBoundaryMismat {
+		t.Errorf("mismatch = %+v err %v", mismatch, err)
+	}
+}

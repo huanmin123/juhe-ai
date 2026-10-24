@@ -5,10 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestParseRunListQueryForwardsNodeCompatibleFilters(t *testing.T) {
@@ -117,7 +114,7 @@ func TestRuntimeGetRunMergesLatestTrustProjectionForFullDetails(t *testing.T) {
 	runtime, db := queryRuntimeFixture(t)
 	defer db.Close()
 	seedQueryRuns(t, db)
-	if _, err := db.Exec(`CREATE TABLE model_account_trust_results (
+	if _, err := db.Exec(`CREATE TABLE ` + j3bTestSchema + `.model_account_trust_results (
 		system_account_id TEXT NOT NULL,
 		account_id TEXT NOT NULL,
 		requested_model TEXT NOT NULL,
@@ -136,9 +133,9 @@ func TestRuntimeGetRunMergesLatestTrustProjectionForFullDetails(t *testing.T) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_account_trust_results (
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_account_trust_results (
 		system_account_id,account_id,requested_model,identity_status,mapping_status,usage_integrity_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at,updated_at
-	) VALUES ('sys-1','acct-1','gpt-5.6','consistent','configured_mapping','insufficient_evidence','consistent','stable',92,7,'["latest_trust"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`); err != nil {
+	) VALUES ('sys-1','acct-1','gpt-5.6','consistent','configured_mapping','insufficient_evidence','consistent','stable',92,7,'["latest_trust"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	result, found, err := runtime.GetRun(context.Background(), "run-filter")
@@ -166,7 +163,7 @@ func TestRuntimeGetRunKeepsRunTrustWhenNodeRefreshGuardsApply(t *testing.T) {
 	runtime, db := queryRuntimeFixture(t)
 	defer db.Close()
 	seedQueryRuns(t, db)
-	if _, err := db.Exec(`CREATE TABLE model_account_trust_results (
+	if _, err := db.Exec(`CREATE TABLE ` + j3bTestSchema + `.model_account_trust_results (
 		system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL,
 		identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, usage_integrity_status TEXT NOT NULL,
 		protocol_status TEXT NOT NULL, evidence_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL,
@@ -175,10 +172,10 @@ func TestRuntimeGetRunKeepsRunTrustWhenNodeRefreshGuardsApply(t *testing.T) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_account_trust_results VALUES ('sys-1','acct-1','gpt-5.6','consistent','configured_mapping','insufficient_evidence','consistent','stable',99,9,'["latest"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_account_trust_results VALUES ('sys-1','acct-1','gpt-5.6','consistent','configured_mapping','insufficient_evidence','consistent','stable',99,9,'["latest"]','obs-latest','2026-08-29T13:00:00Z','2026-08-29T13:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE model_check_runs SET result_summary_json='{"trustReport":{"reasonCodes":["model_response_evidence_unavailable"],"identityStatus":"run-local"}}' WHERE id='run-filter'`); err != nil {
+	if _, err := db.Exec(j3bQ(`UPDATE model_check_runs SET result_summary_json='{"trustReport":{"reasonCodes":["model_response_evidence_unavailable"],"identityStatus":"run-local"}}' WHERE id='run-filter'`)); err != nil {
 		t.Fatal(err)
 	}
 	result, found, err := runtime.GetRun(context.Background(), "run-filter")
@@ -203,7 +200,7 @@ func TestRuntimeGetRunRejectsInvalidDurableJSON(t *testing.T) {
 	runtime, db := queryRuntimeFixture(t)
 	defer db.Close()
 	seedQueryRuns(t, db)
-	if _, err := db.Exec(`UPDATE model_check_runs SET result_summary_json='not-json' WHERE id='run-filter'`); err != nil {
+	if _, err := db.Exec(j3bQ(`UPDATE model_check_runs SET result_summary_json='not-json' WHERE id='run-filter'`)); err != nil {
 		t.Fatal(err)
 	}
 	if result, found, err := runtime.GetRun(context.Background(), "run-filter"); err == nil || found || result != nil {
@@ -213,12 +210,8 @@ func TestRuntimeGetRunRejectsInvalidDurableJSON(t *testing.T) {
 
 func queryRuntimeFixture(t *testing.T) (*Runtime, *sql.DB) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "query.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (
+	db := newJ3BPGDatabase(t,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_runs (
 		id TEXT PRIMARY KEY,
 		system_account_id TEXT NOT NULL,
 		actor_system_account_id TEXT NOT NULL,
@@ -254,11 +247,8 @@ func queryRuntimeFixture(t *testing.T) (*Runtime, *sql.DB) {
 		result_summary_json TEXT NOT NULL,
 		policy_snapshot_json TEXT NOT NULL,
 		quality_decision_json TEXT NOT NULL
-	)`); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE model_check_items (
+	)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_items (
 		id TEXT PRIMARY KEY,
 		run_id TEXT NOT NULL,
 		item_key TEXT NOT NULL,
@@ -273,11 +263,8 @@ func queryRuntimeFixture(t *testing.T) (*Runtime, *sql.DB) {
 		error_message TEXT,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
-	)`); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	return &Runtime{Store: &Store{db: db, mode: "sqlite"}}, db
+	)`)
+	return &Runtime{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}, db
 }
 
 func seedQueryRuns(t *testing.T, db *sql.DB) {
@@ -295,11 +282,11 @@ func seedQueryRuns(t *testing.T, db *sql.DB) {
 		if row.id == "run-filter" {
 			trustedComparison = 1
 		}
-		if _, err := db.Exec(`INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,target_name,target_owner_system_account_id,account_id,group_id,api_key_id,model,profile,trigger_kind,schedule_id,trusted_comparison_enabled,trusted_comparison_available,status,level,message,score,max_score,probe_set_version,started_at,trace_id,finished_at,duration_ms,error_code,error_message,created_at,updated_at,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, row.id, row.systemAccountID, "actor-"+row.systemAccountID, "openai", "account", row.targetID, "target-"+row.targetID, row.systemAccountID, row.targetID, "group-1", nil, row.model, "full", row.triggerKind, nil, trustedComparison, trustedComparison, row.status, row.level, "message", 50, 100, "probe-v1", row.createdAt, nil, row.createdAt, 25, nil, nil, row.createdAt, row.createdAt, `{"targetId":"`+row.targetID+`"}`, `{"score":50}`, `{"threshold":70}`, `{"result":"none"}`); err != nil {
+		if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,target_name,target_owner_system_account_id,account_id,group_id,api_key_id,model,profile,trigger_kind,schedule_id,trusted_comparison_enabled,trusted_comparison_available,status,level,message,score,max_score,probe_set_version,started_at,trace_id,finished_at,duration_ms,error_code,error_message,created_at,updated_at,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), row.id, row.systemAccountID, "actor-"+row.systemAccountID, "openai", "account", row.targetID, "target-"+row.targetID, row.systemAccountID, row.targetID, "group-1", nil, row.model, "full", row.triggerKind, nil, trustedComparison, trustedComparison, row.status, row.level, "message", 50, 100, "probe-v1", row.createdAt, nil, row.createdAt, 25, nil, nil, row.createdAt, row.createdAt, `{"targetId":"`+row.targetID+`"}`, `{"score":50}`, `{"threshold":70}`, `{"result":"none"}`); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_items(id,run_id,item_key,item_type,status,score,max_score,duration_ms,trace_id,evidence_summary_json,error_code,error_message,created_at,updated_at) VALUES ('item-filter','run-filter','response','upstream','passed',50,100,NULL,NULL,?,NULL,NULL,'2026-08-29T10:00:00Z','2026-08-29T10:00:00Z')`, string(json.RawMessage(`{"response":"OK"}`))); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_items(id,run_id,item_key,item_type,status,score,max_score,duration_ms,trace_id,evidence_summary_json,error_code,error_message,created_at,updated_at) VALUES ('item-filter','run-filter','response','upstream','passed',50,100,NULL,NULL,?,NULL,NULL,'2026-08-29T10:00:00Z','2026-08-29T10:00:00Z')`), string(json.RawMessage(`{"response":"OK"}`))); err != nil {
 		t.Fatal(err)
 	}
 }

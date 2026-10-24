@@ -17,7 +17,7 @@ func TestW7CSmallDirectArms(t *testing.T) {
 		t.Fatal("malformed escape must fail")
 	}
 	// candidateEligible rejects manual triggers outright.
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	candidate := w7cBalanceCandidate(t, store, "w7c-direct", nil)
 	if err := candidateEligible(candidate, TriggerManual); err == nil || !strings.Contains(err.Error(), "manual 不接受") {
 		t.Fatalf("manual eligibility: %v", err)

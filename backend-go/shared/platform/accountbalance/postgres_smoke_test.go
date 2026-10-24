@@ -3,8 +3,6 @@ package accountbalance
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -13,45 +11,13 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// This smoke is opt-in and creates/drops a uniquely named dev database. It
-// never touches the shared business database or Redis.
+// TestPostgresJobsStoreSmoke 验证生产 OpenStore(StorePostgres) + EnsureSchema
+// + 租约/outcome 最短链。迁 pgtestkit（PLAN-20261024T051925945Z 切片，§4.2
+// 裁量：smoke 迁离 JUHE_AI_J2_PG_SMOKE_ADMIN_URL 门禁，runtimelog/operationlog
+// 先例已接受）；一次性临时库由 kit 创建/删除，断言逐字节保持。
 func TestPostgresJobsStoreSmoke(t *testing.T) {
-	adminURL := strings.TrimSpace(os.Getenv("JUHE_AI_J2_PG_SMOKE_ADMIN_URL"))
-	if adminURL == "" {
-		t.Skip("JUHE_AI_J2_PG_SMOKE_ADMIN_URL 未设置")
-	}
-	admin, err := sql.Open("pgx", adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := fmt.Sprintf("juhe_ai_sub2api_dev_j2_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE "`+name+`"`); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = admin.ExecContext(context.Background(), `DROP DATABASE "`+name+`" WITH (FORCE)`) }()
-	targetURL, err := replaceDatabase(adminURL, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bootstrap, err := sql.Open("pgx", targetURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bootstrap.ExecContext(context.Background(), "CREATE SCHEMA juhe_jobs"); err != nil {
-		_ = bootstrap.Close()
-		t.Fatal(err)
-	}
-	_ = bootstrap.Close()
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: targetURL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "j2-smoke", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("owner lease: %v %t", err, acquired)
@@ -67,6 +33,9 @@ func TestPostgresJobsStoreSmoke(t *testing.T) {
 	}
 }
 
+// TestPostgresDirectInputContractSmoke 保持 JUHE_AI_J2_PG_SMOKE_BUSINESS_URL
+// env 门禁现状（§4.2）：被测语义是真实共享业务库上的 reader 契约，隔离空库
+// 无法复现，不属本次 SQLite 退役迁移面。
 func TestPostgresDirectInputContractSmoke(t *testing.T) {
 	businessURL := strings.TrimSpace(os.Getenv("JUHE_AI_J2_PG_SMOKE_BUSINESS_URL"))
 	secret := strings.TrimSpace(os.Getenv("JUHE_AI_J2_PG_SMOKE_SECRET"))
@@ -97,13 +66,4 @@ func TestPostgresDirectInputContractSmoke(t *testing.T) {
 	if _, err := reader.LoadRecovery(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func replaceDatabase(raw, database string) (string, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", err
-	}
-	parsed.Path = "/" + database
-	return parsed.String(), nil
 }

@@ -884,7 +884,7 @@ func TestW12HRetryQueueLifecycleArms(t *testing.T) {
 // refresh / score / types / minutekey
 
 func TestW12HRefreshRunnerOffsetAndDefaults(t *testing.T) {
-	store, _, lookup := newQualityStore(t)
+	store, _, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	store.seedMinute(t, "acc-1", MinuteKey(time.Now().Add(-time.Minute), time.UTC), 10, 2, 8, 0, 0, "upstream 500")
@@ -1037,7 +1037,7 @@ func TestW12HOpenStatsStoreValidation(t *testing.T) {
 }
 
 func TestW12HRefreshValidationArms(t *testing.T) {
-	store, _, _ := newQualityStore(t)
+	store, _, _ := newQualityStorePostgres(t)
 	ctx := context.Background()
 	// business 缺失。
 	business := store.business
@@ -1059,7 +1059,7 @@ func TestW12HRefreshValidationArms(t *testing.T) {
 	}
 
 	// 分钟表缺失 → 聚合失败传播。
-	if _, err := store.db.Exec(`DROP TABLE account_quality_minute_stats`); err != nil {
+	if _, err := store.db.Exec(`DROP TABLE juhe_stats.account_quality_minute_stats`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RefreshFromUsage(ctx, RefreshInput{WindowMinutes: 10, Timezone: "UTC"}); err == nil {
@@ -1071,9 +1071,9 @@ func TestW12HStoreErrorPropagationArms(t *testing.T) {
 	ctx := context.Background()
 
 	// 脏账户表缺失。
-	store, _, lookup := newQualityStore(t)
+	store, _, lookup := newQualityStorePostgres(t)
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
-	if _, err := store.db.Exec(`DROP TABLE account_quality_dirty_accounts`); err != nil {
+	if _, err := store.db.Exec(`DROP TABLE juhe_stats.account_quality_dirty_accounts`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RefreshFromUsage(ctx, RefreshInput{WindowMinutes: 10, Timezone: "UTC"}); err == nil {
@@ -1082,9 +1082,9 @@ func TestW12HStoreErrorPropagationArms(t *testing.T) {
 	_ = store.Close()
 
 	// 候选行 updated_at 非毫秒 → 解析失败传播。
-	store2, _, lookup2 := newQualityStore(t)
+	store2, _, lookup2 := newQualityStorePostgres(t)
 	lookup2.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
-	if _, err := store2.db.Exec(`INSERT INTO account_quality_scores (
+	if _, err := store2.db.Exec(`INSERT INTO juhe_stats.account_quality_scores (
 		account_id, system_account_id, provider_code, quality_score, quality_state,
 		recent_request_count, recent_success_count, recent_error_count,
 		window_started_at, window_ended_at, updated_at
@@ -1097,8 +1097,8 @@ func TestW12HStoreErrorPropagationArms(t *testing.T) {
 	_ = store2.Close()
 
 	// 质量表缺失 → LoadQualityRow / ListFailurePrecheckCandidates 失败。
-	store3, _, _ := newQualityStore(t)
-	if _, err := store3.db.Exec(`DROP TABLE account_quality_scores`); err != nil {
+	store3, _, _ := newQualityStorePostgres(t)
+	if _, err := store3.db.Exec(`DROP TABLE juhe_stats.account_quality_scores`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store3.LoadQualityRow(ctx, "acc-1"); err == nil {
@@ -1111,7 +1111,7 @@ func TestW12HStoreErrorPropagationArms(t *testing.T) {
 }
 
 func TestW12HStoreBehaviorArms(t *testing.T) {
-	store, clock, lookup := newQualityStore(t)
+	store, clock, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	// 批量脏账户 + 大于 lookup 块大小的质量行（分块读回）。
 	for i := 0; i < 5; i++ {

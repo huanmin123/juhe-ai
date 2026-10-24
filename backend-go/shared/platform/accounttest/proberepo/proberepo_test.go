@@ -31,6 +31,11 @@ type testDB struct {
 	db    *sql.DB
 }
 
+// openTestDB / openTestDBPostgres：openTestDB（SQLite 夹具）保留给组B
+// （ListDueForProbe 的 PG 臂缺陷阻塞面与弱类型注入臂，见 pgkit_test.go 三组
+// 分类）；组A 行为族走 openTestDBPostgres。seed/校验 helper 按当前 store
+// 方言生成 SQL（table 限定 + bind $n）。
+
 func openTestDB(t *testing.T) *testDB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "business.sqlite3")
@@ -53,8 +58,13 @@ func (h *testDB) exec(t *testing.T, query string, args ...any) {
 	}
 }
 
+// seedSchema 在 SQLite 夹具上安装业务表；PG 夹具的表由 pgkit_test.go prepare
+// 按 maintenance 权威生产 DDL 预建，这里直接复用（幂等）。
 func (h *testDB) seedSchema(t *testing.T) {
 	t.Helper()
+	if h.store.postgres {
+		return
+	}
 	// 供应商解耦后的 fresh DDL 形态（maintenance pg_schema_business_tables
 	// 的 SQLite 等价窄投影）：accounts 无 provider_code/provider_protocol_profile_id/
 	// client_compatibility，身份列为 vendor_code/oauth_type/connection_driver_code；
@@ -98,6 +108,7 @@ func (h *testDB) seedSchema(t *testing.T) {
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
       deleted_at TEXT,
+      created_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT ''
     )`)
 	h.exec(t, `CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1)`)
@@ -177,9 +188,12 @@ func (h *testDB) seedSchema(t *testing.T) {
     CREATE TABLE groups (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
       enabled INTEGER NOT NULL DEFAULT 1,
       group_type TEXT,
-      scheduling_policy_json TEXT
+      scheduling_policy_json TEXT,
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
     )`)
 	h.exec(t, `
     CREATE TABLE group_accounts (
@@ -191,6 +205,7 @@ func (h *testDB) seedSchema(t *testing.T) {
       local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT ''
     )`)
 	h.exec(t, `
@@ -220,11 +235,11 @@ func (h *testDB) seedSchema(t *testing.T) {
 func (h *testDB) seedModel(t *testing.T, accountID, name string) string {
 	t.Helper()
 	modelID := "model-" + name
-	h.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
-	    VALUES (?, 'gpt', ?, ?, 'global', 'active', ?) ON CONFLICT (id) DO NOTHING`,
+	h.exec(t, h.store.bind(`INSERT INTO `+h.store.table("models")+` (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+	    VALUES (?, 'gpt', ?, ?, 'global', 'active', ?) ON CONFLICT (id) DO NOTHING`),
 		modelID, name, name, nowMillisText())
-	h.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES (?, ?, ?)
-	    ON CONFLICT (account_id, model_id) DO NOTHING`, accountID, modelID, nowMillisText())
+	h.exec(t, h.store.bind(`INSERT INTO `+h.store.table("account_supported_models")+` (account_id, model_id, created_at) VALUES (?, ?, ?)
+	    ON CONFLICT (account_id, model_id) DO NOTHING`), accountID, modelID, nowMillisText())
 	return modelID
 }
 
@@ -233,14 +248,14 @@ func (h *testDB) seedModel(t *testing.T, accountID, name string) string {
 func (h *testDB) seedProbeConnection(t *testing.T, accountID, preset, baseURL string, modes ...string) string {
 	t.Helper()
 	connectionID := "conn-" + accountID
-	h.exec(t, `INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
-	    VALUES (?, ?, ?, 'openai_v1', ?, 1, ?, ?) ON CONFLICT (id) DO NOTHING`,
+	h.exec(t, h.store.bind(`INSERT INTO `+h.store.table("account_connections")+` (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+	    VALUES (?, ?, ?, 'openai_v1', ?, 1, ?, ?) ON CONFLICT (id) DO NOTHING`),
 		connectionID, accountID, preset, baseURL, nowMillisText(), nowMillisText())
 	for _, mode := range modes {
-		h.exec(t, `INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)
-		    ON CONFLICT (connection_id, endpoint_mode) DO NOTHING`, connectionID, mode)
+		h.exec(t, h.store.bind(`INSERT INTO `+h.store.table("account_endpoint_modes")+` (connection_id, endpoint_mode) VALUES (?, ?)
+		    ON CONFLICT (connection_id, endpoint_mode) DO NOTHING`), connectionID, mode)
 	}
-	h.exec(t, `UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`, connectionID, accountID)
+	h.exec(t, h.store.bind(`UPDATE `+h.store.table("accounts")+` SET health_check_connection_id = ? WHERE id = ?`), connectionID, accountID)
 	return connectionID
 }
 
@@ -254,7 +269,9 @@ func (h *testDB) sealCredentials(t *testing.T, credentials map[string]any) strin
 }
 
 // seedPoolAccount 写入一个双 Key 池账户（gpt api_key、active、可调度、绑定
-// 分组，连接面 gpt_openai_v1 + chat 双模式）。
+// 分组，连接面 gpt_openai_v1 + chat 双模式）。connection_driver_code/
+// protocol_code/protocol_version/created_at 为生产 NOT NULL 无默认列，两种
+// 夹具统一补齐。
 func (h *testDB) seedPoolAccount(t *testing.T, accountID string) (key1, key2 string) {
 	t.Helper()
 	h.seedSchema(t)
@@ -263,24 +280,24 @@ func (h *testDB) seedPoolAccount(t *testing.T, accountID string) (key1, key2 str
 		"api_keys":              []any{key1, key2},
 		"quota_recovery_policy": map[string]any{"windowHours": float64(24)},
 	}
-	h.exec(t, `
-    INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, vendor_code, health_check_model, health_check_endpoint_mode, credentials_encrypted, dispatch_revision)
-    VALUES (?, 'sys-1', '池账户', 'api_key', 'active', 1, 'gpt', 'gpt-test', 'chat_json', ?, 3)`,
-		accountID, h.sealCredentials(t, credentials))
+	h.exec(t, h.store.bind(`
+    INSERT INTO `+h.store.table("accounts")+` (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code, protocol_code, protocol_version, health_check_model, health_check_endpoint_mode, credentials_encrypted, dispatch_revision, created_at, updated_at)
+    VALUES (?, 'sys-1', '池账户', 'api_key', 'active', 1, 'gpt', 'gpt', 'openai', 'v1', 'gpt-test', 'chat_json', ?, 3, ?, ?)`),
+		accountID, h.sealCredentials(t, credentials), nowMillisText(), nowMillisText())
 	h.seedModel(t, accountID, "gpt-test")
 	h.seedProbeConnection(t, accountID, "gpt_openai_v1", "https://upstream.example.com/v1", "chat_json", "chat_sse")
-	h.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-1', 'sys-1', 1)`)
-	h.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-1', 'sys-1', ?, 1)`, accountID)
+	h.exec(t, h.store.bind(`INSERT INTO `+h.store.table("groups")+` (id, system_account_id, name, enabled, created_at, updated_at) VALUES ('group-1', 'sys-1', 'g', 1, ?, ?)`), nowMillisText(), nowMillisText())
+	h.exec(t, h.store.bind(`INSERT INTO `+h.store.table("group_accounts")+` (group_id, system_account_id, account_id, enabled, created_at, updated_at) VALUES ('group-1', 'sys-1', ?, 1, ?, ?)`), accountID, nowMillisText(), nowMillisText())
 	return key1, key2
 }
 
 func (h *testDB) seedRuntimeState(t *testing.T, accountID, fingerprint string, keyIndex int, status, nextProbeAt string) {
 	t.Helper()
-	h.exec(t, `
-    INSERT INTO account_api_key_runtime_states (
-      id, system_account_id, account_id, key_fingerprint, key_index, status, next_probe_at, updated_at
-    ) VALUES (?, 'sys-1', ?, ?, ?, ?, ?, ?)`,
-		"state-"+fingerprint, accountID, fingerprint, keyIndex, status, nextProbeAt, plusMillis(0), nowMillisText())
+	h.exec(t, h.store.bind(`
+    INSERT INTO `+h.store.table("account_api_key_runtime_states")+` (
+      id, system_account_id, account_id, key_fingerprint, key_index, status, next_probe_at, created_at, updated_at
+    ) VALUES (?, 'sys-1', ?, ?, ?, ?, ?, ?, ?)`),
+		"state-"+fingerprint, accountID, fingerprint, keyIndex, status, nextProbeAt, nowMillisText(), nowMillisText())
 }
 
 // TestListDueForProbeClaimsAndSkipsFreshLeases 验证到期候选 claim：命中后写入
@@ -322,7 +339,7 @@ func TestListDueForProbeClaimsAndSkipsFreshLeases(t *testing.T) {
 // TestCooldownMutationsFlow 验证 record success / failure / defer 的 CAS 与
 // 状态迁移语义。
 func TestCooldownMutationsFlow(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
@@ -366,7 +383,7 @@ func TestCooldownMutationsFlow(t *testing.T) {
 		t.Fatalf("恢复写入失败: %+v", result)
 	}
 	var status string
-	if err := h.db.QueryRow(`SELECT status FROM account_api_key_runtime_states WHERE account_id='acc-1' AND key_fingerprint=?`, fp1).Scan(&status); err != nil {
+	if err := h.db.QueryRow(`SELECT status FROM juhe_business.account_api_key_runtime_states WHERE account_id='acc-1' AND key_fingerprint=$1`, fp1).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "active" {
@@ -434,7 +451,7 @@ func TestCooldownMutationsFlow(t *testing.T) {
 	)
 	if err := h.db.QueryRow(`
       SELECT status, cooldown_until, recovery_started_at, next_probe_at, probe_backoff_seconds
-      FROM account_api_key_runtime_states WHERE account_id='acc-1' AND key_fingerprint=?`, fp1).
+      FROM juhe_business.account_api_key_runtime_states WHERE account_id='acc-1' AND key_fingerprint=$1`, fp1).
 		Scan(&failureStatus, &cooldownUntil, &recoveryStarted, &nextProbeAt, &backoffSeconds); err != nil {
 		t.Fatal(err)
 	}
@@ -477,8 +494,8 @@ func TestCooldownMutationsFlow(t *testing.T) {
 		t.Fatalf("defer 未生效: %+v", result)
 	}
 	if err := h.db.QueryRow(`
-      SELECT recovery_started_at FROM account_api_key_runtime_states
-      WHERE account_id='acc-1' AND key_fingerprint=?`, fp1).Scan(&recoveryStarted); err != nil {
+      SELECT recovery_started_at FROM juhe_business.account_api_key_runtime_states
+      WHERE account_id='acc-1' AND key_fingerprint=$1`, fp1).Scan(&recoveryStarted); err != nil {
 		t.Fatal(err)
 	}
 	if recoveryStarted.Valid && recoveryStarted.String != "" {
@@ -488,7 +505,7 @@ func TestCooldownMutationsFlow(t *testing.T) {
 
 // TestMarkPrecheckTemporaryUnavailableFenceOrder 验证 skipReason 的判定顺序。
 func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	h.seedPoolAccount(t, "acc-1")
 	ctx := context.Background()
 
@@ -517,7 +534,7 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 	}
 
 	// 更新的健康成功 → newer_health_success。
-	h.exec(t, `UPDATE accounts SET last_health_success_at = ? WHERE id='acc-1'`, plusMillis(5000))
+	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at = $1 WHERE id='acc-1'`, plusMillis(5000))
 	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -530,7 +547,7 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 	}
 
 	// fence 全部满足 → 更新成功且 dispatch_revision 前移。
-	h.exec(t, `UPDATE accounts SET last_health_success_at = NULL WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at = NULL WHERE id='acc-1'`)
 	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -542,7 +559,7 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 		t.Fatalf("expected updated: %+v", result)
 	}
 	var dispatchRevision int64
-	if err := h.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id='acc-1'`).Scan(&dispatchRevision); err != nil {
+	if err := h.db.QueryRow(`SELECT dispatch_revision FROM juhe_business.accounts WHERE id='acc-1'`).Scan(&dispatchRevision); err != nil {
 		t.Fatal(err)
 	}
 	if dispatchRevision != 4 {
@@ -553,7 +570,7 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 	// 账户永久隔离在 J1 候选之外，无法自动恢复。
 	var cooldownUntil, observationStartedAt, generation, lastTraceID sql.NullString
 	var schedulable int
-	if err := h.db.QueryRow(`SELECT cooldown_until, cooldown_retest_observation_started_at, cooldown_retest_generation, last_error_trace_id, schedulable FROM accounts WHERE id='acc-1'`).
+	if err := h.db.QueryRow(`SELECT cooldown_until, cooldown_retest_observation_started_at, cooldown_retest_generation, last_error_trace_id, schedulable FROM juhe_business.accounts WHERE id='acc-1'`).
 		Scan(&cooldownUntil, &observationStartedAt, &generation, &lastTraceID, &schedulable); err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +593,7 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 
 // TestFindAccountForTestAvailability 验证 effectiveAvailability 的 DB 分支。
 func TestFindAccountForTestAvailability(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, key2 := h.seedPoolAccount(t, "acc-1")
 	view, err := h.store.LoadAccountForTest(context.Background(), "acc-1")
 	if err != nil {
@@ -593,7 +610,7 @@ func TestFindAccountForTestAvailability(t *testing.T) {
 	}
 
 	// 冷却中 → 不可用。
-	h.exec(t, `UPDATE accounts SET cooldown_until = ? WHERE id='acc-1'`, plusMillis(60_000))
+	h.exec(t, `UPDATE juhe_business.accounts SET cooldown_until = $1 WHERE id='acc-1'`, plusMillis(60_000))
 	view, err = h.store.LoadAccountForTest(context.Background(), "acc-1")
 	if err != nil {
 		t.Fatal(err)
@@ -601,7 +618,7 @@ func TestFindAccountForTestAvailability(t *testing.T) {
 	if view.EffectiveAvailable {
 		t.Fatal("冷却中必须不可用")
 	}
-	h.exec(t, `UPDATE accounts SET cooldown_until = NULL WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET cooldown_until = NULL WHERE id='acc-1'`)
 
 	// 全部 Key 不可用 → api_key_pool_unavailable。
 	fp1 := h.store.FingerprintAPIKey(key1)
@@ -619,7 +636,7 @@ func TestFindAccountForTestAvailability(t *testing.T) {
 
 // TestFindAccountForGroupAndHasAPIKeyEntry 验证分组候选解析与 Key 池校验。
 func TestFindAccountForGroupAndHasAPIKeyEntry(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, key2 := h.seedPoolAccount(t, "acc-1")
 	ctx := context.Background()
 	candidate, err := h.store.FindAccountForGroup(ctx, "group-1", "acc-1", "sys-1")
@@ -662,7 +679,7 @@ func TestFindAccountForGroupAndHasAPIKeyEntry(t *testing.T) {
 
 // TestLoadProbeViewFixedKey 验证探针视图组装与固定 Key 注入。
 func TestLoadProbeViewFixedKey(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	view, err := h.store.LoadProbeView(context.Background(), accountquality.ProbeRequest{
@@ -695,7 +712,7 @@ func TestLoadProbeViewFixedKey(t *testing.T) {
 // BaseURL 来自资源账户健康检查连接行（凭据 JSON 不再承载）、profile 由
 // connection_preset_code 派生、endpoint modes 来自 account_endpoint_modes。
 func TestLoadProbeViewConnectionSurface(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	h.seedPoolAccount(t, "conn-1")
 	view, err := h.store.LoadProbeView(context.Background(), accountquality.ProbeRequest{
 		AccountID: "conn-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,

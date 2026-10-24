@@ -186,7 +186,7 @@ func TestW11ERuntimeStorageFailureArms(t *testing.T) {
 	target := w11eValidTarget()
 	// CreateRun 失败：在解析器内删除 runs 表。
 	droppedRuns := &Runtime{Store: store, Resolve: func(context.Context, RunRequest) (Target, error) {
-		if _, err := store.db.Exec(`DROP TABLE IF EXISTS model_check_runs`); err != nil {
+		if _, err := store.db.Exec(`DROP TABLE IF EXISTS juhe_j3b.model_check_runs`); err != nil {
 			t.Fatal(err)
 		}
 		return target, nil
@@ -198,7 +198,7 @@ func TestW11ERuntimeStorageFailureArms(t *testing.T) {
 	store2 := newRuntimeTestStore(t)
 	defer store2.Close()
 	droppedClaims := &Runtime{Store: store2, Resolve: func(context.Context, RunRequest) (Target, error) {
-		if _, err := store2.db.Exec(`DROP TABLE IF EXISTS model_check_execution_claims`); err != nil {
+		if _, err := store2.db.Exec(`DROP TABLE IF EXISTS juhe_j3b.model_check_execution_claims`); err != nil {
 			t.Fatal(err)
 		}
 		return target, nil
@@ -218,7 +218,7 @@ func TestW11ERuntimeStorageFailureArms(t *testing.T) {
 	failingRuntime := &Runtime{Store: store3, Resolve: func(context.Context, RunRequest) (Target, error) { return failing, nil }}
 	_, err := failingRuntime.RunStream(context.Background(), w11eValidRequest(), func(event ProgressEvent) {
 		if event.Kind == "run_started" {
-			if _, dropErr := store3.db.Exec(`DROP TABLE IF EXISTS model_check_outcomes`); dropErr != nil {
+			if _, dropErr := store3.db.Exec(`DROP TABLE IF EXISTS juhe_j3b.model_check_outcomes`); dropErr != nil {
 				t.Fatal(dropErr)
 			}
 		}
@@ -241,7 +241,7 @@ func TestW11ERuntimeFullProfileObservationArms(t *testing.T) {
 	request.Profile = "full"
 	// 观察表缺失 → full profile 观察写入失败。
 	dropped := &Runtime{Store: store, Resolve: func(context.Context, RunRequest) (Target, error) {
-		if _, err := store.db.Exec(`DROP TABLE IF EXISTS model_check_observations`); err != nil {
+		if _, err := store.db.Exec(`DROP TABLE IF EXISTS juhe_j3b.model_check_observations`); err != nil {
 			t.Fatal(err)
 		}
 		return target, nil
@@ -265,7 +265,7 @@ func TestW11EAppendObservationIdempotentArms(t *testing.T) {
 	defer store.Close()
 	now := time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
 	nowText := now.Format(time.RFC3339Nano)
-	if _, err := store.db.Exec(`INSERT INTO model_check_runs (id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,model,profile,trigger_kind,status,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,created_at,updated_at,level,score,max_score,message) VALUES ('w11e-run-obs','sys','actor','openai','account','acct','m','full','manual','running','{}','{}','{}','{}','probe-v1',?,?,?,'unavailable',0,100,'w11e')`, nowText, nowText, nowText); err != nil {
+	if _, err := store.db.Exec(j3bQ(`INSERT INTO model_check_runs (id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,model,profile,trigger_kind,status,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,created_at,updated_at,level,score,max_score,message) VALUES ('w11e-run-obs','sys','actor','openai','account','acct','m','full','manual','running','{}','{}','{}','{}','probe-v1',?,?,?,'unavailable',0,100,'w11e')`), nowText, nowText, nowText); err != nil {
 		t.Fatal(err)
 	}
 	record := ObservationRecord{ID: "w11e-obs-1", RunID: "w11e-run-obs", SystemAccountID: "sys", AccountID: "acct", ProviderCode: "openai", RequestedModel: "m", MappedUpstreamModel: "m", ProbeFamily: "behavior", ObservationStatus: "complete", IdentityStatus: "ok", MappingStatus: "direct", ProtocolStatus: "ok", EvidenceCoverage: 3, CreatedAt: now}
@@ -276,13 +276,13 @@ func TestW11EAppendObservationIdempotentArms(t *testing.T) {
 		t.Fatalf("幂等重放必须成功: %v", err)
 	}
 	// created_at 损坏的既有行必须报解析错误。
-	if _, err := store.db.Exec(`UPDATE model_check_observations SET created_at='not-a-time' WHERE id=?`, record.ID); err != nil {
+	if _, err := store.db.Exec(j3bQ(`UPDATE model_check_observations SET created_at='not-a-time' WHERE id=?`), record.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := appendObservationIdempotent(context.Background(), store, record); err == nil || !strings.Contains(err.Error(), "parse J3b observation created_at") {
 		t.Fatalf("损坏 created_at 必须失败: %v", err)
 	}
-	if _, err := store.db.Exec(`UPDATE model_check_observations SET created_at=? WHERE id=?`, now.Format(time.RFC3339Nano), record.ID); err != nil {
+	if _, err := store.db.Exec(j3bQ(`UPDATE model_check_observations SET created_at=? WHERE id=?`), now.Format(time.RFC3339Nano), record.ID); err != nil {
 		t.Fatal(err)
 	}
 	// 字段漂移必须冲突。
@@ -292,7 +292,7 @@ func TestW11EAppendObservationIdempotentArms(t *testing.T) {
 		t.Fatalf("字段漂移必须冲突: %v", err)
 	}
 	// 表缺失 → 追加失败且查证失败返回原始错误。
-	if _, err := store.db.Exec(`DROP TABLE model_check_observations`); err != nil {
+	if _, err := store.db.Exec(`DROP TABLE juhe_j3b.model_check_observations`); err != nil {
 		t.Fatal(err)
 	}
 	fresh := record
@@ -408,7 +408,7 @@ func TestW11EStoreHealthFactArms(t *testing.T) {
 		t.Fatalf("非整点小时必须拒绝: %v", err)
 	}
 	// 表缺失时写入失败传播。
-	if _, err := store.db.Exec(`DROP TABLE account_quality_health_hourly`); err != nil {
+	if _, err := store.db.Exec(`DROP TABLE juhe_j3b.account_quality_health_hourly`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ApplyHealthFact(context.Background(), fact); err == nil || !strings.Contains(err.Error(), "upsert J3b health fact") {
@@ -473,13 +473,13 @@ func TestW11ETokenInterceptBaselineArms(t *testing.T) {
 	if err := nilStore.ActivateTokenInterceptBaseline(context.Background(), valid); err == nil || !errors.Is(err, ErrTokenInterceptBaselineUnavailable) {
 		t.Fatalf("nil store 必须返回 unavailable: %v", err)
 	}
-	if _, err := store.db.Exec(`CREATE TABLE model_token_intercept_baseline_versions (cohort_key_hmac TEXT,requested_model TEXT,tokenizer_version TEXT,probe_set_version TEXT,baseline_version INTEGER,version_status TEXT,evidence_status TEXT,independent_source_count INTEGER,q90_intercept REAL,strong_threshold_intercept REAL,strong_gate_enabled INTEGER,calibration_note TEXT,updated_at TEXT,PRIMARY KEY(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version))`); err != nil {
+	if _, err := store.db.Exec(`CREATE TABLE juhe_j3b.model_token_intercept_baseline_versions (cohort_key_hmac TEXT,requested_model TEXT,tokenizer_version TEXT,probe_set_version TEXT,baseline_version INTEGER,version_status TEXT,evidence_status TEXT,independent_source_count INTEGER,q90_intercept DOUBLE PRECISION,strong_threshold_intercept DOUBLE PRECISION,strong_gate_enabled INTEGER,calibration_note TEXT,updated_at TEXT,PRIMARY KEY(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version))`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ActivateTokenInterceptBaseline(context.Background(), valid); err == nil || !errors.Is(err, ErrTokenInterceptBaselineConflict) {
 		t.Fatalf("缺失候选必须冲突: %v", err)
 	}
-	if _, err := store.db.Exec(`INSERT INTO model_token_intercept_baseline_versions VALUES (?,?,?,?,?,'calibration_pending','stable',11,100,NULL,0,'','2026-09-16T10:00:00Z')`, valid.CohortKeyHMAC, valid.RequestedModel, valid.TokenizerVersion, valid.ProbeSetVersion, valid.BaselineVersion); err != nil {
+	if _, err := store.db.Exec(j3bQ(`INSERT INTO model_token_intercept_baseline_versions VALUES (?,?,?,?,?,'calibration_pending','stable',11,100,NULL,0,'','2026-09-16T10:00:00Z')`), valid.CohortKeyHMAC, valid.RequestedModel, valid.TokenizerVersion, valid.ProbeSetVersion, valid.BaselineVersion); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ActivateTokenInterceptBaseline(context.Background(), valid); err != nil {

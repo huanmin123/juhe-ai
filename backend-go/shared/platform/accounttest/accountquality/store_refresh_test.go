@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// 本文件存储行为测试走 pgkit_test.go 的 newQualityStorePostgres（StatsPostgres
+// 生产臂，pgtestkit 真库）；newQualityStore（SQLite 夹具）保留给组B
+// StatsSQLite 臂测试（见 pgkit_test.go 三组分类）。
+
 // mapBusinessLookup 以内存 map 模拟业务库 accounts 元数据。
 type mapBusinessLookup struct {
 	accounts map[string]AccountMetadata
@@ -53,13 +57,16 @@ func newQualityStore(t *testing.T) (*StatsStore, *fakeClock, *mapBusinessLookup)
 	return store, clock, lookup
 }
 
+// seedMinute 按当前 store 方言注入分钟行（表名限定与 $n 占位符经生产侧
+// minuteTable/dollarize 对齐，SQLite/PG 两臂共用）。
 func (s *StatsStore) seedMinute(t *testing.T, accountID string, statMinute string, requests, successes, errors, ftSum, ftCount int, lastErrorMessage string) {
 	t.Helper()
-	_, err := s.db.Exec(`INSERT INTO account_quality_minute_stats (
+	query := s.dollarize(fmt.Sprintf(`INSERT INTO %s (
 		account_id, system_account_id, provider_code, stat_minute, request_count, success_count,
 		error_count, first_token_ms_sum, first_token_ms_count, last_sample_at, last_success_at,
 		last_error_at, last_error_message, updated_at
-	) VALUES (?, 'sys-1', 'openai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, 'sys-1', 'openai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, s.minuteTable()))
+	_, err := s.db.Exec(query,
 		accountID, statMinute, requests, successes, errors, ftSum, ftCount,
 		"2026-09-04T07:59:00.000Z", "2026-09-04T07:59:00.000Z", "2026-09-04T07:59:30.000Z", lastErrorMessage,
 		"2026-09-04T07:59:30.000Z")
@@ -69,7 +76,7 @@ func (s *StatsStore) seedMinute(t *testing.T, accountID string, statMinute strin
 }
 
 func TestRefreshFromUsageComputesScores(t *testing.T) {
-	store, clock, lookup := newQualityStore(t)
+	store, clock, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	lookup.accounts["acc-2"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
@@ -122,7 +129,7 @@ func TestRefreshFromUsageComputesScores(t *testing.T) {
 
 	// 第二轮：acc-1 无新样本 → stale 降级；acc-3 已删除账户 → 行被清理。
 	lookup.accounts["acc-3"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
-	if _, err := store.db.Exec(`INSERT INTO account_quality_scores (account_id, system_account_id, provider_code, quality_score, quality_state, window_started_at, window_ended_at, updated_at)
+	if _, err := store.db.Exec(`INSERT INTO juhe_stats.account_quality_scores (account_id, system_account_id, provider_code, quality_score, quality_state, window_started_at, window_ended_at, updated_at)
 		VALUES ('acc-3', 'sys-1', 'openai', 100, 'fresh', '2026-09-04T07:00:00.000Z', '2026-09-04T07:10:00.000Z', '2026-09-04T07:10:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -153,10 +160,10 @@ func TestRefreshFromUsageComputesScores(t *testing.T) {
 }
 
 func TestRefreshStaleFreshAndUnknownTransition(t *testing.T) {
-	store, clock, lookup := newQualityStore(t)
+	store, clock, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
-	if _, err := store.db.Exec(`INSERT INTO account_quality_scores (account_id, system_account_id, provider_code, quality_score, quality_state, window_started_at, window_ended_at, updated_at)
+	if _, err := store.db.Exec(`INSERT INTO juhe_stats.account_quality_scores (account_id, system_account_id, provider_code, quality_score, quality_state, window_started_at, window_ended_at, updated_at)
 		VALUES ('acc-1', 'sys-1', 'openai', 50, 'failed', '2026-09-04T07:00:00.000Z', '2026-09-04T07:10:00.000Z', '2026-09-04T07:10:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +181,7 @@ func TestRefreshStaleFreshAndUnknownTransition(t *testing.T) {
 }
 
 func TestListFailurePrecheckCandidates(t *testing.T) {
-	store, _, lookup := newQualityStore(t)
+	store, _, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	lookup.accounts["acc-2"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
@@ -186,11 +193,11 @@ func TestListFailurePrecheckCandidates(t *testing.T) {
 		if rate != nil {
 			rateArg = *rate
 		}
-		if _, err := store.db.Exec(`INSERT INTO account_quality_scores (
+		if _, err := store.db.Exec(`INSERT INTO juhe_stats.account_quality_scores (
 			account_id, system_account_id, provider_code, quality_score, quality_state,
 			recent_request_count, recent_success_count, recent_error_count, success_rate,
 			window_started_at, window_ended_at, updated_at
-		) VALUES (?, 'sys-1', 'openai', 100, 'fresh', ?, ?, ?, ?, 'w', 'w', ?)`,
+		) VALUES ($1, 'sys-1', 'openai', 100, 'fresh', $2, $3, $4, $5, 'w', 'w', $6)`,
 			accountID, requests, requests-errors, errors, rateArg, updatedAt); err != nil {
 			t.Fatal(err)
 		}
@@ -229,7 +236,7 @@ func TestListFailurePrecheckCandidates(t *testing.T) {
 }
 
 func TestRefreshHonorsFenceAssertion(t *testing.T) {
-	store, _, lookup := newQualityStore(t)
+	store, _, lookup := newQualityStorePostgres(t)
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	fenceErr := fmt.Errorf("后台任务租约已失效：scheduled:account-quality-refresh:global")
 	_, err := store.RefreshFromUsage(context.Background(), RefreshInput{

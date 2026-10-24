@@ -24,7 +24,7 @@ func w7cDeriveBase() deriveInput {
 }
 
 func TestW7CDeriveAuthorizedBranchMatrix(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	s := h.store
 	cases := []struct {
 		name   string
@@ -181,7 +181,7 @@ func TestW7CTimestampAndTruthinessHelpers(t *testing.T) {
 }
 
 func TestW7CAllKeysUnavailableMatrix(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	s := h.store
 	credentials := map[string]any{"api_keys": []any{"k1", "k2"}}
 	if s.allKeysUnavailable(nil, nil) {
@@ -238,10 +238,10 @@ func TestW7CEndpointModeNormalization(t *testing.T) {
 }
 
 func TestW7CLoadProxyURLArms(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	h.seedSchema(t)
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted, enabled)
-	    VALUES ('p-ok', 'http', '10.0.0.5', 8080, NULL, NULL, 1)`)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
+	    VALUES ('p-ok', 'sys-1', 'p', 'http', '10.0.0.5', 8080, NULL, NULL, TRUE, $1, $1)`, nowMillisText())
 	url, err := h.store.loadProxyURL(context.Background(), "p-ok")
 	if err != nil || url != "http://10.0.0.5:8080" {
 		t.Fatalf("plain proxy: %q %v", url, err)
@@ -254,53 +254,53 @@ func TestW7CLoadProxyURLArms(t *testing.T) {
 	if got, err := h.store.loadProxyURL(context.Background(), "   "); err != nil || got != "" {
 		t.Fatalf("blank profile: %q %v", got, err)
 	}
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, enabled) VALUES ('p-off', 'http', '10.0.0.6', 8080, 0)`)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at) VALUES ('p-off', 'sys-1', 'p', 'http', '10.0.0.6', 8080, FALSE, $1, $1)`, nowMillisText())
 	if _, err := h.store.loadProxyURL(context.Background(), "p-off"); err == nil || !strings.Contains(err.Error(), "不可用") {
 		t.Fatalf("disabled profile: %v", err)
 	}
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, enabled) VALUES ('p-badport', 'http', '10.0.0.7', 70000, 1)`)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at) VALUES ('p-badport', 'sys-1', 'p', 'http', '10.0.0.7', 70000, TRUE, $1, $1)`, nowMillisText())
 	if _, err := h.store.loadProxyURL(context.Background(), "p-badport"); err == nil {
 		t.Fatal("bad port must fail")
 	}
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, enabled) VALUES ('p-scheme', 'gre', '10.0.0.8', 8080, 1)`)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at) VALUES ('p-scheme', 'sys-1', 'p', 'gre', '10.0.0.8', 8080, TRUE, $1, $1)`, nowMillisText())
 	if _, err := h.store.loadProxyURL(context.Background(), "p-scheme"); err == nil || !strings.Contains(err.Error(), "协议不受支持") {
 		t.Fatalf("bad scheme: %v", err)
 	}
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, enabled) VALUES ('p-socks', 'socks5', '10.0.0.9', 1080, 1)`)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at) VALUES ('p-socks', 'sys-1', 'p', 'socks5', '10.0.0.9', 1080, TRUE, $1, $1)`, nowMillisText())
 	url, err = h.store.loadProxyURL(context.Background(), "p-socks")
 	if err != nil || url != "socks5h://10.0.0.9:1080" {
 		t.Fatalf("socks aliasing: %q %v", url, err)
 	}
 
 	password := h.sealCredentials(t, map[string]any{"password": "secret-pass"})
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted, enabled)
-	    VALUES ('p-auth', 'https', '10.0.0.10', 8443, 'user', ?, 1)`, password)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
+	    VALUES ('p-auth', 'sys-1', 'p', 'https', '10.0.0.10', 8443, 'user', $1, TRUE, $2, $2)`, password, nowMillisText())
 	url, err = h.store.loadProxyURL(context.Background(), "p-auth")
 	if err != nil || url != "https://user:secret-pass@10.0.0.10:8443" {
 		t.Fatalf("authenticated proxy: %q %v", url, err)
 	}
 
 	badPassword := h.sealCredentials(t, map[string]any{"other": 1})
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted, enabled)
-	    VALUES ('p-badpass', 'http', '10.0.0.11', 8080, 'user', ?, 1)`, badPassword)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
+	    VALUES ('p-badpass', 'sys-1', 'p', 'http', '10.0.0.11', 8080, 'user', $1, TRUE, $2, $2)`, badPassword, nowMillisText())
 	if _, err := h.store.loadProxyURL(context.Background(), "p-badpass"); err == nil || !strings.Contains(err.Error(), "密码缺失") {
 		t.Fatalf("missing password field: %v", err)
 	}
-	h.exec(t, `INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted, enabled)
-	    VALUES ('p-garbage', 'http', '10.0.0.12', 8080, 'user', 'garbage', 1)`)
+	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
+	    VALUES ('p-garbage', 'sys-1', 'p', 'http', '10.0.0.12', 8080, 'user', 'garbage', TRUE, $1, $1)`, nowMillisText())
 	if _, err := h.store.loadProxyURL(context.Background(), "p-garbage"); err == nil || !strings.Contains(err.Error(), "密码不可用") {
 		t.Fatalf("undecryptable password: %v", err)
 	}
 }
 
 func TestW7CLoadAccountMetadataByIds(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	h.seedSchema(t)
 	credentials := h.sealCredentials(t, map[string]any{"base_url": "https://x", "api_key": "k"})
-	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted)
-	    VALUES ('m-1', 'sys-1', 'n', 'api_key', 'active', ?)`, credentials)
-	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted, deleted_at)
-	    VALUES ('m-2', 'sys-2', 'n', 'api_key', 'active', ?, '2026-01-01')`, credentials)
+	h.exec(t, `INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, created_at, updated_at)
+	    VALUES ('m-1', 'sys-1', 'n', 'api_key', 'active', $1, 'gpt', 'openai', 'v1', $2, $2)`, credentials, nowMillisText())
+	h.exec(t, `INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, created_at, updated_at, deleted_at)
+	    VALUES ('m-2', 'sys-2', 'n', 'api_key', 'active', $1, 'gpt', 'openai', 'v1', $2, $2, '2026-01-01')`, credentials, nowMillisText())
 
 	metadata, err := h.store.LoadAccountMetadataByIds(context.Background(), []string{"m-1", "m-1", "", "m-2", "m-3"})
 	if err != nil {
@@ -317,6 +317,10 @@ func TestW7CLoadAccountMetadataByIds(t *testing.T) {
 	}
 }
 
+// TestW7CAuthorizedInstanceGroupPath 组B：expired authorization 臂被生产 PG
+// 臂缺陷阻塞——activeAuthorizationOwnerByID 的 `expires_at > ?` 把 time.Time
+// 绑进 text 列（pgx 回退编码 Go 时间文本，字典序与 RFC3339 存量行比较恒真），
+// 过期授权仍放行（见任务报告缺陷清单）；待缺陷修复后随组A迁 PG。
 func TestW7CAuthorizedInstanceGroupPath(t *testing.T) {
 	h := openTestDB(t)
 	h.seedSchema(t)
@@ -398,7 +402,7 @@ func TestW7CAuthorizedInstanceGroupPath(t *testing.T) {
 }
 
 func TestW7CSchemaAndStoreGuards(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	ctx := context.Background()
 	// The fixture schema is richer; EnsureSchema must be idempotent over it.
 	h.seedSchema(t)
@@ -409,7 +413,7 @@ func TestW7CSchemaAndStoreGuards(t *testing.T) {
 		t.Fatalf("core tables present: %v", err)
 	}
 	// A database without the core business tables must fail validation.
-	bare := openTestDB(t)
+	bare := openBareTestDBPostgres(t)
 	if err := bare.store.ValidateCoreTables(ctx); err == nil || !strings.Contains(err.Error(), "accounts") {
 		t.Fatalf("missing core tables: %v", err)
 	}
@@ -450,7 +454,7 @@ func TestW7CAssembleProbeViewArms(t *testing.T) {
 	if AssembleProbeView(nil, nil) != nil {
 		t.Fatal("nil inputs must assemble to nil")
 	}
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	account, err := h.store.LoadAccountForTest(context.Background(), "acc-1")
 	if err != nil || account == nil {
@@ -489,7 +493,7 @@ func TestW7CAssembleProbeViewArms(t *testing.T) {
 	if _, ok, err := h.store.resolveGroupAccess(context.Background(), "w7c-missing", "sys-1"); err != nil || ok {
 		t.Fatalf("missing group: %v %v", ok, err)
 	}
-	h.exec(t, `UPDATE groups SET enabled = 0 WHERE id = 'group-1'`)
+	h.exec(t, `UPDATE juhe_business.groups SET enabled = 0 WHERE id = 'group-1'`)
 	if _, ok, err := h.store.resolveGroupAccess(context.Background(), "group-1", "sys-1"); err != nil || ok {
 		t.Fatalf("disabled group: %v %v", ok, err)
 	}

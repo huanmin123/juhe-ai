@@ -2,8 +2,10 @@ package accountbalance
 
 // w7c runner/service contract tests: drive the in-process runner pipeline
 // (candidate eligibility, io/db worker fan-out, prepare/persist arms) and the
-// service manual bridge against the isolated SQLite store, plus direct table
-// coverage for applyQueryResult and the small RunReport helpers.
+// service manual bridge, plus direct table coverage for applyQueryResult and
+// the small RunReport helpers. 存储型测试已迁 pgtestkit 隔离 PG 库（生产
+// OpenStore(StorePostgres) 装配，PLAN-20261024T051925945Z 切片），断言逐字节
+// 保持；纯函数测试不依赖存储。
 
 import (
 	"context"
@@ -67,7 +69,7 @@ func w7cNewRunner(t *testing.T, store *Store, client HTTPDoer, mutate func(*Runn
 }
 
 func TestW7CRunDispatchRejectsManualCandidates(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	runner := w7cNewRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, nil)
 
 	if _, err := runner.Run(context.Background(), TriggerManual, []Candidate{w7cBalanceCandidate(t, store, "w7c-dispatch", nil)}); err == nil || !strings.Contains(err.Error(), "仅接受 periodic 或 first_probe") {
@@ -79,7 +81,7 @@ func TestW7CRunDispatchRejectsManualCandidates(t *testing.T) {
 }
 
 func TestW7CCandidateEligibilityMatrix(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	runner := w7cNewRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, nil)
 
 	report, err := runner.RunPeriodic(context.Background(), []Candidate{
@@ -114,12 +116,12 @@ func TestW7CCandidateEligibilityMatrix(t *testing.T) {
 }
 
 func TestW7CRunInputsSkipsWhenOwnerLeaseHeld(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
 
 	// A competing runner holds the owner lease first.
 	holder := w7cNewRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, func(c *RunnerConfig) { c.OwnerID = "w7c-holder" })
-	w7cOwner(t, store, "w7c-holder")
+	kitOwner(t, store, "w7c-holder")
 
 	runner := w7cNewRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, func(c *RunnerConfig) { c.OwnerID = "w7c-loser" })
 	candidates := []Candidate{w7cBalanceCandidate(t, store, "w7c-skip-a", nil), w7cBalanceCandidate(t, store, "w7c-skip-b", nil)}
@@ -138,7 +140,7 @@ func TestW7CRunInputsSkipsWhenOwnerLeaseHeld(t *testing.T) {
 }
 
 func TestW7CRunInputsCanceledContext(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runner := w7cNewRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, nil)
@@ -152,7 +154,7 @@ func TestW7CRunInputsCanceledContext(t *testing.T) {
 }
 
 func TestW7CRunnerQueryFailureRecordsError(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	// The upstream responds with a non-JSON garbage body on every adapter
 	// endpoint; the query finishes as an adapter diagnostic, and the runner
 	// still persists an unsupported snapshot.
@@ -173,10 +175,10 @@ func TestW7CRunnerQueryFailureRecordsError(t *testing.T) {
 }
 
 func TestW7CRunnerManualRunRecordsError(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	now := time.Now().UTC()
 	due := now.Add(-time.Minute)
-	input := w7cValidBalanceInput("w7c-manual-err")
+	input := kitValidBalanceInput("w7c-manual-err")
 	input.Trigger = TriggerManual
 	input.IssuedAt = now
 	input.ExpiresAt = now.Add(time.Minute)
@@ -198,10 +200,10 @@ func TestW7CRunnerManualRunRecordsError(t *testing.T) {
 }
 
 func TestW7CRunnerInputExpiringMidFlightIsRejected(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	base := time.Now().UTC()
 	advanced := base
-	input := w7cValidBalanceInput("w7c-expiring")
+	input := kitValidBalanceInput("w7c-expiring")
 	input.Trigger = TriggerManual
 	input.IssuedAt = base
 	input.ExpiresAt = base.Add(30 * time.Second)
@@ -272,9 +274,9 @@ func TestW7CApplyQueryResultBranchMatrix(t *testing.T) {
 }
 
 func TestW7CIdentityHelpersAreDeterministic(t *testing.T) {
-	input := w7cValidBalanceInput("w7c-id")
+	input := kitValidBalanceInput("w7c-id")
 	first := OutcomeIDForInput(input)
-	if first != OutcomeIDForInput(input) || first == OutcomeIDForInput(w7cValidBalanceInput("w7c-other")) {
+	if first != OutcomeIDForInput(input) || first == OutcomeIDForInput(kitValidBalanceInput("w7c-other")) {
 		t.Fatal("outcome identity must be deterministic per input")
 	}
 	if RequestIDForInput(input) == first || RequestIDForInput(input) != RequestIDForInput(input) {
@@ -286,7 +288,7 @@ func TestW7CIdentityHelpersAreDeterministic(t *testing.T) {
 }
 
 func TestW7CNewRunnerValidationArms(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	if _, err := NewRunner(RunnerConfig{CredentialSecret: "s"}); err == nil {
 		t.Fatal("missing store/owner must be rejected")
 	}

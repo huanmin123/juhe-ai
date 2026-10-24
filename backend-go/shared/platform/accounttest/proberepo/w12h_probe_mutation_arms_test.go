@@ -20,9 +20,9 @@ import (
 
 // precheck：updated_at 非法时间命中 invalid_runtime_state（健康时间臂由 w7c 覆盖）。
 func TestW12HPrecheckInvalidUpdatedAtArm(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	h.seedPoolAccount(t, "acc-1")
-	h.exec(t, `UPDATE accounts SET updated_at='garbage', last_used_at='2020-01-01T00:00:00.000Z' WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET updated_at='garbage', last_used_at='2020-01-01T00:00:00.000Z' WHERE id='acc-1'`)
 	result, err := h.store.MarkPrecheckTemporaryUnavailable(context.Background(), accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -34,9 +34,10 @@ func TestW12HPrecheckInvalidUpdatedAtArm(t *testing.T) {
 
 // precheck：UPDATE 执行错误必须原样传播。
 func TestW12HPrecheckExecErrorArm(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	h.seedPoolAccount(t, "acc-1")
-	h.exec(t, `CREATE TRIGGER w12h_abort_acc BEFORE UPDATE ON accounts BEGIN SELECT RAISE(ABORT, 'w12h acc abort'); END`)
+	h.exec(t, `CREATE FUNCTION w12h_abort_acc_fn() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN RAISE EXCEPTION 'w12h acc abort'; END $fn$;
+CREATE TRIGGER w12h_abort_acc BEFORE UPDATE ON juhe_business.accounts FOR EACH ROW EXECUTE FUNCTION w12h_abort_acc_fn()`)
 	_, err := h.store.MarkPrecheckTemporaryUnavailable(context.Background(), accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -85,7 +86,7 @@ func TestW12HListDueForProbeArms(t *testing.T) {
 // claimProbeCandidates 直调：时间解析守卫、limit=0 立即截断、CAS 竞争失败丢弃、写中止传播。
 func TestW12HClaimProbeCandidatesArms(t *testing.T) {
 	ctx := context.Background()
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
@@ -108,7 +109,8 @@ func TestW12HClaimProbeCandidatesArms(t *testing.T) {
 		t.Fatalf("CAS 未命中必须丢弃: %d %v", len(claimed), err)
 	}
 	// 写中止必须传播。
-	h.exec(t, `CREATE TRIGGER w12h_abort_claim BEFORE UPDATE ON account_api_key_runtime_states BEGIN SELECT RAISE(ABORT, 'w12h claim abort'); END`)
+	h.exec(t, `CREATE FUNCTION w12h_abort_claim_fn() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN RAISE EXCEPTION 'w12h claim abort'; END $fn$;
+CREATE TRIGGER w12h_abort_claim BEFORE UPDATE ON juhe_business.account_api_key_runtime_states FOR EACH ROW EXECUTE FUNCTION w12h_abort_claim_fn()`)
 	_, err = h.store.claimProbeCandidates(ctx,
 		[]accountquality.CooldownProbeCandidate{{AccountID: "acc-1", KeyFingerprint: fp1, Status: "temporary_unavailable", NextProbeAt: plusMillis(-1000)}}, 5, now)
 	if err == nil || !strings.Contains(err.Error(), "w12h claim abort") {
@@ -119,11 +121,12 @@ func TestW12HClaimProbeCandidatesArms(t *testing.T) {
 // Key 变更：UPDATE 触发器中止各写路径，INSERT 触发器中止失败插入路径。
 func TestW12HKeyMutationExecErrorArms(t *testing.T) {
 	ctx := context.Background()
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
-	h.exec(t, `CREATE TRIGGER w12h_abort_rs BEFORE UPDATE ON account_api_key_runtime_states BEGIN SELECT RAISE(ABORT, 'w12h rs abort'); END`)
+	h.exec(t, `CREATE FUNCTION w12h_abort_rs_fn() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN RAISE EXCEPTION 'w12h rs abort'; END $fn$;
+CREATE TRIGGER w12h_abort_rs BEFORE UPDATE ON juhe_business.account_api_key_runtime_states FOR EACH ROW EXECUTE FUNCTION w12h_abort_rs_fn()`)
 
 	// 成功 + 围栏 → UPDATE 命中 → 中止。
 	if _, err := h.store.RecordKeySuccess(ctx, accountquality.KeySuccessInput{
@@ -155,9 +158,10 @@ func TestW12HKeyMutationExecErrorArms(t *testing.T) {
 	}
 
 	// 新指纹 + BEFORE INSERT 触发器 → 失败插入路径中止。
-	h.exec(t, `CREATE TRIGGER w12h_abort_ri BEFORE INSERT ON account_api_key_runtime_states BEGIN SELECT RAISE(ABORT, 'w12h ri abort'); END`)
+	h.exec(t, `CREATE FUNCTION w12h_abort_ri_fn() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN RAISE EXCEPTION 'w12h ri abort'; END $fn$;
+CREATE TRIGGER w12h_abort_ri BEFORE INSERT ON juhe_business.account_api_key_runtime_states FOR EACH ROW EXECUTE FUNCTION w12h_abort_ri_fn()`)
 	freshKey := "sk-w12h-fresh"
-	h.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acc-1'`,
+	h.exec(t, `UPDATE juhe_business.accounts SET credentials_encrypted = $1 WHERE id = 'acc-1'`,
 		h.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{key1, freshKey}}))
 	if _, err := h.store.RecordKeyFailure(ctx, accountquality.KeyFailureInput{
 		AccountID: "acc-1", KeyFingerprint: h.store.FingerprintAPIKey(freshKey), TrafficSource: "cooldown_retest",
@@ -170,7 +174,7 @@ func TestW12HKeyMutationExecErrorArms(t *testing.T) {
 // Key 变更跳过与解析臂：非池内指纹、generic 恢复码、config 围栏、runtime 行读取错误。
 func TestW12HKeyMutationSkipArms(t *testing.T) {
 	ctx := context.Background()
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
@@ -199,7 +203,7 @@ func TestW12HKeyMutationSkipArms(t *testing.T) {
 		t.Fatalf("generic 失败必须生效: %+v %v", result, err)
 	}
 	var code string
-	if err := h.db.QueryRow(`SELECT last_error_code FROM account_api_key_runtime_states WHERE key_fingerprint = ?`,
+	if err := h.db.QueryRow(`SELECT last_error_code FROM juhe_business.account_api_key_runtime_states WHERE key_fingerprint = $1`,
 		fp1).Scan(&code); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +221,7 @@ func TestW12HKeyMutationSkipArms(t *testing.T) {
 	}
 
 	// runtime 表缺失 → loadRuntimeRow 错误原样传播。
-	h.exec(t, `DROP TABLE account_api_key_runtime_states`)
+	h.exec(t, `DROP TABLE juhe_business.account_api_key_runtime_states`)
 	if _, err = h.store.RecordKeyFailure(ctx, accountquality.KeyFailureInput{
 		AccountID: "acc-1", KeyFingerprint: fp1, TrafficSource: "cooldown_retest", StatusCode: 500,
 	}); err == nil {
@@ -247,7 +251,7 @@ func TestW12HJitterZeroOffsetArms(t *testing.T) {
 
 // 凭据条目：空白与重复 key 去重；Store 缺省时钟。
 func TestW12HCredentialEntryDedupAndDefaultClock(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	entries := h.store.AccountAPIKeyEntries(map[string]any{
 		"api_keys": []any{"  ", "dup", "dup"},
 	})

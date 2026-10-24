@@ -2,20 +2,17 @@ package modelcheckowner
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestStoreSchemaCheckFailsClosedWhenMigrationIsMissing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,24 +33,16 @@ func TestOpenStoreRejectsConfirmedHandoffWhileNodeWriterIsActive(t *testing.T) {
 }
 
 func TestStoreSchemaCheckDoesNotCreateTables(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	statements := make([]string, 0, len(requiredColumns))
 	for table, columns := range requiredColumns {
 		definitions := make([]string, 0, len(columns))
 		for _, column := range columns {
 			definitions = append(definitions, column+" TEXT")
 		}
-		if _, err := seed.Exec(`CREATE TABLE ` + table + ` (` + strings.Join(definitions, ",") + `)`); err != nil {
-			t.Fatal(err)
-		}
+		statements = append(statements, `CREATE TABLE `+j3bTestSchema+`.`+table+` (`+strings.Join(definitions, ",")+`)`)
 	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, statements...)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,11 +53,7 @@ func TestStoreSchemaCheckDoesNotCreateTables(t *testing.T) {
 }
 
 func TestStoreSchemaCheckRejectsMissingRequiredColumn(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	statements := make([]string, 0, len(requiredColumns))
 	for table, columns := range requiredColumns {
 		definitions := make([]string, 0, len(columns))
 		for _, column := range columns {
@@ -77,14 +62,10 @@ func TestStoreSchemaCheckRejectsMissingRequiredColumn(t *testing.T) {
 			}
 			definitions = append(definitions, column+" TEXT")
 		}
-		if _, err := seed.Exec(`CREATE TABLE ` + table + ` (` + strings.Join(definitions, ",") + `)`); err != nil {
-			t.Fatal(err)
-		}
+		statements = append(statements, `CREATE TABLE `+j3bTestSchema+`.`+table+` (`+strings.Join(definitions, ",")+`)`)
 	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, statements...)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,11 +91,7 @@ func TestStoreSchemaCheckRejectsRuntimeProjectionColumnDrift(t *testing.T) {
 		{name: "health error message", table: "account_quality_health_hourly", col: "error_message"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "j3b-drift.db")
-			seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-			if err != nil {
-				t.Fatal(err)
-			}
+			statements := make([]string, 0, len(requiredColumns))
 			for table, columns := range requiredColumns {
 				definitions := make([]string, 0, len(columns))
 				for _, column := range columns {
@@ -123,15 +100,10 @@ func TestStoreSchemaCheckRejectsRuntimeProjectionColumnDrift(t *testing.T) {
 					}
 					definitions = append(definitions, column+" TEXT")
 				}
-				if _, err := seed.Exec(`CREATE TABLE ` + table + ` (` + strings.Join(definitions, ",") + `)`); err != nil {
-					seed.Close()
-					t.Fatal(err)
-				}
+				statements = append(statements, `CREATE TABLE `+j3bTestSchema+`.`+table+` (`+strings.Join(definitions, ",")+`)`)
 			}
-			if err := seed.Close(); err != nil {
-				t.Fatal(err)
-			}
-			store, err := OpenStore(testSQLiteConfig(path))
+			tdb := newJ3BPGTestDatabase(t, statements...)
+			store, err := OpenStore(j3bPGConfig(tdb.DSN))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -145,21 +117,13 @@ func TestStoreSchemaCheckRejectsRuntimeProjectionColumnDrift(t *testing.T) {
 }
 
 func TestActivateTokenInterceptBaselineUsesAtomicCAS(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "baseline.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE model_token_intercept_baseline_versions (
+	db := newJ3BPGDatabase(t, `CREATE TABLE `+j3bTestSchema+`.model_token_intercept_baseline_versions (
 		cohort_key_hmac TEXT NOT NULL, requested_model TEXT NOT NULL, tokenizer_version TEXT NOT NULL,
 		probe_set_version TEXT NOT NULL, baseline_version INTEGER NOT NULL, version_status TEXT NOT NULL,
-		evidence_status TEXT NOT NULL, independent_source_count INTEGER NOT NULL, q90_intercept REAL,
-		strong_threshold_intercept REAL, strong_gate_enabled INTEGER NOT NULL, calibration_note TEXT,
+		evidence_status TEXT NOT NULL, independent_source_count INTEGER NOT NULL, q90_intercept DOUBLE PRECISION,
+		strong_threshold_intercept DOUBLE PRECISION, strong_gate_enabled INTEGER NOT NULL, calibration_note TEXT,
 		updated_at TEXT NOT NULL, PRIMARY KEY(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version))`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
 	const cohort = "hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	for _, row := range []struct {
 		version int
@@ -169,22 +133,20 @@ func TestActivateTokenInterceptBaselineUsesAtomicCAS(t *testing.T) {
 		{version: 1, status: "active", gate: 1},
 		{version: 2, status: "calibration_pending", gate: 0},
 	} {
-		_, err = db.Exec(`INSERT INTO model_token_intercept_baseline_versions (cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,q90_intercept,strong_threshold_intercept,strong_gate_enabled,calibration_note,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, cohort, "gpt-5.6", "o200k_base@1", "probe-v1", row.version, row.status, "stable", 10, 120, nil, row.gate, nil, "2026-08-27T10:00:00Z")
-		if err != nil {
+		if _, err := db.Exec(j3bQ(`INSERT INTO model_token_intercept_baseline_versions (cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,q90_intercept,strong_threshold_intercept,strong_gate_enabled,calibration_note,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`), cohort, "gpt-5.6", "o200k_base@1", "probe-v1", row.version, row.status, "stable", 10, 120, nil, row.gate, nil, "2026-08-27T10:00:00Z"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	store := &Store{db: db, mode: "sqlite"}
 	input := TokenInterceptBaselineActivation{CohortKeyHMAC: cohort, RequestedModel: "gpt-5.6", TokenizerVersion: "o200k_base@1", ProbeSetVersion: "probe-v1", BaselineVersion: 2, StrongThresholdIntercept: 128, CalibrationNote: "calibrated"}
 	if err := store.ActivateTokenInterceptBaseline(context.Background(), input); err != nil {
 		t.Fatalf("activate err=%v", err)
 	}
 	var status1, status2 string
 	var gate1, gate2 int
-	if err := db.QueryRow(`SELECT version_status,strong_gate_enabled FROM model_token_intercept_baseline_versions WHERE baseline_version=1`).Scan(&status1, &gate1); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT version_status,strong_gate_enabled FROM model_token_intercept_baseline_versions WHERE baseline_version=1`)).Scan(&status1, &gate1); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT version_status,strong_gate_enabled FROM model_token_intercept_baseline_versions WHERE baseline_version=2`).Scan(&status2, &gate2); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT version_status,strong_gate_enabled FROM model_token_intercept_baseline_versions WHERE baseline_version=2`)).Scan(&status2, &gate2); err != nil {
 		t.Fatal(err)
 	}
 	if status1 != "retired" || gate1 != 0 || status2 != "active" || gate2 != 1 {
@@ -196,14 +158,9 @@ func TestActivateTokenInterceptBaselineUsesAtomicCAS(t *testing.T) {
 }
 
 func TestActivateTokenInterceptBaselineFailsClosedWhenStorageMissing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing-baseline.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	store := &Store{db: db, mode: "sqlite"}
-	err = store.ActivateTokenInterceptBaseline(context.Background(), TokenInterceptBaselineActivation{
+	db := newJ3BPGDatabase(t)
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	err := store.ActivateTokenInterceptBaseline(context.Background(), TokenInterceptBaselineActivation{
 		CohortKeyHMAC: "hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RequestedModel: "gpt-5.6", TokenizerVersion: "o200k_base@1", ProbeSetVersion: "probe-v1", BaselineVersion: 1, StrongThresholdIntercept: 100, CalibrationNote: "ok",
 	})
 	if !errors.Is(err, ErrTokenInterceptBaselineUnavailable) {
@@ -212,19 +169,8 @@ func TestActivateTokenInterceptBaselineFailsClosedWhenStorageMissing(t *testing.
 }
 
 func TestApplyHealthFactUsesLatestWinsOrdering(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = seed.Exec(`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, score INTEGER NOT NULL, threshold INTEGER NOT NULL, level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(account_id,stat_hour))`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t, `CREATE TABLE `+j3bTestSchema+`.account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, score INTEGER NOT NULL, threshold INTEGER NOT NULL, level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(account_id,stat_hour))`)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,22 +211,13 @@ func TestApplyHealthFactUsesLatestWinsOrdering(t *testing.T) {
 }
 
 func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "health-retry.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
 	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`)
-	if err != nil {
-		t.Fatal(err)
-	}
 	finished := "2026-08-27T10:15:00Z"
-	_, err = db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "run-1", "completed", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished)
-	if err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), "run-1", "completed", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("retries=%#v err=%v", retries, err)
@@ -291,7 +228,7 @@ func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testin
 	if !retries[0].EvidenceFormed || !retries[0].TrustFormed {
 		t.Fatalf("retry evidence=%#v", retries[0])
 	}
-	if _, err := db.Exec(`UPDATE model_check_runs SET policy_snapshot_json='{}' WHERE id='run-1'`); err != nil {
+	if _, err := db.Exec(j3bQ(`UPDATE model_check_runs SET policy_snapshot_json='{}' WHERE id='run-1'`)); err != nil {
 		t.Fatal(err)
 	}
 	retries, err = store.ListHealthSyncRetries(context.Background(), 10)
@@ -299,30 +236,23 @@ func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testin
 		t.Fatalf("invalid retry must be skipped without blocking scan: retries=%#v err=%v", retries, err)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-1'`).Scan(&state); err != nil || state != "failed" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-1'`)).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("invalid retry state=%q err=%v, want durable failed", state, err)
 	}
 }
 
 func TestListHealthSyncRetriesKeepsHardQualityFailureAboveThreshold(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "health-hard-retry.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
 	finished := "2026-08-27T10:15:00Z"
-	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		"run-hard", "completed", "acct-hard", "sys-hard", "openai", "gpt-5.6", "full", "failure", 95, nil,
 		`{"revision":"policy-hard","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
 		`{"evidenceFormed":true,"trustFormed":true,"hardQualityFailure":true}`,
 		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("retries=%#v err=%v", retries, err)
@@ -333,24 +263,17 @@ func TestListHealthSyncRetriesKeepsHardQualityFailureAboveThreshold(t *testing.T
 }
 
 func TestListHealthSyncRetriesAdmitsUnformedQuickQualityFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "health-quick-retry.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
 	finished := "2026-08-27T10:15:00Z"
-	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		"run-quick-hard", "completed", "acct-quick", "sys-quick", "openai", "gpt-5.6", "quick", "failure", 96, nil,
 		`{"revision":"policy-quick","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
 		`{"evidenceFormed":false,"trustFormed":false,"hardQualityFailure":true,"enforcementAllowed":true}`,
 		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("retries=%#v err=%v", retries, err)
@@ -358,7 +281,7 @@ func TestListHealthSyncRetriesAdmitsUnformedQuickQualityFailure(t *testing.T) {
 	if retries[0].EvidenceFormed || retries[0].TrustFormed || !retries[0].HardQualityFailure {
 		t.Fatalf("quick retry evidence flags=%+v", retries[0])
 	}
-	if _, err := db.Exec(`UPDATE model_check_runs SET quality_decision_json=? WHERE id='run-quick-hard'`, `{"evidenceFormed":true,"trustFormed":false,"hardQualityFailure":true,"enforcementAllowed":true}`); err != nil {
+	if _, err := db.Exec(j3bQ(`UPDATE model_check_runs SET quality_decision_json=? WHERE id='run-quick-hard'`), `{"evidenceFormed":true,"trustFormed":false,"hardQualityFailure":true,"enforcementAllowed":true}`); err != nil {
 		t.Fatal(err)
 	}
 	retries, err = store.ListHealthSyncRetries(context.Background(), 10)
@@ -368,30 +291,23 @@ func TestListHealthSyncRetriesAdmitsUnformedQuickQualityFailure(t *testing.T) {
 }
 
 func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "health-retry-batch.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
 	finished := "2026-08-27T10:15:00Z"
 	validPolicy := `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`
 	validDecision := `{"evidenceFormed":true,"trustFormed":true}`
-	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		"run-bad", "completed", "acct-bad", "sys-bad", "openai", "gpt-5.6", "full", "failure", 20, nil, `{}`, validDecision, `{"configRevision":"3"}`, finished, "failed", "2026-08-27T10:00:00Z",
 		"run-valid", "completed", "acct-valid", "sys-valid", "openai", "gpt-5.6", "full", "failure", 20, nil, validPolicy, validDecision, `{"configRevision":"3"}`, finished, "failed", "2026-08-27T10:01:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 1)
 	if err != nil || len(retries) != 1 || retries[0].RunID != "run-valid" {
 		t.Fatalf("retries=%#v err=%v", retries, err)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-bad'`).Scan(&state); err != nil || state != "failed" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-bad'`)).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("malformed run state=%q err=%v, want durable failed", state, err)
 	}
 }
@@ -399,24 +315,17 @@ func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T
 // unavailable 结果的重试筛选与首发同规则：可用性事实不要求 formed/trusted，
 // 不得出现"能首发、进不了重试"的窄门（J3B 修复）。
 func TestListHealthSyncRetriesAdmitsUnavailableWithoutFormedEvidence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "health-unavailable-retry.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
 	finished := "2026-08-27T10:15:00Z"
-	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		"run-unavailable", "completed", "acct-unavail", "sys-unavail", "openai", "gpt-5.6", "full", "unavailable", 0, nil,
 		`{"revision":"policy-unavail","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
 		`{"evidenceFormed":false,"trustFormed":false}`,
 		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("unavailable retry must be admitted: retries=%#v err=%v", retries, err)
@@ -429,24 +338,17 @@ func TestListHealthSyncRetriesAdmitsUnavailableWithoutFormedEvidence(t *testing.
 // MergeRunQualityDecision：读现有 quality_decision_json、合并结果字段并写回；
 // run 不存在时静默跳过；非法输入必须报错。
 func TestMergeRunQualityDecisionMergesResultFields(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "merge-decision.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, `CREATE TABLE `+j3bTestSchema+`.model_check_runs (id TEXT PRIMARY KEY,quality_decision_json TEXT,updated_at TEXT)`)
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_decision_json TEXT,updated_at TEXT)`); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_decision_json,updated_at) VALUES ('run-merge','{"triggerKind":"scheduled","triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_decision_json,updated_at) VALUES ('run-merge','{"triggerKind":"scheduled","triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
 	if err := store.MergeRunQualityDecision(context.Background(), "run-merge", map[string]any{"result": "applied", "enforcementId": "enf-1", "generation": 2, "beforeStatus": nil, "afterStatus": "quality_isolated", "healthSyncResult": "applied", "healthStatHour": "2026-08-27T10:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
 	var merged string
-	if err := db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id='run-merge'`).Scan(&merged); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_decision_json FROM model_check_runs WHERE id='run-merge'`)).Scan(&merged); err != nil {
 		t.Fatal(err)
 	}
 	fields := map[string]any{}
@@ -472,23 +374,10 @@ func TestMergeRunQualityDecisionMergesResultFields(t *testing.T) {
 }
 
 func TestIssueInputIsImmutableAndIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version INTEGER NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(identity_key,input_version), UNIQUE(identity_key,input_digest))`,
-	} {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version BIGINT NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, UNIQUE(identity_key,input_version), UNIQUE(identity_key,input_digest))`)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,23 +406,10 @@ func TestIssueInputIsImmutableAndIdempotent(t *testing.T) {
 }
 
 func TestRunLifecycleProjectionIsAtomicAndIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = seed.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, message TEXT NOT NULL DEFAULT '', finished_at TEXT, duration_ms INTEGER, error_code TEXT, error_message TEXT, quality_health_sync_status TEXT)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = seed.Exec(`CREATE TABLE model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL, error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, message TEXT NOT NULL DEFAULT '', finished_at TEXT, duration_ms INTEGER, error_code TEXT, error_message TEXT, quality_health_sync_status TEXT)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL, error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,13 +439,13 @@ func TestRunLifecycleProjectionIsAtomicAndIdempotent(t *testing.T) {
 	}
 	var status, message, resultSummary, evidence, itemError string
 	var itemCount int
-	if err := store.db.QueryRow(`SELECT status,message,result_summary_json FROM model_check_runs WHERE id='run-1'`).Scan(&status, &message, &resultSummary); err != nil || status != string(RunCompleted) {
+	if err := store.db.QueryRow(j3bQ(`SELECT status,message,result_summary_json FROM model_check_runs WHERE id='run-1'`)).Scan(&status, &message, &resultSummary); err != nil || status != string(RunCompleted) {
 		t.Fatalf("status=%s err=%v", status, err)
 	}
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id='run-1'`).Scan(&itemCount); err != nil || itemCount != 1 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_items WHERE run_id='run-1'`)).Scan(&itemCount); err != nil || itemCount != 1 {
 		t.Fatalf("item count=%d err=%v", itemCount, err)
 	}
-	if err := store.db.QueryRow(`SELECT evidence_summary_json,error_message FROM model_check_items WHERE id='item-1'`).Scan(&evidence, &itemError); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT evidence_summary_json,error_message FROM model_check_items WHERE id='item-1'`)).Scan(&evidence, &itemError); err != nil {
 		t.Fatal(err)
 	}
 	for _, durable := range []string{message, resultSummary, evidence, itemError} {
@@ -609,25 +485,12 @@ func TestRunSummaryJSONRequiresAnObject(t *testing.T) {
 }
 
 func TestClaimAndOutcomeFenceLifecycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version INTEGER NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, payload BLOB NOT NULL)`,
-		`CREATE TABLE model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, claim_until TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token INTEGER NOT NULL, observed_at TEXT NOT NULL, stored_at TEXT NOT NULL, payload BLOB NOT NULL, payload_digest TEXT NOT NULL, committed INTEGER NOT NULL)`,
-	} {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version BIGINT NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, claim_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token BIGINT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, stored_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, payload_digest TEXT NOT NULL, committed BOOLEAN NOT NULL)`)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +498,7 @@ func TestClaimAndOutcomeFenceLifecycle(t *testing.T) {
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	payload := json.RawMessage(`{"model":"gpt-5.6"}`)
 	digest := digestPayload(payload)
-	if _, err := store.db.Exec(`INSERT INTO model_check_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "input-1", "account:a", 1, digest, "a", "cfg", "pol", "manual", now.Format(time.RFC3339Nano), now.Add(time.Hour).Format(time.RFC3339Nano), []byte(payload)); err != nil {
+	if _, err := store.db.Exec(j3bQ(`INSERT INTO model_check_inputs VALUES(?,?,?,?,?,?,?,?,?,?,?)`), "input-1", "account:a", 1, digest, "a", "cfg", "pol", "manual", now.Format(time.RFC3339Nano), now.Add(time.Hour).Format(time.RFC3339Nano), []byte(payload)); err != nil {
 		t.Fatal(err)
 	}
 	first, err := store.ClaimInput(context.Background(), "input-1", "token-1", "outcome-1", "owner-1", time.Minute, now)
@@ -671,25 +534,17 @@ func TestClaimAndOutcomeFenceLifecycle(t *testing.T) {
 	}
 }
 
+// 夹具说明：outcomes.payload 用 text 而非生产的 JSONB——本测试以原始字节
+// 摘要（digestPayload(outcomePayload)）回读校验，JSONB 的规范化渲染
+// （冒号后补空格）会改变字节导致摘要恒不符；text 保持与 SQLite 逐字节
+// 等价的回读语义。生产 PG 臂在 JSONB 列上的该摘要校验失配问题见报告
+// （w15b 之外的生产臂缺陷取证，本切片只报告不修复）。
 func TestLoadInputAndListCommittedOutcomesVerifyDigests(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "j3b.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version INTEGER NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, payload BLOB NOT NULL)`,
-		`CREATE TABLE model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token INTEGER NOT NULL, observed_at TEXT NOT NULL, stored_at TEXT NOT NULL, payload BLOB NOT NULL, payload_digest TEXT NOT NULL, committed INTEGER NOT NULL)`,
-	} {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	tdb := newJ3BPGTestDatabase(t,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version BIGINT NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL)`,
+		`CREATE TABLE `+j3bTestSchema+`.model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token BIGINT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, stored_at TIMESTAMPTZ NOT NULL, payload TEXT NOT NULL, payload_digest TEXT NOT NULL, committed BOOLEAN NOT NULL)`)
+	store, err := OpenStore(j3bPGConfig(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +559,7 @@ func TestLoadInputAndListCommittedOutcomesVerifyDigests(t *testing.T) {
 		t.Fatalf("loaded=%+v err=%v", loaded, err)
 	}
 	outPayload := json.RawMessage(`{"ok":true}`)
-	if _, err := store.db.Exec(`INSERT INTO model_check_outcomes VALUES(?,?,?,?,?,?,?,?,?)`, "out-1", "input-1", loaded.InputDigest, 1, now.Format(time.RFC3339Nano), now.Add(time.Second).Format(time.RFC3339Nano), []byte(outPayload), digestPayload(outPayload), true); err != nil {
+	if _, err := store.db.Exec(j3bQ(`INSERT INTO model_check_outcomes VALUES(?,?,?,?,?,?,?,?,?)`), "out-1", "input-1", loaded.InputDigest, 1, now.Format(time.RFC3339Nano), now.Add(time.Second).Format(time.RFC3339Nano), []byte(outPayload), digestPayload(outPayload), true); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.ListCommittedOutcomes(context.Background(), OutcomeCursor{}, 10)
@@ -715,8 +570,4 @@ func TestLoadInputAndListCommittedOutcomesVerifyDigests(t *testing.T) {
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("cursor after outcome rows=%+v err=%v", rows, err)
 	}
-}
-
-func testSQLiteConfig(path string) Config {
-	return Config{Enabled: true, StoreMode: "sqlite", DatabasePath: path, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
 }

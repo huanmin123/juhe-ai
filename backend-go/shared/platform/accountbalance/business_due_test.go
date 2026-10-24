@@ -9,15 +9,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 type bdueAdvanceCall struct {
@@ -63,7 +61,7 @@ func bdueRunner(t *testing.T, store *Store, client HTTPDoer, advancer BusinessDu
 }
 
 func TestBusinessDuePeriodicSuccessAdvancesDueCursor(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	fixed := time.Now().UTC().Truncate(time.Second)
 	advancer := &bdueFakeAdvancer{result: true}
 	due := fixed.Add(-time.Minute)
@@ -101,7 +99,7 @@ func TestBusinessDuePeriodicSuccessAdvancesDueCursor(t *testing.T) {
 }
 
 func TestBusinessDueUnsupportedOutcomeAdvancesDue(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	advancer := &bdueFakeAdvancer{result: true}
 	// Non-JSON upstream body: the outcome is committed as an unsupported
 	// diagnostic, which is a settled periodic outcome and must advance due by
@@ -127,7 +125,7 @@ func TestBusinessDueUnsupportedOutcomeAdvancesDue(t *testing.T) {
 }
 
 func TestBusinessDueTransientFailureOutcomeAdvancesDue(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	advancer := &bdueFakeAdvancer{result: true}
 	client := &balanceTestHTTP{err: errors.New("dial upstream failed")}
 	runner := bdueRunner(t, store, client, advancer, nil)
@@ -153,7 +151,7 @@ func TestBusinessDueTransientFailureOutcomeAdvancesDue(t *testing.T) {
 }
 
 func TestBusinessDueFirstProbeAndManualDoNotAdvance(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	advancer := &bdueFakeAdvancer{result: true}
 	runner := bdueRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, advancer, nil)
 
@@ -167,7 +165,7 @@ func TestBusinessDueFirstProbeAndManualDoNotAdvance(t *testing.T) {
 		t.Fatalf("first probe report: %#v %v", report, err)
 	}
 	// Manual refresh scheduling belongs to the gateway.
-	manual := w7cValidBalanceInput("bdue-manual")
+	manual := kitValidBalanceInput("bdue-manual")
 	manual.Trigger = TriggerManual
 	manualReport, err := runner.RunManual(context.Background(), manual)
 	if err != nil || manualReport.Executed != 1 {
@@ -179,14 +177,14 @@ func TestBusinessDueFirstProbeAndManualDoNotAdvance(t *testing.T) {
 }
 
 func TestBusinessDueIdempotentReplayAdvancesOnce(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	advancer := &bdueFakeAdvancer{result: true}
 	fixed := time.Now().UTC()
 	runner := bdueRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, advancer, func() time.Time { return fixed })
 
-	owner := w7cOwner(t, store, "bdue-replay-owner")
-	lease := w7cAccount(t, store, owner, "bdue-replay")
-	input := w7cValidBalanceInput("bdue-replay")
+	owner := kitOwner(t, store, "bdue-replay-owner")
+	lease := kitAccount(t, store, owner, "bdue-replay")
+	input := kitValidBalanceInput("bdue-replay")
 	input.IssuedAt = fixed
 	input.ExpiresAt = fixed.Add(time.Minute)
 
@@ -204,7 +202,7 @@ func TestBusinessDueIdempotentReplayAdvancesOnce(t *testing.T) {
 }
 
 func TestBusinessDueAdvancerErrorStaysPerAccount(t *testing.T) {
-	store := w7cNewSQLiteStore(t)
+	store := openKitPostgresStore(t)
 	advancer := &bdueFakeAdvancer{err: errors.New("business due update failed")}
 	runner := bdueRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, advancer, nil)
 
@@ -219,33 +217,13 @@ func TestBusinessDueAdvancerErrorStaysPerAccount(t *testing.T) {
 }
 
 // TestPostgresBusinessDueAdvanceSmoke verifies the real PostgreSQL statement
-// (text due column, timestamptz fence, eligibility guard) against a throwaway
-// dev database. Opt-in via JUHE_AI_J2_PG_SMOKE_ADMIN_URL, like the jobs store
-// smoke; it never touches shared databases.
+// (text due column, timestamptz fence, eligibility guard). 迁 pgtestkit
+// （PLAN-20261024T051925945Z 切片，§4.2 裁量：smoke 迁离 env 门禁，先例
+// runtimelog/operationlog 已接受）：一次性临时库由 kit 创建/删除，账户表
+// DDL 与全部断言逐字节保持。
 func TestPostgresBusinessDueAdvanceSmoke(t *testing.T) {
-	adminURL := strings.TrimSpace(os.Getenv("JUHE_AI_J2_PG_SMOKE_ADMIN_URL"))
-	if adminURL == "" {
-		t.Skip("JUHE_AI_J2_PG_SMOKE_ADMIN_URL 未设置")
-	}
-	admin, err := sql.Open("pgx", adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := fmt.Sprintf("juhe_ai_sub2api_dev_j2_due_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE "`+name+`"`); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = admin.ExecContext(context.Background(), `DROP DATABASE "`+name+`" WITH (FORCE)`) }()
-	targetURL, err := replaceDatabase(adminURL, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bootstrap, err := sql.Open("pgx", targetURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bootstrap.ExecContext(context.Background(), `
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `
 CREATE SCHEMA juhe_business;
 CREATE TABLE juhe_business.accounts (
   id text PRIMARY KEY,
@@ -258,16 +236,10 @@ CREATE TABLE juhe_business.accounts (
   deleted_at timestamptz,
   authorization_instance_authorization_id text,
   updated_at text NOT NULL
-)`); err != nil {
-		_ = bootstrap.Close()
-		t.Fatal(err)
-	}
-	_ = bootstrap.Close()
-	dueDB, err := sql.Open("pgx", targetURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewBusinessDueStore(dueDB, nil)
+)`)
+		return err
+	})
+	store, err := NewBusinessDueStore(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

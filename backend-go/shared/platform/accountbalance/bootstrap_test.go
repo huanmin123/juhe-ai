@@ -4,13 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // BootstrapPostgres 的 nil-db 守卫分支不依赖任何连接。
@@ -20,39 +17,18 @@ func TestBootstrapPostgresNilDB(t *testing.T) {
 	}
 }
 
-// w1 J2 外部预置入口的 PG 门用例：沿用 postgres_smoke_test.go 的
-// JUHE_AI_J2_PG_SMOKE_ADMIN_URL 门控与一次性临时库惯例，只创建/删除本用例
-// 命名唯一的临时库，绝不触碰共享库。
+// w1 J2 外部预置入口的 PG 用例。迁 pgtestkit（PLAN-20261024T051925945Z 切片，
+// §4.2 裁量：smoke 迁离 JUHE_AI_J2_PG_SMOKE_ADMIN_URL 门禁，runtimelog/
+// operationlog 先例已接受）：juhe_jobs schema 仍由 prepare 按外部受控流程
+// 同语义预置，bootstrap 绝不自建 schema；一次性临时库由 kit 创建/删除，
+// 断言逐字节保持。
 func TestBootstrapPostgresProvisionsAndVerifies(t *testing.T) {
-	adminURL := strings.TrimSpace(os.Getenv("JUHE_AI_J2_PG_SMOKE_ADMIN_URL"))
-	if adminURL == "" {
-		t.Skip("JUHE_AI_J2_PG_SMOKE_ADMIN_URL 未设置")
-	}
-	admin, err := sql.Open("pgx", adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := fmt.Sprintf("juhe_ai_sub2api_dev_j2_bootstrap_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE "`+name+`"`); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = admin.ExecContext(context.Background(), `DROP DATABASE "`+name+`" WITH (FORCE)`) }()
-	targetURL, err := replaceDatabase(adminURL, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bootstrap, err := sql.Open("pgx", targetURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bootstrap.Close()
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, "CREATE SCHEMA juhe_jobs")
+		return err
+	})
 	ctx := context.Background()
-	// juhe_jobs schema 仍由外部受控流程预置（重装 runbook 的既有语义）。
-	if _, err := bootstrap.ExecContext(ctx, "CREATE SCHEMA juhe_jobs"); err != nil {
-		t.Fatal(err)
-	}
-	report, err := BootstrapPostgres(ctx, bootstrap)
+	report, err := BootstrapPostgres(ctx, testDB.DB)
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -69,7 +45,7 @@ func TestBootstrapPostgresProvisionsAndVerifies(t *testing.T) {
 		t.Fatalf("报告必须可 JSON 序列化: %v", err)
 	}
 	// 生产只读校验路径在预置后必须通过（含列级契约）。
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: targetURL})
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +54,7 @@ func TestBootstrapPostgresProvisionsAndVerifies(t *testing.T) {
 		t.Fatalf("CheckSchema after bootstrap: %v", err)
 	}
 	// 幂等可重入：二次运行必须同样成功且仍就绪。
-	second, err := BootstrapPostgres(ctx, bootstrap)
+	second, err := BootstrapPostgres(ctx, testDB.DB)
 	if err != nil {
 		t.Fatalf("bootstrap re-run: %v", err)
 	}
@@ -88,36 +64,12 @@ func TestBootstrapPostgresProvisionsAndVerifies(t *testing.T) {
 }
 
 // 缺 juhe_jobs schema 时必须 fail-closed 报错，且不留任何部分产物
-// （不自建 schema、不建表）。
+// （不自建 schema、不建表）。pgtestkit 空库（无 prepare）即原负臂一次性
+// 临时库形态（§4.2：PG 不可达时显式失败，原 PingContext+Skip 臂随之收敛）。
 func TestBootstrapPostgresFailsClosedWithoutSchema(t *testing.T) {
-	adminURL := strings.TrimSpace(os.Getenv("JUHE_AI_J2_PG_SMOKE_ADMIN_URL"))
-	if adminURL == "" {
-		t.Skip("JUHE_AI_J2_PG_SMOKE_ADMIN_URL 未设置")
-	}
-	admin, err := sql.Open("pgx", adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := fmt.Sprintf("juhe_ai_sub2api_dev_j2_bootstrap_neg_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE "`+name+`"`); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _, _ = admin.ExecContext(context.Background(), `DROP DATABASE "`+name+`" WITH (FORCE)`) }()
-	targetURL, err := replaceDatabase(adminURL, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("pgx", targetURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := pgtestkit.New(t)
 	ctx := context.Background()
-	if err := db.PingContext(ctx); err != nil {
-		t.Skipf("PG 临时库不可达: %v", err)
-	}
-	_, err = BootstrapPostgres(ctx, db)
+	_, err := BootstrapPostgres(ctx, db)
 	if err == nil || !strings.Contains(err.Error(), "缺少外部 bootstrap 创建的 juhe_jobs schema") {
 		t.Fatalf("缺 schema 必须 fail-closed: %v", err)
 	}

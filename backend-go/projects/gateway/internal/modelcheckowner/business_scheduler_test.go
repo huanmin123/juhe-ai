@@ -2,45 +2,39 @@ package modelcheckowner
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
+// Business 面夹具按 w15b 生产对齐先例落在 juhe_business schema：
+// timeout_penalty_enabled 为生产 boolean 列型（SQLite 夹具的 0 对应 FALSE）。
+
+func businessSchedulerAccountsDDL() []string {
+	return []string{
+		`CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT)`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN authorization_instance_source_account_id TEXT`,
+	}
+}
+
+func businessSchedulerSchedulesDDL() string {
+	return `CREATE TABLE juhe_business.model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`
+}
+
 func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 1`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`); err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, append(businessSchedulerAccountsDDL(), businessSchedulerSchedulesDDL(),
+		`CREATE TABLE juhe_business.account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`)...)
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','gpt',4,NULL,NULL,'active','gpt-5.6-sol')`); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','gpt',4,NULL,NULL,'active','gpt-5.6-sol')`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,0,1,?,NULL,NULL,NULL,NULL,NULL,'','["mcq-q1"]')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,FALSE,1,?,NULL,NULL,NULL,NULL,NULL,'','["mcq-q1"]')`), now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	store := schedulerStoreFixture(t)
 	defer store.db.Close()
-	source := &BusinessSchedulerSource{Business: db, Store: store, OwnerID: "gateway-1"}
+	source := &BusinessSchedulerSource{Business: db, Postgres: true, Store: store, OwnerID: "gateway-1"}
 	tasks, err := source.Claim(context.Background(), SchedulerScheduled, now, 10)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
@@ -59,7 +53,7 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	var owner, status, runID string
-	if err := db.QueryRow(`SELECT COALESCE(lease_owner,''),last_run_status,last_run_id FROM model_quality_schedules WHERE id='sch'`).Scan(&owner, &status, &runID); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT COALESCE(lease_owner,''),last_run_status,last_run_id FROM model_quality_schedules WHERE id='sch'`)).Scan(&owner, &status, &runID); err != nil {
 		t.Fatal(err)
 	}
 	if owner != "" || status != "completed" || runID != "run-1" {
@@ -68,7 +62,7 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 	if err := source.CompleteScheduled(context.Background(), payload, RunResult{RunID: "run-stale", Status: string(RunCompleted)}); err == nil {
 		t.Fatal("stale schedule lease must be rejected")
 	}
-	if _, err := db.Exec(`UPDATE model_quality_schedules SET lease_owner='gateway-1',lease_until='2000-01-01T00:00:00Z' WHERE id='sch'`); err != nil {
+	if _, err := db.Exec(j3bQ(`UPDATE model_quality_schedules SET lease_owner='gateway-1',lease_until='2000-01-01T00:00:00Z' WHERE id='sch'`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.CompleteScheduled(context.Background(), payload, RunResult{RunID: "run-expired", Status: string(RunCompleted)}); err == nil {
@@ -77,48 +71,30 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 }
 
 func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
-		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 1`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`); err != nil {
-		t.Fatal(err)
-	}
+	db := newJ3BPGDatabase(t, append(businessSchedulerAccountsDDL(), businessSchedulerSchedulesDDL(),
+		`CREATE TABLE juhe_business.model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT)`,
+		`CREATE TABLE juhe_business.account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`)...)
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','gpt',8,NULL,NULL,'quality_isolated','gpt-5.6-sol')`); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','gpt',8,NULL,NULL,'quality_isolated','gpt-5.6-sol')`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model,dispatch_revision) VALUES ('source','gpt',11,NULL,NULL,'active','gpt-5.6-sol',13)`); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model,dispatch_revision) VALUES ('source','gpt',11,NULL,NULL,'active','gpt-5.6-sol',13)`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id='source' WHERE id='acct'`); err != nil {
+	if _, err := db.Exec(j3bQ(`UPDATE accounts SET authorization_instance_source_account_id='source' WHERE id='acct'`)); err != nil {
 		t.Fatal(err)
 	}
 	// 恢复来源是 schedule（config_source='schedule' 且 config_source_id='sch'）：
 	// schedule 行没有配置时回落 system account 的 policy 行配置。
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',7,'full',1,70,'quality_isolate',15,0,'["mcq-policy"]')`); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_quality_policies VALUES ('sys',7,'full',1,70,'quality_isolate',15,FALSE,'["mcq-policy"]')`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'','schedule')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'','schedule')`), now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	store := schedulerStoreFixture(t)
 	defer store.db.Close()
-	source := &BusinessSchedulerSource{Business: db, Store: store, OwnerID: "gateway-1"}
+	source := &BusinessSchedulerSource{Business: db, Postgres: true, Store: store, OwnerID: "gateway-1"}
 	tasks, err := source.Claim(context.Background(), SchedulerQualityRecovery, now, 10)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
@@ -137,13 +113,6 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 
 func schedulerStoreFixture(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/j3b.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,claim_owner TEXT,claim_until TEXT,fence_token INTEGER,state TEXT,last_error TEXT,completed_at TEXT,payload TEXT,updated_at TEXT)`); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	return &Store{db: db, mode: "sqlite"}
+	db := newJ3BPGDatabase(t, j3bSchedulerTasksProdDDL())
+	return &Store{db: db, mode: "postgres", schema: j3bTestSchema}
 }

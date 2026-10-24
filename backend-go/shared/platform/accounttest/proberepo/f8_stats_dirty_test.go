@@ -14,7 +14,7 @@ import (
 
 func (h *testDB) dirtyRows(t *testing.T) map[string][2]string {
 	t.Helper()
-	rows, err := h.db.Query(`SELECT group_id, reason, updated_at FROM group_account_stats_dirty ORDER BY group_id`)
+	rows, err := h.db.Query(`SELECT group_id, reason, updated_at FROM juhe_business.group_account_stats_dirty ORDER BY group_id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestF8RecordKeySuccessMarksStatsDirty(t *testing.T) {
 	ctx := context.Background()
 
 	// fence UPDATE 分支：翻转 temporary_unavailable → active，标脏账户所在分组。
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
@@ -58,9 +58,9 @@ func TestF8RecordKeySuccessMarksStatsDirty(t *testing.T) {
 	}
 
 	// INSERT 分支：新指纹成功，同样标脏。
-	h2 := openTestDB(t)
+	h2 := openTestDBPostgres(t)
 	keyA, _ := h2.seedPoolAccount(t, "acc-ins")
-	h2.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acc-ins'`,
+	h2.exec(t, `UPDATE juhe_business.accounts SET credentials_encrypted = $1 WHERE id = 'acc-ins'`,
 		h2.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{keyA, "sk-ins-new"}}))
 	result, err = h2.store.RecordKeySuccess(ctx, accountquality.KeySuccessInput{
 		AccountID: "acc-ins", KeyFingerprint: h2.store.FingerprintAPIKey("sk-ins-new"),
@@ -78,7 +78,7 @@ func TestF8RecordKeyFailureMarksStatsDirty(t *testing.T) {
 	ctx := context.Background()
 
 	// UPDATE 分支：active → temporary_unavailable。
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "active", plusMillis(-1000))
@@ -96,9 +96,9 @@ func TestF8RecordKeyFailureMarksStatsDirty(t *testing.T) {
 	}
 
 	// INSERT 分支：新 key 首次失败同样标脏。
-	h2 := openTestDB(t)
+	h2 := openTestDBPostgres(t)
 	keyB, _ := h2.seedPoolAccount(t, "acc-ins")
-	h2.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acc-ins'`,
+	h2.exec(t, `UPDATE juhe_business.accounts SET credentials_encrypted = $1 WHERE id = 'acc-ins'`,
 		h2.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{keyB, "sk-fail-new"}}))
 	result, err = h2.store.RecordKeyFailure(ctx, accountquality.KeyFailureInput{
 		AccountID: "acc-ins", KeyFingerprint: h2.store.FingerprintAPIKey("sk-fail-new"),
@@ -114,7 +114,7 @@ func TestF8RecordKeyFailureMarksStatsDirty(t *testing.T) {
 
 func TestF8NoDirtyWithoutStateChange(t *testing.T) {
 	ctx := context.Background()
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "disabled", plusMillis(-1000))
@@ -154,16 +154,16 @@ func TestF8NoDirtyWithoutStateChange(t *testing.T) {
 // 分组；实例翻转只覆盖实例自身分组（不向上扩展到源）。
 func TestF8DirtyCoversAuthorizationInstanceFamily(t *testing.T) {
 	ctx := context.Background()
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	_, _ = h.seedPoolAccount(t, "acc-src")
 	h.exec(t, `
-    INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted,
+    INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, created_at, updated_at,
       authorization_instance_source_account_id)
-    VALUES ('acc-inst', 'sys-1', '实例', 'api_key', 'active', ?, 'acc-src')
-  `, h.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{"sk-i1", "sk-i2"}}))
+    VALUES ('acc-inst', 'sys-1', '实例', 'api_key', 'active', $1, 'gpt', 'openai', 'v1', $2, $2, 'acc-src')
+  `, h.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{"sk-i1", "sk-i2"}}), nowMillisText())
 	h.seedModel(t, "acc-inst", "gpt-test")
-	h.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-2', 'sys-1', 1)`)
-	h.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-2', 'sys-1', 'acc-inst', 1)`)
+	h.exec(t, `INSERT INTO juhe_business.groups (id, system_account_id, name, enabled, created_at, updated_at) VALUES ('group-2', 'sys-1', 'g', 1, $1, $1)`, nowMillisText())
+	h.exec(t, `INSERT INTO juhe_business.group_accounts (group_id, system_account_id, account_id, enabled, created_at, updated_at) VALUES ('group-2', 'sys-1', 'acc-inst', 1, $1, $1)`, nowMillisText())
 
 	// 源账户翻转：group-1（源）+ group-2（实例）都标脏。
 	srcFp := h.store.FingerprintAPIKey("sk-key-one")
@@ -188,16 +188,16 @@ func TestF8DirtyCoversAuthorizationInstanceFamily(t *testing.T) {
 	}
 
 	// 实例翻转：仅实例分组标脏（受影响账户查询以实例为锚无向上扩展，Node 同款）。
-	h2 := openTestDB(t)
+	h2 := openTestDBPostgres(t)
 	_, _ = h2.seedPoolAccount(t, "acc-src")
 	h2.exec(t, `
-    INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted,
+    INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, created_at, updated_at,
       authorization_instance_source_account_id)
-    VALUES ('acc-inst', 'sys-1', '实例', 'api_key', 'active', ?, 'acc-src')
-  `, h2.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{"sk-i1", "sk-i2"}}))
+    VALUES ('acc-inst', 'sys-1', '实例', 'api_key', 'active', $1, 'gpt', 'openai', 'v1', $2, $2, 'acc-src')
+  `, h2.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{"sk-i1", "sk-i2"}}), nowMillisText())
 	h2.seedModel(t, "acc-inst", "gpt-test")
-	h2.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-2', 'sys-1', 1)`)
-	h2.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-2', 'sys-1', 'acc-inst', 1)`)
+	h2.exec(t, `INSERT INTO juhe_business.groups (id, system_account_id, name, enabled, created_at, updated_at) VALUES ('group-2', 'sys-1', 'g', 1, $1, $1)`, nowMillisText())
+	h2.exec(t, `INSERT INTO juhe_business.group_accounts (group_id, system_account_id, account_id, enabled, created_at, updated_at) VALUES ('group-2', 'sys-1', 'acc-inst', 1, $1, $1)`, nowMillisText())
 	instFp := h2.store.FingerprintAPIKey("sk-i1")
 	h2.seedRuntimeState(t, "acc-inst", instFp, 0, "temporary_unavailable", plusMillis(-1000))
 	result, err = h2.store.RecordKeySuccess(ctx, accountquality.KeySuccessInput{

@@ -510,7 +510,7 @@ func TestCooldownScanRespectsSlots(t *testing.T) {
 // refresh 编排
 
 func TestRefreshRunnerOrchestration(t *testing.T) {
-	store, clock, lookup := newQualityStore(t)
+	store, clock, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	minute := MinuteKey(clock.Now().Add(-time.Minute), time.UTC)
@@ -553,7 +553,7 @@ func TestRefreshRunnerOrchestration(t *testing.T) {
 }
 
 func TestRefreshRunnerEmptyRun(t *testing.T) {
-	store, _, _ := newQualityStore(t)
+	store, _, _ := newQualityStorePostgres(t)
 	logger := &fakeLogger{}
 	caches := &mockCacheInvalidator{}
 	precheck := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: &mockReader{}, Prober: &mockProber{}, Mutation: &mockPrecheckMutation{}, Concurrency: 1})
@@ -591,7 +591,7 @@ func (d denyIngestGate) EnsureUsageRecordsIngested(context.Context) error {
 var errIngestNotDrained = errors.New("ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录")
 
 func TestRefreshRunnerIngestGate(t *testing.T) {
-	store, _, _ := newQualityStore(t)
+	store, _, _ := newQualityStorePostgres(t)
 	logger := &fakeLogger{}
 	caches := &mockCacheInvalidator{}
 	precheck := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: &mockReader{}, Prober: &mockProber{}, Mutation: &mockPrecheckMutation{}, Concurrency: 1})

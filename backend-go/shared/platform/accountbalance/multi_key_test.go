@@ -388,15 +388,8 @@ func TestMaskAndFingerprintEquivalence(t *testing.T) {
 // TestMultiKeyRunnerManualPersistsMergedSnapshot 端到端：多 Key 手动输入经
 // runner 执行分派进入多 Key 入口，合并结果（含逐 Key 明细）写为 Snapshot。
 func TestMultiKeyRunnerManualPersistsMergedSnapshot(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\mk-manual.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	client := &mkRoutedClient{bodies: map[string]string{
 		"mk-k1": mkQuotaBody("5"),
 		"mk-k2": mkQuotaBody("2.5"),
@@ -476,15 +469,8 @@ func TestMultiKeyPeriodicPartialFailureLandsDeterministicSnapshot(t *testing.T) 
 	assertDeterministicPartialFailure(t, "unit", landed)
 
 	// 端到端：周期路径第一次部分失败直接原样落库，第二次仍原样（无计数累计）。
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\mk-periodic.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	client := &mkRoutedClient{
 		bodies:   map[string]string{"mk-k1": mkQuotaBody("5")},
 		statuses: map[string]int{"mk-k2": http.StatusInternalServerError},

@@ -14,7 +14,7 @@ import (
 )
 
 func TestW7CMarkPrecheckSkipReasonOrdering(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	h.seedPoolAccount(t, "acc-1")
 	ctx := context.Background()
 
@@ -36,7 +36,7 @@ func TestW7CMarkPrecheckSkipReasonOrdering(t *testing.T) {
 	}
 
 	// hard_unavailable dominates stale fences.
-	h.exec(t, `UPDATE accounts SET status='disabled' WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET status='disabled' WHERE id='acc-1'`)
 	result, err := h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 99, ExpectedStatus: "disabled",
@@ -44,7 +44,7 @@ func TestW7CMarkPrecheckSkipReasonOrdering(t *testing.T) {
 	if err != nil || result.SkippedReason != "hard_unavailable" {
 		t.Fatalf("disabled: %+v %v", result, err)
 	}
-	h.exec(t, `UPDATE accounts SET status='error' WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET status='error' WHERE id='acc-1'`)
 	result, _ = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 99, ExpectedStatus: "error",
@@ -52,10 +52,10 @@ func TestW7CMarkPrecheckSkipReasonOrdering(t *testing.T) {
 	if result.SkippedReason != "hard_unavailable" {
 		t.Fatalf("error: %+v", result)
 	}
-	h.exec(t, `UPDATE accounts SET status='active' WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET status='active' WHERE id='acc-1'`)
 
 	// Garbage runtime timestamps surface invalid_runtime_state.
-	h.exec(t, `UPDATE accounts SET last_health_success_at='garbage' WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at='garbage' WHERE id='acc-1'`)
 	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -63,7 +63,7 @@ func TestW7CMarkPrecheckSkipReasonOrdering(t *testing.T) {
 	if err != nil || result.SkippedReason != "invalid_runtime_state" {
 		t.Fatalf("garbage health timestamp: %+v %v", result, err)
 	}
-	h.exec(t, `UPDATE accounts SET last_health_success_at=NULL, updated_at=? WHERE id='acc-1'`, plusMillis(60_000))
+	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at=NULL, updated_at=$1 WHERE id='acc-1'`, plusMillis(60_000))
 	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -72,7 +72,7 @@ func TestW7CMarkPrecheckSkipReasonOrdering(t *testing.T) {
 		t.Fatalf("newer update: %+v %v", result, err)
 	}
 	// updated_at newer but identical to last_used_at passes the guard.
-	h.exec(t, `UPDATE accounts SET last_used_at = updated_at WHERE id='acc-1'`)
+	h.exec(t, `UPDATE juhe_business.accounts SET last_used_at = updated_at WHERE id='acc-1'`)
 	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -91,7 +91,7 @@ func w7cPoolFence(h *testDB, accountID, fingerprint string) accountquality.KeyMu
 }
 
 func TestW7CRecordKeySuccessArms(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
@@ -107,11 +107,11 @@ func TestW7CRecordKeySuccessArms(t *testing.T) {
 	}
 
 	// Not a pool account (single key).
-	solo := openTestDB(t)
+	solo := openTestDBPostgres(t)
 	solo.seedSchema(t)
-	solo.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted)
-	    VALUES ('solo-1', 'sys-1', 's', 'api_key', 'active', ?)`,
-		solo.sealCredentials(t, map[string]any{"api_key": "only-key"}))
+	solo.exec(t, `INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, created_at, updated_at)
+	    VALUES ('solo-1', 'sys-1', 's', 'api_key', 'active', $1, 'gpt', 'openai', 'v1', $2, $2)`,
+		solo.sealCredentials(t, map[string]any{"api_key": "only-key"}), nowMillisText())
 	result, err = solo.store.RecordKeySuccess(ctx, accountquality.KeySuccessInput{
 		AccountID: "solo-1", KeyFingerprint: "fp", TrafficSource: "cooldown_retest",
 	})
@@ -154,7 +154,7 @@ func TestW7CRecordKeySuccessArms(t *testing.T) {
 	// Unfenced success takes the INSERT path: a brand new fingerprint state
 	// is created active.
 	newKey := "sk-brand-new"
-	h.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acc-1'`,
+	h.exec(t, `UPDATE juhe_business.accounts SET credentials_encrypted = $1 WHERE id = 'acc-1'`,
 		h.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{key1, newKey}}))
 	result, err = h.store.RecordKeySuccess(ctx, accountquality.KeySuccessInput{
 		AccountID: "acc-1", KeyFingerprint: h.store.FingerprintAPIKey(newKey), TrafficSource: "cooldown_retest",
@@ -164,7 +164,7 @@ func TestW7CRecordKeySuccessArms(t *testing.T) {
 		t.Fatalf("insert path: %+v %v", result, err)
 	}
 	var status string
-	if err := h.db.QueryRow(`SELECT status FROM account_api_key_runtime_states WHERE key_fingerprint = ?`,
+	if err := h.db.QueryRow(`SELECT status FROM juhe_business.account_api_key_runtime_states WHERE key_fingerprint = $1`,
 		h.store.FingerprintAPIKey(newKey)).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestW7CRecordKeySuccessArms(t *testing.T) {
 }
 
 func TestW7CRecordKeyFailureArms(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "disabled", plusMillis(-1000))
@@ -192,7 +192,7 @@ func TestW7CRecordKeyFailureArms(t *testing.T) {
 
 	// A provided fence without an existing row is stale.
 	freshKey := "sk-fresh-failure"
-	h.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acc-1'`,
+	h.exec(t, `UPDATE juhe_business.accounts SET credentials_encrypted = $1 WHERE id = 'acc-1'`,
 		h.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{key1, freshKey}}))
 	result, err = h.store.RecordKeyFailure(ctx, accountquality.KeyFailureInput{
 		AccountID: "acc-1", KeyFingerprint: h.store.FingerprintAPIKey(freshKey), TrafficSource: "cooldown_retest",
@@ -214,7 +214,7 @@ func TestW7CRecordKeyFailureArms(t *testing.T) {
 	}
 	var statusText, errorCodeText string
 	var backoffSeconds int
-	if err := h.db.QueryRow(`SELECT status, last_error_code, probe_backoff_seconds FROM account_api_key_runtime_states WHERE key_fingerprint = ?`,
+	if err := h.db.QueryRow(`SELECT status, last_error_code, probe_backoff_seconds FROM juhe_business.account_api_key_runtime_states WHERE key_fingerprint = $1`,
 		h.store.FingerprintAPIKey(freshKey)).Scan(&statusText, &errorCodeText, &backoffSeconds); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestW7CRecordKeyFailureArms(t *testing.T) {
 	}
 
 	// explicit_reset leaves the recovery window unset.
-	h.exec(t, `UPDATE account_api_key_runtime_states SET recovery_started_at=NULL WHERE key_fingerprint = ?`,
+	h.exec(t, `UPDATE juhe_business.account_api_key_runtime_states SET recovery_started_at=NULL WHERE key_fingerprint = $1`,
 		h.store.FingerprintAPIKey(freshKey))
 	testNowCopy := testNow.Add(2 * time.Second)
 	_ = testNowCopy
@@ -237,7 +237,7 @@ func TestW7CRecordKeyFailureArms(t *testing.T) {
 		t.Fatalf("explicit reset: %+v %v", result, err)
 	}
 	var recovery sql.NullString
-	if err := h.db.QueryRow(`SELECT recovery_started_at FROM account_api_key_runtime_states WHERE key_fingerprint = ?`,
+	if err := h.db.QueryRow(`SELECT recovery_started_at FROM juhe_business.account_api_key_runtime_states WHERE key_fingerprint = $1`,
 		h.store.FingerprintAPIKey(freshKey)).Scan(&recovery); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestW7CRecordKeyFailureArms(t *testing.T) {
 }
 
 func TestW7CDeferAndHelperArms(t *testing.T) {
-	h := openTestDB(t)
+	h := openTestDBPostgres(t)
 	key1, _ := h.seedPoolAccount(t, "acc-1")
 	fp1 := h.store.FingerprintAPIKey(key1)
 	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))

@@ -251,7 +251,7 @@ func qbQuizRuntimeFixture(t *testing.T, questions []modelcheckprobe.QuizQuestion
 func qbDurableSummary(t *testing.T, store *Store, runID string) map[string]any {
 	t.Helper()
 	var raw string
-	if err := store.db.QueryRow(`SELECT result_summary_json FROM model_check_runs WHERE id=?`, runID).Scan(&raw); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT result_summary_json FROM model_check_runs WHERE id=?`), runID).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	var summary map[string]any
@@ -316,7 +316,7 @@ func TestQBRuntimeRunsCustomQuizFamily(t *testing.T) {
 		t.Fatalf("item1=%+v", second)
 	}
 	// durable items：题库项 itemKey 为 custom_quiz:<questionId>。
-	rows, err := store.db.Query(`SELECT item_key,status,evidence_summary_json FROM model_check_items WHERE run_id=? AND item_key LIKE 'custom_quiz:%' ORDER BY item_key`, result.RunID)
+	rows, err := store.db.Query(j3bQ(`SELECT item_key,status,evidence_summary_json FROM model_check_items WHERE run_id=? AND item_key LIKE 'custom_quiz:%' ORDER BY item_key`), result.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestQBRuntimeRunsCustomQuizFamily(t *testing.T) {
 	}
 	// policy_snapshot_json 自然快照题目 id。
 	var snapshot string
-	if err := store.db.QueryRow(`SELECT policy_snapshot_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&snapshot); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT policy_snapshot_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(snapshot, "customQuestionIds") {
@@ -366,7 +366,7 @@ func TestQBRuntimeUnconfiguredOmitsCustomQuiz(t *testing.T) {
 		t.Fatal("unconfigured run must not surface customQuiz")
 	}
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=? AND item_key LIKE 'custom_quiz:%'`, result.RunID).Scan(&count); err != nil || count != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_items WHERE run_id=? AND item_key LIKE 'custom_quiz:%'`), result.RunID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unconfigured custom items=%d err=%v", count, err)
 	}
 }
@@ -401,7 +401,7 @@ func TestQBRuntimeScheduledCarriesFrozenQuestions(t *testing.T) {
 		t.Fatalf("item qid=%v verdict=%v reason=%v", only["questionId"], only["verdict"], only["reason"])
 	}
 	var itemKey string
-	if err := store.db.QueryRow(`SELECT item_key FROM model_check_items WHERE run_id=? AND item_key LIKE 'custom_quiz:%'`, result.RunID).Scan(&itemKey); err != nil || itemKey != "custom_quiz:unavailable" {
+	if err := store.db.QueryRow(j3bQ(`SELECT item_key FROM model_check_items WHERE run_id=? AND item_key LIKE 'custom_quiz:%'`), result.RunID).Scan(&itemKey); err != nil || itemKey != "custom_quiz:unavailable" {
 		t.Fatalf("itemKey=%q err=%v", itemKey, err)
 	}
 }

@@ -117,7 +117,7 @@ func TestW7CNewAndValidateCoreTables(t *testing.T) {
 	if err := repo.ValidateCoreTables(ctx); err != nil {
 		t.Fatalf("existing tables: %v", err)
 	}
-	if _, err := db.Exec(`DROP TABLE account_test_session_tasks`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.account_test_session_tasks`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.ValidateCoreTables(ctx); err == nil || !strings.Contains(err.Error(), "account_test_session_tasks") {
@@ -153,7 +153,7 @@ func TestW7CMarkRunningArms(t *testing.T) {
 		t.Fatalf("canceled queued: %#v %v", record, err)
 	}
 	var status, message string
-	if err := db.QueryRow(`SELECT status, status_message FROM account_test_tasks WHERE id = 'w7c-cx'`).Scan(&status, &message); err != nil {
+	if err := db.QueryRow(`SELECT status, status_message FROM juhe_business.account_test_tasks WHERE id = 'w7c-cx'`).Scan(&status, &message); err != nil {
 		t.Fatal(err)
 	}
 	// The seeded queued row already carries a status message, and
@@ -173,7 +173,7 @@ func TestW7CFailLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status, message, resultJSON, errorMessage sql.NullString
-	if err := db.QueryRow(`SELECT status, status_message, result_json, error_message FROM account_test_tasks WHERE id = 'w7c-fail-q'`).Scan(&status, &message, &resultJSON, &errorMessage); err != nil {
+	if err := db.QueryRow(`SELECT status, status_message, result_json, error_message FROM juhe_business.account_test_tasks WHERE id = 'w7c-fail-q'`).Scan(&status, &message, &resultJSON, &errorMessage); err != nil {
 		t.Fatal(err)
 	}
 	if status.String != "failed" || message.String != "上游 5xx" || resultJSON.String != `{"error":"upstream"}` || errorMessage.String != "上游 5xx" {
@@ -185,7 +185,7 @@ func TestW7CFailLifecycle(t *testing.T) {
 	if err := repo.Fail(ctx, "w7c-fail-blank", "   ", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT status_message FROM account_test_tasks WHERE id = 'w7c-fail-blank'`).Scan(&message); err != nil {
+	if err := db.QueryRow(`SELECT status_message FROM juhe_business.account_test_tasks WHERE id = 'w7c-fail-blank'`).Scan(&message); err != nil {
 		t.Fatal(err)
 	}
 	if message.String != "账号测试任务执行失败" {
@@ -203,7 +203,7 @@ func TestW7CFailLifecycle(t *testing.T) {
 	if err := repo.Fail(ctx, "w7c-fail-running", "late", "", &wrongFence); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT status FROM account_test_tasks WHERE id = 'w7c-fail-running'`).Scan(&status); err != nil {
+	if err := db.QueryRow(`SELECT status FROM juhe_business.account_test_tasks WHERE id = 'w7c-fail-running'`).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status.String != "running" {
@@ -213,13 +213,13 @@ func TestW7CFailLifecycle(t *testing.T) {
 	// cancel_requested=1 + running: the missed write finalizes the task as
 	// canceled and reuses its progress message.
 	seedTask(t, db, "w7c-fail-cx", "running", 1, time.Now().UTC())
-	if _, err := db.Exec(`UPDATE account_test_tasks SET status_message = '进行中' WHERE id = 'w7c-fail-cx'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.account_test_tasks SET status_message = '进行中' WHERE id = 'w7c-fail-cx'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Fail(ctx, "w7c-fail-cx", "late", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT status, status_message FROM account_test_tasks WHERE id = 'w7c-fail-cx'`).Scan(&status, &message); err != nil {
+	if err := db.QueryRow(`SELECT status, status_message FROM juhe_business.account_test_tasks WHERE id = 'w7c-fail-cx'`).Scan(&status, &message); err != nil {
 		t.Fatal(err)
 	}
 	if status.String != "canceled" || message.String != "进行中" {
@@ -228,13 +228,13 @@ func TestW7CFailLifecycle(t *testing.T) {
 
 	// Same path with a blank record message uses the default wording.
 	seedTask(t, db, "w7c-fail-cx2", "running", 1, time.Now().UTC())
-	if _, err := db.Exec(`UPDATE account_test_tasks SET status_message = NULL WHERE id = 'w7c-fail-cx2'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.account_test_tasks SET status_message = NULL WHERE id = 'w7c-fail-cx2'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Fail(ctx, "w7c-fail-cx2", "late", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT status_message FROM account_test_tasks WHERE id = 'w7c-fail-cx2'`).Scan(&message); err != nil {
+	if err := db.QueryRow(`SELECT status_message FROM juhe_business.account_test_tasks WHERE id = 'w7c-fail-cx2'`).Scan(&message); err != nil {
 		t.Fatal(err)
 	}
 	if message.String != "已停止测试" {
@@ -259,7 +259,7 @@ func TestW7CCompleteFenceAndCancelFinalize(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status, resultJSON, errorMessage sql.NullString
-	if err := db.QueryRow(`SELECT status, result_json, error_message FROM account_test_tasks WHERE id = 'w7c-complete'`).Scan(&status, &resultJSON, &errorMessage); err != nil {
+	if err := db.QueryRow(`SELECT status, result_json, error_message FROM juhe_business.account_test_tasks WHERE id = 'w7c-complete'`).Scan(&status, &resultJSON, &errorMessage); err != nil {
 		t.Fatal(err)
 	}
 	if status.String != "success" || resultJSON.String != `{"latency_ms":12}` || errorMessage.Valid {
@@ -271,13 +271,13 @@ func TestW7CCompleteFenceAndCancelFinalize(t *testing.T) {
 	if record, err = repo.MarkRunning(ctx, "w7c-complete-cx"); err != nil || record == nil {
 		t.Fatalf("mark running cx: %#v %v", record, err)
 	}
-	if _, err := db.Exec(`UPDATE account_test_tasks SET cancel_requested = 1 WHERE id = 'w7c-complete-cx'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.account_test_tasks SET cancel_requested = TRUE WHERE id = 'w7c-complete-cx'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Complete(ctx, "w7c-complete-cx", accounttest.ManualTestTaskExecutorResult{Success: true, Message: "late"}, record.StartedAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT status FROM account_test_tasks WHERE id = 'w7c-complete-cx'`).Scan(&status); err != nil {
+	if err := db.QueryRow(`SELECT status FROM juhe_business.account_test_tasks WHERE id = 'w7c-complete-cx'`).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status.String != "canceled" {
@@ -298,7 +298,7 @@ func TestW7CCompleteFenceAndCancelFinalize(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cancelMessage string
-	if err := db.QueryRow(`SELECT status_message FROM account_test_tasks WHERE id = 'w7c-cancel-default'`).Scan(&cancelMessage); err != nil {
+	if err := db.QueryRow(`SELECT status_message FROM juhe_business.account_test_tasks WHERE id = 'w7c-cancel-default'`).Scan(&cancelMessage); err != nil {
 		t.Fatal(err)
 	}
 	if cancelMessage != "已停止测试" {
@@ -312,13 +312,13 @@ func w7cSeedSession(t *testing.T, db *sql.DB, id, status string, cancelReason *s
 	if cancelReason != nil {
 		reason = *cancelReason
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
 	if _, err := db.Exec(`
-		INSERT INTO account_test_sessions (
+		INSERT INTO juhe_business.account_test_sessions (
 			id, request_system_account_id, request_role, status, cancel_reason,
 			last_heartbeat_at, created_at, updated_at
-		) VALUES (?, 'viewer-1', 'user', ?, ?, ?, ?, ?)`,
-		id, status, reason, heartbeat.UTC().Format(time.RFC3339Nano), now, now); err != nil {
+		) VALUES ($1, 'viewer-1', 'user', $2, $3, $4, $5, $5)`,
+		id, status, reason, heartbeat.UTC(), now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -349,7 +349,7 @@ func TestW7CSessionCancelReasonMatrix(t *testing.T) {
 		{"s-exp-bare", "t-exp-bare"}, {"s-done", "t-done"}, {"s-done-bare", "t-done-bare"},
 		{"s-running", "t-running"},
 	} {
-		if _, err := db.Exec(`INSERT INTO account_test_session_tasks (session_id, task_id) VALUES (?, ?)`, pair[0], pair[1]); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.account_test_session_tasks (session_id, task_id, created_at) VALUES ($1, $2, $3)`, pair[0], pair[1], time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -383,7 +383,7 @@ func TestW7CMaintenanceCleanupAndIdleSessions(t *testing.T) {
 
 	// Finished task older than retention: cleaned; fresh: kept.
 	seedTask(t, db, "w7c-old-done", "success", 0, old)
-	if _, err := db.Exec(`UPDATE account_test_tasks SET finished_at = ? WHERE id = 'w7c-old-done'`, old.Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.account_test_tasks SET finished_at = $1 WHERE id = 'w7c-old-done'`, old); err != nil {
 		t.Fatal(err)
 	}
 	seedTask(t, db, "w7c-new-done", "success", 0, now)
@@ -393,7 +393,7 @@ func TestW7CMaintenanceCleanupAndIdleSessions(t *testing.T) {
 	// Running session with a queued task: kept even when idle.
 	w7cSeedSession(t, db, "w7c-busy", "running", nil, old)
 	seedTask(t, db, "w7c-busy-task", "queued", 0, now)
-	if _, err := db.Exec(`INSERT INTO account_test_session_tasks (session_id, task_id) VALUES ('w7c-busy', 'w7c-busy-task')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_test_session_tasks (session_id, task_id, created_at) VALUES ('w7c-busy', 'w7c-busy-task', $1)`, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	// Heartbeating session: kept.
@@ -404,13 +404,13 @@ func TestW7CMaintenanceCleanupAndIdleSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_test_tasks WHERE id = 'w7c-old-done'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_test_tasks WHERE id = 'w7c-old-done'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
 		t.Fatal("expired finished task must be cleaned")
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_test_tasks WHERE id = 'w7c-new-done'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_test_tasks WHERE id = 'w7c-new-done'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -422,7 +422,7 @@ func TestW7CMaintenanceCleanupAndIdleSessions(t *testing.T) {
 		"w7c-alive": "running",
 	} {
 		var status string
-		if err := db.QueryRow(`SELECT status FROM account_test_sessions WHERE id = ?`, id).Scan(&status); err != nil {
+		if err := db.QueryRow(`SELECT status FROM juhe_business.account_test_sessions WHERE id = $1`, id).Scan(&status); err != nil {
 			t.Fatal(err)
 		}
 		if status != want {

@@ -5,12 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestCompareLatestWinsObservedAtThenRunID(t *testing.T) {
@@ -31,25 +28,17 @@ func TestCompareLatestWinsObservedAtThenRunID(t *testing.T) {
 }
 
 func TestQualityProjectorDeniesUnformedEvidence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "quality.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncTinyDDL)
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-1','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-1','2026-08-27T10:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}}
-	err = projector.Project(context.Background(), "run-1", EvidenceAggregate{}, HealthFact{})
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
+	err := projector.Project(context.Background(), "run-1", EvidenceAggregate{}, HealthFact{})
 	if err == nil {
 		t.Fatal("unformed evidence must be rejected")
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-1'`).Scan(&state); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-1'`)).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "failed" {
@@ -58,26 +47,18 @@ func TestQualityProjectorDeniesUnformedEvidence(t *testing.T) {
 }
 
 func TestQualityProjectorMarksRetryWhenCallerContextIsCanceled(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "canceled-quality.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-canceled','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncTinyDDL)
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-canceled','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
 	if err := projector.Project(ctx, "run-canceled", EvidenceAggregate{}, HealthFact{}); err == nil {
 		t.Fatal("unformed evidence must be rejected")
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-canceled'`).Scan(&state); err != nil || state != "failed" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-canceled'`)).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("canceled caller must still persist retry state=%q err=%v", state, err)
 	}
 }
@@ -115,7 +96,7 @@ func (r *failingEnforcement) Apply(_ context.Context, _ QualityEnforcement) (Enf
 func readMergedDecision(t *testing.T, db *sql.DB, runID string) map[string]any {
 	t.Helper()
 	var decision string
-	if err := db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, runID).Scan(&decision); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`), runID).Scan(&decision); err != nil {
 		t.Fatal(err)
 	}
 	fields := map[string]any{}
@@ -126,25 +107,12 @@ func readMergedDecision(t *testing.T, db *sql.DB, runID string) map[string]any {
 }
 
 func TestQualityProjectorTreatsSuspiciousAsHardFailureAboveThreshold(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "suspicious-health.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-suspicious','pending','{}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-suspicious','pending','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
 	projector := &QualityProjector{Store: store, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-suspicious", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 96, Threshold: 70, Level: "suspicious", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
@@ -161,31 +129,18 @@ func TestQualityProjectorTreatsSuspiciousAsHardFailureAboveThreshold(t *testing.
 		t.Fatalf("suspicious decision outcome=%+v", decision)
 	}
 	var level string
-	if err := db.QueryRow(`SELECT level FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&level); err != nil || level != "suspicious" {
+	if err := db.QueryRow(j3bQ(`SELECT level FROM account_quality_health_hourly WHERE account_id='acct'`)).Scan(&level); err != nil || level != "suspicious" {
 		t.Fatalf("health level=%q err=%v, want suspicious", level, err)
 	}
 }
 
 func TestQualityProjectorPublishesQuickHardFailureAboveThresholdWithoutAggregate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "quick-hard-failure-health.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-hard-mismatch','pending','{"triggered":true,"hardFailure":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-hard-mismatch','pending','{"triggered":true,"hardFailure":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
 	projector := &QualityProjector{Store: store, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-hard-mismatch", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 96, Threshold: 70, Level: "likely", HardQualityFailure: true, PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: false, TrustFormed: false}, fact); err != nil {
@@ -195,7 +150,7 @@ func TestQualityProjectorPublishesQuickHardFailureAboveThresholdWithoutAggregate
 		t.Fatalf("quick hard failure must follow the quality failure path, calls=%d", enforcement.calls)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-hard-mismatch'`).Scan(&state); err != nil || state != "applied" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-hard-mismatch'`)).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("health sync state=%q err=%v", state, err)
 	}
 	// 投影增补必须保留 finalize 基础字段并覆盖 result。
@@ -208,24 +163,11 @@ func TestQualityProjectorPublishesQuickHardFailureAboveThresholdWithoutAggregate
 // 处罚与健康事实解耦（J3B 修复）：处罚端口缺失/失败不再阻断健康事实，
 // result 分别记录 skipped/stale/failed，run 的健康同步状态仍为 applied。
 func TestQualityProjectorRecordsSkippedWhenEnforcementOwnerMissing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "enforcement.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-failure','pending_retry','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-failure','pending_retry','{}','2026-08-27T10:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
 	projector := &QualityProjector{Store: store}
 	fact := HealthFact{AccountID: "acct-1", SystemAccountID: "sys-1", StatHour: "2026-08-27T10:00:00Z", RunID: "run-failure", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
@@ -236,7 +178,7 @@ func TestQualityProjectorRecordsSkippedWhenEnforcementOwnerMissing(t *testing.T)
 		t.Fatalf("missing enforcement owner decision=%+v", decision)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-failure'`).Scan(&state); err != nil || state != "applied" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-failure'`)).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("health fact must publish without enforcement owner: state=%q err=%v", state, err)
 	}
 	// 配置好处罚端口后同一事实可正常处罚。
@@ -254,31 +196,18 @@ func TestQualityProjectorRecordsSkippedWhenEnforcementOwnerMissing(t *testing.T)
 }
 
 func TestQualityProjectorStaleEnforcementStillAppliesHealthFact(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "stale-enforcement.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-stale','failed','{}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-stale','failed','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &failingEnforcement{err: errors.New("J3b Business enforcement configuration is stale")}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-stale", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatalf("stale enforcement must not block the projection: %v", err)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-stale'`).Scan(&state); err != nil || state != "applied" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-stale'`)).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("health fact must still apply: state=%q err=%v", state, err)
 	}
 	decision := readMergedDecision(t, db, "run-stale")
@@ -286,37 +215,24 @@ func TestQualityProjectorStaleEnforcementStillAppliesHealthFact(t *testing.T) {
 		t.Fatalf("stale decision=%+v", decision)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(j3bQ(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`)).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("health fact row count=%d err=%v", count, err)
 	}
 }
 
 func TestQualityProjectorFailedEnforcementStillWritesHealthFact(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "failed-enforcement.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-apply-failed','failed','{}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-apply-failed','failed','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &failingEnforcement{err: errors.New("connection refused")}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-apply-failed", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatalf("enforcement failure must not block health fact: %v", err)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-apply-failed'`).Scan(&state); err != nil || state != "applied" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-apply-failed'`)).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("health fact must be written: state=%q err=%v", state, err)
 	}
 	decision := readMergedDecision(t, db, "run-apply-failed")
@@ -329,21 +245,13 @@ func TestQualityProjectorFailedEnforcementStillWritesHealthFact(t *testing.T) {
 // 保留 markHealthSyncFailure 的 failed 重试标记，quality_decision 记录
 // healthSyncResult=pending_retry 与已发生的处罚结果，等待重试覆盖终值。
 func TestQualityProjectorMarksPendingRetryWhenHealthFactFails(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "health-fact-failure.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
 	// 只建 run 表：ApplyHealthFact 因 health 表缺失而失败，但 MergeRunQualityDecision 仍可写 run 行。
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-pending','pending','{"triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL)
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-pending','pending','{"triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-pending", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil {
 		t.Fatal("health fact failure must surface the projection error")
@@ -352,7 +260,7 @@ func TestQualityProjectorMarksPendingRetryWhenHealthFactFails(t *testing.T) {
 		t.Fatalf("enforcement must run before the health fact, calls=%d", enforcement.calls)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-pending'`).Scan(&state); err != nil || state != "failed" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-pending'`)).Scan(&state); err != nil || state != "failed" {
 		t.Fatalf("retry marker must remain failed: state=%q err=%v", state, err)
 	}
 	decision := readMergedDecision(t, db, "run-pending")
@@ -365,25 +273,12 @@ func TestQualityProjectorMarksPendingRetryWhenHealthFactFails(t *testing.T) {
 }
 
 func TestQualityProjectorPublishesDiagnosticManualFailureWithoutEnforcement(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "diagnostic-health.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-diagnostic','pending_retry','{}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-diagnostic','pending_retry','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct-1", SystemAccountID: "sys-1", StatHour: "2026-08-27T10:00:00Z", RunID: "run-diagnostic", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", EnforcementAllowed: false}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -392,7 +287,7 @@ func TestQualityProjectorPublishesDiagnosticManualFailureWithoutEnforcement(t *t
 		t.Fatalf("diagnostic manual failure must not enforce, calls=%d", recorder.calls)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-diagnostic'`).Scan(&state); err != nil || state != "applied" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-diagnostic'`)).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("health fact must still publish: state=%q err=%v", state, err)
 	}
 	if decision := readMergedDecision(t, db, "run-diagnostic"); decision["result"] != "skipped" || decision["healthSyncResult"] != "applied" {
@@ -401,19 +296,11 @@ func TestQualityProjectorPublishesDiagnosticManualFailureWithoutEnforcement(t *t
 }
 
 func TestQualityProjectorRejectsRunIdentityMismatch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncTinyDDL)
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-b", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 90, Threshold: 70, Level: "success"}
 	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("mismatch must fail closed, err=%v", err)
@@ -421,25 +308,17 @@ func TestQualityProjectorRejectsRunIdentityMismatch(t *testing.T) {
 }
 
 func TestQualityProjectorUnformedIdentityMismatchDoesNotMutateRun(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "unformed-identity.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncTinyDDL)
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
 	fact := HealthFact{RunID: "run-b"}
 	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{}, fact); err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("err=%v", err)
 	}
 	var state sql.NullString
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-a'`).Scan(&state); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-a'`)).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state.Valid {
@@ -448,25 +327,12 @@ func TestQualityProjectorUnformedIdentityMismatchDoesNotMutateRun(t *testing.T) 
 }
 
 func TestQualityProjectorUnavailableNeverEnforces(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "unavailable-enforcement.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-u','pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-u','pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-u", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 0, Threshold: 70, Level: "unavailable", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -475,11 +341,11 @@ func TestQualityProjectorUnavailableNeverEnforces(t *testing.T) {
 		t.Fatalf("unavailable fact must not enforce, calls=%d", recorder.calls)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-u'`).Scan(&state); err != nil || state != "applied" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-u'`)).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("unavailable health fact must publish, state=%q err=%v", state, err)
 	}
 	var level string
-	if err := db.QueryRow(`SELECT level FROM account_quality_health_hourly WHERE account_id='acct' AND stat_hour='2026-08-27T10:00:00Z'`).Scan(&level); err != nil || level != "unavailable" {
+	if err := db.QueryRow(j3bQ(`SELECT level FROM account_quality_health_hourly WHERE account_id='acct' AND stat_hour='2026-08-27T10:00:00Z'`)).Scan(&level); err != nil || level != "unavailable" {
 		t.Fatalf("unavailable health fact level=%q err=%v", level, err)
 	}
 	// unavailable 不是质量不达标判定：result 保持 not_triggered，仅记录健康同步结果。
@@ -489,25 +355,12 @@ func TestQualityProjectorUnavailableNeverEnforces(t *testing.T) {
 }
 
 func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "quick-unformed-health.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-quick-unformed','pending_retry','{}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-quick-unformed','pending_retry','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-quick-unformed", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "uncertain", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: false, TrustFormed: false}, fact); err != nil {
 		t.Fatal(err)
@@ -516,7 +369,7 @@ func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
 		t.Fatalf("quick quality failure should follow Node enforcement path, calls=%d", recorder.calls)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-quick-unformed'`).Scan(&state); err != nil || state != "applied" {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-quick-unformed'`)).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("quick unformed health state=%q err=%v", state, err)
 	}
 	if decision := readMergedDecision(t, db, "run-quick-unformed"); decision["result"] != "applied" || decision["enforcementId"] != "enf-recording" {
@@ -525,25 +378,17 @@ func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
 }
 
 func TestQualityProjectorRejectsSuccessfulHealthFact(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "successful-health.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncTinyDDL)
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-success','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-success','2026-08-27T10:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-success", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 90, Threshold: 70, Level: "success"}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "quality failure") {
 		t.Fatalf("successful health fact must be rejected, err=%v", err)
 	}
 	var state sql.NullString
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-success'`).Scan(&state); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-success'`)).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state.Valid {
@@ -552,20 +397,12 @@ func TestQualityProjectorRejectsSuccessfulHealthFact(t *testing.T) {
 }
 
 func TestQualityProjectorRejectsInvalidStatHourBeforeEnforcement(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "stat-hour.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncTinyDDL)
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:15:00Z", RunID: "run-a", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 20, Threshold: 70, Level: "failure"}
 	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "scope") {
 		t.Fatalf("invalid stat hour must fail closed, err=%v", err)
@@ -583,22 +420,9 @@ func TestHealthSyncRetryExecutorRequiresRunIDPayload(t *testing.T) {
 }
 
 func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "retry.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bHealthHourlyDDL())
 	finished := "2026-08-27T10:15:00Z"
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,status,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,status,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		"run-retry", "completed", "acct-1", "sys-1", "openai", "gpt-5.6-sol", "quick", "failure", 30, nil,
 		`{"revision":"policy-7","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
 		`{"evidenceFormed":true,"trustFormed":true,"enforcementAllowed":true}`,
@@ -606,15 +430,15 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 		finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	enforcement := &recordingEnforcement{}
 	executor := &HealthSyncRetryExecutor{Projector: &QualityProjector{Store: store, Enforcement: enforcement}}
-	err = executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerHealthRetry, Payload: []byte(`{"runId":"run-retry"}`)})
+	err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerHealthRetry, Payload: []byte(`{"runId":"run-retry"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-retry'`).Scan(&state); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-retry'`)).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "applied" {
@@ -623,12 +447,12 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 	if enforcement.calls != 1 {
 		t.Fatalf("health retry enforcement calls=%d, want 1", enforcement.calls)
 	}
-	retries, err := (&Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}).ListHealthSyncRetries(context.Background(), 10)
+	retries, err := (&Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}).ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 0 {
 		t.Fatalf("completed run should not remain retryable: retries=%#v err=%v", retries, err)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct-1' AND stat_hour='2026-08-27T18'`).Scan(&count); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct-1' AND stat_hour='2026-08-27T18'`)).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -641,23 +465,10 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 // 达标 + 标记为真的失败发布经重试仍执行处罚；无标记的同形态 run 重试后
 // 保持不处罚。
 func TestHealthSyncRetryExecutorRestoresTimeoutPenaltyTriggered(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "retry-timeout.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bHealthHourlyDDL())
 	finished := "2026-08-27T10:15:00Z"
 	insertRun := func(runID, accountID, decision string) {
-		if _, err := db.Exec(`INSERT INTO model_check_runs(id,status,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,status,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 			runID, "completed", accountID, "sys-1", "openai", "gpt-5.6-sol", "quick", "unavailable", 100, nil,
 			`{"revision":"policy-7","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
 			decision,
@@ -668,7 +479,7 @@ func TestHealthSyncRetryExecutorRestoresTimeoutPenaltyTriggered(t *testing.T) {
 	}
 	insertRun("run-timeout-retry", "acct-timeout", `{"evidenceFormed":true,"trustFormed":true,"enforcementAllowed":true,"timeoutPenaltyTriggered":true,"result":"not_triggered"}`)
 	insertRun("run-plain-retry", "acct-plain", `{"evidenceFormed":true,"trustFormed":true,"enforcementAllowed":true,"result":"not_triggered"}`)
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	// 读回核对：ListHealthSyncRetries 按已落库 decision 还原触发标记。
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 2 {
@@ -690,7 +501,7 @@ func TestHealthSyncRetryExecutorRestoresTimeoutPenaltyTriggered(t *testing.T) {
 		t.Fatalf("unavailable + 分数达标 + 超时标记重试必须执行处罚, calls=%d", enforcement.calls)
 	}
 	var state string
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-timeout-retry'`).Scan(&state); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-timeout-retry'`)).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "applied" {
@@ -709,7 +520,7 @@ func TestHealthSyncRetryExecutorRestoresTimeoutPenaltyTriggered(t *testing.T) {
 	if decision := readMergedDecision(t, db, "run-plain-retry"); decision["result"] != "not_triggered" {
 		t.Fatalf("plain retry decision=%+v", decision)
 	}
-	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-plain-retry'`).Scan(&state); err != nil {
+	if err := db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-plain-retry'`)).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	if state != "applied" {
@@ -729,25 +540,12 @@ func TestCompareLatestWinsRejectsScopeMismatch(t *testing.T) {
 // 超时处罚契约：unavailable 且超时触发标记为真即按配置处罚方式执行处罚
 // （既有链路里 unavailable 永不授权处罚；本用例为质量不达标形态）。
 func TestQualityProjectorUnavailableWithTimeoutPenaltyEnforces(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "unavailable-timeout.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-timeout','pending_retry','{"triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-timeout','pending_retry','{"triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-timeout", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", TimeoutPenaltyTriggered: true, EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -760,7 +558,7 @@ func TestQualityProjectorUnavailableWithTimeoutPenaltyEnforces(t *testing.T) {
 		t.Fatalf("unavailable timeout decision=%+v", decision)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(j3bQ(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`)).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("health fact rows=%d err=%v", count, err)
 	}
 }
@@ -768,25 +566,12 @@ func TestQualityProjectorUnavailableWithTimeoutPenaltyEnforces(t *testing.T) {
 // 超时处罚契约不以分数低于阈值为前提：unavailable + 超时触发 + 分数达标
 // （核心超时截断后剩余探针全对，qualityFailure=false）仍按处罚方式执行。
 func TestQualityProjectorUnavailableTimeoutPenaltyEnforcesAtFullScore(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "unavailable-timeout-pass.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-timeout-pass','pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-timeout-pass','pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &countingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-timeout-pass", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 100, Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", TimeoutPenaltyTriggered: true, EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -798,7 +583,7 @@ func TestQualityProjectorUnavailableTimeoutPenaltyEnforcesAtFullScore(t *testing
 		t.Fatalf("unavailable timeout full-score decision=%+v", decision)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(j3bQ(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`)).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("health fact rows=%d err=%v", count, err)
 	}
 }
@@ -806,27 +591,14 @@ func TestQualityProjectorUnavailableTimeoutPenaltyEnforcesAtFullScore(t *testing
 // 非超时的 unavailable 保持“永不授权处罚”：无超时触发标记时无论分数是否
 // 达标（质量不达标或完全无质量信号）都不得处罚。
 func TestQualityProjectorUnavailableWithoutTimeoutNeverEnforces(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "unavailable-no-timeout.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newJ3BPGDatabase(t, j3bRunsSyncDecisionDDL, j3bHealthHourlyDDL())
 	for _, run := range []string{"run-unavailable-low", "run-unavailable-full"} {
-		if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES (?,'pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`, run); err != nil {
+		if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES (?,'pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`), run); err != nil {
 			t.Fatal(err)
 		}
 	}
 	recorder := &countingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
 	base := HealthFact{SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", EnforcementAllowed: true, ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), StatHour: "2026-08-27T10:00:00Z"}
 	for _, fact := range []HealthFact{
 		func() HealthFact { fact := base; fact.AccountID, fact.RunID, fact.Score = "acct-low", "run-unavailable-low", 30; return fact }(),

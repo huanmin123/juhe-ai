@@ -1,153 +1,23 @@
-//go:build windows
-
 package manualtestrepo
 
 // w7c PostgreSQL gated end-to-end for the manual test task repository: the
 // bindSQL $n rewriting, juhe_business-qualified tables, native boolean
-// literals and time.Time instants all run against the real temp cover
-// database (juhe_ai_sub2api_dev_w1cover, same isolation rules as the
-// accountbalance w7c gate: env-only credentials, skip when unreachable,
-// w7c- prefixed rows cleaned up afterwards).
+// literals and time.Time instants all run against the pgtestkit isolated test
+// database (PLAN-20261024T051925945Z 迁移：原常驻 cover 库
+// juhe_ai_sub2api_dev_w1cover 的共享 schema 会过期漂移——2026-10-24 基线即因
+// 旧表缺列失败；每测试独立库 + pgkit_test.go 生产 DDL 根治。种子行不再写
+// provider_code：供应商解耦后 maintenance 权威 DDL 已删该列。连接串内容不进
+// 任何文件、日志或断言）。
 
 import (
 	"context"
 	"database/sql"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
-
-func w7cOpenCoverDB(t *testing.T) *sql.DB {
-	t.Helper()
-	env := w7cSharedEnv(t)
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if env["DEV_POSTGRES_HOST"] == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过）")
-	}
-	admin, err := sql.Open("pgx", "postgres://"+env["DEV_POSTGRES_ADMIN_USERNAME"]+":"+env["DEV_POSTGRES_ADMIN_PASSWORD"]+"@"+env["DEV_POSTGRES_HOST"]+":"+env["DEV_POSTGRES_DIRECT_PORT"]+"/postgres?sslmode=disable")
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
-	}
-	defer admin.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := admin.PingContext(ctx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	var exists bool
-	if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, w7cCoverDBName).Scan(&exists); err != nil {
-		t.Fatalf("查询临时子库失败: %v", err)
-	}
-	if !exists {
-		owner := env["DEV_POSTGRES_APP_USERNAME"]
-		if owner == "" {
-			owner = env["DEV_POSTGRES_ADMIN_USERNAME"]
-		}
-		if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+w7cCoverDBName+` OWNER `+owner); err != nil {
-			t.Fatalf("创建临时子库失败: %v", err)
-		}
-	}
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	db, err := sql.Open("pgx", appURL[:sep+1]+w7cCoverDBName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("临时子库不可达: %v", err)
-	}
-	// 临时子库可能从未引导过业务表（其他波次只建了自己需要的表）；这里
-	// 按 maintenance 权威 DDL 幂等补建本包契约校验的三张表（加法、可重入）。
-	if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
-		t.Fatalf("补建 juhe_business schema 失败: %v", err)
-	}
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS juhe_business.account_test_tasks (
-      id text PRIMARY KEY,
-      account_id text NOT NULL,
-      account_name text NOT NULL,
-      provider_code text NOT NULL,
-      provider_protocol_profile_id text NOT NULL,
-      protocol_code text NOT NULL,
-      protocol_version text NOT NULL,
-      account_type text NOT NULL,
-      request_system_account_id text NOT NULL,
-      request_role text NOT NULL,
-      request_system_account_filter_id text,
-      diagnostics text NOT NULL DEFAULT 'full',
-      model text,
-      test_endpoint_mode text,
-      draft_account_encrypted text,
-      status text NOT NULL DEFAULT 'queued',
-      status_message text,
-      result_json text,
-      error_message text,
-      cancel_requested boolean NOT NULL DEFAULT false,
-      queued_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-      queued_deadline_at timestamptz,
-      started_at timestamptz,
-      finished_at timestamptz,
-      created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-      updated_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00'
-    )`,
-		`CREATE TABLE IF NOT EXISTS juhe_business.account_test_sessions (
-      id text PRIMARY KEY,
-      request_system_account_id text NOT NULL,
-      request_role text NOT NULL,
-      request_system_account_filter_id text,
-      status text NOT NULL DEFAULT 'running',
-      cancel_reason text,
-      last_heartbeat_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-      cancel_requested_at timestamptz,
-      finished_at timestamptz,
-      created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-      updated_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-      CHECK (status IN ('running', 'canceled', 'expired', 'completed'))
-    )`,
-		`CREATE TABLE IF NOT EXISTS juhe_business.account_test_session_tasks (
-      session_id text NOT NULL,
-      task_id text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-      PRIMARY KEY (session_id, task_id)
-    )`,
-	} {
-		if _, err := db.ExecContext(ctx, statement); err != nil {
-			t.Fatalf("补建手动测试契约表失败: %v", err)
-		}
-	}
-	return db
-}
-
-const w7cCoverDBName = "juhe_ai_sub2api_dev_w1cover"
-
-func w7cSharedEnv(t *testing.T) map[string]string {
-	t.Helper()
-	raw, err := os.ReadFile("../../../../../.local/project-resources/dev/env/shared.env")
-	if err != nil {
-		t.Skipf("dev env 不可达（跳过 PG 门禁测试）: %v", err)
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
-	}
-	return values
-}
 
 func w7cSeedPGTask(t *testing.T, db *sql.DB, id, status string, cancelRequested bool, queuedAt time.Time) {
 	t.Helper()
@@ -156,11 +26,11 @@ func w7cSeedPGTask(t *testing.T, db *sql.DB, id, status string, cancelRequested 
 	now := time.Now().UTC()
 	if _, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.account_test_tasks (
-  id, account_id, account_name, provider_code, provider_protocol_profile_id, protocol_code,
+  id, account_id, account_name, provider_protocol_profile_id, protocol_code,
   protocol_version, account_type, request_system_account_id, request_role, diagnostics,
   status, status_message, cancel_requested, queued_at, created_at, updated_at
-) VALUES ($1,'w7c-acc','w7c','openai','','chat_completions','v1','api_key','w7c-viewer','user','full',
-  $2,'等待后台测试',$3::boolean,$4::timestamptz,$5::timestamptz,$5::timestamptz)
+) VALUES ($1,'w7c-acc','w7c','','chat_completions','v1','api_key','w7c-viewer','user','full',
+  $2,'等待后台测试',$3,$4,$5,$5)
 ON CONFLICT (id) DO UPDATE SET status = excluded.status, cancel_requested = excluded.cancel_requested,
   updated_at = excluded.updated_at`,
 		id, status, cancelRequested, queuedAt.UTC(), now); err != nil {
@@ -169,18 +39,7 @@ ON CONFLICT (id) DO UPDATE SET status = excluded.status, cancel_requested = excl
 }
 
 func TestW7CManualTestRepoPostgresLifecycle(t *testing.T) {
-	db := w7cOpenCoverDB(t)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		for _, statement := range []string{
-			`DELETE FROM juhe_business.account_test_session_tasks WHERE session_id LIKE 'w7c-%' OR task_id LIKE 'w7c-%'`,
-			`DELETE FROM juhe_business.account_test_tasks WHERE id LIKE 'w7c-%'`,
-			`DELETE FROM juhe_business.account_test_sessions WHERE id LIKE 'w7c-%'`,
-		} {
-			_, _ = db.ExecContext(ctx, statement)
-		}
-	})
+	db := pgtestkitGateDB(t)
 
 	repo, err := New(Config{DB: db, Postgres: true})
 	if err != nil {
@@ -272,4 +131,15 @@ func TestW7CManualTestRepoPostgresLifecycle(t *testing.T) {
 	if !expired {
 		t.Fatalf("expired queued task missing: %+v", result.ExpiredQueuedTaskIDs)
 	}
+}
+
+// pgtestkitGateDB 打开独立测试库（不经 openTestRepo，生命周期门禁自带
+// ValidateCoreTables 前置；schema 由同一 prepare 提供）。
+func pgtestkitGateDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, manualTestBusinessSchema)
+		return err
+	})
+	return db
 }

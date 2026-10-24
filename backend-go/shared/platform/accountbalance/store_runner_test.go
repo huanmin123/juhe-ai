@@ -2,12 +2,15 @@ package accountbalance
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 type balanceTestHTTP struct {
@@ -34,16 +37,12 @@ func (c *balanceTestHTTP) Do(request *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 }
 
-func TestStoreSQLiteLeaseFenceAndSnapshotCAS(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\balance.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+// TestStoreLeaseFenceAndSnapshotCAS 迁 PG（PLAN-20261024T051925945Z 切片）：
+// 生产 OpenStore(StorePostgres) 装配，断言逐字节保持；原名含 SQLite 已失实，
+// 按 auditlog 先例改名。
+func TestStoreLeaseFenceAndSnapshotCAS(t *testing.T) {
+	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	owner, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquire owner: %v %t", err, acquired)
@@ -129,7 +128,14 @@ func TestStoreSQLiteLeaseFenceAndSnapshotCAS(t *testing.T) {
 }
 
 func TestStoreEnsureSchemaCachesOnlySuccessfulInitialization(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\schema-cache.sqlite"})
+	// 迁 PG（PLAN-20261024T051925945Z 切片）：EnsureSchema 缓存语义的被测臂
+	// 是生产 PG 路径，要求裸 store（openKitPostgresStore 会预跑 EnsureSchema
+	// 使缓存断言失真），故此处内联装配、不经 helper。
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_jobs`)
+		return err
+	})
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,11 +158,7 @@ func TestStoreEnsureSchemaCachesOnlySuccessfulInitialization(t *testing.T) {
 }
 
 func TestRunnerPeriodicDirectHTTPAndFirstProbe(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "\\runner.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	secret := "runner-test-secret"
 	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
 	if err != nil {
@@ -272,11 +274,7 @@ func (c ioNopCloser) Close() error               { return nil }
 // RunPeriodic 的 acquire/release 生命周期），先预置账户租约再调 prepareInput，
 // 无并发不确定性。
 func TestPrepareInputSkipsHeldLeaseWithoutError(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "/prepare-held.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	secret := "runner-test-secret"
 	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
 	if err != nil {
@@ -306,11 +304,7 @@ func TestPrepareInputSkipsHeldLeaseWithoutError(t *testing.T) {
 // skipped 分支的 continue 条件化为 itemErr == nil 时，此臂不得回退为吞错。
 // 过期输入是确定性的 validate 失败（无并发、无真上游），作为该臂的红绿锚点。
 func TestRunManualValidateFailureSurfacesOriginalError(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "/validate-err.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	secret := "runner-test-secret"
 	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
 	if err != nil {
@@ -349,11 +343,7 @@ func TestRunManualValidateFailureSurfacesOriginalError(t *testing.T) {
 // 缺陷（skipped 分支缺 continue 对 nil query 解引用 panic，生产栈
 // runner.go:293）由 2026-10-09 生产实证与本地调试复现定案。
 func TestRunInputsAllHeldLeasesDrainWithoutWorkerLoss(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "/runinputs-all-held.sqlite"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := openKitPostgresStore(t)
 	secret := "runner-test-secret"
 	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
 	if err != nil {

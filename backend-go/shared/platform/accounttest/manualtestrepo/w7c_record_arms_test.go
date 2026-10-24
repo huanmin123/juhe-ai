@@ -1,6 +1,6 @@
 package manualtestrepo
 
-// w7c record projection and internal-primitive arms.
+// w7c record projection and internal-primitive arms（组A：pgkit_test.go PG 夹具）。
 
 import (
 	"context"
@@ -19,9 +19,9 @@ func TestW7CRecordProjectionWithAllFields(t *testing.T) {
 	// upfront: the finalize path reads the full projection without updating.
 	seedTask(t, db, "w7c-rich", "queued", 1, now)
 	startedAt := now.Add(-time.Minute).Format(time.RFC3339Nano)
-	if _, err := db.Exec(`UPDATE account_test_tasks SET
+	if _, err := db.Exec(`UPDATE juhe_business.account_test_tasks SET
 		model = 'gpt-4o', test_endpoint_mode = 'chat', request_system_account_filter_id = 'filter-1',
-		draft_account_encrypted = 'enc-draft', started_at = ?, status_message = '进行中'
+		draft_account_encrypted = 'enc-draft', started_at = $1, status_message = '进行中'
 		WHERE id = 'w7c-rich'`, startedAt); err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestW7CRecordProjectionWithAllFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status, draft string
-	if err := db.QueryRow(`SELECT status, draft_account_encrypted FROM account_test_tasks WHERE id = 'w7c-rich'`).Scan(&status, &draft); err != nil {
+	if err := db.QueryRow(`SELECT status, draft_account_encrypted FROM juhe_business.account_test_tasks WHERE id = 'w7c-rich'`).Scan(&status, &draft); err != nil {
 		t.Fatal(err)
 	}
 	if status != "canceled" || draft != "enc-draft" {

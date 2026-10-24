@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 // seedW62MappingAccount 以 hydration 测试同款形态种一个映射账户（enabled
@@ -185,5 +186,90 @@ func TestW62ChainSuperFallbackRankOrSemantics(t *testing.T) {
 		if got := chainFallbackRank(&tc.row); got != tc.wantFallback {
 			t.Fatalf("%s: chainFallbackRank = %d, want %d", tc.name, got, tc.wantFallback)
 		}
+	}
+}
+
+// TestW62AccountLevelSuperFullAssemblyOrder 全装配复现（T62 生产形态）：
+// SQL 窗口 + merge + Go 比较器 + secret 全链之后，账户级超级优先（绑定列
+// 显式 0）的同族改名映射账户必须排在无特权直连账户之前，且 secret 装配出
+// SuperPriorityEnabled=true（热质量 tier / 会话亲和旁路的输入）。
+func TestW62AccountLevelSuperFullAssemblyOrder(t *testing.T) {
+	fixture := newChainFixture(t)
+	now := "2026-09-04T00:00:00.000Z"
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(query, args...); err != nil {
+			t.Fatalf("seed row: %v: %v: %v", query, args, err)
+		}
+	}
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_gpt-w62', 'openai', 'gpt-w62', 'gpt-w62', 'builtin', 'active', '["chat_json","chat_sse"]', ?, ?)`, now, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-w62', 'mdl_gpt-w62', ?)`,
+		fixture.accountID, now)
+	seedW62MappingAccount(t, fixture, "acc_w62_rename", "gpt-w62", "chat_completions", "up-w62-rename", "chat_completions", 0)
+	seed(`UPDATE accounts SET super_priority_enabled = 1 WHERE id = 'acc_w62_rename'`)
+
+	result, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, fixture.systemAccount,
+		gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedModel: "gpt-w62", RequestedEndpointFamily: "chat_completions"})
+	if err != nil {
+		t.Fatalf("list accounts for group: %v", err)
+	}
+	if len(result.Accounts) != 2 {
+		t.Fatalf("accounts = %d, want 2", len(result.Accounts))
+	}
+	if result.Accounts[0].ID != "acc_w62_rename" {
+		t.Fatalf("assembly order = %s,%s; want account-level super first",
+			result.Accounts[0].ID, result.Accounts[1].ID)
+	}
+	if !result.Accounts[0].SuperPriorityEnabled {
+		t.Fatalf("secret SuperPriorityEnabled must be true for account-level flag")
+	}
+}
+
+// TestW62OwnAccountFallbackFlagAssemblyAndOrder 自有账户降级备用双面（T62
+// 排查矩阵 B+A 层）：accounts.fallback_enabled=1 + 绑定列 0（自有形态）在
+// secret 装配为 FallbackEnabled=true，且排序排在非备用账户之后。同时钉死
+// priority 遮蔽口径：绑定 local_priority 显式 0 遮蔽 accounts.priority（列
+// NOT NULL，COALESCE 取显式值）——自有账户两处一致由写侧 patch/批量同步保
+// 证，绕过同步的写面（modelcheckowner 类）会造成漂移，见 T62 排查报告。
+func TestW62OwnAccountFallbackFlagAssemblyAndOrder(t *testing.T) {
+	fixture := newChainFixture(t)
+	now := "2026-09-04T00:00:00.000Z"
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(query, args...); err != nil {
+			t.Fatalf("seed row: %v: %v: %v", query, args, err)
+		}
+	}
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_gpt-w62', 'openai', 'gpt-w62', 'gpt-w62', 'builtin', 'active', '["chat_json","chat_sse"]', ?, ?)`, now, now)
+	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'gpt-w62', 'mdl_gpt-w62', ?)`,
+		fixture.accountID, now)
+	// 自有形态降级备用：accounts.fallback_enabled=1、accounts.priority=3、
+	// 绑定 local_* 全默认 0。
+	seedW62MappingAccount(t, fixture, "acc_w62_fb", "gpt-w62", "chat_completions", "up-w62-fb", "chat_completions", 0)
+	seed(`UPDATE accounts SET fallback_enabled = 1, priority = 3 WHERE id = 'acc_w62_fb'`)
+
+	result, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, fixture.systemAccount,
+		gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedModel: "gpt-w62", RequestedEndpointFamily: "chat_completions"})
+	if err != nil {
+		t.Fatalf("list accounts for group: %v", err)
+	}
+	if len(result.Accounts) != 2 {
+		t.Fatalf("accounts = %d, want 2", len(result.Accounts))
+	}
+	if result.Accounts[0].ID != fixture.accountID || result.Accounts[1].ID != "acc_w62_fb" {
+		t.Fatalf("order = %s,%s; want non-fallback first, own-form fallback last",
+			result.Accounts[0].ID, result.Accounts[1].ID)
+	}
+	fallbackSecret := result.Accounts[1]
+	if !fallbackSecret.FallbackEnabled {
+		t.Fatalf("secret FallbackEnabled must be true for account-level flag (binding 0)")
+	}
+	if fallbackSecret.Priority != 0 {
+		t.Fatalf("own-account secret priority = %d, want 0 (binding local_priority=0 shadows accounts.priority; write-side sync owns consistency)", fallbackSecret.Priority)
+	}
+	if result.Accounts[0].FallbackEnabled {
+		t.Fatalf("non-fallback account secret FallbackEnabled must stay false")
 	}
 }

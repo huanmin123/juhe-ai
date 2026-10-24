@@ -2,6 +2,10 @@ package accountquality
 
 // w12h 补充 arms（三）：损坏行的读取归一化矩阵、runner 失败日志与取消、
 // 队列出队顺序与停机、precheck/logger 小臂。
+// refresh runner 族与 stale 过滤矩阵走 pgkit_test.go 的 newQualityStorePostgres
+// （StatsPostgres 生产臂）；损坏行矩阵依赖 SQLite 弱类型（text 值直入 integer
+// 列，生产 PG DDL 拒绝）、触发器矩阵依赖 SQLite 触发器注入，均为组B保留
+// （见 pgkit_test.go 三组分类）。
 
 import (
 	"context"
@@ -49,11 +53,11 @@ func TestW12HLoadQualityRowCorruptionMatrix(t *testing.T) {
 }
 
 func TestW12HRefreshRunnerFailureLogsAndCancel(t *testing.T) {
-	store, _, _ := newQualityStore(t)
+	store, _, _ := newQualityStorePostgres(t)
 	logger := &fakeLogger{}
 	precheck := NewPrecheckRunner(PrecheckDeps{Logger: logger, Reader: &mockReader{}, Prober: &mockProber{}, Mutation: &mockPrecheckMutation{}, Concurrency: 1})
 	// 分钟表缺失 → 刷新失败 → runner 打失败日志并返回错误。
-	if _, err := store.db.Exec(`DROP TABLE account_quality_minute_stats`); err != nil {
+	if _, err := store.db.Exec(`DROP TABLE juhe_stats.account_quality_minute_stats`); err != nil {
 		t.Fatal(err)
 	}
 	runner := NewRefreshRunner(RefreshDeps{
@@ -68,16 +72,17 @@ func TestW12HRefreshRunnerFailureLogsAndCancel(t *testing.T) {
 	}
 
 	// 分数表缺失 → 刷新通过但候选读取失败 → 失败日志（第二分支）。
-	if _, err := store.db.Exec(`CREATE TABLE account_quality_minute_stats (
+	// 重建表按 PG 方言（bigint/double precision 与生产 DDL 同形）。
+	if _, err := store.db.Exec(`CREATE TABLE juhe_stats.account_quality_minute_stats (
 		account_id text, system_account_id text, provider_code text, stat_minute text,
-		request_count integer, success_count integer, error_count integer,
-		first_token_ms_sum real, first_token_ms_count integer,
+		request_count bigint, success_count bigint, error_count bigint,
+		first_token_ms_sum bigint, first_token_ms_count bigint,
 		last_sample_at text, last_success_at text, last_error_at text,
 		last_error_message text, updated_at text
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`DROP TABLE account_quality_scores`); err != nil {
+	if _, err := store.db.Exec(`DROP TABLE juhe_stats.account_quality_scores`); err != nil {
 		t.Fatal(err)
 	}
 	logger2 := &fakeLogger{}
@@ -94,10 +99,11 @@ func TestW12HRefreshRunnerFailureLogsAndCancel(t *testing.T) {
 }
 
 func TestW12HRefreshRunnerCancelDuringEnqueue(t *testing.T) {
-	store, _, _ := newQualityStore(t)
+	store, _, _ := newQualityStorePostgres(t)
 	precheck := NewPrecheckRunner(PrecheckDeps{Reader: &mockReader{}, Prober: &mockProber{}, Mutation: &mockPrecheckMutation{}, Concurrency: 1})
-	// 门控取消 ctx 但返回成功：刷新与候选读取在 sqlite 上不受取消影响，
-	// 入队循环的 ctx 检查必须收口返回取消错误。
+	// 门控取消 ctx 但返回成功：刷新与候选读取在取消后的存储查询不受取消
+	// 结果影响（database/sql 在连接前已拒绝），入队循环的 ctx 检查必须收口
+	// 返回取消错误。
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := NewRefreshRunner(RefreshDeps{
 		Store: store, Logger: NopLogger{}, Caches: &mockCacheInvalidator{}, Precheck: precheck,
@@ -117,7 +123,7 @@ func (g cancelingGate) EnsureUsageRecordsIngested(ctx context.Context) error {
 }
 
 func TestW12HRefreshRunnerPendingSnapshotFields(t *testing.T) {
-	store, _, lookup := newQualityStore(t)
+	store, _, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	store.seedMinute(t, "acc-1", MinuteKey(time.Now().Add(-time.Minute), time.UTC), 10, 2, 8, 0, 0, "upstream 500")
@@ -276,7 +282,7 @@ func TestW12HQuotaBoundaryHelpers(t *testing.T) {
 }
 
 func TestW12HStaleFilterMatrixAndOrphanMinuteCleanup(t *testing.T) {
-	store, clock, lookup := newQualityStore(t)
+	store, clock, lookup := newQualityStorePostgres(t)
 	ctx := context.Background()
 	// acc-1：本轮唯一被认领的脏账户（DirtyLimit=1）。
 	lookup.accounts["acc-1"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
@@ -292,10 +298,10 @@ func TestW12HStaleFilterMatrixAndOrphanMinuteCleanup(t *testing.T) {
 	lookup.accounts["acc-b"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	lookup.accounts["acc-c"] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
 	seedScore := func(id, state string, updatedAt string) {
-		if _, err := store.db.Exec(`INSERT INTO account_quality_scores (
+		if _, err := store.db.Exec(`INSERT INTO juhe_stats.account_quality_scores (
 			account_id, system_account_id, provider_code, quality_score, quality_state,
 			window_started_at, window_ended_at, updated_at
-		) VALUES (?, 'sys-1', 'openai', 100, ?, 'w', 'w', ?)`, id, state, updatedAt); err != nil {
+		) VALUES ($1, 'sys-1', 'openai', 100, $2, 'w', 'w', $3)`, id, state, updatedAt); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -326,7 +332,7 @@ func TestW12HStaleFilterMatrixAndOrphanMinuteCleanup(t *testing.T) {
 	}
 	// acc-orphan 的孤儿分钟行被清理。
 	var remaining int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM account_quality_minute_stats WHERE account_id = 'acc-orphan'`).Scan(&remaining); err != nil {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM juhe_stats.account_quality_minute_stats WHERE account_id = 'acc-orphan'`).Scan(&remaining); err != nil {
 		t.Fatal(err)
 	}
 	if remaining != 0 {
@@ -357,6 +363,8 @@ func TestW12HCooldownScanCountsSkippedDuplicates(t *testing.T) {
 	runner.StopAndDrain(2 * time.Second)
 }
 
+// TestW12HTriggerAbortMatrix 组B（StatsSQLite 生产臂 + SQLite 触发器故障注入，
+// PG 臂无同构注入点）：随 B3/B6 生产 sqlite 臂删除同批退役。
 func TestW12HTriggerAbortMatrix(t *testing.T) {
 	seedDirtyWithMinute := func(t *testing.T, store *StatsStore, clock *fakeClock, lookup *mapBusinessLookup, accountID string) {
 		t.Helper()
