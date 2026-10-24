@@ -16,6 +16,8 @@ export interface UserDefaultRouteStrategyReference {
 export interface UserProviderDefaultReference {
   providerCode: ProviderCode
   defaultGroup: UserDefaultGroupReference
+  /** Go uibootstrap 恒随每个 provider 默认项下发（与 preferredDefaultRouteStrategy 并存），前端当前不读，属契约镜像。 */
+  defaultRouteStrategy?: UserDefaultRouteStrategyReference
 }
 
 export interface UserReferenceData {
