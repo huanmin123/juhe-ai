@@ -3,10 +3,8 @@ package legacybusinessimport
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
@@ -233,20 +231,4 @@ func effectiveModes(preset string, declared []string) []string {
 	return append([]string(nil), vocabulary...)
 }
 
-// sortedKeys is a stable helper for report determinism.
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
 
-func mustJSON(value any) (string, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
-}

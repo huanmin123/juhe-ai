@@ -5,9 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -706,10 +704,3 @@ func importAuthorizationGrants(ctx context.Context, source *sql.DB, tx *sql.Tx, 
 
 func nowText() string { return timeNowUTC() }
 
-func sortedStrings(values []string) []string {
-	out := append([]string(nil), values...)
-	sort.Strings(out)
-	return out
-}
-
-var _ = json.Marshal

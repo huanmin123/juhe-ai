@@ -3,9 +3,7 @@ package legacybusinessimport
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"sort"
 )
 
 // importSystemAccounts copies every owner row verbatim: the surviving columns
@@ -691,13 +689,3 @@ func importQuotaWindows(ctx context.Context, source *sql.DB, tx *sql.Tx, report 
 	return bindingRows.Err()
 }
 
-// helper kept for future table additions.
-func requireOwner(owners map[string]struct{}, id string) error {
-	if _, ok := owners[id]; !ok {
-		return fmt.Errorf("引用不存在或未迁移的系统账户 %s", id)
-	}
-	return nil
-}
-
-var _ = errors.New
-var _ = sort.Strings
