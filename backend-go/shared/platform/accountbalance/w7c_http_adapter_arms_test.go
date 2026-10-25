@@ -17,7 +17,7 @@ import (
 
 func w7cQueryInput(t *testing.T, baseURL string, mutate func(*Input)) Input {
 	t.Helper()
-	input := w7cValidBalanceInput("w7c-http-acct")
+	input := kitValidBalanceInput("w7c-http-acct")
 	input.Trigger = TriggerManual
 	input.BaseURL = baseURL
 	if mutate != nil {

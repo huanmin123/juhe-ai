@@ -6,24 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
-// StatsStoreMode 双模存储。
+// StatsStoreMode 双模存储（2026-10-25 sqlite 臂退役后仅 postgres）。
 type StatsStoreMode string
 
 const (
-	StatsSQLite   StatsStoreMode = "sqlite"
 	StatsPostgres StatsStoreMode = "postgres"
 )
 
 // BusinessLookup 提供业务库账户元数据读取（等价 Node loadQualityAccountMetadataByIds：
-// PostgreSQL 时业务与统计同库跨 schema；SQLite 时业务库独立文件，由宿主注入第二个连接）。
+// 业务与统计同库跨 schema，由宿主注入业务读连接）。
 type BusinessLookup interface {
 	// LoadAccountMetadataByIds 返回 id -> (systemAccountID, providerCode)。
 	LoadAccountMetadataByIds(ctx context.Context, ids []string) (map[string]AccountMetadata, error)
@@ -37,8 +33,7 @@ type AccountMetadata struct {
 
 // StatsStoreConfig 组合统计库与业务元数据来源。
 type StatsStoreConfig struct {
-	Mode         StatsStoreMode
-	DatabasePath string
+	Mode StatsStoreMode
 	// PostgresDB 是宿主注入的 PostgreSQL 统计库句柄（共享平台包不持有连接池；
 	// 所有权归注入方，Close 不关闭该句柄）。
 	PostgresDB *sql.DB
@@ -49,54 +44,28 @@ type StatsStoreConfig struct {
 // StatsStore 承载 account_quality_* 统计读写（等价 Node account-quality.repository）。
 type StatsStore struct {
 	db       *sql.DB
-	mode     StatsStoreMode
 	business BusinessLookup
 	clock    Clock
 }
 
-// OpenStatsStore 打开双模统计存储（SQLite 单 writer 自建连接；PG 使用注入句柄）。
+// OpenStatsStore 打开统计存储（PG 使用注入句柄）。
 func OpenStatsStore(config StatsStoreConfig) (*StatsStore, error) {
+	if config.Mode != StatsPostgres {
+		return nil, errors.New("accountquality stats store mode 必须为 postgres")
+	}
+	if config.PostgresDB == nil {
+		return nil, errors.New("accountquality postgres 缺少注入的 *sql.DB 句柄")
+	}
 	clock := config.Clock
 	if clock == nil {
 		clock = SystemClock{}
 	}
-	switch config.Mode {
-	case StatsSQLite:
-		path := strings.TrimSpace(config.DatabasePath)
-		if path == "" {
-			return nil, errors.New("accountquality sqlite 缺少数据库路径")
-		}
-		dsn := "file:" + filepath.ToSlash(path) + "?_pragma=busy_timeout(5000)&_txlock=immediate"
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, err
-		}
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("配置 accountquality sqlite 单 writer 失败: %w", err)
-		}
-		return &StatsStore{db: db, mode: StatsSQLite, business: config.Business, clock: clock}, nil
-	case StatsPostgres:
-		if config.PostgresDB == nil {
-			return nil, errors.New("accountquality postgres 缺少注入的 *sql.DB 句柄")
-		}
-		return &StatsStore{db: config.PostgresDB, mode: StatsPostgres, business: config.Business, clock: clock}, nil
-	default:
-		return nil, errors.New("accountquality stats store mode 必须为 sqlite 或 postgres")
-	}
+	return &StatsStore{db: config.PostgresDB, business: config.Business, clock: clock}, nil
 }
 
-// Close 释放连接（仅关闭本 store 自建的 SQLite 连接；注入的 PG 句柄归注入方所有）。
+// Close 无操作（注入的 PG 句柄归注入方所有）。
 func (s *StatsStore) Close() error {
-	if s == nil || s.db == nil {
-		return nil
-	}
-	if s.mode != StatsSQLite {
-		return nil
-	}
-	return s.db.Close()
+	return nil
 }
 
 // SetBusiness 注入业务元数据来源。
@@ -105,17 +74,11 @@ func (s *StatsStore) SetBusiness(lookup BusinessLookup) { s.business = lookup }
 // SetClock 注入时间源（测试用）。
 func (s *StatsStore) SetClock(clock Clock) { s.clock = clock }
 
-// EnsureSchema 创建测试/SQLite 所需的 account_quality_* 表与索引
+// EnsureSchema 创建 account_quality_* 表与索引
 // （DDL 与 Node stats-schema.ts 一致；PG 的冻结 DDL 属 maintenance 项目，
 // 这里同样提供 IF NOT EXISTS 兜底以便独立部署）。
 func (s *StatsStore) EnsureSchema(ctx context.Context) error {
-	var script string
-	if s.mode == StatsSQLite {
-		script = sqliteQualitySchema
-	} else {
-		script = postgresQualitySchema
-	}
-	if _, err := s.db.ExecContext(ctx, script); err != nil {
+	if _, err := s.db.ExecContext(ctx, postgresQualitySchema); err != nil {
 		return fmt.Errorf("初始化 accountquality schema 失败: %w", err)
 	}
 	return nil
@@ -124,24 +87,15 @@ func (s *StatsStore) EnsureSchema(ctx context.Context) error {
 func (s *StatsStore) now() time.Time { return s.clock.Now().UTC() }
 
 func (s *StatsStore) scoresTable() string {
-	if s.mode == StatsPostgres {
-		return "juhe_stats.account_quality_scores"
-	}
-	return "account_quality_scores"
+	return "juhe_stats.account_quality_scores"
 }
 
 func (s *StatsStore) minuteTable() string {
-	if s.mode == StatsPostgres {
-		return "juhe_stats.account_quality_minute_stats"
-	}
-	return "account_quality_minute_stats"
+	return "juhe_stats.account_quality_minute_stats"
 }
 
 func (s *StatsStore) dirtyTable() string {
-	if s.mode == StatsPostgres {
-		return "juhe_stats.account_quality_dirty_accounts"
-	}
-	return "account_quality_dirty_accounts"
+	return "juhe_stats.account_quality_dirty_accounts"
 }
 
 // ---------------------------------------------------------------------------
@@ -601,13 +555,11 @@ func normalizeDirtyLimit(limit int) int {
 	return limit
 }
 
-// dollarize 把顺序 ? 占位符改写为 PostgreSQL $n 形式；SQLite 模式原样返回。
+// dollarize 把顺序 ? 占位符改写为 PostgreSQL $n 形式。
 // PG 上 ? 不是合法占位符（pgx stdlib 不做改写，直发即 42601 syntax error），
-// 该 store 的 PG 模式此前从未被真库覆盖（w20a 测试环境演练发现）。
+// 该 store 的 PG 模式此前从未被真库覆盖（w20a 测试环境演练发现）；
+// 2026-10-25 sqlite 臂退役后本 store 仅 PG 形态，改写恒启用。
 func (s *StatsStore) dollarize(query string) string {
-	if s.mode != StatsPostgres {
-		return query
-	}
 	var b strings.Builder
 	n := 0
 	for _, r := range query {
@@ -1195,65 +1147,8 @@ func parseMillis(value string) time.Time {
 	return t
 }
 
-// 质量统计 schema（与 Node stats-schema.ts 一致；PG 版对应 maintenance 冻结 DDL）。
-const sqliteQualitySchema = `
-CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
-  account_id TEXT NOT NULL,
-  system_account_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL,
-  stat_minute TEXT NOT NULL,
-  request_count INTEGER NOT NULL DEFAULT 0,
-  success_count INTEGER NOT NULL DEFAULT 0,
-  error_count INTEGER NOT NULL DEFAULT 0,
-  first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
-  first_token_ms_count INTEGER NOT NULL DEFAULT 0,
-  last_sample_at TEXT,
-  last_success_at TEXT,
-  last_error_at TEXT,
-  last_error_message TEXT,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (account_id, stat_minute)
-);
-
-CREATE TABLE IF NOT EXISTS account_quality_scores (
-  account_id TEXT PRIMARY KEY,
-  system_account_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL,
-  quality_score INTEGER NOT NULL DEFAULT 1000000,
-  quality_state TEXT NOT NULL DEFAULT 'unknown',
-  recent_request_count INTEGER NOT NULL DEFAULT 0,
-  recent_success_count INTEGER NOT NULL DEFAULT 0,
-  recent_error_count INTEGER NOT NULL DEFAULT 0,
-  recent_first_token_sample_count INTEGER NOT NULL DEFAULT 0,
-  recent_avg_first_token_ms INTEGER,
-  ewma_first_token_ms INTEGER,
-  success_rate REAL,
-  window_started_at TEXT NOT NULL,
-  window_ended_at TEXT NOT NULL,
-  last_sample_at TEXT,
-  last_success_at TEXT,
-  last_error_at TEXT,
-  last_error_message TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts (
-  account_id TEXT PRIMARY KEY,
-  first_dirty_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_account_quality_minute_stats_minute ON account_quality_minute_stats(stat_minute, account_id);
-
-CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);
-
-CREATE INDEX IF NOT EXISTS idx_account_quality_scores_failure_precheck
-  ON account_quality_scores(recent_error_count DESC, success_rate, updated_at DESC, account_id)
-  WHERE recent_request_count >= 5 AND recent_error_count >= 2;
-
-CREATE INDEX IF NOT EXISTS idx_account_quality_dirty_accounts_first_dirty ON account_quality_dirty_accounts(first_dirty_at, account_id);
-`
-
+// 质量统计 schema（与 Node stats-schema.ts 一致；对应 maintenance 冻结 DDL；
+// 2026-10-25 sqlite 臂退役，sqliteQualitySchema 随 StatsSQLite 生产臂删除）。
 const postgresQualitySchema = `
 CREATE TABLE IF NOT EXISTS juhe_stats.account_quality_minute_stats (
   account_id text NOT NULL,

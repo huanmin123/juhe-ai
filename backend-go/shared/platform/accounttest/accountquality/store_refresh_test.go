@@ -3,14 +3,13 @@ package accountquality
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
-// 本文件存储行为测试走 pgkit_test.go 的 newQualityStorePostgres（StatsPostgres
-// 生产臂，pgtestkit 真库）；newQualityStore（SQLite 夹具）保留给组B
-// StatsSQLite 臂测试（见 pgkit_test.go 三组分类）。
+// 本文件存储行为测试走 pgkit_test.go 的 newQualityStorePostgres
+// （StatsPostgres 生产臂，pgtestkit 真库）。原 newQualityStore（SQLite 夹具）
+// 于 2026-10-25 随 StatsSQLite 生产臂退役删除（组B，D9/D17）。
 
 // mapBusinessLookup 以内存 map 模拟业务库 accounts 元数据。
 type mapBusinessLookup struct {
@@ -36,29 +35,8 @@ func (c *fakeClock) Now() time.Time { return c.current }
 
 func (c *fakeClock) Advance(d time.Duration) { c.current = c.current.Add(d) }
 
-func newQualityStore(t *testing.T) (*StatsStore, *fakeClock, *mapBusinessLookup) {
-	t.Helper()
-	dir := t.TempDir()
-	store, err := OpenStatsStore(StatsStoreConfig{
-		Mode:         StatsSQLite,
-		DatabasePath: filepath.Join(dir, "quality.db"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	clock := &fakeClock{current: time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)}
-	store.SetClock(clock)
-	lookup := &mapBusinessLookup{accounts: map[string]AccountMetadata{}}
-	store.SetBusiness(lookup)
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	return store, clock, lookup
-}
-
-// seedMinute 按当前 store 方言注入分钟行（表名限定与 $n 占位符经生产侧
-// minuteTable/dollarize 对齐，SQLite/PG 两臂共用）。
+// seedMinute 按生产方言注入分钟行（表名限定与 $n 占位符经生产侧
+// minuteTable/dollarize 对齐）。
 func (s *StatsStore) seedMinute(t *testing.T, accountID string, statMinute string, requests, successes, errors, ftSum, ftCount int, lastErrorMessage string) {
 	t.Helper()
 	query := s.dollarize(fmt.Sprintf(`INSERT INTO %s (

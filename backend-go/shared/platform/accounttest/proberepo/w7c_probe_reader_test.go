@@ -239,7 +239,6 @@ func TestW7CEndpointModeNormalization(t *testing.T) {
 
 func TestW7CLoadProxyURLArms(t *testing.T) {
 	h := openTestDBPostgres(t)
-	h.seedSchema(t)
 	h.exec(t, `INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
 	    VALUES ('p-ok', 'sys-1', 'p', 'http', '10.0.0.5', 8080, NULL, NULL, TRUE, $1, $1)`, nowMillisText())
 	url, err := h.store.loadProxyURL(context.Background(), "p-ok")
@@ -295,7 +294,6 @@ func TestW7CLoadProxyURLArms(t *testing.T) {
 
 func TestW7CLoadAccountMetadataByIds(t *testing.T) {
 	h := openTestDBPostgres(t)
-	h.seedSchema(t)
 	credentials := h.sealCredentials(t, map[string]any{"base_url": "https://x", "api_key": "k"})
 	h.exec(t, `INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, created_at, updated_at)
 	    VALUES ('m-1', 'sys-1', 'n', 'api_key', 'active', $1, 'gpt', 'openai', 'v1', $2, $2)`, credentials, nowMillisText())
@@ -317,95 +315,17 @@ func TestW7CLoadAccountMetadataByIds(t *testing.T) {
 	}
 }
 
-// TestW7CAuthorizedInstanceGroupPath 组B：expired authorization 臂被生产 PG
-// 臂缺陷阻塞——activeAuthorizationOwnerByID 的 `expires_at > ?` 把 time.Time
+// 原 TestW7CAuthorizedInstanceGroupPath（组B，openTestDB SQLite 夹具）于
+// 2026-10-25 随 sqlite 方言退役删除：expired authorization 臂被生产 PG 臂缺陷
+// W27③ 阻塞——activeAuthorizationOwnerByID 的 `expires_at > ?` 把 time.Time
 // 绑进 text 列（pgx 回退编码 Go 时间文本，字典序与 RFC3339 存量行比较恒真），
-// 过期授权仍放行（见任务报告缺陷清单）；待缺陷修复后随组A迁 PG。
-func TestW7CAuthorizedInstanceGroupPath(t *testing.T) {
-	h := openTestDB(t)
-	h.seedSchema(t)
-	credentials := h.sealCredentials(t, map[string]any{
-		"api_keys": []any{"sk-a", "sk-b"},
-	})
-	// 授权实例行不再冗余身份/连接事实（vendor_code/健康检查列物理为 NULL），
-	// 资源事实全部归来源账户。
-	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted,
-	    authorization_instance_authorization_id, authorization_instance_source_account_id)
-	    VALUES ('inst-1', 'sys-grantee', '实例', 'api_key', 'active', ?, 'authz-1', 'src-1')`, credentials)
-	// Source account backing the authorization instance.
-	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted, vendor_code, oauth_type)
-	    VALUES ('src-1', 'sys-owner', '源账户', 'oauth', 'active', ?, 'gpt', NULL)`,
-		h.sealCredentials(t, map[string]any{"access_token": "tok-1"}))
-	h.seedModel(t, "src-1", "gpt-test")
-	h.seedProbeConnection(t, "src-1", "gpt_openai_v1", "https://authorized.example.com", "chat_json", "chat_sse")
-	h.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id,
-	    resource_owner_system_account_id, status) VALUES ('authz-1', 'account', 'src-1', 'sys-grantee', 'sys-owner', 'active')`)
-	// Group access for a grantee requires its own active group authorization.
-	h.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id,
-	    resource_owner_system_account_id, status) VALUES ('authz-grp', 'group', 'group-1', 'sys-grantee', 'sys-owner', 'active')`)
-	h.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-1', 'sys-owner', 1)`)
-	h.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-1', 'sys-owner', 'inst-1', 1)`)
-
-	candidate, err := h.store.LoadAccountForGroup(context.Background(), "group-1", "inst-1", "sys-grantee")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if candidate == nil {
-		t.Fatal("authorized candidate must resolve")
-	}
-	if candidate.AccountOwnerSystemAccountID != "sys-owner" {
-		t.Fatalf("access owner: %q", candidate.AccountOwnerSystemAccountID)
-	}
-	if candidate.CredentialSourceAccountID != "src-1" || candidate.Type != "oauth" || candidate.SelectedAPIKey != "tok-1" {
-		t.Fatalf("source fallback: %+v", candidate.OpenAIAccountCandidate)
-	}
-	// 资源事实投影：vendor/preset/连接面来自来源账户。
-	if candidate.ProviderCode != "gpt" || candidate.ProviderProtocolProfileID != "profile_gpt_openai_v1" ||
-		candidate.BaseURL != "https://authorized.example.com" {
-		t.Fatalf("resource facts: vendor=%q profile=%q base=%q", candidate.ProviderCode, candidate.ProviderProtocolProfileID, candidate.BaseURL)
-	}
-
-	// Authorization row expired → grantee loses access.
-	h.exec(t, `UPDATE resource_authorizations SET status='revoked' WHERE id='authz-1'`)
-	missing, err := h.store.LoadAccountForGroup(context.Background(), "group-1", "inst-1", "sys-grantee")
-	if err != nil || missing != nil {
-		t.Fatalf("revoked authorization: %v %v", missing, err)
-	}
-	h.exec(t, `UPDATE resource_authorizations SET status='active', expires_at=? WHERE id='authz-1'`, plusMillis(-1000))
-	missing, err = h.store.LoadAccountForGroup(context.Background(), "group-1", "inst-1", "sys-grantee")
-	if err != nil || missing != nil {
-		t.Fatalf("expired authorization: %v %v", missing, err)
-	}
-
-	// Grantee system account mismatch on the instance row → nil.
-	h.exec(t, `UPDATE resource_authorizations SET expires_at=NULL WHERE id='authz-1'`)
-	mismatch, err := h.store.LoadAccountForGroupFull(context.Background(), "inst-1")
-	if err != nil || mismatch == nil {
-		t.Fatalf("full reload: %v %v", mismatch, err)
-	}
-
-	// oauth with only a refresh token still selects a key.
-	h.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'src-1'`,
-		h.sealCredentials(t, map[string]any{"refresh_token": "refresh-1"}))
-	full, err := h.store.LoadAccountForGroupFull(context.Background(), "inst-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = full
-
-	// An account whose credentials cannot be decrypted resolves to nil.
-	h.exec(t, `UPDATE accounts SET credentials_encrypted='garbage' WHERE id='inst-1'`)
-	broken, err := h.store.LoadAccountForGroupFull(context.Background(), "inst-1")
-	if err != nil || broken != nil {
-		t.Fatalf("broken credentials: %v %v", broken, err)
-	}
-}
-
+// 过期授权仍放行（见任务报告缺陷清单）；该臂在 PG 生产列形态下无行为等价
+// 断言，待缺陷修复后以组A 形态重建。
 func TestW7CSchemaAndStoreGuards(t *testing.T) {
 	h := openTestDBPostgres(t)
 	ctx := context.Background()
-	// The fixture schema is richer; EnsureSchema must be idempotent over it.
-	h.seedSchema(t)
+	// EnsureSchema must stay idempotent over the fixture schema prepared by
+	// the pgtestkit prepare hook.
 	if err := h.store.EnsureSchema(ctx); err != nil {
 		t.Fatalf("EnsureSchema: %v", err)
 	}

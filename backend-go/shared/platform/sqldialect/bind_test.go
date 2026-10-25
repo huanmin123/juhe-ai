@@ -2,12 +2,8 @@ package sqldialect
 
 import "testing"
 
-func TestBindSQLSQLitePassthrough(t *testing.T) {
-	query := "SELECT * FROM t WHERE a = ? AND b = ?"
-	if got := BindSQL(false, query); got != query {
-		t.Fatalf("SQLite 模式必须原样返回: %s", got)
-	}
-}
+// 原 TestBindSQLSQLitePassthrough（postgres=false 透传臂）于 2026-10-25 随
+// sqlite 方言退役删除：全仓调用方核实恒传 true，改写恒启用。
 
 func TestBindSQLPostgresRewrite(t *testing.T) {
 	got := BindSQL(true, "INSERT INTO t (a, b) VALUES (?, ?) WHERE c = ?")

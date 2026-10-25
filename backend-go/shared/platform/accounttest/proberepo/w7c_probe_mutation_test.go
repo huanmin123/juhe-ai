@@ -108,7 +108,6 @@ func TestW7CRecordKeySuccessArms(t *testing.T) {
 
 	// Not a pool account (single key).
 	solo := openTestDBPostgres(t)
-	solo.seedSchema(t)
 	solo.exec(t, `INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, created_at, updated_at)
 	    VALUES ('solo-1', 'sys-1', 's', 'api_key', 'active', $1, 'gpt', 'openai', 'v1', $2, $2)`,
 		solo.sealCredentials(t, map[string]any{"api_key": "only-key"}), nowMillisText())

@@ -1,56 +1,20 @@
 package accountquality
 
-// w12h 补充 arms（三）：损坏行的读取归一化矩阵、runner 失败日志与取消、
-// 队列出队顺序与停机、precheck/logger 小臂。
+// w12h 补充 arms（三）：runner 失败日志与取消、队列出队顺序与停机、
+// precheck/logger 小臂。
 // refresh runner 族与 stale 过滤矩阵走 pgkit_test.go 的 newQualityStorePostgres
-// （StatsPostgres 生产臂）；损坏行矩阵依赖 SQLite 弱类型（text 值直入 integer
-// 列，生产 PG DDL 拒绝）、触发器矩阵依赖 SQLite 触发器注入，均为组B保留
-// （见 pgkit_test.go 三组分类）。
+// （StatsPostgres 生产臂）。原 TestW12HLoadQualityRowCorruptionMatrix（损坏行
+// 读取归一化矩阵，依赖 SQLite 弱类型 text 直入 integer 列）与
+// TestW12HTriggerAbortMatrix（SQLite 触发器故障注入矩阵）为组B（生产 PG DDL
+// 无同构注入点、无等价断言），2026-10-25 随 StatsSQLite 生产臂物理删除退役。
 
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestW12HLoadQualityRowCorruptionMatrix(t *testing.T) {
-	store, _, _ := newQualityStore(t)
-	ctx := context.Background()
-	if _, err := store.db.Exec(`INSERT INTO account_quality_scores (
-		account_id, system_account_id, provider_code, quality_score, quality_state,
-		recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
-		recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
-		window_started_at, window_ended_at, updated_at
-	) VALUES ('acc-1', 'sys-1', 'openai', 'not-a-number', 'weird-state',
-	           -5, -1, 8, 2, NULL, 300, 1.5, 'w', 'w', '2026-09-04T08:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	row, err := store.LoadQualityRow(ctx, "acc-1")
-	if err != nil || row == nil {
-		t.Fatalf("损坏行必须按兜底归一化读取: %v %v", row, err)
-	}
-	if row.QualityScore != UnknownQualityScore {
-		t.Fatalf("不可解析分数应回落默认: %d", row.QualityScore)
-	}
-	if row.QualityState != QualityUnknown {
-		t.Fatalf("未知状态应归一化 unknown: %s", row.QualityState)
-	}
-	if row.RecentRequestCount != 0 || row.RecentSuccessCount != 0 {
-		t.Fatalf("负计数应钳制 0: %+v", row)
-	}
-	if row.RecentAvgFirstTokenMs != nil {
-		t.Fatalf("非数值均值应为 nil: %v", row.RecentAvgFirstTokenMs)
-	}
-	if row.SuccessRate == nil || *row.SuccessRate != 1 {
-		t.Fatalf("超额成功率应钳制 1: %v", row.SuccessRate)
-	}
-	if row.EwmaFirstTokenMs == nil || *row.EwmaFirstTokenMs != 300 {
-		t.Fatalf("EWMA 原样读取: %v", row.EwmaFirstTokenMs)
-	}
-}
 
 func TestW12HRefreshRunnerFailureLogsAndCancel(t *testing.T) {
 	store, _, _ := newQualityStorePostgres(t)
@@ -363,81 +327,6 @@ func TestW12HCooldownScanCountsSkippedDuplicates(t *testing.T) {
 	runner.StopAndDrain(2 * time.Second)
 }
 
-// TestW12HTriggerAbortMatrix 组B（StatsSQLite 生产臂 + SQLite 触发器故障注入，
-// PG 臂无同构注入点）：随 B3/B6 生产 sqlite 臂删除同批退役。
-func TestW12HTriggerAbortMatrix(t *testing.T) {
-	seedDirtyWithMinute := func(t *testing.T, store *StatsStore, clock *fakeClock, lookup *mapBusinessLookup, accountID string) {
-		t.Helper()
-		lookup.accounts[accountID] = AccountMetadata{SystemAccountID: "sys-1", ProviderCode: "openai"}
-		store.seedMinute(t, accountID, MinuteKey(clock.Now().Add(-time.Minute), time.UTC), 8, 6, 2, 500, 5, "")
-		if err := store.MarkQualityDirty(context.Background(), accountID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	refresh := func(store *StatsStore) error {
-		_, err := store.RefreshFromUsage(context.Background(), RefreshInput{WindowMinutes: 10, Timezone: "UTC", DirtyLimit: DirtyAccountBatchLimit})
-		return err
-	}
-
-	t.Run("scores 更新触发器中止", func(t *testing.T) {
-		store, clock, lookup := newQualityStore(t)
-		seedDirtyWithMinute(t, store, clock, lookup, "acc-1")
-		// 预置既有质量行：刷新的 upsert 走 UPDATE 路径才会触发中止器。
-		if _, err := store.db.Exec(`INSERT INTO account_quality_scores (
-			account_id, system_account_id, provider_code, quality_score, quality_state,
-			window_started_at, window_ended_at, updated_at
-		) VALUES ('acc-1', 'sys-1', 'openai', 100, 'fresh', 'w', 'w', '2026-09-04T07:00:00.000Z')`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.db.Exec(`CREATE TRIGGER w12h_abort_score_update BEFORE UPDATE ON account_quality_scores BEGIN SELECT RAISE(ABORT, 'w12h score update aborted'); END`); err != nil {
-			t.Fatal(err)
-		}
-		if err := refresh(store); err == nil {
-			t.Fatal("更新中止必须使刷新失败")
-		}
-	})
-
-	t.Run("scores 删除触发器中止", func(t *testing.T) {
-		store, _, _ := newQualityStore(t)
-		// 孤儿质量行 → 清理路径的 DELETE 被中止。
-		if _, err := store.db.Exec(`INSERT INTO account_quality_scores (
-			account_id, system_account_id, provider_code, quality_score, quality_state,
-			window_started_at, window_ended_at, updated_at
-		) VALUES ('acc-gone', 'sys-1', 'openai', 100, 'fresh', 'w', 'w', '2026-09-04T07:00:00.000Z')`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.db.Exec(`CREATE TRIGGER w12h_abort_score_delete BEFORE DELETE ON account_quality_scores BEGIN SELECT RAISE(ABORT, 'w12h score delete aborted'); END`); err != nil {
-			t.Fatal(err)
-		}
-		if err := refresh(store); err == nil {
-			t.Fatal("删除中止必须使刷新失败")
-		}
-	})
-
-	t.Run("分钟表删除触发器中止", func(t *testing.T) {
-		store, clock, lookup := newQualityStore(t)
-		seedDirtyWithMinute(t, store, clock, lookup, "acc-1")
-		store.seedMinute(t, "acc-orphan", MinuteKey(clock.Now().Add(-48*time.Hour), time.UTC), 4, 0, 4, 0, 0, "gone")
-		if _, err := store.db.Exec(`CREATE TRIGGER w12h_abort_minute_delete BEFORE DELETE ON account_quality_minute_stats BEGIN SELECT RAISE(ABORT, 'w12h minute delete aborted'); END`); err != nil {
-			t.Fatal(err)
-		}
-		if err := refresh(store); err == nil {
-			t.Fatal("分钟清理中止必须使刷新失败")
-		}
-	})
-
-	t.Run("脏表删除触发器中止", func(t *testing.T) {
-		store, clock, lookup := newQualityStore(t)
-		seedDirtyWithMinute(t, store, clock, lookup, "acc-1")
-		if _, err := store.db.Exec(`CREATE TRIGGER w12h_abort_dirty_delete BEFORE DELETE ON account_quality_dirty_accounts BEGIN SELECT RAISE(ABORT, 'w12h dirty delete aborted'); END`); err != nil {
-			t.Fatal(err)
-		}
-		if err := refresh(store); err == nil {
-			t.Fatal("脏行清理中止必须使刷新失败")
-		}
-	})
-}
-
 func TestW12HQuotaRemainingDirectArms(t *testing.T) {
 	// errorType 稳定码。
 	if !SystemInsufficientQuotaRuleMatches(403, "", "insufficient_balance", "") {
@@ -630,22 +519,12 @@ func TestW12HSmallHelperArms(t *testing.T) {
 }
 
 func TestW12HPGModeStoreHelpersAndSchemaError(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "pgmode.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	store, err := OpenStatsStore(StatsStoreConfig{Mode: StatsPostgres, PostgresDB: db})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 2026-10-25 sqlite 臂退役：原「PG 冻结 DDL 在 sqlite 假句柄上执行失败」
+	// 的 schema 初始化错误注入臂随 StatsSQLite 生产臂删除（PG 上无同构注入
+	// 点，无等价断言）；PG 表名限定断言保留（无库面依赖）。
+	store := &StatsStore{}
 	// PG 表名限定分支。
 	if store.scoresTable() != "juhe_stats.account_quality_scores" || store.minuteTable() != "juhe_stats.account_quality_minute_stats" || store.dirtyTable() != "juhe_stats.account_quality_dirty_accounts" {
 		t.Fatal("PG 表名限定不符")
-	}
-	// PG 冻结 DDL 在 sqlite 句柄上执行 → schema 初始化错误分支。
-	if err := store.EnsureSchema(context.Background()); err == nil {
-		t.Fatal("PG 脚本在 sqlite 句柄上必须失败")
 	}
 }

@@ -6,21 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 	stdlib "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 type StoreMode string
 
 const (
-	StoreSQLite   StoreMode = "sqlite"
 	StorePostgres StoreMode = "postgres"
 )
 
@@ -43,7 +39,6 @@ var (
 
 type StoreConfig struct {
 	Mode                 StoreMode
-	DatabasePath         string
 	PostgresURL          string
 	PostgresMaxOpenConns int
 	PostgresMaxIdleConns int
@@ -63,7 +58,6 @@ type AccountLease struct {
 
 type Store struct {
 	db            *sql.DB
-	mode          StoreMode
 	writeMu       sync.Mutex
 	schemaMu      sync.Mutex
 	schemaCheckMu sync.Mutex
@@ -72,56 +66,38 @@ type Store struct {
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
-	switch config.Mode {
-	case StoreSQLite:
-		path := strings.TrimSpace(config.DatabasePath)
-		if path == "" {
-			return nil, errors.New("account-balance sqlite 缺少数据库路径")
-		}
-		// balanceSQLiteDSN 仅做路径规范化不会失败；sql.Open 惰性连接，
-		// 错误延迟到 PRAGMA 执行处（w12h 授权删除死守卫）。
-		dsn, _ := balanceSQLiteDSN(path)
-		db, _ := sql.Open("sqlite", dsn)
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if _, err := db.Exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;"); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("配置 account-balance sqlite writer 失败: %w", err)
-		}
-		return &Store{db: db, mode: config.Mode}, nil
-	case StorePostgres:
-		pool := config.PostgresPool
-		maxOpen := config.PostgresMaxOpenConns
-		if maxOpen == 0 {
-			maxOpen = 1000
-		}
-		maxIdle := config.PostgresMaxIdleConns
-		if maxIdle == 0 {
-			maxIdle = 1000
-		}
-		if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen {
-			return nil, fmt.Errorf("account-balance postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpen, maxIdle)
-		}
-		if pool == nil {
-			// No injected handle: open a dedicated pgx pool. Hosts that own a
-			// shared registry (gateway/jobs pgpool) inject PoolHandle instead.
-			if strings.TrimSpace(config.PostgresURL) == "" {
-				return nil, errors.New("account-balance postgres 缺少连接 URL")
-			}
-			// 经 sqldialect 改写 driver 打开（清理批次 C5 统一裸开路径）：
-			// 与 sql.Open("pgx", url) 同一 driver 实例、同一惰性语义
-			// （openErr 恒为 nil，w12h 授权删除死守卫）；本包 PG 臂 SQL
-			// 已是 `$n`，改写层幂等透传，并对未来遗漏改写的 `?` SQL
-			// 提供驱动层兜底。
-			db, _ := sqldialect.OpenDB(stdlib.GetDefaultDriver(), config.PostgresURL)
-			db.SetMaxOpenConns(maxOpen)
-			db.SetMaxIdleConns(maxIdle)
-			return &Store{db: db, mode: config.Mode}, nil
-		}
-		return &Store{db: pool.DB(), mode: config.Mode, pool: pool}, nil
-	default:
-		return nil, errors.New("account-balance store mode 必须为 sqlite 或 postgres")
+	if config.Mode != StorePostgres {
+		return nil, errors.New("account-balance store mode 必须为 postgres")
 	}
+	pool := config.PostgresPool
+	maxOpen := config.PostgresMaxOpenConns
+	if maxOpen == 0 {
+		maxOpen = 1000
+	}
+	maxIdle := config.PostgresMaxIdleConns
+	if maxIdle == 0 {
+		maxIdle = 1000
+	}
+	if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen {
+		return nil, fmt.Errorf("account-balance postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpen, maxIdle)
+	}
+	if pool == nil {
+		// No injected handle: open a dedicated pgx pool. Hosts that own a
+		// shared registry (gateway/jobs pgpool) inject PoolHandle instead.
+		if strings.TrimSpace(config.PostgresURL) == "" {
+			return nil, errors.New("account-balance postgres 缺少连接 URL")
+		}
+		// 经 sqldialect 改写 driver 打开（清理批次 C5 统一裸开路径）：
+		// 与 sql.Open("pgx", url) 同一 driver 实例、同一惰性语义
+		// （openErr 恒为 nil，w12h 授权删除死守卫）；本包 PG 臂 SQL
+		// 已是 `$n`，改写层幂等透传，并对未来遗漏改写的 `?` SQL
+		// 提供驱动层兜底。
+		db, _ := sqldialect.OpenDB(stdlib.GetDefaultDriver(), config.PostgresURL)
+		db.SetMaxOpenConns(maxOpen)
+		db.SetMaxIdleConns(maxIdle)
+		return &Store{db: db}, nil
+	}
+	return &Store{db: pool.DB(), pool: pool}, nil
 }
 
 func (s *Store) Close() error {
@@ -145,50 +121,20 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.mode == StorePostgres {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(918271447)"); err != nil {
-			return err
-		}
-		if err := applyBalancePGSchemaDDL(ctx, tx); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		s.schemaReady = true
-		return nil
-	}
-	conn, err := s.db.Conn(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("获取 account-balance sqlite schema 锁失败: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
-		}
-	}()
-	if _, err := conn.ExecContext(ctx, balanceSQLiteSchema); err != nil {
-		return fmt.Errorf("初始化 account-balance sqlite schema 失败: %w", err)
-	}
-	if _, err := conn.ExecContext(ctx, `SELECT committed FROM account_balance_outcomes LIMIT 0`); err != nil {
-		if _, alterErr := conn.ExecContext(ctx, `ALTER TABLE account_balance_outcomes ADD COLUMN committed INTEGER NOT NULL DEFAULT 0`); alterErr != nil {
-			return fmt.Errorf("迁移 account-balance sqlite outcome committed 字段失败: %w", alterErr)
-		}
-	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(918271447)"); err != nil {
 		return err
 	}
-	committed = true
+	if err := applyBalancePGSchemaDDL(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	s.schemaReady = true
 	return nil
 }
@@ -200,9 +146,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 // created here), then executes every statement of balancePostgresSchema (all
 // IF NOT EXISTS, so the sequence is idempotent) and finally migrates the
 // outcomes.committed column. The transaction boundary and the advisory lock
-// stay with the caller: EnsureSchema's PostgreSQL arm (isolated tests) and the
-// maintenance one-shot bootstrap (BootstrapPostgres) share this helper under
-// the same lock, so concurrent callers serialize instead of racing.
+// stay with the caller: EnsureSchema (isolated tests) and the maintenance
+// one-shot bootstrap (BootstrapPostgres) share this helper under the same
+// lock, so concurrent callers serialize instead of racing.
 func applyBalancePGSchemaDDL(ctx context.Context, tx *sql.Tx) error {
 	if err := ensureBalancePGSchema(ctx, tx); err != nil {
 		return err
@@ -222,13 +168,11 @@ func applyBalancePGSchemaDDL(ctx context.Context, tx *sql.Tx) error {
 
 // CheckSchema verifies the externally provisioned PostgreSQL contract without
 // issuing DDL. Production J2 startup must fail closed when migrations are
-// missing; only isolated SQLite/scratch tests may call EnsureSchema.
+// missing; EnsureSchema (real DDL) is reserved for isolated tests and the
+// maintenance one-shot bootstrap.
 func (s *Store) CheckSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("account-balance store 未初始化")
-	}
-	if s.mode == StoreSQLite {
-		return s.EnsureSchema(ctx)
 	}
 	s.schemaCheckMu.Lock()
 	defer s.schemaCheckMu.Unlock()
@@ -333,11 +277,9 @@ func checkBalancePGColumns(ctx context.Context, tx *sql.Tx) error {
 }
 
 // ensureRuntimeSchema is the production entrypoint. PostgreSQL is always
-// checked read-only; only isolated SQLite stores may initialize their schema.
+// checked read-only; DDL issuance stays with EnsureSchema (isolated tests and
+// the maintenance one-shot bootstrap).
 func (s *Store) ensureRuntimeSchema(ctx context.Context) error {
-	if s.mode == StoreSQLite {
-		return s.EnsureSchema(ctx)
-	}
 	s.schemaMu.Lock()
 	ready := s.schemaReady
 	s.schemaMu.Unlock()
@@ -380,28 +322,12 @@ func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	if s.mode == StorePostgres {
-		var token int64
-		err := s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
+	var token int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
 VALUES ('account-balance-owner',$1,1,$2,$3)
 ON CONFLICT (lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id, fence_token=juhe_jobs.account_balance_owner_leases.fence_token+1, lease_until=EXCLUDED.lease_until, updated_at=EXCLUDED.updated_at
 WHERE juhe_jobs.account_balance_owner_leases.lease_until <= $3
 RETURNING fence_token`, ownerID, now.Add(duration), now).Scan(&token)
-		if errors.Is(err, sql.ErrNoRows) {
-			return OwnerLease{}, false, nil
-		}
-		if err != nil {
-			return OwnerLease{}, false, err
-		}
-		return OwnerLease{OwnerID: ownerID, FenceToken: token}, true, nil
-	}
-	nowText := now.Format(time.RFC3339Nano)
-	var token int64
-	err := s.db.QueryRowContext(ctx, `INSERT INTO account_balance_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at)
-VALUES ('account-balance-owner',?,?,?,?)
-ON CONFLICT (lease_key) DO UPDATE SET owner_id=excluded.owner_id, fence_token=account_balance_owner_leases.fence_token+1, lease_until=excluded.lease_until, updated_at=excluded.updated_at
-WHERE account_balance_owner_leases.lease_until <= ?
-RETURNING fence_token`, ownerID, 1, now.Add(duration).Format(time.RFC3339Nano), nowText, nowText).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
@@ -418,14 +344,7 @@ func (s *Store) RenewOwnerLease(ctx context.Context, lease OwnerLease, duration 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	var result sql.Result
-	var err error
-	if s.mode == StorePostgres {
-		result, err = s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$2 WHERE lease_key='account-balance-owner' AND owner_id=$3 AND fence_token=$4 AND lease_until>$2`, now.Add(duration), now, lease.OwnerID, lease.FenceToken)
-	} else {
-		text := now.Format(time.RFC3339Nano)
-		result, err = s.db.ExecContext(ctx, `UPDATE account_balance_owner_leases SET lease_until=?,updated_at=? WHERE lease_key='account-balance-owner' AND owner_id=? AND fence_token=? AND lease_until>?`, now.Add(duration).Format(time.RFC3339Nano), text, lease.OwnerID, lease.FenceToken, text)
-	}
+	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$2 WHERE lease_key='account-balance-owner' AND owner_id=$3 AND fence_token=$4 AND lease_until>$2`, now.Add(duration), now, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return false, err
 	}
@@ -440,12 +359,7 @@ func (s *Store) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	if s.mode == StorePostgres {
-		_, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$1 WHERE lease_key='account-balance-owner' AND owner_id=$2 AND fence_token=$3`, now, lease.OwnerID, lease.FenceToken)
-		return err
-	}
-	text := now.Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `UPDATE account_balance_owner_leases SET lease_until=?,updated_at=? WHERE lease_key='account-balance-owner' AND owner_id=? AND fence_token=?`, text, text, lease.OwnerID, lease.FenceToken)
+	_, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$1 WHERE lease_key='account-balance-owner' AND owner_id=$2 AND fence_token=$3`, now, lease.OwnerID, lease.FenceToken)
 	return err
 }
 
@@ -460,13 +374,12 @@ func (s *Store) AcquireAccountLease(ctx context.Context, owner OwnerLease, accou
 		return AccountLease{}, false, err
 	}
 	defer tx.Rollback()
-	if err := verifyOwnerTx(ctx, tx, s.mode, owner, time.Now().UTC()); err != nil {
+	if err := verifyOwnerTx(ctx, tx, owner, time.Now().UTC()); err != nil {
 		return AccountLease{}, false, err
 	}
 	now := time.Now().UTC()
 	var token int64
-	if s.mode == StorePostgres {
-		err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_account_leases(account_id,owner_id,fence_token,lease_until,updated_at)
+	err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_account_leases(account_id,owner_id,fence_token,lease_until,updated_at)
 VALUES($1,$2,1,$3,$4)
 ON CONFLICT(account_id) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_jobs.account_balance_account_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=EXCLUDED.updated_at
 WHERE juhe_jobs.account_balance_account_leases.lease_until <= $4 OR NOT EXISTS (
@@ -476,19 +389,6 @@ WHERE juhe_jobs.account_balance_account_leases.lease_until <= $4 OR NOT EXISTS (
     AND owner_lease.lease_until>$4
 )
 RETURNING fence_token`, accountID, owner.OwnerID, now.Add(duration), now).Scan(&token)
-	} else {
-		text := now.Format(time.RFC3339Nano)
-		err = tx.QueryRowContext(ctx, `INSERT INTO account_balance_account_leases(account_id,owner_id,fence_token,lease_until,updated_at)
-VALUES(?,?,1,?,?)
-ON CONFLICT(account_id) DO UPDATE SET owner_id=excluded.owner_id,fence_token=account_balance_account_leases.fence_token+1,lease_until=excluded.lease_until,updated_at=excluded.updated_at
-WHERE account_balance_account_leases.lease_until <= ? OR NOT EXISTS (
-  SELECT 1 FROM account_balance_owner_leases owner_lease
-  WHERE owner_lease.lease_key='account-balance-owner'
-    AND owner_lease.owner_id=account_balance_account_leases.owner_id
-    AND owner_lease.lease_until>?
-)
-RETURNING fence_token`, accountID, owner.OwnerID, now.Add(duration).Format(time.RFC3339Nano), text, text, text).Scan(&token)
-	}
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = tx.Commit()
 		return AccountLease{}, false, ErrAccountLeaseHeld
@@ -509,22 +409,10 @@ func (s *Store) RenewAccountLease(ctx context.Context, owner OwnerLease, lease A
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	if s.mode == StorePostgres {
-		if err := verifyOwner(ctx, s.db, s.mode, owner, now); err != nil {
-			return false, err
-		}
-		result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_account_leases SET lease_until=$1,updated_at=$2 WHERE account_id=$3 AND owner_id=$4 AND fence_token=$5 AND lease_until>$2`, now.Add(duration), now, lease.AccountID, lease.OwnerID, lease.FenceToken)
-		if err != nil {
-			return false, err
-		}
-		count, err := result.RowsAffected()
-		return count == 1, err
-	}
-	text := now.Format(time.RFC3339Nano)
-	if err := verifyOwner(ctx, s.db, s.mode, owner, now); err != nil {
+	if err := verifyOwner(ctx, s.db, owner, now); err != nil {
 		return false, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE account_balance_account_leases SET lease_until=?,updated_at=? WHERE account_id=? AND owner_id=? AND fence_token=? AND lease_until>?`, now.Add(duration).Format(time.RFC3339Nano), text, lease.AccountID, lease.OwnerID, lease.FenceToken, text)
+	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_account_leases SET lease_until=$1,updated_at=$2 WHERE account_id=$3 AND owner_id=$4 AND fence_token=$5 AND lease_until>$2`, now.Add(duration), now, lease.AccountID, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return false, err
 	}
@@ -539,12 +427,7 @@ func (s *Store) ReleaseAccountLease(ctx context.Context, owner OwnerLease, lease
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	if s.mode == StorePostgres {
-		_, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_account_leases SET lease_until=$1,updated_at=$1 WHERE account_id=$2 AND owner_id=$3 AND fence_token=$4`, now, lease.AccountID, lease.OwnerID, lease.FenceToken)
-		return err
-	}
-	text := now.Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `UPDATE account_balance_account_leases SET lease_until=?,updated_at=? WHERE account_id=? AND owner_id=? AND fence_token=?`, text, text, lease.AccountID, lease.OwnerID, lease.FenceToken)
+	_, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_account_leases SET lease_until=$1,updated_at=$1 WHERE account_id=$2 AND owner_id=$3 AND fence_token=$4`, now, lease.AccountID, lease.OwnerID, lease.FenceToken)
 	return err
 }
 
@@ -555,12 +438,8 @@ func (s *Store) LoadSnapshot(ctx context.Context, accountID string) (SnapshotRec
 	var inputVersion, configRevision int64
 	var trigger string
 	var snapshotRaw, nextRefreshRaw, updatedRaw any
-	query := `SELECT account_id,input_version,config_revision,trigger,snapshot_json,next_refresh_at,updated_at FROM account_balance_snapshots WHERE account_id=?`
-	args := []any{accountID}
-	if s.mode == StorePostgres {
-		query = `SELECT account_id,input_version,config_revision,trigger,snapshot_json,next_refresh_at,updated_at FROM juhe_jobs.account_balance_snapshots WHERE account_id=$1`
-	}
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&accountID, &inputVersion, &configRevision, &trigger, &snapshotRaw, &nextRefreshRaw, &updatedRaw)
+	query := `SELECT account_id,input_version,config_revision,trigger,snapshot_json,next_refresh_at,updated_at FROM juhe_jobs.account_balance_snapshots WHERE account_id=$1`
+	err := s.db.QueryRowContext(ctx, query, accountID).Scan(&accountID, &inputVersion, &configRevision, &trigger, &snapshotRaw, &nextRefreshRaw, &updatedRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SnapshotRecord{}, false, nil
 	}
@@ -589,12 +468,8 @@ func (s *Store) LoadOutcome(ctx context.Context, outcomeID string) (Outcome, boo
 	if strings.TrimSpace(outcomeID) == "" {
 		return Outcome{}, false, errors.New("account-balance outcome ID 不能为空")
 	}
-	query := `SELECT payload FROM account_balance_outcomes WHERE outcome_id=?`
-	if s.mode == StorePostgres {
-		query = `SELECT payload FROM juhe_jobs.account_balance_outcomes WHERE outcome_id=$1`
-	}
 	var raw any
-	if err := s.db.QueryRowContext(ctx, query, outcomeID).Scan(&raw); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT payload FROM juhe_jobs.account_balance_outcomes WHERE outcome_id=$1`, outcomeID).Scan(&raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Outcome{}, false, nil
 		}
@@ -637,10 +512,10 @@ func (s *Store) WriteSnapshotCAS(ctx context.Context, owner OwnerLease, account 
 		return false, err
 	}
 	defer tx.Rollback()
-	if err := verifyLeasesTx(ctx, tx, s.mode, owner, account, time.Now().UTC()); err != nil {
+	if err := verifyLeasesTx(ctx, tx, owner, account, time.Now().UTC()); err != nil {
 		return false, err
 	}
-	accepted, err := writeSnapshotTx(ctx, tx, s.mode, mutation.Input.AccountID, mutation.Input.InputVersion, mutation.Input.ConfigRevision, mutation.Input.Trigger, mutation.Snapshot, mutation.NextRefreshAt, mutation.ExpectedInput, mutation.ExpectedConfig, mutation.Input.NextRefreshAt)
+	accepted, err := writeSnapshotTx(ctx, tx, mutation.Input.AccountID, mutation.Input.InputVersion, mutation.Input.ConfigRevision, mutation.Input.Trigger, mutation.Snapshot, mutation.NextRefreshAt, mutation.ExpectedInput, mutation.ExpectedConfig, mutation.Input.NextRefreshAt)
 	if err != nil {
 		return false, err
 	}
@@ -674,15 +549,15 @@ func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, account Acc
 		return false, err
 	}
 	defer tx.Rollback()
-	if err := verifyLeasesTx(ctx, tx, s.mode, owner, account, time.Now().UTC()); err != nil {
+	if err := verifyLeasesTx(ctx, tx, owner, account, time.Now().UTC()); err != nil {
 		return false, err
 	}
-	inserted, err := insertBalanceOutcome(ctx, tx, s.mode, outcome, string(payload))
+	inserted, err := insertBalanceOutcome(ctx, tx, outcome, string(payload))
 	if err != nil {
 		return false, err
 	}
 	if !inserted {
-		matches, committed, matchErr := existingOutcomeMatchesTx(ctx, tx, s.mode, outcome)
+		matches, committed, matchErr := existingOutcomeMatchesTx(ctx, tx, outcome)
 		if matchErr != nil {
 			return false, matchErr
 		}
@@ -694,12 +569,12 @@ func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, account Acc
 		}
 		return false, nil
 	}
-	accepted, err := writeSnapshotTx(ctx, tx, s.mode, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.Trigger, outcome.Snapshot, outcome.NextRefreshAt, outcome.ExpectedSnapshotInput, outcome.ExpectedSnapshotConfig, outcome.ExpectedSnapshotNextRefreshAt)
+	accepted, err := writeSnapshotTx(ctx, tx, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.Trigger, outcome.Snapshot, outcome.NextRefreshAt, outcome.ExpectedSnapshotInput, outcome.ExpectedSnapshotConfig, outcome.ExpectedSnapshotNextRefreshAt)
 	if err != nil {
 		return false, err
 	}
 	if accepted {
-		if err := markOutcomeCommittedTx(ctx, tx, s.mode, outcome.OutcomeID); err != nil {
+		if err := markOutcomeCommittedTx(ctx, tx, outcome.OutcomeID); err != nil {
 			return false, err
 		}
 	}
@@ -716,15 +591,11 @@ func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, account Acc
 // row, not the mutable current snapshot. A later successful refresh may move
 // next_refresh_at, but it must not turn a retry of an already-committed manual
 // request into a false stale conflict.
-func existingOutcomeMatchesTx(ctx context.Context, tx *sql.Tx, mode StoreMode, outcome Outcome) (bool, bool, error) {
-	query := `SELECT outcome_id,account_id,input_version,config_revision,trigger,committed FROM account_balance_outcomes WHERE request_id=?`
-	if mode == StorePostgres {
-		query = `SELECT outcome_id,account_id,input_version,config_revision,trigger,committed FROM juhe_jobs.account_balance_outcomes WHERE request_id=$1 FOR UPDATE`
-	}
+func existingOutcomeMatchesTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, bool, error) {
 	var outcomeID, accountID, trigger string
 	var inputVersion, configRevision int64
 	var committedRaw any
-	if err := tx.QueryRowContext(ctx, query, outcome.RequestID).Scan(&outcomeID, &accountID, &inputVersion, &configRevision, &trigger, &committedRaw); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT outcome_id,account_id,input_version,config_revision,trigger,committed FROM juhe_jobs.account_balance_outcomes WHERE request_id=$1 FOR UPDATE`, outcome.RequestID).Scan(&outcomeID, &accountID, &inputVersion, &configRevision, &trigger, &committedRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, false, nil
 		}
@@ -737,12 +608,8 @@ func existingOutcomeMatchesTx(ctx context.Context, tx *sql.Tx, mode StoreMode, o
 	return outcomeID == outcome.OutcomeID && accountID == outcome.AccountID && inputVersion == outcome.InputVersion && configRevision == outcome.ConfigRevision && trigger == string(outcome.Trigger), committed, nil
 }
 
-func markOutcomeCommittedTx(ctx context.Context, tx *sql.Tx, mode StoreMode, outcomeID string) error {
-	query := `UPDATE account_balance_outcomes SET committed=1 WHERE outcome_id=?`
-	if mode == StorePostgres {
-		query = `UPDATE juhe_jobs.account_balance_outcomes SET committed=TRUE WHERE outcome_id=$1`
-	}
-	result, err := tx.ExecContext(ctx, query, outcomeID)
+func markOutcomeCommittedTx(ctx context.Context, tx *sql.Tx, outcomeID string) error {
+	result, err := tx.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_outcomes SET committed=TRUE WHERE outcome_id=$1`, outcomeID)
 	if err != nil {
 		return err
 	}
@@ -761,15 +628,11 @@ func (s *Store) CASOutcome(ctx context.Context, owner OwnerLease, account Accoun
 	return s.AppendOutcome(ctx, owner, account, outcome)
 }
 
-func writeSnapshotTx(ctx context.Context, tx *sql.Tx, mode StoreMode, accountID string, inputVersion, configRevision int64, trigger Trigger, snapshot Snapshot, nextRefresh *time.Time, expectedInput, expectedConfig int64, expectedNextRefresh *time.Time) (bool, error) {
+func writeSnapshotTx(ctx context.Context, tx *sql.Tx, accountID string, inputVersion, configRevision int64, trigger Trigger, snapshot Snapshot, nextRefresh *time.Time, expectedInput, expectedConfig int64, expectedNextRefresh *time.Time) (bool, error) {
 	var currentInput, currentConfig int64
 	var currentNext any
 	var exists bool
-	selectSQL := `SELECT input_version,config_revision,next_refresh_at FROM account_balance_snapshots WHERE account_id=?`
-	if mode == StorePostgres {
-		selectSQL = `SELECT input_version,config_revision,next_refresh_at FROM juhe_jobs.account_balance_snapshots WHERE account_id=$1 FOR UPDATE`
-	}
-	err := tx.QueryRowContext(ctx, selectSQL, accountID).Scan(&currentInput, &currentConfig, &currentNext)
+	err := tx.QueryRowContext(ctx, `SELECT input_version,config_revision,next_refresh_at FROM juhe_jobs.account_balance_snapshots WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&currentInput, &currentConfig, &currentNext)
 	if errors.Is(err, sql.ErrNoRows) {
 		exists = false
 	} else if err != nil {
@@ -801,15 +664,9 @@ func writeSnapshotTx(ctx context.Context, tx *sql.Tx, mode StoreMode, accountID 
 		next = nextRefresh.UTC().Format(time.RFC3339Nano)
 	}
 	if !exists {
-		if mode == StorePostgres {
-			_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_balance_snapshots(account_id,input_version,config_revision,trigger,snapshot_json,next_refresh_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, accountID, inputVersion, configRevision, string(trigger), string(encoded), nilIfEmpty(next), updated)
-		} else {
-			_, err = tx.ExecContext(ctx, `INSERT INTO account_balance_snapshots(account_id,input_version,config_revision,trigger,snapshot_json,next_refresh_at,updated_at) VALUES(?,?,?,?,?,?,?)`, accountID, inputVersion, configRevision, string(trigger), string(encoded), nilIfEmpty(next), updated)
-		}
-	} else if mode == StorePostgres {
-		_, err = tx.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_snapshots SET input_version=$1,config_revision=$2,trigger=$3,snapshot_json=$4,next_refresh_at=$5,updated_at=$6 WHERE account_id=$7`, inputVersion, configRevision, string(trigger), string(encoded), nilIfEmpty(next), updated, accountID)
+		_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_balance_snapshots(account_id,input_version,config_revision,trigger,snapshot_json,next_refresh_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, accountID, inputVersion, configRevision, string(trigger), string(encoded), nilIfEmpty(next), updated)
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE account_balance_snapshots SET input_version=?,config_revision=?,trigger=?,snapshot_json=?,next_refresh_at=?,updated_at=? WHERE account_id=?`, inputVersion, configRevision, string(trigger), string(encoded), nilIfEmpty(next), updated, accountID)
+		_, err = tx.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_snapshots SET input_version=$1,config_revision=$2,trigger=$3,snapshot_json=$4,next_refresh_at=$5,updated_at=$6 WHERE account_id=$7`, inputVersion, configRevision, string(trigger), string(encoded), nilIfEmpty(next), updated, accountID)
 	}
 	if err != nil {
 		return false, err
@@ -817,32 +674,20 @@ func writeSnapshotTx(ctx context.Context, tx *sql.Tx, mode StoreMode, accountID 
 	return true, nil
 }
 
-func insertBalanceOutcome(ctx context.Context, tx *sql.Tx, mode StoreMode, outcome Outcome, payload string) (bool, error) {
-	if mode == StorePostgres {
-		var id string
-		err := tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_outcomes(outcome_id,request_id,account_id,input_version,config_revision,trigger,observed_at,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, string(outcome.Trigger), outcome.ObservedAt.UTC(), payload).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return err == nil, err
-	}
+func insertBalanceOutcome(ctx context.Context, tx *sql.Tx, outcome Outcome, payload string) (bool, error) {
 	var id string
-	err := tx.QueryRowContext(ctx, `INSERT INTO account_balance_outcomes(outcome_id,request_id,account_id,input_version,config_revision,trigger,observed_at,payload) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, string(outcome.Trigger), outcome.ObservedAt.UTC().Format(time.RFC3339Nano), payload).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_outcomes(outcome_id,request_id,account_id,input_version,config_revision,trigger,observed_at,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, string(outcome.Trigger), outcome.ObservedAt.UTC(), payload).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-func verifyOwnerTx(ctx context.Context, tx *sql.Tx, mode StoreMode, lease OwnerLease, now time.Time) error {
+func verifyOwnerTx(ctx context.Context, tx *sql.Tx, lease OwnerLease, now time.Time) error {
 	var owner string
 	var token int64
 	var until any
-	query := `SELECT owner_id,fence_token,lease_until FROM account_balance_owner_leases WHERE lease_key=?`
-	if mode == StorePostgres {
-		query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1 FOR UPDATE`
-	}
-	if err := tx.QueryRowContext(ctx, query, "account-balance-owner").Scan(&owner, &token, &until); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1 FOR UPDATE`, "account-balance-owner").Scan(&owner, &token, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOwnerLeaseLost
 		}
@@ -855,18 +700,14 @@ func verifyOwnerTx(ctx context.Context, tx *sql.Tx, mode StoreMode, lease OwnerL
 	return nil
 }
 
-func verifyLeasesTx(ctx context.Context, tx *sql.Tx, mode StoreMode, owner OwnerLease, account AccountLease, now time.Time) error {
-	if err := verifyOwnerTx(ctx, tx, mode, owner, now); err != nil {
+func verifyLeasesTx(ctx context.Context, tx *sql.Tx, owner OwnerLease, account AccountLease, now time.Time) error {
+	if err := verifyOwnerTx(ctx, tx, owner, now); err != nil {
 		return err
 	}
 	var ownerID string
 	var token int64
 	var until any
-	query := `SELECT owner_id,fence_token,lease_until FROM account_balance_account_leases WHERE account_id=?`
-	if mode == StorePostgres {
-		query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_account_leases WHERE account_id=$1 FOR UPDATE`
-	}
-	if err := tx.QueryRowContext(ctx, query, account.AccountID).Scan(&ownerID, &token, &until); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_account_leases WHERE account_id=$1 FOR UPDATE`, account.AccountID).Scan(&ownerID, &token, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrAccountLeaseLost
 		}
@@ -879,16 +720,11 @@ func verifyLeasesTx(ctx context.Context, tx *sql.Tx, mode StoreMode, owner Owner
 	return nil
 }
 
-func verifyOwner(ctx context.Context, db *sql.DB, mode StoreMode, lease OwnerLease, now time.Time) error {
-	query := `SELECT owner_id,fence_token,lease_until FROM account_balance_owner_leases WHERE lease_key=?`
-	arg := any("account-balance-owner")
-	if mode == StorePostgres {
-		query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1`
-	}
+func verifyOwner(ctx context.Context, db *sql.DB, lease OwnerLease, now time.Time) error {
 	var owner string
 	var token int64
 	var until any
-	if err := db.QueryRowContext(ctx, query, arg).Scan(&owner, &token, &until); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1`, "account-balance-owner").Scan(&owner, &token, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOwnerLeaseLost
 		}
@@ -902,35 +738,15 @@ func verifyOwner(ctx context.Context, db *sql.DB, mode StoreMode, lease OwnerLea
 }
 
 func balanceSQLTime(value any) (time.Time, error) {
-	switch parsed := value.(type) {
-	case time.Time:
+	if parsed, ok := value.(time.Time); ok {
 		return parsed.UTC(), nil
-	case string:
-		return time.Parse(time.RFC3339Nano, parsed)
-	case []byte:
-		return time.Parse(time.RFC3339Nano, string(parsed))
-	default:
-		return time.Time{}, errors.New("未知 SQL 时间类型")
 	}
+	return time.Time{}, errors.New("未知 SQL 时间类型")
 }
 
 func balanceSQLBool(value any) (bool, error) {
-	switch parsed := value.(type) {
-	case bool:
+	if parsed, ok := value.(bool); ok {
 		return parsed, nil
-	case int64:
-		return parsed == 1, nil
-	case int:
-		return parsed == 1, nil
-	case []byte:
-		return balanceSQLBool(string(parsed))
-	case string:
-		if parsed == "1" || strings.EqualFold(parsed, "true") {
-			return true, nil
-		}
-		if parsed == "0" || strings.EqualFold(parsed, "false") {
-			return false, nil
-		}
 	}
 	return false, errors.New("未知 SQL 布尔类型")
 }
@@ -963,37 +779,6 @@ func nilIfEmpty(value string) any {
 	}
 	return value
 }
-
-func balanceSQLiteDSN(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("解析 account-balance sqlite 路径失败: %w", err)
-	}
-	uriPath := filepath.ToSlash(absolute)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	// Every database/sql transaction starts with SQLite BEGIN IMMEDIATE.  The
-	// owner/account fence is therefore serialized across processes before the
-	// lease row is verified, not merely protected by this process's writeMu.
-	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_txlock=immediate&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"}).String(), nil
-}
-
-const balanceSQLiteSchema = `
-CREATE TABLE IF NOT EXISTS account_balance_owner_leases (
- lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, lease_until TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS account_balance_account_leases (
- account_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, lease_until TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS account_balance_snapshots (
- account_id TEXT PRIMARY KEY, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, trigger TEXT NOT NULL, snapshot_json TEXT NOT NULL, next_refresh_at TEXT, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS account_balance_outcomes (
- outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, account_id TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, trigger TEXT NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_account_balance_outcomes_account ON account_balance_outcomes(account_id, observed_at);
-`
 
 const balancePostgresSchema = `
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_balance_owner_leases (

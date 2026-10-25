@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1002,9 +1001,8 @@ func TestW12HResolveTimezoneArms(t *testing.T) {
 // store 校验与错误传播
 
 func TestW12HOpenStatsStoreValidation(t *testing.T) {
-	if _, err := OpenStatsStore(StatsStoreConfig{Mode: StatsSQLite}); err == nil || !strings.Contains(err.Error(), "缺少数据库路径") {
-		t.Fatalf("sqlite 缺路径必须报错: %v", err)
-	}
+	// 2026-10-25 sqlite 臂退役：原 StatsSQLite 缺路径臂与 sqlite 假句柄臂
+	// 随生产臂删除；PG 模式注入句柄校验保留（惰性 pgx 句柄不建真连接）。
 	if _, err := OpenStatsStore(StatsStoreConfig{Mode: StatsPostgres}); err == nil || !strings.Contains(err.Error(), "缺少注入") {
 		t.Fatalf("postgres 缺句柄必须报错: %v", err)
 	}
@@ -1012,8 +1010,7 @@ func TestW12HOpenStatsStoreValidation(t *testing.T) {
 		t.Fatalf("未知模式必须报错: %v", err)
 	}
 	// PG 模式用注入句柄：Close 不关闭注入句柄。
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "injected.db"))
+	db, err := sql.Open("pgx", "postgres://w12h-invalid-host/invalid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1021,8 +1018,6 @@ func TestW12HOpenStatsStoreValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// PG 冻结 DDL 引用 juhe_stats schema，sqlite 句柄上不可执行；只验证
-	// OpenStatsStore 的 PG 分支与 Close 无操作。
 	if err := injected.Close(); err != nil {
 		t.Fatalf("PG 模式 Close 必须无操作: %v", err)
 	}

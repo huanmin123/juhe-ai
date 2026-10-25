@@ -508,7 +508,7 @@ func TestW7CCandidateToInputArms(t *testing.T) {
 }
 
 func TestW7CInputValidateArms(t *testing.T) {
-	input := w7cValidBalanceInput("w7c-validate")
+	input := kitValidBalanceInput("w7c-validate")
 	input.Trigger = TriggerManual
 	if err := input.Validate(time.Time{}); err != nil {
 		t.Fatalf("zero now defaults: %v", err)

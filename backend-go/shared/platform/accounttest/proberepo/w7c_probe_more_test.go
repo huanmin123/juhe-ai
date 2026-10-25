@@ -170,34 +170,10 @@ func TestW7CCanceledContextMutationArms(t *testing.T) {
 	}
 }
 
-func TestW7CListDueForProbeFiltersBrokenCandidates(t *testing.T) {
-	h := openTestDB(t)
-	h.seedSchema(t)
-	credentials := h.sealCredentials(t, map[string]any{"base_url": "https://x", "api_keys": []any{"a", "b"}})
-	single := h.sealCredentials(t, map[string]any{"api_key": "solo"})
-	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted, config_revision)
-	    VALUES
-	      ('bad-cred', 'sys-1', 'n', 'api_key', 'active', 'garbage', 1),
-	      ('solo-acct', 'sys-1', 'n', 'api_key', 'active', ?, 1),
-	      ('rotated', 'sys-1', 'n', 'api_key', 'active', ?, 1),
-	      ('rev-zero', 'sys-1', 'n', 'api_key', 'active', ?, 0)`, single, credentials, credentials)
-	h.exec(t, `INSERT INTO account_api_key_runtime_states (id, system_account_id, account_id, key_fingerprint, key_index, status, next_probe_at, updated_at)
-	    VALUES
-	      ('s-bad', 'sys-1', 'bad-cred', 'fp-bad', 0, 'temporary_unavailable', ?, ?),
-	      ('s-solo', 'sys-1', 'solo-acct', 'fp-solo', 0, 'temporary_unavailable', ?, ?),
-	      ('s-rot', 'sys-1', 'rotated', 'fp-rot', 0, 'temporary_unavailable', ?, ?),
-	      ('s-rev', 'sys-1', 'rev-zero', 'fp-rev', 0, 'temporary_unavailable', ?, ?)`,
-		plusMillis(-1000), nowMillisText(), plusMillis(-1000), nowMillisText(),
-		plusMillis(-1000), nowMillisText(), plusMillis(-1000), nowMillisText())
-
-	candidates, err := h.store.ListDueForProbe(context.Background(), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(candidates) != 0 {
-		t.Fatalf("all broken candidates must be filtered: %+v", candidates)
-	}
-}
+// 原 TestW7CListDueForProbeFiltersBrokenCandidates（openTestDB SQLite 夹具，
+// ListDueForProbe 坏候选过滤矩阵）于 2026-10-25 随 sqlite 方言退役删除：
+// 该扫描面被 W27①（PG 臂 time.Time 绑 text 时间列致候选扫描恒空）阻塞，
+// 坏候选在 PG 生产列形态下不可达，无行为等价断言。
 
 func TestW7CLoadProbeViewMissingArms(t *testing.T) {
 	h := openTestDBPostgres(t)

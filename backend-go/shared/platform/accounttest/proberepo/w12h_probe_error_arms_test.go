@@ -199,15 +199,7 @@ func TestW12HMutationHelperArms(t *testing.T) {
 	}
 }
 
-func TestW12HNewStoreValidationAndListDueClamp(t *testing.T) {
-	if _, err := NewStore(Config{}); err == nil {
-		t.Fatal("nil DB 必须报错")
-	}
-	h := openTestDB(t)
-	h.seedSchema(t)
-	ctx := context.Background()
-	// limit<1 钳制为 1（不报错）。
-	if _, err := h.store.ListDueForProbe(ctx, 0); err != nil {
-		t.Fatalf("limit 钳制不应报错: %v", err)
-	}
-}
+// 原 TestW12HNewStoreValidationAndListDueClamp（openTestDB SQLite 夹具）于
+// 2026-10-25 随 sqlite 方言退役删除：ListDueForProbe limit<1 钳制被 W27①
+// 阻塞无等价 PG 断言；NewStore nil-DB 校验臂由 TestW7CSchemaAndStoreGuards
+// 的 PG 直调段覆盖。

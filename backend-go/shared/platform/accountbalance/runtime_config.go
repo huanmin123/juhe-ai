@@ -81,9 +81,9 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		mode = StorePostgres
 	}
 	if mode != StorePostgres {
-		return RuntimeConfig{}, errors.New("J2 Go owner 只允许 JUHE_AI_ACCOUNT_BALANCE_STORE=postgres；SQLite outcome 不能由 Node projector 接管")
+		return RuntimeConfig{}, errors.New("J2 Go owner 只允许 JUHE_AI_ACCOUNT_BALANCE_STORE=postgres")
 	}
-	cfg.Store = StoreConfig{Mode: mode, DatabasePath: strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH")), PostgresURL: storeURL}
+	cfg.Store = StoreConfig{Mode: mode, PostgresURL: storeURL}
 	if cfg.Store.PostgresURL == "" {
 		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
 	}

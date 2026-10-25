@@ -840,7 +840,8 @@ func TestW7CBalancePostgresLeaseContextArms(t *testing.T) {
 	defer store.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
 	defer cancel()
-	if _, _, err := store.AcquireOwnerLease(ctx, w7cOwnerID, time.Minute); err != nil {
+	ownerLease, _, err := store.AcquireOwnerLease(ctx, w7cOwnerID, time.Minute)
+	if err != nil {
 		t.Fatalf("warm owner lease: %v", err)
 	}
 
@@ -853,35 +854,16 @@ func TestW7CBalancePostgresLeaseContextArms(t *testing.T) {
 		t.Fatal("canceled renew must fail")
 	}
 
-	// existingOutcomeMatchesTx committed decode arm: SQLite's dynamic typing
-	// allows storing an undecodable committed value in the INTEGER column.
-	sqlite := w7cNewSQLiteStore(t)
-	sqliteOwner := w7cOwner(t, sqlite, "w7c-committed-owner")
-	sqliteAccount := w7cAccount(t, sqlite, sqliteOwner, "w7c-committed-acct")
-	if _, err := sqlite.AppendOutcome(context.Background(), sqliteOwner, sqliteAccount, Outcome{
-		OutcomeID: "w7c-committed-1", RequestID: "w7c-committed-req", AccountID: sqliteAccount.AccountID,
-		InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sqlite.db.Exec(`UPDATE account_balance_outcomes SET committed='weird' WHERE request_id='w7c-committed-req'`); err != nil {
-		t.Fatal(err)
-	}
-	conflict := Outcome{
-		OutcomeID: "w7c-committed-2", RequestID: "w7c-committed-req", AccountID: sqliteAccount.AccountID,
-		InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: time.Now().UTC(),
-	}
-	if _, err := sqlite.AppendOutcome(context.Background(), sqliteOwner, sqliteAccount, conflict); err == nil || !strings.Contains(err.Error(), "未知 SQL 布尔类型") {
-		t.Fatalf("undecodable committed value: %v", err)
-	}
-
 	// Runner.Run dispatches first_probe through the common entry too. The
-	// active owner lease from the outcome section must be released first:
-	// acquiring never re-grants a live lease, not even to the same owner.
-	if err := sqlite.ReleaseOwnerLease(context.Background(), sqliteOwner); err != nil {
+	// active owner lease from the warm-up must be released first: acquiring
+	// never re-grants a live lease, not even to the same owner.
+	// （2026-10-25 sqlite 臂退役：committed 列坏类型解码臂为 SQLite 动态类型
+	// 专属语义，无 PG 等价断言（D9 裁决）随生产臂删除；first-probe 派发断言
+	// 与生产行为无关，改挂本测试既有的 PG cover store，断言逐字节保持。）
+	if err := store.ReleaseOwnerLease(ctx, ownerLease); err != nil {
 		t.Fatal(err)
 	}
-	runner := w7cNewRunner(t, sqlite, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, func(c *RunnerConfig) {
+	runner := w7cNewRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, func(c *RunnerConfig) {
 		c.OwnerID = "w7c-committed-owner"
 	})
 	credential, err := NewCredentialEnvelope(w7cBalanceSecret, "api_key", map[string]string{"api_key": "sk-w7c"})
@@ -907,6 +889,9 @@ func TestW7CBalancePostgresLeaseContextArms(t *testing.T) {
 
 func TestW7CBalanceRemainingErrorArms(t *testing.T) {
 	// CheckContract on a database without the business relations.
+	// （2026-10-25 sqlite 臂退役：非文本 payload 解码、垃圾时间戳租约、
+	// RAISE(IGNORE) 触发器三类注入臂为 SQLite 动态类型/触发器专属语义，
+	// 无 PG 等价断言（D9 裁决），随生产臂删除。）
 	freshURL := w7cCreateNegativeDatabase(t)
 	negDB, err := sql.Open("pgx", freshURL)
 	if err != nil {
@@ -927,53 +912,6 @@ func TestW7CBalanceRemainingErrorArms(t *testing.T) {
 	if err := reader.CheckContract(canceled); err == nil {
 		t.Fatal("canceled contract check must fail")
 	}
-
-	// A non-text payload decodes through the JSON fallback and then fails the
-	// identity check.
-	sqlite := w7cNewSQLiteStore(t)
-	owner := w7cOwner(t, sqlite, "w7c-arm-owner")
-	account := w7cAccount(t, sqlite, owner, "w7c-arm-acct")
-	if _, err := sqlite.AppendOutcome(context.Background(), owner, account, Outcome{
-		OutcomeID: "w7c-arm-outcome", RequestID: "w7c-arm-request", AccountID: account.AccountID,
-		InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sqlite.db.Exec(`UPDATE account_balance_outcomes SET payload=12345 WHERE outcome_id='w7c-arm-outcome'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := sqlite.LoadOutcome(context.Background(), "w7c-arm-outcome"); err == nil {
-		t.Fatal("non-text payload must fail the identity check")
-	}
-
-	// A garbage owner lease timestamp fails the owner verification.
-	if _, err := sqlite.db.Exec(`UPDATE account_balance_owner_leases SET lease_until='garbage'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := sqlite.AcquireAccountLease(context.Background(), owner, "w7c-arm-acct-2", time.Minute); !errors.Is(err, ErrOwnerLeaseLost) {
-		t.Fatalf("garbage lease timestamp must lose the owner: %v", err)
-	}
-
-	// Restore a parseable, live owner lease before the next section.
-	if _, err := sqlite.db.Exec(`UPDATE account_balance_owner_leases SET lease_until=? WHERE lease_key='account-balance-owner'`,
-		time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
-	}
-
-	// A trigger that silently ignores the committed flag surfaces the
-	// missing-marker error after a successful snapshot write.
-	if _, err := sqlite.db.Exec(`CREATE TRIGGER w7c_ignore_committed BEFORE UPDATE ON account_balance_outcomes WHEN new.committed=1 BEGIN SELECT RAISE(IGNORE); END`); err != nil {
-		t.Fatal(err)
-	}
-	account2 := w7cAccount(t, sqlite, owner, "w7c-arm-acct-3")
-	if _, err := sqlite.AppendOutcome(context.Background(), owner, account2, Outcome{
-		OutcomeID: "w7c-arm-outcome-3", RequestID: "w7c-arm-request-3", AccountID: account2.AccountID,
-		InputVersion: 9, ConfigRevision: 9, Trigger: TriggerPeriodic, ObservedAt: time.Now().UTC(),
-		Snapshot: Snapshot{Status: StatusFresh},
-	}); err == nil || !strings.Contains(err.Error(), "committed 标记缺失") {
-		t.Fatalf("ignored committed marker: %v", err)
-	}
-	sqlite.db.Exec(`DROP TRIGGER w7c_ignore_committed`)
 }
 
 func TestW7CServiceRunReturnsOnLateCancel(t *testing.T) {

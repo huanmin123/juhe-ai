@@ -32,7 +32,7 @@ func TestW7CSmallDirectArms(t *testing.T) {
 	if _, err := NewService(RuntimeConfig{
 		Enabled: true, OwnerID: "w7c", CredentialSecret: "s",
 		Store: StoreConfig{Mode: StoreMode("weird")},
-	}, nil); err == nil || !strings.Contains(err.Error(), "sqlite 或 postgres") {
+	}, nil); err == nil || !strings.Contains(err.Error(), "必须为 postgres") {
 		t.Fatalf("service store mode: %v", err)
 	}
 }

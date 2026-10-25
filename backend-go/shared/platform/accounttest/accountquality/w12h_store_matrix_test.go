@@ -3,8 +3,10 @@ package accountquality
 // w12h 补充 arms（二）：冷却决策解析助手、额度判定剩余臂、停机排空超时、
 // 统计存储坏表矩阵的错误传播。
 // 坏表矩阵与错误臂走 pgkit_test.go 的 newQualityStorePostgres（StatsPostgres
-// 生产臂）；依赖 SQLite Close 关闭语义与 PRAGMA 路径校验的臂保留在
-// TestW12HStoreSQLiteArmValidation（组B，见 pgkit_test.go 三组分类）。
+// 生产臂）。原 TestW12HStoreSQLiteArmValidation（SQLite Close 关闭语义）与
+// TestW12HStoreSQLitePathValidationArm（DatabasePath 目录 PRAGMA 校验）为
+// 组B（StatsSQLite 生产臂专属语义，无 PG 等价断言），2026-10-25 随生产臂
+// 物理删除退役。
 
 import (
 	"context"
@@ -251,30 +253,6 @@ func TestW12HStoreBrokenTableMatrix(t *testing.T) {
 	})
 }
 
-// TestW12HStoreSQLiteArmValidation 是组B（StatsSQLite 生产臂专属语义）：
-// 关闭句柄后入口失败（PG 模式 Close 对注入句柄无操作，该臂仅 SQLite 成立）
-// 与 DatabasePath 是目录的 PRAGMA 校验。随 B3/B6 生产 sqlite 臂删除同批退役。
-func TestW12HStoreSQLiteArmValidation(t *testing.T) {
-	t.Run("关闭句柄后入口失败", func(t *testing.T) {
-		store, _, _ := newQualityStore(t)
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.RefreshFromUsage(context.Background(), RefreshInput{WindowMinutes: 10, Timezone: "UTC"}); err == nil {
-			t.Fatal("关闭后刷新必须失败")
-		}
-		if _, err := store.LoadQualityRow(context.Background(), "acc-1"); err == nil {
-			t.Fatal("关闭后读取必须失败")
-		}
-		if _, err := store.ListFailurePrecheckCandidates(context.Background(), 10, 0); err == nil {
-			t.Fatal("关闭后候选读取必须失败")
-		}
-		if err := store.MarkQualityDirty(context.Background(), "acc-1"); err == nil {
-			t.Fatal("关闭后标脏必须失败")
-		}
-	})
-}
-
 type w12hFailingLookup struct{}
 
 func (w12hFailingLookup) LoadAccountMetadataByIds(ctx context.Context, ids []string) (map[string]AccountMetadata, error) {
@@ -303,14 +281,6 @@ func TestW12HStoreMoreErrorArms(t *testing.T) {
 	// findFirstField 非对象输入。
 	if got := findFirstField(42, []string{"reset_at"}); got != nil {
 		t.Fatalf("非对象必须为 nil: %v", got)
-	}
-}
-
-// DatabasePath 是目录 → PRAGMA 失败（组B：StatsSQLite 生产臂构造校验）。
-func TestW12HStoreSQLitePathValidationArm(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := OpenStatsStore(StatsStoreConfig{Mode: StatsSQLite, DatabasePath: dir}); err == nil {
-		t.Fatal("目录路径必须导致 PRAGMA 失败")
 	}
 }
 

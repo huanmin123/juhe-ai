@@ -3,13 +3,13 @@
 package accountbalance
 
 // w7c gated runner/scan/service-loop arms: malformed proxy and schedule rows,
-// the release-failure surfacing path, and the Service.Run loop recovering
-// readiness after a cycle error.
+// and the Service.Run loop recovering readiness after a cycle error.
+// （2026-10-25 sqlite 臂退役：release 失败经 RAISE ABORT 触发器注入的失败面
+// 随 SQLite 生产臂删除，无 PG 等价断言——D9 裁决。）
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 )
@@ -52,27 +52,6 @@ func TestW7CRunnerReleaseAndScanArms(t *testing.T) {
 	// other malformed row must be skipped.
 	if len(due) != 1 || len(due) == 1 && due[0].AccountID != "w7c-acct-wrongpass" {
 		t.Fatalf("only the tolerated candidate may survive, got %v", w7cIDsOf(due))
-	}
-
-	// A trigger that aborts account-lease updates makes the post-persist
-	// release fail, which the DB worker must surface as an error.
-	sqlite := w7cNewSQLiteStore(t)
-	if _, err := sqlite.db.Exec(`CREATE TRIGGER w7c_abort_release BEFORE UPDATE ON account_balance_account_leases BEGIN SELECT RAISE(ABORT, 'w7c release aborted'); END`); err != nil {
-		t.Fatal(err)
-	}
-	runner := w7cNewRunner(t, sqlite, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, nil)
-	input := w7cValidBalanceInput("w7c-release-acct")
-	input.Trigger = TriggerManual
-	now := time.Now().UTC()
-	input.IssuedAt = now
-	input.ExpiresAt = now.Add(time.Minute)
-	input.NextRefreshAt = &now
-	report, err := runner.RunManual(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Executed != 1 || len(report.Errors) != 1 || !strings.Contains(report.Errors[input.AccountID].Error(), "w7c release aborted") {
-		t.Fatalf("release failure must surface: %#v", report)
 	}
 }
 

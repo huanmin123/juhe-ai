@@ -5,18 +5,19 @@ import (
 	"testing"
 )
 
-// TestW9ABusinessSQLiteSchemaContract freezes structural invariants of the
-// Business SQLite schema contract: every table is populated, key and index
-// references stay inside declared columns/tables and foreign keys point at
-// existing tables.
-func TestW9ABusinessSQLiteSchemaContract(t *testing.T) {
-	if BusinessSQLiteSchemaVersion == "" {
-		t.Fatal("BusinessSQLiteSchemaVersion must not be empty")
+// TestW9ABusinessSchemaContract freezes structural invariants of the
+// Business schema contract (PG-only，2026-10-25 D8 收口去 sqlite 化；不变量
+// 语义与原 TestW9ABusinessSQLiteSchemaContract 逐条一致): every table is
+// populated, key and index references stay inside declared columns/tables
+// and foreign keys point at existing tables.
+func TestW9ABusinessSchemaContract(t *testing.T) {
+	if BusinessSchemaVersion == "" {
+		t.Fatal("BusinessSchemaVersion must not be empty")
 	}
-	if len(BusinessSQLiteSchema) == 0 {
-		t.Fatal("BusinessSQLiteSchema must not be empty")
+	if len(BusinessSchema) == 0 {
+		t.Fatal("BusinessSchema must not be empty")
 	}
-	for table, spec := range BusinessSQLiteSchema {
+	for table, spec := range BusinessSchema {
 		if len(spec.Columns) == 0 {
 			t.Fatalf("table %s has no columns", table)
 		}
@@ -58,7 +59,7 @@ func TestW9ABusinessSQLiteSchemaContract(t *testing.T) {
 			if len(fk.Columns) == 0 || fk.RefTable == "" || len(fk.RefColumns) == 0 {
 				t.Fatalf("table %s has incomplete foreign key %+v", table, fk)
 			}
-			if _, ok := BusinessSQLiteSchema[fk.RefTable]; !ok {
+			if _, ok := BusinessSchema[fk.RefTable]; !ok {
 				t.Fatalf("table %s foreign key references unknown table %q", table, fk.RefTable)
 			}
 			for _, col := range fk.Columns {
@@ -70,11 +71,11 @@ func TestW9ABusinessSQLiteSchemaContract(t *testing.T) {
 	}
 }
 
-// TestW9ABusinessSQLiteSchemaFrozenEntries freezes the contract version and a
+// TestW9ABusinessSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
-func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
-	if BusinessSQLiteSchemaVersion != "business-sqlite-gateway-v17" {
-		t.Fatalf("schema version drifted: %q", BusinessSQLiteSchemaVersion)
+func TestW9ABusinessSchemaFrozenEntries(t *testing.T) {
+	if BusinessSchemaVersion != "business-postgres-gateway-v18" {
+		t.Fatalf("schema version drifted: %q", BusinessSchemaVersion)
 	}
 	for _, table := range []string{
 		"system_accounts", "system_sessions", "accounts", "groups",
@@ -82,7 +83,7 @@ func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
 		"account_entry_mappings", "account_supported_models", "announcements",
 		"account_circuit_incidents", "account_circuit_outbox",
 	} {
-		if _, ok := BusinessSQLiteSchema[table]; !ok {
+		if _, ok := BusinessSchema[table]; !ok {
 			t.Fatalf("required table %s missing from contract", table)
 		}
 	}
@@ -90,15 +91,15 @@ func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
 		"providers", "provider_protocol_profiles", "provider_model_catalog",
 		"account_model_mappings",
 	} {
-		if _, ok := BusinessSQLiteSchema[retired]; ok {
+		if _, ok := BusinessSchema[retired]; ok {
 			t.Fatalf("retired table %s must not stay in contract", retired)
 		}
 	}
-	systemAccounts := BusinessSQLiteSchema["system_accounts"]
+	systemAccounts := BusinessSchema["system_accounts"]
 	if len(systemAccounts.UniqueConstraints) != 1 || systemAccounts.UniqueConstraints[0][0] != "username" {
 		t.Fatalf("system_accounts username unique constraint drifted: %+v", systemAccounts.UniqueConstraints)
 	}
-	incidents := BusinessSQLiteSchema["account_circuit_incidents"]
+	incidents := BusinessSchema["account_circuit_incidents"]
 	if len(incidents.IndexDefinitions) != 1 || !incidents.IndexDefinitions[0].Unique {
 		t.Fatalf("account_circuit_incidents index definition drifted: %+v", incidents.IndexDefinitions)
 	}
@@ -108,7 +109,7 @@ func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
 
 	// v16 冻结：vendor/model 目标形态（provider 面退役、连接/入口关系表、
 	// 复合主键与部分唯一索引）。
-	accounts := BusinessSQLiteSchema["accounts"]
+	accounts := BusinessSchema["accounts"]
 	for _, retired := range []string{"provider_code", "provider_protocol_profile_id", "client_compatibility"} {
 		for _, column := range accounts.Columns {
 			if column == retired {
@@ -131,7 +132,7 @@ func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
 	if !compositeHealthCheckFK {
 		t.Fatalf("accounts composite health-check connection foreign key drifted: %+v", accounts.ForeignKeys)
 	}
-	groups := BusinessSQLiteSchema["groups"]
+	groups := BusinessSchema["groups"]
 	for _, column := range groups.Columns {
 		if column == "provider_code" {
 			t.Fatal("groups retired column provider_code must not stay in contract")
@@ -160,11 +161,11 @@ func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
 	if !hasOwnerDefaultUnique {
 		t.Fatalf("groups default partial unique index drifted: %+v", groups.IndexDefinitions)
 	}
-	supportedModels := BusinessSQLiteSchema["account_supported_models"]
+	supportedModels := BusinessSchema["account_supported_models"]
 	if strings.Join(supportedModels.PrimaryKey, ",") != "account_id,model_id" {
 		t.Fatalf("account_supported_models composite primary key drifted: %+v", supportedModels.PrimaryKey)
 	}
-	models := BusinessSQLiteSchema["models"]
+	models := BusinessSchema["models"]
 	if len(models.Columns) != 48 {
 		t.Fatalf("models column count drifted: %d", len(models.Columns))
 	}

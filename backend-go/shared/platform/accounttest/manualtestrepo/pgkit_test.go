@@ -9,12 +9,12 @@ package manualtestrepo
 // 精确对齐；按 groups 夹具先例放宽一处：不建 FOREIGN KEY（seed 行不满足生产
 // 外键链，如先插 session_tasks 后补 task 行）。
 //
-// 三组分类（D9/D17）：
+// 三组分类（D9/D17；组B 已于 2026-10-25 随生产 sqlite 方言分支删除退役）：
 //   - 组A（bind() 方言共享 SQL，无独立 sqlite 结构臂）：仓储行为/生命周期/
-//     维护/错误注入族走本文件夹具，断言逐字节保持；PG 无同构前提的
-//     SQLite 弱类型臂（cancel_requested 存非法整数）保留在
-//     w12h_repo_scan_arms_test.go 的 newTestRepoSQLite（组B），随生产
-//     sqlite 方言分支删除批次同批退役。
+//     维护/错误注入族走本文件夹具，断言逐字节保持。
+//   - 组B（SQLite 弱类型前提，生产 PG boolean 列无法注入脏值）：原
+//     newTestRepoSQLite 夹具与 TestW12HRepoSQLiteIllegalCancelBoolArm、
+//     TestW12HRepoFinalizeScanErrorArms 无行为等价断言，随臂退役。
 //   - 故障注入经 pgAbortTrigger 转写为 PG 原生触发器函数（RAISE EXCEPTION
 //     文案逐字保留），断言不变。
 //   - 纯函数/方言 helper 测试（bindSQL 改写、bool/instant 参数、文案）不依赖

@@ -7,17 +7,15 @@ package accountquality
 // postgresQualitySchema——与 maintenance juhe_stats 冻结 DDL 同形的生产建表
 // 路径）。
 //
-// 三组分类（D9/D17）：
+// 三组分类（D9/D17；组B 已于 2026-10-25 随 StatsSQLite 生产臂物理删除退役）：
 //   - 组A（StatsPostgres 生产臂，断言逐字节保持）：store_refresh /
 //     w12h store matrix·arms·sweep 中方言中立的存储行为族与 refresh 编排族
 //     走本文件 newQualityStorePostgres；测试体手写 SQL 对齐生产 PG 臂
 //     （juhe_stats schema 限定、$n 占位符、text 时间列原样绑定）。
-//   - 组B（StatsSQLite 生产臂为被测对象；生产构造点 jobs worker_probe_jobs.go
-//     Driver!=postgres→StatsSQLite，随 B3/B6 退役，本切片不删臂）：newQualityStore
-//     （SQLite 夹具）与依赖 SQLite 弱类型 / 触发器注入 / Close 关闭语义 /
-//     PRAGMA 校验 / sqlite 假句柄错误臂的测试原样保留（损坏行读取矩阵、
-//     触发器中止矩阵、关闭句柄与目录路径校验、
-//     TestW12HPGModeStoreHelpersAndSchemaError）。
+//   - 组B（StatsSQLite 生产臂为被测对象：newQualityStore SQLite 夹具与依赖
+//     SQLite 弱类型 / 触发器注入 / Close 关闭语义 / PRAGMA 校验 / sqlite 假
+//     句柄错误臂的测试——损坏行读取矩阵、触发器中止矩阵、关闭句柄与目录
+//     路径校验、PGModeStoreHelpers 假句柄臂）无 PG 等价断言，随臂退役。
 //   - scripted mock（mockProber / mockReader / fakeLogger 等）与纯函数测试
 //     不依赖真库，保持原状。
 //

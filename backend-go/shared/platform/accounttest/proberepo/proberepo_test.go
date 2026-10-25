@@ -4,12 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
@@ -31,204 +28,17 @@ type testDB struct {
 	db    *sql.DB
 }
 
-// openTestDB / openTestDBPostgres：openTestDB（SQLite 夹具）保留给组B
-// （ListDueForProbe 的 PG 臂缺陷阻塞面与弱类型注入臂，见 pgkit_test.go 三组
-// 分类）；组A 行为族走 openTestDBPostgres。seed/校验 helper 按当前 store
-// 方言生成 SQL（table 限定 + bind $n）。
-
-func openTestDB(t *testing.T) *testDB {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	store, err := NewStore(Config{DB: db, Postgres: false, Secret: testSecret, Now: func() time.Time { return testNow }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &testDB{store: store, db: db}
-}
+// openTestDB（SQLite 夹具）与其专属 seedSchema DDL 已于 2026-10-25 随 sqlite
+// 方言退役整体删除（组B：W27 缺陷阻塞面 + 弱类型注入臂，见 pgkit_test.go
+// 退役登记）；全部存储行为测试统一走 openTestDBPostgres（pgtestkit 真库 +
+// 生产 PG 方言）。seed/校验 helper 按生产方言生成 SQL（juhe_business 表限定
+// + bind $n）。
 
 func (h *testDB) exec(t *testing.T, query string, args ...any) {
 	t.Helper()
 	if _, err := h.db.Exec(query, args...); err != nil {
 		t.Fatalf("exec %s: %v", query, err)
 	}
-}
-
-// seedSchema 在 SQLite 夹具上安装业务表；PG 夹具的表由 pgkit_test.go prepare
-// 按 maintenance 权威生产 DDL 预建，这里直接复用（幂等）。
-func (h *testDB) seedSchema(t *testing.T) {
-	t.Helper()
-	if h.store.postgres {
-		return
-	}
-	// 供应商解耦后的 fresh DDL 形态（maintenance pg_schema_business_tables
-	// 的 SQLite 等价窄投影）：accounts 无 provider_code/provider_protocol_profile_id/
-	// client_compatibility，身份列为 vendor_code/oauth_type/connection_driver_code；
-	// 连接面在 account_connections/account_endpoint_modes；支持模型经
-	// account_supported_models(model_id) 外键到 models。
-	h.exec(t, `
-    CREATE TABLE accounts (
-      id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL,
-      name TEXT NOT NULL DEFAULT '',
-      type TEXT NOT NULL,
-      status TEXT NOT NULL,
-      schedulable INTEGER NOT NULL DEFAULT 1,
-      vendor_code TEXT,
-      connection_driver_code TEXT NOT NULL DEFAULT 'gpt',
-      oauth_type TEXT,
-      protocol_code TEXT,
-      protocol_version TEXT,
-      health_check_connection_id TEXT,
-      health_check_model TEXT NOT NULL DEFAULT '',
-      health_check_endpoint_mode TEXT NOT NULL DEFAULT '',
-      account_expires_at TEXT,
-      cooldown_until TEXT,
-      last_error_code TEXT,
-      last_error_message TEXT,
-      last_error_trace_id TEXT,
-      credentials_encrypted TEXT NOT NULL DEFAULT '{}',
-      proxy_profile_id TEXT,
-      authorization_instance_authorization_id TEXT,
-      authorization_instance_source_account_id TEXT,
-      authorization_instance_owner_system_account_id TEXT,
-      config_revision INTEGER NOT NULL DEFAULT 1,
-      dispatch_revision INTEGER NOT NULL DEFAULT 1,
-      last_health_success_at TEXT,
-      last_used_at TEXT,
-      cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
-      cooldown_retest_observation_started_at TEXT,
-      cooldown_retest_generation TEXT,
-      cooldown_retest_last_at TEXT,
-      cooldown_retest_last_status_code INTEGER,
-      stream_failure_count INTEGER NOT NULL DEFAULT 0,
-      stream_failure_window_started_at TEXT,
-      deleted_at TEXT,
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    )`)
-	h.exec(t, `CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1)`)
-	h.exec(t, `
-    CREATE TABLE vendors (
-      id TEXT PRIMARY KEY,
-      code TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1
-    )`)
-	h.exec(t, `
-    CREATE TABLE models (
-      id TEXT PRIMARY KEY,
-      vendor_code TEXT,
-      public_model TEXT NOT NULL,
-      upstream_model TEXT NOT NULL,
-      scope TEXT NOT NULL DEFAULT 'global',
-      system_account_id TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at TEXT NOT NULL DEFAULT ''
-    )`)
-	h.exec(t, `
-    CREATE TABLE account_supported_models (
-      account_id TEXT NOT NULL,
-      model_id TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT '',
-      PRIMARY KEY (account_id, model_id)
-    )`)
-	h.exec(t, `
-    CREATE TABLE account_connections (
-      id TEXT PRIMARY KEY,
-      account_id TEXT NOT NULL,
-      connection_preset_code TEXT NOT NULL,
-      protocol_surface_code TEXT,
-      base_url TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      UNIQUE (account_id, connection_preset_code),
-      UNIQUE (account_id, id)
-    )`)
-	h.exec(t, `
-    CREATE TABLE account_endpoint_modes (
-      connection_id TEXT NOT NULL,
-      endpoint_mode TEXT NOT NULL,
-      PRIMARY KEY (connection_id, endpoint_mode)
-    )`)
-	h.exec(t, `
-    CREATE TABLE account_api_key_runtime_states (
-      id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL,
-      account_id TEXT NOT NULL,
-      key_fingerprint TEXT NOT NULL,
-      key_index INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL,
-      failure_count INTEGER NOT NULL DEFAULT 0,
-      consecutive_failures INTEGER NOT NULL DEFAULT 0,
-      success_count INTEGER NOT NULL DEFAULT 0,
-      cooldown_until TEXT,
-      next_probe_at TEXT,
-      probe_backoff_seconds INTEGER NOT NULL DEFAULT 0,
-      recovery_started_at TEXT,
-      last_attempt_at TEXT,
-      last_success_at TEXT,
-      last_failure_at TEXT,
-      last_error_code TEXT,
-      last_error_message TEXT,
-      last_trace_id TEXT,
-      last_probe_at TEXT,
-      probe_claim_token TEXT,
-      probe_claimed_until TEXT,
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      UNIQUE(account_id, key_fingerprint)
-    )`)
-	h.exec(t, `
-    CREATE TABLE groups (
-      id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL,
-      name TEXT NOT NULL DEFAULT '',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      group_type TEXT,
-      scheduling_policy_json TEXT,
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    )`)
-	h.exec(t, `
-    CREATE TABLE group_accounts (
-      group_id TEXT NOT NULL,
-      system_account_id TEXT NOT NULL,
-      account_id TEXT NOT NULL,
-      account_authorization_id TEXT,
-      local_priority INTEGER NOT NULL DEFAULT 0,
-      local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
-      local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    )`)
-	h.exec(t, `
-    CREATE TABLE resource_authorizations (
-      id TEXT PRIMARY KEY,
-      resource_type TEXT NOT NULL,
-      resource_id TEXT NOT NULL,
-      grantee_system_account_id TEXT NOT NULL,
-      resource_owner_system_account_id TEXT NOT NULL,
-      status TEXT NOT NULL,
-      expires_at TEXT,
-      limits_json TEXT,
-      effective_source_type TEXT,
-      effective_source_team_id TEXT
-    )`)
-	// group_account_stats_dirty 与生产 schema（maintenance）同形状：key 运行态
-	// 翻转标脏（账号#F8）与 stats 家族 RefreshDirtyGroupAccountStats 的消费表。
-	h.exec(t, `
-    CREATE TABLE group_account_stats_dirty (
-      group_id TEXT PRIMARY KEY,
-      reason TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )`)
 }
 
 // seedModel 写入一条全局模型并绑定到账户支持模型集合，返回模型 ID。
@@ -274,7 +84,6 @@ func (h *testDB) sealCredentials(t *testing.T, credentials map[string]any) strin
 // 夹具统一补齐。
 func (h *testDB) seedPoolAccount(t *testing.T, accountID string) (key1, key2 string) {
 	t.Helper()
-	h.seedSchema(t)
 	key1, key2 = "sk-key-one", "sk-key-two"
 	credentials := map[string]any{
 		"api_keys":              []any{key1, key2},
@@ -298,42 +107,6 @@ func (h *testDB) seedRuntimeState(t *testing.T, accountID, fingerprint string, k
       id, system_account_id, account_id, key_fingerprint, key_index, status, next_probe_at, created_at, updated_at
     ) VALUES (?, 'sys-1', ?, ?, ?, ?, ?, ?, ?)`),
 		"state-"+fingerprint, accountID, fingerprint, keyIndex, status, nextProbeAt, nowMillisText(), nowMillisText())
-}
-
-// TestListDueForProbeClaimsAndSkipsFreshLeases 验证到期候选 claim：命中后写入
-// token/租约，未到期的候选不得返回。
-func TestListDueForProbeClaimsAndSkipsFreshLeases(t *testing.T) {
-	h := openTestDB(t)
-	key1, _ := h.seedPoolAccount(t, "acc-1")
-	fp1 := h.store.FingerprintAPIKey(key1)
-	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
-
-	candidates, err := h.store.ListDueForProbe(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("candidates=%d", len(candidates))
-	}
-	candidate := candidates[0]
-	if candidate.AccountID != "acc-1" || candidate.APIKey != key1 || candidate.KeyFingerprint != fp1 {
-		t.Fatalf("candidate=%+v", candidate)
-	}
-	if candidate.ProbeClaimToken == "" || candidate.ProbeClaimedUntil == "" {
-		t.Fatalf("claim 未写入: %+v", candidate)
-	}
-	if candidate.AccountConfigRevision != 1 {
-		t.Fatalf("configRevision=%d", candidate.AccountConfigRevision)
-	}
-
-	// 已领取且租约未到期的候选，下一轮扫描不得重复返回。
-	repeat, err := h.store.ListDueForProbe(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(repeat) != 0 {
-		t.Fatalf("fresh lease 必须被排除: %+v", repeat)
-	}
 }
 
 // TestCooldownMutationsFlow 验证 record success / failure / defer 的 CAS 与

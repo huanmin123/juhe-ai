@@ -1,12 +1,14 @@
 package manualtestrepo
 
-// w12h 补充 arms：cancel_requested 非法布尔值、取消会话、缺表/缺列与
-// 触发器中止的精确落点（区别于 w12h_repo_error_arms_test.go 的粗粒度矩阵）。
+// w12h 补充 arms：取消会话、缺表/缺列与触发器中止的精确落点（区别于
+// w12h_repo_error_arms_test.go 的粗粒度矩阵）。
 // 组A 臂走 pgkit_test.go 夹具（pgtestkit 真库 + 生产 PG 方言），触发器注入
 // 经 pgAbortTrigger 转写为 PG 原生触发器函数（文案逐字保留）。
-// 组B（SQLite 弱类型前提，生产 PG boolean 列无法成立，随生产 sqlite 方言
-// 分支删除批次同批退役）：cancel_requested 存非法整数（2）命中扫描错误的
-// 两个臂，走本文件 newTestRepoSQLite。
+// 原 newTestRepoSQLite（SQLite 夹具）与其两个弱类型注入臂
+// TestW12HRepoSQLiteIllegalCancelBoolArm（cancel_requested 存非法整数 2）与
+// TestW12HRepoFinalizeScanErrorArms（finalize 扫描错误）为组B——生产 PG
+// boolean 列无法注入该脏值、无行为等价断言，2026-10-25 随生产 sqlite 方言
+// 分支删除批次退役。
 // 本文件补充登记的不可达语句（驱动层无注入点）：
 //   - repo.go SweepOrRefill 中 listRunnable 错误返回：failExpiredQueued
 //     与 listRunnable 读取同一表集合，无法只让后者失败；
@@ -18,71 +20,12 @@ package manualtestrepo
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest"
-
-	_ "modernc.org/sqlite"
 )
-
-// newTestRepoSQLite 组B专用：旧 SQLite 夹具（生产 sqlite 方言分支待退役，
-// 仅承载 PG boolean 类型系统无法成立的弱类型注入臂）。
-func newTestRepoSQLite(t *testing.T) (*Repo, *sql.DB) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "w12h-weaktype.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, statement := range []string{
-		`CREATE TABLE account_test_tasks (
-			id TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			request_system_account_id TEXT NOT NULL,
-			request_role TEXT NOT NULL DEFAULT 'user',
-			diagnostics TEXT NOT NULL DEFAULT 'full',
-			status TEXT NOT NULL DEFAULT 'queued',
-			status_message TEXT,
-			result_json TEXT,
-			error_message TEXT,
-			cancel_requested INTEGER NOT NULL DEFAULT 0,
-			queued_at TEXT NOT NULL,
-			queued_deadline_at TEXT,
-			started_at TEXT,
-			finished_at TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		`CREATE TABLE account_test_sessions (
-			id TEXT PRIMARY KEY,
-			request_system_account_id TEXT NOT NULL,
-			request_role TEXT NOT NULL DEFAULT 'user',
-			status TEXT NOT NULL DEFAULT 'running',
-			cancel_reason TEXT,
-			last_heartbeat_at TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		`CREATE TABLE account_test_session_tasks (
-			session_id TEXT NOT NULL,
-			task_id TEXT NOT NULL PRIMARY KEY
-		)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	repo, err := New(Config{DB: db, Postgres: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return repo, db
-}
 
 func TestW12HRepoMarkRunningSessionCancelArms(t *testing.T) {
 	ctx := context.Background()
@@ -140,51 +83,6 @@ func TestW12HRepoMarkRunningSessionCancelArms(t *testing.T) {
 		record, err := repo.MarkRunning(ctx, "w12h-t")
 		if err == nil || record != nil {
 			t.Fatalf("sessions 缺表必须失败: %+v %v", record, err)
-		}
-	})
-}
-
-// TestW12HRepoSQLiteIllegalCancelBoolArm 组B：cancel_requested 存非法整数（2）
-// 命中 claim 后查询错误——生产 PG boolean 列无法注入该脏值，SQLite 弱类型
-// 前提臂，随生产 sqlite 方言分支删除批次同批退役。
-func TestW12HRepoSQLiteIllegalCancelBoolArm(t *testing.T) {
-	repo, db := newTestRepoSQLite(t)
-	if _, err := db.Exec(`INSERT INTO account_test_tasks (
-		id, account_id, request_system_account_id, status, cancel_requested, queued_at, created_at, updated_at
-	) VALUES ('w12h-t', 'acc', 'sys', 'queued', 2, ?, ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
-	}
-	record, err := repo.MarkRunning(context.Background(), "w12h-t")
-	if err == nil || record != nil {
-		t.Fatalf("非法布尔值必须失败: %+v %v", record, err)
-	}
-}
-
-// TestW12HRepoFinalizeScanErrorArms 组B：同上，cancel_requested=2 的
-// finalize 扫描错误臂（SQLite 弱类型前提）。
-func TestW12HRepoFinalizeScanErrorArms(t *testing.T) {
-	seed := func(t *testing.T, db *sql.DB, id, status string) {
-		t.Helper()
-		if _, err := db.Exec(`INSERT INTO account_test_tasks (
-			id, account_id, request_system_account_id, status, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ($1, 'acc', 'sys', $2, 2, $3, $3, $3)`,
-			id, status, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Run("Complete", func(t *testing.T) {
-		repo, db := newTestRepoSQLite(t)
-		seed(t, db, "w12h-t", "running")
-		if err := repo.Complete(context.Background(), "w12h-t", accounttest.ManualTestTaskExecutorResult{Success: true}, nil); err == nil {
-			t.Fatal("非法布尔 finalize 必须失败")
-		}
-	})
-	t.Run("Fail", func(t *testing.T) {
-		repo, db := newTestRepoSQLite(t)
-		seed(t, db, "w12h-t", "running")
-		if err := repo.Fail(context.Background(), "w12h-t", "m", "", nil); err == nil {
-			t.Fatal("非法布尔 finalize 必须失败")
 		}
 	})
 }
