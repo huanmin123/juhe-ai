@@ -11,6 +11,10 @@
 //   - target.go:107 目标用户创建后 ID 为空臂：SQLite 驱动 LastInsertId/RowsAffected 正常时
 //     ID 恒非空（需驱动层故障注入）。
 //   - target.go:405 rand.Read 失败臂：crypto/rand 读取不失败。
+//   - strategies.go 220-222 绑定行扫描错误臂（T65 迁 PG 退役）：SQLite 动态类型下以
+//     非数值文本插 integer 列制造扫描失败；PG 严格类型下该 INSERT 被类型检查直接拒绝，
+//     列声明 integer NOT NULL 后无任何行内值能让 int 扫描失败——扫描错误臂在真实 PG
+//     载具上不可复现，臂随夹具迁移退役（生产 PG 臂行为不受影响）。
 package aipublic
 
 import (
@@ -37,30 +41,30 @@ const w13g6TokenSeed = "juis_token_w13g6margin0margin0margin"
 // w13g6Deps 在给定 DB 上重建 Deps（apiKeyStore 非 nil 时替换 API Key store）。
 func w13g6Deps(t *testing.T, db *sql.DB, apiKeyStore *apikeys.Store) *Deps {
 	t.Helper()
-	systemAccounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	systemAccounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	groupsStore, err := groups.NewStore(db, false, nil, nil, nil)
+	groupsStore, err := groups.NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(db, false, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(db, true, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if apiKeyStore == nil {
-		apiKeyStore, err = apikeys.NewStore(db, false, "test-crypto-secret", nil, nil, nil)
+		apiKeyStore, err = apikeys.NewStore(db, "test-crypto-secret", nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	accountStore, err := accounts.NewStore(db, false, "test-crypto-secret", nil, nil)
+	accountStore, err := accounts.NewStore(db, "test-crypto-secret", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &Deps{
-		DB: db, PGDialect: false, Now: time.Now,
+		DB: db, PGDialect: true, Now: time.Now,
 		SystemAccounts: systemAccounts, Groups: groupsStore,
 		Strategies: strategyStore, ApiKeys: apiKeyStore, AiAccounts: accountStore,
 		Sink: &recordingAIPublicSink{},
@@ -204,7 +208,7 @@ func TestW13g6StrategyBindingArms(t *testing.T) {
 		t.Fatalf("unbound strategy add: %d %v", status, payload)
 	}
 	strategyID := payload["data"].(map[string]any)["routeStrategy"].(map[string]any)["id"].(string)
-	if _, err := env.db.Exec(`DELETE FROM route_strategy_groups WHERE route_strategy_id = ?`, strategyID); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`DELETE FROM route_strategy_groups WHERE route_strategy_id = ?`), strategyID); err != nil {
 		t.Fatalf("drop bindings: %v", err)
 	}
 	status, payload, _ = env.doAuth(http.MethodGet, "/__aipublic__/route-strategy/list?targetUsername=w14downer", "", token)
@@ -218,23 +222,8 @@ func TestW13g6StrategyBindingArms(t *testing.T) {
 		t.Fatalf("explicit bindings: %+v", mutation.Bindings)
 	}
 
-	// 绑定行 priority 列破坏 -> 汇总查询扫描错误臂（220-222）。
-	ownerID := ""
-	if err := env.db.QueryRow(`SELECT id FROM system_accounts WHERE username = 'w14downer'`).Scan(&ownerID); err != nil {
-		t.Fatalf("owner lookup: %v", err)
-	}
-	if _, err := env.db.Exec(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, is_default, created_at, updated_at)
-		VALUES ('w13g6-broken', ?, '坏行策略', 'normal', 'active', 0, datetime('now'), datetime('now'))`, ownerID); err != nil {
-		t.Fatalf("seed broken strategy: %v", err)
-	}
-	if _, err := env.db.Exec(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-		VALUES ('w13g6-rsg-broken', 'w13g6-broken', ?, ?, 'abc', 100, 'active', datetime('now'), datetime('now'))`, ownerID, groupID); err != nil {
-		t.Fatalf("seed broken binding: %v", err)
-	}
-	status, _, _ = env.doAuth(http.MethodGet, "/__aipublic__/route-strategy/list?targetUsername=w14downer", "", token)
-	if status != http.StatusInternalServerError {
-		t.Fatalf("broken binding scan: %d", status)
-	}
+	// 绑定行 priority 列破坏 -> 汇总查询扫描错误臂（220-222）已在文件头登记退役：
+	// PG 严格类型下非数值文本无法插进 integer 列，扫描错误臂不可复现。
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +248,7 @@ func TestW13g6ValidationCacheErrorArms(t *testing.T) {
 	env := newAIPublicEnv(t)
 	token := w14dSeedAllScopes(t, env, "w13g6_srcc", "w13g6_tokc", w13g6TokenSeed+"c")
 
-	failingStore, err := apikeys.NewStore(env.db, false, "test-crypto-secret", nil, nil, w13g6FailingCacheInvalidator{})
+	failingStore, err := apikeys.NewStore(env.db, "test-crypto-secret", nil, nil, w13g6FailingCacheInvalidator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,32 +319,26 @@ func w13g6DoAuth(t *testing.T, server *httptest.Server, method, path, body, toke
 
 // TestW13g6ClosedStoreArms 覆盖 closed DB 下的账号/分组/策略/目标用户错误臂。
 func TestW13g6ClosedStoreArms(t *testing.T) {
-	closed, err := sql.Open("sqlite", "file:w13g6-closed-aipublic?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := closed.Close(); err != nil {
-		t.Fatal(err)
-	}
+	closed := newUnreachablePGDatabase(t)
 
-	groupsStore, err := groups.NewStore(closed, false, nil, nil, nil)
+	groupsStore, err := groups.NewStore(closed, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(closed, false, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(closed, true, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	accountStore, err := accounts.NewStore(closed, false, "test-crypto-secret", nil, nil)
+	accountStore, err := accounts.NewStore(closed, "test-crypto-secret", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	systemAccounts, err := authsys.NewAccountStore(closed, modelcheckauth.SQLite, nil)
+	systemAccounts, err := authsys.NewAccountStore(closed, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	deps := &Deps{
-		DB: closed, PGDialect: false, Now: time.Now,
+		DB: closed, PGDialect: true, Now: time.Now,
 		SystemAccounts: systemAccounts, Groups: groupsStore,
 		Strategies: strategyStore, ApiKeys: nil, AiAccounts: accountStore,
 	}

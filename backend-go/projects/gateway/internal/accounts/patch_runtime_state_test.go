@@ -413,7 +413,7 @@ func TestPatchBalanceSnapshotCleanupPort(t *testing.T) {
 
 	// An unwired port (a second store sharing the env DB, cleaner left nil)
 	// keeps the patch path self-contained.
-	silentStore, err := NewStore(env.db, true, testSecret, nil, nil)
+	silentStore, err := NewStore(env.db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

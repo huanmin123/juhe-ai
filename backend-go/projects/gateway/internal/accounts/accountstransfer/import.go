@@ -1017,9 +1017,9 @@ func (s *Service) findImportProxyOptionByName(ctx context.Context, name string, 
 		}
 	}
 	var id string
-	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer：
-	// 扫描用 bool，enabled 过滤放到 Go 侧（SQL 里 `enabled = 1` 在 PG 会
-	// 因 boolean 与 integer 比较直接报错）。
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean：扫描用 bool，
+	// enabled 过滤放到 Go 侧（SQL 里 `enabled = 1` 会因 boolean 与 integer
+	// 比较直接报错）。
 	var enabled bool
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, enabled FROM `+s.store.Table("proxy_profiles")+`
 		WHERE name = ?
@@ -1046,8 +1046,8 @@ func (s *Service) findImportProxyOptionByName(ctx context.Context, name string, 
 // FindImportProxyByID mirrors findProxy: global id lookup, enabled is checked
 // by the caller.
 func (s *Service) FindImportProxyByID(ctx context.Context, id string) (*ImportProxyOption, error) {
-	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
-	// 扫描目标必须用 bool 才能同时兼容两种驱动。
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean，扫描目标用 bool 对齐
+	// 驱动类型。
 	var row struct {
 		id      string
 		name    string

@@ -25,7 +25,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
-	_ "modernc.org/sqlite"
 )
 
 type aipublicEnv struct {
@@ -37,49 +36,39 @@ type aipublicEnv struct {
 
 func newAIPublicEnv(t *testing.T) *aipublicEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:aipublic-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newAIPublicPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range aipublicSchema {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	systemAccounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	systemAccounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	groupsStore, err := groups.NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	groupsStore, err := groups.NewStore(db, false, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(db, true, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(db, false, nil, nil, nil)
+	apiKeyStore, err := apikeys.NewStore(db, "test-crypto-secret", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	apiKeyStore, err := apikeys.NewStore(db, false, "test-crypto-secret", nil, nil, nil)
+	accountStore, err := accounts.NewStore(db, "test-crypto-secret", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	accountStore, err := accounts.NewStore(db, false, "test-crypto-secret", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	providerStore, err := providers.NewStore(db, false, nil)
+	providerStore, err := providers.NewStore(db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = service
 	k := kernelForTest()
 	aipublicDeps := &Deps{
-		DB: db, PGDialect: false, Now: time.Now,
+		DB: db, PGDialect: true, Now: time.Now,
 		SystemAccounts: systemAccounts,
 		Groups:         groupsStore, Strategies: strategyStore,
 		ApiKeys: apiKeyStore, AiAccounts: accountStore,
@@ -131,15 +120,15 @@ func (e *aipublicEnv) seedSource(sourceID, tokenID, token, sourceStatus, tokenSt
 	}
 	scopesJSON, _ := json.Marshal(scopes)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := e.db.Exec(`INSERT INTO external_integration_sources
+	if _, err := e.db.Exec(fixtureBind(`INSERT INTO external_integration_sources
 		(id, name, status, scopes_json, rate_limits_json, expires_at, notes, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`),
 		sourceID, "来源"+sourceID, sourceStatus, string(scopesJSON), rateLimitsJSON, nullText(sourceExpiresAt), now, now); err != nil {
 		e.t.Fatal(err)
 	}
-	if _, err := e.db.Exec(`INSERT INTO external_integration_source_tokens
+	if _, err := e.db.Exec(fixtureBind(`INSERT INTO external_integration_source_tokens
 		(id, source_ref_id, name, token_hash, token_secret_encrypted, token_prefix, token_suffix, status, scopes_json, expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`),
 		tokenID, sourceID, "Token"+tokenID,
 		apikeys.HashSecret("external-integration-source-token:"+token),
 		token[:8], token[len(token)-8:], tokenStatus, string(scopesJSON), nullText(tokenExpiresAt), now, now); err != nil {
@@ -159,9 +148,9 @@ func nullText(value string) any {
 func (e *aipublicEnv) seedTargetUser(id, username, status string) {
 	e.t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := e.db.Exec(`INSERT INTO system_accounts
+	if _, err := e.db.Exec(fixtureBind(`INSERT INTO system_accounts
 		(id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES (?, ?, ?, 'user', ?, 'x', ?, ?)`, id, username, username, status, now, now); err != nil {
+		VALUES (?, ?, ?, 'user', ?, 'x', ?, ?)`), id, username, username, status, now, now); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -173,17 +162,17 @@ func (e *aipublicEnv) seedProvider(code string, enabled bool) {
 	if enabled {
 		enabledInt = 1
 	}
-	if _, err := e.db.Exec(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, "prov_"+code, code, code, enabledInt,
+	if _, err := e.db.Exec(fixtureBind(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`), "prov_"+code, code, code, enabledInt,
 		`["`+code+`-4o-mini","`+code+`-4o"]`, now, now); err != nil {
 		e.t.Fatal(err)
 	}
 	// 目标 schema（设计 §3/§4）：写面支持模型断言按 models 单表身份键解析，
 	// 默认支持模型必须落表（与 vendors.default_supported_models_json 同集）。
 	for _, model := range []string{code + "-4o-mini", code + "-4o"} {
-		if _, err := e.db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
+		if _, err := e.db.Exec(fixtureBind(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
 			status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'builtin', 'active', '["chat_json","chat_sse","responses_json","responses_sse"]', 1, ?, ?)`,
+			VALUES (?, ?, ?, ?, 'builtin', 'active', '["chat_json","chat_sse","responses_json","responses_sse"]', true, ?, ?)`),
 			"mod_"+code+"_"+model, code, model, model, now, now); err != nil {
 			e.t.Fatal(err)
 		}
@@ -681,12 +670,12 @@ func seedStrategyForTest(t *testing.T, db *sql.DB, ownerSystemAccountID, groupID
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	strategyID := "rs_test_" + now[len(now)-6:]
-	if _, err := db.Exec(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, is_default, created_at, updated_at)
-		VALUES (?, ?, 'Key策略', 'normal', 'active', 0, ?, ?)`, strategyID, ownerSystemAccountID, now, now); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, is_default, created_at, updated_at)
+		VALUES (?, ?, 'Key策略', 'normal', 'active', 0, ?, ?)`), strategyID, ownerSystemAccountID, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 1, 100, 'active', ?, ?)`, "rsg_"+strategyID, strategyID, ownerSystemAccountID, groupID, now, now); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 1, 100, 'active', ?, ?)`), "rsg_"+strategyID, strategyID, ownerSystemAccountID, groupID, now, now); err != nil {
 		t.Fatal(err)
 	}
 	return strategyID

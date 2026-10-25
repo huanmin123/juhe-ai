@@ -18,7 +18,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
@@ -69,8 +68,8 @@ const groupUsageTotalsFixtureDDL = `CREATE TABLE juhe_stats.usage_stats_totals (
 func newGroupUsagePGFixture(t *testing.T) *sql.DB {
 	t.Helper()
 	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
-		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;` +
-			groupUsageDailyFixtureDDL + `;` + groupUsageTotalsFixtureDDL)
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;`+
+			groupUsageDailyFixtureDDL+`;`+groupUsageTotalsFixtureDDL)
 		return err
 	})
 }
@@ -106,7 +105,7 @@ func TestGroupListUsageSummariesPGDialectBranches(t *testing.T) {
 		VALUES ('owner-1', 'group_authorization', 'ra_1', 9, 500, 100, 3, 1.5, 1, 0, 0.5, 2, 1, 1, 12.5, NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	reader := NewGroupAccountStatsDBReader(db, true)
+	reader := NewGroupAccountStatsDBReader(db)
 	ctx := context.Background()
 
 	// daily + stat_date 分支：全字段投影，totalTokens = input + output（不含 cache）。
@@ -198,65 +197,5 @@ func TestGroupListUsageSummariesPGDialectBranches(t *testing.T) {
 		{RowKey: "g", SystemAccountID: "o", ScopeType: usageScopeTypeGroup, ScopeID: "g"},
 	}, ""); err != nil || len(got) != 0 {
 		t.Fatalf("nil db = %v/%v", got, err)
-	}
-}
-
-// TestGroupListUsageSummariesSQLiteBareTables locks the SQLite branch: bare
-// table names (现状契约不回退), both the daily and totals branches resolve.
-func TestGroupListUsageSummariesSQLiteBareTables(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "group-usage-dialect-sqlite.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		`CREATE TABLE usage_stats_daily (
-			system_account_id text NOT NULL, scope_type text NOT NULL, scope_id text NOT NULL DEFAULT '',
-			stat_date text NOT NULL, request_count bigint NOT NULL DEFAULT 0,
-			input_tokens bigint NOT NULL DEFAULT 0, output_tokens bigint NOT NULL DEFAULT 0,
-			cache_read_tokens bigint NOT NULL DEFAULT 0, cache_read_cost_usd double precision NOT NULL DEFAULT 0,
-			cache_write_tokens bigint NOT NULL DEFAULT 0, cache_write_1h_tokens bigint NOT NULL DEFAULT 0,
-			cache_write_cost_usd double precision NOT NULL DEFAULT 0, thinking_tokens bigint NOT NULL DEFAULT 0,
-			input_image_tokens bigint NOT NULL DEFAULT 0, output_image_tokens bigint NOT NULL DEFAULT 0,
-			total_cost_usd double precision NOT NULL DEFAULT 0, last_used_at text,
-			PRIMARY KEY (system_account_id, scope_type, scope_id, stat_date))`,
-		`CREATE TABLE usage_stats_totals (
-			system_account_id text NOT NULL, scope_type text NOT NULL, scope_id text NOT NULL DEFAULT '',
-			request_count bigint NOT NULL DEFAULT 0, input_tokens bigint NOT NULL DEFAULT 0,
-			output_tokens bigint NOT NULL DEFAULT 0, cache_read_tokens bigint NOT NULL DEFAULT 0,
-			cache_read_cost_usd double precision NOT NULL DEFAULT 0, cache_write_tokens bigint NOT NULL DEFAULT 0,
-			cache_write_1h_tokens bigint NOT NULL DEFAULT 0, cache_write_cost_usd double precision NOT NULL DEFAULT 0,
-			thinking_tokens bigint NOT NULL DEFAULT 0, input_image_tokens bigint NOT NULL DEFAULT 0,
-			output_image_tokens bigint NOT NULL DEFAULT 0, total_cost_usd double precision NOT NULL DEFAULT 0,
-			last_used_at text, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
-		`INSERT INTO usage_stats_daily
-			(system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
-			VALUES ('owner-1', 'group', 'grp_sq', '2026-10-02', 5, 10, 20, 0.75)`,
-		`INSERT INTO usage_stats_totals
-			(system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd)
-			VALUES ('owner-1', 'group', 'grp_sq', 7, 30, 40, 3.5)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("fixture exec %q: %v", statement, err)
-		}
-	}
-	reader := NewGroupAccountStatsDBReader(db, false)
-	scopes := []UsageScope{
-		{RowKey: "grp_sq", SystemAccountID: "owner-1", ScopeType: usageScopeTypeGroup, ScopeID: "grp_sq"},
-	}
-	todays, err := reader.GroupListUsageSummaries(context.Background(), scopes, "2026-10-02")
-	if err != nil {
-		t.Fatalf("sqlite reader must keep the bare usage_stats_daily name: %v", err)
-	}
-	if row := todays["grp_sq"]; row.RequestCount != 5 || row.TotalTokens != 30 || row.TotalCost != 0.75 {
-		t.Fatalf("sqlite daily summary mismatch: %+v", row)
-	}
-	totals, err := reader.GroupListUsageSummaries(context.Background(), scopes, "")
-	if err != nil {
-		t.Fatalf("sqlite reader must keep the bare usage_stats_totals name: %v", err)
-	}
-	if row := totals["grp_sq"]; row.RequestCount != 7 || row.TotalTokens != 70 || row.TotalCost != 3.5 {
-		t.Fatalf("sqlite totals summary mismatch: %+v", row)
 	}
 }

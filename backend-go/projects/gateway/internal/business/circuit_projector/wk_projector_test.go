@@ -63,7 +63,7 @@ func wkControlDB(t *testing.T) *sql.DB {
 func wkProjector(t *testing.T) (*Service, *control.Store, *sql.DB, *miniredis.Miniredis) {
 	t.Helper()
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestNewRequiresStoresAndOwner(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runtimeStore.Close() })
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestNilServiceAndUninitializedServiceFailClosed(t *testing.T) {
 
 func TestRunOnceFailsWhenRuntimeNotReady(t *testing.T) {
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestRunOnceFailsWhenAcknowledgeErrors(t *testing.T) {
 
 func TestBackfillRuntimeIndexFailsWhenGateNotReady(t *testing.T) {
 	db := wkControlDB(t)
-	controlStore, err := control.New(db, control.Postgres, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	controlStore, err := control.New(db, "", control.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}

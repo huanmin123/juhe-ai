@@ -8,17 +8,12 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
-
-	_ "modernc.org/sqlite"
 )
 
 // LegacyMigrationOptions is the explicit stop-and-copy gate for F4 history.
 // It is never called by normal sidecar startup. Source data is read only and
-// is never deleted or modified by the SQLite migration.
+// is never deleted or modified by the offline migration.
 type LegacyMigrationOptions struct {
 	SourceDatabasePath string
 	NodeStopped        bool
@@ -38,64 +33,6 @@ type LegacyMigrationResult struct {
 	MigratedOperationLogs int64            `json:"migratedOperationLogs"`
 }
 
-type legacyLeaseRenewer struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-	mu     sync.Mutex
-	err    error
-}
-
-func startLegacyLeaseRenewer(ctx context.Context, store Store, lease OwnerLease, duration time.Duration) *legacyLeaseRenewer {
-	renewCtx, cancel := context.WithCancel(ctx)
-	r := &legacyLeaseRenewer{cancel: cancel, done: make(chan struct{})}
-	interval := duration / 3
-	if interval < 10*time.Millisecond {
-		interval = 10 * time.Millisecond
-	}
-	go func() {
-		defer safego.Recover("operationlog.legacy_migration.lease_renew")
-		defer close(r.done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-renewCtx.Done():
-				return
-			case <-ticker.C:
-				ok, err := store.RenewOwnerLease(renewCtx, lease, duration)
-				if renewCtx.Err() != nil {
-					// Stop 取消上下文时在途续租会带着 context.Canceled 返回，
-					// 那是主动停止不是租约失败，不能记成 Err 让迁移误判租约丢失。
-					return
-				}
-				if err == nil && !ok {
-					err = ErrOwnerLeaseLost
-				}
-				if err == nil {
-					continue
-				}
-				r.mu.Lock()
-				r.err = err
-				r.mu.Unlock()
-				return
-			}
-		}
-	}()
-	return r
-}
-
-func (r *legacyLeaseRenewer) Err() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.err
-}
-
-func (r *legacyLeaseRenewer) Stop() error {
-	r.cancel()
-	<-r.done
-	return r.Err()
-}
-
 func requireLegacyMigrationGates(options LegacyMigrationOptions) error {
 	if !options.NodeStopped || !options.GoStopped {
 		return errors.New("F4 操作日志离线迁移要求停机：必须同时确认 Node 和 Go 已停止（--node-stopped --go-stopped）")
@@ -105,10 +42,6 @@ func requireLegacyMigrationGates(options LegacyMigrationOptions) error {
 	}
 	return nil
 }
-
-// MigrateLegacySQLite copies the old Node dataset operation-log tables into
-// the dedicated F4 SQLite store. It keeps the stable operation-log IDs and
-// rebuilds only the derived search-term index with the current Go algorithm.
 
 // MigrateLegacyPostgres upgrades the historical Node viewer primary key in
 // place. PostgreSQL uses the same juhe_dataset table names for F4, so copying
@@ -352,10 +285,6 @@ func readPostgresLegacyViewers(ctx context.Context, tx *sql.Tx, operationLogID s
 	return viewers, rows.Err()
 }
 
-
-
-
-
 var legacyOperationLogTables = []string{
 	"operation_logs",
 	"operation_log_targets",
@@ -429,8 +358,6 @@ func scanLegacyOperationLog(row legacyOperationLogScanner) (legacyOperationLog, 
 	return record, nil
 }
 
-
-
 func normalizeLegacyOperationLogInput(input Input) error {
 	for name, value := range map[string]string{"id": input.ID, "actorSystemAccountId": input.ActorSystemAccountID, "actorRole": input.ActorRole, "mode": input.Mode, "module": input.Module, "action": input.Action, "operationKey": input.OperationKey, "resourceType": input.ResourceType, "summary": input.Summary, "detailLevel": input.DetailLevel, "visibilityScope": input.VisibilityScope, "createdAt": input.CreatedAt} {
 		if strings.TrimSpace(value) == "" {
@@ -449,24 +376,14 @@ func normalizeLegacyOperationLogInput(input Input) error {
 	return nil
 }
 
-// persistLegacySQLiteOperationLog intentionally bypasses normalizeInput. The
-// ordinary write path derives viewers/targets for new data; a history copy must
-// retain exactly the source facts, including original target row IDs.
-
 type legacyRecordQueryer interface {
 	legacyQueryer
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-
 type legacyQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
-
-
-
-
-
 
 func postgresPrimaryKey(ctx context.Context, db operationLogCounter, qualifiedTable string) (string, error) {
 	var primaryKey sql.NullString

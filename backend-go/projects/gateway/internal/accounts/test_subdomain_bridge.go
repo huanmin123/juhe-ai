@@ -102,14 +102,13 @@ const (
 type storeBaseAdapter struct{ s *Store }
 
 func (a storeBaseAdapter) DB() *sql.DB                { return a.s.db }
-func (a storeBaseAdapter) PG() bool                   { return a.s.pg }
 func (a storeBaseAdapter) Secret() string             { return a.s.secret }
 func (a storeBaseAdapter) Now() time.Time             { return a.s.now() }
 func (a storeBaseAdapter) NewID(prefix string) string { return a.s.newI(prefix) }
 func (a storeBaseAdapter) Table(name string) string   { return a.s.table(name) }
 func (a storeBaseAdapter) Bind(query string) string   { return a.s.bind(query) }
-func (a storeBaseAdapter) BoolTrueLiteral() string    { return accountscore.BoolTrueLiteral(a.s.pg) }
-func (a storeBaseAdapter) BoolFalseLiteral() string   { return accountscore.BoolFalseLiteral(a.s.pg) }
+func (a storeBaseAdapter) BoolTrueLiteral() string    { return accountscore.BoolTrueLiteral() }
+func (a storeBaseAdapter) BoolFalseLiteral() string   { return accountscore.BoolFalseLiteral() }
 
 // testService builds the subdomain service over this store's live fields.
 func (s *Store) testService() *accountstest.Service {

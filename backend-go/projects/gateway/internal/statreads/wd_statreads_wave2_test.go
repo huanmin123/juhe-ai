@@ -3,15 +3,13 @@ package statreads
 // statreads 第二轮补充（wd_ 前缀，独占新增文件）：读错误→500 的降级契约、
 // PG outcome 入口不可达的失败面、分页 hasMore、损坏 shard 的容错与系统账户
 // 名回退。读错误契约用 pgtestkit 空 PG 库；分片/shard 容错（组B，SQLite-only
-// 臂）走 newWdShardFixture（SQLite）。
+// 组B 分片读面测试已随 sqlite 生产臂退役（2026-10-24 存储形态收口）。
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,11 +30,10 @@ func wdUTCOnlyDeps(t *testing.T) *Deps {
 	t.Helper()
 	db := pgtestkit.New(t)
 	return &Deps{
-		Business:  db,
-		Stats:     db,
-		PGDialect: true,
-		Now:       func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
-		Timezone:  func(context.Context) (string, error) { return "UTC", nil },
+		Business: db,
+		Stats:    db,
+		Now:      func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
+		Timezone: func(context.Context) (string, error) { return "UTC", nil },
 	}
 }
 
@@ -189,55 +186,5 @@ func TestWdSmallPureHelpersRoundTwo(t *testing.T) {
 	// deref 非 *any 原样返回。
 	if got := deref("raw"); got != "raw" {
 		t.Fatalf("deref 非指针应原样返回: %#v", got)
-	}
-}
-
-func TestWdUsageRecordsHasMoreAndBadShard(t *testing.T) {
-	fixture, shardPath, catalog := newWdShardFixture(t)
-	wdShardExec(t, shardPath,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, success, status_code, created_at) VALUES
-			('u-h2', 'sys-user-1', 'tr-2', 'gateway', 1, 200, '2026-09-04T11:00:00.000Z')`,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, success, status_code, created_at) VALUES
-			('u-h1', 'sys-user-1', 'tr-1', 'gateway', 1, 200, '2026-09-04T10:00:00.000Z')`,
-	)
-	// 额外登记一个损坏 shard（非 SQLite 文件）：打开成功、查询失败应被跳过。
-	badPath := filepath.Join(t.TempDir(), "bad.sqlite3")
-	if err := os.WriteFile(badPath, []byte("definitely not a sqlite database"), 0o600); err != nil {
-		t.Fatalf("write bad shard: %v", err)
-	}
-	if _, err := catalog.Exec(`INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status)
-		VALUES ('20260904:s001', '2026-09-04', 1, ?, 'active')`, badPath); err != nil {
-		t.Fatalf("catalog bad seed: %v", err)
-	}
-	handler := fixture.deps.usageRecordsListHandler(true)
-	recorder := wdGet(t, handler, "/?pageSize=1", userAuth())
-	payload := wdData(t, recorder)
-	items := wdJSONArray(t, payload["items"], "items")
-	if len(items) != 1 || items[0].(map[string]any)["id"] != "u-h2" {
-		t.Fatalf("pageSize=1 应取最新一条: %#v", payload)
-	}
-	if payload["hasMore"] != true || payload["total"] != float64(2) {
-		t.Fatalf("hasMore/total 上界错误: %#v", payload)
-	}
-}
-
-func TestWdUsageRecordsSystemAccountNameUsernameFallback(t *testing.T) {
-	fixture, shardPath, _ := newWdShardFixture(t)
-	wdShardExec(t, shardPath,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, success, status_code, created_at) VALUES
-			('u-n1', 'sys-nodisplay', 'tr-1', 'gateway', 1, 200, '2026-09-04T10:00:00.000Z')`,
-	)
-	fixture.exec(t,
-		// display_name 为 NULL：admin 面回退 username。
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-nodisplay', 'fallbackname', NULL)`,
-	)
-	recorder := wdGet(t, fixture.deps.usageRecordsListHandler(false), "/?systemAccountId=sys-nodisplay", adminAuth(""))
-	items := wdJSONArray(t, wdData(t, recorder)["items"], "items")
-	if len(items) != 1 {
-		t.Fatalf("行数错误: %#v", items)
-	}
-	row := items[0].(map[string]any)
-	if row["systemAccountId"] != "sys-nodisplay" || row["systemAccountName"] != "fallbackname" {
-		t.Fatalf("display_name 缺失应回退 username: %#v", row)
 	}
 }

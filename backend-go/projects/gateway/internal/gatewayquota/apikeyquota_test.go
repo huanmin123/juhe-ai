@@ -2,7 +2,6 @@ package gatewayquota
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -100,7 +99,7 @@ const testQuotaLimits = `{"daily":{"enabled":true,"limit":10}}`
 func TestCheckAPIKeyQuotaBoundaries(t *testing.T) {
 	db := newTestDB(t, "apikeyquota")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, true)
+	stats, _ := NewStatsStore(db)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	tz, _ := NewStaticTimezoneSource(time.UTC)
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{Modes: Modes{}, Stats: stats, Timezone: tz, Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now})
@@ -149,7 +148,7 @@ func TestCheckAPIKeyQuotaBoundaries(t *testing.T) {
 func TestCheckAPIKeyQuotaInvalidConfig(t *testing.T) {
 	db := newTestDB(t, "apikey-invalid")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, true)
+	stats, _ := NewStatsStore(db)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	service, _ := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
@@ -163,7 +162,7 @@ func TestCheckAPIKeyQuotaInvalidConfig(t *testing.T) {
 func TestCheckAPIKeyQuotaCacheAndInvalidation(t *testing.T) {
 	db := newTestDB(t, "apikey-cache")
 	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, true)
+	stats, _ := NewStatsStore(db)
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
@@ -225,36 +224,6 @@ func TestCheckAPIKeyQuotaCacheAndInvalidation(t *testing.T) {
 	}
 }
 
-func TestCheckAPIKeyQuotaServerRoleRefusesSQLite(t *testing.T) {
-	db := newTestDB(t, "apikey-server")
-	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, true)
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _ := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{ServerRole: true}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{ServerRole: true}, clock), Now: clock.Now,
-	})
-	_, err := service.CheckAPIKeyQuota(context.Background(), APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}, clock.Now())
-	if err == nil || err.Error() != "server 角色禁止直接同步读取 SQLite：checkGatewayApiKeyQuota 必须通过 DB service" {
-		t.Fatalf("server role error = %v", err)
-	}
-}
-
-func TestReadAPIKeyQuotaCostsExactAsyncSQLiteFallback(t *testing.T) {
-	db := newTestDB(t, "apikey-exact")
-	statsSchema(t, db)
-	stats, _ := NewStatsStore(db, true)
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _ := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
-	})
-	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
-		[]any{"sys", "api_key", "ak", 7})
-	costs, err := service.ReadAPIKeyQuotaCostsExactAsync(context.Background(), APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}, clock.Now())
-	if err != nil || costs.Total != 7 {
-		t.Fatalf("ReadAPIKeyQuotaCostsExactAsync = (%+v, %v)", costs, err)
-	}
-}
-
 func newRedisQuotaStack(t *testing.T, clock *fakeClock) (*miniredis.Miniredis, *RedisSharedCache, *SnapshotCache, *RedisRuntimeState) {
 	t.Helper()
 	server := miniredis.RunT(t)
@@ -276,96 +245,16 @@ func newRedisQuotaStack(t *testing.T, clock *fakeClock) (*miniredis.Miniredis, *
 	return server, shared, snapshot, runtimeState
 }
 
-func TestCheckAPIKeyQuotaAsyncRedisServerRole(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	_, shared, snapshot, runtimeState := newRedisQuotaStack(t, clock)
-	logs := &logRecorder{}
-	dbService := &mockDBService{}
-	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Stats:     nil,
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    shared,
-		DBService: dbService,
-		Now:       clock.Now,
-		Log:       logs.hook,
-	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyQuotaService: %v", err)
-	}
-	ctx := context.Background()
-	apiKey := APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
-
-	// Snapshot hit: passive decision without any DB-service call. The cost
-	// entry must use the api key's window shape (daily-only, no hourly).
-	dailyOnly := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	dailyOnly.CostEntries = []QuotaCostSnapshotEntry{{
-		SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak",
-		Costs: RequestQuotaCosts{Daily: 2, Total: 5},
-	}}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey,
-		dailyOnly, time.Hour); err != nil {
-		t.Fatalf("write snapshot: %v", err)
-	}
-	decision, err := service.CheckAPIKeyQuotaAsync(ctx, apiKey)
-	if err != nil || !decision.Allowed {
-		t.Fatalf("snapshot hit must allow: (%+v, %v)", decision, err)
-	}
-	if dbService.checkAPIKeyCalls != 0 {
-		t.Fatalf("snapshot hit must not call the DB service")
-	}
-	// The passive decision is stored in the shared cache.
-	var stored CachedDecision
-	found, err := shared.Get(ctx, sharedCacheKey(mustAPIKeyCacheKey(t, service, apiKey, clock.Now())), &stored)
-	if err != nil || !found || !stored.Allowed {
-		t.Fatalf("passive decision must be shared: (%v, %v, %+v)", found, err, stored)
-	}
-
-	// Snapshot incomplete + DB-service denial. Drop the stored shared
-	// decision first: the previous passive entry short-circuits before the
-	// snapshot branch (mirrors Node's cache-first order).
-	incomplete := snapshotFixture("2026-09-04T00:00:00.000Z", false, true)
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, incomplete, time.Hour); err != nil {
-		t.Fatalf("write incomplete snapshot: %v", err)
-	}
-	clock.Advance(2 * time.Second) // drop the 1s memo
-	service.ClearCache(ctx)        // rotate the shared cache version
-	decision, err = service.CheckAPIKeyQuotaAsync(ctx, apiKey)
-	if err != nil {
-		t.Fatalf("exact check via db service: %v", err)
-	}
-	if dbService.checkAPIKeyCalls != 1 {
-		t.Fatalf("snapshot miss must call the DB service, calls=%d", dbService.checkAPIKeyCalls)
-	}
-
-	// DB-service failure denies by policy and logs the exact event.
-	dbService.mu.Lock()
-	dbService.checkAPIKeyErr = errors.New("ipc down")
-	dbService.mu.Unlock()
-	clock.Advance(2 * time.Second)
-	service.ClearCache(ctx)
-	decision, err = service.CheckAPIKeyQuotaAsync(ctx, apiKey)
-	if err != nil || decision.Allowed || decision.Message != APIKeyQuotaExceededMessage {
-		t.Fatalf("db-service failure must deny: (%+v, %v)", decision, err)
-	}
-	if !logs.has("gateway_api_key_quota_redis_exact_check_failed|") {
-		t.Fatalf("expected warn event, logs=%v", logs.items)
-	}
-}
-
 func TestCheckAPIKeyQuotaAsyncSharedCacheHit(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	_, shared, snapshot, _ := newRedisQuotaStack(t, clock)
-	dbService := &mockDBService{}
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true},
-		Stats:     nil,
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    shared,
-		DBService: dbService,
-		Now:       clock.Now,
+		Modes:    Modes{RedisCache: true, RedisRuntimeState: true},
+		Stats:    nil,
+		Timezone: mustTZ(t, time.UTC),
+		Snapshot: snapshot,
+		Shared:   shared,
+		Now:      clock.Now,
 	})
 	if err != nil {
 		t.Fatalf("NewAPIKeyQuotaService: %v", err)
@@ -380,80 +269,6 @@ func TestCheckAPIKeyQuotaAsyncSharedCacheHit(t *testing.T) {
 	decision, err := service.CheckAPIKeyQuotaAsync(ctx, apiKey)
 	if err != nil || decision.Allowed || decision.Message != APIKeyQuotaExceededMessage {
 		t.Fatalf("shared hit must return the cached denial: (%+v, %v)", decision, err)
-	}
-	if dbService.checkAPIKeyCalls != 0 {
-		t.Fatal("shared hit must not touch the DB service")
-	}
-}
-
-func TestCheckAPIKeyQuotaAsyncServerRoleMemorySnapshot(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	snapshot, err := NewSnapshotCache(Modes{}, nil, clock.Now, nil)
-	if err != nil {
-		t.Fatalf("NewSnapshotCache: %v", err)
-	}
-	logs := &logRecorder{}
-	dbService := &mockDBService{}
-	db, _ := NewStatsStore(newTestDB(t, "server-mem"), true)
-	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:     Modes{ServerRole: true},
-		Stats:     db,
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		DBService: dbService,
-		Now:       clock.Now,
-		Log:       logs.hook,
-	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyQuotaService: %v", err)
-	}
-	ctx := context.Background()
-	apiKey := APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
-
-	// Complete snapshot with daily cost 20 > limit 10 -> passive deny. The
-	// cost entry mirrors the api key's daily-only window shape.
-	completeSnapshot := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	completeSnapshot.CostEntries = []QuotaCostSnapshotEntry{{
-		SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak",
-		Costs: RequestQuotaCosts{Daily: 20, Total: 20},
-	}}
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(completeSnapshot); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	decision, err := service.CheckAPIKeyQuotaAsync(ctx, apiKey)
-	if err != nil || decision.Allowed || decision.Message != APIKeyQuotaExceededMessage {
-		t.Fatalf("snapshot-driven deny: (%+v, %v)", decision, err)
-	}
-
-	// Incomplete snapshot + DB-service failure -> protective deny + warn.
-	// Clear the cached passive decision first (cache-first order).
-	dbService.mu.Lock()
-	dbService.checkAPIKeyErr = errors.New("ipc down")
-	dbService.mu.Unlock()
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(snapshotFixture("2026-09-04T00:00:00.000Z", false, true)); err != nil {
-		t.Fatalf("replace incomplete: %v", err)
-	}
-	service.ClearCache(ctx)
-	decision, err = service.CheckAPIKeyQuotaAsync(ctx, apiKey)
-	if err != nil || decision.Allowed {
-		t.Fatalf("incomplete+failure must deny: (%+v, %v)", decision, err)
-	}
-	if !logs.has("gateway_api_key_quota_snapshot_fallback_failed|") {
-		t.Fatalf("expected fallback warn, logs=%v", logs.items)
-	}
-
-	// Incomplete snapshot + DB-service decision wins.
-	dbService.mu.Lock()
-	dbService.checkAPIKeyErr = nil
-	dbService.checkAPIKeyDec = AllowedDecision()
-	dbService.mu.Unlock()
-	service.ClearCache(ctx)
-	decision, err = service.CheckAPIKeyQuotaAsync(ctx, apiKey)
-	if err != nil || !decision.Allowed {
-		t.Fatalf("db-service decision must win: (%+v, %v)", decision, err)
-	}
-	if dbService.checkAPIKeyCalls == 0 {
-		t.Fatal("expected db-service call")
 	}
 }
 

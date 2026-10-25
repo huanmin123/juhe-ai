@@ -54,10 +54,6 @@ func runAccountCircuitRuntimeIndexInit() {
 	if isolationErr := j3bConfig.ValidateCircuitRuntimeRedisIsolation(); isolationErr != nil {
 		fail(isolationErr)
 	}
-	businessMode := circuitcontrolplane.SQLite
-	if j3bConfig.StoreMode == "postgres" {
-		businessMode = circuitcontrolplane.Postgres
-	}
 	gate := circuitcontrolplane.OwnerGate{
 		Confirmed:         j3bConfig.BusinessHandoffConfirmed,
 		SchemaReady:       j3bConfig.SchemaReady,
@@ -69,7 +65,7 @@ func runAccountCircuitRuntimeIndexInit() {
 	}
 	defer businessConnection.Close()
 
-	controlStore, err := circuitcontrolplane.New(businessConnection.DB, businessMode, "juhe_business", gate)
+	controlStore, err := circuitcontrolplane.New(businessConnection.DB, "juhe_business", gate)
 	if err != nil {
 		fail(fmt.Errorf("create account circuit control-plane store: %w", err))
 	}

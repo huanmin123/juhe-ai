@@ -68,7 +68,7 @@ func newUsageHydrateFixture(t *testing.T) *sql.DB {
 func TestListPageHydratesUsageSummaries(t *testing.T) {
 	db := newUsageHydrateFixture(t)
 	source := &fakeGroupUsageSource{}
-	store, err := NewStore(db, true, nil, nil, nil, WithUsageSource(source))
+	store, err := NewStore(db, nil, nil, nil, WithUsageSource(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestListPageHydratesUsageSummaries(t *testing.T) {
 func TestFindDetailHydratesUsage(t *testing.T) {
 	db := newUsageHydrateFixture(t)
 	source := &fakeGroupUsageSource{}
-	store, err := NewStore(db, true, nil, nil, nil, WithUsageSource(source))
+	store, err := NewStore(db, nil, nil, nil, WithUsageSource(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestFindDetailHydratesUsage(t *testing.T) {
 // groups_test.go is untouched.
 func TestListPageUsageNilSourceKeepsEmptyShape(t *testing.T) {
 	db := newUsageHydrateFixture(t)
-	store, err := NewStore(db, true, nil, nil, nil)
+	store, err := NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestListPageUsageNilSourceKeepsEmptyShape(t *testing.T) {
 func TestListPageUsageSourceErrorDegrades(t *testing.T) {
 	db := newUsageHydrateFixture(t)
 	source := &fakeGroupUsageSource{err: sql.ErrConnDone}
-	store, err := NewStore(db, true, nil, nil, nil, WithUsageSource(source))
+	store, err := NewStore(db, nil, nil, nil, WithUsageSource(source))
 	if err != nil {
 		t.Fatal(err)
 	}

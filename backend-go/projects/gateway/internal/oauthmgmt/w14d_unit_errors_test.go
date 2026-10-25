@@ -8,7 +8,6 @@ package oauthmgmt
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"math"
@@ -280,18 +279,13 @@ func TestW14dCryptoArms(t *testing.T) {
 }
 
 func TestW14dClosedStoreForks(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:w14d-oauth-closed?mode=memory&cache=shared")
+	// 不可达 pgx 连接池（accounts 包 w13a 先例），错误语义与 closed 等价。
+	db := newUnreachablePGDatabase(t)
+	accountStore, err := accounts.NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	accountStore, err := accounts.NewStore(db, false, testSecret, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(db, false, testSecret, accountStore, ExchangerFunc(func(context.Context, TokenHTTPRequest) (TokenHTTPResponse, error) {
+	store, err := NewStore(db, true, testSecret, accountStore, ExchangerFunc(func(context.Context, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{}, errors.New("w14d closed")
 	}), nil, nil)
 	if err != nil {

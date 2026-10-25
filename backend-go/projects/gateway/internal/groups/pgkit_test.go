@@ -392,7 +392,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, true, nil, nil, invalidator)
+	store, err := NewStore(db, nil, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}

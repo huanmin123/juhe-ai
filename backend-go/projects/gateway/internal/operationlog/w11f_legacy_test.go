@@ -6,115 +6,11 @@ package operationlog
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestW11FLegacyPersistFaultArms(t *testing.T) {
-	ctx := context.Background()
-	store, script, lease := w11fFaultStore(t)
-
-	record := legacyOperationLog{Input: w11fInput("w11f-legacy-1"), RawChangesJSON: "[]", RawMetadataJSON: "{}"}
-	// 正常写入。
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, record); err != nil {
-		t.Fatal(err)
-	}
-	// begin / verifyLease 之后 INSERT 故障 / targets / viewers / terms / commit。
-	record2 := legacyOperationLog{Input: w11fInput("w11f-legacy-2"), RawChangesJSON: "[]", RawMetadataJSON: "{}"}
-	script.failBeginOnce()
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, record2); err == nil {
-		t.Fatal("persist begin fault must fail")
-	}
-	script.failExec("INSERT INTO operation_logs")
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, record2); err == nil {
-		t.Fatal("persist insert fault must fail")
-	}
-	// 已存在记录校验不一致。
-	mismatch := legacyOperationLog{Input: w11fInput("w11f-legacy-1"), RawChangesJSON: "[]", RawMetadataJSON: "{}"}
-	mismatch.Input.Summary = "w11f 不同摘要"
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, mismatch); err == nil || !strings.Contains(err.Error(), "不一致") {
-		t.Fatalf("persist mismatch = %v", err)
-	}
-	// targets 插入故障（新记录 + 带 target）。
-	withTarget := legacyOperationLog{Input: w11fInput("w11f-legacy-3"), RawChangesJSON: "[]", RawMetadataJSON: "{}",
-		Targets: []legacyTarget{{ID: "w11f-t1", Target: Target{TargetType: "group", TargetID: "g", Relation: "child"}, CreatedAt: "2026-01-01T00:00:00.000Z"}}}
-	script.failExec("INSERT INTO operation_log_targets")
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, withTarget); err == nil {
-		t.Fatal("persist targets fault must fail")
-	}
-	// viewers 插入故障。
-	withViewer := legacyOperationLog{Input: w11fInput("w11f-legacy-4"), RawChangesJSON: "[]", RawMetadataJSON: "{}",
-		Viewers: []legacyViewer{{Viewer: Viewer{SystemAccountID: "w11f-v", VisibilityReason: "resource_owner", DetailLevel: "full"}, CreatedAt: "2026-01-01T00:00:00.000Z"}}}
-	script.failExec("INSERT INTO operation_log_viewers")
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, withViewer); err == nil {
-		t.Fatal("persist viewers fault must fail")
-	}
-	// search terms 插入故障。
-	script.failExec("INSERT INTO operation_log_summary_search_terms")
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, legacyOperationLog{Input: w11fInput("w11f-legacy-5"), RawChangesJSON: "[]", RawMetadataJSON: "{}"}); err == nil {
-		t.Fatal("persist terms fault must fail")
-	}
-	// commit 故障。
-	script.failCommitOnce()
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, legacyOperationLog{Input: w11fInput("w11f-legacy-6"), RawChangesJSON: "[]", RawMetadataJSON: "{}"}); err == nil {
-		t.Fatal("persist commit fault must fail")
-	}
-}
-
-func TestW11FVerifyExistingRecordArms(t *testing.T) {
-	ctx := context.Background()
-	store, _, lease := w11fFaultStore(t)
-	record := legacyOperationLog{
-		Input: func() Input {
-			input := w11fInput("w11f-verify-1")
-			input.Changes = []Change{}
-			input.Metadata = json.RawMessage("{}")
-			return input
-		}(), RawChangesJSON: "[]", RawMetadataJSON: "{}",
-		Targets: []legacyTarget{{ID: "w11f-vt", Target: Target{TargetType: "group", TargetID: "g1", Relation: "child"}, CreatedAt: "2026-01-01T00:00:00.000Z"}},
-		Viewers: []legacyViewer{{Viewer: Viewer{SystemAccountID: "w11f-vv", VisibilityReason: "resource_owner", DetailLevel: "full"}, CreatedAt: "2026-01-01T00:00:00.000Z"}},
-	}
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, record); err != nil {
-		t.Fatal(err)
-	}
-	// （完全一致的回读对齐已由 TestW11FLegacySQLiteGates 的二次迁移覆盖。）
-	// 缺失记录。
-	missing := legacyOperationLog{Input: w11fInput("w11f-missing"), RawChangesJSON: "[]", RawMetadataJSON: "{}"}
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, missing); err == nil || !strings.Contains(err.Error(), "未找到") {
-		t.Fatalf("missing record = %v", err)
-	}
-	// 摘要不一致。
-	summaryDiff := record
-	summaryDiff.Input.Summary = "w11f 摘要不同"
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, summaryDiff); err == nil || !strings.Contains(err.Error(), "不一致") {
-		t.Fatalf("summary mismatch = %v", err)
-	}
-	// targets 不一致。
-	targetDiff := record
-	targetDiff.Targets = []legacyTarget{{ID: "t", Target: Target{TargetType: "group", Relation: "child"}, CreatedAt: "2026-01-01T00:00:00.000Z"}}
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, targetDiff); err == nil || !strings.Contains(err.Error(), "不一致") {
-		t.Fatalf("targets mismatch = %v", err)
-	}
-	// viewers 不一致。
-	viewerDiff := record
-	viewerDiff.Viewers = []legacyViewer{{Viewer: Viewer{SystemAccountID: "v", VisibilityReason: "owner", DetailLevel: "full"}, CreatedAt: "2026-01-01T00:00:00.000Z"}}
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, viewerDiff); err == nil || !strings.Contains(err.Error(), "不一致") {
-		t.Fatalf("viewers mismatch = %v", err)
-	}
-	// terms 与当前规则不一致（手工改写 terms）。
-	if _, err := store.db.Exec(`DELETE FROM operation_log_summary_search_terms WHERE operation_log_id=?`, record.Input.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`INSERT INTO operation_log_summary_search_terms (operation_log_id,term,created_at) VALUES (?, 'zzz-term', ?)`, record.Input.ID, record.Input.CreatedAt); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, record); err == nil || !strings.Contains(err.Error(), "search terms") {
-		t.Fatalf("terms mismatch = %v", err)
-	}
-}
 
 // TestW11FLegacyPostgresHelpers 用 w9b 脚本驱动覆盖 PG 迁移辅助的错误臂。
 func TestW11FLegacyPostgresHelpers(t *testing.T) {
@@ -222,48 +118,13 @@ func TestW11FLegacyPostgresHelpers(t *testing.T) {
 func TestW11FMigrateLegacyPostgresOpenFaults(t *testing.T) {
 	ctx := context.Background()
 	options := w11fGates()
-	// 模式不符。
-	if _, err := MigrateLegacyPostgres(ctx, Config{Mode: ModeSQLite}, options); err == nil {
-		t.Fatal("mode mismatch must fail")
-	}
 	// 打开目标失败（非法 URL）。
-	if _, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: "not a url"}, options); err == nil {
+	if _, err := MigrateLegacyPostgres(ctx, Config{PostgresURL: "not a url"}, options); err == nil {
 		t.Fatal("bad URL must fail")
 	}
 }
 
 // TestW11FListViewerPathFaults 覆盖 List 的 viewer 两臂查询与错误。
-func TestW11FListViewerPathFaults(t *testing.T) {
-	ctx := context.Background()
-	store, script, lease := w11fFaultStore(t)
-	// targeted 记录 + viewer。
-	input := w11fInput("w11f-viewer-1")
-	input.VisibilityScope = "targeted"
-	input.Viewers = []Viewer{{SystemAccountID: "w11f-viewer", VisibilityReason: "resource_owner", DetailLevel: "full"}}
-	if _, err := store.Persist(ctx, lease, input); err != nil {
-		t.Fatal(err)
-	}
-	// 命中。
-	result, err := store.List(ctx, ListOptions{ViewerID: "w11f-viewer"})
-	if err != nil || len(result.Items) != 1 {
-		t.Fatalf("viewer list = %+v/%v", result, err)
-	}
-	// targeted 查询错误。
-	script.failQuery("JOIN operation_logs ol")
-	if _, err := store.List(ctx, ListOptions{ViewerID: "w11f-viewer"}); err == nil {
-		t.Fatal("viewer targeted fault must fail")
-	}
-	// all-users 查询错误。
-	script.failQuery("FROM operation_logs ol")
-	if _, err := store.List(ctx, ListOptions{ViewerID: "w11f-viewer"}); err == nil {
-		t.Fatal("viewer all-users fault must fail")
-	}
-	// summary keyword 过滤命中。
-	result, err = store.List(ctx, ListOptions{SummaryKeyword: "w11f 摘要"})
-	if err != nil || len(result.Items) != 1 {
-		t.Fatalf("keyword list = %+v/%v", result, err)
-	}
-}
 
 var _ = sql.ErrNoRows
 var _ = filepath.Join

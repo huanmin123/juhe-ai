@@ -75,7 +75,6 @@ func int64Ptr2(v int64) *int64 { return &v }
 func TestPostgresTextRewriting(t *testing.T) {
 	s, db := wkReadyStore(t)
 	defer db.Close()
-	s.mode = Postgres
 	s.schema = "tenant_1"
 	if got := s.table("accounts"); got != `"tenant_1".accounts` {
 		t.Fatalf("table=%q", got)
@@ -90,7 +89,7 @@ func TestPostgresTextRewriting(t *testing.T) {
 		t.Fatalf("forUpdateSkipLocked=%q", got)
 	}
 	// 非法 schema 拒绝。
-	if _, err := New(db, Postgres, "bad schema", OwnerGate{}); !errors.Is(err, ErrInvalidSchema) {
+	if _, err := New(db, "bad schema", OwnerGate{}); !errors.Is(err, ErrInvalidSchema) {
 		t.Fatalf("schema err=%v", err)
 	}
 }
@@ -596,18 +595,6 @@ func TestCheckContractGateBlocked(t *testing.T) {
 	blocked, _ := wkStoreLabeled(t, "-gateblocked", OwnerGate{})
 	if err := blocked.CheckContract(context.Background()); !errors.Is(err, ErrOwnerGate) {
 		t.Fatalf("gate err=%v", err)
-	}
-}
-
-func TestCheckContractPostgresModeOnSQLiteFails(t *testing.T) {
-	// 组B：被测对象是"PG 模式契约查询落在 SQLite 生产臂上必然失败"的跨形态
-	// 守卫，必须保留 SQLite 建库（随生产 sqlite 臂删除批次同批退役）。
-	s, db := wkSQLiteLegacyStoreLabeled(t, "-pgmode", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	defer db.Close()
-	// Postgres 模式索引校验查询在 SQLite 上必然失败（缺 pg_catalog）。
-	s.mode = Postgres
-	if err := s.CheckContract(context.Background()); err == nil {
-		t.Fatal("Postgres 索引校验在 SQLite 上必须失败")
 	}
 }
 

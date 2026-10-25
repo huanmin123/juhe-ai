@@ -18,12 +18,12 @@ func strongProductionSecret(length int) string {
 func productionSecurityEnv(t *testing.T) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"NODE_ENV":                    "production",
-		"JUHE_AI_POSTGRES_URL":        "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL":     "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL":     "redis://127.0.0.1:6379/1",
-		"JUHE_AI_SECRET":              strongProductionSecret(32),
-		"JUHE_AI_ALLOWED_ORIGINS":     "https://admin.example.com",
+		"NODE_ENV":                "production",
+		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+		"JUHE_AI_SECRET":          strongProductionSecret(32),
+		"JUHE_AI_ALLOWED_ORIGINS": "https://admin.example.com",
 	}
 }
 

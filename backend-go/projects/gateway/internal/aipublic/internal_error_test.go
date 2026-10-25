@@ -2,28 +2,24 @@ package aipublic
 
 // Node 对齐契约测试：DB 基础设施失败走全局 handler 语义
 //（500 {message}，无 code 字段），nowISO 毫秒精度（nowIso() =
-// new Date().toISOString()）。
+// new Date().toISOString()）。T65 迁移后载具为 pgtestkit 空 schema 隔离库
+//（表缺失即存储基础设施失败，与原 SQLite :memory: 空库同一断言语义）。
 
 import (
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // TestGuardDBFailureOmitsCode：token 查询失败（表缺失）时 Node 经
 // next(error) 进全局错误处理，返回 500 {"message":"服务器内部错误"}，
 // 不带 external_source_internal_error。
 func TestGuardDBFailureOmitsCode(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
-	deps := &Deps{DB: db, PGDialect: false, Now: time.Now}
+	db := pgtestkit.New(t)
+	deps := &Deps{DB: db, PGDialect: true, Now: time.Now}
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, Prefix+"/group/list", nil)
@@ -48,12 +44,8 @@ func TestGuardDBFailureOmitsCode(t *testing.T) {
 
 // TestValidateTokenDBFailureUntyped：ValidateToken 的 500 分支不携带 code。
 func TestValidateTokenDBFailureUntyped(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
-	deps := &Deps{DB: db, PGDialect: false, Now: time.Now}
+	db := pgtestkit.New(t)
+	deps := &Deps{DB: db, PGDialect: true, Now: time.Now}
 	_, authErr := deps.ValidateToken(t.Context(), "some-token", scopeGroupListRead)
 	if authErr == nil {
 		t.Fatalf("expected auth error")

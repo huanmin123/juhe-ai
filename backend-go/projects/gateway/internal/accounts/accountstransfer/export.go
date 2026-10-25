@@ -39,7 +39,7 @@ type ExportProxy struct {
 // ExportConnection 是导出文档的 §8 连接 wire 行（连接只写 connectionPresetCode，
 // 不导出 account_connections.id；导入时服务端重新生成内部 ID）。
 type ExportConnection struct {
-	ConnectionPresetCode string   `json:"connectionPresetCode"`
+	ConnectionPresetCode string `json:"connectionPresetCode"`
 	// ProtocolSurfaceCode 纯媒体连接导出 null（§8：纯媒体为 null）。
 	ProtocolSurfaceCode *string  `json:"protocolSurfaceCode"`
 	BaseURL             string   `json:"baseUrl"`
@@ -545,8 +545,8 @@ func (s *Service) exportProxyRef(ctx context.Context, proxyProfileID string, pro
 		username    sql.NullString
 		password    sql.NullString
 		description sql.NullString
-		// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
-		// 扫描目标必须用 bool 才能同时兼容两种驱动。
+		// proxy_profiles.enabled 在 PostgreSQL 为 boolean，扫描目标用 bool
+		// 对齐驱动类型。
 		enabled bool
 	}
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT name, type, host, port, username, password_encrypted,

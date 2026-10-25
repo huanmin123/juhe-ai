@@ -162,8 +162,7 @@ func urlValuesFrom(keyword string) url.Values {
 
 func newPGCaptureDeps(rec *pgCapture) *Deps {
 	return &Deps{
-		Business:  sql.OpenDB(captureConnector{rec: rec}),
-		PGDialect: true,
+		Business: sql.OpenDB(captureConnector{rec: rec}),
 		Now: func() time.Time {
 			return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 		},
@@ -413,69 +412,6 @@ func TestAiPerformanceSeriesKeepsRequestedAccountOrder(t *testing.T) {
 }
 
 // ---- rank NULL → 0（Node Number(row.rank ?? 0)，NULL rank 排最前） ----
-
-func TestDefaultAiPerformanceAccountsNullRankSortsFirst(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	schema := `
-		CREATE TABLE usage_rank_snapshots (
-			system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, window_key TEXT NOT NULL,
-			metric TEXT NOT NULL, snapshot_at TEXT NOT NULL, rank INTEGER, scope_id TEXT NOT NULL,
-			metric_value REAL NOT NULL DEFAULT 0,
-			PRIMARY KEY (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id));
-		CREATE TABLE accounts (
-			id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL,
-			vendor_code TEXT, deleted_at TEXT,
-			authorization_instance_authorization_id TEXT);
-		CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT);
-	`
-	if _, err := db.Exec(schema); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	seed := []string{
-		// 同一快照批次：acct-a rank=1/100 次，acct-z rank 为 NULL/5 次。
-		`INSERT INTO usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
-			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-01T00:00:00.000Z', 1, 'acct-a', 100)`,
-		`INSERT INTO usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value)
-			VALUES ('global', 'account', 'last7d', 'request_count', '2026-09-01T00:00:00.000Z', NULL, 'acct-z', 5)`,
-		`INSERT INTO accounts (id, name, system_account_id, vendor_code)
-			VALUES ('acct-a', '账户A', 'sys-owner-1', 'openai'),
-			       ('acct-z', '账户Z', 'sys-owner-1', 'openai')`,
-	}
-	for _, statement := range seed {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("seed %v", err)
-		}
-	}
-	deps := &Deps{
-		Business: db,
-		Stats:    db,
-		Now: func() time.Time {
-			return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-		},
-	}
-	rows, err := deps.defaultAiPerformanceAccounts(httptest.NewRequest(http.MethodGet, "/", nil),
-		perfScopeState{SystemAccountID: globalStatsSystemAccountID, ScopeType: "account", IncludeSystemAccountName: true}, 10)
-	if err != nil {
-		t.Fatalf("defaultAiPerformanceAccounts: %v", err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("rows = %#v", rows)
-	}
-	// NULL rank 按 Number(rank ?? 0) = 0 排最前（Go 旧实现排最后）。
-	if rows[0].ID != "acct-z" || rows[1].ID != "acct-a" {
-		t.Fatalf("顺序 = [%s %s], 期望 [acct-z acct-a]（NULL rank 应为 0 排最前）", rows[0].ID, rows[1].ID)
-	}
-	if rows[0].Rank == nil || *rows[0].Rank != 0 {
-		t.Fatalf("NULL rank 应固化为 0，实际 %#v", rows[0].Rank)
-	}
-	if rows[0].RequestCountLast7d != 5 || rows[1].RequestCountLast7d != 100 {
-		t.Fatalf("request_count_last_7d 漂移：%#v", rows)
-	}
-}
 
 // ---- ai-health / 账户选项参数门（Node zod 契约） ----
 

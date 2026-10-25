@@ -93,7 +93,7 @@ func newW1SResetFixture(t *testing.T) *w1sResetFixture {
 	w1sEnsureStatsSchema(t, db)
 
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	stats, err := gatewayquota.NewStatsStore(db, false)
+	stats, err := gatewayquota.NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("stats store: %v", err)
 	}

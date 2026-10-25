@@ -310,16 +310,12 @@ func newChainAccountCircuitPersistHook(runtimeStore gatewaycircuit.Store, config
 	if config.DB == nil || !config.Confirmed || !config.SchemaReady || !config.NodeWriterStopped {
 		return nil, nil, nil, nil
 	}
-	mode := circuitcontrolplane.SQLite
-	if config.Postgres {
-		mode = circuitcontrolplane.Postgres
-	}
 	gate := circuitcontrolplane.OwnerGate{
 		Confirmed:         config.Confirmed,
 		SchemaReady:       config.SchemaReady,
 		NodeWriterStopped: config.NodeWriterStopped,
 	}
-	controlStore, err := circuitcontrolplane.New(config.DB, mode, businessSchema, gate)
+	controlStore, err := circuitcontrolplane.New(config.DB, businessSchema, gate)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create gateway account circuit control-plane store: %w", err)
 	}

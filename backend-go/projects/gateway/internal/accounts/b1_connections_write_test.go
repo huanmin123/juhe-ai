@@ -29,7 +29,7 @@ func b1CreatePayload(name string) string {
 
 // TestB1CreateWritesConnectionRows 是 #B1 完成判定用例：携 connections +
 // mappings + healthCheck 三件套的创建全流程 2xx，四张关系表行完整且相互解析
-//（连接行 → mode 行 → 映射 target_connection_id → health_check_connection_id）。
+// （连接行 → mode 行 → 映射 target_connection_id → health_check_connection_id）。
 func TestB1CreateWritesConnectionRows(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -214,19 +214,19 @@ func TestB1ValidateConnectionBaseURLTable(t *testing.T) {
 		}
 	}
 	invalid := []string{
-		"",                        // 空
-		"ftp://api.openai.com/v1", // 非 http/https
-		"https://user:pass@api.openai.com/v1", // userinfo
-		"https://api.openai.com/v1?x=1",       // query
-		"https://api.openai.com/v1#frag",      // fragment
-		"https://api.openai.com/../v1",        // dot segment
-		"https://api.openai.com/%zz/v1",       // 坏 percent escape
-		"https://api.openai.com/%2F/v1",       // percent-decoded slash
-		"https://api.openai.com/%5C/v1",       // percent-decoded backslash
-		"https://api.openai.com/v1/chat/completions", // operation 完整路径
-		"https://api.openai.com/v1/chat",             // operation 中间前缀
-		"https://api.openai.com/v1/chat/comp",        // 字面段非空前缀
-		"https://api.openai.com/audio",               // 非法 suffix
+		"",                                                 // 空
+		"ftp://api.openai.com/v1",                          // 非 http/https
+		"https://user:pass@api.openai.com/v1",              // userinfo
+		"https://api.openai.com/v1?x=1",                    // query
+		"https://api.openai.com/v1#frag",                   // fragment
+		"https://api.openai.com/../v1",                     // dot segment
+		"https://api.openai.com/%zz/v1",                    // 坏 percent escape
+		"https://api.openai.com/%2F/v1",                    // percent-decoded slash
+		"https://api.openai.com/%5C/v1",                    // percent-decoded backslash
+		"https://api.openai.com/v1/chat/completions",       // operation 完整路径
+		"https://api.openai.com/v1/chat",                   // operation 中间前缀
+		"https://api.openai.com/v1/chat/comp",              // 字面段非空前缀
+		"https://api.openai.com/audio",                     // 非法 suffix
 		"https://api.openai.com/v1/chat/completions/extra", // suffix 未命中 + operation 前缀
 	}
 	for _, raw := range invalid {

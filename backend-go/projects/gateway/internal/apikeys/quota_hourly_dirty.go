@@ -22,10 +22,7 @@ import (
 // statsTable qualifies a juhe_stats table (PostgreSQL schema-qualified, bare
 // on SQLite), matching the authz/accounts stats table helpers.
 func (s *Store) statsTable(name string) string {
-	if s.pg {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // markQuotaHourlyWindowDirtyScope mirrors
@@ -50,9 +47,6 @@ func (s *Store) markQuotaHourlyWindowDirtyScope(ctx context.Context, q queryer, 
 // they surface as a warn log and the scope converges on the next scheduler
 // expiry sweep instead.
 func (s *Store) markQuotaHourlyWindowDirtyScopeAfterCommit(ctx context.Context, ownerID, apiKeyID, timestamp string) {
-	if !s.pg {
-		return
-	}
 	if err := s.markQuotaHourlyWindowDirtyScope(ctx, s.db, ownerID, apiKeyID, timestamp); err != nil {
 		slog.Warn("配额小时窗绑定打脏失败，等待调度轮 expiry 区间推进收敛",
 			"event", "api_key_quota_hourly_window_dirty_mark_failed",

@@ -79,7 +79,7 @@ func wjNewAuthzService(t *testing.T, modes Modes, clock *fakeClock, suffix strin
 	statsDB := newTestDB(t, "wj-authz-stats-"+suffix)
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -103,7 +103,7 @@ func wjNewAuthzService(t *testing.T, modes Modes, clock *fakeClock, suffix strin
 func TestWJAuthorizationQuotaConfigValidation(t *testing.T) {
 	business := newTestDB(t, "wj-cfg-biz")
 	statsDB := newTestDB(t, "wj-cfg-stats")
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -158,24 +158,23 @@ func TestWJAuthorizationQuotaConfigValidation(t *testing.T) {
 
 // wjNewAuthzRedisService 构造 Redis server 角色的授权配额服务：业务库在
 // server 角色下不直接查询（走快照/DB service），但构造期仍要求非 nil。
-func wjNewAuthzRedisService(t *testing.T, clock *fakeClock, shared SharedJSONCache, snapshot *SnapshotCache, dbService DBServiceClient, log LogHook) *AuthorizationQuotaService {
+func wjNewAuthzRedisService(t *testing.T, clock *fakeClock, shared SharedJSONCache, snapshot *SnapshotCache, log LogHook) *AuthorizationQuotaService {
 	t.Helper()
 	statsDB := newTestDB(t, "wj-authz-redis-stats")
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Business:  newTestDB(t, "wj-authz-redis-biz"),
-		Stats:     stats,
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    shared,
-		DBService: dbService,
-		Now:       clock.Now,
-		Log:       log,
+		Modes:    Modes{RedisCache: true, RedisRuntimeState: true},
+		Business: newTestDB(t, "wj-authz-redis-biz"),
+		Stats:    stats,
+		Timezone: mustTZ(t, time.UTC),
+		Snapshot: snapshot,
+		Shared:   shared,
+		Now:      clock.Now,
+		Log:      log,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthorizationQuotaService: %v", err)
@@ -187,7 +186,7 @@ func wjNewAuthzRedisService(t *testing.T, clock *fakeClock, shared SharedJSONCac
 // 的包装语义：account 为 nil 时只按 group 维度判定，非 nil 时取其授权 ID。
 func TestWJCheckAuthorizationQuotaSyncWrapper(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "sync")
+	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "sync")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -215,7 +214,7 @@ func TestWJCheckAuthorizationQuotaSyncWrapper(t *testing.T) {
 // 运行时内存缓存命中与失效同步器错误传播。
 func TestWJAuthorizationQuotaAsyncMemoryAndSyncer(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	base, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "mem")
+	base, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "mem")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -265,285 +264,23 @@ func TestWJAuthorizationQuotaAsyncMemoryAndSyncer(t *testing.T) {
 
 // TestWJAuthorizationQuotaAsyncServerRoleDBFallback 固定 server 角色内存快照
 // 模式下 DB service 精确补判的成功与失败路径。
-func TestWJAuthorizationQuotaAsyncServerRoleDBFallback(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _, _ := wjNewAuthzService(t, Modes{ServerRole: true}, clock, "fallback")
-	logs := &logRecorder{}
-	service.log = logs.hook
-	dbService := &mockDBService{}
-	service.dbService = dbService
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	account := &AccountAuthorizationSummary{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true}
-
-	// 快照不完整且受限 scope 缺失 → DB service 精确补判成功，结果回写缓存。
-	incomplete := snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	if err := service.snapshot.ReplaceGatewayQuotaSnapshot(incomplete); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	dbService.mu.Lock()
-	dbService.checkAuthzDec = DeniedDecision(AuthorizationQuotaExceededMessage)
-	dbService.mu.Unlock()
-	decision, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed || decision.Message != AuthorizationQuotaExceededMessage {
-		t.Fatalf("DB service 补判拒绝必须生效: (%+v, %v)", decision, err)
-	}
-	if dbService.checkAuthzCalls != 1 || dbService.checkAuthzGroup[0] != "ga1" || dbService.checkAuthzAcct[0] != "aa1" {
-		t.Fatalf("DB service 补判参数不符: calls=%d group=%v acct=%v", dbService.checkAuthzCalls, dbService.checkAuthzGroup, dbService.checkAuthzAcct)
-	}
-
-	// DB service 失败 → 保护策略继续使用快照判定（受限缺失 → 拒绝）并记录 warn。
-	dbService.mu.Lock()
-	dbService.checkAuthzErr = errors.New("ipc down")
-	dbService.mu.Unlock()
-	service.ClearCache(ctx)
-	decision, err = service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed {
-		t.Fatalf("补判失败必须按快照保护拒绝: (%+v, %v)", decision, err)
-	}
-	if !logs.has("gateway_authorization_quota_snapshot_fallback_failed|") {
-		t.Fatalf("必须记录快照回退失败事件: %v", logs.items)
-	}
-
-	// DB service 未配置 → 补判错误 → 同样走快照保护。
-	service.dbService = nil
-	service.ClearCache(ctx)
-	decision, err = service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed {
-		t.Fatalf("无 DB service 必须按快照保护拒绝: (%+v, %v)", decision, err)
-	}
-}
 
 // TestWJCheckAuthorizationQuotaAsyncRedisServerRole 固定 Redis 模式 server
 // 角色的共享快照判定树：命中即判、缺失精确补判、失败保护拒绝。
-func TestWJCheckAuthorizationQuotaAsyncRedisServerRole(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	server, shared, snapshot, runtimeState := newRedisQuotaStack(t, clock)
-	logs := &logRecorder{}
-	dbService := &mockDBService{}
-	service := wjNewAuthzRedisService(t, clock, shared, snapshot, dbService, logs.hook)
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	account := &AccountAuthorizationSummary{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true}
-
-	// 完整快照且条目拒绝 group scope → 直接按快照拒绝，不触碰 DB service。
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	doc.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: DeniedDecision(AuthorizationQuotaExceededMessage)},
-	}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Hour); err != nil {
-		t.Fatalf("write snapshot: %v", err)
-	}
-	decision, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed || decision.Message != AuthorizationQuotaExceededMessage {
-		t.Fatalf("共享快照拒绝必须生效: (%+v, %v)", decision, err)
-	}
-	if dbService.checkAuthzCalls != 0 {
-		t.Fatalf("快照命中不得调用 DB service")
-	}
-
-	// 二次调用直接命中 Redis shared cache 中已缓存的拒绝决策（越过 1s memo
-	// 后快照仍可用，返回值必须与缓存一致且不触发 DB service）。
-	clock.Advance(2 * time.Second) // 越过 1s memo
-	dbService.mu.Lock()
-	dbService.checkAuthzDec = AllowedDecision()
-	dbService.mu.Unlock()
-	decision, err = service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed || decision.Message != AuthorizationQuotaExceededMessage {
-		t.Fatalf("shared 缓存命中必须返回缓存的拒绝决策: (%+v, %v)", decision, err)
-	}
-	if dbService.checkAuthzCalls != 0 {
-		t.Fatalf("shared 命中不得调用 DB service, calls=%d", dbService.checkAuthzCalls)
-	}
-
-	// 快照缺失 → DB service 精确补判成功。
-	if err := runtimeState.Delete(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey); err != nil {
-		t.Fatalf("delete snapshot: %v", err)
-	}
-	service.ClearCacheAsync(ctx)
-	clock.Advance(2 * time.Second)
-	decision, err = service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || !decision.Allowed {
-		t.Fatalf("无快照时 DB service 补判必须生效: (%+v, %v)", decision, err)
-	}
-	if dbService.checkAuthzCalls != 1 {
-		t.Fatalf("无快照必须精确补判, calls=%d", dbService.checkAuthzCalls)
-	}
-
-	// 无快照且 DB service 失败 → 保护性拒绝并记录事件。
-	dbService.mu.Lock()
-	dbService.checkAuthzErr = errors.New("ipc down")
-	dbService.mu.Unlock()
-	service.ClearCacheAsync(ctx)
-	clock.Advance(2 * time.Second)
-	decision, err = service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed || decision.Message != AuthorizationQuotaExceededMessage {
-		t.Fatalf("补判失败必须保护性拒绝: (%+v, %v)", decision, err)
-	}
-	if !logs.has("gateway_authorization_quota_redis_exact_check_failed|") {
-		t.Fatalf("必须记录 Redis 精确补判失败事件: %v", logs.items)
-	}
-
-	// Redis transport 故障（server 关闭）→ 快照可用性检查错误传播。
-	service.ClearCacheAsync(ctx)
-	clock.Advance(2 * time.Second)
-	server.Close()
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account); err == nil {
-		t.Fatal("Redis 故障时快照可用性检查错误必须传播")
-	}
-}
 
 // TestWJCheckAuthorizationQuotaBatchAsyncRedisServerRole 固定 Redis server
 // 角色的批量判定树：快照可判的直接判、缺失的走 DB service 批量补判。
-func TestWJCheckAuthorizationQuotaBatchAsyncRedisServerRole(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	_, shared, snapshot, runtimeState := newRedisQuotaStack(t, clock)
-	logs := &logRecorder{}
-	dbService := &mockDBService{}
-	service := wjNewAuthzRedisService(t, clock, shared, snapshot, dbService, logs.hook)
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{
-		{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true},
-		{ID: "u2", AccountAuthorizationID: "aa2"},
-	}
-
-	// 完整快照不需要 DB service 补判：u1 的 aa1 无条目 → 按快照允许；
-	// u2 无受限授权 → 允许。全程不调用 DB service。
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	doc.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: AllowedDecision()},
-	}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Hour); err != nil {
-		t.Fatalf("write snapshot: %v", err)
-	}
-	dbService.mu.Lock()
-	dbService.checkBatchDecs = []Decision{AllowedDecision()}
-	dbService.mu.Unlock()
-	output, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("批量 Redis 判定: %v", err)
-	}
-	if !output["u1"].Allowed || !output["u2"].Allowed {
-		t.Fatalf("完整快照批量必须都允许: %+v", output)
-	}
-	if dbService.checkBatchCalls != 0 {
-		t.Fatalf("完整快照不得调用 DB service, calls=%d", dbService.checkBatchCalls)
-	}
-
-	// 不完整快照：u1 受限且条目缺失 → 必须批量精确补判并回填结果。
-	service.ClearCacheAsync(ctx)
-	clock.Advance(2 * time.Second)
-	incomplete := snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	incomplete.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: AllowedDecision()},
-	}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, incomplete, time.Hour); err != nil {
-		t.Fatalf("write incomplete snapshot: %v", err)
-	}
-	output, err = service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("不完整快照批量: %v", err)
-	}
-	if dbService.checkBatchCalls != 1 {
-		t.Fatalf("不完整快照缺失 scope 必须批量补判, calls=%d", dbService.checkBatchCalls)
-	}
-	if !output["u1"].Allowed || !output["u2"].Allowed {
-		t.Fatalf("补判结果必须都允许: %+v", output)
-	}
-
-	// 补判失败 → 仍缺失的 u1 保护性拒绝；u2 已由快照判定，保留允许结果。
-	service.ClearCacheAsync(ctx)
-	clock.Advance(2 * time.Second)
-	dbService.mu.Lock()
-	dbService.checkBatchErr = errors.New("ipc down")
-	dbService.mu.Unlock()
-	output, err = service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("批量 Redis 判定失败路径: %v", err)
-	}
-	if output["u1"].Allowed || output["u1"].Message != AuthorizationQuotaExceededMessage {
-		t.Fatalf("补判失败 u1 必须保护性拒绝: %+v", output["u1"])
-	}
-	if !output["u2"].Allowed {
-		t.Fatalf("快照已判定的 u2 必须保留允许: %+v", output["u2"])
-	}
-	if !logs.has("gateway_authorization_quota_batch_redis_exact_check_failed|") {
-		t.Fatalf("必须记录批量补判失败事件: %v", logs.items)
-	}
-
-	// 完整快照且所有受限 scope 均有条目 → 全部按快照判定，不调用 DB service。
-	service.ClearCacheAsync(ctx)
-	clock.Advance(2 * time.Second)
-	dbService.mu.Lock()
-	dbService.checkBatchErr = nil
-	dbService.checkBatchCalls = 0
-	dbService.mu.Unlock()
-	doc = snapshotFixture("2026-09-04T01:00:00.000Z", true, true)
-	doc.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: AllowedDecision()},
-		{ScopeType: ScopeTypeAccountAuthorization, AuthorizationID: "aa1", Decision: AllowedDecision()},
-	}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Hour); err != nil {
-		t.Fatalf("write snapshot: %v", err)
-	}
-	output, err = service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("快照全可判批量: %v", err)
-	}
-	if dbService.checkBatchCalls != 0 {
-		t.Fatalf("快照全可判不得额外调用 DB service, calls=%d", dbService.checkBatchCalls)
-	}
-	if !output["u1"].Allowed || !output["u2"].Allowed {
-		t.Fatalf("快照全可判必须都允许: %+v", output)
-	}
-}
 
 // TestWJAuthorizationQuotaBatchServerRoleSharedAuthzDedup 固定 server 角色
 // 非共享缓存批量路径的 scope 去重语义：两个账户共享同一账户授权 ID 时，
 // 只精确补判一次，且两个账户都必须得到决策（含兜底快照判定循环）。
-func TestWJAuthorizationQuotaBatchServerRoleSharedAuthzDedup(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _, _ := wjNewAuthzService(t, Modes{ServerRole: true}, clock, "dedup")
-	dbService := &mockDBService{}
-	service.dbService = dbService
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	// u1 与 u3 共享 aa1：cacheKey 相同，u3 不进入精确补判名单但必须得到决策。
-	accounts := []AccountAuthorizationSummary{
-		{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true},
-		{ID: "u3", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true},
-	}
-
-	incomplete := snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	if err := service.snapshot.ReplaceGatewayQuotaSnapshot(incomplete); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	// DB service 只返回一条决策（与去重后的缺失名单对齐），u1 拒绝、
-	// u3 依赖兜底快照判定 → 受限缺失 → 保护性拒绝。
-	dbService.mu.Lock()
-	dbService.checkBatchDecs = []Decision{DeniedDecision(AuthorizationQuotaExceededMessage)}
-	dbService.mu.Unlock()
-	output, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("共享授权批量: %v", err)
-	}
-	for _, accountID := range []string{"u1", "u3"} {
-		if output[accountID].Allowed || output[accountID].Message != AuthorizationQuotaExceededMessage {
-			t.Fatalf("%s 必须得到拒绝决策: %+v", accountID, output[accountID])
-		}
-	}
-	if dbService.checkBatchCalls != 1 {
-		t.Fatalf("共享 scope 只能补判一次, calls=%d", dbService.checkBatchCalls)
-	}
-}
 
 // TestWJAuthorizationQuotaReadOnlyAndExact 固定只读与精确异步入口的契约：
 // 只读绕过运行时缓存；ExactAsync 在非 PostgreSQL 下回退同步路径，在
 // PostgreSQL 模式下走批量成本装载（SQLite 无法绑定 $n 占位符 → 错误传播）。
 func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "roex")
+	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "roex")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -585,16 +322,16 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 	statsSchema(t, pgStatsDB)
 	seedCost(t, pgStatsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 10})
-	pgStats, err := NewStatsStore(pgStatsDB, true)
+	pgStats, err := NewStatsStore(pgStatsDB)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
 	pgService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true},
+		Modes:    Modes{},
 		Business: pgBusiness,
 		Stats:    pgStats,
 		Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock),
 		Now:      clock.Now,
 	})
 	if err != nil {
@@ -614,57 +351,12 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 
 // TestWJAuthorizationQuotaRedisCacheSetFailure 固定 Redis shared cache 写入
 // 失败只记录日志、不改变决策的契约（Node void 写入的对齐行为）。
-func TestWJAuthorizationQuotaRedisCacheSetFailure(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	_, _, snapshot, _ := newRedisQuotaStack(t, clock)
-	logs := &logRecorder{}
-	failing := &wjMockShared{setErr: errors.New("redis write down")}
-	dbService := &mockDBService{}
-	service := wjNewAuthzRedisService(t, clock, failing, snapshot, dbService, logs.hook)
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-
-	// DB service 补判成功但 shared 写入失败：异步入口按契约向上传播写入
-	// 错误（setCacheEntryAsync 会 await shared.Set）。
-	dbService.mu.Lock()
-	dbService.checkAuthzDec = AllowedDecision()
-	dbService.mu.Unlock()
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil || err.Error() != "redis write down" {
-		t.Fatalf("异步入口 shared 写失败必须传播: %v", err)
-	}
-	if failing.setCalls == 0 {
-		t.Fatal("必须尝试写 shared cache")
-	}
-
-	// setCacheEntry 的 best-effort 分支（对齐 Node void 写入）：写失败只记录
-	// 日志、不向上传播。
-	service.setCacheEntry("runtime\x00key", newCachedDecision(AllowedDecision(), clock.Now().UnixMilli()), false)
-	if !logs.has("authorization_quota_shared_cache_set_failed|") {
-		t.Fatalf("必须记录 shared 写失败事件: %v", logs.items)
-	}
-
-	// shared Get 返回错误 → 错误传播，不得静默当作 miss。
-	failing.mu.Lock()
-	failing.getErr = errors.New("redis read down")
-	failing.mu.Unlock()
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil || err.Error() != "redis read down" {
-		t.Fatalf("shared 读取错误必须传播: %v", err)
-	}
-
-	// ClearCacheAsync 在 Redis 模式下传播 shared Clear 错误。
-	failing.mu.Lock()
-	failing.clearErr = errors.New("redis clear down")
-	failing.mu.Unlock()
-	if err := service.ClearCacheAsync(ctx); err == nil || err.Error() != "redis clear down" {
-		t.Fatalf("ClearCacheAsync 必须传播 shared 清理错误: %v", err)
-	}
-}
 
 // TestWJTeamGrantHourlyLimit 固定 team grant 小时窗口限制的统计口径：
 // 小时额度按归一化窗口小时数读取 hourly 投影，超出即拒绝。
 func TestWJTeamGrantHourlyLimit(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "teamhourly")
+	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "teamhourly")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "team1", "", "active")
 	seedGrantRow(t, business, "grant1", "group", "g1", "team1", "sysA", `{"hourly":{"enabled":true,"hours":6,"limit":2}}`)
@@ -691,7 +383,7 @@ func TestWJTeamGrantHourlyLimit(t *testing.T) {
 func TestWJAPIKeyQuotaAsyncWorkerAndShared(t *testing.T) {
 	db := newTestDB(t, "wj-apikey-worker")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -786,17 +478,17 @@ func TestWJAPIKeyQuotaAsyncWorkerAndShared(t *testing.T) {
 func TestWJAPIKeyQuotaExactAsyncPostgresDialect(t *testing.T) {
 	db := newTestDB(t, "wj-apikey-pg")
 	statsSchema(t, db)
-	pgStats, err := NewStatsStore(db, true)
+	pgStats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	syncer := &wjMockSyncer{}
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true, RedisRuntimeState: true},
+		Modes:    Modes{RedisRuntimeState: true},
 		Stats:    pgStats,
 		Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock),
 		Syncer:   syncer,
 		Now:      clock.Now,
 	})

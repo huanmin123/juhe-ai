@@ -151,34 +151,27 @@ func uniqueUsageScopes(scopes []UsageScope) []UsageScope {
 }
 
 // StatsUsageSource is the default UsageSource over a stats-database handle
-// (PostgreSQL juhe_stats schema or the unqualified SQLite tables), mirroring
-// the Node usageSql VALUES-join (account-management-list-usage.repository.ts).
+// (the juhe_stats schema), mirroring the Node usageSql VALUES-join
+// (account-management-list-usage.repository.ts).
 type StatsUsageSource struct {
 	db *sql.DB
-	pg bool
 }
 
 // NewStatsUsageSource builds the reader; db must point at the stats database.
-func NewStatsUsageSource(db *sql.DB, postgres bool) (*StatsUsageSource, error) {
+func NewStatsUsageSource(db *sql.DB) (*StatsUsageSource, error) {
 	if db == nil {
 		return nil, errors.New("accounts stats usage source requires a stats database")
 	}
-	return &StatsUsageSource{db: db, pg: postgres}, nil
+	return &StatsUsageSource{db: db}, nil
 }
 
 // table qualifies stats-schema tables for PostgreSQL.
 func (s *StatsUsageSource) table(name string) string {
-	if s.pg {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // bind rewrites ? placeholders to $N for PostgreSQL.
 func (s *StatsUsageSource) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

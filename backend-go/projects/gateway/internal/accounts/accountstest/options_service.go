@@ -641,24 +641,16 @@ func DedupeTestStrings(values []string) []string {
 // testCatalogAvailability mirrors the availability filter shared by the
 // test-catalog reads (active + visible + not shutdown).
 func (s *Service) testCatalogAvailability() string {
-	// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，谓词按方言生成。
-	visible := "CAST(catalog_visible AS integer) = 1"
-	if s.store.PG() {
-		visible = "catalog_visible = TRUE"
-	}
 	return ` AND status = 'active'
-		AND ` + visible + `
+		AND catalog_visible = TRUE
 		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ` + s.TestTodayText() + `)`
 }
 
-// TestTodayText renders the SQL "today" literal (SQLite date('now') vs
-// PostgreSQL CURRENT_DATE::text), mirroring the providers slice helper
+// TestTodayText renders the SQL "today" literal (CURRENT_DATE::text),
+// mirroring the providers slice helper
 // （原根包自由函数 testTodayText(s *Store)，子域化改为 Service 方法）.
 func (s *Service) TestTodayText() string {
-	if s.store.PG() {
-		return "CURRENT_DATE::text"
-	}
-	return "date('now')"
+	return "CURRENT_DATE::text"
 }
 
 // NormalizeTestProviderCodeList mirrors the provider-code list normalization
@@ -807,7 +799,7 @@ func (s *Service) appendTestOptionTextFilter(clauses *[]string, args []any, quer
 
 // testSelectedOrderClause 把已选模型置顶。必须用物理列 public_model：PG 的
 // ORDER BY 别名只能独立引用、不能出现在表达式里，`CASE WHEN model IN (...)`
-// 会按 FROM 表解析 model 列（SQLSTATE 42703），SQLite 宽松解析掩盖了该差异。
+// 会按 FROM 表解析 model 列（SQLSTATE 42703）。
 func testSelectedOrderClause(query ManualTestOptionsQuery) string {
 	if len(query.SelectedIDs) == 0 {
 		return ""

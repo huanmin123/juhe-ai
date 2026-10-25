@@ -126,10 +126,9 @@ func TestW2M11PureHelpers(t *testing.T) {
 			t.Fatal("窗口外应拒绝")
 		}
 	})
-	t.Run("statsTable 方言", func(t *testing.T) {
-		// env.store 已是 PG 臂；SQLite 臂渲染用零值 Store 直测。
-		if (&Store{}).statsTable("account_usage_snapshots") == "juhe_stats.account_usage_snapshots" {
-			t.Fatal("SQLite 方言不应带 schema 前缀")
+	t.Run("statsTable", func(t *testing.T) {
+		if got := (&Store{}).statsTable("account_usage_snapshots"); got != "juhe_stats.account_usage_snapshots" {
+			t.Fatalf("stats 表应加 schema 前缀：%q", got)
 		}
 	})
 	t.Run("balanceSnapshotTimestampMs", func(t *testing.T) {

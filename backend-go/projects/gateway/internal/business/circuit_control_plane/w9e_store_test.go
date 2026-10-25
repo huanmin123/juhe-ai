@@ -13,26 +13,23 @@ import (
 )
 
 func TestW9ENewStoreValidation(t *testing.T) {
-	if _, err := New(nil, SQLite, "", OwnerGate{Confirmed: true}); err == nil {
+	if _, err := New(nil, "", OwnerGate{Confirmed: true}); err == nil {
 		t.Fatal("nil db 必须失败")
 	}
 	_, db := wkReadyStore(t)
 	defer db.Close()
-	if _, err := New(db, Mode("mysql"), "", OwnerGate{Confirmed: true}); err == nil {
-		t.Fatal("非法 mode 必须失败")
-	}
 	// Postgres schema 默认值与非法标识符（不触库）。
-	pg, err := New(db, Postgres, "", OwnerGate{Confirmed: true})
+	pg, err := New(db, "", OwnerGate{Confirmed: true})
 	if err != nil {
 		t.Fatalf("postgres 空 schema 应默认 %q: %v", defaultBusinessSchema, err)
 	}
 	if pg.schema != defaultBusinessSchema {
 		t.Fatalf("默认 schema = %q", pg.schema)
 	}
-	if _, err := New(db, Postgres, `bad-schema`, OwnerGate{Confirmed: true}); !errors.Is(err, ErrInvalidSchema) {
+	if _, err := New(db, `bad-schema`, OwnerGate{Confirmed: true}); !errors.Is(err, ErrInvalidSchema) {
 		t.Fatalf("非法 postgres schema 应返回 ErrInvalidSchema, got %v", err)
 	}
-	if _, err := New(db, Postgres, "  ", OwnerGate{Confirmed: true}); err != nil {
+	if _, err := New(db, "  ", OwnerGate{Confirmed: true}); err != nil {
 		t.Fatalf("空白 schema 应默认化: %v", err)
 	}
 }
@@ -55,50 +52,6 @@ func w9eDDLDB(t *testing.T, name string, indexDDL string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
-}
-
-func TestW9ECheckContractIndexDefinitionBranches(t *testing.T) {
-	ctx := context.Background()
-	gate := OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true}
-
-	// 缺索引 → missing。
-	db, _ := w9eDDLDB(t, "noindex", "")
-	s, err := New(db, SQLite, "", gate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CheckContract(ctx); err == nil || !strings.Contains(err.Error(), "missing") {
-		t.Fatalf("缺索引应报 missing, got %v", err)
-	}
-
-	// 唯一性不符。
-	db2, _ := w9eDDLDB(t, "nonunique", `CREATE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash)`)
-	s2, _ := New(db2, SQLite, "", gate)
-	if err := s2.CheckContract(ctx); err == nil || !strings.Contains(err.Error(), "unique=false") {
-		t.Fatalf("非唯一索引应报 unique 不符, got %v", err)
-	}
-
-	// 列不符。
-	db3, _ := w9eDDLDB(t, "wrongcols", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`)
-	s3, _ := New(db3, SQLite, "", gate)
-	if err := s3.CheckContract(ctx); err == nil || !strings.Contains(err.Error(), "columns=") {
-		t.Fatalf("列不符应报 columns, got %v", err)
-	}
-
-	// 缺部分谓词（required 为 partial）。
-	db4, _ := w9eDDLDB(t, "nopartial", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash)`)
-	s4, _ := New(db4, SQLite, "", gate)
-	if err := s4.CheckContract(ctx); err == nil || (!strings.Contains(err.Error(), "predicate") && !strings.Contains(err.Error(), "partial")) {
-		t.Fatalf("缺谓词应报 predicate/partial, got %v", err)
-	}
-
-	// 契约表缺失（无 accounts 表）。
-	db5, _ := sql.Open("sqlite", "file:"+strings.ReplaceAll(t.Name(), "/", "-")+"-notables?mode=memory&cache=shared")
-	defer db5.Close()
-	s5, _ := New(db5, SQLite, "", gate)
-	if err := s5.CheckContract(ctx); err == nil || !strings.Contains(err.Error(), "accounts") {
-		t.Fatalf("缺表应报 verify circuit contract accounts, got %v", err)
-	}
 }
 
 func TestW9EPredicatesAndColumnsHelpers(t *testing.T) {
@@ -124,12 +77,6 @@ func TestW9EPredicatesAndColumnsHelpers(t *testing.T) {
 	}
 	if predicatesEquivalent("a = 1", "a = 2") {
 		t.Fatal("不同谓词必须不等")
-	}
-	if indexPredicate("CREATE INDEX x ON t(c)") != "" {
-		t.Fatal("无 where 的定义谓词应为空")
-	}
-	if got := indexPredicate("CREATE INDEX x ON t(c) WHERE scope_kind = 'key_model'"); got != "scope_kind = 'key_model'" {
-		t.Fatalf("indexPredicate = %q", got)
 	}
 }
 

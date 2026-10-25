@@ -8,11 +8,25 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 )
+
+// w17eOpenBusinessPostgres 打开 pgtestkit 隔离 PG 业务库（bootstrap 六 schema
+// 含 circuit control-plane 契约表）并预置账户行 acc(dispatch=1)。原 sqlite
+// 临时库夹具随生产 sqlite 臂删除批次退役（D17），载具切真实 PG。
+func w17eOpenBusinessPostgres(t *testing.T) *sql.DB {
+	t.Helper()
+	db := composeTestPostgres(t).DB
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, dispatch_revision)
+		VALUES ('acc', 1) ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("seed account row: %v", err)
+	}
+	return db
+}
 
 // TestChainAccountCircuitServiceOptionsRuntimeReadyHooks 覆盖装配两侧：
 // gate 未就绪 → 三 hook 全 nil（不 fail-closed）；gate 就绪 → 三 hook 非 nil
@@ -35,24 +49,24 @@ func TestChainAccountCircuitServiceOptionsRuntimeReadyHooks(t *testing.T) {
 	}
 
 	// gate 就绪：预置 ledger SUSPECT 行（acc / dispatch_revision=1，与
-	// w17eOpenBusinessSQLite 预置的 accounts 行对齐 ListByRuntimeKeys 的
+	// w17eOpenBusinessPostgres 预置的 accounts 行对齐 ListByRuntimeKeys 的
 	// dispatch revision 围栏）。
-	db := w17eOpenBusinessSQLite(t)
+	db := w17eOpenBusinessPostgres(t)
 	nowMs := time.Now().UnixMilli()
 	scope := gatewaycircuit.Scope{Kind: gatewaycircuit.ScopeKindAccount, AccountRuntimeKey: "acc"}
-	if _, err := db.Exec(`INSERT INTO account_circuit_incidents (
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_circuit_incidents (
 		circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
 		child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
 		projected_ledger_revision, transition_id, cooldown_observation_generation,
 		upstream_attempt_observed, backoff_level, consecutive_failures,
 		confirmation_failures_required, confirmation_failure_evidence_keys_json,
 		recovering_successes, next_transition_at_ms, created_at_ms, updated_at_ms)
-		VALUES (?, 'acc', 'acc', 'account', 'inc-seed', '[]', 'SUSPECT', 1, 1, 1,
-		0, 't-seed', 0, 0, 0, 1, 2, '[]', 0, ?, ?, ?)`,
+		VALUES ($1, 'acc', 'acc', 'account', 'inc-seed', '[]', 'SUSPECT', 1, 1, 1,
+		0, 't-seed', 0, false, 0, 1, 2, '[]', 0, $2, $3, $4)`,
 		gatewaycircuit.MustScopeKey(scope), nowMs+int64((10*time.Minute)/time.Millisecond), nowMs, nowMs); err != nil {
 		t.Fatalf("seed suspect incident: %v", err)
 	}
-	options, closeOptions, hookErr = newChainAccountCircuitServiceOptions(store, w17eGateReadyConfig(db), nil)
+	options, closeOptions, hookErr = newChainAccountCircuitServiceOptions(store, chainAccountCircuitPersistConfig{DB: db, Confirmed: true, SchemaReady: true, NodeWriterStopped: true}, nil)
 	if hookErr != nil {
 		t.Fatalf("gate ready options: %v", hookErr)
 	}

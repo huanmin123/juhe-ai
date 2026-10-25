@@ -236,7 +236,7 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 			lease_until_ms = excluded.lease_until_ms,
 			generation = excluded.generation,
 			updated_at = excluded.updated_at
-		WHERE `+lockStateTableRef(s.pg)+`.generation = ?`),
+		WHERE `+lockStateTableRef()+`.generation = ?`),
 		id, boolInt(input.Enabled), nextState, timeout, interval,
 		incidentID, incidentStart, deadlineAt, originalStatus, provenance,
 		nextRetryAtMs, leaseID, leaseUntilMs,
@@ -271,13 +271,10 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 	}, nil
 }
 
-// lockStateTableRef renders the target-table reference the upsert WHERE needs
-// (PostgreSQL qualifies the schema, SQLite does not).
-func lockStateTableRef(pg bool) string {
-	if pg {
-		return "juhe_business.account_lock_states"
-	}
-	return "account_lock_states"
+// lockStateTableRef renders the schema-qualified target-table reference the
+// upsert WHERE needs.
+func lockStateTableRef() string {
+	return "juhe_business.account_lock_states"
 }
 
 // LockConfig mirrors updateAccountLockConfigAsync: keep the current enabled

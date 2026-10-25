@@ -133,12 +133,11 @@ func TestW14BTargetModelModesWithMapping(t *testing.T) {
 	if observed := cooldownRetestObservationStartedAtForStatus("active", time.Now()); observed.Valid {
 		t.Fatal("active 不应记录观察起点")
 	}
-	if lockStateTableRef(true) != "juhe_business.account_lock_states" || lockStateTableRef(false) != "account_lock_states" {
-		t.Fatal("锁表引用分支不符")
+	if lockStateTableRef() != "juhe_business.account_lock_states" {
+		t.Fatal("锁表引用应带 schema 前缀")
 	}
-	store := &Store{pg: true}
-	if store.forUpdate() != " FOR UPDATE" || (&Store{}).forUpdate() != "" {
-		t.Fatal("forUpdate 分支不符")
+	if (&Store{}).forUpdate() != " FOR UPDATE" {
+		t.Fatal("forUpdate 应渲染 FOR UPDATE")
 	}
 	if actor := func() string {
 		request, _ := http.NewRequest(http.MethodGet, "http://example.com", nil)

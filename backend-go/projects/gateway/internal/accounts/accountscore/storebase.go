@@ -7,7 +7,7 @@ import (
 )
 
 // Queryer abstracts *sql.DB / *sql.Tx so transactional paths never touch the
-// store db while a transaction holds the single SQLite test connection.
+// store db while a transaction is in flight.
 type Queryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -19,10 +19,8 @@ type Queryer interface {
 // The facade implements it over its live Store fields, so composition-root
 // tests that clone a Store and swap fields keep observing the clone.
 type StoreBase interface {
-	// DB is the dual-mode database handle.
+	// DB is the database handle.
 	DB() *sql.DB
-	// PG reports the PostgreSQL dialect (SQLite otherwise).
-	PG() bool
 	// Secret is the Node runtimeConfig.secret material behind the
 	// credentials envelope.
 	Secret() string

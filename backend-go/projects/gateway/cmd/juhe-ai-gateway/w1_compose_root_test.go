@@ -458,7 +458,6 @@ func TestW1ONewCompositionIDFormat(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // C10. chain_runtime.go：composeChainRuntimeServices 守卫臂与坏 redis URL
 // （错误均发生在任何数据库访问之前，最小 composition 即可驱动）

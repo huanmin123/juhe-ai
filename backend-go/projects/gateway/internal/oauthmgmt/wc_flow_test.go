@@ -263,7 +263,7 @@ func TestWCScopeQueryAndStrictBody(t *testing.T) {
 	}
 	groupedID := dataMap(t, payload)["id"].(string)
 	var groupedOwner string
-	if err := env.db.QueryRow(`SELECT system_account_id FROM accounts WHERE id = ?`, groupedID).Scan(&groupedOwner); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT system_account_id FROM accounts WHERE id = ?`), groupedID).Scan(&groupedOwner); err != nil {
 		t.Fatal(err)
 	}
 	if groupedOwner != "seed-owner" {
@@ -315,7 +315,7 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 	env := newTestEnv(t)
 	ownerID := env.login(t, "root", "root-pass", "super_admin")
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-1', ?, '代理', 'http', '127.0.0.1', 8888, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
+		VALUES ('proxy-1', ?, '代理', 'http', '127.0.0.1', 8888, true, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
 	env.exchanger.respond = staticToken(openAITokenPayload("managed"))
 
 	// superPriorityEnabled=true 会被 accounts store 拒绝（当前实现对 oauth
@@ -332,15 +332,15 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 	var concurrency, priority int64
 	var superPriority, fallback int
 	var models string
-	if err := env.db.QueryRow(`SELECT concurrency_limit, priority, super_priority_enabled, fallback_enabled
-		FROM accounts WHERE id = ?`, accountID).Scan(&concurrency, &priority, &superPriority, &fallback); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT concurrency_limit, priority, super_priority_enabled, fallback_enabled
+		FROM accounts WHERE id = ?`), accountID).Scan(&concurrency, &priority, &superPriority, &fallback); err != nil {
 		t.Fatal(err)
 	}
 	if concurrency != 7 || priority != 2 || superPriority != 0 || fallback != 1 {
 		t.Fatalf("调度字段落库: %d %d %d %d", concurrency, priority, superPriority, fallback)
 	}
-	if err := env.db.QueryRow(`SELECT m.upstream_model FROM account_supported_models asm
-		JOIN models m ON m.id = asm.model_id WHERE asm.account_id = ? ORDER BY m.upstream_model`, accountID).Scan(&models); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT m.upstream_model FROM account_supported_models asm
+		JOIN models m ON m.id = asm.model_id WHERE asm.account_id = ? ORDER BY m.upstream_model`), accountID).Scan(&models); err != nil {
 		t.Fatalf("支持模型: %v", err)
 	}
 
@@ -355,14 +355,14 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 	}
 	healthID := dataMap(t, payload)["id"].(string)
 	var healthModel, healthMode, tags, notes, proxy string
-	if err := env.db.QueryRow(`SELECT health_check_model, health_check_endpoint_mode, notes, proxy_profile_id
-		FROM accounts WHERE id = ?`, healthID).Scan(&healthModel, &healthMode, &notes, &proxy); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT health_check_model, health_check_endpoint_mode, notes, proxy_profile_id
+		FROM accounts WHERE id = ?`), healthID).Scan(&healthModel, &healthMode, &notes, &proxy); err != nil {
 		t.Fatal(err)
 	}
 	if healthModel != "gpt-4o-mini" || healthMode != "responses_json" || notes != "备注" || proxy != "proxy-1" {
 		t.Fatalf("健康字段落库: %s %s %s %s", healthModel, healthMode, notes, proxy)
 	}
-	if err := env.db.QueryRow(`SELECT name FROM account_tags WHERE id IN (SELECT tag_id FROM account_tag_bindings WHERE account_id = ?)`, healthID).Scan(&tags); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT name FROM account_tags WHERE id IN (SELECT tag_id FROM account_tag_bindings WHERE account_id = ?)`), healthID).Scan(&tags); err != nil {
 		t.Fatalf("标签: %v", err)
 	}
 	if !env.sink.has("openai_oauth.create_from_refresh_token") {
@@ -382,7 +382,7 @@ func TestWCAccountExpiresAtCreation(t *testing.T) {
 	}
 	accountID := dataMap(t, payload)["id"].(string)
 	var expiresAt any
-	if err := env.db.QueryRow(`SELECT account_expires_at FROM accounts WHERE id = ?`, accountID).Scan(&expiresAt); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT account_expires_at FROM accounts WHERE id = ?`), accountID).Scan(&expiresAt); err != nil {
 		t.Fatal(err)
 	}
 	if expiresAt == nil {

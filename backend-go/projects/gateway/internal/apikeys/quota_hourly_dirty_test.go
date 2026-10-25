@@ -12,7 +12,6 @@ package apikeys
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -58,7 +57,7 @@ func newQuotaDirtyPGFixture(t *testing.T) *Store {
 			);`)
 		return err
 	})
-	return &Store{db: db, pg: true, secret: "quota-dirty-secret", now: func() time.Time { return time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC) }}
+	return &Store{db: db, secret: "quota-dirty-secret", now: func() time.Time { return time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC) }}
 }
 
 func quotaDirtyRowCount(t *testing.T, store *Store) int {
@@ -178,53 +177,3 @@ func TestQuotaHourlyWindowDirtyMarkFailureNeverPanics(t *testing.T) {
 
 // TestQuotaHourlyWindowSQLiteModeSkipsDirtyMark: the SQLite arm keeps the
 // archived sync semantics (binding rebuilt, stats dirty table untouched).
-func TestQuotaHourlyWindowSQLiteModeSkipsDirtyMark(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "quota-dirty-sqlite.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		`CREATE TABLE request_quota_hourly_window_scope_bindings (
-			system_account_id TEXT NOT NULL,
-			scope_type TEXT NOT NULL,
-			scope_id TEXT NOT NULL,
-			source_type TEXT NOT NULL,
-			source_id TEXT NOT NULL,
-			window_hours INTEGER NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (system_account_id, scope_type, scope_id)
-		)`,
-		`CREATE TABLE usage_quota_hourly_window_dirty_scopes (
-			system_account_id TEXT NOT NULL,
-			scope_type TEXT NOT NULL,
-			scope_id TEXT NOT NULL,
-			generation INTEGER NOT NULL,
-			first_dirty_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (system_account_id, scope_type, scope_id)
-		)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("sqlite fixture exec: %v", err)
-		}
-	}
-	store := &Store{db: db, pg: false, secret: "quota-dirty-secret", now: func() time.Time { return time.Now() }}
-	ctx := context.Background()
-	upserted, err := store.syncQuotaHourlyWindowBinding(ctx, db, "key-1", "owner-1",
-		sql.NullString{String: quotaDirtyLimitsJSON, Valid: true}, true, "t")
-	if err != nil || !upserted {
-		t.Fatalf("sqlite binding rebuild: upserted=%v err=%v", upserted, err)
-	}
-	// SQLite 模式 AfterCommit 直接早退（无 juhe_stats 消费面）。
-	store.markQuotaHourlyWindowDirtyScopeAfterCommit(ctx, "owner-1", "key-1", "t")
-	var dirty int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM usage_quota_hourly_window_dirty_scopes`).Scan(&dirty); err != nil {
-		t.Fatal(err)
-	}
-	if dirty != 0 {
-		t.Fatalf("sqlite mode must not write dirty scopes, got %d", dirty)
-	}
-}

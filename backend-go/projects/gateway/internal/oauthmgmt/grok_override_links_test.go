@@ -189,7 +189,7 @@ func TestGrokOverrideRotateLink(t *testing.T) {
 		t.Fatalf("非法轮换(ultra): result=%v err=%v", result, err)
 	}
 	var storedRevision int64
-	if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, "grok-ov-rot").Scan(&storedRevision); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT config_revision FROM accounts WHERE id = ?`), "grok-ov-rot").Scan(&storedRevision); err != nil {
 		t.Fatal(err)
 	}
 	if storedRevision != revision {
@@ -292,7 +292,7 @@ func TestGrokOverrideReauthorizeLink(t *testing.T) {
 		t.Fatalf("非法重授权: %d %v", code, payload)
 	}
 	var storedRevision int64
-	if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, "grok-ov-dirty").Scan(&storedRevision); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT config_revision FROM accounts WHERE id = ?`), "grok-ov-dirty").Scan(&storedRevision); err != nil {
 		t.Fatal(err)
 	}
 	if storedRevision != 1 {

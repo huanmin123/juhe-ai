@@ -347,12 +347,12 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	services.ConcurrencyTracker = concurrencyTracker
 	models.SetConcurrencySource(concurrencyTracker)
 	cacheOptions2 := gatewayruntimecache.Options{
-		Bus: composed.Bus,
-		Logger:                  chainCacheEventLogger{inner: slog.Default()},
+		Bus:    composed.Bus,
+		Logger: chainCacheEventLogger{inner: slog.Default()},
 		// D3（存储形态收口）：UpdateAgeOnGet 是 standalone memory 缓存的读龄
 		// 语义，redis 形态恒 false（原 `cfg.RuntimeMode == "standalone"` 判据
 		// 收敛为常量）。
-		UpdateAgeOnGet:          false,
+		UpdateAgeOnGet: false,
 		// redis 运行态下跨实例失效同步恒开（原 SyncInvalidationsOnRead:
 		// redisState 判据收敛）。
 		SyncInvalidationsOnRead: true,
@@ -454,12 +454,10 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 
 	// ---- G07 quota services ----
 	quotaModes := gatewayquota.Modes{
-		PostgresDatabase:  true,
 		RedisCache:        true,
 		RedisRuntimeState: true,
-		ServerRole:        false,
 	}
-	statsStore, err := gatewayquota.NewStatsStore(composed.statsDB, composed.pgDialect)
+	statsStore, err := gatewayquota.NewStatsStore(composed.statsDB)
 	if err != nil {
 		services.Close()
 		return nil, fmt.Errorf("create gateway quota stats store: %w", err)
@@ -777,10 +775,10 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// 驱动退役；trafficMigrationPreference 在 redis 下本无实现，生产行为
 	// （关闭）不变。
 	groupAffinityConfig := gatewaysession.GroupAffinityConfig{
-		CacheDriver:      gatewaysession.CacheDriverRedis,
-		RedisCacheURL:    cfg.RedisCacheURL,
-		RedisNamespace:   cfg.RedisNamespace,
-		Secret:           cfg.Secret,
+		CacheDriver:    gatewaysession.CacheDriverRedis,
+		RedisCacheURL:  cfg.RedisCacheURL,
+		RedisNamespace: cfg.RedisNamespace,
+		Secret:         cfg.Secret,
 	}
 	groupAffinityService, groupAffinityErr := gatewaysession.NewGroupAffinityService(groupAffinityConfig)
 	if groupAffinityErr != nil {
@@ -791,6 +789,10 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Identity: identityService,
 		Affinity: affinityService,
 		Secret:   cfg.Secret,
+		// 内容指纹谱系判别器（内容指纹会话身份设计 §4.3）：进程内 LRU（容量
+		// 10000 / TTL 24h），单实例生产判别精确；多实例退化为每实例
+		// best-effort（设计 §7.5），不引入跨进程状态。
+		ContentFingerprintLineage: gatewaysession.NewContentFingerprintLineageService(gatewaysession.ContentFingerprintLineageConfig{}),
 	}
 	services.GroupAffinity = groupAffinityService
 	return services, nil

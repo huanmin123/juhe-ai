@@ -378,8 +378,8 @@ type BalanceRefreshCandidate struct {
 	// Input 的摘要输入字段（BUG-0286，与 J2 周期路径同源同列）。
 	CredentialFingerprint string
 	ConfigJSON            string
-	NextRefreshAt       sql.NullString
-	ProxyProfileID      sql.NullString
+	NextRefreshAt         sql.NullString
+	ProxyProfileID        sql.NullString
 }
 
 // FindBalanceManualRefreshCandidate mirrors

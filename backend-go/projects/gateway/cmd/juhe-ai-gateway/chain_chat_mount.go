@@ -148,7 +148,7 @@ func (f chatSystemAccountFlags) ImageGenerationEnabled(systemAccountID string) (
 	if systemAccountID == "" {
 		return false, nil
 	}
-	bind := func(query string) string { return accountscore.SQLBind(f.postgres, query) }
+	bind := func(query string) string { return accountscore.SQLBind(query) }
 	table := "system_accounts"
 	if f.postgres {
 		table = "juhe_business.system_accounts"

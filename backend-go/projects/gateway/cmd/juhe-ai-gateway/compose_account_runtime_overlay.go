@@ -55,11 +55,7 @@ func wireAccountRuntimeOverlaySources(composed *composition, cfg runtimeConfig, 
 	// 与 newChainAccountCircuitPersistHook 的 ErrOwnerGate 纪律一致）；表未建
 	// 时 warn 停用，maintenance ensure-schema 后重启恢复。
 	if composed.db != nil && cfg.BusinessHandoffConfirmed && cfg.BusinessSchemaReady && cfg.BusinessNodeWriterStopped {
-		mode := circuitcontrolplane.SQLite
-		if composed.pgDialect {
-			mode = circuitcontrolplane.Postgres
-		}
-		controlStore, err := circuitcontrolplane.New(composed.db, mode, businessSchema, circuitcontrolplane.OwnerGate{
+		controlStore, err := circuitcontrolplane.New(composed.db, businessSchema, circuitcontrolplane.OwnerGate{
 			Confirmed:         cfg.BusinessHandoffConfirmed,
 			SchemaReady:       cfg.BusinessSchemaReady,
 			NodeWriterStopped: cfg.BusinessNodeWriterStopped,

@@ -357,7 +357,7 @@ func TestW13APatchStoreErrorArms(t *testing.T) {
 
 	// PG 臂 Patch 真实执行（原「PG 方言在 sqlite 缺 juhe_business 前缀 →
 	// 行扫描错误」注入随 sqlite 夹具退役；错误传播由下方关闭库臂承接）。
-	pgStore, err := NewStore(env.db, true, testSecret, nil, nil)
+	pgStore, err := NewStore(env.db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestW13APatchHelperArms(t *testing.T) {
 	if err != nil || got != "" {
 		t.Fatalf("无绑定应返回空：%q %v", got, err)
 	}
-	pgStore, err := NewStore(env.db, true, testSecret, nil, nil)
+	pgStore, err := NewStore(env.db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

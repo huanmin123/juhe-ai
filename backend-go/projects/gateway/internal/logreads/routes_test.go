@@ -52,7 +52,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	// F4 store on the same PG database (single-database shape: the authsys
 	// rows double as the actor-name mirror).
-	store, err := operationlog.OpenStore(operationlog.Config{Enabled: true, InstanceID: "logreads-pgkit-owner", Mode: operationlog.ModePostgres, PostgresURL: testDB.DSN})
+	store, err := operationlog.OpenStore(operationlog.Config{Enabled: true, InstanceID: "logreads-pgkit-owner", PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,7 +17,7 @@ import (
 func newBridgeService(t *testing.T) (*ChatBridgeStateService, *ContextRequestStateRegistry, *recordedSink, *recordedAudit, *fakeClock) {
 	_ = newTrackedWriter
 	t.Helper()
-	store, _ := newSQLiteStore(t)
+	store := newPostgresContextStateStore(t)
 	clock := newFakeClock(time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC))
 	service, err := NewChatBridgeStateService(
 		ChatBridgeStateConfig{CodexContextRoot: t.TempDir()},

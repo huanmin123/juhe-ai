@@ -75,17 +75,6 @@ func TestWIValidateAndClampContextStoreHelpers(t *testing.T) {
 	if err := validateResponseStateIndex(&CodexContextResponseStateIndex{ResponseID: "r", SessionID: "s"}); err != nil {
 		t.Fatalf("合法行报错: %v", err)
 	}
-	// 保存入口的守卫分支。
-	store, _ := newSQLiteStore(t)
-	if err := SaveCodexContextCompactStateIndex(context.Background(), store, CodexContextCompactStateIndex{CompactID: " "}); err == nil {
-		t.Fatal("空 compactId 必须报错")
-	}
-	if err := SaveCodexContextCompactStateIndex(context.Background(), store, CodexContextCompactStateIndex{CompactID: "c", SessionID: " "}); err == nil {
-		t.Fatal("空 sessionId 必须报错")
-	}
-	if err := SaveCodexContextResponseStateIndex(context.Background(), store, CodexContextResponseStateIndex{}); err == nil {
-		t.Fatal("空响应索引必须报错")
-	}
 	// clampChainDepth：0→64、负→1、超限→256、普通直通。
 	if got := clampChainDepth(0); got != 64 {
 		t.Fatalf("0→%d", got)
@@ -98,40 +87,6 @@ func TestWIValidateAndClampContextStoreHelpers(t *testing.T) {
 	}
 	if got := clampChainDepth(10); got != 10 {
 		t.Fatalf("普通→%d", got)
-	}
-}
-
-func TestWIShardCountAndRootGuard(t *testing.T) {
-	if _, err := NewSQLiteShardContextStateStore(SQLiteShardStoreConfig{Root: " "}); err == nil {
-		t.Fatal("空 root 必须报错")
-	}
-	store, err := NewSQLiteShardContextStateStore(SQLiteShardStoreConfig{Root: t.TempDir(), ShardCount: 0})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if got := store.shardCount(); got != 1 {
-		t.Fatalf("0 分片回落 1: %d", got)
-	}
-	big, err := NewSQLiteShardContextStateStore(SQLiteShardStoreConfig{Root: t.TempDir(), ShardCount: 999})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	t.Cleanup(func() { _ = big.Close() })
-	if got := big.shardCount(); got != 256 {
-		t.Fatalf("分片上限: %d", got)
-	}
-	normal, err := NewSQLiteShardContextStateStore(SQLiteShardStoreConfig{Root: t.TempDir(), ShardCount: 4})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	t.Cleanup(func() { _ = normal.Close() })
-	if got := normal.shardCount(); got != 4 {
-		t.Fatalf("普通分片: %d", got)
-	}
-	// databaseForKey：非法 key（全空）也必须能定位分片或报错，不得 panic。
-	if _, err := normal.databaseForKey(""); err != nil {
-		t.Fatalf("空 key 分片路由失败: %v", err)
 	}
 }
 

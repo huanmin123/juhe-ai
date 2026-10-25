@@ -96,37 +96,26 @@ func IsRequestQuotaExceeded(limits RequestQuotaLimits, costs RequestQuotaCosts) 
 // the juhe_stats schema (mirroring statsTableName).
 type StatsStore struct {
 	db *sql.DB
-	pg bool
 }
 
 // NewStatsStore builds the stats reader; db must not be nil.
-func NewStatsStore(db *sql.DB, postgres bool) (*StatsStore, error) {
+func NewStatsStore(db *sql.DB) (*StatsStore, error) {
 	if db == nil {
 		return nil, errors.New("gatewayquota stats store requires a database")
 	}
-	return &StatsStore{db: db, pg: postgres}, nil
+	return &StatsStore{db: db}, nil
 }
 
-func statsTable(pg bool, name string) string {
-	if pg {
-		return "juhe_stats." + name
-	}
-	return name
+func statsTable(name string) string {
+	return "juhe_stats." + name
 }
 
-func statsBusinessTable(pg bool, name string) string {
-	if pg {
-		return "juhe_business." + name
-	}
-	return name
+func statsBusinessTable(name string) string {
+	return "juhe_business." + name
 }
 
-// bindPlaceholders converts ? markers to $n for PostgreSQL (Node driver
-// dialects), leaving SQLite queries untouched.
-func bindPlaceholders(pg bool, query string) string {
-	if !pg {
-		return query
-	}
+// bindPlaceholders converts ? markers to $n for PostgreSQL.
+func bindPlaceholders(query string) string {
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -153,9 +142,9 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 	}
 	costs := EmptyRequestQuotaCosts()
 	var totalCost sql.NullFloat64
-	err := s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
+	err := s.db.QueryRowContext(ctx, bindPlaceholders(`
 		SELECT COALESCE(success_cost_usd, 0) AS total_cost
-		FROM `+statsTable(s.pg, "usage_stats_totals")+`
+		FROM `+statsTable("usage_stats_totals")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID).Scan(&totalCost)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -166,9 +155,9 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 	}
 	if input.HasHourlyWindow {
 		var hourlyCost sql.NullFloat64
-		err := s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
+		err := s.db.QueryRowContext(ctx, bindPlaceholders(`
 			SELECT COALESCE(total_cost_usd, 0) AS total_cost
-			FROM `+statsTable(s.pg, "usage_quota_hourly_windows")+`
+			FROM `+statsTable("usage_quota_hourly_windows")+`
 			WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND window_hours = ?`),
 			input.SystemAccountID, input.ScopeType, input.ScopeID, NormalizeHourlyWindowHours(input.HourlyWindowHours)).Scan(&hourlyCost)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -179,9 +168,9 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 		}
 	}
 	var dailyCost sql.NullFloat64
-	err = s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
+	err = s.db.QueryRowContext(ctx, bindPlaceholders(`
 		SELECT COALESCE(success_cost_usd, 0) AS total_cost
-		FROM `+statsTable(s.pg, "usage_stats_daily")+`
+		FROM `+statsTable("usage_stats_daily")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_date = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID, dateKey(input.Now, location)).Scan(&dailyCost)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -191,9 +180,9 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 		costs.Daily = dailyCost.Float64
 	}
 	var weeklyCost sql.NullFloat64
-	err = s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
+	err = s.db.QueryRowContext(ctx, bindPlaceholders(`
 		SELECT COALESCE(success_cost_usd, 0) AS total_cost
-		FROM `+statsTable(s.pg, "usage_stats_weekly")+`
+		FROM `+statsTable("usage_stats_weekly")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_week = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID, weekKey(input.Now, location)).Scan(&weeklyCost)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -203,9 +192,9 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 		costs.Weekly = weeklyCost.Float64
 	}
 	var monthlyCost sql.NullFloat64
-	err = s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
+	err = s.db.QueryRowContext(ctx, bindPlaceholders(`
 		SELECT COALESCE(success_cost_usd, 0) AS total_cost
-		FROM `+statsTable(s.pg, "usage_stats_monthly")+`
+		FROM `+statsTable("usage_stats_monthly")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_month = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID, monthKey(input.Now, location)).Scan(&monthlyCost)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -378,8 +367,8 @@ func (s *StatsStore) LoadCostsBatch(ctx context.Context, inputs []CostInput, loc
 				selectColumns = append(selectColumns, column)
 			}
 			query := "SELECT " + strings.Join(selectColumns, ", ") + ", COALESCE(" + tableDef.costColumn + ", 0) AS total_cost FROM " +
-				statsTable(s.pg, tableDef.name) + " WHERE " + strings.Join(clauses, " OR ")
-			rows, err := s.db.QueryContext(ctx, bindPlaceholders(s.pg, query), args...)
+				statsTable(tableDef.name) + " WHERE " + strings.Join(clauses, " OR ")
+			rows, err := s.db.QueryContext(ctx, bindPlaceholders(query), args...)
 			if err != nil {
 				return nil, err
 			}

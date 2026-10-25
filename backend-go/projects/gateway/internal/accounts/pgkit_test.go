@@ -2,8 +2,8 @@ package accounts
 
 // pgkit_test.go 是 accounts 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，accounts 测试迁移切片）：
-// pgtestkit 每测试独立库 + 生产 store 的 PG 臂（NewStore postgres=true，
-// juhe_business/juhe_stats schema 限定 + $n 占位符，与生产 PG 装配同一方言）。
+// pgtestkit 每测试独立库 + 生产 store（juhe_business/juhe_stats schema 限定
+// + $n 占位符，与生产 PG 装配同一方言）。
 //
 // 三组分类（D9/D17）：
 //   - 组A（被测对象有 PG 臂且断言可逐字节保持）：HTTP/store 级测试走本文件
@@ -18,15 +18,12 @@ package accounts
 //     outbox 的生产 CHECK）。fresh-DDL 契约测试（b1_fresh_ddl_test.go /
 //     bug0335_entry_mapping_fk_write_order_test.go）另走 bootstrap.EnsurePostgres
 //     生产建表路径，外键语义真实生效。
-//   - 组B（SQLite-only 生产臂为被测对象）：statsdb_attach_test.go 的双文件
-//     stats 拆分回归、delete_authorization_sqlite_test.go 的 SQLite 删除臂
-//     逐 grant 运行态同步域、list_usage_test.go 的 StatsUsageSource sqlite 臂
-//     VALUES join、w14b_pure_arms_test.go 的 sqlite 表名/占位符渲染锁——按
-//     D17 不提前迁移也不提前删除，走本文件 newSQLiteTestEnv（原共享夹具
-//     SQLite 形态原样保留），随生产 sqlite 臂删除批次同批退役。
-//   - scripted 假驱动/内存 fake（w14l 故障注入连接器族、w14bBoomConnector、
-//     fakeTestEffects / fakeUsageSource / recordingSink / recordingInvalidator）
-//     不依赖真库，保持原状。
+//   - 组B（SQLite-only 生产臂为被测对象：statsdb_attach_test.go 双文件 stats
+//     拆分回归、delete_authorization_sqlite_test.go 删除臂逐 grant 运行态同步域、
+//     StatsUsageSource sqlite VALUES join、sqlite 表名/占位符渲染锁）与 w14l
+//     sqlite 故障注入连接器族，已随生产 sqlite 臂删除批次同批退役（D17）。
+//   - 内存 fake（w14bBoomConnector、fakeTestEffects / fakeUsageSource /
+//     recordingSink / recordingInvalidator）不依赖真库，保持原状。
 //
 // 连接串由 pgtestkit 自 .local dev env 解析，内容不进入任何文件、日志或断言。
 

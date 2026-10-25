@@ -31,17 +31,11 @@ package apikeys
 import (
 	"context"
 	"database/sql"
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
@@ -283,47 +277,4 @@ var sqliteFixtureSchema = []string{
 		last_blocked_reason TEXT,
 		last_error_message TEXT
 	)`,
-}
-
-// newSQLiteTestEnv 是组B SQLite-only 生产臂测试的环境（原 newTestEnv 的
-// SQLite 形态原样保留）：单连接内存 SQLite + 生产 store 的 sqlite 臂。仅
-// bug0161_test.go 的 SQLite 删除臂 cleanup 契约测试在用；随生产 sqlite 臂
-// 删除批次同批退役（D17）。
-func newSQLiteTestEnv(t *testing.T) *testEnv {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:apikeys-sqlite-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range sqliteFixtureSchema {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deps := &authsys.Deps{
-		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
-		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
-	}
-	sink := &recordingSink{}
-	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, false, testSecret, nil, nil, invalidator)
-	if err != nil {
-		t.Fatal(err)
-	}
-	k := kernel.New(kernel.Options{CompressionDisabled: true})
-	deps.MountAuth(k, "lax", false)
-	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
-	server := httptest.NewServer(k.Handler())
-	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, inval: invalidator, db: db, store: store}
 }

@@ -14,7 +14,6 @@ package groups
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
@@ -59,7 +58,7 @@ func TestGroupAccountStatsDBReaderPGTableQualification(t *testing.T) {
 			 rate_limited, current_concurrency, concurrency_limit, updated_at)
 		 VALUES ('owner-1', 'grp_1', 3, 2, 2, 1, 0, 0, 5, 10, '2026-09-27T00:00:00.000Z')`)
 
-	reader := NewGroupAccountStatsDBReader(pgDB, true)
+	reader := NewGroupAccountStatsDBReader(pgDB)
 	stats, err := reader.ReadGroupAccountStats(context.Background(), []string{"grp_1", "grp_missing"})
 	if err != nil {
 		t.Fatalf("pg reader must resolve juhe_stats.group_account_stats: %v", err)
@@ -74,35 +73,5 @@ func TestGroupAccountStatsDBReaderPGTableQualification(t *testing.T) {
 	}
 	if _, ok := stats["grp_missing"]; ok {
 		t.Fatalf("missing group must stay absent: %+v", stats)
-	}
-
-	// SQLite 分支保持裸表名（现状契约不回退）。
-	sqliteDB, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "group-stats-dialect-sqlite.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sqliteDB.Close() })
-	sqliteDB.SetMaxOpenConns(1)
-	if _, err := sqliteDB.Exec(`CREATE TABLE group_account_stats (
-		system_account_id text NOT NULL, group_id text NOT NULL,
-		total integer NOT NULL DEFAULT 0, available integer NOT NULL DEFAULT 0,
-		active integer NOT NULL DEFAULT 0, disabled integer NOT NULL DEFAULT 0,
-		error integer NOT NULL DEFAULT 0, rate_limited integer NOT NULL DEFAULT 0,
-		current_concurrency integer NOT NULL DEFAULT 0, concurrency_limit integer NOT NULL DEFAULT 0,
-		updated_at text NOT NULL, PRIMARY KEY (system_account_id, group_id))`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sqliteDB.Exec(`INSERT INTO group_account_stats
-		(system_account_id, group_id, total, updated_at)
-		VALUES ('owner-1', 'grp_sq', 7, '2026-09-27T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	sqliteReader := NewGroupAccountStatsDBReader(sqliteDB, false)
-	sqliteStats, err := sqliteReader.ReadGroupAccountStats(context.Background(), []string{"grp_sq"})
-	if err != nil {
-		t.Fatalf("sqlite reader must keep the bare table name: %v", err)
-	}
-	if row, ok := sqliteStats["grp_sq"]; !ok || row.Total != 7 {
-		t.Fatalf("sqlite reader counters mismatch: %+v", sqliteStats)
 	}
 }

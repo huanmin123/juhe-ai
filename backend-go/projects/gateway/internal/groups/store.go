@@ -98,7 +98,6 @@ func (a AccessScope) writeSystemAccountID() (string, error) {
 // Store is the dual-mode group persistence.
 type Store struct {
 	db        *sql.DB
-	pg        bool
 	now       func() time.Time
 	newI      func(prefix string) string
 	inval     RuntimeInvalidator
@@ -164,7 +163,7 @@ func (s *Store) globalConcurrencyMax() int {
 
 // NewStore builds the store; inval may be nil (no-op invalidation until K5
 // wires the bus).
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval RuntimeInvalidator, options ...StoreOption) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, newID func(string) string, inval RuntimeInvalidator, options ...StoreOption) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("groups store requires a database")
 	}
@@ -174,7 +173,7 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string
 	if newID == nil {
 		newID = func(prefix string) string { return randomID(prefix) }
 	}
-	store := &Store{db: db, pg: postgres, now: now, newI: newID, inval: inval}
+	store := &Store{db: db, now: now, newI: newID, inval: inval}
 	for _, option := range options {
 		option(store)
 	}
@@ -189,16 +188,10 @@ func randomID(prefix string) string {
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -2065,15 +2058,11 @@ func (s *Store) activeBindingCountsExcludingGroup(ctx context.Context, q queryer
 	return counts, rows.Err()
 }
 
-// refreshStatsAfterWrite mirrors refreshGroupAccountStatsAfterWrite: SQLite
-// marks the dirty rows synchronously (a failure fails the request), while
+// refreshStatsAfterWrite mirrors refreshGroupAccountStatsAfterWrite:
 // PostgreSQL hands the write to a background task whose failure only logs
 // postgres_group_account_stats_dirty_mark_failed — the committed business
 // write never turns into a 500 because the stats database hiccupped.
 func (s *Store) refreshStatsAfterWrite(ctx context.Context, groupIDs []string, reason string) error {
-	if !s.pg {
-		return s.markStatsDirty(ctx, groupIDs, reason)
-	}
 	go func() {
 		defer safego.Recover("groups.store.refresh_stats")
 		if err := s.markStatsDirty(context.Background(), groupIDs, reason); err != nil {

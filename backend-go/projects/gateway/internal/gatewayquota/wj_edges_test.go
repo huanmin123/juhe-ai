@@ -341,9 +341,8 @@ func TestWJInflightDefaultsAndHelpers(t *testing.T) {
 		t.Fatalf("必须记录精确成本失败事件: %v", logs.items)
 	}
 
-	// DB service 读取失败同样保护性拒绝。
-	failing := &mockDBService{readCostsErr: errors.New("ipc down")}
-	service2, err := NewInflightQuotaService(InflightQuotaConfig{DBService: failing, Log: logs.hook, Estimator: estimator})
+	// 精确成本读取端口未注入（nil）→ 同一保护性拒绝分支。
+	service2, err := NewInflightQuotaService(InflightQuotaConfig{Log: logs.hook, Estimator: estimator})
 	if err != nil {
 		t.Fatalf("NewInflightQuotaService: %v", err)
 	}
@@ -355,7 +354,7 @@ func TestWJInflightDefaultsAndHelpers(t *testing.T) {
 		t.Fatalf("ReserveGatewayCost: %v", err)
 	}
 	if gwDecision.Allowed {
-		t.Fatalf("DB service 读取失败必须保护性拒绝: %+v", gwDecision)
+		t.Fatalf("精确成本读取不可用必须保护性拒绝: %+v", gwDecision)
 	}
 }
 
@@ -448,9 +447,9 @@ func TestWJSmallHelpers(t *testing.T) {
 	if NormalizeHourlyWindowHours(0) != 1 || NormalizeHourlyWindowHours(-3) != 1 || NormalizeHourlyWindowHours(7) != 7 {
 		t.Fatal("小时窗口归一化必须 clamp 到 >=1")
 	}
-	// bindPlaceholders 的 PG 绑定在其它测试覆盖；这里覆盖表名前缀。
-	if statsTable(false, "t") != "t" || statsBusinessTable(false, "t") != "t" {
-		t.Fatal("SQLite 表名必须不带前缀")
+	// bindPlaceholders 的绑定在其它测试覆盖；这里覆盖表名前缀。
+	if statsTable("t") != "juhe_stats.t" || statsBusinessTable("t") != "juhe_business.t" {
+		t.Fatal("表名必须带 schema 前缀")
 	}
 	// itoa64 的多位与非负分支由 runtimeCacheKey 触发；这里直接验证。
 	if itoa64(0) != "0" || itoa64(42) != "42" || itoa64(-7) != "-7" {
@@ -564,7 +563,7 @@ func TestWJStatsStoreQueryErrors(t *testing.T) {
 		total_cost_usd double precision NOT NULL DEFAULT 0, success_cost_usd double precision NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -586,7 +585,7 @@ func TestWJConcurrentLoadCostsBatch(t *testing.T) {
 	statsSchema(t, db)
 	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"s", "api_key", "k", 3})
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}

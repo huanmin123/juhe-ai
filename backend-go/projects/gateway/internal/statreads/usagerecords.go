@@ -2,22 +2,17 @@ package statreads
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"net/url"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
 // Usage-records list family (Node usage-records.repository.ts
 // listUsageRecordsAsync + usage-records.routes.ts). PostgreSQL reads
-// juhe_usage.usage_records directly; SQLite walks the registered usage shard
-// files through the usage-catalog registry and merges per-shard windows.
+// juhe_usage.usage_records directly.
 
 const (
 	usageRecordDefaultPageSize    = 50
@@ -185,12 +180,7 @@ func (d *Deps) listUsageRecords(r *http.Request, scope AccessScope, options usag
 	if err != nil {
 		return nil, err
 	}
-	var rows []Row
-	if d.PGDialect {
-		rows, err = d.usageRecordRowsPG(r, filters, options.SortOrder, offset+pageSize+1)
-	} else {
-		rows, err = d.usageRecordRowsSQLite(r, scope, filters, options, offset+pageSize+1)
-	}
+	rows, err := d.usageRecordRowsPG(r, filters, options.SortOrder, offset+pageSize+1)
 	if err != nil {
 		return nil, err
 	}
@@ -445,212 +435,6 @@ func (d *Deps) usageRecordRowsPG(r *http.Request, filters usageRecordFilterSet, 
 	`), append(append([]any{}, filters.params...), limit)...)
 }
 
-type usageShardLocation struct {
-	ShardKey   string
-	BucketDate string
-	FilePath   string
-}
-
-// usageRecordRowsSQLite mirrors listUsageRecordRowsFromShards: per-shard
-// limited reads merged and re-sorted in memory.
-func (d *Deps) usageRecordRowsSQLite(r *http.Request, scope AccessScope, filters usageRecordFilterSet, options usageRecordListOptions, perShardLimit int) ([]Row, error) {
-	locations, err := d.usageShardLocations(r.Context(), options.StartAt, options.EndAt)
-	if err != nil {
-		return nil, err
-	}
-	direction := sortDesc
-	if options.SortOrder == "asc" {
-		direction = sortAsc
-	}
-	merged := []Row{}
-	for _, location := range locations {
-		shardDB, openErr := openUsageShardDB(location.FilePath)
-		if openErr != nil {
-			continue
-		}
-		rows, queryErr := queryRowsContext(r.Context(), shardDB, `
-			SELECT
-				`+usageRecordListSelectColumns+`
-			FROM usage_records ur
-			`+filters.clause+`
-			ORDER BY ur.created_at `+direction.sql()+`, ur.id `+direction.sql()+`
-			LIMIT ?
-		`, append(append([]any{}, filters.params...), perShardLimit)...)
-		if queryErr != nil {
-			_ = shardDB.Close()
-			continue
-		}
-		merged = append(merged, rows...)
-		_ = shardDB.Close()
-	}
-	sort.SliceStable(merged, func(left, right int) bool {
-		return compareUsageRecordRows(merged[left], merged[right], direction)
-	})
-	if len(merged) > perShardLimit {
-		merged = merged[:perShardLimit]
-	}
-	return merged, nil
-}
-
-type sortDirection int
-
-const (
-	sortDesc sortDirection = iota
-	sortAsc
-)
-
-func (d sortDirection) sql() string {
-	if d == sortAsc {
-		return "ASC"
-	}
-	return "DESC"
-}
-
-// compareUsageRecordRows mirrors compareUsageRecordRows for createdAt sorts.
-func compareUsageRecordRows(left, right Row, direction sortDirection) bool {
-	compare := compareUsageTimestamp(left.text("created_at"), right.text("created_at"))
-	if direction == sortDesc {
-		// DESC keeps the newest first: invert the natural ascending compare.
-		compare = -compare
-	}
-	if compare != 0 {
-		return compare < 0
-	}
-	compare = strings.Compare(left.text("id"), right.text("id"))
-	if direction == sortAsc {
-		return compare < 0
-	}
-	return compare > 0
-}
-
-func compareUsageTimestamp(left, right string) int {
-	leftMs, leftOK := parseRFC3339Millis(left)
-	rightMs, rightOK := parseRFC3339Millis(right)
-	if !leftOK || !rightOK {
-		// Node throws on unparseable timestamps; the route surfaces a 500.
-		return 0
-	}
-	if leftMs == rightMs {
-		return 0
-	}
-	if leftMs > rightMs {
-		return 1
-	}
-	return -1
-}
-
-func parseRFC3339Millis(value string) (int64, bool) {
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return 0, false
-	}
-	return parsed.UnixMilli(), true
-}
-
-// usageShardLocations mirrors listUsageRecordShardLocations: a date-bounded
-// bucket window when start/end are known, the full active registry otherwise.
-func (d *Deps) usageShardLocations(ctx context.Context, startAt, endAt string) ([]usageShardLocation, error) {
-	if d.UsageCatalog == nil {
-		// Composition roots that cannot provide the usage catalog (or tests)
-		// get the documented "no registered shards" outcome instead of a nil
-		// dereference.
-		return nil, nil
-	}
-	clauses := []string{"status = 'active'"}
-	params := []any{}
-	if startAt != "" || endAt != "" {
-		endKey := ""
-		startKey := ""
-		if endAt != "" {
-			endKey = bucketDateKeyFromIso(endAt)
-		}
-		if startAt != "" {
-			startKey = bucketDateKeyFromIso(startAt)
-		}
-		if endKey == "" {
-			endKey = bucketDateKeyFromIso(d.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
-		}
-		if startKey == "" {
-			startKey = endKey
-		}
-		startMs, _ := bucketDateKeyToUTCms(startKey)
-		endMs, _ := bucketDateKeyToUTCms(endKey)
-		ascendingStart, ascendingEnd := startMs, endMs
-		if ascendingStart > ascendingEnd {
-			ascendingStart, ascendingEnd = ascendingEnd, ascendingStart
-		}
-		days := int((ascendingEnd-ascendingStart)/dayMS) + 1
-		if days > usageRecordShardWindowMaxDays {
-			days = usageRecordShardWindowMaxDays
-		}
-		if days < 1 {
-			days = 1
-		}
-		boundedStart := ascendingEnd - int64(days-1)*dayMS
-		clauses = append(clauses, "bucket_date >= ?", "bucket_date <= ?")
-		params = append(params,
-			time.UnixMilli(boundedStart).UTC().Format("2006-01-02"),
-			time.UnixMilli(ascendingEnd).UTC().Format("2006-01-02"),
-		)
-	}
-	rows, qerr := queryRowsContext(ctx, d.UsageCatalog, `
-		SELECT shard_key, bucket_date, shard_id, file_path
-		FROM usage_record_shards
-		WHERE `+strings.Join(clauses, " AND ")+`
-		ORDER BY bucket_date ASC, shard_id ASC
-	`, params...)
-	if qerr != nil {
-		return nil, qerr
-	}
-	locations := []usageShardLocation{}
-	for _, row := range rows {
-		shardKey := strings.TrimSpace(row.text("shard_key"))
-		bucketDate := strings.TrimSpace(row.text("bucket_date"))
-		filePath := strings.TrimSpace(row.text("file_path"))
-		shardID, hasShardID := toFloat(row.value("shard_id"))
-		if shardKey == "" || bucketDate == "" || filePath == "" || !hasShardID || shardID != float64(int64(shardID)) {
-			continue
-		}
-		locations = append(locations, usageShardLocation{ShardKey: shardKey, BucketDate: bucketDate, FilePath: filePath})
-	}
-	return locations, nil
-}
-
-func bucketDateKeyFromIso(value string) string {
-	if len(value) < 10 {
-		return ""
-	}
-	return strings.ReplaceAll(value[:10], "-", "")
-}
-
-func bucketDateKeyToUTCms(key string) (int64, bool) {
-	if len(key) != 8 {
-		return 0, false
-	}
-	year, errYear := strconv.Atoi(key[0:4])
-	month, errMonth := strconv.Atoi(key[4:6])
-	day, errDay := strconv.Atoi(key[6:8])
-	if errYear != nil || errMonth != nil || errDay != nil {
-		return 0, false
-	}
-	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC).UnixMilli(), true
-}
-
-// openUsageShardDB 以非 owner 只读契约打开 usage shard：gateway 不是 shard
-// 写者（写入由 jobs 单写者写队列负责），必须以 mode=ro + query_only 打开；
-// mode=ro 下 shard 文件缺失直接报错，不再静默创建空库。调用方对打开/查询
-// 失败按"该 shard 无数据"跳过（见 usageRecordRowsSQLite）。单连接池限制
-// 每请求逐 shard 开合的句柄资源。
-func openUsageShardDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)")
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	return db, nil
-}
-
 // hydrateUsageRecordItems mirrors hydrateUsageRecordNames +
 // usageRecordListItemFromRow.
 func (d *Deps) hydrateUsageRecordItems(r *http.Request, scope AccessScope, rows []Row) ([]usageRecordListItem, error) {
@@ -763,13 +547,13 @@ func (d *Deps) mapUsageRecordListItem(row Row, scope AccessScope, apiKeyNames, g
 	upstreamResponseModel := row.nullText("upstream_response_model")
 	success := row.boolLike("success")
 	item := usageRecordListItem{
-		ID:                       row.text("id"),
-		TraceID:                  row.text("trace_id"),
-		TrafficSource:            row.nullText("traffic_source"),
-		ClientIp:                 row.nullText("client_ip"),
-		ApiKeyId:                 row.nullText("api_key_id"),
-		GroupId:                  row.nullText("group_id"),
-		RouteGroupId:             row.nullText("route_group_id"),
+		ID:            row.text("id"),
+		TraceID:       row.text("trace_id"),
+		TrafficSource: row.nullText("traffic_source"),
+		ClientIp:      row.nullText("client_ip"),
+		ApiKeyId:      row.nullText("api_key_id"),
+		GroupId:       row.nullText("group_id"),
+		RouteGroupId:  row.nullText("route_group_id"),
 		// 压缩标记（用量记录压缩标记设计 §压缩请求识别）：boolLike 同时吃
 		// PG 原生 bool 与 SQLite integer 0/1；缺失列按 false。
 		CompactionExpected:       row.boolLike("compaction_expected"),

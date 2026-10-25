@@ -108,10 +108,10 @@ type CreateInput struct {
 	// （克隆载荷由源账户连接行综合）；写入序 accounts → account_connections →
 	// account_endpoint_modes → … → UPDATE health 三字段（§2.1 复合外键事务
 	// 闭环）。
-	Connections []ConnectionInput
-	ModelMappings             []ModelMapping
-	Tags                      []string
-	Status                    CreationStatus
+	Connections   []ConnectionInput
+	ModelMappings []ModelMapping
+	Tags          []string
+	Status        CreationStatus
 	// PreservePendingTest keeps an import's explicit pending_test state. Normal
 	// media creation uses the domain default active; import is the deliberate
 	// exception because imported credentials have not been checked locally.
@@ -182,7 +182,7 @@ const (
 //   - realtime_session 有意不加入本白名单：无探针执行器、无人工测试形态
 //     （周期候选白名单 J1 与人工测试 options 均不含该值），与 video_create
 //     同一处理口径——DB CHECK 词表含该值（maintenance pg_schema_business_
-//     tables.go / sqlite_schema_business.go 同形）、写入口不开放落值；v8-A
+//     tables.go）、写入口不开放落值；v8-A
 //     将其归入音频域 lane 集只影响推导与允许集，不开放健康检查形态。
 var AccountHealthCheckEndpointModes = map[string]bool{
 	"images_json": true, "chat_json": true, "chat_sse": true,

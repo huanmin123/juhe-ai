@@ -676,53 +676,6 @@ func coalesceStringWd(value *string) string {
 
 func toPointerWd(value string) *string { return &value }
 
-func TestWdUsageRecordCompareRows(t *testing.T) {
-	left := Row{"created_at": "2026-09-04T10:00:00.000Z", "id": "u-1"}
-	right := Row{"created_at": "2026-09-04T11:00:00.000Z", "id": "u-2"}
-	// less(left,right) 语义：DESC 时更晚的记录排前（right 更新 → less(left,right)=false）。
-	if compareUsageRecordRows(left, right, sortDesc) {
-		t.Fatalf("DESC 下旧记录不应排在更新记录之前")
-	}
-	if !compareUsageRecordRows(right, left, sortDesc) {
-		t.Fatalf("DESC 应新记录在前")
-	}
-	if !compareUsageRecordRows(left, right, sortAsc) {
-		t.Fatalf("ASC 应旧记录在前")
-	}
-	if compareUsageRecordRows(left, left, sortAsc) {
-		t.Fatalf("同键同 id 不应有严格序")
-	}
-	// created_at 相同时按 id 决胜：DESC 下 id 大者在前。
-	older := Row{"created_at": "2026-09-04T10:00:00.000Z", "id": "u-1"}
-	newer := Row{"created_at": "2026-09-04T10:00:00.000Z", "id": "u-2"}
-	if !compareUsageRecordRows(newer, older, sortDesc) || !compareUsageRecordRows(older, newer, sortAsc) {
-		t.Fatalf("id 决胜方向错误")
-	}
-	// 不可解析时间戳比较为相等，落到 id 决胜（Node 抛错走 500，Go 端排序层
-	// 不 panic 即为当前契约）。
-	if compareUsageTimestamp("bad", "2026-09-04T10:00:00.000Z") != 0 {
-		t.Fatalf("不可解析时间戳应比较为相等")
-	}
-	if _, ok := parseRFC3339Millis("nope"); ok {
-		t.Fatalf("非法时间戳不应解析成功")
-	}
-}
-
-func TestWdBucketDateKeyHelpers(t *testing.T) {
-	if got := bucketDateKeyFromIso("2026-09-04T10:00:00.000Z"); got != "20260904" {
-		t.Fatalf("bucket 键错误: %q", got)
-	}
-	if got := bucketDateKeyFromIso("short"); got != "" {
-		t.Fatalf("过短时间应得空 bucket 键: %q", got)
-	}
-	if ms, ok := bucketDateKeyToUTCms("20260904"); !ok || ms != time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC).UnixMilli() {
-		t.Fatalf("bucket 键转毫秒错误: %d %v", ms, ok)
-	}
-	if _, ok := bucketDateKeyToUTCms("2026-09"); ok {
-		t.Fatalf("非法 bucket 键应失败")
-	}
-}
-
 func TestWdErrToString(t *testing.T) {
 	if got := errToString(nil); got != "<nil>" {
 		t.Fatalf("errToString(nil) = %q", got)
@@ -834,9 +787,6 @@ func TestWdAiPerformanceMappersAndHelpers(t *testing.T) {
 	hidden := mapAiPerformanceAccounts([]aiPerfAccountRow{{ID: "b", Name: "B", ProviderCode: "openai", SystemAccountName: toPointerWd("Hidden")}}, perfScopeState{IncludeSystemAccountName: false})
 	if hidden[0].SystemAccountName != nil {
 		t.Fatalf("未授权系统账户名不应导出: %#v", hidden[0])
-	}
-	if got := containsString([]string{"a", "b"}, "b"); !got || containsString([]string{"a"}, "b") {
-		t.Fatalf("containsString 错误")
 	}
 	if got := uniqueNonEmpty([]string{" x ", "", "x", "y"}); len(got) != 2 || got[0] != "x" || got[1] != "y" {
 		t.Fatalf("uniqueNonEmpty 错误: %#v", got)
@@ -1054,15 +1004,9 @@ func TestWdTimezoneLocationSourceError(t *testing.T) {
 }
 
 func TestWdSystemSettingsTimezoneSourceBranches(t *testing.T) {
-	// PG 方言只改表名前缀：postgres=false 读无前缀表（PG 夹具上不存在）应
-	// 报错，postgres=true 走 juhe_business.system_settings 读到已 seed 的
-	// UTC（原「PG 前缀在 SQLite 库上报错」的镜像断言，随夹具迁 PG 重钉）。
+	// 时区源固定走 juhe_business.system_settings，读到已 seed 的 UTC。
 	fixture := newFixture(t)
-	unqualified := NewSystemSettingsTimezoneSource(fixture.db, false)
-	if _, err := unqualified(nil); err == nil {
-		t.Fatalf("PG 测试库上无前缀 system_settings 应报错（验证表名前缀路径）")
-	}
-	source := NewSystemSettingsTimezoneSource(fixture.db, true)
+	source := NewSystemSettingsTimezoneSource(fixture.db)
 	if _, err := source(nil); err != nil {
 		t.Fatalf("已 seed UTC 的库应能解析时区: %v", err)
 	}

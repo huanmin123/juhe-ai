@@ -50,7 +50,7 @@ func newStatsTestEnv(t *testing.T) (*testEnv, *Store, *authz.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(base.db, true, testSecret, nil, nil)
+	store, err := NewStore(base.db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func newStatsTestEnv(t *testing.T) (*testEnv, *Store, *authz.Store) {
 	(&Deps{Store: store, Auth: base.deps, Authorized: authzStore}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	wired := &testEnv{deps: base.deps, k: k, server: server, jar: map[string]string{}, db: base.db, pg: true}
+	wired := &testEnv{deps: base.deps, k: k, server: server, jar: map[string]string{}, db: base.db}
 	return wired, store, authzStore
 }
 

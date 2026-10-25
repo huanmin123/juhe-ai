@@ -13,15 +13,12 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestW7AConstructorAndDialectArms(t *testing.T) {
-	if _, err := New(nil, SQLite, "", OwnerGate{}); err == nil {
+	if _, err := New(nil, "", OwnerGate{}); err == nil {
 		t.Fatal("nil db must be rejected")
 	}
 	db := newSettingsPGDatabase(t)
 	defer db.Close()
-	if _, err := New(db, "oracle", "", OwnerGate{}); err == nil {
-		t.Fatal("invalid mode must be rejected")
-	}
-	pg, err := New(db, Postgres, "", OwnerGate{})
+	pg, err := New(db, "", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,16 +32,12 @@ func TestW7AConstructorAndDialectArms(t *testing.T) {
 	if got := pg.bind("WHERE key=? AND updated_at=?"); got != "WHERE key=$1 AND updated_at=$2" {
 		t.Fatalf("pg bind=%q", got)
 	}
-	bare := &Store{mode: Postgres}
+	bare := &Store{}
 	if got := bare.table("system_settings"); got != "system_settings" {
 		t.Fatalf("empty schema table=%q", got)
 	}
 	if got := bare.bind("x"); got != "x" {
-		t.Fatal("postgres bind changed query")
-	}
-	sqlite := &Store{mode: SQLite}
-	if got := sqlite.bind("a=?"); got != "a=?" {
-		t.Fatal("sqlite bind changed query")
+		t.Fatal("非占位符查询不得改写")
 	}
 }
 
@@ -104,7 +97,7 @@ func TestW7APutValidationArms(t *testing.T) {
 	// DSN 供 closed-pool 错误臂二次开池。
 	testDB := newSettingsPGTestDatabase(t)
 	db := testDB.DB
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{true, true, true})
+	store, err := New(db, "juhe_business", OwnerGate{true, true, true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +116,7 @@ func TestW7APutValidationArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	brokenStore, err := New(broken, Postgres, "juhe_business", OwnerGate{true, true, true})
+	brokenStore, err := New(broken, "juhe_business", OwnerGate{true, true, true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +147,7 @@ func TestW7AListAndReplaceCatalogArms(t *testing.T) {
 	// DSN 供 closed-pool 错误臂二次开池。
 	testDB := newSettingsPGTestDatabase(t)
 	db := testDB.DB
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{true, true, true})
+	store, err := New(db, "juhe_business", OwnerGate{true, true, true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +211,7 @@ func TestW7AListAndReplaceCatalogArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	brokenStore, err := New(broken, Postgres, "juhe_business", OwnerGate{true, true, true})
+	brokenStore, err := New(broken, "juhe_business", OwnerGate{true, true, true})
 	if err != nil {
 		t.Fatal(err)
 	}

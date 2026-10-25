@@ -235,17 +235,12 @@ type w13g6StaticError string
 
 func (e w13g6StaticError) Error() string { return string(e) }
 
-// w13g6NewStore 在 env.db（env 为 nil 时新建内存库）上构造 Store。
+// w13g6NewStore 在 env.db（env 为 nil 时新建 pgtestkit 隔离库）上构造 Store。
 func w13g6NewStore(t *testing.T, env *testEnv, exchanger TokenExchanger, opts ...Option) *Store {
 	t.Helper()
 	var db *sql.DB
 	if env == nil {
-		fresh, err := sql.Open("sqlite", "file:w13g6-sso-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = fresh.Close() })
-		db = fresh
+		db = newOAuthMgmtPGDatabase(t)
 	} else {
 		db = env.db
 	}
@@ -254,14 +249,14 @@ func w13g6NewStore(t *testing.T, env *testEnv, exchanger TokenExchanger, opts ..
 			return TokenHTTPResponse{}, w13g6StaticError("w13g6 exchanger not configured")
 		})
 	}
-	accountStore, err := accounts.NewStore(db, false, testSecret, nil, nil)
+	accountStore, err := accounts.NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 默认关闭 requiresProxy 拦截（夹具账户不带代理）；调用方显式传入的
 	// WithProxyRequired 排在后面，可覆盖默认值。
 	opts = append([]Option{WithProxyRequired(false)}, opts...)
-	store, err := NewStore(db, false, testSecret, accountStore, exchanger, nil, nil, opts...)
+	store, err := NewStore(db, true, testSecret, accountStore, exchanger, nil, nil, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,11 +433,13 @@ func TestW13g6ExchangeArms(t *testing.T) {
 func w13g6SeedOAuthAccount(t *testing.T, env *testEnv, id, owner, provider, profile, protocol, version, accountType, creds string, revision int) {
 	t.Helper()
 	const now = "2026-01-01T00:00:00.000Z"
-	if _, err := env.db.Exec(`INSERT INTO accounts (id, config_revision, system_account_id, vendor_code,
-		provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+	// provider_protocol_profile_id 迁移壳列已随生产 accounts 退役，PG 载具
+	// 不再插（profile 形参保留以维持既有调用点）。
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO accounts (id, config_revision, system_account_id, vendor_code,
+		protocol_code, protocol_version, name, type, status,
 		credentials_encrypted, credential_mask, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '', ?, ?)`,
-		id, revision, owner, provider, profile, protocol, version, "w13g6-"+id, accountType, creds, now, now); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '', ?, ?)`),
+		id, revision, owner, provider, protocol, version, "w13g6-"+id, accountType, creds, now, now); err != nil {
 		t.Fatalf("seed account %s: %v", id, err)
 	}
 }
@@ -485,13 +482,8 @@ func TestW13g6StoreArms(t *testing.T) {
 		t.Fatal("revision-0 rotation must fail (rotation guard)")
 	}
 	// closed DB：findRotationAccount / RotateCredentials 错误臂（631/653/680）。
-	closed, err := sql.Open("sqlite", "file:w13g6-closed-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := closed.Close(); err != nil {
-		t.Fatal(err)
-	}
+	// 不可达 pgx 连接池（accounts 包 w13a 先例），错误语义与 closed 等价。
+	closed := newUnreachablePGDatabase(t)
 	closedStore := w13g6NewStore(t, nil, nil)
 	closedStore.db = closed
 	if _, err := closedStore.findRotationAccount(ctx, "w13g6-x", AccessScope{}); err == nil {

@@ -314,13 +314,10 @@ func TestW1MRunSessionRetentionArms(t *testing.T) {
 	})
 
 	t.Run("首次cleanup错误立即返回", func(t *testing.T) {
-		db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1m-retention-fail.sqlite3"))
-		if err != nil {
-			t.Fatalf("打开临时库: %v", err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
 		// owner gate 不满足：Cleanup 在 requireOwner 处失败，无需任何表。
-		store, err := sessionretention.New(db, sessionretention.SQLite, "", sessionretention.OwnerGate{})
+		// sqlite 临时库载具退役（D17），句柄改 pgtestkit 隔离 PG 库（不触表）。
+		db := composeTestPostgres(t).DB
+		store, err := sessionretention.New(db, "", sessionretention.OwnerGate{})
 		if err != nil {
 			t.Fatalf("sessionretention.New: %v", err)
 		}
@@ -338,22 +335,11 @@ func TestW1MRunSessionRetentionArms(t *testing.T) {
 	})
 
 	t.Run("tick轮次cleanup错误返回", func(t *testing.T) {
-		db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1m-retention-tick.sqlite3"))
-		if err != nil {
-			t.Fatalf("打开临时库: %v", err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		if _, err := db.Exec(`CREATE TABLE system_sessions (
-			id TEXT PRIMARY KEY,
-			system_account_id TEXT,
-			token_hash TEXT,
-			expires_at TEXT,
-			created_at TEXT,
-			last_seen_at TEXT
-		)`); err != nil {
-			t.Fatalf("创建 system_sessions: %v", err)
-		}
-		store, err := sessionretention.New(db, sessionretention.SQLite, "", sessionretention.OwnerGate{
+		// pgtestkit 隔离库已由 bootstrap 建出 juhe_business.system_sessions
+		//（生产 schema）；markReady 后 DROP 该表令下一个 tick 的 cleanup
+		// 必然失败（与原 sqlite 建表/删表臂同语义）。
+		db := composeTestPostgres(t).DB
+		store, err := sessionretention.New(db, "", sessionretention.OwnerGate{
 			Confirmed:         true,
 			SchemaReady:       true,
 			NodeWriterStopped: true,
@@ -368,7 +354,7 @@ func TestW1MRunSessionRetentionArms(t *testing.T) {
 		defer cancel()
 		err = runSessionRetention(ctx, store, 5*time.Millisecond, 10, func() {
 			ready = true
-			if _, dropErr := db.Exec("DROP TABLE system_sessions"); dropErr != nil {
+			if _, dropErr := db.Exec("DROP TABLE juhe_business.system_sessions"); dropErr != nil {
 				t.Errorf("DROP system_sessions: %v", dropErr)
 			}
 		})

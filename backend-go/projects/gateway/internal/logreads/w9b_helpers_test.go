@@ -18,37 +18,19 @@ import (
 )
 
 func TestW9BBindPostgresOrdinals(t *testing.T) {
-	if got := ReadPostgres.bind("a = ? AND b = ? AND c=?"); got != "a = $1 AND b = $2 AND c=$3" {
+	if got := logReadsBind("a = ? AND b = ? AND c=?"); got != "a = $1 AND b = $2 AND c=$3" {
 		t.Fatalf("bind=%q", got)
-	}
-	if got := ReadSQLite.bind("a = ?"); got != "a = ?" {
-		t.Fatalf("sqlite bind=%q", got)
 	}
 }
 
 func TestW9BTimeParamModes(t *testing.T) {
-	if got := ReadSQLite.timeParam("2026-09-01T00:00:00.000Z"); got != "2026-09-01T00:00:00.000Z" {
-		t.Fatalf("sqlite timeParam=%v", got)
-	}
-	parsed, ok := ReadPostgres.timeParam("2026-09-01T00:00:00.000Z").(time.Time)
+	parsed, ok := logReadsTimeParam("2026-09-01T00:00:00.000Z").(time.Time)
 	if !ok || parsed.UTC().Format(time.RFC3339) != "2026-09-01T00:00:00Z" {
-		t.Fatalf("postgres timeParam=%v", ReadPostgres.timeParam("2026-09-01T00:00:00.000Z"))
+		t.Fatalf("timeParam=%v", logReadsTimeParam("2026-09-01T00:00:00.000Z"))
 	}
 	// 非 RFC3339 回退字符串。
-	if got := ReadPostgres.timeParam("not-a-time"); got != "not-a-time" {
+	if got := logReadsTimeParam("not-a-time"); got != "not-a-time" {
 		t.Fatalf("fallback=%v", got)
-	}
-}
-
-func TestW9BParseReadDBModeArms(t *testing.T) {
-	if _, err := parseReadDBMode(""); err == nil || !strings.Contains(err.Error(), "必填") {
-		t.Fatalf("空模式=%v", err)
-	}
-	if _, err := parseReadDBMode("mysql"); err == nil || !strings.Contains(err.Error(), "mysql") {
-		t.Fatalf("非法模式=%v", err)
-	}
-	if mode, err := parseReadDBMode(ReadPostgres); err != nil || mode != ReadPostgres {
-		t.Fatalf("postgres=%v err=%v", mode, err)
 	}
 }
 
@@ -267,23 +249,20 @@ func TestW9BEmptyAuditBlobWindowArms(t *testing.T) {
 }
 
 func TestW9BReaderConstructors(t *testing.T) {
-	if _, err := NewAuditLogSQLReader(nil, ReadSQLite); err == nil {
+	if _, err := NewAuditLogSQLReader(nil); err == nil {
 		t.Fatal("nil db 必须拒绝")
 	}
-	if _, err := NewAuditLogSQLReader(&sql.DB{}, ""); err == nil {
-		t.Fatal("空模式必须拒绝")
-	}
-	reader, err := NewAuditLogSQLReader(&sql.DB{}, ReadPostgres)
+	reader, err := NewAuditLogSQLReader(&sql.DB{})
 	if err != nil {
 		t.Fatalf("postgres reader=%v", err)
 	}
 	if reader == nil {
 		t.Fatal("reader 不能为 nil")
 	}
-	if _, err := NewRuntimeLogSQLReaderWithSources(nil, ReadSQLite, nil, nil); err == nil {
+	if _, err := NewRuntimeLogSQLReaderWithSources(nil, nil, nil); err == nil {
 		t.Fatal("nil db 必须拒绝")
 	}
-	withSources, err := NewRuntimeLogSQLReaderWithSources(&sql.DB{}, ReadSQLite, func() int { return 30 }, func() time.Time { return time.Unix(0, 0) })
+	withSources, err := NewRuntimeLogSQLReaderWithSources(&sql.DB{}, func() int { return 30 }, func() time.Time { return time.Unix(0, 0) })
 	if err != nil || withSources == nil {
 		t.Fatalf("WithSources=%v err=%v", withSources, err)
 	}

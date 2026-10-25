@@ -160,7 +160,7 @@ type w11gDriver struct{ script *w11gScript }
 
 func (d w11gDriver) Open(string) (driver.Conn, error) { return &w11gConn{script: d.script}, nil }
 
-func w11gOpenScripted(t *testing.T, mode Mode, steps []w11gStep) *Store {
+func w11gOpenScripted(t *testing.T, _ string, steps []w11gStep) *Store {
 	t.Helper()
 	name := fmt.Sprintf("w11g-gdc-scripted-%d", atomic.AddInt64(&w11gDriverSeq, 1))
 	sql.Register(name, w11gDriver{script: &w11gScript{steps: steps}})
@@ -170,7 +170,7 @@ func w11gOpenScripted(t *testing.T, mode Mode, steps []w11gStep) *Store {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	store, err := New(db, mode, "w11g_schema", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	store, err := New(db, "w11g_schema", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,12 +180,12 @@ func w11gOpenScripted(t *testing.T, mode Mode, steps []w11gStep) *Store {
 func TestW11GMarkAllTransactionErrorArms(t *testing.T) {
 	ctx := context.Background()
 	beginErr := errors.New("w11g begin failed")
-	s := w11gOpenScripted(t, SQLite, []w11gStep{{beginErr: beginErr}})
+	s := w11gOpenScripted(t, "", []w11gStep{{beginErr: beginErr}})
 	if err := s.MarkAll(ctx, "reason"); err == nil {
 		t.Fatal("begin error must propagate")
 	}
 	execErr := errors.New("w11g exec failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{}, {execErr: execErr}})
+	s = w11gOpenScripted(t, "", []w11gStep{{}, {execErr: execErr}})
 	if err := s.MarkAll(ctx, "reason"); err == nil {
 		t.Fatal("exec error must propagate")
 	}
@@ -219,31 +219,31 @@ func TestW11GDeleteRowsTransactionErrorArms(t *testing.T) {
 	ctx := context.Background()
 	rows := []DirtyRow{{GroupID: "w11g-g1", UpdatedAt: "u1"}}
 	beginErr := errors.New("w11g begin failed")
-	s := w11gOpenScripted(t, SQLite, []w11gStep{{beginErr: beginErr}})
+	s := w11gOpenScripted(t, "", []w11gStep{{beginErr: beginErr}})
 	if _, err := s.DeleteRows(ctx, rows); err == nil {
 		t.Fatal("begin error must propagate")
 	}
 	prepareErr := errors.New("w11g prepare failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{}, {prepareErr: prepareErr}})
+	s = w11gOpenScripted(t, "", []w11gStep{{}, {prepareErr: prepareErr}})
 	if _, err := s.DeleteRows(ctx, rows); err == nil {
 		t.Fatal("prepare error must propagate")
 	}
 	execErr := errors.New("w11g stmt exec failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{}, {}, {execErr: execErr}})
+	s = w11gOpenScripted(t, "", []w11gStep{{}, {}, {execErr: execErr}})
 	if _, err := s.DeleteRows(ctx, rows); err == nil {
 		t.Fatal("stmt exec error must propagate")
 	}
 	affectedErr := errors.New("w11g rows-affected failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{}, {}, {affectedErr: affectedErr}})
+	s = w11gOpenScripted(t, "", []w11gStep{{}, {}, {affectedErr: affectedErr}})
 	if _, err := s.DeleteRows(ctx, rows); err == nil {
 		t.Fatal("rows-affected error must propagate")
 	}
 	commitErr := errors.New("w11g commit failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{}, {}, {affected: 1}, {commitErr: commitErr}})
+	s = w11gOpenScripted(t, "", []w11gStep{{}, {}, {affected: 1}, {commitErr: commitErr}})
 	if _, err := s.DeleteRows(ctx, rows); err == nil {
 		t.Fatal("commit error must propagate")
 	}
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{}, {}, {affected: 1}, {}})
+	s = w11gOpenScripted(t, "", []w11gStep{{}, {}, {affected: 1}, {}})
 	if err := s.DeleteGroupAccountStatsDirtyRows(ctx, rows); err != nil {
 		t.Fatalf("manifest alias err=%v", err)
 	}
@@ -252,7 +252,7 @@ func TestW11GDeleteRowsTransactionErrorArms(t *testing.T) {
 func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 	ctx := context.Background()
 	// Postgres 路径：FOR UPDATE 锁定 + 相等 cursor 幂等提交。
-	s := w11gOpenScripted(t, Postgres, []w11gStep{
+	s := w11gOpenScripted(t, "", []w11gStep{
 		{},
 		{contains: "FOR UPDATE", cols: []string{"reason"}, rows: [][]driver.Value{{"all_cursor:w11g-g1"}}},
 		{contains: "CASE WHEN", cols: []string{"c"}, rows: [][]driver.Value{{int64(0)}}},
@@ -263,22 +263,22 @@ func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 空 cursor：先拒绝。
-	s = w11gOpenScripted(t, Postgres, nil)
+	s = w11gOpenScripted(t, "", nil)
 	if err := s.UpdateAllCursor(ctx, "   "); !errors.Is(err, ErrCursorMalformed) {
 		t.Fatalf("blank cursor err=%v", err)
 	}
 	beginErr := errors.New("w11g begin failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{beginErr: beginErr}})
+	s = w11gOpenScripted(t, "", []w11gStep{{beginErr: beginErr}})
 	if err := s.UpdateAllCursor(ctx, "w11g-g1"); err == nil {
 		t.Fatal("begin error must propagate")
 	}
 	queryErr := errors.New("w11g select failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{{}, {rowsErr: queryErr}})
+	s = w11gOpenScripted(t, "", []w11gStep{{}, {rowsErr: queryErr}})
 	if err := s.UpdateAllCursor(ctx, "w11g-g1"); err == nil {
 		t.Fatal("select error must propagate")
 	}
 	// reason 为 NULL（初始非 cursor 状态）时直接推进 UPDATE。
-	s = w11gOpenScripted(t, SQLite, []w11gStep{
+	s = w11gOpenScripted(t, "", []w11gStep{
 		{},
 		{cols: []string{"reason"}, rows: [][]driver.Value{{nil}}},
 		{contains: "UPDATE", affected: 1},
@@ -288,7 +288,7 @@ func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	regressErr := errors.New("w11g regress query failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{
+	s = w11gOpenScripted(t, "", []w11gStep{
 		{},
 		{cols: []string{"reason"}, rows: [][]driver.Value{{AllCursorPrefix + "w11g-g1"}}},
 		{rowsErr: regressErr},
@@ -297,7 +297,7 @@ func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 		t.Fatal("regress query error must propagate")
 	}
 	equalErr := errors.New("w11g equal query failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{
+	s = w11gOpenScripted(t, "", []w11gStep{
 		{},
 		{cols: []string{"reason"}, rows: [][]driver.Value{{AllCursorPrefix + "w11g-g1"}}},
 		{cols: []string{"c"}, rows: [][]driver.Value{{int64(0)}}},
@@ -307,7 +307,7 @@ func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 		t.Fatal("equal query error must propagate")
 	}
 	execErr := errors.New("w11g update failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{
+	s = w11gOpenScripted(t, "", []w11gStep{
 		{},
 		{cols: []string{"reason"}, rows: [][]driver.Value{{nil}}},
 		{contains: "UPDATE", execErr: execErr},
@@ -316,7 +316,7 @@ func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 		t.Fatal("update error must propagate")
 	}
 	affectedErr := errors.New("w11g affected failed")
-	s = w11gOpenScripted(t, SQLite, []w11gStep{
+	s = w11gOpenScripted(t, "", []w11gStep{
 		{},
 		{cols: []string{"reason"}, rows: [][]driver.Value{{nil}}},
 		{contains: "UPDATE", affectedErr: affectedErr},
@@ -325,7 +325,7 @@ func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 		t.Fatal("affected error must propagate")
 	}
 	// 影响行数非 1：视为 marker 丢失，失败关闭。
-	s = w11gOpenScripted(t, SQLite, []w11gStep{
+	s = w11gOpenScripted(t, "", []w11gStep{
 		{},
 		{cols: []string{"reason"}, rows: [][]driver.Value{{nil}}},
 		{contains: "UPDATE", affected: 0},
@@ -336,17 +336,14 @@ func TestW11GUpdateAllCursorPostgresLockAndErrorArms(t *testing.T) {
 }
 
 func TestW11GConstructorAndContractGuards(t *testing.T) {
-	if _, err := New(nil, SQLite, "", OwnerGate{}); err == nil {
+	if _, err := New(nil, "", OwnerGate{}); err == nil {
 		t.Fatal("nil db must fail")
 	}
 	s, db := testStore(t, OwnerGate{})
-	if _, err := New(db, Mode("bogus"), "", OwnerGate{}); err == nil {
-		t.Fatal("invalid mode must fail")
-	}
-	if _, err := NewStore(db, SQLite, "", OwnerGate{}); err != nil {
+	if _, err := NewStore(db, "", OwnerGate{}); err != nil {
 		t.Fatalf("NewStore err=%v", err)
 	}
-	if _, err := NewStore(nil, SQLite, "", OwnerGate{}); err == nil {
+	if _, err := NewStore(nil, "", OwnerGate{}); err == nil {
 		t.Fatal("NewStore nil db must fail")
 	}
 	ctx := context.Background()

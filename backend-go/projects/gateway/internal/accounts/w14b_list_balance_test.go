@@ -80,15 +80,9 @@ func TestW14BListPageProjectionArms(t *testing.T) {
 	if got := listItemColumns(""); got[0] != "accounts.id" && !strings.Contains(strings.Join(got, ","), "accounts.id") {
 		t.Fatalf("空别名应回退 accounts 前缀：%v", got)
 	}
-	pgStore := &Store{pg: true}
-	cte, joins := pgStore.listJoins()
+	cte, joins := (&Store{}).listJoins()
 	if !strings.Contains(joins, "LEFT JOIN LATERAL") || cte != "" {
-		t.Fatal("pg 列表连接应使用 LATERAL")
-	}
-	// env.store 已是 PG 臂；SQLite 臂 CTE 渲染用零值 Store 直测。
-	sqliteCte, sqliteJoins := (&Store{}).listJoins()
-	if sqliteCte == "" || !strings.Contains(sqliteJoins, "ranked_group_bindings") {
-		t.Fatal("sqlite 列表连接应使用 CTE")
+		t.Fatal("列表连接应使用 LATERAL")
 	}
 	if groupBindStatus(listRow{}) != "bound" {
 		t.Fatal("无绑定 owner 差异应视为 bound")
@@ -142,12 +136,9 @@ func TestW14BBalanceDetailsAndSnapshotArms(t *testing.T) {
 	if env.store.BalanceRefresherPort() == nil || env.store.ModelCatalogRefresherPort() == nil {
 		t.Fatal("接线后端口应可用")
 	}
-	// statsTable 分支。
-	if (&Store{pg: true}).statsTable("account_usage_snapshots") != "juhe_stats.account_usage_snapshots" {
-		t.Fatal("pg stats 表应加前缀")
-	}
-	if (&Store{}).statsTable("account_usage_snapshots") != "account_usage_snapshots" {
-		t.Fatal("sqlite stats 表不应有前缀")
+	// statsTable（PG 单态：juhe_stats 前缀）。
+	if (&Store{}).statsTable("account_usage_snapshots") != "juhe_stats.account_usage_snapshots" {
+		t.Fatal("stats 表应加前缀")
 	}
 
 	// 空 id / 缺失账户。

@@ -108,8 +108,7 @@ func (s *Service) AdvanceBatchDispatchRevisionFamily(ctx context.Context, q acco
 	}
 	// Parent lock before the child row: account update transactions can hold
 	// either row already, and inverting the order deadlocks under concurrency
-	// (account-circuit-control-plane.repository.ts:433-454). SQLite ignores the
-	// clause via ForUpdate; the single-writer transaction serializes it.
+	// (account-circuit-control-plane.repository.ts:433-454).
 	if err := s.lockBatchDispatchRow(ctx, q, familyRootID); err != nil {
 		return err
 	}
@@ -167,8 +166,7 @@ func (s *Service) AdvanceBatchDispatchRevisionFamily(ctx context.Context, q acco
 }
 
 // AdvanceBatchDispatchRevision mirrors
-// advanceAccountCircuitDispatchRevisionInTransaction (+ the SQLite variant
-// :491-546): dedupe replay is idempotent, the revision bump is fenced with the
+// advanceAccountCircuitDispatchRevisionInTransaction: dedupe replay is idempotent, the revision bump is fenced with the
 // read revision (Node UPDATE ... + 1 with the Go control-plane store's CAS
 // fence, circuit_control_plane/store.go AdvanceDispatchRevision) and the
 // outbox row lands with the same column set and projection key.
@@ -233,7 +231,7 @@ func (s *Service) lockBatchDispatchRow(ctx context.Context, q accountscore.Query
 
 // ForUpdate 阶段 B 下沉 accountscore（SQLForUpdate），根包保留同名转发.
 func (s *Service) ForUpdate() string {
-	return accountscore.SQLForUpdate(s.store.PG())
+	return accountscore.SQLForUpdate()
 }
 
 // BatchFamilyDispatchTransitionID mirrors familyDispatchTransitionId

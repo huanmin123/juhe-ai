@@ -223,7 +223,7 @@ CREATE TABLE juhe_dataset.operation_log_summary_search_terms (operation_log_id t
 CREATE TABLE juhe_dataset.operation_log_owner_leases (lease_key text PRIMARY KEY, owner_id text NOT NULL, fence_token bigint NOT NULL, lease_until timestamptz NOT NULL, updated_at timestamptz NOT NULL)`); err != nil {
 		t.Fatalf("建旧 Node schema 失败：%v", err)
 	}
-	_, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
+	_, err := MigrateLegacyPostgres(ctx, Config{PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
 	if err == nil || !strings.Contains(err.Error(), "未知 operation_log_viewers 主键") {
 		t.Fatalf("未知主键必须拒绝：%v", err)
 	}
@@ -250,7 +250,7 @@ INSERT INTO juhe_dataset.operation_log_viewers VALUES ('w9b-legacy-1','actor','a
 		t.Fatalf("建旧 Node schema 失败：%v", err)
 	}
 	options := LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true}
-	cfg := Config{Mode: ModePostgres, PostgresURL: testDB.DSN}
+	cfg := Config{PostgresURL: testDB.DSN}
 	result, err := MigrateLegacyPostgres(ctx, cfg, options)
 	if err != nil {
 		t.Fatalf("历史迁移失败：%v", err)

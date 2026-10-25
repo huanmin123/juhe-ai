@@ -69,7 +69,7 @@ func TestInProcessAccountTestDispatchEndToEnd(t *testing.T) {
 	}
 	defer composed.Shutdown()
 
-	accountStore, err := accounts.NewStore(composed.DB, true, cfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composed.DB, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}

@@ -11,9 +11,9 @@ package gatewaycodex
 //     provider_code 退役幂等 DROP，与生产执行顺序一致）；行契约/链读/compact
 //     读正测试走本文件 newPostgresContextStateStore，断言与分片臂既有矩阵
 //     逐字节一致。
-//   - 组B（SQLiteShardContextStateStore 分片生产臂，随 B6 删臂半场退役）：
-//     newSQLiteStore 夹具族（分片布局/物理文件门禁/contextstore_test.go 链读
-//     矩阵/w14d guards 的 shard 臂）原样保留，不提前迁移也不提前删除。
+//   - 原「组B」（SQLiteShardContextStateStore 分片生产臂及其夹具族）已随
+//     sqlite 生产臂同批退役（2026-10-24 存储形态收口）；服务层测试夹具改为
+//     生产 PostgresContextStateStore。
 //   - scripted/内存实现与纯函数测试不依赖真库，保持原状。
 //
 // 连接串由 pgtestkit 自 .local dev env 解析，内容不进入任何文件、日志或断言。

@@ -200,7 +200,7 @@ func composeBalanceRefreshFixture(t *testing.T) (*pgtestkit.TestDatabase, *compo
 		t.Fatalf("ensure fixture lease schema: %v", err)
 	}
 	_ = leaseStore.Close()
-	accountStore, err := accounts.NewStore(composed.DB, true, cfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composed.DB, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
 	}
 	added, _ := result["addedModels"].([]string)
 	if len(added) != 1 || added[0] != "mock-model-a" {
-		providerStore, providerErr := providers.NewStore(db, true, time.Now)
+		providerStore, providerErr := providers.NewStore(db, false, time.Now)
 		if providerErr == nil {
 			items, listErr := providerStore.ListProviderModelsForRequest(context.Background(), "gpt", adminID, false, true)
 			t.Fatalf("addedModels = %v result=%v localProjection=%v listErr=%v", added, result, items, listErr)

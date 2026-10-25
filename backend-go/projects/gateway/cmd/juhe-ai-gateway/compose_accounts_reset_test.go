@@ -45,7 +45,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assemble runtime reset bridge: %v", err)
 	}
-	accountStore, err := accounts.NewStore(composed.DB, true, cfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composed.DB, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}

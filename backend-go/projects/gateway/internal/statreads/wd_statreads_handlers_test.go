@@ -2,11 +2,10 @@ package statreads
 
 // statreads DB handler 契约补充测试（wd_ 前缀，独占新增文件）：
 // pgtestkit 独立 PG 测试库 + httptest 直驱 handler，覆盖 account-usage 选项/
-// 趋势/关键字、ai-performance base/账户选项/关键字、ai-health 关键字检索与
-// J1 outcome 合并、usage-overview 模型分布/错误分节、usage-records 门禁，
-// 以及 Mount 的注册与门禁契约。usage 分片文件读面（SQLite-only 臂，组B）由
-// newWdSQLiteFixture 承接；J1 outcome SQLite 文件臂（HealthOutcomeSource.
-// SQLitePath）保留，业务侧夹具随 PG 基建迁移。
+// 趋势/关键字、ai-performance base/账户选项/关键字、ai-health 关键字检索、
+// usage-overview 模型分布/错误分节、usage-records 门禁，以及 Mount 的注册与
+// 门禁契约。2026-10-24 存储形态收口：usage 分片文件读面与 J1 outcome SQLite
+// 文件臂的组B测试已随 sqlite 生产臂同批退役。
 
 import (
 	"context"
@@ -14,13 +13,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
-	_ "modernc.org/sqlite"
 )
 
 // wdExtraSchema 是组B SQLite 夹具（共享 testSchema）之外、被测 SQL 需要的
@@ -50,14 +47,6 @@ func newWdFixture(t *testing.T) *wdFixture {
 
 // newWdSQLiteFixture 是组B测试（usage 分片文件读面）的 SQLite 夹具入口：
 // newSQLiteFixture + 无前缀补充表，随 SQLite 生产臂删除批次同批退役。
-func newWdSQLiteFixture(t *testing.T) *wdFixture {
-	t.Helper()
-	base := newSQLiteFixture(t)
-	if _, err := base.db.Exec(wdExtraSchema); err != nil {
-		t.Fatalf("apply extra schema: %v", err)
-	}
-	return &wdFixture{deps: base.deps, db: base.db}
-}
 
 func (f *wdFixture) exec(t *testing.T, statements ...string) {
 	t.Helper()
@@ -541,63 +530,6 @@ func TestWdAiHealthKeywordUsesSearchIndex(t *testing.T) {
 	}
 }
 
-func TestWdAiHealthHourDetailMergesJ1OutcomeSQLite(t *testing.T) {
-	fixture := newWdFixture(t)
-	fixture.exec(t,
-		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-j1', 'J1Account', 'sys-owner-1', 'api_key', 'openai', 'active')`,
-		// 本地读侧已有该小时的失败观察（10:20），J1 outcome 更新（10:40）应胜出。
-		`INSERT INTO juhe_stats.account_health_hourly (account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message)
-			VALUES ('acct-j1', '2026-09-04T10', 'failure', '2026-09-04T10:20:00.000Z', 502, 'upstream_error', 'upstream bad')`,
-	)
-	// 构造 J1 outcome SQLite 文件（jobs 侧写、gateway 只读）。
-	outcomePath := filepath.Join(t.TempDir(), "outcomes.sqlite3")
-	outcomeDB, err := sql.Open("sqlite", outcomePath)
-	if err != nil {
-		t.Fatalf("open outcome db: %v", err)
-	}
-	if _, err := outcomeDB.Exec(`CREATE TABLE account_health_outcomes (
-		outcome_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, observed_at TEXT NOT NULL,
-		outcome TEXT NOT NULL, payload TEXT NOT NULL)`); err != nil {
-		t.Fatalf("outcome schema: %v", err)
-	}
-	payload := `{"outcomeId":"out-1","requestId":"req-1","accountId":"acct-j1","outcome":"complete_success","observedAt":"2026-09-04T10:40:00.000Z","statusCode":200,"nextDueAt":"2026-09-04T11:40:00.000Z"}`
-	if _, err := outcomeDB.Exec(`INSERT INTO account_health_outcomes (outcome_id, account_id, observed_at, outcome, payload)
-		VALUES ('out-1', 'acct-j1', '2026-09-04T10:40:00.000Z', 'complete_success', ?)`, payload); err != nil {
-		t.Fatalf("outcome seed: %v", err)
-	}
-	if err := outcomeDB.Close(); err != nil {
-		t.Fatalf("close outcome db: %v", err)
-	}
-	fixture.deps.HealthOutcomes = &HealthOutcomeSource{SQLitePath: outcomePath}
-
-	handler := fixture.deps.aiHealthHourDetailHandler(false)
-	recorder := wdGet(t, handler, "/?accountId=acct-j1&statHour=2026-09-04T10", adminAuth(""))
-	detail := wdData(t, recorder)
-	if detail["status"] != "success" {
-		t.Fatalf("更新的 J1 outcome 应胜出: %#v", detail)
-	}
-	if detail["lastObservedAt"] != "2026-09-04T10:40:00.000Z" || detail["statusCode"] != float64(200) {
-		t.Fatalf("J1 outcome 明细字段错误: %#v", detail)
-	}
-
-	// 无 J1 配置时保持读侧观察。
-	fixture.deps.HealthOutcomes = nil
-	recorder = wdGet(t, handler, "/?accountId=acct-j1&statHour=2026-09-04T10", adminAuth(""))
-	detail = wdData(t, recorder)
-	if detail["status"] != "failure" || detail["errorCode"] != "upstream_error" {
-		t.Fatalf("无 J1 合并时读侧观察应保留: %#v", detail)
-	}
-	// 参数契约。
-	recorder = wdGet(t, handler, "/?accountId=&statHour=2026-09-04T10", adminAuth(""))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("空 accountId 应 400: %d", recorder.Code)
-	}
-	recorder = wdGet(t, handler, "/?accountId=acct-j1&statHour=2026-13-04T10", adminAuth(""))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("非法日历 statHour 应 400: %d", recorder.Code)
-	}
-}
-
 func TestWdAiHealthListHandlerParameterContract(t *testing.T) {
 	fixture := newWdFixture(t)
 	handler := fixture.deps.aiHealthListHandler(false)
@@ -615,172 +547,6 @@ func TestWdAiHealthListHandlerParameterContract(t *testing.T) {
 // newWdShardFixture 是组B（usage 分片文件读面，SQLite-only 臂）的夹具入口：
 // newWdSQLiteFixture + 真实 shard 文件与 :memory: 目录，随 SQLite 生产臂删除
 // 批次同批退役。
-func newWdShardFixture(t *testing.T) (*wdFixture, string, *sql.DB) {
-	t.Helper()
-	fixture := newWdSQLiteFixture(t)
-	shardPath := filepath.Join(t.TempDir(), "usage_20260904_s000.sqlite3")
-	shardDB, err := sql.Open("sqlite", shardPath)
-	if err != nil {
-		t.Fatalf("open shard: %v", err)
-	}
-	if _, err := shardDB.Exec(shardSchema); err != nil {
-		t.Fatalf("shard schema: %v", err)
-	}
-	if err := shardDB.Close(); err != nil {
-		t.Fatalf("close shard: %v", err)
-	}
-	catalog, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open catalog: %v", err)
-	}
-	t.Cleanup(func() { _ = catalog.Close() })
-	if _, err := catalog.Exec(`CREATE TABLE usage_record_shards (
-		shard_key TEXT PRIMARY KEY, bucket_date TEXT NOT NULL, shard_id INTEGER NOT NULL,
-		file_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active')`); err != nil {
-		t.Fatalf("catalog schema: %v", err)
-	}
-	if _, err := catalog.Exec(`INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status)
-		VALUES ('20260904:s000', '2026-09-04', 0, ?, 'active')`, shardPath); err != nil {
-		t.Fatalf("catalog seed: %v", err)
-	}
-	fixture.deps.UsageCatalog = catalog
-	return fixture, shardPath, catalog
-}
-
-func wdShardExec(t *testing.T, path string, statements ...string) {
-	t.Helper()
-	shardDB, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("reopen shard: %v", err)
-	}
-	defer shardDB.Close()
-	for _, statement := range statements {
-		if _, err := shardDB.Exec(statement); err != nil {
-			t.Fatalf("shard seed %v", err)
-		}
-	}
-}
-
-func TestWdUsageRecordsKeywordResolvesScopedAccountIds(t *testing.T) {
-	fixture, shardPath, _ := newWdShardFixture(t)
-	// self 面（user）钉到 sys-user-1：关键字经名称前缀/授权/分组四路并集解析。
-	// 组B SQLite 夹具：业务种子保持无前缀（与分片读臂同库形态）。
-	fixture.exec(t,
-		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-w1', 'WidgetAccount', 'sys-user-1', 'api_key', 'openai', 'active')`,
-		`INSERT INTO accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-w2', 'WidgetGrouped', 'sys-other', 'api_key', 'openai', 'active')`,
-		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-w', 'WidgetGroup', 'sys-user-1')`,
-		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES ('acct-w2', 'g-w', 'sys-user-1', 1)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
-			VALUES ('ra-w', 'group', 'g-w', 'sys-other', 'sys-user-1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-	)
-	wdShardExec(t, shardPath,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, account_id, success, status_code, created_at) VALUES
-			('u-w1', 'sys-user-1', 'tr-1', 'gateway', 'acct-w1', 1, 200, '2026-09-04T10:00:00.000Z')`,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, account_id, success, status_code, created_at) VALUES
-			('u-w2', 'sys-user-1', 'tr-2', 'gateway', 'acct-w2', 1, 200, '2026-09-04T11:00:00.000Z')`,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, account_id, success, status_code, created_at) VALUES
-			('u-w3', 'sys-user-1', 'tr-3', 'gateway', 'acct-unrelated', 1, 200, '2026-09-04T12:00:00.000Z')`,
-	)
-	handler := fixture.deps.usageRecordsListHandler(true)
-	// w11g 修复回归：scoped（ownerID 非空）关键字检索此前在
-	// usageRecordKeywordAccountIds 第二段查询报 "no such column:
-	// accounts.system_account_id"（ownerClause 锚错了别名），路由呈现 500。
-	// 已按 Node 原版把 owner 条件锚定 instance_accounts 别名；现在 owner 视角
-	// 关键字检索正常返回命中记录（acct-w1 自有 + acct-w2 分组授权）。
-	recorder := wdGet(t, handler, "/?accountKeyword=Widget", userAuth())
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("scoped accountKeyword 应 200: %d %s", recorder.Code, recorder.Body.String())
-	}
-	keywordItems := wdJSONArray(t, wdData(t, recorder)["items"], "items")
-	if len(keywordItems) != 2 {
-		t.Fatalf("scoped accountKeyword 应命中两条记录: %#v", keywordItems)
-	}
-	if keywordItems[1].(map[string]any)["accountName"] != "WidgetAccount" {
-		t.Fatalf("账户名水合错误: %#v", keywordItems[1])
-	}
-	// 非关键字读取保持可用：三条种子记录照常返回并带账户名水合。
-	recorder = wdGet(t, handler, "/", userAuth())
-	payload := wdData(t, recorder)
-	items := wdJSONArray(t, payload["items"], "items")
-	if len(items) != 3 {
-		t.Fatalf("非关键字读取应返回全部记录: %#v", payload)
-	}
-	if items[2].(map[string]any)["accountName"] != "WidgetAccount" {
-		t.Fatalf("账户名水合错误: %#v", items[2])
-	}
-}
-
-func TestWdUsageRecordsFilterMatrix(t *testing.T) {
-	fixture, shardPath, _ := newWdShardFixture(t)
-	wdShardExec(t, shardPath,
-		// 今日（固定 Now=2026-09-04T12:00Z，UTC 时区）窗口内两条对照记录。
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, model, stream, status_code, success, error_code, first_token_ms, duration_ms, input_tokens, output_tokens, cost_usd, created_at) VALUES
-			('u-f1', 'sys-user-1', 'trace-alpha', 'gateway', '10.0.0.1', 'key-1', 'g-1', 'acct-1', '/v1/chat', 'gpt-5', 1, 200, 1, NULL, 100, 900, 10, 5, 0.2, '2026-09-04T10:00:00.000Z')`,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, client_ip, model, stream, status_code, success, failure_attribution, error_code, error_message, created_at) VALUES
-			('u-f2', 'sys-user-1', 'trace-beta', 'manual_account_test', '10.0.0.9', 'gpt-5', 0, 429, 0, 'account_upstream', 'rate_limit_exceeded', '被限流', '2026-09-04T11:00:00.000Z')`,
-		// 昨日记录：默认"今日"窗口外。
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, success, status_code, created_at) VALUES
-			('u-old', 'sys-user-1', 'trace-old', 'gateway', 1, 200, '2026-09-03T08:00:00.000Z')`,
-	)
-	handler := fixture.deps.usageRecordsListHandler(true)
-	// 默认窗口=今天（UTC），昨日记录不出现；倒序 newest first。
-	recorder := wdGet(t, handler, "/", userAuth())
-	payload := wdData(t, recorder)
-	items := wdJSONArray(t, payload["items"], "items")
-	if len(items) != 2 || items[0].(map[string]any)["id"] != "u-f2" {
-		t.Fatalf("默认今日窗口与倒序错误: %#v", payload)
-	}
-	cases := []struct {
-		name     string
-		query    string
-		expected []string
-	}{
-		{"result=success", "?result=success", []string{"u-f1"}},
-		{"result=failed", "?result=failed", []string{"u-f2"}},
-		{"statusCode", "?statusCode=429", []string{"u-f2"}},
-		{"traceId 前缀", "?traceId=trace-a", []string{"u-f1"}},
-		{"clientIp 前缀", "?clientIp=10.0.0.9", []string{"u-f2"}},
-		{"model", "?model=gpt-5", []string{"u-f2", "u-f1"}},
-		{"trafficSource", "?trafficSource=manual_account_test", []string{"u-f2"}},
-		{"groupId", "?groupId=g-1", []string{"u-f1"}},
-		{"显式日期窗口", "?startDate=2026-09-04&endDate=2026-09-04", []string{"u-f2", "u-f1"}},
-		{"升序", "?sortBy=createdAt&sortOrder=asc", []string{"u-f1", "u-f2"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			recorder := wdGet(t, handler, "/"+tc.query, userAuth())
-			items := wdJSONArray(t, wdData(t, recorder)["items"], "items")
-			got := []string{}
-			for _, item := range items {
-				got = append(got, item.(map[string]any)["id"].(string))
-			}
-			if strings.Join(got, ",") != strings.Join(tc.expected, ",") {
-				t.Fatalf("过滤结果错误: got %#v want %#v", got, tc.expected)
-			}
-		})
-	}
-	// 失败行映射：归因/事实串与水合名。
-	recorder = wdGet(t, handler, "/?result=failed", userAuth())
-	failed := wdData(t, recorder)["items"].([]any)[0].(map[string]any)
-	if failed["failureAttribution"] != "account_upstream" || failed["failureReason"] != "rate_limit_exceeded | 被限流" {
-		t.Fatalf("失败行归因错误: %#v", failed)
-	}
-	recorder = wdGet(t, handler, "/?result=success", userAuth())
-	successRow := wdData(t, recorder)["items"].([]any)[0].(map[string]any)
-	if successRow["failureReason"] != nil || successRow["stream"] != true || successRow["costUsd"] != 0.2 {
-		t.Fatalf("成功行字段错误: %#v", successRow)
-	}
-	// 组合过滤 + upstream 模型不一致标记。
-	wdShardExec(t, shardPath,
-		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, model, upstream_model, upstream_response_model, success, status_code, created_at) VALUES
-			('u-f3', 'sys-user-1', 'trace-gamma', 'gateway', 'gpt-5', 'gpt-5', 'gpt-5-mini', 1, 200, '2026-09-04T11:30:00.000Z')`,
-	)
-	recorder = wdGet(t, handler, "/?traceId=trace-gamma", userAuth())
-	item := wdData(t, recorder)["items"].([]any)[0].(map[string]any)
-	if item["upstreamModelMismatch"] != true {
-		t.Fatalf("上下游模型不一致应标记: %#v", item)
-	}
-}
 
 func TestWdUsageRecordsAdminCannotFilterAcrossAllWithoutScope(t *testing.T) {
 	// 被测对象是 admin 过滤门（方言无关）；放行臂的行读走 PG 臂空
@@ -806,16 +572,14 @@ func TestWdUsageRecordsAdminCannotFilterAcrossAllWithoutScope(t *testing.T) {
 func TestWdUsageRecordRowsPGRequiresPostgres(t *testing.T) {
 	fixture := newWdFixture(t)
 	deps := fixture.deps
-	deps.PGDialect = true
 	if !strings.Contains(deps.statsTable("usage_records"), "juhe_stats.") {
 		t.Fatalf("PG 方言 stats 表应带 juhe_stats 前缀: %q", deps.statsTable("usage_records"))
 	}
 	if !strings.Contains(deps.businessTable("accounts"), "juhe_business.") {
 		t.Fatalf("PG 方言 business 表应带 juhe_business 前缀: %q", deps.businessTable("accounts"))
 	}
-	// 迁移 PG 夹具后 juhe_usage.usage_records 母表已由 pgTestSchema 承载，
-	// 原「SQLite 库不承载限定表」的 Skip 前提消失；前缀断言保留，行读行为
-	// 由 usage-records 组A测试（admin 门/keyword 检索）在真实 PG 上覆盖。
+	// 行读行为由 usage-records 组A测试（admin 门/keyword 检索）在真实 PG 上
+	// 覆盖。
 }
 
 func TestWdAiPerformanceKeywordPostgresBuilderNeedsPostgres(t *testing.T) {

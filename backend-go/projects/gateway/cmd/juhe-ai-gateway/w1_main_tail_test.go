@@ -943,7 +943,6 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 	// 先确保 F4 PG schema 就绪，再预插一条未过期的他者租约。
 	fixtureStore, err := operationlog.OpenStore(operationlog.Config{
 		Enabled:              true,
-		Mode:                 operationlog.ModePostgres,
 		InstanceID:           "w1w-f4-lease-fixture",
 		PostgresURL:          tempAppURL,
 		PostgresMaxOpenConns: 4,

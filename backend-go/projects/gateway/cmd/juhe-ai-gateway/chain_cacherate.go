@@ -36,7 +36,7 @@ func newChainCacheRateSnapshotSource(statsDB *sql.DB, businessDB *sql.DB, postgr
 	return gatewaycacherate.NewSnapshotSource(
 		statsDB,
 		postgres,
-		statreads.NewSystemSettingsTimezoneSource(businessDB, postgres),
+		statreads.NewSystemSettingsTimezoneSource(businessDB),
 		time.Now,
 		func(message string) {
 			slog.Default().Warn("缓存率快照刷新失败，保留旧快照（缓存率维度超龄后转中性）",

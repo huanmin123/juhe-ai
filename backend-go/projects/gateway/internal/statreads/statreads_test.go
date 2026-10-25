@@ -3,12 +3,11 @@ package statreads
 // 契约测试：pgtestkit 独立 PG 测试库上直接驱动 handler（注入
 // authsys.AuthContext），覆盖权限门（my-stats 403 / usage-records 未过滤
 // 400）、日期参数 400、usage-overview 各段读数、account-usage 分页聚合、
-// ai-performance 序列与 usage-window。夹具走生产 PG 臂形态（PGDialect=true、
-// juhe_stats/juhe_business schema 限定、juhe_usage 分区母表空形态）；列集与
+// ai-performance 序列与 usage-window。夹具走生产形态
+// （juhe_stats/juhe_business schema 限定、juhe_usage 分区母表空形态）；列集与
 // 类型同 maintenance 生产 DDL，约束/默认值按夹具放宽（读面 seed 需要表达
-// NULL/缺省形态，读查询不依赖约束）。SQLite-only 读面（usage 分片文件走查
-// 等，组B）由 newSQLiteFixture 承接，随生产 sqlite 臂删除批次同批退役
-// （PLAN-20261024T051925945Z）。
+// NULL/缺省形态，读查询不依赖约束）。原 SQLite-only 读面组B测试已随 sqlite
+// 生产臂退役（2026-10-24 存储形态收口）。
 
 import (
 	"context"
@@ -24,7 +23,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-	_ "modernc.org/sqlite"
 )
 
 // pgTestSchema 是 PG 夹具的 minimal schema：schema 限定与表名同生产 PG 臂
@@ -258,10 +256,9 @@ type testFixture struct {
 	now  time.Time
 }
 
-// newFixture 是组A测试的 PG 夹具入口：pgtestkit 每测试独立库 + pgTestSchema
-// （生产 PG 臂 schema 形态），PGDialect=true、时区源走 juhe_business 限定表
-// （与生产 PG 组合根一致）。连接串由 pgtestkit 自 .local dev env 解析，内容
-// 不进入任何文件、日志或断言。
+// newFixture 是测试夹具入口：pgtestkit 每测试独立库 + pgTestSchema（生产
+// schema 形态），时区源走 juhe_business 限定表（与生产组合根一致）。连接串
+// 由 pgtestkit 自 .local dev env 解析，内容不进入任何文件、日志或断言。
 func newFixture(t *testing.T) *testFixture {
 	t.Helper()
 	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
@@ -274,11 +271,10 @@ func newFixture(t *testing.T) *testFixture {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	fixture := &testFixture{db: db, now: now}
 	fixture.deps = &Deps{
-		Business:  db,
-		Stats:     db,
-		PGDialect: true,
-		Now:       func() time.Time { return fixture.now },
-		Timezone:  NewSystemSettingsTimezoneSource(db, true),
+		Business: db,
+		Stats:    db,
+		Now:      func() time.Time { return fixture.now },
+		Timezone: NewSystemSettingsTimezoneSource(db),
 	}
 	return fixture
 }
@@ -287,30 +283,6 @@ func newFixture(t *testing.T) *testFixture {
 // 快照形态等 SQLite-only 臂/形态）的夹具入口：原 :memory: SQLite 形态原样
 // 保留（无 schema 限定表、PGDialect=false、无前缀时区源），随生产 sqlite 臂
 // 删除批次同批退役，不得再新增消费方。
-func newSQLiteFixture(t *testing.T) *testFixture {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(testSchema); err != nil {
-		t.Fatalf("apply schema: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"', '2026-01-01T00:00:00.000Z')`); err != nil {
-		t.Fatalf("seed timezone: %v", err)
-	}
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	fixture := &testFixture{db: db, now: now}
-	fixture.deps = &Deps{
-		Business:  db,
-		Stats:     db,
-		PGDialect: false,
-		Now:       func() time.Time { return fixture.now },
-		Timezone:  NewSystemSettingsTimezoneSource(db, false),
-	}
-	return fixture
-}
 
 // invoke runs a wrapped handler with an injected auth context (the authsys
 // session wrappers are exercised by their own package tests).
@@ -700,7 +672,7 @@ func TestAiPerformanceSeriesReadsHourly(t *testing.T) {
 func TestTimezoneMissingFailsClosed(t *testing.T) {
 	// 空库（无 juhe_business.system_settings）：PG 臂时区源按缺行失败闭合。
 	db := pgtestkit.New(t)
-	deps := &Deps{Business: db, Stats: db, PGDialect: true, Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Timezone: NewSystemSettingsTimezoneSource(db, true)}
+	deps := &Deps{Business: db, Stats: db, Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Timezone: NewSystemSettingsTimezoneSource(db)}
 	recorder := invoke(t, deps.usageWindowHandler, http.MethodGet, "/__aisys__/api/stats/usage-window", adminAuth(""))
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("missing timezone not 500: %d", recorder.Code)

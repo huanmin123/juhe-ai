@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// publicReadsDDL 是 w11fFaultEnv 保留组（scripted SQLite 故障注入环境）专用
 // 的 F5 dataset SQLite DDL（见 pgkit_test.go 的三组分类说明）；组A环境的 F5
 // 表由 newLogreadsPGDatabase 按生产 PG DDL 建。
 var publicReadsDDL = []string{

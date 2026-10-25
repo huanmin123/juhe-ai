@@ -180,25 +180,6 @@ func TestWINativeResponsesMaterializedConversion(t *testing.T) {
 	}
 }
 
-func TestWIUpsertPostgresRowHelpersOverSQLite(t *testing.T) {
-	handle := wiOpenSQLiteHandle(t, "wi-codex-pg-upsert?mode=memory&cache=shared")
-	db := handle.DB()
-	ctx := context.Background()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("打开事务失败: %v", err)
-	}
-	defer tx.Rollback() //nolint
-	responseRow := CodexContextResponseStateIndex{ResponseID: "resp-1", SessionID: "s1"}
-	if err := upsertResponseStateRowPostgres(ctx, tx, &responseRow); err == nil {
-		t.Fatal("postgres 响应行 upsert 必须报错（schema 缺失）")
-	}
-	compactRow := CodexContextCompactStateIndex{CompactID: "c1", SessionID: "s1"}
-	if err := upsertCompactStateRowPostgres(ctx, tx, &compactRow); err == nil {
-		t.Fatal("postgres compact 行 upsert 必须报错（schema 缺失）")
-	}
-}
-
 func TestWICompactTerminalHelpers(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()

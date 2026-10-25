@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestW14dAccountAddAutoCreatesTargetAndGroup(t *testing.T) {
@@ -86,12 +87,15 @@ func TestW14dApiKeyOptionalPatches(t *testing.T) {
 	if err := env.db.QueryRow(`SELECT id FROM groups LIMIT 1`).Scan(&groupID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.db.Exec(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, is_default, created_at, updated_at)
-		VALUES ('w14d_rs', (SELECT id FROM system_accounts WHERE username='w14dkeyer'), 'Key策略', 'normal', 'active', 0, datetime('now'), datetime('now'))`); err != nil {
+	// datetime('now') 为 SQLite 方言：PG 载具改绑 RFC3339 参数（时间列 text，
+	// seed 行时间值不被本测试断言，格式无契约意义）。
+	nowText := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, is_default, created_at, updated_at)
+		VALUES ('w14d_rs', (SELECT id FROM system_accounts WHERE username='w14dkeyer'), 'Key策略', 'normal', 'active', 0, ?, ?)`), nowText, nowText); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.db.Exec(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-		VALUES ('w14d_rsg', 'w14d_rs', (SELECT id FROM system_accounts WHERE username='w14dkeyer'), ?, 1, 100, 'active', datetime('now'), datetime('now'))`, groupID); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+		VALUES ('w14d_rsg', 'w14d_rs', (SELECT id FROM system_accounts WHERE username='w14dkeyer'), ?, 1, 100, 'active', ?, ?)`), groupID, nowText, nowText); err != nil {
 		t.Fatal(err)
 	}
 	_ = strategyID

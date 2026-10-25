@@ -12,7 +12,7 @@ import (
 func TestStatsStoreLoadCosts(t *testing.T) {
 	db := newTestDB(t, "loadcosts")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestStatsStoreLoadCosts(t *testing.T) {
 func TestLoadCostsIgnoresFailedAttemptCost(t *testing.T) {
 	db := newTestDB(t, "failed-attempt-cost")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestLoadCostsIgnoresFailedAttemptCost(t *testing.T) {
 func TestStatsStoreLoadCostsBatch(t *testing.T) {
 	db := newTestDB(t, "batch")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -157,25 +157,25 @@ func TestStatsStoreLoadCostsBatch(t *testing.T) {
 }
 
 func TestStatsStorePostgreSQLBindingAndQualification(t *testing.T) {
-	stats, err := NewStatsStore(nil, false)
+	stats, err := NewStatsStore(nil)
 	if err == nil {
 		t.Fatal("nil db must be rejected")
 	}
 	_ = stats
-	query := bindPlaceholders(true, "SELECT * FROM t WHERE a = ? AND b = ? OR (c = ?)")
+	query := bindPlaceholders("SELECT * FROM t WHERE a = ? AND b = ? OR (c = ?)")
 	if strings.Contains(query, "?") {
 		t.Fatalf("postgres binding must rewrite every placeholder: %q", query)
 	}
 	if query != "SELECT * FROM t WHERE a = $1 AND b = $2 OR (c = $3)" {
 		t.Fatalf("unexpected binding: %q", query)
 	}
-	if bindPlaceholders(false, query) != query {
+	if bindPlaceholders(query) != query {
 		t.Fatal("sqlite binding must be a no-op")
 	}
-	if statsTable(true, "usage_stats_daily") != "juhe_stats.usage_stats_daily" {
+	if statsTable("usage_stats_daily") != "juhe_stats.usage_stats_daily" {
 		t.Fatal("postgres stats tables must be schema-qualified")
 	}
-	if statsBusinessTable(true, "resource_authorizations") != "juhe_business.resource_authorizations" {
+	if statsBusinessTable("resource_authorizations") != "juhe_business.resource_authorizations" {
 		t.Fatal("postgres business tables must be schema-qualified")
 	}
 }
@@ -183,7 +183,7 @@ func TestStatsStorePostgreSQLBindingAndQualification(t *testing.T) {
 func TestWindowResetSemantics(t *testing.T) {
 	db := newTestDB(t, "reset")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}

@@ -427,7 +427,7 @@ func TestGroupPermissionMatrixAnonymousAndValidation(t *testing.T) {
 // conflict mapping (the HTTP dedup guard shadows it for identical payloads).
 func TestGroupStoreLevelDuplicateName(t *testing.T) {
 	env := newTestEnv(t)
-	store, err := NewStore(env.db, true, nil, nil, nil)
+	store, err := NewStore(env.db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

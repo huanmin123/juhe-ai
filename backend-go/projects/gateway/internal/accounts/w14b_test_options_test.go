@@ -163,15 +163,12 @@ func TestW14BManualTestOptionsFlow(t *testing.T) {
 		t.Fatalf("损坏密文能力上下文应返回 nil：%v %v", got, err)
 	}
 
-	// 字面量分支（零值 Store 即 sqlite 臂视角；env.store 已是 PG 臂）。
-	sqliteStore := &Store{pg: false}
-	pgStore := &Store{pg: true}
-	if testTodayText(pgStore) != "CURRENT_DATE::text" || testTodayText(sqliteStore) != "date('now')" {
-		t.Fatal("今日字面量分支不符")
+	// 方言字面量（PG 单态收口，双方言分支断言随 sqlite 臂退役）。
+	if testTodayText(env.store) != "CURRENT_DATE::text" {
+		t.Fatal("今日字面量不符")
 	}
-	if pgStore.boolTrueLiteral() != "TRUE" || pgStore.boolFalseLiteral() != "FALSE" ||
-		sqliteStore.boolTrueLiteral() != "1" || sqliteStore.boolFalseLiteral() != "0" {
-		t.Fatal("pg 布尔字面量分支不符")
+	if env.store.boolTrueLiteral() != "TRUE" || env.store.boolFalseLiteral() != "FALSE" {
+		t.Fatal("布尔字面量不符")
 	}
 	if normalizeTestProviderCodeList([]string{" openai ", "", "openai", "OPENAI"})[0] != "openai" {
 		t.Fatal("provider code 归一化应去重")

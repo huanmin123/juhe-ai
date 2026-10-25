@@ -13,7 +13,7 @@ import (
 
 func TestCleanupPostgresStrictCutoffBoundedAndReplayable(t *testing.T) {
 	db := openPG(t)
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	store, err := New(db, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,14 +56,14 @@ func TestCleanupPostgresStrictCutoffBoundedAndReplayable(t *testing.T) {
 func TestCleanupOwnerGateAndInputFailClosed(t *testing.T) {
 	db := openPG(t)
 	insertSession(t, db, "old", "2020-01-01T00:00:00.000Z")
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true})
+	store, err := New(db, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Cleanup(context.Background(), CleanupInput{ExpiredBefore: "2021-01-01T00:00:00.000Z", Limit: 1}); !errors.Is(err, ErrOwnerGate) {
 		t.Fatalf("partial owner gate err=%v", err)
 	}
-	store, err = New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	store, err = New(db, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestCleanupOwnerGateAndInputFailClosed(t *testing.T) {
 
 func TestPostgresSQLQualificationAndPlaceholders(t *testing.T) {
 	db := openPG(t)
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
+	store, err := New(db, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,13 +104,10 @@ func TestPostgresSQLQualificationAndPlaceholders(t *testing.T) {
 
 func TestPostgresSchemaValidationAndContract(t *testing.T) {
 	db := openPG(t)
-	if _, err := New(db, Postgres, "bad.schema", OwnerGate{}); !errors.Is(err, ErrInvalidSchema) {
+	if _, err := New(db, "bad.schema", OwnerGate{}); !errors.Is(err, ErrInvalidSchema) {
 		t.Fatalf("invalid schema err=%v", err)
 	}
-	if _, err := New(db, Mode("mysql"), "", OwnerGate{}); !errors.Is(err, ErrInvalidMode) {
-		t.Fatalf("invalid mode err=%v", err)
-	}
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
+	store, err := New(db, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +118,7 @@ func TestPostgresSchemaValidationAndContract(t *testing.T) {
 
 func TestExpiryUsesNodeMillisecondRepresentation(t *testing.T) {
 	db := openPG(t)
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
+	store, err := New(db, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}

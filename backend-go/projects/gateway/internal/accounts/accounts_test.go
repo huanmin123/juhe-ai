@@ -90,15 +90,12 @@ type testEnv struct {
 	sink   *recordingSink
 	db     *sql.DB
 	store  *Store
-	// pg 标记环境存储方言：组A PG 环境为 true（e.exec/count/queryCell 经
-	// fixtureBind 对齐 $n）；newSQLiteTestEnv 组B环境为 false（原样 ?）。
-	pg bool
 }
 
-// newTestEnv 是组A测试的共享环境：pgtestkit 隔离 PG 测试库 + 生产 store 的
-// PG 臂（NewStore postgres=true，与生产 PG 装配同一方言）；schema 与手写 SQL
-// 方言见 pgkit_test.go。SQLite-only 生产臂的组B测试走 newSQLiteTestEnv
-// （本文件末尾，随生产 sqlite 臂删除批次同批退役）。
+// newTestEnv 是测试的共享环境：pgtestkit 隔离 PG 测试库 + 生产 store
+// （与生产 PG 装配同一方言）；schema 与手写 SQL 方言见 pgkit_test.go。
+// 原 SQLite-only 组B环境（newSQLiteTestEnv）已随生产 sqlite 臂删除批次
+// 同批退役（D17）。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	db := newAccountsPGDatabase(t)
@@ -112,7 +109,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
-	seedFixtureModels(t, db, true)
+	seedFixtureModels(t, db)
 	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +123,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
 	sink := &recordingSink{}
-	store, err := NewStore(db, true, testSecret, nil, nil)
+	store, err := NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,285 +132,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db, store: store, pg: true}
-}
-
-// schemaStatements mirrors the maintenance business schema subset the slice
-// owns (accounts and its satellite tables). 组B SQLite-only 生产臂测试专用
-// （newSQLiteTestEnv，随生产 sqlite 臂删除批次同批退役）；组A PG 夹具见
-// pgkit_test.go accountsPGFixtureSchema。
-var schemaStatements = []string{
-	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, parent_code TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL, account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	// vendors（设计 §9.1，providers 更名收敛）：创建链 vendor 归属校验读该表
-	// （真实厂商必须存在且 enabled）；夹具与 maintenance fresh DDL 同列集。
-	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, test_status TEXT NOT NULL DEFAULT 'unknown', latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS accounts (
-		id TEXT PRIMARY KEY,
-		config_revision INTEGER NOT NULL DEFAULT 1,
-		dispatch_revision INTEGER NOT NULL DEFAULT 1,
-		circuit_projection_revision INTEGER NOT NULL DEFAULT 0,
-		system_account_id TEXT NOT NULL,
-		-- 迁移窗口 DDL（pg_schema_business_tables.go accounts 同形）：B1 写入
-		-- 面起 createInTx 落 vendor_code / connection_driver_code，fixture 同步
-		-- 携带两列（generic 账户 vendor 为 NULL，driver 恒非空）。
-		vendor_code TEXT,
-		connection_driver_code TEXT,
-		-- oauth_type 物理列（设计 §2.1，#B1 剩余③）：google_oauth 三值、其他
-		-- NULL；写链 create/patch oauth 变体落列。
-		oauth_type TEXT,
-		-- 设计 §9.11 目标列集无 provider_code / provider_protocol_profile_id /
-		-- client_compatibility 三列，夹具与 fresh DDL 同列集。
-		protocol_code TEXT NOT NULL,
-		protocol_version TEXT NOT NULL,
-		name TEXT NOT NULL,
-		type TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'pending_test',
-		credentials_encrypted TEXT NOT NULL,
-		credential_fingerprint TEXT,
-		credential_mask TEXT NOT NULL DEFAULT '',
-		oauth_access_token_expires_at TEXT,
-		oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
-		proxy_profile_id TEXT,
-		concurrency_limit INTEGER NOT NULL DEFAULT 5000,
-		priority INTEGER NOT NULL DEFAULT 0,
-		super_priority_enabled INTEGER NOT NULL DEFAULT 0,
-		fallback_enabled INTEGER NOT NULL DEFAULT 0,
-		schedulable INTEGER NOT NULL DEFAULT 1,
-		availability_schedule_json TEXT,
-		availability_schedule_next_check_at TEXT,
-		notes TEXT,
-		account_expires_at TEXT,
-		last_used_at TEXT,
-		cooldown_until TEXT,
-		last_error_code TEXT,
-		last_error_message TEXT,
-		last_error_trace_id TEXT,
-		health_check_model TEXT NOT NULL DEFAULT '',
-		health_check_endpoint_mode TEXT NOT NULL DEFAULT 'chat_json',
-		health_check_failure_count INTEGER NOT NULL DEFAULT 0,
-		health_check_failure_started_at TEXT,
-		cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
-		cooldown_retest_observation_started_at TEXT,
-		cooldown_retest_generation TEXT,
-		cooldown_retest_last_at TEXT,
-		cooldown_retest_last_status_code INTEGER,
-		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
-		expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0,
-		capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
-		last_health_check_at TEXT,
-		last_health_success_at TEXT,
-		health_check_connection_id TEXT,
-		last_health_check_status_code INTEGER,
-		last_health_check_error_code TEXT,
-		last_health_check_error_message TEXT,
-		last_health_check_trace_id TEXT,
-		stream_failure_count INTEGER NOT NULL DEFAULT 0,
-		stream_failure_window_started_at TEXT,
-		next_health_check_at TEXT,
-		balance_query_enabled INTEGER NOT NULL DEFAULT 0,
-		balance_query_next_refresh_at TEXT,
-		balance_query_config_json TEXT NOT NULL DEFAULT '{}',
-		authorization_instance_source_account_id TEXT,
-		authorization_instance_authorization_id TEXT,
-		authorization_instance_owner_system_account_id TEXT,
-		deleted_at TEXT,
-		deleted_by TEXT,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique ON accounts(system_account_id, name) WHERE deleted_at IS NULL`,
-	`CREATE TABLE IF NOT EXISTS group_accounts (
-		system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL,
-		account_authorization_id TEXT, local_priority INTEGER NOT NULL DEFAULT 0,
-		local_super_priority_enabled INTEGER NOT NULL DEFAULT 0, local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
-		enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-		PRIMARY KEY (group_id, account_id)
-	)`,
-	`CREATE TABLE IF NOT EXISTS models (
-		id TEXT PRIMARY KEY,
-		vendor_code TEXT,
-		public_model TEXT NOT NULL,
-		upstream_model TEXT NOT NULL,
-		scope TEXT NOT NULL DEFAULT 'builtin',
-		system_account_id TEXT,
-		status TEXT NOT NULL DEFAULT 'active',
-		supported_endpoint_modes_json TEXT,
-		-- B4 ⑧（设计 §4）：测试目录读取切 models 单表所需列（与 maintenance
-		-- fresh DDL 同名同语义；夹具此前只建写入面子集）。
-		release_date TEXT,
-		shutdown_date TEXT,
-		catalog_visible INTEGER NOT NULL DEFAULT 1,
-		catalog_order INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`,
-	// B4 W2 目标形态（设计 §4：(account_id, model_id)，§9：映射外键引用面）。
-	`CREATE TABLE IF NOT EXISTS account_supported_models (
-		account_id TEXT NOT NULL, model_id TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, model_id),
-		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-		FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_connections (
-		id TEXT PRIMARY KEY,
-		account_id TEXT NOT NULL,
-		connection_preset_code TEXT NOT NULL,
-		protocol_surface_code TEXT,
-		base_url TEXT NOT NULL,
-		enabled INTEGER NOT NULL DEFAULT 1,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL,
-		UNIQUE (account_id, connection_preset_code),
-		-- B1 断点批（设计 §2.1）：复合唯一键支撑 accounts 复合外键
-		-- (id, health_check_connection_id)（测试 SQLite 夹具不带该 FK，生产
-		-- DDL 见 maintenance pg_schema_business_tables.go）。
-		UNIQUE (account_id, id),
-		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_endpoint_modes (
-		connection_id TEXT NOT NULL,
-		endpoint_mode TEXT NOT NULL,
-		PRIMARY KEY (connection_id, endpoint_mode),
-		FOREIGN KEY (connection_id) REFERENCES account_connections(id) ON DELETE CASCADE
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_entry_mappings (
-		id TEXT PRIMARY KEY,
-		account_id TEXT NOT NULL,
-		source_model TEXT NOT NULL,
-		source_endpoint_family TEXT NOT NULL,
-		target_connection_id TEXT NOT NULL,
-		target_model_id TEXT NOT NULL,
-		target_endpoint_family TEXT NOT NULL,
-		enabled INTEGER NOT NULL DEFAULT 1,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL,
-		UNIQUE (account_id, source_model, source_endpoint_family),
-		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-		FOREIGN KEY (account_id, target_connection_id) REFERENCES account_connections(account_id, id),
-		FOREIGN KEY (account_id, target_model_id) REFERENCES account_supported_models(account_id, model_id)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_tags (
-		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL,
-		created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-	)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique ON account_tags(system_account_id, name)`,
-	`CREATE TABLE IF NOT EXISTS account_tag_bindings (
-		account_id TEXT NOT NULL, tag_id TEXT NOT NULL, system_account_id TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, tag_id)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_name_search_terms (
-		account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, term TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, term)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_name_search_documents (
-		account_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, normalized_name TEXT NOT NULL, updated_at TEXT NOT NULL
-	)`,
-	// PATCH 连接面 retained-active-Key 精确化（归档
-	// hasRetainedActiveAccountApiKeyInClient）读取的运行态表；列集镜像
-	// maintenance/internal/schema/sqlite_schema.go 的同名表子集。
-	`CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (
-		id TEXT PRIMARY KEY,
-		system_account_id TEXT NOT NULL,
-		account_id TEXT NOT NULL,
-		key_fingerprint TEXT NOT NULL,
-		key_index INTEGER NOT NULL DEFAULT 0,
-		status TEXT NOT NULL DEFAULT 'active',
-		updated_at TEXT NOT NULL
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_lock_states (
-		account_id TEXT PRIMARY KEY,
-		enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-		lock_state TEXT NOT NULL DEFAULT 'UNLOCKED' CHECK (lock_state IN ('UNLOCKED', 'LOCKED_IDLE', 'ENGAGED', 'DEAD_CONFIRMED')),
-		lock_death_timeout_seconds INTEGER NOT NULL DEFAULT 300 CHECK (lock_death_timeout_seconds BETWEEN 30 AND 3600),
-		lock_retry_interval_seconds INTEGER NOT NULL DEFAULT 5 CHECK (lock_retry_interval_seconds BETWEEN 5 AND 30),
-		incident_id TEXT,
-		generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
-		incident_started_at TEXT,
-		deadline_at TEXT,
-		original_status TEXT,
-		provenance TEXT,
-		next_retry_at_ms INTEGER,
-		lease_id TEXT,
-		lease_until_ms INTEGER,
-		updated_at TEXT NOT NULL
-	)`,
-	// The management list LEFT JOINs the runtime authorization rows for the
-	// stamped-instance status guard (Node
-	// account-management-list.repository.ts:324-334), so the fixture carries
-	// the production table; column set mirrors m10AuthzDDL.
-	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
-	// BUG-0162 delete side effects: the resource-authorization chain tables
-	// (revokeAccountAuthorizationsForDeletedResource) and the health-input
-	// tombstone outbox family (logicallyDeleteAccounts). Column sets mirror
-	// maintenance/internal/schema/sqlite_schema.go.
-	`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active', activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, source_type TEXT NOT NULL, source_id TEXT NOT NULL, window_hours INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
-	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (account_id TEXT PRIMARY KEY, current_version INTEGER NOT NULL CHECK (current_version >= 1), reserved_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (event_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, input_version INTEGER NOT NULL CHECK (input_version >= 1), event_kind TEXT NOT NULL CHECK (event_kind IN ('snapshot', 'tombstone')), reason TEXT NOT NULL, config_revision INTEGER NOT NULL CHECK (config_revision >= 1), dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1), status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')), claim_token TEXT, claimed_until TEXT, attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0), available_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (account_id, input_version))`,
-	// Batch-edit side effects (问题-0172 T1): the dispatch revision outbox and
-	// the group stats dirty marker (Node business-schema.ts:553-584,1108-1112).
-	`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
-		group_id TEXT PRIMARY KEY,
-		reason TEXT,
-		updated_at TEXT NOT NULL
-	)`,
-	// D-206 oauthUsage read projection: ListPage hydrates the Codex usage
-	// snapshots from the stats-side table (statsTable renders the bare name on
-	// SQLite; column set and kind CHECK mirror
-	// maintenance/internal/schema/sqlite_schema_stats.go — xai_grok per
-	// AI账户Grok用量快照设计 §3, anthropic_claude per §8).
-	`CREATE TABLE IF NOT EXISTS account_usage_snapshots (
-		system_account_id TEXT NOT NULL,
-		account_id TEXT NOT NULL,
-		kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance', 'xai_grok', 'anthropic_claude')),
-		source TEXT,
-		snapshot_json TEXT NOT NULL,
-		refresh_status TEXT,
-		last_attempt_at TEXT,
-		last_success_at TEXT,
-		next_refresh_after TEXT,
-		last_error_message TEXT,
-		updated_at TEXT NOT NULL,
-		created_at TEXT NOT NULL,
-		PRIMARY KEY (system_account_id, account_id, kind)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_circuit_outbox (
-		event_id TEXT PRIMARY KEY,
-		projection_key TEXT NOT NULL,
-		dedupe_key TEXT NOT NULL,
-		event_type TEXT NOT NULL CHECK (event_type IN ('dispatch_revision_changed', 'incident_changed')),
-		account_id TEXT NOT NULL,
-		account_runtime_key TEXT NOT NULL,
-		circuit_scope_key TEXT,
-		incident_id TEXT,
-		transition_id TEXT NOT NULL,
-		dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
-		generation INTEGER,
-		ledger_revision INTEGER,
-		status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'dispatched')),
-		available_at_ms INTEGER NOT NULL,
-		claim_token TEXT,
-		claimed_by TEXT,
-		claim_until_ms INTEGER,
-		attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-		last_error_class TEXT,
-		acknowledged_at_ms INTEGER,
-		created_at_ms INTEGER NOT NULL,
-		updated_at_ms INTEGER NOT NULL,
-		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-		UNIQUE (projection_key, dedupe_key),
-		CHECK (length(event_id) BETWEEN 1 AND 256),
-		CHECK (length(projection_key) BETWEEN 1 AND 128),
-		CHECK (length(dedupe_key) BETWEEN 1 AND 256),
-		CHECK (length(account_runtime_key) BETWEEN 1 AND 1024),
-		CHECK (length(transition_id) BETWEEN 1 AND 256)
-	)`,
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db, store: store}
 }
 
 func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]any) {
@@ -517,7 +236,7 @@ func nullStringForFixture(code string) any {
 // 字面量与直插种子）。每个名字按 §1.1 九厂商 + NULL(generic) 全值域落 vendor 身份：写侧
 // 按账户 provider 推导的 vendor_code（gpt→'gpt'，openai/generic→”）做身份键
 // 匹配。
-func seedFixtureModels(t *testing.T, db *sql.DB, bindPlaceholders bool) {
+func seedFixtureModels(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, model := range []struct{ id, name string }{
 		{"gpt-4o", "gpt-4o"},
@@ -548,9 +267,7 @@ func seedFixtureModels(t *testing.T, db *sql.DB, bindPlaceholders bool) {
 			statement := `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', false, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
 			ON CONFLICT DO NOTHING`
-			if bindPlaceholders {
-				statement = fixtureBind(statement)
-			}
+			statement = fixtureBind(statement)
 			if _, err := db.Exec(statement,
 				"mod-fixture-"+model.id+vendor.id, nullStringForFixture(vendor.code), model.name, model.name); err != nil {
 				t.Fatal(err)
@@ -645,13 +362,9 @@ func (e *testEnv) queryCell(t *testing.T, query string, args ...any) string {
 	return value.String
 }
 
-// bindFixture 按环境方言改写占位符（PG 环境经 fixtureBind 对齐 $n；sqlite
-// 组B环境原样 ?）。
+// bindFixture 把测试手写 SQL 的 ? 占位符对齐生产 PG 臂的 $n。
 func (e *testEnv) bindFixture(query string) string {
-	if e.pg {
-		return fixtureBind(query)
-	}
-	return query
+	return fixtureBind(query)
 }
 
 func dataMap(t *testing.T, payload map[string]any) map[string]any {
@@ -1666,52 +1379,4 @@ func TestCreateDerivesClientCompatibilityColumn(t *testing.T) {
 	if !hasSSE {
 		t.Fatalf("codex_responses 账户端点模式应含 responses_sse: %v", modes)
 	}
-}
-
-// newSQLiteTestEnv 是组B SQLite-only 生产臂测试的环境（原 newTestEnv 的
-// SQLite 形态原样保留）：单连接内存 SQLite + 生产 store 的 sqlite 臂 +
-// modelcheckauth.SQLite 组合（与生产 SQLite 装配同一方言）。仅
-// statsdb_attach_test.go 与 delete_authorization_sqlite_test.go 在用；随
-// 生产 sqlite 臂删除批次同批退役（D17）。
-func newSQLiteTestEnv(t *testing.T) *testEnv {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:accounts-sqlite-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range schemaStatements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT OR IGNORE INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '["gpt-4o-mini"]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	seedFixtureModels(t, db, false)
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deps := &authsys.Deps{
-		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
-		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
-	}
-	sink := &recordingSink{}
-	store, err := NewStore(db, false, testSecret, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	k := kernel.New(kernel.Options{CompressionDisabled: true})
-	deps.MountAuth(k, "lax", false)
-	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
-	server := httptest.NewServer(k.Handler())
-	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db, store: store, pg: false}
 }

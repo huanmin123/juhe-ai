@@ -324,7 +324,7 @@ func normalizedHealthCheckModel(value string, supportedModels []string) (string,
 }
 
 // groupOwnerReference mirrors groupOwnerAndProviderForAccountWriteAsync rows
-//（组无 provider 维度，设计 §8）：只解析 owner 归属维度。
+// （组无 provider 维度，设计 §8）：只解析 owner 归属维度。
 type groupReference struct {
 	id              string
 	systemAccountID string
@@ -984,8 +984,7 @@ const defaultUserAiAccountLimit = 100
 // the owner's ai_account_limit override (NULL falls back to the
 // userAiAccountLimit setting) gates the count of live owner-owned base
 // accounts (deleted_at IS NULL, authorization instances excluded); 0 means
-// unlimited. The PostgreSQL arm locks the owner row (LIMIT 1 FOR UPDATE);
-// SQLite serializes through the single-writer transaction via forUpdate.
+// unlimited. The arm locks the owner row (LIMIT 1 FOR UPDATE).
 func (s *Store) assertAiAccountCreationLimit(ctx context.Context, q queryer, systemAccountID string) error {
 	var ownerLimit sql.NullInt64
 	// A missing owner row falls through to the setting (Node owner = undefined
@@ -1126,8 +1125,8 @@ func (s *Store) defaultGroupForWrite(ctx context.Context, q queryer, systemAccou
 }
 
 func (s *Store) resolveEnabledProxyProfile(ctx context.Context, q queryer, proxyProfileID string) (bool, error) {
-	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
-	// 扫描目标必须用 bool 才能同时兼容两种驱动（同 list.go 的 NullBool 先例）。
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean，扫描目标用 bool 对齐
+	// 驱动类型（同 list.go 的 NullBool 先例）。
 	var id string
 	var enabled bool
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id, enabled FROM `+s.table("proxy_profiles")+`

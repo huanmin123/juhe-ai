@@ -95,7 +95,7 @@ func TestAccountListUsageSummariesPGDialectBranches(t *testing.T) {
 		VALUES ('owner-1', 'account_authorization', 'ra_1', 9, 500, 100, 60, 12.5)`); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewStatsUsageSource(db, true)
+	source, err := NewStatsUsageSource(db)
 	if err != nil {
 		t.Fatal(err)
 	}

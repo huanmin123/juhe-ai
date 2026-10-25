@@ -67,8 +67,8 @@ func TestRotationInvalidationAndDispatchRevision(t *testing.T) {
 		t.Fatalf("dispatch revision %d → %d, want +1", before, after)
 	}
 	var eventType, status, transitionID string
-	if err := env.db.QueryRow(`SELECT event_type, status, transition_id FROM account_circuit_outbox
-		WHERE projection_key = 'account_circuit_runtime_v1' AND dedupe_key LIKE 'dispatch:%' AND account_id = ?`,
+	if err := env.db.QueryRow(fixtureBind(`SELECT event_type, status, transition_id FROM account_circuit_outbox
+		WHERE projection_key = 'account_circuit_runtime_v1' AND dedupe_key LIKE 'dispatch:%' AND account_id = ?`),
 		accountID).Scan(&eventType, &status, &transitionID); err != nil {
 		t.Fatalf("rotation outbox row: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRotationInvalidationAndDispatchRevision(t *testing.T) {
 func (e *testEnv) dispatchRevision(t *testing.T, accountID string) int64 {
 	t.Helper()
 	var revision int64
-	if err := e.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = ?`, accountID).Scan(&revision); err != nil {
+	if err := e.db.QueryRow(fixtureBind(`SELECT dispatch_revision FROM accounts WHERE id = ?`), accountID).Scan(&revision); err != nil {
 		t.Fatal(err)
 	}
 	return revision

@@ -493,7 +493,7 @@ func TestW1TBalanceWirePGDegradationArms(t *testing.T) {
 	t.Run("PG 模式 SQLite 句柄：契约校验失败降级或打开失败", func(t *testing.T) {
 		db := w1uOpenPlainSQLite(t, "w1t-pg.sqlite3")
 		composed := &composition{db: db, pgDialect: true}
-		accountStore, err := accounts.NewStore(db, false, "w1t-secret", time.Now, newCompositionID)
+		accountStore, err := accounts.NewStore(db, "w1t-secret", time.Now, newCompositionID)
 		if err != nil {
 			t.Fatalf("accounts store: %v", err)
 		}
@@ -518,7 +518,7 @@ func TestW1TBalanceWirePGDegradationArms(t *testing.T) {
 
 	t.Run("PG 模式 nil 句柄：契约校验失败降级", func(t *testing.T) {
 		composed := &composition{db: nil, pgDialect: true}
-		accountStore, err := accounts.NewStore(w1uOpenPlainSQLite(t, "w1t-pg2.sqlite3"), false, "w1t-secret", time.Now, newCompositionID)
+		accountStore, err := accounts.NewStore(w1uOpenPlainSQLite(t, "w1t-pg2.sqlite3"), "w1t-secret", time.Now, newCompositionID)
 		if err != nil {
 			t.Fatalf("accounts store: %v", err)
 		}
@@ -1055,6 +1055,7 @@ func TestW1TSSEOverflowClosesSubscriberChannel(t *testing.T) {
 		t.Fatalf("溢出关闭分支未收敛")
 	}
 }
+
 // ---------------------------------------------------------------------------
 // chain_runtime.go：组合根 redis 驱动闭包 + 错误臂
 // ---------------------------------------------------------------------------

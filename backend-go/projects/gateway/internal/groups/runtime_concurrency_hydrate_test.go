@@ -55,7 +55,7 @@ func newRuntimeConcurrencyFixture(t *testing.T) *Store {
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active');`)
 		return err
 	})
-	store, err := NewStore(db, true, nil, nil, nil)
+	store, err := NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

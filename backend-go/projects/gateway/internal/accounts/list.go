@@ -498,8 +498,8 @@ type listRow struct {
 	proxyProfileID               sql.NullString
 	proxyProfileName             sql.NullString
 	proxyProfileType             sql.NullString
-	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
-	// 扫描目标必须用 NullBool 才能同时兼容两种驱动。
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean，扫描目标用 NullBool
+	// 对齐驱动类型。
 	proxyProfileEnabled    sql.NullBool
 	bindingSystemAccountID sql.NullString
 	boundGroupID           sql.NullString
@@ -575,8 +575,7 @@ func listItemColumns(alias string) []string {
 		alias + ".last_error_trace_id",
 		alias + ".last_used_at",
 		// BUG-0278 批次二同表加法扩列（列名以
-		// maintenance/internal/schema/pg_schema_business_tables.go:648-665 为准；
-		// SQLite fixture 建表已含同名列）。
+		// maintenance/internal/schema/pg_schema_business_tables.go:648-665 为准）。
 		alias + ".last_health_check_at",
 		alias + ".next_health_check_at",
 		alias + ".last_health_check_status_code",
@@ -647,8 +646,7 @@ func listItemColumns(alias string) []string {
 // （vendor_code 为 NULL 且旧列不在 vendors 值域）JOIN 不中，provider_name 走
 // LEFT JOIN 的 NULL（响应层 omitempty）。
 func (s *Store) listJoins() (cte, joins string) {
-	if s.pg {
-		joins = ` LEFT JOIN LATERAL (
+	joins = ` LEFT JOIN LATERAL (
 			SELECT group_accounts.system_account_id, group_accounts.group_id,
 				group_accounts.account_authorization_id, group_accounts.local_priority,
 				group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
@@ -659,23 +657,6 @@ func (s *Store) listJoins() (cte, joins string) {
 			ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
 			LIMIT 1
 		) group_bindings ON true`
-	} else {
-		cte = ` WITH ranked_group_bindings AS (
-			SELECT group_accounts.account_id, group_accounts.system_account_id, group_accounts.group_id,
-				group_accounts.account_authorization_id, group_accounts.local_priority,
-				group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
-				ROW_NUMBER() OVER (
-					PARTITION BY group_accounts.account_id, group_accounts.system_account_id
-					ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
-				) AS binding_rank
-			FROM ` + s.table("group_accounts") + ` group_accounts
-			WHERE group_accounts.enabled = 1
-		)`
-		joins = ` LEFT JOIN ranked_group_bindings group_bindings
-			ON group_bindings.account_id = accounts.id
-			AND group_bindings.system_account_id = accounts.system_account_id
-			AND group_bindings.binding_rank = 1`
-	}
 	joins += ` LEFT JOIN ` + s.table("groups") + ` bound_groups ON bound_groups.id = group_bindings.group_id
 		LEFT JOIN ` + s.table("system_accounts") + ` system_accounts_ref
 			ON system_accounts_ref.id = accounts.system_account_id
@@ -1610,9 +1591,9 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		healthCheckConnectionID  sql.NullString
 		currentHealthCheckPreset string
 		authorizationID          sql.NullString
-		sourceAccountID           sql.NullString
-		boundGroupID              sql.NullString
-		boundGroupName            sql.NullString
+		sourceAccountID          sql.NullString
+		boundGroupID             sql.NullString
+		boundGroupName           sql.NullString
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, COALESCE(accounts.vendor_code, '') AS provider_code,

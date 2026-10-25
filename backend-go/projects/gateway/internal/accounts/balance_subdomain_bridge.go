@@ -101,8 +101,8 @@ type ForceActivateResult struct {
 // balanceService builds the subdomain service over this store's live fields.
 func (s *Store) balanceService() *accountsbalance.Service {
 	return accountsbalance.New(storeBaseAdapter{s}, accountsbalance.Deps{
-		// account_usage_snapshots 读写落在 stats 库句柄上（生产 SQLite 双文件；
-		// nil 回退共享句柄，PG 同池、单文件测试不受影响）。
+		// account_usage_snapshots 读写落在 stats 库句柄上（nil 回退共享句柄，
+		// PG 同池、juhe_stats schema 全限定）。
 		StatsDatabase:                s.statsQueryDB(),
 		AuthorizedReadableIDs:        s.authorizedReadableIDs,
 		AdvanceBatchDispatchRevision: s.advanceBatchDispatchRevision,
@@ -170,8 +170,7 @@ func (s *Store) ModelCatalogRefresherPort() ModelCatalogRefresher { return s.mod
 
 // ---- Store 方法转发（余额与探子子域） ----
 
-// statsTable qualifies a juhe_stats table (PostgreSQL schema-qualified, bare
-// on SQLite — the Go test database keeps one file).
+// statsTable qualifies a juhe_stats table (juhe_stats schema-qualified).
 func (s *Store) statsTable(name string) string {
 	return s.balanceService().StatsTable(name)
 }

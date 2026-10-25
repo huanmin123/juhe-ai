@@ -6,60 +6,11 @@ package statreads
 // usage_stats_daily 聚合列。
 
 import (
-	"database/sql"
 	"net/http"
-	"path/filepath"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // seedMediaUsageShard 建一个含媒体计量列的 usage shard 并注册 catalog。
-func seedMediaUsageShard(t *testing.T, fixture *testFixture, shardDir, fileName string) error {
-	t.Helper()
-	shardPath := filepath.Join(shardDir, fileName)
-	shard, err := sql.Open("sqlite", shardPath)
-	if err != nil {
-		return err
-	}
-	defer shard.Close()
-	if _, err := shard.Exec(`CREATE TABLE usage_records (
-		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
-		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT, compaction_expected INTEGER NOT NULL DEFAULT 0, account_id TEXT, provider_code TEXT, endpoint TEXT,
-		model TEXT, upstream_model TEXT, upstream_response_model TEXT, billed_service_tier TEXT,
-		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0, stream INTEGER DEFAULT 0,
-		status_code INTEGER, success INTEGER DEFAULT 0, failure_attribution TEXT,
-		error_code TEXT, error_message TEXT, first_token_ms INTEGER, duration_ms INTEGER,
-		input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
-		input_audio_tokens INTEGER, output_audio_tokens INTEGER, tts_input_chars INTEGER NOT NULL DEFAULT 0,
-		audio_input_seconds REAL NOT NULL DEFAULT 0, output_video_seconds REAL NOT NULL DEFAULT 0,
-		cost_usd REAL, created_at TEXT NOT NULL)`); err != nil {
-		return err
-	}
-	if _, err := shard.Exec(`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source,
-		success, status_code, input_audio_tokens, output_audio_tokens, tts_input_chars,
-		audio_input_seconds, output_video_seconds, cost_usd, created_at) VALUES
-		('u-media', 'sys-user-1', 'trace-media', 'gateway', 1, 200, 1200, 300, 4567, 62.5, 4, 0.02, '2026-09-04T10:00:00.000Z')`); err != nil {
-		return err
-	}
-	catalog, err := sql.Open("sqlite", filepath.Join(shardDir, "catalog.sqlite3"))
-	if err != nil {
-		return err
-	}
-	// catalog 句柄交给 deps.UsageCatalog 持有，测试结束时统一关闭。
-	t.Cleanup(func() { _ = catalog.Close() })
-	if _, err := catalog.Exec(`CREATE TABLE usage_record_shards (
-		shard_key TEXT PRIMARY KEY, bucket_date TEXT NOT NULL, shard_id INTEGER NOT NULL,
-		file_path TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
-		return err
-	}
-	if _, err := catalog.Exec(`INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status)
-		VALUES ('20260904:s000', '2026-09-04', 0, ?, 'active')`, shardPath); err != nil {
-		return err
-	}
-	fixture.deps.UsageCatalog = catalog
-	return nil
-}
 
 func TestAccountUsageSummaryMediaMeteringFields(t *testing.T) {
 	fixture := newFixture(t)
@@ -112,32 +63,5 @@ func TestAccountUsagePageRangeUsageMediaFields(t *testing.T) {
 	if rangeUsage["inputAudioTokens"] != float64(1200) || rangeUsage["ttsInputChars"] != float64(4567) ||
 		rangeUsage["audioInputSeconds"] != 62.5 || rangeUsage["outputVideoSeconds"] != float64(4) {
 		t.Fatalf("rangeUsage media fields wrong: %#v", rangeUsage)
-	}
-}
-
-func TestUsageRecordsListMediaFieldsFromShard(t *testing.T) {
-	// 组B：usage 分片文件读面（SQLite-only 臂）。
-	fixture := newSQLiteFixture(t)
-	shardDir := t.TempDir()
-	if err := seedMediaUsageShard(t, fixture, shardDir, "usage_20260904_s000.sqlite3"); err != nil {
-		t.Fatal(err)
-	}
-	recorder := invoke(t, fixture.deps.usageRecordsListHandler(true), http.MethodGet,
-		"/__aisys__/api/my-usage-records?startDate=2026-09-04&endDate=2026-09-04", userAuth())
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("usage-records not 200: %d %s", recorder.Code, recorder.Body.String())
-	}
-	payload := dataMap(t, decodeBody(t, recorder))
-	items, ok := payload["items"].([]any)
-	if !ok || len(items) != 1 {
-		t.Fatalf("usage-records items wrong: %#v", payload["items"])
-	}
-	item := items[0].(map[string]any)
-	if item["inputAudioTokens"] != float64(1200) || item["outputAudioTokens"] != float64(300) ||
-		item["ttsInputChars"] != float64(4567) {
-		t.Fatalf("usage record media token fields wrong: %#v", item)
-	}
-	if item["audioInputSeconds"] != 62.5 || item["outputVideoSeconds"] != float64(4) {
-		t.Fatalf("usage record media seconds fields wrong: %#v", item)
 	}
 }

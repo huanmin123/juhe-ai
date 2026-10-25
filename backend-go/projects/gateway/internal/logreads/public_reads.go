@@ -88,20 +88,15 @@ var publicApiLogResultFilters = map[string]bool{"success": true, "failed": true,
 // schema juhe_dataset in PostgreSQL, fact file in SQLite). SELECTs only; the
 // Node F5 pipeline stays the writer.
 type publicApiLogSQLStore struct {
-	db   *sql.DB
-	mode ReadDBMode
+	db *sql.DB
 }
 
 // NewPublicApiLogSQLStore opens the read-only public API log store.
-func NewPublicApiLogSQLStore(db *sql.DB, mode ReadDBMode) (PublicApiLogReader, error) {
+func NewPublicApiLogSQLStore(db *sql.DB) (PublicApiLogReader, error) {
 	if db == nil {
 		return nil, errors.New("public-api-logs 数据集数据库句柄必填")
 	}
-	dialect, err := parseReadDBMode(mode)
-	if err != nil {
-		return nil, err
-	}
-	return &publicApiLogSQLStore{db: db, mode: dialect}, nil
+	return &publicApiLogSQLStore{db: db}, nil
 }
 
 const publicApiLogListSelectColumns = `pal.id, pal.created_at, pal.source_name, pal.method, pal.path, ` +
@@ -121,7 +116,7 @@ func (s *publicApiLogSQLStore) buildFilters(options PublicApiLogListOptions) (st
 		if text == "" {
 			return
 		}
-		expression := s.mode.prefixColumn(column)
+		expression := logReadsPrefixColumn(column)
 		clauses = append(clauses, expression+" >= ? AND "+expression+" < ?")
 		params = append(params, text, readTextPrefixUpperBound(text))
 	}
@@ -148,11 +143,11 @@ func (s *publicApiLogSQLStore) buildFilters(options PublicApiLogListOptions) (st
 	// Node optionalServerDateTimeIso: invalid values are ignored, not errors.
 	if startAt := readOptionalInstant(options.StartAt); startAt != "" {
 		clauses = append(clauses, "pal.created_at >= ?")
-		params = append(params, s.mode.timeParam(startAt))
+		params = append(params, logReadsTimeParam(startAt))
 	}
 	if endAt := readOptionalInstant(options.EndAt); endAt != "" {
 		clauses = append(clauses, "pal.created_at <= ?")
-		params = append(params, s.mode.timeParam(endAt))
+		params = append(params, logReadsTimeParam(endAt))
 	}
 	clause := ""
 	if len(clauses) > 0 {
@@ -178,9 +173,9 @@ func (s *publicApiLogSQLStore) ListPublicApiLogs(ctx context.Context, options Pu
 	page := readNormalizePage(options.Page, pageSize)
 	offset := (page - 1) * pageSize
 	clause, params := s.buildFilters(options)
-	query := `SELECT ` + publicApiLogListSelectColumns + ` FROM ` + s.mode.table("public_api_logs") + ` pal ` + clause +
+	query := `SELECT ` + publicApiLogListSelectColumns + ` FROM ` + logReadsTable("public_api_logs") + ` pal ` + clause +
 		` ORDER BY pal.created_at DESC, pal.id DESC LIMIT ? OFFSET ?`
-	rows, err := readQueryMaps(ctx, s.db, s.mode, query, append(params, pageSize+1, offset)...)
+	rows, err := readQueryMaps(ctx, s.db, query, append(params, pageSize+1, offset)...)
 	if err != nil {
 		return ReadPage[PublicApiLogListItem]{}, err
 	}
@@ -211,8 +206,8 @@ func (s *publicApiLogSQLStore) GetPublicApiLogDetailSupplement(ctx context.Conte
 	if logID == "" {
 		return nil, nil
 	}
-	row, err := readQueryOneMap(ctx, s.db, s.mode,
-		`SELECT `+publicApiLogDetailSupplementSelectColumns+` FROM `+s.mode.table("public_api_logs")+` pal WHERE pal.id = ?`,
+	row, err := readQueryOneMap(ctx, s.db,
+		`SELECT `+publicApiLogDetailSupplementSelectColumns+` FROM `+logReadsTable("public_api_logs")+` pal WHERE pal.id = ?`,
 		logID)
 	if err != nil || row == nil {
 		return nil, err

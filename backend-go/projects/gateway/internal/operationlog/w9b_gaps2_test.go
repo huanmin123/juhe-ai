@@ -122,8 +122,8 @@ func TestW9BListPersonalWindowTrimming(t *testing.T) {
 	}
 	// 双流各 2 行：size=1、page=1 时触发裁剪与 hasMore。
 	script := &w9bScript{steps: []w9bStep{
-		{matcher: []string{"visible JOIN operation_logs"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: [][]driver.Value{row("t1", "2026-09-01T00:00:00.000000000Z"), row("t2", "2026-09-01T00:00:01.000000000Z")}},
-		{matcher: []string{"FROM operation_logs ol WHERE"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: [][]driver.Value{row("a1", "2026-09-01T00:00:00.000000000Z"), row("a2", "2026-09-02T00:00:00.000000000Z")}},
+		{matcher: []string{"visible JOIN"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: [][]driver.Value{row("t1", "2026-09-01T00:00:00.000000000Z"), row("t2", "2026-09-01T00:00:01.000000000Z")}},
+		{matcher: []string{"operation_logs ol WHERE"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: [][]driver.Value{row("a1", "2026-09-01T00:00:00.000000000Z"), row("a2", "2026-09-02T00:00:00.000000000Z")}},
 		{matcher: []string{"juhe_business.system_accounts"}, noRows: true},
 	}}
 	store := &sqlStore{db: w9bOpen(t, script)}
@@ -136,8 +136,8 @@ func TestW9BListPersonalWindowTrimming(t *testing.T) {
 	}
 	// start 超出合并结果 → 空页。
 	script2 := &w9bScript{steps: []w9bStep{
-		{matcher: []string{"visible JOIN operation_logs"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: [][]driver.Value{row("t1", "2026-09-01T00:00:00.000000000Z")}},
-		{matcher: []string{"FROM operation_logs ol WHERE"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: nil},
+		{matcher: []string{"visible JOIN"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: [][]driver.Value{row("t1", "2026-09-01T00:00:00.000000000Z")}},
+		{matcher: []string{"operation_logs ol WHERE"}, cols: []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"}, rows: nil},
 		{matcher: []string{"juhe_business.system_accounts"}, noRows: true},
 	}}
 	result2, err := (&sqlStore{db: w9bOpen(t, script2)}).List(ctx, ListOptions{ViewerID: "viewer", Page: 5, PageSize: 1})
@@ -214,7 +214,7 @@ func (s *w9bRenewErrStore) RenewOwnerLease(context.Context, OwnerLease, time.Dur
 
 func TestW9BMigrateLegacyPostgresOpenStoreFailure(t *testing.T) {
 	// PostgresURL 无法解析 → OpenStore 失败包装。
-	_, err := MigrateLegacyPostgres(context.Background(), Config{Mode: ModePostgres, PostgresURL: "postgres://bad url with spaces"}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
+	_, err := MigrateLegacyPostgres(context.Background(), Config{PostgresURL: "postgres://bad url with spaces"}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
 	if err == nil || !strings.Contains(err.Error(), "打开 F4 PostgreSQL 目标失败") {
 		t.Fatalf("坏 URL=%v", err)
 	}

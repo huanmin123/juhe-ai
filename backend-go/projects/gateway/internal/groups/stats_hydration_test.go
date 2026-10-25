@@ -45,7 +45,7 @@ func TestListPageHydratesAccountStats(t *testing.T) {
 	reader := &fakeGroupStatsReader{stats: map[string]AccountStats{
 		// Filled below once the group id exists.
 	}}
-	store, err := NewStore(db, true, nil, nil, nil, WithStatsReader(reader))
+	store, err := NewStore(db, nil, nil, nil, WithStatsReader(reader))
 	if err != nil {
 		t.Fatal(err)
 	}

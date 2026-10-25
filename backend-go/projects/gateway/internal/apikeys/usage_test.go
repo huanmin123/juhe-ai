@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
+	_ "modernc.org/sqlite"
 )
 
 // fakeUsageSource records the scopes the store requested and serves a fixed
@@ -113,123 +113,35 @@ func TestApiKeyListUsageHydrationLocksIn(t *testing.T) {
 
 func newStatsDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:apikeys-stats-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	_, err = db.Exec(`CREATE TABLE usage_stats_totals (
-		system_account_id TEXT NOT NULL,
-		scope_type TEXT NOT NULL,
-		scope_id TEXT NOT NULL,
-		request_count INTEGER NOT NULL DEFAULT 0,
-		input_tokens INTEGER NOT NULL DEFAULT 0,
-		output_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
-		cache_write_tokens INTEGER,
-		cache_write_1h_tokens INTEGER,
-		cache_write_cost_usd REAL,
-		thinking_tokens INTEGER,
-		input_image_tokens INTEGER,
-		output_image_tokens INTEGER,
-		total_cost_usd REAL NOT NULL DEFAULT 0,
-		success_cost_usd REAL NOT NULL DEFAULT 0,
-		last_used_at TEXT
-	)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, thinking_tokens, total_cost_usd, success_cost_usd, last_used_at)
-		VALUES ('sysacc_1', 'api_key', 'key_1', 3, 10, 20, 4, 0.25, 5, 1.5, 1.5, '2026-09-01T08:30:00.000Z')`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;
+CREATE TABLE juhe_stats.usage_stats_totals (
+	system_account_id text NOT NULL, scope_type text NOT NULL, scope_id text NOT NULL,
+	request_count bigint NOT NULL DEFAULT 0, input_tokens bigint NOT NULL DEFAULT 0,
+	output_tokens bigint NOT NULL DEFAULT 0, cache_read_tokens bigint NOT NULL DEFAULT 0,
+	cache_read_cost_usd double precision NOT NULL DEFAULT 0, cache_write_tokens bigint,
+	cache_write_1h_tokens bigint, cache_write_cost_usd double precision, thinking_tokens bigint,
+	input_image_tokens bigint, output_image_tokens bigint, total_cost_usd double precision NOT NULL DEFAULT 0,
+	success_cost_usd double precision NOT NULL DEFAULT 0, last_used_at text,
+	PRIMARY KEY (system_account_id, scope_type, scope_id));
+INSERT INTO juhe_stats.usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, thinking_tokens, total_cost_usd, success_cost_usd, last_used_at)
+VALUES ('sysacc_1', 'api_key', 'key_1', 3, 10, 20, 4, 0.25, 5, 1.5, 1.5, '2026-09-01T08:30:00.000Z')`)
+		return err
+	})
 	return db
 }
 
 func newEmptyStatsDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:apikeys-stats-empty-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats`)
+		return err
+	})
 	return db
 }
 
-// TestStatsUsageSourceSQLLocksIn drives StatsUsageSource against an in-memory
-// SQLite stats database and asserts the VALUES-join projection (including the
-// input+output token sum and the missing-table degradation).
-func TestStatsUsageSourceSQLLocksIn(t *testing.T) {
-	source, err := NewStatsUsageSource(newStatsDB(t), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	summaries, err := source.ApiKeyListUsageSummaries(ctx, []UsageScope{
-		{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"},
-		{RowKey: "key_2", SystemAccountID: "sysacc_2", ScopeID: "key_2"},
-		{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}, // duplicate scope
-		{RowKey: "", SystemAccountID: "sysacc_1", ScopeID: "key_1"},      // invalid scope
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := summaries["key_1"]; got != (ListUsageSummary{RequestCount: 3, TotalTokens: 10 + 20, TotalCost: 1.5}) {
-		t.Fatalf("key_1 summary mismatch: %+v", got)
-	}
-	if got, ok := summaries["key_2"]; !ok || got != (ListUsageSummary{}) {
-		t.Fatalf("key_2 must join with zeroed totals: %+v ok=%v", got, ok)
-	}
-	if _, ok := summaries[""]; ok {
-		t.Fatal("invalid scope must not produce a row")
-	}
-
-	missing, err := NewStatsUsageSource(newEmptyStatsDB(t), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// BUG-0175 D-180: without the SQLite read-worker role the missing-resource
-	// arm never fires — the error fails the read exactly like Node's main
-	// process (isSqliteReadWorkerProcess gate).
-	if _, err := missing.ApiKeyListUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}}); err == nil {
-		t.Fatal("non read-worker SQLite missing stats table must fail the read")
-	}
-	// Inside the read-worker process the missing-resource arm degrades to an
-	// empty map.
-	t.Setenv("JUHE_AI_SQLITE_READ_WORKER", "true")
-	degraded, err := missing.ApiKeyListUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}})
-	if err != nil {
-		t.Fatalf("missing stats table must degrade, got error: %v", err)
-	}
-	if len(degraded) != 0 {
-		t.Fatalf("degraded source must return an empty map, got %v", degraded)
-	}
-	// PostgreSQL has no missing-resource arm: every error fails the read
-	// （PG 臂组A段走真实 PG：pgtestkit 独立库未建 juhe_stats 表，缺失关系
-	// 错误直接传播；SQLite 读进程降级段为组B保留，随生产 sqlite 臂删除批次
-	// 同批退役）。
-	pgDB := pgtestkit.New(t)
-	pgSource, err := NewStatsUsageSource(pgDB, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pgSource.ApiKeyListUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}}); err == nil {
-		t.Fatal("PostgreSQL source errors must propagate")
-	}
-	if _, err := pgSource.ApiKeyUsageSummaries(ctx, []UsageScope{{RowKey: "key_1", SystemAccountID: "sysacc_1", ScopeID: "key_1"}}); err == nil {
-		t.Fatal("PostgreSQL full-summary errors must propagate")
-	}
-}
-
-// TestStatsUsageSourceFullSummaryLocksIn drives the detail-projection aggregate
-// (Node usageSummaryFromAggregate): full counters, required
-// cache_read_cost_usd, canonicalized last_used_at and the zero fallback.
 func TestStatsUsageSourceFullSummaryLocksIn(t *testing.T) {
-	source, err := NewStatsUsageSource(newStatsDB(t), false)
+	source, err := NewStatsUsageSource(newStatsDB(t))
 	if err != nil {
 		t.Fatal(err)
 	}

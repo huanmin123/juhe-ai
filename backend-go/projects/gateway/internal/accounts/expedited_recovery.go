@@ -16,8 +16,8 @@ import (
 const defaultExpeditedAccountLimit = int64(3)
 
 // assertExpeditedRecoveryLimit mirrors 名额校验精确契约（设计 §9）：先对归属行
-// SELECT expedited_account_limit ... LIMIT 1 FOR UPDATE（PG 锁归属行串行化并发
-// 设置，SQLite 单写者事务天然等价），上限 = COALESCE(列值, 3)，0 即禁止新增/
+// SELECT expedited_account_limit ... LIMIT 1 FOR UPDATE（锁归属行串行化并发
+// 设置），上限 = COALESCE(列值, 3)，0 即禁止新增/
 // 重新启用；再执行归属名下特供计数（软删不计、不过滤 status——停用/异常行仍
 // 占名额），计数 + 本次增量（待翻转的补丁行或待插入的创建行）> 上限时整体
 // 回滚并返回名额已满 ValidationError。归属行缺失按 NULL 归一（默认 3）。

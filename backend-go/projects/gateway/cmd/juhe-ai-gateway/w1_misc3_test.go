@@ -570,7 +570,7 @@ func TestW1ChainAccountLocksReadStateOnce(t *testing.T) {
 
 func TestW1AuthorizationQuotaExceededArms(t *testing.T) {
 	fixture := newChainFixture(t)
-	statsStore, err := gatewayquota.NewStatsStore(fixture.statsDB, false)
+	statsStore, err := gatewayquota.NewStatsStore(fixture.statsDB)
 	if err != nil {
 		t.Fatalf("stats store = %v", err)
 	}

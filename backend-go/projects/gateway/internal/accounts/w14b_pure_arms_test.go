@@ -18,13 +18,13 @@ import (
 // ---------------------------------------------------------------- store.go
 
 func TestW14BStoreHelpersArms(t *testing.T) {
-	if _, err := NewStore(nil, false, testSecret, nil, nil); err == nil || !strings.Contains(err.Error(), "requires a database") {
+	if _, err := NewStore(nil, testSecret, nil, nil); err == nil || !strings.Contains(err.Error(), "requires a database") {
 		t.Fatalf("nil db 应报错：%v", err)
 	}
-	if _, err := NewStore(&sql.DB{}, false, "  ", nil, nil); err == nil || !strings.Contains(err.Error(), "requires the runtime secret") {
+	if _, err := NewStore(&sql.DB{}, "  ", nil, nil); err == nil || !strings.Contains(err.Error(), "requires the runtime secret") {
 		t.Fatalf("空 secret 应报错：%v", err)
 	}
-	store, err := NewStore(&sql.DB{}, true, testSecret, nil, nil)
+	store, err := NewStore(&sql.DB{}, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,26 +760,19 @@ func TestW14BYAMLValueNormalization(t *testing.T) {
 // ------------------------------------------------------- list_usage.go
 
 func TestW14BStatsUsageSourceHelpers(t *testing.T) {
-	if _, err := NewStatsUsageSource(nil, false); err == nil {
+	if _, err := NewStatsUsageSource(nil); err == nil {
 		t.Fatal("nil db 应报错")
 	}
 	env := newTestEnv(t)
-	source, err := NewStatsUsageSource(env.db, false)
+	source, err := NewStatsUsageSource(env.db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := source.table("usage_stats_totals"); got != "usage_stats_totals" {
-		t.Fatalf("sqlite 表名不应有前缀：%q", got)
+	if got := source.table("usage_stats_totals"); got != "juhe_stats.usage_stats_totals" {
+		t.Fatalf("表名应加前缀：%q", got)
 	}
-	if got := source.bind("a = ? AND b = ?"); got != "a = ? AND b = ?" {
-		t.Fatalf("sqlite bind 应原样：%q", got)
-	}
-	pgSource := &StatsUsageSource{db: env.db, pg: true}
-	if got := pgSource.table("usage_stats_totals"); got != "juhe_stats.usage_stats_totals" {
-		t.Fatalf("pg 表名应加前缀：%q", got)
-	}
-	if got := pgSource.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
-		t.Fatalf("pg bind 应改写：%q", got)
+	if got := source.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
+		t.Fatalf("bind 应改写：%q", got)
 	}
 	empty, err := source.AccountListUsageSummaries(context.Background(), nil, "")
 	if err != nil || len(empty) != 0 {
@@ -793,7 +786,7 @@ func TestW14BStatsUsageSourceHelpers(t *testing.T) {
 	env.exec(t, `INSERT INTO juhe_stats.usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd)
 		VALUES ('owner-w14b', 'account', 'acc-w14b-usage', 2, 10, 20, 0.5, 0.4)`)
 	scope := UsageScope{RowKey: "acc-w14b-usage", SystemAccountID: "owner-w14b", ScopeType: usageScopeTypeAccount, ScopeID: "acc-w14b-usage"}
-	summaries, err := pgSource.AccountListUsageSummaries(context.Background(), []UsageScope{scope, scope}, "")
+	summaries, err := source.AccountListUsageSummaries(context.Background(), []UsageScope{scope, scope}, "")
 	if err != nil {
 		t.Fatalf("用量汇总查询应成功：%v", err)
 	}
@@ -802,7 +795,7 @@ func TestW14BStatsUsageSourceHelpers(t *testing.T) {
 		t.Fatalf("用量汇总不符（成本应为 success_cost_usd=0.4，缺省 cache_read_tokens 读 0）：%+v", summaries)
 	}
 	// statDate 分支换 daily 表：缺表应返回错误臂（夹具不建 daily）。
-	if _, err := pgSource.AccountListUsageSummaries(context.Background(), []UsageScope{scope}, "2026-09-17"); err == nil {
+	if _, err := source.AccountListUsageSummaries(context.Background(), []UsageScope{scope}, "2026-09-17"); err == nil {
 		t.Fatal("缺 daily 表应报错")
 	}
 }

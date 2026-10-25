@@ -8,8 +8,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
-	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -799,129 +797,11 @@ func TestBusinessTargetSourceRoutesGPTOAuthThroughCodexAdapterIncludingAuthorize
 	}
 }
 
-func TestOpenBusinessTargetSourceUsesReadOnlySQLiteURI(t *testing.T) {
-	path := t.TempDir() + "/business.db"
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range businessSourceContractDDL() {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	source, closeSource, err := OpenBusinessTargetSource(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: path, CredentialSecret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if source == nil || closeSource == nil {
-		t.Fatal("factory returned incomplete source")
-	}
-	if err := closeSource(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestOpenBusinessTargetConnectionAllowsWritesOnlyAfterHandoff(t *testing.T) {
-	path := t.TempDir() + "/business.db"
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range businessSourceContractDDL() {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_ = db.Close()
-	connection, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: path, CredentialSecret: "secret", BusinessHandoffConfirmed: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	var queryOnly int
-	if err := connection.DB.QueryRow(`PRAGMA query_only`).Scan(&queryOnly); err != nil {
-		t.Fatal(err)
-	}
-	if queryOnly != 0 {
-		t.Fatalf("handoff owner connection must not be query-only: %d", queryOnly)
-	}
-	stats := connection.DB.Stats()
-	if stats.MaxOpenConnections != 1 {
-		t.Fatalf("SQLite Business owner must use one connection, stats=%+v", stats)
-	}
-	var foreignKeys int
-	if err := connection.DB.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
-		t.Fatal(err)
-	}
-	if foreignKeys != 1 {
-		t.Fatalf("SQLite Business owner must enable foreign-key enforcement: %d", foreignKeys)
-	}
-}
-
 func TestOpenBusinessTargetConnectionRejectsActiveNodeWriterAfterHandoff(t *testing.T) {
-	_, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: filepath.Join(t.TempDir(), "business.db"), CredentialSecret: "secret", BusinessHandoffConfirmed: true})
+	// sqlite 载具退役（D17）：owner gate 校验先于任何连接打开，PG 形态同语义。
+	_, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "postgres", CredentialSecret: "secret", BusinessHandoffConfirmed: true})
 	if err == nil || !strings.Contains(err.Error(), "Node writer") {
 		t.Fatalf("confirmed handoff with active Node writer must fail closed, err=%v", err)
-	}
-}
-
-func TestOpenBusinessTargetConnectionRejectsUnprovenSQLiteSchemaReady(t *testing.T) {
-	path := t.TempDir() + "/business.db"
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range businessSourceContractDDL() {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	_, err = OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: path, CredentialSecret: "secret", SchemaReady: true})
-	if err == nil || !strings.Contains(err.Error(), "Business SQLite schema") {
-		t.Fatalf("schemaReady must be proven against SQLite contract, err=%v", err)
-	}
-}
-
-// TestOpenBusinessTargetConnectionSplitsReadWritePins 验证 SQLite 读/写双池
-// 契约：写池单连接归 auth/session 与保留任务所有，Source（纯读端口）绑定
-// 独立只读池（默认 4），同一文件、同一关闭链；显式 JUHE_AI_SQLITE_READ_POOL
-// 覆盖默认值。PostgreSQL 模式不拆池，Source 与连接共享句柄。
-func TestOpenBusinessTargetConnectionSplitsReadWritePins(t *testing.T) {
-	path := t.TempDir() + "/business.db"
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range businessSourceContractDDL() {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	connection, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "sqlite", BusinessDatabasePath: path, CredentialSecret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if connection.DB == nil || connection.Source == nil || connection.ReadDB == nil {
-		t.Fatal("sqlite mode must expose write pool, read pool and source")
-	}
-	if connection.Source.db != connection.ReadDB {
-		t.Fatal("source must run on the dedicated read pool")
-	}
-	if got := connection.ReadDB.Stats().MaxOpenConnections; got != 4 {
-		t.Fatalf("read pool default size = %d, want 4", got)
-	}
-	if err := connection.Close(); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -987,82 +867,4 @@ func testCredentialEnvelope(t *testing.T, secret, plaintext string) string {
 func sha256Bytes(value string) []byte {
 	sum := sha256.Sum256([]byte(value))
 	return sum[:]
-}
-
-// TestBusinessSQLiteReadPoolReadWriteSemantics 验证 Business 读/写双池约定：
-// 只读池（默认 4 连接）物理拒绝写入、并发读可同时持有多条连接，且纯读的
-// BusinessTargetSource（含 AccountID 富化与 ReadOnly 事务）在只读池上完整工作。
-// 这是个人部署读并发加固（JUHE_AI_SQLITE_READ_POOL）的行为契约。
-func TestBusinessSQLiteReadPoolReadWriteSemantics(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "business.db")
-	writer, err := sql.Open("sqlite", "file:"+path+"?mode=rwc&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer writer.Close()
-	writer.SetMaxOpenConns(1)
-	for _, ddl := range businessSourceContractDDL() {
-		if _, err := writer.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, ddl := range []string{
-		`INSERT INTO groups VALUES ('g1','sys-1',1)`,
-		`INSERT INTO accounts (id,system_account_id,name,vendor_code,connection_driver_code,protocol_code,protocol_version,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('a1','sys-1','Alpha','gpt','gpt','openai','1','api_key',1,1,'active',1,'','conn-a1','')`,
-		`INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-a1','a1','gpt_openai_v1','https://api.openai.test/v1',1)`,
-		w11eSeedModelDDL("model-sol", "gpt-5.6-sol"),
-		`INSERT INTO account_supported_models (account_id,model_id) VALUES ('a1','model-sol')`,
-		`INSERT INTO group_accounts (account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('a1','sys-1','g1',NULL,1)`,
-	} {
-		if _, err := writer.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	readPool, err := openBusinessSQLiteReadPool(path, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer readPool.Close()
-	if got := readPool.Stats().MaxOpenConnections; got != 4 {
-		t.Fatalf("read pool max open connections = %d, want 4", got)
-	}
-	if _, err := readPool.Exec(`INSERT INTO accounts (id) VALUES ('write-probe')`); err == nil {
-		t.Fatal("read pool must physically reject writes via query_only")
-	}
-
-	source, err := NewBusinessTargetSource(readPool, false, "secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source.now = func() time.Time { return time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC) }
-	if err := source.CheckContract(context.Background()); err != nil {
-		t.Fatalf("source contract must pass on the read pool: %v", err)
-	}
-	direct, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: "a1", Limit: 1})
-	if err != nil || len(direct) != 1 || direct[0].ID != "a1" || len(direct[0].ModelCheckModels) == 0 {
-		t.Fatalf("accountId enrichment must work on the read pool: %+v err=%v", direct, err)
-	}
-
-	const concurrency = 16
-	results := make(chan error, concurrency)
-	for i := 0; i < concurrency; i++ {
-		go func() {
-			items, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", Limit: 50})
-			if err != nil {
-				results <- err
-				return
-			}
-			if len(items) != 1 {
-				results <- errors.New("unexpected option count")
-				return
-			}
-			results <- nil
-		}()
-	}
-	for i := 0; i < concurrency; i++ {
-		if err := <-results; err != nil {
-			t.Fatalf("concurrent reads on the pool failed: %v", err)
-		}
-	}
 }

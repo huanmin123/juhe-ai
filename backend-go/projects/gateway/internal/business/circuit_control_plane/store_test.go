@@ -273,18 +273,18 @@ func TestKeyModelIncidentRoundTripsAndRequiresCompleteIdentity(t *testing.T) {
 func TestPostgresSchemaIsValidatedDefaultedAndQuoted(t *testing.T) {
 	db := openTestDB(t)
 	for _, schema := range []string{"bad.schema", "tenant;drop", "tenant space", "1tenant", `tenant"x`} {
-		if _, err := New(db, Postgres, schema, OwnerGate{}); !errors.Is(err, ErrInvalidSchema) {
+		if _, err := New(db, schema, OwnerGate{}); !errors.Is(err, ErrInvalidSchema) {
 			t.Fatalf("schema %q err=%v", schema, err)
 		}
 	}
-	store, err := New(db, Postgres, "", OwnerGate{})
+	store, err := New(db, "", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := store.table("accounts"); got != `"juhe_business".accounts` {
 		t.Fatalf("default schema qualification=%q", got)
 	}
-	store, err = New(db, Postgres, "tenant_1", OwnerGate{})
+	store, err = New(db, "tenant_1", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}

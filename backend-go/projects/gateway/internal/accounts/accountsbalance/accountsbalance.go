@@ -32,9 +32,8 @@ import (
 // tests that clone a Store and swap fields keep observing the clone).
 type Deps struct {
 	// StatsDatabase is the dedicated juhe_stats handle behind the
-	// account_usage_snapshots reads. Production SQLite opens the stats
-	// database as a separate file; PostgreSQL and the single-file tests leave
-	// it nil and the service falls back to the shared store handle.
+	// account_usage_snapshots reads. Nil falls back to the shared store
+	// handle (PostgreSQL shares the business pool).
 	StatsDatabase *sql.DB
 	// AuthorizedReadableIDs mirrors Store.authorizedReadableIDs: the
 	// authorized-instance account id set for the scope viewer (authorized.go).
@@ -77,13 +76,9 @@ func New(store accountscore.StoreBase, deps Deps) *Service {
 	return &Service{store: store, deps: deps}
 }
 
-// StatsTable qualifies a juhe_stats table (PostgreSQL schema-qualified, bare
-// on SQLite — the Go test database keeps one file).
+// StatsTable qualifies a juhe_stats table (juhe_stats schema-qualified).
 func (s *Service) StatsTable(name string) string {
-	if s.store.PG() {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // statsDB resolves the handle stats-table statements must run on: the

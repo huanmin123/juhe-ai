@@ -98,7 +98,7 @@ func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings, err := businesssettings.New(db, businesssettings.SQLite, "", businesssettings.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	settings, err := businesssettings.New(db, "", businesssettings.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}

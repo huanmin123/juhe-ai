@@ -19,7 +19,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
 
-
 // w1ShutdownAndDrainSpool 包装 shutdown：gateway 停机返回后，usage spool 的
 // 异步投递可能仍有在途写（提交后失败路径会估算入账并落 spool）；Windows 上
 // t.TempDir 的 RemoveAll 清理会与之竞争（"directory is not empty" / 路径不存在，

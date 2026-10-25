@@ -196,7 +196,7 @@ func w9bPGStore(t *testing.T, script *w9bScript) *sqlStore {
 	if script.fallback == nil {
 		script.fallback = newW9BPGCatalog().respond
 	}
-	return &sqlStore{db: w9bOpen(t, script), mode: ModePostgres}
+	return &sqlStore{db: w9bOpen(t, script)}
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +298,7 @@ func TestW9BBeginTxPostgresTimeoutArms(t *testing.T) {
 	beginFail := func(matcher, want string, migration bool) func(t *testing.T) {
 		return func(t *testing.T) {
 			script := &w9bScript{steps: []w9bStep{{matcher: []string{matcher}, execErr: w9bErrBoom}}}
-			store := &sqlStore{db: w9bOpen(t, script), mode: ModePostgres}
+			store := &sqlStore{db: w9bOpen(t, script)}
 			var err error
 			if migration {
 				_, err = store.beginLegacyMigrationTx(ctx)
@@ -317,7 +317,7 @@ func TestW9BBeginTxPostgresTimeoutArms(t *testing.T) {
 
 	// 全部 SET LOCAL 成功路径。
 	okScript := &w9bScript{}
-	okStore := &sqlStore{db: w9bOpen(t, okScript), mode: ModePostgres}
+	okStore := &sqlStore{db: w9bOpen(t, okScript)}
 	tx, err := okStore.beginTx(ctx)
 	if err != nil {
 		t.Fatalf("beginTx=%v", err)
@@ -325,7 +325,7 @@ func TestW9BBeginTxPostgresTimeoutArms(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit=%v", err)
 	}
-	migTx, err := (&sqlStore{db: w9bOpen(t, &w9bScript{}), mode: ModePostgres}).beginLegacyMigrationTx(ctx)
+	migTx, err := (&sqlStore{db: w9bOpen(t, &w9bScript{})}).beginLegacyMigrationTx(ctx)
 	if err != nil {
 		t.Fatalf("beginLegacyMigrationTx=%v", err)
 	}
@@ -605,7 +605,7 @@ func TestW9BOpenStorePostgresPoolInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresPool: handle})
+	store, err := OpenStore(Config{PostgresPool: handle})
 	if err != nil {
 		t.Fatalf("pool 注入=%v", err)
 	}
@@ -613,7 +613,7 @@ func TestW9BOpenStorePostgresPoolInjection(t *testing.T) {
 		t.Fatalf("Close=%v", err)
 	}
 	// 坏 URL：pool 打开失败。
-	if _, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: "postgres://bad url with spaces"}); err == nil || !strings.Contains(err.Error(), "open F4 PostgreSQL pool") {
+	if _, err := OpenStore(Config{PostgresURL: "postgres://bad url with spaces"}); err == nil || !strings.Contains(err.Error(), "open F4 PostgreSQL pool") {
 		t.Fatalf("坏 URL=%v", err)
 	}
 }

@@ -13,14 +13,12 @@ import (
 // insertProxyProfile 用测试 schema 的 proxy_profiles 表插入一行代理配置。
 func insertProxyProfile(t *testing.T, env *testEnv, id, proxyType, host string, port int64, username, passwordEncrypted string, enabled bool) {
 	t.Helper()
-	enabledValue := 0
-	if enabled {
-		enabledValue = 1
-	}
-	if _, err := env.db.Exec(`INSERT INTO proxy_profiles
+	// proxy_profiles.enabled 生产为 boolean、created_at/updated_at 为
+	// timestamptz：seed 按生产类型绑定（SQLite 整数旗标载具已退役）。
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO proxy_profiles
 		(id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
-		VALUES (?, 'owner', ?, ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		id, id, proxyType, host, port, username, passwordEncrypted, enabledValue); err != nil {
+		VALUES (?, 'owner', ?, ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`),
+		id, id, proxyType, host, port, username, passwordEncrypted, enabled); err != nil {
 		t.Fatal(err)
 	}
 }

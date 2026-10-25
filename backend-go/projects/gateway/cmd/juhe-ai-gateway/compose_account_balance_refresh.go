@@ -62,7 +62,7 @@ type gatewayManualBalanceRefresher struct {
 	secret string
 	store  *accountbalance.Store
 	runner *accountbalance.Runner
-	now func() time.Time
+	now    func() time.Time
 }
 
 // gatewayModelCatalogRefresher 实现 accounts.ModelCatalogRefresher。

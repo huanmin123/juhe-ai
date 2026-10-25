@@ -3,6 +3,7 @@ package gatewaypreauth
 import (
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -54,6 +55,19 @@ type GatewayRequest struct {
 	// InflightQuotaReserved mirrors the Node inflightQuotaReservedRequests
 	// WeakSet membership: one in-flight reservation per request.
 	InflightQuotaReserved bool
+
+	// contentFingerprintMemos 是内容指纹会话身份的请求级记忆化（按
+	// clientProfile，内容指纹会话身份设计 §4.3）；惰性初始化的指针共享存储，
+	// 使 GatewayRequest 的浅复制（model override clone）保持原语义——副本与
+	// 原请求共享同一份记忆化（同一逻辑请求）。只能经 ContentFingerprintMemoFor
+	// 读写，构造方零值即可。
+	contentFingerprintMemos *contentFingerprintMemoStore
+}
+
+// contentFingerprintMemoStore 是单请求的内容指纹记忆化存储。
+type contentFingerprintMemoStore struct {
+	mu    sync.Mutex
+	items map[string]ContentFingerprintMemo
 }
 
 // NewGatewayRequest builds the view from a raw request. ClientIP falls back

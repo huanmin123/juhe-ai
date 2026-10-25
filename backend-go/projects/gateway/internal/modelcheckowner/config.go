@@ -15,15 +15,15 @@ import (
 // the explicit readiness gates; listener and scheduler startup remains the
 // caller's responsibility after the full dependency graph is assembled.
 // 2026-10-24 存储形态收口：StoreMode 恒 "postgres"（JUHE_AI_J3B_STORE 仅剩
-// 单一合法形态 → 整个 env 读取删除），DatabasePath/BusinessDatabasePath/
-// SQLiteReadPoolSize 等 sqlite 字段保留是 OpenBusinessTargetConnection
-// 双形态本体的后续批次对象，LoadConfig 不再填充。
+// 单一合法形态 → 整个 env 读取删除）。DatabasePath 仅剩 J3b owner store
+// 自身 sqlite 分支（OpenStore，后续批次折叠）的输入；BusinessDatabasePath/
+// SQLiteReadPoolSize 已随 OpenBusinessTargetConnection 的 sqlite 形态折叠
+// 同批删除。
 type Config struct {
 	Enabled                  bool
 	StoreMode                string
 	DatabasePath             string
 	PostgresURL              string
-	BusinessDatabasePath     string
 	BusinessPostgresURL      string
 	CredentialSecret         string
 	IdentitySecret           string
@@ -58,11 +58,6 @@ type Config struct {
 	CircuitRuntimeRedisURLFellBack bool
 	CircuitRuntimeCapacity         int
 	CircuitRuntimeRetention        time.Duration
-	// SQLiteReadPoolSize is the legacy Business SQLite read pool connection
-	// limit consumed by the sqlite form of OpenBusinessTargetConnection
-	// (JUHE_AI_SQLITE_READ_POOL env 随存储形态退役，LoadConfig 不再读取)；
-	// PostgreSQL mode shares one multi-connection pool and ignores it.
-	SQLiteReadPoolSize int
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {

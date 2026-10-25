@@ -139,7 +139,7 @@ func TestW9EPredicatesEquivalentParenTrim(t *testing.T) {
 func TestW9EOwnerGateBlocksEveryMethod(t *testing.T) {
 	_, db := wkReadyStore(t)
 	defer db.Close()
-	s, err := New(db, SQLite, "", OwnerGate{})
+	s, err := New(db, "", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,31 +220,6 @@ func TestW9ECASUpdateTimeOverrideFails(t *testing.T) {
 	}
 }
 
-func TestW9EExpressionIndexRejected(t *testing.T) {
-	db, _ := w9eDDLDB(t, "expr", `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, lower(capability_hash)) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`)
-	s, _ := New(db, SQLite, "", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	err := s.CheckContract(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "expression") {
-		t.Fatalf("表达式索引应报 expression, got %v", err)
-	}
-}
-
-func TestW9EClaimOutboxCorruptRowFails(t *testing.T) {
-	// 组B：损坏行注入依赖 SQLite 弱类型（attempt_count 写入非数值文本），
-	// PG 强类型列在写入口即拒绝、场景不可构造；随生产 sqlite 臂删除批次
-	// 同批退役。
-	s, db := wkSQLiteLegacyStoreLabeled(t, "-corrupt", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	defer db.Close()
-	ctx := context.Background()
-	// attempt_count 写入非数值文本（WHERE 不涉及该列，行会被选出并在 scan 时失败）。
-	if _, err := db.Exec(`INSERT INTO account_circuit_outbox (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,transition_id,dispatch_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES ('bad','` + ProjectionKey + `','d-bad','incident_changed','a1','a1','t-bad',1,'pending',1,'not-a-number',1,1)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ClaimOutbox(ctx, "owner", 10, 1000, 10); err == nil {
-		t.Fatal("损坏行必须使 claim 失败")
-	}
-}
-
 func TestW9EScanIncidentTimeValidationFailure(t *testing.T) {
 	// 通过 scanIncident 行读取路径触发 validateIncidentTimes 的负值分支。
 	values := []any{
@@ -260,21 +235,5 @@ func TestW9EScanIncidentTimeValidationFailure(t *testing.T) {
 	}
 	if _, err := scanIncident(&fakeScanner{values: values}); err == nil || !strings.Contains(err.Error(), "openUntilMs cannot be negative") {
 		t.Fatalf("scan negative openUntil = %v", err)
-	}
-}
-
-func TestW9EListProjectionGapsCorruptAccountRow(t *testing.T) {
-	// 组B：损坏账户行注入依赖 SQLite 弱类型（dispatch_revision 写入非数值
-	// 文本），PG 强类型列在写入口即拒绝、场景不可构造；随生产 sqlite 臂
-	// 删除批次同批退役。
-	s, db := wkSQLiteLegacyStoreLabeled(t, "-gapcorrupt", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	defer db.Close()
-	ctx := context.Background()
-	// dispatch_revision 写入非数值文本，缺口查询 scan 失败。
-	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('bad','xyz',0)`); err != nil {
-		t.Skipf("SQLite 类型约束不允许注入: %v", err)
-	}
-	if _, err := s.ListProjectionGaps(ctx, "", 0, "", 10); err == nil {
-		t.Fatal("损坏账户行必须使缺口查询失败")
 	}
 }

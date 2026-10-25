@@ -142,7 +142,6 @@ func chainIsRealtimePath(req *gatewaypreauth.GatewayRequest) bool {
 	return chainStripGatewayVersionPrefix(path) == "/realtime"
 }
 
-
 // serveRealtimeUpgrade 是 WS 桥接入口（chain_v1 在协议门后、preauth 前短
 // 路——?token= 浏览器形态没有 Bearer，不能先过 PreResolveGatewayRuntime 的
 // 强制 Bearer 认证）。traceID/stage 记录器由链入口统一装配，此处补 request

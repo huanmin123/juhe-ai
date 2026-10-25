@@ -34,13 +34,15 @@ func w14dSeedRawAccount(t *testing.T, env *aipublicEnv, id, ownerID, profileID s
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// 目标 schema（§2.1）：身份键为 vendor_code；profile 列仅作迁移窗口壳。
-	if _, err := env.db.Exec(`INSERT INTO accounts
+	// 目标 schema（§2.1）：身份键为 vendor_code；provider_code /
+	// provider_protocol_profile_id 迁移壳列已随生产 accounts 退役，PG 载具
+	// 不再插这两列（profileID 形参保留以维持既有调用点）。
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO accounts
 		(id, config_revision, dispatch_revision, system_account_id, vendor_code,
-		 connection_driver_code, provider_code, provider_protocol_profile_id,
+		 connection_driver_code,
 		 protocol_code, protocol_version, name, type, status, credentials_encrypted, schedulable, created_at, updated_at)
-		VALUES (?, 1, 1, ?, 'gpt', 'gpt', 'gpt', ?, 'openai', 'v1', ?, 'api_key', 'active', ?, 1, ?, ?)`,
-		id, ownerID, profileID, "raw-"+id, sealed, now, now); err != nil {
+		VALUES (?, 1, 1, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active', ?, 1, ?, ?)`),
+		id, ownerID, "raw-"+id, sealed, now, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -48,7 +50,7 @@ func w14dSeedRawAccount(t *testing.T, env *aipublicEnv, id, ownerID, profileID s
 func w14dOwnerIDByUsername(t *testing.T, env *aipublicEnv, username string) string {
 	t.Helper()
 	var ownerID string
-	if err := env.db.QueryRow(`SELECT id FROM system_accounts WHERE username = ?`, username).Scan(&ownerID); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT id FROM system_accounts WHERE username = ?`), username).Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
 	return ownerID

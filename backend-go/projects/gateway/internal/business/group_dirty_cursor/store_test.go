@@ -13,7 +13,7 @@ import (
 func testStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 	t.Helper()
 	db := newGroupDirtyCursorPGDatabase(t)
-	s, err := New(db, Postgres, "juhe_business", gate)
+	s, err := New(db, "juhe_business", gate)
 	if err != nil {
 		t.Fatal(err)
 	}

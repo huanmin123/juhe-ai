@@ -2,29 +2,18 @@ package operationlog
 
 // w14h 覆盖波次：MigrateLegacyPostgres 全路径（通过 pgpool 注入脚本化连接池）
 // 与 legacy 校验辅助的剩余错误臂。所有 PG 交互均为脚本驱动，不访问真实网络。
-//
-// 已知不可达语句（经证据复核，登记备查）：
-//   - legacy_migration.go verifyLegacySQLiteExistingRecord 中 actual 侧
-//     created_at 的 parseStorageTime 错误臂：actual.CreatedAt 必经
-//     storageTimestamp.Scan（内含同一 parseStorageTime）归一化，再次解析不会失败。
-//   - legacy_migration.go verifyLegacySQLiteSamples 的 sample.Input.ID==""
-//     continue 臂与 config.go validateUsageShardIsolation 的 SameFile 复核臂：
-//     前者空 ID 在 scanLegacyOperationLog 已被拒绝，后者被更早的 within 检查
-//     遮蔽（本次一并按授权删除）。
+// 2026-10-24 存储形态收口：legacy SQLite 校验链与其测试随臂退役。
 
 import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
-	sqlite "modernc.org/sqlite"
 )
 
 var w14hBoom = errors.New("w14h boom")
@@ -67,7 +56,7 @@ func w14hMigrationPool(t *testing.T, script *w9bScript) Config {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = handle.Close() })
-	return Config{Mode: ModePostgres, PostgresPool: handle}
+	return Config{PostgresPool: handle}
 }
 
 // w14hUpgradeBaseSteps 返回 in-place 升级成功路径所需的全部查询脚本：
@@ -263,197 +252,19 @@ func TestW14HPostgresRecordReaderArms(t *testing.T) {
 }
 
 // TestW14HLegacySQLiteReferenceAndTimeArms 覆盖引用校验查询错误与 target/viewer 时间解析错误臂。
-func TestW14HLegacySQLiteReferenceAndTimeArms(t *testing.T) {
-	ctx := context.Background()
-	// verifySQLiteOperationLogReferences 查询错误。
-	script := &w9bScript{steps: []w9bStep{{matcher: []string{"LEFT JOIN operation_logs"}, rowsErr: w14hBoom}}}
-	if err := verifySQLiteOperationLogReferences(ctx, w9bOpen(t, script), "w14h"); err == nil {
-		t.Fatal("reference query fault must fail")
-	}
-	// readLegacyTargets：created_at 非法。
-	script2 := &w9bScript{steps: []w9bStep{
-		{matcher: []string{"FROM operation_log_targets"}, cols: []string{"id", "target_type", "target_id", "target_name", "target_owner_system_account_id", "relation", "created_at"}, rows: [][]driver.Value{{"w14h-t", "group", "g", "n", "o", "primary", "w14h-bogus-time"}}},
-	}}
-	if _, err := readLegacyTargets(ctx, w9bOpen(t, script2), "w14h-op"); err == nil || !strings.Contains(err.Error(), "target created_at 无效") {
-		t.Fatalf("target time fault = %v", err)
-	}
-	// readLegacyViewers：created_at 非法。
-	script3 := &w9bScript{steps: []w9bStep{
-		{matcher: []string{"FROM operation_log_viewers"}, cols: []string{"system_account_id", "visibility_reason", "detail_level", "created_at"}, rows: [][]driver.Value{{"w14h-viewer", "resource_owner", "full", "w14h-bogus-time"}}},
-	}}
-	if _, err := readLegacyViewers(ctx, w9bOpen(t, script3), "w14h-op"); err == nil || !strings.Contains(err.Error(), "viewer created_at 无效") {
-		t.Fatalf("viewer time fault = %v", err)
-	}
-	// legacySearchTerms：扫描失败与行迭代失败。
-	script4 := &w9bScript{steps: []w9bStep{
-		{matcher: []string{"operation_log_summary_search_terms"}, cols: []string{"term"}, rows: [][]driver.Value{{nil}}},
-	}}
-	if _, err := legacySearchTerms(ctx, w11fQueryerDB{w9bOpen(t, script4)}, "w14h-op"); err == nil {
-		t.Fatal("terms scan fault must fail")
-	}
-	script5 := &w9bScript{steps: []w9bStep{
-		{matcher: []string{"operation_log_summary_search_terms"}, cols: []string{"term"}, rows: [][]driver.Value{{"a"}}, eofErr: w14hBoom},
-	}}
-	if _, err := legacySearchTerms(ctx, w11fQueryerDB{w9bOpen(t, script5)}, "w14h-op"); err == nil {
-		t.Fatal("terms rows fault must fail")
-	}
-}
 
 // TestW14HVerifyExistingRecordFaultArms 覆盖 verifyLegacySQLiteExistingRecord 剩余分支。
-func TestW14HVerifyExistingRecordFaultArms(t *testing.T) {
-	ctx := context.Background()
-	store, script, lease := w11fFaultStore(t)
-	w14hVerifyBase := func() legacyOperationLog {
-		input := w11fInput("w14h-verify-1")
-		input.Changes = []Change{}
-		input.Metadata = json.RawMessage("{}")
-		return legacyOperationLog{Input: input, RawChangesJSON: "[]", RawMetadataJSON: "{}",
-			Targets: []legacyTarget{{ID: "w14h-vt", Target: Target{TargetType: "group", TargetID: "g", Relation: "child"}, CreatedAt: "2026-01-01T00:00:00.000Z"}},
-			Viewers: []legacyViewer{{Viewer: Viewer{SystemAccountID: "w14h-vv", VisibilityReason: "resource_owner", DetailLevel: "full"}, CreatedAt: "2026-01-01T00:00:00.000Z"}},
-		}
-	}
-	record := w14hVerifyBase()
-	if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, record); err != nil {
-		t.Fatal(err)
-	}
-	// 主行查询非 ErrNoRows 错误。
-	script.failQuery("FROM operation_logs WHERE id=?")
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, record); err == nil || !strings.Contains(err.Error(), "校验已迁移操作日志") {
-		t.Fatalf("row query fault = %v", err)
-	}
-	// 实际行 changes_json 非法。
-	if _, err := store.db.Exec(`UPDATE operation_logs SET changes_json='w14h-not-json' WHERE id=?`, record.Input.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, w14hVerifyBase()); err == nil || !strings.Contains(err.Error(), "changes_json 失败") {
-		t.Fatalf("changes_json fault = %v", err)
-	}
-	if _, err := store.db.Exec(`UPDATE operation_logs SET changes_json='[]' WHERE id=?`, record.Input.ID); err != nil {
-		t.Fatal(err)
-	}
-	// targets 回读查询失败。
-	script.failQuery("FROM operation_log_targets")
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, w14hVerifyBase()); err == nil {
-		t.Fatal("targets read fault must fail")
-	}
-	// viewers 回读查询失败。
-	script.failQuery("FROM operation_log_viewers")
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, w14hVerifyBase()); err == nil {
-		t.Fatal("viewers read fault must fail")
-	}
-	// 记录侧 target created_at 非法。
-	badTarget := w14hVerifyBase()
-	badTarget.Targets = []legacyTarget{{ID: "w14h-vt", Target: Target{TargetType: "group", TargetID: "g", Relation: "child"}, CreatedAt: "w14h-bogus"}}
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, badTarget); err == nil || !strings.Contains(err.Error(), "created_at 失败") {
-		t.Fatalf("record target time fault = %v", err)
-	}
-	// 记录侧 viewer created_at 非法。
-	badViewer := w14hVerifyBase()
-	badViewer.Viewers = []legacyViewer{{Viewer: Viewer{SystemAccountID: "w14h-vv", VisibilityReason: "resource_owner", DetailLevel: "full"}, CreatedAt: "w14h-bogus"}}
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, badViewer); err == nil || !strings.Contains(err.Error(), "created_at 失败") {
-		t.Fatalf("record viewer time fault = %v", err)
-	}
-	// terms 回读查询失败。
-	script.failQuery("operation_log_summary_search_terms")
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, w14hVerifyBase()); err == nil {
-		t.Fatal("terms read fault must fail")
-	}
-	// 记录侧 created_at 非法。
-	badRecordTime := w14hVerifyBase()
-	badRecordTime.Input.CreatedAt = "w14h-bogus"
-	if err := verifyLegacySQLiteExistingRecord(ctx, store.db, badRecordTime); err == nil || !strings.Contains(err.Error(), "created_at 失败") {
-		t.Fatalf("record created_at fault = %v", err)
-	}
-}
 
 // TestW14HPersistLegacyLeaseVerifyArms 覆盖 persistLegacySQLiteOperationLog 的两次租约校验失败臂。
 // 两个子测试各自独立运行：w11fFaultStore 以 t.Name() 命名共享内存库，
 // 同一测试内重复调用会命中同一内存库导致租约冲突。
-func TestW14HPersistLegacyLeaseVerifyArms(t *testing.T) {
-	record := legacyOperationLog{Input: w11fInput("w14h-persist-1"), RawChangesJSON: "[]", RawMetadataJSON: "{}",
-		Targets: []legacyTarget{{ID: "w14h-pt", Target: Target{TargetType: "group", Relation: "child"}, CreatedAt: "2026-01-01T00:00:00.000Z"}}}
-	t.Run("first lease verify", func(t *testing.T) {
-		ctx := context.Background()
-		store, script, lease := w11fFaultStore(t)
-		script.failQuery("operation_log_owner_leases")
-		if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, record); err == nil {
-			t.Fatal("first lease verify fault must fail")
-		}
-	})
-	// 首条规则放过首个租约校验，第二条规则让写后校验失败。
-	t.Run("second lease verify", func(t *testing.T) {
-		ctx := context.Background()
-		store, script, lease := w11fFaultStore(t)
-		script.rules = append(script.rules,
-			&w11fStoreRule{substr: "operation_log_owner_leases", limit: 1},
-			&w11fStoreRule{substr: "operation_log_owner_leases", queryErr: w14hBoom},
-		)
-		if _, err := persistLegacySQLiteOperationLog(ctx, store, lease, record); err == nil || !errors.Is(err, w14hBoom) {
-			t.Fatalf("second lease verify = %v", err)
-		}
-	})
-}
 
 // w14hSamplesFaultStore 与 w11fFaultStore 同型，但包装连接池允许 2 连接，
 // 供抽样校验（外层 rows 打开期间继续读 source）使用。
-func w14hSamplesFaultStore(t *testing.T) (*sqlStore, *w11fStoreScript, OwnerLease) {
-	t.Helper()
-	base, err := sqlite.NewConnector("file:w14h-oplog-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := &w11fStoreScript{}
-	db := sql.OpenDB(w11fStoreConnector{base: base, script: script})
-	db.SetMaxOpenConns(2)
-	t.Cleanup(func() { _ = db.Close() })
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	opened, err := OpenStore(Config{Mode: ModeSQLite, InstanceID: "w14h-owner", DatabasePath: filepath.Join(root, "operation.sqlite3"), BusinessSettingsPath: business, OwnerLease: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := opened.(*sqlStore)
-	origDB := store.db
-	t.Cleanup(func() { _ = origDB.Close() })
-	t.Cleanup(func() { _ = store.Close() })
-	store.db = db
-	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	lease, ok, err := store.AcquireOwnerLease(ctx, "w14h-owner", time.Minute)
-	if err != nil || !ok {
-		t.Fatalf("lease = %v/%v", ok, err)
-	}
-	return store, script, lease
-}
 
 // TestW14HVerifyLegacySQLiteSamplesFaults 覆盖抽样校验内的查询/子读取错误臂。
 // 抽样主查询 rows 保持打开期间会继续在同一 source 上读取 targets/viewers，
 // 因此包装连接池必须允许 ≥2 连接，否则内层查询会因连接信号量永久阻塞。
-func TestW14HVerifyLegacySQLiteSamplesFaults(t *testing.T) {
-	ctx := context.Background()
-	store, script, lease := w14hSamplesFaultStore(t)
-	if _, err := store.Persist(ctx, lease, w11fInput("w14h-sample-1")); err != nil {
-		t.Fatal(err)
-	}
-	// 主查询失败。
-	script.failQuery("ORDER BY created_at,id")
-	if err := verifyLegacySQLiteSamples(ctx, store.db, store.db); err == nil || !strings.Contains(err.Error(), "读取 F4 SQLite 迁移抽样失败") {
-		t.Fatalf("samples main fault = %v", err)
-	}
-	// targets 子查询失败。
-	script.failQuery("FROM operation_log_targets")
-	if err := verifyLegacySQLiteSamples(ctx, store.db, store.db); err == nil {
-		t.Fatal("samples targets fault must fail")
-	}
-	// viewers 子查询失败。
-	script.failQuery("FROM operation_log_viewers")
-	if err := verifyLegacySQLiteSamples(ctx, store.db, store.db); err == nil {
-		t.Fatal("samples viewers fault must fail")
-	}
-}
 
 // TestW14HNormalizedTargetRelationInvalid 覆盖 normalizedTargets 的非法 relation 臂。
 func TestW14HNormalizedTargetRelationInvalid(t *testing.T) {
@@ -462,4 +273,3 @@ func TestW14HNormalizedTargetRelationInvalid(t *testing.T) {
 		t.Fatalf("invalid relation = %v", err)
 	}
 }
-

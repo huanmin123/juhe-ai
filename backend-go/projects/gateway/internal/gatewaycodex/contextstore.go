@@ -5,15 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
-	"unicode/utf16"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
-	_ "modernc.org/sqlite"
 )
 
 // Port of storage/codex-context-state.repository.ts (the response/compact
@@ -279,232 +274,6 @@ func validateResponseStateIndex(row *CodexContextResponseStateIndex) error {
 }
 
 // ---------------------------------------------------------------------------
-// sqlite shard driver (sqlitepath mode)
-// ---------------------------------------------------------------------------
-
-// SQLiteShardStoreConfig carries the shard root and count
-// (JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT / _COUNT).
-type SQLiteShardStoreConfig struct {
-	Root       string
-	ShardCount int
-}
-
-// SQLiteShardContextStateStore mirrors the Node shard DatabaseSync map: one
-// sqlite file per shard, opened lazily, schema applied on create.
-type SQLiteShardContextStateStore struct {
-	config SQLiteShardStoreConfig
-
-	mu  sync.Mutex
-	dbs map[int]*sql.DB
-}
-
-// NewSQLiteShardContextStateStore builds the sqlite driver.
-func NewSQLiteShardContextStateStore(config SQLiteShardStoreConfig) (*SQLiteShardContextStateStore, error) {
-	if strings.TrimSpace(config.Root) == "" {
-		return nil, errors.New("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 在 sqlite driver 下必须配置")
-	}
-	return &SQLiteShardContextStateStore{
-		config: config,
-		dbs:    map[int]*sql.DB{},
-	}, nil
-}
-
-// CodexContextStateShardCount mirrors codexContextStateShardCount.
-func (s *SQLiteShardContextStateStore) shardCount() int {
-	count := s.config.ShardCount
-	if count < 1 {
-		count = 1
-	}
-	if count > 256 {
-		count = 256
-	}
-	return count
-}
-
-// CodexContextStateShardIndexForKey mirrors codexContextStateShardIndexForKey:
-// FNV-1a over the UTF-16 code units of the key, modulo the shard count
-// clamped to 1..256 exactly like codexContextStateShardCount.
-func CodexContextStateShardIndexForKey(key string, shardCount int) int {
-	if shardCount < 1 {
-		shardCount = 1
-	}
-	if shardCount > 256 {
-		shardCount = 256
-	}
-	hash := uint32(2166136261)
-	for _, unit := range utf16.Encode([]rune(key)) {
-		hash ^= uint32(unit)
-		hash *= 16777619
-	}
-	return int(hash % uint32(shardCount))
-}
-
-func (s *SQLiteShardContextStateStore) databaseForKey(key string) (*sql.DB, error) {
-	shardIndex := CodexContextStateShardIndexForKey(key, s.shardCount())
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if db, ok := s.dbs[shardIndex]; ok {
-		return db, nil
-	}
-	path := filepath.Join(s.config.Root, "state-"+padLeft3(shardIndex)+".sqlite3")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create codex context shard directory: %w", err)
-	}
-	// _txlock=immediate 使该句柄上所有事务（含 BeginTx(ctx, nil)）以
-	// BEGIN IMMEDIATE 起始：同一批 state-*.sqlite3 文件被 jobs 侧
-	// cleanuprepo/codexcontext.go 以 _txlock=immediate + 单连接池跨进程
-	// 清理，deferred 事务升级写锁时 SQLITE_BUSY 不受 busy_timeout 重试，
-	// 必须与写者侧契约对齐。单连接池与 jobs 侧写句柄一致，进程内串行化。
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
-	if err != nil {
-		return nil, fmt.Errorf("open codex context state shard %d: %w", shardIndex, err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	if _, err := db.Exec(codexContextStateSchemaSQL); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("apply codex context state schema on shard %d: %w", shardIndex, err)
-	}
-	s.dbs[shardIndex] = db
-	return db, nil
-}
-
-func padLeft3(value int) string {
-	text := strconv.Itoa(value)
-	for len(text) < 3 {
-		text = "0" + text
-	}
-	return text
-}
-
-// SaveResponseStateRow implements CodexContextRowStore.
-func (s *SQLiteShardContextStateStore) SaveResponseStateRow(ctx context.Context, row CodexContextResponseStateIndex) error {
-	db, err := s.databaseForKey(row.ResponseID)
-	if err != nil {
-		return err
-	}
-	sessionDB, err := s.databaseForKey(row.SessionID)
-	if err != nil {
-		return err
-	}
-	tx, err := sessionDB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := upsertSessionRow(ctx, tx, sessionUpsertInputFromResponse(row)); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return withSQLTx(ctx, db, func(tx *sql.Tx) error {
-		return upsertResponseStateRow(ctx, tx, &row)
-	})
-}
-
-// SaveCompactStateRow implements CodexContextRowStore.
-func (s *SQLiteShardContextStateStore) SaveCompactStateRow(ctx context.Context, row CodexContextCompactStateIndex) error {
-	db, err := s.databaseForKey(row.CompactID)
-	if err != nil {
-		return err
-	}
-	sessionDB, err := s.databaseForKey(row.SessionID)
-	if err != nil {
-		return err
-	}
-	tx, err := sessionDB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := upsertSessionRow(ctx, tx, sessionUpsertInputFromCompact(row)); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return withSQLTx(ctx, db, func(tx *sql.Tx) error {
-		return upsertCompactStateRow(ctx, tx, &row)
-	})
-}
-
-// ReadResponseStateRow implements CodexContextRowStore.
-func (s *SQLiteShardContextStateStore) ReadResponseStateRow(ctx context.Context, responseID string) (*CodexContextResponseStateIndex, error) {
-	db, err := s.databaseForKey(responseID)
-	if err != nil {
-		return nil, err
-	}
-	row := db.QueryRowContext(ctx, codexContextResponseSelectColumns+"codex_context_responses WHERE response_id = ? LIMIT 1", responseID)
-	return scanResponseStateRow(row)
-}
-
-// ReadCompactStateRow implements CodexContextRowStore.
-func (s *SQLiteShardContextStateStore) ReadCompactStateRow(ctx context.Context, compactID string) (*CodexContextCompactStateIndex, error) {
-	db, err := s.databaseForKey(compactID)
-	if err != nil {
-		return nil, err
-	}
-	row := db.QueryRowContext(ctx, codexContextCompactSelectColumns+"codex_context_compacts WHERE compact_id = ? LIMIT 1", compactID)
-	return scanCompactStateRow(row)
-}
-
-// TouchResponseChain implements CodexContextRowStore.
-func (s *SQLiteShardContextStateStore) TouchResponseChain(ctx context.Context, rows []CodexContextResponseStateIndex, now, refreshExpiresAt string) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	sessionID := ""
-	if len(rows) > 0 {
-		sessionID = rows[0].SessionID
-	}
-	if sessionDB, err := s.databaseForKey(sessionID); err == nil {
-		_, _ = sessionDB.ExecContext(ctx, `UPDATE codex_context_sessions SET last_used_at = ?, updated_at = ?, expires_at = ? WHERE id = ?`, now, now, refreshExpiresAt, sessionID)
-	}
-	for _, row := range rows {
-		db, err := s.databaseForKey(row.ResponseID)
-		if err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, `UPDATE codex_context_responses SET last_used_at = ?, updated_at = ?, expires_at = ? WHERE response_id = ?`, now, now, refreshExpiresAt, row.ResponseID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// TouchCompact implements CodexContextRowStore.
-func (s *SQLiteShardContextStateStore) TouchCompact(ctx context.Context, row CodexContextCompactStateIndex, now, refreshExpiresAt string) error {
-	db, err := s.databaseForKey(row.CompactID)
-	if err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, `UPDATE codex_context_compacts SET last_used_at = ?, updated_at = ?, expires_at = ? WHERE compact_id = ?`, now, now, refreshExpiresAt, row.CompactID); err != nil {
-		return err
-	}
-	sessionDB, err := s.databaseForKey(row.SessionID)
-	if err != nil {
-		return err
-	}
-	_, err = sessionDB.ExecContext(ctx, `UPDATE codex_context_sessions SET last_used_at = ?, updated_at = ?, expires_at = ? WHERE id = ?`, now, now, refreshExpiresAt, row.SessionID)
-	return err
-}
-
-// Close releases every open shard database.
-func (s *SQLiteShardContextStateStore) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var first error
-	for shardIndex, db := range s.dbs {
-		if err := db.Close(); err != nil && first == nil {
-			first = err
-		}
-		delete(s.dbs, shardIndex)
-	}
-	return first
-}
-
-// ---------------------------------------------------------------------------
 // postgres driver (sqlpool mode)
 // ---------------------------------------------------------------------------
 
@@ -652,12 +421,6 @@ ON CONFLICT(id) DO UPDATE SET
   expires_at = excluded.expires_at
 `
 
-func upsertSessionRow(ctx context.Context, tx *sql.Tx, input sessionUpsertInput) error {
-	values := sessionUpsertValues(input)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextSessionUpsertSQL, "codex_context_sessions", sqlPlaceholders(11)), values...)
-	return err
-}
-
 func upsertSessionRowPostgres(ctx context.Context, tx *sql.Tx, input sessionUpsertInput) error {
 	values := sessionUpsertValues(input)
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextSessionUpsertSQL, codexContextTablePostgres("codex_context_sessions"), postgresPlaceholders(11)), values...)
@@ -678,12 +441,6 @@ func sessionUpsertValues(input sessionUpsertInput) []any {
 		input.now,
 		input.expiresAt,
 	}
-}
-
-func upsertResponseStateRow(ctx context.Context, tx *sql.Tx, row *CodexContextResponseStateIndex) error {
-	values := responseStateValues(row)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextResponseUpsertSQL, "codex_context_responses", sqlPlaceholders(20)), values...)
-	return err
 }
 
 func upsertResponseStateRowPostgres(ctx context.Context, tx *sql.Tx, row *CodexContextResponseStateIndex) error {
@@ -741,12 +498,6 @@ func responseStateValues(row *CodexContextResponseStateIndex) []any {
 		row.LastUsedAt,
 		row.ExpiresAt,
 	}
-}
-
-func upsertCompactStateRow(ctx context.Context, tx *sql.Tx, row *CodexContextCompactStateIndex) error {
-	values := compactStateValues(row)
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(codexContextCompactUpsertSQL, "codex_context_compacts", sqlPlaceholders(21)), values...)
-	return err
 }
 
 func upsertCompactStateRowPostgres(ctx context.Context, tx *sql.Tx, row *CodexContextCompactStateIndex) error {
@@ -816,14 +567,6 @@ func nullableText(value string) any {
 	return value
 }
 
-func sqlPlaceholders(count int) string {
-	parts := make([]string, count)
-	for index := range parts {
-		parts[index] = "?"
-	}
-	return strings.Join(parts, ", ")
-}
-
 func postgresPlaceholders(count int) string {
 	parts := make([]string, count)
 	for index := range parts {
@@ -844,87 +587,10 @@ func withSQLTx(ctx context.Context, db *sql.DB, operation func(tx *sql.Tx) error
 	return tx.Commit()
 }
 
-// The codex context schema mirrors storage/schema/codex-context-state-schema.ts
-// (sqlite DDL); the postgres migration owns the equivalent SQL and the
-// runtime statements are compatible with both dialects. provider_code 维度已
-// 随 B4① 存储迁移退役（写入面恒空串、边界比对恒真）：建表不再声明该列，
-// boundary 索引同步拆除；存量 shard 文件由离线维护收列（部署文档口径）。
-const codexContextStateSchemaSQL = `
-CREATE TABLE IF NOT EXISTS codex_context_sessions (
-  id TEXT PRIMARY KEY,
-  system_account_id TEXT NOT NULL,
-  api_key_id TEXT,
-  group_id TEXT NOT NULL,
-  source_response_id TEXT,
-  latest_response_id TEXT,
-  latest_compact_id TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_used_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS codex_context_responses (
-  response_id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  previous_response_id TEXT,
-  system_account_id TEXT NOT NULL,
-  api_key_id TEXT,
-  group_id TEXT NOT NULL,
-  upstream_account_id TEXT,
-  model TEXT,
-  upstream_model TEXT,
-  storage_key TEXT NOT NULL,
-  storage_offset_bytes INTEGER NOT NULL,
-  sha256 TEXT NOT NULL,
-  raw_size_bytes INTEGER NOT NULL,
-  compressed_size_bytes INTEGER NOT NULL,
-  compression TEXT NOT NULL DEFAULT 'gzip',
-  schema_version INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_used_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS codex_context_compacts (
-  compact_id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  source_response_id TEXT,
-  summary_digest TEXT NOT NULL,
-  system_account_id TEXT NOT NULL,
-  api_key_id TEXT,
-  group_id TEXT NOT NULL,
-  upstream_account_id TEXT,
-  model TEXT,
-  upstream_model TEXT,
-  storage_key TEXT NOT NULL,
-  storage_offset_bytes INTEGER NOT NULL,
-  sha256 TEXT NOT NULL,
-  raw_size_bytes INTEGER NOT NULL,
-  compressed_size_bytes INTEGER NOT NULL,
-  compression TEXT NOT NULL DEFAULT 'gzip',
-  schema_version INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_used_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_expires ON codex_context_sessions(expires_at ASC, id ASC);
-CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_last_used ON codex_context_sessions(last_used_at ASC, id ASC);
-CREATE INDEX IF NOT EXISTS idx_codex_context_responses_session ON codex_context_responses(session_id, created_at ASC, response_id);
-CREATE INDEX IF NOT EXISTS idx_codex_context_responses_previous ON codex_context_responses(previous_response_id) WHERE previous_response_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_codex_context_responses_expires ON codex_context_responses(expires_at ASC, response_id);
-CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_session ON codex_context_compacts(session_id, created_at ASC, compact_id);
-CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_source_response ON codex_context_compacts(source_response_id);
-CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_expires ON codex_context_compacts(expires_at ASC, compact_id);
-`
+// provider_code 维度已随 B4① 存储迁移退役（写入面恒空串、边界比对恒真）：
+// PG DDL（maintenance 权威）不再声明该列，boundary 索引同步拆除；原 sqlite
+// 分片建表 DDL 随 sqlite 存储形态退役（2026-10-24）。
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-// codexContextResponseSelectColumns / codexContextCompactSelectColumns 是读面
-// 显式列清单（B4① 拆除 provider_code 后不再 SELECT *：列序由显式清单钉住，
-// 存量 shard 文件多出的旧列不影响读取）。
 const codexContextResponseSelectColumns = `SELECT response_id, session_id, previous_response_id, system_account_id, api_key_id, group_id,
 	upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
 	raw_size_bytes, compressed_size_bytes, compression, schema_version,
@@ -934,6 +600,11 @@ const codexContextCompactSelectColumns = `SELECT compact_id, session_id, source_
 	upstream_account_id, model, upstream_model, storage_key, storage_offset_bytes, sha256,
 	raw_size_bytes, compressed_size_bytes, compression, schema_version,
 	created_at, updated_at, last_used_at, expires_at FROM `
+
+// rowScanner abstracts *sql.Row / *sql.Rows for the shared column scanners.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
 
 func scanResponseStateRow(row rowScanner) (*CodexContextResponseStateIndex, error) {
 	index := &CodexContextResponseStateIndex{}

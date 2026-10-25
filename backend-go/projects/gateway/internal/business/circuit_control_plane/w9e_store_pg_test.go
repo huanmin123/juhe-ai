@@ -135,7 +135,7 @@ func TestW9ECPPPostgresContractAndFlows(t *testing.T) {
 	ctx := context.Background()
 	gate := OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true}
 
-	s, err := New(appDB, Postgres, defaultBusinessSchema, gate)
+	s, err := New(appDB, defaultBusinessSchema, gate)
 	if err != nil {
 		t.Fatal(err)
 	}

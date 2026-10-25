@@ -213,7 +213,7 @@ func TestW16BAccountReadCompanionsArms(t *testing.T) {
 		t.Fatalf("open business db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	accountStore, err := accounts.NewStore(db, false, "w16b-secret", time.Now, func(kind string) string { return kind })
+	accountStore, err := accounts.NewStore(db, "w16b-secret", time.Now, func(kind string) string { return kind })
 	if err != nil {
 		t.Fatalf("create account store: %v", err)
 	}

@@ -20,7 +20,7 @@ func newProxyRequiredEnv(t *testing.T) *testEnv {
 	// 直接翻转字段（同包测试可见）。
 	env.store.proxyRequired = true
 	if _, err := env.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-oauth-test', 'system', '测试出海代理', 'socks5', '127.0.0.1', 7890, 1, 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+		VALUES ('proxy-oauth-test', 'system', '测试出海代理', 'socks5', '127.0.0.1', 7890, true, 'unknown', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
 	return env

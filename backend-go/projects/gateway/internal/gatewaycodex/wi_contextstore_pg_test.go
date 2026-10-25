@@ -236,68 +236,6 @@ func wiOpenSQLiteHandle(t *testing.T, dsn string) *sqlpool.Handle {
 	return handle
 }
 
-func TestWIPostgresContextStateStoreOverSQLite(t *testing.T) {
-	// 契约：postgres driver 的 SQL 限定 juhe_codex_context schema；用 SQLite
-	// 承载时 schema 不存在，所有写读必须报错（错误透传，不静默降级）。
-	if _, err := NewPostgresContextStateStore(nil); err == nil {
-		t.Fatal("nil handle 必须报错")
-	}
-	handle := wiOpenSQLiteHandle(t, "wi-codex-pg?mode=memory&cache=shared")
-	store, err := NewPostgresContextStateStore(handle)
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
-	ctx := context.Background()
-
-	// 读路径：schema 缺失 → 查询错误。
-	if _, err := store.ReadResponseStateRow(ctx, "resp-1"); err == nil {
-		t.Fatal("postgres 读必须报错（schema 缺失）")
-	}
-	if _, err := store.ReadCompactStateRow(ctx, "compact-1"); err == nil {
-		t.Fatal("postgres compact 读必须报错")
-	}
-	// 写路径：事务打开成功、upsert 失败 → 错误并回滚。
-	responseRow := CodexContextResponseStateIndex{
-		ResponseID: "resp-1",
-		SessionID:  "s1",
-		UpdatedAt:  "2026-01-01T00:00:00.000Z",
-		ExpiresAt:  "2026-01-02T00:00:00.000Z",
-	}
-	if err := store.SaveResponseStateRow(ctx, responseRow); err == nil {
-		t.Fatal("postgres 写必须报错")
-	}
-	compactRow := CodexContextCompactStateIndex{
-		CompactID: "compact-1",
-		SessionID: "s1",
-		UpdatedAt: "2026-01-01T00:00:00.000Z",
-		ExpiresAt: "2026-01-02T00:00:00.000Z",
-	}
-	if err := store.SaveCompactStateRow(ctx, compactRow); err == nil {
-		t.Fatal("postgres compact 写必须报错")
-	}
-	// touch：空 rows 是合法 no-op。
-	if err := store.TouchResponseChain(ctx, nil, "now", "later"); err != nil {
-		t.Fatalf("空 rows 必须无错: %v", err)
-	}
-	if err := store.TouchResponseChain(ctx, []CodexContextResponseStateIndex{responseRow}, "now", "later"); err == nil {
-		t.Fatal("postgres touch 必须报错")
-	}
-	if err := store.TouchCompact(ctx, compactRow, "now", "later"); err == nil {
-		t.Fatal("postgres compact touch 必须报错")
-	}
-	// upsert helper 直接执行同样报错（juhe_codex_context 表不存在）。
-	if db := handle.DB(); db != nil {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatalf("打开事务失败: %v", err)
-		}
-		if err := upsertSessionRowPostgres(ctx, tx, sessionUpsertInput{sessionID: "s1"}); err == nil {
-			t.Fatal("postgres upsert 必须报错")
-		}
-		_ = tx.Rollback()
-	}
-}
-
 // ---------------------------------------------------------------------------
 // PostgresContextStateStore 臂正测试（组A，pgkit_test.go 夹具）：与分片臂既有
 // 矩阵（contextstore_test.go / wi_shard_store_test.go，组B）断言逐字节一致。

@@ -448,8 +448,6 @@ func seedSettingsDefaults(t *testing.T, db *sql.DB) {
 	seedSystemSettings(t, db)
 }
 
-
-
 // ---------------------------------------------------------------------------
 // compose-level chain assembly
 // ---------------------------------------------------------------------------
@@ -1063,7 +1061,7 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 	coordinator := gatewayproxyhealth.NewUserRequestLimitCoordinator(counter, nil, gatewayproxyhealth.UserRequestLimitCoordinatorOptions{})
 	userLimits := gatewayproxyhealth.NewUserRequestLimitsService(counter, coordinator)
 
-	statsStore, err := gatewayquota.NewStatsStore(fixture.statsDB, false)
+	statsStore, err := gatewayquota.NewStatsStore(fixture.statsDB)
 	if err != nil {
 		t.Fatalf("create stats store: %v", err)
 	}

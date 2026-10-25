@@ -30,45 +30,17 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
-// ReadDBMode selects the SQL dialect of a log dataset reader. The dataset
-// tables live in SQLite fact files during migration and in the PostgreSQL
-// juhe_dataset schema in production.
-type ReadDBMode string
-
-// Supported dataset modes.
-const (
-	ReadSQLite   ReadDBMode = "sqlite"
-	ReadPostgres ReadDBMode = "postgres"
-)
-
 // logReadsDatasetSchema is the PostgreSQL schema holding the dataset tables
 // (Node defaults every dataset repository to juhe_dataset).
 const logReadsDatasetSchema = "juhe_dataset"
 
-func parseReadDBMode(value ReadDBMode) (ReadDBMode, error) {
-	switch value {
-	case ReadSQLite, ReadPostgres:
-		return value, nil
-	case "":
-		return "", errors.New("logreads 数据库模式必填（sqlite 或 postgres）")
-	default:
-		return "", fmt.Errorf("logreads 数据库模式必须为 sqlite 或 postgres，收到 %q", string(value))
-	}
+// table quotes a dataset table name inside the juhe_dataset schema.
+func logReadsTable(name string) string {
+	return `"` + logReadsDatasetSchema + `"."` + name + `"`
 }
 
-// table quotes a dataset table name for the active dialect.
-func (m ReadDBMode) table(name string) string {
-	if m == ReadPostgres {
-		return `"` + logReadsDatasetSchema + `"."` + name + `"`
-	}
-	return `"` + name + `"`
-}
-
-// bind rewrites ? placeholders into PostgreSQL $N ordinals; SQLite keeps ?.
-func (m ReadDBMode) bind(query string) string {
-	if m != ReadPostgres {
-		return query
-	}
+// logReadsBind rewrites ? placeholders into PostgreSQL $N ordinals.
+func logReadsBind(query string) string {
 	var builder strings.Builder
 	index := 0
 	for _, character := range query {
@@ -83,20 +55,14 @@ func (m ReadDBMode) bind(query string) string {
 	return builder.String()
 }
 
-// prefixColumn mirrors the postgres-only COLLATE "C" prefix filters.
-func (m ReadDBMode) prefixColumn(column string) string {
-	if m == ReadPostgres {
-		return column + ` COLLATE "C"`
-	}
-	return column
+// logReadsPrefixColumn applies the COLLATE "C" prefix filters.
+func logReadsPrefixColumn(column string) string {
+	return column + ` COLLATE "C"`
 }
 
-// timeParam passes time filters as strings to SQLite and as time values to
-// PostgreSQL so timestamptz comparisons never fall back to text casting.
-func (m ReadDBMode) timeParam(canonicalISO string) any {
-	if m != ReadPostgres {
-		return canonicalISO
-	}
+// logReadsTimeParam passes time filters as time values so timestamptz
+// comparisons never fall back to text casting.
+func logReadsTimeParam(canonicalISO string) any {
 	if parsed, err := time.Parse(time.RFC3339Nano, canonicalISO); err == nil {
 		return parsed.UTC()
 	}
@@ -265,8 +231,8 @@ func readAuditPrefixUpperBound(value string) string {
 // readQueryMaps runs a read-only query and returns rows as column→value maps,
 // mirroring the Node AuditLogRow/Record<string, unknown> row style so the
 // mappers below stay 1:1 with the Node repositories.
-func readQueryMaps(ctx context.Context, db *sql.DB, mode ReadDBMode, query string, args ...any) ([]map[string]any, error) {
-	rows, err := db.QueryContext(ctx, mode.bind(query), args...)
+func readQueryMaps(ctx context.Context, db *sql.DB, query string, args ...any) ([]map[string]any, error) {
+	rows, err := db.QueryContext(ctx, logReadsBind(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -294,8 +260,8 @@ func readQueryMaps(ctx context.Context, db *sql.DB, mode ReadDBMode, query strin
 	return out, rows.Err()
 }
 
-func readQueryOneMap(ctx context.Context, db *sql.DB, mode ReadDBMode, query string, args ...any) (map[string]any, error) {
-	rows, err := readQueryMaps(ctx, db, mode, query, args...)
+func readQueryOneMap(ctx context.Context, db *sql.DB, query string, args ...any) (map[string]any, error) {
+	rows, err := readQueryMaps(ctx, db, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -742,8 +708,7 @@ const (
 // auditLogSQLReader reads the F3 audit dataset published by
 // internal/auditlog (F3 writer). It performs SELECTs only.
 type auditLogSQLReader struct {
-	db   *sql.DB
-	mode ReadDBMode
+	db *sql.DB
 	// hotDir is the F3 hot-search NDJSON root (JUHE_AI_AUDIT_LOG_HOT_SEARCH_
 	// DIRECTORY); empty disables /search-hot with the Node unconfigured
 	// contract. blobDir is the payload blob root
@@ -758,8 +723,8 @@ type auditLogSQLReader struct {
 // owns the database handle and the schema (F3 EnsureSchema). The hot-search
 // and payload-blob roots stay unset, so /search-hot answers the Node
 // "unconfigured directory" contract and payload bodies report file_missing.
-func NewAuditLogSQLReader(db *sql.DB, mode ReadDBMode) (AuditLogReader, error) {
-	return NewAuditLogQueryReader(db, mode, AuditQueryDirectories{})
+func NewAuditLogSQLReader(db *sql.DB) (AuditLogReader, error) {
+	return NewAuditLogQueryReader(db, AuditQueryDirectories{})
 }
 
 // AuditQueryDirectories bundles the file roots the audit query routes need
@@ -772,17 +737,12 @@ type AuditQueryDirectories struct {
 // NewAuditLogQueryReader opens the read-only audit dataset adapter with the
 // hot-search and payload-blob roots required by the /search-hot and payload
 // detail routes.
-func NewAuditLogQueryReader(db *sql.DB, mode ReadDBMode, directories AuditQueryDirectories) (AuditLogReader, error) {
+func NewAuditLogQueryReader(db *sql.DB, directories AuditQueryDirectories) (AuditLogReader, error) {
 	if db == nil {
 		return nil, errors.New("audit 数据集数据库句柄必填")
 	}
-	dialect, err := parseReadDBMode(mode)
-	if err != nil {
-		return nil, err
-	}
 	return &auditLogSQLReader{
 		db:      db,
-		mode:    dialect,
 		hotDir:  strings.TrimSpace(directories.HotSearchDirectory),
 		blobDir: strings.TrimSpace(directories.PayloadBlobDirectory),
 	}, nil
@@ -796,7 +756,9 @@ func (s *auditLogSQLReader) now() time.Time {
 }
 
 func (s *auditLogSQLReader) Runtime() AuditLogRuntime {
-	return AuditLogRuntime{Mode: string(s.mode), ReadOnly: true, QueryOnly: true, SchemaReady: true}
+	// Mode 恒 "postgres"：存储形态收口后 sqlite 侧已物理删除，该字段是
+	// 管理页运行信息载荷的既有契约（唯一形态的如实报告，非可选判据）。
+	return AuditLogRuntime{Mode: "postgres", ReadOnly: true, QueryOnly: true, SchemaReady: true}
 }
 
 const auditLogListSelectColumns = `al.id, al.trace_id, al.session_id, al.session_client_type, al.traffic_source, ` +
@@ -827,7 +789,7 @@ func (s *auditLogSQLReader) buildFilters(options AuditLogListOptions) (string, [
 		if text == "" {
 			return
 		}
-		expression := s.mode.prefixColumn(column)
+		expression := logReadsPrefixColumn(column)
 		clauses = append(clauses, expression+" >= ? AND "+expression+" < ?")
 		params = append(params, text, readAuditPrefixUpperBound(text))
 	}
@@ -857,11 +819,11 @@ func (s *auditLogSQLReader) buildFilters(options AuditLogListOptions) (string, [
 	}
 	if options.StartAt != "" {
 		clauses = append(clauses, "al.created_at >= ?")
-		params = append(params, s.mode.timeParam(options.StartAt))
+		params = append(params, logReadsTimeParam(options.StartAt))
 	}
 	if options.EndAt != "" {
 		clauses = append(clauses, "al.created_at <= ?")
-		params = append(params, s.mode.timeParam(options.EndAt))
+		params = append(params, logReadsTimeParam(options.EndAt))
 	}
 	for _, filter := range []struct{ column, value string }{
 		{"al.system_account_id", options.SystemAccountID},
@@ -910,9 +872,9 @@ func (s *auditLogSQLReader) ListAuditLogs(ctx context.Context, options AuditLogL
 	page := readNormalizeAuditLogPage(options.Page, pageSize, options.SessionID)
 	offset := (page - 1) * pageSize
 	clause, params := s.buildFilters(options)
-	query := `SELECT ` + auditLogListSelectColumns + ` FROM ` + s.mode.table("audit_logs") + ` al ` + clause +
+	query := `SELECT ` + auditLogListSelectColumns + ` FROM ` + logReadsTable("audit_logs") + ` al ` + clause +
 		` ORDER BY al.created_at DESC, al.id DESC LIMIT ? OFFSET ?`
-	rows, err := readQueryMaps(ctx, s.db, s.mode, query, append(params, pageSize+1, offset)...)
+	rows, err := readQueryMaps(ctx, s.db, query, append(params, pageSize+1, offset)...)
 	if err != nil {
 		return ReadPage[AuditLogListItem]{}, err
 	}
@@ -960,9 +922,9 @@ func (s *auditLogSQLReader) ListAuditErrorGroups(ctx context.Context, options Au
 	if len(clauses) > 0 {
 		clause = "WHERE " + strings.Join(clauses, " AND ")
 	}
-	query := `SELECT ` + auditErrorGroupSelectColumns + ` FROM ` + s.mode.table("audit_error_groups") + ` aeg ` + clause +
+	query := `SELECT ` + auditErrorGroupSelectColumns + ` FROM ` + logReadsTable("audit_error_groups") + ` aeg ` + clause +
 		` ORDER BY aeg.updated_at DESC, aeg.id DESC LIMIT ? OFFSET ?`
-	rows, err := readQueryMaps(ctx, s.db, s.mode, query, append(params, pageSize+1, offset)...)
+	rows, err := readQueryMaps(ctx, s.db, query, append(params, pageSize+1, offset)...)
 	if err != nil {
 		return ReadPage[AuditErrorGroupSummary]{}, err
 	}
@@ -982,8 +944,8 @@ func (s *auditLogSQLReader) GetAuditLogDetail(ctx context.Context, id string) (*
 	if logID == "" {
 		return nil, nil
 	}
-	query := `SELECT al.* FROM ` + s.mode.table("audit_logs") + ` al WHERE al.id = ? AND ` + s.persistedTrafficClause("al")
-	row, err := readQueryOneMap(ctx, s.db, s.mode, query, append([]any{logID},
+	query := `SELECT al.* FROM ` + logReadsTable("audit_logs") + ` al WHERE al.id = ? AND ` + s.persistedTrafficClause("al")
+	row, err := readQueryOneMap(ctx, s.db, query, append([]any{logID},
 		auditLogNonPersistedTrafficSources[0], auditLogNonPersistedTrafficSources[1], auditLogNonPersistedTrafficSources[2])...)
 	if err != nil || row == nil {
 		return nil, err
@@ -1044,8 +1006,8 @@ func (s *auditLogSQLReader) GetAuditLogDetail(ctx context.Context, id string) (*
 }
 
 func (s *auditLogSQLReader) listAttempts(ctx context.Context, auditLogID string) ([]AuditLogAttemptSummary, error) {
-	query := `SELECT * FROM ` + s.mode.table("audit_log_attempts") + ` WHERE audit_log_id = ? ORDER BY attempt_index ASC, id ASC`
-	rows, err := readQueryMaps(ctx, s.db, s.mode, query, auditLogID)
+	query := `SELECT * FROM ` + logReadsTable("audit_log_attempts") + ` WHERE audit_log_id = ? ORDER BY attempt_index ASC, id ASC`
+	rows, err := readQueryMaps(ctx, s.db, query, auditLogID)
 	if err != nil {
 		return nil, err
 	}
@@ -1083,8 +1045,8 @@ func (s *auditLogSQLReader) listAttempts(ctx context.Context, auditLogID string)
 }
 
 func (s *auditLogSQLReader) listPayloads(ctx context.Context, auditLogID string) ([]AuditLogPayloadSummary, error) {
-	query := `SELECT * FROM ` + s.mode.table("audit_payload_refs") + ` WHERE audit_log_id = ? ORDER BY sequence_index ASC, id ASC`
-	rows, err := readQueryMaps(ctx, s.db, s.mode, query, auditLogID)
+	query := `SELECT * FROM ` + logReadsTable("audit_payload_refs") + ` WHERE audit_log_id = ? ORDER BY sequence_index ASC, id ASC`
+	rows, err := readQueryMaps(ctx, s.db, query, auditLogID)
 	if err != nil {
 		return nil, err
 	}
@@ -1119,8 +1081,8 @@ func auditLogPayloadSummaryFromRow(row map[string]any) AuditLogPayloadSummary {
 }
 
 func (s *auditLogSQLReader) findErrorGroup(ctx context.Context, id string) (*AuditErrorGroupSummary, error) {
-	query := `SELECT ` + auditErrorGroupSelectColumns + ` FROM ` + s.mode.table("audit_error_groups") + ` aeg WHERE aeg.id = ?`
-	row, err := readQueryOneMap(ctx, s.db, s.mode, query, id)
+	query := `SELECT ` + auditErrorGroupSelectColumns + ` FROM ` + logReadsTable("audit_error_groups") + ` aeg WHERE aeg.id = ?`
+	row, err := readQueryOneMap(ctx, s.db, query, id)
 	if err != nil || row == nil {
 		return nil, err
 	}
@@ -1132,8 +1094,8 @@ func (s *auditLogSQLReader) findErrorGroup(ctx context.Context, id string) (*Aud
 // newest window row — under per-window sample handover it is the only event
 // still holding full payloads. Empty when the fingerprint has no group rows.
 func (s *auditLogSQLReader) latestErrorGroupSampleEventID(ctx context.Context, fingerprint string) (string, error) {
-	query := `SELECT sample_event_id FROM ` + s.mode.table("audit_error_groups") + ` WHERE fingerprint = ? ORDER BY window_started_at DESC, id DESC LIMIT 1`
-	row, err := readQueryOneMap(ctx, s.db, s.mode, query, fingerprint)
+	query := `SELECT sample_event_id FROM ` + logReadsTable("audit_error_groups") + ` WHERE fingerprint = ? ORDER BY window_started_at DESC, id DESC LIMIT 1`
+	row, err := readQueryOneMap(ctx, s.db, query, fingerprint)
 	if err != nil || row == nil {
 		return "", err
 	}

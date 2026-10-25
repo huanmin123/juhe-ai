@@ -60,31 +60,29 @@ type TeamAuthorizationQuotaRow struct {
 
 // AuthorizationQuotaConfig wires the service.
 type AuthorizationQuotaConfig struct {
-	Modes     Modes
-	Business  *sql.DB
-	Stats     *StatsStore
-	Timezone  StatsTimezoneProvider
-	Snapshot  *SnapshotCache
-	Shared    SharedJSONCache
-	DBService DBServiceClient
-	Syncer    InvalidationSyncer
-	Now       func() time.Time
-	Log       LogHook
+	Modes    Modes
+	Business *sql.DB
+	Stats    *StatsStore
+	Timezone StatsTimezoneProvider
+	Snapshot *SnapshotCache
+	Shared   SharedJSONCache
+	Syncer   InvalidationSyncer
+	Now      func() time.Time
+	Log      LogHook
 }
 
 // AuthorizationQuotaService ports authorization-quota.service.ts.
 type AuthorizationQuotaService struct {
-	modes     Modes
-	business  *sql.DB
-	stats     *StatsStore
-	tz        StatsTimezoneProvider
-	snapshot  *SnapshotCache
-	shared    SharedJSONCache
-	dbService DBServiceClient
-	syncer    InvalidationSyncer
-	now       func() time.Time
-	log       LogHook
-	memory    *simpleMemoryCache
+	modes    Modes
+	business *sql.DB
+	stats    *StatsStore
+	tz       StatsTimezoneProvider
+	snapshot *SnapshotCache
+	shared   SharedJSONCache
+	syncer   InvalidationSyncer
+	now      func() time.Time
+	log      LogHook
+	memory   *simpleMemoryCache
 }
 
 // NewAuthorizationQuotaService validates the wiring and builds the runtime cache.
@@ -113,17 +111,16 @@ func NewAuthorizationQuotaService(cfg AuthorizationQuotaConfig) (*AuthorizationQ
 		log = noopLog
 	}
 	return &AuthorizationQuotaService{
-		modes:     cfg.Modes,
-		business:  cfg.Business,
-		stats:     cfg.Stats,
-		tz:        cfg.Timezone,
-		snapshot:  cfg.Snapshot,
-		shared:    cfg.Shared,
-		dbService: cfg.DBService,
-		syncer:    cfg.Syncer,
-		now:       now,
-		log:       log,
-		memory:    newSimpleMemoryCache(now, authorizationQuotaCacheTTL, authorizationQuotaCacheMax),
+		modes:    cfg.Modes,
+		business: cfg.Business,
+		stats:    cfg.Stats,
+		tz:       cfg.Timezone,
+		snapshot: cfg.Snapshot,
+		shared:   cfg.Shared,
+		syncer:   cfg.Syncer,
+		now:      now,
+		log:      log,
+		memory:   newSimpleMemoryCache(now, authorizationQuotaCacheTTL, authorizationQuotaCacheMax),
 	}, nil
 }
 
@@ -171,10 +168,8 @@ func (s *AuthorizationQuotaService) CheckAuthorizationQuotaAsync(ctx context.Con
 		}
 	}
 	accountAuthorizationID := ""
-	accountQuotaLimited := false
 	if account != nil {
 		accountAuthorizationID = account.AccountAuthorizationID
-		accountQuotaLimited = account.AccountAuthorizationQuotaLimited
 	}
 	if groupAccess.GroupAuthorizationID == "" && accountAuthorizationID == "" {
 		return AllowedDecision(), nil
@@ -195,46 +190,8 @@ func (s *AuthorizationQuotaService) CheckAuthorizationQuotaAsync(ctx context.Con
 		s.setCacheEntry(cacheKey, sharedCached, true)
 		return sharedCached.decision(), nil
 	}
-	if s.modes.RedisCache && s.modes.ServerRole {
-		decision, err := s.checkRedisServerRole(ctx, groupAccess, accountAuthorizationID, accountQuotaLimited, cacheKey)
-		if err != nil {
-			return Decision{}, err
-		}
-		return decision, nil
-	}
-	if s.modes.ServerRole {
-		snapshotInput := authorizationSnapshotInput{
-			groupAuthorizationID:             groupAccess.GroupAuthorizationID,
-			groupAuthorizationQuotaLimited:   groupAccess.GroupAuthorizationQuotaLimited,
-			accountAuthorizationID:           accountAuthorizationID,
-			accountAuthorizationQuotaLimited: accountQuotaLimited,
-		}
-		if s.snapshotNeedsDBFallback(snapshotInput) {
-			decision, dbErr := s.dbServiceCheckAuthorizationQuota(ctx, groupAccess.GroupAuthorizationID, accountAuthorizationID)
-			if dbErr == nil {
-				if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-					return Decision{}, err
-				}
-				return decision, nil
-			}
-			s.log("gateway_authorization_quota_snapshot_fallback_failed", map[string]any{
-				"groupAuthorizationId":   groupAccess.GroupAuthorizationID,
-				"accountAuthorizationId": accountAuthorizationID,
-				"error":                  dbErr.Error(),
-			}, "授权配额快照不完整且 DB service 精确补判失败，按保护策略继续使用快照判定")
-		}
-		decision := s.decisionFromSnapshot(snapshotInput)
-		if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-			return Decision{}, err
-		}
-		return decision, nil
-	}
 	var decision Decision
-	if s.modes.PostgresDatabase {
-		decision, err = s.CheckAuthorizationQuotaByIDsExactAsync(ctx, groupAccess.GroupAuthorizationID, accountAuthorizationID, now)
-	} else {
-		decision, err = s.CheckAuthorizationQuotaByIDs(ctx, groupAccess.GroupAuthorizationID, accountAuthorizationID, now)
-	}
+	decision, err = s.CheckAuthorizationQuotaByIDsExactAsync(ctx, groupAccess.GroupAuthorizationID, accountAuthorizationID, now)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -246,50 +203,6 @@ func (s *AuthorizationQuotaService) CheckAuthorizationQuotaAsync(ctx context.Con
 
 // checkRedisServerRole is the `cacheDriver === 'redis' && processRole ===
 // 'server'` branch of checkGatewayAuthorizationQuotaAsync.
-func (s *AuthorizationQuotaService) checkRedisServerRole(ctx context.Context, groupAccess GroupAccessMetadata, accountAuthorizationID string, accountQuotaLimited bool, cacheKey string) (Decision, error) {
-	snapshotInput := authorizationSnapshotInput{
-		groupAuthorizationID:             groupAccess.GroupAuthorizationID,
-		groupAuthorizationQuotaLimited:   groupAccess.GroupAuthorizationQuotaLimited,
-		accountAuthorizationID:           accountAuthorizationID,
-		accountAuthorizationQuotaLimited: accountQuotaLimited,
-	}
-	snapshotAvailable, err := s.snapshot.HasGatewayQuotaSnapshotAsync(ctx)
-	if err != nil {
-		return Decision{}, err
-	}
-	snapshotNeedsFallback := true
-	if snapshotAvailable {
-		snapshotNeedsFallback, err = s.snapshotNeedsDBFallbackAsync(ctx, snapshotInput)
-		if err != nil {
-			return Decision{}, err
-		}
-	}
-	if !snapshotNeedsFallback {
-		decision, err := s.decisionFromSnapshotAsync(ctx, snapshotInput)
-		if err != nil {
-			return Decision{}, err
-		}
-		if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-			return Decision{}, err
-		}
-		return decision, nil
-	}
-	decision, dbErr := s.dbServiceCheckAuthorizationQuota(ctx, groupAccess.GroupAuthorizationID, accountAuthorizationID)
-	if dbErr != nil {
-		s.log("gateway_authorization_quota_redis_exact_check_failed", map[string]any{
-			"groupAuthorizationId":   groupAccess.GroupAuthorizationID,
-			"accountAuthorizationId": accountAuthorizationID,
-			"snapshotAvailable":      snapshotAvailable,
-			"snapshotNeedsFallback":  snapshotNeedsFallback,
-			"error":                  dbErr.Error(),
-		}, "Redis 模式授权配额共享快照未命中且精确补判失败，按保护策略拒绝请求")
-		return DeniedDecision(AuthorizationQuotaExceededMessage), nil
-	}
-	if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-		return Decision{}, err
-	}
-	return decision, nil
-}
 
 // CheckAuthorizationQuotaBatchAsync mirrors checkGatewayAuthorizationQuotaBatchAsync.
 func (s *AuthorizationQuotaService) CheckAuthorizationQuotaBatchAsync(ctx context.Context, groupAccess GroupAccessMetadata, accounts []AccountAuthorizationSummary) (map[string]Decision, error) {
@@ -362,17 +275,9 @@ func (s *AuthorizationQuotaService) CheckAuthorizationQuotaBatchAsync(ctx contex
 			return s.fillBatchOutput(accounts, cachedDecisionsByAccountID), nil
 		}
 	}
-	if s.modes.ServerRole {
-		return s.checkBatchServerRole(ctx, groupAccess, accounts, accountsToCheck, missingAccounts, missingCacheKeys, cachedDecisionsByAccountID)
-	}
-	// Worker role: exact batch (postgres) or direct batch (sqlite).
 	var missingDecisions []Decision
 	var err error
-	if s.modes.PostgresDatabase {
-		missingDecisions, err = s.CheckAuthorizationQuotaBatchByIDsExactAsync(ctx, groupAccess.GroupAuthorizationID, toAccountRefs(missingAccounts), now)
-	} else {
-		missingDecisions, err = s.CheckAuthorizationQuotaBatchByIDs(ctx, groupAccess.GroupAuthorizationID, toAccountRefs(missingAccounts), now)
-	}
+	missingDecisions, err = s.CheckAuthorizationQuotaBatchByIDsExactAsync(ctx, groupAccess.GroupAuthorizationID, toAccountRefs(missingAccounts), now)
 	if err != nil {
 		return nil, err
 	}
@@ -401,169 +306,6 @@ func (s *AuthorizationQuotaService) CheckAuthorizationQuotaBatchAsync(ctx contex
 
 // checkBatchServerRole ports the processRole === 'server' branch of
 // checkGatewayAuthorizationQuotaBatchAsync.
-func (s *AuthorizationQuotaService) checkBatchServerRole(
-	ctx context.Context,
-	groupAccess GroupAccessMetadata,
-	accounts []AccountAuthorizationSummary,
-	accountsToCheck []AccountAuthorizationSummary,
-	missingAccounts []AccountAuthorizationSummary,
-	missingCacheKeys map[string]string,
-	cachedDecisionsByAccountID map[string]Decision,
-) (map[string]Decision, error) {
-	output := make(map[string]Decision, len(cachedDecisionsByAccountID)+len(missingCacheKeys))
-	for accountID, decision := range cachedDecisionsByAccountID {
-		output[accountID] = decision
-	}
-	if s.modes.RedisCache {
-		snapshotAvailable, err := s.snapshot.HasGatewayQuotaSnapshotAsync(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if snapshotAvailable {
-			snapshotDecisionsByCacheKey := map[string]Decision{}
-			stillMissing := make([]AccountAuthorizationSummary, 0, len(missingAccounts))
-			for _, account := range missingAccounts {
-				cacheKey, ok := missingCacheKeys[account.ID]
-				if !ok {
-					continue
-				}
-				snapshotInput := authorizationSnapshotInput{
-					groupAuthorizationID:             groupAccess.GroupAuthorizationID,
-					groupAuthorizationQuotaLimited:   groupAccess.GroupAuthorizationQuotaLimited,
-					accountAuthorizationID:           account.AccountAuthorizationID,
-					accountAuthorizationQuotaLimited: account.AccountAuthorizationQuotaLimited,
-				}
-				needsFallback, err := s.snapshotNeedsDBFallbackAsync(ctx, snapshotInput)
-				if err != nil {
-					return nil, err
-				}
-				if needsFallback {
-					stillMissing = append(stillMissing, account)
-					continue
-				}
-				decision, err := s.decisionFromSnapshotAsync(ctx, snapshotInput)
-				if err != nil {
-					return nil, err
-				}
-				snapshotDecisionsByCacheKey[cacheKey] = decision
-				if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-					return nil, err
-				}
-			}
-			for accountID, cacheKey := range missingCacheKeys {
-				if decision, ok := snapshotDecisionsByCacheKey[cacheKey]; ok {
-					output[accountID] = decision
-				}
-			}
-			missingAccounts = stillMissing
-			if len(missingAccounts) == 0 {
-				return s.fillBatchOutput(accounts, output), nil
-			}
-		}
-		batchDecisions, dbErr := s.dbServiceCheckAuthorizationQuotaBatch(ctx, groupAccess.GroupAuthorizationID, toAccountRefs(missingAccounts))
-		if dbErr == nil {
-			missingDecisionsByCacheKey := map[string]Decision{}
-			for index, account := range missingAccounts {
-				decision := AllowedDecision()
-				if index < len(batchDecisions) {
-					decision = batchDecisions[index]
-				}
-				cacheKey := missingCacheKeys[account.ID]
-				missingDecisionsByCacheKey[cacheKey] = decision
-				if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-					return nil, err
-				}
-			}
-			for accountID, cacheKey := range missingCacheKeys {
-				if decision, ok := missingDecisionsByCacheKey[cacheKey]; ok {
-					output[accountID] = decision
-				} else {
-					output[accountID] = AllowedDecision()
-				}
-			}
-			return s.fillBatchOutput(accounts, output), nil
-		}
-		s.log("gateway_authorization_quota_batch_redis_exact_check_failed", map[string]any{
-			"groupAuthorizationId": groupAccess.GroupAuthorizationID,
-			"accountCount":         len(missingAccounts),
-			"error":                dbErr.Error(),
-		}, "Redis 模式授权配额批量精确补判失败，按保护策略拒绝请求")
-		for _, account := range accounts {
-			if _, ok := output[account.ID]; !ok {
-				output[account.ID] = DeniedDecision(AuthorizationQuotaExceededMessage)
-			}
-		}
-		return output, nil
-	}
-	if s.batchSnapshotNeedsDBFallback(groupAccess, missingAccounts) {
-		batchDecisions, dbErr := s.dbServiceCheckAuthorizationQuotaBatch(ctx, groupAccess.GroupAuthorizationID, toAccountRefs(missingAccounts))
-		if dbErr == nil {
-			missingDecisionsByCacheKey := map[string]Decision{}
-			for index, account := range missingAccounts {
-				decision := AllowedDecision()
-				if index < len(batchDecisions) {
-					decision = batchDecisions[index]
-				}
-				cacheKey := missingCacheKeys[account.ID]
-				missingDecisionsByCacheKey[cacheKey] = decision
-				if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-					return nil, err
-				}
-			}
-			for accountID, cacheKey := range missingCacheKeys {
-				if decision, ok := missingDecisionsByCacheKey[cacheKey]; ok {
-					output[accountID] = decision
-				} else {
-					output[accountID] = AllowedDecision()
-				}
-			}
-			return s.fillBatchOutput(accounts, output), nil
-		}
-		s.log("gateway_authorization_quota_batch_snapshot_fallback_failed", map[string]any{
-			"groupAuthorizationId": groupAccess.GroupAuthorizationID,
-			"accountCount":         len(missingAccounts),
-			"error":                dbErr.Error(),
-		}, "授权配额快照不完整且 DB service 批量补判失败，按保护策略继续使用快照判定")
-	}
-	for _, account := range missingAccounts {
-		cacheKey := missingCacheKeys[account.ID]
-		decision := s.decisionFromSnapshot(authorizationSnapshotInput{
-			groupAuthorizationID:             groupAccess.GroupAuthorizationID,
-			groupAuthorizationQuotaLimited:   groupAccess.GroupAuthorizationQuotaLimited,
-			accountAuthorizationID:           account.AccountAuthorizationID,
-			accountAuthorizationQuotaLimited: account.AccountAuthorizationQuotaLimited,
-		})
-		output[account.ID] = decision
-		if cacheKey != "" {
-			if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-				return nil, err
-			}
-		}
-	}
-	for accountID, cacheKey := range missingCacheKeys {
-		if _, ok := output[accountID]; ok {
-			continue
-		}
-		var account *AccountAuthorizationSummary
-		for index := range accountsToCheck {
-			if accountsToCheck[index].ID == accountID {
-				account = &accountsToCheck[index]
-				break
-			}
-		}
-		decision := s.decisionFromSnapshot(authorizationSnapshotInput{
-			groupAuthorizationID:             groupAccess.GroupAuthorizationID,
-			groupAuthorizationQuotaLimited:   groupAccess.GroupAuthorizationQuotaLimited,
-			accountAuthorizationID:           accountSummaryAuthorizationID(account),
-			accountAuthorizationQuotaLimited: accountSummaryQuotaLimited(account),
-		})
-		output[accountID] = decision
-		if err := s.setCacheEntryAsync(ctx, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-			return nil, err
-		}
-	}
-	return s.fillBatchOutput(accounts, output), nil
-}
 
 func accountSummaryAuthorizationID(account *AccountAuthorizationSummary) string {
 	if account == nil {
@@ -615,9 +357,6 @@ func (s *AuthorizationQuotaService) CheckAuthorizationQuotaByIDs(ctx context.Con
 
 // CheckAuthorizationQuotaBatchByIDs mirrors checkGatewayAuthorizationQuotaBatchByIds.
 func (s *AuthorizationQuotaService) CheckAuthorizationQuotaBatchByIDs(ctx context.Context, groupAuthorizationID string, accounts []AccountRef, now time.Time) ([]Decision, error) {
-	if s.modes.ServerRole {
-		return nil, errServerLocalSQLite("checkGatewayAuthorizationQuotaBatchByIds")
-	}
 	if now.IsZero() {
 		now = s.now()
 	}
@@ -693,9 +432,6 @@ func (s *AuthorizationQuotaService) CheckAuthorizationQuotaByIDsExactAsync(ctx c
 // CheckAuthorizationQuotaBatchByIDsExactAsync mirrors
 // checkGatewayAuthorizationQuotaBatchByIdsExactAsync.
 func (s *AuthorizationQuotaService) CheckAuthorizationQuotaBatchByIDsExactAsync(ctx context.Context, groupAuthorizationID string, accounts []AccountRef, now time.Time) ([]Decision, error) {
-	if !s.modes.PostgresDatabase {
-		return s.CheckAuthorizationQuotaBatchByIDs(ctx, groupAuthorizationID, accounts, now)
-	}
 	if s.modes.RedisRuntimeState && s.syncer != nil {
 		if err := s.syncer.SyncGatewayCacheInvalidations(ctx); err != nil {
 			return nil, err
@@ -1019,9 +755,6 @@ func (s *AuthorizationQuotaService) runtimeCacheKey(ctx context.Context, groupAu
 		Now:             now,
 	}, location)
 	version := int64(0)
-	if s.modes.ServerRole {
-		version = s.snapshot.AuthorizationQuotaSnapshotVersion()
-	}
 	return "runtime_authorization_quota\x00" + groupAuthorizationID + "\x00" + accountAuthorizationID + "\x00" + windowKey + "\x00" + itoa64(version), nil
 }
 
@@ -1068,15 +801,15 @@ func (s *AuthorizationQuotaService) queryAuthorizationRows(ctx context.Context, 
 		SELECT ra.id, ra.resource_owner_system_account_id, ra.grantee_system_account_id, ra.resource_type, ra.resource_id,
 			instance_accounts.id AS instance_account_id,
 			ra.effective_source_team_id, ra.limits_json
-		FROM ` + statsBusinessTable(s.modes.PostgresDatabase, "resource_authorizations") + ` ra
-		LEFT JOIN ` + statsBusinessTable(s.modes.PostgresDatabase, "accounts") + ` instance_accounts
+		FROM ` + statsBusinessTable("resource_authorizations") + ` ra
+		LEFT JOIN ` + statsBusinessTable("accounts") + ` instance_accounts
 			ON ra.resource_type = 'account'
 			AND instance_accounts.authorization_instance_authorization_id = ra.id
 			AND instance_accounts.system_account_id = ra.grantee_system_account_id
 			AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
 		WHERE ra.status = 'active'
 			AND ra.id IN (` + sqlPlaceholders(len(ids)) + `)`
-	rows, err := s.business.QueryContext(ctx, bindPlaceholders(s.modes.PostgresDatabase, query), toAnySlice(ids)...)
+	rows, err := s.business.QueryContext(ctx, bindPlaceholders(query), toAnySlice(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1112,14 +845,14 @@ func (s *AuthorizationQuotaService) loadTeamRowsByAuthorizationID(ctx context.Co
 				ra.grantee_system_account_id AS authorization_grantee_system_account_id,
 				instance_accounts.id AS authorization_instance_account_id,
 				grant_rows.resource_type, grant_rows.resource_id, grant_rows.limits_json
-			FROM ` + statsBusinessTable(s.modes.PostgresDatabase, "resource_authorizations") + ` ra
-			INNER JOIN ` + statsBusinessTable(s.modes.PostgresDatabase, "resource_authorization_grants") + ` grant_rows
+			FROM ` + statsBusinessTable("resource_authorizations") + ` ra
+			INNER JOIN ` + statsBusinessTable("resource_authorization_grants") + ` grant_rows
 				ON grant_rows.resource_type = ra.resource_type
 				AND grant_rows.resource_id = ra.resource_id
 				AND grant_rows.grantee_type = 'team'
 				AND grant_rows.grantee_team_id = ra.effective_source_team_id
 				AND grant_rows.status = 'active'
-			LEFT JOIN ` + statsBusinessTable(s.modes.PostgresDatabase, "accounts") + ` instance_accounts
+			LEFT JOIN ` + statsBusinessTable("accounts") + ` instance_accounts
 				ON ra.resource_type = 'account'
 				AND instance_accounts.authorization_instance_authorization_id = ra.id
 				AND instance_accounts.system_account_id = ra.grantee_system_account_id
@@ -1127,7 +860,7 @@ func (s *AuthorizationQuotaService) loadTeamRowsByAuthorizationID(ctx context.Co
 			WHERE ra.status = 'active'
 				AND ra.effective_source_team_id IS NOT NULL
 				AND ra.id IN (` + sqlPlaceholders(len(chunk)) + `)`
-		rows, err := s.business.QueryContext(ctx, bindPlaceholders(s.modes.PostgresDatabase, query), toAnySlice(chunk)...)
+		rows, err := s.business.QueryContext(ctx, bindPlaceholders(query), toAnySlice(chunk)...)
 		if err != nil {
 			return nil, err
 		}
@@ -1244,20 +977,6 @@ func toAnySlice(values []string) []any {
 		args[i] = value
 	}
 	return args
-}
-
-func (s *AuthorizationQuotaService) dbServiceCheckAuthorizationQuota(ctx context.Context, groupAuthorizationID, accountAuthorizationID string) (Decision, error) {
-	if s.dbService == nil {
-		return Decision{}, errors.New("db service client is not configured")
-	}
-	return s.dbService.CheckAuthorizationQuota(ctx, groupAuthorizationID, accountAuthorizationID)
-}
-
-func (s *AuthorizationQuotaService) dbServiceCheckAuthorizationQuotaBatch(ctx context.Context, groupAuthorizationID string, accounts []AccountRef) ([]Decision, error) {
-	if s.dbService == nil {
-		return nil, errors.New("db service client is not configured")
-	}
-	return s.dbService.CheckAuthorizationQuotaBatch(ctx, groupAuthorizationID, accounts)
 }
 
 // sharedGet mirrors getAuthorizationQuotaSharedCacheEntry (redis only).

@@ -33,7 +33,7 @@ func newChatImageDownloadProxy(db *sql.DB, postgres bool, secret string, urlSecu
 	// 单例 guard（transport_urlpolicy.go 同一装配方式）：guard 实例身份参与
 	// SharedClient 池键，按工厂复用同一实例避免按账户碎片化传输池。
 	guard := upstreamhttp.NewDialGuard(urlSecurity, nil, nil)
-	bind := func(query string) string { return accountscore.SQLBind(postgres, query) }
+	bind := func(query string) string { return accountscore.SQLBind(query) }
 	table := func(name string) string {
 		if postgres {
 			return "juhe_business." + name

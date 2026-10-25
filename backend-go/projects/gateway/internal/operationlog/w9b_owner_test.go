@@ -9,7 +9,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,29 +119,6 @@ func TestW9BRunOwnerLostWithoutError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// legacy lease renewer fake 臂
-// ---------------------------------------------------------------------------
-
-type w9bRenewFailingStore struct{ w9bFakeStore }
-
-func (s *w9bRenewFailingStore) RenewOwnerLease(context.Context, OwnerLease, time.Duration) (bool, error) {
-	return false, w9bErrBoom
-}
-
-func TestW9BLegacyLeaseRenewerSurfacesRenewFailure(t *testing.T) {
-	store := &w9bRenewFailingStore{}
-	renewer := startLegacyLeaseRenewer(context.Background(), store, OwnerLease{OwnerID: "w9b", FenceToken: 1}, 45*time.Millisecond)
-	time.Sleep(60 * time.Millisecond) // 至少经历一次续租 tick（interval=15ms）。
-	err := renewer.Stop()
-	if !errors.Is(err, w9bErrBoom) {
-		t.Fatalf("续租失败必须进入 Err 并由 Stop 返回：%v", err)
-	}
-	if renewer.Err() == nil {
-		t.Fatal("Err 必须保留失败原因")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 计数/主键/扫描错误臂
 // ---------------------------------------------------------------------------
 
@@ -233,111 +209,6 @@ func TestW9BScanLegacyOperationLogArms(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// MigrateLegacySQLite 源库校验失败臂
-// ---------------------------------------------------------------------------
-
-func TestW9BMigrateLegacySQLiteSourceGuards(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	target := filepath.Join(root, "target.sqlite3")
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	cfg := Config{Mode: ModeSQLite, DatabasePath: target, BusinessSettingsPath: business, InstanceID: "w9b-mig"}
-
-	// 缺少源路径。
-	if _, err := MigrateLegacySQLite(ctx, cfg, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true}); err == nil || !strings.Contains(err.Error(), "--operation-log-source-db") {
-		t.Fatalf("缺源路径=%v", err)
-	}
-	// 源不是合法 SQLite 文件 → Ping 失败。
-	garbage := filepath.Join(root, "garbage.sqlite3")
-	if err := os.WriteFile(garbage, []byte("this is not a sqlite database at all"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := MigrateLegacySQLite(ctx, cfg, LegacyMigrationOptions{SourceDatabasePath: garbage, NodeStopped: true, GoStopped: true, BackupConfirmed: true}); err == nil || !strings.Contains(err.Error(), "连接旧 Node 操作日志 SQLite 源失败") {
-		t.Fatalf("垃圾源=%v", err)
-	}
-	// 源缺必需表 → schema 校验失败。
-	empty := filepath.Join(root, "empty.sqlite3")
-	emptyDB, err := sql.Open("sqlite", empty)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := emptyDB.Exec(`CREATE TABLE unrelated (id text)`); err != nil {
-		t.Fatal(err)
-	}
-	_ = emptyDB.Close()
-	if _, err := MigrateLegacySQLite(ctx, cfg, LegacyMigrationOptions{SourceDatabasePath: empty, NodeStopped: true, GoStopped: true, BackupConfirmed: true}); err == nil || !strings.Contains(err.Error(), "缺少必需表") {
-		t.Fatalf("缺表源=%v", err)
-	}
-	// 目标 lease 被占用 → 迁移拒绝。
-	legacyPath := filepath.Join(root, "legacy.sqlite3")
-	createLegacyNodeOperationLogSQLite(t, legacyPath)
-	holder, err := OpenStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer holder.Close()
-	if err := holder.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, err := holder.AcquireOwnerLease(ctx, "w9b-holder", time.Minute); err != nil || !ok {
-		t.Fatalf("占租约：ok=%v err=%v", ok, err)
-	}
-	if _, err := MigrateLegacySQLite(ctx, cfg, LegacyMigrationOptions{SourceDatabasePath: legacyPath, NodeStopped: true, GoStopped: true, BackupConfirmed: true}); err == nil || !strings.Contains(err.Error(), "owner lease") {
-		t.Fatalf("lease 被占=%v", err)
-	}
-	// 目标路径是垃圾文件 → OpenStore 失败。
-	brokenTarget := filepath.Join(root, "broken-target.sqlite3")
-	if err := os.WriteFile(brokenTarget, []byte("garbage not sqlite"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	brokenCfg := cfg
-	brokenCfg.DatabasePath = brokenTarget
-	if _, err := MigrateLegacySQLite(ctx, brokenCfg, LegacyMigrationOptions{SourceDatabasePath: legacyPath, NodeStopped: true, GoStopped: true, BackupConfirmed: true}); err == nil || !strings.Contains(err.Error(), "打开 F4 SQLite 目标失败") {
-		t.Fatalf("坏目标=%v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// verifyLegacySQLiteReadability / verifyLegacySQLiteSamples
-// ---------------------------------------------------------------------------
-
-func TestW9BVerifyLegacyReadabilityArms(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	store, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: filepath.Join(root, "op.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	// 空库 + expected>0 → 报空。
-	if err := verifyLegacySQLiteReadability(ctx, store, 5); err == nil || !strings.Contains(err.Error(), "列表为空") {
-		t.Fatalf("空列表=%v", err)
-	}
-	// 空库 + expected=0 → 通过。
-	if err := verifyLegacySQLiteReadability(ctx, store, 0); err != nil {
-		t.Fatalf("空库零期望=%v", err)
-	}
-	// List 失败（store 已关闭）。
-	closable, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: filepath.Join(root, "op2.sqlite3"), BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := closable.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_ = closable.Close()
-	if err := verifyLegacySQLiteReadability(ctx, closable, 0); err == nil || !strings.Contains(err.Error(), "可读性校验失败") {
-		t.Fatalf("List 失败=%v", err)
-	}
-}
-
 // w9bSeedLegacyPair 构造 source/target 两库，各含一条指定的操作日志行。
 func w9bSeedLegacyPair(t *testing.T, root, summary string) (source, target *sql.DB) {
 	t.Helper()
@@ -373,69 +244,6 @@ INSERT INTO operation_log_viewers VALUES ('legacy-1','viewer','resource_owner','
 		}
 	}
 	return source, target
-}
-
-func TestW9BVerifyLegacySamplesArms(t *testing.T) {
-	ctx := context.Background()
-	// 一致 → 通过。
-	matchingRoot := t.TempDir()
-	source, target := w9bSeedLegacyPair(t, matchingRoot, "一致的摘要")
-	if err := verifyLegacySQLiteSamples(ctx, source, target); err != nil {
-		t.Fatalf("一致抽样=%v", err)
-	}
-	// target 摘要被改 → 失败。
-	tamperedRoot := t.TempDir()
-	tSource, tTarget := w9bSeedLegacyPair(t, tamperedRoot, "一致的摘要")
-	if _, err := tTarget.Exec(`UPDATE operation_logs SET summary='被篡改的摘要' WHERE id='legacy-1'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tTarget.Exec(`DELETE FROM operation_log_summary_search_terms`); err != nil {
-		t.Fatal(err)
-	}
-	for _, term := range searchTerms("被篡改的摘要") {
-		if _, err := tTarget.Exec(`INSERT INTO operation_log_summary_search_terms VALUES ('legacy-1',?,'2026-09-01T00:00:00.000000000Z')`, term); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := verifyLegacySQLiteSamples(ctx, tSource, tTarget); err == nil || !strings.Contains(err.Error(), "校验失败") {
-		t.Fatalf("篡改抽样=%v", err)
-	}
-	// target viewer 被删 → 失败。
-	viewerRoot := t.TempDir()
-	vSource, vTarget := w9bSeedLegacyPair(t, viewerRoot, "一致的摘要")
-	if _, err := vTarget.Exec(`DELETE FROM operation_log_viewers`); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyLegacySQLiteSamples(ctx, vSource, vTarget); err == nil || !strings.Contains(err.Error(), "target 或 viewer") {
-		t.Fatalf("viewer 缺失=%v", err)
-	}
-	// target target 行被改 → 失败。
-	targetRowRoot := t.TempDir()
-	rSource, rTarget := w9bSeedLegacyPair(t, targetRowRoot, "一致的摘要")
-	if _, err := rTarget.Exec(`UPDATE operation_log_targets SET target_name='改名' WHERE id='legacy-target'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyLegacySQLiteSamples(ctx, rSource, rTarget); err == nil || !strings.Contains(err.Error(), "target 或 viewer") {
-		t.Fatalf("target 行改动=%v", err)
-	}
-	// 空源 → count==0 返回 nil（err 为 nil 时的约定）。
-	emptyRoot := t.TempDir()
-	eSource, eTarget := w9bSeedLegacyPair(t, emptyRoot, "占位")
-	if _, err := eSource.Exec(`DELETE FROM operation_logs`); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyLegacySQLiteSamples(ctx, eSource, eTarget); err != nil {
-		t.Fatalf("空源=%v", err)
-	}
-	// 源行 created_at 非法 → 抽样失败。
-	badTimeRoot := t.TempDir()
-	bSource, bTarget := w9bSeedLegacyPair(t, badTimeRoot, "一致的摘要")
-	if _, err := bSource.Exec(`UPDATE operation_logs SET created_at='nope'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyLegacySQLiteSamples(ctx, bSource, bTarget); err == nil {
-		t.Fatal("坏时间源必须失败")
-	}
 }
 
 // TestW9BSearchTermsBoundaryArms 覆盖 searchTerms 的长度/上限分支。
@@ -514,15 +322,10 @@ func TestW9BListInvalidTimes(t *testing.T) {
 // TestW9BRowsFallbackErrors 覆盖 accountNames 的查询/扫描/迭代错误。
 func TestW9BAccountNamesErrorArms(t *testing.T) {
 	ctx := context.Background()
-	// SQLite 查询失败。
+	// 查询失败透传。
 	store := &sqlStore{db: w9bOpen(t, &w9bScript{})}
 	if _, err := store.accountNames(ctx, []string{"a"}); err == nil || !strings.Contains(err.Error(), "read F4 system account names") {
 		t.Fatalf("查询失败=%v", err)
-	}
-	// PG 查询失败。
-	pgStore := &sqlStore{db: w9bOpen(t, &w9bScript{}), mode: ModePostgres}
-	if _, err := pgStore.accountNames(ctx, []string{"a"}); err == nil {
-		t.Fatal("PG 查询失败必须透传")
 	}
 	// 空列表直接返回。
 	empty, err := store.accountNames(ctx, nil)
@@ -547,7 +350,7 @@ func TestW9BDetailErrorArms(t *testing.T) {
 	// full 检查失败。
 	fullCheckErr := &w9bScript{steps: []w9bStep{
 		{matcher: []string{"SELECT ol.operation_key"}, cols: []string{"operation_key", "resource_type", "resource_id", "resource_name", "visibility_scope", "detail_level"}, rows: [][]driver.Value{{"key", "account", "acc", "Alpha", "targeted", "full"}}},
-		{matcher: []string{"SELECT EXISTS(SELECT 1 FROM operation_log_viewers"}, rowsErr: w9bErrBoom},
+		{matcher: []string{"FROM juhe_dataset.operation_log_viewers"}, rowsErr: w9bErrBoom},
 	}}
 	if _, _, err := (&sqlStore{db: w9bOpen(t, fullCheckErr)}).Detail(ctx, "id", "viewer"); err == nil {
 		t.Fatal("full 检查失败必须透传")
@@ -555,7 +358,7 @@ func TestW9BDetailErrorArms(t *testing.T) {
 	// summary 级 viewer → 空骨架。
 	summaryViewer := &w9bScript{steps: []w9bStep{
 		{matcher: []string{"SELECT ol.operation_key"}, cols: []string{"operation_key", "resource_type", "resource_id", "resource_name", "visibility_scope", "detail_level"}, rows: [][]driver.Value{{"key", "account", "acc", "Alpha", "targeted", "summary"}}},
-		{matcher: []string{"SELECT EXISTS(SELECT 1 FROM operation_log_viewers"}, rows: [][]driver.Value{{false}}},
+		{matcher: []string{"FROM juhe_dataset.operation_log_viewers"}, rows: [][]driver.Value{{false}}},
 	}}
 	supplement, found, err := (&sqlStore{db: w9bOpen(t, summaryViewer)}).Detail(ctx, "id", "viewer")
 	if err != nil || !found || supplement.Changes == nil || supplement.Targets == nil {
@@ -564,7 +367,7 @@ func TestW9BDetailErrorArms(t *testing.T) {
 	// changes 查询失败。
 	changesErr := &w9bScript{steps: []w9bStep{
 		{matcher: []string{"SELECT ol.operation_key"}, cols: []string{"operation_key", "resource_type", "resource_id", "resource_name", "visibility_scope", "detail_level"}, rows: [][]driver.Value{{"key", "account", "acc", "Alpha", "targeted", "full"}}},
-		{matcher: []string{"SELECT EXISTS(SELECT 1 FROM operation_log_viewers"}, rows: [][]driver.Value{{true}}},
+		{matcher: []string{"FROM juhe_dataset.operation_log_viewers"}, rows: [][]driver.Value{{true}}},
 		{matcher: []string{"SELECT changes_json,COALESCE(method"}, rowsErr: w9bErrBoom},
 	}}
 	if _, _, err := (&sqlStore{db: w9bOpen(t, changesErr)}).Detail(ctx, "id", "viewer"); err == nil {
@@ -573,7 +376,7 @@ func TestW9BDetailErrorArms(t *testing.T) {
 	// targets 查询失败。
 	targetsErr := &w9bScript{steps: []w9bStep{
 		{matcher: []string{"SELECT ol.operation_key"}, cols: []string{"operation_key", "resource_type", "resource_id", "resource_name", "visibility_scope", "detail_level"}, rows: [][]driver.Value{{"key", "account", "acc", "Alpha", "targeted", "full"}}},
-		{matcher: []string{"SELECT EXISTS(SELECT 1 FROM operation_log_viewers"}, rows: [][]driver.Value{{true}}},
+		{matcher: []string{"FROM juhe_dataset.operation_log_viewers"}, rows: [][]driver.Value{{true}}},
 		{matcher: []string{"SELECT changes_json,COALESCE(method"}, rows: [][]driver.Value{{"[]", "PATCH", "/x", "1.2.3.4"}}},
 		{matcher: []string{"SELECT id,target_type,COALESCE(target_id"}, rowsErr: w9bErrBoom},
 	}}

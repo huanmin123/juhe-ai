@@ -1,72 +1,13 @@
 package modelcheckowner
 
-// w9e 覆盖率战役：补 business_schema 漂移检测臂与 PG 辅助纯函数、
-// business_source 的凭据类型/来源校验纯分支。基于既有 SQLite fixture。
+// w9e 覆盖率战役：business_schema PG 辅助纯函数与 business_source 凭据
+// 纯分支（原 SQLite 漂移臂随 CheckBusinessSQLiteSchema 退役，D17）。
 
 import (
-	"context"
-	"strings"
 	"testing"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
-
-func TestW9ESchemaFixtureMismatchArms(t *testing.T) {
-	ctx := context.Background()
-
-	// 缺表。
-	db := newBusinessSQLiteSchemaFixture(t, "", "")
-	defer db.Close()
-	tables := make([]string, 0, len(contracts.BusinessSQLiteSchema))
-	for table := range contracts.BusinessSQLiteSchema {
-		tables = append(tables, table)
-	}
-	first := tables[0]
-	if _, err := db.Exec("DROP TABLE " + quoteSQLiteIdentifier(first)); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckBusinessSQLiteSchema(ctx, db); err == nil || !strings.Contains(err.Error(), first) {
-		t.Fatalf("缺表应失败: %v", err)
-	}
-
-	// 缺索引。
-	db2 := newBusinessSQLiteSchemaFixture(t, "", "")
-	defer db2.Close()
-	var indexName string
-	for _, spec := range contracts.BusinessSQLiteSchema {
-		if len(spec.IndexDefinitions) == 0 {
-			continue
-		}
-		indexName = spec.IndexDefinitions[0].Name
-		break
-	}
-	if indexName != "" {
-		if _, err := db2.Exec("DROP INDEX " + quoteSQLiteIdentifier(indexName)); err != nil {
-			t.Fatal(err)
-		}
-		if err := CheckBusinessSQLiteSchema(ctx, db2); err == nil {
-			t.Fatal("缺索引应失败")
-		}
-	}
-
-	// 缺列。
-	db3 := newBusinessSQLiteSchemaFixture(t, "", "")
-	defer db3.Close()
-	var columnName string
-	for table, spec := range contracts.BusinessSQLiteSchema {
-		_ = table
-		columnName = spec.Columns[len(spec.Columns)-1]
-		break
-	}
-	if columnName != "" {
-		if _, err := db3.Exec("ALTER TABLE " + quoteSQLiteIdentifier(first) + " DROP COLUMN " + quoteSQLiteIdentifier(columnName)); err != nil {
-			t.Skipf("SQLite 版本不支持 DROP COLUMN: %v", err)
-		}
-		if err := CheckBusinessSQLiteSchema(ctx, db3); err == nil {
-			t.Fatal("缺列应失败")
-		}
-	}
-}
 
 func TestW9EPostgresSchemaHelpers(t *testing.T) {
 	// postgresReferentialAction 全码表。

@@ -345,7 +345,6 @@ func chainCatalogCodeArgs(codes []string) []any {
 	return args
 }
 
-
 // catalogEndpointModeLegacyProjection 是 models.supported_endpoint_modes_json
 // 元素到旧目录行 (mode, supportedApiProtocols) 投影的读侧逆映射（与
 // maintenance modelSeedProtocolEndpointModes 的正向投影互为镜像；改动必须两处

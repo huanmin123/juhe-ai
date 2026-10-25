@@ -431,7 +431,6 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 		t.Fatalf("打开 F3 审计共享池失败: %v", err)
 	}
 	auditConfig := auditlog.Config{
-		Mode:                     auditlog.ModePostgres,
 		InstanceID:               "w1g2-compose",
 		PostgresURL:              tempAppURL,
 		PostgresPool:             auditPooled,
@@ -462,7 +461,6 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 
 	operationConfig := operationlog.Config{
 		Enabled:              true,
-		Mode:                 operationlog.ModePostgres,
 		InstanceID:           "w1g2-compose",
 		PostgresURL:          tempAppURL,
 		PostgresMaxOpenConns: 8,
@@ -702,7 +700,6 @@ func TestW1G2F4OperationLogLegacyPostgresMigration(t *testing.T) {
 	// 先确保 F4 PG schema 就绪（maintenance DDL 未覆盖时的自愈；幂等）。
 	fixtureStore, err := operationlog.OpenStore(operationlog.Config{
 		Enabled:              true,
-		Mode:                 operationlog.ModePostgres,
 		InstanceID:           "w1g2-f4-fixture",
 		PostgresURL:          tempAppURL,
 		PostgresMaxOpenConns: 4,

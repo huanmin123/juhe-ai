@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 )
@@ -23,9 +24,10 @@ type GatewayClientSourceKind = string
 
 // Client source kinds.
 const (
-	SourceKindOfficialSession  = "official_session"
-	SourceKindProtocolResource = "protocol_resource"
-	SourceKindIPAPIKeyFallback = "ip_api_key_fallback"
+	SourceKindOfficialSession    = "official_session"
+	SourceKindProtocolResource   = "protocol_resource"
+	SourceKindContentFingerprint = "content_fingerprint"
+	SourceKindIPAPIKeyFallback   = "ip_api_key_fallback"
 )
 
 // GatewayClientSourceStatus mirrors GatewayClientSourceStatus.
@@ -127,6 +129,27 @@ func (r *SourceIdentityResolver) ResolveGatewayClientSourceIdentity(req *gateway
 			semanticNamespace: "google.gemini.interaction",
 			stableValue:       interactionID,
 			affinityKey:       interactionID,
+		})
+		source.SessionIdentity = sessionIdentity
+		return source
+	}
+
+	// content_fingerprint 档（内容指纹会话身份设计 §3.2/§6.2）：激活条件按
+	// 阶梯口径——"无前两档、非 invalid/conflict"。generic 画像本就不适用官
+	// 方会话（profileMayUseOfficialSession 为 false，上方不调用官方
+	// resolver），codex/claude 画像仅 resolver missing 时落到此处——两种情形
+	// 都被本分支覆盖，与 adapter 侧"resolver 返回 missing"的口径不同源。
+	// stableValue 用临时指纹（首请求即可用、全会话稳定、与审计 session_id
+	// 同源）；来源阶梯不接触谱系 LRU，亲和确认档由 adapter 侧产出。锚点经
+	// 请求级记忆化取用，不重复扫描、不触发完整物化。
+	memo := req.ContentFingerprintMemoFor(input.ClientProfile, systemAccountID, apiKeyID)
+	if memo.AnchorsOK {
+		source := resolvedSource(r.Secret, sourceResolvedInput{
+			kind:              SourceKindContentFingerprint,
+			systemAccountID:   systemAccountID,
+			apiKeyID:          apiKeyID,
+			semanticNamespace: gatewaybody.ContentFingerprintNamespace,
+			stableValue:       memo.ProvisionalHex,
 		})
 		source.SessionIdentity = sessionIdentity
 		return source

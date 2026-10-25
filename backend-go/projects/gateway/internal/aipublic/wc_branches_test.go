@@ -125,16 +125,16 @@ func TestWCAccountAddProfileTypesBrokenJSON(t *testing.T) {
 	}
 }
 
-// TestWCStoresFailClosed：DB 关闭后目标解析报错（错误分支覆盖）。
+// TestWCStoresFailClosed：DB 关闭后目标解析报错（错误分支覆盖）。T65 迁 PG
+// 后以独立 pgtestkit 空闲池主动 Close 复现「池已关闭」语义。
 func TestWCStoresFailClosed(t *testing.T) {
-	env := newAIPublicEnv(t)
-	env.seedTargetUser("user_x", "xuser", "active")
-	accountsStore, err := authsys.NewAccountStore(env.db, modelcheckauth.SQLite, nil)
+	closed := newAIPublicPGDatabase(t)
+	accountsStore, err := authsys.NewAccountStore(closed, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deps := &Deps{DB: env.db, PGDialect: false, Now: time.Now, SystemAccounts: accountsStore}
-	if err := env.db.Close(); err != nil {
+	deps := &Deps{DB: closed, PGDialect: true, Now: time.Now, SystemAccounts: accountsStore}
+	if err := closed.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	if _, err := deps.requirePublicTarget(t.Context(), "xuser"); err == nil {

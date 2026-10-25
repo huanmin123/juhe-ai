@@ -17,17 +17,9 @@ import (
 )
 
 var (
-	ErrOwnerGate     = errors.New("Business SQLite owner handoff gate is not satisfied")
-	ErrInvalidMode   = errors.New("session retention database mode is invalid")
+	ErrOwnerGate     = errors.New("Business owner handoff gate is not satisfied")
 	ErrInvalidSchema = errors.New("session retention PostgreSQL schema is invalid")
 	ErrInvalidExpiry = errors.New("expiredBefore must be a valid RFC3339 timestamp")
-)
-
-type Mode string
-
-const (
-	SQLite   Mode = "sqlite"
-	Postgres Mode = "postgres"
 )
 
 // OwnerGate is immutable handoff evidence. A partial handoff never permits a
@@ -57,7 +49,6 @@ type CleanupInput struct {
 
 type Store struct {
 	db     *sql.DB
-	mode   Mode
 	schema string
 	gate   OwnerGate
 	now    func() time.Time
@@ -65,23 +56,18 @@ type Store struct {
 
 var postgresIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func New(db *sql.DB, mode Mode, schema string, gate OwnerGate) (*Store, error) {
+func New(db *sql.DB, schema string, gate OwnerGate) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("session retention database is required")
 	}
-	if mode != SQLite && mode != Postgres {
-		return nil, ErrInvalidMode
-	}
 	schema = strings.TrimSpace(schema)
-	if mode == Postgres {
-		if schema == "" {
-			schema = "juhe_business"
-		}
-		if !postgresIdentifier.MatchString(schema) {
-			return nil, ErrInvalidSchema
-		}
+	if schema == "" {
+		schema = "juhe_business"
 	}
-	return &Store{db: db, mode: mode, schema: schema, gate: gate, now: time.Now}, nil
+	if !postgresIdentifier.MatchString(schema) {
+		return nil, ErrInvalidSchema
+	}
+	return &Store{db: db, schema: schema, gate: gate, now: time.Now}, nil
 }
 
 func (s *Store) requireOwner() error {
@@ -177,23 +163,14 @@ func (s *Store) expiry(raw string) (string, error) {
 const nodeTimeLayout = "2006-01-02T15:04:05.000Z"
 
 func (s *Store) table() string {
-	if s.mode == Postgres {
-		return s.schema + ".system_sessions"
-	}
-	return "system_sessions"
+	return s.schema + ".system_sessions"
 }
 
 func (s *Store) deleteSQL() string {
-	if s.mode == Postgres {
-		return "DELETE FROM " + s.table() + " WHERE ctid IN (SELECT ctid FROM " + s.table() + " WHERE expires_at < ? ORDER BY expires_at ASC, ctid ASC LIMIT ?)"
-	}
-	return "DELETE FROM system_sessions WHERE rowid IN (SELECT rowid FROM system_sessions WHERE expires_at < ? ORDER BY expires_at ASC, rowid ASC LIMIT ?)"
+	return "DELETE FROM " + s.table() + " WHERE ctid IN (SELECT ctid FROM " + s.table() + " WHERE expires_at < ? ORDER BY expires_at ASC, ctid ASC LIMIT ?)"
 }
 
 func (s *Store) bind(query string) string {
-	if s.mode != Postgres {
-		return query
-	}
 	var b strings.Builder
 	position := 1
 	for _, r := range query {

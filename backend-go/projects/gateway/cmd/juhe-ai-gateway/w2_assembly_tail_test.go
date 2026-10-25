@@ -214,7 +214,6 @@ package main
 //     对应平台真实可达，非死代码。
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -224,9 +223,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -235,16 +231,13 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
@@ -953,253 +946,3 @@ func TestW2CComposeWakeRecoverableWaiterOnLeaseRelease(t *testing.T) {
 // ---------------------------------------------------------------------------
 // main.go 引导失败臂（369/388/408/442/514/620）——插桩二进制场景
 // ---------------------------------------------------------------------------
-
-// w2cBootRoot 汇总一次引导场景的全部本地 fixture（SQLite/文件，全部落在
-// t.TempDir，不触碰共享 dev PG/Redis）。
-type w2cBootRoot struct {
-	root             string
-	businessPath     string
-	auditPath        string
-	operationPath    string
-	businessEvidence string
-	healthAddress    string
-	mainAddress      string
-}
-
-func w2cNewBootRoot(t *testing.T, epoch string) *w2cBootRoot {
-	t.Helper()
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite")
-	db, err := bootstrap.OpenSQLiteFile(businessPath)
-	if err != nil {
-		t.Fatalf("open business: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if _, err := bootstrap.EnsureSQLiteSchema(ctx, bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		_ = db.Close()
-		t.Fatalf("ensure business: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(ctx, db, bootstrap.SeedOptions{Now: time.Now, Secret: "w2c-boot-secret"}); err != nil {
-		_ = db.Close()
-		t.Fatalf("seed business: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close business: %v", err)
-	}
-	for _, dir := range []string{"codex-shards", "audit-blobs", "audit-hot", "usage-spool", "logs", "business-evidence"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
-			t.Fatalf("create %s: %v", dir, err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(root, "business-settings.sqlite"), nil, 0o644); err != nil {
-		t.Fatalf("write business settings file: %v", err)
-	}
-	evidence := w1bWriteCutoverEvidence(t, filepath.Join(root, "business-evidence"), epoch)
-	return &w2cBootRoot{
-		root:             root,
-		businessPath:     businessPath,
-		auditPath:        filepath.Join(root, "audit.sqlite"),
-		operationPath:    filepath.Join(root, "operation.sqlite"),
-		businessEvidence: evidence,
-		healthAddress:    fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t)),
-		mainAddress:      fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t)),
-	}
-}
-
-// w2cBootEnv 组装 owner 引导基础 env（standalone + memory 驱动，无 J3b）。
-func w2cBootEnv(t *testing.T, coverageDir string, boot *w2cBootRoot, extra ...string) []string {
-	t.Helper()
-	pairs := []string{
-		"JUHE_AI_RUNTIME_MODE=standalone",
-		"JUHE_AI_DATABASE_DRIVER=sqlite",
-		"JUHE_AI_CACHE_DRIVER=memory",
-		"JUHE_AI_RUNTIME_STATE_DRIVER=memory",
-		"JUHE_AI_SECRET=w2c-boot-secret",
-		"JUHE_AI_HOST=127.0.0.1",
-		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=" + boot.healthAddress,
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
-		"JUHE_AI_AUTH_CAPTCHA_DISABLED=true",
-		"JUHE_AI_DATABASE_PATH=" + boot.businessPath,
-		"JUHE_AI_CHAT_DATABASE_PATH=" + filepath.Join(boot.root, "chat.sqlite"),
-		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(boot.root, "dataset.sqlite"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(boot.root, "usage-catalog.sqlite"),
-		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(boot.root, "stats.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(boot.root, "runtime-log.sqlite"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(boot.root, "codex-shards"),
-		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(boot.root, "usage-shards"),
-		"JUHE_AI_BUSINESS_OWNER=gateway",
-		"JUHE_AI_BUSINESS_DATABASE_PATH=" + boot.businessPath,
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH=epoch-w2c",
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH=" + boot.businessEvidence,
-		"JUHE_AI_AUDIT_LOG_STORE=sqlite",
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH=" + boot.auditPath,
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=" + filepath.Join(boot.root, "audit-blobs"),
-		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=" + filepath.Join(boot.root, "audit-hot"),
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH=" + filepath.Join(boot.root, "business-settings.sqlite"),
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w2c-boot",
-		"JUHE_AI_OPERATION_LOG_STORE=sqlite",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH=" + boot.operationPath,
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH=" + filepath.Join(boot.root, "business-settings.sqlite"),
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w2c-boot",
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(boot.root, "usage-spool"),
-		"JUHE_AI_LOG_DIR=" + filepath.Join(boot.root, "logs"),
-	}
-	return w1bScenarioEnv(t, coverageDir, append(pairs, extra...)...)
-}
-
-// w2cSabotageLeaseInsert 在已建好 schema 的 F3/F4 SQLite 租约表上挂一个
-// BEFORE INSERT 触发器：EnsureSchema 幂等（触发器保留），下一次租约 INSERT
-// 必然报错——把 main 的 lease keeperErr 臂从“需要并发持锁”变成确定性触发。
-func w2cSabotageLeaseInsert(t *testing.T, path, table string) {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open %s: %v", table, err)
-	}
-	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(fmt.Sprintf(`CREATE TRIGGER w2c_deny_%s_lease BEFORE INSERT ON %s BEGIN SELECT RAISE(ABORT, 'w2c lease insert denied'); END`, table, table)); err != nil {
-		t.Fatalf("create trigger on %s: %v", table, err)
-	}
-}
-
-// w2cPrepareAuditStore / w2cPrepareOperationStore 预建 F3/F4 SQLite schema
-// （boot 时的 EnsureSchema 幂等无副作用）。
-func w2cPrepareAuditStore(t *testing.T, path, root string) {
-	t.Helper()
-	config := auditlog.Config{
-		Mode:                 auditlog.ModeSQLite,
-		InstanceID:           "w2c-boot",
-		AuditDatabasePath:    path,
-		PayloadBlobDirectory: filepath.Join(root, "audit-blobs"),
-		HotSearchDirectory:   filepath.Join(root, "audit-hot"),
-	}
-	store, err := auditlog.OpenStore(config)
-	if err != nil {
-		t.Fatalf("open audit store: %v", err)
-	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		_ = store.Close()
-		t.Fatalf("ensure audit schema: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("close audit store: %v", err)
-	}
-}
-
-func w2cPrepareOperationStore(t *testing.T, path, root string) {
-	t.Helper()
-	config := operationlog.Config{
-		Enabled:              true,
-		Mode:                 operationlog.ModeSQLite,
-		InstanceID:           "w2c-boot",
-		DatabasePath:         path,
-		BusinessSettingsPath: filepath.Join(root, "business-settings.sqlite"),
-		OwnerLease:           30 * time.Second,
-	}
-	store, err := operationlog.OpenStore(config)
-	if err != nil {
-		t.Fatalf("open operation store: %v", err)
-	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		_ = store.Close()
-		t.Fatalf("ensure operation schema: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("close operation store: %v", err)
-	}
-}
-
-func TestW2CMainBootFailFastArms(t *testing.T) {
-	if testing.Short() {
-		t.Skip("short 模式跳过插桩二进制场景")
-	}
-	w1bBuildCoverBinary(t)
-
-	t.Run("F3审计租约keeperErr388", func(t *testing.T) {
-		boot := w2cNewBootRoot(t, "epoch-w2c")
-		w2cPrepareAuditStore(t, boot.auditPath, boot.root)
-		w2cSabotageLeaseInsert(t, boot.auditPath, "audit_log_owner_leases")
-		coverageDir := w1bCoverageDir(t, "W2C-f3-lease-err")
-		env := w2cBootEnv(t, coverageDir, boot)
-		_, stderr, code := w1bRunScenario(t, "W2C-f3-lease-err", env)
-		w1bRequireExitCode(t, "W2C-f3-lease-err", code, 1)
-		if !strings.Contains(stderr, "acquire F3 audit owner lease") {
-			t.Fatalf("stderr 缺少 F3 租约失败文案: %s", stderr)
-		}
-	})
-
-	t.Run("F4共享租约keeperErr442", func(t *testing.T) {
-		boot := w2cNewBootRoot(t, "epoch-w2c")
-		w2cPrepareOperationStore(t, boot.operationPath, boot.root)
-		w2cSabotageLeaseInsert(t, boot.operationPath, "operation_log_owner_leases")
-		coverageDir := w1bCoverageDir(t, "W2C-f4-lease-err")
-		env := w2cBootEnv(t, coverageDir, boot)
-		_, stderr, code := w1bRunScenario(t, "W2C-f4-lease-err", env)
-		w1bRequireExitCode(t, "W2C-f4-lease-err", code, 1)
-		if !strings.Contains(stderr, "acquire F4 operation-log owner lease") {
-			t.Fatalf("stderr 缺少 F4 租约失败文案: %s", stderr)
-		}
-	})
-
-}
-
-// TestW2CMainPrivateF4LeaseErrorFailsFast covers main.go F4 组件私有租约
-// keeperErr。2026-09-21 起组合根恒开（SYSTEM_API/CHAIN 开关移除），F4 组件
-// 租约获取失败在装配段即暴露：进程 exit 1 fail-closed，stderr 携带租约
-// 获取错误（原「supervisor 记录失败并重试 + 优雅退出 exit 0」契约属于
-// 组合根关闭形态，该形态已不存在）。
-func TestW2CMainPrivateF4LeaseErrorFailsFast(t *testing.T) {
-	if testing.Short() {
-		t.Skip("short 模式跳过插桩二进制场景")
-	}
-	exe := w1bBuildCoverBinary(t)
-	boot := w2cNewBootRoot(t, "epoch-w2c")
-	w2cPrepareOperationStore(t, boot.operationPath, boot.root)
-	w2cSabotageLeaseInsert(t, boot.operationPath, "operation_log_owner_leases")
-
-	coverageDir := w1bCoverageDir(t, "W2C-f4-private-lease")
-	env := w2cBootEnv(t, coverageDir, boot)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe)
-	cmd.Env = env
-	w1bSetNewProcessGroup(cmd)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		cancel()
-		t.Fatalf("启动 F4 私有租约场景失败: %v", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case waitErr := <-done:
-		cancel()
-		exitCode := 0
-		if waitErr != nil {
-			exitErr, ok := waitErr.(*exec.ExitError)
-			if !ok {
-				t.Fatalf("等待退出失败: %v\nstdout=%s\nstderr=%s", waitErr, stdout.String(), stderr.String())
-			}
-			exitCode = exitErr.ExitCode()
-		}
-		if exitCode != 1 {
-			t.Fatalf("F4 租约破坏必须 exit 1 fail-closed，实际 %d\nstdout=%s\nstderr=%s", exitCode, stdout.String(), stderr.String())
-		}
-		if !strings.Contains(stderr.String(), "acquire F4 operation-log owner lease") {
-			t.Fatalf("stderr 必须含 F4 租约获取错误\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
-		}
-	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
-		cancel()
-		t.Fatalf("F4 租约破坏后 30s 内未快速退出\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
-	}
-	w1bAppendCoverageManifest(t, coverageDir)
-}

@@ -24,7 +24,7 @@ func w9bBlobDB(t *testing.T) *sql.DB {
 
 func w9bBlobReader(t *testing.T, db *sql.DB, blobDir string) *auditLogSQLReader {
 	t.Helper()
-	reader, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{PayloadBlobDirectory: blobDir})
+	reader, err := NewAuditLogQueryReader(db, AuditQueryDirectories{PayloadBlobDirectory: blobDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,18 +234,5 @@ func TestW9BGrepIDAndPrefixHelpers(t *testing.T) {
 	digest := sha256.Sum256([]byte("file.log\x003\x00line"))
 	if id != hex.EncodeToString(digest[:]) {
 		t.Fatalf("itemID=%q", id)
-	}
-	// prefixColumn。
-	if !strings.Contains(ReadPostgres.prefixColumn("al.path"), "COLLATE") {
-		t.Fatal("PG prefixColumn 需要 COLLATE")
-	}
-	if ReadSQLite.prefixColumn("al.path") != "al.path" {
-		t.Fatal("SQLite prefixColumn 原样")
-	}
-	if got := ReadPostgres.table("audit_logs"); got != `"juhe_dataset"."audit_logs"` {
-		t.Fatalf("PG table=%q", got)
-	}
-	if got := ReadSQLite.table("audit_logs"); got != `"audit_logs"` {
-		t.Fatalf("SQLite table=%q", got)
 	}
 }

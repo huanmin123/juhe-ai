@@ -3,7 +3,6 @@ package gatewayquota
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"testing"
 	"time"
 )
@@ -74,7 +73,7 @@ func newAuthzFixture(t *testing.T, modes Modes, clock *fakeClock) *authzFixture 
 	statsDB := newTestDB(t, "authz-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -94,7 +93,7 @@ func newAuthzFixture(t *testing.T, modes Modes, clock *fakeClock) *authzFixture 
 }
 
 func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	// Group authorization ga1: owner sysA, grantee sysB, daily limit 10.
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
@@ -133,7 +132,7 @@ func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
 	}
 
 	// Drop the group cost below the limit: everything allows.
-		if _, err := fixture.statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 9 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := fixture.statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 9 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	decisions, err = fixture.service.CheckAuthorizationQuotaBatchByIDsReadOnly(ctx, "ga1", []AccountRef{
@@ -161,7 +160,7 @@ func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
 }
 
 func TestCheckAuthorizationQuotaMissingRowsAllow(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	decisions, err := fixture.service.CheckAuthorizationQuotaBatchByIDs(context.Background(), "ghost", []AccountRef{
 		{AccountID: "u1", AccountAuthorizationID: "phantom"},
 	}, fixture.clock.Now())
@@ -174,7 +173,7 @@ func TestCheckAuthorizationQuotaMissingRowsAllow(t *testing.T) {
 }
 
 func TestTeamGrantQuota(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	// The authorization itself has no limits; the team grant does.
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "team1", "", "active")
@@ -193,7 +192,7 @@ func TestTeamGrantQuota(t *testing.T) {
 }
 
 func TestTeamGrantAccountScopeUsesInstanceAccount(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "aa1", "sysA", "sysB", "account", "acc1", "team1", "", "active")
 	seedInstanceAccount(t, fixture.business, "inst1", "sysB", "aa1", "acc1")
@@ -213,7 +212,7 @@ func TestTeamGrantAccountScopeUsesInstanceAccount(t *testing.T) {
 }
 
 func TestCheckAuthorizationQuotaRuntimeCache(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -224,7 +223,7 @@ func TestCheckAuthorizationQuotaRuntimeCache(t *testing.T) {
 		t.Fatalf("first check: (%+v, %v)", first, err)
 	}
 	// Exceed the scope; the 5s runtime cache must keep allowing.
-		if _, err := fixture.statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 50 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := fixture.statsDB.Exec(`UPDATE juhe_stats.usage_stats_daily SET success_cost_usd = 50 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	second, err := fixture.service.CheckAuthorizationQuotaByIDs(ctx, "ga1", "", fixture.clock.Now())
@@ -246,62 +245,8 @@ func TestCheckAuthorizationQuotaRuntimeCache(t *testing.T) {
 	}
 }
 
-func TestCheckAuthorizationQuotaServerRoleRefusesSQLite(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{ServerRole: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
-	_, err := fixture.service.CheckAuthorizationQuotaBatchByIDs(context.Background(), "ga1", []AccountRef{{AccountID: "u1"}}, fixture.clock.Now())
-	if err == nil || err.Error() != "server 角色禁止直接同步读取 SQLite：checkGatewayAuthorizationQuotaBatchByIds 必须通过 DB service" {
-		t.Fatalf("server role error = %v", err)
-	}
-}
-
-func TestCheckAuthorizationQuotaAsyncSnapshotBranches(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	fixture := newAuthzFixture(t, Modes{ServerRole: true}, clock)
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	account := &AccountAuthorizationSummary{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true}
-
-	// Snapshot denies the group scope -> deny without touching the DB service.
-	snapshotDoc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	snapshotDoc.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: DeniedDecision(AuthorizationQuotaExceededMessage)},
-		{ScopeType: ScopeTypeAccountAuthorization, AuthorizationID: "aa1", Decision: AllowedDecision()},
-	}
-	if err := fixture.service.snapshot.ReplaceGatewayQuotaSnapshot(snapshotDoc); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	decision, err := fixture.service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed || decision.Message != AuthorizationQuotaExceededMessage {
-		t.Fatalf("snapshot denial must win: (%+v, %v)", decision, err)
-	}
-
-	// Complete snapshot without entries -> allowed (no protective denial).
-	fixture.service.ClearCache(ctx)
-	snapshotDoc = snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	snapshotDoc.AuthorizationEntries = nil
-	if err := fixture.service.snapshot.ReplaceGatewayQuotaSnapshot(snapshotDoc); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	decision, err = fixture.service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || !decision.Allowed {
-		t.Fatalf("complete snapshot without entries must allow: (%+v, %v)", decision, err)
-	}
-
-	// Incomplete snapshot with quota-limited scopes missing -> protective deny.
-	fixture.service.ClearCache(ctx)
-	snapshotDoc = snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	snapshotDoc.AuthorizationEntries = nil
-	if err := fixture.service.snapshot.ReplaceGatewayQuotaSnapshot(snapshotDoc); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	decision, err = fixture.service.CheckAuthorizationQuotaAsync(ctx, groupAccess, account)
-	if err != nil || decision.Allowed {
-		t.Fatalf("incomplete snapshot must deny protectively: (%+v, %v)", decision, err)
-	}
-}
-
 func TestCheckAuthorizationQuotaBatchAsyncWorkerRole(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "aa1", "sysA", "sysB", "account", "acc1", "", `{"daily":{"enabled":true,"limit":5}}`, "active")
 	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -326,67 +271,6 @@ func TestCheckAuthorizationQuotaBatchAsyncWorkerRole(t *testing.T) {
 	}
 }
 
-func TestCheckAuthorizationQuotaBatchAsyncServerRoleDBService(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	fixture := newAuthzFixture(t, Modes{ServerRole: true}, clock)
-	dbService := &mockDBService{}
-	fixture.service.dbService = dbService
-	ctx := context.Background()
-
-	// The in-memory snapshot must be incomplete so the server role takes the
-	// DB-service fallback (a complete-but-empty snapshot would allow without
-	// any exact check, mirroring Node).
-	incompleteDoc := snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	incompleteDoc.AuthorizationEntries = nil
-	if err := fixture.service.snapshot.ReplaceGatewayQuotaSnapshot(incompleteDoc); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-
-	// DB-service failure denies every account missing from the cache.
-	dbService.mu.Lock()
-	dbService.checkBatchErr = errors.New("ipc down")
-	dbService.mu.Unlock()
-	output, err := fixture.service.CheckAuthorizationQuotaBatchAsync(ctx, GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}, []AccountAuthorizationSummary{
-		{ID: "u1", AccountAuthorizationID: "aa1"},
-		{ID: "u2", AccountAuthorizationID: "aa2"},
-	})
-	if err != nil {
-		t.Fatalf("BatchAsync server role: %v", err)
-	}
-	for _, accountID := range []string{"u1", "u2"} {
-		if output[accountID].Allowed || output[accountID].Message != AuthorizationQuotaExceededMessage {
-			t.Fatalf("protective batch denial for %s: %+v", accountID, output[accountID])
-		}
-	}
-	if dbService.checkBatchCalls != 1 {
-		t.Fatalf("expected one db-service batch call, got %d", dbService.checkBatchCalls)
-	}
-
-	// DB-service decisions flow through per account (index-aligned).
-	dbService.mu.Lock()
-	dbService.checkBatchErr = nil
-	dbService.checkBatchDecs = []Decision{AllowedDecision(), DeniedDecision(AuthorizationQuotaExceededMessage)}
-	dbService.mu.Unlock()
-	fixture.service.ClearCache(ctx)
-	fixture.clock.Advance(2 * time.Second) // rotate the runtime cache key version
-	output, err = fixture.service.CheckAuthorizationQuotaBatchAsync(ctx, GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}, []AccountAuthorizationSummary{
-		{ID: "u1", AccountAuthorizationID: "aa1"},
-		{ID: "u2", AccountAuthorizationID: "aa2"},
-	})
-	if err != nil {
-		t.Fatalf("BatchAsync server role success: %v", err)
-	}
-	if !output["u1"].Allowed {
-		t.Fatalf("u1 must allow: %+v", output["u1"])
-	}
-	if output["u2"].Allowed {
-		t.Fatalf("u2 must deny: %+v", output["u2"])
-	}
-	if dbService.checkBatchCalls != 2 {
-		t.Fatalf("expected second db-service batch call, got %d", dbService.checkBatchCalls)
-	}
-}
-
 // TestCheckAuthorizationQuotaInvalidLimitsJSONFailsClosed pins the Node
 // fail-closed semantics of authorization-quota.service.ts
 // (authorizationQuotaCostChecksForAuthorizationRow /
@@ -394,7 +278,7 @@ func TestCheckAuthorizationQuotaBatchAsyncServerRoleDBService(t *testing.T) {
 // on a malformed limits_json and the error propagates, so a parse failure must
 // return an error instead of being treated as "no limits" (allow).
 func TestCheckAuthorizationQuotaInvalidLimitsJSONFailsClosed(t *testing.T) {
-	fixture := newAuthzFixture(t, Modes{PostgresDatabase: true}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
+	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "ga-bad", "sysA", "sysB", "group", "g1", "", `{invalid`, "active")
 

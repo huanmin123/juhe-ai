@@ -82,11 +82,11 @@ func (s *auditLogSQLReader) ListAuditLogsByID(ctx context.Context, ids []string)
 		end := min(start+auditLogIDChunkSize, len(unique))
 		chunk := unique[start:end]
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
-		query := `SELECT ` + auditLogListSelectColumns + ` FROM ` + s.mode.table("audit_logs") + ` al ` +
+		query := `SELECT ` + auditLogListSelectColumns + ` FROM ` + logReadsTable("audit_logs") + ` al ` +
 			`WHERE al.id IN (` + placeholders + `) AND ` + s.persistedTrafficClause("al")
 		params := append([]any{}, toAnySlice(chunk)...)
 		params = append(params, auditLogNonPersistedTrafficSources[0], auditLogNonPersistedTrafficSources[1], auditLogNonPersistedTrafficSources[2])
-		rows, err := readQueryMaps(ctx, s.db, s.mode, query, params...)
+		rows, err := readQueryMaps(ctx, s.db, query, params...)
 		if err != nil {
 			return nil, err
 		}
@@ -131,13 +131,13 @@ func (s *auditLogSQLReader) GetAuditLogPayload(ctx context.Context, auditLogID s
 	if logID == "" || payloadKey == "" {
 		return nil, nil
 	}
-	query := `SELECT refs.* FROM ` + s.mode.table("audit_payload_refs") + ` refs ` +
+	query := `SELECT refs.* FROM ` + logReadsTable("audit_payload_refs") + ` refs ` +
 		`WHERE refs.audit_log_id = ? AND refs.id = ? AND EXISTS (` +
-		`SELECT 1 FROM ` + s.mode.table("audit_logs") + ` al WHERE al.id = refs.audit_log_id AND ` +
+		`SELECT 1 FROM ` + logReadsTable("audit_logs") + ` al WHERE al.id = refs.audit_log_id AND ` +
 		s.persistedTrafficClause("al") + `)`
 	params := append([]any{logID, payloadKey},
 		auditLogNonPersistedTrafficSources[0], auditLogNonPersistedTrafficSources[1], auditLogNonPersistedTrafficSources[2])
-	row, err := readQueryOneMap(ctx, s.db, s.mode, query, params...)
+	row, err := readQueryOneMap(ctx, s.db, query, params...)
 	if err != nil || row == nil {
 		return nil, err
 	}
@@ -223,8 +223,8 @@ func (s *auditLogSQLReader) readBlobWindow(ctx context.Context, blobID string, r
 	if blobID == "" {
 		return emptyAuditBlobWindow(full, requestedOffset, requestedLimit, 0, auditPayloadStatusNotSaved), nil
 	}
-	row, err := readQueryOneMap(ctx, s.db, s.mode,
-		`SELECT storage_key, compression, raw_size_bytes, compressed_size_bytes FROM `+s.mode.table("audit_payload_blobs")+` WHERE id = ?`, blobID)
+	row, err := readQueryOneMap(ctx, s.db,
+		`SELECT storage_key, compression, raw_size_bytes, compressed_size_bytes FROM `+logReadsTable("audit_payload_blobs")+` WHERE id = ?`, blobID)
 	if err != nil {
 		return auditBlobWindow{}, err
 	}

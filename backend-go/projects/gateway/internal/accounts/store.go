@@ -35,7 +35,7 @@ type (
 	// pinned to their own rows (forceSelfAccessScope).
 	AccessScope = accountscore.AccessScope
 	// queryer abstracts *sql.DB / *sql.Tx so transactional paths never touch
-	// s.db while a transaction holds the single SQLite test connection.
+	// s.db while a transaction is in flight.
 	queryer = accountscore.Queryer
 )
 
@@ -58,12 +58,11 @@ const (
 	maxAccountNameLength = 128
 )
 
-// Store is the dual-mode accounts persistence (SQLite + PostgreSQL). secret
+// Store is the accounts persistence over PostgreSQL. secret
 // is the Node runtimeConfig.secret material: accounts.credentials_encrypted
 // rows written by Node must stay decryptable.
 type Store struct {
 	db     *sql.DB
-	pg     bool
 	secret string
 	now    func() time.Time
 	newI   func(prefix string) string
@@ -96,11 +95,6 @@ type Store struct {
 	modelCatalogRefresher  ModelCatalogRefresher
 	returner               AuthorizationGrantReturner
 	trafficRuntimeMigrator TrafficRuntimeMigrator
-	// deletedGrantRevoker is the SQLite delete-arm port into the authz
-	// per-grant runtime sync domain (delete.go). Nil until
-	// SetDeletedResourceGrantRevoker wires it; a nil port (and the PG
-	// dialect) keeps the bulk revoke arm verbatim.
-	deletedGrantRevoker DeletedResourceGrantRevoker
 	// balanceSnapshotCleaner is the post-commit balance snapshot cleanup port
 	// (balance_snapshot_cleanup.go). Nil until SetBalanceSnapshotCleaner
 	// wires it; a nil port keeps PATCH cache/snapshot silent.
@@ -143,7 +137,7 @@ type Store struct {
 }
 
 // NewStore builds the store.
-func NewStore(db *sql.DB, postgres bool, secret string, now func() time.Time, newID func(string) string) (*Store, error) {
+func NewStore(db *sql.DB, secret string, now func() time.Time, newID func(string) string) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("accounts store requires a database")
 	}
@@ -156,7 +150,7 @@ func NewStore(db *sql.DB, postgres bool, secret string, now func() time.Time, ne
 	if newID == nil {
 		newID = func(prefix string) string { return newRandomID(prefix) }
 	}
-	return &Store{db: db, pg: postgres, secret: secret, now: now, newI: newID}, nil
+	return &Store{db: db, secret: secret, now: now, newI: newID}, nil
 }
 
 // newRandomID mirrors Node newId(prefix): "{prefix}_{millis}_{8 hex}".
@@ -167,11 +161,10 @@ func newRandomID(prefix string) string {
 }
 
 // AttachStatsDatabase injects the dedicated juhe_stats handle for the
-// account_usage_snapshots reads/writes. Production SQLite opens the stats
-// database as a separate file, so the bare statsTable name is unresolvable on
-// the business handle; PostgreSQL shares the business pool (juhe_stats
-// schema-qualified) and the single-file tests never need this call — both
-// keep the nil fallback on the business handle.
+// account_usage_snapshots reads/writes. PostgreSQL shares the business pool
+// (juhe_stats schema-qualified), so the nil fallback keeps stats statements
+// on the business handle; the injection point stays for deployments that
+// split the stats database onto its own pool.
 func (s *Store) AttachStatsDatabase(db *sql.DB) { s.statsDB = db }
 
 // statsQueryDB resolves the handle stats-table statements must run on: the
@@ -184,23 +177,23 @@ func (s *Store) statsQueryDB() *sql.DB {
 }
 
 func (s *Store) table(name string) string {
-	return accountscore.SQLTable(s.pg, name)
+	return accountscore.SQLTable(name)
 }
 
 // bind rewrites ? placeholders into $N for PostgreSQL.
 func (s *Store) bind(query string) string {
-	return accountscore.SQLBind(s.pg, query)
+	return accountscore.SQLBind(query)
 }
 
 // boolTrueLiteral renders the dialect TRUE literal（原 test_store.go 定义，
 // 阶段 0 逻辑下沉 accountscore，根包保留方法转发）.
 func (s *Store) boolTrueLiteral() string {
-	return accountscore.BoolTrueLiteral(s.pg)
+	return accountscore.BoolTrueLiteral()
 }
 
 // boolFalseLiteral renders the dialect FALSE literal.
 func (s *Store) boolFalseLiteral() string {
-	return accountscore.BoolFalseLiteral(s.pg)
+	return accountscore.BoolFalseLiteral()
 }
 
 func itoa(v int) string {
@@ -310,12 +303,9 @@ func (s *Store) replaceAccountNameSearchTerms(ctx context.Context, q queryer, ac
 	return nil
 }
 
-// insertIgnore adapts an INSERT statement to the SQLite INSERT OR IGNORE
-// shorthand (PostgreSQL receives an explicit ON CONFLICT clause).
+// insertIgnore appends the explicit ON CONFLICT clause to an INSERT
+// statement.
 func (s *Store) insertIgnore(statement, conflictClause string) string {
-	if !s.pg {
-		return strings.Replace(statement, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
-	}
 	return statement + conflictClause
 }
 

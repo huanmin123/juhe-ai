@@ -402,7 +402,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 			t.Fatalf("建残缺契约表失败: %v", err)
 		}
 	}
-	degradedStore, err := accounts.NewStore(minimal, false, cfg.Secret, time.Now, newCompositionID)
+	degradedStore, err := accounts.NewStore(minimal, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 		t.Fatalf("compose system api: %v", err)
 	}
 	defer composedFull.Shutdown()
-	accountStore, err := accounts.NewStore(composedFull.DB, true, composeCfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composedFull.DB, composeCfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
@@ -1093,7 +1093,7 @@ func TestW2BBalanceRefreshLoadOutcomeArms(t *testing.T) {
 
 	// 118：组合根装配在空 Secret 下必须于 NewRunner 处 fail closed（组合根
 	// 先把目录刷新端口接到 accountStore，账户 store 只需可构造）。
-	wireStore, err := accounts.NewStore(w2bOpenOutcomeFaultyPG(t, tempAppURL, w2bFaultNoRows), true, "w2b-wire-secret", time.Now, nil)
+	wireStore, err := accounts.NewStore(w2bOpenOutcomeFaultyPG(t, tempAppURL, w2bFaultNoRows), "w2b-wire-secret", time.Now, nil)
 	if err != nil {
 		t.Fatalf("构造账户 store 失败: %v", err)
 	}

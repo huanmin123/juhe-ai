@@ -209,57 +209,8 @@ func TestW11GUsageRecordPGDialectArm(t *testing.T) {
 	// juhe_usage.usage_records 空母表查询（原 SQLite 夹具上断言 500 的前提
 	// 「非 PG 存储不承载限定表」已随 PG 迁移消失，按 PG 对应行为重钉为 200）。
 	fixture := newWdFixture(t)
-	fixture.deps.PGDialect = true
 	recorder := invoke(t, fixture.deps.usageRecordsListHandler(false), http.MethodGet, "/usage-records", adminAuth(""))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("pg dialect rows = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestW11GUsageShardLocationArms(t *testing.T) {
-	// 组B：usage_record_shards 目录枚举是 SQLite 分片读臂的组成部分。
-	fixture := newWdSQLiteFixture(t)
-	fixture.deps.UsageCatalog = fixture.db
-	if _, err := fixture.db.Exec(`CREATE TABLE usage_record_shards (shard_key TEXT NOT NULL, bucket_date TEXT NOT NULL, shard_id INTEGER NOT NULL, file_path TEXT NOT NULL, status TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	seed := func(rows ...string) {
-		if _, err := fixture.db.Exec(`DELETE FROM usage_record_shards`); err != nil {
-			t.Fatal(err)
-		}
-		for _, row := range rows {
-			if _, err := fixture.db.Exec(`INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status) VALUES (` + row + `)`); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	ctx := requestCtx(t)
-	// 只有 start：startKey=endKey 起点；只有 end：endKey 兜底今天；start>end 交换；超窗钳制。
-	locations, err := fixture.deps.usageShardLocations(ctx, "2026-09-04T00:00:00.000Z", "")
-	if err != nil || len(locations) != 0 {
-		t.Fatalf("start-only = %v err=%v", locations, err)
-	}
-	locations, err = fixture.deps.usageShardLocations(ctx, "", "2026-09-04T00:00:00.000Z")
-	if err != nil || len(locations) != 0 {
-		t.Fatalf("end-only = %v err=%v", locations, err)
-	}
-	locations, err = fixture.deps.usageShardLocations(ctx, "2026-10-04T00:00:00.000Z", "2026-01-04T00:00:00.000Z")
-	if err != nil {
-		t.Fatalf("swapped err=%v", err)
-	}
-	// 无效行（空 shard_key / 非整数 shard_id）被跳过，有效行保留。
-	seed(`'w11g-shard', '2026-09-04', 1, 'w11g-path', 'active'`,
-		`'', '2026-09-04', 2, 'w11g-path-2', 'active'`,
-		`'w11g-shard-3', '2026-09-04', 2.5, 'w11g-path-3', 'active'`)
-	locations, err = fixture.deps.usageShardLocations(ctx, "2026-09-04T00:00:00.000Z", "2026-09-04T23:00:00.000Z")
-	if err != nil || len(locations) != 1 || locations[0].ShardKey != "w11g-shard" {
-		t.Fatalf("locations=%+v err=%v", locations, err)
-	}
-	// 目录查询失败。
-	if _, err := fixture.db.Exec(`DROP TABLE usage_record_shards`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fixture.deps.usageShardLocations(ctx, "2026-09-04T00:00:00.000Z", "2026-09-04T23:00:00.000Z"); err == nil {
-		t.Fatal("catalog error must propagate")
 	}
 }

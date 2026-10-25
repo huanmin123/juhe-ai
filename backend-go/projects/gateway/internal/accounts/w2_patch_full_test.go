@@ -75,7 +75,7 @@ func TestW2PatchBalanceAndProxyAndGroup(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, adminID)
 	seedImportProxy(t, env, "pp-patch", adminID, "补丁代理")
 	seedImportProxy(t, env, "pp-patch-disabled", adminID, "停用代理")
-	env.exec(t, `UPDATE proxy_profiles SET enabled = 0 WHERE id = 'pp-patch-disabled'`)
+	env.exec(t, `UPDATE proxy_profiles SET enabled = FALSE WHERE id = 'pp-patch-disabled'`)
 	// 第二个 openai 分组用于换绑。
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
 		VALUES ('grp-patch-b', ?, '补丁分组B', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)

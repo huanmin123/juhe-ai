@@ -19,7 +19,7 @@ import (
 var w9dErrBoom = errors.New("w9d scripted failure")
 
 func TestW9DPrefixedTableArm(t *testing.T) {
-	bare := &Store{mode: Postgres, schema: "juhe_business"}
+	bare := &Store{schema: "juhe_business"}
 	if got := bare.table("global_settings"); got != "juhe_business.global_settings" {
 		t.Fatalf("prefixed table=%q", got)
 	}
@@ -162,7 +162,7 @@ func w9dOpen(t *testing.T, steps []w9dStep) *Store {
 	}
 	db.SetMaxOpenConns(2)
 	t.Cleanup(func() { _ = db.Close() })
-	store, err := New(db, SQLite, "", OwnerGate{true, true, true})
+	store, err := New(db, "", OwnerGate{true, true, true})
 	if err != nil {
 		t.Fatal(err)
 	}

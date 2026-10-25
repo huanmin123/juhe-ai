@@ -20,12 +20,12 @@ import (
 var w9dErrBoom = errors.New("w9d scripted failure")
 
 func TestW9DNewRejectsNilDBAndDefaultsSchema(t *testing.T) {
-	if _, err := New(nil, SQLite, "", OwnerGate{}); err == nil || !strings.Contains(err.Error(), "database is required") {
+	if _, err := New(nil, "", OwnerGate{}); err == nil || !strings.Contains(err.Error(), "database is required") {
 		t.Fatalf("nil db err=%v", err)
 	}
 	db := openPG(t)
 	// Postgres 空 schema 时注入默认 schema。
-	store, err := New(db, Postgres, "  ", OwnerGate{})
+	store, err := New(db, "  ", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestW9DCheckContractArms(t *testing.T) {
 	}
 	// 查询失败（缺少关系）：无任何关系的隔离 PG 库。
 	bare := openBarePG(t)
-	store, err := New(bare, Postgres, "juhe_business", OwnerGate{})
+	store, err := New(bare, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestW9DCheckContractArms(t *testing.T) {
 
 func TestW9DExpiryZeroTimeRejected(t *testing.T) {
 	db := openPG(t)
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{})
+	store, err := New(db, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestW9DExpiryZeroTimeRejected(t *testing.T) {
 
 func TestW9DCleanupLimitNormalizationAndAlias(t *testing.T) {
 	db := openPG(t)
-	store, err := New(db, Postgres, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	store, err := New(db, "juhe_business", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestW9DCleanupLimitNormalizationAndAlias(t *testing.T) {
 		t.Fatalf("alias cleanup deleted=%d err=%v", deleted, err)
 	}
 	// 失败透传臂。
-	blocked, err := New(db, Postgres, "juhe_business", OwnerGate{})
+	blocked, err := New(db, "juhe_business", OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func w9dOpen(t *testing.T, steps []w9dStep) *Store {
 	}
 	db.SetMaxOpenConns(2)
 	t.Cleanup(func() { _ = db.Close() })
-	store, err := New(db, SQLite, "", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	store, err := New(db, "", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}

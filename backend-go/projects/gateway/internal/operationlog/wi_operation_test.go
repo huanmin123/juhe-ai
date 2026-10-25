@@ -7,27 +7,13 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"time"
 )
 
-// wiOpenSQLiteStore 构造已打开 schema 的 SQLite operation log store（组B：
-// SQLite-only 生产臂测试与方言 sqlite 分支继续使用，随生产臂删除批次退役）。
-func wiOpenSQLiteStore(t *testing.T, root string) Store {
-	t.Helper()
-	business := root + "/business.sqlite3"
-	createBusinessSettings(t, business, "365")
-	store, err := OpenStore(Config{Enabled: true, InstanceID: "wi-owner", Mode: ModeSQLite, DatabasePath: root + "/operation.sqlite3", BusinessSettingsPath: business})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store
-}
-
-// wiOpenPostgresStore 构造已装配的 PG operation log store（组A 测试入口：
-// pgtestkit 独立库 + 生产 OpenStore ModePostgres，业务夹具与 SQLite 版同构）。
+// wiOpenPostgresStore 构造已装配的 PG operation log store（pgtestkit 独立库 +
+// 生产 OpenStore 装配）。
 func wiOpenPostgresStore(t *testing.T) Store {
 	t.Helper()
 	store, _ := openPostgresStore(t)
@@ -200,7 +186,7 @@ func TestWIRunOwnerRetentionPasses(t *testing.T) {
 		t.Fatalf("启动 keeper=%v err=%v", ok, err)
 	}
 	defer keeper.Close()
-	cfg := Config{Mode: ModeSQLite, RetentionInterval: 15 * time.Millisecond, RetentionDays: 30, RetentionBatchSize: 100}
+	cfg := Config{RetentionInterval: 15 * time.Millisecond, RetentionDays: 30, RetentionBatchSize: 100}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
@@ -307,25 +293,21 @@ func TestWIKnownAndQuoteHelpers(t *testing.T) {
 	}
 }
 
-func TestWIPostgresCatalogOverSQLite(t *testing.T) {
-	// postgresSQLCatalog 是通用 database/sql 包装：用 SQLite 验证行为。
-	db, err := sql.Open("sqlite", "file:wi-oplog-catalog?mode=memory&cache=shared")
-	if err != nil {
+func TestWIPostgresCatalogBehavior(t *testing.T) {
+	// postgresSQLCatalog 是通用 database/sql 包装：在隔离 PG 库上验证行为。
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE TABLE probe (name text, ok boolean)`)
+		return err
+	})
+	catalog := postgresSQLCatalog{queryer: testDB.DB}
+	if _, err := testDB.DB.Exec(`INSERT INTO probe VALUES ('x', true)`); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	catalog := postgresSQLCatalog{queryer: db}
-	if _, err := db.Exec(`CREATE TABLE probe (name TEXT, ok INTEGER)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO probe VALUES ('x', 1)`); err != nil {
-		t.Fatal(err)
-	}
-	name, err := catalog.String(context.Background(), `SELECT name FROM probe WHERE ok=?`, 1)
+	name, err := catalog.String(context.Background(), `SELECT name FROM probe WHERE ok=$1`, true)
 	if err != nil || name != "x" {
 		t.Fatalf("String=%q err=%v", name, err)
 	}
-	ok, err := catalog.Bool(context.Background(), `SELECT ok FROM probe WHERE name='x'`)
+	ok, err := catalog.Bool(context.Background(), `SELECT ok FROM probe WHERE name=$1`, "x")
 	if err != nil || !ok {
 		t.Fatalf("Bool=%v err=%v", ok, err)
 	}

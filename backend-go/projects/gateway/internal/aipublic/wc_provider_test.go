@@ -30,8 +30,8 @@ func (e *aipublicEnv) seedProviderRow(code, name string, enabled bool) {
 	if enabled {
 		enabledInt = 1
 	}
-	if _, err := e.db.Exec(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, '[]', ?, ?)`, "prov_"+code, code, name, enabledInt, now, now); err != nil {
+	if _, err := e.db.Exec(fixtureBind(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, '[]', ?, ?)`), "prov_"+code, code, name, enabledInt, now, now); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -43,31 +43,22 @@ func (e *aipublicEnv) seedProviderCatalogRow(id, providerCode, model, status str
 	// 目标 schema（设计 §3）：目录并入 models 单表；写面断言按
 	// (vendor_code, upstream_model, scope, status) 身份键解析。
 	// 公开详情读面按 active + 有价 + visible 过滤（inputUsd 为 nil 表示无价）。
-	if _, err := e.db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
+	// source 按生产 seed 权威值填写（pg_seed 内置目录行恒为
+	// "openai-pricing-snapshot" 非空；生产读面把 source 扫进 string，
+	// NULL 行会 500——该缺口由本夹具对齐 seed 口径规避，见 T65 报告登记）。
+	if _, err := e.db.Exec(fixtureBind(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
 		status, supported_endpoint_modes_json, catalog_visible, input_usd_per_1m,
-		output_usd_per_1m, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'builtin', ?, '["chat_json","chat_sse","responses_json","responses_sse"]', 1, ?, ?, ?, ?)`,
+		output_usd_per_1m, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'builtin', ?, '["chat_json","chat_sse","responses_json","responses_sse"]', true, ?, ?, 'openai-pricing-snapshot', ?, ?)`),
 		id, providerCode, model, model, status, inputUsd, inputUsd, now, now); err != nil {
 		e.t.Fatal(err)
 	}
 }
 
-// seedProviderProfile 插入协议档案 + 一个启用的端点族绑定。
-func (e *aipublicEnv) seedProviderProfile(id, providerCode string) {
-	e.t.Helper()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// 目标 schema（设计 §9.3）无 provider_protocol_profiles：档案身份由 registry 派生。
-	if _, err := e.db.Exec(`INSERT INTO protocol_endpoint_families
-		(id, protocol_code, protocol_version, family_code, name, enabled, created_at, updated_at)
-		VALUES ('fam_'||?, 'openai', 'v1', 'chat_completions', 'Chat Completions', 1, ?, ?)`,
-		id, now, now); err != nil {
-		e.t.Fatal(err)
-	}
-	if _, err := e.db.Exec(`INSERT INTO provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at)
-		VALUES (?, 'chat_completions', 1, ?, ?)`, id, now, now); err != nil {
-		e.t.Fatal(err)
-	}
-}
+// seedProviderProfile 及其 provider_protocol_profile_families /
+// protocol_endpoint_families 死表插入已随 T65 载具迁移退役：目标 schema（§9.3）
+// 无档案表，basic tab 的档案与 endpointFamilies 断言全部由编译期 registry
+// 按 vendor 派生（见 TestWCProviderDetailBasic 注释），原插入无行为影响。
 
 func wcData(t *testing.T, status int, payload map[string]any, wantStatus int) map[string]any {
 	t.Helper()
@@ -93,8 +84,9 @@ func TestWCProviderList(t *testing.T) {
 	env.seedProviderRow("d-provider", "Delta", true)
 	token := wcProviderToken(t, env, wcProviderScopesList())
 
-	// 默认分页：仅 enabled，store 的 ORDER BY name ASC 为二进制序（大写在前）：
-	// "Beta" < "Delta" < "alpha"。
+	// 默认分页：仅 enabled。store 的 ORDER BY name ASC 在 PG 为实例 collation
+	// 序（大小写不敏感字典序）：alpha < Beta < Delta。SQLite 载具的码点序
+	// （大写在前）已随载具退役，T65 重钉披露。
 	status, payload, _ := env.doAuth(http.MethodGet, Prefix+"/provider/list", "", token)
 	data := wcData(t, status, payload, http.StatusOK)
 	if data["page"] != float64(1) || data["pageSize"] != float64(20) {
@@ -104,14 +96,14 @@ func TestWCProviderList(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("enabled 过滤: %v", items)
 	}
-	wantOrder := []string{"b-provider", "d-provider", "a-provider"}
+	wantOrder := []string{"a-provider", "b-provider", "d-provider"}
 	for index, item := range items {
 		if got := item.(map[string]any)["code"]; got != wantOrder[index] {
 			t.Fatalf("稳定顺序 %d: %v != %s", index, got, wantOrder[index])
 		}
 	}
 	first := items[0].(map[string]any)
-	if first["name"] != "Beta" || first["enabled"] != true {
+	if first["name"] != "alpha" || first["enabled"] != true {
 		t.Fatalf("列表项投影: %v", first)
 	}
 	if _, hasParent := first["parentCode"]; hasParent {
@@ -124,7 +116,7 @@ func TestWCProviderList(t *testing.T) {
 	if data["pageUpperBound"] != float64(2) || data["hasMore"] != true {
 		t.Fatalf("第 1 页分页: %v", data)
 	}
-	if items := data["items"].([]any); len(items) != 1 || items[0].(map[string]any)["code"] != "b-provider" {
+	if items := data["items"].([]any); len(items) != 1 || items[0].(map[string]any)["code"] != "a-provider" {
 		t.Fatalf("第 1 页条目: %v", data["items"])
 	}
 	status, payload, _ = env.doAuth(http.MethodGet, Prefix+"/provider/list?page=3&pageSize=1", "", token)
@@ -160,7 +152,6 @@ func TestWCProviderDetailBasic(t *testing.T) {
 	env := newAIPublicEnv(t)
 	env.seedProviderRow("gpt", "GPT", true)
 	env.seedProviderRow("dead", "停用", false)
-	env.seedProviderProfile("profile_gpt_openai_v1", "gpt")
 	token := wcProviderToken(t, env, wcProviderScopesList())
 
 	status, payload, _ := env.doAuth(http.MethodGet, Prefix+"/provider/detail?code=gpt&tab=basic", "", token)

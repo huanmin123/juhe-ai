@@ -279,6 +279,10 @@ type sessionIdentityServices struct {
 	Identity *gatewaysession.IdentityService
 	Affinity *gatewaysession.AffinityService
 	Secret   string
+	// ContentFingerprintLineage 是内容指纹会话身份的谱系判别器（内容指纹会话
+	// 身份设计 §4.3），门控确认档 ConversationKey 的产出；nil = 未装配（组合
+	// 测试），确认档不产出，审计临时档不受影响。
+	ContentFingerprintLineage gatewayContentFingerprintLineage
 }
 
 // composeGatewayChain assembles the /v1 chain. It fails fast naming every

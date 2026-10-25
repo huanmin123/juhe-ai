@@ -37,7 +37,7 @@ func TestDeriveConnectionProtocolContext(t *testing.T) {
 			},
 		},
 		{
-			name:        "多连接取首个（跨协议面账户）",
+			name: "多连接取首个（跨协议面账户）",
 			connections: []resolvedConnection{
 				{preset: "gemini_native_v1beta", surface: "gemini_v1beta"},
 				{preset: "gemini_openai_chat_v1beta", surface: "openai_v1"},

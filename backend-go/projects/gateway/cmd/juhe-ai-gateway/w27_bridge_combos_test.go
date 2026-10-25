@@ -132,10 +132,9 @@ func w27InstallSanitizeHook(t *testing.T, hook gatewayoauthcodex.SanitizeCodexHi
 }
 
 // w27WiredChain 组装依赖齐备的真实组合链（真实 ChatBridgeStateService /
-// CompactPreflightService / registry / 晚绑定合成摘要 dispatcher）。sqlite
-// shard store 的关闭归顶层 compose.go（composeGatewayChain 的 shutdown 不含
-// 它）；真实读写会保持文件句柄打开，测试内注册 Close（LIFO：先于 TempDir
-// RemoveAll 运行，避免 Windows 文件锁）。
+// CompactPreflightService / registry / 晚绑定合成摘要 dispatcher）。codex
+// context 行存储恒 PostgreSQL（juhe_codex_context，pgtestkit 隔离库载具），
+// 句柄与库生命周期由 w1CodexBridgeChainDeps 内注册的 t.Cleanup 收口。
 func w27WiredChain(t *testing.T) (*gatewayChain, codexPreflightAdapter) {
 	t.Helper()
 	deps := w1CodexBridgeChainDeps(t, true)
@@ -144,9 +143,6 @@ func w27WiredChain(t *testing.T) (*gatewayChain, codexPreflightAdapter) {
 		t.Fatalf("composeGatewayChain: %v", assembleErr)
 	}
 	t.Cleanup(shutdown)
-	if shards, ok := deps.CodexContextStateStore.(*gatewaycodex.SQLiteShardContextStateStore); ok {
-		t.Cleanup(func() { _ = shards.Close() })
-	}
 	adapter, ok := chain.preauth.Codex.(codexPreflightAdapter)
 	if !ok {
 		t.Fatalf("chain.preauth.Codex 类型 = %T，want codexPreflightAdapter", chain.preauth.Codex)

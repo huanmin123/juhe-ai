@@ -118,8 +118,8 @@ func TestGrokSSOToDeviceFlow(t *testing.T) {
 	// 行身份键 = vendor_code（§2.1：真实厂商 == provider_code）；xai profile pin
 	// 由 requiredProfileForProvider 在路由层校验，目标列集已无 profile 列（§9.11）。
 	var vendorCode, accountType, name string
-	if err := env.db.QueryRow(`SELECT vendor_code, type, name
-		FROM accounts WHERE id = ?`, accountID).Scan(&vendorCode, &accountType, &name); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT vendor_code, type, name
+		FROM accounts WHERE id = ?`), accountID).Scan(&vendorCode, &accountType, &name); err != nil {
 		t.Fatal(err)
 	}
 	if vendorCode != "xai" || accountType != "oauth" || !strings.HasPrefix(name, "cli-chat-proxy.grok.com-") {
@@ -305,7 +305,7 @@ func TestOAuthPermissionMatrix(t *testing.T) {
 	}
 	bobAccountID := dataMap(t, created)["id"].(string)
 	var ownerID string
-	if err := env.db.QueryRow(`SELECT system_account_id FROM accounts WHERE id = ?`, bobAccountID).Scan(&ownerID); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT system_account_id FROM accounts WHERE id = ?`), bobAccountID).Scan(&ownerID); err != nil {
 		t.Fatal(err)
 	}
 	if ownerID != bobID {

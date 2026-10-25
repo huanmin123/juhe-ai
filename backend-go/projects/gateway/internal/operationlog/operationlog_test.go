@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -119,14 +117,13 @@ func TestListRejectsInvalidAbsoluteTimesAndCanonicalizesOffsets(t *testing.T) {
 	}
 }
 
-
 func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID": "f4-config",
-		"JUHE_AI_POSTGRES_URL":              "postgres://f4-main",
-		"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "45s",
-		"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL":     "2m",
-		"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE":   "321",
+		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":          "f4-config",
+		"JUHE_AI_POSTGRES_URL":                       "postgres://f4-main",
+		"JUHE_AI_OPERATION_LOG_OWNER_LEASE":          "45s",
+		"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL":   "2m",
+		"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "321",
 	}
 	cfg, err := LoadConfig(func(key string) string { return values[key] })
 	if err != nil || cfg.OwnerLease != 45*time.Second || cfg.RetentionInterval != 2*time.Minute || cfg.RetentionBatchSize != 321 {
@@ -206,19 +203,6 @@ func TestViewerListAndSummaryDetailArePermissionBounded(t *testing.T) {
 	}
 	if _, err := store.RetentionDays(context.Background(), 365); err == nil {
 		t.Fatal("invalid business setting must not silently fall back")
-	}
-}
-
-func createBusinessSettings(t *testing.T, path, value string) {
-	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL,key TEXT NOT NULL,value_json TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(system_account_id,key)); CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT NOT NULL); INSERT INTO system_accounts VALUES ('actor','actor','Actor'),('other','other','Other'),('viewer','viewer','Viewer'),('owner','owner','Owner'),('actor-1','actor-1','Actor 1'); INSERT INTO system_settings VALUES ('sys_admin','operationLogRetentionDays', ?, '2026-08-13T00:00:00Z')`, value)
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -343,7 +327,7 @@ func TestPostgresOperationLogStoreSmoke(t *testing.T) {
 	testDB := pgtestkit.NewTestDatabase(t, prepareBusinessFixture("12"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	opened, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: testDB.DSN})
+	opened, err := OpenStore(Config{PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatalf("打开 F4 PostgreSQL store 失败: %v", err)
 	}
@@ -482,7 +466,7 @@ func TestPostgresLegacyOperationLogMigrationSmoke(t *testing.T) {
 	testDB := pgtestkit.NewTestDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	opened, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: testDB.DSN})
+	opened, err := OpenStore(Config{PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatalf("打开 F4 PostgreSQL 历史迁移 smoke store 失败: %v", err)
 	}
@@ -534,7 +518,7 @@ FROM generate_series(1,250) AS gs;`); err != nil {
 	if err == nil || !strings.Contains(err.Error(), "业务事实不一致") {
 		t.Fatalf("F4 PostgreSQL 迁移必须拒绝被篡改的首尾业务事实: %v", err)
 	}
-	result, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
+	result, err := MigrateLegacyPostgres(ctx, Config{PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
 	if err != nil {
 		t.Fatalf("F4 PostgreSQL 历史迁移失败: %v", err)
 	}
@@ -552,36 +536,9 @@ FROM generate_series(1,250) AS gs;`); err != nil {
 	if err = store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM juhe_dataset.operation_log_summary_search_terms WHERE operation_log_id='legacy-oplog'`).Scan(&rebuiltTerms); err != nil || rebuiltTerms == 0 {
 		t.Fatalf("F4 PostgreSQL 历史 search terms 未重建: count=%d err=%v", rebuiltTerms, err)
 	}
-	repeated, err := MigrateLegacyPostgres(ctx, Config{Mode: ModePostgres, PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
+	repeated, err := MigrateLegacyPostgres(ctx, Config{PostgresURL: testDB.DSN}, LegacyMigrationOptions{NodeStopped: true, GoStopped: true, BackupConfirmed: true})
 	if err != nil || !repeated.NoOp {
 		t.Fatalf("F4 PostgreSQL 历史迁移重复执行必须 no-op: result=%+v err=%v", repeated, err)
-	}
-}
-
-func TestSQLiteBusinessDatabaseMustBeDistinct(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	createBusinessSettings(t, path, "365")
-	_, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: path, BusinessSettingsPath: path})
-	if err == nil {
-		t.Fatal("F4 SQLite store must reject a shared business database")
-	}
-}
-
-func TestSQLiteStoreRejectsPhysicalAliasesAndOptionalPathsRemainOptional(t *testing.T) {
-	root := t.TempDir()
-	business := filepath.Join(root, "business.sqlite3")
-	createBusinessSettings(t, business, "365")
-	operation := filepath.Join(root, "operation.sqlite3")
-	if store, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: operation, BusinessSettingsPath: business, SQLiteIsolationPaths: []string{filepath.Join(root, "missing-usage.sqlite3")}}); err != nil {
-		t.Fatal(err)
-	} else {
-		_ = store.Close()
-	}
-	if err := os.Link(business, operation); err != nil {
-		t.Skipf("hard links unavailable: %v", err)
-	}
-	if _, err := OpenStore(Config{Mode: ModeSQLite, DatabasePath: operation, BusinessSettingsPath: business}); err == nil {
-		t.Fatal("hard-linked business database must be rejected")
 	}
 }
 

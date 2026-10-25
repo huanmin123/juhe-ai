@@ -212,7 +212,7 @@ func TestWCGroupUpdateDeleteBranches(t *testing.T) {
 	}
 	// DB 侧确认 description 为 NULL。
 	var description any
-	if err := env.db.QueryRow(`SELECT description FROM groups WHERE id = ?`, groupID).Scan(&description); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT description FROM groups WHERE id = ?`), groupID).Scan(&description); err != nil {
 		t.Fatal(err)
 	}
 	if description != nil {
@@ -613,7 +613,7 @@ func TestWCAccountRejectsNonAPIKeyRow(t *testing.T) {
 	env := newWCLifeEnv(t)
 	accountID := wcAddAccount(t, env, wcAccountBase)
 	// 直接改行类型模拟存量 oauth 账号。
-	if _, err := env.db.Exec(`UPDATE accounts SET type = 'oauth' WHERE id = ?`, accountID); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`UPDATE accounts SET type = 'oauth' WHERE id = ?`), accountID); err != nil {
 		t.Fatal(err)
 	}
 	status, payload, _ := env.doAuth(http.MethodPost, Prefix+"/account/update", `{"accountId":"`+accountID+`","name":"x"}`, wcLifeToken)

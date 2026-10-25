@@ -86,7 +86,7 @@ func TestAccountsRuntimeResetBridgeDispatchesHealthCheckRow(t *testing.T) {
 	resetEffects, writer := newResetDispatchBridge(t, composed)
 	// 管理面接线同款：write.go 激活 / runtime_reset.go reset / routes.go PATCH
 	// 都经 SetRuntimeResetEffects 后的该端口派发。
-	accountStore, err := accounts.NewStore(composed.db, false, resetDispatchTestSecret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composed.db, resetDispatchTestSecret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}

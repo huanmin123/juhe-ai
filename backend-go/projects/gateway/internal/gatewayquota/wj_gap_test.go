@@ -2,61 +2,12 @@ package gatewayquota
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 )
 
 // TestWJAPIKeyQuotaAsyncRedisSharedWriteFailure 固定 Redis server 角色
 // API Key 检查中共享缓存写入失败必须向上传播的契约（setCacheEntryAsync await）。
-func TestWJAPIKeyQuotaAsyncRedisSharedWriteFailure(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	_, _, snapshot, runtimeState := newRedisQuotaStack(t, clock)
-	failing := &wjMockShared{setErr: errors.New("shared write down")}
-	dbService := &mockDBService{}
-	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    failing,
-		DBService: dbService,
-		Now:       clock.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewAPIKeyQuotaService: %v", err)
-	}
-	ctx := context.Background()
-	apiKey := APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
-
-	// 快照命中且成本超限 → 被动拒绝；回写 shared 失败 → 错误传播。
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	doc.CostEntries = []QuotaCostSnapshotEntry{{
-		SystemAccountID: "sys", ScopeType: ScopeTypeAPIKey, ScopeID: "ak",
-		Costs: RequestQuotaCosts{Daily: 50, Total: 50},
-	}}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Hour); err != nil {
-		t.Fatalf("write snapshot: %v", err)
-	}
-	if _, err := service.CheckAPIKeyQuotaAsync(ctx, apiKey); err == nil || err.Error() != "shared write down" {
-		t.Fatalf("被动决策写 shared 失败必须传播: %v", err)
-	}
-
-	// 快照缺失 + DB service 决策成功 + 写 shared 失败 → 同样传播。先越过
-	// 1s memo 让删除后的“无文档”真正生效。
-	clock.Advance(2 * time.Second)
-	if err := runtimeState.Delete(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey); err != nil {
-		t.Fatalf("delete snapshot: %v", err)
-	}
-	dbService.mu.Lock()
-	dbService.checkAPIKeyDec = AllowedDecision()
-	dbService.mu.Unlock()
-	if _, err := service.CheckAPIKeyQuotaAsync(ctx, apiKey); err == nil || err.Error() != "shared write down" {
-		t.Fatalf("DB service 决策写 shared 失败必须传播: %v", err)
-	}
-	if dbService.checkAPIKeyCalls != 1 {
-		t.Fatalf("缺失快照必须精确补判, calls=%d", dbService.checkAPIKeyCalls)
-	}
-}
 
 // TestWJAuthzBatchAsyncSharedAllHit 固定批量入口在共享缓存全命中时的短路
 // 返回：不进入快照/精确装载。
@@ -123,14 +74,14 @@ func TestWJAuthzBatchMaterializeError(t *testing.T) {
 	if err := pgStatsDB.Close(); err != nil {
 		t.Fatalf("close stats db: %v", err)
 	}
-	pgStats, err := NewStatsStore(pgStatsDB, true)
+	pgStats, err := NewStatsStore(pgStatsDB)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
 		// 业务库查询走生产 PG 臂方言（业务库方言由 Modes.PostgresDatabase 决定，
 		// 测试业务库已是真实 PG）。
-		Modes:    Modes{PostgresDatabase: true},
+		Modes:    Modes{},
 		Business: business,
 		Stats:    pgStats,
 		Timezone: mustTZ(t, time.UTC),
@@ -149,7 +100,7 @@ func TestWJAuthzBatchMaterializeError(t *testing.T) {
 // 限制的 grant 跳过 team 检查；账户维度 grant 在实例账户缺失时同样跳过。
 func TestWJAuthzTeamRowLimitShapes(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "teamshape")
+	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "teamshape")
 	ctx := context.Background()
 
 	// grant 无启用限制 → team 检查为空 → 允许。
@@ -175,7 +126,7 @@ func mustStats(t *testing.T) *StatsStore {
 	t.Helper()
 	db := newTestDB(t, "wj-must-stats")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}

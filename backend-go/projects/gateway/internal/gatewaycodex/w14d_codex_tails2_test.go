@@ -385,7 +385,7 @@ func TestW14dBridgeCompactExternalPrevious(t *testing.T) {
 }
 
 func TestW14dBridgeCompactSummaryReadArms(t *testing.T) {
-	store, _ := newSQLiteStore(t)
+	store := newPostgresContextStateStore(t)
 	segmentsRoot := t.TempDir()
 	clock := newFakeClock(time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC))
 	service, err := NewChatBridgeStateService(ChatBridgeStateConfig{CodexContextRoot: segmentsRoot}, store, nil, clock)

@@ -37,11 +37,11 @@ func TestChatCapabilityVolcengineQwenEndpointModeNormalization(t *testing.T) {
 		context endpointModeDefaultContext
 		value   []any
 	}{
-		"volcengine chat pair":            {context: volcengineContext, value: []any{"chat_json", "chat_sse"}},
-		"volcengine chat with video":      {context: volcengineContext, value: []any{"chat_json", "video_create", "video_get"}},
-		"volcengine chat with speech":     {context: volcengineContext, value: []any{"chat_sse", "audio_speech"}},
-		"qwen chat pair":                  {context: qwenContext, value: []any{"chat_json", "chat_sse"}},
-		"qwen chat with audio job":        {context: qwenContext, value: []any{"chat_json", "audio_job_create", "audio_job_get"}},
+		"volcengine chat pair":        {context: volcengineContext, value: []any{"chat_json", "chat_sse"}},
+		"volcengine chat with video":  {context: volcengineContext, value: []any{"chat_json", "video_create", "video_get"}},
+		"volcengine chat with speech": {context: volcengineContext, value: []any{"chat_sse", "audio_speech"}},
+		"qwen chat pair":              {context: qwenContext, value: []any{"chat_json", "chat_sse"}},
+		"qwen chat with audio job":    {context: qwenContext, value: []any{"chat_json", "audio_job_create", "audio_job_get"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			modes, err := normalizeEndpointModesForWrite(opt(tc.value), tc.context)
@@ -103,7 +103,7 @@ func TestChatCapabilityMatrixAllowsChatMappingsForVolcengineQwen(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// chat→chat 映射：openai 档案判定 + chat 白名单 + chat_json 上游能力。
 			if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
-				SourceEndpointFamily: mappingFamilyChatCompletions,
+				SourceEndpointFamily:   mappingFamilyChatCompletions,
 				UpstreamEndpointFamily: mappingFamilyChatCompletions,
 			}, tc.profile, []string{"chat_json"}); err != nil {
 				t.Fatalf("chat→chat 映射应通过：%v", err)

@@ -78,8 +78,8 @@ func (s *DBTimezoneSource) StatsTimezone(ctx context.Context) (*time.Location, e
 		return s.cached, nil
 	}
 	var valueJSON sql.NullString
-	err := s.db.QueryRowContext(ctx, bindPlaceholders(s.pg,
-		"SELECT value_json FROM "+statsBusinessTable(s.pg, "system_settings")+
+	err := s.db.QueryRowContext(ctx, bindPlaceholders(
+		"SELECT value_json FROM "+statsBusinessTable("system_settings")+
 			" WHERE system_account_id = ? AND key = 'usageStatsTimezone' LIMIT 1"),
 		"sys_admin").Scan(&valueJSON)
 	if errors.Is(err, sql.ErrNoRows) {

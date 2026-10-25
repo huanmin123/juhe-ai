@@ -240,7 +240,7 @@ func w1qNewResetFixture(t *testing.T) *w1qResetFixture {
 		}
 	}
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-	stats, err := gatewayquota.NewStatsStore(db, false)
+	stats, err := gatewayquota.NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("构造 quota stats store: %v", err)
 	}

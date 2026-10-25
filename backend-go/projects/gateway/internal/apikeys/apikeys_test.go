@@ -142,7 +142,7 @@ func newTestEnv(t *testing.T, wrapInvalidator ...func(CacheInvalidator) CacheInv
 	for _, wrap := range wrapInvalidator {
 		storeInvalidator = wrap(storeInvalidator)
 	}
-	store, err := NewStore(db, true, testSecret, nil, nil, storeInvalidator)
+	store, err := NewStore(db, testSecret, nil, nil, storeInvalidator)
 	if err != nil {
 		t.Fatal(err)
 	}

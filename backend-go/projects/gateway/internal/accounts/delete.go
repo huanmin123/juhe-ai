@@ -130,31 +130,17 @@ func (s *Store) Delete(ctx context.Context, accountID string, access AccessScope
 // scope bindings first, then grants, sources and authorizations flip to the
 // 'revoked' terminal state inside the caller's transaction.
 //
-// The Node dialects do NOT land identically here. The PG async arm
-// bulk-writes this exact shape: grants 'revoked' (COALESCE-preserving),
-// sources 'revoked' with ended_reason='account_deleted' (active/superseded),
-// authorizations 'revoked' unconditionally with the effective source nulled
-// and revoked_reason='account_deleted', quota scope bindings deleted
-// outright. The SQLite sync arm instead walks the account's grants one by
-// one through the resource-authorization runtime-sync domain
-// (revokeResourceAuthorizationGrant → syncResourceAuthorizationGrantRuntime):
-// manual-source-scoped updates with ended_reason='authorization_revoked', a
-// conditional terminal refresh that can leave the runtime authorization
-// alive while another source stands, per-grant quota re-sync and health
-// fanout. Both arms still terminate at 'revoked' — the 'returned' states in
-// the archived file belong to revokeAuthorizationInstanceForDeletedAccount,
-// which no archived delete flow calls. This store mirrors the PG async arm
-// verbatim; the wired SQLite mode (DeletedResourceGrantRevoker) hands the
-// per-grant runtime sync domain to the authz slice instead
-// (authz.Store.RevokeGrantsForResourceDeleted).
+// This store mirrors the PG async arm verbatim: grants 'revoked'
+// (COALESCE-preserving), sources 'revoked' with
+// ended_reason='account_deleted' (active/superseded), authorizations
+// 'revoked' unconditionally with the effective source nulled and
+// revoked_reason='account_deleted', quota scope bindings deleted outright —
+// everything terminating at 'revoked' (the 'returned' states in the archived
+// file belong to revokeAuthorizationInstanceForDeletedAccount, which no
+// archived delete flow calls). 原 SQLite 臂的逐 grant 运行态同步域
+// （revokeResourceAuthorizationGrant → syncResourceAuthorizationGrantRuntime）
+// 已随 sqlite 存储形态删除批次退役（D17）。
 func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Context, tx *sql.Tx, accountID, actor, deletedAt string) error {
-	// SQLite arm: the wired per-grant runtime sync domain (Node
-	// account-delete-cleanup.repository.ts:479-492). The bulk arm below stays
-	// the PostgreSQL path and the unwired fallback, so existing fixtures and
-	// the PG dialect keep the exact bulk semantics.
-	if !s.pg && s.deletedGrantRevoker != nil {
-		return s.deletedGrantRevoker.RevokeGrantsForResourceDeleted(ctx, tx, "account", accountID, actor, deletedAt)
-	}
 	var authorizationIDs []string
 	authRows, err := tx.QueryContext(ctx, s.bind(`SELECT id
 		FROM `+s.table("resource_authorizations")+`
@@ -229,23 +215,6 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 	return err
 }
 
-// DeletedResourceGrantRevoker is the narrow port into the authz per-grant
-// runtime sync domain for the SQLite delete arm (authz.Store.
-// RevokeGrantsForResourceDeleted): the revocation of one resource's live
-// grants, the manual-source-scoped runtime revoke, the team cascade, the
-// per-grant quota re-sync and the health fanout all land in the authz slice
-// inside the caller's transaction. The composition root wires the authz
-// store; unwired stores keep the bulk arm below verbatim.
-type DeletedResourceGrantRevoker interface {
-	RevokeGrantsForResourceDeleted(ctx context.Context, tx *sql.Tx, resourceType, resourceID, actor, now string) error
-}
-
-// SetDeletedResourceGrantRevoker wires the port (composition-root handover;
-// the production bridge passes the authz store directly).
-func (s *Store) SetDeletedResourceGrantRevoker(revoker DeletedResourceGrantRevoker) {
-	s.deletedGrantRevoker = revoker
-}
-
 // accountHealthTombstoneProviderCodes / Types mirror the health-capable
 // filter of logicallyDeleteAccounts (provider_code IN (...) AND type IN (...)).
 var (
@@ -262,10 +231,7 @@ func (s *Store) enqueueDeletedAccountHealthTombstones(ctx context.Context, tx *s
 	idsClause := strings.TrimRight(strings.Repeat("?, ", len(accountIDs)), ", ")
 	providerClause := strings.TrimRight(strings.Repeat("?, ", len(accountHealthTombstoneProviderCodes)), ", ")
 	typeClause := strings.TrimRight(strings.Repeat("?, ", len(accountHealthTombstoneAccountTypes)), ", ")
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
+	lockSuffix := " FOR UPDATE"
 	args := []any{deletedAt}
 	args = append(args, stringSliceToAny(accountIDs)...)
 	args = append(args, stringSliceToAny(accountHealthTombstoneProviderCodes)...)

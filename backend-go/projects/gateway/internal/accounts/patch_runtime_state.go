@@ -21,8 +21,8 @@ import (
 //     cooldownRetestObservationStartedAtForStatus（temporary_unavailable 初始
 //     退避 3 秒，rate_limited 用 defaultTemporaryUnschedulableMinutes）。
 //
-// 双方言说明：所有语句经 s.bind/s.table，运行态列族经 setRuntimeColumn 的
-// 单赋值通道并入 SET，PG/SQLite 共用同一语句形状。
+// 所有语句经 s.bind/s.table，运行态列族经 setRuntimeColumn 的
+// 单赋值通道并入 SET。
 
 // RuntimeCooldownSettings is the narrow settings port behind the rate_limited
 // re-arm cooldown (Node getSettings().defaultTemporaryUnschedulableMinutes).

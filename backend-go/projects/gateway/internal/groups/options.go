@@ -79,8 +79,8 @@ type OptionSummary struct {
 // EditDetail mirrors GroupEditDetail。ProviderCode 同 OptionSummary：形状兼容
 // 恒空串。
 type EditDetail struct {
-	Name             string  `json:"name"`
-	ProviderCode     string  `json:"providerCode"`
+	Name         string `json:"name"`
+	ProviderCode string `json:"providerCode"`
 	// GroupKind 让编辑弹窗区分普通/超级分组（超级分组不展示供应商与账号项）。
 	GroupKind        string  `json:"groupKind"`
 	Description      *string `json:"description,omitempty"`

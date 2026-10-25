@@ -257,34 +257,12 @@ func TestWJSnapshotSharedReadGuards(t *testing.T) {
 // TestWJAuthzBatchServerRoleSnapshotSecondLoop 固定 server 角色（内存快照）
 // 批量判定的兜底循环：两个账户共享同一授权 ID、快照完整可判时，重复
 // cacheKey 的账户仍必须得到快照决策并被写入运行时缓存。
-func TestWJAuthzBatchServerRoleSnapshotSecondLoop(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _, _ := wjNewAuthzService(t, Modes{ServerRole: true}, clock, "loop2")
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{
-		{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true},
-		{ID: "u3", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true},
-	}
-	// 完整快照且无任何条目：两个账户都按快照允许（受限但快照完整 → 不保护拒绝）。
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	if err := service.snapshot.ReplaceGatewayQuotaSnapshot(doc); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	output, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatalf("batch: %v", err)
-	}
-	if !output["u1"].Allowed || !output["u3"].Allowed {
-		t.Fatalf("完整快照下共享授权账户必须都允许: %+v", output)
-	}
-}
 
 // TestWJAuthzBatchAsyncAllCached 固定批量入口的全缓存命中短路：所有账户
 // 的运行时缓存都命中时必须直接返回，不进入缺失装载。
 func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, business, statsDB := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "allcached")
+	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "allcached")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
 	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
@@ -316,7 +294,7 @@ func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
 func TestWJAPIKeyExactAsyncSharedCacheHit(t *testing.T) {
 	db := newTestDB(t, "wj-apikey-sharedhit")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}
@@ -324,7 +302,7 @@ func TestWJAPIKeyExactAsyncSharedCacheHit(t *testing.T) {
 	denied := newCachedDecision(DeniedDecision(APIKeyQuotaExceededMessage), clock.Now().UnixMilli())
 	shared := &wjMockShared{getFound: true, getValue: denied}
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true, RedisCache: true},
+		Modes:    Modes{RedisCache: true},
 		Stats:    stats,
 		Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, clock),
@@ -397,7 +375,7 @@ func TestWJCostsMissingProjectionTables(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			db := newTestDB(t, "wj-drop")
 			statsSchema(t, db)
-			stats, err := NewStatsStore(db, true)
+			stats, err := NewStatsStore(db)
 			if err != nil {
 				t.Fatalf("NewStatsStore: %v", err)
 			}
@@ -419,7 +397,7 @@ func TestWJCostsMissingProjectionTables(t *testing.T) {
 func TestWJCostsBatchNilContext(t *testing.T) {
 	db := newTestDB(t, "wj-nilctx")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatalf("NewStatsStore: %v", err)
 	}

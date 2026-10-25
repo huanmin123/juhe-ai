@@ -59,7 +59,7 @@ func TestGroupListPageSizeNormalization(t *testing.T) {
 
 func TestGroupDefaultPolicyUsesInjectedGlobalMax(t *testing.T) {
 	env := newTestEnv(t)
-	store, err := NewStore(env.db, true, nil, nil, nil, WithGlobalConcurrencyMax(1234))
+	store, err := NewStore(env.db, nil, nil, nil, WithGlobalConcurrencyMax(1234))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestGroupDefaultPolicyUsesInjectedGlobalMax(t *testing.T) {
 		}
 	}
 	// Stores built without the option keep the 5000 default.
-	legacy, err := NewStore(env.db, true, nil, nil, nil)
+	legacy, err := NewStore(env.db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,9 +442,9 @@ func TestGroupDeleteAuditMetadata(t *testing.T) {
 }
 
 func TestGroupRefreshStatsAfterWriteNeverFailsTheRequestOnPostgres(t *testing.T) {
-	// A closed handle fails every statement; the SQLite path surfaces the
-	// error while the PostgreSQL path hands the write to the background task
-	// (postgres_group_account_stats_dirty_mark_failed log only).
+	// A closed handle fails every statement; the PostgreSQL path hands the
+	// write to the background task (postgres_group_account_stats_dirty_mark_failed
+	// log only) and never fails the request.
 	db, err := sql.Open("sqlite", "file:closed-groups?mode=memory")
 	if err != nil {
 		t.Fatal(err)
@@ -452,18 +452,11 @@ func TestGroupRefreshStatsAfterWriteNeverFailsTheRequestOnPostgres(t *testing.T)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	pgStore, err := NewStore(db, true, nil, nil, nil)
+	store, err := NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgStore.refreshStatsAfterWrite(context.Background(), []string{"grp-x"}, "group_deleted"); err != nil {
+	if err := store.refreshStatsAfterWrite(context.Background(), []string{"grp-x"}, "group_deleted"); err != nil {
 		t.Fatalf("postgres refresh must degrade to the background log: %v", err)
-	}
-	sqliteStore, err := NewStore(db, false, nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sqliteStore.refreshStatsAfterWrite(context.Background(), []string{"grp-x"}, "group_deleted"); err == nil {
-		t.Fatal("sqlite refresh must surface the failure synchronously")
 	}
 }

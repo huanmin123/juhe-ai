@@ -124,7 +124,6 @@ func w1uFinalNewPGComposeFixture(t *testing.T) *w1uFinalPGComposeFixture {
 	// ---- F4 操作日志（PG 模式，镜像 TestW1G2 装配） ----
 	operationConfig := operationlog.Config{
 		Enabled:              true,
-		Mode:                 operationlog.ModePostgres,
 		InstanceID:           "w1u-final-pg",
 		PostgresURL:          tempAppURL,
 		PostgresMaxOpenConns: 8,
@@ -156,7 +155,6 @@ func w1uFinalNewPGComposeFixture(t *testing.T) *w1uFinalPGComposeFixture {
 		t.Fatalf("打开 F3 审计共享池失败: %v", err)
 	}
 	auditConfig := auditlog.Config{
-		Mode:                     auditlog.ModePostgres,
 		InstanceID:               "w1u-final-pg",
 		PostgresURL:              tempAppURL,
 		PostgresPool:             auditPooled,

@@ -20,15 +20,13 @@ import (
 var statHourPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$`)
 
 // HealthOutcomeSource mirrors accountHealthJobsOutcomeStoreSource: the
-// jobs-owned outcome store the gateway only reads. SQLite mode points at the
-// outcome file (outcomeSqlitePath); PostgreSQL mode points at the jobs
+// jobs-owned outcome store the gateway only reads. It points at the jobs
 // database URL (outcomePostgresUrl) and reads juhe_jobs.account_health_outcomes
 // through the same per-slice reader the Node async path uses
 // (listAccountHealthJobsOutcomesForAccountsAsync). The merge semantics
-// (j1OutcomeHealthRows / newestJ1OutcomeHourRow) are mode-independent. An
+// (j1OutcomeHealthRows / newestJ1OutcomeHourRow) are source-independent. An
 // absent/unconfigured source keeps the merge absent exactly like Node.
 type HealthOutcomeSource struct {
-	SQLitePath  string
 	PostgresURL string
 }
 
@@ -454,60 +452,7 @@ func (d *Deps) j1OutcomesForAccounts(ctx context.Context, accountIds []string, n
 		return nil, nil
 	}
 	observedAfter := time.UnixMilli(now.UnixMilli() - int64(hours+2)*int64(time.Hour/time.Millisecond)).UTC().Format("2006-01-02T15:04:05.000Z")
-	if d.HealthOutcomes.PostgresURL != "" {
-		return d.j1PostgresOutcomesForAccounts(ctx, accountIds, observedAfter, location, hourBuckets)
-	}
-	if d.HealthOutcomes.SQLitePath == "" {
-		return nil, nil
-	}
-	db, err := sql.Open("sqlite", "file:"+d.HealthOutcomes.SQLitePath+"?mode=ro&_pragma=query_only(1)")
-	if err != nil {
-		return nil, err
-	}
-	defer db.Close()
-	var rows []Row
-	// Per account/hour the latest non-stale outcome inside the zoned hour.
-	for _, chunk := range chunkStrings(accountIds, 8) {
-		tuples := []string{}
-		values := []any{}
-		for _, accountID := range chunk {
-			for _, statHour := range hourBuckets {
-				startAt, endAt := zonedHourRange(statHour, location)
-				tuples = append(tuples, "(?, ?, ?, ?)")
-				values = append(values, accountID, statHour, startAt, endAt)
-			}
-		}
-		chunkRows, err := queryRowsContext(ctx, db, `
-			WITH requested(account_id, stat_hour, start_at, end_at) AS (VALUES `+strings.Join(tuples, ", ")+`)
-			SELECT chosen.payload, chosen.observed_at AS storage_observed_at
-			FROM requested
-			JOIN account_health_outcomes chosen
-				ON chosen.outcome_id = (
-					SELECT candidate.outcome_id
-					FROM account_health_outcomes candidate
-					WHERE candidate.account_id = requested.account_id
-						AND candidate.observed_at >= requested.start_at
-						AND candidate.observed_at < requested.end_at
-						AND candidate.observed_at >= ?
-						AND COALESCE(json_extract(candidate.payload, '$.outcome'), '') <> 'stale'
-					ORDER BY candidate.observed_at DESC, candidate.outcome_id DESC
-					LIMIT 1
-				)
-		`, append(values, observedAfter)...)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, chunkRows...)
-	}
-	outcomes := make([]j1Outcome, 0, len(rows))
-	for _, row := range rows {
-		var outcome j1Outcome
-		if err := json.Unmarshal([]byte(row.text("payload")), &outcome); err != nil {
-			continue
-		}
-		outcomes = append(outcomes, outcome)
-	}
-	return outcomes, nil
+	return d.j1PostgresOutcomesForAccounts(ctx, accountIds, observedAfter, location, hourBuckets)
 }
 
 // zonedHourRange returns the [start, end) UTC instants of the local hour.

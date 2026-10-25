@@ -229,9 +229,8 @@ func TestW2TestStoreHelpers(t *testing.T) {
 		}
 	})
 	t.Run("布尔字面量与可选时间戳", func(t *testing.T) {
-		// env.store 已是 PG 臂；SQLite 臂字面量用零值 Store 直测。
-		if (&Store{}).boolTrueLiteral() != "1" || (&Store{}).boolFalseLiteral() != "0" {
-			t.Fatal("SQLite 布尔字面量不一致")
+		if (&Store{}).boolTrueLiteral() != "TRUE" || (&Store{}).boolFalseLiteral() != "FALSE" {
+			t.Fatal("布尔字面量不一致")
 		}
 		if testEndpointModeOrNull(sql.NullString{}) != nil {
 			t.Fatal("空端点形态应为 nil")

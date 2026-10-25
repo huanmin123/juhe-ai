@@ -200,9 +200,10 @@ func TestW10ASnapshotOptionalHelpers(t *testing.T) {
 
 func TestW10AListSortAndAvailability(t *testing.T) {
 	cases := map[string]string{
-		"priority":         "accounts.priority",
-		"superPriority":    "accounts.super_priority_enabled",
-		"fallback":         "accounts.fallback_enabled",
+		// T62：排序键取派发生效值（绑定行 local_*，无绑定回落 accounts.*）。
+		"priority":         "COALESCE(group_bindings.local_priority, accounts.priority)",
+		"superPriority":    "(CASE WHEN COALESCE(group_bindings.local_super_priority_enabled, 0) = 1 OR COALESCE(accounts.super_priority_enabled, 0) = 1 THEN 1 ELSE 0 END)",
+		"fallback":         "(CASE WHEN COALESCE(group_bindings.local_fallback_enabled, 0) = 1 OR COALESCE(accounts.fallback_enabled, 0) = 1 THEN 1 ELSE 0 END)",
 		"name":             "accounts.name",
 		"type":             "accounts.type",
 		"providerCode":     "COALESCE(accounts.vendor_code, '')",

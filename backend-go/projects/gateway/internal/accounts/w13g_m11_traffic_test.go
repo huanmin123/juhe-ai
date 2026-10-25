@@ -39,7 +39,7 @@ func w13gTrafficAuthorizedEnv(t *testing.T) (*testEnv, *authz.Store, *Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(base.db, true, testSecret, nil, nil)
+	store, err := NewStore(base.db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

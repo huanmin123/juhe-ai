@@ -91,8 +91,7 @@ var runtimeLogLevels = map[string]bool{
 // runtimeLogSQLReader reads the runtime_logs dataset published by the F1
 // indexer (projects/jobs/internal/runtimelog). SELECTs only.
 type runtimeLogSQLReader struct {
-	db   *sql.DB
-	mode ReadDBMode
+	db *sql.DB
 	// Now backs the keyword default time window; nil means time.Now. It is a
 	// deliberate seam so tests can pin the window.
 	Now func() time.Time
@@ -103,23 +102,19 @@ type runtimeLogSQLReader struct {
 
 // NewRuntimeLogSQLReader opens the read-only runtime log dataset adapter. The
 // caller owns the database handle and the schema (F1 EnsureSchema).
-func NewRuntimeLogSQLReader(db *sql.DB, mode ReadDBMode) (RuntimeLogReader, error) {
+func NewRuntimeLogSQLReader(db *sql.DB) (RuntimeLogReader, error) {
 	if db == nil {
 		return nil, errors.New("runtime 日志数据集数据库句柄必填")
 	}
-	dialect, err := parseReadDBMode(mode)
-	if err != nil {
-		return nil, err
-	}
-	return &runtimeLogSQLReader{db: db, mode: dialect}, nil
+	return &runtimeLogSQLReader{db: db}, nil
 }
 
 // NewRuntimeLogSQLReaderWithSources opens the read-only runtime log dataset
 // adapter with the settings-backed retention source and the clock seam (Node
 // currentRuntimeLogIndexRetentionDays). Either source may be nil; the
 // retention value is clamped to 1..90 with the 14-day default upstream.
-func NewRuntimeLogSQLReaderWithSources(db *sql.DB, mode ReadDBMode, retentionDays func() int, now func() time.Time) (RuntimeLogReader, error) {
-	reader, err := NewRuntimeLogSQLReader(db, mode)
+func NewRuntimeLogSQLReaderWithSources(db *sql.DB, retentionDays func() int, now func() time.Time) (RuntimeLogReader, error) {
+	reader, err := NewRuntimeLogSQLReader(db)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +150,7 @@ func (s *runtimeLogSQLReader) buildFilters(options RuntimeLogListOptions) (strin
 	var clauses []string
 	var params []any
 	if traceID := strings.TrimSpace(options.TraceID); traceID != "" {
-		expression := s.mode.prefixColumn("rl.trace_id")
+		expression := logReadsPrefixColumn("rl.trace_id")
 		clauses = append(clauses, expression+" >= ? AND "+expression+" < ?")
 		params = append(params, traceID, readTextPrefixUpperBound(traceID))
 	}
@@ -170,17 +165,17 @@ func (s *runtimeLogSQLReader) buildFilters(options RuntimeLogListOptions) (strin
 	}
 	if options.StartAt != "" {
 		clauses = append(clauses, "rl.time >= ?")
-		params = append(params, s.mode.timeParam(options.StartAt))
+		params = append(params, logReadsTimeParam(options.StartAt))
 	}
 	if options.EndAt != "" {
 		clauses = append(clauses, "rl.time <= ?")
-		params = append(params, s.mode.timeParam(options.EndAt))
+		params = append(params, logReadsTimeParam(options.EndAt))
 	}
 	keyword := strings.TrimSpace(options.Keyword)
 	if keyword != "" && options.StartAt == "" && options.EndAt == "" {
 		clauses = append(clauses, "rl.time >= ?")
 		window := s.now().Add(-runtimeLogKeywordWindowHours * time.Hour)
-		params = append(params, s.mode.timeParam(readISOText(window)))
+		params = append(params, logReadsTimeParam(readISOText(window)))
 	}
 	if keyword != "" {
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(keyword)
@@ -199,9 +194,9 @@ func (s *runtimeLogSQLReader) ListRuntimeLogs(ctx context.Context, options Runti
 	page := readNormalizePage(options.Page, pageSize)
 	offset := (page - 1) * pageSize
 	clause, params := s.buildFilters(options)
-	query := `SELECT ` + runtimeLogListSelectColumns + ` FROM ` + s.mode.table("runtime_logs") + ` rl ` + clause +
+	query := `SELECT ` + runtimeLogListSelectColumns + ` FROM ` + logReadsTable("runtime_logs") + ` rl ` + clause +
 		` ORDER BY rl.time DESC, rl.id DESC LIMIT ? OFFSET ?`
-	rows, err := readQueryMaps(ctx, s.db, s.mode, query, append(params, pageSize+1, offset)...)
+	rows, err := readQueryMaps(ctx, s.db, query, append(params, pageSize+1, offset)...)
 	if err != nil {
 		return ReadPage[RuntimeLogListItem]{}, err
 	}
@@ -226,8 +221,8 @@ func (s *runtimeLogSQLReader) ListRuntimeLogs(ctx context.Context, options Runti
 
 func (s *runtimeLogSQLReader) GetRuntimeLogFacets(ctx context.Context) (RuntimeLogFacets, error) {
 	facets := RuntimeLogFacets{RetentionDays: s.retentionDays(), Levels: []RuntimeLogLevelFacet{}, Events: []string{}}
-	summary, err := readQueryOneMap(ctx, s.db, s.mode,
-		`SELECT earliest_time, latest_time, total_count FROM `+s.mode.table("runtime_log_facet_summary")+` WHERE bucket_key = ?`,
+	summary, err := readQueryOneMap(ctx, s.db,
+		`SELECT earliest_time, latest_time, total_count FROM `+logReadsTable("runtime_log_facet_summary")+` WHERE bucket_key = ?`,
 		runtimeLogFacetBucketKey)
 	if err != nil {
 		return RuntimeLogFacets{}, err
@@ -237,8 +232,8 @@ func (s *runtimeLogSQLReader) GetRuntimeLogFacets(ctx context.Context) (RuntimeL
 		facets.LatestIndexedAt = readOptionalText(summary["latest_time"])
 		facets.TotalIndexed = readNumberOr(summary["total_count"], 0)
 	}
-	levelRows, err := readQueryMaps(ctx, s.db, s.mode,
-		`SELECT level AS value, count FROM `+s.mode.table("runtime_log_level_facets")+` WHERE bucket_key = ? AND count > 0 ORDER BY count DESC, level ASC`,
+	levelRows, err := readQueryMaps(ctx, s.db,
+		`SELECT level AS value, count FROM `+logReadsTable("runtime_log_level_facets")+` WHERE bucket_key = ? AND count > 0 ORDER BY count DESC, level ASC`,
 		runtimeLogFacetBucketKey)
 	if err != nil {
 		return RuntimeLogFacets{}, err
@@ -246,8 +241,8 @@ func (s *runtimeLogSQLReader) GetRuntimeLogFacets(ctx context.Context) (RuntimeL
 	for _, row := range levelRows {
 		facets.Levels = append(facets.Levels, RuntimeLogLevelFacet{Value: readRawString(row["value"]), Count: readNumberOr(row["count"], 0)})
 	}
-	eventRows, err := readQueryMaps(ctx, s.db, s.mode,
-		`SELECT event FROM `+s.mode.table("runtime_log_event_facets")+` WHERE bucket_key = ? AND count > 0 ORDER BY latest_time DESC, event ASC LIMIT ?`,
+	eventRows, err := readQueryMaps(ctx, s.db,
+		`SELECT event FROM `+logReadsTable("runtime_log_event_facets")+` WHERE bucket_key = ? AND count > 0 ORDER BY latest_time DESC, event ASC LIMIT ?`,
 		runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents)
 	if err != nil {
 		return RuntimeLogFacets{}, err
@@ -263,8 +258,8 @@ func (s *runtimeLogSQLReader) GetRuntimeLogDetailDelta(ctx context.Context, id s
 	if logID == "" {
 		return nil, nil
 	}
-	row, err := readQueryOneMap(ctx, s.db, s.mode,
-		`SELECT id, raw_json FROM `+s.mode.table("runtime_logs")+` WHERE id = ? LIMIT 1`, logID)
+	row, err := readQueryOneMap(ctx, s.db,
+		`SELECT id, raw_json FROM `+logReadsTable("runtime_logs")+` WHERE id = ? LIMIT 1`, logID)
 	if err != nil || row == nil {
 		return nil, err
 	}

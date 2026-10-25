@@ -2,7 +2,7 @@ package logreads
 
 // pgkit_test.go 是 logreads 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，logreads 测试迁移
-// 切片）：pgtestkit 每测试独立库，三族数据集读取器以生产 ReadPostgres 方言
+// 切片）：pgtestkit 每测试独立库，三族数据集读取器以生产形态
 // 挂载（juhe_dataset schema 限定 + mode.bind $n 占位符，与 compose.go 的
 // pgDialect 装配同一形态）。
 //
@@ -19,8 +19,8 @@ package logreads
 //     timestamptz 列回读 time.Time 经 readISOText 输出 canonical UTC 毫秒文
 //     本，与 SQLite 文本回读逐字节一致。
 //   - 组B（scripted SQLite 故障注入环境）：w11f_faults_test.go 的
-//     w11fFaultEnv 与 w11f 故障注入连接器族按 D17 原样保留（SQLite 方言 +
-//     readsAuthTables / auditReadsDDL / runtimeReadsDDL / publicReadsDDL），
+//     原 w11fFaultEnv scripted 故障注入族与其 SQLite DDL 夹具已随 sqlite
+//     生产臂退役（2026-10-24 存储形态收口），
 //     随生产 sqlite 臂删除批次同批退役。
 //   - 纯函数矩阵与 stub reader 测试不依赖真库，保持原状。
 //
@@ -188,7 +188,6 @@ func newLogreadsPGTestDatabase(t *testing.T) *pgtestkit.TestDatabase {
 	// 零值会让 OpenStore 落到 1000/1000 而被池校验拒绝。
 	store, err := auditlog.OpenStore(auditlog.Config{
 		InstanceID:           "logreads-pgkit",
-		Mode:                 auditlog.ModePostgres,
 		PostgresURL:          testDB.DSN,
 		PostgresMaxOpenConns: 20,
 		PostgresMaxIdleConns: 10,

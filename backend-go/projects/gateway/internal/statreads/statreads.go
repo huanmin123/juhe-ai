@@ -19,23 +19,17 @@ const (
 
 // Deps bundles the statreads collaborators. Business reaches the business
 // database (accounts / system_accounts / groups ...), Stats reaches the stats
-// database (usage_stats_* / *_windows / account_health_hourly ...). Both use
-// the dual-mode convention of the composition root: PostgreSQL aliases the
-// shared pool handle and qualifies juhe_business.*/juhe_stats.*, SQLite owns
-// dedicated file handles with unqualified tables.
+// database (usage_stats_* / *_windows / account_health_hourly ...) — both
+// alias the shared pool handle with juhe_business.*/juhe_stats.* schema
+// qualification.
 type Deps struct {
-	Business  DB
-	Stats     DB
-	PGDialect bool
-	Auth      *authsys.Deps
-	Now       func() time.Time
-	Timezone  TimezoneSource
-	// UsageCatalog backs the usage_record_shards registry (SQLite mode
-	// only); the shard walk for /usage-records reads the registered files
-	// through it. Nil disables shard discovery (empty results).
-	UsageCatalog DB
+	Business DB
+	Stats    DB
+	Auth     *authsys.Deps
+	Now      func() time.Time
+	Timezone TimezoneSource
 	// HealthOutcomes optionally points at the J1 account-health outcome
-	// store (Node runtimeConfig.accountHealthJobs.outcomeSqlitePath); nil
+	// store (jobs Postgres juhe_jobs.account_health_outcomes); nil
 	// keeps the merge absent exactly like an unconfigured Node source.
 	HealthOutcomes *HealthOutcomeSource
 	// RuntimeMode mirrors runtimeConfig.runtimeMode ('standalone' |

@@ -2,7 +2,7 @@ package circuitcontrolplane
 
 // pgkit_test.go 是 circuit_control_plane 建库测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z 测试基建迁移切片）：pgtestkit 每测试独立库 +
-// 生产 store 的 PG 臂（New(db, Postgres, defaultBusinessSchema)，schema 限定
+// 生产 store 的 PG 臂（New(db, defaultBusinessSchema)，schema 限定
 // 与生产一致；maintenance 的 schema 包是 internal，gateway 不可导入，故 prepare
 // 内手写与生产同构的建表 DDL——复用 w9e_store_pg_test.go 已对齐生产的 BIGINT
 // 形态常量，不做 CHECK/FK 复刻，保证既有测试数据与断言逐字节保持）。
@@ -56,7 +56,7 @@ func wkPGStoreLabeled(t *testing.T, label string, gate OwnerGate) (*Store, *sql.
 		}
 		return nil
 	})
-	s, err := New(testDB.DB, Postgres, defaultBusinessSchema, gate)
+	s, err := New(testDB.DB, defaultBusinessSchema, gate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func wkSQLiteLegacyStoreLabeled(t *testing.T, label string, gate OwnerGate) (*St
 	if _, err := db.Exec(`INSERT INTO accounts(id,dispatch_revision,circuit_projection_revision) VALUES ('a1',1,0)`); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(db, SQLite, "", gate)
+	s, err := New(db, "", gate)
 	if err != nil {
 		t.Fatal(err)
 	}

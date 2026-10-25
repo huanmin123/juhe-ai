@@ -24,7 +24,7 @@ func wiEnv(base map[string]string, overrides map[string]string) func(string) str
 
 func TestWILoadConfigMatrix(t *testing.T) {
 	// 2026-10-24 存储形态收口：JUHE_AI_OPERATION_LOG_STORE 仅剩单一合法形态
-	// postgres——env 读取删除，Mode 恒 ModePostgres；PG URL 回退主连接串，
+	// postgres——env 读取删除；PG URL 回退主连接串，
 	// 全空 env 指名缺失连接串 fail-fast。原 sqlite 路径派生/隔离矩阵随生产
 	// 臂删除。
 	base := map[string]string{
@@ -36,7 +36,7 @@ func TestWILoadConfigMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("基线配置失败: %v", err)
 	}
-	if !cfg.Enabled || cfg.Mode != ModePostgres || cfg.RetentionDays != 365 || cfg.PostgresURL != "postgres://wi-main" {
+	if !cfg.Enabled || cfg.RetentionDays != 365 || cfg.PostgresURL != "postgres://wi-main" {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 	// 空 env fail-fast 且指名缺失连接串（实例 ID 回落 hostname 在 URL 校验前

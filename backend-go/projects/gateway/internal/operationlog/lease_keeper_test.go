@@ -8,7 +8,7 @@ import (
 )
 
 // openKeeperTestStore opens an isolated PG F4 store (pgtestkit 独立库 + 生产
-// OpenStore ModePostgres 装配，业务夹具与 createBusinessSettings 同构) for
+// OpenStore 装配，业务夹具为 PG 同构) for
 // keeper tests.
 func openKeeperTestStore(t *testing.T) Store {
 	t.Helper()

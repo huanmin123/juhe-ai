@@ -23,7 +23,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 // BusinessTargetSource reads the Gateway-owned Business database directly.
@@ -38,12 +37,8 @@ type BusinessTargetSource struct {
 
 type BusinessTargetConnection struct {
 	DB *sql.DB
-	// ReadDB is the read-only pool over the same Business SQLite file
-	// (JUHE_AI_SQLITE_READ_POOL, default 4). Source runs on it while DB stays
-	// the single-connection write owner for auth/session and retention; WAL
-	// carries the one-writer/many-readers contract between the two pools.
-	// Nil on PostgreSQL mode, where one multi-connection pool serves both.
-	ReadDB *sql.DB
+	// ReadDB 已随 Business SQLite 读/写双池形态退役（2026-10-24 存储形态收口）；
+	// PostgreSQL 单多连接池同时承载 Source 只读面与 auth/session 写面。
 	Source *BusinessTargetSource
 	Close  func() error
 }
@@ -56,9 +51,8 @@ func NewBusinessTargetSource(db *sql.DB, postgres bool, credentialSecret string)
 }
 
 // OpenBusinessTargetSource opens the configured Business database without
-// granting this J3b reader a write path. SQLite uses query_only and a
-// read-only URI; PostgreSQL callers must provision a role with SELECT-only
-// access to the required relations.
+// granting this J3b reader a write path. PostgreSQL callers must provision a
+// role with SELECT-only access to the required relations.
 func OpenBusinessTargetSource(ctx context.Context, cfg Config) (*BusinessTargetSource, func() error, error) {
 	connection, err := OpenBusinessTargetConnection(ctx, cfg)
 	if err != nil {
@@ -77,9 +71,8 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 	if cfg.BusinessHandoffConfirmed && !cfg.NodeWriterStopped {
 		return nil, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
 	}
-	if cfg.StoreMode != "sqlite" && cfg.StoreMode != "postgres" {
-		return nil, errors.New("J3b Business source store mode is invalid")
-	}
+	// 2026-10-24 存储形态收口：StoreMode 恒 "postgres"（LoadConfig 单一形态），
+	// sqlite 文件形态与 CheckBusinessSQLiteSchema 文件形状守卫随批次退役。
 	postgres := cfg.StoreMode == "postgres"
 	driver, dsn := "", ""
 	if postgres {
@@ -87,68 +80,24 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 		if strings.TrimSpace(dsn) == "" {
 			return nil, errors.New("J3b Business PostgreSQL URL is required")
 		}
-	} else {
-		// Before the complete Business handoff this connection is a strict
-		// read-only coexistence reader. Once the handoff gate is confirmed,
-		// auth/session and enforcement share the same owner connection and
-		// need normal SQLite write access; the source itself still uses
-		// read-only transactions for target resolution.
-		mode := "ro&_pragma=query_only(1)"
-		if cfg.BusinessHandoffConfirmed {
-			mode = "rw"
-		}
-		// SQLite foreign-key enforcement is connection-local and disabled by
-		// default. The Gateway owner must enable it explicitly so the schema
-		// contract's cascade/relationship guarantees hold for every connection.
-		driver, dsn = "sqlite", "file:"+cfg.BusinessDatabasePath+"?mode="+mode+"&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
-		if strings.TrimSpace(cfg.BusinessDatabasePath) == "" {
-			return nil, errors.New("J3b Business SQLite path is required")
-		}
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open J3b Business source database: %w", err)
 	}
-	if !postgres {
-		// SQLite's physical-file owner must serialize all reads/writes through
-		// one connection. This applies before and after handoff; query_only is
-		// an access mode, not a substitute for single-connection ownership.
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-	}
 	closeDB := db.Close
-	// schemaReady is evidence, not a trust-me switch: on SQLite it must be
-	// backed by the same versioned table/column/index contract that
-	// maintenance reports before Gateway exposes the owner.
-	if cfg.SchemaReady && !postgres {
-		if err := CheckBusinessSQLiteSchema(ctx, db); err != nil {
-			_ = closeDB()
-			return nil, err
-		}
-	} else if cfg.SchemaReady && postgres {
+	// schemaReady is evidence, not a trust-me switch: it must be backed by the
+	// same versioned table/column/index contract that maintenance reports
+	// before Gateway exposes the owner.
+	if cfg.SchemaReady && postgres {
 		if err := CheckBusinessPostgresSchema(ctx, db, "juhe_business"); err != nil {
 			_ = closeDB()
 			return nil, err
 		}
 	}
-	// 2026-09-22 读/写双池：Source 是纯读端口（见类型注释），账户选项、运行时
-	// 目标解析、契约检查与缓存回源都走只读池，吸收个人部署的真实读并发；写池
-	// 维持单连接的进程内排队语义。PostgreSQL 池本就是多连接，不另拆。
-	sourceDB := db
-	var readDB *sql.DB
-	if !postgres {
-		readDB, err = openBusinessSQLiteReadPool(cfg.BusinessDatabasePath, cfg.SQLiteReadPoolSize)
-		if err != nil {
-			_ = closeDB()
-			return nil, err
-		}
-		sourceDB = readDB
-		closeDB = func() error {
-			_ = readDB.Close()
-			return db.Close()
-		}
-	}
-	source, err := NewBusinessTargetSource(sourceDB, postgres, cfg.CredentialSecret)
+	// 原 SQLite 读/写双池（ReadDB 只读池吸收读并发）已随 sqlite 形态退役；
+	// PostgreSQL 单多连接池同时承载 Source 只读面与 auth/session 写面。
+	source, err := NewBusinessTargetSource(db, postgres, cfg.CredentialSecret)
 	if err != nil {
 		_ = closeDB()
 		return nil, err
@@ -157,30 +106,7 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 		_ = closeDB()
 		return nil, err
 	}
-	return &BusinessTargetConnection{DB: db, ReadDB: readDB, Source: source, Close: closeDB}, nil
-}
-
-// openBusinessSQLiteReadPool opens the read-only pool over the same Business
-// SQLite file: mode=ro plus query_only keeps the connection fail-closed even
-// if a future caller misroutes a write, and busy_timeout covers waits against
-// the write pool and WAL checkpointing. size 0 means the 4-connection default;
-// explicit values must stay within 1..16 so a misconfigured deployment fails
-// loudly instead of silently serializing on one connection or exhausting the
-// file with unbounded readers.
-func openBusinessSQLiteReadPool(path string, size int) (*sql.DB, error) {
-	if size == 0 {
-		size = 4
-	}
-	if size < 1 || size > 16 {
-		return nil, fmt.Errorf("JUHE_AI_SQLITE_READ_POOL 必须为 1..16 的整数: %d", size)
-	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
-	if err != nil {
-		return nil, fmt.Errorf("open J3b Business read pool: %w", err)
-	}
-	db.SetMaxOpenConns(size)
-	db.SetMaxIdleConns(size)
-	return db, nil
+	return &BusinessTargetConnection{DB: db, Source: source, Close: closeDB}, nil
 }
 
 // Resolver returns the narrow in-process function expected by Runtime. It is

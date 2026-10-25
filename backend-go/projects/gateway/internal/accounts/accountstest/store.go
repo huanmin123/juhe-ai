@@ -19,9 +19,9 @@ import (
 // write surface, mirroring the accountkeystates precedent. The diagnostics
 // execution itself is dispatched through TestDispatchEffects.
 //
-// SQL and message copy follow the Node repository verbatim; the dual-mode
-// dialect differences are the store-wide ones (PostgreSQL qualified
-// juhe_business tables + TRUE/FALSE literals, SQLite plain tables + 1/0).
+// SQL and message copy follow the Node repository verbatim; the dialect
+// surface is the store-wide PG one (qualified juhe_business tables +
+// TRUE/FALSE literals).
 
 const (
 	// testTaskRetentionHours mirrors accountTestTaskRetentionHours.

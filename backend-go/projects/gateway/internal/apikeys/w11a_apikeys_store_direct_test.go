@@ -49,7 +49,7 @@ func TestW11AStorePatchDirectArms(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pgStore, err := NewStore(env.db, true, testSecret, time.Now, nil, nil)
+		pgStore, err := NewStore(env.db, testSecret, time.Now, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -199,7 +199,7 @@ func TestW11AStoreRefreshAndDeleteDirectArms(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pgStore, err := NewStore(env.db, true, testSecret, time.Now, nil, nil)
+		pgStore, err := NewStore(env.db, testSecret, time.Now, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -308,7 +308,7 @@ func TestW11AQuotaRemainingArms(t *testing.T) {
 
 func TestW11AUsageSourceArms(t *testing.T) {
 	ctx := context.Background()
-	source, err := NewStatsUsageSource(newStatsDB(t), false)
+	source, err := NewStatsUsageSource(newStatsDB(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,11 +323,11 @@ func TestW11AUsageSourceArms(t *testing.T) {
 	// A row with NULL cache_read_cost falls back to the zero-cost parse.
 	t.Run("null_cost_row", func(t *testing.T) {
 		db := newStatsDB(t)
-		if _, err := db.Exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_tokens, thinking_tokens, total_cost_usd, last_used_at)
+		if _, err := db.Exec(`INSERT INTO juhe_stats.usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_tokens, thinking_tokens, total_cost_usd, last_used_at)
 			VALUES ('sysacc_1', 'api_key', 'w11a-key', 1, 1, 1, 0, 0, 0, NULL)`); err != nil {
 			t.Fatal(err)
 		}
-		fullSource, err := NewStatsUsageSource(db, false)
+		fullSource, err := NewStatsUsageSource(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -339,23 +339,11 @@ func TestW11AUsageSourceArms(t *testing.T) {
 			t.Fatalf("summary missing: %+v", full)
 		}
 	})
-	// Missing stats table inside the read worker degrades per chunk.
-	t.Setenv("JUHE_AI_SQLITE_READ_WORKER", "true")
-	missing, err := NewStatsUsageSource(newEmptyStatsDB(t), false)
+	// 缺表错误直接传播（无 read-worker 降级臂——已随 sqlite 生产臂删除）。
+	broken, err := NewStatsUsageSource(newEmptyStatsDB(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	degraded, err := missing.ApiKeyUsageSummaries(ctx, []UsageScope{{RowKey: "w11a-key", SystemAccountID: "sysacc_1", ScopeID: "w11a-key"}})
-	if err != nil || len(degraded) != 0 {
-		t.Fatalf("degraded full summaries = %v, %v", degraded, err)
-	}
-	// Column-mismatched table fails the row scan.
-	broken, err := NewStatsUsageSource(newEmptyStatsDB(t), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("JUHE_AI_SQLITE_READ_WORKER", "")
-	// (read worker off: every error propagates)
 	if _, err := broken.ApiKeyUsageSummaries(ctx, []UsageScope{{RowKey: "w11a-key", SystemAccountID: "sysacc_1", ScopeID: "w11a-key"}}); err == nil {
 		t.Fatal("missing stats table must propagate")
 	}

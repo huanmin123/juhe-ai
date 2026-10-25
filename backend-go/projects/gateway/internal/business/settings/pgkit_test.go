@@ -15,7 +15,7 @@ package settings
 //     settings.go boolBind 同因）。
 //   - 组B（SQLite-only 生产臂为被测对象）：TestStoreBoolBindDialect 的
 //     SQLite 绑定分支、scripted w9d driver 对 SQLite 臂 SQL 形态的断言、
-//     w7a 方言臂的 &Store{mode: SQLite} 纯断言——按 D17 不提前迁移也不提前
+//     w7a 方言臂的 &Store{} 纯断言——按 D17 不提前迁移也不提前
 //     删除，随生产 sqlite 臂删除批次同批退役。
 //   - scripted 假驱动（w9dScript driver 族）不依赖真库，保持原状。
 //

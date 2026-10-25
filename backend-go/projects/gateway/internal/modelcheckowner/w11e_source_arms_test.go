@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"net/http"
 	"strings"
 	"testing"
@@ -75,14 +76,15 @@ func TestW11ESourceConstructorAndFactoryArms(t *testing.T) {
 	if _, closeFn, err := OpenBusinessTargetSource(context.Background(), Config{Enabled: false}); err == nil || closeFn != nil {
 		t.Fatalf("未启用配置必须失败: %v", err)
 	}
-	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", StoreMode: "oracle"}); err == nil || !strings.Contains(err.Error(), "store mode is invalid") {
-		t.Fatalf("非法存储模式必须拒绝: %v", err)
+	// sqlite 形态拒绝臂（非法模式/空路径/缺表）随 OpenBusinessTargetConnection
+	// 的 sqlite 折叠退役（D17）；PG 形态保留「空业务 URL 必须拒绝」与
+	// 「schemaReady 未经证实的空库必须被形状守卫拒绝」两个对应臂。
+	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", StoreMode: "postgres"}); err == nil || !strings.Contains(err.Error(), "PostgreSQL URL is required") {
+		t.Fatalf("空业务 PG URL 必须拒绝: %v", err)
 	}
-	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", StoreMode: "sqlite"}); err == nil || !strings.Contains(err.Error(), "SQLite path is required") {
-		t.Fatalf("空 SQLite 路径必须拒绝: %v", err)
-	}
-	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", StoreMode: "sqlite", BusinessDatabasePath: t.TempDir() + "/missing.db"}); err == nil {
-		t.Fatal("CheckContract 失败必须让打开失败（缺表）")
+	emptyDB := pgtestkit.NewTestDatabase(t)
+	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", StoreMode: "postgres", BusinessPostgresURL: emptyDB.DSN, SchemaReady: true}); err == nil || !strings.Contains(err.Error(), "no tables") {
+		t.Fatalf("schemaReady 空库必须被形状守卫拒绝: %v", err)
 	}
 }
 

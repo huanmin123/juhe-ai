@@ -331,10 +331,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// tables live only in juhe_stats — reached through schema qualification on
 	// the shared business pool.
 	composed.statsDB = composed.db
-	// X04 read faces: the usage-catalog registry (usage-records shard walk)
-	// and the table-monitor snapshot database reach juhe_usage/juhe_stats
-	// through the shared pool.
-	usageCatalogDB := composed.db
+	// X04 read faces: the table-monitor snapshot database reaches
+	// juhe_usage/juhe_stats through the shared pool.
 
 	// X04 404 项补齐 (logreads three-family reads): PostgreSQL reaches
 	// juhe_dataset through the shared pools — audit through the F3 store pool
@@ -342,13 +340,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// runtime-log and public-api-logs through the business pool like every
 	// other dataset repository.
 	var auditDatasetDB *sql.DB
-	if auditConfig.Mode == auditlog.ModePostgres && auditConfig.PostgresPool != nil {
+	if auditConfig.PostgresPool != nil {
 		auditDatasetDB = auditConfig.PostgresPool.DB()
 	}
 	if auditDatasetDB == nil {
 		return nil, errors.New("缺少 F3 audit 数据集连接池，无法挂载审计日志读面")
 	}
-	logReadsMode := logreads.ReadPostgres
 	runtimeLogDatasetDB := composed.db
 	publicApiLogDatasetDB := composed.db
 
@@ -365,7 +362,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	bus.SetLogger(slog.Default())
 	composed.Bus = bus
 
-	businessSettings, err := businesssettings.New(composed.db, businesssettings.Postgres, businessSchema, ownerGate)
+	businessSettings, err := businesssettings.New(composed.db, businessSchema, ownerGate)
 	if err != nil {
 		return nil, fmt.Errorf("create business settings store: %w", err)
 	}
@@ -399,7 +396,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 
 	// X04 404 项补齐 (logreads three-family reads): build the audit/runtime/
 	// public-api log readers over the dataset handles opened above.
-	auditLogReader, err := logreads.NewAuditLogQueryReader(auditDatasetDB, logReadsMode, logreads.AuditQueryDirectories{
+	auditLogReader, err := logreads.NewAuditLogQueryReader(auditDatasetDB, logreads.AuditQueryDirectories{
 		HotSearchDirectory:   auditConfig.HotSearchDirectory,
 		PayloadBlobDirectory: auditConfig.PayloadBlobDirectory,
 	})
@@ -409,7 +406,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// Retention days mirror Node runtimeLogIndexRetentionDaysFromSettings:
 	// the integer runtimeLogIndexRetentionDays setting (else the 14-day
 	// default), clamped to 1..90 by the reader.
-	runtimeLogReader, err := logreads.NewRuntimeLogSQLReaderWithSources(runtimeLogDatasetDB, logReadsMode, func() int {
+	runtimeLogReader, err := logreads.NewRuntimeLogSQLReaderWithSources(runtimeLogDatasetDB, func() int {
 		value, readErr := settingValue("runtimeLogIndexRetentionDays")
 		if readErr != nil {
 			return 14
@@ -422,7 +419,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create runtime log reader: %w", err)
 	}
-	publicApiLogReader, err := logreads.NewPublicApiLogSQLStore(publicApiLogDatasetDB, logReadsMode)
+	publicApiLogReader, err := logreads.NewPublicApiLogSQLStore(publicApiLogDatasetDB)
 	if err != nil {
 		return nil, fmt.Errorf("create public api log reader: %w", err)
 	}
@@ -451,7 +448,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// authorization quota caches invalidate through the K5 bus —
 	// *inval.Bus satisfies the RuntimeInvalidator port directly, the same
 	// adapter shape as accountsBusInvalidator below without translation.
-	groupStatsDirtyMarker, err := groupdirtycursor.NewStore(composed.db, groupdirtycursor.Postgres, businessSchema,
+	groupStatsDirtyMarker, err := groupdirtycursor.NewStore(composed.db, businessSchema,
 		groupdirtycursor.OwnerGate{
 			Confirmed:         ownerGate.Confirmed,
 			SchemaReady:       ownerGate.SchemaReady,
@@ -470,8 +467,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// into the DEFAULT scheduling-policy projection (Node reads
 	// runtimeConfig.concurrency.globalMax live; the store default stays 5000).
 	// D-38: group_account_stats reads from juhe_stats database.
-	groupStatsReader := groups.NewGroupAccountStatsDBReader(composed.statsDB, composed.pgDialect)
-	groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus,
+	groupStatsReader := groups.NewGroupAccountStatsDBReader(composed.statsDB)
+	groupsStore, err := groups.NewStore(composed.db, time.Now, newCompositionID, bus,
 		groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax),
 		groups.WithStatsReader(groupStatsReader),
 		// 分组列表"用量(日)"列（accountStats.todayUsage/usage）：同一 juhe_stats
@@ -500,7 +497,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create scheduling-preference store: %w", err)
 	}
-	apiKeyStore, err := apikeys.NewStore(composed.db, composed.pgDialect, cfg.Secret, time.Now, newCompositionID, apikeys.BusInvalidator{Bus: bus})
+	apiKeyStore, err := apikeys.NewStore(composed.db, cfg.Secret, time.Now, newCompositionID, apikeys.BusInvalidator{Bus: bus})
 	if err != nil {
 		return nil, fmt.Errorf("create api-key store: %w", err)
 	}
@@ -509,13 +506,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// nil-source degradation), and the delete-transaction cleanup handoff
 	// reaches the dataset placement through the shared juhe_dataset schema
 	// registered in-transaction.
-	usageSource, err := apikeys.NewStatsUsageSource(composed.statsDB, composed.pgDialect)
+	usageSource, err := apikeys.NewStatsUsageSource(composed.statsDB)
 	if err != nil {
 		return nil, fmt.Errorf("create api-key stats usage source: %w", err)
 	}
 	apiKeyStore.SetUsageSource(usageSource)
 	apiKeyStore.SetCleanupSubmitter(apiKeyCleanupSubmitter{store: apiKeyStore})
-	accountStore, err := accounts.NewStore(composed.db, composed.pgDialect, cfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composed.db, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		return nil, fmt.Errorf("create account store: %w", err)
 	}
@@ -525,7 +522,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
 	// D-126 账户列表 usage 注水（W4-C）：totals 从 usage_stats_totals、
 	// statDate 从 usage_stats_daily 读，-nil source 保持零值降级。
-	accountUsageSource, err := accounts.NewStatsUsageSource(composed.statsDB, composed.pgDialect)
+	accountUsageSource, err := accounts.NewStatsUsageSource(composed.statsDB)
 	if err != nil {
 		return nil, fmt.Errorf("create account stats usage source: %w", err)
 	}
@@ -564,10 +561,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 句柄关闭执行（composition.Shutdown 顺序），Close 停止调度、取消在飞
 	// DELETE 并等待返回，保证队列不触碰已关闭的连接池。
 	composed.shutdowns = append(composed.shutdowns, balanceSnapshotCleaner.Close)
-	// SQLite account deletion performs the Node per-grant authorization
-	// runtime sync only through this composition-root port; PostgreSQL keeps
-	// its existing bulk transaction path inside accounts.Delete.
-	accountStore.SetDeletedResourceGrantRevoker(authzStore)
 	// BUG-0175 追加接线（W2-B 完工后移交的 compose 职责）：M11 账户实例归还
 	// 路由（POST /{id}/return-authorization）的终态授权归还写此前生产不可达
 	//（端口只有 m11_test 在用，组装根从未注入 → 归还路由恒 404）。接到
@@ -832,11 +825,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	(&statreads.Deps{
 		Business:       composed.db,
 		Stats:          composed.statsDB,
-		UsageCatalog:   usageCatalogDB,
-		PGDialect:      composed.pgDialect,
 		Auth:           authDeps,
 		Now:            time.Now,
-		Timezone:       statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
+		Timezone:       statreads.NewSystemSettingsTimezoneSource(composed.db),
 		HealthOutcomes: healthOutcomes,
 		// D3（存储形态收口）：RuntimeMode 判据收敛——standalone 不再是合法值，
 		// 恒传 performance（PG+Redis 唯一形态的既有取值）。

@@ -38,7 +38,7 @@ func TestListGroupModelOptions(t *testing.T) {
 	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES
 		('a-std', 'm-std', '2026-01-01'), ('a-member', 'm-member', '2026-01-01')`)
 
-	store, err := NewStore(env.db, true, nil, nil, env.inval)
+	store, err := NewStore(env.db, nil, nil, env.inval)
 	if err != nil {
 		t.Fatal(err)
 	}

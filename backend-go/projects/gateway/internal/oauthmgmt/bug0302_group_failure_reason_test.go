@@ -64,7 +64,9 @@ func installBUG0302Sink(t *testing.T) *bug0302EventSink {
 
 // assertBUG0302GroupQuery500KeepsFailureReason drives one group-query 500 arm
 // and pins the BUG-0302 contract: the client envelope stays generic while the
-// completion log carries the raw SQLite cause.
+// completion log carries the raw storage cause（T65 迁 PG 后原文为 PG
+// `relation ... does not exist (SQLSTATE 42P01)`；SQLite "no such table" 原文
+// 已随载具退役，断言按 PG 原文重钉）。
 func assertBUG0302GroupQuery500KeepsFailureReason(t *testing.T, path string, body string) {
 	t.Helper()
 	sink := installBUG0302Sink(t)
@@ -72,7 +74,7 @@ func assertBUG0302GroupQuery500KeepsFailureReason(t *testing.T, path string, bod
 	env.w14dLoginAdmin(t)
 
 	// Dropping the groups table turns the group check into the 500 arm.
-	env.exec(t, `DROP TABLE groups`)
+	env.exec(t, `DROP TABLE juhe_business.groups`)
 	code, payload := env.do(t, http.MethodPost, path, body)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("group 500: %d %v", code, payload)
@@ -82,13 +84,13 @@ func assertBUG0302GroupQuery500KeepsFailureReason(t *testing.T, path string, bod
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "no such table") {
+	if strings.Contains(string(encoded), "SQLSTATE") {
 		t.Fatalf("raw error leaked to the client: %s", encoded)
 	}
 	// BUG-0302: the arm used to pass the always-nil outer err, so the
 	// completion log lost the failureReason. It must now name the cause.
 	reason := sink.completedFailureReason(t, path)
-	if !strings.Contains(reason, "no such table: groups") {
+	if !strings.Contains(reason, "juhe_business.groups") || !strings.Contains(reason, "does not exist") {
 		t.Fatalf("failureReason must keep the raw cause, got %q", reason)
 	}
 }

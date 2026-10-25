@@ -18,12 +18,11 @@ type GroupAccountStatsDBReader struct {
 	db *sql.DB
 	// pg 决定占位符方言（PG 句柄为 pgx stdlib，? 须重写为 $N，与 ipstats /
 	// groups Store.bind 同一惯例）。
-	pg bool
 }
 
 // NewGroupAccountStatsDBReader creates a stats reader from the stats database.
-func NewGroupAccountStatsDBReader(db *sql.DB, postgres bool) *GroupAccountStatsDBReader {
-	return &GroupAccountStatsDBReader{db: db, pg: postgres}
+func NewGroupAccountStatsDBReader(db *sql.DB) *GroupAccountStatsDBReader {
+	return &GroupAccountStatsDBReader{db: db}
 }
 
 // table qualifies stats-schema tables for PostgreSQL（生产 PG 无 search_path，
@@ -31,17 +30,11 @@ func NewGroupAccountStatsDBReader(db *sql.DB, postgres bool) *GroupAccountStatsD
 // apikeys StatsUsageSource.table / gatewayclientip SQLPolicySource.table 同一
 // 方言惯例：SQLite 保持裸表名）。
 func (r *GroupAccountStatsDBReader) table(name string) string {
-	if r.pg {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // bind rewrites ? placeholders to $N for PostgreSQL.
 func (r *GroupAccountStatsDBReader) bind(query string) string {
-	if !r.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

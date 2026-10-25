@@ -17,7 +17,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
 	"strings"
 )
 
@@ -117,30 +116,23 @@ func (s *Store) hydrateDetailUsage(ctx context.Context, item *ListItem, systemAc
 // (PostgreSQL juhe_stats schema or the unqualified SQLite tables).
 type StatsUsageSource struct {
 	db *sql.DB
-	pg bool
 }
 
 // NewStatsUsageSource builds the reader; db must point at the stats database.
-func NewStatsUsageSource(db *sql.DB, postgres bool) (*StatsUsageSource, error) {
+func NewStatsUsageSource(db *sql.DB) (*StatsUsageSource, error) {
 	if db == nil {
 		return nil, errors.New("apikeys stats usage source requires a stats database")
 	}
-	return &StatsUsageSource{db: db, pg: postgres}, nil
+	return &StatsUsageSource{db: db}, nil
 }
 
 // table qualifies stats-schema tables for PostgreSQL.
 func (s *StatsUsageSource) table(name string) string {
-	if s.pg {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // bind rewrites ? placeholders to $N for PostgreSQL.
 func (s *StatsUsageSource) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -185,7 +177,7 @@ func (s *StatsUsageSource) ApiKeyListUsageSummaries(ctx context.Context, scopes 
   `)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		if degradeOnMissingStats(s.pg, err) {
+		if false {
 			return map[string]ListUsageSummary{}, nil
 		}
 		return nil, err
@@ -261,7 +253,7 @@ func (s *StatsUsageSource) ApiKeyUsageSummaries(ctx context.Context, scopes []Us
   `)
 			rows, err := s.db.QueryContext(ctx, query, args...)
 			if err != nil {
-				if degradeOnMissingStats(s.pg, err) {
+				if false {
 					continue
 				}
 				return nil, err
@@ -347,31 +339,5 @@ func collectUsageSummaryRows(rows *sql.Rows, summaries map[string]AccountUsageSu
 // dialectPlaceholder renders the next positional placeholder ($N on
 // PostgreSQL, ? on SQLite).
 func (s *StatsUsageSource) dialectPlaceholder(index int) string {
-	if !s.pg {
-		return "?"
-	}
 	return "$" + itoa(index)
-}
-
-// sqliteReadWorkerProcess mirrors isSqliteReadWorkerProcess: the SQLite
-// read-worker role flag (JUHE_AI_SQLITE_READ_WORKER === 'true'). The Go
-// gateway runs single-process, so the flag stays unset and every SQLite
-// stats failure fails the read exactly like Node's main process.
-func sqliteReadWorkerProcess() bool {
-	return os.Getenv("JUHE_AI_SQLITE_READ_WORKER") == "true"
-}
-
-// degradeOnMissingStats mirrors isMissingSqliteStatsReadError: the
-// missing-resource arm ("no such table" / "unable to open database file")
-// only degrades inside the SQLite read-worker process. BUG-0175 D-180: the
-// gate previously fired unconditionally, silently zeroing usage on SQLite
-// stats errors the Node main process would have surfaced. Every other error
-// — and every PostgreSQL error (Node has no catch on the PG path) — fails
-// the read.
-func degradeOnMissingStats(pg bool, err error) bool {
-	if pg || !sqliteReadWorkerProcess() {
-		return false
-	}
-	message := err.Error()
-	return strings.Contains(message, "no such table:") || strings.Contains(message, "unable to open database file")
 }

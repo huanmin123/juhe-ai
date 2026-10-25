@@ -204,7 +204,7 @@ func main() {
 			fail(fmt.Errorf("verify J3b Gateway auth contract: %w", authErr))
 		}
 		retentionGate := sessionretention.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped}
-		retentionStore, retentionErr := sessionretention.New(businessConnection.DB, sessionretention.Postgres, "juhe_business", retentionGate)
+		retentionStore, retentionErr := sessionretention.New(businessConnection.DB, "juhe_business", retentionGate)
 		if retentionErr != nil {
 			fail(fmt.Errorf("create J3b Gateway session retention owner: %w", retentionErr))
 		}
@@ -230,7 +230,7 @@ func main() {
 				SchemaReady:       j3bConfig.SchemaReady,
 				NodeWriterStopped: j3bConfig.NodeWriterStopped,
 			}
-			circuitStore, circuitErr := circuitcontrolplane.New(businessConnection.DB, circuitcontrolplane.Postgres, "juhe_business", circuitGate)
+			circuitStore, circuitErr := circuitcontrolplane.New(businessConnection.DB, "juhe_business", circuitGate)
 			if circuitErr != nil {
 				fail(fmt.Errorf("create J3b Gateway circuit control-plane owner: %w", circuitErr))
 			}

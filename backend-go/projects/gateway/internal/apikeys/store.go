@@ -120,18 +120,12 @@ func (a AccessScope) ownerID() (string, error) {
 // rows written by Node must stay decryptable.
 type Store struct {
 	db     *sql.DB
-	pg     bool
 	secret string
 	now    func() time.Time
 	newI   func(prefix string) string
 	inval  CacheInvalidator
 	usage  UsageSource
 
-	// datasetDB is the SQLite dataset-database handle (the business and
-	// dataset databases are separate files; Node registers deleted API key
-	// cleanup targets into the dataset one). Unused on PostgreSQL, where the
-	// juhe_dataset schema shares the business database handle.
-	datasetDB *sql.DB
 	// cleanupSubmitter mirrors submitApiKeyRelatedCleanupAsync's maintenance
 	// job enqueue after the delete transaction commits.
 	cleanupSubmitter CleanupSubmitter
@@ -157,7 +151,6 @@ type CleanupSubmitter interface {
 
 // SetDatasetDB wires the SQLite dataset-database handle used for the
 // post-commit cleanup-target registration.
-func (s *Store) SetDatasetDB(db *sql.DB) { s.datasetDB = db }
 
 // SetCleanupSubmitter wires the maintenance-job enqueue port.
 func (s *Store) SetCleanupSubmitter(submitter CleanupSubmitter) { s.cleanupSubmitter = submitter }
@@ -171,13 +164,7 @@ func (s *Store) SetCleanupSubmitter(submitter CleanupSubmitter) { s.cleanupSubmi
 // enqueue equivalent. Idempotent upsert; a nil dataset handle on SQLite keeps
 // the degradation observable instead of silent.
 func (s *Store) RegisterCleanupTarget(ctx context.Context, apiKeyID, systemAccountID string) error {
-	if s.pg {
-		return s.insertCleanupTarget(ctx, s.db, apiKeyID, systemAccountID, isoMillis(s.now()))
-	}
-	if s.datasetDB == nil {
-		return errors.New("api keys dataset 数据库未接入，清理目标未登记")
-	}
-	return s.insertCleanupTarget(ctx, s.datasetDB, apiKeyID, systemAccountID, isoMillis(s.now()))
+	return s.insertCleanupTarget(ctx, s.db, apiKeyID, systemAccountID, isoMillis(s.now()))
 }
 
 // defaultScheduleTimezone mirrors defaultScheduleTimezone: the
@@ -228,7 +215,7 @@ func (s *Store) readUsageStatsTimezoneSetting() string {
 
 // NewStore builds the store; inval may be nil (no-op invalidation until the
 // bus is wired).
-func NewStore(db *sql.DB, postgres bool, secret string, now func() time.Time, newID func(string) string, inval CacheInvalidator) (*Store, error) {
+func NewStore(db *sql.DB, secret string, now func() time.Time, newID func(string) string, inval CacheInvalidator) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("apikeys store requires a database")
 	}
@@ -241,7 +228,7 @@ func NewStore(db *sql.DB, postgres bool, secret string, now func() time.Time, ne
 	if newID == nil {
 		newID = func(prefix string) string { return randomID(prefix) }
 	}
-	return &Store{db: db, pg: postgres, secret: secret, now: now, newI: newID, inval: inval}, nil
+	return &Store{db: db, secret: secret, now: now, newI: newID, inval: inval}, nil
 }
 
 // randomID mirrors Node newId (random hex suffix).
@@ -252,26 +239,17 @@ func randomID(prefix string) string {
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 // datasetTable mirrors the dataset-database placement of
 // api_key_record_cleanup_targets (M01 dataset domain); the slice writes it in
 // the same database handle/transaction as the business delete.
 func (s *Store) datasetTable(name string) string {
-	if s.pg {
-		return "juhe_dataset." + name
-	}
-	return name
+	return "juhe_dataset." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -760,7 +738,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		args = append(args, scoped)
 	}
 	if normalized.Keyword != "" {
-		clause, keywordArgs := apiKeyKeywordClause(s.pg, normalized.Keyword)
+		clause, keywordArgs := apiKeyKeywordClause(normalized.Keyword)
 		clauses = append(clauses, clause)
 		args = append(args, keywordArgs...)
 	}
@@ -895,32 +873,23 @@ func textPrefixUpperBound(value string) string {
 // PostgreSQL narrows the name range under COLLATE "C" and adds an exact
 // starts_with guard (the default collation must not decide the prefix match);
 // SQLite keeps the plain range scan of buildApiKeyFilters.
-func apiKeyKeywordClause(pg bool, keyword string) (string, []any) {
+func apiKeyKeywordClause(keyword string) (string, []any) {
 	upper := textPrefixUpperBound(keyword)
-	if pg {
-		return `(api_keys.name COLLATE "C" >= ? AND api_keys.name COLLATE "C" < ? AND starts_with(api_keys.name, ?))`,
-			[]any{keyword, upper, keyword}
-	}
-	return "(api_keys.name >= ? AND api_keys.name < ?)", []any{keyword, upper}
+	return `(api_keys.name COLLATE "C" >= ? AND api_keys.name COLLATE "C" < ? AND starts_with(api_keys.name, ?))`,
+		[]any{keyword, upper, keyword}
 }
 
 // rowLockClause mirrors `const lockClause = tx.driver === 'postgres' ? '
 // FOR UPDATE' : ”` on the single-table refresh/delete row reads.
-func rowLockClause(pg bool) string {
-	if pg {
-		return " FOR UPDATE"
-	}
-	return ""
+func rowLockClause() string {
+	return " FOR UPDATE"
 }
 
 // strategyJoinLockClause mirrors findPreferredDefaultRouteStrategyReference's
 // ` FOR UPDATE OF route_strategies, route_strategy_groups, groups` on
 // PostgreSQL create-path reads.
-func strategyJoinLockClause(pg bool) string {
-	if pg {
-		return " FOR UPDATE OF route_strategies, route_strategy_groups, groups"
-	}
-	return ""
+func strategyJoinLockClause() string {
+	return " FOR UPDATE OF route_strategies, route_strategy_groups, groups"
 }
 
 // newListItem mirrors apiKeyListItemsFromRows (usage zero value; the list
@@ -1287,7 +1256,7 @@ func (s *Store) findPreferredDefaultRouteStrategy(ctx context.Context, q queryer
 			AND route_strategies.status = 'active'
 			AND route_strategies.is_default = 1
 		ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
-		LIMIT 1`+strategyJoinLockClause(s.pg)), ownerID).
+		LIMIT 1`+strategyJoinLockClause()), ownerID).
 		Scan(&reference.id, &reference.name, &reference.mode, &reference.status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1305,7 +1274,7 @@ func (s *Store) routeStrategyReference(ctx context.Context, q queryer, ownerID, 
 	err := q.QueryRowContext(ctx, s.bind(`SELECT route_strategies.id, route_strategies.name, route_strategies.mode, route_strategies.status
 		FROM `+s.table("route_strategies")+` route_strategies
 		WHERE route_strategies.id = ? AND route_strategies.system_account_id = ?
-		LIMIT 1`+rowLockClause(s.pg)), strategyID, ownerID).
+		LIMIT 1`+rowLockClause()), strategyID, ownerID).
 		Scan(&reference.id, &reference.name, &reference.mode, &reference.status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1342,7 +1311,7 @@ func (s *Store) RefreshSecret(ctx context.Context, id string, access AccessScope
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.key_hash, api_keys.key_prefix, api_keys.key_suffix, api_keys.updated_at
 		FROM `+s.table("api_keys")+` api_keys
-		WHERE api_keys.id = ?`+where+` LIMIT 1`+rowLockClause(s.pg)), args...).
+		WHERE api_keys.id = ?`+where+` LIMIT 1`+rowLockClause()), args...).
 		Scan(&rowID, &ownerID, &name, &keyHashColumn, &previousKeyPrefix, &previousKeySuffix, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1421,7 +1390,7 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.key_hash, api_keys.is_default, api_keys.purpose
 		FROM `+s.table("api_keys")+` api_keys
-		WHERE api_keys.id = ?`+where+` LIMIT 1`+rowLockClause(s.pg)), args...).
+		WHERE api_keys.id = ?`+where+` LIMIT 1`+rowLockClause()), args...).
 		Scan(&rowID, &ownerID, &name, &keyHash, &isDefault, &purpose)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &DeleteResult{}, nil
@@ -1447,14 +1416,10 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		return nil, err
 	}
 	// Node registers the dataset cleanup target inside the delete transaction
-	// only on PostgreSQL, where juhe_dataset shares the business database; on
-	// SQLite the registration happens after commit against the separate
-	// dataset database (submitApiKeyRelatedCleanupAsync, best effort).
-	if s.pg {
-		updatedAt := isoMillis(s.now())
-		if err := s.insertCleanupTarget(ctx, tx, rowID, ownerID, updatedAt); err != nil {
-			return nil, err
-		}
+	// (juhe_dataset shares the business database on PostgreSQL).
+	updatedAt := isoMillis(s.now())
+	if err := s.insertCleanupTarget(ctx, tx, rowID, ownerID, updatedAt); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -1465,15 +1430,6 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		CleanupTargetOwnerID:  ownerID,
 		OwnerSystemAccountID:  ownerID,
 		ResourceName:          name,
-	}
-	if !s.pg {
-		if s.datasetDB == nil {
-			outcome.CleanupRegisterError = errors.New("api keys dataset 数据库未接入，清理目标未登记")
-		} else if err := s.insertCleanupTarget(ctx, s.datasetDB, rowID, ownerID, isoMillis(s.now())); err != nil {
-			// Node catches the registration failure, logs it and still
-			// submits the worker job; the delete stays successful.
-			outcome.CleanupRegisterError = err
-		}
 	}
 	if s.inval != nil {
 		if err := s.inval.InvalidateValidation(rowID, ReasonAPIKeyDeleted, []string{keyHash}); err != nil {

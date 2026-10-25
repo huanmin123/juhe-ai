@@ -27,9 +27,9 @@ type Config struct {
 }
 
 const (
-	defaultOwnerLease           = 30 * time.Second
-	defaultRetentionInterval    = time.Minute
-	defaultRetentionBatch       = 512
+	defaultOwnerLease        = 30 * time.Second
+	defaultRetentionInterval = time.Minute
+	defaultRetentionBatch    = 512
 	// 2026-10-17 取值收敛 5096→20（BUG-0313 治理批次 3，与审计池同口径）：
 	// F4 负载形态为异步追加+保留任务+管理页查询，5096 对 PG
 	// max_connections=100 是连接风暴隐患。

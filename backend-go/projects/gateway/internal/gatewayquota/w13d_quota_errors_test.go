@@ -58,15 +58,15 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 	statsSchema(t, db)
 	// stats 用生产 PG 臂方言（juhe_stats 限定表 + $n 占位符），配合
 	// PostgresDatabase 模式走批量装载成功路径。
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true},
+		Modes:    Modes{},
 		Stats:    stats,
 		Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock),
 		Now:      clock.Now,
 	})
 	if err != nil {
@@ -126,8 +126,8 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 
 	// ExactAsync 的 stats 缺失 / 坏 limits / 坏时区 / shared 错误。
 	noStats, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{PostgresDatabase: true}, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Modes: Modes{}, Timezone: mustTZ(t, time.UTC),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -139,8 +139,8 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 		t.Fatal("坏 limits 必须报错")
 	}
 	brokenTZ, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{PostgresDatabase: true}, Stats: stats, Timezone: w13dBrokenTZ{},
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Modes: Modes{}, Stats: stats, Timezone: w13dBrokenTZ{},
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 	shared := &w13dFlakyShared{}
 	_, _, redisSnapshot, _ := newRedisQuotaStack(t, clock)
 	redisService, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true, RedisCache: true},
+		Modes:    Modes{RedisCache: true},
 		Stats:    stats,
 		Timezone: mustTZ(t, time.UTC),
 		Snapshot: redisSnapshot,
@@ -181,7 +181,7 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 func TestW13DAPIKeyQuotaCheckCostErrors(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	// 统计库不建表（无 juhe_stats 投影）→ LoadCosts 缺表报错。
-	pgStats, err := NewStatsStore(newTestDB(t, "w13d-cost-err"), true)
+	pgStats, err := NewStatsStore(newTestDB(t, "w13d-cost-err"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestW13DAPIKeyQuotaAsyncRedisSnapshotErrors(t *testing.T) {
 	server, shared, snapshot, _ := newRedisQuotaStack(t, clock)
 	logs := &logRecorder{}
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:    Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
+		Modes:    Modes{RedisCache: true, RedisRuntimeState: true},
 		Timezone: mustTZ(t, time.UTC),
 		Snapshot: snapshot,
 		Shared:   shared,
@@ -265,7 +265,7 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-modes-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 	// 非 PG 模式的 ByIDs 同步物化分支需要 SQLite 业务库承载，PG 化测试基建下
 	// 不可达（登记：随生产 sqlite 臂删除批次同批退役）。
 	memoryService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true},
+		Modes:    Modes{},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
@@ -298,9 +298,9 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 	// PG 臂方言真实查询（SQLite 时代依赖 schema 前缀表在 SQLite 不存在注入
 	// 错误，迁真实 PG 后重钉为成功路径断言）。
 	pgService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true},
+		Modes:    Modes{},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -331,9 +331,9 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 
 	// syncer 错误透传。
 	syncerService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true, RedisRuntimeState: true},
+		Modes:    Modes{RedisRuntimeState: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock),
 		Syncer:   &wjMockSyncer{err: errors.New("失效同步失败")}, Now: clock.Now,
 	})
 	if err != nil {
@@ -350,7 +350,7 @@ func TestW13DAuthorizationByIDsErrorPaths(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-byids-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,9 +392,9 @@ func TestW13DAuthorizationByIDsErrorPaths(t *testing.T) {
 	}
 	// syncer 错误（ExactAsync 批量）。
 	syncerService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{PostgresDatabase: true, RedisRuntimeState: true},
+		Modes:    Modes{RedisRuntimeState: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock),
 		Syncer:   &wjMockSyncer{err: errors.New("失效同步失败")}, Now: clock.Now,
 	})
 	if err != nil {
@@ -411,91 +411,6 @@ func TestW13DAuthorizationByIDsErrorPaths(t *testing.T) {
 	if len(uniqueAuthorizationQuotaScopes(scopes)) != len(scopes)-1 {
 		t.Fatalf("重复 scope 必须去重: %d -> %d", len(scopes), len(uniqueAuthorizationQuotaScopes(scopes)))
 	}
-}
-
-func TestW13DAuthorizationRedisServerRoleSnapshotErrors(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	server, shared, snapshot, _ := newRedisQuotaStack(t, clock)
-	business := newTestDB(t, "w13d-authz-redis-role-biz")
-	statsDB := newTestDB(t, "w13d-authz-redis-role-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logs := &logRecorder{}
-	dbService := &mockDBService{}
-	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Business:  business,
-		Stats:     stats,
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    shared,
-		DBService: dbService,
-		Now:       clock.Now,
-		Log:       logs.hook,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true}}
-
-	// redis 故障：HasGatewayQuotaSnapshotAsync 错误透传。
-	server.SetError("模拟故障")
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("快照可用性检查错误必须透传")
-	}
-	server.SetError("")
-	// 发布一个完整快照（redis 共享缓存）→ 决策直接来自快照。
-	complete := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	complete.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: DeniedDecision(AuthorizationQuotaExceededMessage)},
-	}
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(complete); err != nil {
-		t.Fatal(err)
-	}
-	decision, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decision.Allowed {
-		t.Fatalf("快照拒绝必须生效: %+v", decision)
-	}
-	// 发布快照后中断 redis：快照 memo 可用但读取需要回源 → 错误透传。
-	server.SetError("模拟故障")
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("快照回读错误必须透传")
-	}
-	server.SetError("")
-	snapshot.ClearGatewayQuotaSnapshot()
-	snapshot.clearSharedMemo()
-
-	// 批量：redis 故障 → 错误透传。
-	server.SetError("模拟故障")
-	if _, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts); err == nil {
-		t.Fatal("批量快照检查错误必须透传")
-	}
-	server.SetError("")
-	// 批量：db service 失败 → 保护性拒绝。
-	dbService.mu.Lock()
-	dbService.checkBatchErr = errors.New("ipc down")
-	dbService.mu.Unlock()
-	batch, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range batch {
-		if item.Allowed {
-			t.Fatalf("保护性拒绝必须生效: %+v", batch)
-		}
-	}
-	dbService.mu.Lock()
-	dbService.checkBatchErr = nil
-	dbService.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +642,7 @@ func TestW13DSnapshotDecisionFromSnapshotBranches(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-decision-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,10 +650,9 @@ func TestW13DSnapshotDecisionFromSnapshotBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dbService := &mockDBService{}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes: Modes{ServerRole: true}, Business: business, Stats: stats,
-		Timezone: mustTZ(t, time.UTC), Snapshot: snapshot, DBService: dbService, Now: clock.Now,
+		Modes: Modes{}, Business: business, Stats: stats,
+		Timezone: mustTZ(t, time.UTC), Snapshot: snapshot, Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -866,117 +780,11 @@ func TestW13DQuotaLimitsHourlyValidation(t *testing.T) {
 
 func boolPtr(value bool) *bool { return &value }
 
-func TestW13DAuthorizationBatchServerRoleSnapshotAvailable(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	server, shared, snapshot, runtimeState := newRedisQuotaStack(t, clock)
-	business := newTestDB(t, "w13d-authz-batch-snap-biz")
-	statsDB := newTestDB(t, "w13d-authz-batch-snap-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	logs := &logRecorder{}
-	dbService := &mockDBService{}
-	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Business:  business,
-		Stats:     stats,
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    shared,
-		DBService: dbService,
-		Now:       clock.Now,
-		Log:       logs.hook,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{
-		{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true},
-	}
-
-	// 发布完整快照：group 条目拒绝 + account 条目拒绝 → 决策全部来自快照，
-	// 不触碰 DB service。
-	doc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	doc.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: DeniedDecision(AuthorizationQuotaExceededMessage)},
-		{ScopeType: ScopeTypeAccountAuthorization, AuthorizationID: "aa1", Decision: AllowedDecision()},
-	}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	batch, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if batch["u1"].Allowed {
-		t.Fatalf("快照拒绝必须生效: %+v", batch)
-	}
-	if dbService.checkBatchCalls != 0 {
-		t.Fatal("快照完整时不得触碰 DB service")
-	}
-
-	// 快照不完整（authzComplete=false）且 account 条目缺失 → needsFallback
-	// → DB service 批量补判；完整快照的缺失条目按允许判定、不触 DB。
-	doc.AuthorizationEntriesComplete = boolPtr(false)
-	doc.AuthorizationEntries = doc.AuthorizationEntries[:1]
-	clock.Advance(sharedSnapshotMemoTTL + time.Second)
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, doc, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	dbService.mu.Lock()
-	dbService.checkBatchDecs = []Decision{AllowedDecision()}
-	dbService.mu.Unlock()
-	service.ClearCache(ctx)
-	batch, err = service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// account 条目缺失触发 DB service 补判，补判决策直接生效。
-	if !batch["u1"].Allowed {
-		t.Fatalf("DB service 补判必须生效: %+v", batch)
-	}
-	if dbService.checkBatchCalls == 0 {
-		t.Fatal("缺失条目必须触发 DB service 补判")
-	}
-
-	// 单条 CheckAuthorizationQuotaAsync 的快照可用路径（完整快照）。
-	clock.Advance(sharedSnapshotMemoTTL + time.Second)
-	service.ClearCache(ctx)
-	completeDoc := snapshotFixture("2026-09-04T00:00:00.000Z", true, true)
-	completeDoc.AuthorizationEntries = []AuthorizationQuotaSnapshotEntry{
-		{ScopeType: ScopeTypeGroupAuthorization, AuthorizationID: "ga1", Decision: DeniedDecision(AuthorizationQuotaExceededMessage)},
-	}
-	if err := runtimeState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, completeDoc, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	dbService.mu.Lock()
-	dbService.checkBatchDecs = nil
-	dbService.mu.Unlock()
-	decision, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = decision
-
-	// server 恢复后清缓存重查：快照不完整 + db 成功 → 补判决策生效。
-	server.SetError("")
-	clock.Advance(sharedSnapshotMemoTTL + time.Second)
-	service.ClearCache(ctx)
-	if _, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestW13DCostsBatchTableCoverage(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-costs-batch")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1098,20 +906,18 @@ func TestW13DAuthorizationCacheWriteErrors(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-write-err-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dbService := &mockDBService{}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Business:  business,
-		Stats:     stats,
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    shared,
-		DBService: dbService,
-		Now:       clock.Now,
+		Modes:    Modes{RedisCache: true, RedisRuntimeState: true},
+		Business: business,
+		Stats:    stats,
+		Timezone: mustTZ(t, time.UTC),
+		Snapshot: snapshot,
+		Shared:   shared,
+		Now:      clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1152,7 +958,7 @@ func TestW13DAuthorizationCacheWriteErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	workerService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true, PostgresDatabase: true},
+		Modes:    Modes{RedisCache: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: snapshot, Shared: shared, Now: clock.Now,
 	})
@@ -1178,7 +984,7 @@ func TestW13DAPIKeyQuotaCountingTimezoneErrors(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-counting-tz")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1205,15 +1011,15 @@ func TestW13DAPIKeyQuotaCountingTimezoneErrors(t *testing.T) {
 	}
 	// ExactAsync PG 模式的 stats 缺失 / 坏 limits / tz 失败（越过非 PG 回退）。
 	pgService, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{PostgresDatabase: true}, Stats: stats, Timezone: tz,
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Modes: Modes{}, Stats: stats, Timezone: tz,
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	noStats, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{PostgresDatabase: true}, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Modes: Modes{}, Timezone: mustTZ(t, time.UTC),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1239,26 +1045,6 @@ func TestW13DAPIKeyQuotaCountingTimezoneErrors(t *testing.T) {
 	if decision, err := pgService.CheckAPIKeyQuotaExactAsync(ctx, w13dNoLimitsAPIKey("ak2"), now); err != nil || !decision.Allowed {
 		t.Fatalf("无限额必须放行: (%+v, %v)", decision, err)
 	}
-	// Async 快照读取错误透传（redis 快照 + 坏 generatedAt）。
-	_, _, redisSnapshot, redisState := newRedisQuotaStack(t, clock)
-	asyncService, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:    Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Stats:    stats,
-		Timezone: mustTZ(t, time.UTC),
-		Snapshot: redisSnapshot,
-		Shared:   &w13dFlakyShared{},
-		Now:      clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	badDoc := snapshotFixture("not-a-time", true, true)
-	if err := redisState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, badDoc, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := asyncService.CheckAPIKeyQuotaAsync(ctx, w13dAPIKey("ak1")); err == nil {
-		t.Fatal("坏快照必须透传")
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,7 +1055,7 @@ func TestW13DAPIKeyQuotaReadExactAsyncPGGuards(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	db := newTestDB(t, "w13d-pg-guards")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1277,8 +1063,8 @@ func TestW13DAPIKeyQuotaReadExactAsyncPGGuards(t *testing.T) {
 	now := clock.Now()
 	// PG 模式 + Stats 缺失：读取入口的守卫。
 	noStats, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{PostgresDatabase: true}, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Modes: Modes{}, Timezone: mustTZ(t, time.UTC),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1288,8 +1074,8 @@ func TestW13DAPIKeyQuotaReadExactAsyncPGGuards(t *testing.T) {
 	}
 	// PG 模式 + 坏 limits / 坏时区。
 	pgService, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{PostgresDatabase: true}, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC),
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1298,8 +1084,8 @@ func TestW13DAPIKeyQuotaReadExactAsyncPGGuards(t *testing.T) {
 		t.Fatal("PG 读取坏 limits 必须报错")
 	}
 	brokenTZ, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes: Modes{PostgresDatabase: true}, Stats: stats, Timezone: w13dBrokenTZ{},
-		Snapshot: mustSnapshotCache(t, Modes{PostgresDatabase: true}, clock), Now: clock.Now,
+		Modes: Modes{}, Stats: stats, Timezone: w13dBrokenTZ{},
+		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1317,12 +1103,12 @@ func TestW13DAuthorizationWorkerBatchCacheWriteError(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-worker-batch-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true, PostgresDatabase: true},
+		Modes:    Modes{RedisCache: true},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, clock),
 		Shared:   shared, Now: clock.Now,
@@ -1349,83 +1135,7 @@ func TestW13DAuthorizationWorkerBatchCacheWriteError(t *testing.T) {
 	if len(batch) == 0 {
 		t.Fatal("批量决策不能为空")
 	}
-	// 坏快照（generatedAt 非法）→ HasGatewayQuotaSnapshotAsync 错误透传。
-	badDoc := snapshotFixture("not-a-time", true, true)
-	_, _, badSnapshot, badState := newRedisQuotaStack(t, clock)
-	badService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: badSnapshot, Shared: shared, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := badState.SetJSON(ctx, GatewayQuotaSnapshotRuntimeStateStoreName, GatewayQuotaSnapshotRuntimeStateKey, badDoc, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	// 清掉 worker 段写入的决策缓存，避免 shared 命中提前返回。
-	if err := realShared.Clear(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := badService.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil); err == nil {
-		t.Fatal("坏快照必须透传")
-	}
-	if _, err := badService.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts); err == nil {
-		t.Fatal("坏快照批量必须透传")
-	}
-}
 
-func TestW13DAuthorizationMemoryServerRoleBatch(t *testing.T) {
-	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	business := newTestDB(t, "w13d-authz-mem-batch-biz")
-	statsDB := newTestDB(t, "w13d-authz-mem-batch-stats")
-	authzSchema(t, business)
-	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := NewSnapshotCache(Modes{}, nil, clock.Now, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dbService := &mockDBService{}
-	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{ServerRole: true},
-		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: snapshot, DBService: dbService, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
-	accounts := []AccountAuthorizationSummary{{ID: "u1", AccountAuthorizationID: "aa1", AccountAuthorizationQuotaLimited: true}}
-
-	// 不完整快照 + DB 补判成功（memory server 批量）。
-	incomplete := snapshotFixture("2026-09-04T00:00:00.000Z", true, false)
-	if err := snapshot.ReplaceGatewayQuotaSnapshot(incomplete); err != nil {
-		t.Fatal(err)
-	}
-	// memory 模式下单条 Async 会写入 5s 运行时缓存；先预填再批量以覆盖
-	// cachedDecisionsByAccountID 遍历分支。
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, &accounts[0]); err != nil {
-		t.Fatal(err)
-	}
-	service.ClearCache(ctx)
-	if _, err := service.CheckAuthorizationQuotaAsync(ctx, groupAccess, &accounts[0]); err != nil {
-		t.Fatal(err)
-	}
-	dbService.mu.Lock()
-	dbService.checkBatchDecs = []Decision{AllowedDecision()}
-	dbService.mu.Unlock()
-	batch, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := batch["u1"]; !ok {
-		t.Fatalf("批量必须产出 u1 决策: %+v", batch)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,7 +1148,7 @@ func TestW13DAuthorizationSnapshotFallbackAccountDimension(t *testing.T) {
 	statsDB := newTestDB(t, "w13d-authz-fallback-acct-stats")
 	authzSchema(t, business)
 	statsSchema(t, statsDB)
-	stats, err := NewStatsStore(statsDB, true)
+	stats, err := NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1446,11 +1156,10 @@ func TestW13DAuthorizationSnapshotFallbackAccountDimension(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dbService := &mockDBService{}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:    Modes{ServerRole: true},
+		Modes:    Modes{},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
-		Snapshot: snapshot, DBService: dbService, Now: clock.Now,
+		Snapshot: snapshot, Now: clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1501,7 +1210,7 @@ func TestW13DAuthorizationSnapshotFallbackAccountDimension(t *testing.T) {
 
 func TestW13DAuthorizationByIDsEmptyBatchAllowed(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	service, _, _ := wjNewAuthzService(t, Modes{PostgresDatabase: true}, clock, "w13d-empty-batch")
+	service, _, _ := wjNewAuthzService(t, Modes{}, clock, "w13d-empty-batch")
 	ctx := context.Background()
 	// scope 列表非空但行不存在 → 决策空 → 包装层回落允许。
 	decision, err := service.CheckAuthorizationQuotaByIDs(ctx, "ghost", "ghost-acct", clock.Now())
@@ -1630,7 +1339,7 @@ func TestW13DQuotaConstructionAndFallbackGuards(t *testing.T) {
 	// Async 的 cacheKey 时区错误透传（brokenTZ + Async 组合）。
 	db := newTestDB(t, "w13d-async-tz")
 	statsSchema(t, db)
-	stats, err := NewStatsStore(db, true)
+	stats, err := NewStatsStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}

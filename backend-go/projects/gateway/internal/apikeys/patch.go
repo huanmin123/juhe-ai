@@ -315,10 +315,7 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		return nil, err
 	}
 	defer tx.Rollback()
-	lock := ""
-	if s.pg {
-		lock = " FOR UPDATE"
-	}
+	lock := " FOR UPDATE"
 	where := ""
 	args := []any{id}
 	if scoped := access.manageableID(); scoped != "" {
@@ -624,10 +621,7 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 // KeyAsync(lockRow=true) + apiKeyRouteStrategyReferenceAsync: the owner-scoped
 // lookup (row-locked on PostgreSQL) must exist and be active.
 func (s *Store) selectableRouteStrategyForPatch(ctx context.Context, q queryer, ownerID, strategyID string) (*routeStrategyReference, error) {
-	lock := ""
-	if s.pg {
-		lock = " FOR UPDATE"
-	}
+	lock := " FOR UPDATE"
 	var reference routeStrategyReference
 	err := q.QueryRowContext(ctx, s.bind(`SELECT route_strategies.id, route_strategies.name, route_strategies.mode, route_strategies.status
 		FROM `+s.table("route_strategies")+` route_strategies

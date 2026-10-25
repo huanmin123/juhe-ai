@@ -152,24 +152,18 @@ func (s *Store) finishPatchSideEffects(ctx context.Context, result *PatchResult)
 }
 
 // finishDeleteSideEffects mirrors the post-commit invalidation tail of the
-// Node delete flow (account-delete-cleanup.repository.ts:149-158 SQLite /
-// :163-172 PG async): the SQLite arm opens with the whole-surface group stats
-// dirty marker (refreshGroupAccountStatsAfterWrite({all:true}); the PG async
-// arm runs no stats refresh), then one lookup flush per deleted account (the
-// soft delete takes the authorization instances with it), the
-// group-account-ids and resource-authorization lookup cache flushes, the
-// whole-surface runtime invalidation and the authorization quota invalidation
+// Node delete flow (account-delete-cleanup.repository.ts:163-172 PG async):
+// one lookup flush per deleted account (the soft delete takes the
+// authorization instances with it), the group-account-ids and
+// resource-authorization lookup cache flushes, the whole-surface runtime
+// invalidation and the authorization quota invalidation
 // (invalidateAuthorizationRuntimeAfterBusinessWrite = gateway runtime +
-// authorization quota). Every step is best-effort — a failure is logged and
-// never reported to the client (the Node warn channels).
+// authorization quota). The PG async arm runs no stats refresh here — the
+// PG stats dirty writer stays a compose wiring handover of the stats slice
+// (the SQLite whole-surface dirty marker arm retired with the sqlite branch,
+// D17). Every step is best-effort — a failure is logged and never reported
+// to the client (the Node warn channels).
 func (s *Store) finishDeleteSideEffects(ctx context.Context, accountIDs []string) {
-	if !s.pg {
-		if err := s.markAllGroupStatsDirty(ctx, accountDeleteRuntimeInvalidationReason); err != nil {
-			slog.Warn("账户删除已提交，但分组账户统计全量脏标记失败",
-				"event", "account_delete_stats_refresh_failed",
-				"accountCount", len(accountIDs), "error", err)
-		}
-	}
 	if s.invalidator == nil {
 		return
 	}
@@ -208,40 +202,17 @@ func (s *Store) finishDeleteSideEffects(ctx context.Context, accountIDs []string
 	}
 }
 
-// markCreateGroupStatsDirty mirrors refreshGroupAccountStatsAfterWrite's
-// groupIds arm for the create tail (repositories.ts:2440 →
-// group-account-stats-write-invalidation.ts:43-45 →
-// group-account-stats-cache.repository.ts:61-74): one dirty-marker upsert for
-// the bound group (mark, never recompute; the same statement shape as
-// markBatchGroupStatsDirty / markAllGroupStatsDirty).
-func (s *Store) markCreateGroupStatsDirty(ctx context.Context, groupID, reason string) error {
-	ctx = ensureCtx(ctx)
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("group_account_stats_dirty")+` (group_id, reason, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(group_id) DO UPDATE SET
-			reason = excluded.reason,
-			updated_at = excluded.updated_at`), groupID, reason, isoMillis(s.now()))
-	return err
-}
-
 // finishCreateSideEffects mirrors the post-commit tail of createAccountAsync
 // (repositories.ts:2440-2443): the group stats dirty marker for the bound
 // group, the per-account lookup flush, the group-account-ids cache flush and
 // one whole-surface runtime invalidation with the 'account_created' reason.
-// Every step is best-effort — a failure is logged and never reported to the
-// client (the Node warn channels). The stats dirty marker rides the SQLite
-// arm only (the delete-path dialect split); the Postgres background dirty
-// writer stays a compose wiring handover of the stats slice.
+// The stats dirty marker of the archived SQLite arm retired with the sqlite
+// branch (D17); the Postgres background dirty writer stays a compose wiring
+// handover of the stats slice. Every step is best-effort — a failure is
+// logged and never reported to the client (the Node warn channels).
 func (s *Store) finishCreateSideEffects(ctx context.Context, result *CreateResult) {
 	if result == nil {
 		return
-	}
-	if !s.pg {
-		if err := s.markCreateGroupStatsDirty(ctx, result.GroupID, accountCreateRuntimeInvalidationReason); err != nil {
-			slog.Warn("账户创建已提交，但分组账户统计脏标记失败",
-				"event", "account_create_stats_refresh_failed",
-				"accountId", result.ID, "groupId", result.GroupID, "error", err)
-		}
 	}
 	if s.invalidator == nil {
 		return

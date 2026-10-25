@@ -26,8 +26,6 @@ type APIKeyQuotaConfig struct {
 	// Shared is the createSharedJsonCache('gateway:api-key-quota') backend;
 	// required when Modes.RedisCache.
 	Shared SharedJSONCache
-	// DBService backs the server-role exact checks (db-service-ipc).
-	DBService DBServiceClient
 	// Syncer mirrors syncGatewayCacheInvalidationsFromRuntimeState.
 	Syncer InvalidationSyncer
 	Now    func() time.Time
@@ -36,16 +34,15 @@ type APIKeyQuotaConfig struct {
 
 // APIKeyQuotaService ports api-key-quota.service.ts.
 type APIKeyQuotaService struct {
-	modes     Modes
-	stats     *StatsStore
-	tz        StatsTimezoneProvider
-	snapshot  *SnapshotCache
-	shared    SharedJSONCache
-	dbService DBServiceClient
-	syncer    InvalidationSyncer
-	now       func() time.Time
-	log       LogHook
-	memory    *quotaMemoryCache
+	modes    Modes
+	stats    *StatsStore
+	tz       StatsTimezoneProvider
+	snapshot *SnapshotCache
+	shared   SharedJSONCache
+	syncer   InvalidationSyncer
+	now      func() time.Time
+	log      LogHook
+	memory   *quotaMemoryCache
 }
 
 // NewAPIKeyQuotaService validates the wiring and builds the runtime cache.
@@ -70,16 +67,15 @@ func NewAPIKeyQuotaService(cfg APIKeyQuotaConfig) (*APIKeyQuotaService, error) {
 		log = noopLog
 	}
 	return &APIKeyQuotaService{
-		modes:     cfg.Modes,
-		stats:     cfg.Stats,
-		tz:        cfg.Timezone,
-		snapshot:  cfg.Snapshot,
-		shared:    cfg.Shared,
-		dbService: cfg.DBService,
-		syncer:    cfg.Syncer,
-		now:       now,
-		log:       log,
-		memory:    newQuotaMemoryCache(now, apiKeyQuotaCacheTTL, apiKeyQuotaCacheMax),
+		modes:    cfg.Modes,
+		stats:    cfg.Stats,
+		tz:       cfg.Timezone,
+		snapshot: cfg.Snapshot,
+		shared:   cfg.Shared,
+		syncer:   cfg.Syncer,
+		now:      now,
+		log:      log,
+		memory:   newQuotaMemoryCache(now, apiKeyQuotaCacheTTL, apiKeyQuotaCacheMax),
 	}, nil
 }
 
@@ -183,12 +179,8 @@ func (s *APIKeyQuotaService) ReadAPIKeyQuotaCostsExact(ctx context.Context, apiK
 }
 
 // ReadAPIKeyQuotaCostsExactAsync mirrors readGatewayApiKeyQuotaCostsExactAsync:
-// PostgreSQL batches through loadRequestQuotaCostsBatchAsync, everything else
-// takes the synchronous path.
+// PostgreSQL batches through loadRequestQuotaCostsBatchAsync.
 func (s *APIKeyQuotaService) ReadAPIKeyQuotaCostsExactAsync(ctx context.Context, apiKey APIKeyRow, now time.Time) (RequestQuotaCosts, error) {
-	if !s.modes.PostgresDatabase {
-		return s.ReadAPIKeyQuotaCostsExact(ctx, apiKey, now)
-	}
 	stats, err := s.requireStats()
 	if err != nil {
 		return RequestQuotaCosts{}, err
@@ -216,9 +208,6 @@ func (s *APIKeyQuotaService) ReadAPIKeyQuotaCostsExactAsync(ctx context.Context,
 // CheckAPIKeyQuota mirrors checkGatewayApiKeyQuota: cached 5s decision with
 // the exact stats-database cost load behind it.
 func (s *APIKeyQuotaService) CheckAPIKeyQuota(ctx context.Context, apiKey APIKeyRow, now time.Time) (Decision, error) {
-	if s.modes.ServerRole {
-		return Decision{}, errServerLocalSQLite("checkGatewayApiKeyQuota")
-	}
 	stats, err := s.requireStats()
 	if err != nil {
 		return Decision{}, err
@@ -290,9 +279,6 @@ func (s *APIKeyQuotaService) CheckAPIKeyQuotaReadOnly(ctx context.Context, apiKe
 
 // CheckAPIKeyQuotaExactAsync mirrors checkGatewayApiKeyQuotaExactAsync.
 func (s *APIKeyQuotaService) CheckAPIKeyQuotaExactAsync(ctx context.Context, apiKey APIKeyRow, now time.Time) (Decision, error) {
-	if !s.modes.PostgresDatabase {
-		return s.CheckAPIKeyQuota(ctx, apiKey, now)
-	}
 	if s.modes.RedisRuntimeState && s.syncer != nil {
 		if err := s.syncer.SyncGatewayCacheInvalidations(ctx); err != nil {
 			return Decision{}, err
@@ -382,89 +368,8 @@ func (s *APIKeyQuotaService) CheckAPIKeyQuotaAsync(ctx context.Context, apiKey A
 		return sharedCached.decision(), nil
 	}
 
-	if s.modes.RedisCache && s.modes.ServerRole {
-		costs, costsFound, err := s.snapshot.ReadCostsSnapshotAsync(ctx, QuotaCostSnapshotEntry{
-			SystemAccountID:   apiKey.SystemAccountID,
-			ScopeType:         ScopeTypeAPIKey,
-			ScopeID:           apiKey.ID,
-			HourlyWindowHours: hourlyPointer(hourly, hasHourly),
-		})
-		if err != nil {
-			return Decision{}, err
-		}
-		if costsFound {
-			passive := newCachedDecision(Decision{Allowed: !IsRequestQuotaExceeded(limits, costs)}, s.nowMs())
-			if !passive.Allowed {
-				passive.Message = APIKeyQuotaExceededMessage
-			}
-			if err := s.setCacheEntryAsync(ctx, apiKey.ID, cacheKey, passive); err != nil {
-				return Decision{}, err
-			}
-			return passive.decision(), nil
-		}
-		snapshotIncomplete, err := s.snapshot.IsCostSnapshotIncompleteAsync(ctx)
-		if err != nil {
-			return Decision{}, err
-		}
-		decision, dbErr := s.dbServiceCheckAPIKeyQuota(ctx, apiKey)
-		if dbErr != nil {
-			s.log("gateway_api_key_quota_redis_exact_check_failed", map[string]any{
-				"apiKeyId":           apiKey.ID,
-				"systemAccountId":    apiKey.SystemAccountID,
-				"snapshotIncomplete": snapshotIncomplete,
-				"error":              dbErr.Error(),
-			}, "Redis 模式 API Key 配额共享快照未命中且精确补判失败，按保护策略拒绝请求")
-			return DeniedDecision(APIKeyQuotaExceededMessage), nil
-		}
-		if err := s.setCacheEntryAsync(ctx, apiKey.ID, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-			return Decision{}, err
-		}
-		return decision, nil
-	}
-
-	if s.modes.ServerRole {
-		costs, costsFound := s.snapshot.ReadCostsSnapshot(QuotaCostSnapshotEntry{
-			SystemAccountID:   apiKey.SystemAccountID,
-			ScopeType:         ScopeTypeAPIKey,
-			ScopeID:           apiKey.ID,
-			HourlyWindowHours: hourlyPointer(hourly, hasHourly),
-		})
-		allowed := true
-		if costsFound {
-			allowed = !IsRequestQuotaExceeded(limits, costs)
-		}
-		if !costsFound && s.snapshot.IsCostSnapshotIncomplete() {
-			decision, dbErr := s.dbServiceCheckAPIKeyQuota(ctx, apiKey)
-			if dbErr != nil {
-				s.log("gateway_api_key_quota_snapshot_fallback_failed", map[string]any{
-					"apiKeyId":        apiKey.ID,
-					"systemAccountId": apiKey.SystemAccountID,
-					"error":           dbErr.Error(),
-				}, "API Key 配额快照不完整且 DB service 精确补判失败，按保护策略拒绝请求")
-				allowed = false
-			} else {
-				if err := s.setCacheEntryAsync(ctx, apiKey.ID, cacheKey, newCachedDecision(decision, s.nowMs())); err != nil {
-					return Decision{}, err
-				}
-				return decision, nil
-			}
-		}
-		passive := Decision{Allowed: allowed}
-		if !allowed {
-			passive.Message = APIKeyQuotaExceededMessage
-		}
-		if err := s.setCacheEntryAsync(ctx, apiKey.ID, cacheKey, newCachedDecision(passive, s.nowMs())); err != nil {
-			return Decision{}, err
-		}
-		return passive, nil
-	}
-
 	var decision Decision
-	if s.modes.PostgresDatabase {
-		decision, err = s.CheckAPIKeyQuotaExactAsync(ctx, apiKey, now)
-	} else {
-		decision, err = s.CheckAPIKeyQuota(ctx, apiKey, now)
-	}
+	decision, err = s.CheckAPIKeyQuotaExactAsync(ctx, apiKey, now)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -472,13 +377,6 @@ func (s *APIKeyQuotaService) CheckAPIKeyQuotaAsync(ctx context.Context, apiKey A
 		return Decision{}, err
 	}
 	return decision, nil
-}
-
-func (s *APIKeyQuotaService) dbServiceCheckAPIKeyQuota(ctx context.Context, apiKey APIKeyRow) (Decision, error) {
-	if s.dbService == nil {
-		return Decision{}, errors.New("db service client is not configured")
-	}
-	return s.dbService.CheckAPIKeyQuota(ctx, apiKey)
 }
 
 // sharedCacheGet mirrors getApiKeyQuotaSharedCacheEntry (redis only).

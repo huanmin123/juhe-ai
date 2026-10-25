@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
@@ -170,259 +168,19 @@ func (r *rotationInvalidatorRecorder) channels() (lookups, runtime, validation [
 	return append([]string{}, r.lookups...), append([]string{}, r.runtime...), append([]string{}, r.validation...)
 }
 
-var testSchema = []string{
-	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-	// vendors（供应商与上游协议面重构设计 §1.1/§2.1）：accounts 写入面
-	// createInTx 经 assertVendorEnabled（internal/accounts write.go）校验真实
-	// 厂商 provider 必须存在 enabled=1 的 vendors 行；DDL 与 maintenance
-	// sqlite_schema_business.go 的 vendors 表同构（无 parent_code）。
-	// T30/B4 ⑧：档案域已切 vendors + 编译期 registry，夹具不再创建或播种
-	// providers / provider_protocol_profiles 旧表（目标 schema 无此二表）。
-	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, test_status TEXT NOT NULL DEFAULT 'unknown', latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	// groups 目标形态（供应商与上游协议面重构设计 §8）：无 provider_code 列，
-	// 分组与 provider 无关；与 maintenance sqlite_schema_business.go 的 groups
-	// 表同构（group_kind/super_group_members 属超组切片，本夹具不涉及）。
-	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS accounts (
-		id TEXT PRIMARY KEY,
-		config_revision INTEGER NOT NULL DEFAULT 1,
-		dispatch_revision INTEGER NOT NULL DEFAULT 1,
-		circuit_projection_revision INTEGER NOT NULL DEFAULT 0,
-		system_account_id TEXT NOT NULL,
-		-- 迁移窗口 DDL（accounts fixture 同形，见 internal/accounts
-		-- accounts_test.go）：写入面 createInTx 落 vendor_code /
-		-- connection_driver_code（generic 账户 vendor 为 NULL）+ oauth_type
-		-- 物理列与 health_check_connection_id（§2.1 复合外键列），创建链路
-		-- （CreateOAuthAccount → accounts.Create）经该写入面，fixture 同步携带。
-		vendor_code TEXT,
-		connection_driver_code TEXT,
-		oauth_type TEXT,
-		health_check_connection_id TEXT,
-		provider_protocol_profile_id TEXT NOT NULL DEFAULT '',
-		protocol_code TEXT NOT NULL,
-		protocol_version TEXT NOT NULL,
-		name TEXT NOT NULL,
-		type TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'pending_test',
-		credentials_encrypted TEXT NOT NULL,
-		credential_fingerprint TEXT,
-		credential_mask TEXT NOT NULL DEFAULT '',
-		oauth_access_token_expires_at TEXT,
-		oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
-		proxy_profile_id TEXT,
-		concurrency_limit INTEGER NOT NULL DEFAULT 5000,
-		priority INTEGER NOT NULL DEFAULT 0,
-		super_priority_enabled INTEGER NOT NULL DEFAULT 0,
-		fallback_enabled INTEGER NOT NULL DEFAULT 0,
-		client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
-		schedulable INTEGER NOT NULL DEFAULT 1,
-		availability_schedule_json TEXT,
-		availability_schedule_next_check_at TEXT,
-		notes TEXT,
-		account_expires_at TEXT,
-		last_used_at TEXT,
-		cooldown_until TEXT,
-		last_error_code TEXT,
-		last_error_message TEXT,
-		last_error_trace_id TEXT,
-		health_check_model TEXT NOT NULL DEFAULT '',
-		health_check_endpoint_mode TEXT NOT NULL DEFAULT 'chat_json',
-		health_check_failure_count INTEGER NOT NULL DEFAULT 0,
-		health_check_failure_started_at TEXT,
-		cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
-		cooldown_retest_observation_started_at TEXT,
-		cooldown_retest_generation TEXT,
-		cooldown_retest_last_at TEXT,
-		cooldown_retest_last_status_code INTEGER,
-		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
-		expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0,
-		capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
-		last_health_check_at TEXT,
-		last_health_success_at TEXT,
-		last_health_check_status_code INTEGER,
-		last_health_check_error_code TEXT,
-		last_health_check_error_message TEXT,
-		last_health_check_trace_id TEXT,
-		stream_failure_count INTEGER NOT NULL DEFAULT 0,
-		stream_failure_window_started_at TEXT,
-		next_health_check_at TEXT,
-		balance_query_enabled INTEGER NOT NULL DEFAULT 0,
-		balance_query_next_refresh_at TEXT,
-		balance_query_config_json TEXT NOT NULL DEFAULT '{}',
-		authorization_instance_source_account_id TEXT,
-		authorization_instance_authorization_id TEXT,
-		authorization_instance_owner_system_account_id TEXT,
-		deleted_at TEXT,
-		deleted_by TEXT,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_name_unique ON accounts(system_account_id, name) WHERE deleted_at IS NULL`,
-	`CREATE TABLE IF NOT EXISTS group_accounts (
-		system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL,
-		account_authorization_id TEXT, local_priority INTEGER NOT NULL DEFAULT 0,
-		local_super_priority_enabled INTEGER NOT NULL DEFAULT 0, local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
-		enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-		PRIMARY KEY (group_id, account_id)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_supported_models (
-		account_id TEXT NOT NULL, model_id TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, model_id),
-		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-		FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
-	)`,
-	// models（§4 单表，写入面 resolveEntryModelID / 健康检查三件套模型解析的
-	// 身份键：vendor_code + upstream_model + owner 可见性 + status=active）。
-	`CREATE TABLE IF NOT EXISTS models (
-		id TEXT PRIMARY KEY,
-		vendor_code TEXT,
-		public_model TEXT NOT NULL,
-		upstream_model TEXT NOT NULL,
-		scope TEXT NOT NULL DEFAULT 'builtin',
-		system_account_id TEXT,
-		status TEXT NOT NULL DEFAULT 'active',
-		supported_endpoint_modes_json TEXT,
-		release_date TEXT,
-		shutdown_date TEXT,
-		catalog_visible INTEGER NOT NULL DEFAULT 1,
-		catalog_order INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`,
-	// account_connections / account_endpoint_modes（§2.1）：createInTx 连接行
-	// 写入 + 健康检查 preset → enabled 连接行解析的写入面两表；列集与
-	// internal/accounts fixture 同形（复合唯一键支撑 accounts 复合外键，
-	// 测试 SQLite 夹具不带该 FK）。
-	`CREATE TABLE IF NOT EXISTS account_connections (
-		id TEXT PRIMARY KEY,
-		account_id TEXT NOT NULL,
-		connection_preset_code TEXT NOT NULL,
-		protocol_surface_code TEXT,
-		base_url TEXT NOT NULL,
-		enabled INTEGER NOT NULL DEFAULT 1,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL,
-		UNIQUE (account_id, connection_preset_code),
-		UNIQUE (account_id, id),
-		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_endpoint_modes (
-		connection_id TEXT NOT NULL,
-		endpoint_mode TEXT NOT NULL,
-		PRIMARY KEY (connection_id, endpoint_mode),
-		FOREIGN KEY (connection_id) REFERENCES account_connections(id) ON DELETE CASCADE
-	)`,
-	// account_entry_mappings（§5.1 目标形态）：replaceAccountModelMappings 的
-	// 整集合替换 DELETE 需要该表存在（OAuth 建户映射通常为空）。
-	`CREATE TABLE IF NOT EXISTS account_entry_mappings (
-		id TEXT PRIMARY KEY,
-		account_id TEXT NOT NULL,
-		source_model TEXT NOT NULL,
-		source_endpoint_family TEXT NOT NULL,
-		target_connection_id TEXT NOT NULL,
-		target_model_id TEXT NOT NULL,
-		target_endpoint_family TEXT NOT NULL,
-		enabled INTEGER NOT NULL DEFAULT 1,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL,
-		UNIQUE (account_id, source_model, source_endpoint_family)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_tags (
-		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL,
-		created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-	)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique ON account_tags(system_account_id, name)`,
-	`CREATE TABLE IF NOT EXISTS account_tag_bindings (
-		account_id TEXT NOT NULL, tag_id TEXT NOT NULL, system_account_id TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, tag_id)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_name_search_terms (
-		account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, term TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, term)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_name_search_documents (
-		account_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, normalized_name TEXT NOT NULL, updated_at TEXT NOT NULL
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_lock_states (
-		account_id TEXT PRIMARY KEY,
-		enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-		lock_state TEXT NOT NULL DEFAULT 'UNLOCKED' CHECK (lock_state IN ('UNLOCKED', 'LOCKED_IDLE', 'ENGAGED', 'DEAD_CONFIRMED')),
-		lock_death_timeout_seconds INTEGER NOT NULL DEFAULT 300 CHECK (lock_death_timeout_seconds BETWEEN 30 AND 3600),
-		lock_retry_interval_seconds INTEGER NOT NULL DEFAULT 5 CHECK (lock_retry_interval_seconds BETWEEN 5 AND 30),
-		incident_id TEXT,
-		generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
-		incident_started_at TEXT,
-		deadline_at TEXT,
-		original_status TEXT,
-		provenance TEXT,
-		next_retry_at_ms INTEGER,
-		lease_id TEXT,
-		lease_until_ms INTEGER,
-		updated_at TEXT NOT NULL
-	)`,
-	// T2 audit: the rotation dispatch-revision fence writes the pending
-	// outbox rows through the accounts family advance (Node
-	// business-schema.ts account_circuit_outbox).
-	`CREATE TABLE IF NOT EXISTS account_circuit_outbox (
-		event_id TEXT PRIMARY KEY,
-		projection_key TEXT NOT NULL,
-		dedupe_key TEXT NOT NULL,
-		event_type TEXT NOT NULL CHECK (event_type IN ('dispatch_revision_changed', 'incident_changed')),
-		account_id TEXT NOT NULL,
-		account_runtime_key TEXT NOT NULL,
-		circuit_scope_key TEXT,
-		incident_id TEXT,
-		transition_id TEXT NOT NULL,
-		dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
-		generation INTEGER,
-		ledger_revision INTEGER,
-		status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'dispatched')),
-		available_at_ms INTEGER NOT NULL,
-		claim_token TEXT,
-		claimed_by TEXT,
-claim_until_ms INTEGER,
-			attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-			last_error_class TEXT,
-			acknowledged_at_ms INTEGER,
-			created_at_ms INTEGER NOT NULL,
-			updated_at_ms INTEGER NOT NULL,
-			FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-			UNIQUE (projection_key, dedupe_key)
-		)`,
-	// Missing from oauthmgmt test schema but required by accounts store CREATE.
-	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (account_id TEXT PRIMARY KEY, current_version INTEGER NOT NULL CHECK (current_version >= 1), reserved_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (event_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, input_version INTEGER NOT NULL CHECK (input_version >= 1), event_kind TEXT NOT NULL CHECK (event_kind IN ('snapshot', 'tombstone')), reason TEXT NOT NULL, config_revision INTEGER NOT NULL CHECK (config_revision >= 1), dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1), status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'published', 'failed', 'superseded')), claim_token TEXT, claimed_until TEXT, attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0), available_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (account_id, input_version))`,
-	// Batch-edit side effects: stats dirty marker (Node business-schema.ts:553-584).
-	`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
-			group_id TEXT PRIMARY KEY,
-			reason TEXT,
-			updated_at TEXT NOT NULL
-		)`,
-}
-
+// testSchema（原 SQLite 内存夹具 DDL）已随 T65 载具迁移删除：PG 夹具 schema
+// 见 pgkit_test.go（oauthMgmtPGFixtureSchema，生产 DDL 对齐）。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:oauthmgmt-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range testSchema {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newOAuthMgmtPGDatabase(t)
 	if err := seedOAuthCatalog(db); err != nil {
 		t.Fatal(err)
 	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	authAccounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	authAccounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,14 +189,14 @@ func newTestEnv(t *testing.T) *testEnv {
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
 	sink := &recordingSink{}
-	accountStore, err := accounts.NewStore(db, false, testSecret, nil, nil)
+	accountStore, err := accounts.NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	exchanger := &mockExchanger{respond: staticToken(`{}`)}
 	sso := &scriptedSSORequester{}
 	rotation := &rotationInvalidatorRecorder{}
-	store, err := NewStore(db, false, testSecret, accountStore, exchanger, nil, nil,
+	store, err := NewStore(db, true, testSecret, accountStore, exchanger, nil, nil,
 		WithSSODeviceTransport(sso), WithSSOSleep(func(context.Context, time.Duration) error { return nil }),
 		// T2 audit: the rotation post-commit channels + the in-transaction
 		// circuit dispatch revision family advance (same accounts store).
@@ -478,8 +236,8 @@ func seedOAuthCatalog(db *sql.DB) error {
 		// vendors 行（assertVendorEnabled 只读 enabled；档案域读 enabled +
 		// default_supported_models_json）：id=code 对齐 maintenance
 		// pgSeedProviders 的权威播种口径，enabled=1 与九厂商内置行一致。
-		if _, err := db.Exec(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?, ?)`, provider.code, provider.code, provider.code, provider.models, now, now); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?, ?)`), provider.code, provider.code, provider.code, provider.models, now, now); err != nil {
 			return err
 		}
 	}
@@ -498,9 +256,9 @@ func seedOAuthCatalog(db *sql.DB) error {
 		{"gemini", "gemini-2.5-pro", `["generate_content_json","generate_content_sse","interactions_json","interactions_sse","count_tokens","embed_content"]`},
 		{"xai", "grok-4", `["chat_json","chat_sse","responses_json","responses_sse"]`},
 	} {
-		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
+		if _, err := db.Exec(fixtureBind(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
 			status, supported_endpoint_modes_json, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'builtin', 'active', ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, 'builtin', 'active', ?, ?, ?)`),
 			"mod-"+model.vendor+"-"+model.name, model.vendor, model.name, model.name,
 			model.modes, now, now); err != nil {
 			return err
@@ -585,7 +343,7 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 
 func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(fixtureBind(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -593,7 +351,7 @@ func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var count int
-	if err := e.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := e.db.QueryRow(fixtureBind(query), args...).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
@@ -602,7 +360,7 @@ func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 func (e *testEnv) accountCredentials(t *testing.T, accountID string) map[string]any {
 	t.Helper()
 	var sealed string
-	if err := e.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, accountID).Scan(&sealed); err != nil {
+	if err := e.db.QueryRow(fixtureBind(`SELECT credentials_encrypted FROM accounts WHERE id = ?`), accountID).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	credentials := map[string]any{}
@@ -709,8 +467,8 @@ func TestOpenAIOAuthFamily(t *testing.T) {
 	var configRevision int64
 	// 行身份键 = vendor_code（§2.1：真实厂商 == provider_code）；profile 归属
 	// 由路由层 resolveProviderProfile 校验，目标列集已无该列（§9.11）。
-	if err := env.db.QueryRow(`SELECT vendor_code, type, name, system_account_id, config_revision
-		FROM accounts WHERE id = ?`, accountID).Scan(&vendorCode, &accountType, &name, &ownerID, &configRevision); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT vendor_code, type, name, system_account_id, config_revision
+		FROM accounts WHERE id = ?`), accountID).Scan(&vendorCode, &accountType, &name, &ownerID, &configRevision); err != nil {
 		t.Fatal(err)
 	}
 	if vendorCode != "gpt" || accountType != "oauth" ||
@@ -925,7 +683,7 @@ func TestAnthropicOAuthFamily(t *testing.T) {
 		t.Fatalf("anthropic credentials: %v", credentials)
 	}
 	var accountName string
-	if err := env.db.QueryRow(`SELECT name FROM accounts WHERE id = ?`, accountID).Scan(&accountName); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT name FROM accounts WHERE id = ?`), accountID).Scan(&accountName); err != nil {
 		t.Fatal(err)
 	}
 	// 未显式命名时按“上游域名-毫秒时间戳后 6 位”自动命名（四家 OAuth 统一）。
@@ -1043,7 +801,7 @@ func TestGeminiOAuthCapabilitiesAndFamily(t *testing.T) {
 	}
 	accountID := dataMap(t, created)["id"].(string)
 	var accountName string
-	if err := env.db.QueryRow(`SELECT name FROM accounts WHERE id = ?`, accountID).Scan(&accountName); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT name FROM accounts WHERE id = ?`), accountID).Scan(&accountName); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(accountName, "cloudcode-pa.googleapis.com-") {

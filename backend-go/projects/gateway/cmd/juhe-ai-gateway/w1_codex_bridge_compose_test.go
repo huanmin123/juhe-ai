@@ -9,11 +9,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
@@ -39,12 +42,24 @@ func w1CodexBridgeChainDeps(t *testing.T, wired bool) chainRuntimeDeps {
 	if !wired {
 		return deps
 	}
-	store, err := gatewaycodex.NewSQLiteShardContextStateStore(gatewaycodex.SQLiteShardStoreConfig{
-		Root:       w1CodexBridgeTempDir(t, "state-shards"),
-		ShardCount: 1,
-	})
+	// 2026-10-24 存储形态收口：codex context 行存储恒 PostgreSQL
+	// （juhe_codex_context），sqlite 分片载具退役（D17）；组合根测试改用
+	// pgtestkit 隔离库上的生产 PostgresContextStateStore（sqlpool 句柄注入，
+	// 与 gatewaycodex 包内 pgkit 夹具同一打开路径；EnsurePostgres 六 schema
+	// 已含 codex context 契约表）。
+	tdb := composeTestPostgres(t)
+	registry := sqlpool.NewRegistry()
+	handle, err := registry.Acquire(
+		func() (*sql.DB, error) { return tdb.DB, nil },
+		"pgtestkit://juhe_codex_context", "test", 1, 1,
+	)
 	if err != nil {
-		t.Fatalf("create sqlite shard store: %v", err)
+		t.Fatalf("sqlpool Acquire: %v", err)
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+	store, err := gatewaycodex.NewPostgresContextStateStore(handle)
+	if err != nil {
+		t.Fatalf("create postgres context state store: %v", err)
 	}
 	deps.CodexContextRoot = w1CodexBridgeTempDir(t, "codex-context")
 	deps.CodexContextStateStore = store

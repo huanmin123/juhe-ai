@@ -2,25 +2,19 @@ package gatewayquota
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Modes mirrors the runtimeConfig axes the quota subsystem forks on
-// (backend/src/config/runtime.ts). They are fixed at construction so every
-// code path is explicit about which driver it touches.
+// Modes carries the remaining cache-axis criteria the quota subsystem forks
+// on. 存储形态收口后 databaseDriver 恒 postgres、processRole 恒非 server
+// （db-service-ipc 旁路随 sqlite 形态删除），仅保留缓存侧判据。
 type Modes struct {
-	// PostgresDatabase mirrors databaseDriver === 'postgres'.
-	PostgresDatabase bool
 	// RedisCache mirrors cacheDriver === 'redis'.
 	RedisCache bool
 	// RedisRuntimeState mirrors runtimeStateDriver === 'redis'.
 	RedisRuntimeState bool
-	// ServerRole mirrors processRole === 'server' (gateway server that must
-	// reach the DB through the DB service instead of local SQLite).
-	ServerRole bool
 }
 
 // Decision mirrors GatewayQuotaDecision / ApiKeyQuotaDecision /
@@ -68,8 +62,8 @@ type AccountRef struct {
 	AccountAuthorizationID string
 }
 
-// DBServiceClient is the db-service-ipc port (Node requestDbService) for the
-// four read operations the quota services fall back to on the server role.
+// DBServiceClient is the exact-read port the in-flight quota service uses as
+// the cost-snapshot fallback (D-129: Go 进程内 stats 直读适配，非跨进程 IPC)。
 type DBServiceClient interface {
 	// CheckAPIKeyQuota mirrors { type: 'check_api_key_quota', apiKey }.
 	CheckAPIKeyQuota(ctx context.Context, apiKey APIKeyRow) (Decision, error)
@@ -80,8 +74,6 @@ type DBServiceClient interface {
 	CheckAuthorizationQuota(ctx context.Context, groupAuthorizationID, accountAuthorizationID string) (Decision, error)
 	// CheckAuthorizationQuotaBatch mirrors { type:
 	// 'check_authorization_quota_batch', groupAuthorizationId, accounts }.
-	// The returned slice is index-aligned with accounts; a missing entry
-	// falls back to { allowed: true } exactly like Node.
 	CheckAuthorizationQuotaBatch(ctx context.Context, groupAuthorizationID string, accounts []AccountRef) ([]Decision, error)
 }
 
@@ -111,11 +103,6 @@ type RuntimeStateStore interface {
 type LogHook func(event string, fields map[string]any, message string)
 
 func noopLog(event string, fields map[string]any, message string) {}
-
-// errServerLocalSQLite mirrors assertLocalGatewayDatabaseAccess.
-func errServerLocalSQLite(operation string) error {
-	return errors.New("server 角色禁止直接同步读取 SQLite：" + operation + " 必须通过 DB service")
-}
 
 // splitNul splits on the \x0000 separator the Node cache keys use.
 func splitNul(value string) []string {

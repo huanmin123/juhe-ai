@@ -201,10 +201,10 @@ func TestW9BGrepIsRuntimeLogSearchRequestLine(t *testing.T) {
 
 func TestW9BAuditSearchHotScenarios(t *testing.T) {
 	// SearchHot 只扫 NDJSON 桶文件（hydration 在 handler 层），PG 库仅承载
-	// reader 构造与生产 ReadPostgres 方言。
+	// reader 构造与生产装配同参。
 	db := w9bBlobDB(t)
 	hotDir := t.TempDir()
-	reader, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{HotSearchDirectory: hotDir})
+	reader, err := NewAuditLogQueryReader(db, AuditQueryDirectories{HotSearchDirectory: hotDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestW9BAuditSearchHotScenarios(t *testing.T) {
 		t.Fatalf("空关键词=%+v err=%v", scan, err)
 	}
 	// 目录未配置。
-	noDir, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{})
+	noDir, err := NewAuditLogQueryReader(db, AuditQueryDirectories{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestW9BAuditSearchHotScenarios(t *testing.T) {
 		t.Fatal("非法 endAt 必须报错")
 	}
 	// 目录不存在 → nil paths 消息。
-	emptyReader, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{HotSearchDirectory: filepath.Join(hotDir, "missing-subdir")})
+	emptyReader, err := NewAuditLogQueryReader(db, AuditQueryDirectories{HotSearchDirectory: filepath.Join(hotDir, "missing-subdir")})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,7 +23,7 @@ func bug0335FreshStore(t *testing.T) (*Store, *sql.DB) {
 	db := newFreshPGDatabase(t)
 	bug0335SeedOwner(t, db, "owner-bug0335")
 	bug0335SeedOwner(t, db, "owner-bug0335b")
-	store, err := NewStore(db, true, testSecret, nil, nil)
+	store, err := NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

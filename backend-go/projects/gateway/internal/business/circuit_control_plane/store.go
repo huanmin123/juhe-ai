@@ -27,13 +27,6 @@ var (
 	ErrInvalidSchema  = errors.New("circuit control-plane PostgreSQL schema is invalid")
 )
 
-type Mode string
-
-const (
-	SQLite   Mode = "sqlite"
-	Postgres Mode = "postgres"
-)
-
 // OwnerGate is external, auditable handoff evidence. A schema alone never
 // authorizes Gateway writes while Node remains a writer.
 type OwnerGate struct{ Confirmed, SchemaReady, NodeWriterStopped bool }
@@ -42,7 +35,6 @@ func (g OwnerGate) Ready() bool { return g.Confirmed && g.SchemaReady && g.NodeW
 
 type Store struct {
 	db     *sql.DB
-	mode   Mode
 	schema string
 	gate   OwnerGate
 	now    func() time.Time
@@ -163,23 +155,18 @@ var postgresIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var machineCategory = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]*$`)
 var sha256Hex = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
-func New(db *sql.DB, mode Mode, schema string, gate OwnerGate) (*Store, error) {
+func New(db *sql.DB, schema string, gate OwnerGate) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("circuit control-plane database is required")
 	}
-	if mode != SQLite && mode != Postgres {
-		return nil, errors.New("circuit control-plane database mode is invalid")
-	}
 	schema = strings.TrimSpace(schema)
-	if mode == Postgres {
-		if schema == "" {
-			schema = defaultBusinessSchema
-		}
-		if !postgresIdentifier.MatchString(schema) {
-			return nil, ErrInvalidSchema
-		}
+	if schema == "" {
+		schema = defaultBusinessSchema
 	}
-	return &Store{db: db, mode: mode, schema: schema, gate: gate, now: time.Now, token: randomToken}, nil
+	if !postgresIdentifier.MatchString(schema) {
+		return nil, ErrInvalidSchema
+	}
+	return &Store{db: db, schema: schema, gate: gate, now: time.Now, token: randomToken}, nil
 }
 
 func (s *Store) requireOwner() error {
@@ -189,32 +176,20 @@ func (s *Store) requireOwner() error {
 	return nil
 }
 func (s *Store) table(name string) string {
-	if s.mode == Postgres && s.schema != "" {
-		// The schema is validated at construction and quoted at every use. Table
-		// names are package constants, not caller input.
-		return quoteIdentifier(s.schema) + "." + name
-	}
-	return name
+	// The schema is validated at construction and quoted at every use. Table
+	// names are package constants, not caller input.
+	return quoteIdentifier(s.schema) + "." + name
 }
 func quoteIdentifier(identifier string) string {
 	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
 }
 func (s *Store) forUpdate() string {
-	if s.mode == Postgres {
-		return " FOR UPDATE"
-	}
-	return ""
+	return " FOR UPDATE"
 }
 func (s *Store) forUpdateSkipLocked() string {
-	if s.mode == Postgres {
-		return " FOR UPDATE SKIP LOCKED"
-	}
-	return ""
+	return " FOR UPDATE SKIP LOCKED"
 }
 func (s *Store) bind(q string) string {
-	if s.mode != Postgres {
-		return q
-	}
 	var b strings.Builder
 	n := 1
 	for _, r := range q {
@@ -274,16 +249,6 @@ func (s *Store) checkKeyModelCapabilityIndex(ctx context.Context) error {
 	if !foundDefinition {
 		return fmt.Errorf("verify circuit key_model capability index %s: shared contract definition is missing", indexName)
 	}
-	if s.mode == SQLite {
-		ok, detail, err := checkSQLiteIndexDefinition(ctx, s.db, "account_circuit_incidents", required)
-		if err != nil {
-			return fmt.Errorf("verify circuit key_model capability index: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf("verify circuit key_model capability index %s is incompatible: %s", required.Name, detail)
-		}
-		return nil
-	}
 	var unique bool
 	var predicate sql.NullString
 	var columns sql.NullString
@@ -302,77 +267,6 @@ func (s *Store) checkKeyModelCapabilityIndex(ctx context.Context) error {
 	return nil
 }
 
-func checkSQLiteIndexDefinition(ctx context.Context, db *sql.DB, table string, required sharedcontracts.SQLiteIndexDefinition) (bool, string, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA index_list("+quoteIdentifier(table)+")")
-	if err != nil {
-		return false, "read index_list failed", err
-	}
-	defer rows.Close()
-	var found, unique, partial bool
-	for rows.Next() {
-		var seq, u, p int
-		var name, origin string
-		if err := rows.Scan(&seq, &name, &u, &origin, &p); err != nil {
-			return false, "scan index_list failed", err
-		}
-		if name == required.Name {
-			found, unique, partial = true, u == 1, p == 1
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, "read index_list failed", err
-	}
-	if err := rows.Close(); err != nil {
-		return false, "close index_list failed", err
-	}
-	if !found {
-		return false, "index is missing", nil
-	}
-	if unique != required.Unique {
-		return false, fmt.Sprintf("unique=%t want=%t", unique, required.Unique), nil
-	}
-	colRows, err := db.QueryContext(ctx, "PRAGMA index_info("+quoteIdentifier(required.Name)+")")
-	if err != nil {
-		return false, "read index_info failed", err
-	}
-	defer colRows.Close()
-	columns := []string{}
-	for colRows.Next() {
-		var seq, cid int
-		var name sql.NullString
-		if err := colRows.Scan(&seq, &cid, &name); err != nil {
-			return false, "scan index_info failed", err
-		}
-		if !name.Valid {
-			return false, "index contains an expression", nil
-		}
-		columns = append(columns, name.String)
-	}
-	if err := colRows.Err(); err != nil {
-		return false, "read index_info failed", err
-	}
-	if err := colRows.Close(); err != nil {
-		return false, "close index_info failed", err
-	}
-	if !sameIndexColumns(columns, required.Columns) {
-		return false, fmt.Sprintf("columns=%v want=%v", columns, required.Columns), nil
-	}
-	var definition sql.NullString
-	if err := db.QueryRowContext(ctx, "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", required.Name).Scan(&definition); err != nil {
-		return false, "read sqlite_master definition failed", err
-	}
-	actualPredicate := indexPredicate(definition.String)
-	if strings.TrimSpace(required.Predicate) == "" {
-		if partial || actualPredicate != "" {
-			return false, "unexpected partial predicate", nil
-		}
-	} else if !partial || !predicatesEquivalent(actualPredicate, required.Predicate) {
-		return false, fmt.Sprintf("predicate=%q want=%q", actualPredicate, required.Predicate), nil
-	}
-	return true, "", nil
-}
-
 func sameIndexColumns(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -384,14 +278,7 @@ func sameIndexColumns(a, b []string) bool {
 	}
 	return true
 }
-func indexPredicate(sqlText string) string {
-	lower := strings.ToLower(sqlText)
-	idx := strings.Index(lower, " where ")
-	if idx < 0 {
-		return ""
-	}
-	return strings.TrimSpace(sqlText[idx+7:])
-}
+
 func predicatesEquivalent(actual, expected string) bool {
 	norm := func(v string) []string {
 		v = strings.ToLower(strings.TrimSpace(v))
@@ -399,8 +286,6 @@ func predicatesEquivalent(actual, expected string) bool {
 		v = regexp.MustCompile(`::[a-z0-9_]+`).ReplaceAllString(v, "")
 		v = strings.ReplaceAll(strings.ReplaceAll(v, "(", ""), ")", "")
 		v = strings.Join(strings.Fields(v), " ")
-		// 说明：norm 上方已移除全部括号，此处原有的成对去括号循环不可达，
-		// w14g 覆盖波次确认后删除。
 		parts := strings.Split(v, " and ")
 		for i := range parts {
 			parts[i] = strings.Join(strings.Fields(parts[i]), " ")

@@ -297,18 +297,12 @@ type usageErrorPoint struct {
 	ErrorCount   float64 `json:"errorCount"`
 }
 
-// statsTable qualifies a stats table for the active dialect.
+// statsTable qualifies a stats table (juhe_stats schema).
 func (d *Deps) statsTable(tableName string) string {
-	if d.PGDialect {
-		return "juhe_stats." + tableName
-	}
-	return tableName
+	return "juhe_stats." + tableName
 }
 
-// businessTable qualifies a business table for the active dialect.
+// businessTable qualifies a business table (juhe_business schema).
 func (d *Deps) businessTable(tableName string) string {
-	if d.PGDialect {
-		return "juhe_business." + tableName
-	}
-	return tableName
+	return "juhe_business." + tableName
 }

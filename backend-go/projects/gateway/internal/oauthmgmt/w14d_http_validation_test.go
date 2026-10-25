@@ -200,11 +200,13 @@ func (env *testEnv) w14dSeedRotatableAccountWithCreds(t *testing.T, id, provider
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id,
+	// provider_protocol_profile_id 迁移壳列已随生产 accounts 退役，PG 载具
+	// 不再插（profileID 形参保留以维持既有调用点）。
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, oauth_refresh_token_present,
 		config_revision, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'oauth', 'active', ?, ?, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		id, adminID, provider, profileID, protocol, version, "w14d-acc-"+id, sealed, refreshFlag)
+		VALUES (?, ?, ?, ?, ?, ?, 'oauth', 'active', ?, ?, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		id, adminID, provider, protocol, version, "w14d-acc-"+id, sealed, refreshFlag)
 	return adminID
 }
 

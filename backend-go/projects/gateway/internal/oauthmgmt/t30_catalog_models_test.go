@@ -19,8 +19,8 @@ import (
 // models.upstream_model）。
 func supportedModelSet(t *testing.T, env *testEnv, accountID string) map[string]bool {
 	t.Helper()
-	rows, err := env.db.Query(`SELECT m.upstream_model FROM account_supported_models asm
-		JOIN models m ON m.id = asm.model_id WHERE asm.account_id = ?`, accountID)
+	rows, err := env.db.Query(fixtureBind(`SELECT m.upstream_model FROM account_supported_models asm
+		JOIN models m ON m.id = asm.model_id WHERE asm.account_id = ?`), accountID)
 	if err != nil {
 		t.Fatal(err)
 	}

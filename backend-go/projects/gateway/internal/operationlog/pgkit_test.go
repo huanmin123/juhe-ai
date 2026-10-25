@@ -2,20 +2,17 @@ package operationlog
 
 // pgkit_test.go 是 operationlog 建库测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z B5 operationlog 测试迁移切片）：pgtestkit 每测试
-// 独立库 + 生产 store 的 PG 臂（OpenStore ModePostgres，首用时 EnsureSchema
+// 独立库 + 生产 store（OpenStore，首用时 EnsureSchema
 // 建 juhe_dataset schema，与生产启动时序一致）。
 //
-// 三组分类（D9/D17）：
-//   - 组A（被测对象有 PG 臂且断言可逐字节保持）：建库走本文件 helper；测试
-//     体内手写 SQL 与生产 PG 臂对齐（juhe_dataset schema 限定、$n 占位符、
-//     timestamptz 经生产 storageTimestamp 回读 canonical UTC 文本）；测试名
-//     含「SQLite」且迁移后失实的改名。
-//   - 组B（SQLite-only 生产臂：文件形态库隔离、业务镜像/兜底句柄、legacy
-//     SQLite 迁移链、PRAGMA、方言 bind 的 sqlite 分支）：按 D17 不提前迁移
-//     也不提前删除，继续走 createBusinessSettings / wiOpenSQLiteStore 等文件
-//     夹具，随其生产臂删除批次同批退役。
-//   - scripted 假驱动（w9bScript、w11f/w14h 故障注入包装驱动、伪 catalog）
-//     与 fake store（renewGraceFakeStore、w9bFakeStore、fakeStore）不依赖真
+// 分组（D9/D17，2026-10-24 存储形态收口后为单一形态）：
+//   - 建库走本文件 helper；测试体内手写 SQL 与生产 PG 臂对齐
+//     （juhe_dataset schema 限定、$n 占位符、timestamptz 经生产
+//     storageTimestamp 回读 canonical UTC 文本）。
+//   - 原「组B」（文件形态库隔离、业务镜像/兜底句柄、legacy SQLite 迁移链、
+//     PRAGMA、方言 bind 的 sqlite 分支）已随 sqlite 生产臂同批退役。
+//   - scripted 假驱动（w9bScript、w14h 故障注入包装驱动、伪 catalog）与
+//     fake store（renewGraceFakeStore、w9bFakeStore、fakeStore）不依赖真
 //     库，保持原状。
 //
 // 连接串由 pgtestkit 自 .local dev env 解析，内容不进入任何文件、日志或断言。
@@ -28,8 +25,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// pgBusinessFixtureAccounts 与 createBusinessSettings 的 SQLite 账户种子逐行
-// 同构，保证迁移前后账户名断言逐字节一致。
+// pgBusinessFixtureAccounts 是业务账户种子（PG 形态夹具）。
 var pgBusinessFixtureAccounts = []struct{ id, displayName string }{
 	{"actor", "Actor"}, {"other", "Other"}, {"viewer", "Viewer"}, {"owner", "Owner"}, {"actor-1", "Actor 1"},
 }
@@ -59,7 +55,7 @@ INSERT INTO juhe_business.system_settings (system_account_id,key,value_json,upda
 func openPostgresStoreFixture(t *testing.T, retentionValue string) (Store, *sqlStore, *sql.DB) {
 	t.Helper()
 	testDB := pgtestkit.NewTestDatabase(t, prepareBusinessFixture(retentionValue))
-	store, err := OpenStore(Config{Enabled: true, InstanceID: "pgkit-owner", Mode: ModePostgres, PostgresURL: testDB.DSN})
+	store, err := OpenStore(Config{Enabled: true, InstanceID: "pgkit-owner", PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +63,7 @@ func openPostgresStoreFixture(t *testing.T, retentionValue string) (Store, *sqlS
 	return store, store.(*sqlStore), testDB.DB
 }
 
-// openPostgresStore 是默认夹具（retention=365，账户种子与 createBusinessSettings
-// 同构）的组A测试入口。
+// openPostgresStore 是默认夹具（retention=365）的测试入口。
 func openPostgresStore(t *testing.T) (Store, *sqlStore) {
 	store, implementation, _ := openPostgresStoreFixture(t, "365")
 	return store, implementation
@@ -86,7 +81,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.system_settings (system_account_id text
 INSERT INTO juhe_business.system_accounts (id,username,display_name) VALUES ('actor','actor','Actor PG'),('viewer','viewer','Viewer PG') ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name`)
 		return err
 	})
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: testDB.DSN})
+	store, err := OpenStore(Config{PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatal(err)
 	}

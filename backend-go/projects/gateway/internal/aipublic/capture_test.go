@@ -8,7 +8,6 @@ package aipublic
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -29,7 +28,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/publicapilogs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 	redis "github.com/redis/go-redis/v9"
-	_ "modernc.org/sqlite"
 )
 
 // recordingCapture collects the inputs the capture port emitted.
@@ -54,45 +52,35 @@ func (c *recordingCapture) recorded() []publicapilogs.Input {
 // newAIPublicCaptureEnv builds the shared env with a custom Deps hook.
 func newAIPublicCaptureEnv(t *testing.T, customize func(*Deps)) *aipublicEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:aipublic-capture-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range aipublicSchema {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	db := newAIPublicPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = service
-	systemAccounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	systemAccounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	groupsStore, err := groups.NewStore(db, false, nil, nil, nil)
+	groupsStore, err := groups.NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(db, false, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(db, true, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	apiKeyStore, err := apikeys.NewStore(db, false, "test-crypto-secret", nil, nil, nil)
+	apiKeyStore, err := apikeys.NewStore(db, "test-crypto-secret", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	accountStore, err := accounts.NewStore(db, false, "test-crypto-secret", nil, nil)
+	accountStore, err := accounts.NewStore(db, "test-crypto-secret", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	k := kernelForTest()
 	deps := &Deps{
-		DB: db, PGDialect: false, Now: time.Now,
+		DB: db, PGDialect: true, Now: time.Now,
 		SystemAccounts: systemAccounts,
 		Groups:         groupsStore, Strategies: strategyStore,
 		ApiKeys: apiKeyStore, AiAccounts: accountStore,

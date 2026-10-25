@@ -235,8 +235,7 @@ func StoredEndpointModes(value any) []string {
 
 // LoadBatchSupportedModels mirrors the context repository supported-models
 // branch (account_id ASC, model ASC). The accountscore.Queryer stays explicit so
-// transactional callers never touch s.db while the tx holds the only SQLite
-// connection.
+// transactional callers never touch s.db while a transaction is in flight.
 func (s *Service) LoadBatchSupportedModels(ctx context.Context, q accountscore.Queryer, ids []string) (map[string][]string, error) {
 	out := map[string][]string{}
 	if len(ids) == 0 {
@@ -836,8 +835,8 @@ func (s *Service) prepareBatchUpdates(ctx context.Context, q accountscore.Querye
 				return nil, &accountscore.ValidationError{Message: "账户归属不能为空"}
 			}
 			var id string
-			// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为
-			// integer，扫描目标必须用 bool 才能同时兼容两种驱动。
+			// proxy_profiles.enabled 在 PostgreSQL 为 boolean，扫描目标用
+			// bool 对齐驱动类型。
 			var enabled bool
 			err := q.QueryRowContext(ctx, s.store.Bind(`SELECT id, enabled FROM `+s.store.Table("proxy_profiles")+`
 				WHERE id = ? AND system_account_id = ? LIMIT 1`), text, owner).Scan(&id, &enabled)

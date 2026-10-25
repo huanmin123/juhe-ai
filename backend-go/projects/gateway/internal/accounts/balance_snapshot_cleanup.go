@@ -47,9 +47,9 @@ const cleanupQueueConcurrency = 4
 
 // StoreBalanceSnapshotCleaner is the store-backed BalanceSnapshotCleaner: the
 // composition-root default that executes the archived deletion against the
-// account store's own database surface (PostgreSQL schema-qualified
-// juhe_stats.account_usage_snapshots via statsTable, bare table on the shared
-// SQLite file — the same dual-mode face the M11 snapshot read uses).
+// account store's own database surface (the schema-qualified
+// juhe_stats.account_usage_snapshots via statsTable — the same face the M11
+// snapshot read uses).
 //
 // Node surrounds the deletion with the bounded retry queue (see
 // cleanupRetryDelays) plus the read-side isSuppressed suppression map; the Go

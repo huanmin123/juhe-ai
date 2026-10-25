@@ -460,7 +460,7 @@ func TestW10AOptionalRuleErrorCodeList(t *testing.T) {
 
 func TestW10AStoreBindAndTable(t *testing.T) {
 	env := newTestEnv(t)
-	pgStore, err := NewStore(env.db, true, testSecret, nil, nil)
+	pgStore, err := NewStore(env.db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,17 +470,6 @@ func TestW10AStoreBindAndTable(t *testing.T) {
 	bound := pgStore.bind("SELECT * FROM t WHERE a = ? AND b = ? AND c = ?")
 	if bound != "SELECT * FROM t WHERE a = $1 AND b = $2 AND c = $3" {
 		t.Fatalf("PG 占位符改写不一致：%s", bound)
-	}
-	// sqlite 臂渲染锁：env.store 已是 PG 臂，另构造 sqlite 视角 Store 直测。
-	sqliteStore, err := NewStore(env.db, false, testSecret, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sqliteStore.bind("SELECT ?") != "SELECT ?" {
-		t.Fatal("SQLite 不应改写占位符")
-	}
-	if sqliteStore.table("accounts") != "accounts" {
-		t.Fatal("SQLite 无表前缀")
 	}
 }
 

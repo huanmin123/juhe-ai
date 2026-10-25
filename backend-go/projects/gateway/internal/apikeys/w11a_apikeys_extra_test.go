@@ -5,8 +5,6 @@ package apikeys
 // and the store error paths (broken schema, closed db, triggers).
 
 import (
-	"context"
-	"database/sql"
 	"errors"
 	"math"
 	"net/http"
@@ -14,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,7 +71,7 @@ func TestW11APatchTypingHelpers(t *testing.T) {
 	if got := actorResolver(httptest.NewRequest(http.MethodGet, "/", nil)); got != "anonymous" {
 		t.Fatalf("anonymous actor = %q", got)
 	}
-	if _, err := NewStatsUsageSource(nil, false); err == nil {
+	if _, err := NewStatsUsageSource(nil); err == nil {
 		t.Fatal("nil stats db must fail")
 	}
 	if ensureCtx(nil) == nil {
@@ -283,65 +279,6 @@ func TestW11AQuotaNormalizationArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Store constructor, invalidator bus, cleanup target, timezone fallbacks.
 // ---------------------------------------------------------------------------
-
-func TestW11AStoreConstructorAndCleanupArms(t *testing.T) {
-	if _, err := NewStore(nil, false, "secret", time.Now, nil, nil); err == nil {
-		t.Fatal("nil db must fail")
-	}
-	env := newTestEnv(t)
-	if _, err := NewStore(env.db, false, "  ", time.Now, nil, nil); err == nil {
-		t.Fatal("blank secret must fail")
-	}
-
-	// BusInvalidator with a live bus reaches all three topics.
-	bus := inval.New(time.Now)
-	invalidator := BusInvalidator{Bus: bus}
-	if err := invalidator.InvalidateValidation("w11a-key", "w11a-reason", nil); err != nil {
-		t.Fatal(err)
-	}
-	invalidator.InvalidateQuota("w11a-key", "w11a-reason")
-	invalidator.InvalidateRuntime("w11a-key", "w11a-reason")
-
-	// SQLite store without the dataset handle refuses the cleanup target
-	// （SQLite-only 生产臂契约，组B：显式构造 sqlite 臂 store；PG 臂在同一
-	// 连接池的 juhe_dataset schema 落目标，无此拒绝臂）。
-	sqliteStore, err := NewStore(env.db, false, "w11a-secret", time.Now, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sqliteStore.RegisterCleanupTarget(context.Background(), "w11a-key", "w11a-owner"); err == nil {
-		t.Fatal("missing dataset db must fail")
-	}
-
-	// A wired dataset handle records the target row (schema fixture exists).
-	dataset, err := sql.Open("sqlite", "file:w11a-dataset-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dataset.SetMaxOpenConns(1)
-	t.Cleanup(func() { dataset.Close() })
-	if _, err := dataset.Exec(`CREATE TABLE api_key_record_cleanup_targets (
-		api_key_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT,
-		last_blocked_reason TEXT, last_error_message TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	wired, wiredErr := NewStore(env.db, false, "w11a-secret", time.Now, nil, nil)
-	if wiredErr != nil {
-		t.Fatal(wiredErr)
-	}
-	wired.datasetDB = dataset
-	if err := wired.RegisterCleanupTarget(context.Background(), "w11a-key", "w11a-owner"); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	if err := dataset.QueryRow(`SELECT COUNT(*) FROM api_key_record_cleanup_targets WHERE api_key_id = 'w11a-key'`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("cleanup targets = %d", count)
-	}
-}
 
 func TestW11AScheduleTimezoneFallbacks(t *testing.T) {
 	env := newTestEnv(t)

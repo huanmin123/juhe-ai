@@ -1160,7 +1160,7 @@ func TestW1XClientSourceAvoidanceErrorArm(t *testing.T) {
 
 func TestW1XDispatchQuotaCheckBatchErrorArm(t *testing.T) {
 	statsDB := w1xOpenBareSQLite(t, "w1x-quota-stats.sqlite3")
-	statsStore, err := gatewayquota.NewStatsStore(statsDB, false)
+	statsStore, err := gatewayquota.NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("create stats store: %v", err)
 	}
@@ -1779,7 +1779,7 @@ func TestW1XQuotaDBServiceBridges(t *testing.T) {
 	ctx := context.Background()
 	statsDB := w1xOpenBareSQLite(t, "w1x-quotadb-stats.sqlite3")
 	businessDB := w1xOpenBareSQLite(t, "w1x-quotadb-business.sqlite3")
-	statsStore, err := gatewayquota.NewStatsStore(statsDB, false)
+	statsStore, err := gatewayquota.NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("create stats store: %v", err)
 	}

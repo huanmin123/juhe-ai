@@ -18,7 +18,7 @@ const (
 )
 
 var (
-	ErrOwnerGate       = errors.New("Business SQLite owner handoff gate is not satisfied")
+	ErrOwnerGate       = errors.New("Business owner handoff gate is not satisfied")
 	ErrDirtyRowMissing = errors.New("group account stats dirty row not found")
 	ErrCursorRegressed = errors.New("group account stats all cursor cannot move backward")
 	ErrCursorMalformed = errors.New("group account stats all cursor is malformed")
@@ -28,15 +28,7 @@ var (
 // name the monotonicity violation rather than the rejected operation.
 var ErrCursorRegression = ErrCursorRegressed
 
-// Mode selects the SQL dialect. Postgres uses the configured schema and
-// numbered placeholders; SQLite uses unqualified table names and ? markers.
-type Mode string
-
-const (
-	SQLite   Mode = "sqlite"
-	Postgres Mode = "postgres"
-)
-
+// numbered placeholders.
 // OwnerGate is external, auditable handoff evidence. A partial handoff never
 // permits writes, even when the table exists.
 type OwnerGate struct {
@@ -73,7 +65,6 @@ type DirtyStateWriter interface {
 
 type Store struct {
 	db     *sql.DB
-	mode   Mode
 	schema string
 	gate   OwnerGate
 	now    func() time.Time
@@ -81,16 +72,12 @@ type Store struct {
 
 // New constructs the isolated transaction-group store. It never creates or
 // alters schema; callers must establish SchemaReady from an external check.
-func New(db *sql.DB, mode Mode, schema string, gate OwnerGate) (*Store, error) {
+func New(db *sql.DB, schema string, gate OwnerGate) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("group dirty cursor database is required")
 	}
-	if mode != SQLite && mode != Postgres {
-		return nil, errors.New("group dirty cursor database mode is invalid")
-	}
 	return &Store{
 		db:     db,
-		mode:   mode,
 		schema: strings.TrimSpace(schema),
 		gate:   gate,
 		now:    time.Now,
@@ -99,8 +86,8 @@ func New(db *sql.DB, mode Mode, schema string, gate OwnerGate) (*Store, error) {
 
 // NewStore is an explicit alias for callers that prefer constructor names
 // which identify the returned value as a store.
-func NewStore(db *sql.DB, mode Mode, schema string, gate OwnerGate) (*Store, error) {
-	return New(db, mode, schema, gate)
+func NewStore(db *sql.DB, schema string, gate OwnerGate) (*Store, error) {
+	return New(db, schema, gate)
 }
 
 func (s *Store) requireOwner() error {
@@ -111,16 +98,13 @@ func (s *Store) requireOwner() error {
 }
 
 func (s *Store) table(name string) string {
-	if s.mode == Postgres && s.schema != "" {
+	if s.schema != "" {
 		return s.schema + "." + name
 	}
 	return name
 }
 
 func (s *Store) bind(query string) string {
-	if s.mode != Postgres {
-		return query
-	}
 	var b strings.Builder
 	index := 0
 	for _, r := range query {
@@ -253,10 +237,7 @@ func (s *Store) UpdateAllCursor(ctx context.Context, cursorGroupID string) error
 		return err
 	}
 	defer tx.Rollback()
-	selectQuery := "SELECT reason FROM " + s.dirtyTable() + " WHERE group_id=?"
-	if s.mode == Postgres {
-		selectQuery += " FOR UPDATE"
-	}
+	selectQuery := "SELECT reason FROM " + s.dirtyTable() + " WHERE group_id=? FOR UPDATE"
 	var reason sql.NullString
 	err = tx.QueryRowContext(ctx, s.bind(selectQuery), GroupAccountStatsDirtyAll).Scan(&reason)
 	if errors.Is(err, sql.ErrNoRows) {

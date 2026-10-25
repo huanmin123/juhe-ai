@@ -14,15 +14,8 @@ import (
 )
 
 var (
-	ErrOwnerGate = errors.New("Business SQLite owner handoff gate is not satisfied")
+	ErrOwnerGate = errors.New("Business owner handoff gate is not satisfied")
 	ErrCAS       = errors.New("Business setting revision is stale")
-)
-
-type Mode string
-
-const (
-	SQLite   Mode = "sqlite"
-	Postgres Mode = "postgres"
 )
 
 type OwnerGate struct{ Confirmed, SchemaReady, NodeWriterStopped bool }
@@ -31,7 +24,6 @@ func (g OwnerGate) Ready() bool { return g.Confirmed && g.SchemaReady && g.NodeW
 
 type Store struct {
 	db     *sql.DB
-	mode   Mode
 	schema string
 	gate   OwnerGate
 	now    func() time.Time
@@ -67,28 +59,19 @@ type CatalogModel struct {
 	ContextWindowTokens, MaxInputTokens, MaxOutputTokens       *int64
 }
 
-func New(db *sql.DB, mode Mode, schema string, gate OwnerGate) (*Store, error) {
+func New(db *sql.DB, schema string, gate OwnerGate) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("settings database is required")
 	}
-	if mode != SQLite && mode != Postgres {
-		return nil, errors.New("settings database mode is invalid")
-	}
-	return &Store{db: db, mode: mode, schema: strings.TrimSpace(schema), gate: gate, now: time.Now}, nil
+	return &Store{db: db, schema: strings.TrimSpace(schema), gate: gate, now: time.Now}, nil
 }
 func (s *Store) table(name string) string {
-	if s.mode == Postgres {
-		if s.schema == "" {
-			return name
-		}
-		return s.schema + "." + name
+	if s.schema == "" {
+		return name
 	}
-	return name
+	return s.schema + "." + name
 }
 func (s *Store) bind(q string) string {
-	if s.mode != Postgres {
-		return q
-	}
 	n := 1
 	var b strings.Builder
 	for _, c := range q {
@@ -212,8 +195,7 @@ func (s *Store) put(ctx context.Context, table, accountID, key, valueJSON, expec
 
 // ListProviderModels 读 models 单表 builtin 行（scope='builtin'，vendor 窗口
 // 等价旧 provider_model_catalog 的 provider_code 窗口）。includeInactive=false
-// 附加 active + catalog_visible 过滤（catalog_visible 在 PostgreSQL 为
-// boolean、SQLite 为 integer，谓词按方言生成）。
+// 附加 active + catalog_visible 过滤。
 func (s *Store) ListProviderModels(ctx context.Context, providerCode string, includeInactive bool) ([]ProviderModel, error) {
 	if strings.TrimSpace(providerCode) == "" {
 		return nil, errors.New("provider code is required")
@@ -221,13 +203,7 @@ func (s *Store) ListProviderModels(ctx context.Context, providerCode string, inc
 	q := "SELECT COALESCE(vendor_code,'') AS provider_code, public_model AS model, status, catalog_order, supported_endpoint_modes_json, context_window_tokens, max_input_tokens, max_output_tokens FROM " + s.table("models") + " WHERE scope='builtin' AND vendor_code=?"
 	args := []any{providerCode}
 	if !includeInactive {
-		// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
-		// 比较 must 按方言生成（见 providers.Store.visibleTruePredicate 同因）。
-		visiblePredicate := "catalog_visible=1"
-		if s.mode == Postgres {
-			visiblePredicate = "catalog_visible=TRUE"
-		}
-		q += " AND status='active' AND " + visiblePredicate
+		q += " AND status='active' AND catalog_visible=TRUE"
 	}
 	q += " ORDER BY COALESCE(catalog_order,2147483647), public_model"
 	rows, err := s.db.QueryContext(ctx, s.bind(q), args...)
@@ -366,8 +342,8 @@ func forwardProtocolEndpointModesList(protocols []string) ([]string, bool) {
 // in one transaction over the models 单表 builtin 行（供应商解耦设计 §3，
 // 与 chain_catalog 读侧闭环）：CAS 门读 vendors.updated_at（vendors 为 9 行
 // 只读种子，比较不再回写）；整删重插收窄为 DELETE scope='builtin' 的该
-// vendor 行后按身份键 (COALESCE(vendor_code,''), scope,
-// COALESCE(system_account_id,''), upstream_model) ON CONFLICT 重插。It is a
+// vendor 行后按身份键 (COALESCE(vendor_code,”), scope,
+// COALESCE(system_account_id,”), upstream_model) ON CONFLICT 重插。It is a
 // complete replacement, not a best-effort patch.
 func (s *Store) ReplaceProviderCatalog(ctx context.Context, input CatalogReplacement) error {
 	if err := s.requireOwner(); err != nil {
@@ -441,16 +417,9 @@ func nullableString(value string) any {
 	return value
 }
 
-// boolBind 返回 catalog_visible 的方言绑定值：该列在 PG 为 boolean、
-// 在 SQLite 为 INTEGER 0/1，pgx 无法把整数编码进 boolean 列。
+// boolBind 返回 catalog_visible 的绑定值（PG boolean）。
 func (s *Store) boolBind(v bool) any {
-	if s.mode == Postgres {
-		return v
-	}
-	if v {
-		return 1
-	}
-	return 0
+	return v
 }
 
 // Port keeps future Gateway management handlers from acquiring raw SQL.

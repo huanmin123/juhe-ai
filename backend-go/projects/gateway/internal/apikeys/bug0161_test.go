@@ -2,7 +2,6 @@ package apikeys
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"strings"
 	"testing"
@@ -322,98 +321,23 @@ func TestAPIKeyRouteStrategyModeNormalization(t *testing.T) {
 // --- Claim 5: PostgreSQL keyword filter uses COLLATE "C" + starts_with. ---
 
 func TestPGDialectQueryContracts(t *testing.T) {
-	pgClause, pgArgs := apiKeyKeywordClause(true, "al")
+	pgClause, pgArgs := apiKeyKeywordClause("al")
 	if !strings.Contains(pgClause, `COLLATE "C"`) || !strings.Contains(pgClause, "starts_with(api_keys.name, ?)") {
 		t.Fatalf("PG keyword clause must keep the C-collation + prefix guard: %v", pgClause)
 	}
 	if len(pgArgs) != 3 || pgArgs[0] != "al" || pgArgs[2] != "al" {
 		t.Fatalf("PG keyword clause binds keyword, upper bound, keyword: %v", pgArgs)
 	}
-	sqliteClause, sqliteArgs := apiKeyKeywordClause(false, "al")
-	if strings.Contains(sqliteClause, "COLLATE") || strings.Contains(sqliteClause, "starts_with") {
-		t.Fatalf("SQLite keyword clause keeps the plain range: %v", sqliteClause)
+	if rowLockClause() != " FOR UPDATE" {
+		t.Fatalf("row lock clause: %q", rowLockClause())
 	}
-	if len(sqliteArgs) != 2 {
-		t.Fatalf("SQLite keyword clause arity: %v", sqliteArgs)
-	}
-	if rowLockClause(true) != " FOR UPDATE" || rowLockClause(false) != "" {
-		t.Fatalf("row lock clause: %q %q", rowLockClause(true), rowLockClause(false))
-	}
-	if strategyJoinLockClause(true) != " FOR UPDATE OF route_strategies, route_strategy_groups, groups" ||
-		strategyJoinLockClause(false) != "" {
-		t.Fatalf("strategy join lock clause: %q %q", strategyJoinLockClause(true), strategyJoinLockClause(false))
+	if strategyJoinLockClause() != " FOR UPDATE OF route_strategies, route_strategy_groups, groups" {
+		t.Fatalf("strategy join lock clause: %q", strategyJoinLockClause())
 	}
 }
 
 // --- Claims 8+11: SQLite cleanup targets live in the dataset database and
 // the maintenance submission runs after commit. ---
-
-func TestAPIKeyDeleteSQLiteCleanupTargetPlacement(t *testing.T) {
-	// 组B（D17）：SQLite-only 删除臂的 cleanup 目标放置契约（业务库零落行、
-	// 提交后写独立 dataset 句柄、提交后维护提交）——走 SQLite 环境，随生产
-	// sqlite 臂删除批次同批退役。
-	env := newSQLiteTestEnv(t)
-	adminID := env.login(t, "root", "root-pass", "super_admin")
-	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
-	code, created := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"cleanup-key"}`)
-	if code != http.StatusCreated {
-		t.Fatalf("create: %d %v", code, created)
-	}
-	id := dataMap(t, created)["id"].(string)
-
-	dataset, err := sql.Open("sqlite", "file:apikeys-dataset-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dataset.Close()
-	if _, err := dataset.Exec(`CREATE TABLE api_key_record_cleanup_targets (
-		api_key_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	env.store.SetDatasetDB(dataset)
-	submitted := &recordingSubmitter{}
-	env.store.SetCleanupSubmitter(submitted)
-
-	code, _ = env.do(t, http.MethodDelete, "/__aisys__/api/api-keys/"+id, "")
-	if code != http.StatusNoContent {
-		t.Fatalf("delete: %d", code)
-	}
-	if env.count(t, `SELECT COUNT(*) FROM api_key_record_cleanup_targets`) != 0 {
-		t.Fatal("SQLite deletes must not write the cleanup target into the business database")
-	}
-	var owner string
-	if err := dataset.QueryRow(`SELECT system_account_id FROM api_key_record_cleanup_targets WHERE api_key_id = ?`, id).Scan(&owner); err != nil {
-		t.Fatalf("cleanup target must land in the dataset database: %v", err)
-	}
-	if owner != adminID {
-		t.Fatalf("cleanup target owner: %v", owner)
-	}
-	if !submitted.has(id, adminID) {
-		t.Fatal("maintenance submission must fire after commit")
-	}
-}
-
-func TestAPIKeyDeleteWithoutDatasetDBKeepsSuccess(t *testing.T) {
-	// 组B（D17）：SQLite 臂未接 dataset 句柄时删除仍成功且
-	// CleanupRegisterError 可观察（PG 臂为事务内原子落目标，无此契约）——
-	// 走 SQLite 环境，随生产 sqlite 臂删除批次同批退役。
-	env := newSQLiteTestEnv(t)
-	adminID := env.login(t, "root", "root-pass", "super_admin")
-	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
-	code, created := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"no-dataset"}`)
-	if code != http.StatusCreated {
-		t.Fatalf("create: %d %v", code, created)
-	}
-	id := dataMap(t, created)["id"].(string)
-	// Node keeps the delete successful when the cleanup side effects fail.
-	result, err := env.store.Delete(context.Background(), id, AccessScope{ViewerID: adminID, IsAdmin: true})
-	if err != nil || !result.Deleted {
-		t.Fatalf("delete must succeed without dataset wiring: %v %v", result, err)
-	}
-	if result.CleanupRegisterError == nil {
-		t.Fatal("the unwired dataset handle must stay observable as CleanupRegisterError")
-	}
-}
 
 type recordingSubmitter struct {
 	targets [][2]string

@@ -18,7 +18,6 @@ package main
 import (
 	"context"
 	"testing"
-
 )
 
 // TestW14aRedisStateClientProviderInvalidate 覆盖空实现端口（显式 no-op 契约）。

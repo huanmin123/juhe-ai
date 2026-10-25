@@ -88,12 +88,9 @@ type TimezoneSource func(ctx context.Context) (string, error)
 
 // NewSystemSettingsTimezoneSource reads usageStatsTimezone from the business
 // system_settings table (Node usage-stats-helpers.ts usageStatsTimezoneAsync:
-// SQLite reads the unqualified table, PostgreSQL qualifies juhe_business).
-func NewSystemSettingsTimezoneSource(db DB, postgres bool) TimezoneSource {
-	table := "system_settings"
-	if postgres {
-		table = "juhe_business.system_settings"
-	}
+
+func NewSystemSettingsTimezoneSource(db DB) TimezoneSource {
+	table := "juhe_business.system_settings"
 	return func(ctx context.Context) (string, error) {
 		if ctx == nil {
 			ctx = context.Background()

@@ -36,7 +36,7 @@ func b1FreshSeedOwner(t *testing.T, db *sql.DB, owner string) {
 func TestB1FreshMaintenanceDDLConnectionWrite(t *testing.T) {
 	db := newFreshPGDatabase(t)
 	b1FreshSeedOwner(t, db, "owner-b1-fresh")
-	store, err := NewStore(db, true, testSecret, nil, nil)
+	store, err := NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *test
 		VALUES ('acc-b1-fk-ok', 'mod-b1-fk', $1)`, now); err != nil {
 		t.Fatalf("seed supported model: %v", err)
 	}
-	store, err := NewStore(db, true, testSecret, nil, nil)
+	store, err := NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *test
 // oauth 缺省 base_url 按 §1.1 default_base_url 表落 vendor 根。
 func TestB1FreshMaintenanceDDLDraftTestSnapshot(t *testing.T) {
 	db := newFreshPGDatabase(t)
-	store, err := NewStore(db, true, testSecret, nil, nil)
+	store, err := NewStore(db, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

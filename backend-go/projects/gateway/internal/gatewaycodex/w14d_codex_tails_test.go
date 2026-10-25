@@ -19,7 +19,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -127,7 +126,7 @@ func TestW14dSegmentStoreEdges(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW14dContextStoreGuards(t *testing.T) {
-	store, _ := newSQLiteStore(t)
+	store := newPostgresContextStateStore(t)
 	ctx := context.Background()
 
 	// Empty ids (L164/L213).
@@ -159,36 +158,14 @@ func TestW14dContextStoreGuards(t *testing.T) {
 		t.Fatalf("outcome = %q", result.Outcome)
 	}
 
-	// A shard root that is a file fails every lazy database open
-	// (L173/L218/L351/L355/L377/L403).
-	fileRoot := filepath.Join(t.TempDir(), "root-file")
-	if err := os.WriteFile(fileRoot, []byte("x"), 0o644); err != nil {
+	// withSQLTx surfaces BeginTx failures (L835)。
+	closed, openErr := sql.Open("pgx", "postgres://w14d-invalid/invalid")
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if err := closed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	broken, err := NewSQLiteShardContextStateStore(SQLiteShardStoreConfig{Root: fileRoot, ShardCount: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = broken.Close() })
-	if _, err := broken.ReadResponseStateRow(ctx, "resp-1"); err == nil {
-		t.Fatal("broken root read must fail")
-	}
-	if _, err := broken.ReadCompactStateRow(ctx, "compact-1"); err == nil {
-		t.Fatal("broken root compact read must fail")
-	}
-	if err := broken.SaveResponseStateRow(ctx, CodexContextResponseStateIndex{ResponseID: "r", SessionID: "s"}); err == nil {
-		t.Fatal("broken root save must fail")
-	}
-	if err := broken.SaveCompactStateRow(ctx, CodexContextCompactStateIndex{CompactID: "c", SessionID: "s"}); err == nil {
-		t.Fatal("broken root compact save must fail")
-	}
-
-	// withSQLTx surfaces BeginTx failures (L835).
-	closed, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
 	if err := withSQLTx(ctx, closed, func(tx *sql.Tx) error { return nil }); err == nil {
 		t.Fatal("closed db transaction must fail")
 	}
@@ -506,7 +483,7 @@ func TestW14dBridgeRegistryInit(t *testing.T) {
 }
 
 func TestW14dBridgeServiceFallbacks(t *testing.T) {
-	store, _ := newSQLiteStore(t)
+	store := newPostgresContextStateStore(t)
 
 	// Empty segment root fails the lazy segment store (L129).
 	if _, err := NewChatBridgeStateService(ChatBridgeStateConfig{CodexContextRoot: ""}, store, nil, nil); err == nil {
@@ -522,94 +499,8 @@ func TestW14dBridgeServiceFallbacks(t *testing.T) {
 	}
 }
 
-func TestW14dBridgeStoreFailureArms(t *testing.T) {
-	// A shard root that is a file breaks every store operation while the
-	// segment store stays healthy.
-	fileRoot := filepath.Join(t.TempDir(), "root-file")
-	if err := os.WriteFile(fileRoot, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	brokenStore, err := NewSQLiteShardContextStateStore(SQLiteShardStoreConfig{Root: fileRoot, ShardCount: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = brokenStore.Close() })
-	segmentsRoot := t.TempDir()
-	service, err := NewChatBridgeStateService(ChatBridgeStateConfig{CodexContextRoot: segmentsRoot}, brokenStore, nil, newFakeClock(time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	service.Logger = &recordingLogger{}
-	registry := NewContextRequestStateRegistry()
-	sink := &recordedSink{}
-	service.Sink = sink
-	ctx := context.Background()
-
-	// Preflight with an internal previous fails on the chain read (L306).
-	req := newTestRequest(t, "POST", "/v1/responses", nil, nil)
-	body := map[string]any{"model": "gpt-5", "previous_response_id": "resp_chat_bridge_gone", "input": []any{}}
-	raw, _ := json.Marshal(body)
-	attachBody(req, body, raw)
-	res, resWriter := newTrackedWriter()
-	preflightInput := bridgeBaseInput(req, resWriter, &recordedAudit{})
-	if _, err := service.ApplyContextStatePreflight(ctx, registry, preflightInput); err == nil {
-		t.Fatal("store failure must surface from the preflight")
-	}
-	_ = res
-
-	// Completion persistence failure is swallowed with a warn (L437).
-	seedReq := newTestRequest(t, "POST", "/v1/responses", nil, nil)
-	attachBody(seedReq, map[string]any{"model": "gpt-5", "input": []any{}}, nil)
-	registry.Set(seedReq, &CodexResponsesContextRequestState{
-		RequestKind:           RequestKindResponses,
-		Boundary:              CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"},
-		CanonicalBody:         map[string]any{"model": "gpt-5", "input": []any{}},
-		CurrentInput:          []any{},
-		MaterializedInput:     []any{},
-		PreviousResponseKind:  PreviousKindNone,
-		ActiveBridgeAccountID: "acc",
-	})
-	handler := service.CompletionHandlerForRequest(registry, seedReq, gatewayruntimecache.OpenAIAccountSecret{ID: "acc", ProtocolCode: "openai", ProtocolVersion: "v1"}, "m")
-	if handler == nil {
-		t.Fatal("handler missing")
-	}
-	handler(CodexResponsesChatBridgeCompletion{ResponseID: "resp_chat_bridge_fail", CreatedAt: time.Now(), OutputItems: []any{}})
-
-	// Compact restore error arm (L483) and snapshot write error arms
-	// (L552 needs broken segments, L569 a broken store with healthy segments).
-	if _, err := service.RestoreChatBridgeInputForCompact(ctx, struct {
-		PreviousResponseID string
-		Boundary           CodexContextStateBoundary
-		CurrentInput       any
-	}{PreviousResponseID: "resp_chat_bridge_x", Boundary: CodexContextStateBoundary{}}); err == nil {
-		t.Fatal("compact restore must surface store failure")
-	}
-	if _, err := service.CreateChatBridgeCompactSnapshot(ctx, CreateChatBridgeCompactSnapshotInput{
-		SessionID: "s", Boundary: CodexContextStateBoundary{}, Summary: "x",
-	}); err == nil {
-		t.Fatal("snapshot index save must surface store failure")
-	}
-
-	// Healthy segments plus a broken store still fail the snapshot save
-	// through the index write (L569 vs L552 distinction needs healthy
-	// segments): service with broken store but valid segment root is the
-	// same service; a segments-broken service fails the segment write (L552).
-	brokenSegmentsService, err := NewChatBridgeStateService(
-		ChatBridgeStateConfig{CodexContextRoot: fileRoot}, brokenStore, nil,
-		newFakeClock(time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)))
-	if err != nil {
-		t.Fatalf("segments are lazily opened: %v", err)
-	}
-	brokenSegmentsService.Logger = &recordingLogger{}
-	if _, err := brokenSegmentsService.CreateChatBridgeCompactSnapshot(ctx, CreateChatBridgeCompactSnapshotInput{
-		SessionID: "s2", Boundary: CodexContextStateBoundary{}, Summary: "y",
-	}); err == nil {
-		t.Fatal("broken segment root must fail snapshot write")
-	}
-}
-
 func TestW14dBridgeManualRowRestoreArms(t *testing.T) {
-	store, _ := newSQLiteStore(t)
+	store := newPostgresContextStateStore(t)
 	segmentsRoot := t.TempDir()
 	clock := newFakeClock(time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC))
 	service, err := NewChatBridgeStateService(ChatBridgeStateConfig{CodexContextRoot: segmentsRoot}, store, nil, clock)

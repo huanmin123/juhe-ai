@@ -57,12 +57,12 @@ func composeTestConfigForDSN(t *testing.T, dsn string) runtimeConfig {
 	root := t.TempDir()
 	redisServer := miniredis.RunT(t)
 	return runtimeConfig{
-		PostgresURL:     dsn,
+		PostgresURL:         dsn,
 		BusinessPostgresURL: dsn,
-		RedisCacheURL:   "redis://" + redisServer.Addr(),
-		RedisStateURL:   "redis://" + redisServer.Addr(),
-		RedisNamespace:  "compose-test",
-		Secret:          "compose-test-secret",
+		RedisCacheURL:       "redis://" + redisServer.Addr(),
+		RedisStateURL:       "redis://" + redisServer.Addr(),
+		RedisNamespace:      "compose-test",
+		Secret:              "compose-test-secret",
 		// Node runtime.ts:770: dispatchAccountCandidateLimit =
 		// integerConfig(..., globalConcurrencyMax, 1, 50_000) — the load path
 		// always provides the default (globalMax 5000); the hand-built config
@@ -90,7 +90,6 @@ func openComposeOperationStore(t *testing.T, dsn string) operationlog.Store {
 	t.Helper()
 	config := operationlog.Config{
 		Enabled:              true,
-		Mode:                 operationlog.ModePostgres,
 		InstanceID:           "compose-test",
 		PostgresURL:          dsn,
 		PostgresMaxOpenConns: 4,
@@ -141,7 +140,6 @@ func openComposeAuditSources(t *testing.T, dsn string) (auditlog.Config, *auditl
 		t.Fatalf("open F3 audit shared pool: %v", err)
 	}
 	config := auditlog.Config{
-		Mode:                     auditlog.ModePostgres,
 		InstanceID:               "compose-test",
 		PostgresURL:              dsn,
 		PostgresPool:             pooled,
@@ -453,7 +451,6 @@ func composeTestAuditConfig(t *testing.T, dsn string) auditlog.Config {
 		t.Fatalf("open F3 audit shared pool: %v", err)
 	}
 	return auditlog.Config{
-		Mode:                     auditlog.ModePostgres,
 		InstanceID:               "compose-test",
 		PostgresURL:              dsn,
 		PostgresPool:             pooled,
@@ -496,9 +493,9 @@ func TestGateGatewayChainPassesAfterPhase2(t *testing.T) {
 // segments / logs / chat-assets）保留。
 func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_POSTGRES_URL":     "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL":  "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL":  "redis://127.0.0.1:6379/1",
+		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
 	}
 	cfg, err := loadRuntimeConfig(func(key string) string { return env[key] })
 	if err != nil {

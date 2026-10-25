@@ -452,105 +452,17 @@ func (d *Deps) mergeAiPerformanceStatsWithAccounts(r *http.Request, scope perfSc
 	return accounts, nil
 }
 
-// aiPerformanceKeywordAccountIds mirrors the keyword option query: direct
-// accounts, authorized instances and (scoped) group-authorized accounts.
-// SQLite keeps the Node SQLite path (two instr queries at
-// usage-stats-ai-performance.repository.ts:665-686); PostgreSQL ports the Node
-// PG path (single UNION ALL candidate query with source_priority semantics and
-// in-database ROW_NUMBER dedupe, lines 711-791).
+// aiPerformanceKeywordAccountIds ports the keyword option query: direct
+// accounts, authorized instances and (scoped) group-authorized accounts
+// (single UNION ALL candidate query with source_priority semantics and
+// in-database ROW_NUMBER dedupe, usage-stats-ai-performance.repository.ts
+// lines 711-791).
 func (d *Deps) aiPerformanceKeywordAccountIds(r *http.Request, scope perfScopeState, keyword string, limit int) ([]string, error) {
 	normalized := nfkcTrim(keyword)
 	if normalized == "" {
 		return nil, nil
 	}
-	if d.PGDialect {
-		return d.aiPerformanceKeywordAccountIdsPostgres(r, scope, normalized, limit)
-	}
-	ids := []string{}
-	appendLimit := func(current []string, rows []Row) []string {
-		for _, row := range rows {
-			id := row.text("id")
-			if id == "" || containsString(current, id) || len(current) >= limit {
-				continue
-			}
-			current = append(current, id)
-		}
-		return current
-	}
-	if scope.SystemAccountID == globalStatsSystemAccountID {
-		rows, err := d.queryBusiness(r, `
-			SELECT accounts.id
-			FROM `+d.businessTable("accounts")+` accounts
-			WHERE accounts.deleted_at IS NULL
-				AND instr(accounts.name, ?) > 0
-			ORDER BY accounts.name ASC, accounts.id ASC
-			LIMIT ?
-		`, normalized, limit)
-		if err != nil {
-			return nil, err
-		}
-		ids = appendLimit(ids, rows)
-		rows, err = d.queryBusiness(r, `
-			SELECT instance_accounts.id
-			FROM `+d.businessTable("accounts")+` source_accounts
-			INNER JOIN `+d.businessTable("accounts")+` instance_accounts
-				ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-			WHERE source_accounts.deleted_at IS NULL
-				AND instance_accounts.deleted_at IS NULL
-				AND instr(source_accounts.name, ?) > 0
-			ORDER BY source_accounts.name ASC, instance_accounts.id ASC
-			LIMIT ?
-		`, normalized, limit)
-		if err != nil {
-			return nil, err
-		}
-		ids = appendLimit(ids, rows)
-		return ids, nil
-	}
-	rows, err := d.queryBusiness(r, `
-		SELECT accounts.id
-		FROM `+d.businessTable("accounts")+` accounts
-		WHERE accounts.deleted_at IS NULL
-			AND instr(accounts.name, ?) > 0
-			AND (
-				accounts.system_account_id = ?
-				OR EXISTS (
-					SELECT 1
-					FROM `+d.businessTable("group_accounts")+` visible_group_accounts
-					INNER JOIN `+d.businessTable("resource_authorizations")+` visible_group_authorization_rows
-						ON visible_group_authorization_rows.resource_type = 'group'
-						AND visible_group_authorization_rows.resource_id = visible_group_accounts.group_id
-						AND visible_group_authorization_rows.grantee_system_account_id = ?
-						AND visible_group_authorization_rows.status = 'active'
-						AND (visible_group_authorization_rows.expires_at IS NULL OR visible_group_authorization_rows.expires_at > ?)
-					WHERE visible_group_accounts.account_id = accounts.id
-						AND visible_group_accounts.enabled = 1
-				)
-			)
-		ORDER BY accounts.name ASC, accounts.id ASC
-		LIMIT ?
-	`, normalized, scope.SystemAccountID, scope.SystemAccountID, rfc3339Millis(d.Now()), limit)
-	if err != nil {
-		return nil, err
-	}
-	ids = appendLimit(ids, rows)
-	rows, err = d.queryBusiness(r, `
-		SELECT instance_accounts.id
-		FROM `+d.businessTable("accounts")+` source_accounts
-		INNER JOIN `+d.businessTable("accounts")+` instance_accounts
-			ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
-		WHERE source_accounts.deleted_at IS NULL
-			AND instance_accounts.deleted_at IS NULL
-			AND instr(source_accounts.name, ?) > 0
-			AND instance_accounts.system_account_id = ?
-		ORDER BY source_accounts.name ASC, instance_accounts.id ASC
-		LIMIT ?
-	`, normalized, scope.SystemAccountID, limit)
-	if err != nil {
-		return nil, err
-	}
-	ids = appendLimit(ids, rows)
-	return ids, nil
+	return d.aiPerformanceKeywordAccountIdsPostgres(r, scope, normalized, limit)
 }
 
 // aiPerformanceKeywordAccountIdsPostgres ports the keyword candidate query of
@@ -931,15 +843,6 @@ func uniqueNonEmpty(values []string) []string {
 		result = append(result, text)
 	}
 	return result
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func placeholders(count int) string {

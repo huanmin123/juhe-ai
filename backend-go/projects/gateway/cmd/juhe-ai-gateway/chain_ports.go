@@ -22,6 +22,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
@@ -1738,6 +1739,13 @@ type sessionIdentityAdapter struct {
 	services *sessionIdentityServices
 }
 
+// gatewayContentFingerprintLineage 是内容指纹谱系判别器的接缝（内容指纹会话
+// 身份设计 §4.3）：对确认指纹做一次判定并原子更新记录，返回本请求是否产出
+// 确认档。gatewaysession 服务实现之，测试注入计数 spy。
+type gatewayContentFingerprintLineage interface {
+	Record(confirmedHex string, messageCount int) bool
+}
+
 // codexSourceSessionAdapter bridges the G14 IdentityService onto the
 // gatewaycodex SessionIdentityResolver seam (source-identity.ts consumes the
 // full session projection: status, conversation key and semantic namespace).
@@ -1784,6 +1792,10 @@ func (r chainIdentityRequest) HeaderValues(name string) []string {
 // resolved session id + conversation key ride on the frozen identity. When
 // the identity services are absent the adapter keeps the Node
 // header-passthrough session id fallback.
+//
+// 官方 resolver 裁决为 IdentityStatusMissing 时进入内容指纹降级档（内容指纹
+// 会话身份设计 §3.1）：官方身份路径（Resolved / Invalid / Conflict / 出错）
+// 的行为逐字节不变。
 func (a sessionIdentityAdapter) ResolveGatewaySessionIdentity(req *gatewaypreauth.GatewayRequest, input gatewaypreauth.SessionIdentityInput) gatewaypreauth.SessionIdentity {
 	if req == nil {
 		return gatewaypreauth.SessionIdentity{}
@@ -1804,6 +1816,14 @@ func (a sessionIdentityAdapter) ResolveGatewaySessionIdentity(req *gatewaypreaut
 				ConversationKey: identity.ConversationKey,
 			}
 		}
+		// 裁定词（设计 §3.1，fail-closed 的实现约束）：指纹判定必须在
+		// identity.Status 与 err 仍在作用域处完成，err == nil && Status ==
+		// IdentityStatusMissing 是唯一入口；invalid / conflict / resolver
+		// 出错维持现状空身份，不走指纹档。禁止以投影后的空 SessionIdentity
+		// 作为下游触发条件——投影无法区分 missing / invalid / conflict / error。
+		if err == nil && identity.Status == gatewaysession.IdentityStatusMissing {
+			return a.resolveContentFingerprintIdentity(req, input)
+		}
 		return gatewaypreauth.SessionIdentity{}
 	}
 	identity := gatewaypreauth.SessionIdentity{}
@@ -1813,6 +1833,48 @@ func (a sessionIdentityAdapter) ResolveGatewaySessionIdentity(req *gatewaypreaut
 	if conversationKey := trimmedHeader(req, "x-conversation-key"); conversationKey != "" {
 		identity.ConversationKey = conversationKey
 	}
+	return identity
+}
+
+// resolveContentFingerprintIdentity 计算内容指纹降级档（设计 §3.1/§4.3）：
+// 锚点可用 → 审计 SessionID = "cfp1-" + 临时指纹（首请求即有）；确认指纹可
+// 计算且谱系判别器产出 → 亲和 ConversationKey（复用现有 canonicalizer 与
+// HMAC purpose，scope 携带 systemAccountID + apiKeyID + secret，与官方档同
+// 构）。锚点扫描经请求级记忆化与来源阶梯共享，零完整物化。
+func (a sessionIdentityAdapter) resolveContentFingerprintIdentity(req *gatewaypreauth.GatewayRequest, input gatewaypreauth.SessionIdentityInput) gatewaypreauth.SessionIdentity {
+	memo := req.ContentFingerprintMemoFor(input.ClientProfile, input.SystemAccountID, input.APIKeyID)
+	if !memo.AnchorsOK {
+		return gatewaypreauth.SessionIdentity{}
+	}
+	identity := gatewaypreauth.SessionIdentity{
+		SessionID: gatewaybody.ContentFingerprintSessionIDPrefix + memo.ProvisionalHex,
+	}
+	if !memo.ConfirmedComputable {
+		return identity
+	}
+	if a.services.ContentFingerprintLineage == nil ||
+		!a.services.ContentFingerprintLineage.Record(memo.ConfirmedHex, memo.MessageCount) {
+		// 判别器拦截（恒定长度重放等）：本次解析不产出确认档，按无键处理
+		// 走普通调度，不更新记录（服务内部纪律）。
+		return identity
+	}
+	conversationKey, err := gatewaysession.CreateGatewayConversationKey(
+		gatewaysession.ResolvedGatewaySessionIdentityScope{
+			ClientProfile:   input.ClientProfile,
+			SystemAccountID: input.SystemAccountID,
+			APIKeyID:        input.APIKeyID,
+			HMACSecret:      a.services.Secret,
+		},
+		gatewaybody.ContentFingerprintNamespace,
+		gatewaybody.ContentFingerprintConfirmedPrefix+memo.ConfirmedHex,
+	)
+	if err != nil {
+		// 键派生失败（HMAC secret 缺失等装配态）：确认档不产出（按无键处
+		// 理），审计临时档保留——身份主体由锚点派生、不依赖 secret，与官方
+		// 档"resolver 出错折叠为空身份"的口径不同源，故不回退整档。
+		return identity
+	}
+	identity.ConversationKey = conversationKey
 	return identity
 }
 

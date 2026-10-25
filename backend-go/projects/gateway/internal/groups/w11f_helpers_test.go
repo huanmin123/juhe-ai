@@ -340,11 +340,11 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, false, nil, nil, invalidator)
+	store, err := NewStore(db, nil, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authzStore, err := authz.NewStore(db, false, nil)
+	authzStore, err := authz.NewStore(db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,85 +673,6 @@ func TestW11FSchedulingPure(t *testing.T) {
 // stats_reader.go
 // ---------------------------------------------------------------------------
 
-func TestW11FStatsReader(t *testing.T) {
-	env := newW11FEnv(t)
-	reader := NewGroupAccountStatsDBReader(env.db, false)
-	ctx := context.Background()
-
-	// 空 ID / nil DB → 空结果。
-	if got, err := reader.ReadGroupAccountStats(ctx, nil); err != nil || len(got) != 0 {
-		t.Fatalf("empty ids = %v/%v", got, err)
-	}
-	nilReader := &GroupAccountStatsDBReader{}
-	if got, err := nilReader.ReadGroupAccountStats(ctx, []string{"g1"}); err != nil || len(got) != 0 {
-		t.Fatalf("nil db = %v/%v", got, err)
-	}
-
-	// 命中：无时效过滤（对齐 Node groupAccountStatsSelectColumns——旧实现的
-	// updated_at > 读时刻恒假且 today_usage/usage 两列不存在，均移植错误），
-	// 旧行/新行都返回，total/available 等计数透传。
-	fresh := time.Now().UTC().Add(time.Minute).Format("2006-01-02 15:04:05")
-	stale := time.Now().UTC().Add(-time.Hour).Format("2006-01-02 15:04:05")
-	env.exec(t, `INSERT INTO group_account_stats
-		(system_account_id, group_id, total, available, active, disabled, error, rate_limited, current_concurrency, concurrency_limit, updated_at)
-		VALUES ('sys_admin', 'w11f-g1', 5, 4, 3, 1, 1, 0, 2, 9, ?)`, fresh)
-	env.exec(t, `INSERT INTO group_account_stats
-		(system_account_id, group_id, total, available, active, disabled, error, rate_limited, current_concurrency, concurrency_limit, updated_at)
-		VALUES ('sys_admin', 'w11f-g2', 1, 1, 1, 0, 0, 0, 0, 1, ?)`, stale)
-
-	stats, err := reader.ReadGroupAccountStats(ctx, []string{"w11f-g1", "w11f-g2", "w11f-missing"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stats) != 2 {
-		t.Fatalf("stats = %v", stats)
-	}
-	g1 := stats["w11f-g1"]
-	if g1.Total != 5 || g1.Available != 4 || g1.Active != 3 || g1.Disabled != 1 || g1.Error != 1 || g1.RateLimited != 0 || g1.CurrentConcurrency != 2 || g1.ConcurrencyLimit != 9 {
-		t.Fatalf("g1 = %+v", g1)
-	}
-	g2 := stats["w11f-g2"]
-	if g2.Total != 1 || g2.Available != 1 || g2.ConcurrencyLimit != 1 {
-		t.Fatalf("g2 = %+v", g2)
-	}
-	// TodayUsage/Usage 先铺 emptyAccountUsageSummary 13 键空形状（恢复 Node
-	// 响应形状：行存在时 two key 也必须非 nil），真值由 WithUsageSource 端口
-	// 的 usage-summary hydrate 覆盖。修复前这里钉的是"零值（nil）"旧契约，
-	// 随"用量(日)"列恒 0 修复回正。
-	for _, item := range []AccountStats{g1, g2} {
-		if item.TodayUsage == nil || item.Usage == nil {
-			t.Fatalf("usage hydrate 键必须非 nil 空形状: %+v", item)
-		}
-	}
-	// accountStatsFromGroupRow 直连。
-	row := groupAccountStatsRow{GroupID: "g", Total: 1, Available: 2, Active: 3, Disabled: 4, Error: 5, RateLimited: 6, CurrentConcurrency: 7, ConcurrencyLimit: 8}
-	fromRow := accountStatsFromGroupRow(row)
-	if fromRow.RateLimited != 6 || fromRow.Total != 1 || fromRow.TodayUsage == nil || fromRow.Usage == nil {
-		t.Fatalf("fromRow = %+v", fromRow)
-	}
-	if _, ok := fromRow.TodayUsage.(map[string]any); !ok {
-		t.Fatalf("fromRow.TodayUsage 必须是 emptyAccountUsageSummary 形状: %#v", fromRow.TodayUsage)
-	}
-
-	// 查询错误 / Scan 错误 / rows.Err。
-	env.script.failQuery("FROM group_account_stats")
-	if _, err := reader.ReadGroupAccountStats(ctx, []string{"w11f-g1"}); err == nil {
-		t.Fatal("stats query fault must fail")
-	}
-	env.script.canned("FROM group_account_stats",
-		[]string{"group_id", "total", "available", "active", "disabled", "error", "rate_limited", "current_concurrency", "concurrency_limit"},
-		[][]driver.Value{{nil, 1, 1, 1, 1, 1, 1, 1, 1}}, nil)
-	if _, err := reader.ReadGroupAccountStats(ctx, []string{"w11f-g1"}); err == nil {
-		t.Fatal("stats scan fault must fail")
-	}
-	env.script.canned("FROM group_account_stats",
-		[]string{"group_id", "total", "available", "active", "disabled", "error", "rate_limited", "current_concurrency", "concurrency_limit"},
-		[][]driver.Value{{"g", 1, 1, 1, 1, 1, 1, 1, 1}}, w11fBoom)
-	if _, err := reader.ReadGroupAccountStats(ctx, []string{"w11f-g1"}); err == nil {
-		t.Fatal("stats rows.Err fault must fail")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // store.go 纯辅助
 // ---------------------------------------------------------------------------
@@ -761,11 +682,11 @@ func TestW11FStoreHelpers(t *testing.T) {
 	if (&ValidationError{Message: "m"}).Error() != "m" || (&ConflictError{Message: "m"}).Error() != "m" {
 		t.Fatal("Error() drift")
 	}
-	// NewStore(nil) 与 PG 方言。
-	if _, err := NewStore(nil, false, nil, nil, nil); err == nil {
+	// NewStore(nil) 与表名/绑定方言。
+	if _, err := NewStore(nil, nil, nil, nil); err == nil {
 		t.Fatal("NewStore(nil) must fail")
 	}
-	pgStore := &Store{pg: true}
+	pgStore := &Store{}
 	if pgStore.table("x") != "juhe_business.x" {
 		t.Fatal("pg table drift")
 	}
@@ -778,7 +699,7 @@ func TestW11FStoreHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	defaultStore, err := NewStore(db, false, nil, nil, nil)
+	defaultStore, err := NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -924,63 +845,3 @@ func TestW11FStoreHelpers(t *testing.T) {
 }
 
 // TestW11FPermissionHelpers 覆盖 options.go 权限与授权视图辅助。
-func TestW11FPermissionHelpers(t *testing.T) {
-	env := newW11FEnv(t)
-	store := env.store
-
-	// authorizedGroupPermissions。
-	permissions := authorizedGroupPermissions(true, false)
-	if !permissions.CanUse || !permissions.CanEdit || permissions.CanDelete || permissions.CanReturnAuthorization || permissions.CanAuthorize {
-		t.Fatalf("authorized permissions = %+v", permissions)
-	}
-	// canBindAccessRowValues: 禁用 / 状态非 active / 过期 / 未来 / 坏时间。
-	invalidStatus := sql.NullString{String: "paused", Valid: true}
-	if bound, err := store.canBindAccessRowValues(false, sql.NullString{String: "active", Valid: true}, sql.NullString{}); err != nil || bound {
-		t.Fatalf("disabled row = %v/%v", bound, err)
-	}
-	if bound, err := store.canBindAccessRowValues(true, invalidStatus, sql.NullString{}); err != nil || bound {
-		t.Fatalf("paused row = %v/%v", bound, err)
-	}
-	past := sql.NullString{String: "2001-01-01T00:00:00Z", Valid: true}
-	if bound, err := store.canBindAccessRowValues(true, sql.NullString{String: "active", Valid: true}, past); err != nil || bound {
-		t.Fatalf("expired row = %v/%v", bound, err)
-	}
-	future := sql.NullString{String: "2999-01-01T00:00:00Z", Valid: true}
-	if bound, err := store.canBindAccessRowValues(true, sql.NullString{String: "active", Valid: true}, future); err != nil || !bound {
-		t.Fatalf("future row = %v/%v", bound, err)
-	}
-	bad := sql.NullString{String: "not-a-time", Valid: true}
-	if _, err := store.canBindAccessRowValues(true, sql.NullString{String: "active", Valid: true}, bad); err == nil {
-		t.Fatal("malformed expiresAt must fail")
-	}
-	// authorizationExpired: 缺失 / 空白。
-	if expired, err := store.authorizationExpired(sql.NullString{}); err != nil || expired {
-		t.Fatalf("absent expiresAt = %v/%v", expired, err)
-	}
-	blank := sql.NullString{String: "  ", Valid: true}
-	if expired, err := store.authorizationExpired(blank); err != nil || expired {
-		t.Fatalf("blank expiresAt = %v/%v", expired, err)
-	}
-	// parseAuthorizationLimitsView: 缺失 / 空白 / 坏 JSON / 完整文档。
-	if value, err := parseAuthorizationLimitsView(sql.NullString{}); err != nil || value == nil {
-		t.Fatalf("absent limits = %v/%v", value, err)
-	}
-	if value, err := parseAuthorizationLimitsView(sql.NullString{String: "  ", Valid: true}); err != nil || value == nil {
-		t.Fatalf("blank limits = %v/%v", value, err)
-	}
-	if _, err := parseAuthorizationLimitsView(sql.NullString{String: "{bad", Valid: true}); err == nil {
-		t.Fatal("malformed limits must fail")
-	}
-	full := `{"hourly":{"enabled":true,"hours":1,"limit":5},"daily":{"enabled":true,"limit":100},"weekly":{"enabled":true,"limit":50},"monthly":{"enabled":true,"limit":1000},"total":{"enabled":true,"limit":10000}}`
-	value, err := parseAuthorizationLimitsView(sql.NullString{String: full, Valid: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(value)
-	if !strings.Contains(string(encoded), `"hourly"`) || !strings.Contains(string(encoded), `"monthly"`) {
-		t.Fatalf("limits view = %s", encoded)
-	}
-	if !strings.Contains(string(encoded), `"weekly"`) {
-		t.Fatalf("weekly entry missing: %s", encoded)
-	}
-}

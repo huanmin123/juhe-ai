@@ -68,7 +68,7 @@ func New(store accountscore.StoreBase, deps Deps, effects RuntimeResetEffects) *
 
 // forUpdate renders the SELECT ... FOR UPDATE suffix (PostgreSQL only).
 func (s *Service) forUpdate() string {
-	return accountscore.SQLForUpdate(s.store.PG())
+	return accountscore.SQLForUpdate()
 }
 
 const runtimeResetAction = "runtime_reset"
@@ -116,24 +116,24 @@ type RuntimeResetLog struct {
 // ResetSummary is the focused findAccountSummaryAsync projection the reset
 // flow reads: the persistent fields plus the authorized-branch joins.
 type ResetSummary struct {
-	ID                                 string
-	ConfigRevision                     int64
-	DispatchRevision                   sql.NullInt64
-	Name                               string
-	AccountType                        string
-	Credentials                        accountscore.Credentials
-	Status                             string
-	Schedulable                        bool
+	ID               string
+	ConfigRevision   int64
+	DispatchRevision sql.NullInt64
+	Name             string
+	AccountType      string
+	Credentials      accountscore.Credentials
+	Status           string
+	Schedulable      bool
 	// ProviderCode 承载 accounts.vendor_code（供应商解耦设计 §2.1：vendor 值域
 	// 与旧 providerCode 同名，NULL 归一空串）；ProviderProtocolProfileID /
 	// ClientCompatibility 词汇已随供应商解耦退役，投影恒空串。包内无消费方，
 	// 字段仅为 scan 形状保留。
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	ProtocolCode              string
-	ProtocolVersion           string
-	ClientCompatibility       string
-	SystemAccountID           string
+	ProviderCode                       string
+	ProviderProtocolProfileID          string
+	ProtocolCode                       string
+	ProtocolVersion                    string
+	ClientCompatibility                string
+	SystemAccountID                    string
 	AccessType                         string // 'owner' | 'authorized'
 	AccountExpiresAt                   sql.NullString
 	CooldownUntil                      sql.NullString

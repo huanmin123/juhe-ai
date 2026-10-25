@@ -99,13 +99,10 @@ func (d *Deps) queryBusiness(r *http.Request, query string, args ...any) ([]Row,
 }
 
 // bind rewrites `?` placeholders to `$n` for PostgreSQL. statreads ports the
-// Node SQL with `?` placeholders; SQLite takes them natively while pgx does
-// not (ISSUE-005 同类：未绑定占位符直达 pgx 触发 500)。2026-09-25 E2E 发现
+// Node SQL with `?` placeholders while pgx does not bind them natively
+// (ISSUE-005 同类：未绑定占位符直达 pgx 触发 500)。2026-09-25 E2E 发现
 // usage-records / usage-overview 在生产 PG 500 后收敛到本包统一出口绑定。
 func (d *Deps) bind(query string) string {
-	if !d.PGDialect {
-		return query
-	}
 	if strings.Contains(query, "instr(") {
 		// SQLite 专有 instr(X, Y) → PG strpos(X, Y)（语义等价）。
 		query = strings.ReplaceAll(query, "instr(", "strpos(")

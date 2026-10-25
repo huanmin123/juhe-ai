@@ -18,19 +18,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
-// readsAuthTables 是 w11fFaultEnv 保留组（scripted SQLite 故障注入环境）专用
-// 的最小 auth schema（见 pgkit_test.go 的三组分类说明）；组A环境走
-// newLogreadsPGDatabase 的 PG 夹具。
-var readsAuthTables = []string{
-	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-}
-
 // readsTestEnv is the shared route test harness: one pgtestkit PG database
 // carrying the auth tables and the F1/F3/F5 production dataset schemas, and
-// the logreads routes mounted behind the real requireAdmin chain in the
-// production ReadPostgres dialect. The pg flag keeps exec() bilingual for the
-// retained w11fFaultEnv scripted environment (SQLite semantics).
+// the logreads routes mounted behind the real requireAdmin chain.
 type readsTestEnv struct {
 	server   *httptest.Server
 	db       *sql.DB
@@ -66,18 +56,18 @@ func newReadsTestEnv(t *testing.T, mutate func(audit AuditLogReader, runtime Run
 	hotDir := filepath.Join(directories, "audit-hot")
 	blobDir := filepath.Join(directories, "audit-blobs")
 	logDir := filepath.Join(directories, "logs")
-	audit, err := NewAuditLogQueryReader(db, ReadPostgres, AuditQueryDirectories{
+	audit, err := NewAuditLogQueryReader(db, AuditQueryDirectories{
 		HotSearchDirectory:   hotDir,
 		PayloadBlobDirectory: blobDir,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeReader, err := NewRuntimeLogSQLReader(db, ReadPostgres)
+	runtimeReader, err := NewRuntimeLogSQLReader(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := NewPublicApiLogSQLStore(db, ReadPostgres)
+	public, err := NewPublicApiLogSQLStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,63 +206,6 @@ func wantItems(t *testing.T, data map[string]any) []map[string]any {
 // ---------------------------------------------------------------------------
 // Audit family
 // ---------------------------------------------------------------------------
-
-// auditReadsDDL 是 w11fFaultEnv 保留组（scripted SQLite 故障注入环境）专用的
-// F3 dataset SQLite DDL（见 pgkit_test.go 的三组分类说明）；组A环境的 F3 表
-// 由 auditlog 生产 EnsureSchema 经 newLogreadsPGDatabase 建。
-var auditReadsDDL = []string{
-	`CREATE TABLE IF NOT EXISTS audit_logs (
-	  id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
-	  system_account_id TEXT, api_key_id TEXT, conversation_key TEXT, session_id TEXT,
-	  session_client_type TEXT, group_id TEXT, route_group_id TEXT, account_id TEXT, provider_code TEXT,
-	  method TEXT NOT NULL, path TEXT NOT NULL, query_string TEXT, model TEXT,
-	  upstream_model TEXT, pricing_model TEXT, model_mapping_applied INTEGER NOT NULL DEFAULT 0,
-	  model_mapping_source TEXT, source_endpoint_family TEXT, upstream_endpoint_family TEXT,
-	  stream INTEGER NOT NULL DEFAULT 0, client_ip TEXT, user_agent TEXT,
-	  audit_outcome TEXT NOT NULL, success INTEGER NOT NULL DEFAULT 0, final_status_code INTEGER,
-	  error_phase TEXT, error_code TEXT, error_message TEXT, sample_bucket INTEGER NOT NULL,
-	  sample_reason TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0,
-	  payload_count INTEGER NOT NULL DEFAULT 0, raw_payload_bytes INTEGER NOT NULL DEFAULT 0,
-	  compressed_payload_bytes INTEGER NOT NULL DEFAULT 0, compression_saved_bytes INTEGER NOT NULL DEFAULT 0,
-	  error_group_id TEXT, capture_status TEXT NOT NULL DEFAULT 'complete',
-	  lifecycle_status TEXT NOT NULL DEFAULT 'finalized', started_at TEXT NOT NULL,
-	  ended_at TEXT NOT NULL, duration_ms INTEGER, http_completed_at TEXT, http_duration_ms INTEGER,
-	  first_token_ms INTEGER, created_at TEXT NOT NULL
-	)`,
-	`CREATE TABLE IF NOT EXISTS audit_log_attempts (
-	  id TEXT PRIMARY KEY, audit_log_id TEXT NOT NULL, attempt_index INTEGER NOT NULL,
-	  account_id TEXT, account_owner_system_account_id TEXT, group_id TEXT, member_group_id TEXT, proxy_url TEXT,
-	  provider_code TEXT, attempt_model TEXT, attempt_upstream_model TEXT, attempt_pricing_model TEXT,
-	  attempt_model_mapping_applied INTEGER NOT NULL DEFAULT 0, attempt_model_mapping_source TEXT,
-	  attempt_source_endpoint_family TEXT, attempt_upstream_endpoint_family TEXT,
-	  upstream_method TEXT NOT NULL, upstream_url TEXT NOT NULL, upstream_status_code INTEGER,
-	  success INTEGER NOT NULL DEFAULT 0, error_phase TEXT, error_code TEXT, error_message TEXT,
-	  started_at TEXT NOT NULL, ended_at TEXT, duration_ms INTEGER
-	)`,
-	`CREATE TABLE IF NOT EXISTS audit_payload_blobs (
-	  id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, raw_size_bytes INTEGER NOT NULL,
-	  compressed_size_bytes INTEGER NOT NULL, content_type TEXT NOT NULL, content_encoding TEXT,
-	  compression TEXT NOT NULL DEFAULT 'none', storage_key TEXT NOT NULL,
-	  ref_count INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
-	  created_at TEXT NOT NULL
-	)`,
-	`CREATE TABLE IF NOT EXISTS audit_payload_refs (
-	  id TEXT PRIMARY KEY, audit_log_id TEXT NOT NULL, attempt_id TEXT, part_type TEXT NOT NULL,
-	  sequence_index INTEGER NOT NULL, content_type TEXT, content_encoding TEXT,
-	  headers_blob_id TEXT, body_blob_id TEXT, headers_sha256 TEXT, body_sha256 TEXT,
-	  raw_size_bytes INTEGER NOT NULL DEFAULT 0, compressed_size_bytes INTEGER NOT NULL DEFAULT 0,
-	  capture_status TEXT NOT NULL, drop_reason TEXT, created_at TEXT NOT NULL
-	)`,
-	`CREATE TABLE IF NOT EXISTS audit_error_groups (
-	  id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, window_started_at TEXT NOT NULL,
-	  window_ended_at TEXT NOT NULL, system_account_id TEXT, api_key_id TEXT, group_id TEXT,
-	  account_id TEXT, provider_code TEXT, path TEXT, model TEXT, status_code INTEGER,
-	  error_phase TEXT, error_code TEXT, error_type TEXT, request_fingerprint TEXT,
-	  error_fingerprint TEXT, count INTEGER NOT NULL DEFAULT 0, first_event_id TEXT,
-	  last_event_id TEXT, sample_event_id TEXT, last_message TEXT, created_at TEXT NOT NULL,
-	  updated_at TEXT NOT NULL
-	)`,
-}
 
 func seedAuditReads(t *testing.T, env *readsTestEnv) {
 	t.Helper()

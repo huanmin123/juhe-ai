@@ -1314,7 +1314,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 
 	// 特供快速恢复开关（AI账户特供快速恢复通道设计 §8.1/§9）：false→true 的
-	// 翻转在同一补丁事务内先锁归属行（PG FOR UPDATE，SQLite 单写者等价）再
+	// 翻转在同一补丁事务内先锁归属行（FOR UPDATE）再
 	// 计数校验，超限整体回滚（ValidationError → 400）；置 false 与幂等 true
 	// （本已为特供）不校验、不重复占额。写入随既有无条件 config_revision+1
 	// 与 updated_at；特供消费方是 jobs 恢复道，不进
@@ -1695,10 +1695,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 // observation fields for temporary_unavailable instances only (CASE WHEN
 // keeps other statuses untouched).
 func (s *Store) propagateProbeSwitchToAuthorizationInstances(ctx context.Context, tx *sql.Tx, sourceAccountID string, next int, activated bool, generation string, now time.Time, nowISO string) error {
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
+	lockSuffix := " FOR UPDATE"
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("accounts")+`
 		WHERE authorization_instance_source_account_id = ?
 			AND deleted_at IS NULL
@@ -2121,10 +2118,7 @@ func (s *Store) assertGroupCanBind(ctx context.Context, q queryer, groupID, syst
 	var groupOwner string
 	var enabled int64
 	var groupKind string
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
+	lockSuffix := " FOR UPDATE"
 	err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id, enabled, group_kind
 		FROM `+s.table("groups")+`
 		WHERE id = ?`+lockSuffix), groupID).Scan(&groupOwner, &enabled, &groupKind)
