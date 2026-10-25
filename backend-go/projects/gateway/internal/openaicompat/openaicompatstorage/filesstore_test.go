@@ -163,59 +163,44 @@ func TestFilesStoreContainerPurposeFilter(t *testing.T) {
 	}
 }
 
-// Dual-mode consistency: PostgreSQL mode must render Node-identical SQL
-// (juhe_business-qualified tables and $n placeholders) while SQLite mode
-// keeps '?' and bare names.
-func TestStoreDualModeSQLRendering(t *testing.T) {
+// SQL rendering contract: the store renders Node-identical PostgreSQL SQL
+// (juhe_business-qualified tables and $n placeholders).
+func TestStoreSQLRendering(t *testing.T) {
 	db := newTestDB(t)
-	pgStore, err := NewStore(db, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqliteStore, err := NewStore(db, false)
+	store, err := NewStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
-		name       string
-		query      string
-		table      string
-		wantSQLite string
-		wantPG     string
+		name    string
+		query   string
+		table   string
+		wantSQL string
 	}{
 		{
-			name:       "files select",
-			query:      "SELECT id FROM {T} WHERE id = ? LIMIT ?",
-			table:      "openai_compatible_files",
-			wantSQLite: "SELECT id FROM openai_compatible_files WHERE id = ? LIMIT ?",
-			wantPG:     "SELECT id FROM juhe_business.openai_compatible_files WHERE id = $1 LIMIT $2",
+			name:    "files select",
+			query:   "SELECT id FROM {T} WHERE id = ? LIMIT ?",
+			table:   "openai_compatible_files",
+			wantSQL: "SELECT id FROM juhe_business.openai_compatible_files WHERE id = $1 LIMIT $2",
 		},
 		{
-			name:       "vector store files upsert",
-			query:      "INSERT INTO {T} (vector_store_id, file_id) VALUES (?, ?) ON CONFLICT(vector_store_id, file_id) DO UPDATE SET status = excluded.status",
-			table:      "openai_compatible_vector_store_files",
-			wantSQLite: "INSERT INTO openai_compatible_vector_store_files (vector_store_id, file_id) VALUES (?, ?) ON CONFLICT(vector_store_id, file_id) DO UPDATE SET status = excluded.status",
-			wantPG:     "INSERT INTO juhe_business.openai_compatible_vector_store_files (vector_store_id, file_id) VALUES ($1, $2) ON CONFLICT(vector_store_id, file_id) DO UPDATE SET status = excluded.status",
+			name:    "vector store files upsert",
+			query:   "INSERT INTO {T} (vector_store_id, file_id) VALUES (?, ?) ON CONFLICT(vector_store_id, file_id) DO UPDATE SET status = excluded.status",
+			table:   "openai_compatible_vector_store_files",
+			wantSQL: "INSERT INTO juhe_business.openai_compatible_vector_store_files (vector_store_id, file_id) VALUES ($1, $2) ON CONFLICT(vector_store_id, file_id) DO UPDATE SET status = excluded.status",
 		},
 		{
-			name:       "chunks delete",
-			query:      "DELETE FROM {T} WHERE vector_store_id = ? AND system_account_id = ?",
-			table:      "openai_compatible_vector_store_chunks",
-			wantSQLite: "DELETE FROM openai_compatible_vector_store_chunks WHERE vector_store_id = ? AND system_account_id = ?",
-			wantPG:     "DELETE FROM juhe_business.openai_compatible_vector_store_chunks WHERE vector_store_id = $1 AND system_account_id = $2",
+			name:    "chunks delete",
+			query:   "DELETE FROM {T} WHERE vector_store_id = ? AND system_account_id = ?",
+			table:   "openai_compatible_vector_store_chunks",
+			wantSQL: "DELETE FROM juhe_business.openai_compatible_vector_store_chunks WHERE vector_store_id = $1 AND system_account_id = $2",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			templated := strings.ReplaceAll(tc.query, "{T}", "'"+tc.table+"'")
-			_ = templated
-			sqliteRendered := strings.ReplaceAll(tc.query, "{T}", sqliteStore.table(tc.table))
-			pgRendered := pgStore.bind(strings.ReplaceAll(tc.query, "{T}", pgStore.table(tc.table)))
-			if sqliteRendered != tc.wantSQLite {
-				t.Fatalf("sqlite sql = %q, want %q", sqliteRendered, tc.wantSQLite)
-			}
-			if pgRendered != tc.wantPG {
-				t.Fatalf("postgres sql = %q, want %q", pgRendered, tc.wantPG)
+			rendered := store.bind(strings.ReplaceAll(tc.query, "{T}", store.table(tc.table)))
+			if rendered != tc.wantSQL {
+				t.Fatalf("postgres sql = %q, want %q", rendered, tc.wantSQL)
 			}
 		})
 	}
@@ -247,10 +232,10 @@ func TestFilesStoreBehaviorSuiteSQLite(t *testing.T) {
 }
 
 func TestNewStoreRequiresDB(t *testing.T) {
-	if _, err := NewStore(nil, false); err == nil {
+	if _, err := NewStore(nil); err == nil {
 		t.Fatal("expected error for nil db")
 	}
-	if _, err := NewStore(newTestDB(t), false); err != nil {
+	if _, err := NewStore(newTestDB(t)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -260,7 +245,7 @@ func TestCreateFileSurfacesDBErrors(t *testing.T) {
 	db := newTestDB(t)
 	db.Close()
 	// After closing the pool the insert error must surface verbatim.
-	broken, err := NewStore(db, false)
+	broken, err := NewStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}

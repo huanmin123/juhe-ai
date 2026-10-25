@@ -79,52 +79,15 @@ func w1nDropTables(t *testing.T, db *sql.DB, names ...string) {
 // ---------------------------------------------------------------------------
 
 func TestW1NChainAccountsSelectorDialect(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
+	selector := &chainAccountsSelector{}
+	if got := selector.table("groups"); got != "juhe_business.groups" {
+		t.Errorf("table(groups) = %q, want juhe_business.groups", got)
 	}
-	defer db.Close()
-	cases := []struct {
-		name           string
-		postgres       bool
-		wantTable      string
-		wantStatsTable string
-		bindIn         string
-		wantBind       string
-	}{
-		{
-			name:           "sqlite 方言原样返回",
-			postgres:       false,
-			wantTable:      "groups",
-			wantStatsTable: "account_quality_scores",
-			bindIn:         "WHERE a = ? AND b IN (?, ?)",
-			wantBind:       "WHERE a = ? AND b IN (?, ?)",
-		},
-		{
-			name:           "postgres 方言加 schema 前缀并转换占位符",
-			postgres:       true,
-			wantTable:      "juhe_business.groups",
-			wantStatsTable: "juhe_stats.account_quality_scores",
-			bindIn:         "WHERE a = ? AND b IN (?, ?) OR c = ?",
-			wantBind:       "WHERE a = $1 AND b IN ($2, $3) OR c = $4",
-		},
+	if got := selector.statsTable("account_quality_scores"); got != "juhe_stats.account_quality_scores" {
+		t.Errorf("statsTable(account_quality_scores) = %q, want juhe_stats.account_quality_scores", got)
 	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			selector, err := newChainAccountsSelectorWithStats(db, db, testCase.postgres, "secret", time.Now, 20)
-			if err != nil {
-				t.Fatalf("create selector: %v", err)
-			}
-			if got := selector.table("groups"); got != testCase.wantTable {
-				t.Errorf("table(groups) = %q, want %q", got, testCase.wantTable)
-			}
-			if got := selector.statsTable("account_quality_scores"); got != testCase.wantStatsTable {
-				t.Errorf("statsTable(account_quality_scores) = %q, want %q", got, testCase.wantStatsTable)
-			}
-			if got := selector.bind(testCase.bindIn); got != testCase.wantBind {
-				t.Errorf("bind(%q) = %q, want %q", testCase.bindIn, got, testCase.wantBind)
-			}
-		})
+	if got := selector.bind("WHERE a = ? AND b IN (?, ?) OR c = ?"); got != "WHERE a = $1 AND b IN ($2, $3) OR c = $4" {
+		t.Errorf("bind = %q, want $N 形态", got)
 	}
 }
 
@@ -152,7 +115,7 @@ func TestW1NNewChainAccountsSelectorWithStatsGuards(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			selector, err := newChainAccountsSelectorWithStats(testCase.businessDB, nil, false, "secret", time.Now, testCase.limit)
+			selector, err := newChainAccountsSelectorWithStats(testCase.businessDB, nil, "secret", time.Now, testCase.limit)
 			if testCase.wantErrPart != "" {
 				if err == nil {
 					t.Fatalf("limit=%d 必须构造失败", testCase.limit)
@@ -172,7 +135,7 @@ func TestW1NNewChainAccountsSelectorWithStatsGuards(t *testing.T) {
 	}
 
 	// statsDB=nil 回落到业务库句柄；now=nil 回落到 time.Now。
-	selector, err := newChainAccountsSelectorWithStats(db, nil, false, "secret", nil, 7)
+	selector, err := newChainAccountsSelectorWithStats(db, nil, "secret", nil, 7)
 	if err != nil {
 		t.Fatalf("statsDB=nil 必须构造成功: %v", err)
 	}
@@ -427,7 +390,7 @@ func TestW1NListAccountsForGroupQueryErrorArms(t *testing.T) {
 				t.Cleanup(func() { _ = empty.Close() })
 				statsDB = empty
 			}
-			selector, err := newChainAccountsSelectorWithStats(db, statsDB, false, "chain-test-secret", time.Now, 20)
+			selector, err := newChainAccountsSelectorWithStats(db, statsDB, "chain-test-secret", time.Now, 20)
 			if err != nil {
 				t.Fatalf("create selector: %v", err)
 			}

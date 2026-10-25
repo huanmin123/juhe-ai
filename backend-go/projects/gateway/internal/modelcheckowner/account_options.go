@@ -346,7 +346,7 @@ func (s *BusinessTargetSource) configuredModelCheckModels(ctx context.Context, a
 	}
 	models := make([]string, 0, len(profile.Models))
 	for _, model := range profile.Models {
-		resolved, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, s.postgres, accountID, profile, model)
+		resolved, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, accountID, profile, model)
 		if err != nil {
 			return nil, err
 		}
@@ -432,10 +432,7 @@ func (s *BusinessTargetSource) accountSupportedCheckModels(ctx context.Context, 
 }
 
 func (s *BusinessTargetSource) expiryAfterNow(column string) string {
-	if s.postgres {
-		return "(" + column + " IS NULL OR " + column + "::timestamptz > CURRENT_TIMESTAMP)"
-	}
-	return "(" + column + " IS NULL OR datetime(" + column + ") > CURRENT_TIMESTAMP)"
+	return "(" + column + " IS NULL OR " + column + "::timestamptz > CURRENT_TIMESTAMP)"
 }
 
 func (s *BusinessTargetSource) accountAvailable(alias string) string {
@@ -443,10 +440,7 @@ func (s *BusinessTargetSource) accountAvailable(alias string) string {
 }
 
 func (s *BusinessTargetSource) cooldownClear(column string) string {
-	if s.postgres {
-		return "(" + column + " IS NULL OR " + column + "::timestamptz <= CURRENT_TIMESTAMP)"
-	}
-	return "(" + column + " IS NULL OR datetime(" + column + ") <= CURRENT_TIMESTAMP)"
+	return "(" + column + " IS NULL OR " + column + "::timestamptz <= CURRENT_TIMESTAMP)"
 }
 
 // modelCheckProfilePredicate keeps the options query aligned with the

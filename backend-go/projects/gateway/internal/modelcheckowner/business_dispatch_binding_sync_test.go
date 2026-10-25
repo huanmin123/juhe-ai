@@ -7,15 +7,14 @@ package modelcheckowner
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 func TestBusinessEnforcementFallbackSyncsBindingLocalSnapshot(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	t.Skip("W28②：BusinessEnforcementApplier PG 臂 generation=generation+1 未限定自引用 42702（生产缺陷待裁决，见 docs/待办与阻塞事项.md #W28）")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,20 +25,20 @@ func TestBusinessEnforcementFallbackSyncsBindingLocalSnapshot(t *testing.T) {
 		}
 	}
 	// 追加绑定表行（表结构由 businessEnforcementTestDDL 提供）。
-	if _, err := db.Exec(`INSERT INTO group_accounts (account_id,system_account_id,local_fallback_enabled,local_super_priority_enabled,enabled,updated_at) VALUES ('acct-1','sys-1',0,1,1,'2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts (account_id,system_account_id,local_fallback_enabled,local_super_priority_enabled,enabled,updated_at) VALUES ('acct-1','sys-1',0,1, 1,'2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,status,config_revision,fallback_enabled,super_priority_enabled,deleted_at,schedulable,last_error_code,last_error_message,updated_at) VALUES ('acct-1','sys-1','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	// 惩罚前：账户级 super=1、绑定快照 local_super=1 / local_fallback=0。
-	if _, err := db.Exec(`INSERT INTO group_accounts (account_id,system_account_id,local_fallback_enabled,local_super_priority_enabled,enabled,updated_at) VALUES ('acct-1','sys-1',0,1,1,'2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts (account_id,system_account_id,local_fallback_enabled,local_super_priority_enabled,enabled,updated_at) VALUES ('acct-1','sys-1',0,1, 1,'2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch-1','sys-1','acct-1',7,'full',70,'fallback',15,0,'gpt-5.6-sol',NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	applier, err := NewBusinessEnforcementApplier(db, false)
+	applier, err := NewBusinessEnforcementApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -211,12 +211,9 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		where += " AND route_strategies.system_account_id = ?"
 		args = append(args, managedOwner)
 	}
-	// loadLockedRouteStrategyPatchCurrentAsync: PostgreSQL locks the strategy
-	// row for the duration of the patch transaction.
-	lockClause := ""
-	if s.pg {
-		lockClause = " FOR UPDATE"
-	}
+	// loadLockedRouteStrategyPatchCurrentAsync: the strategy row is locked
+	// for the duration of the patch transaction.
+	lockClause := " FOR UPDATE"
 	current, err := scanStrategyRow(func(targets ...any) error {
 		return tx.QueryRowContext(ctx, s.bind(`SELECT `+strategyRowColumns+`
 			FROM `+s.table("route_strategies")+` route_strategies
@@ -509,18 +506,16 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		return nil, err
 	}
 	defer tx.Rollback()
-	// lockRouteStrategyMutationRowAsync: PostgreSQL pins the strategy row
-	// before the delete guards run.
-	if s.pg {
-		var lockedID string
-		lockErr := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("route_strategies")+`
+	// lockRouteStrategyMutationRowAsync: pins the strategy row before the
+	// delete guards run.
+	var lockedID string
+	lockErr := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("route_strategies")+`
 			WHERE id = ? AND system_account_id = ? LIMIT 1 FOR UPDATE`), id, ownerID).Scan(&lockedID)
-		if isNoRows(lockErr) {
-			return &DeleteResult{}, nil
-		}
-		if lockErr != nil {
-			return nil, lockErr
-		}
+	if isNoRows(lockErr) {
+		return &DeleteResult{}, nil
+	}
+	if lockErr != nil {
+		return nil, lockErr
 	}
 	var isDefault int
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT is_default FROM `+s.table("route_strategies")+`

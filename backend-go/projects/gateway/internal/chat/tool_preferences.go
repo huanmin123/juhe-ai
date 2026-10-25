@@ -54,14 +54,13 @@ func (s *Store) GetUserToolPreferences(ownerID string) (*UserToolPreferences, er
 	}, nil
 }
 
-// UpsertUserToolPreferences 整行写入用户工具偏好（PG ON CONFLICT
-// (system_account_id) DO UPDATE，SQLite 同构；updated_at 以注入时钟刷新）。
+// UpsertUserToolPreferences 整行写入用户工具偏好（ON CONFLICT
+// (system_account_id) DO UPDATE；updated_at 以注入时钟刷新）。
 // 只更新请求键的合并语义由调用方完成；upsert 本身整行覆盖。
 func (s *Store) UpsertUserToolPreferences(pref UserToolPreferences) error {
 	now := s.nowISO()
 	table := s.table("chat_user_tool_preferences")
-	if s.pg {
-		_, err := s.db.Exec(s.bind(`INSERT INTO `+table+`
+	_, err := s.db.Exec(s.bind(`INSERT INTO `+table+`
 		(system_account_id, search_account_id, search_model_id, image_account_id, default_image_model,
 			video_account_id, default_video_model, audio_account_id, default_audio_model, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -75,26 +74,6 @@ func (s *Store) UpsertUserToolPreferences(pref UserToolPreferences) error {
 		              audio_account_id = EXCLUDED.audio_account_id,
 		              default_audio_model = EXCLUDED.default_audio_model,
 		              updated_at = EXCLUDED.updated_at`),
-			pref.SystemAccountID, optSQLText(pref.SearchAccountID), optSQLText(pref.SearchModelID),
-			optSQLText(pref.ImageAccountID), optSQLText(pref.DefaultImageModel),
-			optSQLText(pref.VideoAccountID), optSQLText(pref.DefaultVideoModel),
-			optSQLText(pref.AudioAccountID), optSQLText(pref.DefaultAudioModel), now)
-		return err
-	}
-	_, err := s.db.Exec(s.bind(`INSERT INTO `+table+`
-	(system_account_id, search_account_id, search_model_id, image_account_id, default_image_model,
-		video_account_id, default_video_model, audio_account_id, default_audio_model, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(system_account_id)
-	DO UPDATE SET search_account_id = excluded.search_account_id,
-	              search_model_id = excluded.search_model_id,
-	              image_account_id = excluded.image_account_id,
-	              default_image_model = excluded.default_image_model,
-	              video_account_id = excluded.video_account_id,
-	              default_video_model = excluded.default_video_model,
-	              audio_account_id = excluded.audio_account_id,
-	              default_audio_model = excluded.default_audio_model,
-	              updated_at = excluded.updated_at`),
 		pref.SystemAccountID, optSQLText(pref.SearchAccountID), optSQLText(pref.SearchModelID),
 		optSQLText(pref.ImageAccountID), optSQLText(pref.DefaultImageModel),
 		optSQLText(pref.VideoAccountID), optSQLText(pref.DefaultVideoModel),

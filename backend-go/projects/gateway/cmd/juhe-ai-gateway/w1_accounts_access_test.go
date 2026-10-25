@@ -16,7 +16,7 @@ import (
 func newW1AccessSelector(t *testing.T) *chainAccountsSelector {
 	t.Helper()
 	fixture := newChainFixture(t)
-	selector, err := newChainAccountsSelector(fixture.db, false, "chain-test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(fixture.db, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}

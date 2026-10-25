@@ -2,7 +2,7 @@ package announcements
 
 // pgkit_test.go 是 announcements 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，测试尾巴批次）：
-// pgtestkit 每测试独立库 + 生产 PG 臂（NewStore(db, true, ...)，juhe_business
+// pgtestkit 每测试独立库 + 生产 PG 臂（NewStore(db, nil, ...)，juhe_business
 // schema 限定 + $n 占位符，与 gateway 组合根恒 PG 的装配同一方言）。
 //
 // 分组处置（D9/D17）：组A（被测对象有 PG 臂且断言逐字节保持）——HTTP/store

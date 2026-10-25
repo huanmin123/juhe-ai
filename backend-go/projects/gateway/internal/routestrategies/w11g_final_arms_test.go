@@ -124,7 +124,7 @@ func TestW11GConfigNormalizeArms(t *testing.T) {
 		t.Fatalf("stored normal=%v err=%v", normal, err)
 	}
 	// 构造守卫：NewStore nil db 与 itoa(0)。
-	if _, err := NewStore(nil, false, nil, nil, nil); err == nil {
+	if _, err := NewStore(nil, nil, nil, nil); err == nil {
 		t.Fatal("nil db must fail")
 	}
 	if got := itoa(0); got != "0" {

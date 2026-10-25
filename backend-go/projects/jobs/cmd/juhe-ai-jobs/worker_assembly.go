@@ -820,7 +820,7 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	})
 	// usage-writer 池与业务库同库（juhe_business schema 限定），定价目录复用
 	// 该句柄，不额外开池。
-	pricingCatalog := newUsagePricingCatalog(catalogDB, true)
+	pricingCatalog := newUsagePricingCatalog(catalogDB)
 	// 统计链路排查 B②/B③：
 	//   - OverflowSpool：队列满时记录先落盘溢出 spool（历史装配缺省该选项，
 	//     溢出记录直接丢弃且无处恢复），再由本进程的回放 drain 幂等重投；

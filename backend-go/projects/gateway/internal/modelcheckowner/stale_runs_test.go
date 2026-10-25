@@ -26,39 +26,11 @@ func TestStaleRunSweepSQLConstruction(t *testing.T) {
 		}
 	}
 	// PG 模式下 bind 把占位符转换为 $1..$4，参数序：code、message、now、cutoff。
-	bound := (&Store{mode: "postgres", schema: "juhe_j3b"}).bind(query)
+	bound := (&Store{schema: "juhe_j3b"}).bind(query)
 	for _, want := range []string{"error_code=$1", "error_message=$2", "updated_at=$3", "updated_at::timestamptz < $4::timestamptz"} {
 		if !strings.Contains(bound, want) {
 			t.Fatalf("bound sweep SQL missing %q: %s", want, bound)
 		}
-	}
-}
-
-// TestStaleRunSweepSQLiteSQLConstruction 钉死 SQLite 方言收尾语句的构造：
-// 与 PG 方言同字段序，比较为纯文本字典序（SQLite 无 ::timestamptz cast）。
-// SQLite 收尾臂是 standalone 形态的生产臂，随 sqlite 臂退役批次一并退役。
-func TestStaleRunSweepSQLiteSQLConstruction(t *testing.T) {
-	query := staleRunSweepSQLiteSQL("model_check_runs")
-	for _, want := range []string{
-		"UPDATE model_check_runs SET",
-		"status='failed'",
-		"error_code=?",
-		"error_message=?",
-		"updated_at=?",
-		"WHERE status='running'",
-		"updated_at < ?",
-	} {
-		if !strings.Contains(query, want) {
-			t.Fatalf("sqlite sweep SQL missing %q: %s", want, query)
-		}
-	}
-	if strings.Contains(query, "::timestamptz") {
-		t.Fatalf("sqlite sweep SQL must not use PG cast: %s", query)
-	}
-	// SQLite 模式下 bind 原样保留 ? 占位符。
-	bound := (&Store{mode: "sqlite"}).bind(query)
-	if bound != query {
-		t.Fatalf("sqlite bind must keep ? placeholders: %s", bound)
 	}
 }
 

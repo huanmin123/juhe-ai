@@ -28,14 +28,14 @@ func spc1SeedEnabledKey(t *testing.T, db *sql.DB, keyID, keyHash, purpose string
 		purpose = "general"
 	}
 	if preferenceID.Valid {
-		_, err := db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose, scheduling_preference_id)
+		_, err := db.Exec(`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose, scheduling_preference_id)
 			VALUES (?, 'sys_owner', 'rs1', ?, 'active', ?, ?)`, keyID, keyHash, purpose, preferenceID.String)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return
 	}
-	_, err := db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose)
+	_, err := db.Exec(`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose)
 		VALUES (?, 'sys_owner', 'rs1', ?, 'active', ?)`, keyID, keyHash, purpose)
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +45,7 @@ func spc1SeedEnabledKey(t *testing.T, db *sql.DB, keyID, keyHash, purpose string
 func spc1SeedPreference(t *testing.T, db *sql.DB, id, ownerID, chatMode, configJSON string, builtIn int) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+	_, err := db.Exec(`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, ownerID, "偏好-"+id, chatMode, configJSON, builtIn, now, now)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestSPC2HistoricalNullFailsAndChatKeysKeepStrategyConfig(t *testing.T) {
 	seedGatewaySettingsKeys(t, db)
 	seedGatewayKeyFixture(t, db)
 	// 策略带 speed_first 配置（chat 键的现状来源；普通键不再允许回落该来源）。
-	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
 	// 内置行已由 seedGatewayKeyFixture 提供；自定义偏好存在但普通 NULL 键也必须显式失败。
@@ -78,7 +78,7 @@ func TestSPC2HistoricalNullFailsAndChatKeysKeepStrategyConfig(t *testing.T) {
 	spc1SeedEnabledKey(t, db, "key-hist", HashSecret("sk-hist"), "", sql.NullString{})
 	spc1SeedEnabledKey(t, db, "key-chat", HashSecret("sk-chat"), "chat", sql.NullString{String: apikeys.BuiltinSchedulingPreferenceID, Valid: true})
 	spc1SeedEnabledKey(t, db, "key-studio", HashSecret("sk-studio"), "studio", sql.NullString{})
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestSPC1BoundEnabledPreferenceSynthesizesConfig(t *testing.T) {
 	seedGatewayKeyFixture(t, db)
 	spc1SeedPreference(t, db, "sp-speed", "sys_owner", "speed_first", spc1SpeedFirstConfigJSON, 0)
 	spc1SeedEnabledKey(t, db, "key-speed", HashSecret("sk-speed"), "", sql.NullString{String: "sp-speed", Valid: true})
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,13 +171,13 @@ func TestSPC1BoundCostFirstCollapsesAndFingerprintIgnoresName(t *testing.T) {
 	seedGatewayKeyFixture(t, db)
 	// 策略带 speed_first 配置：绑定 cost_first 偏好的普通 Key 派发配置必须来
 	// 自偏好合成（裸 cost_first），策略调度字段不再影响派发（P2 读取收敛）。
-	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
 	spc1SeedPreference(t, db, "sp-cost-a", "sys_owner", "cost_first", "", 0)
 	spc1SeedPreference(t, db, "sp-cost-b", "other_owner", "cost_first", "", 0)
 	spc1SeedEnabledKey(t, db, "key-cost", HashSecret("sk-cost"), "", sql.NullString{String: "sp-cost-a", Valid: true})
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestSPC1BrokenBindingOrConfigFailsExplicitly(t *testing.T) {
 				spc1SeedPreference(t, db, parts[0], parts[1], parts[2], parts[3], 0)
 			}
 			spc1SeedEnabledKey(t, db, "key-broken", HashSecret("sk-broken"), "", sql.NullString{String: testCase.preferenceID, Valid: true})
-			models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
+			models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

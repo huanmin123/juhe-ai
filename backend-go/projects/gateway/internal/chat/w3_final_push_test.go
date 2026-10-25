@@ -7,12 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // 最后一批高价值分支：压缩总结链路（两种协议 + 失败路径）、runner 订阅者
 // 裁剪与时间线补发、流式路由的 Hub 冲突/超大消息/替换链路、deps 参数守卫、
-// ETag 匹配表与 Windows 锁重入。
+// ETag 匹配表。
 
 // TestSummarizePageW3 直接驱动压缩总结（恒 chat 协议）与失败路径。
 func TestSummarizePageW3(t *testing.T) {
@@ -430,30 +429,8 @@ func TestImageHelpersW3(t *testing.T) {
 	}
 }
 
-// TestLockUserPolicyReentrantW3 覆盖 SQLite 用户策略锁的顺序加解锁。
-// 注意：该锁不可重入（同 owner 二次 Lock 会阻塞），生产调用点互不嵌套。
-func TestLockUserPolicyReentrantW3(t *testing.T) {
-	f := newChatFixture(t)
-	release := f.store.lockUserPolicy("owner-lock-1")
-	done := make(chan struct{})
-	go func() {
-		inner := f.store.lockUserPolicy("owner-lock-1")
-		inner()
-		close(done)
-	}()
-	release()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("释放后同 owner 应可再次加锁")
-	}
-	if f.store.pg {
-		t.Fatalf("fixture 应为 SQLite 模式")
-	}
-	// pg 模式的锁是 no-op。
-	pgStore := &Store{pg: true}
-	pgRelease := pgStore.lockUserPolicy("owner-lock")
-	pgRelease()
+// TestStorageReservationW3 覆盖助手消息存储预留校验的合法/非法臂。
+func TestStorageReservationW3(t *testing.T) {
 	if got, err := requiredAssistantStorageReservation(AssistantStorageReservationBytes); err != nil || got != AssistantStorageReservationBytes {
 		t.Fatalf("预留校验失败: %d %v", got, err)
 	}

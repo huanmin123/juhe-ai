@@ -41,7 +41,6 @@ func normalizeUsageStatsTimezone(value any) (string, error) {
 // are cached, exactly like Node.
 type DBTimezoneSource struct {
 	db *sql.DB
-	pg bool
 	// clock injects now (tests); nil falls back to time.Now.
 	now func() time.Time
 
@@ -51,14 +50,14 @@ type DBTimezoneSource struct {
 }
 
 // NewDBTimezoneSource builds the source over the business database.
-func NewDBTimezoneSource(db *sql.DB, postgres bool, now func() time.Time) (*DBTimezoneSource, error) {
+func NewDBTimezoneSource(db *sql.DB, now func() time.Time) (*DBTimezoneSource, error) {
 	if db == nil {
 		return nil, errors.New("gatewayquota timezone source requires a database")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &DBTimezoneSource{db: db, pg: postgres, now: now}, nil
+	return &DBTimezoneSource{db: db, now: now}, nil
 }
 
 const usageStatsTimezoneCacheTTL = 60 * time.Second

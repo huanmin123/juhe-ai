@@ -12,7 +12,7 @@ func TestSQLSchedulerSourceClaimsDueTasksWithLease(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_scheduler_tasks(id,kind,due_at,payload,updated_at) VALUES ('task-1','scheduled','2026-08-27T10:00:00Z','{"targetId":"acct-1"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{db: db, schema: j3bTestSchema}
 	source := &SQLSchedulerSource{Store: store, OwnerID: "gateway-1", Lease: time.Minute}
 	tasks, err := source.Claim(context.Background(), SchedulerScheduled, time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), 10)
 	if err != nil || len(tasks) != 1 || tasks[0].ID != "task-1" {
@@ -37,7 +37,7 @@ func TestSQLSchedulerSourceFencesCompletionAndFailure(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_scheduler_tasks(id,kind,due_at,payload,updated_at) VALUES ('task-1','scheduled','2026-08-27T10:00:00Z','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{db: db, schema: j3bTestSchema}
 	source := &SQLSchedulerSource{Store: store, OwnerID: "gateway-1", Lease: time.Minute}
 	tasks, err := source.Claim(context.Background(), SchedulerScheduled, time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), 10)
 	if err != nil || len(tasks) != 1 {
@@ -67,7 +67,7 @@ func TestEnsureHealthRetryTasksMaterializesOneTaskPerFailedRun(t *testing.T) {
 		"run-3", "running", "acct-3", "sys-3", "openai", "gpt-5.6", "quick", "failure", 20, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, "2030-01-01T00:00:00Z", "failed", "2030-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	if err := store.EnsureHealthRetryTasks(context.Background(), 10); err != nil {
 		t.Fatal(err)
 	}

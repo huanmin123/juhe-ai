@@ -58,13 +58,13 @@ const (
 	ProfileGeminiNativeV1Beta = "profile_gemini_native_v1beta"
 )
 
-// Store is the dual-mode OAuth account persistence. secret is the Node
+// Store is the OAuth account persistence (PostgreSQL single form: juhe_business
+// schema qualification + $n placeholders). secret is the Node
 // runtimeConfig.secret material: accounts.credentials_encrypted rows written
 // by Node stay decryptable. exchanger may be nil only together with an
 // explicitly injected transport at the route layer; NewStore rejects nil.
 type Store struct {
 	db           *sql.DB
-	pg           bool
 	secret       string
 	now          func() time.Time
 	newI         func(prefix string) string
@@ -117,7 +117,7 @@ func WithProxyRequired(enabled bool) Option {
 
 // NewStore builds the store. accountsStore is the M08 accounts slice store the
 // create routes delegate to; exchanger is the injected upstream transport.
-func NewStore(db *sql.DB, postgres bool, secret string, accountsStore *accounts.Store, exchanger TokenExchanger, now func() time.Time, newID func(string) string, opts ...Option) (*Store, error) {
+func NewStore(db *sql.DB, secret string, accountsStore *accounts.Store, exchanger TokenExchanger, now func() time.Time, newID func(string) string, opts ...Option) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("oauthmgmt store requires a database")
 	}
@@ -137,7 +137,7 @@ func NewStore(db *sql.DB, postgres bool, secret string, accountsStore *accounts.
 		newID = func(prefix string) string { return randomID(prefix) }
 	}
 	store := &Store{
-		db: db, pg: postgres, secret: secret, now: now, newI: newID,
+		db: db, secret: secret, now: now, newI: newID,
 		sessions: newSessionStore(now), Accounts: accountsStore, exchanger: exchanger,
 		proxyRequired: true,
 	}
@@ -177,16 +177,10 @@ func itoa64(v int64) string {
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -653,16 +647,13 @@ func containsString(values []string, target string) bool {
 // 'embedding'）经 §2.2 mode 词表逆映射等价改写为 supported_endpoint_modes_json
 // 不含 images_json 与 embedding 族三 mode；空/NULL modes 数组不过滤，等价旧
 // `mode IS NULL OR mode = ”` 保留臂。返回 upstream_model（写入面身份键）。
-// release_date 为空的行排最后；CASE 排序写法对 SQLite 与 PG 同时成立（PG 的
-// DESC 默认 NULLS FIRST，必须显式压后）。
+// release_date 为空的行排最后；PG 的 DESC 默认 NULLS FIRST，CASE 排序显式
+// 压后空值。
 func (s *Store) latestCatalogModels(ctx context.Context, providerCode string, limit int) ([]string, error) {
-	// json_each / jsonb_array_elements_text 分别是 SQLite 与 PG 的数组展开读
-	// 法（同 providers.endpointModesAnyPredicate 方案，本包不跨包引用私有方
-	// 法，方言分支就地生成；元素列名两者同为 value）。
-	modesSource := "json_each(supported_endpoint_modes_json)"
-	if s.pg {
-		modesSource = "jsonb_array_elements_text(supported_endpoint_modes_json::jsonb)"
-	}
+	// jsonb_array_elements_text 是 PG 的数组展开读法（同
+	// providers.endpointModesAnyPredicate 方案，本包不跨包引用私有方法，方言
+	// 读法就地生成；元素列名为 value）。
+	modesSource := "jsonb_array_elements_text(supported_endpoint_modes_json::jsonb)"
 	rows, err := s.db.QueryContext(ensureContext(ctx), s.bind(`SELECT upstream_model FROM `+s.table("models")+`
 		WHERE scope = 'builtin' AND vendor_code = ? AND status = 'active'
 			AND NOT EXISTS (

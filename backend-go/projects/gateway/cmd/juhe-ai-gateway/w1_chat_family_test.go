@@ -386,8 +386,8 @@ func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
 	if deps.AccountOptionsLookup == nil {
 		t.Fatalf("AccountOptionsLookup 未接线（/my-chat/accounts 端口）")
 	}
-	if deps.Store == nil || deps.Store.Postgres() {
-		t.Fatalf("chat Store 缺失或方言错误（want sqlite）")
+	if deps.Store == nil {
+		t.Fatalf("chat Store 缺失")
 	}
 	if deps.Hub == nil || deps.Generations == nil {
 		t.Fatalf("GenerationHub 未接线")
@@ -419,23 +419,16 @@ func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1HChatObservationTableAndBind(t *testing.T) {
-	sqlitePort := &chatImageObservations{postgres: false}
-	pgPort := &chatImageObservations{postgres: true}
-	if got := sqlitePort.table("chat_assets"); got != "chat_assets" {
-		t.Fatalf("sqlite table = %q, want chat_assets", got)
-	}
-	if got := pgPort.table("chat_assets"); got != "juhe_chat.chat_assets" {
-		t.Fatalf("postgres table = %q, want juhe_chat.chat_assets", got)
+	port := &chatImageObservations{}
+	if got := port.table("chat_assets"); got != "juhe_chat.chat_assets" {
+		t.Fatalf("table = %q, want juhe_chat.chat_assets", got)
 	}
 	query := "UPDATE t SET a = ?, b = ? WHERE c = ?"
-	if got := sqlitePort.bind(query); got != query {
-		t.Fatalf("sqlite bind 改写了占位符: %q", got)
+	if got := port.bind(query); got != "UPDATE t SET a = $1, b = $2 WHERE c = $3" {
+		t.Fatalf("bind = %q, want $1/$2/$3 形态", got)
 	}
-	if got := pgPort.bind(query); got != "UPDATE t SET a = $1, b = $2 WHERE c = $3" {
-		t.Fatalf("postgres bind = %q, want $1/$2/$3 形态", got)
-	}
-	if got := pgPort.bind("no placeholder"); got != "no placeholder" {
-		t.Fatalf("postgres bind 无占位符时改写了原文: %q", got)
+	if got := port.bind("no placeholder"); got != "no placeholder" {
+		t.Fatalf("bind 无占位符时改写了原文: %q", got)
 	}
 }
 
@@ -490,7 +483,7 @@ func w1hNewObservationDB(t *testing.T) *sql.DB {
 }
 
 func w1hNewObservationPort(db *sql.DB) *chatImageObservations {
-	return &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}}
+	return &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}}
 }
 
 // w1hClaim 封装 claim 断言：RETURNING 语法不被底层 SQLite 支持时跳过并保留

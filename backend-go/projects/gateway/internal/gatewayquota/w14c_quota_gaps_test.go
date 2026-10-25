@@ -266,7 +266,7 @@ func TestW14CStatWindowTimezoneGaps(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewDBTimezoneSource(db, true, nil)
+	source, err := NewDBTimezoneSource(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestW14CStatWindowTimezoneGaps(t *testing.T) {
 	if _, err := db2.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'usageStatsTimezone', '"No/Such/Zone"', '2026-09-17T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
-	source2, err := NewDBTimezoneSource(db2, true, nil)
+	source2, err := NewDBTimezoneSource(db2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,7 +687,7 @@ func TestW14CQuotaDefaultNowAndNilCtx(t *testing.T) {
 	_ = decision
 
 	// nil ctx → context.Background() 回退（缓存命中路径，无数据库访问）。
-	tzSource, err := NewDBTimezoneSource(statsDB, true, time.Now)
+	tzSource, err := NewDBTimezoneSource(statsDB, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

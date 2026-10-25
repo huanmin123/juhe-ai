@@ -98,7 +98,7 @@ func (c dsnConnector) Connect(ctx context.Context) (driver.Conn, error) {
 func (c dsnConnector) Driver() driver.Driver { return c.driver }
 
 func bindQuery(query string) string {
-	return BindSQL(true, query)
+	return BindSQL(query)
 }
 
 // rewriteConn 透传底层连接的完整能力面。database/sql 依据 conn 的静态类型

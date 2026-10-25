@@ -61,6 +61,9 @@ type StreamPipeResult struct {
 	GatewayLocalFailure bool
 	// ParseErrorEventCount 是本流解析失败事件计数（设计 §3.3 结算观测面）。
 	ParseErrorEventCount int
+	// InvalidProtocolEventCount 是本流协议形状异常事件计数（设计 §3.2.0 L2
+	// 结算观测面，v2.3 增量，与 ParseErrorEventCount 并列）。
+	InvalidProtocolEventCount int
 	// WindowDurationMs 是受限重放窗口开启到关闭的时长；未开窗流为 nil（省略）。
 	WindowDurationMs *int64
 	// DownstreamFirstWriteMs 是首个下游字节写出时刻 − 请求开始（客户端可感知

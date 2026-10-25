@@ -360,7 +360,7 @@ func TestWJInflightDefaultsAndHelpers(t *testing.T) {
 
 // TestWJDBTimezoneSourceEdgeCases 固定数据库时区源的错误与缓存契约。
 func TestWJDBTimezoneSourceEdgeCases(t *testing.T) {
-	if _, err := NewDBTimezoneSource(nil, false, nil); err == nil || !strings.Contains(err.Error(), "requires a database") {
+	if _, err := NewDBTimezoneSource(nil, nil); err == nil || !strings.Contains(err.Error(), "requires a database") {
 		t.Fatalf("nil db 必须拒绝: %v", err)
 	}
 	if _, err := NewStaticTimezoneSource(nil); err == nil || !strings.Contains(err.Error(), "requires a location") {
@@ -384,7 +384,7 @@ func TestWJDBTimezoneSourceEdgeCases(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
-	source, err := NewDBTimezoneSource(db, true, clock.Now)
+	source, err := NewDBTimezoneSource(db, clock.Now)
 	if err != nil {
 		t.Fatalf("NewDBTimezoneSource: %v", err)
 	}

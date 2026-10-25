@@ -13,9 +13,9 @@ package uibootstrap
 //     全列、NOT NULL 与 UNIQUE），按 groups/modelcheckauth 夹具先例放宽一处：
 //     不建 system_sessions.system_account_id 的 FOREIGN KEY。未登录探针在
 //     session 中间件即被拒绝，不触库查询。
-//   - 纯函数（bind/table 方言渲染）与引用数据契约测试的既有夹具保持原状；
-//     uibootstrap_test.go / w11f_faults_test.go 的 sqlite 夹具随 B8 残留清扫
-//     与 uibootstrap 方言坍缩批另行处置，不在本切片。
+//   - 纯函数（bind/table 渲染）与引用数据契约测试不触库或随方言坍缩批
+//     迁 pgtestkit：uibootstrap_test.go 夹具、w11f_faults_test.go 注入底座
+//     已随方言坍缩批切到隔离 PG（juhe_business 限定 + $n 生产形态）。
 //
 // 连接串由 pgtestkit 自 .local dev env 解析，内容不进入任何文件、日志或断言。
 

@@ -396,7 +396,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authzStore, err := authz.NewStore(db, true, nil)
+	authzStore, err := authz.NewStore(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

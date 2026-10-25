@@ -105,6 +105,11 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		if p.interpretedProtocolFailure(latestInspection) {
 			return p.handleProtocolFailure(latestInspection, true)
 		}
+		// 空完成终局判定（设计 §3.2.3 L1）：EOF flush 段与主循环同语义对称位。
+		if p.emptyCompletionFailureDetected(latestInspection) {
+			result, finalizeErr := p.finalizeEmptyCompletion(latestInspection)
+			return &result, finalizeErr
+		}
 		if err := p.flushPreCommitChunks(); err != nil {
 			return nil, err
 		}
@@ -161,6 +166,11 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 	if (eofWroteDownstream || len(p.preCommitBuffer.Chunks) > 0) &&
 		latestInspection.TerminalReceived && !p.interpretedProtocolFailure(latestInspection) &&
 		eofCanEndAfterTerminal && !p.pendingProtocolEvent {
+		// 空完成终局判定（设计 §3.2.3 L1）：EOF 段终态成功臂写出前拦截。
+		if p.emptyCompletionFailureDetected(latestInspection) {
+			result, finalizeErr := p.finalizeEmptyCompletion(latestInspection)
+			return &result, finalizeErr
+		}
 		if err := p.flushPreCommitChunks(); err != nil {
 			return nil, err
 		}
@@ -398,6 +408,17 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 		return p.finalizeAbnormalStreamEOF(inspection)
 	}
 
+	// 空完成终局判定（设计 §3.2.3 L1，v2.3）：协议终态已到且全程零语义输出
+	// → 不收敛 success，改按 upstream_stream_empty_completion 失败结算。放在
+	// generic 收敛臂（下方）与精确 success 臂（本函数末臂）之前——控制流必然
+	// 先经过本判定，一处插入同时覆盖两个 success 臂，覆盖「Finish 冲刷才置位
+	// Terminal」的残片形态（此时缓冲未 flush、totalResponseBytes==0，仍走提交
+	// 前分支）。判定 4（无终止事件干净 EOF 零输出）不受影响：谓词要求
+	// TerminalReceived。
+	if p.emptyCompletionFailureDetected(inspection) {
+		return p.finalizeEmptyCompletion(inspection)
+	}
+
 	// Generic clients keep opaque upstream SSE semantics: once at least one
 	// real SSE data event was observed, a clean transport EOF is sufficient
 	// even when the protocol driver does not recognize a provider-specific
@@ -411,19 +432,20 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 		}
 		p.endResponse()
 		p.logger.Info("gateway_stream_finished_success", map[string]any{
-			"elapsedMs":              p.nowMs() - p.startedAt,
-			"chunkCount":             p.chunkIndex,
-			"totalUpstreamBytes":     p.totalUpstreamBytes,
-			"totalResponseBytes":     p.totalResponseBytes,
-			"firstTokenMs":           int64PtrValue(p.firstTokenMs),
-			"sseEventCount":          inspection.EventCount,
-			"sseEventTypeCounts":     inspection.EventTypeCounts,
-			"recentSseEventTypes":    inspection.RecentEventTypes,
-			"outputReceived":         inspection.OutputReceived,
-			"outputEventCount":       inspection.OutputEventCount,
-			"parseErrorEventCount":   inspection.ParseErrorEventCount,
-			"windowDurationMs":       int64PtrValue(p.replayWindowDurationMs),
-			"downstreamFirstWriteMs": int64PtrValue(p.downstreamFirstWriteMs),
+			"elapsedMs":                 p.nowMs() - p.startedAt,
+			"chunkCount":                p.chunkIndex,
+			"totalUpstreamBytes":        p.totalUpstreamBytes,
+			"totalResponseBytes":        p.totalResponseBytes,
+			"firstTokenMs":              int64PtrValue(p.firstTokenMs),
+			"sseEventCount":             inspection.EventCount,
+			"sseEventTypeCounts":        inspection.EventTypeCounts,
+			"recentSseEventTypes":       inspection.RecentEventTypes,
+			"outputReceived":            inspection.OutputReceived,
+			"outputEventCount":          inspection.OutputEventCount,
+			"parseErrorEventCount":      inspection.ParseErrorEventCount,
+			"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
+			"windowDurationMs":          int64PtrValue(p.replayWindowDurationMs),
+			"downstreamFirstWriteMs":    int64PtrValue(p.downstreamFirstWriteMs),
 		}, "网关流式响应已成功结束")
 		return p.finishStreamResult(finishArgs{
 			completed: true, message: "已完成", usage: inspection.Usage,
@@ -446,19 +468,20 @@ func (p *streamPipe) finalizeAfterLoop() (StreamPipeResult, error) {
 	}
 	p.endResponse()
 	p.logger.Info("gateway_stream_finished_success", map[string]any{
-		"elapsedMs":              p.nowMs() - p.startedAt,
-		"chunkCount":             p.chunkIndex,
-		"totalUpstreamBytes":     p.totalUpstreamBytes,
-		"totalResponseBytes":     p.totalResponseBytes,
-		"firstTokenMs":           int64PtrValue(p.firstTokenMs),
-		"sseEventCount":          inspection.EventCount,
-		"sseEventTypeCounts":     inspection.EventTypeCounts,
-		"recentSseEventTypes":    inspection.RecentEventTypes,
-		"outputReceived":         inspection.OutputReceived,
-		"outputEventCount":       inspection.OutputEventCount,
-		"parseErrorEventCount":   inspection.ParseErrorEventCount,
-		"windowDurationMs":       int64PtrValue(p.replayWindowDurationMs),
-		"downstreamFirstWriteMs": int64PtrValue(p.downstreamFirstWriteMs),
+		"elapsedMs":                 p.nowMs() - p.startedAt,
+		"chunkCount":                p.chunkIndex,
+		"totalUpstreamBytes":        p.totalUpstreamBytes,
+		"totalResponseBytes":        p.totalResponseBytes,
+		"firstTokenMs":              int64PtrValue(p.firstTokenMs),
+		"sseEventCount":             inspection.EventCount,
+		"sseEventTypeCounts":        inspection.EventTypeCounts,
+		"recentSseEventTypes":       inspection.RecentEventTypes,
+		"outputReceived":            inspection.OutputReceived,
+		"outputEventCount":          inspection.OutputEventCount,
+		"parseErrorEventCount":      inspection.ParseErrorEventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
+		"windowDurationMs":          int64PtrValue(p.replayWindowDurationMs),
+		"downstreamFirstWriteMs":    int64PtrValue(p.downstreamFirstWriteMs),
 	}, "网关流式响应已成功结束")
 	return p.finishStreamResult(finishArgs{
 		completed: true, message: "已完成", usage: inspection.Usage,
@@ -485,17 +508,18 @@ func (p *streamPipe) finalizeAbnormalStreamEOF(inspection gatewayproto.StreamIns
 		return StreamPipeResult{}, err
 	}
 	fields := map[string]any{
-		"elapsedMs":              p.nowMs() - p.startedAt,
-		"chunkCount":             p.chunkIndex,
-		"totalUpstreamBytes":     p.totalUpstreamBytes,
-		"totalResponseBytes":     p.totalResponseBytes,
-		"firstTokenMs":           int64PtrValue(p.firstTokenMs),
-		"sseEventCount":          inspection.EventCount,
-		"sseEventTypeCounts":     inspection.EventTypeCounts,
-		"recentSseEventTypes":    inspection.RecentEventTypes,
-		"parseErrorEventCount":   inspection.ParseErrorEventCount,
-		"windowDurationMs":       int64PtrValue(p.replayWindowDurationMs),
-		"downstreamFirstWriteMs": int64PtrValue(p.downstreamFirstWriteMs),
+		"elapsedMs":                 p.nowMs() - p.startedAt,
+		"chunkCount":                p.chunkIndex,
+		"totalUpstreamBytes":        p.totalUpstreamBytes,
+		"totalResponseBytes":        p.totalResponseBytes,
+		"firstTokenMs":              int64PtrValue(p.firstTokenMs),
+		"sseEventCount":             inspection.EventCount,
+		"sseEventTypeCounts":        inspection.EventTypeCounts,
+		"recentSseEventTypes":       inspection.RecentEventTypes,
+		"parseErrorEventCount":      inspection.ParseErrorEventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
+		"windowDurationMs":          int64PtrValue(p.replayWindowDurationMs),
+		"downstreamFirstWriteMs":    int64PtrValue(p.downstreamFirstWriteMs),
 	}
 	if p.shouldFailBeforeDownstreamCommit() {
 		p.logger.Warn("gateway_stream_abnormal_eof_before_downstream_commit", fields, "网关在下游提交前识别到流异常终局，丢弃缓冲交由上层换号重放")
@@ -510,6 +534,91 @@ func (p *streamPipe) finalizeAbnormalStreamEOF(inspection gatewayproto.StreamIns
 		return StreamPipeResult{}, err
 	}
 	p.logger.Warn("gateway_stream_abnormal_eof_interrupted", fields, "网关已因流异常终局中断连接，客户端以网络级断开触发自身重试")
+	return p.finishStreamResult(finishArgs{
+		message: message, errorCode: errorCode, usage: inspection.Usage,
+		outputReceived:        inspection.OutputReceived,
+		estimatedOutputTokens: inspection.EstimatedOutputTokens,
+		imageOutputReceived:   inspection.ImageOutputReceived,
+	}), nil
+}
+
+// emptyCompletionFailureDetected 报告当前流是否构成空完成终局（设计 §3.2.3
+// L1，v2.3 增量）：协议终态已到（TerminalReceived）且全程零语义输出
+// （!OutputReceived && !ImageOutputReceived）。现有 inspector 计数语义已保证
+// tool_calls / reasoning_content / text / audio / refusal / responses delta /
+// image 事件都置位 Output（usage-only 帧 choices 空数组不算输出），本谓词不
+// 改分类器。**作用域限定 openai 驱动域**（与 §3.2.0 隔离器同款
+// driver==openai 门）：生产实证空壳流在 openai 域；gemini 域存在合法的
+// 零输出终态面——interactions create 的 interaction.completed 经
+// firstGeminiFinishReason 投影为终态而天然零输出（实施验证反例，见设计文档
+// §3.2.3 豁免面登记），全域生效会误伤该合法面，故 anthropic/gemini 域本批
+// 不启用。豁免面：Codex passthroughUpstreamFailure 透传模式不判（同
+// interpretedProtocolFailure 口径）；失败帧证据在场时交由既有协议失败路径
+// 先行（各挂点序在协议失败判定之后，谓词再显式含 !FailedReceived 双保险）。
+// 判定不消费状态，可被多个挂点重复询问。
+func (p *streamPipe) emptyCompletionFailureDetected(inspection gatewayproto.StreamInspection) bool {
+	if p.driver == nil || p.driver.ClientErrorProtocol() != "openai" {
+		return false
+	}
+	return !p.passthroughUpstreamFailure &&
+		!inspection.FailedReceived &&
+		inspection.TerminalReceived &&
+		!inspection.OutputReceived &&
+		!inspection.ImageOutputReceived
+}
+
+// finalizeEmptyCompletion 是 §3.2.3 L1 空完成终局失败结算（v2.3）：流收到协议
+// 终态且全程零语义输出（空壳成功流，生产实证 2026-10-26）不再收敛 success。
+// 复用 finalizeAbnormalStreamEOF 的提交前/提交后两分支骨架：提交前（客户端零
+// 字节）丢弃缓冲交由上层 RetryUpstream 换号重放；提交后（理论难达，兜底：大
+// usage 帧序列冲开 256KB 预提交缓冲后终态才到）按真·网络级断开收口。
+// error_code 固定 upstream_stream_empty_completion——chain 面
+// classifyPostVerdictOutcome 按它做失败归因三面（经
+// PreCommitStreamServerRetryErrorCode 原样透传豁免保持原样）；探针不派发
+// （availabilityProbeEligible=false，同 abnormal_eof）；usage 照上游上报值入账
+// 但 Success=false（finalizeStreamFailure 既有口径）。
+func (p *streamPipe) finalizeEmptyCompletion(inspection gatewayproto.StreamInspection) (StreamPipeResult, error) {
+	// 失败信号同属窗口关闭条件④：先关窗再处置（与 handleProtocolFailure /
+	// finalizeAfterLoop 入口同序）。
+	p.closeReplayWindow()
+	beforeDownstreamCommit := p.shouldFailBeforeDownstreamCommit()
+	if beforeDownstreamCommit {
+		TakeStreamPreCommitChunks(p.preCommitBuffer)
+	}
+	message := "上游流式响应全程零语义输出即宣告完成"
+	errorCode := UpstreamStreamEmptyCompletionCode
+	if err := p.input.HandleStreamFailure(message, errorCode, p.streamFailureContext(p.totalResponseBytes, inspection.OutputReceived, false, false)); err != nil {
+		return StreamPipeResult{}, err
+	}
+	p.body.Close()
+	if !beforeDownstreamCommit {
+		if err := p.signalCommittedStreamFailure(); err != nil {
+			return StreamPipeResult{}, err
+		}
+	}
+	fields := map[string]any{
+		"elapsedMs":                 p.nowMs() - p.startedAt,
+		"chunkCount":                p.chunkIndex,
+		"totalUpstreamBytes":        p.totalUpstreamBytes,
+		"totalResponseBytes":        p.totalResponseBytes,
+		"firstTokenMs":              int64PtrValue(p.firstTokenMs),
+		"sseEventCount":             inspection.EventCount,
+		"sseEventTypeCounts":        inspection.EventTypeCounts,
+		"recentSseEventTypes":       inspection.RecentEventTypes,
+		"outputReceived":            inspection.OutputReceived,
+		"outputEventCount":          inspection.OutputEventCount,
+		"parseErrorEventCount":      inspection.ParseErrorEventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
+		"windowDurationMs":          int64PtrValue(p.replayWindowDurationMs),
+		"downstreamFirstWriteMs":    int64PtrValue(p.downstreamFirstWriteMs),
+	}
+	event := "gateway_stream_empty_completion_before_downstream_commit"
+	logMessage := "网关在下游提交前识别到上游空完成，丢弃缓冲交由上层换号重放"
+	if !beforeDownstreamCommit {
+		event = "gateway_stream_empty_completion_interrupted"
+		logMessage = "网关已识别到提交后的上游空完成并中断连接，客户端以网络级断开触发自身重试"
+	}
+	p.logger.Warn(event, fields, logMessage)
 	return p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
 		outputReceived:        inspection.OutputReceived,

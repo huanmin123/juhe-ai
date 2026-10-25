@@ -51,7 +51,7 @@ func newCooldownSettingsAdapterStack(t *testing.T) (*settings.Store, *sql.DB) {
 		step++
 		return base.Add(time.Duration(step) * 2 * time.Minute)
 	}
-	store, err := settings.NewStore(db, true, now, nil)
+	store, err := settings.NewStore(db, now, nil)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}

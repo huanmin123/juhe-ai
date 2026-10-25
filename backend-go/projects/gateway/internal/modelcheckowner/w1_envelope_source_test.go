@@ -170,7 +170,7 @@ func TestW1RuntimeResolvedEnvelopeReachesTargetAndComparison(t *testing.T) {
 			comparison := w1RuntimeEnvelopeTarget(test, test.comparisonBaseURL, 2, "comparison")
 			comparison.Client = &http.Client{Transport: comparisonTransport}
 
-			store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+			store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 			runtime := &Runtime{
 				Store:             store,
 				OwnerID:           "w1-envelope-source",
@@ -391,7 +391,7 @@ func TestW1RuntimeQuestionBankFailureFinalizesRunState(t *testing.T) {
 			if test.cancelRun {
 				reader.cancel = cancel
 			}
-			store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+			store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 			runtime := &Runtime{
 				Store: store, OwnerID: "w1-envelope-failure",
 				Now: func() time.Time { return time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC) },
@@ -437,7 +437,7 @@ func TestW1RuntimeCancellationBeforeOutcomeFinalization(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	transport := &w1OwnerEnvelopeTransport{model: "gpt-5.6-sol"}
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	itemCompleted := false
 	runtime := &Runtime{
 		Store:   store,
@@ -488,7 +488,7 @@ func TestW1RuntimeFailureFinalizationStorageErrors(t *testing.T) {
 		{name: "project outcome", dropTable: "model_check_items", wantError: "model_check_items", wantCommitted: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+			store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 			reader := w1FailingQuestionBankReader{
 				err: errors.New("question bank unavailable"),
 				beforeFail: func() error {
@@ -524,7 +524,7 @@ func TestW1RuntimeFailureFinalizationStorageErrors(t *testing.T) {
 			}
 			if test.wantCommitted > 0 {
 				var committed int
-				if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_outcomes WHERE committed=1`).Scan(&committed); err != nil {
+				if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_outcomes WHERE committed=TRUE`).Scan(&committed); err != nil {
 					t.Fatal(err)
 				}
 				if committed != test.wantCommitted {
@@ -536,7 +536,7 @@ func TestW1RuntimeFailureFinalizationStorageErrors(t *testing.T) {
 }
 
 func TestW1RuntimeHealthProjectionFailureRemainsRetryable(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	transport := &w1OwnerEnvelopeTransport{model: "gpt-5.6-sol", responseText: "WRONG-CONTENT"}
 	var events []ProgressEvent
 	store.HealthStatHour = mustHealthStatHourFunc(t, "UTC")
@@ -600,7 +600,7 @@ func TestW1OwnerLoadConfigGetterBoundaries(t *testing.T) {
 	// JUHE_AI_SQLITE_READ_POOL 读取随生产删除；边界只剩 owner / 容量 / 保留
 	// 时长 / 连接串回退与 Redis namespace 必填。
 	base := map[string]string{"JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b"}
-	if cfg, err := LoadConfig(get(base)); err != nil || cfg.StoreMode != "postgres" {
+	if cfg, err := LoadConfig(get(base)); err != nil {
 		t.Fatalf("default config=%+v err=%v", cfg, err)
 	}
 	for _, tc := range []struct {
@@ -859,11 +859,11 @@ func TestW1OwnerHealthProjectorFailureAndIdempotencyContracts(t *testing.T) {
 
 func w1OwnerBusinessQualityFixture(t *testing.T) (*BusinessQualityManager, *sql.DB, *w14mFailpoint) {
 	t.Helper()
-	scheduleDDL := `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT, UNIQUE(system_account_id,account_id))`
+	scheduleDDL := `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT, UNIQUE(system_account_id,account_id))`
 	enforcementDDL := `CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`
 	db, fp := w14mFailDB(t, append(businessSourceContractDDL(), scheduleDDL, enforcementDDL))
 	w14mSeedPlainAccount(t, db, "acct")
-	manager, err := NewBusinessQualityManager(db, false)
+	manager, err := NewBusinessQualityManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}

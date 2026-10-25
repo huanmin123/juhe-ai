@@ -15,7 +15,7 @@ import (
 func TestProxyDeleteInUseLeavesProfileUntouched(t *testing.T) {
 	fixture := newProxyFixture(t)
 	fixture.seedProfile(t, "p-1", "2026-09-01T00:00:00.000Z", "unknown")
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, name, proxy_profile_id) VALUES ('a-1', '账户A', 'p-1'), ('a-2', '账户B', 'p-1')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.accounts (id, name, proxy_profile_id) VALUES ('a-1', '账户A', 'p-1'), ('a-2', '账户B', 'p-1')`); err != nil {
 		t.Fatalf("seed accounts: %v", err)
 	}
 	_, err := fixture.store.Delete(context.Background(), "p-1")
@@ -28,7 +28,7 @@ func TestProxyDeleteInUseLeavesProfileUntouched(t *testing.T) {
 	}
 	// 守卫拒绝时不得删除任何东西。
 	var count int
-	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM proxy_profiles WHERE id = 'p-1'`).Scan(&count); err != nil {
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM juhe_business.proxy_profiles WHERE id = 'p-1'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -39,7 +39,7 @@ func TestProxyDeleteInUseLeavesProfileUntouched(t *testing.T) {
 func TestProxyDeleteIgnoresSoftDeletedAccounts(t *testing.T) {
 	fixture := newProxyFixture(t)
 	fixture.seedProfile(t, "p-1", "2026-09-01T00:00:00.000Z", "unknown")
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, name, deleted_at, proxy_profile_id) VALUES ('a-gone', '已删账户', '2026-09-02T00:00:00.000Z', 'p-1')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.accounts (id, name, deleted_at, proxy_profile_id) VALUES ('a-gone', '已删账户', '2026-09-02T00:00:00.000Z', 'p-1')`); err != nil {
 		t.Fatalf("seed deleted account: %v", err)
 	}
 	name, err := fixture.store.Delete(context.Background(), "p-1")
@@ -48,7 +48,7 @@ func TestProxyDeleteIgnoresSoftDeletedAccounts(t *testing.T) {
 	}
 	// 软删账号不参与守卫（deleted_at IS NULL 谓词与 Node 一致）。
 	var count int
-	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM proxy_profiles WHERE id = 'p-1'`).Scan(&count); err != nil {
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM juhe_business.proxy_profiles WHERE id = 'p-1'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -56,26 +56,14 @@ func TestProxyDeleteIgnoresSoftDeletedAccounts(t *testing.T) {
 	}
 }
 
-func TestProxyDeleteLoadsProfileWithRowLockOnPG(t *testing.T) {
-	// PG 方言下删除临界区的 profile 读取必须带 FOR UPDATE（Node
-	// client.transaction 的行锁语义）；SQLite 单 writer 无锁后缀。
-	sqliteDB, err := sql.Open("sqlite", ":memory:")
+func TestProxyDeleteLoadsProfileWithRowLock(t *testing.T) {
+	// 删除临界区的 profile 读取必须带 FOR UPDATE（Node client.transaction
+	// 的行锁语义；PG 单形态唯一行锁后缀）。
+	store, err := NewStore(Deps{DB: &sql.DB{}, Secret: "s", Now: time.Now, NewID: func(string) string { return "x" }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sqliteDB.Close()
-	pgStore, err := NewStore(Deps{DB: sqliteDB, PGDialect: true, Secret: "s", Now: time.Now, NewID: func(string) string { return "x" }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := pgStore.rowLockClause(); got != " FOR UPDATE" {
-		t.Fatalf("pg lock clause=%q", got)
-	}
-	sqliteStore, err := NewStore(Deps{DB: sqliteDB, PGDialect: false, Secret: "s", Now: time.Now, NewID: func(string) string { return "x" }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := sqliteStore.rowLockClause(); got != "" {
-		t.Fatalf("sqlite lock clause=%q", got)
+	if got := store.rowLockClause(); got != " FOR UPDATE" {
+		t.Fatalf("lock clause=%q", got)
 	}
 }

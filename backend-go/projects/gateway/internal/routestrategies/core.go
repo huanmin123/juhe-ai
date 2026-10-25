@@ -198,10 +198,9 @@ func (a AccessScope) canManageOwner(ownerID string) bool {
 	return a.canAccessAll()
 }
 
-// Store is the dual-mode route-strategy persistence.
+// Store is the PostgreSQL route-strategy persistence.
 type Store struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	newI  func(prefix string) string
 	inval RuntimeInvalidator
@@ -227,7 +226,7 @@ func (s *Store) SetSpeedFirstRuntimeFacade(facade SpeedFirstRuntimeFacade) {
 
 // NewStore builds the store; inval may be nil (no-op invalidation until K5
 // wires the bus).
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval RuntimeInvalidator) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, newID func(string) string, inval RuntimeInvalidator) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("routestrategies store requires a database")
 	}
@@ -237,7 +236,7 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string
 	if newID == nil {
 		newID = func(prefix string) string { return randomID(prefix) }
 	}
-	return &Store{db: db, pg: postgres, now: now, newI: newID, inval: inval}, nil
+	return &Store{db: db, now: now, newI: newID, inval: inval}, nil
 }
 
 // randomID mirrors Node newId('route_strategy') / newId('rsg').
@@ -248,16 +247,10 @@ func randomID(prefix string) string {
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

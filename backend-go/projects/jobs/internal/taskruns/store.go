@@ -121,7 +121,7 @@ const pgNowText = `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"H
 // 已使用 $n 的 PG 专有 SQL 不含 `?`，原样返回。
 // 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func (s *Store) bind(query string) string {
-	return sqldialect.BindSQL(true, query)
+	return sqldialect.BindSQL(query)
 }
 
 // postgresSchema 与 backend-go/projects/maintenance/internal/schema/pg_schema.go

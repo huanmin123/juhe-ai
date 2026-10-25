@@ -152,7 +152,7 @@ func w11gOpenScripted(t *testing.T, steps []w11gPStep) *sql.DB {
 
 func w11gExternalStore(t *testing.T, steps []w11gPStep) *ExternalStore {
 	t.Helper()
-	store, err := NewExternalStore(w11gOpenScripted(t, steps), false, func() time.Time { return w11gClock }, nil, nil, "w11g-crypto-secret")
+	store, err := NewExternalStore(w11gOpenScripted(t, steps), func() time.Time { return w11gClock }, nil, nil, "w11g-crypto-secret")
 	if err != nil {
 		t.Fatal(err)
 	}

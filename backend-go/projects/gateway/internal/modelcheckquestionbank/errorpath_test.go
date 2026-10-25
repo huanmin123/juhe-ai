@@ -412,7 +412,7 @@ func TestStoreCorruptKeyPointsJSONPropagates(t *testing.T) {
 // 前缀）缺表时的错误上抛：事务内查重查询失败必须中断提交而非静默放行。
 func TestStorePostgresDialectMissingTable(t *testing.T) {
 	_, db := newTestStore(t)
-	pgStore, err := NewStore(db, true)
+	pgStore, err := NewStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,7 +34,7 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 	}
 	store := schedulerStoreFixture(t)
 	defer store.db.Close()
-	source := &BusinessSchedulerSource{Business: db, Postgres: true, Store: store, OwnerID: "gateway-1"}
+	source := &BusinessSchedulerSource{Business: db, Store: store, OwnerID: "gateway-1"}
 	tasks, err := source.Claim(context.Background(), SchedulerScheduled, now, 10)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
@@ -86,7 +86,7 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 	}
 	// 恢复来源是 schedule（config_source='schedule' 且 config_source_id='sch'）：
 	// schedule 行没有配置时回落 system account 的 policy 行配置。
-	if _, err := db.Exec(j3bQ(`INSERT INTO model_quality_policies VALUES ('sys',7,'full',1,70,'quality_isolate',15,FALSE,'["mcq-policy"]')`)); err != nil {
+	if _, err := db.Exec(j3bQ(`INSERT INTO model_quality_policies(system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,custom_question_ids) VALUES ('sys',7,'full',1,70,'quality_isolate',15,FALSE,'["mcq-policy"]')`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(j3bQ(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'','schedule')`), now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
@@ -94,7 +94,7 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 	}
 	store := schedulerStoreFixture(t)
 	defer store.db.Close()
-	source := &BusinessSchedulerSource{Business: db, Postgres: true, Store: store, OwnerID: "gateway-1"}
+	source := &BusinessSchedulerSource{Business: db, Store: store, OwnerID: "gateway-1"}
 	tasks, err := source.Claim(context.Background(), SchedulerQualityRecovery, now, 10)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
@@ -114,5 +114,5 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 func schedulerStoreFixture(t *testing.T) *Store {
 	t.Helper()
 	db := newJ3BPGDatabase(t, j3bSchedulerTasksProdDDL())
-	return &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	return &Store{db: db, schema: j3bTestSchema}
 }

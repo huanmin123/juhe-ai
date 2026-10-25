@@ -33,7 +33,7 @@ func TestWlStoreErrorTypesAndCreateValidation(t *testing.T) {
 		sink.Record(OperationLogEntry{Module: "m"}, httptest.NewRequest(http.MethodGet, "/", nil))
 	})
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestWlVerifyNodePasswordMalformedHash(t *testing.T) {
 func TestWlEnsureDefaultResourcesIdempotentInSameTx(t *testing.T) {
 	ctx := context.Background()
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestWlEnsureDefaultResourcesIdempotentInSameTx(t *testing.T) {
 func TestWlNextDefaultResourceNameSkipsTaken(t *testing.T) {
 	ctx := context.Background()
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestWlGetProfileSettingsFailure(t *testing.T) {
 func TestWlDBFailurePathsReturn500(t *testing.T) {
 	// 关闭数据库后触发查询失败分支：路由层必须映射为 500 而不是 panic。
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestWlSmallHelpersExtraBranches(t *testing.T) {
 		}
 	})
 	t.Run("NewAccountStore 校验", func(t *testing.T) {
-		if _, err := NewAccountStore(nil, modelcheckauth.SQLite, nil); err == nil {
+		if _, err := NewAccountStore(nil, modelcheckauth.Postgres, nil); err == nil {
 			t.Fatal("nil db 必须拒绝")
 		}
 		if _, err := NewAccountStore(newContractTestDB(t), modelcheckauth.Mode(99), nil); err == nil {
@@ -489,7 +489,7 @@ func TestWlRemainingRoute500And401Branches(t *testing.T) {
 	})
 	t.Run("数据库关闭后 patchMe 返回 500", func(t *testing.T) {
 		db := newContractTestDB(t)
-		store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+		store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 		if err != nil {
 			t.Fatal(err)
 		}

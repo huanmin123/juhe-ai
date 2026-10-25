@@ -538,10 +538,7 @@ func (s *Store) advanceInstanceDispatchRevision(ctx context.Context, tx *sql.Tx,
 	transitionID := "dispatch_" + randomSuffix()
 	dedupeKey := "dispatch:" + transitionID
 	var revision int64
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
+	lockSuffix := " FOR UPDATE"
 	if err := tx.QueryRowContext(ctx, s.bind(`SELECT dispatch_revision FROM `+s.table("accounts")+`
 		WHERE id = ?`+lockSuffix), accountID).Scan(&revision); err != nil {
 		return err
@@ -597,10 +594,6 @@ func (s *Store) replaceInstanceNameSearchTerms(ctx context.Context, q queryer, a
 			statement := `INSERT INTO ` + s.table("account_name_search_terms") + `
 				(account_id, system_account_id, term, created_at) VALUES (?, ?, ?, ?)`
 			conflict := ` ON CONFLICT (account_id, term) DO NOTHING`
-			if !s.pg {
-				statement = strings.Replace(statement, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
-				conflict = ""
-			}
 			if _, err := q.ExecContext(ctx, s.bind(statement+conflict), accountID, systemAccountID, term, now); err != nil {
 				return err
 			}

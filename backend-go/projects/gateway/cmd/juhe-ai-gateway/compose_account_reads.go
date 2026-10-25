@@ -52,10 +52,9 @@ func wireAccountReadCompanions(composed *composition, accountStore *accounts.Sto
 	// API Key 运行明细读取器：/accounts/{id}/api-key-runtime 的 items 数据源
 	// （此前组装根从未注入，响应 items 恒为 []）。
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB:       composed.db,
-		Postgres: composed.pgDialect,
-		Secret:   secret,
-		Now:      time.Now,
+		DB:     composed.db,
+		Secret: secret,
+		Now:    time.Now,
 	})
 	if err != nil {
 		return err

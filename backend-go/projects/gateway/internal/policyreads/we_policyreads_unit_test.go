@@ -83,22 +83,15 @@ func TestWeZodMessageShims(t *testing.T) {
 }
 
 func TestWeBaseStoreTableAndBind(t *testing.T) {
-	// 白盒：SQLite 模式原样返回，PostgreSQL 模式加 schema 前缀并把 ? 换成 $n。
-	sqlite := &baseStore{}
-	if got := sqlite.table("providers"); got != "providers" {
-		t.Fatalf("sqlite table = %s", got)
-	}
-	if got := sqlite.bind("WHERE a = ? AND b = ?"); got != "WHERE a = ? AND b = ?" {
-		t.Fatalf("sqlite bind = %s", got)
-	}
-	pg := &baseStore{pg: true}
+	// 白盒：表名加 juhe_business schema 前缀，? 占位符改写为 $n。
+	pg := &baseStore{}
 	if got := pg.table("providers"); got != "juhe_business.providers" {
 		t.Fatalf("pg table = %s", got)
 	}
 	if got := pg.bind("WHERE a = ? AND b = ?"); got != "WHERE a = $1 AND b = $2" {
 		t.Fatalf("pg bind = %s", got)
 	}
-	if _, err := newBaseStore(nil, false, nil, nil, nil); err == nil {
+	if _, err := newBaseStore(nil, nil, nil, nil); err == nil {
 		t.Fatal("缺 db 应报错")
 	}
 }

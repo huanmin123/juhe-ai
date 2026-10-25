@@ -267,8 +267,8 @@ func TestW9BVisitJSONLikeValueArms(t *testing.T) {
 }
 
 func TestW9BStorePostgresInsertPath(t *testing.T) {
-	// pg 标志驱动方言分支：nil db 的构造守卫 + postgres bind 查询文本。
-	if _, err := NewStore(nil, true, nil, nil); err == nil {
+	// nil db 的构造守卫 + PG bind 查询文本。
+	if _, err := NewStore(nil, nil, nil); err == nil {
 		t.Fatal("nil db 必须拒绝")
 	}
 }
@@ -276,7 +276,7 @@ func TestW9BStorePostgresInsertPath(t *testing.T) {
 func TestW9BStorePostgresInsertBatchArms(t *testing.T) {
 	// 脚本化 database/sql driver 驱动 PG 方言 INSERT 分支。
 	script := &w9bScript{}
-	store, err := NewStore(w9bOpen(t, script), true, func() time.Time { return time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC) }, nil)
+	store, err := NewStore(w9bOpen(t, script), func() time.Time { return time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestW9BStorePostgresInsertBatchArms(t *testing.T) {
 	}
 	// 失败注入：BEGIN 后第一条 INSERT 失败。
 	failScript := &w9bScript{steps: []w9bScriptStep{{matcher: []string{"INSERT INTO"}, execErr: errW9BWriter}}}
-	failing, err := NewStore(w9bOpen(t, failScript), true, nil, nil)
+	failing, err := NewStore(w9bOpen(t, failScript), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

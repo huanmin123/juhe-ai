@@ -292,6 +292,9 @@ func TestPipeUpstreamStreamClientAbortAfterTerminalSucceeds(t *testing.T) {
 			err    error
 		}{result, err}
 	}()
+	// 首个内容 chunk 保证流非空完成（设计 §3.2.3 L1：openai 域终态 + 零输出
+	// 判 upstream_stream_empty_completion，本用例锚定的是终态后 abort 成功收尾）。
+	body.push([]byte(chatDeltaChunk))
 	body.push([]byte(chatFinishChunk))
 	body.push([]byte(chatDoneChunk))
 	time.Sleep(50 * time.Millisecond)

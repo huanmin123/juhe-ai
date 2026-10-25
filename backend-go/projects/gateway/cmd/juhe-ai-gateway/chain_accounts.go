@@ -56,11 +56,10 @@ func dispatchCandidateScanLimitFor(finalLimit int) int { return finalLimit * 2 }
 // chainAccountsSelector implements gatewayruntimecache.AccountsSelector over
 // the business + stats databases.
 type chainAccountsSelector struct {
-	db       *sql.DB
-	statsDB  *sql.DB
-	postgres bool
-	secret   string
-	now      func() time.Time
+	db      *sql.DB
+	statsDB *sql.DB
+	secret  string
+	now     func() time.Time
 	// candidateFinalLimit mirrors gatewayDispatchAccountCandidateLimit
 	// (runtimeConfig.gateway.dispatchAccountCandidateLimit, default
 	// concurrency.globalMax); candidateScanLimit = finalLimit * 2.
@@ -74,13 +73,13 @@ type chainAccountsSelector struct {
 // dispatchAccountCandidateLimit comes from the runtime config (Node default
 // concurrency.globalMax, bounded 1..50000); out-of-range values fail the
 // constructor like the Node integerConfig range error.
-func newChainAccountsSelector(db *sql.DB, postgres bool, secret string, now func() time.Time, dispatchAccountCandidateLimit int) (*chainAccountsSelector, error) {
-	return newChainAccountsSelectorWithStats(db, db, postgres, secret, now, dispatchAccountCandidateLimit)
+func newChainAccountsSelector(db *sql.DB, secret string, now func() time.Time, dispatchAccountCandidateLimit int) (*chainAccountsSelector, error) {
+	return newChainAccountsSelectorWithStats(db, db, secret, now, dispatchAccountCandidateLimit)
 }
 
 // newChainAccountsSelectorWithStats wires the stats database the fresh
 // account_quality_scores reads run against (Node getStatsDatabase()).
-func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, postgres bool, secret string, now func() time.Time, dispatchAccountCandidateLimit int) (*chainAccountsSelector, error) {
+func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, secret string, now func() time.Time, dispatchAccountCandidateLimit int) (*chainAccountsSelector, error) {
 	if db == nil {
 		return nil, fmt.Errorf("网关链账户选择器需要业务数据库")
 	}
@@ -96,7 +95,6 @@ func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, postgres boo
 	return &chainAccountsSelector{
 		db:                  db,
 		statsDB:             statsDB,
-		postgres:            postgres,
 		secret:              secret,
 		now:                 now,
 		candidateFinalLimit: dispatchAccountCandidateLimit,
@@ -105,23 +103,14 @@ func newChainAccountsSelectorWithStats(db *sql.DB, statsDB *sql.DB, postgres boo
 }
 
 func (s *chainAccountsSelector) table(name string) string {
-	if s.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *chainAccountsSelector) statsTable(name string) string {
-	if s.postgres {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 func (s *chainAccountsSelector) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

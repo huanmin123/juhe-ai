@@ -89,12 +89,12 @@ func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 		t.Logf("exec %d done", i)
 	}
 	now := time.Now
-	service, err := businessauth.New(db, modelcheckauth.SQLite, now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Log("constructors done")
-	accounts, err := NewAccountStore(db, modelcheckauth.SQLite, now)
+	accounts, err := NewAccountStore(db, modelcheckauth.Postgres, now)
 	if err != nil {
 		t.Fatal(err)
 	}

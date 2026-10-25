@@ -182,7 +182,7 @@ type ExternalSourceDeleteReceipt struct {
 	Name string
 }
 
-// ExternalStore is the dual-mode external_integration_sources persistence.
+// ExternalStore is the external_integration_sources persistence.
 type ExternalStore struct {
 	baseStore
 	// CryptoSecret mirrors runtimeConfig.secret: the storage crypto key used
@@ -191,8 +191,8 @@ type ExternalStore struct {
 }
 
 // NewExternalStore builds the external integration store.
-func NewExternalStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval RuntimeInvalidator, cryptoSecret string) (*ExternalStore, error) {
-	base, err := newBaseStore(db, postgres, now, newID, inval)
+func NewExternalStore(db *sql.DB, now func() time.Time, newID func(string) string, inval RuntimeInvalidator, cryptoSecret string) (*ExternalStore, error) {
+	base, err := newBaseStore(db, now, newID, inval)
 	if err != nil {
 		return nil, err
 	}

@@ -12,7 +12,7 @@ func TestLoadBusinessHealthStatHourUsesNodeSystemSetting(t *testing.T) {
 		`CREATE SCHEMA IF NOT EXISTS juhe_business`,
 		`CREATE TABLE juhe_business.system_settings (system_account_id TEXT NOT NULL,key TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(system_account_id,key))`,
 		`INSERT INTO juhe_business.system_settings VALUES ('sys_admin','usageStatsTimezone','"Asia/Shanghai"')`)
-	format, err := LoadBusinessHealthStatHour(context.Background(), db, true)
+	format, err := LoadBusinessHealthStatHour(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,13 +26,13 @@ func TestLoadBusinessHealthStatHourFailsClosedWithoutValidSetting(t *testing.T) 
 	db := newJ3BPGDatabase(t,
 		`CREATE SCHEMA IF NOT EXISTS juhe_business`,
 		`CREATE TABLE juhe_business.system_settings (system_account_id TEXT NOT NULL,key TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(system_account_id,key))`)
-	if _, err := LoadBusinessHealthStatHour(context.Background(), db, true); err == nil || !strings.Contains(err.Error(), "missing") {
+	if _, err := LoadBusinessHealthStatHour(context.Background(), db); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("missing setting err=%v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings VALUES ('sys_admin','usageStatsTimezone','123')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadBusinessHealthStatHour(context.Background(), db, true); err == nil {
+	if _, err := LoadBusinessHealthStatHour(context.Background(), db); err == nil {
 		t.Fatal("non-string setting must fail closed")
 	}
 }

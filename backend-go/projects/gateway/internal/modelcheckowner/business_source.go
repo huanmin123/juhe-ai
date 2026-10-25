@@ -30,7 +30,6 @@ import (
 // the Business owner handoff, while this port only freezes an execution target.
 type BusinessTargetSource struct {
 	db               *sql.DB
-	postgres         bool
 	credentialSecret string
 	now              func() time.Time
 }
@@ -43,11 +42,11 @@ type BusinessTargetConnection struct {
 	Close  func() error
 }
 
-func NewBusinessTargetSource(db *sql.DB, postgres bool, credentialSecret string) (*BusinessTargetSource, error) {
+func NewBusinessTargetSource(db *sql.DB, credentialSecret string) (*BusinessTargetSource, error) {
 	if db == nil || strings.TrimSpace(credentialSecret) == "" {
 		return nil, errors.New("J3b Business target source requires database and credential secret")
 	}
-	return &BusinessTargetSource{db: db, postgres: postgres, credentialSecret: credentialSecret, now: time.Now}, nil
+	return &BusinessTargetSource{db: db, credentialSecret: credentialSecret, now: time.Now}, nil
 }
 
 // OpenBusinessTargetSource opens the configured Business database without
@@ -71,17 +70,10 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 	if cfg.BusinessHandoffConfirmed && !cfg.NodeWriterStopped {
 		return nil, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
 	}
-	// 2026-10-24 存储形态收口：StoreMode 恒 "postgres"（LoadConfig 单一形态），
-	// sqlite 文件形态守卫随 sqlite 存储形态退役批次删除。
-	postgres := cfg.StoreMode == "postgres"
-	driver, dsn := "", ""
-	if postgres {
-		driver, dsn = "pgx", cfg.BusinessPostgresURL
-		if strings.TrimSpace(dsn) == "" {
-			return nil, errors.New("J3b Business PostgreSQL URL is required")
-		}
+	if strings.TrimSpace(cfg.BusinessPostgresURL) == "" {
+		return nil, errors.New("J3b Business PostgreSQL URL is required")
 	}
-	db, err := sql.Open(driver, dsn)
+	db, err := sql.Open("pgx", cfg.BusinessPostgresURL)
 	if err != nil {
 		return nil, fmt.Errorf("open J3b Business source database: %w", err)
 	}
@@ -89,15 +81,13 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 	// schemaReady is evidence, not a trust-me switch: it must be backed by the
 	// same versioned table/column/index contract that maintenance reports
 	// before Gateway exposes the owner.
-	if cfg.SchemaReady && postgres {
+	if cfg.SchemaReady {
 		if err := CheckBusinessPostgresSchema(ctx, db, "juhe_business"); err != nil {
 			_ = closeDB()
 			return nil, err
 		}
 	}
-	// 原 SQLite 读/写双池（ReadDB 只读池吸收读并发）已随 sqlite 形态退役；
-	// PostgreSQL 单多连接池同时承载 Source 只读面与 auth/session 写面。
-	source, err := NewBusinessTargetSource(db, postgres, cfg.CredentialSecret)
+	source, err := NewBusinessTargetSource(db, cfg.CredentialSecret)
 	if err != nil {
 		_ = closeDB()
 		return nil, err
@@ -260,7 +250,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if !ok {
 		return Target{}, errors.New("J3b Business provider profile does not support model")
 	}
-	mapping, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, s.postgres, request.TargetID, profile, request.Model)
+	mapping, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, request.TargetID, profile, request.Model)
 	if err != nil {
 		return Target{}, err
 	}
@@ -402,7 +392,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if !ok {
 		return Target{}, errors.New("J3b Business provider profile does not support model")
 	}
-	mapping, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, s.postgres, sourceID, profile, request.Model)
+	mapping, err := resolveConfiguredUpstreamModelMapping(ctx, s.db, sourceID, profile, request.Model)
 	if err != nil {
 		return Target{}, err
 	}
@@ -855,17 +845,11 @@ func (s *BusinessTargetSource) readPolicy(ctx context.Context, systemAccountID s
 }
 
 func (s *BusinessTargetSource) table(name string) string {
-	if s.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *BusinessTargetSource) placeholder(index int) string {
-	if s.postgres {
-		return fmt.Sprintf("$%d", index)
-	}
-	return "?"
+	return fmt.Sprintf("$%d", index)
 }
 
 func decryptCredential(secret, envelope string) (string, error) {

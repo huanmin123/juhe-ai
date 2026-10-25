@@ -48,11 +48,7 @@ func (s *ExternalStore) ListPage(ctx context.Context, page *int, pageSize *int, 
 	}
 	trimmedKeyword := strings.TrimSpace(keyword)
 	if trimmedKeyword != "" {
-		if s.pg {
-			clauses = append(clauses, "(LOWER(sources.name) = LOWER(?) OR LOWER(sources.name) LIKE LOWER(?) ESCAPE '\\')")
-		} else {
-			clauses = append(clauses, "(sources.name = ? OR sources.name LIKE ? ESCAPE '\\')")
-		}
+		clauses = append(clauses, "(LOWER(sources.name) = LOWER(?) OR LOWER(sources.name) LIKE LOWER(?) ESCAPE '\\')")
 		pattern := escapeLikePrefix(trimmedKeyword) + "%"
 		args = append(args, trimmedKeyword, pattern)
 	}

@@ -909,13 +909,8 @@ func TestRouteStrategyMutationErrorStatusMatrix(t *testing.T) {
 }
 
 func TestRouteStrategyPGFilterSQLContract(t *testing.T) {
-	sqliteStore := &Store{}
-	clause, args := sqliteStore.keywordFilter("Alpha")
-	if clause != "(route_strategies.name >= ? AND route_strategies.name < ?)" || len(args) != 2 {
-		t.Fatalf("sqlite keyword filter: %q %v", clause, args)
-	}
-	pgStore := &Store{pg: true}
-	clause, args = pgStore.keywordFilter("Alpha")
+	pgStore := &Store{}
+	clause, args := pgStore.keywordFilter("Alpha")
 	if clause != `(route_strategies.name COLLATE "C" >= ? AND route_strategies.name COLLATE "C" < ?)` || len(args) != 2 {
 		t.Fatalf("pg keyword filter must pin the C collation: %q %v", clause, args)
 	}

@@ -361,9 +361,6 @@ func TestW11EStoreOpenSchemaAndHealthArms(t *testing.T) {
 	if _, err := OpenStore(Config{Enabled: true}); err == nil || !strings.Contains(err.Error(), "readiness gates") {
 		t.Fatalf("readiness 门禁缺失必须拒绝: %v", err)
 	}
-	if _, err := OpenStore(Config{Enabled: true, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, StoreMode: "oracle"}); err == nil || !strings.Contains(err.Error(), "unsupported J3b store mode") {
-		t.Fatalf("非法模式必须拒绝: %v", err)
-	}
 	var nilStore *Store
 	if err := nilStore.CheckSchema(context.Background()); err == nil || !strings.Contains(err.Error(), "not open") {
 		t.Fatalf("nil store 必须拒绝: %v", err)

@@ -81,7 +81,7 @@ func storedSettingJSON(t *testing.T, db *sql.DB, key string) string {
 // TestAutoOverridesKeyRejectedOnUpdate：全量写路径携带自动键被拒绝且不落库。
 func TestAutoOverridesKeyRejectedOnUpdate(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
-	store, err := NewStore(db, true, nil, nil)
+	store, err := NewStore(db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestAutoOverridesKeyRejectedOnUpdate(t *testing.T) {
 // 目录，证明即使目录扩张把该键纳入分区，写守卫仍先于分区校验拒绝它。
 func TestAutoOverridesKeyRejectedOnUpdateSection(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
-	store, err := NewStore(db, true, nil, nil)
+	store, err := NewStore(db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestAutoOverridesKeyRejectedOnUpdateSection(t *testing.T) {
 func TestAutoOverridesKeyReadableViaLoadAndDirectRead(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
 	replaceSettingRow(t, db, upstreamClientVersionAutoOverridesKey, `{"codex":"1.2.3","claudeCode":"2.0.1"}`)
-	store, err := NewStore(db, true, nil, nil)
+	store, err := NewStore(db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestAutoOverridesKeyReadableViaLoadAndDirectRead(t *testing.T) {
 // TestManualOverridesWriteUnaffected：手动键写入行为不变（对照守卫不误伤）。
 func TestManualOverridesWriteUnaffected(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
-	store, err := NewStore(db, true, nil, nil)
+	store, err := NewStore(db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

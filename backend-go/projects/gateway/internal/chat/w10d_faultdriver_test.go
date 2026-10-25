@@ -205,7 +205,7 @@ func newFaultChatFixtureW10D(t *testing.T) (*chatFixture, *faultScriptW10D) {
 		}
 	}
 	_, clock := fixedChatClock()
-	store, err := NewStore(db, false, clock, nil)
+	store, err := NewStore(db, clock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

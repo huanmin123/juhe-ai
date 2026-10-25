@@ -13,7 +13,7 @@ import (
 
 func w9eStore(t *testing.T, env *testEnv) *Store {
 	t.Helper()
-	store, err := NewStore(env.db, true, nil, nil, nil)
+	store, err := NewStore(env.db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

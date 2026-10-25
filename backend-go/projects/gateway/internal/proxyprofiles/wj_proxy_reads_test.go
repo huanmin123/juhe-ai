@@ -13,9 +13,9 @@ import (
 // TestWJListPageHydratesTestColumns 固定分页列表回填检测列。
 func TestWJListPageHydratesTestColumns(t *testing.T) {
 	fixture := newProxyFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles
 		(id, system_account_id, name, type, host, port, enabled, test_status, latency_ms, outbound_ip, outbound_region, last_test_message, last_tested_at, created_at, updated_at)
-		VALUES ('p-hyd', 'sa-1', '回填', 'http', 'h', 8080, 1, 'warning', 321, '5.6.7.8', 'JP', 'warn', '2026-09-04T01:00:00.000Z', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`); err != nil {
+		VALUES ('p-hyd', 'sa-1', '回填', 'http', 'h', 8080, true, 'warning', 321, '5.6.7.8', 'JP', 'warn', '2026-09-04T01:00:00.000Z', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	result, err := fixture.store.ListPage(context.Background(), 1, 20, "")
@@ -39,14 +39,14 @@ func TestWJListPageHydratesTestColumns(t *testing.T) {
 func TestWJListOptionsSortTieBreaks(t *testing.T) {
 	fixture := newProxyFixture(t)
 	statements := []string{
-		`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-			VALUES ('o-1', 'sa-1', '同名', 'http', 'h', 8080, 1, '2026-01-01', '2026-01-05')`,
-		`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-			VALUES ('o-2', 'sa-1', '同名2', 'http', 'h', 8080, 1, '2026-01-01', '2026-01-04')`,
-		`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-			VALUES ('o-0', 'sa-1', '同名3', 'http', 'h', 8080, 1, '2026-01-01', '2026-01-04')`,
-		`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-			VALUES ('a-first', 'sa-1', 'AAA', 'http', 'h', 8080, 1, '2026-01-01', '2026-01-01')`,
+		`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
+			VALUES ('o-1', 'sa-1', '同名', 'http', 'h', 8080, true, '2026-01-01', '2026-01-05')`,
+		`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
+			VALUES ('o-2', 'sa-1', '同名2', 'http', 'h', 8080, true, '2026-01-01', '2026-01-04')`,
+		`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
+			VALUES ('o-0', 'sa-1', '同名3', 'http', 'h', 8080, true, '2026-01-01', '2026-01-04')`,
+		`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
+			VALUES ('a-first', 'sa-1', 'AAA', 'http', 'h', 8080, true, '2026-01-01', '2026-01-01')`,
 	}
 	for _, statement := range statements {
 		if _, err := fixture.db.Exec(statement); err != nil {

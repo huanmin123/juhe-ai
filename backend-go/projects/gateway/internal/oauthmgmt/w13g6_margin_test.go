@@ -256,7 +256,7 @@ func w13g6NewStore(t *testing.T, env *testEnv, exchanger TokenExchanger, opts ..
 	// 默认关闭 requiresProxy 拦截（夹具账户不带代理）；调用方显式传入的
 	// WithProxyRequired 排在后面，可覆盖默认值。
 	opts = append([]Option{WithProxyRequired(false)}, opts...)
-	store, err := NewStore(db, true, testSecret, accountStore, exchanger, nil, nil, opts...)
+	store, err := NewStore(db, testSecret, accountStore, exchanger, nil, nil, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

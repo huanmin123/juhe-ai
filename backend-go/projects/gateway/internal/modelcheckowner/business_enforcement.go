@@ -17,15 +17,14 @@ import (
 // The adapter performs account status and enforcement persistence in one
 // transaction and never talks to Node or another process.
 type BusinessEnforcementApplier struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
-func NewBusinessEnforcementApplier(db *sql.DB, postgres bool) (*BusinessEnforcementApplier, error) {
+func NewBusinessEnforcementApplier(db *sql.DB) (*BusinessEnforcementApplier, error) {
 	if db == nil {
 		return nil, errors.New("J3b Business enforcement database is required")
 	}
-	return &BusinessEnforcementApplier{db: db, postgres: postgres}, nil
+	return &BusinessEnforcementApplier{db: db}, nil
 }
 
 func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnforcement) (EnforcementOutcome, error) {
@@ -158,7 +157,7 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	recoveryDueAt := nullableTime(now.Add(time.Duration(interval)*time.Minute), input.Action == "quality_isolate")
 	// recovery_model 冻结触发本次处罚的检测模型：恢复调度按它回放探针，
 	// 不得回退到账户当前 health_check_model（可能已被改配）。
-	enforcement := `INSERT INTO ` + a.table("account_quality_enforcements") + ` (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,config_source,config_source_id,policy_revision,profile,penalty_threshold,recovery_interval_minutes,recovery_model,account_config_revision,before_status,after_status,fallback_was_enabled,super_priority_was_enabled,started_at,recovery_due_at,created_at,updated_at) VALUES (` + a.placeholders(23) + `) ON CONFLICT(account_id) DO UPDATE SET system_account_id=excluded.system_account_id,enforcement_id=excluded.enforcement_id,generation=generation+1,state='active',action=excluded.action,trigger_run_id=excluded.trigger_run_id,config_source=excluded.config_source,config_source_id=excluded.config_source_id,policy_revision=excluded.policy_revision,profile=excluded.profile,penalty_threshold=excluded.penalty_threshold,recovery_interval_minutes=excluded.recovery_interval_minutes,recovery_model=excluded.recovery_model,account_config_revision=excluded.account_config_revision,before_status=excluded.before_status,after_status=excluded.after_status,fallback_was_enabled=excluded.fallback_was_enabled,super_priority_was_enabled=excluded.super_priority_was_enabled,started_at=excluded.started_at,recovery_due_at=excluded.recovery_due_at,cleared_at=NULL,updated_at=excluded.updated_at`
+	enforcement := `INSERT INTO ` + a.table("account_quality_enforcements") + ` (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,config_source,config_source_id,policy_revision,profile,penalty_threshold,recovery_interval_minutes,recovery_model,account_config_revision,before_status,after_status,fallback_was_enabled,super_priority_was_enabled,started_at,recovery_due_at,created_at,updated_at) VALUES (` + a.placeholders(23) + `) ON CONFLICT(account_id) DO UPDATE SET system_account_id=excluded.system_account_id,enforcement_id=excluded.enforcement_id,generation=account_quality_enforcements.generation+1,state='active',action=excluded.action,trigger_run_id=excluded.trigger_run_id,config_source=excluded.config_source,config_source_id=excluded.config_source_id,policy_revision=excluded.policy_revision,profile=excluded.profile,penalty_threshold=excluded.penalty_threshold,recovery_interval_minutes=excluded.recovery_interval_minutes,recovery_model=excluded.recovery_model,account_config_revision=excluded.account_config_revision,before_status=excluded.before_status,after_status=excluded.after_status,fallback_was_enabled=excluded.fallback_was_enabled,super_priority_was_enabled=excluded.super_priority_was_enabled,started_at=excluded.started_at,recovery_due_at=excluded.recovery_due_at,cleared_at=NULL,updated_at=excluded.updated_at`
 	args := []any{input.AccountID, input.SystemAccountID, enforcementID, 1, "active", input.Action, input.RunID, source, sourceID, policyRevision, defaultProfile(input.Profile), input.Threshold, interval, nullable(input.Model), accountRevision, status, newStatus, fallbackEnabled, superPriority, now.Format(time.RFC3339Nano), recoveryDueAt, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}
 	if _, err := tx.ExecContext(ctx, enforcement, args...); err != nil {
 		return EnforcementOutcome{}, fmt.Errorf("persist J3b Business enforcement: %w", err)
@@ -251,17 +250,11 @@ func nullableTime(value time.Time, enabled bool) any {
 }
 
 func (a *BusinessEnforcementApplier) table(name string) string {
-	if a.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (a *BusinessEnforcementApplier) placeholder(index int) string {
-	if a.postgres {
-		return fmt.Sprintf("$%d", index)
-	}
-	return "?"
+	return fmt.Sprintf("$%d", index)
 }
 
 func (a *BusinessEnforcementApplier) placeholders(count int) string {

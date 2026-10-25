@@ -18,7 +18,7 @@ func wbInputFixture() InputRecord {
 // IssueInput/LoadInput 契约：同一不可变输入重放幂等；ID 复用、
 // 摘要篡改与过期读取都必须失败关闭。
 func TestWBStoreIssueInputAndLoadInputRoundTrip(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	first, err := store.IssueInput(ctx, wbInputFixture())
@@ -90,7 +90,7 @@ func TestWBStoreIssueInputAndLoadInputRoundTrip(t *testing.T) {
 // ClaimInput 租约契约：新认领分配递增 fence；租约内存活期内同身份幂等，
 // 异主拒绝、同主异 outcome 冲突；过期后可被新 fence 接管。
 func TestWBStoreClaimLeaseLifecycle(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 5, 8, 10, 0, 0, time.UTC)
@@ -160,7 +160,7 @@ func TestWBStoreClaimLeaseLifecycle(t *testing.T) {
 // CommitOutcome 契约：摘要/租约全部校验后一次性提交；同载荷重放幂等，
 // 异载荷冲突，陈旧租约拒绝。ListCommittedOutcomes 校验存储完整性。
 func TestWBStoreCommitOutcomeAndListCommittedOutcomes(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 5, 8, 0, 30, 0, time.UTC)
@@ -210,7 +210,7 @@ func TestWBStoreCommitOutcomeAndListCommittedOutcomes(t *testing.T) {
 		if err != nil || len(paged) != 1 {
 			t.Fatalf("游标后分页=%+v err=%v", paged, err)
 		}
-		if _, err := store.db.Exec(`UPDATE model_check_outcomes SET payload=? WHERE outcome_id='outcome-1'`, `{"ok":hacked}`); err != nil {
+		if _, err := store.db.Exec(`UPDATE model_check_outcomes SET payload=? WHERE outcome_id='outcome-1'`, `{"ok":false}`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10); err == nil {
@@ -221,7 +221,7 @@ func TestWBStoreCommitOutcomeAndListCommittedOutcomes(t *testing.T) {
 
 // ProjectOutcome 契约：终态投影一次落库，精确重放幂等，任何漂移都冲突。
 func TestWBStoreProjectOutcomeIdempotentReplay(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 5, 11, 0, 0, 0, time.UTC)
@@ -265,7 +265,7 @@ func wbValidHealthFact() HealthFact {
 // ApplyHealthFact/ReadHealthFact 契约：最新观测优先落库；
 // 旧观测不得覆盖新事实；读取必须限定账户与小时。
 func TestWBStoreHealthFactUpsertAndRead(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, wbHealthRuntimeDDL(t)), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, wbHealthRuntimeDDL(t))}
 	defer store.Close()
 	ctx := context.Background()
 	applied, err := store.ApplyHealthFact(ctx, wbValidHealthFact())
@@ -311,7 +311,7 @@ func TestWBStoreHealthFactUpsertAndRead(t *testing.T) {
 
 // MarkHealthSync 契约：按 run 记录发布结果，状态只允许 applied/failed。
 func TestWBStoreMarkHealthSyncContract(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
@@ -347,7 +347,7 @@ func wbSeedFailedHealthRun(t *testing.T, store *Store, id string, fields map[str
 // ListHealthSyncRetries 契约：只重新发现可安全重试的失败健康发布；
 // 不完整或越界的快照必须被跳过而不是阻塞其他重试。
 func TestWBStoreListHealthSyncRetriesFilters(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, wbHealthRuntimeDDL(t)), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, wbHealthRuntimeDDL(t))}
 	defer store.Close()
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {
@@ -389,9 +389,9 @@ func TestWBStoreListHealthSyncRetriesFilters(t *testing.T) {
 
 // EnsureHealthRetryTasks 契约：按失败发布物化幂等重试任务。
 func TestWBStoreEnsureHealthRetryTasksIdempotent(t *testing.T) {
-	j3b := wbOpenMemoryDB(t, append(wbHealthRuntimeDDL(t),
+	j3b := wbOpenPGDB(t, append(wbHealthRuntimeDDL(t),
 		`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,claim_owner TEXT,claim_until TEXT,fence_token INTEGER,state TEXT,last_error TEXT,completed_at TEXT,payload TEXT,updated_at TEXT)`))
-	store := &Store{db: j3b, mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: j3b}
 	defer store.Close()
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {
@@ -416,7 +416,7 @@ func TestWBStoreEnsureHealthRetryTasksIdempotent(t *testing.T) {
 
 // ListRuns 契约：过滤器/分页/全局 scope 校验。
 func TestWBRunListRunFiltersAndScopes(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)
@@ -459,7 +459,7 @@ func TestWBRunListRunFiltersAndScopes(t *testing.T) {
 
 // GetRun 契约：完整详情必须带检查项，并把最新信任投影合并进结果摘要。
 func TestWBRunGetRunMergesLatestTrustReport(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 5, 14, 0, 0, 0, time.UTC)

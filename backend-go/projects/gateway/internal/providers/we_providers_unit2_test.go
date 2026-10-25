@@ -42,10 +42,7 @@ func TestWeMatchesModelToken(t *testing.T) {
 }
 
 func TestWeTodayTextAndProviderDialects(t *testing.T) {
-	if (&Store{}).todayText() != "date('now')" {
-		t.Fatal("sqlite todayText 错误")
-	}
-	if (&Store{pg: true}).todayText() != "CURRENT_DATE::text" {
+	if (&Store{}).todayText() != "CURRENT_DATE::text" {
 		t.Fatal("pg todayText 错误")
 	}
 	if ensureCtx(nil) == nil {
@@ -180,7 +177,7 @@ func TestWeEnabledNonHybridProviderCodes(t *testing.T) {
 	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('p2', 'anthropic', 'Anthropic', 0, '[]', ?, ?)`, now, now)
 
-	store, err := NewStore(env.db, false, nil)
+	store, err := NewStore(env.db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

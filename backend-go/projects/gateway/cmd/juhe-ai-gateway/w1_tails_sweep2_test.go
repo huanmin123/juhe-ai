@@ -166,7 +166,7 @@ func w1tObservationOutputBody(summary string) string {
 func TestW1TObservationScheduleWaitTrackArms(t *testing.T) {
 	// ① track + Wait 命中：waiters 收集后任务表删除该键。
 	db := w1yChatAssetsDB(t)
-	port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}}
+	port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}}
 	done := make(chan struct{})
 	port.track("ast-track", done)
 	close(done)
@@ -182,7 +182,7 @@ func TestW1TObservationScheduleWaitTrackArms(t *testing.T) {
 	// ③ Schedule 过滤无效目标 + 去重，仅有效目标进入任务表；goroutine 内
 	// runObservation 对不存在的资产行 claim 返回 nil（空表）。
 	emptyDB := w1yChatAssetsDB(t)
-	scheduler := &chatImageObservations{db: emptyDB, postgres: false, tasks: map[string][]chan struct{}{}}
+	scheduler := &chatImageObservations{db: emptyDB, tasks: map[string][]chan struct{}{}}
 	scheduler.Schedule(chat.ScheduleObservationInput{
 		ConversationID:  "conv-w1t",
 		SystemAccountID: "sys-w1t",
@@ -200,7 +200,7 @@ func TestW1TObservationScheduleWaitTrackArms(t *testing.T) {
 	}
 
 	// ④ Wait 超时分支：waiter 永不关闭，按 timeoutMs 上界返回。
-	slow := &chatImageObservations{db: emptyDB, postgres: false, tasks: map[string][]chan struct{}{}}
+	slow := &chatImageObservations{db: emptyDB, tasks: map[string][]chan struct{}{}}
 	slow.track("ast-slow", make(chan struct{}))
 	started := time.Now()
 	slow.Wait([]string{"ast-slow"}, 30)
@@ -213,7 +213,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("关闭句柄 claim 失败", func(t *testing.T) {
-		port := &chatImageObservations{db: w1yOpenClosedSQLite(t), postgres: false, tasks: map[string][]chan struct{}{}}
+		port := &chatImageObservations{db: w1yOpenClosedSQLite(t), tasks: map[string][]chan struct{}{}}
 		if err := port.runObservation(ctx, w1tObsInput("ast-x"), w1tObsInput("ast-x").Targets[0]); err == nil ||
 			!strings.Contains(err.Error(), "sql: database is closed") {
 			t.Fatalf("关闭句柄 runObservation = %v, want database is closed", err)
@@ -223,7 +223,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 	t.Run("无引用行 claim 返回 nil 直接结束", func(t *testing.T) {
 		db := w1yChatAssetsDB(t)
 		w1tSeedObservationAsset(t, db, "ast-noref", false)
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}}
 		if err := port.runObservation(ctx, w1tObsInput("ast-noref"), w1tObsInput("ast-noref").Targets[0]); err != nil {
 			t.Fatalf("无引用行 runObservation = %v, want nil", err)
 		}
@@ -232,7 +232,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 	t.Run("对象存储未接线 fail 分支", func(t *testing.T) {
 		db := w1yChatAssetsDB(t)
 		w1tSeedObservationAsset(t, db, "ast-unwired", true)
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}}
 		err := port.runObservation(ctx, w1tObsInput("ast-unwired"), w1tObsInput("ast-unwired").Targets[0])
 		if err == nil || !strings.Contains(err.Error(), "chat 资产存储未接线") {
 			t.Fatalf("对象存储未接线 runObservation = %v, want 未接线错误", err)
@@ -253,7 +253,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{handler: func() (*chat.GenerationDispatchResponse, error) {
 			return nil, errors.New("w1t 派发失败")
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		err := port.runObservation(ctx, w1tObsInput("ast-dispatch-err"), w1tObsInput("ast-dispatch-err").Targets[0])
 		if err == nil || !strings.Contains(err.Error(), "w1t 派发失败") {
 			t.Fatalf("派发失败 runObservation = %v, want 原样错误", err)
@@ -270,7 +270,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{handler: func() (*chat.GenerationDispatchResponse, error) {
 			return &chat.GenerationDispatchResponse{Status: http.StatusOK, Body: io.ReadCloser(w1tFailReader{})}, nil
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		if err := port.runObservation(ctx, w1tObsInput("ast-read-err"), w1tObsInput("ast-read-err").Targets[0]); err == nil ||
 			!strings.Contains(err.Error(), "w1t 响应体读取失败") {
 			t.Fatalf("读体失败 runObservation = %v, want 原样错误", err)
@@ -284,7 +284,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{handler: func() (*chat.GenerationDispatchResponse, error) {
 			return w1tObsJSONResponse(http.StatusOK, strings.Repeat("x", 128*1024+1)), nil
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		err := port.runObservation(ctx, w1tObsInput("ast-huge"), w1tObsInput("ast-huge").Targets[0])
 		if err == nil || !strings.Contains(err.Error(), "payload_too_large") {
 			t.Fatalf("载荷超限 runObservation = %v, want payload_too_large", err)
@@ -298,7 +298,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{handler: func() (*chat.GenerationDispatchResponse, error) {
 			return w1tObsJSONResponse(http.StatusInternalServerError, `{"error":"boom"}`), nil
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		err := port.runObservation(ctx, w1tObsInput("ast-http500"), w1tObsInput("ast-http500").Targets[0])
 		if err == nil || !strings.Contains(err.Error(), "chat_image_observation_http_500") {
 			t.Fatalf("非 2xx runObservation = %v, want http_500", err)
@@ -312,7 +312,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{handler: func() (*chat.GenerationDispatchResponse, error) {
 			return w1tObsJSONResponse(http.StatusOK, "not-json"), nil
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		if err := port.runObservation(ctx, w1tObsInput("ast-badjson"), w1tObsInput("ast-badjson").Targets[0]); err == nil {
 			t.Fatal("响应非 JSON 必须失败")
 		}
@@ -325,7 +325,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{handler: func() (*chat.GenerationDispatchResponse, error) {
 			return w1tObsJSONResponse(http.StatusOK, w1tObservationOutputBody("   ")), nil
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		err := port.runObservation(ctx, w1tObsInput("ast-empty-obs"), w1tObsInput("ast-empty-obs").Targets[0])
 		if err == nil || !strings.Contains(err.Error(), "chat_image_observation_empty") {
 			t.Fatalf("空说明 runObservation = %v, want empty", err)
@@ -339,7 +339,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{handler: func() (*chat.GenerationDispatchResponse, error) {
 			return w1tObsJSONResponse(http.StatusOK, w1tObservationOutputBody(`{"summary":"图片说明","ocr":["文字1"],"objects":[],"questionRelevantFacts":["事实"],"uncertainties":[]}`)), nil
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		if err := port.runObservation(ctx, w1tObsInput("ast-ok"), w1tObsInput("ast-ok").Targets[0]); err != nil {
 			t.Fatalf("成功路径 runObservation = %v, want nil", err)
 		}
@@ -363,7 +363,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 		executor := &w1tObsExecutor{release: release, handler: func() (*chat.GenerationDispatchResponse, error) {
 			return w1tObsJSONResponse(http.StatusOK, w1tObservationOutputBody(`{"summary":"冲突前说明"}`)), nil
 		}}
-		port := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
+		port := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}, objects: store, executor: executor}
 		type outcome struct {
 			err error
 		}
@@ -375,7 +375,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 			time.Sleep(2 * time.Millisecond)
 		}
 		// 阻塞期间重 claim：revision 递增 + 换 claim id。
-		rival := &chatImageObservations{db: db, postgres: false, tasks: map[string][]chan struct{}{}}
+		rival := &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}}
 		reClaimed, err := rival.claim(ctx, "ast-conflict", "conv-w1t", "sys-w1t", "turn-w1t", "msg-w1t", time.Now().UTC().Format(chainTimeLayout))
 		if err != nil || reClaimed == nil {
 			t.Fatalf("重 claim = (%v, %v), want 成功抢占", reClaimed, err)
@@ -396,7 +396,7 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 	ctx := context.Background()
 	db := seedChainSelectorDB(t)
 	t.Cleanup(func() { _ = db.Close() })
-	selector, err := newChainAccountsSelector(db, true, "w1t-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "w1t-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("构造 selector: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 		// 裸库无 juhe_business/juhe_stats schema，恰好承载「表缺失必须查询
 		// 失败」负向臂（原 sqlite 裸文件臂重钉，T67 批）。
 		bare := w1uOpenPlainSQLite(t, "w1t-selector-bare.sqlite3")
-		bareSelector, err := newChainAccountsSelector(bare, true, "w1t-secret", time.Now, 20)
+		bareSelector, err := newChainAccountsSelector(bare, "w1t-secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("构造裸库 selector: %v", err)
 		}
@@ -577,7 +577,7 @@ func w1tLocksQueryOnly(t *testing.T, rw *sql.DB) *chainAccountLocks {
 	if _, err := rw.Exec(`PRAGMA query_only = 1`); err != nil {
 		t.Fatalf("设置 query_only: %v", err)
 	}
-	locks, err := newChainAccountLocks(rw, false, nil)
+	locks, err := newChainAccountLocks(rw, nil)
 	if err != nil {
 		t.Fatalf("构造锁端口: %v", err)
 	}
@@ -696,7 +696,7 @@ func TestW1TAccountLocksDuplicateRowCASArms(t *testing.T) {
 	newLocks := func(t *testing.T, name string) (*sql.DB, *chainAccountLocks) {
 		t.Helper()
 		db := w1tLocksOpenReadWrite(t, name)
-		locks, err := newChainAccountLocks(db, false, nil)
+		locks, err := newChainAccountLocks(db, nil)
 		if err != nil {
 			t.Fatalf("构造锁端口: %v", err)
 		}
@@ -774,7 +774,7 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 	t.Run("models 表缺失", func(t *testing.T) {
 		// 裸库无 juhe_business schema，恰好承载「缺 models 表必须查询失败」
 		//（原 sqlite 裸文件臂重钉，T67 批）。
-		source, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-cat-bare.sqlite3"), true)
+		source, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-cat-bare.sqlite3"))
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -789,7 +789,7 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 		if _, err := db.Exec(`DROP TABLE juhe_business.models CASCADE`); err != nil {
 			t.Fatalf("删 models: %v", err)
 		}
-		source, err := newChainCatalogSource(db, true)
+		source, err := newChainCatalogSource(db)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -809,7 +809,7 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 			VALUES ('w1t-cat-poison', 'gpt', 'w1t-m-poison', 'w1t-m-poison', 'builtin', 'active', TRUE, 'not-a-number', 'builtin', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed 坏数值目录行: %v", err)
 		}
-		source, err := newChainCatalogSource(db, true)
+		source, err := newChainCatalogSource(db)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -827,7 +827,7 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 			VALUES ('w1t-cpm-poison', 'gpt', 'w1t-m-poison', 'w1t-m-poison', 'global', NULL, 'active', 'not-a-number', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed 坏数值自定义行: %v", err)
 		}
-		source, err := newChainCatalogSource(db, true)
+		source, err := newChainCatalogSource(db)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -842,12 +842,12 @@ func TestW1TBalanceRefresherEmptySecretArms(t *testing.T) {
 	db := w1tProxyDB(t, `INSERT INTO proxy_profiles (id, type, host, port) VALUES ('p-w1t-plain', 'socks5', '10.0.0.8', 1080)`)
 
 	// resolveProxyURLEnvelope：空 secret 构建 proxy_url 信封失败上抛。
-	if _, err := resolveProxyURLEnvelope(ctx, db, true, "", "p-w1t-plain"); err == nil {
+	if _, err := resolveProxyURLEnvelope(ctx, db, "", "p-w1t-plain"); err == nil {
 		t.Fatal("空 secret 的代理信封构建必须报错")
 	}
 
 	// TestDraft：空 secret 构建 api_key 信封失败上抛（在配置校验之后）。
-	refresher := &gatewayManualBalanceRefresher{db: db, pg: true, secret: "", now: time.Now}
+	refresher := &gatewayManualBalanceRefresher{db: db, secret: "", now: time.Now}
 	if _, err := refresher.TestDraft(ctx, accounts.BalanceDraftProbeInput{
 		Credentials: accounts.Credentials{"api_key": "sk-w1t", "base_url": "http://127.0.0.1:9"},
 		Config:      map[string]any{"adapter": "builtin", "intervalMinutes": 5},
@@ -863,9 +863,8 @@ func TestW1TBalanceRefresherEmptySecretArms(t *testing.T) {
 func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 	t.Run("空 Secret 组合失败", func(t *testing.T) {
 		composed := &composition{
-			db:        w1uOpenPlainSQLite(t, "w1t-rt-sec-b.sqlite3"),
-			statsDB:   w1uOpenPlainSQLite(t, "w1t-rt-sec-s.sqlite3"),
-			pgDialect: true,
+			db:      w1uOpenPlainSQLite(t, "w1t-rt-sec-b.sqlite3"),
+			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-sec-s.sqlite3"),
 		}
 		cfg := runtimeConfig{Secret: "", DispatchAccountCandidateLimit: 20}
 		if _, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue); err == nil {
@@ -875,9 +874,8 @@ func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 
 	t.Run("坏 state redis URL 组合失败", func(t *testing.T) {
 		composed := &composition{
-			db:        w1uOpenPlainSQLite(t, "w1t-rt-drv-b.sqlite3"),
-			statsDB:   w1uOpenPlainSQLite(t, "w1t-rt-drv-s.sqlite3"),
-			pgDialect: true,
+			db:      w1uOpenPlainSQLite(t, "w1t-rt-drv-b.sqlite3"),
+			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-drv-s.sqlite3"),
 		}
 		cfg := runtimeConfig{
 			Secret: "w1t-runtime-secret", RedisStateURL: "redis://[::w1t-bad-url",

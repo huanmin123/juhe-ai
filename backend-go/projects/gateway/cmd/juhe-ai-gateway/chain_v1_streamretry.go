@@ -157,6 +157,11 @@ func streamServerRetryFallbackReason(retryReason string) string {
 		// 返回 false，正常流不会走到耗尽出口；若后续改动把恢复轮漏进既有
 		// 耗尽分支，fallback reason 仍显式可辨，不再误报为通用 stream 耗尽。
 		return "codex_encrypted_content_recovery"
+	case gatewayresponse.StreamServerRetryEmptyCompletion:
+		// 上游空完成失败（流式提交边界受限重放与异常终局处置设计 §3.2.3，
+		// v2.3）：换号耗尽出口与通用 pre_commit 耗尽显式可辨（fallback group
+		// 切换审计与耗尽终态审计都消费本 reason）。
+		return "upstream_stream_empty_completion_server_retry_exhausted"
 	}
 	return "stream_server_retry_exhausted"
 }

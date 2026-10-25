@@ -232,7 +232,7 @@ func wcStrPtr(value string) *string { return &value }
 
 // TestWCNewStoreValidation：NewStore 的参数校验分支。
 func TestWCNewStoreValidation(t *testing.T) {
-	if _, err := NewStore(nil, false, "s", nil, nil, nil, nil); err == nil {
+	if _, err := NewStore(nil, "s", nil, nil, nil, nil); err == nil {
 		t.Fatalf("缺 db 必须报错")
 	}
 }
@@ -262,7 +262,7 @@ func TestWCStoreStatics(t *testing.T) {
 	if user.accountsScope().ViewerID != "v" {
 		t.Fatalf("accountsScope: %+v", user.accountsScope())
 	}
-	pg := &Store{pg: true}
+	pg := &Store{}
 	if got := pg.table("accounts"); got != "juhe_business.accounts" {
 		t.Fatalf("pg table: %q", got)
 	}

@@ -11,7 +11,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// newSQLTestDB 建立隔离的 SQLite 内存库（MaxOpenConns(1)）并建业务表。
+// newSQLTestDB 建立隔离的 SQLite 内存库（MaxOpenConns(1)）并建业务表：
+// ATTACH ':memory:' AS juhe_business 承载生产同款限定形式（juhe_business.*
+// 表名 + $n 绑定），单连接保证 ATTACH 对所有查询可见。
 func newSQLTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:gatewayruntimecache-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
@@ -22,21 +24,22 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = db.Close() })
 
 	statements := []string{
-		`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, system_account_id TEXT NOT NULL DEFAULT 'sys_admin')`,
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT)`,
-		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT)`,
+		`ATTACH ':memory:' AS juhe_business`,
+		`CREATE TABLE juhe_business.system_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, system_account_id TEXT NOT NULL DEFAULT 'sys_admin')`,
+		`CREATE TABLE juhe_business.system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT)`,
+		`CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT)`,
 		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
-		`CREATE TABLE scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
-		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE juhe_business.scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE juhe_business.route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
+		`CREATE TABLE juhe_business.route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
 		// groups 目标形态（供应商与上游协议面重构设计 §8，迁移窗口 shim 已按
 		// A 路线一次性收敛撤除）：无 provider_code 列；owner 内名称唯一见
 		// idx_groups_owner_name_unique（与权威 DDL 同名同列）。
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
-		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`,
-		`CREATE TABLE group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
-		`CREATE TABLE response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)`,
+		`CREATE TABLE juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
+		`CREATE TABLE juhe_business.super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`,
+		`CREATE TABLE juhe_business.group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
+		`CREATE TABLE juhe_business.response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -132,7 +135,7 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 
 func setSetting(t *testing.T, db *sql.DB, key string, valueJSON string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO system_settings (key, value_json) VALUES (?, ?)
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (key, value_json) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`, key, valueJSON); err != nil {
 		t.Fatalf("set setting %s: %v", key, err)
 	}
@@ -146,7 +149,7 @@ func TestSQLReadGatewaySettingsProjection(t *testing.T) {
 	setSetting(t, db, "gatewayUserRequestLimitPerMinute", "120")
 	setSetting(t, db, "sameAccountRetryFastFailMaxMs", "5000")
 	setSetting(t, db, "gatewayAttemptStartMinWindowMs", "20000")
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,16 +183,16 @@ func seedGatewayKeyFixture(t *testing.T, db *sql.DB) {
 	// P2 迁移完成世界：内置偏好行存在，普通 Key 一律绑定（NULL 属未迁移错误，
 	// 读取链会显式失败），见 spc1 六态测试。
 	statements := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`,
-		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g2', 'sys_owner', 1)`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled) VALUES ('g2', 'sys_owner', 1)`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-fixture") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 2, 'active', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, NULL, 'active', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b3', 'rs1', 'sys_owner', 'g_disabled', 3, 1, 'disabled', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-fixture") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 2, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, NULL, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b3', 'rs1', 'sys_owner', 'g_disabled', 3, 1, 'disabled', '2026-01-01T00:00:00.000Z')`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -204,10 +207,10 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 	seedGatewayKeyFixture(t, db)
 	// 策略 config 解码的消费路径（P2）只剩 purpose=chat（会话路径保持现状）；
 	// 普通 Key 的派发配置一律来自偏好合成，补一条 chat 键承载原断言。
-	if _, err := db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key-chat', 'sys_owner', 'rs1', '` + HashSecret("sk-chat-row") + `', 'active', 'chat')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key-chat', 'sys_owner', 'rs1', '` + HashSecret("sk-chat-row") + `', 'active', 'chat')`); err != nil {
 		t.Fatal(err)
 	}
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +245,7 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 
 	// 普通 Key：策略 config 变更不影响派发配置（P2 起策略调度字段不再是普通
 	// Key 的配置来源；绑定合成始终覆盖）。
-	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
 	general, err := models.ReadGatewayRuntime(ctx, "sk-fixture")
@@ -270,7 +273,7 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 	if string(clone.Raw) != string(normalConfig.Raw) {
 		t.Fatal("speed_first clone must keep the raw payload")
 	}
-	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"cost_first"}}' WHERE id = 'rs1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"cost_first"}}' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
 	chatCostFirst, err := models.ReadGatewayRuntime(ctx, "sk-chat-row")
@@ -298,7 +301,7 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 	}
 
 	// 过期 key → nil。
-	if _, err := db.Exec(`UPDATE api_keys SET expires_at = '2020-01-01T00:00:00.000Z' WHERE id = 'key1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.api_keys SET expires_at = '2020-01-01T00:00:00.000Z' WHERE id = 'key1'`); err != nil {
 		t.Fatal(err)
 	}
 	expired, err := models.ReadGatewayRuntime(ctx, "sk-fixture")
@@ -312,15 +315,15 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 
 func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 	db := newSQLTestDB(t)
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	statements := []string{
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g_off', 'sys_owner', 0, 'personal')`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, effective_source_type, effective_source_team_id, expires_at, limits_json)
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g_off', 'sys_owner', 0, 'personal')`,
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, effective_source_type, effective_source_team_id, expires_at, limits_json)
 			VALUES ('auth1', 'group', 'g1', 'sys_peer', 'active', 'team', 'team1', '2099-01-01T00:00:00.000Z', '{"daily":{"enabled":true,"limit":5}}')`,
 	}
 	for _, statement := range statements {
@@ -356,7 +359,7 @@ func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 		t.Fatalf("source type mismatch: %+v", peer.GroupAuthorizationSourceType)
 	}
 	// 本地授权设置禁用 → undefined。
-	if _, err := db.Exec(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled) VALUES ('auth1', 'sys_peer', 'g1', 0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.group_authorization_settings (authorization_id, system_account_id, group_id, enabled) VALUES ('auth1', 'sys_peer', 'g1', 0)`); err != nil {
 		t.Fatal(err)
 	}
 	disabled, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_peer")
@@ -378,17 +381,17 @@ func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 
 func TestSQLInspectionPoliciesForGateway(t *testing.T) {
 	db := newSQLTestDB(t)
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	seed := []string{
-		`INSERT INTO response_inspection_policies (id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json, action, updated_at)
+		`INSERT INTO juhe_business.response_inspection_policies (id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json, action, updated_at)
 		 VALUES ('stored_provider', 'stored provider', 1, 1, 'provider', 'openai', 'gpt', '{"errorCodes":["cyber_policy"]}', 'observe', '2026-01-02T00:00:00.000Z')`,
-		`INSERT INTO response_inspection_policies (id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json, action, updated_at)
+		`INSERT INTO juhe_business.response_inspection_policies (id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json, action, updated_at)
 		 VALUES ('stored_protocol', 'stored protocol', 1, 1, 'protocol', 'openai', NULL, '{"jsonPathsExists":["error"]}', 'observe', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO response_inspection_policies (id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json, action, updated_at)
+		`INSERT INTO juhe_business.response_inspection_policies (id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json, action, updated_at)
 		 VALUES ('stored_disabled', 'disabled', 0, 0, 'protocol', 'openai', NULL, '{}', 'observe', '2026-01-03T00:00:00.000Z')`,
 	}
 	for _, statement := range seed {
@@ -458,22 +461,22 @@ func TestSQLInspectionPoliciesForGateway(t *testing.T) {
 // 非 active 行与非目录 scope 不返回。
 func TestSQLVisibleModelsDirectoryEntries(t *testing.T) {
 	db := newSQLTestDB(t)
-	if _, err := db.Exec(`CREATE TABLE models (id TEXT PRIMARY KEY, public_model TEXT NOT NULL, scope TEXT NOT NULL, system_account_id TEXT, status TEXT NOT NULL)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE juhe_business.models (id TEXT PRIMARY KEY, public_model TEXT NOT NULL, scope TEXT NOT NULL, system_account_id TEXT, status TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m1', 'gpt-x', 'builtin', NULL, 'active')`,
-		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m2', 'glm-air', 'global', NULL, 'active')`,
-		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m3', 'my-model', 'personal', 'sys_owner', 'active')`,
-		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m4', 'my-model', 'personal', 'sys_peer', 'active')`,
-		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m5', 'my-model', 'personal', 'sys_owner', 'inactive')`,
+		`INSERT INTO juhe_business.models (id, public_model, scope, system_account_id, status) VALUES ('m1', 'gpt-x', 'builtin', NULL, 'active')`,
+		`INSERT INTO juhe_business.models (id, public_model, scope, system_account_id, status) VALUES ('m2', 'glm-air', 'global', NULL, 'active')`,
+		`INSERT INTO juhe_business.models (id, public_model, scope, system_account_id, status) VALUES ('m3', 'my-model', 'personal', 'sys_owner', 'active')`,
+		`INSERT INTO juhe_business.models (id, public_model, scope, system_account_id, status) VALUES ('m4', 'my-model', 'personal', 'sys_peer', 'active')`,
+		`INSERT INTO juhe_business.models (id, public_model, scope, system_account_id, status) VALUES ('m5', 'my-model', 'personal', 'sys_owner', 'inactive')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed models: %v\n%s", err, statement)
 		}
 	}
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,22 +517,22 @@ func (s seamAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Conte
 func TestSQLReadGatewayRuntimeComposition(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
 		"g2": {Accounts: []OpenAIAccountSecret{testAccount("a2", "sys_owner")}},
 	}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g2', 'sys_owner', 1, 'personal')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g2', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-comp") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-comp") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
@@ -554,7 +557,7 @@ func TestSQLReadGatewayRuntimeComposition(t *testing.T) {
 	}
 
 	// 未接线账户选择器 → 明确报错（不静默返回空）。
-	bare, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	bare, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +567,7 @@ func TestSQLReadGatewayRuntimeComposition(t *testing.T) {
 	}
 
 	// 动态模式返回静态形态（re-route 由 Service 的 Orderer 完成）。
-	if _, err := db.Exec(`UPDATE route_strategies SET mode = 'round_robin' WHERE id = 'rs1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.route_strategies SET mode = 'round_robin' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
 	dynamic, err := models.ReadGatewayRuntime(ctx, "sk-comp")

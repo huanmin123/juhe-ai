@@ -15,7 +15,7 @@ import (
 // bindSQL 把顺序 `?` 占位符按出现次序改写为 PostgreSQL 的 $n 序号。
 // 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func bindSQL(query string) string {
-	return sqldialect.BindSQL(true, query)
+	return sqldialect.BindSQL(query)
 }
 
 // boundDB 嵌入 *sql.DB，对 PG 模式改写方言共享 SQL 的 `?` 占位符。

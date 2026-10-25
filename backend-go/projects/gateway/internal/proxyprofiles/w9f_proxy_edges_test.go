@@ -1,7 +1,7 @@
 package proxyprofiles
 
-// w9f 覆盖收尾：本文件只补既有测试未触达的分支（错误路径、方言分支、
-// 纯函数分类与解析边界），不改变既有契约断言。生产逻辑零改动。
+// w9f 覆盖收尾：本文件只补既有测试未触达的分支（错误路径、纯函数分类与
+// 解析边界），不改变既有契约断言。生产逻辑零改动。
 
 import (
 	"context"
@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
@@ -34,31 +36,30 @@ func init() {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-// w9fBrokenSchema: port/updated_at 列故意放宽为可空/文本，用于构造扫描错误
-// 与 JOIN 列 NULL 的混合目标行。
+// w9fBrokenSchema: port 列故意放宽为文本（扫描目标），updated_at/last_tested_at
+// 可空，用于构造扫描错误与 JOIN 列 NULL 的混合目标行；列型沿 PG 单形态
+// （enabled boolean、to_char 目标时间列 timestamptz），补 summarySelectColumns
+// 消费的 description 列。
 const w9fBrokenSchema = `
-	CREATE TABLE vendors (
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE juhe_business.vendors (
 		id TEXT PRIMARY KEY, code TEXT, name TEXT, enabled INTEGER NOT NULL DEFAULT 1,
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-	CREATE TABLE proxy_profiles (
-		id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, host TEXT NOT NULL,
-		port TEXT NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+	CREATE TABLE juhe_business.proxy_profiles (
+		id TEXT PRIMARY KEY, description TEXT, name TEXT NOT NULL, type TEXT NOT NULL, host TEXT NOT NULL,
+		port TEXT NOT NULL, username TEXT, password_encrypted TEXT, enabled BOOLEAN NOT NULL DEFAULT true,
 		test_status TEXT NOT NULL DEFAULT 'unknown', latency_ms INTEGER,
-		outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, updated_at TEXT);
+		outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TIMESTAMPTZ, updated_at TIMESTAMPTZ);
 `
 
 func newW9FBrokenFixture(t *testing.T) *proxyFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(w9fBrokenSchema); err != nil {
-		t.Fatalf("broken schema: %v", err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, w9fBrokenSchema)
+		return err
+	})
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	store, err := NewStore(Deps{DB: db, PGDialect: false, Secret: "test-secret",
+	store, err := NewStore(Deps{DB: db, Secret: "test-secret",
 		Now:   func() time.Time { return now },
 		NewID: func(prefix string) string { return prefix + "_w9f_seq" }})
 	if err != nil {
@@ -73,7 +74,7 @@ func w9fInsertBrokenProxy(t *testing.T, db *sql.DB, id, name string, updatedAt a
 		updatedAt = "2026-09-04T12:00:00.000Z"
 	}
 	if _, err := db.Exec(
-		`INSERT INTO proxy_profiles (id, name, type, host, port, test_status, updated_at) VALUES (?, ?, 'http', '127.0.0.1', 'not-a-port', 'unknown', ?)`,
+		`INSERT INTO juhe_business.proxy_profiles (id, name, type, host, port, test_status, updated_at) VALUES ($1, $2, 'http', '127.0.0.1', 'not-a-port', 'unknown', $3)`,
 		id, name, updatedAt); err != nil {
 		t.Fatalf("insert broken proxy: %v", err)
 	}
@@ -81,20 +82,15 @@ func w9fInsertBrokenProxy(t *testing.T, db *sql.DB, id, name string, updatedAt a
 
 func w9fInsertProviderTarget(t *testing.T, db *sql.DB, id, code string, name any) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`,
+	if _, err := db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at) VALUES ($1, $2, $3, 1, '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`,
 		id, code, name); err != nil {
 		t.Fatalf("insert vendor: %v", err)
 	}
 }
 
-// w9fRawStore 直接构造 Store，绕过 NewStore 的必填校验。
-func w9fRawStore(db *sql.DB, pg bool, secret string) *Store {
-	return &Store{db: db, pg: pg, secret: secret,
-		now:   func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
-		newID: func(prefix string) string { return prefix + "_w9f" }}
-}
-
-const w9fSystemAccountsSchema = `CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`
+// w9fSystemAccountsSchema 是 Mount 自动登录链路的最小管理面表形状（列型沿
+// 生产 DDL：must_change_password / image_generation_enabled 为 integer）。
+const w9fSystemAccountsSchema = `CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`
 
 // ---------------------------------------------------------------------------
 // proxyTestDeadline env 解析分支（sync.OnceValue 全包只解析一次）
@@ -109,17 +105,8 @@ func TestW9FProxyTestDeadlineClampsAboveMax(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// LoadProxyTestSnapshot：PG 方言列、扫描错误、混合 NULL 目标、重复 provider
+// LoadProxyTestSnapshot：扫描错误、混合 NULL 目标、重复 provider
 // ---------------------------------------------------------------------------
-
-func TestW9FLoadSnapshotPGDialectSelectsTextifiedColumn(t *testing.T) {
-	fixture := newProxyTestFixture(t)
-	// pg=true 时 SQL 使用 to_char，sqlite 必然报错；覆盖方言分支本身。
-	_, err := w9fRawStore(fixture.db, true, "secret").LoadProxyTestSnapshot(context.Background(), "any")
-	if err == nil {
-		t.Fatal("pg dialect query on sqlite should fail")
-	}
-}
 
 func TestW9FLoadSnapshotScanErrorOnBadPort(t *testing.T) {
 	fixture := newW9FBrokenFixture(t)
@@ -134,7 +121,7 @@ func TestW9FLoadSnapshotRejectsMixedNullTargetIdentifiers(t *testing.T) {
 	fixture := newW9FBrokenFixture(t)
 	// vendor.name 为 NULL → JOIN 目标行标识混合 NULL → 必须报错。
 	w9fInsertProviderTarget(t, fixture.db, "pv1", "gpt", nil)
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, name, type, host, port, test_status, updated_at) VALUES ('px1', '代理', 'http', '127.0.0.1', '1', 'unknown', '2026-09-04T12:00:00.000Z')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, name, type, host, port, test_status, updated_at) VALUES ('px1', '代理', 'http', '127.0.0.1', '1', 'unknown', '2026-09-04T12:00:00.000Z')`); err != nil {
 		t.Fatalf("insert proxy: %v", err)
 	}
 	_, err := fixture.store.LoadProxyTestSnapshot(context.Background(), "px1")
@@ -191,8 +178,8 @@ func TestW9FProxyTestURLValidatesTypeHostPortAndPassword(t *testing.T) {
 		t.Fatal("bad envelope should fail")
 	}
 	// 信封里密码为空。
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
-		VALUES ('px_env', 'acc', 'envelope', 'http', 'h', 1, 'u', '', 1, 'unknown', '2026-09-04T12:00:00.000Z', '2026-09-04T12:00:00.000Z')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
+		VALUES ('px_env', 'acc', 'envelope', 'http', 'h', 1, 'u', '', true, 'unknown', '2026-09-04T12:00:00.000Z', '2026-09-04T12:00:00.000Z')`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	// 密码字段缺失/空串路径：username-only URL。
@@ -289,7 +276,7 @@ func (w9fTimeoutNetError) Temporary() bool { return true }
 // w9fInsertRealProxy 在真实 schema 的 fixture 中插入一行可探测代理。
 func w9fInsertRealProxy(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at) VALUES ('px1', 'acc', '代理', 'http', '127.0.0.1', '1', 1, 'unknown', '2026-09-04T12:00:00.000Z', '2026-09-04T12:00:00.000Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at) VALUES ('px1', 'acc', '代理', 'http', '127.0.0.1', '1', true, 'unknown', '2026-09-04T12:00:00.000Z', '2026-09-04T12:00:00.000Z')`); err != nil {
 		t.Fatalf("insert proxy: %v", err)
 	}
 }
@@ -596,7 +583,7 @@ func TestW9FScanProfileSurfacesScanError(t *testing.T) {
 func TestW9FListOptionsClampsLimitAndScans(t *testing.T) {
 	fixture := newProxyFixture(t)
 	for _, name := range []string{"alpha", "beta"} {
-		if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at) VALUES (?, 'acc', ?, 'http', 'h', 1, 1, 'unknown', '2026-09-04T12:00:00.000Z', '2026-09-04T12:00:00.000Z')`, "px_"+name, name); err != nil {
+		if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at) VALUES ($1, 'acc', $2, 'http', 'h', 1, true, 'unknown', '2026-09-04T12:00:00.000Z', '2026-09-04T12:00:00.000Z')`, "px_"+name, name); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
 	}
@@ -617,7 +604,7 @@ func TestW9FListOptionsClampsLimitAndScans(t *testing.T) {
 func TestW9FListOptionsScanErrorOnNullUpdatedAt(t *testing.T) {
 	fixture := newW9FBrokenFixture(t)
 	// 窗口扫描错误：updated_at NULL。
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, name, type, host, port, test_status, updated_at) VALUES ('px1', 'a', 'http', 'h', 1, 'unknown', NULL)`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, name, type, host, port, test_status, updated_at) VALUES ('px1', 'a', 'http', 'h', 1, 'unknown', NULL)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := fixture.store.ListOptions(context.Background(), "", 10, nil); err == nil {
@@ -684,11 +671,7 @@ func TestW9FNewStoreValidation(t *testing.T) {
 	if _, err := NewStore(Deps{}); err == nil {
 		t.Fatal("nil db must fail")
 	}
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t)
 	store, err := NewStore(Deps{DB: db, NewID: func(string) string { return "x" }})
 	if err != nil || store == nil {
 		t.Fatalf("default Now: err=%v", err)
@@ -962,10 +945,10 @@ func TestW9FMountServesRouteFamilyViaAutoLogin(t *testing.T) {
 	if _, err := fixture.db.Exec(w9fSystemAccountsSchema); err != nil {
 		t.Fatalf("system accounts schema: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at) VALUES ('acc1','admin','管理员','admin','active','x','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at) VALUES ('acc1','admin','管理员','admin','active','x','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
-	accountStore, err := authsys.NewAccountStore(fixture.db, modelcheckauth.SQLite, nil)
+	accountStore, err := authsys.NewAccountStore(fixture.db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatalf("account store: %v", err)
 	}

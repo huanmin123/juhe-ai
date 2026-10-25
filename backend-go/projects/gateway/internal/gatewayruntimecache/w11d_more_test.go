@@ -745,7 +745,7 @@ func TestW11DSQLProjectionDirectArms(t *testing.T) {
 	ctx := context.Background()
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	plain, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	plain, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -802,30 +802,30 @@ func TestW11DSQLAuthorizationFailureArms(t *testing.T) {
 	ctx := context.Background()
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	if _, err := db.Exec(`DROP TABLE resource_authorizations`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.resource_authorizations`); err != nil {
 		t.Fatal(err)
 	}
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_other"); err == nil {
 		t.Fatal("授权查询失败必须上抛")
 	}
 	// 本地设置查询失败：drop group_authorization_settings。
-	if _, err := db.Exec(`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DROP TABLE group_authorization_settings`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.group_authorization_settings`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status) VALUES ('auth1', 'group', 'g1', 'sys_other', 'active')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status) VALUES ('auth1', 'group', 'g1', 'sys_other', 'active')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_other"); err == nil {
@@ -837,15 +837,15 @@ func TestW11DSQLLocalTypeInvalidArms(t *testing.T) {
 	ctx := context.Background()
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g1', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status) VALUES ('auth1', 'group', 'g1', 'sys_other', 'active')`,
-		`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type) VALUES ('auth1', 'sys_other', 'g1', 1, 'weird')`,
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g1', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status) VALUES ('auth1', 'group', 'g1', 'sys_other', 'active')`,
+		`INSERT INTO juhe_business.group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type) VALUES ('auth1', 'sys_other', 'g1', 1, 'weird')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
@@ -861,22 +861,22 @@ func TestW11DSQLRuntimeCompositionTailArms(t *testing.T) {
 	ctx := context.Background()
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
 		"g1": {Accounts: []OpenAIAccountSecret{testAccount("a1", "sys_owner")}},
 	}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`,
-		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g2', 'sys_owner', 1)`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled) VALUES ('g2', 'sys_owner', 1)`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key4', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-sql4") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key4', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-sql4") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		// 单绑定：空账户也会走到检查策略扇出（多候选时空账户组会被跳过）。
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b41', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b41', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
@@ -889,7 +889,7 @@ func TestW11DSQLRuntimeCompositionTailArms(t *testing.T) {
 		t.Fatalf("组合读取 = %+v err=%v", runtime.APIKey, err)
 	}
 	// 检查策略查询失败：drop 表后重读必须上抛。
-	if _, err := db.Exec(`DROP TABLE response_inspection_policies`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.response_inspection_policies`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := models.ReadGatewayRuntimeByKeyHash(ctx, HashSecret("sk-w11d-sql4")); err == nil {
@@ -910,21 +910,21 @@ func TestW11DSQLBindingFailureArms(t *testing.T) {
 	ctx := context.Background()
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key5', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-sql5") + `', 'active')`,
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key5', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-sql5") + `', 'active')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed: %v\n%s", err, statement)
 		}
 	}
-	if _, err := db.Exec(`DROP TABLE route_strategy_groups`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.route_strategy_groups`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := models.ReadGatewayRuntimeByKeyHash(ctx, HashSecret("sk-w11d-sql5")); err == nil {

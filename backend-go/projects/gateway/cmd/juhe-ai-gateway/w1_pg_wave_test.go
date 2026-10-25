@@ -498,10 +498,7 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 	}
 	defer composed.Shutdown()
 
-	// ---- 组装契约：PG 方言 + 共享池句柄归属 ----
-	if !composed.pgDialect {
-		t.Fatalf("postgres 驱动下 composed.pgDialect 必须为 true")
-	}
+	// ---- 组装契约：共享池句柄归属（PG 单形态） ----
 	if composed.Kernel == nil || composed.Bus == nil || composed.DB == nil {
 		t.Fatalf("组合根关键字段缺失: Kernel=%v Bus=%v DB=%v", composed.Kernel != nil, composed.Bus != nil, composed.DB != nil)
 	}

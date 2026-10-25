@@ -800,31 +800,21 @@ func sortableCatalogReleaseDate(value *string) string {
 }
 
 // todayText renders the SQL "today" literal for the shutdown-date predicate
-// (SQLite date('now') vs PostgreSQL CURRENT_DATE::text).
+// (PostgreSQL CURRENT_DATE::text).
 func (s *Store) todayText() string {
-	if s.pg {
-		return "CURRENT_DATE::text"
-	}
-	return "date('now')"
+	return "CURRENT_DATE::text"
 }
 
-// visibleTruePredicate renders the catalog visibility predicate for the
-// active dialect: SQLite stores 1/0, PostgreSQL uses boolean.
+// visibleTruePredicate renders the catalog visibility predicate: the fresh
+// PostgreSQL DDL declares catalog_visible boolean.
 func (s *Store) visibleTruePredicate(column string) string {
-	if s.pg {
-		return column + " = TRUE"
-	}
-	return column + " = 1"
+	return column + " = TRUE"
 }
 
-// modelOrderExpression mirrors the archived dual-dialect custom model ordering
-// on the models 单表 public_model 列: `public_model COLLATE NOCASE` on SQLite,
-// `lower(public_model)` on PostgreSQL.
+// modelOrderExpression mirrors the custom model ordering on the models 单表
+// public_model 列: lower(public_model) on PostgreSQL.
 func (s *Store) modelOrderExpression() string {
-	if s.pg {
-		return "lower(public_model)"
-	}
-	return "public_model COLLATE NOCASE"
+	return "lower(public_model)"
 }
 
 // ListProviderModelSelectionOptions serves GET /models/options: the merged
@@ -1112,20 +1102,13 @@ func (s *Store) appendCatalogModeFilter(clauses *[]string, args []any, modes []s
 }
 
 // endpointModesAnyPredicate 渲染 supported_endpoint_modes_json 与给定 mode 集
-// 交集非空的方言谓词（SQLite json_each / PG jsonb_array_elements_text）。
+// 交集非空的 PG 谓词（jsonb_array_elements_text）。
 func (s *Store) endpointModesAnyPredicate(column string, modes []string) string {
 	list := placeholders(len(modes))
-	if s.pg {
-		return `EXISTS (
+	return `EXISTS (
 			SELECT 1
 			FROM jsonb_array_elements_text(` + column + `::jsonb) AS endpoint_mode
 			WHERE endpoint_mode IN (` + list + `)
-		)`
-	}
-	return `EXISTS (
-			SELECT 1
-			FROM json_each(` + column + `) AS endpoint_mode
-			WHERE endpoint_mode.value IN (` + list + `)
 		)`
 }
 

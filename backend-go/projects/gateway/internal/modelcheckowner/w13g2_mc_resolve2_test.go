@@ -18,14 +18,14 @@ func w13g2McResolveBase(t *testing.T, db *sql.DB) *BusinessTargetSource {
 	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
 	for _, stmt := range []string{
 		// v16 契约：探针身份 = (vendor_code, 健康检查连接 preset)。
-		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
-		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-1','sys-1','gpt','gpt','openai','1','api_key',3,7,'active',1,'responses_sse','conn-acct-1',?,'Account 1')`,
-		`INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1',1)`,
-		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`,
-		`INSERT INTO resource_authorizations VALUES ('auth-1','account','acct-1','sys-1','sys-1','use','active','2027-01-01T00:00:00Z')`,
-		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,account_expires_at,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('inst-1','sys-1','gpt','gpt','openai','1','api_key',3,7,'disabled',1,'responses_sse','conn-inst-1',?,'2027-01-01T00:00:00Z','auth-1','acct-1','Instance 1')`,
-		`INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-inst-1','inst-1','gpt_openai_v1','https://example.invalid/v1',1)`,
-		`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('inst-1','sys-1','group-1','auth-1',1)`,
+		`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`,
+		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-1','sys-1','gpt','gpt','openai','1','api_key',3,7,'active', 1,'responses_sse','conn-acct-1',?,'Account 1')`,
+		`INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1', 1)`,
+		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1', 1)`,
+		`INSERT INTO resource_authorizations(id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at) VALUES ('auth-1','account','acct-1','sys-1','sys-1','use','active','2027-01-01T00:00:00Z')`,
+		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,account_expires_at,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('inst-1','sys-1','gpt','gpt','openai','1','api_key',3,7,'disabled', 1,'responses_sse','conn-inst-1',?,'2027-01-01T00:00:00Z','auth-1','acct-1','Instance 1')`,
+		`INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-inst-1','inst-1','gpt_openai_v1','https://example.invalid/v1', 1)`,
+		`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('inst-1','sys-1','group-1','auth-1', 1)`,
 	} {
 		args := []any{}
 		if countParams(stmt) == 1 {
@@ -35,7 +35,7 @@ func w13g2McResolveBase(t *testing.T, db *sql.DB) *BusinessTargetSource {
 			t.Fatal(err)
 		}
 	}
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}

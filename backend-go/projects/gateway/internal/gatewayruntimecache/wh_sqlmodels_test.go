@@ -13,12 +13,12 @@ import (
 // SQL 读模型的 seam 接线：未接线时快速失败，接线后逐层委托，
 // 并发源缺省读零（对齐无并发状态的 Node 运行时）。
 func TestWhSQLReadModelsSeams(t *testing.T) {
-	if _, err := NewSQLReadModels(nil, false, nil, nil, nil, nil); err == nil {
+	if _, err := NewSQLReadModels(nil, nil, nil, nil, nil); err == nil {
 		t.Fatal("nil 数据库必须报错")
 	}
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestWhSQLReadModelsSeams(t *testing.T) {
 		t.Fatalf("设置读取 = %v", err)
 	}
 	// SetSettingsStore 注入组合共享仓库。
-	sharedStore, err := settings.NewStore(db, false, nil, nil)
+	sharedStore, err := settings.NewStore(db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,20 +93,20 @@ func (s whConcurrencyStub) LoadAccountCurrentConcurrencyByID(ctx context.Context
 func TestWhSQLReadGatewayRuntimeByKeyHash(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
 		"g1": {Accounts: []OpenAIAccountSecret{testAccount("a1", "sys_owner")}},
 	}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs1', 'sys_owner', 'normal', '{"schedulingPreference":"speed_first","firstByteDeadlineMs":2500}', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs1', 'sys_owner', 'normal', '{"schedulingPreference":"speed_first","firstByteDeadlineMs":2500}', 'active')`,
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-hash1") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-hash1") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
@@ -151,22 +151,22 @@ func TestWhSQLReadGatewayRuntimeByKeyHash(t *testing.T) {
 func TestWhSQLReadGatewayRuntimeGates(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_normal', 'sys_owner', 'normal', '{}', 'active')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_weighted', 'sys_owner', 'weighted', '{}', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_normal', 'sys_owner', 'normal', '{}', 'active')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_weighted', 'sys_owner', 'weighted', '{}', 'active')`,
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_expired', 'sys_owner', 'rs_normal', '` + HashSecret("sk-expired") + `', 'active', '2000-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_disabled', 'sys_owner', 'rs_normal', '` + HashSecret("sk-disabled") + `', 'disabled', NULL)`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_dynamic', 'sys_owner', 'rs_weighted', '` + HashSecret("sk-dynamic") + `', 'active', NULL, '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bh', 'rs_weighted', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_nobinding', 'sys_owner', 'rs_normal', '` + HashSecret("sk-nobinding") + `', 'active', NULL)`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_expired', 'sys_owner', 'rs_normal', '` + HashSecret("sk-expired") + `', 'active', '2000-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_disabled', 'sys_owner', 'rs_normal', '` + HashSecret("sk-disabled") + `', 'disabled', NULL)`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_dynamic', 'sys_owner', 'rs_weighted', '` + HashSecret("sk-dynamic") + `', 'active', NULL, '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bh', 'rs_weighted', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_nobinding', 'sys_owner', 'rs_normal', '` + HashSecret("sk-nobinding") + `', 'active', NULL)`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {

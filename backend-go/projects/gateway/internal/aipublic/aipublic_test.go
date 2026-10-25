@@ -49,7 +49,7 @@ func newAIPublicEnv(t *testing.T) *aipublicEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(db, true, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func newAIPublicEnv(t *testing.T) *aipublicEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	providerStore, err := providers.NewStore(db, true, nil)
+	providerStore, err := providers.NewStore(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

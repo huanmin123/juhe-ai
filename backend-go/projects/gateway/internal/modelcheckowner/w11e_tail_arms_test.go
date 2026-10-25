@@ -11,35 +11,26 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
-	_ "modernc.org/sqlite"
 )
 
 func w11eQualityDDL() []string {
 	return []string{
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,action TEXT,state TEXT,recovery_due_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 	}
 }
 
 func w11eQualityManager(t *testing.T) (*BusinessQualityManager, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/w11e-quality.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := wbOpenPGDB(t, w11eQualityDDL())
 	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range w11eQualityDDL() {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatalf("DDL 失败: %v", err)
-		}
-	}
-	manager, err := NewBusinessQualityManager(db, false)
+	manager, err := NewBusinessQualityManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +42,7 @@ func w11eString(value string) *string { return &value }
 func w11eBool(value bool) *bool       { return &value }
 
 func TestW11EQualityManagerPolicyArms(t *testing.T) {
-	if _, err := NewBusinessQualityManager(nil, false); err == nil || !strings.Contains(err.Error(), "database is required") {
+	if _, err := NewBusinessQualityManager(nil); err == nil || !strings.Contains(err.Error(), "database is required") {
 		t.Fatalf("nil 数据库必须拒绝: %v", err)
 	}
 	manager, db := w11eQualityManager(t)
@@ -63,7 +54,7 @@ func TestW11EQualityManagerPolicyArms(t *testing.T) {
 	if _, err := manager.Policy(canceled, "sys-1"); err == nil {
 		t.Fatal("canceled 查询必须失败")
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-1',3,'quick',1,82,'fallback',15,0,'2026-09-16T10:00:00Z','2026-09-16T10:00:00Z',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-1',3,'quick',1,82,'fallback',15,FALSE,'2026-09-16T10:00:00Z','2026-09-16T10:00:00Z',NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	view, err := manager.Policy(context.Background(), "sys-1")
@@ -214,24 +205,18 @@ func TestW11EQualityManagerScheduleArms(t *testing.T) {
 }
 
 func TestW11EModelLimitsArms(t *testing.T) {
-	if _, err := NewVersionedModelLimits(nil, false); err == nil || !strings.Contains(err.Error(), "database is required") {
+	if _, err := NewVersionedModelLimits(nil); err == nil || !strings.Contains(err.Error(), "database is required") {
 		t.Fatalf("nil 数据库必须拒绝: %v", err)
 	}
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/w11e-limits.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := wbOpenPGDB(t, []string{`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN,context_window_tokens INTEGER,max_input_tokens INTEGER)`})
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER,context_window_tokens INTEGER,max_input_tokens INTEGER)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-sol','gpt','gpt-5.6-sol','builtin',NULL,'active',TRUE,200000,120000)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-sol','gpt','gpt-5.6-sol','builtin',NULL,'active',1,200000,120000)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-terra','gpt','gpt-5.6-terra','builtin',NULL,'active',TRUE,200000,0)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-terra','gpt','gpt-5.6-terra','builtin',NULL,'active',1,200000,0)`); err != nil {
-		t.Fatal(err)
-	}
-	limits, err := NewVersionedModelLimits(db, false)
+	limits, err := NewVersionedModelLimits(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +244,7 @@ func TestW11EModelLimitsArms(t *testing.T) {
 	if _, err := limits.MaxInputTokens("gpt", "w11e-missing", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("缺模型必须拒绝: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-bad','gpt','gpt-5.6-bad','builtin',NULL,'active',1,0,-5)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-bad','gpt','gpt-5.6-bad','builtin',NULL,'active',TRUE,0,-5)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := limits.MaxInputTokens("gpt", "gpt-5.6-bad", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "invalid") {
@@ -286,31 +271,24 @@ func TestW11EOutcomeCursorAndHealthTimeArms(t *testing.T) {
 		t.Fatal("canceled 查询必须失败")
 	}
 	// 健康时区。
-	if _, err := LoadBusinessHealthStatHour(context.Background(), nil, false); err == nil || !strings.Contains(err.Error(), "not initialized") {
+	if _, err := LoadBusinessHealthStatHour(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "not initialized") {
 		t.Fatalf("nil 数据库必须拒绝: %v", err)
 	}
-	path := t.TempDir() + "/w11e-settings.db"
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := wbOpenPGDB(t, []string{`CREATE TABLE system_settings (system_account_id TEXT,key TEXT,value_json TEXT,updated_at TEXT)`})
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT,key TEXT,value_json TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadBusinessHealthStatHour(context.Background(), db, false); err == nil || !strings.Contains(err.Error(), "missing") {
+	if _, err := LoadBusinessHealthStatHour(context.Background(), db); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("缺设置必须拒绝: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin','usageStatsTimezone','not-json','2026-09-16T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadBusinessHealthStatHour(context.Background(), db, false); err == nil || !strings.Contains(err.Error(), "parse") {
+	if _, err := LoadBusinessHealthStatHour(context.Background(), db); err == nil || !strings.Contains(err.Error(), "parse") {
 		t.Fatalf("非法 JSON 必须拒绝: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE system_settings SET value_json='"Asia/Shanghai"' WHERE key='usageStatsTimezone'`); err != nil {
 		t.Fatal(err)
 	}
-	formatter, err := LoadBusinessHealthStatHour(context.Background(), db, false)
+	formatter, err := LoadBusinessHealthStatHour(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +343,7 @@ func TestW11ELoadConfigArms(t *testing.T) {
 	if err != nil || !cfg.AutoClaimed {
 		t.Fatalf("零配置 postgres 必须自动认领: cfg=%+v err=%v", cfg, err)
 	}
-	if cfg.StoreMode != "postgres" || cfg.PostgresURL != "postgres://w11e.invalid/main" || cfg.BusinessPostgresURL != "postgres://w11e.invalid/main" {
+	if cfg.PostgresURL != "postgres://w11e.invalid/main" || cfg.BusinessPostgresURL != "postgres://w11e.invalid/main" {
 		t.Fatalf("postgres URL 回退=%+v", cfg)
 	}
 	explicit := map[string]string{
@@ -382,39 +360,31 @@ func TestW11ELoadConfigArms(t *testing.T) {
 }
 
 func TestW11EModelMappingAndEvidenceArms(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/w11e-mapping.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+	db := wbOpenPGDB(t, []string{
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
+	defer db.Close()
 	profile, _ := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	// db nil 或模型不受 profile 支持时返回空解析。
-	if resolution, err := resolveConfiguredUpstreamModelMapping(context.Background(), nil, false, "acct", profile, "gpt-5.6-sol"); err != nil || resolution.UpstreamModel != "" {
+	if resolution, err := resolveConfiguredUpstreamModelMapping(context.Background(), nil, "acct", profile, "gpt-5.6-sol"); err != nil || resolution.UpstreamModel != "" {
 		t.Fatalf("nil db 解析=%+v err=%v", resolution, err)
 	}
-	if resolution, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct", profile, "w11e-unsupported"); err != nil || resolution.UpstreamModel != "" {
+	if resolution, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct", profile, "w11e-unsupported"); err != nil || resolution.UpstreamModel != "" {
 		t.Fatalf("不支持模型解析=%+v err=%v", resolution, err)
 	}
 	// 映射行缺 family。
 	w11eExec(t, db, w11eSeedModelDDL("model-sol", "gpt-5.6-sol"))
 	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-missing','acct-1','gpt-5.6-sol','responses','conn-x','model-sol','',1)`)
-	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "family is missing") {
+	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "family is missing") {
 		t.Fatalf("缺 family 必须拒绝: %v", err)
 	}
 	// 映射查询表缺失。
 	if _, err := db.Exec(`DROP TABLE account_entry_mappings`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "model mapping") {
+	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "model mapping") {
 		t.Fatalf("表缺失必须失败: %v", err)
 	}
 	// 证据聚合边臂（使用契约 family 名）。

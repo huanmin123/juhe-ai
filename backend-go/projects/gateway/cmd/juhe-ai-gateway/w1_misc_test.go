@@ -192,7 +192,7 @@ func TestW1ErrorPolicySmallHelpers(t *testing.T) {
 }
 
 func TestW1ErrorPolicyEffectsBridgeSQL(t *testing.T) {
-	bridge := &chainErrorPolicyEffectsBridge{pg: false}
+	bridge := &chainErrorPolicyEffectsBridge{}
 	if got := bridge.bindingExistsSQL(nil); got != "" {
 		t.Fatalf("nil binding SQL = %q", got)
 	}
@@ -201,23 +201,16 @@ func TestW1ErrorPolicyEffectsBridgeSQL(t *testing.T) {
 	}
 	binding := &authorizedBindingTarget{SystemAccountID: "sys_1", GroupID: "grp_1", AccountAuthorizationID: "authz_1"}
 	sqlText := bridge.bindingExistsSQL(binding)
-	if !strings.Contains(sqlText, "group_accounts") || !strings.Contains(sqlText, "?") {
-		t.Fatalf("sqlite SQL = %q", sqlText)
+	if !strings.Contains(sqlText, "juhe_business.group_accounts") || !strings.Contains(sqlText, "?") {
+		t.Fatalf("SQL = %q", sqlText)
 	}
 	params := bindingExistsParams(binding)
 	if len(params) != 3 || params[0] != "sys_1" || params[1] != "grp_1" || params[2] != "authz_1" {
 		t.Fatalf("params = %v", params)
 	}
-	pgBridge := &chainErrorPolicyEffectsBridge{pg: true}
-	if !strings.Contains(pgBridge.bindingExistsSQL(binding), "juhe_business.group_accounts") {
-		t.Fatal("pg 表前缀缺失")
-	}
-	// bind：postgres 占位符重写。
-	if got := pgBridge.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
-		t.Fatalf("pg bind = %q", got)
-	}
-	if got := bridge.bind("a = ?"); got != "a = ?" {
-		t.Fatalf("sqlite bind = %q", got)
+	// bind：$n 占位符重写。
+	if got := bridge.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
+		t.Fatalf("bind = %q", got)
 	}
 	// invalidateRuntime：nil bus 安全。
 	bridge.invalidateRuntime("reason")

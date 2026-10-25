@@ -475,7 +475,9 @@ func wjCreateProxy(t *testing.T, fixture *proxyFixture, name string) struct {
 func currentUpdatedAt(t *testing.T, fixture *proxyFixture, id string) string {
 	t.Helper()
 	var updatedAt string
-	if err := fixture.db.QueryRow(`SELECT updated_at FROM proxy_profiles WHERE id = ?`, id).Scan(&updatedAt); err != nil {
+	// 读法对齐生产 revisionSelectExpression（to_char US）：客户端 revision
+	// 恒为读回的微秒文本。
+	if err := fixture.db.QueryRow(`SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') FROM juhe_business.proxy_profiles WHERE id = $1`, id).Scan(&updatedAt); err != nil {
 		t.Fatalf("query updated_at: %v", err)
 	}
 	return updatedAt
@@ -609,12 +611,12 @@ func TestWJCreatePatchUnauthenticatedRoute(t *testing.T) {
 func TestWJTestHandlerRunErrorIs502(t *testing.T) {
 	fixture := newProxyTestFixture(t)
 	// 无效 type 的代理行 + 一个启用的 provider 目标 → proxyTestURL 失败。
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles
 		(id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('p-bad', 'sa-1', '坏类型', 'ftp', 'h', 8080, 1, 'unknown', '2026-01-01', '2026-01-01')`); err != nil {
+		VALUES ('p-bad', 'sa-1', '坏类型', 'ftp', 'h', 8080, true, 'unknown', '2026-01-01', '2026-01-01')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at)
 		VALUES ('vendor-1', 'gpt', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
 		t.Fatalf("seed vendor: %v", err)
 	}

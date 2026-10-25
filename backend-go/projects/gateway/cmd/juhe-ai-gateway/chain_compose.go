@@ -109,13 +109,12 @@ type chainRuntimeDeps struct {
 	QueueDefaults gatewayclientip.HighConcurrencyPolicyDefaults
 
 	// M2 媒体任务面运行时输入（媒体设计 §8.2）：MediaJobsDB 是业务库句柄
-	//（media_jobs 仓储 + 账户亲和水合读面）；MediaJobsPostgres 报告方言
-	//（PG $n 绑定 + juhe_business schema 限定）；MediaJobsSecret 是账户凭据
-	// 解密密钥（生产与 newChainAccountsSelector 的 cfg.Secret 同源）。DB 为
-	// nil 仅组合测试——任务面端点显式 503 降级（不静默吞请求）。
-	MediaJobsDB       *sql.DB
-	MediaJobsPostgres bool
-	MediaJobsSecret   string
+	//（media_jobs 仓储 + 账户亲和水合读面，juhe_business schema 限定）；
+	// MediaJobsSecret 是账户凭据解密密钥（生产与 newChainAccountsSelector
+	// 的 cfg.Secret 同源）。DB 为 nil 仅组合测试——任务面端点显式 503 降级
+	//（不静默吞请求）。
+	MediaJobsDB     *sql.DB
+	MediaJobsSecret string
 
 	// RealtimeTokens 是 M5b realtime ephemeral token 签发/校验面（Realtime
 	// 设计 §4；runtimeStateDriver!=='redis' 时 nil——client_secrets 端点显式
@@ -597,9 +596,8 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	var mediaJobs *mediaJobsRuntime
 	if deps.MediaJobsDB != nil {
 		mediaJobs = &mediaJobsRuntime{
-			repo:      gatewaymedia.NewMediaJobsRepo(deps.MediaJobsDB, deps.MediaJobsPostgres, clock.Now),
+			repo:      gatewaymedia.NewMediaJobsRepo(deps.MediaJobsDB, clock.Now),
 			db:        deps.MediaJobsDB,
-			postgres:  deps.MediaJobsPostgres,
 			secret:    deps.MediaJobsSecret,
 			transport: engine.Transport,
 		}

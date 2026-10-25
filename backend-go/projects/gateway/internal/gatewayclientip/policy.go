@@ -46,8 +46,8 @@ type PolicyHitInput struct {
 
 // PolicySource is the direct stats-database seam behind
 // listActiveClientIpPoliciesAsync / findActiveClientIpPolicyByHashAsync /
-// recordClientIpPolicyHitsAsync. *SQLPolicySource implements it in both
-// SQLite and PostgreSQL modes.
+// recordClientIpPolicyHitsAsync. *SQLPolicySource implements it against the
+// shared PostgreSQL pool (juhe_stats schema, $n binding).
 type PolicySource interface {
 	ListActiveClientIPPolicies(ctx context.Context) ([]ActiveClientIPPolicy, error)
 	FindActiveClientIPPolicyByHash(ctx context.Context, ipHash string) (*ActiveClientIPPolicy, error)
@@ -82,22 +82,19 @@ type StatsWriterPayload struct {
 // passes to requestStatsWriter.
 const requestStatsWriterTimeout = 1000 * time.Millisecond
 
-// SQLPolicySource is the dual-mode policy read/hit source
-// (storage/client-ip-policy.repository.ts): db is either the SQLite
-// database opened from a sqlite path or the PostgreSQL pool handle; postgres
-// switches schema qualification and placeholder binding. timezone resolves
-// usageStatsTimezone for the hit stat_date; nil falls back to the
-// system_settings source from internal/ipstats.
+// SQLPolicySource is the policy read/hit source
+// (storage/client-ip-policy.repository.ts): db is the PostgreSQL pool handle
+// reaching juhe_stats through schema qualification and $n placeholder
+// binding. timezone resolves usageStatsTimezone for the hit stat_date; nil
+// falls back to the system_settings source from internal/ipstats.
 type SQLPolicySource struct {
 	db       *sql.DB
-	postgres bool
 	now      func() time.Time
 	timezone ipstats.TimezoneSource
 }
 
-// NewSQLPolicySource builds the dual-mode source. The caller opens db from a
-// SQLite path or from the pg pool.
-func NewSQLPolicySource(db *sql.DB, postgres bool, now func() time.Time, timezone ipstats.TimezoneSource) (*SQLPolicySource, error) {
+// NewSQLPolicySource builds the source over the PostgreSQL pool handle.
+func NewSQLPolicySource(db *sql.DB, now func() time.Time, timezone ipstats.TimezoneSource) (*SQLPolicySource, error) {
 	if db == nil {
 		return nil, errors.New("gatewayclientip SQLPolicySource requires a stats database")
 	}
@@ -105,23 +102,17 @@ func NewSQLPolicySource(db *sql.DB, postgres bool, now func() time.Time, timezon
 		now = time.Now
 	}
 	if timezone == nil {
-		timezone = ipstats.NewSystemSettingsTimezoneSource(db, postgres)
+		timezone = ipstats.NewSystemSettingsTimezoneSource(db)
 	}
-	return &SQLPolicySource{db: db, postgres: postgres, now: now, timezone: timezone}, nil
+	return &SQLPolicySource{db: db, now: now, timezone: timezone}, nil
 }
 
 func (s *SQLPolicySource) table(name string) string {
-	if s.postgres {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // bind mirrors the pg placeholder rewrite of internal/ipstats.
 func (s *SQLPolicySource) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -236,9 +227,8 @@ type policyHitEntry struct {
 }
 
 // RecordClientIPPolicyHits mirrors recordClientIpPolicyHits(Async): one
-// upsert per hit keyed (ip_hash, stat_date, policy_id). SQLite runs the
-// batch in one transaction like beginDatabaseTransaction; PostgreSQL chunks
-// 500-row multi-row inserts like the Node async branch.
+// upsert per hit keyed (ip_hash, stat_date, policy_id). The batch is written
+// as 500-row chunked multi-row inserts like the Node async branch.
 func (s *SQLPolicySource) RecordClientIPPolicyHits(ctx context.Context, hits []PolicyHitInput) error {
 	if len(hits) == 0 {
 		return nil
@@ -287,39 +277,7 @@ func (s *SQLPolicySource) RecordClientIPPolicyHits(ctx context.Context, hits []P
 	if len(entries) == 0 {
 		return nil
 	}
-	if s.postgres {
-		return s.recordHitsPostgres(ctx, entries, updatedAt)
-	}
-	return s.recordHitsSQLite(ctx, entries, updatedAt)
-}
-
-func (s *SQLPolicySource) recordHitsSQLite(ctx context.Context, entries []policyHitEntry, updatedAt string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	statement, err := tx.PrepareContext(ctx, s.bind(`
-		INSERT INTO client_ip_policy_hits (
-			ip_hash, stat_date, policy_id, hit_count, last_hit_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(ip_hash, stat_date, policy_id) DO UPDATE SET
-			hit_count = hit_count + excluded.hit_count,
-			last_hit_at = CASE
-				WHEN client_ip_policy_hits.last_hit_at IS NULL OR excluded.last_hit_at > client_ip_policy_hits.last_hit_at THEN excluded.last_hit_at
-				ELSE client_ip_policy_hits.last_hit_at
-			END,
-			updated_at = excluded.updated_at`))
-	if err != nil {
-		return err
-	}
-	defer statement.Close()
-	for _, entry := range entries {
-		if _, err := statement.ExecContext(ctx, entry.ipHash, entry.statDate, entry.policyID, entry.hitCount, entry.hitAt, updatedAt); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return s.recordHitsPostgres(ctx, entries, updatedAt)
 }
 
 const policyHitsChunkSize = 500

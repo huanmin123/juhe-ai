@@ -1,19 +1,16 @@
-// scenario_dual_mode_test.go —— 授权域双模式（SQLite / 真实 PostgreSQL）全场景
-// 回归套件（写入执行代理交付物 1）。设计要点：
+// scenario_dual_mode_test.go —— 授权域（真实 PostgreSQL）全场景回归套件
+// （写入执行代理交付物 1）。设计要点：
 //
-//   - SQLite 臂无条件运行（复用既有 newFixture 夹具 + usageFixtureDDL stats
-//     表）；PG 臂由环境变量 JUHE_AI_DUALMODE_PG_DSN 门控：未设置 t.Skip，
-//     设置了但连不上或缺表 t.Fatal 大声失败（共享 dev 库前置检查）。
+//   - PG 臂由环境变量 JUHE_AI_DUALMODE_PG_DSN 门控：未设置 t.Skip，设置了但
+//     连不上或缺表 t.Fatal 大声失败（共享 dev 库前置检查）。
 //   - 共享 dev 库隔离：本套件所有造数 ID 一律带 "dsc"+6hex+"-" 前缀（e.p）；
 //     store 随机生成的 grant/runtime/source/实例 ID 无法前缀匹配，通过关系
 //     谓词（owner/grantee/resource/team 前缀、实例来源账户外键）在清理时回收；
 //     清理后用同一组谓词 COUNT 自审计，残留 > 0 记 t.Errorf 并打印表名与计数
 //     （绝不打印 DSN）。
-//   - PG 真实 schema（maintenance/internal/schema/pg_schema_*.go）与 SQLite
-//     夹具 DDL 的差异（外键、额外 NOT NULL 列、groups 无 status 列、
-//     system_team_members 多 created_by、groups.created_at、真实库的
-//     system_teams.name 唯一索引与 account-list-availability 触发器）全部在
-//     seed/清理层吸收，断言层不分臂。
+//   - PG 真实 schema（maintenance/internal/schema/pg_schema_*.go）与夹具差异
+//     （外键、额外 NOT NULL 列、触发器维护表）全部在 seed/清理层吸收，断言层
+//     不分臂。
 package authz
 
 import (
@@ -40,8 +37,6 @@ type dualEnv struct {
 	t     *testing.T
 	db    *sql.DB
 	store *Store
-	fx    *fixture // SQLite 臂的底层夹具（推进时钟要用它的闭包）
-	pg    bool
 	p     string // 全部造数前缀："dsc"+6hex+"-"
 	now   time.Time
 }
@@ -89,76 +84,50 @@ var dualProbeTables = []string{
 	"juhe_stats.usage_quota_hourly_window_dirty_scopes",
 }
 
-// newDualEnv 构造指定臂的测试环境。pg=true 时要求 DSN 已设置（未设置 t.Skip，
-// 与门控约定一致）；pg=false 时永远走 SQLite 内存夹具。
-func newDualEnv(t *testing.T, pg bool) *dualEnv {
+// newDualEnv 构造 PG 测试环境。要求 DSN 已设置（未设置 t.Skip，与门控约定
+// 一致）。
+func newDualEnv(t *testing.T) *dualEnv {
 	t.Helper()
 	e := &dualEnv{
 		t:   t,
-		pg:  pg,
 		p:   "dsc" + dualHexChars(6) + "-",
 		now: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC),
 	}
-	if pg {
-		dsn := dualPGDSN()
-		if dsn == "" {
-			e.t.Skip("JUHE_AI_DUALMODE_PG_DSN 未设置，跳过 PG 臂")
-		}
-		db, err := sql.Open("pgx", dsn)
-		if err != nil {
-			e.t.Fatalf("PG 臂 sql.Open 失败（DSN 不打印）: %v", err)
-		}
-		// 生产 PG 模式为单连接池；测试同构以排除连接池并发下的会话状态干扰。
-		db.SetMaxOpenConns(1)
-		pingCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		if err := db.PingContext(pingCtx); err != nil {
-			db.Close()
-			e.t.Fatalf("PG 臂连接失败（共享 dev 库不可达，DSN 不打印）: %v", err)
-		}
-		for _, table := range dualProbeTables {
-			var qualified sql.NullString
-			if err := db.QueryRowContext(pingCtx, `SELECT to_regclass($1)`, table).Scan(&qualified); err != nil {
-				db.Close()
-				e.t.Fatalf("PG 臂前置检查失败：to_regclass(%s) 查询错误: %v", table, err)
-			}
-			if !qualified.Valid || qualified.String == "" {
-				db.Close()
-				e.t.Fatalf("PG 臂前置检查失败：共享 dev 库缺少表 %s", table)
-			}
-		}
-		e.db = db
-		store, err := NewStore(db, true, func() time.Time { return e.now })
-		if err != nil {
-			db.Close()
-			e.t.Fatal(err)
-		}
-		e.store = store
-		t.Cleanup(func() { _ = db.Close() })
-	} else {
-		f := newFixture(t)
-		if _, err := f.db.Exec(usageFixtureDDL); err != nil {
-			e.t.Fatal(err)
-		}
-		// 清理自审计会触达 usage_quota_hourly_window_dirty_scopes（PG 写路径的
-		// 脏标记表；SQLite 夹具 DDL 未含），按真实列形状补建空表保证双臂清理
-		// 代码同构。
-		if _, err := f.db.Exec(`CREATE TABLE IF NOT EXISTS usage_quota_hourly_window_dirty_scopes (
-			system_account_id TEXT NOT NULL,
-			scope_type TEXT NOT NULL,
-			scope_id TEXT NOT NULL DEFAULT '',
-			generation INTEGER NOT NULL DEFAULT 1,
-			first_dirty_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (system_account_id, scope_type, scope_id))`); err != nil {
-			e.t.Fatal(err)
-		}
-		f.store.AttachStatsDatabase(f.db)
-		f.now = e.now // 夹具时钟闭包读 f.now，双臂必须同一时钟基准。
-		e.db = f.db
-		e.fx = f
-		e.store = f.store
+	dsn := dualPGDSN()
+	if dsn == "" {
+		e.t.Skip("JUHE_AI_DUALMODE_PG_DSN 未设置，跳过 PG 臂")
 	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		e.t.Fatalf("PG 臂 sql.Open 失败（DSN 不打印）: %v", err)
+	}
+	// 生产 PG 模式为单连接池；测试同构以排除连接池并发下的会话状态干扰。
+	db.SetMaxOpenConns(1)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		db.Close()
+		e.t.Fatalf("PG 臂连接失败（共享 dev 库不可达，DSN 不打印）: %v", err)
+	}
+	for _, table := range dualProbeTables {
+		var qualified sql.NullString
+		if err := db.QueryRowContext(pingCtx, `SELECT to_regclass($1)`, table).Scan(&qualified); err != nil {
+			db.Close()
+			e.t.Fatalf("PG 臂前置检查失败：to_regclass(%s) 查询错误: %v", table, err)
+		}
+		if !qualified.Valid || qualified.String == "" {
+			db.Close()
+			e.t.Fatalf("PG 臂前置检查失败：共享 dev 库缺少表 %s", table)
+		}
+	}
+	e.db = db
+	store, err := NewStore(db, func() time.Time { return e.now })
+	if err != nil {
+		db.Close()
+		e.t.Fatal(err)
+	}
+	e.store = store
+	t.Cleanup(func() { _ = db.Close() })
 	e.store.AttachTimezoneSource(func(ctx context.Context) (string, error) {
 		return "UTC", nil
 	})
@@ -166,35 +135,25 @@ func newDualEnv(t *testing.T, pg bool) *dualEnv {
 	return e
 }
 
-// runDual 在两个臂上各跑一次用例体；断言全部使用中文失败信息。
+// runDual 在 PG 环境上跑一次用例体；断言全部使用中文失败信息。
 func runDual(t *testing.T, fn func(e *dualEnv)) {
 	t.Helper()
-	t.Run("sqlite", func(t *testing.T) { fn(newDualEnv(t, false)) })
-	t.Run("pg", func(t *testing.T) { fn(newDualEnv(t, true)) })
+	fn(newDualEnv(t))
 }
 
-// advance 推进双臂共享的测试时钟（SQLite 臂需同步写回 fixture 闭包）。
+// advance 推进测试时钟。
 func (e *dualEnv) advance(d time.Duration) {
 	e.now = e.now.Add(d)
-	if e.fx != nil {
-		e.fx.now = e.now
-	}
 }
 
 func (e *dualEnv) q(query string) string { return e.store.bind(query) }
 
 func (e *dualEnv) tbl(name string) string {
-	if e.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (e *dualEnv) stbl(name string) string {
-	if e.pg {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 func (e *dualEnv) exec(query string, args ...any) {
@@ -308,35 +267,33 @@ func (e *dualEnv) dualCleanupSteps() []struct {
 		{e.tbl("system_teams"), `id LIKE ? OR created_by LIKE ?`, likeP(2)},
 		{e.tbl("system_accounts"), `id LIKE ?`, likeP(1)},
 	}
-	if e.pg {
-		// 触发器维护表（account-list-availability dirty / viewer health）：真实 PG
-		// 的 accounts/runtime/grants/group_accounts 写入会经触发器隐式种 dirty 行，
-		// 全部以本 env 的账户 / viewer 为键（dirty 行对 accounts/system_accounts 均
-		// ON DELETE CASCADE，此处显式删除让审计谓词可复核）。插在账户删除之前。
-		triggerSteps := []struct {
-			table string
-			where string
-			args  []any
-		}{
-			{e.tbl("account_list_availability_dirty"),
-				`viewer_system_account_id LIKE ? OR account_id IN (SELECT id FROM ` + e.tbl("accounts") + ` WHERE ` + e.dualInstPred() + ` OR id LIKE ?)`,
-				append(append(append([]any{}, p), instArgs...), p)},
-			{e.tbl("account_list_availability_projection_viewer_health"), `viewer_system_account_id LIKE ?`, likeP(1)},
-		}
-		insertAt := len(steps)
-		for i, step := range steps {
-			if step.table == e.tbl("accounts") {
-				insertAt = i
-				break
-			}
-		}
-		steps = append(steps[:insertAt], append(triggerSteps, steps[insertAt:]...)...)
-		steps = append(steps,
-			struct{ table, where string; args []any }{e.tbl("provider_protocol_profiles"), `id LIKE ?`, likeP(1)},
-			struct{ table, where string; args []any }{e.tbl("protocols"), `code LIKE ? OR id LIKE ?`, likeP(2)},
-			struct{ table, where string; args []any }{e.tbl("providers"), `code LIKE ? OR id LIKE ?`, likeP(2)},
-		)
+	// 触发器维护表（account-list-availability dirty / viewer health）：真实 PG
+	// 的 accounts/runtime/grants/group_accounts 写入会经触发器隐式种 dirty 行，
+	// 全部以本 env 的账户 / viewer 为键（dirty 行对 accounts/system_accounts 均
+	// ON DELETE CASCADE，此处显式删除让审计谓词可复核）。插在账户删除之前。
+	triggerSteps := []struct {
+		table string
+		where string
+		args  []any
+	}{
+		{e.tbl("account_list_availability_dirty"),
+			`viewer_system_account_id LIKE ? OR account_id IN (SELECT id FROM ` + e.tbl("accounts") + ` WHERE ` + e.dualInstPred() + ` OR id LIKE ?)`,
+			append(append(append([]any{}, p), instArgs...), p)},
+		{e.tbl("account_list_availability_projection_viewer_health"), `viewer_system_account_id LIKE ?`, likeP(1)},
 	}
+	insertAt := len(steps)
+	for i, step := range steps {
+		if step.table == e.tbl("accounts") {
+			insertAt = i
+			break
+		}
+	}
+	steps = append(steps[:insertAt], append(triggerSteps, steps[insertAt:]...)...)
+	steps = append(steps,
+		struct{ table, where string; args []any }{e.tbl("provider_protocol_profiles"), `id LIKE ?`, likeP(1)},
+		struct{ table, where string; args []any }{e.tbl("protocols"), `code LIKE ? OR id LIKE ?`, likeP(2)},
+		struct{ table, where string; args []any }{e.tbl("providers"), `code LIKE ? OR id LIKE ?`, likeP(2)},
+	)
 	return steps
 }
 
@@ -358,9 +315,8 @@ func (e *dualEnv) cleanupAndAudit() {
 // 造数 helpers（方言感知）
 // ---------------------------------------------------------------------------
 
-// dualProviderChain 承载 accounts/groups 供应商外键依赖链；PG 臂真实 schema 有
-// providers/protocols/provider_protocol_profiles 表与 FK，需要先种链；SQLite
-// 夹具没有这三张表（相关列是自由文本），链号直接复用。
+// dualProviderChain 承载 accounts/groups 供应商外键依赖链；PG 真实 schema 有
+// providers/protocols/provider_protocol_profiles 表与 FK，需要先种链。
 type dualProviderChain struct {
 	ProviderCode    string
 	ProtocolCode    string
@@ -375,10 +331,6 @@ func (e *dualEnv) seedProviderChain() dualProviderChain {
 		ProtocolCode:    e.p + "proto",
 		ProtocolVersion: "v1",
 		ProfileID:       e.p + "profile",
-	}
-	if !e.pg {
-		// SQLite 夹具无 FK，链号直接可用。
-		return chain
 	}
 	stamp := "2026-09-01T00:00:00.000Z"
 	e.exec(`INSERT INTO `+e.tbl("providers")+` (id, code, name, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
@@ -405,19 +357,12 @@ func (e *dualEnv) seedTeam(teamID, name string) {
 		VALUES (?, ?, 'active', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, teamID, name, e.p+"team-creator")
 }
 
-// seedTeamMember：PG 的 system_team_members 多一个 NOT NULL created_by（SQLite
-// 夹具没有该列），方言分支只在 seed 层。
+// seedTeamMember：PG 的 system_team_members 多一个 NOT NULL created_by。
 func (e *dualEnv) seedTeamMember(teamID, memberID string) {
 	e.t.Helper()
-	if e.pg {
-		e.exec(`INSERT INTO `+e.tbl("system_team_members")+` (id, team_id, system_account_id, status, joined_at, created_by, created_at, updated_at)
+	e.exec(`INSERT INTO `+e.tbl("system_team_members")+` (id, team_id, system_account_id, status, joined_at, created_by, created_at, updated_at)
 			VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			"tm_"+memberID, teamID, memberID, e.p+"team-creator")
-		return
-	}
-	e.exec(`INSERT INTO `+e.tbl("system_team_members")+` (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-		VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		"tm_"+memberID, teamID, memberID)
+		"tm_"+memberID, teamID, memberID, e.p+"team-creator")
 }
 
 // seedTeamWithMembers = seedTeam + 逐个 seedTeamMember。
@@ -438,24 +383,18 @@ func isRealVendorCode(code string) bool {
 	return false
 }
 
-// seedGroup：PG groups 无 status 列且 created_at NOT NULL；SQLite 夹具相反。
+// seedGroup：PG groups 无 status 列且 created_at NOT NULL。
 func (e *dualEnv) seedGroup(groupID, ownerID, name string, chain dualProviderChain, isDefault bool) {
 	e.t.Helper()
 	defaultFlag := 0
 	if isDefault {
 		defaultFlag = 1
 	}
-	// 组无 provider 维度（设计 §8）：两方言都不再写 provider_code。
+	// 组无 provider 维度（设计 §8）：不写 provider_code。
 	_ = chain
-	if e.pg {
-		e.exec(`INSERT INTO `+e.tbl("groups")+` (id, system_account_id, name, enabled, is_default, created_at, updated_at)
+	e.exec(`INSERT INTO `+e.tbl("groups")+` (id, system_account_id, name, enabled, is_default, created_at, updated_at)
 			VALUES (?, ?, ?, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			groupID, ownerID, name, defaultFlag)
-		return
-	}
-	e.exec(`INSERT INTO `+e.tbl("groups")+` (id, name, system_account_id, status, enabled, is_default, updated_at)
-		VALUES (?, ?, ?, 'active', 1, ?, '2026-01-01T00:00:00Z')`,
-		groupID, name, ownerID, defaultFlag)
+		groupID, ownerID, name, defaultFlag)
 }
 
 // seedSourceAccount：两个臂的同名列超集（fixture accounts 列覆盖 PG 必填列）。

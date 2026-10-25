@@ -30,7 +30,7 @@ func mountChainOpenAICompatFamilies(composed *composition, chain *gatewayChain, 
 	if services == nil || services.Cache == nil {
 		return errChainCompat("openai-compatible 组合缺少网关链 runtime cache")
 	}
-	store, err := openaicompatstorage.NewStore(composed.db, composed.pgDialect)
+	store, err := openaicompatstorage.NewStore(composed.db)
 	if err != nil {
 		return err
 	}

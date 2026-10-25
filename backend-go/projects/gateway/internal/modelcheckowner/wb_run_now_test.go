@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -28,27 +27,19 @@ import (
 // before/fallback 字段）。
 func wbRunNowBusinessFixture(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/run-now-business.db?mode=rwc&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{
+	db := wbOpenPGDB(t, []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,last_error_code TEXT,last_error_message TEXT,availability_schedule_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,local_fallback_enabled INTEGER,local_super_priority_enabled INTEGER,enabled INTEGER,updated_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,cleared_at TEXT,created_at TEXT,updated_at TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
 func wbInsertRunNowAccount(t *testing.T, db *sql.DB, id, systemID, status string, configRevision int) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled) VALUES (?,?,'gpt',?,7,NULL,NULL,?,1,0,0)`, id, systemID, configRevision, status); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled) VALUES (?,?,'gpt',?,7,NULL,NULL,?, 1,0,0)`, id, systemID, configRevision, status); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -64,21 +55,13 @@ func wbInsertRunNowSchedule(t *testing.T, db *sql.DB, id, systemID, accountID st
 // RunScoresByIDs 需要的 J3b 表（列面与 requiredColumns 契约对齐）。
 func wbRunNowJ3bFixture(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/run-now-j3b.db?mode=rwc&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{
+	db := wbOpenPGDB(t, []string{
 		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,actor_system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT NOT NULL,target_name TEXT,target_owner_system_account_id TEXT,account_id TEXT,group_id TEXT,api_key_id TEXT,model TEXT NOT NULL,profile TEXT NOT NULL,trigger_kind TEXT NOT NULL,schedule_id TEXT,trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0,trusted_comparison_available INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,level TEXT NOT NULL,score INTEGER NOT NULL,max_score INTEGER NOT NULL,message TEXT NOT NULL,request_summary_json TEXT NOT NULL,result_summary_json TEXT NOT NULL,policy_snapshot_json TEXT NOT NULL,quality_decision_json TEXT NOT NULL,probe_set_version TEXT NOT NULL,started_at TEXT NOT NULL,trace_id TEXT,quality_health_sync_status TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finished_at TEXT,duration_ms INTEGER,error_code TEXT,error_message TEXT)`,
 		`CREATE TABLE model_check_items (id TEXT PRIMARY KEY,run_id TEXT NOT NULL,item_key TEXT NOT NULL,item_type TEXT NOT NULL,status TEXT NOT NULL,score INTEGER NOT NULL,max_score INTEGER NOT NULL,duration_ms INTEGER,trace_id TEXT,evidence_summary_json TEXT NOT NULL,error_code TEXT,error_message TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
 		`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,claim_owner TEXT,claim_until TEXT,fence_token INTEGER,state TEXT,last_error TEXT,completed_at TEXT,payload TEXT,updated_at TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return &Store{db: db, mode: "sqlite"}
+	})
+	t.Cleanup(func() { _ = db.Close() })
+	return &Store{db: db, schema: j3bTestSchema}
 }
 
 // fakeRunNowRunner 记录收到的请求并以预设结果返回；OnStarted 被模拟为
@@ -219,14 +202,14 @@ func (wbNoopSchedulerExecutor) Execute(context.Context, ScheduleTask) error { re
 // 一次 10 条到期计划按容量领取只领 4 条，且租约只落在被领取的 4 条上
 // （租约自领取起算，D1）。
 func TestBusinessSchedulerClaimsOnlyConcurrencyCapacity(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	for _, ddl := range []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
@@ -238,7 +221,7 @@ func TestBusinessSchedulerClaimsOnlyConcurrencyCapacity(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status) VALUES (?,'gpt',4,NULL,NULL,'active')`, accountID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,custom_question_ids) VALUES (?,1,'sys',?,'gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,'[]')`, "sch-"+strconv.Itoa(i), accountID, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+		if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,custom_question_ids) VALUES (?,1,'sys',?,'gpt-5.6-sol',60,'quick',70,'fallback',15, 1,?,'[]')`, "sch-"+strconv.Itoa(i), accountID, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -279,14 +262,14 @@ func TestBusinessSchedulerClaimsOnlyConcurrencyCapacity(t *testing.T) {
 // 5 分钟后，历史存量记录（interval<5）的调度完成路径仍必须正常回写，
 // 不得因新建校验收紧而炸存量数据。
 func TestBusinessSchedulerCompletesIntervalOneSchedule(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	for _, ddl := range []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
@@ -296,7 +279,7 @@ func TestBusinessSchedulerCompletesIntervalOneSchedule(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status) VALUES ('acct','gpt',4,NULL,NULL,'active')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,custom_question_ids) VALUES ('sch',3,'sys','acct','gpt-5.6-sol',1,'quick',70,'fallback',15,1,?,'[]')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,custom_question_ids) VALUES ('sch',3,'sys','acct','gpt-5.6-sol',1,'quick',70,'fallback',15, 1,?,'[]')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE model_quality_schedules SET lease_owner='gateway-1',lease_until=? WHERE id='sch'`, now.Add(6*time.Minute).Format(time.RFC3339Nano)); err != nil {
@@ -629,7 +612,7 @@ func TestScheduleRunNowServiceBuildFailureRecordsFailedRun(t *testing.T) {
 		t.Fatalf("last_run_id must point at the failed run record: %q err=%v", runID, err)
 	}
 	var status, triggerKind, errorCode string
-	if err := store.db.QueryRow(`SELECT status,trigger_kind,error_code FROM model_check_runs WHERE id=?`, runID).Scan(&status, &triggerKind, &errorCode); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT status,trigger_kind,error_code FROM model_check_runs WHERE id=?`), runID).Scan(&status, &triggerKind, &errorCode); err != nil {
 		t.Fatalf("failed run must be queryable: %v", err)
 	}
 	if status != string(RunFailed) || triggerKind != TriggerKindScheduleNow || errorCode != "model_check_build_failed" {
@@ -660,7 +643,7 @@ type wbRestoreFixture struct {
 
 func wbNewRestoreFixture(t *testing.T) *wbRestoreFixture {
 	db := wbRunNowBusinessFixture(t)
-	applier, err := NewBusinessRecoveryApplier(db, false)
+	applier, err := NewBusinessRecoveryApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +716,7 @@ func TestRestoreSchedulePenaltiesQualityIsolate(t *testing.T) {
 // fallback 处罚恢复：降级标记按行内记录的前值恢复。
 func TestRestoreSchedulePenaltiesFallback(t *testing.T) {
 	f := wbNewRestoreFixture(t)
-	if _, err := f.db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled,last_error_code) VALUES ('acct','sys','gpt',6,7,NULL,NULL,'active',1,1,0,'model_quality_failed')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled,last_error_code) VALUES ('acct','sys','gpt',6,7,NULL,NULL,'active', 1,1,0,'model_quality_failed')`); err != nil {
 		t.Fatal(err)
 	}
 	f.insertEnforcement(t, "acct", "active", "fallback", "schedule", "sch", "", 6, 0, 1)
@@ -805,7 +788,7 @@ func TestScheduleRunNowRestoreOnEligibleCompletion(t *testing.T) {
 		store := wbRunNowJ3bFixture(t)
 		runner := &fakeRunNowRunner{runID: "run-r", onStarted: true, resultData: map[string]any{"score": score, "level": "success", "hardFailure": false, "evidenceFormed": true, "trustFormed": true}}
 		service, _ := wbNewRunNowService(t, db, store, runner)
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -873,17 +856,17 @@ func TestScheduleRunNowRestoresRealApplyPenalty(t *testing.T) {
 	db := wbRunNowBusinessFixture(t)
 	// Apply 的配置校验夹具（参照 businessEnforcementTestDDL；带 ScheduleID
 	// 时读取 schedule 行，全局策略行仅作契约面陪衬）。
-	if _, err := db.Exec(`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',1,'quick',70,'quality_isolate',10,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies(system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,custom_question_ids) VALUES ('sys',1,'quick',1,70,'quality_isolate',10,FALSE,NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	wbInsertRunNowAccount(t, db, "acct", "sys", "active", 4)
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,created_at,updated_at,custom_question_ids) VALUES ('sch',1,'sys','acct','gpt-5.6-sol',30,'quick',70,'quality_isolate',10,1,'2026-10-01T00:00:00Z',NULL,NULL,NULL,NULL,NULL,'2026-10-01T00:00:00Z','','[]')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,created_at,updated_at,custom_question_ids) VALUES ('sch',1,'sys','acct','gpt-5.6-sol',30,'quick',70,'quality_isolate',10, 1,'2026-10-01T00:00:00Z',NULL,NULL,NULL,NULL,NULL,'2026-10-01T00:00:00Z','','[]')`); err != nil {
 		t.Fatal(err)
 	}
-	enforcer, err := NewBusinessEnforcementApplier(db, false)
+	enforcer, err := NewBusinessEnforcementApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +887,7 @@ func TestScheduleRunNowRestoresRealApplyPenalty(t *testing.T) {
 	store := wbRunNowJ3bFixture(t)
 	runner := &fakeRunNowRunner{runID: "run-r2", onStarted: true, resultData: map[string]any{"score": 70, "level": "success", "hardFailure": false}}
 	service, _ := wbNewRunNowService(t, db, store, runner)
-	recovery, err := NewBusinessRecoveryApplier(db, false)
+	recovery, err := NewBusinessRecoveryApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -952,14 +935,14 @@ func TestScheduleRunNowRestoresRealApplyPenalty(t *testing.T) {
 // 恢复计 Skipped，不覆盖并发变更，处罚行保持 active。
 func TestRestoreSchedulePenaltiesSkipsOnConcurrentAccountChange(t *testing.T) {
 	db := wbRunNowBusinessFixture(t)
-	if _, err := db.Exec(`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT)`); err != nil {
 		t.Fatal(err)
 	}
 	wbInsertRunNowAccount(t, db, "acct", "sys", "active", 4)
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,created_at,updated_at,custom_question_ids) VALUES ('sch',1,'sys','acct','gpt-5.6-sol',30,'quick',70,'quality_isolate',10,1,'2026-10-01T00:00:00Z',NULL,NULL,NULL,NULL,NULL,'2026-10-01T00:00:00Z','','[]')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,created_at,updated_at,custom_question_ids) VALUES ('sch',1,'sys','acct','gpt-5.6-sol',30,'quick',70,'quality_isolate',10, 1,'2026-10-01T00:00:00Z',NULL,NULL,NULL,NULL,NULL,'2026-10-01T00:00:00Z','','[]')`); err != nil {
 		t.Fatal(err)
 	}
-	enforcer, err := NewBusinessEnforcementApplier(db, false)
+	enforcer, err := NewBusinessEnforcementApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -971,7 +954,7 @@ func TestRestoreSchedulePenaltiesSkipsOnConcurrentAccountChange(t *testing.T) {
 	if _, err := db.Exec(`UPDATE accounts SET status='active',schedulable=1,config_revision=config_revision+1 WHERE id='acct'`); err != nil {
 		t.Fatal(err)
 	}
-	applier, err := NewBusinessRecoveryApplier(db, false)
+	applier, err := NewBusinessRecoveryApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1044,10 +1027,10 @@ func (f fakeRunScoreReader) RunScoresByIDs(_ context.Context, ids []string) (map
 // 列表 SQL 补选 lease_until/a.status 后五态可观察，lastRunScore 经端口注入。
 func TestBusinessQualityManagerListExecutionStateAndScore(t *testing.T) {
 	db := wbRunNowBusinessFixture(t)
-	if _, err := db.Exec(`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := NewBusinessQualityManager(db, false)
+	manager, err := NewBusinessQualityManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1092,7 +1075,7 @@ func TestBusinessQualityManagerListExecutionStateAndScore(t *testing.T) {
 		t.Fatalf("missing run must yield nil score: %+v", states["sch-paused"].LastRunScore)
 	}
 	// 端口未注入时列表仍可用，lastRunScore 恒为 null。
-	bare, err := NewBusinessQualityManager(db, false)
+	bare, err := NewBusinessQualityManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1096,7 @@ func TestBusinessQualityManagerListExecutionStateAndScore(t *testing.T) {
 func TestStoreRunScoresByIDs(t *testing.T) {
 	store := wbRunNowJ3bFixture(t)
 	for i, score := range map[string]int{"run-a": 90, "run-b": 0} {
-		if _, err := store.db.Exec(`INSERT INTO model_check_runs (id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,model,profile,trigger_kind,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,created_at,updated_at) VALUES (?,?,'sys','openai','account','acct','m','quick','manual','completed','success',?,100,'','{}','{}','{}','{}','probe','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')`, i, "sys", score); err != nil {
+		if _, err := store.db.Exec(j3bQ(`INSERT INTO model_check_runs (id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,model,profile,trigger_kind,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,created_at,updated_at) VALUES (?,?,'sys','openai','account','acct','m','quick','manual','completed','success',?,100,'','{}','{}','{}','{}','probe','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')`), i, "sys", score); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1488,7 +1471,7 @@ func TestHTTPRunNowNullRunIDScopeAndRouteOrder(t *testing.T) {
 // Business 表（列面与 business_source_test.go 的 Resolve 夹具一致）。
 func wbRestoreProbeSourceFixture(t *testing.T) (*BusinessTargetSource, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/restore-probe.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1499,16 +1482,16 @@ func wbRestoreProbeSourceFixture(t *testing.T) (*BusinessTargetSource, *sql.DB) 
 		}
 	}
 	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct','sys','group-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct','sys','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	// v16 契约：探针身份 = (vendor_code, 健康检查连接 preset)。
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct','sys','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse','conn-acct',?,'Restore Probe')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://example.invalid/v1',1)`)
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct','sys','gpt','gpt','openai','api_key',3,7,'active', 1,'responses_sse','conn-acct',?,'Restore Probe')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}

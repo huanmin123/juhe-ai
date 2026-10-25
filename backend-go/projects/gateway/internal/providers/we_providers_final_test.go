@@ -55,11 +55,7 @@ func TestWeProvidersPatchModelWrongProvider(t *testing.T) {
 }
 
 func TestWeEndpointModesPredicateDialects(t *testing.T) {
-	sqlitePredicate := (&Store{}).endpointModesAnyPredicate("supported_endpoint_modes_json", []string{"chat_json"})
-	if !strings.Contains(sqlitePredicate, "json_each") {
-		t.Fatal("sqlite 方言应使用 json1")
-	}
-	pgPredicate := (&Store{pg: true}).endpointModesAnyPredicate("supported_endpoint_modes_json", []string{"chat_json"})
+	pgPredicate := (&Store{}).endpointModesAnyPredicate("supported_endpoint_modes_json", []string{"chat_json"})
 	if !strings.Contains(pgPredicate, "jsonb_array_elements_text") {
 		t.Fatal("pg 方言应使用 jsonb")
 	}

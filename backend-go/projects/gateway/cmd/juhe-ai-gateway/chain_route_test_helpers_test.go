@@ -28,16 +28,16 @@ const chainRouteTestNow = "2026-09-04T00:00:00.000Z"
 // w1FreshCacheFor 在凭据更新后重建运行时缓存（缓存快照在构造时生成）。
 func w1FreshCacheFor(t *testing.T, fixture *chainFixture) *gatewayruntimecache.Service {
 	t.Helper()
-	models, err := gatewayruntimecache.NewSQLReadModels(fixture.db, true, time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(fixture.db, time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("read models = %v", err)
 	}
-	selector, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, true, "chain-test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("selector = %v", err)
 	}
 	models.SetAccountsSelector(selector)
-	catalogSource, err := newChainCatalogSource(fixture.db, true)
+	catalogSource, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("catalog source = %v", err)
 	}

@@ -60,14 +60,13 @@ func sprintf(format string, args ...any) string {
 	return fmt.Sprintf(format, args...)
 }
 
-// Store is the dual-mode authorization persistence. The optional stats handle
-// backs the usage window reads (PostgreSQL shares the business pool; SQLite
-// needs the dedicated stats file injected through AttachStatsDatabase), and
-// the optional timezone source resolves the usageStatsTimezone system setting
-// (Node usageStatsTimezoneAsync).
+// Store is the authorization persistence. The optional stats handle backs
+// the usage window reads (shares the business pool; a dedicated handle can be
+// injected through AttachStatsDatabase), and the optional timezone source
+// resolves the usageStatsTimezone system setting (Node
+// usageStatsTimezoneAsync).
 type Store struct {
 	db       *sql.DB
-	pg       bool
 	now      func() time.Time
 	stats    *sql.DB
 	timezone func(ctx context.Context) (string, error)
@@ -82,19 +81,18 @@ type Store struct {
 	statsCache *authorizationStatsCache
 }
 
-func NewStore(db *sql.DB, postgres bool, now func() time.Time) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("authz store requires a database")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{db: db, pg: postgres, now: now, statsCache: newAuthorizationStatsCache(now)}, nil
+	return &Store{db: db, now: now, statsCache: newAuthorizationStatsCache(now)}, nil
 }
 
-// AttachStatsDatabase injects the SQLite stats database handle used by the
-// usage window reads; PostgreSQL mode shares the business pool and never
-// needs this call.
+// AttachStatsDatabase injects an alternative stats database handle used by
+// the usage window reads; by default the business pool is shared.
 func (s *Store) AttachStatsDatabase(db *sql.DB) { s.stats = db }
 
 // AttachTimezoneSource injects the usageStatsTimezone resolver (compose
@@ -104,16 +102,10 @@ func (s *Store) AttachTimezoneSource(source func(ctx context.Context) (string, e
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -489,9 +481,7 @@ func (s *Store) findSummaryWithLimits(ctx context.Context, id string) (*Summary,
 func (s *Store) GetGrantForMutation(ctx context.Context, tx *sql.Tx, id string) (*grantRow, error) {
 	ctx = ensureCtx(ctx)
 	query := `SELECT ` + grantColumns + ` FROM ` + s.table("resource_authorization_grants") + ` g WHERE g.id = ?`
-	if s.pg {
-		query += " FOR UPDATE"
-	}
+	query += " FOR UPDATE"
 	if tx != nil {
 		grant, err := s.scanGrant(tx.QueryRowContext(ctx, s.bind(query), id))
 		if errors.Is(err, sql.ErrNoRows) {

@@ -368,7 +368,7 @@ func newChatFixture(t *testing.T) *chatFixture {
 		}
 	}
 	_, clock := fixedChatClock()
-	store, err := NewStore(db, false, clock, nil)
+	store, err := NewStore(db, clock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

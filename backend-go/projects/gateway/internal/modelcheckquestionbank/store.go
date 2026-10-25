@@ -141,20 +141,18 @@ type QuestionFilter struct {
 	PageSize int
 }
 
-// Store 是题库的存储实现，pg/SQLite 双方言（照 BusinessQualityManager
-// 的 table()+bind() 惯例）。
+// Store 是题库的存储实现，恒定 PostgreSQL 方言（juhe_business schema 限定
+// + $n 占位符，与 gateway 组合根装配同一形态）。
 type Store struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
-// NewStore 构造题库 Store。postgres=true 时表名带 juhe_business 前缀且
-// 占位符改写为 $N；false 为 SQLite。
-func NewStore(db *sql.DB, postgres bool) (*Store, error) {
+// NewStore 构造题库 Store。
+func NewStore(db *sql.DB) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("模型检测题库数据库未初始化")
 	}
-	return &Store{db: db, postgres: postgres}, nil
+	return &Store{db: db}, nil
 }
 
 // Create 提交题目：服务端生成 id，status=pending；入库前执行标题查重与
@@ -617,18 +615,12 @@ func (s *Store) SystemAccountNames(ctx context.Context, ids []string) (map[strin
 }
 
 func (s *Store) table(name string) string {
-	if s.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 // bind 把 SQL 中的 ? 占位符改写为 PostgreSQL 的 $N（照
 // BusinessQualityManager.bind 惯例）。
 func (s *Store) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	var b strings.Builder
 	i := 0
 	for _, r := range query {

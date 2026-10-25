@@ -416,7 +416,7 @@ func nullStringOf(value string) sql.NullString { return sql.NullString{String: v
 // ---------------------------------------------------------------------------
 
 func TestW9FChatStoreConstructorsAndHelpers(t *testing.T) {
-	if _, err := NewStore(nil, false, nil, nil); err == nil {
+	if _, err := NewStore(nil, nil, nil); err == nil {
 		t.Fatal("nil db must fail")
 	}
 	fixture := newChatFixture(t)
@@ -433,7 +433,7 @@ func TestW9FChatStoreConstructorsAndHelpers(t *testing.T) {
 		t.Fatal("nowTime")
 	}
 	// NewStore 的默认时钟与 id 生成。
-	bare, err := NewStore(fixture.store.DB(), false, nil, nil)
+	bare, err := NewStore(fixture.store.DB(), nil, nil)
 	if err != nil || bare.nowTime().IsZero() || bare.nowISO() == "" {
 		t.Fatalf("bare store = %v", err)
 	}

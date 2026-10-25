@@ -962,14 +962,13 @@ func chainConfigIntOf(value any) int64 {
 // ---------------------------------------------------------------------------
 
 // newChainListAvailabilityDirtyMarker 镜像 markAccountListRuntimeProjectionDirty
-// （account-side-effects.service.ts:101-118）：postgres 驱动且投影开关任一
-// 开启时，把来源账号家族（本账号 + 授权实例）写进
-// account_list_availability_dirty（Node markAccountListAvailabilityDirtyFamily
-// 的 sourceAccountIds 分支；逐账号 upsert 与 jobs circuitstore markDirtySQL
-// 同表同列，jobs 是唯一消费者）。非 postgres 返回 nil（Node 的直接 return
-// 分支），写入面缺席。2026-09-21 起投影开关移除，postgres 模式恒启用。
+// （account-side-effects.service.ts:101-118）：把来源账号家族（本账号 + 授权
+// 实例）写进 account_list_availability_dirty（Node
+// markAccountListAvailabilityDirtyFamily 的 sourceAccountIds 分支；逐账号
+// upsert 与 jobs circuitstore markDirtySQL 同表同列，jobs 是唯一消费者）。
+// 业务库句柄缺席（组合测试）返回 nil，写入面缺席。
 func newChainListAvailabilityDirtyMarker(composed *composition) gatewayaccounteffects.ListAvailabilityDirtyMarker {
-	if composed == nil || composed.db == nil || !composed.pgDialect {
+	if composed == nil || composed.db == nil {
 		return nil
 	}
 	return func(ctx context.Context, sourceAccountID string, reason string, availableAtMs int64) error {

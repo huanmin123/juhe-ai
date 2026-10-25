@@ -112,24 +112,23 @@ func (a AccessScope) ActorID() (string, error) {
 	return a.ViewerID, nil
 }
 
-// Store is the dual-mode team persistence.
+// Store is the PostgreSQL team persistence.
 type Store struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	authz *authz.Store
 	stats StatsDirtyMarker
 	inval RuntimeInvalidator
 }
 
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, authzStore *authz.Store, options ...Option) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, authzStore *authz.Store, options ...Option) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("systemteams store requires a database")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	s := &Store{db: db, pg: postgres, now: now, authz: authzStore}
+	s := &Store{db: db, now: now, authz: authzStore}
 	for _, option := range options {
 		option(s)
 	}
@@ -161,16 +160,10 @@ func (s *Store) canonicalNow() string {
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -586,19 +579,14 @@ func (s *Store) Create(ctx context.Context, name string, description *string, st
 	}, nil
 }
 
-// keywordPredicate mirrors querySystemTeamRowsAsync's keyword arms
-// (system-team.repository.ts:916-926): PostgreSQL pins bytewise comparison on
-// both range ends with COLLATE "C" and adds starts_with() so the range scan
-// and the prefix predicate agree under the database default collation; SQLite
-// keeps the bare range pair (BINARY is the default collation there). The
-// upper bound stays systemTeamTextPrefixUpperBound (keywordUpperBound) in both
-// arms.
+// keywordPredicate mirrors querySystemTeamRowsAsync's keyword arm
+// (system-team.repository.ts:916-926): bytewise comparison on both range ends
+// with COLLATE "C" plus starts_with() so the range scan and the prefix
+// predicate agree under the database default collation. The upper bound stays
+// systemTeamTextPrefixUpperBound (keywordUpperBound).
 func (s *Store) keywordPredicate(keyword string) (string, []any) {
-	if s.pg {
-		return `(t.name COLLATE "C" >= ? AND t.name COLLATE "C" < ? AND starts_with(t.name, ?))`,
-			[]any{keyword, keywordUpperBound(keyword), keyword}
-	}
-	return "(t.name >= ? AND t.name < ?)", []any{keyword, keywordUpperBound(keyword)}
+	return `(t.name COLLATE "C" >= ? AND t.name COLLATE "C" < ? AND starts_with(t.name, ?))`,
+		[]any{keyword, keywordUpperBound(keyword), keyword}
 }
 
 // keywordUpperBound mirrors systemTeamTextPrefixUpperBound (:1496-1504) with

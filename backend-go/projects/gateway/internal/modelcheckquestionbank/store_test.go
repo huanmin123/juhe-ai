@@ -31,7 +31,7 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	if _, err := db.Exec(testSystemAccountsDDL); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, false)
+	store, err := NewStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,21 +697,14 @@ func TestStoreListByIDsAndOptions(t *testing.T) {
 }
 
 func TestStoreBindAndTableDialect(t *testing.T) {
-	store := &Store{postgres: true}
+	store := &Store{}
 	if got := store.table(questionBankTable); got != "juhe_business."+questionBankTable {
 		t.Fatalf("postgres table = %q", got)
 	}
 	if got := store.bind("SELECT a FROM t WHERE x=? AND y=?"); got != "SELECT a FROM t WHERE x=$1 AND y=$2" {
 		t.Fatalf("postgres bind = %q", got)
 	}
-	sqliteStore := &Store{}
-	if got := sqliteStore.table(questionBankTable); got != questionBankTable {
-		t.Fatalf("sqlite table = %q", got)
-	}
-	if got := sqliteStore.bind("SELECT a FROM t WHERE x=? AND y=?"); got != "SELECT a FROM t WHERE x=? AND y=?" {
-		t.Fatalf("sqlite bind = %q", got)
-	}
-	if _, err := NewStore(nil, false); err == nil {
+	if _, err := NewStore(nil); err == nil {
 		t.Fatal("nil db must be rejected")
 	}
 }

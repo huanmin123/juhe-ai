@@ -889,10 +889,9 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 func TestW1WChainRuntimeSuppressionConcurrencyClosure(t *testing.T) {
 	stateRedis := miniredis.RunT(t)
 	composed := &composition{
-		db:        w1uOpenSeededBusinessPG(t),
-		statsDB:   nil,
-		pgDialect: true,
-		Bus:       inval.New(time.Now),
+		db:      w1uOpenSeededBusinessPG(t),
+		statsDB: nil,
+		Bus:     inval.New(time.Now),
 	}
 	composed.statsDB = composed.db
 	cfg := runtimeConfig{
@@ -941,10 +940,9 @@ func TestW1WChainRuntimeSuppressionConcurrencyClosure(t *testing.T) {
 
 func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 	composed := &composition{
-		db:        w1uOpenSeededBusinessPG(t),
-		statsDB:   nil,
-		pgDialect: true,
-		Bus:       inval.New(time.Now),
+		db:      w1uOpenSeededBusinessPG(t),
+		statsDB: nil,
+		Bus:     inval.New(time.Now),
 	}
 	composed.statsDB = composed.db
 	stateRedis := miniredis.RunT(t)
@@ -1003,10 +1001,9 @@ func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
 	stateRedis := miniredis.RunT(t)
 	composed := &composition{
-		db:        w1uOpenSeededBusinessPG(t),
-		statsDB:   nil,
-		pgDialect: true,
-		Bus:       inval.New(time.Now),
+		db:      w1uOpenSeededBusinessPG(t),
+		statsDB: nil,
+		Bus:     inval.New(time.Now),
 	}
 	composed.statsDB = composed.db
 	cfg := runtimeConfig{

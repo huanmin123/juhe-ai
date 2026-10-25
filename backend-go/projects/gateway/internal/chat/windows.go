@@ -1,37 +1,5 @@
 package chat
 
-import (
-	"sync"
-)
-
-// Per-user policy serialization for SQLite mirrors withSqliteChatUserPolicyLock:
-// PostgreSQL serializes through pg_advisory_xact_lock; SQLite relies on this
-// in-process queue keyed by system account id. MaxOpenConns(1) runtimes are
-// additionally serialized by the single connection.
-var sqliteUserPolicyLocks sync.Map
-
-// lockUserPolicy returns the release func for the per-owner chat policy lock
-// (conversation create/delete/clear and turn acceptance in SQLite mode). In
-// PostgreSQL mode it is a no-op: the advisory xact lock inside the
-// transaction provides the same ordering.
-func (s *Store) lockUserPolicy(ownerID string) func() {
-	if s.pg {
-		return func() {}
-	}
-	value, _ := sqliteUserPolicyLocks.LoadOrStore(ownerID, &policyLockGuard{})
-	guard := value.(*policyLockGuard)
-	guard.mu.Lock()
-	guard.depth++
-	return func() {
-		guard.mu.Unlock()
-	}
-}
-
-type policyLockGuard struct {
-	mu    sync.Mutex
-	depth int
-}
-
 // releaseChatConversationStorageAndExpireAssets mirrors
 // releaseChatConversationStorageAndExpireAssets: per-bucket storage window
 // decrement, zero-window cleanup and asset expiry.
@@ -101,15 +69,12 @@ func (s *Store) recentStorageBytes(tx queryer, ownerID, now string, retentionDay
 
 // lockChatUserStorageQuota mirrors lockChatUserStorageQuota (PG only).
 func (s *Store) lockChatUserStorageQuota(tx queryer, ownerID string) error {
-	if !s.pg {
-		return nil
-	}
 	_, err := tx.Exec(s.bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`), "juhe-ai:chat-storage:"+ownerID)
 	return err
 }
 
-// incrementStorageWindow mirrors incrementStorageWindow with the per-dialect
-// upsert spelling.
+// incrementStorageWindow mirrors incrementStorageWindow with the PG upsert
+// spelling.
 func (s *Store) incrementStorageWindow(tx queryer, ownerID, now string, contentBytes, reservedBytes int64) error {
 	normalized, err := requireRFC3339Instant(now, "聊天容量窗口 now")
 	if err != nil {
@@ -117,22 +82,12 @@ func (s *Store) incrementStorageWindow(tx queryer, ownerID, now string, contentB
 	}
 	bucketDate := normalized[:10]
 	table := s.table("chat_user_storage_windows")
-	if s.pg {
-		_, err = tx.Exec(s.bind(`INSERT INTO `+table+` (system_account_id, bucket_date, content_bytes, reserved_bytes, updated_at)
+	_, err = tx.Exec(s.bind(`INSERT INTO `+table+` (system_account_id, bucket_date, content_bytes, reserved_bytes, updated_at)
 			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT (system_account_id, bucket_date)
 			DO UPDATE SET content_bytes = `+table+`.content_bytes + EXCLUDED.content_bytes,
 			              reserved_bytes = `+table+`.reserved_bytes + EXCLUDED.reserved_bytes,
 			              updated_at = EXCLUDED.updated_at`),
-			ownerID, bucketDate, contentBytes, reservedBytes, normalized)
-		return err
-	}
-	_, err = tx.Exec(s.bind(`INSERT INTO `+table+` (system_account_id, bucket_date, content_bytes, reserved_bytes, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(system_account_id, bucket_date)
-		DO UPDATE SET content_bytes = content_bytes + excluded.content_bytes,
-		              reserved_bytes = reserved_bytes + excluded.reserved_bytes,
-		              updated_at = excluded.updated_at`),
 		ownerID, bucketDate, contentBytes, reservedBytes, normalized)
 	return err
 }

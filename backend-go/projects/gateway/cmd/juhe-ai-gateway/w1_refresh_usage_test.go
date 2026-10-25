@@ -42,9 +42,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	platformaccountbalance "github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ func w1zNewBalanceRefresher(t *testing.T, upstreamBody string, runnerNow func() 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &gatewayManualBalanceRefresher{db: db, pg: true, secret: w1zRefreshSecret, store: store, runner: runner, now: time.Now}
+	return &gatewayManualBalanceRefresher{db: db, secret: w1zRefreshSecret, store: store, runner: runner, now: time.Now}
 }
 
 // w1zSealedCandidate 构造凭据已按 w1zRefreshSecret 加封的有效候选行。
@@ -239,7 +239,7 @@ func TestW1ZResolveProxyURLEnvelopeArms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			envelope, err := resolveProxyURLEnvelope(context.Background(), db, true, w1zRefreshSecret, tc.profileID)
+			envelope, err := resolveProxyURLEnvelope(context.Background(), db, w1zRefreshSecret, tc.profileID)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("resolveProxyURLEnvelope(%q) err = %v，want 包含 %q", tc.profileID, err, tc.wantErr)
@@ -277,7 +277,7 @@ func TestW1ZResolveProxyURLEnvelopeArms(t *testing.T) {
 	// 表缺失 → 查询错误上抛（不静默降级为直连）：裸库无 juhe_business
 	// schema，恰好承载「表缺失」负向臂（原 sqlite 裸文件臂重钉）。
 	bareDB := w1uOpenPlainSQLite(t, "w1z-proxy-bare.sqlite3")
-	if _, err := resolveProxyURLEnvelope(context.Background(), bareDB, true, w1zRefreshSecret, "w1z-prof-http"); err == nil {
+	if _, err := resolveProxyURLEnvelope(context.Background(), bareDB, w1zRefreshSecret, "w1z-prof-http"); err == nil {
 		t.Fatal("proxy_profiles 表缺失时必须报错")
 	}
 }
@@ -288,7 +288,7 @@ func TestW1ZResolveProxyURLEnvelopeArms(t *testing.T) {
 // TestGatewayManualBalanceRefresherMultiKeyManualRefresh 以真实 store + canned
 // runner 覆盖。
 func TestW1ZRefreshManualInputValidationArms(t *testing.T) {
-	refresher := &gatewayManualBalanceRefresher{db: nil, pg: true, secret: w1zRefreshSecret, now: time.Now}
+	refresher := &gatewayManualBalanceRefresher{db: nil, secret: w1zRefreshSecret, now: time.Now}
 
 	brokenEnvelopeCandidate := w1zSealedCandidate(t, accounts.Credentials{"api_key": "sk-w1z", "base_url": "http://127.0.0.1:9"})
 	brokenEnvelopeCandidate.CredentialsEnvelope = "w1z-not-a-v1-envelope"
@@ -391,7 +391,7 @@ func TestW1ZTestDraftProbeArms(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(upstream.Close)
-	refresher := &gatewayManualBalanceRefresher{db: nil, pg: true, secret: w1zRefreshSecret, now: time.Now}
+	refresher := &gatewayManualBalanceRefresher{db: nil, secret: w1zRefreshSecret, now: time.Now}
 	snapshot, err := refresher.TestDraft(context.Background(), draftInput(upstream.URL))
 	if err != nil {
 		t.Fatalf("成功臂: %v", err)
@@ -444,7 +444,7 @@ func TestW1ZTestDraftProbeArms(t *testing.T) {
 	// ⑥ 代理解析失败：profile 类型不支持 → 错误上抛。
 	proxyDB := w1zOpenProxyProfileDB(t)
 	w1zSeedProxyProfile(t, proxyDB, "w1z-prof-draft", "ftp", "127.0.0.1", 21, "", "")
-	proxyRefresher := &gatewayManualBalanceRefresher{db: proxyDB, pg: true, secret: w1zRefreshSecret, now: time.Now}
+	proxyRefresher := &gatewayManualBalanceRefresher{db: proxyDB, secret: w1zRefreshSecret, now: time.Now}
 	proxyID := "w1z-prof-draft"
 	if _, err := proxyRefresher.TestDraft(context.Background(), accounts.BalanceDraftProbeInput{
 		Credentials:    accounts.Credentials{"api_key": "sk-w1z", "base_url": upstream.URL},
@@ -458,7 +458,7 @@ func TestW1ZTestDraftProbeArms(t *testing.T) {
 // TestW1ZRefreshDraftModelCatalogErrorArms 覆盖目录刷新的缺 base_url、上游
 // 非 2xx 与网络错误臂（错误臂在本地目录投影前返回，无需 provider store）。
 func TestW1ZRefreshDraftModelCatalogErrorArms(t *testing.T) {
-	refresher := &gatewayModelCatalogRefresher{db: nil, pg: true, secret: w1zRefreshSecret, catalog: nil, now: time.Now}
+	refresher := &gatewayModelCatalogRefresher{db: nil, secret: w1zRefreshSecret, catalog: nil, now: time.Now}
 	discovery := func(baseURL string) accounts.ModelCatalogDiscoveryInput {
 		return accounts.ModelCatalogDiscoveryInput{
 			ProviderCode: "gpt", ProtocolCode: "openai", AccountType: "api_key",
@@ -765,7 +765,7 @@ func TestW1ZEnqueueProbeRequestInsertFailureRejected(t *testing.T) {
 	// ensureSchema 按 PG 方言在 juhe_business 建表：种子库恰好承载成功臂
 	//（裸库缺 schema 只能覆盖建表失败臂）。
 	db := w1uOpenSeededBusinessDB(t)
-	writer := newChainProbeRequestOutboxWriter(db, true, 30_000)
+	writer := newChainProbeRequestOutboxWriter(db, 30_000)
 	if outcome := writer.EnqueueProbeRequest(context.Background(), "acc-w1z", chainRequestFailureReason, "", nil); outcome.Outcome != gatewaycodex.HealthDispatchQueued {
 		t.Fatalf("首次派发必须 queued，got %#v", outcome)
 	}

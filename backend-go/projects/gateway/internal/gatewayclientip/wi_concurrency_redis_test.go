@@ -431,7 +431,7 @@ func TestWIPreAuthSprayThresholdBothDrivers(t *testing.T) {
 }
 
 func TestWIPolicyHitsPostgresPath(t *testing.T) {
-	// postgres 模式 + 注入时区：走 recordHitsPostgres 的 chunk 构建分支；
+	// PG 方言 + 注入时区：走 recordHitsPostgres 的 chunk 构建分支；
 	// 目标库是 SQLite（无 juhe_stats schema），写入必须报错而非静默成功。
 	db, err := sql.Open("sqlite", "file:wi-policy-pg-hits?mode=memory&cache=shared")
 	if err != nil {
@@ -439,7 +439,7 @@ func TestWIPolicyHitsPostgresPath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	fixed := time.UnixMilli(1_700_000_000_000)
-	source := &SQLPolicySource{db: db, postgres: true, now: func() time.Time { return fixed }}
+	source := &SQLPolicySource{db: db, now: func() time.Time { return fixed }}
 	source.timezone = func(context.Context) (string, error) { return "UTC", nil }
 	hits := make([]PolicyHitInput, 0, policyHitsChunkSize+1)
 	for i := 0; i < policyHitsChunkSize+1; i++ {
@@ -460,21 +460,26 @@ func TestWIPolicyHitsPostgresPath(t *testing.T) {
 	}
 }
 
-func TestWIRecordHitsSQLiteContract(t *testing.T) {
-	// SQLite 模式：命中按 (ip_hash, stat_date, policy_id) 累加，last_hit_at 取更晚者。
+func TestWIRecordHitsUpsertContract(t *testing.T) {
+	// PG 方言 upsert：命中按 (ip_hash, stat_date, policy_id) 累加，last_hit_at
+	// 取更晚者。SQLite 句柄 ATTACH juhe_stats 承载生产同款限定形式。
 	db, err := sql.Open("sqlite", "file:wi-policy-sqlite-hits?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("打开 sqlite 失败: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE client_ip_policy_hits (
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`ATTACH ':memory:' AS juhe_stats`); err != nil {
+		t.Fatalf("attach 失败: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE juhe_stats.client_ip_policy_hits (
 		ip_hash TEXT NOT NULL, stat_date TEXT NOT NULL, policy_id TEXT NOT NULL,
 		hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT, updated_at TEXT,
 		PRIMARY KEY (ip_hash, stat_date, policy_id))`); err != nil {
 		t.Fatalf("建表失败: %v", err)
 	}
 	fixed := time.UnixMilli(1_700_000_000_000)
-	source := &SQLPolicySource{db: db, postgres: false, now: func() time.Time { return fixed }}
+	source := &SQLPolicySource{db: db, now: func() time.Time { return fixed }}
 	source.timezone = func(context.Context) (string, error) { return "UTC", nil }
 	ctx := context.Background()
 	hitAt := "2030-01-02T03:04:05Z"
@@ -491,7 +496,7 @@ func TestWIRecordHitsSQLiteContract(t *testing.T) {
 		t.Fatalf("第二次写入失败: %v", err)
 	}
 	var hitCount int64
-	if err := db.QueryRow(`SELECT hit_count FROM client_ip_policy_hits WHERE policy_id = 'p1'`).Scan(&hitCount); err != nil {
+	if err := db.QueryRow(`SELECT hit_count FROM juhe_stats.client_ip_policy_hits WHERE policy_id = 'p1'`).Scan(&hitCount); err != nil {
 		t.Fatalf("读取失败: %v", err)
 	}
 	if hitCount != 5 {

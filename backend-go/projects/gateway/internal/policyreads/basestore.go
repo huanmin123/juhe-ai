@@ -1,6 +1,6 @@
 // basestore.go owns the shared persistence base for the policyreads domains:
-// the store error types, the gateway runtime invalidation port, the dual-mode
-// baseStore and small generic helpers used across domains.
+// the store error types, the gateway runtime invalidation port, the
+// PostgreSQL-form baseStore and small generic helpers used across domains.
 package policyreads
 
 import (
@@ -38,17 +38,16 @@ type RuntimeInvalidator interface {
 // TopicGatewayRuntime mirrors the Node gateway runtime cache topic constant.
 const TopicGatewayRuntime = "topic:gateway_runtime_cache"
 
-// baseStore is the dual-mode (SQLite + PostgreSQL) persistence core shared by
-// the two domains.
+// baseStore is the persistence core shared by the two domains (PostgreSQL
+// single form: juhe_business schema qualification + $n placeholders).
 type baseStore struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	newID func(string) string
 	inval RuntimeInvalidator
 }
 
-func newBaseStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval RuntimeInvalidator) (baseStore, error) {
+func newBaseStore(db *sql.DB, now func() time.Time, newID func(string) string, inval RuntimeInvalidator) (baseStore, error) {
 	if db == nil {
 		return baseStore{}, errors.New("policyreads store requires a database")
 	}
@@ -58,20 +57,14 @@ func newBaseStore(db *sql.DB, postgres bool, now func() time.Time, newID func(st
 	if newID == nil {
 		newID = randomPrefixedID
 	}
-	return baseStore{db: db, pg: postgres, now: now, newID: newID, inval: inval}, nil
+	return baseStore{db: db, now: now, newID: newID, inval: inval}, nil
 }
 
 func (b *baseStore) table(name string) string {
-	if b.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (b *baseStore) bind(query string) string {
-	if !b.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

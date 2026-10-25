@@ -184,21 +184,20 @@ func TestScanNullTimeMatrix(t *testing.T) {
 	expected := time.Date(2026, 9, 10, 8, 30, 0, 123456789, time.UTC)
 	cases := []struct {
 		name     string
-		postgres bool
 		value    any
 		wantNil  bool
 		wantTime time.Time
 		wantErr  bool
 	}{
-		{"nil 值", false, nil, true, time.Time{}, false},
-		{"SQLite 字符串", false, valid, false, expected, false},
-		{"SQLite 字节串", false, []byte(valid), false, expected, false},
-		{"SQLite time.Time", false, expected, false, expected, false},
-		{"SQLite 非法字符串", false, "nope", false, time.Time{}, true},
-		{"SQLite 非法字节串", false, []byte("bad"), false, time.Time{}, true},
-		{"SQLite 非法类型", false, 42, false, time.Time{}, true},
-		{"PG time.Time", true, expected, false, expected, false},
-		{"PG 字节串", true, []byte(valid), false, expected, false},
+		{"nil 值", nil, true, time.Time{}, false},
+		{"字符串", valid, false, expected, false},
+		{"字节串", []byte(valid), false, expected, false},
+		{"time.Time", expected, false, expected, false},
+		{"非法字符串", "nope", false, time.Time{}, true},
+		{"非法字节串", []byte("bad"), false, time.Time{}, true},
+		{"非法类型", 42, false, time.Time{}, true},
+		{"PG time.Time", expected, false, expected, false},
+		{"PG 字节串", []byte(valid), false, expected, false},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {

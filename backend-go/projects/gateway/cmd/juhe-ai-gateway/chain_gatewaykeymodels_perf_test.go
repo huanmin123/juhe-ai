@@ -455,7 +455,7 @@ func TestUnionPerfManual(t *testing.T) {
 	}
 
 	// 生产构造方式（chain_runtime.go:329 镜像；见文件头注释）。
-	selector, err := newChainAccountsSelectorWithStats(db, db, true, "", time.Now, 100)
+	selector, err := newChainAccountsSelectorWithStats(db, db, "", time.Now, 100)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}

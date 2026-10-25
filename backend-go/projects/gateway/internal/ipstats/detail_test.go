@@ -54,7 +54,7 @@ func newDetailEnv(t *testing.T) *testEnv {
 	}
 	// The admin login already created a system_accounts row; the detail
 	// lookup reads display_name from the same table.
-	env.store.SetDetailAccountLookup(NewBusinessAccountLookup(env.db, true))
+	env.store.SetDetailAccountLookup(NewBusinessAccountLookup(env.db))
 	return env
 }
 

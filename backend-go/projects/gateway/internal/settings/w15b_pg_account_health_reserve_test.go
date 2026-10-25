@@ -141,7 +141,7 @@ func TestW15BUpsertAccountHealthSectionUnderPgx(t *testing.T) {
 			t.Fatalf("种子账户失败: %v", err)
 		}
 	}
-	store, err := NewStore(db, true, func() time.Time { return now }, nil)
+	store, err := NewStore(db, func() time.Time { return now }, nil)
 	if err != nil {
 		t.Fatalf("构建 settings store 失败: %v", err)
 	}

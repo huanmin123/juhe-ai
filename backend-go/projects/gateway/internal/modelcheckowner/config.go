@@ -14,15 +14,10 @@ import (
 // Config is the Gateway-side owner contract for J3b. Loading it only validates
 // the explicit readiness gates; listener and scheduler startup remains the
 // caller's responsibility after the full dependency graph is assembled.
-// 2026-10-24 存储形态收口：StoreMode 恒 "postgres"（JUHE_AI_J3B_STORE 仅剩
-// 单一合法形态 → 整个 env 读取删除）。DatabasePath 仅剩 J3b owner store
-// 自身 sqlite 分支（OpenStore，后续批次折叠）的输入；BusinessDatabasePath/
-// SQLiteReadPoolSize 已随 OpenBusinessTargetConnection 的 sqlite 形态折叠
-// 同批删除。
+// PostgreSQL 是唯一存储形态：sqlite 形态（DatabasePath/DatabaseDriver）与
+// StoreMode 开关已随 PLAN-20261024T051925945Z 物理删除。
 type Config struct {
 	Enabled                  bool
-	StoreMode                string
-	DatabasePath             string
 	PostgresURL              string
 	BusinessPostgresURL      string
 	CredentialSecret         string
@@ -79,9 +74,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.InstanceID == "" {
 		cfg.InstanceID = datadir.DefaultInstanceID()
 	}
-	// 2026-10-24 存储形态收口：JUHE_AI_J3B_STORE 仅剩单一合法形态 postgres——
-	// 整个 env 读取删除；PostgreSQL 是唯一存储形态。
-	cfg.StoreMode = "postgres"
+	// PostgreSQL 是唯一存储形态，不再有形态选择 env。
 	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_POSTGRES_URL"))
 	if cfg.PostgresURL == "" {
 		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))

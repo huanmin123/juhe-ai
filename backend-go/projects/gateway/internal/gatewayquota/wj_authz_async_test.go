@@ -276,8 +276,7 @@ func TestWJAuthorizationQuotaAsyncMemoryAndSyncer(t *testing.T) {
 // 只精确补判一次，且两个账户都必须得到决策（含兜底快照判定循环）。
 
 // TestWJAuthorizationQuotaReadOnlyAndExact 固定只读与精确异步入口的契约：
-// 只读绕过运行时缓存；ExactAsync 在非 PostgreSQL 下回退同步路径，在
-// PostgreSQL 模式下走批量成本装载（SQLite 无法绑定 $n 占位符 → 错误传播）。
+// 只读绕过运行时缓存；ExactAsync 走批量成本装载。
 func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC))
 	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "roex")
@@ -300,9 +299,7 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 		t.Fatalf("只读超额必须拒绝: (%+v, %v)", decision, err)
 	}
 
-	// ExactAsync（PostgreSQL 模式）走批量精确装载，判定与同步一致。
-	// 非 PostgreSQL 回退同步分支需要 SQLite 业务库承载，PG 化测试基建下不可达
-	// （登记：随生产 sqlite 臂删除批次同批退役）。
+	// ExactAsync 走批量精确装载，判定与同步一致。
 	decision, err = service.CheckAuthorizationQuotaByIDsExactAsync(ctx, "ga1", "aa1", clock.Now())
 	if err != nil || decision.Allowed {
 		t.Fatalf("ExactAsync 批量精确必须拒绝: (%+v, %v)", decision, err)
@@ -312,9 +309,8 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 		t.Fatalf("ExactAsync 批量必须拒绝: (%+v, %v)", batch, err)
 	}
 
-	// PostgreSQL 模式：StatsStore 以生产 PG 臂方言执行（$n 占位符 + juhe_stats
-	// schema 限定表名），真实 PostgreSQL 上批量精确判定完整生效（SQLite 时代
-	// 依赖方言冲突注入错误，迁真实 PG 后重钉为成功路径断言）。
+	// StatsStore 以生产方言执行（$n 占位符 + juhe_stats schema 限定表名），
+	// 真实 PostgreSQL 上批量精确判定完整生效。
 	pgBusiness := newTestDB(t, "wj-authz-pg-biz")
 	authzSchema(t, pgBusiness)
 	seedAuthzRow(t, pgBusiness, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")

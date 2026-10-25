@@ -314,25 +314,25 @@ func main() {
 				return runSessionRetention(runCtx, retentionStore, retentionInterval, retentionLimit, func() { retentionRunning.Store(true) })
 			},
 		}
-		enforcement, enforcementErr := modelcheckowner.NewBusinessEnforcementApplier(businessConnection.DB, true)
+		enforcement, enforcementErr := modelcheckowner.NewBusinessEnforcementApplier(businessConnection.DB)
 		if enforcementErr != nil {
 			fail(fmt.Errorf("create J3b Gateway enforcement owner: %w", enforcementErr))
 		}
-		recovery, recoveryErr := modelcheckowner.NewBusinessRecoveryApplier(businessConnection.DB, true)
+		recovery, recoveryErr := modelcheckowner.NewBusinessRecoveryApplier(businessConnection.DB)
 		if recoveryErr != nil {
 			fail(fmt.Errorf("create J3b Gateway recovery owner: %w", recoveryErr))
 		}
-		quality, qualityErr := modelcheckowner.NewBusinessQualityManager(businessConnection.DB, true)
+		quality, qualityErr := modelcheckowner.NewBusinessQualityManager(businessConnection.DB)
 		if qualityErr != nil {
 			fail(fmt.Errorf("create J3b Gateway quality manager: %w", qualityErr))
 		}
 		// 题库域装配（计划阶段 2/3）：业务库句柄与 BusinessQualityManager
-		// 同源；postgres 布尔沿用 businessMode 取法。store 同时充当质量配置
+		// 同源（PostgreSQL 单形态）。store 同时充当质量配置
 		// 写入侧的 approved 存在性校验端口与运行时题目解析端口。审计 sink：
 		// F4 operation-log producer 在本块之后的 system API 装配段才存在，
 		// J3b 管理面（含既有 model-checks 端点）没有进程内审计 sink 可注入，
 		// 题库写操作审计按 handlers 的 nil-sink 契约降级为 no-op。
-		questionBankStore, questionBankErr := modelcheckquestionbank.NewStore(businessConnection.DB, true)
+		questionBankStore, questionBankErr := modelcheckquestionbank.NewStore(businessConnection.DB)
 		if questionBankErr != nil {
 			fail(fmt.Errorf("create J3b Gateway question bank store: %w", questionBankErr))
 		}
@@ -346,7 +346,7 @@ func main() {
 		questionBankAdmin := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true, questionTestRunner)
 		questionBankSelf := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false, questionTestRunner)
 		quality.SetQuestionBankVerifier(questionBankStore)
-		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, Postgres: true, OwnerID: j3bConfig.InstanceID}
+		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, OwnerID: j3bConfig.InstanceID}
 		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway scheduler contract: %w", schedulerErr))
 		}
@@ -354,11 +354,11 @@ func main() {
 		if tokenizerErr != nil {
 			fail(fmt.Errorf("create J3b Gateway tokenizer: %w", tokenizerErr))
 		}
-		modelLimits, modelLimitsErr := modelcheckowner.NewVersionedModelLimits(businessConnection.DB, true)
+		modelLimits, modelLimitsErr := modelcheckowner.NewVersionedModelLimits(businessConnection.DB)
 		if modelLimitsErr != nil {
 			fail(fmt.Errorf("create J3b Gateway model-limit source: %w", modelLimitsErr))
 		}
-		healthStatHour, healthStatHourErr := modelcheckowner.LoadBusinessHealthStatHour(context.Background(), businessConnection.DB, true)
+		healthStatHour, healthStatHourErr := modelcheckowner.LoadBusinessHealthStatHour(context.Background(), businessConnection.DB)
 		if healthStatHourErr != nil {
 			fail(fmt.Errorf("load J3b Gateway usage stats timezone: %w", healthStatHourErr))
 		}

@@ -25,7 +25,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestW1SNewChainAccountLocksRejectsNilDB(t *testing.T) {
-	if _, err := newChainAccountLocks(nil, false, nil); err == nil {
+	if _, err := newChainAccountLocks(nil, nil); err == nil {
 		t.Fatal("newChainAccountLocks(nil) 应拒绝空业务库句柄")
 	}
 	db, err := sql.Open("sqlite", ":memory:")
@@ -34,7 +34,7 @@ func TestW1SNewChainAccountLocksRejectsNilDB(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	locksWithNil, err := newChainAccountLocks(db, false, nil)
+	locksWithNil, err := newChainAccountLocks(db, nil)
 	if err != nil {
 		t.Fatalf("build locks with nil callback: %v", err)
 	}
@@ -50,16 +50,13 @@ func TestW1SNewChainAccountLocksRejectsNilDB(t *testing.T) {
 	}
 
 	touched := false
-	locksWithCallback, err := newChainAccountLocks(db, true, func(string) { touched = true })
+	locksWithCallback, err := newChainAccountLocks(db, func(string) { touched = true })
 	if err != nil {
 		t.Fatalf("build locks with callback: %v", err)
 	}
 	locksWithCallback.invalidateRuntimeCache("custom")
 	if !touched {
 		t.Fatal("自定义 invalidateRuntimeCache 必须被调用")
-	}
-	if !locksWithCallback.postgres {
-		t.Fatal("postgres 标志必须透传")
 	}
 }
 
@@ -68,26 +65,17 @@ func TestW1SNewChainAccountLocksRejectsNilDB(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1SChainAccountLocksTableDialect(t *testing.T) {
-	fixture := newAccountLocksFixture(t)
-	if got := fixture.locks.table("account_lock_states"); got != "account_lock_states" {
-		t.Fatalf("sqlite table = %q, want 裸表名", got)
+	locks := &chainAccountLocks{}
+	if got := locks.table("account_lock_states"); got != "juhe_business.account_lock_states" {
+		t.Fatalf("table = %q", got)
 	}
-	pg := &chainAccountLocks{postgres: true}
-	if got := pg.table("account_lock_states"); got != "juhe_business.account_lock_states" {
-		t.Fatalf("postgres table = %q", got)
-	}
-	if got := pg.table("accounts"); got != "juhe_business.accounts" {
-		t.Fatalf("postgres table accounts = %q", got)
+	if got := locks.table("accounts"); got != "juhe_business.accounts" {
+		t.Fatalf("table accounts = %q", got)
 	}
 }
 
 func TestW1SChainAccountLocksBindDialect(t *testing.T) {
-	fixture := newAccountLocksFixture(t)
-	sqliteIn := "SELECT a, b FROM t WHERE x = ? AND y = ?"
-	if got := fixture.locks.bind(sqliteIn); got != sqliteIn {
-		t.Fatalf("sqlite bind 必须原样返回, got %q", got)
-	}
-	pg := &chainAccountLocks{postgres: true}
+	pg := &chainAccountLocks{}
 	cases := []struct {
 		name  string
 		query string

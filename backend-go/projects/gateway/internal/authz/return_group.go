@@ -51,9 +51,7 @@ func (s *Store) ReturnGroupForGrantee(ctx context.Context, groupID, granteeUserI
 			AND ra.resource_id = ?
 			AND ra.grantee_system_account_id = ?
 		LIMIT 1`)
-	if s.pg {
-		runtimeQuery += " FOR UPDATE"
-	}
+	runtimeQuery += " FOR UPDATE"
 	var receipt ReturnedGroupAuthorization
 	err = tx.QueryRowContext(ctx, runtimeQuery, groupID, granteeUserID).Scan(
 		&receipt.ID, &receipt.ResourceType, &receipt.ResourceID,
@@ -83,12 +81,10 @@ func (s *Store) ReturnGroupForGrantee(ctx context.Context, groupID, granteeUserI
 			AND g.resource_id = ?
 			AND g.resource_owner_system_account_id = ?
 			AND g.grantee_type = 'system_account'
-			AND g.grantee_system_account_id = ?
-			AND g.status NOT IN ('revoked', 'returned')
+		AND g.grantee_system_account_id = ?
+		AND g.status NOT IN ('revoked', 'returned')
 		LIMIT 1`)
-	if s.pg {
-		grantQuery += " FOR UPDATE"
-	}
+	grantQuery += " FOR UPDATE"
 	grant, err := s.scanGrant(tx.QueryRowContext(ctx, grantQuery,
 		receipt.ResourceType, receipt.ResourceID, receipt.ResourceOwnerSystemAccountID, granteeUserID))
 	if errors.Is(err, sql.ErrNoRows) {

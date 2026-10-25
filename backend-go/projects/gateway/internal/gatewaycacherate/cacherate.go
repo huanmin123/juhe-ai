@@ -53,11 +53,10 @@ func usageStatsHourKey(t time.Time) string {
 // map physical account IDs (usage_stats_hourly scope_id of the global/account
 // rows) to their rolling 24h cache-read windows. Safe for concurrent use.
 type SnapshotSource struct {
-	db       *sql.DB
-	postgres bool
-	tz       statreads.TimezoneSource
-	now      func() time.Time
-	warn     func(string)
+	db   *sql.DB
+	tz   statreads.TimezoneSource
+	now  func() time.Time
+	warn func(string)
 
 	// refreshScheduled is the singleflight gate: at most one background
 	// refresh is queued at any time; lastAttemptAt throttles re-scheduling
@@ -74,7 +73,7 @@ type SnapshotSource struct {
 // NewSnapshotSource builds the loader. db must point at the stats database
 // (usage_stats_hourly); tz is the shared usageStatsTimezone resolver; now and
 // warn are injectable for tests (nil falls back to time.Now / no-op).
-func NewSnapshotSource(db *sql.DB, postgres bool, tz statreads.TimezoneSource, now func() time.Time, warn func(string)) (*SnapshotSource, error) {
+func NewSnapshotSource(db *sql.DB, tz statreads.TimezoneSource, now func() time.Time, warn func(string)) (*SnapshotSource, error) {
 	if db == nil {
 		return nil, fmt.Errorf("缓存率快照加载器要求统计库句柄")
 	}
@@ -87,7 +86,7 @@ func NewSnapshotSource(db *sql.DB, postgres bool, tz statreads.TimezoneSource, n
 	if warn == nil {
 		warn = func(string) {}
 	}
-	return &SnapshotSource{db: db, postgres: postgres, tz: tz, now: now, warn: warn}, nil
+	return &SnapshotSource{db: db, tz: tz, now: now, warn: warn}, nil
 }
 
 // Warmup performs the first synchronous refresh (composition-root startup).
@@ -161,7 +160,7 @@ func (s *SnapshotSource) refresh(ctx context.Context) error {
 		return err
 	}
 	cutoff := usageStatsHourKey(s.now().In(location).Add(-cacheRateWindowHours))
-	// 契约 8.1 聚合 SQL 原文；唯一参数是 cutoff 小时键（PG 走 $1 绑定）。
+	// 契约 8.1 聚合 SQL 原文；唯一参数是 cutoff 小时键（$1 绑定）。
 	query := fmt.Sprintf(`SELECT scope_id, SUM(cache_read_tokens), SUM(input_tokens)
 		FROM %s WHERE system_account_id = 'global' AND scope_type = 'account' AND stat_hour >= %s
 		GROUP BY scope_id`, s.table("usage_stats_hourly"), s.dialectPlaceholder())
@@ -205,21 +204,14 @@ func (s *SnapshotSource) warnf(message string) {
 	s.warn(message)
 }
 
-// table qualifies stats-schema tables for PostgreSQL (same contract as
-// accounts.StatsUsageSource.table: PG reaches juhe_stats through schema
-// qualification on the shared pool, SQLite uses the bare name).
+// table qualifies stats-schema tables through schema qualification on the
+// shared PostgreSQL pool (same contract as accounts.StatsUsageSource.table).
 func (s *SnapshotSource) table(name string) string {
-	if s.postgres {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // dialectPlaceholder renders the placeholder for the query's single cutoff
-// parameter: PostgreSQL binds positionally with $N, SQLite with ?.
+// parameter: PostgreSQL binds positionally with $N.
 func (s *SnapshotSource) dialectPlaceholder() string {
-	if s.postgres {
-		return "$1"
-	}
-	return "?"
+	return "$1"
 }

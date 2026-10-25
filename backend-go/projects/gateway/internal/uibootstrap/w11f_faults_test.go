@@ -1,6 +1,8 @@
 package uibootstrap
 
 // w11f 覆盖波次：补 query 校验、self/admin scope、行解析与错误分支。
+// 故障注入底座为同型连接层 wrapper（driver.Connector 拦截），基座接
+// pgtestkit 隔离 PG 库（生产 pgx 驱动形态，与方言坍缩后的 PG 单形态一致）。
 
 import (
 	"context"
@@ -14,7 +16,10 @@ import (
 	"sync"
 	"testing"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 )
@@ -158,13 +163,16 @@ func (r *w11fRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-// w11fFaultFixture 在故障脚本连接上重建 fixture。
+// w11fFaultFixture 在故障脚本连接上重建 fixture（基座 = pgtestkit 隔离 PG
+// 库的 pgx connector，方言坍缩后查询即生产 juhe_business 限定 + $n 形态）。
 func w11fFaultFixture(t *testing.T) (*Deps, *w11fScript) {
 	t.Helper()
-	base, err := sqlite.NewConnector("file:w11f-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t)
+	connConfig, err := pgx.ParseConfig(testDB.DSN)
 	if err != nil {
 		t.Fatal(err)
 	}
+	base := stdlib.GetConnector(*connConfig)
 	script := &w11fScript{t: t}
 	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w11fConnector{base: base, script: script})
@@ -174,13 +182,13 @@ func w11fFaultFixture(t *testing.T) (*Deps, *w11fScript) {
 		t.Fatal(err)
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('w11f-sa', 'w11f-user', 'W11F')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('w11f-sa', 'w11f-user', 'W11F')`,
 		// 设计 §8：组无 provider 维度，owner 单默认组（启用）。
-		`INSERT INTO groups (id, name, system_account_id, enabled, is_default) VALUES
+		`INSERT INTO juhe_business.groups (id, name, system_account_id, enabled, is_default) VALUES
 			('w11f-g2', 'w11f-默认组', 'w11f-sa', 1, 1)`,
-		`INSERT INTO route_strategies (id, name, system_account_id, mode, status, is_default, created_at) VALUES
+		`INSERT INTO juhe_business.route_strategies (id, name, system_account_id, mode, status, is_default, created_at) VALUES
 			('w11f-rs1', 'w11f-策略一', 'w11f-sa', 'normal', 'active', 1, '2026-01-01')`,
-		`INSERT INTO route_strategy_groups (route_strategy_id, system_account_id, group_id, status) VALUES
+		`INSERT INTO juhe_business.route_strategy_groups (route_strategy_id, system_account_id, group_id, status) VALUES
 			('w11f-rs1', 'w11f-sa', 'w11f-g2', 'active')`,
 	}
 	for _, statement := range seed {
@@ -188,7 +196,7 @@ func w11fFaultFixture(t *testing.T) (*Deps, *w11fScript) {
 			t.Fatal(err)
 		}
 	}
-	return &Deps{DB: db, PGDialect: false, Auth: nil}, script
+	return &Deps{DB: db, Auth: nil}, script
 }
 
 func TestW11FBootstrapScopesAndErrors(t *testing.T) {
@@ -225,7 +233,7 @@ func TestW11FBootstrapScopesAndErrors(t *testing.T) {
 		t.Fatalf("missing account = %d %s", recorder.Code, recorder.Body.String())
 	}
 	// 存储错误 → 500。
-	script.failQuery("FROM system_accounts")
+	script.failQuery("FROM juhe_business.system_accounts")
 	recorder = invokeBootstrap(t, deps, false, "/__aisys__/api/ui-bootstrap/options?systemAccountId=w11f-sa", adminAuthBootstrap("admin"))
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("query fault = %d %s", recorder.Code, recorder.Body.String())
@@ -240,22 +248,22 @@ func TestW11FBootstrapRowBranches(t *testing.T) {
 		t.Fatalf("blank owner = %v/%v", reference, err)
 	}
 	// 查询错误 / Scan 错误 / rows.Err。
-	script.failQuery("FROM system_accounts")
+	script.failQuery("FROM juhe_business.system_accounts")
 	if _, err := deps.findUserReferenceData(context.Background(), "w11f-sa"); err == nil {
 		t.Fatal("query fault must fail")
 	}
 	cols := []string{"system_account_id", "group_id", "group_name", "group_enabled",
 		"route_strategy_id", "route_strategy_name", "route_strategy_mode", "route_strategy_status", "route_binding_status"}
-	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", "g", "n", "notabool", nil, nil, nil, nil, nil}}, nil)
+	script.canned("FROM juhe_business.system_accounts", cols, [][]driver.Value{{"sa", "g", "n", "notabool", nil, nil, nil, nil, nil}}, nil)
 	if _, err := deps.findUserReferenceData(context.Background(), "w11f-sa"); err == nil {
 		t.Fatal("scan fault must fail")
 	}
-	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil}}, w11fBoom)
+	script.canned("FROM juhe_business.system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil}}, w11fBoom)
 	if _, err := deps.findUserReferenceData(context.Background(), "w11f-sa"); err == nil {
 		t.Fatal("rows.Err fault must fail")
 	}
 	// 组缺失行（LEFT JOIN 全 NULL）→ reference 存在但无 providerDefaults。
-	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil}}, nil)
+	script.canned("FROM juhe_business.system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil}}, nil)
 	reference, err := deps.findUserReferenceData(context.Background(), "w11f-sa")
 	if err != nil || reference == nil || reference.SystemAccountID != "w11f-sa" {
 		t.Fatalf("null group row = %v/%v", reference, err)
@@ -277,9 +285,9 @@ func TestW11FBootstrapRowBranches(t *testing.T) {
 	if ref := routeStrategyRef(sqlNull("rs"), sqlNull("n"), sqlNull("normal"), sqlNull("active")); ref == nil || ref.ID != "rs" || ref.Mode != "normal" {
 		t.Fatalf("valid ref = %+v", ref)
 	}
-	// table 的 PG 方言 arm。
-	if got := (&Deps{PGDialect: true}).table("x"); got != "juhe_business.x" {
-		t.Fatalf("pg table = %q", got)
+	// table 恒为 juhe_business 限定。
+	if got := (&Deps{}).table("x"); got != "juhe_business.x" {
+		t.Fatalf("table = %q", got)
 	}
 	// requestScope / selfScope 无 auth 上下文。
 	request := httptest.NewRequest(http.MethodGet, "/", nil)

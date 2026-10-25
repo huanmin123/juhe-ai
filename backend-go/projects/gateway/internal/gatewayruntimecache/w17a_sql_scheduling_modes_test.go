@@ -17,7 +17,7 @@ import (
 func TestW17ASQLSchedulingModeDecode(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{
 		"g1": {Accounts: []OpenAIAccountSecret{testAccount("a1", "sys_owner")}},
 	}}, nil, nil)
 	if err != nil {
@@ -36,27 +36,27 @@ func TestW17ASQLSchedulingModeDecode(t *testing.T) {
 		{"rs_w17a_roundrobin", RouteStrategyModeRoundRobin, "sk-w17a-roundrobin"},
 	}
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
 	}
 	for _, m := range modes {
 		seed = append(seed,
-			`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('`+m.strategyID+`', 'sys_owner', '`+m.mode+`', '`+speedConfig+`', 'active')`,
-			`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_`+m.strategyID+`', 'sys_owner', '`+m.strategyID+`', '`+HashSecret(m.keyHash)+`', 'active', 'chat')`,
-			`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_`+m.strategyID+`', '`+m.strategyID+`', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+			`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, config_json, status) VALUES ('`+m.strategyID+`', 'sys_owner', '`+m.mode+`', '`+speedConfig+`', 'active')`,
+			`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_`+m.strategyID+`', 'sys_owner', '`+m.strategyID+`', '`+HashSecret(m.keyHash)+`', 'active', 'chat')`,
+			`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_`+m.strategyID+`', '`+m.strategyID+`', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		)
 	}
 	seed = append(seed,
 		// 无 config_json / 空 config_json / 空对象 config_json。
-		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_noconf', 'sys_owner', 'weighted', NULL, 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_noconf', 'sys_owner', 'rs_w17a_noconf', '`+HashSecret("sk-w17a-noconf")+`', 'active', 'chat')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_noconf', 'rs_w17a_noconf', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_empty', 'sys_owner', 'weighted', '', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_empty', 'sys_owner', 'rs_w17a_empty', '`+HashSecret("sk-w17a-empty")+`', 'active', 'chat')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_empty', 'rs_w17a_empty', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_emptyobj', 'sys_owner', 'weighted', '{}', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_emptyobj', 'sys_owner', 'rs_w17a_emptyobj', '`+HashSecret("sk-w17a-emptyobj")+`', 'active', 'chat')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_emptyobj', 'rs_w17a_emptyobj', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_noconf', 'sys_owner', 'weighted', NULL, 'active')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_noconf', 'sys_owner', 'rs_w17a_noconf', '`+HashSecret("sk-w17a-noconf")+`', 'active', 'chat')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_noconf', 'rs_w17a_noconf', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_empty', 'sys_owner', 'weighted', '', 'active')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_empty', 'sys_owner', 'rs_w17a_empty', '`+HashSecret("sk-w17a-empty")+`', 'active', 'chat')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_empty', 'rs_w17a_empty', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_emptyobj', 'sys_owner', 'weighted', '{}', 'active')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_emptyobj', 'sys_owner', 'rs_w17a_emptyobj', '`+HashSecret("sk-w17a-emptyobj")+`', 'active', 'chat')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_emptyobj', 'rs_w17a_emptyobj', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	)
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {

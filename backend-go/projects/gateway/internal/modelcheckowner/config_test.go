@@ -21,7 +21,7 @@ func TestPostgresZeroConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zero-config J3b must auto-claim: %v", err)
 	}
-	if !cfg.AutoClaimed || cfg.Owner != "gateway" || cfg.StoreMode != "postgres" {
+	if !cfg.AutoClaimed || cfg.Owner != "gateway" {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 	if cfg.InstanceID != datadir.DefaultInstanceID() {
@@ -72,7 +72,7 @@ func TestPostgresStoreAndURLFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	if cfg.StoreMode != "postgres" || cfg.PostgresURL != "postgres://main" || cfg.BusinessPostgresURL != "postgres://business" {
+	if cfg.PostgresURL != "postgres://main" || cfg.BusinessPostgresURL != "postgres://business" {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 }

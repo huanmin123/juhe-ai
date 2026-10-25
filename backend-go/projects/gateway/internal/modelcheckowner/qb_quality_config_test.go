@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
-	_ "modernc.org/sqlite"
 )
 
 // fakeQuestionVerifier 是质量配置写入侧题库验证端口的 fake：只按
@@ -38,19 +37,19 @@ func (f *fakeQuestionVerifier) ListByIDs(_ context.Context, ids []string, status
 
 func qbQualityFixture(t *testing.T) (*BusinessQualityManager, *sql.DB, *fakeQuestionVerifier) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/quality.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, ddl := range []string{
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,action TEXT,state TEXT,recovery_due_at TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -58,8 +57,8 @@ func qbQualityFixture(t *testing.T) (*BusinessQualityManager, *sql.DB, *fakeQues
 		}
 	}
 	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,name,vendor_code,connection_driver_code,health_check_connection_id,status) VALUES ('acct','sys','Primary account','gpt','gpt','conn-acct','active')`)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://quality.invalid/v1',1)`)
-	manager, err := NewBusinessQualityManager(db, false)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://quality.invalid/v1', 1)`)
+	manager, err := NewBusinessQualityManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}

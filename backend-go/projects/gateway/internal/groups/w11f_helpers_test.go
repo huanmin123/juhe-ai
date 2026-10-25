@@ -326,11 +326,11 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 			t.Fatal(err)
 		}
 	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authzStore, err := authz.NewStore(db, true, nil)
+	authzStore, err := authz.NewStore(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -299,9 +299,6 @@ func (s *AssetStore) CompleteAssetDeletion(assetID, claimID string) (bool, error
 }
 
 func (s *AssetStore) LockAssetUserQuota(tx queryer, ownerID string) error {
-	if !s.pg {
-		return nil
-	}
 	_, err := tx.Exec(s.ports.Bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`), "juhe-ai:chat-asset-usage:"+ownerID)
 	return err
 }

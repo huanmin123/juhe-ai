@@ -201,15 +201,11 @@ func clampInt(value, minValue, maxValue int) int {
 	return value
 }
 
-// enabledFilter renders the enabled predicate per dialect: PG stores
+// enabledFilter renders the enabled predicate: PG stores
 // `enabled boolean` (Node listProxyOptionsAsync proxy.repository.ts:263,273
-// uses `enabled = true`), SQLite stores the 0/1 integer (readonly variant
-// proxy.repository.ts:234,239 uses `enabled = 1`).
+// uses `enabled = true`).
 func (s *Store) enabledFilter() string {
-	if s.pg {
-		return "enabled = true"
-	}
-	return "enabled = 1"
+	return "enabled = true"
 }
 
 // keywordFilter renders the name prefix window per dialect (Node
@@ -218,20 +214,14 @@ func (s *Store) enabledFilter() string {
 // variant pins byte collation and adds starts_with because the C collation
 // range scan alone misses locale-sorted rows).
 func (s *Store) keywordFilter() string {
-	if s.pg {
-		return `(name COLLATE "C" >= ? AND name COLLATE "C" < ? AND starts_with(name, ?))`
-	}
-	return "(name >= ? AND name < ?)"
+	return `(name COLLATE "C" >= ? AND name COLLATE "C" < ? AND starts_with(name, ?))`
 }
 
 // keywordFilterParams mirrors the clause shape above: the PG variant binds the
 // keyword a third time for starts_with (proxy.repository.ts:399).
 func (s *Store) keywordFilterParams(keyword string) []any {
 	upper := textPrefixUpperBound(keyword)
-	if s.pg {
-		return []any{keyword, upper, keyword}
-	}
-	return []any{keyword, upper}
+	return []any{keyword, upper, keyword}
 }
 
 // summarySelectColumns mirrors proxySummarySelectColumns
@@ -241,14 +231,10 @@ func (s *Store) keywordFilterParams(keyword string) []any {
 // driver path produced (normalizePostgresRows database-client.ts:460-476, MS
 // pattern). Scanning stays string-typed on both dialects.
 func (s *Store) summarySelectColumns() string {
-	if s.pg {
-		return `id, name, description, type, host, port, username, enabled, test_status,
+	return `id, name, description, type, host, port, username, enabled, test_status,
 			latency_ms, outbound_ip, outbound_region, last_test_message,
 			to_char(last_tested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_tested_at,
 			to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
-	}
-	return `id, name, description, type, host, port, username, enabled, test_status,
-		latency_ms, outbound_ip, outbound_region, last_test_message, last_tested_at, updated_at`
 }
 
 // optionSelectColumns renders the options projection (Node
@@ -256,11 +242,8 @@ func (s *Store) summarySelectColumns() string {
 // with the same US pattern used for the summary revision so the option merge
 // ordering keeps comparing UTC text.
 func (s *Store) optionSelectColumns() string {
-	if s.pg {
-		return `id, name, type, enabled,
+	return `id, name, type, enabled,
 			to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
-	}
-	return "id, name, type, enabled, updated_at"
 }
 
 func textPrefixUpperBound(value string) string {

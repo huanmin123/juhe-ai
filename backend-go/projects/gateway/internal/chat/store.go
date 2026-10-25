@@ -28,14 +28,13 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat/chatassets"
 )
 
-// Store is the dual-mode chat persistence (SQLite + PostgreSQL) mirroring
-// chat.repository.ts / chat-context.repository.ts / chat-assets.repository.ts /
+// Store is the chat persistence (PostgreSQL) mirroring chat.repository.ts /
+// chat-context.repository.ts / chat-assets.repository.ts /
 // chat-image-generations.repository.ts. The Node code qualifies chat tables
-// with dialect.qualifyTable('juhe_chat', name); PostgreSQL keeps the juhe_chat
-// schema prefix, SQLite uses bare table names.
+// with dialect.qualifyTable('juhe_chat', name); the juhe_chat schema prefix
+// is kept.
 type Store struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	newID func(prefix string) string
 	// assets is the chatassets asset subdomain service (REFACTOR-0006 phase
@@ -46,7 +45,7 @@ type Store struct {
 
 // NewStore builds the chat store. now is the injected clock (time injection
 // contract); newID generates prefixed ids (chat_<prefix>_<32 hex> by default).
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(prefix string) string) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, newID func(prefix string) string) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("chat store requires a database")
 	}
@@ -56,7 +55,7 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(prefix
 	if newID == nil {
 		newID = func(prefix string) string { return chatID(prefix) }
 	}
-	store := &Store{db: db, pg: postgres, now: now, newID: newID}
+	store := &Store{db: db, now: now, newID: newID}
 	store.assets = store.newAssetStore()
 	return store, nil
 }
@@ -64,7 +63,7 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(prefix
 // newAssetStore builds the asset subdomain service with dialect/clock ports
 // wired to this store's primitives — single source of truth, no duplication.
 func (s *Store) newAssetStore() *chatassets.AssetStore {
-	return chatassets.NewAssetStore(s.db, s.pg, chatassets.Ports{
+	return chatassets.NewAssetStore(s.db, chatassets.Ports{
 		Table:                 s.table,
 		Bind:                  s.bind,
 		LockSuffix:            s.lockSuffix,
@@ -80,23 +79,14 @@ func (s *Store) newAssetStore() *chatassets.AssetStore {
 	})
 }
 
-// Postgres reports the active dialect (dual-mode tests assert both).
-func (s *Store) Postgres() bool { return s.pg }
-
 // DB exposes the underlying handle for route-level composition.
 func (s *Store) DB() *sql.DB { return s.db }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_chat." + name
-	}
-	return name
+	return "juhe_chat." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -110,13 +100,8 @@ func (s *Store) bind(query string) string {
 	return out.String()
 }
 
-// lockSuffix mirrors `tx.driver === 'postgres' ? ' FOR UPDATE' : ”`.
-func (s *Store) lockSuffix() string {
-	if s.pg {
-		return " FOR UPDATE"
-	}
-	return ""
-}
+// lockSuffix mirrors the PostgreSQL `' FOR UPDATE'` spelling.
+func (s *Store) lockSuffix() string { return " FOR UPDATE" }
 
 func ensureCtx(ctx context.Context) context.Context {
 	if ctx == nil {

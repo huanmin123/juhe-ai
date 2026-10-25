@@ -389,7 +389,7 @@ func TestW1CSettingsString(t *testing.T) {
 }
 
 func TestW1CSettingsValueReaderPropagatesStoreError(t *testing.T) {
-	store, err := settings.NewStore(sql.OpenDB(w1cErrConnector{}), true, func() time.Time { return time.UnixMilli(0) }, nil)
+	store, err := settings.NewStore(sql.OpenDB(w1cErrConnector{}), func() time.Time { return time.UnixMilli(0) }, nil)
 	if err != nil {
 		t.Fatalf("构造 settings store 失败: %v", err)
 	}

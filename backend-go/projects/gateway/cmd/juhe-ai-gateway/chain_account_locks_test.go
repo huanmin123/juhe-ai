@@ -142,7 +142,7 @@ func newAccountLocksFixture(t *testing.T) *lockFixture {
 	clock := newLockClock()
 	tokens := &tokenSequence{}
 	reasons := &invalidationRecorder{}
-	locks, err := newChainAccountLocks(db, false, reasons.Record)
+	locks, err := newChainAccountLocks(db, reasons.Record)
 	if err != nil {
 		t.Fatalf("build lock bridge: %v", err)
 	}

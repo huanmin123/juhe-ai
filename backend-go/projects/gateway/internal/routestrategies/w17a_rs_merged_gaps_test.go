@@ -140,7 +140,7 @@ func TestW17aRsPgStoreDialectArms(t *testing.T) {
 	env := newTestEnv(t)
 	admin := env.login(t, "w17a-pg", "root-pass", "super_admin")
 	group := env.createGroup(t, admin, "w17a-pg-group", true)
-	store, err := NewStore(env.db, true, nil, nil, &recordingInvalidator{})
+	store, err := NewStore(env.db, nil, nil, &recordingInvalidator{})
 	if err != nil {
 		t.Fatal(err)
 	}

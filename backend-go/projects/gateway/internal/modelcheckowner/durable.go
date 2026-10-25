@@ -33,13 +33,9 @@ var (
 	ErrOutcomeConflict = errors.New("J3b outcome conflicts with existing outcome")
 )
 
-// forUpdate serializes read/modify/write decisions on PostgreSQL. SQLite is
-// opened with a single writer connection and does not accept this clause.
+// forUpdate serializes read/modify/write decisions on PostgreSQL.
 func (s *Store) forUpdate() string {
-	if s != nil && s.mode == "postgres" {
-		return " FOR UPDATE"
-	}
-	return ""
+	return " FOR UPDATE"
 }
 
 // ClaimInput reserves an immutable input with a monotonically increasing
@@ -141,7 +137,14 @@ func (s *Store) CommitOutcome(ctx context.Context, outcome Outcome, claim Claim,
 	if s == nil || s.db == nil || outcome.InputID == "" || outcome.OutcomeID == "" || claim.InputID != outcome.InputID || claim.ClaimToken == "" || outcome.InputDigest == "" || len(outcome.Payload) == 0 || !json.Valid(outcome.Payload) || now.IsZero() {
 		return errors.New("J3b outcome input is invalid")
 	}
-	sum := sha256.Sum256(outcome.Payload)
+	// 摘要必须对规范化 JSON 计算：生产列是 JSONB，读回文本的空白与键序由
+	// PG 重新渲染，原始字节摘要必然失配。规范化后写入与校验使用同一形态。
+	canonicalPayload, err := canonicalJSON(outcome.Payload)
+	if err != nil {
+		return errors.New("J3b outcome payload is not valid JSON")
+	}
+	outcome.Payload = canonicalPayload
+	sum := sha256.Sum256(canonicalPayload)
 	digest := hex.EncodeToString(sum[:])
 	if outcome.PayloadDigest != "" && outcome.PayloadDigest != digest {
 		return errors.New("J3b outcome payload digest mismatch")

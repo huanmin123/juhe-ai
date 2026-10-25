@@ -66,7 +66,7 @@ func newAIPublicCaptureEnv(t *testing.T, customize func(*Deps)) *aipublicEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(db, true, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

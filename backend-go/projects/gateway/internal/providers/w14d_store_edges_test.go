@@ -15,7 +15,7 @@ import (
 
 // w14dClosedStore opens then closes an in-memory SQLite handle so every
 // QueryContext/ExecContext/BeginTx fails with "database is closed".
-func w14dClosedStore(t *testing.T, pg bool) *Store {
+func w14dClosedStore(t *testing.T) *Store {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:w14d-closed-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
 	if err != nil {
@@ -24,7 +24,7 @@ func w14dClosedStore(t *testing.T, pg bool) *Store {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return &Store{db: db, pg: pg, now: func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }}
+	return &Store{db: db, now: func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }}
 }
 
 var w14dErrBoom = errors.New("w14d boom")
@@ -37,7 +37,7 @@ func TestW14dCustomModelScanError(t *testing.T) {
 }
 
 func TestW14dCustomModelFindErrors(t *testing.T) {
-	store := w14dClosedStore(t, false)
+	store := w14dClosedStore(t)
 	ctx := context.Background()
 	if _, err := store.findCustomProviderModelByID(ctx, "id", "owner"); err == nil {
 		t.Fatal("closed DB find by id must fail")
@@ -51,7 +51,7 @@ func TestW14dCustomModelFindErrors(t *testing.T) {
 }
 
 func TestW14dUpsertValidationForks(t *testing.T) {
-	store := w14dClosedStore(t, false)
+	store := w14dClosedStore(t)
 	ctx := context.Background()
 	// requiredCustomText failures.
 	if _, err := store.upsertCustomProviderModel(ctx, customProviderModelUpsertInput{}); err == nil ||
@@ -170,7 +170,7 @@ func TestW14dPatchCustomModelUnitOutcomes(t *testing.T) {
 }
 
 func TestW14dPatchCustomModelClosedDBForks(t *testing.T) {
-	store := w14dClosedStore(t, false)
+	store := w14dClosedStore(t)
 	ctx := context.Background()
 	current := &customProviderModelRecord{ID: "m1", ProviderCode: "gpt", Model: "m", Status: "active",
 		UpdatedAt: "2026-01-01T00:00:00.000Z"}
@@ -333,13 +333,13 @@ func TestW14dCustomProviderModelBindingsUnit(t *testing.T) {
 	}
 
 	// Closed DB error fork.
-	if _, err := w14dClosedStore(t, false).customProviderModelBindings(ctx, "gpt", "m", "global", ""); err == nil {
+	if _, err := w14dClosedStore(t).customProviderModelBindings(ctx, "gpt", "m", "global", ""); err == nil {
 		t.Fatal("closed DB bindings must fail")
 	}
 }
 
 func TestW14dCountDistinctBoundAccountsError(t *testing.T) {
-	store := w14dClosedStore(t, false)
+	store := w14dClosedStore(t)
 	if _, err := store.countDistinctBoundAccounts(context.Background(), "SELECT 1 AS account_id", nil); err == nil {
 		t.Fatal("closed DB count must fail")
 	}

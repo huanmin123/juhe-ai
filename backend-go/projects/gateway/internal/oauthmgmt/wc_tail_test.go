@@ -17,16 +17,16 @@ import (
 // TestWCNewStoreValidationBranches：NewStore 其余参数校验。
 func TestWCNewStoreValidationBranches(t *testing.T) {
 	env := newTestEnv(t)
-	if _, err := NewStore(env.db, false, "  ", nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "secret") {
+	if _, err := NewStore(env.db, "  ", nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "secret") {
 		t.Fatalf("空 secret: %v", err)
 	}
 	exchanger := ExchangerFunc(func(context.Context, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{StatusCode: 200}, nil
 	})
-	if _, err := NewStore(env.db, false, testSecret, nil, exchanger, nil, nil); err == nil || !strings.Contains(err.Error(), "accounts") {
+	if _, err := NewStore(env.db, testSecret, nil, exchanger, nil, nil); err == nil || !strings.Contains(err.Error(), "accounts") {
 		t.Fatalf("缺 accounts store: %v", err)
 	}
-	if _, err := NewStore(env.db, false, testSecret, env.store.Accounts, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "exchanger") {
+	if _, err := NewStore(env.db, testSecret, env.store.Accounts, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "exchanger") {
 		t.Fatalf("缺 exchanger: %v", err)
 	}
 }

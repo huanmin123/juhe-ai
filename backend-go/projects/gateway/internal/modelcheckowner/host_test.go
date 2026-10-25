@@ -13,7 +13,7 @@ import (
 )
 
 func TestOpenHostFailsClosedBeforeOpeningStoreWhenDependenciesMissing(t *testing.T) {
-	_, err := OpenHost(context.Background(), Config{Enabled: true, StoreMode: "sqlite", DatabasePath: "unused.db", BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, InstanceID: "gateway-1"}, HostDependencies{})
+	_, err := OpenHost(context.Background(), Config{Enabled: true, PostgresURL: "postgres://127.0.0.1:1/unused?connect_timeout=1", BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, InstanceID: "gateway-1"}, HostDependencies{})
 	if err == nil {
 		t.Fatal("missing in-process owner dependencies must fail closed")
 	}
@@ -21,7 +21,7 @@ func TestOpenHostFailsClosedBeforeOpeningStoreWhenDependenciesMissing(t *testing
 
 func TestOpenHostRejectsConfirmedHandoffWhileNodeWriterIsActive(t *testing.T) {
 	_, err := OpenHost(context.Background(), Config{
-		Enabled: true, StoreMode: "sqlite", DatabasePath: "unused.db", BusinessHandoffConfirmed: true,
+		Enabled: true, PostgresURL: "postgres://127.0.0.1:1/unused?connect_timeout=1", BusinessHandoffConfirmed: true,
 		SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, InstanceID: "gateway-1",
 	}, HostDependencies{})
 	if err == nil || !strings.Contains(err.Error(), "Node writer") {
@@ -42,7 +42,7 @@ func TestOpenHostRequiresCompleteSchedulerDependencies(t *testing.T) {
 		return Target{Endpoint: "https://example.invalid", Prompt: "OK"}, nil
 	}
 	_, err := OpenHost(context.Background(), Config{
-		Enabled: true, StoreMode: "sqlite", DatabasePath: "unused.db",
+		Enabled: true, PostgresURL: "postgres://127.0.0.1:1/unused?connect_timeout=1",
 		BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true,
 		RuntimeReady: true, InstanceID: "gateway-1",
 	}, HostDependencies{

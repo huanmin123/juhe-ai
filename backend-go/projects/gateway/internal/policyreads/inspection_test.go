@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -114,7 +112,7 @@ func newPolicyTestEnv(t *testing.T) *policyTestEnv {
 }
 
 func (e *policyTestEnv) mountInspection(t *testing.T) *InspectionStore {
-	store, err := NewInspectionStore(e.db, true, nil, nil, e.inval)
+	store, err := NewInspectionStore(e.db, nil, nil, e.inval)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +121,7 @@ func (e *policyTestEnv) mountInspection(t *testing.T) *InspectionStore {
 }
 
 func (e *policyTestEnv) mountExternal(t *testing.T) *ExternalStore {
-	store, err := NewExternalStore(e.db, true, nil, nil, e.inval, "test-crypto-secret")
+	store, err := NewExternalStore(e.db, nil, nil, e.inval, "test-crypto-secret")
 	if err != nil {
 		t.Fatal(err)
 	}

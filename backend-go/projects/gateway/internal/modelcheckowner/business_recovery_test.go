@@ -17,7 +17,7 @@ func TestBusinessRecoveryApplierClearsOnlyMatchingLease(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate',7,5,'gateway-1','2030-01-01T00:10:00Z',NULL,'2030-01-01T00:00:00Z',NULL,'')`)); err != nil {
 		t.Fatal(err)
 	}
-	applier, err := NewBusinessRecoveryApplier(db, true)
+	applier, err := NewBusinessRecoveryApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestBusinessRecoveryApplierFailedProbeReschedules(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate',7,5,'gateway-1','2030-01-01T00:10:00Z',NULL,'2030-01-01T00:00:00Z',NULL,'')`)); err != nil {
 		t.Fatal(err)
 	}
-	applier, _ := NewBusinessRecoveryApplier(db, true)
+	applier, _ := NewBusinessRecoveryApplier(db)
 	when := time.Date(2030, 1, 1, 0, 1, 0, 0, time.UTC)
 	if err := applier.Complete(context.Background(), RecoveryPayload{OwnerID: "gateway-1", AccountID: "acct", EnforcementID: "enf", RunID: "run-failed", Generation: 2, PolicyRevision: 7, RecoveryIntervalMinutes: 10, CompletedAt: when}, false); err != nil {
 		t.Fatal(err)

@@ -89,13 +89,50 @@ func newJ3BPGTestDatabase(t *testing.T, ddl ...string) *pgtestkit.TestDatabase {
 		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
 			return err
 		}
+		// 单连接固定 search_path：裸名夹具 DDL 落 juhe_business，j3b 限定 DDL
+		// 落 juhe_j3b（2026-10-25 存储形态收尾）。
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, `SET search_path TO juhe_business,juhe_j3b,public`); err != nil {
+			return err
+		}
 		for _, statement := range ddl {
-			if _, err := db.ExecContext(ctx, statement); err != nil {
+			if _, err := conn.ExecContext(ctx, j3bQualifyDDL(statement)); err != nil {
 				return fmt.Errorf("执行 J3b 夹具 DDL 失败: %w", err)
 			}
 		}
 		return nil
 	})
+}
+
+// j3bQualifyDDL 把夹具 DDL 里裸名的 J3b 表限定到 juhe_j3b。夹具按生产 SQL
+// 的裸表名书写，而 search_path 首位是 juhe_business（业务表优先），不限定
+// 会让 J3b 表落错 schema。业务面表（accounts/models/质量策略等）不做改写。
+var (
+	j3bFixtureTableNames = []string{
+		"model_check_input_versions", "model_check_execution_claims", "model_check_observations",
+		"model_check_scheduler_tasks", "model_token_intercept_baseline_versions",
+		"model_trust_latest_dirty_accounts", "model_trust_observation_receipts",
+		"model_trust_aggregation_state", "model_account_trust_results",
+		"account_quality_health_hourly", "model_check_inputs", "model_check_outcomes",
+		"model_check_runs", "model_check_items",
+	}
+	j3bTableNameAlternation = strings.Join(j3bFixtureTableNames, "|")
+	j3bCreateTablePattern  = regexp.MustCompile(`(?i)(\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(` + j3bTableNameAlternation + `)\b`)
+	j3bAlterTablePattern   = regexp.MustCompile(`(?i)(\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?)(` + j3bTableNameAlternation + `)\b`)
+	j3bOnTablePattern      = regexp.MustCompile(`(?i)(\bON\s+)(` + j3bTableNameAlternation + `)\b`)
+)
+
+func j3bQualifyDDL(statement string) string {
+	statement = j3bCreateTablePattern.ReplaceAllString(statement, "${1}"+j3bTestSchema+".${2}")
+	statement = j3bAlterTablePattern.ReplaceAllString(statement, "${1}"+j3bTestSchema+".${2}")
+	if strings.Contains(strings.ToUpper(statement), "CREATE INDEX") || strings.Contains(strings.ToUpper(statement), "CREATE TRIGGER") {
+		statement = j3bOnTablePattern.ReplaceAllString(statement, "${1}"+j3bTestSchema+".${2}")
+	}
+	return statement
 }
 
 // newJ3BPGDatabase 等价于 newJ3BPGTestDatabase(...).DB。
@@ -104,22 +141,15 @@ func newJ3BPGDatabase(t *testing.T, ddl ...string) *sql.DB {
 	return newJ3BPGTestDatabase(t, ddl...).DB
 }
 
-// j3bPGConfig 构造 OpenStore 的生产 postgres 配置（门控全开，与
-// testSQLiteConfig 同形态）。
+// j3bPGConfig 构造 OpenStore 的生产 postgres 配置（门控全开）。
 func j3bPGConfig(dsn string) Config {
-	return Config{Enabled: true, StoreMode: "postgres", PostgresURL: dsn, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
+	return Config{Enabled: true, PostgresURL: dsn, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
 }
 
-// testSQLiteConfig 构造 OpenStore 的 sqlite 配置（门控全开）。仅剩尚未迁移
-// 的组A测试与无真实建库的门控测试在用；迁移完成后随最后一个调用方删除。
-func testSQLiteConfig(path string) Config {
-	return Config{Enabled: true, StoreMode: "sqlite", DatabasePath: path, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
-}
-
-// j3bNewStore 以生产 PG 臂形态直构 Store（与 &Store{db: db, mode: "sqlite"}
+// j3bNewStore 以生产 PG 臂形态直构 Store（与 &Store{db: db, schema: j3bTestSchema}
 // 同构，schema 固定 juhe_j3b）。
 func j3bNewStore(db *sql.DB) *Store {
-	return &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	return &Store{db: db, schema: j3bTestSchema}
 }
 
 // j3bRetryRunsFixtureDDL 是健康重试扫描测试族的 16 列最小 model_check_runs
@@ -141,7 +171,7 @@ const (
 	j3bRunsSyncDecisionDDL = `CREATE TABLE ` + j3bTestSchema + `.model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`
 )
 
-// j3bRuntimeFixtureDDLs 是 runtimeTestDDL()（SQLite 13 表夹具，供 failpoint/
+// j3bRuntimeFixtureDDLs 是 j3bRuntimeFixtureDDLs()（SQLite 13 表夹具，供 failpoint/
 // scripted 臂继续使用）的 PG 方言对齐版：列集逐列一致，时间列与 payload/
 // committed 列型对齐 maintenance 生产 DDL（j3bmodelcheck/bootstrap.go）。
 // outcomes.payload 按生产 JSONB；需要原始字节摘要回读语义的测试自带 text
@@ -176,22 +206,3 @@ func j3bSchedulerTasksTextPayloadDDL() string {
 	return `CREATE TABLE ` + j3bTestSchema + `.model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT NOT NULL,due_at TIMESTAMPTZ NOT NULL,claim_owner TEXT,claim_until TIMESTAMPTZ,fence_token BIGINT NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',last_error TEXT,completed_at TIMESTAMPTZ,payload TEXT NOT NULL,updated_at TIMESTAMPTZ NOT NULL)`
 }
 
-// runtimeTestDDL 是 SQLite 方言的 13 表运行时夹具（组A 已由
-// j3bRuntimeFixtureDDLs 承接）；现仅剩 scripted failpoint 驱动与内存库消费方
-// （w13g2/wb_*/w14m 家族），随其退役批次一并删除。
-func runtimeTestDDL() []string {
-	return []string{
-		`CREATE TABLE model_check_input_versions (identity_key TEXT PRIMARY KEY, next_version INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version INTEGER NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, payload BLOB NOT NULL)`,
-		`CREATE TABLE model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, claim_until TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token INTEGER NOT NULL, observed_at TEXT NOT NULL, stored_at TEXT NOT NULL, payload BLOB NOT NULL, payload_digest TEXT NOT NULL, committed INTEGER NOT NULL)`,
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, message TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, error_code TEXT, error_message TEXT, quality_health_sync_status TEXT)`,
-		`CREATE TABLE model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL, error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, probe_family TEXT NOT NULL, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL, created_at TEXT NOT NULL, aggregation_completed_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, score INTEGER NOT NULL, threshold INTEGER NOT NULL, level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(account_id,stat_hour))`,
-		`CREATE TABLE model_account_trust_results (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, identity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', mapping_status TEXT NOT NULL DEFAULT 'unknown', usage_integrity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', protocol_status TEXT NOT NULL DEFAULT 'insufficient_evidence', evidence_status TEXT NOT NULL DEFAULT 'insufficient', evidence_coverage INTEGER NOT NULL DEFAULT 0, observation_count INTEGER NOT NULL DEFAULT 0, reason_codes_json TEXT NOT NULL DEFAULT '[]', last_observed_id TEXT, last_observed_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
-		`CREATE TABLE model_trust_latest_dirty_accounts (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, dirty_reason TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
-		`CREATE TABLE model_trust_observation_receipts (observation_id TEXT PRIMARY KEY, observation_created_at TEXT NOT NULL, processed_at TEXT NOT NULL)`,
-		`CREATE TABLE model_trust_aggregation_state (scope_key TEXT PRIMARY KEY, cursor_created_at TEXT, cursor_id TEXT, last_success_at TEXT, updated_at TEXT NOT NULL)`,
-	}
-}

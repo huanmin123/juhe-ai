@@ -166,7 +166,7 @@ func TestW1QuotaRuntimeStateBridgeAndEval(t *testing.T) {
 
 func TestW1SettingsLimitAndCatalogs(t *testing.T) {
 	fixture := newChainFixture(t)
-	store, err := settings.NewStore(fixture.db, false, time.Now, nil)
+	store, err := settings.NewStore(fixture.db, time.Now, nil)
 	if err != nil {
 		t.Fatalf("settings store = %v", err)
 	}
@@ -238,7 +238,7 @@ func TestW1AttemptAuditSinkCompleteAttempt(t *testing.T) {
 
 func TestW1AuthzAdapters(t *testing.T) {
 	fixture := newChainFixture(t)
-	store, err := authz.NewStore(fixture.db, false, time.Now)
+	store, err := authz.NewStore(fixture.db, time.Now)
 	if err != nil {
 		t.Fatalf("authz store = %v", err)
 	}
@@ -575,7 +575,7 @@ func TestW1AuthorizationQuotaExceededArms(t *testing.T) {
 		t.Fatalf("stats store = %v", err)
 	}
 	bridge := &accountsRuntimeResetBridge{
-		db: fixture.db, pg: false,
+		db:       fixture.db,
 		settings: func(string) (string, error) { return "UTC", nil },
 		stats:    statsStore,
 		now:      func() time.Time { return time.UnixMilli(1728000000000) },

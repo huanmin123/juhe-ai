@@ -302,7 +302,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 
 	// ---- runtime cache (G10) ----
-	models, err := gatewayruntimecache.NewSQLReadModels(composed.db, composed.pgDialect, time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(composed.db, time.Now, nil, nil, nil)
 	if err != nil {
 		services.Close()
 		return nil, fmt.Errorf("create gateway runtime sql read models: %w", err)
@@ -311,7 +311,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// management settings PATCH immediately (Node clears the shared
 	// systemSettingsCache on write) instead of a stale 60s snapshot.
 	models.SetSettingsStore(composed.settingsStore)
-	selector, selectorErr := newChainAccountsSelectorWithStats(composed.db, composed.statsDB, composed.pgDialect, cfg.Secret, time.Now, cfg.DispatchAccountCandidateLimit)
+	selector, selectorErr := newChainAccountsSelectorWithStats(composed.db, composed.statsDB, cfg.Secret, time.Now, cfg.DispatchAccountCandidateLimit)
 	if selectorErr != nil {
 		services.Close()
 		return nil, fmt.Errorf("create gateway accounts selector: %w", selectorErr)
@@ -330,7 +330,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// api-key-group-route-selector.service.ts）。redis 驱动共享轮转/权重
 	// 计数器（存储形态收口后恒 redis）。
 	routeSelector := gatewayrouting.NewAPIKeyGroupRouteSelector("redis", gatewayrouting.NewRedisRouteStateCounter(cfg.RedisStateURL), cfg.RedisStateURL)
-	catalogSource, catalogErr := newChainCatalogSource(composed.db, composed.pgDialect)
+	catalogSource, catalogErr := newChainCatalogSource(composed.db)
 	if catalogErr != nil {
 		services.Close()
 		return nil, fmt.Errorf("create gateway model catalog source: %w", catalogErr)
@@ -396,7 +396,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	services.Circuits = circuits
 	services.closeFuncs = append(services.closeFuncs, circuits.Close)
 
-	policySource, err := gatewayclientip.NewSQLPolicySource(composed.statsDB, composed.pgDialect, time.Now, ipstatsTimezone(settingValue))
+	policySource, err := gatewayclientip.NewSQLPolicySource(composed.statsDB, time.Now, ipstatsTimezone(settingValue))
 	if err != nil {
 		services.Close()
 		return nil, fmt.Errorf("create client-ip policy source: %w", err)
@@ -588,7 +588,6 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// 行为（见 chain_circuit_controlplane.go）。
 	accountCircuitRuntime, closeAccountCircuits, circuitsErr := newChainAccountCircuitService("redis", cfg.RedisStateURL, cfg.RedisNamespace, chainAccountCircuitPersistConfig{
 		DB:                composed.db,
-		Postgres:          composed.pgDialect,
 		Confirmed:         cfg.BusinessHandoffConfirmed,
 		SchemaReady:       cfg.BusinessSchemaReady,
 		NodeWriterStopped: cfg.BusinessNodeWriterStopped,
@@ -702,10 +701,9 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// Key 级持久写走 accountkeystates（Node db-service record_account_api_key_*
 	// 的进程内直写），运行态失效经 K5 总线。
 	keyStatesStore, keyStatesErr := accountkeystates.NewStore(accountkeystates.Config{
-		DB:       composed.db,
-		Postgres: composed.pgDialect,
-		Secret:   cfg.Secret,
-		Now:      time.Now,
+		DB:     composed.db,
+		Secret: cfg.Secret,
+		Now:    time.Now,
 		InvalidateRuntimeCache: func(reason string) {
 			if composed.Bus != nil {
 				composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)

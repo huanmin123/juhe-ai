@@ -34,7 +34,7 @@ func TestPostgresGatewayTrustRuntimeSmoke(t *testing.T) {
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(1)
 	defer db.Close()
-	store := &Store{db: db, mode: "postgres", schema: "juhe_j3b"}
+	store := &Store{db: db, schema: "juhe_j3b"}
 	if err := store.CheckSchema(context.Background()); err != nil {
 		t.Fatalf("J3b PostgreSQL schema must be ready before runtime smoke: %v", err)
 	}

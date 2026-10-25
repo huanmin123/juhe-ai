@@ -89,7 +89,6 @@ const chainRequestFailureReason = "request_failure"
 // degraded contract for hand-assembled tests.
 type chainProbeRequestOutboxWriter struct {
 	db         *sql.DB
-	pg         bool
 	deadlineMS int64
 	now        func() time.Time
 
@@ -101,21 +100,15 @@ type chainProbeRequestOutboxWriter struct {
 // newChainProbeRequestOutboxWriter builds the durable probe-request writer;
 // deadlineMS <= 0 keeps the writer inert (input_unavailable), matching the
 // old bridge's missing-assembly contract.
-func newChainProbeRequestOutboxWriter(db *sql.DB, pgDialect bool, probeDeadlineMS int64) *chainProbeRequestOutboxWriter {
-	return &chainProbeRequestOutboxWriter{db: db, pg: pgDialect, deadlineMS: probeDeadlineMS, now: time.Now}
+func newChainProbeRequestOutboxWriter(db *sql.DB, probeDeadlineMS int64) *chainProbeRequestOutboxWriter {
+	return &chainProbeRequestOutboxWriter{db: db, deadlineMS: probeDeadlineMS, now: time.Now}
 }
 
 func (w *chainProbeRequestOutboxWriter) table() string {
-	if w != nil && w.pg {
-		return "juhe_business." + chainProbeRequestOutboxTableName
-	}
-	return chainProbeRequestOutboxTableName
+	return "juhe_business." + chainProbeRequestOutboxTableName
 }
 
 func (w *chainProbeRequestOutboxWriter) bind(query string) string {
-	if w == nil || !w.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

@@ -44,7 +44,6 @@ const (
 // executor.
 type chatImageObservations struct {
 	db       *sql.DB
-	postgres bool
 	executor chat.GenerationExecutor
 	objects  chat.ObjectStore
 
@@ -52,21 +51,15 @@ type chatImageObservations struct {
 	tasks map[string][]chan struct{}
 }
 
-func newChatImageObservations(db *sql.DB, postgres bool, objects chat.ObjectStore, executor chat.GenerationExecutor) *chatImageObservations {
-	return &chatImageObservations{db: db, postgres: postgres, objects: objects, executor: executor, tasks: map[string][]chan struct{}{}}
+func newChatImageObservations(db *sql.DB, objects chat.ObjectStore, executor chat.GenerationExecutor) *chatImageObservations {
+	return &chatImageObservations{db: db, objects: objects, executor: executor, tasks: map[string][]chan struct{}{}}
 }
 
 func (o *chatImageObservations) table(name string) string {
-	if o.postgres {
-		return "juhe_chat." + name
-	}
-	return name
+	return "juhe_chat." + name
 }
 
 func (o *chatImageObservations) bind(query string) string {
-	if !o.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

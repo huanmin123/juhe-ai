@@ -1,5 +1,5 @@
-// Package announcements owns the M01 vertical slice: dual-mode announcement
-// store (SQLite + PostgreSQL) and the full route family contract ported from
+// Package announcements owns the M01 vertical slice: the PostgreSQL
+// announcement store and the full route family contract ported from
 // backend/src/modules/announcements/announcements.routes.ts, including
 // revision conflicts (409 + currentRevision), publish/unpublish via status
 // patch, read tracking, and operation-log emission.
@@ -41,15 +41,14 @@ const publicLimit = 30
 // still load; new writes converge the column onto the fixed width.
 const announcementInstantLayout = "2006-01-02T15:04:05.000Z"
 
-// Store is the dual-mode announcement persistence.
+// Store is the announcement persistence.
 type Store struct {
 	db   *sql.DB
-	pg   bool
 	now  func() time.Time
 	newI func(prefix string) string
 }
 
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, newID func(string) string) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("announcements store requires a database")
 	}
@@ -59,20 +58,14 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string
 	if newID == nil {
 		newID = func(prefix string) string { return prefix + "_" + now().UTC().Format("20060102150405") }
 	}
-	return &Store{db: db, pg: postgres, now: now, newI: newID}, nil
+	return &Store{db: db, now: now, newI: newID}, nil
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

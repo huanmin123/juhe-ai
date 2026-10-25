@@ -301,7 +301,7 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 	})
 	t.Run("sealer 缺失拒绝", func(t *testing.T) {
 		db := newContractTestDB(t)
-		store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+		store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -314,7 +314,7 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 	})
 	t.Run("无默认分组时策略路由失败关闭", func(t *testing.T) {
 		db := newContractTestDB(t)
-		store, _ := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+		store, _ := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 		ensurer := NewSQLDefaultResources(store, wlStringSealer{})
 		tx, _ := db.BeginTx(ctx, nil)
 		defer tx.Rollback()
@@ -325,7 +325,7 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 	})
 	t.Run("sealer 空信封拒绝", func(t *testing.T) {
 		db := newContractTestDB(t)
-		store, _ := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+		store, _ := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 		ensurer := NewSQLDefaultResources(store, wlStringSealer{empty: true})
 		tx, _ := db.BeginTx(ctx, nil)
 		defer tx.Rollback()
@@ -345,7 +345,7 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 	})
 	t.Run("完整流水线幂等", func(t *testing.T) {
 		db := newContractTestDB(t)
-		store, _ := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+		store, _ := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 		ensurer := NewSQLDefaultResources(store, wlStringSealer{})
 		run := func() int {
 			tx, _ := db.BeginTx(ctx, nil)
@@ -405,7 +405,7 @@ func TestWlStoreHelpersAndDialect(t *testing.T) {
 		// SQLite 模式单写事务已串行化，锁必须直接返回 nil。
 		tx, _ := db.BeginTx(context.Background(), nil)
 		defer tx.Rollback()
-		sqliteStore, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+		sqliteStore, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -432,7 +432,7 @@ func TestWlStoreHelpersAndDialect(t *testing.T) {
 			t.Fatalf("err=%v", err)
 		}
 		// 不存在的账户：affected != 1，返回空 summary 且无错误（SQLite 方言验证）。
-		sqliteStore, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+		sqliteStore, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 		if err != nil {
 			t.Fatal(err)
 		}

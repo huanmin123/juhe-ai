@@ -2,7 +2,7 @@ package ipstats
 
 // pgkit_test.go 是 ipstats 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，测试尾巴批次）：
-// pgtestkit 每测试独立库 + 生产 PG 臂（NewStore(db, true, ...)，client_ip_*/
+// pgtestkit 每测试独立库 + 生产形态（NewStore(db, ...)，client_ip_*/
 // stats_job_state 落 juhe_stats、system_settings 落 juhe_business，与生产
 // 装配同一 schema 限定 + $n 占位符）。
 //

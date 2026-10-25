@@ -1773,11 +1773,12 @@ func (l *v1DispatchLoop) settleHotQualityTerminal(
 	case handling.RetryUpstream:
 		// response_inspection（非用户策略）/ pre_commit_stream_failure 等
 		// 响应期重试的当前 attempt 诊断终态。
-	case handling.ErrorCode == gatewayresponse.UpstreamStreamAbnormalEOFCode:
-		// 流异常终局失败（流式提交边界受限重放与异常终局处置设计 §3.2.2）：
+	case handling.ErrorCode == gatewayresponse.UpstreamStreamAbnormalEOFCode ||
+		handling.ErrorCode == gatewayresponse.UpstreamStreamEmptyCompletionCode:
+		// 流异常终局失败（设计 §3.2.2）与上游空完成失败（设计 §3.2.3 v2.3）：
 		// 热质量终态归上游响应面（upstream_response_failure / none /
 		// upstream_response），提交前换号与提交后断开两形态一致；AlreadyFinalized
-		// 渲染族的 unknown / request_lifecycle 臂不适用于该失败（它有明确的上游
+		// 渲染族的 unknown / request_lifecycle 臂不适用于该失败族（它有明确的上游
 		// 归因），显式分支保持缺省终态。
 	case handling.TransportFailure != nil:
 		terminal = gatewaydispatch.HotQualityTerminal{
@@ -1937,6 +1938,11 @@ type postVerdictClassification struct {
 	//（不直接熔断，阈值由既有机制管）；keyModel 维持默认臂
 	// ReportUpstreamNotComplete（ProtocolValidatedSuccess=false 既有落点）。
 	upstreamStreamAbnormalEOF bool
+	// upstreamStreamEmptyCompletion 标记上游空完成失败（error_code =
+	// upstream_stream_empty_completion，同设计 §3.2.3 v2.3 增量）：归因三面与
+	// upstreamStreamAbnormalEOF 同构——circuit ReportUnknown、账户锁按本码
+	// RecordFailureAsync、keyModel 默认臂、热质量 upstream_response_failure。
+	upstreamStreamEmptyCompletion bool
 }
 
 // classifyPostVerdictOutcome 对齐 Node routes.ts:1750-1803 的判定组。字段映射：
@@ -1960,7 +1966,9 @@ type postVerdictClassification struct {
 //     （网关主动的同账户 body 变体重放，非传输失败也非帧完成证据）。
 //   - 流式提交边界受限重放与异常终局处置设计 §3.2.2 增补：error_code =
 //     upstream_stream_abnormal_eof（提交前换号与提交后断开两形态共用）→
-//     upstreamStreamAbnormalEOF，失败归因三面见该字段注释。
+//     upstreamStreamAbnormalEOF，失败归因三面见该字段注释；§3.2.3 v2.3 增补：
+//     error_code = upstream_stream_empty_completion（上游空完成）→
+//     upstreamStreamEmptyCompletion，归因三面同构。
 func classifyPostVerdictOutcome(
 	dispatched gatewaydispatch.UpstreamDispatchResult,
 	handling gatewayresponse.UpstreamResponseHandlingResult,
@@ -2027,6 +2035,8 @@ func classifyPostVerdictOutcome(
 		requestLocalProtocolFailure:  requestLocalProtocolFailure,
 		protocolValidatedSuccess:     protocolValidatedSuccess,
 		upstreamStreamAbnormalEOF:    handling.ErrorCode == gatewayresponse.UpstreamStreamAbnormalEOFCode,
+		upstreamStreamEmptyCompletion: handling.ErrorCode ==
+			gatewayresponse.UpstreamStreamEmptyCompletionCode,
 	}
 }
 
@@ -2042,15 +2052,18 @@ func classifyPostVerdictOutcome(
 //	           Node 同形态下 circuitDecision undefined 且第二支不触发）；
 //	           BUG-0289：codex 加密上下文清理重放轮并入 neutral（ReportUnknown），
 //	           不计治愈证据；upstream_stream_abnormal_eof（流式提交边界受限
-//	           重放与异常终局处置设计 §3.2.2）同走 ReportUnknown 中性臂；
+//	           重放与异常终局处置设计 §3.2.2）与 upstream_stream_empty_completion
+//	           （同设计 §3.2.3 v2.3）同走 ReportUnknown 中性臂；
 //	keyModel = neutral || requestLocalProtocolFailure || explicitUserPolicyRetry
 //	           → ReportUnknown；protocolValidatedSuccess → ReportCompleteSuccess；
-//	           其余（含 upstream_stream_abnormal_eof）→ ReportUpstreamNotComplete；
+//	           其余（含 upstream_stream_abnormal_eof /
+//	           upstream_stream_empty_completion）→ ReportUpstreamNotComplete；
 //	账户锁   = transportFailure 且未中止且非 downstream_connection_closed 且
 //	           !neutral 且 !requestLocalProtocolFailure 且 !hardCutover →
 //	           RecordFailureAsync('upstream_body_transport_failure')；
-//	           upstream_stream_abnormal_eof 且未中止且非 downstream_connection_
-//	           closed → RecordFailureAsync('upstream_stream_abnormal_eof')。
+//	           upstream_stream_abnormal_eof / upstream_stream_empty_completion
+//	           且未中止且非 downstream_connection_closed →
+//	           RecordFailureAsync(各自 error_code)。
 //
 // 与 Node 的顺序偏差（无行为耦合，各消费者独立记账）：Node 先锁记录（:1813）
 // 再 circuit transport-failure（:1839）；Go 本块整体在 settleHotQualityTerminal
@@ -2083,13 +2096,18 @@ func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 			}, "响应期传输失败的账户锁失败记录未完成")
 		}
 	}
-	// 流异常终局失败侧（设计 §3.2.2）：RecordFailureAsync 按
-	// upstream_stream_abnormal_eof 归因计入失败统计（不直接熔断，阈值由既有
-	// 机制管），修正「断流被记为治愈证据」的记账倒挂。
-	if class.upstreamStreamAbnormalEOF && !aborted && !downstreamClosed &&
+	// 流异常终局失败侧（设计 §3.2.2）与上游空完成失败侧（设计 §3.2.3 v2.3）：
+	// RecordFailureAsync 按各自 error_code 归因计入失败统计（不直接熔断，阈值
+	// 由既有机制管），修正「断流被记为治愈证据」的记账倒挂。
+	structuralStreamFailure := class.upstreamStreamAbnormalEOF || class.upstreamStreamEmptyCompletion
+	structuralFailureReason := gatewayresponse.UpstreamStreamAbnormalEOFCode
+	if class.upstreamStreamEmptyCompletion {
+		structuralFailureReason = gatewayresponse.UpstreamStreamEmptyCompletionCode
+	}
+	if structuralStreamFailure && !aborted && !downstreamClosed &&
 		lockRecorder != nil &&
 		l.current != nil && l.current.UsageContext.TrafficSource == gatewayTrafficSource {
-		if err := lockRecorder.RecordFailureAsync(ctx, dispatched.Account.ID, gatewayresponse.UpstreamStreamAbnormalEOFCode, dispatched.AccountLockObservation); err != nil {
+		if err := lockRecorder.RecordFailureAsync(ctx, dispatched.Account.ID, structuralFailureReason, dispatched.AccountLockObservation); err != nil {
 			l.c.observability.Logger().Warn("gateway_account_lock_failure_record_failed", map[string]any{
 				"event":     "gateway_account_lock_failure_record_failed",
 				"traceId":   l.traceID,
@@ -2100,7 +2118,8 @@ func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 	}
 
 	// circuit 结算（Node :1839-1848 + :1865-1869）。upstream_stream_abnormal_eof
-	// 走中性臂 ReportUnknown（设计 §3.2.2：干净 EOF 非 transport 失败，不进
+	// 与 upstream_stream_empty_completion（设计 §3.2.3 v2.3）走中性臂
+	// ReportUnknown（设计 §3.2.2：干净 EOF 非 transport 失败，不进
 	// ReportTransportFailure；也不得落入 transportFailure==nil 的
 	// ReportFramingComplete 治愈证据臂，BUG-0289 注释口径同源）。
 	if circuitAttempt != nil {
@@ -2116,7 +2135,7 @@ func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 					"error":     err.Error(),
 				}, "账户熔断传输失败结算未完成")
 			}
-		} else if class.neutralSchedulingTermination || class.upstreamStreamAbnormalEOF {
+		} else if class.neutralSchedulingTermination || class.upstreamStreamAbnormalEOF || class.upstreamStreamEmptyCompletion {
 			if _, err := circuitAttempt.ReportUnknown(ctx); err != nil {
 				l.c.observability.Logger().Warn("gateway_account_circuit_unknown_report_failed", map[string]any{
 					"event":     "gateway_account_circuit_unknown_report_failed",

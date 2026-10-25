@@ -9,7 +9,7 @@ import (
 )
 
 func TestW11GExternalHelperArms(t *testing.T) {
-	if _, err := NewExternalStore(nil, false, time.Now, nil, nil, ""); err == nil {
+	if _, err := NewExternalStore(nil, time.Now, nil, nil, ""); err == nil {
 		t.Fatal("nil db must fail")
 	}
 	// 非数组 JSON 的 scopes 解码失败。
@@ -83,7 +83,7 @@ func TestW11GExternalUniqueMappingAndResolveArms(t *testing.T) {
 		t.Fatal("primary tokens scan error must propagate")
 	}
 	// Postgres 模式的 keyword LIKE 分支。
-	pgStore, err := NewExternalStore(w11gOpenScripted(t, []w11gPStep{{}, {}}), true, func() time.Time { return w11gClock }, nil, nil, "")
+	pgStore, err := NewExternalStore(w11gOpenScripted(t, []w11gPStep{{}, {}}), func() time.Time { return w11gClock }, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestW11GInspectionListRowArms(t *testing.T) {
 		t.Fatal("bad action must fail list")
 	}
 	// NewInspectionStore nil db。
-	if _, err := NewInspectionStore(nil, false, time.Now, nil, nil); err == nil {
+	if _, err := NewInspectionStore(nil, time.Now, nil, nil); err == nil {
 		t.Fatal("nil db must fail")
 	}
 }

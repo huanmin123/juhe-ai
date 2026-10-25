@@ -21,16 +21,25 @@ import (
 
 func w1OwnerBusinessRunNowDDL() []string {
 	return []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,authorization_instance_source_account_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,availability_schedule_json TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,authorization_instance_source_account_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,availability_schedule_json TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,cleared_at TEXT,created_at TEXT,updated_at TEXT)`,
+	}
+}
+
+// w1IgnoreUpdateTriggerDDL 生成"静默忽略 UPDATE"的 PG 触发器：BEFORE 行
+// 触发器返回 NULL 即取消该行更新，等价于 SQLite 的 RAISE(IGNORE)。
+func w1IgnoreUpdateTriggerDDL(name, table, column, when string) []string {
+	return []string{
+		`CREATE OR REPLACE FUNCTION ` + name + `() RETURNS trigger AS $$ BEGIN RETURN NULL; END; $$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER ` + name + ` BEFORE UPDATE OF ` + column + ` ON ` + table + ` FOR EACH ROW ` + when + ` EXECUTE FUNCTION ` + name + `()`,
 	}
 }
 
 func w1OwnerSeedPenaltyAccount(t *testing.T, db *sql.DB, status string, revision int, availability string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled,last_error_code,last_error_message) VALUES ('acct','sys','gpt',?,7,NULL,NULL,?,?,1,1,0,'model_quality_failed','')`, revision, status, availability); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled,last_error_code,last_error_message) VALUES ('acct','sys','gpt',?,7,NULL,NULL,?,?, 1,1,0,'model_quality_failed','')`, revision, status, availability); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -58,7 +67,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 	input := SchedulePenaltyRestoreInput{AccountID: "acct", SystemAccountID: "sys", ScheduleID: "sch", RunID: "run-new", OccurredAt: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)}
 
 	t.Run("invalid input and begin/query/scan/iterate failures", func(t *testing.T) {
-		applier, err := NewBusinessRecoveryApplier(wbOpenMemoryDB(t, w1OwnerBusinessRunNowDDL()), false)
+		applier, err := NewBusinessRecoveryApplier(wbOpenPGDB(t, w1OwnerBusinessRunNowDDL()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +88,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				db, fp := w14mFailDB(t, w1OwnerBusinessRunNowDDL())
 				defer fp.disarm()
-				applier, err := NewBusinessRecoveryApplier(db, false)
+				applier, err := NewBusinessRecoveryApplier(db)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -100,7 +109,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			db, fp := w14mFailDB(t, w1OwnerBusinessRunNowDDL())
 			defer fp.disarm()
 			w1OwnerSeedPenalty(t, db, "disable", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			outcome, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err != nil || outcome.Restored != 0 || outcome.Skipped != 1 {
 				t.Fatalf("missing account outcome=%+v err=%v", outcome, err)
@@ -115,7 +124,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			defer fp.disarm()
 			w1OwnerSeedPenaltyAccount(t, db, "quality_isolated", 6, `{ "enabled":`)
 			w1OwnerSeedPenalty(t, db, "quality_isolate", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			_, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err == nil || !strings.Contains(err.Error(), "evaluate J3b schedule restore availability") {
 				t.Fatalf("invalid availability err=%v", err)
@@ -130,7 +139,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			defer fp.disarm()
 			w1OwnerSeedPenaltyAccount(t, db, "active", 6, "")
 			w1OwnerSeedPenalty(t, db, "mystery", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			outcome, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err != nil || outcome.Restored != 0 || outcome.Skipped != 1 {
 				t.Fatalf("unknown action outcome=%+v err=%v", outcome, err)
@@ -145,7 +154,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			defer fp.disarm()
 			w1OwnerSeedPenaltyAccount(t, db, "active", 6, "")
 			w1OwnerSeedPenalty(t, db, "disable", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			outcome, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err != nil || outcome.Restored != 0 || outcome.Skipped != 1 {
 				t.Fatalf("CAS skip outcome=%+v err=%v", outcome, err)
@@ -170,7 +179,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 				defer fp.disarm()
 				w1OwnerSeedPenaltyAccount(t, db, tc.status, 6, "")
 				w1OwnerSeedPenalty(t, db, tc.action, "schedule", "sch", "active", 6)
-				applier, _ := NewBusinessRecoveryApplier(db, false)
+				applier, _ := NewBusinessRecoveryApplier(db)
 				fp.arm(tc.pattern)
 				_, err := applier.RestoreSchedulePenalties(ctx, input)
 				if err == nil || !strings.Contains(err.Error(), "w14m") {
@@ -191,7 +200,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			defer fp.disarm()
 			w1OwnerSeedPenaltyAccount(t, db, "disabled", 6, "")
 			w1OwnerSeedPenalty(t, db, "disable", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			fp.arm("UPDATE account_quality_enforcements SET state='cleared'")
 			_, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err == nil || !strings.Contains(err.Error(), "enforcement CAS failed") {
@@ -208,7 +217,7 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			defer fp.disarm()
 			w1OwnerSeedPenaltyAccount(t, db, "disabled", 6, "")
 			w1OwnerSeedPenalty(t, db, "disable", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			fp.failCommitsFrom = 1
 			_, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err == nil || !strings.Contains(err.Error(), "commit J3b schedule penalty restore") || !strings.Contains(err.Error(), "w14m") {
@@ -224,12 +233,12 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 
 	t.Run("ignored action and enforcement CAS updates never leave partial state", func(t *testing.T) {
 		t.Run("account action RAISE IGNORE counts as skipped", func(t *testing.T) {
-			ddl := append(w1OwnerBusinessRunNowDDL(), `CREATE TRIGGER w1_ignore_account_restore BEFORE UPDATE OF status ON accounts BEGIN SELECT RAISE(IGNORE); END`)
+			ddl := append(w1OwnerBusinessRunNowDDL(), w1IgnoreUpdateTriggerDDL("w1_ignore_account_restore", "accounts", "status", "")...)
 			db, fp := w14mFailDB(t, ddl)
 			defer fp.disarm()
 			w1OwnerSeedPenaltyAccount(t, db, "disabled", 6, "")
 			w1OwnerSeedPenalty(t, db, "disable", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			outcome, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err != nil || outcome.Restored != 0 || outcome.Skipped != 1 {
 				t.Fatalf("ignored account CAS outcome=%+v err=%v", outcome, err)
@@ -240,12 +249,12 @@ func TestW1BusinessRecoveryFaultEdges(t *testing.T) {
 			}
 		})
 		t.Run("enforcement clear RAISE IGNORE rolls account back", func(t *testing.T) {
-			ddl := append(w1OwnerBusinessRunNowDDL(), `CREATE TRIGGER w1_ignore_enforcement_clear BEFORE UPDATE OF state ON account_quality_enforcements WHEN NEW.state='cleared' BEGIN SELECT RAISE(IGNORE); END`)
+			ddl := append(w1OwnerBusinessRunNowDDL(), w1IgnoreUpdateTriggerDDL("w1_ignore_enforcement_clear", "account_quality_enforcements", "state", "WHEN (NEW.state='cleared')")...)
 			db, fp := w14mFailDB(t, ddl)
 			defer fp.disarm()
 			w1OwnerSeedPenaltyAccount(t, db, "disabled", 6, "")
 			w1OwnerSeedPenalty(t, db, "disable", "schedule", "sch", "active", 6)
-			applier, _ := NewBusinessRecoveryApplier(db, false)
+			applier, _ := NewBusinessRecoveryApplier(db)
 			_, err := applier.RestoreSchedulePenalties(ctx, input)
 			if err == nil || !strings.Contains(err.Error(), "enforcement CAS failed") {
 				t.Fatalf("ignored enforcement CAS err=%v", err)
@@ -263,10 +272,10 @@ func w1OwnerSchedulerBusinessDDL() []string { return w1OwnerBusinessRunNowDDL() 
 func w1OwnerSeedSchedule(t *testing.T, db *sql.DB, leaseOwner, leaseUntil string) {
 	t.Helper()
 	now := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled) VALUES ('acct','sys','gpt',4,7,NULL,NULL,'active','gpt-6-luna','',1,0,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled) VALUES ('acct','sys','gpt',4,7,NULL,NULL,'active','gpt-6-luna','', 1,0, 0)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,updated_at) VALUES ('sch',1,'sys','acct','gpt-6-luna',30,'quick',70,'fallback',10,'[]',1,?,?,?,NULL,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano), leaseOwner, leaseUntil); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,updated_at) VALUES ('sch',1,'sys','acct','gpt-6-luna',30,'quick',70,'fallback',10,'[]', 1,?,?,?,NULL,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano), leaseOwner, leaseUntil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -335,8 +344,8 @@ func TestW1BusinessSchedulerFaultEdges(t *testing.T) {
 				}
 			})
 		}
-		t.Run("SQLite trigger RAISE IGNORE leaves no task or lease", func(t *testing.T) {
-			db, fp := w14mFailDB(t, append(w1OwnerSchedulerBusinessDDL(), `CREATE TRIGGER w1_ignore_schedule_lease BEFORE UPDATE OF lease_owner ON model_quality_schedules BEGIN SELECT RAISE(IGNORE); END`))
+		t.Run("PG trigger ignoring the update leaves no task or lease", func(t *testing.T) {
+			db, fp := w14mFailDB(t, append(w1OwnerSchedulerBusinessDDL(), w1IgnoreUpdateTriggerDDL("w1_ignore_schedule_lease", "model_quality_schedules", "lease_owner", "")...))
 			defer fp.disarm()
 			store := schedulerStoreFixture(t)
 			defer store.db.Close()
@@ -448,7 +457,7 @@ func TestW1HTTPRunNowFaultEdges(t *testing.T) {
 		if _, err := db.Exec(`UPDATE accounts SET system_account_id='sys-1' WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at) VALUES ('sch',1,'sys-1','acct','gpt-6-luna',30,'quick',70,'fallback',10,1,?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at) VALUES ('sch',1,'sys-1','acct','gpt-6-luna',30,'quick',70,'fallback',10, 1,?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		response = request(handler, "/quality-schedules/sch/run-now?systemAccountId=sys-1", `{"revision":0}`)
@@ -475,7 +484,7 @@ func TestW1HTTPRunNowFaultEdges(t *testing.T) {
 		if _, err := db.Exec(`UPDATE accounts SET system_account_id='sys-1' WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at) VALUES ('sch',1,'sys-1','acct','gpt-6-luna',30,'quick',70,'fallback',10,1,?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at) VALUES ('sch',1,'sys-1','acct','gpt-6-luna',30,'quick',70,'fallback',10, 1,?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		handle, acquired, _ := handler.RunNow.Active.TryStart(context.Background(), scheduleRunNowTargetKey("acct"), modelcheckactive.Summary{RunID: "existing", TargetID: "acct", Model: "gpt-6-luna"})

@@ -54,13 +54,10 @@ func sqlInOutList(prefix string, count int) string {
 	return prefix + " (" + sqlPlaceholders(count) + ")"
 }
 
-// statsTable qualifies a juhe_stats table (PostgreSQL schema-qualified, bare
-// on SQLite), matching the gateway accounts/apikeys stats table helpers.
+// statsTable qualifies a juhe_stats table (PostgreSQL schema-qualified),
+// matching the gateway accounts/apikeys stats table helpers.
 func (s *Store) statsTable(name string) string {
-	if s.pg {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // syncGrantQuotaScopeBindings mirrors
@@ -104,13 +101,9 @@ func (s *Store) syncGrantQuotaScopeBindings(ctx context.Context, tx *sql.Tx, gra
 	if err := s.insertScopeBindings(ctx, tx, bindings, now); err != nil {
 		return err
 	}
-	if s.pg {
-		// markPostgresRequestQuotaHourlyWindowDirtyScopes (:384-405): the stats
-		// hourly window rebuild only exists on PostgreSQL; the sqlite variant
-		// (:108-120) never marks dirty scopes.
-		return s.markQuotaHourlyWindowDirtyScopes(ctx, tx, bindings, now)
-	}
-	return nil
+	// markPostgresRequestQuotaHourlyWindowDirtyScopes (:384-405): the stats
+	// hourly window rebuild marks dirty scopes.
+	return s.markQuotaHourlyWindowDirtyScopes(ctx, tx, bindings, now)
 }
 
 // loadAuthorizationScopeBindings mirrors
@@ -354,10 +347,7 @@ func (s *Store) enqueueGrantAccountHealthInputs(ctx context.Context, tx *sql.Tx,
 	if strings.TrimSpace(grant.ResourceType) != "account" {
 		return 0, nil
 	}
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = "\n\tFOR UPDATE"
-	}
+	lockSuffix := "\n\tFOR UPDATE"
 	query := fmt.Sprintf(`SELECT id, config_revision, dispatch_revision
 		FROM %s
 		WHERE authorization_instance_source_account_id = ?
@@ -431,10 +421,7 @@ func (s *Store) reserveAccountHealthInputVersion(ctx context.Context, tx *sql.Tx
 	if normalized == "" {
 		return 0, failf("缺少健康任务输入的账户 ID")
 	}
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
+	lockSuffix := " FOR UPDATE"
 	var current sql.NullInt64
 	err := tx.QueryRowContext(ctx, s.bind("SELECT current_version FROM "+s.table("account_health_jobs_input_versions")+" WHERE account_id = ?"+lockSuffix), normalized).Scan(&current)
 	if err != nil && err != sql.ErrNoRows {

@@ -438,12 +438,6 @@ func TestW11ADownstreamSyncArms(t *testing.T) {
 		if err := f.store.markQuotaHourlyWindowDirtyScopes(ctx, tx, nil, "2026-01-01T00:00:00Z"); err != nil {
 			t.Fatal(err)
 		}
-		// The pg dialect qualifies the stats schema: it must fail on SQLite.
-		pgStore := *f.store
-		pgStore.pg = true
-		if err := pgStore.markQuotaHourlyWindowDirtyScopes(ctx, tx, bindings, "2026-01-01T00:00:00Z"); err == nil {
-			t.Fatal("pg-qualified dirty table must fail on the sqlite fixture")
-		}
 	})
 
 	t.Run("unique_scope_bindings_and_active_hours", func(t *testing.T) {

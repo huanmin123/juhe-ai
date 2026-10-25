@@ -6,7 +6,7 @@ package chat
 //   - turns.go 212-214：requireReplaceableTurn 已保证 idempotencyRows 恰 1 条
 //     （604-606 同条件查询），DELETE affected != 1 不可达。
 //   - turns.go 161-163 ensurePostgresChatMessagePartitions err：SQLite fixture
-//     （s.pg=false）直接跳过，需 PG 方言环境。
+//     现为唯一路径，需真实 PG。
 //   - context.go 634-637：suffix 查询 EXISTS 配对条件（sequence_no +1/-1、role、
 //     turn_id 一致）已保证 634-635 的检查恒通过。
 

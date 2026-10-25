@@ -317,7 +317,7 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, true, nil, invalidator)
+	store, err := NewStore(db, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,10 +403,10 @@ func TestW11FHelperBranches(t *testing.T) {
 		t.Fatal("UnknownSettingsSectionError drift")
 	}
 	// NewStore(nil) 与 PG 方言。
-	if _, err := NewStore(nil, false, nil, nil); err == nil {
+	if _, err := NewStore(nil, nil, nil); err == nil {
 		t.Fatal("NewStore(nil) must fail")
 	}
-	pgStore := &Store{pg: true}
+	pgStore := &Store{}
 	if pgStore.table("x") != "juhe_business.x" {
 		t.Fatal("pg table drift")
 	}

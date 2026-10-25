@@ -106,17 +106,14 @@ func preferenceOwnerClause(access AccessScope, column string) (string, []any, bo
 }
 
 // keywordFilter mirrors the routestrategies name-prefix filter: case-sensitive
-// literal prefix range (%/_ 非通配符)；PG 分支钉 C collation。
+// literal prefix range (%/_ 非通配符)，钉 C collation。
 func (s *Store) keywordFilter(keyword string) (string, []any) {
 	text := strings.TrimSpace(keyword)
 	if text == "" {
 		return "", nil
 	}
 	upper := textPrefixUpperBound(text)
-	if s.pg {
-		return `(scheduling_preferences.name COLLATE "C" >= ? AND scheduling_preferences.name COLLATE "C" < ?)`, []any{text, upper}
-	}
-	return "(scheduling_preferences.name >= ? AND scheduling_preferences.name < ?)", []any{text, upper}
+	return `(scheduling_preferences.name COLLATE "C" >= ? AND scheduling_preferences.name COLLATE "C" < ?)`, []any{text, upper}
 }
 
 func textPrefixUpperBound(value string) string {

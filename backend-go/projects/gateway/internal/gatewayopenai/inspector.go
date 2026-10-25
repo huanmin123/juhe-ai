@@ -218,6 +218,12 @@ func (i *StreamInspector) inspectParsedEvent(event ParsedStreamEvent, dataBytes 
 	}
 
 	classification := ClassifyStreamEvent(event, i.inspection.EstimatedOutputTokens)
+	if IsProtocolInvalidChunkFrame(event.Data) {
+		// L2 协议形状异常计数（流式提交边界受限重放与异常终局处置设计
+		// §3.2.0，2026-10-26 增量）：与 ParseErrorEventCount 并列的观测计数；
+		// 字节隔离由 gatewayresponse 隔离器按同一谓词处置，不参与终局判定。
+		i.inspection.InvalidProtocolEventCount++
+	}
 	if classification.VisibleOutput {
 		i.inspection.OutputReceived = true
 		i.inspection.OutputEventCount++

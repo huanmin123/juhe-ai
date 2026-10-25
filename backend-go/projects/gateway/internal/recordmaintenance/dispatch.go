@@ -11,9 +11,8 @@
 // background_worker_record_maintenance 条目：组合根本地队列 flush 循环）；gateway
 // 与 jobs 不同 module，既有跨进程通道是「持久化任务表 + jobs 轮询」
 // （api_key_record_cleanup_targets / account_test_tasks 先例）。因此 gateway
-// 侧按 Node RecordMaintenanceJob 形状写入 record_maintenance_jobs 表：SQLite 落业务库
-// 文件（与 api_key_record_cleanup_targets 同放置约定），PostgreSQL 落
-// juhe_dataset schema。jobs 侧 drain 契约（jobs wave 接线，Node 本地队列 flush
+// 侧按 Node RecordMaintenanceJob 形状写入 juhe_dataset schema 的
+// record_maintenance_jobs 表。jobs 侧 drain 契约（jobs wave 接线，Node 本地队列 flush
 // 语义）：ORDER BY created_at 读取、RunOnce 成功后按 id 删除、失败保留等待重试。
 //
 // 交接契约 v2（codex usage headers 持久化扩展载荷）：表承载
@@ -23,7 +22,7 @@
 // （生产者面已随表监控路由族删除；jobs drain 仍消费存量清理行）。
 // 快照 5 列与既有清理列互斥填充：清理行写 cutoff_at/batch_size/max_batches，
 // 快照行写 account_id/kind/source/snapshot_json/updated_at（JSON 文本），
-// 其余列写 '' / 0 哨兵。列集与 jobs internal/recordmaintenance/queue.go 的
+// 其余列写 ” / 0 哨兵。列集与 jobs internal/recordmaintenance/queue.go 的
 // schema 逐字一致；对既有 6 列旧表按列名补 ALTER ADD COLUMN（幂等，见
 // ensureSnapshotColumns），DDL 双侧先到先建、各侧自升级。
 package recordmaintenance
@@ -61,8 +60,10 @@ const recordMaintenancePGSchema = "juhe_dataset"
 // 交接关系不占用生产 migration catalog）。列即 Node RecordMaintenanceJob
 // union 的 non_business_data_cleanup + account_usage_snapshot_upsert 两个
 // 变体的规范化字段并集；与 jobs internal/recordmaintenance/queue.go schema
-// 逐字一致。
-var recordMaintenanceSchema = `CREATE TABLE IF NOT EXISTS record_maintenance_jobs (
+// 逐字一致。表名带 juhe_dataset 限定：DDL 与读写路径必须同一 schema，不能
+// 依赖连接 search_path（否则会在 public 建表而 INSERT/查询不到，W32 同源
+// 缺陷）。
+var recordMaintenanceSchema = `CREATE TABLE IF NOT EXISTS juhe_dataset.record_maintenance_jobs (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   cutoff_at TEXT NOT NULL,
@@ -92,7 +93,6 @@ type DispatchResult struct {
 // composition time, mockable in tests.
 type DurableDispatch struct {
 	db  *sql.DB
-	pg  bool
 	now func() time.Time
 
 	mu        sync.Mutex
@@ -102,27 +102,21 @@ type DurableDispatch struct {
 
 // NewDurableRecordMaintenanceDispatch builds the durable dispatch; now may be
 // nil for the process clock.
-func NewDurableRecordMaintenanceDispatch(db *sql.DB, pgDialect bool, now func() time.Time) (*DurableDispatch, error) {
+func NewDurableRecordMaintenanceDispatch(db *sql.DB, now func() time.Time) (*DurableDispatch, error) {
 	if db == nil {
 		return nil, sql.ErrConnDone
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &DurableDispatch{db: db, pg: pgDialect, now: now}, nil
+	return &DurableDispatch{db: db, now: now}, nil
 }
 
 func (d *DurableDispatch) table() string {
-	if d.pg {
-		return recordMaintenancePGSchema + "." + recordMaintenanceTableName
-	}
-	return recordMaintenanceTableName
+	return recordMaintenancePGSchema + "." + recordMaintenanceTableName
 }
 
 func (d *DurableDispatch) bind(query string) string {
-	if !d.pg {
-		return query
-	}
 	index := 0
 	var builder strings.Builder
 	for _, char := range query {
@@ -137,9 +131,8 @@ func (d *DurableDispatch) bind(query string) string {
 }
 
 // ensureSchema 幂等建表 + 旧表加法式升级：CREATE IF NOT EXISTS 后按列名补齐
-// v2 快照列。旧表升级对 SQLite 无原生 ADD COLUMN IF NOT EXISTS，先查列再
-// ALTER；并发双写方（gateway/jobs 两侧各自 ensure）同时命中同一缺失列时，
-// 后到方以 duplicate column 容错收敛（PG 走原生 IF NOT EXISTS）。
+// v2 快照列。先查列再 ALTER；并发双写方（gateway/jobs 两侧各自 ensure）同时
+// 命中同一缺失列时，后到方以 duplicate column 容错收敛。
 func (d *DurableDispatch) ensureSchema(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -169,29 +162,8 @@ func (d *DurableDispatch) ensureSchema(ctx context.Context) error {
 	return nil
 }
 
-// existingColumns 按方言列出既有列名（SQLite PRAGMA table_info 的行形状是
-// cid/name/type/notnull/dflt_value/pk，取 name；PG 走 information_schema）。
+// existingColumns 经 information_schema 列出既有列名（juhe_dataset schema）。
 func (d *DurableDispatch) existingColumns(ctx context.Context) (map[string]bool, error) {
-	if !d.pg {
-		rows, err := d.db.QueryContext(ctx, `PRAGMA table_info(`+recordMaintenanceTableName+`)`)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		columns := map[string]bool{}
-		for rows.Next() {
-			var (
-				cid, notnull, pk int
-				name, columnType string
-				dflt             sql.NullString
-			)
-			if err := rows.Scan(&cid, &name, &columnType, &notnull, &dflt, &pk); err != nil {
-				return nil, err
-			}
-			columns[name] = true
-		}
-		return columns, rows.Err()
-	}
 	rows, err := d.db.QueryContext(ctx, d.bind(
 		`SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?`),
 		recordMaintenancePGSchema, recordMaintenanceTableName)
@@ -210,8 +182,7 @@ func (d *DurableDispatch) existingColumns(ctx context.Context) (map[string]bool,
 	return columns, rows.Err()
 }
 
-// isDuplicateColumnError 容错并发双写方同时补列的竞态（SQLite
-// duplicate column name; PG 原生 IF NOT EXISTS 不会产生该错误）。
+// isDuplicateColumnError 容错并发双写方同时补列的竞态。
 func isDuplicateColumnError(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column")
 }

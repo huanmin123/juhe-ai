@@ -1372,14 +1372,14 @@ func newErrorPolicyEffectsFixture(t *testing.T) *errorPolicyEffectsFixture {
 	}
 	now := fixedErrorPolicyClock()
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB: db, Postgres: false, Secret: "chain-error-policy-secret",
+		DB: db, Secret: "chain-error-policy-secret",
 		Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatalf("create key states store: %v", err)
 	}
 	bridge := &chainErrorPolicyEffectsBridge{
-		db: db, pg: false, bus: nil, keyStates: keyStates,
+		db: db, bus: nil, keyStates: keyStates,
 		now: func() time.Time { return now },
 	}
 	return &errorPolicyEffectsFixture{db: db, bridge: bridge, keyStates: keyStates, now: now}
@@ -2063,7 +2063,7 @@ func TestGatewayChain402InsufficientQuotaCooldownsAccount(t *testing.T) {
 	}
 
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
-	errorPolicyBridge, errorPolicyService, err := newChainErrorPolicyEffectsBridge(&composition{db: fixture.db, pgDialect: true}, "chain-test-secret")
+	errorPolicyBridge, errorPolicyService, err := newChainErrorPolicyEffectsBridge(&composition{db: fixture.db}, "chain-test-secret")
 	if err != nil {
 		t.Fatalf("compose error policy bridge: %v", err)
 	}

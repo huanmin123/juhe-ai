@@ -5,7 +5,7 @@
 // backend/src/storage/client-ip-policy.repository.ts.
 //
 // Data source: every table lives in the stats database (PostgreSQL schema
-// juhe_stats; unqualified in SQLite). The list reads the pre-aggregated
+// juhe_stats). The list reads the pre-aggregated
 // client_ip_registry + client_ip_usage_range_windows projection plus
 // client_ip_policies for status labeling and readiness from stats_job_state —
 // strictly read-only. Policy writes replace-then-insert inside one
@@ -78,10 +78,9 @@ var clientIPHashPattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 // it from juhe_business.system_settings sys_admin/usageStatsTimezone).
 type TimezoneSource func(ctx context.Context) (string, error)
 
-// Store is the dual-mode (SQLite + PostgreSQL) client IP stats persistence.
+// Store is the client IP stats persistence over the shared PostgreSQL pool.
 type Store struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	newID func(prefix string) string
 	inval PolicyInvalidator
@@ -93,7 +92,7 @@ type Store struct {
 
 // NewStore builds the store; inval and tz may be nil (tz falls back to the
 // system_settings source on the same handle, inval becomes a no-op).
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval PolicyInvalidator, tz TimezoneSource) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, newID func(string) string, inval PolicyInvalidator, tz TimezoneSource) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("ipstats store requires a stats database")
 	}
@@ -104,9 +103,9 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string
 		newID = randomID
 	}
 	if tz == nil {
-		tz = NewSystemSettingsTimezoneSource(db, postgres)
+		tz = NewSystemSettingsTimezoneSource(db)
 	}
-	return &Store{db: db, pg: postgres, now: now, newID: newID, inval: inval, tz: tz}, nil
+	return &Store{db: db, now: now, newID: newID, inval: inval, tz: tz}, nil
 }
 
 // randomID mirrors Node newId('ip_policy') (random hex suffix).
@@ -118,17 +117,11 @@ func randomID(prefix string) string {
 
 // table qualifies stats-schema tables for PostgreSQL.
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // bind rewrites ? placeholders to $N for PostgreSQL.
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -169,17 +162,12 @@ func (s *Store) invalidatePolicyCache(reason string) {
 }
 
 // NewSystemSettingsTimezoneSource reads usageStatsTimezone from the business
-// system_settings table (Node usageStatsTimezoneAsync PostgreSQL branch reads
-// juhe_business.system_settings; SQLite reads the unqualified table).
-func NewSystemSettingsTimezoneSource(db *sql.DB, postgres bool) TimezoneSource {
-	table := "system_settings"
-	if postgres {
-		table = "juhe_business.system_settings"
-	}
+// system_settings table (juhe_business.system_settings on the shared pool).
+func NewSystemSettingsTimezoneSource(db *sql.DB) TimezoneSource {
 	return func(ctx context.Context) (string, error) {
 		ctx = ensureCtx(ctx)
 		var raw sql.NullString
-		err := db.QueryRowContext(ctx, `SELECT value_json FROM `+table+`
+		err := db.QueryRowContext(ctx, `SELECT value_json FROM juhe_business.system_settings
 			WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`).Scan(&raw)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && !raw.Valid) {
 			return "", errors.New("系统设置缺少 usageStatsTimezone")
@@ -390,13 +378,9 @@ func (s *Store) CreatePolicy(ctx context.Context, input PolicyMutationInput) (*P
 	}
 	defer tx.Rollback()
 
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
 	var registryHash string
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT ip_hash FROM `+s.table("client_ip_registry")+`
-		WHERE ip_hash = ?`)+lockSuffix, ipHash).Scan(&registryHash)
+		WHERE ip_hash = ?`)+" FOR UPDATE", ipHash).Scan(&registryHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &ValidationError{Message: "IP 不存在"}
 	}

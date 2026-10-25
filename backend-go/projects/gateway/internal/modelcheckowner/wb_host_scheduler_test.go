@@ -6,14 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
-	_ "modernc.org/sqlite"
 )
 
 // wbStubSchedulerSource / wbStubExecutor 是宿主装配测试所需的最小调度端口。
@@ -49,25 +47,21 @@ func wbCompleteStoreSeed(t *testing.T, db *sql.DB) {
 		for _, column := range columns {
 			definitions = append(definitions, column+" TEXT")
 		}
-		if _, err := db.Exec(`CREATE TABLE ` + table + ` (` + strings.Join(definitions, ",") + `)`); err != nil {
+		if _, err := db.Exec(`CREATE TABLE ` + j3bTestSchema + `.` + table + ` (` + strings.Join(definitions, ",") + `)`); err != nil {
 			t.Fatalf("建表 %s 失败: %v", table, err)
 		}
 	}
 }
 
-// wbSeedSQLiteFile 在临时目录准备一个指定形态的 SQLite 文件库并关闭句柄。
-func wbSeedSQLiteFile(t *testing.T, name string, complete bool) string {
+// wbSeedPG 在 pgtestkit 隔离库上准备一个指定形态的 J3b 夹具并返回 DSN
+// （原 wbSeedSQLiteFile 的 PG 形态：complete=true 时按 requiredColumns 建全表）。
+func wbSeedPG(t *testing.T, complete bool) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer seed.Close()
+	db, dsn := wbOpenPGHandle(t, nil)
 	if complete {
-		wbCompleteStoreSeed(t, seed)
+		wbCompleteStoreSeed(t, db)
 	}
-	return path
+	return dsn
 }
 
 func wbValidHostDeps() HostDependencies {
@@ -90,10 +84,10 @@ func wbValidHostDeps() HostDependencies {
 // OpenHost 门禁契约：任何未就绪的配置/依赖都必须失败关闭，
 // 且失败路径不得返回半装配的宿主。
 func TestWBOpenHostFailsClosedOnIncompleteGates(t *testing.T) {
-	readyConfig := func(path string) Config {
-		return Config{Enabled: true, StoreMode: "sqlite", DatabasePath: path, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
+	readyConfig := func(dsn string) Config {
+		return Config{Enabled: true, PostgresURL: dsn, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true}
 	}
-	untouchedPath := wbSeedSQLiteFile(t, "wb-gates-untouched.db", true)
+	untouchedDSN := wbSeedPG(t, true)
 	cases := []struct {
 		name string
 		cfg  Config
@@ -102,23 +96,23 @@ func TestWBOpenHostFailsClosedOnIncompleteGates(t *testing.T) {
 	}{
 		{name: "disabled config", cfg: Config{Enabled: false}, deps: wbValidHostDeps, need: "disabled"},
 		{name: "handoff without stopped node writer", cfg: Config{Enabled: true, BusinessHandoffConfirmed: true}, deps: wbValidHostDeps, need: "Node writer"},
-		{name: "missing resolve", cfg: readyConfig(untouchedPath), deps: func() HostDependencies {
+		{name: "missing resolve", cfg: readyConfig(untouchedDSN), deps: func() HostDependencies {
 			deps := wbValidHostDeps()
 			deps.Resolve = nil
 			return deps
 		}, need: "dependencies are incomplete"},
-		{name: "blank tokenizer version", cfg: readyConfig(untouchedPath), deps: func() HostDependencies {
+		{name: "blank tokenizer version", cfg: readyConfig(untouchedDSN), deps: func() HostDependencies {
 			deps := wbValidHostDeps()
 			deps.Tokenizer = wbEmptyTokenizer{}
 			return deps
 		}, need: "tokenizer snapshot"},
-		{name: "blank model limits version", cfg: readyConfig(untouchedPath), deps: func() HostDependencies {
+		{name: "blank model limits version", cfg: readyConfig(untouchedDSN), deps: func() HostDependencies {
 			deps := wbValidHostDeps()
 			deps.ModelLimits = wbEmptyLimits{}
 			return deps
 		}, need: "model-limit snapshot"},
-		{name: "schema missing", cfg: readyConfig(wbSeedSQLiteFile(t, "wb-gates-empty.db", false)), deps: wbValidHostDeps, need: "verify J3b Gateway schema"},
-		{name: "scheduler missing", cfg: readyConfig(wbSeedSQLiteFile(t, "wb-gates-complete.db", true)), deps: func() HostDependencies {
+		{name: "schema missing", cfg: readyConfig(wbSeedPG(t, false)), deps: wbValidHostDeps, need: "verify J3b Gateway schema"},
+		{name: "scheduler missing", cfg: readyConfig(wbSeedPG(t, true)), deps: func() HostDependencies {
 			deps := wbValidHostDeps()
 			deps.Scheduler = nil
 			deps.Executor = nil
@@ -141,8 +135,8 @@ func TestWBOpenHostFailsClosedOnIncompleteGates(t *testing.T) {
 // OpenHost 成功装配契约：HTTP 与调度器共享同一 Store/Runtime，
 // Mount 暴露管理路由，Close 释放存储并解除就绪状态。
 func TestWBOpenHostAssemblesAndClosesCompleteOwner(t *testing.T) {
-	path := wbSeedSQLiteFile(t, "wb-host-complete.db", true)
-	host, err := OpenHost(context.Background(), testSQLiteConfig(path), wbValidHostDeps())
+	dsn := wbSeedPG(t, true)
+	host, err := OpenHost(context.Background(), j3bPGConfig(dsn), wbValidHostDeps())
 	if err != nil {
 		t.Fatalf("OpenHost 失败: %v", err)
 	}
@@ -225,18 +219,18 @@ func TestWBHostNilAndUnreadyContracts(t *testing.T) {
 func TestWBBusinessSchedulerCheckContractVerifiesBusinessTables(t *testing.T) {
 	ddl := []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,config_revision INTEGER,dispatch_revision INTEGER,authorization_instance_source_account_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,availability_schedule_json TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,cleared_at TEXT,updated_at TEXT)`,
 	}
 	t.Run("contract satisfied", func(t *testing.T) {
-		source := &BusinessSchedulerSource{Business: wbOpenMemoryDB(t, ddl)}
+		source := &BusinessSchedulerSource{Business: wbOpenPGDB(t, ddl)}
 		if err := source.CheckContract(context.Background()); err != nil {
 			t.Fatalf("契约校验失败: %v", err)
 		}
 	})
 	t.Run("missing table", func(t *testing.T) {
-		db := wbOpenMemoryDB(t, ddl[:3])
+		db := wbOpenPGDB(t, ddl[:3])
 		source := &BusinessSchedulerSource{Business: db}
 		if err := source.CheckContract(context.Background()); err == nil || !strings.Contains(err.Error(), "account_quality_enforcements") {
 			t.Fatalf("缺表必须失败关闭: err=%v", err)
@@ -253,11 +247,11 @@ func TestWBBusinessSchedulerCheckContractVerifiesBusinessTables(t *testing.T) {
 // BusinessSchedulerSource 生命周期契约：只有健康重试任务走 J3b 存储，
 // scheduled/recovery 的完成与失败由 Business 事务独占（此处为显式 no-op）。
 func TestWBBusinessSchedulerLifecycleDelegatesHealthRetryOnly(t *testing.T) {
-	j3b := wbOpenMemoryDB(t, []string{
+	j3b := wbOpenPGDB(t, []string{
 		`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,claim_owner TEXT,claim_until TEXT,fence_token INTEGER,state TEXT,last_error TEXT,completed_at TEXT,payload TEXT,updated_at TEXT)`,
 		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,status TEXT,quality_health_sync_status TEXT,updated_at TEXT)`,
 	})
-	store := &Store{db: j3b, mode: "sqlite"}
+	store := &Store{db: j3b, schema: j3bTestSchema}
 	defer store.Close()
 	now := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
 	insertTask := func(id string) {
@@ -266,7 +260,7 @@ func TestWBBusinessSchedulerLifecycleDelegatesHealthRetryOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	source := &BusinessSchedulerSource{Business: wbOpenMemoryDB(t, nil), Store: store, OwnerID: "wb-owner"}
+	source := &BusinessSchedulerSource{Business: wbOpenPGDB(t, nil), Store: store, OwnerID: "wb-owner"}
 	t.Run("non health kinds are explicit no-ops", func(t *testing.T) {
 		task := ScheduleTask{ID: "schedule:1", Kind: SchedulerScheduled, OwnerID: "wb-owner", FenceToken: 1}
 		if err := source.Complete(context.Background(), task); err != nil {

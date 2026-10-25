@@ -44,11 +44,11 @@ func TestWBResolveAuthorizedTargetRevisionFences(t *testing.T) {
 // wbAuthorizedFixture 复刻授权实例（虚拟账户 + 源账户 + 授权）最小数据集。
 func wbAuthorizedFixture(t *testing.T) (*sql.DB, *BusinessTargetSource) {
 	t.Helper()
-	db := wbOpenMemoryDB(t, businessSourceContractDDL())
+	db := wbOpenPGDB(t, businessSourceContractDDL())
 	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"source-key","supported_endpoint_modes":["responses_sse"]}`)
 	statements := []string{
 		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source','acct-source','gpt_openai_v1','https://example.invalid/v1',1),('conn-virtual','acct-virtual','gpt_openai_v1','https://example.invalid/v1',1)`,
-		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
+		`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`,
 		`INSERT INTO resource_authorizations VALUES ('grant-1','account','acct-source','sys-1','sys-1','use','active',NULL)`,
 		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-source','sys-1','gpt','gpt','openai','api_key',3,8,'active',1,'responses_sse','conn-source','` + envelope + `')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-source','sys-1','group-1',1)`,
@@ -65,7 +65,7 @@ func wbAuthorizedFixture(t *testing.T) (*sql.DB, *BusinessTargetSource) {
 
 func mustSource(t *testing.T, db *sql.DB) *BusinessTargetSource {
 	t.Helper()
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,20 +76,20 @@ func mustSource(t *testing.T, db *sql.DB) *BusinessTargetSource {
 func TestWBBuildRequestComparisonCompatibilityMatrix(t *testing.T) {
 	ddl := businessSourceContractDDL()
 	// 账户 B 使用不同协议画像，制造协议/画像不匹配。
-	db := wbOpenMemoryDB(t, ddl)
+	db := wbOpenPGDB(t, ddl)
 	envelopeA := testCredentialEnvelope(t, "secret", `{"api_key":"key-a","supported_endpoint_modes":["responses_sse"]}`)
 	envelopeB := testCredentialEnvelope(t, "secret", `{"api_key":"key-b","supported_endpoint_modes":["chat_json"]}`)
 	envelopeC := testCredentialEnvelope(t, "secret", `{"api_key":"key-c","supported_endpoint_modes":["messages_json"]}`)
 	statements := []string{
 		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-a','acct-a','gpt_openai_v1','https://a.example/v1',1),('conn-b','acct-b','gpt_openai_v1','https://b.example/v1',1),('conn-c','acct-c','anthropic_v1','https://c.example/v1',1)`,
-		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
+		`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-a','sys-1','group-1',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-b','sys-1','group-1',1)`,
 		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-a','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'responses_sse','conn-a','` + envelopeA + `')`,
 		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-b','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'chat_json','conn-b','` + envelopeB + `')`,
 		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-c','sys-1','anthropic','anthropic','anthropic','api_key',1,1,'active',1,'messages_json','conn-c','` + envelopeC + `')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-c','sys-1','group-1',1)`,
-		`INSERT INTO model_quality_policies VALUES ('sys-1',1,'quick',1,70,'fallback',10,0,NULL)`,
+		`INSERT INTO model_quality_policies VALUES ('sys-1',1,'quick',1,70,'fallback',10,FALSE,NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -137,7 +137,7 @@ func TestWBHTTPQualityRoutesFailClosedWithoutOwner(t *testing.T) {
 // GetRun 的信任合并早退分支：unverified 报告与缺失 observedModel 的
 // unavailable run 都不得触碰信任投影表。
 func TestWBRunGetRunTrustMergeEarlyReturns(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC)
@@ -170,7 +170,7 @@ func TestWBRunGetRunTrustMergeEarlyReturns(t *testing.T) {
 
 // ProjectOutcome 条目漂移契约：终态重放时条目集合不一致必须冲突。
 func TestWBStoreProjectOutcomeItemDriftConflicts(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
@@ -192,10 +192,10 @@ func TestWBStoreProjectOutcomeItemDriftConflicts(t *testing.T) {
 
 // 空恢复模型 + 空健康模型的恢复任务必须被跳过而不是生成坏任务。
 func TestWBBusinessSchedulerSkipsBlankRecoveryModel(t *testing.T) {
-	db := wbOpenMemoryDB(t, []string{
+	db := wbOpenPGDB(t, []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,health_check_model TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`,
 	})
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)

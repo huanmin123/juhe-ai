@@ -30,7 +30,7 @@ func TestW9BMountRegistersBothSurfaces(t *testing.T) {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	deps := &Deps{DB: db, PGDialect: true, Auth: authDeps}
+	deps := &Deps{DB: db, Auth: authDeps}
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	authDeps.MountAuth(k, "lax", false)
 	deps.Mount(k)

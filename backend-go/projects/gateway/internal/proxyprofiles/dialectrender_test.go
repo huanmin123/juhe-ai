@@ -1,14 +1,13 @@
 package proxyprofiles
 
-// 方言渲染级测试（X05 盲区修复）：SQLite 行为测试全绿无法暴露 PG 列型断裂
-// （enabled boolean / timestamptz），本文件用录制驱动捕获 Store 实际发出的
+// 方言渲染级测试（X05 盲区修复）：列型断裂（enabled boolean / timestamptz）
+// 无法靠行为黑盒暴露，本文件用录制驱动捕获 Store 实际发出的
 // SQL 文本与绑定参数，按 Node 归档 PG 路径（proxy.repository.ts 的
 // createProxyAsync / patchProxyForManagementAsync / listProxyOptionsAsync /
 // buildProxyKeywordFilterAsync / proxySummarySelectColumns）逐片段断言。
 // 做法与 jobs/internal/cleanuprepo/statssubtractpostgres_test.go 一致：
 // 录制驱动 + 测试内独立 bindTestPG 重写占位符，避免与 Store.bind 循环论证。
-// 时间列扫描行为以 SQLite 真实库文本扫描（proxyprofiles_test.go）加 PG
-// to_char 渲染断言组合覆盖。
+// 方言坍缩后 Store 恒发 PG 形态，SQLite 对偶断言随开关退役。
 
 import (
 	"context"
@@ -172,18 +171,17 @@ type proxyRenderFixture struct {
 	rec   *proxyRecorder
 }
 
-func newProxyRenderFixture(t *testing.T, pg bool) *proxyRenderFixture {
+func newProxyRenderFixture(t *testing.T) *proxyRenderFixture {
 	t.Helper()
 	rec := newProxyRecorder()
 	db := sql.OpenDB(proxyRecorderConnector{rec})
 	t.Cleanup(func() { _ = db.Close() })
 	fixed := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	store, err := NewStore(Deps{
-		DB:        db,
-		PGDialect: pg,
-		Secret:    "test-secret",
-		Now:       func() time.Time { return fixed },
-		NewID:     func(prefix string) string { return prefix + "_render_1" },
+		DB:     db,
+		Secret: "test-secret",
+		Now:    func() time.Time { return fixed },
+		NewID:  func(prefix string) string { return prefix + "_render_1" },
 	})
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -198,7 +196,7 @@ func newProxyRenderFixture(t *testing.T, pg bool) *proxyRenderFixture {
 // 查询：enabled = true、COLLATE "C" + starts_with 三参窗口、updated_at 经
 // to_char 文本化。
 func TestPostgresListOptionsRendersBooleanFilterAndKeyword(t *testing.T) {
-	fixture := newProxyRenderFixture(t, true)
+	fixture := newProxyRenderFixture(t)
 	optionColumns := []string{"id", "name", "type", "enabled", "updated_at"}
 	fixture.rec.script("LIMIT", optionColumns, [][]driver.Value{
 		{"p-1", "Alpha", "http", true, "2026-09-01T00:00:00.000000Z"},
@@ -259,7 +257,7 @@ func TestPostgresListOptionsRendersBooleanFilterAndKeyword(t *testing.T) {
 // last_tested_at（MS，镜像 normalizePostgresRows 的 Date.toISOString 毫秒形）
 // 文本列可被 string 扫描；keyword 窗口为 COLLATE "C" + starts_with。
 func TestPostgresListPageRendersTimeTextAndKeyword(t *testing.T) {
-	fixture := newProxyRenderFixture(t, true)
+	fixture := newProxyRenderFixture(t)
 	summaryColumns := []string{
 		"id", "name", "description", "type", "host", "port", "username", "enabled",
 		"test_status", "latency_ms", "outbound_ip", "outbound_region", "last_test_message",
@@ -304,21 +302,16 @@ func TestPostgresListPageRendersTimeTextAndKeyword(t *testing.T) {
 }
 
 // TestPostgresCreateBindsBoolean 断言插入把 enabled 绑定为 bool（Node
-// createProxyAsync proxy.repository.ts:558 直接绑定 proxy.enabled），SQLite
-// 侧保持 int64(0/1)（对照行 517）。
+// createProxyAsync proxy.repository.ts:558 直接绑定 proxy.enabled）。
 func TestPostgresCreateBindsBoolean(t *testing.T) {
 	for _, tc := range []struct {
-		pg        bool
 		enabled   bool
 		wantValue string
-		wantTable string
 	}{
-		{pg: true, enabled: true, wantValue: "true", wantTable: "juhe_business.proxy_profiles"},
-		{pg: true, enabled: false, wantValue: "false", wantTable: "juhe_business.proxy_profiles"},
-		{pg: false, enabled: true, wantValue: "1", wantTable: "proxy_profiles"},
-		{pg: false, enabled: false, wantValue: "0", wantTable: "proxy_profiles"},
+		{enabled: true, wantValue: "true"},
+		{enabled: false, wantValue: "false"},
 	} {
-		fixture := newProxyRenderFixture(t, tc.pg)
+		fixture := newProxyRenderFixture(t)
 		name := "代理-" + tc.wantValue
 		proxyType := "http"
 		host := "h"
@@ -328,10 +321,10 @@ func TestPostgresCreateBindsBoolean(t *testing.T) {
 			Name: &name, Type: &proxyType, Host: &host, Port: &port, Enabled: &enabled,
 		}, "sa-1")
 		if err != nil {
-			t.Fatalf("Create(pg=%v): %v", tc.pg, err)
+			t.Fatalf("Create(enabled=%v): %v", tc.enabled, err)
 		}
 		statement := fixture.rec.all()[0]
-		if !strings.Contains(statement.query, "INSERT INTO "+tc.wantTable+" ") {
+		if !strings.Contains(statement.query, "INSERT INTO juhe_business.proxy_profiles ") {
 			t.Fatalf("INSERT 表名不对：\n%s", statement.query)
 		}
 		var enabledArg driver.Value
@@ -340,13 +333,11 @@ func TestPostgresCreateBindsBoolean(t *testing.T) {
 			enabledArg = statement.args[9]
 		}
 		if fmt.Sprintf("%v", enabledArg) != tc.wantValue {
-			t.Fatalf("pg=%v enabled=%v: enabled 绑定 = %v (%T), 期望 %s",
-				tc.pg, tc.enabled, enabledArg, enabledArg, tc.wantValue)
+			t.Fatalf("enabled=%v: enabled 绑定 = %v (%T), 期望 %s",
+				tc.enabled, enabledArg, enabledArg, tc.wantValue)
 		}
-		if tc.pg {
-			if strings.Contains(statement.query, "COLLATE") {
-				t.Fatalf("INSERT 不应携带 keyword 片段")
-			}
+		if strings.Contains(statement.query, "COLLATE") {
+			t.Fatalf("INSERT 不应携带 keyword 片段")
 		}
 	}
 }
@@ -356,7 +347,7 @@ func TestPostgresCreateBindsBoolean(t *testing.T) {
 // bool（buildProxyManagementPatchPlan 行 978 的 PG 分支）、连接变更重置项、
 // updated_at = GREATEST(... CAST(? AS timestamptz))、CAS WHERE 的显式 CAST。
 func TestPostgresPatchBindsBooleanAndTimestampCast(t *testing.T) {
-	fixture := newProxyRenderFixture(t, true)
+	fixture := newProxyRenderFixture(t)
 	rowColumns := []string{
 		"id", "name", "description", "type", "host", "port", "username",
 		"password_encrypted", "enabled", "test_status", "updated_at",
@@ -416,7 +407,7 @@ func TestPostgresPatchBindsBooleanAndTimestampCast(t *testing.T) {
 		"<nil>",                       // outbound_region
 		"<nil>",                       // last_test_message
 		"<nil>",                       // last_tested_at
-		"2026-09-04T12:00:00.000Z",    // updated_at candidate
+		"2026-09-04T12:00:00.000000Z", // updated_at candidate
 		"p-1",                         // id
 		"2026-09-01T00:00:00.000000Z", // CAS revision
 	}
@@ -443,79 +434,6 @@ func TestPostgresPatchBindsBooleanAndTimestampCast(t *testing.T) {
 	}
 	if !strings.Contains(load.query, `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`) {
 		t.Fatalf("行加载应 to_char 文本化 updated_at：\n%s", load.query)
-	}
-}
-
-// TestSQLiteRendersLegacyIntegerShapes 是 PG 断言的对偶：SQLite 模式保持
-// 现状——enabled = 1 整数谓词、无 COLLATE/starts_with、updated_at 原样文本
-// 列、enabled 绑定 int64。
-func TestSQLiteRendersLegacyIntegerShapes(t *testing.T) {
-	fixture := newProxyRenderFixture(t, false)
-	optionColumns := []string{"id", "name", "type", "enabled", "updated_at"}
-	fixture.rec.script("LIMIT", optionColumns, [][]driver.Value{
-		{"p-1", "Alpha", "http", int64(1), "2026-09-01T00:00:00.000Z"},
-	})
-	if _, err := fixture.store.ListOptions(context.Background(), "Alpha", 20, nil); err != nil {
-		t.Fatalf("ListOptions: %v", err)
-	}
-	statement := fixture.rec.all()[0]
-	// SQLite capture 保留 ? 占位符（Store.bind 不重写），期望模板不经
-	// bindTestPG。
-	want := `
-		SELECT id, name, type, enabled, updated_at
-		FROM proxy_profiles
-		WHERE enabled = 1 AND (name >= ? AND name < ?)
-		ORDER BY name ASC, updated_at DESC, id ASC
-		LIMIT ?`
-	if statement.query != want {
-		t.Fatalf("SQLite window 查询文本不匹配：\n%s\n期望：\n%s", statement.query, want)
-	}
-	if len(statement.args) != 3 || fmt.Sprintf("%v", statement.args[0]) != "Alpha" || fmt.Sprintf("%v", statement.args[2]) != "20" {
-		t.Fatalf("SQLite window 参数 = %v（keyword 两参 + limit，无 starts_with 第三参）", statement.args)
-	}
-
-	// 行加载：updated_at 原样列。
-	rowColumns := []string{
-		"id", "name", "description", "type", "host", "port", "username",
-		"password_encrypted", "enabled", "test_status", "updated_at",
-	}
-	fixture.rec.script("password_encrypted", rowColumns, [][]driver.Value{
-		{"p-1", "代理-p-1", nil, "http", "old.host", int64(8080), nil, nil, int64(1), "passed", "2026-09-01T00:00:00.000Z"},
-	})
-	fixture.rec.script("password_encrypted", rowColumns, [][]driver.Value{
-		{"p-1", "代理-p-1", nil, "http", "old.host", int64(8080), nil, nil, int64(0), "passed", "2026-09-04T12:00:00.000Z"},
-	})
-	disabled := false
-	if _, err := fixture.store.Patch(context.Background(), "p-1", proxyInput{
-		Enabled:           &disabled,
-		ExpectedUpdatedAt: "2026-09-01T00:00:00.000Z",
-	}); err != nil {
-		t.Fatalf("Patch: %v", err)
-	}
-	var patchUpdate *proxyRecordedStatement
-	for i := range fixture.rec.all() {
-		current := fixture.rec.all()[i]
-		if strings.Contains(current.query, "UPDATE proxy_profiles") {
-			patchUpdate = &fixture.rec.all()[i]
-			break
-		}
-	}
-	if patchUpdate == nil {
-		t.Fatalf("未捕获 SQLite UPDATE")
-	}
-	if strings.Contains(patchUpdate.query, "$") {
-		// SQLite 走 ? 占位符（Store.bind 不重写）；确认未发生 $n 重写。
-		t.Fatalf("SQLite UPDATE 不应使用 $n 占位：\n%s", patchUpdate.query)
-	}
-	if strings.Contains(patchUpdate.query, "CAST(? AS timestamptz)") || strings.Contains(patchUpdate.query, "enabled = true") {
-		t.Fatalf("SQLite UPDATE 不得携带 PG 片段：\n%s", patchUpdate.query)
-	}
-	if !strings.Contains(patchUpdate.query, "updated_at = CASE WHEN updated_at >= ?") {
-		t.Fatalf("SQLite UPDATE 应保持 CASE 表达式：\n%s", patchUpdate.query)
-	}
-	// enabled 单字段补丁：参数[0] 是 int64(0)。
-	if fmt.Sprintf("%v", patchUpdate.args[0]) != "0" {
-		t.Fatalf("SQLite enabled 绑定 = %v (%T), 期望 int64(0)", patchUpdate.args[0], patchUpdate.args[0])
 	}
 }
 

@@ -236,8 +236,8 @@ func TestWBSchedulerExecutorMuxRoutes(t *testing.T) {
 
 // HealthSyncRetryExecutor 契约：按 runId 定位失败发布并重新投影。
 func TestWBHealthSyncRetryExecutorContract(t *testing.T) {
-	j3b := wbOpenMemoryDB(t, wbHealthRuntimeDDL(t))
-	store := &Store{db: j3b, mode: "sqlite"}
+	j3b := wbOpenPGDB(t, wbHealthRuntimeDDL(t))
+	store := &Store{db: j3b, schema: j3bTestSchema}
 	defer store.Close()
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {

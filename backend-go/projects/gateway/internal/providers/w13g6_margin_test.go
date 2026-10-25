@@ -52,7 +52,7 @@ func w13g6DropTable(t *testing.T, env *testEnv, table string) {
 
 // TestW13g6ClosedStoreErrorArms 覆盖 closed-DB 下各 Store 方法的错误臂。
 func TestW13g6ClosedStoreErrorArms(t *testing.T) {
-	store := w14dClosedStore(t, false)
+	store := w14dClosedStore(t)
 	ctx := context.Background()
 
 	if _, err := store.ListProviderModelsForRequest(ctx, "hybrid", "w13g6-u", false, false); err == nil {
@@ -81,8 +81,8 @@ func TestW13g6ClosedStoreErrorArms(t *testing.T) {
 	}, current.UpdatedAt, nil); err == nil {
 		t.Fatal("builtin patch on closed DB must fail")
 	}
-	// pg 分支：table() 前缀。
-	if got := (&Store{pg: true}).table("models"); got != "juhe_business.models" {
+	// table() 前缀。
+	if got := (&Store{}).table("models"); got != "juhe_business.models" {
 		t.Fatalf("pg table prefix: %s", got)
 	}
 }

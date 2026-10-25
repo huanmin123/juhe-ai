@@ -382,8 +382,6 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 	if defaultImageModel == "" {
 		defaultImageModel = string(ImageModelGPTImage2)
 	}
-	release := s.lockUserPolicy(input.SystemAccountID)
-	defer release()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -657,8 +655,6 @@ func joinAssignments(assignments []string) string {
 // DeleteConversation mirrors deleteChatConversation: quota lock, row lock,
 // active-turn conflict, storage release + asset expiry, hard delete.
 func (s *Store) DeleteConversation(conversationID, ownerID string) (bool, error) {
-	release := s.lockUserPolicy(ownerID)
-	defer release()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
@@ -718,8 +714,6 @@ func (s *Store) ClearConversation(input ClearConversationInput) (*Conversation, 
 	if err != nil {
 		return nil, err
 	}
-	release := s.lockUserPolicy(input.SystemAccountID)
-	defer release()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err

@@ -37,7 +37,7 @@ func newOptionsFixture(t *testing.T) *Store {
 			t.Fatalf("seed %q: %v", statement, err)
 		}
 	}
-	store, err := NewStore(db, false, func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) })
+	store, err := NewStore(db, func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) })
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}

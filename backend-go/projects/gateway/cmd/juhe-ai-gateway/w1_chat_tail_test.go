@@ -114,7 +114,7 @@ func w1yChatAssetsDB(t *testing.T) *sql.DB {
 
 func TestW1YChatObservationClosedDBArms(t *testing.T) {
 	db := w1yOpenClosedSQLite(t)
-	observations := &chatImageObservations{db: db, postgres: false}
+	observations := &chatImageObservations{db: db}
 	ctx := context.Background()
 
 	if _, err := observations.claim(ctx, "ast", "conv", "sys", "turn", "msg", w1yNow()); err == nil ||
@@ -138,7 +138,7 @@ func TestW1YChatObservationArms(t *testing.T) {
 	ctx := context.Background()
 
 	// observation 无法 JSON 编码 → 直接报 marshal 错误。
-	observations := &chatImageObservations{db: db, postgres: false}
+	observations := &chatImageObservations{db: db}
 	if _, err := observations.setObservation(ctx, "ast", "conv", "sys", "failed",
 		map[string]any{"summary": make(chan int)}, 1, "claim", w1yNow()); err == nil {
 		t.Fatalf("不可编码 observation setObservation 未报错")
@@ -147,7 +147,7 @@ func TestW1YChatObservationArms(t *testing.T) {
 	// assistant_generated 走 generated 上限分支后，对象存储未接线 → 读失败。
 	w1yExec(t, db, `INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at, source_kind)
 		VALUES ('ast-w1y-generated', 'sys', 'conv', '2027-01-01T00:00:00.000Z', 'now', 'assistant_generated')`)
-	unwired := &chatImageObservations{db: db, postgres: false, objects: nil}
+	unwired := &chatImageObservations{db: db, objects: nil}
 	if _, err := unwired.buildAssetDataURL(ctx, "ast-w1y-generated", "conv", "sys", w1yNow()); err == nil ||
 		!strings.Contains(err.Error(), "chat 资产存储未接线") {
 		t.Fatalf("对象存储未接线 buildAssetDataURL = %v, want 未接线错误", err)

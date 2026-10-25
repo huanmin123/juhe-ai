@@ -2,17 +2,15 @@ package gatewayquota
 
 // testhelpers_test.go 是 gatewayquota 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，gatewayquota 测试迁移
-// 切片）：pgtestkit 每测试独立库，测试建库走生产 store 的 PG 臂（StatsStore /
-// DBTimezoneSource postgres=true，juhe_stats / juhe_business schema 限定 + $n
+// 切片）：pgtestkit 每测试独立库，测试建库走生产 store（StatsStore /
+// DBTimezoneSource，juhe_stats / juhe_business schema 限定 + $n
 // 占位符，与生产 PG 装配同一方言）。
 //
 // 三组分类（D9/D17）：
-//   - 组A（被测对象有 PG 臂且断言可逐字节保持）：建库走本文件 newTestDB，
-//     statsSchema / seedCost / authzSchema 系列 seed 对齐生产 PG 臂方言；
+//   - 组A（断言可逐字节保持）：建库走本文件 newTestDB，
+//     statsSchema / seedCost / authzSchema 系列 seed 对齐生产方言；
 //     测试体断言逐字节保持。
-//   - 组B（SQLite-only 生产臂为被测对象）：本包生产读取器为双模实现，无
-//     SQLite-only 臂；ServerRole 同步守卫文案中的「SQLite」是生产契约本身，
-//     相关测试随生产双模实现保留。
+//   - 组B（ServerRole 同步守卫）：守卫文案是生产契约本身，相关测试保留。
 //   - scripted 假驱动与 fake（miniredis、mockDBService、wjMockShared、
 //     fakeClock、manualTimerQueue 等）不依赖真库，保持原状。
 //

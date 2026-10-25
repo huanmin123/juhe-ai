@@ -170,7 +170,7 @@ func TestStatsStorePostgreSQLBindingAndQualification(t *testing.T) {
 		t.Fatalf("unexpected binding: %q", query)
 	}
 	if bindPlaceholders(query) != query {
-		t.Fatal("sqlite binding must be a no-op")
+		t.Fatal("repeat binding must be a no-op")
 	}
 	if statsTable("usage_stats_daily") != "juhe_stats.usage_stats_daily" {
 		t.Fatal("postgres stats tables must be schema-qualified")
@@ -245,7 +245,7 @@ func TestDBTimezoneSource(t *testing.T) {
 
 	t.Run("missing setting errors", func(t *testing.T) {
 		db, clock := setup(t)
-		source, err := NewDBTimezoneSource(db, true, clock.Now)
+		source, err := NewDBTimezoneSource(db, clock.Now)
 		if err != nil {
 			t.Fatalf("NewDBTimezoneSource: %v", err)
 		}
@@ -258,7 +258,7 @@ func TestDBTimezoneSource(t *testing.T) {
 	t.Run("empty json errors", func(t *testing.T) {
 		db, clock := setup(t)
 		setSetting(t, db, "")
-		source, _ := NewDBTimezoneSource(db, true, clock.Now)
+		source, _ := NewDBTimezoneSource(db, clock.Now)
 		_, err := source.StatsTimezone(context.Background())
 		if err == nil || err.Error() != "系统设置缺少 usageStatsTimezone" {
 			t.Fatalf("empty setting error = %v", err)
@@ -268,7 +268,7 @@ func TestDBTimezoneSource(t *testing.T) {
 	t.Run("invalid json errors", func(t *testing.T) {
 		db, clock := setup(t)
 		setSetting(t, db, "{not json")
-		source, _ := NewDBTimezoneSource(db, true, clock.Now)
+		source, _ := NewDBTimezoneSource(db, clock.Now)
 		_, err := source.StatsTimezone(context.Background())
 		if err == nil || !strings.HasPrefix(err.Error(), "系统设置 usageStatsTimezone 无效：") {
 			t.Fatalf("invalid json error = %v", err)
@@ -278,7 +278,7 @@ func TestDBTimezoneSource(t *testing.T) {
 	t.Run("unknown zone errors", func(t *testing.T) {
 		db, clock := setup(t)
 		setSetting(t, db, `"Mars/Olympus"`)
-		source, _ := NewDBTimezoneSource(db, true, clock.Now)
+		source, _ := NewDBTimezoneSource(db, clock.Now)
 		_, err := source.StatsTimezone(context.Background())
 		if err == nil || err.Error() != "系统设置 usageStatsTimezone 无效：统计时区不存在：Mars/Olympus" {
 			t.Fatalf("unknown zone error = %v", err)
@@ -288,7 +288,7 @@ func TestDBTimezoneSource(t *testing.T) {
 	t.Run("caches success for 60s", func(t *testing.T) {
 		db, clock := setup(t)
 		setSetting(t, db, `"UTC"`)
-		source, _ := NewDBTimezoneSource(db, true, clock.Now)
+		source, _ := NewDBTimezoneSource(db, clock.Now)
 		ctx := context.Background()
 		first, err := source.StatsTimezone(ctx)
 		if err != nil {

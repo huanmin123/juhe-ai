@@ -640,7 +640,7 @@ func w1xSelectorAuthzFixture(t *testing.T) (*chainAccountsSelector, *sql.DB) {
 			t.Fatalf("seed authz schema: %v", err)
 		}
 	}
-	selector, err := newChainAccountsSelector(db, false, "w1x-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "w1x-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -922,7 +922,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 		db := seedChainSelectorDB(t)
 		t.Cleanup(func() { _ = db.Close() })
 		w1nDropTables(t, db, "groups")
-		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
+		selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("create selector: %v", err)
 		}
@@ -941,7 +941,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('w1x-src-1', 'sys_admin', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`); err != nil {
 			t.Fatalf("seed source account: %v", err)
 		}
-		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
+		selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("create selector: %v", err)
 		}
@@ -962,7 +962,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('w1x-src-1', 'sys_admin', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`); err != nil {
 			t.Fatalf("seed source account: %v", err)
 		}
-		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
+		selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("create selector: %v", err)
 		}
@@ -978,7 +978,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 		if _, err := db.Exec(`UPDATE accounts SET account_expires_at = 'bad-date' WHERE id = 'a-limit-acc'`); err != nil {
 			t.Fatalf("bind expires: %v", err)
 		}
-		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
+		selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("create selector: %v", err)
 		}
@@ -1018,7 +1018,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 					t.Fatalf("seed %q: %v", statement[:32], err)
 				}
 			}
-			selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
+			selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 20)
 			if err != nil {
 				t.Fatalf("create selector: %v", err)
 			}
@@ -1066,7 +1066,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 		if _, err := db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'a-limit-acc'`), sealed); err != nil {
 			t.Fatalf("bind credentials: %v", err)
 		}
-		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
+		selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("create selector: %v", err)
 		}
@@ -1195,7 +1195,7 @@ func TestW1XRuntimeCacheAndGuardArms(t *testing.T) {
 
 	// 空库缓存：分组用量元数据解析必须报错。
 	bare := w1xOpenBareSQLite(t, "w1x-cache-bare.sqlite3")
-	models, err := gatewayruntimecache.NewSQLReadModels(bare, false, time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(bare, time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create read models: %v", err)
 	}
@@ -1392,7 +1392,7 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 	if marker := newChainListAvailabilityDirtyMarker(composed); marker != nil {
 		t.Fatal("sqlite 方言不得装配脏标记")
 	}
-	pgComposed := &composition{db: db, pgDialect: true}
+	pgComposed := &composition{db: db}
 	marker := newChainListAvailabilityDirtyMarker(pgComposed)
 	if marker == nil {
 		t.Fatal("postgres 方言必须装配脏标记")
@@ -1411,7 +1411,7 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open closed-case db: %v", err)
 	}
-	closedMarker := newChainListAvailabilityDirtyMarker(&composition{db: closedDB, pgDialect: true})
+	closedMarker := newChainListAvailabilityDirtyMarker(&composition{db: closedDB})
 	_ = closedDB.Close()
 	if err := closedMarker(ctx, "w1x-src", "reason", 1); err == nil {
 		t.Fatal("关闭句柄必须透传事务错误")
@@ -1443,7 +1443,7 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 			t.Fatalf("seed attached schema: %v", err)
 		}
 	}
-	fullComposed := &composition{db: attach, pgDialect: true}
+	fullComposed := &composition{db: attach}
 	fullMarker := newChainListAvailabilityDirtyMarker(fullComposed)
 	if err := fullMarker(ctx, "w1x-src", "w1x 失败", 1234); err != nil {
 		t.Fatalf("脏标记写入: %v", err)
@@ -2061,7 +2061,7 @@ func TestW1XHydrationLimitBreakAndBadCooldownError(t *testing.T) {
 		if _, err := db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id IN ('a-limit-acc', 'b-limit-acc', 'c-limit-acc', 'd-limit-acc')`), sealed); err != nil {
 			t.Fatalf("bind credentials: %v", err)
 		}
-		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 2)
+		selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 2)
 		if err != nil {
 			t.Fatalf("create selector: %v", err)
 		}
@@ -2091,7 +2091,7 @@ func TestW1XHydrationLimitBreakAndBadCooldownError(t *testing.T) {
 				t.Fatalf("seed %q: %v", statement[:40], err)
 			}
 		}
-		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
+		selector, err := newChainAccountsSelectorWithStats(db, db, "secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("create selector: %v", err)
 		}

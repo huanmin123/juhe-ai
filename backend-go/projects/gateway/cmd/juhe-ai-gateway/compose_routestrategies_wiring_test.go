@@ -89,11 +89,11 @@ func routestrategiesWiringEnv(t *testing.T) (*authsys.Deps, *sql.DB) {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestRoutestrategiesMountRegistersSpeedFirstEndpointsWhenFacadeWired(t *test
 
 	for name, wired := range map[string]bool{"facade_wired": true, "facade_absent": false} {
 		t.Run(name, func(t *testing.T) {
-			store, err := routestrategies.NewStore(db, false, nil, nil, nil)
+			store, err := routestrategies.NewStore(db, nil, nil, nil)
 			if err != nil {
 				t.Fatalf("new store: %v", err)
 			}

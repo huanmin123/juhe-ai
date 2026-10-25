@@ -285,7 +285,7 @@ func TestChainCatalogSourceClosedDBErrorArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	source, err := newChainCatalogSource(db, false)
+	source, err := newChainCatalogSource(db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestChainListProviderModelCatalogFilterArms(t *testing.T) {
 	seedModel("cat_w40_whisper", "catdrop-whisper-x", "builtin", 1.0)
 	// 无价自定义行：active、可支持 → unpriced 臂剔除（192）。
 	seedModel("cpm_w40_free", "catdrop-free-model", "global", nil)
-	source, err := newChainCatalogSource(fixture.db, false)
+	source, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}

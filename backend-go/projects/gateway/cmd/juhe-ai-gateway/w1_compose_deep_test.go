@@ -709,7 +709,7 @@ func TestW1QAuthzGrantReturnerArms(t *testing.T) {
 			t.Fatalf("打开临时库: %v", err)
 		}
 		t.Cleanup(func() { _ = db.Close() })
-		store, err := authz.NewStore(db, false, now)
+		store, err := authz.NewStore(db, now)
 		if err != nil {
 			t.Fatalf("构造 authz store: %v", err)
 		}
@@ -733,7 +733,7 @@ func TestW1QAuthzGrantReturnerArms(t *testing.T) {
 			revoked_by TEXT, revoked_at TEXT, created_at TEXT, updated_at TEXT)`); err != nil {
 			t.Fatalf("建 grants 表: %v", err)
 		}
-		store, err := authz.NewStore(db, false, now)
+		store, err := authz.NewStore(db, now)
 		if err != nil {
 			t.Fatalf("构造 authz store: %v", err)
 		}

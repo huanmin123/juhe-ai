@@ -66,7 +66,7 @@ func newTestStore(t *testing.T) (*Store, *sql.DB, *manualClock) {
 		t.Fatal(err)
 	}
 	clock := &manualClock{current: fixedTime(t, "2026-09-04T08:00:00Z")}
-	store, err := NewStore(db, false, clock.Now, nil)
+	store, err := NewStore(db, clock.Now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,18 +262,18 @@ func TestStoreCleanupBeforeConditions(t *testing.T) {
 	}
 }
 
-// TestStorePostgresSQLShape pins the dual-mode SQL generation without a live
+// TestStorePostgresSQLShape pins the SQL generation without a live
 // PostgreSQL: juhe_dataset qualification, $n ordinals and the idempotency
 // clause.
 func TestStorePostgresSQLShape(t *testing.T) {
 	clock := &manualClock{current: fixedTime(t, "2026-09-04T08:00:00Z")}
-	store, err := NewStore(nil, true, clock.Now, nil)
+	store, err := NewStore(nil, clock.Now, nil)
 	if err == nil {
 		t.Fatal("nil db must be rejected")
 	}
 	_ = store
 
-	s := &Store{pg: true}
+	s := &Store{}
 	if got := s.table("public_api_logs"); got != "juhe_dataset.public_api_logs" {
 		t.Fatalf("pg table: %q", got)
 	}

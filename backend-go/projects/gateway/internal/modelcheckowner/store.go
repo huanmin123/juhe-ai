@@ -11,23 +11,18 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 // Store is a J3b-owned connection. It never creates or mutates schema; schema
 // migration and data backfill belong to the offline maintenance command.
 type Store struct {
 	db             *sql.DB
-	mode           string
 	schema         string
 	HealthStatHour HealthStatHourFunc
 }
 
 func (s *Store) schedulerTaskTable() string {
-	if s.mode == "postgres" {
-		return s.schema + ".model_check_scheduler_tasks"
-	}
-	return "model_check_scheduler_tasks"
+	return s.schema + ".model_check_scheduler_tasks"
 }
 
 var requiredTables = []string{
@@ -148,10 +143,7 @@ func (s *Store) ActivateTokenInterceptBaseline(ctx context.Context, input TokenI
 	table := s.tokenInterceptBaselineTable()
 	query := `SELECT version_status,evidence_status,independent_source_count,q90_intercept
 		FROM ` + table + ` WHERE cohort_key_hmac=? AND requested_model=? AND tokenizer_version=?
-		AND probe_set_version=? AND baseline_version=? LIMIT 1`
-	if s.mode == "postgres" {
-		query += " FOR UPDATE"
-	}
+		AND probe_set_version=? AND baseline_version=? LIMIT 1 FOR UPDATE`
 	var status, evidence string
 	var independent int
 	var q90 sql.NullFloat64
@@ -194,10 +186,7 @@ func normalizeTokenInterceptBaselineActivation(input TokenInterceptBaselineActiv
 }
 
 func (s *Store) tokenInterceptBaselineTable() string {
-	if s.mode == "postgres" {
-		return s.schema + ".model_token_intercept_baseline_versions"
-	}
-	return "model_token_intercept_baseline_versions"
+	return s.schema + ".model_token_intercept_baseline_versions"
 }
 
 func validateTokenInterceptBaselineActivation(input TokenInterceptBaselineActivation) error {
@@ -232,23 +221,9 @@ func OpenStore(cfg Config) (*Store, error) {
 	if !cfg.BusinessHandoffConfirmed || !cfg.NodeWriterStopped || !cfg.SchemaReady || !cfg.HealthBoundaryReady || !cfg.RuntimeReady {
 		return nil, errors.New("J3b owner readiness gates are incomplete")
 	}
-	var driver, dsn, schema string
-	switch cfg.StoreMode {
-	case "sqlite":
-		driver, dsn = "sqlite", "file:"+cfg.DatabasePath+"?mode=rw&_pragma=busy_timeout(5000)"
-	case "postgres":
-		driver, dsn, schema = "pgx", cfg.PostgresURL, "juhe_j3b"
-	default:
-		return nil, fmt.Errorf("unsupported J3b store mode %q", cfg.StoreMode)
-	}
-	// sql.Open 仅在驱动名未注册时返回错误；上面 switch 已把 driver 限定为
-	// 包内 init 注册的 "sqlite"/"pgx"，该错误臂不可达（w14m 甄别：不可达防御臂）。
-	db, _ := sql.Open(driver, dsn)
-	if cfg.StoreMode == "sqlite" {
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-	}
-	return &Store{db: db, mode: cfg.StoreMode, schema: schema}, nil
+	// sql.Open 仅在驱动名未注册时返回错误；"pgx" 由包内 init 注册，该错误臂不可达。
+	db, _ := sql.Open("pgx", cfg.PostgresURL)
+	return &Store{db: db, schema: "juhe_j3b"}, nil
 }
 
 func (s *Store) CheckSchema(ctx context.Context) error {
@@ -260,12 +235,7 @@ func (s *Store) CheckSchema(ctx context.Context) error {
 	}
 	for _, table := range requiredTables {
 		var found string
-		var err error
-		if s.mode == "postgres" {
-			err = s.db.QueryRowContext(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2`, s.schema, table).Scan(&found)
-		} else {
-			err = s.db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found)
-		}
+		err := s.db.QueryRowContext(ctx, `SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2`, s.schema, table).Scan(&found)
 		if err != nil {
 			return fmt.Errorf("J3b schema missing table %q: %w", table, err)
 		}
@@ -284,40 +254,20 @@ func (s *Store) checkColumns(ctx context.Context, table string, required []strin
 		return nil
 	}
 	found := make(map[string]struct{}, len(required))
-	if s.mode == "postgres" {
-		rows, err := s.db.QueryContext(ctx, `SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2`, s.schema, table)
-		if err != nil {
-			return fmt.Errorf("read J3b schema columns %q: %w", table, err)
+	rows, err := s.db.QueryContext(ctx, `SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2`, s.schema, table)
+	if err != nil {
+		return fmt.Errorf("read J3b schema columns %q: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scan J3b schema columns %q: %w", table, err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				return fmt.Errorf("scan J3b schema columns %q: %w", table, err)
-			}
-			found[name] = struct{}{}
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate J3b schema columns %q: %w", table, err)
-		}
-	} else {
-		rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
-		if err != nil {
-			return fmt.Errorf("read J3b SQLite schema columns %q: %w", table, err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var cid, notNull, primaryKey int
-			var name, columnType string
-			var defaultValue sql.NullString
-			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-				return fmt.Errorf("scan J3b SQLite schema columns %q: %w", table, err)
-			}
-			found[name] = struct{}{}
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate J3b SQLite schema columns %q: %w", table, err)
-		}
+		found[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate J3b schema columns %q: %w", table, err)
 	}
 	missing := make([]string, 0)
 	for _, column := range required {
@@ -663,16 +613,10 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 }
 
 func (s *Store) healthTable() string {
-	if s.mode == "postgres" {
-		return s.schema + ".account_quality_health_hourly"
-	}
-	return "account_quality_health_hourly"
+	return s.schema + ".account_quality_health_hourly"
 }
 
 func (s *Store) bind(query string) string {
-	if s.mode != "postgres" {
-		return query
-	}
 	var b strings.Builder
 	index := 0
 	for _, char := range query {

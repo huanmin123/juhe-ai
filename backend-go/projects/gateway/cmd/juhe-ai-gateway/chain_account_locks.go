@@ -91,9 +91,8 @@ func scanChainAccountLockRow(scan func(dest ...any) error) (*chainAccountLockRow
 // chainAccountLocks implements gatewaydispatch.AccountLocks over the business
 // database (the runtime half the accounts package does not expose).
 type chainAccountLocks struct {
-	db       *sql.DB
-	postgres bool
-	now      func() time.Time
+	db  *sql.DB
+	now func() time.Time
 	// invalidateRuntimeCache mirrors notifyGatewayRuntimeCacheInvalidation:
 	// fired only when the settle actually flipped the account row to
 	// temporary_unavailable (Node account_lock_deadline reason). nil-safe.
@@ -106,7 +105,7 @@ type chainAccountLocks struct {
 // newChainAccountLocks builds the lock runtime port over the composed business
 // handle. The invalidation callback is the shared K5 bus adapter the sibling
 // bridges use (compose_accounts_reset.go); a nil bus degrades to no-op there.
-func newChainAccountLocks(db *sql.DB, postgres bool, invalidateRuntimeCache func(reason string)) (*chainAccountLocks, error) {
+func newChainAccountLocks(db *sql.DB, invalidateRuntimeCache func(reason string)) (*chainAccountLocks, error) {
 	if db == nil {
 		return nil, fmt.Errorf("网关链账户锁端口需要业务数据库")
 	}
@@ -115,7 +114,6 @@ func newChainAccountLocks(db *sql.DB, postgres bool, invalidateRuntimeCache func
 	}
 	return &chainAccountLocks{
 		db:                     db,
-		postgres:               postgres,
 		now:                    time.Now,
 		invalidateRuntimeCache: invalidateRuntimeCache,
 		newToken:               chainLockRandomToken,
@@ -123,16 +121,10 @@ func newChainAccountLocks(db *sql.DB, postgres bool, invalidateRuntimeCache func
 }
 
 func (s *chainAccountLocks) table(name string) string {
-	if s.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *chainAccountLocks) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

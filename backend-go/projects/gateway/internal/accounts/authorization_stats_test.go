@@ -46,7 +46,7 @@ func newStatsTestEnv(t *testing.T) (*testEnv, *Store, *authz.Store) {
 			t.Fatal(err)
 		}
 	}
-	authzStore, err := authz.NewStore(base.db, true, nil)
+	authzStore, err := authz.NewStore(base.db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

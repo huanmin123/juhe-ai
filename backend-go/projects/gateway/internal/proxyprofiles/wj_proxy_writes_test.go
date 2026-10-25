@@ -174,7 +174,7 @@ func TestWJPatchUsernameNullClears(t *testing.T) {
 func wjUsernameCell(t *testing.T, fixture *proxyFixture, id string) string {
 	t.Helper()
 	var username string
-	if err := fixture.db.QueryRow(`SELECT COALESCE(username,'') FROM proxy_profiles WHERE id = ?`, id).Scan(&username); err != nil {
+	if err := fixture.db.QueryRow(`SELECT COALESCE(username,'') FROM juhe_business.proxy_profiles WHERE id = $1`, id).Scan(&username); err != nil {
 		t.Fatalf("query username: %v", err)
 	}
 	return username
@@ -204,9 +204,9 @@ func TestWJPatchConflictAndMissing(t *testing.T) {
 // TestWJLoadProxyTestSnapshotHydratesTestState 固定快照装载回填检测字段。
 func TestWJLoadProxyTestSnapshotHydratesTestState(t *testing.T) {
 	fixture := newProxyTestFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles
 		(id, system_account_id, name, type, host, port, enabled, test_status, latency_ms, outbound_ip, outbound_region, last_test_message, last_tested_at, created_at, updated_at)
-		VALUES ('p-snap', 'sa-1', '快照', 'http', 'h', 8080, 1, 'passed', 123, '1.2.3.4', 'US', 'ok', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`); err != nil {
+		VALUES ('p-snap', 'sa-1', '快照', 'http', 'h', 8080, true, 'passed', 123, '1.2.3.4', 'US', 'ok', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	snapshot, err := fixture.store.LoadProxyTestSnapshot(context.Background(), "p-snap")

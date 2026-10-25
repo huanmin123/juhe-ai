@@ -5,7 +5,7 @@
 // 的 Driver/WrapDriver/OpenDB，清理批次 C5 自 gateway/jobs pgpool 双副本收敛）
 // 也归本包，供 pgpool 装配与 accountbalance 裸开 pgx 路径统一接线。
 // 2026-10-25 sqlite 存储形态退役：BindSQL 的 postgres=false 透传臂随 sqlite
-// 方言删除（全仓调用方核实恒传 true），参数保留以稳定跨模块签名。
+// 方言删除，开关参数从签名移除，本函数恒按 PG 改写。
 package sqldialect
 
 import (
@@ -14,11 +14,9 @@ import (
 )
 
 // BindSQL 把 SQL 中的顺序 `?` 占位符按出现次序改写为 PostgreSQL 的 $n 序号。
-// postgres 参数已随 sqlite 方言退役失效（恒按 PG 改写），保留以稳定签名。
 // 调用方必须保证 SQL 文本不含含 `?` 的字符串字面量（与既有三份实现的正确性
 // 前提一致）。
-func BindSQL(postgres bool, query string) string {
-	_ = postgres
+func BindSQL(query string) string {
 	if !strings.Contains(query, "?") {
 		return query
 	}

@@ -20,7 +20,7 @@ func TestChainCatalogCustomModelOrderDualDialect(t *testing.T) {
 	// PostgreSQL 唯一存储形态（PLAN-20261024T051925945Z）：原 sqlite 臂的
 	// COLLATE NOCASE 排序断言随方言退役删除；pg 臂 lower(public_model) 排序
 	// 断言保留（fixture 上真实执行 end to end）。
-	pgSource, err := newChainCatalogSource(fixture.db, true)
+	pgSource, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create pg source: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestChainCatalogCustomModelNOCASEOrdering(t *testing.T) {
 			t.Fatalf("seed custom row %s: %v", model, err)
 		}
 	}
-	source, err := newChainCatalogSource(fixture.db, true)
+	source, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}

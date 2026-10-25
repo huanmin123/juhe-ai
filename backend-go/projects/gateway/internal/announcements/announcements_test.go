@@ -82,7 +82,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	// generator is second-granular and the pagination tests create many
 	// announcements in one burst).
 	var sequence atomic.Int64
-	store, err := NewStore(db, true, nil, func(prefix string) string {
+	store, err := NewStore(db, nil, func(prefix string) string {
 		return fmt.Sprintf("%s_%06d", prefix, sequence.Add(1))
 	})
 	if err != nil {

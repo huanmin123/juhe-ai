@@ -81,7 +81,7 @@ func TestW9FCreateConversationGuards(t *testing.T) {
 		t.Fatalf("limit err = %v", err)
 	}
 	// ID 缺省时走 newID 生成路径。
-	store, err := NewStore(fixture.db, false, nil, nil)
+	store, err := NewStore(fixture.db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

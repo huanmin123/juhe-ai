@@ -285,7 +285,7 @@ func TestW14dClosedStoreForks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, true, testSecret, accountStore, ExchangerFunc(func(context.Context, TokenHTTPRequest) (TokenHTTPResponse, error) {
+	store, err := NewStore(db, testSecret, accountStore, ExchangerFunc(func(context.Context, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{}, errors.New("w14d closed")
 	}), nil, nil)
 	if err != nil {

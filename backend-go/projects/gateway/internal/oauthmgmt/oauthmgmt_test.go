@@ -196,7 +196,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	exchanger := &mockExchanger{respond: staticToken(`{}`)}
 	sso := &scriptedSSORequester{}
 	rotation := &rotationInvalidatorRecorder{}
-	store, err := NewStore(db, true, testSecret, accountStore, exchanger, nil, nil,
+	store, err := NewStore(db, testSecret, accountStore, exchanger, nil, nil,
 		WithSSODeviceTransport(sso), WithSSOSleep(func(context.Context, time.Duration) error { return nil }),
 		// T2 audit: the rotation post-commit channels + the in-transaction
 		// circuit dispatch revision family advance (same accounts store).

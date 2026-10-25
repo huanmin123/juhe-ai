@@ -19,19 +19,19 @@ func w1CandidateRow(id string) *chainCandidateRow {
 
 func TestW1AccountsSelectorConstruction(t *testing.T) {
 	// nil 数据库：报错。
-	if _, err := newChainAccountsSelectorWithStats(nil, nil, false, "secret", nil, 20); err == nil {
+	if _, err := newChainAccountsSelectorWithStats(nil, nil, "secret", nil, 20); err == nil {
 		t.Fatal("nil db 必须报错")
 	}
 	// 限额越界：报错。
 	fixture := newChainFixture(t)
-	if _, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, false, "secret", nil, 0); err == nil {
+	if _, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, "secret", nil, 0); err == nil {
 		t.Fatal("限额 0 必须报错")
 	}
-	if _, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, false, "secret", nil, 50001); err == nil {
+	if _, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, "secret", nil, 50001); err == nil {
 		t.Fatal("限额超上界必须报错")
 	}
 	// 缺席 statsDB / now：回退业务库与系统时钟。
-	selector, err := newChainAccountsSelectorWithStats(fixture.db, nil, false, "secret", nil, 20)
+	selector, err := newChainAccountsSelectorWithStats(fixture.db, nil, "secret", nil, 20)
 	if err != nil || selector.statsDB != fixture.db || selector.now == nil {
 		t.Fatalf("selector = %+v, %v", selector, err)
 	}
@@ -40,7 +40,7 @@ func TestW1AccountsSelectorConstruction(t *testing.T) {
 		t.Fatalf("scan limit = %d", got)
 	}
 	// 方言投影：SQLite 前缀名直用，PostgreSQL 加 schema 前缀。
-	sqliteSelector, _ := newChainAccountsSelector(fixture.db, false, "secret", nil, 20)
+	sqliteSelector, _ := newChainAccountsSelector(fixture.db, "secret", nil, 20)
 	if got := sqliteSelector.table("api_keys"); got != "api_keys" {
 		t.Fatalf("sqlite table = %q", got)
 	}
@@ -51,7 +51,7 @@ func TestW1AccountsSelectorConstruction(t *testing.T) {
 	if got := sqliteSelector.bind(plainQuery); got != plainQuery {
 		t.Fatalf("sqlite bind = %q", got)
 	}
-	pgSelector, _ := newChainAccountsSelector(fixture.db, true, "secret", nil, 20)
+	pgSelector, _ := newChainAccountsSelector(fixture.db, "secret", nil, 20)
 	if got := pgSelector.table("api_keys"); got != "juhe_business.api_keys" {
 		t.Fatalf("pg table = %q", got)
 	}

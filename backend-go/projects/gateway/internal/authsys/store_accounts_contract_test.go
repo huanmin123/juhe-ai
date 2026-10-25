@@ -118,7 +118,7 @@ func newContractTestDB(t *testing.T) *sql.DB {
 // while the same store with the proven gate serves the identical calls.
 func TestAccountStoreOwnerGateFailsClosed(t *testing.T) {
 	db := newContractTestDB(t)
-	closed, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, OwnerGate{})
+	closed, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, OwnerGate{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestAccountStoreOwnerGateFailsClosed(t *testing.T) {
 		t.Fatalf("ListOptions err=%v want ErrOwnerGate", err)
 	}
 
-	ready, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, readyOwnerGate)
+	ready, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestAccountStoreOwnerGateFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer bare.Close()
-	bareStore, err := NewAccountStore(bare, modelcheckauth.SQLite, time.Now, readyOwnerGate)
+	bareStore, err := NewAccountStore(bare, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestSuperAdminAdvisoryLockContract(t *testing.T) {
 	if rendered := pg.bind(superAdminAdvisoryLockQuery); rendered != "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))" {
 		t.Fatalf("postgres render=%q", rendered)
 	}
-	sqlite, err := NewAccountStore(sql.OpenDB(nil), modelcheckauth.SQLite, time.Now, readyOwnerGate)
+	sqlite, err := NewAccountStore(sql.OpenDB(nil), modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func strPtr(value string) *string { return &value }
 // zero active super admins (BUG-0169.4).
 func TestPatchLastSuperAdminSQLiteSingleWriter(t *testing.T) {
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, readyOwnerGate)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestPatchLastSuperAdminSQLiteSingleWriter(t *testing.T) {
 // provisioned on demand by the chat-session ensure chain.
 func TestCreateSeedsDefaultResources(t *testing.T) {
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, readyOwnerGate)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +454,7 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 // TestNextDefaultResourceName proves the Node dedupe helper semantics.
 func TestNextDefaultResourceName(t *testing.T) {
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, readyOwnerGate)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +494,7 @@ func TestPatchCacheInvalidationChannels(t *testing.T) {
 	buildStore := func(t *testing.T) (*AccountStore, *AccountListItem) {
 		t.Helper()
 		db := newContractTestDB(t)
-		store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, readyOwnerGate)
+		store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 		if err != nil {
 			t.Fatal(err)
 		}

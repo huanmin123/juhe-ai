@@ -12,7 +12,7 @@
 //   - 池重校验触发（revalidateAccountApiKeyRuntimePoolAsync，runtime-reset 端口的
 //     RevalidateAccountAPIKeyRuntimePool 语义）。
 //
-// SQL 逐字段对照归档 Node（PostgreSQL 取 *Async 变体、SQLite 取同步变体）。
+// SQL 逐字段对照归档 Node（取 PostgreSQL *Async 变体）。
 // 已知偏差（与迁移报告同步披露）：
 //  1. recordFailure 的 PostgreSQL 分支不再把 next_probe_at 的背期调度放进 SQL
 //     （Node 用 statement_timestamp()+random() 原子计算），改为注入时钟在应用侧
@@ -67,11 +67,8 @@ func isProbeCandidateStatus(status string) bool {
 
 // Config 组装 Store。
 type Config struct {
-	// DB 是业务库句柄（SQLite 单库或 PostgreSQL juhe_business schema 共享池）。
+	// DB 是业务库句柄（PostgreSQL juhe_business schema 共享池）。
 	DB *sql.DB
-	// Postgres 为 true 时表名限定 juhe_business schema、占位符绑定为 $n、
-	// 时间参数按原生 timestamptz 绑定。
-	Postgres bool
 	// Secret 是凭据封套与 Key 指纹 HMAC 密钥（Node runtimeConfig.secret）。
 	Secret string
 	// Now 注入时间源；为空取 UTC time.Now。
@@ -84,11 +81,10 @@ type Config struct {
 
 // Store 承载 account_api_key_runtime_states 域全部业务库读写。
 type Store struct {
-	db       *sql.DB
-	postgres bool
-	secret   string
-	now      func() time.Time
-	inval    func(reason string)
+	db     *sql.DB
+	secret string
+	now    func() time.Time
+	inval  func(reason string)
 }
 
 // NewStore 构建 Store；输入校验失败返回错误。
@@ -103,7 +99,7 @@ func NewStore(config Config) (*Store, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Store{db: config.DB, postgres: config.Postgres, secret: config.Secret, now: now, inval: config.InvalidateRuntimeCache}, nil
+	return &Store{db: config.DB, secret: config.Secret, now: now, inval: config.InvalidateRuntimeCache}, nil
 }
 
 // rfc3339Milli 与 Node toISOString() 输出一致（UTC + 毫秒 + Z）；与 jobs
@@ -116,19 +112,13 @@ func (s *Store) nowISO() string { return s.now().UTC().Format(rfc3339Milli) }
 func (s *Store) statesTable() string { return s.businessTable("account_api_key_runtime_states") }
 
 // businessTable 等价 accountApiKeyRuntimeBusinessTable(client, tableName)：
-// PostgreSQL 限定 juhe_business schema，SQLite 使用裸表名。
+// 限定 juhe_business schema。
 func (s *Store) businessTable(name string) string {
-	if s.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
-// bind 把 ? 占位符改写为 PostgreSQL 的 $n 序号（SQLite 原样返回）。
+// bind 把 ? 占位符改写为 PostgreSQL 的 $n 序号。
 func (s *Store) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -142,21 +132,13 @@ func (s *Store) bind(query string) string {
 	return out.String()
 }
 
-// timeParam 绑定生成时间（PG 原生 timestamptz；SQLite RFC3339 文本）。
-func (s *Store) timeParam(t time.Time) any {
-	if s.postgres {
-		return t
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
+// timeParam 绑定生成时间（PG 原生 timestamptz）。
+func (s *Store) timeParam(t time.Time) any { return t }
 
-// instantParam 绑定 RFC3339 文本时间（PG 解析为原生 timestamptz 比较；
-// SQLite 保留文本，与 Node nowIso 字符串比较语义一致）。
+// instantParam 绑定 RFC3339 文本时间（PG 解析为原生 timestamptz 比较）。
 func (s *Store) instantParam(value string) any {
-	if s.postgres {
-		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-			return parsed
-		}
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed
 	}
 	return value
 }

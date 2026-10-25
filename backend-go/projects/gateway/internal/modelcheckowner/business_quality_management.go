@@ -126,8 +126,7 @@ type QualityQuestionBankVerifier interface {
 var _ QualityQuestionBankVerifier = (*modelcheckquestionbank.Store)(nil)
 
 type BusinessQualityManager struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 	// questionBank 是可选端口：nil 且配置了非空 customQuestionIds 时按
 	// fail-closed 拒绝写入，绝不跳过 approved 存在性校验。
 	questionBank QualityQuestionBankVerifier
@@ -157,11 +156,11 @@ func (m *BusinessQualityManager) SetQuestionBankVerifier(verifier QualityQuestio
 	}
 }
 
-func NewBusinessQualityManager(db *sql.DB, postgres bool) (*BusinessQualityManager, error) {
+func NewBusinessQualityManager(db *sql.DB) (*BusinessQualityManager, error) {
 	if db == nil {
 		return nil, errors.New("J3b Business quality database is required")
 	}
-	return &BusinessQualityManager{db: db, postgres: postgres}, nil
+	return &BusinessQualityManager{db: db}, nil
 }
 
 func (m *BusinessQualityManager) Policy(ctx context.Context, systemID string) (QualityPolicyView, error) {
@@ -495,7 +494,7 @@ func (m *BusinessQualityManager) checkScheduleAccount(ctx context.Context, syste
 	if !ok || profile.ID == "" {
 		return errors.New("账户模型限制或供应商协议不支持定时检查模型")
 	}
-	upstreamMapping, err := resolveConfiguredUpstreamModelMapping(ctx, m.db, m.postgres, accountID, profile, model)
+	upstreamMapping, err := resolveConfiguredUpstreamModelMapping(ctx, m.db, accountID, profile, model)
 	if err != nil {
 		return err
 	}
@@ -505,15 +504,9 @@ func (m *BusinessQualityManager) checkScheduleAccount(ctx context.Context, syste
 	return nil
 }
 func (m *BusinessQualityManager) table(name string) string {
-	if m.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 func (m *BusinessQualityManager) bind(s string) string {
-	if !m.postgres {
-		return s
-	}
 	var b strings.Builder
 	i := 0
 	for _, r := range s {
@@ -782,11 +775,8 @@ func boolIntQuality(v bool) int {
 	return 0
 }
 
-// boolBind 返回 timeout_penalty_enabled 的方言绑定值：该列在 SQLite 为
-// INTEGER 0/1、在 PG 为 boolean，pgx 无法把整数编码进 boolean 列。
+// boolBind 返回 timeout_penalty_enabled 的绑定值：该列是 PG boolean，
+// pgx 无法把整数编码进 boolean 列。
 func (m *BusinessQualityManager) boolBind(v bool) any {
-	if m.postgres {
-		return v
-	}
-	return boolIntQuality(v)
+	return v
 }

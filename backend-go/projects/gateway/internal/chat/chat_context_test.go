@@ -33,19 +33,9 @@ func (s *stubQueryer) Exec(query string, _ ...any) (sql.Result, error) {
 
 func (s *stubQueryer) Query(string, ...any) (*sql.Rows, error) { return nil, nil }
 
-func TestEnsurePostgresChatMessagePartitionsSQLiteNoop(t *testing.T) {
-	f := newChatFixture(t)
-	if f.store.Postgres() {
-		t.Fatal("fixture must be sqlite mode")
-	}
-	if err := f.store.ensurePostgresChatMessagePartitions(f.store.db, f.nowISO); err != nil {
-		t.Fatalf("sqlite mode must be a no-op, got %v", err)
-	}
-}
-
 func TestEnsurePostgresChatMessagePartitionsSQLRendering(t *testing.T) {
 	stub := &stubQueryer{}
-	store := &Store{pg: true}
+	store := &Store{}
 	current := "2026-03-10T08:00:00.000Z"
 	if err := store.ensurePostgresChatMessagePartitions(stub, current); err != nil {
 		t.Fatal(err)
@@ -113,23 +103,16 @@ func TestChatMessagePartitionDateKeyTable(t *testing.T) {
 }
 
 func TestPostgresBindRendering(t *testing.T) {
-	pgStore := &Store{pg: true}
-	sqliteStore := &Store{}
-	rendered := pgStore.bind("WHERE a = ? AND b IN (?, ?, ?) AND c = ?")
+	store := &Store{}
+	rendered := store.bind("WHERE a = ? AND b IN (?, ?, ?) AND c = ?")
 	if rendered != "WHERE a = $1 AND b IN ($2, $3, $4) AND c = $5" {
 		t.Fatalf("unexpected pg rendering: %s", rendered)
 	}
-	if sqliteStore.bind("WHERE a = ? AND b = ?") != "WHERE a = ? AND b = ?" {
-		t.Fatal("sqlite rendering must keep placeholders")
+	if store.table("chat_messages") != "juhe_chat.chat_messages" {
+		t.Fatal("must qualify with the juhe_chat schema")
 	}
-	if pgStore.table("chat_messages") != "juhe_chat.chat_messages" {
-		t.Fatal("pg must qualify with the juhe_chat schema")
-	}
-	if sqliteStore.table("chat_messages") != "chat_messages" {
-		t.Fatal("sqlite must use bare table names")
-	}
-	if pgStore.lockSuffix() != " FOR UPDATE" || sqliteStore.lockSuffix() != "" {
-		t.Fatal("lock suffix must be dialect aware")
+	if store.lockSuffix() != " FOR UPDATE" {
+		t.Fatal("lock suffix must be FOR UPDATE")
 	}
 }
 

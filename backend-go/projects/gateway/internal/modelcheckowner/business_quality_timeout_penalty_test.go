@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "modernc.org/sqlite"
 )
 
 // TestBusinessQualityManagerTimeoutPenaltySwitch 覆盖模型检测超时处罚开关
@@ -18,32 +17,32 @@ import (
 // 运行时消费（modelcheckprobe/modelcheckowner runtime、health、summary）不
 // 在本文件：这里只验证配置从 API 输入到存储、再回到视图的完整闭环。
 func TestBusinessQualityManagerTimeoutPenaltySwitch(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,action TEXT,state TEXT,recovery_due_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
 	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,name,vendor_code,connection_driver_code,health_check_connection_id,status) VALUES ('acct','sys','Primary account','gpt','gpt','conn-acct','active')`)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://quality.invalid/v1',1)`)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://quality.invalid/v1', 1)`)
 	// 第二个账户：schedule 的唯一键是 (system_account_id, account_id)，
 	// 显式开启开关的 create 需要独立账户。
 	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,name,vendor_code,connection_driver_code,health_check_connection_id,status) VALUES ('acct-b','sys','Secondary account','gpt','gpt','conn-acct-b','active')`)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-b','acct-b','gpt_openai_v1','https://quality.invalid/v1',1)`)
-	m, err := NewBusinessQualityManager(db, false)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-b','acct-b','gpt_openai_v1','https://quality.invalid/v1', 1)`)
+	m, err := NewBusinessQualityManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,22 +50,28 @@ func TestBusinessQualityManagerTimeoutPenaltySwitch(t *testing.T) {
 
 	policyColumn := func(t *testing.T) int {
 		t.Helper()
-		var enabled int
+		var enabled bool
 		if err := db.QueryRow(`SELECT timeout_penalty_enabled FROM model_quality_policies WHERE system_account_id='sys'`).Scan(&enabled); err != nil {
 			if err == sql.ErrNoRows {
 				return -1
 			}
 			t.Fatal(err)
 		}
-		return enabled
+		if enabled {
+			return 1
+		}
+		return 0
 	}
 	scheduleColumn := func(t *testing.T, id string) int {
 		t.Helper()
-		var enabled int
+		var enabled bool
 		if err := db.QueryRow(`SELECT timeout_penalty_enabled FROM model_quality_schedules WHERE id=?`, id).Scan(&enabled); err != nil {
 			t.Fatal(err)
 		}
-		return enabled
+		if enabled {
+			return 1
+		}
+		return 0
 	}
 
 	t.Run("policy default view and patch lifecycle", func(t *testing.T) {
@@ -216,19 +221,3 @@ func TestBusinessQualityManagerTimeoutPenaltySwitch(t *testing.T) {
 // TestBusinessQualityManagerBoolBindDialect 锁定 timeout_penalty_enabled 的
 // 方言绑定契约：SQLite 绑 INTEGER 0/1，PG 必须绑 Go bool——pgx 拒绝把整数
 // 编码进 boolean 列，回归整数绑定会让策略/计划的全部写路径失败。
-func TestBusinessQualityManagerBoolBindDialect(t *testing.T) {
-	pg := &BusinessQualityManager{postgres: true}
-	if v, ok := pg.boolBind(true).(bool); !ok || !v {
-		t.Fatalf("PG true 绑定=%#v, want bool true", pg.boolBind(true))
-	}
-	if v, ok := pg.boolBind(false).(bool); !ok || v {
-		t.Fatalf("PG false 绑定=%#v, want bool false", pg.boolBind(false))
-	}
-	sqliteMgr := &BusinessQualityManager{}
-	if v, ok := sqliteMgr.boolBind(true).(int); !ok || v != 1 {
-		t.Fatalf("SQLite true 绑定=%#v, want int 1", sqliteMgr.boolBind(true))
-	}
-	if v, ok := sqliteMgr.boolBind(false).(int); !ok || v != 0 {
-		t.Fatalf("SQLite false 绑定=%#v, want int 0", sqliteMgr.boolBind(false))
-	}
-}

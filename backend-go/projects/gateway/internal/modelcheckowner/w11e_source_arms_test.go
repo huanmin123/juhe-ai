@@ -16,12 +16,11 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
-	_ "modernc.org/sqlite"
 )
 
 func w11eOpenBusinessDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/w11e-business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,15 +39,15 @@ func w11eOpenBusinessDB(t *testing.T) *sql.DB {
 func w11eSeedAccount(t *testing.T, db *sql.DB, id string) string {
 	t.Helper()
 	envelope := testCredentialEnvelope(t, "secret", fmt.Sprintf(`{"api_key":"key-%s","supported_endpoint_modes":["responses_sse"]}`, id))
-	if _, err := db.Exec(`INSERT OR IGNORE INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1) ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES (?,'sys-1','group-1',1)`, id); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES (?,'sys-1','group-1', 1)`, id); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES (?,'sys-1','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse',?,?,'Account '||?)`, id, "conn-"+id, envelope, id)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES (?,?,'gpt_openai_v1','https://example.invalid/v1',1)`, "conn-"+id, id)
-	if _, err := db.Exec(`INSERT OR IGNORE INTO model_quality_policies VALUES ('sys-1',4,'quick',1,82,'fallback',15,0,NULL)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES (?,'sys-1','gpt','gpt','openai','api_key',3,7,'active', 1,'responses_sse',?,?,'Account '||?)`, id, "conn-"+id, envelope, id)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES (?,?,'gpt_openai_v1','https://example.invalid/v1', 1)`, "conn-"+id, id)
+	if _, err := db.Exec(`INSERT INTO model_quality_policies(system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,custom_question_ids) VALUES ('sys-1',4,'quick',1,82,'fallback',15, FALSE,NULL) ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
 	return envelope
@@ -56,7 +55,7 @@ func w11eSeedAccount(t *testing.T, db *sql.DB, id string) string {
 
 func w11eNewSource(t *testing.T, db *sql.DB) *BusinessTargetSource {
 	t.Helper()
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +64,11 @@ func w11eNewSource(t *testing.T, db *sql.DB) *BusinessTargetSource {
 }
 
 func TestW11ESourceConstructorAndFactoryArms(t *testing.T) {
-	if _, err := NewBusinessTargetSource(nil, false, "secret"); err == nil || !strings.Contains(err.Error(), "credential secret") {
+	if _, err := NewBusinessTargetSource(nil, "secret"); err == nil || !strings.Contains(err.Error(), "credential secret") {
 		t.Fatalf("nil 数据库必须拒绝: %v", err)
 	}
 	db := w11eOpenBusinessDB(t)
-	if _, err := NewBusinessTargetSource(db, false, "  "); err == nil || !strings.Contains(err.Error(), "credential secret") {
+	if _, err := NewBusinessTargetSource(db, "  "); err == nil || !strings.Contains(err.Error(), "credential secret") {
 		t.Fatalf("空 secret 必须拒绝: %v", err)
 	}
 	// OpenBusinessTargetSource 直接传播连接失败。
@@ -79,11 +78,11 @@ func TestW11ESourceConstructorAndFactoryArms(t *testing.T) {
 	// sqlite 形态拒绝臂（非法模式/空路径/缺表）随 OpenBusinessTargetConnection
 	// 的 sqlite 折叠退役（D17）；PG 形态保留「空业务 URL 必须拒绝」与
 	// 「schemaReady 未经证实的空库必须被形状守卫拒绝」两个对应臂。
-	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", StoreMode: "postgres"}); err == nil || !strings.Contains(err.Error(), "PostgreSQL URL is required") {
+	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret"}); err == nil || !strings.Contains(err.Error(), "PostgreSQL URL is required") {
 		t.Fatalf("空业务 PG URL 必须拒绝: %v", err)
 	}
 	emptyDB := pgtestkit.NewTestDatabase(t)
-	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", StoreMode: "postgres", BusinessPostgresURL: emptyDB.DSN, SchemaReady: true}); err == nil || !strings.Contains(err.Error(), "no tables") {
+	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", BusinessPostgresURL: emptyDB.DSN, SchemaReady: true}); err == nil || !strings.Contains(err.Error(), "no tables") {
 		t.Fatalf("schemaReady 空库必须被形状守卫拒绝: %v", err)
 	}
 }
@@ -219,13 +218,13 @@ func w11eExec(t *testing.T, db *sql.DB, query string, args ...any) {
 // （v16 契约：vendor_code + account_connections.connection_preset_code）。
 func w11eSeedVariant(t *testing.T, db *sql.DB, id, vendor, preset, mode, credentialJSON string) {
 	t.Helper()
-	w11eExec(t, db, `INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES (?,'sys-1','group-1',1)`, id)
+	w11eExec(t, db, `INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES (?,'sys-1','group-1', 1)`, id)
 	credentialType := "api_key"
 	if strings.Contains(credentialJSON, "access_token") {
 		credentialType = "oauth"
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES (?,'sys-1',?,?,'openai',?,3,7,'active',1,?,?,?,'Account '||?)`, id, vendor, vendor, credentialType, mode, "conn-"+id, testCredentialEnvelope(t, "secret", credentialJSON), id)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES (?,?,?,'https://w11e.invalid/v1',1)`, "conn-"+id, id, preset)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES (?,'sys-1',?,?,'openai',?,3,7,'active', 1,?,?,?,'Account '||?)`, id, vendor, vendor, credentialType, mode, "conn-"+id, testCredentialEnvelope(t, "secret", credentialJSON), id)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES (?,?,?,'https://w11e.invalid/v1', 1)`, "conn-"+id, id, preset)
 }
 
 func w11eAccountField(t *testing.T, db *sql.DB, column string) any {
@@ -241,12 +240,12 @@ func TestW11ESourceAuthorizedTargetArms(t *testing.T) {
 	db := w11eOpenBusinessDB(t)
 	envelope := w11eSeedAccount(t, db, "seed-acct")
 	sourceEnvelope := testCredentialEnvelope(t, "secret", `{"api_key":"source-key","supported_endpoint_modes":["responses_sse"]}`)
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('acct-auth','sys-1','gpt','gpt','openai','api_key',3,6,'active',1,'responses_sse','conn-acct-auth',?,'grant-1','source-1','Authorized')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-auth','acct-auth','gpt_openai_v1','https://example.invalid/v1',1)`)
-	w11eExec(t, db, `INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('acct-auth','sys-1','group-1','grant-1',1)`)
-	w11eExec(t, db, `INSERT INTO resource_authorizations VALUES ('grant-1','account','source-1','sys-1','sys-1','use','active',NULL)`)
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('source-1','sys-1','gpt','gpt','openai','api_key',3,8,'active',1,'responses_sse','conn-source-1',?,'Source')`, sourceEnvelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source-1','source-1','gpt_openai_v1','https://example.invalid/v1',1)`)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('acct-auth','sys-1','gpt','gpt','openai','api_key',3,6,'active', 1,'responses_sse','conn-acct-auth',?,'grant-1','source-1','Authorized')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-auth','acct-auth','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	w11eExec(t, db, `INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('acct-auth','sys-1','group-1','grant-1', 1)`)
+	w11eExec(t, db, `INSERT INTO resource_authorizations(id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at) VALUES ('grant-1','account','source-1','sys-1','sys-1','use','active',NULL)`)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('source-1','sys-1','gpt','gpt','openai','api_key',3,8,'active', 1,'responses_sse','conn-source-1',?,'Source')`, sourceEnvelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source-1','source-1','gpt_openai_v1','https://example.invalid/v1', 1)`)
 	source := w11eNewSource(t, db)
 	request := RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-auth", Model: "gpt-5.6-sol"}
 	if _, err := source.Resolve(context.Background(), request); err != nil {
@@ -323,7 +322,7 @@ func TestW11ESourceAuthorizedTargetArms(t *testing.T) {
 		t.Fatalf("表缺失必须失败关闭: %v", err)
 	}
 	w11eExec(t, db, businessSourceContractDDL()[8])
-	w11eExec(t, db, `INSERT INTO resource_authorizations VALUES ('grant-1','account','source-1','sys-1','sys-1','use','active',NULL)`)
+	w11eExec(t, db, `INSERT INTO resource_authorizations(id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at) VALUES ('grant-1','account','source-1','sys-1','sys-1','use','active',NULL)`)
 	if _, err := source.Resolve(context.Background(), request); err != nil {
 		t.Fatalf("复位后授权账户必须可解析: %v", err)
 	}

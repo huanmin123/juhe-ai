@@ -267,7 +267,7 @@ func TestW11DSortRowsLastUsedArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW11DStoreDirectArms(t *testing.T) {
-	if _, err := NewStore(nil, false, nil, nil, nil, nil); err == nil {
+	if _, err := NewStore(nil, nil, nil, nil, nil); err == nil {
 		t.Fatal("nil db 必须报错")
 	}
 	env := newTestEnv(t)
@@ -305,7 +305,7 @@ func TestW11DStoreDirectArms(t *testing.T) {
 		t.Fatalf("创建策略 = %+v err=%v", policy, err)
 	}
 	// 重复主键：注入恒等 newID 让 INSERT 撞主键。
-	dupStore, err := NewStore(env.db, true, nil, func(string) string { return policy.ID }, nil, nil)
+	dupStore, err := NewStore(env.db, nil, func(string) string { return policy.ID }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestW11DTimezoneSourceArms(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			name, err := NewSystemSettingsTimezoneSource(env.db, false)(context.Background())
+			name, err := NewSystemSettingsTimezoneSource(env.db)(context.Background())
 			if tc.fail {
 				if err == nil {
 					t.Fatal("必须报错")
@@ -377,13 +377,8 @@ func TestW11DTimezoneSourceArms(t *testing.T) {
 		if _, err := env.db.Exec(`DROP TABLE system_settings`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewSystemSettingsTimezoneSource(env.db, false)(context.Background()); err == nil {
+		if _, err := NewSystemSettingsTimezoneSource(env.db)(context.Background()); err == nil {
 			t.Fatal("查询失败必须上抛")
-		}
-		// PG 表名臂。
-		pgSource := NewSystemSettingsTimezoneSource(env.db, true)
-		if _, err := pgSource(context.Background()); err == nil {
-			t.Fatal("PG 表名在 SQLite 上必须失败")
 		}
 	})
 }
@@ -399,7 +394,7 @@ func TestW11DDetailErrorArms(t *testing.T) {
 	ctx := context.Background()
 
 	// 自定义 tz 源错误与坏时区。
-	badTZStore, err := NewStore(env.db, true, nil, nil, nil, func(context.Context) (string, error) {
+	badTZStore, err := NewStore(env.db, nil, nil, nil, func(context.Context) (string, error) {
 		return "", sql.ErrConnDone
 	})
 	if err != nil {
@@ -408,7 +403,7 @@ func TestW11DDetailErrorArms(t *testing.T) {
 	if _, err := badTZStore.Detail(ctx, DetailOptions{IPHash: detailIPHash}); err == nil {
 		t.Fatal("tz 源错误必须上抛")
 	}
-	invalidTZStore, err := NewStore(env.db, true, nil, nil, nil, func(context.Context) (string, error) {
+	invalidTZStore, err := NewStore(env.db, nil, nil, nil, func(context.Context) (string, error) {
 		return "Mars/Olympus", nil
 	})
 	if err != nil {
@@ -418,7 +413,7 @@ func TestW11DDetailErrorArms(t *testing.T) {
 		t.Fatalf("坏时区 = %v", err)
 	}
 	// 窗口查询失败：drop 账户窗口表（先保证 rangeReady 通过 registry 窗口行）。
-	dropStore, err := NewStore(env.db, true, nil, nil, nil, nil)
+	dropStore, err := NewStore(env.db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +467,7 @@ func TestW11DDetailPaginationAndLookupArms(t *testing.T) {
 	}
 
 	// LookupAccounts / SystemAccountNames：空集合、查询失败。
-	lookup := NewBusinessAccountLookup(env.db, false)
+	lookup := NewBusinessAccountLookup(env.db)
 	accounts, err := lookup.LookupAccounts(ctx, nil)
 	if err != nil || len(accounts) != 0 {
 		t.Fatalf("空 ids = %v err=%v", accounts, err)
@@ -482,7 +477,7 @@ func TestW11DDetailPaginationAndLookupArms(t *testing.T) {
 		t.Fatalf("空 names = %v err=%v", names, err)
 	}
 	// PG + 无业务库：db() 为 nil → 空表。
-	pgNil := NewBusinessAccountLookup(nil, true).(*businessAccountLookup)
+	pgNil := NewBusinessAccountLookup(nil).(*businessAccountLookup)
 	if pgNil.db() != nil {
 		t.Fatal("PG 无业务库必须返回 nil handle")
 	}
@@ -494,7 +489,7 @@ func TestW11DDetailPaginationAndLookupArms(t *testing.T) {
 	}
 	// 「PG 限定表在 SQLite 上必须失败」臂随 sqlite 引擎退役（D9）：夹具已迁
 	// 真实 PG，PG 臂改为断言真实命中，再以 drop 表保留查询失败传播语义。
-	pgHit := NewBusinessAccountLookup(env.db, true)
+	pgHit := NewBusinessAccountLookup(env.db)
 	if accounts, err := pgHit.LookupAccounts(ctx, []string{"acc_alpha"}); err != nil || len(accounts) != 1 {
 		t.Fatalf("PG 账户命中 = %v err=%v", accounts, err)
 	}
@@ -525,7 +520,7 @@ func TestW11DListErrorArms(t *testing.T) {
 	ctx := context.Background()
 
 	// tz 错误 / 坏时区。
-	badTZ, err := NewStore(env.db, true, nil, nil, nil, func(context.Context) (string, error) {
+	badTZ, err := NewStore(env.db, nil, nil, nil, func(context.Context) (string, error) {
 		return "", sql.ErrConnDone
 	})
 	if err != nil {
@@ -534,7 +529,7 @@ func TestW11DListErrorArms(t *testing.T) {
 	if _, err := badTZ.List(ctx, ListOptions{Page: 1, PageSize: 20}); err == nil {
 		t.Fatal("tz 错误必须上抛")
 	}
-	invalidTZ, err := NewStore(env.db, true, nil, nil, nil, func(context.Context) (string, error) {
+	invalidTZ, err := NewStore(env.db, nil, nil, nil, func(context.Context) (string, error) {
 		return "Mars/Olympus", nil
 	})
 	if err != nil {
@@ -565,7 +560,7 @@ func TestW11DListErrorArms(t *testing.T) {
 		t.Fatalf("超大页 = %+v err=%v", far, err)
 	}
 	// pg 绑定臂：buildRangeWhere 的 PG 分支。
-	pgStore, err := NewStore(env.db, true, nil, nil, nil, nil)
+	pgStore, err := NewStore(env.db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

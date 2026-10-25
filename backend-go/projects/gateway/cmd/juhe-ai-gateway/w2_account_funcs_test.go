@@ -333,7 +333,7 @@ func w2bOpenPlainSQLiteAt(t *testing.T, path string) *sql.DB {
 // w2bOpenBusinessPGFixture 创建带 juhe_business/juhe_stats schema 的 pgtestkit
 // 隔离库，返回 search_path 连接池（夹具手写裸表名 SQL 直用）与裸 DSN
 // （故障注入句柄按需自接）。原 SQLite 文件夹具随存储形态退役重钉 PG
-//（T67 批）。
+// （T67 批）。
 func w2bOpenBusinessPGFixture(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	testDB := pgtestkit.NewTestDatabase(t)
@@ -402,7 +402,7 @@ func TestW2BAccountTestDispatchWireArms(t *testing.T) {
 			t.Fatalf("建契约表失败: %v", err)
 		}
 	}
-	composed := &composition{db: db, pgDialect: true}
+	composed := &composition{db: db}
 	if err := wireInProcessAccountTestDispatch(composed, runtimeConfig{Secret: ""}, nil); err == nil ||
 		!strings.Contains(err.Error(), "JUHE_AI_SECRET") {
 		t.Fatalf("空 Secret 必须在 proberepo.NewStore 处报错: %v", err)
@@ -417,7 +417,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 
 	// 162：业务库没有 account_test_* 契约表 → 按路由 503 契约降级为 nil 端口。
 	plain := w1uOpenPlainSQLite(t, "w2b-account-test-missing.sqlite3")
-	if err := wireInProcessAccountTestDispatch(&composition{db: plain, pgDialect: true}, cfg, nil); err != nil {
+	if err := wireInProcessAccountTestDispatch(&composition{db: plain}, cfg, nil); err != nil {
 		t.Fatalf("契约表缺失必须按 nil 端口降级，不得报错: %v", err)
 	}
 
@@ -439,7 +439,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 	var degradedBuf bytes.Buffer
 	previousLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&degradedBuf, nil)))
-	degradedComposed := &composition{db: minimal, pgDialect: true}
+	degradedComposed := &composition{db: minimal}
 	if err := wireInProcessAccountTestDispatch(degradedComposed, cfg, degradedStore); err != nil {
 		t.Fatalf("启动维护失败必须按告警降级，不得报错: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestW2BAccountBalanceHealthURLErrorArms(t *testing.T) {
 // 关闭句柄 → Queued=false → catch-warn 契约（不静默）。
 func TestW2BCodexUsageHeadersDispatchFailure(t *testing.T) {
 	db := w1uOpenPlainSQLite(t, "w2b-codex-closed.sqlite3")
-	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, true, time.Now)
+	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, time.Now)
 	if err != nil {
 		t.Fatalf("create dispatch: %v", err)
 	}
@@ -842,7 +842,7 @@ func TestW2BChainAccountsScanFaultArms(t *testing.T) {
 
 	wrapped := w2bOpenFaultyPG(t, dsn,
 		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "group_accounts") }, action: w2bFaultShortColumns})
-	selector := &chainAccountsSelector{db: wrapped, postgres: true, secret: "chain-test-secret", now: time.Now,
+	selector := &chainAccountsSelector{db: wrapped, secret: "chain-test-secret", now: time.Now,
 		candidateFinalLimit: 4, candidateScanLimit: 8}
 	groupAccess := &gatewayruntimecache.GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys-owner"}
 
@@ -878,7 +878,7 @@ func TestW2BProxyRowsIterationFault(t *testing.T) {
 	// 选择器按生产 PG 形态以 juhe_business 限定名查询，匹配键收窄为表名。
 	wrapped := w2bOpenFaultyPG(t, dsn,
 		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "proxy_profiles") }, action: w2bFaultNextError})
-	selector := &chainAccountsSelector{db: wrapped, postgres: true, secret: "chain-test-secret", now: time.Now,
+	selector := &chainAccountsSelector{db: wrapped, secret: "chain-test-secret", now: time.Now,
 		candidateFinalLimit: 4, candidateScanLimit: 8}
 	if _, err := selector.resolveProxyURLsForProfiles(context.Background(), []string{"proxy-w2b"}); err == nil {
 		t.Fatal("代理行迭代失败必须上抛")
@@ -941,7 +941,7 @@ func TestW2BResetBridgeInstanceScanFault(t *testing.T) {
 		&w2bFaultRule{match: func(query string) bool {
 			return strings.Contains(query, "FROM juhe_business.accounts") && strings.Contains(query, "authorization_instance_authorization_id")
 		}, action: w2bFaultZeroColumns})
-	bridge := &accountsRuntimeResetBridge{db: wrapped, pg: true}
+	bridge := &accountsRuntimeResetBridge{db: wrapped}
 	if _, err := bridge.authorizationInstanceIDs(context.Background(), "auth-w2b"); err == nil ||
 		!strings.Contains(err.Error(), "destination arguments") {
 		t.Fatalf("实例清单必须报 Scan 数量错误: %v", err)
@@ -967,7 +967,7 @@ func TestW2BCatalogScanBadValueFault(t *testing.T) {
 		&w2bFaultRule{match: func(query string) bool {
 			return strings.Contains(query, "FROM juhe_business.models") || strings.Contains(query, " FROM models")
 		}, action: w2bFaultBadValue})
-	source := &chainCatalogSource{db: wrapped, postgres: true}
+	source := &chainCatalogSource{db: wrapped}
 	if _, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("不可序列化目录值必须报 JSON 编码错误: %v", err)
@@ -1029,11 +1029,11 @@ func TestW2BModelCatalogRefreshSecondListFailure(t *testing.T) {
 		action: w2bFaultQueryError, err: errors.New("w2b 第二次目录投影失败"), afterN: 2}
 	wrapped := w2bOpenFaultyPG(t, dsn, rule)
 	wrapped.SetMaxOpenConns(1)
-	catalogStore, err := providers.NewStore(wrapped, true, time.Now)
+	catalogStore, err := providers.NewStore(wrapped, time.Now)
 	if err != nil {
 		t.Fatalf("providers store: %v", err)
 	}
-	refresher := &gatewayModelCatalogRefresher{db: wrapped, pg: true, secret: "w2b-refresh-secret", catalog: catalogStore, now: time.Now}
+	refresher := &gatewayModelCatalogRefresher{db: wrapped, secret: "w2b-refresh-secret", catalog: catalogStore, now: time.Now}
 	if _, err := refresher.RefreshDraftModelCatalog(context.Background(), accounts.ModelCatalogDiscoveryInput{
 		ProviderCode: "gpt",
 		ProtocolCode: "openai",
@@ -1102,7 +1102,7 @@ func w2bNewPGBalanceRefresher(t *testing.T, db *sql.DB, ownerID string) *gateway
 	if err != nil {
 		t.Fatalf("create balance runner: %v", err)
 	}
-	return &gatewayManualBalanceRefresher{db: db, pg: true, secret: w2bRefreshSecret, store: store, runner: runner, now: time.Now}
+	return &gatewayManualBalanceRefresher{db: db, secret: w2bRefreshSecret, store: store, runner: runner, now: time.Now}
 }
 
 // TestW2BBalanceRefreshLoadOutcomeArms 覆盖 RefreshManual 的 outcome 回读
@@ -1129,7 +1129,7 @@ func TestW2BBalanceRefreshLoadOutcomeArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构造账户 store 失败: %v", err)
 	}
-	if err := wireInProcessBalanceAndCatalogRefresh(&composition{db: w2bOpenOutcomeFaultyPG(t, tempAppURL, w2bFaultNoRows), pgDialect: true},
+	if err := wireInProcessBalanceAndCatalogRefresh(&composition{db: w2bOpenOutcomeFaultyPG(t, tempAppURL, w2bFaultNoRows)},
 		runtimeConfig{Secret: ""}, wireStore, nil); err == nil || !strings.Contains(err.Error(), "create account-balance gateway runner") {
 		t.Fatalf("空 Secret 必须在 runner 构造处报错: %v", err)
 	}
@@ -1186,7 +1186,7 @@ func TestW2BAuthzExpirySyncReconciledLog(t *testing.T) {
 		nowText, nowText); err != nil {
 		t.Fatalf("seed expired grant: %v", err)
 	}
-	store, err := authz.NewStore(db, false, time.Now)
+	store, err := authz.NewStore(db, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1231,7 +1231,7 @@ func TestW2BAuthzExpirySyncTickerPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	store, err := authz.NewStore(db, false, time.Now)
+	store, err := authz.NewStore(db, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

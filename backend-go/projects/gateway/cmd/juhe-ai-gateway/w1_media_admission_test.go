@@ -258,7 +258,7 @@ func newMediaWriteBackRuntime(t *testing.T) (*mediaJobsRuntime, *sql.DB) {
 		updated_at TEXT NOT NULL DEFAULT '')`); err != nil {
 		t.Fatalf("create accounts: %v", err)
 	}
-	return &mediaJobsRuntime{db: db, postgres: false, transport: gatewayupstream.TransportDeps{}}, db
+	return &mediaJobsRuntime{db: db, transport: gatewayupstream.TransportDeps{}}, db
 }
 
 const mediaWriteBackSeedRow = `INSERT INTO accounts (id, capability_domain, status, schedulable, cooldown_until,

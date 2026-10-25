@@ -48,10 +48,7 @@ func (s *SQLSchedulerSource) Claim(ctx context.Context, kind SchedulerKind, now 
 		return nil, err
 	}
 	defer tx.Rollback()
-	query := fmt.Sprintf(`SELECT id,fence_token,payload FROM %s WHERE kind=? AND state IN ('pending','failed') AND due_at<=? AND (claim_until IS NULL OR claim_until<=?) ORDER BY due_at,id LIMIT ?`, s.schedulerTable())
-	if s.Store.mode == "postgres" {
-		query += " FOR UPDATE SKIP LOCKED"
-	}
+	query := fmt.Sprintf(`SELECT id,fence_token,payload FROM %s WHERE kind=? AND state IN ('pending','failed') AND due_at<=? AND (claim_until IS NULL OR claim_until<=?) ORDER BY due_at,id LIMIT ? FOR UPDATE SKIP LOCKED`, s.schedulerTable())
 	rows, err := tx.QueryContext(ctx, s.Store.bind(query), string(kind), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim J3b %s tasks: %w", kind, err)

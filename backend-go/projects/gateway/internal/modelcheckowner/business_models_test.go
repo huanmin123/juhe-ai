@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
-	_ "modernc.org/sqlite"
 )
 
 func TestResolveConfiguredUpstreamModelMappingPreservesFamilies(t *testing.T) {
@@ -23,7 +22,7 @@ func TestResolveConfiguredUpstreamModelMappingPreservesFamilies(t *testing.T) {
 	}
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
 	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +40,7 @@ func TestResolveConfiguredUpstreamModelMappingRejectsUnsupportedCrossFamily(t *t
 	}
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
 	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "messages")
-	_, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
+	_, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported cross-family mapping must fail closed, err=%v", err)
 	}
@@ -56,7 +55,7 @@ func TestResolveConfiguredUpstreamModelMappingAcceptsSameFamily(t *testing.T) {
 	}
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
 	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "responses")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +72,7 @@ func TestResolveConfiguredUpstreamModelMappingReadsMappingWithoutModelRestrictio
 		t.Fatal("OpenAI Responses profile is required")
 	}
 	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +91,7 @@ func TestResolveConfiguredUpstreamModelMappingMappingPrecedesDirectMatch(t *test
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-sol")
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
 	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +108,7 @@ func TestResolveConfiguredUpstreamModelMappingAdmitsAccountSupportedCatalogExter
 		t.Fatal("OpenAI Responses profile is required")
 	}
 	seedMappingSupported(t, db, "acct-1", "deepseek-v4.1-flash")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "deepseek-v4.1-flash")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "deepseek-v4.1-flash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +125,7 @@ func TestResolveConfiguredUpstreamModelMappingStillRejectsUnsupportedCatalogExte
 		t.Fatal("OpenAI Responses profile is required")
 	}
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "deepseek-v4.1-flash")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "deepseek-v4.1-flash")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +144,7 @@ func TestResolveConfiguredUpstreamModelMappingAppliesMappingForCatalogExternalMo
 	seedMappingSupported(t, db, "acct-1", "glm-5.2")
 	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
 	seedMappingEntry(t, db, "acct-1", "glm-5.2", "responses", "gpt-5.6-terra", "responses")
-	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "glm-5.2")
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "glm-5.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +155,7 @@ func TestResolveConfiguredUpstreamModelMappingAppliesMappingForCatalogExternalMo
 	if _, err := db.Exec(`DELETE FROM account_supported_models WHERE account_id='acct-1' AND model_id=?`, seedMappingModel(t, db, "gpt-5.6-terra")); err != nil {
 		t.Fatal(err)
 	}
-	restricted, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "glm-5.2")
+	restricted, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "glm-5.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +170,7 @@ func TestResolveConfiguredUpstreamModelMappingAppliesMappingForCatalogExternalMo
 func seedMappingModel(t *testing.T, db *sql.DB, name string) string {
 	t.Helper()
 	id := "model-" + strings.NewReplacer(".", "-", "_", "-").Replace(name)
-	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES (?,'gpt',?,?,'builtin',NULL,'active',1)`, id, name, name); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES (?,'gpt',?,?,'builtin',NULL,'active',TRUE) ON CONFLICT DO NOTHING`, id, name, name); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -197,12 +196,12 @@ func seedMappingEntry(t *testing.T, db *sql.DB, accountID, sourceModel, sourceFa
 
 func newModelMappingDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/model-mapping.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, ddl := range []string{
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 	} {
@@ -326,7 +325,7 @@ func TestResolveConfiguredUpstreamModelMappingPostgresQueryUsesIntegerEnabledLit
 	rec := &modelMappingRecorder{}
 	db := sql.OpenDB(modelMappingConnector{rec})
 	defer func() { _ = db.Close() }()
-	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, true, "acct-1", profile, "gpt-5.6-sol"); err != nil {
+	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, "acct-1", profile, "gpt-5.6-sol"); err != nil {
 		t.Fatal(err)
 	}
 	mapping := ""

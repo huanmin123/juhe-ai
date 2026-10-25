@@ -22,9 +22,9 @@ func wbBusinessQualityDDL(t *testing.T) []string {
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,name TEXT,status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,local_fallback_enabled INTEGER,local_super_priority_enabled INTEGER,enabled INTEGER,updated_at TEXT)`,
 		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,state TEXT,action TEXT,recovery_due_at TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT, model_id TEXT, PRIMARY KEY (account_id, model_id))`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT, source_model TEXT, source_endpoint_family TEXT, target_connection_id TEXT, target_model_id TEXT, target_endpoint_family TEXT, enabled INTEGER)`,
@@ -34,12 +34,12 @@ func wbBusinessQualityDDL(t *testing.T) []string {
 // 质量管理 CRUD 契约：策略按乐观锁修订；定时检查按账户唯一并
 // 在创建/更新时重新校验账户与模型约束。
 func TestWBBusinessQualityManagerCRUDContract(t *testing.T) {
-	db := wbOpenMemoryDB(t, wbBusinessQualityDDL(t))
+	db := wbOpenPGDB(t, wbBusinessQualityDDL(t))
 	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,health_check_connection_id,name) VALUES ('acct','sys','gpt','gpt','conn-acct','Account 1')`)
 	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://quality.invalid/v1',1)`)
-	w11eExec(t, db, "INSERT OR IGNORE INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('model-sol','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',1)")
+	w11eExec(t, db, "INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('model-sol','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',TRUE) ON CONFLICT (id) DO NOTHING")
 	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct','model-sol')`)
-	manager, err := NewBusinessQualityManager(db, false)
+	manager, err := NewBusinessQualityManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,29 +196,29 @@ func TestWBBusinessRecoveryApplierFencedBranches(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,status,config_revision,schedulable,last_error_code,availability_schedule_json,updated_at) VALUES ('acct','sys',?,?,0,'model_quality_failed',?,'')`, accountStatus, accountRevision, schedule); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,?,'quality_isolate',?,5,'gateway-1','2030-01-01T00:10:00Z',NULL,'2030-01-01T00:00:00Z',NULL,'')`, state, policyRevision, action); err != nil {
+		if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,?,?,?,5,'gateway-1','2030-01-01T00:10:00Z',NULL,'2030-01-01T00:00:00Z',NULL,'')`, state, action, policyRevision); err != nil {
 			t.Fatal(err)
 		}
 	}
 	when := time.Date(2030, 1, 1, 0, 1, 0, 0, time.UTC)
 	baseInput := RecoveryPayload{OwnerID: "gateway-1", AccountID: "acct", EnforcementID: "enf", RunID: "run-x", Generation: 2, PolicyRevision: 7, RecoveryIntervalMinutes: 10, CompletedAt: when}
 	t.Run("input validation", func(t *testing.T) {
-		db := wbOpenMemoryDB(t, ddl)
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		db := wbOpenPGDB(t, ddl)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := applier.Complete(ctx2(), RecoveryPayload{}, true); err == nil {
 			t.Fatal("空输入必须报错")
 		}
-		if _, err := NewBusinessRecoveryApplier(nil, false); err == nil {
+		if _, err := NewBusinessRecoveryApplier(nil); err == nil {
 			t.Fatal("nil 数据库必须报错")
 		}
 	})
 	t.Run("stale policy revision only reschedules", func(t *testing.T) {
-		db := wbOpenMemoryDB(t, ddl)
+		db := wbOpenPGDB(t, ddl)
 		seed(t, db, "active", "quality_isolate", 8, "quality_isolated", 5, "")
-		applier, _ := NewBusinessRecoveryApplier(db, false)
+		applier, _ := NewBusinessRecoveryApplier(db)
 		if err := applier.Complete(ctx2(), baseInput, true); err != nil {
 			t.Fatal(err)
 		}
@@ -233,9 +233,9 @@ func TestWBBusinessRecoveryApplierFencedBranches(t *testing.T) {
 		}
 	})
 	t.Run("cleared as disabled outside availability", func(t *testing.T) {
-		db := wbOpenMemoryDB(t, ddl)
+		db := wbOpenPGDB(t, ddl)
 		seed(t, db, "active", "quality_isolate", 7, "quality_isolated", 5, `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"00:00","end":"01:00"}]}`)
-		applier, _ := NewBusinessRecoveryApplier(db, false)
+		applier, _ := NewBusinessRecoveryApplier(db)
 		if err := applier.Complete(ctx2(), baseInput, true); err != nil {
 			t.Fatal(err)
 		}
@@ -259,9 +259,9 @@ func TestWBBusinessRecoveryApplierFencedBranches(t *testing.T) {
 			"invalid schedule": {status: "quality_isolated", revision: 5, schedule: `{`},
 		} {
 			t.Run(name, func(t *testing.T) {
-				db := wbOpenMemoryDB(t, ddl)
+				db := wbOpenPGDB(t, ddl)
 				seed(t, db, "active", "quality_isolate", 7, mutate.status, mutate.revision, mutate.schedule)
-				applier, _ := NewBusinessRecoveryApplier(db, false)
+				applier, _ := NewBusinessRecoveryApplier(db)
 				err := applier.Complete(ctx2(), baseInput, true)
 				if mutate.schedule == `{` {
 					if err == nil || !strings.Contains(err.Error(), "availability") {
@@ -283,8 +283,8 @@ func TestWBBusinessRecoveryApplierFencedBranches(t *testing.T) {
 		}
 	})
 	t.Run("missing lease or account commits no-op", func(t *testing.T) {
-		db := wbOpenMemoryDB(t, ddl)
-		applier, _ := NewBusinessRecoveryApplier(db, false)
+		db := wbOpenPGDB(t, ddl)
+		applier, _ := NewBusinessRecoveryApplier(db)
 		if err := applier.Complete(ctx2(), baseInput, true); err != nil {
 			t.Fatalf("缺失租约必须幂等成功: %v", err)
 		}
@@ -306,20 +306,21 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 	ddl := []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,deleted_at TEXT,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT UNIQUE,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,created_at TEXT,updated_at TEXT,cleared_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,model TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,model TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,custom_question_ids TEXT)`,
+		`CREATE TABLE group_accounts (system_account_id TEXT,group_id TEXT,account_id TEXT,account_authorization_id TEXT,local_priority INTEGER,local_super_priority_enabled INTEGER,local_fallback_enabled INTEGER,enabled INTEGER,created_at TEXT,updated_at TEXT)`,
 	}
 	open := func(t *testing.T) (*sql.DB, *BusinessEnforcementApplier) {
 		t.Helper()
-		db := wbOpenMemoryDB(t, ddl)
-		applier, err := NewBusinessEnforcementApplier(db, false)
+		db := wbOpenPGDB(t, ddl)
+		applier, err := NewBusinessEnforcementApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return db, applier
 	}
 	t.Run("constructor and identity validation", func(t *testing.T) {
-		if _, err := NewBusinessEnforcementApplier(nil, false); err == nil {
+		if _, err := NewBusinessEnforcementApplier(nil); err == nil {
 			t.Fatal("nil 数据库必须报错")
 		}
 		_, applier := open(t)
@@ -354,7 +355,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 	})
 	t.Run("policy snapshot must match defaults", func(t *testing.T) {
 		db, applier := open(t)
-		if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',3,'full',1,80,'quality_isolate',20,0,NULL)`); err != nil {
+		if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',3,'full',1,80,'quality_isolate',20,FALSE,NULL)`); err != nil {
 			t.Fatal(err)
 		}
 		input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-1", Action: "fallback", Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "4", Profile: "quick"}
@@ -423,7 +424,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 				if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','sys','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',0,'quick',1,70,?,10,0,NULL)`, action); err != nil {
+				if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',0,'quick',1,70,?,10,FALSE,NULL)`, action); err != nil {
 					t.Fatal(err)
 				}
 				input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-1", Action: action, Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "4", Profile: "quick"}
@@ -599,8 +600,8 @@ func TestWBSourceResolverAdapter(t *testing.T) {
 	if nilSource.Resolver() != nil {
 		t.Fatal("空源必须返回 nil resolver")
 	}
-	db := wbOpenMemoryDB(t, nil)
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	db := wbOpenPGDB(t, nil)
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +617,7 @@ func TestWBSourceResolverAdapter(t *testing.T) {
 
 // claim 后的复核契约：目标或可信对比在租约建立后发生变化必须失败关闭。
 func TestWBRunRejectsDriftAfterClaim(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	request := RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"}
 	target := func(endpoint string) Target {

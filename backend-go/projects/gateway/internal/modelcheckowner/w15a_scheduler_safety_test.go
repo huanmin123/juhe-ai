@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
-	_ "modernc.org/sqlite"
 )
 
 func TestScheduleRunBudgetDerivesLeaseWindow(t *testing.T) {
@@ -73,30 +72,16 @@ func TestSchedulerRunExecutorRunBudgetEndsRunInsideBudget(t *testing.T) {
 }
 
 func TestBusinessSchedulerRunBudgetCompletesInsideLeaseWindow(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := wbOpenPGDB(t, []string{
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,dispatch_revision INTEGER NOT NULL DEFAULT 1,authorization_instance_source_account_id TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+	})
 	defer db.Close()
-	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 1`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','gpt',4,NULL,NULL,'active','gpt-5.6-sol')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,0,1,?,NULL,NULL,NULL,NULL,NULL,'','')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,FALSE,1,?,NULL,NULL,NULL,NULL,NULL,'','')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	store := schedulerStoreFixture(t)
@@ -286,15 +271,9 @@ func TestSchedulerCapsConcurrentBatchExecution(t *testing.T) {
 
 func schedulerTasksFixture(t *testing.T) (*sql.DB, *SQLSchedulerSource, time.Time) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/tasks.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := wbOpenPGDB(t, []string{`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT NOT NULL,due_at TEXT NOT NULL,claim_owner TEXT,claim_until TEXT,fence_token INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',last_error TEXT,completed_at TEXT,payload TEXT NOT NULL,updated_at TEXT NOT NULL)`})
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT NOT NULL,due_at TEXT NOT NULL,claim_owner TEXT,claim_until TEXT,fence_token INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',last_error TEXT,completed_at TEXT,payload TEXT NOT NULL,updated_at TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: db}
 	source := &SQLSchedulerSource{Store: store, OwnerID: "gateway-1", Lease: time.Minute}
 	return db, source, time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 }
@@ -453,14 +432,8 @@ func TestSQLSchedulerSourceLeavesNonHealthPayloadUntouchedOnFail(t *testing.T) {
 }
 
 func TestListHealthSyncRetriesScanWindowTruncates(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/window.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := wbOpenPGDB(t, []string{`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`})
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
 	// 40 invalid head rows sort before the single valid row. They pass the
 	// SQL filters (durable completed failed-sync facts) but are skipped by the
 	// Go-side projector parse: with limit=10 the scan window (4*limit) covers
@@ -477,7 +450,7 @@ func TestListHealthSyncRetriesScanWindowTruncates(t *testing.T) {
 		`'{"evidenceFormed":true,"trustFormed":true}','{"configRevision":"3"}','2030-01-02T00:00:00Z','failed','2030-01-02T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{schema: j3bTestSchema, db: db, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	truncated, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil {
 		t.Fatal(err)

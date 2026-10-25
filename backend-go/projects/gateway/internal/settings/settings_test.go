@@ -177,7 +177,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, true, nil, invalidator)
+	store, err := NewStore(db, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestSettingsPatchUpdatesSnapshotInvalidationAndLog(t *testing.T) {
 // of the guard: any online timezone change is refused before touching SQL.
 func TestSettingsPostgresModeForbidsTimezoneOnlineChange(t *testing.T) {
 	db := newSettingsPGDatabase(t)
-	store, err := NewStore(db, true, nil, nil)
+	store, err := NewStore(db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +480,7 @@ func TestSettingsSnapshotProviderFillsCompatibleDefaults(t *testing.T) {
 	env := newTestEnv(t)
 	env.exec(t, `DELETE FROM system_settings WHERE system_account_id='sys_admin' AND key='userAiAccountLimit'`)
 
-	store, err := NewStore(env.db, true, nil, nil)
+	store, err := NewStore(env.db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -986,7 +986,7 @@ func TestSettingsAccountHealthReservationGatedArms(t *testing.T) {
 	}
 
 	// (d) The full-snapshot write never reserves.
-	store, err := NewStore(env.db, true, nil, nil)
+	store, err := NewStore(env.db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1128,7 +1128,7 @@ func TestSettingsAccountHealthReservationPostgresDialect(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 
-	store, err := NewStore(db, true, nil, nil)
+	store, err := NewStore(db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1195,7 +1195,7 @@ func TestStoreInvalidateSnapshotCacheClearsSystemAndGlobalCaches(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO juhe_business.global_settings (key, value_json, updated_at) VALUES ('appName', '"聚合 AI"', '2026-01-01T00:00:00.000Z'), ('appIcon', '"/__aisys__/brand-icon.svg"', '2026-01-01T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, true, time.Now, nil)
+	store, err := NewStore(db, time.Now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

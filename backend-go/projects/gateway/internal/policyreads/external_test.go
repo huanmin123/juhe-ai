@@ -377,7 +377,7 @@ func TestExternalBuiltInTestToken(t *testing.T) {
 	}
 	// Reset twice yields different tokens (guard passes different result? identical payload → dedupe).
 	// Use a distinct second reset through the store to avoid the guard.
-	store, err := NewExternalStore(env.db, true, nil, nil, nil, "test-crypto-secret")
+	store, err := NewExternalStore(env.db, nil, nil, nil, "test-crypto-secret")
 	if err != nil {
 		t.Fatal(err)
 	}

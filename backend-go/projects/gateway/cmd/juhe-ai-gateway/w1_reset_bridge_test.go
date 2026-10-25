@@ -17,7 +17,7 @@ func newW1ResetBridge(t *testing.T) *accountsRuntimeResetBridge {
 		grantee_team_id TEXT, status TEXT, expires_at TEXT, limits_json TEXT)`); err != nil {
 		t.Fatalf("create grants table: %v", err)
 	}
-	return &accountsRuntimeResetBridge{db: fixture.db, pg: false, now: time.Now}
+	return &accountsRuntimeResetBridge{db: fixture.db, now: time.Now}
 }
 
 func TestW1ResetBridgeGenerationsAndGuards(t *testing.T) {
@@ -42,19 +42,12 @@ func TestW1ResetBridgeGenerationsAndGuards(t *testing.T) {
 	if withGen.SelectedAPIKeyTransientGeneration == nil || *withGen.SelectedAPIKeyTransientGeneration != "gen-9" {
 		t.Fatalf("代际 = %v", withGen.SelectedAPIKeyTransientGeneration)
 	}
-	// 表限定与占位符。
-	if bridge.table("accounts") != "accounts" {
-		t.Fatal("sqlite 表无前缀")
+	// 表限定与占位符（PG 单形态）。
+	if bridge.table("accounts") != "juhe_business.accounts" {
+		t.Fatal("表前缀缺失")
 	}
-	if got := bridge.bind("a = ? AND b = ?"); got != "a = ? AND b = ?" {
-		t.Fatalf("sqlite bind = %q", got)
-	}
-	pgBridge := &accountsRuntimeResetBridge{pg: true}
-	if pgBridge.table("accounts") != "juhe_business.accounts" {
-		t.Fatal("pg 前缀缺失")
-	}
-	if got := pgBridge.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
-		t.Fatalf("pg bind = %q", got)
+	if got := bridge.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
+		t.Fatalf("bind = %q", got)
 	}
 }
 

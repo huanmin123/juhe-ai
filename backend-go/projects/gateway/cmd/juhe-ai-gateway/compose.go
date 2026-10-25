@@ -145,12 +145,10 @@ type composition struct {
 	// connection). Exposed for seed/maintenance helpers.
 	DB *sql.DB
 
-	// db is the business pool handle; pgDialect is the storage dialect handed
-	// to every internal store constructor. 2026-10-24 存储形态收口：
+	// db is the business pool handle. 2026-10-24 存储形态收口：
 	// PostgreSQL 是唯一存储形态，句柄恒来自共享池（ownDB/ownStatsDB/ownChatDB
-	// 自有句柄护栏随 sqlite 臂删除），pgDialect 恒 true。
-	db        *sql.DB
-	pgDialect bool
+	// 自有句柄护栏随 sqlite 臂删除）。
+	db *sql.DB
 	// statsDB backs the ipstats reads (client_ip_* tables live in the juhe_stats
 	// schema); it aliases the shared pool handle (schema qualification) and
 	// closes nothing here.
@@ -297,7 +295,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 2026-10-24 存储形态收口：PostgreSQL 是唯一存储形态——业务/统计/chat/
 	// usage-catalog/全部数据集读面与 capture 写面都经共享池（schema 限定），
 	// sqlite 双臂、六库 preflight 与自有句柄护栏整体删除。
-	composed := &composition{pgDialect: true}
+	composed := &composition{}
 
 	// Business database: the managed pool registry owns the handle.
 	handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-system-api",
@@ -366,7 +364,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create business settings store: %w", err)
 	}
-	settingsStore, err := settings.NewStore(composed.db, composed.pgDialect, time.Now, bus)
+	settingsStore, err := settings.NewStore(composed.db, time.Now, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create settings store: %w", err)
 	}
@@ -430,7 +428,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		RetentionDays: cfg.LogRetentionDays,
 	})
 
-	authzStore, err := authz.NewStore(composed.db, composed.pgDialect, time.Now)
+	authzStore, err := authz.NewStore(composed.db, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("create authorization store: %w", err)
 	}
@@ -457,7 +455,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create group-stats dirty marker store: %w", err)
 	}
-	teamStore, err := systemteams.NewStore(composed.db, composed.pgDialect, time.Now, authzStore,
+	teamStore, err := systemteams.NewStore(composed.db, time.Now, authzStore,
 		systemteams.WithSideEffects(groupStatsDirtyMarker, bus))
 	if err != nil {
 		return nil, fmt.Errorf("create system-teams store: %w", err)
@@ -479,7 +477,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create groups store: %w", err)
 	}
-	routeStrategyStore, err := routestrategies.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+	routeStrategyStore, err := routestrategies.NewStore(composed.db, time.Now, newCompositionID, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create route-strategy store: %w", err)
 	}
@@ -493,7 +491,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 总线（create/update/delete 提交成功后由 store 发布 topic:gateway_
 	// runtime_cache 全局失效——绑定 Key 的合成配置依赖偏好内容/状态，理由与
 	// 订阅判据见 compose_scheduling_preferences_wiring.go）。
-	schedulingPreferenceStore, err := schedulingpreferences.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+	schedulingPreferenceStore, err := schedulingpreferences.NewStore(composed.db, time.Now, newCompositionID, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create scheduling-preference store: %w", err)
 	}
@@ -531,7 +529,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 的 global/account 行 + 业务库 usageStatsTimezone 时区源）；组合根启动
 	// 后台 Warmup 一次，请求路径只读内存（TTL 后台刷新），超龄由排序接线侧
 	// 转维度中性。取消函数随 shutdowns 登记。
-	cacheRateSource, err := newChainCacheRateSnapshotSource(composed.statsDB, composed.db, composed.pgDialect)
+	cacheRateSource, err := newChainCacheRateSnapshotSource(composed.statsDB, composed.db)
 	if err != nil {
 		return nil, fmt.Errorf("create cache-rate snapshot source: %w", err)
 	}
@@ -582,11 +580,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err := wireInProcessAccountTestDispatch(composed, cfg, accountStore); err != nil {
 		return nil, fmt.Errorf("wire in-process account test dispatch: %w", err)
 	}
-	announcementStore, err := announcements.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID)
+	announcementStore, err := announcements.NewStore(composed.db, time.Now, newCompositionID)
 	if err != nil {
 		return nil, fmt.Errorf("create announcement store: %w", err)
 	}
-	providerStore, err := providers.NewStore(composed.db, composed.pgDialect, time.Now)
+	providerStore, err := providers.NewStore(composed.db, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("create provider store: %w", err)
 	}
@@ -603,24 +601,23 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err := wireInProcessBalanceAndCatalogRefresh(composed, cfg, accountStore, providerStore); err != nil {
 		return nil, fmt.Errorf("wire in-process balance and catalog refresh: %w", err)
 	}
-	ipStatsStore, err := ipstats.NewStore(composed.statsDB, composed.pgDialect, time.Now, newCompositionID, bus, settingsTimezone(settingValue))
+	ipStatsStore, err := ipstats.NewStore(composed.statsDB, time.Now, newCompositionID, bus, settingsTimezone(settingValue))
 	if err != nil {
 		return nil, fmt.Errorf("create ip-stats store: %w", err)
 	}
 	// M15 detail hydration (client-ip-stats-detail.repository.ts hydrates in
 	// both modes): account/owner display names are business-database reads —
-	// the SQLite handle queries the unqualified tables, PostgreSQL qualifies
-	// juhe_business.* on the same pool.
-	ipStatsStore.SetDetailAccountLookup(ipstats.NewBusinessAccountLookup(composed.db, composed.pgDialect))
-	inspectionStore, err := policyreads.NewInspectionStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+	// PostgreSQL qualifies juhe_business.* over the shared pool.
+	ipStatsStore.SetDetailAccountLookup(ipstats.NewBusinessAccountLookup(composed.db))
+	inspectionStore, err := policyreads.NewInspectionStore(composed.db, time.Now, newCompositionID, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create inspection store: %w", err)
 	}
-	externalStore, err := policyreads.NewExternalStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus, cfg.Secret)
+	externalStore, err := policyreads.NewExternalStore(composed.db, time.Now, newCompositionID, bus, cfg.Secret)
 	if err != nil {
 		return nil, fmt.Errorf("create external-integration store: %w", err)
 	}
-	oauthStore, err := oauthmgmt.NewStore(composed.db, composed.pgDialect, cfg.Secret, accountStore, oauthmgmt.NewHTTPTokenExchanger(), time.Now, newCompositionID,
+	oauthStore, err := oauthmgmt.NewStore(composed.db, cfg.Secret, accountStore, oauthmgmt.NewHTTPTokenExchanger(), time.Now, newCompositionID,
 		// T2 audit wiring: the rotation post-commit invalidation channels ride
 		// the same bus adapter as the accounts slice, and the in-transaction
 		// circuit dispatch-revision fence reuses the accounts family advance
@@ -797,22 +794,20 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	authzDeps.Mount(kern)
 	authzDeps.MountAuthorizationOptions(kern)
 	proxyStore, err := proxyprofiles.NewStore(proxyprofiles.Deps{
-		DB:        composed.db,
-		PGDialect: composed.pgDialect,
-		Secret:    cfg.Secret,
-		Now:       time.Now,
-		NewID:     newCompositionID,
+		DB:     composed.db,
+		Secret: cfg.Secret,
+		Now:    time.Now,
+		NewID:  newCompositionID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create proxy store: %w", err)
 	}
 	proxyprofiles.Mount(kern, authDeps, proxyStore, sink)
-	(&uibootstrap.Deps{DB: composed.db, PGDialect: composed.pgDialect, Auth: authDeps}).Mount(kern)
+	(&uibootstrap.Deps{DB: composed.db, Auth: authDeps}).Mount(kern)
 	// record_maintenance_jobs 持久交接通道（internal/recordmaintenance）：
-	// codex / anthropic 用量快照 job 由组合根写入业务库（SQLite）或
-	// juhe_dataset（PostgreSQL），jobs 侧 drain（表监控清理 POST 路由族已
-	// 随其读面删除，通道仅承载快照行家族）。
-	recordMaintenanceDispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(composed.db, composed.pgDialect, time.Now)
+	// codex / anthropic 用量快照 job 由组合根写入业务库 juhe_dataset，
+	// jobs 侧 drain（表监控清理 POST 路由族已随其读面删除，通道仅承载快照行家族）。
+	recordMaintenanceDispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(composed.db, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("create record maintenance dispatch: %w", err)
 	}
@@ -837,7 +832,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 权限沿使用记录列表（requireAdmin）；与 /v1 任务面同源业务库（repo 只读
 	// 查询，独立实例无共享写状态）。
 	mediaJobsAdminDeps := &mediajobsadmin.Deps{
-		Repo: gatewaymedia.NewMediaJobsRepo(composed.db, composed.pgDialect, time.Now),
+		Repo: gatewaymedia.NewMediaJobsRepo(composed.db, time.Now),
 		Auth: authDeps,
 	}
 	mediaJobsAdminDeps.Mount(kern)
@@ -878,7 +873,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// chain_request_failure_health.go）：请求失败链与 runtime-reset/激活面的
 		// 探针派发都落这张常驻交接表，jobs J1 Runner 每周期 drain。deadline env
 		// 非法时 writer 为 inert（dispatch 显式 input_unavailable）。
-		healthProbeOutbox := newChainProbeRequestOutboxWriter(composed.db, composed.pgDialect, cfg.AccountHealthProbeDeadlineMS)
+		healthProbeOutbox := newChainProbeRequestOutboxWriter(composed.db, cfg.AccountHealthProbeDeadlineMS)
 		services, chainErr := composeChainRuntimeServices(composed, cfg, settingValue)
 		if chainErr != nil {
 			return nil, fmt.Errorf("compose gateway chain runtime services: %w", chainErr)
@@ -936,7 +931,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// cooldown 后的 account_lock_deadline 失效通知）；装配失败按组合根
 		// 约定 fail-fast。nil 只出现在组合测试（链条回落 chain_ports.go
 		// disabledAccountLocks 的「视为未锁」降级），生产不提供关闭开关。
-		accountLockPort, locksErr := newChainAccountLocks(composed.db, composed.pgDialect, func(reason string) {
+		accountLockPort, locksErr := newChainAccountLocks(composed.db, func(reason string) {
 			if composed.Bus != nil {
 				composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
 			}
@@ -983,9 +978,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// M2 媒体任务面（媒体设计 §8.2）：media_jobs 仓储 + 账户亲和水合走
 			// 同一业务库；secret 与 chain_runtime.go newChainAccountsSelector
 			// 的 cfg.Secret 同源（B-1 同款约定）。
-			MediaJobsDB:       composed.db,
-			MediaJobsPostgres: composed.pgDialect,
-			MediaJobsSecret:   cfg.Secret,
+			MediaJobsDB:     composed.db,
+			MediaJobsSecret: cfg.Secret,
 			// D-209 / D-147 / D-192+D-146（BUG-0175）：spool 容量、用量收尾
 			// 队列与全局并发容量、请求期上游 URL 安全配置的组合根传参。
 			UsageSpoolMaxItems:           cfg.UsageSpoolMaxItems,
@@ -1163,7 +1157,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// management mounts above.
 	aipublicDeps := &aipublic.Deps{
 		DB:             composed.db,
-		PGDialect:      composed.pgDialect,
+		PGDialect:      true,
 		Now:            time.Now,
 		SystemAccounts: systemAccountStore,
 		Groups:         groupsStore,
@@ -1186,7 +1180,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// The read families share the same juhe_dataset schema; the capture writer
 	// is the gateway's one writable dataset consumer.
 	captureDatasetDB := composed.db
-	if logStore, err := publicapilogs.NewStore(captureDatasetDB, composed.pgDialect, time.Now, nil); err == nil {
+	if logStore, err := publicapilogs.NewStore(captureDatasetDB, time.Now, nil); err == nil {
 		pipeline := publicapilogs.NewPipeline(logStore, publicapilogs.Config{})
 		composed.shutdowns = append(composed.shutdowns, func() { pipeline.Close(context.Background()) })
 		aipublicDeps.Capture = aipublic.PublicApiLogCaptureSink(pipeline.Enqueue)

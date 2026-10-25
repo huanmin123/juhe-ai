@@ -1,8 +1,7 @@
-// Store ported from storage/public-api-logs.repository.ts: dual-mode
-// (SQLite + PostgreSQL) persistence for public_api_logs. The insert shape
-// matches Node exactly — SQLite wraps the whole batch in one transaction over
-// a single prepared INSERT, PostgreSQL inserts 1000-row multi-VALUE chunks
-// inside one transaction with ON CONFLICT(id) DO NOTHING for at-least-once
+// Store ported from storage/public-api-logs.repository.ts: the PostgreSQL
+// single-form persistence for public_api_logs. The insert shape matches the
+// Node PostgreSQL arm exactly — 1000-row multi-VALUE chunks inserted inside
+// one transaction with ON CONFLICT(id) DO NOTHING for at-least-once
 // idempotency. CleanupBefore keeps the Node repository semantics: candidates
 // are chosen by created_at ASC, id ASC with a hard LIMIT, then deleted by id
 // inside a transaction (the W7 contract allows this equivalent transactional
@@ -23,16 +22,16 @@ const (
 	publicApiLogPostgresRowsPerInsert = 1000
 )
 
-// Store is the dual-mode public API log writer persistence.
+// Store is the public API log writer persistence (PostgreSQL single form:
+// juhe_dataset schema qualification + $n placeholders).
 type Store struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	newID func(prefix string) string
 }
 
 // NewStore builds the store over the dataset database handle.
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, newID func(string) string) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("publicapilogs store requires a dataset database")
 	}
@@ -42,21 +41,15 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string
 	if newID == nil {
 		newID = func(prefix string) string { return newRecordID(prefix, now) }
 	}
-	return &Store{db: db, pg: postgres, now: now, newID: newID}, nil
+	return &Store{db: db, now: now, newID: newID}, nil
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_dataset." + name
-	}
-	return name
+	return "juhe_dataset." + name
 }
 
 // bind converts ? placeholders to PostgreSQL $n ordinals.
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -86,31 +79,7 @@ func (s *Store) InsertBatch(ctx context.Context, inputs []Input) error {
 	for _, input := range inputs {
 		rows = append(rows, normalizeInput(input, s.now, s.newID))
 	}
-	if s.pg {
-		return s.insertBatchPostgres(ctx, rows)
-	}
-	return s.insertBatchSQLite(ctx, rows)
-}
-
-func (s *Store) insertBatchSQLite(ctx context.Context, rows []normalized) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	insert, err := tx.PrepareContext(ctx, s.bind(`INSERT INTO `+s.table("public_api_logs")+` (
-		`+publicApiLogInsertColumns+`
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`))
-	if err != nil {
-		return err
-	}
-	defer insert.Close()
-	for _, row := range rows {
-		if _, err := insert.ExecContext(ctx, normalizedArgs(row)...); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return s.insertBatchPostgres(ctx, rows)
 }
 
 func (s *Store) insertBatchPostgres(ctx context.Context, rows []normalized) error {

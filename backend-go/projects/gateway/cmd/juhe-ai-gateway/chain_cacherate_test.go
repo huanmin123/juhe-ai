@@ -28,8 +28,8 @@ func newW2CHotQualityRuntime(t *testing.T) *gatewayhotquality.GatewayHotQualityR
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RedisStateURL:      "redis://" + miniredis.RunT(t).Addr(),
-		RedisNamespace:     "w2c-hot-quality",
+		RedisStateURL:  "redis://" + miniredis.RunT(t).Addr(),
+		RedisNamespace: "w2c-hot-quality",
 	})
 	if err != nil {
 		t.Fatalf("create hot quality runtime: %v", err)
@@ -158,10 +158,10 @@ func TestChainHotQualityPortGatesStaleCacheRates(t *testing.T) {
 // 柄 fail-fast。原 SQLite 临时句柄夹具随生产 sqlite 臂删除批次退役（D17）。
 func TestNewChainCacheRateSnapshotSourceWiring(t *testing.T) {
 	t.Run("nil handles fail fast", func(t *testing.T) {
-		if _, err := newChainCacheRateSnapshotSource(nil, &sql.DB{}, true); err == nil {
+		if _, err := newChainCacheRateSnapshotSource(nil, &sql.DB{}); err == nil {
 			t.Fatal("缺统计库句柄必须报错")
 		}
-		if _, err := newChainCacheRateSnapshotSource(&sql.DB{}, nil, true); err == nil {
+		if _, err := newChainCacheRateSnapshotSource(&sql.DB{}, nil); err == nil {
 			t.Fatal("缺业务库句柄必须报错")
 		}
 	})
@@ -177,7 +177,7 @@ func TestNewChainCacheRateSnapshotSourceWiring(t *testing.T) {
 			time.Now().UTC().Format(time.RFC3339)); err != nil {
 			t.Fatalf("seed timezone setting: %v", err)
 		}
-		source, err := newChainCacheRateSnapshotSource(db, db, true)
+		source, err := newChainCacheRateSnapshotSource(db, db)
 		if err != nil {
 			t.Fatalf("create source: %v", err)
 		}

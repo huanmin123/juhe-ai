@@ -164,21 +164,12 @@ func TestW9BBoundedDetailPageSizeFromQuery(t *testing.T) {
 }
 
 func TestW9BStoreDialectHelpers(t *testing.T) {
-	// SQLite 方言。
 	store := &Store{}
-	if got := store.table("client_ip_stats"); got != "client_ip_stats" {
-		t.Fatalf("sqlite table=%q", got)
+	if got := store.table("client_ip_stats"); got != "juhe_stats.client_ip_stats" {
+		t.Fatalf("table=%q", got)
 	}
-	if got := store.bind("WHERE a=? AND b=?"); got != "WHERE a=? AND b=?" {
-		t.Fatalf("sqlite bind=%q", got)
-	}
-	// PG 方言。
-	pgStore := &Store{pg: true}
-	if got := pgStore.table("client_ip_stats"); got != "juhe_stats.client_ip_stats" {
-		t.Fatalf("pg table=%q", got)
-	}
-	if got := pgStore.bind("WHERE a=? AND b=?"); got != "WHERE a=$1 AND b=$2" {
-		t.Fatalf("pg bind=%q", got)
+	if got := store.bind("WHERE a=? AND b=?"); got != "WHERE a=$1 AND b=$2" {
+		t.Fatalf("bind=%q", got)
 	}
 }
 

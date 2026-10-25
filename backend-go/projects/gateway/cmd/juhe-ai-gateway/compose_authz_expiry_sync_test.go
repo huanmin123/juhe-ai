@@ -42,7 +42,7 @@ func TestAuthzExpiryRuntimeSyncComponentExitsOnCancel(t *testing.T) {
 	defer db.Close()
 	// 组件只需要一个能执行 ReconcileExpiredGrants 扫描的 store；空库（无
 	// grants 表）会让首轮失败并被组件吞掉（尽力而为语义），ctx 取消即退出。
-	store, err := authz.NewStore(db, false, time.Now)
+	store, err := authz.NewStore(db, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

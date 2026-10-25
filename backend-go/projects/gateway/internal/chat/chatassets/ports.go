@@ -25,11 +25,11 @@ type queryer interface {
 // facade root, wired once by chat.Store at construction (no interface
 // indirection on any per-request path; every field is a plain function).
 type Ports struct {
-	// Table qualifies a table name for the active dialect.
+	// Table qualifies a table name (juhe_chat schema prefix).
 	Table func(name string) string
-	// Bind rewrites ? placeholders for the active dialect.
+	// Bind rewrites ? placeholders as $n.
 	Bind func(query string) string
-	// LockSuffix returns the row-lock suffix (" FOR UPDATE" on PostgreSQL).
+	// LockSuffix returns the row-lock suffix (" FOR UPDATE").
 	LockSuffix func() string
 	// NowISO renders the injected clock as millisecond ISO-8601.
 	NowISO func() string
@@ -58,11 +58,10 @@ type Ports struct {
 // directly and receives the dialect/clock ports from the facade root.
 type AssetStore struct {
 	db    *sql.DB
-	pg    bool
 	ports Ports
 }
 
 // NewAssetStore builds the asset subdomain service.
-func NewAssetStore(db *sql.DB, postgres bool, ports Ports) *AssetStore {
-	return &AssetStore{db: db, pg: postgres, ports: ports}
+func NewAssetStore(db *sql.DB, ports Ports) *AssetStore {
+	return &AssetStore{db: db, ports: ports}
 }

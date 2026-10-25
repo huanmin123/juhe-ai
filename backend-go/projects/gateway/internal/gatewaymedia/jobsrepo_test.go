@@ -14,9 +14,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// openJobsRepoSQLite 打开仓储单测库：media_jobs 与 maintenance 建表 DDL 同构
-// （含 owner_system_account_id），accounts 是 vendor 水合 JOIN 的最小表，
-// api_keys 仅用于证明 owner 过滤不依赖它。
+// openJobsRepoSQLite 打开仓储单测库：SQLite 句柄 ATTACH ':memory:' AS
+// juhe_business 承载生产同款限定形式（juhe_business.* 表名 + $n 绑定），
+// SetMaxOpenConns(1) 保证 ATTACH 对所有查询可见。media_jobs 与 maintenance
+// 建表 DDL 同构（含 owner_system_account_id），accounts 是 vendor 水合 JOIN
+// 的最小表，api_keys 仅用于证明 owner 过滤不依赖它。
 func openJobsRepoSQLite(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "media-jobs-owner.sqlite3"))
@@ -24,7 +26,11 @@ func openJobsRepoSQLite(t *testing.T) *sql.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE media_jobs (
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`ATTACH ':memory:' AS juhe_business`); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE juhe_business.media_jobs (
 		id TEXT PRIMARY KEY,
 		kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
 		api_key_id TEXT NOT NULL,
@@ -42,8 +48,8 @@ func openJobsRepoSQLite(t *testing.T) *sql.DB {
 		params_ignored_json TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL);
-		CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT);
-		CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`); err != nil {
+		CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY, vendor_code TEXT);
+		CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`); err != nil {
 		t.Fatalf("create tables: %v", err)
 	}
 	return db
@@ -72,7 +78,7 @@ func seedOwnerJob(t *testing.T, repo *MediaJobsRepo, record MediaJobRecord) {
 
 func TestMediaJobsRepoOwnerSemantics(t *testing.T) {
 	db := openJobsRepoSQLite(t)
-	repo := NewMediaJobsRepo(db, false, time.Now)
+	repo := NewMediaJobsRepo(db, time.Now)
 	ctx := context.Background()
 
 	// sys_1 名下两个 Key（key_1/key_2）与一条内部通道行（key 为空）；sys_2 一行。
@@ -130,7 +136,7 @@ func TestMediaJobsRepoOwnerSemantics(t *testing.T) {
 
 	// owner 过滤不经 api_keys join：删光 api_keys 行后，GetByIDAndOwner /
 	// GetByOwnerAndID / ListByOwner / 管理面 owner 过滤全部仍按 owner 列命中。
-	if _, err := db.Exec(`DELETE FROM api_keys`); err != nil {
+	if _, err := db.Exec(`DELETE FROM juhe_business.api_keys`); err != nil {
 		t.Fatalf("delete api_keys: %v", err)
 	}
 	if _, err := repo.GetByIDAndOwner(ctx, "video_a1", "sys_1"); err != nil {

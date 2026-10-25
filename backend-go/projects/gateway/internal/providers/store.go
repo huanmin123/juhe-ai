@@ -26,38 +26,32 @@ import (
 // ceiling over vendors.
 const maxProviderDefinitions = 50
 
-// Store is the dual-mode vendor catalog persistence (SQLite + PostgreSQL).
-// The vendors.enabled flag keeps INTEGER 0/1 in both modes (the fresh DDL
-// declares it integer on PostgreSQL too), so enabled checks compare against 1.
+// Store is the vendor catalog persistence (PostgreSQL single form:
+// juhe_business schema qualification + $n placeholders). The vendors.enabled
+// flag keeps INTEGER 0/1 (the fresh DDL declares it integer on PostgreSQL),
+// so enabled checks compare against 1.
 type Store struct {
 	db  *sql.DB
-	pg  bool
 	now func() time.Time
 }
 
 // NewStore builds the store.
-func NewStore(db *sql.DB, postgres bool, now func() time.Time) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("providers store requires a database")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{db: db, pg: postgres, now: now}, nil
+	return &Store{db: db, now: now}, nil
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 // bind rewrites ? placeholders into $N for PostgreSQL.
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

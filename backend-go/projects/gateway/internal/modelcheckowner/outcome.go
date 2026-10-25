@@ -70,9 +70,11 @@ func (s *Store) ListCommittedOutcomes(ctx context.Context, cursor OutcomeCursor,
 		if err != nil || digestErr != nil || computedInputDigest != input.InputDigest {
 			return nil, ErrInputTampered
 		}
-		if digestPayload(outcomePayload) != outcome.PayloadDigest {
+		canonicalOutcomePayload, canonicalErr := canonicalJSON(outcomePayload)
+		if canonicalErr != nil || digestPayload(canonicalOutcomePayload) != outcome.PayloadDigest {
 			return nil, errors.New("stored J3b outcome failed integrity verification")
 		}
+		outcomePayload = canonicalOutcomePayload
 		outcome.Payload = outcomePayload
 		result = append(result, StoredOutcome{Outcome: outcome, Input: input})
 	}

@@ -16,7 +16,7 @@ import (
 func w11aNewStore(t *testing.T) (*AccountStore, *sql.DB) {
 	t.Helper()
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -83,6 +83,9 @@ type streamPipe struct {
 	downstreamFirstWriteMs *int64
 	// gateway_stream_event_parse_error 每请求首个 WARN 的去重位。
 	parseErrorWarnLogged bool
+	// gateway_stream_event_invalid_protocol 每请求首个 WARN 的去重位（§3.2.0
+	// L2 协议形状异常，v2.3 增量）。
+	invalidProtocolWarnLogged bool
 	// parseErrorIsolator 是 ParseError 事件字节隔离器（§3.2.0：分类为解析失败
 	// 的事件不写下游，与失败帧拦截同一「事件级分类先于写入」时序保证）。仅在
 	// gatewayopenai inspector 驱动的直通管道装配（非 openai 协议自有
@@ -340,6 +343,13 @@ func (p *streamPipe) loop() (*StreamPipeResult, error) {
 			if p.interpretedProtocolFailure(latestInspection) {
 				return p.handleProtocolFailure(latestInspection, false)
 			}
+			// 空完成终局判定（设计 §3.2.3 L1，v2.3）：协议终态已到且全程零语义
+			// 输出 → 不再 flush 透传空壳流，交由共享 finalize 按提交前/提交后
+			// 处置（此挂点是空壳流拦截的主杠杆：客户端零字节）。
+			if p.emptyCompletionFailureDetected(latestInspection) {
+				result, finalizeErr := p.finalizeEmptyCompletion(latestInspection)
+				return &result, finalizeErr
+			}
 			if err := p.flushPreCommitChunks(); err != nil {
 				return nil, err
 			}
@@ -365,6 +375,11 @@ func (p *streamPipe) loop() (*StreamPipeResult, error) {
 		if p.interceptor == nil && (chunkWroteDownstream || len(p.preCommitBuffer.Chunks) > 0) &&
 			latestInspection.TerminalReceived && !p.interpretedProtocolFailure(latestInspection) &&
 			chunkCanEndAfterTerminal && !p.pendingProtocolEvent {
+			// 空完成终局判定（设计 §3.2.3 L1）：终态提前成功臂写出前拦截。
+			if p.emptyCompletionFailureDetected(latestInspection) {
+				result, finalizeErr := p.finalizeEmptyCompletion(latestInspection)
+				return &result, finalizeErr
+			}
 			if err := p.flushPreCommitChunks(); err != nil {
 				return nil, err
 			}

@@ -8,18 +8,32 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 func w13g2McSchemaFailStore(t *testing.T) (*Store, *w13g2McFailpoint) {
 	t.Helper()
 	key := strings_ReplaceAll(t.Name())
 	fp := w13g2McRegisterFailDriver(key)
-	db, err := sql.Open("w13g2mcfail-"+key, "file:w13g2mcschema-"+key+"?mode=memory&cache=shared")
+	tdb := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+j3bTestSchema); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+			return err
+		}
+		return nil
+	})
+	d := &w13g2McFailDriver{inner: stdlib.GetDefaultDriver(), fp: fp}
+	db, err := sqldialect.OpenDB(d, pgSearchPathDSN(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return &Store{db: db, mode: "sqlite"}, fp
+	return &Store{db: db, schema: j3bTestSchema}, fp
 }
 
 func strings_ReplaceAll(v string) string {
@@ -119,7 +133,7 @@ func TestW13g2McRuntimeAndRunGuards(t *testing.T) {
 }
 
 func newBusinessRecoveryApplierHelper(db *sql.DB) (*BusinessRecoveryApplier, error) {
-	return NewBusinessRecoveryApplier(db, false)
+	return NewBusinessRecoveryApplier(db)
 }
 
 // TestW13g2McQueryGuards 覆盖 query/runtime 读接口的 nil 与空库守卫。

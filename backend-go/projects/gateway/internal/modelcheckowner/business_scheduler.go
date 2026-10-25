@@ -23,7 +23,6 @@ import (
 // store because its retry fact is a run/outcome projection.
 type BusinessSchedulerSource struct {
 	Business *sql.DB
-	Postgres bool
 	Store    *Store
 	OwnerID  string
 	Lease    time.Duration
@@ -116,24 +115,18 @@ func (s *BusinessSchedulerSource) Fail(ctx context.Context, task ScheduleTask, c
 
 func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx, now time.Time, limit int, lease time.Duration) ([]ScheduleTask, error) {
 	q := s.bind
-	lock := ""
-	if s.Postgres {
-		lock = " FOR UPDATE OF mqs SKIP LOCKED"
-	}
-	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.timeout_penalty_enabled,mqs.custom_question_ids,a.config_revision,a.dispatch_revision,COALESCE(a.vendor_code,'') FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
+	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.timeout_penalty_enabled,mqs.custom_question_ids,a.config_revision,a.dispatch_revision,COALESCE(a.vendor_code,'') FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ? FOR UPDATE OF mqs SKIP LOCKED`), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim J3b schedules: %w", err)
 	}
 	defer rows.Close()
 	// pgx 的查询结果按流式读取:外层 rows 未读完时连接处于 busy,循环内再
-	// 在同一事务上执行租约 UPDATE 会得到 driver: bad connection(PG 唯一
-	// 路径必炸;SQLite 全量缓冲无此约束)。先把到期行全部读入内存并关闭
-	// rows,再统一领取租约。
+	// 在同一事务上执行租约 UPDATE 会得到 driver: bad connection。先把到期
+	// 行全部读入内存并关闭 rows,再统一领取租约。
 	type claimedScheduleRow struct {
 		id, systemID, accountID, model, profile, action, provider                         string
 		revision, interval, recoveryInterval, threshold, configRevision, dispatchRevision int
-		// timeoutPenalty 在 SQLite 为 INTEGER 0/1、PG 为 boolean，两种驱动
-		// 取值都可扫描进 bool（readPolicy 同语义）。
+		// timeoutPenalty 是 PG boolean 列（readPolicy 同语义）。
 		timeoutPenalty    bool
 		customQuestionIds sql.NullString
 	}
@@ -171,11 +164,7 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 
 func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.Tx, now time.Time, limit int, lease time.Duration) ([]ScheduleTask, error) {
 	q := s.bind
-	lock := ""
-	if s.Postgres {
-		lock = " FOR UPDATE OF aqe SKIP LOCKED"
-	}
-	rows, err := tx.QueryContext(ctx, q(`SELECT aqe.account_id,aqe.system_account_id,aqe.enforcement_id,aqe.generation,COALESCE(NULLIF(aqe.recovery_model,''),a.health_check_model),a.config_revision,a.dispatch_revision,COALESCE(sa.config_revision,a.config_revision),COALESCE(sa.dispatch_revision,a.dispatch_revision),aqe.policy_revision,COALESCE(aqe.config_source_id,''),aqe.profile,aqe.penalty_threshold,aqe.recovery_interval_minutes,COALESCE(a.vendor_code,''),COALESCE(CASE WHEN aqe.config_source='schedule' THEN mqs.custom_question_ids END,mqp.custom_question_ids) FROM `+s.table("account_quality_enforcements")+` aqe JOIN `+s.table("accounts")+` a ON a.id=aqe.account_id LEFT JOIN `+s.table("accounts")+` sa ON sa.id=a.authorization_instance_source_account_id LEFT JOIN `+s.table("model_quality_schedules")+` mqs ON aqe.config_source='schedule' AND mqs.id=aqe.config_source_id LEFT JOIN `+s.table("model_quality_policies")+` mqp ON mqp.system_account_id=aqe.system_account_id WHERE aqe.state='active' AND aqe.action='quality_isolate' AND aqe.recovery_due_at IS NOT NULL AND aqe.recovery_due_at<=? AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until<=?) AND a.deleted_at IS NULL AND a.status='quality_isolated' ORDER BY aqe.recovery_due_at,aqe.account_id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
+	rows, err := tx.QueryContext(ctx, q(`SELECT aqe.account_id,aqe.system_account_id,aqe.enforcement_id,aqe.generation,COALESCE(NULLIF(aqe.recovery_model,''),a.health_check_model),a.config_revision,a.dispatch_revision,COALESCE(sa.config_revision,a.config_revision),COALESCE(sa.dispatch_revision,a.dispatch_revision),aqe.policy_revision,COALESCE(aqe.config_source_id,''),aqe.profile,aqe.penalty_threshold,aqe.recovery_interval_minutes,COALESCE(a.vendor_code,''),COALESCE(CASE WHEN aqe.config_source='schedule' THEN mqs.custom_question_ids END,mqp.custom_question_ids) FROM `+s.table("account_quality_enforcements")+` aqe JOIN `+s.table("accounts")+` a ON a.id=aqe.account_id LEFT JOIN `+s.table("accounts")+` sa ON sa.id=a.authorization_instance_source_account_id LEFT JOIN `+s.table("model_quality_schedules")+` mqs ON aqe.config_source='schedule' AND mqs.id=aqe.config_source_id LEFT JOIN `+s.table("model_quality_policies")+` mqp ON mqp.system_account_id=aqe.system_account_id WHERE aqe.state='active' AND aqe.action='quality_isolate' AND aqe.recovery_due_at IS NOT NULL AND aqe.recovery_due_at<=? AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until<=?) AND a.deleted_at IS NULL AND a.status='quality_isolated' ORDER BY aqe.recovery_due_at,aqe.account_id LIMIT ? FOR UPDATE OF aqe SKIP LOCKED`), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim J3b recoveries: %w", err)
 	}
@@ -346,15 +335,9 @@ func (s *BusinessSchedulerSource) CompleteRunNow(ctx context.Context, scheduleID
 }
 
 func (s *BusinessSchedulerSource) table(name string) string {
-	if s.Postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 func (s *BusinessSchedulerSource) bind(text string) string {
-	if !s.Postgres {
-		return text
-	}
 	var b strings.Builder
 	index := 0
 	for _, r := range text {

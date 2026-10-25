@@ -18,13 +18,13 @@ import (
 func TestW14MBusinessQualityManagerArms(t *testing.T) {
 	ctx := context.Background()
 	enforcementDDL := `CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`
-	scheduleDDL := `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`
+	scheduleDDL := `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`
 	ddl := append(businessSourceContractDDL(), enforcementDDL, scheduleDDL)
 
 	t.Run("listSchedulesQueryError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		w14mSeedPlainAccount(t, db, "acct")
-		manager, err := NewBusinessQualityManager(db, false)
+		manager, err := NewBusinessQualityManager(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,10 +38,10 @@ func TestW14MBusinessQualityManagerArms(t *testing.T) {
 	t.Run("listSchedulesIterateError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		w14mSeedPlainAccount(t, db, "acct")
-		if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',1,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,0,1,NULL,NULL,NULL,NULL,NULL,NULL,'','',NULL)`); err != nil {
+		if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',1,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,FALSE,1,NULL,NULL,NULL,NULL,NULL,NULL,'','',NULL)`); err != nil {
 			t.Fatal(err)
 		}
-		manager, err := NewBusinessQualityManager(db, false)
+		manager, err := NewBusinessQualityManager(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +55,7 @@ func TestW14MBusinessQualityManagerArms(t *testing.T) {
 	t.Run("createScheduleError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		w14mSeedPlainAccount(t, db, "acct")
-		manager, err := NewBusinessQualityManager(db, false)
+		manager, err := NewBusinessQualityManager(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +69,7 @@ func TestW14MBusinessQualityManagerArms(t *testing.T) {
 	t.Run("deleteScheduleError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		w14mSeedPlainAccount(t, db, "acct")
-		manager, err := NewBusinessQualityManager(db, false)
+		manager, err := NewBusinessQualityManager(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,18 +90,6 @@ func TestW14MBusinessEnforcementArms(t *testing.T) {
 	seed := func(t *testing.T, db *sql.DB) {
 		t.Helper()
 		w14mSeedPlainAccount(t, db, "acct")
-		if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN last_error_message TEXT`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN updated_at TEXT`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN fallback_enabled INTEGER`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN super_priority_enabled INTEGER`); err != nil {
-			t.Fatal(err)
-		}
 		if _, err := db.Exec(`UPDATE accounts SET fallback_enabled=0, super_priority_enabled=0 WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +99,7 @@ func TestW14MBusinessEnforcementArms(t *testing.T) {
 	t.Run("accountUpdateError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		seed(t, db)
-		applier, err := NewBusinessEnforcementApplier(db, false)
+		applier, err := NewBusinessEnforcementApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,8 +141,8 @@ func TestW14MSchedulerExecutorMuxArms(t *testing.T) {
 
 func TestW14MTokenBaselineActivationArms(t *testing.T) {
 	ctx := context.Background()
-	db, fp := w14mFailDB(t, runtimeTestDDL())
-	store := &Store{db: db, mode: "sqlite"}
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+	store := &Store{db: db, schema: j3bTestSchema}
 	input := TokenInterceptBaselineActivation{
 		CohortKeyHMAC:            "hmac-sha256-v1:" + strings.Repeat("a", 64),
 		RequestedModel:           "gpt-5.6-sol",
@@ -173,8 +161,8 @@ func TestW14MTokenBaselineActivationArms(t *testing.T) {
 // ---- durable：认领事务起始臂 ----
 
 func TestW14MClaimBeginArm(t *testing.T) {
-	db, fp := w14mFailDB(t, runtimeTestDDL())
-	store := &Store{db: db, mode: "sqlite"}
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+	store := &Store{db: db, schema: j3bTestSchema}
 	fp.failBeginsFrom = 1
 	defer fp.disarm()
 	if _, err := store.ClaimInput(context.Background(), "ghost", "ct", "ot", "owner", time.Minute, time.Now()); err == nil || !strings.Contains(err.Error(), "begin J3b claim") {
@@ -185,9 +173,9 @@ func TestW14MClaimBeginArm(t *testing.T) {
 // ---- scheduler_store：健康重试物化写入臂 ----
 
 func TestW14MEnsureHealthRetryMaterializeError(t *testing.T) {
-	ddl := append(runtimeTestDDL(), w14mSchedulerDDL...)
+	ddl := append(j3bRuntimeFixtureDDLs(), w14mSchedulerDDL...)
 	db, fp := w14mFailDB(t, ddl)
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, schema: j3bTestSchema}
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {
 		t.Fatal(err)
@@ -228,14 +216,6 @@ func TestW14MBusinessRecoveryRescheduleErrorArms(t *testing.T) {
 	setup := func(t *testing.T, db *sql.DB) {
 		t.Helper()
 		w14mSeedPlainAccount(t, db, "acct")
-		for _, alter := range []string{
-			`ALTER TABLE accounts ADD COLUMN last_error_message TEXT`,
-			`ALTER TABLE accounts ADD COLUMN updated_at TEXT`,
-		} {
-			if _, err := db.Exec(alter); err != nil {
-				t.Fatal(err)
-			}
-		}
 		if _, err := db.Exec(`UPDATE accounts SET system_account_id='sys' WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
@@ -250,7 +230,7 @@ func TestW14MBusinessRecoveryRescheduleErrorArms(t *testing.T) {
 	t.Run("beginError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		setup(t, db)
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +244,7 @@ func TestW14MBusinessRecoveryRescheduleErrorArms(t *testing.T) {
 	t.Run("notPassedRescheduleError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		setup(t, db)
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -281,7 +261,7 @@ func TestW14MBusinessRecoveryRescheduleErrorArms(t *testing.T) {
 		if _, err := db.Exec(`UPDATE accounts SET status='active' WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -292,26 +272,14 @@ func TestW14MBusinessRecoveryRescheduleErrorArms(t *testing.T) {
 		}
 	})
 
-	t.Run("postgresLockBranch", func(t *testing.T) {
-		db, _ := w14mFailDB(t, ddl)
-		w14mSeedPlainAccount(t, db, "acct")
-		applier, err := NewBusinessRecoveryApplier(db, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// postgres 分支的 FOR UPDATE 在 SQLite 上必然失败（成功覆盖分支构造）。
-		if err := applier.Complete(ctx, base, true); err == nil {
-			t.Fatal("postgres 分支应报错")
-		}
-	})
 }
 
 // ---- run.go：outcome 投影臂 ----
 
 func TestW14MProjectOutcomeArms(t *testing.T) {
 	ctx := context.Background()
-	db, fp := w14mFailDB(t, runtimeTestDDL())
-	store := &Store{db: db, mode: "sqlite"}
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+	store := &Store{db: db, schema: j3bTestSchema}
 	run := w14fOwnerBaseRun(t, store)
 	if err := store.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
@@ -353,8 +321,8 @@ func TestW14MProjectOutcomeArms(t *testing.T) {
 
 	t.Run("finishRunError", func(t *testing.T) {
 		// 运行处于 running：跳过终端重放对比，直接命中 UPDATE 臂。
-		db2, fp2 := w14mFailDB(t, runtimeTestDDL())
-		store2 := &Store{db: db2, mode: "sqlite"}
+		db2, fp2 := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+		store2 := &Store{db: db2, schema: j3bTestSchema}
 		run2 := w14fOwnerBaseRun(t, store2)
 		if err := store2.CreateRun(ctx, run2); err != nil {
 			t.Fatal(err)

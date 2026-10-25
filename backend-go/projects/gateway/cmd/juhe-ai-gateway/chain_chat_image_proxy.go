@@ -29,16 +29,13 @@ import (
 // 绑定变更，无缓存失效面）。urlSecurity 是部署级上游 URL 安全配置（与 /v1
 // dispatch 链的 UpstreamURLSecurity 同源）：guard 校验的是实际 socket 对端
 // （代理路径即代理主机），私网代理是否放行由部署配置裁决，不在此处硬编码。
-func newChatImageDownloadProxy(db *sql.DB, postgres bool, secret string, urlSecurity UpstreamURLSecurityConfig, warn func(message string)) func(accountID string) *http.Client {
+func newChatImageDownloadProxy(db *sql.DB, secret string, urlSecurity UpstreamURLSecurityConfig, warn func(message string)) func(accountID string) *http.Client {
 	// 单例 guard（transport_urlpolicy.go 同一装配方式）：guard 实例身份参与
 	// SharedClient 池键，按工厂复用同一实例避免按账户碎片化传输池。
 	guard := upstreamhttp.NewDialGuard(urlSecurity, nil, nil)
 	bind := func(query string) string { return accountscore.SQLBind(query) }
 	table := func(name string) string {
-		if postgres {
-			return "juhe_business." + name
-		}
-		return name
+		return "juhe_business." + name
 	}
 	return func(accountID string) *http.Client {
 		client, err := chatImageProxyClientFor(db, bind, table, secret, guard, accountID)

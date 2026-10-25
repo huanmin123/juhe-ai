@@ -15,7 +15,7 @@ import (
 //     96-106）：gate 读与 UPDATE 之间存在并发窗口，单线程测试无法注入。
 //   - LoadSelectionStatesByAccountIds 的 rows.Err（states.go 84-87）与
 //     ClaimDueForProbe 的 rows.Err（probe.go）：本地 sqlite 驱动无迭代故障面。
-//   - RecordFailure 的 PG upsert 分支（probe.go 511-553）：需要真实 PG 方言。
+//   - RecordFailure 的 upsert 写路径（probe.go）：需要真实 PG。
 // ---------------------------------------------------------------------------
 
 func TestW9DStoreDialectArms(t *testing.T) {
@@ -25,27 +25,20 @@ func TestW9DStoreDialectArms(t *testing.T) {
 	if _, err := NewStore(Config{DB: openTestDB(t).db}); err == nil {
 		t.Fatal("empty secret must fail")
 	}
-	pg := &Store{postgres: true}
-	if got := pg.businessTable("accounts"); got != "juhe_business.accounts" {
+	store := &Store{}
+	if got := store.businessTable("accounts"); got != "juhe_business.accounts" {
 		t.Fatalf("pg table=%q", got)
 	}
-	if got := pg.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
+	if got := store.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("pg bind=%q", got)
 	}
-	plain := &Store{}
-	if got := plain.bind("a = ?"); got != "a = ?" {
-		t.Fatalf("sqlite bind=%q", got)
-	}
-	if _, ok := pg.timeParam(time.UnixMilli(1_000)).(time.Time); !ok {
+	if _, ok := store.timeParam(time.UnixMilli(1_000)).(time.Time); !ok {
 		t.Fatal("pg timeParam must be native time")
 	}
-	if _, ok := plain.timeParam(time.UnixMilli(1_000)).(string); !ok {
-		t.Fatal("sqlite timeParam must be text")
-	}
-	if _, ok := pg.instantParam(nowMillisText()).(time.Time); !ok {
+	if _, ok := store.instantParam(nowMillisText()).(time.Time); !ok {
 		t.Fatal("pg instantParam must parse")
 	}
-	if _, ok := pg.instantParam("junk").(string); !ok {
+	if _, ok := store.instantParam("junk").(string); !ok {
 		t.Fatal("pg instantParam fallback must keep text")
 	}
 	if chunkValues([]string{"a"}, 900) == nil {

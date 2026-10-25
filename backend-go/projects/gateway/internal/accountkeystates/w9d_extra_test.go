@@ -13,8 +13,8 @@ import (
 // ---------------------------------------------------------------------------
 // w9d：ResolveTarget / fence / claim / record / defer / revalidate 的分支臂。
 // 不可达登记：ClaimDueForProbe 的 rows.Err 臂与 scan err 臂需要本地 sqlite
-// 驱动迭代中途故障；PG 专属分支（postgres=true 的 upsert）需真实 PG（本包
-// 门禁不覆盖 PG 方言，与既有测试一致）。
+// 驱动迭代中途故障；RecordFailure 的 upsert 写路径需真实 PG（本包门禁不覆
+// 盖 PG 方言，与既有测试一致）。
 // ---------------------------------------------------------------------------
 
 func w9dPoolAccount(id string, fps []string) TargetInput {

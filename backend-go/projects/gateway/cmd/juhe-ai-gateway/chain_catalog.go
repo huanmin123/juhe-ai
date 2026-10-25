@@ -58,15 +58,14 @@ import (
 // round-trips the Node camelCase projection through the shared item JSON
 // shape so the cache and downstream consumers see identical payloads.
 type chainCatalogSource struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
-func newChainCatalogSource(db *sql.DB, postgres bool) (*chainCatalogSource, error) {
+func newChainCatalogSource(db *sql.DB) (*chainCatalogSource, error) {
 	if db == nil {
 		return nil, fmt.Errorf("网关链模型目录源需要业务数据库")
 	}
-	return &chainCatalogSource{db: db, postgres: postgres}, nil
+	return &chainCatalogSource{db: db}, nil
 }
 
 // chainCatalogColumns 是 models 单表（供应商与上游协议面重构设计 §3）的目录
@@ -287,15 +286,11 @@ func chainCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderC
 
 // builtinCatalogQuery mirrors listBuiltInProviderModels: availability filter
 // plus the vendor_code window over models.scope='builtin', ordered like the
-// Node read（catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
-// 谓词按方言生成）。
+// Node read（catalog_visible 在 PostgreSQL 为 boolean，谓词取该形态）。
 func (s *chainCatalogSource) builtinCatalogQuery(input gatewayruntimecache.ModelCatalogListOptions, now string, codes []string) (string, []any) {
 	availability := ""
 	if !input.IncludeInactive {
-		visible := "CAST(catalog_visible AS integer) = 1"
-		if s.postgres {
-			visible = "catalog_visible = TRUE"
-		}
+		visible := "catalog_visible = TRUE"
 		availability = " AND status = 'active' AND " + visible + " AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?) "
 	}
 	base := fmt.Sprintf(`SELECT %s FROM %s`, catalogColumnList(chainCatalogColumns), s.table("models"))
@@ -714,14 +709,10 @@ func chainCatalogItemID(item gatewayruntimecache.ProviderModelCatalogItem) strin
 	return *item.ID
 }
 
-// modelOrderExpression mirrors the Node dual-dialect custom-provider model
-// ordering on the models 单表 public_model 列: `public_model COLLATE NOCASE`
-// on SQLite, `lower(public_model)` on PostgreSQL.
+// modelOrderExpression mirrors the Node custom-provider model ordering on the
+// models 单表 public_model 列（PostgreSQL: lower(public_model)）。
 func (s *chainCatalogSource) modelOrderExpression() string {
-	if s.postgres {
-		return "lower(public_model)"
-	}
-	return "public_model COLLATE NOCASE"
+	return "lower(public_model)"
 }
 
 func catalogColumnList(columns [][2]string) string {
@@ -939,16 +930,10 @@ func normalizeCatalogValue(value any) any {
 }
 
 func (s *chainCatalogSource) table(name string) string {
-	if s.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *chainCatalogSource) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

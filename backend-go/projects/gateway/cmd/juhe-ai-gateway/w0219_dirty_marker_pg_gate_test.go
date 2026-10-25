@@ -110,7 +110,7 @@ func TestW0219ListAvailabilityDirtyMarkerPostgres(t *testing.T) {
 		return generation
 	}
 
-	marker := newChainListAvailabilityDirtyMarker(&composition{db: db, pgDialect: true})
+	marker := newChainListAvailabilityDirtyMarker(&composition{db: db})
 	if marker == nil {
 		t.Fatal("postgres 方言必须装配脏标记")
 	}

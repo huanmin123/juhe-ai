@@ -506,34 +506,27 @@ func TestWINumericRedisArrayAndMaxInt(t *testing.T) {
 }
 
 func TestWISQLPolicySourceGuardsAndPostgresDialect(t *testing.T) {
-	if _, err := NewSQLPolicySource(nil, false, nil, nil); err == nil {
+	if _, err := NewSQLPolicySource(nil, nil, nil); err == nil {
 		t.Fatal("nil db 必须报错")
 	}
-	// postgres 方言的 table 名限定与占位符重写。
-	pg := &SQLPolicySource{postgres: true}
+	// PG 方言的 table 名限定与占位符重写。
+	pg := &SQLPolicySource{}
 	if got := pg.table("client_ip_policies"); got != "juhe_stats.client_ip_policies" {
 		t.Fatalf("table=%q", got)
 	}
 	if got := pg.bind("VALUES (?, ?, ?)"); got != "VALUES ($1, $2, $3)" {
 		t.Fatalf("bind=%q", got)
 	}
-	sqliteSource := &SQLPolicySource{}
-	if got := sqliteSource.table("client_ip_policies"); got != "client_ip_policies" {
-		t.Fatalf("sqlite table=%q", got)
-	}
-	if got := sqliteSource.bind("VALUES (?)"); got != "VALUES (?)" {
-		t.Fatalf("sqlite bind=%q", got)
-	}
 
-	// 契约：postgres 模式限定 juhe_stats schema。用内存 SQLite 承载该模式时
-	// schema 不存在，写入必须报错（错误路径），而不是静默成功。
+	// 契约：查询限定 juhe_stats schema。内存 SQLite 上该 schema 不存在，
+	// 写入必须报错（错误路径），而不是静默成功。
 	db, err := sql.Open("sqlite", "file:wi-policy-pg-dialect?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("打开 sqlite 失败: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	fixed := time.UnixMilli(1_700_000_000_000)
-	pgSource, err := NewSQLPolicySource(db, true, func() time.Time { return fixed }, nil)
+	pgSource, err := NewSQLPolicySource(db, func() time.Time { return fixed }, nil)
 	if err != nil {
 		t.Fatalf("NewSQLPolicySource 失败: %v", err)
 	}
@@ -565,7 +558,7 @@ func TestWISQLPolicySourceGuardsAndPostgresDialect(t *testing.T) {
 	}}); err == nil {
 		t.Fatal("非法时区必须报错")
 	}
-	brokenTimezone := &SQLPolicySource{db: db, postgres: true, now: func() time.Time { return fixed }}
+	brokenTimezone := &SQLPolicySource{db: db, now: func() time.Time { return fixed }}
 	brokenTimezone.timezone = func(context.Context) (string, error) { return "", errors.New("读取时区失败") }
 	if err := brokenTimezone.RecordClientIPPolicyHits(context.Background(), []PolicyHitInput{{
 		IPHash: strings.Repeat("a", 64), PolicyID: "p1",

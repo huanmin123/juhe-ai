@@ -16,7 +16,7 @@ import (
 
 // w14f_aks_arms_test.go 用脚本化 database/sql 驱动对 accountkeystates 做
 // 行级故障注入（Scan / rows.Err / Exec / RowsAffected / 标脏链路），并补齐
-// PostgreSQL 分支（revalidateUpdateSQL、genericGuard、RecordFailure /
+// PostgreSQL 形态（revalidateUpdateSQL、genericGuard、RecordFailure /
 // RecordSuccess 的 PG upsert）与 changed==0 重试路径。
 //
 // 不可达语句登记（语句覆盖率口径下确实无法触达的防御守卫，保持与 Node
@@ -128,14 +128,13 @@ func w14fOpenFakeDB(t *testing.T, state *w14fFakeState) *sql.DB {
 	return db
 }
 
-// w14fFakeStore 直接以脚本化驱动组装 Store（postgres 切换方言分支）。
-func w14fFakeStore(t *testing.T, postgres bool, state *w14fFakeState) *Store {
+// w14fFakeStore 直接以脚本化驱动组装 Store。
+func w14fFakeStore(t *testing.T, state *w14fFakeState) *Store {
 	t.Helper()
 	return &Store{
-		db:       w14fOpenFakeDB(t, state),
-		postgres: postgres,
-		secret:   testSecret,
-		now:      func() time.Time { return testNow },
+		db:     w14fOpenFakeDB(t, state),
+		secret: testSecret,
+		now:    func() time.Time { return testNow },
 	}
 }
 
@@ -240,7 +239,7 @@ func TestW14fRevalidatePoolRetrySuccessPath(t *testing.T) {
 		updateResult:      w14fFakeResult{rowsAffected: 0},
 	}
 	state := &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn}
-	store := w14fFakeStore(t, true, state)
+	store := w14fFakeStore(t, state)
 	invalCalls := 0
 	store.inval = func(reason string) { invalCalls++ }
 
@@ -267,7 +266,7 @@ func TestW14fRevalidatePoolGateRereadArms(t *testing.T) {
 			updateResult: w14fFakeResult{rowsAffected: 0},
 		}
 		mutate(script)
-		return w14fFakeStore(t, true, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
+		return w14fFakeStore(t, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
 	}
 
 	// 重读账户行不存在 → not_found。
@@ -325,7 +324,7 @@ func TestW14fRevalidatePoolErrorArms(t *testing.T) {
 			accountRows: [][]driver.Value{w14fRevalidateAccountRow(t)},
 		}
 		mutate(script)
-		return w14fFakeStore(t, true, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
+		return w14fFakeStore(t, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
 	}
 
 	// 首次 UPDATE 失败。
@@ -383,7 +382,7 @@ func TestW14fRevalidatePoolErrorArms(t *testing.T) {
 		}
 		return script.queryFn(query, args)
 	}}
-	store = w14fFakeStore(t, true, state)
+	store = w14fFakeStore(t, state)
 	if _, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err == nil {
 		t.Fatalf("group iterate failure must error")
 	}
@@ -394,7 +393,7 @@ func TestW14fRevalidatePoolErrorArms(t *testing.T) {
 		groupRows:    [][]driver.Value{{"w14f-group"}},
 		dirtyExecErr: errors.New("w14f dirty upsert failure"),
 	}
-	store = w14fFakeStore(t, true, &w14fFakeState{queryFn: script2.queryFn, execFn: script2.execFn})
+	store = w14fFakeStore(t, &w14fFakeState{queryFn: script2.queryFn, execFn: script2.execFn})
 	if _, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err == nil {
 		t.Fatalf("dirty upsert failure must error")
 	}
@@ -404,7 +403,7 @@ func TestW14fRevalidateDecryptFailureFallsBackToNotSupported(t *testing.T) {
 	script := &w14fRevalidateScript{
 		accountRows: [][]driver.Value{{"openai", "openai", "v1", "api_key", "active", int64(1), int64(1), "w14f-not-an-envelope"}},
 	}
-	store := w14fFakeStore(t, true, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
+	store := w14fFakeStore(t, &w14fFakeState{queryFn: script.queryFn, execFn: script.execFn})
 	if result, err := store.RevalidatePool(context.Background(), "w14f-acc", 1); err != nil ||
 		result.Reason != ReasonNotSupported {
 		t.Fatalf("decrypt fallback: %+v %v", result, err)
@@ -412,9 +411,6 @@ func TestW14fRevalidateDecryptFailureFallsBackToNotSupported(t *testing.T) {
 	// PG 方言的 UPDATE 渲染（AS states 别名）。
 	if !strings.Contains(store.revalidateUpdateSQL(2), "AS states") {
 		t.Fatalf("postgres revalidate SQL missing AS states alias")
-	}
-	if strings.Contains((&Store{postgres: false}).revalidateUpdateSQL(2), "AS states") {
-		t.Fatalf("sqlite revalidate SQL must not alias")
 	}
 }
 
@@ -433,7 +429,7 @@ func w14fClaimDispatch(t *testing.T, query string, args []driver.NamedValue) (dr
 
 func TestW14fClaimDueForProbeErrorArms(t *testing.T) {
 	// 行 Scan 失败（列数不足）。
-	store := w14fFakeStore(t, true, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
+	store := w14fFakeStore(t, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 		if strings.Contains(query, "states.next_probe_at IS NOT NULL") {
 			return &w14fFakeRows{columns: make([]string, 3), values: [][]driver.Value{{"a", "b", "c"}}}, nil
 		}
@@ -443,7 +439,7 @@ func TestW14fClaimDueForProbeErrorArms(t *testing.T) {
 		t.Fatalf("claim scan failure must error")
 	}
 	// 行迭代失败（rows.Err）。
-	store = w14fFakeStore(t, true, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
+	store = w14fFakeStore(t, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 		if strings.Contains(query, "states.next_probe_at IS NOT NULL") {
 			return w14fErrRows(errors.New("w14f claim iterate failure")), nil
 		}
@@ -453,7 +449,7 @@ func TestW14fClaimDueForProbeErrorArms(t *testing.T) {
 		t.Fatalf("claim iterate failure must error")
 	}
 	// claim UPDATE 失败。
-	store = w14fFakeStore(t, true, &w14fFakeState{
+	store = w14fFakeStore(t, &w14fFakeState{
 		queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 			return w14fClaimDispatch(t, query, args)
 		},
@@ -465,7 +461,7 @@ func TestW14fClaimDueForProbeErrorArms(t *testing.T) {
 		t.Fatalf("claim exec failure must error")
 	}
 	// claim RowsAffected 失败。
-	store = w14fFakeStore(t, true, &w14fFakeState{
+	store = w14fFakeStore(t, &w14fFakeState{
 		queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 			return w14fClaimDispatch(t, query, args)
 		},
@@ -477,7 +473,7 @@ func TestW14fClaimDueForProbeErrorArms(t *testing.T) {
 		t.Fatalf("claim rows affected failure must error")
 	}
 	// claim 竞争失败（0 行）→ 候选被丢弃。
-	store = w14fFakeStore(t, true, &w14fFakeState{
+	store = w14fFakeStore(t, &w14fFakeState{
 		queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 			return w14fClaimDispatch(t, query, args)
 		},
@@ -494,7 +490,7 @@ func TestW14fClaimDueForProbeErrorArms(t *testing.T) {
 // ---- RecordFailure / RecordSuccess / DeferProbe 分支 ----
 
 // w14fMutationStore 组装带标脏链路的 mutation 脚本：existing 行读取 + exec。
-func w14fMutationStore(t *testing.T, postgres bool, existingRows [][]driver.Value, exec func(string) (driver.Result, error)) (*Store, *w14fFakeState) {
+func w14fMutationStore(t *testing.T, existingRows [][]driver.Value, exec func(string) (driver.Result, error)) (*Store, *w14fFakeState) {
 	t.Helper()
 	state := &w14fFakeState{
 		queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -513,7 +509,7 @@ func w14fMutationStore(t *testing.T, postgres bool, existingRows [][]driver.Valu
 			return exec(query)
 		},
 	}
-	return w14fFakeStore(t, postgres, state), state
+	return w14fFakeStore(t, state), state
 }
 
 func w14fMutationTarget(t *testing.T) TargetInput {
@@ -535,7 +531,7 @@ func w14fMutationTarget(t *testing.T) TargetInput {
 
 func TestW14fRecordFailurePGUpsertArms(t *testing.T) {
 	// PG 无 fence upsert 成功（覆盖 PG INSERT + finishMutation 链路）。
-	store, _ := w14fMutationStore(t, true, nil, func(string) (driver.Result, error) {
+	store, _ := w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		return w14fFakeResult{rowsAffected: 1}, nil
 	})
 	result, err := store.RecordFailure(context.Background(), FailureInput{Account: w14fMutationTarget(t), Status: "rate_limited"})
@@ -543,7 +539,7 @@ func TestW14fRecordFailurePGUpsertArms(t *testing.T) {
 		t.Fatalf("pg upsert failure: %+v %v", result, err)
 	}
 	// PG 无 fence upsert 失败。
-	store, _ = w14fMutationStore(t, true, nil, func(string) (driver.Result, error) {
+	store, _ = w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		return nil, errors.New("w14f pg upsert failure")
 	})
 	if _, err := store.RecordFailure(context.Background(), FailureInput{Account: w14fMutationTarget(t)}); err == nil {
@@ -552,7 +548,7 @@ func TestW14fRecordFailurePGUpsertArms(t *testing.T) {
 	// PG 带 fence：genericGuard PG 方言 + fence UPDATE exec 失败（fence 需要已
 	// 存在的运行态行，否则在 exec 前按 stale_probe_state 跳过）。
 	existing := [][]driver.Value{{"rate_limited", "", "", int64(3)}}
-	store, _ = w14fMutationStore(t, true, existing, func(string) (driver.Result, error) {
+	store, _ = w14fMutationStore(t, existing, func(string) (driver.Result, error) {
 		return nil, errors.New("w14f fenced update failure")
 	})
 	if _, err := store.RecordFailure(context.Background(), FailureInput{
@@ -561,34 +557,16 @@ func TestW14fRecordFailurePGUpsertArms(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("fenced update failure must error")
 	}
-	// genericGuard 两种方言渲染。
+	// genericGuard 渲染（current_state 别名前缀）。
 	if !strings.Contains(store.genericGuard(), "current_state.") {
 		t.Fatalf("postgres generic guard missing alias prefix")
-	}
-	if strings.Contains((&Store{postgres: false}).genericGuard(), "current_state.") {
-		t.Fatalf("sqlite generic guard must not alias")
-	}
-}
-
-func TestW14fRecordFailureSQLiteArms(t *testing.T) {
-	// SQLite 已有行：UPDATE 失败。
-	store, _ := w14fMutationStore(t, false, [][]driver.Value{{"rate_limited", "", "", int64(3)}},
-		func(string) (driver.Result, error) { return nil, errors.New("w14f sqlite update failure") })
-	if _, err := store.RecordFailure(context.Background(), FailureInput{Account: w14fMutationTarget(t)}); err == nil {
-		t.Fatalf("sqlite update failure must error")
-	}
-	// SQLite 无行：INSERT 失败。
-	store, _ = w14fMutationStore(t, false, nil,
-		func(string) (driver.Result, error) { return nil, errors.New("w14f sqlite insert failure") })
-	if _, err := store.RecordFailure(context.Background(), FailureInput{Account: w14fMutationTarget(t)}); err == nil {
-		t.Fatalf("sqlite insert failure must error")
 	}
 }
 
 func TestW14fRecordSuccessArms(t *testing.T) {
 	target := w14fMutationTarget(t)
 	// 非法 fence → invalid_expected_probe_at（覆盖 skip 臂）。
-	store, _ := w14fMutationStore(t, true, nil, func(string) (driver.Result, error) {
+	store, _ := w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		t.Fatalf("must not execute statements")
 		return nil, nil
 	})
@@ -598,32 +576,25 @@ func TestW14fRecordSuccessArms(t *testing.T) {
 		t.Fatalf("invalid fence: %+v %v", result, err)
 	}
 	// PG 无 fence upsert 成功。
-	store, _ = w14fMutationStore(t, true, nil, func(string) (driver.Result, error) {
+	store, _ = w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		return w14fFakeResult{rowsAffected: 1}, nil
 	})
 	if result, err := store.RecordSuccess(context.Background(), target, SuccessInput{}); err != nil || !result.Changed {
 		t.Fatalf("pg success: %+v %v", result, err)
 	}
 	// PG 无 fence upsert 失败。
-	store, _ = w14fMutationStore(t, true, nil, func(string) (driver.Result, error) {
+	store, _ = w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		return nil, errors.New("w14f pg success failure")
 	})
 	if _, err := store.RecordSuccess(context.Background(), target, SuccessInput{}); err == nil {
 		t.Fatalf("pg success failure must error")
-	}
-	// SQLite 无 fence upsert 失败。
-	store, _ = w14fMutationStore(t, false, nil, func(string) (driver.Result, error) {
-		return nil, errors.New("w14f sqlite success failure")
-	})
-	if _, err := store.RecordSuccess(context.Background(), target, SuccessInput{}); err == nil {
-		t.Fatalf("sqlite success failure must error")
 	}
 }
 
 func TestW14fDeferAndFinishMutationArms(t *testing.T) {
 	target := w14fMutationTarget(t)
 	// DeferProbe：RowsAffected 失败。
-	store, _ := w14fMutationStore(t, false, nil, func(string) (driver.Result, error) {
+	store, _ := w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		return w14fFakeResult{rowsAffected: 1, raErr: errors.New("w14f defer rows affected failure")}, nil
 	})
 	if _, err := store.DeferProbe(context.Background(), target, DeferInput{
@@ -633,14 +604,14 @@ func TestW14fDeferAndFinishMutationArms(t *testing.T) {
 		t.Fatalf("defer rows affected failure must error")
 	}
 	// finishMutation：RowsAffected 失败（SQLite success 链路）。
-	store, _ = w14fMutationStore(t, false, nil, func(string) (driver.Result, error) {
+	store, _ = w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		return w14fFakeResult{rowsAffected: 0, raErr: errors.New("w14f finish rows affected failure")}, nil
 	})
 	if _, err := store.RecordSuccess(context.Background(), target, SuccessInput{}); err == nil {
 		t.Fatalf("finish rows affected failure must error")
 	}
 	// finishMutation：标脏失败（affected 查询失败）。
-	store, _ = w14fMutationStore(t, false, nil, func(string) (driver.Result, error) {
+	store, _ = w14fMutationStore(t, nil, func(string) (driver.Result, error) {
 		return w14fFakeResult{rowsAffected: 1}, nil
 	})
 	state := &w14fFakeState{
@@ -655,7 +626,7 @@ func TestW14fDeferAndFinishMutationArms(t *testing.T) {
 			return w14fFakeResult{rowsAffected: 1}, nil
 		},
 	}
-	store = w14fFakeStore(t, false, state)
+	store = w14fFakeStore(t, state)
 	if _, err := store.RecordSuccess(context.Background(), target, SuccessInput{}); err == nil {
 		t.Fatalf("mark failure must error")
 	}
@@ -692,7 +663,7 @@ func TestW14fSummaryErrorArms(t *testing.T) {
 			_ = args
 			return &w14fFakeRows{}, nil
 		}}
-		return w14fFakeStore(t, true, st), st
+		return w14fFakeStore(t, st), st
 	}()
 	if _, err := store.LoadSummariesByAccountIds(context.Background(), []string{"w14f-acc"}); err == nil {
 		t.Fatalf("detail query failure must error")
@@ -700,7 +671,7 @@ func TestW14fSummaryErrorArms(t *testing.T) {
 
 	build := func(t *testing.T, sourceRows func() (driver.Rows, error), detailRows func() (driver.Rows, error)) *Store {
 		t.Helper()
-		return w14fFakeStore(t, true, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
+		return w14fFakeStore(t, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 			if strings.Contains(query, "AS view_account_id") {
 				return sourceRows()
 			}
@@ -778,7 +749,7 @@ func TestW14fSummaryDecryptFailureSkipsRow(t *testing.T) {
 }
 
 func TestW14fSelectionStatesRowsErrArm(t *testing.T) {
-	store := w14fFakeStore(t, true, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
+	store := w14fFakeStore(t, &w14fFakeState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 		if strings.Contains(query, "key_fingerprint") {
 			return w14fErrRows(errors.New("w14f selection iterate failure")), nil
 		}

@@ -84,7 +84,7 @@ func w14fOwnerBaseRun(t *testing.T, store *Store) RunRecord {
 
 func TestW14fOwnerGetRunValidationArms(t *testing.T) {
 	ctx := context.Background()
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	runtime := &Runtime{Store: store}
 	run := w14fOwnerBaseRun(t, store)
 	if err := store.CreateRun(ctx, run); err != nil {

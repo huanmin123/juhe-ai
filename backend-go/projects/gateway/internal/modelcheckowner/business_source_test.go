@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -15,11 +14,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
-	_ "modernc.org/sqlite"
 )
 
 func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,33 +40,33 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	}
 	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
 	sourceEnvelope := testCredentialEnvelope(t, "secret", `{"api_key":"source-key","supported_endpoint_modes":["responses_sse","interactions_json"]}`)
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	// 设计 §8 去供应商化 fixture：探针身份 = (vendor_code, 健康检查连接
 	// preset)，base_url/启停在 account_connections。
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-1','sys-1','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse','conn-acct-1',?,'Account 1')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1',1)`)
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-2','sys-2','gpt','gpt','openai','api_key',3,2,'active',1,'responses_sse','conn-acct-2',?,'Account 2')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-2','acct-2','gpt_openai_v1','https://example.invalid/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-2','sys-2',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-1','sys-1','gpt','gpt','openai','api_key',3,7,'active', 1,'responses_sse','conn-acct-1',?,'Account 1')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-2','sys-2','gpt','gpt','openai','api_key',3,2,'active', 1,'responses_sse','conn-acct-2',?,'Account 2')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-2','acct-2','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-2','sys-2',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-2','sys-2','group-2',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-2','sys-2','group-2', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-3','sys-1','gpt','gpt','openai','api_key',4,9,'active',1,'responses_sse','conn-acct-3',?,'Account 3')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-3','acct-3','gpt_openai_v1','https://example.invalid/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-3','sys-1','group-1',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-3','sys-1','gpt','gpt','openai','api_key',4,9,'active', 1,'responses_sse','conn-acct-3',?,'Account 3')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-3','acct-3','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-3','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-1',4,'quick',1,82,'fallback',15,0,NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies(system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,custom_question_ids) VALUES ('sys-1',4,'quick', 1,82,'fallback',15, FALSE,NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +102,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	}
 	w11eExec(t, db, w11eSeedModelDDL("model-terra", "gpt-5.6-terra"))
 	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-1','model-terra')`)
-	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','chat_completions',1)`)
+	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','chat_completions', 1)`)
 	mappedOwner, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
 	if err != nil || mappedOwner.UpstreamModel != "gpt-5.6-terra" || mappedOwner.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedOwner.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions || mappedOwner.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIChat || mappedOwner.UpstreamEndpointMode != modelcheckprofile.EndpointModeChatSSE {
 		t.Fatalf("owner Responses to Chat mapping must freeze family and request shape: target=%+v err=%v", mappedOwner, err)
@@ -151,16 +149,16 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := db.Exec(`UPDATE accounts SET last_error_code=NULL WHERE id='acct-1'`); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,name) VALUES ('acct-authorized','sys-1','gpt','gpt','openai','api_key',3,6,'active',1,'responses_sse','conn-acct-auth',?,'authorization-1','Authorized Account')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-auth','acct-authorized','gpt_openai_v1','https://example.invalid/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-authorized','sys-1','group-1',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,name) VALUES ('acct-authorized','sys-1','gpt','gpt','openai','api_key',3,6,'active', 1,'responses_sse','conn-acct-auth',?,'authorization-1','Authorized Account')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-auth','acct-authorized','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-authorized','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO resource_authorizations VALUES ('authorization-1','account','source-account-1','sys-1','sys-1','use','active',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO resource_authorizations(id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at) VALUES ('authorization-1','account','source-account-1','sys-1','sys-1','use','active',NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('source-account-1','sys-1','gpt','gpt','openai','api_key',3,8,'active',1,'responses_json','conn-source-1',?,'Source Account')`, sourceEnvelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source-1','source-account-1','gpt_openai_v1','https://example.invalid/v1',1)`)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('source-account-1','sys-1','gpt','gpt','openai','api_key',3,8,'active', 1,'responses_json','conn-source-1',?,'Source Account')`, sourceEnvelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source-1','source-account-1','gpt_openai_v1','https://example.invalid/v1', 1)`)
 	if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id='source-account-1' WHERE id='acct-authorized'`); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +182,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 		t.Fatalf("authorized target must use source credentials: target=%+v err=%v", authorizedTarget, err)
 	}
 	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('source-account-1','model-terra')`)
-	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-source-1','source-account-1','gpt-5.6-sol','responses','conn-source-1','model-terra','chat_completions',1)`)
+	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-source-1','source-account-1','gpt-5.6-sol','responses','conn-source-1','model-terra','chat_completions', 1)`)
 	mappedAuthorized, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol"})
 	if err != nil || mappedAuthorized.UpstreamModel != "gpt-5.6-terra" || mappedAuthorized.SourceEndpointFamily != modelcheckprofile.EndpointResponses || mappedAuthorized.UpstreamEndpointFamily != modelcheckprofile.EndpointChatCompletions || mappedAuthorized.UpstreamProtocol != modelcheckprofile.ProtocolOpenAIChat || mappedAuthorized.UpstreamEndpointMode != modelcheckprofile.EndpointModeChatSSE || mappedAuthorized.CredentialSourceAccountID != "source-account-1" {
 		t.Fatalf("authorized source mapping must freeze source identity and upstream family: target=%+v err=%v", mappedAuthorized, err)
@@ -197,9 +195,9 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-authorized", Model: "gpt-5.6-sol", SourceDispatchRevision: 7}); err == nil || !strings.Contains(err.Error(), "source account dispatch revision") {
 		t.Fatalf("stale source dispatch revision must be rejected: err=%v", err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('acct-authorized-source','sys-1','gpt','gpt','openai','api_key',3,6,'active',1,'responses_sse','conn-acct-auth-src',?,NULL,'source-account-1','Authorized Source Account')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-auth-src','acct-authorized-source','gpt_openai_v1','https://example.invalid/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-authorized-source','sys-1','group-1',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('acct-authorized-source','sys-1','gpt','gpt','openai','api_key',3,6,'active', 1,'responses_sse','conn-acct-auth-src',?,NULL,'source-account-1','Authorized Source Account')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-auth-src','acct-authorized-source','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-authorized-source','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	sourceOnly, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetType: "account", TargetID: "acct-authorized-source", Model: "gpt-5.6-sol"})
@@ -278,7 +276,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil {
 		t.Fatal("configured account models must restrict the static catalog")
 	}
-	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1-resp','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','responses',1)`)
+	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1-resp','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','responses', 1)`)
 	mapped, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
 	if err != nil || mapped.UpstreamModel != "gpt-5.6-terra" {
 		t.Fatalf("enabled mapping must resolve the configured upstream model: target=%+v err=%v", mapped, err)
@@ -289,7 +287,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}); err == nil || !strings.Contains(err.Error(), "proxy profile") {
 		t.Fatalf("proxy-configured account with missing profile must fail closed, err=%v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO proxy_profiles VALUES ('proxy-1',1,'http','127.0.0.1',8080,'',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO proxy_profiles(id,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-1', TRUE,'http','127.0.0.1',8080,'',NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	proxied, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
@@ -316,7 +314,7 @@ func TestBusinessTargetSourceReadsScopedActiveAccount(t *testing.T) {
 }
 
 func TestBusinessTargetSourceCheckContractIsReadOnly(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +324,7 @@ func TestBusinessTargetSourceCheckContractIsReadOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +334,7 @@ func TestBusinessTargetSourceCheckContractIsReadOnly(t *testing.T) {
 }
 
 func TestBusinessTargetSourceCheckContractRejectsMissingHealthCheckEndpointMode(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +346,7 @@ func TestBusinessTargetSourceCheckContractRejectsMissingHealthCheckEndpointMode(
 			t.Fatal(err)
 		}
 	}
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +356,7 @@ func TestBusinessTargetSourceCheckContractRejectsMissingHealthCheckEndpointMode(
 }
 
 func TestBusinessTargetSourceCheckContractRejectsMissingUpstreamEndpointFamily(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +374,7 @@ func TestBusinessTargetSourceCheckContractRejectsMissingUpstreamEndpointFamily(t
 			t.Fatal(err)
 		}
 	}
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +384,7 @@ func TestBusinessTargetSourceCheckContractRejectsMissingUpstreamEndpointFamily(t
 }
 
 func TestBusinessTargetSourceRejectsInvalidEndpointModeConfiguration(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,16 +394,16 @@ func TestBusinessTargetSourceRejectsInvalidEndpointModeConfiguration(t *testing.
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	credential := func(plaintext string) string { return testCredentialEnvelope(t, "secret", plaintext) }
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-1','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'responses_sse','conn-acct-1',?)`, credential(`{"api_key":"key","supported_endpoint_modes":["responses_sse","images_json"]}`))
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1',1)`)
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-1','sys-1','gpt','gpt','openai','api_key',1,1,'active', 1,'responses_sse','conn-acct-1',?)`, credential(`{"api_key":"key","supported_endpoint_modes":["responses_sse","images_json"]}`))
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +434,7 @@ func TestBusinessTargetSourceRejectsInvalidEndpointModeConfiguration(t *testing.
 }
 
 func TestBusinessTargetFenceDetectsMappingAndCredentialDrift(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,15 +446,15 @@ func TestBusinessTargetFenceDetectsMappingAndCredentialDrift(t *testing.T) {
 	}
 	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
 	rotatedEnvelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-2","supported_endpoint_modes":["responses_sse"]}`)
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-1','sys-1','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse','conn-acct-1',?,'Account 1')`, envelope)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-1','sys-1','gpt','gpt','openai','api_key',3,7,'active', 1,'responses_sse','conn-acct-1',?,'Account 1')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +468,7 @@ func TestBusinessTargetFenceDetectsMappingAndCredentialDrift(t *testing.T) {
 	}
 	w11eExec(t, db, w11eSeedModelDDL("model-terra", "gpt-5.6-terra"))
 	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-1','model-terra')`)
-	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','responses',1)`)
+	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-acct-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','model-terra','responses', 1)`)
 	mapped, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"})
 	if err != nil || mapped.UpstreamModel != "gpt-5.6-terra" {
 		t.Fatalf("mapping drift fixture target=%+v err=%v", mapped, err)
@@ -684,7 +682,7 @@ func mustCredentialFields(t *testing.T, plain string) map[string]any {
 }
 
 func TestBusinessTargetSourceUsesCredentialBaseURLAndGeminiOAuthHeaders(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,15 +693,15 @@ func TestBusinessTargetSourceUsesCredentialBaseURLAndGeminiOAuthHeaders(t *testi
 		}
 	}
 	credential := testCredentialEnvelope(t, "secret", `{"access_token":"google-access","refresh_token":"google-refresh","base_url":"https://credential.example/v1beta/","quota_project_id":"quota-project","supported_endpoint_modes":["generate_content_json"]}`)
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gemini-1','sys-1','group-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gemini-1','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('gemini-1','sys-1','gemini','gemini','gemini','google_oauth',1,1,'active',1,'generate_content_json','conn-gemini-1',?)`, credential)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gemini-1','gemini-1','gemini_native_v1beta','https://profile.example',1)`)
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('gemini-1','sys-1','gemini','gemini','gemini','google_oauth',1,1,'active', 1,'generate_content_json','conn-gemini-1',?)`, credential)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gemini-1','gemini-1','gemini_native_v1beta','https://profile.example', 1)`)
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,7 +718,7 @@ func TestBusinessTargetSourceUsesCredentialBaseURLAndGeminiOAuthHeaders(t *testi
 }
 
 func TestBusinessTargetSourceRoutesGPTOAuthThroughCodexAdapterIncludingAuthorizedSource(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,17 +728,17 @@ func TestBusinessTargetSourceRoutesGPTOAuthThroughCodexAdapterIncludingAuthorize
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
 	oauth := testCredentialEnvelope(t, "secret", `{"access_token":"oauth-access","account_id":"chatgpt-account","base_url":"https://custom.example/v1","supported_endpoint_modes":["responses_json","responses_sse"]}`)
 	apiKey := testCredentialEnvelope(t, "secret", `{"api_key":"api-key","base_url":"https://custom.example/v1","supported_endpoint_modes":["responses_json","responses_sse"]}`)
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('gpt-oauth','sys-1','gpt','gpt','openai','oauth',1,1,'active',1,'responses_json','conn-gpt-oauth',?)`, oauth)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gpt-oauth','gpt-oauth','gpt_openai_v1','https://profile.example/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gpt-oauth','sys-1','group-1',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('gpt-oauth','sys-1','gpt','gpt','openai','oauth',1,1,'active', 1,'responses_json','conn-gpt-oauth',?)`, oauth)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gpt-oauth','gpt-oauth','gpt_openai_v1','https://profile.example/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gpt-oauth','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,17 +773,17 @@ func TestBusinessTargetSourceRoutesGPTOAuthThroughCodexAdapterIncludingAuthorize
 		t.Fatalf("API-key target=%+v", apiTarget)
 	}
 
-	if _, err := db.Exec(`INSERT INTO resource_authorizations VALUES ('grant-1','account','gpt-source','sys-1','sys-1','use','active',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO resource_authorizations(id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at) VALUES ('grant-1','account','gpt-source','sys-1','sys-1','use','active',NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('gpt-source','sys-1','gpt','gpt','openai','oauth',3,4,'active',1,'responses_sse','conn-gpt-source',?)`, oauth)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gpt-source','gpt-source','gpt_openai_v1','https://profile.example/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gpt-source','sys-1','group-1',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('gpt-source','sys-1','gpt','gpt','openai','oauth',3,4,'active', 1,'responses_sse','conn-gpt-source',?)`, oauth)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gpt-source','gpt-source','gpt_openai_v1','https://profile.example/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('gpt-source','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('gpt-virtual','sys-1','gpt','gpt','openai','oauth',5,6,'active',1,'responses_sse','conn-gpt-virtual',?,'grant-1','gpt-source')`, apiKey)
-	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gpt-virtual','gpt-virtual','gpt_openai_v1','https://profile.example/v1',1)`)
-	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('gpt-virtual','sys-1','group-1','grant-1',1)`); err != nil {
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('gpt-virtual','sys-1','gpt','gpt','openai','oauth',5,6,'active', 1,'responses_sse','conn-gpt-virtual',?,'grant-1','gpt-source')`, apiKey)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-gpt-virtual','gpt-virtual','gpt_openai_v1','https://profile.example/v1', 1)`)
+	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('gpt-virtual','sys-1','group-1','grant-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	virtual, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-virtual", Model: "gpt-5.6-sol"})
@@ -799,49 +797,18 @@ func TestBusinessTargetSourceRoutesGPTOAuthThroughCodexAdapterIncludingAuthorize
 
 func TestOpenBusinessTargetConnectionRejectsActiveNodeWriterAfterHandoff(t *testing.T) {
 	// sqlite 载具退役（D17）：owner gate 校验先于任何连接打开，PG 形态同语义。
-	_, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "postgres", CredentialSecret: "secret", BusinessHandoffConfirmed: true})
+	_, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "secret", BusinessHandoffConfirmed: true})
 	if err == nil || !strings.Contains(err.Error(), "Node writer") {
 		t.Fatalf("confirmed handoff with active Node writer must fail closed, err=%v", err)
 	}
 }
 
-// businessSourceContractDDL 是探针 Business fixture 的 v16 契约 DDL（设计 §8
-// 去供应商化）。列集与生产 CheckContract（business_source.go）的校验清单同源：
-// 账户身份列 vendor_code/connection_driver_code + health_check_connection_id，
-// base_url/启停/协议身份在 account_connections，模型与映射在 models /
-// account_entry_mappings / account_supported_models(account_id, model_id)。
-func businessSourceContractDDL() []string {
-	return []string{
-		// [0] accounts
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,vendor_code TEXT,connection_driver_code TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,config_revision INTEGER,dispatch_revision INTEGER,status TEXT,schedulable INTEGER,health_check_endpoint_mode TEXT,health_check_connection_id TEXT,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,credentials_encrypted TEXT,proxy_profile_id TEXT,availability_schedule_json TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT,name TEXT)`,
-		// [1] vendors
-		`CREATE TABLE vendors (id TEXT PRIMARY KEY,code TEXT UNIQUE,enabled INTEGER)`,
-		// [2] models（探针消费列 + 长上下文限额列）
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER,max_input_tokens INTEGER,context_window_tokens INTEGER)`,
-		// [3] account_connections
-		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
-		// [4] account_entry_mappings
-		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
-		// [5] proxy_profiles
-		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY,enabled INTEGER,type TEXT,host TEXT,port INTEGER,username TEXT,password_encrypted TEXT)`,
-		// [6] group_accounts
-		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,account_authorization_id TEXT,enabled INTEGER)`,
-		// [7] groups
-		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
-		// [8] resource_authorizations
-		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
-		// [9] model_quality_policies
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
-		// [10] account_supported_models（(account_id, model_id) 复合主键形态）
-		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
-	}
-}
 
 // w11eSeedModelDDL 返回一条向 models 表写入内置模型行的 INSERT（scope=builtin、
 // status=active、catalog_visible=1），供 account_supported_models /
 // account_entry_mappings 的外键解析与模型名映射使用。
 func w11eSeedModelDDL(id, name string) string {
-	return `INSERT OR IGNORE INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('` + id + `','gpt','` + name + `','` + name + `','builtin',NULL,'active',1)`
+	return `INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('` + id + `','gpt','` + name + `','` + name + `','builtin',NULL,'active',TRUE) ON CONFLICT DO NOTHING`
 }
 
 func testCredentialEnvelope(t *testing.T, secret, plaintext string) string {

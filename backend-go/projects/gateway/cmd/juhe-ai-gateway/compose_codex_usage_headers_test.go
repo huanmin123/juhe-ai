@@ -29,7 +29,7 @@ func newCodexUsageHeadersTestChannel(t *testing.T) (*sql.DB, *recordmaintenance.
 	// 串行化语义）。
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, false, time.Now)
+	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, time.Now)
 	if err != nil {
 		t.Fatalf("create durable dispatch: %v", err)
 	}

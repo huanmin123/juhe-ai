@@ -189,10 +189,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	if clause != "" {
 		where = " AND " + clause
 	}
-	lockClause := ""
-	if s.pg {
-		lockClause = " FOR UPDATE"
-	}
+	lockClause := " FOR UPDATE"
 	current, err := scanPreferenceRow(func(targets ...any) error {
 		return tx.QueryRowContext(ctx, s.bind(`SELECT `+preferenceRowColumns+`
 			FROM `+s.table("scheduling_preferences")+` scheduling_preferences
@@ -377,19 +374,17 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		return nil, err
 	}
 	defer tx.Rollback()
-	if s.pg {
-		var lockedID string
-		lockErr := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("scheduling_preferences")+`
-			WHERE id = ? AND system_account_id = ? LIMIT 1 FOR UPDATE`), id, owner).Scan(&lockedID)
-		if isNoRows(lockErr) {
-			return &DeleteResult{}, nil
-		}
-		if lockErr != nil {
-			return nil, lockErr
-		}
+	var lockedID string
+	lockErr := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("scheduling_preferences")+`
+		WHERE id = ? AND system_account_id = ? LIMIT 1 FOR UPDATE`), id, owner).Scan(&lockedID)
+	if isNoRows(lockErr) {
+		return &DeleteResult{}, nil
+	}
+	if lockErr != nil {
+		return nil, lockErr
 	}
 	// 先重置绑定回内置默认（固定 ID 契约锚点，跨包常量复用），再删偏好行：
-	// 两步同事务，SQLite 外键与 PG NO ACTION 都满足「删行时无引用」。
+	// 两步同事务，PG NO ACTION 满足「删行时无引用」。
 	reset, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("api_keys")+` SET scheduling_preference_id = ?
 		WHERE scheduling_preference_id = ?`), apikeys.BuiltinSchedulingPreferenceID, id)
 	if err != nil {

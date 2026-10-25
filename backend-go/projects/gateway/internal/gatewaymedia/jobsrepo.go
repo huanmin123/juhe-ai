@@ -1,7 +1,7 @@
 // jobsrepo.go 是 media_jobs 表的网关侧仓储（媒体设计 §8.2：id 对外、
 // account_id/provider_code/provider_protocol_profile_id 账户亲和三元组、
-// 状态机/终态回填字段）。SQL 风格沿 chainAccountsSelector 先例：SQLite ?
-// 占位 + PG $n 改写、postgres 时 schema 限定 juhe_business。本文件只承载
+// 状态机/终态回填字段）。SQL 风格沿 chainAccountsSelector 先例：
+// juhe_business schema 限定 + PG $n 绑定。本文件只承载
 // 行存取与 JSON 列编解码，不触 chain/HTTP 执行（链上层 chain_media_video.go
 // 消费）。
 //
@@ -104,32 +104,25 @@ var ErrMediaJobNotFound = errors.New("媒体任务不存在")
 
 // MediaJobsRepo 是 media_jobs 的行仓储。
 type MediaJobsRepo struct {
-	db       *sql.DB
-	postgres bool
-	now      func() time.Time
+	db  *sql.DB
+	now func() time.Time
 }
 
-// NewMediaJobsRepo 构造仓储；postgres 为真时查询按 $n 方言绑定并限定
-// juhe_business schema。now 注入时间源（测试可固定）。
-func NewMediaJobsRepo(db *sql.DB, postgres bool, now func() time.Time) *MediaJobsRepo {
+// NewMediaJobsRepo 构造仓储（juhe_business schema 限定 + $n 方言绑定）。
+// now 注入时间源（测试可固定）。
+func NewMediaJobsRepo(db *sql.DB, now func() time.Time) *MediaJobsRepo {
 	if now == nil {
 		now = time.Now
 	}
-	return &MediaJobsRepo{db: db, postgres: postgres, now: now}
+	return &MediaJobsRepo{db: db, now: now}
 }
 
 func (r *MediaJobsRepo) table() string {
-	if r.postgres {
-		return "juhe_business.media_jobs"
-	}
-	return "media_jobs"
+	return "juhe_business.media_jobs"
 }
 
 // bind 把 ? 占位改写为 PG $n（与 chainAccountsSelector.bind 同构）。
 func (r *MediaJobsRepo) bind(query string) string {
-	if !r.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -442,13 +435,10 @@ func (r *MediaJobsRepo) query(ctx context.Context, where string, args ...any) ([
 	return r.scanRows(ctx, r.bind(stmt), args...)
 }
 
-// accountsTable 是 vendor 水合 JOIN 的 accounts 表名（PG 与 media_jobs 同
+// accountsTable 是 vendor 水合 JOIN 的 accounts 表名（与 media_jobs 同
 // schema 限定）。
 func (r *MediaJobsRepo) accountsTable() string {
-	if r.postgres {
-		return "juhe_business.accounts"
-	}
-	return "accounts"
+	return "juhe_business.accounts"
 }
 
 // scanRows 执行语句并解码行集（query/selectRows 共用）。
@@ -591,7 +581,7 @@ func nullString(value string) any {
 }
 
 // mediaJobTimeLayout / parseMediaJobTime：毫秒 RFC3339 UTC 文本（与链侧
-// nowIso 同构），SQLite 与 PG 文本列共用。
+// nowIso 同构）的文本列编解码。
 func mediaJobTimeLayout(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }

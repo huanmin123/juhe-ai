@@ -131,6 +131,18 @@ const StreamPreCommitBufferExceededCode = "stream_precommit_buffer_exceeded"
 // 账户锁失败记录 / 热质量 upstream_response_failure）。
 const UpstreamStreamAbnormalEOFCode = "upstream_stream_abnormal_eof"
 
+// UpstreamStreamEmptyCompletionCode 是上游空完成失败的 error_code（流式提交
+// 边界受限重放与异常终局处置设计 §3.2.3，v2.3 增量 2026-10-26）：流收到协议
+// 终态且全程零语义输出（`!OutputReceived && !ImageOutputReceived`）时，不再
+// 按 success 透传空壳流（生产实证：中转渠道空壳成功流三帧逐字节透传判
+// success、客户端 AI SDK schema 校验拒收），改按本 code 失败结算。结算面与
+// upstream_stream_abnormal_eof 同构（circuit ReportUnknown / 账户锁失败记录 /
+// 热质量 upstream_response_failure / keyModel 默认臂 / usage 失败行 /
+// 审计 error_phase=stream）；该 code 是 chain 面 classifyPostVerdictOutcome
+// 失败归因三面的判别键，经 PreCommitStreamServerRetryErrorCode 原样透传豁免
+// （同 abnormal_eof 样板）保持不被改写为通用 interrupted 文案。
+const UpstreamStreamEmptyCompletionCode = "upstream_stream_empty_completion"
+
 // StreamPreCommitBufferExceededError 对齐 StreamPreCommitBufferExceededError。
 type StreamPreCommitBufferExceededError struct{}
 

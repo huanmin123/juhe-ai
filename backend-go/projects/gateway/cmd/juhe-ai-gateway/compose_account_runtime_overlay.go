@@ -72,10 +72,9 @@ func wireAccountRuntimeOverlaySources(composed *composition, cfg runtimeConfig, 
 		}
 	}
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB:       composed.db,
-		Postgres: composed.pgDialect,
-		Secret:   cfg.Secret,
-		Now:      time.Now,
+		DB:     composed.db,
+		Secret: cfg.Secret,
+		Now:    time.Now,
 	})
 	if err != nil {
 		return err

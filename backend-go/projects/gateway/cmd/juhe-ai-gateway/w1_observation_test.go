@@ -201,7 +201,7 @@ func newW1ObservationFixture(t *testing.T) *w1ObservationFixture {
 	}
 	objects := &w1FakeObjectStore{data: map[string][]byte{}}
 	executor := &w1FakeExecutor{status: 200}
-	obs := newChatImageObservations(db, false, objects, executor)
+	obs := newChatImageObservations(db, objects, executor)
 	return &w1ObservationFixture{db: db, objects: objects, executor: executor, obs: obs}
 }
 
@@ -246,14 +246,14 @@ func w1ScheduleInput() chat.ScheduleObservationInput {
 }
 
 func TestW1ObservationTableAndBind(t *testing.T) {
-	sqlite := newChatImageObservations(nil, false, nil, nil)
+	sqlite := newChatImageObservations(nil, nil, nil)
 	if got := sqlite.table("chat_assets"); got != "chat_assets" {
 		t.Fatalf("sqlite table = %q", got)
 	}
 	if got := sqlite.bind("UPDATE t SET a = ? WHERE b = ?"); got != "UPDATE t SET a = ? WHERE b = ?" {
 		t.Fatalf("sqlite bind = %q", got)
 	}
-	pg := newChatImageObservations(nil, true, nil, nil)
+	pg := newChatImageObservations(nil, nil, nil)
 	if got := pg.table("chat_assets"); got != "juhe_chat.chat_assets" {
 		t.Fatalf("pg table = %q", got)
 	}

@@ -253,7 +253,7 @@ func w13g4HookFixture(t *testing.T, hooks map[string]func()) (*chatFixture, *fau
 		}
 	}
 	_, clock := fixedChatClock()
-	store, err := NewStore(db, false, clock, nil)
+	store, err := NewStore(db, clock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

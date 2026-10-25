@@ -16,7 +16,7 @@ import (
 )
 
 func TestW11AStoreConstructorAndDialectArms(t *testing.T) {
-	if _, err := NewStore(nil, false, time.Now); err == nil {
+	if _, err := NewStore(nil, time.Now); err == nil {
 		t.Fatal("nil db must fail")
 	}
 	db, err := sql.Open("sqlite", "file:w11a-unused-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory")
@@ -24,7 +24,7 @@ func TestW11AStoreConstructorAndDialectArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	store, err := NewStore(db, false, nil) // nil clock falls back to time.Now
+	store, err := NewStore(db, nil) // nil clock falls back to time.Now
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestW11AStoreConstructorAndDialectArms(t *testing.T) {
 	if got := store.bind("a = ? AND b = ?"); got != "a = ? AND b = ?" {
 		t.Fatalf("sqlite bind = %q", got)
 	}
-	pgStore, err := NewStore(db, true, time.Now)
+	pgStore, err := NewStore(db, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

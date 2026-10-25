@@ -13,15 +13,14 @@ import (
 // full-profile long-context probes. It is a read-only Business port; schema
 // creation and updates remain outside the J3b runtime.
 type VersionedModelLimits struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
-func NewVersionedModelLimits(db *sql.DB, postgres bool) (*VersionedModelLimits, error) {
+func NewVersionedModelLimits(db *sql.DB) (*VersionedModelLimits, error) {
 	if db == nil {
 		return nil, errors.New("J3b model limits database is required")
 	}
-	return &VersionedModelLimits{db: db, postgres: postgres}, nil
+	return &VersionedModelLimits{db: db}, nil
 }
 
 func (m *VersionedModelLimits) Version() string {
@@ -38,20 +37,7 @@ func (m *VersionedModelLimits) MaxInputTokens(providerCode, model string, _ mode
 	// (vendor_code, scope, system_account_id, upstream_model)，同厂商同名
 	// 上游模型可能同时存在 builtin 行与 owner 自定义行：内置行优先、再按 id
 	// 升序，保证 LIMIT 1 的确定性（旧表按 provider+model 唯一，无此分支）。
-	table := "models"
-	placeholder := "?"
-	visible := "catalog_visible=1"
-	if m.postgres {
-		table = "juhe_business." + table
-		placeholder = "$1"
-		visible = "catalog_visible=TRUE"
-	}
-	query := "SELECT COALESCE(NULLIF(max_input_tokens,0), context_window_tokens) FROM " + table + " WHERE vendor_code=" + placeholder + " AND upstream_model=" + func() string {
-		if m.postgres {
-			return "$2"
-		}
-		return "?"
-	}() + " AND status='active' AND " + visible + " ORDER BY CASE WHEN scope='builtin' THEN 0 ELSE 1 END, id LIMIT 1"
+	query := "SELECT COALESCE(NULLIF(max_input_tokens,0), context_window_tokens) FROM juhe_business.models WHERE vendor_code=$1 AND upstream_model=$2 AND status='active' AND catalog_visible=TRUE ORDER BY CASE WHEN scope='builtin' THEN 0 ELSE 1 END, id LIMIT 1"
 	var limit sql.NullInt64
 	if err := m.db.QueryRow(query, providerCode, model).Scan(&limit); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

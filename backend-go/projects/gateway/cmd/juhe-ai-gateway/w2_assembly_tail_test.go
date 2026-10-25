@@ -588,7 +588,7 @@ func (e *w2cObservationExecutor) Dispatch(context.Context, chat.GenerationDispat
 func w2cNewObservationStore(t *testing.T, steps []w2cMockStep, objects chat.ObjectStore, executor chat.GenerationExecutor) *chatImageObservations {
 	t.Helper()
 	db := w2cNewMockDB(t, steps)
-	return newChatImageObservations(db, false, objects, executor)
+	return newChatImageObservations(db, objects, executor)
 }
 
 func TestW2CChatObservationArms(t *testing.T) {

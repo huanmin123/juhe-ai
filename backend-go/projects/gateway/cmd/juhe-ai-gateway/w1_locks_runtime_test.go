@@ -13,18 +13,18 @@ import (
 
 func TestW1ChainAccountLocksSmallHelpers(t *testing.T) {
 	// newChainAccountLocks：nil db fail fast。
-	if _, err := newChainAccountLocks(nil, false, nil); err == nil {
+	if _, err := newChainAccountLocks(nil, nil); err == nil {
 		t.Fatal("nil db 必须报错")
 	}
 	// nil 回调自动补 no-op。
-	locks, err := newChainAccountLocks(&sql.DB{}, false, nil)
+	locks, err := newChainAccountLocks(&sql.DB{}, nil)
 	if err != nil || locks == nil {
 		t.Fatalf("构造 = %v, %v", locks, err)
 	}
 	if got := locks.table("account_lock_states"); got != "account_lock_states" {
 		t.Fatalf("sqlite table = %q", got)
 	}
-	pgLocks, _ := newChainAccountLocks(&sql.DB{}, true, nil)
+	pgLocks, _ := newChainAccountLocks(&sql.DB{}, nil)
 	if got := pgLocks.table("account_lock_states"); got != "juhe_business.account_lock_states" {
 		t.Fatalf("pg table = %q", got)
 	}

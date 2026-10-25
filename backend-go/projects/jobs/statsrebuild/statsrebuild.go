@@ -61,7 +61,7 @@ import (
 // bind 复用平台方言改写（statsagg.Dialect.bind 的共享实现，导出面不可引用
 // 非导出方法）。
 func bind(_ bool, query string) string {
-	return sqldialect.BindSQL(true, query)
+	return sqldialect.BindSQL(query)
 }
 
 // 吞吐参数默认值与钳制边界，对齐 BUG-0182 记载的 Node 脚本缺省值。

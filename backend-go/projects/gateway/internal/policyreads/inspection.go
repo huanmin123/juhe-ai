@@ -257,14 +257,14 @@ var systemDefaultRules = []systemDefaultRule{
 	},
 }
 
-// InspectionStore is the dual-mode response_inspection_policies persistence.
+// InspectionStore is the response_inspection_policies persistence.
 type InspectionStore struct {
 	baseStore
 }
 
 // NewInspectionStore builds the inspection store; inval may be nil.
-func NewInspectionStore(db *sql.DB, postgres bool, now func() time.Time, newID func(string) string, inval RuntimeInvalidator) (*InspectionStore, error) {
-	base, err := newBaseStore(db, postgres, now, newID, inval)
+func NewInspectionStore(db *sql.DB, now func() time.Time, newID func(string) string, inval RuntimeInvalidator) (*InspectionStore, error) {
+	base, err := newBaseStore(db, now, newID, inval)
 	if err != nil {
 		return nil, err
 	}

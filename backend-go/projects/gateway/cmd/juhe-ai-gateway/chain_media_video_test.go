@@ -40,7 +40,6 @@ func composeMediaVideoChain(t *testing.T, fixture *chainFixture, spoolDir string
 	t.Helper()
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir)
 	deps.MediaJobsDB = fixture.db
-	deps.MediaJobsPostgres = true
 	deps.MediaJobsSecret = "chain-test-secret"
 	chain, shutdown, err := composeGatewayChain(deps)
 	if err != nil {
@@ -686,7 +685,7 @@ func TestChainMediaJobRepoRoundTrip(t *testing.T) {
 		CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`); err != nil {
 		t.Fatalf("create media_jobs: %v", err)
 	}
-	repo := gatewaymedia.NewMediaJobsRepo(db, false, time.Now)
+	repo := gatewaymedia.NewMediaJobsRepo(db, time.Now)
 	ctx := context.Background()
 	seconds := 4.0
 	if err := repo.Insert(ctx, mediaJobRecordOf("job_1", "key_1", "acc_1", seconds)); err != nil {
@@ -836,7 +835,7 @@ func TestChainMediaJobTerminalUpdateRaceOnce(t *testing.T) {
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
 		t.Fatalf("create media_jobs: %v", err)
 	}
-	repo := gatewaymedia.NewMediaJobsRepo(db, false, time.Now)
+	repo := gatewaymedia.NewMediaJobsRepo(db, time.Now)
 	ctx := context.Background()
 	seconds := 4.0
 	if err := repo.Insert(ctx, mediaJobRecordOf("job_race", "key_1", "acc_1", seconds)); err != nil {

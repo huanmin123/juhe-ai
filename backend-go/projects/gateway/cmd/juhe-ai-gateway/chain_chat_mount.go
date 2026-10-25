@@ -50,7 +50,7 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		return nil, fmt.Errorf("my-chat 组合缺少网关链 runtime")
 	}
 	chatNow := func() string { return time.Now().UTC().Format(chainTimeLayout) }
-	store, err := chat.NewStore(chatDB, composed.pgDialect, time.Now, nil)
+	store, err := chat.NewStore(chatDB, time.Now, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create chat store: %w", err)
 	}
@@ -76,7 +76,7 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		AccountModelCatalog: chatModelCatalog{cache: services.Cache},
 		// 归属系统账户开关端口（生图开关载体，随 chat Key 退场从 gateway key
 		// 视图迁到 system_accounts 直读，保持原开关语义）。
-		SystemAccountFlags: chatSystemAccountFlags{db: composed.db, postgres: composed.pgDialect},
+		SystemAccountFlags: chatSystemAccountFlags{db: composed.db},
 		// AI 问答会话账户绑定的解析校验端口（accounts.Store 只读查询
 		// FindChatAccount）：账户选择/切换与发送前置校验的存在性 + 启用口径。
 		AccountLookup: accountLookup,
@@ -87,9 +87,9 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		// 生图 URL 下载按绑定账户的 proxy_profile 出站（BUG-0232 关联：
 		// grok /v1/images/edits 只回 imgen.x.ai 临时链接）；guard 与 /v1 链
 		// 同用部署级 UpstreamURLSecurity 配置；解析失败回落直连。
-		ImageDownloadProxy: newChatImageDownloadProxy(composed.db, composed.pgDialect, cfg.Secret, cfg.UpstreamURLSecurity, func(message string) { slog.Warn(message) }),
+		ImageDownloadProxy: newChatImageDownloadProxy(composed.db, cfg.Secret, cfg.UpstreamURLSecurity, func(message string) { slog.Warn(message) }),
 		ImageProcessor:     newChatImageProcessor(),
-		ImageObservation:   newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
+		ImageObservation:   newChatImageObservations(chatDB, objectStore, executor),
 		// M7 问答音视频工具的 media_jobs 只读端口（问答音视频工具设计 §4：
 		// 任务面归属校验与终态快照；gatewaymedia 仓储适配——internal/chat 不
 		// 直接依赖 gatewaymedia，沿组合根注入先例）。媒体任务面未装配（组合
@@ -138,8 +138,7 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 // 发送一次直查（发送为低频操作，跟随开关变更，无缓存失效面）。账户不存在/
 // 非 active 返回 false（保守：不授予生图工具），查询错误原样上抛。
 type chatSystemAccountFlags struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
 // ImageGenerationEnabled implements chat.SystemAccountFlagsLookup.
@@ -149,10 +148,7 @@ func (f chatSystemAccountFlags) ImageGenerationEnabled(systemAccountID string) (
 		return false, nil
 	}
 	bind := func(query string) string { return accountscore.SQLBind(query) }
-	table := "system_accounts"
-	if f.postgres {
-		table = "juhe_business.system_accounts"
-	}
+	table := "juhe_business.system_accounts"
 	var enabled int64
 	err := f.db.QueryRow(bind(`SELECT image_generation_enabled FROM `+table+`
 		WHERE id = ? AND status = 'active' LIMIT 1`), systemAccountID).Scan(&enabled)

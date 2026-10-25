@@ -604,6 +604,13 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 	if !pipeResult.SemanticCommitted && pipeResult.ResponseInspection == nil &&
 		ShouldRetryPreCommitStreamFailureOnServer(pipeResult, responseState) {
 		clientFacingErrorCode := PreCommitStreamServerRetryErrorCode(pipeResult, preCommitProtocolError)
+		// 空完成失败（设计 §3.2.3 v2.3）以独立 reason 走同一换号通道：verdict
+		// 行为（预算/排除/耗尽契约）与既有 pre_commit_stream_failure 完全一致，
+		// 仅让耗尽出口 fallback reason 与审计可辨。
+		retryReason := StreamServerRetryPreCommitStreamFailure
+		if pipeResult.ErrorCode == UpstreamStreamEmptyCompletionCode {
+			retryReason = StreamServerRetryEmptyCompletion
+		}
 		input.AuditCapture.AddGatewayMetadata("pre_commit_stream_server_retry", map[string]any{
 			"errorCode":              pipeResult.ErrorCode,
 			"clientFacingErrorCode":  clientFacingErrorCode,
@@ -614,7 +621,7 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 		})
 		return UpstreamResponseHandlingResult{
 			RetryUpstream:            true,
-			RetryReason:              StreamServerRetryPreCommitStreamFailure,
+			RetryReason:              retryReason,
 			SameAccountRetryEligible: pipeResult.TransportFailure != nil,
 			ResponseInspection:       pipeResult.ResponseInspection,
 			ExcludeCurrentAccount:    true,

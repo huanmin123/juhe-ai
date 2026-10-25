@@ -19,7 +19,7 @@ import (
 func TestW1AccountAPIKeyWriterRoundTrip(t *testing.T) {
 	fixture := newChainFixture(t)
 	store, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB: fixture.db, Postgres: false, Secret: "chain-test-secret", Now: time.Now,
+		DB: fixture.db, Secret: "chain-test-secret", Now: time.Now,
 		InvalidateRuntimeCache: func(string) {},
 	})
 	if err != nil {

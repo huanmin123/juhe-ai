@@ -2,7 +2,7 @@ package gatewayruntimecache
 
 // w11d 覆盖补齐（三）：SQL 读模型（settings 投影错误臂、分组访问解析全分支、
 // 运行态装载/绑定/限额/路由配置解码、检查策略行扫描、预热枚举）。
-// PG 形态（postgres=true）复用 SQLite 连接驱动 $N 绑定不兼容的特性触发各查询错误臂。
+// 夹具经 ATTACH juhe_business 承载生产同款限定形式（juhe_business.* + $n）。
 
 import (
 	"context"
@@ -13,20 +13,20 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 )
 
-// newW11DPGModels 构造 postgres=true 的读模型：SQLite 驱动不接受 $1 绑定，
-// 所有带参数查询都会失败，从而覆盖各查询函数的错误分支与 bind()/table() PG 臂。
-func newW11DPGModels(t *testing.T) (*SQLReadModels, *sql.DB) {
+// newW11DModels 构造读模型（夹具表已按生产 juhe_business 限定形态建好），
+// 覆盖 bind()/table() 契约与各查询在空库/缺行下的语义。
+func newW11DModels(t *testing.T) (*SQLReadModels, *sql.DB) {
 	t.Helper()
 	db := newSQLTestDB(t)
-	models, err := NewSQLReadModels(db, true, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return models, db
 }
 
-func TestW11DSQLBindAndTablePGArms(t *testing.T) {
-	models, db := newW11DPGModels(t)
+func TestW11DSQLBindAndTable(t *testing.T) {
+	models, db := newW11DModels(t)
 	ctx := context.Background()
 	if got := models.table("api_keys"); got != "juhe_business.api_keys" {
 		t.Fatalf("PG 表名 = %q", got)
@@ -34,26 +34,27 @@ func TestW11DSQLBindAndTablePGArms(t *testing.T) {
 	if got := models.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("PG 绑定 = %q", got)
 	}
-	// 各查询错误臂：$N 在 SQLite 上报错。
-	if _, err := models.ReadGatewayRuntime(ctx, "sk-pg"); err == nil {
-		t.Fatal("PG 形态 runtime 查询必须失败")
+	// 空库缺行不是错误：runtime 匿名、分组访问 nil、检查策略/预热枚举空集。
+	runtime, err := models.ReadGatewayRuntime(ctx, "sk-pg")
+	if err != nil || runtime.APIKey != nil {
+		t.Fatalf("空库 runtime = %+v err=%v", runtime.APIKey, err)
 	}
-	if _, err := models.ReadGatewayRuntimeByKeyHash(ctx, "hash"); err == nil {
-		t.Fatal("PG 形态按 hash 查询必须失败")
+	if row, err := models.ReadGatewayRuntimeByKeyHash(ctx, "sk-pg"); err != nil || row.APIKey != nil {
+		t.Fatalf("空库按 hash runtime = %+v err=%v", row.APIKey, err)
 	}
-	if _, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys"); err == nil {
-		t.Fatal("PG 形态分组访问查询必须失败")
+	if meta, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys"); err != nil || meta != nil {
+		t.Fatalf("空库分组访问 = %v err=%v", meta, err)
 	}
-	if _, err := models.ListActiveResponseInspectionPolicies(ctx, "openai", "gpt"); err == nil {
-		t.Fatal("PG 形态检查策略查询必须失败")
+	if policies, err := models.ListActiveResponseInspectionPolicies(ctx, "openai", "gpt"); err != nil || len(policies) != 0 {
+		t.Fatalf("空库检查策略 = %v err=%v", policies, err)
 	}
-	if _, err := models.ListActiveGatewayAPIKeyHashes(ctx); err == nil {
-		t.Fatal("PG 形态预热枚举必须失败")
+	if hashes, err := models.ListActiveGatewayAPIKeyHashes(ctx); err != nil || len(hashes) != 0 {
+		t.Fatalf("空库预热枚举 = %v err=%v", hashes, err)
 	}
 	// 无 sk- 前缀：设置投影不涉及参数化查询 → 成功（错误臂在 28-30 由坏设置覆盖）。
 	seedGatewaySettingsKeys(t, db)
 	// 设置存储不可用：删除表后（绕开 60s 快照缓存的）新读模型报错。
-	plain, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	plain, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,10 +62,10 @@ func TestW11DSQLBindAndTablePGArms(t *testing.T) {
 	if err != nil || anonymous.APIKey != nil {
 		t.Fatalf("nil ctx 匿名读取 = %+v err=%v", anonymous.APIKey, err)
 	}
-	if _, err := db.Exec(`DROP TABLE system_settings`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.system_settings`); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	fresh, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,12 +109,12 @@ func TestW11DProjectSettingsErrorArms(t *testing.T) {
 	for _, tc := range cases {
 		// 记录种子默认值，用例后恢复。
 		var original string
-		if err := db.QueryRow(`SELECT value_json FROM system_settings WHERE key = ?`, tc.key).Scan(&original); err != nil {
+		if err := db.QueryRow(`SELECT value_json FROM juhe_business.system_settings WHERE key = ?`, tc.key).Scan(&original); err != nil {
 			t.Fatal(err)
 		}
 		// settings.Store 有 60s 快照缓存：每个用例重建读模型以绕开缓存。
 		setSetting(t, db, tc.key, tc.bad)
-		badModels, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+		badModels, err := NewSQLReadModels(db, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +122,7 @@ func TestW11DProjectSettingsErrorArms(t *testing.T) {
 			t.Fatalf("%s 坏值必须报错", tc.key)
 		}
 		setSetting(t, db, tc.key, tc.over)
-		overModels, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+		overModels, err := NewSQLReadModels(db, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,7 +133,7 @@ func TestW11DProjectSettingsErrorArms(t *testing.T) {
 	}
 	// 时区键缺失：settings.Store 会先报缺少字段，投影层 else-UTC 分支用
 	// 直接调用覆盖（raw 来自合法种子的副本）。
-	tzModels, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	tzModels, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,29 +151,29 @@ func TestW11DProjectSettingsErrorArms(t *testing.T) {
 func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_other', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g_missing_owner', '', 1)`,
-		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g_disabled', 'sys_owner', 0)`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g_badtype', 'sys_owner', 1, 'weird')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g_high_nopolicy', 'sys_owner', 1, 'high_concurrency')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high_badpolicy', 'sys_owner', 1, 'high_concurrency', 'not-json')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_authorized', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_disabled_local', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_overridden', 'sys_owner', 1, 'personal', NULL)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth1', 'group', 'g_authorized', 'sys_other', 'active', NULL)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth2', 'group', 'g_auth_disabled_local', 'sys_other', 'active', NULL)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth3', 'group', 'g_auth_overridden', 'sys_other', 'active', '{"daily":{"enabled":true,"limit":10.5}}')`,
-		`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled) VALUES ('auth2', 'sys_other', 'g_auth_disabled_local', 0)`,
-		`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type, scheduling_policy_json) VALUES ('auth3', 'sys_other', 'g_auth_overridden', 1, 'high_concurrency', '{"maxConcurrency":9}')`,
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_other', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled) VALUES ('g_missing_owner', '', 1)`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled) VALUES ('g_disabled', 'sys_owner', 0)`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g_badtype', 'sys_owner', 1, 'weird')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g_high_nopolicy', 'sys_owner', 1, 'high_concurrency')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high_badpolicy', 'sys_owner', 1, 'high_concurrency', 'not-json')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_authorized', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_disabled_local', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_overridden', 'sys_owner', 1, 'personal', NULL)`,
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth1', 'group', 'g_authorized', 'sys_other', 'active', NULL)`,
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth2', 'group', 'g_auth_disabled_local', 'sys_other', 'active', NULL)`,
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth3', 'group', 'g_auth_overridden', 'sys_other', 'active', '{"daily":{"enabled":true,"limit":10.5}}')`,
+		`INSERT INTO juhe_business.group_authorization_settings (authorization_id, system_account_id, group_id, enabled) VALUES ('auth2', 'sys_other', 'g_auth_disabled_local', 0)`,
+		`INSERT INTO juhe_business.group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type, scheduling_policy_json) VALUES ('auth3', 'sys_other', 'g_auth_overridden', 1, 'high_concurrency', '{"maxConcurrency":9}')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
@@ -241,7 +242,7 @@ func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 		t.Fatal("启用限额必须标记 quotaLimited")
 	}
 	// 坏限额 JSON：按无限额处理。
-	if _, err := db.Exec(`UPDATE resource_authorizations SET limits_json = 'not-json' WHERE id = 'auth1'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.resource_authorizations SET limits_json = 'not-json' WHERE id = 'auth1'`); err != nil {
 		t.Fatal(err)
 	}
 	badLimits, err := models.ResolveGroupUsageAccessMetadata(ctx, "g_authorized", "sys_other")
@@ -269,21 +270,21 @@ func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 func TestW11DLoadGatewayAPIKeyByHashArms(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
+	models, err := NewSQLReadModels(db, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	seed := []string{
-		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
-		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g2', 'sys_owner', 1, 'personal')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		`INSERT INTO juhe_business.system_accounts (id, status) VALUES ('sys_owner', 'active')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type) VALUES ('g2', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO juhe_business.route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_badexp', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-badexp") + `', 'active', 'not-a-time', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_ok', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-ok") + `', 'active', NULL, '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bw0', 'rs1', 'sys_owner', 'g1', 1, 0, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_badexp', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-badexp") + `', 'active', 'not-a-time', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_ok', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-ok") + `', 'active', NULL, '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
+		`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bw0', 'rs1', 'sys_owner', 'g1', 1, 0, 'active', '2026-01-01T00:00:00.000Z')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
@@ -304,7 +305,7 @@ func TestW11DLoadGatewayAPIKeyByHashArms(t *testing.T) {
 		t.Fatalf("非 sk- 键 = %v %v", row, err)
 	}
 	// 修正权重后正常装载 + NULL group_id 扫描错误。
-	if _, err := db.Exec(`UPDATE route_strategy_groups SET weight = 3 WHERE id = 'bw0'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.route_strategy_groups SET weight = 3 WHERE id = 'bw0'`); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := models.ReadGatewayRuntimeByKeyHash(ctx, HashSecret("sk-w11d-ok"))
@@ -312,7 +313,7 @@ func TestW11DLoadGatewayAPIKeyByHashArms(t *testing.T) {
 		t.Fatalf("正常装载 = %+v err=%v", runtime.APIKey, err)
 	}
 	// NULL 绑定行主键扫描错误（sqlite TEXT PRIMARY KEY 允许 NULL）。
-	if _, err := db.Exec(`UPDATE route_strategy_groups SET id = NULL WHERE id = 'bw0'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.route_strategy_groups SET id = NULL WHERE id = 'bw0'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := models.ReadGatewayRuntimeByKeyHash(ctx, HashSecret("sk-w11d-ok")); err == nil {
@@ -433,11 +434,11 @@ func TestW11DInspectionScanArms(t *testing.T) {
 	// 预热：空 hash 跳过。
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
-	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	models, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('k_empty', 's', 'r', '', 'active')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('k_empty', 's', 'r', '', 'active')`); err != nil {
 		t.Fatal(err)
 	}
 	hashes, err := models.ListActiveGatewayAPIKeyHashes(context.Background())

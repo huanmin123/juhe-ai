@@ -1209,13 +1209,7 @@ func nullableFloat64Ptr(value *float64) any {
 }
 
 func (s *Store) boolValue(value bool) any {
-	if s.pg {
-		return value
-	}
-	if value {
-		return 1
-	}
-	return 0
+	return value
 }
 
 func (s *Store) nowUTC() time.Time {

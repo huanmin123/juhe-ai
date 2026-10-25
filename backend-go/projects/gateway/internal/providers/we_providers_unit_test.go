@@ -815,20 +815,13 @@ func TestWeCustomModelSmallHelpers(t *testing.T) {
 }
 
 func TestWeStoreBindAndRequestAccountID(t *testing.T) {
-	sqliteStore := &Store{}
-	if got := sqliteStore.bind("a = ? AND b = ?"); got != "a = ? AND b = ?" {
-		t.Fatalf("sqlite bind = %s", got)
-	}
-	// PostgreSQL 方言：? 占位符改写为 $n（双模式部署契约）。
-	pgStore := &Store{pg: true}
+	// PostgreSQL 方言：? 占位符改写为 $n。
+	pgStore := &Store{}
 	if got := pgStore.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("pg bind = %s", got)
 	}
-	// boolValue：SQLite 用 1/0，PG 用布尔。
-	if sqliteStore.boolValue(true) != 1 || sqliteStore.boolValue(false) != 0 {
-		t.Fatal("sqlite boolValue 语义错误")
-	}
-	if pgStore.boolValue(true) != true {
+	// boolValue：PG 布尔直传。
+	if pgStore.boolValue(true) != true || pgStore.boolValue(false) != false {
 		t.Fatal("pg boolValue 语义错误")
 	}
 	if requestSystemAccountID(httptest.NewRequest("GET", "/x", nil)) != "" {

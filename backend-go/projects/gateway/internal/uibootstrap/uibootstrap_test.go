@@ -6,44 +6,46 @@ package uibootstrap
 // user-reference-data.repository.ts）。
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 )
 
 // bootstrapSchema mirrors the target groups contract (供应商解耦设计 §8):
 // 组无 provider 维度，每个 system_account_id 至多一个 is_default=1 分组
-//（唯一部分索引在维护库 DDL 上表达，夹具按业务语义播种单默认组）。
+// （唯一部分索引在维护库 DDL 上表达，夹具按业务语义播种单默认组）。
+// 列型沿 maintenance 生产业务 DDL（groups/route_strategies 的 enabled 与
+// is_default 为 integer，`is_default = 1` 谓词即生产形态）。
 const bootstrapSchema = `
-	CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT);
-	CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0);
-	CREATE TABLE route_strategies (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '');
-	CREATE TABLE route_strategy_groups (route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL);
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE juhe_business.system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT);
+	CREATE TABLE juhe_business.groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0);
+	CREATE TABLE juhe_business.route_strategies (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '');
+	CREATE TABLE juhe_business.route_strategy_groups (route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL);
 `
 
 func newBootstrapFixture(t *testing.T) *Deps {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(bootstrapSchema); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, bootstrapSchema)
+		return err
+	})
 	seed := []string{
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sa-1', 'user1', 'User One')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sa-1', 'user1', 'User One')`,
 		// 单默认组（设计 §8）：owner 的默认分组不再按供应商分叉。
-		`INSERT INTO groups (id, name, system_account_id, enabled, is_default) VALUES
+		`INSERT INTO juhe_business.groups (id, name, system_account_id, enabled, is_default) VALUES
 			('g-1', '默认组', 'sa-1', 1, 1)`,
-		`INSERT INTO route_strategies (id, name, system_account_id, mode, status, is_default, created_at) VALUES
+		`INSERT INTO juhe_business.route_strategies (id, name, system_account_id, mode, status, is_default, created_at) VALUES
 			('rs-1', '策略一', 'sa-1', 'normal', 'active', 1, '2026-01-01'),
 			('rs-2', '策略二', 'sa-1', 'hybrid', 'paused', 1, '2026-01-02')`,
-		`INSERT INTO route_strategy_groups (route_strategy_id, system_account_id, group_id, status) VALUES
+		`INSERT INTO juhe_business.route_strategy_groups (route_strategy_id, system_account_id, group_id, status) VALUES
 			('rs-1', 'sa-1', 'g-1', 'active'),
 			('rs-2', 'sa-1', 'g-1', 'paused')`,
 	}
@@ -52,7 +54,7 @@ func newBootstrapFixture(t *testing.T) *Deps {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	return &Deps{DB: db, PGDialect: false, Auth: nil}
+	return &Deps{DB: db, Auth: nil}
 }
 
 func invokeBootstrap(t *testing.T, deps *Deps, selfOnly bool, target string, auth *authsys.AuthContext) *httptest.ResponseRecorder {

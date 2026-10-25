@@ -41,7 +41,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 				RedisURL: cfg.RedisStateURL, Namespace: cfg.RedisNamespace,
 			})
 		})
-	resetEffects, err := newAccountsRuntimeResetBridge(composed, settingsValueReader(composed.settingsStore), &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainProbeRequestOutboxWriter(nil, false, 65_000))
+	resetEffects, err := newAccountsRuntimeResetBridge(composed, settingsValueReader(composed.settingsStore), &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainProbeRequestOutboxWriter(nil, 65_000))
 	if err != nil {
 		t.Fatalf("assemble runtime reset bridge: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	}
 	accountStore.SetRuntimeResetEffects(resetEffects)
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB: composed.DB, Postgres: true, Secret: cfg.Secret, Now: time.Now,
+		DB: composed.DB, Secret: cfg.Secret, Now: time.Now,
 	})
 	if err != nil {
 		t.Fatalf("accountkeystates store: %v", err)

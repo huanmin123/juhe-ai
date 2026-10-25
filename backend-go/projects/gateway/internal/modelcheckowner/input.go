@@ -85,7 +85,7 @@ func (s *Store) IssueInput(ctx context.Context, input InputRecord) (InputRecord,
 		return InputRecord{}, fmt.Errorf("read existing J3b input: %w", err)
 	}
 	var nextVersion int64
-	err = tx.QueryRowContext(ctx, s.bind("INSERT INTO "+s.table("model_check_input_versions")+" (identity_key,next_version,updated_at) VALUES (?,?,?) ON CONFLICT(identity_key) DO UPDATE SET next_version="+s.table("model_check_input_versions")+".next_version+1,updated_at=excluded.updated_at RETURNING next_version"), input.IdentityKey, int64(2), input.IssuedAt.UTC().Format(time.RFC3339Nano)).Scan(&nextVersion)
+	err = tx.QueryRowContext(ctx, s.bind("INSERT INTO "+s.table("model_check_input_versions")+" (identity_key,next_version,updated_at) VALUES (?,?,?) ON CONFLICT(identity_key) DO UPDATE SET next_version=model_check_input_versions.next_version+1,updated_at=excluded.updated_at RETURNING next_version"), input.IdentityKey, int64(2), input.IssuedAt.UTC().Format(time.RFC3339Nano)).Scan(&nextVersion)
 	if err != nil || nextVersion < 2 {
 		return InputRecord{}, fmt.Errorf("allocate J3b input version: %w", err)
 	}
@@ -201,8 +201,5 @@ func jsonEqual(left, right []byte) bool {
 }
 
 func (s *Store) table(name string) string {
-	if s.mode == "postgres" {
-		return s.schema + "." + name
-	}
-	return name
+	return s.schema + "." + name
 }

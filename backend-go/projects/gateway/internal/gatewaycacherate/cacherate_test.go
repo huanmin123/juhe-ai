@@ -3,7 +3,7 @@ package gatewaycacherate
 // 缓存率快照加载器契约回归（设计 8.1）：SQL 口径（global/account 行、
 // stat_hour >= cutoff、按 scope_id 聚合）、cutoff 小时键按注入时区、TTL 内
 // 不重复查询、到点后台刷新（请求路径零 I/O）、失败保留旧快照、超龄 stale、
-// 限频 warn 与双方言表名/绑定。fixture 模式沿用
+// 限频 warn 与 juhe_stats 限定表名/$1 绑定。fixture 模式沿用
 // accounts/list_usage_pg_dialect_test.go：SQLite 句柄 ATTACH ':memory:' AS
 // juhe_stats 承载生产同款限定形式，SetMaxOpenConns(1) 保证 ATTACH 对所有
 // 查询可见。
@@ -43,7 +43,7 @@ type cacherateFixture struct {
 	warns    []string
 }
 
-func newCacherateFixture(t *testing.T, qualified bool) *cacherateFixture {
+func newCacherateFixture(t *testing.T) *cacherateFixture {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "cacherate.sqlite"))
 	if err != nil {
@@ -51,13 +51,8 @@ func newCacherateFixture(t *testing.T, qualified bool) *cacherateFixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	db.SetMaxOpenConns(1)
-	table := "usage_stats_hourly"
-	statements := []string{}
-	if qualified {
-		table = "juhe_stats.usage_stats_hourly"
-		statements = append(statements, `ATTACH ':memory:' AS juhe_stats`)
-	}
-	statements = append(statements, ddlFor(table))
+	table := "juhe_stats.usage_stats_hourly"
+	statements := []string{`ATTACH ':memory:' AS juhe_stats`, ddlFor(table)}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("fixture exec %q: %v", statement, err)
@@ -68,7 +63,7 @@ func newCacherateFixture(t *testing.T, qualified bool) *cacherateFixture {
 		table:    table,
 		nowValue: time.Date(2026, 10, 8, 4, 0, 0, 0, time.UTC),
 	}
-	source, err := NewSnapshotSource(db, qualified, fixture.timezone, fixture.now, fixture.warn)
+	source, err := NewSnapshotSource(db, fixture.timezone, fixture.now, fixture.warn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,36 +151,26 @@ func waitForScheduledRefresh(t *testing.T, fixture *cacherateFixture) {
 // TestSnapshotSourceLoadsGlobalAccountWindow 锁定 8.1 SQL 口径：只取
 // system_account_id='global' + scope_type='account' 行、按 scope_id 聚合、
 // stat_hour >= cutoff（注入时区 Asia/Shanghai；now=UTC 04:00 → 本地 12:00 →
-// cutoff 键 2026-10-07T12），并覆盖双方言分支（PG 限定前缀 / SQLite 裸表）。
+// cutoff 键 2026-10-07T12）。
 func TestSnapshotSourceLoadsGlobalAccountWindow(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		qualified bool
-	}{
-		{name: "sqlite_bare_table", qualified: false},
-		{name: "pg_juhe_stats_qualified", qualified: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fixture := newCacherateFixture(t, tc.qualified)
-			fixture.insert(t, "acc-1", "2026-10-07T12", 100, 400)
-			fixture.insert(t, "acc-1", "2026-10-07T23", 100, 100)
-			fixture.insert(t, "acc-1", "2026-10-07T11", 999, 999) // cutoff 之前
-			fixture.insertRow(t, "tenant", "account", "acc-1", "2026-10-08T00", 999, 999)
-			fixture.insertRow(t, "global", "system", "acc-1", "2026-10-08T00", 999, 999)
+	fixture := newCacherateFixture(t)
+	fixture.insert(t, "acc-1", "2026-10-07T12", 100, 400)
+	fixture.insert(t, "acc-1", "2026-10-07T23", 100, 100)
+	fixture.insert(t, "acc-1", "2026-10-07T11", 999, 999) // cutoff 之前
+	fixture.insertRow(t, "tenant", "account", "acc-1", "2026-10-08T00", 999, 999)
+	fixture.insertRow(t, "global", "system", "acc-1", "2026-10-08T00", 999, 999)
 
-			fixture.source.Warmup(context.Background())
-			rates, stale := fixture.source.Snapshot()
-			if stale {
-				t.Fatalf("首次成功加载后 stale 应为 false")
-			}
-			if len(rates) != 1 {
-				t.Fatalf("rates = %v, 只应有 acc-1 一行", rates)
-			}
-			window := rates["acc-1"]
-			if window.CacheReadTokens != 200 || window.InputTokens != 500 {
-				t.Fatalf("acc-1 window = %+v, 期望 cache=200 input=500", window)
-			}
-		})
+	fixture.source.Warmup(context.Background())
+	rates, stale := fixture.source.Snapshot()
+	if stale {
+		t.Fatalf("首次成功加载后 stale 应为 false")
+	}
+	if len(rates) != 1 {
+		t.Fatalf("rates = %v, 只应有 acc-1 一行", rates)
+	}
+	window := rates["acc-1"]
+	if window.CacheReadTokens != 200 || window.InputTokens != 500 {
+		t.Fatalf("acc-1 window = %+v, 期望 cache=200 input=500", window)
 	}
 }
 
@@ -194,7 +179,7 @@ func TestSnapshotSourceLoadsGlobalAccountWindow(t *testing.T) {
 // 上海 23:59 → cutoff 键 2026-10-07T23；22 点行必须被排除——若误用 UTC，
 // cutoff 会是 07T15，两行都会进窗。
 func TestSnapshotSourceCutoffFollowsInjectedTimezone(t *testing.T) {
-	fixture := newCacherateFixture(t, false)
+	fixture := newCacherateFixture(t)
 	fixture.setTime(time.Date(2026, 10, 8, 15, 59, 0, 0, time.UTC))
 	fixture.insert(t, "acc-inside", "2026-10-07T23", 10, 100)
 	fixture.insert(t, "acc-outside", "2026-10-07T22", 20, 100)
@@ -216,7 +201,7 @@ func TestSnapshotSourceCutoffFollowsInjectedTimezone(t *testing.T) {
 // 数据库变化不反映（不重复查询）；到点后 Snapshot 同步路径仍返回旧数据、
 // 仅调度一次后台刷新，新数据随后落地。
 func TestSnapshotSourceNoRequeryWithinTTLAndZeroIO(t *testing.T) {
-	fixture := newCacherateFixture(t, false)
+	fixture := newCacherateFixture(t)
 	fixture.insert(t, "acc-1", "2026-10-08T00", 100, 200)
 	fixture.source.Warmup(context.Background())
 
@@ -251,7 +236,7 @@ func TestSnapshotSourceNoRequeryWithinTTLAndZeroIO(t *testing.T) {
 // 失败使整轮刷新失败（不得另设默认时区），旧快照保留至超龄，之后维度中性
 // （rates=nil, stale=true）。
 func TestSnapshotSourceFailureKeepsOldSnapshotAndStales(t *testing.T) {
-	fixture := newCacherateFixture(t, false)
+	fixture := newCacherateFixture(t)
 	fixture.insert(t, "acc-1", "2026-10-08T00", 50, 100)
 	fixture.source.Warmup(context.Background())
 
@@ -276,7 +261,7 @@ func TestSnapshotSourceFailureKeepsOldSnapshotAndStales(t *testing.T) {
 // TestSnapshotSourceNeverLoadedIsStale：Warmup 失败后加载器保持未加载——
 // Snapshot 报 nil + stale，直到某轮刷新成功。
 func TestSnapshotSourceNeverLoadedIsStale(t *testing.T) {
-	fixture := newCacherateFixture(t, false)
+	fixture := newCacherateFixture(t)
 	fixture.failTimezone()
 	fixture.source.Warmup(context.Background())
 	rates, stale := fixture.source.Snapshot()
@@ -287,7 +272,7 @@ func TestSnapshotSourceNeverLoadedIsStale(t *testing.T) {
 
 // TestSnapshotSourceWarnRateLimited 锁定刷新失败的 1/min 限频 warn。
 func TestSnapshotSourceWarnRateLimited(t *testing.T) {
-	fixture := newCacherateFixture(t, false)
+	fixture := newCacherateFixture(t)
 	fixture.failTimezone()
 	for i := 0; i < 5; i++ {
 		fixture.source.Warmup(context.Background())

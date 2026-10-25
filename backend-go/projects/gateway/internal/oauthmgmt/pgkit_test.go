@@ -2,9 +2,9 @@ package oauthmgmt
 
 // pgkit_test.go 是 oauthmgmt 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，aipublic/oauthmgmt
-// 测试迁移切片，T65）：pgtestkit 每测试独立库 + 生产 store 的 PG 臂
-// （NewStore postgres=true，juhe_business schema 限定 + $n 占位符，与生产
-// PG 装配同一方言；accounts/apikeys store 同为 PG 单态）。
+// 测试迁移切片，T65）：pgtestkit 每测试独立库 + 生产 store（juhe_business
+// schema 限定 + $n 占位符，与生产 PG 装配同一方言；accounts/apikeys store
+// 同为 PG 单态）。
 //
 // 分组处置（D9）：
 //   - 组A（被测对象有 PG 臂且断言可逐字节保持）：HTTP/store 级测试走本文件

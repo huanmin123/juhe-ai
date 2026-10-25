@@ -2,7 +2,7 @@ package modelcheckowner
 
 // w14f_owner_store_arms_test.go：store/input/outcome/query/durable/
 // model_limits/config 的剩余错误臂与过滤分支。复用 w13g2 的失败注入驱动
-// （w13g2McFailStore）与 wb 的内存库（wbOpenMemoryDB + runtimeTestDDL）。
+// （w13g2McFailStore）与 wb 的内存库（wbOpenPGDB + runtimeTestDDL）。
 
 import (
 	"context"
@@ -16,16 +16,10 @@ import (
 
 // ---- OpenStore / CheckSchema ----
 
-func TestW14fOwnerOpenStoreModeArms(t *testing.T) {
-	if _, err := OpenStore(Config{Enabled: true, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true, StoreMode: "w14f-bogus"}); err == nil ||
-		!strings.Contains(err.Error(), "unsupported J3b store mode") {
-		t.Fatalf("不支持的模式应报错: %v", err)
-	}
-}
 
 func TestW14fOwnerCheckSchemaArms(t *testing.T) {
 	// 缺表 → 报错。
-	store := &Store{db: wbOpenMemoryDB(t, nil), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, nil)}
 	if err := store.CheckSchema(context.Background()); err == nil ||
 		!strings.Contains(err.Error(), "missing table") {
 		t.Fatalf("缺表应报错: %v", err)
@@ -35,8 +29,8 @@ func TestW14fOwnerCheckSchemaArms(t *testing.T) {
 	for _, table := range requiredTables {
 		statements = append(statements, "CREATE TABLE "+table+" (placeholder TEXT)")
 	}
-	db := wbOpenMemoryDB(t, statements)
-	store = &Store{db: db, mode: "sqlite"}
+	db := wbOpenPGDB(t, statements)
+	store = &Store{schema: j3bTestSchema, db: db}
 	if err := store.CheckSchema(context.Background()); err == nil ||
 		!strings.Contains(err.Error(), "missing columns") {
 		t.Fatalf("缺列应报错: %v", err)
@@ -72,16 +66,8 @@ func w14fInsertBaseline(t *testing.T, db *sql.DB, status, evidence string, indep
 
 func TestW14fOwnerActivateBaselineArms(t *testing.T) {
 	ctx := context.Background()
-	// PostgreSQL 分支：FOR UPDATE 拼接 + $N 绑定在 SQLite 注入库上必然失败，
-	// 覆盖 PG 分支与读取失败臂。
-	pgStore := &Store{db: wbOpenMemoryDB(t, []string{w14fBaselineDDL}), mode: "postgres", schema: "juhe_j3b"}
-	if err := pgStore.ActivateTokenInterceptBaseline(ctx, w14fBaselineActivation()); err == nil ||
-		!strings.Contains(err.Error(), "storage unavailable") {
-		t.Fatalf("PG 分支应报 storage unavailable: %v", err)
-	}
-
 	s, fp := w13g2McFailStore(t)
-	if _, err := s.db.Exec(w14fBaselineDDL); err != nil {
+	if _, err := s.db.Exec(j3bQualifyDDL(w14fBaselineDDL)); err != nil {
 		t.Fatal(err)
 	}
 	// 候选读取失败（failpoint）。
@@ -142,7 +128,7 @@ func TestW14fOwnerHealthSyncArms(t *testing.T) {
 	fp.disarm()
 
 	// ReadHealthFact：observed_at 非法 → 解析错误。
-	health := &Store{db: wbOpenMemoryDB(t, wbHealthRuntimeDDL(t)), mode: "sqlite"}
+	health := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, wbHealthRuntimeDDL(t))}
 	if _, err := health.db.Exec(`INSERT INTO account_quality_health_hourly
 		(account_id,system_account_id,provider_code,stat_hour,observed_at,model_check_run_id,model,profile,score,threshold,level,error_code,error_message,updated_at)
 		VALUES ('acct','sys','openai','2026-09-16T10','not-a-time','run','m','quick',1,2,'ok','e','m','x')`); err != nil {
@@ -172,7 +158,7 @@ func w14fInsertRetryRun(t *testing.T, db *sql.DB, id string, policy, decision, r
 
 func TestW14fOwnerHealthSyncRetryFilterArms(t *testing.T) {
 	ctx := context.Background()
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {
 		t.Fatal(err)
@@ -227,40 +213,12 @@ func TestW14fOwnerHealthSyncRetryFilterArms(t *testing.T) {
 
 func TestW14fOwnerInputIntegrityArms(t *testing.T) {
 	ctx := context.Background()
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	// 非法 payload JSON。
 	bad := wbInputFixture()
 	bad.Payload = json.RawMessage(`not-json`)
 	if _, err := store.IssueInput(ctx, bad); err == nil {
 		t.Fatalf("非法 payload 应报错")
-	}
-	// 幂等重放：入库时间损坏 → ErrInputTampered。
-	now := time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC)
-	if _, err := store.db.Exec(`INSERT INTO model_check_inputs
-		(input_id,identity_key,input_version,input_digest,target_id,config_revision,policy_revision,trigger,issued_at,expires_at,payload)
-		VALUES ('w14f-bad-time','sys:acct:model',1,'digest','acct','cfg','pol','manual','bad-time','bad-time','{}')`); err != nil {
-		t.Fatal(err)
-	}
-	replay := wbInputFixture()
-	replay.InputID = "w14f-bad-time"
-	if _, err := store.IssueInput(ctx, replay); !errors.Is(err, ErrInputTampered) {
-		t.Fatalf("损坏时间应 ErrInputTampered: %v", err)
-	}
-	// 存量 payload 非法 → ErrInputTampered。
-	if _, err := store.db.Exec(`INSERT INTO model_check_inputs
-		(input_id,identity_key,input_version,input_digest,target_id,config_revision,policy_revision,trigger,issued_at,expires_at,payload)
-		VALUES ('w14f-bad-payload','sys:acct:model',1,'digest','acct','cfg','pol','manual',?,?,'not-json')`,
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
-	}
-	replay2 := wbInputFixture()
-	replay2.InputID = "w14f-bad-payload"
-	if _, err := store.IssueInput(ctx, replay2); !errors.Is(err, ErrInputTampered) {
-		t.Fatalf("损坏 payload 应 ErrInputTampered: %v", err)
-	}
-	// LoadInput：损坏时间。
-	if _, err := store.LoadInput(ctx, "w14f-bad-time", now); err == nil {
-		t.Fatalf("LoadInput 损坏时间应报错")
 	}
 	// canonicalJSON / jsonEqual 直驱。
 	if _, err := canonicalJSON([]byte("not-json")); err == nil {
@@ -275,17 +233,7 @@ func TestW14fOwnerCommittedOutcomeIntegrityArms(t *testing.T) {
 	ctx := context.Background()
 	now := "2026-09-16T10:00:00.000Z"
 	newStore := func() *Store {
-		db, err := sql.Open("sqlite", "file:"+strings.ReplaceAll(t.TempDir(), "\\", "/")+"/w14f-outcome.db?mode=rwc")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		for _, statement := range runtimeTestDDL() {
-			if _, err := db.Exec(statement); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return &Store{db: db, mode: "sqlite"}
+		return &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	}
 	store := newStore()
 	insert := func(id, observed, stored, issued, expires, inputDigest string) {
@@ -297,31 +245,9 @@ func TestW14fOwnerCommittedOutcomeIntegrityArms(t *testing.T) {
 		}
 		if _, err := store.db.Exec(`INSERT INTO model_check_outcomes
 			(outcome_id,input_id,input_digest,fence_token,observed_at,stored_at,payload,payload_digest,committed)
-			VALUES (?, ?, 'input-digest',1,?,?,'{}','payload-digest',1)`, id, id, observed, stored); err != nil {
+			VALUES (?, ?, 'input-digest',1,?,?,'{}','payload-digest',TRUE)`, id, id, observed, stored); err != nil {
 			t.Fatal(err)
 		}
-	}
-	insert("w14f-bad-observed", "bad-time", now, now, now, "input-digest")
-	if _, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10); err == nil {
-		t.Fatalf("observed_at 损坏应报错")
-	}
-	// stored_at 损坏（独立库，避免先前坏行短路）。
-	store = newStore()
-	insert("w14f-bad-stored", now, "bad-time", now, now, "input-digest")
-	if _, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10); err == nil {
-		t.Fatalf("stored_at 损坏应报错")
-	}
-	// issued_at 损坏。
-	store = newStore()
-	insert("w14f-bad-issued", now, now, "bad-time", now, "input-digest")
-	if _, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10); err == nil {
-		t.Fatalf("issued_at 损坏应报错")
-	}
-	// expires_at 损坏。
-	store = newStore()
-	insert("w14f-bad-expires", now, now, now, "bad-time", "input-digest")
-	if _, err := store.ListCommittedOutcomes(ctx, OutcomeCursor{}, 10); err == nil {
-		t.Fatalf("expires_at 损坏应报错")
 	}
 	// input digest 不一致 → ErrInputTampered。
 	store = newStore()
@@ -375,16 +301,6 @@ func TestW14fOwnerDurableErrorArms(t *testing.T) {
 		t.Fatalf("claim 读取失败应报错")
 	}
 	fp.disarm()
-	// claim_until 损坏 → parse 失败。
-	if _, err := s.db.Exec(`UPDATE model_check_execution_claims SET claim_until='bad-time' WHERE input_id=?`, input.InputID); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CommitOutcome(ctx, outcome2, claim2, now); err == nil {
-		t.Fatalf("claim_until 损坏应报错")
-	}
-	if _, err := s.db.Exec(`UPDATE model_check_execution_claims SET claim_until=? WHERE input_id=?`, now.Add(time.Minute).Format(time.RFC3339Nano), input.InputID); err != nil {
-		t.Fatal(err)
-	}
 	fp.arm("SELECT outcome_id,payload_digest FROM model_check_outcomes")
 	if err := s.CommitOutcome(ctx, outcome2, claim2, now); err == nil {
 		t.Fatalf("existing outcome 读取失败应报错")
@@ -413,8 +329,8 @@ func TestW14fOwnerDurableErrorArms(t *testing.T) {
 
 func TestW14fOwnerModelLimitsArms(t *testing.T) {
 	// 目标 schema（设计 §3）：容量快照读 models 单表（vendor_code/upstream_model）。
-	ddl := []string{`CREATE TABLE models (id TEXT, vendor_code TEXT, upstream_model TEXT, scope TEXT DEFAULT 'builtin', status TEXT, catalog_visible INTEGER, max_input_tokens INTEGER, context_window_tokens INTEGER)`}
-	db := wbOpenMemoryDB(t, ddl)
+	ddl := []string{`CREATE TABLE models (id TEXT, vendor_code TEXT, upstream_model TEXT, scope TEXT DEFAULT 'builtin', status TEXT, catalog_visible BOOLEAN, max_input_tokens INTEGER, context_window_tokens INTEGER)`}
+	db := wbOpenPGDB(t, ddl)
 	limits := &VersionedModelLimits{db: db}
 	// 未知模型 → not found。
 	if _, err := limits.MaxInputTokens("openai", "w14f-missing", ""); err == nil ||
@@ -422,18 +338,12 @@ func TestW14fOwnerModelLimitsArms(t *testing.T) {
 		t.Fatalf("未知模型应报错: %v", err)
 	}
 	// limit 非法（0）→ invalid。
-	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, upstream_model, status, catalog_visible, max_input_tokens, context_window_tokens) VALUES ('w14f-zero','openai','w14f-zero','active',1,0,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, upstream_model, status, catalog_visible, max_input_tokens, context_window_tokens) VALUES ('w14f-zero','openai','w14f-zero','active',TRUE,0,0)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := limits.MaxInputTokens("openai", "w14f-zero", ""); err == nil ||
 		!strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("非法 limit 应报错: %v", err)
-	}
-	// PostgreSQL 方言分支：$N 绑定在 SQLite 上必然失败 → 覆盖 PG 分支与读取失败臂。
-	pgLimits := &VersionedModelLimits{db: db, postgres: true}
-	if _, err := pgLimits.MaxInputTokens("openai", "w14f-zero", ""); err == nil ||
-		!strings.Contains(err.Error(), "read J3b model limit snapshot") {
-		t.Fatalf("PG 分支读取失败应报错: %v", err)
 	}
 }
 

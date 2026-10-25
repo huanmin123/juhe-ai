@@ -314,12 +314,8 @@ func TestDualUsageReadMatrix(t *testing.T) {
 					userExpect[expectKey("", m1, tm.resourceType, tm.resourceID)] = struct{ requests, cost float64 }{6, 0.6}
 				}
 			}
-			// 全零行（HAVING 应排除）与 global 键行（仅 SQLite 臂参与断言）。
+			// 全零行（HAVING 应排除）。
 			insertTeam(ownerKey, date, teamA, tier{"group", e.p + "grp-zero"}, 0, 0, "")
-			if !e.pg && dateIdx == 0 {
-				// global 行放在具体资源档：details 谓词只显示具体资源行。
-				insertTeam("global", date, teamA, tiers[2], 100, 55.5, lastUsed[dateIdx])
-			}
 		}
 
 		rng := UsageStatsRange{StartDate: dates[0], EndDate: dates[2], Days: 3, MaxDays: 31}
@@ -425,17 +421,7 @@ func TestDualUsageReadMatrix(t *testing.T) {
 		if !reflect.DeepEqual(selfRows.Rows, rows.Rows) {
 			e.t.Fatalf("self 与 admin-filter 行集应一致")
 		}
-		// 7) global 键命中（仅 SQLite 臂：PG 臂不向共享库种 system_account_id='global' 行，
-		//    SQL 无方言差异，SQLite 臂已覆盖）。
-		if !e.pg {
-			globalRows, err := e.store.teamUsageRows(ctx, UsageFilters{}, accessInfo{IsAdmin: true}, rng, 1, 20)
-			if err != nil {
-				e.t.Fatalf("global 读取失败: %v", err)
-			}
-			if len(globalRows.Rows) != 1 || globalRows.Rows[0].TeamID != teamA || !dualNearlyEqual(globalRows.Rows[0].Usage.RequestCount, 100) {
-				e.t.Fatalf("global 键读取异常: %+v", globalRows.Rows)
-			}
-		}
+		// 7) global 键命中已随 SQLite 臂退役（PG 共享库不种 system_account_id='global' 行）。
 		// 8) 分页 pageSize=1 的上界语义。
 		paged, err := e.store.teamUsageRows(ctx, UsageFilters{}, ownerAccess, rng, 1, 1)
 		if err != nil {

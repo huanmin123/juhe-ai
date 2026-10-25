@@ -92,11 +92,11 @@ func newTestEnv(t *testing.T) *testEnv {
 			t.Fatal(err)
 		}
 	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accountStore, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accountStore, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Port: service, Accounts: accountStore, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	store, err := NewStore(db, false, nil)
+	store, err := NewStore(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

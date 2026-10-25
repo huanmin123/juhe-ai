@@ -1,9 +1,8 @@
 // detail.go ports client-ip-stats-detail.repository.ts: the per-IP account
 // usage detail read behind GET /:ipHash/detail. The window rows come from
 // client_ip_account_usage_range_windows; account and owner display names come
-// from the business database through the DetailAccountLookup port (Node sync
-// branch reads the business handle, the PostgreSQL branch cross-queries
-// juhe_business on the same pool — both render through the same mapper).
+// from the business database through the DetailAccountLookup port (cross-
+// querying juhe_business on the same pool).
 package ipstats
 
 import (
@@ -30,42 +29,28 @@ type DetailAccountLookup interface {
 }
 
 // NewBusinessAccountLookup builds the default lookup. businessDB is the
-// business database handle for SQLite; for PostgreSQL the stats connection
-// already reaches juhe_business through schema qualification, so businessDB
-// may be nil.
-func NewBusinessAccountLookup(businessDB *sql.DB, postgres bool) DetailAccountLookup {
-	return &businessAccountLookup{business: businessDB, pg: postgres}
+// database handle that reaches juhe_business through schema qualification
+// (the shared pool); it may be nil (composition root not wired), which
+// degrades the lookups to empty results.
+func NewBusinessAccountLookup(businessDB *sql.DB) DetailAccountLookup {
+	return &businessAccountLookup{business: businessDB}
 }
 
 type businessAccountLookup struct {
 	business *sql.DB
-	pg       bool
 }
 
 func (l *businessAccountLookup) db() *sql.DB {
-	if l.pg {
-		if l.business != nil {
-			return l.business
-		}
-		return nil
-	}
 	return l.business
 }
 
-// table qualifies business-schema tables the way Node resolves them: the
-// PostgreSQL detail client cross-queries juhe_business.*, the SQLite handle
-// uses the unqualified business tables.
+// table qualifies business-schema tables: the lookup cross-queries
+// juhe_business.* on the shared pool.
 func (l *businessAccountLookup) table(name string) string {
-	if l.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (l *businessAccountLookup) bind(query string) string {
-	if !l.pg {
-		return query
-	}
 	return pgBind(query)
 }
 

@@ -25,7 +25,7 @@ import (
 func TestComposeChainRuntimeServicesWiresIdentity(t *testing.T) {
 	tdb := composeTestPostgres(t)
 	cfg := composeTestConfigForDSN(t, tdb.DSN)
-	composed := &composition{db: nil, pgDialect: false}
+	composed := &composition{db: nil}
 	// composeChainRuntimeServices requires the composed handles: seed the
 	// minimal business + stats schema for the runtime cache read models.
 	// The cheap path: reuse the chain fixture database (same schema).

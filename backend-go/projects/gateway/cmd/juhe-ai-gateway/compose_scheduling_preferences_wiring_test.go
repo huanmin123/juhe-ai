@@ -32,12 +32,12 @@ var _ routestrategies.RuntimeInvalidator = (*inval.Bus)(nil)
 // 全部可达（未登录 401 请先登录，注册判据），未挂载路径 404。
 func TestSchedulingPreferencesComposeWiringRegistersDualSurfaces(t *testing.T) {
 	authDeps := schedulingPreferencesWiringAuth(t)
-	store, err := schedulingpreferences.NewStore(nil, false, time.Now, nil, nil)
+	store, err := schedulingpreferences.NewStore(nil, time.Now, nil, nil)
 	if err == nil {
 		t.Fatalf("nil db store construction must fail, got %v", store)
 	}
 	db := schedulingPreferencesWiringDB(t)
-	store, err = schedulingpreferences.NewStore(db, false, time.Now, nil, nil)
+	store, err = schedulingpreferences.NewStore(db, time.Now, nil, nil)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
@@ -92,12 +92,12 @@ func TestSchedulingPreferencesComposeWiringRegistersDualSurfaces(t *testing.T) {
 
 func schedulingPreferencesWiringAuth(t *testing.T) *authsys.Deps {
 	t.Helper()
-	service, err := businessauth.New(schedulingPreferencesWiringDB(t), modelcheckauth.SQLite, time.Now,
+	service, err := businessauth.New(schedulingPreferencesWiringDB(t), modelcheckauth.Postgres, time.Now,
 		businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(schedulingPreferencesWiringDB(t), modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(schedulingPreferencesWiringDB(t), modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

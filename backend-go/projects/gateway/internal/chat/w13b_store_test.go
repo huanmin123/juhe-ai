@@ -374,7 +374,7 @@ func TestW13BGetConversationSyncHeadInvalidNow(t *testing.T) {
 
 func TestW13BPgDialectArms(t *testing.T) {
 	fixture, script := newFaultChatFixtureW13B(t)
-	pgStore, err := NewStore(fixture.db, true, fixtureStoreClockW13B(fixture), nil)
+	pgStore, err := NewStore(fixture.db, fixtureStoreClockW13B(fixture), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func TestW13BPgDialectArms(t *testing.T) {
 
 func TestW13BAcceptTurnPgLockArm(t *testing.T) {
 	fixture, _ := newFaultChatFixtureW13B(t)
-	pgStore, err := NewStore(fixture.db, true, fixtureStoreClockW13B(fixture), nil)
+	pgStore, err := NewStore(fixture.db, fixtureStoreClockW13B(fixture), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

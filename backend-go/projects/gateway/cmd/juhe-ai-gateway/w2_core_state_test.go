@@ -162,7 +162,7 @@ func w2aClosedSQLiteDB(t *testing.T) *sql.DB {
 // w2aBrokenRoutingCache 构造底库已关闭的运行态缓存服务。
 func w2aBrokenRoutingCache(t *testing.T) *gatewayruntimecache.Service {
 	t.Helper()
-	models, err := gatewayruntimecache.NewSQLReadModels(w2aClosedSQLiteDB(t), false, time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(w2aClosedSQLiteDB(t), time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create read models: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestW2AProbeOutboxIndexCreateFailure(t *testing.T) {
 			t.Fatalf("seed: %v: %v", statement, err)
 		}
 	}
-	writer := newChainProbeRequestOutboxWriter(db, false, 1000)
+	writer := newChainProbeRequestOutboxWriter(db, 1000)
 	outcome := writer.EnqueueProbeRequest(context.Background(), "w2a-acc", chainRequestFailureReason, "", nil)
 	if outcome.Outcome != gatewaycodex.HealthDispatchRejected || outcome.DecisionCode != "input_unavailable" {
 		t.Fatalf("index failure must reject as input_unavailable, got %+v", outcome)
@@ -908,7 +908,6 @@ func w2aLockRow(lockState, deadlineAt, incidentID string, generation int64) []dr
 func w2aLocksPort(db *sql.DB) *chainAccountLocks {
 	return &chainAccountLocks{
 		db:       db,
-		postgres: false,
 		now:      func() time.Time { return time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC) },
 		newToken: func() string { return "w2a-token" },
 	}
@@ -1007,7 +1006,7 @@ func TestW2AClientIPAvoidanceOrderError(t *testing.T) {
 
 func TestW2AResponseInspectionSideEffectWriteErrors(t *testing.T) {
 	db, _ := w2aFixtureDatabases(t)
-	models, err := gatewayruntimecache.NewSQLReadModels(db, false, time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(db, time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("read models: %v", err)
 	}
@@ -1080,7 +1079,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "BEGIN"},
 		{contains: "SELECT id FROM juhe_business.accounts", rowsErr: errors.New("w2a: family query refused")},
 	}
-	marker := newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
+	marker := newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps)})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("family query failure must surface")
 	}
@@ -1090,7 +1089,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "BEGIN"},
 		{contains: "SELECT id FROM juhe_business.accounts", cols: []string{"id"}, scanAsNil: true},
 	}
-	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
+	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps)})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("null id scan failure must surface")
 	}
@@ -1100,7 +1099,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "BEGIN"},
 		{contains: "SELECT id FROM juhe_business.accounts", cols: []string{"id"}, rowsEOFErr: errors.New("w2a: rows corrupted")},
 	}
-	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
+	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps)})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("rows.Err failure must surface")
 	}
@@ -1111,7 +1110,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "SELECT id FROM juhe_business.accounts", cols: []string{"id"}, row: []driver.Value{"acc_w2a_marker"}},
 		{contains: "INSERT INTO juhe_business.account_list_availability_dirty", execErr: errors.New("w2a: upsert refused")},
 	}
-	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
+	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps)})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("upsert failure must surface")
 	}

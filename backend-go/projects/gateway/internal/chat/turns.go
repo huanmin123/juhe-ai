@@ -130,8 +130,6 @@ func (s *Store) AcceptTurn(input AcceptTurnInput) (*AcceptTurnResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	release := s.lockUserPolicy(input.SystemAccountID)
-	defer release()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -866,8 +864,6 @@ func (s *Store) finalizeTurn(input finalizeTurnInput) (*Message, error) {
 			serializationExceeded = true
 		}
 	}
-	release := s.lockUserPolicy(input.SystemAccountID)
-	defer release()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err

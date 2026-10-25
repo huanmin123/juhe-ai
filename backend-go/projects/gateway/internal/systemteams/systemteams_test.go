@@ -88,13 +88,13 @@ func newTestEnv(t *testing.T) *testEnv {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	authzStore, err := authz.NewStore(db, true, nil)
+	authzStore, err := authz.NewStore(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stats := &statsSpy{}
 	inval := &invalSpy{}
-	store, err := NewStore(db, true, nil, authzStore, WithSideEffects(stats, inval))
+	store, err := NewStore(db, nil, authzStore, WithSideEffects(stats, inval))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,23 +412,14 @@ func TestTeamLifecycleWithAuthorizationCascade(t *testing.T) {
 	}
 }
 
-// TestKeywordPredicateDialectArms locks in the querySystemTeamRowsAsync
-// keyword arms (system-team.repository.ts:916-926): PostgreSQL pins bytewise
-// ordering with COLLATE "C" on both range ends plus starts_with() so the
-// range scan and the prefix predicate agree under the database default
-// collation; SQLite keeps the bare range pair. Both arms share the
-// systemTeamTextPrefixUpperBound upper bound, and the PG arm rides the
-// shared ? → $n placeholder binding.
-func TestKeywordPredicateDialectArms(t *testing.T) {
-	sqliteClause, sqliteArgs := (&Store{}).keywordPredicate("al")
-	if sqliteClause != "(t.name >= ? AND t.name < ?)" {
-		t.Fatalf("sqlite keyword clause drift: %q", sqliteClause)
-	}
-	if len(sqliteArgs) != 2 || sqliteArgs[0] != "al" || sqliteArgs[1] != "am" {
-		t.Fatalf("sqlite keyword args drift: %#v", sqliteArgs)
-	}
-
-	pg := &Store{pg: true}
+// TestKeywordPredicateDialectArm locks in the querySystemTeamRowsAsync
+// keyword arm (system-team.repository.ts:916-926): bytewise ordering with
+// COLLATE "C" on both range ends plus starts_with() so the range scan and the
+// prefix predicate agree under the database default collation. The bound
+// stays systemTeamTextPrefixUpperBound, and the predicate rides the shared
+// ? → $n placeholder binding.
+func TestKeywordPredicateDialectArm(t *testing.T) {
+	pg := &Store{}
 	pgClause, pgArgs := pg.keywordPredicate("al")
 	if pgClause != `(t.name COLLATE "C" >= ? AND t.name COLLATE "C" < ? AND starts_with(t.name, ?))` {
 		t.Fatalf("postgres keyword clause drift: %q", pgClause)

@@ -10,7 +10,7 @@ import (
 
 func w11gInspectionStore(t *testing.T, steps []w11gPStep) *InspectionStore {
 	t.Helper()
-	store, err := NewInspectionStore(w11gOpenScripted(t, steps), false, func() time.Time { return w11gClock }, nil, nil)
+	store, err := NewInspectionStore(w11gOpenScripted(t, steps), func() time.Time { return w11gClock }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

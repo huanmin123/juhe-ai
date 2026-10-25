@@ -235,12 +235,9 @@ type proxyTestSnapshot struct {
 // after the run are the caller's re-check, matching the Node route's
 // before/after findProxyAsync pair.
 func (s *Store) LoadProxyTestSnapshot(ctx context.Context, id string) (*proxyTestSnapshot, error) {
-	lastTestedAtColumn := "p.last_tested_at"
-	if s.pg {
-		// PG stores timestamptz; textify like manualAdminSnapshotSQL so the
-		// scan stays string-typed and the audit diff keeps the same text.
-		lastTestedAtColumn = `CASE WHEN p.last_tested_at IS NULL THEN NULL ELSE to_char(p.last_tested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END AS last_tested_at`
-	}
+	// PG stores timestamptz; textify like manualAdminSnapshotSQL so the
+	// scan stays string-typed and the audit diff keeps the same text.
+	lastTestedAtColumn := `CASE WHEN p.last_tested_at IS NULL THEN NULL ELSE to_char(p.last_tested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END AS last_tested_at`
 	query := `
 WITH selected_targets AS (
   SELECT v.code AS provider,v.name AS provider_name,t.profile_id,t.target_url

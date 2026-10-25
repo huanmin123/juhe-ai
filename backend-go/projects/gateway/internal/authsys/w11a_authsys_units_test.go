@@ -70,7 +70,7 @@ func TestW11APureHelperArms(t *testing.T) {
 		t.Fatal("nil store CheckContract must fail")
 	}
 	db := newContractTestDB(t)
-	if _, err := NewAccountStore(db, modelcheckauth.SQLite, nil); err != nil {
+	if _, err := NewAccountStore(db, modelcheckauth.Postgres, nil); err != nil {
 		t.Fatalf("nil clock must fall back to time.Now: %v", err)
 	}
 }

@@ -130,14 +130,13 @@ func (f routeStrategySpeedFirstFacade) ClearDegradedRuntime(ctx context.Context,
 }
 
 // newSchedulingPreferenceNameLookup 构造运行态条目的偏好名批量解析闭包：
-// 按主键直查 scheduling_preferences（enabled 已随 v2 用户裁决修订第 4 条退
-// 役，无停用态，主键直查即全部行）；PG 方言带 juhe_business 前缀并使用
-// $n 占位（pgpool 无驱动层 ? -> $n 改写，BUG-0219），sqlite 用 ? 占位。
+// 按主键直查 juhe_business.scheduling_preferences（enabled 已随 v2 用户裁决
+// 修订第 4 条退役，无停用态，主键直查即全部行）；$n 占位（pgpool 无驱动层
+// ? -> $n 改写，BUG-0219）。
 func newSchedulingPreferenceNameLookup(composed *composition) func(ctx context.Context, ids []string) (map[string]string, error) {
 	if composed == nil || composed.db == nil {
 		return nil
 	}
-	pgDialect := composed.pgDialect
 	return func(ctx context.Context, ids []string) (map[string]string, error) {
 		unique := make([]string, 0, len(ids))
 		seen := make(map[string]struct{}, len(ids))
@@ -154,21 +153,13 @@ func newSchedulingPreferenceNameLookup(composed *composition) func(ctx context.C
 		if len(unique) == 0 {
 			return map[string]string{}, nil
 		}
-		table := "scheduling_preferences"
-		if pgDialect {
-			table = "juhe_business.scheduling_preferences"
-		}
 		placeholders := make([]string, len(unique))
 		args := make([]any, len(unique))
 		for index, id := range unique {
-			if pgDialect {
-				placeholders[index] = "$" + strconv.Itoa(index+1)
-			} else {
-				placeholders[index] = "?"
-			}
+			placeholders[index] = "$" + strconv.Itoa(index+1)
 			args[index] = id
 		}
-		query := "SELECT id, name FROM " + table + " WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+		query := "SELECT id, name FROM juhe_business.scheduling_preferences WHERE id IN (" + strings.Join(placeholders, ",") + ")"
 		rows, err := composed.db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, err

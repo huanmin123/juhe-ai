@@ -111,7 +111,7 @@ func newW1SResetFixture(t *testing.T) *w1sResetFixture {
 		},
 		&chainRuntimeServices{QuotaStats: stats, AccountAPIKeyGuard: guard},
 		"w1s-test-secret",
-		newChainProbeRequestOutboxWriter(nil, false, 65_000))
+		newChainProbeRequestOutboxWriter(nil, 65_000))
 	if err != nil {
 		t.Fatalf("bridge: %v", err)
 	}
@@ -199,25 +199,16 @@ func TestW1SAccountsResetTransientGenerationMemory(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// table / bind 方言（postgres 前缀 + $N）
+// table / bind 渲染（juhe_business 前缀 + $N）
 // ---------------------------------------------------------------------------
 
 func TestW1SAccountsResetTableBindDialect(t *testing.T) {
-	sqliteBridge := &accountsRuntimeResetBridge{pg: false}
-	sqliteQuery := "SELECT x FROM t WHERE a = ? AND b = ?"
-	if got := sqliteBridge.table("resource_authorizations"); got != "resource_authorizations" {
-		t.Fatalf("sqlite table = %q, want 裸表名", got)
+	bridge := &accountsRuntimeResetBridge{}
+	if got := bridge.table("resource_authorizations"); got != "juhe_business.resource_authorizations" {
+		t.Fatalf("table = %q", got)
 	}
-	if got := sqliteBridge.bind(sqliteQuery); got != sqliteQuery {
-		t.Fatalf("sqlite bind 必须原样返回, got %q", got)
-	}
-
-	pgBridge := &accountsRuntimeResetBridge{pg: true}
-	if got := pgBridge.table("resource_authorizations"); got != "juhe_business.resource_authorizations" {
-		t.Fatalf("pg table = %q", got)
-	}
-	if got := pgBridge.table("accounts"); got != "juhe_business.accounts" {
-		t.Fatalf("pg table accounts = %q", got)
+	if got := bridge.table("accounts"); got != "juhe_business.accounts" {
+		t.Fatalf("table accounts = %q", got)
 	}
 	cases := []struct {
 		name, query, want string
@@ -229,8 +220,8 @@ func TestW1SAccountsResetTableBindDialect(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := pgBridge.bind(testCase.query); got != testCase.want {
-				t.Fatalf("pg.bind(%q) = %q, want %q", testCase.query, got, testCase.want)
+			if got := bridge.bind(testCase.query); got != testCase.want {
+				t.Fatalf("bind(%q) = %q, want %q", testCase.query, got, testCase.want)
 			}
 		})
 	}

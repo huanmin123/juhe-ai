@@ -22,7 +22,7 @@ import (
 )
 
 const proxyTestCatalogSchema = `
-	CREATE TABLE vendors (
+	CREATE TABLE juhe_business.vendors (
 		id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT,
 		enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -133,11 +133,11 @@ func TestProxyTestRunsThroughForwardProxy(t *testing.T) {
 	t.Cleanup(func() { proxyTestOutboundTargets = originalOutbound })
 
 	proxyHost, proxyPort := proxyHostPort(proxyServer.URL)
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-1', 'sa-1', '测试代理', 'http', ?, ?, 1, 'unknown', '2026-01-01', '2026-01-01')`, proxyHost, proxyPort); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
+		VALUES ('proxy-1', 'sa-1', '测试代理', 'http', $1, $2, true, 'unknown', '2026-01-01', '2026-01-01')`, proxyHost, proxyPort); err != nil {
 		t.Fatalf("seed proxy: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at)
 		VALUES ('vendor-1', 'gpt', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
 		t.Fatalf("seed vendor: %v", err)
 	}
@@ -251,8 +251,8 @@ func TestProxyTestRequiresAuthContext(t *testing.T) {
 
 func TestProxyTestWithoutEnabledProviderTargets(t *testing.T) {
 	fixture := newProxyTestFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-1', 'sa-1', '空目标', 'http', '127.0.0.1', 1, 0, 'unknown', '2026-01-01', '2026-01-01')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
+		VALUES ('proxy-1', 'sa-1', '空目标', 'http', '127.0.0.1', 1, false, 'unknown', '2026-01-01', '2026-01-01')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	recorder := postProxyTest(t, fixture, "proxy-1", true)
@@ -287,11 +287,11 @@ func TestProxyTestTransportFailureClassification(t *testing.T) {
 	}
 	closedPort := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-1', 'sa-1', '断连代理', 'http', '127.0.0.1', ?, 1, 'unknown', '2026-01-01', '2026-01-01')`, closedPort); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
+		VALUES ('proxy-1', 'sa-1', '断连代理', 'http', '127.0.0.1', $1, true, 'unknown', '2026-01-01', '2026-01-01')`, closedPort); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at)
 		VALUES ('vendor-1', 'gpt', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
 		t.Fatalf("seed vendor: %v", err)
 	}

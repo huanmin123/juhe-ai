@@ -297,7 +297,7 @@ func TestBalancePGDueSQLContract(t *testing.T) {
 	fenceRequireText(t, statement.query, "updated_at = ?", "Commit updated_at 写入")
 	fenceRequireText(t, statement.query, "AND balance_query_next_refresh_at::timestamptz = ?::timestamptz", "Commit fence cast")
 	// pgpool driver 层把 ? 改写为 $n（与生产同源），cast 不被破坏。
-	bound := sqldialect.BindSQL(true, statement.query)
+	bound := sqldialect.BindSQL(statement.query)
 	fenceRequireText(t, bound, "AND balance_query_next_refresh_at::timestamptz = $5::timestamptz", "Commit fence 改写后契约")
 	// 参数形态：$1 收口 NULL、$2 预格式化 updated_at、$5 围栏原文文本。
 	if statement.args[0] != nil {
@@ -346,7 +346,7 @@ func TestBalancePGDueSQLContract(t *testing.T) {
 	statement = recorder.all()[3]
 	fenceRequireText(t, statement.query, "AND balance_query_next_refresh_at::timestamptz <= ?", "List due 过滤 cast")
 	fenceRequireText(t, statement.query, "OR balance_query_next_refresh_at::timestamptz > ?::timestamptz OR (balance_query_next_refresh_at::timestamptz = ?::timestamptz AND id > ?)", "List 游标比较 cast")
-	boundList := sqldialect.BindSQL(true, statement.query)
+	boundList := sqldialect.BindSQL(statement.query)
 	if strings.Contains(boundList, "?") {
 		t.Fatalf("List SQL 经 pgpool 改写后不得残留 ? 占位符:\n%s", boundList)
 	}

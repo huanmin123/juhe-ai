@@ -365,9 +365,7 @@ func TestW13DAuthorizationByIDsReadOnlyAndExact(t *testing.T) {
 		t.Fatal("坏时区必须报错")
 	}
 
-	// ExactAsync（PostgreSQL 模式）走批量精确装载，判定与同步一致。
-	// 非 postgres 回退同步分支需要 SQLite 业务库承载，PG 化测试基建下不可达
-	// （登记：随生产 sqlite 臂删除批次同批退役）。
+	// ExactAsync 走批量精确装载，判定与同步一致。
 	exactDecision, err := service.CheckAuthorizationQuotaByIDsExactAsync(ctx, "ga1", "aa1", clock.Now())
 	if err != nil {
 		t.Fatal(err)

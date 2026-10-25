@@ -21,12 +21,12 @@ import (
 
 // newChainCacheRateSnapshotSource 构造缓存率快照加载器（设计 8.1 端口
 // CacheRateSnapshotSource 的 adapter）：
-//   - statsDB：统计库句柄（PG 共享业务池 + juhe_stats. 限定 / SQLite 独立
-//     stats 文件句柄，与 accounts.NewStatsUsageSource 同一装配口径）；
+//   - statsDB：统计库句柄（PG 共享业务池 + juhe_stats. 限定，与
+//     accounts.NewStatsUsageSource 同一装配口径）；
 //   - businessDB：业务库句柄，承载 usageStatsTimezone 系统设置读；
 //   - 失败语义：刷新失败保留旧快照 + 每分钟至多一条 WARN（loader 内实现），
 //     构造期仅校验句柄非空，缺句柄属于组合根装配缺陷（fail-fast）。
-func newChainCacheRateSnapshotSource(statsDB *sql.DB, businessDB *sql.DB, postgres bool) (*gatewaycacherate.SnapshotSource, error) {
+func newChainCacheRateSnapshotSource(statsDB *sql.DB, businessDB *sql.DB) (*gatewaycacherate.SnapshotSource, error) {
 	if statsDB == nil {
 		return nil, errors.New("缓存率快照加载器要求统计库句柄")
 	}
@@ -35,7 +35,6 @@ func newChainCacheRateSnapshotSource(statsDB *sql.DB, businessDB *sql.DB, postgr
 	}
 	return gatewaycacherate.NewSnapshotSource(
 		statsDB,
-		postgres,
 		statreads.NewSystemSettingsTimezoneSource(businessDB),
 		time.Now,
 		func(message string) {

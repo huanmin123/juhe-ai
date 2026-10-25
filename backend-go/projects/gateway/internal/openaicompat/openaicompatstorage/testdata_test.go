@@ -123,7 +123,7 @@ func fixedClock(t *testing.T) func() time.Time {
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := NewStore(newTestDB(t), false, WithNow(fixedClock(t)))
+	store, err := NewStore(newTestDB(t), WithNow(fixedClock(t)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -208,7 +208,7 @@ func TestW15BClaimScheduledDueRowsUnderPgx(t *testing.T) {
 	w15bScheduleRow(t, db, "s-future", "acc-w15b-active", future, 1)
 	w15bScheduleRow(t, db, "s-paused", "acc-w15b-paused", past, 1)
 
-	source := &BusinessSchedulerSource{Business: db, Postgres: true, Store: &Store{mode: "postgres", schema: "juhe_j3b"}, OwnerID: w15bOwnerID, Lease: w15bLease}
+	source := &BusinessSchedulerSource{Business: db, Store: &Store{schema: "juhe_j3b"}, OwnerID: w15bOwnerID, Lease: w15bLease}
 	tasks, err := source.Claim(ctx, SchedulerScheduled, now, 10)
 	if err != nil {
 		t.Fatalf("领取到期计划失败(修复前此处为 driver: bad connection,即 BUG-0308): %v", err)
@@ -296,7 +296,7 @@ func TestW15BClaimQualityRecoveryDueRowsUnderPgx(t *testing.T) {
 		}
 	}
 
-	source := &BusinessSchedulerSource{Business: db, Postgres: true, Store: &Store{mode: "postgres", schema: "juhe_j3b"}, OwnerID: w15bOwnerID, Lease: w15bLease}
+	source := &BusinessSchedulerSource{Business: db, Store: &Store{schema: "juhe_j3b"}, OwnerID: w15bOwnerID, Lease: w15bLease}
 	tasks, err := source.Claim(ctx, SchedulerQualityRecovery, now, 10)
 	if err != nil {
 		t.Fatalf("领取到期恢复失败(修复前此处为 driver: bad connection,即 BUG-0308): %v", err)

@@ -331,10 +331,7 @@ func (s *Store) buildRangeWhere(ctx context.Context, options ListOptions, policy
 	if status == "" {
 		status = StatusAll
 	}
-	expiresAfterNow := `unixepoch(active_policies.expires_at) > unixepoch(?)`
-	if s.pg {
-		expiresAfterNow = `EXTRACT(EPOCH FROM active_policies.expires_at::timestamptz) > EXTRACT(EPOCH FROM ?::timestamptz)`
-	}
+	expiresAfterNow := `EXTRACT(EPOCH FROM active_policies.expires_at::timestamptz) > EXTRACT(EPOCH FROM ?::timestamptz)`
 	activePolicyExists := func(ipHashExpression, policyType string) string {
 		return `EXISTS (
 		SELECT 1

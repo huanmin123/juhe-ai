@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ func TestStoreSchemaCheckFailsClosedWhenMigrationIsMissing(t *testing.T) {
 
 func TestOpenStoreRejectsConfirmedHandoffWhileNodeWriterIsActive(t *testing.T) {
 	_, err := OpenStore(Config{
-		Enabled: true, StoreMode: "sqlite", DatabasePath: filepath.Join(t.TempDir(), "j3b.db"),
+		Enabled: true, PostgresURL: "postgres://127.0.0.1:1/unused?connect_timeout=1",
 		BusinessHandoffConfirmed: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "readiness gates") {
@@ -123,7 +122,7 @@ func TestActivateTokenInterceptBaselineUsesAtomicCAS(t *testing.T) {
 		evidence_status TEXT NOT NULL, independent_source_count INTEGER NOT NULL, q90_intercept DOUBLE PRECISION,
 		strong_threshold_intercept DOUBLE PRECISION, strong_gate_enabled INTEGER NOT NULL, calibration_note TEXT,
 		updated_at TEXT NOT NULL, PRIMARY KEY(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version))`)
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{db: db, schema: j3bTestSchema}
 	const cohort = "hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	for _, row := range []struct {
 		version int
@@ -159,7 +158,7 @@ func TestActivateTokenInterceptBaselineUsesAtomicCAS(t *testing.T) {
 
 func TestActivateTokenInterceptBaselineFailsClosedWhenStorageMissing(t *testing.T) {
 	db := newJ3BPGDatabase(t)
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{db: db, schema: j3bTestSchema}
 	err := store.ActivateTokenInterceptBaseline(context.Background(), TokenInterceptBaselineActivation{
 		CohortKeyHMAC: "hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RequestedModel: "gpt-5.6", TokenizerVersion: "o200k_base@1", ProbeSetVersion: "probe-v1", BaselineVersion: 1, StrongThresholdIntercept: 100, CalibrationNote: "ok",
 	})
@@ -217,7 +216,7 @@ func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testin
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), "run-1", "completed", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("retries=%#v err=%v", retries, err)
@@ -252,7 +251,7 @@ func TestListHealthSyncRetriesKeepsHardQualityFailureAboveThreshold(t *testing.T
 		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("retries=%#v err=%v", retries, err)
@@ -273,7 +272,7 @@ func TestListHealthSyncRetriesAdmitsUnformedQuickQualityFailure(t *testing.T) {
 		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("retries=%#v err=%v", retries, err)
@@ -301,7 +300,7 @@ func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T
 		"run-valid", "completed", "acct-valid", "sys-valid", "openai", "gpt-5.6", "full", "failure", 20, nil, validPolicy, validDecision, `{"configRevision":"3"}`, finished, "failed", "2026-08-27T10:01:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 1)
 	if err != nil || len(retries) != 1 || retries[0].RunID != "run-valid" {
 		t.Fatalf("retries=%#v err=%v", retries, err)
@@ -325,7 +324,7 @@ func TestListHealthSyncRetriesAdmitsUnavailableWithoutFormedEvidence(t *testing.
 		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{db: db, schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 1 {
 		t.Fatalf("unavailable retry must be admitted: retries=%#v err=%v", retries, err)
@@ -343,7 +342,7 @@ func TestMergeRunQualityDecisionMergesResultFields(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_decision_json,updated_at) VALUES ('run-merge','{"triggerKind":"scheduled","triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{db: db, schema: j3bTestSchema}
 	if err := store.MergeRunQualityDecision(context.Background(), "run-merge", map[string]any{"result": "applied", "enforcementId": "enf-1", "generation": 2, "beforeStatus": nil, "afterStatus": "quality_isolated", "healthSyncResult": "applied", "healthStatHour": "2026-08-27T10:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}

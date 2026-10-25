@@ -166,7 +166,7 @@ func authorizedBindingTargetOf(account gatewaydispatch.AccountCandidate) *author
 // ---------------------------------------------------------------------------
 
 // newChainErrorPolicyEffectsBridge 构造状态写侧桥（compose.go 装配点）：
-// 业务库句柄 + 方言 + K5 运行态失效总线 + accountkeystates（Key 级记录与
+// 业务库句柄 + K5 运行态失效总线 + accountkeystates（Key 级记录与
 // 池隔离判定）。任一必要协作者缺失时返回错误（组合根 fail-fast）。
 func newChainErrorPolicyEffectsBridge(composed *composition, secret string) (chainAccountErrorPolicyEffects, *chainErrorPolicyService, error) {
 	if composed.db == nil {
@@ -176,10 +176,9 @@ func newChainErrorPolicyEffectsBridge(composed *composition, secret string) (cha
 		return nil, nil, fmt.Errorf("账户错误策略桥缺少 JUHE_AI_SECRET")
 	}
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB:       composed.db,
-		Postgres: composed.pgDialect,
-		Secret:   secret,
-		Now:      time.Now,
+		DB:     composed.db,
+		Secret: secret,
+		Now:    time.Now,
 		InvalidateRuntimeCache: func(reason string) {
 			if composed.Bus != nil {
 				composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
@@ -204,7 +203,6 @@ func newChainErrorPolicyEffectsBridge(composed *composition, secret string) (cha
 	}
 	bridge := &chainErrorPolicyEffectsBridge{
 		db:        composed.db,
-		pg:        composed.pgDialect,
 		bus:       composed.Bus,
 		keyStates: keyStates,
 		now:       time.Now,
@@ -215,7 +213,6 @@ func newChainErrorPolicyEffectsBridge(composed *composition, secret string) (cha
 // chainErrorPolicyEffectsBridge 实现 chainAccountErrorPolicyEffects。
 type chainErrorPolicyEffectsBridge struct {
 	db        *sql.DB
-	pg        bool
 	bus       *inval.Bus
 	keyStates *accountkeystates.Store
 	now       func() time.Time
@@ -660,10 +657,7 @@ func (b *chainErrorPolicyEffectsBridge) systemQuotaCooldownPrioritySQL(failureCo
 	if failureCode != systemQuotaGenericCooldownCode {
 		return ""
 	}
-	futureCooldown := `julianday(cooldown_until) > julianday(?)`
-	if b.pg {
-		futureCooldown = `cooldown_until::timestamptz > ?::timestamptz`
-	}
+	futureCooldown := `cooldown_until::timestamptz > ?::timestamptz`
 	return `
 		  AND NOT (
 		    (
@@ -742,16 +736,10 @@ func (b *chainErrorPolicyEffectsBridge) invalidateRuntime(reason string) {
 }
 
 func (b *chainErrorPolicyEffectsBridge) table(name string) string {
-	if b.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (b *chainErrorPolicyEffectsBridge) bind(query string) string {
-	if !b.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

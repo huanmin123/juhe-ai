@@ -171,7 +171,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{db: db, now: now}
 	// The clock reads through the fixture pointer so tests can advance time
 	// for expiry state-machine coverage.
-	store, err := NewStore(db, true, func() time.Time { return f.now })
+	store, err := NewStore(db, func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,17 +78,15 @@ func (e *InUseError) Error() string {
 
 // Deps bundles the proxy family collaborators.
 type Deps struct {
-	DB        *sql.DB
-	PGDialect bool
-	Secret    string
-	Now       func() time.Time
-	NewID     func(prefix string) string
+	DB     *sql.DB
+	Secret string
+	Now    func() time.Time
+	NewID  func(prefix string) string
 }
 
 // Store is the proxy persistence half.
 type Store struct {
 	db     *sql.DB
-	pg     bool
 	secret string
 	now    func() time.Time
 	newID  func(string) string
@@ -105,20 +103,14 @@ func NewStore(deps Deps) (*Store, error) {
 	if deps.NewID == nil {
 		return nil, errors.New("proxy store requires an id generator")
 	}
-	return &Store{db: deps.DB, pg: deps.PGDialect, secret: deps.Secret, now: deps.Now, newID: deps.NewID}, nil
+	return &Store{db: deps.DB, secret: deps.Secret, now: deps.Now, newID: deps.NewID}, nil
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

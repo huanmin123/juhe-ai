@@ -17,15 +17,14 @@ import (
 // A stale lease/generation is a harmless no-op; the scheduler may acknowledge
 // the task without allowing an old probe to change current account state.
 type BusinessRecoveryApplier struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
-func NewBusinessRecoveryApplier(db *sql.DB, postgres bool) (*BusinessRecoveryApplier, error) {
+func NewBusinessRecoveryApplier(db *sql.DB) (*BusinessRecoveryApplier, error) {
 	if db == nil {
 		return nil, errors.New("J3b Business recovery database is required")
 	}
-	return &BusinessRecoveryApplier{db: db, postgres: postgres}, nil
+	return &BusinessRecoveryApplier{db: db}, nil
 }
 
 func (a *BusinessRecoveryApplier) Complete(ctx context.Context, input RecoveryPayload, passed bool) error {
@@ -38,10 +37,7 @@ func (a *BusinessRecoveryApplier) Complete(ctx context.Context, input RecoveryPa
 	}
 	defer tx.Rollback()
 	q := func(s string) string { return a.bind(s) }
-	lock := ""
-	if a.postgres {
-		lock = " FOR UPDATE"
-	}
+	lock := " FOR UPDATE"
 	now := input.CompletedAt.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -159,10 +155,7 @@ func (a *BusinessRecoveryApplier) RestoreSchedulePenalties(ctx context.Context, 
 		return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("begin J3b schedule penalty restore: %w", err)
 	}
 	defer tx.Rollback()
-	lock := ""
-	if a.postgres {
-		lock = " FOR UPDATE"
-	}
+	lock := " FOR UPDATE"
 	rows, err := tx.QueryContext(ctx, a.bind(`SELECT enforcement_id,generation,action,before_status,fallback_was_enabled,super_priority_was_enabled FROM `+a.table("account_quality_enforcements")+` WHERE account_id=? AND system_account_id=? AND config_source='schedule' AND config_source_id=? AND state='active'`+lock), input.AccountID, input.SystemAccountID, input.ScheduleID)
 	if err != nil {
 		return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("read J3b schedule penalty rows: %w", err)
@@ -291,15 +284,9 @@ func (a *BusinessRecoveryApplier) RestoreSchedulePenalties(ctx context.Context, 
 }
 
 func (a *BusinessRecoveryApplier) table(name string) string {
-	if a.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 func (a *BusinessRecoveryApplier) bind(s string) string {
-	if !a.postgres {
-		return s
-	}
 	var b strings.Builder
 	index := 0
 	for _, r := range s {

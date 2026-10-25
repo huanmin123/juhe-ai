@@ -203,7 +203,7 @@ func composeBalanceRefreshFixture(t *testing.T) (*pgtestkit.TestDatabase, *compo
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
-	providerStore, err := providers.NewStore(composed.DB, true, time.Now)
+	providerStore, err := providers.NewStore(composed.DB, time.Now)
 	if err != nil {
 		t.Fatalf("providers store: %v", err)
 	}
@@ -404,7 +404,7 @@ func newAdapterBalanceRefresher(t *testing.T, ownerID, upstreamBody string, hold
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &gatewayManualBalanceRefresher{db: nil, pg: true, secret: secret, store: store, runner: runner, now: time.Now}, store
+	return &gatewayManualBalanceRefresher{db: nil, secret: secret, store: store, runner: runner, now: time.Now}, store
 }
 
 // adapterCandidate builds one manual-refresh candidate with the given input
@@ -725,7 +725,7 @@ func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
 	}
 	added, _ := result["addedModels"].([]string)
 	if len(added) != 1 || added[0] != "mock-model-a" {
-		providerStore, providerErr := providers.NewStore(db, false, time.Now)
+		providerStore, providerErr := providers.NewStore(db, time.Now)
 		if providerErr == nil {
 			items, listErr := providerStore.ListProviderModelsForRequest(context.Background(), "gpt", adminID, false, true)
 			t.Fatalf("addedModels = %v result=%v localProjection=%v listErr=%v", added, result, items, listErr)

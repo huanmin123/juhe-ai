@@ -44,7 +44,7 @@ func (s *wbRunStartedServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // run_completed 进度同时投递给请求级回调与 Runtime.OnEvent 订阅者，
 // 并落库同质的 run/outcome 记录。
 func TestWBRunStreamDeliversProgressAndPersistsOutcome(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	var mu sync.Mutex
 	server := httptest.NewServer(&wbRunStartedServer{t: t})
@@ -89,7 +89,7 @@ func TestWBRunStreamDeliversProgressAndPersistsOutcome(t *testing.T) {
 // AppendItem 契约：只允许向 running 状态的 run 追加条目；
 // 终态 run、缺失 run 与非法条目都必须失败关闭。
 func TestWBStoreAppendItemOnlyPersistsWhileRunRunning(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	now := time.Date(2026, 9, 2, 9, 0, 0, 0, time.UTC)
 	run := RunRecord{ID: "run-append", SystemAccountID: "sys", ActorSystemAccountID: "actor", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", TriggerKind: "manual", ProbeSetVersion: "probe-v1", StartedAt: now, RequestSummary: []byte(`{}`), PolicySnapshot: []byte(`{}`)}
@@ -137,14 +137,14 @@ func TestWBStoreAppendItemOnlyPersistsWhileRunRunning(t *testing.T) {
 // ApplyHealthFact 的写入列保持一致。
 func wbHealthRuntimeDDL(t *testing.T) []string {
 	t.Helper()
-	return runtimeTestDDL()
+	return j3bRuntimeFixtureDDLs()
 }
 
 // 健康发布契约：quick 质量失败 + 明确允许执行时必须发布健康事实并标记 applied；
 // 统计小时不可用时必须保留可重试的 failed 状态并发出 health_sync_failed 事件。
 func TestWBRunQuickQualityFailurePublishesHealthFactOrRetryableFailure(t *testing.T) {
 	t.Run("applied", func(t *testing.T) {
-		store := &Store{db: wbOpenMemoryDB(t, wbHealthRuntimeDDL(t)), mode: "sqlite"}
+		store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, wbHealthRuntimeDDL(t))}
 		defer store.Close()
 		statHour, err := NewHealthStatHourFunc("UTC")
 		if err != nil {
@@ -183,7 +183,7 @@ func TestWBRunQuickQualityFailurePublishesHealthFactOrRetryableFailure(t *testin
 		}
 	})
 	t.Run("stat hour failure keeps retryable state", func(t *testing.T) {
-		store := &Store{db: wbOpenMemoryDB(t, wbHealthRuntimeDDL(t)), mode: "sqlite"}
+		store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, wbHealthRuntimeDDL(t))}
 		defer store.Close()
 		store.HealthStatHour = func(time.Time) (string, error) { return "", errors.New("统计时区不可用") }
 		result, events := wbRunQualityFailingProbe(t, store, &QualityProjector{Store: store}, nil)
@@ -256,7 +256,7 @@ func (f EnforcementApplierFunc) Apply(ctx context.Context, input QualityEnforcem
 // 发出 item_completed；事件数据来自真实探针（状态码、路径、traceId），
 // 不合成探针事件。
 func TestWBRunStreamEmitsPerProbeAndItemEvents(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	var mu sync.Mutex
 	server := httptest.NewServer(&wbRunStartedServer{t: t})

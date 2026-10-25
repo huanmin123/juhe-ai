@@ -199,9 +199,7 @@ func (s *Store) Patch(ctx context.Context, id string, input PatchInput, access A
 		query += scopeClause
 		scopeArgs = append(scopeArgs, scopedID)
 	}
-	if s.pg {
-		query += " FOR UPDATE"
-	}
+	query += " FOR UPDATE"
 	if err := tx.QueryRowContext(ctx, s.bind(query), append([]any{id}, scopeArgs...)...).Scan(&row.name, &row.description, &row.status, &row.updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return &PatchOutcome{Status: "not_found"}, nil
@@ -382,9 +380,7 @@ func (s *Store) AddMembers(ctx context.Context, teamID string, systemAccountIDs 
 		query += scopeClause
 		args = append(args, scopedID)
 	}
-	if s.pg {
-		query += " FOR UPDATE"
-	}
+	query += " FOR UPDATE"
 	var teamName, teamStatus, teamUpdatedAt string
 	if err := tx.QueryRowContext(ctx, s.bind(query), args...).Scan(&teamName, &teamStatus, &teamUpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -562,9 +558,7 @@ func (s *Store) RemoveMember(ctx context.Context, teamID, memberID, expectedUpda
 		query += scopeClause
 		args = append(args, scopedID)
 	}
-	if s.pg {
-		query += " FOR UPDATE"
-	}
+	query += " FOR UPDATE"
 	var teamName, teamStatus, teamUpdatedAt string
 	if err := tx.QueryRowContext(ctx, s.bind(query), args...).Scan(&teamName, &teamStatus, &teamUpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

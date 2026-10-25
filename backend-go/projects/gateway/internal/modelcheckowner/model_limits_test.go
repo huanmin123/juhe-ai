@@ -14,7 +14,7 @@ func TestVersionedModelLimitsReadsCatalogFallback(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO juhe_business.models (id,vendor_code,upstream_model,scope,system_account_id,context_window_tokens,max_input_tokens,status,catalog_visible) VALUES ('m1','gpt','gpt-5.6','builtin',NULL,128000,0,'active',TRUE),('m2','gpt','small','builtin',NULL,8000,4096,'active',TRUE)`); err != nil {
 		t.Fatal(err)
 	}
-	limits, err := NewVersionedModelLimits(db, true)
+	limits, err := NewVersionedModelLimits(db)
 	if err != nil {
 		t.Fatal(err)
 	}

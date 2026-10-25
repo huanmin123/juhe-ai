@@ -26,8 +26,8 @@ import (
 // （mutation.go）同表同键、SQL 同源（同一批 CAS 围栏）；jobs 承担后台
 // claim/探针写，本包承担网关侧被动失败/成功登记与 defer，读写互通不冲突。
 //
-// 方言取材：PostgreSQL 分支取 Node *Async 变体（UPDATE ... AS current_state
-// 别名 + ::timestamptz cast），SQLite 分支取同步变体（julianday 比较）。
+// 方言取材：取 Node 的 PostgreSQL *Async 变体（UPDATE ... AS current_state
+// 别名 + ::timestamptz cast）。
 // 已知偏差（与迁移报告同步披露）：Node PG 失败写入把 next_probe_at 的背期
 // 调度放进 SQL（statement_timestamp()+random() 原子计算）；这里与 jobs
 // proberepo 一致改为应用侧按注入时钟计算后绑定参数，避免同一张表出现两种
@@ -376,41 +376,24 @@ func (s *Store) claimCandidates(ctx context.Context, candidates []ProbeCandidate
 
 // writePrefix 返回 PG 写语句的列前缀（Node expectedProbeStateFence 的
 // 'current_state.'）。
-func (s *Store) writePrefix() string {
-	if s.postgres {
-		return "current_state."
-	}
-	return ""
-}
+func (s *Store) writePrefix() string { return "current_state." }
 
 // writeColumn 返回写语句里的列引用（PG 带 current_state 别名）。
 func (s *Store) writeColumn(column string) string { return s.writePrefix() + column }
 
-// updateTarget 返回 UPDATE 目标（PG 用 AS current_state 别名，SQLite 裸表）。
+// updateTarget 返回 UPDATE 目标（AS current_state 别名）。
 func (s *Store) updateTarget() string {
-	if s.postgres {
-		return s.statesTable() + " AS current_state"
-	}
-	return s.statesTable()
+	return s.statesTable() + " AS current_state"
 }
 
 // genericGuard 渲染失败写入的配额泛化守卫（沿写语句列前缀）。
 func (s *Store) genericGuard() string {
-	if s.postgres {
-		return `
+	return `
         AND NOT (
           ? = 'generic'
           AND current_state.last_error_code IN (?, ?)
           AND current_state.cooldown_until IS NOT NULL
           AND current_state.cooldown_until::timestamptz > ?::timestamptz
-        )`
-	}
-	return `
-        AND NOT (
-          ? = 'generic'
-          AND last_error_code IN (?, ?)
-          AND cooldown_until IS NOT NULL
-          AND julianday(cooldown_until) > julianday(?)
         )`
 }
 
@@ -437,8 +420,8 @@ type FailureInput struct {
 }
 
 // RecordFailure 实现 recordAccountApiKeyRuntimeFailure(Async)：existing 读后
-// 按 fence/配额守卫做 CAS 写入；带 fence 两方言都走 fenced UPDATE，无 fence
-// 时 SQLite 按 existing 分支 UPDATE/INSERT、PG 走原子 upsert。
+// 按 fence/配额守卫做 CAS 写入；带 fence 走 fenced UPDATE，无 fence 走原子
+// upsert（Node async 变体）。
 func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteResult, error) {
 	target := s.ResolveTarget(input.Account)
 	if target == nil {
@@ -552,9 +535,8 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
 	if expectedFence.provided {
 		return fencedUpdate()
 	}
-	if s.postgres {
-		// PG 无 fence：原子 upsert（Node async 变体）。
-		query := s.bind(fmt.Sprintf(`
+	// 无 fence：原子 upsert（Node async 变体）。
+	query := s.bind(fmt.Sprintf(`
     INSERT INTO %s AS current_state (
       id, system_account_id, account_id, key_fingerprint, key_index,
       status, failure_count, consecutive_failures, success_count,
@@ -594,63 +576,11 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
         AND current_state.cooldown_until::timestamptz > excluded.last_attempt_at::timestamptz
       )
   `, s.statesTable(), boolSQL(input.BreakQuotaRecoveryWindow || input.QuotaRecoveryMode != "")))
-		result, err := s.db.ExecContext(ctx, query,
-			newStateID(), target.SystemAccountID, target.AccountID, target.KeyFingerprint, target.KeyIndex,
-			status, s.instantParam(persistedCooldownUntil), s.instantParam(nextProbeAt), nextBackoff, recoveryStartedAt,
-			s.instantParam(observedAt), s.instantParam(observedAt), argOrNull(errorCode), errorMessage, normalizeTraceID(input.TraceID), now, now,
-			input.QuotaRecoveryMode, QuotaRecoveryExplicitErrorCode, QuotaRecoveryGenericErrorCode)
-		if err != nil {
-			return WriteResult{}, err
-		}
-		return s.finishMutation(ctx, result, target.AccountID, false)
-	}
-	if existing != nil {
-		// SQLite 无 fence 且已有行：不带 fence 的守卫 UPDATE（Node 同步变体）。
-		query := s.bind(fmt.Sprintf(`
-      UPDATE %s
-      SET system_account_id = ?, key_index = ?, status = ?,
-          failure_count = failure_count + 1, consecutive_failures = consecutive_failures + 1,
-          cooldown_until = ?, next_probe_at = ?, probe_backoff_seconds = ?,
-          recovery_started_at = %s,
-          last_attempt_at = ?, last_failure_at = ?, last_error_code = ?, last_error_message = ?, last_trace_id = ?,
-          probe_claim_token = NULL, probe_claimed_until = NULL,
-          updated_at = ?
-      WHERE account_id = ? AND key_fingerprint = ?
-        AND status <> 'disabled'
-        AND (last_attempt_at IS NULL OR last_attempt_at < ?)
-        %s
-    `, s.statesTable(), recoverySQL, s.genericGuard()))
-		params := []any{
-			target.SystemAccountID, target.KeyIndex, status,
-			s.instantParam(persistedCooldownUntil), s.instantParam(nextProbeAt), nextBackoff,
-		}
-		params = append(params, recoveryParams...)
-		params = append(params,
-			s.instantParam(observedAt), s.instantParam(observedAt), argOrNull(errorCode), errorMessage, normalizeTraceID(input.TraceID), now,
-			target.AccountID, target.KeyFingerprint, s.instantParam(observedAt))
-		params = append(params, genericGuardParams(input.QuotaRecoveryMode, observedAt, s.instantParam)...)
-		result, err := s.db.ExecContext(ctx, query, params...)
-		if err != nil {
-			return WriteResult{}, err
-		}
-		return s.finishMutation(ctx, result, target.AccountID, false)
-	}
-	// SQLite 无 fence 且无行：普通 INSERT（Node 同步变体）。
-	query := s.bind(fmt.Sprintf(`
-      INSERT INTO %s (
-        id, system_account_id, account_id, key_fingerprint, key_index,
-        status, failure_count, consecutive_failures, success_count,
-        cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
-        last_attempt_at, last_failure_at, last_error_code, last_error_message,
-        last_trace_id,
-        created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, s.statesTable()))
 	result, err := s.db.ExecContext(ctx, query,
 		newStateID(), target.SystemAccountID, target.AccountID, target.KeyFingerprint, target.KeyIndex,
 		status, s.instantParam(persistedCooldownUntil), s.instantParam(nextProbeAt), nextBackoff, recoveryStartedAt,
-		s.instantParam(observedAt), s.instantParam(observedAt), argOrNull(errorCode), errorMessage, normalizeTraceID(input.TraceID), now, now)
+		s.instantParam(observedAt), s.instantParam(observedAt), argOrNull(errorCode), errorMessage, normalizeTraceID(input.TraceID), now, now,
+		input.QuotaRecoveryMode, QuotaRecoveryExplicitErrorCode, QuotaRecoveryGenericErrorCode)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -715,8 +645,7 @@ func (s *Store) RecordSuccess(ctx context.Context, account TargetInput, input Su
 		}
 		return s.finishMutation(ctx, result, target.AccountID, expectedFence.provided)
 	}
-	if s.postgres {
-		query := s.bind(fmt.Sprintf(`
+	query := s.bind(fmt.Sprintf(`
     INSERT INTO %s AS current_state (
       id, system_account_id, account_id, key_fingerprint, key_index,
       status, failure_count, consecutive_failures, success_count,
@@ -746,45 +675,6 @@ func (s *Store) RecordSuccess(ctx context.Context, account TargetInput, input Su
       updated_at = excluded.updated_at
     WHERE current_state.status NOT IN ('disabled', 'error')
       AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
-  `, s.statesTable()))
-		result, err := s.db.ExecContext(ctx, query,
-			newStateID(), target.SystemAccountID, target.AccountID, target.KeyFingerprint, target.KeyIndex,
-			s.instantParam(observedAt), s.instantParam(observedAt), now, now)
-		if err != nil {
-			return WriteResult{}, err
-		}
-		return s.finishMutation(ctx, result, target.AccountID, false)
-	}
-	query := s.bind(fmt.Sprintf(`
-    INSERT INTO %s (
-      id, system_account_id, account_id, key_fingerprint, key_index,
-      status, failure_count, consecutive_failures, success_count,
-      cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
-      last_attempt_at, last_success_at, last_error_code, last_error_message,
-      last_trace_id,
-      created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 1, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?)
-    ON CONFLICT(account_id, key_fingerprint) DO UPDATE SET
-      system_account_id = excluded.system_account_id,
-      key_index = excluded.key_index,
-      status = 'active',
-      consecutive_failures = 0,
-      success_count = account_api_key_runtime_states.success_count + 1,
-      cooldown_until = NULL,
-      next_probe_at = NULL,
-      probe_backoff_seconds = 0,
-      recovery_started_at = NULL,
-      last_attempt_at = excluded.last_attempt_at,
-      last_success_at = excluded.last_success_at,
-      last_error_code = NULL,
-      last_error_message = NULL,
-      last_trace_id = NULL,
-      probe_claim_token = NULL,
-      probe_claimed_until = NULL,
-      updated_at = excluded.updated_at
-    WHERE account_api_key_runtime_states.status NOT IN ('disabled', 'error')
-      AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at <= excluded.last_attempt_at)
   `, s.statesTable()))
 	result, err := s.db.ExecContext(ctx, query,
 		newStateID(), target.SystemAccountID, target.AccountID, target.KeyFingerprint, target.KeyIndex,

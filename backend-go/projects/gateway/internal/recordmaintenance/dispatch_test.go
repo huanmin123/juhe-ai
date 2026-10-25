@@ -6,6 +6,9 @@ package recordmaintenance
 //     internal/recordmaintenance/queue.go 的 Dequeue 消费列集成对）；
 //   - 对既有 6 列旧表的加法式升级（ensureSchema 幂等双跑；双 DurableDispatch
 //     实例各自 ensure，模拟 gateway/jobs 两侧先到先建、各自升级）。
+//
+// 夹具走 pgtestkit 隔离 PG 库（SQLite 与内存模式退役后唯一形态）：表名/
+// 占位符/升级路径即生产 juhe_dataset 形态。
 
 import (
 	"context"
@@ -14,17 +17,18 @@ import (
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-func newDispatchSQLite(t *testing.T) (*DurableDispatch, *sql.DB) {
+// newDispatchPG 创建 pgtestkit 隔离 PG 测试库（预建 juhe_dataset schema，
+// 表由生产 ensureSchema 路径幂等创建）并返回 PG 单形态 dispatch。
+func newDispatchPG(t *testing.T) (*DurableDispatch, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	dispatch, err := NewDurableRecordMaintenanceDispatch(db, false, nil)
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_dataset`)
+		return err
+	})
+	dispatch, err := NewDurableRecordMaintenanceDispatch(db, nil)
 	if err != nil {
 		t.Fatalf("new dispatch: %v", err)
 	}
@@ -35,7 +39,7 @@ func newDispatchSQLite(t *testing.T) (*DurableDispatch, *sql.DB) {
 // gateway/jobs 旧表。
 func createLegacyRecordMaintenanceTable(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`CREATE TABLE record_maintenance_jobs (
+	if _, err := db.Exec(`CREATE TABLE juhe_dataset.record_maintenance_jobs (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   cutoff_at TEXT NOT NULL,
@@ -47,33 +51,31 @@ func createLegacyRecordMaintenanceTable(t *testing.T, db *sql.DB) {
 	}
 }
 
-func sqliteTableColumns(t *testing.T, db *sql.DB, table string) map[string]bool {
+// datasetTableColumns 经 information_schema 列出既有列名（与生产
+// existingColumns 同一查询形态）。
+func datasetTableColumns(t *testing.T, db *sql.DB, schema, table string) map[string]bool {
 	t.Helper()
-	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	rows, err := db.Query(`SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`, schema, table)
 	if err != nil {
-		t.Fatalf("pragma table_info: %v", err)
+		t.Fatalf("information_schema.columns: %v", err)
 	}
 	defer rows.Close()
 	columns := map[string]bool{}
 	for rows.Next() {
-		var (
-			cid, notnull, pk int
-			name, columnType string
-			dflt             sql.NullString
-		)
-		if err := rows.Scan(&cid, &name, &columnType, &notnull, &dflt, &pk); err != nil {
-			t.Fatalf("scan pragma row: %v", err)
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan column row: %v", err)
 		}
 		columns[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("pragma rows: %v", err)
+		t.Fatalf("column rows: %v", err)
 	}
 	return columns
 }
 
 func TestDurableDispatchSnapshotUpsertRowShape(t *testing.T) {
-	dispatch, db := newDispatchSQLite(t)
+	dispatch, db := newDispatchPG(t)
 	result := dispatch.EnqueueAccountUsageSnapshotUpsert(context.Background(), RecordMaintenanceSnapshotJob{
 		AccountID: "acc-1",
 		Kind:      "openai_codex",
@@ -95,7 +97,7 @@ func TestDurableDispatchSnapshotUpsertRowShape(t *testing.T) {
 	)
 	err := db.QueryRow(`SELECT id, type, cutoff_at, batch_size, max_batches, created_at,
 		account_id, kind, source, snapshot_json, updated_at
-		FROM record_maintenance_jobs`).Scan(&id, &jobType, &cutoffAt, &batchSize, &maxBatches, &createdAt,
+		FROM juhe_dataset.record_maintenance_jobs`).Scan(&id, &jobType, &cutoffAt, &batchSize, &maxBatches, &createdAt,
 		&accountID, &kind, &source, &snapshotJSON, &updatedAt)
 	if err != nil {
 		t.Fatalf("scan row: %v", err)
@@ -131,7 +133,7 @@ func TestDurableDispatchSnapshotUpsertRowShape(t *testing.T) {
 }
 
 func TestDurableDispatchSnapshotUpsertRejectsInvalidUpdatedAt(t *testing.T) {
-	dispatch, db := newDispatchSQLite(t)
+	dispatch, db := newDispatchPG(t)
 	// 先走一次有效入队建表，断言被拒任务不落行。
 	if queued := dispatch.EnqueueAccountUsageSnapshotUpsert(context.Background(), RecordMaintenanceSnapshotJob{
 		AccountID: "acc-0",
@@ -151,7 +153,7 @@ func TestDurableDispatchSnapshotUpsertRejectsInvalidUpdatedAt(t *testing.T) {
 		t.Fatalf("receipt = %#v", result)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM record_maintenance_jobs`).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.record_maintenance_jobs`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("rejected job must not persist rows: %d %v", count, err)
 	}
 }
@@ -160,16 +162,16 @@ func TestDurableDispatchSnapshotUpsertRejectsInvalidUpdatedAt(t *testing.T) {
 // 两个 dispatch 实例各自 ensureSchema（第二跑等价 jobs 侧/重启后的再次
 // ensure），列集收敛到 v2。
 func TestDurableDispatchUpgradesLegacyTableAndIsIdempotent(t *testing.T) {
-	_, db := newDispatchSQLite(t)
+	_, db := newDispatchPG(t)
 	createLegacyRecordMaintenanceTable(t, db)
 	legacyRowID := "recmaint_1757000000000_abcdef01"
-	if _, err := db.Exec(`INSERT INTO record_maintenance_jobs (id, type, cutoff_at, batch_size, max_batches, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, legacyRowID, RecordMaintenanceJobTypeNonBusinessDataCleanup,
+	if _, err := db.Exec(`INSERT INTO juhe_dataset.record_maintenance_jobs (id, type, cutoff_at, batch_size, max_batches, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`, legacyRowID, RecordMaintenanceJobTypeNonBusinessDataCleanup,
 		"2026-09-01T00:00:00.000Z", 1, 1, "2026-09-04T00:00:00.000Z"); err != nil {
 		t.Fatalf("seed legacy row: %v", err)
 	}
 
-	first, err := NewDurableRecordMaintenanceDispatch(db, false, nil)
+	first, err := NewDurableRecordMaintenanceDispatch(db, nil)
 	if err != nil {
 		t.Fatalf("first dispatch: %v", err)
 	}
@@ -182,7 +184,7 @@ func TestDurableDispatchUpgradesLegacyTableAndIsIdempotent(t *testing.T) {
 	}); !queued.Queued {
 		t.Fatalf("legacy-table snapshot enqueue failed: %#v", queued)
 	}
-	second, err := NewDurableRecordMaintenanceDispatch(db, false, nil)
+	second, err := NewDurableRecordMaintenanceDispatch(db, nil)
 	if err != nil {
 		t.Fatalf("second dispatch: %v", err)
 	}
@@ -195,7 +197,7 @@ func TestDurableDispatchUpgradesLegacyTableAndIsIdempotent(t *testing.T) {
 		t.Fatalf("legacy-table snapshot enqueue failed: %#v", queued)
 	}
 
-	columns := sqliteTableColumns(t, db, recordMaintenanceTableName)
+	columns := datasetTableColumns(t, db, recordMaintenancePGSchema, recordMaintenanceTableName)
 	for _, column := range recordMaintenanceSnapshotColumns {
 		if !columns[column] {
 			t.Fatalf("column %q not upgraded", column)
@@ -203,7 +205,7 @@ func TestDurableDispatchUpgradesLegacyTableAndIsIdempotent(t *testing.T) {
 	}
 	// 既有行不受升级影响，新列按默认值补齐。
 	var accountID string
-	if err := db.QueryRow(`SELECT account_id FROM record_maintenance_jobs WHERE id = ?`,
+	if err := db.QueryRow(`SELECT account_id FROM juhe_dataset.record_maintenance_jobs WHERE id = $1`,
 		legacyRowID).Scan(&accountID); err != nil || accountID != "" {
 		t.Fatalf("legacy row default = %q %v", accountID, err)
 	}

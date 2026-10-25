@@ -173,7 +173,7 @@ func staticDerivedCapabilityMapEqual(left, right map[string][]string) bool {
 func TestChainCatalogBuiltinStaticDerivedCapabilitiesRealDataChain(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, true)
+	source, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestChainCatalogBuiltinStaticDerivedCapabilitiesSurviveCacheHit(t *testing.
 func TestChainCatalogBuiltinStaticDerivedParityWithAdminFace(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, true)
+	source, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestChainCatalogBuiltinStaticDerivedParityWithAdminFace(t *testing.T) {
 func TestChainCatalogCustomRowInheritsBuiltinCapabilities(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, true)
+	source, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestChainCatalogCustomRowInheritsBuiltinCapabilities(t *testing.T) {
 func TestChainCatalogCustomCapabilityInheritAdminFaceParity(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, true)
+	source, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestChainCatalogCustomCapabilityInheritAdminFaceParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list chat catalog: %v", err)
 	}
-	adminStore, err := providers.NewStore(fixture.db, true, time.Now)
+	adminStore, err := providers.NewStore(fixture.db, time.Now)
 	if err != nil {
 		t.Fatalf("create admin store: %v", err)
 	}

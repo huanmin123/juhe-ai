@@ -50,7 +50,7 @@ func newHealthOutboxFixture(t *testing.T, deadlineMS int64) *healthOutboxFixture
 	// 单连接：测试串行执行，固定句柄消除连接池对 SQLite 文件的重复打开。
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	writer := newChainProbeRequestOutboxWriter(db, false, deadlineMS)
+	writer := newChainProbeRequestOutboxWriter(db, deadlineMS)
 	return &healthOutboxFixture{db: db, writer: writer}
 }
 
@@ -165,7 +165,7 @@ func TestChainProbeRequestOutboxWire(t *testing.T) {
 	if got := nilDBWriter.EnqueueProbeRequest(context.Background(), "acc_1", "request_failure", "", nil); got.Outcome != gatewaycodex.HealthDispatchRejected || got.DecisionCode != "input_unavailable" {
 		t.Fatalf("nil-db writer outcome = %#v", got)
 	}
-	if got := newChainProbeRequestOutboxWriter(fixture.db, false, 0).EnqueueProbeRequest(context.Background(), "acc_1", "request_failure", "", nil); got.Outcome != gatewaycodex.HealthDispatchRejected || got.DecisionCode != "input_unavailable" {
+	if got := newChainProbeRequestOutboxWriter(fixture.db, 0).EnqueueProbeRequest(context.Background(), "acc_1", "request_failure", "", nil); got.Outcome != gatewaycodex.HealthDispatchRejected || got.DecisionCode != "input_unavailable" {
 		t.Fatalf("zero-deadline writer outcome = %#v", got)
 	}
 
@@ -349,7 +349,7 @@ func TestChainTurnAvoidanceProbeServiceRunsProbe(t *testing.T) {
 
 	// 派发被拒（inert writer 的生产降级形态）→ probe_task_failure 结算
 	// （Node 契约：快速拒绝必须结算 fence，不能搁浅 generation）。
-	rejecting := newChainRequestFailureHealthDispatcher(newChainProbeRequestOutboxWriter(nil, false, 65_000))
+	rejecting := newChainRequestFailureHealthDispatcher(newChainProbeRequestOutboxWriter(nil, 65_000))
 	rejectingProbe := newChainTurnAvoidanceProbeService(turnRetry, gatewaypreauth.SystemClock{}, rejecting)
 	rejected, err := rejectingProbe.RunCodexTurnAvoidanceAvailabilityProbe(context.Background(), gatewaycodex.CodexTurnAvoidanceProbeInput{
 		Account:  gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1"},

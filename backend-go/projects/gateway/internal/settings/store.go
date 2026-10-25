@@ -420,10 +420,9 @@ var usageStatsDataTables = []string{
 	"usage_scope_range_windows",
 }
 
-// Store is the dual-mode settings persistence behind the M12 route family.
+// Store is the PostgreSQL settings persistence behind the M12 route family.
 type Store struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	inval RuntimeInvalidator
 	// statsDB backs the usageStatsTimezone guard probe. Node runs
@@ -442,14 +441,14 @@ type Store struct {
 
 // NewStore builds the store; inval may be nil (no-op invalidation until K5
 // wires the bus).
-func NewStore(db *sql.DB, postgres bool, now func() time.Time, inval RuntimeInvalidator) (*Store, error) {
+func NewStore(db *sql.DB, now func() time.Time, inval RuntimeInvalidator) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("settings store requires a database")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{db: db, pg: postgres, now: now, inval: inval}, nil
+	return &Store{db: db, now: now, inval: inval}, nil
 }
 
 // SetStatsDatabase points the usageStatsDataExists probe at the dedicated
@@ -462,16 +461,10 @@ func (s *Store) SetStatsDatabase(db *sql.DB) {
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -708,10 +701,7 @@ func (s *Store) upsertSystemSettings(ctx context.Context, sectionKey string, nor
 // the enclosing transaction and rolls the settings write back with it. No
 // version upper-bound guard is added, matching the sibling writers.
 func (s *Store) reserveAccountHealthInputVersions(ctx context.Context, tx *sql.Tx, now string) error {
-	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
+	lockSuffix := " FOR UPDATE"
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, config_revision, dispatch_revision FROM `+s.table("accounts")+`
 		WHERE deleted_at IS NULL AND vendor_code IS NULL AND connection_driver_code = 'generic_http' AND type IN ('api_key','oauth')
 		ORDER BY id ASC`)+lockSuffix)
@@ -1398,33 +1388,13 @@ func (s *Store) assertLogRetentionLinkageAllowed(ctx context.Context, normalized
 }
 
 // assertUsageStatsTimezoneUpdateAllowed mirrors
-// assertUsageStatsTimezoneUpdateAllowed: PostgreSQL rejects every online
-// timezone change; SQLite mode allows a no-op write or an empty stats store
-// and refuses once usage stats data exists.
+// assertUsageStatsTimezoneUpdateAllowed: every online timezone change is
+// rejected（PG 形态语义，无 sqlite 旁路）。
 func (s *Store) assertUsageStatsTimezoneUpdateAllowed(ctx context.Context, normalized map[string]any) error {
-	next, ok := normalized["usageStatsTimezone"]
-	if !ok {
+	if _, ok := normalized["usageStatsTimezone"]; !ok {
 		return nil
 	}
-	if s.pg {
-		return &ValidationError{Message: "PostgreSQL 模式下暂不支持在线修改统计时区，请停机后通过离线迁移 / 重建流程调整"}
-	}
-	snapshot, err := s.Load(ctx)
-	if err != nil {
-		return err
-	}
-	current, _ := snapshot["usageStatsTimezone"].(string)
-	if next == current {
-		return nil
-	}
-	exists, err := s.usageStatsDataExists(ctx)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
-	return &ValidationError{Message: "已有统计数据后不能直接修改统计时区，请先备份并重建统计缓存"}
+	return &ValidationError{Message: "PostgreSQL 模式下暂不支持在线修改统计时区，请停机后通过离线迁移 / 重建流程调整"}
 }
 
 // usageStatsDataExists mirrors usageStatsDataExists: any row in any usage

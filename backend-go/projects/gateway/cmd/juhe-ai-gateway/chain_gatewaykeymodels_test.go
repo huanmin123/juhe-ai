@@ -197,7 +197,7 @@ func gkmUpdateAuthorizationStatus(t *testing.T, db *sql.DB, id, status string) {
 // gkmUnionLoader 以固定时钟构建被测装载器（newChainFixture 夹具）。
 func gkmUnionLoader(t *testing.T, fixture *chainFixture) chainGroupModelUnionLoader {
 	t.Helper()
-	selector, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, false, "", gkmNow, 20)
+	selector, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, "", gkmNow, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}

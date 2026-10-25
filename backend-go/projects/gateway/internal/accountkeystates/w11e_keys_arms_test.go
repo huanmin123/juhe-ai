@@ -158,23 +158,22 @@ func TestW11EStoreConstructorsAndSQLFragments(t *testing.T) {
 	if _, err := NewStore(Config{DB: db, Secret: "  "}); err == nil || !strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("空 secret 必须拒绝: %v", err)
 	}
-	sqliteStore := &Store{postgres: false}
-	pgStore := &Store{postgres: true}
-	if sqliteStore.writePrefix() != "" || pgStore.writePrefix() != "current_state." {
+	store := &Store{}
+	if store.writePrefix() != "current_state." {
 		t.Fatal("写前缀错误")
 	}
-	if pgStore.writeColumn("status") != "current_state.status" || sqliteStore.writeColumn("status") != "status" {
+	if store.writeColumn("status") != "current_state.status" {
 		t.Fatal("列引用错误")
 	}
-	if !strings.Contains(pgStore.updateTarget(), "AS current_state") || sqliteStore.updateTarget() == pgStore.updateTarget() {
+	if !strings.Contains(store.updateTarget(), "AS current_state") {
 		t.Fatal("UPDATE 目标错误")
 	}
 	// claimCandidates 的非法 now。
-	if _, err := sqliteStore.claimCandidates(context.Background(), []ProbeCandidate{{AccountID: "a", KeyFingerprint: "f"}}, 1, "junk"); err == nil {
+	if _, err := store.claimCandidates(context.Background(), []ProbeCandidate{{AccountID: "a", KeyFingerprint: "f"}}, 1, "junk"); err == nil {
 		t.Fatal("非法 now 必须失败")
 	}
 	// 空候选直接成功。
-	if claimed, err := sqliteStore.claimCandidates(context.Background(), nil, 1, "2026-09-16T10:00:00Z"); err != nil || len(claimed) != 0 {
+	if claimed, err := store.claimCandidates(context.Background(), nil, 1, "2026-09-16T10:00:00Z"); err != nil || len(claimed) != 0 {
 		t.Fatalf("空候选=%v err=%v", claimed, err)
 	}
 	// chunkValues。

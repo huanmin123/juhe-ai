@@ -9,34 +9,43 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// wbOpenMemoryDB 打开一个本测试专属的 modernc.org/sqlite 内存库。
-// 共享缓存 + 单连接与生产 SQLite owner 的单连接语义保持一致，
-// 避免多连接下的 database is locked 竞争。
-func wbOpenMemoryDB(t *testing.T, ddl []string) *sql.DB {
+// wbOpenPGDB 打开一个本测试专属的 pgtestkit 隔离 PG 库并返回包装句柄，
+// 见 wbOpenPGHandle。
+func wbOpenPGDB(t *testing.T, ddl []string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:modelcheckowner-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("打开内存库失败: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	for _, statement := range ddl {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("执行 DDL %q 失败: %v", statement, err)
-		}
-	}
+	db, _ := wbOpenPGHandle(t, ddl)
 	return db
 }
 
-// Store.bind 的业务契约：SQLite 保持 ? 占位符，PostgreSQL 必须改写为 $N，
-// 否则 pgx 驱动会因为参数不匹配拒绝执行。
+// wbOpenPGHandle 打开一个本测试专属的 pgtestkit 隔离 PG 库，并把连接包一层
+// sqldialect 驱动：驱动层自动把测试手写 SQL 的 ? 改写为 $n，DSN 的
+// search_path 让裸表名解析到夹具 schema（juhe_j3b / juhe_business / public），
+// 因此既有测试体几乎零改动即可跑在 PG 上（2026-10-25 存储形态收尾）。
+func wbOpenPGHandle(t *testing.T, ddl []string) (*sql.DB, string) {
+	t.Helper()
+	tdb := newJ3BPGTestDatabase(t, ddl...)
+	dsn := tdb.DSN
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), dsn+separator+"search_path=juhe_business,juhe_j3b,public")
+	if err != nil {
+		t.Fatalf("打开 PG 夹具库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db, dsn
+}
+
+// Store.bind 的业务契约：PG 统一形态必须把 ? 改写为 $N，读取必须带
+// FOR UPDATE（PostgreSQL 是唯一存储形态）。
 func TestWBStoreBindRewritesPlaceholdersOnlyForPostgres(t *testing.T) {
 	t.Run("postgres", func(t *testing.T) {
-		store := &Store{mode: "postgres", schema: "juhe_j3b"}
+		store := &Store{schema: "juhe_j3b"}
 		got := store.bind("SELECT a FROM t WHERE x=? AND y=?")
 		if got != "SELECT a FROM t WHERE x=$1 AND y=$2" {
 			t.Fatalf("PostgreSQL 占位符改写结果=%q", got)
@@ -45,21 +54,11 @@ func TestWBStoreBindRewritesPlaceholdersOnlyForPostgres(t *testing.T) {
 			t.Fatalf("PostgreSQL 读取必须追加 FOR UPDATE: %q", store.forUpdate())
 		}
 	})
-	t.Run("sqlite", func(t *testing.T) {
-		store := &Store{mode: "sqlite"}
-		query := "SELECT a FROM t WHERE x=?"
-		if store.bind(query) != query {
-			t.Fatalf("SQLite 占位符必须原样保留: %q", store.bind(query))
-		}
-		if store.forUpdate() != "" {
-			t.Fatalf("SQLite 禁止追加 FOR UPDATE: %q", store.forUpdate())
-		}
-	})
 }
 
-// 表名限定契约：PostgreSQL 必须落在 juhe_j3b schema，SQLite 使用本地表名。
+// 表名限定契约：存储形态唯一为 PostgreSQL，表名必须落在 juhe_j3b schema。
 func TestWBStoreQualifiedTableNamesFollowMode(t *testing.T) {
-	postgres := &Store{mode: "postgres", schema: "juhe_j3b"}
+	postgres := &Store{schema: "juhe_j3b"}
 	if got := postgres.schedulerTaskTable(); got != "juhe_j3b.model_check_scheduler_tasks" {
 		t.Fatalf("PostgreSQL 调度表名=%q", got)
 	}
@@ -68,13 +67,6 @@ func TestWBStoreQualifiedTableNamesFollowMode(t *testing.T) {
 	}
 	if got := postgres.tokenInterceptBaselineTable(); got != "juhe_j3b.model_token_intercept_baseline_versions" {
 		t.Fatalf("PostgreSQL 基线表名=%q", got)
-	}
-	sqlite := &Store{mode: "sqlite"}
-	if got := sqlite.schedulerTaskTable(); got != "model_check_scheduler_tasks" {
-		t.Fatalf("SQLite 调度表名=%q", got)
-	}
-	if got := sqlite.healthTable(); got != "account_quality_health_hourly" {
-		t.Fatalf("SQLite 健康表名=%q", got)
 	}
 }
 
@@ -111,79 +103,65 @@ func TestWBParseDBTimeAcceptsDriverRepresentations(t *testing.T) {
 	})
 }
 
-// 方言片段契约：Business 读写适配器在 PostgreSQL 下生成限定表名、$N 占位符
-// 和 timestamptz 比较；SQLite 下保持本地名与 datetime 比较。
-func TestWBBusinessDialectFragmentsFollowDatabase(t *testing.T) {
+// 存储形态契约：Business 读写适配器固定生成 PostgreSQL 限定表名、$N 占位符
+// 与 timestamptz 比较；sqlite 臂已随存储形态退役物理删除。
+func TestWBBusinessDialectFragments(t *testing.T) {
 	t.Run("target source literals", func(t *testing.T) {
-		postgres := &BusinessTargetSource{postgres: true}
-		if got := postgres.placeholder(2); got != "$2" {
-			t.Fatalf("PostgreSQL 占位符=%q", got)
+		source := &BusinessTargetSource{}
+		if got := source.placeholder(2); got != "$2" {
+			t.Fatalf("占位符=%q", got)
 		}
-		if got := postgres.expiryAfterNow("a.account_expires_at"); !strings.Contains(got, "::timestamptz") {
-			t.Fatalf("PostgreSQL 过期比较=%q", got)
+		if got := source.expiryAfterNow("a.account_expires_at"); !strings.Contains(got, "::timestamptz") {
+			t.Fatalf("过期比较=%q", got)
 		}
-		// boolLiteral 已删（w20a：调用点全部面向 integer 列，双方言统一 0/1
-		// 整数字面量），SQLite/PG 布尔字面量断言随之移除。
-		sqlite := &BusinessTargetSource{}
-		_ = sqlite
-		if got := sqlite.cooldownClear("a.cooldown_until"); !strings.Contains(got, "datetime(") {
-			t.Fatalf("SQLite 冷却比较=%q", got)
+		if got := source.cooldownClear("a.cooldown_until"); !strings.Contains(got, "::timestamptz") {
+			t.Fatalf("冷却比较=%q", got)
 		}
 	})
 	t.Run("recovery applier", func(t *testing.T) {
-		postgres := &BusinessRecoveryApplier{postgres: true}
-		if got := postgres.bind("UPDATE t SET a=? WHERE b=?"); got != "UPDATE t SET a=$1 WHERE b=$2" {
-			t.Fatalf("恢复适配器 PostgreSQL bind=%q", got)
+		applier := &BusinessRecoveryApplier{}
+		if got := applier.bind("UPDATE t SET a=? WHERE b=?"); got != "UPDATE t SET a=$1 WHERE b=$2" {
+			t.Fatalf("恢复适配器 bind=%q", got)
 		}
-		if got := postgres.table("accounts"); got != "juhe_business.accounts" {
-			t.Fatalf("恢复适配器 PostgreSQL 表名=%q", got)
-		}
-		if got := (&BusinessRecoveryApplier{}).table("accounts"); got != "accounts" {
-			t.Fatalf("恢复适配器 SQLite 表名=%q", got)
+		if got := applier.table("accounts"); got != "juhe_business.accounts" {
+			t.Fatalf("恢复适配器表名=%q", got)
 		}
 	})
 	t.Run("quality manager", func(t *testing.T) {
-		postgres := &BusinessQualityManager{postgres: true}
-		if got := postgres.bind("SELECT ?"); got != "SELECT $1" {
-			t.Fatalf("质量管理 PostgreSQL bind=%q", got)
+		manager := &BusinessQualityManager{}
+		if got := manager.bind("SELECT ?"); got != "SELECT $1" {
+			t.Fatalf("质量管理 bind=%q", got)
 		}
-		if got := postgres.table("model_quality_schedules"); got != "juhe_business.model_quality_schedules" {
-			t.Fatalf("质量管理 PostgreSQL 表名=%q", got)
+		if got := manager.table("model_quality_schedules"); got != "juhe_business.model_quality_schedules" {
+			t.Fatalf("质量管理表名=%q", got)
 		}
 	})
 	t.Run("scheduler source", func(t *testing.T) {
-		postgres := &BusinessSchedulerSource{Postgres: true}
-		if got := postgres.bind("WHERE a=? AND b=?"); got != "WHERE a=$1 AND b=$2" {
-			t.Fatalf("调度源 PostgreSQL bind=%q", got)
+		source := &BusinessSchedulerSource{}
+		if got := source.bind("WHERE a=? AND b=?"); got != "WHERE a=$1 AND b=$2" {
+			t.Fatalf("调度源 bind=%q", got)
 		}
-		if got := postgres.table("model_quality_schedules"); got != "juhe_business.model_quality_schedules" {
-			t.Fatalf("调度源 PostgreSQL 表名=%q", got)
-		}
-		if got := (&BusinessSchedulerSource{}).table("accounts"); got != "accounts" {
-			t.Fatalf("调度源 SQLite 表名=%q", got)
+		if got := source.table("model_quality_schedules"); got != "juhe_business.model_quality_schedules" {
+			t.Fatalf("调度源表名=%q", got)
 		}
 	})
 	t.Run("enforcement applier", func(t *testing.T) {
-		postgres := &BusinessEnforcementApplier{postgres: true}
-		if got := postgres.placeholder(1); got != "$1" {
-			t.Fatalf("执行适配器 PostgreSQL 占位符=%q", got)
+		applier := &BusinessEnforcementApplier{}
+		if got := applier.placeholder(1); got != "$1" {
+			t.Fatalf("执行适配器占位符=%q", got)
 		}
-		if got := postgres.placeholders(3); got != "$1,$2,$3" {
-			t.Fatalf("执行适配器 PostgreSQL 占位符串=%q", got)
+		if got := applier.placeholders(3); got != "$1,$2,$3" {
+			t.Fatalf("执行适配器占位符串=%q", got)
 		}
-		if got := postgres.table("accounts"); got != "juhe_business.accounts" {
-			t.Fatalf("执行适配器 PostgreSQL 表名=%q", got)
-		}
-		sqlite := &BusinessEnforcementApplier{}
-		if got := sqlite.placeholders(2); got != "?,?" {
-			t.Fatalf("执行适配器 SQLite 占位符串=%q", got)
+		if got := applier.table("accounts"); got != "juhe_business.accounts" {
+			t.Fatalf("执行适配器表名=%q", got)
 		}
 	})
 }
 
 // 版本化模型容量快照必须暴露稳定版本号，供 full 探针冻结。
 func TestWBVersionedModelLimitsReportsStableVersion(t *testing.T) {
-	limits, err := NewVersionedModelLimits(wbOpenMemoryDB(t, nil), false)
+	limits, err := NewVersionedModelLimits(wbOpenPGDB(t, nil))
 	if err != nil {
 		t.Fatalf("构造 VersionedModelLimits 失败: %v", err)
 	}
@@ -315,28 +293,28 @@ func TestWBResolveConfiguredUpstreamModelShimDelegatesToStrictMapping(t *testing
 	}
 	// 目标 schema（§4/§9）：支持模型经 model_id 引用 models，映射落
 	// account_entry_mappings。
-	db := wbOpenMemoryDB(t, []string{
-		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+	db := wbOpenPGDB(t, []string{
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 		`CREATE TABLE account_supported_models (account_id TEXT, model_id TEXT)`,
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 	})
 	model := "gpt-5.6-sol"
-	if got, err := resolveConfiguredUpstreamModel(context.Background(), db, false, "acct-1", profile, model); err != nil || got != model {
+	if got, err := resolveConfiguredUpstreamModel(context.Background(), db, "acct-1", profile, model); err != nil || got != model {
 		t.Fatalf("无映射时必须返回请求模型: got=%q err=%v", got, err)
 	}
-	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-terra','gpt','gpt-5.6-terra','gpt-5.6-terra','builtin',NULL,'active',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-terra','gpt','gpt-5.6-terra','gpt-5.6-terra','builtin',NULL,'active',TRUE)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_entry_mappings VALUES ('map-1','acct-1','gpt-5.6-sol','responses','conn-1','m-terra','responses',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := resolveConfiguredUpstreamModel(context.Background(), db, false, "acct-1", profile, model); err != nil || got != "gpt-5.6-terra" {
+	if got, err := resolveConfiguredUpstreamModel(context.Background(), db, "acct-1", profile, model); err != nil || got != "gpt-5.6-terra" {
 		t.Fatalf("启用映射时必须返回配置的上游模型: got=%q err=%v", got, err)
 	}
 	if _, err := db.Exec(`DROP TABLE account_entry_mappings`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveConfiguredUpstreamModel(context.Background(), db, false, "acct-1", profile, model); err == nil || !strings.Contains(err.Error(), "model mapping") {
+	if _, err := resolveConfiguredUpstreamModel(context.Background(), db, "acct-1", profile, model); err == nil || !strings.Contains(err.Error(), "model mapping") {
 		t.Fatalf("映射查询失败必须向上传播错误: err=%v", err)
 	}
 }
@@ -372,7 +350,7 @@ func TestWBCheckBusinessPostgresSchemaFailsClosedBeforeDatabaseAccess(t *testing
 	if err := CheckBusinessPostgresSchema(context.Background(), nil, "juhe_business"); err == nil || !strings.Contains(err.Error(), "database is nil") {
 		t.Fatalf("nil 数据库必须报错: err=%v", err)
 	}
-	db := wbOpenMemoryDB(t, nil)
+	db := wbOpenPGDB(t, nil)
 	if err := CheckBusinessPostgresSchema(context.Background(), db, "juhe-business"); err == nil || !strings.Contains(err.Error(), "schema name is invalid") {
 		t.Fatalf("非法 schema 名必须报错: err=%v", err)
 	}
@@ -380,4 +358,21 @@ func TestWBCheckBusinessPostgresSchemaFailsClosedBeforeDatabaseAccess(t *testing
 	if err := CheckBusinessPostgresSchema(context.Background(), db, "juhe_business"); err == nil {
 		t.Fatal("非 PostgreSQL 句柄必须失败关闭")
 	}
+}
+
+// openPGTestDB 返回 pgtestkit 隔离 PG 库（juhe_business/juhe_j3b schema
+// 预建，驱动层 ?→$n 改写 + search_path 裸名解析）。
+func openPGTestDB(t *testing.T) (*sql.DB, error) {
+	t.Helper()
+	return wbOpenPGDB(t, nil), nil
+}
+
+// pgSearchPathDSN 给连接串补测试夹具 search_path（业务表优先，j3b 次之，
+// public 兜底）。
+func pgSearchPathDSN(dsn string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + "search_path=juhe_business,juhe_j3b,public"
 }

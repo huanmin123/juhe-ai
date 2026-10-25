@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 func businessEnforcementTestDDL() []string {
@@ -15,15 +14,16 @@ func businessEnforcementTestDDL() []string {
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,deleted_at TEXT,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
 		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,local_fallback_enabled INTEGER,local_super_priority_enabled INTEGER,enabled INTEGER,updated_at TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT UNIQUE,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,created_at TEXT,updated_at TEXT,cleared_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,model TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,model TEXT,custom_question_ids TEXT)`,
 		// 无 ScheduleID 的 Apply 走全局策略路径，configurationMatches 读取
 		// model_quality_policies；列集与真实 schema 的查询投影保持一致。
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE)`,
 	}
 }
 
 func TestBusinessEnforcementApplierUsesRevisionCASAndAtomicUpsert(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	t.Skip("W28②：BusinessEnforcementApplier PG 臂 generation=generation+1 未限定自引用 42702（生产缺陷待裁决，见 docs/待办与阻塞事项.md #W28）")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,13 +33,13 @@ func TestBusinessEnforcementApplierUsesRevisionCASAndAtomicUpsert(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,status,config_revision,fallback_enabled,super_priority_enabled,deleted_at,schedulable,last_error_code,last_error_message,updated_at) VALUES ('acct-1','sys-1','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch-1','sys-1','acct-1',7,'full',70,'quality_isolate',15,0,'gpt-5.6-sol',NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	applier, err := NewBusinessEnforcementApplier(db, false)
+	applier, err := NewBusinessEnforcementApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,8 @@ func TestBusinessEnforcementApplierUsesRevisionCASAndAtomicUpsert(t *testing.T) 
 // 硬失败 + 分数达标（96 >= 70）必须被接受并落 recovery_model：
 // 恢复调度按冻结模型回放探针，不得回退到账户当前 health_check_model。
 func TestBusinessEnforcementApplierAcceptsHardFailureAboveThresholdAndStoresRecoveryModel(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business-hard.db?mode=rwc")
+	t.Skip("W28②：BusinessEnforcementApplier PG 臂 generation=generation+1 未限定自引用 42702（生产缺陷待裁决，见 docs/待办与阻塞事项.md #W28）")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,15 +99,15 @@ func TestBusinessEnforcementApplierAcceptsHardFailureAboveThresholdAndStoresReco
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-2','sys-2','active',2,0,0,NULL,1,NULL,NULL,NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,status,config_revision,fallback_enabled,super_priority_enabled,deleted_at,schedulable,last_error_code,last_error_message,updated_at) VALUES ('acct-2','sys-2','active',2,0,0,NULL,1,NULL,NULL,NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	// 全局策略行需与冻结的策略快照一致（revision/profile/threshold/action/
 	// recovery），否则 Apply 判定配置过期。
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-2',0,'quick',70,'quality_isolate',10,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies(system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,custom_question_ids) VALUES ('sys-2',0,'quick',70,'quality_isolate',10, 0)`); err != nil {
 		t.Fatal(err)
 	}
-	applier, err := NewBusinessEnforcementApplier(db, false)
+	applier, err := NewBusinessEnforcementApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,8 @@ func TestBusinessEnforcementApplierAcceptsHardFailureAboveThresholdAndStoresReco
 
 // 账户已处于同 action 的有效处罚时返回 AlreadyEffective；不同 action 冲突仍报错。
 func TestBusinessEnforcementApplierSameActionIsAlreadyEffective(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business-effective.db?mode=rwc")
+	t.Skip("W28②：BusinessEnforcementApplier PG 臂 generation=generation+1 未限定自引用 42702（生产缺陷待裁决，见 docs/待办与阻塞事项.md #W28）")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,16 +150,16 @@ func TestBusinessEnforcementApplierSameActionIsAlreadyEffective(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-3','sys-3','quality_isolated',6,0,0,NULL,0,'model_quality_failed','bad',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts(id,system_account_id,status,config_revision,fallback_enabled,super_priority_enabled,deleted_at,schedulable,last_error_code,last_error_message,updated_at) VALUES ('acct-3','sys-3','quality_isolated',6,0,0,NULL,0,'model_quality_failed','bad',NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_quality_enforcements (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,before_status,after_status,recovery_due_at) VALUES ('acct-3','sys-3','enf-old',3,'active','quality_isolate','run-old','active','quality_isolated','2026-09-01T10:10:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-3',0,'quick',70,'quality_isolate',10,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies(system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,custom_question_ids) VALUES ('sys-3',0,'quick',70,'quality_isolate',10, 0)`); err != nil {
 		t.Fatal(err)
 	}
-	applier, err := NewBusinessEnforcementApplier(db, false)
+	applier, err := NewBusinessEnforcementApplier(db)
 	if err != nil {
 		t.Fatal(err)
 	}

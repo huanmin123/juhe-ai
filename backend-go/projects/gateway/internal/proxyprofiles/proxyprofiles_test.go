@@ -14,18 +14,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 )
 
+// proxySchema 列型照抄 maintenance 生产业务 DDL 的 proxy_profiles
+// （enabled boolean、时间列 timestamptz）；accounts 取删除守卫消费的最小列集。
 const proxySchema = `
-	CREATE TABLE proxy_profiles (
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE juhe_business.proxy_profiles (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
 		type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT,
-		password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, test_status TEXT NOT NULL DEFAULT 'unknown',
+		password_encrypted TEXT, enabled BOOLEAN NOT NULL DEFAULT true, test_status TEXT NOT NULL DEFAULT 'unknown',
 		latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT,
-		last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-	CREATE UNIQUE INDEX idx_proxy_profiles_name_unique ON proxy_profiles(name);
-	CREATE TABLE accounts (
+		last_tested_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
+	CREATE UNIQUE INDEX idx_proxy_profiles_name_unique ON juhe_business.proxy_profiles(name);
+	CREATE TABLE juhe_business.accounts (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL, deleted_at TEXT, proxy_profile_id TEXT);
 `
 
@@ -47,22 +52,17 @@ func (s *recordingSink) Record(entry authsys.OperationLogEntry, r *http.Request)
 
 func newProxyFixture(t *testing.T) *proxyFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(proxySchema); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, proxySchema)
+		return err
+	})
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	sink := &recordingSink{}
 	sequence := 0
 	store, err := NewStore(Deps{
-		DB:        db,
-		PGDialect: false,
-		Secret:    "test-secret",
-		Now:       func() time.Time { return now },
+		DB:     db,
+		Secret: "test-secret",
+		Now:    func() time.Time { return now },
 		NewID: func(prefix string) string {
 			sequence++
 			return prefix + "_test_" + strconv.Itoa(sequence)
@@ -84,10 +84,10 @@ func (f *proxyFixture) auth(role string) *authsys.AuthContext {
 func TestProxyOptionsMergesWindowAndSelected(t *testing.T) {
 	fixture := newProxyFixture(t)
 	seed := []string{
-		`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at) VALUES
-			('p-1', 'sa-1', 'Beta', 'http', 'h1', 8080, 1, '2026-01-01', '2026-01-01'),
-			('p-2', 'sa-1', 'Alpha', 'http', 'h2', 8080, 1, '2026-01-02', '2026-01-02'),
-			('p-3', 'sa-1', '停用', 'http', 'h3', 8080, 0, '2026-01-03', '2026-01-03')`,
+		`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at) VALUES
+			('p-1', 'sa-1', 'Beta', 'http', 'h1', 8080, true, '2026-01-01', '2026-01-01'),
+			('p-2', 'sa-1', 'Alpha', 'http', 'h2', 8080, true, '2026-01-02', '2026-01-02'),
+			('p-3', 'sa-1', '停用', 'http', 'h3', 8080, false, '2026-01-03', '2026-01-03')`,
 	}
 	for _, statement := range seed {
 		if _, err := fixture.db.Exec(statement); err != nil {
@@ -123,8 +123,8 @@ func urlValuesOf(raw map[string][]string) map[string][]string { return raw }
 func TestProxyListPageContract(t *testing.T) {
 	fixture := newProxyFixture(t)
 	for index := 0; index < 3; index++ {
-		if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-			VALUES (?, 'sa-1', ?, 'http', 'h', 8080, 1, ?, ?)`,
+		if _, err := fixture.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
+			VALUES ($1, 'sa-1', $2, 'http', 'h', 8080, true, $3, $4)`,
 			"p-"+string(rune('a'+index)), "Proxy"+string(rune('A'+index)),
 			time.Date(2026, 9, 1+index, 0, 0, 0, 0, time.UTC).Format("2006-01-02T15:04:05.000Z"),
 			time.Date(2026, 9, 1+index, 0, 0, 0, 0, time.UTC).Format("2006-01-02T15:04:05.000Z")); err != nil {
@@ -139,7 +139,7 @@ func TestProxyListPageContract(t *testing.T) {
 	if len(result.Items) != 2 || result.Items[0].Name != "ProxyC" || !result.HasMore || result.Total != 3 {
 		t.Fatalf("list page wrong: %#v", result)
 	}
-	if result.Items[0].UpdatedAt != "2026-09-03T00:00:00.000Z" {
+	if result.Items[0].UpdatedAt != "2026-09-03T00:00:00.000000Z" {
 		t.Fatalf("updatedAt wrong: %q", result.Items[0].UpdatedAt)
 	}
 }
@@ -183,10 +183,10 @@ func asDuplicate(err error, target **DuplicateNameError) bool {
 
 func TestProxyPatchCASAndTestStateReset(t *testing.T) {
 	fixture := newProxyFixture(t)
-	fixture.seedProfile(t, "p-1", "2026-09-01T00:00:00.000Z", "passed")
+	fixture.seedProfile(t, "p-1", "2026-09-01T00:00:00.000000Z", "passed")
 	// 空补丁 → changed:false（Node 需要至少一个字段，路由层已挡；store 层
-	// 的 no-op 语义保持一致）。
-	outcome, err := fixture.store.Patch(context.Background(), "p-1", proxyInput{ExpectedUpdatedAt: "2026-09-01T00:00:00.000Z"})
+	// 的 no-op 语义保持一致）。revision 恒为读回的 to_char US 微秒文本。
+	outcome, err := fixture.store.Patch(context.Background(), "p-1", proxyInput{ExpectedUpdatedAt: "2026-09-01T00:00:00.000000Z"})
 	if err != nil {
 		t.Fatalf("empty patch: %v", err)
 	}
@@ -195,41 +195,41 @@ func TestProxyPatchCASAndTestStateReset(t *testing.T) {
 	}
 	// 版本不匹配 → 409。
 	host := "new.internal"
-	_, err = fixture.store.Patch(context.Background(), "p-1", proxyInput{Host: &host, ExpectedUpdatedAt: "2026-08-01T00:00:00.000Z"})
+	_, err = fixture.store.Patch(context.Background(), "p-1", proxyInput{Host: &host, ExpectedUpdatedAt: "2026-08-01T00:00:00.000000Z"})
 	if err != ErrConflict {
 		t.Fatalf("stale revision not conflict: %v", err)
 	}
 	// host 变更 → changed + 连接类变更重置检测状态 + runtimeChanged。
 	newHost := "new.internal"
-	outcome, err = fixture.store.Patch(context.Background(), "p-1", proxyInput{Host: &newHost, ExpectedUpdatedAt: "2026-09-01T00:00:00.000Z"})
+	outcome, err = fixture.store.Patch(context.Background(), "p-1", proxyInput{Host: &newHost, ExpectedUpdatedAt: "2026-09-01T00:00:00.000000Z"})
 	if err != nil {
 		t.Fatalf("patch: %v", err)
 	}
 	if !outcome.Mutation.Changed || !outcome.RuntimeChanged {
 		t.Fatalf("patch outcome wrong: %#v", outcome)
 	}
-	if outcome.Mutation.UpdatedAt != "2026-09-04T12:00:00.000Z" {
+	if outcome.Mutation.UpdatedAt != "2026-09-04T12:00:00.000000Z" {
 		t.Fatalf("patch updatedAt wrong: %q", outcome.Mutation.UpdatedAt)
 	}
 	var testStatus string
-	if err := fixture.db.QueryRow(`SELECT test_status FROM proxy_profiles WHERE id = 'p-1'`).Scan(&testStatus); err != nil {
+	if err := fixture.db.QueryRow(`SELECT test_status FROM juhe_business.proxy_profiles WHERE id = 'p-1'`).Scan(&testStatus); err != nil {
 		t.Fatalf("read test status: %v", err)
 	}
 	if testStatus != "unknown" {
 		t.Fatalf("connection change should reset test status: %q", testStatus)
 	}
 	// 仅名称变更 → 不重置检测状态。
-	fixture.seedProfile(t, "p-2", "2026-09-01T00:00:00.000Z", "passed")
-	fixture.db.Exec(`UPDATE proxy_profiles SET test_status = 'passed' WHERE id = 'p-2'`)
+	fixture.seedProfile(t, "p-2", "2026-09-01T00:00:00.000000Z", "passed")
+	fixture.db.Exec(`UPDATE juhe_business.proxy_profiles SET test_status = 'passed' WHERE id = 'p-2'`)
 	newName := "改名"
-	outcome, err = fixture.store.Patch(context.Background(), "p-2", proxyInput{Name: &newName, ExpectedUpdatedAt: "2026-09-01T00:00:00.000Z"})
+	outcome, err = fixture.store.Patch(context.Background(), "p-2", proxyInput{Name: &newName, ExpectedUpdatedAt: "2026-09-01T00:00:00.000000Z"})
 	if err != nil {
 		t.Fatalf("rename patch: %v", err)
 	}
 	if outcome.RuntimeChanged {
 		t.Fatalf("rename should not reset runtime state: %#v", outcome)
 	}
-	if err := fixture.db.QueryRow(`SELECT test_status FROM proxy_profiles WHERE id = 'p-2'`).Scan(&testStatus); err != nil {
+	if err := fixture.db.QueryRow(`SELECT test_status FROM juhe_business.proxy_profiles WHERE id = 'p-2'`).Scan(&testStatus); err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if testStatus != "passed" {
@@ -240,7 +240,7 @@ func TestProxyPatchCASAndTestStateReset(t *testing.T) {
 func TestProxyDeleteInUseGuard(t *testing.T) {
 	fixture := newProxyFixture(t)
 	fixture.seedProfile(t, "p-1", "2026-09-01T00:00:00.000Z", "unknown")
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, name, proxy_profile_id) VALUES ('a-1', '账户A', 'p-1')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.accounts (id, name, proxy_profile_id) VALUES ('a-1', '账户A', 'p-1')`); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 	_, err := fixture.store.Delete(context.Background(), "p-1")
@@ -252,7 +252,7 @@ func TestProxyDeleteInUseGuard(t *testing.T) {
 		t.Fatalf("in-use message wrong: %q", inUse.Error())
 	}
 	// 解绑后可删除。
-	fixture.db.Exec(`UPDATE accounts SET proxy_profile_id = NULL WHERE id = 'a-1'`)
+	fixture.db.Exec(`UPDATE juhe_business.accounts SET proxy_profile_id = NULL WHERE id = 'a-1'`)
 	name, err := fixture.store.Delete(context.Background(), "p-1")
 	if err != nil || name != "代理-p-1" {
 		t.Fatalf("delete wrong: %q %v", name, err)
@@ -343,8 +343,8 @@ func TestProxyCreateRouteWritesOperationLog(t *testing.T) {
 func (f *proxyFixture) seedProfile(t *testing.T, id, updatedAt, testStatus string) {
 	t.Helper()
 	name := "代理-" + id
-	if _, err := f.db.Exec(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES (?, 'sa-1', ?, 'http', 'h', 8080, 1, ?, ?, ?)`, id, name, testStatus, updatedAt, updatedAt); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO juhe_business.proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
+		VALUES ($1, 'sa-1', $2, 'http', 'h', 8080, true, $3, $4, $5)`, id, name, testStatus, updatedAt, updatedAt); err != nil {
 		t.Fatalf("seed profile: %v", err)
 	}
 }

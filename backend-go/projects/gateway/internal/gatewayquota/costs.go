@@ -91,9 +91,8 @@ func IsRequestQuotaExceeded(limits RequestQuotaLimits, costs RequestQuotaCosts) 
 		(limits.Total != nil && limits.Total.Enabled && costs.Total >= limits.Total.Limit)
 }
 
-// StatsStore is the dual-mode (SQLite / PostgreSQL) reader over the juhe_stats
-// usage projections. SQLite tables are unqualified; PostgreSQL qualifies with
-// the juhe_stats schema (mirroring statsTableName).
+// StatsStore is the reader over the juhe_stats usage projections, qualified
+// with the juhe_stats schema (mirroring statsTableName).
 type StatsStore struct {
 	db *sql.DB
 }

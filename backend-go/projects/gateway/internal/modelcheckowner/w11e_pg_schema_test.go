@@ -445,7 +445,7 @@ func TestW11EOpenBusinessTargetConnectionPostgresArms(t *testing.T) {
 	defer cancel()
 
 	// PostgreSQL 模式缺 URL 必须拒绝。
-	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, StoreMode: "postgres", CredentialSecret: "w11e-secret"}); err == nil || !strings.Contains(err.Error(), "PostgreSQL URL is required") {
+	if _, err := OpenBusinessTargetConnection(context.Background(), Config{Enabled: true, CredentialSecret: "w11e-secret"}); err == nil || !strings.Contains(err.Error(), "PostgreSQL URL is required") {
 		t.Fatalf("缺 URL 必须拒绝: %v", err)
 	}
 
@@ -453,18 +453,18 @@ func TestW11EOpenBusinessTargetConnectionPostgresArms(t *testing.T) {
 	broken := w11eNewPlan()
 	broken.skipTable["model_quality_policies"] = true
 	w11eRecreateSchema(t, db, "juhe_business", broken)
-	if _, err := OpenBusinessTargetConnection(ctx, Config{Enabled: true, StoreMode: "postgres", BusinessPostgresURL: coverURL, CredentialSecret: "w11e-secret", SchemaReady: true}); err == nil || !strings.Contains(err.Error(), "missing table model_quality_policies") {
+	if _, err := OpenBusinessTargetConnection(ctx, Config{Enabled: true, BusinessPostgresURL: coverURL, CredentialSecret: "w11e-secret", SchemaReady: true}); err == nil || !strings.Contains(err.Error(), "missing table model_quality_policies") {
 		t.Fatalf("SchemaReady 契约失败必须传播: %v", err)
 	}
 
 	// 完整契约下打开成功，Source 与 DB 共享句柄。
 	plan := w11eNewPlan()
 	w11eRecreateSchema(t, db, "juhe_business", plan)
-	connection, err := OpenBusinessTargetConnection(ctx, Config{Enabled: true, StoreMode: "postgres", BusinessPostgresURL: coverURL, CredentialSecret: "w11e-secret", SchemaReady: true})
+	connection, err := OpenBusinessTargetConnection(ctx, Config{Enabled: true, BusinessPostgresURL: coverURL, CredentialSecret: "w11e-secret", SchemaReady: true})
 	if err != nil {
 		t.Fatalf("完整契约必须允许打开: %v", err)
 	}
-	if connection.DB == nil || connection.Source == nil || connection.Source.postgres != true {
+	if connection.DB == nil || connection.Source == nil {
 		t.Fatal("连接与 Source 必须共享已验证句柄")
 	}
 	if _, err := connection.DB.QueryContext(ctx, `SELECT 1`); err != nil {

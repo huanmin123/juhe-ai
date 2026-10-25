@@ -111,7 +111,7 @@ func TestW1ProbeOutboxWriterSQLite(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	writer := newChainProbeRequestOutboxWriter(db, false, 1500)
+	writer := newChainProbeRequestOutboxWriter(db, 1500)
 	// 方言投影：SQLite 无前缀、绑定符保持。
 	if got := writer.table(); got != "account_health_probe_request_outbox" {
 		t.Fatalf("table = %q", got)

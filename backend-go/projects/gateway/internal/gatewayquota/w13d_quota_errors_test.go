@@ -77,7 +77,7 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-09-04", 20})
 
-	// 非postgres 模式回退同步检查。
+	// 无缓存模式回退同步检查。
 	fallback, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
@@ -86,7 +86,7 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decision, err := fallback.CheckAPIKeyQuotaExactAsync(ctx, w13dAPIKey("ak1"), now); err != nil || decision.Allowed {
-		t.Fatalf("非 PG 回退必须按同步路径拒绝: (%+v, %v)", decision, err)
+		t.Fatalf("无缓存回退必须按同步路径拒绝: (%+v, %v)", decision, err)
 	}
 
 	// PG 批量成功：命中 key → 超额拒绝；ExactAsync 决策进 memory。
@@ -274,8 +274,6 @@ func TestW13DAuthorizationAsyncModeBranches(t *testing.T) {
 	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
 
 	// Async 入口（内存快照模式）：走批量精确装载并写 memory 缓存。
-	// 非 PG 模式的 ByIDs 同步物化分支需要 SQLite 业务库承载，PG 化测试基建下
-	// 不可达（登记：随生产 sqlite 臂删除批次同批退役）。
 	memoryService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
 		Modes:    Modes{},
 		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
@@ -733,11 +731,11 @@ func TestW13DRFC3339Helpers(t *testing.T) {
 }
 
 func TestW13DStatWindowGuards(t *testing.T) {
-	if _, err := NewDBTimezoneSource(nil, false, nil); err == nil {
+	if _, err := NewDBTimezoneSource(nil, nil); err == nil {
 		t.Fatal("缺 db 必须报错")
 	}
 	db := newTestDB(t, "w13d-statwindow")
-	source, err := NewDBTimezoneSource(db, true, nil)
+	source, err := NewDBTimezoneSource(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +827,7 @@ func TestW13DStatWindowTimezoneErrors(t *testing.T) {
 		PRIMARY KEY (system_account_id, key))`); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewDBTimezoneSource(db, true, nil)
+	source, err := NewDBTimezoneSource(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

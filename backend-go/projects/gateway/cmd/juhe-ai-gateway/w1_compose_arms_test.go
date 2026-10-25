@@ -48,7 +48,7 @@ func TestW1ComposeSystemAPIErrorArms(t *testing.T) {
 // 空组回落、请求模型窗口合并、预解析组访问元数据跳过解析。
 func TestW1SelectorListAccountsForGroupResultArms(t *testing.T) {
 	fixture := newChainFixture(t)
-	selector, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, false, "chain-test-secret", nil, 20)
+	selector, err := newChainAccountsSelectorWithStats(fixture.db, fixture.statsDB, "chain-test-secret", nil, 20)
 	if err != nil {
 		t.Fatalf("selector = %v", err)
 	}

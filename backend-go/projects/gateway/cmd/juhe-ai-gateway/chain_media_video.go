@@ -821,7 +821,6 @@ func chainMediaJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatew
 type mediaJobsRuntime struct {
 	repo      *gatewaymedia.MediaJobsRepo
 	db        *sql.DB
-	postgres  bool
 	secret    string
 	transport gatewayupstream.TransportDeps
 }
@@ -900,20 +899,14 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	return &account, nil
 }
 
-// mediaAccountsTable 按方言限定 accounts 表名。
+// mediaAccountsTable 限定 accounts 表名（juhe_business schema）。
 func (m *mediaJobsRuntime) mediaAccountsTable() string {
-	if m.postgres {
-		return "juhe_business.accounts"
-	}
-	return "accounts"
+	return "juhe_business.accounts"
 }
 
-// mediaConnectionsTable 按方言限定 account_connections 表名。
+// mediaConnectionsTable 限定 account_connections 表名（juhe_business schema）。
 func (m *mediaJobsRuntime) mediaConnectionsTable() string {
-	if m.postgres {
-		return "juhe_business.account_connections"
-	}
-	return "account_connections"
+	return "juhe_business.account_connections"
 }
 
 // mediaJobProxyUnavailableError 标记任务面出站代理解析失败（档案缺失/停用/
@@ -940,10 +933,7 @@ func (m *mediaJobsRuntime) resolveMediaJobAccountProxyURL(ctx context.Context, p
 	if profileID == "" {
 		return "", nil
 	}
-	table := "proxy_profiles"
-	if m.postgres {
-		table = "juhe_business.proxy_profiles"
-	}
+	table := "juhe_business.proxy_profiles"
 	var (
 		proxyType, host, username, passwordEncrypted sql.NullString
 		port                                         sql.NullInt64

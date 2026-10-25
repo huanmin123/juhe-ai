@@ -179,7 +179,7 @@ func TestW14MRecoveryCompleteInputArms(t *testing.T) {
 		defer func() { _ = db.Close() }()
 		fp.disarm()
 		w14mSeedPlainAccount(t, db, "acct")
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -195,7 +195,7 @@ func TestW14MRecoveryCompleteInputArms(t *testing.T) {
 		fp.disarm()
 		fp.failBeginsFrom = 1
 		defer func() { fp.failBeginsFrom = 0; fp.disarm() }()
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,8 +209,8 @@ func TestW14MRecoveryCompleteInputArms(t *testing.T) {
 
 func w14mRuntimeDB(t *testing.T) (*Store, *w14mFailpoint) {
 	t.Helper()
-	db, fp := w14mFailDB(t, runtimeTestDDL())
-	return &Store{db: db, mode: "sqlite"}, fp
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+	return &Store{db: db, schema: j3bTestSchema}, fp
 }
 
 func w14mFrozenNow() time.Time {
@@ -349,7 +349,7 @@ func TestW14MRuntimeNegativeDurationClamp(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	var duration int64
-	if err := store.db.QueryRow(`SELECT duration_ms FROM model_check_runs WHERE id=?`, result.RunID).Scan(&duration); err != nil || duration != 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT duration_ms FROM model_check_runs WHERE id=?`), result.RunID).Scan(&duration); err != nil || duration != 0 {
 		t.Fatalf("duration=%d err=%v，负时长应被钳制为 0", duration, err)
 	}
 }
@@ -384,7 +384,7 @@ func TestW14MRuntimeFullProfileModelCheckUnverified(t *testing.T) {
 	}
 	// 非快速档必须已写入观察与 trust 投影。
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count == 0 {
+	if err := store.db.QueryRow(j3bQ(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`), result.RunID).Scan(&count); err != nil || count == 0 {
 		t.Fatalf("observations=%d err=%v", count, err)
 	}
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_trust_observation_receipts`).Scan(&count); err != nil || count == 0 {
@@ -409,7 +409,7 @@ func TestW14MRuntimeFullProfileUndeclaredMismatch(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	var decision string
-	if err := store.db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&decision); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&decision); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(decision, `"hardQualityFailure":true`) {
@@ -475,7 +475,7 @@ func TestW14MRuntimeQuickQualityFailureHealthArms(t *testing.T) {
 	}
 	// MarkHealthSync 被注入失败，同步状态保持 NULL 即证明 markErr 分支已走。
 	var status sql.NullString
-	if err := store.db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT quality_health_sync_status FROM model_check_runs WHERE id=?`), result.RunID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status.Valid && status.String != "failed" {

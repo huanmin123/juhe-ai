@@ -32,10 +32,9 @@
 //     syncGatewayCacheInvalidationsFromRuntimeState).
 //
 // Runtime forks preserved as explicit Modes (Node runtimeConfig):
-//   - PostgresDatabase: databaseDriver === 'postgres' (SQLite otherwise)
 //   - RedisCache: cacheDriver === 'redis' (process-local caches otherwise)
 //   - RedisRuntimeState: runtimeStateDriver === 'redis' (memory store otherwise)
-//   - ServerRole: processRole === 'server' (local SQLite sync reads refused)
+//   - ServerRole: processRole === 'server' (local sync reads refused)
 //
 // DB-service exact checks (Node db-service-ipc requestDbService) are the
 // DBServiceClient port; tests inject mocks. Redis paths use go-redis plus the

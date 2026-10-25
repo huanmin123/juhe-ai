@@ -9,6 +9,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// newSQLitePolicySource 打开 PG 方言夹具：SQLite 句柄 ATTACH ':memory:' AS
+// juhe_stats 承载生产同款限定形式（juhe_stats.* 表名 + $n 绑定），
+// SetMaxOpenConns(1) 保证 ATTACH 对所有查询可见。
 func newSQLitePolicySource(t *testing.T) (*SQLPolicySource, *sql.DB) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -16,13 +19,15 @@ func newSQLitePolicySource(t *testing.T) (*SQLPolicySource, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
 	schema := []string{
-		`CREATE TABLE client_ip_registry (
+		`ATTACH ':memory:' AS juhe_stats`,
+		`CREATE TABLE juhe_stats.client_ip_registry (
 			ip_hash TEXT PRIMARY KEY,
 			aggregate_ip_key TEXT NOT NULL,
 			client_ip TEXT NOT NULL
 		)`,
-		`CREATE TABLE client_ip_policies (
+		`CREATE TABLE juhe_stats.client_ip_policies (
 			id TEXT PRIMARY KEY,
 			ip_hash TEXT NOT NULL,
 			policy_type TEXT NOT NULL,
@@ -33,7 +38,7 @@ func newSQLitePolicySource(t *testing.T) (*SQLPolicySource, *sql.DB) {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
-		`CREATE TABLE client_ip_policy_hits (
+		`CREATE TABLE juhe_stats.client_ip_policy_hits (
 			ip_hash TEXT NOT NULL,
 			stat_date TEXT NOT NULL,
 			policy_id TEXT NOT NULL,
@@ -48,7 +53,7 @@ func newSQLitePolicySource(t *testing.T) (*SQLPolicySource, *sql.DB) {
 			t.Fatal(err)
 		}
 	}
-	source, err := NewSQLPolicySource(db, false, func() time.Time { return time.UnixMilli(1_000_000) },
+	source, err := NewSQLPolicySource(db, func() time.Time { return time.UnixMilli(1_000_000) },
 		func(context.Context) (string, error) { return "UTC", nil })
 	if err != nil {
 		t.Fatal(err)
@@ -59,18 +64,18 @@ func newSQLitePolicySource(t *testing.T) (*SQLPolicySource, *sql.DB) {
 func seedPolicy(t *testing.T, db *sql.DB, id, ipHash, policyType, status string, expiresAt *string) {
 	t.Helper()
 	reason := "abuse"
-	if _, err := db.Exec(`INSERT INTO client_ip_registry (ip_hash, aggregate_ip_key, client_ip) VALUES (?, ?, ?)`,
+	if _, err := db.Exec(`INSERT INTO juhe_stats.client_ip_registry (ip_hash, aggregate_ip_key, client_ip) VALUES (?, ?, ?)`,
 		ipHash, ipHash+"-agg", ipHash+"-ip"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO client_ip_policies (id, ip_hash, policy_type, status, reason, expires_at,
+	if _, err := db.Exec(`INSERT INTO juhe_stats.client_ip_policies (id, ip_hash, policy_type, status, reason, expires_at,
 		created_by_system_account_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'sys', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		id, ipHash, policyType, status, reason, expiresAt); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestSQLPolicySourceListAndFindDualMode(t *testing.T) {
+func TestSQLPolicySourceListAndFind(t *testing.T) {
 	source, db := newSQLitePolicySource(t)
 	ctx := context.Background()
 	activeExpires := canonicalRFC3339(time.UnixMilli(2_000_000))
@@ -135,7 +140,7 @@ func TestSQLPolicySourceRecordHitsUpserts(t *testing.T) {
 	}
 	var hitCount int64
 	var lastHitAt string
-	if err := db.QueryRow(`SELECT hit_count, last_hit_at FROM client_ip_policy_hits WHERE ip_hash = ? AND policy_id = ?`,
+	if err := db.QueryRow(`SELECT hit_count, last_hit_at FROM juhe_stats.client_ip_policy_hits WHERE ip_hash = ? AND policy_id = ?`,
 		hashOf("10.0.0.1"), "p1").Scan(&hitCount, &lastHitAt); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +152,7 @@ func TestSQLPolicySourceRecordHitsUpserts(t *testing.T) {
 	}
 	// stat_date = UTC date of hitAt。
 	var statDate string
-	if err := db.QueryRow(`SELECT stat_date FROM client_ip_policy_hits WHERE ip_hash = ?`, hashOf("10.0.0.1")).Scan(&statDate); err != nil {
+	if err := db.QueryRow(`SELECT stat_date FROM juhe_stats.client_ip_policy_hits WHERE ip_hash = ?`, hashOf("10.0.0.1")).Scan(&statDate); err != nil {
 		t.Fatal(err)
 	}
 	if statDate != time.UnixMilli(1_500_000).UTC().Format("2006-01-02") {
@@ -160,7 +165,7 @@ func TestSQLPolicySourceRecordHitsUpserts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rows int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM client_ip_policy_hits`).Scan(&rows); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_stats.client_ip_policy_hits`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 2 {

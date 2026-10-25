@@ -119,16 +119,16 @@ func newChainFixture(t *testing.T) *chainFixture {
 	secret := seedChainRuntimeRows(t, db, fixture)
 	fixture.apiKeySecret = secret
 
-	models, err := gatewayruntimecache.NewSQLReadModels(db, true, time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(db, time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create sql read models: %v", err)
 	}
-	selector, err := newChainAccountsSelectorWithStats(db, statsDB, true, "chain-test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelectorWithStats(db, statsDB, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
 	models.SetAccountsSelector(selector)
-	catalogSource, err := newChainCatalogSource(db, true)
+	catalogSource, err := newChainCatalogSource(db)
 	if err != nil {
 		t.Fatalf("create catalog source: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestChainAccountsSelectorListsDispatchableAccounts(t *testing.T) {
 
 func TestChainCatalogSourceListsProviderModels(t *testing.T) {
 	fixture := newChainFixture(t)
-	source, err := newChainCatalogSource(fixture.db, true)
+	source, err := newChainCatalogSource(fixture.db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -1339,7 +1339,7 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 			row.source, row.source, row.family, row.targetModel, row.family, now, now)
 	}
 
-	selector, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -1372,7 +1372,7 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 func TestChainAccountsSelectorConsumesDispatchCandidateLimit(t *testing.T) {
 	db := seedChainSelectorDB(t)
 	defer db.Close()
-	selector, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 7)
+	selector, err := newChainAccountsSelector(db, "chain-test-secret", time.Now, 7)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -1391,10 +1391,10 @@ func TestChainAccountsSelectorConsumesDispatchCandidateLimit(t *testing.T) {
 			result.Diagnostics.FinalLimit, result.Diagnostics.ScanLimit)
 	}
 	// Node integerConfig 边界：越界 limit 构造失败（1..50000）。
-	if _, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 0); err == nil {
+	if _, err := newChainAccountsSelector(db, "chain-test-secret", time.Now, 0); err == nil {
 		t.Fatal("limit=0 必须构造失败")
 	}
-	if _, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 50001); err == nil {
+	if _, err := newChainAccountsSelector(db, "chain-test-secret", time.Now, 50001); err == nil {
 		t.Fatal("limit=50001 必须构造失败")
 	}
 }

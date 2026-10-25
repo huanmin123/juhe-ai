@@ -31,7 +31,7 @@ func TestW1ResolveGroupAccessQueryError(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE groups (id TEXT, system_account_id TEXT)`); err != nil {
 		t.Fatalf("create groups: %v", err)
 	}
-	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestW1ResolveGroupAccessEmptyOwner(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO groups VALUES ('g1', '', 1, 'personal', NULL)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestW1ResolveGroupAccessDisabledGroup(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO groups VALUES ('g2', 'sys', 0, 'personal', NULL)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestW1ResolveGroupAccessBadGroupType(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO groups VALUES ('g3', 'sys', 1, 'invalid-type', NULL)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO group_authorization_settings VALUES ('auth_1', 'grantee_1', 'g_auth', 0, NULL, NULL)`); err != nil {
 		t.Fatalf("insert settings: %v", err)
 	}
-	selector, err := newChainAccountsSelector(db, false, "test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, "test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}

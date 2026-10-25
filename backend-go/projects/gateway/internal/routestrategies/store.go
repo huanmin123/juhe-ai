@@ -140,19 +140,15 @@ func ownerClause(access AccessScope, column string) (string, []any, bool) {
 }
 
 // keywordFilter mirrors buildRouteStrategyFiltersForClient: case-sensitive
-// name prefix range (textPrefixUpperBound). The PostgreSQL branch pins the
-// comparison to the `C` collation exactly like the source; SQLite keeps the
-// unadorned range.
+// name prefix range (textPrefixUpperBound) pinned to the `C` collation like
+// the source.
 func (s *Store) keywordFilter(keyword string) (string, []any) {
 	text := strings.TrimSpace(keyword)
 	if text == "" {
 		return "", nil
 	}
 	upper := textPrefixUpperBound(text)
-	if s.pg {
-		return `(route_strategies.name COLLATE "C" >= ? AND route_strategies.name COLLATE "C" < ?)`, []any{text, upper}
-	}
-	return "(route_strategies.name >= ? AND route_strategies.name < ?)", []any{text, upper}
+	return `(route_strategies.name COLLATE "C" >= ? AND route_strategies.name COLLATE "C" < ?)`, []any{text, upper}
 }
 
 func textPrefixUpperBound(value string) string {

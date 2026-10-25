@@ -25,9 +25,9 @@ var w14mSchedulerDDL = []string{
 
 func w14mSchedulerStore(t *testing.T) (*Store, *SQLSchedulerSource, *w14mFailpoint) {
 	t.Helper()
-	ddl := append(runtimeTestDDL(), w14mSchedulerDDL...)
+	ddl := append(j3bRuntimeFixtureDDLs(), w14mSchedulerDDL...)
 	db, fp := w14mFailDB(t, ddl)
-	store := &Store{db: db, mode: "sqlite"}
+	store := &Store{db: db, schema: j3bTestSchema}
 	source := &SQLSchedulerSource{Store: store, OwnerID: "w14m-gateway", Lease: time.Minute}
 	if _, err := db.Exec(`INSERT INTO model_check_scheduler_tasks(id,kind,due_at,payload,updated_at) VALUES ('task-1','scheduled','2026-08-27T10:00:00Z','{"targetId":"acct-1"}','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
@@ -134,8 +134,8 @@ func TestW14MDurableClaimArms(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("inputNotFoundAndReadError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		store := &Store{db: db, mode: "sqlite"}
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+		store := &Store{db: db, schema: j3bTestSchema}
 		// 输入不存在。
 		if _, err := store.ClaimInput(ctx, "ghost", "ct", "ot", "owner", time.Minute, time.Now()); err == nil || !strings.Contains(err.Error(), "input not found") {
 			t.Fatalf("err = %v", err)
@@ -149,8 +149,8 @@ func TestW14MDurableClaimArms(t *testing.T) {
 	})
 
 	t.Run("persistError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		store := &Store{db: db, mode: "sqlite"}
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+		store := &Store{db: db, schema: j3bTestSchema}
 		run := w14fOwnerBaseRun(t, store)
 		if err := store.CreateRun(ctx, run); err != nil {
 			t.Fatal(err)
@@ -171,8 +171,8 @@ func TestW14MDurableClaimArms(t *testing.T) {
 
 func TestW14MInputIssueArms(t *testing.T) {
 	ctx := context.Background()
-	db, fp := w14mFailDB(t, runtimeTestDDL())
-	store := &Store{db: db, mode: "sqlite"}
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+	store := &Store{db: db, schema: j3bTestSchema}
 	base := wbInputFixture()
 
 	// 非法 payload。
@@ -206,8 +206,8 @@ func TestW14MInputIssueArms(t *testing.T) {
 
 func TestW14MQueryRuntimeArms(t *testing.T) {
 	ctx := context.Background()
-	db, fp := w14mFailDB(t, runtimeTestDDL())
-	store := &Store{db: db, mode: "sqlite"}
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+	store := &Store{db: db, schema: j3bTestSchema}
 	runtime := &Runtime{Store: store}
 	run := w14fOwnerBaseRun(t, store)
 	if err := store.CreateRun(ctx, run); err != nil {
@@ -343,20 +343,16 @@ func TestW14MBusinessModelsPostgresArms(t *testing.T) {
 	w14mSeedPlainAccount(t, db, "acct-1")
 	profile, _ := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
 
-	// postgres 分支：juhe_business 前缀在 SQLite 上必然失败（覆盖字符串构造臂）。
-	if _, err := resolveConfiguredUpstreamModelMapping(ctx, db, true, "acct-1", profile, "gpt-5.6-sol"); err == nil {
-		t.Fatal("postgres 模式在 sqlite 上应报错")
-	}
 	// 支持模型扫描错误。
 	fp.armScan("FROM account_supported_models")
 	defer fp.disarm()
-	if _, err := resolveConfiguredUpstreamModelMapping(ctx, db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "scan J3b account supported model") {
+	if _, err := resolveConfiguredUpstreamModelMapping(ctx, db, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "scan J3b account supported model") {
 		t.Fatalf("err = %v", err)
 	}
 	fp.disarm()
 	// 迭代错误。
 	fp.armNextErr("FROM account_supported_models")
-	if _, err := resolveConfiguredUpstreamModelMapping(ctx, db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "iterate J3b account supported models") {
+	if _, err := resolveConfiguredUpstreamModelMapping(ctx, db, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "iterate J3b account supported models") {
 		t.Fatalf("err = %v", err)
 	}
 	fp.disarm()
@@ -368,8 +364,8 @@ func TestW14MBusinessModelsMappingSupportArms(t *testing.T) {
 	w14mSeedPlainAccount(t, db, "acct-1")
 	profile, _ := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
 	statements := []string{
-		`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-gpt56','gpt','gpt-5.6','gpt-5.6','builtin',NULL,'active',1)`,
-		`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-other','gpt','other-model','other-model','builtin',NULL,'active',1)`,
+		`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-gpt56','gpt','gpt-5.6','gpt-5.6','builtin',NULL,'active', TRUE)`,
+		`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-other','gpt','other-model','other-model','builtin',NULL,'active', TRUE)`,
 		`INSERT INTO account_supported_models VALUES ('acct-1','m-gpt56')`,
 		`INSERT INTO account_entry_mappings VALUES ('map-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','m-other','responses',1)`,
 	}
@@ -379,7 +375,7 @@ func TestW14MBusinessModelsMappingSupportArms(t *testing.T) {
 		}
 	}
 	// 映射命中但 upstream 不在 supported 集合 → 拒绝（UpstreamModel 空）。
-	resolution, err := resolveConfiguredUpstreamModelMapping(ctx, db, false, "acct-1", profile, "gpt-5.6-sol")
+	resolution, err := resolveConfiguredUpstreamModelMapping(ctx, db, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +402,7 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 		}
 		fp.arm("FROM account_quality_enforcements WHERE account_id=? AND enforcement_id=?")
 		defer fp.disarm()
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,7 +418,7 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 		}
 		fp.arm("FROM accounts WHERE id=? AND system_account_id=?")
 		defer fp.disarm()
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -439,7 +435,7 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 		}
 		fp.arm("UPDATE account_quality_enforcements SET recovery_due_at=")
 		defer fp.disarm()
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -460,7 +456,7 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 		}
 		fp.arm("UPDATE account_quality_enforcements SET recovery_due_at=")
 		defer fp.disarm()
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -478,7 +474,7 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 		// 策略修订不一致 → 顺延且不触碰账户。
 		fp.arm("UPDATE account_quality_enforcements SET last_recovery_run_id=")
 		defer fp.disarm()
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -490,15 +486,6 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 	t.Run("restoreSuccess", func(t *testing.T) {
 		db, fp := newDB(t)
 		w14mSeedPlainAccount(t, db, "acct")
-		// 对齐 enforcement 行的租户字段；恢复更新会触碰 last_error_message/updated_at。
-		for _, alter := range []string{
-			`ALTER TABLE accounts ADD COLUMN last_error_message TEXT`,
-			`ALTER TABLE accounts ADD COLUMN updated_at TEXT`,
-		} {
-			if _, err := db.Exec(alter); err != nil {
-				t.Fatal(err)
-			}
-		}
 		if _, err := db.Exec(`UPDATE accounts SET system_account_id='sys', status='quality_isolated',config_revision=5 WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
@@ -507,7 +494,7 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 		}
 		fp.arm("SET state='cleared'")
 		defer fp.disarm()
-		applier, err := NewBusinessRecoveryApplier(db, false)
+		applier, err := NewBusinessRecoveryApplier(db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -537,8 +524,8 @@ func TestW14MTrustProjectionMoreArms(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("receiptSelectError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		store := &Store{db: db, mode: "sqlite"}
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+		store := &Store{db: db, schema: j3bTestSchema}
 		projection := w14mSeedTrustObservation(t, store)
 		// 首次投影写入回执；重放时 INSERT 冲突后才走回执读取。
 		if err := store.ProjectTrust(ctx, projection); err != nil {
@@ -552,8 +539,8 @@ func TestW14MTrustProjectionMoreArms(t *testing.T) {
 	})
 
 	t.Run("mappingStatusInvalid", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		store := &Store{db: db, mode: "sqlite"}
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+		store := &Store{db: db, schema: j3bTestSchema}
 		if _, err := db.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-a','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','protocol_basic','complete','consistent','bogus','consistent',100,'2026-08-31T10:00:00Z')`); err != nil {
 			t.Fatal(err)
 		}
@@ -568,10 +555,10 @@ func TestW14MTrustProjectionMoreArms(t *testing.T) {
 	})
 
 	t.Run("cursorSelectError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		store := &Store{db: db, mode: "sqlite"}
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+		store := &Store{db: db, schema: j3bTestSchema}
 		projection := w14mSeedTrustObservation(t, store)
-		if _, err := store.db.Exec(`INSERT INTO model_trust_aggregation_state(scope_key,cursor_created_at,cursor_id,last_success_at,updated_at) VALUES (?,?,?,?,'')`, trustAggregationScope, "2026-08-30T10:00:00Z", "obs-0", "2026-08-30T10:00:00Z"); err != nil {
+		if _, err := store.db.Exec(j3bQ(`INSERT INTO model_trust_aggregation_state(scope_key,cursor_created_at,cursor_id,last_success_at,updated_at) VALUES (?,?,?,?,'')`), trustAggregationScope, "2026-08-30T10:00:00Z", "obs-0", "2026-08-30T10:00:00Z"); err != nil {
 			t.Fatal(err)
 		}
 		fp.arm("SELECT cursor_created_at,cursor_id FROM")
@@ -587,7 +574,7 @@ func TestW14MTrustProjectionMoreArms(t *testing.T) {
 func w14mSchedulerBusinessDDL(t *testing.T) []string {
 	t.Helper()
 	ddl := businessSourceContractDDL()
-	ddl = append(ddl, `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`)
+	ddl = append(ddl, `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`)
 	ddl = append(ddl, `CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`)
 	return ddl
 }
@@ -599,7 +586,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 
 	t.Run("healthRetryEnsureError", func(t *testing.T) {
 		business, fp := w14mFailDB(t, w14mSchedulerBusinessDDL(t))
-		store := &Store{db: business, mode: "sqlite"}
+		store := &Store{db: business, schema: j3bTestSchema}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
 		fp.arm("quality_health_sync_status='failed'")
 		defer fp.disarm()
@@ -611,9 +598,9 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 	t.Run("scheduledClaimQueryError", func(t *testing.T) {
 		business, fp := w14mFailDB(t, w14mSchedulerBusinessDDL(t))
 		w14mSeedPlainAccount(t, business, "acct")
-		store := &Store{db: business, mode: "sqlite"}
+		store := &Store{db: business, schema: j3bTestSchema}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
-		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,0,1,?,NULL,NULL,NULL,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,FALSE,1,?,NULL,NULL,NULL,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		fp.arm("FROM model_quality_schedules")
@@ -626,9 +613,9 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 	t.Run("scheduledClaimScanError", func(t *testing.T) {
 		business, fp := w14mFailDB(t, w14mSchedulerBusinessDDL(t))
 		w14mSeedPlainAccount(t, business, "acct")
-		store := &Store{db: business, mode: "sqlite"}
+		store := &Store{db: business, schema: j3bTestSchema}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
-		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,0,1,?,NULL,NULL,NULL,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,FALSE,1,?,NULL,NULL,NULL,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		fp.armScan("FROM model_quality_schedules")
@@ -641,7 +628,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 	t.Run("recoveryClaimQueryError", func(t *testing.T) {
 		business, fp := w14mFailDB(t, w14mSchedulerBusinessDDL(t))
 		w14mSeedPlainAccount(t, business, "acct")
-		store := &Store{db: business, mode: "sqlite"}
+		store := &Store{db: business, schema: j3bTestSchema}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
 		if _, err := business.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','gpt-5.6-sol',5,7,'','quick',70,10,?,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
@@ -659,7 +646,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 		if _, err := business.Exec(`UPDATE accounts SET credentials_encrypted='` + envelope + `' WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
-		store := &Store{db: business, mode: "sqlite"}
+		store := &Store{db: business, schema: j3bTestSchema}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
 		if _, err := business.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','gpt-5.6-sol',5,7,'','quick',70,10,?,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)

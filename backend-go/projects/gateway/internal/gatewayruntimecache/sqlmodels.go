@@ -16,7 +16,7 @@ import (
 )
 
 // SQLReadModels is the default ReadModels implementation over the business
-// database (SQLite + PostgreSQL dual mode via ? / $N binding). It owns the
+// database (juhe_business schema qualification + $N binding). It owns the
 // read-only queries that had no Go home at migration time:
 //
 //   - gateway settings projection (Node readGatewaySettings +
@@ -37,7 +37,6 @@ import (
 // wiring error instead of silently returning wrong data.
 type SQLReadModels struct {
 	db          *sql.DB
-	pg          bool
 	settings    *settings.Store
 	now         func() time.Time
 	accounts    AccountsSelector
@@ -48,20 +47,19 @@ type SQLReadModels struct {
 // NewSQLReadModels builds the SQL read models. now defaults to time.Now; the
 // three seams may stay nil until their slices land (behaviour documented on
 // SQLReadModels).
-func NewSQLReadModels(db *sql.DB, postgres bool, now func() time.Time, accounts AccountsSelector, catalog CatalogSource, concurrency ConcurrencySource) (*SQLReadModels, error) {
+func NewSQLReadModels(db *sql.DB, now func() time.Time, accounts AccountsSelector, catalog CatalogSource, concurrency ConcurrencySource) (*SQLReadModels, error) {
 	if db == nil {
 		return nil, errors.New("gatewayruntimecache SQL 读模型需要数据库")
 	}
 	if now == nil {
 		now = time.Now
 	}
-	store, err := settings.NewStore(db, postgres, now, nil)
+	store, err := settings.NewStore(db, now, nil)
 	if err != nil {
 		return nil, err
 	}
 	return &SQLReadModels{
 		db:          db,
-		pg:          postgres,
 		settings:    store,
 		now:         now,
 		accounts:    accounts,
@@ -92,16 +90,10 @@ func (m *SQLReadModels) SetCatalogSource(source CatalogSource) { m.catalog = sou
 func (m *SQLReadModels) SetConcurrencySource(source ConcurrencySource) { m.concurrency = source }
 
 func (m *SQLReadModels) table(name string) string {
-	if m.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (m *SQLReadModels) bind(query string) string {
-	if !m.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

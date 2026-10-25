@@ -80,7 +80,7 @@ func wbValidTrustReport() TrustReport {
 // ProjectTrust 契约：收据去重、游标单调推进、最新读模型只在更新时改写；
 // 同游标不同事实的重放必须失败关闭。
 func TestWBStoreProjectTrustLifecycle(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	seedObservation := func(id, runID, createdAt string) {
@@ -170,7 +170,7 @@ func TestWBAppendObservationIdempotentErrorBranches(t *testing.T) {
 			t.Fatal("nil 存储必须报错")
 		}
 	})
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	now := time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)
 	run := RunRecord{ID: "run-obs", SystemAccountID: "sys", ActorSystemAccountID: "actor", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", TriggerKind: "manual", ProbeSetVersion: "probe-v1", StartedAt: now, RequestSummary: []byte(`{}`), PolicySnapshot: []byte(`{}`)}
@@ -315,7 +315,7 @@ func TestWBNormalizeJSONCollapsesInvalidPayloads(t *testing.T) {
 
 // 运行/条目/观测校验与追加的失败关闭分支。
 func TestWBRunRecordValidationAndAppendBranches(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	base := RunRecord{ID: "run-v", SystemAccountID: "sys", ActorSystemAccountID: "actor", ProviderCode: "openai", TargetType: "account", TargetID: "acct", Model: "m", Profile: "quick", TriggerKind: "manual", ProbeSetVersion: "probe-v1", StartedAt: time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC), RequestSummary: []byte(`{}`), PolicySnapshot: []byte(`{}`)}
@@ -428,11 +428,11 @@ type buildProxyClientArgs struct {
 
 // targetSystemAccountID 与 readPolicy 分支契约。
 func TestWBBusinessSourceTargetOwnerAndPolicy(t *testing.T) {
-	db := wbOpenMemoryDB(t, []string{
+	db := wbOpenPGDB(t, []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, deleted_at TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY, revision INTEGER, profile TEXT, manual_enforcement_enabled INTEGER, penalty_threshold INTEGER, penalty_action TEXT, recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0, custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY, revision INTEGER, profile TEXT, manual_enforcement_enabled INTEGER, penalty_threshold INTEGER, penalty_action TEXT, recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE, custom_question_ids TEXT)`,
 	})
-	source, err := NewBusinessTargetSource(db, false, "secret")
+	source, err := NewBusinessTargetSource(db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestWBBusinessSourceTargetOwnerAndPolicy(t *testing.T) {
 	if _, err := source.targetSystemAccountID(context.Background(), "acct"); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("空白租户必须报错: err=%v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',2,'full',1,80,'quality_isolate',20,0,NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',2,'full',1,80,'quality_isolate',20,FALSE,NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	profile, revision, manual, timeoutPenalty, threshold, action, interval, ids, err := source.readPolicy(context.Background(), "sys")
@@ -474,14 +474,14 @@ func TestWBMiscBranches(t *testing.T) {
 	if defaultProfile(" ") != "quick" {
 		t.Fatal("空白 profile 必须回退 quick")
 	}
-	if _, err := NewBusinessQualityManager(nil, false); err == nil {
+	if _, err := NewBusinessQualityManager(nil); err == nil {
 		t.Fatal("nil 数据库必须报错")
 	}
 	store := &Store{}
 	if err := store.Close(); err != nil {
 		t.Fatal("未打开存储的关闭必须幂等成功")
 	}
-	if got := (&Store{mode: "postgres", schema: "juhe_j3b"}).table("model_check_inputs"); got != "juhe_j3b.model_check_inputs" {
+	if got := (&Store{schema: "juhe_j3b"}).table("model_check_inputs"); got != "juhe_j3b.model_check_inputs" {
 		t.Fatalf("postgres 表名=%q", got)
 	}
 }
@@ -539,8 +539,8 @@ func TestWBSQLSchedulerFailBranches(t *testing.T) {
 	if err := source.Fail(context.Background(), ScheduleTask{ID: "x"}, errors.New("boom")); err == nil {
 		t.Fatal("未初始化的源必须报错")
 	}
-	j3b := wbOpenMemoryDB(t, []string{`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,claim_owner TEXT,claim_until TEXT,fence_token INTEGER,state TEXT,last_error TEXT,completed_at TEXT,payload TEXT,updated_at TEXT)`})
-	owned := &SQLSchedulerSource{Store: &Store{db: j3b, mode: "sqlite"}, OwnerID: "owner"}
+	j3b := wbOpenPGDB(t, []string{`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,claim_owner TEXT,claim_until TEXT,fence_token INTEGER,state TEXT,last_error TEXT,completed_at TEXT,payload TEXT,updated_at TEXT)`})
+	owned := &SQLSchedulerSource{Store: &Store{schema: j3bTestSchema, db: j3b}, OwnerID: "owner"}
 	if err := owned.Fail(context.Background(), ScheduleTask{ID: "ghost", OwnerID: "owner", FenceToken: 1}, errors.New("boom")); err == nil {
 		t.Fatal("缺失任务必须报错")
 	}

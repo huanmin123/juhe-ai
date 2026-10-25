@@ -11,7 +11,7 @@ import (
 // PostgreSQL chat_messages range partitions mirror
 // backend/src/storage/postgres-chat-message-partitions.ts: one daily child
 // table per UTC day (plus a look-ahead day), created lazily on turn
-// acceptance. SQLite keeps bare table names and never partitions.
+// acceptance.
 
 const chatMessagePartitionPrefix = "chat_messages_"
 
@@ -69,12 +69,8 @@ func chatMessagePartitionBounds(dateKey string) (startDate, endDate string, err 
 }
 
 // ensurePostgresChatMessagePartitions mirrors ensurePostgresChatMessagePartitions:
-// no-op outside PostgreSQL; otherwise creates the current and next daily
-// partition unless memoized this process.
+// creates the current and next daily partition unless memoized this process.
 func (s *Store) ensurePostgresChatMessagePartitions(tx queryer, createdAt string) error {
-	if !s.pg {
-		return nil
-	}
 	current, ok := chatMessagePartitionDateKeyFromISO(createdAt)
 	if !ok {
 		return &DomainError{Message: "AI 问答消息时间无效：" + createdAt}

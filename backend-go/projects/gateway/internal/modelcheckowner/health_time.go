@@ -19,14 +19,11 @@ type HealthStatHourFunc func(time.Time) (string, error)
 // Node. The setting is intentionally loaded through the already validated
 // Gateway Business handle; process TZ and environment defaults are not a
 // fallback because they would make a retry write a different fact key.
-func LoadBusinessHealthStatHour(ctx context.Context, db *sql.DB, postgres bool) (HealthStatHourFunc, error) {
+func LoadBusinessHealthStatHour(ctx context.Context, db *sql.DB) (HealthStatHourFunc, error) {
 	if db == nil {
 		return nil, errors.New("J3b usage stats timezone database is not initialized")
 	}
-	query := "SELECT value_json FROM system_settings WHERE system_account_id='sys_admin' AND key='usageStatsTimezone' LIMIT 1"
-	if postgres {
-		query = "SELECT value_json::text FROM juhe_business.system_settings WHERE system_account_id='sys_admin' AND key='usageStatsTimezone' LIMIT 1"
-	}
+	query := "SELECT value_json::text FROM juhe_business.system_settings WHERE system_account_id='sys_admin' AND key='usageStatsTimezone' LIMIT 1"
 	var raw string
 	if err := db.QueryRowContext(ctx, query).Scan(&raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

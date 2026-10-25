@@ -285,10 +285,10 @@ func (g bindableGroup) namePtr() *string {
 }
 
 // bindableGroupsQuery renders the loadRouteStrategyBindableGroupsAsync select
-// (authorization joins + optional PostgreSQL FOR UPDATE OF groups lock).
+// (authorization joins + optional FOR UPDATE OF groups lock).
 func (s *Store) bindableGroupsQuery(placeholders []string, lockRows bool) string {
 	lockClause := ""
-	if lockRows && s.pg {
+	if lockRows {
 		lockClause = " FOR UPDATE OF groups"
 	}
 	return s.bind(`SELECT groups.id, groups.system_account_id, groups.name,

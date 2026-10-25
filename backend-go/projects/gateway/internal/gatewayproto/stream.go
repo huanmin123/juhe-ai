@@ -16,14 +16,20 @@ type StreamInspection struct {
 	// 处置设计 §3.2：EOF 终局判定按本计数收紧 generic 收敛，字节级隔离与
 	// WARN 观测由管道与拦截面消费。
 	ParseErrorEventCount int
-	EventTypeCounts      map[string]int
-	LastEventType        string
-	RecentEventTypes     []string
-	PendingEvent         bool
-	Skipped              bool
-	SkipReason           string
-	ErrorCode            string
-	ErrorMessage         string
+	// InvalidProtocolEventCount 是解析成功但协议形状异常的事件计数（顶层存在
+	// `choices` 键且 JSON 值不是数组；流式提交边界受限重放与异常终局处置设计
+	// §3.2.0 L2，2026-10-26 增量）：与 ParseErrorEventCount 并列的观测计数，
+	// 字节级隔离与 WARN 摘要由同一隔离基建处置；L2 纯观测+隔离，不参与终局
+	// 判定。仅 gatewayopenai inspector 域计数（谓词只对 openai 形状有意义）。
+	InvalidProtocolEventCount int
+	EventTypeCounts           map[string]int
+	LastEventType             string
+	RecentEventTypes          []string
+	PendingEvent              bool
+	Skipped                   bool
+	SkipReason                string
+	ErrorCode                 string
+	ErrorMessage              string
 	// ResponseResourceID 是 Gemini interactions 创建流的资源 ID（inspector 从
 	// interaction.* 事件提取的协议内部元数据）；其余协议恒空。亲和写入
 	// （提交前 Remember）与后续资源路由依赖本字段的全链回带。

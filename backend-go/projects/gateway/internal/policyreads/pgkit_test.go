@@ -2,9 +2,8 @@ package policyreads
 
 // pgkit_test.go 是 policyreads 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，测试尾巴批次）：
-// pgtestkit 每测试独立库 + 生产 PG 臂（NewInspectionStore / NewExternalStore
-// postgres=true，juhe_business schema 限定 + $n 占位符，与 gateway 组合根恒
-// PG 的装配同一方言）。
+// pgtestkit 每测试独立库 + 生产 store（juhe_business schema 限定 + $n 占位
+// 符，与 gateway 组合根恒 PG 的装配同一方言）。
 //
 // 分组处置（D9/D17）：组A（被测对象有 PG 臂且断言逐字节保持）——HTTP/store
 // 级测试走本文件夹具，断言逐字节保持；夹具 schema 列集与原 sqlite 夹具同一

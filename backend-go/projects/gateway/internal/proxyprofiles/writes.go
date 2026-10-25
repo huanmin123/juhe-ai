@@ -106,7 +106,9 @@ func (s *Store) Create(ctx context.Context, input proxyInput, systemAccountID st
 		description := *input.Description
 		profile.Description = &description
 	}
-	now := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
+	// 微秒形态与 revisionSelectExpression 的 to_char US 读回逐字一致：
+	// 客户端把 create 返回的 revision 原样回传 PATCH 预检才能通过。
+	now := s.now().UTC().Format("2006-01-02T15:04:05.000000Z")
 	profile.UpdatedAt = now
 	var passwordEncrypted any
 	if input.HasPassword && input.Password != nil {
@@ -315,7 +317,8 @@ func (s *Store) Patch(ctx context.Context, id string, input proxyInput) (*patchO
 		values["lastTestMessage"] = nil
 		values["lastTestedAt"] = nil
 	}
-	updatedAtCandidate := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
+	// 微秒形态与 revisionSelectExpression 的 to_char US 读回逐字一致。
+	updatedAtCandidate := s.now().UTC().Format("2006-01-02T15:04:05.000000Z")
 	setClauses := make([]string, 0, len(assignments)+1)
 	params := make([]any, 0, len(assignments)+3)
 	for _, assignment := range assignments {
@@ -323,19 +326,13 @@ func (s *Store) Patch(ctx context.Context, id string, input proxyInput) (*patchO
 		params = append(params, assignment.value)
 	}
 	// Node bumps the timestamp when the same-millisecond collision occurs;
-	// the SQLite CASE expression mirrors that exactly.
-	if s.pg {
-		setClauses = append(setClauses, "updated_at = GREATEST(updated_at + INTERVAL '1 millisecond', CAST(? AS timestamptz))")
-		params = append(params, updatedAtCandidate)
-	} else {
-		setClauses = append(setClauses, "updated_at = CASE WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds') ELSE ? END")
-		params = append(params, updatedAtCandidate, updatedAtCandidate)
-	}
+	// the PG GREATEST + timestamptz expression mirrors that exactly.
+	setClauses = append(setClauses, "updated_at = GREATEST(updated_at + INTERVAL '1 millisecond', CAST(? AS timestamptz))")
+	params = append(params, updatedAtCandidate)
 	params = append(params, id, currentUpdatedAt)
 	// Node bumps the timestamp when the same-millisecond collision occurs;
-	// the SQLite CASE expression mirrors that exactly. The PG CAS predicate
-	// casts the revision text explicitly (patchProxyForManagementAsync
-	// proxy.repository.ts:856).
+	// the PG CAS predicate casts the revision text explicitly
+	// (patchProxyForManagementAsync proxy.repository.ts:856).
 	updateQuery := `
 		UPDATE ` + s.table("proxy_profiles") + `
 		SET ` + strings.Join(setClauses, ", ") + `
@@ -478,13 +475,9 @@ type rowQuerier interface {
 }
 
 // rowLockClause is the PG row lock appended to the delete-critical-section
-// profile load (Node SELECT ... FOR UPDATE); SQLite relies on its single
-// writer, so no suffix there.
+// profile load (Node SELECT ... FOR UPDATE).
 func (s *Store) rowLockClause() string {
-	if s.pg {
-		return " FOR UPDATE"
-	}
-	return ""
+	return " FOR UPDATE"
 }
 
 func (s *Store) loadProfileRow(ctx context.Context, id string) (*profileRow, error) {
@@ -626,38 +619,24 @@ func toTextValue(value any) string {
 	}
 }
 
-// enabledDBValue shapes the bound boolean for the dialect: PG columns are
+// enabledDBValue shapes the bound boolean: PG columns are
 // `enabled boolean` and take the bool directly (Node createProxyAsync
 // proxy.repository.ts:558 passes proxy.enabled; buildProxyManagementPatchPlan
-// line 978 binds `next` on PG); SQLite keeps the 0/1 integer (line 517 and the
-// toSqliteValues mapping in database-client.ts:377).
+// line 978 binds `next` on PG).
 func (s *Store) enabledDBValue(enabled bool) any {
-	if s.pg {
-		return enabled
-	}
-	if enabled {
-		return int64(1)
-	}
-	return int64(0)
+	return enabled
 }
 
 // revisionSelectExpression textifies updated_at on PG so the revision scans
 // back as text (Node proxyManagementPatchSelectColumns proxy.repository.ts:887-889
-// and proxySummarySelectColumns line 450 use the same to_char US pattern); the
-// SQLite column is already RFC3339 text.
+// and proxySummarySelectColumns line 450 use the same to_char US pattern).
 func (s *Store) revisionSelectExpression() string {
-	if s.pg {
-		return `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
-	}
-	return "updated_at"
+	return `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at`
 }
 
 // revisionCastPlaceholder wraps the CAS parameter on PG (Node
 // patchProxyForManagementAsync proxy.repository.ts:856:
 // `updated_at = CAST(? AS timestamptz)`).
 func (s *Store) revisionCastPlaceholder() string {
-	if s.pg {
-		return "CAST(? AS timestamptz)"
-	}
-	return "?"
+	return "CAST(? AS timestamptz)"
 }

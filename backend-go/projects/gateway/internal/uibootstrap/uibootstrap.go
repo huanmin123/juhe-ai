@@ -22,9 +22,8 @@ const gptVendorCode = "gpt"
 
 // Deps bundles the ui-bootstrap collaborators.
 type Deps struct {
-	DB        *sql.DB
-	PGDialect bool
-	Auth      *authsys.Deps
+	DB   *sql.DB
+	Auth *authsys.Deps
 }
 
 // Mount wires the ui-bootstrap surfaces:
@@ -136,19 +135,13 @@ type defaultRouteStrategyRef struct {
 }
 
 func (d *Deps) table(name string) string {
-	if d.PGDialect {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 // bind 把 `?` 占位符改写为 PG 的 $n（ISSUE-005 同类）：本包查询按 Node
-// 语义使用 `?`，SQLite 原生支持，直达 pgx 则触发 42601 语法错误
-// （2026-09-25 生产 my-ui-bootstrap 500，failureReason 定位）。
+// 语义使用 `?`，直达 pgx 会触发 42601 语法错误（2026-09-25 生产
+// my-ui-bootstrap 500，failureReason 定位）。
 func (d *Deps) bind(query string) string {
-	if !d.PGDialect {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

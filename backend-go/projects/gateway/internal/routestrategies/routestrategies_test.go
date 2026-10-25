@@ -110,7 +110,7 @@ func newTestEnvFull(t *testing.T, facade SpeedFirstRuntimeFacade) *testEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, true, nil, nil, invalidator)
+	store, err := NewStore(db, nil, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestRouteStrategyAdminLifecycle(t *testing.T) {
 	// The HTTP surface is asserted at store level like the M05 slice because
 	// the guard shadows identical payloads (TestGroupStoreLevelDuplicateName).
 	{
-		store, storeErr := NewStore(env.db, true, nil, nil, nil)
+		store, storeErr := NewStore(env.db, nil, nil, nil)
 		if storeErr != nil {
 			t.Fatal(storeErr)
 		}

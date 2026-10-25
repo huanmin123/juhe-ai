@@ -51,7 +51,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	repo := gatewaymedia.NewMediaJobsRepo(db, true, time.Now)
+	repo := gatewaymedia.NewMediaJobsRepo(db, time.Now)
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
 	(&Deps{Repo: repo, Auth: deps}).Mount(k)

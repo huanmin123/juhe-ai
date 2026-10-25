@@ -47,6 +47,12 @@ const (
 	StreamServerRetryCodexEncryptedContentRecovery = "codex_encrypted_content_recovery"
 	StreamServerRetryNormalRouteFirstByteTimeout   = "normal_route_first_byte_timeout"
 	StreamServerRetryHybridQuality                 = "hybrid_quality"
+	// StreamServerRetryEmptyCompletion 是上游空完成失败的换号 reason（设计
+	// §3.2.3，v2.3 增量 2026-10-26）：复用既有 pre-commit 换号通道（同谓词、
+	// 同预算、同排除语义），仅以独立 reason 让耗尽出口
+	//（streamServerRetryFallbackReason → fallback group 切换审计）与 verdict
+	// 可辨，不新增换号行为。
+	StreamServerRetryEmptyCompletion = "upstream_stream_empty_completion"
 )
 
 // StreamClientFailureCode 对齐 streamClientFailureCode。
@@ -138,14 +144,14 @@ func ShouldRetryPreCommitStreamFailureOnServer(result StreamPipeResult, response
 // PreCommitStreamServerRetryErrorCode 对齐 preCommitStreamServerRetryErrorCode。
 // clientStrategyPreCommitProtocolError 由调用方从 client strategy 读出
 // （retryCoordination.preCommitFailureSignal === 'protocol_error_event'）。
-// 例外：upstream_stream_abnormal_eof 原样透传（流式提交边界受限重放与异常
-// 终局处置设计 §3.2.2）——该 code 是 chain 面 classifyPostVerdictOutcome
-// 失败归因三面（circuit ReportUnknown / 账户锁 / 热质量）的判别键，经本函数
-// 可达 handling.ErrorCode；异常终局是真实的上游响应面失败，不按消息改写为
-// 通用 interrupted 文案。
+// 例外：upstream_stream_abnormal_eof 与 upstream_stream_empty_completion 原样
+// 透传（流式提交边界受限重放与异常终局处置设计 §3.2.2 / §3.2.3）——两者是
+// chain 面 classifyPostVerdictOutcome 失败归因三面（circuit ReportUnknown /
+// 账户锁 / 热质量）的判别键，经本函数可达 handling.ErrorCode；异常终局与空
+// 完成是真实的上游响应面失败，不按消息改写为通用 interrupted 文案。
 func PreCommitStreamServerRetryErrorCode(result StreamPipeResult, clientStrategyPreCommitProtocolError bool) string {
-	if result.ErrorCode == UpstreamStreamAbnormalEOFCode {
-		return UpstreamStreamAbnormalEOFCode
+	if result.ErrorCode == UpstreamStreamAbnormalEOFCode || result.ErrorCode == UpstreamStreamEmptyCompletionCode {
+		return result.ErrorCode
 	}
 	if clientStrategyPreCommitProtocolError {
 		return gatewayStreamClientRetryErrorCode

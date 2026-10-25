@@ -910,11 +910,8 @@ func TestW13g2LookupAndOptionsArms(t *testing.T) {
 
 	// readSystemSettingsTimezone：无 system_settings 表 → 非 ErrNoRows 的
 	// 查询错误（204-206）。newFixture 未附加 timezone 源。
-	if _, err := readSystemSettingsTimezone(ctx, f.db, false); err == nil {
+	if _, err := readSystemSettingsTimezone(ctx, f.db); err == nil {
 		t.Fatalf("缺表应报错")
-	}
-	if _, err := readSystemSettingsTimezone(ctx, f.db, true); err == nil {
-		t.Fatalf("pg 缺表应报错")
 	}
 
 	// canceled ctx → 各 lookup 查询失败。
@@ -939,13 +936,13 @@ func TestW13g2LookupAndOptionsArms(t *testing.T) {
 	if _, _, err := f.store.findSummaryWithLimits(ctx, "missing-id"); err != nil {
 		t.Fatalf("missing findSummary 应 nil,nil,nil: %v", err)
 	}
-	// pg 模式的 table/GetGrantForMutation 分支（store.go 102-104/462-464）。
-	pgStore := &Store{db: f.db, pg: true, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
-	if pgStore.table("x") != "juhe_business.x" {
-		t.Fatalf("pg table 前缀错误")
+	// table 前缀与 GetGrantForMutation 的 FOR UPDATE（store.go）。
+	store := &Store{db: f.db, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
+	if store.table("x") != "juhe_business.x" {
+		t.Fatalf("table 前缀错误")
 	}
-	if _, err := pgStore.GetGrantForMutation(ctx, nil, "x"); err == nil {
-		t.Fatalf("pg FOR UPDATE 在 sqlite 上应报错")
+	if _, err := store.GetGrantForMutation(ctx, nil, "x"); err == nil {
+		t.Fatalf("FOR UPDATE 在 sqlite 夹具上应报错")
 	}
 
 	// loadResourceAuthorizationStatsFromDatabase canceled（191-193/206-208）。

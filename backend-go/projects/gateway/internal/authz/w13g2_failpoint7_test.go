@@ -87,7 +87,7 @@ func TestW13g2ProvisionMisc(t *testing.T) {
 	// pg 分支：advanceInstanceDispatchRevision 的 FOR UPDATE（422-424）与
 	// enqueue 的 lockSuffix（354）、reserve（428）、bindings 的 stats 标记
 	//（103-108）。
-	pgStore := &Store{db: db, pg: true, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
+	pgStore := &Store{db: db, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
 	if err := pgStore.advanceInstanceDispatchRevision(ctx, tx, "acc_misc", 1); err == nil {
 		t.Fatalf("pg FOR UPDATE 在 sqlite 应报错")
 	}
@@ -98,7 +98,7 @@ func TestW13g2ProvisionMisc(t *testing.T) {
 
 	// pg enqueue / bindings：查询构造分支（352-356、428-430）经错误返回覆盖。
 	pgTx := mustTx(t, db)
-	s2 := &Store{db: db, pg: true, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
+	s2 := &Store{db: db, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
 	if _, err := s2.enqueueGrantAccountHealthInputs(ctx, pgTx, &grantRow{
 		ResourceType: "account", ResourceID: "acc_misc",
 	}, "now"); err == nil {

@@ -66,13 +66,13 @@ func TestWBCredentialEnvelopeAuthenticationMatrix(t *testing.T) {
 func TestWBActivateBaselineEligibilityMatrix(t *testing.T) {
 	open := func(t *testing.T) (*Store, *sql.DB) {
 		t.Helper()
-		db := wbOpenMemoryDB(t, []string{`CREATE TABLE model_token_intercept_baseline_versions (
+		db := wbOpenPGDB(t, []string{`CREATE TABLE model_token_intercept_baseline_versions (
 			cohort_key_hmac TEXT NOT NULL, requested_model TEXT NOT NULL, tokenizer_version TEXT NOT NULL,
 			probe_set_version TEXT NOT NULL, baseline_version INTEGER NOT NULL, version_status TEXT NOT NULL,
 			evidence_status TEXT NOT NULL, independent_source_count INTEGER NOT NULL, q90_intercept REAL,
 			strong_threshold_intercept REAL, strong_gate_enabled INTEGER NOT NULL, calibration_note TEXT,
 			updated_at TEXT NOT NULL, PRIMARY KEY(cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version))`})
-		store := &Store{db: db, mode: "sqlite"}
+		store := &Store{schema: j3bTestSchema, db: db}
 		return store, db
 	}
 	input := func(strong float64) TokenInterceptBaselineActivation {
@@ -96,7 +96,7 @@ func TestWBActivateBaselineEligibilityMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, db := open(t)
 			const cohort = "hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			if _, err := db.Exec(`INSERT INTO model_token_intercept_baseline_versions (cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,q90_intercept,strong_gate_enabled,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'',?)`, cohort, "m", "t", "p", 2, tc.status, tc.evidence, tc.sources, tc.q90, "2026-09-06T00:00:00Z"); err != nil {
+			if _, err := db.Exec(`INSERT INTO model_token_intercept_baseline_versions (cohort_key_hmac,requested_model,tokenizer_version,probe_set_version,baseline_version,version_status,evidence_status,independent_source_count,q90_intercept,strong_gate_enabled,updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)`, cohort, "m", "t", "p", 2, tc.status, tc.evidence, tc.sources, tc.q90, "2026-09-06T00:00:00Z"); err != nil {
 				t.Fatal(err)
 			}
 			if err := store.ActivateTokenInterceptBaseline(context.Background(), input(tc.strong)); !errors.Is(err, ErrTokenInterceptBaselineConflict) {
@@ -108,7 +108,7 @@ func TestWBActivateBaselineEligibilityMatrix(t *testing.T) {
 
 // 详情读取契约：损坏的检查项证据必须让详情失败关闭而不是输出半份数据。
 func TestWBRunGetRunFailsClosedOnMalformedCheckEvidence(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
@@ -127,7 +127,7 @@ func TestWBRunGetRunFailsClosedOnMalformedCheckEvidence(t *testing.T) {
 
 // ProjectTrust 收据冲突契约：同观测不同创建时间的重放必须失败关闭。
 func TestWBStoreProjectTrustReceiptConflict(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	if _, err := store.db.Exec(`INSERT INTO model_check_observations (id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-x','run-t','sys','acct','openai','m','m','stability','complete','consistent','direct','consistent',10,'2026-09-07T10:00:00Z')`); err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestWBStoreProjectTrustReceiptConflict(t *testing.T) {
 // 状态为 applied，quality_decision_json 记录 result=failed，且不发出
 // health_sync_failed 事件（stale/failed 均不注册无限重试）。
 func TestWBRunHealthPublishingSurvivesEnforcementFailure(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, wbHealthRuntimeDDL(t)), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, wbHealthRuntimeDDL(t))}
 	defer store.Close()
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {
@@ -197,7 +197,7 @@ func TestWBRunHealthPublishingSurvivesEnforcementFailure(t *testing.T) {
 
 // full profile 运行契约：观测行随 run 一起落库，供信任聚合消费。
 func TestWBRunFullProfilePersistsObservations(t *testing.T) {
-	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	store := &Store{schema: j3bTestSchema, db: wbOpenPGDB(t, j3bRuntimeFixtureDDLs())}
 	defer store.Close()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

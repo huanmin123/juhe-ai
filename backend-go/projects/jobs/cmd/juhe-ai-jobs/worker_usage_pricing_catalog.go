@@ -51,9 +51,8 @@ const usagePricingCatalogCacheMaxEntries = 1024
 
 // usagePricingCatalog 实现 usagewriter.CatalogPricing（组合根侧适配器）。
 type usagePricingCatalog struct {
-	db       *sql.DB
-	postgres bool
-	now      func() time.Time
+	db  *sql.DB
+	now func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]usagePricingCatalogEntry
@@ -65,8 +64,8 @@ type usagePricingCatalogEntry struct {
 	err       error
 }
 
-func newUsagePricingCatalog(db *sql.DB, postgres bool) *usagePricingCatalog {
-	return &usagePricingCatalog{db: db, postgres: postgres, now: time.Now, cache: map[string]usagePricingCatalogEntry{}}
+func newUsagePricingCatalog(db *sql.DB) *usagePricingCatalog {
+	return &usagePricingCatalog{db: db, now: time.Now, cache: map[string]usagePricingCatalogEntry{}}
 }
 
 // usageCatalogModelVariants 镜像 gatewayrouting.VolcengineTTSModelAliasVariantsOf
@@ -210,16 +209,10 @@ func mergeUsageCatalogRow(merged map[string]usageCatalogPricingRow, row usageCat
 }
 
 func (c *usagePricingCatalog) table(name string) string {
-	if c.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (c *usagePricingCatalog) bind(query string) string {
-	if !c.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -252,12 +245,9 @@ var usageCatalogPricingColumns = strings.Join([]string{
 func (c *usagePricingCatalog) loadBuiltin(ctx context.Context, providerCode string, today string) ([]usageCatalogPricingRow, error) {
 	// 镜像 chain_catalog.go builtinCatalogQuery / Node listBuiltInProviderModels：
 	// scope='builtin' + active + 目录可见 + 未下线；顺序 catalog_order,
-	// public_model, id。catalog_visible 在 PostgreSQL 为 boolean、SQLite 为
-	// integer，谓词按方言生成。
-	visible := "CAST(catalog_visible AS integer) = 1"
-	if c.postgres {
-		visible = "catalog_visible = TRUE"
-	}
+	// public_model, id。catalog_visible 在 PostgreSQL 为 boolean，谓词恒按
+	// PG 方言生成。
+	visible := "catalog_visible = TRUE"
 	query := c.bind(`SELECT ` + usageCatalogPricingColumns + `, '' AS scope FROM ` + c.table("models") + `
 		WHERE scope = 'builtin' AND vendor_code = ? AND status = 'active'
 		  AND ` + visible + `

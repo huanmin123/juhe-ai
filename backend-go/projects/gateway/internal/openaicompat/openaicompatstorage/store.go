@@ -10,15 +10,14 @@ import (
 	"time"
 )
 
-// Store is the dual-mode persistence for the openai-compatible file and
-// vector-store repositories (storage/openai-compatible-files.repository.ts +
-// storage/openai-compatible-vector-stores.repository.ts). SQLite mode keeps
-// bare table names and '?' placeholders; PostgreSQL mode qualifies tables
-// with the juhe_business schema and rewrites '?' to '$n', mirroring the Node
-// database-client dialect helpers.
+// Store is the persistence for the openai-compatible file and vector-store
+// repositories (storage/openai-compatible-files.repository.ts +
+// storage/openai-compatible-vector-stores.repository.ts) in its single
+// PostgreSQL form: tables qualify with the juhe_business schema and '?'
+// placeholders rewrite to '$n', mirroring the Node database-client dialect
+// helpers.
 type Store struct {
 	db    *sql.DB
-	pg    bool
 	now   func() time.Time
 	newID func(kind string) string
 }
@@ -38,12 +37,12 @@ func WithIDGenerator(newID func(kind string) string) StoreOption {
 	return func(s *Store) { s.newID = newID }
 }
 
-// NewStore builds the dual-mode store.
-func NewStore(db *sql.DB, postgres bool, options ...StoreOption) (*Store, error) {
+// NewStore builds the store.
+func NewStore(db *sql.DB, options ...StoreOption) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("openaicompat store requires a database")
 	}
-	store := &Store{db: db, pg: postgres, now: time.Now}
+	store := &Store{db: db, now: time.Now}
 	for _, option := range options {
 		option(store)
 	}
@@ -51,17 +50,11 @@ func NewStore(db *sql.DB, postgres bool, options ...StoreOption) (*Store, error)
 }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 // bind mirrors the Node pg dialect placeholder rewrite ('?' -> '$n').
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

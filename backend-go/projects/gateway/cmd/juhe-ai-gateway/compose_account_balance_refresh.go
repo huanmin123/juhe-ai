@@ -58,7 +58,6 @@ func (p sharedDBPool) Close() error { return nil }
 // gatewayManualBalanceRefresher 实现 accounts.ManualBalanceRefresher。
 type gatewayManualBalanceRefresher struct {
 	db     *sql.DB
-	pg     bool
 	secret string
 	store  *accountbalance.Store
 	runner *accountbalance.Runner
@@ -68,7 +67,6 @@ type gatewayManualBalanceRefresher struct {
 // gatewayModelCatalogRefresher 实现 accounts.ModelCatalogRefresher。
 type gatewayModelCatalogRefresher struct {
 	db      *sql.DB
-	pg      bool
 	secret  string
 	catalog *providers.Store
 	now     func() time.Time
@@ -83,7 +81,6 @@ func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeCon
 	// 模型目录刷新：纯进程内 HTTP + 本地目录投影读。
 	accountStore.SetModelCatalogRefresher(&gatewayModelCatalogRefresher{
 		db:      composed.db,
-		pg:      composed.pgDialect,
 		secret:  cfg.Secret,
 		catalog: providerStore,
 		now:     time.Now,
@@ -118,7 +115,6 @@ func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeCon
 	composed.shutdowns = append(composed.shutdowns, func() { _ = store.Close() })
 	accountStore.SetManualBalanceRefresher(&gatewayManualBalanceRefresher{
 		db:     composed.db,
-		pg:     composed.pgDialect,
 		secret: cfg.Secret,
 		store:  store,
 		runner: runner,
@@ -139,24 +135,19 @@ func newGatewayBalanceOwnerID() string {
 // 对齐 jobs worker_balance_detect.go proxyEnvelope）：按 profile ID 读取
 // proxy_profiles 行并封成 proxy_url envelope。profile 不存在或 proxyID 为空
 // 返回 (nil, nil)（直连）。
-func resolveProxyURLEnvelope(ctx context.Context, db *sql.DB, pg bool, secret, proxyProfileID string) (*accountbalance.CredentialEnvelope, error) {
+func resolveProxyURLEnvelope(ctx context.Context, db *sql.DB, secret, proxyProfileID string) (*accountbalance.CredentialEnvelope, error) {
 	profileID := strings.TrimSpace(proxyProfileID)
 	if profileID == "" {
 		return nil, nil
 	}
-	table := "proxy_profiles"
-	if pg {
-		table = "juhe_business.proxy_profiles"
-	}
+	table := "juhe_business.proxy_profiles"
 	var (
 		id, kind, host, username, encryptedPassword sql.NullString
 		port                                        sql.NullInt64
 	)
 	query := `SELECT id, type, host, port, username, password_encrypted
 		FROM ` + table + ` WHERE id = ? LIMIT 1`
-	if pg {
-		query = strings.Replace(query, "?", "$1", 1)
-	}
+	query = strings.Replace(query, "?", "$1", 1)
 	err := db.QueryRowContext(ctx, query, profileID).
 		Scan(&id, &kind, &host, &port, &username, &encryptedPassword)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -272,7 +263,7 @@ func (r *gatewayManualBalanceRefresher) buildManualInput(ctx context.Context, ca
 		// 手动刷新没有 due fence（Node business fence 只约束周期恢复）。
 		NextRefreshAt: nil,
 	}
-	proxy, err := resolveProxyURLEnvelope(ctx, r.db, r.pg, r.secret, candidate.ProxyProfileID.String)
+	proxy, err := resolveProxyURLEnvelope(ctx, r.db, r.secret, candidate.ProxyProfileID.String)
 	if err != nil {
 		return accountbalance.Input{}, err
 	}
@@ -364,7 +355,7 @@ func (r *gatewayManualBalanceRefresher) TestDraft(ctx context.Context, input acc
 		IssuedAt:       now,
 		ExpiresAt:      now.Add(manualBalanceInputTTL),
 	}
-	proxy, err := resolveProxyURLEnvelope(ctx, r.db, r.pg, r.secret, derefText(input.ProxyProfileID))
+	proxy, err := resolveProxyURLEnvelope(ctx, r.db, r.secret, derefText(input.ProxyProfileID))
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +443,7 @@ func (r *gatewayModelCatalogRefresher) RefreshDraftModelCatalog(ctx context.Cont
 // resolveProxyURL 解出代理串（直连返回 ""）。失败按错误上抛（路由渲染
 // 400「获取上游模型目录失败」契约）。
 func (r *gatewayModelCatalogRefresher) resolveProxyURL(ctx context.Context, proxyProfileID *string) (string, error) {
-	envelope, err := resolveProxyURLEnvelope(ctx, r.db, r.pg, r.secret, derefText(proxyProfileID))
+	envelope, err := resolveProxyURLEnvelope(ctx, r.db, r.secret, derefText(proxyProfileID))
 	if err != nil || envelope == nil {
 		return "", err
 	}

@@ -15,13 +15,13 @@ import (
 func w1EffectsBridge(t *testing.T, fixture *chainFixture) *chainErrorPolicyEffectsBridge {
 	t.Helper()
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB: fixture.db, Postgres: false, Secret: "chain-test-secret", Now: time.Now,
+		DB: fixture.db, Secret: "chain-test-secret", Now: time.Now,
 		InvalidateRuntimeCache: func(string) {},
 	})
 	if err != nil {
 		t.Fatalf("keyStates = %v", err)
 	}
-	return &chainErrorPolicyEffectsBridge{db: fixture.db, pg: false, keyStates: keyStates, now: time.Now}
+	return &chainErrorPolicyEffectsBridge{db: fixture.db, keyStates: keyStates, now: time.Now}
 }
 
 func TestW1ApplyAccountErrorPolicyDecision(t *testing.T) {

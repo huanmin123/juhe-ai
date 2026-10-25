@@ -72,7 +72,7 @@ func TestChainCatalogListAccountSupportedModels(t *testing.T) {
 		VALUES ('acc-t36', 'custom-public', 'm-t36', '2026-01-01')`); err != nil {
 		t.Fatal(err)
 	}
-	source := &chainCatalogSource{db: db, postgres: false}
+	source := &chainCatalogSource{db: db}
 	items, err := source.ListAccountSupportedModelCatalog(context.Background(), "acc-t36", "sys-t36")
 	if err != nil {
 		t.Fatal(err)

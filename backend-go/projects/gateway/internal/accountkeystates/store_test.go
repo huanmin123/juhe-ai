@@ -46,7 +46,7 @@ func openTestDB(t *testing.T) *testDB {
 	t.Cleanup(func() { _ = db.Close() })
 	harness := &testDB{db: db, clock: testNow}
 	store, err := NewStore(Config{
-		DB: db, Postgres: false, Secret: testSecret,
+		DB: db, Secret: testSecret,
 		Now:                    func() time.Time { return harness.clock },
 		InvalidateRuntimeCache: func(reason string) { harness.invalCalls = append(harness.invalCalls, reason) },
 	})

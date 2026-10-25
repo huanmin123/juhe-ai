@@ -2,7 +2,6 @@ package modelcheckowner
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,7 +13,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
-	_ "modernc.org/sqlite"
 )
 
 // qbFakeTestRunner 是提交门禁测试执行器替身：固定返回 pass 结论与账户名，
@@ -33,7 +31,7 @@ func (qbFakeTestRunner) TestQuestion(ctx context.Context, input modelcheckquesti
 // 同一测试执行器）。
 func qbQuestionBankFixture(t *testing.T) (*modelcheckquestionbank.Store, *modelcheckquestionbank.HTTPHandlers, *modelcheckquestionbank.HTTPHandlers) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/questionbank.db?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +84,7 @@ func qbQuestionBankFixture(t *testing.T) (*modelcheckquestionbank.Store, *modelc
 	if _, err := db.Exec(`INSERT INTO system_accounts (id, display_name) VALUES ('sys-1', '提交人甲'), ('sys-2', '提交人乙')`); err != nil {
 		t.Fatal(err)
 	}
-	store, err := modelcheckquestionbank.NewStore(db, false)
+	store, err := modelcheckquestionbank.NewStore(db)
 	if err != nil {
 		t.Fatal(err)
 	}

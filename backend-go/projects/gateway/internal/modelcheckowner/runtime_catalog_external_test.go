@@ -2,12 +2,10 @@ package modelcheckowner
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,20 +18,8 @@ import (
 // 专属隐藏探针与基线自动跳过），报告与请求快照携带 detectionScope 标注；
 // 目录内模型的持久化形态不含该键，保持既有字节行为。
 func TestRuntimeRunsCatalogExternalAccountSupportedModel(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime-catalog-external.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range runtimeTestDDL() {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	_, dsn := wbOpenPGHandle(t, j3bRuntimeFixtureDDLs())
+	store, err := OpenStore(j3bPGConfig(dsn))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +66,7 @@ func TestRuntimeRunsCatalogExternalAccountSupportedModel(t *testing.T) {
 		t.Fatalf("catalog-external run result=%+v err=%v", result, err)
 	}
 	var requestSummary, resultSummary string
-	if err := store.db.QueryRow(`SELECT request_summary_json,result_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary, &resultSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT request_summary_json,result_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&requestSummary, &resultSummary); err != nil {
 		t.Fatal(err)
 	}
 	var snapshot, report map[string]any
@@ -114,7 +100,7 @@ func TestRuntimeRunsCatalogExternalAccountSupportedModel(t *testing.T) {
 		t.Fatalf("catalog run result=%+v err=%v", catalogResult, err)
 	}
 	var catalogSummary, catalogResultSummary string
-	if err := store.db.QueryRow(`SELECT request_summary_json,result_summary_json FROM model_check_runs WHERE id=?`, catalogResult.RunID).Scan(&catalogSummary, &catalogResultSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT request_summary_json,result_summary_json FROM model_check_runs WHERE id=?`), catalogResult.RunID).Scan(&catalogSummary, &catalogResultSummary); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(catalogSummary, "detectionScope") || strings.Contains(catalogResultSummary, "detectionScope") {
@@ -124,7 +110,7 @@ func TestRuntimeRunsCatalogExternalAccountSupportedModel(t *testing.T) {
 
 func readRunItemKinds(t *testing.T, store *Store, runID string) map[string]string {
 	t.Helper()
-	rows, err := store.db.Query(`SELECT item_type,status FROM model_check_items WHERE run_id=?`, runID)
+	rows, err := store.db.Query(j3bQ(`SELECT item_type,status FROM model_check_items WHERE run_id=?`), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,16 +136,8 @@ func readRunItemKinds(t *testing.T, store *Store, runID string) map[string]strin
 // /v1/chat/completions；目录内模型在同一账户上仍拒绝，且错误文本给出可操作
 // 提示。
 func TestBusinessResolveRunsChatShapeAccountCatalogExternalModel(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "business-chat-external.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range append(businessSourceContractDDL(), runtimeTestDDL()...) {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
+	seed, dsn := wbOpenPGHandle(t, append(businessSourceContractDDL(), j3bRuntimeFixtureDDLs()...))
+	_ = dsn
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected probe path %s", r.URL.Path)
@@ -187,25 +165,25 @@ func TestBusinessResolveRunsChatShapeAccountCatalogExternalModel(t *testing.T) {
 	if _, err := seed.Exec(`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-chat','acct-chat','gpt_openai_v1','` + server.URL + `/v1',1),('conn-chat-gpt','acct-chat-gpt','gpt_openai_v1','` + server.URL + `/v1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := seed.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
+	if _, err := seed.Exec(`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
 	credential := testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["chat_json"]}`)
-	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-chat','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'chat_json','conn-chat',?,'Chat Shape')`, credential); err != nil {
+	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-chat','sys-1','gpt','gpt','openai','api_key',1,1,'active', 1,'chat_json','conn-chat',?,'Chat Shape')`, credential); err != nil {
 		t.Fatal(err)
 	}
 	// 目录内模型拒绝用例的对照账户：mode 同为 chat_json，但支持模型只登记
 	// 目录内 gpt 系。
-	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-chat-gpt','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'chat_json','conn-chat-gpt',?,'Chat Shape GPT')`, credential); err != nil {
+	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-chat-gpt','sys-1','gpt','gpt','openai','api_key',1,1,'active', 1,'chat_json','conn-chat-gpt',?,'Chat Shape GPT')`, credential); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := seed.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-chat','sys-1','group-1',1),('acct-chat-gpt','sys-1','group-1',1)`); err != nil {
+	if _, err := seed.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-chat','sys-1','group-1', 1),('acct-chat-gpt','sys-1','group-1', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	// 目标 schema（§4）：account_supported_models 以 model_id 引用 models；
 	// 目录外支持模型必须存在 active 的 owner-visible 行（本用例验证目录外
 	// 模型仍可检测，故在此登记行并保持 account_supported_models 关系）。
-	if _, err := seed.Exec(`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-ds','gpt','deepseek-v4.1-flash','deepseek-v4.1-flash','builtin',NULL,'active',1),('m-gpt56','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',1)`); err != nil {
+	if _, err := seed.Exec(`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-ds','gpt','deepseek-v4.1-flash','deepseek-v4.1-flash','builtin',NULL,'active',TRUE),('m-gpt56','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',TRUE)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := seed.Exec(`INSERT INTO account_supported_models VALUES ('acct-chat','m-ds'),('acct-chat-gpt','m-gpt56')`); err != nil {
@@ -214,12 +192,12 @@ func TestBusinessResolveRunsChatShapeAccountCatalogExternalModel(t *testing.T) {
 	if err := seed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	store, err := OpenStore(j3bPGConfig(dsn))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	source, err := NewBusinessTargetSource(store.db, false, "secret")
+	source, err := NewBusinessTargetSource(store.db, "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +235,7 @@ func TestBusinessResolveRunsChatShapeAccountCatalogExternalModel(t *testing.T) {
 		t.Fatalf("chat-shape catalog-external run result=%+v err=%v", result, err)
 	}
 	var requestSummary, resultSummary string
-	if err := store.db.QueryRow(`SELECT request_summary_json,result_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&requestSummary, &resultSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT request_summary_json,result_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&requestSummary, &resultSummary); err != nil {
 		t.Fatal(err)
 	}
 	var snapshot, report map[string]any
@@ -296,20 +274,8 @@ func TestBusinessResolveRunsChatShapeAccountCatalogExternalModel(t *testing.T) {
 // excludedFromScoring，且以 Score=0/MaxScore=0 落库（不进评分分母），品牌
 // tokenizer 基线无法再压低目录外模型分数并触发处罚。
 func TestRuntimeFullProfileSkipsTokenIntegrityForCatalogExternalModel(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime-full-external.db")
-	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ddl := range runtimeTestDDL() {
-		if _, err := seed.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := seed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(testSQLiteConfig(path))
+	_, dsn := wbOpenPGHandle(t, j3bRuntimeFixtureDDLs())
+	store, err := OpenStore(j3bPGConfig(dsn))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,19 +317,19 @@ func TestRuntimeFullProfileSkipsTokenIntegrityForCatalogExternalModel(t *testing
 	}
 	var score, maxScore int
 	var status string
-	if err := store.db.QueryRow(`SELECT status,score,max_score FROM model_check_runs WHERE id=?`, result.RunID).Scan(&status, &score, &maxScore); err != nil || status != string(RunCompleted) {
+	if err := store.db.QueryRow(j3bQ(`SELECT status,score,max_score FROM model_check_runs WHERE id=?`), result.RunID).Scan(&status, &score, &maxScore); err != nil || status != string(RunCompleted) {
 		t.Fatalf("run row status=%s err=%v", status, err)
 	}
 	var tokenStatus string
 	var tokenScore, tokenMaxScore int
-	if err := store.db.QueryRow(`SELECT status,score,max_score FROM model_check_items WHERE run_id=? AND item_type='token_integrity'`, result.RunID).Scan(&tokenStatus, &tokenScore, &tokenMaxScore); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT status,score,max_score FROM model_check_items WHERE run_id=? AND item_type='token_integrity'`), result.RunID).Scan(&tokenStatus, &tokenScore, &tokenMaxScore); err != nil {
 		t.Fatalf("token_integrity item must exist: %v", err)
 	}
 	if tokenStatus != "skipped" || tokenScore != 0 || tokenMaxScore != 0 {
 		t.Fatalf("token_integrity must be an excluded skip, got status=%s score=%d maxScore=%d", tokenStatus, tokenScore, tokenMaxScore)
 	}
 	var resultSummary string
-	if err := store.db.QueryRow(`SELECT result_summary_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&resultSummary); err != nil {
+	if err := store.db.QueryRow(j3bQ(`SELECT result_summary_json FROM model_check_runs WHERE id=?`), result.RunID).Scan(&resultSummary); err != nil {
 		t.Fatal(err)
 	}
 	var report struct {

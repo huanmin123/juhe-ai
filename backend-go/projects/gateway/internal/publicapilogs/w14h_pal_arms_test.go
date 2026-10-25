@@ -494,9 +494,9 @@ func w14hStoreOpen(t *testing.T, script *w14hStoreScript) *sql.DB {
 }
 
 // newW14HStore 构造挂接脚本 driver 的 Store。
-func newW14HStore(t *testing.T, script *w14hStoreScript, postgres bool) *Store {
+func newW14HStore(t *testing.T, script *w14hStoreScript) *Store {
 	t.Helper()
-	store, err := NewStore(w14hStoreOpen(t, script), postgres, nil, nil)
+	store, err := NewStore(w14hStoreOpen(t, script), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,21 +506,13 @@ func newW14HStore(t *testing.T, script *w14hStoreScript, postgres bool) *Store {
 func TestW14HStoreFaultArms(t *testing.T) {
 	ctx := context.Background()
 	inputs := []Input{{ID: "w14h-store-1", Method: "GET", Path: "/x", StatusCode: 200}}
-	// SQLite：begin 失败 / prepare 失败。
-	if err := newW14HStore(t, &w14hStoreScript{beginErr: w14hPalBoom}, false).InsertBatch(ctx, inputs); err == nil {
-		t.Fatal("sqlite begin 失败必须透传")
-	}
-	prepareFail := &w14hStoreScript{steps: []w14hStoreStep{{matcher: []string{"INSERT INTO"}, prepareErr: w14hPalBoom}}}
-	if err := newW14HStore(t, prepareFail, false).InsertBatch(ctx, inputs); err == nil {
-		t.Fatal("sqlite prepare 失败必须透传")
-	}
-	// PG：begin 失败。
-	if err := newW14HStore(t, &w14hStoreScript{beginErr: w14hPalBoom}, true).InsertBatch(ctx, inputs); err == nil {
+	// begin 失败。
+	if err := newW14HStore(t, &w14hStoreScript{beginErr: w14hPalBoom}).InsertBatch(ctx, inputs); err == nil {
 		t.Fatal("pg begin 失败必须透传")
 	}
 	// CleanupBefore 全链错误臂。
 	cleanup := func(script *w14hStoreScript) (int, error) {
-		deleted, err := newW14HStore(t, script, false).CleanupBefore(ctx, "2026-01-01", 5)
+		deleted, err := newW14HStore(t, script).CleanupBefore(ctx, "2026-01-01", 5)
 		return deleted, err
 	}
 	if _, err := cleanup(&w14hStoreScript{beginErr: w14hPalBoom}); err == nil {
@@ -556,7 +548,7 @@ func TestW14HStoreFaultArms(t *testing.T) {
 	}
 	// ensureCtx：nil ctx 回退为 Background，limit<1 钳制。
 	okScript := &w14hStoreScript{steps: []w14hStoreStep{{matcher: []string{"SELECT id FROM"}, noRows: true, cols: []string{"id"}}}}
-	if _, err := newW14HStore(t, okScript, false).CleanupBefore(nil, "2026-01-01", 0); err != nil {
+	if _, err := newW14HStore(t, okScript).CleanupBefore(nil, "2026-01-01", 0); err != nil {
 		t.Fatalf("nil ctx + limit<1=%v", err)
 	}
 }

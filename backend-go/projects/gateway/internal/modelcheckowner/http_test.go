@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,12 +17,10 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
-	_ "modernc.org/sqlite"
 )
 
 func TestNewAdminAuthorizeUsesGatewaySessionContract(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +40,7 @@ func TestNewAdminAuthorizeUsesGatewaySessionContract(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('s-1','sys-1',?,?,?)`, hex.EncodeToString(digest[:]), now.Add(time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := modelcheckauth.New(db, modelcheckauth.SQLite, func() time.Time { return now })
+	auth, err := modelcheckauth.New(db, modelcheckauth.Postgres, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,8 +54,7 @@ func TestNewAdminAuthorizeUsesGatewaySessionContract(t *testing.T) {
 }
 
 func TestNewSelfAuthorizeAllowsAuthenticatedNonAdmin(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "auth.db")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	db, err := openPGTestDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +74,7 @@ func TestNewSelfAuthorizeAllowsAuthenticatedNonAdmin(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO system_sessions VALUES ('s-user','sys-user',?,?,?)`, hex.EncodeToString(digest[:]), now.Add(time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := modelcheckauth.New(db, modelcheckauth.SQLite, func() time.Time { return now })
+	auth, err := modelcheckauth.New(db, modelcheckauth.Postgres, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,7 @@ type Dialect struct{}
 
 // bind 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func (d Dialect) bind(query string) string {
-	return sqldialect.BindSQL(true, query)
+	return sqldialect.BindSQL(query)
 }
 
 // StatsTable 返回 stats 库表引用。

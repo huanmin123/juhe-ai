@@ -330,21 +330,16 @@ func TestW1EEffectsSQLFragments(t *testing.T) {
 		t.Fatalf("updated_at 参数 = %v", got)
 	}
 
-	// 系统 quota 优先级围栏：非通用码短路；通用码分方言。
-	plainBridge := &chainErrorPolicyEffectsBridge{pg: false}
-	pgBridge := &chainErrorPolicyEffectsBridge{pg: true}
-	if got := plainBridge.systemQuotaCooldownPrioritySQL(explicitAccountErrorPolicyCooldownCode, "ref"); got != "" {
+	// 系统 quota 优先级围栏：非通用码短路；通用码取 PG timestamptz 比较。
+	bridge := &chainErrorPolicyEffectsBridge{}
+	if got := bridge.systemQuotaCooldownPrioritySQL(explicitAccountErrorPolicyCooldownCode, "ref"); got != "" {
 		t.Fatalf("非通用码围栏 = %q", got)
 	}
-	plainFencing := plainBridge.systemQuotaCooldownPrioritySQL(systemQuotaGenericCooldownCode, "ref")
-	for _, fragment := range []string{"last_error_code IN (?, ?, ?)", "LIKE ?", "julianday(cooldown_until) > julianday(?)"} {
-		if !strings.Contains(plainFencing, fragment) {
-			t.Fatalf("SQLite 围栏缺片段 %q：%s", fragment, plainFencing)
+	fencing := bridge.systemQuotaCooldownPrioritySQL(systemQuotaGenericCooldownCode, "ref")
+	for _, fragment := range []string{"last_error_code IN (?, ?, ?)", "LIKE ?", "cooldown_until::timestamptz > ?::timestamptz"} {
+		if !strings.Contains(fencing, fragment) {
+			t.Fatalf("围栏缺片段 %q：%s", fragment, fencing)
 		}
-	}
-	pgFencing := pgBridge.systemQuotaCooldownPrioritySQL(systemQuotaGenericCooldownCode, "ref")
-	if !strings.Contains(pgFencing, "cooldown_until::timestamptz > ?::timestamptz") {
-		t.Fatalf("PG 围栏 = %s", pgFencing)
 	}
 	if got := systemQuotaCooldownPriorityParams(explicitAccountErrorPolicyCooldownCode, "ref"); got != nil {
 		t.Fatalf("非通用码参数 = %v", got)
@@ -364,10 +359,10 @@ func TestW1EEffectsSQLFragments(t *testing.T) {
 	}
 
 	// 绑定守卫 SQL 与参数。
-	if got := plainBridge.bindingGuardSQL(nil); got != "" {
+	if got := bridge.bindingGuardSQL(nil); got != "" {
 		t.Fatalf("nil 绑定守卫 SQL = %q", got)
 	}
-	if got := plainBridge.bindingExistsSQL(nil); got != "" {
+	if got := bridge.bindingExistsSQL(nil); got != "" {
 		t.Fatalf("nil 绑定 EXISTS SQL = %q", got)
 	}
 	if got := bindingGuardParams(nil); got != nil {
@@ -379,9 +374,9 @@ func TestW1EEffectsSQLFragments(t *testing.T) {
 	binding := &authorizedBindingTarget{
 		AccountID: "acc-1", SystemAccountID: "sys-1", GroupID: "grp-1", AccountAuthorizationID: "authz-1",
 	}
-	existsSQL := plainBridge.bindingExistsSQL(binding)
+	existsSQL := bridge.bindingExistsSQL(binding)
 	for _, fragment := range []string{
-		"FROM group_accounts group_accounts",
+		"FROM juhe_business.group_accounts group_accounts",
 		"group_accounts.account_id = accounts.id",
 		"group_accounts.system_account_id = ?",
 		"group_accounts.group_id = ?",
@@ -392,7 +387,7 @@ func TestW1EEffectsSQLFragments(t *testing.T) {
 			t.Fatalf("EXISTS SQL 缺片段 %q：%s", fragment, existsSQL)
 		}
 	}
-	guardBindingSQL := plainBridge.bindingGuardSQL(binding)
+	guardBindingSQL := bridge.bindingGuardSQL(binding)
 	for _, fragment := range []string{"system_account_id = ?", "authorization_instance_authorization_id = ?"} {
 		if !strings.Contains(guardBindingSQL, fragment) {
 			t.Fatalf("绑定守卫 SQL 缺片段 %q：%s", fragment, guardBindingSQL)
@@ -413,18 +408,12 @@ func TestW1EEffectsSQLFragments(t *testing.T) {
 		t.Fatalf("EXISTS 参数 = %v", existsParams)
 	}
 
-	// 表名与占位符方言。
-	if got := plainBridge.table("accounts"); got != "accounts" {
-		t.Fatalf("SQLite 表名 = %q", got)
+	// 表名与占位符渲染（PG 单形态）。
+	if got := bridge.table("accounts"); got != "juhe_business.accounts" {
+		t.Fatalf("表名 = %q", got)
 	}
-	if got := pgBridge.table("accounts"); got != "juhe_business.accounts" {
-		t.Fatalf("PG 表名 = %q", got)
-	}
-	if got := plainBridge.bind("a = ? AND b = ?"); got != "a = ? AND b = ?" {
-		t.Fatalf("SQLite bind = %q", got)
-	}
-	if got := pgBridge.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
-		t.Fatalf("PG bind = %q", got)
+	if got := bridge.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
+		t.Fatalf("bind = %q", got)
 	}
 }
 
@@ -450,7 +439,7 @@ func TestW1EEffectsBridgeArms(t *testing.T) {
 		t.Fatalf("装配桥: %v", err)
 	}
 	bridge, ok := bridgePort.(*chainErrorPolicyEffectsBridge)
-	if !ok || bridge == nil || service == nil || bridge.keyStates == nil || bridge.pg {
+	if !ok || bridge == nil || service == nil || bridge.keyStates == nil {
 		t.Fatalf("装配结果 = %T / %+v / %+v", bridgePort, bridge, service)
 	}
 	if delta := time.Since(bridge.now()); delta < -time.Minute || delta > time.Minute {

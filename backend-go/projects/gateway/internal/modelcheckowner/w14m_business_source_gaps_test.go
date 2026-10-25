@@ -17,8 +17,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 	"github.com/jackc/pgx/v5/stdlib"
-	sqlite "modernc.org/sqlite"
 )
 
 var errW14mInjected = errors.New("w14m: injected failure")
@@ -103,7 +104,7 @@ func (fp *w14mFailpoint) hit(query string) bool {
 
 func (fp *w14mFailpoint) matchLocked(query string) string {
 	for pattern := range fp.armed {
-		if strings.Contains(query, pattern) {
+		if strings.Contains(failpointMatchQuery(query), failpointMatchQuery(pattern)) {
 			return pattern
 		}
 	}
@@ -202,7 +203,7 @@ type w14mFailDriver struct {
 func (d *w14mFailDriver) Open(name string) (driver.Conn, error) {
 	inner := d.inner
 	if inner == nil {
-		inner = &sqlite.Driver{}
+		inner = stdlib.GetDefaultDriver()
 	}
 	raw, err := inner.Open(name)
 	if err != nil {
@@ -316,7 +317,18 @@ func w14mFailDB(t *testing.T, ddl []string) (*sql.DB, *w14mFailpoint) {
 	fp := w14mSharedFailpoint()
 	w14mDBSequence++
 	name := fmt.Sprintf("%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), w14mDBSequence)
-	db, err := sql.Open("w14mfail", "file:w14mfail-"+name+"?mode=memory&cache=shared")
+	_ = name
+	tdb := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+j3bTestSchema); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+			return err
+		}
+		return nil
+	})
+	d := &w14mFailDriver{inner: stdlib.GetDefaultDriver(), fp: fp}
+	db, err := sqldialect.OpenDB(d, pgSearchPathDSN(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +336,7 @@ func w14mFailDB(t *testing.T, ddl []string) (*sql.DB, *w14mFailpoint) {
 	// 单连接会造成自等待死锁。
 	t.Cleanup(func() { _ = db.Close(); fp.disarm() })
 	for _, statement := range ddl {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := db.Exec(j3bQualifyDDL(statement)); err != nil {
 			t.Fatalf("执行 DDL %q 失败: %v", statement, err)
 		}
 	}
@@ -488,14 +500,14 @@ func TestW14MSameTargetFenceCompareArms(t *testing.T) {
 func w14mSeedAuthorizedFixture(t *testing.T, db *sql.DB, sourceEnvelope string) {
 	t.Helper()
 	statements := []string{
-		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
-		`INSERT INTO resource_authorizations VALUES ('grant-1','account','acct-source','sys-1','sys-1','use','active',NULL)`,
-		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source','acct-source','gpt_openai_v1','https://example.invalid/v1',1)`,
+		`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','sys-1',1)`,
+		`INSERT INTO resource_authorizations(id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at) VALUES ('grant-1','account','acct-source','sys-1','sys-1','use','active',NULL)`,
+		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source','acct-source','gpt_openai_v1','https://example.invalid/v1', 1)`,
 		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-source','sys-1','gpt','gpt','openai','api_key',3,8,'active',1,'responses_sse','conn-source','` + sourceEnvelope + `')`,
-		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-source','sys-1','group-1',1)`,
-		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-virtual','acct-virtual','gpt_openai_v1','https://example.invalid/v1',1)`,
+		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-source','sys-1','group-1', 1)`,
+		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-virtual','acct-virtual','gpt_openai_v1','https://example.invalid/v1', 1)`,
 		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('acct-virtual','sys-1','gpt','gpt','openai','api_key',5,6,'active',1,'responses_sse','conn-virtual','` + sourceEnvelope + `','grant-1','acct-source')`,
-		`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('acct-virtual','sys-1','group-1','grant-1',1)`,
+		`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('acct-virtual','sys-1','group-1','grant-1', 1)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -525,7 +537,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 		// 目标 schema 以 model_id 外键表达支持模型：先登记 models 行再建关系，
 		// 否则 JOIN 无行等价于「无支持模型」（不限制），旧语义会失真。
 		for _, statement := range []string{
-			`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-other-model','gpt','other-model','other-model','builtin',NULL,'active',1)`,
+			`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-other-model','gpt','other-model','other-model','builtin',NULL,'active',TRUE)`,
 			`INSERT INTO account_supported_models VALUES ('acct-source','m-other-model')`,
 		} {
 			if _, err := db.Exec(statement); err != nil {
@@ -587,7 +599,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 	t.Run("proxyUnavailable", func(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		w14mSeedAuthorizedFixture(t, db, testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`))
-		if _, err := db.Exec(`INSERT INTO proxy_profiles VALUES ('proxy-broken',0,'http','127.0.0.1',1,'','')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO proxy_profiles(id,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-broken', FALSE,'http','127.0.0.1',1,'','')`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='proxy-broken' WHERE id='acct-source'`); err != nil {
@@ -603,7 +615,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 	t.Run("proxyUnsupportedProtocol", func(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		w14mSeedAuthorizedFixture(t, db, testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`))
-		if _, err := db.Exec(`INSERT INTO proxy_profiles VALUES ('proxy-socks6',1,'socks6','127.0.0.1',1,'','')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO proxy_profiles(id,enabled,type,host,port,username,password_encrypted) VALUES ('proxy-socks6', TRUE,'socks6','127.0.0.1',1,'','')`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id='proxy-socks6' WHERE id='acct-source'`); err != nil {

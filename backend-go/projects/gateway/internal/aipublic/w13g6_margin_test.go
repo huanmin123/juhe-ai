@@ -49,7 +49,7 @@ func w13g6Deps(t *testing.T, db *sql.DB, apiKeyStore *apikeys.Store) *Deps {
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(db, true, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(db, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestW13g6ClosedStoreArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	strategyStore, err := routestrategies.NewStore(closed, true, nil, nil, nil)
+	strategyStore, err := routestrategies.NewStore(closed, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

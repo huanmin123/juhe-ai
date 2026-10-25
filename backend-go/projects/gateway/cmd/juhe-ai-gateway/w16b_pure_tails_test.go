@@ -197,7 +197,7 @@ func TestW16BAccountReadCompanionsArms(t *testing.T) {
 
 	// authorizationStatsSourceAdapter 读错误透传（31-33）：底库句柄关闭。
 	closedDB := w2aClosedSQLiteDB(t)
-	authzStore, err := authz.NewStore(closedDB, false, time.Now)
+	authzStore, err := authz.NewStore(closedDB, time.Now)
 	if err != nil {
 		t.Fatalf("create authz store: %v", err)
 	}
@@ -217,11 +217,11 @@ func TestW16BAccountReadCompanionsArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create account store: %v", err)
 	}
-	validAuthz, err := authz.NewStore(db, false, time.Now)
+	validAuthz, err := authz.NewStore(db, time.Now)
 	if err != nil {
 		t.Fatalf("create valid authz store: %v", err)
 	}
-	composed := &composition{db: db, pgDialect: false}
+	composed := &composition{db: db}
 	if err := wireAccountReadCompanions(composed, accountStore, validAuthz, ""); err == nil {
 		t.Fatal("空 secret 必须让 keyStates 构造失败")
 	}

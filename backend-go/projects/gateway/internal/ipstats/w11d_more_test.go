@@ -40,7 +40,7 @@ func w11dDetailScanDB(t *testing.T) *Store {
 			t.Fatalf("建表: %v\n%s", err, statement)
 		}
 	}
-	store, err := NewStore(db, true, nil, nil, nil, nil)
+	store, err := NewStore(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestW11DCreatePolicyTransactionArms(t *testing.T) {
 	ctx := context.Background()
 
 	// BeginTx 错误：关闭连接池后新事务失败（方言无关）。
-	closed, err := NewStore(env.db, true, nil, nil, nil, nil)
+	closed, err := NewStore(env.db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

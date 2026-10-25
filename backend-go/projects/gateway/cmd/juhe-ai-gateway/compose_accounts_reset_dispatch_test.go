@@ -46,7 +46,7 @@ func newResetDispatchBridge(t *testing.T, composed *composition) (accounts.Runti
 		t.Fatalf("open outbox sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	writer := newChainProbeRequestOutboxWriter(db, false, 65_000)
+	writer := newChainProbeRequestOutboxWriter(db, 65_000)
 	// 生产对等：与 chain 装配同一条 ensure 路径已在进程启动早期完成建表；
 	// 测试在派发 goroutine 之前主动 ensure，避免行查询与建表竞速。
 	if err := writer.ensureSchema(context.Background()); err != nil {
@@ -114,7 +114,7 @@ func TestAccountsRuntimeResetBridgeDispatchRejectedKeepsReset(t *testing.T) {
 	// input_unavailable 拒绝——fire-and-forget，端口不 panic、不向调用方传
 	// 错、不写行，reset 继续。
 	inert, err := newAccountsRuntimeResetBridge(composed, nil, &chainRuntimeServices{}, resetDispatchTestSecret,
-		newChainProbeRequestOutboxWriter(nil, false, 65_000))
+		newChainProbeRequestOutboxWriter(nil, 65_000))
 	if err != nil {
 		t.Fatalf("assemble inert reset bridge: %v", err)
 	}

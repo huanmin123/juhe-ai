@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 var errW13g2McFailpoint = errors.New("w13g2 mc failpoint: injected failure")
@@ -47,13 +49,13 @@ func (fp *w13g2McFailpoint) disarm() {
 func (fp *w13g2McFailpoint) armed(query string) bool {
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
-	return fp.pattern != "" && !fp.scan && strings.Contains(query, fp.pattern)
+	return fp.pattern != "" && !fp.scan && strings.Contains(failpointMatchQuery(query), failpointMatchQuery(fp.pattern))
 }
 
 func (fp *w13g2McFailpoint) scanArmed(query string) bool {
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
-	return fp.pattern != "" && fp.scan && strings.Contains(query, fp.pattern)
+	return fp.pattern != "" && fp.scan && strings.Contains(failpointMatchQuery(query), failpointMatchQuery(fp.pattern))
 }
 
 type w13g2McFakeRows struct{ sent bool }
@@ -140,7 +142,7 @@ func w13g2McRegisterFailDriver(key string) *w13g2McFailpoint {
 	if loaded, ok := w13g2McFailDrivers.Load(key); ok {
 		return loaded.(*w13g2McFailpoint)
 	}
-	d := &w13g2McFailDriver{inner: &sqlite.Driver{}, fp: &w13g2McFailpoint{}}
+	d := &w13g2McFailDriver{inner: stdlib.GetDefaultDriver(), fp: &w13g2McFailpoint{}}
 	if actual, loaded := w13g2McFailDrivers.LoadOrStore(key, d.fp); loaded {
 		return actual.(*w13g2McFailpoint)
 	}
@@ -148,23 +150,34 @@ func w13g2McRegisterFailDriver(key string) *w13g2McFailpoint {
 	return d.fp
 }
 
-// w13g2McFailStore 打开 runtimeTestDDL 结构的失败注入库。
+// w13g2McFailStore 打开 j3bRuntimeFixtureDDLs 结构的失败注入库（pgtestkit
+// 隔离 PG 库 + pgx 驱动内核，2026-10-25 存储形态收尾）。
 func w13g2McFailStore(t *testing.T) (*Store, *w13g2McFailpoint) {
 	t.Helper()
 	key := strings.ReplaceAll(t.Name(), "/", "-")
 	fp := w13g2McRegisterFailDriver(key)
-	db, err := sql.Open("w13g2mcfail-"+key, "file:w13g2mcfail-"+key+"?mode=memory&cache=shared")
+	tdb := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+j3bTestSchema); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+			return err
+		}
+		return nil
+	})
+	d := &w13g2McFailDriver{inner: stdlib.GetDefaultDriver(), fp: fp}
+	db, err := sqldialect.OpenDB(d, pgSearchPathDSN(tdb.DSN))
 	if err != nil {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	for _, statement := range runtimeTestDDL() {
+	for _, statement := range j3bRuntimeFixtureDDLs() {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return &Store{db: db, mode: "sqlite"}, fp
+	return &Store{db: db, schema: j3bTestSchema}, fp
 }
 
 func w13g2McTx(t *testing.T, s *Store) *sql.Tx {
@@ -375,7 +388,7 @@ func TestW13g2McFailpointCoreArms(t *testing.T) {
 	})
 
 	t.Run("checkSchemaColumns", func(t *testing.T) {
-		fp.arm("PRAGMA table_info")
+		fp.arm("information_schema.columns")
 		defer fp.disarm()
 		if err := s.checkColumns(ctx, "model_check_runs", []string{"id"}); err == nil {
 			t.Fatalf("应失败")

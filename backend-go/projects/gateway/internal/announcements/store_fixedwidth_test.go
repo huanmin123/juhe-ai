@@ -32,7 +32,7 @@ func TestAnnouncementTimestampsFixedWidthMillis(t *testing.T) {
 	}
 	// Sub-ms clock fraction proves the fixed-width truncation.
 	clock := time.Date(2026, 1, 10, 8, 30, 0, 123456789, time.UTC)
-	store, err := NewStore(db, false, func() time.Time { return clock }, func(prefix string) string { return prefix + "_1" })
+	store, err := NewStore(db, func() time.Time { return clock }, func(prefix string) string { return prefix + "_1" })
 	if err != nil {
 		t.Fatal(err)
 	}

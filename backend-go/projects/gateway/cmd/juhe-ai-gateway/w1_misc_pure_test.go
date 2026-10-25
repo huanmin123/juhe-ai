@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	redis "github.com/redis/go-redis/v9"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	redis "github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
@@ -273,7 +273,7 @@ func TestW1UAiAccountLimitSettingsAdapterBranches(t *testing.T) {
 		step++
 		return base.Add(time.Duration(step) * 2 * time.Minute)
 	}
-	store, err := settings.NewStore(db, true, now, nil)
+	store, err := settings.NewStore(db, now, nil)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -737,7 +737,7 @@ func TestW1UChainRequestDispatchMarks(t *testing.T) {
 // 账户/reason/trace 归一化。
 func TestW1UEnqueueProbeRequestSourceFence(t *testing.T) {
 	db := w1uOpenSeededBusinessPG(t)
-	writer := newChainProbeRequestOutboxWriter(db, true, 30_000)
+	writer := newChainProbeRequestOutboxWriter(db, 30_000)
 	fence := &chainHealthDispatchSourceFence{
 		StateKey:         "sk-w1u",
 		AccountID:        "acc-9",
@@ -908,7 +908,7 @@ func TestW1UBuildAssetDataURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatAssetObjectStore: %v", err)
 	}
-	obs := newChatImageObservations(db, true, store, nil)
+	obs := newChatImageObservations(db, store, nil)
 	base := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 	now := base.Format(w1uChatAssetTimeLayout)
 	future := base.Add(time.Hour).Format(w1uChatAssetTimeLayout)

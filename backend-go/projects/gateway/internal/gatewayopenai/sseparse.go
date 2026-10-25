@@ -117,6 +117,26 @@ func ParseStreamEventData(dataText, eventName, rawText string, dataBytes int) Pa
 	return event
 }
 
+// IsProtocolInvalidChunkFrame 报告一个已解析的 data 载荷是否为协议形状异常帧
+// （流式提交边界受限重放与异常终局处置设计 §3.2.0 L2，2026-10-26 增量）：
+// 顶层存在 `choices` 键且 JSON 值不是数组。生产实证（2026-10-26）：中转渠道
+// 空壳流首帧 `"choices":null`，客户端 AI SDK chunk schema 校验拒收导致整轮
+// 失败。`choices:[]`（数组）放行；无 `choices` 键（responses 系 / 桥接转换后
+// 字节）放行；nil 载荷（DataParseError / [DONE]）不适用——解析失败走既有
+// DataParseError 分类。inspector 按本谓词计 InvalidProtocolEventCount，
+// gatewayresponse 隔离器按同一谓词做字节隔离；L2 纯观测+隔离，不参与终局判定。
+func IsProtocolInvalidChunkFrame(data map[string]any) bool {
+	if data == nil {
+		return false
+	}
+	choices, present := data["choices"]
+	if !present {
+		return false
+	}
+	_, isArray := choices.([]any)
+	return !isArray
+}
+
 // extractStreamEventError mirrors extractOpenAIStreamEventError.
 func extractStreamEventError(data map[string]any) map[string]any {
 	if typeText, _ := data["type"].(string); typeText == "response.mcp_call.failed" {

@@ -34,25 +34,16 @@ type configuredModelResolution struct {
 // protocol-consistency subset only: the cross-account comparison evidence and
 // the GPT-tokenizer token-integrity baseline skip it inside modelcheckprobe
 // with excludedFromScoring evidence.
-func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, postgres bool, accountID string, profile modelcheckprofile.ProtocolProfile, model string) (configuredModelResolution, error) {
+func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, accountID string, profile modelcheckprofile.ProtocolProfile, model string) (configuredModelResolution, error) {
 	if db == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(model) == "" {
 		return configuredModelResolution{}, nil
-	}
-	table := func(name string) string {
-		if postgres {
-			return "juhe_business." + name
-		}
-		return name
 	}
 	// v16 契约（设计 §8 去供应商化）：account_supported_models 只存
 	// model_id 外键，请求侧模型名取 models.public_model；映射读取改
 	// account_entry_mappings，upstream_model 由 target_model_id 外键解析出
 	// models.upstream_model，target_endpoint_family 对应旧
 	// upstream_endpoint_family。
-	modelsQuery := "SELECT m.public_model FROM " + table("account_supported_models") + " asm JOIN " + table("models") + " m ON m.id=asm.model_id WHERE asm.account_id=?"
-	if postgres {
-		modelsQuery = "SELECT m.public_model FROM " + table("account_supported_models") + " asm JOIN " + table("models") + " m ON m.id=asm.model_id WHERE asm.account_id=$1"
-	}
+	modelsQuery := "SELECT m.public_model FROM juhe_business.account_supported_models asm JOIN juhe_business.models m ON m.id=asm.model_id WHERE asm.account_id=$1"
 	rows, err := db.QueryContext(ctx, modelsQuery, accountID)
 	if err != nil {
 		return configuredModelResolution{}, fmt.Errorf("read J3b account supported models: %w", err)
@@ -75,10 +66,7 @@ func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, post
 	// 上游侧支持名单：旧行是单一名字空间（请求名与上游名同列），新契约里
 	// 两侧名字可能不同，因此用同一批 supported 行的 models.upstream_model
 	// 建第二集合，供映射后的上游名校验使用。
-	upstreamQuery := "SELECT m.upstream_model FROM " + table("account_supported_models") + " asm JOIN " + table("models") + " m ON m.id=asm.model_id WHERE asm.account_id=?"
-	if postgres {
-		upstreamQuery = "SELECT m.upstream_model FROM " + table("account_supported_models") + " asm JOIN " + table("models") + " m ON m.id=asm.model_id WHERE asm.account_id=$1"
-	}
+	upstreamQuery := "SELECT m.upstream_model FROM juhe_business.account_supported_models asm JOIN juhe_business.models m ON m.id=asm.model_id WHERE asm.account_id=$1"
 	upstreamRows, err := db.QueryContext(ctx, upstreamQuery, accountID)
 	if err != nil {
 		return configuredModelResolution{}, fmt.Errorf("read J3b account supported models: %w", err)
@@ -109,13 +97,8 @@ func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, post
 		defaultResolution.SourceEndpointFamily = sourceFamilies[0]
 		defaultResolution.UpstreamEndpointFamily = sourceFamilies[0]
 	}
-	mappingQuery := "SELECT m.upstream_model,aem.target_endpoint_family FROM " + table("account_entry_mappings") + " aem JOIN " + table("models") + " m ON m.id=aem.target_model_id WHERE aem.account_id=? AND aem.source_model=? AND aem.source_endpoint_family=? AND aem.enabled=1"
-	if postgres {
-		// enabled is an integer column in both dialect schemas (maintenance
-		// pg_schema_business_tables / sqlite_schema_business); a TRUE literal
-		// fails on PostgreSQL with 42883 integer = boolean (BUG-0205).
-		mappingQuery = "SELECT m.upstream_model,aem.target_endpoint_family FROM " + table("account_entry_mappings") + " aem JOIN " + table("models") + " m ON m.id=aem.target_model_id WHERE aem.account_id=$1 AND aem.source_model=$2 AND aem.source_endpoint_family=$3 AND aem.enabled=1"
-	}
+	// aem.enabled 是整型列；TRUE 字面量在 PG 上会触发 42883（整数 = 布尔，BUG-0205）。
+	mappingQuery := "SELECT m.upstream_model,aem.target_endpoint_family FROM juhe_business.account_entry_mappings aem JOIN juhe_business.models m ON m.id=aem.target_model_id WHERE aem.account_id=$1 AND aem.source_model=$2 AND aem.source_endpoint_family=$3 AND aem.enabled=1"
 	for _, family := range sourceFamilies {
 		var upstream, upstreamFamily string
 		err := db.QueryRowContext(ctx, mappingQuery, accountID, model, string(family)).Scan(&upstream, &upstreamFamily)
@@ -160,8 +143,8 @@ func j3bModelMappingConversionSupported(profile modelcheckprofile.ProtocolProfil
 // resolveConfiguredUpstreamModel is retained as a compatibility shim for
 // package-local callers; the strict resolver remains the single source of
 // mapping semantics and this wrapper cannot bypass family validation.
-func resolveConfiguredUpstreamModel(ctx context.Context, db *sql.DB, postgres bool, accountID string, profile modelcheckprofile.ProtocolProfile, model string) (string, error) {
-	resolution, err := resolveConfiguredUpstreamModelMapping(ctx, db, postgres, accountID, profile, model)
+func resolveConfiguredUpstreamModel(ctx context.Context, db *sql.DB, accountID string, profile modelcheckprofile.ProtocolProfile, model string) (string, error) {
+	resolution, err := resolveConfiguredUpstreamModelMapping(ctx, db, accountID, profile, model)
 	if err != nil {
 		return "", err
 	}

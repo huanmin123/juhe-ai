@@ -184,17 +184,14 @@ func uniqueStrings(values []string) []string {
 
 // readSystemSettingsTimezone is the default TimezoneSource: the
 // usageStatsTimezone system setting from the business system_settings table
-// (Node usage-stats-helpers.ts usageStatsTimezoneAsync; SQLite reads the bare
-// table, PostgreSQL qualifies juhe_business). The statreads package owns the
-// same query for the stats surfaces.
-func readSystemSettingsTimezone(ctx context.Context, db *sql.DB, postgres bool) (string, error) {
+// (Node usage-stats-helpers.ts usageStatsTimezoneAsync; juhe_business
+// qualified). The statreads package owns the same query for the stats
+// surfaces.
+func readSystemSettingsTimezone(ctx context.Context, db *sql.DB) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	table := "system_settings"
-	if postgres {
-		table = "juhe_business.system_settings"
-	}
+	table := "juhe_business.system_settings"
 	var raw sql.NullString
 	err := db.QueryRowContext(ctx, `SELECT value_json FROM `+table+`
 		WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`).Scan(&raw)

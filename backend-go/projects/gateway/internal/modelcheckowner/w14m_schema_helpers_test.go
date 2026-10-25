@@ -31,68 +31,35 @@ func w14mPgStore(db *sql.DB, schema string) *Store {
 	if err != nil {
 		panic(err)
 	}
-	return &Store{db: db, mode: "postgres", schema: schema, HealthStatHour: statHour}
+	return &Store{db: db, schema: schema, HealthStatHour: statHour}
 }
 
-func w14mPlainStore(db *sql.DB, mode string) *Store {
+func w14mPlainStore(db *sql.DB) *Store {
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {
 		panic(err)
 	}
-	return &Store{db: db, mode: mode, schema: "juhe_business", HealthStatHour: statHour}
+	return &Store{db: db, schema: j3bTestSchema, HealthStatHour: statHour}
 }
 
 func TestW14MStoreCheckColumnsArms(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("emptyRequired", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
 		defer func() { _ = db.Close() }()
 		fp.disarm()
-		if err := w14mPlainStore(db, "sqlite").checkColumns(ctx, "model_check_inputs", nil); err != nil {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("sqliteScanError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		defer func() { _ = db.Close() }()
-		fp.armScan("PRAGMA table_info")
-		defer fp.disarm()
-		err := w14mPlainStore(db, "sqlite").checkColumns(ctx, "model_check_inputs", []string{"input_id"})
-		if err == nil || !strings.Contains(err.Error(), "scan J3b SQLite schema columns") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("sqliteIterateError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		defer func() { _ = db.Close() }()
-		fp.armNextErr("PRAGMA table_info")
-		defer fp.disarm()
-		err := w14mPlainStore(db, "sqlite").checkColumns(ctx, "model_check_inputs", []string{"input_id"})
-		if err == nil || !strings.Contains(err.Error(), "iterate J3b SQLite schema columns") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("checkSchemaTableMismatch", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
-		defer func() { _ = db.Close() }()
-		fp.armScan1("type='table' AND name=?")
-		defer fp.disarm()
-		err := w14mPlainStore(db, "sqlite").CheckSchema(ctx)
-		if err == nil || !strings.Contains(err.Error(), "returned unexpected table") {
+		if err := w14mPlainStore(db).checkColumns(ctx, "model_check_inputs", nil); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 	})
 
 	t.Run("applyHealthFactUpsertError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
 		defer func() { _ = db.Close() }()
 		fp.arm("ON CONFLICT(account_id,stat_hour)")
 		defer fp.disarm()
-		changed, err := w14mPlainStore(db, "sqlite").ApplyHealthFact(ctx, HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6-sol", Profile: "quick", Level: "unavailable", StatHour: "2026-08-27T10", RunID: "run-1", ObservedAt: time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC), Threshold: 80, Score: 10})
+		changed, err := w14mPlainStore(db).ApplyHealthFact(ctx, HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6-sol", Profile: "quick", Level: "unavailable", StatHour: "2026-08-27T10", RunID: "run-1", ObservedAt: time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC), Threshold: 80, Score: 10})
 		if err == nil || changed || !strings.Contains(err.Error(), "upsert J3b health fact") {
 			t.Fatalf("changed=%t err = %v", changed, err)
 		}
@@ -110,11 +77,11 @@ func TestW14MStoreHealthRetryScanArms(t *testing.T) {
 	}
 
 	t.Run("emptyIdentitySkipped", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
 		defer func() { _ = db.Close() }()
 		fp.disarm()
 		seed(t, db, "run-w14m-empty", "")
-		retries, err := w14mPlainStore(db, "sqlite").ListHealthSyncRetries(ctx, 10)
+		retries, err := w14mPlainStore(db).ListHealthSyncRetries(ctx, 10)
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -124,13 +91,13 @@ func TestW14MStoreHealthRetryScanArms(t *testing.T) {
 	})
 
 	t.Run("iterateError", func(t *testing.T) {
-		db, fp := w14mFailDB(t, runtimeTestDDL())
+		db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
 		defer func() { _ = db.Close() }()
 		fp.disarm()
 		seed(t, db, "run-w14m-scan", "acct")
 		fp.armNextErr("quality_health_sync_status='failed'")
 		defer fp.disarm()
-		if _, err := w14mPlainStore(db, "sqlite").ListHealthSyncRetries(ctx, 10); err == nil || !strings.Contains(err.Error(), "iterate J3b health sync retries") {
+		if _, err := w14mPlainStore(db).ListHealthSyncRetries(ctx, 10); err == nil || !strings.Contains(err.Error(), "iterate J3b health sync retries") {
 			t.Fatalf("err = %v", err)
 		}
 	})
@@ -147,12 +114,12 @@ func TestW14MStorePostgresSchemaArms(t *testing.T) {
 	w11eRecreateSchema(t, realDB, schema, w11eNewPlan())
 
 	t.Run("openStorePostgresOK", func(t *testing.T) {
-		store, err := OpenStore(Config{Enabled: true, StoreMode: "postgres", PostgresURL: w11eCoverPostgresURL(t), BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true})
+		store, err := OpenStore(Config{Enabled: true, PostgresURL: w11eCoverPostgresURL(t), BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true})
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		if store.mode != "postgres" || store.schema != "juhe_j3b" {
-			t.Fatalf("mode=%s schema=%s", store.mode, store.schema)
+		if store.schema != "juhe_j3b" {
+			t.Fatalf("schema=%s", store.schema)
 		}
 		_ = store.Close()
 	})

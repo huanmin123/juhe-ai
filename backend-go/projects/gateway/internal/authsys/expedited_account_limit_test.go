@@ -23,7 +23,7 @@ import (
 func expeditedNewStore(t *testing.T) (*AccountStore, *sql.DB) {
 	t.Helper()
 	db := newContractTestDB(t)
-	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, readyOwnerGate)
+	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}

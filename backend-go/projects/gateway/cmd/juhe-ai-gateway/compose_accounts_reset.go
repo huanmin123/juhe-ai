@@ -75,10 +75,9 @@ import (
 // the dispatch on its logged skip contract).
 func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string, healthDispatch *chainProbeRequestOutboxWriter) (accounts.RuntimeResetEffects, error) {
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB:       composed.db,
-		Postgres: composed.pgDialect,
-		Secret:   secret,
-		Now:      time.Now,
+		DB:     composed.db,
+		Secret: secret,
+		Now:    time.Now,
 		InvalidateRuntimeCache: func(reason string) {
 			if composed.Bus != nil {
 				composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
@@ -91,7 +90,6 @@ func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingVa
 	return &accountsRuntimeResetBridge{
 		bus:       composed.Bus,
 		db:        composed.db,
-		pg:        composed.pgDialect,
 		settings:  settingValue,
 		latency:   services.LatencyDegradation,
 		guard:     services.AccountAPIKeyGuard,
@@ -106,7 +104,6 @@ func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingVa
 type accountsRuntimeResetBridge struct {
 	bus       *inval.Bus
 	db        *sql.DB
-	pg        bool
 	settings  SettingValueFunc
 	latency   *gatewayproxyhealth.LatencyDegradationService
 	guard     *gatewayaccounteffects.AccountAPIKeyFailureGuard
@@ -415,18 +412,12 @@ func (b *accountsRuntimeResetBridge) rememberedTransientGeneration(accountID, ke
 
 // table qualifies business tables the way the other composition adapters do:
 // PostgreSQL reaches juhe_business through schema qualification on the shared
-// pool, SQLite uses the unqualified tables.
+// pool.
 func (b *accountsRuntimeResetBridge) table(name string) string {
-	if b.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (b *accountsRuntimeResetBridge) bind(query string) string {
-	if !b.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

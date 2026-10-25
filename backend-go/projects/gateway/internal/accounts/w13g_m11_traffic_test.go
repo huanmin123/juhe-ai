@@ -35,7 +35,7 @@ func w13gTrafficAuthorizedEnv(t *testing.T) (*testEnv, *authz.Store, *Store) {
 	for _, statement := range m10AuthzDDL {
 		base.exec(t, statement)
 	}
-	authzStore, err := authz.NewStore(base.db, true, nil)
+	authzStore, err := authz.NewStore(base.db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

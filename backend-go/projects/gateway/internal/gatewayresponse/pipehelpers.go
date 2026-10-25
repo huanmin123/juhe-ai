@@ -253,6 +253,7 @@ func (p *streamPipe) publishInspection(inspection gatewayproto.StreamInspection)
 	}
 	p.lastInspection = inspection
 	p.warnFirstParseErrorEvent(inspection)
+	p.warnFirstInvalidProtocolEvent(inspection)
 	return inspection
 }
 
@@ -280,6 +281,31 @@ func (p *streamPipe) warnFirstParseErrorEvent(inspection gatewayproto.StreamInsp
 		}
 	}
 	p.logger.Warn("gateway_stream_event_parse_error", fields, "上游流式事件无法 JSON 解析，已字节级隔离不向下游透传")
+}
+
+// warnFirstInvalidProtocolEvent 在首个协议形状异常事件上发每请求一条 WARN
+// （设计 §3.2.0 L2，v2.3 增量）：计数来自 inspector 快照，原始字节摘要由隔离器
+// 记录（与 ParseError 隔离共用首个摘要位）；L2 纯观测+隔离，不参与终局判定。
+func (p *streamPipe) warnFirstInvalidProtocolEvent(inspection gatewayproto.StreamInspection) {
+	if p.invalidProtocolWarnLogged || inspection.InvalidProtocolEventCount == 0 {
+		return
+	}
+	p.invalidProtocolWarnLogged = true
+	fields := map[string]any{
+		"endpoint":                  string(p.options.EndpointFamily),
+		"eventIndex":                inspection.EventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
+	}
+	if p.parseErrorIsolator != nil {
+		snippet, snippetIndex := p.parseErrorIsolator.firstDropped()
+		if snippet != "" {
+			fields["invalidProtocolSnippet"] = snippet
+		}
+		if snippetIndex > 0 {
+			fields["invalidProtocolEventIndex"] = snippetIndex
+		}
+	}
+	p.logger.Warn("gateway_stream_event_invalid_protocol", fields, "上游流式事件协议形状异常（顶层 choices 非数组），已字节级隔离不向下游透传")
 }
 
 func (p *streamPipe) omitBodyCaptureIfImageStream(inspection gatewayproto.StreamInspection, eofPendingFlush bool) {
@@ -370,10 +396,11 @@ func (p *streamPipe) finishStreamResult(args finishArgs) StreamPipeResult {
 	})
 	result.GatewayLocalFailure = args.gatewayLocalFailure
 	result.TransportFailure = args.transportFailure
-	// 结算观测面（设计 §3.3）：解析失败事件计数取最终 inspector 快照；
-	// windowDurationMs 未开窗流省略（nil）；downstreamFirstWriteMs 是首个下游
-	// 字节写出时刻 − 请求开始。
+	// 结算观测面（设计 §3.3 / §3.2.0 L2）：解析失败与协议形状异常事件计数取
+	// 最终 inspector 快照；windowDurationMs 未开窗流省略（nil）；
+	// downstreamFirstWriteMs 是首个下游字节写出时刻 − 请求开始。
 	result.ParseErrorEventCount = p.lastInspection.ParseErrorEventCount
+	result.InvalidProtocolEventCount = p.lastInspection.InvalidProtocolEventCount
 	result.WindowDurationMs = p.replayWindowDurationMs
 	result.DownstreamFirstWriteMs = p.downstreamFirstWriteMs
 	return result

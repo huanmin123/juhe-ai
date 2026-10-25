@@ -161,7 +161,7 @@ func w13g2FailStore(t *testing.T) (*Store, *w13g2Failpoint) {
 			t.Fatal(err)
 		}
 	}
-	store, err := NewStore(db, false, time.Now)
+	store, err := NewStore(db, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

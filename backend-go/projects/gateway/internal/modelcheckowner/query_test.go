@@ -264,7 +264,7 @@ func queryRuntimeFixture(t *testing.T) (*Runtime, *sql.DB) {
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`)
-	return &Runtime{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}, db
+	return &Runtime{Store: &Store{db: db, schema: j3bTestSchema}}, db
 }
 
 func seedQueryRuns(t *testing.T, db *sql.DB) {

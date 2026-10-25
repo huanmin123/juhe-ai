@@ -327,11 +327,11 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	authzStore, err := authz.NewStore(db, true, nil)
+	authzStore, err := authz.NewStore(db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, true, nil, authzStore)
+	store, err := NewStore(db, nil, authzStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func (w11fFailingStats) MarkAllGroupAccountStatsDirty(context.Context, string) e
 
 // w11fStoreOver 在同一 DB 上重建 store，可注入失败副作用端口。
 func (e *w11fEnv) w11fStoreOver(options ...Option) (*Store, error) {
-	return NewStore(e.env.store.db, true, nil, e.env.authz, options...)
+	return NewStore(e.env.store.db, nil, e.env.authz, options...)
 }
 
 func w11fReq(method, target, body string) *http.Request {
@@ -486,12 +486,12 @@ func TestW11FHelperBranches(t *testing.T) {
 	if itoa(0) != "0" || itoa(421) != "421" {
 		t.Fatal("itoa drift")
 	}
-	// table 的 PG 方言臂。
-	if got := (&Store{pg: true}).table("x"); got != "juhe_business.x" {
+	// table 的 PG 方言。
+	if got := (&Store{}).table("x"); got != "juhe_business.x" {
 		t.Fatalf("pg table = %q", got)
 	}
 	// NewStore nil DB。
-	if _, err := NewStore(nil, false, nil, nil); err == nil {
+	if _, err := NewStore(nil, nil, nil); err == nil {
 		t.Fatal("NewStore(nil) must fail")
 	}
 	// ActorID 缺上下文。

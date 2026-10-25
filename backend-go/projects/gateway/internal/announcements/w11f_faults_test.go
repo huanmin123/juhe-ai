@@ -2,7 +2,7 @@ package announcements
 
 // w11f 覆盖波次：脚本化连接层故障注入 + 纯函数/直连分支测试。生产存储形态
 // 收敛为 PostgreSQL 后，注入基座与 store 装配迁真实 PG（pgtestkit 隔离库 +
-// NewStore(db, true, ...)），含 ? 的规则子串按生产 PG 臂 bind 后的 $n 形式
+// NewStore(db, nil, ...)），含 ? 的规则子串按生产 PG 臂 bind 后的 $n 形式
 // 匹配、断言逐字节保持。
 // 受影响行数覆盖与罐装行（Scan 错误 / rows.Err 错误臂）。
 
@@ -319,7 +319,7 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
 	var sequence atomic.Int64
-	store, err := NewStore(db, true, nil, func(prefix string) string {
+	store, err := NewStore(db, nil, func(prefix string) string {
 		return fmt.Sprintf("%s_w11f_%06d", prefix, sequence.Add(1))
 	})
 	if err != nil {
@@ -544,11 +544,11 @@ func TestW11FHelperBranches(t *testing.T) {
 		t.Fatal("normalizeStatus bogus must fail")
 	}
 	// NewStore: nil DB / 默认 now 与 newID。
-	if _, err := NewStore(nil, false, nil, nil); err == nil {
+	if _, err := NewStore(nil, nil, nil); err == nil {
 		t.Fatal("NewStore(nil) must fail")
 	}
-	// PG 方言: table 与 bind。
-	pgStore := &Store{pg: true}
+	// PG 形态: table 与 bind。
+	pgStore := &Store{}
 	if pgStore.table("x") != "juhe_business.x" {
 		t.Fatal("pg table drift")
 	}
@@ -872,7 +872,7 @@ func TestW11FStoreWriteFaults(t *testing.T) {
 		t.Fatal("Create exec fault must fail")
 	}
 	// 默认 ID 生成器（NewStore 传入 nil newID）。
-	defaultStore, err := NewStore(env.db, true, nil, nil)
+	defaultStore, err := NewStore(env.db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

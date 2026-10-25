@@ -180,11 +180,9 @@ func revalidateGateReasonFromGate(row *revalidateGateRow, expectedConfigRevision
 	return "", true
 }
 
-// revalidateUpdateSQL 渲染重校验 UPDATE（PG 用 AS states 别名，SQLite 裸表，
-// 与 Node 两个变体一一对应）。
+// revalidateUpdateSQL 渲染重校验 UPDATE（AS states 别名，对应 Node async 变体）。
 func (s *Store) revalidateUpdateSQL(fingerprints int) string {
-	if s.postgres {
-		return s.bind(fmt.Sprintf(`
+	return s.bind(fmt.Sprintf(`
     UPDATE %s AS states
     SET status = CASE WHEN states.status = 'error' THEN 'unverified' ELSE states.status END,
         recovery_started_at = NULL,
@@ -203,30 +201,6 @@ func (s *Store) revalidateUpdateSQL(fingerprints int) string {
           AND accounts.deleted_at IS NULL
       )
   `, s.statesTable(), placeholders(fingerprints), s.businessTable("accounts")))
-	}
-	return s.bind(fmt.Sprintf(`
-    UPDATE %s
-    SET status = CASE WHEN status = 'error' THEN 'unverified' ELSE status END,
-        recovery_started_at = NULL,
-        cooldown_until = NULL,
-        next_probe_at = ?, last_attempt_at = ?, updated_at = ?
-    WHERE account_id = ?
-      AND key_fingerprint IN (%s)
-      AND status NOT IN ('active', 'disabled')
-      AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
-      AND EXISTS (
-        SELECT 1 FROM %s
-        WHERE %s.id = %s.account_id
-          AND %s.config_revision = ?
-          AND %s.status = 'active'
-          AND %s.schedulable = 1
-          AND %s.deleted_at IS NULL
-      )
-  `, s.statesTable(), placeholders(fingerprints),
-		s.businessTable("accounts"), s.businessTable("accounts"),
-		s.statesTable(), s.businessTable("accounts"),
-		s.businessTable("accounts"), s.businessTable("accounts"),
-		s.businessTable("accounts")))
 }
 
 // execRevalidateUpdate 执行重校验 UPDATE 并返回受影响行数。

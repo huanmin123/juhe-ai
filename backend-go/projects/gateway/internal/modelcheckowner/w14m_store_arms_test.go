@@ -18,17 +18,17 @@ import (
 
 func w14mTrustStore(t *testing.T) (*Store, *w14mFailpoint) {
 	t.Helper()
-	db, fp := w14mFailDB(t, runtimeTestDDL())
-	return &Store{db: db, mode: "sqlite"}, fp
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
+	return &Store{db: db, schema: j3bTestSchema}, fp
 }
 
 func w14mSeedTrustObservation(t *testing.T, store *Store) TrustProjection {
 	t.Helper()
 	const created = "2026-08-31T10:00:00Z"
-	if _, err := store.db.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-a','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','protocol_basic','complete','consistent','unknown','consistent',100,?)`, created); err != nil {
+	if _, err := store.db.Exec(j3bQ(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES ('obs-a','run-1','sys','acct','openai','gpt-5.6','gpt-5.6','protocol_basic','complete','consistent','unknown','consistent',100,?)`), created); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`INSERT INTO model_trust_latest_dirty_accounts(system_account_id,account_id,requested_model,dirty_reason,updated_at) VALUES ('sys','acct','gpt-5.6','baseline_changed',?)`, created); err != nil {
+	if _, err := store.db.Exec(j3bQ(`INSERT INTO model_trust_latest_dirty_accounts(system_account_id,account_id,requested_model,dirty_reason,updated_at) VALUES ('sys','acct','gpt-5.6','baseline_changed',?)`), created); err != nil {
 		t.Fatal(err)
 	}
 	return TrustProjection{RunID: "run-1", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "consistent", MappingStatus: "direct", UsageIntegrityStatus: "insufficient_evidence", ProtocolStatus: "consistent", EvidenceStatus: "stable", EvidenceFormed: true, TrustFormed: true, TrustScore: 1, EvidenceCoverage: 100, ReasonCodes: []string{"z", "a", "a"}}}
@@ -95,7 +95,7 @@ func TestW14MTrustProjectionWriteArms(t *testing.T) {
 		store, fp := w14mTrustStore(t)
 		projection := w14mSeedTrustObservation(t, store)
 		// 预置一个落后的聚合游标 → 走 UPDATE 推进分支。
-		if _, err := store.db.Exec(`INSERT INTO model_trust_aggregation_state(scope_key,cursor_created_at,cursor_id,last_success_at,updated_at) VALUES (?,?,?,?,'')`,
+		if _, err := store.db.Exec(j3bQ(`INSERT INTO model_trust_aggregation_state(scope_key,cursor_created_at,cursor_id,last_success_at,updated_at) VALUES (?,?,?,?,'')`),
 			trustAggregationScope, "2026-08-30T10:00:00Z", "obs-0", "2026-08-30T10:00:00Z"); err != nil {
 			t.Fatal(err)
 		}
@@ -114,10 +114,10 @@ var w14mOptionsDDL = []string{
 	// 目标 schema（设计 §2.1/§9）：账户探针身份 = (vendor_code, 健康检查连接)。
 	`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,status TEXT,schedulable INTEGER,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,availability_schedule_json TEXT,proxy_profile_id TEXT,health_check_connection_id TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
 	`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
-	`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+	`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible BOOLEAN)`,
 	// w14mOptionsAccountsDDL 的 group_accounts 需含 system_account_id。
 	`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,account_authorization_id TEXT,enabled INTEGER)`,
-	`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
+	`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,enabled INTEGER)`,
 	`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
 	`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT)`,
 	`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
@@ -132,7 +132,7 @@ func w14mSeedOptionAccount(t *testing.T, db *sql.DB, id, systemID string) {
 	t.Helper()
 	statements := []string{
 		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-` + id + `','` + id + `','gpt_openai_v1','https://example.invalid/v1',1)`,
-		`INSERT INTO groups VALUES ('group-1','` + systemID + `',1)`,
+		`INSERT INTO groups(id,system_account_id,enabled) VALUES ('group-1','` + systemID + `',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('` + id + `','` + systemID + `','group-1',1)`,
 		`INSERT INTO accounts(id,system_account_id,name,vendor_code,connection_driver_code,protocol_code,protocol_version,type,status,schedulable,health_check_connection_id,deleted_at) VALUES ('` + id + `','` + systemID + `','` + id + `','gpt','gpt','openai','1','api_key','active',1,'conn-` + id + `',NULL)`,
 	}

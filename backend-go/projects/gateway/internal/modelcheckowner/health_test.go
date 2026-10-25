@@ -32,7 +32,7 @@ func TestQualityProjectorDeniesUnformedEvidence(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-1','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}}
 	err := projector.Project(context.Background(), "run-1", EvidenceAggregate{}, HealthFact{})
 	if err == nil {
 		t.Fatal("unformed evidence must be rejected")
@@ -53,7 +53,7 @@ func TestQualityProjectorMarksRetryWhenCallerContextIsCanceled(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}}
 	if err := projector.Project(ctx, "run-canceled", EvidenceAggregate{}, HealthFact{}); err == nil {
 		t.Fatal("unformed evidence must be rejected")
 	}
@@ -112,7 +112,7 @@ func TestQualityProjectorTreatsSuspiciousAsHardFailureAboveThreshold(t *testing.
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{schema: j3bTestSchema, db: db}
 	projector := &QualityProjector{Store: store, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-suspicious", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 96, Threshold: 70, Level: "suspicious", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
@@ -140,7 +140,7 @@ func TestQualityProjectorPublishesQuickHardFailureAboveThresholdWithoutAggregate
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{schema: j3bTestSchema, db: db}
 	projector := &QualityProjector{Store: store, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-hard-mismatch", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 96, Threshold: 70, Level: "likely", HardQualityFailure: true, PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: false, TrustFormed: false}, fact); err != nil {
@@ -167,7 +167,7 @@ func TestQualityProjectorRecordsSkippedWhenEnforcementOwnerMissing(t *testing.T)
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-failure','pending_retry','{}','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema}
+	store := &Store{schema: j3bTestSchema, db: db}
 	projector := &QualityProjector{Store: store}
 	fact := HealthFact{AccountID: "acct-1", SystemAccountID: "sys-1", StatHour: "2026-08-27T10:00:00Z", RunID: "run-failure", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
@@ -201,7 +201,7 @@ func TestQualityProjectorStaleEnforcementStillAppliesHealthFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	enforcement := &failingEnforcement{err: errors.New("J3b Business enforcement configuration is stale")}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-stale", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatalf("stale enforcement must not block the projection: %v", err)
@@ -226,7 +226,7 @@ func TestQualityProjectorFailedEnforcementStillWritesHealthFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	enforcement := &failingEnforcement{err: errors.New("connection refused")}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-apply-failed", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatalf("enforcement failure must not block health fact: %v", err)
@@ -251,7 +251,7 @@ func TestQualityProjectorMarksPendingRetryWhenHealthFactFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-pending", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil {
 		t.Fatal("health fact failure must surface the projection error")
@@ -278,7 +278,7 @@ func TestQualityProjectorPublishesDiagnosticManualFailureWithoutEnforcement(t *t
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct-1", SystemAccountID: "sys-1", StatHour: "2026-08-27T10:00:00Z", RunID: "run-diagnostic", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", EnforcementAllowed: false}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -300,7 +300,7 @@ func TestQualityProjectorRejectsRunIdentityMismatch(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-b", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 90, Threshold: 70, Level: "success"}
 	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("mismatch must fail closed, err=%v", err)
@@ -312,7 +312,7 @@ func TestQualityProjectorUnformedIdentityMismatchDoesNotMutateRun(t *testing.T) 
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-a','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}}
 	fact := HealthFact{RunID: "run-b"}
 	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{}, fact); err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("err=%v", err)
@@ -332,7 +332,7 @@ func TestQualityProjectorUnavailableNeverEnforces(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-u", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 0, Threshold: 70, Level: "unavailable", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -360,7 +360,7 @@ func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-quick-unformed", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "uncertain", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: false, TrustFormed: false}, fact); err != nil {
 		t.Fatal(err)
@@ -382,7 +382,7 @@ func TestQualityProjectorRejectsSuccessfulHealthFact(t *testing.T) {
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,updated_at) VALUES ('run-success','2026-08-27T10:00:00Z')`)); err != nil {
 		t.Fatal(err)
 	}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-success", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 90, Threshold: 70, Level: "success"}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "quality failure") {
 		t.Fatalf("successful health fact must be rejected, err=%v", err)
@@ -402,7 +402,7 @@ func TestQualityProjectorRejectsInvalidStatHourBeforeEnforcement(t *testing.T) {
 		t.Fatal(err)
 	}
 	enforcement := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: enforcement}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: enforcement}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:15:00Z", RunID: "run-a", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 20, Threshold: 70, Level: "failure"}
 	if err := projector.Project(context.Background(), "run-a", EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "scope") {
 		t.Fatalf("invalid stat hour must fail closed, err=%v", err)
@@ -430,7 +430,7 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 		finished, "failed", finished); err != nil {
 		t.Fatal(err)
 	}
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{schema: j3bTestSchema, db: db, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	enforcement := &recordingEnforcement{}
 	executor := &HealthSyncRetryExecutor{Projector: &QualityProjector{Store: store, Enforcement: enforcement}}
 	err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerHealthRetry, Payload: []byte(`{"runId":"run-retry"}`)})
@@ -447,7 +447,7 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 	if enforcement.calls != 1 {
 		t.Fatalf("health retry enforcement calls=%d, want 1", enforcement.calls)
 	}
-	retries, err := (&Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}).ListHealthSyncRetries(context.Background(), 10)
+	retries, err := (&Store{schema: j3bTestSchema, db: db, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}).ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 0 {
 		t.Fatalf("completed run should not remain retryable: retries=%#v err=%v", retries, err)
 	}
@@ -479,7 +479,7 @@ func TestHealthSyncRetryExecutorRestoresTimeoutPenaltyTriggered(t *testing.T) {
 	}
 	insertRun("run-timeout-retry", "acct-timeout", `{"evidenceFormed":true,"trustFormed":true,"enforcementAllowed":true,"timeoutPenaltyTriggered":true,"result":"not_triggered"}`)
 	insertRun("run-plain-retry", "acct-plain", `{"evidenceFormed":true,"trustFormed":true,"enforcementAllowed":true,"result":"not_triggered"}`)
-	store := &Store{db: db, mode: "postgres", schema: j3bTestSchema, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	store := &Store{schema: j3bTestSchema, db: db, HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
 	// 读回核对：ListHealthSyncRetries 按已落库 decision 还原触发标记。
 	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
 	if err != nil || len(retries) != 2 {
@@ -545,7 +545,7 @@ func TestQualityProjectorUnavailableWithTimeoutPenaltyEnforces(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-timeout", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", TimeoutPenaltyTriggered: true, EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -571,7 +571,7 @@ func TestQualityProjectorUnavailableTimeoutPenaltyEnforcesAtFullScore(t *testing
 		t.Fatal(err)
 	}
 	recorder := &countingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: recorder}
 	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-timeout-pass", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 100, Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", TimeoutPenaltyTriggered: true, EnforcementAllowed: true}
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
 		t.Fatal(err)
@@ -598,7 +598,7 @@ func TestQualityProjectorUnavailableWithoutTimeoutNeverEnforces(t *testing.T) {
 		}
 	}
 	recorder := &countingEnforcement{}
-	projector := &QualityProjector{Store: &Store{db: db, mode: "postgres", schema: j3bTestSchema}, Enforcement: recorder}
+	projector := &QualityProjector{Store: &Store{schema: j3bTestSchema, db: db}, Enforcement: recorder}
 	base := HealthFact{SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", EnforcementAllowed: true, ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), StatHour: "2026-08-27T10:00:00Z"}
 	for _, fact := range []HealthFact{
 		func() HealthFact { fact := base; fact.AccountID, fact.RunID, fact.Score = "acct-low", "run-unavailable-low", 30; return fact }(),

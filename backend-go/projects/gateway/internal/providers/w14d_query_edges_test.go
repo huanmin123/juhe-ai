@@ -13,7 +13,7 @@ import (
 )
 
 func TestW14dNewStoreGuardsAndClock(t *testing.T) {
-	if _, err := NewStore(nil, false, nil); err == nil {
+	if _, err := NewStore(nil, nil); err == nil {
 		t.Fatal("nil db must be rejected")
 	}
 	store := &Store{db: nil, now: nil}
@@ -28,7 +28,7 @@ func TestW14dNewStoreGuardsAndClock(t *testing.T) {
 }
 
 func TestW14dClosedDBQueryForks(t *testing.T) {
-	store := w14dClosedStore(t, false)
+	store := w14dClosedStore(t)
 	ctx := context.Background()
 
 	// Catalog read family.

@@ -253,12 +253,14 @@ const parseErrorEventIsolatorMaxHoldBytes = StreamPreCommitBufferMaxBytes
 
 // parseErrorEventIsolator 在写下游前按事件粒度隔离无法 JSON 解析的事件
 // （gatewayopenai.ParseSseEventText 的 DataParseError 分类，含 W22 的
-// 「半截 chunk + 错误帧粘连」残片）：与既有失败帧拦截同一时序保证——事件级
-// 分类先于写入。inspector 消费原始字节（计数照常），本隔离器只过滤下游字节；
-// 首个被隔离事件保留截断摘要供 WARN 观测。
+// 「半截 chunk + 错误帧粘连」残片）与协议形状异常事件（解析成功但顶层
+// `choices` 键存在且 JSON 值不是数组，§3.2.0 L2 v2.3 增量，生产实证空壳流
+// 首帧 `"choices":null`）：与既有失败帧拦截同一时序保证——事件级分类先于
+// 写入。inspector 消费原始字节（计数照常），本隔离器只过滤下游字节；首个被
+// 隔离事件保留截断摘要供 WARN 观测（两类隔离共用首个摘要位）。
 //
-// 快路径零改写：本批事件全部可解析时原样返回入参切片（不复制、不改变下游
-// 写出粒度），只有真实出现解析失败事件时才按事件边界重写后续字节。
+// 快路径零改写：本批事件全部可解析且形状合法时原样返回入参切片（不复制、
+// 不改变下游写出粒度），只有真实出现被隔离事件时才按事件边界重写后续字节。
 type parseErrorEventIsolator struct {
 	pending      []byte
 	dropped      int
@@ -299,7 +301,9 @@ func (iso *parseErrorEventIsolator) push(chunk []byte) []byte {
 		if rawEvent == nil {
 			break
 		}
-		if gatewayopenai.ParseSseEventText(string(rawEvent)).DataParseError {
+		event := gatewayopenai.ParseSseEventText(string(rawEvent))
+		if event.DataParseError || gatewayopenai.IsProtocolInvalidChunkFrame(event.Data) {
+			// 解析失败（§3.2.0）与协议形状异常（§3.2.0 L2）同处置：字节不外泄。
 			iso.rememberDroppedEvent(rawEvent)
 			continue
 		}

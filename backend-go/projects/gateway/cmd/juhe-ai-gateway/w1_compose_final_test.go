@@ -262,8 +262,8 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 			t.Fatalf("juhe_jobs 四表就绪后 PG 组合根必须组装成功（含进程内余额刷新 wire 成功路径）: %v", err)
 		}
 		defer composed.Shutdown()
-		if !composed.pgDialect || composed.Kernel == nil || composed.Bus == nil || composed.DB == nil {
-			t.Fatalf("PG 组合根关键字段缺失: pgDialect=%v Kernel=%v Bus=%v DB=%v", composed.pgDialect, composed.Kernel != nil, composed.Bus != nil, composed.DB != nil)
+		if composed.Kernel == nil || composed.Bus == nil || composed.DB == nil {
+			t.Fatalf("PG 组合根关键字段缺失: Kernel=%v Bus=%v DB=%v", composed.Kernel != nil, composed.Bus != nil, composed.DB != nil)
 		}
 		if composed.chain == nil || composed.chainServices == nil || composed.chatDB == nil {
 			t.Fatalf("链条开启时 chain/chainServices/chatDB 必须装配: chain=%v services=%v chat=%v", composed.chain != nil, composed.chainServices != nil, composed.chatDB != nil)

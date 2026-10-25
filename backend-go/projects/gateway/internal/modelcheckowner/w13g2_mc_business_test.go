@@ -18,7 +18,7 @@ func w13g2McBusinessDDL(t *testing.T, db *sql.DB) {
 		}
 	}
 	for _, ddl := range []string{
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT UNIQUE,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,created_at TEXT,updated_at TEXT,cleared_at TEXT)`,
 		`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,state TEXT,payload TEXT,fence_token INTEGER,owner_id TEXT,updated_at TEXT)`,
 	} {
@@ -32,13 +32,13 @@ func w13g2McSeedAccounts(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, row := range []string{
 		// v16 契约：探针身份 = (vendor_code, 健康检查连接 preset)。
-		`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, protocol_code, type, config_revision, dispatch_revision, status, schedulable, health_check_connection_id) VALUES ('acct-1','sys-1','gpt','gpt','responses','api_key',3,7,'active',1,'conn-acct-1')`,
-		`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.test',1)`,
-		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('grp-1','sys-1',1)`,
-		`INSERT INTO group_accounts (account_id, system_account_id, group_id, enabled) VALUES ('acct-1','sys-1','grp-1',1)`,
-		`INSERT INTO model_quality_policies (system_account_id, revision, profile, manual_enforcement_enabled, penalty_threshold, penalty_action, recovery_interval_minutes) VALUES ('sys-1',5,'quality',0,70,'disable',60)`,
+		`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, protocol_code, type, config_revision, dispatch_revision, status, schedulable, health_check_connection_id) VALUES ('acct-1','sys-1','gpt','gpt','responses','api_key',3,7,'active', 1,'conn-acct-1')`,
+		`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.test', 1)`,
+		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('grp-1','sys-1', 1)`,
+		`INSERT INTO group_accounts (account_id, system_account_id, group_id, enabled) VALUES ('acct-1','sys-1','grp-1', 1)`,
+		`INSERT INTO model_quality_policies (system_account_id, revision, profile, manual_enforcement_enabled, penalty_threshold, penalty_action, recovery_interval_minutes) VALUES ('sys-1',5,'quality', 0,70,'disable',60)`,
 		`INSERT INTO account_supported_models (account_id, model_id) VALUES ('acct-1','model-sol')`,
-		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible) VALUES ('model-sol','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',1)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible) VALUES ('model-sol','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',TRUE)`,
 	} {
 		if _, err := db.Exec(row); err != nil {
 			t.Fatal(err)
@@ -57,7 +57,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 	t.Run("claimSchedulesSelect", func(t *testing.T) {
 		fp.arm("FROM model_quality_schedules mqs JOIN")
 		defer fp.disarm()
-		src := &BusinessSchedulerSource{Business: s.db, OwnerID: "owner-1", Postgres: false}
+		src := &BusinessSchedulerSource{Business: s.db, OwnerID: "owner-1", }
 		if _, err := src.Claim(ctx, SchedulerScheduled, time.Now(), 5); err == nil {
 			t.Fatalf("应失败")
 		}
@@ -69,7 +69,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 		}
 		fp.arm("SET lease_owner=?,lease_until=?")
 		defer fp.disarm()
-		src := &BusinessSchedulerSource{Business: s.db, OwnerID: "owner-1", Postgres: false}
+		src := &BusinessSchedulerSource{Business: s.db, OwnerID: "owner-1", }
 		if _, err := src.Claim(ctx, SchedulerScheduled, time.Now(), 5); err == nil {
 			t.Fatalf("应失败")
 		}
@@ -77,7 +77,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 	t.Run("completeScheduled", func(t *testing.T) {
 		fp.arm("SET last_run_id=?,last_run_at=?")
 		defer fp.disarm()
-		src := &BusinessSchedulerSource{Business: s.db, OwnerID: "owner-1", Postgres: false}
+		src := &BusinessSchedulerSource{Business: s.db, OwnerID: "owner-1", }
 		err := src.CompleteScheduled(ctx, ScheduledPayload{ScheduleID: "sched-1", ScheduleRevision: 1, OwnerID: "owner-1"},
 			RunResult{RunID: "run-x", Status: "passed"})
 		if err == nil {
@@ -87,7 +87,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 	t.Run("listSchedules", func(t *testing.T) {
 		fp.arm("FROM model_quality_schedules mqs JOIN")
 		defer fp.disarm()
-		mgr, err := NewBusinessQualityManager(s.db, false)
+		mgr, err := NewBusinessQualityManager(s.db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +102,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 		}
 	})
 	t.Run("enforcementApply", func(t *testing.T) {
-		applier, err := NewBusinessEnforcementApplier(s.db, false)
+		applier, err := NewBusinessEnforcementApplier(s.db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -124,7 +124,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 	t.Run("listAccountOptions", func(t *testing.T) {
 		fp.arm("FROM accounts a")
 		defer fp.disarm()
-		src, err := NewBusinessTargetSource(s.db, false, "secret")
+		src, err := NewBusinessTargetSource(s.db, "secret")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 	t.Run("supportedModelsScan", func(t *testing.T) {
 		fp.armScan("FROM account_supported_models")
 		defer fp.disarm()
-		src, err := NewBusinessTargetSource(s.db, false, "secret")
+		src, err := NewBusinessTargetSource(s.db, "secret")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +152,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 	t.Run("readPolicyScan", func(t *testing.T) {
 		fp.armScan("FROM model_quality_policies")
 		defer fp.disarm()
-		src, err := NewBusinessTargetSource(s.db, false, "secret")
+		src, err := NewBusinessTargetSource(s.db, "secret")
 		if err != nil {
 			t.Fatal(err)
 		}

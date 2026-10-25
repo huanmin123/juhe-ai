@@ -122,6 +122,9 @@ func TestStreamPipeReleasesBodyOnClientAbortAfterTerminalSuccess(t *testing.T) {
 	recorder := &failureRecorder{}
 	signal := make(chan struct{})
 	outcome := runStreamPipeAsync(streamPipeInputForCloseTest(body, signal, StreamPipeOptions{NowMs: func() int64 { return 1000 }}, recorder.handle))
+	// 首个内容 chunk 保证流非空完成（设计 §3.2.3 L1：openai 域终态 + 零输出
+	// 判 upstream_stream_empty_completion，本用例锚定的是终态后 abort 成功收尾）。
+	inner.push([]byte(chatDeltaChunk))
 	inner.push([]byte(chatFinishChunk))
 	inner.push([]byte(chatDoneChunk))
 	time.Sleep(50 * time.Millisecond)

@@ -623,7 +623,7 @@ func (s *Store) usageStatsTimezone(ctx context.Context) (string, error) {
 	if s.timezone != nil {
 		return s.timezone(ctx)
 	}
-	return readSystemSettingsTimezone(ctx, s.db, s.pg)
+	return readSystemSettingsTimezone(ctx, s.db)
 }
 
 // defaultUsageStatsRange mirrors fixedUsageStatsDefaultRange
