@@ -13,7 +13,7 @@ import (
 // JUHE_AI_USAGE_SPOOL_DIR 时回退旧名（组合根据 usageSpoolDirectoryLegacyName
 // 打 warn 披露兼容路径），两者都配置时旧名静默失效。
 func TestLoadWorkerConfigUsageSpoolLegacyDirectoryFallback(t *testing.T) {
-	env := wgFullValidWorkerEnv(t)
+	env := workerSmokeTestEnv(t)
 	env["JUHE_AI_USAGE_SPOOL_DIR"] = "/tmp/spool-legacy"
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {
@@ -26,7 +26,7 @@ func TestLoadWorkerConfigUsageSpoolLegacyDirectoryFallback(t *testing.T) {
 		t.Fatal("只配旧名时必须登记旧名回退标记（组合根据此披露兼容路径）")
 	}
 
-	env = wgFullValidWorkerEnv(t)
+	env = workerSmokeTestEnv(t)
 	env["JUHE_AI_USAGE_SPOOL_DIR"] = "/tmp/spool-legacy"
 	env["JUHE_AI_USAGE_SPOOL_DIRECTORY"] = "/tmp/spool-new"
 	config, err = loadWorkerConfig(getenvFrom(env))
@@ -40,7 +40,7 @@ func TestLoadWorkerConfigUsageSpoolLegacyDirectoryFallback(t *testing.T) {
 		t.Fatal("新名生效时不得登记旧名回退标记")
 	}
 
-	env = wgFullValidWorkerEnv(t)
+	env = workerSmokeTestEnv(t)
 	env["JUHE_AI_USAGE_SPOOL_DIRECTORY"] = "/tmp/spool-new"
 	config, err = loadWorkerConfig(getenvFrom(env))
 	if err != nil {
@@ -54,21 +54,21 @@ func TestLoadWorkerConfigUsageSpoolLegacyDirectoryFallback(t *testing.T) {
 // TestLoadWorkerConfigProductionSecretGate 对齐 gateway runtime.go 的
 // assertProductionSecret：生产拒绝短值与默认开发密钥，非生产不受影响。
 func TestLoadWorkerConfigProductionSecretGate(t *testing.T) {
-	env := wgFullValidWorkerEnv(t)
+	env := workerSmokeTestEnv(t)
 	env["NODE_ENV"] = "production"
 	env["JUHE_AI_SECRET"] = strings.Repeat("a", 31)
 	if _, err := loadWorkerConfig(getenvFrom(env)); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
 		t.Fatalf("production 31 位 SECRET 必须 fail-fast: %v", err)
 	}
 
-	env = wgFullValidWorkerEnv(t)
+	env = workerSmokeTestEnv(t)
 	env["NODE_ENV"] = "production"
 	env["JUHE_AI_SECRET"] = defaultRuntimeSecret
 	if _, err := loadWorkerConfig(getenvFrom(env)); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
 		t.Fatalf("production 默认开发密钥必须 fail-fast: %v", err)
 	}
 
-	env = wgFullValidWorkerEnv(t)
+	env = workerSmokeTestEnv(t)
 	env["NODE_ENV"] = "production"
 	env["JUHE_AI_SECRET"] = strings.Repeat("a", 32)
 	config, err := loadWorkerConfig(getenvFrom(env))
@@ -80,12 +80,12 @@ func TestLoadWorkerConfigProductionSecretGate(t *testing.T) {
 	}
 
 	// 非生产短值/默认开发密钥不受生产门禁影响（既有零配置契约）。
-	env = wgFullValidWorkerEnv(t)
+	env = workerSmokeTestEnv(t)
 	env["JUHE_AI_SECRET"] = "short"
 	if _, err := loadWorkerConfig(getenvFrom(env)); err != nil {
 		t.Fatalf("非生产短 SECRET 必须放行: %v", err)
 	}
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err != nil {
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://smoke-test.invalid/juhe_ai_smoke"})); err != nil {
 		t.Fatalf("非生产空 SECRET 必须回退开发密钥: %v", err)
 	}
 }

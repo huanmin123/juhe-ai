@@ -84,15 +84,7 @@ func (w *WindowRefresher) runQuotaHourlyWindows(ctx context.Context, result *Quo
 	if err != nil {
 		return err
 	}
-	if w.Dialect.Postgres {
-		return w.refreshQuotaHourlyWindowsIncremental(ctx, timezone, result)
-	}
-	// :1796-1799 非 PG 分支固定 {changed: true, hasMore: false}。
-	if err := w.refreshQuotaHourlyWindowsRebuild(ctx, timezone); err != nil {
-		return err
-	}
-	result.Changed = true
-	return nil
+	return w.refreshQuotaHourlyWindowsIncremental(ctx, timezone, result)
 }
 
 // businessDB 返回业务库句柄：PG 与 stats 同池复用 DB；SQLite 由组合根注入
@@ -111,72 +103,6 @@ func (w *WindowRefresher) scopeLimit() int {
 	return quotaHourlyWindowDefaultScopeLimit
 }
 
-// ---- SQLite 全量重建（refreshUsageQuotaHourlyWindowsCache + helpers :8-42）----
-
-func (w *WindowRefresher) refreshQuotaHourlyWindowsRebuild(ctx context.Context, timezone *time.Location) error {
-	bindings, err := w.listQuotaHourlyWindowScopeBindings(ctx)
-	if err != nil {
-		return err
-	}
-	tx, err := w.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable("usage_quota_hourly_windows"))); err != nil {
-		return err
-	}
-	nowMs := w.now().UnixMilli()
-	for offset := 0; offset < len(bindings); offset += quotaHourlyWindowRebuildBatchSize {
-		end := offset + quotaHourlyWindowRebuildBatchSize
-		if end > len(bindings) {
-			end = len(bindings)
-		}
-		chunk := bindings[offset:end]
-		values := strings.TrimSuffix(strings.Repeat("(?, ?, ?, CAST(? AS INTEGER), ?), ", len(chunk)), ", ")
-		// 窗口成本是配额口径（usage_quota_hourly_windows.total_cost_usd 单列
-		// 承载配额成本，唯一消费方 gatewayquota/costs.go），按业务口径只汇总
-		// usage_stats_hourly 的成功交付成本 success_cost_usd：切号重试的部分流
-		// 失败尝试（Success=false 但带 usage）不再与最终成功尝试双计配额；
-		// 失败成本仍保留在 hourly.total_cost_usd 供账号成本观测。
-		query := w.Dialect.bind(`
-			WITH claimed(system_account_id, scope_type, scope_id, window_hours, cutoff_hour) AS (
-				VALUES ` + values + `
-			)
-			INSERT INTO ` + w.Dialect.StatsTable("usage_quota_hourly_windows") + ` (
-				system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
-			)
-			SELECT claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours,
-				COALESCE(SUM(hourly.success_cost_usd), 0), ?
-			FROM claimed
-			LEFT JOIN ` + w.Dialect.StatsTable("usage_stats_hourly") + ` hourly
-				ON hourly.system_account_id = claimed.system_account_id
-				AND hourly.scope_type = claimed.scope_type
-				AND hourly.scope_id = claimed.scope_id
-				AND hourly.stat_hour >= claimed.cutoff_hour
-			GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours
-			HAVING COALESCE(SUM(hourly.success_cost_usd), 0) > 0
-		`)
-		updatedAt := FormatRFC3339Millis(w.now())
-		args := make([]any, 0, len(chunk)*5+1)
-		for _, binding := range chunk {
-			args = append(args,
-				binding.systemAccountID,
-				binding.scopeType,
-				binding.scopeID,
-				binding.windowHours,
-				hourKey(time.UnixMilli(nowMs-int64(binding.windowHours)*quotaHourlyWindowHourMs), timezone))
-		}
-		args = append(args, updatedAt)
-		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// listQuotaHourlyWindowScopeBindings mirrors listRequestQuotaHourlyWindowScopeBindings
-// （request-quota-hourly-windows.repository.ts:146-167，含 1..720 过滤）。
 func (w *WindowRefresher) listQuotaHourlyWindowScopeBindings(ctx context.Context) ([]scopeBinding, error) {
 	query := w.Dialect.bind(`
 		SELECT system_account_id, scope_type, scope_id, window_hours
@@ -408,9 +334,7 @@ func (w *WindowRefresher) claimQuotaHourlyWindowDirtyScopes(ctx context.Context,
 			AND bindings.scope_id = dirty.scope_id
 		ORDER BY dirty.first_dirty_at, dirty.system_account_id, dirty.scope_type, dirty.scope_id
 		LIMIT ?`)
-	if w.Dialect.Postgres {
-		query += ` FOR UPDATE OF dirty SKIP LOCKED`
-	}
+	query += ` FOR UPDATE OF dirty SKIP LOCKED`
 	rows, err := tx.QueryContext(ctx, query, w.scopeLimit())
 	if err != nil {
 		return nil, err

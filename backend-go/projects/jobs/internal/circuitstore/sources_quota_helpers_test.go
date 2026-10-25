@@ -58,11 +58,8 @@ func TestBooleanValueAndCoalesce(t *testing.T) {
 	if got := coalesceAny(nil, nil); got != nil {
 		t.Fatalf("全 nil 应返回 nil: %v", got)
 	}
-	if timeParamText(true, sourcesNow()) != any(sourcesNow()) {
+	if timeParamText(sourcesNow()) != any(sourcesNow()) {
 		t.Fatal("PG 方言应传 time.Time")
-	}
-	if _, ok := timeParamText(false, sourcesNow()).(string); !ok {
-		t.Fatal("SQLite 方言应传 RFC3339 文本")
 	}
 	if got := sha256HexShort("abc", 8); len(got) != 8 {
 		t.Fatalf("sha256HexShort 长度不符: %s", got)

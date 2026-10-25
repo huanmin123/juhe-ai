@@ -1,88 +1,12 @@
 package taskruns
 
 import (
-	"context"
-	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
 // ---- OpenStore 配置校验与双模式 ----
-
-func TestOpenStoreValidationAndModes(t *testing.T) {
-	if _, err := OpenStore(StoreConfig{Mode: ModeSQLite}); err == nil {
-		t.Fatalf("sqlite 缺路径应报错")
-	}
-	if _, err := OpenStore(StoreConfig{Mode: StoreMode("mysql")}); err == nil {
-		t.Fatalf("非法模式应报错")
-	}
-	if _, err := OpenStore(StoreConfig{Mode: ModePostgres}); err == nil {
-		t.Fatalf("postgres 缺 URL 应报错")
-	}
-	// SQLite 正常打开并建表。
-	store, err := OpenStore(StoreConfig{Mode: ModeSQLite, DatabasePath: filepath.Join(t.TempDir(), "taskruns.sqlite3")})
-	if err != nil {
-		t.Fatalf("sqlite 打开失败: %v", err)
-	}
-	if store.Mode() != ModeSQLite {
-		t.Fatalf("模式应为 sqlite: %s", store.Mode())
-	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("建表失败: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("关闭失败: %v", err)
-	}
-	// PostgreSQL 懒打开（不要求真实数据库可达）后关闭归还连接池。
-	pgStore, err := OpenStore(StoreConfig{Mode: ModePostgres, PostgresURL: "postgres://taskruns:pw@127.0.0.1:1/juhe_stats?connect_timeout=1"})
-	if err != nil {
-		t.Fatalf("postgres 懒打开不应报错: %v", err)
-	}
-	if pgStore.Mode() != ModePostgres {
-		t.Fatalf("模式应为 postgres: %s", pgStore.Mode())
-	}
-	if err := pgStore.Close(); err != nil {
-		t.Fatalf("关闭失败: %v", err)
-	}
-	// NewStore 复用已有连接。
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	reused := NewStore(db, ModeSQLite)
-	if reused.Mode() != ModeSQLite {
-		t.Fatalf("NewStore 模式不符: %s", reused.Mode())
-	}
-	if err := reused.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("NewStore 建表失败: %v", err)
-	}
-	var nilStore *Store
-	if err := nilStore.Close(); err != nil {
-		t.Fatalf("nil store 关闭应安全: %v", err)
-	}
-}
-
-func TestStoreDialectHelpers(t *testing.T) {
-	sqliteStore := NewStore(nil, ModeSQLite)
-	pgStore := NewStore(nil, ModePostgres)
-	if got := sqliteStore.runsTable(); got != "background_task_runs" {
-		t.Fatalf("sqlite runs 表名不符: %s", got)
-	}
-	if got := pgStore.runsTable(); got != "juhe_stats.background_task_runs" {
-		t.Fatalf("postgres runs 表名不符: %s", got)
-	}
-	if got := sqliteStore.leasesTable(); got != "background_job_leases" {
-		t.Fatalf("sqlite leases 表名不符: %s", got)
-	}
-	if got := pgStore.leasesTable(); got != "juhe_stats.background_job_leases" {
-		t.Fatalf("postgres leases 表名不符: %s", got)
-	}
-}
-
-// ---- 纯函数 ----
 
 func TestPostgresBoolVariants(t *testing.T) {
 	cases := []struct {

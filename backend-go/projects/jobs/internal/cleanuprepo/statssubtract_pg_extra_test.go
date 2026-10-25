@@ -7,9 +7,30 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
+
+// kitText/kitNum 是 PG 结算测试共用的取址 helper（原置放于已退役的 sqlite
+// 组B 测试文件，随组B 退役迁入本文件）。
+// kit 固定值与取址 helper（原置放于已退役的 sqlite 组B/kit 测试文件，
+// 随组B 退役迁入本文件供 PG 结算测试共用）。
+const kitCreatedAt = "2026-01-05T03:04:05.123Z"
+
+const kitUpdatedAt = "2026-09-10T00:00:00.000Z"
+
+func kitNow() time.Time {
+	return time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+}
+
+func kitZone() *time.Location {
+	return time.FixedZone("KITTZ", 8*3600)
+}
+
+func kitText(v string) *string { return &v }
+
+func kitNum(v float64) *float64 { return &v }
 
 // statssubtractpostgres.go 剩余路径的录制驱动测试：估算回填、聚合条目合并、
 // 授权查找、team 过滤日报扣减、quality 脏账户多行 upsert、派生窗口脏范围。

@@ -338,28 +338,6 @@ func TestRefreshJobTableDriven(t *testing.T) {
 	}
 }
 
-func TestRefreshJobRestoreAfterRecovery(t *testing.T) {
-	store, db := newClearStateSQLiteStore(t)
-	seedClearStateAccount(t, db, "acc-restore", "error", OpenAIOAuthTokenRefreshFailedErrorCode)
-	clock := &fixedClock{current: defaultNow()}
-	exchanger := &recordingExchanger{}
-	exchanger.respond = func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
-		return TokenHTTPResponse{StatusCode: 200, Body: `{"access_token":"at-new","refresh_token":"rt-new","expires_in":3600}`}, nil
-	}
-	job := NewRefreshJob(store.WithClock(func() time.Time { return clock.Now() }), exchanger, WithClock(clock))
-	result, err := job.RunOnce(context.Background(), RefreshOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Refreshed != 1 || result.Cooldowned != 1 {
-		t.Fatalf("result=%+v", result)
-	}
-	status, lastError, _ := readClearStateAccountRow(t, db, "acc-restore")
-	if status != "active" || lastError != "" {
-		t.Fatalf("restored account=%q %q", status, lastError)
-	}
-}
-
 func TestRefreshJobRaceRecoveryKeepsFreshCredentials(t *testing.T) {
 	job, _, db, clock, exchanger := newRefreshJobForTest(t)
 	seedOpenAIOAuthAccount(t, db, "acc-race", openAICredentials(expiresInMillis(0)), clock.Now())

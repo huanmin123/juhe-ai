@@ -363,9 +363,6 @@ func (r *RecordMaintenanceRunner) nonBusinessData() NonBusinessDataCleaner {
 }
 
 func (r *RecordMaintenanceRunner) statsWriter() StatsWriter {
-	if r.Mode == ModePostgres {
-		return nil
-	}
 	return r.Executor.StatsWriter
 }
 

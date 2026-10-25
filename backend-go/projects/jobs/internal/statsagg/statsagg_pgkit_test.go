@@ -2,7 +2,7 @@ package statsagg
 
 // statsagg_pgkit_test.go 是本包真实建库测试迁 PG 的共享基建
 // （PLAN-20261024T051925945Z 测试迁移切片）：
-//   - newPGTestEnv 经 pgtestkit 隔离 PG 测试库装配 Dialect{Postgres: true}
+//   - newPGTestEnv 经 pgtestkit 隔离 PG 测试库装配 Dialect{}
 //     的 testEnv；DDL 对照 maintenance 生产 PG 权威 schema 逐表复刻
 //     （juhe_stats：pg_schema_stats.go，含 success_cost_usd 与媒体计量列的
 //     ALTER 追加；juhe_usage.usage_records：pg_schema_usage.go 的聚合 46 列
@@ -687,5 +687,5 @@ func newPGTestEnvWithDB(t *testing.T, db *sql.DB) *testEnv {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	return &testEnv{t: t, db: db, dialect: Dialect{Postgres: true}, now: now, zone: zone}
+	return &testEnv{t: t, db: db, dialect: Dialect{}, now: now, zone: zone}
 }

@@ -2,7 +2,6 @@ package recordmaintenance
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -12,51 +11,6 @@ import (
 )
 
 // ---- OpenStore 与列探测 ----
-
-func TestOpenStoreValidation(t *testing.T) {
-	if _, err := OpenStore(nil, false); err == nil {
-		t.Fatalf("nil 数据库应报错")
-	}
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	store, err := OpenStore(db, false)
-	if err != nil || store == nil {
-		t.Fatalf("合法构造不应报错: %v", err)
-	}
-}
-
-func TestExistingColumnsSQLite(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	store, err := OpenStore(db, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	// 表不存在：返回空列集而不报错。
-	columns, err := store.existingColumns(ctx)
-	if err != nil || len(columns) != 0 {
-		t.Fatalf("缺表应返回空列集: %#v %v", columns, err)
-	}
-	if _, err := db.Exec(`CREATE TABLE ` + TableName + ` (id TEXT PRIMARY KEY, kind TEXT, snapshot_json TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	columns, err = store.existingColumns(ctx)
-	if err != nil {
-		t.Fatalf("读取列失败: %v", err)
-	}
-	for _, name := range []string{"id", "kind", "snapshot_json"} {
-		if !columns[name] {
-			t.Fatalf("列 %s 应存在: %#v", name, columns)
-		}
-	}
-}
 
 func TestIsDuplicateColumnErrorVariants(t *testing.T) {
 	if isDuplicateColumnError(nil) {

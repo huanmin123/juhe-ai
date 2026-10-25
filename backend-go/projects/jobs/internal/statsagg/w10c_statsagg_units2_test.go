@@ -179,53 +179,6 @@ func TestW10CAuthorizationLookupJoin(t *testing.T) {
 // 句柄分派与绑定过滤（RunQuotaHourlyWindows 非 PG 分支固定
 // changed=true/hasMore=false），随生产 sqlite 臂删除批次退役（D17）。
 
-func TestW10CQuotaRebuildHandlesAndBindingFilter(t *testing.T) {
-	env := newTestEnv(t)
-	businessDB := quotaTestBusinessDB(t)
-	// 有效 + 无效 window_hours 绑定（validQuotaHourlyWindowHours 过滤臂）。
-	// 绑定表在独立业务库（quotaTestBusinessDB 已建表），插入走 businessDB。
-	for _, binding := range []struct {
-		scopeID string
-		hours   int
-	}{
-		{"key-1", 24}, {"key-bad", 0}, {"key-bad2", 1000},
-	} {
-		if _, err := businessDB.Exec("INSERT INTO request_quota_hourly_window_scope_bindings (system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at) VALUES ('alice','api_key',?,'manual','src',?,'2026-04-18T10:00:00.000Z','2026-04-18T10:00:00.000Z')", binding.scopeID, binding.hours); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// BusinessDB 句柄分派：独立业务库连接承载绑定表（businessDB() 非 nil 臂）。
-	refresher := env.refresher()
-	refresher.BusinessDB = businessDB
-	if got := env.queryRowFloats("SELECT COUNT(*) FROM usage_quota_hourly_windows"); got[0] != 0 {
-		t.Fatalf("前置应为空")
-	}
-	result, err := refresher.RunQuotaHourlyWindows(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Changed || result.HasMore {
-		t.Fatalf("SQLite 全量重建固定 changed=true/hasMore=false: %+v", result)
-	}
-	// 有效绑定落窗，无效 hours 过滤；零成本 scope 不落行。
-	if got := env.queryRowFloats(`SELECT COUNT(*) FROM usage_quota_hourly_windows WHERE scope_id='key-1'`); got[0] != 0 {
-		t.Fatalf("零成本 scope 不应落行: %v", got)
-	}
-	// scopeLimit()：ScopeLimit>0 覆盖默认。
-	refresher.ScopeLimit = 7
-	if refresher.scopeLimit() != 7 {
-		t.Fatalf("ScopeLimit 覆盖失败")
-	}
-	// businessDB nil 兜底臂 → 回退 w.DB。
-	fallback := env.refresher()
-	if fallback.businessDB() != env.db {
-		t.Fatalf("nil BusinessDB 应回退 w.DB")
-	}
-}
-
-// ---- RunStages 错误臂 ----
-
 func TestW10CRunStagesErrorArms(t *testing.T) {
 	env := newPGTestEnv(t)
 	ctx := context.Background()

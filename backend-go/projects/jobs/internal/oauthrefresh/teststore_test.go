@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-	_ "modernc.org/sqlite"
 )
 
 // newTestStore builds a PG-backed Store (PLAN-20261024T051925945Z 测试基建迁移：
@@ -28,7 +27,7 @@ func newTestStore(t *testing.T) (*Store, *sql.DB, func()) {
 		_, err := db.Exec(oauthRefreshFixtureSchema)
 		return err
 	})
-	store, err := OpenStore(db, StorePostgres, cryptoTestSecret)
+	store, err := OpenStore(db, cryptoTestSecret)
 	if err != nil {
 		t.Fatal(err)
 	}

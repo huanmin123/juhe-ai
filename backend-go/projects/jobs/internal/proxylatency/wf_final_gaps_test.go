@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -83,76 +82,3 @@ func TestWFManualAdminExistsAndSnapshotFailures(t *testing.T) {
 	}
 }
 
-func TestWFRunManualReusesCurrentOwnerLease(t *testing.T) {
-	store := wfOpenJobsStore(t)
-	business := wfOpenBusinessDB(t)
-	projector := wfNewProjector(t, store, business)
-	runner := NewRunner(RuntimeConfig{InstanceID: "wf-reuse", OwnerLease: time.Hour, ProxyLease: time.Hour}, store, &wfFakeReader{}, nil)
-	runner.SetResultProjector(projector)
-	ctx := context.Background()
-
-	owner, ok, err := store.AcquireOwnerLease(ctx, "wf-reuse", time.Hour)
-	if err != nil || !ok {
-		t.Fatalf("owner lease ok=%v err=%v", ok, err)
-	}
-	proxy, ok, err := store.AcquireProxyLease(ctx, owner, "p-reuse", time.Hour)
-	if err != nil || !ok {
-		t.Fatalf("proxy lease ok=%v err=%v", ok, err)
-	}
-	_ = proxy
-	runner.setOwnerLease(owner)
-	runner.setOwnerHeld(true)
-
-	// 复用当前 owner lease：计数器不得再次 acquire（hook 返回错误即暴露）。
-	runner.acquireOwnerLease = func(context.Context, string, time.Duration) (OwnerLease, bool, error) {
-		return OwnerLease{}, false, errors.New("不应再次 acquire")
-	}
-	runner.executeIssuedInput = func(_ context.Context, store *Store, owner OwnerLease, proxy ProxyLease, issued IssuedInput, _ ExecutorOptions) (Outcome, bool, error) {
-		outcome, committed := wfCycleCommitOutcome(t, store, owner, proxy, issued)
-		return outcome, committed, nil
-	}
-
-	wfSeedProxyRow(t, business, "p-1", wfProjRevision, nil)
-	request := wfManualRequest()
-	request.ProxyHost = "127.0.0.1"
-	request.ProxyPort = 1
-	if _, err := runner.RunManual(ctx, request); err != nil {
-		t.Fatalf("复用 lease 的 RunManual 失败: %v", err)
-	}
-
-	// 释放代理后：runCycle 的代理释放失败记账（释放错误 + 非致命）。
-	runner.releaseProxyLease = func(context.Context, ProxyLease) error {
-		return errors.New("proxy release boom")
-	}
-	runner.reader = &wfFakeReader{drafts: []InputDraft{wfCycleDraft("p-reuse-2")}}
-	runner.acquireProxyLease = func(context.Context, OwnerLease, string, time.Duration) (ProxyLease, bool, error) {
-		proxy2, ok, err := store.AcquireProxyLease(ctx, owner, "p-reuse-2", time.Hour)
-		if err != nil || !ok {
-			return ProxyLease{}, false, errors.New("no lease")
-		}
-		return proxy2, true, nil
-	}
-	if err := runner.runCycle(ctx, owner); err != nil {
-		t.Fatalf("释放失败不得致命: %v", err)
-	}
-	if runner.Status().ReleaseFailures != 1 {
-		t.Fatalf("释放失败未记账：%+v", runner.Status())
-	}
-}
-
-func TestWFHealthHandlerReady(t *testing.T) {
-	store := wfOpenJobsStore(t)
-	runner := NewRunner(RuntimeConfig{InstanceID: "wf-health", Enabled: true, OwnerLease: time.Hour}, store, &wfFakeReader{}, nil)
-	runner.setOwnerHeld(true)
-	owner, ok, err := store.AcquireOwnerLease(context.Background(), "wf-health", time.Hour)
-	if err != nil || !ok {
-		t.Fatalf("owner lease ok=%v err=%v", ok, err)
-	}
-	runner.setOwnerLease(owner)
-	handler := runner.HealthHandler()
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest("GET", "/health", nil))
-	if recorder.Body == nil || !strings.Contains(recorder.Body.String(), "j3aEnabled") {
-		t.Fatalf("健康负载缺失：%s", recorder.Body.String())
-	}
-}

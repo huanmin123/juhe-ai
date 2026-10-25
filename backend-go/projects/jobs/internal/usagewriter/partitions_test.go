@@ -256,7 +256,7 @@ func TestEnsureChainConsumesWritePlanCreatedAts(t *testing.T) {
 		TrafficSource:   TrafficSourceGateway,
 		Success:         true,
 		CreatedAt:       "2026-09-10T03:00:00.000Z",
-	}}, WritePlanOptions{Postgres: true, ShardCount: 4}, clock)
+	}}, WritePlanOptions{ShardCount: 4}, clock)
 	if err != nil {
 		t.Fatalf("BuildWritePlan err = %v", err)
 	}

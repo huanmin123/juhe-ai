@@ -292,14 +292,10 @@ func managementAccountRowsCTE(table func(string) string) string {
     )`
 }
 
-// managementPageSQL 组装完整列表行查询；postgres 用 LATERAL 选绑定，
-// SQLite 用窗口 CTE（与 Node 双分支一致）。
-func (l *ProjectionItemLoader) managementPageSQL(postgres bool, idCount int) string {
+// managementPageSQL 组装完整列表行查询（PG 用 LATERAL 选绑定）。
+func (l *ProjectionItemLoader) managementPageSQL(idCount int) string {
 	table := func(name string) string {
-		if postgres {
-			return "juhe_business." + name
-		}
-		return name
+		return "juhe_business." + name
 	}
 	groupBindingsJoin := `LEFT JOIN LATERAL (
       SELECT
@@ -316,31 +312,7 @@ func (l *ProjectionItemLoader) managementPageSQL(postgres bool, idCount int) str
       ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
       LIMIT 1
     ) group_bindings ON true`
-	rankedCTE := ""
-	if !postgres {
-		rankedCTE = `,
-    ranked_group_bindings AS (
-      SELECT
-        group_accounts.account_id,
-        group_accounts.system_account_id,
-        group_accounts.group_id,
-        group_accounts.account_authorization_id,
-        group_accounts.local_priority,
-        group_accounts.local_super_priority_enabled,
-        group_accounts.local_fallback_enabled,
-        ROW_NUMBER() OVER (
-          PARTITION BY group_accounts.account_id, group_accounts.system_account_id
-          ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
-        ) AS binding_rank
-      FROM ` + table("group_accounts") + ` group_accounts
-      WHERE group_accounts.enabled = 1
-    )`
-		groupBindingsJoin = `LEFT JOIN ranked_group_bindings group_bindings
-      ON group_bindings.account_id = account_rows.id
-      AND group_bindings.system_account_id = account_rows.system_account_id
-      AND group_bindings.binding_rank = 1`
-	}
-	return managementAccountRowsCTE(table) + rankedCTE + `
+	return managementAccountRowsCTE(table) + `
     SELECT ` + managementRowColumns + `
     FROM account_rows
     ` + groupBindingsJoin + `
@@ -370,7 +342,7 @@ func (l *ProjectionItemLoader) managementPageSQL(postgres bool, idCount int) str
 // loadManagementPage 拉取可见范围行（Node listAccountManagementItemsPageDirect
 // 的 worker 消费面：ids 过滤、无 keyword/其他过滤器）。
 func (l *ProjectionItemLoader) loadManagementPage(ctx context.Context, viewer string, ids []string) (*managementPage, error) {
-	query := l.managementPageSQL(l.postgres, len(ids))
+	query := l.managementPageSQL(len(ids))
 	args := make([]any, 0, len(ids)+1)
 	args = append(args, viewer)
 	for _, id := range ids {
@@ -826,7 +798,7 @@ func (l *ProjectionItemLoader) loadAccountLockView(ctx context.Context, accountI
           original_status = NULL, provenance = NULL, next_retry_at_ms = NULL, lease_id = NULL,
           lease_until_ms = NULL, updated_at = ?
       WHERE account_id = ? AND lock_state = 'DEAD_CONFIRMED' AND generation = ?`,
-		timeParamText(l.postgres, l.now().UTC()), accountID, generation.Int64)
+		timeParamText(l.now().UTC()), accountID, generation.Int64)
 	if err != nil {
 		return nil, false, err
 	}
@@ -900,8 +872,5 @@ func (l *ProjectionItemLoader) loadAccountTags(ctx context.Context, accountIDs [
 }
 
 func (l *ProjectionItemLoader) table(name string) string {
-	if l.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }

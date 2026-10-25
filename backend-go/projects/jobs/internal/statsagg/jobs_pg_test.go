@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 )
@@ -30,23 +28,6 @@ type testEnv struct {
 	dialect Dialect
 	now     time.Time
 	zone    *time.Location
-}
-
-// newTestEnv 打开 SQLite 承载的测试环境（组B 保留载体；组A 迁移面用
-// newPGTestEnv）。
-func newTestEnv(t *testing.T) *testEnv {
-	t.Helper()
-	db, err := OpenSQLiteTestDB(filepath.Join(t.TempDir(), "stats.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	zone, err := LoadStatsTimezone("UTC")
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
-	return &testEnv{t: t, db: db, dialect: Dialect{Postgres: false}, now: now, zone: zone}
 }
 
 func (e *testEnv) aggregator() *Aggregator {
@@ -164,14 +145,8 @@ func (e *testEnv) assertFloats(label string, got []float64, want ...float64) {
 
 func (e *testEnv) seedUsageRecord(record UsageStatsRecordRow) {
 	e.t.Helper()
-	// 双模式共享 helper（对齐生产 Dialect 装配习语）：PG 模式落
-	// juhe_usage.usage_records 且占位符为 $n，SQLite 模式保持裸表名与 ?。
-	table := "usage_records"
-	values := placeholders(46)
-	if e.dialect.Postgres {
-		table = "juhe_usage.usage_records"
-		values = pgPlaceholders(46)
-	}
+	table := "juhe_usage.usage_records"
+	values := pgPlaceholders(46)
 	e.exec(`INSERT INTO `+table+` (
 		id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint,
 		provider_code, provider_protocol_profile_id, model, status_code, success, failure_attribution,
@@ -657,73 +632,3 @@ func TestWatermarkSkipSemantics(t *testing.T) {
 	}
 }
 
-// TestConcurrentWindowRefreshRace：并发窗口竞争。SQLite 单连接串行化镜像
-// 生产 stats-writer 单写者契约；断言并发下无重复行、终态一致（-race 检测竞争）。
-//
-// 组B（SQLite 载体保留）：被测对象是「单写者串行化」契约，其测试载体依赖
-// SQLite 单连接串行语义（OpenSQLiteTestDB SetMaxOpenConns(1)）；PG 生产臂
-// 的窗口刷新为行锁 + 事务并发，等价语义由 PG 行级锁承载，4 并发无错断言
-// 在真实 PG 上不可逐字节保持（并发 INSERT 同键行触发唯一约束等待/冲突），
-// 故不迁，随生产 sqlite 臂删除批次同批裁决（D17）。
-func TestConcurrentWindowRefreshRace(t *testing.T) {
-	env := newTestEnv(t)
-	env.exec(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, total_cost_usd, updated_at)
-		VALUES ('alice','system_account','alice','2026-04-18',2,10,0.2,'2026-04-18T09:00:00.000Z')`)
-	refresher := env.refresher()
-	var wg sync.WaitGroup
-	errCh := make(chan error, 4)
-	for worker := 0; worker < 4; worker++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := refresher.RunStages(context.Background(), []WindowStageName{StageUsageScopeRangeWindows}, RefreshOptions{})
-			errCh <- err
-		}()
-	}
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
-			t.Fatalf("concurrent refresh error: %v", err)
-		}
-	}
-	// 4 次全量重建后行数仍为唯一窗口行集：alice 只有 04-18 数据，覆盖它的
-	// 热窗口为 [04-18]、[04-12..04-18]、[04-01..04-18]、[03-19..04-18]。
-	rows := env.queryFloats(`SELECT COUNT(*) FROM usage_scope_range_windows WHERE system_account_id='alice'`)
-	if len(rows) != 1 || rows[0] != 4 {
-		t.Fatalf("concurrent final rows = %v want 4", rows)
-	}
-	// 并发 usage-stats-aggregation：游标保证每条记录恰好聚合一次。
-	seedEnv := newTestEnv(t)
-	seedEnv.seedGoldenPair()
-	aggregator := seedEnv.aggregator()
-	var aggWg sync.WaitGroup
-	aggErrs := make(chan error, 4)
-	processedCh := make(chan int, 4)
-	for worker := 0; worker < 4; worker++ {
-		aggWg.Add(1)
-		go func() {
-			defer aggWg.Done()
-			processed, err := aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{BatchSize: 10, SafeCreatedBefore: "2026-04-18T11:00:00.000Z"})
-			aggErrs <- err
-			processedCh <- processed
-		}()
-	}
-	aggWg.Wait()
-	close(aggErrs)
-	for err := range aggErrs {
-		if err != nil {
-			t.Fatalf("concurrent aggregate error: %v", err)
-		}
-	}
-	totalProcessed := 0
-	for index := 0; index < 4; index++ {
-		totalProcessed += <-processedCh
-	}
-	if totalProcessed != 2 {
-		t.Fatalf("concurrent aggregate processed total = %d want 2 (游标保证恰好一次)", totalProcessed)
-	}
-	seedEnv.assertFloats("concurrent totals exactly once",
-		seedEnv.queryRowFloats(`SELECT COALESCE(SUM(request_count), 0) FROM usage_stats_totals WHERE system_account_id='global' AND scope_type='system_account'`),
-		2)
-}

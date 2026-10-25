@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -649,42 +648,12 @@ func TestW9HFindRotationAccountArms(t *testing.T) {
 	}
 }
 
-func TestW9HMarkAndClearFailureStateArms(t *testing.T) {
-	store, db := newClearStateSQLiteStore(t)
-	seedClearStateAccount(t, db, "w9h-mark", "active", "")
-	ctx := context.Background()
-	// Guard miss (wrong status) reports updated=false.
-	updated, err := store.MarkAccountFailureState(ctx, "w9h-mark", "code", "reason", 1, "disabled")
-	if err != nil || updated {
-		t.Fatalf("guard miss updated=%v err=%v", updated, err)
-	}
-	// Guard hit flips the status.
-	if updated, err = store.MarkAccountFailureState(ctx, "w9h-mark", OpenAIOAuthTokenRefreshFailedErrorCode, "reason", 1, "active"); err != nil || !updated {
-		t.Fatalf("guard hit updated=%v err=%v", updated, err)
-	}
-	// Clear with a non-matching code leaves the account in error.
-	changed, status, err := store.ClearAccountFailureState(ctx, "w9h-mark", []string{OpenAIOAuthTokenRefreshLocalConfigurationInvalidCode})
-	if err != nil || changed || status != "" {
-		t.Fatalf("clear mismatch changed=%v status=%q err=%v", changed, status, err)
-	}
-	// Clear with the managed code restores active.
-	changed, status, err = store.ClearAccountFailureState(ctx, "w9h-mark", ManagedRefreshErrorCodes)
-	if err != nil || !changed || status != "active" {
-		t.Fatalf("clear hit changed=%v status=%q err=%v", changed, status, err)
-	}
-	// Second clear misses (already active).
-	changed, _, err = store.ClearAccountFailureState(ctx, "w9h-mark", ManagedRefreshErrorCodes)
-	if err != nil || changed {
-		t.Fatalf("second clear changed=%v err=%v", changed, err)
-	}
-}
-
 func TestW9HOpenStoreValidationAndClose(t *testing.T) {
-	if _, err := OpenStore(nil, StoreSQLite, cryptoTestSecret); err == nil {
+	if _, err := OpenStore(nil, cryptoTestSecret); err == nil {
 		t.Fatal("nil db must fail")
 	}
 	store, db, _ := newTestStore(t)
-	if _, err := OpenStore(db, StoreSQLite, "  "); err == nil {
+	if _, err := OpenStore(db, "  "); err == nil {
 		t.Fatal("blank secret must fail")
 	}
 	if err := store.Close(); err != nil {
@@ -748,44 +717,6 @@ func TestW9HSweepFinalizerErrorAborts(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Health fanout reserve/query error arms
-// ---------------------------------------------------------------------------
-
-func TestW9HHealthFanoutErrorArms(t *testing.T) {
-	store, db, _ := newTestStore(t)
-	ctx := context.Background()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Empty instance account id fails the version reservation.
-	if _, err := store.reserveAccountHealthInputVersionTx(ctx, tx, "  ", isoMillis(defaultNow())); err == nil {
-		t.Fatal("empty account id must fail")
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	// A store over a schema-less database fails the instance query.
-	raw, err := sql.Open("sqlite", t.TempDir()+"/bare.sqlite3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
-	bare, err := OpenStore(raw, StoreSQLite, cryptoTestSecret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bareTx, err := raw.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bare.EnqueueAccountHealthInputsForAuthorizationSourceTx(ctx, bareTx, "account", "res", AuthorizationGrantHealthFanoutReason); err == nil {
-		t.Fatal("missing tables must fail the fanout")
-	}
-	_ = bareTx.Rollback()
-}
-
-// ---------------------------------------------------------------------------
-// Availability sync: api-key invalid-disabled next-check-only arm
 // ---------------------------------------------------------------------------
 
 func TestW9HSyncApiKeyInvalidDisabledAdvancesOnly(t *testing.T) {
@@ -878,52 +809,6 @@ CREATE TABLE accounts (
 	created_at TEXT NOT NULL DEFAULT '',
 	updated_at TEXT NOT NULL DEFAULT ''
 )`
-
-func newClearStateSQLiteStore(t *testing.T) (*Store, *sql.DB) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "clearstate.sqlite3")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(clearStateSQLiteSchema); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenStore(db, StoreSQLite, cryptoTestSecret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return store, db
-}
-
-func seedClearStateAccount(t *testing.T, db *sql.DB, id, status, lastErrorCode string) {
-	t.Helper()
-	credentials := openAICredentials(expiresInMillis(0))
-	sealed, err := EncryptJSON(cryptoTestSecret, credentials)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expiresAt := sql.NullString{}
-	if value, ok := credentials["expires_at"]; ok {
-		if canonical, ok2 := canonicalRFC3339(normalizeText(value)); ok2 {
-			expiresAt = sql.NullString{String: canonical, Valid: true}
-		}
-	}
-	lastErrorArg := sql.NullString{}
-	if lastErrorCode != "" {
-		lastErrorArg = sql.NullString{String: lastErrorCode, Valid: true}
-	}
-	_, err = db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
-		credentials_encrypted, credential_fingerprint, credential_mask, oauth_access_token_expires_at, oauth_refresh_token_present,
-		last_error_code, config_revision, created_at, updated_at)
-		VALUES (?, 'gpt', 'gpt', 'openai', 'v1', ?, ?, ?, ?, ?, '', ?, 1, ?, ?, ?, ?)`,
-		id, "账户-"+id, "oauth", status, sealed, "", expiresAt, lastErrorArg, 1,
-		isoMillis(defaultNow()), isoMillis(defaultNow()))
-	if err != nil {
-		t.Fatal(err)
-	}
-}
 
 func readClearStateAccountRow(t *testing.T, db *sql.DB, id string) (string, string, int64) {
 	t.Helper()

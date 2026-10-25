@@ -69,7 +69,7 @@ func wgSeedDueAccount(t *testing.T, db *sql.DB, id, baseURL string, dueOffset ti
 	}
 	due := time.Now().UTC().Add(dueOffset).Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
-INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
 VALUES (?, 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
 `, id, envelope, due, due); err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestBalanceRuntimeListDueCandidatesPagination(t *testing.T) {
 	// 解密必失败的行：明文非 JSON 且非封套 → 候选被跳过。
 	due := time.Now().UTC().Add(-3 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := businessDB.Exec(`
-INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
 VALUES ('acc-bad', 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, 'not-an-envelope', 0, '{}', ?, ?)
 `, due, due); err != nil {
 		t.Fatal(err)
@@ -209,7 +209,7 @@ func TestBalanceRuntimeReplaceSnapshot(t *testing.T) {
 		t.Fatalf("缺失账户必须返回 false: %v %v", ok, err)
 	}
 	// 快照围栏要求账户已开启且配置一致（enabled 谓词）。
-	if _, err := businessDB.Exec(`UPDATE accounts SET balance_query_enabled = 1, balance_query_config_json = '{"adapter":"builtin","intervalMinutes":10}' WHERE id = 'acc-snap'`); err != nil {
+	if _, err := businessDB.Exec(`UPDATE juhe_business.accounts SET balance_query_enabled = 1, balance_query_config_json = '{"adapter":"builtin","intervalMinutes":10}' WHERE id = 'acc-snap'`); err != nil {
 		t.Fatal(err)
 	}
 	// next_refresh_after 非法 → 报错（config 围栏通过后才会解析）。
@@ -236,7 +236,7 @@ func TestBalanceRuntimeReplaceSnapshot(t *testing.T) {
 		t.Fatalf("快照写入必须成功: %v %v", ok, err)
 	}
 	var snapshotText string
-	if err := statsDB.QueryRow(`SELECT snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-snap'`).Scan(&snapshotText); err != nil {
+	if err := statsDB.QueryRow(`SELECT snapshot_json FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-snap'`).Scan(&snapshotText); err != nil {
 		t.Fatal(err)
 	}
 	if !containsAllJSONKeys(t, snapshotText, "remainingUsd", "rawRemaining", "lastSuccessAt") {
@@ -255,7 +255,7 @@ func TestBalanceRuntimeReplaceSnapshot(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("缓存丰富快照写入必须成功: %v %v", ok, err)
 	}
-	if err := statsDB.QueryRow(`SELECT snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-snap'`).Scan(&snapshotText); err != nil {
+	if err := statsDB.QueryRow(`SELECT snapshot_json FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-snap'`).Scan(&snapshotText); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"rawUnit", "basis", "errorMessage", "remainingUsd"} {
@@ -340,7 +340,7 @@ func TestBalanceRuntimeQueryBuiltin(t *testing.T) {
 		t.Fatalf("查询结果形状错误: %+v", result)
 	}
 	// base_url 缺失 → 显式报错。
-	if _, err := businessDB.Exec(`UPDATE accounts SET credentials_encrypted = '{"api_key":"sk-x"}' WHERE id = 'acc-q'`); err != nil {
+	if _, err := businessDB.Exec(`UPDATE juhe_business.accounts SET credentials_encrypted = '{"api_key":"sk-x"}' WHERE id = 'acc-q'`); err != nil {
 		t.Fatal(err)
 	}
 	runtime.detected = sync.Map{}
@@ -396,7 +396,7 @@ func TestEnsureAccountUsageSnapshotsTableBranches(t *testing.T) {
 	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB); err != nil {
 		t.Fatalf("快照表存在必须通过: %v", err)
 	}
-	if _, err := statsDB.Exec(`DROP TABLE account_usage_snapshots`); err != nil {
+	if _, err := statsDB.Exec(`DROP TABLE juhe_stats.account_usage_snapshots`); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB); err == nil {

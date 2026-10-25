@@ -162,9 +162,9 @@ func TestCompleteConfirmationRecoveringDisposition(t *testing.T) {
 	}
 }
 
-// TestPostgresDialectSQLConstruction 覆盖双模方言的纯构造分支（不触达 DB）。
+// TestPostgresDialectSQLConstruction 覆盖 PG 方言的纯构造分支（不触达 DB）。
 func TestPostgresDialectSQLConstruction(t *testing.T) {
-	pgLoader := &ProjectionItemLoader{postgres: true, statsPostgres: true}
+	pgLoader := &ProjectionItemLoader{}
 	if got := pgLoader.table("accounts"); got != "juhe_business.accounts" {
 		t.Fatalf("PG 业务表前缀: %s", got)
 	}
@@ -172,27 +172,22 @@ func TestPostgresDialectSQLConstruction(t *testing.T) {
 		t.Fatalf("PG 统计表前缀: %s", got)
 	}
 	// managementPageSQL 的 PG LATERAL 分支（构造成功且含 LATERAL）。
-	pgSQL := pgLoader.managementPageSQL(true, 2)
+	pgSQL := pgLoader.managementPageSQL(2)
 	if !strings.Contains(pgSQL, "LEFT JOIN LATERAL") || !strings.Contains(pgSQL, "juhe_business.accounts") {
 		t.Fatalf("PG 分页 SQL 应走 LATERAL 分支: %s", pgSQL[:120])
 	}
-	// SQLite 分支走窗口 CTE。
-	sqliteSQL := pgLoader.managementPageSQL(false, 2)
-	if !strings.Contains(sqliteSQL, "ranked_group_bindings") {
-		t.Fatal("SQLite 分页 SQL 应走窗口 CTE 分支")
-	}
-	pgRepo := &ControlPlaneRepo{postgres: true}
+	pgRepo := &ControlPlaneRepo{}
 	if got := pgRepo.table("account_circuit_incidents"); got != "juhe_business.account_circuit_incidents" {
 		t.Fatalf("控制面 PG 表前缀: %s", got)
 	}
-	listRepo := &ListAvailabilityRepo{postgres: true}
+	listRepo := &ListAvailabilityRepo{}
 	if got := listRepo.table("accounts"); got != "juhe_business.accounts" {
 		t.Fatalf("投影 repo PG 表前缀: %s", got)
 	}
-	// instantParam 的 PG time.Time 分支。
-	parsed, ok := instantParam(true, "2030-01-01T00:00:00.000Z", nil).(time.Time)
+	// instantParam 的 time.Time 分支。
+	parsed, ok := instantParam("2030-01-01T00:00:00.000Z", nil).(time.Time)
 	if !ok || parsed.IsZero() {
-		t.Fatalf("PG 合法时间应返回 time.Time: %v", parsed)
+		t.Fatalf("合法时间应返回 time.Time: %v", parsed)
 	}
 }
 

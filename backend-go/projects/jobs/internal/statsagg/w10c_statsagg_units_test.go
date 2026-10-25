@@ -919,47 +919,4 @@ func TestW10CLoadStatsTimezoneAndTimeKeys(t *testing.T) {
 
 // ---- Dialect PG 臂（纯字符串函数，无需真实 PG）----
 
-func TestW10CDialectPostgresArms(t *testing.T) {
-	pg := Dialect{Postgres: true}
-	// bind：把每个 ? 依序替换为 $n。
-	if got := pg.bind("SELECT * FROM t WHERE a = ? AND b = ? AND c = ?"); got != "SELECT * FROM t WHERE a = $1 AND b = $2 AND c = $3" {
-		t.Fatalf("bind PG 替换错误: %s", got)
-	}
-	// 无占位符查询走逐字符拷贝臂。
-	if got := pg.bind("SELECT 1"); got != "SELECT 1" {
-		t.Fatalf("bind 无占位符错误: %s", got)
-	}
-	// 各表引用前缀。
-	if got := pg.StatsTable("usage_stats_daily"); got != "juhe_stats.usage_stats_daily" {
-		t.Fatalf("StatsTable = %s", got)
-	}
-	if got := pg.BusinessTable("accounts"); got != "juhe_business.accounts" {
-		t.Fatalf("BusinessTable = %s", got)
-	}
-	if got := pg.UsageRecordsTable(); got != "juhe_usage.usage_records" {
-		t.Fatalf("UsageRecordsTable = %s", got)
-	}
-	if got := pg.qualifiedTarget("stats_job_state"); got != "juhe_stats.stats_job_state" {
-		t.Fatalf("qualifiedTarget = %s", got)
-	}
-	if got := pg.leastExpr("a", "b"); got != "LEAST(a, b)" {
-		t.Fatalf("leastExpr = %s", got)
-	}
-	if got := pg.greatestExpr("a", "b"); got != "GREATEST(a, b)" {
-		t.Fatalf("greatestExpr = %s", got)
-	}
-	// SQLite 臂（非 PG）逐一对照。
-	sqlite := Dialect{Postgres: false}
-	if got := sqlite.StatsTable("t"); got != "t" || got != sqlite.BusinessTable("t") || sqlite.UsageRecordsTable() != "usage_records" || sqlite.qualifiedTarget("t") != "t" {
-		t.Fatalf("SQLite 表引用错误")
-	}
-	if got := sqlite.leastExpr("a", "b"); got != "MIN(a, b)" {
-		t.Fatalf("SQLite leastExpr = %s", got)
-	}
-	if got := sqlite.greatestExpr("a", "b"); got != "MAX(a, b)" {
-		t.Fatalf("SQLite greatestExpr = %s", got)
-	}
-}
-
-// w10cPGProbe 编译期引用 database/sql（SQLite env 复用同包 fixture）。
 var _ = sql.NullString{}

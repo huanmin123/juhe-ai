@@ -144,7 +144,7 @@ func newTestWriter(t *testing.T, config Config, store ShardStore, options ...Opt
 
 func TestWriterNormalBatchWrite(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 4, FlushIntervalMs: 5_000, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 4, FlushIntervalMs: 5_000, }
 	writer, _ := newTestWriter(t, config, store)
 	for i := 0; i < 4; i++ {
 		if err := writer.Enqueue(context.Background(), gatewayInput(string(rune('a'+i)))); err != nil {
@@ -181,7 +181,7 @@ func TestWriterNormalBatchWrite(t *testing.T) {
 
 func TestWriterShardDistribution(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 100, FlushIntervalMs: 5_000, ShardCount: 8, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 100, FlushIntervalMs: 5_000, ShardCount: 8, }
 	writer, _ := newTestWriter(t, config, store)
 	// Explicit pre-generated ids spread over shard buckets deterministically.
 	inputs := []UsageRecordInput{}
@@ -224,8 +224,7 @@ func TestWriterShardDistribution(t *testing.T) {
 func TestWriterRetryThenTerminalDeadLetter(t *testing.T) {
 	store := &mockStore{failures: 2, overflowErr: errors.New("db busy")}
 	config := Config{
-		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 4, ShardRoot: t.TempDir(),
-	}
+		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 4, }
 	writer, retry := newTestWriter(t, config, store)
 	// Batch 1 (records a,b) survives two failures then succeeds.
 	if err := writer.Enqueue(context.Background(), gatewayInput("a")); err != nil {
@@ -271,7 +270,7 @@ func TestWriterZeroAttemptsRetriesForeverUntilStop(t *testing.T) {
 	// MaxWriteAttempts=0 (Node default): a failing batch is never dropped;
 	// Close() drains what it can and the failed batch stays terminal-queued.
 	store := &mockStore{failures: 1 << 20, overflowErr: errors.New("db down")}
-	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, }
 	writer, retry := newTestWriter(t, config, store)
 	if err := writer.Enqueue(context.Background(), gatewayInput("stuck")); err != nil {
 		t.Fatal(err)
@@ -297,7 +296,7 @@ func TestWriterOverflowDropAndSpool(t *testing.T) {
 	logger := &captureLogger{}
 	config := Config{
 		QueueMaxItems: 2, QueueMaxBytes: 64 * 1024, BatchSize: 10,
-		FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
+		FlushIntervalMs: 60_000,
 	}
 	writer, _ := newTestWriter(t, config, store, WithOverflowSpool(spool), WithLogger(logger))
 	base := gatewayInput("x")
@@ -422,7 +421,7 @@ func TestWriterDropLogSampling(t *testing.T) {
 	logger := &captureLogger{}
 	config := Config{
 		QueueMaxItems: 1, QueueMaxBytes: 64 * 1024, BatchSize: 10,
-		FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
+		FlushIntervalMs: 60_000,
 	}
 	writer, _ := newTestWriter(t, config, store, WithLogger(logger))
 	// Fill the queue; every further record overflows. The sampled log only
@@ -454,7 +453,7 @@ func TestWriterDropLogSampling(t *testing.T) {
 func TestWriterGracefulShutdownDrain(t *testing.T) {
 	store := &mockStore{}
 	config := Config{
-		BatchSize: 2, FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
+		BatchSize: 2, FlushIntervalMs: 60_000,
 		RetryDelayMs: 50,
 	}
 	writer, _ := newTestWriter(t, config, store)
@@ -480,7 +479,7 @@ func TestWriterGracefulShutdownDrain(t *testing.T) {
 
 func TestWriterShutdownDrainStopsOnFailure(t *testing.T) {
 	store := &mockStore{failures: 1 << 20, overflowErr: errors.New("db down")}
-	config := Config{BatchSize: 1, FlushIntervalMs: 60_000, ShutdownFlushMaxBatches: 3, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 1, FlushIntervalMs: 60_000, ShutdownFlushMaxBatches: 3, }
 	writer, _ := newTestWriter(t, config, store)
 	for i := 0; i < 3; i++ {
 		if err := writer.Enqueue(context.Background(), gatewayInput(string(rune('a'+i)))); err != nil {
@@ -500,51 +499,9 @@ func TestWriterShutdownDrainStopsOnFailure(t *testing.T) {
 	}
 }
 
-func TestWriterFreezesPricingAtEnqueue(t *testing.T) {
-	store := &mockStore{}
-	catalog := &mockCatalog{
-		resolveModel: "gpt-5",
-		breakdown: &CostBreakdown{
-			AccountChargeUsd:         floatPtr(0.42),
-			Multiplier:               1,
-			ServiceTierPricingSource: TierSourceDefault,
-		},
-	}
-	config := Config{
-		BatchSize: 10, FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
-		FreezePricing: true, CatalogSnapshot: true,
-	}
-	writer, _ := newTestWriter(t, config, store, WithCatalog(catalog))
-	input := gatewayInput("frozen")
-	input.ProviderCode = "gpt"
-	input.InputTokens = intPtr(9)
-	if err := writer.Enqueue(context.Background(), input); err != nil {
-		t.Fatal(err)
-	}
-	// 冻结发生在入队时点：enqueue 返回时目录已被调用一次。
-	if catalog.breakdownCalls != 1 {
-		t.Fatalf("freeze-time breakdown calls = %d", catalog.breakdownCalls)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	writer.Close(ctx)
-	if got := store.totalRows(); got != 1 {
-		t.Fatalf("rows = %d, want 1", got)
-	}
-	entry := store.batches[0].ShardEntries[0]
-	if entry.CostUsd == nil || *entry.CostUsd != 0.42 {
-		t.Fatalf("frozen cost not persisted: %+v", entry.CostUsd)
-	}
-	row := store.batches[0].RowsByShard[0].Rows[0]
-	snapshot, ok := row.Params[columnIndexOf("cost_breakdown_snapshot_json")].(string)
-	if !ok || !strings.Contains(snapshot, `"accountChargeUsd":0.42`) {
-		t.Fatalf("snapshot json = %v", snapshot)
-	}
-}
-
 func TestWriterConcurrentEnqueueRace(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 16, FlushIntervalMs: 5, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 16, FlushIntervalMs: 5, }
 	writer, _ := newTestWriter(t, config, store)
 	var wg sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
@@ -568,7 +525,7 @@ func TestWriterConcurrentEnqueueRace(t *testing.T) {
 
 func TestWriterInvalidNormalizeInput(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 4, FlushIntervalMs: 60_000, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 4, FlushIntervalMs: 60_000, }
 	writer, _ := newTestWriter(t, config, store)
 	input := gatewayInput("bad")
 	input.CreatedAt = "not-a-time"
@@ -584,7 +541,7 @@ func TestWriterSlowFlushMetrics(t *testing.T) {
 	// The store stub sleeps past the slow threshold to exercise the
 	// slow-flush counters.
 	store := &slowStore{delay: 520 * time.Millisecond}
-	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, }
 	writer, _ := newTestWriter(t, config, store)
 	if err := writer.Enqueue(context.Background(), gatewayInput("s")); err != nil {
 		t.Fatal(err)

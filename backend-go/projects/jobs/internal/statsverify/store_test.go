@@ -3,35 +3,11 @@ package statsverify
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 // test helpers ---------------------------------------------------------------
-
-// openTestStore opens a Go-owned SQLite store pair inside a temp directory
-// with the usageStatsTimezone setting pre-seeded (default UTC).
-func openTestStore(t *testing.T, timezone string) *Store {
-	t.Helper()
-	dir := t.TempDir()
-	store, err := OpenStore(StoreConfig{
-		Mode:               StoreSQLite,
-		SQLiteStatsPath:    filepath.Join(dir, "stats.db"),
-		SQLiteBusinessPath: filepath.Join(dir, "business.db"),
-	})
-	if err != nil {
-		t.Fatalf("open test store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	ctx := context.Background()
-	if _, err := store.business.ExecContext(ctx,
-		`INSERT INTO system_settings (system_account_id, key, value_json) VALUES ('sys_admin', 'usageStatsTimezone', ?)`,
-		mustJSONString(timezone)); err != nil {
-		t.Fatalf("seed timezone: %v", err)
-	}
-	return store
-}
 
 func mustJSONString(value string) string {
 	return `"` + value + `"`

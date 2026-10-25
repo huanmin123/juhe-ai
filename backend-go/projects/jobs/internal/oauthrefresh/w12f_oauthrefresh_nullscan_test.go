@@ -36,27 +36,3 @@ func TestW12fNullCredentialsScanArms(t *testing.T) {
 	}
 }
 
-func TestW12fUpdateAndMarkArms(t *testing.T) {
-	store, db := newClearStateSQLiteStore(t)
-	ctx := context.Background()
-	seedClearStateAccount(t, db, "w12f-upd", "active", "")
-
-	// UpdateAccountCredentials：版本冲突。
-	if _, err := store.UpdateAccountCredentials(ctx, "w12f-upd", openAICredentials(expiresInMillis(0)), 99); err == nil {
-		t.Fatal("版本冲突必须报错")
-	}
-	// UpdateAccountCredentials：不存在账户按幂等处理（不报错）。
-	if _, err := store.UpdateAccountCredentials(ctx, "w12f-ghost", openAICredentials(expiresInMillis(0)), 1); err != nil {
-		t.Fatalf("不存在账户必须幂等: %v", err)
-	}
-	// MarkAccountFailureState：状态/版本不匹配 → false。
-	changed, err := store.MarkAccountFailureState(ctx, "w12f-upd", "w12f-err", "w12f-reason", 99, "active")
-	if err != nil || changed {
-		t.Fatalf("版本不匹配必须返回 false: changed=%v err=%v", changed, err)
-	}
-	// ClearAccountFailureState：错误码不匹配 → false。
-	changed, status, err := store.ClearAccountFailureState(ctx, "w12f-upd", []string{"w12f-other"})
-	if err != nil || changed {
-		t.Fatalf("错误码不匹配必须返回 false: changed=%v status=%s err=%v", changed, status, err)
-	}
-}

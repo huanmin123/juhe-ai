@@ -98,7 +98,7 @@ func TestBalanceRuntimeFenceHitsNanoAndMillisecondStoredText(t *testing.T) {
 		t.Fatalf("纳秒围栏的收口提交必须命中: %v %v", changed, err)
 	}
 	var stored sql.NullString
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_next_refresh_at FROM accounts WHERE id = 'acc-nano'`).Scan(&stored); err != nil {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = 'acc-nano'`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored.Valid {
@@ -116,7 +116,7 @@ func TestBalanceRuntimeFenceHitsNanoAndMillisecondStoredText(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("毫秒围栏的推进提交必须命中: %v %v", changed, err)
 	}
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_next_refresh_at FROM accounts WHERE id = 'acc-milli'`).Scan(&stored); err != nil {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = 'acc-milli'`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if !stored.Valid || stored.String != milliNext {
@@ -144,7 +144,7 @@ func TestBalanceRuntimeFenceHitsNanoAndMillisecondStoredText(t *testing.T) {
 	}
 	var enabledFlag int
 	var enableStored, updatedAt string
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled, balance_query_next_refresh_at, updated_at FROM accounts WHERE id = 'acc-enable'`).Scan(&enabledFlag, &enableStored, &updatedAt); err != nil {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled, balance_query_next_refresh_at, updated_at FROM juhe_business.accounts WHERE id = 'acc-enable'`).Scan(&enabledFlag, &enableStored, &updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	if enabledFlag != 1 || enableStored != enableNext {
@@ -160,7 +160,7 @@ func TestBalanceRuntimeFenceHitsNanoAndMillisecondStoredText(t *testing.T) {
 func seedBalanceDueRawText(t *testing.T, db *sql.DB, id, dueText string) {
 	t.Helper()
 	if _, err := db.Exec(`
-INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
 VALUES (?, 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, '{"api_key":"sk-x","base_url":"http://127.0.0.1:1"}', 0, '{}', ?, ?)
 `, id, dueText, dueText); err != nil {
 		t.Fatal(err)

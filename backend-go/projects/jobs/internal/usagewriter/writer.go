@@ -57,22 +57,12 @@ type Config struct {
 	MaxWriteAttempts int
 	// ShardCount mirrors runtimeConfig.usageShardCount.
 	ShardCount int
-	// ShardRoot is the SQLite usage-shard root (planning only; the store
-	// owns the files).
-	ShardRoot string
 	// FreezePricing enables the enqueue-time pricing freeze (the Node Redis
 	// Stream path freezes before enqueue; the Go single path freezes here
 	// when enabled).
 	FreezePricing bool
-	// CatalogSnapshot mirrors databaseDriver !== 'postgres' for
-	// usageRecordPricingSnapshotForWrite's catalog attempt.
-	CatalogSnapshot bool
-	// Postgres mirrors databaseDriver == 'postgres' for the write plan: PG
-	// rows must carry systemAccountId, and BuildWritePlan fails the batch at
-	// plan time instead of letting an empty value hit the INSERT's NOT NULL
-	// only to retry forever. Must match the ShardStore driver wired by the
-	// assembly (NewPostgresShardStore ⇔ true, NewSqliteShardStore ⇔ false).
-	Postgres bool
+	// Postgres 收敛后恒为唯一驱动形态：write plan 期对缺失 systemAccountId
+	// 快速失败（空值否则要到 INSERT 才撞 NOT NULL 后无限重试）。
 }
 
 // OverflowSpool ports the performance-mode disk compensation
@@ -251,7 +241,7 @@ func (w *Writer) prepareForAdmission(ctx Ctx, input UsageRecordInput) (UsageReco
 		return UsageRecordInput{}, 0, err
 	}
 	if w.config.FreezePricing {
-		normalized = FreezeUsageRecordPricingFacts(ctx, normalized, w.catalog, w.config.CatalogSnapshot)
+		normalized = FreezeUsageRecordPricingFacts(ctx, normalized, w.catalog)
 	}
 	return normalized, EstimateUsageRecordBytes(normalized, w.config.QueueMaxBytes), nil
 }
@@ -611,11 +601,8 @@ func (w *Writer) writeBatch(batch []queuedRecord) (int, error) {
 	}
 	ctx := context.Background()
 	plan, err := BuildWritePlan(ctx, inputs, WritePlanOptions{
-		Postgres:               w.config.Postgres,
-		CatalogSnapshotEnabled: w.config.CatalogSnapshot,
-		Catalog:                w.catalog,
-		ShardCount:             w.config.ShardCount,
-		ShardRoot:              w.config.ShardRoot,
+		Catalog:    w.catalog,
+		ShardCount: w.config.ShardCount,
 	}, w.clock)
 	if err != nil {
 		return 0, err

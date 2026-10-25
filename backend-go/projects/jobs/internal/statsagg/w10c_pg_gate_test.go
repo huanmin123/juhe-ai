@@ -137,7 +137,7 @@ func TestW10CPGQuotaIncrementalSkipLocked(t *testing.T) {
 
 	refresher := &WindowRefresher{
 		DB:      db,
-		Dialect: Dialect{Postgres: true},
+		Dialect: Dialect{},
 		Clock:   StaticTimezoneSource{Location: time.UTC},
 		Now:     func() time.Time { return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) },
 	}

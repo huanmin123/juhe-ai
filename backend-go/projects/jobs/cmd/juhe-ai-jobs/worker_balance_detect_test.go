@@ -7,15 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // balanceFixtureSchema 建立余额探测依赖的冻结业务/统计表
@@ -43,7 +42,11 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   proxy_profile_id TEXT,
   balance_query_enabled INTEGER NOT NULL DEFAULT 0,
   balance_query_config_json TEXT NOT NULL DEFAULT '{}',
+  name TEXT NOT NULL DEFAULT '',
+  protocol_code TEXT,
+  protocol_version TEXT,
   balance_query_next_refresh_at TEXT,
+  created_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
@@ -102,63 +105,81 @@ func seedBalanceDetectionAccount(t *testing.T, ctx context.Context, db *sql.DB, 
 	}
 	due := time.Now().UTC().Add(dueOffset).Format(time.RFC3339Nano)
 	if _, err := db.ExecContext(ctx, `
-INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
-VALUES ('acc-detect-1', 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
-`, envelope, due, due); err != nil {
+INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, name, protocol_code, protocol_version, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at)
+VALUES ('acc-detect-1', 'sys_admin', 'gpt', 'gpt', 'acc-detect-1', 'gpt', '1', 'api_key', 'active', 1, ?, 0, '{}', ?, ?, ?)
+`, envelope, due, due, due); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func balanceDetectAssemblyEnv(t *testing.T, businessPath, statsPath string) map[string]string {
+// wgBalanceAssemblyFixture 打开共享覆盖库（w14j 自愈 seed + 行卫生）供
+// 余额装配全链测试使用：statsverify 契约表属外部预置（fresh 独立库 DDL
+// 回填登记为 B6 遗留切片），装配全链沿用覆盖库（w16j 同惯例）。返回
+// sqldialect 改写句柄（测试内保留 `?` 写法）与覆盖库 URL（装配 env 用）。
+// 账户/快照行按调用方自有 ID 在前后双向清理，不触碰他人数据。
+func wgBalanceAssemblyFixture(t *testing.T, accountIDs []string) (*sql.DB, string) {
 	t.Helper()
-	return map[string]string{
-		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
-		"JUHE_AI_DATABASE_PATH":                   businessPath,
-		"JUHE_AI_STATS_DATABASE_PATH":             statsPath,
-		"JUHE_AI_TASK_RUNS_DATABASE_PATH":         filepath.Join(filepath.Dir(businessPath), "task-runs.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":     filepath.Join(filepath.Dir(businessPath), "usage-catalog.sqlite3"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                filepath.Join(filepath.Dir(businessPath), "usage-shards"),
-		"JUHE_AI_INSTANCE_ID":                     "balance-detect-instance",
-		"JUHE_AI_WORKER_ROLE":                     "ops-worker",
-		"JUHE_AI_SECRET":                          "0123456789abcdef0123456789abcdef",
-		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":           "2000",
-		"JUHE_AI_DATASET_DATABASE_PATH":           filepath.Join(filepath.Dir(businessPath), "dataset.sqlite3"),
-		"JUHE_AI_CHAT_DATABASE_PATH":              filepath.Join(filepath.Dir(businessPath), "chat.sqlite3"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  filepath.Join(filepath.Dir(businessPath), "codex-state"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "1",
-		// 家族开关 env 已删除（2026-09-19）：全部家族恒装配。
+	pgURL := w12cPGOverrideURL(t)
+	if pgURL == "" {
+		t.Skip("balance: 覆盖库连接串不可用")
 	}
-}
-
-func mustOpenSQLite(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_txlock=immediate")
+	db, err := sql.Open("pgx", pgURL)
+	if err != nil {
+		t.Skipf("打开覆盖库失败（跳过）: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		t.Skipf("覆盖库不可达（跳过）: %v", err)
+	}
+	w14jEnsurePGFixture(t, db)
+	wrapped, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), pgURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-		t.Fatal(err)
-	}
-	return db
+	t.Cleanup(func() { _ = wrapped.Close() })
+	wgBalanceCleanupRows(t, wrapped, accountIDs)
+	t.Cleanup(func() { wgBalanceCleanupRows(t, wrapped, accountIDs) })
+	return wrapped, pgURL
 }
 
-// TestWorkerBalanceDetectWiresEnabledOutcome：fake 上游命中 user_balance
-// 适配器 → 跑一轮 → 断言账户开启、配置 JSON camelCase、快照行写入。
+// wgBalanceCleanupRows 按账户 ID 清理测试自有行（先快照后账户，幂等）。
+func wgBalanceCleanupRows(t *testing.T, db *sql.DB, accountIDs []string) {
+	t.Helper()
+	for _, id := range accountIDs {
+		if _, err := db.Exec(`DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ?`, id); err != nil {
+			t.Logf("清理 %s 快照行失败（继续）: %v", id, err)
+		}
+		if _, err := db.Exec(`DELETE FROM juhe_business.accounts WHERE id = ?`, id); err != nil {
+			t.Logf("清理 %s 账户行失败（继续）: %v", id, err)
+		}
+	}
+}
+
+// balanceDetectAssemblyEnv 以隔离 PG 测试库 DSN 构造装配 env（原 sqlite
+// 驱动与路径族 env 随 sqlite 形态退役删除；家族开关恒装配不变）。
+func balanceDetectAssemblyEnv(t *testing.T, postgresURL string) map[string]string {
+	t.Helper()
+	return map[string]string{
+		"JUHE_AI_POSTGRES_URL":          postgresURL,
+		"JUHE_AI_INSTANCE_ID":           "balance-detect-instance",
+		"JUHE_AI_WORKER_ROLE":           "ops-worker",
+		"JUHE_AI_SECRET":                "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS": "2000",
+	}
+}
+
 func TestWorkerBalanceDetectWiresEnabledOutcome(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipped in -short mode")
 	}
 	ctx := context.Background()
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	statsPath := filepath.Join(root, "stats.sqlite3")
-	businessDB := mustOpenSQLite(t, businessPath)
-	defer businessDB.Close()
-	statsDB := mustOpenSQLite(t, statsPath)
-	defer statsDB.Close()
-	if err := balanceFixtureSchema(ctx, businessDB, statsDB); err != nil {
-		t.Fatal(err)
-	}
+	// PG 唯一形态：共享覆盖库 + w14j 自愈 seed（statsverify 契约表属外部
+	// 预置，fresh 独立库 DDL 回填登记为 B6 遗留；原 sqlite 双文件夹具随
+	// sqlite 形态退役删除）。
+	businessDB, dsn := wgBalanceAssemblyFixture(t, []string{"acc-detect-1"})
+	statsDB := businessDB
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/user/balance" {
@@ -171,7 +192,7 @@ func TestWorkerBalanceDetectWiresEnabledOutcome(t *testing.T) {
 	defer upstream.Close()
 	seedBalanceDetectionAccount(t, ctx, businessDB, "0123456789abcdef0123456789abcdef", upstream.URL, -time.Minute)
 
-	env := balanceDetectAssemblyEnv(t, businessPath, statsPath)
+	env := balanceDetectAssemblyEnv(t, dsn)
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {
 		t.Fatalf("loadWorkerConfig: %v", err)
@@ -193,14 +214,14 @@ func TestWorkerBalanceDetectWiresEnabledOutcome(t *testing.T) {
 	}
 
 	var enabled int
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled FROM accounts WHERE id = 'acc-detect-1'`).Scan(&enabled); err != nil {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled FROM juhe_business.accounts WHERE id = 'acc-detect-1'`).Scan(&enabled); err != nil {
 		t.Fatal(err)
 	}
 	if enabled != 1 {
 		t.Fatal("探测命中后账户必须已开启余额查询")
 	}
 	var configText string
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_config_json FROM accounts WHERE id = 'acc-detect-1'`).Scan(&configText); err != nil {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_config_json FROM juhe_business.accounts WHERE id = 'acc-detect-1'`).Scan(&configText); err != nil {
 		t.Fatal(err)
 	}
 	// Node normalizeAccountBalanceConfig 输出 camelCase 键，intervalMinutes=5。
@@ -208,7 +229,7 @@ func TestWorkerBalanceDetectWiresEnabledOutcome(t *testing.T) {
 		t.Fatalf("配置 JSON 必须保持 Node camelCase 形状，得到 %s", configText)
 	}
 	var nextRefreshAt sql.NullString
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_next_refresh_at FROM accounts WHERE id = 'acc-detect-1'`).Scan(&nextRefreshAt); err != nil || !nextRefreshAt.Valid {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = 'acc-detect-1'`).Scan(&nextRefreshAt); err != nil || !nextRefreshAt.Valid {
 		t.Fatalf("开启后必须写入新的 next_refresh_at: %v %v", nextRefreshAt, err)
 	}
 	if due, err := time.Parse(time.RFC3339Nano, nextRefreshAt.String); err != nil || !due.After(time.Now().UTC()) {
@@ -219,7 +240,7 @@ func TestWorkerBalanceDetectWiresEnabledOutcome(t *testing.T) {
 		refreshStatus string
 		snapshotJSON  string
 	)
-	if err := statsDB.QueryRowContext(ctx, `SELECT refresh_status, snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-detect-1' AND kind = 'relay_balance'`).Scan(&refreshStatus, &snapshotJSON); err != nil {
+	if err := statsDB.QueryRowContext(ctx, `SELECT refresh_status, snapshot_json FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-detect-1' AND kind = 'relay_balance'`).Scan(&refreshStatus, &snapshotJSON); err != nil {
 		t.Fatalf("relay_balance 快照行必须写入: %v", err)
 	}
 	if refreshStatus != "fresh" {
@@ -253,21 +274,16 @@ func TestWorkerBalanceDetectUnsupportedClearsIntent(t *testing.T) {
 		t.Skip("skipped in -short mode")
 	}
 	ctx := context.Background()
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	statsPath := filepath.Join(root, "stats.sqlite3")
-	businessDB := mustOpenSQLite(t, businessPath)
-	defer businessDB.Close()
-	statsDB := mustOpenSQLite(t, statsPath)
-	defer statsDB.Close()
-	if err := balanceFixtureSchema(ctx, businessDB, statsDB); err != nil {
-		t.Fatal(err)
-	}
+	// PG 唯一形态：共享覆盖库 + w14j 自愈 seed（statsverify 契约表属外部
+	// 预置，fresh 独立库 DDL 回填登记为 B6 遗留；原 sqlite 双文件夹具随
+	// sqlite 形态退役删除）。
+	businessDB, dsn := wgBalanceAssemblyFixture(t, []string{"acc-detect-1"})
+	statsDB := businessDB
 	upstream := httptest.NewServer(http.HandlerFunc(http.NotFound))
 	defer upstream.Close()
 	seedBalanceDetectionAccount(t, ctx, businessDB, "0123456789abcdef0123456789abcdef", upstream.URL, -time.Minute)
 
-	env := balanceDetectAssemblyEnv(t, businessPath, statsPath)
+	env := balanceDetectAssemblyEnv(t, dsn)
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {
 		t.Fatalf("loadWorkerConfig: %v", err)
@@ -283,7 +299,7 @@ func TestWorkerBalanceDetectUnsupportedClearsIntent(t *testing.T) {
 
 	var enabled int
 	var nextRefreshAt sql.NullString
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled, balance_query_next_refresh_at FROM accounts WHERE id = 'acc-detect-1'`).Scan(&enabled, &nextRefreshAt); err != nil {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled, balance_query_next_refresh_at FROM juhe_business.accounts WHERE id = 'acc-detect-1'`).Scan(&enabled, &nextRefreshAt); err != nil {
 		t.Fatal(err)
 	}
 	if enabled != 0 {
@@ -293,60 +309,11 @@ func TestWorkerBalanceDetectUnsupportedClearsIntent(t *testing.T) {
 		t.Fatalf("unsupported 结果必须收口探测意图（NULL），得到 %s", nextRefreshAt.String)
 	}
 	var rows int
-	if err := statsDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 'acc-detect-1'`).Scan(&rows); err != nil {
+	if err := statsDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-detect-1'`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 0 {
 		t.Fatal("unsupported 结果不得写入快照")
-	}
-}
-
-// TestWorkerBalanceDetectDisabledOnMissingContract：业务库缺 accounts 表 →
-// 任务登记 disabled 且不进入调度循环，其他任务不受影响。
-func TestWorkerBalanceDetectDisabledOnMissingContract(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipped in -short mode")
-	}
-	env := balanceDetectAssemblyEnv(t,
-		filepath.Join(t.TempDir(), "business.sqlite3"),
-		filepath.Join(t.TempDir(), "stats.sqlite3"))
-	config, err := loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("loadWorkerConfig: %v", err)
-	}
-	assembly, err := buildWorkerAssembly(config, nil)
-	if err != nil {
-		t.Fatalf("buildWorkerAssembly: %v", err)
-	}
-	defer assembly.closeStores()
-	for _, job := range assembly.wiredJobs {
-		if job == "account-balance-auto-detect-recovery" {
-			t.Fatal("契约缺失时余额自动探测任务不得接线")
-		}
-	}
-	found := false
-	for _, job := range assembly.disabledJobs {
-		if job.JobName == "account-balance-auto-detect-recovery" && strings.Contains(job.Reason, "契约校验失败") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("必须登记 disabled 并说明缺口: %+v", assembly.disabledJobs)
-	}
-	// 其他任务不受影响：task-run-reconcile 仍然接线。
-	reconcileWired := false
-	for _, job := range assembly.wiredJobs {
-		if job == "background-task-run-reconcile" {
-			reconcileWired = true
-		}
-	}
-	if !reconcileWired {
-		t.Fatal("其他任务不得被牵连")
-	}
-	// 状态载荷必须可序列化且包含 disabled 清单。
-	status := assembly.statusPayload()
-	if _, err := json.Marshal(status); err != nil {
-		t.Fatalf("status payload 必须可序列化: %v", err)
 	}
 }
 
@@ -375,100 +342,5 @@ func TestWorkerPartialJobsStartupLogExhaustive(t *testing.T) {
 		if len(gap.Reason) < 20 {
 			t.Fatalf("%s 的缺口说明必须命名缺失适配器: %s", gap.JobName, gap.Reason)
 		}
-	}
-}
-
-// TestWorkerSmokeRunsMultipleJobsConcurrently：多 job 并跑冒烟——调度循环
-// 运行的同时，并发直跑 3 个已注册任务（reconcile / usage-stats-aggregation /
-// account-balance-auto-detect-recovery），全部成功且停机排空干净。
-func TestWorkerSmokeRunsMultipleJobsConcurrently(t *testing.T) {
-	if testing.Short() {
-		t.Skip("smoke test skipped in -short mode")
-	}
-	ctx := context.Background()
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	statsPath := filepath.Join(root, "stats.sqlite3")
-	businessDB := mustOpenSQLite(t, businessPath)
-	statsDB := mustOpenSQLite(t, statsPath)
-	if err := balanceFixtureSchema(ctx, businessDB, statsDB); err != nil {
-		t.Fatal(err)
-	}
-	// usage-stats-aggregation 需要 stats 库的冻结聚合 schema；此导出 schema
-	// 是 statsagg 文档化的测试专用引导（禁止生产初始化）。
-	for _, statement := range statsagg.SQLiteTestSchema {
-		if _, err := statsDB.ExecContext(ctx, statement); err != nil {
-			t.Fatalf("应用 statsagg 测试 schema 失败: %v", err)
-		}
-	}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/user/balance" {
-			_, _ = w.Write([]byte(`{"balance":"3"}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer upstream.Close()
-	seedBalanceDetectionAccount(t, ctx, businessDB, "0123456789abcdef0123456789abcdef", upstream.URL, -time.Second)
-	businessDB.Close()
-	statsDB.Close()
-
-	env := workerSmokeTestEnv(t)
-	env["JUHE_AI_DATABASE_PATH"] = businessPath
-	env["JUHE_AI_STATS_DATABASE_PATH"] = statsPath
-	config, err := loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("loadWorkerConfig: %v", err)
-	}
-	assembly, err := buildWorkerAssembly(config, nil)
-	if err != nil {
-		t.Fatalf("buildWorkerAssembly: %v", err)
-	}
-	defer assembly.closeStores()
-	if len(assembly.wiredJobs) < 17 {
-		t.Fatalf("至少应接线 17 个 GoWired 任务（17 基线 + balance），得到 %d", len(assembly.wiredJobs))
-	}
-
-	components := assembly.components()
-	runCtx, cancel := context.WithCancel(ctx)
-	runErr := make(chan error, 1)
-	go func() { runErr <- components[0].Run(runCtx) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && !assembly.ready() {
-		time.Sleep(2 * time.Millisecond)
-	}
-	if !assembly.ready() {
-		t.Fatal("调度循环必须就绪")
-	}
-
-	var wg sync.WaitGroup
-	errs := make([]error, 3)
-	names := []string{
-		"background-task-run-reconcile",
-		"usage-stats-aggregation",
-		"account-balance-auto-detect-recovery",
-	}
-	for index, name := range names {
-		wg.Add(1)
-		go func(slot int, jobName string) {
-			defer wg.Done()
-			_, err := assembly.runWiredJobOnce(ctx, jobName)
-			errs[slot] = err
-		}(index, name)
-	}
-	wg.Wait()
-	for index, err := range errs {
-		if err != nil {
-			t.Fatalf("并发执行 %s 失败: %v", names[index], err)
-		}
-	}
-	cancel()
-	select {
-	case err := <-runErr:
-		if err != nil {
-			t.Fatalf("调度循环退出错误: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("调度循环未按时停机")
 	}
 }

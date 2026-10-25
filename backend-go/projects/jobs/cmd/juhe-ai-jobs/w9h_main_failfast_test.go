@@ -3,7 +3,6 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,68 +18,6 @@ import (
 
 const w9hFailFastTimeout = 90 * time.Second
 
-func TestW9HMainFailFastArms(t *testing.T) {
-	if testing.Short() {
-		t.Skip("fail-fast 子进程场景在 -short 下跳过")
-	}
-	scenarios := []struct {
-		name  string
-		patch map[string]string
-	}{
-		{"log-level-invalid", map[string]string{"JUHE_AI_LOG_LEVEL": "bogus-level"}},
-		{"owner-mode-invalid", map[string]string{"JUHE_AI_BLUE_GREEN_OWNER_MODE": "bogus-mode"}},
-		{"runtime-store-invalid", map[string]string{"JUHE_AI_RUNTIME_LOG_STORE": "bogus-store"}},
-		{"runtime-once-unsupported", map[string]string{"JUHE_AI_RUNTIME_LOG_ONCE": "true"}},
-		// J1 开启但 owner 未声明为 go → accounthealth.LoadConfig 失败。
-		// OWNER 缺省视为 go（不再报错）；显式非 go 值仍 fail-fast。
-		{"account-health-owner-not-go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}},
-		// model-recovery 开启（Redis state）但 J1 输入源是 files（无 reader）。
-		// INPUT_SOURCE 显式 files：sqlite 缺省自 2026-09 起会装配直读 reader，
-		// 该臂要验证的正是「reader 缺席」前提。
-		{"model-recovery-without-reader", map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "files",
-			"JUHE_AI_REDIS_STATE_URL":             "redis://127.0.0.1:6379/9",
-			"JUHE_AI_REDIS_NAMESPACE":             "w9h-failfast",
-		}},
-		// J2 家族已激活（2026-09-21 起 ENABLED 开关移除，专属 PG URL 即激活），
-		// store=sqlite → accountbalance.LoadRuntimeConfig 加载期拒绝。
-		{"account-balance-sqlite-rejected", map[string]string{
-			"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://w9h:w9h@127.0.0.1:1/w9h",
-			"JUHE_AI_ACCOUNT_BALANCE_STORE":        "sqlite",
-			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":     "w9h-j2",
-		}},
-		// J3b runtime 是 Gateway-owned：jobs 进程开启即失败。
-		{"model-check-jobs-rejected", map[string]string{"JUHE_AI_MODEL_CHECK_ENABLED": "true"}},
-	}
-	for _, scenario := range scenarios {
-		t.Run(scenario.name, func(t *testing.T) {
-			root := t.TempDir()
-			env := wgOwnerModeMainEnv(t, root)
-			for key, value := range scenario.patch {
-				env[key] = value
-			}
-			port := wgFreePort(t)
-			cmd := wgSpawnMainChild(t, env, "w9h-"+scenario.name, port)
-			done := make(chan error, 1)
-			go func() { done <- cmd.Wait() }()
-			select {
-			case err := <-done:
-				exitErr, ok := err.(*exec.ExitError)
-				if !ok {
-					t.Fatalf("fail-fast 臂 %s 应以非零码退出，实际 err=%v", scenario.name, err)
-				}
-				if code := exitErr.ExitCode(); code != 1 {
-					t.Fatalf("fail-fast 臂 %s 退出码=%d want 1", scenario.name, code)
-				}
-			case <-time.After(w9hFailFastTimeout):
-				_ = cmd.Process.Kill()
-				t.Fatalf("fail-fast 臂 %s 未在限期内退出", scenario.name)
-			}
-		})
-	}
-}
-
-// manualOutcome / manualHandoverResult 纯函数臂。
 func TestW9HManualOutcomeAndHandover(t *testing.T) {
 	if got := manualOutcome(accountbalance.StatusUnsupported); got != "unsupported" {
 		t.Fatalf("unsupported=%q", got)

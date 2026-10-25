@@ -139,9 +139,6 @@ type authorizationRowQuerier interface {
 // 业务库句柄（stats 库没有 resource_authorizations / accounts）。SQLite 未
 // 注入时回退聚合事务，保留既有缺表报错信号，不静默吞。
 func (a *Aggregator) authorizationQueryHandle(tx *sql.Tx) authorizationRowQuerier {
-	if !a.Dialect.Postgres && a.BusinessDB != nil {
-		return a.BusinessDB
-	}
 	return tx
 }
 
@@ -160,15 +157,10 @@ func (a *Aggregator) createUsageStatsAuthorizationLookup(ctx context.Context, tx
 	if len(ids) == 0 {
 		return lookup, nil
 	}
-	businessDialect := a.Dialect
-	prefix := ""
-	if businessDialect.Postgres {
-		prefix = "juhe_business."
-	}
-	query := businessDialect.bind(`
+	query := a.Dialect.bind(`
 		SELECT authorizations.id, authorizations.resource_id, instance_accounts.id AS instance_account_id
-		FROM ` + prefix + `resource_authorizations authorizations
-		LEFT JOIN ` + prefix + `accounts instance_accounts
+		FROM ` + a.Dialect.BusinessTable("resource_authorizations") + ` authorizations
+		LEFT JOIN ` + a.Dialect.BusinessTable("accounts") + ` instance_accounts
 		  ON instance_accounts.authorization_instance_authorization_id = authorizations.id
 		 AND instance_accounts.system_account_id = authorizations.grantee_system_account_id
 		WHERE authorizations.resource_type = 'account'

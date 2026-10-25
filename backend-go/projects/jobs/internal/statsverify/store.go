@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +13,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 // StoreMode mirrors runtimeConfig.databaseDriver: the jobs can run against
@@ -24,7 +21,6 @@ import (
 type StoreMode string
 
 const (
-	StoreSQLite   StoreMode = "sqlite"
 	StorePostgres StoreMode = "postgres"
 )
 
@@ -40,7 +36,6 @@ const UsageStatsTimezoneCacheTTL = 60 * time.Second
 type Store struct {
 	mode     StoreMode
 	db       *sql.DB // stats DB (SQLite) or shared PostgreSQL pool
-	business *sql.DB // business DB (SQLite only)
 	pool     *pgpool.Handle
 
 	writeMu sync.Mutex // serializes multi-statement SQLite write paths
@@ -56,8 +51,6 @@ type Store struct {
 
 type StoreConfig struct {
 	Mode                 StoreMode
-	SQLiteStatsPath      string
-	SQLiteBusinessPath   string
 	PostgresURL          string
 	PostgresMaxOpenConns int
 	PostgresMaxIdleConns int
@@ -66,50 +59,6 @@ type StoreConfig struct {
 
 func OpenStore(config StoreConfig) (*Store, error) {
 	switch config.Mode {
-	case StoreSQLite:
-		statsPath := strings.TrimSpace(config.SQLiteStatsPath)
-		businessPath := strings.TrimSpace(config.SQLiteBusinessPath)
-		if statsPath == "" || businessPath == "" {
-			return nil, errors.New("statsverify sqlite 缺少 stats 或 business 数据库路径")
-		}
-		statsDSN, err := sqliteDSN(statsPath)
-		if err != nil {
-			return nil, err
-		}
-		businessDSN, err := sqliteDSN(businessPath)
-		if err != nil {
-			return nil, err
-		}
-		statsDB, err := sql.Open("sqlite", statsDSN)
-		if err != nil {
-			return nil, err
-		}
-		statsDB.SetMaxOpenConns(1)
-		statsDB.SetMaxIdleConns(1)
-		businessDB, err := sql.Open("sqlite", businessDSN)
-		if err != nil {
-			_ = statsDB.Close()
-			return nil, err
-		}
-		businessDB.SetMaxOpenConns(1)
-		businessDB.SetMaxIdleConns(1)
-		if _, err := statsDB.Exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;"); err != nil {
-			_ = statsDB.Close()
-			_ = businessDB.Close()
-			return nil, fmt.Errorf("配置 statsverify stats sqlite 失败: %w", err)
-		}
-		if _, err := businessDB.Exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;"); err != nil {
-			_ = statsDB.Close()
-			_ = businessDB.Close()
-			return nil, fmt.Errorf("配置 statsverify business sqlite 失败: %w", err)
-		}
-		store := &Store{mode: StoreSQLite, db: statsDB, business: businessDB}
-		if err := store.EnsureSchema(context.Background()); err != nil {
-			_ = statsDB.Close()
-			_ = businessDB.Close()
-			return nil, err
-		}
-		return store, nil
 	case StorePostgres:
 		if strings.TrimSpace(config.PostgresURL) == "" {
 			return nil, errors.New("statsverify postgres 缺少连接 URL")
@@ -136,22 +85,13 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		}
 		return &Store{mode: StorePostgres, db: pool.DB(), pool: pool}, nil
 	default:
-		return nil, errors.New("statsverify store mode 必须为 sqlite 或 postgres")
+		return nil, errors.New("statsverify store mode 必须为 postgres")
 	}
 }
 
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
-	}
-	if s.mode == StoreSQLite {
-		err := s.db.Close()
-		if s.business != nil {
-			if businessErr := s.business.Close(); err == nil {
-				err = businessErr
-			}
-		}
-		return err
 	}
 	if s.pool != nil {
 		return s.pool.Close()
@@ -166,65 +106,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("statsverify store 未初始化")
 	}
-	if s.mode == StorePostgres {
-		return s.checkPostgresSchema(ctx)
-	}
-	if _, err := s.db.ExecContext(ctx, sqliteStatsSchema); err != nil {
-		return fmt.Errorf("初始化 statsverify stats sqlite schema 失败: %w", err)
-	}
-	if err := ensureAggregateColumnBackfills(ctx, s.db); err != nil {
-		return fmt.Errorf("迁移 statsverify stats sqlite 聚合列失败: %w", err)
-	}
-	// success_cost_usd 历史数据回填已移交 maintenance --apply-success-cost-backfill
-	// 一次性子命令（计划 PLAN-20261011T225418）：ensure 只建结构，不再扫描回填。
-	if _, err := s.business.ExecContext(ctx, sqliteBusinessSchema); err != nil {
-		return fmt.Errorf("初始化 statsverify business sqlite schema 失败: %w", err)
-	}
-	return nil
-}
-
-// ensureAggregateColumnBackfills 为存量 stats 表幂等补齐聚合形状列
-// （早期窄形状布局升级）。先例：usagewriter ensureUpstreamResponseModelColumn
-// 的存在性检查迁移。
-func ensureAggregateColumnBackfills(ctx context.Context, db *sql.DB) error {
-	for _, backfill := range sqliteAggregateColumnBackfills {
-		rows, err := db.QueryContext(ctx, "PRAGMA table_info("+backfill.table+")")
-		if err != nil {
-			return err
-		}
-		existing := map[string]bool{}
-		for rows.Next() {
-			var cid int
-			var name string
-			var ctype sql.NullString
-			var notNull any
-			var dflt any
-			var pk any
-			if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-				rows.Close()
-				return err
-			}
-			existing[name] = true
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		for _, column := range backfill.columns {
-			name := strings.Fields(column)[0]
-			if existing[name] {
-				continue
-			}
-			if _, err := db.ExecContext(ctx, "ALTER TABLE "+backfill.table+" ADD COLUMN "+column); err != nil {
-				// 并发建库方可能已补列；重复列错误与 Node 存在性检查一样视为成功。
-				if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-					return err
-				}
-			}
-		}
-	}
-	return nil
+	return s.checkPostgresSchema(ctx)
 }
 
 func (s *Store) checkPostgresSchema(ctx context.Context) error {
@@ -277,9 +159,7 @@ func (s *Store) LoadUsageStatsTimezone(ctx context.Context, now time.Time) (stri
 	s.tzMu.Unlock()
 
 	query := `SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
-	if s.mode == StorePostgres {
-		query = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
-	}
+	query = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
 	var rawValue sql.NullString
 	if err := s.queryRowContext(ctx, query).Scan(&rawValue); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -356,26 +236,16 @@ func (s *Store) hasInMemoryDirtyIPHashes() bool {
 	return len(s.dirtyClientIP) > 0 || len(s.dirtyAccountIP) > 0
 }
 
-// queryRowContext picks the database handle for cross-domain reads
-// (system_settings lives in the business database on SQLite).
+// queryRowContext 统一 stats 库读句柄（PG 与 stats 同池，业务侧
+// system_settings 经 juhe_business 前缀同连接可查）。
 func (s *Store) queryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	if s.mode == StoreSQLite && isBusinessTableQuery(query) {
-		return s.business.QueryRowContext(ctx, query, args...)
-	}
 	return s.db.QueryRowContext(ctx, query, args...)
-}
-
-func isBusinessTableQuery(query string) bool {
-	return strings.Contains(query, "system_settings")
 }
 
 // dialect helpers -----------------------------------------------------------
 
 func (s *Store) placeholder(index int) string {
-	if s.mode == StorePostgres {
-		return fmt.Sprintf("$%d", index)
-	}
-	return "?"
+	return fmt.Sprintf("$%d", index)
 }
 
 func (s *Store) placeholders(count int) string {
@@ -398,46 +268,23 @@ func (s *Store) placeholdersFrom(start, count int) string {
 }
 
 func (s *Store) statsTable(name string) string {
-	if s.mode == StorePostgres {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 func (s *Store) businessTable(name string) string {
-	if s.mode == StorePostgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) usageTable(name string) string {
-	if s.mode == StorePostgres {
-		return "juhe_usage." + name
-	}
-	return name
+	return "juhe_usage." + name
 }
 
 // greatest renders the two-arg maximum: GREATEST on PostgreSQL, MAX(a,b)
 // scalar form on SQLite.
 func (s *Store) greatest(left, right string) string {
-	if s.mode == StorePostgres {
-		return fmt.Sprintf("GREATEST(%s, %s)", left, right)
-	}
-	return fmt.Sprintf("MAX(%s, %s)", left, right)
+	return fmt.Sprintf("GREATEST(%s, %s)", left, right)
 }
 
-func sqliteDSN(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("解析 statsverify sqlite 路径失败: %w", err)
-	}
-	uriPath := filepath.ToSlash(absolute)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_txlock=immediate&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"}).String(), nil
-}
 
 var postgresRequiredTables = []string{
 	"juhe_usage.usage_records",
@@ -472,388 +319,9 @@ var postgresRequiredTables = []string{
 // 缺任何聚合列都会让聚合查询以 "no such column" 失败。存量窄形状库文件由
 // ensureAggregateColumnBackfills 幂等补列。
 
-// sqliteAggregateColumnBackfills 是存量窄形状 stats 表的补列清单（列定义为
-// 完整 ADD COLUMN 子句）。usage_records 对齐 statsagg 聚合 SELECT 全列
-// （aggregate.go usageStatsRecordSelectColumns）；usage_stats_daily/hourly
-// 对齐聚合器写入的全累加器形状（maintenance EnsureSQLiteStats 同形 DDL，
-// gateway bootstrap 先建库时无感）。全部可空或带 DEFAULT，SQLite ADD COLUMN
-// 合法。success_cost_usd 的历史数据回填职责已移交 maintenance
-// --apply-success-cost-backfill 一次性子命令（见计划 PLAN-20261011T225418），
-// ensure 不再扫描回填，本清单只保留 ADD COLUMN 结构守卫。
-var sqliteAggregateColumnBackfills = []struct {
-	table   string
-	columns []string
-}{
-	{
-		table: "usage_records",
-		columns: []string{
-			"endpoint TEXT",
-			"provider_code TEXT",
-			"provider_protocol_profile_id TEXT",
-			"failure_attribution TEXT",
-			"error_code TEXT",
-			"error_message TEXT",
-			"account_owner_system_account_id TEXT",
-			"group_owner_system_account_id TEXT",
-			"account_access_type TEXT",
-			"group_access_type TEXT",
-			"account_authorization_id TEXT",
-			"account_authorization_source_type TEXT",
-			"account_authorization_source_team_id TEXT",
-			"group_authorization_id TEXT",
-			"group_authorization_source_type TEXT",
-			"group_authorization_source_team_id TEXT",
-		},
-	},
-	{
-		table: "usage_stats_daily",
-		columns: []string{
-			"duration_ms_sum INTEGER NOT NULL DEFAULT 0",
-			"duration_ms_count INTEGER NOT NULL DEFAULT 0",
-			"duration_ms_max INTEGER NOT NULL DEFAULT 0",
-			"first_token_ms_sum INTEGER NOT NULL DEFAULT 0",
-			"first_token_ms_count INTEGER NOT NULL DEFAULT 0",
-			"first_token_ms_max INTEGER NOT NULL DEFAULT 0",
-			"last_used_at TEXT",
-			"last_error_at TEXT",
-			"success_cost_usd REAL NOT NULL DEFAULT 0",
-		},
-	},
-	{
-		table: "usage_stats_hourly",
-		columns: []string{
-			"duration_ms_sum INTEGER NOT NULL DEFAULT 0",
-			"duration_ms_count INTEGER NOT NULL DEFAULT 0",
-			"duration_ms_max INTEGER NOT NULL DEFAULT 0",
-			"first_token_ms_sum INTEGER NOT NULL DEFAULT 0",
-			"first_token_ms_count INTEGER NOT NULL DEFAULT 0",
-			"first_token_ms_max INTEGER NOT NULL DEFAULT 0",
-			"last_used_at TEXT",
-			"last_error_at TEXT",
-			"success_cost_usd REAL NOT NULL DEFAULT 0",
-		},
-	},
-}
 
 // sqliteStatsSchema 及其后的 business schema 常量承接建库；历史错口径行的
 // 数据回填唯一入口是 maintenance --apply-success-cost-backfill 一次性子命令
 // （计划 PLAN-20261011T225418），ensure 不再执行任何同谓词回填扫描。
 
-const sqliteStatsSchema = `
-CREATE TABLE IF NOT EXISTS usage_records (
-	id TEXT PRIMARY KEY,
-	system_account_id TEXT NOT NULL,
-	trace_id TEXT NOT NULL,
-	traffic_source TEXT NOT NULL,
-	client_ip TEXT,
-	api_key_id TEXT,
-	group_id TEXT,
-	account_id TEXT,
-	model TEXT,
-	status_code INTEGER,
-	success INTEGER NOT NULL,
-	first_token_ms INTEGER,
-	duration_ms INTEGER,
-	input_tokens INTEGER,
-	output_tokens INTEGER,
-	cache_read_tokens INTEGER,
-	cache_read_cost_usd REAL,
-	cache_write_tokens INTEGER,
-	cache_write_1h_tokens INTEGER,
-	cache_write_cost_usd REAL,
-	thinking_tokens INTEGER,
-	input_image_tokens INTEGER,
-	output_image_tokens INTEGER,
-	input_audio_tokens INTEGER,
-	output_audio_tokens INTEGER,
-	tts_input_chars INTEGER NOT NULL DEFAULT 0,
-	audio_input_seconds REAL NOT NULL DEFAULT 0,
-	output_video_seconds REAL NOT NULL DEFAULT 0,
-	endpoint TEXT,
-	provider_code TEXT,
-	provider_protocol_profile_id TEXT,
-	failure_attribution TEXT,
-	error_code TEXT,
-	error_message TEXT,
-	account_owner_system_account_id TEXT,
-	group_owner_system_account_id TEXT,
-	account_access_type TEXT,
-	group_access_type TEXT,
-	account_authorization_id TEXT,
-	account_authorization_source_type TEXT,
-	account_authorization_source_team_id TEXT,
-	group_authorization_id TEXT,
-	group_authorization_source_type TEXT,
-	group_authorization_source_team_id TEXT,
-	cost_usd REAL,
-	created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_statsverify_usage_records_cursor ON usage_records(created_at, id);
-CREATE TABLE IF NOT EXISTS stats_job_state (
-	scope_type TEXT NOT NULL,
-	scope_id TEXT NOT NULL,
-	job_name TEXT NOT NULL,
-	cursor_created_at TEXT,
-	cursor_id TEXT,
-	last_success_at TEXT,
-	last_error_message TEXT,
-	lag_seconds INTEGER,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY (scope_type, scope_id, job_name)
-);
-CREATE TABLE IF NOT EXISTS client_ip_registry (
-	ip_hash TEXT PRIMARY KEY,
-	bucket_no INTEGER NOT NULL,
-	aggregate_ip_key TEXT NOT NULL,
-	client_ip TEXT NOT NULL,
-	ip_version INTEGER NOT NULL,
-	first_seen_at TEXT NOT NULL,
-	last_seen_at TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS client_ip_stats_daily (
-	ip_hash TEXT NOT NULL,
-	stat_date TEXT NOT NULL,
-	request_count INTEGER NOT NULL,
-	success_count INTEGER NOT NULL,
-	error_count INTEGER NOT NULL,
-	input_tokens INTEGER NOT NULL,
-	output_tokens INTEGER NOT NULL,
-	cache_read_tokens INTEGER NOT NULL,
-	cache_read_cost_usd REAL NOT NULL,
-	cache_write_tokens INTEGER NOT NULL,
-	cache_write_1h_tokens INTEGER NOT NULL,
-	cache_write_cost_usd REAL NOT NULL,
-	thinking_tokens INTEGER NOT NULL,
-	input_image_tokens INTEGER NOT NULL,
-	output_image_tokens INTEGER NOT NULL,
-	total_cost_usd REAL NOT NULL,
-	duration_ms_sum INTEGER NOT NULL,
-	duration_ms_count INTEGER NOT NULL,
-	duration_ms_max INTEGER NOT NULL,
-	first_token_ms_sum INTEGER NOT NULL,
-	first_token_ms_count INTEGER NOT NULL,
-	last_used_at TEXT,
-	last_error_at TEXT,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY (ip_hash, stat_date)
-);
-CREATE TABLE IF NOT EXISTS client_ip_account_stats_daily (
-	ip_hash TEXT NOT NULL,
-	account_id TEXT NOT NULL,
-	stat_date TEXT NOT NULL,
-	request_count INTEGER NOT NULL,
-	success_count INTEGER NOT NULL,
-	error_count INTEGER NOT NULL,
-	input_tokens INTEGER NOT NULL,
-	output_tokens INTEGER NOT NULL,
-	cache_read_tokens INTEGER NOT NULL,
-	cache_read_cost_usd REAL NOT NULL,
-	cache_write_tokens INTEGER NOT NULL,
-	cache_write_1h_tokens INTEGER NOT NULL,
-	cache_write_cost_usd REAL NOT NULL,
-	thinking_tokens INTEGER NOT NULL,
-	input_image_tokens INTEGER NOT NULL,
-	output_image_tokens INTEGER NOT NULL,
-	total_cost_usd REAL NOT NULL,
-	duration_ms_sum INTEGER NOT NULL,
-	duration_ms_count INTEGER NOT NULL,
-	duration_ms_max INTEGER NOT NULL,
-	first_token_ms_sum INTEGER NOT NULL,
-	first_token_ms_count INTEGER NOT NULL,
-	last_used_at TEXT,
-	last_error_at TEXT,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY (ip_hash, account_id, stat_date)
-);
-CREATE TABLE IF NOT EXISTS client_ip_usage_range_windows (
-	ip_hash TEXT NOT NULL,
-	start_date TEXT NOT NULL,
-	end_date TEXT NOT NULL,
-	request_count INTEGER NOT NULL,
-	success_count INTEGER NOT NULL,
-	error_count INTEGER NOT NULL,
-	input_tokens INTEGER NOT NULL,
-	output_tokens INTEGER NOT NULL,
-	cache_read_tokens INTEGER NOT NULL,
-	cache_read_cost_usd REAL NOT NULL,
-	cache_write_tokens INTEGER NOT NULL,
-	cache_write_1h_tokens INTEGER NOT NULL,
-	cache_write_cost_usd REAL NOT NULL,
-	thinking_tokens INTEGER NOT NULL,
-	input_image_tokens INTEGER NOT NULL,
-	output_image_tokens INTEGER NOT NULL,
-	total_cost_usd REAL NOT NULL,
-	duration_ms_sum INTEGER NOT NULL,
-	duration_ms_count INTEGER NOT NULL,
-	duration_ms_max INTEGER NOT NULL,
-	average_duration_ms REAL,
-	first_token_ms_sum INTEGER NOT NULL,
-	first_token_ms_count INTEGER NOT NULL,
-	average_first_token_ms REAL,
-	active_days INTEGER NOT NULL,
-	last_used_at TEXT,
-	last_error_at TEXT,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY (ip_hash, start_date, end_date)
-);
-CREATE TABLE IF NOT EXISTS client_ip_account_usage_range_windows (
-	ip_hash TEXT NOT NULL,
-	account_id TEXT NOT NULL,
-	start_date TEXT NOT NULL,
-	end_date TEXT NOT NULL,
-	request_count INTEGER NOT NULL,
-	success_count INTEGER NOT NULL,
-	error_count INTEGER NOT NULL,
-	input_tokens INTEGER NOT NULL,
-	output_tokens INTEGER NOT NULL,
-	cache_read_tokens INTEGER NOT NULL,
-	cache_read_cost_usd REAL NOT NULL,
-	cache_write_tokens INTEGER NOT NULL,
-	cache_write_1h_tokens INTEGER NOT NULL,
-	cache_write_cost_usd REAL NOT NULL,
-	thinking_tokens INTEGER NOT NULL,
-	input_image_tokens INTEGER NOT NULL,
-	output_image_tokens INTEGER NOT NULL,
-	total_cost_usd REAL NOT NULL,
-	duration_ms_sum INTEGER NOT NULL,
-	duration_ms_count INTEGER NOT NULL,
-	duration_ms_max INTEGER NOT NULL,
-	average_duration_ms REAL,
-	first_token_ms_sum INTEGER NOT NULL,
-	first_token_ms_count INTEGER NOT NULL,
-	average_first_token_ms REAL,
-	active_days INTEGER NOT NULL,
-	last_used_at TEXT,
-	last_error_at TEXT,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY (ip_hash, account_id, start_date, end_date)
-);
-CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips (
-	ip_hash TEXT PRIMARY KEY,
-	generation INTEGER NOT NULL,
-	first_dirty_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips (
-	ip_hash TEXT PRIMARY KEY,
-	generation INTEGER NOT NULL,
-	first_dirty_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS group_account_stats (
-	system_account_id TEXT NOT NULL,
-	group_id TEXT PRIMARY KEY,
-	total INTEGER NOT NULL,
-	available INTEGER NOT NULL,
-	active INTEGER NOT NULL,
-	disabled INTEGER NOT NULL,
-	error INTEGER NOT NULL,
-	rate_limited INTEGER NOT NULL,
-	current_concurrency INTEGER NOT NULL,
-	concurrency_limit INTEGER NOT NULL,
-	updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS usage_stats_daily (
-	system_account_id TEXT NOT NULL,
-	scope_type TEXT NOT NULL,
-	scope_id TEXT NOT NULL,
-	stat_date TEXT NOT NULL,
-	request_count INTEGER NOT NULL DEFAULT 0,
-	success_count INTEGER NOT NULL DEFAULT 0,
-	error_count INTEGER NOT NULL DEFAULT 0,
-	input_tokens INTEGER NOT NULL DEFAULT 0,
-	output_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_read_cost_usd REAL NOT NULL DEFAULT 0,
-	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_write_cost_usd REAL NOT NULL DEFAULT 0,
-	thinking_tokens INTEGER NOT NULL DEFAULT 0,
-	input_image_tokens INTEGER NOT NULL DEFAULT 0,
-	output_image_tokens INTEGER NOT NULL DEFAULT 0,
-	total_cost_usd REAL NOT NULL DEFAULT 0,
-	success_cost_usd REAL NOT NULL DEFAULT 0,
-	duration_ms_sum INTEGER NOT NULL DEFAULT 0,
-	duration_ms_count INTEGER NOT NULL DEFAULT 0,
-	duration_ms_max INTEGER NOT NULL DEFAULT 0,
-	first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
-	first_token_ms_count INTEGER NOT NULL DEFAULT 0,
-	first_token_ms_max INTEGER NOT NULL DEFAULT 0,
-	last_used_at TEXT,
-	last_error_at TEXT,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY (system_account_id, scope_type, scope_id, stat_date)
-);
-CREATE TABLE IF NOT EXISTS usage_stats_hourly (
-	system_account_id TEXT NOT NULL,
-	scope_type TEXT NOT NULL,
-	scope_id TEXT NOT NULL,
-	stat_hour TEXT NOT NULL,
-	request_count INTEGER NOT NULL DEFAULT 0,
-	success_count INTEGER NOT NULL DEFAULT 0,
-	error_count INTEGER NOT NULL DEFAULT 0,
-	input_tokens INTEGER NOT NULL DEFAULT 0,
-	output_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_read_cost_usd REAL NOT NULL DEFAULT 0,
-	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-	cache_write_cost_usd REAL NOT NULL DEFAULT 0,
-	thinking_tokens INTEGER NOT NULL DEFAULT 0,
-	input_image_tokens INTEGER NOT NULL DEFAULT 0,
-	output_image_tokens INTEGER NOT NULL DEFAULT 0,
-	total_cost_usd REAL NOT NULL DEFAULT 0,
-	success_cost_usd REAL NOT NULL DEFAULT 0,
-	duration_ms_sum INTEGER NOT NULL DEFAULT 0,
-	duration_ms_count INTEGER NOT NULL DEFAULT 0,
-	duration_ms_max INTEGER NOT NULL DEFAULT 0,
-	first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
-	first_token_ms_count INTEGER NOT NULL DEFAULT 0,
-	first_token_ms_max INTEGER NOT NULL DEFAULT 0,
-	last_used_at TEXT,
-	last_error_at TEXT,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour)
-);
-`
 
-const sqliteBusinessSchema = `
-CREATE TABLE IF NOT EXISTS system_settings (
-	system_account_id TEXT NOT NULL,
-	key TEXT NOT NULL,
-	value_json TEXT NOT NULL,
-	PRIMARY KEY (system_account_id, key)
-);
-CREATE TABLE IF NOT EXISTS groups (
-	id TEXT PRIMARY KEY,
-	system_account_id TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS group_accounts (
-	group_id TEXT NOT NULL,
-	account_id TEXT NOT NULL,
-	account_authorization_id TEXT,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	PRIMARY KEY (group_id, account_id)
-);
-CREATE TABLE IF NOT EXISTS accounts (
-	id TEXT PRIMARY KEY,
-	system_account_id TEXT NOT NULL,
-	status TEXT NOT NULL,
-	schedulable INTEGER NOT NULL DEFAULT 1,
-	cooldown_until TEXT,
-	concurrency_limit INTEGER NOT NULL DEFAULT 0,
-	deleted_at TEXT
-);
-CREATE TABLE IF NOT EXISTS resource_authorizations (
-	id TEXT PRIMARY KEY,
-	status TEXT NOT NULL,
-	expires_at TEXT
-);
-CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
-	group_id TEXT PRIMARY KEY,
-	reason TEXT,
-	updated_at TEXT NOT NULL
-);
-`

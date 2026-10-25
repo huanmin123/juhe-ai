@@ -19,7 +19,6 @@ func TestBuildWritePlanAudioMeteringParams(t *testing.T) {
 	input.CreatedAt = "2026-01-02T03:04:05.000Z"
 
 	plan, err := BuildWritePlan(context.Background(), []UsageRecordInput{input}, WritePlanOptions{
-		Postgres:   true,
 		ShardCount: 4,
 	}, fixedClock("2026-01-02T03:04:05.000Z"))
 	if err != nil {
@@ -57,7 +56,6 @@ func TestBuildWritePlanAudioMeteringNilFallsToZero(t *testing.T) {
 	input.UsageMissing = true
 	input.CreatedAt = "2026-01-02T03:04:05.000Z"
 	plan, err := BuildWritePlan(context.Background(), []UsageRecordInput{input}, WritePlanOptions{
-		Postgres:   true,
 		ShardCount: 4,
 	}, fixedClock("2026-01-02T03:04:05.000Z"))
 	if err != nil {

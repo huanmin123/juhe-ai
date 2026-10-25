@@ -52,8 +52,6 @@ func TestCodexStorageProcessorDeletesUnderSegmentsRoot(t *testing.T) {
 	root := t.TempDir()
 	segmentsRoot := filepath.Join(root, "codex-context")
 	// 故意与 segments 根不同源的 state-shards 根：修复前误用它当删除根时，
-	// 文件解析 miss → deleted=0 → 本断言红。
-	shardRoot := filepath.Join(root, "codex-shards")
 	storageKey := "sessions/safe-abc/segments/2026093010.json.gz"
 	target := filepath.Join(segmentsRoot, filepath.FromSlash(storageKey))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -65,7 +63,7 @@ func TestCodexStorageProcessorDeletesUnderSegmentsRoot(t *testing.T) {
 	db := &codexSegmentRootFakeDb{}
 	processor := &codexStorageProcessor{
 		db:          db,
-		store:       &cleanuprepo.CodexContextStore{ShardRoot: shardRoot, ShardCount: 1},
+		store:       &cleanuprepo.CodexContextStore{},
 		segmentRoot: segmentsRoot,
 		logger:      slog.Default(),
 	}

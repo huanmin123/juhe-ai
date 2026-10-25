@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,64 +23,6 @@ import (
 //     随生产 sqlite 臂删除批次退役）。
 //   - TestWFStorePGSchemaNegativeVariants 为 scripted 录制驱动（PLAN §3 非
 //     目标），保持原状。
-
-func TestWFOpenStoreBranches(t *testing.T) {
-	if _, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: ""}); err == nil {
-		t.Fatal("缺 sqlite 路径必须拒绝")
-	}
-	if _, err := OpenStore(StoreConfig{Mode: StoreMode("bogus")}); err == nil {
-		t.Fatal("非法 mode 必须拒绝")
-	}
-	if _, err := OpenStore(StoreConfig{Mode: StorePostgres}); err == nil {
-		t.Fatal("缺 PG URL 必须拒绝")
-	}
-	if _, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: "postgres://x", PostgresMaxOpenConns: 1, PostgresMaxIdleConns: 2}); err == nil {
-		t.Fatal("idle > open 必须拒绝")
-	}
-	// 默认连接池上限不满足共享校验（1 <= idle <= min(open,10)）→ fail closed。
-	if _, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: "postgres://jobs:x@127.0.0.1:5432/j"}); err == nil {
-		t.Fatal("默认超限池必须拒绝")
-	}
-	// 合法 PG 配置：连接惰性建立，不拨号即可打开与关闭。
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: "postgres://jobs:x@127.0.0.1:5432/j?sslmode=disable", PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2})
-	if err != nil {
-		t.Fatalf("PG 打开失败: %v", err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("PG Close 失败: %v", err)
-	}
-	var nilStore *Store
-	if err := nilStore.Close(); err != nil {
-		t.Fatalf("nil Close 失败: %v", err)
-	}
-}
-
-func TestWFEnsureSchemaSQLite(t *testing.T) {
-	ctx := context.Background()
-	// 全新文件：EnsureSchema 装配完整 SQLite schema 后可再次执行（IF NOT EXISTS）。
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "wf-ensure.sqlite3")})
-	if err != nil {
-		t.Fatalf("OpenStore 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("EnsureSchema 失败: %v", err)
-	}
-	if err := store.CheckSchema(context.Background()); err != nil {
-		t.Fatalf("CheckSchema 失败: %v", err)
-	}
-	// 缺对象时 fail closed。
-	if _, err := store.db.Exec(`DROP TABLE proxy_latency_execution_claims`); err != nil {
-		t.Fatalf("准备缺表失败: %v", err)
-	}
-	err = store.CheckSchema(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "缺少对象") {
-		t.Fatalf("缺对象 err=%v", err)
-	}
-	if _, _, err := store.AcquireOwnerLease(ctx, "wf-x", time.Minute); err == nil {
-		t.Fatal("缺对象后租约操作必须 fail closed")
-	}
-}
 
 func TestWFStoreLeaseLostPaths(t *testing.T) {
 	store := openKitPostgresStore(t)

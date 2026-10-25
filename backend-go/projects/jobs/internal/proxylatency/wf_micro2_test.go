@@ -9,39 +9,6 @@ import (
 	"time"
 )
 
-func TestWFLoadRuntimeConfigRemainingGuards(t *testing.T) {
-	base := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
-		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "wf",
-		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
-		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":        "postgres://j:x@127.0.0.1:5432/j",
-		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":  "postgres://b:x@127.0.0.1:5432/b",
-		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": "postgres://r:x@127.0.0.1:5432/b",
-		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":   "s",
-	}
-	cases := []struct {
-		name, key, value, wantErr string
-	}{
-		{name: "proxy lease 超上限", key: "JUHE_AI_PROXY_LATENCY_PROXY_LEASE", value: "25h", wantErr: "duration"},
-		{name: "probe timeout 过短", key: "JUHE_AI_PROXY_LATENCY_PROBE_TIMEOUT", value: "100ms", wantErr: "duration"},
-		{name: "input ttl 过长", key: "JUHE_AI_PROXY_LATENCY_INPUT_TTL", value: "16m", wantErr: "duration"},
-		{name: "db queue 超上限", key: "JUHE_AI_PROXY_LATENCY_DB_QUEUE_SIZE", value: "99999", wantErr: "有效范围"},
-	}
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			env := map[string]string{}
-			for key, value := range base {
-				env[key] = value
-			}
-			env[tt.key] = tt.value
-			_, err := LoadRuntimeConfig(wfEnv(env))
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("err=%v 必须包含 %q", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestWFParseTargetURLShapes(t *testing.T) {
 	canonical, err := parseTargetURL("HTTPS://API.OpenAI.com:443/v1")
 	if err != nil {

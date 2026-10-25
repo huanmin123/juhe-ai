@@ -6,36 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
-
-// 组B保留（SQLite-only 生产臂，保持原状不迁）：本测试的被测对象是
-// checkSQLiteSchema 的 sqlite_master 对象检查与 EnsureSchema 的 SQLite 恢复
-// 臂（DROP INDEX sqlite 对象后 fail-closed、显式 maintenance 自愈），属于
-// SQLite 模式专属防御面，随生产 sqlite 臂删除批次退役
-// （PLAN-20261024T051925945Z proxylatency 切片裁决）。
-func TestSQLiteCheckSchemaFailsClosedWhenOwnedObjectIsMissing(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "proxy-latency-schema-check.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := store.db.Exec(`DROP INDEX idx_proxy_latency_outcomes_cursor`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CheckSchema(context.Background()); err == nil || !strings.Contains(err.Error(), "idx_proxy_latency_outcomes_cursor") {
-		t.Fatalf("缺少 SQLite schema 对象时必须 fail-closed，实际错误=%v", err)
-	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("显式 schema maintenance 应能恢复私有 SQLite schema: %v", err)
-	}
-	if err := store.CheckSchema(context.Background()); err != nil {
-		t.Fatalf("显式 schema maintenance 后 CheckSchema 仍失败: %v", err)
-	}
-}
 
 func TestPGStoreOwnerProxyLeasesAndOutcomes(t *testing.T) {
 	testDB := openKitPostgresTestDB(t)

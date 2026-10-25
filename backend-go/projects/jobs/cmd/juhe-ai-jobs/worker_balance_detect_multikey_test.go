@@ -57,9 +57,9 @@ func seedMultiKeyDueAccount(t *testing.T, db *sql.DB, id string, keys []string, 
 	}
 	due := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
-INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
-VALUES (?, 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
-`, id, envelope, due, due); err != nil {
+INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, name, protocol_code, protocol_version, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at)
+VALUES (?, 'sys_admin', 'gpt', 'gpt', ?, 'gpt', '1', 'api_key', 'active', 1, ?, 0, '{}', ?, ?, ?)
+`, id, id, envelope, due, due, due); err != nil {
 		t.Fatal(err)
 	}
 	return due
@@ -121,7 +121,7 @@ func TestBalanceRuntimeQueryBuiltinMultiKeySum(t *testing.T) {
 	}
 }
 
-// TestBalanceDetectMultiKeyPersistsKeyBalances：装配全链路（SQLite 实测）——
+// TestBalanceDetectMultiKeyPersistsKeyBalances：装配全链路（PG 实测）——
 // 多 Key 候选探测命中后，relay_balance 持久化 JSON 必须携带多 Key 字段与
 // 逐 Key 明细（gateway 明细端按 keyFingerprint join 的数据源）。
 func TestBalanceDetectMultiKeyPersistsKeyBalances(t *testing.T) {
@@ -129,21 +129,16 @@ func TestBalanceDetectMultiKeyPersistsKeyBalances(t *testing.T) {
 		t.Skip("skipped in -short mode")
 	}
 	ctx := context.Background()
-	root := t.TempDir()
-	businessPath := root + "/business.sqlite3"
-	statsPath := root + "/stats.sqlite3"
-	businessDB := mustOpenSQLite(t, businessPath)
-	defer businessDB.Close()
-	statsDB := mustOpenSQLite(t, statsPath)
-	defer statsDB.Close()
-	if err := balanceFixtureSchema(ctx, businessDB, statsDB); err != nil {
-		t.Fatal(err)
-	}
+	// PG 唯一形态：共享覆盖库 + w14j 自愈 seed（statsverify 契约表属外部
+	// 预置，fresh 独立库 DDL 回填登记为 B6 遗留；原 sqlite 双文件夹具随
+	// sqlite 形态退役删除）。
+	businessDB, dsn := wgBalanceAssemblyFixture(t, []string{"acc-detect-multi"})
+	statsDB := businessDB
 	upstream := newSub2APIMultiKeyUpstream(t, map[string]string{"sk-a": "2.5", "sk-b": "3"})
 	defer upstream.Close()
 	seedMultiKeyDueAccount(t, businessDB, "acc-detect-multi", []string{"sk-a", "sk-b"}, upstream.URL)
 
-	env := balanceDetectAssemblyEnv(t, businessPath, statsPath)
+	env := balanceDetectAssemblyEnv(t, dsn)
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {
 		t.Fatalf("loadWorkerConfig: %v", err)
@@ -158,14 +153,14 @@ func TestBalanceDetectMultiKeyPersistsKeyBalances(t *testing.T) {
 	}
 
 	var enabled int
-	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled FROM accounts WHERE id = 'acc-detect-multi'`).Scan(&enabled); err != nil {
+	if err := businessDB.QueryRowContext(ctx, `SELECT balance_query_enabled FROM juhe_business.accounts WHERE id = 'acc-detect-multi'`).Scan(&enabled); err != nil {
 		t.Fatal(err)
 	}
 	if enabled != 1 {
 		t.Fatal("多 Key 合并命中后账户必须已开启余额查询")
 	}
 	var snapshotJSON string
-	if err := statsDB.QueryRowContext(ctx, `SELECT snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-detect-multi' AND kind = 'relay_balance'`).Scan(&snapshotJSON); err != nil {
+	if err := statsDB.QueryRowContext(ctx, `SELECT snapshot_json FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-detect-multi' AND kind = 'relay_balance'`).Scan(&snapshotJSON); err != nil {
 		t.Fatalf("relay_balance 快照行必须写入: %v", err)
 	}
 	decoded := map[string]any{}
@@ -209,7 +204,7 @@ func TestBalancePersistSingleKeyStaysNarrow(t *testing.T) {
 	defer upstream.Close()
 	runtime, businessDB, statsDB := wgNewBalanceRuntime(t, "", false)
 	wgSeedDueAccount(t, businessDB, "acc-narrow", upstream.URL, -time.Minute)
-	if _, err := businessDB.Exec(`UPDATE accounts SET balance_query_enabled = 1, balance_query_config_json = '{"adapter":"builtin","intervalMinutes":5}' WHERE id = 'acc-narrow'`); err != nil {
+	if _, err := businessDB.Exec(`UPDATE juhe_business.accounts SET balance_query_enabled = 1, balance_query_config_json = '{"adapter":"builtin","intervalMinutes":5}' WHERE id = 'acc-narrow'`); err != nil {
 		t.Fatal(err)
 	}
 	runtime.detected.Store("snapshot:acc-narrow", &accountbalance.Snapshot{
@@ -229,7 +224,7 @@ func TestBalancePersistSingleKeyStaysNarrow(t *testing.T) {
 		t.Fatalf("单 Key 快照写入必须成功: %v %v", ok, err)
 	}
 	var snapshotJSON string
-	if err := statsDB.QueryRow(`SELECT snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-narrow'`).Scan(&snapshotJSON); err != nil {
+	if err := statsDB.QueryRow(`SELECT snapshot_json FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-narrow'`).Scan(&snapshotJSON); err != nil {
 		t.Fatal(err)
 	}
 	decoded := map[string]any{}
@@ -260,7 +255,7 @@ func TestBalancePersistTransientFieldsPersisted(t *testing.T) {
 	defer upstream.Close()
 	runtime, businessDB, statsDB := wgNewBalanceRuntime(t, "", false)
 	wgSeedDueAccount(t, businessDB, "acc-transient", upstream.URL, -time.Minute)
-	if _, err := businessDB.Exec(`UPDATE accounts SET balance_query_enabled = 1, balance_query_config_json = '{"adapter":"builtin","intervalMinutes":5}' WHERE id = 'acc-transient'`); err != nil {
+	if _, err := businessDB.Exec(`UPDATE juhe_business.accounts SET balance_query_enabled = 1, balance_query_config_json = '{"adapter":"builtin","intervalMinutes":5}' WHERE id = 'acc-transient'`); err != nil {
 		t.Fatal(err)
 	}
 	runtime.detected.Store("snapshot:acc-transient", &accountbalance.Snapshot{
@@ -281,7 +276,7 @@ func TestBalancePersistTransientFieldsPersisted(t *testing.T) {
 		t.Fatalf("瞬态快照写入必须成功: %v %v", ok, err)
 	}
 	var snapshotJSON string
-	if err := statsDB.QueryRow(`SELECT snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-transient'`).Scan(&snapshotJSON); err != nil {
+	if err := statsDB.QueryRow(`SELECT snapshot_json FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-transient'`).Scan(&snapshotJSON); err != nil {
 		t.Fatal(err)
 	}
 	decoded := map[string]any{}

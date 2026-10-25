@@ -14,8 +14,7 @@ import (
 // backend/src/storage/postgres-usage-record-partitions.ts：
 // 写入前把批内 createdAt 解析为 YYYYMMDD 日期键，对缺失的每日分区执行
 // CREATE TABLE IF NOT EXISTS ... PARTITION OF juhe_usage.usage_records
-// FOR VALUES FROM ('YYYY-MM-DD') TO ('次日')。SQLite 路径（SqliteShardStore）
-// 不分区、不经过本文件。
+// FOR VALUES FROM ('YYYY-MM-DD') TO ('次日')。
 //
 // 并发语义与 Node 一致：跨进程依赖 IF NOT EXISTS 幂等；进程内由
 // ensuredPartitionDateKeys 备忘 + 串行化把同一日期键的 DDL 收敛为一次，

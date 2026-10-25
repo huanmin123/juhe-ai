@@ -74,8 +74,7 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 	a.addCloser(runtimeReader.Close)
 
 	repo, err := circuitstore.NewListAvailabilityRepo(circuitstore.ListAvailabilityConfig{
-		DB:       business.db,
-		Postgres: true,
+		DB: business.db,
 	})
 	if err != nil {
 		return err
@@ -83,8 +82,6 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 	loader, err := circuitstore.NewProjectionItemLoader(circuitstore.ProjectionLoadConfig{
 		Business:            business.db,
 		Stats:               business.db,
-		Postgres:            true,
-		StatsPostgres:       true,
 		Secret:              a.config.Secret,
 		Credentials:         projectionCredentials{store: probeStore},
 		Concurrency:         circuitstore.NewOverlayConcurrencySource(overlayStore),

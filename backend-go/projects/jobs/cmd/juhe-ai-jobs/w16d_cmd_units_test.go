@@ -10,8 +10,6 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,10 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
-	_ "modernc.org/sqlite"
 )
 
 func TestW16DBalanceConfigParsersArms(t *testing.T) {
@@ -141,37 +136,6 @@ func TestW16DHealthHandlerSlotDefaultsInvoked(t *testing.T) {
 		if !strings.Contains(body, fragment) {
 			t.Fatalf("载荷缺少 %s: %s", fragment, body)
 		}
-	}
-}
-
-func TestW16DResolveScheduleSettingsIntervalCap(t *testing.T) {
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", root+"/settings.sqlite3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (
-		system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
-		PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
-	key, ok := jobregistry.SettingsIntervalJobNames()["usage-stats-aggregation"]
-	if !ok {
-		t.Fatal("注册表缺少 usage-stats-aggregation 的设置键")
-	}
-	if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json) VALUES ('sys_admin', ?, '3600')`, key); err != nil {
-		t.Fatal(err)
-	}
-	source := jobssettings.NewSource(jobssettings.Options{DB: db, Mode: jobssettings.SQLite})
-	// 3600 超过 OnlineFreshnessCap=60 → 收敛到 60（覆盖 98-100 分支）。
-	interval, ok := resolveScheduleSettingsInterval(context.Background(), source, nil, "usage-stats-aggregation")
-	if !ok || interval != 60*time.Second {
-		t.Fatalf("OnlineFreshnessCap 收敛错误: %v ok=%v", interval, ok)
-	}
-	// 非设置驱动 job → false（81-84 分支）。
-	if _, ok := resolveScheduleSettingsInterval(context.Background(), source, nil, "not-a-spec-job"); ok {
-		t.Fatal("非设置驱动 job 必须返回 false")
 	}
 }
 

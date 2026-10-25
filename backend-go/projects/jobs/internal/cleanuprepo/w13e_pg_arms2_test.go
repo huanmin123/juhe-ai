@@ -332,7 +332,6 @@ func TestW13ePGCodexArms(t *testing.T) {
 	ctx := ctx0()
 	newStore := func(t *testing.T, rec *pgRecorder, failOn ...string) *CodexContextStore {
 		return &CodexContextStore{
-			Postgres:    true,
 			PG:          w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: failOn}),
 			Now:         kitNow,
 			RetryJitter: func(int64) int64 { return 0 },
@@ -405,7 +404,7 @@ func TestW13ePGCodexArms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newPGRecorder()
 			pgCodexSeed(rec)
-			store := &CodexContextStore{Postgres: true, PG: w13eOpenDecoratedPG(t, rec, tc.opts), Now: kitNow}
+			store := &CodexContextStore{PG: w13eOpenDecoratedPG(t, rec, tc.opts), Now: kitNow}
 			if _, err := store.CleanupExpiredStates(ctx, "2026-09-10T00:00:00.000Z", 10); err == nil {
 				t.Fatalf("%s 应透传错误", tc.name)
 			}
@@ -433,7 +432,6 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 		return &DeletedAccountStore{
 			Business: decorated,
 			Dataset:  decorated,
-			Records:  &RecordCleanupStore{Stats: decorated, Dataset: decorated, Business: decorated, Now: kitNow},
 			Now:      kitNow,
 		}
 	}

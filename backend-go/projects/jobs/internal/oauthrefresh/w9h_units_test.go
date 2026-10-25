@@ -1499,14 +1499,7 @@ func TestW9HFailureLogAttrsArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW9HStoreDialectHelpers(t *testing.T) {
-	sqlite := &Store{}
-	if sqlite.table("accounts") != "accounts" {
-		t.Fatalf("sqlite table=%q", sqlite.table("accounts"))
-	}
-	if sqlite.bind("SELECT * FROM t WHERE a = ? AND b = ?") != "SELECT * FROM t WHERE a = ? AND b = ?" {
-		t.Fatal("sqlite bind passthrough")
-	}
-	pg := &Store{pg: true}
+	pg := &Store{}
 	if pg.table("accounts") != "juhe_business.accounts" {
 		t.Fatalf("pg table=%q", pg.table("accounts"))
 	}

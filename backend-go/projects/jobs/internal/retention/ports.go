@@ -6,13 +6,12 @@ import (
 )
 
 // Mode mirrors runtimeConfig.databaseDriver for the retention family. The
-// data-retention job is dual-mode: sqlite runs the single-node cleanup chain
+// data-retention job 恒 PG 形态（派发 PostgreSQL 维护任务）
 // in-process, postgres only dispatches record-maintenance maintenance jobs
 // and runs the PostgreSQL cleanup stages directly.
 type Mode string
 
 const (
-	ModeSQLite   Mode = "sqlite"
 	ModePostgres Mode = "postgres"
 )
 
@@ -317,12 +316,6 @@ type AccountRecordCleanupRetryer interface {
 	CleanupPendingTargets(ctx context.Context, limit int, statsWriter StatsWriter) (PendingCleanupSummary, error)
 }
 
-// DatasetCheckpointer is the optional sqlite-mode WAL checkpoint hook
-// (checkpointDatasetAndUsageDatabasesAfterDelete). Stores implement it when
-// they own the dataset/usage-shard SQLite files.
-type DatasetCheckpointer interface {
-	CheckpointAfterDelete(ctx context.Context) error
-}
 
 // StorageKeyDeletionResult mirrors CodexContextStorageKeyDeletionResult.
 type StorageKeyDeletionResult struct {

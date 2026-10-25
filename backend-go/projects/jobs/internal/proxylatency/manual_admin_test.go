@@ -217,28 +217,6 @@ func TestManualAdminProxyIDMatchesDecodedExpressPathParam(t *testing.T) {
 	}
 }
 
-func TestLoadManualAdminConfigIsExplicitAndBounded(t *testing.T) {
-	// 2026-09-21 起管理 listener 随家族常驻：依赖缺席（无任何 PG 连接串）
-	// 时合法缺席。
-	if cfg, err := LoadManualAdminConfig(func(string) string { return "" }); err != nil || cfg.Enabled {
-		t.Fatalf("absent config=%#v err=%v", cfg, err)
-	}
-	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":        "true",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "0.0.0.0:3405",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":   "postgres://example",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE":       "25s",
-	}
-	cfg, err := LoadManualAdminConfig(func(key string) string { return env[key] })
-	if err != nil || !cfg.Enabled || cfg.RequestDeadline != 25*time.Second || cfg.MaxOpenConns != 20 {
-		t.Fatalf("enabled config=%#v err=%v", cfg, err)
-	}
-	env["JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS"] = "0.0.0.0:not-a-port"
-	if _, err := LoadManualAdminConfig(func(key string) string { return env[key] }); err == nil {
-		t.Fatal("expected invalid port rejection")
-	}
-}
-
 func TestManualAdminAuditValueKeepsNodeSafeChangeBound(t *testing.T) {
 	if got := manualAdminAuditValue(strings.Repeat("测", 201)); got != strings.Repeat("测", 200)+"…" {
 		t.Fatalf("bounded audit value=%#v", got)

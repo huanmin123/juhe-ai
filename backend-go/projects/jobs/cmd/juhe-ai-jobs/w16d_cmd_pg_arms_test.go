@@ -19,7 +19,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,7 +34,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 const w16dSecret = "0123456789abcdef0123456789abcdef"
@@ -94,7 +92,7 @@ func TestW16DPGRetentionAdapterArms(t *testing.T) {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
 	pgDB := w16dPGOpen(t)
-	pgHandle := &cleanuprepo.DB{DB: pgDB, Postgres: true}
+	pgHandle := &cleanuprepo.DB{DB: pgDB}
 	family := &retentionFamily{
 		assembly: newWorkerAssembly(workerConfig{}, slog.Default()),
 		recordCleanup: &cleanuprepo.RecordCleanupStore{
@@ -127,85 +125,26 @@ func TestW16DPGCodexSettleAndDrainArms(t *testing.T) {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
 	pgDB := w16dPGOpen(t)
-	pgHandle := &cleanuprepo.DB{DB: pgDB, Postgres: true}
-	// SettleCodexContextStorageCleanup 错误臂：PG 句柄指向关闭连接（700-702）。
-	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.sqlite3"))
+	pgHandle := &cleanuprepo.DB{DB: pgDB}
+	// SettleCodexContextStorageCleanup 错误臂：PG 句柄指向关闭连接（700-702；
+	// 原 sqlite closed 句柄夹具随 sqlite 形态退役删除，改隔离库 DSN 的关闭句柄）。
+	_, closedDSN := wgOpenPGDialectDB(t, nil)
+	closed, err := sql.Open("pgx", closedDSN)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = closed.Close()
-	closedPG := &cleanuprepo.DB{DB: closed, Postgres: true}
+	closedPG := &cleanuprepo.DB{DB: closed}
 	dbService := &familyDbService{
-		codex: &cleanuprepo.CodexContextStore{Postgres: true, PG: closedPG, ShardCount: 4},
+		codex: &cleanuprepo.CodexContextStore{PG: closedPG},
 	}
 	if _, err := dbService.SettleCodexContextStorageCleanup(context.Background(), retention.CodexContextSettlement{
 		SucceededStorageKeys: []string{"w16d-key"},
 	}); err == nil {
 		t.Fatal("关闭 PG 句柄结算必须报错")
 	}
-	// ProcessBatch：缺失文件 → failures>0 → warn 分支（730-734）；结算走
-	// SQLite 分片（预建分片库与 cleanup queue 表，参考 cleanuprepo 测试形状）。
-	shardRoot := t.TempDir()
-	codexStore := &cleanuprepo.CodexContextStore{Postgres: false, ShardRoot: shardRoot, ShardCount: 4}
-	for index := 0; index < 4; index++ {
-		shard, shardErr := sql.Open("sqlite", filepath.Join(shardRoot, "state-00"+string(rune('0'+index))+".sqlite3"))
-		if shardErr != nil {
-			t.Fatal(shardErr)
-		}
-		if _, shardErr := shard.Exec(`CREATE TABLE IF NOT EXISTS codex_context_storage_cleanup_queue (
-			storage_key TEXT PRIMARY KEY, enqueued_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-			next_attempt_at TEXT NOT NULL, attempt_count INTEGER DEFAULT 0, last_error TEXT)`); shardErr != nil {
-			t.Fatal(shardErr)
-		}
-		if _, shardErr := shard.Exec(`CREATE TABLE IF NOT EXISTS codex_context_sessions (
-			id TEXT PRIMARY KEY, expires_at TEXT NOT NULL, updated_at TEXT DEFAULT '')`); shardErr != nil {
-			t.Fatal(shardErr)
-		}
-		if _, shardErr := shard.Exec(`CREATE TABLE IF NOT EXISTS codex_context_responses (
-			response_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, storage_key TEXT DEFAULT '',
-			expires_at TEXT NOT NULL)`); shardErr != nil {
-			t.Fatal(shardErr)
-		}
-		if _, shardErr := shard.Exec(`CREATE TABLE IF NOT EXISTS codex_context_compacts (
-			compact_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, storage_key TEXT DEFAULT '',
-			expires_at TEXT NOT NULL)`); shardErr != nil {
-			t.Fatal(shardErr)
-		}
-		_ = shard.Close()
-	}
-	t.Cleanup(func() { _ = codexStore.Close() })
-	processor := &codexStorageProcessor{
-		db:     &familyDbService{codex: codexStore},
-		store:  codexStore,
-		logger: slog.Default(),
-	}
-	deleted, err := processor.ProcessBatch(context.Background(), []string{"w16d-missing-key"})
-	if err != nil {
-		t.Fatalf("ProcessBatch 缺失文件: %v", err)
-	}
-	if deleted != 0 {
-		t.Fatalf("缺失文件不得计入删除: %d", deleted)
-	}
-	// 非法 storage key（路径穿越）→ 删除失败记录 → 结算持久化 → warn 分支（730-734）。
-	deleted, err = processor.ProcessBatch(context.Background(), []string{"../../w16d-escape"})
-	if err != nil {
-		t.Fatalf("ProcessBatch 非法 key: %v", err)
-	}
-	if deleted != 0 {
-		t.Fatalf("非法 key 不得计入删除: %d", deleted)
-	}
-	// 结算错误臂（727-729）：codex store 的 PG 句柄不可用。
-	brokenStore := &cleanuprepo.CodexContextStore{Postgres: true, PG: closedPG, ShardCount: 4}
-	brokenProcessor := &codexStorageProcessor{
-		db:     &familyDbService{codex: brokenStore},
-		store:  brokenStore,
-		logger: slog.Default(),
-	}
-	if _, err := brokenProcessor.ProcessBatch(context.Background(), []string{"w16d-key"}); err == nil {
-		t.Fatal("结算失败必须报错")
-	}
 	// record_maintenance 表 drain 的 PG 接线（50-52）与 closer 排空（74-78）。
-	assembly := newWorkerAssembly(workerConfig{ InstanceID: "w16d-drain",
+	assembly := newWorkerAssembly(workerConfig{InstanceID: "w16d-drain",
 		RecordMaintenanceBatchSize:               5,
 		RecordMaintenanceShutdownFlushMaxBatches: 1,
 	}, slog.Default())
@@ -226,15 +165,15 @@ func TestW16DPGFlushLoopFailureArms(t *testing.T) {
 	family := &retentionFamily{
 		assembly: assembly,
 		runner: &retention.RecordMaintenanceRunner{
-			Mode: retention.ModeSQLite,
+			Mode: retention.ModePostgres,
 			Executor: retention.RecordMaintenanceExecutor{
 				RelatedRecords: &familyRelatedCleaner{family: &retentionFamily{
 					assembly: assembly,
 					recordCleanup: &cleanuprepo.RecordCleanupStore{
-						Dataset:      &cleanuprepo.DB{DB: pgDB, Postgres: true},
-						Stats:        &cleanuprepo.DB{DB: pgDB, Postgres: true},
-						UsageCatalog: &cleanuprepo.DB{DB: pgDB, Postgres: true},
-						Business:     &cleanuprepo.DB{DB: pgDB, Postgres: true},
+						Dataset:      &cleanuprepo.DB{DB: pgDB},
+						Stats:        &cleanuprepo.DB{DB: pgDB},
+						UsageCatalog: &cleanuprepo.DB{DB: pgDB},
+						Business:     &cleanuprepo.DB{DB: pgDB},
 					},
 				}},
 			},
@@ -267,7 +206,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	}
 	pgDB := w16dPGOpen(t)
 	redisServer := miniredis.RunT(t)
-	assembly := newWorkerAssembly(workerConfig{ InstanceID: "w16d-list-projection",
+	assembly := newWorkerAssembly(workerConfig{InstanceID: "w16d-list-projection",
 		Secret:                          w16dSecret,
 		ListProjectionIntervalMS:        1_000,
 		ListProjectionBatchSize:         10,
@@ -291,12 +230,12 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 		t.Skipf("w16d: stats PG schema 初始化失败（跳过）: %v", err)
 	}
 	// OAuth 族 store（投影 SyncSchedules 依赖）。
-	oauthStore, err := oauthrefresh.OpenStore(pgDB, oauthrefresh.StorePostgres, w16dSecret)
+	oauthStore, err := oauthrefresh.OpenStore(pgDB, w16dSecret)
 	if err != nil {
 		t.Fatalf("oauth store: %v", err)
 	}
 	assembly.oauthStore = oauthStore
-	probeStore, err := proberepo.NewStore(proberepo.Config{DB: pgDB, Postgres: true, Secret: w16dSecret})
+	probeStore, err := proberepo.NewStore(proberepo.Config{DB: pgDB, Secret: w16dSecret})
 	if err != nil {
 		t.Fatalf("probe store: %v", err)
 	}

@@ -17,7 +17,6 @@ import (
 // (batchSize=1000, maxBatches=20, pause=25ms) and stay behind per-domain
 // ports so a slow or failing store never blocks another domain's job.
 type DataRetentionJob struct {
-	Mode        Mode
 	ProcessRole string
 	WorkerRole  string
 
@@ -33,9 +32,7 @@ type DataRetentionJob struct {
 	DB            DbService
 	Enqueuer      RecordMaintenanceEnqueuer
 	CodexStorage  CodexContextStorageBatchProcessor
-	Checkpointer  DatasetCheckpointer
 
-	sqliteRunning   bool
 	postgresRunning bool
 	runningMutex    sync.Mutex
 }
@@ -47,27 +44,22 @@ type CodexContextStorageBatchProcessor interface {
 
 // NewDataRetentionJob builds the job; now/sleep/logger fall back to real
 // time, the fixed pause and the default logger.
-func NewDataRetentionJob(mode Mode, processRole, workerRole string) *DataRetentionJob {
+func NewDataRetentionJob(processRole, workerRole string) *DataRetentionJob {
 	return &DataRetentionJob{
-		Mode:        mode,
 		ProcessRole: processRole,
 		WorkerRole:  workerRole,
 	}
 }
 
-// Run mirrors runDataRetentionCleanup: postgres dispatches the PostgreSQL
-// maintenance jobs, sqlite runs the in-process cleanup chain.
+// Run 恒派发 PostgreSQL 维护任务（原 sqlite 单机清理链已随存储形态退役）。
 func (j *DataRetentionJob) Run(ctx context.Context) (CleanupResult, error) {
 	if err := ctx.Err(); err != nil {
 		return EmptyCleanupResult(), err
 	}
-	if j.Mode == ModePostgres {
-		if err := j.EnqueuePostgresMaintenanceJobs(ctx); err != nil {
-			return EmptyCleanupResult(), err
-		}
-		return EmptyCleanupResult(), nil
+	if err := j.EnqueuePostgresMaintenanceJobs(ctx); err != nil {
+		return EmptyCleanupResult(), err
 	}
-	return j.CleanupExpiredRetainedData(ctx)
+	return EmptyCleanupResult(), nil
 }
 
 func (j *DataRetentionJob) logger() *slog.Logger {
@@ -91,120 +83,20 @@ func (j *DataRetentionJob) sleep(ctx context.Context) error {
 	return j.Sleep(ctx)
 }
 
-func (j *DataRetentionJob) begin(stage string) bool {
+func (j *DataRetentionJob) begin() bool {
 	j.runningMutex.Lock()
 	defer j.runningMutex.Unlock()
-	if stage == "postgres" {
-		if j.postgresRunning {
-			return false
-		}
-		j.postgresRunning = true
-		return true
-	}
-	if j.sqliteRunning {
+	if j.postgresRunning {
 		return false
 	}
-	j.sqliteRunning = true
+	j.postgresRunning = true
 	return true
 }
 
-func (j *DataRetentionJob) end(stage string) {
+func (j *DataRetentionJob) end() {
 	j.runningMutex.Lock()
 	defer j.runningMutex.Unlock()
-	if stage == "postgres" {
-		j.postgresRunning = false
-		return
-	}
-	j.sqliteRunning = false
-}
-
-// CleanupExpiredRetainedData mirrors cleanupExpiredRetainedData. A second
-// concurrent invocation returns an empty result instead of queueing behind
-// the running one; postgres mode is rejected outright.
-func (j *DataRetentionJob) CleanupExpiredRetainedData(ctx context.Context) (CleanupResult, error) {
-	if err := ctx.Err(); err != nil {
-		return EmptyCleanupResult(), err
-	}
-	if j.ProcessRole != "worker" {
-		return EmptyCleanupResult(), nil
-	}
-	if !j.begin("sqlite") {
-		return EmptyCleanupResult(), nil
-	}
-	defer j.end("sqlite")
-	if j.Mode == ModePostgres {
-		return EmptyCleanupResult(), errors.New("高性能模式禁止运行单机数据保留清理 worker；请使用 PostgreSQL 数据维护任务清理非业务数据，禁止静默跳过或回落 SQLite 清理链路")
-	}
-
-	result, err := j.runSQLiteStages(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return result, err
-		}
-		j.logger().Error("数据保留清理失败", "event", "data_retention_cleanup_failed", "error", err)
-		return result, err
-	}
-	return result, nil
-}
-
-func (j *DataRetentionJob) runSQLiteStages(ctx context.Context) (CleanupResult, error) {
-	settings, err := j.loadSettings(ctx)
-	if err != nil {
-		return EmptyCleanupResult(), err
-	}
-	timezone, err := j.loadTimezone(ctx)
-	if err != nil {
-		return EmptyCleanupResult(), err
-	}
-	policy, err := LoadPolicy(settings)
-	if err != nil {
-		return EmptyCleanupResult(), err
-	}
-	nowMillis := j.clock().UnixMilli()
-	batchSize := CleanupBatchSize
-	maxBatches := CleanupMaxBatchesPerRun
-
-	result := EmptyCleanupResult()
-	if j.WorkerRole == "ingest-worker" {
-		dataset, err := j.cleanupDatasetAndUsage(ctx, nowMillis, policy, batchSize, maxBatches)
-		result.Add(dataset)
-		if err != nil {
-			return result, err
-		}
-		if dataset.Sum() > 0 {
-			j.checkpointAfterDelete(ctx)
-		}
-
-		statsLocation, err := LoadUsageStatsTimezone(timezone)
-		if err != nil {
-			return result, err
-		}
-		if err := j.cleanupRetentionInBatches(ctx, &result, maxBatches, func(ctx context.Context) (UsageStatsRetentionCounts, error) {
-			return j.stats().CleanupUsageStatsRetention(ctx, usageStatsRetentionInput(nowMillis, policy, statsLocation, batchSize))
-		}); err != nil {
-			return result, err
-		}
-		systemSessions, err := j.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
-			return j.db().CleanupExpiredSystemSessions(ctx, ISOString(time.UnixMilli(nowMillis)), batchSize)
-		})
-		result.SystemSessions += systemSessions
-		if err != nil {
-			return result, err
-		}
-		if err := j.cleanupCodexContextStatesInBatches(ctx, &result, ISOString(time.UnixMilli(nowMillis)), batchSize, maxBatches); err != nil {
-			return result, err
-		}
-	}
-
-	logger := j.logger()
-	logger.Info("数据保留清理完成",
-		append([]any{
-			"event", "data_retention_cleanup_completed",
-			"batchSize", batchSize,
-			"maxBatches", maxBatches,
-			"workerRole", j.WorkerRole,
-		}, result.Values()...)...)
-	return result, nil
+	j.postgresRunning = false
 }
 
 func (j *DataRetentionJob) loadSettings(ctx context.Context) (map[string]any, error) {
@@ -319,36 +211,6 @@ func (missingDbService) CleanupExpiredDeletedAccounts(context.Context) (*Expired
 	return nil, errors.New("retention db service 未初始化")
 }
 
-// cleanupDatasetAndUsage mirrors cleanupDatasetAndUsageRetainedData: the
-// publicApiLogs stage followed by the usage-records stage, separated by
-// yields and abort checks.
-func (j *DataRetentionJob) cleanupDatasetAndUsage(ctx context.Context, nowMillis int64, policy Policy, batchSize, maxBatches int) (CleanupResult, error) {
-	result := EmptyCleanupResult()
-	publicApiLogs, err := j.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
-		return j.publicApiLogs().CleanupBefore(ctx, cutoffISO(nowMillis, policy.PublicApiLogDays), batchSize)
-	})
-	if err != nil {
-		return result, err
-	}
-	result.PublicApiLogs = publicApiLogs
-
-	usageRecords, err := j.cleanupProcessedUsageRecordsInBatches(ctx, cutoffISO(nowMillis, policy.UsageRecordDays), batchSize, maxBatches)
-	result.UsageRecords += usageRecords.deletedRows
-	if err != nil {
-		return result, err
-	}
-	if usageRecords.blockedReason != "" {
-		j.logger().Warn("使用记录保留清理被统计安全游标拦截",
-			"event", "data_retention_usage_records_cleanup_blocked",
-			"blockedReason", usageRecords.blockedReason,
-			"cutoffCreatedAt", usageRecords.cutoffCreatedAt,
-			"deletedRows", usageRecords.deletedRows,
-			"batches", usageRecords.batches,
-		)
-	}
-	return result, nil
-}
-
 type processedUsageRecordsCleanup struct {
 	cutoffCreatedAt string
 	deletedRows     int64
@@ -356,44 +218,6 @@ type processedUsageRecordsCleanup struct {
 	blockedReason   string
 }
 
-// cleanupProcessedUsageRecordsInBatches mirrors
-// cleanupProcessedUsageRecordsInBatches: the latest blocked reason wins, a
-// blocked or non-full batch ends the loop.
-func (j *DataRetentionJob) cleanupProcessedUsageRecordsInBatches(ctx context.Context, cutoffCreatedAt string, batchSize, maxBatches int) (processedUsageRecordsCleanup, error) {
-	outcome := processedUsageRecordsCleanup{cutoffCreatedAt: cutoffCreatedAt}
-	for index := 0; index < maxBatches; index++ {
-		if err := ctx.Err(); err != nil {
-			return outcome, err
-		}
-		batch, err := j.usageRecords().CleanupProcessedBefore(ctx, cutoffCreatedAt, batchSize)
-		if err != nil {
-			return outcome, err
-		}
-		outcome.deletedRows += batch.DeletedRows
-		if batch.BlockedReason != "" {
-			outcome.blockedReason = batch.BlockedReason
-		}
-		if batch.DeletedRows > 0 {
-			outcome.batches++
-		}
-		if err := yieldToEventLoop(ctx); err != nil {
-			return outcome, err
-		}
-		if err := ctx.Err(); err != nil {
-			return outcome, err
-		}
-		if batch.BlockedReason != "" || batch.DeletedRows < int64(batchSize) || !batch.HasMore {
-			return outcome, nil
-		}
-		if err := j.sleep(ctx); err != nil {
-			return outcome, err
-		}
-	}
-	return outcome, nil
-}
-
-// cleanupInBatches mirrors cleanupInBatches over a single-number cleanup
-// (publicApiLogs, expired system sessions): a non-full batch ends the run.
 func (j *DataRetentionJob) cleanupInBatches(ctx context.Context, batchSize, maxBatches int, cleanupBatch func(ctx context.Context) (int64, error)) (int64, error) {
 	var total int64
 	for index := 0; index < maxBatches; index++ {
@@ -449,40 +273,10 @@ func (j *DataRetentionJob) cleanupRetentionInBatches(ctx context.Context, result
 	return nil
 }
 
-// cleanupCodexContextStatesInBatches mirrors
-// cleanupCodexContextStatesInBatches: each batch deletes expired state rows
-// then settles the storage file deletions before deciding to continue.
-func (j *DataRetentionJob) cleanupCodexContextStatesInBatches(ctx context.Context, result *CleanupResult, expiredBefore string, batchSize, maxBatches int) error {
-	for index := 0; index < maxBatches; index++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		cleanup, err := j.db().CleanupExpiredCodexContextStates(ctx, expiredBefore, batchSize)
-		if err != nil {
-			return err
-		}
-		if cleanup == nil {
-			return nil
-		}
-		result.CodexContextSessions += cleanup.DeletedSessions
-		result.CodexContextResponses += cleanup.DeletedResponses
-		result.CodexContextCompacts += cleanup.DeletedCompacts
-		files, err := j.codexStorage().ProcessBatch(ctx, cleanup.StorageKeys)
-		result.CodexContextFiles += files
-		if err != nil {
-			return err
-		}
-		if err := yieldToEventLoop(ctx); err != nil {
-			return err
-		}
-		if !cleanup.HasMore || cleanup.DeletedSessions < int64(batchSize) {
-			return nil
-		}
-		if err := j.sleep(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
+type missingCodexStorage struct{}
+
+func (missingCodexStorage) ProcessBatch(context.Context, []string) (int64, error) {
+	return 0, errors.New("retention codex context storage processor 未初始化")
 }
 
 func (j *DataRetentionJob) codexStorage() CodexContextStorageBatchProcessor {
@@ -492,35 +286,14 @@ func (j *DataRetentionJob) codexStorage() CodexContextStorageBatchProcessor {
 	return missingCodexStorage{}
 }
 
-type missingCodexStorage struct{}
-
-func (missingCodexStorage) ProcessBatch(context.Context, []string) (int64, error) {
-	return 0, errors.New("retention codex context storage processor 未初始化")
-}
-
-func (j *DataRetentionJob) checkpointAfterDelete(ctx context.Context) {
-	if j.Checkpointer == nil {
-		return
-	}
-	if err := j.Checkpointer.CheckpointAfterDelete(ctx); err != nil {
-		j.logger().Warn("数据集与使用记录分片 WAL checkpoint 失败，等待下一轮清理继续维护",
-			"event", "data_retention_dataset_checkpoint_failed", "error", err)
-		return
-	}
-	j.logger().Info("数据集与使用记录分片 WAL checkpoint 完成", "event", "data_retention_dataset_checkpoint_completed")
-}
-
-// EnqueuePostgresMaintenanceJobs mirrors enqueuePostgresDataRetentionMaintenanceJobs:
-// enqueue the usage-records cleanup job, then run the PostgreSQL publicApiLogs,
-// stats, metrics, sessions and codex-context cleanup stages directly.
 func (j *DataRetentionJob) EnqueuePostgresMaintenanceJobs(ctx context.Context) error {
 	if j.ProcessRole != "worker" {
 		return nil
 	}
-	if !j.begin("postgres") {
+	if !j.begin() {
 		return nil
 	}
-	defer j.end("postgres")
+	defer j.end()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

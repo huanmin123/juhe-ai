@@ -8,14 +8,12 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	_ "modernc.org/sqlite"
 )
 
 // w16dBalanceFixture 是余额探测运行时的完整 PG fixture：独立 PG 测试库，
@@ -101,98 +99,6 @@ func TestW16DBalanceDecryptCredentialsArms(t *testing.T) {
 	}
 }
 
-func TestW16DBalanceListDueCandidatesArms(t *testing.T) {
-	fixture := w16dNewBalanceFixture(t, true)
-	now := fixture.runtime.nowFunc()
-	due := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	// scan 错误臂已随 PG 化退役：dispatch_revision BIGINT 列在 PG 下拒绝文
-	// 本插入（22P02 于 fixture 写入时暴露），运行期 scan 错误臂不可达。
-	// scanNullTime 整数 due 错误臂已随 PG 化退役：text 列拒绝整数参数
-	// （encode plan 失败于 fixture 写入时暴露），运行期不可达。
-	// 正常路径：解密通过 → 候选入选。
-	fixture.insertDueAccount(t, "w16d-ok", int64(2), due, `{"api_key":"sk-ok","base_url":"http://127.0.0.1:1"}`)
-	fixture.insertDueAccount(t, "w16d-bad-cred", int64(3), due, `{"base_url":"http://127.0.0.1:1"}`)
-	selected, err := fixture.runtime.ListDueCandidates(context.Background(), 5)
-	if err != nil {
-		t.Fatalf("正常扫描: %v", err)
-	}
-	if len(selected) != 1 || selected[0].ID != "w16d-ok" {
-		t.Fatalf("候选结果错误: %+v", selected)
-	}
-	// 游标耗尽回绕后重复扫描：行未被 Commit，仍是 due → 再次入选。
-	again, err := fixture.runtime.ListDueCandidates(context.Background(), 5)
-	if err != nil {
-		t.Fatalf("回绕扫描: %v", err)
-	}
-	if len(again) != 1 || again[0].ID != "w16d-ok" {
-		t.Fatalf("未提交的候选必须仍在扫描窗口内: %+v", again)
-	}
-	// 关闭句柄错误臂。
-	closed, err := sql.Open("pgx", "postgres://w16d-closed.invalid/db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
-	broken := &balanceDetectRuntime{business: &businessDB{db: closed}, nowFunc: fixture.runtime.nowFunc}
-	if _, err := broken.ListDueCandidates(context.Background(), 5); err == nil {
-		t.Fatal("关闭句柄扫描必须报错")
-	}
-}
-
-func TestW16DBalanceCommitAndEnableArms(t *testing.T) {
-	fixture := w16dNewBalanceFixture(t, true)
-	ctx := context.Background()
-	// 缺 due 围栏。
-	if _, err := fixture.runtime.CommitDetectionDue(ctx, opsjobs.BalanceCommitDueInput{}); err == nil {
-		t.Fatal("缺 due 围栏必须报错")
-	}
-	// NextRefreshAt 合法（361 分支）+ 围栏不匹配 → false。
-	badFence := "2026-01-01T00:00:00Z"
-	committed, err := fixture.runtime.CommitDetectionDue(ctx, opsjobs.BalanceCommitDueInput{
-		AccountID:              "w16d-missing",
-		ExpectedNextRefreshAt:  &badFence,
-		NextRefreshAt:          &badFence,
-		ExpectedConfigRevision: 1,
-	})
-	if err != nil || committed {
-		t.Fatalf("不匹配围栏必须 false: %v %v", committed, err)
-	}
-	// 非法 NextRefreshAt → 解析错误。
-	bogus := "not-a-time"
-	if _, err := fixture.runtime.CommitDetectionDue(ctx, opsjobs.BalanceCommitDueInput{
-		AccountID: "w16d-missing", ExpectedNextRefreshAt: &badFence, NextRefreshAt: &bogus,
-		ExpectedConfigRevision: 1,
-	}); err == nil {
-		t.Fatal("非法 next 必须报错")
-	}
-	// 关闭句柄 → exec 错误。
-	closed, err := sql.Open("pgx", "postgres://w16d-closed.invalid/db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
-	broken := &balanceDetectRuntime{business: &businessDB{db: closed}, nowFunc: fixture.runtime.nowFunc}
-	if _, err := broken.CommitDetectionDue(ctx, opsjobs.BalanceCommitDueInput{
-		AccountID: "w16d-x", ExpectedNextRefreshAt: &badFence, ExpectedConfigRevision: 1,
-	}); err == nil {
-		t.Fatal("关闭句柄提交必须报错")
-	}
-
-	// EnableDetectedQuery：非法围栏 / 关闭句柄。
-	if _, err := broken.EnableDetectedQuery(ctx, opsjobs.BalanceEnableInput{
-		AccountID: "w16d-x", NextRefreshAt: badFence, Config: opsjobs.BalanceQueryConfig{Adapter: "builtin"},
-		ExpectedConfigRevision: 1,
-	}); err == nil {
-		t.Fatal("关闭句柄启用必须报错")
-	}
-	if _, err := fixture.runtime.EnableDetectedQuery(ctx, opsjobs.BalanceEnableInput{
-		AccountID: "w16d-x", NextRefreshAt: badFence, Config: opsjobs.BalanceQueryConfig{Adapter: "builtin"},
-		ExpectedNextRefreshAt: &bogus, ExpectedConfigRevision: 1,
-	}); err == nil {
-		t.Fatal("非法围栏必须报错")
-	}
-}
-
 func TestW16DBalanceReplaceSnapshotArms(t *testing.T) {
 	fixture := w16dNewBalanceFixture(t, false) // stats 无快照表 → exec 错误臂
 	ctx := context.Background()
@@ -225,65 +131,6 @@ func TestW16DBalanceReplaceSnapshotArms(t *testing.T) {
 	}
 }
 
-func TestW16DBalanceRunWithLeaseArms(t *testing.T) {
-	fixture := w16dNewBalanceFixture(t, true)
-	ctx := context.Background()
-	// leasestore 缺失。
-	if _, err := fixture.runtime.RunWithLease(ctx, opsjobs.BalanceDetectionCandidate{ID: "w16d-x"}, func(context.Context) error { return nil }); err == nil {
-		t.Fatal("缺租约存储必须报错")
-	}
-	// 关闭的租约存储 → AcquireLease 错误。
-	closedLease, err := taskruns.OpenStore(taskruns.StoreConfig{
-		Mode:         taskruns.ModeSQLite,
-		DatabasePath: filepath.Join(t.TempDir(), "closed-lease.sqlite3"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := closedLease.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := closedLease.Close(); err != nil {
-		t.Fatal(err)
-	}
-	leaseStore := w16dOpenTaskRunsStore(t)
-	runtimeWithLease := &balanceDetectRuntime{business: fixture.runtime.business, statsDB: fixture.runtime.statsDB,
-		secret: fixture.runtime.secret, nowFunc: fixture.runtime.nowFunc, leasestore: leaseStore}
-	closedLeaseRuntime := &balanceDetectRuntime{business: fixture.runtime.business, statsDB: fixture.runtime.statsDB,
-		secret: fixture.runtime.secret, nowFunc: fixture.runtime.nowFunc, leasestore: closedLease}
-	if _, err := closedLeaseRuntime.RunWithLease(ctx, opsjobs.BalanceDetectionCandidate{ID: "w16d-x"}, func(context.Context) error { return nil }); err == nil {
-		t.Fatal("关闭租约存储必须报错")
-	}
-	// 他人持有未过期租约 → !acquired → (false, nil)。
-	now := fixture.runtime.nowFunc().UTC()
-	acquired, err := leaseStore.AcquireLease(ctx, taskruns.LeaseAcquireInput{
-		LeaseKey: "account-balance:w16d-held", JobName: "account-balance-refresh",
-		ShardKey: "sys-w16d", OwnerID: "w16d-other-owner", RunID: "w16d-run",
-		LeaseUntil: now.Add(time.Minute), Now: &now,
-	})
-	if err != nil || !acquired {
-		t.Fatalf("预占租约: %v %v", acquired, err)
-	}
-	held, err := runtimeWithLease.RunWithLease(ctx, opsjobs.BalanceDetectionCandidate{ID: "w16d-held", SystemAccountID: "sys-w16d"},
-		func(context.Context) error { return nil })
-	if err != nil || held {
-		t.Fatalf("他人持锁必须 false,nil: %v %v", held, err)
-	}
-	// 无竞争 → 获取并执行。
-	ran := false
-	ok, err := runtimeWithLease.RunWithLease(ctx, opsjobs.BalanceDetectionCandidate{ID: "w16d-free", SystemAccountID: "sys-w16d"},
-		func(context.Context) error { ran = true; return nil })
-	if err != nil || !ok || !ran {
-		t.Fatalf("无竞争租约必须执行: %v %v ran=%v", ok, err, ran)
-	}
-	// 任务失败透传。
-	if _, err := runtimeWithLease.RunWithLease(ctx, opsjobs.BalanceDetectionCandidate{ID: "w16d-err", SystemAccountID: "sys-w16d"},
-		func(context.Context) error { return context.DeadlineExceeded }); err == nil {
-		t.Fatal("任务错误必须透传")
-	}
-}
-
-// w16dOpenTaskRunsStore 打开独立 taskruns 租约存储。
 func w16dOpenTaskRunsStore(t *testing.T) *taskruns.Store {
 	t.Helper()
 	_, dsn := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {

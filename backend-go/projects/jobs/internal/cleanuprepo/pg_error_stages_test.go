@@ -261,7 +261,7 @@ func TestCodexPGErrorStages(t *testing.T) {
 	runPGStages(t, stages, func(t *testing.T, stage pgStage) error {
 		rec := newPGRecorder()
 		seed(rec)
-		store := &CodexContextStore{Postgres: true, PG: openKitFailingRecorderPG(rec, stage.failOn), Now: kitNow}
+		store := &CodexContextStore{PG: openKitFailingRecorderPG(rec, stage.failOn), Now: kitNow}
 		_, err := store.CleanupExpiredStates(context.Background(), "2026-09-10T00:00:00.000Z", 5)
 		return err
 	})

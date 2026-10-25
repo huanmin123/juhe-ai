@@ -65,10 +65,7 @@ func (s *Store) RefreshDirtyGroupAccountStats(ctx context.Context, options Group
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	if s.mode == StorePostgres {
-		return s.refreshDirtyGroupAccountStatsPostgres(ctx, limit, updatedAt, now)
-	}
-	return s.refreshDirtyGroupAccountStatsSQLite(ctx, limit, updatedAt, now)
+	return s.refreshDirtyGroupAccountStatsPostgres(ctx, limit, updatedAt, now)
 }
 
 // refreshDirtyGroupAccountStatsPostgres mirrors refreshDirtyGroupAccountStatsCacheAsync:
@@ -89,39 +86,6 @@ func (s *Store) refreshDirtyGroupAccountStatsPostgres(ctx context.Context, limit
 	return refreshed, nil
 }
 
-// refreshDirtyGroupAccountStatsSQLite mirrors
-// refreshDirtyGroupAccountStatsCacheWithWriter: dirty state lives in the
-// business database, the cache lives in the stats database, and there is no
-// cross-database transaction (Node relies on the updated_at CAS for the
-// same guarantee).
-func (s *Store) refreshDirtyGroupAccountStatsSQLite(ctx context.Context, limit int, updatedAt string, now time.Time) (int, error) {
-	businessTx, err := s.business.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("开启 statsverify business 事务失败: %w", err)
-	}
-	defer businessTx.Rollback()
-	statsTx, err := s.beginWriteTx(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer statsTx.Rollback()
-
-	refreshed, err := s.refreshDirtyGroupAccountStatsTx(ctx, businessTx, statsTx, limit, updatedAt, now)
-	if err != nil {
-		return 0, err
-	}
-	if err := businessTx.Commit(); err != nil {
-		return 0, err
-	}
-	if err := statsTx.Commit(); err != nil {
-		return 0, err
-	}
-	return refreshed, nil
-}
-
-// refreshDirtyGroupAccountStatsTx is the shared dirty protocol. businessQ
-// reads/writes the dirty tables; statsQ rewrites group_account_stats (and is
-// also a queryer for the hasStats probe).
 func (s *Store) refreshDirtyGroupAccountStatsTx(ctx context.Context, businessQ queryerExecer, statsQ queryerExecer, limit int, updatedAt string, now time.Time) (int, error) {
 	allRows, err := s.loadAllGroupAccountStatsDirtyRows(ctx, businessQ)
 	if err != nil {
@@ -230,26 +194,15 @@ func (s *Store) MarkAllGroupAccountStatsDirty(ctx context.Context, reason string
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.mode == StorePostgres {
-		tx, err := s.beginWriteTx(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		if err := s.markGroupAccountStatsDirtyRows(ctx, tx, []string{groupAccountStatsDirtyAll}, reason, NowIso(now)); err != nil {
-			return err
-		}
-		return tx.Commit()
-	}
-	businessTx, err := s.business.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
-	defer businessTx.Rollback()
-	if err := s.markGroupAccountStatsDirtyRows(ctx, businessTx, []string{groupAccountStatsDirtyAll}, reason, NowIso(now)); err != nil {
+	defer tx.Rollback()
+	if err := s.markGroupAccountStatsDirtyRows(ctx, tx, []string{groupAccountStatsDirtyAll}, reason, NowIso(now)); err != nil {
 		return err
 	}
-	return businessTx.Commit()
+	return tx.Commit()
 }
 
 func (s *Store) markAllGroupAccountStatsDirty(ctx context.Context, q execer, reason, updatedAt string) error {

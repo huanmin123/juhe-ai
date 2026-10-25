@@ -352,7 +352,9 @@ func TestBalanceProjectionUpsertIdempotent(t *testing.T) {
 	if singleDecoded["configRevision"] != float64(7) {
 		t.Fatalf("configRevision 必须来自 J2 行的 config_revision 列: %v", singleDecoded["configRevision"])
 	}
-	if !single.nextRefreshAfter.Valid || single.nextRefreshAfter.String != nextRefresh {
+	if !single.nextRefreshAfter.Valid || !storedInstant(t, single.nextRefreshAfter.String).Equal(storedInstant(t, nextRefresh)) {
+		// PG 形态：next_refresh_after 经 time.Time 绑定写入，TEXT 夹具列上
+		// 文本形态不再逐字符一致，按时刻相等断言。
 		t.Fatalf("next_refresh_after 必须直通 J2 next_refresh_at: %+v", single.nextRefreshAfter)
 	}
 	if single.lastAttemptAt != "2026-09-27T07:59:00Z" || !single.lastSuccessAt.Valid {
@@ -594,4 +596,22 @@ func TestEnsureBalanceProjectionContractBranches(t *testing.T) {
 	if err := ensureBalanceProjectionContract(ctx, pgDB); err == nil {
 		t.Fatal("缺 juhe_jobs 源表必须报错")
 	}
+}
+
+// storedInstant 容忍 TEXT 列上时间值的多种文本形态（RFC3339 与 pgx
+// time.Time 文本编码），返回时刻用于相等断言。
+func storedInstant(t *testing.T, raw string) time.Time {
+	t.Helper()
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05.999999999Z07:00:00",
+		"2006-01-02 15:04:05Z07:00",
+	} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed
+		}
+	}
+	t.Fatalf("无法解析存储时间文本: %q", raw)
+	return time.Time{}
 }

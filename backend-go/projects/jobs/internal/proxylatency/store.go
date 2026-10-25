@@ -9,8 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -20,13 +18,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 type StoreMode string
 
 const (
-	StoreSQLite   StoreMode = "sqlite"
 	StorePostgres StoreMode = "postgres"
 )
 
@@ -50,7 +46,6 @@ type executionAdmission struct {
 
 type StoreConfig struct {
 	Mode                 StoreMode
-	DatabasePath         string
 	PostgresURL          string
 	PostgresMaxOpenConns int
 	PostgresMaxIdleConns int
@@ -105,31 +100,6 @@ type StoredOutcome struct {
 
 func OpenStore(config StoreConfig) (*Store, error) {
 	switch config.Mode {
-	case StoreSQLite:
-		path := strings.TrimSpace(config.DatabasePath)
-		if path == "" {
-			return nil, errors.New("proxy-latency sqlite 缺少数据库路径")
-		}
-		dsn, err := proxyLatencySQLiteDSN(path)
-		if err != nil {
-			return nil, err
-		}
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, err
-		}
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if _, err := db.Exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;"); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("配置 proxy-latency sqlite 单 writer 失败: %w", err)
-		}
-		store := &Store{db: db, mode: StoreSQLite}
-		if err := store.EnsureSchema(context.Background()); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("初始化 proxy-latency sqlite schema 失败: %w", err)
-		}
-		return store, nil
 	case StorePostgres:
 		if strings.TrimSpace(config.PostgresURL) == "" {
 			return nil, errors.New("proxy-latency postgres 缺少连接 URL")
@@ -156,7 +126,7 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		}
 		return &Store{db: pool.DB(), mode: StorePostgres, pool: pool}, nil
 	default:
-		return nil, errors.New("proxy-latency store mode 必须为 sqlite 或 postgres")
+		return nil, errors.New("proxy-latency store mode 必须为 postgres")
 	}
 }
 
@@ -176,67 +146,39 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.mode == StorePostgres {
-		tx, err := s.beginTx(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		var owner, currentUser string
-		err = tx.QueryRowContext(ctx, `SELECT pg_get_userbyid(nspowner), current_user FROM pg_namespace WHERE nspname='juhe_jobs'`).Scan(&owner, &currentUser)
-		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("缺少外部 bootstrap 创建的 juhe_jobs schema")
-		}
-		if err != nil {
-			return fmt.Errorf("读取 proxy-latency postgres schema owner 失败: %w", err)
-		}
-		if owner != currentUser {
-			return fmt.Errorf("juhe_jobs schema owner 必须是当前 jobs role: owner=%s current=%s", owner, currentUser)
-		}
-		for _, statement := range strings.Split(postgresSchema, ";") {
-			if statement = strings.TrimSpace(statement); statement != "" {
-				if _, err := tx.ExecContext(ctx, statement); err != nil {
-					return fmt.Errorf("初始化 proxy-latency postgres schema 失败: %w", err)
-				}
-			}
-		}
-		return tx.Commit()
-	}
-	conn, err := s.db.Conn(ctx)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("获取 proxy-latency sqlite schema 锁失败: %w", err)
+	defer tx.Rollback()
+	var owner, currentUser string
+	err = tx.QueryRowContext(ctx, `SELECT pg_get_userbyid(nspowner), current_user FROM pg_namespace WHERE nspname='juhe_jobs'`).Scan(&owner, &currentUser)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("缺少外部 bootstrap 创建的 juhe_jobs schema")
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+	if err != nil {
+		return fmt.Errorf("读取 proxy-latency postgres schema owner 失败: %w", err)
+	}
+	if owner != currentUser {
+		return fmt.Errorf("juhe_jobs schema owner 必须是当前 jobs role: owner=%s current=%s", owner, currentUser)
+	}
+	for _, statement := range strings.Split(postgresSchema, ";") {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("初始化 proxy-latency postgres schema 失败: %w", err)
+			}
 		}
-	}()
-	if _, err := conn.ExecContext(ctx, sqliteSchema); err != nil {
-		return fmt.Errorf("初始化 proxy-latency sqlite schema 失败: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return err
-	}
-	committed = true
-	return nil
+	return tx.Commit()
 }
 
 // CheckSchema verifies the externally provisioned PostgreSQL contract without
 // issuing DDL. Production J3a startup uses this method so a missing or partial
 // migration fails closed instead of turning the owner process into an implicit
-// schema migrator. SQLite remains Go-owned and may initialize its private
-// store on first use.
+// schema migrator.
 func (s *Store) CheckSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("proxy-latency store 未初始化")
-	}
-	if s.mode == StoreSQLite {
-		return s.checkSQLiteSchema(ctx)
 	}
 	err := s.checkPostgresSchema(ctx)
 	s.schemaMu.Lock()
@@ -254,9 +196,6 @@ func (s *Store) CheckSchema(ctx context.Context) error {
 func (s *Store) ensureRuntimeSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("proxy-latency store 未初始化")
-	}
-	if s.mode == StoreSQLite {
-		return s.CheckSchema(ctx)
 	}
 	s.schemaMu.Lock()
 	ready := s.postgresSchemaReady
@@ -450,35 +389,6 @@ func checkPostgresSchemaShape(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func (s *Store) checkSQLiteSchema(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type IN ('table','index') AND name IN ('proxy_latency_owner_leases','proxy_latency_proxy_leases','proxy_latency_outcomes','proxy_latency_input_versions','proxy_latency_inputs','proxy_latency_execution_claims','idx_proxy_latency_outcomes_proxy','idx_proxy_latency_outcomes_cursor')`)
-	if err != nil {
-		return fmt.Errorf("读取 proxy-latency sqlite schema 失败: %w", err)
-	}
-	defer rows.Close()
-	seen := make(map[string]struct{}, len(proxyLatencySQLiteObjects))
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("读取 proxy-latency sqlite schema 名称失败: %w", err)
-		}
-		seen[name] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("遍历 proxy-latency sqlite schema 失败: %w", err)
-	}
-	missing := make([]string, 0)
-	for _, name := range proxyLatencySQLiteObjects {
-		if _, ok := seen[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("J3a SQLite schema 缺少对象: %s", strings.Join(missing, ", "))
-	}
-	return nil
-}
-
 func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
 	if strings.TrimSpace(ownerID) == "" || duration <= 0 {
 		return OwnerLease{}, false, errors.New("owner lease 参数无效")
@@ -491,20 +401,11 @@ func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration 
 	now := time.Now().UTC()
 	var token int64
 	var err error
-	if s.mode == StorePostgres {
-		err = s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_owner_leases(lease_key,owner_id,fence_token,lease_until,updated_at)
+	err = s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_owner_leases(lease_key,owner_id,fence_token,lease_until,updated_at)
 VALUES('proxy-latency-owner',$1,1,$2,$3)
 ON CONFLICT(lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_jobs.proxy_latency_owner_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=EXCLUDED.updated_at
 WHERE juhe_jobs.proxy_latency_owner_leases.lease_until<=statement_timestamp()
 RETURNING fence_token`, ownerID, now.Add(duration), now).Scan(&token)
-	} else {
-		nowText := now.Format(time.RFC3339Nano)
-		err = s.db.QueryRowContext(ctx, `INSERT INTO proxy_latency_owner_leases(lease_key,owner_id,fence_token,lease_until,updated_at)
-VALUES('proxy-latency-owner',?,1,?,?)
-ON CONFLICT(lease_key) DO UPDATE SET owner_id=excluded.owner_id,fence_token=proxy_latency_owner_leases.fence_token+1,lease_until=excluded.lease_until,updated_at=excluded.updated_at
-WHERE proxy_latency_owner_leases.lease_until<=?
-RETURNING fence_token`, ownerID, now.Add(duration).Format(time.RFC3339Nano), nowText, nowText).Scan(&token)
-	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
@@ -520,12 +421,7 @@ func (s *Store) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.mode == StorePostgres {
-		result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_owner_leases SET lease_until=statement_timestamp(),updated_at=statement_timestamp() WHERE lease_key='proxy-latency-owner' AND owner_id=$1 AND fence_token=$2 AND lease_until>statement_timestamp()`, lease.OwnerID, lease.FenceToken)
-		return releasedLeaseResult(result, err, ErrOwnerLeaseLost)
-	}
-	nowText := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx, `UPDATE proxy_latency_owner_leases SET lease_until=?,updated_at=? WHERE lease_key='proxy-latency-owner' AND owner_id=? AND fence_token=? AND lease_until>?`, nowText, nowText, lease.OwnerID, lease.FenceToken, nowText)
+	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_owner_leases SET lease_until=statement_timestamp(),updated_at=statement_timestamp() WHERE lease_key='proxy-latency-owner' AND owner_id=$1 AND fence_token=$2 AND lease_until>statement_timestamp()`, lease.OwnerID, lease.FenceToken)
 	return releasedLeaseResult(result, err, ErrOwnerLeaseLost)
 }
 
@@ -537,15 +433,9 @@ func (s *Store) RenewOwnerLease(ctx context.Context, lease OwnerLease, duration 
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	now := time.Now().UTC()
 	var result sql.Result
 	var err error
-	if s.mode == StorePostgres {
-		result, err = s.db.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_owner_leases SET lease_until=statement_timestamp()+($3 * INTERVAL '1 microsecond'),updated_at=statement_timestamp() WHERE lease_key='proxy-latency-owner' AND owner_id=$1 AND fence_token=$2 AND lease_until>statement_timestamp()`, lease.OwnerID, lease.FenceToken, duration.Microseconds())
-	} else {
-		nowText := now.Format(time.RFC3339Nano)
-		result, err = s.db.ExecContext(ctx, `UPDATE proxy_latency_owner_leases SET lease_until=?,updated_at=? WHERE lease_key='proxy-latency-owner' AND owner_id=? AND fence_token=? AND lease_until>?`, now.Add(duration).Format(time.RFC3339Nano), nowText, lease.OwnerID, lease.FenceToken, nowText)
-	}
+	result, err = s.db.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_owner_leases SET lease_until=statement_timestamp()+($3 * INTERVAL '1 microsecond'),updated_at=statement_timestamp() WHERE lease_key='proxy-latency-owner' AND owner_id=$1 AND fence_token=$2 AND lease_until>statement_timestamp()`, lease.OwnerID, lease.FenceToken, duration.Microseconds())
 	return releasedLeaseResult(result, err, ErrOwnerLeaseLost)
 }
 
@@ -583,8 +473,7 @@ func (s *Store) AcquireProxyLease(ctx context.Context, owner OwnerLease, proxyID
 		return ProxyLease{}, false, err
 	}
 	var token int64
-	if s.mode == StorePostgres {
-		err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_proxy_leases(proxy_id,owner_id,fence_token,lease_until,updated_at)
+	err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_proxy_leases(proxy_id,owner_id,fence_token,lease_until,updated_at)
 VALUES($1,$2,1,$3,$4)
 ON CONFLICT(proxy_id) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_jobs.proxy_latency_proxy_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=EXCLUDED.updated_at
 WHERE juhe_jobs.proxy_latency_proxy_leases.lease_until<=statement_timestamp() OR NOT EXISTS(
@@ -592,17 +481,6 @@ WHERE juhe_jobs.proxy_latency_proxy_leases.lease_until<=statement_timestamp() OR
  WHERE owner_lease.lease_key='proxy-latency-owner' AND owner_lease.owner_id=juhe_jobs.proxy_latency_proxy_leases.owner_id AND owner_lease.lease_until>statement_timestamp()
 )
 RETURNING fence_token`, proxyID, owner.OwnerID, now.Add(duration), now).Scan(&token)
-	} else {
-		text := now.Format(time.RFC3339Nano)
-		err = tx.QueryRowContext(ctx, `INSERT INTO proxy_latency_proxy_leases(proxy_id,owner_id,fence_token,lease_until,updated_at)
-VALUES(?,?,1,?,?)
-ON CONFLICT(proxy_id) DO UPDATE SET owner_id=excluded.owner_id,fence_token=proxy_latency_proxy_leases.fence_token+1,lease_until=excluded.lease_until,updated_at=excluded.updated_at
-WHERE proxy_latency_proxy_leases.lease_until<=? OR NOT EXISTS(
- SELECT 1 FROM proxy_latency_owner_leases owner_lease
- WHERE owner_lease.lease_key='proxy-latency-owner' AND owner_lease.owner_id=proxy_latency_proxy_leases.owner_id AND owner_lease.lease_until>?
-)
-RETURNING fence_token`, proxyID, owner.OwnerID, now.Add(duration).Format(time.RFC3339Nano), text, text, text).Scan(&token)
-	}
 	if errors.Is(err, sql.ErrNoRows) {
 		if commitErr := tx.Commit(); commitErr != nil {
 			return ProxyLease{}, false, commitErr
@@ -626,9 +504,7 @@ func (s *Store) activeProxyLeaseBelongsTo(ctx context.Context, proxyID, ownerID 
 	var until any
 	query := `SELECT owner_id,lease_until FROM proxy_latency_proxy_leases WHERE proxy_id=?`
 	args := []any{proxyID}
-	if s.mode == StorePostgres {
-		query = `SELECT owner_id,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1`
-	}
+	query = `SELECT owner_id,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1`
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&foundOwner, &until); err != nil {
 		return false
 	}
@@ -642,12 +518,7 @@ func (s *Store) ReleaseProxyLease(ctx context.Context, lease ProxyLease) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.mode == StorePostgres {
-		result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_proxy_leases SET lease_until=statement_timestamp(),updated_at=statement_timestamp() WHERE proxy_id=$1 AND owner_id=$2 AND fence_token=$3 AND lease_until>statement_timestamp()`, lease.ProxyID, lease.OwnerID, lease.FenceToken)
-		return releasedLeaseResult(result, err, ErrProxyLeaseLost)
-	}
-	nowText := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx, `UPDATE proxy_latency_proxy_leases SET lease_until=?,updated_at=? WHERE proxy_id=? AND owner_id=? AND fence_token=? AND lease_until>?`, nowText, nowText, lease.ProxyID, lease.OwnerID, lease.FenceToken, nowText)
+	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_proxy_leases SET lease_until=statement_timestamp(),updated_at=statement_timestamp() WHERE proxy_id=$1 AND owner_id=$2 AND fence_token=$3 AND lease_until>statement_timestamp()`, lease.ProxyID, lease.OwnerID, lease.FenceToken)
 	return releasedLeaseResult(result, err, ErrProxyLeaseLost)
 }
 
@@ -669,9 +540,7 @@ func releasedLeaseResult(result sql.Result, err error, lost error) error {
 // match the original request identity exactly; a later config never changes
 // the interpretation of an earlier request ID.
 func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, proxy ProxyLease, outcome Outcome) (bool, error) {
-	if s.mode == StorePostgres {
-		outcome.ObservedAt = canonicalPostgresTimestamp(outcome.ObservedAt)
-	}
+	outcome.ObservedAt = canonicalPostgresTimestamp(outcome.ObservedAt)
 	if err := validateOutcome(outcome); err != nil {
 		return false, err
 	}
@@ -775,7 +644,7 @@ func (s *Store) IssueInput(ctx context.Context, draft InputDraft) (IssuedInput, 
 		return IssuedInput{}, err
 	}
 	defer tx.Rollback()
-	version, err := nextInputVersion(ctx, tx, s.mode, canonicalDraft.ProxyID)
+	version, err := nextInputVersion(ctx, tx, canonicalDraft.ProxyID)
 	if err != nil {
 		return IssuedInput{}, err
 	}
@@ -785,11 +654,7 @@ func (s *Store) IssueInput(ctx context.Context, draft InputDraft) (IssuedInput, 
 		return IssuedInput{}, fmt.Errorf("编码 J3a issued input 失败: %w", err)
 	}
 	digest := sha256.Sum256(payload)
-	if s.mode == StorePostgres {
-		_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_inputs(request_id,proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload,payload_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, requestID, issued.ProxyID, issued.InputVersion, issued.ConfigRevision, issued.Trigger, issued.IssuedAt, issued.ExpiresAt, payload, hex.EncodeToString(digest[:]))
-	} else {
-		_, err = tx.ExecContext(ctx, `INSERT INTO proxy_latency_inputs(request_id,proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload,payload_digest) VALUES(?,?,?,?,?,?,?,?,?)`, requestID, issued.ProxyID, issued.InputVersion, issued.ConfigRevision, issued.Trigger, issued.IssuedAt.Format(time.RFC3339Nano), issued.ExpiresAt.Format(time.RFC3339Nano), payload, hex.EncodeToString(digest[:]))
-	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_inputs(request_id,proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload,payload_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, requestID, issued.ProxyID, issued.InputVersion, issued.ConfigRevision, issued.Trigger, issued.IssuedAt, issued.ExpiresAt, payload, hex.EncodeToString(digest[:]))
 	if err != nil {
 		return IssuedInput{}, fmt.Errorf("持久化 J3a issued input 失败: %w", err)
 	}
@@ -816,9 +681,7 @@ func (s *Store) LoadCommittedOutcome(ctx context.Context, input IssuedInput) (Ou
 		return Outcome{}, false, err
 	}
 	query := `SELECT payload,payload_digest FROM proxy_latency_outcomes WHERE request_id=? AND committed=1`
-	if s.mode == StorePostgres {
-		query = `SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE`
-	}
+	query = `SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE`
 	var payload []byte
 	var storedDigest string
 	if err := tx.QueryRowContext(ctx, query, input.RequestID).Scan(&payload, &storedDigest); err != nil {
@@ -834,7 +697,7 @@ func (s *Store) LoadCommittedOutcome(ctx context.Context, input IssuedInput) (Ou
 	if err := json.Unmarshal(payload, &outcome); err != nil || validateOutcome(outcome) != nil {
 		return Outcome{}, false, ErrRequestConflict
 	}
-	if !payloadDigestMatches(s.mode, payload, outcome, storedDigest) {
+	if !payloadDigestMatches(payload, outcome, storedDigest) {
 		return Outcome{}, false, ErrRequestConflict
 	}
 	if outcome.RequestID != input.RequestID || outcome.ProxyID != input.ProxyID || outcome.InputVersion != input.InputVersion || outcome.ConfigRevision != input.ConfigRevision || outcome.Trigger != input.Trigger {
@@ -861,25 +724,13 @@ func (s *Store) ListCommittedOutcomes(ctx context.Context, after *OutcomeCursor,
 	}
 	query := `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM proxy_latency_outcomes WHERE committed=1`
 	args := make([]any, 0, 3)
-	if s.mode == StorePostgres {
-		query = `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE committed=TRUE`
-	}
+	query = `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE committed=TRUE`
 	if after != nil {
-		if s.mode == StorePostgres {
-			query += ` AND (stored_at>$1 OR (stored_at=$1 AND outcome_id>$2))`
-			args = append(args, after.StoredAt.UTC(), after.OutcomeID)
-		} else {
-			query += ` AND (stored_at>? OR (stored_at=? AND outcome_id>?))`
-			storedAt := after.StoredAt.UTC().Format(time.RFC3339Nano)
-			args = append(args, storedAt, storedAt, after.OutcomeID)
-		}
+		query += ` AND (stored_at>$1 OR (stored_at=$1 AND outcome_id>$2))`
+		args = append(args, after.StoredAt.UTC(), after.OutcomeID)
 	}
 	query += ` ORDER BY stored_at ASC,outcome_id ASC`
-	if s.mode == StorePostgres {
-		query += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
-	} else {
-		query += ` LIMIT ?`
-	}
+	query += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -907,7 +758,7 @@ func (s *Store) ListCommittedOutcomes(ctx context.Context, after *OutcomeCursor,
 		if err := json.Unmarshal(payload, &outcome); err != nil || validateOutcome(outcome) != nil {
 			return nil, errors.New("J3a committed outcome payload 无效")
 		}
-		if outcome.OutcomeID != outcomeID || outcome.RequestID != requestID || outcome.ProxyID != proxyID || outcome.InputVersion != inputVersion || outcome.ConfigRevision != configRevision || outcome.Trigger != Trigger(trigger) || outcome.OwnerFenceToken != ownerFenceToken || outcome.ProxyFenceToken != proxyFenceToken || !outcome.ObservedAt.Equal(observedAt) || !payloadDigestMatches(s.mode, payload, outcome, digest) {
+		if outcome.OutcomeID != outcomeID || outcome.RequestID != requestID || outcome.ProxyID != proxyID || outcome.InputVersion != inputVersion || outcome.ConfigRevision != configRevision || outcome.Trigger != Trigger(trigger) || outcome.OwnerFenceToken != ownerFenceToken || outcome.ProxyFenceToken != proxyFenceToken || !outcome.ObservedAt.Equal(observedAt) || !payloadDigestMatches(payload, outcome, digest) {
 			return nil, errors.New("J3a committed outcome 行元数据与 payload 不一致")
 		}
 		result = append(result, StoredOutcome{Outcome: outcome, StoredAt: storedAt.UTC()})
@@ -926,9 +777,7 @@ func (s *Store) FindCommittedOutcome(ctx context.Context, outcomeID string) (Sto
 		return StoredOutcome{}, false, errors.New("J3a committed outcome id 无效")
 	}
 	query := `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM proxy_latency_outcomes WHERE outcome_id=? AND committed=1`
-	if s.mode == StorePostgres {
-		query = `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE outcome_id=$1 AND committed=TRUE`
-	}
+	query = `SELECT outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE outcome_id=$1 AND committed=TRUE`
 	var row StoredOutcome
 	var storedID, requestID, proxyID, configRevision, trigger, digest string
 	var inputVersion, ownerFenceToken, proxyFenceToken int64
@@ -952,7 +801,7 @@ func (s *Store) FindCommittedOutcome(ctx context.Context, outcomeID string) (Sto
 	if err := json.Unmarshal(payload, &row.Outcome); err != nil || validateOutcome(row.Outcome) != nil {
 		return StoredOutcome{}, false, errors.New("J3a committed outcome payload 无效")
 	}
-	if row.Outcome.OutcomeID != storedID || row.Outcome.RequestID != requestID || row.Outcome.ProxyID != proxyID || row.Outcome.InputVersion != inputVersion || row.Outcome.ConfigRevision != configRevision || row.Outcome.Trigger != Trigger(trigger) || row.Outcome.OwnerFenceToken != ownerFenceToken || row.Outcome.ProxyFenceToken != proxyFenceToken || !row.Outcome.ObservedAt.Equal(observedAt) || !payloadDigestMatches(s.mode, payload, row.Outcome, digest) {
+	if row.Outcome.OutcomeID != storedID || row.Outcome.RequestID != requestID || row.Outcome.ProxyID != proxyID || row.Outcome.InputVersion != inputVersion || row.Outcome.ConfigRevision != configRevision || row.Outcome.Trigger != Trigger(trigger) || row.Outcome.OwnerFenceToken != ownerFenceToken || row.Outcome.ProxyFenceToken != proxyFenceToken || !row.Outcome.ObservedAt.Equal(observedAt) || !payloadDigestMatches(payload, row.Outcome, digest) {
 		return StoredOutcome{}, false, errors.New("J3a committed outcome 行元数据与 payload 不一致")
 	}
 	row.StoredAt = storedAt.UTC()
@@ -1050,15 +899,9 @@ func (s *Store) AdmitExecution(ctx context.Context, owner OwnerLease, proxy Prox
 	args := []any{persisted.RequestID, claimToken, outcomeID, persisted.ProxyID, persisted.InputVersion, persisted.ConfigRevision, persisted.Trigger, owner.OwnerID, owner.FenceToken, proxy.FenceToken, storedDigest, claimUntil, now}
 	var execErr error
 	if claimExists {
-		if s.mode == StorePostgres {
-			_, execErr = tx.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_execution_claims SET claim_token=$2,outcome_id=$3,proxy_id=$4,input_version=$5,config_revision=$6,trigger=$7,owner_id=$8,owner_fence_token=$9,proxy_fence_token=$10,input_digest=$11,claim_until=$12,updated_at=$13 WHERE request_id=$1`, args...)
-		} else {
-			_, execErr = tx.ExecContext(ctx, `UPDATE proxy_latency_execution_claims SET claim_token=?,outcome_id=?,proxy_id=?,input_version=?,config_revision=?,trigger=?,owner_id=?,owner_fence_token=?,proxy_fence_token=?,input_digest=?,claim_until=?,updated_at=? WHERE request_id=?`, claimToken, outcomeID, persisted.ProxyID, persisted.InputVersion, persisted.ConfigRevision, persisted.Trigger, owner.OwnerID, owner.FenceToken, proxy.FenceToken, storedDigest, claimUntil.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), persisted.RequestID)
-		}
-	} else if s.mode == StorePostgres {
-		_, execErr = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_execution_claims(request_id,claim_token,outcome_id,proxy_id,input_version,config_revision,trigger,owner_id,owner_fence_token,proxy_fence_token,input_digest,claim_until,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, args...)
+		_, execErr = tx.ExecContext(ctx, `UPDATE juhe_jobs.proxy_latency_execution_claims SET claim_token=$2,outcome_id=$3,proxy_id=$4,input_version=$5,config_revision=$6,trigger=$7,owner_id=$8,owner_fence_token=$9,proxy_fence_token=$10,input_digest=$11,claim_until=$12,updated_at=$13 WHERE request_id=$1`, args...)
 	} else {
-		_, execErr = tx.ExecContext(ctx, `INSERT INTO proxy_latency_execution_claims(request_id,claim_token,outcome_id,proxy_id,input_version,config_revision,trigger,owner_id,owner_fence_token,proxy_fence_token,input_digest,claim_until,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, persisted.RequestID, claimToken, outcomeID, persisted.ProxyID, persisted.InputVersion, persisted.ConfigRevision, persisted.Trigger, owner.OwnerID, owner.FenceToken, proxy.FenceToken, storedDigest, claimUntil.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		_, execErr = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_execution_claims(request_id,claim_token,outcome_id,proxy_id,input_version,config_revision,trigger,owner_id,owner_fence_token,proxy_fence_token,input_digest,claim_until,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, args...)
 	}
 	if execErr != nil {
 		return IssuedInput{}, "", nil, fmt.Errorf("创建 J3a execution claim 失败: %w", execErr)
@@ -1075,19 +918,13 @@ func (s *Store) ReleaseExecutionClaim(ctx context.Context, requestID, claimToken
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.mode == StorePostgres {
-		_, err := s.db.ExecContext(ctx, `DELETE FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 AND claim_token=$2`, requestID, claimToken)
-		return err
-	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM proxy_latency_execution_claims WHERE request_id=? AND claim_token=?`, requestID, claimToken)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 AND claim_token=$2`, requestID, claimToken)
 	return err
 }
 
 func (s *Store) loadPersistedInputTx(ctx context.Context, tx *sql.Tx, requestID string) (IssuedInput, string, error) {
 	query := `SELECT payload,payload_digest FROM proxy_latency_inputs WHERE request_id=?`
-	if s.mode == StorePostgres {
-		query = `SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
-	}
+	query = `SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
 	var payload []byte
 	var digest string
 	if err := tx.QueryRowContext(ctx, query, requestID).Scan(&payload, &digest); err != nil {
@@ -1100,7 +937,7 @@ func (s *Store) loadPersistedInputTx(ctx context.Context, tx *sql.Tx, requestID 
 	if err := json.Unmarshal(payload, &input); err != nil || validateIssuedInput(input) != nil || input.RequestID != requestID {
 		return IssuedInput{}, "", ErrInputFence
 	}
-	if !payloadDigestMatches(s.mode, payload, input, digest) {
+	if !payloadDigestMatches(payload, input, digest) {
 		return IssuedInput{}, "", ErrInputFence
 	}
 	return input, digest, nil
@@ -1113,9 +950,7 @@ func issuedInputsEqual(supplied, persisted IssuedInput, storedDigest string) boo
 
 func (s *Store) loadCommittedOutcomeTx(ctx context.Context, tx *sql.Tx, input IssuedInput) (*Outcome, error) {
 	query := `SELECT payload,payload_digest FROM proxy_latency_outcomes WHERE request_id=? AND committed=1`
-	if s.mode == StorePostgres {
-		query = `SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE FOR UPDATE`
-	}
+	query = `SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE FOR UPDATE`
 	var payload []byte
 	var storedDigest string
 	if err := tx.QueryRowContext(ctx, query, input.RequestID).Scan(&payload, &storedDigest); err != nil {
@@ -1128,7 +963,7 @@ func (s *Store) loadCommittedOutcomeTx(ctx context.Context, tx *sql.Tx, input Is
 	if err := json.Unmarshal(payload, &outcome); err != nil || validateOutcome(outcome) != nil || outcome.RequestID != input.RequestID || outcome.ProxyID != input.ProxyID || outcome.InputVersion != input.InputVersion || outcome.ConfigRevision != input.ConfigRevision || outcome.Trigger != input.Trigger {
 		return nil, ErrRequestConflict
 	}
-	if !payloadDigestMatches(s.mode, payload, outcome, storedDigest) {
+	if !payloadDigestMatches(payload, outcome, storedDigest) {
 		return nil, ErrRequestConflict
 	}
 	return &outcome, nil
@@ -1146,20 +981,14 @@ func canonicalJSONDigest(value any) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func payloadDigestMatches(mode StoreMode, raw []byte, decoded any, stored string) bool {
-	if mode != StorePostgres {
-		digest := sha256.Sum256(raw)
-		return stored == hex.EncodeToString(digest[:])
-	}
+func payloadDigestMatches(raw []byte, decoded any, stored string) bool {
 	actual, err := canonicalJSONDigest(decoded)
 	return err == nil && stored == actual
 }
 
 func (s *Store) executionClaimTx(ctx context.Context, tx *sql.Tx, requestID string) (bool, time.Time, error) {
 	query := `SELECT claim_until FROM proxy_latency_execution_claims WHERE request_id=?`
-	if s.mode == StorePostgres {
-		query = `SELECT claim_until FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 FOR UPDATE`
-	}
+	query = `SELECT claim_until FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 FOR UPDATE`
 	var raw any
 	if err := tx.QueryRowContext(ctx, query, requestID).Scan(&raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1295,9 +1124,7 @@ func canonicalizeTarget(target Target) (Target, error) {
 
 func (s *Store) verifyIssuedInputTx(ctx context.Context, tx *sql.Tx, outcome Outcome, now time.Time) error {
 	query := `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at FROM proxy_latency_inputs WHERE request_id=?`
-	if s.mode == StorePostgres {
-		query = `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
-	}
+	query = `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
 	var proxyID, configRevision, trigger string
 	var inputVersion int64
 	var issuedAtRaw, expiresAtRaw any
@@ -1324,9 +1151,7 @@ func (s *Store) verifyIssuedInputTx(ctx context.Context, tx *sql.Tx, outcome Out
 
 func (s *Store) verifyExecutionClaimTx(ctx context.Context, tx *sql.Tx, owner OwnerLease, proxy ProxyLease, outcome Outcome, claimToken string, now time.Time) error {
 	query := `SELECT outcome_id,proxy_id,input_version,config_revision,trigger,owner_id,owner_fence_token,proxy_fence_token,input_digest,claim_until FROM proxy_latency_execution_claims WHERE request_id=? AND claim_token=?`
-	if s.mode == StorePostgres {
-		query = `SELECT outcome_id,proxy_id,input_version,config_revision,trigger,owner_id,owner_fence_token,proxy_fence_token,input_digest,claim_until FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 AND claim_token=$2 FOR UPDATE`
-	}
+	query = `SELECT outcome_id,proxy_id,input_version,config_revision,trigger,owner_id,owner_fence_token,proxy_fence_token,input_digest,claim_until FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 AND claim_token=$2 FOR UPDATE`
 	var outcomeID, proxyID, configRevision, trigger, claimOwner, inputDigest string
 	var inputVersion, ownerFence, proxyFence int64
 	var claimUntilRaw any
@@ -1341,9 +1166,7 @@ func (s *Store) verifyExecutionClaimTx(ctx context.Context, tx *sql.Tx, owner Ow
 		return ErrInputFence
 	}
 	inputQuery := `SELECT payload_digest FROM proxy_latency_inputs WHERE request_id=?`
-	if s.mode == StorePostgres {
-		inputQuery = `SELECT payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
-	}
+	inputQuery = `SELECT payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
 	var currentDigest string
 	if err := tx.QueryRowContext(ctx, inputQuery, outcome.RequestID).Scan(&currentDigest); err != nil || currentDigest != inputDigest {
 		return ErrInputFence
@@ -1353,9 +1176,7 @@ func (s *Store) verifyExecutionClaimTx(ctx context.Context, tx *sql.Tx, owner Ow
 
 func (s *Store) deleteExecutionClaimTx(ctx context.Context, tx *sql.Tx, requestID, claimToken string) error {
 	query := `DELETE FROM proxy_latency_execution_claims WHERE request_id=? AND claim_token=?`
-	if s.mode == StorePostgres {
-		query = `DELETE FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 AND claim_token=$2`
-	}
+	query = `DELETE FROM juhe_jobs.proxy_latency_execution_claims WHERE request_id=$1 AND claim_token=$2`
 	result, err := tx.ExecContext(ctx, query, requestID, claimToken)
 	if err != nil {
 		return err
@@ -1369,9 +1190,7 @@ func (s *Store) deleteExecutionClaimTx(ctx context.Context, tx *sql.Tx, requestI
 
 func (s *Store) verifyIssuedInputSnapshotTx(ctx context.Context, tx *sql.Tx, input IssuedInput, now time.Time, requireActive bool) error {
 	query := `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload_digest FROM proxy_latency_inputs WHERE request_id=?`
-	if s.mode == StorePostgres {
-		query = `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
-	}
+	query = `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
 	var proxyID, configRevision, trigger, storedDigest string
 	var inputVersion int64
 	var issuedAtRaw, expiresAtRaw any
@@ -1400,14 +1219,9 @@ func (s *Store) verifyIssuedInputSnapshotTx(ctx context.Context, tx *sql.Tx, inp
 	return nil
 }
 
-func nextInputVersion(ctx context.Context, tx *sql.Tx, mode StoreMode, proxyID string) (int64, error) {
-	if mode == StorePostgres {
-		var version int64
-		err := tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_input_versions(proxy_id,next_version,updated_at) VALUES($1,2,statement_timestamp()) ON CONFLICT(proxy_id) DO UPDATE SET next_version=juhe_jobs.proxy_latency_input_versions.next_version+1,updated_at=statement_timestamp() RETURNING next_version-1`, proxyID).Scan(&version)
-		return version, err
-	}
+func nextInputVersion(ctx context.Context, tx *sql.Tx, proxyID string) (int64, error) {
 	var version int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO proxy_latency_input_versions(proxy_id,next_version,updated_at) VALUES(?,2,?) ON CONFLICT(proxy_id) DO UPDATE SET next_version=proxy_latency_input_versions.next_version+1,updated_at=excluded.updated_at RETURNING next_version-1`, proxyID, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&version)
+	err := tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_input_versions(proxy_id,next_version,updated_at) VALUES($1,2,statement_timestamp()) ON CONFLICT(proxy_id) DO UPDATE SET next_version=juhe_jobs.proxy_latency_input_versions.next_version+1,updated_at=statement_timestamp() RETURNING next_version-1`, proxyID).Scan(&version)
 	return version, err
 }
 
@@ -1447,11 +1261,9 @@ func (s *Store) beginTx(ctx context.Context) (*sql.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.mode == StorePostgres {
-		if _, err := tx.ExecContext(ctx, postgresSetLocalSQL); err != nil {
-			_ = tx.Rollback()
-			return nil, fmt.Errorf("配置 proxy-latency PostgreSQL transaction timeout 失败: %w", err)
-		}
+	if _, err := tx.ExecContext(ctx, postgresSetLocalSQL); err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("配置 proxy-latency PostgreSQL transaction timeout 失败: %w", err)
 	}
 	return tx, nil
 }
@@ -1461,9 +1273,7 @@ func (s *Store) verifyOwnerTx(ctx context.Context, tx *sql.Tx, owner OwnerLease,
 	var token int64
 	var until any
 	query := `SELECT owner_id,fence_token,lease_until FROM proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner'`
-	if s.mode == StorePostgres {
-		query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE`
-	}
+	query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE`
 	if err := tx.QueryRowContext(ctx, query).Scan(&foundOwner, &token, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOwnerLeaseLost
@@ -1483,9 +1293,7 @@ func (s *Store) verifyProxyTx(ctx context.Context, tx *sql.Tx, proxy ProxyLease,
 	var until any
 	query := `SELECT owner_id,fence_token,lease_until FROM proxy_latency_proxy_leases WHERE proxy_id=?`
 	args := []any{proxy.ProxyID}
-	if s.mode == StorePostgres {
-		query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 FOR UPDATE`
-	}
+	query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 FOR UPDATE`
 	if err := tx.QueryRowContext(ctx, query, args...).Scan(&foundOwner, &token, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrProxyLeaseLost
@@ -1500,29 +1308,18 @@ func (s *Store) verifyProxyTx(ctx context.Context, tx *sql.Tx, proxy ProxyLease,
 }
 
 func (s *Store) insertOutcomeTx(ctx context.Context, tx *sql.Tx, outcome Outcome, payload, payloadDigest string, storedAt time.Time) (bool, error) {
-	if s.mode == StorePostgres {
-		var id string
-		err := tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_outcomes(outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest,committed)
+	var id string
+	err := tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.proxy_latency_outcomes(outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest,committed)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,statement_timestamp(),$10,$11,TRUE) ON CONFLICT(request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.ProxyID, outcome.InputVersion, outcome.ConfigRevision, outcome.Trigger, outcome.OwnerFenceToken, outcome.ProxyFenceToken, outcome.ObservedAt.UTC(), payload, payloadDigest).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return err == nil, err
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO proxy_latency_outcomes(outcome_id,request_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,observed_at,stored_at,payload,payload_digest,committed)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(request_id) DO NOTHING`, outcome.OutcomeID, outcome.RequestID, outcome.ProxyID, outcome.InputVersion, outcome.ConfigRevision, outcome.Trigger, outcome.OwnerFenceToken, outcome.ProxyFenceToken, outcome.ObservedAt.UTC().Format(time.RFC3339Nano), storedAt.UTC().Format(time.RFC3339Nano), payload, payloadDigest)
-	if err != nil {
-		return false, err
-	}
-	count, err := result.RowsAffected()
-	return count == 1, err
+	return err == nil, err
 }
 
 func (s *Store) outcomeMatchesTx(ctx context.Context, tx *sql.Tx, outcome Outcome, payloadDigest string) (bool, error) {
 	query := `SELECT outcome_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,payload_digest FROM proxy_latency_outcomes WHERE request_id=?`
-	if s.mode == StorePostgres {
-		query = `SELECT outcome_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 FOR UPDATE`
-	}
+	query = `SELECT outcome_id,proxy_id,input_version,config_revision,trigger,owner_fence_token,proxy_fence_token,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 FOR UPDATE`
 	var outcomeID, proxyID, configRevision, trigger, storedDigest string
 	var inputVersion, ownerFenceToken, proxyFenceToken int64
 	if err := tx.QueryRowContext(ctx, query, outcome.RequestID).Scan(&outcomeID, &proxyID, &inputVersion, &configRevision, &trigger, &ownerFenceToken, &proxyFenceToken, &storedDigest); err != nil {
@@ -1544,18 +1341,6 @@ func sqlTime(value any) (time.Time, error) {
 	}
 }
 
-func proxyLatencySQLiteDSN(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("解析 proxy-latency sqlite 路径失败: %w", err)
-	}
-	uriPath := filepath.ToSlash(absolute)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_txlock=immediate&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"}).String(), nil
-}
-
 func containsForbiddenPostgresDDL(schema string) bool {
 	for _, forbidden := range []string{"CREATE SCHEMA", "ALTER TABLE", "DROP ", "TRUNCATE ", "proxy_profiles", "juhe_business"} {
 		if strings.Contains(strings.ToUpper(schema), strings.ToUpper(forbidden)) {
@@ -1567,40 +1352,6 @@ func containsForbiddenPostgresDDL(schema string) bool {
 
 const postgresSetLocalSQL = `SET LOCAL statement_timeout = '5000ms'; SET LOCAL lock_timeout = '1000ms'`
 
-var proxyLatencySQLiteObjects = []string{
-	"proxy_latency_owner_leases",
-	"proxy_latency_proxy_leases",
-	"proxy_latency_outcomes",
-	"proxy_latency_input_versions",
-	"proxy_latency_inputs",
-	"proxy_latency_execution_claims",
-	"idx_proxy_latency_outcomes_proxy",
-	"idx_proxy_latency_outcomes_cursor",
-}
-
-const sqliteSchema = `
-CREATE TABLE IF NOT EXISTS proxy_latency_owner_leases (
- lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, lease_until TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS proxy_latency_proxy_leases (
- proxy_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, lease_until TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS proxy_latency_outcomes (
- outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, proxy_id TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision TEXT NOT NULL, trigger TEXT NOT NULL, owner_fence_token INTEGER NOT NULL, proxy_fence_token INTEGER NOT NULL, observed_at TEXT NOT NULL, stored_at TEXT NOT NULL, payload TEXT NOT NULL, payload_digest TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS proxy_latency_input_versions (
- proxy_id TEXT PRIMARY KEY, next_version INTEGER NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS proxy_latency_inputs (
- request_id TEXT PRIMARY KEY, proxy_id TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL, payload TEXT NOT NULL, payload_digest TEXT NOT NULL, UNIQUE(proxy_id, input_version)
-);
-CREATE TABLE IF NOT EXISTS proxy_latency_execution_claims (
- request_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, proxy_id TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision TEXT NOT NULL, trigger TEXT NOT NULL, owner_id TEXT NOT NULL, owner_fence_token INTEGER NOT NULL, proxy_fence_token INTEGER NOT NULL, input_digest TEXT NOT NULL, claim_until TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_proxy ON proxy_latency_outcomes(proxy_id, observed_at);
-CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_cursor ON proxy_latency_outcomes(stored_at, outcome_id);
-CREATE INDEX IF NOT EXISTS idx_proxy_latency_inputs_expires_at ON proxy_latency_inputs(expires_at);
-`
 
 const postgresSchema = `
 CREATE TABLE IF NOT EXISTS juhe_jobs.proxy_latency_owner_leases (

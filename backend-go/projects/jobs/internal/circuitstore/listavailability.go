@@ -27,17 +27,15 @@ import (
 
 // ListAvailabilityConfig 组装投影仓储。
 type ListAvailabilityConfig struct {
-	DB       *sql.DB
-	Postgres bool
-	Now      func() time.Time
+	DB  *sql.DB
+	Now func() time.Time
 }
 
 // ListAvailabilityRepo 实现 opsjobs.ListAvailabilityRepo 与
 // opsjobs.OverlayReconciler 的 PG 持久化半边。
 type ListAvailabilityRepo struct {
-	db       *boundDB
-	postgres bool
-	now      func() time.Time
+	db  *boundDB
+	now func() time.Time
 }
 
 // NewListAvailabilityRepo 构建仓储；输入校验失败返回错误。
@@ -49,14 +47,11 @@ func NewListAvailabilityRepo(config ListAvailabilityConfig) (*ListAvailabilityRe
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &ListAvailabilityRepo{db: &boundDB{DB: config.DB, postgres: config.Postgres}, postgres: config.Postgres, now: now}, nil
+	return &ListAvailabilityRepo{db: &boundDB{DB: config.DB}, now: now}, nil
 }
 
 func (r *ListAvailabilityRepo) table(name string) string {
-	if r.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 const (
@@ -166,9 +161,7 @@ func (r *ListAvailabilityRepo) BeginRuntimeDependencyRecovery(ctx context.Contex
 	defer func() { _ = tx.Rollback() }()
 	var state string
 	selectQuery := `SELECT state FROM ` + health + ` WHERE dependency_name = 'runtime_state'`
-	if r.postgres {
-		selectQuery += " FOR UPDATE"
-	}
+	selectQuery += " FOR UPDATE"
 	err = tx.QueryRowContext(ctx, selectQuery).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, err := tx.ExecContext(ctx, `
@@ -276,9 +269,6 @@ func (r *ListAvailabilityRepo) markDirtyTx(ctx context.Context, tx txLike, accou
 // BUG-0313：取锁等待受事务级 lock_timeout 约束，超时 55P03 失败本轮——
 // dirty 行持久留表，任务下轮重试自愈，不再随持锁方被主机饿死而无限排队。
 func (r *ListAvailabilityRepo) lockDirtyWritesInTx(ctx context.Context, tx txLike) error {
-	if !r.postgres {
-		return nil
-	}
 	return advisorylock.LockAccountListDirty(ctx, tx)
 }
 
@@ -391,7 +381,7 @@ func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS 
       AND projections.next_transition_at <= ?
       AND dirty_accounts.account_id IS NULL
     ORDER BY projections.next_transition_at ASC, projections.account_id ASC
-    LIMIT ?`, instantParam(r.postgres, now, r.now), batchRows)
+    LIMIT ?`, instantParam(now, r.now), batchRows)
 		if err != nil {
 			return nil, err
 		}
@@ -627,12 +617,11 @@ func (r *ListAvailabilityRepo) ClaimDirty(ctx context.Context, ownerID string, l
 		return nil, errors.New("nowMs 必须是非负整数")
 	}
 	dirty := r.table("account_list_availability_dirty")
-	if r.postgres {
-		// Node PG 分支：数据库时钟 + 单条 CTE 批量 claim。
-		// 问题-0184：CTE 按自身扫描序锁多行 dirty，与其他 dirty 写事务交叉
-		// 会成死锁环，故纳入 advisory 锁事务统一串行化。
-		claimToken := newRandomUUID()
-		query := `
+	// Node PG 分支：数据库时钟 + 单条 CTE 批量 claim。
+	// 问题-0184：CTE 按自身扫描序锁多行 dirty，与其他 dirty 写事务交叉
+	// 会成死锁环，故纳入 advisory 锁事务统一串行化。
+	claimToken := newRandomUUID()
+	query := `
       WITH candidates AS (
         SELECT account_id
         FROM ` + dirty + `
@@ -652,101 +641,38 @@ func (r *ListAvailabilityRepo) ClaimDirty(ctx context.Context, ownerID string, l
       WHERE dirty_accounts.account_id = candidates.account_id
       RETURNING dirty_accounts.account_id, dirty_accounts.viewer_system_account_id,
         dirty_accounts.generation, dirty_accounts.attempt_count`
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
-			return nil, err
-		}
-		rows, err := tx.QueryContext(ctx, query, limit, claimToken, ownerID, leaseMS)
-		if err != nil {
-			return nil, err
-		}
-		claims := []opsjobs.DirtyClaim{}
-		for rows.Next() {
-			claim := opsjobs.DirtyClaim{ClaimToken: claimToken}
-			if err := rows.Scan(&claim.AccountID, &claim.ViewerSystemAccountID, &claim.Generation, &claim.AttemptCount); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			claims = append(claims, claim)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		rows.Close()
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		return claims, nil
-	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `
-    SELECT account_id, viewer_system_account_id, generation, attempt_count
-    FROM `+dirty+`
-    WHERE available_at_ms <= ?
-      AND (claim_until_ms IS NULL OR claim_until_ms <= ?)
-    ORDER BY available_at_ms ASC, created_at_ms ASC, account_id ASC
-    LIMIT ?`, nowMS, nowMS, limit)
+	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, query, limit, claimToken, ownerID, leaseMS)
 	if err != nil {
 		return nil, err
 	}
-	var candidates []opsjobs.DirtyClaim
+	claims := []opsjobs.DirtyClaim{}
 	for rows.Next() {
-		var claim opsjobs.DirtyClaim
+		claim := opsjobs.DirtyClaim{ClaimToken: claimToken}
 		if err := rows.Scan(&claim.AccountID, &claim.ViewerSystemAccountID, &claim.Generation, &claim.AttemptCount); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		candidates = append(candidates, claim)
+		claims = append(claims, claim)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return nil, err
 	}
 	rows.Close()
-	claims := []opsjobs.DirtyClaim{}
-	for _, claim := range candidates {
-		claimToken := newRandomUUID()
-		claimUntil := nowMS + leaseMS
-		result, err := tx.ExecContext(ctx, `
-      UPDATE `+dirty+`
-      SET claim_token = ?, claimed_by = ?, claim_until_ms = ?,
-          attempt_count = attempt_count + 1, updated_at_ms = ?
-      WHERE account_id = ? AND generation = ?
-        AND available_at_ms <= ?
-        AND (claim_until_ms IS NULL OR claim_until_ms <= ?)`,
-			claimToken, ownerID, claimUntil, nowMS, claim.AccountID, claim.Generation, nowMS, nowMS)
-		if err != nil {
-			return nil, err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return nil, err
-		}
-		if changed != 1 {
-			continue
-		}
-		claim.ClaimToken = claimToken
-		claim.AttemptCount++
-		claims = append(claims, claim)
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return claims, nil
 }
 
-// ---- scope / search terms ----
-
-// ListScopes 对齐 listAccountListAvailabilityProjectionScopesInClient。
 func (r *ListAvailabilityRepo) ListScopes(ctx context.Context, accountIDs []string) ([]opsjobs.ProjectionScope, error) {
 	ids, err := normalizedIDList(accountIDs)
 	if err != nil {
@@ -1360,11 +1286,11 @@ func (r *ListAvailabilityRepo) ReleaseForReplay(ctx context.Context, input opsjo
 		return false, errors.New("nowMs 必须是非负整数")
 	}
 	dirty := r.table("account_list_availability_dirty")
+	// 问题-0184：单行 UPDATE 也纳入 dirty 写 advisory 锁事务，与并行
+	// worker/网关标记/proxy 触发路径互斥，避免锁序交叉。
 	var result sql.Result
 	var err error
-	if r.postgres {
-		// 问题-0184：单行 UPDATE 也纳入 dirty 写 advisory 锁事务，与并行
-		// worker/网关标记/proxy 触发路径互斥，避免锁序交叉。
+	{
 		tx, txErr := r.db.BeginTx(ctx, nil)
 		if txErr != nil {
 			return false, txErr
@@ -1385,13 +1311,6 @@ func (r *ListAvailabilityRepo) ReleaseForReplay(ctx context.Context, input opsjo
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
-	} else {
-		result, err = r.db.ExecContext(ctx, `
-      UPDATE `+dirty+`
-      SET reason = ?, available_at_ms = ?, claim_token = NULL,
-          claimed_by = NULL, claim_until_ms = NULL, updated_at_ms = ?
-      WHERE account_id = ? AND generation = ? AND claim_token = ?`,
-			reason, input.NowMS+input.RetryDelayMS, input.NowMS, accountID, input.Generation, claimToken)
 	}
 	if err != nil {
 		return false, err
@@ -1426,11 +1345,9 @@ func placeholdersFor(count int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", count), ", ")
 }
 
-func instantParam(postgres bool, value string, now func() time.Time) any {
-	if postgres {
-		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-			return parsed
-		}
+func instantParam(value string, _ func() time.Time) any {
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed
 	}
 	return value
 }

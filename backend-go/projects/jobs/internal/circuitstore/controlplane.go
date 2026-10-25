@@ -43,9 +43,8 @@ type ControlPlaneConfig struct {
 
 // ControlPlaneRepo 实现 opsjobs.ControlPlaneLedger 与 opsjobs.ControlPlaneOutbox。
 type ControlPlaneRepo struct {
-	db       *sql.DB
-	postgres bool
-	now      func() time.Time
+	db  *sql.DB
+	now func() time.Time
 }
 
 // NewControlPlaneRepo 构建适配器；输入校验失败返回错误。
@@ -57,14 +56,11 @@ func NewControlPlaneRepo(config ControlPlaneConfig) (*ControlPlaneRepo, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &ControlPlaneRepo{db: config.DB, postgres: config.Postgres, now: now}, nil
+	return &ControlPlaneRepo{db: config.DB, now: now}, nil
 }
 
 func (r *ControlPlaneRepo) table(name string) string {
-	if r.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 type incidentRow struct {
@@ -542,9 +538,7 @@ func (r *ControlPlaneRepo) CompareAndSetIncident(ctx context.Context, input opsj
 	}
 	defer func() { _ = tx.Rollback() }()
 	lockClause := ""
-	if r.postgres {
-		lockClause = " FOR UPDATE"
-	}
+	lockClause = " FOR UPDATE"
 	// 归档热修：物理清理会级联 circuit ledger，账户行锁 SELECT 需带
 	// deleted_at；行缺失或已逻辑删除时迟到观察落 account_not_found 终态。
 	var (
@@ -649,7 +643,7 @@ func (r *ControlPlaneRepo) CompareAndSetIncident(ctx context.Context, input opsj
 
 func (r *ControlPlaneRepo) incidentCASByScope(ctx context.Context, q txLike, scopeKey string, forUpdate bool) (opsjobs.IncidentCASRow, bool, error) {
 	query := "SELECT " + incidentCASColumns + " FROM " + r.table("account_circuit_incidents") + " WHERE circuit_scope_key=?"
-	if forUpdate && r.postgres {
+	if forUpdate {
 		query += " FOR UPDATE"
 	}
 	row, err := scanIncidentCASRow(q.QueryRowContext(ctx, query, scopeKey))
@@ -1210,13 +1204,12 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
 		return nil, errors.New("limit 必须是 1..500 的正整数")
 	}
 	outboxTable := r.table("account_circuit_outbox")
-	if r.postgres {
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = tx.Rollback() }()
-		rows, err := tx.QueryContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `
       SELECT event_id, projection_key, event_type, account_id, account_runtime_key,
         circuit_scope_key, transition_id, dispatch_revision
       FROM `+outboxTable+`
@@ -1224,65 +1217,6 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
          OR (status = 'processing' AND claim_until_ms <= ?)
       ORDER BY available_at_ms ASC, created_at_ms ASC, event_id ASC
       LIMIT ? FOR UPDATE SKIP LOCKED`, nowMS, nowMS, limit)
-		if err != nil {
-			return nil, err
-		}
-		var candidates []outboxClaimRow
-		for rows.Next() {
-			row, err := scanOutboxClaimRow(rows)
-			if err != nil {
-				rows.Close()
-				return nil, err
-			}
-			candidates = append(candidates, row)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		rows.Close()
-		claimed := make([]opsjobs.OutboxEvent, 0, len(candidates))
-		for _, row := range candidates {
-			claimToken := newClaimToken()
-			result, err := tx.ExecContext(ctx, `
-        UPDATE `+outboxTable+`
-        SET status = 'processing', claim_token = ?, claimed_by = ?, claim_until_ms = ?,
-            attempt_count = attempt_count + 1, updated_at_ms = ?
-        WHERE event_id = ?
-          AND ((status = 'pending' AND available_at_ms <= ?)
-            OR (status = 'processing' AND claim_until_ms <= ?))`,
-				claimToken, ownerID, nowMS+leaseMS, nowMS, row.eventID, nowMS, nowMS)
-			if err != nil {
-				return nil, err
-			}
-			changed, err := result.RowsAffected()
-			if err != nil {
-				return nil, err
-			}
-			if changed != 1 {
-				continue
-			}
-			row.claimToken = sql.NullString{String: claimToken, Valid: true}
-			claimed = append(claimed, mapOutboxEvent(row))
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		return claimed, nil
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `
-    SELECT event_id, projection_key, event_type, account_id, account_runtime_key,
-      circuit_scope_key, transition_id, dispatch_revision
-    FROM `+outboxTable+`
-    WHERE (status = 'pending' AND available_at_ms <= ?)
-       OR (status = 'processing' AND claim_until_ms <= ?)
-    ORDER BY available_at_ms ASC, created_at_ms ASC, event_id ASC
-    LIMIT ?`, nowMS, nowMS, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1304,12 +1238,12 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
 	for _, row := range candidates {
 		claimToken := newClaimToken()
 		result, err := tx.ExecContext(ctx, `
-      UPDATE `+outboxTable+`
-      SET status = 'processing', claim_token = ?, claimed_by = ?, claim_until_ms = ?,
-          attempt_count = attempt_count + 1, updated_at_ms = ?
-      WHERE event_id = ?
-        AND ((status = 'pending' AND available_at_ms <= ?)
-          OR (status = 'processing' AND claim_until_ms <= ?))`,
+        UPDATE `+outboxTable+`
+        SET status = 'processing', claim_token = ?, claimed_by = ?, claim_until_ms = ?,
+            attempt_count = attempt_count + 1, updated_at_ms = ?
+        WHERE event_id = ?
+          AND ((status = 'pending' AND available_at_ms <= ?)
+            OR (status = 'processing' AND claim_until_ms <= ?))`,
 			claimToken, ownerID, nowMS+leaseMS, nowMS, row.eventID, nowMS, nowMS)
 		if err != nil {
 			return nil, err
@@ -1329,7 +1263,6 @@ func (r *ControlPlaneRepo) Claim(ctx context.Context, ownerID string, nowMS int6
 	}
 	return claimed, nil
 }
-
 func scanOutboxClaimRow(row interface{ Scan(...any) error }) (outboxClaimRow, error) {
 	var scanned outboxClaimRow
 	var scopeKey sql.NullString
@@ -1398,9 +1331,7 @@ func (r *ControlPlaneRepo) Ack(ctx context.Context, event opsjobs.OutboxEvent, a
       ledger_revision, status, claim_token, projection_key
     FROM ` + outboxTable + `
     WHERE event_id = ?`
-	if r.postgres {
-		selectQuery += " FOR UPDATE"
-	}
+	selectQuery += " FOR UPDATE"
 	err = tx.QueryRowContext(ctx, selectQuery, eventID).Scan(
 		&rowEventType, &rowAccountID, &rowScopeKey, &rowIncidentID, &rowDispatch,
 		&rowLedger, &rowStatus, &rowClaimToken, &rowProjectionKey)

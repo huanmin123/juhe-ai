@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+func fixedNow() time.Time {
+	return time.Date(2026, 9, 4, 20, 30, 0, 0, time.UTC)
+}
+
 // TestChatRetentionInputContract asserts the request mirrors the Node DB
 // service payload byte for byte: now, now-20min interruption window, limit
 // 1000, retentionDays, lease fence and the low-priority lane.

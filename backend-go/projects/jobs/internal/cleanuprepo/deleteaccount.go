@@ -35,11 +35,6 @@ type DeletedAccountStore struct {
 	Business *DB
 	Dataset  *DB
 	Stats    *DB
-	// UsageCatalog 是 SQLite usage catalog（SQLite 模式相关记录检查用）。
-	UsageCatalog *DB
-	Shards       *ShardStore
-	// Records 承载 SQLite 相关记录检查（targets/usage shards/stats rows）。
-	Records *RecordCleanupStore
 	// LastTargetError 记录最近一个目标失败的诊断信息（组合根可上报）。
 	LastTargetError string
 	Now             func() time.Time
@@ -548,10 +543,7 @@ func (s *DeletedAccountStore) physicallyDelete(ctx context.Context, rootAccountI
 
 // orphanSweep 双方言统一入口（hasRelatedRecordData 同款分派模式）。
 func (s *DeletedAccountStore) orphanSweep(ctx context.Context, limit int) ([]string, error) {
-	if s.Business.Postgres {
-		return s.orphanSweepPostgres(ctx, limit)
-	}
-	return s.orphanSweepSQLite(ctx, limit)
+	return s.orphanSweepPostgres(ctx, limit)
 }
 
 // scanOrphanAuthorizationInstanceRows 扫描孤儿授权实例账户行（双方言通用：
@@ -749,172 +741,6 @@ func revokeAccountAuthorizationsPostgres(ctx context.Context, tx *sql.Tx, accoun
 	return err
 }
 
-// orphanSweepSQLite 是孤儿授权实例扫尾的 SQLite 臂，与 orphanSweepPostgres
-// 同 bulk 终态语义（同扫描；每孤儿行一个事务：revoke → 逻辑删除 → tombstone
-// → tags/搜索清理；LIMIT 20；单行失败整体中断返回错误）。Node SQLite 同步臂
-// 的 per-grant 链与进程内缓存失效不随迁（终态等价，见 gateway internal/
-// accounts/delete.go 双臂对照）。
-func (s *DeletedAccountStore) orphanSweepSQLite(ctx context.Context, limit int) ([]string, error) {
-	rows, err := s.scanOrphanAuthorizationInstanceRows(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) == 0 {
-		return []string{}, nil
-	}
-	actor := internalAccountReadAccessSystemAccountID
-	fallbackDeletedAt := ISOOf(s.now())
-	var deletedIDs []string
-	for _, row := range rows {
-		accountID := textOf(row["id"])
-		authorizationID := textOf(row["authorization_instance_authorization_id"])
-		tx, err := s.Business.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.revokeAuthorizationInstanceSQLite(ctx, tx, authorizationID, actor, fallbackDeletedAt); err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
-		ids, err := s.logicallyDeleteAccountsTx(ctx, tx, []string{accountID}, actor, fallbackDeletedAt)
-		if err != nil {
-			_ = tx.Rollback()
-			return nil, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		deletedIDs = append(deletedIDs, ids...)
-	}
-	return uniqueNonEmpty(deletedIDs), nil
-}
-
-// revokeAuthorizationInstanceSQLite 照 revokeAuthorizationInstanceForDeletedSourceAccountAsync
-// 的 SQLite 臂（与 revokeAuthorizationInstancePostgres 同 bulk 终态语义；
-// authorizationID 为空直通；授权行缺失（ErrNoRows）跳过 grants 回收，仍更新
-// sources/authorizations 状态）。
-func (s *DeletedAccountStore) revokeAuthorizationInstanceSQLite(ctx context.Context, tx *sql.Tx, authorizationID, actor, deletedAt string) error {
-	if authorizationID == "" {
-		return nil
-	}
-	var resourceType sql.NullString
-	var resourceID sql.NullString
-	err := tx.QueryRowContext(ctx, s.Business.Bind(fmt.Sprintf(
-		`SELECT resource_type, resource_id FROM %s WHERE id = ? LIMIT 1`, s.table("resource_authorizations"))),
-		authorizationID).Scan(&resourceType, &resourceID)
-	if err != nil && err != sql.ErrNoRows {
-		return err
-	}
-	if err == nil && resourceType.String == "account" && resourceID.String != "" {
-		if err := s.revokeAccountAuthorizationsSQLite(ctx, tx, resourceID.String, actor, deletedAt); err != nil {
-			return err
-		}
-	}
-	_, err = tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
-    UPDATE %s
-    SET status = 'revoked',
-        ended_at = COALESCE(ended_at, ?),
-        ended_reason = COALESCE(ended_reason, 'account_deleted'),
-        revoked_by = ?,
-        revoked_at = ?,
-        updated_at = ?
-    WHERE authorization_id = ?
-      AND status IN ('active', 'superseded')
-	`, s.table("resource_authorization_sources"))), deletedAt, actor, deletedAt, deletedAt, authorizationID)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
-    UPDATE %s
-    SET status = 'revoked',
-        effective_source_type = NULL,
-        effective_source_team_id = NULL,
-        revoked_by = COALESCE(revoked_by, ?),
-        revoked_at = COALESCE(revoked_at, ?),
-        revoked_reason = COALESCE(revoked_reason, 'account_deleted'),
-        last_source_changed_at = ?,
-        updated_at = ?
-    WHERE id = ?
-      AND status <> 'returned'
-	`, s.table("resource_authorizations"))), actor, deletedAt, deletedAt, deletedAt, authorizationID)
-	return err
-}
-
-// revokeAccountAuthorizationsSQLite 照 revokeAccountAuthorizationsForDeletedResourceAsync
-// 的 SQLite 臂（PG 的 ANY($n::text[]) 改写为 placeholderList IN 列表；
-// BUG-0239：SET/WHERE 前置 `?` 与 IN 列表必须由同一次 Bind 编号）。
-func (s *DeletedAccountStore) revokeAccountAuthorizationsSQLite(ctx context.Context, tx *sql.Tx, accountID, actor, deletedAt string) error {
-	rows, err := queryRows(ctx, tx, s.Business.Bind(fmt.Sprintf(`
-    SELECT id FROM %s
-    WHERE resource_type = 'account' AND resource_id = ? AND status <> 'returned'
-	`, s.table("resource_authorizations"))), accountID)
-	if err != nil {
-		return err
-	}
-	authorizationIDs := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if id := textOf(row["id"]); id != "" {
-			authorizationIDs = append(authorizationIDs, id)
-		}
-	}
-	if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
-    DELETE FROM %s
-    WHERE source_type = 'resource_authorization_grant'
-      AND source_id IN (
-        SELECT id FROM %s
-        WHERE resource_type = 'account' AND resource_id = ?
-      )
-	`, s.table("request_quota_hourly_window_scope_bindings"), s.table("resource_authorization_grants"))), accountID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
-    UPDATE %s
-    SET status = 'revoked',
-        revoked_by = COALESCE(revoked_by, ?),
-        revoked_at = COALESCE(revoked_at, ?),
-        updated_at = ?
-    WHERE resource_type = 'account'
-      AND resource_id = ?
-      AND status NOT IN ('revoked', 'returned')
-	`, s.table("resource_authorization_grants"))), actor, deletedAt, deletedAt, accountID); err != nil {
-		return err
-	}
-	if len(authorizationIDs) == 0 {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
-    UPDATE %s
-    SET status = 'revoked',
-        ended_at = COALESCE(ended_at, ?),
-        ended_reason = COALESCE(ended_reason, 'account_deleted'),
-        revoked_by = ?,
-        revoked_at = ?,
-        updated_at = ?
-    WHERE authorization_id IN (%s)
-      AND status IN ('active', 'superseded')
-	`, s.table("resource_authorization_sources"), placeholderList(len(authorizationIDs)))),
-		append([]any{deletedAt, actor, deletedAt, deletedAt}, stringSliceToAny(authorizationIDs)...)...); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
-    UPDATE %s
-    SET status = 'revoked',
-        effective_source_type = NULL,
-        effective_source_team_id = NULL,
-        revoked_by = COALESCE(revoked_by, ?),
-        revoked_at = COALESCE(revoked_at, ?),
-        revoked_reason = COALESCE(revoked_reason, 'account_deleted'),
-        last_source_changed_at = ?,
-        updated_at = ?
-    WHERE id IN (%s)
-      AND status <> 'returned'
-	`, s.table("resource_authorizations"), placeholderList(len(authorizationIDs)))),
-		append([]any{actor, deletedAt, deletedAt, deletedAt}, stringSliceToAny(authorizationIDs)...)...)
-	return err
-}
-
-// logicallyDeleteAccountsTx 照 logicallyDeleteAccountsAsync 的行级语义
-// （tombstone outbox + 标签/搜索清理在事务内）。
 func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx *sql.Tx, accountIDs []string, actor, deletedAt string) ([]string, error) {
 	ids := uniqueNonEmpty(accountIDs)
 	if len(ids) == 0 {
@@ -1041,13 +867,6 @@ func newEventID() string {
 	return fmt.Sprintf("%s-%s", randomHex32()[:8], randomHex32())
 }
 
-// hasRelatedRecordData 分派 SQLite / PG 两套相关记录检查。
 func (s *DeletedAccountStore) hasRelatedRecordData(ctx context.Context, target *cleanupTarget) (bool, error) {
-	if s.Business.Postgres {
-		return s.hasRelatedRecordDataPostgres(ctx, target)
-	}
-	if s.Records == nil {
-		return false, fmt.Errorf("retention record cleanup store 未初始化")
-	}
-	return s.Records.hasRelatedRecordDataSQLite(ctx, target)
+	return s.hasRelatedRecordDataPostgres(ctx, target)
 }

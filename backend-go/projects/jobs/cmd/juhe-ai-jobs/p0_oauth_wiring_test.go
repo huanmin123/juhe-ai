@@ -120,7 +120,7 @@ CREATE TABLE juhe_business.account_circuit_outbox (
 		_, err := db.Exec(schema)
 		return err
 	})
-	store, err := oauthrefresh.OpenStore(db, oauthrefresh.StorePostgres, "p0-wiring-test-secret")
+	store, err := oauthrefresh.OpenStore(db, "p0-wiring-test-secret")
 	if err != nil {
 		t.Fatal(err)
 	}

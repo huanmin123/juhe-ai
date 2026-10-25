@@ -377,7 +377,7 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 		return err
 	}
 	aggDB := aggHandle.DB()
-	dialect := statsagg.Dialect{Postgres: true}
+	dialect := statsagg.Dialect{}
 	timezone := statsTimezoneSource{store: store}
 
 	// system_settings 读模型（background-jobs settingsNumber 移植）：与 stats
@@ -574,7 +574,7 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 		return err
 	}
 	db := handle.DB()
-	store, err := oauthrefresh.OpenStore(db, oauthrefresh.StorePostgres, a.config.Secret)
+	store, err := oauthrefresh.OpenStore(db, a.config.Secret)
 	if err != nil {
 		return fmt.Errorf("open oauth-refresh store: %w", err)
 	}
@@ -831,9 +831,7 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	writer := usagewriter.NewWriter(usagewriter.Config{
 		ShardCount:       usageWriterShardCount,
 		FreezePricing:    true,
-		CatalogSnapshot:  false,
 		MaxWriteAttempts: usageWriterMaxWriteAttempts,
-		Postgres:         true,
 	}, store, nil,
 		usagewriter.WithLogger(slogWriterLogger{logger: a.logger}),
 		usagewriter.WithCatalog(pricingCatalog),

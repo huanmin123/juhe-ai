@@ -288,33 +288,6 @@ func TestW12EProjectManualOutboundArms(t *testing.T) {
 	}
 }
 
-// TestW12EManualOutboundUpdateArms：PG/SQLite 各语句族。
-func TestW12EManualOutboundUpdateArms(t *testing.T) {
-	outcome := Outcome{ProxyID: "p", ConfigRevision: "r", ObservedAt: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)}
-	pg := &ResultProjector{mode: StorePostgres}
-	sqlite := &ResultProjector{mode: StoreSQLite}
-	query, args := pg.manualOutboundUpdate(outcome, "1.2.3.4", " region ")
-	if !strings.Contains(query, "outbound_ip=$1,outbound_region=$2") || len(args) != 5 {
-		t.Fatalf("PG IP+地区语句错误: %s", query)
-	}
-	if query, _ := pg.manualOutboundUpdate(outcome, "1.2.3.4", ""); !strings.Contains(query, "outbound_ip=$1 WHERE") {
-		t.Fatalf("PG 仅 IP 语句错误: %s", query)
-	}
-	if query, _ := pg.manualOutboundUpdate(outcome, "", "region"); !strings.Contains(query, "outbound_region=$1") {
-		t.Fatalf("PG 仅地区语句错误: %s", query)
-	}
-	if query, _ := sqlite.manualOutboundUpdate(outcome, "1.2.3.4", "region"); !strings.Contains(query, "outbound_ip=?,outbound_region=?") {
-		t.Fatalf("SQLite IP+地区语句错误: %s", query)
-	}
-	if query, _ := sqlite.manualOutboundUpdate(outcome, "1.2.3.4", ""); !strings.Contains(query, "outbound_ip=? WHERE") {
-		t.Fatalf("SQLite 仅 IP 语句错误: %s", query)
-	}
-	if query, _ := sqlite.manualOutboundUpdate(outcome, "", "region"); !strings.Contains(query, "outbound_region=?") {
-		t.Fatalf("SQLite 仅地区语句错误: %s", query)
-	}
-}
-
-// TestW12EAdvanceCursorArms：游标推进的全部分支。
 func TestW12EAdvanceCursorArms(t *testing.T) {
 	ctx := context.Background()
 	projector := wfNewPGProjector(wfOpenRecorderDB(t, newWFRecorder()))

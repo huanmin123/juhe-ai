@@ -39,7 +39,7 @@ func openKitPostgresDB(t *testing.T) *sql.DB {
 // 关闭 store 并删库。
 func openKitPostgresStore(t *testing.T) *Store {
 	t.Helper()
-	store := NewStore(openKitPostgresDB(t), ModePostgres)
+	store := NewStore(openKitPostgresDB(t))
 	t.Cleanup(func() { _ = store.Close() })
 	if err := store.EnsureSchema(context.Background()); err != nil {
 		t.Fatalf("taskruns PG EnsureSchema 失败: %v", err)

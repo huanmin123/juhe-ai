@@ -83,13 +83,13 @@ func TestW15ClaimDirtyPostgresOnW1Cover(t *testing.T) {
 	}
 
 	// boundDB 包装路径：QueryRowContext 经 sqldialect.BindSQL 转发。
-	bound := &boundDB{DB: db, postgres: true}
+	bound := &boundDB{DB: db}
 	var probe int
 	if err := bound.QueryRowContext(ctx, `SELECT 1`).Scan(&probe); err != nil || probe != 1 {
 		t.Fatalf("boundDB QueryRowContext 应可用: %v", err)
 	}
 
-	repo, err := NewListAvailabilityRepo(ListAvailabilityConfig{DB: db, Postgres: true})
+	repo, err := NewListAvailabilityRepo(ListAvailabilityConfig{DB: db})
 	if err != nil {
 		t.Fatal(err)
 	}

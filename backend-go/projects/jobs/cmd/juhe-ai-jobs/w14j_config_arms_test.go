@@ -2,7 +2,6 @@
 package main
 
 import (
-	"path/filepath"
 	"testing"
 )
 
@@ -10,12 +9,6 @@ import (
 func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_DATABASE_DRIVER":             "sqlite",
-			"JUHE_AI_DATABASE_PATH":               filepath.Join(t.TempDir(), "business.sqlite3"),
-			"JUHE_AI_STATS_DATABASE_PATH":         filepath.Join(t.TempDir(), "stats.sqlite3"),
-			"JUHE_AI_TASK_RUNS_DATABASE_PATH":     filepath.Join(t.TempDir(), "task-runs.sqlite3"),
-			"JUHE_AI_USAGE_CATALOG_DATABASE_PATH": filepath.Join(t.TempDir(), "usage-catalog.sqlite3"),
-			"JUHE_AI_USAGE_SHARD_ROOT":            filepath.Join(t.TempDir(), "usage-shards"),
 			"JUHE_AI_INSTANCE_ID":                 "w14j-cfg",
 			"JUHE_AI_WORKER_ROLE":                 "stats-worker",
 			"JUHE_AI_SECRET":                      "0123456789abcdef0123456789abcdef",

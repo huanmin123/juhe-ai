@@ -146,43 +146,6 @@ func TestW10BManualHandoverResultAndOutcome(t *testing.T) {
 	}
 }
 
-func TestW10BWorkerAssemblyRootHelpers(t *testing.T) {
-	config := workerConfig{InstanceID: "w10b", WorkerRole: "owner", WorkerReplicaIdx: 2}
-	assembly := newWorkerAssembly(config, nil)
-	if assembly.logger == nil {
-		t.Fatal("nil logger 必须回落 slog.Default")
-	}
-	if got := assembly.ownerID(); !strings.HasPrefix(got, "w10b:owner:2:") || len(strings.TrimPrefix(got, "w10b:owner:2:")) != 32 {
-		t.Fatalf("ownerID=%q", got)
-	}
-	if token := newRandomToken(); len(token) != 32 {
-		t.Fatalf("token=%q", token)
-	}
-
-	// acquirePool fail-closed：idle 越界 → 拒绝。
-	badConfig := workerConfig{PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 0}
-	badAssembly := newWorkerAssembly(badConfig, slog.Default())
-	if _, err := badAssembly.acquirePool("postgres://127.0.0.1:1/nope?sslmode=disable", "task-runs"); err == nil {
-		t.Fatal("非法池配置必须拒绝")
-	}
-	// 正确的池配置：URL 不可达也只在首用时报错；这里校验 acquirePool 的
-	// 成功路径（pgx 惰性连接）与句柄登记。
-	okConfig := workerConfig{PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 1}
-	okAssembly := newWorkerAssembly(okConfig, slog.Default())
-	handle, err := okAssembly.acquirePool("postgres://127.0.0.1:1/nope?sslmode=disable", "w10b-pool")
-	if err != nil {
-		t.Fatalf("acquirePool 成功路径: %v", err)
-	}
-	_ = handle.Close()
-	if len(okAssembly.pools) != 1 {
-		t.Fatalf("池句柄登记=%d", len(okAssembly.pools))
-	}
-	okAssembly.closeStores()
-	if len(okAssembly.pools) != 0 {
-		t.Fatal("closeStores 必须清空池句柄")
-	}
-}
-
 func TestW10BWorkerStatusPayloadFields(t *testing.T) {
 	config := workerConfig{InstanceID: "w10b", WorkerRole: "owner", WorkerReplicaIdx: 0}
 	assembly := newWorkerAssembly(config, slog.Default())

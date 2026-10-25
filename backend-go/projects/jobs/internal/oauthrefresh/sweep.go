@@ -71,10 +71,8 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 		AND expires_at <= ?
 	ORDER BY expires_at ASC, updated_at ASC, id ASC
 	LIMIT ?`
-	if s.pg {
-		query += `
+	query += `
 	FOR UPDATE SKIP LOCKED`
-	}
 	rows, err := tx.QueryContext(ctx, s.bind(query), now, limit)
 	if err != nil {
 		return SweepResult{}, err

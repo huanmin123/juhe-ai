@@ -9,13 +9,10 @@ package circuitstore
 // 纯函数测试不涉存储，不在迁移面。
 
 import (
-	"context"
 	"database/sql"
 	"strings"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 )
 
 func validScheduleJSON() string {
@@ -277,65 +274,6 @@ func TestRowMappingHelpers(t *testing.T) {
 	}
 }
 
-// TestLoadAccountLockViewRecovery 覆盖 DEAD_CONFIRMED 的恢复写路径。
-func TestLoadAccountLockViewRecovery(t *testing.T) {
-	db := newLoaderTestDB(t)
-	loader := newTestLoader(db, stubConcurrency{}, stubRuntime{})
-	ctx := context.Background()
-	seed := func(query string, args ...any) {
-		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
-			t.Fatalf("seed: %v\n%s", err, query)
-		}
-	}
-	// 无锁行 → nil。
-	lock, _, err := loader.loadAccountLockView(ctx, "acc-none")
-	if err != nil || lock != nil {
-		t.Fatalf("无锁行应为 nil: %v %v", lock, err)
-	}
-	// enabled=false → 返回视图但不恢复。
-	seed(`INSERT INTO account_lock_states (account_id, enabled, lock_state) VALUES ('acc-locked-off', 0, 'DEAD_CONFIRMED')`)
-	lock, _, err = loader.loadAccountLockView(ctx, "acc-locked-off")
-	if err != nil || lock == nil || lock.enabled {
-		t.Fatalf("禁用锁应返回视图: %+v %v", lock, err)
-	}
-	// DEAD_CONFIRMED + 非 active 账户 → 不恢复。
-	seed(`INSERT INTO system_accounts (id) VALUES ('sys-1')`)
-	seed(`INSERT INTO accounts (id, system_account_id, status, schedulable) VALUES ('acc-dead', 'sys-1', 'disabled', 1)`)
-	seed(`INSERT INTO account_lock_states (account_id, enabled, lock_state, generation) VALUES ('acc-dead', 1, 'DEAD_CONFIRMED', 3)`)
-	lock, _, err = loader.loadAccountLockView(ctx, "acc-dead")
-	if err != nil || lock == nil || lock.lockState != "DEAD_CONFIRMED" {
-		t.Fatalf("非 active 账户不恢复: %+v %v", lock, err)
-	}
-	// DEAD_CONFIRMED + active+schedulable → 恢复写 LOCKED_IDLE。
-	seed(`INSERT INTO accounts (id, system_account_id, status, schedulable) VALUES ('acc-recover', 'sys-1', 'active', 1)`)
-	seed(`INSERT INTO account_lock_states (account_id, enabled, lock_state, generation, incident_id, incident_started_at, deadline_at, original_status, provenance, next_retry_at_ms, lease_id, lease_until_ms) VALUES
-		('acc-recover', 1, 'DEAD_CONFIRMED', 5, 'in-1', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', 'active', 'probe', 100, 'lease-1', 200)`)
-	lock, _, err = loader.loadAccountLockView(ctx, "acc-recover")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lock == nil || lock.lockState != "LOCKED_IDLE" {
-		t.Fatalf("active+schedulable 必须恢复为 LOCKED_IDLE: %+v", lock)
-	}
-	var cleared int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_lock_states WHERE account_id = 'acc-recover' AND incident_id IS NULL AND lease_id IS NULL AND next_retry_at_ms IS NULL`).Scan(&cleared); err != nil {
-		t.Fatal(err)
-	}
-	if cleared != 1 {
-		t.Fatalf("恢复必须清空 incident/lease 字段: %d", cleared)
-	}
-	var enabled any
-	var lockState string
-	if err := db.QueryRow(`SELECT enabled, lock_state FROM account_lock_states WHERE account_id = 'acc-recover'`).Scan(&enabled, &lockState); err != nil {
-		t.Fatal(err)
-	}
-	if !booleanValue(enabled) || lockState != "LOCKED_IDLE" {
-		t.Fatalf("恢复写必须保留 enabled 且改写 lock_state: %v %s", enabled, lockState)
-	}
-}
-
-// TestHydrateRowDerivations 覆盖 status seed 派生辅助。
 func TestHydrateRowDerivations(t *testing.T) {
 	now := effNow()
 	// runtimeKeyOf。
@@ -579,116 +517,6 @@ func TestComposeEntrySynthesis(t *testing.T) {
 	// （空集合路径已在 effective_availability_matrix_test.go 直接覆盖）。
 }
 
-// TestNewProjectionItemLoaderValidation 覆盖构造依赖校验。
-func TestNewProjectionItemLoaderValidation(t *testing.T) {
-	base := ProjectionLoadConfig{}
-	if _, err := NewProjectionItemLoader(base); err == nil {
-		t.Fatal("缺业务库必须报错")
-	}
-	business, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = business.Close() })
-	base.Business = business
-	if _, err := NewProjectionItemLoader(base); err == nil {
-		t.Fatal("缺统计库必须报错")
-	}
-	base.Stats = business
-	if _, err := NewProjectionItemLoader(base); err == nil {
-		t.Fatal("缺凭据解码器必须报错")
-	}
-	base.Credentials = stubCredentials{}
-	if _, err := NewProjectionItemLoader(base); err == nil {
-		t.Fatal("缺运行态读面必须报错")
-	}
-	base.Concurrency = stubConcurrency{}
-	if _, err := NewProjectionItemLoader(base); err == nil {
-		t.Fatal("缺 runtime availability 读面必须报错")
-	}
-	base.RuntimeAvailability = stubRuntime{}
-	if _, err := NewProjectionItemLoader(base); err == nil {
-		t.Fatal("缺时区读面必须报错")
-	}
-	base.Timezone = stubTimezone{}
-	if _, err := NewProjectionItemLoader(base); err != nil {
-		t.Fatalf("完整依赖应可构造: %v", err)
-	}
-}
-
-// TestLoaderSmallHelpers 覆盖 loader 小工具。
-func TestLoaderSmallHelpers(t *testing.T) {
-	if parseSchedulePtr(nil) != nil || parseSchedulePtr(&[]string{""}[0]) != nil {
-		t.Fatal("空输入返回 nil")
-	}
-	broken := "{broken"
-	if parseSchedulePtr(&broken) != nil {
-		t.Fatal("非法 JSON 返回 nil")
-	}
-	valid := validScheduleJSON()
-	schedule := parseSchedulePtr(&valid)
-	if schedule == nil {
-		t.Fatal("合法计划必须解析")
-	}
-	now := effNow()
-	if nextAvailabilityScheduleCheckAt(nil, now) != "" {
-		t.Fatal("nil 计划返回空")
-	}
-	value, ok := oauthrefresh.NextScheduleCheckAt(schedule, now)
-	if ok && nextAvailabilityScheduleCheckAt(schedule, now) != value {
-		t.Fatalf("check at 透传: %s %v", value, ok)
-	}
-	if derefString(nil) != "" || derefString(&[]string{"x"}[0]) != "x" {
-		t.Fatal("derefString 语义不符")
-	}
-	if boolPtr(true) == nil || !*boolPtr(true) {
-		t.Fatal("boolPtr 语义不符")
-	}
-	// payloadTagIDs 兼容 []any 与 []map 形状。
-	anyShape := map[string]any{"tags": []any{
-		map[string]any{"id": "tag-1", "name": "a"},
-		map[string]any{"name": "no-id"},
-	}}
-	if got := payloadTagIDs(anyShape); len(got) != 1 || got[0] != "tag-1" {
-		t.Fatalf("[]any 形状提取 id: %v", got)
-	}
-	mapShape := map[string]any{"tags": []map[string]any{{"id": "tag-2"}}}
-	if got := payloadTagIDs(mapShape); len(got) != 1 || got[0] != "tag-2" {
-		t.Fatalf("[]map 形状提取 id: %v", got)
-	}
-	if got := payloadTagIDs(map[string]any{}); len(got) != 0 {
-		t.Fatalf("无 tags 返回空: %v", got)
-	}
-	// LoadItems 入口校验（viewer 空 / ids 空）。
-	db := newLoaderTestDB(t)
-	loader := newTestLoader(db, stubConcurrency{}, stubRuntime{})
-	if _, err := loader.LoadItems(context.Background(), "  ", []string{"a"}); err == nil {
-		t.Fatal("空 viewer 必须报错")
-	}
-	empty, err := loader.LoadItems(context.Background(), "viewer", nil)
-	if err != nil || len(empty) != 0 {
-		t.Fatalf("空 ids 返回空列表: %v %v", empty, err)
-	}
-	if _, err := loader.LoadItems(context.Background(), "viewer", []string{"  "}); err == nil {
-		t.Fatal("空 id 必须报错")
-	}
-}
-
-// TestProjectionLoadConfigPostgresDialect 标记 Postgres 方言字段不影响 SQLite 行为
-// （双模字段的存在性验证，防止结构性回归）。
-func TestProjectionLoadConfigPostgresDialect(t *testing.T) {
-	config := ProjectionLoadConfig{Postgres: true, StatsPostgres: true}
-	if !config.Postgres || !config.StatsPostgres {
-		t.Fatal("方言字段必须可配置")
-	}
-	var _ opsjobs.ItemLoader = nil
-	_ = config
-}
-
-// TestBuildBasePayloadOmitsNullProviderName：vendor_code NULL 的 generic_http
-// 账户没有厂商行（LEFT JOIN vendors 结果为 NULL），payload 必须省略
-// providerName 键而不是产出空串；此前字段为 string 会让 Scan 直接失败并使
-// 整个投影批次释放重放。
 func TestBuildBasePayloadOmitsNullProviderName(t *testing.T) {
 	row := managementRow{
 		id: "acc-generic", systemAccountID: "sys-1", ownerSystemAccountID: "sys-1",

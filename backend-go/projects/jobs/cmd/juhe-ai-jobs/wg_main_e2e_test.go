@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"os"
 	"path/filepath"
 	"os/exec"
@@ -190,105 +189,28 @@ func wgInterruptAndWait(t *testing.T, cmd *exec.Cmd) {
 	}
 }
 
-// wgOwnerModeMainEnv 构造 owner 模式完整 main() 的 env：F1/F2/J1 + 全量
-// worker 家族（SQLite + 文件输入源；Redis 缺省 → 电路/速度优先族 disabled）。
+// wgOwnerModeMainEnv 构造 owner 模式完整 main() 的 env：F1/J1 + 全量
+// worker 家族（PG 单形态 + 文件运行时目录；Redis 缺省 → 电路/速度优先族
+// disabled）。PG 连接串由调用方按目标库注入（覆盖库 e2e 见
+// w13g8FullOwnerEnv / w14qPGMainEnv）；standby 被动模式不装配存储面。
 func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 	t.Helper()
 	env := workerSmokeTestEnv(t)
-	// 存储路径统一收拢到本次测试的隔离目录。
-	env["JUHE_AI_DATABASE_PATH"] = filepath.Join(root, "business.sqlite3")
-	env["JUHE_AI_STATS_DATABASE_PATH"] = filepath.Join(root, "stats.sqlite3")
-	env["JUHE_AI_TASK_RUNS_DATABASE_PATH"] = filepath.Join(root, "task-runs.sqlite3")
-	env["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"] = filepath.Join(root, "usage-catalog.sqlite3")
-	env["JUHE_AI_USAGE_SHARD_ROOT"] = filepath.Join(root, "usage-shards")
-	env["JUHE_AI_DATASET_DATABASE_PATH"] = filepath.Join(root, "dataset.sqlite3")
-	env["JUHE_AI_CHAT_DATABASE_PATH"] = filepath.Join(root, "chat.sqlite3")
-	env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"] = filepath.Join(root, "codex-state")
+	// 文件运行时目录统一收拢到本次测试的隔离目录（原 sqlite 库文件族
+	// 与业务库 DDL 预置随 sqlite 形态退役删除；PG 形状由覆盖库 seed 承担）。
 	env["JUHE_AI_CHAT_ASSETS_ROOT"] = filepath.Join(root, "chat-assets")
-	// F1 runtime-log-indexer。
+	env["JUHE_AI_CODEX_CONTEXT_ROOT"] = filepath.Join(root, "codex-context")
+	// F1 runtime-log-indexer（store URL 由调用方注入覆盖库）。
 	env["JUHE_AI_RUNTIME_LOG_INSTANCE_ID"] = "wg-main-e2e"
-	env["JUHE_AI_RUNTIME_LOG_STORE"] = "sqlite"
-	env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = filepath.Join(root, "runtime-log.sqlite3")
 	logsDirectory := filepath.Join(root, "logs")
 	if err := os.MkdirAll(logsDirectory, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	env["JUHE_AI_LOG_DIR"] = logsDirectory
-	// F1 runtime store 会校验只读数据源文件存在，先建全部 SQLite 文件。
-	for _, name := range []string{
-		"business.sqlite3", "stats.sqlite3", "dataset.sqlite3", "usage-catalog.sqlite3",
-		"task-runs.sqlite3", "chat.sqlite3",
-	} {
-		db, dbErr := sql.Open("sqlite", filepath.Join(root, name))
-		if dbErr != nil {
-			t.Fatal(dbErr)
-		}
-		// Ping 触发物理建文件（sql.Open 惰性连接）。
-		if dbErr := db.Ping(); dbErr != nil {
-			t.Fatal(dbErr)
-		}
-		if dbErr := db.Close(); dbErr != nil {
-			t.Fatal(dbErr)
-		}
-	}
-	// F1 indexer 与 J1 投影面从业务库读 system_settings/投影游标
-	// （cursors/receipts 表由 maintenance bootstrap 负责，进程不做 DDL）。
-	business, dbErr := sql.Open("sqlite", filepath.Join(root, "business.sqlite3"))
-	if dbErr != nil {
-		t.Fatal(dbErr)
-	}
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_settings (
-			system_account_id TEXT NOT NULL,
-			key TEXT NOT NULL,
-			value_json TEXT,
-			PRIMARY KEY (system_account_id, key)
-		)`,
-		`CREATE TABLE IF NOT EXISTS account_health_projection_receipts (
-			outcome_id TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			input_version INTEGER NOT NULL,
-			disposition TEXT NOT NULL,
-			reason TEXT,
-			applied_at TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS account_health_projection_cursors (
-			consumer_key TEXT PRIMARY KEY,
-			observed_at TEXT,
-			outcome_id TEXT,
-			updated_at TEXT NOT NULL
-		)`,
-		// accounts.capability_domain 是 jobs 启动的业务库形状契约
-		// （capability_domain_schema.go 启动只读校验，2026-10 M1）：fixture 只
-		// 提供启动校验消费的最小 accounts 形状（列声明与 maintenance DDL
-		// 同构）；任务族所需的完整列集由 wgUnionBusinessSchema 等专项 fixture
-		// 承载。
-		`CREATE TABLE IF NOT EXISTS accounts (
-			id TEXT PRIMARY KEY,
-			deleted_at TEXT,
-			capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))
-		)`,
-	} {
-		if _, err := business.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// M2 启动阶段门禁与调度偏好启动校验夹具已随 sqlite 子进程 e2e 退役：
-	// owner 全链装配在 PG 上由 w14q/w16i 覆盖库 e2e 承接（w14j seed + w16j
-	// fixture 提供契约形状）。
-	if err := business.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// J1 account-health（SQLite store + 显式 files 输入源；目录必须存在且为空 =
-	// 无待消费输入。INPUT_SOURCE 自 2026-09 缺省改为 sqlite 直读，但本 fixture
-	// 的业务库只有 worker 装配所需表，走直读会契约失败；这些用例验证 worker
-	// 装配而非 J1 输入，故显式钉住 files 后备源）。J1 与 worker 均恒装配
-	// （2026-09-19 决策），env 不再需要启用开关。
+	// J1 account-health（postgres 直连输入；输入目录恒为空目录。J1 与
+	// worker 均恒装配（2026-09-19 决策），env 不再需要启用开关）。
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER"] = "go"
 	env["JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID"] = "wg-main-e2e"
-	env["JUHE_AI_ACCOUNT_HEALTH_STORE"] = "sqlite"
-	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "files"
-	env["JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH"] = filepath.Join(root, "account-health.sqlite3")
 	inputDirectory := filepath.Join(root, "account-health-inputs")
 	if err := os.MkdirAll(inputDirectory, 0o755); err != nil {
 		t.Fatal(err)

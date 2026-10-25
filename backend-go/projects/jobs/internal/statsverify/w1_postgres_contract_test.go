@@ -558,23 +558,3 @@ func TestW1DateKeyRejectsNonNumericComponent(t *testing.T) {
 	}
 }
 
-func TestW1PostgresScratchURLValidation(t *testing.T) {
-	for _, testCase := range []struct {
-		name string
-		url  string
-		want bool
-	}{
-		{name: "scratch database", url: "postgres://user:pass@localhost:5432/" + w10cSvScratchDatabase, want: true},
-		{name: "primary database", url: "postgres://user:pass@localhost:5432/juhe_ai_sub2api_dev"},
-		{name: "primary dbname override", url: "postgres://user:pass@localhost:5432/" + w10cSvScratchDatabase + "?dbname=juhe_ai_sub2api_dev"},
-		{name: "different scheme", url: "http://localhost/" + w10cSvScratchDatabase},
-		{name: "invalid URL", url: "postgres://[invalid/"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			err := w10cSvValidatePGURL(testCase.url)
-			if (err == nil) != testCase.want {
-				t.Fatalf("w10cSvValidatePGURL() error = %v, want success=%t", err, testCase.want)
-			}
-		})
-	}
-}

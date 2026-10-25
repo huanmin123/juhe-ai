@@ -13,54 +13,9 @@ package statsagg
 //     NaN 归一）——需要构造大量特定字段组合的 usage 行 fixture。
 
 import (
-	"context"
 	"math"
 	"testing"
 )
-
-func TestW12fStatsAggregatorClosedDBArms(t *testing.T) {
-	env := newTestEnv(t)
-	aggregator := env.aggregator()
-	if err := env.db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := aggregator.AggregateUsageStatsBatch(context.Background(), AggregateOptions{}); err == nil {
-		t.Fatal("句柄关闭后聚合必须报错")
-	}
-}
-
-func TestW12fStatsRefresherClosedDBArms(t *testing.T) {
-	env := newTestEnv(t)
-	refresher := env.refresher()
-	if err := env.db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := refresher.RunHotWindows(context.Background(), RefreshOptions{}); err == nil {
-		t.Fatal("句柄关闭后 RunHotWindows 必须报错")
-	}
-	if _, err := refresher.RunStages(context.Background(), nil, RefreshOptions{}); err == nil {
-		t.Fatal("句柄关闭后 RunStages 必须报错")
-	}
-	if _, err := refresher.RunQuotaHourlyWindows(context.Background()); err == nil {
-		t.Fatal("句柄关闭后 RunQuotaHourlyWindows 必须报错")
-	}
-}
-
-func TestW12fStatsUnknownStageRejected(t *testing.T) {
-	env := newTestEnv(t)
-	refresher := env.refresher()
-	if _, err := refresher.RunStages(context.Background(), []WindowStageName{"w12f-not-a-stage"}, RefreshOptions{}); err == nil {
-		t.Fatal("未知 stage 必须报错")
-	}
-}
-
-func TestW12fStatsOpenSQLiteFailureArms(t *testing.T) {
-	// 目录路径与非法路径打开失败。
-	if db, err := OpenSQLiteTestDB("w12f-missing-dir/w12f/x.sqlite3"); err == nil {
-		db.Close()
-		t.Fatal("非法路径打开必须报错")
-	}
-}
 
 func TestW12fStatsRFC3339Rejects(t *testing.T) {
 	cases := []struct {
@@ -114,42 +69,3 @@ func TestW12fStatsNaNGuard(t *testing.T) {
 	}
 }
 
-// TestW12fStatsRunStagesEachClosedDB 逐个合法 stage 在关句柄库上的第一错误
-// 传播（每个 stage 的 fail-closed 入口臂）。
-func TestW12fStatsRunStagesEachClosedDB(t *testing.T) {
-	env := newTestEnv(t)
-	refresher := env.refresher()
-	if err := env.db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	stages := []WindowStageName{
-		StageAccountLast7dRequestRank,
-		StageCallerAccountLast7dRequestRank,
-		StageApiKeyCurrentMonthCostRank,
-		StageAccountAuthorizationCurrentMonthRank,
-		StageGroupAuthorizationCurrentMonthRank,
-		StageUsageOverviewWindows,
-		StageAiPerformanceSummaryWindows,
-	}
-	for _, stage := range stages {
-		if _, err := refresher.RunStages(context.Background(), []WindowStageName{stage}, RefreshOptions{}); err == nil {
-			t.Fatalf("stage %s 在关句柄库上必须报错", stage)
-		}
-	}
-}
-
-// TestW12fStatsAggregateRowsEmpty 直接覆盖空记录早退臂。
-func TestW12fStatsAggregateRowsEmpty(t *testing.T) {
-	env := newTestEnv(t)
-	aggregator := env.aggregator()
-	tx, err := env.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := aggregator.aggregateRows(context.Background(), tx, nil, FormatRFC3339Millis(env.now), env.zone); err != nil {
-		t.Fatalf("空记录必须早退成功: %v", err)
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-}

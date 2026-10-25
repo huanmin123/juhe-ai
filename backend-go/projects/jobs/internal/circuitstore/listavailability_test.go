@@ -127,7 +127,7 @@ CREATE TABLE juhe_business.account_list_availability_projection_viewer_health (
 func openListAvailabilityFixture(t *testing.T) (*ListAvailabilityRepo, *sql.DB) {
 	t.Helper()
 	db := openKitPostgresDB(t, kitListAvailabilitySchemaPrepare)
-	repo, err := NewListAvailabilityRepo(ListAvailabilityConfig{DB: db, Postgres: true})
+	repo, err := NewListAvailabilityRepo(ListAvailabilityConfig{DB: db})
 	if err != nil {
 		t.Fatal(err)
 	}

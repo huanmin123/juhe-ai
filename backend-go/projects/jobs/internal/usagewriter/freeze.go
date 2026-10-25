@@ -195,7 +195,7 @@ func EnrichUsageRecordPricing(ctx Ctx, input UsageRecordInput, catalog CatalogPr
 // kept untouched (frozen facts are never re-interpreted against a future
 // catalog); records without pricing facts pass through; otherwise the
 // snapshot is enriched/enrolled once at this instant.
-func FreezeUsageRecordPricingFacts(ctx Ctx, input UsageRecordInput, catalog CatalogPricing, catalogFallbackEnabled bool) UsageRecordInput {
+func FreezeUsageRecordPricingFacts(ctx Ctx, input UsageRecordInput, catalog CatalogPricing) UsageRecordInput {
 	if !HasPricingSnapshotFact(input) {
 		return input
 	}
@@ -203,7 +203,7 @@ func FreezeUsageRecordPricingFacts(ctx Ctx, input UsageRecordInput, catalog Cata
 	if enriched.PricingSnapshot != nil {
 		return enriched
 	}
-	pricingSnapshot := PricingSnapshotForWrite(ctx, enriched, catalogFallbackEnabled, catalog)
+	pricingSnapshot := PricingSnapshotForWrite(ctx, enriched, catalog)
 	if pricingSnapshot == nil {
 		return enriched
 	}
@@ -212,12 +212,10 @@ func FreezeUsageRecordPricingFacts(ctx Ctx, input UsageRecordInput, catalog Cata
 }
 
 // PricingSnapshotForWrite mirrors usageRecordPricingSnapshotForWrite: an
-// existing snapshot wins; records without pricing facts produce none; the
-// catalog snapshot is only attempted when catalogLookupEnabled is true
-// (mirrors the Node `runtimeConfig.databaseDriver !== 'postgres'` guard),
-// the provider code is present and a cost dimension exists; otherwise the
-// deterministic fallback applies.
-func PricingSnapshotForWrite(ctx Ctx, input UsageRecordInput, catalogLookupEnabled bool, catalog CatalogPricing) *CostBreakdown {
+// existing snapshot wins; records without pricing facts produce none;
+// otherwise the deterministic fallback applies (PG 形态恒不尝试 catalog
+// snapshot，镜像 Node `databaseDriver !== 'postgres'` 守卫的恒假臂).
+func PricingSnapshotForWrite(ctx Ctx, input UsageRecordInput, catalog CatalogPricing) *CostBreakdown {
 	if input.PricingSnapshot != nil {
 		if snapshot, ok := input.PricingSnapshot.(*CostBreakdown); ok {
 			return snapshot
@@ -226,26 +224,6 @@ func PricingSnapshotForWrite(ctx Ctx, input UsageRecordInput, catalogLookupEnabl
 	}
 	if !HasPricingSnapshotFact(input) {
 		return nil
-	}
-	if catalogLookupEnabled && input.ProviderCode != "" && HasCostDimension(input) {
-		model := firstNonEmpty(
-			normalizeUsageRecordPricingModel(input.PricingModel),
-			normalizeUsageRecordPricingModel(input.UpstreamModel),
-			normalizeUsageRecordPricingModel(input.Model),
-		)
-		if model != "" && catalog != nil {
-			snapshot := catalog.BuildBreakdown(
-				ctx,
-				input.ProviderCode,
-				firstNonEmpty(input.AccountOwnerSystemAccountID, input.SystemAccountID),
-				model,
-				serviceTierForWrite(input),
-				input,
-			)
-			if snapshot != nil {
-				return snapshot
-			}
-		}
 	}
 	return FallbackPricingSnapshot(input)
 }

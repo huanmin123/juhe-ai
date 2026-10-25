@@ -63,9 +63,6 @@ func NewResultProjector(store *Store, business *sql.DB, cfg ResultProjectorConfi
 	if store == nil || store.db == nil || business == nil {
 		return nil, errors.New("J3a Go result projector 未初始化")
 	}
-	if store.mode != StorePostgres && store.mode != StoreSQLite {
-		return nil, errors.New("J3a Go result projector Store mode 无效")
-	}
 	if strings.TrimSpace(cfg.ConsumerKey) == "" {
 		cfg.ConsumerKey = defaultResultProjectionConsumer
 	}
@@ -118,28 +115,18 @@ func (p *ResultProjector) CheckContract(ctx context.Context) error {
 }
 
 func (p *ResultProjector) contractStatements() []string {
-	if p.mode == StorePostgres {
-		return []string{
-			"SELECT id,test_status,latency_ms,outbound_ip,outbound_region,last_test_message,last_tested_at,updated_at FROM juhe_business.proxy_profiles LIMIT 0",
-			"SELECT outcome_id,proxy_id,input_version,disposition,reason,applied_at FROM juhe_business.proxy_latency_projection_receipts LIMIT 0",
-			"SELECT consumer_key,stored_at,outcome_id,updated_at FROM juhe_business.proxy_latency_projection_cursors LIMIT 0",
-			"SELECT id,proxy_profile_id,authorization_instance_source_account_id,system_account_id FROM juhe_business.accounts LIMIT 0",
-			"SELECT account_id,source_generation FROM juhe_business.account_list_availability_projections LIMIT 0",
-			"SELECT account_id,generation,available_at_ms FROM juhe_business.account_list_availability_dirty LIMIT 0",
-			"UPDATE juhe_business.proxy_profiles SET test_status=test_status WHERE FALSE",
-			"INSERT INTO juhe_business.proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) SELECT '', '', 1, 'rejected', NULL, CURRENT_TIMESTAMP WHERE FALSE",
-			"INSERT INTO juhe_business.proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) SELECT '', NULL, NULL, CURRENT_TIMESTAMP WHERE FALSE",
-			"INSERT INTO juhe_business.account_list_availability_dirty(account_id,viewer_system_account_id,generation,applied_generation,reason,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) SELECT '', '', 1, 0, 'j3a_contract_check', 0, NULL, NULL, NULL, 0, 0, 0 WHERE FALSE",
-			"UPDATE juhe_business.account_list_availability_dirty SET generation=generation WHERE FALSE",
-		}
-	}
 	return []string{
-		"SELECT id,test_status,latency_ms,outbound_ip,outbound_region,last_test_message,last_tested_at,updated_at FROM proxy_profiles LIMIT 0",
-		"SELECT outcome_id,proxy_id,input_version,disposition,reason,applied_at FROM proxy_latency_projection_receipts LIMIT 0",
-		"SELECT consumer_key,stored_at,outcome_id,updated_at FROM proxy_latency_projection_cursors LIMIT 0",
-		"UPDATE proxy_profiles SET test_status=test_status WHERE FALSE",
-		"INSERT INTO proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) SELECT '', '', 1, 'rejected', NULL, CURRENT_TIMESTAMP WHERE FALSE",
-		"INSERT INTO proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) SELECT '', NULL, NULL, CURRENT_TIMESTAMP WHERE FALSE",
+		"SELECT id,test_status,latency_ms,outbound_ip,outbound_region,last_test_message,last_tested_at,updated_at FROM juhe_business.proxy_profiles LIMIT 0",
+		"SELECT outcome_id,proxy_id,input_version,disposition,reason,applied_at FROM juhe_business.proxy_latency_projection_receipts LIMIT 0",
+		"SELECT consumer_key,stored_at,outcome_id,updated_at FROM juhe_business.proxy_latency_projection_cursors LIMIT 0",
+		"SELECT id,proxy_profile_id,authorization_instance_source_account_id,system_account_id FROM juhe_business.accounts LIMIT 0",
+		"SELECT account_id,source_generation FROM juhe_business.account_list_availability_projections LIMIT 0",
+		"SELECT account_id,generation,available_at_ms FROM juhe_business.account_list_availability_dirty LIMIT 0",
+		"UPDATE juhe_business.proxy_profiles SET test_status=test_status WHERE FALSE",
+		"INSERT INTO juhe_business.proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) SELECT '', '', 1, 'rejected', NULL, CURRENT_TIMESTAMP WHERE FALSE",
+		"INSERT INTO juhe_business.proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) SELECT '', NULL, NULL, CURRENT_TIMESTAMP WHERE FALSE",
+		"INSERT INTO juhe_business.account_list_availability_dirty(account_id,viewer_system_account_id,generation,applied_generation,reason,available_at_ms,claim_token,claimed_by,claim_until_ms,attempt_count,created_at_ms,updated_at_ms) SELECT '', '', 1, 0, 'j3a_contract_check', 0, NULL, NULL, NULL, 0, 0, 0 WHERE FALSE",
+		"UPDATE juhe_business.account_list_availability_dirty SET generation=generation WHERE FALSE",
 	}
 }
 
@@ -233,8 +220,7 @@ func (p *ResultProjector) recordRejectedSkip(result ProjectionResult) {
 // 隐式标脏），本锁保留为保守串行化：维持与全部 dirty 写方的全序，并使本事务
 // 的等待受 BUG-0313 的 2s lock_timeout 约束（超时 55P03 失败本轮——投影游标
 // 未推进，下轮从原位置重放，不随持锁方被主机饿死而无限排队）。是否可随触发
-// 器移除一并撤销（J3a 退出 dirty 护航队）见问题-0313 后续记录跟进项；非 PG
-// 方言 no-op（SQLite 单 writer）。
+// 器移除一并撤销（J3a 退出 dirty 护航队）见问题-0313 后续记录跟进项。
 func (p *ResultProjector) lockAccountListDirtyInTx(ctx context.Context, tx *sql.Tx) error {
 	if p.mode != StorePostgres {
 		return nil
@@ -483,9 +469,7 @@ func (p *ResultProjector) recordDispositionTx(ctx context.Context, tx *sql.Tx, b
 
 func (p *ResultProjector) receiptTx(ctx context.Context, tx *sql.Tx, outcomeID string) (ProjectionResult, bool, error) {
 	query := `SELECT outcome_id,proxy_id,input_version,disposition,reason FROM proxy_latency_projection_receipts WHERE outcome_id=?`
-	if p.mode == StorePostgres {
-		query = `SELECT outcome_id,proxy_id,input_version,disposition,reason FROM juhe_business.proxy_latency_projection_receipts WHERE outcome_id=$1 FOR UPDATE`
-	}
+	query = `SELECT outcome_id,proxy_id,input_version,disposition,reason FROM juhe_business.proxy_latency_projection_receipts WHERE outcome_id=$1 FOR UPDATE`
 	var result ProjectionResult
 	var disposition string
 	var reason sql.NullString
@@ -510,9 +494,7 @@ func (p *ResultProjector) insertReceiptTx(ctx context.Context, tx *sql.Tx, base 
 	}
 	query := `INSERT INTO proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) VALUES(?,?,?,?,?,?) ON CONFLICT(outcome_id) DO NOTHING`
 	args := []any{base.OutcomeID, base.ProxyID, base.InputVersion, disposition, nullableString(reason), p.cfg.Now().UTC().Format(time.RFC3339Nano)}
-	if p.mode == StorePostgres {
-		query = `INSERT INTO juhe_business.proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(outcome_id) DO NOTHING`
-	}
+	query = `INSERT INTO juhe_business.proxy_latency_projection_receipts(outcome_id,proxy_id,input_version,disposition,reason,applied_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(outcome_id) DO NOTHING`
 	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("写入 J3a Go result receipt 失败: %w", err)
@@ -533,9 +515,7 @@ func (p *ResultProjector) insertReceiptTx(ctx context.Context, tx *sql.Tx, base 
 
 func (p *ResultProjector) proxyFenceTx(ctx context.Context, tx *sql.Tx, proxyID string) (bool, string, *time.Time, error) {
 	query := `SELECT id,updated_at,last_tested_at FROM proxy_profiles WHERE id=?`
-	if p.mode == StorePostgres {
-		query = `SELECT id,to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,CASE WHEN last_tested_at IS NULL THEN NULL ELSE to_char(last_tested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END AS last_tested_at FROM juhe_business.proxy_profiles WHERE id=$1 FOR UPDATE`
-	}
+	query = `SELECT id,to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,CASE WHEN last_tested_at IS NULL THEN NULL ELSE to_char(last_tested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END AS last_tested_at FROM juhe_business.proxy_profiles WHERE id=$1 FOR UPDATE`
 	var id, revision string
 	var last sql.NullString
 	err := tx.QueryRowContext(ctx, query, proxyID).Scan(&id, &revision, &last)
@@ -568,10 +548,8 @@ func (p *ResultProjector) applyStateUpdate(ctx context.Context, tx *sql.Tx, prox
 	}
 	query := `UPDATE proxy_profiles SET test_status=?,latency_ms=?,last_test_message=?,last_tested_at=? WHERE id=? AND updated_at=? AND (last_tested_at IS NULL OR last_tested_at<=?)`
 	args := []any{summary.Status, latency, summary.Message, observedAt.UTC().Format(time.RFC3339Nano), proxyID, configRevision, observedAt.UTC().Format(time.RFC3339Nano)}
-	if p.mode == StorePostgres {
-		query = `UPDATE juhe_business.proxy_profiles SET test_status=$1,latency_ms=$2,last_test_message=$3,last_tested_at=$4 WHERE id=$5 AND updated_at=$6::timestamptz AND (last_tested_at IS NULL OR last_tested_at<=$4)`
-		args = []any{summary.Status, latency, summary.Message, observedAt.UTC(), proxyID, configRevision}
-	}
+	query = `UPDATE juhe_business.proxy_profiles SET test_status=$1,latency_ms=$2,last_test_message=$3,last_tested_at=$4 WHERE id=$5 AND updated_at=$6::timestamptz AND (last_tested_at IS NULL OR last_tested_at<=$4)`
+	args = []any{summary.Status, latency, summary.Message, observedAt.UTC(), proxyID, configRevision}
 	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return ProjectionRejected, fmt.Errorf("写入 J3a Go proxy state 失败: %w", err)
@@ -587,30 +565,18 @@ func (p *ResultProjector) applyStateUpdate(ctx context.Context, tx *sql.Tx, prox
 }
 
 func (p *ResultProjector) manualOutboundUpdate(outcome Outcome, outboundIP, outboundRegion string) (string, []any) {
-	if p.mode == StorePostgres {
-		if strings.TrimSpace(outboundIP) != "" && strings.TrimSpace(outboundRegion) != "" {
-			return `UPDATE juhe_business.proxy_profiles SET outbound_ip=$1,outbound_region=$2 WHERE id=$3 AND updated_at=$4::timestamptz AND last_tested_at=$5`, []any{outboundIP, outboundRegion, outcome.ProxyID, outcome.ConfigRevision, outcome.ObservedAt.UTC()}
-		}
-		if strings.TrimSpace(outboundIP) != "" {
-			return `UPDATE juhe_business.proxy_profiles SET outbound_ip=$1 WHERE id=$2 AND updated_at=$3::timestamptz AND last_tested_at=$4`, []any{outboundIP, outcome.ProxyID, outcome.ConfigRevision, outcome.ObservedAt.UTC()}
-		}
-		return `UPDATE juhe_business.proxy_profiles SET outbound_region=$1 WHERE id=$2 AND updated_at=$3::timestamptz AND last_tested_at=$4`, []any{outboundRegion, outcome.ProxyID, outcome.ConfigRevision, outcome.ObservedAt.UTC()}
-	}
-	observed := outcome.ObservedAt.UTC().Format(time.RFC3339Nano)
 	if strings.TrimSpace(outboundIP) != "" && strings.TrimSpace(outboundRegion) != "" {
-		return `UPDATE proxy_profiles SET outbound_ip=?,outbound_region=? WHERE id=? AND updated_at=? AND last_tested_at=?`, []any{outboundIP, outboundRegion, outcome.ProxyID, outcome.ConfigRevision, observed}
+		return `UPDATE juhe_business.proxy_profiles SET outbound_ip=$1,outbound_region=$2 WHERE id=$3 AND updated_at=$4::timestamptz AND last_tested_at=$5`, []any{outboundIP, outboundRegion, outcome.ProxyID, outcome.ConfigRevision, outcome.ObservedAt.UTC()}
 	}
 	if strings.TrimSpace(outboundIP) != "" {
-		return `UPDATE proxy_profiles SET outbound_ip=? WHERE id=? AND updated_at=? AND last_tested_at=?`, []any{outboundIP, outcome.ProxyID, outcome.ConfigRevision, observed}
+		return `UPDATE juhe_business.proxy_profiles SET outbound_ip=$1 WHERE id=$2 AND updated_at=$3::timestamptz AND last_tested_at=$4`, []any{outboundIP, outcome.ProxyID, outcome.ConfigRevision, outcome.ObservedAt.UTC()}
 	}
-	return `UPDATE proxy_profiles SET outbound_region=? WHERE id=? AND updated_at=? AND last_tested_at=?`, []any{outboundRegion, outcome.ProxyID, outcome.ConfigRevision, observed}
+	return `UPDATE juhe_business.proxy_profiles SET outbound_region=$1 WHERE id=$2 AND updated_at=$3::timestamptz AND last_tested_at=$4`, []any{outboundRegion, outcome.ProxyID, outcome.ConfigRevision, outcome.ObservedAt.UTC()}
 }
 
 func (p *ResultProjector) currentCursor(ctx context.Context) (*OutcomeCursor, error) {
 	query := `SELECT stored_at,outcome_id FROM proxy_latency_projection_cursors WHERE consumer_key=?`
-	if p.mode == StorePostgres {
-		query = `SELECT stored_at,outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1`
-	}
+	query = `SELECT stored_at,outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1`
 	var storedAt, outcomeID sql.NullString
 	err := p.business.QueryRowContext(ctx, query, p.cfg.ConsumerKey).Scan(&storedAt, &outcomeID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -637,9 +603,7 @@ func (p *ResultProjector) advanceCursorTx(ctx context.Context, tx *sql.Tx, next 
 		return errors.New("J3a Go result cursor 参数无效")
 	}
 	query := `SELECT stored_at,outcome_id FROM proxy_latency_projection_cursors WHERE consumer_key=?`
-	if p.mode == StorePostgres {
-		query = `SELECT stored_at,outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1 FOR UPDATE`
-	}
+	query = `SELECT stored_at,outcome_id FROM juhe_business.proxy_latency_projection_cursors WHERE consumer_key=$1 FOR UPDATE`
 	var storedAt, outcomeID sql.NullString
 	err := tx.QueryRowContext(ctx, query, p.cfg.ConsumerKey).Scan(&storedAt, &outcomeID)
 	if !errors.Is(err, sql.ErrNoRows) && err != nil {
@@ -649,9 +613,7 @@ func (p *ResultProjector) advanceCursorTx(ctx context.Context, tx *sql.Tx, next 
 	now := p.cfg.Now().UTC().Format(time.RFC3339Nano)
 	if errors.Is(err, sql.ErrNoRows) {
 		insert := `INSERT INTO proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) VALUES(?,?,?,?)`
-		if p.mode == StorePostgres {
-			insert = `INSERT INTO juhe_business.proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) VALUES($1,$2,$3,$4)`
-		}
+		insert = `INSERT INTO juhe_business.proxy_latency_projection_cursors(consumer_key,stored_at,outcome_id,updated_at) VALUES($1,$2,$3,$4)`
 		if _, err := tx.ExecContext(ctx, insert, p.cfg.ConsumerKey, nextStoredAt, next.OutcomeID, now); err != nil {
 			return fmt.Errorf("创建 J3a Go result cursor 失败: %w", err)
 		}
@@ -673,9 +635,7 @@ func (p *ResultProjector) advanceCursorTx(ctx context.Context, tx *sql.Tx, next 
 	}
 	update := `UPDATE proxy_latency_projection_cursors SET stored_at=?,outcome_id=?,updated_at=? WHERE consumer_key=?`
 	args := []any{nextStoredAt, next.OutcomeID, now, p.cfg.ConsumerKey}
-	if p.mode == StorePostgres {
-		update = `UPDATE juhe_business.proxy_latency_projection_cursors SET stored_at=$1,outcome_id=$2,updated_at=$3 WHERE consumer_key=$4`
-	}
+	update = `UPDATE juhe_business.proxy_latency_projection_cursors SET stored_at=$1,outcome_id=$2,updated_at=$3 WHERE consumer_key=$4`
 	result, err := tx.ExecContext(ctx, update, args...)
 	if err != nil {
 		return fmt.Errorf("推进 J3a Go result cursor 失败: %w", err)

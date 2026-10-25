@@ -5,77 +5,13 @@ import (
 	"strings"
 	"testing"
 )
-
 func planOptions() WritePlanOptions {
 	return WritePlanOptions{
-		CatalogSnapshotEnabled: true,
-		ShardCount:             16,
-		ShardRoot:              "/shards",
+		ShardCount: 16,
 	}
 }
 
-func TestBuildWritePlanColumnsAndDefaults(t *testing.T) {
-	clock := fixedClock("2026-01-02T03:04:05.000Z")
-	input := UsageRecordInput{
-		SystemAccountID: "sys1",
-		TraceID:         "t1",
-		TrafficSource:   TrafficSourceGateway,
-		Success:         true,
-		Model:           "gpt-5",
-	}
-	plan, err := BuildWritePlan(context.Background(), []UsageRecordInput{input}, planOptions(), clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.RowsByShard) != 1 || len(plan.RowsByShard[0].Rows) != 1 {
-		t.Fatalf("plan shape = %+v", plan)
-	}
-	if len(UsageRecordColumns) != len(plan.RowsByShard[0].Rows[0].Params) {
-		t.Fatalf("column/param count mismatch: %d vs %d", len(UsageRecordColumns), len(plan.RowsByShard[0].Rows[0].Params))
-	}
-	params := plan.RowsByShard[0].Rows[0].Params
-	columnIndex := map[string]int{}
-	for index, column := range UsageRecordColumns {
-		columnIndex[column] = index
-	}
-	// Service tier defaults (requested/effective/billed fall back to 'default';
-	// reported stays null).
-	if params[columnIndex["requested_service_tier"]] != "default" {
-		t.Fatalf("requested tier = %v", params[columnIndex["requested_service_tier"]])
-	}
-	if params[columnIndex["billed_service_tier"]] != "default" {
-		t.Fatalf("billed tier = %v", params[columnIndex["billed_service_tier"]])
-	}
-	if params[columnIndex["reported_service_tier"]] != nil {
-		t.Fatalf("reported tier = %v", params[columnIndex["reported_service_tier"]])
-	}
-	if params[columnIndex["success"]] != 1 {
-		t.Fatalf("success = %v", params[columnIndex["success"]])
-	}
-	if params[columnIndex["failure_attribution"]] != nil {
-		t.Fatalf("success attribution = %v", params[columnIndex["failure_attribution"]])
-	}
-	if params[columnIndex["created_at"]] != "2026-01-02T03:04:05.000Z" {
-		t.Fatalf("created_at = %v", params[columnIndex["created_at"]])
-	}
-	// Fallback pricing snapshot written as JSON for a record with cost facts?
-	// No cost facts here → null snapshot.
-	if params[columnIndex["cost_breakdown_snapshot_json"]] != nil {
-		t.Fatalf("snapshot without facts = %v", params[columnIndex["cost_breakdown_snapshot_json"]])
-	}
-	// Gateway traffic produces the account side effect.
-	if plan.RowsByShard[0].Rows[0].AccountLastUsedAt != "2026-01-02T03:04:05.000Z" {
-		t.Fatalf("gateway lastUsed missing: %+v", plan.RowsByShard[0].Rows[0])
-	}
-	// Catalog entry mirrors the row.
-	if len(plan.ShardEntries) != 1 || plan.ShardEntries[0].TraceID != "t1" || plan.ShardEntries[0].TrafficSource != TrafficSourceGateway {
-		t.Fatalf("shard entries = %+v", plan.ShardEntries)
-	}
-}
 
-// TestBuildWritePlanCompactionExpectedParam 钉压缩标记列（使用记录延迟健康
-// 分档设计 §压缩请求识别）：编码对齐 success 布尔列（true→1，缺省→0），列序
-// 锚点紧跟 route_group_id。
 func TestBuildWritePlanCompactionExpectedParam(t *testing.T) {
 	clock := fixedClock("2026-01-02T03:04:05.000Z")
 	expected := UsageRecordInput{
@@ -177,36 +113,35 @@ func TestBuildWritePlanDiagnosticTrafficSkipsSideEffects(t *testing.T) {
 	}
 }
 
-func TestBuildWritePlanAPIKeyFilter(t *testing.T) {
-	clock := fixedClock("2026-01-02T03:04:05.000Z")
-	options := planOptions()
-	options.Scope = &ScopeLookup{
-		APIKeyExists: func(apiKeyID string) bool { return apiKeyID == "key-live" },
-		SystemAccountIDForAPIKey: func(apiKeyID string) string {
-			if apiKeyID == "key-live" {
-				return "sys-from-key"
-			}
-			return ""
-		},
+func columnIndexOf(name string) int {
+	for index, column := range UsageRecordColumns {
+		if column == name {
+			return index
+		}
 	}
-	kept := UsageRecordInput{TraceID: "t1", TrafficSource: TrafficSourceGateway, Success: true, APIKeyID: "key-live"}
-	dropped := UsageRecordInput{TraceID: "t2", TrafficSource: TrafficSourceGateway, Success: true, APIKeyID: "key-gone"}
-	plan, err := BuildWritePlan(context.Background(), []UsageRecordInput{kept, dropped}, options, clock)
-	if err != nil {
-		t.Fatal(err)
+	return -1
+}
+
+func TestMergeShardWriteResult(t *testing.T) {
+	lastUsed := map[string]string{}
+	health := map[string]string{}
+	rows := []ShardWriteRow{
+		{AccountID: "a", AccountLastUsedAt: "2026-01-02T00:00:00.000Z", AccountHealthSuccessAt: "2026-01-02T00:00:00.000Z"},
+		{AccountID: "a", AccountLastUsedAt: "2026-01-03T00:00:00.000Z"},
+		{AccountID: "", AccountLastUsedAt: "2026-01-09T00:00:00.000Z"},
 	}
-	if len(plan.ShardEntries) != 1 || plan.ShardEntries[0].TraceID != "t1" {
-		t.Fatalf("api key filter result = %+v", plan.ShardEntries)
+	MergeShardWriteResult(lastUsed, health, rows)
+	if lastUsed["a"] != "2026-01-03T00:00:00.000Z" {
+		t.Fatalf("lastUsed merge = %v", lastUsed)
 	}
-	if plan.ShardEntries[0].SystemAccountID != "sys-from-key" {
-		t.Fatalf("system account resolution = %q", plan.ShardEntries[0].SystemAccountID)
+	if health["a"] != "2026-01-02T00:00:00.000Z" {
+		t.Fatalf("health merge = %v", health)
 	}
 }
 
 func TestBuildWritePlanPostgresRequiresSystemAccount(t *testing.T) {
 	clock := fixedClock("2026-01-02T03:04:05.000Z")
 	options := planOptions()
-	options.Postgres = true
 	input := UsageRecordInput{TraceID: "t", TrafficSource: TrafficSourceGateway, Success: true}
 	if _, err := BuildWritePlan(context.Background(), []UsageRecordInput{input}, options, clock); err == nil ||
 		err.Error() != "PostgreSQL 使用记录写入必须提供 systemAccountId" {
@@ -235,7 +170,6 @@ func TestBuildWritePlanShardGroupsAndFallbackSnapshot(t *testing.T) {
 		})
 	}
 	options := planOptions()
-	options.CatalogSnapshotEnabled = false
 	options.Catalog = nil
 	plan, err := BuildWritePlan(context.Background(), inputs, options, clock)
 	if err != nil {
@@ -268,31 +202,5 @@ func TestBuildWritePlanShardGroupsAndFallbackSnapshot(t *testing.T) {
 	text := snapshotJSON.(string)
 	if !strings.Contains(text, `"multiplier":1`) || !strings.Contains(text, `"serviceTierPricingSource":"unknown"`) {
 		t.Fatalf("fallback snapshot json = %s", text)
-	}
-}
-
-func columnIndexOf(name string) int {
-	for index, column := range UsageRecordColumns {
-		if column == name {
-			return index
-		}
-	}
-	return -1
-}
-
-func TestMergeShardWriteResult(t *testing.T) {
-	lastUsed := map[string]string{}
-	health := map[string]string{}
-	rows := []ShardWriteRow{
-		{AccountID: "a", AccountLastUsedAt: "2026-01-02T00:00:00.000Z", AccountHealthSuccessAt: "2026-01-02T00:00:00.000Z"},
-		{AccountID: "a", AccountLastUsedAt: "2026-01-03T00:00:00.000Z"},
-		{AccountID: "", AccountLastUsedAt: "2026-01-09T00:00:00.000Z"},
-	}
-	MergeShardWriteResult(lastUsed, health, rows)
-	if lastUsed["a"] != "2026-01-03T00:00:00.000Z" {
-		t.Fatalf("lastUsed merge = %v", lastUsed)
-	}
-	if health["a"] != "2026-01-02T00:00:00.000Z" {
-		t.Fatalf("health merge = %v", health)
 	}
 }

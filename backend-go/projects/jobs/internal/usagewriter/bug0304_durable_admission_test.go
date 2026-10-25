@@ -35,7 +35,7 @@ func newFullQueueWriter(t *testing.T, options ...Option) *Writer {
 	t.Helper()
 	config := Config{
 		QueueMaxItems: 1, QueueMaxBytes: 64 * 1024, BatchSize: 10,
-		FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
+		FlushIntervalMs: 60_000,
 	}
 	writer := NewWriter(config, &mockStore{}, fixedClock("2026-01-02T03:04:05.000Z"), options...)
 	// 不 Start：无 flush 循环，队列保持满。
@@ -128,7 +128,7 @@ func TestBug0304EnqueueDurableQueueFullWithoutSpoolReturnsError(t *testing.T) {
 // Enqueue 同款错误形态。
 func TestBug0304EnqueueDurableAfterStopReturnsError(t *testing.T) {
 	store := &mockStore{}
-	config := Config{BatchSize: 4, FlushIntervalMs: 60_000, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 4, FlushIntervalMs: 60_000, }
 	writer, _ := newTestWriter(t, config, store)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -150,7 +150,7 @@ func TestBug0304EnqueueDurableOversizeTerminalDrop(t *testing.T) {
 	spool := &mockSpool{}
 	config := Config{
 		QueueMaxItems: 10, QueueMaxBytes: 64 * 1024, BatchSize: 10,
-		FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
+		FlushIntervalMs: 60_000,
 	}
 	writer, _ := newTestWriter(t, config, store, WithOverflowSpool(spool))
 	huge := gatewayInput("huge")
@@ -179,7 +179,7 @@ func TestBug0304EnqueueDurableOversizeTerminalDrop(t *testing.T) {
 func TestBug0304EnqueueDurableAdmitsWhenQueueHasRoom(t *testing.T) {
 	store := &mockStore{}
 	// BatchSize=1：单条即批满立即冲刷，不等 flush ticker，断言确定。
-	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, ShardRoot: t.TempDir()}
+	config := Config{BatchSize: 1, FlushIntervalMs: 5_000, }
 	writer, _ := newTestWriter(t, config, store)
 
 	if err := writer.EnqueueDurable(context.Background(), gatewayInput("durable-1")); err != nil {

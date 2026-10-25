@@ -64,7 +64,7 @@ func TestAuthorizationWritePGDailyUpserts(t *testing.T) {
 	statDate := "2026-10-01"
 	updatedAt := "2026-10-01T12:00:00.000Z"
 
-	agg := &Aggregator{DB: db, Dialect: Dialect{Postgres: true}}
+	agg := &Aggregator{DB: db, Dialect: Dialect{}}
 	teamKey := authorizationSummaryKey{
 		teamFilterID:       prefix + "team1",
 		resourceFilterType: "account",

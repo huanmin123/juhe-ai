@@ -1,7 +1,7 @@
 package main
 
 // jobs 框架域排查（缺陷1/2/3/4）的 cmd 组合根级回归测试：
-//   - 缺陷1：background_task_runs / background_job_leases 纳入保留清理，随
+//   - 缺陷1：juhe_stats.background_task_runs / juhe_stats.background_job_leases 纳入保留清理，随
 //     data-retention-cleanup 节拍滚动删除（清理前后行数断言）；
 //   - 缺陷2：withLease 包裹的任务 panic 转失败终态（运行记录 failed + 租约
 //     释放收口），不外溢打断状态机；
@@ -59,7 +59,10 @@ func TestScheduleWiredJobDuplicateRegistrationFailsFast(t *testing.T) {
 // 装配体（PG 唯一形态；原 sqlite 文件夹具随 sqlite 形态退役删除）。
 func newTaskRunHistoryAssembly(t *testing.T, _ string) (*workerAssembly, *sql.DB) {
 	t.Helper()
-	db, dsn := wgOpenPGDialectDB(t, nil)
+	db, dsn := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_stats`)
+		return err
+	})
 	store, err := taskruns.OpenStore(taskruns.StoreConfig{Mode: taskruns.ModePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatalf("open taskruns store: %v", err)
@@ -88,7 +91,7 @@ func TestWithLeasePanicRecordsFailedTerminalAndReleasesLease(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "boom-lease-inject") {
 		t.Fatalf("panic 必须转为错误并留痕 panic 值: %v", err)
 	}
-	row := history.QueryRow(`SELECT status, error_message FROM background_task_runs`)
+	row := history.QueryRow(`SELECT status, error_message FROM juhe_stats.background_task_runs`)
 	var status string
 	var errorMessage sql.NullString
 	if err := row.Scan(&status, &errorMessage); err != nil {
@@ -101,7 +104,7 @@ func TestWithLeasePanicRecordsFailedTerminalAndReleasesLease(t *testing.T) {
 		t.Fatalf("error_message 必须留痕 panic 值: %#v", errorMessage)
 	}
 	var tempLeases int64
-	if err := history.QueryRow(`SELECT COUNT(*) FROM background_job_leases WHERE job_name = 'temporary-maintenance-worker'`).Scan(&tempLeases); err != nil {
+	if err := history.QueryRow(`SELECT COUNT(*) FROM juhe_stats.background_job_leases WHERE job_name = 'temporary-maintenance-worker'`).Scan(&tempLeases); err != nil {
 		t.Fatal(err)
 	}
 	if tempLeases != 0 {

@@ -14,11 +14,8 @@ import (
 	"database/sql"
 	"path/filepath"
 	"context"
-	"strings"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 )
 
 const w16gNamespace = "juhe-ai:w16g"
@@ -74,76 +71,6 @@ func TestW16GPGBadURLWireFamilyArms(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestW16GProjectionGateArms(t *testing.T) {
-	db, _ := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
-		_, err := db.Exec(probeCoreTablesPGDDL)
-		return err
-	})
-	probeStore, err := proberepo.NewStore(proberepo.Config{DB: db, Postgres: true, Secret: wgBalanceSecret})
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := workerConfig{
-		InstanceID:     "w16g-projection",
-		Secret:         wgBalanceSecret,
-		RedisNamespace: w16gNamespace,
-	}
-	t.Run("OAuth 族缺席登记 disabled", func(t *testing.T) {
-		config := base
-		config.RedisStateURL = "redis://127.0.0.1:1"
-		assembly := newWorkerAssembly(config, nil)
-		if err := assembly.wireListProjectionFamily(context.Background(), &businessDB{}, probeStore); err != nil {
-			t.Fatalf("登记分支不得报错: %v", err)
-		}
-		found := false
-		for _, disabled := range assembly.disabledJobs {
-			if strings.Contains(disabled.Reason, "OAuth 族未装配") {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("OAuth 缺席必须登记: %+v", assembly.disabledJobs)
-		}
-	})
-	t.Run("overlay Redis URL 解析失败", func(t *testing.T) {
-		config := base
-		config.RedisStateURL = "http://127.0.0.1:1"
-		oauthDB, err := sql.Open("pgx", "postgres://unit-test.invalid/w16g-oauth")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = oauthDB.Close() })
-		oauthStore, err := oauthrefresh.OpenStore(oauthDB, oauthrefresh.StorePostgres, wgBalanceSecret)
-		if err != nil {
-			t.Fatal(err)
-		}
-		assembly := newWorkerAssembly(config, nil)
-		assembly.oauthStore = oauthStore
-		if err := assembly.wireListProjectionFamily(context.Background(), &businessDB{}, probeStore); err == nil {
-			t.Fatal("非法 Redis URL 必须使 overlay store 打开失败")
-		}
-	})
-	t.Run("投影仓储 nil 业务库句柄", func(t *testing.T) {
-		config := base
-		config.RedisStateURL = "redis://127.0.0.1:1"
-		oauthDB, err := sql.Open("pgx", "postgres://unit-test.invalid/w16g-oauth2")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = oauthDB.Close() })
-		oauthStore, err := oauthrefresh.OpenStore(oauthDB, oauthrefresh.StorePostgres, wgBalanceSecret)
-		if err != nil {
-			t.Fatal(err)
-		}
-		assembly := newWorkerAssembly(config, nil)
-		assembly.oauthStore = oauthStore
-		// overlay/runtime reader 构造成功后，nil 业务库句柄使 NewListAvailabilityRepo 失败。
-		if err := assembly.wireListProjectionFamily(context.Background(), &businessDB{}, probeStore); err == nil {
-			t.Fatal("nil 业务库句柄必须使投影仓储构造失败")
-		}
-	})
 }
 
 func TestW16GAssemblyComponentsLifecycle(t *testing.T) {

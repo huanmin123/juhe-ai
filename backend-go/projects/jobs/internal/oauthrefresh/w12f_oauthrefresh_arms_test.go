@@ -110,7 +110,7 @@ func TestW12fOauthKeepaliveAndHealthFanoutArms(t *testing.T) {
 	if err != nil || zero != 0 {
 		t.Fatalf("非 account 资源必须零值返回: %d %v", zero, err)
 	}
-	pgStore := &Store{db: db, pg: true, secret: "w12f", now: store.now}
+	pgStore := &Store{db: db, secret: "w12f", now: store.now}
 	if _, err := pgStore.EnqueueAccountHealthInputsForAuthorizationSourceTx(ctx, badTx, "account", "w12f-src", AuthorizationGrantHealthFanoutReason); err == nil {
 		t.Fatal("回滚事务必须报错")
 	}

@@ -138,34 +138,12 @@ var UsageRecordColumns = []string{
 	"created_at",
 }
 
-// ScopeLookup ports the SQLite-mode access lookups
-// (usage-record-access-metadata.ts): the usage API key existence check and
-// the system-account resolution for records that arrive without one. nil
-// functions mean "lookups unavailable", matching a reader-degraded store.
-type ScopeLookup struct {
-	// APIKeyExists mirrors usageApiKeyExists(apiKeyId, context).
-	APIKeyExists func(apiKeyID string) bool
-	// SystemAccountIDForAPIKey mirrors systemAccountIdForUsage.
-	SystemAccountIDForAPIKey func(apiKeyID string) string
-}
-
 // WritePlanOptions mirror the buildUsageRecordBatchWritePlan options.
 type WritePlanOptions struct {
-	// Postgres mirrors shardLocationMode: 'postgres' (logical shard
-	// locations, provided-only access, no api-key existence filter).
-	Postgres bool
-	// CatalogSnapshotEnabled mirrors the databaseDriver !== 'postgres' guard
-	// of usageRecordPricingSnapshotForWrite: catalog snapshots are attempted
-	// only off Postgres.
-	CatalogSnapshotEnabled bool
 	// Catalog is the optional pricing port (may be nil).
 	Catalog CatalogPricing
-	// Scope carries the SQLite-mode access lookups (may be nil).
-	Scope *ScopeLookup
 	// ShardCount mirrors runtimeConfig.usageShardCount.
 	ShardCount int
-	// ShardRoot is the SQLite usage-shard root directory.
-	ShardRoot string
 }
 
 // BuildWritePlan mirrors buildUsageRecordBatchWritePlan: validate and shape
@@ -185,20 +163,9 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 			}
 			createdAt = normalized
 		}
-		if !options.Postgres && input.APIKeyID != "" && options.Scope != nil && options.Scope.APIKeyExists != nil {
-			if !options.Scope.APIKeyExists(input.APIKeyID) {
-				// Node silently skips records whose api key vanished.
-				continue
-			}
-		}
 		systemAccountID := input.SystemAccountID
 		if systemAccountID == "" {
-			if options.Postgres {
-				return WritePlan{}, fmt.Errorf("PostgreSQL 使用记录写入必须提供 systemAccountId")
-			}
-			if options.Scope != nil && options.Scope.SystemAccountIDForAPIKey != nil && input.APIKeyID != "" {
-				systemAccountID = options.Scope.SystemAccountIDForAPIKey(input.APIKeyID)
-			}
+			return WritePlan{}, fmt.Errorf("PostgreSQL 使用记录写入必须提供 systemAccountId")
 		}
 		id := input.ID
 		if id == "" {
@@ -216,7 +183,7 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 		if err != nil {
 			return WritePlan{}, err
 		}
-		pricingSnapshot := PricingSnapshotForWrite(ctx, input, options.CatalogSnapshotEnabled, options.Catalog)
+		pricingSnapshot := PricingSnapshotForWrite(ctx, input, options.Catalog)
 
 		row := ShardWriteRow{
 			ID:        id,
@@ -302,19 +269,9 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 			}
 		}
 
-		var location UsageRecordShardLocation
-		if options.Postgres {
-			resolved, err := UsageRecordLogicalShardLocationForPostgres(id, createdAt, options.ShardCount)
-			if err != nil {
-				return WritePlan{}, err
-			}
-			location = resolved
-		} else {
-			resolved, err := UsageRecordShardLocationForRecord(id, createdAt, options.ShardCount, options.ShardRoot)
-			if err != nil {
-				return WritePlan{}, err
-			}
-			location = resolved
+		location, err := UsageRecordLogicalShardLocationForPostgres(id, createdAt, options.ShardCount)
+		if err != nil {
+			return WritePlan{}, err
 		}
 		index, exists := shardIndex[location.ShardKey]
 		if !exists {

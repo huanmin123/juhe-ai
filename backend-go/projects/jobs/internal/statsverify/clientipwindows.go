@@ -233,9 +233,7 @@ func (s *Store) takeClientIPRangeWindowDirty(ctx context.Context, tx *sql.Tx, fu
 	}
 
 	lockClause := ""
-	if s.mode == StorePostgres {
-		lockClause = " FOR UPDATE SKIP LOCKED"
-	}
+	lockClause = " FOR UPDATE SKIP LOCKED"
 	clientIPRows, err := s.readDirtyRows(ctx, tx, s.statsTable("client_ip_range_window_dirty_ips"), ipHashes, lockClause)
 	if err != nil {
 		return clientIPRangeWindowDirtyClaim{}, err
@@ -322,26 +320,17 @@ func (s *Store) clearClientIPRangeWindowDirtyRows(ctx context.Context, tx *sql.T
 	for _, chunk := range chunkDirtyRows(rows, clientIpRangeWindowChunkSize) {
 		var query string
 		var args []any
-		if s.mode == StorePostgres {
-			claimedValues := make([]string, 0, len(chunk))
-			for index, row := range chunk {
-				claimedValues = append(claimedValues, fmt.Sprintf("(%s, %s::bigint)", s.placeholder(2*index+1), s.placeholder(2*index+2)))
-				args = append(args, row.ipHash, row.generation)
-			}
-			query = fmt.Sprintf(`
-				DELETE FROM %s AS dirty
-				USING (VALUES %s) AS claimed(ip_hash, generation)
-				WHERE dirty.ip_hash = claimed.ip_hash
-				  AND dirty.generation = claimed.generation
-			`, table, strings.Join(claimedValues, ", "))
-		} else {
-			predicates := make([]string, 0, len(chunk))
-			for _, row := range chunk {
-				predicates = append(predicates, "(ip_hash = ? AND generation = ?)")
-				args = append(args, row.ipHash, row.generation)
-			}
-			query = fmt.Sprintf(`DELETE FROM %s WHERE %s`, table, strings.Join(predicates, " OR "))
+		claimedValues := make([]string, 0, len(chunk))
+		for index, row := range chunk {
+			claimedValues = append(claimedValues, fmt.Sprintf("(%s, %s::bigint)", s.placeholder(2*index+1), s.placeholder(2*index+2)))
+			args = append(args, row.ipHash, row.generation)
 		}
+		query = fmt.Sprintf(`
+			DELETE FROM %s AS dirty
+			USING (VALUES %s) AS claimed(ip_hash, generation)
+			WHERE dirty.ip_hash = claimed.ip_hash
+			  AND dirty.generation = claimed.generation
+		`, table, strings.Join(claimedValues, ", "))
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return fmt.Errorf("清理 %s 失败: %w", table, err)
 		}

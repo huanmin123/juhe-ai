@@ -143,15 +143,13 @@ func (s *Store) beginWriteTx(ctx context.Context) (*sql.Tx, error) {
 // UPDATE inside the batch transaction (postgresClientIpStatsJobState);
 // SQLite relies on the BEGIN IMMEDIATE writer lock from the DSN.
 func (s *Store) loadClientIPJobState(ctx context.Context, q queryer) (ClientIPStatsAggregationJobState, error) {
-	if s.mode == StorePostgres {
-		// PG 分支必须用 $n 占位符（硬编码 ? 触发 pgx 语法错误；w10c PG 门禁取证修复）。
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, updated_at)
-			VALUES ('global', '', $1, $2)
-			ON CONFLICT(scope_type, scope_id, job_name) DO NOTHING
-		`, clientIpStatsJobName, NowIso(time.Now())); err != nil {
-			return ClientIPStatsAggregationJobState{}, fmt.Errorf("初始化 client-ip 统计 job state 失败: %w", err)
-		}
+	// PG 分支必须用 $n 占位符（硬编码 ? 触发 pgx 语法错误；w10c PG 门禁取证修复）。
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, updated_at)
+		VALUES ('global', '', $1, $2)
+		ON CONFLICT(scope_type, scope_id, job_name) DO NOTHING
+	`, clientIpStatsJobName, NowIso(time.Now())); err != nil {
+		return ClientIPStatsAggregationJobState{}, fmt.Errorf("初始化 client-ip 统计 job state 失败: %w", err)
 	}
 	query := fmt.Sprintf(`
 		SELECT cursor_created_at, cursor_id, lag_seconds
@@ -159,15 +157,13 @@ func (s *Store) loadClientIPJobState(ctx context.Context, q queryer) (ClientIPSt
 		WHERE scope_type = 'global' AND scope_id = '' AND job_name = %s
 		LIMIT 1
 	`, s.statsTable("stats_job_state"), s.placeholder(1))
-	if s.mode == StorePostgres {
-		query = `
-		SELECT cursor_created_at, cursor_id, lag_seconds
-		FROM juhe_stats.stats_job_state
-		WHERE scope_type = 'global' AND scope_id = '' AND job_name = $1
-		LIMIT 1
-		FOR UPDATE
-	`
-	}
+	query = `
+	SELECT cursor_created_at, cursor_id, lag_seconds
+	FROM juhe_stats.stats_job_state
+	WHERE scope_type = 'global' AND scope_id = '' AND job_name = $1
+	LIMIT 1
+	FOR UPDATE
+`
 	var row ClientIPStatsAggregationJobState
 	var cursorCreatedAt, cursorID any
 	var lagSeconds any

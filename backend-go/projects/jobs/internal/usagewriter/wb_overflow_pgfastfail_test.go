@@ -74,7 +74,7 @@ func TestWriterOverflowPersistsToSpoolInsteadOfDropping(t *testing.T) {
 	spool := NewFileOverflowSpool(t.TempDir())
 	config := Config{
 		QueueMaxItems: 1, QueueMaxBytes: 64 * 1024, BatchSize: 10,
-		FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
+		FlushIntervalMs: 60_000,
 	}
 	writer := NewWriter(config, store, fixedClock("2026-01-02T03:04:05.000Z"), WithOverflowSpool(spool))
 	// 不 Start：无 flush 循环，队列保持满。
@@ -111,7 +111,7 @@ func TestWriterOverflowSpoolFailureCountsDispatchDrop(t *testing.T) {
 	logger := &captureLogger{}
 	config := Config{
 		QueueMaxItems: 1, QueueMaxBytes: 64 * 1024, BatchSize: 10,
-		FlushIntervalMs: 60_000, ShardRoot: t.TempDir(),
+		FlushIntervalMs: 60_000,
 	}
 	writer := NewWriter(config, store, fixedClock("2026-01-02T03:04:05.000Z"),
 		WithOverflowSpool(spool), WithLogger(logger))
@@ -148,7 +148,6 @@ func TestWriterPostgresPlanFastFail(t *testing.T) {
 	logger := &captureLogger{}
 	config := Config{
 		BatchSize: 1, FlushIntervalMs: 5_000, MaxWriteAttempts: 1,
-		ShardRoot: t.TempDir(), Postgres: true,
 	}
 	writer, _ := newTestWriter(t, config, store, WithLogger(logger))
 	input := gatewayInput("pg-missing-account")
@@ -171,8 +170,7 @@ func TestWriterPostgresPlanFastFail(t *testing.T) {
 func TestWriterSQLiteDefaultAcceptsEmptySystemAccountID(t *testing.T) {
 	store := &mockStore{}
 	config := Config{
-		BatchSize: 1, FlushIntervalMs: 5_000, ShardRoot: t.TempDir(),
-	}
+		BatchSize: 1, FlushIntervalMs: 5_000, }
 	writer, _ := newTestWriter(t, config, store)
 	input := gatewayInput("sqlite-missing-account")
 	input.SystemAccountID = ""

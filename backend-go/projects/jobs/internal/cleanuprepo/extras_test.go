@@ -2,7 +2,6 @@ package cleanuprepo
 
 import (
 	"context"
-	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"strings"
@@ -20,7 +19,6 @@ func newKitPGRecordStore(rec *pgRecorder) *RecordCleanupStore {
 	return &RecordCleanupStore{
 		Stats:        openRecorderPG(rec),
 		Dataset:      openRecorderPG(rec),
-		UsageCatalog: openRecorderPG(rec),
 		Business:     openRecorderPG(rec),
 		Now:          kitNow,
 		Timezone:     func(context.Context) (*time.Location, error) { return kitZone(), nil },
@@ -213,134 +211,7 @@ func okInstant(value string) bool {
 }
 
 // TestExecChangedQError：执行失败透传（覆盖 execChangedQ 错误分支）。
-func TestExecChangedQError(t *testing.T) {
-	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error { return nil })
-	if _, err := execChangedQ(context.Background(), db, `INSERT INTO missing VALUES (1)`); err == nil {
-		t.Fatalf("SQL 失败应透传")
-	}
-}
 
-// TestReleaseAssetDeletionClaimDirect：成功释放、缺省错误码与超长截断。
-func TestReleaseAssetDeletionClaimDirect(t *testing.T) {
-	store, db := newKitChatStore(t)
-	mustExecKit(t, db, `INSERT INTO chat_assets (
-      id, system_account_id, cleanup_status, cleanup_claim_id, cleanup_attempt_count, expires_at, updated_at)
-    VALUES ('asset-1','sys-1','claimed','claim-1',1,'2026-10-01T00:00:00.000Z','2026-09-01T00:00:00.000Z')`)
-	released, releaseErr := store.releaseAssetDeletionClaim(context.Background(), "asset-1", "claim-1", "", kitUpdatedAt, kitUpdatedAt)
-	if releaseErr != nil || !released {
-		t.Fatalf("释放 = %v, %v", released, releaseErr)
-	}
-	var errorCode string
-	if err := db.QueryRowContext(context.Background(), `SELECT cleanup_error_code FROM chat_assets WHERE id = 'asset-1'`).Scan(&errorCode); err != nil {
-		t.Fatalf("read asset: %v", err)
-	}
-	if errorCode != "chat_asset_cleanup_failed" {
-		t.Fatalf("缺省错误码 = %q", errorCode)
-	}
-	// 认领不匹配 → false。
-	released, releaseErr = store.releaseAssetDeletionClaim(context.Background(), "asset-1", "claim-1", "x", kitUpdatedAt, kitUpdatedAt)
-	if releaseErr != nil || released {
-		t.Fatalf("认领不匹配应 false：%v, %v", released, releaseErr)
-	}
-	// 超长错误码截断到 120（先恢复 claimed 以命中更新）。
-	mustExecKit(t, db, `UPDATE chat_assets SET cleanup_status = 'claimed', cleanup_claim_id = 'claim-2'
-    WHERE id = 'asset-1'`)
-	long := strings.Repeat("e", 200)
-	released, releaseErr = store.releaseAssetDeletionClaim(context.Background(), "asset-1", "claim-2", long, kitUpdatedAt, kitUpdatedAt)
-	if releaseErr != nil || !released {
-		t.Fatalf("释放 = %v, %v", released, releaseErr)
-	}
-	if err := db.QueryRowContext(context.Background(), `SELECT cleanup_error_code FROM chat_assets WHERE id = 'asset-1'`).Scan(&errorCode); err != nil {
-		t.Fatalf("read asset: %v", err)
-	}
-	if len(errorCode) != 120 || errorCode != long[:120] {
-		t.Fatalf("截断错误码长度 = %d", len(errorCode))
-	}
-}
-
-// TestCodexHasMoreAndErrorPaths：批满 HasMore、残句刷新分支与句柄错误传播。
-func TestCodexHasMoreAndErrorPaths(t *testing.T) {
-	store := newKitCodexStore(t, 1)
-	seedKitCodexSession(t, store, 0, "s-1", "2026-09-01T00:00:00.000Z")
-	seedKitCodexSession(t, store, 0, "s-2", "2026-09-02T00:00:00.000Z")
-	result, err := store.CleanupExpiredStates(context.Background(), "2026-09-10T00:00:00.000Z", 1)
-	if err != nil {
-		t.Fatalf("CleanupExpiredStates: %v", err)
-	}
-	if result.DeletedSessions != 1 || !result.HasMore {
-		t.Fatalf("result = %+v", result)
-	}
-	// limit 抬升 → 剩余会话可清。
-	result, err = store.CleanupExpiredStates(context.Background(), "2026-09-10T00:00:00.000Z", 10)
-	if err != nil || result.DeletedSessions != 1 || result.HasMore {
-		t.Fatalf("second result = %+v, %v", result, err)
-	}
-	// 关闭分片句柄 → 错误传播。
-	shardDB, err := store.shard(0)
-	if err != nil {
-		t.Fatalf("shard: %v", err)
-	}
-	if err := shardDB.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if _, err := store.CleanupExpiredStates(context.Background(), "2026-09-10T00:00:00.000Z", 1); err == nil {
-		t.Fatalf("关闭句柄应报错")
-	}
-	// 关闭底层句柄但保留缓存 → 结算事务开启失败。
-	failedSettle := newKitCodexStore(t, 1)
-	cached, err := failedSettle.shard(0)
-	if err != nil {
-		t.Fatalf("shard: %v", err)
-	}
-	if err := cached.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if _, err := failedSettle.SettleStorageCleanup(context.Background(), Settlement{
-		Failures: []SettlementFailure{{StorageKey: "k", Error: "x"}}, Now: kitUpdatedAt,
-	}); err == nil {
-		t.Fatalf("关闭句柄结算应报错")
-	}
-}
-
-// TestUsageCatalogErrorPropagation：目录库句柄失败时的错误传播。
-func TestUsageCatalogErrorPropagation(t *testing.T) {
-	catalog := openKitSQLite(t, "catalog_errors")
-	createKitUsageCatalogSchema(t, catalog.DB)
-	store := newKitShardStore(t, t.TempDir())
-	if err := catalog.DB.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if _, err := ListLocationsForApiKey(context.Background(), catalog, "k", "s", 1); err == nil {
-		t.Fatalf("关闭句柄应报错")
-	}
-	if _, err := store.DeleteShardEntries(context.Background(), catalog, []string{"u"}); err == nil {
-		t.Fatalf("关闭句柄应报错")
-	}
-	if _, err := store.CleanupEmptyShardFilesBefore(context.Background(), catalog, kitUpdatedAt, 1); err == nil {
-		t.Fatalf("关闭句柄应报错")
-	}
-	records := &UsageRecordsStore{Catalog: catalog, Stats: catalog, Shards: store}
-	if _, err := records.CleanupProcessedBefore(context.Background(), kitUpdatedAt, 1); err == nil {
-		t.Fatalf("关闭句柄应报错")
-	}
-}
-
-// TestNonBusinessDatasetTimezoneError：时区来源失败时显式报错。
-func TestNonBusinessDatasetTimezoneError(t *testing.T) {
-	f := newKitRecordFixture(t)
-	store := &NonBusinessDatasetStore{
-		Dataset:      f.dataset,
-		UsageCatalog: f.catalog,
-		Stats:        f.stats,
-		UsageRecords: &UsageRecordsStore{Catalog: f.catalog, Stats: f.stats, Shards: f.shards},
-		Timezone:     func(context.Context) (*time.Location, error) { return nil, context.DeadlineExceeded },
-	}
-	if _, err := store.CleanupBefore(context.Background(), kitUpdatedAt, 10); err == nil {
-		t.Fatalf("时区失败应报错")
-	}
-}
-
-// TestStatsRetentionPostgresSchema：PG schema 限定（juhe_stats）与批删链。
 func TestStatsRetentionPostgresSchema(t *testing.T) {
 	rec := newPGRecorder()
 	store := &StatsRetentionStore{DB: openRecorderPG(rec)}

@@ -3,7 +3,11 @@ package cleanuprepo
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
@@ -23,6 +27,8 @@ import (
 // scripted 假驱动（pgRecorder / kitFailingPGConn / w13e 装饰句柄）不依赖真库，
 // 保持原状（PLAN §3 非目标）。
 
+const kitPGSchemaStats = "juhe_stats"
+
 // openKitPostgres 打开 pgtestkit 隔离 PG 测试库并返回 PG 方言句柄；prepare
 // 回调内建该测试所需的最小 schema（生产 PG 臂按 schema 限定访问，DDL 与
 // 生产 schema 名一一对应）。测试结束自动删库。
@@ -33,66 +39,110 @@ func openKitPostgres(t *testing.T, prepare func(ctx context.Context, db *sql.DB)
 
 // kitPGSchemaStats 是 stats 家族表的生产 PG schema（deleteRowsBefore /
 // schemaForStats 的 PG 方言值；与组合根 openDual 的 "juhe_stats" 一致）。
-const kitPGSchemaStats = "juhe_stats"
 
-// TestUpsertAccountUsageSnapshots：UpsertAccountUsageSnapshots 的 PG 分支
-// （juhe_business.accounts 归属读取 + juhe_stats.account_usage_snapshots
-// EXCLUDED 大写 upsert）在真实 PG 上的 upsert、缺省 updatedAt 与缺归属报错。
-// 单库双 schema 双句柄，与组合根 openDual 的单 PG 库装配一致。
-func TestUpsertAccountUsageSnapshots(t *testing.T) {
-	db := openKitPostgres(t, func(ctx context.Context, raw *sql.DB) error {
-		_, err := raw.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business;
-CREATE SCHEMA IF NOT EXISTS juhe_stats;
-CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY, system_account_id TEXT);
-CREATE TABLE juhe_stats.account_usage_snapshots (
-      system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, kind TEXT NOT NULL,
-      source TEXT, snapshot_json TEXT NOT NULL, refresh_status TEXT,
-      last_success_at TEXT, last_error_message TEXT, updated_at TEXT, created_at TEXT,
-      PRIMARY KEY (system_account_id, account_id, kind))`)
-		return err
-	})
-	business := &DB{DB: db.DB, Postgres: true}
-	stats := &DB{DB: db.DB, Postgres: true}
-	store := &RecordCleanupStore{Stats: stats, Now: kitNow}
-	mustExecKit(t, business, `INSERT INTO juhe_business.accounts (id, system_account_id) VALUES ('acc-1','owner-1'), ('acc-2','owner-2')`)
+type kitFailingPGConn struct {
+	*recorderConn
+	failOn []string
+}
 
-	if err := store.UpsertAccountUsageSnapshots(context.Background(), business, nil); err != nil {
-		t.Fatalf("空输入应直接返回 nil：%v", err)
+func (c *kitFailingPGConn) shouldFail(query string) bool {
+	for _, needle := range c.failOn {
+		if strings.Contains(query, needle) {
+			return true
+		}
 	}
-	if err := store.UpsertAccountUsageSnapshots(context.Background(), business, []retention.AccountUsageSnapshotUpsertInput{
-		{AccountID: "acc-1", Kind: "openai_codex", Source: "job", Snapshot: map[string]any{"requests": 1.0}, UpdatedAt: "bad-time"},
-	}); err == nil {
-		t.Fatalf("非法 updatedAt 应报错")
+	return false
+}
+
+func (c *kitFailingPGConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if c.shouldFail(query) {
+		return nil, fmt.Errorf("kitFailingPGConn: 注入失败：%s", oneLineSQL(query))
 	}
-	if err := store.UpsertAccountUsageSnapshots(context.Background(), business, []retention.AccountUsageSnapshotUpsertInput{
-		{AccountID: "acc-missing", Kind: "openai_codex"},
-	}); err == nil || !strings.Contains(err.Error(), "缺少账户归属") {
-		t.Fatalf("缺归属应报错：%v", err)
+	return c.recorderConn.ExecContext(ctx, query, args)
+}
+
+func (c *kitFailingPGConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if c.shouldFail(query) {
+		return nil, fmt.Errorf("kitFailingPGConn: 注入失败：%s", oneLineSQL(query))
 	}
-	if err := store.UpsertAccountUsageSnapshots(context.Background(), business, []retention.AccountUsageSnapshotUpsertInput{
-		{AccountID: "acc-1", Kind: "openai_codex", Source: "job", Snapshot: map[string]any{"requests": 1.0}},
-		{AccountID: "acc-2", Kind: "openai_codex", Source: "job", Snapshot: map[string]any{"requests": 2.0}, UpdatedAt: "2026-08-01T00:00:00.000Z"},
-	}); err != nil {
-		t.Fatalf("UpsertAccountUsageSnapshots: %v", err)
+	return c.recorderConn.QueryContext(ctx, query, args)
+}
+
+type kitFailingPGConnector struct {
+	rec    *pgRecorder
+	failOn []string
+}
+
+func (c kitFailingPGConnector) Connect(context.Context) (driver.Conn, error) {
+	return &kitFailingPGConn{recorderConn: &recorderConn{rec: c.rec}, failOn: c.failOn}, nil
+}
+
+func (c kitFailingPGConnector) Driver() driver.Driver { return recorderDriver{rec: c.rec} }
+
+// openKitFailingRecorderPG 打开命中 failOn 子串即报错的 PG 录制句柄。
+func openKitFailingRecorderPG(rec *pgRecorder, failOn ...string) *DB {
+	return &DB{DB: sql.OpenDB(kitFailingPGConnector{rec: rec, failOn: failOn}), Postgres: true}
+}
+
+// ---- retention.StatsWriter / DerivedWindowRefresher fake ----
+
+type kitAPIKeyStatsCall struct {
+	Target       retention.APIKeyCleanupTarget
+	Rows         []map[string]any
+	UpdatedAt    string
+	ShardDeleted bool
+}
+
+type kitAccountStatsCall struct {
+	Target       retention.ExpiredDeletedAccountTarget
+	Rows         []map[string]any
+	UpdatedAt    string
+	ShardDeleted bool
+}
+
+// kitStatsWriter 记录 CleanupDeletedApiKeyRecordStats / CleanupDeletedAccountRecordStats
+// 调用，并可脚本化返回错误（Node stats cleanup callback 的 fake）。
+type kitStatsWriter struct {
+	mu           sync.Mutex
+	apiKeyCalls  []kitAPIKeyStatsCall
+	accountCalls []kitAccountStatsCall
+	apiKeyErr    error
+	accountErr   error
+}
+
+func oneLineSQL(query string) string {
+	return strings.Join(strings.Fields(query), " ")
+}
+
+// normalizeKitSQL 逐行 trim 后拼接，用于对生产 raw string SQL 做空白无关
+// 的逐字符内容比对（保留 token 序列）。
+
+func execKitSchema(t *testing.T, db *sql.DB, statements ...string) {
+	t.Helper()
+	for _, statement := range statements {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("schema %q: %v", oneLineSQL(statement), err)
+		}
 	}
-	var count int64
-	if err := stats.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM juhe_stats.account_usage_snapshots`).Scan(&count); err != nil {
-		t.Fatalf("read snapshots: %v", err)
+}
+
+func normalizeKitSQL(query string) string {
+	lines := make([]string, 0, 8)
+	for _, line := range strings.Split(query, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			lines = append(lines, trimmed)
+		}
 	}
-	if count != 2 {
-		t.Fatalf("快照行数 = %d, 期望 2", count)
-	}
-	// 同 key 二次 upsert 覆盖（refresh_status 回 fresh）。
-	if err := store.UpsertAccountUsageSnapshots(context.Background(), business, []retention.AccountUsageSnapshotUpsertInput{
-		{AccountID: "acc-1", Kind: "openai_codex", Source: "retry", Snapshot: map[string]any{"requests": 9.0}},
-	}); err != nil {
-		t.Fatalf("second upsert: %v", err)
-	}
-	var source string
-	if err := stats.QueryRowContext(context.Background(), `SELECT source FROM juhe_stats.account_usage_snapshots WHERE account_id = 'acc-1'`).Scan(&source); err != nil {
-		t.Fatalf("read snapshot: %v", err)
-	}
-	if source != "retry" {
-		t.Fatalf("upsert 未覆盖 source：%q", source)
-	}
+	return strings.Join(lines, "\n")
+}
+
+type kitFailingResult struct{}
+
+func (kitFailingResult) LastInsertId() (int64, error) { return 0, nil }
+func (kitFailingResult) RowsAffected() (int64, error) {
+	return 0, errors.New("kitFailingResult: RowsAffected 注入失败")
 }

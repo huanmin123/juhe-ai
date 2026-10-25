@@ -188,28 +188,3 @@ func TestW10CAggregateBatchNilStoreErrors(t *testing.T) {
 	}
 }
 
-func TestW10CLoadUsageStatsLocationInvalidTimezone(t *testing.T) {
-	store := openTestStore(t, "UTC")
-	ctx := context.Background()
-	// 覆盖时区为非法值 → LoadUsageStatsLocation 错误臂。
-	mustExec(t, ctx, store.business,
-		`UPDATE system_settings SET value_json = ? WHERE key = 'usageStatsTimezone'`, mustJSONString("Not/AZone"))
-	if _, _, err := store.LoadUsageStatsLocation(ctx, time.Now()); err == nil {
-		t.Fatalf("非法时区应报错")
-	}
-}
-
-func TestW10CIgnoredCursorInvalidTimestampError(t *testing.T) {
-	store := openTestStore(t, "UTC")
-	ctx := context.Background()
-	// 一条被排除流量来源 + 非法 created_at 的记录（字符串 '0000-...' 小于
-	// safeCreatedBefore，能通过过滤；ParseRFC3339 失败触发忽略游标错误臂）。
-	insertUsageRecord(t, ctx, store, UsageStatsRecordRow{
-		ID: "w10c-ignored", SystemAccountID: "alice", TrafficSource: "runtime_recovery_probe",
-		CreatedAt: "0000-00-00T00:00:00.000Z",
-	})
-	now := fixedUTC(t, "2026-09-06T12:00:00Z").Now()
-	if _, err := store.AggregateClientIPStatsBatch(ctx, 10, now); err == nil {
-		t.Fatalf("非法忽略游标时间戳应报错")
-	}
-}

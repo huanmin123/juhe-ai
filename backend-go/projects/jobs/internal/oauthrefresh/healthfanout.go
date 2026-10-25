@@ -57,10 +57,8 @@ func (s *Store) EnqueueAccountHealthInputsForAuthorizationSourceTx(ctx context.C
 	}
 	now := s.nowISO()
 	lockSuffix := ""
-	if s.pg {
-		lockSuffix = `
+	lockSuffix = `
 		FOR UPDATE`
-	}
 	query := fmt.Sprintf(`SELECT id, config_revision, dispatch_revision
 		FROM %s
 		WHERE authorization_instance_source_account_id = ?
@@ -129,9 +127,7 @@ func (s *Store) reserveAccountHealthInputVersionTx(ctx context.Context, tx *sql.
 		return 0, fmt.Errorf("J1 snapshot version 缺少 account ID")
 	}
 	lockSuffix := ""
-	if s.pg {
-		lockSuffix = " FOR UPDATE"
-	}
+	lockSuffix = " FOR UPDATE"
 	var current sql.NullInt64
 	err := tx.QueryRowContext(ctx, s.bind("SELECT current_version FROM "+s.table("account_health_jobs_input_versions")+" WHERE account_id = ?"+lockSuffix), normalized).Scan(&current)
 	if err != nil && err != sql.ErrNoRows {

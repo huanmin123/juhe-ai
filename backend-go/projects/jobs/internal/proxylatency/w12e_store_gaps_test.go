@@ -22,23 +22,6 @@ import (
 const w12eOwnerRow = "FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key"
 const w12eProxyLeaseRow = "FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 FOR UPDATE"
 
-// w12eScriptLeases 登记一条活跃 owner/proxy lease 行，供 verify*Tx 通过。
-func w12eScriptLeases(rec *wfRecorder, owner OwnerLease, proxy ProxyLease) {
-	rec.script(w12eOwnerRow, []string{"owner", "token", "until"}, [][]driver.Value{{owner.OwnerID, owner.FenceToken, time.Now().Add(time.Minute)}})
-	rec.script(w12eProxyLeaseRow, []string{"owner", "token", "until"}, [][]driver.Value{{proxy.OwnerID, proxy.FenceToken, time.Now().Add(time.Minute)}})
-}
-
-// TestW12EOpenStoreSQLiteArms：SQLite OpenStore 缺路径错误臂。
-func TestW12EOpenStoreSQLiteArms(t *testing.T) {
-	if _, err := OpenStore(StoreConfig{Mode: StoreSQLite}); err == nil || !strings.Contains(err.Error(), "缺少数据库路径") {
-		t.Fatalf("空路径应报错: %v", err)
-	}
-	if _, err := OpenStore(StoreConfig{Mode: "weird"}); err == nil {
-		t.Fatalf("未知模式应报错")
-	}
-}
-
-// TestW12EStoreNilGuards：未初始化 Store 的防御臂。
 func TestW12EStoreNilGuards(t *testing.T) {
 	empty := &Store{}
 	ctx := context.Background()
@@ -262,7 +245,11 @@ func TestW12EEnsureRuntimeSchemaPGPreflight(t *testing.T) {
 	}
 }
 
-// TestW12ELeaseArms：owner/proxy lease 的失败与冲突臂。
+func w12eScriptLeases(rec *wfRecorder, owner OwnerLease, proxy ProxyLease) {
+	rec.script(w12eOwnerRow, []string{"owner", "token", "until"}, [][]driver.Value{{owner.OwnerID, owner.FenceToken, time.Now().Add(time.Minute)}})
+	rec.script(w12eProxyLeaseRow, []string{"owner", "token", "until"}, [][]driver.Value{{proxy.OwnerID, proxy.FenceToken, time.Now().Add(time.Minute)}})
+}
+
 func TestW12ELeaseArms(t *testing.T) {
 	ctx := context.Background()
 	owner := OwnerLease{OwnerID: "w12e-owner", FenceToken: 3}
@@ -547,133 +534,6 @@ func TestW12EAppendOutcomeClaimChain(t *testing.T) {
 	}
 }
 
-// TestW12EIssueAndLoadArms：IssueInput / LoadCommittedOutcome 的失败臂。
-func TestW12EIssueAndLoadArms(t *testing.T) {
-	ctx := context.Background()
-	// IssueInput：ensureRuntimeSchema 失败（ready=false + begin 失败）。
-	rec := newWFRecorder()
-	rec.beginErr = errors.New("w12e begin")
-	store := &Store{db: wfOpenRecorderDB(t, rec), mode: StorePostgres}
-	if _, err := store.IssueInput(ctx, testInputDraft("p1", TriggerPeriodic)); err == nil {
-		t.Fatalf("预检失败应透传")
-	}
-	// begin 失败（ready=true）。
-	rec = newWFRecorder()
-	rec.beginErr = errors.New("w12e begin2")
-	if _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).IssueInput(ctx, testInputDraft("p1", TriggerPeriodic)); err == nil {
-		t.Fatalf("begin 失败应透传")
-	}
-	// nextInputVersion 失败。
-	rec = newWFRecorder()
-	rec.failQuery("juhe_jobs.proxy_latency_input_versions", errors.New("w12e version"))
-	if _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).IssueInput(ctx, testInputDraft("p1", TriggerPeriodic)); err == nil {
-		t.Fatalf("input version 失败应透传")
-	}
-	// 持久化 INSERT 失败。
-	rec = newWFRecorder()
-	rec.script("juhe_jobs.proxy_latency_input_versions", []string{"next_version"}, [][]driver.Value{{int64(1)}})
-	rec.failExec("INSERT INTO juhe_jobs.proxy_latency_inputs", errors.New("w12e insert input"))
-	if _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).IssueInput(ctx, testInputDraft("p1", TriggerPeriodic)); err == nil || !strings.Contains(err.Error(), "持久化 J3a issued input 失败") {
-		t.Fatalf("INSERT 失败应包装: %v", err)
-	}
-	// commit 失败。
-	rec = newWFRecorder()
-	rec.script("juhe_jobs.proxy_latency_input_versions", []string{"next_version"}, [][]driver.Value{{int64(1)}})
-	rec.commitErr = errors.New("w12e commit")
-	if _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).IssueInput(ctx, testInputDraft("p1", TriggerPeriodic)); err == nil {
-		t.Fatalf("commit 失败应透传")
-	}
-
-	// LoadCommittedOutcome：真实 SQLite 签发一个输入，再在 PG 录制库上校验。
-	sqlite, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "/w12e-issue.sqlite3"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sqlite.Close()
-	issued, err := sqlite.IssueInput(ctx, testInputDraft("w12e-proxy", TriggerPeriodic))
-	if err != nil {
-		t.Fatal(err)
-	}
-	inputPayload, err := json.Marshal(issued)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inputDigest := sha256.Sum256(inputPayload)
-	snapshotScript := func(rec *wfRecorder) {
-		rec.script("SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload_digest FROM juhe_jobs.proxy_latency_inputs",
-			[]string{"proxy_id", "input_version", "config_revision", "trigger", "issued_at", "expires_at", "payload_digest"},
-			[][]driver.Value{{issued.ProxyID, issued.InputVersion, issued.ConfigRevision, string(issued.Trigger), issued.IssuedAt, issued.ExpiresAt, hex.EncodeToString(inputDigest[:])}})
-	}
-	// begin 失败。
-	rec = newWFRecorder()
-	rec.beginErr = errors.New("w12e begin load")
-	if _, _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).LoadCommittedOutcome(ctx, issued); err == nil {
-		t.Fatalf("LoadCommittedOutcome begin 失败应透传")
-	}
-	// snapshot 校验失败（无行）→ ErrInputFence。
-	rec = newWFRecorder()
-	if _, _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).LoadCommittedOutcome(ctx, issued); !errors.Is(err, ErrInputFence) {
-		t.Fatalf("无 snapshot 应 ErrInputFence: %v", err)
-	}
-	// snapshot 查询失败（非 NoRows）。
-	rec = newWFRecorder()
-	rec.failQuery("SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload_digest FROM juhe_jobs.proxy_latency_inputs", errors.New("w12e snapshot"))
-	if _, _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).LoadCommittedOutcome(ctx, issued); err == nil {
-		t.Fatalf("snapshot 查询失败应透传")
-	}
-	// 无 committed outcome + commit 失败。
-	rec = newWFRecorder()
-	snapshotScript(rec)
-	rec.commitErr = errors.New("w12e load commit")
-	if _, found, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).LoadCommittedOutcome(ctx, issued); found || err == nil {
-		t.Fatalf("无 committed + commit 失败: found=%v err=%v", found, err)
-	}
-	// committed 查询失败。
-	rec = newWFRecorder()
-	snapshotScript(rec)
-	rec.failQuery("FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE", errors.New("w12e committed"))
-	if _, _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).LoadCommittedOutcome(ctx, issued); err == nil {
-		t.Fatalf("committed 查询失败应透传")
-	}
-	// committed 身份不匹配 → ErrRequestConflict。
-	outcomePayload := func(mutate func(*Outcome)) []byte {
-		outcome := Outcome{
-			OutcomeID: "w12e-co", RequestID: issued.RequestID, ProxyID: issued.ProxyID,
-			ObservedAt: issued.IssuedAt.Add(time.Second), InputVersion: issued.InputVersion,
-			ConfigRevision: issued.ConfigRevision, Trigger: issued.Trigger,
-			OwnerFenceToken: 1, ProxyFenceToken: 1, OverallStatus: OverallPassed,
-			Items: []ItemResult{{Status: ItemPassed, HTTPStatus: 200}},
-		}
-		mutate(&outcome)
-		payload, err := json.Marshal(outcome)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return payload
-	}
-	digest := func(payload []byte) string {
-		sum := sha256.Sum256(payload)
-		return hex.EncodeToString(sum[:])
-	}
-	rec = newWFRecorder()
-	snapshotScript(rec)
-	bad := outcomePayload(func(o *Outcome) { o.RequestID = "j3a-other" })
-	rec.script("FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE", []string{"payload", "payload_digest"}, [][]driver.Value{{bad, digest(bad)}})
-	if _, _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).LoadCommittedOutcome(ctx, issued); !errors.Is(err, ErrRequestConflict) {
-		t.Fatalf("身份不匹配应 ErrRequestConflict: %v", err)
-	}
-	// committed 匹配 + commit 失败。
-	rec = newWFRecorder()
-	snapshotScript(rec)
-	good := outcomePayload(func(*Outcome) {})
-	rec.script("FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE", []string{"payload", "payload_digest"}, [][]driver.Value{{good, digest(good)}})
-	rec.commitErr = errors.New("w12e load commit2")
-	if _, found, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).LoadCommittedOutcome(ctx, issued); found || err == nil {
-		t.Fatalf("匹配 + commit 失败: found=%v err=%v", found, err)
-	}
-}
-
-// TestW12EListAndFindArms：ListCommittedOutcomes / FindCommittedOutcome。
 func TestW12EListAndFindArms(t *testing.T) {
 	ctx := context.Background()
 	// after 游标 PG 分支 + limit/cursor 参数错误。
@@ -878,39 +738,6 @@ func TestW12EVerifyAndAdmitArms(t *testing.T) {
 	rec.commitErr = errors.New("w12e admit commit")
 	if _, _, _, err := wfNewPGStore(wfOpenRecorderDB(t, rec)).AdmitExecution(ctx, owner, proxy, issued); err == nil {
 		t.Fatalf("admit commit 失败应透传")
-	}
-}
-
-// TestW12EBeginTxAndSQLiteModeArms：beginTx SET LOCAL 失败 + SQLite 模式臂。
-func TestW12EBeginTxAndSQLiteModeArms(t *testing.T) {
-	ctx := context.Background()
-	// beginTx 的 SET LOCAL 失败（VerifyOwnerLease 走 beginTx）。
-	rec := newWFRecorder()
-	rec.failExec("SET LOCAL statement_timeout", errors.New("w12e setlocal"))
-	store := wfNewPGStore(wfOpenRecorderDB(t, rec))
-	if err := store.VerifyOwnerLease(ctx, OwnerLease{OwnerID: "o", FenceToken: 1}); err == nil || !strings.Contains(err.Error(), "transaction timeout 失败") {
-		t.Fatalf("SET LOCAL 失败应包装: %v", err)
-	}
-	// verifyOwnerTx / verifyProxyTx 的 SQLite 字符串分支：释放未命中 → lost。
-	rec = newWFRecorder()
-	rec.scriptExec("UPDATE proxy_latency_owner_leases", 0)
-	sqliteStore := &Store{db: wfOpenRecorderDB(t, rec), mode: StoreSQLite}
-	if err := sqliteStore.RenewOwnerLease(ctx, OwnerLease{OwnerID: "w12e-o", FenceToken: 1}, time.Minute); !errors.Is(err, ErrOwnerLeaseLost) {
-		t.Fatalf("SQLite lease 未命中应 lost: %v", err)
-	}
-	// AppendOutcome SQLite 模式 insert 失败：mode 伪装为 SQLite 的录制库。
-	rec = newWFRecorder()
-	rec.failExec("INSERT INTO proxy_latency_outcomes", errors.New("w12e sqlite insert"))
-	fakeSQLite := &Store{db: wfOpenRecorderDB(t, rec), mode: StoreSQLite}
-	outcome := Outcome{
-		OutcomeID: "w12e-o", RequestID: "j3a-w12e-sqlite", ProxyID: "w12e-p",
-		ObservedAt: time.Now().UTC(), InputVersion: 1,
-		ConfigRevision: time.Now().UTC().Format(time.RFC3339Nano), Trigger: TriggerPeriodic,
-		OwnerFenceToken: 1, ProxyFenceToken: 1, OverallStatus: OverallPassed,
-		Items: []ItemResult{{Status: ItemPassed}},
-	}
-	if _, err := fakeSQLite.AppendOutcome(ctx, OwnerLease{OwnerID: "o", FenceToken: 1}, ProxyLease{ProxyID: "w12e-p", OwnerID: "o", FenceToken: 1}, outcome); err == nil {
-		t.Fatalf("SQLite insert 失败应透传")
 	}
 }
 

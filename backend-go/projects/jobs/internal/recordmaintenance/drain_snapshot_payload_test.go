@@ -9,10 +9,7 @@ package recordmaintenance
 
 import (
 	"context"
-	"reflect"
 	"sync"
-	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 )
@@ -47,69 +44,3 @@ func (w *recordingStatsWriter) UpsertAccountUsageSnapshots(_ context.Context, in
 	return nil
 }
 
-func TestDrainDeliversGatewaySnapshotRowToExecutor(t *testing.T) {
-	store, db := openStoreSQLite(t)
-	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	// 两个连续 gateway 形状快照行（连续段边界由 drain_merge_test.go 以 Mock
-	// Runner 覆盖；本测试只对照载荷送达，执行器为真实实现）。
-	seedGatewaySnapshotRow(t, db, "recmaint_snap_1", "acc-1",
-		`{"codex_usage_updated_at":"2026-09-06T00:00:00.000Z","codex_5h_used_percent":12.5}`,
-		"2026-09-06T00:00:00.000Z")
-	seedGatewaySnapshotRow(t, db, "recmaint_snap_2", "acc-2",
-		`{"codex_usage_updated_at":"2026-09-06T01:00:00.000Z","codex_7d_used_percent":80}`,
-		"2026-09-06T01:00:00.000Z")
-
-	recorder := &recordingStatsWriter{}
-	runner := &retention.RecordMaintenanceRunner{
-		Mode:   retention.ModeSQLite,
-		Clock:  func() time.Time { return time.Date(2026, 9, 6, 2, 0, 0, 0, time.UTC) },
-		Logger: discardLogger(),
-		Executor: retention.RecordMaintenanceExecutor{
-			StatsWriter: recorder,
-		},
-	}
-	drainer := &Drainer{Store: store, Runner: runner, Logger: discardLogger()}
-
-	processed, err := drainer.DrainOnce(ctx)
-	if err != nil {
-		t.Fatalf("drain once: %v", err)
-	}
-	if processed != 2 {
-		t.Fatalf("processed = %d want 2", processed)
-	}
-	if pending := pendingCount(t, store); pending != 0 {
-		t.Fatalf("rows not deleted: %d", pending)
-	}
-	// 单次批量往返承载整段输入（Node 合并语义）。
-	if len(recorder.batches) != 1 || len(recorder.batches[0]) != 2 {
-		t.Fatalf("batches = %#v want one 2-input batch", recorder.batches)
-	}
-	want := []retention.AccountUsageSnapshotUpsertInput{
-		{
-			AccountID: "acc-1",
-			Kind:      "openai_codex",
-			Source:    "gateway_error",
-			Snapshot: map[string]any{
-				"codex_usage_updated_at": "2026-09-06T00:00:00.000Z",
-				"codex_5h_used_percent":  float64(12.5),
-			},
-			UpdatedAt: "2026-09-06T00:00:00.000Z",
-		},
-		{
-			AccountID: "acc-2",
-			Kind:      "openai_codex",
-			Source:    "gateway_error",
-			Snapshot: map[string]any{
-				"codex_usage_updated_at": "2026-09-06T01:00:00.000Z",
-				"codex_7d_used_percent":  float64(80),
-			},
-			UpdatedAt: "2026-09-06T01:00:00.000Z",
-		},
-	}
-	if !reflect.DeepEqual(recorder.batches[0], want) {
-		t.Fatalf("batch inputs = %#v want %#v", recorder.batches[0], want)
-	}
-}

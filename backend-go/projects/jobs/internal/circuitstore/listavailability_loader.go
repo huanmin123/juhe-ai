@@ -102,12 +102,10 @@ type ProjectionLoadConfig struct {
 // ProjectionItemLoader 实现 opsjobs.ItemLoader 的载荷组装
 // （circuitstore 对 ListAvailabilityRepo 17 方法之外的 LoadItems 补齐）。
 type ProjectionItemLoader struct {
-	db            *sql.DB
-	statsDB       *sql.DB
-	postgres      bool
-	statsPostgres bool
-	secret        string
-	credentials   CredentialCodec
+	db          *sql.DB
+	statsDB     *sql.DB
+	secret      string
+	credentials CredentialCodec
 	concurrency   ConcurrencySource
 	runtime       RuntimeAvailabilitySource
 	timezone      TimezoneSource
@@ -136,11 +134,9 @@ func NewProjectionItemLoader(config ProjectionLoadConfig) (*ProjectionItemLoader
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &ProjectionItemLoader{
-		db:            config.Business,
-		statsDB:       config.Stats,
-		postgres:      config.Postgres,
-		statsPostgres: config.StatsPostgres,
-		secret:        config.Secret,
+		db:          config.Business,
+		statsDB:     config.Stats,
+		secret:      config.Secret,
 		credentials:   config.Credentials,
 		concurrency:   config.Concurrency,
 		runtime:       config.RuntimeAvailability,

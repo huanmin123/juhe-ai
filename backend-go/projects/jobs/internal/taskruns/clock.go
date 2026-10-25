@@ -1,7 +1,7 @@
 // Package taskruns 是 J-INF 基建：jobs 运行记录（background_task_runs）与
 // 共享租约（background_job_leases）的 Go 实现。状态机、CAS 谓词和对账 SQL
 // 与 Node backend/src/storage/background-task-runs.repository.ts、
-// scheduled-job-lease.repository.ts 逐字段对齐；SQLite 用于测试闭环，
+// scheduled-job-lease.repository.ts 逐字段对齐。
 // PostgreSQL 为生产语义（juhe_stats schema，text 时间戳与 Node 冻结 DDL 一致）。
 package taskruns
 

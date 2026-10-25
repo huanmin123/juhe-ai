@@ -96,14 +96,9 @@ func (s *Store) pruneBatch(ctx context.Context, table pruneTable, cutoff time.Ti
 	if table == pruneTableInputs {
 		keyColumn, timeColumn, tableLabel = "request_id", "issued_at", "inputs"
 	}
-	sqliteTable := "proxy_latency_" + tableLabel
-	query := `DELETE FROM ` + sqliteTable + ` WHERE ` + keyColumn + ` IN (SELECT ` + keyColumn + ` FROM ` + sqliteTable + ` WHERE ` + timeColumn + `<? LIMIT ?)`
-	args := []any{cutoff.UTC().Format(time.RFC3339Nano), proxyLatencyPruneBatchSize}
-	if s.mode == StorePostgres {
-		postgresTable := "juhe_jobs.proxy_latency_" + tableLabel
-		query = `DELETE FROM ` + postgresTable + ` WHERE ` + keyColumn + ` IN (SELECT ` + keyColumn + ` FROM ` + postgresTable + ` WHERE ` + timeColumn + `<$1 LIMIT $2)`
-		args = []any{cutoff, proxyLatencyPruneBatchSize}
-	}
+	postgresTable := "juhe_jobs.proxy_latency_" + tableLabel
+	query := `DELETE FROM ` + postgresTable + ` WHERE ` + keyColumn + ` IN (SELECT ` + keyColumn + ` FROM ` + postgresTable + ` WHERE ` + timeColumn + `<$1 LIMIT $2)`
+	args := []any{cutoff, proxyLatencyPruneBatchSize}
 	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, false, fmt.Errorf("清理 J3a %s 过期行失败: %w", tableLabel, err)

@@ -2,14 +2,11 @@ package cleanuprepo
 
 import (
 	"context"
-	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // 第二轮收尾：CleanupRetention PG 全路径、deleteaccount 实例授权富场景、
@@ -76,83 +73,7 @@ func TestCleanupRetentionPostgres(t *testing.T) {
 	}
 }
 
-// TestDeletedAccountInstanceCandidateRichGraph：实例候选（授权实例 + 团队
-// source + manual source + grants join）完整构建与删除。
-func TestDeletedAccountInstanceCandidateRichGraph(t *testing.T) {
-	f := newKitRecordFixture(t)
-	store, business := newKitDeletedAccountStore(t, f.store)
-	seedKitDeletedAccount(t, business, "acc-live", "", "", "")
-	seedKitDeletedAccount(t, business, "acc-inst", "2026-06-01T00:00:00.000Z", "auth-5", "acc-live")
-	mustExecKit(t, business, `INSERT INTO resource_authorizations
-    (id, resource_type, resource_id, grantee_system_account_id, resource_owner_system_account_id, status)
-    VALUES ('auth-5','account','acc-live','sys-1','owner-2','active')`)
-	mustExecKit(t, business, `INSERT INTO resource_authorization_sources
-    (id, authorization_id, source_type, source_team_id, status)
-    VALUES ('src-5','auth-5','manual','team-31','active')`)
-	mustExecKit(t, business, `INSERT INTO resource_authorization_grants
-    (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, status)
-    VALUES ('g-5','account','acc-live','owner-2','system_account','sys-1','active')`)
-	mustExecKit(t, business, `INSERT INTO group_accounts (id, account_id, account_authorization_id)
-    VALUES ('ga-5', NULL, 'auth-5')`)
-
-	summary, err := store.CleanupExpired(context.Background())
-	if err != nil {
-		t.Fatalf("CleanupExpired: %v", err)
-	}
-	if summary.Completed != 1 || summary.PhysicallyDeletedAccounts != 1 ||
-		summary.PhysicallyDeletedAuthorizations != 1 || summary.PhysicallyDeletedGrants != 1 {
-		t.Fatalf("summary = %+v", summary)
-	}
-}
-
-// TestRecordCleanupSQLiteAccountErrorStages：account 清理链阶段注入。
-func TestRecordCleanupSQLiteAccountErrorStages(t *testing.T) {
-	stages := []pgStage{
-		{"target upsert", "INSERT INTO account_record_cleanup_targets"},
-		{"target mark", "UPDATE account_record_cleanup_targets"},
-		{"target clear", "DELETE FROM account_record_cleanup_targets"},
-	}
-	runSQLiteStages(t, stages, func(t *testing.T, stage pgStage) error {
-		f := newKitSQLiteStageFixture(t, stage.failOn)
-		// sk-1 在 global floor 内（有记录可删）；"target mark" 阶段把 floor
-		// 回拨到记录之前 → 行未覆盖 → deferred 路径走到 mark（带阻塞原因）。
-		f.addKitStageShard(t, "sk-1", "20260105", true)
-		if stage.name == "target mark" {
-			mustExecKit(t, f.seedStats, `UPDATE stats_job_state
-        SET cursor_created_at = '2026-01-05T00:00:00.000Z' WHERE scope_type = 'global'`)
-		}
-		store := kitStageStore(t, f)
-		store.Shards.SetOpener(func(path string) (*sql.DB, error) {
-			return openKitFailingSQLite(path, stage.failOn), nil
-		})
-		target := retention.ExpiredDeletedAccountTarget{AccountID: "acc-1", SystemAccountID: "sys-1"}
-		_, err := store.CleanupAccountRelatedSQLite(context.Background(), target, &kitStatsWriter{})
-		return err
-	})
-	// statsWriter 失败时的 markErr 路径（含 Pending 汇总）。
-	g := newKitRecordFixture(t)
-	g.addKitShard(t, "sk-3", "2026-01-07", 3, "key-1", "sys-1", "acc-1", true, []statsagg.UsageStatsRecordRow{
-		kitUsageRecord("rec-3", "sys-1", "key-1", "acc-1", "2026-01-05T01:00:00.000Z"),
-	})
-	failingWriter := &kitStatsWriter{accountErr: errors.New("account 结算注入失败")}
-	if err := g.store.upsertAccountTarget(context.Background(),
-		retention.ExpiredDeletedAccountTarget{AccountID: "acc-1", SystemAccountID: "sys-1"}, kitUpdatedAt); err != nil {
-		t.Fatalf("seed target: %v", err)
-	}
-	summary, err := g.store.CleanupPendingAccountTargets(context.Background(), 10, failingWriter)
-	if err != nil {
-		t.Fatalf("CleanupPendingAccountTargets: %v", err)
-	}
-	if summary.Failed != 1 {
-		t.Fatalf("summary = %+v", summary)
-	}
-}
-
-// TestMiscTrailingHelpers：收尾纯函数。
 func TestMiscTrailingHelpers(t *testing.T) {
-	if !strings.Contains(sqliteBusyBlockedReason("api key"), "api key") {
-		t.Fatalf("sqliteBusyBlockedReason = %q", sqliteBusyBlockedReason("api key"))
-	}
 	if got := cleanupPendingReason(true, false); !strings.Contains(got, "已被统计安全游标覆盖") {
 		t.Fatalf("cleanupPendingReason(true,false) = %q", got)
 	}

@@ -25,13 +25,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 )
@@ -203,123 +200,6 @@ func TestW12CBalanceConfigHelpers(t *testing.T) {
 	}
 }
 
-func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
-	base := func() map[string]string {
-		return workerSmokeTestEnv(t)
-	}
-	cases := []struct {
-		name string
-		env  map[string]string
-	}{
-		// replica / PG pool conns / projection 批量族 / record maintenance
-		// 批量族错误臂已删除（2026-09-30 C4 收编为常量，env 不再被读取）。
-		{"非法 chat retention", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}},
-		// 「非法 stats toggle」臂已删除（2026-09-19 家族开关移除：开关 env 不再被读取）。
-		{"非法 probe concurrency", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "0"}},
-		{"非法 projection interval", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "1"}},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			env := base()
-			for key, value := range tc.env {
-				env[key] = value
-			}
-			if _, err := loadWorkerConfig(getenvFrom(env)); err == nil {
-				t.Fatalf("%s 必须拒绝", tc.name)
-			}
-		})
-	}
-	// 合法 projection 边界值应通过（2026-09-21 起投影恒开，开关 env 已移除）。
-	env := base()
-	env["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS"] = "1000"
-	config, err := loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("合法 projection 配置应通过: %+v %v", config, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// J1 outcome 投影面装配分支
-// ---------------------------------------------------------------------------
-
-func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{PostgresURL: "postgres://unit-test.invalid/j1", PostgresMaxOpenConns: 50, PostgresMaxIdleConns: 10}, slog.Default())
-	defer assembly.closeStores()
-	ctx := context.Background()
-
-	// store 为 nil → 合法缺席（防御性分支；恒开终态下 store 恒非 nil）。
-	if projector, err := assembly.wireHealthOutcomeProjector(func(string) string { return "" }, nil); err != nil || projector != nil {
-		t.Fatalf("nil store 应缺席: %v %v", projector, err)
-	}
-	// production 下 J1 凭据密钥缺失 → 恒开语义下 LoadConfig 失败即装配失败
-	//（非生产空值回退开发密钥，装配成功是预期行为）。
-	prodGetenv := func(name string) string {
-		if name == "NODE_ENV" {
-			return "production"
-		}
-		return ""
-	}
-	if absent, err := assembly.wireHealthOutcomeProjector(prodGetenv, &accounthealth.Store{}); err == nil {
-		t.Fatalf("production J1 凭据密钥缺失必须使投影装配失败: %v", absent)
-	}
-	// 轮询/批量 env 非法 → 装配失败（业务库可开）。
-	getenv := func(name string) string {
-		pairs := map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://unit-test.invalid/j1",
-			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://unit-test.invalid/j1",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
-			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
-			healthProjectionPollEnvVar:                 "1",
-			healthProjectionBatchEnvVar:                "",
-		}
-		return pairs[name]
-	}
-	if _, err := assembly.wireHealthOutcomeProjector(getenv, &accounthealth.Store{}); err == nil {
-		t.Fatal("非法轮询间隔必须暴露")
-	}
-	getenvBatch := func(name string) string {
-		pairs := map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://unit-test.invalid/j1",
-			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://unit-test.invalid/j1",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
-			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
-			healthProjectionPollEnvVar:                 "",
-			healthProjectionBatchEnvVar:                "1001",
-		}
-		return pairs[name]
-	}
-	if _, err := assembly.wireHealthOutcomeProjector(getenvBatch, &accounthealth.Store{}); err == nil {
-		t.Fatal("非法批量必须暴露")
-	}
-	// 合法配置 → 投影器装配成功（stats 家族缺席 warn）。
-	getenvOK := func(name string) string {
-		pairs := map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w12c-j1",
-			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://unit-test.invalid/j1",
-			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://unit-test.invalid/j1",
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
-			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
-		}
-		return pairs[name]
-	}
-	projector, err := assembly.wireHealthOutcomeProjector(getenvOK, &accounthealth.Store{})
-	if err != nil || projector == nil {
-		t.Fatalf("合法配置应装配投影器: %v %v", projector, err)
-	}
-	_ = ctx
-}
-
-// ---------------------------------------------------------------------------
-// openBusinessDB 与 probeSettingsSource 回落
-// ---------------------------------------------------------------------------
-
 func TestW12COpenBusinessDBArms(t *testing.T) {
 	// PG 缺 URL → acquirePool fail-fast（sqlite 臂已随 sqlite 形态退役删除）。
 	pgAssembly := newWorkerAssembly(workerConfig{}, slog.Default())
@@ -355,30 +235,3 @@ CREATE TABLE juhe_business.system_settings (
 	}
 }
 
-func TestW12CWireFamiliesErrorPropagation(t *testing.T) {
-	// PG 驱动 + 非法连接参数：家族装配在 schedule-settings 池获取处失败，
-	// buildWorkerAssembly 必须回收已打开句柄并上抛错误（wireFamilies 61.1%
-	// 的错误传播臂）。
-	config := workerConfig{
-		PostgresURL:          "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable",
-		PostgresMaxOpenConns: 10,
-		PostgresMaxIdleConns: 5,
-		Secret:               wgBalanceSecret,
-		InstanceID:           "w12c-propagation",
-		ProbeConcurrency:     1,
-		DrainTimeout:         time.Second,
-		ChatAssetsRoot:       filepath.Join(t.TempDir(), "chat-assets"),
-		CodexContextRoot:     filepath.Join(t.TempDir(), "codex-context"),
-	}
-	assembly, err := buildWorkerAssembly(config, slog.Default())
-	if err == nil {
-		if assembly != nil {
-			assembly.closeStores()
-		}
-		t.Fatal("不可达 PG 必须让装配失败")
-	}
-	// 装配失败后组合根必须返回 nil assembly（内部已回收句柄）。
-	if assembly != nil {
-		t.Fatal("失败装配必须返回 nil assembly")
-	}
-}

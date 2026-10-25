@@ -17,32 +17,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 )
 
-func TestW12fControlPlaneClosedArms(t *testing.T) {
-	repo, _, db := openControlPlaneFixture(t)
-	ctx := context.Background()
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repo.ListForRebuild(ctx, opsjobs.RebuildPageQuery{NowMS: 1000, Limit: 1}); err == nil {
-		t.Fatal("ListForRebuild 必须报错")
-	}
-	if _, err := repo.ListByRuntimeKeys(ctx, []string{"w12f-key"}, false, 1000); err == nil {
-		t.Fatal("ListByRuntimeKeys 必须报错")
-	}
-	if _, err := repo.GetByScopeKey(ctx, "w12f-scope"); err == nil {
-		t.Fatal("GetByScopeKey 必须报错")
-	}
-	if _, err := repo.Claim(ctx, "w12f-owner", 1000, 30_000, 10); err == nil {
-		t.Fatal("Claim 必须报错")
-	}
-	if _, err := repo.Ack(ctx, opsjobs.OutboxEvent{}, 1000); err == nil {
-		t.Fatal("Ack 必须报错")
-	}
-	if err := repo.ReleaseForReplay(ctx, opsjobs.OutboxEvent{}, "w12f-class", 1000, 1000); err == nil {
-		t.Fatal("ReleaseForReplay 必须报错")
-	}
-}
-
 func TestW12fListAvailabilityClosedArms(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	ctx := context.Background()

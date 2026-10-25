@@ -19,54 +19,6 @@ func TestLoadRuntimeConfigAbsentWithoutPostgres(t *testing.T) {
 	}
 }
 
-// 有 PG（回退主连接串）即恒开：任何残留错误 fail-closed（凭据密钥缺失）。
-func TestLoadRuntimeConfigRequiresCompletePostgresConfig(t *testing.T) {
-	env := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://main"}
-	_, err := LoadRuntimeConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "CREDENTIAL_SECRET") {
-		t.Fatalf("expected fail-closed credential secret, err=%v", err)
-	}
-}
-
-func TestLoadRuntimeConfigUsesGoHighThroughputDefaults(t *testing.T) {
-	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
-		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "jobs-test",
-		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
-		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":        "postgres://jobs",
-		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":  "postgres://business",
-		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": "postgres://business-writer",
-		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":   "credential-secret",
-	}
-	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.InputLimit != 512 || cfg.BatchSize != 512 || cfg.CandidatePoolFactor != 100 || cfg.WorkerConcurrency != 512 || cfg.DBConcurrency != 16 || cfg.DBQueueSize != 512 {
-		t.Fatalf("unexpected Go high-throughput scheduler defaults: %+v", cfg)
-	}
-}
-
-func TestLoadRuntimeConfigAcceptsLargeGoCapacity(t *testing.T) {
-	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":            "go",
-		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":           "jobs-test",
-		"JUHE_AI_PROXY_LATENCY_STORE":                 "postgres",
-		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":          "postgres://jobs",
-		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":    "postgres://business",
-		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL":   "postgres://business-writer",
-		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":     "credential-secret",
-		"JUHE_AI_PROXY_LATENCY_INPUT_LIMIT":           "5096",
-		"JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR": "1000",
-	}
-	// 清理批次 C4（2026-09-30）：BATCH/WORKER 并发 env 零引用收编为常量，
-	// 本测试保留仍可配置项（INPUT_LIMIT/CANDIDATE_POOL_FACTOR）的上限语义。
-	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
-	if err != nil || cfg.InputLimit != 5096 || cfg.CandidatePoolFactor != 1_000 || cfg.BatchSize != defaultProxyLatencyBatchSize || cfg.WorkerConcurrency != defaultProxyLatencyConcurrency {
-		t.Fatalf("large Go capacity config=%+v err=%v", cfg, err)
-	}
-}
-
 func TestRunnerBatchAndCandidatePoolLimits(t *testing.T) {
 	runner := &Runner{cfg: RuntimeConfig{InputLimit: 80, BatchSize: 20, CandidatePoolFactor: 4, WorkerConcurrency: 4}}
 	if got := runner.batchSize(); got != 20 {

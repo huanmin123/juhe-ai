@@ -4,69 +4,46 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 )
 
-// Dialect 承载 SQLite 测试 / PG 生产的 SQL 双模差异：
-//   - 占位符：SQLite `?`，PG `$n`；
-//   - stats 库表限定：SQLite 裸表名，PG `juhe_stats.` 前缀；
-//   - usage 记录源表：SQLite `usage_records`，PG `juhe_usage.usage_records`。
+// Dialect 承载 PG 唯一形态的 SQL 生成（原 SQLite 方言臂已随存储形态退役）：
+//   - 占位符：PG `$n`；
+//   - stats 库表限定：`juhe_stats.` 前缀；
+//   - usage 记录源表：`juhe_usage.usage_records`；
+//   - 业务库与 stats 库同池（juhe_business. 前缀）。
 //
-// 双模下同一语句由 bind 生成，保证聚合语义逐字段一致（对齐
-// usage-stats.repository.ts 的 PG 路径与 usage-stats-writers.ts 的 SQLite 路径）。
-type Dialect struct {
-	Postgres bool
-}
+// 对齐 usage-stats.repository.ts 的 PG 路径。
+type Dialect struct{}
 
 // bind 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func (d Dialect) bind(query string) string {
-	return sqldialect.BindSQL(d.Postgres, query)
+	return sqldialect.BindSQL(true, query)
 }
 
 // StatsTable 返回 stats 库表引用。
 func (d Dialect) StatsTable(tableName string) string {
-	if d.Postgres {
-		return "juhe_stats." + tableName
-	}
-	return tableName
+	return "juhe_stats." + tableName
 }
 
-// BusinessTable 返回业务库表引用。PG 与 stats 库同池（juhe_business. 前缀）；
-// SQLite 是独立库文件，裸表名由 WindowRefresher.BusinessDB 注入的句柄承载。
+// BusinessTable 返回业务库表引用。
 func (d Dialect) BusinessTable(tableName string) string {
-	if d.Postgres {
-		return "juhe_business." + tableName
-	}
-	return tableName
+	return "juhe_business." + tableName
 }
 
 // UsageRecordsTable 返回 usage 记录源表引用。
 func (d Dialect) UsageRecordsTable() string {
-	if d.Postgres {
-		return "juhe_usage.usage_records"
-	}
-	return "usage_records"
+	return "juhe_usage.usage_records"
 }
 
 // qualifiedTarget 返回 DO UPDATE SET 右值里指向目标行既有值的限定引用。
-// SQLite/PG 均支持 `table.column` 形式。
 func (d Dialect) qualifiedTarget(tableName string) string {
-	if d.Postgres {
-		return "juhe_stats." + tableName
-	}
-	return tableName
+	return "juhe_stats." + tableName
 }
 
-// leastExpr 返回二元取小表达式：PG 用 LEAST，SQLite 用标量 MIN
-// （对齐 Node PG 路径的 LEAST 与 SQLite 路径的 MIN 语义）。
+// leastExpr 返回二元取小表达式（PG LEAST）。
 func (d Dialect) leastExpr(left, right string) string {
-	if d.Postgres {
-		return "LEAST(" + left + ", " + right + ")"
-	}
-	return "MIN(" + left + ", " + right + ")"
+	return "LEAST(" + left + ", " + right + ")"
 }
 
-// greatestExpr 返回二元取大表达式。
+// greatestExpr 返回二元取大表达式（PG GREATEST）。
 func (d Dialect) greatestExpr(left, right string) string {
-	if d.Postgres {
-		return "GREATEST(" + left + ", " + right + ")"
-	}
-	return "MAX(" + left + ", " + right + ")"
+	return "GREATEST(" + left + ", " + right + ")"
 }

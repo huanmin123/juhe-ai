@@ -100,14 +100,12 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		Business: business,
 		Dataset:  dataset,
 		Stats:    stats,
-		Records:  recordCleanup,
 		Now:      family.now,
 	}
 
 	codexStore := &cleanuprepo.CodexContextStore{
-		Postgres: true,
-		PG:       usageCatalog,
-		Now:      family.now,
+		PG:  usageCatalog,
+		Now: family.now,
 	}
 	if codexStore.PG == nil {
 		return fmt.Errorf("retention codex context PG 句柄未初始化")
@@ -131,11 +129,9 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		MaxItems: a.config.RecordMaintenanceQueueMaxItems,
 		MaxBytes: a.config.RecordMaintenanceQueueMaxMb * 1024 * 1024,
 	})
-	// Mode 恒 ModeSQLite 是有意为之（P0 修复注释）：runner.statsWriter() 仅在
-	// 非 ModePostgres 时暴露 Executor.StatsWriter，account_usage_snapshot_upsert
-	// 通道要求该写入面双形态恒接线，与存储 driver 无关。
+	// statsWriter 恒暴露 Executor.StatsWriter（P0 修复语义固化：
+	// account_usage_snapshot_upsert 通道要求该写入面恒接线）。
 	runner := &retention.RecordMaintenanceRunner{
-		Mode:   retention.ModeSQLite,
 		Clock:  func() time.Time { return family.now() },
 		Logger: a.logger,
 		Executor: retention.RecordMaintenanceExecutor{
@@ -168,7 +164,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family.dbService = dbService
 
 	// ---- 任务登记 ----
-	dataRetentionJob := retention.NewDataRetentionJob(retention.ModePostgres, "worker", a.config.WorkerRole)
+	dataRetentionJob := retention.NewDataRetentionJob("worker", a.config.WorkerRole)
 	dataRetentionJob.Logger = a.logger
 	dataRetentionJob.Clock = func() time.Time { return family.now() }
 	dataRetentionJob.Settings = retentionSettings.settings
@@ -235,7 +231,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	})
 
 	retryJob := &retention.RecordCleanupRetryJob{
-		Mode:    retention.ModePostgres,
 		Clock:   func() time.Time { return family.now() },
 		Logger:  a.logger,
 		APIKey:  &familyAPIKeyRetryer{family: family},
@@ -261,7 +256,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	a.addCloser(func() error {
 		close(stopFlush)
 		queue.drainShutdown(family.runMaintenanceOnce)
-		return codexStore.Close()
+		return nil
 	})
 	safego.Go("juheaijobs.retentionFlushLoop", func() { family.flushLoop(stopFlush, queue) })
 

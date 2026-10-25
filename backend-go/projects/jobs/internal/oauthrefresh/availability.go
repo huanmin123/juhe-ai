@@ -266,12 +266,7 @@ func (s *Store) applyScheduleUpdates(
 func (s *Store) insertScheduleStatusEvent(ctx context.Context, tx *sql.Tx, eventsTable, entityColumn string, update scheduleSyncUpdate, executedAt string) (bool, error) {
 	query := `INSERT INTO ` + eventsTable + ` (event_key, ` + entityColumn + `, status, executed_at)
 		VALUES (?, ?, ?, ?)`
-	if !s.pg {
-		query = `INSERT OR IGNORE INTO ` + eventsTable + ` (event_key, ` + entityColumn + `, status, executed_at)
-			VALUES (?, ?, ?, ?)`
-	} else {
-		query += ` ON CONFLICT(event_key) DO NOTHING`
-	}
+	query += ` ON CONFLICT(event_key) DO NOTHING`
 	result, err := tx.ExecContext(ctx, s.bind(query), update.eventKey, update.id, update.status, executedAt)
 	if err != nil {
 		return false, err

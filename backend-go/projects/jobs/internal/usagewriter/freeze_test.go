@@ -62,7 +62,7 @@ func TestFreezeKeepsFrozenSnapshotUntouched(t *testing.T) {
 		Model: "gpt-old", InputTokens: intPtr(100), CostUsd: floatPtr(0.9),
 		PricingSnapshot: frozen,
 	}
-	result := FreezeUsageRecordPricingFacts(context.Background(), input, catalog, true)
+	result := FreezeUsageRecordPricingFacts(context.Background(), input, catalog)
 	snapshot, ok := result.PricingSnapshot.(*CostBreakdown)
 	if !ok || snapshot != frozen {
 		t.Fatalf("frozen snapshot replaced: %+v", result.PricingSnapshot)
@@ -75,70 +75,10 @@ func TestFreezeKeepsFrozenSnapshotUntouched(t *testing.T) {
 	}
 }
 
-func TestFreezeUnfrozenRecordUsesCatalogOnce(t *testing.T) {
-	// 解冻面：无快照记录在 freeze 时点补算一次；冻结后再次 freeze（重复入队
-	// 场景）不再触碰目录，catalog 变化不影响已冻结结果。
-	catalog := &mockCatalog{
-		resolveModel: "gpt-5",
-		breakdown: &CostBreakdown{
-			CacheReadCostUsd:         floatPtr(0.01),
-			CacheWriteCostUsd:        floatPtr(0.02),
-			CacheWrite1hCostUsd:      floatPtr(0.04),
-			AccountChargeUsd:         floatPtr(0.10),
-			Multiplier:               1,
-			ServiceTierPricingSource: TierSourceDefault,
-		},
-	}
-	input := UsageRecordInput{
-		TraceID: "t", TrafficSource: TrafficSourceGateway, ProviderCode: "gpt",
-		SystemAccountID: "sys1", Model: "gpt-5-alias", UpstreamModel: "gpt-5",
-		InputTokens: intPtr(10), CacheReadTokens: intPtr(5), CacheWriteTokens: intPtr(2), CacheWrite1hTokens: intPtr(1),
-	}
-	frozenOnce := FreezeUsageRecordPricingFacts(context.Background(), input, catalog, true)
-	if frozenOnce.PricingSnapshot == nil {
-		t.Fatal("expected snapshot frozen at enqueue time")
-	}
-	if frozenOnce.PricingModel != "gpt-5" {
-		t.Fatalf("pricingModel = %q", frozenOnce.PricingModel)
-	}
-	snapshot := frozenOnce.PricingSnapshot.(*CostBreakdown)
-	if snapshot.AccountChargeUsd == nil || *snapshot.AccountChargeUsd != 0.10 {
-		t.Fatalf("account charge = %+v", snapshot.AccountChargeUsd)
-	}
-	if frozenOnce.CostUsd == nil || *frozenOnce.CostUsd != 0.10 {
-		t.Fatalf("costUsd backfilled = %+v", frozenOnce.CostUsd)
-	}
-	if frozenOnce.CacheReadCostUsd == nil || *frozenOnce.CacheReadCostUsd != 0.01 {
-		t.Fatalf("cacheReadCostUsd backfilled = %+v", frozenOnce.CacheReadCostUsd)
-	}
-	if frozenOnce.CacheWriteCostUsd == nil {
-		t.Fatal("cacheWriteCostUsd missing")
-	}
-	// cache write cost = sum(cacheWrite, cacheWrite1h) rounded to 10 decimals.
-	if *frozenOnce.CacheWriteCostUsd != 0.0600000000 {
-		t.Fatalf("cacheWriteCostUsd = %v, want 0.06 sum", *frozenOnce.CacheWriteCostUsd)
-	}
-	firstCalls := catalog.breakdownCalls
-	if firstCalls == 0 {
-		t.Fatal("catalog breakdown never consulted")
-	}
-
-	// Re-freezing the frozen record must not consult the catalog again
-	// (frozen facts are never re-interpreted, even as the catalog "changes").
-	catalog.resolveModel = "price-changed-model"
-	refrozen := FreezeUsageRecordPricingFacts(context.Background(), frozenOnce, catalog, true)
-	if catalog.breakdownCalls != firstCalls || catalog.resolveCalls != 1 {
-		t.Fatalf("frozen record re-consulted catalog: resolve=%d breakdown=%d", catalog.resolveCalls, catalog.breakdownCalls)
-	}
-	if refrozen.PricingSnapshot != frozenOnce.PricingSnapshot {
-		t.Fatal("frozen snapshot replaced on re-freeze")
-	}
-}
-
 func TestFreezePassthroughWithoutFacts(t *testing.T) {
 	catalog := &mockCatalog{resolveModel: "m"}
 	input := UsageRecordInput{TraceID: "t", TrafficSource: TrafficSourceGateway}
-	result := FreezeUsageRecordPricingFacts(context.Background(), input, catalog, true)
+	result := FreezeUsageRecordPricingFacts(context.Background(), input, catalog)
 	if result.PricingSnapshot != nil {
 		t.Fatalf("unexpected snapshot: %+v", result.PricingSnapshot)
 	}
@@ -177,7 +117,7 @@ func TestEnrichKeepsRecordOnCatalogMiss(t *testing.T) {
 		TraceID: "t", TrafficSource: TrafficSourceGateway, ProviderCode: "gpt",
 		Model: "unknown-model", InputTokens: intPtr(3),
 	}
-	result := FreezeUsageRecordPricingFacts(context.Background(), input, catalog, true)
+	result := FreezeUsageRecordPricingFacts(context.Background(), input, catalog)
 	if result.CostUsd != nil {
 		t.Fatal("cost fabricated on catalog miss")
 	}
@@ -200,26 +140,17 @@ func TestEnrichKeepsRecordOnCatalogMiss(t *testing.T) {
 }
 
 func TestPricingSnapshotForWriteCatalogGuard(t *testing.T) {
-	// Postgres 写路径不做 catalog 快照（databaseDriver 守卫），直接落
-	// deterministic fallback。
+	// 写路径不做 catalog 快照（PG 形态恒假守卫），直接落 deterministic fallback。
 	catalog := &mockCatalog{resolveModel: "gpt-5", breakdown: &CostBreakdown{Multiplier: 1, ServiceTierPricingSource: TierSourceDefault}}
 	input := UsageRecordInput{
 		TraceID: "t", TrafficSource: TrafficSourceGateway, ProviderCode: "gpt",
 		Model: "gpt-5", InputTokens: intPtr(4), CostUsd: floatPtr(0.2),
 	}
-	snapshot := PricingSnapshotForWrite(context.Background(), input, false, catalog)
+	snapshot := PricingSnapshotForWrite(context.Background(), input, catalog)
 	if snapshot == nil || snapshot.ServiceTierPricingSource != TierSourceUnknown {
-		t.Fatalf("postgres-path snapshot = %+v", snapshot)
+		t.Fatalf("write-path snapshot = %+v", snapshot)
 	}
 	if catalog.breakdownCalls != 0 {
-		t.Fatalf("catalog consulted on postgres path: %d", catalog.breakdownCalls)
-	}
-	// SQLite 路径允许 catalog 快照。
-	snapshot = PricingSnapshotForWrite(context.Background(), input, true, catalog)
-	if snapshot == nil || snapshot.ServiceTierPricingSource != TierSourceDefault {
-		t.Fatalf("sqlite-path snapshot = %+v", snapshot)
-	}
-	if catalog.breakdownCalls != 1 {
-		t.Fatalf("catalog breakdown calls = %d", catalog.breakdownCalls)
+		t.Fatalf("catalog consulted on write path: %d", catalog.breakdownCalls)
 	}
 }

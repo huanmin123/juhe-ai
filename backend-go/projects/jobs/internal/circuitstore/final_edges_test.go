@@ -238,48 +238,6 @@ func hydrateFailingLoader(t *testing.T, db *sql.DB, concurrency ConcurrencySourc
 	return loader
 }
 
-// TestHydratePageFailClosed 覆盖水合链各读面失败的 fail-closed 行为。
-// 组B保留（不迁 PG）：loader 的 PG 臂与生产 schema 存在适配缺口（如
-// juhe_stats.account_usage_snapshots 时间列生产为 timestamptz，loader 读 SQL
-// 裸扫 text 断言；与 EnqueueDue 的 instantParam 同族），本测试随 loader PG 臂
-// 修复批次再迁；此处保持 SQLite fixture 与断言原状。
-func TestHydratePageFailClosed(t *testing.T) {
-	db := newLoaderTestDB(t)
-	seedOwnerAccount(t, db)
-	// DB 查询失败面：锁状态表不存在 → loadAccountLockViews 报错。
-	loader := hydrateFailingLoader(t, db, stubConcurrency{}, stubRuntime{})
-	if _, err := db.Exec(`DROP TABLE account_lock_states`); err != nil {
-		t.Fatal(err)
-	}
-	page := &managementPage{rows: []managementRow{newSourcesRow("acct-1")}}
-	if _, err := loader.hydratePage(context.Background(), page, effNow()); err == nil {
-		t.Fatal("锁状态读取失败必须 fail closed")
-	}
-	// 恢复表后：运行态读失败、并发读失败各自 fail closed。
-	if _, err := db.Exec(`CREATE TABLE account_lock_states (account_id TEXT PRIMARY KEY, enabled INTEGER, lock_state TEXT, lock_death_timeout_seconds INTEGER, lock_retry_interval_seconds INTEGER, generation INTEGER, incident_id TEXT, incident_started_at TEXT, deadline_at TEXT, original_status TEXT, provenance TEXT, next_retry_at_ms INTEGER, lease_id TEXT, lease_until_ms INTEGER, updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	boom := errors.New("redis down")
-	if _, err := hydrateFailingLoader(t, db, stubConcurrency{err: boom}, stubRuntime{}).hydratePage(context.Background(), page, effNow()); err == nil {
-		t.Fatal("并发读失败必须 fail closed")
-	}
-	if _, err := hydrateFailingLoader(t, db, stubConcurrency{}, stubRuntime{err: boom}).hydratePage(context.Background(), page, effNow()); err == nil {
-		t.Fatal("运行态读失败必须 fail closed")
-	}
-	// 时区读失败 fail closed。
-	brokenTimezoneLoader, err := NewProjectionItemLoader(ProjectionLoadConfig{
-		Business: db, Stats: db, Secret: "s", Credentials: stubCredentials{},
-		Concurrency: stubConcurrency{}, RuntimeAvailability: stubRuntime{},
-		Timezone: brokenTimezone{}, Now: func() time.Time { return effNow() },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := brokenTimezoneLoader.hydratePage(context.Background(), page, effNow()); err == nil {
-		t.Fatal("时区读失败必须 fail closed")
-	}
-}
-
 type brokenTimezone struct{}
 
 func (brokenTimezone) StatsTimezone(ctx context.Context) (*time.Location, error) {

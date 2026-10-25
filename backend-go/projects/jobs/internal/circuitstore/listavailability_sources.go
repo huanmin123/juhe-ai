@@ -99,11 +99,8 @@ func convertScanError(err error) error { return err }
 
 // timeParamText 返回与方言匹配的时间绑定（PG timestamptz 用 time.Time，
 // SQLite 用 RFC3339Nano 文本）。
-func timeParamText(postgres bool, t time.Time) any {
-	if postgres {
-		return t
-	}
-	return t.UTC().Format(time.RFC3339Nano)
+func timeParamText(t time.Time) any {
+	return t
 }
 
 func sha256HexShort(input string, length int) string {
@@ -154,10 +151,7 @@ func (l *ProjectionItemLoader) loadUsageSummaries(ctx context.Context, rows []ma
 }
 
 func (l *ProjectionItemLoader) statsTable(name string) string {
-	if l.statsPostgres {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 // loadUsage 对齐 loadAccountManagementListUsageAsync（VALUES joined 查询，

@@ -9,40 +9,28 @@ import (
 	"time"
 )
 
-// Store is the dual-mode business database access for the J4 job family. The
+// Store is the business database access for the J4 job family. The
 // jobs process owns the narrow credential writers (rotation CAS + keepalive
 // merge writer) and the maintenance queries; it never routes gateway traffic.
 //
-// mode mirrors runtimeConfig.databaseDriver: postgres qualifies rows with the
-// juhe_business schema and rewrites ? placeholders to $n; sqlite keeps the
-// bare table names.
+// 行以 juhe_business schema 限定，`?` 占位符改写为 $n（PG 唯一形态）。
 type Store struct {
 	db     *sql.DB
-	pg     bool
 	secret string
 	now    func() time.Time
 }
 
-// StoreMode selects the SQL dialect.
-type StoreMode int
-
-// Store modes.
-const (
-	StoreSQLite StoreMode = iota
-	StorePostgres
-)
-
 // OpenStore wraps an opened database handle. secret is the Node
 // runtimeConfig.secret material: credentials sealed by Node stay decryptable.
 // The handle is owned by the caller (Close only closes via CloseHandle).
-func OpenStore(db *sql.DB, mode StoreMode, secret string) (*Store, error) {
+func OpenStore(db *sql.DB, secret string) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("oauthrefresh store requires a database")
 	}
 	if strings.TrimSpace(secret) == "" {
 		return nil, errors.New("oauthrefresh store requires the runtime secret")
 	}
-	return &Store{db: db, pg: mode == StorePostgres, secret: secret, now: func() time.Time { return time.Now() }}, nil
+	return &Store{db: db, secret: secret, now: func() time.Time { return time.Now() }}, nil
 }
 
 // WithClock overrides the store clock (tests).
@@ -57,16 +45,10 @@ func (s *Store) WithClock(clock func() time.Time) *Store {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {

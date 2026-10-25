@@ -62,18 +62,6 @@ func scanUsageStatsRecordRows(rows *sql.Rows) ([]statsagg.UsageStatsRecordRow, e
 	return output, rows.Err()
 }
 
-// shardUsageRowsToMaps 把分片行转换为 Node IPC JSON 同构的 snake_case map。
-func shardUsageRowsToMaps(rows []shardUsageRow) []map[string]any {
-	if len(rows) == 0 {
-		return nil
-	}
-	output := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		output = append(output, statsaggRowToMap(row.UsageStatsRecordRow, row.SourceShardKey))
-	}
-	return output
-}
-
 func optionalNumberPtr(value *float64) any {
 	if value == nil {
 		return nil

@@ -4,47 +4,12 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
-	"log/slog"
-	"os"
 	"testing"
 	"time"
 )
 
 // 本文件收尾剩余分支：runCycle 过期执行窗口与日志分支、IssueInput 的
 // PG 语句失败传播、PG receipt 幂等冲突重放，以及执行器 DB 闸门日志。
-
-func TestWFRunCycleExpiredWindowAndLogging(t *testing.T) {
-	store := wfOpenJobsStore(t)
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	runner := NewRunner(RuntimeConfig{InstanceID: "wf-last", OwnerLease: time.Hour, ProxyLease: time.Hour, ProbeTimeout: time.Second}, store, &wfFakeReader{}, logger)
-	runner.SetResultProjector(wfNewProjector(t, store, wfOpenBusinessDB(t)))
-	ctx := context.Background()
-	owner, ok, err := store.AcquireOwnerLease(ctx, "wf-last", time.Hour)
-	if err != nil || !ok {
-		t.Fatalf("owner lease ok=%v err=%v", ok, err)
-	}
-	// 执行窗口为 0：executeIssuedInput 不应被调用，计数记为执行失败。
-	runner.reader = &wfFakeReader{drafts: []InputDraft{wfCycleDraft("p-last")}}
-	runner.acquireProxyLease = func(context.Context, OwnerLease, string, time.Duration) (ProxyLease, bool, error) {
-		return ProxyLease{ProxyID: "p-last", OwnerID: owner.OwnerID, FenceToken: 1, LeaseUntil: time.Now().Add(-time.Second)}, true, nil
-	}
-	hookRan := false
-	runner.executeIssuedInput = func(context.Context, *Store, OwnerLease, ProxyLease, IssuedInput, ExecutorOptions) (Outcome, bool, error) {
-		hookRan = true
-		return Outcome{}, true, nil
-	}
-	// 窗口过期记为执行失败；随后真实释放失败（租约行不存在）级联为致命错误。
-	err = runner.runCycle(ctx, owner)
-	if err == nil || !strings_Contains(err.Error(), "execution window expired") {
-		t.Fatalf("过期窗口 err=%v", err)
-	}
-	if hookRan {
-		t.Fatal("窗口过期不得执行探测")
-	}
-	if runner.Status().ReleaseFailures != 1 {
-		t.Fatalf("释放失败未记账：%+v", runner.Status())
-	}
-}
 
 func TestWFStorePGIssueInputFailures(t *testing.T) {
 	rec := newWFRecorder()

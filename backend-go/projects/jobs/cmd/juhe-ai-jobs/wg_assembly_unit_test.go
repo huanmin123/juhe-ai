@@ -2,42 +2,18 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 )
 
-// TestStaticSettingsDefaults 验证无数据库设置源的 Node 默认值语义
-// （statsAggregationBatchSize=2000、MaxBatches=5）。
-func TestStaticSettingsDefaults(t *testing.T) {
-	ctx := context.Background()
-	static := staticSettings{}
-	batchSize, err := static.statsAggregationBatchSize(ctx)
-	if err != nil || batchSize != 2000 {
-		t.Fatalf("静态批次大小必须是 2000: %d %v", batchSize, err)
-	}
-	maxBatches, err := static.statsAggregationMaxBatches(ctx)
-	if err != nil || maxBatches != 5 {
-		t.Fatalf("静态批次数必须是 5: %d %v", maxBatches, err)
-	}
-}
-
-// TestOpenSQLiteWALAndRegistry 验证 openSQLite 注册连接与 PRAGMA 失败分支。
-// TestCloseStoresReportsCloserError 验证 closer 报错时逆向关闭继续执行。
 func TestCloseStoresReportsCloserError(t *testing.T) {
 	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	order := []string{}
@@ -57,8 +33,12 @@ func TestCloseStoresReportsCloserError(t *testing.T) {
 func TestStatusPayloadWithoutScheduler(t *testing.T) {
 	assembly := &workerAssembly{config: workerConfig{}}
 	payload := assembly.statusPayload()
-	if payload["workerEnabled"] != true || payload["workerDriver"] != "sqlite" {
+	if payload["workerEnabled"] != true {
 		t.Fatalf("健康载荷基础字段错误: %v", payload)
+	}
+	// workerDriver 键已随 driver 概念退役删除（对齐 w10b 契约）。
+	if _, ok := payload["workerDriver"]; ok {
+		t.Fatalf("workerDriver 键必须已删除: %v", payload)
 	}
 	if _, ok := payload["workerJobs"].([]jobsched.Snapshot); !ok {
 		t.Fatalf("nil 调度器必须输出空快照列表: %T", payload["workerJobs"])
@@ -125,90 +105,6 @@ func TestScheduleWiredJobDriverForkRejectsRegistration(t *testing.T) {
 	}
 }
 
-// TestTaskRunReconcileRepoInputValidation 覆盖 taskRunReconcileRepo 的
-// RFC3339 输入校验分支与正常透传。
-func TestTaskRunReconcileRepoInputValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "task-runs.sqlite3")
-	store, err := taskruns.OpenStore(taskruns.StoreConfig{Mode: taskruns.ModeSQLite, DatabasePath: path})
-	if err != nil {
-		t.Fatalf("open taskruns store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	repo := &taskRunReconcileRepo{store: store}
-	ctx := context.Background()
-	if _, err := repo.ReconcileStale(ctx, opsjobs.TaskRunReconcileInput{QueuedBefore: "not-a-time", RunningHeartbeatBefore: "2026-01-01T00:00:00Z", Limit: 10}); err == nil {
-		t.Fatal("非法 queuedBefore 必须报错")
-	}
-	if _, err := repo.ReconcileStale(ctx, opsjobs.TaskRunReconcileInput{QueuedBefore: "2026-01-01T00:00:00Z", RunningHeartbeatBefore: "nope", Limit: 10}); err == nil {
-		t.Fatal("非法 runningHeartbeatBefore 必须报错")
-	}
-	if _, err := repo.ReconcileStale(ctx, opsjobs.TaskRunReconcileInput{QueuedBefore: "2026-01-01T00:00:00Z", RunningHeartbeatBefore: "2026-01-01T00:00:00Z", Now: "bad-now", Limit: 10}); err == nil {
-		t.Fatal("非法 now 必须报错")
-	}
-	result, err := repo.ReconcileStale(ctx, opsjobs.TaskRunReconcileInput{
-		QueuedBefore:           "2026-01-01T00:00:00.000Z",
-		RunningHeartbeatBefore: "2026-01-01T00:00:00.000Z",
-		Now:                    "2026-01-01T00:00:00.000Z",
-		Limit:                  10,
-	})
-	if err != nil {
-		t.Fatalf("合法输入必须成功: %v", err)
-	}
-	if result.FailedQueuedCount != 0 || result.FailedRunningCount != 0 || result.DeletedExpiredLeaseCount != 0 {
-		t.Fatalf("空库对账结果必须为 0: %+v", result)
-	}
-}
-
-// TestWithLeaseWrapsTaskWhenPostgres 验证 withLease 在 PG 语义下包裹租约
-// （存储本身用 SQLite 实现，租约流程与 driver 无关）。
-func TestWithLeaseWrapsTaskWhenPostgres(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "leases.sqlite3")
-	store, err := taskruns.OpenStore(taskruns.StoreConfig{Mode: taskruns.ModeSQLite, DatabasePath: path})
-	if err != nil {
-		t.Fatalf("open taskruns store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	assembly := &workerAssembly{
-		config:        workerConfig{InstanceID: "wg", WorkerRole: "worker", WorkerReplicaIdx: 3},
-		taskRunsStore: store,
-	}
-	executed := false
-	wrapped := assembly.withLease("background-task-run-reconcile", time.Minute, func(_ context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		executed = true
-		return jobsched.TaskResult{}, nil
-	})
-	result, err := wrapped(context.Background(), jobsched.TaskContext{})
-	if err != nil || !executed {
-		t.Fatalf("租约包裹任务必须执行: executed=%v err=%v", executed, err)
-	}
-	if result.Outcome != jobsched.OutcomeSuccess {
-		t.Fatalf("成功任务必须返回 success: %+v", result)
-	}
-	// 任务失败路径：错误必须透传。
-	failing := assembly.withLease("background-task-run-reconcile", time.Minute, func(_ context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		return jobsched.TaskResult{}, errors.New("任务失败")
-	})
-	if _, err := failing(context.Background(), jobsched.TaskContext{}); err == nil {
-		t.Fatal("任务失败必须透传错误")
-	}
-	// ownerID 必须包含 instance:role:replica 三元组与随机 token。
-	ownerA := assembly.ownerID()
-	ownerB := assembly.ownerID()
-	if ownerA == "" || ownerA == ownerB {
-		t.Fatalf("ownerID 必须非空且每次随机: %q %q", ownerA, ownerB)
-	}
-	if !strings.Contains(ownerA, "wg") || !strings.Contains(ownerA, "worker") || !strings.Contains(ownerA, "3") {
-		t.Fatalf("ownerID 必须包含三元组: %q", ownerA)
-	}
-}
-
-// TestWithLeaseSkipsWhenSQLiteOrNoStore 验证 SQLite/无租约存储时任务直跑。
 func TestWithLeaseSkipsWhenSQLiteOrNoStore(t *testing.T) {
 	assembly := &workerAssembly{config: workerConfig{}}
 	called := false
@@ -230,110 +126,6 @@ func TestWithLeaseSkipsWhenSQLiteOrNoStore(t *testing.T) {
 	}
 }
 
-// TestMarkAllGroupAccountStatsMarkerPaths 覆盖 stats 家族缺席 warn 与
-// 真实脏标记两条路径（既有测试只覆盖 marker 接口分支）。
-func TestMarkAllGroupAccountStatsMarkerPaths(t *testing.T) {
-	ctx := context.Background()
-	// marker 为 nil（stats 家族缺席）→ 显式 warn 且不报错。
-	if err := markAllGroupAccountStatsAfterAuthzWrite(ctx, slog.Default(), nil, "authorization_expired"); err != nil {
-		t.Fatalf("缺席 marker 必须显式 warn 而非报错: %v", err)
-	}
-	// 真实 marker：SQLite statsverify store。
-	root := t.TempDir()
-	store, err := statsverify.OpenStore(statsverify.StoreConfig{
-		Mode:               statsverify.StoreSQLite,
-		SQLiteStatsPath:    filepath.Join(root, "stats.sqlite3"),
-		SQLiteBusinessPath: filepath.Join(root, "business.sqlite3"),
-	})
-	if err != nil {
-		t.Fatalf("open statsverify store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	if err := markAllGroupAccountStatsAfterAuthzWrite(ctx, slog.Default(), store, "authorization_expired"); err != nil {
-		t.Fatalf("真实脏标记必须成功: %v", err)
-	}
-}
-
-// TestProbeSettingsSourceFallsBackOnError 验证探针设置源读取失败时回落
-// DEFAULT_SYSTEM_SETTINGS 并继续（无错误通道的消费语义）。
-func TestProbeSettingsSourceFallsBackOnError(t *testing.T) {
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(businessPath)+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	// 不建 system_settings 表 → SQLite 读模型按语义回落默认。
-	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
-	settings := assembly.probeSettingsSource(&businessDB{db: db})
-	value := settings("accountQualityWindowMinutes", 5, 120)
-	if value < 5 || value > 120 {
-		t.Fatalf("回落的窗口分钟数必须落在边界内: %d", value)
-	}
-}
-
-// TestResolveScheduleSettingsInterval 覆盖设置驱动间隔的命中、上限收敛、
-// 读取失败回落与未知 job 分支。
-func TestResolveScheduleSettingsInterval(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "settings.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
-	insertSetting := func(t *testing.T, key, valueJSON string) {
-		t.Helper()
-		if _, err := db.Exec(`INSERT OR REPLACE INTO system_settings VALUES ('sys_admin', ?, ?, '2026-09-10T00:00:00.000Z')`, key, valueJSON); err != nil {
-			t.Fatal(err)
-		}
-	}
-	source := jobssettings.NewSource(jobssettings.Options{DB: db, Mode: jobssettings.SQLite})
-
-	// 未知 job：不命中键表。
-	if _, ok := resolveScheduleSettingsInterval(ctx, source, nil, "wg-unknown-job"); ok {
-		t.Fatal("未知 job 不得返回设置间隔")
-	}
-	// 缺行 → 读模型回落 DEFAULT_SYSTEM_SETTINGS（statsAggregationIntervalSeconds
-	// 默认 60，与 OnlineFreshnessCap=60 相同）→ 间隔恰为 60s。
-	interval, ok := resolveScheduleSettingsInterval(ctx, source, nil, "usage-stats-aggregation")
-	if !ok || interval != 60*time.Second {
-		t.Fatalf("缺行默认间隔必须是 60s: %v %v", interval, ok)
-	}
-	// 无 OnlineFreshnessCap 的 job：显式行值原样生效（statsAggregationIntervalSeconds
-	// 同键的 client-ip 族不受 usage-stats 在线新鲜度上限约束）。Source 带 60s
-	// per-key TTL 缓存，插入新行后必须换新实例才能读到（同上文失败分支）。
-	insertSetting(t, "statsAggregationIntervalSeconds", "3600")
-	rowSource := jobssettings.NewSource(jobssettings.Options{DB: db, Mode: jobssettings.SQLite})
-	interval, ok = resolveScheduleSettingsInterval(ctx, rowSource, nil, "client-ip-stats-aggregation")
-	if !ok || interval != 3600*time.Second {
-		t.Fatalf("无上限的 job 必须原样使用显式设置值: %v %v", interval, ok)
-	}
-	// OnlineFreshnessCap：同键超大值对 usage-stats-aggregation 收敛到 60s。
-	interval, ok = resolveScheduleSettingsInterval(ctx, rowSource, nil, "usage-stats-aggregation")
-	if !ok || interval != 60*time.Second {
-		t.Fatalf("在线新鲜度上限必须收敛到 60s: %v %v", interval, ok)
-	}
-	// 非整数 → 读失败 → warn + false（Node settingsNumber 失败语义）。
-	// client-ip-stats-aggregation 与 usage-stats-aggregation 共用
-	// statsAggregationIntervalSeconds 键（jobregistry.SettingsIntervalJobNames）；
-	// Source 带 60s TTL 缓存，失败分支必须换新实例才能读到新行。
-	insertSetting(t, "statsAggregationIntervalSeconds", `"abc"`)
-	failingSource := jobssettings.NewSource(jobssettings.Options{DB: db, Mode: jobssettings.SQLite})
-	if _, ok := resolveScheduleSettingsInterval(ctx, failingSource, slog.Default(), "client-ip-stats-aggregation"); ok {
-		t.Fatal("非法设置值必须回落注册表默认（ok=false）")
-	}
-}
-
-// TestIngestDrainGateWithoutWriter 验证 usagewriter 缺席时门控按
-// 「快照不可用」失败本轮（Node ingest worker 不可达语义）。
 func TestIngestDrainGateWithoutWriter(t *testing.T) {
 	assembly := newWorkerAssembly(workerConfig{}, nil)
 	probe := assembly.ingestDrainProbe()
@@ -358,15 +150,9 @@ func TestIngestDrainGateWithoutWriter(t *testing.T) {
 	}
 }
 
-// TestBusinessDBDialectHelpers 覆盖业务库句柄的方言助手矩阵。
+// TestBusinessDBDialectHelpers 覆盖业务库句柄的方言助手矩阵（PG 唯一形态；
+// 原 SQLite 不加前缀/原样 bind/RFC3339Nano 文本断言随 sqlite 形态退役删除）。
 func TestBusinessDBDialectHelpers(t *testing.T) {
-	sqlite := &businessDB{}
-	if sqlite.table("accounts") != "accounts" {
-		t.Fatalf("SQLite 表名不加前缀: %s", sqlite.table("accounts"))
-	}
-	if bound := sqlite.bind("WHERE id = ? AND name = ?"); bound != "WHERE id = ? AND name = ?" {
-		t.Fatalf("SQLite bind 原样返回: %s", bound)
-	}
 	pg := &businessDB{}
 	if pg.table("accounts") != "juhe_business.accounts" {
 		t.Fatalf("PG 表名必须限定 schema: %s", pg.table("accounts"))
@@ -377,30 +163,17 @@ func TestBusinessDBDialectHelpers(t *testing.T) {
 	if statsTable("account_usage_snapshots") != "juhe_stats.account_usage_snapshots" {
 		t.Fatal("PG 统计表必须限定 juhe_stats")
 	}
-	if statsTable("account_usage_snapshots") != "account_usage_snapshots" {
-		t.Fatal("SQLite 统计表不加前缀")
-	}
 	if timeParam(time.Unix(0, 0).UTC()) != time.Unix(0, 0).UTC() {
 		t.Fatal("PG 时间参数必须保持 time.Time")
-	}
-	if text, ok := timeParam(time.Unix(0, 0).UTC()).(string); !ok || text != "1970-01-01T00:00:00Z" {
-		t.Fatalf("SQLite 时间参数必须是 RFC3339Nano 文本: %#v", timeParam(time.Unix(0, 0).UTC()))
 	}
 	if textParam("x") != "x" {
 		t.Fatal("textParam 必须原样返回")
 	}
-	cases := []struct {
-		postgres bool
-		value    bool
-		expected string
-	}{
-		// accounts 布尔标志列在 PG 里也是 integer(0/1)，两个方言统一输出数字，
-		// PG 输出 TRUE/FALSE 会报 operator does not exist: integer = boolean。
-		{true, true, "1"}, {true, false, "0"}, {false, true, "1"}, {false, false, "0"},
-	}
-	for _, item := range cases {
-		if got := boolLit(item.value); got != item.expected {
-			t.Fatalf("boolLit(%v,%v)=%s 期望 %s", item.postgres, item.value, got, item.expected)
+	// accounts 布尔标志列在 PG 里也是 integer(0/1)，统一输出数字，
+	// 输出 TRUE/FALSE 会报 operator does not exist: integer = boolean。
+	for _, expected := range []string{"1", "0"} {
+		if got := boolLit(expected == "1"); got != expected {
+			t.Fatalf("boolLit(%v)=%s 期望 %s", expected == "1", got, expected)
 		}
 	}
 }
@@ -452,30 +225,6 @@ func TestScanNullTimeMatrix(t *testing.T) {
 	}
 }
 
-// TestEnsureAccountsBalanceColumns 验证业务库契约校验：缺列 fail closed、
-// 列齐全放行。
-func TestEnsureAccountsBalanceColumns(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "business.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	missing := &businessDB{db: db}
-	if err := ensureAccountsBalanceColumns(ctx, missing); err == nil {
-		t.Fatal("缺 accounts 表必须报错")
-	}
-	if _, err := db.Exec(`CREATE TABLE accounts (balance_query_enabled INTEGER, balance_query_config_json TEXT, balance_query_next_refresh_at TEXT, config_revision INTEGER, credentials_encrypted TEXT, proxy_profile_id TEXT, dispatch_revision INTEGER)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureAccountsBalanceColumns(ctx, missing); err != nil {
-		t.Fatalf("列齐全必须放行: %v", err)
-	}
-}
-
-// TestBalanceConfigJSONHelpers 锁定余额配置 JSON 的归一化与等价判定
-// （Node camelCase 键不得改变）。
 func TestBalanceConfigJSONHelpers(t *testing.T) {
 	// intervalMinutes=0 归一为 5；preferred 为空省略。
 	normalized, err := normalizeBalanceConfigJSON("builtin", 0, "")

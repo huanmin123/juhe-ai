@@ -2,12 +2,9 @@ package usagewriter
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +52,6 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 	// ALTER 臂随门禁装配一并退役（生产由 maintenance --ensure-schema 承担）。
 
 	plan, err := BuildWritePlan(ctx, []UsageRecordInput{baseInput("a"), baseInput("b")}, WritePlanOptions{
-		Postgres:   true,
 		ShardCount: 4,
 	}, fixedClock("2026-01-02T03:04:05.000Z"))
 	if err != nil {
@@ -92,7 +88,6 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 	future := baseInput("future")
 	future.CreatedAt = "1999-12-31T23:59:59.000Z"
 	futurePlan, err := BuildWritePlan(ctx, []UsageRecordInput{future}, WritePlanOptions{
-		Postgres:   true,
 		ShardCount: 4,
 	}, fixedClock("2026-01-02T03:04:05.000Z"))
 	if err != nil {
@@ -136,155 +131,6 @@ func TestW9GPostgresStoreEnsurePartitionsInvalidDate(t *testing.T) {
 
 // ---------- SQLite store 错误臂 ----------
 
-func TestW9GSqliteStoreDefaultsAndEmptyRows(t *testing.T) {
-	// ShardCount/BusyTimeout 默认化。
-	store := NewSqliteShardStore(SqliteShardStoreConfig{ShardCount: 0, BusyTimeoutMs: 0})
-	if store.config.ShardCount != DefaultUsageShardCount || store.config.BusyTimeoutMs != 5000 {
-		t.Fatalf("defaults: shardCount=%d busy=%d", store.config.ShardCount, store.config.BusyTimeoutMs)
-	}
-
-	// 空 shard 行集合直通。
-	inserted, err := store.WriteBatch(context.Background(), WritePlan{
-		RowsByShard: []ShardRows{{}},
-	})
-	if err != nil || inserted != 0 {
-		t.Fatalf("empty shard rows: inserted=%d err=%v", inserted, err)
-	}
-
-	// recordShardEntries 空条目直通。
-	if err := store.recordShardEntries(context.Background(), nil, nil); err != nil {
-		t.Fatalf("empty entries: %v", err)
-	}
-}
-
-func TestW9GSqliteStoreCatalogFailures(t *testing.T) {
-	ctx := context.Background()
-	entries := []ShardEntry{{
-		ID:              "usage_20260102_s00_1000_x",
-		ShardKey:        "20260102:s00",
-		SystemAccountID: "sys1",
-		TraceID:         "trace-x",
-		TrafficSource:   TrafficSourceGateway,
-		CreatedAt:       "2026-01-02T03:04:05.000Z",
-	}}
-
-	// catalog 库未建 schema：catalog 语句在缺失表上失败（defer 回滚臂）。
-	root := t.TempDir()
-	catalog, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(root, "catalog.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer catalog.Close()
-	store := NewSqliteShardStore(SqliteShardStoreConfig{CatalogDB: catalog, ShardRoot: root, ShardCount: 4})
-	if err := store.recordShardEntries(ctx, entries, nil); err == nil {
-		t.Fatal("缺失 catalog schema 时必须报错")
-	}
-
-	// catalog 库已关闭：BeginTx 失败。
-	closed, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(root, "closed.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	closedStore := NewSqliteShardStore(SqliteShardStoreConfig{CatalogDB: closed, ShardRoot: root, ShardCount: 4})
-	closed.Close()
-	if err := closedStore.recordShardEntries(ctx, entries, nil); err == nil {
-		t.Fatal("catalog 已关闭时 BeginTx 必须报错")
-	}
-}
-
-func TestW9GSqliteStoreShardDBFailures(t *testing.T) {
-
-	// ShardRoot 位于普通文件之下：MkdirAll 失败。
-	filePath := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(t.TempDir(), "catalog.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer catalog.Close()
-	store := NewSqliteShardStore(SqliteShardStoreConfig{
-		CatalogDB: catalog, ShardRoot: filepath.Join(filePath, "shards"), ShardCount: 4,
-	})
-	location := UsageRecordShardLocationForBucket("20260102", 0, filepath.Join(filePath, "shards"))
-	if _, err := store.writeShardRows(location, []ShardWriteRow{{}}); err == nil {
-		t.Fatal("shard 目录创建失败必须报错")
-	}
-
-	// 已缓存的 shard DB 被关闭：BeginTx 失败。
-	liveRoot := t.TempDir()
-	liveCatalog, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(liveRoot, "catalog.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer liveCatalog.Close()
-	liveStore := NewSqliteShardStore(SqliteShardStoreConfig{CatalogDB: liveCatalog, ShardRoot: liveRoot, ShardCount: 4})
-	liveLocation := UsageRecordShardLocationForBucket("20260102", 1, liveRoot)
-	if _, err := liveStore.writeShardRows(liveLocation, []ShardWriteRow{{}}); err == nil {
-		// 空行集合直通；用带参行打开真实 shard 库后再关闭它。
-		row, err := w9gShardRow("20260102", "usage_20260102_s01_10_x")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := liveStore.writeShardRows(liveLocation, []ShardWriteRow{row}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cached, err := liveStore.openShardDB(liveLocation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cached.Close(); err != nil {
-		t.Fatal(err)
-	}
-	row, err := w9gShardRow("20260102", "usage_20260102_s01_11_x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := liveStore.writeShardRows(liveLocation, []ShardWriteRow{row}); err == nil {
-		t.Fatal("shard 库被关闭后写入必须报错")
-	}
-}
-
-func TestW9GEnsureUpstreamResponseModelColumn(t *testing.T) {
-	root := t.TempDir()
-
-	// 旧表缺列：ALTER 补列成功。
-	legacy, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(root, "legacy.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer legacy.Close()
-	if _, err := legacy.Exec(`CREATE TABLE usage_records (id TEXT PRIMARY KEY)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureUpstreamResponseModelColumn(legacy); err != nil {
-		t.Fatalf("补列失败: %v", err)
-	}
-
-	// 目标表不存在：ALTER 以原始错误上抛。
-	missing, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(root, "missing.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer missing.Close()
-	if err := ensureUpstreamResponseModelColumn(missing); err == nil {
-		t.Fatal("缺表时 ALTER 必须报错")
-	}
-
-	// 已关闭的库：PRAGMA 查询失败按可容忍处理（返回 nil）。
-	closed, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(root, "closed.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed.Close()
-	if err := ensureUpstreamResponseModelColumn(closed); err != nil {
-		t.Fatalf("已关闭库必须容错返回 nil: %v", err)
-	}
-}
-
-// w9gShardRow 用 BuildWritePlan 产出一条真实可写 shard 行。
 func w9gShardRow(bucketDateKey, id string) (ShardWriteRow, error) {
 	createdAt := bucketDateKey[0:4] + "-" + bucketDateKey[4:6] + "-" + bucketDateKey[6:8] + "T03:04:05.000Z"
 	plan, err := BuildWritePlan(context.Background(), []UsageRecordInput{{
@@ -294,7 +140,7 @@ func w9gShardRow(bucketDateKey, id string) (ShardWriteRow, error) {
 		TrafficSource:   TrafficSourceGateway,
 		Success:         true,
 		CreatedAt:       createdAt,
-	}}, WritePlanOptions{ShardCount: 4, ShardRoot: t_tempShardRoot()}, fixedClock(createdAt))
+	}}, WritePlanOptions{ShardCount: 4}, fixedClock(createdAt))
 	if err != nil {
 		return ShardWriteRow{}, err
 	}
@@ -307,15 +153,6 @@ func w9gShardRow(bucketDateKey, id string) (ShardWriteRow, error) {
 }
 
 var w9gTempRoot string
-
-func t_tempShardRoot() string {
-	if w9gTempRoot == "" {
-		w9gTempRoot = os.TempDir()
-	}
-	return w9gTempRoot
-}
-
-// ---------- 分片路由边界 ----------
 
 func TestW9GShardRoutingEdges(t *testing.T) {
 	// 负 shardID 归零。
@@ -360,7 +197,7 @@ func TestW9GBuildWritePlanInvalidCreatedAt(t *testing.T) {
 		SystemAccountID: "sys1",
 		TrafficSource:   TrafficSourceGateway,
 		CreatedAt:       "not-a-time",
-	}}, WritePlanOptions{ShardCount: 4, ShardRoot: t.TempDir()}, fixedClock("2026-01-02T03:04:05.000Z"))
+	}}, WritePlanOptions{ShardCount: 4, }, fixedClock("2026-01-02T03:04:05.000Z"))
 	if err == nil {
 		t.Fatal("非法 createdAt 必须上抛")
 	}
@@ -692,22 +529,22 @@ func TestW9GFreezePricingEdges(t *testing.T) {
 	// BuildBreakdown 返回 nil：Freeze 回落 PricingSnapshotForWrite 决定。
 	catalog = &w9gFakeCatalog{model: "gpt-5", snapshot: nil}
 	fallbackInput := UsageRecordInput{ProviderCode: "openai", Model: "gpt-5", CostUsd: &cost}
-	frozen := FreezeUsageRecordPricingFacts(ctx, fallbackInput, catalog, true)
+	frozen := FreezeUsageRecordPricingFacts(ctx, fallbackInput, catalog)
 	if frozen.PricingSnapshot == nil {
 		t.Fatal("fallback 路径必须产出确定性快照")
 	}
 
 	// PricingSnapshotForWrite：已有 *CostBreakdown 原样返回。
 	snapshot := &CostBreakdown{Currency: "USD"}
-	if got := PricingSnapshotForWrite(ctx, UsageRecordInput{PricingSnapshot: snapshot}, true, catalog); got != snapshot {
+	if got := PricingSnapshotForWrite(ctx, UsageRecordInput{PricingSnapshot: snapshot}, catalog); got != snapshot {
 		t.Fatal("已有快照必须原样返回")
 	}
 	// 非 *CostBreakdown 快照：返回 nil。
-	if got := PricingSnapshotForWrite(ctx, UsageRecordInput{PricingSnapshot: "legacy"}, true, catalog); got != nil {
+	if got := PricingSnapshotForWrite(ctx, UsageRecordInput{PricingSnapshot: "legacy"}, catalog); got != nil {
 		t.Fatal("未知快照类型必须返回 nil")
 	}
 	// 无成本事实：返回 nil。
-	if got := PricingSnapshotForWrite(ctx, UsageRecordInput{}, true, catalog); got != nil {
+	if got := PricingSnapshotForWrite(ctx, UsageRecordInput{}, catalog); got != nil {
 		t.Fatal("无成本事实必须返回 nil")
 	}
 
@@ -741,7 +578,6 @@ func TestW9GWriterFlushFailureAndDeadLetter(t *testing.T) {
 		MaxWriteAttempts: 2,
 		QueueMaxItems:    10,
 		QueueMaxBytes:    1 << 20,
-		ShardRoot:        t.TempDir(),
 	}, w9gAlwaysFailStore{}, fixedClock("2026-01-02T03:04:05.000Z"),
 		WithLogger(w9gDiscardLogger{}))
 	retry := &immediateRetry{}
@@ -775,7 +611,6 @@ func TestW9GWriterRuntimeEdges(t *testing.T) {
 		BatchSize:       4,
 		QueueMaxItems:   4,
 		QueueMaxBytes:   1 << 20,
-		ShardRoot:       t.TempDir(),
 		FlushIntervalMs: 60_000,
 	}, &mockStore{}, fixedClock("2026-01-02T03:04:05.000Z"))
 	// 不 Start：直接探测运行时与信号分支。
@@ -840,7 +675,7 @@ func TestW9GWriterRuntimeEdges(t *testing.T) {
 	writer.Close(nil)
 
 	// NewWriter 默认时钟。
-	defaultClockWriter := NewWriter(Config{ShardRoot: t.TempDir()}, &mockStore{}, nil)
+	defaultClockWriter := NewWriter(Config{}, &mockStore{}, nil)
 	defaultClockWriter.Start()
 	defaultClockWriter.Close(nil)
 }
@@ -850,7 +685,6 @@ func TestW9GWriterOversizeDropWithoutLogger(t *testing.T) {
 		BatchSize:       4,
 		QueueMaxItems:   100,
 		QueueMaxBytes:   1 << 20,
-		ShardRoot:       t.TempDir(),
 		FlushIntervalMs: 60_000,
 	}, &mockStore{}, fixedClock("2026-01-02T03:04:05.000Z"))
 	// 快照在归一化时已被 64KB 上限截断；用超大 TraceID 触发超尺寸。

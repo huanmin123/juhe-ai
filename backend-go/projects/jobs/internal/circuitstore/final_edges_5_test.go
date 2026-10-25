@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"testing"
-	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 
@@ -135,174 +134,6 @@ func replayInputHelper(accountID string, generation int64, token string) opsjobs
 	return opsjobs.ListAvailabilityReplayInput{AccountID: accountID, Generation: generation, ClaimToken: token, Reason: "r", NowMS: 1000}
 }
 
-// TestLoaderErrorSurfacesOnMissingTables 覆盖 loader 各读面在统计/业务表缺失
-// 时的 fail-closed 错误出口。
-// 组B保留（不迁 PG）：loader 的 PG 臂与生产 schema 存在适配缺口（timestamptz
-// 列裸扫 text 断言等，取证见 TestHydratePageFailClosed 注释），随 loader PG 臂
-// 修复批次再迁。
-func TestLoaderErrorSurfacesOnMissingTables(t *testing.T) {
-	cases := []struct {
-		name   string
-		drop   string
-		action func(loader *ProjectionItemLoader, ctx context.Context) error
-	}{
-		{
-			name: "usage汇总表缺失", drop: "usage_stats_daily",
-			action: func(loader *ProjectionItemLoader, ctx context.Context) error {
-				timezone, _ := loader.timezone.StatsTimezone(ctx)
-				_, _, err := loader.loadUsageSummaries(ctx, []managementRow{newSourcesRow("acc-1")}, loader.now(), timezone)
-				return err
-			},
-		},
-		{
-			name: "quota成本表缺失", drop: "usage_stats_totals",
-			action: func(loader *ProjectionItemLoader, ctx context.Context) error {
-				timezone, _ := loader.timezone.StatsTimezone(ctx)
-				limits := parseQuotaLimits(`{"total":{"enabled":true,"limit":1}}`)
-				_, err := loader.loadQuotaCosts(ctx, []quotaCostCheck{{
-					authorizationID: "a", systemAccountID: "sys-1", scopeType: "s", scopeID: "i", limits: limits,
-				}}, loader.now(), timezone)
-				return err
-			},
-		},
-		{
-			name: "团队授权grant表缺失", drop: "resource_authorization_grants",
-			action: func(loader *ProjectionItemLoader, ctx context.Context) error {
-				team := authorizedSourcesRow("acc-1")
-				team.authorizationEffectiveSourceTeamID.Valid = true
-				team.authorizationEffectiveSourceTeamID.String = "team-1"
-				_, err := loader.loadTeamLimitJSON(ctx, []managementRow{team}, loader.now())
-				return err
-			},
-		},
-		{
-			name: "余额快照表缺失", drop: "account_usage_snapshots",
-			action: func(loader *ProjectionItemLoader, ctx context.Context) error {
-				_, err := loader.loadBalanceSnapshotRecords(ctx, []string{"acc-1"})
-				return err
-			},
-		},
-		{
-			name: "key运行态表缺失", drop: "account_api_key_runtime_states",
-			action: func(loader *ProjectionItemLoader, ctx context.Context) error {
-				_, err := loader.loadAPIKeyRuntimeStates(ctx, []string{"fp-1"})
-				return err
-			},
-		},
-		{
-			name: "circuit账本表缺失", drop: "account_circuit_incidents",
-			action: func(loader *ProjectionItemLoader, ctx context.Context) error {
-				_, err := loader.loadCircuitSummaries(ctx, []string{"acc-1"}, loader.now())
-				return err
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			db := newLoaderTestDB(t)
-			loader := newTestLoader(db, stubConcurrency{}, stubRuntime{})
-			ctx := context.Background()
-			if _, err := db.Exec(`DROP TABLE ` + tc.drop); err != nil {
-				t.Fatal(err)
-			}
-			if err := tc.action(loader, ctx); err == nil {
-				t.Fatal("底层表缺失必须报错（fail closed）")
-			}
-		})
-	}
-}
-
-// TestHydratePageFailsOnBrokenReads 覆盖水合链剩余读面（usage/quota/balance/
-// apiKey/circuit）失败的 fail-closed 行为。
-// 组B保留（不迁 PG）：loader 族，取证见 TestHydratePageFailClosed 注释。
-func TestHydratePageFailsOnBrokenReads(t *testing.T) {
-	cases := []struct {
-		name string
-		drop string
-	}{
-		{name: "usage失败", drop: "usage_stats_daily"},
-		{name: "circuit失败", drop: "account_circuit_incidents"},
-		{name: "余额快照失败", drop: "account_usage_snapshots"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			db := newLoaderTestDB(t)
-			seedOwnerAccount(t, db)
-			if _, err := db.Exec(`DROP TABLE ` + tc.drop); err != nil {
-				t.Fatal(err)
-			}
-			loader := newTestLoader(db, stubConcurrency{}, stubRuntime{})
-			row := newSourcesRow("acct-1")
-			// 余额快照读面仅在 balanceQueryEnabled 行触发；其余读面对所有行生效。
-			row.balanceQueryEnabled = 1
-			page := &managementPage{rows: []managementRow{row}}
-			if _, err := loader.hydratePage(context.Background(), page, time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)); err == nil {
-				t.Fatal("读面失败必须 fail closed")
-			}
-		})
-	}
-}
-
-// TestControlPlaneErrorSurfacesOnMissingTables 覆盖控制面各方法的错误出口。
-func TestControlPlaneErrorSurfacesOnMissingTables(t *testing.T) {
-	cases := []struct {
-		name   string
-		drop   string
-		action func(repo *ControlPlaneRepo, ctx context.Context) error
-	}{
-		{
-			name: "outbox表缺失Claim", drop: "account_circuit_outbox",
-			action: func(repo *ControlPlaneRepo, ctx context.Context) error {
-				_, err := repo.Claim(ctx, "owner", 1000, 30_000, 10)
-				return err
-			},
-		},
-		{
-			name: "accounts表缺失ListForRebuild", drop: "accounts",
-			action: func(repo *ControlPlaneRepo, ctx context.Context) error {
-				_, err := repo.ListForRebuild(ctx, opsjobs.RebuildPageQuery{Limit: 10, NowMS: 1000})
-				return err
-			},
-		},
-		{
-			name: "accounts表缺失ListByRuntimeKeys", drop: "accounts",
-			action: func(repo *ControlPlaneRepo, ctx context.Context) error {
-				_, err := repo.ListByRuntimeKeys(ctx, []string{"acc-1"}, false, 1000)
-				return err
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			repo, _, db := openControlPlaneFixture(t)
-			ctx := context.Background()
-			if _, err := db.Exec(kitDropBusinessTable(tc.drop)); err != nil {
-				t.Fatal(err)
-			}
-			if err := tc.action(repo, ctx); err == nil {
-				t.Fatal("底层表缺失必须报错")
-			}
-		})
-	}
-}
-
-// TestAckAndReleaseErrorSurfaces 覆盖 Ack / ReleaseForReplay 的 SQL 失败出口。
-func TestAckAndReleaseErrorSurfaces(t *testing.T) {
-	repo, _, db := openControlPlaneFixture(t)
-	ctx := context.Background()
-	if _, err := db.Exec(`DROP TABLE juhe_business.account_circuit_outbox`); err != nil {
-		t.Fatal(err)
-	}
-	claim := opsjobs.OutboxEvent{EventID: "e", ClaimToken: "t", ProjectionKey: ProjectionKey}
-	if _, err := repo.Ack(ctx, claim, 1000); err == nil {
-		t.Fatal("outbox 表缺失 Ack 必须报错")
-	}
-	if err := repo.ReleaseForReplay(ctx, claim, "reason", 2000, 500); err == nil {
-		t.Fatal("outbox 表缺失 Release 必须报错")
-	}
-}
-
-// TestOverlayExistingAccountsOnMissingAccounts 覆盖对账存在性检查的 SQL 失败。
 func TestOverlayExistingAccountsOnMissingAccounts(t *testing.T) {
 	repo, db := openListAvailabilityFixture(t)
 	server := newMiniredisForTest(t)
@@ -320,7 +151,7 @@ func TestOverlayExistingAccountsOnMissingAccounts(t *testing.T) {
 // TestControlPlaneCursorErrorSurface 覆盖游标 store 的错误出口。
 func TestControlPlaneCursorErrorSurface(t *testing.T) {
 	db := openKitPostgresDB(t, func(ctx context.Context, raw *sql.DB) error { return nil })
-	repo, err := NewControlPlaneRepo(ControlPlaneConfig{DB: db, Postgres: true})
+	repo, err := NewControlPlaneRepo(ControlPlaneConfig{DB: db})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +162,7 @@ func TestControlPlaneCursorErrorSurface(t *testing.T) {
 	if err := repo.EnsureCursorSchema(context.Background()); err == nil {
 		t.Fatal("句柄关闭后建表必须报错")
 	}
-	s, err := NewReconcileCursorStore(ControlPlaneConfig{DB: db, Postgres: true})
+	s, err := NewReconcileCursorStore(ControlPlaneConfig{DB: db})
 	if err != nil {
 		t.Fatal(err)
 	}

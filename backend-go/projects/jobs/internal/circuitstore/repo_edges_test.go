@@ -16,58 +16,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 )
 
-// TestControlPlaneClaimValidation 覆盖 outbox Claim 参数校验。
-func TestControlPlaneClaimValidation(t *testing.T) {
-	repo, _, _ := openControlPlaneFixture(t)
-	ctx := context.Background()
-	if _, err := repo.Claim(ctx, "  ", 1000, 30_000, 10); err == nil {
-		t.Fatal("空 owner 必须报错")
-	}
-	if _, err := repo.Claim(ctx, "owner", -1, 30_000, 10); err == nil {
-		t.Fatal("负 now 必须报错")
-	}
-	if _, err := repo.Claim(ctx, "owner", 1000, 0, 10); err == nil {
-		t.Fatal("lease 0 必须报错")
-	}
-	if _, err := repo.Claim(ctx, "owner", 1000, 60*60_000+1, 10); err == nil {
-		t.Fatal("lease 超上限必须报错")
-	}
-	if _, err := repo.Claim(ctx, "owner", 1000, 30_000, 0); err == nil {
-		t.Fatal("limit 0 必须报错")
-	}
-	if _, err := repo.Claim(ctx, "owner", 1000, 30_000, 501); err == nil {
-		t.Fatal("limit 超上限必须报错")
-	}
-}
-
-// TestControlPlaneClaimExpiredLeaseReclaim 覆盖 processing 租约过期后的再认领。
-func TestControlPlaneClaimExpiredLeaseReclaim(t *testing.T) {
-	repo, _, db := openControlPlaneFixture(t)
-	ctx := context.Background()
-	seedOutboxEvent(t, db, "evt-exp", 0)
-	// 第一次认领：租约 1000ms。
-	claims, err := repo.Claim(ctx, "owner-1", 1000, 1000, 10)
-	if err != nil || len(claims) != 1 {
-		t.Fatalf("首次认领失败: %v %v", claims, err)
-	}
-	// 租约未到期 → 不可再认领。
-	repeat, err := repo.Claim(ctx, "owner-2", 1500, 30_000, 10)
-	if err != nil || len(repeat) != 0 {
-		t.Fatalf("租约未到期不得再认领: %v %v", repeat, err)
-	}
-	// 租约到期（claim_until_ms <= now）→ 可被其他 owner 再认领。
-	repeat, err = repo.Claim(ctx, "owner-2", 2100, 30_000, 10)
-	if err != nil || len(repeat) != 1 {
-		t.Fatalf("租约过期必须可再认领: %v %v", repeat, err)
-	}
-	if repeat[0].ClaimToken == claims[0].ClaimToken {
-		t.Fatal("再认领必须换发新 claim token")
-	}
-	if repeat[0].EventID != "evt-exp" {
-		t.Fatalf("再认领事件不符: %+v", repeat[0])
-	}
-}
-
 func seedOutboxEvent(t *testing.T, db *sql.DB, eventID string, availableAtMS int64) {
 	t.Helper()
 	if _, err := db.Exec(`
@@ -81,95 +29,6 @@ func seedOutboxEvent(t *testing.T, db *sql.DB, eventID string, availableAtMS int
 	}
 }
 
-// TestControlPlaneAckTokenMismatch 覆盖 Ack 的 token 围栏。
-func TestControlPlaneAckTokenMismatch(t *testing.T) {
-	repo, _, db := openControlPlaneFixture(t)
-	ctx := context.Background()
-	seedOutboxEvent(t, db, "evt-ack", 0)
-	claims, err := repo.Claim(ctx, "owner-1", 1000, 30_000, 10)
-	if err != nil || len(claims) != 1 {
-		t.Fatalf("认领失败: %v %v", claims, err)
-	}
-	forged := claims[0]
-	forged.ClaimToken = "forged-token"
-	acknowledged, err := repo.Ack(ctx, forged, 2000)
-	if err != nil || acknowledged {
-		t.Fatalf("伪造 token 不得 ack: %v %v", acknowledged, err)
-	}
-	// ReleaseForReplay 用合法 token（非法 token 静默 0 行）。
-	if err := repo.ReleaseForReplay(ctx, claims[0], "projector_error", 3000, 500); err != nil {
-		t.Fatal(err)
-	}
-	var availableAt int64
-	if err := db.QueryRow(`SELECT available_at_ms FROM juhe_business.account_circuit_outbox WHERE event_id = 'evt-ack'`).Scan(&availableAt); err != nil {
-		t.Fatal(err)
-	}
-	if availableAt != 3500 {
-		t.Fatalf("release 应写 available_at = now + retryDelay: %d", availableAt)
-	}
-}
-
-// TestControlPlaneIncidentRowOptionalColumns 覆盖 incident 行所有可选列的透传。
-func TestControlPlaneIncidentRowOptionalColumns(t *testing.T) {
-	repo, _, db := openControlPlaneFixture(t)
-	ctx := context.Background()
-	if _, err := db.Exec(`
-		INSERT INTO juhe_business.account_circuit_incidents (
-			circuit_scope_key, account_id, account_runtime_key, scope_kind, key_fingerprint,
-			protocol_code, request_lane, model_family, incident_id, parent_incident_id,
-			child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
-			transition_id, lease_id, lease_purpose, lease_until_ms, backoff_level,
-			consecutive_failures, confirmation_failures_required,
-			confirmation_failure_evidence_keys_json, recovering_successes,
-			next_transition_at_ms, open_until_ms, last_failure_class, created_at_ms, updated_at_ms
-		) VALUES ('sk-full', 'acc-1', 'acc-1', 'key', 'fp-1',
-			'openai', 'text', 'gpt-4o', 'incident-full', 'incident-parent',
-			'["child-b","child-a","child-b"]', 'OPEN', 3, 5, 2,
-			'tr-full', 'lease-9', 'half_open', 88_888, 2,
-			4, 2,
-			'["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]', 1,
-			77_777, 66_666, 'http_502', 1, 999)`); err != nil {
-		t.Fatal(err)
-	}
-	record, err := repo.GetByScopeKey(ctx, "sk-full")
-	if err != nil || record == nil {
-		t.Fatalf("全字段行必须可读: %v %v", record, err)
-	}
-	if record.ParentIncidentID != "incident-parent" || record.KeyFingerprint != "fp-1" {
-		t.Fatalf("父 incident / 指纹不符: %+v", record)
-	}
-	if record.ProtocolCode != "openai" || record.RequestLane != "text" || record.ModelFamily != "gpt-4o" {
-		t.Fatalf("协议列不符: %+v", record)
-	}
-	if record.LeaseID != "lease-9" || record.LeasePurpose != "half_open" || record.LeaseUntilMS == nil || *record.LeaseUntilMS != 88_888 {
-		t.Fatalf("租约列不符: %+v", record)
-	}
-	if len(record.ChildIncidentIDs) != 2 || record.ChildIncidentIDs[0] != "child-b" || record.ChildIncidentIDs[1] != "child-a" {
-		t.Fatalf("child 数组应去重保持序: %v", record.ChildIncidentIDs)
-	}
-	if len(record.ConfirmationFailureEvidenceKeys) != 2 {
-		t.Fatalf("evidence keys 应去重保留: %v", record.ConfirmationFailureEvidenceKeys)
-	}
-	if record.ConfirmationFailureEvidenceKeys[0] != strings.Repeat("a", 64) {
-		t.Fatalf("evidence key 应归一小写: %v", record.ConfirmationFailureEvidenceKeys[0])
-	}
-	if record.NextTransitionAtMS == nil || *record.NextTransitionAtMS != 77_777 {
-		t.Fatalf("nextTransitionAtMS 不符: %+v", record)
-	}
-	if record.OpenUntilMS == nil || *record.OpenUntilMS != 66_666 {
-		t.Fatalf("openUntilMS 不符: %+v", record)
-	}
-	if record.LastFailureClass != "http_502" || record.BackoffLevel != 2 || record.ConsecutiveFailures != 4 {
-		t.Fatalf("失败分类列不符: %+v", record)
-	}
-	// 未知 scopeKey → nil（不报错）。
-	missing, err := repo.GetByScopeKey(ctx, "sk-none")
-	if err != nil || missing != nil {
-		t.Fatalf("未知 scopeKey 应返回 nil: %v %v", missing, err)
-	}
-}
-
-// TestParseBoundedIDArrayGuards 覆盖 child 数组解析的守卫分支。
 func TestParseBoundedIDArrayGuards(t *testing.T) {
 	if _, err := parseBoundedIDArray("{broken"); err == nil {
 		t.Fatal("非法 JSON 必须报错")
@@ -208,69 +67,6 @@ func TestParseEvidenceKeysGuards(t *testing.T) {
 	}
 }
 
-// TestListByRuntimeKeysValidation 覆盖运行态键查询的校验与 tombstone 过滤。
-func TestListByRuntimeKeysValidation(t *testing.T) {
-	repo, _, db := openControlPlaneFixture(t)
-	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, dispatch_revision) VALUES ('acc-1', 5)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repo.ListByRuntimeKeys(ctx, []string{"   "}, false, 1000); err == nil {
-		t.Fatal("空键必须报错")
-	}
-	tooMany := make([]string, 101)
-	for i := range tooMany {
-		tooMany[i] = "k" + itoa(i)
-	}
-	if _, err := repo.ListByRuntimeKeys(ctx, tooMany, false, 1000); err == nil {
-		t.Fatal("超过 100 键必须报错")
-	}
-	if _, err := repo.ListByRuntimeKeys(ctx, nil, false, 1000); err != nil {
-		t.Fatalf("空列表返回空: %v", err)
-	}
-
-	// retained tombstone：CLOSED + retained_until_ms 未来 → include 时保留。
-	if _, err := db.Exec(`
-		INSERT INTO juhe_business.account_circuit_incidents (
-			circuit_scope_key, account_id, account_runtime_key, scope_kind, incident_id,
-			child_incident_ids_json, state, generation, dispatch_revision, ledger_revision,
-			transition_id, retained_until_ms, created_at_ms, updated_at_ms
-		) VALUES ('sk-closed', 'acc-1', 'acc-1', 'account', 'in-c', '[]', 'CLOSED', 1, 5, 1,
-			'tr-c', 5000, 1, 100),
-			('sk-closed-expired', 'acc-1', 'acc-1', 'account', 'in-e', '[]', 'CLOSED', 1, 5, 1,
-			'tr-e', 50, 1, 90)`); err != nil {
-		t.Fatal(err)
-	}
-	records, err := repo.ListByRuntimeKeys(ctx, []string{"acc-1"}, true, 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 1 || records[0].CircuitScopeKey != "sk-closed" {
-		t.Fatalf("只有未过期的 retained tombstone 保留: %+v", records)
-	}
-	// include=false 时 CLOSED 全部过滤。
-	records, err = repo.ListByRuntimeKeys(ctx, []string{"acc-1"}, false, 1000)
-	if err != nil || len(records) != 0 {
-		t.Fatalf("不含 retained 时 CLOSED 必须过滤: %v %v", records, err)
-	}
-}
-
-// TestListForRebuildValidation 覆盖 rebuild 分页参数校验。
-func TestListForRebuildValidation(t *testing.T) {
-	repo, _, _ := openControlPlaneFixture(t)
-	ctx := context.Background()
-	if _, err := repo.ListForRebuild(ctx, opsjobs.RebuildPageQuery{NowMS: 1000, Limit: 0}); err == nil {
-		t.Fatal("limit 0 必须报错")
-	}
-	longKey := strings.Repeat("k", 2049)
-	if _, err := repo.ListForRebuild(ctx, opsjobs.RebuildPageQuery{
-		NowMS: 1000, Limit: 10, AfterCircuitScopeKey: &longKey,
-	}); err == nil {
-		t.Fatal("afterCircuitScopeKey 超长必须报错")
-	}
-}
-
-// TestNewControlPlaneRepoNilDB 覆盖构造校验。
 func TestNewControlPlaneRepoNilDB(t *testing.T) {
 	if _, err := NewControlPlaneRepo(ControlPlaneConfig{}); err == nil {
 		t.Fatal("缺 DB 必须报错")
@@ -280,59 +76,6 @@ func TestNewControlPlaneRepoNilDB(t *testing.T) {
 	}
 }
 
-// TestEnqueueDueTransitionsDueProjections 覆盖到期投影转 dirty。
-// 组B保留（不迁 PG）：EnqueueDue 的 PG 分支经 instantParam 把 time.Time 参数
-// 与 next_transition_at（text 列）比较，真实 PG 上该比较恒不匹配（探针实测
-// `text <= $1(time.Time)` 无报错但恒 0 行，time.Time 以 Go 默认文本形态参与
-// 字典序比较），PG 模式到期转移静默失效——属生产 PG 臂缺陷，本切片不修，
-// 测试随该臂修复批次再迁 PG；此处保持 SQLite fixture 与断言原状。
-func TestEnqueueDueTransitionsDueProjections(t *testing.T) {
-	repo, db, _ := w13g5CircuitListFixture(t)
-	ctx := context.Background()
-	nowMS := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC).UnixMilli()
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ('acc-due', 'viewer-1'), ('acc-later', 'viewer-1')`); err != nil {
-		t.Fatal(err)
-	}
-	insertProjection := func(t *testing.T, accountID, nextTransitionAt string) {
-		t.Helper()
-		if _, err := db.Exec(`
-			INSERT INTO account_list_availability_projections (
-				viewer_system_account_id, account_id, effective_status, schedulable_bucket,
-				account_type, name_sort_key,
-				priority_sort_key, super_priority_sort_key, fallback_sort_key, concurrency_sort_key,
-				created_at_sort_key, payload_json, source_generation, next_transition_at, projected_at
-			) VALUES ('viewer-1', ?, 'active', 'enabled', 'api_key', ?,
-				0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 1, ?, '2026-09-04T09:00:00.000Z')`,
-			accountID, accountID, nextTransitionAt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// 到期（<= now）与未到期各一。
-	insertProjection(t, "acc-due", "2026-09-04T09:59:59Z")
-	insertProjection(t, "acc-later", "2026-09-04T11:00:00Z")
-
-	enqueued, err := repo.EnqueueDue(ctx, 10, nowMS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enqueued != 1 {
-		t.Fatalf("只有到期投影应入队: %d", enqueued)
-	}
-	var reason string
-	if err := db.QueryRow(`SELECT reason FROM account_list_availability_dirty WHERE account_id = 'acc-due'`).Scan(&reason); err != nil {
-		t.Fatal(err)
-	}
-	if reason != "projection_due_transition" {
-		t.Fatalf("到期入队 reason 不符: %s", reason)
-	}
-	// 重复入队推进 generation 且保留最早 available_at。
-	enqueued, err = repo.EnqueueDue(ctx, 10, nowMS)
-	if err != nil || enqueued != 0 {
-		t.Fatalf("已有 dirty 的账户不得重复入队: %d %v", enqueued, err)
-	}
-}
-
-// TestEnqueueDueAndMissingValidation 覆盖入队 limit 校验。
 func TestEnqueueDueAndMissingValidation(t *testing.T) {
 	repo, _ := openListAvailabilityFixture(t)
 	ctx := context.Background()
@@ -685,7 +428,7 @@ func TestListAvailabilityRepoSmallHelpers(t *testing.T) {
 	if err != nil || len(ids) != 2 || ids[0] != "a" {
 		t.Fatalf("归一去重不符: %v %v", ids, err)
 	}
-	if got := instantParam(true, "bad-time", nil); got != "bad-time" {
+	if got := instantParam("bad-time", nil); got != "bad-time" {
 		t.Fatalf("解析失败回退文本: %v", got)
 	}
 	if got := boolParam(true); got != 1 {

@@ -11,8 +11,7 @@ import (
 // 2026-09-19 zero-config decision: every retention domain is permanently
 // enabled inside the jobs process.
 type Config struct {
-	// Mode mirrors JUHE_AI_DATABASE_DRIVER (sqlite default, postgres for the
-	// performance runtime).
+	// Mode 恒 ModePostgres（JUHE_AI_DATABASE_DRIVER env 已随 sqlite 形态退役）。
 	Mode Mode
 	// ProcessRole mirrors JUHE_AI_PROCESS_ROLE (Node default server). The
 	// retention jobs only act when it is "worker".
@@ -38,17 +37,10 @@ type Config struct {
 // effect anymore.
 func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		Mode:              ModeSQLite,
+		Mode:              ModePostgres,
 		ProcessRole:       "server",
 		WorkerRole:        "worker",
 		ChatRetentionDays: chatRetentionDefaultDays,
-	}
-	if value := strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")); value != "" {
-		mode := Mode(strings.ToLower(value))
-		if mode != ModeSQLite && mode != ModePostgres {
-			return Config{}, fmt.Errorf("JUHE_AI_DATABASE_DRIVER 必须为 sqlite 或 postgres")
-		}
-		cfg.Mode = mode
 	}
 	if value := strings.TrimSpace(getenv("JUHE_AI_PROCESS_ROLE")); value != "" {
 		cfg.ProcessRole = value

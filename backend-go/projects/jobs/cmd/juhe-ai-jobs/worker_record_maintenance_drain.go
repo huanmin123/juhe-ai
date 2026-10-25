@@ -42,7 +42,7 @@ func (r familyTableDrainRunner) RunAccountUsageSnapshotUpserts(ctx context.Conte
 }
 
 func (a *workerAssembly) wireRecordMaintenanceTableDrain(family *retentionFamily, dataset *cleanuprepo.DB) error {
-	store, err := recordmaintenance.OpenStore(dataset.DB, true)
+	store, err := recordmaintenance.OpenStore(dataset.DB)
 	if err != nil {
 		return fmt.Errorf("open record_maintenance_jobs store: %w", err)
 	}

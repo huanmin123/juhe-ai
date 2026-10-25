@@ -60,8 +60,8 @@ import (
 
 // bind 复用平台方言改写（statsagg.Dialect.bind 的共享实现，导出面不可引用
 // 非导出方法）。
-func bind(postgres bool, query string) string {
-	return sqldialect.BindSQL(postgres, query)
+func bind(_ bool, query string) string {
+	return sqldialect.BindSQL(true, query)
 }
 
 // 吞吐参数默认值与钳制边界，对齐 BUG-0182 记载的 Node 脚本缺省值。
@@ -148,21 +148,15 @@ var completionClearedDirtyTables = []string{
 }
 
 // Options 承载一次离线重建的依赖与吞吐参数。导出面不暴露 internal 类型：
-// 方言用 Postgres 布尔承载，窗口阶段结果用本包 WindowStageRun 承载。
+// 窗口阶段结果用本包 WindowStageRun 承载。
 type Options struct {
-	// DB 是 stats 库句柄：SQLite standalone 传统计结果库 SQLite 连接
-	// （usage_records 镜像同库），PG 传含 juhe_usage/juhe_stats/juhe_business
-	// schema 的连接池。
+	// DB 是 stats 库句柄：传含 juhe_usage/juhe_stats/juhe_business schema
+	// 的 PostgreSQL 连接。
 	DB *sql.DB
-	// Postgres 选择方言：true=PG（juhe_stats./juhe_business. 前缀 + $n 占位符），
-	// false=SQLite standalone（裸表名 + ? 占位符）。
-	Postgres bool
-	// Clock 解析统计时区；nil 时按 dialect 从业务库 system_settings 读取
+	// Clock 解析统计时区；nil 时从业务库 system_settings 读取
 	// usageStatsTimezone（与 statsverify.LoadUsageStatsTimezone 同源）。
 	Clock statsagg.StatsTimezoneProvider
-	// BusinessDB 是业务库句柄：SQLite 模式必填（聚合授权链查找
-	// resource_authorizations/accounts 与默认时区读取所在，stats 库没有
-	// 这些表）；PG 与 stats 同池时可留 nil。
+	// BusinessDB 是业务库句柄：PG 与 stats 同池时可留 nil（缺省复用 DB）。
 	BusinessDB *sql.DB
 	// Now 注入当前时间（测试用）；nil 时取 time.Now。
 	Now func() time.Time
@@ -224,15 +218,15 @@ const jobsOfflineActivityWindow = 5 * time.Minute
 // statsagg.ParseRFC3339Instant 解析后按时刻比较，不可解析的旧行不参与判定；
 // 空表视为离线。前提：执行重建的机器与 jobs 同源时钟（当前单机部署成立；
 // 多机部署需改用数据库时钟重估）。
-func CheckJobsOffline(ctx context.Context, db *sql.DB, postgres bool, now time.Time) error {
-	dialect := statsagg.Dialect{Postgres: postgres}
+func CheckJobsOffline(ctx context.Context, db *sql.DB, now time.Time) error {
+	dialect := statsagg.Dialect{}
 	var maxLeaseUntil, maxHeartbeat sql.NullString
-	if err := db.QueryRowContext(ctx, bind(postgres,
+	if err := db.QueryRowContext(ctx, bind(true,
 		`SELECT max(lease_until) FROM `+dialect.StatsTable("background_job_leases"),
 	)).Scan(&maxLeaseUntil); err != nil {
 		return fmt.Errorf("读取后台任务租约失败: %w", err)
 	}
-	if err := db.QueryRowContext(ctx, bind(postgres,
+	if err := db.QueryRowContext(ctx, bind(true,
 		`SELECT max(heartbeat_at) FROM `+dialect.StatsTable("background_task_runs"),
 	)).Scan(&maxHeartbeat); err != nil {
 		return fmt.Errorf("读取后台任务运行心跳失败: %w", err)
@@ -256,7 +250,7 @@ func CheckJobsOffline(ctx context.Context, db *sql.DB, postgres bool, now time.T
 // 拒绝（ErrJobsNotOffline，零副作用）、清空、聚合或窗口阶段执行失败时返回。
 // 达到批数上限不是错误（Drained=false）。
 func Rebuild(ctx context.Context, options Options) (Result, error) {
-	dialect := statsagg.Dialect{Postgres: options.Postgres}
+	dialect := statsagg.Dialect{}
 	startedAt := nowFunc(options.Now)
 	result := Result{
 		Dialect:        dialectName(dialect),
@@ -272,18 +266,15 @@ func Rebuild(ctx context.Context, options Options) (Result, error) {
 	clock := options.Clock
 	if clock == nil {
 		businessDB := options.BusinessDB
-		if businessDB == nil && options.Postgres {
+		if businessDB == nil {
 			businessDB = options.DB
 		}
-		if businessDB == nil {
-			return Result{}, errors.New("SQLite 模式统计缓存重建缺少业务库句柄（授权链查找与时区读取必需）")
-		}
-		clock = settingsTimezoneSource{db: businessDB, postgres: options.Postgres}
+		clock = settingsTimezoneSource{db: businessDB}
 	}
 
 	// 0. 离线校验：检测到 jobs 活动痕迹（未过期租约/近期任务心跳）时拒绝，
 	// 先于任何清空动作，零副作用。
-	if err := CheckJobsOffline(ctx, options.DB, options.Postgres, startedAt); err != nil {
+	if err := CheckJobsOffline(ctx, options.DB, startedAt); err != nil {
 		return Result{}, err
 	}
 
@@ -379,12 +370,12 @@ func clearStatsSurface(ctx context.Context, db *sql.DB, dialect statsagg.Dialect
 // clearTableSQL 生成单表清空语句（PG 形态带 juhe_stats. 前缀并经 $n 改写；
 // 独立成纯函数供语句形态断言测试核对）。
 func clearTableSQL(dialect statsagg.Dialect, table string) string {
-	return bind(dialect.Postgres, `DELETE FROM `+dialect.StatsTable(table))
+	return bind(true, `DELETE FROM `+dialect.StatsTable(table))
 }
 
 // resetJobStateSQL 生成游标重置语句（形态契约同上）。
 func resetJobStateSQL(dialect statsagg.Dialect) string {
-	return bind(dialect.Postgres, `DELETE FROM `+dialect.StatsTable("stats_job_state")+`
+	return bind(true, `DELETE FROM `+dialect.StatsTable("stats_job_state")+`
 		WHERE scope_type = 'global' AND scope_id = ''
 		  AND job_name IN (`+placeholders(len(rebuildResetJobStateNames))+`)`)
 }
@@ -397,7 +388,7 @@ func clearCompletionDirtyQueues(ctx context.Context, db *sql.DB, dialect statsag
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, table := range completionClearedDirtyTables {
-		if _, err := tx.ExecContext(ctx, bind(dialect.Postgres, `DELETE FROM `+dialect.StatsTable(table))); err != nil {
+		if _, err := tx.ExecContext(ctx, bind(true, `DELETE FROM `+dialect.StatsTable(table))); err != nil {
 			return fmt.Errorf("DELETE FROM %s: %w", dialect.StatsTable(table), err)
 		}
 	}
@@ -408,15 +399,11 @@ func clearCompletionDirtyQueues(ctx context.Context, db *sql.DB, dialect statsag
 // usageStatsTimezone（与 statsverify.LoadUsageStatsTimezone 同一查询语义；
 // 不 import statsverify——它是 internal 包，此处只保留读模型）。
 type settingsTimezoneSource struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
 func (s settingsTimezoneSource) StatsTimezone(ctx context.Context) (*time.Location, error) {
-	table := "system_settings"
-	if s.postgres {
-		table = "juhe_business.system_settings"
-	}
+	table := "juhe_business.system_settings"
 	var rawValue sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT value_json FROM `+table+
 		` WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`).Scan(&rawValue)
@@ -467,11 +454,8 @@ func clampInt(value, defaultValue, minValue, maxValue int) int {
 	return value
 }
 
-func dialectName(dialect statsagg.Dialect) string {
-	if dialect.Postgres {
-		return "postgres"
-	}
-	return "sqlite"
+func dialectName(statsagg.Dialect) string {
+	return "postgres"
 }
 
 func nowFunc(now func() time.Time) time.Time {

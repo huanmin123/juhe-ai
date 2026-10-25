@@ -62,8 +62,7 @@ var snapshotColumns = []string{"account_id", "kind", "source", "snapshot_json", 
 // Store 是 record_maintenance_jobs 交接表的双模读侧（SQLite 业务库句柄 /
 // PG dataset pool 句柄由组合根按同源规则提供）。
 type Store struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 
 	mu      sync.Mutex
 	ensured bool
@@ -71,26 +70,20 @@ type Store struct {
 
 // OpenStore builds the queue store over an existing handle; the caller owns
 // handle lifecycle（组合根的 SQLite 连接 / PG pool 统一关闭）。
-func OpenStore(db *sql.DB, postgres bool) (*Store, error) {
+func OpenStore(db *sql.DB) (*Store, error) {
 	if db == nil {
 		return nil, sql.ErrConnDone
 	}
-	return &Store{db: db, postgres: postgres}, nil
+	return &Store{db: db}, nil
 }
 
 // Table 返回方言限定的表名（PG 走 juhe_dataset schema，SQLite 单库直名）。
 func (s *Store) Table() string {
-	if s.postgres {
-		return PGSchema + "." + TableName
-	}
-	return TableName
+	return PGSchema + "." + TableName
 }
 
 // bind 把 ? 占位符改写为 PG 的 $N（gateway DurableDispatch.bind 同语义）。
 func (s *Store) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	index := 0
 	var builder strings.Builder
 	for _, char := range query {
@@ -134,10 +127,7 @@ func (s *Store) ensureSnapshotColumns(ctx context.Context) error {
 		if existing[column] {
 			continue
 		}
-		query := "ALTER TABLE " + s.Table() + " ADD COLUMN " + column + " TEXT NOT NULL DEFAULT ''"
-		if s.postgres {
-			query = "ALTER TABLE " + s.Table() + " ADD COLUMN IF NOT EXISTS " + column + " TEXT NOT NULL DEFAULT ''"
-		}
+		query := "ALTER TABLE " + s.Table() + " ADD COLUMN IF NOT EXISTS " + column + " TEXT NOT NULL DEFAULT ''"
 		if _, err := s.db.ExecContext(ctx, s.bind(query)); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}
@@ -148,26 +138,6 @@ func (s *Store) ensureSnapshotColumns(ctx context.Context) error {
 // existingColumns 按方言列出既有列名（SQLite PRAGMA table_info 的行形状是
 // cid/name/type/notnull/dflt_value/pk，取 name；PG 走 information_schema）。
 func (s *Store) existingColumns(ctx context.Context) (map[string]bool, error) {
-	if !s.postgres {
-		rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+TableName+`)`)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		columns := map[string]bool{}
-		for rows.Next() {
-			var (
-				cid, notnull, pk int
-				name, columnType string
-				dflt             sql.NullString
-			)
-			if err := rows.Scan(&cid, &name, &columnType, &notnull, &dflt, &pk); err != nil {
-				return nil, err
-			}
-			columns[name] = true
-		}
-		return columns, rows.Err()
-	}
 	rows, err := s.db.QueryContext(ctx, s.bind(
 		`SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?`),
 		PGSchema, TableName)

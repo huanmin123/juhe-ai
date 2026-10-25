@@ -77,10 +77,7 @@ func (j *RecordCleanupRetryJob) account() AccountRecordCleanupRetryer {
 // statsWriter mirrors the Node conditional callback: postgres mode passes
 // nil so the retryer skips stats deduction dispatch.
 func (j *RecordCleanupRetryJob) statsWriter() StatsWriter {
-	if j.Mode == ModePostgres {
-		return nil
-	}
-	return j.Stats
+	return nil
 }
 
 func (j *RecordCleanupRetryJob) logger() *slog.Logger {

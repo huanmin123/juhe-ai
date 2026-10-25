@@ -13,6 +13,7 @@ import (
 	"time"
 
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	schedprefdomain "github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -31,6 +32,15 @@ func w14jPGSeedStatements() []string {
 	if err != nil {
 		panic("marshal capability domain stage record: " + err.Error())
 	}
+	schedprefRecordJSON, err := json.Marshal(schedprefdomain.Record{
+		Stage:       schedprefdomain.StageCompleted,
+		RuleVersion: schedprefdomain.RuleVersion,
+		CompletedAt: "2026-10-12T08:00:00Z",
+		Counts:      schedprefdomain.Counts{},
+	})
+	if err != nil {
+		panic("marshal scheduling preferences migration record: " + err.Error())
+	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS juhe_business.global_settings (
       key text PRIMARY KEY,
@@ -39,6 +49,9 @@ func w14jPGSeedStatements() []string {
 		`INSERT INTO juhe_business.global_settings (key, value_json, updated_at)
       VALUES ('` + capdomain.MigrationSettingKey + `', '` + string(stageRecordJSON) + `', '2026-10-12T08:00:00Z')
       ON CONFLICT (key) DO NOTHING`,
+		`INSERT INTO juhe_business.global_settings (key, value_json, updated_at)
+      VALUES ('` + schedprefdomain.MigrationSettingKey + `', '` + string(schedprefRecordJSON) + `', '2026-10-12T08:00:00Z')
+      ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at`,
 		// 调度偏好独立实体（PLAN-20261012T033000000Z P1）启动校验夹具契约：
 		// jobs 启动只读校验（scheduling_preference_schema.go）要求覆盖库自带
 		// scheduling_preferences 表、api_keys 绑定列与合规内置行；旧版外部

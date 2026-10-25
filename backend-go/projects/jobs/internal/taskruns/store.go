@@ -6,36 +6,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
-
-	_ "modernc.org/sqlite"
 )
 
-// StoreMode 支持双模：SQLite 测试闭环 / PostgreSQL 生产。
+// StoreMode 标识存储形态（PG 唯一形态）。
 type StoreMode string
 
 const (
-	ModeSQLite   StoreMode = "sqlite"
 	ModePostgres StoreMode = "postgres"
 )
 
-// StoreConfig 等价 accounthealth StoreConfig 的双模配置。
+// StoreConfig 等价 accounthealth StoreConfig 的配置。
 type StoreConfig struct {
 	Mode                 StoreMode
-	DatabasePath         string
 	PostgresURL          string
 	PostgresMaxOpenConns int
 	PostgresMaxIdleConns int
 	PostgresPool         *pgpool.Handle
 }
 
-// Store 是 background_task_runs + background_job_leases 的双模存储。
+// Store 是 background_task_runs + background_job_leases 的存储。
 type Store struct {
 	db    *sql.DB
 	mode  StoreMode
@@ -43,32 +38,14 @@ type Store struct {
 	clock Clock
 }
 
-// NewStore 使用已有 *sql.DB（测试或自定义池）。
-func NewStore(db *sql.DB, mode StoreMode) *Store {
-	return &Store{db: db, mode: mode, clock: SystemClock{}}
+// NewStore 使用已有 *sql.DB（测试或自定义池，恒 PG 方言）。
+func NewStore(db *sql.DB) *Store {
+	return &Store{db: db, mode: ModePostgres, clock: SystemClock{}}
 }
 
-// OpenStore 按配置打开 SQLite（MaxOpenConns(1) 单 writer，事务 IMMEDIATE）
-// 或 PostgreSQL（pgpool）。
+// OpenStore 打开 PostgreSQL（pgpool）。
 func OpenStore(config StoreConfig) (*Store, error) {
 	switch config.Mode {
-	case ModeSQLite:
-		path := strings.TrimSpace(config.DatabasePath)
-		if path == "" {
-			return nil, errors.New("taskruns sqlite 缺少数据库路径")
-		}
-		dsn := "file:" + filepath.ToSlash(path) + "?_pragma=busy_timeout(5000)&_txlock=immediate"
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, err
-		}
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("配置 taskruns sqlite 单 writer 失败: %w", err)
-		}
-		return &Store{db: db, mode: ModeSQLite, clock: SystemClock{}}, nil
 	case ModePostgres:
 		if strings.TrimSpace(config.PostgresURL) == "" {
 			return nil, errors.New("taskruns postgres 缺少连接 URL")
@@ -92,7 +69,7 @@ func OpenStore(config StoreConfig) (*Store, error) {
 		}
 		return &Store{db: pool.DB(), mode: ModePostgres, pool: pool, clock: SystemClock{}}, nil
 	default:
-		return nil, errors.New("taskruns store mode 必须为 sqlite 或 postgres")
+		return nil, errors.New("taskruns store mode 必须为 postgres")
 	}
 }
 
@@ -118,16 +95,10 @@ func (s *Store) now() time.Time { return s.clock.Now().UTC() }
 // ---------------------------------------------------------------------------
 // schema
 
-// EnsureSchema 创建 SQLite/PG 表与索引。PG 的 DDL 与
+// EnsureSchema 创建 PG 表与索引。PG 的 DDL 与
 // backend-go/projects/maintenance/internal/schema/pg_schema.go 中
 // juhe_stats.background_task_runs / background_job_leases 冻结文本一致。
 func (s *Store) EnsureSchema(ctx context.Context) error {
-	if s.mode == ModeSQLite {
-		if _, err := s.db.ExecContext(ctx, sqliteSchema); err != nil {
-			return fmt.Errorf("初始化 taskruns sqlite schema 失败: %w", err)
-		}
-		return nil
-	}
 	if _, err := s.db.ExecContext(ctx, postgresSchema); err != nil {
 		return fmt.Errorf("初始化 taskruns postgres schema 失败: %w", err)
 	}
@@ -135,31 +106,70 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 }
 
 func (s *Store) runsTable() string {
-	if s.mode == ModePostgres {
-		return "juhe_stats.background_task_runs"
-	}
-	return "background_task_runs"
+	return "juhe_stats.background_task_runs"
 }
 
 func (s *Store) leasesTable() string {
-	if s.mode == ModePostgres {
-		return "juhe_stats.background_job_leases"
-	}
-	return "background_job_leases"
+	return "juhe_stats.background_job_leases"
 }
 
 // pgNowText 与 Node postgresUtcNowTextSql 一致：数据库毫秒 UTC 时钟。
 const pgNowText = `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
 
-// bind 把 SQL 中的顺序 `?` 占位符按出现次序改写为 PostgreSQL 的 $n 序号。
-// 生命周期 SQL 与 SQLite 共享 `?` 形态，pgx 驱动不做等价改写（w12b 门控
-// 实测 PG 模式报 42601 语法错误，与 cleanuprepo/statsverify 前波同类缺陷）；
-// 本包 SQL 文本不含含 `?` 的字符串字面量，顺序改写与参数顺序一一对应。
+// bind 把 SQL 中的顺序 `?` 占位符按出现次序改写为 PostgreSQL 的 $n 序号
+// （pgx 驱动不做等价改写，w12b 门控实测 PG 模式报 42601 语法错误）。
 // 已使用 $n 的 PG 专有 SQL 不含 `?`，原样返回。
 // 实现收敛到 shared/platform/sqldialect（行为逐字节等价）。
 func (s *Store) bind(query string) string {
-	return sqldialect.BindSQL(s.mode == ModePostgres, query)
+	return sqldialect.BindSQL(true, query)
 }
+
+// postgresSchema 与 backend-go/projects/maintenance/internal/schema/pg_schema.go
+// 的 juhe_stats 冻结 DDL 一致。
+const postgresSchema = `
+CREATE TABLE IF NOT EXISTS juhe_stats.background_task_runs (
+  run_id text PRIMARY KEY,
+  job_name text NOT NULL,
+  job_type text NOT NULL,
+  worker_role text NOT NULL,
+  status text NOT NULL,
+  lease_key text NOT NULL,
+  owner_id text,
+  params_json text NOT NULL DEFAULT '{}',
+  result_json text NOT NULL DEFAULT '{}',
+  error_message text,
+  submitted_at text NOT NULL,
+  started_at text,
+  heartbeat_at text,
+  finished_at text,
+  duration_ms integer,
+  exit_code integer,
+  created_at text NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS juhe_stats.background_job_leases (
+  lease_key text PRIMARY KEY,
+  job_name text NOT NULL,
+  shard_key text NOT NULL DEFAULT '',
+  owner_id text NOT NULL,
+  run_id text,
+  fencing_token bigint NOT NULL DEFAULT 0,
+  lease_until text NOT NULL,
+  heartbeat_at text NOT NULL,
+  started_at text NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_background_task_runs_status_updated
+  ON juhe_stats.background_task_runs(status, updated_at DESC, run_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_background_task_runs_job_created
+  ON juhe_stats.background_task_runs(job_name, created_at DESC, run_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_background_job_leases_job
+  ON juhe_stats.background_job_leases(job_name, shard_key, lease_until);
+`
 
 // ---------------------------------------------------------------------------
 // task run 生命周期
@@ -515,9 +525,7 @@ func ScheduledLeaseAdvisoryKey(leaseKey string) (int64, error) {
 }
 
 // TryAcquireScheduledLease 获取带 fencing token 的共享租约：
-// PG 在事务内先取 pg_try_advisory_xact_lock 再做过期 CAS + token 自增；
-// SQLite 依赖单 writer 连接 + IMMEDIATE 事务做同样的过期 CAS + token 自增，
-// 无 advisory（advisory_busy 仅是 PG 并发快路径，不影响语义）。
+// 事务内先取 pg_try_advisory_xact_lock 再做过期 CAS + token 自增。
 func (s *Store) TryAcquireScheduledLease(ctx context.Context, input ScheduledLeaseAcquireInput) (AcquireResult, error) {
 	jobName, err := requiredText(input.JobName, "jobName")
 	if err != nil {
@@ -554,19 +562,17 @@ func (s *Store) TryAcquireScheduledLease(ctx context.Context, input ScheduledLea
 
 	var result AcquireResult
 	txErr := s.withTx(ctx, func(tx *sql.Tx) error {
-		if s.mode == ModePostgres {
-			// leaseKey 已在入口经 requiredText 校验（非空且 ≤512），
-			// ScheduledLeaseAdvisoryKey 仅因同类校验失败，此处不可达，
-			// 错误守卫按 w12b 覆盖整改授权删除。
-			advisory, _ := ScheduledLeaseAdvisoryKey(leaseKey)
-			var acquiredRaw any
-			if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired`, advisory).Scan(&acquiredRaw); err != nil {
-				return err
-			}
-			if !postgresBool(acquiredRaw) {
-				result = AcquireResult{Acquired: false, Reason: AcquireAdvisoryBusy, LeaseKey: leaseKey}
-				return nil
-			}
+		// leaseKey 已在入口经 requiredText 校验（非空且 ≤512），
+		// ScheduledLeaseAdvisoryKey 仅因同类校验失败，此处不可达，
+		// 错误守卫按 w12b 覆盖整改授权删除。
+		advisory, _ := ScheduledLeaseAdvisoryKey(leaseKey)
+		var acquiredRaw any
+		if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired`, advisory).Scan(&acquiredRaw); err != nil {
+			return err
+		}
+		if !postgresBool(acquiredRaw) {
+			result = AcquireResult{Acquired: false, Reason: AcquireAdvisoryBusy, LeaseKey: leaseKey}
+			return nil
 		}
 		identity, opErr := s.acquireScheduledLeaseRow(ctx, tx, leaseKey, jobName, shardKey, ownerID, runID, ttl)
 		if opErr != nil {
@@ -588,8 +594,7 @@ func (s *Store) TryAcquireScheduledLease(ctx context.Context, input ScheduledLea
 func (s *Store) acquireScheduledLeaseRow(ctx context.Context, tx *sql.Tx, leaseKey, jobName, shardKey, ownerID string, runID any, ttl time.Duration) (*LeaseIdentity, error) {
 	var query string
 	var args []any
-	if s.mode == ModePostgres {
-		query = `
+	query = `
 	INSERT INTO ` + s.leasesTable() + ` AS current (
 	  lease_key, job_name, shard_key, owner_id, run_id, lease_until,
 	  heartbeat_at, started_at, updated_at, fencing_token
@@ -607,30 +612,7 @@ func (s *Store) acquireScheduledLeaseRow(ctx context.Context, tx *sql.Tx, leaseK
 	WHERE current.lease_until <= ` + pgNowText + `
 	RETURNING lease_key, owner_id, fencing_token, lease_until
 	`
-		args = []any{leaseKey, jobName, shardKey, ownerID, runID, ttl.Milliseconds()}
-	} else {
-		nowText := FormatInstant(s.now())
-		untilText := FormatInstant(s.now().Add(ttl))
-		query = `
-	INSERT INTO ` + s.leasesTable() + ` (
-	  lease_key, job_name, shard_key, owner_id, run_id, lease_until,
-	  heartbeat_at, started_at, updated_at, fencing_token
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-	ON CONFLICT(lease_key) DO UPDATE SET
-	  job_name = excluded.job_name,
-	  shard_key = excluded.shard_key,
-	  owner_id = excluded.owner_id,
-	  run_id = excluded.run_id,
-	  lease_until = excluded.lease_until,
-	  heartbeat_at = excluded.heartbeat_at,
-	  started_at = excluded.started_at,
-	  updated_at = excluded.updated_at,
-	  fencing_token = fencing_token + 1
-	WHERE background_job_leases.lease_until <= ?
-	RETURNING lease_key, owner_id, fencing_token, lease_until
-	`
-		args = []any{leaseKey, jobName, shardKey, ownerID, runID, untilText, nowText, nowText, nowText, nowText}
-	}
+	args = []any{leaseKey, jobName, shardKey, ownerID, runID, ttl.Milliseconds()}
 	// 事务内必须绑定同一连接：MaxOpenConns(1) 下经由 s.db 再取连接会死锁。
 	identity, err := scanLeaseIdentity(tx.QueryRowContext(ctx, s.bind(query), args...))
 	if err != nil {
@@ -656,32 +638,19 @@ func (s *Store) RenewScheduledLease(ctx context.Context, lease LeaseIdentity, tt
 	}
 	var query string
 	var args []any
-	if s.mode == ModePostgres {
-		query = `
-	UPDATE ` + s.leasesTable() + `
-	SET lease_until = to_char((clock_timestamp() + ($1 * INTERVAL '1 millisecond')) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-	  heartbeat_at = ` + pgNowText + `,
-	  updated_at = ` + pgNowText + `
-	WHERE lease_key = $2
-	  AND owner_id = $3
-	  AND fencing_token = $4
-	  AND lease_until > ` + pgNowText + `
-	RETURNING lease_key, owner_id, fencing_token, lease_until
-	`
-		args = []any{normalizedTTL.Milliseconds(), key, owner, lease.FencingToken}
-	} else {
-		nowText := FormatInstant(s.now())
-		query = `
-	UPDATE ` + s.leasesTable() + `
-	SET lease_until = ?, heartbeat_at = ?, updated_at = ?
-	WHERE lease_key = ?
-	  AND owner_id = ?
-	  AND fencing_token = ?
-	  AND lease_until > ?
-	RETURNING lease_key, owner_id, fencing_token, lease_until
-	`
-		args = []any{FormatInstant(s.now().Add(normalizedTTL)), nowText, nowText, key, owner, lease.FencingToken, nowText}
-	}
+
+	query = `
+UPDATE ` + s.leasesTable() + `
+SET lease_until = to_char((clock_timestamp() + ($1 * INTERVAL '1 millisecond')) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  heartbeat_at = ` + pgNowText + `,
+  updated_at = ` + pgNowText + `
+WHERE lease_key = $2
+  AND owner_id = $3
+  AND fencing_token = $4
+  AND lease_until > ` + pgNowText + `
+RETURNING lease_key, owner_id, fencing_token, lease_until
+`
+	args = []any{normalizedTTL.Milliseconds(), key, owner, lease.FencingToken}
 	identity, err := s.queryLeaseIdentity(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -694,30 +663,18 @@ func (s *Store) RenewScheduledLease(ctx context.Context, lease LeaseIdentity, tt
 func (s *Store) ReleaseScheduledLease(ctx context.Context, lease LeaseIdentity) (bool, error) {
 	var query string
 	var args []any
-	if s.mode == ModePostgres {
-		query = `
-	UPDATE ` + s.leasesTable() + `
-	SET lease_until = ` + pgNowText + `,
-	  heartbeat_at = ` + pgNowText + `,
-	  updated_at = ` + pgNowText + `
-	WHERE lease_key = $1
-	  AND owner_id = $2
-	  AND fencing_token = $3
-	  AND lease_until > ` + pgNowText + `
-	`
-		args = []any{lease.LeaseKey, lease.OwnerID, lease.FencingToken}
-	} else {
-		nowText := FormatInstant(s.now())
-		query = `
-	UPDATE ` + s.leasesTable() + `
-	SET lease_until = ?, heartbeat_at = ?, updated_at = ?
-	WHERE lease_key = ?
-	  AND owner_id = ?
-	  AND fencing_token = ?
-	  AND lease_until > ?
-	`
-		args = []any{nowText, nowText, nowText, lease.LeaseKey, lease.OwnerID, lease.FencingToken, nowText}
-	}
+
+	query = `
+UPDATE ` + s.leasesTable() + `
+SET lease_until = ` + pgNowText + `,
+  heartbeat_at = ` + pgNowText + `,
+  updated_at = ` + pgNowText + `
+WHERE lease_key = $1
+  AND owner_id = $2
+  AND fencing_token = $3
+  AND lease_until > ` + pgNowText + `
+`
+	args = []any{lease.LeaseKey, lease.OwnerID, lease.FencingToken}
 	changed, err := s.execChanges(ctx, query, args...)
 	if err != nil {
 		return false, fmt.Errorf("释放周期任务租约失败: %w", err)
@@ -731,29 +688,17 @@ func (s *Store) ReleaseScheduledLease(ctx context.Context, lease LeaseIdentity) 
 func (s *Store) AssertScheduledLease(ctx context.Context, lease LeaseFence) error {
 	var query string
 	var args []any
-	if s.mode == ModePostgres {
-		query = `
-	SELECT lease_key
-	FROM ` + s.leasesTable() + `
-	WHERE lease_key = $1
-	  AND owner_id = $2
-	  AND fencing_token = $3
-	  AND lease_until > ` + pgNowText + `
-	LIMIT 1
-	`
-		args = []any{lease.LeaseKey, lease.OwnerID, lease.FencingToken}
-	} else {
-		query = `
-	SELECT lease_key
-	FROM ` + s.leasesTable() + `
-	WHERE lease_key = ?
-	  AND owner_id = ?
-	  AND fencing_token = ?
-	  AND lease_until > ?
-	LIMIT 1
-	`
-		args = []any{lease.LeaseKey, lease.OwnerID, lease.FencingToken, FormatInstant(s.now())}
-	}
+
+	query = `
+SELECT lease_key
+FROM ` + s.leasesTable() + `
+WHERE lease_key = $1
+  AND owner_id = $2
+  AND fencing_token = $3
+  AND lease_until > ` + pgNowText + `
+LIMIT 1
+`
+	args = []any{lease.LeaseKey, lease.OwnerID, lease.FencingToken}
 	var key string
 	err := s.db.QueryRowContext(ctx, s.bind(query), args...).Scan(&key)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -807,8 +752,6 @@ func (s *Store) ReconcileStale(ctx context.Context, input TaskRunReconcileInput)
 
 	var result TaskRunReconcileResult
 	txErr := s.withTx(ctx, func(tx *sql.Tx) error {
-		// Node 的 PG SQL 含外层 NOT EXISTS（9 个占位符）；SQLite 分支去掉
-		// 该外层限定后为 8 个占位符，参数顺序与谓词一一对应。
 		queuedArgs := []any{
 			`{"reconciled":true,"reconciledReason":"worker_never_started"}`,
 			"临时维护 worker 未在期限内启动，后台任务已自动收口为失败",
@@ -818,18 +761,6 @@ func (s *Store) ReconcileStale(ctx context.Context, input TaskRunReconcileInput)
 			`{"reconciled":true,"reconciledReason":"lease_expired_after_worker_exit"}`,
 			"临时维护 worker 心跳中断且无有效租约，后台任务已自动收口为失败",
 			nowText, nowText, heartbeatBefore, nowText, heartbeatBefore, nowText, limit,
-		}
-		if s.mode != ModePostgres {
-			queuedArgs = []any{
-				`{"reconciled":true,"reconciledReason":"worker_never_started"}`,
-				"临时维护 worker 未在期限内启动，后台任务已自动收口为失败",
-				nowText, nowText, queuedBefore, nowText, limit,
-			}
-			runningArgs = []any{
-				`{"reconciled":true,"reconciledReason":"lease_expired_after_worker_exit"}`,
-				"临时维护 worker 心跳中断且无有效租约，后台任务已自动收口为失败",
-				nowText, nowText, heartbeatBefore, nowText, limit,
-			}
 		}
 		changes, err := execTxChanges(tx, s.bind(s.reconcileQueuedSQL()), queuedArgs...)
 		if err != nil {
@@ -856,129 +787,79 @@ func (s *Store) ReconcileStale(ctx context.Context, input TaskRunReconcileInput)
 	return result, nil
 }
 
-// Node 的 SQLite 对账 UPDATE 使用 IN (SELECT ..) 子查询而非 PG 的
-// NOT EXISTS 目标行限定（SQLite 不支持 UPDATE 目标行上直接引用同表
-// CTE/子查询的写法），谓词与排序完全一致；PG 分支与 Node SQL 文本一致。
+// 对账 UPDATE 的 PG 文本与 Node SQL 文本一致（外层 NOT EXISTS 目标行限定）。
 func (s *Store) reconcileQueuedSQL() string {
 	runs, leases := s.runsTable(), s.leasesTable()
 	leaseValidSub := "leases.run_id = runs.run_id AND leases.job_name = '" + TemporaryMaintenanceWorkerRole + "' AND leases.lease_until > ?"
-	head := `
-	SET status = 'failed',
-	  result_json = ?,
-	  error_message = ?,
-	  finished_at = ?,
-	  updated_at = ?
-	WHERE run_id IN (
-	  SELECT runs.run_id
-	  FROM ` + runs + ` runs
-	  WHERE runs.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
-	    AND runs.status = 'queued'
-	    AND runs.submitted_at <= ?
-	    AND NOT EXISTS (
-	      SELECT 1
-	      FROM ` + leases + ` leases
-	      WHERE ` + leaseValidSub + `
-	    )
-	  ORDER BY runs.updated_at ASC, runs.run_id ASC
-	  LIMIT ?
-	)
-	`
-	if s.mode == ModePostgres {
-		return `
-	UPDATE ` + runs + ` AS target
-	SET status = 'failed',
-	  result_json = ?,
-	  error_message = ?,
-	  finished_at = ?,
-	  updated_at = ?
-	WHERE target.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
-	  AND target.status = 'queued'
-	  AND target.submitted_at <= ?
-	  AND NOT EXISTS (
-	    SELECT 1
-	    FROM ` + leases + ` current_lease
-	    WHERE current_lease.run_id = target.run_id
-	      AND current_lease.job_name = '` + TemporaryMaintenanceWorkerRole + `'
-	      AND current_lease.lease_until > ?
-	  )
-	  AND target.run_id IN (
-	    SELECT runs.run_id
-	    FROM ` + runs + ` runs
-	    WHERE runs.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
-	      AND runs.status = 'queued'
-	      AND runs.submitted_at <= ?
-	      AND NOT EXISTS (
-	        SELECT 1
-	        FROM ` + leases + ` leases
-	        WHERE ` + leaseValidSub + `
-	      )
-	    ORDER BY runs.updated_at ASC, runs.run_id ASC
-	    LIMIT ?
-	  )
-	`
-	}
-	return `UPDATE ` + runs + head
+	return `
+UPDATE ` + runs + ` AS target
+SET status = 'failed',
+  result_json = ?,
+  error_message = ?,
+  finished_at = ?,
+  updated_at = ?
+WHERE target.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
+  AND target.status = 'queued'
+  AND target.submitted_at <= ?
+  AND NOT EXISTS (
+    SELECT 1
+    FROM ` + leases + ` current_lease
+    WHERE current_lease.run_id = target.run_id
+      AND current_lease.job_name = '` + TemporaryMaintenanceWorkerRole + `'
+      AND current_lease.lease_until > ?
+  )
+  AND target.run_id IN (
+    SELECT runs.run_id
+    FROM ` + runs + ` runs
+    WHERE runs.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
+      AND runs.status = 'queued'
+      AND runs.submitted_at <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ` + leases + ` leases
+        WHERE ` + leaseValidSub + `
+      )
+    ORDER BY runs.updated_at ASC, runs.run_id ASC
+    LIMIT ?
+  )
+`
 }
 
 func (s *Store) reconcileRunningSQL() string {
 	runs, leases := s.runsTable(), s.leasesTable()
 	leaseValidSub := "leases.run_id = runs.run_id AND leases.job_name = '" + TemporaryMaintenanceWorkerRole + "' AND leases.lease_until > ?"
-	if s.mode == ModePostgres {
-		return `
-	UPDATE ` + runs + ` AS target
-	SET status = 'failed',
-	  result_json = ?,
-	  error_message = ?,
-	  finished_at = ?,
-	  updated_at = ?
-	WHERE target.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
-	  AND target.status = 'running'
-	  AND COALESCE(target.heartbeat_at, target.started_at, target.updated_at) <= ?
-	  AND NOT EXISTS (
-	    SELECT 1
-	    FROM ` + leases + ` current_lease
-	    WHERE current_lease.run_id = target.run_id
-	      AND current_lease.job_name = '` + TemporaryMaintenanceWorkerRole + `'
-	      AND current_lease.lease_until > ?
-	  )
-	  AND target.run_id IN (
-	    SELECT runs.run_id
-	    FROM ` + runs + ` runs
-	    WHERE runs.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
-	      AND runs.status = 'running'
-	      AND COALESCE(runs.heartbeat_at, runs.started_at, runs.updated_at) <= ?
-	      AND NOT EXISTS (
-	        SELECT 1
-	        FROM ` + leases + ` leases
-	        WHERE ` + leaseValidSub + `
-	      )
-	    ORDER BY runs.updated_at ASC, runs.run_id ASC
-	    LIMIT ?
-	  )
-	`
-	}
 	return `
-	UPDATE ` + runs + ` AS target
-	SET status = 'failed',
-	  result_json = ?,
-	  error_message = ?,
-	  finished_at = ?,
-	  updated_at = ?
-	WHERE target.run_id IN (
-	  SELECT runs.run_id
-	  FROM ` + runs + ` runs
-	  WHERE runs.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
-	    AND runs.status = 'running'
-	    AND COALESCE(runs.heartbeat_at, runs.started_at, runs.updated_at) <= ?
-	    AND NOT EXISTS (
-	      SELECT 1
-	      FROM ` + leases + ` leases
-	      WHERE ` + leaseValidSub + `
-	    )
-	  ORDER BY runs.updated_at ASC, runs.run_id ASC
-	  LIMIT ?
-	)
-	`
+UPDATE ` + runs + ` AS target
+SET status = 'failed',
+  result_json = ?,
+  error_message = ?,
+  finished_at = ?,
+  updated_at = ?
+WHERE target.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
+  AND target.status = 'running'
+  AND COALESCE(target.heartbeat_at, target.started_at, target.updated_at) <= ?
+  AND NOT EXISTS (
+    SELECT 1
+    FROM ` + leases + ` current_lease
+    WHERE current_lease.run_id = target.run_id
+      AND current_lease.job_name = '` + TemporaryMaintenanceWorkerRole + `'
+      AND current_lease.lease_until > ?
+  )
+  AND target.run_id IN (
+    SELECT runs.run_id
+    FROM ` + runs + ` runs
+    WHERE runs.worker_role = '` + TemporaryMaintenanceWorkerRole + `'
+      AND runs.status = 'running'
+      AND COALESCE(runs.heartbeat_at, runs.started_at, runs.updated_at) <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ` + leases + ` leases
+        WHERE ` + leaseValidSub + `
+      )
+    ORDER BY runs.updated_at ASC, runs.run_id ASC
+    LIMIT ?
+  )
+`
 }
 
 func (s *Store) deleteExpiredLeasesSQL() string {
@@ -1017,9 +898,7 @@ func execTxChanges(tx *sql.Tx, query string, args ...any) (int64, error) {
 	return result.RowsAffected()
 }
 
-// withTx 在单个事务内执行 fn。SQLite DSN 已启用 _txlock=immediate，
-// 与 MaxOpenConns(1) 一起保证读-改-写竞争串行化；PG 走默认事务，
-// 租约行的过期 CAS 由行级锁 + WHERE 谓词保证。
+// withTx 在单个事务内执行 fn（租约行的过期 CAS 由行级锁 + WHERE 谓词保证）。
 func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

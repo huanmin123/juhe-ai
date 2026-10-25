@@ -55,7 +55,6 @@ func TestBug0304DrainKeepsSourceOnOverflowPersistFailureThenReplays(t *testing.T
 	store := &bug0304StubShardStore{}
 	writer := usagewriter.NewWriter(usagewriter.Config{
 		QueueMaxItems: 1, QueueMaxBytes: 64 * 1024, BatchSize: 8,
-		FlushIntervalMs: 60_000, ShardRoot: filepath.Join(root, "usage-shards"),
 	}, store, nil,
 		usagewriter.WithOverflowSpool(usagewriter.NewFileOverflowSpool(blocker)))
 	// 不 Start：无后台 flush，队列满状态由本测试显式驱动（writer.Drain）。

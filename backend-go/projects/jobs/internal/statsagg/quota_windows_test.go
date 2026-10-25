@@ -3,17 +3,15 @@ package statsagg
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 // 配额小时窗刷新测试（BUG-0175 D-48/D-75/D-86/D-229）。双载体：
 //   - 组A 增量族（PG 生产分支）：pgtestkit 隔离 PG 测试库 + 生产方言
-//     Dialect{Postgres: true}，真实覆盖 FOR UPDATE SKIP LOCKED 认领编排；
+//     Dialect{}，真实覆盖 FOR UPDATE SKIP LOCKED 认领编排；
 //     绑定表经 juhe_business. 前缀落在同池（生产拓扑），种子 SQL 按 PG 方言
 //     书写（juhe_ 前缀 schema 限定 + $n）；
 //   - 组B 全量重建族（SQLite 生产分支）：SQLite 承载测试库 + BusinessDB
@@ -35,17 +33,6 @@ import (
 //     同一小时不重复打脏；非法游标 fail closed；
 //   - 刷新失败写 stats_job_state(global,'',usage-quota-hourly-windows-refresh)
 //     的 last_error_message，成功清空并记 last_success_at（D-229）。
-
-func quotaTestBusinessDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "business.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	createBindingTable(t, db)
-	return db
-}
 
 func createBindingTable(t *testing.T, db *sql.DB) {
 	t.Helper()
@@ -164,89 +151,6 @@ func assertQuotaWindowRows(t *testing.T, got []quotaWindowRow, want ...quotaWind
 	}
 }
 
-// TestQuotaHourlyWindowsRebuildSQLite mirrors refreshUsageQuotaHourlyWindowsCache
-// （usage-stats.repository.ts:1783-1793）+ refreshUsageQuotaHourlyWindowSnapshots
-// （usage-stats-snapshot-helpers.ts:8-42）。
-//
-// 组B（SQLite 生产分支保留）：被测对象是 SQLite 全量重建臂（BusinessDB
-// 独立业务库读绑定），随生产 sqlite 臂删除批次同批退役（D17）。
-func TestQuotaHourlyWindowsRebuildSQLite(t *testing.T) {
-	e := newTestEnv(t)
-	business := quotaTestBusinessDB(t)
-	refresher := e.quotaRefresher(business)
-
-	if err := seedBinding(business, "sa1", "api_key", "keyA", 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := seedBinding(business, "sa1", "api_key", "keyA2", 12); err != nil {
-		t.Fatal(err)
-	}
-	// 无 hourly → 零成本不落行。
-	if err := seedBinding(business, "sa1", "account_authorization", "authB", 2); err != nil {
-		t.Fatal(err)
-	}
-	// 无效窗口小时 → 读侧过滤（helpers :160）。
-	if err := seedBinding(business, "sa2", "api_key", "keyC", 0); err != nil {
-		t.Fatal(err)
-	}
-	// now=2026-04-18T12:00Z；1h 窗 cutoff="2026-04-18T11"，12h 窗 cutoff="2026-04-18T00"。
-	e.seedQuotaHourly("sa1", "api_key", "keyA", "2026-04-18T11", 3)
-	e.seedQuotaHourly("sa1", "api_key", "keyA", "2026-04-18T08", 5) // 1h 窗外
-	e.seedQuotaHourly("sa1", "api_key", "keyA2", "2026-04-18T04", 7)
-	// 无绑定残留行：全表 DELETE 后消失。
-	e.exec(`INSERT INTO usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at)
-		VALUES ('sa9', 'api_key', 'keyOld', 5, 9.9, '2026-04-17T00:00:00.000Z')`)
-
-	result, err := refresher.RunQuotaHourlyWindows(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	// :1796-1799 非 PG 分支固定 {changed: true, hasMore: false}。
-	if !result.Changed || result.HasMore {
-		t.Fatalf("result = %+v, want changed=true hasMore=false", result)
-	}
-	assertQuotaWindowRows(t, e.quotaWindowRows(t),
-		quotaWindowRow{"sa1", "api_key", "keyA", 1, 3},
-		quotaWindowRow{"sa1", "api_key", "keyA2", 12, 7},
-	)
-}
-
-// TestQuotaHourlyWindowsRebuildSuccessCostOnly 钉住配额口径（业务拍板：客户端
-// 配额与账单只计成功交付的尝试）：窗口刷新只汇总 usage_stats_hourly 的
-// success_cost_usd，失败尝试携带的成本（只在 total_cost_usd）不进配额窗口。
-//
-// 组B（SQLite 生产分支保留，同 TestQuotaHourlyWindowsRebuildSQLite）。
-func TestQuotaHourlyWindowsRebuildSuccessCostOnly(t *testing.T) {
-	e := newTestEnv(t)
-	business := quotaTestBusinessDB(t)
-	refresher := e.quotaRefresher(business)
-
-	if err := seedBinding(business, "sa1", "api_key", "keyA", 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := seedBinding(business, "sa1", "api_key", "keyFailOnly", 1); err != nil {
-		t.Fatal(err)
-	}
-	// keyA：total=8（含失败尝试 5）但成功口径只有 3 → 窗口记 3。
-	e.seedQuotaHourlySplit("sa1", "api_key", "keyA", "2026-04-18T11", 8, 3)
-	// keyFailOnly：只有失败尝试（success=0）→ 零配额成本不落行。
-	e.seedQuotaHourlySplit("sa1", "api_key", "keyFailOnly", "2026-04-18T11", 5, 0)
-
-	result, err := refresher.RunQuotaHourlyWindows(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Changed || result.HasMore {
-		t.Fatalf("result = %+v, want changed=true hasMore=false", result)
-	}
-	assertQuotaWindowRows(t, e.quotaWindowRows(t),
-		quotaWindowRow{"sa1", "api_key", "keyA", 1, 3},
-	)
-}
-
-// TestQuotaHourlyWindowsIncrementalConsumesDirtyScopes mirrors
-// refreshUsageQuotaHourlyWindowsCacheAsync 的消费段（:1871-1949）：
-// 脏范围输入 → 窗口重算 → 脏行按 generation 消费，消费方可读。
 func TestQuotaHourlyWindowsIncrementalConsumesDirtyScopes(t *testing.T) {
 	e := newPGTestEnv(t)
 	refresher := e.quotaRefresher(nil)

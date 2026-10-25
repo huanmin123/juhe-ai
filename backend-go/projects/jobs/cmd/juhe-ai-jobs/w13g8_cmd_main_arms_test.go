@@ -130,6 +130,8 @@ func w13g8FullOwnerEnv(t *testing.T) map[string]string {
 	env := wgOwnerModeMainEnv(t, t.TempDir())
 	env["JUHE_AI_RUNTIME_LOG_POSTGRES_URL"] = pgURL
 	env["JUHE_AI_POSTGRES_URL"] = pgURL
+	// J1 postgres 直连输入（PG 唯一形态必填，原 files/sqlite 形状退役）。
+	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] = pgURL
 	return env
 }
 
