@@ -15,6 +15,7 @@ const environmentKeys = [
   'JUHE_AI_DATA_DIR',
   'JUHE_AI_LOG_DIR',
   'JUHE_AI_DATABASE_DRIVER',
+  'JUHE_AI_RUNTIME_MODE',
   'JUHE_AI_POSTGRES_URL',
   'JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT',
   'JUHE_AI_AUDIT_LOG_OWNER_LEASE',
@@ -31,11 +32,15 @@ const previousEnvironment = new Map(environmentKeys.map((key) => [key, process.e
 
 try {
   for (const key of environmentKeys) delete process.env[key]
-  // go-only 终态：dev.mjs 从仓库根 .env 读取后端环境变量（JUHE_AI_ENV_FILE
-  // overlay 相对仓库根解析），fixture 按零配置语义构造：逐库路径不进入
-  // fixture（旧式注入会与 Go 固定名表脱节，破坏 gateway 零配置自举建库）。
+  // go-only 终态 + 2026-10-24/25 存储收口：dev.mjs 从仓库根 .env 读取后端环境
+  // 变量（JUHE_AI_ENV_FILE overlay 相对仓库根解析），fixture 按退役残留注入构
+  // 造：模式开关与 sqlite 路径/分片族必须被拒转，不得进入 Go 子进程。
   writeFileSync(join(fixtureRoot, '.env'), [
+    // 存储收口回归注入：历史 .env 残留的模式开关与 SQLite 路径/分片族。
     'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_RUNTIME_MODE=standalone',
+    'JUHE_AI_STATS_DATABASE_PATH=./data/stats.sqlite3',
+    'JUHE_AI_USAGE_SHARD_COUNT=16',
     // 2026-10-14 监控改造回归注入：历史 .env 残留的 gometrics / F2 表监控两
     // 家族 env 必须被 dev 启动器按前缀显式 drop，不得进入 Go 子进程。
     'JUHE_AI_GO_RUNTIME_METRICS_INTERVAL=15s',
@@ -54,10 +59,15 @@ try {
   const module = await import(`${pathToFileURL(modulePath).href}?v=${Date.now()}`)
   const sidecarEnv = module.resolveGoProjectEnv()
 
-  // .env 值原样转发（零配置下不再改写逐库路径）。
-  assert.equal(sidecarEnv.JUHE_AI_DATABASE_DRIVER, 'sqlite')
-  // 数据/日志根钉住 dev 专属目录并确保存在（SQLite 无法在不存在的目录建库，
-  // 删库冷启动必须自愈）。
+  // 2026-10-24/25 存储收口：模式开关与 sqlite 路径/分片族退役，残留值拒转。
+  for (const name of [
+    'JUHE_AI_DATABASE_DRIVER', 'JUHE_AI_RUNTIME_MODE',
+    'JUHE_AI_STATS_DATABASE_PATH', 'JUHE_AI_USAGE_SHARD_COUNT'
+  ]) {
+    assert.equal(sidecarEnv[name], undefined, `the retired sqlite-mode env ${name} must not be forwarded`)
+  }
+  // 数据/日志根钉住 dev 专属目录并确保存在（spool 等普通文件目录由 Go 侧按
+  // 数据根派生，冷启动必须自愈）。
   assert.equal(sidecarEnv.JUHE_AI_DATA_DIR, join(fixtureRoot, '.local', 'dev', 'data'))
   assert.equal(sidecarEnv.JUHE_AI_LOG_DIR, join(fixtureRoot, '.local', 'dev', 'logs'))
   assert.ok(existsSync(sidecarEnv.JUHE_AI_DATA_DIR), 'dev data root must exist before gateway cold start')
@@ -82,12 +92,13 @@ try {
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_SECRET, undefined, 'the removed operation input secret must not be forwarded')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_INPUT_URL, undefined, 'the removed operation input URL must not be forwarded')
 
-  // .env overlay 仍生效：新增条目原样转发，不破坏既有驱动转发契约。
+  // .env overlay 仍生效：新增条目原样转发，不破坏既有转发契约。
   const postgresFixture = readFileSync(join(fixtureRoot, '.env'), 'utf8')
     + '\nJUHE_AI_POSTGRES_URL=postgres://dev.example/juhe_ai\n'
   writeFileSync(join(fixtureRoot, '.env'), postgresFixture)
   const postgresEnv = module.resolveGoProjectEnv()
-  assert.equal(postgresEnv.JUHE_AI_DATABASE_DRIVER, 'sqlite')
+  assert.equal(postgresEnv.JUHE_AI_DATABASE_DRIVER, undefined,
+    'the retired JUHE_AI_DATABASE_DRIVER must not be forwarded')
   assert.equal(postgresEnv.JUHE_AI_POSTGRES_URL, 'postgres://dev.example/juhe_ai')
 
   // 用户显式配置优先于 dev 默认：进程环境与 .env 两个来源都要生效。

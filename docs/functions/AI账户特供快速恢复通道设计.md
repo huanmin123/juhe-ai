@@ -189,7 +189,7 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 | `docs/functions/账号健康检测设计.md` | 探针节奏参数表补特供档 |
 | `docs/functions/接口契约与权限矩阵.md` | 两个 API 字段、错误语义、权限面 |
 | `docs/architecture/功能开发指导.md` | 字段与写入契约 |
-| `docs/functions/SQLite存储说明.md` 与 schema 契约文档 | 双方言列与 ensure 守卫 |
+| `docs/functions/PostgreSQL与Redis高性能模式设计.md` 与 schema 契约文档 | PG 列形状与 ensure 守卫 |
 | `docs/architecture/frontend/README.md` | 列表操作、徽章、已超限展示、系统账户限制输入 |
 | `docs/functions/README.md` | 权威功能索引、当前设计稿版本与“未实施/待终审”状态 |
 | `docker/single-server/README.md`、`docs/deploy/部署指南.md` | schema 加列随 ensure-schema 生效，无额外命令、无新环境变量 |

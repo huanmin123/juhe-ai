@@ -21,11 +21,13 @@ const goFiles = (root) => {
 
 assert.ok(existsSync(join(goRoot, 'go.work')), 'backend-go/go.work is required');
 const workspace = read(join(goRoot, 'go.work'));
-// 受控例外（baseline amendment 2026-09-04，用户批准；见
-// projects/maintenance/bootstrap/bootstrap.go 头注释与 gateway go.mod 记载）：
-// gateway 组合根在 SQLite 模式启动时必须执行与 Node db-service 相同的六库
-// ensure+seed，唯一允许的跨项目 import 是 maintenance 的受控导出面
-// backend-go-maintenance/bootstrap（该包只暴露存储引导入口、无自身业务逻辑）。
+// 受控例外（baseline amendment 2026-09-04，用户批准；登记于 gateway go.mod 与
+// maintenance/bootstrap 包注释；2026-10-24/25 存储收口后收窄）：gateway 组合根
+// 的运行时 SQLite 六库 ensure+seed 引导已随 SQLite 退役删除（schema 初始化唯一
+// 入口是 juhe-ai-maintenance --ensure-schema），当前该例外仅剩测试专用——gateway
+// cmd 层测试经 maintenance/bootstrap.EnsurePostgres 为 pgtestkit 隔离库注入 DDL。
+// 唯一允许的跨项目 import 仍是受控导出面 backend-go-maintenance/bootstrap（只暴
+// 露存储引导入口、无自身业务逻辑）。
 // 受控例外 2（2026-10-06，BUG-0182 统计缓存离线重建 CLI；基线 §2 同步补记）：
 // maintenance 的 rebuild-usage-stats 子命令必须复用 jobs 的 statsagg 聚合
 // 口径（BUG-0182 建议方案 #3 明确禁止第二套口径实现），唯一允许的 import 是

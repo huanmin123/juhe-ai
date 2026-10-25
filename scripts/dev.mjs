@@ -53,6 +53,21 @@ const removedInputServerEnvNames = [
 // JUHE_AI_GO_RUNTIME_METRICS_* 与 JUHE_AI_TABLE_MONITOR_* 两家族 env 全部
 // 退役——按前缀拒转，残留值不得进入 Go 子进程。声明必须先于顶层 try。
 const removedMonitoringEnvPrefixes = ['JUHE_AI_GO_RUNTIME_METRICS_', 'JUHE_AI_TABLE_MONITOR_']
+// 2026-10-24/25 存储形态收口（PLAN-20261024T051925945Z）：SQLite + memory 本地
+// 模式物理退役，运行模式四开关、SQLite 路径族与 store 选择族 env 全部退役——
+// 即使残留在历史 .env 或父进程环境中也不得进入 Go 子进程。
+const removedSqliteModeEnvNames = [
+  'JUHE_AI_RUNTIME_MODE', 'JUHE_AI_DATABASE_DRIVER', 'JUHE_AI_CACHE_DRIVER', 'JUHE_AI_RUNTIME_STATE_DRIVER',
+  'JUHE_AI_DATABASE_PATH', 'JUHE_AI_BUSINESS_DATABASE_PATH', 'JUHE_AI_CHAT_DATABASE_PATH',
+  'JUHE_AI_DATASET_DATABASE_PATH', 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH', 'JUHE_AI_USAGE_CATALOG_DATABASE_PATH',
+  'JUHE_AI_STATS_DATABASE_PATH', 'JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH', 'JUHE_AI_AUDIT_LOG_DATABASE_PATH',
+  'JUHE_AI_OPERATION_LOG_DATABASE_PATH', 'JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH',
+  'JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH', 'JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH',
+  'JUHE_AI_AUDIT_LOG_STORE', 'JUHE_AI_OPERATION_LOG_STORE', 'JUHE_AI_RUNTIME_LOG_STORE',
+  'JUHE_AI_J3B_STORE', 'JUHE_AI_ACCOUNT_HEALTH_STORE', 'JUHE_AI_ACCOUNT_BALANCE_STORE',
+  'JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE'
+]
+const removedSqliteModeEnvPrefixes = ['JUHE_AI_USAGE_SHARD_', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_']
 
 process.on('SIGINT', () => shutdown(130))
 process.on('SIGTERM', () => shutdown(143))
@@ -231,15 +246,14 @@ function resolveBackendTarget() {
 
 function resolveGoProjectEnv() {
   const childEnv = { ...loadBackendEnv(), ...process.env }
-  // Go 三项目遵循 2026-09-19 零配置存储约定：路径类 env 全部从单一数据根
-  // JUHE_AI_DATA_DIR 按 <DATA_DIR>/<固定名> 派生（业务库固定名
-  // business.sqlite3，gateway 与 jobs 缺省派生到同一文件）。dev 只钉住数据
-  // 根与日志根；注入旧式逐库路径会与 Go 固定名表脱节，破坏 gateway 零配
-  // 置自举建库的同文件判定，冷启动即 fail-fast。
+  // 2026-10-24/25 存储形态收口后为 PostgreSQL + Redis 唯一形态：dev 只钉住
+  // 普通/日志文件根（JUHE_AI_DATA_DIR 派生 usage-record-spool / codex-context /
+  // audit-blob / chat-assets 等运行时目录），存储连接串（PG/Redis URL）从仓库
+  // 根 .env / 父进程环境原样转发，缺失由 Go 侧 fail-fast。
   childEnv.JUHE_AI_DATA_DIR = firstConfiguredValue(childEnv.JUHE_AI_DATA_DIR, devDataRoot)
   childEnv.JUHE_AI_LOG_DIR = firstConfiguredValue(childEnv.JUHE_AI_LOG_DIR, devLogRoot)
-  // SQLite 无法在不存在的目录里建库文件（unable to open database file 14）：
-  // 启动器钉住了数据/日志根，就必须保证目录存在，删库冷启动才能自愈。
+  // spool 等文件目录由 Go 侧按数据根派生，但目录本身需要预先存在：
+  // 启动器钉住了数据/日志根，就必须保证目录存在，冷启动才能自愈。
   mkdirSync(childEnv.JUHE_AI_DATA_DIR, { recursive: true })
   mkdirSync(childEnv.JUHE_AI_LOG_DIR, { recursive: true })
   // gateway 进程被强杀（taskkill /f、关终端窗口、Windows 8s 宽限兜底强杀）
@@ -248,8 +262,8 @@ function resolveGoProjectEnv() {
   childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT = firstConfiguredValue(childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '45s')
   // F3/F4 owner 租约 TTL 生产默认 30s：dev 重启后要等旧进程的残留租约过期
   // 才能接管，这段等待的长度就是 TTL。dev 把 TTL 收紧到 10s（满足“不少于
-  // 5s”的配置下限），强杀后重启最长约 10s 即可接管；本地 SQLite 专库下续
-  // 租是每 TTL/3 一次的单行 UPDATE，压力可忽略。用户显式配置时不覆盖。
+  // 5s”的配置下限），强杀后重启最长约 10s 即可接管；租约续租是低频单行
+  // UPDATE，压力可忽略。用户显式配置时不覆盖。
   childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
   childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
   // jobs 侧 F1 同样会被强杀残留租约卡住：F1 runtime-log 生产默认 30s，
@@ -258,7 +272,13 @@ function resolveGoProjectEnv() {
   // （原 F2 table-monitor 租约注入已随 2026-10-14 监控改造删除。）
   childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, '10s')
   for (const name of removedInputServerEnvNames) delete childEnv[name]
+  for (const name of removedSqliteModeEnvNames) delete childEnv[name]
   for (const prefix of removedMonitoringEnvPrefixes) {
+    for (const name of Object.keys(childEnv)) {
+      if (name.startsWith(prefix)) delete childEnv[name]
+    }
+  }
+  for (const prefix of removedSqliteModeEnvPrefixes) {
     for (const name of Object.keys(childEnv)) {
       if (name.startsWith(prefix)) delete childEnv[name]
     }

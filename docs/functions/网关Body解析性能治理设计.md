@@ -123,3 +123,4 @@ Go 对应物：`scanned_json` 元数据状态对应 `gatewaybody.JSONParseStatus
 | 图片账户诊断 | 完整解析 0 | 有界 envelope scanner 识别成功、错误和缺失结果，不复制 base64 |
 | 审计/公开日志/操作日志 | 原始模型 Body 0 | 只保留字节、hash、窗口和必要传输编码 |
 | 协议转换与持久化 | 每个独立边界 1 | 源/目标 wire document、HTTP、Redis、DB、IPC、JSONL 分别属于独立正确性边界（"Redis""IPC"为 Node 审计链路词汇；Go 审计为进程内 F3 owner 提交，无 IPC 边界，现行边界以 Go 实现为准） |
+| 内容指纹会话身份锚点扫描（2026-10-25 新增消费面） | 完整解析 0 | [内容指纹会话身份设计](内容指纹会话身份设计.md) §4.1：`gatewaybody.ScanConversationAnchors` 对 `RawBody` 做有界前向字节扫描（定位顶层 `messages` 数组收集 S/U1/A1/U2 原始字节锚点，四锚齐备后仅 skip 级跳读数组尾部统计元素数），非全量物化、无 worker 依赖；身份接缝（preauth 会话身份 + 来源标识阶梯）零 `ParseRequestJSONBody` 调用，扫描与哈希结果按 clientProfile 请求级记忆化（每请求每 profile 至多一次） |

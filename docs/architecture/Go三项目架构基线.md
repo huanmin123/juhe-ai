@@ -2,7 +2,7 @@
 
 > 状态：架构落地第一阶段（项目边界与工程骨架），不代表三个项目已经完成业务接管或生产切流。
 >
-> 本文是 Go 后续迁移的边界契约。F1/F2 已物理迁入 `jobs`，F3/F4 已物理迁入 `gateway`（原 F2 表监控组件已于 2026-10-14 随监控改造删除，jobs 域仅余 J3a，见 [Prometheus 指标暴露设计](../functions/Prometheus指标暴露设计.md)）；`backend-go` 根目录只保留工作区定义。一般新迁移的定时功能进入 `jobs`；J3b 是经方案 A 明确批准的例外：其管理入口、调度和投影与 Business SQLite owner 同进程落在 `gateway`。当前 Gateway 已具备 J3b 的实现装配基线，但 Business SQLite 全量 handoff、三库回填、切换/回滚与 Node active-path-zero 尚未通过，不代表 J3b 已完成接管。
+> 本文是 Go 后续迁移的边界契约。F1/F2 已物理迁入 `jobs`，F3/F4 已物理迁入 `gateway`（原 F2 表监控组件已于 2026-10-14 随监控改造删除，jobs 域仅余 J3a，见 [Prometheus 指标暴露设计](../functions/Prometheus指标暴露设计.md)）；`backend-go` 根目录只保留工作区定义。一般新迁移的定时功能进入 `jobs`；J3b 是经方案 A 明确批准的例外：其管理入口、调度和投影与业务库 owner 同进程落在 `gateway`。当前 Gateway 已具备 J3b 的实现装配基线，但 Business 全量 handoff、三库回填、切换/回滚与 Node active-path-zero 尚未通过，不代表 J3b 已完成接管。存储形态自 2026-10-25 起为 PostgreSQL + Redis 唯一形态（SQLite / memory 本地模式已整体退役，见 [PostgreSQL 与 Redis 高性能模式设计](../functions/PostgreSQL与Redis高性能模式设计.md) 收口决策记录）。
 >
 > **终局补记（2026-09-30）**：上述迁移已全部完成——Node 后端已于 2026-09-05 全量清零（归档已移出仓库，git 历史可溯），Go 三项目为唯一后端实现，现行生产形态为国内单机 Docker go-only（部署配置见 `docker/single-server/`）。本文的项目边界、依赖方向、运行数据边界、并发任务优先级、发布配置契约与验收门（§1-§4、§6-§7）继续作为现行契约生效；§5"定时迁移顺序"是迁移期的历史规划存档，仅作过程溯源，不再是执行计划；文中其余 Node 共存期措辞（如"Node 尚未迁移时"）按历史背景理解。
 
@@ -32,7 +32,7 @@ gateway       jobs       maintenance
 
 - 三个项目各自拥有独立 `go.mod`、`cmd`、`internal`、测试和发布产物。
 - 项目之间禁止直接 import：`gateway` 不得依赖 `jobs` 或 `maintenance`；`jobs` 不得依赖 `gateway`；`maintenance` 不得依赖前两个项目。受控例外共两项，均只暴露单一入口包、无自身业务逻辑，其余内部包仍不可被跨项目引用，并在回归脚本 go-project-boundary-regression.mjs 白名单同款收口：
-  - 受控例外 1（2026-09-04 用户批准，X05 / BUG-0167-0168；登记于 gateway go.mod 与 maintenance/bootstrap 包注释）：`gateway` 组合根可 import `backend-go-maintenance/bootstrap` 以在 SQLite 启动时执行与 Node db-service 相同的六库 ensure+seed。
+  - 受控例外 1（2026-09-04 用户批准，X05 / BUG-0167-0168；登记于 gateway go.mod 与 maintenance/bootstrap 包注释）：`gateway` 组合根可 import `backend-go-maintenance/bootstrap`。原始用途是 SQLite 启动时的六库 ensure+seed 引导；2026-10-24/25 存储形态收口后运行时引导面已删除（schema 初始化唯一入口是 `juhe-ai-maintenance --ensure-schema`），该例外当前仅剩测试专用——gateway cmd 层测试经 `bootstrap.EnsurePostgres` 为 pgtestkit 隔离库注入 DDL（gateway go.mod 对 maintenance 的 replace 同步保留测试面），生产路径不触发。
   - 受控例外 2（2026-10-06，BUG-0182 统计缓存离线重建 CLI；登记于 maintenance go.mod 与 jobs/statsrebuild 包注释）：`maintenance` 的 `rebuild-usage-stats` 子命令可 import `backend-go-jobs/statsrebuild`，以复用 jobs `internal/statsagg` 的聚合口径重建统计缓存（BUG-0182 建议方案明确禁止第二套口径实现）；该包只暴露重建编排入口，聚合、游标与窗口阶段全部委托 `internal/statsagg`，自身不含口径 SQL。
 - 共享代码只能进入明确的、无业务编排的库，例如 DTO、枚举、错误码、协议版本和稳定 ID 规则。共享库不得反向 import 任一项目，也不得放入“万能 service”“跨项目 repository”或隐含 owner 的全局状态。
 - 数据库驱动、HTTP client、日志、配置解析、租约和并发工具优先复用已有经过验证的 Go 基础设施；抽取共享实现前先检查现有 `backend-go/projects/*/internal`、`shared/platform` 能力和已选官方/成熟开源库，不能因项目拆分各写一套。
@@ -65,8 +65,8 @@ backend-go/
 - 可实时的探活、账号检测和独立外部 I/O 按候选窗口直接 fan-out goroutine；统计按游标/批次并发；低优先级历史扫描和冷数据清理使用较小窗口，让位于实时任务。
 - `jobs` 不提供通用业务 API。对已由 `jobs` 完整拥有的后台功能，允许提供受认证、精确路由的管理命令入口（例如 J3a）；J3b 不在此列，其入口和 runtime 由 gateway 在同一进程内提供。任何功能的入口都不得转发给 Node 或另一个 Go 项目，也不得演化为通用业务代理。
 - `jobs` 直接向账户配置的上游执行轻量诊断，不经 Node 或 Go gateway。J3b 由 gateway 进程内直接向上游执行，其诊断入口不经过 jobs。两者都不实现未获授权的用户请求路由、配额或跨项目写回。
-- PostgreSQL 使用稳定数据库契约；SQLite 使用 jobs 自己拥有的 Store 和单向输入/只读结果协议。`jobs` 绝不成为 Node SQLite 文件的第二 writer，也不以 Node/gateway RPC 为 fallback。
-- 账户健康探针输入在派发上游前执行 `accounts.config_revision` 新鲜度门（2026-10-10 起，随 AI 账户特供快速恢复通道落地，对所有账户行配置变更通用）：签名验证与 TTL 校验通过后、构造上游请求前按 `input.AccountID` 重读账户 `config_revision`，与 `input.ConfigRevision` 不一致即拒绝上游调用。查询落在 PG/SQLite 两个直读 reader 的 `LoadAccountConfigRevision`（业务库连接面），由 `NewRunnerWithDirectInputReader` 注入 Runner，不经 jobs Store——SQLite 模式 jobs Store 与业务库是两个物理文件，PG 模式 jobs Store 对业务库无读权限。作用域仅是 `accounts` 行配置，不覆盖全局调度设置；线性化点是 freshness SELECT 返回后、构造上游请求前，门后提交的补丁竞态允许请求已发出，写回由既有 fence 拒绝。数据库读失败或账户不存在按失败关闭（`input_freshness_unavailable`，不写回账户状态、不计失败，按账户 10 分钟限频）；定时路径拒绝记 `account_health_input_stale_before_dispatch` Warn 日志（零写回、零计数、零退避），显式请求路径以 `input_stale_before_dispatch` / `input_freshness_unavailable` 终态消费请求（audit-only，`account_health_current_state` 零写入）。files 文件输入后备通道的组合根不装配业务读面，门未装配即跳过——该通道保留探活能力，陈旧输入上界由签名输入 24h TTL 兜底。完整契约见 [AI 账户特供快速恢复通道设计](../functions/AI账户特供快速恢复通道设计.md)。
+- PostgreSQL 使用稳定数据库契约（唯一存储形态）。`jobs` 绝不成为历史 Node SQLite 文件的第二 writer，也不以 Node/gateway RPC 为 fallback（该边界随 2026-09-05 Node 清零与 2026-10-25 存储收口成为纯历史约束，保留防止回归）。
+- 账户健康探针输入在派发上游前执行 `accounts.config_revision` 新鲜度门（2026-10-10 起，随 AI 账户特供快速恢复通道落地，对所有账户行配置变更通用）：签名验证与 TTL 校验通过后、构造上游请求前按 `input.AccountID` 重读账户 `config_revision`，与 `input.ConfigRevision` 不一致即拒绝上游调用。查询落在 PG 直读 reader 的 `LoadAccountConfigRevision`（业务库连接面），由 `NewRunnerWithDirectInputReader` 注入 Runner，不经 jobs Store（2026-10-24/25 存储收口后输入源恒 PostgreSQL 直读业务库；原 sqlite 直读臂与 files 文件输入后备通道已随退役删除，`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE` env 一并退役）。作用域仅是 `accounts` 行配置，不覆盖全局调度设置；线性化点是 freshness SELECT 返回后、构造上游请求前，门后提交的补丁竞态允许请求已发出，写回由既有 fence 拒绝。数据库读失败或账户不存在按失败关闭（`input_freshness_unavailable`，不写回账户状态、不计失败，按账户 10 分钟限频）；定时路径拒绝记 `account_health_input_stale_before_dispatch` Warn 日志（零写回、零计数、零退避），显式请求路径以 `input_stale_before_dispatch` / `input_freshness_unavailable` 终态消费请求（audit-only，`account_health_current_state` 零写入）。完整契约见 [AI 账户特供快速恢复通道设计](../functions/AI账户特供快速恢复通道设计.md)。
 
 ### `maintenance`
 
@@ -79,7 +79,7 @@ backend-go/
 Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine 是默认执行单元，但“并发多”不等于“无边界”：边界来自真实资源和正确性。
 
 1. 先按独立 I/O、独立账户、独立上游、独立文件或独立批次识别 fan-out 单元，再直接使用 `context` + goroutine（必要时使用已选 `errgroup`）并汇总结果。
-2. 不设置迁移层全局小并发常量。按 PostgreSQL pool/PgBouncer、SQLite 文件单 writer、HTTP transport、代理、FD、CPU、payload、上游 `429/503` 和任务 deadline 设置实际边界。
+2. 不设置迁移层全局小并发常量。按 PostgreSQL pool、HTTP transport、代理、FD、CPU、payload、上游 `429/503` 和任务 deadline 设置实际边界。
 3. 实时探活和高价值可恢复任务优先获得并发和新鲜度；统计批处理受游标/窗口控制；低价值历史重建和冷数据清理可以慢，但不能阻塞实时任务。
 4. 单条业务失败必须记录并返回该条失败；不能杀死整个 jobs listener。租约丢失、进程退出和不可恢复基础设施错误才进入项目重启边界。
 5. 每个 goroutine 都必须属于项目生命周期或具体任务 context，具备取消、超时、幂等键和结果观测。禁止无 owner goroutine、无限内存 backlog、无限重试和静默 fallback。
@@ -117,6 +117,6 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 ## 7. 验收门
 
 - 三个模块可分别 `go test ./...`、构建和查看版本；模块间无直接 import。
-- 新 jobs 任务有单元测试、取消/超时测试、单条失败隔离测试、SQLite 单 writer 测试和 PostgreSQL/Redis 真实 smoke（环境可用时）。
+- 新 jobs 任务有单元测试、取消/超时测试、单条失败隔离测试和 PostgreSQL 真实 smoke（存储测试统一经 pgtestkit 隔离库在真实 PG 上执行，PG 不可达时显式失败而非 skip）。
 - 迁移完成前必须保留旧 owner 的回切证据；迁移完成后扫描 Node 活跃 import、旧 queue/worker、双写和 fallback 引用均为零。（迁移期门禁的历史记录：迁移已于 2026-09-05 完成验收，切流门禁与回切证据机制已于 2026-09-30 清理退役。）
 - 文档、启动器、Docker、systemd/launchd/PowerShell 和回归脚本必须以三项目边界为准；只更新代码不算架构完成。

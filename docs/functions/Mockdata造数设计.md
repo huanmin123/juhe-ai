@@ -1,5 +1,7 @@
 # Mockdata 造数设计
 
+> **2026-10-24/25 存储收口注记（T66 前置状态）**：SQLite 造数链已随存储形态收口整体退役——本文描述的 sqlite 编排（`pnpm mockdata` 四步流程、sqlite 数据根、jobs `--run-jobs-once` sqlite 任务集）已摘除；`maintenance --mockdata` / `--verify-mockdata-coverage` 保留为 PG 骨架（`--dsn` 单形态），执行返回「PG 造数尚未交付」明确错误。PG 造数重写交付（待办 T66）前，本文其余章节仅作造数域结构与覆盖口径的权威参考，执行类步骤以 T66 交付后的更新为准。
+>
 > 面向本地演示、测试联调和页面验收。
 > 唯一造数入口是仓库根目录的 `pnpm mockdata`，编排 Go `maintenance` 与 Go `jobs` 的既有一次性命令，在本地 SQLite 数据根上重建一套可重复执行的离线造数；不进入后端运行请求链路。历史（Node）实现已归档（归档已移出仓库，git 历史可溯），仅作只读参照，不再是权威实现。
 

@@ -30,7 +30,7 @@ assert.match(launcherSource, /gateway\|jobs/u, 'launcher must accept only declar
 assertLauncherStartsWithoutProjectIdentity()
 assertLauncherRejectsJ1WithoutGoOwner()
 assertLauncherLeavesJ1IdentityToGoDefaults()
-assertLauncherForwardsJ2StoreVerbatimToGo()
+assertLauncherDropsRetiredJ2StoreAndForwardsPgUrl()
 assertLauncherForwardsProjectScopedPaths()
 assertLauncherForwardsGatewayOwnershipGates()
 assertLauncherForwardsGatewayJobsOrigins()
@@ -41,9 +41,9 @@ assertReleaseScriptsCreateGoOnlyBackendRoot()
 
 console.log('release Go project launcher regression passed')
 
-// 2026-09-19 零配置收口：F1/F2 INSTANCE_ID 缺省主机名、store/路径由 Go 侧自
-// 派生，launcher 不得再硬校验 owner 身份；零注入启动必须成功，且 JUHE_AI_DATA_DIR
-// 透传、已删除的家族开关残留被 drop。
+// 2026-10-24/25 存储形态收口：PostgreSQL + Redis 唯一形态，运行模式四开关、
+// SQLite 路径/分片族与 store 选择族 env 全部退役——launcher 对显式残留值必须
+// 按拒转清单 drop，零注入启动仍成功。
 function assertLauncherStartsWithoutProjectIdentity() {
   const result = runLauncher('jobs', {
     JUHE_AI_DATA_DIR: './zero-config-data',
@@ -95,23 +95,30 @@ function assertLauncherRejectsJ1WithoutGoOwner() {
   }
 }
 
-// 2026-09-19 零配置收口：J1 的 INSTANCE_ID 缺省主机名、INPUT_DIRECTORY 自动
+// 2026-10-24/25 存储收口：J1 的 INSTANCE_ID 缺省主机名、INPUT_DIRECTORY 自动
 // 创建、SIGNING_KEY 自动生成并持久化、CREDENTIAL_SECRET 缺省取 JUHE_AI_SECRET、
-// STORE 跟随 driver——launcher 不注入、不硬校验，缺省启动必须成功。
+// 输入源恒 PG 直读——launcher 不注入、不硬校验，缺省启动必须成功；已退役的
+// J1 STORE/DATABASE_PATH/INPUT_SOURCE 即使显式注入也必须被 drop。
 function assertLauncherLeavesJ1IdentityToGoDefaults() {
-  const result = runLauncher('jobs', {})
+  const result = runLauncher('jobs', {
+    JUHE_AI_ACCOUNT_HEALTH_STORE: 'sqlite',
+    JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH: './data/account-health.sqlite3',
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE: 'sqlite'
+  })
   try {
     assert.equal(result.status, 0, `J1 must start without launcher-provided identity env: ${result.output}`)
     for (const name of [
       'JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID',
-      'JUHE_AI_ACCOUNT_HEALTH_STORE',
-      'JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH',
       'JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY',
       'JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY',
-      'JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET'
+      'JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET',
+      // 2026-10-24/25 存储收口：J1 store 选择族与 sqlite 路径族退役，注入值不得进入子进程。
+      'JUHE_AI_ACCOUNT_HEALTH_STORE',
+      'JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH',
+      'JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE'
     ]) {
       assert.equal(result.childEnvironment[name], undefined,
-        `the launcher must not inject ${name} (Go derives it when unset)`)
+        `the launcher must not forward ${name} (retired or Go-derived when unset)`)
     }
   } finally {
     result.cleanup()
@@ -120,9 +127,11 @@ function assertLauncherLeavesJ1IdentityToGoDefaults() {
 
 function assertLauncherForwardsProjectScopedPaths() {
   const jobs = runLauncher('jobs', {
-    // 2026-09-19 零配置收口：J1 必填项校验已删除，以下显式值原样透传。
+    // 2026-09-19 零配置收口：J1 显式输入面配置原样透传；2026-10-25 起 J1 输入
+    // 源恒 PG 直读，POSTGRES_URL 为存储面透传样例。
     JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY: './data/account-health-inputs',
     JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: j1InputSigningKey,
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL: 'postgres://j1-direct-input',
     // J1/worker 强制常开后无 ENABLED 开关：以下历史开关残留必须被 launcher
     // 显式 drop，不得进入 jobs 子进程（开关移除回归注入）。
     JUHE_AI_ACCOUNT_HEALTH_ENABLED: 'true',
@@ -140,13 +149,16 @@ function assertLauncherForwardsProjectScopedPaths() {
     JUHE_AI_JOBS_RETENTION_API_KEY_RETRY_ENABLED: 'false',
     JUHE_AI_JOBS_RETENTION_ACCOUNT_RETRY_ENABLED: 'false',
     JUHE_AI_JOBS_PROBE_ENABLED: 'false',
-    JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go',
-    JUHE_AI_ACCOUNT_HEALTH_STORE: 'sqlite',
-    JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH: './data/account-health.sqlite3'
+    JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go'
   }, [
+    // 2026-10-24/25 存储收口回归注入：历史 .env 残留的模式开关与 SQLite 路径/
+    // 分片/store 族必须被 launcher 拒转，不得进入 jobs 子进程。
     'JUHE_AI_DATABASE_DRIVER=sqlite',
-    'JUHE_AI_DATA_DIR=./data',
+    'JUHE_AI_RUNTIME_MODE=standalone',
+    'JUHE_AI_RUNTIME_LOG_STORE=postgres',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
+    'JUHE_AI_USAGE_SHARD_COUNT=16',
+    'JUHE_AI_DATA_DIR=./data',
     // 2026-10-14 监控改造回归注入：历史 .env 残留的 F2 表监控 env 必须被
     // launcher 按前缀显式 drop，不得进入 jobs 子进程。
     'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
@@ -155,26 +167,36 @@ function assertLauncherForwardsProjectScopedPaths() {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
     JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
-    'JUHE_AI_DATABASE_DRIVER=sqlite',
-    'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
-    // 2026-10-14 监控改造回归注入：历史 .env 残留的 F2 表监控 env 必须被
-    // launcher 按前缀显式 drop，不得进入 gateway 子进程。
-    'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3',
-    'JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/audit-log.sqlite3',
+    'JUHE_AI_DATA_DIR=./data',
+    // 仍在役的 F3/F4 路径类显式配置原样透传。
     'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs',
     'JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=./data/audit-hot-search',
-    'JUHE_AI_OPERATION_LOG_DATABASE_PATH=./data/operation-log.sqlite3'
+    // 存储收口回归注入：sqlite 路径族与 store 选择族残留必须被拒转。
+    'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
+    'JUHE_AI_AUDIT_LOG_STORE=sqlite',
+    'JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/audit-log.sqlite3',
+    'JUHE_AI_OPERATION_LOG_STORE=postgres',
+    'JUHE_AI_OPERATION_LOG_DATABASE_PATH=./data/operation-log.sqlite3',
+    // 2026-10-14 监控改造回归注入：历史 .env 残留的 F2 表监控 env 必须被
+    // launcher 按前缀显式 drop，不得进入 gateway 子进程。
+    'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
   ].join('\n'))
   try {
     assert.equal(jobs.status, 0, `jobs launcher failed: ${jobs.output}`)
-    // 2026-09-19 零配置收口：SQLite 路径注入表删除，显式值原样透传，
-    // 相对路径由 Go 子进程按 cwd/语义自行解析。
-    assert.equal(jobs.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/runtime-log.sqlite3')
+    // 2026-10-24/25 存储收口：模式开关、sqlite 路径族与 store 选择族拒转。
+    for (const name of [
+      'JUHE_AI_DATABASE_DRIVER', 'JUHE_AI_RUNTIME_MODE', 'JUHE_AI_RUNTIME_LOG_STORE',
+      'JUHE_AI_RUNTIME_LOG_DATABASE_PATH', 'JUHE_AI_USAGE_SHARD_COUNT'
+    ]) {
+      assert.equal(jobs.childEnvironment[name], undefined,
+        `the retired sqlite-mode env ${name} must not be forwarded to the jobs child`)
+    }
     assert.equal(jobs.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, undefined,
       'the retired JUHE_AI_TABLE_MONITOR_DATABASE_PATH must not be forwarded to the jobs child')
-    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH, './data/account-health.sqlite3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY, './data/account-health-inputs')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY, j1InputSigningKey)
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL, 'postgres://j1-direct-input')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER, 'go')
     assert.equal(jobs.childEnvironment.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3305')
     assert.equal(jobs.childEnvironment.JUHE_AI_DATA_DIR, './data', 'JUHE_AI_DATA_DIR must be forwarded to the jobs child')
@@ -196,11 +218,20 @@ function assertLauncherForwardsProjectScopedPaths() {
         `the removed job family switch ${name} must not be forwarded to the jobs child`)
     }
     assert.equal(gateway.status, 0, `gateway launcher failed: ${gateway.output}`)
-    assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/runtime-log.sqlite3')
+    // 仍在役的 F3/F4 路径类配置原样透传。
+    assert.equal(gateway.childEnvironment.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, './data/audit-payload-blobs')
+    assert.equal(gateway.childEnvironment.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, './data/audit-hot-search')
+    // 存储收口：sqlite 路径族与 store 选择族拒转。
+    for (const name of [
+      'JUHE_AI_DATABASE_DRIVER', 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
+      'JUHE_AI_AUDIT_LOG_STORE', 'JUHE_AI_AUDIT_LOG_DATABASE_PATH',
+      'JUHE_AI_OPERATION_LOG_STORE', 'JUHE_AI_OPERATION_LOG_DATABASE_PATH'
+    ]) {
+      assert.equal(gateway.childEnvironment[name], undefined,
+        `the retired sqlite-mode env ${name} must not be forwarded to the gateway child`)
+    }
     assert.equal(gateway.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, undefined,
       'the retired JUHE_AI_TABLE_MONITOR_DATABASE_PATH must not be forwarded to the gateway child')
-    assert.equal(gateway.childEnvironment.JUHE_AI_AUDIT_LOG_DATABASE_PATH, './data/audit-log.sqlite3')
-    assert.equal(gateway.childEnvironment.JUHE_AI_OPERATION_LOG_DATABASE_PATH, './data/operation-log.sqlite3')
     assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3306')
     // 去跨进程战役第四刀：loopback input listen 地址随 F3/F4 监听器删除，
     // launcher 不得再生成或转发该 env。
@@ -219,7 +250,9 @@ function assertLauncherForwardsGatewayOwnershipGates() {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
     JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
-    'JUHE_AI_DATABASE_DRIVER=sqlite',
+    // 2026-09-30 Node→Go 切流门禁 env 家族已整体退役：显式残留必须被 drop；
+    // 仍在役的 JUHE_AI_BUSINESS_POSTGRES_URL（缺省回落主 URL）原样透传。
+    'JUHE_AI_BUSINESS_POSTGRES_URL=postgres://business-owner',
     'JUHE_AI_BUSINESS_OWNER=gateway',
     'JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true',
     'JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true',
@@ -227,7 +260,6 @@ function assertLauncherForwardsGatewayOwnershipGates() {
     'JUHE_AI_BUSINESS_OWNER_EPOCH=epoch-launcher-regression',
     'JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH=./data/cutover-evidence.json',
     'JUHE_AI_BUSINESS_DATABASE_PATH=./data/business.sqlite3',
-    'JUHE_AI_BUSINESS_POSTGRES_URL=postgres://business-owner',
     // 2026-09-21 起 SYSTEM_API/CHAIN 功能开关移除：显式残留值必须被剥离，
     // 不进入子进程（开关清零后子进程恒开，不存在可开关假象）。
     'JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true',
@@ -235,14 +267,16 @@ function assertLauncherForwardsGatewayOwnershipGates() {
   ].join('\n'))
   try {
     assert.equal(gateway.status, 0, `gateway ownership-gate launcher failed: ${gateway.output}`)
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_OWNER, 'gateway')
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_HANDOFF_CONFIRMED, 'true')
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_NODE_WRITER_STOPPED, 'true')
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_SCHEMA_READY, 'true')
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_OWNER_EPOCH, 'epoch-launcher-regression')
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH, './data/cutover-evidence.json')
-    assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_DATABASE_PATH, './data/business.sqlite3')
     assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_POSTGRES_URL, 'postgres://business-owner')
+    for (const name of [
+      'JUHE_AI_BUSINESS_OWNER', 'JUHE_AI_BUSINESS_HANDOFF_CONFIRMED',
+      'JUHE_AI_BUSINESS_NODE_WRITER_STOPPED', 'JUHE_AI_BUSINESS_SCHEMA_READY',
+      'JUHE_AI_BUSINESS_OWNER_EPOCH', 'JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH',
+      'JUHE_AI_BUSINESS_DATABASE_PATH'
+    ]) {
+      assert.equal(gateway.childEnvironment[name], undefined,
+        `the retired cutover-gate env ${name} must not be forwarded to the gateway child`)
+    }
     assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_SYSTEM_API_ENABLED, undefined,
       '已移除的 SYSTEM_API 开关残留值必须被 launcher 剥离')
     assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_CHAIN_ENABLED, undefined,
@@ -257,6 +291,7 @@ function assertLauncherForwardsGatewayJobsOrigins() {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
     JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
+    // 2026-10-24/25 存储收口回归注入：模式开关残留必须被拒转。
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     // 2026-10-14 监控改造回归注入：历史 .env 残留的 gometrics env 必须被
     // launcher 按前缀显式 drop，不得进入 gateway 子进程。
@@ -280,6 +315,9 @@ function assertLauncherForwardsGatewayJobsOrigins() {
   ].join('\n'))
   try {
     assert.equal(gateway.status, 0, `gateway jobs-origin launcher failed: ${gateway.output}`)
+    // 2026-10-24/25 存储收口：模式开关退役，残留值拒转。
+    assert.equal(gateway.childEnvironment.JUHE_AI_DATABASE_DRIVER, undefined,
+      'the retired JUHE_AI_DATABASE_DRIVER must not be forwarded to the gateway child')
     // 2026-10-14 监控改造：gometrics 两家族整体退役，残留值按前缀 drop。
     assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_STORE, undefined,
       'the retired JUHE_AI_GO_RUNTIME_METRICS_STORE must not be forwarded to the gateway child')
@@ -306,11 +344,14 @@ function assertLauncherForwardsGatewayRuntimeConfig() {
     JUHE_AI_AUDIT_LOG_INSTANCE_ID: 'f3-owner',
     JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
-    'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_HOST=127.0.0.1',
     'JUHE_AI_PORT=4300',
     'JUHE_AI_COOKIE_SECURE=true',
     'JUHE_AI_COOKIE_SAME_SITE=strict',
+    // 2026-10-24/25 存储收口回归注入：运行态/缓存 driver 开关已退役，显式
+    // 残留必须被拒转；Redis 连接串仍在役并原样透传。
+    'JUHE_AI_DATABASE_DRIVER=sqlite',
+    'JUHE_AI_CACHE_DRIVER=memory',
     'JUHE_AI_RUNTIME_STATE_DRIVER=redis',
     'JUHE_AI_REDIS_STATE_URL=redis://state.example.test:6379/9',
     'JUHE_AI_UNLISTED_FUTURE_GATEWAY_SETTING=kept'
@@ -321,7 +362,12 @@ function assertLauncherForwardsGatewayRuntimeConfig() {
     assert.equal(gateway.childEnvironment.JUHE_AI_PORT, '4300')
     assert.equal(gateway.childEnvironment.JUHE_AI_COOKIE_SECURE, 'true')
     assert.equal(gateway.childEnvironment.JUHE_AI_COOKIE_SAME_SITE, 'strict')
-    assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_STATE_DRIVER, 'redis')
+    assert.equal(gateway.childEnvironment.JUHE_AI_DATABASE_DRIVER, undefined,
+      'the retired JUHE_AI_DATABASE_DRIVER must not be forwarded to the gateway child')
+    assert.equal(gateway.childEnvironment.JUHE_AI_CACHE_DRIVER, undefined,
+      'the retired JUHE_AI_CACHE_DRIVER must not be forwarded to the gateway child')
+    assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_STATE_DRIVER, undefined,
+      'the retired JUHE_AI_RUNTIME_STATE_DRIVER must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_REDIS_STATE_URL, 'redis://state.example.test:6379/9')
     assert.equal(gateway.childEnvironment.JUHE_AI_UNLISTED_FUTURE_GATEWAY_SETTING, 'kept')
     // 2026-09-19 零配置语义：SYSTEM_API/CHAIN 开关缺省 true，由 Go 侧解析；
@@ -350,11 +396,10 @@ function assertReleaseScriptsCreateGoOnlyBackendRoot() {
 
 function assertLauncherForwardsJ2PathsAndOwner() {
   const jobs = runLauncher('jobs', {
-    // 2026-09-19 零配置收口：J1 必填项校验已删除，J2 显式配置原样透传
-    //（2026-09-21 起 ENABLED 开关移除，家族由 PG 连接串激活）。
+    // 2026-09-19 零配置收口：J2 显式配置原样透传（2026-09-21 起 ENABLED 开关
+    // 移除，家族由 PG 连接串激活；2026-10-25 起 STORE 选择族退役、恒 PG）。
     JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
-    JUHE_AI_ACCOUNT_BALANCE_STORE: 'postgres',
     JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL: 'postgres://j2-store',
     JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL: 'postgres://j2-input',
     JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET: 'j2-credential-secret',
@@ -364,6 +409,10 @@ function assertLauncherForwardsJ2PathsAndOwner() {
     JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE: '3',
     JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET: '40s'
   }, [
+    // 2026-10-24/25 存储收口回归注入：J2 store 选择族与 sqlite 路径族残留必须
+    // 被拒转，不得进入 jobs 子进程。
+    'JUHE_AI_ACCOUNT_BALANCE_STORE=sqlite',
+    'JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH=./data/account-balance.sqlite3',
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
     'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
@@ -378,8 +427,14 @@ function assertLauncherForwardsJ2PathsAndOwner() {
       'the removed J2 manual-bridge secret must not be forwarded to the jobs child')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE, '3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET, '40s')
-    assert.equal(jobs.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, undefined,
-      'the retired JUHE_AI_TABLE_MONITOR_DATABASE_PATH must not be forwarded to the jobs child')
+    for (const name of [
+      'JUHE_AI_ACCOUNT_BALANCE_STORE', 'JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH',
+      'JUHE_AI_DATABASE_DRIVER', 'JUHE_AI_RUNTIME_LOG_DATABASE_PATH',
+      'JUHE_AI_TABLE_MONITOR_DATABASE_PATH'
+    ]) {
+      assert.equal(jobs.childEnvironment[name], undefined,
+        `the retired env ${name} must not be forwarded to the jobs child`)
+    }
   } finally {
     jobs.cleanup()
   }
@@ -398,6 +453,8 @@ function assertLauncherDropsRetiredMonitoringEnv() {
     // 2026-09-27 起 JUHE_AI_GO_RUNTIME_METRICS_ROLE 删除：role 由进程身份固定
     // （gateway/gateway、jobs/jobs），launcher 不注入、不转发该 env。
   }, [
+    // 2026-10-24/25 存储收口回归注入：模式开关与 store 选择族残留必须被拒转；
+    // RUNTIME_LOG_POSTGRES_URL 仍在役并原样透传。
     'JUHE_AI_DATABASE_DRIVER=postgres',
     'JUHE_AI_RUNTIME_LOG_STORE=postgres',
     'JUHE_AI_TABLE_MONITOR_STORE=postgres',
@@ -414,20 +471,24 @@ function assertLauncherDropsRetiredMonitoringEnv() {
       'JUHE_AI_GO_RUNTIME_METRICS_SERVICE',
       'JUHE_AI_GO_RUNTIME_METRICS_ROLE',
       'JUHE_AI_TABLE_MONITOR_STORE',
-      'JUHE_AI_TABLE_MONITOR_POSTGRES_URL'
+      'JUHE_AI_TABLE_MONITOR_POSTGRES_URL',
+      'JUHE_AI_DATABASE_DRIVER',
+      'JUHE_AI_RUNTIME_LOG_STORE',
+      'JUHE_AI_TABLE_MONITOR_STORE'
     ]) {
       assert.equal(jobs.childEnvironment[name], undefined,
         `the retired monitoring env ${name} must not be forwarded to the jobs child`)
     }
+    assert.equal(jobs.childEnvironment.JUHE_AI_RUNTIME_LOG_POSTGRES_URL, 'postgres://runtime-log',
+      'JUHE_AI_RUNTIME_LOG_POSTGRES_URL must be forwarded to the jobs child')
   } finally {
     jobs.cleanup()
   }
 }
 
-function assertLauncherForwardsJ2StoreVerbatimToGo() {
-  // 2026-09-21 起 launcher 层 J2 校验（含 STORE=postgres 强制）已移除：
-  // store 合法性由 Go 加载期 fail-closed 判定，launcher 对显式配置只做
-  // 原样透传，不再改写、不再拦截。
+function assertLauncherDropsRetiredJ2StoreAndForwardsPgUrl() {
+  // 2026-09-21 起 launcher 层 J2 校验已移除；2026-10-24/25 存储收口后 J2 恒 PG
+  //（STORE 选择族退役），launcher 对退役残留值只做拒转，不再透传。
   const result = runLauncher('jobs', {
     JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
@@ -438,7 +499,8 @@ function assertLauncherForwardsJ2StoreVerbatimToGo() {
   })
   try {
     assert.equal(result.status, 0, `launcher 必须放行 J2 配置由 Go 侧校验: ${result.output}`)
-    assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_STORE, 'sqlite')
+    assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_STORE, undefined,
+      'the retired JUHE_AI_ACCOUNT_BALANCE_STORE must not be forwarded to the jobs child')
     assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, 'postgres://j2-store')
   } finally {
     result.cleanup()

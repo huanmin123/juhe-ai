@@ -1,5 +1,7 @@
 # Go 技术选型与依赖基线
 
+> **2026-10-25 存储形态注记：** 本文写于 Node→Go 迁移期，其中 SQLite / memory 本地模式与"双模式基线"表述已随存储形态收口整体退役——现行唯一存储形态为 PostgreSQL + Redis（`JUHE_AI_POSTGRES_URL` / `JUHE_AI_REDIS_CACHE_URL` / `JUHE_AI_REDIS_STATE_URL` 必填），权威契约见 [PostgreSQL 与 Redis 高性能模式设计](../functions/PostgreSQL与Redis高性能模式设计.md) 收口决策记录；本文其余项目边界与并发纪律继续有效，涉及 SQLite / 双模式的段落只作迁移期历史对照，不得作为新增实现的依据。
+
 > 面向 Go 后端迁移执行者。
 > 本文固定 Go 迁移期默认依赖、禁用依赖、评估门禁和封装规则。后续新增 Go 模块不得临时自选框架或把第三方库类型暴露到业务层。
 

@@ -34,7 +34,7 @@
 ## 本地管理页面测试
 
 - 需要通过项目管理页面执行 AI 账户、模型、探针或其他本地联调测试时，默认启动隔离的 Go 后端开发实例（`backend-go/projects/gateway` 的 `juhe-ai-gateway`，需 schema 时先用 `backend-go/projects/maintenance` 的 `juhe-ai-maintenance --ensure-schema/--seed` 初始化隔离库）并使用开发自动登录；不得把截图、识别或人工输入验证码作为默认测试步骤。
-- 隔离后端至少设置 `JUHE_AI_DEV_AUTO_LOGIN_USERNAME=admin` 和 `JUHE_AI_AUTH_CAPTCHA_DISABLED=true`（Go gateway 支持这两个变量），并为业务库、用量库、统计库、日志和运行时文件设置独立临时目录，禁止污染现有开发数据。
+- 隔离后端至少设置 `JUHE_AI_DEV_AUTO_LOGIN_USERNAME=admin` 和 `JUHE_AI_AUTH_CAPTCHA_DISABLED=true`（Go gateway 支持这两个变量），并使用隔离的 PostgreSQL/Redis 连接（独立库或独立 schema，schema 经 `juhe-ai-maintenance --ensure-schema --seed --dsn` 初始化）与独立的日志、用量 spool 等运行时文件目录，禁止污染现有开发数据。
 - 隔离前端通过 `VITE_JUHE_AI_BACKEND_TARGET` 和 `VITE_JUHE_AI_GATEWAY_BASE_URL` 指向该隔离后端；使用未占用的新端口，不停止或复用用户已经运行的前后端进程。
 - 浏览器打开前必须完成隔离预检：确认后端健康检查指向本次新端口，`/auth/me` 已返回配置的开发账户，且 `/auth/captcha` 返回 `required: false`；任一检查失败都必须先修复启动配置，禁止把登录页当作目标页面继续操作。
 - 端口选择必须以实时监听检查为准；默认端口被占用时自动选择未占用的新后端端口和前端端口，并同步更新 `VITE_JUHE_AI_BACKEND_TARGET`，不得复用已有服务、抢占端口或停止用户进程。

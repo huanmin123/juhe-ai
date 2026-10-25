@@ -430,7 +430,7 @@ DEAD_CONFIRMED
 - [AI 账户短窗口热质量与精准切号设计](AI账户短窗口热质量与精准切号设计.md)：说明锁死如何覆盖 `speed_first` 的账户偏好切换；
 - [网关异常重试与兜底策略](网关异常重试与兜底策略.md)：说明锁死与同账号重试、后备分组和客户端 handoff 的交接；
 - [接口契约与权限矩阵](接口契约与权限矩阵.md)：增加字段、详情、更新和所有者权限；
-- [SQLite 存储说明](SQLite存储说明.md)及 PostgreSQL / Redis 相关文档：增加持久配置、运行态和迁移边界；
+- [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)及 PostgreSQL / Redis 相关文档：增加持久配置、运行态和迁移边界；
 - 前端架构和账户页面文档：增加操作菜单、高级配置、运行态只读展示和文案。
 - `lockRetryIntervalSeconds` 的字段校验、随机延迟计算、共享发送租约、`nextRetryAt` 恢复 / 过期和多实例一致性测试。
 
