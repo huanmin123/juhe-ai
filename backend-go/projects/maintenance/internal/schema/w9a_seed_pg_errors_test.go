@@ -44,12 +44,6 @@ func TestW9ASeedFirstStatementFailuresOnClosedDB(t *testing.T) {
 	if _, err := EnsurePostgresSeeds(ctx, pg); err == nil || !strings.Contains(err.Error(), "postgres seed statement 1") {
 		t.Fatalf("EnsurePostgresSeeds 首条失败必须带定位: %v", err)
 	}
-
-	sqlite := openWMSchemaFakeDB(&wmSchemaRecorder{})
-	sqlite.Close()
-	if _, err := SeedSQLiteDefaults(ctx, sqlite, SeedOptions{}); err == nil || !strings.Contains(err.Error(), "sqlite seed statement 1") {
-		t.Fatalf("SQLite 首条失败必须带定位: %v", err)
-	}
 }
 
 // TestW9ASeedPostgresRouteStrategyErrorBranches 逐分支注入，覆盖默认路由

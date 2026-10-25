@@ -8,6 +8,9 @@
 //     的 route_strategy_groups 行；任一守卫失败整笔回滚；
 //   - blocked 策略不写库，由调用方在 manifest 中复核；全部 merge 行解决前
 //     不允许上线（设计 §6 第 5 条）。
+//
+// PostgreSQL 单形态：sqlite 方言随 SQLite 存储形态退役删除
+// （PLAN-20261024T051925945Z B4，2026-10-24 用户裁决）。
 package mergesupermigration
 
 import (
@@ -19,14 +22,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-)
-
-// Dialect 是业务库方言。
-type Dialect string
-
-const (
-	DialectPostgres Dialect = "postgres"
-	DialectSQLite   Dialect = "sqlite"
 )
 
 // 迁移判定词表。
@@ -58,7 +53,6 @@ const minEnabledMembers = 2
 
 // Options 是 Plan/Apply 的注入参数。
 type Options struct {
-	Dialect Dialect
 	// BatchID 是稳定复用键的一部分（设计 §6：manifest 复用键
 	// (system_account_id, migration_batch_id, source_route_strategy_id)）。必填。
 	BatchID string
@@ -99,10 +93,7 @@ type querier interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-func bind(query string, dialect Dialect) string {
-	if dialect != DialectPostgres {
-		return query
-	}
+func bind(query string) string {
 	var builder strings.Builder
 	builder.Grow(len(query) + 8)
 	index := 1
@@ -117,11 +108,8 @@ func bind(query string, dialect Dialect) string {
 	return builder.String()
 }
 
-func table(name string, dialect Dialect) string {
-	if dialect == DialectPostgres {
-		return "juhe_business." + name
-	}
-	return name
+func table(name string) string {
+	return "juhe_business." + name
 }
 
 // SuperGroupID 返回确定性目标组 ID（同一策略同一批次稳定）。
@@ -136,14 +124,11 @@ func BuildPlan(ctx context.Context, db *sql.DB, options Options) (Plan, error) {
 }
 
 func planWith(ctx context.Context, q querier, options Options) (Plan, error) {
-	if options.Dialect != DialectPostgres && options.Dialect != DialectSQLite {
-		return Plan{}, fmt.Errorf("不支持的业务库方言 %q（仅 postgres/sqlite）", options.Dialect)
-	}
 	if strings.TrimSpace(options.BatchID) == "" {
 		return Plan{}, fmt.Errorf("migration batch id 必填")
 	}
-	rows, err := q.QueryContext(ctx, bind(`SELECT id, system_account_id, name FROM `+table("route_strategies", options.Dialect)+`
-		WHERE mode = 'merge' ORDER BY id`, options.Dialect))
+	rows, err := q.QueryContext(ctx, bind(`SELECT id, system_account_id, name FROM `+table("route_strategies")+`
+		WHERE mode = 'merge' ORDER BY id`))
 	if err != nil {
 		return Plan{}, err
 	}
@@ -160,7 +145,7 @@ func planWith(ctx context.Context, q querier, options Options) (Plan, error) {
 		return Plan{}, err
 	}
 	for index := range plan.Strategies {
-		if err := planStrategy(ctx, q, options.Dialect, &plan.Strategies[index]); err != nil {
+		if err := planStrategy(ctx, q, &plan.Strategies[index]); err != nil {
 			return Plan{}, err
 		}
 		if plan.Strategies[index].Disposition == DispositionMapped {
@@ -187,11 +172,11 @@ type memberFact struct {
 	SchedulingJSON sql.NullString
 }
 
-func planStrategy(ctx context.Context, q querier, dialect Dialect, plan *StrategyPlan) error {
+func planStrategy(ctx context.Context, q querier, plan *StrategyPlan) error {
 	rows, err := q.QueryContext(ctx, bind(`SELECT id, group_id, status, priority
-		FROM `+table("route_strategy_groups", dialect)+`
+		FROM `+table("route_strategy_groups")+`
 		WHERE route_strategy_id = ?
-		ORDER BY priority ASC, created_at ASC, id ASC`, dialect), plan.StrategyID)
+		ORDER BY priority ASC, created_at ASC, id ASC`), plan.StrategyID)
 	if err != nil {
 		return err
 	}
@@ -226,7 +211,7 @@ func planStrategy(ctx context.Context, q querier, dialect Dialect, plan *Strateg
 			return block(plan, BlockedMemberDuplicate)
 		}
 		seen[binding.GroupID] = true
-		fact, found, err := loadMemberFact(ctx, q, dialect, binding.GroupID)
+		fact, found, err := loadMemberFact(ctx, q, binding.GroupID)
 		if err != nil {
 			return err
 		}
@@ -261,16 +246,16 @@ func planStrategy(ctx context.Context, q querier, dialect Dialect, plan *Strateg
 	}
 	// 目标名称/ID 冲突：同一 owner 下已有同名分组，或目标 ID 已被占用。
 	var existing int
-	err = q.QueryRowContext(ctx, bind(`SELECT 1 FROM `+table("groups", dialect)+`
-		WHERE system_account_id = ? AND name = ? LIMIT 1`, dialect), plan.OwnerID, plan.SuperGroupName).Scan(&existing)
+	err = q.QueryRowContext(ctx, bind(`SELECT 1 FROM `+table("groups")+`
+		WHERE system_account_id = ? AND name = ? LIMIT 1`), plan.OwnerID, plan.SuperGroupName).Scan(&existing)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
 	if err == nil {
 		return block(plan, BlockedMigrationGroupExists)
 	}
-	err = q.QueryRowContext(ctx, bind(`SELECT 1 FROM `+table("groups", dialect)+`
-		WHERE id = ? LIMIT 1`, dialect), plan.SuperGroupID).Scan(&existing)
+	err = q.QueryRowContext(ctx, bind(`SELECT 1 FROM `+table("groups")+`
+		WHERE id = ? LIMIT 1`), plan.SuperGroupID).Scan(&existing)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -287,10 +272,10 @@ func block(plan *StrategyPlan, reason string) error {
 	return nil
 }
 
-func loadMemberFact(ctx context.Context, q querier, dialect Dialect, groupID string) (memberFact, bool, error) {
+func loadMemberFact(ctx context.Context, q querier, groupID string) (memberFact, bool, error) {
 	var fact memberFact
 	err := q.QueryRowContext(ctx, bind(`SELECT id, system_account_id, group_kind, group_type, scheduling_policy_json
-		FROM `+table("groups", dialect)+` WHERE id = ? LIMIT 1`, dialect), groupID).
+		FROM `+table("groups")+` WHERE id = ? LIMIT 1`), groupID).
 		Scan(&fact.ID, &fact.OwnerID, &fact.GroupKind, &fact.GroupType, &fact.SchedulingJSON)
 	if err == sql.ErrNoRows {
 		return memberFact{}, false, nil
@@ -344,7 +329,7 @@ func Apply(ctx context.Context, db *sql.DB, options Options) (Plan, error) {
 		if strategy.Disposition != DispositionMapped {
 			continue
 		}
-		if err := applyStrategy(ctx, tx, options.Dialect, strategy, nowISO); err != nil {
+		if err := applyStrategy(ctx, tx, strategy, nowISO); err != nil {
 			return Plan{}, fmt.Errorf("迁移策略 %s 失败: %w", strategy.StrategyID, err)
 		}
 	}
@@ -354,58 +339,58 @@ func Apply(ctx context.Context, db *sql.DB, options Options) (Plan, error) {
 	return plan, nil
 }
 
-func applyStrategy(ctx context.Context, tx *sql.Tx, dialect Dialect, plan *StrategyPlan, nowISO string) error {
-	groupType, schedulingJSON, err := firstMemberDispatchFacts(ctx, tx, dialect, plan)
+func applyStrategy(ctx context.Context, tx *sql.Tx, plan *StrategyPlan, nowISO string) error {
+	groupType, schedulingJSON, err := firstMemberDispatchFacts(ctx, tx, plan)
 	if err != nil {
 		return err
 	}
 	// 迁移产物守卫（设计 §6）：plan 阶段已保证 enabled=true 成员数 ≥2，生成的
 	// 超级分组必须直接 enabled=1——否则改写后的 normal 策略会绑定一个 disabled
 	// 目标，runtimecache 装载时被 groups.enabled=1 过滤掉，迁移后整体不可用。
-	if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("groups", dialect)+`
+	if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("groups")+`
 		(id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
-		VALUES (?, ?, ?, NULL, 1, 0, ?, 'super', ?, ?, ?)`, dialect),
+		VALUES (?, ?, ?, NULL, 1, 0, ?, 'super', ?, ?, ?)`),
 		plan.SuperGroupID, plan.OwnerID, plan.SuperGroupName, groupType, schedulingJSON, nowISO, nowISO); err != nil {
 		return err
 	}
 	for _, member := range plan.Members {
-		if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("super_group_members", dialect)+`
+		if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("super_group_members")+`
 			(id, super_group_id, member_group_id, priority, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, dialect),
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
 			fmt.Sprintf("sgm_%s_%d", plan.StrategyID, member.Priority), plan.SuperGroupID, member.MemberGroupID,
 			member.Priority, boolInt(member.Enabled), nowISO, nowISO); err != nil {
 			return err
 		}
 	}
-	update, err := tx.ExecContext(ctx, bind(`UPDATE `+table("route_strategies", dialect)+`
-		SET mode = 'normal', updated_at = ? WHERE id = ? AND mode = 'merge'`, dialect), nowISO, plan.StrategyID)
+	update, err := tx.ExecContext(ctx, bind(`UPDATE `+table("route_strategies")+`
+		SET mode = 'normal', updated_at = ? WHERE id = ? AND mode = 'merge'`), nowISO, plan.StrategyID)
 	if err != nil {
 		return err
 	}
 	if affected, _ := update.RowsAffected(); affected != 1 {
 		return fmt.Errorf("策略不再处于 merge 状态（并发迁移？）")
 	}
-	if _, err := tx.ExecContext(ctx, bind(`DELETE FROM `+table("route_strategy_groups", dialect)+`
-		WHERE route_strategy_id = ?`, dialect), plan.StrategyID); err != nil {
+	if _, err := tx.ExecContext(ctx, bind(`DELETE FROM `+table("route_strategy_groups")+`
+		WHERE route_strategy_id = ?`), plan.StrategyID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("route_strategy_groups", dialect)+`
+	if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("route_strategy_groups")+`
 		(id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 1, 1, 'active', ?, ?)`, dialect),
+		VALUES (?, ?, ?, ?, 1, 1, 'active', ?, ?)`),
 		"rsg_"+plan.StrategyID, plan.StrategyID, plan.OwnerID, plan.SuperGroupID, nowISO, nowISO); err != nil {
 		return err
 	}
 	return nil
 }
 
-func firstMemberDispatchFacts(ctx context.Context, q querier, dialect Dialect, plan *StrategyPlan) (string, string, error) {
+func firstMemberDispatchFacts(ctx context.Context, q querier, plan *StrategyPlan) (string, string, error) {
 	if len(plan.Members) == 0 {
 		return "", "", fmt.Errorf("策略 %s 没有成员", plan.StrategyID)
 	}
 	var groupType string
 	var schedulingJSON sql.NullString
-	if err := q.QueryRowContext(ctx, bind(`SELECT group_type, scheduling_policy_json FROM `+table("groups", dialect)+`
-		WHERE id = ? LIMIT 1`, dialect), plan.Members[0].MemberGroupID).Scan(&groupType, &schedulingJSON); err != nil {
+	if err := q.QueryRowContext(ctx, bind(`SELECT group_type, scheduling_policy_json FROM `+table("groups")+`
+		WHERE id = ? LIMIT 1`), plan.Members[0].MemberGroupID).Scan(&groupType, &schedulingJSON); err != nil {
 		return "", "", err
 	}
 	policy := ""

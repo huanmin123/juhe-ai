@@ -9,9 +9,8 @@
 //     are not cleanup targets;
 //   - the idx_api_keys_studio_purpose_unique index on api_keys;
 //   - api_keys rows with purpose='studio' (DELETE, not filtered copies);
-//   - the api_keys.studio_domains_json column (PostgreSQL DROP COLUMN;
-//     SQLite row-preserving table rebuild — with the three-value legacy
-//     purpose CHECK the rebuild copies every remaining row).
+//   - the api_keys.studio_domains_json column (PostgreSQL DROP COLUMN IF
+//     EXISTS).
 //
 // Normal --ensure-schema runs stay purely additive: the destructive cleanup
 // that briefly lived in the ensure statements was deliberately moved here so
@@ -23,7 +22,8 @@
 //
 // Every step is idempotent: a second run finds nothing left and reports
 // alreadyRetired without writing; a run interrupted mid-way converges on
-// rerun because each step is guarded.
+// rerun because each step is guarded. SQLite 目标随 SQLite 存储形态退役删除
+// （PLAN-20261024T051925945Z B4，2026-10-24 用户裁决）。
 package studioretirement
 
 import (
@@ -33,8 +33,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // SchemaName is the PostgreSQL schema owning the business tables.
@@ -74,9 +72,11 @@ type Report struct {
 	DroppedTables     []string `json:"droppedTables,omitempty"`
 	DroppedIndex      bool     `json:"droppedLegacyIndex"`
 	DroppedColumn     bool     `json:"droppedLegacyColumn"`
-	RebuiltTable      bool     `json:"rebuiltTable"`
-	AlreadyRetired    bool     `json:"alreadyRetired"`
-	FinishedAt        string   `json:"finishedAt"`
+	// RebuiltTable 是历史 sqlite 整表重建路径的报告字段；PG 直接 DROP
+	// COLUMN 恒为 false（字段保留，PG 报告 JSON 形状不变）。
+	RebuiltTable   bool   `json:"rebuiltTable"`
+	AlreadyRetired bool   `json:"alreadyRetired"`
+	FinishedAt     string `json:"finishedAt"`
 	// Postflight：全零/全空即 Ready。
 	RemainingStudioTables     []string `json:"remainingStudioTables,omitempty"`
 	RemainingStudioAPIKeyRows int64    `json:"remainingStudioApiKeyRows"`
@@ -108,27 +108,18 @@ func (r Report) Ready() bool {
 
 // Run performs the idempotent retirement. Statements run one by one (the
 // ensure-schema model): each step is independently idempotent and guarded, so
-// a mid-way failure leaves partial state that a rerun converges; only the
-// SQLite column drop — the only multi-statement sequence — runs inside one
-// transaction (PRAGMA foreign_keys toggled off and restored around it exactly
-// like the schedule-interval / chat-assets media rebuilds it follows).
-func Run(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, now time.Time) (Report, error) {
+// a mid-way failure leaves partial state that a rerun converges.
+func Run(ctx context.Context, db *sql.DB, now time.Time) (Report, error) {
 	report := Report{
-		Driver:               dialect.String(),
+		Driver:               "postgres",
 		StudioTableRowCounts: map[string]int64{},
 		FinishedAt:           now.UTC().Format(isoMillisLayout),
 		RollbackNote:         rollbackNote,
 	}
-	if dialect == capabilitydomain.DialectPostgres {
-		if err := runPostgres(ctx, db, &report); err != nil {
-			return report, err
-		}
-	} else {
-		if err := runSQLite(ctx, db, &report); err != nil {
-			return report, err
-		}
+	if err := runPostgres(ctx, db, &report); err != nil {
+		return report, err
 	}
-	if err := postflight(ctx, db, dialect, &report); err != nil {
+	if err := postflight(ctx, db, &report); err != nil {
 		return report, err
 	}
 	report.AlreadyRetired = report.DeletedAPIKeyRows == 0 &&
@@ -139,9 +130,9 @@ func Run(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, now 
 
 // postflight re-runs the existence checks and fails the report (Ready=false,
 // CLI exit 3) when anything survives; it never writes.
-func postflight(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, report *Report) error {
+func postflight(ctx context.Context, db *sql.DB, report *Report) error {
 	for _, table := range studioTables {
-		exists, err := studioTableExists(ctx, db, dialect, table)
+		exists, err := pgRelationExists(ctx, db, SchemaName+"."+table)
 		if err != nil {
 			return err
 		}
@@ -149,17 +140,17 @@ func postflight(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialec
 			report.RemainingStudioTables = append(report.RemainingStudioTables, table)
 		}
 	}
-	rows, err := studioAPIKeyCount(ctx, db, dialect)
+	rows, err := studioAPIKeyCount(ctx, db)
 	if err != nil {
 		return err
 	}
 	report.RemainingStudioAPIKeyRows = rows
-	indexExists, err := legacyIndexExists(ctx, db, dialect)
+	indexExists, err := pgRelationExists(ctx, db, SchemaName+"."+legacyAPIKeysIndex)
 	if err != nil {
 		return err
 	}
 	report.RemainingLegacyIndex = indexExists
-	columnExists, err := legacyColumnExists(ctx, db, dialect)
+	columnExists, err := pgColumnExists(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -193,10 +184,10 @@ func runPostgres(ctx context.Context, db *sql.DB, report *Report) error {
 		}
 		report.StudioTableRowCounts[table] = rows
 	}
-	if report.StudioAPIKeyRows, err = studioAPIKeyCount(ctx, db, capabilitydomain.DialectPostgres); err != nil {
+	if report.StudioAPIKeyRows, err = studioAPIKeyCount(ctx, db); err != nil {
 		return err
 	}
-	if report.OpenAICompatibleResourceRows, err = openAICompatibleResourceCounts(ctx, db, capabilitydomain.DialectPostgres); err != nil {
+	if report.OpenAICompatibleResourceRows, err = openAICompatibleResourceCounts(ctx, db); err != nil {
 		return err
 	}
 	if report.OpenAICompatibleResourceRows.any() {
@@ -245,91 +236,9 @@ func runPostgres(ctx context.Context, db *sql.DB, report *Report) error {
 	return nil
 }
 
-// runSQLite migrates a SQLite business database.步骤与 PG 相同；唯一差异是
-// SQLite 不能在带列级 CHECK 的表上 DROP COLUMN，legacy 列存在时按
-// schedule-interval / chat-assets media 先例整表重建（保行拷贝——三值 CHECK
-// 下重建不删任何行，studio 行已在上方 DELETE 步骤显式删除）。
-func runSQLite(ctx context.Context, db *sql.DB, report *Report) error {
-	apiKeysExists, err := sqliteTableExists(ctx, db, "api_keys")
-	if err != nil {
-		return err
-	}
-	if !apiKeysExists {
-		return errors.New("api_keys 表不存在：请先 --ensure-schema 初始化业务库")
-	}
-	// 1) preflight 计数。
-	for _, table := range studioTables {
-		exists, err := sqliteTableExists(ctx, db, table)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			report.MissingStudioTables = append(report.MissingStudioTables, table)
-			continue
-		}
-		var rows int64
-		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&rows); err != nil {
-			return fmt.Errorf("统计 %s 行数失败: %w", table, err)
-		}
-		report.StudioTableRowCounts[table] = rows
-	}
-	if report.StudioAPIKeyRows, err = studioAPIKeyCount(ctx, db, capabilitydomain.DialectSQLite); err != nil {
-		return err
-	}
-	if report.OpenAICompatibleResourceRows, err = openAICompatibleResourceCounts(ctx, db, capabilitydomain.DialectSQLite); err != nil {
-		return err
-	}
-	if report.OpenAICompatibleResourceRows.any() {
-		return blockedByOpenAICompatibleResources(report.OpenAICompatibleResourceRows)
-	}
-	if report.LegacyIndexExisted, err = sqliteIndexExists(ctx, db, legacyAPIKeysIndex); err != nil {
-		return err
-	}
-	if report.LegacyColumnExisted, err = sqliteColumnExists(ctx, db, "api_keys", legacyAPIKeysColumn); err != nil {
-		return err
-	}
-	// 2) DELETE purpose='studio' 行。
-	if report.StudioAPIKeyRows > 0 {
-		result, err := db.ExecContext(ctx, "DELETE FROM api_keys WHERE purpose = 'studio'")
-		if err != nil {
-			return fmt.Errorf("删除 purpose='studio' api_keys 行失败: %w", err)
-		}
-		if affected, err := result.RowsAffected(); err == nil {
-			report.DeletedAPIKeyRows = affected
-		}
-	}
-	// 3) DROP 4 张真实 studio 表与遗留索引。
-	for _, table := range studioTables {
-		if _, missing := contains(report.MissingStudioTables, table); missing {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS "+table); err != nil {
-			return fmt.Errorf("DROP TABLE %s 失败: %w", table, err)
-		}
-		report.DroppedTables = append(report.DroppedTables, table)
-	}
-	if report.LegacyIndexExisted {
-		if _, err := db.ExecContext(ctx, "DROP INDEX IF EXISTS "+legacyAPIKeysIndex); err != nil {
-			return fmt.Errorf("DROP INDEX %s 失败: %w", legacyAPIKeysIndex, err)
-		}
-		report.DroppedIndex = true
-	}
-	// 4) 删 studio_domains_json 列：不存在即跳过，存在走保行重建。
-	if report.LegacyColumnExisted {
-		if err := rebuildSQLiteAPIKeys(ctx, db, report); err != nil {
-			return err
-		}
-		report.DroppedColumn = true
-	}
-	return nil
-}
-
 // studioAPIKeyCount 统计 purpose='studio' 的 api_keys 行。
-func studioAPIKeyCount(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect) (int64, error) {
-	query := "SELECT count(*) FROM api_keys WHERE purpose = 'studio'"
-	if dialect == capabilitydomain.DialectPostgres {
-		query = "SELECT count(*) FROM " + SchemaName + ".api_keys WHERE purpose = 'studio'"
-	}
+func studioAPIKeyCount(ctx context.Context, db *sql.DB) (int64, error) {
+	query := "SELECT count(*) FROM " + SchemaName + ".api_keys WHERE purpose = 'studio'"
 	var rows int64
 	if err := db.QueryRowContext(ctx, query).Scan(&rows); err != nil {
 		return 0, fmt.Errorf("统计 purpose='studio' api_keys 行数失败: %w", err)
@@ -337,11 +246,8 @@ func studioAPIKeyCount(ctx context.Context, db *sql.DB, dialect capabilitydomain
 	return rows, nil
 }
 
-func openAICompatibleResourceCounts(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect) (OpenAICompatibleResourceCounts, error) {
-	prefix := ""
-	if dialect == capabilitydomain.DialectPostgres {
-		prefix = SchemaName + "."
-	}
+func openAICompatibleResourceCounts(ctx context.Context, db *sql.DB) (OpenAICompatibleResourceCounts, error) {
+	prefix := SchemaName + "."
 	tables := []string{
 		"openai_compatible_files",
 		"openai_compatible_vector_stores",
@@ -357,7 +263,7 @@ func openAICompatibleResourceCounts(ctx context.Context, db *sql.DB, dialect cap
 	counts := OpenAICompatibleResourceCounts{}
 	values := []*int64{&counts.Files, &counts.VectorStores, &counts.VectorStoreFiles, &counts.VectorStoreChunks}
 	for i, table := range tables {
-		exists, err := studioTableExists(ctx, db, dialect, table)
+		exists, err := pgRelationExists(ctx, db, prefix+table)
 		if err != nil {
 			return OpenAICompatibleResourceCounts{}, err
 		}
@@ -373,29 +279,6 @@ func openAICompatibleResourceCounts(ctx context.Context, db *sql.DB, dialect cap
 
 func blockedByOpenAICompatibleResources(counts OpenAICompatibleResourceCounts) error {
 	return fmt.Errorf("studio 退场已在写入前拒绝：关联 OpenAI-compatible 资源仍存在（files=%d vectorStores=%d vectorStoreFiles=%d vectorStoreChunks=%d）；请先迁移或清理这些资源后重试", counts.Files, counts.VectorStores, counts.VectorStoreFiles, counts.VectorStoreChunks)
-}
-
-// studioTableExists / legacyIndexExists / legacyColumnExists 按 dialect 分派
-// 的存在性检查（postflight 与 preflight 共用）。
-func studioTableExists(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, table string) (bool, error) {
-	if dialect == capabilitydomain.DialectPostgres {
-		return pgRelationExists(ctx, db, SchemaName+"."+table)
-	}
-	return sqliteTableExists(ctx, db, table)
-}
-
-func legacyIndexExists(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect) (bool, error) {
-	if dialect == capabilitydomain.DialectPostgres {
-		return pgRelationExists(ctx, db, SchemaName+"."+legacyAPIKeysIndex)
-	}
-	return sqliteIndexExists(ctx, db, legacyAPIKeysIndex)
-}
-
-func legacyColumnExists(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect) (bool, error) {
-	if dialect == capabilitydomain.DialectPostgres {
-		return pgColumnExists(ctx, db)
-	}
-	return sqliteColumnExists(ctx, db, "api_keys", legacyAPIKeysColumn)
 }
 
 // pgRelationExists reports whether a schema-qualified relation (table or
@@ -420,44 +303,6 @@ func pgColumnExists(ctx context.Context, db *sql.DB) (bool, error) {
 	return count > 0, nil
 }
 
-func sqliteTableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
-	var count int
-	if err := db.QueryRowContext(ctx,
-		"SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&count); err != nil {
-		return false, fmt.Errorf("探测表 %s 失败: %w", table, err)
-	}
-	return count > 0, nil
-}
-
-func sqliteIndexExists(ctx context.Context, db *sql.DB, index string) (bool, error) {
-	var count int
-	if err := db.QueryRowContext(ctx,
-		"SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&count); err != nil {
-		return false, fmt.Errorf("探测索引 %s 失败: %w", index, err)
-	}
-	return count > 0, nil
-}
-
-func sqliteColumnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
-	if err != nil {
-		return false, fmt.Errorf("读取 PRAGMA table_info(%s) 失败: %w", table, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, declaredType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
-}
-
 // contains 是小清单（4 个表名）的线性查找辅助。
 func contains(list []string, target string) (int, bool) {
 	for i, item := range list {
@@ -466,153 +311,4 @@ func contains(list []string, target string) (int, bool) {
 		}
 	}
 	return -1, false
-}
-
-// rebuildColumns 是重建后 api_keys 的完整列清单（顺序与
-// sqlite_schema_business.go 的建表 DDL 一致，天然不含 legacy 列）。复制阶段
-// 按旧表实际列求交集，兼容 scheduling_preference_id 尚未由守卫补齐的更老
-// 形状。
-var rebuildColumns = []string{
-	"id", "system_account_id", "route_strategy_id", "name", "description",
-	"key_hash", "key_prefix", "key_suffix", "key_secret_encrypted", "status",
-	"is_default", "purpose", "scheduling_preference_id",
-	"expires_at", "quota_limits_json", "availability_schedule_json",
-	"availability_schedule_next_check_at", "last_used_at", "created_at", "updated_at",
-}
-
-// rebuildIndexes 在 rename 后按 business 脚本与守卫链的索引定义重建 api_keys
-// 的全部索引（DROP TABLE 会连带删除旧表索引；含守卫链尾创建的
-// idx_api_keys_scheduling_preference，不在此复建会把它随旧表一起丢掉）。
-var rebuildIndexes = []string{
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_route_strategy ON api_keys(route_strategy_id)`,
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC)`,
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC)`,
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot
-      ON api_keys(status, updated_at DESC, id)
-      WHERE quota_limits_json IS NOT NULL`,
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_next_check
-      ON api_keys(availability_schedule_next_check_at ASC, id ASC)
-      WHERE availability_schedule_json IS NOT NULL`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique ON api_keys(system_account_id, name)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys(route_strategy_id) WHERE is_default = 1`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_chat_purpose_unique
-      ON api_keys(system_account_id)
-      WHERE purpose = 'chat'`,
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name, id)`,
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name, id)`,
-	`CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)`,
-}
-
-// rebuildDDL 是重建后的 api_keys 形状（与 sqlite_schema_business.go 建表 DDL
-// 同构，purpose 为三值 legacy 词表；列与索引一致性由本包测试断言）。重建
-// 只为摆脱 legacy 列，拷贝不携带 WHERE 过滤——purpose='studio' 行已在
-// DELETE 步骤显式删除，三值 CHECK 下其余行全部合法。
-const rebuildDDL = `CREATE TABLE api_keys_migrating (
-      id TEXT PRIMARY KEY,
-      system_account_id TEXT NOT NULL,
-      route_strategy_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      description TEXT,
-      key_hash TEXT NOT NULL UNIQUE,
-      key_prefix TEXT NOT NULL,
-      key_suffix TEXT NOT NULL,
-      key_secret_encrypted TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
-      is_default INTEGER NOT NULL DEFAULT 0,
-      purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat', 'studio')),
-      scheduling_preference_id TEXT REFERENCES scheduling_preferences(id),
-      expires_at TEXT,
-      quota_limits_json TEXT,
-      availability_schedule_json TEXT,
-      availability_schedule_next_check_at TEXT,
-      last_used_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id)
-    )`
-
-// rebuildSQLiteAPIKeys rebuilds api_keys without the legacy column inside one
-// transaction, following the schedule-interval / chat-assets media precedent
-// (staging table -> copy -> drop -> rename -> recreate indexes). PRAGMA
-// foreign_keys is toggled off and restored around the rebuild —
-// openai_compatible_* tables reference api_keys by name, and the rename
-// restores the name so those foreign keys stay intact.
-func rebuildSQLiteAPIKeys(ctx context.Context, db *sql.DB, report *Report) error {
-	existing, err := apiKeysColumnSet(ctx, db)
-	if err != nil {
-		return err
-	}
-	copyColumns := make([]string, 0, len(rebuildColumns))
-	for _, column := range rebuildColumns {
-		if existing[column] {
-			copyColumns = append(copyColumns, column)
-		}
-	}
-	if len(copyColumns) == 0 {
-		// 非预期形状（旧表没有任何已知列）：不重建，postflight 会把残留
-		// legacy 列报成未就绪（exit 3），不做静默伪装。
-		return nil
-	}
-	foreignKeys := 0
-	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
-		return fmt.Errorf("读取 PRAGMA foreign_keys 失败: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
-		return fmt.Errorf("关闭 PRAGMA foreign_keys 失败: %w", err)
-	}
-	defer func() {
-		if foreignKeys != 0 {
-			_, _ = db.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys=ON")
-		}
-	}()
-	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS api_keys_migrating"); err != nil {
-		return fmt.Errorf("清理上次重建残留失败: %w", err)
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, rebuildDDL); err != nil {
-		return fmt.Errorf("创建 api_keys 重建表失败: %w", err)
-	}
-	columnList := strings.Join(copyColumns, ", ")
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-		"INSERT INTO api_keys_migrating (%s)\nSELECT %s FROM api_keys",
-		columnList, columnList)); err != nil {
-		return fmt.Errorf("回填 api_keys 重建表数据失败: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "DROP TABLE api_keys"); err != nil {
-		return fmt.Errorf("删除旧 api_keys 失败: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "ALTER TABLE api_keys_migrating RENAME TO api_keys"); err != nil {
-		return fmt.Errorf("重命名 api_keys 重建表失败: %w", err)
-	}
-	for _, statement := range rebuildIndexes {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("重建 api_keys 索引失败: %w", err)
-		}
-	}
-	report.RebuiltTable = true
-	return tx.Commit()
-}
-
-// apiKeysColumnSet 返回 api_keys 当前列名集合。
-func apiKeysColumnSet(ctx context.Context, db *sql.DB) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info(api_keys)")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	columns := map[string]bool{}
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, declaredType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
-			return nil, err
-		}
-		columns[name] = true
-	}
-	return columns, rows.Err()
 }

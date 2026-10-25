@@ -1,34 +1,45 @@
+// Package mockdata 是本地开发造数能力（docs/functions/Mockdata造数设计.md）
+// 的维护入口。
+//
+// 2026-10-24 存储形态收口（PLAN-20261024T051925945Z D7，用户裁决「彻底物理
+// 删除、无兼容期」）：原「12 个固定 sqlite3 文件 + usage/codex 分片」存储
+// 实现整体删除；PG 造数重写（PG DSN 目标 + maintenance schema EnsurePostgres
+// 建骨架 + PG INSERT 造数）以本文件的 Options/Report 骨架与 CLI 参数契约为
+// 落点，重写完成前 Run / VerifyCoverage 返回明确的未实现错误——命令可解析、
+// 可报错、绝不静默假成功。
+//
+// fake 数据生成逻辑（domain_*.go 的形状与数量语义）随 sqlite 实现进入 git
+// 历史（本删除批次之前的提交），PG 重写时按同语义重建。
 package mockdata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"time"
 )
 
-// 造数域名。域名同时是 domainSeeds 的注册键、存储归属键与覆盖报告里
-// DomainResult.Name 的取值，三处必须一致。
+// 造数域名（PG 重写的域切分与报告口径沿用的固定词表）。
 const (
-	// DomainBusiness 拥有 business 库（系统账户、AI 账户、分组、路由策略、
+	// DomainBusiness 拥有 juhe_business（系统账户、AI 账户、分组、路由策略、
 	// API Key、授权、公告、外部来源、响应检查策略、账户测试与题库）。
 	DomainBusiness = "business"
-	// DomainUsage 拥有 usage-catalog 库与 usage-shards 分片文件。
+	// DomainUsage 拥有 juhe_usage_catalog 与 usage 明细分片面。
 	DomainUsage = "usage"
-	// DomainStats 拥有 stats 库的明细写入面（派生聚合由本域调用既有聚合器
-	// 重建，不手工伪造）。
+	// DomainStats 拥有 juhe_stats 明细写入面（派生聚合由既有聚合器重建，
+	// 不手工伪造）。
 	DomainStats = "stats"
 	// DomainObservability 拥有运行日志、表监控、审计日志、操作日志与
-	// dataset 库（公开接口日志、记录清理目标）。
+	// juhe_dataset（公开接口日志、记录清理目标）。
 	DomainObservability = "observability"
-	// DomainChatCodexModelCheck 拥有 chat 库、codex context state 分片、
-	// J3b 模型检测专库、后台任务运行库与账户健康库。
+	// DomainChatCodexModelCheck 拥有 juhe_chat、codex context 面、J3b 模型
+	// 检测专库、后台任务运行库与账户健康库。
 	DomainChatCodexModelCheck = "chat_codex_model_check"
 )
 
 // 参数边界（docs/functions/Mockdata造数设计.md「命令」小节的表格）：
-// --days 1..90、--daily-requests 1..500。
+// --mockdata-days 1..90、--mockdata-daily-requests 1..500。
 const (
 	// DefaultDays 是 --mockdata-days 的默认值（近 31 天）。
 	DefaultDays = 31
@@ -40,9 +51,12 @@ const (
 	MaxDailyRequests = 500
 )
 
+// ErrPGSeedPending 是 PG 造数重写完成前的固定未实现错误：D7 切片只交付
+// 骨架与 CLI 契约，不静默半成品。文案同时是 CLI 与库调用方的稳定判定锚。
+var ErrPGSeedPending = errors.New("mockdata PG 造数尚未交付：sqlite 实现已按 SQLite 退役计划删除，PG 重写（EnsurePostgres 建骨架 + PG INSERT 造数）完成后本命令可用")
+
 // DomainResult 是一个域的执行结果：Name 是域名，Counts 是「逻辑对象 → 行数」
-// 计数（例如 usageRecords=3720）。Counts 为空表示该域尚未接线，覆盖报告会据此
-// 把该域的关键状态断言标成 not-covered。
+// 计数。PG 重写保留该报告口径。
 type DomainResult struct {
 	Name   string         `json:"name"`
 	Counts map[string]int `json:"counts"`
@@ -50,8 +64,9 @@ type DomainResult struct {
 
 // Options 是一次造数运行的输入。
 type Options struct {
-	// Paths 是解析后的存储位置（必须是 ResolvePaths 的结果）。
-	Paths Paths
+	// DSN 是目标 PostgreSQL URL（开发库或测试库；一次误执行的造数命令不得
+	// 落到未知库，必填）。
+	DSN string
 	// Days 是明细与监控样本的天数跨度，1..MaxDays。
 	Days int
 	// DailyRequests 是每天生成的使用记录条数，1..MaxDailyRequests。
@@ -65,7 +80,7 @@ type Options struct {
 }
 
 // validate 校验参数边界。越界即错而不是钳制：造数结果会被当作页面验收的
-// 证据，静默钳制会让「--days 500」看起来成功但只生成 90 天。
+// 证据，静默钳制会让「--mockdata-days 500」看起来成功但只生成 90 天。
 func (o Options) validate() error {
 	if o.Days < 1 || o.Days > MaxDays {
 		return fmt.Errorf("mockdata days 必须在 1 到 %d 之间: %d", MaxDays, o.Days)
@@ -73,8 +88,8 @@ func (o Options) validate() error {
 	if o.DailyRequests < 1 || o.DailyRequests > MaxDailyRequests {
 		return fmt.Errorf("mockdata dailyRequests 必须在 1 到 %d 之间: %d", MaxDailyRequests, o.DailyRequests)
 	}
-	if len(o.Paths.DataDir) == 0 {
-		return fmt.Errorf("mockdata 需要已解析的存储路径（Paths.DataDir 为空）")
+	if o.DSN == "" {
+		return fmt.Errorf("mockdata 需要 --dsn 指向显式的 PostgreSQL URL")
 	}
 	return nil
 }
@@ -87,55 +102,30 @@ func (o Options) clock() time.Time {
 	return o.Now
 }
 
-// domainSeed 是域注册项：固定签名 (context.Context, *env) (DomainResult, error)。
-//
-// 为什么用函数变量表而不是 switch：后续域实现者只改自己域文件里的函数体
-// （domain_*.go），不需要回到本文件加分支；覆盖报告与报告输出也按这张表
-// 枚举域，新增域自动出现在两个输出里。
-var domainSeeds = []struct {
-	Name string
-	Run  func(context.Context, *env) (DomainResult, error)
-}{
-	{Name: DomainBusiness, Run: seedBusiness},
-	{Name: DomainUsage, Run: seedUsage},
-	{Name: DomainStats, Run: seedStatsRaw},
-	{Name: DomainObservability, Run: seedObservability},
-	{Name: DomainChatCodexModelCheck, Run: seedChatCodexModelCheck},
-}
-
-// Report 是 --mockdata 的 stdout JSON，也是库调用方的返回值。
+// Report 是 --mockdata 的 stdout JSON，也是库调用方的返回值。PG 重写保留
+// 字段词表；骨架阶段只回填 driver 与参数回显字段。
 type Report struct {
-	Driver        string         `json:"driver"`
-	DataDir       string         `json:"dataDir"`
-	Days          int            `json:"days"`
-	DailyRequests int            `json:"dailyRequests"`
-	StartedAt     string         `json:"startedAt"`
-	FinishedAt    string         `json:"finishedAt"`
-	DurationMs    int64          `json:"durationMs"`
-	Cleanup       map[string]int `json:"cleanup"`
-	// CleanupSkipped 记录因存储文件或表不存在而跳过的清理目标；这些不是
-	// 失败（首次运行本来就什么都没有），但必须显式列出，避免「清理了 0 行」
-	// 被误读成「上一批数据已清空」。
-	CleanupSkipped []string       `json:"cleanupSkipped,omitempty"`
-	Domains        []DomainResult `json:"domains"`
-	// Counts 是各域计数的合并视图（同名键相加），给只关心总数的调用方。
-	Counts   map[string]int `json:"counts"`
-	Autofill map[string]int `json:"autofill"`
-	// AutofillSkipped 记录自动补全跳过的表与原因；跳过不影响成功，但要让
-	// 「某张表为什么是空的」在报告里可查。
-	AutofillSkipped map[string]string `json:"autofillSkipped,omitempty"`
-	SummaryPath     string            `json:"summaryPath"`
-	Warnings        []string          `json:"warnings,omitempty"`
+	Driver        string `json:"driver"`
+	DSN           string `json:"dsn"`
+	Days          int    `json:"days"`
+	DailyRequests int    `json:"dailyRequests"`
+	StartedAt     string `json:"startedAt"`
+	FinishedAt    string `json:"finishedAt"`
+	DurationMs    int64  `json:"durationMs"`
 }
 
-// Run 执行一次完整造数：打开存储 → 清理上一批 → 逐域 seed → 自动补全 →
-// 写摘要。任何一步失败即整体失败（返回已完成部分的报告与错误），不做部分
-// 成功提交：半批数据比没有数据更难排查。
+// CoverageReport 是 --verify-mockdata-coverage 的 stdout JSON。PG 重写保留
+// 该口径（Ready=false 时 CLI exit 3）。
+type CoverageReport struct {
+	Driver string `json:"driver"`
+	DSN    string `json:"dsn"`
+	Ready  bool   `json:"ready"`
+}
+
+// Run 执行一次完整造数：PG 重写完成前返回 ErrPGSeedPending（参数校验先行，
+// 越界参数优先报边界错误）。
 func Run(ctx context.Context, options Options) (Report, error) {
-	if err := options.validate(); err != nil {
-		return Report{}, err
-	}
-	return runWithLogger(ctx, options, nil)
+	return RunWithLogger(ctx, options, nil)
 }
 
 // RunWithLogger 与 Run 相同，但接受注入的日志器（CLI 用它把进度写到 stderr，
@@ -144,103 +134,21 @@ func RunWithLogger(ctx context.Context, options Options, logger *slog.Logger) (R
 	if err := options.validate(); err != nil {
 		return Report{}, err
 	}
-	return runWithLogger(ctx, options, logger)
-}
-
-// runWithLogger 用命名返回值：句柄关闭发生在所有 return 之后，只有命名返回
-// 值才能把关闭失败追记进报告（普通局部变量的改动不会被调用方看到）。关闭失败
-// 不改变退出码——数据已经写完，句柄泄漏是警告而不是失败。
-func runWithLogger(ctx context.Context, options Options, logger *slog.Logger) (report Report, err error) {
-	started := options.clock()
-	// 耗时用真实墙钟测量：options.Now 是数据时间基准（可被测试固定），
-	// 拿它算耗时会恒为 0。
-	wallStart := time.Now()
-	report = Report{
-		Driver:        "sqlite",
-		DataDir:       options.Paths.DataDir,
+	_ = logger
+	started := options.clock().UTC().Format(time.RFC3339)
+	return Report{
+		Driver:        "postgres",
+		DSN:           options.DSN,
 		Days:          options.Days,
 		DailyRequests: options.DailyRequests,
-		StartedAt:     started.UTC().Format(time.RFC3339),
-	}
-	e := newEnv(options, logger)
-	defer func() {
-		if closeErr := e.Close(); closeErr != nil {
-			report.Warnings = append(report.Warnings, closeErr.Error())
-		}
-	}()
-
-	cleanup, skipped, err := cleanupAll(ctx, e)
-	report.Cleanup = cleanup
-	report.CleanupSkipped = skipped
-	if err != nil {
-		return finishReport(report, options, wallStart), err
-	}
-
-	for _, seed := range domainSeeds {
-		result, seedErr := seed.Run(ctx, e)
-		if seedErr != nil {
-			return finishReport(report, options, wallStart), fmt.Errorf("mockdata 域 %s 失败: %w", seed.Name, seedErr)
-		}
-		if result.Name == "" {
-			result.Name = seed.Name
-		}
-		e.recordDomainResult(result)
-	}
-
-	autofill, autofillSkipped, err := autofillTables(ctx, e)
-	report.Autofill = autofill
-	report.AutofillSkipped = autofillSkipped
-	if err != nil {
-		return finishReport(report, options, wallStart), err
-	}
-
-	report.Domains = e.domainResults()
-	report.Counts = mergedDomainCounts(report.Domains)
-	summaryPath, err := writeSummary(e, report)
-	report.SummaryPath = summaryPath
-	if err != nil {
-		return finishReport(report, options, wallStart), err
-	}
-	return finishReport(report, options, wallStart), nil
+		StartedAt:     started,
+	}, ErrPGSeedPending
 }
 
-// finishReport 补齐时间字段，保证错误路径也返回结构完整的报告。
-func finishReport(report Report, options Options, wallStart time.Time) Report {
-	finished := options.clock()
-	report.FinishedAt = finished.UTC().Format(time.RFC3339)
-	report.DurationMs = time.Since(wallStart).Milliseconds()
-	if report.Cleanup == nil {
-		report.Cleanup = map[string]int{}
+// VerifyCoverage 执行只读覆盖校验：PG 重写完成前返回 ErrPGSeedPending。
+func VerifyCoverage(ctx context.Context, options Options) (CoverageReport, error) {
+	if err := options.validate(); err != nil {
+		return CoverageReport{}, err
 	}
-	if report.Counts == nil {
-		report.Counts = map[string]int{}
-	}
-	if report.Autofill == nil {
-		report.Autofill = map[string]int{}
-	}
-	if report.Domains == nil {
-		report.Domains = []DomainResult{}
-	}
-	return report
-}
-
-// mergedDomainCounts 把各域计数按 key 求和。
-func mergedDomainCounts(results []DomainResult) map[string]int {
-	merged := map[string]int{}
-	for _, result := range results {
-		for key, count := range result.Counts {
-			merged[key] += count
-		}
-	}
-	return merged
-}
-
-// sortedKeys 返回 map 的稳定顺序键（报告与日志输出用）。
-func sortedKeys[T any](values map[string]T) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return CoverageReport{Driver: "postgres", DSN: options.DSN}, ErrPGSeedPending
 }

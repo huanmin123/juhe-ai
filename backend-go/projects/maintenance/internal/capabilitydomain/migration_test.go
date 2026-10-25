@@ -21,7 +21,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -29,57 +28,74 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const testSecret = "capability-domain-test-secret"
 
-// openMigrationDB 打开一个完成 ensure 的临时业务库（单连接，进程内）。
+// openMigrationDB 打开一个完成 EnsurePostgres 的隔离测试库（pgtestkit，
+// 每测试独立 database），并预置 fixtures 依赖的 system_accounts 父行。
 func openMigrationDB(t *testing.T) *sql.DB {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := schema.EnsureSQLiteBusiness(context.Background(), db); err != nil {
-		t.Fatalf("ensure business schema: %v", err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := schema.EnsurePostgres(ctx, db); err != nil {
+			return err
+		}
+		for _, seed := range []string{
+			// fixtures 依赖的父行：system_accounts（accounts.system_account_id FK）
+			// 与 vendors（accounts.vendor_code FK，fixtures 固定 'gpt'）。
+			`INSERT INTO "juhe_business"."system_accounts"
+				(id, username, display_name, description, role, status, password_hash, created_at, updated_at)
+				VALUES ('sys-1', 'sys-1', 'sys-1', NULL, 'user', 'active', 'hash', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')
+				ON CONFLICT (id) DO NOTHING`,
+			`INSERT INTO "juhe_business"."vendors"
+				(id, code, name, default_supported_models_json, enabled, created_at, updated_at)
+				VALUES ('vendor-gpt', 'gpt', 'gpt', '[]', 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')
+				ON CONFLICT (code) DO NOTHING`,
+		} {
+			if _, err := db.Exec(seed); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	return db
 }
 
 // openLegacyDB 打开一个「capability_domain 加列前」形状的业务库（无阶段
-// 记录路径依赖，只建表不 ensure）。
+// 记录路径依赖，只建迁移面最小表集）。
 func openLegacyDB(t *testing.T, name string, capabilityLine string) *sql.DB {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+	ddl := `
+CREATE SCHEMA juhe_business;
+CREATE TABLE juhe_business.accounts (
+  id TEXT PRIMARY KEY,
+  system_account_id TEXT NOT NULL,
+  vendor_code TEXT,
+  connection_driver_code TEXT,
+  protocol_code TEXT,
+  protocol_version TEXT,
+  name TEXT,
+  type TEXT,
+  credentials_encrypted TEXT NOT NULL,
+  health_check_model TEXT,
+  health_check_endpoint_mode TEXT,
+  authorization_instance_source_account_id TEXT REFERENCES juhe_business.accounts(id),
+  deleted_at TEXT,
+  created_at TEXT NOT NULL DEFAULT '2026-10-01T00:00:00Z',
+  updated_at TEXT NOT NULL DEFAULT '2026-10-01T00:00:00Z'
+);
+CREATE TABLE juhe_business.global_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '2026-10-01T00:00:00Z');
+`
+	if capabilityLine != "" {
+		ddl += "ALTER TABLE juhe_business.accounts ADD COLUMN " + capabilityLine + ";\n"
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	ddl := schema.SQLiteBusinessMainDDLForTest()
-	if capabilityLine == "" {
-		ddl = strings.Replace(ddl,
-			"      capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),\n",
-			"", 1)
-	} else {
-		ddl = strings.Replace(ddl,
-			"capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))",
-			capabilityLine, 1)
-	}
-	if strings.Contains(ddl, "CHECK (capability_domain") && capabilityLine != "keep" {
-		if capabilityLine == "" {
-			t.Fatal("legacy fixture 仍声明 capability_domain CHECK")
-		}
-	}
-	if _, err := db.Exec(ddl); err != nil {
-		t.Fatalf("seed legacy ddl: %v", err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(ddl)
+		return err
+	})
 	return db
 }
 
@@ -119,9 +135,17 @@ func fixtureCredentials(t *testing.T, f accountFixture) string {
 
 func seedFixtures(t *testing.T, db *sql.DB, fixtures []accountFixture) {
 	t.Helper()
-	if _, err := db.Exec("PRAGMA foreign_keys=OFF"); err != nil {
-		t.Fatalf("toggle foreign_keys: %v", err)
+	// 孤儿实例夹具（sourceID 指向不存在行）需要外键窗口：PG 无会话级外键
+	// 开关，种子前临时解除自引用约束、种子后以 NOT VALID 重建（不校验存量，
+	// 语义与 sqlite 关外键窗口一致）。
+	const selfFK = "accounts_authorization_instance_source_account_id_fkey"
+	if _, err := db.Exec(`ALTER TABLE "juhe_business"."accounts" DROP CONSTRAINT ` + selfFK); err != nil {
+		t.Fatalf("drop self FK: %v", err)
 	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`ALTER TABLE "juhe_business"."accounts" ADD CONSTRAINT ` + selfFK +
+			` FOREIGN KEY (authorization_instance_source_account_id) REFERENCES "juhe_business"."accounts"(id) NOT VALID`)
+	})
 	for _, f := range fixtures {
 		deletedAt := "NULL"
 		if f.deleted {
@@ -133,7 +157,7 @@ func seedFixtures(t *testing.T, db *sql.DB, fixtures []accountFixture) {
 		}
 		// 目标 schema（设计 §2.1/§9.11）：无 provider_code /
 		// provider_protocol_profile_id，身份落 vendor_code + driver。
-		statement := `INSERT INTO accounts
+		statement := `INSERT INTO "juhe_business"."accounts"
 			(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			 name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode,
 			 authorization_instance_source_account_id, deleted_at, created_at, updated_at)
@@ -144,16 +168,13 @@ func seedFixtures(t *testing.T, db *sql.DB, fixtures []accountFixture) {
 			t.Fatalf("seed account %s: %v", f.id, err)
 		}
 	}
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatalf("restore foreign_keys: %v", err)
-	}
 }
 
 // accountDomain 读单个账户的落库域。
 func accountDomain(t *testing.T, db *sql.DB, id string) string {
 	t.Helper()
 	var domain string
-	if err := db.QueryRow(`SELECT capability_domain FROM accounts WHERE id = ?`, id).Scan(&domain); err != nil {
+	if err := db.QueryRow(`SELECT capability_domain FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&domain); err != nil {
 		t.Fatalf("read domain of %s: %v", id, err)
 	}
 	return domain
@@ -163,7 +184,7 @@ func accountDomain(t *testing.T, db *sql.DB, id string) string {
 func storedRecord(t *testing.T, db *sql.DB) (capdomain.Record, bool) {
 	t.Helper()
 	var valueJSON string
-	err := db.QueryRow(`SELECT value_json FROM global_settings WHERE key = ?`, capdomain.MigrationSettingKey).Scan(&valueJSON)
+	err := db.QueryRow(`SELECT value_json FROM "juhe_business"."global_settings" WHERE key = $1`, capdomain.MigrationSettingKey).Scan(&valueJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return capdomain.Record{}, false
 	}
@@ -177,8 +198,8 @@ func storedRecord(t *testing.T, db *sql.DB) (capdomain.Record, bool) {
 	return record, true
 }
 
-func migrationOptions(dialect capdomain.Dialect, target capdomain.Target) Options {
-	return Options{Dialect: dialect, Target: target, Secret: testSecret, Now: time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)}
+func migrationOptions(target capdomain.Target) Options {
+	return Options{Target: target, Secret: testSecret, Now: time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)}
 }
 
 // TestPlanMigrationStateMachine 与 TestClaimTransitionRace 随阶段记录语义
@@ -212,14 +233,14 @@ func TestRunM1EndToEnd(t *testing.T) {
 	credentialFingerprint := map[string]string{}
 	for _, id := range []string{"acct-chat-gpt", "acct-video", "inst-of-chat"} {
 		var sealed string
-		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&sealed); err != nil {
 			t.Fatalf("read credentials of %s: %v", id, err)
 		}
 		credentialFingerprint[id] = sealed
 	}
 
 	// 首次执行：inst-orphan 源缺失 → 失败清单非空，不写完成阶段。
-	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("Run m1: %v", err)
 	}
@@ -239,7 +260,7 @@ func TestRunM1EndToEnd(t *testing.T) {
 	// I1：域内行凭据密文逐字节不变（失败路径零写入）。
 	for id, before := range credentialFingerprint {
 		var sealed string
-		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&sealed); err != nil {
 			t.Fatalf("re-read credentials of %s: %v", id, err)
 		}
 		if sealed != before {
@@ -248,10 +269,10 @@ func TestRunM1EndToEnd(t *testing.T) {
 	}
 
 	// 修复：解除孤儿实例关联 → 同阶段恢复重跑收敛完成（全量重读当前数据）。
-	if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id = NULL WHERE id = 'inst-orphan'`); err != nil {
+	if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET authorization_instance_source_account_id = NULL WHERE id = 'inst-orphan'`); err != nil {
 		t.Fatalf("detach orphan instance: %v", err)
 	}
-	report, err = Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	report, err = Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("resume Run m1: %v", err)
 	}
@@ -286,11 +307,11 @@ func TestRunM1EndToEnd(t *testing.T) {
 	}
 
 	// m1_complete 重复执行只报告完成，不重算窗口期数据（即使凭据已改）。
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'inst-orphan'`,
+	if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET credentials_encrypted = $1 WHERE id = 'inst-orphan'`,
 		fixtureCredentials(t, accountFixture{id: "inst-orphan", modesJSON: `["chat_json"]`})); err != nil {
 		t.Fatalf("rewrite orphan credentials: %v", err)
 	}
-	report, err = Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	report, err = Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("rerun m1 after complete: %v", err)
 	}
@@ -312,7 +333,7 @@ func TestRunM1EndToEnd(t *testing.T) {
 	}
 	for id, before := range credentialFingerprint {
 		var sealed string
-		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&sealed); err != nil {
 			t.Fatalf("re-read credentials of %s: %v", id, err)
 		}
 		if sealed != before {
@@ -328,7 +349,7 @@ func TestRunM1EndToEnd(t *testing.T) {
 func storedModes(t *testing.T, db *sql.DB, id string) []string {
 	t.Helper()
 	var sealed string
-	if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+	if err := db.QueryRow(`SELECT credentials_encrypted FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&sealed); err != nil {
 		t.Fatalf("read credentials of %s: %v", id, err)
 	}
 	var credentials map[string]any
@@ -373,7 +394,7 @@ func TestRunTrimsMixedDeclarationAndReports(t *testing.T) {
 		{id: "acct-chat-source", modesJSON: `["chat_json"]`},
 		{id: "inst-of-chat", sourceID: "acct-chat-source", modesJSON: `["chat_json","images_json"]`},
 	})
-	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("Run m1: %v", err)
 	}
@@ -407,7 +428,7 @@ func TestRunTrimsMixedDeclarationAndReports(t *testing.T) {
 		}
 		var apiKey string
 		var sealed string
-		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&sealed); err != nil {
 			t.Fatal(err)
 		}
 		var credentials map[string]any
@@ -420,7 +441,7 @@ func TestRunTrimsMixedDeclarationAndReports(t *testing.T) {
 		}
 	}
 	// m1_complete 重复执行：只报告完成，零改动（无新增裁剪明细）。
-	rerun, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	rerun, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("rerun m1: %v", err)
 	}
@@ -454,7 +475,7 @@ func TestRunM1FailureKinds(t *testing.T) {
 				{id: "acct-good", modesJSON: `["chat_json"]`},
 				testCase.fixture,
 			})
-			report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+			report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -482,7 +503,7 @@ func TestRunInstanceSourceFailed(t *testing.T) {
 		{id: "acct-source-bad", modesJSON: `["mystery_mode"]`},
 		{id: "inst-of-bad", sourceID: "acct-source-bad", modesJSON: `["chat_json"]`},
 	})
-	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -508,15 +529,15 @@ func TestRunM1FailureThenRepairResume(t *testing.T) {
 		{id: "acct-good", modesJSON: `["video_create"]`},
 		{id: "acct-bad", modesJSON: `[]`},
 	})
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	// 修复：补上合法声明。
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acct-bad'`,
+	if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET credentials_encrypted = $1 WHERE id = 'acct-bad'`,
 		fixtureCredentials(t, accountFixture{id: "acct-bad", modesJSON: `["images_json"]`})); err != nil {
 		t.Fatalf("repair: %v", err)
 	}
-	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("resume run: %v", err)
 	}
@@ -540,27 +561,27 @@ func TestRunM2CutoverLifecycle(t *testing.T) {
 	})
 
 	// 无记录：m2-cutover 拒绝。
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
 		t.Fatalf("无记录时 m2-cutover 必须拒绝，got err=%v", err)
 	}
 	// M1 先行。
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1: %v", err)
 	}
 	// m1_running 阶段拒绝 m2：手工把记录拨回 m1_running 模拟未完成 M1。
-	if _, err := db.Exec(`UPDATE global_settings SET value_json = ? WHERE key = ?`,
+	if _, err := db.Exec(`UPDATE "juhe_business"."global_settings" SET value_json = $1 WHERE key = $2`,
 		`{"stage":"m1_running","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
 		t.Fatalf("m1_running 时 m2-cutover 必须拒绝，got err=%v", err)
 	}
 	// 拨回 m1_complete 再进 M2。
-	if _, err := db.Exec(`UPDATE global_settings SET value_json = ? WHERE key = ?`,
+	if _, err := db.Exec(`UPDATE "juhe_business"."global_settings" SET value_json = $1 WHERE key = $2`,
 		`{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
 		t.Fatal(err)
 	}
-	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover))
 	if err != nil {
 		t.Fatalf("m2-cutover: %v", err)
 	}
@@ -568,15 +589,15 @@ func TestRunM2CutoverLifecycle(t *testing.T) {
 		t.Fatalf("m2 not finalized: %+v", report)
 	}
 	// 封存后：任何 migrate 拒绝。
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err == nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err == nil {
 		t.Fatal("m2_finalized 后 M1 必须拒绝")
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err == nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover)); err == nil {
 		t.Fatal("m2_finalized 后 m2-cutover 必须拒绝")
 	}
 	// 只读核验仍可执行，标记推导对账不适用。
 	verify, err := Verify(context.Background(), db, Options{
-		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
+		Target: capdomain.TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
 		Now: time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
@@ -600,10 +621,10 @@ func TestPostflightFinalizedInstanceChecks(t *testing.T) {
 			{id: "acct-chat", modesJSON: `["chat_json"]`},
 			{id: "inst-of-chat", sourceID: "acct-chat"},
 		})
-		if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
+		if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err != nil {
 			t.Fatalf("m1: %v", err)
 		}
-		if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err != nil {
+		if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover)); err != nil {
 			t.Fatalf("m2-cutover: %v", err)
 		}
 		return db
@@ -611,7 +632,7 @@ func TestPostflightFinalizedInstanceChecks(t *testing.T) {
 	finalizedPostflight := func(t *testing.T, db *sql.DB) VerifyReport {
 		t.Helper()
 		report, err := Verify(context.Background(), db, Options{
-			Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
+			Target: capdomain.TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
 		})
 		if err != nil {
 			t.Fatalf("finalized postflight: %v", err)
@@ -637,7 +658,7 @@ func TestPostflightFinalizedInstanceChecks(t *testing.T) {
 
 	t.Run("实例落库域与源落库域不一致", func(t *testing.T) {
 		db := finalize(t)
-		if _, err := db.Exec(`UPDATE accounts SET capability_domain = 'audio' WHERE id = 'inst-of-chat'`); err != nil {
+		if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET capability_domain = 'audio' WHERE id = 'inst-of-chat'`); err != nil {
 			t.Fatal(err)
 		}
 		report := finalizedPostflight(t, db)
@@ -652,14 +673,16 @@ func TestPostflightFinalizedInstanceChecks(t *testing.T) {
 	t.Run("封存后源行缺失", func(t *testing.T) {
 		db := finalize(t)
 		// accounts.authorization_instance_source_account_id 自引用外键：
-		// 造「源行不存在」的关联必须临时关闭外键（单连接，改完恢复）。
-		if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		// 造「源行不存在」的关联先临时解除该约束（PG 无会话级外键开关，
+		// 用 ALTER DROP 后重建，语义与 sqlite 关外键窗口一致）。
+		if _, err := db.Exec(`ALTER TABLE "juhe_business"."accounts" DROP CONSTRAINT IF EXISTS accounts_authorization_instance_source_account_id_fkey`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id = 'acct-gone' WHERE id = 'inst-of-chat'`); err != nil {
+		if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET authorization_instance_source_account_id = 'acct-gone' WHERE id = 'inst-of-chat'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		// NOT VALID：PG 重建约束不校验存量违规行（与 sqlite 关外键窗口等价）。
+		if _, err := db.Exec(`ALTER TABLE "juhe_business"."accounts" ADD CONSTRAINT accounts_authorization_instance_source_account_id_fkey FOREIGN KEY (authorization_instance_source_account_id) REFERENCES "juhe_business"."accounts"(id) NOT VALID`); err != nil {
 			t.Fatal(err)
 		}
 		report := finalizedPostflight(t, db)
@@ -680,24 +703,24 @@ func TestM2CutoverRecomputesStaleRows(t *testing.T) {
 		{id: "acct-flip", modesJSON: `["video_create"]`},
 		{id: "acct-still", modesJSON: `["chat_json"]`},
 	})
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1: %v", err)
 	}
 	if accountDomain(t, db, "acct-flip") != "video" {
 		t.Fatalf("m1 后应为 video，got %q", accountDomain(t, db, "acct-flip"))
 	}
 	// 窗口期修改（M1 已完成，不会重算）。
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acct-flip'`,
+	if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET credentials_encrypted = $1 WHERE id = 'acct-flip'`,
 		fixtureCredentials(t, accountFixture{id: "acct-flip", modesJSON: `["chat_json"]`})); err != nil {
 		t.Fatalf("window edit: %v", err)
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1 rerun: %v", err)
 	}
 	if accountDomain(t, db, "acct-flip") != "video" {
 		t.Fatalf("m1_complete 重复执行不得重算，got %q", accountDomain(t, db, "acct-flip"))
 	}
-	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover))
 	if err != nil {
 		t.Fatalf("m2: %v", err)
 	}
@@ -728,7 +751,7 @@ func TestParallelSingleExecutor(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+			report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -778,10 +801,10 @@ func TestRunCorruptRecordRejected(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			db := openMigrationDB(t)
 			seedFixtures(t, db, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
-			if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`, capdomain.MigrationSettingKey, testCase.valueJSON); err != nil {
+			if _, err := db.Exec(`INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, '2026-10-12T08:00:00Z')`, capdomain.MigrationSettingKey, testCase.valueJSON); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err == nil {
+			if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err == nil {
 				t.Fatal("损坏记录必须拒绝执行")
 			}
 		})
@@ -793,7 +816,7 @@ func TestRunCorruptRecordRejected(t *testing.T) {
 func TestRunAddsMissingColumn(t *testing.T) {
 	legacyDB := openLegacyDB(t, "legacy.sqlite3", "")
 	seedFixtures(t, legacyDB, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
-	report, err := Run(context.Background(), legacyDB, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	report, err := Run(context.Background(), legacyDB, migrationOptions(capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("Run over legacy db: %v", err)
 	}
@@ -806,7 +829,7 @@ func TestRunAddsMissingColumn(t *testing.T) {
 
 	brokenDB := openLegacyDB(t, "broken.sqlite3", "capability_domain TEXT")
 	seedFixtures(t, brokenDB, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
-	if _, err := Run(context.Background(), brokenDB, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err == nil || !strings.Contains(err.Error(), "形状不符") {
+	if _, err := Run(context.Background(), brokenDB, migrationOptions(capdomain.TargetM1)); err == nil || !strings.Contains(err.Error(), "形状不符") {
 		t.Fatalf("错误形状必须原样报错，got err=%v", err)
 	}
 }
@@ -821,7 +844,7 @@ func TestVerifyPreflightAndPostflight(t *testing.T) {
 		{id: "inst-of-chat", sourceID: "acct-chat"},
 	})
 	preflight, err := Verify(context.Background(), db, Options{
-		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPreflight, Secret: testSecret,
+		Target: capdomain.TargetM1, Check: CheckPreflight, Secret: testSecret,
 		Now: time.Date(2026, 10, 12, 7, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
@@ -838,20 +861,20 @@ func TestVerifyPreflightAndPostflight(t *testing.T) {
 	}
 	// postflight 缺列必须失败。
 	if _, err := Verify(context.Background(), db, Options{
-		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
+		Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
 	}); err == nil || !strings.Contains(err.Error(), "postflight") {
 		t.Fatalf("缺列 postflight 必须报错，got %v", err)
 	}
 	// 修复失败声明后迁移，postflight 才能通过（失败清单清零是门禁）。
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acct-bad'`,
+	if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET credentials_encrypted = $1 WHERE id = 'acct-bad'`,
 		fixtureCredentials(t, accountFixture{id: "acct-bad", modesJSON: `["chat_json"]`})); err != nil {
 		t.Fatalf("repair acct-bad: %v", err)
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1: %v", err)
 	}
 	postflight, err := Verify(context.Background(), db, Options{
-		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
+		Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
 	})
 	if err != nil {
 		t.Fatalf("postflight: %v", err)
@@ -860,11 +883,11 @@ func TestVerifyPreflightAndPostflight(t *testing.T) {
 		t.Fatalf("postflight not ready: %+v", postflight)
 	}
 	// 篡改一个域值 → postflight 报不一致。
-	if _, err := db.Exec(`UPDATE accounts SET capability_domain = 'video' WHERE id = 'acct-chat'`); err != nil {
+	if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET capability_domain = 'video' WHERE id = 'acct-chat'`); err != nil {
 		t.Fatal(err)
 	}
 	postflight, err = Verify(context.Background(), db, Options{
-		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
+		Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
 	})
 	if err != nil {
 		t.Fatalf("postflight after tamper: %v", err)
@@ -884,7 +907,7 @@ func TestVerifyPreflightWithColumn(t *testing.T) {
 	})
 	// 手工把两行拨到默认 'chat'，模拟「加列后未迁移」的中间状态。
 	report, err := Verify(context.Background(), db, Options{
-		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPreflight, Secret: testSecret,
+		Target: capdomain.TargetM1, Check: CheckPreflight, Secret: testSecret,
 	})
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
@@ -906,7 +929,7 @@ func TestVerifyPreflightWithColumn(t *testing.T) {
 func TestSealFreshInstall(t *testing.T) {
 	t.Run("空库自动封存且幂等", func(t *testing.T) {
 		db := openMigrationDB(t)
-		sealed, err := SealFreshInstall(context.Background(), db, capdomain.DialectSQLite)
+		sealed, err := SealFreshInstall(context.Background(), db)
 		if err != nil {
 			t.Fatalf("seal fresh install: %v", err)
 		}
@@ -918,7 +941,7 @@ func TestSealFreshInstall(t *testing.T) {
 			t.Fatalf("空库封存后阶段记录应为 m2_finalized，got %+v ok=%v", record, ok)
 		}
 		// 重复执行（ensure/bootstrap 幂等重入）：跳过且不改写记录。
-		sealedAgain, err := SealFreshInstall(context.Background(), db, capdomain.DialectSQLite)
+		sealedAgain, err := SealFreshInstall(context.Background(), db)
 		if err != nil {
 			t.Fatalf("re-seal: %v", err)
 		}
@@ -932,7 +955,7 @@ func TestSealFreshInstall(t *testing.T) {
 	t.Run("非空库不自动写记录", func(t *testing.T) {
 		db := openMigrationDB(t)
 		seedFixtures(t, db, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
-		sealed, err := SealFreshInstall(context.Background(), db, capdomain.DialectSQLite)
+		sealed, err := SealFreshInstall(context.Background(), db)
 		if err != nil {
 			t.Fatalf("seal non-empty db: %v", err)
 		}

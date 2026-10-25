@@ -3,11 +3,9 @@ package main
 // w14k 波次：main.go 各 runner 抽出的 result 函数的进程内覆盖。runner 原主体
 // 曾以 os.Exit 终止；os.Exit 包装已全部删除（os.Exit→return 收敛，出口契约由
 // runMaintenance 统一承载，测试单进程纪律禁止 exec 子进程重执行），本文件直调
-// 等价的 *Result / *OutcomeExitCode 函数，覆盖 usage 预检、Open 拒绝、运行时
-// 失败、encode 失败、未就绪门与成功路径的全部语句。Node→Go 迁移期命令族
-// （J3a/J3b backfill/readback、cutover/inventory evidence、manifest/
-// handoff/j3c/active-path 检查、hybrid_smart 迁移）退役后，本文件只保留现行
-// runner 的覆盖（含 J3a/J3b bootstrap apply 命令的用法门）。
+// 等价的 *Result / *OutcomeExitCode 函数，覆盖 usage 预检、Open 拒绝等分支。
+// J3b SQLite bootstrap 臂与 parseSQLiteStoragePaths 随 SQLite 存储形态退役删除
+// （PLAN-20261024T051925945Z B4）。
 //
 // 结构性限制登记（迁移期 runner 删除后同步收敛）：
 //  1. main() 的非零 os.Exit 行（main.go main() 内唯一残留）：仅当二进制以非
@@ -16,17 +14,12 @@ package main
 //  2. database/sql 懒连接使 sql.Open 的错误分支不可达（openSnapshotDB /
 //     openPostgresBootstrap）：pgx 驱动把 DSN 解析推迟到首个语句，Open 仅在
 //     未知驱动时失败，属 API 契约守卫，按 w12g sql.Open 懒注册同口径保留不删。
-//  3. runStorageBootstrap 的 postgres ensure/seed 成功后 report 赋值行（需真实
-//     可写 PG，共享库禁止 schema 变更）、ensureSQLiteStorage 闭包的 apply err
-//     包装（需“可打开但写入失败”的 SQLite 文件，Windows 只读属性仍导致打开
-//     失败）。
 // 另登记上游缺陷（不属本改动范围）：internal/schemasnapshot CollectSnapshot
 // 的 $1::text[] 查询调用 collectRows 时缺 schemaNames 实参，真实 PG 上
 // --postgres-schema-snapshot 必失败；详见 w14k_pg_gate_test.go 注释。
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
@@ -54,7 +47,6 @@ func wm14kWithClosedStdout(t *testing.T, fn func()) {
 }
 
 func TestW14KRunnerUsageGates(t *testing.T) {
-	root := t.TempDir()
 	t.Run("schema snapshot env gates", func(t *testing.T) {
 		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_TARGET", "")
 		if got := postgresSchemaSnapshotResult(); got != 2 {
@@ -69,10 +61,6 @@ func TestW14KRunnerUsageGates(t *testing.T) {
 		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM", "")
 		if got := postgresSchemaSnapshotResult(); got != 2 {
 			t.Fatalf("缺失只读确认必须返回 2: %d", got)
-		}
-		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM", "READ_ONLY")
-		if got := postgresSchemaSnapshotResult(); got != 1 {
-			t.Fatalf("SQLite URL 必须被 openSnapshotDB 拒绝返回 1: %d", got)
 		}
 	})
 	// J3a/J3b 一次性 bootstrap apply 命令（现行生产初始化契约）的用法门：
@@ -95,36 +83,6 @@ func TestW14KRunnerUsageGates(t *testing.T) {
 		t.Setenv(j3bmodelcheck.BootstrapEnv, "postgres://@/")
 		if got := j3bModelCheckBootstrapResult(false); got != 2 {
 			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
-		}
-	})
-	t.Run("j3b sqlite bootstrap", func(t *testing.T) {
-		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, "")
-		if got := j3bModelCheckSQLiteBootstrapResult(false, false, false, false); got != 2 {
-			t.Fatalf("空 env 必须返回 2: %d", got)
-		}
-		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, filepath.Join(root, "apply.db"))
-		if got := j3bModelCheckSQLiteBootstrapResult(true, false, false, false); got != 2 {
-			t.Fatalf("apply 无确认必须返回 2: %d", got)
-		}
-	})
-}
-
-// TestW14KRunnerRuntimeFailures 历史上覆盖 go-runtime-metrics 不可达主机出
-// 口 1；该命令族已随 internal/goruntimemetrics 包删除，退役监控表清退的
-// 不可达出口由 monitoringretirement 包测试覆盖
-// （TestRunPostgresUnreachableTargetFailsClosed），此处无剩余分支。
-// TestW14KOutcomeExitCodeHelpers（report 层出口映射直调）同因整体删除。
-
-func TestW14KRunnerRemainingBranches(t *testing.T) {
-	t.Run("parse paths tolerates empty entries", func(t *testing.T) {
-		// 尾随/连续逗号产生空条目，必须被跳过而不是报“key=value 形式”错；
-		// 其余必填 key 齐全时解析成功。
-		paths, err := parseSQLiteStoragePaths("business=a,,chat=b,dataset=c,usage-catalog=d,stats=e,codex-context-shard-root=f,")
-		if err != nil {
-			t.Fatalf("空条目必须被跳过: %v", err)
-		}
-		if paths.Business != "a" || paths.Chat != "b" {
-			t.Fatalf("空条目两侧的键值必须正常解析: %+v", paths)
 		}
 	})
 }

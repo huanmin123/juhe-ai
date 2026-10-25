@@ -83,10 +83,9 @@ func TestWMMainExitBranches(t *testing.T) {
 		// runner 用法错误。
 		// J3a/J3b bootstrap apply 命令（现行生产初始化契约）：与其他命令
 		// 互斥、无 env 拒绝裸跑（对照基线 j3a/j3b bootstrap without env 分支）。
-		branch("j3 apply mutex with storage bootstrap", []string{"-apply-j3b-model-check-sqlite", "-ensure-schema"}, 2, "storage bootstrap flags are mutually exclusive"),
+		branch("j3 apply mutex with storage bootstrap", []string{"-apply-j3b-model-check-postgres", "-ensure-schema"}, 2, "storage bootstrap flags are mutually exclusive"),
 		branch("j3a apply without env", []string{"-apply-j3a-proxy-latency-postgres"}, 2, "JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL"),
 		branch("j3b pg apply without env", []string{"-apply-j3b-model-check-postgres"}, 2, "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL"),
-		branch("j3b sqlite apply without env", []string{"-apply-j3b-model-check-sqlite"}, 2, "JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH"),
 		// 成功成本历史回填一次性子命令（2026-10-12）：与其他命令互斥。
 		branch("success-cost backfill mutex with storage bootstrap", []string{"-apply-success-cost-backfill", "-ensure-schema"}, 2, "storage bootstrap flags are mutually exclusive"),
 		branch("success-cost backfill mutex with rebuild", []string{"-apply-success-cost-backfill", "-rebuild-usage-stats", "-confirm-offline"}, 2, "rebuild-usage-stats flag is mutually exclusive"),
@@ -107,8 +106,6 @@ func TestWMMainExitBranches(t *testing.T) {
 			branches[i].env = map[string]string{"JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL": ""}
 		case "j3b pg apply without env":
 			branches[i].env = map[string]string{"JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL": ""}
-		case "j3b sqlite apply without env":
-			branches[i].env = map[string]string{"JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH": ""}
 		}
 	}
 

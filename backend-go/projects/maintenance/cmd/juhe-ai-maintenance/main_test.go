@@ -16,7 +16,7 @@ import (
 // monitoring_retirement_test.go 覆盖，这里只钉门禁与互斥用法契约）。
 
 func TestMaintenanceCommandRejectsDropRetiredMonitoringTablesWithoutConfirmations(t *testing.T) {
-	code, _, stderr := wmRunMaintenanceCapture(t, "-drop-retired-monitoring-tables", "-driver", "postgres", "-dsn", "postgres://m@db.example.invalid:5432/juhe")
+	code, _, stderr := wmRunMaintenanceCapture(t, "-drop-retired-monitoring-tables", "-dsn", "postgres://m@db.example.invalid:5432/juhe")
 	if code != 2 {
 		t.Fatalf("missing confirmation exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
@@ -38,26 +38,26 @@ func TestMaintenanceCommandRejectsDropRetiredMonitoringTablesMutualExclusion(t *
 	}
 }
 
-func TestMaintenanceCommandRejectsDropRetiredMonitoringTablesBadDriver(t *testing.T) {
+func TestMaintenanceCommandRejectsDropRetiredMonitoringTablesBadDSN(t *testing.T) {
 	code, _, stderr := wmRunMaintenanceCapture(t,
-		"-drop-retired-monitoring-tables", "-driver", "mysql",
+		"-drop-retired-monitoring-tables", "-dsn", "sqlite:///x.db",
 		"-node-stopped", "-go-stopped", "-backup-confirmed")
 	if code != 2 {
-		t.Fatalf("bad driver exit=%d, want exit status 2; stderr=%s", code, stderr)
+		t.Fatalf("bad dsn exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "--driver 必须为 sqlite 或 postgres") {
-		t.Fatalf("bad driver stderr=%q", stderr)
+	if !strings.Contains(stderr, "--dsn 必须是 postgres:// 或 postgresql:// URL") {
+		t.Fatalf("bad dsn stderr=%q", stderr)
 	}
 }
 
-func TestMaintenanceCommandRejectsDropRetiredMonitoringTablesSQLiteMissingPathsKeys(t *testing.T) {
+func TestMaintenanceCommandRejectsDropRetiredMonitoringTablesMissingDSN(t *testing.T) {
 	code, _, stderr := wmRunMaintenanceCapture(t,
-		"-drop-retired-monitoring-tables", "-driver", "sqlite", "-paths", "stats=/tmp/stats.sqlite3",
+		"-drop-retired-monitoring-tables",
 		"-node-stopped", "-go-stopped", "-backup-confirmed")
 	if code != 2 {
-		t.Fatalf("missing paths keys exit=%d, want exit status 2; stderr=%s", code, stderr)
+		t.Fatalf("missing dsn exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "缺少必填 key") || !strings.Contains(stderr, "go-runtime-metrics") {
-		t.Fatalf("missing paths keys stderr=%q", stderr)
+	if !strings.Contains(stderr, "需要 --dsn") {
+		t.Fatalf("missing dsn stderr=%q", stderr)
 	}
 }

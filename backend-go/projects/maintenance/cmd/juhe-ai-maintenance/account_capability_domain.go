@@ -7,9 +7,8 @@
 //   - --verify-account-capability-domain：只读核验；必须显式携带
 //     --account-capability-domain-stage 与 --account-capability-domain-check=
 //     preflight|postflight（不根据列是否存在隐式切换核验语义）；
-//   - 存储目标沿用既有 --driver sqlite|postgres + --paths/--dsn 旗标风格
-//     （SQLite 只消费 business 键，其余键接受并忽略，便于复用 --ensure-schema
-//     的完整 --paths 参数）；解密密钥沿用 --secret → JUHE_AI_SECRET →
+//   - 存储目标为 --dsn 单形态（PLAN-20261024T051925945Z B4 删除
+//     --driver/--paths 旗标族）；解密密钥沿用 --secret → JUHE_AI_SECRET →
 //     Node dev default 链。
 //
 // 退出码契约：0 成功（含 M1 重复执行的「只报告完成」）、1 运行失败（阶段
@@ -31,75 +30,21 @@ import (
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
-// parseCapabilityDomainBusinessPath 解析 --paths（键词汇与六库 bootstrap 相同，
-// 能力域命令只读写业务库，business 为唯一必填键；其余键接受并忽略）。
-func parseCapabilityDomainBusinessPath(raw string) (string, error) {
-	business := ""
-	seen := map[string]bool{}
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		key, value, found := strings.Cut(entry, "=")
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if !found || key == "" || value == "" {
-			return "", fmt.Errorf("--paths 条目必须是 key=value 形式：%q", entry)
-		}
-		if seen[key] {
-			return "", fmt.Errorf("--paths 条目重复：%q", key)
-		}
-		seen[key] = true
-		if key == "business" {
-			business = value
-		}
-	}
-	if business == "" {
-		return "", fmt.Errorf("--paths 缺少必填 key：business（能力域迁移/核验只读写业务库）")
-	}
-	return business, nil
-}
-
-// openCapabilityDomainDB 按 driver 打开业务库连接（门禁检查先于开库）。
-func openCapabilityDomainDB(driver, paths, dsn string) (*sql.DB, capdomain.Dialect, int) {
-	driver = strings.ToLower(strings.TrimSpace(driver))
-	if driver != "sqlite" && driver != "postgres" {
-		fmt.Fprintf(os.Stderr, "--driver 必须为 sqlite 或 postgres: %q\n", driver)
-		return nil, 0, 2
-	}
-	if driver == "sqlite" && strings.TrimSpace(dsn) != "" {
-		fmt.Fprintln(os.Stderr, "--dsn 只适用于 --driver postgres；sqlite 模式使用 --paths")
-		return nil, 0, 2
-	}
-	if driver == "postgres" && strings.TrimSpace(paths) != "" {
-		fmt.Fprintln(os.Stderr, "--paths 只适用于 --driver sqlite；postgres 模式使用 --dsn")
-		return nil, 0, 2
-	}
-	if driver == "sqlite" {
-		businessPath, err := parseCapabilityDomainBusinessPath(paths)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return nil, 0, 2
-		}
-		db, err := capabilitydomain.OpenSQLite(businessPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return nil, 0, 2
-		}
-		return db, capdomain.DialectSQLite, 0
-	}
+// openBusinessPostgres 打开 maintenance 业务库 PG 连接（显式 --dsn 契约，
+// 门禁检查先于开库；能力域/studio 退场/调度偏好/merge 迁移共用同一连接
+// 契约）。usageCode 非零时 db 为 nil。
+func openBusinessPostgres(dsn string) (*sql.DB, int) {
 	parsedDSN := strings.TrimSpace(dsn)
 	if parsedDSN == "" {
-		fmt.Fprintln(os.Stderr, "--driver postgres 需要 --dsn 指向显式的 PostgreSQL URL")
-		return nil, 0, 2
+		fmt.Fprintln(os.Stderr, "本命令需要 --dsn 指向显式的 PostgreSQL URL")
+		return nil, 2
 	}
 	db, err := capabilitydomain.OpenPostgres(parsedDSN)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return nil, 0, 2
+		return nil, 2
 	}
-	return db, capdomain.DialectPostgres, 0
+	return db, 0
 }
 
 // parseCapabilityDomainTarget 校验 --account-capability-domain-stage 取值。
@@ -115,7 +60,7 @@ func parseCapabilityDomainTarget(raw string) (capdomain.Target, bool) {
 
 // accountCapabilityDomainMigrateResult 返回 migrate 命令的 CLI 退出码；
 // runMaintenance 派发它，测试进程内直调。门禁检查先于一切开库动作。
-func accountCapabilityDomainMigrateResult(driver, paths, dsn, secret, stage string, nodeStopped, goStopped, backupConfirmed bool) int {
+func accountCapabilityDomainMigrateResult(dsn, secret, stage string, nodeStopped, goStopped, backupConfirmed bool) int {
 	target, ok := parseCapabilityDomainTarget(stage)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "--migrate-account-capability-domain 需要 --account-capability-domain-stage=m1|m2-cutover（显式指定迁移目标，禁止隐式选择）\n")
@@ -125,15 +70,14 @@ func accountCapabilityDomainMigrateResult(driver, paths, dsn, secret, stage stri
 		fmt.Fprintln(os.Stderr, "能力域迁移被拒绝：必须显式携带 --node-stopped --go-stopped --backup-confirmed（停写 gateway/jobs 并验证可恢复备份后才能执行；命令本身不负责停进程）")
 		return 2
 	}
-	db, dialect, usageCode := openCapabilityDomainDB(driver, paths, dsn)
+	db, usageCode := openBusinessPostgres(dsn)
 	if usageCode != 0 {
 		return usageCode
 	}
 	defer db.Close()
 	report, err := capabilitydomain.Run(context.Background(), db, capabilitydomain.Options{
-		Dialect: dialect,
-		Target:  target,
-		Secret:  capabilitydomain.ResolveSecret(secret),
+		Target: target,
+		Secret: capabilitydomain.ResolveSecret(secret),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "能力域迁移失败：%v\n", err)
@@ -156,7 +100,7 @@ func accountCapabilityDomainMigrateResult(driver, paths, dsn, secret, stage stri
 
 // accountCapabilityDomainVerifyResult 返回 verify 命令的 CLI 退出码；
 // runMaintenance 派发它，测试进程内直调。只读：全程零写入。
-func accountCapabilityDomainVerifyResult(driver, paths, dsn, secret, stage, check string) int {
+func accountCapabilityDomainVerifyResult(dsn, secret, stage, check string) int {
 	target, ok := parseCapabilityDomainTarget(stage)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "--verify-account-capability-domain 需要 --account-capability-domain-stage=m1|m2-cutover（显式指定迁移目标）\n")
@@ -167,16 +111,15 @@ func accountCapabilityDomainVerifyResult(driver, paths, dsn, secret, stage, chec
 		fmt.Fprintf(os.Stderr, "--verify-account-capability-domain 需要 --account-capability-domain-check=preflight|postflight（preflight 允许域列不存在；postflight 要求列存在；不隐式切换核验语义）\n")
 		return 2
 	}
-	db, dialect, usageCode := openCapabilityDomainDB(driver, paths, dsn)
+	db, usageCode := openBusinessPostgres(dsn)
 	if usageCode != 0 {
 		return usageCode
 	}
 	defer db.Close()
 	report, err := capabilitydomain.Verify(context.Background(), db, capabilitydomain.Options{
-		Dialect: dialect,
-		Target:  target,
-		Check:   normalizedCheck,
-		Secret:  capabilitydomain.ResolveSecret(secret),
+		Target: target,
+		Check:  normalizedCheck,
+		Secret: capabilitydomain.ResolveSecret(secret),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "能力域核验失败：%v\n", err)

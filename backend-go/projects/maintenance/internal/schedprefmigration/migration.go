@@ -72,7 +72,7 @@ const speedRuntimeNote = "速度运行态不迁移（P2 设计门裁决①）：
 
 // Options 是迁移/预检/核验的注入参数。
 type Options struct {
-	Dialect   capabilitydomain.Dialect
+
 	Now       time.Time
 	BatchSize int // <=0 取 DefaultBatchSize
 }
@@ -261,29 +261,26 @@ func modeSupportsSchedulingPreference(mode string) bool {
 	return false
 }
 
-// qualifiedTable 返回方言限定的业务表名（PG 走 juhe_business schema）。
-func qualifiedTable(dialect capabilitydomain.Dialect, table string) string {
-	if dialect == capabilitydomain.DialectPostgres {
-		return `"juhe_business".` + table
-	}
-	return table
+// qualifiedTable 返回 juhe_business schema 限定的业务表名。
+func qualifiedTable(table string) string {
+	return `"juhe_business".` + table
 }
 
 // scan 全量只读扫描（策略/Key/偏好/内置行四路；每路分批 keyset，批间完整读取
 // 后再取下一批，全程不开写事务）。内置行缺失或结构不符记入 failures（阻断迁
 // 移，先 --ensure-schema）。
-func scan(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, batchSize int) (*scanResult, error) {
+func scan(ctx context.Context, db *sql.DB, batchSize int) (*scanResult, error) {
 	result := &scanResult{owners: map[string]bool{}}
-	if err := scanStrategies(ctx, db, dialect, batchSize, result); err != nil {
+	if err := scanStrategies(ctx, db, batchSize, result); err != nil {
 		return nil, err
 	}
-	if err := scanKeys(ctx, db, dialect, batchSize, result); err != nil {
+	if err := scanKeys(ctx, db, batchSize, result); err != nil {
 		return nil, err
 	}
-	if err := scanPreferences(ctx, db, dialect, batchSize, result); err != nil {
+	if err := scanPreferences(ctx, db, batchSize, result); err != nil {
 		return nil, err
 	}
-	if err := scanBuiltin(ctx, db, dialect, result); err != nil {
+	if err := scanBuiltin(ctx, db, result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -291,22 +288,12 @@ func scan(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, bat
 
 // scanStrategies 分批只读扫描全部策略并就地规范化配置。每批完整读取（rows.Err
 // + Close）后再取下一批，全程不开写事务（BUG-0308）。
-func scanStrategies(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, batchSize int, result *scanResult) error {
-	query := `SELECT id, system_account_id, name, mode, status, config_json FROM route_strategies
-		WHERE (? = '' OR id > ?) ORDER BY id LIMIT ?`
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `SELECT id, system_account_id, name, mode, status, config_json FROM "juhe_business"."route_strategies"
-			WHERE ($1 = '' OR id > $1) ORDER BY id LIMIT $2`
-	}
+func scanStrategies(ctx context.Context, db *sql.DB, batchSize int, result *scanResult) error {
+	query := `SELECT id, system_account_id, name, mode, status, config_json FROM "juhe_business"."route_strategies"
+		WHERE ($1 = '' OR id > $1) ORDER BY id LIMIT $2`
 	after := ""
 	for {
-		var rows *sql.Rows
-		var err error
-		if dialect == capabilitydomain.DialectPostgres {
-			rows, err = db.QueryContext(ctx, query, after, batchSize)
-		} else {
-			rows, err = db.QueryContext(ctx, query, after, after, batchSize)
-		}
+		rows, err := db.QueryContext(ctx, query, after, batchSize)
 		if err != nil {
 			return fmt.Errorf("扫描 route_strategies 失败: %w", err)
 		}
@@ -370,22 +357,12 @@ func scanStrategies(ctx context.Context, db *sql.DB, dialect capabilitydomain.Di
 // scanKeys 分批只读扫描全部 API Key（含 chat、legacy studio 与停用 Key：显
 // 式绑定与 chat 一律不动，legacy studio 保持 B1 排除臂——恒 NULL、单独计数，
 // 但须纳入计数与保护断言）。
-func scanKeys(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, batchSize int, result *scanResult) error {
-	query := `SELECT id, system_account_id, route_strategy_id, purpose, scheduling_preference_id FROM api_keys
-		WHERE (? = '' OR id > ?) ORDER BY id LIMIT ?`
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `SELECT id, system_account_id, route_strategy_id, purpose, scheduling_preference_id FROM "juhe_business"."api_keys"
-			WHERE ($1 = '' OR id > $1) ORDER BY id LIMIT $2`
-	}
+func scanKeys(ctx context.Context, db *sql.DB, batchSize int, result *scanResult) error {
+	query := `SELECT id, system_account_id, route_strategy_id, purpose, scheduling_preference_id FROM "juhe_business"."api_keys"
+		WHERE ($1 = '' OR id > $1) ORDER BY id LIMIT $2`
 	after := ""
 	for {
-		var rows *sql.Rows
-		var err error
-		if dialect == capabilitydomain.DialectPostgres {
-			rows, err = db.QueryContext(ctx, query, after, batchSize)
-		} else {
-			rows, err = db.QueryContext(ctx, query, after, after, batchSize)
-		}
+		rows, err := db.QueryContext(ctx, query, after, batchSize)
 		if err != nil {
 			return fmt.Errorf("扫描 api_keys 失败: %w", err)
 		}
@@ -424,22 +401,12 @@ func scanKeys(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect,
 
 // scanPreferences 分批只读扫描既有自定义偏好行（built_in=0；重名预测与确定性
 // ID 复用判定的输入）。
-func scanPreferences(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, batchSize int, result *scanResult) error {
-	query := `SELECT id, system_account_id, name, chat_mode, chat_speed_first_config_json FROM scheduling_preferences
-		WHERE built_in = 0 AND (? = '' OR id > ?) ORDER BY id LIMIT ?`
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `SELECT id, system_account_id, name, chat_mode, chat_speed_first_config_json FROM "juhe_business"."scheduling_preferences"
-			WHERE built_in = 0 AND ($1 = '' OR id > $1) ORDER BY id LIMIT $2`
-	}
+func scanPreferences(ctx context.Context, db *sql.DB, batchSize int, result *scanResult) error {
+	query := `SELECT id, system_account_id, name, chat_mode, chat_speed_first_config_json FROM "juhe_business"."scheduling_preferences"
+		WHERE built_in = 0 AND ($1 = '' OR id > $1) ORDER BY id LIMIT $2`
 	after := ""
 	for {
-		var rows *sql.Rows
-		var err error
-		if dialect == capabilitydomain.DialectPostgres {
-			rows, err = db.QueryContext(ctx, query, after, batchSize)
-		} else {
-			rows, err = db.QueryContext(ctx, query, after, after, batchSize)
-		}
+		rows, err := db.QueryContext(ctx, query, after, batchSize)
 		if err != nil {
 			return fmt.Errorf("扫描 scheduling_preferences 失败: %w", err)
 		}
@@ -480,11 +447,8 @@ func scanPreferences(ctx context.Context, db *sql.DB, dialect capabilitydomain.D
 // 缺失或不符记入 failures——回填内置 ID 之前必须保证内置行可用，先
 // --ensure-schema。enabled 已随 v2 用户裁决修订第 4 条退役（创建即启用），
 // 内置行合规性不再读取该列。
-func scanBuiltin(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, result *scanResult) error {
-	query := `SELECT built_in, chat_mode FROM scheduling_preferences WHERE id = ?`
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `SELECT built_in, chat_mode FROM "juhe_business"."scheduling_preferences" WHERE id = $1`
-	}
+func scanBuiltin(ctx context.Context, db *sql.DB, result *scanResult) error {
+	query := `SELECT built_in, chat_mode FROM "juhe_business"."scheduling_preferences" WHERE id = $1`
 	var builtIn int
 	var chatMode string
 	err := db.QueryRowContext(ctx, query, builtinID).Scan(&builtIn, &chatMode)
@@ -762,8 +726,8 @@ func sortFailures(failures []Failure) {
 }
 
 // readRecord 读取迁移记录（不存在返回 nil）。
-func readRecord(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect) (*schedprefdomain.Record, error) {
-	record, present, err := schedprefdomain.ReadRecord(ctx, db, dialect)
+func readRecord(ctx context.Context, db *sql.DB) (*schedprefdomain.Record, error) {
+	record, present, err := schedprefdomain.ReadRecord(ctx, db, capabilitydomain.DialectPostgres)
 	if err != nil {
 		return nil, err
 	}
@@ -777,7 +741,7 @@ func readRecord(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialec
 // Blocking 计数，不改变退出语义（退出语义由 CLI 层决定）。
 func Preflight(ctx context.Context, db *sql.DB, options Options) (PreflightReport, error) {
 	report := PreflightReport{
-		Driver:                  options.Dialect.String(),
+		Driver:                  capabilitydomain.DialectPostgres.String(),
 		RuleVersion:             schedprefdomain.RuleVersion,
 		Modes:                   map[string]ModeReport{},
 		PlannedPreferences:      []PlannedPreference{},
@@ -789,12 +753,12 @@ func Preflight(ctx context.Context, db *sql.DB, options Options) (PreflightRepor
 	if batchSize <= 0 {
 		batchSize = DefaultBatchSize
 	}
-	record, err := readRecord(ctx, db, options.Dialect)
+	record, err := readRecord(ctx, db)
 	if err != nil {
 		return report, err
 	}
 	report.Record = record
-	scanned, err := scan(ctx, db, options.Dialect, batchSize)
+	scanned, err := scan(ctx, db, batchSize)
 	if err != nil {
 		return report, err
 	}
@@ -877,7 +841,7 @@ func collectPreflight(report *PreflightReport, scanned *scanResult, plan *planOu
 //     提交；后检失败保留 running，不写完成记录。
 func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	report := Report{
-		Driver:           options.Dialect.String(),
+		Driver:           capabilitydomain.DialectPostgres.String(),
 		RuleVersion:      schedprefdomain.RuleVersion,
 		SpeedRuntimeNote: speedRuntimeNote,
 		Failures:         []Failure{},
@@ -890,7 +854,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	if batchSize <= 0 {
 		batchSize = DefaultBatchSize
 	}
-	record, err := readRecord(ctx, db, options.Dialect)
+	record, err := readRecord(ctx, db)
 	if err != nil {
 		return report, err
 	}
@@ -902,7 +866,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		return report, nil
 	}
 
-	scanned, err := scan(ctx, db, options.Dialect, batchSize)
+	scanned, err := scan(ctx, db, batchSize)
 	if err != nil {
 		return report, err
 	}
@@ -921,7 +885,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		if err != nil {
 			return report, err
 		}
-		acquired, err := schedprefdomain.ClaimRunningStage(ctx, tx, options.Dialect, now)
+		acquired, err := schedprefdomain.ClaimRunningStage(ctx, tx, capabilitydomain.DialectPostgres, now)
 		if err != nil {
 			_ = tx.Rollback()
 			return report, err
@@ -930,7 +894,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 			return report, err
 		}
 		if !acquired {
-			latest, readErr := readRecord(ctx, db, options.Dialect)
+			latest, readErr := readRecord(ctx, db)
 			if readErr != nil {
 				return report, readErr
 			}
@@ -943,7 +907,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	}
 
 	// 按 owner 分批短事务写入。
-	preferencesCreated, preferencesReused, keysBackfilled, writeErr := writePlan(ctx, db, options.Dialect, plan, now)
+	preferencesCreated, preferencesReused, keysBackfilled, writeErr := writePlan(ctx, db, plan, now)
 	if writeErr != nil {
 		return report, writeErr
 	}
@@ -958,7 +922,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		return report, err
 	}
 	defer tx.Rollback()
-	postcheckFailures, err := postcheck(ctx, tx, options.Dialect, plan, keysBackfilled)
+	postcheckFailures, err := postcheck(ctx, tx, plan, keysBackfilled)
 	if err != nil {
 		return report, err
 	}
@@ -973,7 +937,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		APIKeysNullGeneral:           report.APIKeysNullGeneral,
 		APIKeysBackfilled:            int(keysBackfilled),
 	}
-	acquired, err := schedprefdomain.CompleteStage(ctx, tx, options.Dialect, counts, now)
+	acquired, err := schedprefdomain.CompleteStage(ctx, tx, capabilitydomain.DialectPostgres, counts, now)
 	if err != nil {
 		return report, err
 	}
@@ -1020,22 +984,15 @@ func fillReport(report *Report, scanned *scanResult, plan *planOutput) {
 // writePlan 按 owner 分批短事务写入：每 owner 一个事务（等值偏好先行、Key 回
 // 填随后，满足列级 REFERENCES belt）。只写 scheduling_preferences 新行与
 // api_keys.scheduling_preference_id 列，不触碰策略 config_json 与 Key 其他列。
-func writePlan(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, plan *planOutput, now time.Time) (created int, reused int, backfilled int64, err error) {
+func writePlan(ctx context.Context, db *sql.DB, plan *planOutput, now time.Time) (created int, reused int, backfilled int64, err error) {
 	timestamp := now.UTC().Format("2006-01-02T15:04:05.000") + "Z"
 	// enabled 已随 v2 用户裁决修订第 4 条退役：等值偏好行不再写该列（创建即
 	// 启用，无停用态）。
-	insertSQL := `INSERT INTO scheduling_preferences
+	insertSQL := `INSERT INTO "juhe_business"."scheduling_preferences"
 		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
-		VALUES (?, ?, ?, 'speed_first', ?, 0, ?, ?) ON CONFLICT (id) DO NOTHING`
-	updateSQL := `UPDATE api_keys SET scheduling_preference_id = ?
-		WHERE id = ? AND scheduling_preference_id IS NULL AND purpose = 'general'`
-	if dialect == capabilitydomain.DialectPostgres {
-		insertSQL = `INSERT INTO "juhe_business"."scheduling_preferences"
-			(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
-			VALUES ($1, $2, $3, 'speed_first', $4, 0, $5, $6) ON CONFLICT (id) DO NOTHING`
-		updateSQL = `UPDATE "juhe_business"."api_keys" SET scheduling_preference_id = $1
-			WHERE id = $2 AND scheduling_preference_id IS NULL AND purpose = 'general'`
-	}
+		VALUES ($1, $2, $3, 'speed_first', $4, 0, $5, $6) ON CONFLICT (id) DO NOTHING`
+	updateSQL := `UPDATE "juhe_business"."api_keys" SET scheduling_preference_id = $1
+		WHERE id = $2 AND scheduling_preference_id IS NULL AND purpose = 'general'`
 	owners := append([]string{}, plan.ownerOrder...)
 	sort.Strings(owners)
 	for _, owner := range owners {
@@ -1063,7 +1020,7 @@ func writePlan(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect
 				continue
 			}
 			// 并行执行者已插入同 ID（领取语义下罕见）：校验等值后计复用。
-			existing, equal, equalErr := readInsertedPreference(ctx, tx, dialect, preference)
+			existing, equal, equalErr := readInsertedPreference(ctx, tx, preference)
 			if equalErr != nil {
 				_ = tx.Rollback()
 				return created, reused, backfilled, equalErr
@@ -1095,11 +1052,8 @@ func writePlan(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect
 }
 
 // readInsertedPreference 读取并行插入的同 ID 偏好行并做规范化等值比较。
-func readInsertedPreference(ctx context.Context, tx *sql.Tx, dialect capabilitydomain.Dialect, preference plannedWrite) (bool, bool, error) {
-	query := `SELECT chat_mode, chat_speed_first_config_json FROM scheduling_preferences WHERE id = ?`
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `SELECT chat_mode, chat_speed_first_config_json FROM "juhe_business"."scheduling_preferences" WHERE id = $1`
-	}
+func readInsertedPreference(ctx context.Context, tx *sql.Tx, preference plannedWrite) (bool, bool, error) {
+	query := `SELECT chat_mode, chat_speed_first_config_json FROM "juhe_business"."scheduling_preferences" WHERE id = $1`
 	var chatMode string
 	var configJSON sql.NullString
 	err := tx.QueryRowContext(ctx, query, preference.id).Scan(&chatMode, &configJSON)
@@ -1126,10 +1080,10 @@ func readInsertedPreference(ctx context.Context, tx *sql.Tx, dialect capabilityd
 // 也不参与回填计数核对。
 func postcheck(ctx context.Context, q interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}, dialect capabilitydomain.Dialect, plan *planOutput, keysBackfilled int64) ([]Failure, error) {
+}, plan *planOutput, keysBackfilled int64) ([]Failure, error) {
 	failures := []Failure{}
-	apiKeys := qualifiedTable(dialect, "api_keys")
-	schedulingPreferences := qualifiedTable(dialect, "scheduling_preferences")
+	apiKeys := qualifiedTable("api_keys")
+	schedulingPreferences := qualifiedTable("scheduling_preferences")
 	var residual int
 	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+apiKeys+` WHERE scheduling_preference_id IS NULL AND purpose = 'general'`).Scan(&residual); err != nil {
 		return nil, fmt.Errorf("后检统计 NULL 普通 Key 残留失败: %w", err)
@@ -1165,11 +1119,11 @@ func postcheck(ctx context.Context, q interface {
 // 引用完整。全程零写入。
 func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, error) {
 	report := VerifyReport{
-		Driver:      options.Dialect.String(),
+		Driver:      capabilitydomain.DialectPostgres.String(),
 		RuleVersion: schedprefdomain.RuleVersion,
 		Failures:    []Failure{},
 	}
-	record, err := readRecord(ctx, db, options.Dialect)
+	record, err := readRecord(ctx, db)
 	if err != nil {
 		return report, err
 	}
@@ -1192,8 +1146,8 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 	if batchSize <= 0 {
 		batchSize = DefaultBatchSize
 	}
-	apiKeys := qualifiedTable(options.Dialect, "api_keys")
-	schedulingPreferences := qualifiedTable(options.Dialect, "scheduling_preferences")
+	apiKeys := qualifiedTable("api_keys")
+	schedulingPreferences := qualifiedTable("scheduling_preferences")
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+apiKeys).Scan(&report.APIKeysTotal); err != nil {
 		return report, fmt.Errorf("核验统计 api_keys 失败: %w", err)
 	}

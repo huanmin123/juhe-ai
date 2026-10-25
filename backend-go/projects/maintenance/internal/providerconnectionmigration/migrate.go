@@ -21,22 +21,18 @@ import (
 
 // Options 是 DryRun 的注入参数。
 type Options struct {
-	Dialect Dialect
-	Now     time.Time // 零值取当前 UTC（manifest created_at 与证据 retrieved_at）
+	Now time.Time // 零值取当前 UTC（manifest created_at 与证据 retrieved_at）
 }
 
 // DryRun 执行只读迁移预演并返回 manifest。返回的 Manifest 由调用方序列化写
 // 入 --manifest-out（UTF-8 JSON 无 BOM）。
 func DryRun(ctx context.Context, db *sql.DB, options Options) (Manifest, error) {
 	manifest := Manifest{FormatVersion: FormatVersion}
-	if options.Dialect != DialectPostgres && options.Dialect != DialectSQLite {
-		return manifest, fmt.Errorf("不支持的存在库方言 %q（仅 postgres/sqlite）", options.Dialect)
-	}
 	now := options.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
-	source, err := loadSource(ctx, db, options.Dialect)
+	source, err := loadSource(ctx, db)
 	if err != nil {
 		return manifest, err
 	}

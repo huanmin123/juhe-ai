@@ -5,8 +5,8 @@
 //     --node-stopped --go-stopped --backup-confirmed，在单个业务库事务内执行
 //     mapped 策略迁移并写出执行后 manifest；blocked 计数 > 0 时退出码 1。
 //
-// 存储形态与其它 maintenance 命令一致：--driver postgres --dsn 或
-// --driver sqlite --paths（仅必填 business=，其余键接受并忽略）。
+// 存储目标为 --dsn 单形态（PLAN-20261024T051925945Z B4 删除 --driver/--paths
+// 旗标族）。
 //
 // 退出码契约：0 成功且 blocked=0（dry-run 允许 blocked 非零，退出 0）；1 执行
 // 失败或 apply 后仍有 blocked；2 用法错误。
@@ -15,7 +15,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,23 +23,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/mergesupermigration"
 )
 
-func mergeSuperGroupsMigrationResult(dryRun bool, driver, paths, dsn, manifestOut, batchID string, nodeStopped, goStopped, backupConfirmed bool) int {
-	driver = strings.ToLower(strings.TrimSpace(driver))
-	if driver != "postgres" && driver != "sqlite" {
-		fmt.Fprintln(os.Stderr, "--driver 必须为 sqlite 或 postgres")
-		return 2
-	}
-	if driver == "sqlite" && strings.TrimSpace(dsn) != "" {
-		fmt.Fprintln(os.Stderr, "--dsn 只适用于 --driver postgres；sqlite 模式使用 --paths")
-		return 2
-	}
-	if driver == "postgres" && strings.TrimSpace(paths) != "" {
-		fmt.Fprintln(os.Stderr, "--paths 只适用于 --driver sqlite；postgres 模式使用 --dsn")
-		return 2
-	}
+func mergeSuperGroupsMigrationResult(dryRun bool, dsn, manifestOut, batchID string, nodeStopped, goStopped, backupConfirmed bool) int {
 	parsedDSN := strings.TrimSpace(dsn)
-	if driver == "postgres" && parsedDSN == "" {
-		fmt.Fprintln(os.Stderr, "--driver postgres 需要 --dsn 指向显式的 PostgreSQL URL")
+	if parsedDSN == "" {
+		fmt.Fprintln(os.Stderr, "--migrate-merge-super-groups 需要 --dsn 指向显式的 PostgreSQL URL")
 		return 2
 	}
 	outPath := strings.TrimSpace(manifestOut)
@@ -56,31 +42,13 @@ func mergeSuperGroupsMigrationResult(dryRun bool, driver, paths, dsn, manifestOu
 		fmt.Fprintln(os.Stderr, "正式执行要求 --node-stopped --go-stopped --backup-confirmed")
 		return 2
 	}
-	var db *sql.DB
-	var err error
-	dialect := mergesupermigration.DialectPostgres
-	if driver == "sqlite" {
-		businessPath, pathErr := parseCapabilityDomainBusinessPath(paths)
-		if pathErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", pathErr)
-			return 2
-		}
-		db, err = sql.Open("sqlite", "file:"+businessPath+"?mode=rwc&_pragma=busy_timeout(5000)")
-		if db != nil {
-			// 与其它 maintenance SQLite 入口一致：单连接串行化，避免迁移事务
-			// 与连接池内另一条连接争写锁导致 database is locked。
-			db.SetMaxOpenConns(1)
-		}
-		dialect = mergesupermigration.DialectSQLite
-	} else {
-		db, err = openPostgresBootstrap(parsedDSN)
-	}
+	db, err := openPostgresBootstrap(parsedDSN)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 2
 	}
 	defer db.Close()
-	options := mergesupermigration.Options{Dialect: dialect, BatchID: strings.TrimSpace(batchID)}
+	options := mergesupermigration.Options{BatchID: strings.TrimSpace(batchID)}
 	var plan mergesupermigration.Plan
 	if dryRun {
 		plan, err = mergesupermigration.BuildPlan(context.Background(), db, options)

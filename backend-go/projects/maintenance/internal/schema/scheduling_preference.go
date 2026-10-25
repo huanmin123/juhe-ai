@@ -7,12 +7,13 @@
 // 存量库经恢复式 upsert 自动拉回新权威名。enabled 已随 v2 第 4 条退役
 // （创建即启用，无停用态），本文件不再携带该列。
 //
-// 写入通道（两条，共用同一恢复式 upsert 语句、同一权威值）：
-//   - maintenance --seed：seedPostgresDefaults / SeedSQLiteDefaults 在既有
-//     系统内置资源顺序位（系统内置题库题之后）幂等预置；
-//   - maintenance --ensure-schema 补种臂：SeedBuiltinSchedulingPreferenceSQLite
-//     / SeedBuiltinSchedulingPreferencePostgres，保证存量库「升级 = 跑
-//     ensure-schema 即得内置行」（ensure 臂原本不执行完整 seed）。
+// 写入通道（两条，共用同一权威值）：
+//   - maintenance --seed：SeedPostgresDefaults 在既有系统内置资源顺序位
+//    （系统内置题库题之后）幂等预置；
+//   - maintenance --ensure-schema 补种臂：SeedBuiltinSchedulingPreferencePostgres，
+//     保证存量库「升级 = 跑 ensure-schema 即得内置行」（ensure 臂原本不执行
+//     完整 seed）。SQLite 通道随 SQLite 存储形态退役删除
+//     （PLAN-20261024T051925945Z B4）。
 //
 // upsert 语义沿用 pgSeedBuiltinQuestionUpsert 先例：固定 id 冲突时仅在目标行
 // 仍是内置行（built_in=1）时把权威字段恢复为 seed 值——内置行业务写入口一律
@@ -38,10 +39,9 @@ const (
 )
 
 // pgSeedBuiltinSchedulingPreferenceUpsert 是 PG 方言的恢复式 upsert（表名带
-// juhe_business 前缀，pgSeedBuiltinQuestionUpsert 先例）；sqSeedBuiltinSchedulingPreferenceUpsert
-// 是 SQLite 方言同构语句。参数依次为：id、name、created_at、updated_at；
-// system_account_id / chat_mode / chat_speed_first_config_json / built_in
-// 为语句内字面权威值。
+// juhe_business 前缀，pgSeedBuiltinQuestionUpsert 先例）。参数依次为：id、
+// name、created_at、updated_at；system_account_id / chat_mode /
+// chat_speed_first_config_json / built_in 为语句内字面权威值。
 const pgSeedBuiltinSchedulingPreferenceUpsert = `
         INSERT INTO "juhe_business"."scheduling_preferences"
           (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
@@ -54,32 +54,6 @@ const pgSeedBuiltinSchedulingPreferenceUpsert = `
           built_in = EXCLUDED.built_in
           WHERE "juhe_business"."scheduling_preferences".built_in = 1
       `
-
-const sqSeedBuiltinSchedulingPreferenceUpsert = `
-    INSERT INTO scheduling_preferences
-      (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
-    VALUES (?, NULL, ?, 'cost_first', NULL, 1, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      system_account_id=excluded.system_account_id,
-      name=excluded.name,
-      chat_mode=excluded.chat_mode,
-      chat_speed_first_config_json=excluded.chat_speed_first_config_json,
-      built_in=excluded.built_in
-      WHERE scheduling_preferences.built_in=1
-  `
-
-// SeedBuiltinSchedulingPreferenceSQLite 把内置调度偏好行恢复式补种进一个已
-// 应用 business schema 的 SQLite 业务库，供 maintenance --ensure-schema 补种
-// 臂调用（存量库升级 = 跑 ensure-schema 即得内置行）；--seed 链在
-// SeedSQLiteDefaults 内走同一 upsert 语句，幂等可重入。
-func SeedBuiltinSchedulingPreferenceSQLite(ctx context.Context, db *sql.DB) error {
-	now := seedTimestamp(time.Now())
-	if _, err := db.ExecContext(ctx, sqSeedBuiltinSchedulingPreferenceUpsert,
-		BuiltinSchedulingPreferenceID, BuiltinSchedulingPreferenceName, now, now); err != nil {
-		return fmt.Errorf("seed builtin scheduling preference (sqlite): %w", err)
-	}
-	return nil
-}
 
 // SeedBuiltinSchedulingPreferencePostgres 把内置调度偏好行恢复式补种进一个已
 // 应用 PostgreSQL schema 的业务库，供 maintenance --ensure-schema 补种臂调用；

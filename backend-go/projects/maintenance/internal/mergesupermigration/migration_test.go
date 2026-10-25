@@ -3,13 +3,19 @@ package mergesupermigration
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// fixtureDDL 在测试库上建 juhe_business schema 的四张迁移面表（列形状与
+// 生产业务库同构的测试子集）。原 sqlite 内存 fixture 随 SQLite 存储形态退役
+// 删除（PLAN-20261024T051925945Z B4），本文件迁真实 PG（pgtestkit 隔离库）。
 const fixtureDDL = `
+CREATE SCHEMA juhe_business;
+SET search_path = juhe_business;
 CREATE TABLE groups (
   id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
   enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
@@ -31,14 +37,10 @@ CREATE TABLE super_group_members (
 
 func openFixture(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "merge-migration.sqlite3")+"?mode=rwc&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("打开 fixture: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(fixtureDDL); err != nil {
-		t.Fatalf("建 fixture: %v", err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(fixtureDDL)
+		return err
+	})
 	return db
 }
 
@@ -55,26 +57,29 @@ func seedFixture(t *testing.T, db *sql.DB) {
 	for _, group := range []struct{ id, owner, name string }{
 		{"g1", "u1", "组一"}, {"g2", "u1", "组二"}, {"g3", "u1", "组三"}, {"g4", "u2", "他人组"},
 	} {
-		exec(t, db, `INSERT INTO groups (id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
-			VALUES (?, ?, ?, NULL, 1, 0, 'personal', 'standard', NULL, ?, ?)`, group.id, group.owner, group.name, now, now)
+		exec(t, db, `INSERT INTO juhe_business.groups (id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
+			VALUES ($1, $2, $3, NULL, 1, 0, 'personal', 'standard', NULL, $4, $5)`, group.id, group.owner, group.name, now, now)
 	}
-	exec(t, db, `INSERT INTO route_strategies (id, system_account_id, name, mode, status, created_at, updated_at) VALUES ('s1', 'u1', '合并一', 'merge', 'active', ?, ?)`, now, now)
-	exec(t, db, `INSERT INTO route_strategies (id, system_account_id, name, mode, status, created_at, updated_at) VALUES ('s2', 'u1', '合并二', 'merge', 'active', ?, ?)`, now, now)
-	exec(t, db, `INSERT INTO route_strategies (id, system_account_id, name, mode, status, created_at, updated_at) VALUES ('s3', 'u1', '合并三', 'merge', 'active', ?, ?)`, now, now)
-	for _, binding := range []struct{ id, strategy, group string; priority int }{
+	exec(t, db, `INSERT INTO juhe_business.route_strategies (id, system_account_id, name, mode, status, created_at, updated_at) VALUES ($1, 'u1', '合并一', 'merge', 'active', $2, $3)`, "s1", now, now)
+	exec(t, db, `INSERT INTO juhe_business.route_strategies (id, system_account_id, name, mode, status, created_at, updated_at) VALUES ($1, 'u1', '合并二', 'merge', 'active', $2, $3)`, "s2", now, now)
+	exec(t, db, `INSERT INTO juhe_business.route_strategies (id, system_account_id, name, mode, status, created_at, updated_at) VALUES ($1, 'u1', '合并三', 'merge', 'active', $2, $3)`, "s3", now, now)
+	for _, binding := range []struct {
+		id, strategy, group string
+		priority            int
+	}{
 		{"b1", "s1", "g1", 1}, {"b2", "s1", "g2", 2},
 		{"b3", "s2", "g3", 1},
 		{"b4", "s3", "g1", 1}, {"b5", "s3", "g4", 2},
 	} {
-		exec(t, db, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-			VALUES (?, ?, 'u1', ?, ?, 1, 'active', ?, ?)`, binding.id, binding.strategy, binding.group, binding.priority, now, now)
+		exec(t, db, `INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+			VALUES ($1, $2, 'u1', $3, $4, 1, 'active', $5, $6)`, binding.id, binding.strategy, binding.group, binding.priority, now, now)
 	}
 }
 
 func TestPlanAndApply(t *testing.T) {
 	db := openFixture(t)
 	seedFixture(t, db)
-	options := Options{Dialect: DialectSQLite, BatchID: "batch-1"}
+	options := Options{BatchID: "batch-1"}
 
 	plan, err := BuildPlan(context.Background(), db, options)
 	if err != nil {
@@ -112,21 +117,21 @@ func TestPlanAndApply(t *testing.T) {
 	}
 	var mode, groupKind string
 	var enabled int
-	if err := db.QueryRow(`SELECT mode FROM route_strategies WHERE id = 's1'`).Scan(&mode); err != nil || mode != "normal" {
+	if err := db.QueryRow(`SELECT mode FROM juhe_business.route_strategies WHERE id = 's1'`).Scan(&mode); err != nil || mode != "normal" {
 		t.Fatalf("s1 mode = %q/%v", mode, err)
 	}
-	if err := db.QueryRow(`SELECT group_kind, enabled FROM groups WHERE id = 'mgsg_s1'`).Scan(&groupKind, &enabled); err != nil || groupKind != "super" || enabled != 1 {
+	if err := db.QueryRow(`SELECT group_kind, enabled FROM juhe_business.groups WHERE id = 'mgsg_s1'`).Scan(&groupKind, &enabled); err != nil || groupKind != "super" || enabled != 1 {
 		t.Fatalf("generated group = %q/%d/%v, want super/enabled=1", groupKind, enabled, err)
 	}
 	var memberCount, bindingCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM super_group_members WHERE super_group_id = 'mgsg_s1'`).Scan(&memberCount); err != nil || memberCount != 2 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.super_group_members WHERE super_group_id = 'mgsg_s1'`).Scan(&memberCount); err != nil || memberCount != 2 {
 		t.Fatalf("member rows = %d/%v", memberCount, err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM route_strategy_groups WHERE route_strategy_id = 's1'`).Scan(&bindingCount); err != nil || bindingCount != 1 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.route_strategy_groups WHERE route_strategy_id = 's1'`).Scan(&bindingCount); err != nil || bindingCount != 1 {
 		t.Fatalf("binding rows = %d/%v", bindingCount, err)
 	}
 	var boundGroup string
-	if err := db.QueryRow(`SELECT group_id FROM route_strategy_groups WHERE route_strategy_id = 's1'`).Scan(&boundGroup); err != nil || boundGroup != "mgsg_s1" {
+	if err := db.QueryRow(`SELECT group_id FROM juhe_business.route_strategy_groups WHERE route_strategy_id = 's1'`).Scan(&boundGroup); err != nil || boundGroup != "mgsg_s1" {
 		t.Fatalf("bound group = %q/%v", boundGroup, err)
 	}
 
@@ -141,9 +146,9 @@ func TestApplyIsAtomicOnBlockedStrategyConflict(t *testing.T) {
 	db := openFixture(t)
 	seedFixture(t, db)
 	// 预置同名分组使 s1 在事务内判定 blocked；s2/s3 本就 blocked，全部不写库。
-	exec(t, db, `INSERT INTO groups (id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
+	exec(t, db, `INSERT INTO juhe_business.groups (id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
 		VALUES ('pre', 'u1', 'migration-super-group:s1', NULL, 1, 0, 'personal', 'standard', NULL, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`)
-	applied, err := Apply(context.Background(), db, Options{Dialect: DialectSQLite, BatchID: "batch-1"})
+	applied, err := Apply(context.Background(), db, Options{BatchID: "batch-1"})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -151,7 +156,7 @@ func TestApplyIsAtomicOnBlockedStrategyConflict(t *testing.T) {
 		t.Fatalf("applied = %d/%d, want 0/3", applied.Mapped, applied.Blocked)
 	}
 	var mode string
-	if err := db.QueryRow(`SELECT mode FROM route_strategies WHERE id = 's1'`).Scan(&mode); err != nil || mode != "merge" {
+	if err := db.QueryRow(`SELECT mode FROM juhe_business.route_strategies WHERE id = 's1'`).Scan(&mode); err != nil || mode != "merge" {
 		t.Fatalf("blocked strategy must stay merge: %q/%v", mode, err)
 	}
 }

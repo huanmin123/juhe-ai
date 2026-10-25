@@ -42,7 +42,7 @@ func TestWMSeedPostgresDefaultsSkipsExistingAdminObjects(t *testing.T) {
 	rec.script("external_integration_source_tokens", []string{"c0"}, [][]driver.Value{{externalIntegrationTestTokenID}})
 
 	client := &wmSeedCaptureClient{db: db, rec: rec}
-	result, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }, Secret: sqliteSeedTestSecret})
+	result, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }, Secret: "wm-pg-seed-secret"})
 	if err != nil {
 		t.Fatalf("seedPostgresDefaults（对象已存在分支）: %v", err)
 	}

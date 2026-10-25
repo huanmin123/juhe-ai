@@ -5,10 +5,9 @@
 //   - --verify-scheduling-preferences：只读核验；必须显式携带
 //     --scheduling-preferences-check=preflight|postflight（preflight=迁移前
 //     只读报告，postflight=完成态核验；不根据记录是否存在隐式切换核验语义）；
-//   - 存储目标沿用既有 --driver sqlite|postgres + --paths/--dsn 旗标风格
-//     （SQLite 只消费 business 键，其余键接受并忽略，便于复用 --ensure-schema
-//     的完整 --paths 参数）；开库与 --paths 解析直接复用能力域命令同包函数
-//     openCapabilityDomainDB（同一 maintenance 连接契约）。
+//   - 存储目标为 --dsn 单形态（PLAN-20261024T051925945Z B4 删除
+//     --driver/--paths 旗标族）；开库复用能力域命令同包函数
+//     openBusinessPostgres（同一 maintenance 连接契约）。
 //
 // 退出码契约：0 成功（含重复执行的「只报告完成」与预检报告输出）、1 运行失
 // 败（阶段记录损坏、并行竞争或库操作错误）、2 用法错误（门禁/旗标缺失或矛
@@ -28,17 +27,17 @@ import (
 
 // schedulingPreferencesMigrateResult 返回 migrate 命令的 CLI 退出码；
 // runMaintenance 派发它，测试进程内直调。门禁检查先于一切开库动作。
-func schedulingPreferencesMigrateResult(driver, paths, dsn string, nodeStopped, goStopped, backupConfirmed bool) int {
+func schedulingPreferencesMigrateResult(dsn string, nodeStopped, goStopped, backupConfirmed bool) int {
 	if !nodeStopped || !goStopped || !backupConfirmed {
 		fmt.Fprintln(os.Stderr, "调度偏好迁移被拒绝：必须显式携带 --node-stopped --go-stopped --backup-confirmed（停写 gateway/jobs 并验证可恢复备份后才能执行；命令本身不负责停进程）")
 		return 2
 	}
-	db, dialect, usageCode := openCapabilityDomainDB(driver, paths, dsn)
+	db, usageCode := openBusinessPostgres(dsn)
 	if usageCode != 0 {
 		return usageCode
 	}
 	defer db.Close()
-	report, err := schedprefmigration.Run(context.Background(), db, schedprefmigration.Options{Dialect: dialect})
+	report, err := schedprefmigration.Run(context.Background(), db, schedprefmigration.Options{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "调度偏好迁移失败：%v\n", err)
 		return 1
@@ -56,19 +55,19 @@ func schedulingPreferencesMigrateResult(driver, paths, dsn string, nodeStopped, 
 
 // schedulingPreferencesVerifyResult 返回 verify 命令的 CLI 退出码；
 // runMaintenance 派发它，测试进程内直调。只读：全程零写入。
-func schedulingPreferencesVerifyResult(driver, paths, dsn, check string) int {
+func schedulingPreferencesVerifyResult(dsn, check string) int {
 	normalizedCheck := strings.ToLower(strings.TrimSpace(check))
 	if normalizedCheck != "preflight" && normalizedCheck != "postflight" {
 		fmt.Fprintln(os.Stderr, "--verify-scheduling-preferences 需要 --scheduling-preferences-check=preflight|postflight（preflight=迁移前只读报告；postflight=完成态核验；不隐式切换核验语义）")
 		return 2
 	}
-	db, dialect, usageCode := openCapabilityDomainDB(driver, paths, dsn)
+	db, usageCode := openBusinessPostgres(dsn)
 	if usageCode != 0 {
 		return usageCode
 	}
 	defer db.Close()
 	if normalizedCheck == "preflight" {
-		report, err := schedprefmigration.Preflight(context.Background(), db, schedprefmigration.Options{Dialect: dialect})
+		report, err := schedprefmigration.Preflight(context.Background(), db, schedprefmigration.Options{})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "调度偏好预检失败：%v\n", err)
 			return 1
@@ -82,7 +81,7 @@ func schedulingPreferencesVerifyResult(driver, paths, dsn, check string) int {
 		}
 		return 0
 	}
-	report, err := schedprefmigration.Verify(context.Background(), db, schedprefmigration.Options{Dialect: dialect})
+	report, err := schedprefmigration.Verify(context.Background(), db, schedprefmigration.Options{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "调度偏好核验失败：%v\n", err)
 		return 1

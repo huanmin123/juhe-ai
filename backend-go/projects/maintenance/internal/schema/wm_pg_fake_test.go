@@ -11,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	_ "modernc.org/sqlite"
 )
 
 // 本文件提供 schema 包共享的 PG 录制驱动：EnsurePostgres / EnsurePostgresSeeds

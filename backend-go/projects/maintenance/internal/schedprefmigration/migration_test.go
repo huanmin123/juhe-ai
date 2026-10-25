@@ -1,7 +1,7 @@
-// 迁移器测试（SQLite 真库，进程内直调 Preflight/Run/Verify；PG 侧行为走
-// opt-in live smoke 门禁 TestPostgresSchedulingPreferencesMigrationLiveSmoke，
-// 环境变量 JUHE_AI_SCHEDPREF_MIGRATION_PG_SMOKE_URL 指向一次性隔离库时才运
-// 行，口径同 capabilitydomain）：
+// 迁移器测试（真实 PG，pgtestkit 每测试独立库，进程内直调
+// Preflight/Run/Verify；原 SQLite 真库臂随 SQLite 存储形态退役删除
+// （PLAN-20261024T051925945Z B4）；opt-in live smoke 门禁
+// TestPostgresSchedulingPreferencesMigrationLiveSmoke 保留）：
 //   - 预检报告：五种模式各自有效调度参数、坏配置清单（JSON 损坏/非法值/越界/
 //     未知模式）、显式绑定/NULL 普通/chat/studio 计数、重名冲突预测、Blocking；
 //   - 执行：等值偏好生成（键序不同与旧 firstByteThresholdMs 别名均按规范化参
@@ -24,15 +24,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const fixtureTimestamp = "2026-10-12T08:00:00.000Z"
@@ -40,26 +40,33 @@ const fixtureTimestamp = "2026-10-12T08:00:00.000Z"
 var fixtureClock = time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)
 
 // openMigrationDB 打开一个完成 ensure 的临时业务库（单连接，进程内）。
+// openMigrationDB 打开一个完成 EnsurePostgres 的隔离测试库（pgtestkit，
+// 每测试独立 database），并补种迁移前置条件（内置行按契约权威值；enabled
+// 已随 v2 用户裁决修订第 4 条退役，行不再携带该列）。
 func openMigrationDB(t *testing.T) *sql.DB {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := schema.EnsureSQLiteBusiness(context.Background(), db); err != nil {
-		t.Fatalf("ensure business schema: %v", err)
-	}
-	// ensure 只建表不种子：迁移前置条件（内置行）按契约权威值补种（enabled
-	// 已随 v2 用户裁决修订第 4 条退役，行不再携带该列）。
-	if _, err := db.Exec(`INSERT INTO scheduling_preferences
-		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
-		VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', NULL, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
-		ON CONFLICT (id) DO NOTHING`); err != nil {
-		t.Fatalf("seed builtin scheduling preference: %v", err)
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := schema.EnsurePostgres(ctx, db); err != nil {
+			return err
+		}
+		for _, seed := range []string{
+			`INSERT INTO "juhe_business"."system_accounts"
+				(id, username, display_name, description, role, status, password_hash, created_at, updated_at)
+				VALUES ('sys-1', 'sys-1', 'sys-1', NULL, 'user', 'active', 'hash', '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z'),
+				('sys-a', 'sys-a', 'sys-a', NULL, 'user', 'active', 'hash', '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z'),
+				('sys-b', 'sys-b', 'sys-b', NULL, 'user', 'active', 'hash', '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
+				ON CONFLICT (id) DO NOTHING`,
+			`INSERT INTO "juhe_business"."scheduling_preferences"
+				(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+				VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', NULL, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
+				ON CONFLICT (id) DO NOTHING`,
+		} {
+			if _, err := db.Exec(seed); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	return db
 }
 
@@ -70,9 +77,9 @@ func seedStrategyFixture(t *testing.T, db *sql.DB, id, owner, name, mode, status
 	if configJSON != "" {
 		config = configJSON
 	}
-	if _, err := db.Exec(`INSERT INTO route_strategies
+	if _, err := db.Exec(`INSERT INTO "juhe_business"."route_strategies"
 		(id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at)
-		VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?)`,
+		VALUES ($1, $2, $3, NULL, $4, $5, 0, $6, $7, $8)`,
 		id, owner, name, mode, status, config, fixtureTimestamp, fixtureTimestamp); err != nil {
 		t.Fatalf("seed strategy %s: %v", id, err)
 	}
@@ -86,9 +93,9 @@ func seedPreferenceFixture(t *testing.T, db *sql.DB, id, owner, name, chatMode, 
 	if configJSON != "" {
 		config = configJSON
 	}
-	if _, err := db.Exec(`INSERT INTO scheduling_preferences
+	if _, err := db.Exec(`INSERT INTO "juhe_business"."scheduling_preferences"
 		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, 0, $6, $7)`,
 		id, owner, name, chatMode, config, fixtureTimestamp, fixtureTimestamp); err != nil {
 		t.Fatalf("seed preference %s: %v", id, err)
 	}
@@ -102,36 +109,49 @@ func seedKeyFixture(t *testing.T, db *sql.DB, id, owner, strategyID, purpose, bo
 	if bound != "" {
 		boundAny = bound
 	}
-	if _, err := db.Exec(`INSERT INTO api_keys
+	if _, err := db.Exec(`INSERT INTO "juhe_business"."api_keys"
 		(id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
 		 key_secret_encrypted, status, is_default, purpose, scheduling_preference_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, NULL, ?, 'sk-prefix', 'suf', 'enc', 'active', 0, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, NULL, $5, 'sk-prefix', 'suf', 'enc', 'active', 0, $6, $7, $8, $9)`,
 		id, owner, strategyID, id, "hash-"+id, purpose, boundAny, fixtureTimestamp, fixtureTimestamp); err != nil {
 		t.Fatalf("seed api key %s: %v", id, err)
 	}
 }
 
-// toggleForeignKeys 切换 SQLite 外键（夹具造数悬空引用时关，迁移运行时开，
+// toggleForeignKeys 切换夹具外键窗口（夹具造数悬空引用时关，迁移运行时开，
 // 顺带验证「偏好先行、回填随后」的 owner 短事务顺序满足列级 REFERENCES）。
+// PG 无会话级外键开关：摘挂 api_keys 的三个引用约束（策略/偏好），重挂用
+// NOT VALID 不校验存量行，语义与 sqlite 关外键窗口一致。
 func toggleForeignKeys(t *testing.T, db *sql.DB, on bool) {
 	t.Helper()
-	value := "OFF"
-	if on {
-		value = "ON"
+	type fk struct{ table, name, definition string }
+	constraints := []fk{
+		{"api_keys", "api_keys_route_strategy_id_fkey", `FOREIGN KEY (route_strategy_id) REFERENCES "juhe_business"."route_strategies"(id)`},
+		{"api_keys", "api_keys_scheduling_preference_id_fkey", `FOREIGN KEY (scheduling_preference_id) REFERENCES "juhe_business"."scheduling_preferences"(id)`},
+		{"route_strategies", "route_strategies_system_account_id_fkey", `FOREIGN KEY (system_account_id) REFERENCES "juhe_business"."system_accounts"(id)`},
+		{"scheduling_preferences", "scheduling_preferences_system_account_id_fkey", `FOREIGN KEY (system_account_id) REFERENCES "juhe_business"."system_accounts"(id)`},
 	}
-	if _, err := db.Exec("PRAGMA foreign_keys=" + value); err != nil {
-		t.Fatalf("toggle foreign_keys: %v", err)
+	for _, c := range constraints {
+		if !on {
+			if _, err := db.Exec(`ALTER TABLE "juhe_business".` + c.table + ` DROP CONSTRAINT IF EXISTS ` + c.name); err != nil {
+				t.Fatalf("drop constraint %s: %v", c.name, err)
+			}
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE "juhe_business".` + c.table + ` ADD CONSTRAINT ` + c.name + ` ` + c.definition + ` NOT VALID`); err != nil {
+			t.Fatalf("re-add constraint %s: %v", c.name, err)
+		}
 	}
 }
 
 func migrationOptions() Options {
-	return Options{Dialect: capabilitydomain.DialectSQLite, Now: fixtureClock, BatchSize: 2}
+	return Options{Now: fixtureClock, BatchSize: 2}
 }
 
 // storedPreference 读取一条偏好行（无行返回 ok=false）。
 func storedPreference(t *testing.T, db *sql.DB, id string) (name, chatMode string, configJSON sql.NullString, ok bool) {
 	t.Helper()
-	err := db.QueryRow(`SELECT name, chat_mode, chat_speed_first_config_json FROM scheduling_preferences WHERE id = ?`, id).
+	err := db.QueryRow(`SELECT name, chat_mode, chat_speed_first_config_json FROM "juhe_business"."scheduling_preferences" WHERE id = $1`, id).
 		Scan(&name, &chatMode, &configJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", sql.NullString{}, false
@@ -146,7 +166,7 @@ func storedPreference(t *testing.T, db *sql.DB, id string) (name, chatMode strin
 func storedKeyBinding(t *testing.T, db *sql.DB, id string) sql.NullString {
 	t.Helper()
 	var bound sql.NullString
-	if err := db.QueryRow(`SELECT scheduling_preference_id FROM api_keys WHERE id = ?`, id).Scan(&bound); err != nil {
+	if err := db.QueryRow(`SELECT scheduling_preference_id FROM "juhe_business"."api_keys" WHERE id = $1`, id).Scan(&bound); err != nil {
 		t.Fatalf("read key binding %s: %v", id, err)
 	}
 	return bound
@@ -156,7 +176,7 @@ func storedKeyBinding(t *testing.T, db *sql.DB, id string) sql.NullString {
 func storedStrategyConfig(t *testing.T, db *sql.DB, id string) sql.NullString {
 	t.Helper()
 	var config sql.NullString
-	if err := db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, id).Scan(&config); err != nil {
+	if err := db.QueryRow(`SELECT config_json FROM "juhe_business"."route_strategies" WHERE id = $1`, id).Scan(&config); err != nil {
 		t.Fatalf("read strategy config %s: %v", id, err)
 	}
 	return config
@@ -165,7 +185,7 @@ func storedStrategyConfig(t *testing.T, db *sql.DB, id string) sql.NullString {
 // storedMigrationRecord 读取迁移记录（无记录返回 nil）。
 func storedMigrationRecord(t *testing.T, db *sql.DB) *schedprefdomain.Record {
 	t.Helper()
-	record, err := readRecord(context.Background(), db, capabilitydomain.DialectSQLite)
+	record, err := readRecord(context.Background(), db)
 	if err != nil {
 		t.Fatalf("read migration record: %v", err)
 	}
@@ -186,10 +206,10 @@ func countRows(t *testing.T, db *sql.DB, query string) int {
 func databaseSnapshot(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	return fmt.Sprintf("prefs=%d keys=%d bound=%d settings=%d",
-		countRows(t, db, `SELECT COUNT(*) FROM scheduling_preferences WHERE built_in = 0`),
-		countRows(t, db, `SELECT COUNT(*) FROM api_keys`),
-		countRows(t, db, `SELECT COUNT(*) FROM api_keys WHERE scheduling_preference_id IS NOT NULL`),
-		countRows(t, db, `SELECT COUNT(*) FROM global_settings`))
+		countRows(t, db, `SELECT COUNT(*) FROM "juhe_business"."scheduling_preferences" WHERE built_in = 0`),
+		countRows(t, db, `SELECT COUNT(*) FROM "juhe_business"."api_keys"`),
+		countRows(t, db, `SELECT COUNT(*) FROM "juhe_business"."api_keys" WHERE scheduling_preference_id IS NOT NULL`),
+		countRows(t, db, `SELECT COUNT(*) FROM "juhe_business"."global_settings"`))
 }
 
 // speedConfigJSON 渲染偏好存储形状的期望 JSON（marshalSpeedConfig 键序稳定）。
@@ -481,7 +501,7 @@ func TestRunResumeFromRunningRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acquired, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, capabilitydomain.DialectSQLite, fixtureClock); err != nil || !acquired {
+	if acquired, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, capabilitydomain.DialectPostgres, fixtureClock); err != nil || !acquired {
 		t.Fatalf("claim running: acquired=%v err=%v", acquired, err)
 	}
 	if err := claimTx.Commit(); err != nil {
@@ -580,11 +600,11 @@ func TestRunBadDataBlocksThenRepairResume(t *testing.T) {
 	}
 
 	// 修复后同命令重跑收敛（断点恢复纪律）。
-	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"cost_first"}}' WHERE id = 'st-bad'`); err != nil {
+	if _, err := db.Exec(`UPDATE "juhe_business"."route_strategies" SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"cost_first"}}' WHERE id = 'st-bad'`); err != nil {
 		t.Fatal(err)
 	}
 	toggleForeignKeys(t, db, false)
-	if _, err := db.Exec(`DELETE FROM api_keys WHERE id = 'k-dangling'`); err != nil {
+	if _, err := db.Exec(`DELETE FROM "juhe_business"."api_keys" WHERE id = 'k-dangling'`); err != nil {
 		t.Fatal(err)
 	}
 	toggleForeignKeys(t, db, true)
@@ -607,7 +627,7 @@ func TestRunRejectsCorruptOrForeignRecord(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			db := openMigrationDB(t)
 			seedEndToEndFixtures(t, db)
-			if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?)`,
+			if _, err := db.Exec(`INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3)`,
 				schedprefdomain.MigrationSettingKey, recordJSON, fixtureTimestamp); err != nil {
 				t.Fatal(err)
 			}
@@ -633,7 +653,7 @@ func TestPostcheckRejections(t *testing.T) {
 	toggleForeignKeys(t, db, true)
 
 	// NULL 残留：计划以为 0、实际库里有 1。
-	failures, err := postcheck(context.Background(), db, capabilitydomain.DialectSQLite, &planOutput{}, 0)
+	failures, err := postcheck(context.Background(), db, &planOutput{}, 0)
 	if err != nil {
 		t.Fatalf("postcheck: %v", err)
 	}
@@ -642,7 +662,7 @@ func TestPostcheckRejections(t *testing.T) {
 	}
 
 	// 计数不一致：计划 1、实际回填 0（残留同现）。
-	failures, err = postcheck(context.Background(), db, capabilitydomain.DialectSQLite, &planOutput{nullGeneral: 1}, 0)
+	failures, err = postcheck(context.Background(), db, &planOutput{nullGeneral: 1}, 0)
 	if err != nil {
 		t.Fatalf("postcheck: %v", err)
 	}
@@ -661,11 +681,11 @@ func TestPostcheckRejections(t *testing.T) {
 
 	// 悬空绑定：指向不存在的偏好行。
 	toggleForeignKeys(t, db, false)
-	if _, err := db.Exec(`UPDATE api_keys SET scheduling_preference_id = 'schpref-ghost' WHERE id = 'k-residual'`); err != nil {
+	if _, err := db.Exec(`UPDATE "juhe_business"."api_keys" SET scheduling_preference_id = 'schpref-ghost' WHERE id = 'k-residual'`); err != nil {
 		t.Fatal(err)
 	}
 	toggleForeignKeys(t, db, true)
-	failures, err = postcheck(context.Background(), db, capabilitydomain.DialectSQLite, &planOutput{nullGeneral: 0}, 0)
+	failures, err = postcheck(context.Background(), db, &planOutput{nullGeneral: 0}, 0)
 	if err != nil {
 		t.Fatalf("postcheck: %v", err)
 	}
@@ -681,11 +701,11 @@ func TestPostcheckRejections(t *testing.T) {
 
 	// 干净库零失败。
 	toggleForeignKeys(t, db, false)
-	if _, err := db.Exec(`DELETE FROM api_keys`); err != nil {
+	if _, err := db.Exec(`DELETE FROM "juhe_business"."api_keys"`); err != nil {
 		t.Fatal(err)
 	}
 	toggleForeignKeys(t, db, true)
-	failures, err = postcheck(context.Background(), db, capabilitydomain.DialectSQLite, &planOutput{}, 0)
+	failures, err = postcheck(context.Background(), db, &planOutput{}, 0)
 	if err != nil {
 		t.Fatalf("postcheck: %v", err)
 	}
@@ -714,7 +734,7 @@ func TestVerifyFailureArms(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, capabilitydomain.DialectSQLite, fixtureClock); err != nil {
+		if _, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, capabilitydomain.DialectPostgres, fixtureClock); err != nil {
 			t.Fatal(err)
 		}
 		if err := claimTx.Commit(); err != nil {
@@ -730,7 +750,7 @@ func TestVerifyFailureArms(t *testing.T) {
 	})
 	t.Run("residual-and-dangling", func(t *testing.T) {
 		db := openMigrationDB(t)
-		if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?)`,
+		if _, err := db.Exec(`INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3)`,
 			schedprefdomain.MigrationSettingKey,
 			`{"stage":"completed","ruleVersion":1,"completedAt":"2026-10-12T08:00:00Z","counts":{}}`,
 			fixtureTimestamp); err != nil {
@@ -827,7 +847,7 @@ func TestPostgresSchedulingPreferencesMigrationLiveSmoke(t *testing.T) {
 		VALUES ($1, $2, $3, $4, NULL, $5, 'sk-prefix', 'suf', 'enc', 'active', 0, 'general', NULL, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`,
 		"k-pg", "sys-pg", "st-pg-speed", "k-pg", "hash-pg")
 
-	options := Options{Dialect: capabilitydomain.DialectPostgres, Now: fixtureClock}
+	options := Options{Now: fixtureClock}
 	preflight, err := Preflight(ctx, db, options)
 	if err != nil {
 		t.Fatalf("preflight: %v", err)

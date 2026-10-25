@@ -1,7 +1,7 @@
 // 供应商与上游协议面重构迁移命令薄壳（《供应商与上游协议面重构设计》§10，
 // docs/functions/供应商与上游协议面重构设计.md :421-465）——dry-run 切片：
 //   - --migrate-provider-connection-model --dry-run --manifest-out <path>：
-//     只读旧 schema 存量业务库（--driver postgres --dsn），把可复核 manifest
+//     只读旧 schema 存量业务库（--dsn），把可复核 manifest
 //     写到 --manifest-out（dry-run 唯一写入）。判定实现与 manifest 契约在
 //     internal/providerconnectionmigration。
 //   - 非 dry-run（正式执行形态，--manifest/--manifest-sha256/--backup-id/
@@ -26,18 +26,14 @@ import (
 
 // providerConnectionMigrationResult 返回 CLI 退出码；runMaintenance 派发它，
 // 测试进程内直调。
-func providerConnectionMigrationResult(dryRun bool, driver, dsn, manifestOut string) int {
+func providerConnectionMigrationResult(dryRun bool, dsn, manifestOut string) int {
 	if !dryRun {
 		fmt.Fprintln(os.Stderr, "正式执行尚未交付：历史 usage/audit 列改造完成后提供")
 		return 2
 	}
-	if strings.ToLower(strings.TrimSpace(driver)) != "postgres" {
-		fmt.Fprintln(os.Stderr, "--migrate-provider-connection-model --dry-run 当前切片仅支持 --driver postgres --dsn 读取旧 schema 存量库（SQLite 形态后补）")
-		return 2
-	}
 	parsedDSN := strings.TrimSpace(dsn)
 	if parsedDSN == "" {
-		fmt.Fprintln(os.Stderr, "--driver postgres 需要 --dsn 指向显式的 PostgreSQL URL")
+		fmt.Fprintln(os.Stderr, "--migrate-provider-connection-model --dry-run 需要 --dsn 指向显式的 PostgreSQL URL")
 		return 2
 	}
 	outPath := strings.TrimSpace(manifestOut)
@@ -52,8 +48,7 @@ func providerConnectionMigrationResult(dryRun bool, driver, dsn, manifestOut str
 	}
 	defer db.Close()
 	manifest, err := providerconnectionmigration.DryRun(context.Background(), db, providerconnectionmigration.Options{
-		Dialect: providerconnectionmigration.DialectPostgres,
-	})
+		})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "provider connection model migration dry-run 失败: %v\n", err)
 		return 1

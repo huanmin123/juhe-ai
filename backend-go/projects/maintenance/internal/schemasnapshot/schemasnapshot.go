@@ -12,8 +12,9 @@
 //   - snapshotDigest strips target/capturedAt/database and hashes the
 //     schema-only remainder with sha256, exactly like the Node tool.
 //
-// PostgreSQL is the only supported dialect; SQLite targets are rejected with
-// an explicit error by the maintenance CLI.
+// PostgreSQL is the only supported dialect (SQLite targets and their CLI
+// rejection arm were removed with the SQLite retirement,
+// PLAN-20261024T051925945Z B4).
 package schemasnapshot
 
 import (

@@ -23,8 +23,9 @@
 // 中断库从持久化 cursor 续跑。
 //
 // 退出码契约：0 完成（六表收敛 done，含 0 批秒完）、1 运行失败（marker 表
-// 缺失、cursor CAS 冲突、SQL 错误等，保留原始错误）、2 用法错误（driver/
-// 连接参数缺失或矛盾）。
+// 缺失、cursor CAS 冲突、SQL 错误等，保留原始错误）、2 用法错误（连接参数
+// 缺失或矛盾）。SQLite --paths 形态随 SQLite 存储形态退役删除
+// （PLAN-20261024T051925945Z B4）。
 package main
 
 import (
@@ -38,8 +39,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
 
 // successCostBackfillBatchSize 是单批扫描的行数上限（计划 §3.2 固定值）。
@@ -50,7 +49,7 @@ const successCostBackfillBatchSize = 5000
 const missingBackfillProgressHint = "backfill_progress 表不存在；先执行 --ensure-schema 创建该表（成功成本历史回填治理：ensure 只建标记表，回填只由本命令执行）"
 
 // successCostBackfillTarget 描述一张回填目标表与其主键 tuple（游标列序，
-// PG juhe_stats 与 SQLite stats 库同构，主键列序以建表 DDL 为准）。
+// 主键列序以 juhe_stats 建表 DDL 为准）。
 type successCostBackfillTarget struct {
 	name      string
 	pkColumns []string
@@ -66,24 +65,16 @@ var successCostBackfillTargets = []successCostBackfillTarget{
 	{name: "usage_stats_monthly", pkColumns: []string{"system_account_id", "scope_type", "scope_id", "stat_month"}},
 }
 
-// backfillDialect 承载 PG 与 SQLite 的 SQL 方言差异：PG 下表名以 juhe_stats
-// schema 前缀限定、占位符为 $n；SQLite 用裸表名与 ?。
-type backfillDialect struct {
-	postgres bool
-}
+// backfillDialect 承载 juhe_stats schema 限定（表名前缀 + $n 占位符）。
+// sqlite 方言随 SQLite 存储形态退役删除（PLAN-20261024T051925945Z B4）。
+type backfillDialect struct{}
 
 func (d backfillDialect) table(name string) string {
-	if d.postgres {
-		return "juhe_stats." + name
-	}
-	return name
+	return "juhe_stats." + name
 }
 
 func (d backfillDialect) placeholder(index int) string {
-	if d.postgres {
-		return "$" + strconv.Itoa(index)
-	}
-	return "?"
+	return "$" + strconv.Itoa(index)
 }
 
 // placeholderTuple 渲染 (?, ?, ...) / ($1, $2, ...) 形态的占位符 tuple。
@@ -173,101 +164,24 @@ type successCostTableStat struct {
 	MatchedRows int    `json:"matchedRows"`
 }
 
-// parseBackfillSQLitePaths 解析回填子命令的 --paths：键词汇与六库 bootstrap
-// 相同，但只强制 stats=（回填只读写 stats 库），其余键接受并忽略值，保持
-// 操作者可以直接复用 --ensure-schema 的完整 --paths 参数。
-func parseBackfillSQLitePaths(raw string) (string, error) {
-	stats := ""
-	seen := map[string]bool{}
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		key, value, found := strings.Cut(entry, "=")
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if !found || key == "" || value == "" {
-			return "", fmt.Errorf("--paths 条目必须是 key=value 形式：%q", entry)
-		}
-		if seen[key] {
-			return "", fmt.Errorf("--paths 条目重复：%q", key)
-		}
-		seen[key] = true
-		switch key {
-		case "stats":
-			stats = value
-		case "business", "chat", "dataset", "usage-catalog", "codex-context-shard-root", "codex-context-shard-count":
-			// 与六库 bootstrap 同词汇；成功成本回填不消费这些键。
-		default:
-			return "", fmt.Errorf("--paths 未知 key %q（有效 key：business、chat、dataset、usage-catalog、stats、codex-context-shard-root、codex-context-shard-count）", key)
-		}
-	}
-	if stats == "" {
-		return "", fmt.Errorf("--paths 缺少必填 key：stats（成功成本回填只读写 stats 库）")
-	}
-	return stats, nil
-}
-
 // applySuccessCostBackfillResult 返回 CLI 退出码；runMaintenance 派发它，
 // 测试进程内直调。用法/开库错误 exit 2，运行失败 exit 1（保留原始错误）。
-func applySuccessCostBackfillResult(driver, paths, dsn string, dryRun bool) int {
-	driver = strings.ToLower(strings.TrimSpace(driver))
-	if driver != "sqlite" && driver != "postgres" {
-		fmt.Fprintf(os.Stderr, "--driver 必须为 sqlite 或 postgres: %q\n", driver)
+func applySuccessCostBackfillResult(dsn string, dryRun bool) int {
+	parsedDSN := strings.TrimSpace(dsn)
+	if parsedDSN == "" {
+		fmt.Fprintln(os.Stderr, "--apply-success-cost-backfill 需要 --dsn 指向显式的 PostgreSQL URL")
 		return 2
 	}
-	if driver == "sqlite" && strings.TrimSpace(dsn) != "" {
-		fmt.Fprintln(os.Stderr, "--dsn 只适用于 --driver postgres；sqlite 模式使用 --paths")
+	db, openErr := openPostgresBootstrap(parsedDSN)
+	if openErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", openErr)
 		return 2
-	}
-	if driver == "postgres" && strings.TrimSpace(paths) != "" {
-		fmt.Fprintln(os.Stderr, "--paths 只适用于 --driver sqlite；postgres 模式使用 --dsn")
-		return 2
-	}
-	var (
-		db      *sql.DB
-		dialect backfillDialect
-	)
-	if driver == "sqlite" {
-		statsPath, parseErr := parseBackfillSQLitePaths(paths)
-		if parseErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", parseErr)
-			return 2
-		}
-		var opened *sql.DB
-		var openErr error
-		if dryRun {
-			opened, openErr = openReadOnlySuccessCostSQLite(statsPath)
-		} else {
-			opened, openErr = bootstrap.OpenSQLiteFile(statsPath)
-		}
-		if openErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", openErr)
-			if dryRun {
-				return 1
-			}
-			return 2
-		}
-		db = opened
-	} else {
-		parsedDSN := strings.TrimSpace(dsn)
-		if parsedDSN == "" {
-			fmt.Fprintln(os.Stderr, "--driver postgres 需要 --dsn 指向显式的 PostgreSQL URL")
-			return 2
-		}
-		opened, openErr := openPostgresBootstrap(parsedDSN)
-		if openErr != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", openErr)
-			return 2
-		}
-		db = opened
-		dialect = backfillDialect{postgres: true}
 	}
 	defer db.Close()
 
 	ctx := context.Background()
-	report := successCostBackfillReport{Driver: driver, DryRun: dryRun, Tables: map[string]successCostTableStat{}}
+	dialect := backfillDialect{}
+	report := successCostBackfillReport{Driver: "postgres", DryRun: dryRun, Tables: map[string]successCostTableStat{}}
 	if dryRun {
 		for _, target := range successCostBackfillTargets {
 			pending, countErr := countPendingSuccessCostRows(ctx, db, dialect, target)
@@ -306,28 +220,6 @@ func applySuccessCostBackfillResult(driver, paths, dsn string, dryRun bool) int 
 	return 0
 }
 
-func openReadOnlySuccessCostSQLite(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", "file:"+strings.TrimSpace(path)+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
-	if err != nil {
-		return nil, fmt.Errorf("open read-only sqlite stats: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("open read-only sqlite stats: %w", err)
-	}
-	var queryOnly int
-	if err := db.QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("verify read-only sqlite stats: %w", err)
-	}
-	if queryOnly != 1 {
-		_ = db.Close()
-		return nil, errors.New("verify read-only sqlite stats: PRAGMA query_only is not enabled")
-	}
-	return db, nil
-}
-
 // encodeSuccessCostBackfillReport 以单行 JSON 输出报告。
 func encodeSuccessCostBackfillReport(report successCostBackfillReport) error {
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
@@ -347,23 +239,14 @@ func countPendingSuccessCostRows(ctx context.Context, db *sql.DB, dialect backfi
 	return pending, nil
 }
 
-// backfillProgressPresent 三态探测 marker 表存在性：PG 用 to_regclass
-// （juhe_stats 前缀限定），SQLite 查 sqlite_master；探测失败返回包装后的
-// 原始错误（显式失败不静默）。
+// backfillProgressPresent 三态探测 marker 表存在性（to_regclass，juhe_stats
+// 前缀限定）；探测失败返回包装后的原始错误（显式失败不静默）。
 func backfillProgressPresent(ctx context.Context, db *sql.DB, dialect backfillDialect) (bool, error) {
-	if dialect.postgres {
-		var qualified *string
-		if err := db.QueryRowContext(ctx, "SELECT to_regclass('juhe_stats.backfill_progress')").Scan(&qualified); err != nil {
-			return false, fmt.Errorf("probe backfill_progress: %w", err)
-		}
-		return qualified != nil, nil
-	}
-	var present int
-	if err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'backfill_progress'").Scan(&present); err != nil {
+	var qualified *string
+	if err := db.QueryRowContext(ctx, "SELECT to_regclass('juhe_stats.backfill_progress')").Scan(&qualified); err != nil {
 		return false, fmt.Errorf("probe backfill_progress: %w", err)
 	}
-	return present > 0, nil
+	return qualified != nil, nil
 }
 
 // ensureBackfillProgressTablePresent 要求 marker 表存在（回填子命令前置
@@ -374,10 +257,7 @@ func ensureBackfillProgressTablePresent(ctx context.Context, db *sql.DB, dialect
 		return err
 	}
 	if !present {
-		if dialect.postgres {
-			return errors.New("juhe_stats.backfill_progress is missing")
-		}
-		return errors.New("backfill_progress is missing")
+		return errors.New("juhe_stats.backfill_progress is missing")
 	}
 	return nil
 }
@@ -428,17 +308,6 @@ func sortedBackfillTargetNames(statuses map[string]string) []string {
 	}
 	sort.Strings(pending)
 	return pending
-}
-
-// pendingBackfillTablesSQLite 打开 stats 库文件探测回填待办（ensure 各库
-// 连接已关闭，这里按需重开、探测后即关闭）。
-func pendingBackfillTablesSQLite(ctx context.Context, statsPath string) ([]string, bool, error) {
-	db, err := openReadOnlySuccessCostSQLite(statsPath)
-	if err != nil {
-		return nil, false, fmt.Errorf("open sqlite stats for backfill probe: %w", err)
-	}
-	defer db.Close()
-	return pendingBackfillTables(ctx, db, backfillDialect{})
 }
 
 // successCostBackfillTimestamp 产出与库内 stats 时间戳同风格的 UTC 文本。

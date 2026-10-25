@@ -7,12 +7,10 @@
 package schema
 
 import (
-	"context"
 	"encoding/json"
 	"sort"
 	"strings"
 	"testing"
-	"time"
 )
 
 // nodeModelCatalogCompare mirrors compareProviderModels in Node
@@ -234,59 +232,5 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 	}
 	if first.Status != modelSeedStatusActive || !first.CatalogVisible {
 		t.Fatalf("first projected row status/visible = %s/%v", first.Status, first.CatalogVisible)
-	}
-}
-
-// TestModelSeedTableRowsMatchProjection locks the seed's own output to the
-// models-table projection: fresh ensure+seed writes every snapshot row
-// （disabled 行计入）, the disabled subset equals the shutdown-expired rows of
-// the same pinned clock, and repeated seeds keep the count stable. The gateway
-// storage bootstrap test routes the same count through
-// bootstrap.SQLiteSeedResult.ModelCatalogRows; maintenance internal is not
-// importable across modules.
-func TestModelSeedTableRowsMatchProjection(t *testing.T) {
-	db := openSeedTestDatabase(t)
-	ctx := context.Background()
-	result, err := SeedSQLiteDefaults(ctx, db, SeedOptions{Now: func() time.Time { return sqliteSeedTestClock }})
-	if err != nil {
-		t.Fatalf("seed sqlite defaults: %v", err)
-	}
-	asOf := sqliteSeedTestClock.UTC().Format("2006-01-02")
-	projection, err := modelSeedTargetRows(asOf)
-	if err != nil {
-		t.Fatalf("modelSeedTargetRows: %v", err)
-	}
-	if result.ModelCatalogRows != len(projection) {
-		t.Fatalf("seed ModelCatalogRows = %d, want projection size %d", result.ModelCatalogRows, len(projection))
-	}
-	if result.ModelCatalogRows != len(modelCatalogSeedRows) {
-		t.Fatalf("seed ModelCatalogRows = %d, want full snapshot size %d", result.ModelCatalogRows, len(modelCatalogSeedRows))
-	}
-	var tableRows int
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM models").Scan(&tableRows); err != nil {
-		t.Fatalf("query models: %v", err)
-	}
-	if tableRows != result.ModelCatalogRows {
-		t.Fatalf("models rows = %d, want %d (fresh seed, upsert only)", tableRows, result.ModelCatalogRows)
-	}
-	expired := 0
-	for _, source := range modelCatalogSeedRows {
-		if modelSeedRowStatus(source, asOf) == modelSeedStatusDisabled {
-			expired++
-		}
-	}
-	var disabledRows int
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM models WHERE status = 'disabled'").Scan(&disabledRows); err != nil {
-		t.Fatalf("query disabled models: %v", err)
-	}
-	if disabledRows != expired {
-		t.Fatalf("disabled models rows = %d, want %d (shutdown expired at %s)", disabledRows, expired, asOf)
-	}
-	second, err := SeedSQLiteDefaults(ctx, db, SeedOptions{Now: func() time.Time { return sqliteSeedTestClock }})
-	if err != nil {
-		t.Fatalf("second seed (idempotency): %v", err)
-	}
-	if second.ModelCatalogRows != result.ModelCatalogRows {
-		t.Fatalf("second seed ModelCatalogRows = %d, want %d", second.ModelCatalogRows, result.ModelCatalogRows)
 	}
 }

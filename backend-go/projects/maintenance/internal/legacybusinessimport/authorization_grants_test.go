@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	_ "github.com/jackc/pgx/v5/stdlib"
+
 )
 
 // 回归背景（2026-10-24 生产取证）：2026-10-22 结构重建回迁漏掉
@@ -15,8 +17,8 @@ import (
 // 保留资源的 grants 原样带入（含 runtime 已消失的终态记录），资源被丢弃的
 // grants 与其 runtime 行一起跳过，未知资源类型按 runtime 同款口径报错。
 func TestImportAuthorizationsCarriesGrantRows(t *testing.T) {
-	source := openLegacyImportSQLite(t)
-	target := openLegacyImportSQLite(t)
+	source := openLegacyImportFixtureDB(t)
+	target := openLegacyImportFixtureDB(t)
 	tx, err := target.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("开启目标事务: %v", err)
@@ -127,8 +129,8 @@ func TestImportAuthorizationsCarriesGrantRows(t *testing.T) {
 }
 
 func TestImportAuthorizationsRejectsUnknownGrantResourceType(t *testing.T) {
-	source := openLegacyImportSQLite(t)
-	target := openLegacyImportSQLite(t)
+	source := openLegacyImportFixtureDB(t)
+	target := openLegacyImportFixtureDB(t)
 	tx, err := target.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("开启目标事务: %v", err)
@@ -153,24 +155,28 @@ func TestImportAuthorizationsRejectsUnknownGrantResourceType(t *testing.T) {
 	}
 }
 
-// openLegacyImportSQLite opens a single-connection in-memory SQLite database
-// with the legacy-import schema attached as juhe_business, so the hardcoded
-// schema-qualified import SQL runs verbatim (the import is PG-only in
-// production; the attach keeps the fixture on the repo's sqlite regression
-// pattern while exercising the same statements).
-func openLegacyImportSQLite(t *testing.T) *sql.DB {
+// openLegacyImportFixtureDB opens an isolated pgtestkit database and creates
+// the legacy-import fixture tables under the juhe_business schema, so the
+// hardcoded schema-qualified import SQL runs verbatim. 原 SQLite ATTACH 内存
+// 库夹具随 SQLite 存储形态退役删除（PLAN-20261024T051925945Z B4）。
+func openLegacyImportFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("打开内存库: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	// 导入语句使用 schema 限定名，单连接保证 ATTACH 对全部语句生效。
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`ATTACH ':memory:' AS juhe_business`); err != nil {
-		t.Fatalf("附加 juhe_business schema: %v", err)
-	}
-	for _, ddl := range []string{
+	db := pgtestkit.New(t, func(ctx context.Context, conn *sql.DB) error {
+		if _, err := conn.Exec(`CREATE SCHEMA juhe_business`); err != nil {
+			return err
+		}
+		for _, ddl := range fixtureDDLs() {
+			if _, err := conn.Exec(ddl); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return db
+}
+
+func fixtureDDLs() []string {
+	return []string{
 		`CREATE TABLE juhe_business.resource_authorization_grants (
 			id text PRIMARY KEY,
 			resource_type text NOT NULL,
@@ -227,10 +233,5 @@ func openLegacyImportSQLite(t *testing.T) *sql.DB {
 			revoked_at text,
 			updated_at text NOT NULL
 		)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatalf("建夹具表: %v", err)
-		}
 	}
-	return db
 }

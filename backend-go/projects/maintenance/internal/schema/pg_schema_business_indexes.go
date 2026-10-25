@@ -14,7 +14,7 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		// models 身份唯一索引（供应商与上游协议面重构设计 §3 :201）：四元组
 		// (COALESCE(vendor_code,''), scope, COALESCE(system_account_id,''),
-		// upstream_model) 表达式唯一索引，PG 与 SQLite 同名同列集；vendor 与
+		// upstream_model) 表达式唯一索引（与已退役 SQLite 形态同名同列集）；vendor 与
 		// owner 空值归一空串，binary/case-sensitive 比较由列的默认 collation
 		// 承载（模型名比较契约 §3）。
 		SchemaName: "juhe_business",
@@ -1296,7 +1296,7 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		// owner_name_unique 先例，均挂 WHERE built_in=0 条件——内置行 name
 		// 权威且不参与查重）；UNIQUE(id) WHERE built_in=1 固定内置身份唯一；
 		// owner 列支撑管理面按 owner 收窄列表；api_keys 绑定列查询索引。
-		// 与 SQLite 同构（sqlite_schema_business.go 索引区）。
+		// 与已退役的 SQLite 形态同构（该 DDL 文件随 SQLite 存储退役删除，见 git 历史）。
 		SchemaName: "juhe_business",
 		Source:     "scheduling-preferences-indexes",
 		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique ON scheduling_preferences(system_account_id, name) WHERE built_in = 0`,

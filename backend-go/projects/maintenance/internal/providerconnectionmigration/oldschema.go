@@ -7,16 +7,8 @@ import "fmt"
 // 在加载时按物理表（SELECT * 的 ordinal 与驱动报告的 declared type）读取，
 // 本清单只声明规则判定必需列（子集校验，fail-closed）与主键声明。
 //
-// 方言：CLI 切片只接 --driver postgres（juhe_business 等 schema 限定名）；
-// SQLite 形态供隔离 fixture 与后续切片使用（不带 schema 前缀）。
-
-// Dialect 是迁移器支持的两种源库方言。
-type Dialect string
-
-const (
-	DialectSQLite   Dialect = "sqlite"
-	DialectPostgres Dialect = "postgres"
-)
+// 源库方言固定为 PostgreSQL（juhe_business 等 schema 限定名）；sqlite 形态
+// 随 SQLite 存储形态退役删除（PLAN-20261024T051925945Z B4）。
 
 // SourceSchemaVersion / TargetSchemaVersion 是 manifest 记录的 schema 版本
 // 口径：源版本描述本包拥有的旧 schema 迁移输入契约；目标版本描述 §2-§9 的
@@ -139,10 +131,7 @@ var historySourceTables = []sourceTableDef{
 	{name: "model_check_runs", pgSchema: "juhe_j3b", required: []string{"id"}, pk: []string{"id"}},
 }
 
-// qualifiedName 返回方言限定的表名（PG 走源 schema 前缀，SQLite 直接表名）。
-func qualifiedName(dialect Dialect, def sourceTableDef) string {
-	if dialect == DialectPostgres {
-		return fmt.Sprintf(`"%s".%s`, def.pgSchema, def.name)
-	}
-	return def.name
+// qualifiedName 返回源 schema 限定的表名。
+func qualifiedName(def sourceTableDef) string {
+	return fmt.Sprintf(`"%s".%s`, def.pgSchema, def.name)
 }

@@ -1,5 +1,10 @@
 package bootstrap
 
+// 本文件覆盖受控导出面 bootstrap 的 PostgreSQL 包装（录制驱动：全部执行成功、
+// 查询返回空行，验证 EnsurePostgres/SeedPostgres 的语句计数与错误传播）。
+// 六库 SQLite ensure+seed 导出面与 OpenSQLiteFile 随 SQLite 存储形态退役删除，
+// 对应测试同批退役（PLAN-20261024T051925945Z B4）。
+
 import (
 	"context"
 	"database/sql"
@@ -7,119 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
-
-// 本文件覆盖受控导出面 bootstrap 的六库 ensure+seed 与 PostgreSQL 包装。
-// SQLite 走 t.TempDir 真实文件；PostgreSQL 用录制驱动（全部执行成功、查询
-// 返回空行）验证 EnsurePostgres/SeedPostgres 的语句计数与错误传播。
-
-func TestWMEnsureSQLiteSchemaAllKinds(t *testing.T) {
-	ctx := context.Background()
-	kinds := []struct {
-		kind SQLiteSchemaKind
-		name string
-	}{
-		{SQLiteSchemaBusiness, "business"},
-		{SQLiteSchemaStats, "stats"},
-		{SQLiteSchemaChat, "chat"},
-		{SQLiteSchemaCodexContext, "codex-context"},
-		{SQLiteSchemaDataset, "dataset"},
-		{SQLiteSchemaUsageCatalog, "usage-catalog"},
-	}
-	for _, item := range kinds {
-		t.Run(item.name, func(t *testing.T) {
-			db, err := OpenSQLiteFile(filepath.Join(t.TempDir(), item.name+".sqlite3"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			counts, err := EnsureSQLiteSchema(ctx, item.kind, db)
-			if err != nil {
-				t.Fatalf("ensure %s: %v", item.name, err)
-			}
-			if counts.Tables <= 0 {
-				t.Fatalf("每个 schema 至少应建一张表: %+v", counts)
-			}
-			// 幂等：重复执行不再新增对象。
-			repeat, err := EnsureSQLiteSchema(ctx, item.kind, db)
-			if err != nil || repeat != counts {
-				t.Fatalf("重复 ensure 必须幂等: %+v err=%v", repeat, err)
-			}
-		})
-	}
-	t.Run("unknown kind rejected", func(t *testing.T) {
-		db, err := OpenSQLiteFile(filepath.Join(t.TempDir(), "unknown.sqlite3"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		if _, err := EnsureSQLiteSchema(ctx, SQLiteSchemaKind(99), db); err == nil || !strings.Contains(err.Error(), "unknown sqlite schema kind") {
-			t.Fatalf("未知 kind 必须拒绝: %v", err)
-		}
-	})
-}
-
-func TestWMEnsureAllSQLiteCreatesSixSchemas(t *testing.T) {
-	db, err := OpenSQLiteFile(filepath.Join(t.TempDir(), "all.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	counts, err := EnsureAllSQLite(context.Background(), db)
-	if err != nil {
-		t.Fatalf("EnsureAllSQLite: %v", err)
-	}
-	for index, count := range counts {
-		if count.Tables <= 0 {
-			t.Fatalf("第 %d 个 schema 必须至少建一张表: %+v", index, count)
-		}
-	}
-	if len(counts) != 6 {
-		t.Fatalf("必须恰好报告六个 schema: %d", len(counts))
-	}
-}
-
-func TestWMSeedSQLiteBusinessMirrorsSchemaSeed(t *testing.T) {
-	db, err := OpenSQLiteFile(filepath.Join(t.TempDir(), "seed.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := EnsureSQLiteSchema(context.Background(), SQLiteSchemaBusiness, db); err != nil {
-		t.Fatal(err)
-	}
-	clock := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
-	result, err := SeedSQLiteBusiness(context.Background(), db, SeedOptions{Now: func() time.Time { return clock }, Secret: "wm-secret"})
-	if err != nil {
-		t.Fatalf("SeedSQLiteBusiness: %v", err)
-	}
-	if result.StatementCount <= 0 || result.ModelCatalogRows <= 0 {
-		t.Fatalf("seed 结果必须为正: %+v", result)
-	}
-}
-
-func TestWMOpenSQLiteFileCreatesParentDirectories(t *testing.T) {
-	root := t.TempDir()
-	nested := filepath.Join(root, "deep", "nested", "dir", "business.sqlite3")
-	db, err := OpenSQLiteFile(nested)
-	if err != nil {
-		t.Fatalf("OpenSQLiteFile 必须递归创建父目录: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec("CREATE TABLE wm_probe (id INTEGER PRIMARY KEY)"); err != nil {
-		t.Fatalf("打开的句柄必须可写: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-}
 
 // ---- PostgreSQL 录制驱动 ----
 

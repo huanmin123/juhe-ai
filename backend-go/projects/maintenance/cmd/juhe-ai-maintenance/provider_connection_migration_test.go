@@ -14,7 +14,6 @@ import (
 func TestProviderConnectionMigrationFormalExecutionNotDelivered(t *testing.T) {
 	code, _, stderr := wmRunMaintenanceCapture(t,
 		"-migrate-provider-connection-model",
-		"-driver", "postgres",
 		"-dsn", "postgres://user:pass@127.0.0.1:5432/legacy",
 	)
 	if code != 2 {
@@ -28,7 +27,6 @@ func TestProviderConnectionMigrationFormalExecutionNotDelivered(t *testing.T) {
 func TestProviderConnectionMigrationDryRunRequiresManifestOut(t *testing.T) {
 	code, _, stderr := wmRunMaintenanceCapture(t,
 		"-migrate-provider-connection-model", "-dry-run",
-		"-driver", "postgres",
 		"-dsn", "postgres://user:pass@127.0.0.1:5432/legacy",
 	)
 	if code != 2 {
@@ -39,25 +37,10 @@ func TestProviderConnectionMigrationDryRunRequiresManifestOut(t *testing.T) {
 	}
 }
 
-func TestProviderConnectionMigrationDryRunSQLiteRejectedThisSlice(t *testing.T) {
-	code, _, stderr := wmRunMaintenanceCapture(t,
-		"-migrate-provider-connection-model", "-dry-run",
-		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
-		"-driver", "sqlite",
-	)
-	if code != 2 {
-		t.Fatalf("sqlite 形态在本切片应返回退出码 2: %d", code)
-	}
-	if !strings.Contains(stderr, "SQLite 形态后补") {
-		t.Fatalf("stderr 应说明切片只支持 postgres: %q", stderr)
-	}
-}
-
 func TestProviderConnectionMigrationMutuallyExclusive(t *testing.T) {
 	code, _, stderr := wmRunMaintenanceCapture(t,
 		"-migrate-provider-connection-model", "-dry-run",
 		"-manifest-out", filepath.Join(t.TempDir(), "manifest.json"),
-		"-driver", "postgres",
 		"-dsn", "postgres://user:pass@127.0.0.1:5432/legacy",
 		"-ensure-schema",
 	)

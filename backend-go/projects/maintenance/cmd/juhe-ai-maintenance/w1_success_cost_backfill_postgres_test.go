@@ -456,7 +456,7 @@ func successCostPGMarkers(t *testing.T, db *sql.DB) map[string][2]string {
 
 func successCostPGRunTarget(t *testing.T, db *sql.DB, target successCostBackfillTarget) successCostTableStat {
 	t.Helper()
-	stat, err := backfillSuccessCostTable(context.Background(), db, backfillDialect{postgres: true}, target)
+	stat, err := backfillSuccessCostTable(context.Background(), db, backfillDialect{}, target)
 	if err != nil {
 		t.Fatalf("回填 %s 失败: %v", target.name, err)
 	}

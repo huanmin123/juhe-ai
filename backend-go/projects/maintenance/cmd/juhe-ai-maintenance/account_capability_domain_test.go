@@ -1,48 +1,65 @@
 // 能力域命令 CLI 门禁与端到端测试（进程内直调 runMaintenance 与 result 函数，
 // 测试进程纪律：main 是唯一 os.Exit 站点）：
 //   - 用法门禁：缺 stage / 非法 stage / migrate 缺停写备份确认 / verify 缺
-//     check / driver 缺失 / 与其他命令互斥，全部退出码 2；
-//   - SQLite 端到端：preflight → migrate m1 → postflight → 重复 migrate 只
-//     报告完成 → m2-cutover 封存 → 封存后 migrate 拒绝、postflight 仍可用；
-//   - 失败清单路径退出码 3、阶段保留。
+//     check / dsn 缺失 / 与其他命令互斥，全部退出码 2；
+//   - 真实 PG 端到端（pgtestkit 隔离库）：preflight → migrate m1 → postflight
+//     → 重复 migrate 只报告完成 → m2-cutover 封存 → 封存后 migrate 拒绝、
+//     postflight 仍可用；失败清单路径退出码 3、阶段保留。
+// SQLite 形态随 SQLite 存储形态退役删除（PLAN-20261024T051925945Z B4）。
 
 package main
 
 import (
 	"context"
-	"path/filepath"
-	"strings"
+	"database/sql"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // capabilityDomainTestSecret 是 CLI 测试的解密密钥（进程内固定测试值）。
 const capabilityDomainTestSecret = "capability-domain-cli-secret"
 
-func capabilityDomainPaths(t *testing.T) string {
+// newCapabilityDomainTestDB 打开一个完成 EnsurePostgres 的隔离测试库并预置
+// fixtures 依赖的父行（system_accounts / vendors）。
+func newCapabilityDomainTestDB(t *testing.T) string {
 	t.Helper()
-	return "business=" + filepath.Join(t.TempDir(), "business.sqlite3")
+	return pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := schema.EnsurePostgres(ctx, db); err != nil {
+			return err
+		}
+		for _, seed := range []string{
+			`INSERT INTO "juhe_business"."system_accounts"
+				(id, username, display_name, description, role, status, password_hash, created_at, updated_at)
+				VALUES ('sys-1', 'sys-1', 'sys-1', NULL, 'user', 'active', 'hash', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')
+				ON CONFLICT (id) DO NOTHING`,
+			`INSERT INTO "juhe_business"."vendors"
+				(id, code, name, default_supported_models_json, enabled, created_at, updated_at)
+				VALUES ('vendor-gpt', 'gpt', 'gpt', '[]', 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')
+				ON CONFLICT (code) DO NOTHING`,
+		} {
+			if _, err := db.Exec(seed); err != nil {
+				return err
+			}
+		}
+		return nil
+	}).DSN
 }
 
-func seedCapabilityDomainAccounts(t *testing.T, pathsFlag string, fixtures map[string][]string) {
+func seedCapabilityDomainAccounts(t *testing.T, dsn string, fixtures map[string][]string) {
 	t.Helper()
-	db, err := capabilitydomain.OpenSQLite(strings.TrimPrefix(pathsFlag, "business="))
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		t.Fatalf("open business db: %v", err)
+		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := schema.EnsureSQLiteBusiness(context.Background(), db); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	// 造数不需要父行：临时关闭外键（同一连接），插入后恢复。
-	if _, err := db.Exec("PRAGMA foreign_keys=OFF"); err != nil {
-		t.Fatalf("toggle foreign_keys: %v", err)
-	}
-	defer func() { _, _ = db.Exec("PRAGMA foreign_keys=ON") }()
+	// 孤儿/悬空夹具不需要：能力域 fixtures 引用关系只在 accounts 自引用
+	// （本夹具不造实例行），父行已在建库时预置。
 	for id, modes := range fixtures {
 		credentials := map[string]any{"api_key": "sk-" + id}
 		if modes != nil {
@@ -52,34 +69,33 @@ func seedCapabilityDomainAccounts(t *testing.T, pathsFlag string, fixtures map[s
 		if err != nil {
 			t.Fatalf("encrypt: %v", err)
 		}
-		if _, err := db.Exec(`INSERT INTO accounts
+		if _, err := db.Exec(`INSERT INTO "juhe_business"."accounts"
 			(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			 name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at)
-			VALUES (?, 'sys-1', 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, 'm', 'chat_json',
-			 '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, id, id, sealed); err != nil {
+			VALUES ($1, 'sys-1', 'gpt', 'gpt', 'openai', 'v1', $1, 'api_key', $2, 'm', 'chat_json',
+			 '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, id, sealed); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
 }
 
 func TestCapabilityDomainUsageGates(t *testing.T) {
-	paths := capabilityDomainPaths(t)
+	dsn := "postgres://juhe-ai-test.invalid/testdb"
 	cases := []struct {
 		name string
 		argv []string
 	}{
-		{"migrate 缺 stage", []string{"--migrate-account-capability-domain", "--driver", "sqlite", "--paths", paths, "--node-stopped", "--go-stopped", "--backup-confirmed"}},
-		{"migrate 非法 stage", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m3", "--driver", "sqlite", "--paths", paths, "--node-stopped", "--go-stopped", "--backup-confirmed"}},
-		{"migrate 缺 backup 确认", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--driver", "sqlite", "--paths", paths, "--node-stopped", "--go-stopped"}},
-		{"migrate 缺 node-stopped", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--driver", "sqlite", "--paths", paths, "--go-stopped", "--backup-confirmed"}},
-		{"migrate 缺 go-stopped", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--driver", "sqlite", "--paths", paths, "--node-stopped", "--backup-confirmed"}},
-		{"verify 缺 stage", []string{"--verify-account-capability-domain", "--account-capability-domain-check=preflight", "--driver", "sqlite", "--paths", paths}},
-		{"verify 缺 check", []string{"--verify-account-capability-domain", "--account-capability-domain-stage=m1", "--driver", "sqlite", "--paths", paths}},
-		{"verify 非法 check", []string{"--verify-account-capability-domain", "--account-capability-domain-stage=m1", "--account-capability-domain-check=midflight", "--driver", "sqlite", "--paths", paths}},
+		{"migrate 缺 stage", []string{"--migrate-account-capability-domain", "--dsn", dsn, "--node-stopped", "--go-stopped", "--backup-confirmed"}},
+		{"migrate 非法 stage", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m3", "--dsn", dsn, "--node-stopped", "--go-stopped", "--backup-confirmed"}},
+		{"migrate 缺 backup 确认", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--dsn", dsn, "--node-stopped", "--go-stopped"}},
+		{"migrate 缺 node-stopped", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--dsn", dsn, "--go-stopped", "--backup-confirmed"}},
+		{"migrate 缺 go-stopped", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--dsn", dsn, "--node-stopped", "--backup-confirmed"}},
+		{"verify 缺 stage", []string{"--verify-account-capability-domain", "--account-capability-domain-check=preflight", "--dsn", dsn}},
+		{"verify 缺 check", []string{"--verify-account-capability-domain", "--account-capability-domain-stage=m1", "--dsn", dsn}},
+		{"verify 非法 check", []string{"--verify-account-capability-domain", "--account-capability-domain-stage=m1", "--account-capability-domain-check=midflight", "--dsn", dsn}},
 		{"migrate/verify 互斥", []string{"--migrate-account-capability-domain", "--verify-account-capability-domain", "--account-capability-domain-stage=m1"}},
 		{"与其他命令互斥", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--node-stopped", "--go-stopped", "--backup-confirmed", "--ensure-schema"}},
-		{"driver 缺失", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--node-stopped", "--go-stopped", "--backup-confirmed"}},
-		{"sqlite 携带 dsn", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--node-stopped", "--go-stopped", "--backup-confirmed", "--driver", "sqlite", "--paths", paths, "--dsn", "postgres://x/y"}},
+		{"dsn 缺失", []string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--node-stopped", "--go-stopped", "--backup-confirmed"}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -90,19 +106,19 @@ func TestCapabilityDomainUsageGates(t *testing.T) {
 	}
 }
 
-func TestCapabilityDomainSQLiteEndToEnd(t *testing.T) {
-	paths := capabilityDomainPaths(t)
-	seedCapabilityDomainAccounts(t, paths, map[string][]string{
+func TestCapabilityDomainPostgresEndToEnd(t *testing.T) {
+	dsn := newCapabilityDomainTestDB(t)
+	seedCapabilityDomainAccounts(t, dsn, map[string][]string{
 		"acct-chat":  {"chat_json", "chat_sse"},
 		"acct-volc":  {"chat_json", "video_create", "audio_speech"},
 		"acct-video": {"video_create", "video_get", "video_content", "video_cancel"},
 		"acct-audio": {"audio_speech"},
 		"acct-image": {"images_json"},
 	})
-	common := []string{"--driver", "sqlite", "--paths", paths, "--secret", capabilityDomainTestSecret}
+	common := []string{"--dsn", dsn, "--secret", capabilityDomainTestSecret}
 	gates := []string{"--node-stopped", "--go-stopped", "--backup-confirmed"}
 
-	// preflight：域列已由造数 ensure 加好，全部行待迁移 → 正常结果，退出码 0。
+	// preflight：全部行待迁移 → 正常结果，退出码 0。
 	if code := runMaintenance(append([]string{"--verify-account-capability-domain", "--account-capability-domain-stage=m1", "--account-capability-domain-check=preflight"}, common...)); code != 0 {
 		t.Fatalf("preflight exit = %d, want 0", code)
 	}
@@ -118,7 +134,7 @@ func TestCapabilityDomainSQLiteEndToEnd(t *testing.T) {
 	}
 
 	// 落库域断言。
-	db, err := capabilitydomain.OpenSQLite(strings.TrimPrefix(paths, "business="))
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +148,7 @@ func TestCapabilityDomainSQLiteEndToEnd(t *testing.T) {
 	}
 	for id, domain := range want {
 		var got string
-		if err := db.QueryRow(`SELECT capability_domain FROM accounts WHERE id = ?`, id).Scan(&got); err != nil {
+		if err := db.QueryRow(`SELECT capability_domain FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
 		if got != domain {
@@ -144,7 +160,7 @@ func TestCapabilityDomainSQLiteEndToEnd(t *testing.T) {
 	assertModes := func(id string, wantModes []string) {
 		t.Helper()
 		var sealed string
-		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM "juhe_business"."accounts" WHERE id = $1`, id).Scan(&sealed); err != nil {
 			t.Fatal(err)
 		}
 		var credentials map[string]any
@@ -197,24 +213,24 @@ func TestCapabilityDomainSQLiteEndToEnd(t *testing.T) {
 
 // TestCapabilityDomainFailureExitCode 覆盖失败清单路径：退出码 3、阶段保留。
 func TestCapabilityDomainFailureExitCode(t *testing.T) {
-	paths := capabilityDomainPaths(t)
-	seedCapabilityDomainAccounts(t, paths, map[string][]string{
+	dsn := newCapabilityDomainTestDB(t)
+	seedCapabilityDomainAccounts(t, dsn, map[string][]string{
 		"acct-good": {"chat_json"},
 		"acct-bad":  {}, // 缺省 modes → 失败清单
 	})
 	gates := []string{"--node-stopped", "--go-stopped", "--backup-confirmed"}
-	argv := append([]string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--driver", "sqlite", "--paths", paths, "--secret", capabilityDomainTestSecret}, gates...)
+	argv := append([]string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1", "--dsn", dsn, "--secret", capabilityDomainTestSecret}, gates...)
 	if code := runMaintenance(argv); code != 3 {
 		t.Fatalf("migrate with failures exit = %d, want 3", code)
 	}
 	// 阶段保留 m1_running：修复后重跑收敛完成。
-	db, err := capabilitydomain.OpenSQLite(strings.TrimPrefix(paths, "business="))
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	var valueJSON string
-	if err := db.QueryRow(`SELECT value_json FROM global_settings WHERE key = ?`, capdomain.MigrationSettingKey).Scan(&valueJSON); err != nil {
+	if err := db.QueryRow(`SELECT value_json FROM "juhe_business"."global_settings" WHERE key = $1`, capdomain.MigrationSettingKey).Scan(&valueJSON); err != nil {
 		t.Fatalf("read record: %v", err)
 	}
 	record, err := capdomain.ParseRecord(valueJSON)
@@ -225,7 +241,7 @@ func TestCapabilityDomainFailureExitCode(t *testing.T) {
 		t.Fatalf("record stage = %q, want m1_running", record.Stage)
 	}
 	// 修复后同阶段重跑 → 0。
-	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acct-bad'`,
+	if _, err := db.Exec(`UPDATE "juhe_business"."accounts" SET credentials_encrypted = $1 WHERE id = 'acct-bad'`,
 		mustSealedModes(t, "acct-bad", []string{"chat_json"})); err != nil {
 		t.Fatal(err)
 	}
@@ -244,19 +260,4 @@ func mustSealedModes(t *testing.T, id string, modes []string) string {
 		t.Fatal(err)
 	}
 	return sealed
-}
-
-// TestCapabilityDomainPreflightMissingColumn 覆盖 preflight 在列不存在时
-// 正常执行（列从未加过：手动 DROP 需要重建表，直接以无 ensure 的空库模拟
-// 缺列——preflight 报 accounts 表缺失为运行错误；列存在与否的分支行为已由
-// internal/capabilitydomain 覆盖）。这里钉 CLI 层的退出码语义。
-func TestCapabilityDomainPreflightMissingColumn(t *testing.T) {
-	paths := capabilityDomainPaths(t)
-	seedCapabilityDomainAccounts(t, paths, map[string][]string{"acct-chat": {"chat_json"}})
-	if code := accountCapabilityDomainVerifyResult("sqlite", paths, "", capabilityDomainTestSecret, "m1", "preflight"); code != 0 {
-		t.Fatalf("preflight exit = %d, want 0", code)
-	}
-	if code := accountCapabilityDomainVerifyResult("sqlite", paths, "", capabilityDomainTestSecret, "m1", "postflight"); code != 0 {
-		t.Fatalf("postflight exit = %d, want 0", code)
-	}
 }

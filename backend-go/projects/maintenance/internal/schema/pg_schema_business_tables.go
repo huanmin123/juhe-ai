@@ -941,7 +941,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 		// 迁移窗口 shim（provider_code / model 两列与 UNIQUE (account_id, model)
 		// 约束）已按 A 路线一次性收敛撤除。model_id 声明 NOT NULL（B4① 补充，
 		// T52 复核：写面不产 NULL；PG 侧主键本就隐式 NOT NULL，声明只对齐
-		// fresh DDL 与 SQLite 形状，存量 PG 库无需迁移）。
+		// fresh DDL 与已退役 SQLite 形状，存量 PG 库无需迁移）。
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_supported_models (
@@ -1297,7 +1297,7 @@ var postgresSchemaBusinessTables = []PGStatement{
 	{
 		// scheduling_preferences 调度偏好独立实体（调度偏好独立实体
 		// PLAN-20261012T033000000Z P1，接口契约「调度偏好」章；v2 用户裁决修订
-		// 第 4 条）：与 SQLite 版同构（sqlite_schema_business.go
+		// 第 4 条）：与已退役 SQLite 版同构（该 DDL 随 SQLite 存储退役删除）
 		// scheduling_preferences DDL）。system_account_id 内置行恒 NULL（全局
 		// 只读例外）；不加 owner 外键——契约只要求 api_keys 侧引用声明，自定义
 		// 行 owner 非空由写入口事务内校验。enabled 已随 v2 第 4 条退役（创建即
@@ -1343,7 +1343,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       is_default integer NOT NULL DEFAULT 0,
       -- purpose 词表固定三值 legacy 形状（2026-10-14 studio 退场契约修订）：
       -- 'studio' 仅为存量遗留词表值（写路径已在应用层拒绝新建 studio Key），
-      -- 双方言（SQLite 同步在 sqlite_schema_business.go）与一切存量 CHECK
+      -- 与已退役 SQLite 方言 DDL（见 git 历史）同构；一切存量 CHECK
       -- 迁移逻辑保持一致；存量 studio 行/列/表由显式维护命令
       -- juhe-ai-maintenance --apply-studio-retirement 清理，不在 ensure 内。
       purpose text NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat', 'studio')),
@@ -2246,7 +2246,7 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
 	{
 		// 提交门禁透出列（last_test）：PG 的 model_check_question_bank
 		// CREATE TABLE 未内联两列，新库与历史库统一由下方幂等 ALTER 补列
-		//（仅 SQLite 侧建表 DDL 内联声明）。last_test_id 记录
+		//（仅已退役 SQLite 建表 DDL 内联声明，见 git 历史）。last_test_id 记录
 		// 通过门禁的测试记录 id，last_test_json 存题目视图透出的摘要 JSON。
 		SchemaName: "juhe_business",
 		Source:     "model-check-question-bank-lasttest-pg-column",

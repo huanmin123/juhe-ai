@@ -91,17 +91,17 @@ func (s *sourceData) snapshot() *Snapshot {
 }
 
 // loadSource 全量只读加载 11 张配置表并按表清点历史行。
-func loadSource(ctx context.Context, db *sql.DB, dialect Dialect) (*sourceData, error) {
+func loadSource(ctx context.Context, db *sql.DB) (*sourceData, error) {
 	data := &sourceData{tables: map[string]*sourceTable{}, historyCounts: map[string]int{}}
 	for _, def := range configSourceTables {
-		table, err := loadConfigTable(ctx, db, dialect, def)
+		table, err := loadConfigTable(ctx, db, def)
 		if err != nil {
 			return nil, err
 		}
 		data.tables[def.name] = table
 	}
 	for _, def := range historySourceTables {
-		count, missing, err := countHistoryTable(ctx, db, dialect, def)
+		count, missing, err := countHistoryTable(ctx, db, def)
 		if err != nil {
 			return nil, err
 		}
@@ -113,8 +113,8 @@ func loadSource(ctx context.Context, db *sql.DB, dialect Dialect) (*sourceData, 
 	return data, nil
 }
 
-func loadConfigTable(ctx context.Context, db *sql.DB, dialect Dialect, def sourceTableDef) (*sourceTable, error) {
-	query := fmt.Sprintf(`SELECT * FROM %s`, qualifiedName(dialect, def))
+func loadConfigTable(ctx context.Context, db *sql.DB, def sourceTableDef) (*sourceTable, error) {
+	query := fmt.Sprintf(`SELECT * FROM %s`, qualifiedName(def))
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("只读拉取 %s 失败: %w", def.name, err)
@@ -182,10 +182,10 @@ func loadConfigTable(ctx context.Context, db *sql.DB, dialect Dialect, def sourc
 
 // countHistoryTable 只做 SELECT COUNT(*)；表缺失（PG 42P01 / SQLite no such
 // table）按缺失处理，其余错误原样返回。
-func countHistoryTable(ctx context.Context, db *sql.DB, dialect Dialect, def sourceTableDef) (count int, missing bool, err error) {
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s`, qualifiedName(dialect, def))
+func countHistoryTable(ctx context.Context, db *sql.DB, def sourceTableDef) (count int, missing bool, err error) {
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s`, qualifiedName(def))
 	if scanErr := db.QueryRowContext(ctx, query).Scan(&count); scanErr != nil {
-		if historyTableMissing(dialect, scanErr) {
+		if historyTableMissing(scanErr) {
 			return 0, true, nil
 		}
 		return 0, false, fmt.Errorf("清点历史表 %s 失败: %w", def.name, scanErr)
@@ -193,12 +193,10 @@ func countHistoryTable(ctx context.Context, db *sql.DB, dialect Dialect, def sou
 	return count, false, nil
 }
 
-func historyTableMissing(dialect Dialect, err error) bool {
-	if dialect == DialectPostgres {
-		var pgErr interface{ SQLState() string }
-		if errors.As(err, &pgErr) && pgErr.SQLState() == "42P01" {
-			return true
-		}
+func historyTableMissing(err error) bool {
+	var pgErr interface{ SQLState() string }
+	if errors.As(err, &pgErr) && pgErr.SQLState() == "42P01" {
+		return true
 	}
 	message := err.Error()
 	return strings.Contains(message, "no such table") || strings.Contains(message, "does not exist")

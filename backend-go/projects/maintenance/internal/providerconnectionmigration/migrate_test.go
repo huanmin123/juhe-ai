@@ -7,46 +7,45 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// SQLite 内存/临时文件旧 schema fixture：迁移器自建旧表 DDL 造数（不依赖
-// maintenance ensure），跑通 dry-run 全流程并断言 manifest 内容、计数、脱敏
-// 与零写入。
+// 真实 PG 旧 schema fixture（pgtestkit 隔离库）：迁移器自建旧表 DDL 造数
+// （不依赖 maintenance ensure），跑通 dry-run 全流程并断言 manifest 内容、
+// 计数、脱敏与零写入。原 SQLite 文件 fixture 随 SQLite 存储形态退役删除
+// （PLAN-20261024T051925945Z B4）。
 
 const fixtureOldSchemaDDL = `
-CREATE TABLE providers (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, base_url TEXT NOT NULL DEFAULT '', default_health_check_model TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE provider_protocol_profile_families (profile_id TEXT NOT NULL, family_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (profile_id, family_code));
-CREATE TABLE accounts (id TEXT PRIMARY KEY, config_revision INTEGER NOT NULL DEFAULT 1, system_account_id TEXT NOT NULL, provider_code TEXT, provider_protocol_profile_id TEXT, name TEXT NOT NULL DEFAULT '', type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', credentials_encrypted TEXT NOT NULL DEFAULT '', credential_fingerprint TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', health_check_model TEXT, health_check_endpoint_mode TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT 'gpt', description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE group_accounts (group_id TEXT NOT NULL, account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id));
-CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE account_supported_models (account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (account_id, model));
-CREATE TABLE account_model_mappings (account_id TEXT NOT NULL, provider_code TEXT NOT NULL, source_model TEXT NOT NULL, source_endpoint_family TEXT NOT NULL, upstream_model TEXT NOT NULL, upstream_endpoint_family TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, source_model, source_endpoint_family));
-CREATE TABLE provider_model_catalog (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', mode TEXT, supported_api_protocols_json TEXT NOT NULL DEFAULT '[]', service_tier_prices_json TEXT NOT NULL DEFAULT '{}', input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL, long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL, image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL, output_usd_per_image REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE custom_provider_models (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'personal', system_account_id TEXT, status TEXT NOT NULL DEFAULT 'active', supported_api_protocols_json TEXT NOT NULL DEFAULT '[]', service_tier_prices_json TEXT NOT NULL DEFAULT '{}', currency TEXT NOT NULL DEFAULT 'USD', input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL, long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL, image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL, output_usd_per_image REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE usage_records (id TEXT PRIMARY KEY, model TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE audit_logs (id TEXT PRIMARY KEY, action TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE SCHEMA juhe_business;
+CREATE SCHEMA juhe_usage;
+CREATE SCHEMA juhe_dataset;
+CREATE TABLE "juhe_business".providers (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE "juhe_business".provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, base_url TEXT NOT NULL DEFAULT '', default_health_check_model TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE "juhe_business".provider_protocol_profile_families (profile_id TEXT NOT NULL, family_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (profile_id, family_code));
+CREATE TABLE "juhe_business".accounts (id TEXT PRIMARY KEY, config_revision INTEGER NOT NULL DEFAULT 1, system_account_id TEXT NOT NULL, provider_code TEXT, provider_protocol_profile_id TEXT, name TEXT NOT NULL DEFAULT '', type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', credentials_encrypted TEXT NOT NULL DEFAULT '', credential_fingerprint TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', health_check_model TEXT, health_check_endpoint_mode TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE "juhe_business".groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT 'gpt', description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE "juhe_business".group_accounts (group_id TEXT NOT NULL, account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id));
+CREATE TABLE "juhe_business".route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE "juhe_business".account_supported_models (account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (account_id, model));
+CREATE TABLE "juhe_business".account_model_mappings (account_id TEXT NOT NULL, provider_code TEXT NOT NULL, source_model TEXT NOT NULL, source_endpoint_family TEXT NOT NULL, upstream_model TEXT NOT NULL, upstream_endpoint_family TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, source_model, source_endpoint_family));
+CREATE TABLE "juhe_business".provider_model_catalog (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', mode TEXT, supported_api_protocols_json TEXT NOT NULL DEFAULT '[]', service_tier_prices_json TEXT NOT NULL DEFAULT '{}', input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL, long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL, image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL, output_usd_per_image REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE "juhe_business".custom_provider_models (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'personal', system_account_id TEXT, status TEXT NOT NULL DEFAULT 'active', supported_api_protocols_json TEXT NOT NULL DEFAULT '[]', service_tier_prices_json TEXT NOT NULL DEFAULT '{}', currency TEXT NOT NULL DEFAULT 'USD', input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL, long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL, image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL, output_usd_per_image REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE "juhe_usage".usage_records (id TEXT PRIMARY KEY, model TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE "juhe_dataset".audit_logs (id TEXT PRIMARY KEY, action TEXT NOT NULL, created_at TEXT NOT NULL);
 `
 
-func openFixtureDB(t *testing.T) (*sql.DB, string) {
+func openFixtureDB(t *testing.T) *sql.DB {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legacy-business.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc&_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("打开 fixture SQLite 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(fixtureOldSchemaDDL); err != nil {
-		t.Fatalf("建旧 schema fixture 失败: %v", err)
-	}
-	return db, path
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(fixtureOldSchemaDDL)
+		return err
+	})
+	return db
 }
 
 func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
@@ -61,7 +60,7 @@ func tableCounts(t *testing.T, db *sql.DB) map[string]int {
 	counts := map[string]int{}
 	for _, def := range configSourceTables {
 		var count int
-		if err := db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s`, def.name)).Scan(&count); err != nil {
+		if err := db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s`, qualifiedName(def))).Scan(&count); err != nil {
 			t.Fatalf("统计 %s 失败: %v", def.name, err)
 		}
 		counts[def.name] = count
@@ -74,7 +73,7 @@ func seedFixtureDB(t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := "2026-10-01T00:00:00Z"
 	for _, code := range []string{"gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen", "openai", "hybrid"} {
-		mustExec(t, db, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`, "prov-"+code, code, code, now, now)
+		mustExec(t, db, `INSERT INTO "juhe_business".providers (id, code, name, enabled, created_at, updated_at) VALUES ($1, $2, $3, 1, $4, $5)`, "prov-"+code, code, code, now, now)
 	}
 	for _, profile := range []struct{ id, provider, baseURL string }{
 		{"profile_gpt_openai_v1", "gpt", "https://api.openai.com/v1"},
@@ -83,11 +82,11 @@ func seedFixtureDB(t *testing.T, db *sql.DB) {
 		{"profile_deepseek_openai_v1", "deepseek", "https://api.deepseek.com"},
 		{"profile_gemini_native_v1beta", "gemini", "https://generativelanguage.googleapis.com"},
 	} {
-		mustExec(t, db, `INSERT INTO provider_protocol_profiles (id, provider_code, protocol_code, protocol_version, base_url, default_health_check_model, enabled, created_at, updated_at) VALUES (?, ?, 'openai', 'v1', ?, 'm1', 1, ?, ?)`,
+		mustExec(t, db, `INSERT INTO "juhe_business".provider_protocol_profiles (id, provider_code, protocol_code, protocol_version, base_url, default_health_check_model, enabled, created_at, updated_at) VALUES ($1, $2, 'openai', 'v1', $3, 'm1', 1, $4, $5)`,
 			profile.id, profile.provider, profile.baseURL, now, now)
 	}
-	mustExec(t, db, `INSERT INTO provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at) VALUES ('profile_gpt_openai_v1', 'chat_completions', 1, ?, ?)`, now, now)
-	mustExec(t, db, `INSERT INTO provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at) VALUES ('profile_gpt_openai_v1', 'responses', 1, ?, ?)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at) VALUES ('profile_gpt_openai_v1', 'chat_completions', 1, $1, $2)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at) VALUES ('profile_gpt_openai_v1', 'responses', 1, $1, $2)`, now, now)
 
 	// 账户（9 行；预期 accounts_blocked = 5：未知/空白/NULL provider_code、
 	// google_oauth 不可解析、非法 type）。
@@ -96,8 +95,8 @@ func seedFixtureDB(t *testing.T, db *sql.DB) {
 		if len(extraAuth) == 3 {
 			authSource, authID, authOwner = extraAuth[0], extraAuth[1], extraAuth[2]
 		}
-		mustExec(t, db, `INSERT INTO accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, name, type, status, credentials_encrypted, capability_domain, health_check_model, health_check_endpoint_mode, authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id, created_at, updated_at)
-			VALUES (?, ?, 'sys_admin', ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mustExec(t, db, `INSERT INTO "juhe_business".accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, name, type, status, credentials_encrypted, capability_domain, health_check_model, health_check_endpoint_mode, authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id, created_at, updated_at)
+			VALUES ($1, $2, 'sys_admin', $3, $4, $5, $6, 'active', $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 			id, revision, provider, profile, id, accountType, "v1:SECRET-IV:SECRET-TAG:SECRET-CIPHER-"+id, domain, healthModel, healthMode, authSource, authID, authOwner, now, now)
 	}
 	insertAccount("acc-gpt", "gpt", "profile_gpt_openai_v1", "api_key", "chat", 3, "m1", "chat_json")
@@ -105,14 +104,14 @@ func seedFixtureDB(t *testing.T, db *sql.DB) {
 	insertAccount("acc-hybrid", "hybrid", "profile_hybrid_openai_chat_v1", "api_key", "chat", 1, "", "")
 	insertAccount("acc-badprov", "unknown_ai", "profile_gpt_openai_v1", "api_key", "chat", 1, "m1", "chat_json")
 	insertAccount("acc-blank", " gpt ", "profile_gpt_openai_v1", "api_key", "chat", 1, "m1", "chat_json")
-	mustExec(t, db, `INSERT INTO accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, name, type, status, credentials_encrypted, capability_domain, created_at, updated_at) VALUES ('acc-nullprov', 1, 'sys_admin', NULL, NULL, 'n', 'api_key', 'active', 'v1:x', 'chat', ?, ?)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, name, type, status, credentials_encrypted, capability_domain, created_at, updated_at) VALUES ('acc-nullprov', 1, 'sys_admin', NULL, NULL, 'n', 'api_key', 'active', 'v1:x', 'chat', $1, $2)`, now, now)
 	insertAccount("acc-gemini-oauth", "gemini", "profile_gemini_native_v1beta", "google_oauth", "chat", 1, "", "")
 	insertAccount("acc-badtype", "gpt", "profile_gpt_openai_v1", "session", "chat", 1, "m1", "chat_json")
 	insertAccount("acc-authinst", "gpt", "profile_gpt_openai_v1", "api_key", "chat", 1, "", "", "acc-gpt", "auth-1", "sys_admin")
 
 	// 模型目录（catalog 6 行 + custom 2 行；预期 models_blocked = 4）。
 	insertCatalog := func(id, provider, model, protocols string, inputPrice any) {
-		mustExec(t, db, `INSERT INTO provider_model_catalog (id, provider_code, model, status, mode, supported_api_protocols_json, service_tier_prices_json, input_usd_per_1m, created_at, updated_at) VALUES (?, ?, ?, 'active', 'chat', ?, '{}', ?, ?, ?)`,
+		mustExec(t, db, `INSERT INTO "juhe_business".provider_model_catalog (id, provider_code, model, status, mode, supported_api_protocols_json, service_tier_prices_json, input_usd_per_1m, created_at, updated_at) VALUES ($1, $2, $3, 'active', 'chat', $4, '{}', $5, $6, $7)`,
 			id, provider, model, protocols, inputPrice, now, now)
 	}
 	insertCatalog("cat-1", "gpt", "m1", `["chat_completions","responses"]`, 1.5)
@@ -121,12 +120,12 @@ func seedFixtureDB(t *testing.T, db *sql.DB) {
 	insertCatalog("cat-unpriced", "gpt", "free-chat", `["chat_completions"]`, nil)
 	insertCatalog("cat-weird", "gpt", "legacy", `["completions"]`, 1.0)
 	insertCatalog("cat-dup", "qwen", "dup-model", `["video"]`, nil)
-	mustExec(t, db, `INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, supported_api_protocols_json, service_tier_prices_json, currency, input_usd_per_1m, created_at, updated_at) VALUES ('cus-1', 'glm', 'mine', 'personal', 'sys_admin', 'active', '["chat_completions"]', '{}', 'CNY', 0.5, ?, ?)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".custom_provider_models (id, provider_code, model, scope, system_account_id, status, supported_api_protocols_json, service_tier_prices_json, currency, input_usd_per_1m, created_at, updated_at) VALUES ('cus-1', 'glm', 'mine', 'personal', 'sys_admin', 'active', '["chat_completions"]', '{}', 'CNY', 0.5, $1, $2)`, now, now)
 	// 同一 (vendor, scope, owner, upstream_model) 身份在 custom 表内出现两行
 	// → 规则 10 同身份冲突，两行都阻塞（catalog 恒 builtin、custom 至多
 	// global/personal，跨表身份不会重复）。
-	mustExec(t, db, `INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, supported_api_protocols_json, service_tier_prices_json, currency, created_at, updated_at) VALUES ('cus-dup', 'qwen', 'dup-model', 'personal', 'sys_admin', 'active', '["video"]', '{}', 'USD', ?, ?)`, now, now)
-	mustExec(t, db, `INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, supported_api_protocols_json, service_tier_prices_json, currency, created_at, updated_at) VALUES ('cus-dup2', 'qwen', 'dup-model', 'personal', 'sys_admin', 'active', '["video"]', '{}', 'USD', ?, ?)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".custom_provider_models (id, provider_code, model, scope, system_account_id, status, supported_api_protocols_json, service_tier_prices_json, currency, created_at, updated_at) VALUES ('cus-dup', 'qwen', 'dup-model', 'personal', 'sys_admin', 'active', '["video"]', '{}', 'USD', $1, $2)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".custom_provider_models (id, provider_code, model, scope, system_account_id, status, supported_api_protocols_json, service_tier_prices_json, currency, created_at, updated_at) VALUES ('cus-dup2', 'qwen', 'dup-model', 'personal', 'sys_admin', 'active', '["video"]', '{}', 'USD', $1, $2)`, now, now)
 
 	// 支持模型（5 行；预期 account_supported_models_blocked = 1 的 ghost）。
 	for _, row := range [][3]string{
@@ -136,47 +135,47 @@ func seedFixtureDB(t *testing.T, db *sql.DB) {
 		{"acc-gpt", "glm", "ghost"},
 		{"acc-badprov", "unknown_ai", "m"},
 	} {
-		mustExec(t, db, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, ?, ?, ?)`, row[0], row[1], row[2], now)
+		mustExec(t, db, `INSERT INTO "juhe_business".account_supported_models (account_id, provider_code, model, created_at) VALUES ($1, $2, $3, $4)`, row[0], row[1], row[2], now)
 	}
 
 	// 映射（3 行；预期 mappings_blocked = 1 的 ghost upstream）。
-	mustExec(t, db, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('acc-openai', 'openai', 'shared', 'chat_completions', 'shared', 'chat_completions', 1, ?, ?)`, now, now)
-	mustExec(t, db, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('acc-hybrid', 'deepseek', 'client-a', 'chat_completions', 'deepseek-chat', 'chat_completions', 1, ?, ?)`, now, now)
-	mustExec(t, db, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('acc-hybrid', 'deepseek', 'client-b', 'chat_completions', 'ghost-model', 'chat_completions', 1, ?, ?)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('acc-openai', 'openai', 'shared', 'chat_completions', 'shared', 'chat_completions', 1, $1, $2)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('acc-hybrid', 'deepseek', 'client-a', 'chat_completions', 'deepseek-chat', 'chat_completions', 1, $1, $2)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('acc-hybrid', 'deepseek', 'client-b', 'chat_completions', 'ghost-model', 'chat_completions', 1, $1, $2)`, now, now)
 
 	// 分组（5 行；预期 groups_blocked = 4：同名 2 + 多默认 2）。
 	insertGroup := func(id, owner, name string, isDefault int) {
-		mustExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at) VALUES (?, ?, ?, 'gpt', 1, ?, 'personal', ?, ?)`, id, owner, name, isDefault, now, now)
+		mustExec(t, db, `INSERT INTO "juhe_business".groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at) VALUES ($1, $2, $3, 'gpt', 1, $4, 'personal', $5, $6)`, id, owner, name, isDefault, now, now)
 	}
 	insertGroup("grp-clean", "sys_admin", "清洁组", 0)
 	insertGroup("grp-dup-a", "sys_admin", "默认", 0)
 	insertGroup("grp-dup-b", "sys_admin", "默认", 0)
 	insertGroup("grp-def-a", "owner2", "A", 1)
 	insertGroup("grp-def-b", "owner2", "B", 1)
-	mustExec(t, db, `INSERT INTO group_accounts (group_id, account_id, system_account_id, enabled, created_at, updated_at) VALUES ('grp-clean', 'acc-gpt', 'sys_admin', 1, ?, ?)`, now, now)
-	mustExec(t, db, `INSERT INTO group_accounts (group_id, account_id, system_account_id, enabled, created_at, updated_at) VALUES ('grp-dup-a', 'acc-gpt', 'sys_admin', 1, ?, ?)`, now, now)
-	mustExec(t, db, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at) VALUES ('rsg-1', 'rs-1', 'sys_admin', 'grp-clean', 'active', ?, ?)`, now, now)
-	mustExec(t, db, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at) VALUES ('rsg-2', 'rs-1', 'sys_admin', 'grp-dup-a', 'active', ?, ?)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".group_accounts (group_id, account_id, system_account_id, enabled, created_at, updated_at) VALUES ('grp-clean', 'acc-gpt', 'sys_admin', 1, $1, $2)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".group_accounts (group_id, account_id, system_account_id, enabled, created_at, updated_at) VALUES ('grp-dup-a', 'acc-gpt', 'sys_admin', 1, $1, $2)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at) VALUES ('rsg-1', 'rs-1', 'sys_admin', 'grp-clean', 'active', $1, $2)`, now, now)
+	mustExec(t, db, `INSERT INTO "juhe_business".route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at) VALUES ('rsg-2', 'rs-1', 'sys_admin', 'grp-dup-a', 'active', $1, $2)`, now, now)
 
 	// 历史行（usage 3 + audit 2；model_check_runs 表故意不建 → 缺表 note）。
 	for index := 0; index < 3; index++ {
-		mustExec(t, db, `INSERT INTO usage_records (id, model, created_at) VALUES (?, 'm1', ?)`, fmt.Sprintf("u-%d", index), now)
+		mustExec(t, db, `INSERT INTO "juhe_usage".usage_records (id, model, created_at) VALUES ($1, 'm1', $2)`, fmt.Sprintf("u-%d", index), now)
 	}
 	for index := 0; index < 2; index++ {
-		mustExec(t, db, `INSERT INTO audit_logs (id, action, created_at) VALUES (?, 'request', ?)`, fmt.Sprintf("a-%d", index), now)
+		mustExec(t, db, `INSERT INTO "juhe_dataset".audit_logs (id, action, created_at) VALUES ($1, 'request', $2)`, fmt.Sprintf("a-%d", index), now)
 	}
 }
 
-func TestDryRunSQLiteFixtureFullFlow(t *testing.T) {
-	db, path := openFixtureDB(t)
+func TestDryRunPGFixtureFullFlow(t *testing.T) {
+	db := openFixtureDB(t)
 	seedFixtureDB(t, db)
 	beforeCounts := tableCounts(t, db)
 
 	fixedNow := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
-	manifest, err := DryRun(context.Background(), db, Options{Dialect: DialectSQLite, Now: fixedNow})
+	manifest, err := DryRun(context.Background(), db, Options{Now: fixedNow})
 	if err != nil {
 		t.Fatalf("dry-run 失败: %v", err)
 	}
@@ -326,7 +325,7 @@ func TestDryRunSQLiteFixtureFullFlow(t *testing.T) {
 	})
 
 	// snapshot hash 确定性：同库重跑 hash 逐字节相同。
-	repeat, err := DryRun(context.Background(), db, Options{Dialect: DialectSQLite, Now: fixedNow})
+	repeat, err := DryRun(context.Background(), db, Options{Now: fixedNow})
 	if err != nil {
 		t.Fatalf("重跑 dry-run 失败: %v", err)
 	}
@@ -340,12 +339,5 @@ func TestDryRunSQLiteFixtureFullFlow(t *testing.T) {
 		if afterCounts[name] != count {
 			t.Fatalf("dry-run 修改了数据库（%s: %d → %d）", name, count, afterCounts[name])
 		}
-	}
-	_ = path
-}
-
-func TestDryRunRejectsUnknownDialect(t *testing.T) {
-	if _, err := DryRun(context.Background(), nil, Options{Dialect: "mysql"}); err == nil {
-		t.Fatalf("未知方言必须拒绝")
 	}
 }

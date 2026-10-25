@@ -1,12 +1,12 @@
 package j3bmodelcheck
 
 // w12g 波次：用 w12gFakeConn 脚本驱动 bootstrap.go 的 PostgreSQL 检查链
-// （inspectTx / inspectColumns / inspectConstraints）与 SQLite 升级链
-// （ensureSQLite*Columns），覆盖查询错误、Scan 错误、迭代错误与 DDL 失败分支。
+// （inspectTx / inspectColumns / inspectConstraints），覆盖查询错误、Scan
+// 错误、迭代错误与 DDL 失败分支。SQLite 升级链（ensureSQLite*Columns）随
+// SQLite 存储形态退役删除（PLAN-20261024T051925945Z B4）。
 
 import (
 	"context"
-	"database/sql"
 	"database/sql/driver"
 	"testing"
 )
@@ -124,70 +124,6 @@ func TestW12GInspectTxScriptedBranches(t *testing.T) {
 		defer tx.Rollback()
 		if _, err := inspectTx(ctx, tx); err == nil {
 			t.Fatal("索引迭代失败必须上抛")
-		}
-	})
-}
-
-func TestW12GEnsureSQLiteColumnsScripted(t *testing.T) {
-	ctx := context.Background()
-	runEnsure := func(t *testing.T, conn *w12gFakeConn, ensure func(context.Context, *sql.Tx) error) error {
-		t.Helper()
-		db := w12gFakeDB(t, conn)
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		return ensure(ctx, tx)
-	}
-
-	t.Run("run columns query error", func(t *testing.T) {
-		err := runEnsure(t, &w12gFakeConn{queries: []w12gFakeQuery{{match: "table_info", err: errW12GDriver}}}, ensureSQLiteRunColumns)
-		if err == nil {
-			t.Fatal("run 列查询失败必须上抛")
-		}
-	})
-	t.Run("run columns alter error", func(t *testing.T) {
-		conn := &w12gFakeConn{
-			queries: []w12gFakeQuery{{rows: w12gTableInfo([]string{"id"}, nil)}},
-			execErr: errW12GDriver,
-		}
-		if err := runEnsure(t, conn, ensureSQLiteRunColumns); err == nil {
-			t.Fatal("run 列 ALTER 失败必须上抛")
-		}
-	})
-	t.Run("run columns scan and iterate errors", func(t *testing.T) {
-		err := runEnsure(t, &w12gFakeConn{queries: []w12gFakeQuery{{rows: w12gRowsBadTableInfo()}}}, ensureSQLiteRunColumns)
-		if err == nil {
-			t.Fatal("run 列 Scan 失败必须上抛")
-		}
-		err = runEnsure(t, &w12gFakeConn{queries: []w12gFakeQuery{{rows: w12gRowsIterErrTableInfo()}}}, ensureSQLiteRunColumns)
-		if err == nil {
-			t.Fatal("run 列迭代失败必须上抛")
-		}
-	})
-	t.Run("observation columns failures", func(t *testing.T) {
-		if err := runEnsure(t, &w12gFakeConn{queries: []w12gFakeQuery{{match: "table_info", err: errW12GDriver}}}, ensureSQLiteObservationColumns); err == nil {
-			t.Fatal("observation 列查询失败必须上抛")
-		}
-		conn := &w12gFakeConn{
-			queries: []w12gFakeQuery{{rows: w12gTableInfo([]string{"id"}, nil)}},
-			execErr: errW12GDriver,
-		}
-		if err := runEnsure(t, conn, ensureSQLiteObservationColumns); err == nil {
-			t.Fatal("observation 列 ALTER 失败必须上抛")
-		}
-	})
-	t.Run("trust columns failures", func(t *testing.T) {
-		if err := runEnsure(t, &w12gFakeConn{queries: []w12gFakeQuery{{match: "table_info", err: errW12GDriver}}}, ensureSQLiteTrustAggregationColumns); err == nil {
-			t.Fatal("trust 列查询失败必须上抛")
-		}
-		conn := &w12gFakeConn{
-			queries: []w12gFakeQuery{{rows: w12gTableInfo([]string{"scope_key"}, nil)}},
-			execErr: errW12GDriver,
-		}
-		if err := runEnsure(t, conn, ensureSQLiteTrustAggregationColumns); err == nil {
-			t.Fatal("trust 列 ALTER 失败必须上抛")
 		}
 	})
 }
