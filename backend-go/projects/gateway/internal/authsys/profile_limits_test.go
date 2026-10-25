@@ -50,6 +50,71 @@ func TestProfileIncludesEffectiveRequestLimits(t *testing.T) {
 	}
 }
 
+func TestProfileIncludesEffectiveAccountLimits(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	aiLimit := 25
+	expeditedLimit := 0
+	if _, err := deps.Accounts.Create(nil, CreateInput{
+		Username:               "capped",
+		DisplayName:            "Capped",
+		Password:               "capped-pass",
+		Role:                   "user",
+		MustChangePassword:     boolPtr(false),
+		AIAccountLimit:         &aiLimit,
+		ExpeditedAccountLimit:  &expeditedLimit,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.Accounts.Create(nil, CreateInput{
+		Username:           "inherit",
+		DisplayName:        "Inherit",
+		Password:           "inherit-pass",
+		Role:               "user",
+		MustChangePassword: boolPtr(false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 覆盖用户：AI 上限取覆盖值；特供名额取覆盖值（0 = 禁止，原样透出）。
+	cookie := login(t, server, "capped", "capped-pass")
+	response, payload := getJSON(t, server, "/__aisys__/api/auth/profile", cookie)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("profile: %d %v", response.StatusCode, payload)
+	}
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("profile data missing: %v", payload)
+	}
+	aiAccountLimit, ok := data["effectiveAiAccountLimit"].(map[string]any)
+	if !ok || aiAccountLimit["limit"] != float64(25) || aiAccountLimit["source"] != "user" {
+		t.Fatalf("ai account limit override mismatch: %v", data["effectiveAiAccountLimit"])
+	}
+	expeditedAccountLimit, ok := data["effectiveExpeditedAccountLimit"].(map[string]any)
+	if !ok || expeditedAccountLimit["limit"] != float64(0) || expeditedAccountLimit["source"] != "user" {
+		t.Fatalf("expedited account limit override mismatch: %v", data["effectiveExpeditedAccountLimit"])
+	}
+
+	// 未覆盖用户：AI 上限回退全局设置（未配置时取 schema 缺省 100）；
+	// 特供名额回退内置默认 3。
+	inheritCookie := login(t, server, "inherit", "inherit-pass")
+	inheritResponse, inheritPayload := getJSON(t, server, "/__aisys__/api/auth/profile", inheritCookie)
+	if inheritResponse.StatusCode != http.StatusOK {
+		t.Fatalf("inherit profile: %d %v", inheritResponse.StatusCode, inheritPayload)
+	}
+	inheritData, ok := inheritPayload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("inherit profile data missing: %v", inheritPayload)
+	}
+	inheritAI, ok := inheritData["effectiveAiAccountLimit"].(map[string]any)
+	if !ok || inheritAI["limit"] != float64(100) || inheritAI["source"] != "global" {
+		t.Fatalf("ai account limit global fallback mismatch: %v", inheritData["effectiveAiAccountLimit"])
+	}
+	inheritExpedited, ok := inheritData["effectiveExpeditedAccountLimit"].(map[string]any)
+	if !ok || inheritExpedited["limit"] != float64(3) || inheritExpedited["source"] != "global" {
+		t.Fatalf("expedited account limit default mismatch: %v", inheritData["effectiveExpeditedAccountLimit"])
+	}
+}
+
 func TestProfileExpiredRequestLimitOverrideFallsBackToGlobal(t *testing.T) {
 	deps, _, server := newTestEnv(t)
 	perDay := 42

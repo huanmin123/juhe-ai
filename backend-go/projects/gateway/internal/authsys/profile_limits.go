@@ -28,6 +28,12 @@ var userRequestLimitSettingKeys = [...]string{
 type ProfileResponse struct {
 	AccountSummary
 	EffectiveRequestLimits EffectiveUserRequestLimits `json:"effectiveRequestLimits"`
+	// 2026-10-24 用户裁决：个人信息「账户上限」卡片所需的两个生效值，
+	// 解析语义与各自执行侧一致（AI 上限照 accounts/write.go 的
+	// effectiveAiAccountCreationLimit；特供名额照 accounts/expedited_recovery.go
+	// 的内置默认 3），管理面、个人信息与执行侧不各自复制规则。
+	EffectiveAiAccountLimit        EffectiveUserRequestLimitValue `json:"effectiveAiAccountLimit"`
+	EffectiveExpeditedAccountLimit EffectiveUserRequestLimitValue `json:"effectiveExpeditedAccountLimit"`
 }
 
 type EffectiveUserRequestLimits struct {
@@ -80,6 +86,62 @@ func (d *Deps) effectiveUserRequestLimits(ctx context.Context, overrides *UserRe
 		OverrideExpiresOn: overrideExpiresOn(normalizedOverrides),
 		OverrideActive:    active,
 	}, nil
+}
+
+// profile 侧账户上限常量镜像执行侧：defaultUserAiAccountLimit（accounts/write.go，
+// userAiAccountLimit 设置 schema 缺省）与 defaultExpeditedAccountLimit
+// （accounts/expedited_recovery.go，特供名额内置默认）。
+const (
+	profileDefaultUserAiAccountLimit    = 100
+	profileDefaultExpeditedAccountLimit = 3
+	maxProfileAiAccountLimit            = 1_000_000
+)
+
+const profileUserAiAccountLimitSettingKey = "userAiAccountLimit"
+
+// effectiveAccountLimits 解析个人信息两个账户上限生效值：用户覆盖优先并标记
+// source=user，否则回退全局并标记 source=global。AI 上限的越界判定照执行侧
+// effectiveAiAccountCreationLimit（[0, 1_000_000] 之外为配置无效）。
+func (d *Deps) effectiveAccountLimits(ctx context.Context, aiOverride, expeditedOverride *int) (EffectiveUserRequestLimitValue, EffectiveUserRequestLimitValue, error) {
+	aiLimit, err := d.effectiveProfileAiAccountLimit(ctx, aiOverride)
+	if err != nil {
+		return EffectiveUserRequestLimitValue{}, EffectiveUserRequestLimitValue{}, err
+	}
+	return aiLimit, effectiveProfileExpeditedAccountLimit(expeditedOverride), nil
+}
+
+func (d *Deps) effectiveProfileAiAccountLimit(ctx context.Context, override *int) (EffectiveUserRequestLimitValue, error) {
+	if override != nil {
+		if *override < 0 || *override > maxProfileAiAccountLimit {
+			return EffectiveUserRequestLimitValue{}, errors.New("AI 账户数量限制配置无效")
+		}
+		return EffectiveUserRequestLimitValue{Limit: *override, Source: "user"}, nil
+	}
+	if d.Settings != nil {
+		setting, ok, err := d.Settings.GetSystem(ctx, systemSettingsAccountID, profileUserAiAccountLimitSettingKey)
+		if err != nil {
+			return EffectiveUserRequestLimitValue{}, err
+		}
+		if ok && strings.TrimSpace(setting.ValueJSON) != "" {
+			var number json.Number
+			if parseErr := json.Unmarshal([]byte(strings.TrimSpace(setting.ValueJSON)), &number); parseErr != nil {
+				return EffectiveUserRequestLimitValue{}, errors.New("AI 账户数量限制配置无效")
+			}
+			value, convErr := strconv.ParseFloat(string(number), 64)
+			if convErr != nil || value < 0 || value > float64(maxProfileAiAccountLimit) || math.Trunc(value) != value {
+				return EffectiveUserRequestLimitValue{}, errors.New("AI 账户数量限制配置无效")
+			}
+			return EffectiveUserRequestLimitValue{Limit: int(value), Source: "global"}, nil
+		}
+	}
+	return EffectiveUserRequestLimitValue{Limit: profileDefaultUserAiAccountLimit, Source: "global"}, nil
+}
+
+func effectiveProfileExpeditedAccountLimit(override *int) EffectiveUserRequestLimitValue {
+	if override != nil {
+		return EffectiveUserRequestLimitValue{Limit: *override, Source: "user"}
+	}
+	return EffectiveUserRequestLimitValue{Limit: profileDefaultExpeditedAccountLimit, Source: "global"}
 }
 
 func (d *Deps) loadUserRequestLimitSettings(ctx context.Context) (userRequestLimitSettings, error) {

@@ -158,9 +158,6 @@
       </div>
 
       <a-card class="page-card profile-limit-card" title="请求限制">
-        <template #extra>
-          <span class="profile-limit-timezone">统计时区：{{ profile.effectiveRequestLimits.timezone }}</span>
-        </template>
         <div class="profile-limit-grid">
           <div v-for="item in requestLimitItems" :key="item.key" class="profile-limit-item">
             <span class="profile-limit-icon"><component :is="item.icon" /></span>
@@ -178,6 +175,22 @@
             ? `用户单独配置有效至 ${profile.effectiveRequestLimits.overrideExpiresOn}，到期次日自动继承全局。`
             : `用户单独配置已于 ${profile.effectiveRequestLimits.overrideExpiresOn} 到期，当前已继承全局。` }}
         </div>
+      </a-card>
+
+      <a-card class="page-card profile-limit-card" title="账户上限">
+        <div class="profile-limit-grid profile-account-limit-grid">
+          <div v-for="item in accountLimitItems" :key="item.key" class="profile-limit-item">
+            <span class="profile-limit-icon"><component :is="item.icon" /></span>
+            <div class="profile-limit-copy">
+              <span>{{ item.label }}</span>
+              <strong>{{ accountLimitText(item) }}</strong>
+            </div>
+            <a-tag :color="item.source === 'user' ? 'blue' : 'default'">
+              {{ item.source === 'user' ? '单独配置' : '全局默认' }}
+            </a-tag>
+          </div>
+        </div>
+        <div class="profile-limit-hint">AI 账户数量 0 表示不限制；特供账户名额 0 表示禁止新增或重新启用特供。名额由管理员配置，如需调整请联系管理员。</div>
       </a-card>
 
       <div ref="securitySection">
@@ -251,6 +264,7 @@
 
 <script setup lang="ts">
 import {
+  AppstoreOutlined,
   CalendarOutlined,
   CheckCircleOutlined,
   EditOutlined,
@@ -319,6 +333,15 @@ const requestLimitItems = computed(() => {
     { key: 'day', label: '每日', icon: CalendarOutlined, ...limits.perDay },
     { key: 'week', label: '每周', icon: ScheduleOutlined, ...limits.perWeek },
     { key: 'month', label: '每月', icon: FieldTimeOutlined, ...limits.perMonth }
+  ]
+})
+const accountLimitItems = computed(() => {
+  const ai = profile.value?.effectiveAiAccountLimit
+  const expedited = profile.value?.effectiveExpeditedAccountLimit
+  if (!ai || !expedited) return []
+  return [
+    { key: 'ai', label: 'AI 账户数量', icon: AppstoreOutlined, source: ai.source, limit: ai.limit, zeroText: '不限制' },
+    { key: 'expedited', label: '特供账户名额', icon: ThunderboltOutlined, source: expedited.source, limit: expedited.limit, zeroText: '已禁止' }
   ]
 })
 watch(
@@ -429,6 +452,10 @@ function resetPasswordForm(): void {
 
 function requestLimitText(limit: number): string {
   return limit === 0 ? '无限制' : `${formatNumber(limit)} 次`
+}
+
+function accountLimitText(item: { limit: number; zeroText: string }): string {
+  return item.limit === 0 ? item.zeroText : `${formatNumber(item.limit)} 个`
 }
 
 async function focusRequestedSection(): Promise<void> {
@@ -571,11 +598,6 @@ async function focusRequestedSection(): Promise<void> {
   padding: 6px 24px 18px;
 }
 
-.profile-limit-timezone {
-  color: var(--juhe-muted);
-  font-size: 12px;
-}
-
 .profile-limit-expiry {
   margin-top: 16px;
   padding: 10px 12px;
@@ -593,6 +615,16 @@ async function focusRequestedSection(): Promise<void> {
 .profile-limit-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.profile-account-limit-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.profile-limit-hint {
+  margin-top: 14px;
+  color: var(--juhe-muted);
+  font-size: 12px;
 }
 
 .profile-limit-item {
@@ -929,6 +961,11 @@ async function focusRequestedSection(): Promise<void> {
     border-bottom: 1px solid var(--juhe-border);
   }
 
+  /* 两格「账户上限」在 ≤900px 仍是一行两列，不加行间横线 */
+  .profile-account-limit-grid .profile-limit-item {
+    border-bottom: 0;
+  }
+
 }
 
 @media (max-width: 640px) {
@@ -1005,14 +1042,6 @@ async function focusRequestedSection(): Promise<void> {
     gap: 12px;
   }
 
-  .profile-limit-card :deep(.ant-card-head) {
-    align-items: flex-start;
-  }
-
-  .profile-limit-timezone {
-    display: none;
-  }
-
   .profile-limit-grid {
     grid-template-columns: 1fr;
   }
@@ -1024,6 +1053,16 @@ async function focusRequestedSection(): Promise<void> {
   }
 
   .profile-limit-item:last-child {
+    border-bottom: 0;
+  }
+
+  .profile-account-limit-grid .profile-limit-item,
+  .profile-account-limit-grid .profile-limit-item:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--juhe-border);
+  }
+
+  .profile-account-limit-grid .profile-limit-item:last-child {
     border-bottom: 0;
   }
 

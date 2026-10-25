@@ -136,6 +136,7 @@ SQLite reader 同名同列同步（direct_input_reader_sqlite.go）
 2. 校验：非空时必须为 0–100 整数；审计与 `updated_at` 沿用系统账户补丁既有链路。
 3. 前端：系统账户编辑弹窗"用户限制"区增"特供账户上限"输入框，占位说明"默认 3，0 = 禁止新增/重新启用"。
 4. 账户列表：行操作"设为特供 / 取消特供"；特供徽章；状态卡片在特供账户上展示加速节奏摘要（例如"特供恢复：中性封顶基准 1 分钟，实际 30–90 秒"），不得表述为调度优先级。
+5. 个人信息（2026-10-24 用户裁决）：`GET /__aisys__/api/auth/profile` 响应新增 `effectiveExpeditedAccountLimit`（`{limit, source=global|user}`；覆盖 → `source=user`，NULL → 内置默认 3、`source=global`，`0` 语义为禁止新增/重新启用），个人信息页「账户上限」卡片向归属用户只读展示其名额与来源，契约见 [接口契约与权限矩阵](接口契约与权限矩阵.md)「auth/profile」。
 
 ## 9. 名额校验与并发（精确契约）
 

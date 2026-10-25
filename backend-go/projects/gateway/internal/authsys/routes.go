@@ -201,11 +201,21 @@ func (d *Deps) getProfile(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
+	aiAccountLimit, expeditedAccountLimit, err := d.effectiveAccountLimits(r.Context(), summary.AIAccountLimit, summary.ExpeditedAccountLimit)
+	if err != nil {
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+		return
+	}
 	if summary.ID == "" {
 		kernel.WriteError(w, http.StatusNotFound, "系统账户不存在")
 		return
 	}
-	kernel.WriteOK(w, ProfileResponse{AccountSummary: summary, EffectiveRequestLimits: effective}, "")
+	kernel.WriteOK(w, ProfileResponse{
+		AccountSummary:                 summary,
+		EffectiveRequestLimits:         effective,
+		EffectiveAiAccountLimit:        aiAccountLimit,
+		EffectiveExpeditedAccountLimit: expeditedAccountLimit,
+	}, "")
 }
 
 func (d *Deps) patchMe(w http.ResponseWriter, r *http.Request) {

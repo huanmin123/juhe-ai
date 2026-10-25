@@ -58,6 +58,10 @@ export interface EffectiveUserRequestLimits {
 
 export interface CurrentUserProfile extends SystemAccountSummary {
   effectiveRequestLimits: EffectiveUserRequestLimits
+  /** 生效 AI 账户数量上限：用户覆盖 → 全局设置 userAiAccountLimit（缺省 100）；0 = 不限制。 */
+  effectiveAiAccountLimit: EffectiveUserRequestLimitValue
+  /** 生效特供账户名额：用户覆盖 → 内置默认 3；0 = 禁止新增/重新启用。 */
+  effectiveExpeditedAccountLimit: EffectiveUserRequestLimitValue
 }
 
 export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'> & {

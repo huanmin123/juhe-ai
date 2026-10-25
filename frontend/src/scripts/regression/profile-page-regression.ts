@@ -37,10 +37,12 @@ for (const marker of ['系统角色', '图像生成', '账户状态', '最近登
   assert(profileSource.includes(marker), `个人信息页面缺少展示项：${marker}`)
 }
 // 2026-10-24 用户裁决恢复个人信息「请求限制」展示（对齐 docs/functions/用户请求限制设计.md §个人信息，
-// 原「不得展示内部限制信息」禁令随 906afe91d 的删除一起作废）。
-for (const marker of ['请求限制', '统计时区', '每分钟', '每日', '每周', '每月', '单独配置', '全局默认', '无限制']) {
+// 原「不得展示内部限制信息」禁令随 906afe91d 的删除一起作废）；同裁决新增「账户上限」卡片，
+// 「统计时区」按用户裁决不展示。
+for (const marker of ['请求限制', '每分钟', '每日', '每周', '每月', '单独配置', '全局默认', '无限制', '账户上限', 'AI 账户数量', '特供账户名额']) {
   assert(profileSource.includes(marker), `个人信息页面缺少请求限制展示项：${marker}`)
 }
+assert(!profileSource.includes('统计时区'), '个人信息页不得展示统计时区')
 
 const layoutDirectory = fileURLToPath(new URL('../../layouts/', import.meta.url))
 assert.equal(existsSync(`${layoutDirectory}DisplayNameModal.vue`), false, '旧名称弹窗组件必须删除')
