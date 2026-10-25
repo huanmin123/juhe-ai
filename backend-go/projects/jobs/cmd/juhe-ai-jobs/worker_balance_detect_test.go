@@ -23,8 +23,11 @@ import (
 // （§9.11：provider_code 已删，身份 = vendor_code（nullable；余额候选经
 // Input.Validate 要求非空真实厂商）+ connection_driver_code）。
 func balanceFixtureSchema(ctx context.Context, businessDB, statsDB *sql.DB) error {
+	// PG 唯一形态：单库 schema 限定（business/stats 两个参数传入同一测试库；
+	// 原 SQLite 双文件夹具随 sqlite 形态退役删除）。
 	businessSchema := `
-CREATE TABLE IF NOT EXISTS accounts (
+CREATE SCHEMA IF NOT EXISTS juhe_business;
+CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   id TEXT PRIMARY KEY,
   system_account_id TEXT NOT NULL,
   vendor_code TEXT,
@@ -41,9 +44,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   balance_query_enabled INTEGER NOT NULL DEFAULT 0,
   balance_query_config_json TEXT NOT NULL DEFAULT '{}',
   balance_query_next_refresh_at TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL DEFAULT ''
 );
-CREATE TABLE IF NOT EXISTS proxy_profiles (
+CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   host TEXT,
@@ -52,19 +55,18 @@ CREATE TABLE IF NOT EXISTS proxy_profiles (
   password_encrypted TEXT,
   enabled INTEGER NOT NULL DEFAULT 1
 );
-CREATE TABLE IF NOT EXISTS system_settings (
+CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
   system_account_id TEXT NOT NULL,
   key TEXT NOT NULL,
   value_json TEXT,
   PRIMARY KEY (system_account_id, key)
 );
-INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json) VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"');
+INSERT INTO juhe_business.system_settings (system_account_id, key, value_json)
+VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"') ON CONFLICT DO NOTHING;
 `
-	if _, err := businessDB.ExecContext(ctx, businessSchema); err != nil {
-		return err
-	}
 	statsSchema := `
-CREATE TABLE IF NOT EXISTS account_usage_snapshots (
+CREATE SCHEMA IF NOT EXISTS juhe_stats;
+CREATE TABLE IF NOT EXISTS juhe_stats.account_usage_snapshots (
   system_account_id TEXT NOT NULL,
   account_id TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -80,13 +82,14 @@ CREATE TABLE IF NOT EXISTS account_usage_snapshots (
   PRIMARY KEY (system_account_id, account_id, kind)
 );
 `
+	if _, err := businessDB.ExecContext(ctx, businessSchema); err != nil {
+		return err
+	}
 	if _, err := statsDB.ExecContext(ctx, statsSchema); err != nil {
 		return err
 	}
 	return nil
 }
-
-// seedBalanceDetectionAccount 写入一个到期探测意图账户。
 func seedBalanceDetectionAccount(t *testing.T, ctx context.Context, db *sql.DB, secret, baseURL string, dueOffset time.Duration) {
 	t.Helper()
 	credentials, err := json.Marshal(map[string]any{"api_key": "sk-test-key", "base_url": baseURL})

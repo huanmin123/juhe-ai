@@ -2,9 +2,7 @@
 package main
 
 import (
-	"log/slog"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -51,44 +49,3 @@ func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 	}
 }
 
-// TestW14JBuildWorkerAssemblyDisabledFamiliesWithoutRedis 验证缺 Redis 时
-// circuit/oauth/speedfirst 等 Redis 依赖族按契约登记 disabled（fail closed）。
-func TestW14JBuildWorkerAssemblyDisabledFamiliesWithoutRedis(t *testing.T) {
-	root := t.TempDir()
-	env := workerSmokeTestEnv(t)
-	env["JUHE_AI_DATABASE_PATH"] = filepath.Join(root, "business.sqlite3")
-	env["JUHE_AI_STATS_DATABASE_PATH"] = filepath.Join(root, "stats.sqlite3")
-	env["JUHE_AI_TASK_RUNS_DATABASE_PATH"] = filepath.Join(root, "task-runs.sqlite3")
-	env["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"] = filepath.Join(root, "usage-catalog.sqlite3")
-	env["JUHE_AI_USAGE_SHARD_ROOT"] = filepath.Join(root, "usage-shards")
-	env["JUHE_AI_DATASET_DATABASE_PATH"] = filepath.Join(root, "dataset.sqlite3")
-	env["JUHE_AI_CHAT_DATABASE_PATH"] = filepath.Join(root, "chat.sqlite3")
-	env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"] = filepath.Join(root, "codex-state")
-	env["JUHE_AI_CHAT_ASSETS_ROOT"] = filepath.Join(root, "chat-assets")
-	delete(env, "JUHE_AI_REDIS_STATE_URL")
-	config, err := loadWorkerConfig(getenvFrom(env))
-	if err != nil {
-		t.Fatalf("无 Redis 配置必须可加载: %v", err)
-	}
-	assembly, err := buildWorkerAssembly(config, slog.Default())
-	if err != nil {
-		t.Fatalf("无 Redis 装配必须成功（依赖族 disabled）: %v", err)
-	}
-	defer assembly.closeStores()
-	disabled := map[string]string{}
-	for _, item := range assembly.disabledJobs {
-		disabled[item.JobName] = item.Reason
-	}
-	for _, name := range []string{
-		"account-circuit-control-plane-maintenance",
-		"account-circuit-recovery",
-	} {
-		reason, ok := disabled[name]
-		if !ok {
-			t.Fatalf("无 Redis 时 %s 必须登记 disabled: %v", name, assembly.disabledJobs)
-		}
-		if !strings.Contains(reason, "JUHE_AI_REDIS_STATE_URL") && !strings.Contains(reason, "Redis") {
-			t.Fatalf("%s disabled 原因必须提及 Redis: %s", name, reason)
-		}
-	}
-}

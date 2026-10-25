@@ -325,10 +325,12 @@ func TestCreateInvalidationChannels(t *testing.T) {
 	if authzLookups != 0 || len(quotaReasons) != 0 {
 		t.Fatalf("create must not touch the delete-only channels: authz=%d quota=%v", authzLookups, quotaReasons)
 	}
-	// The bound-group dirty marker (SQLite arm, refreshGroupAccountStatsAfterWrite
-	// groupIds branch).
-	if got := env.queryCell(t, `SELECT reason FROM group_account_stats_dirty WHERE group_id = ?`, result.GroupID); got != "account_created" {
-		t.Fatalf("group dirty reason = %q, want account_created", got)
+	// The bound-group dirty marker rides the SQLite arm only
+	// （invalidation.go finishCreateSideEffects 的 if !s.pg 门控；PG 由 compose
+	// 的 stats slice 承接）——PG 臂夹具内断言无该行（原 SQLite 臂断言随
+	// sqlite 夹具退役）。
+	if got := env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty WHERE group_id = $1`, result.GroupID); got != 0 {
+		t.Fatalf("group dirty rows = %d, want 0 on the PG arm", got)
 	}
 	if result.GroupID != "grp-default-owner-0174d" {
 		t.Fatalf("CreateResult.GroupID = %q, want the seeded default group", result.GroupID)
@@ -389,10 +391,11 @@ func TestCreateDeepseekApiKeyReservesHealthInputSnapshot(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('prov-deepseek', 'deepseek', 'DeepSeek', 1, '["deepseek-v4.1-flash"]', ?, ?)`, now, now)
-	env.exec(t, `INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status,
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 		supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
 		VALUES ('mod-fixture-deepseek-v41f', 'deepseek', 'deepseek-v4.1-flash', 'deepseek-v4.1-flash',
-		'builtin', 'active', '["chat_json","chat_sse"]', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+		'builtin', 'active', '["chat_json","chat_sse"]', false, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+		ON CONFLICT DO NOTHING`)
 
 	healthModel := "deepseek-v4.1-flash"
 	healthMode := "chat_sse"

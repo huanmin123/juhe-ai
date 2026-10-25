@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // fakeUsageSource records the scopes the store requested and serves a fixed
@@ -206,8 +208,12 @@ func TestStatsUsageSourceSQLLocksIn(t *testing.T) {
 	if len(degraded) != 0 {
 		t.Fatalf("degraded source must return an empty map, got %v", degraded)
 	}
-	// PostgreSQL has no missing-resource arm: every error fails the read.
-	pgSource, err := NewStatsUsageSource(newEmptyStatsDB(t), true)
+	// PostgreSQL has no missing-resource arm: every error fails the read
+	// （PG 臂组A段走真实 PG：pgtestkit 独立库未建 juhe_stats 表，缺失关系
+	// 错误直接传播；SQLite 读进程降级段为组B保留，随生产 sqlite 臂删除批次
+	// 同批退役）。
+	pgDB := pgtestkit.New(t)
+	pgSource, err := NewStatsUsageSource(pgDB, true)
 	if err != nil {
 		t.Fatal(err)
 	}

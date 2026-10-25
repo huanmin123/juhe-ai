@@ -96,6 +96,11 @@ func w14jPGSeedStatements() []string {
       disposition text NOT NULL, reason text, applied_at text NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (
       group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT NOT NULL)`,
+		// 外部重建的共享覆盖库 system_accounts 可能是最小形状（无 created_at/
+		// updated_at 列），sys_admin 幂等 seed 需要这两列；加法幂等补列
+		// （列级 ALTER IF NOT EXISTS，不改既有行）。
+		`ALTER TABLE juhe_business.system_accounts ADD COLUMN IF NOT EXISTS created_at text`,
+		`ALTER TABLE juhe_business.system_accounts ADD COLUMN IF NOT EXISTS updated_at text`,
 		`CREATE TABLE IF NOT EXISTS juhe_jobs.proxy_latency_owner_leases (
  lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, lease_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS juhe_jobs.proxy_latency_proxy_leases (

@@ -390,7 +390,7 @@ func TestBatchUpdateCredentialConfigFields(t *testing.T) {
 
 	// The normalized rules are persisted in the sealed credentials.
 	var sealed string
-	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, ids[0]).Scan(&sealed); err != nil {
+	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = $1`, ids[0]).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	credentials := Credentials{}
@@ -450,7 +450,7 @@ func TestBatchUpdateCredentialConfigFields(t *testing.T) {
 		t.Fatalf("tier changedFields: %v", dataMap(t, tierPayload)["changedFields"])
 	}
 	var sealedTier string
-	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, ids[0]).Scan(&sealedTier); err != nil {
+	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = $1`, ids[0]).Scan(&sealedTier); err != nil {
 		t.Fatal(err)
 	}
 	tierCredentials := Credentials{}
@@ -548,7 +548,7 @@ func TestRuntimeResetOwnerAccount(t *testing.T) {
 	var configRevision, dispatchRevision int
 	var cooldownUntil *string
 	if err := env.db.QueryRow(`SELECT status, COALESCE(last_error_code, ''), config_revision, dispatch_revision, cooldown_until
-		FROM accounts WHERE id = ?`, id).Scan(&status, &lastErrorCode, &configRevision, &dispatchRevision, &cooldownUntil); err != nil {
+		FROM accounts WHERE id = $1`, id).Scan(&status, &lastErrorCode, &configRevision, &dispatchRevision, &cooldownUntil); err != nil {
 		t.Fatal(err)
 	}
 	// Create chain (BUG-0174 M-8) baseline dispatch 2 + the reset dispatch
@@ -638,7 +638,7 @@ func TestRuntimeResetLockStateAndSelfScope(t *testing.T) {
 		t.Fatalf("runtime-only surfaces still change the result: %v", result)
 	}
 	var status, lastErrorCode string
-	if err := env.db.QueryRow(`SELECT status, COALESCE(last_error_code, '') FROM accounts WHERE id = ?`, id).
+	if err := env.db.QueryRow(`SELECT status, COALESCE(last_error_code, '') FROM accounts WHERE id = $1`, id).
 		Scan(&status, &lastErrorCode); err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +704,7 @@ func TestRuntimeResetPendingTestWithoutFailureRefuses(t *testing.T) {
 	}
 	var freshStatus string
 	var freshRevision int
-	if err := env.db.QueryRow("SELECT status, config_revision FROM accounts WHERE id = ?", freshID).
+	if err := env.db.QueryRow("SELECT status, config_revision FROM accounts WHERE id = $1", freshID).
 		Scan(&freshStatus, &freshRevision); err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +778,7 @@ func TestRuntimeResetAuthorizedInstance(t *testing.T) {
 	authID := "ra-test-1"
 	instanceID := "acc-instance-1"
 	groupID := ""
-	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, granteeID).Scan(&groupID); err != nil {
+	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = $1 AND is_default = 1`, granteeID).Scan(&groupID); err != nil {
 		t.Fatal(err)
 	}
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
@@ -833,7 +833,7 @@ func TestRuntimeResetAuthorizedInstance(t *testing.T) {
 	}
 	var status string
 	var revision int
-	if err := env.db.QueryRow(`SELECT status, config_revision FROM accounts WHERE id = ?`, instanceID).Scan(&status, &revision); err != nil {
+	if err := env.db.QueryRow(`SELECT status, config_revision FROM accounts WHERE id = $1`, instanceID).Scan(&status, &revision); err != nil {
 		t.Fatal(err)
 	}
 	if status != "active" || revision != 2 {
@@ -856,7 +856,7 @@ func TestRuntimeResetAuthorizedInstance(t *testing.T) {
 		t.Fatalf("paused skipped set: %v", pausedResult["skipped"])
 	}
 	var statusAfter string
-	if err := env.db.QueryRow(`SELECT status FROM accounts WHERE id = ?`, instanceID).Scan(&statusAfter); err != nil {
+	if err := env.db.QueryRow(`SELECT status FROM accounts WHERE id = $1`, instanceID).Scan(&statusAfter); err != nil {
 		t.Fatal(err)
 	}
 	if statusAfter != "rate_limited" {

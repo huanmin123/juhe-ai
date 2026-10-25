@@ -17,56 +17,12 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // Windows may deny os.Symlink when Developer Mode/admin privileges are unavailable.
 // The test remains mandatory on hosts that support symlink creation.
 func symlinkCreationUnavailable(err error) bool {
 	return errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.Errno(1314))
-}
-
-func TestSQLiteSchemaAndWriterPragmas(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
-	defer store.Close()
-	implementation := store.(*sqlStore)
-	var timeout int
-	if err := implementation.db.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
-		t.Fatal(err)
-	}
-	if timeout != sqliteBusyTimeoutMS {
-		t.Fatalf("busy_timeout=%d, want %d", timeout, sqliteBusyTimeoutMS)
-	}
-	var journal string
-	if err := implementation.db.QueryRow("PRAGMA journal_mode").Scan(&journal); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.EqualFold(journal, "wal") {
-		t.Fatalf("journal_mode=%q, want WAL", journal)
-	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	for _, table := range []string{"audit_logs", "audit_log_attempts", "audit_payload_refs", "audit_payload_blobs", "audit_error_groups", "audit_log_owner_leases"} {
-		var found string
-		if err := implementation.db.QueryRow(`SELECT name FROM sqlite_schema WHERE type='table' AND name=?`, table).Scan(&found); err != nil {
-			t.Fatalf("schema 缺少 %s: %v", table, err)
-		}
-	}
-	for _, index := range []string{
-		"idx_audit_logs_persisted_created", "idx_audit_logs_system_trace_created", "idx_audit_logs_session_created",
-		"idx_audit_payload_blobs_created", "idx_audit_payload_refs_log_part",
-		"idx_audit_payload_refs_attempt", "idx_audit_payload_refs_headers_blob",
-		"idx_audit_payload_refs_body_blob", "idx_audit_error_groups_fingerprint_window",
-		"idx_audit_error_groups_updated", "idx_audit_error_groups_api_key_account",
-	} {
-		var found string
-		if err := implementation.db.QueryRow(`SELECT name FROM sqlite_schema WHERE type='index' AND name=?`, index).Scan(&found); err != nil {
-			t.Fatalf("fresh F3 schema 缺少 Node read/retention 索引 %s: %v", index, err)
-		}
-	}
 }
 
 func TestOpenStoreDoesNotMutateBlobDirectory(t *testing.T) {
@@ -95,16 +51,6 @@ func TestOpenStoreDoesNotMutateBlobDirectory(t *testing.T) {
 	defer second.Close()
 	if _, err := os.Stat(stale); err != nil {
 		t.Fatalf("OpenStore must not clean a stale blob temp before lease: %v", err)
-	}
-}
-
-func TestLoadConfigRejectsPhysicalSQLiteConflict(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"] = env["JUHE_AI_DATABASE_PATH"]
-	_, err := LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_DATABASE_PATH") {
-		t.Fatalf("SQLite physical conflict must fail, got %v", err)
 	}
 }
 
@@ -144,7 +90,7 @@ func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
 
 func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
 	root := t.TempDir()
-	env := sqliteEnv(root)
+	env := loadConfigBaseEnv(root)
 	cfg, err := LoadConfig(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +126,7 @@ func TestLoadConfigParsesNodeCompatibleRetentionPolicy(t *testing.T) {
 		"hot-hours-over-max": {"JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS": "169"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			candidate := sqliteEnv(root)
+			candidate := loadConfigBaseEnv(root)
 			for key, value := range overrides {
 				candidate[key] = value
 			}
@@ -287,57 +233,6 @@ func TestPersistRejectsInvalidAbsoluteTimesAndStoresCanonicalUTC(t *testing.T) {
 	}
 }
 
-func TestFinalizedLoserHasNoChildrenErrorGroupOrRefSideEffects(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
-	defer store.Close()
-	lease := acquireLease(t, store)
-	input := fixture("audit-one-winner", LifecycleFinalized)
-	input.Success = false
-	input.AuditOutcome = AuditOutcomeUpstreamFailed
-	input.ErrorCode = "winner"
-	input.Attempts = []AuditLogAttemptInput{{TempID: "a", AttemptIndex: 0, UpstreamMethod: "POST", UpstreamURL: "https://example.test", StartedAt: input.StartedAt}}
-	input.Payloads = []AuditLogPayloadInput{{AttemptTempID: "a", PartType: PayloadPartGatewayError, Body: PayloadBody{Bytes: []byte("child once"), Present: true}}}
-	results := make(chan PersistResult, 2)
-	errs := make(chan error, 2)
-	for range 2 {
-		go func() {
-			result, err := store.Persist(context.Background(), lease, input)
-			results <- result
-			errs <- err
-		}()
-	}
-	ignored := 0
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
-		}
-		if (<-results).Ignored {
-			ignored++
-		}
-	}
-	if ignored != 1 {
-		t.Fatalf("exactly one concurrent same-ID loser must be ignored, got %d", ignored)
-	}
-	impl := store.(*sqlStore)
-	for table, want := range map[string]int{"audit_log_attempts": 1, "audit_payload_refs": 1, "audit_error_groups": 1} {
-		var count int
-		if err := impl.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != want {
-			t.Fatalf("same-ID loser created %s side effect: got %d want %d", table, count, want)
-		}
-	}
-	var refCount int
-	if err := impl.db.QueryRow(`SELECT ref_count FROM audit_payload_blobs`).Scan(&refCount); err != nil {
-		t.Fatal(err)
-	}
-	if refCount != 1 {
-		t.Fatalf("same-ID loser changed SQLite blob ref_count: got %d", refCount)
-	}
-}
-
 func TestFinalizedReplacesAllNodeLifecycleFields(t *testing.T) {
 	store, implementation := openPostgresStore(t)
 	defer store.Close()
@@ -358,44 +253,6 @@ func TestFinalizedReplacesAllNodeLifecycleFields(t *testing.T) {
 	}
 	if accountID != final.SystemAccountID || query != final.QueryString || ip != final.ClientIP || reason != final.SampleReason || lifecycle != string(LifecycleFinalized) {
 		t.Fatalf("finalized update must replace Node lifecycle fields: account=%q query=%q ip=%q reason=%q lifecycle=%q", accountID, query, ip, reason, lifecycle)
-	}
-}
-
-func TestPersistAttemptsPayloadsAndBlobs(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
-	defer store.Close()
-	input := fixture("audit-payload", LifecycleFinalized)
-	input.Attempts = []AuditLogAttemptInput{{TempID: "a", AttemptIndex: 0, UpstreamMethod: "POST", UpstreamURL: "https://upstream.example", StartedAt: input.StartedAt, EndedAt: input.EndedAt}}
-	input.Payloads = []AuditLogPayloadInput{{AttemptTempID: "a", PartType: PayloadPartUpstreamResponse, SequenceIndex: intPointer(0), ContentType: "application/json", Headers: map[string]HeaderValues{"x-request-id": {Values: []string{"one"}}}, Body: PayloadBody{Bytes: []byte("payload body"), Present: true}}}
-	if _, err := store.Persist(context.Background(), acquireLease(t, store), input); err != nil {
-		t.Fatal(err)
-	}
-	implementation := store.(*sqlStore)
-	var attemptID, headerID, bodyID string
-	if err := implementation.db.QueryRow(`SELECT id FROM audit_log_attempts WHERE audit_log_id=?`, input.ID).Scan(&attemptID); err != nil {
-		t.Fatal(err)
-	}
-	if err := implementation.db.QueryRow(`SELECT headers_blob_id,body_blob_id FROM audit_payload_refs WHERE audit_log_id=? AND attempt_id=?`, input.ID, attemptID).Scan(&headerID, &bodyID); err != nil {
-		t.Fatal(err)
-	}
-	if headerID == "" || bodyID == "" {
-		t.Fatalf("payload references must include both blobs: headers=%q body=%q", headerID, bodyID)
-	}
-	var key string
-	var refs int
-	if err := implementation.db.QueryRow(`SELECT storage_key,ref_count FROM audit_payload_blobs WHERE id=?`, bodyID).Scan(&key, &refs); err != nil {
-		t.Fatal(err)
-	}
-	if refs != 1 {
-		t.Fatalf("body blob ref_count=%d, want 1", refs)
-	}
-	bytes, err := os.ReadFile(filepath.Join(cfg.PayloadBlobDirectory, filepath.FromSlash(key)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(bytes) != "payload body" {
-		t.Fatalf("blob content=%q", string(bytes))
 	}
 }
 
@@ -489,52 +346,6 @@ func TestPersistRejectsStaleOwnerFence(t *testing.T) {
 	}
 }
 
-func TestFailedTransactionPreservesPublishedBlobAndCleansTemps(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
-	defer store.Close()
-	input := fixture("audit-rollback", LifecycleFinalized)
-	input.Payloads = []AuditLogPayloadInput{{AttemptTempID: "missing-attempt", PartType: PayloadPartGatewayError, SequenceIndex: intPointer(0), Body: PayloadBody{Bytes: []byte("must be cleaned"), Present: true}}}
-	implementation := store.(*sqlStore)
-	if err := implementation.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := implementation.db.Exec(`CREATE TRIGGER fail_audit_payload_ref BEFORE INSERT ON audit_payload_refs BEGIN SELECT RAISE(ABORT, 'forced failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	_, err := store.Persist(context.Background(), acquireLease(t, store), input)
-	if err == nil {
-		t.Fatal("forced payload reference failure must fail the transaction")
-	}
-	var rows int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE id=?`, input.ID).Scan(&rows); err != nil {
-		t.Fatal(err)
-	}
-	if rows != 0 {
-		t.Fatalf("failed transaction retained %d audit rows", rows)
-	}
-	var blobs int
-	if err := implementation.db.QueryRow(`SELECT COUNT(*) FROM audit_payload_blobs`).Scan(&blobs); err != nil {
-		t.Fatal(err)
-	}
-	if blobs != 0 {
-		t.Fatalf("failed transaction retained %d blob metadata rows", blobs)
-	}
-	if tempCount(t, cfg.PayloadBlobDirectory) != 0 {
-		t.Fatal("failed transaction left a private blob temp file")
-	}
-	// The published immutable file is deliberately retained. A failed commit
-	// may be ambiguous on real PostgreSQL; deleting it would risk another
-	// committed reference. Future reference-aware retention owns the orphan.
-	entries, err := os.ReadDir(filepath.Join(cfg.PayloadBlobDirectory, "sha256"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected one retained published blob directory, got %d", len(entries))
-	}
-}
-
 func TestBlobTempsArePrivateUntilLeaseAndStaleTempsAreSafeToClean(t *testing.T) {
 	store, _, cfg := openPostgresStoreConfig(t)
 	defer store.Close()
@@ -595,123 +406,6 @@ func TestBlobTempsArePrivateUntilLeaseAndStaleTempsAreSafeToClean(t *testing.T) 
 	}
 	if _, err := os.Stat(published); err != nil {
 		t.Fatalf("orphan cleanup removed published blob: %v", err)
-	}
-}
-
-func TestLoadConfigRejectsUsageShardPhysicalConflict(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	if err := os.MkdirAll(env["JUHE_AI_USAGE_SHARD_ROOT"], 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], []byte("sqlite-fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	conflictDir := filepath.Join(env["JUHE_AI_USAGE_SHARD_ROOT"], "2026", "08", "09")
-	if err := os.MkdirAll(conflictDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	conflict := filepath.Join(conflictDir, "usage-20260809-s000.sqlite3")
-	if err := os.Link(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], conflict); err != nil {
-		t.Fatal(err)
-	}
-	_, err := LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_USAGE_SHARD_ROOT") {
-		t.Fatalf("usage shard conflict must fail closed: %v", err)
-	}
-}
-
-func TestLoadConfigRejectsUsageShardSymlinkConflict(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	if err := os.MkdirAll(env["JUHE_AI_USAGE_SHARD_ROOT"], 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], []byte("sqlite-fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	conflictDir := filepath.Join(env["JUHE_AI_USAGE_SHARD_ROOT"], "2026", "08", "09")
-	if err := os.MkdirAll(conflictDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	conflict := filepath.Join(conflictDir, "usage-20260809-s000.sqlite3")
-	if err := os.Symlink(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], conflict); err != nil {
-		if symlinkCreationUnavailable(err) {
-			t.Skipf("当前 Windows token 不允许创建 symlink，无法执行 symlink 物理隔离回归: %v", err)
-		}
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(conflict)
-	_, err := LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_USAGE_SHARD_ROOT") {
-		t.Fatalf("usage shard symlink conflict must fail closed: %v", err)
-	}
-}
-
-func TestLoadConfigRejectsCodexStateShardPhysicalConflict(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	codexNested := filepath.Join(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "future", "nested")
-	if err := os.MkdirAll(codexNested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], []byte("sqlite-fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], filepath.Join(codexNested, "state-007.sqlite3")); err != nil {
-		t.Fatal(err)
-	}
-	_, err := LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
-		t.Fatalf("nested Codex state-shard hardlink conflict must fail closed: %v", err)
-	}
-}
-
-func TestLoadConfigRejectsCodexStateShardSymlinks(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	outside := filepath.Join(root, "outside-codex")
-	if err := os.MkdirAll(outside, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], []byte("audit-db"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], filepath.Join(outside, "state-000.sqlite3")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"]); err != nil {
-		if symlinkCreationUnavailable(err) {
-			t.Skipf("当前 Windows token 不允许创建 symlink，无法执行 Codex root symlink 回归: %v", err)
-		}
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"])
-	_, err := LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
-		t.Fatalf("Codex shard root symlink must fail closed: %v", err)
-	}
-
-	root = t.TempDir()
-	env = sqliteEnv(root)
-	if err := os.MkdirAll(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], 0o755); err != nil {
-		t.Fatal(err)
-	}
-	target := env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"]
-	if err := os.WriteFile(target, []byte("audit-db"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	childSymlink := filepath.Join(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "state-000.sqlite3")
-	if err := os.Symlink(target, childSymlink); err != nil {
-		if symlinkCreationUnavailable(err) {
-			t.Skipf("当前 Windows token 不允许创建 symlink，无法执行 Codex shard symlink 回归: %v", err)
-		}
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(childSymlink)
-	_, err = LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
-		t.Fatalf("Codex shard symlink must fail closed: %v", err)
 	}
 }
 
@@ -997,7 +691,7 @@ func TestInputDTOAcceptsNodeBufferAndPostgresBinding(t *testing.T) {
 	if len(input.Payloads) != 1 || !input.Payloads[0].Body.Present || string(input.Payloads[0].Body.Bytes) != "hi" || len(input.Payloads[0].Headers["x-test"].Values) != 1 {
 		t.Fatalf("Node DTO JSON mapping failed: %+v", input.Payloads)
 	}
-	store := &sqlStore{mode: ModePostgres}
+	store := &sqlStore{}
 	bound := store.bind(`INSERT INTO juhe_dataset.audit_logs (id, trace_id) VALUES (?, ?)`)
 	if bound != `INSERT INTO juhe_dataset.audit_logs (id, trace_id) VALUES ($1, $2)` {
 		t.Fatalf("PostgreSQL bind conversion mismatch: %q", bound)
@@ -1035,9 +729,6 @@ func TestPostgresLeaseSQLUsesRealtimeCommitFenceWithoutLongRowLock(t *testing.T)
 	if !strings.Contains(strings.ToUpper(postgresCommitFenceSQL), "UPDATE") || !strings.Contains(strings.ToUpper(postgresCommitFenceSQL), "RETURNING") {
 		t.Fatalf("commit fence must atomically lock/check the lease immediately before Commit: %s", postgresCommitFenceSQL)
 	}
-	if shouldMaintainBlobRefCount(ModePostgres) || !shouldMaintainBlobRefCount(ModeSQLite) {
-		t.Fatal("PostgreSQL blob ref_count must remain reference-derived while SQLite retains the local counter")
-	}
 }
 
 func TestBlobParentSyncPlatformContract(t *testing.T) {
@@ -1061,7 +752,7 @@ func TestPostgresLeaseSmokeWhenExplicitlyConfigured(t *testing.T) {
 	}
 	assertDestructivePostgresSmokeTarget(t, postgresURL)
 	blobRoot := t.TempDir()
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: postgresURL, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobRoot})
+	store, err := OpenStore(Config{PostgresURL: postgresURL, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1348,7 +1039,7 @@ func TestPostgresRetentionSameIDPersistLockOrderSmokeWhenExplicitlyConfigured(t 
 	}
 	assertDestructivePostgresSmokeTarget(t, postgresURL)
 	blobRoot := t.TempDir()
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: postgresURL, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobRoot})
+	store, err := OpenStore(Config{PostgresURL: postgresURL, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1613,62 +1304,15 @@ func cleanupPostgresSmokeRows(t *testing.T, ctx context.Context, db *sql.DB) {
 	}
 }
 
-func sqliteConfig(t *testing.T, root string) Config {
-	t.Helper()
-	env := sqliteEnv(root)
-	// 2026-10-02 设置热读：retention 每 tick 直读业务库 system_settings，
-	// 测试夹具预建空表业务库（缺行回落 env 固化值，与生产首启动一致）。
-	createBusinessSettingsFixture(t, env["JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH"], nil)
-	cfg, err := LoadConfig(func(name string) string { return env[name] })
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cfg
-}
-
-// createBusinessSettingsFixture 建立带 system_settings 表的业务库（PG 同构
-// 列），rows 以键值对写入 value_json（nil 表示空表）。
-func createBusinessSettingsFixture(t *testing.T, path string, rows map[string]string) {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
-	for key, value := range rows {
-		if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?) ON CONFLICT(system_account_id, key) DO UPDATE SET value_json=excluded.value_json`, key, value, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func sqliteEnv(root string) map[string]string {
+// loadConfigBaseEnv 提供 LoadConfig 全链测试的最小 env 基座（存储形态收口后
+// 仅含 PG 连接串、实例 ID 与 blob 目录文件面）。
+func loadConfigBaseEnv(root string) map[string]string {
 	return map[string]string{
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":            "f3-test-instance",
-		"JUHE_AI_AUDIT_LOG_STORE":                  "sqlite",
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH":          filepath.Join(root, "audit.sqlite3"),
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":         filepath.Join(root, "audit-blobs"),
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_DATABASE_PATH":                    filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_DATASET_DATABASE_PATH":            filepath.Join(root, "dataset.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":      filepath.Join(root, "usage.sqlite3"),
-		"JUHE_AI_STATS_DATABASE_PATH":              filepath.Join(root, "stats.sqlite3"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":        filepath.Join(root, "runtime.sqlite3"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":   filepath.Join(root, "codex-shards"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                 filepath.Join(root, "usage-shards"),
+		"JUHE_AI_POSTGRES_URL":                    "postgres://f3-test-main",
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":           "f3-test-instance",
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":        filepath.Join(root, "audit-blobs"),
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": "postgres://f3-test-main",
 	}
-}
-
-func openSQLiteStore(t *testing.T, cfg Config) Store {
-	t.Helper()
-	store, err := OpenStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return store
 }
 
 func acquireLease(t *testing.T, store Store) OwnerLease {

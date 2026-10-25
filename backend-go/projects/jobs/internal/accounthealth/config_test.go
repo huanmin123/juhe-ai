@@ -1,10 +1,6 @@
 package accounthealth
 
 import (
-	"encoding/base64"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,48 +69,6 @@ func TestLoadConfigJ1CapacityDefaultsAndUpperBound(t *testing.T) {
 	}
 }
 
-func TestLoadConfigSQLiteUsesFourWorkers(t *testing.T) {
-	key := strings.Repeat("A", 43)
-	storePath := t.TempDir() + "/state.sqlite3"
-	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "jobs-test",
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     storePath,
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": key,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "credential-secret",
-	}
-	cfg, err := LoadConfig(func(name string) string { return base[name] })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.MaxConcurrency != defaultSQLiteConcurrency {
-		t.Fatalf("SQLite default concurrency = %d, want %d", cfg.MaxConcurrency, defaultSQLiteConcurrency)
-	}
-}
-
-func TestLoadConfigSQLitePerformanceModeUsesSixtyFourWorkers(t *testing.T) {
-	key := strings.Repeat("A", 43)
-	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "jobs-test",
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     t.TempDir() + "/state.sqlite3",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": key,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "credential-secret",
-		"JUHE_AI_RUNTIME_MODE":                     "performance",
-	}
-	cfg, err := LoadConfig(func(name string) string { return base[name] })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.MaxConcurrency != defaultPerformanceConcurrency {
-		t.Fatalf("SQLite performance concurrency = %d, want %d", cfg.MaxConcurrency, defaultPerformanceConcurrency)
-	}
-}
-
 func TestLoadConfigDirectInputRequiresSeparateBusinessURL(t *testing.T) {
 	key := strings.Repeat("A", 43)
 	env := map[string]string{
@@ -137,11 +91,11 @@ func TestLoadConfigDirectInputRequiresSeparateBusinessURL(t *testing.T) {
 func TestLoadConfigOwnerDefaultsToGoAndRejectsOthers(t *testing.T) {
 	key := strings.Repeat("A", 43)
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     t.TempDir() + "/state.sqlite3",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": key,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "credential-secret",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://business-read-only",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "credential-secret",
 	}
 	for _, owner := range []string{"", "go", "GO", " go "} {
 		env := make(map[string]string, len(base)+1)
@@ -173,11 +127,11 @@ func TestLoadConfigOwnerDefaultsToGoAndRejectsOthers(t *testing.T) {
 func TestLoadConfigInstanceIDDefaultsToHostname(t *testing.T) {
 	key := strings.Repeat("A", 43)
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     t.TempDir() + "/state.sqlite3",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": key,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "credential-secret",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://business-read-only",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "credential-secret",
 	}
 	cfg, err := LoadConfig(func(name string) string { return base[name] })
 	if err != nil {
@@ -202,10 +156,10 @@ func TestLoadConfigInstanceIDDefaultsToHostname(t *testing.T) {
 func TestLoadConfigCredentialSecretFallsBackToSharedSecret(t *testing.T) {
 	key := strings.Repeat("A", 43)
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     t.TempDir() + "/state.sqlite3",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": key,
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://jobs-output",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://business-read-only",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  key,
 	}
 	env := make(map[string]string, len(base)+1)
 	for name, value := range base {
@@ -242,22 +196,41 @@ func TestLoadConfigCredentialSecretFallsBackToSharedSecret(t *testing.T) {
 // 仅注 DATA_DIR 即可完整装载；production 下凭据封套密钥缺失仍 fail-fast，
 // 显式配置始终优先。
 func TestLoadConfigZeroConfigFailsArms(t *testing.T) {
-	loaded, err := LoadConfig(func(name string) string {
+	// PG 唯一形态：零配置不再可启动（POSTGRES_URL 必填 fail-fast；原「仅
+	// DATA_DIR 即可完整装载」臂随 sqlite 形态退役删除）。
+	if _, err := LoadConfig(func(name string) string {
 		if name == "JUHE_AI_DATA_DIR" {
 			return t.TempDir()
 		}
 		return ""
+	}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL") {
+		t.Fatalf("zero-config 必须 fail-fast 缺 POSTGRES_URL: %v", err)
+	}
+	loaded, err := LoadConfig(func(name string) string {
+		switch name {
+		case "JUHE_AI_DATA_DIR":
+			return t.TempDir()
+		case "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":
+			return "postgres://jobs-output"
+		case "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL":
+			return "postgres://business-read-only"
+		}
+		return ""
 	})
 	if err != nil {
-		t.Fatalf("zero-config LoadConfig must succeed (dev secret fallback), got %v", err)
+		t.Fatalf("最小 PG env LoadConfig must succeed, got %v", err)
 	}
 	if loaded.CredentialSecret != "juhe-ai-dev-secret-change-me" {
-		t.Fatalf("zero-config credential secret must fall back to the dev envelope secret, got %q", loaded.CredentialSecret)
+		t.Fatalf("credential secret must fall back to the dev envelope secret, got %q", loaded.CredentialSecret)
 	}
 	if _, err := LoadConfig(func(name string) string {
 		switch name {
 		case "JUHE_AI_DATA_DIR":
 			return t.TempDir()
+		case "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":
+			return "postgres://jobs-output"
+		case "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL":
+			return "postgres://business-read-only"
 		case "NODE_ENV":
 			return "production"
 		}
@@ -266,186 +239,56 @@ func TestLoadConfigZeroConfigFailsArms(t *testing.T) {
 		t.Fatalf("production zero-config must fail on the credential envelope secret, got %v", err)
 	}
 	if _, err := LoadConfig(func(name string) string {
-		if name == "JUHE_AI_DATA_DIR" {
+		switch name {
+		case "JUHE_AI_DATA_DIR":
 			return t.TempDir()
-		}
-		if name == "JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET" {
+		case "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":
+			return "postgres://jobs-output"
+		case "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL":
+			return "postgres://business-read-only"
+		case "JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":
 			return "credential-secret"
 		}
 		return ""
 	}); err != nil {
-		t.Fatalf("zero-config env with only DATA_DIR + credential secret must load: %v", err)
+		t.Fatalf("minimal PG env with credential secret must load: %v", err)
 	}
 }
 
-// TestLoadConfigZeroConfigDefaultsKeyFileAndSource 覆盖 2026-09-19 零配置
-// 决策：仅注 DATA_DIR + 凭据封套密钥（唯一无法派生的共享密钥）即可完整装载。
-// 校验四件事：store/source 缺省推导两臂、派生路径落 <DATA_DIR> 固定名、
-// 签名 key 文件首次装载生成（48 字节 base64rawurl、0600）、二次装载复用
-// 同一 key（进程重启后签名密钥稳定）。
+// TestLoadConfigZeroConfigDefaultsKeyFileAndSource 锁定 PG 唯一形态的零配置
+// 契约：InputSource 恒 postgres、缺 INPUT_POSTGRES_URL fail-fast、显式
+// SIGNING_KEY 优先；原 sqlite 缺省臂与 key 文件派生臂随 sqlite 形态退役删除
+// （key 文件派生 helper 保留但仅在显式环境消费）。
 func TestLoadConfigZeroConfigDefaultsKeyFileAndSource(t *testing.T) {
-	dataDir := t.TempDir()
 	base := map[string]string{
-		"JUHE_AI_DATA_DIR":                         dataDir,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "zero-config-secret",
-	}
-	getenv := func(name string) string { return base[name] }
-
-	// 臂一：sqlite 缺省（DATABASE_DRIVER 缺省非 postgres）→ source=sqlite
-	// （2026-09 起直读业务/统计库，files 为显式后备）。
-	cfg, err := LoadConfig(getenv)
-	if err != nil {
-		t.Fatalf("DATA_DIR + credential secret must load: %v", err)
-	}
-	if cfg.Store.Mode != StoreSQLite || cfg.InputSource != "sqlite" {
-		t.Fatalf("sqlite 缺省臂: mode=%v source=%q", cfg.Store.Mode, cfg.InputSource)
-	}
-	if expected := filepath.Join(dataDir, "business.sqlite3"); cfg.BusinessSQLitePath != expected {
-		t.Fatalf("business path = %q, want %q", cfg.BusinessSQLitePath, expected)
-	}
-	if expected := filepath.Join(dataDir, "stats.sqlite3"); cfg.StatsSQLitePath != expected {
-		t.Fatalf("stats path = %q, want %q", cfg.StatsSQLitePath, expected)
-	}
-	if expected := filepath.Join(dataDir, "account-health.sqlite3"); cfg.Store.DatabasePath != expected {
-		t.Fatalf("store path = %q, want %q", cfg.Store.DatabasePath, expected)
-	}
-	if expected := filepath.Join(dataDir, "account-health-input"); cfg.InputDirectory != expected {
-		t.Fatalf("input dir = %q, want %q", cfg.InputDirectory, expected)
-	}
-	if _, statErr := os.Stat(cfg.InputDirectory); statErr != nil {
-		t.Fatalf("派生 input 目录必须被创建: %v", statErr)
-	}
-	firstKey, keyOK := cfg.InputKeys["runtime-v1"]
-	if !keyOK || len(firstKey) != 48 {
-		t.Fatalf("缺省签名 key 必须是 48 字节: len=%d ok=%v", len(firstKey), keyOK)
-	}
-	keyFile := filepath.Join(dataDir, "account-health-input.key")
-	raw, readErr := os.ReadFile(keyFile)
-	if readErr != nil {
-		t.Fatalf("签名 key 文件必须被创建: %v", readErr)
-	}
-	decoded, decodeErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	if decodeErr != nil || len(decoded) != 48 {
-		t.Fatalf("key 文件内容必须是 48 字节 base64rawurl: %v len=%d", decodeErr, len(decoded))
-	}
-	if info, statErr := os.Stat(keyFile); statErr == nil && runtime.GOOS != "windows" {
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("key 文件权限必须为 0600: %v", info.Mode().Perm())
-		}
-	}
-
-	// 臂二（重启一致性）：二次 LoadConfig 读取同一 key 文件。
-	reloaded, err := LoadConfig(getenv)
-	if err != nil {
-		t.Fatalf("second LoadConfig: %v", err)
-	}
-	secondKey := reloaded.InputKeys["runtime-v1"]
-	if string(secondKey) != string(firstKey) {
-		t.Fatal("二次装载必须复用同一签名 key（可重启一致）")
-	}
-
-	// 臂三：显式 env 始终优先于 key 文件。
-	explicit := map[string]string{
-		"JUHE_AI_DATA_DIR":                         dataDir,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "zero-config-secret",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": strings.Repeat("A", 43),
-	}
-	withExplicit, err := LoadConfig(func(name string) string { return explicit[name] })
-	if err != nil {
-		t.Fatalf("explicit signing key must load: %v", err)
-	}
-	decodedExplicit, decodeErr := base64.RawURLEncoding.DecodeString(strings.Repeat("A", 43))
-	if decodeErr != nil {
-		t.Fatal(decodeErr)
-	}
-	if got := string(withExplicit.InputKeys["runtime-v1"]); got != string(decodedExplicit) {
-		t.Fatalf("显式签名 key 必须优先: %q", got)
-	}
-
-	// 臂四：postgres 缺省臂——DATABASE_DRIVER=postgres → store/source 均
-	// postgres，store URL 回退 JUHE_AI_POSTGRES_URL。
-	pg := map[string]string{
-		"JUHE_AI_DATA_DIR":                          dataDir,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "zero-config-secret",
-		"JUHE_AI_DATABASE_DRIVER":                   "postgres",
-		"JUHE_AI_POSTGRES_URL":                      "postgres://shared/juhe",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://shared/business",
-	}
-	pgCfg, err := LoadConfig(func(name string) string { return pg[name] })
-	if err != nil {
-		t.Fatalf("postgres 缺省臂必须装载: %v", err)
-	}
-	if pgCfg.Store.Mode != StorePostgres || pgCfg.InputSource != "postgres" {
-		t.Fatalf("postgres 缺省臂: mode=%v source=%q", pgCfg.Store.Mode, pgCfg.InputSource)
-	}
-	if pgCfg.Store.PostgresURL != "postgres://shared/juhe" {
-		t.Fatalf("store URL 必须回退 JUHE_AI_POSTGRES_URL: %q", pgCfg.Store.PostgresURL)
-	}
-}
-
-// TestLoadConfigSQLiteDirectInputArms 覆盖 2026-09 sqlite 直读输入源的新臂：
-// 显式 files 后备仍合法、sqlite+postgres store 组合拒绝、显式路径 env 优先于
-// DATA_DIR 派生（BusinessSQLitePath/StatsSQLitePath 不引入新 env 名）。
-func TestLoadConfigSQLiteDirectInputArms(t *testing.T) {
-	dataDir := t.TempDir()
-	base := map[string]string{
-		"JUHE_AI_DATA_DIR":                         dataDir,
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "sqlite-direct-secret",
-	}
-	// 臂一：显式 files 仍是合法后备（store 为 sqlite）。
-	filesEnv := map[string]string{}
-	for name, value := range base {
-		filesEnv[name] = value
-	}
-	filesEnv["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "files"
-	filesCfg, err := LoadConfig(func(name string) string { return filesEnv[name] })
-	if err != nil {
-		t.Fatalf("显式 files 必须装载: %v", err)
-	}
-	if filesCfg.InputSource != "files" {
-		t.Fatalf("显式 files 被改写: %q", filesCfg.InputSource)
-	}
-
-	// 臂二：显式 sqlite 输入源 + postgres store → 拒绝。
-	mixedEnv := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "postgres",
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "pg-direct-secret",
 		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":      "postgres://jobs-output",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE":      "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "sqlite-direct-secret",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": strings.Repeat("A", 43),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 	}
-	if _, err := LoadConfig(func(name string) string { return mixedEnv[name] }); err == nil || !strings.Contains(err.Error(), "sqlite direct input 只允许与 sqlite jobs store") {
-		t.Fatalf("sqlite 输入 + postgres store 必须拒绝: %v", err)
+	// 缺 INPUT_POSTGRES_URL → fail-fast（D12：postgres 直读恒定）。
+	if _, err := LoadConfig(func(name string) string { return base[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL") {
+		t.Fatalf("缺 INPUT_POSTGRES_URL 必须 fail-fast: %v", err)
 	}
-
-	// 臂三：显式路径 env 优先于 DATA_DIR 派生。
-	explicitPathEnv := map[string]string{
-		"JUHE_AI_DATA_DIR":            dataDir,
-		"JUHE_AI_DATABASE_PATH":       filepath.Join(dataDir, "custom", "biz.sqlite3"),
-		"JUHE_AI_STATS_DATABASE_PATH": filepath.Join(dataDir, "custom", "st.sqlite3"),
-	}
-	pathCfg, err := LoadConfig(func(name string) string { return explicitPathEnv[name] })
-	if err != nil {
-		t.Fatalf("显式路径 env 必须装载: %v", err)
-	}
-	if pathCfg.InputSource != "sqlite" {
-		t.Fatalf("sqlite 缺省臂: source=%q", pathCfg.InputSource)
-	}
-	if pathCfg.BusinessSQLitePath != filepath.Join(dataDir, "custom", "biz.sqlite3") {
-		t.Fatalf("BusinessSQLitePath = %q", pathCfg.BusinessSQLitePath)
-	}
-	if pathCfg.StatsSQLitePath != filepath.Join(dataDir, "custom", "st.sqlite3") {
-		t.Fatalf("StatsSQLitePath = %q", pathCfg.StatsSQLitePath)
-	}
-
-	// 臂四：输入源非法值继续 fail closed（sqlite 合法化后仍拒绝其他值）。
-	badSourceEnv := map[string]string{}
+	// 补齐后：InputSource 恒 postgres、Store 恒 StorePostgres。
+	env := map[string]string{}
 	for name, value := range base {
-		badSourceEnv[name] = value
+		env[name] = value
 	}
-	badSourceEnv["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "redis"
-	if _, err := LoadConfig(func(name string) string { return badSourceEnv[name] }); err == nil || !strings.Contains(err.Error(), "files、postgres 或 sqlite") {
-		t.Fatalf("非法输入源必须拒绝: %v", err)
+	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] = "postgres://business-read-only"
+	cfg, err := LoadConfig(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.InputSource != "postgres" || cfg.Store.Mode != StorePostgres {
+		t.Fatalf("InputSource/Store.Mode 恒 postgres: %#v", cfg)
+	}
+	if len(cfg.InputKeys) == 0 || cfg.InputKeys["runtime-v1"] == nil {
+		t.Fatalf("显式 SIGNING_KEY 必须注入 InputKeys: %#v", cfg.InputKeys)
+	}
+	// 显式非法输入源 env 不再被读取（变量退役）：任意值不影响装载。
+	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "files"
+	if _, err := LoadConfig(func(name string) string { return env[name] }); err != nil {
+		t.Fatalf("退役 env 不得被读取: %v", err)
 	}
 }

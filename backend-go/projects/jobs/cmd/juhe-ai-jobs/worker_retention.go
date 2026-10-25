@@ -15,7 +15,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
@@ -27,71 +26,58 @@ import (
 const retentionFamilyBatchSize = retention.CleanupBatchSize
 
 func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
-	postgres := a.config.Driver == "postgres"
-	family := &retentionFamily{assembly: a, postgres: postgres}
+	family := &retentionFamily{assembly: a}
 
-	var closeHandles []func() error
-	openDual := func(postgresPath string, sqlitePath string, label string, schema string) (*cleanuprepo.DB, error) {
-		if postgres {
-			handle, err := a.acquirePool(a.config.PostgresURL, label)
-			if err != nil {
-				return nil, err
-			}
-			return &cleanuprepo.DB{DB: handle.DB(), Postgres: true}, nil
-		}
-		if strings.TrimSpace(sqlitePath) == "" {
-			return nil, fmt.Errorf("retention 家族 SQLite 模式必须配置 %s", postgresPath)
-		}
-		db, err := a.openSQLite(sqlitePath, label)
+	// PostgreSQL 唯一形态：六句柄（business/stats/dataset/chat/usage-catalog/
+	// task-runs 保留清理）全部来自共享 URL 池，schema 限定由 cleanuprepo.DB
+	// 的 Postgres 语义承担。原 sqlite 六库文件臂与 openDual 双模分派已随
+	// sqlite 形态退役删除。
+	openCleanupDB := func(label string) (*cleanuprepo.DB, error) {
+		handle, err := a.acquirePool(a.config.PostgresURL, label)
 		if err != nil {
 			return nil, err
 		}
-		return &cleanuprepo.DB{DB: db}, nil
+		return &cleanuprepo.DB{DB: handle.DB(), Postgres: true}, nil
 	}
 
-	business, err := openDual("JUHE_AI_POSTGRES_URL", a.config.BusinessSQLitePath, "retention-business", "juhe_business")
+	business, err := openCleanupDB("retention-business")
 	if err != nil {
 		return err
 	}
-	stats, err := openDual("JUHE_AI_POSTGRES_URL", a.config.StatsSQLitePath, "retention-stats", "juhe_stats")
+	stats, err := openCleanupDB("retention-stats")
 	if err != nil {
 		return err
 	}
-	dataset, err := openDual("JUHE_AI_POSTGRES_URL", a.config.DatasetSQLitePath, "retention-dataset", "juhe_dataset")
+	dataset, err := openCleanupDB("retention-dataset")
 	if err != nil {
 		return err
 	}
-	chat, err := openDual("JUHE_AI_POSTGRES_URL", a.config.ChatSQLitePath, "retention-chat", "juhe_chat")
+	chat, err := openCleanupDB("retention-chat")
 	if err != nil {
 		return err
 	}
-	usageCatalog, err := openDual("JUHE_AI_POSTGRES_URL", a.config.UsageCatalogSQLitePath, "retention-usage-catalog", "juhe_usage")
+	usageCatalog, err := openCleanupDB("retention-usage-catalog")
 	if err != nil {
 		return err
 	}
-	// 缺陷1修复：background_task_runs / background_job_leases 的保留清理句柄。
-	// PG 模式两表在 juhe_stats schema（与 stats 同池）；SQLite 模式在独立的
-	// task-runs 库（stats 库没有这两张表，不能并入 stats 清单）。句柄进
-	// openDual 统一关闭链。
-	taskRunsRetentionDB, err := openDual("JUHE_AI_POSTGRES_URL", a.config.TaskRunsSQLitePath, "retention-task-runs", "juhe_stats")
+	// 缺陷1修复：background_task_runs / background_job_leases 的保留清理句柄
+	//（两表在 juhe_stats schema，与 stats 同池）。句柄进统一关闭链。
+	taskRunsRetentionDB, err := openCleanupDB("retention-task-runs")
 	if err != nil {
 		return err
 	}
 
-	shards := cleanuprepo.NewShardStore(a.config.UsageShardRoot)
-
-	usageRecords := &cleanuprepo.UsageRecordsStore{Catalog: usageCatalog, Stats: stats, Shards: shards}
+	// usage-shards 清理消费面已随 sqlite 分片形态删除（D14 验证：PG 写侧落
+	// juhe_usage 分区，分片文件只在 sqlite 形态存在，ShardStore 在 PG 装配
+	// 无行为依赖）。
+	usageRecords := &cleanuprepo.UsageRecordsStore{Catalog: usageCatalog, Stats: stats}
 	statsRetention := &cleanuprepo.StatsRetentionStore{DB: stats}
-	if !postgres {
-		statsDB := stats.DB
-		statsRetention.Checkpoint = func(ctx context.Context) error { return checkpointSQLite(ctx, statsDB) }
-	}
 
 	// D-45（BUG-0175）：数据保留的组合根设置/时区源接真实 system_settings
 	// 读模型（business 库）。此前 timezone 固定 Asia/Shanghai、retention 策略
 	// 固定一套与 DEFAULT_SYSTEM_SETTINGS 不一致的硬编码值（自述临时边界），
 	// 运营改设置完全不生效。
-	retentionSettings := newRetentionSettingsRuntime(business.DB, postgres, a.logger)
+	retentionSettings := newRetentionSettingsRuntime(business.DB, a.logger)
 	family.timezone = retentionSettings.location
 	family.usageTimezone = retentionSettings.timezoneName
 	family.retentionSettings = retentionSettings
@@ -99,36 +85,17 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family.retentionStatsStore = statsRetention
 	family.taskRunsRetention = &cleanuprepo.TaskRunsRetentionStore{DB: taskRunsRetentionDB}
 	recordCleanup := &cleanuprepo.RecordCleanupStore{
-		Dataset:        dataset,
-		Stats:          stats,
-		UsageCatalog:   usageCatalog,
-		Business:       business,
-		Shards:         shards,
-		Now:            family.now,
-		Timezone:       retentionSettings.location,
-		DerivedWindows: nil,
-		OnDerivedWindowsSkipped: func(reason string) {
-			a.logger.Warn("record cleanup 跳过同步派生窗口刷新", "event", "retention_derived_windows_refresh_skipped", "reason", reason)
-		},
-	}
-	// 派生窗口同步重算接入（BUG-0175 D-48：DerivedWindowRefresher 组合根固定
-	// nil → 仅 PG 清理路径保持 nil——Node PG cleanup 只写脏范围标记、由调度式
-	// 窗口刷新收敛；SQLite 清理链接 statsagg 配额小时窗 + 排行快照重算，
-	// 对齐 refreshDeletedApiKey/AccountDerivedWindowsIfNeeded 的刷新半区）。
-	if !postgres {
-		recordCleanup.DerivedWindows = &retentionDerivedWindows{refresher: &statsagg.WindowRefresher{
-			DB:         stats.DB,
-			BusinessDB: business.DB,
-			Dialect:    statsagg.Dialect{},
-			Clock:      &familyTimezoneClock{family},
-			Now:        family.now,
-		}}
+		Dataset:      dataset,
+		Stats:        stats,
+		UsageCatalog: usageCatalog,
+		Business:     business,
+		Now:          family.now,
+		Timezone:     retentionSettings.location,
 	}
 	family.recordCleanup = recordCleanup
 
-	// 孤儿授权实例扫尾双模内聚于 DeletedAccountStore（orphanSweep 按
-	// Business.Postgres 分派，SQLite 臂与 PG 臂同 bulk 终态语义），组合根
-	// 不再持模式开关。
+	// 孤儿授权实例扫尾内聚于 DeletedAccountStore（orphanSweep 按
+	// Business.Postgres 分派，PG bulk 终态语义），组合根不持模式开关。
 	deletedAccounts := &cleanuprepo.DeletedAccountStore{
 		Business: business,
 		Dataset:  dataset,
@@ -138,27 +105,12 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	}
 
 	codexStore := &cleanuprepo.CodexContextStore{
-		Postgres: postgres,
-		PG: func() *cleanuprepo.DB {
-			if postgres {
-				return usageCatalog
-			}
-			return nil
-		}(),
-		ShardRoot:  a.config.CodexContextStateShardRoot,
-		ShardCount: a.config.CodexContextStateShardCount,
-		Now:        family.now,
+		Postgres: true,
+		PG:       usageCatalog,
+		Now:      family.now,
 	}
-	if postgres && codexStore.PG == nil {
+	if codexStore.PG == nil {
 		return fmt.Errorf("retention codex context PG 句柄未初始化")
-	}
-	if !postgres {
-		if strings.TrimSpace(a.config.CodexContextStateShardRoot) == "" {
-			return fmt.Errorf("retention 家族 SQLite 模式必须配置 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
-		}
-		if a.config.CodexContextStateShardCount < 1 {
-			return fmt.Errorf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 必须 >= 1")
-		}
 	}
 	family.codex = codexStore
 
@@ -168,7 +120,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		Dataset:      dataset,
 		UsageCatalog: usageCatalog,
 		Stats:        stats,
-		Shards:       shards,
 		UsageRecords: usageRecords,
 		Timezone:     retentionSettings.location,
 	}
@@ -180,6 +131,9 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		MaxItems: a.config.RecordMaintenanceQueueMaxItems,
 		MaxBytes: a.config.RecordMaintenanceQueueMaxMb * 1024 * 1024,
 	})
+	// Mode 恒 ModeSQLite 是有意为之（P0 修复注释）：runner.statsWriter() 仅在
+	// 非 ModePostgres 时暴露 Executor.StatsWriter，account_usage_snapshot_upsert
+	// 通道要求该写入面双形态恒接线，与存储 driver 无关。
 	runner := &retention.RecordMaintenanceRunner{
 		Mode:   retention.ModeSQLite,
 		Clock:  func() time.Time { return family.now() },
@@ -197,8 +151,8 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	// drain 队头）。真实现是 cleanuprepo.RecordCleanupStore.
 	// UpsertAccountUsageSnapshots（jobregistry 注册表登记 GoWired、owner=
 	// cleanuprepo）；关联清理的 statsWriter 参数仍按 Node 语义由
-	// familyRelatedCleaner 的 postgres 分支忽略（PG 清理链在事务内承担
-	// stats 半区，不经该回调）。
+	// familyRelatedCleaner 忽略（PG 清理链在事务内承担 stats 半区，不经该
+	// 回调）。
 	family.queue = queue
 	family.runner = runner
 
@@ -214,13 +168,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family.dbService = dbService
 
 	// ---- 任务登记 ----
-	dataRetentionJob := retention.NewDataRetentionJob(
-		func() retention.Mode {
-			if postgres {
-				return retention.ModePostgres
-			}
-			return retention.ModeSQLite
-		}(), "worker", a.config.WorkerRole)
+	dataRetentionJob := retention.NewDataRetentionJob(retention.ModePostgres, "worker", a.config.WorkerRole)
 	dataRetentionJob.Logger = a.logger
 	dataRetentionJob.Clock = func() time.Time { return family.now() }
 	dataRetentionJob.Settings = retentionSettings.settings
@@ -231,9 +179,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	dataRetentionJob.DB = dbService
 	dataRetentionJob.Enqueuer = &queueEnqueuer{queue: queue}
 	dataRetentionJob.CodexStorage = &codexStorageProcessor{db: dbService, store: codexStore, segmentRoot: a.config.CodexContextRoot, logger: a.logger}
-	if !postgres {
-		dataRetentionJob.Checkpointer = &datasetCheckpointer{dataset: dataset.DB, usageCatalog: usageCatalog.DB, stats: stats.DB}
-	}
 
 	a.scheduleWiredJob("data-retention-cleanup", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		// 缺陷1修复：先执行 jobs 运行历史/租约保留清理，再跑既有数据保留任务；
@@ -275,10 +220,10 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	})
 
 	// media-jobs-retention（媒体设计 §8.2，M2）：media_jobs TTL 保留清理，复用
-	// retention-business 句柄（同业务库双模方言）；表缺席（老库未跑
+	// retention-business 句柄（同业务库 PG 方言）；表缺席（老库未跑
 	// maintenance 迁移）按零任务快速返回（job 内部判 IsMediaJobsTableMissing）。
 	mediaJobsRetention := &retention.MediaJobsRetentionJob{
-		Store:  &retention.MediaJobsSQLStore{DB: business.DB, Postgres: postgres},
+		Store:  &retention.MediaJobsSQLStore{DB: business.DB, Postgres: true},
 		Clock:  func() time.Time { return family.now() },
 		Logger: a.logger,
 	}
@@ -290,12 +235,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	})
 
 	retryJob := &retention.RecordCleanupRetryJob{
-		Mode: func() retention.Mode {
-			if postgres {
-				return retention.ModePostgres
-			}
-			return retention.ModeSQLite
-		}(),
+		Mode:    retention.ModePostgres,
 		Clock:   func() time.Time { return family.now() },
 		Logger:  a.logger,
 		APIKey:  &familyAPIKeyRetryer{family: family},
@@ -321,43 +261,25 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	a.addCloser(func() error {
 		close(stopFlush)
 		queue.drainShutdown(family.runMaintenanceOnce)
-		if err := codexStore.Close(); err != nil {
-			return err
-		}
-		return shards.Close()
+		return codexStore.Close()
 	})
 	safego.Go("juheaijobs.retentionFlushLoop", func() { family.flushLoop(stopFlush, queue) })
 
 	// ---- record_maintenance_jobs 交接表 drain（gateway cleanup POST 持久通道） ----
-	if err := a.wireRecordMaintenanceTableDrain(family, business, dataset); err != nil {
+	if err := a.wireRecordMaintenanceTableDrain(family, dataset); err != nil {
 		return err
 	}
 
-	family.closeHandles = closeHandles
 	a.retention = family
 	return nil
 }
 
-// checkpointSQLite 照 Node checkpointSqliteWal（sqlite-maintenance.ts:8-23，
-// D-70，BUG-0175）：PASSIVE checkpoint + PRAGMA optimize。Go 曾用 TRUNCATE——
-// 它会等待所有读事务退出并截断 WAL 文件，把清理循环变成阻塞窗口；PASSIVE
-// 尽力搬移而不等待，WAL 收缩交给优化器建议的时机。返回的行计数不消费（Node
-// 仅用于日志字段，Go 侧保持删除计数日志不变）。
-func checkpointSQLite(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return nil
-	}
-	if _, err := db.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE);"); err != nil {
-		return err
-	}
-	_, err := db.ExecContext(ctx, "PRAGMA optimize;")
-	return err
-}
+// checkpointSQLite 已随 sqlite 形态退役删除（原 WAL PASSIVE checkpoint +
+// PRAGMA optimize 只服务 sqlite 库文件的清理后收尾）。
 
 // retentionFamily 持有家族内共享对象（供组合根测试/运维入口访问）。
 type retentionFamily struct {
 	assembly *workerAssembly
-	postgres bool
 
 	timezone func(ctx context.Context) (*time.Location, error)
 	// usageTimezone 是字符串时区源（retention.TimezoneSource，D-45 接真实
@@ -378,9 +300,8 @@ type retentionFamily struct {
 	// record_maintenance_jobs 表 drain 各自是单 goroutine，但共享同一
 	// runner；Node flushing 标志保证同一时刻只有一轮 flush，这里以互斥
 	// 保持同语义。
-	runMu        sync.Mutex
-	flushStop    chan struct{}
-	closeHandles []func() error
+	runMu     sync.Mutex
+	flushStop chan struct{}
 }
 
 func (f *retentionFamily) now() time.Time { return time.Now() }
@@ -475,18 +396,16 @@ func (f *retentionFamily) cleanupTaskRunsRetention(ctx context.Context) error {
 // （D-45，BUG-0175；Node usageStatsTimezoneAsync + getSettingsAsync 的 Go
 // 承接）：
 //   - retention 策略数值经 jobssettings.Source（background-jobs settingsNumber
-//     语义：缺行回落 DEFAULT_SYSTEM_SETTINGS、非法值任务失败；SQLite 缺表 /
-//     PG 读失败按驱动语义回落默认并告警）；数值边界交给 retention.LoadPolicy
+//     语义：缺行回落 DEFAULT_SYSTEM_SETTINGS、非法值任务失败；PG 读失败按
+//     驱动语义回落默认并告警）；数值边界交给 retention.LoadPolicy
 //     fail-closed 校验，这里只要求整数。
 //   - usageStatsTimezone（字符串）沿用同一组失败语义：缺行走
-//     DEFAULT_SYSTEM_SETTINGS 的 "Asia/Shanghai" 种子值；SQLite 缺表 / PG 读
-//     失败回落默认并告警（sqliteBackgroundJobSettingValue /
-//     postgresBackgroundJobSettingValue 等价）；非法 JSON / 非法时区任务
-//     失败。60s 缓存对齐 usageStatsTimezoneCacheTtlMs。
+//     DEFAULT_SYSTEM_SETTINGS 的 "Asia/Shanghai" 种子值；PG 读失败回落默认
+//     并告警（postgresBackgroundJobSettingValue 等价）；非法 JSON / 非法时区
+//     任务失败。60s 缓存对齐 usageStatsTimezoneCacheTtlMs。
 type retentionSettingsRuntime struct {
 	source *jobssettings.Source
 	db     *sql.DB
-	dbMode jobssettings.Mode
 	warn   jobssettings.WarnFunc
 
 	mu          sync.Mutex
@@ -508,20 +427,15 @@ var retentionPolicySettingKeys = []string{
 	"usageRankSnapshotRetentionDays",
 }
 
-func newRetentionSettingsRuntime(business *sql.DB, postgres bool, logger *slog.Logger) *retentionSettingsRuntime {
-	mode := jobssettings.SQLite
-	if postgres {
-		mode = jobssettings.Postgres
-	}
+func newRetentionSettingsRuntime(business *sql.DB, logger *slog.Logger) *retentionSettingsRuntime {
 	return &retentionSettingsRuntime{
 		source: jobssettings.NewSource(jobssettings.Options{
 			DB:   business,
-			Mode: mode,
+			Mode: jobssettings.Postgres,
 			Warn: jobssettingsWarn(logger),
 		}),
-		db:     business,
-		dbMode: mode,
-		warn:   jobssettingsWarn(logger),
+		db:   business,
+		warn: jobssettingsWarn(logger),
 	}
 }
 
@@ -582,10 +496,7 @@ func defaultRetentionTimezone() string {
 // readTimezoneSetting resolves the raw usageStatsTimezone setting with the
 // jobssettings failure semantics.
 func (r *retentionSettingsRuntime) readTimezoneSetting(ctx context.Context) (string, error) {
-	query := `SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
-	if r.dbMode == jobssettings.Postgres {
-		query = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
-	}
+	query := `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone' LIMIT 1`
 	var rawValue sql.NullString
 	readErr := r.db.QueryRowContext(ctx, query).Scan(&rawValue)
 	if readErr == nil || readErr == sql.ErrNoRows {
@@ -602,20 +513,10 @@ func (r *retentionSettingsRuntime) readTimezoneSetting(ctx context.Context) (str
 		// 与 jobssettings.Source 的缺行回落一致）。
 		return defaultRetentionTimezone(), nil
 	}
-	if r.dbMode == jobssettings.Postgres {
-		// postgresBackgroundJobSettingValue：快照刷新失败告警后保持默认。
-		r.warnOnce("background_job_settings_snapshot_refresh_failed",
-			"后台任务系统设置快照刷新失败，将临时使用默认设置", readErr)
-		return defaultRetentionTimezone(), nil
-	}
-	if isMissingSystemSettingsTable(readErr) {
-		// sqliteBackgroundJobSettingValue：启动早期设置表可能尚未初始化——
-		// 一次告警后临时使用默认。
-		r.warnOnce("background_job_settings_table_missing_default",
-			"后台任务启动时系统设置表尚未初始化，将临时使用默认设置", readErr)
-		return defaultRetentionTimezone(), nil
-	}
-	return "", fmt.Errorf("读取 usageStatsTimezone 失败: %w", readErr)
+	// postgresBackgroundJobSettingValue：快照刷新失败告警后保持默认。
+	r.warnOnce("background_job_settings_snapshot_refresh_failed",
+		"后台任务系统设置快照刷新失败，将临时使用默认设置", readErr)
+	return defaultRetentionTimezone(), nil
 }
 
 func (r *retentionSettingsRuntime) warnOnce(event, message string, err error) {
@@ -627,10 +528,6 @@ func (r *retentionSettingsRuntime) warnOnce(event, message string, err error) {
 		return
 	}
 	r.warn(event, map[string]any{"error": err.Error()}, message)
-}
-
-func isMissingSystemSettingsTable(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "no such table: system_settings")
 }
 
 // location 是 *time.Location 视角的同一读模型（statsagg /
@@ -658,32 +555,20 @@ func (c *familyRelatedCleaner) CleanupApiKeyRelated(ctx context.Context, job ret
 	if c.family.recordCleanup == nil {
 		return retention.RelatedCleanupResult{}, fmt.Errorf("retention record cleanup store 未初始化")
 	}
-	if c.family.postgres {
-		return c.family.recordCleanup.CleanupAPIKeyRelatedPostgres(ctx, job.APIKeyID, job.SystemAccountID)
-	}
-	return c.family.recordCleanup.CleanupAPIKeyRelatedSQLite(ctx, job.APIKeyID, job.SystemAccountID, statsWriter)
+	return c.family.recordCleanup.CleanupAPIKeyRelatedPostgres(ctx, job.APIKeyID, job.SystemAccountID)
 }
 
 func (c *familyRelatedCleaner) CleanupAccountRelated(ctx context.Context, job retention.RecordMaintenanceJob, statsWriter retention.StatsWriter) (retention.RelatedCleanupResult, error) {
 	if c.family.recordCleanup == nil {
 		return retention.RelatedCleanupResult{}, fmt.Errorf("retention record cleanup store 未初始化")
 	}
-	if c.family.postgres {
-		return c.family.recordCleanup.CleanupAccountRelatedPostgres(ctx, retention.ExpiredDeletedAccountTarget{
-			AccountID:         job.AccountID,
-			SystemAccountID:   job.SystemAccountID,
-			RelatedAccountIDs: job.RelatedAccountIDs,
-			AuthorizationIDs:  job.AuthorizationIDs,
-			TeamScopeIDs:      job.TeamScopeIDs,
-		})
-	}
-	return c.family.recordCleanup.CleanupAccountRelatedSQLite(ctx, retention.ExpiredDeletedAccountTarget{
+	return c.family.recordCleanup.CleanupAccountRelatedPostgres(ctx, retention.ExpiredDeletedAccountTarget{
 		AccountID:         job.AccountID,
 		SystemAccountID:   job.SystemAccountID,
 		RelatedAccountIDs: job.RelatedAccountIDs,
 		AuthorizationIDs:  job.AuthorizationIDs,
 		TeamScopeIDs:      job.TeamScopeIDs,
-	}, statsWriter)
+	})
 }
 
 type familyAPIKeyRetryer struct {
@@ -691,10 +576,7 @@ type familyAPIKeyRetryer struct {
 }
 
 func (r *familyAPIKeyRetryer) CleanupPendingTargets(ctx context.Context, limit int, statsWriter retention.StatsWriter) (retention.PendingCleanupSummary, error) {
-	if r.family.postgres {
-		return r.family.recordCleanup.CleanupPendingAPIKeyTargetsPostgres(ctx, limit)
-	}
-	return r.family.recordCleanup.CleanupPendingAPIKeyTargets(ctx, limit, statsWriter)
+	return r.family.recordCleanup.CleanupPendingAPIKeyTargetsPostgres(ctx, limit)
 }
 
 type familyAccountRetryer struct {
@@ -702,10 +584,7 @@ type familyAccountRetryer struct {
 }
 
 func (r *familyAccountRetryer) CleanupPendingTargets(ctx context.Context, limit int, statsWriter retention.StatsWriter) (retention.PendingCleanupSummary, error) {
-	if r.family.postgres {
-		return r.family.recordCleanup.CleanupPendingAccountTargetsPostgres(ctx, limit)
-	}
-	return r.family.recordCleanup.CleanupPendingAccountTargets(ctx, limit, statsWriter)
+	return r.family.recordCleanup.CleanupPendingAccountTargetsPostgres(ctx, limit)
 }
 
 // familyStatsWriter 是 retention.StatsWriter 的清理侧实现（非业务数据 stats 半区
@@ -841,19 +720,6 @@ func (p *codexStorageProcessor) ProcessBatch(ctx context.Context, storageKeys []
 			"failedCount", len(deletion.Failures))
 	}
 	return deletion.Deleted, nil
-}
-
-type datasetCheckpointer struct {
-	dataset, usageCatalog, stats *sql.DB
-}
-
-func (c *datasetCheckpointer) CheckpointAfterDelete(ctx context.Context) error {
-	for _, db := range []*sql.DB{c.dataset, c.usageCatalog, c.stats} {
-		if err := checkpointSQLite(ctx, db); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ---- 本地 record maintenance 队列 ----
@@ -1005,28 +871,4 @@ func (f *retentionFamily) flushLoop(stop <-chan struct{}, queue *recordMaintenan
 	}
 }
 
-// familyTimezoneClock 适配 family 时区解析为 statsagg.StatsTimezoneProvider。
-type familyTimezoneClock struct {
-	family *retentionFamily
-}
-
-func (c *familyTimezoneClock) StatsTimezone(ctx context.Context) (*time.Location, error) {
-	return c.family.timezone(ctx)
-}
-
-// retentionDerivedWindows 适配 cleanuprepo.DerivedWindowRefresher：复用
-// statsagg 的配额小时窗与排行快照刷新（与 stats 家族同一套实现，句柄来自
-// retention 家族自己的 stats/business 连接，两个家族启用开关独立）。
-type retentionDerivedWindows struct {
-	refresher *statsagg.WindowRefresher
-}
-
-func (d *retentionDerivedWindows) RefreshQuotaHourlyWindows(ctx context.Context) error {
-	_, err := d.refresher.RunQuotaHourlyWindows(ctx)
-	return err
-}
-
-func (d *retentionDerivedWindows) RefreshRankSnapshots(ctx context.Context) error {
-	_, err := d.refresher.RunStages(ctx, nil, statsagg.RefreshOptions{})
-	return err
-}
+// familyTimezoneClock 已随 sqlite 派生窗口刷新臂删除（DerivedWindows 同批移除）。

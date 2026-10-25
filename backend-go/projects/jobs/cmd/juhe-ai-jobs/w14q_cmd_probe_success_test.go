@@ -48,20 +48,20 @@ func w14qSeedProbeHTTPAccount(t *testing.T, handle *proberepoStoreHandle, upstre
 	}
 	statements := []string{
 		// seedProbeCoreTables 的账户形状缺 LoadProbeView 读取的代理列。
-		`ALTER TABLE accounts ADD COLUMN proxy_profile_id TEXT`,
-		`INSERT INTO groups (id, system_account_id) VALUES ('g-w14q', 'sys-w14q')`,
-		`INSERT INTO group_accounts (group_id, system_account_id, account_id) VALUES ('g-w14q', 'sys-w14q', 'acc-w14q')`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN proxy_profile_id TEXT`,
+		`INSERT INTO juhe_business.groups (id, system_account_id) VALUES ('g-w14q', 'sys-w14q')`,
+		`INSERT INTO juhe_business.group_accounts (group_id, system_account_id, account_id) VALUES ('g-w14q', 'sys-w14q', 'acc-w14q')`,
 		// 供应商解耦形态：身份 vendor_code + 健康检查连接行（探针 profile 由
 		// 连接 preset 派生，上游地址取连接 base_url）。
-		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code, health_check_model, health_check_endpoint_mode, credentials_encrypted, config_revision, dispatch_revision)
+		`INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code, health_check_model, health_check_endpoint_mode, credentials_encrypted, config_revision, dispatch_revision)
 		 VALUES ('acc-w14q', 'sys-w14q', 'w14q', 'api_key', 'active', 1, 'gpt', 'gpt', 'gpt-w14q', 'chat_json', ?, 1, 2)`,
-		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+		`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
 		 VALUES ('model-w14q', 'gpt', 'gpt-w14q', 'gpt-w14q', 'global', 'active', '')`,
-		`INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES ('acc-w14q', 'model-w14q', '')`,
-		`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		`INSERT INTO juhe_business.account_supported_models (account_id, model_id, created_at) VALUES ('acc-w14q', 'model-w14q', '')`,
+		`INSERT INTO juhe_business.account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
 		 VALUES ('conn-w14q', 'acc-w14q', 'gpt_openai_v1', 'openai_v1', ?, 1, '', '')`,
-		`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-w14q', 'chat_json')`,
-		`UPDATE accounts SET health_check_connection_id = 'conn-w14q' WHERE id = 'acc-w14q'`,
+		`INSERT INTO juhe_business.account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-w14q', 'chat_json')`,
+		`UPDATE juhe_business.accounts SET health_check_connection_id = 'conn-w14q' WHERE id = 'acc-w14q'`,
 	}
 	for index, statement := range statements {
 		var execErr error

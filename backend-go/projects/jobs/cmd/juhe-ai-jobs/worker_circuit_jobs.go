@@ -60,7 +60,7 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 	// ---- account-circuit-control-plane-maintenance ----
 	controlPlaneRepo, err := circuitstore.NewControlPlaneRepo(circuitstore.ControlPlaneConfig{
 		DB:       business.db,
-		Postgres: business.postgres,
+		Postgres: true,
 	})
 	if err != nil {
 		return err
@@ -73,7 +73,7 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 	}
 	cursorStore, err := circuitstore.NewReconcileCursorStore(circuitstore.ControlPlaneConfig{
 		DB:       business.db,
-		Postgres: business.postgres,
+		Postgres: true,
 	})
 	if err != nil {
 		return err

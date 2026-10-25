@@ -127,10 +127,9 @@ func TestW2M11PureHelpers(t *testing.T) {
 		}
 	})
 	t.Run("statsTable 方言", func(t *testing.T) {
-		if env, _ := newM11TestEnv(t); env != nil {
-			if env.store.statsTable("account_usage_snapshots") == "juhe_stats.account_usage_snapshots" {
-				t.Fatal("SQLite 方言不应带 schema 前缀")
-			}
+		// env.store 已是 PG 臂；SQLite 臂渲染用零值 Store 直测。
+		if (&Store{}).statsTable("account_usage_snapshots") == "juhe_stats.account_usage_snapshots" {
+			t.Fatal("SQLite 方言不应带 schema 前缀")
 		}
 	})
 	t.Run("balanceSnapshotTimestampMs", func(t *testing.T) {

@@ -86,12 +86,13 @@ func TestW14BTargetModelModesWithMapping(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acc-w14b-map'`, sealed)
 	// 目录：源模型 + 映射上游模型（B4 ⑧ 切 models 单表；builtin 行按
 	// seedFixtureModels 同名 id REPLACE 覆盖，精确保控目录行）。
-	env.exec(t, `REPLACE INTO models (id, vendor_code, public_model, upstream_model, scope, status,
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 		supported_endpoint_modes_json, release_date, created_at, updated_at)
 		VALUES ('mod-fixture-gpt-4o-mini-gpt', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', 'active',
 			'["chat_json","chat_sse","responses_json","responses_sse"]', '2024-07-18', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
 		       ('mod-fixture-custom-a-gpt', 'gpt', 'custom-a', 'custom-a', 'builtin', 'active',
-			'["chat_json","chat_sse"]', '2024-06-01', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+			'["chat_json","chat_sse"]', '2024-06-01', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+			ON CONFLICT (id) DO UPDATE SET vendor_code = EXCLUDED.vendor_code, public_model = EXCLUDED.public_model, upstream_model = EXCLUDED.upstream_model, scope = EXCLUDED.scope, system_account_id = EXCLUDED.system_account_id, status = EXCLUDED.status, supported_endpoint_modes_json = EXCLUDED.supported_endpoint_modes_json, release_date = EXCLUDED.release_date, shutdown_date = EXCLUDED.shutdown_date, catalog_visible = EXCLUDED.catalog_visible, catalog_order = EXCLUDED.catalog_order, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`)
 	// 账户模型映射：gpt-4o-mini → custom-a（触发映射解析 + 目录缓存臂）；
 	// B4 W2 目标形态直插。
 	env.seedEntryMapping(t, "acc-w14b-map", "generic_openai_v1", "gpt-4o-mini", "chat_completions", "custom-a", "chat_completions", 1)
@@ -136,7 +137,7 @@ func TestW14BTargetModelModesWithMapping(t *testing.T) {
 		t.Fatal("锁表引用分支不符")
 	}
 	store := &Store{pg: true}
-	if store.forUpdate() != " FOR UPDATE" || env.store.forUpdate() != "" {
+	if store.forUpdate() != " FOR UPDATE" || (&Store{}).forUpdate() != "" {
 		t.Fatal("forUpdate 分支不符")
 	}
 	if actor := func() string {

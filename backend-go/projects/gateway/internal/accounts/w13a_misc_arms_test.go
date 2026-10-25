@@ -170,7 +170,7 @@ func TestW13AExportHelpers(t *testing.T) {
 	env.seedAccount(t, "acc-w13a-ex2", adminID, "w13a-ex2", "pending_test")
 	now := "2026-09-17T00:00:00.000Z"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, username, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-ex', ?, 'w13a-ex-proxy', 'socks5', 'h', 1080, 'user', 1, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13a-ex', ?, 'w13a-ex-proxy', 'socks5', 'h', 1080, 'user', true, 'unknown', ?, ?)`, adminID, now, now)
 	env.exec(t, `UPDATE accounts SET proxy_profile_id = 'proxy-w13a-ex' WHERE id = 'acc-w13a-ex1'`)
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
 

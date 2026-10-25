@@ -2,9 +2,7 @@ package modelcheckowner
 
 import (
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +14,10 @@ import (
 // Config is the Gateway-side owner contract for J3b. Loading it only validates
 // the explicit readiness gates; listener and scheduler startup remains the
 // caller's responsibility after the full dependency graph is assembled.
+// 2026-10-24 存储形态收口：StoreMode 恒 "postgres"（JUHE_AI_J3B_STORE 仅剩
+// 单一合法形态 → 整个 env 读取删除），DatabasePath/BusinessDatabasePath/
+// SQLiteReadPoolSize 等 sqlite 字段保留是 OpenBusinessTargetConnection
+// 双形态本体的后续批次对象，LoadConfig 不再填充。
 type Config struct {
 	Enabled                  bool
 	StoreMode                string
@@ -28,19 +30,14 @@ type Config struct {
 	Owner                    string
 	InstanceID               string
 	BusinessHandoffConfirmed bool
-	// AutoClaimed marks the 2026-09-20 zero-config standalone arm: the
-	// handoff/readiness env family is entirely unconfigured, so the owner
-	// facts are claimed in-process (handoff flags true, fixed standalone
-	// epoch, no cutover evidence). Explicitly configuring any family member
-	// restores the original fail-closed cutover discipline.
+	// AutoClaimed marks the zero-config auto-claim contract: the owner facts
+	// are claimed in-process (handoff flags true, fixed standalone epoch, no
+	// cutover evidence). 清理批次 C1（2026-09-30）起恒真。
 	AutoClaimed bool
 	// OwnerEpoch identifies the externally coordinated cutover epoch. The
 	// value is intentionally opaque here; the deployment evidence verifier
 	// remains responsible for proving that the epoch is real and current.
 	OwnerEpoch string
-	// CutoverEvidencePath points to the externally generated post-cutover
-	// evidence consumed before any Business DB or listener is opened.
-	CutoverEvidencePath string
 	// NodeWriterStopped is an explicit cutover fence. It must be true before
 	// Gateway can enable a confirmed Business handoff; otherwise a stale Node
 	// writer could race the new owner and silently corrupt Business state.
@@ -61,11 +58,9 @@ type Config struct {
 	CircuitRuntimeRedisURLFellBack bool
 	CircuitRuntimeCapacity         int
 	CircuitRuntimeRetention        time.Duration
-	// SQLiteReadPoolSize is the Business SQLite read pool connection limit
-	// (JUHE_AI_SQLITE_READ_POOL). The pure-read Source port (account options,
-	// target resolution, contract checks) runs on this pool while the write
-	// pool stays single-connection with in-process queuing; WAL carries the
-	// one-writer/many-readers contract. Zero means the 4-connection default;
+	// SQLiteReadPoolSize is the legacy Business SQLite read pool connection
+	// limit consumed by the sqlite form of OpenBusinessTargetConnection
+	// (JUHE_AI_SQLITE_READ_POOL env 随存储形态退役，LoadConfig 不再读取)；
 	// PostgreSQL mode shares one multi-connection pool and ignores it.
 	SQLiteReadPoolSize int
 }
@@ -78,17 +73,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	// gateway 进程始终装配 J3b owner；访问控制走管理面权限（Admin/Self
 	// 会话鉴权），部署依赖只有存储与可选 Redis。
 	cfg := Config{Enabled: true}
-	// 2026-09-22 读/写双池：读池默认 4 连接，吸收个人部署的真实读并发
-	// （多窗口多 agent 的管理面查询与缓存回源）；写池维持单连接的进程内
-	// 排队语义。未配置取默认，显式配置必须落在 1..16。
-	cfg.SQLiteReadPoolSize = 4
-	if raw := strings.TrimSpace(getenv("JUHE_AI_SQLITE_READ_POOL")); raw != "" {
-		size, parseErr := strconv.Atoi(raw)
-		if parseErr != nil || size < 1 || size > 16 {
-			return Config{}, fmt.Errorf("JUHE_AI_SQLITE_READ_POOL 必须为 1..16 的整数: %q", raw)
-		}
-		cfg.SQLiteReadPoolSize = size
-	}
 	cfg.Owner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_J3B_OWNER")))
 	if cfg.Owner == "" {
 		cfg.Owner = "gateway"
@@ -100,47 +84,22 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.InstanceID == "" {
 		cfg.InstanceID = datadir.DefaultInstanceID()
 	}
-	cfg.StoreMode = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_J3B_STORE")))
-	if cfg.StoreMode == "" {
-		if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")), "postgres") {
-			cfg.StoreMode = "postgres"
-		} else {
-			cfg.StoreMode = "sqlite"
-		}
+	// 2026-10-24 存储形态收口：JUHE_AI_J3B_STORE 仅剩单一合法形态 postgres——
+	// 整个 env 读取删除；PostgreSQL 是唯一存储形态。
+	cfg.StoreMode = "postgres"
+	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_POSTGRES_URL"))
+	if cfg.PostgresURL == "" {
+		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	}
-	if cfg.StoreMode != "sqlite" && cfg.StoreMode != "postgres" {
-		return Config{}, errors.New("JUHE_AI_J3B_STORE 必须为 sqlite 或 postgres")
+	if cfg.PostgresURL == "" {
+		return Config{}, errors.New("缺少 JUHE_AI_J3B_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
 	}
-	dataDir := datadir.Dir(getenv)
-	if cfg.StoreMode == "sqlite" {
-		cfg.DatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_J3B_DATABASE_PATH", datadir.ModelCheckDatabase)
-		cfg.BusinessDatabasePath = strings.TrimSpace(getenv("JUHE_AI_J3B_BUSINESS_DATABASE_PATH"))
-		if cfg.BusinessDatabasePath == "" {
-			// 未显式配置时跟随主网关的 Business 库（同一部署的 owner 事实
-			// 源必须同库），再回落 datadir 固定名。
-			cfg.BusinessDatabasePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_DATABASE_PATH"))
-		}
-		if cfg.BusinessDatabasePath == "" {
-			cfg.BusinessDatabasePath = filepath.Join(dataDir, datadir.BusinessDatabase)
-		}
-		if cfg.DatabasePath == cfg.BusinessDatabasePath {
-			return Config{}, errors.New("J3b 专属 SQLite 文件必须与 Business SQLite 文件分离")
-		}
-	} else {
-		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_POSTGRES_URL"))
-		if cfg.PostgresURL == "" {
-			cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-		}
-		if cfg.PostgresURL == "" {
-			return Config{}, errors.New("postgres 模式缺少 JUHE_AI_J3B_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
-		}
-		cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_BUSINESS_POSTGRES_URL"))
-		if cfg.BusinessPostgresURL == "" {
-			cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_POSTGRES_URL"))
-		}
-		if cfg.BusinessPostgresURL == "" {
-			cfg.BusinessPostgresURL = cfg.PostgresURL
-		}
+	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_J3B_BUSINESS_POSTGRES_URL"))
+	if cfg.BusinessPostgresURL == "" {
+		cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_POSTGRES_URL"))
+	}
+	if cfg.BusinessPostgresURL == "" {
+		cfg.BusinessPostgresURL = cfg.PostgresURL
 	}
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_J3B_CREDENTIAL_SECRET"))
 	if cfg.CredentialSecret == "" {

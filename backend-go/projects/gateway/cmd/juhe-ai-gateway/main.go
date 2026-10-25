@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -53,21 +52,13 @@ var corsSurfacePrefixes = []string{"/__aisys__", "/__aipublic__"}
 func main() {
 	version := flag.Bool("version", false, "print the gateway project contract version")
 	check := flag.Bool("check-boundary", false, "verify the scaffold boundary")
-	auditLegacyMigration := flag.Bool("migrate-audit-log-legacy-sqlite", false, "offline F3 legacy SQLite migration")
-	operationLegacySQLiteMigration := flag.Bool("migrate-operation-log-legacy-sqlite", false, "offline F4 legacy SQLite migration")
 	operationLegacyPostgresMigration := flag.Bool("migrate-operation-log-legacy-postgres", false, "offline F4 legacy PostgreSQL schema migration")
 	initCircuitRuntimeIndex := flag.Bool("init-account-circuit-runtime-index", false, "one-shot backfill of the J3b account circuit Redis runtime index from the authoritative business dispatch revisions (performance-mode bootstrap; exits after completion)")
 	nodeStopped := flag.Bool("node-stopped", false, "confirm Node is stopped for the offline migration")
 	goStopped := flag.Bool("go-stopped", false, "confirm all Go owners are stopped for the offline migration")
 	backupConfirmed := flag.Bool("backup-confirmed", false, "confirm a recoverable backup was verified for the offline migration")
 	healthAddress := flag.String("health-listen-address", envOrDefault("JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3306"), "loopback health listen address")
-	var auditMigration auditlog.LegacyMigrationOptions
 	var operationMigration operationlog.LegacyMigrationOptions
-	flag.StringVar(&auditMigration.SourceDatabasePath, "source-db", "", "legacy Node audit SQLite database")
-	flag.StringVar(&auditMigration.TargetDatabasePath, "target-db", "", "dedicated Go F3 SQLite database")
-	flag.StringVar(&auditMigration.SourceBlobDirectory, "source-blob-dir", "", "legacy audit blob directory")
-	flag.StringVar(&auditMigration.TargetBlobDirectory, "target-blob-dir", "", "dedicated Go F3 blob directory")
-	flag.StringVar(&operationMigration.SourceDatabasePath, "operation-log-source-db", "", "legacy Node operation-log SQLite database")
 	flag.Parse()
 	if *version {
 		fmt.Printf("juhe-ai-gateway project=%s contract=%s\n", contracts.ProjectGateway, contracts.ArchitectureVersion)
@@ -81,24 +72,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unsupported gateway arguments: %v\n", flag.Args())
 		os.Exit(2)
 	}
-	auditMigration.NodeStopped, auditMigration.GoStopped = *nodeStopped, *goStopped
 	operationMigration.NodeStopped, operationMigration.GoStopped, operationMigration.BackupConfirmed = *nodeStopped, *goStopped, *backupConfirmed
-	migrationCount := 0
-	for _, enabled := range []bool{*auditLegacyMigration, *operationLegacySQLiteMigration, *operationLegacyPostgresMigration} {
-		if enabled {
-			migrationCount++
-		}
-	}
-	if migrationCount > 1 {
-		fmt.Fprintln(os.Stderr, "offline migration modes are mutually exclusive")
-		os.Exit(2)
-	}
-	if *auditLegacyMigration {
-		runAuditLegacyMigration(auditMigration)
-		return
-	}
-	if *operationLegacySQLiteMigration || *operationLegacyPostgresMigration {
-		runOperationLogLegacyMigration(operationMigration, *operationLegacyPostgresMigration)
+	// 2026-10-24 存储形态收口：--migrate-audit-log-legacy-sqlite 与
+	// --migrate-operation-log-legacy-sqlite 两个 sqlite 形态一次性命令随
+	// sqlite 存储形态物理删除；PG→PG 迁移命令（-migrate-operation-log-legacy-
+	// postgres）保留为唯一离线迁移形态。
+	if *operationLegacyPostgresMigration {
+		runOperationLogLegacyPostgresMigration(operationMigration)
 		return
 	}
 	if *initCircuitRuntimeIndex {
@@ -185,34 +165,10 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))
 	}
-	// 零配置自动认领臂（2026-09-19 起；2026-09-21 扩展到 J3b）：业务库文件
-	// 在组合根 preflight 之前尚不存在，而两处打开都先于它——J3b owner 连接
-	// （2026-09-21 起常驻装配）用 mode=rw（不建文件）打开并强校验 schema；
-	// F4 sqlite 镜像与业务库同文件（同为 <DATA_DIR>/business.sqlite3 派生）
-	// 时只读镜像打开会失败。此处先对业务库执行一次 ensure+seed preflight
-	// （与组合根稍后的同一 preflight 幂等）。显式配置独立 settings 镜像
-	// （F4）或独立业务路径（J3b）的部署不满足同文件条件，维持外部供给契约，
-	// 不在此自举。
-	f4MirrorSharesBusinessFile := operationConfig.Enabled && operationConfig.Mode == operationlog.ModeSQLite &&
-		filepath.Clean(operationConfig.BusinessSettingsPath) == filepath.Clean(runtimeCfg.BusinessDatabasePath)
-	j3bSharesBusinessFile := j3bConfig.StoreMode == "sqlite" && j3bConfig.AutoClaimed &&
-		filepath.Clean(j3bConfig.BusinessDatabasePath) == filepath.Clean(runtimeCfg.BusinessDatabasePath)
-	if runtimeCfg.BusinessOwnerAutoClaimed && (f4MirrorSharesBusinessFile || j3bSharesBusinessFile) {
-		seedDB, seedErr := sql.Open("sqlite", sqliteFileDSN(runtimeCfg.BusinessDatabasePath))
-		if seedErr != nil {
-			fail(fmt.Errorf("open business sqlite database for zero-config seed: %w", seedErr))
-		}
-		seedDB.SetMaxOpenConns(1)
-		if configureErr := configureSQLiteConnection(seedDB); configureErr != nil {
-			_ = seedDB.Close()
-			fail(fmt.Errorf("configure business sqlite database for zero-config seed: %w", configureErr))
-		}
-		if preflightErr := ensureGatewaySQLiteStoragePreflight(context.Background(), runtimeCfg, seedDB); preflightErr != nil {
-			_ = seedDB.Close()
-			fail(fmt.Errorf("zero-config sqlite storage preflight: %w", preflightErr))
-		}
-		_ = seedDB.Close()
-	}
+	// 2026-10-24 存储形态收口：零配置 sqlite seed preflight 块（业务库文件
+	// ensure+seed 自举）随 sqlite 存储形态删除——PG schema/seed 由外部
+	// juhe-ai-maintenance --ensure-schema --seed 流程预置，组合根只做只读
+	// 契约校验，不再有任何启动期 DDL。
 	var j3bHostComponent supervisor.Component
 	var j3bManagementServer *http.Server
 	var j3bManagementListener net.Listener
@@ -229,17 +185,15 @@ func main() {
 	var circuitRuntimeRunning atomic.Bool
 	var keyModelStore *keymodelruntime.RedisStore
 	if j3bConfig.Enabled {
-		var businessMode modelcheckauth.Mode = modelcheckauth.SQLite
-		if j3bConfig.StoreMode == "postgres" {
-			businessMode = modelcheckauth.Postgres
-		}
+		// 2026-10-24 存储形态收口：业务连接恒 PostgreSQL（原 sqlite/postgres
+		// 按 JUHE_AI_J3B_STORE 的映射收敛为常量）。
 		businessConnection, openErr := modelcheckowner.OpenBusinessTargetConnection(context.Background(), j3bConfig)
 		if openErr != nil {
 			fail(fmt.Errorf("open J3b Business owner connection: %w", openErr))
 		}
 		defer businessConnection.Close()
 		businessSource := businessConnection.Source
-		authenticator, authErr := modelcheckauth.New(businessConnection.DB, businessMode, time.Now)
+		authenticator, authErr := modelcheckauth.New(businessConnection.DB, modelcheckauth.Postgres, time.Now)
 		if authErr != nil {
 			fail(fmt.Errorf("create J3b Gateway authenticator: %w", authErr))
 		}
@@ -250,15 +204,7 @@ func main() {
 			fail(fmt.Errorf("verify J3b Gateway auth contract: %w", authErr))
 		}
 		retentionGate := sessionretention.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped}
-		// 按枚举映射保留模式（与下方 circuitMode 同款写法）。直接
-		// sessionretention.Mode(businessMode) 会经 string(uint8) rune 转换
-		// 得到 "\x01"/"\x02"，永远不是 "sqlite"/"postgres"，J3b 分支
-		// 100% 在 ErrInvalidMode 处 fail。
-		retentionMode := sessionretention.SQLite
-		if businessMode == modelcheckauth.Postgres {
-			retentionMode = sessionretention.Postgres
-		}
-		retentionStore, retentionErr := sessionretention.New(businessConnection.DB, retentionMode, "juhe_business", retentionGate)
+		retentionStore, retentionErr := sessionretention.New(businessConnection.DB, sessionretention.Postgres, "juhe_business", retentionGate)
 		if retentionErr != nil {
 			fail(fmt.Errorf("create J3b Gateway session retention owner: %w", retentionErr))
 		}
@@ -279,16 +225,12 @@ func main() {
 			if isolationErr := j3bConfig.ValidateCircuitRuntimeRedisIsolation(); isolationErr != nil {
 				fail(isolationErr)
 			}
-			circuitMode := circuitcontrolplane.SQLite
-			if businessMode == modelcheckauth.Postgres {
-				circuitMode = circuitcontrolplane.Postgres
-			}
 			circuitGate := circuitcontrolplane.OwnerGate{
 				Confirmed:         j3bConfig.BusinessHandoffConfirmed,
 				SchemaReady:       j3bConfig.SchemaReady,
 				NodeWriterStopped: j3bConfig.NodeWriterStopped,
 			}
-			circuitStore, circuitErr := circuitcontrolplane.New(businessConnection.DB, circuitMode, "juhe_business", circuitGate)
+			circuitStore, circuitErr := circuitcontrolplane.New(businessConnection.DB, circuitcontrolplane.Postgres, "juhe_business", circuitGate)
 			if circuitErr != nil {
 				fail(fmt.Errorf("create J3b Gateway circuit control-plane owner: %w", circuitErr))
 			}
@@ -372,15 +314,15 @@ func main() {
 				return runSessionRetention(runCtx, retentionStore, retentionInterval, retentionLimit, func() { retentionRunning.Store(true) })
 			},
 		}
-		enforcement, enforcementErr := modelcheckowner.NewBusinessEnforcementApplier(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		enforcement, enforcementErr := modelcheckowner.NewBusinessEnforcementApplier(businessConnection.DB, true)
 		if enforcementErr != nil {
 			fail(fmt.Errorf("create J3b Gateway enforcement owner: %w", enforcementErr))
 		}
-		recovery, recoveryErr := modelcheckowner.NewBusinessRecoveryApplier(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		recovery, recoveryErr := modelcheckowner.NewBusinessRecoveryApplier(businessConnection.DB, true)
 		if recoveryErr != nil {
 			fail(fmt.Errorf("create J3b Gateway recovery owner: %w", recoveryErr))
 		}
-		quality, qualityErr := modelcheckowner.NewBusinessQualityManager(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		quality, qualityErr := modelcheckowner.NewBusinessQualityManager(businessConnection.DB, true)
 		if qualityErr != nil {
 			fail(fmt.Errorf("create J3b Gateway quality manager: %w", qualityErr))
 		}
@@ -390,20 +332,21 @@ func main() {
 		// F4 operation-log producer 在本块之后的 system API 装配段才存在，
 		// J3b 管理面（含既有 model-checks 端点）没有进程内审计 sink 可注入，
 		// 题库写操作审计按 handlers 的 nil-sink 契约降级为 no-op。
-		questionBankStore, questionBankErr := modelcheckquestionbank.NewStore(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		questionBankStore, questionBankErr := modelcheckquestionbank.NewStore(businessConnection.DB, true)
 		if questionBankErr != nil {
 			fail(fmt.Errorf("create J3b Gateway question bank store: %w", questionBankErr))
 		}
 		// 提交门禁测试执行器（检测题库提交门禁设计）：businessSource 在本块
 		// 之前已构造（businessConnection.Source）。Dispatcher 取下方
 		// HostDependencies 装配的检测 ProbeAdapter 同款组合（同 KeyModel gate
-		// 与熔断 gate，独立实例同语义）；提交前诊断直连不走新的调度语义，
-		// nil 时 probe 亦回退直连。
+		// 与熔断 gate，独立实例同语义，Diagnostic 探针中性结算）；派发语义
+		// 与检测探针链一致，套件侧由 suiteFor 携带 Capability 准入键，
+		// dispatcher 为 nil 时 probe 才回退直连。
 		questionTestRunner := modelcheckowner.NewQuestionTestRunner(businessSource.Resolver(), &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelGate, Circuit: probeCircuit}})
 		questionBankAdmin := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true, questionTestRunner)
 		questionBankSelf := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false, questionTestRunner)
 		quality.SetQuestionBankVerifier(questionBankStore)
-		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, Postgres: businessMode == modelcheckauth.Postgres, OwnerID: j3bConfig.InstanceID}
+		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, Postgres: true, OwnerID: j3bConfig.InstanceID}
 		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway scheduler contract: %w", schedulerErr))
 		}
@@ -411,21 +354,13 @@ func main() {
 		if tokenizerErr != nil {
 			fail(fmt.Errorf("create J3b Gateway tokenizer: %w", tokenizerErr))
 		}
-		modelLimits, modelLimitsErr := modelcheckowner.NewVersionedModelLimits(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		modelLimits, modelLimitsErr := modelcheckowner.NewVersionedModelLimits(businessConnection.DB, true)
 		if modelLimitsErr != nil {
 			fail(fmt.Errorf("create J3b Gateway model-limit source: %w", modelLimitsErr))
 		}
-		healthStatHour, healthStatHourErr := modelcheckowner.LoadBusinessHealthStatHour(context.Background(), businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		healthStatHour, healthStatHourErr := modelcheckowner.LoadBusinessHealthStatHour(context.Background(), businessConnection.DB, true)
 		if healthStatHourErr != nil {
 			fail(fmt.Errorf("load J3b Gateway usage stats timezone: %w", healthStatHourErr))
-		}
-		if j3bConfig.StoreMode == "sqlite" && j3bConfig.AutoClaimed {
-			// 零配置自动认领：专属库文件与 schema 由组合根幂等自举（与六库
-			// preflight 同款语义）；严格切流模式仍要求外部预置并保持
-			// SCHEMA_READY 门禁。
-			if err := ensureJ3bDedicatedSQLiteBootstrap(context.Background(), j3bConfig.DatabasePath); err != nil {
-				fail(err)
-			}
 		}
 		// dev 自动登录接入 J3b 面（2026-10-01，BUG-0256）：与 authsys.
 		// sessionMiddleware 的 developmentAutoLogin 同语义，仅对"完全无
@@ -437,7 +372,7 @@ func main() {
 		if runtimeCfg.DevAutoLoginUsername != "" {
 			// 显式 OwnerGate（不用无 gate 的 legacy 形式）：dev 自动登录的
 			// 账号查询与主面 system-accounts 走同一 handoff 证据链。
-			devAutoLoginAccounts, devAutoLoginErr := authsys.NewAccountStore(businessConnection.DB, businessMode, time.Now, authsys.OwnerGate{
+			devAutoLoginAccounts, devAutoLoginErr := authsys.NewAccountStore(businessConnection.DB, modelcheckauth.Postgres, time.Now, authsys.OwnerGate{
 				Confirmed:         j3bConfig.BusinessHandoffConfirmed,
 				SchemaReady:       j3bConfig.SchemaReady,
 				NodeWriterStopped: j3bConfig.NodeWriterStopped,
@@ -604,11 +539,9 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F3 audit-log config: %w", err))
 	}
-	if auditConfig.Mode == auditlog.ModePostgres {
-		auditConfig.PostgresPool, err = postgresPools.Acquire(auditConfig.PostgresURL, "gateway-store", auditConfig.PostgresMaxOpenConns, auditConfig.PostgresMaxIdleConns)
-		if err != nil {
-			fail(fmt.Errorf("open shared F3 PostgreSQL pool: %w", err))
-		}
+	auditConfig.PostgresPool, err = postgresPools.Acquire(auditConfig.PostgresURL, "gateway-store", auditConfig.PostgresMaxOpenConns, auditConfig.PostgresMaxIdleConns)
+	if err != nil {
+		fail(fmt.Errorf("open shared F3 PostgreSQL pool: %w", err))
 	}
 	auditStore, err := auditlog.OpenStore(auditConfig)
 	if err != nil {
@@ -657,22 +590,9 @@ func main() {
 	})
 	var operationStore operationlog.Store
 	if operationConfig.Enabled {
-		if operationConfig.Mode == operationlog.ModePostgres {
-			operationConfig.PostgresPool, err = postgresPools.Acquire(operationConfig.PostgresURL, "gateway-store", operationConfig.PostgresMaxOpenConns, operationConfig.PostgresMaxIdleConns)
-			if err != nil {
-				fail(fmt.Errorf("open shared F4 PostgreSQL pool: %w", err))
-			}
-		}
-		// F4 镜像运行期同步选型（consumer 侧读业务库兜底）：SQLite 模式把
-		// 业务库本体路径交给 F4 store，镜像缺失运行期新建/改名账户时名字
-		// 解析兜底到业务库（部署契约里镜像路径常直接指向业务库文件，此时
-		// store 复用句柄不重复打开）。PostgreSQL 模式直读 juhe_business，
-		// 无镜像概念。2026-09-19：只透传显式 JUHE_AI_BUSINESS_DATABASE_PATH，
-		// 不传 loadRuntimeConfig 的派生值——兜底句柄是可选增强，派生业务库
-		// 文件尚不存在时（零配置首启动）不允许它阻塞 store 打开；零配置下
-		// 镜像本身就是业务库文件，兜底无增益。
-		if operationConfig.Mode == operationlog.ModeSQLite {
-			operationConfig.BusinessDatabasePath = strings.TrimSpace(os.Getenv("JUHE_AI_BUSINESS_DATABASE_PATH"))
+		operationConfig.PostgresPool, err = postgresPools.Acquire(operationConfig.PostgresURL, "gateway-store", operationConfig.PostgresMaxOpenConns, operationConfig.PostgresMaxIdleConns)
+		if err != nil {
+			fail(fmt.Errorf("open shared F4 PostgreSQL pool: %w", err))
 		}
 		operationStore, err = operationlog.OpenStore(operationConfig)
 		if err != nil {
@@ -849,29 +769,15 @@ func main() {
 		gatewayusage.SetOperationLogDroppedTotal(composed.producer.DroppedTotal)
 		// 主业务池 DBStats 进 Prometheus（2026-10-16：六序列无标签，四 gauge +
 		// 两累计 counter）。F3/F4 同款 seam：Server 启动前注入，先于任何
-		// scrape 读取。SQLite 形态 composed.db 是单写句柄而非池化对象，不注
-		// 入、整族缺席。
-		if composed.pgDialect {
-			gatewayusage.SetDBPoolStats(func() sql.DBStats { return composed.db.Stats() })
-		}
+		// scrape 读取。2026-10-24 存储形态收口：业务句柄恒为共享池对象，
+		// 注入无条件执行（原 pgDialect 恒真条件去除）。
+		gatewayusage.SetDBPoolStats(func() sql.DBStats { return composed.db.Stats() })
 		// T6d gateway-side consumption: re-project the runtime rows and quota
 		// scope bindings the jobs expiry sweep cannot touch (jobregistry
 		// GoBinding freeze). Best-effort compensator: failures never stop the
 		// owner, so the component is not health-gated.
 		if composed.AuthzStore != nil {
 			components = append(components, newAuthzExpiryRuntimeSyncComponent(composed.AuthzStore))
-		}
-		// 本地单机形态恢复驱动（PLAN-20261008T113056000Z）：memory 运行态
-		// 形态下 gateway 进程内推进账户电路恢复（redis 形态归 jobs，组件
-		// 零值不挂载）；生命周期随 supervisor，ctx 取消即停。
-		if chain := composed.chainServices; chain != nil && chain.AccountCircuitRecovery.Run != nil {
-			components = append(components, chain.AccountCircuitRecovery)
-		}
-		// key-model 能力熔断记忆恢复驱动（PLAN-20261008T113056000Z 根治
-		// 阶段）：同上仅 memory 运行态形态装配（redis 形态归 jobs
-		// keymodelrecovery），组件零值不挂载。
-		if chain := composed.chainServices; chain != nil && chain.KeyModelMemoryRecovery.Run != nil {
-			components = append(components, chain.KeyModelMemoryRecovery)
 		}
 		mainListener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", runtimeCfg.Host, runtimeCfg.Port))
 		if err != nil {
@@ -911,9 +817,6 @@ func main() {
 		}
 		logger.Info("gateway system api composed",
 			"address", mainListener.Addr().String(),
-			"databaseDriver", runtimeCfg.DatabaseDriver,
-			"cacheDriver", runtimeCfg.CacheDriver,
-			"runtimeStateDriver", runtimeCfg.RuntimeStateDriver,
 			"chainEnabled", runtimeCfg.ChainEnabled,
 		)
 	}
@@ -922,11 +825,12 @@ func main() {
 	// startInternalGatewayRegistryWhenReady，server.ts:561-563——dbService 就绪
 	// 且 HTTP 监听后启动；此处 mainServer 已开始 Serve，supervisor 组件在
 	// health/supervisor 生命周期内发布心跳，ctx 结束时注销 boot id）。
-	// PublisherEnabled 镜像 internalGatewayRegistryPublisherEnabled：
-	// performance 模式 + redis 运行态驱动。ReaderEnabled 是 performance 控制
+	// 2026-10-24 存储形态收口：原 `RuntimeMode=="performance" &&
+	// RuntimeStateDriver=="redis"` 判据随双模式删除无条件化（PostgreSQL +
+	// Redis 是唯一形态）。ReaderEnabled 是 performance 控制
 	// 面（control/control-replica db-service）的读侧开关——Go 网关进程没有
 	// 对等的内部源点消费面，保持 false（ListEndpoints 返回空集）。
-	if runtimeCfg.SystemAPIEnabled && runtimeCfg.RuntimeMode == "performance" && runtimeCfg.RuntimeStateDriver == "redis" {
+	if runtimeCfg.SystemAPIEnabled {
 		// NewRegistry 的三个错误判据（RedisURL 空、Secret 空、redis.ParseURL）
 		// 均已被先行排除：同一 RedisStateURL 已在 compose 的 NewRedisLoginGuard
 		// 内急切解析，Secret 已被 compose 的 apikeys.NewStore 空秘钥守卫拒绝
@@ -1109,32 +1013,21 @@ func passiveGatewayHealthHandler(ownerMode ownermode.Mode) http.Handler {
 	})
 }
 
-func runOperationLogLegacyMigration(options operationlog.LegacyMigrationOptions, postgres bool) {
+// runOperationLogLegacyPostgresMigration runs the only remaining offline F4
+// migration form (PostgreSQL in-place legacy schema upgrade). The two legacy
+// SQLite migration commands were deleted together with the sqlite storage
+// shape (2026-10-24 存储形态收口).
+func runOperationLogLegacyPostgresMigration(options operationlog.LegacyMigrationOptions) {
 	config, err := operationlog.LoadConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))
 	}
-	var result operationlog.LegacyMigrationResult
-	if postgres {
-		result, err = operationlog.MigrateLegacyPostgres(context.Background(), config, options)
-	} else {
-		result, err = operationlog.MigrateLegacySQLite(context.Background(), config, options)
-	}
+	result, err := operationlog.MigrateLegacyPostgres(context.Background(), config, options)
 	if err != nil {
 		fail(fmt.Errorf("F4 operation-log legacy migration failed: %w", err))
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		fail(fmt.Errorf("encode F4 operation-log migration result: %w", err))
-	}
-}
-
-func runAuditLegacyMigration(options auditlog.LegacyMigrationOptions) {
-	result, err := auditlog.MigrateLegacySQLite(context.Background(), options)
-	if err != nil {
-		fail(fmt.Errorf("F3 audit SQLite migration failed: %w", err))
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
-		fail(fmt.Errorf("encode F3 audit migration result: %w", err))
 	}
 }
 

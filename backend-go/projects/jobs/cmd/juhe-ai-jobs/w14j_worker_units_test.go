@@ -95,19 +95,20 @@ func TestW14JEstimateJobBytes(t *testing.T) {
 	}
 }
 
-// TestW14JScanNullTime 覆盖 postgres/sqlite 与空值、文本、错误值分支。
+// TestW14JScanNullTime 覆盖 PG 形态与空值、文本（text 列读回）、错误值分支
+//（原 sqlite 参数分叉已随 sqlite 形态退役删除）。
 func TestW14JScanNullTime(t *testing.T) {
-	if value, err := scanNullTime(true, nil); err != nil || value != nil {
+	if value, err := scanNullTime(nil); err != nil || value != nil {
 		t.Fatalf("nil 必须 nil: %v %v", value, err)
 	}
 	stamp := time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC)
-	if value, err := scanNullTime(false, stamp.Format(time.RFC3339Nano)); err != nil || value == nil {
-		t.Fatalf("sqlite 文本必须可解析: %v %v", value, err)
+	if value, err := scanNullTime(stamp.Format(time.RFC3339Nano)); err != nil || value == nil {
+		t.Fatalf("text 列读回的 RFC3339Nano 文本必须可解析: %v %v", value, err)
 	}
-	if value, err := scanNullTime(true, stamp); err != nil || value == nil {
-		t.Fatalf("postgres time.Time 必须直通: %v %v", value, err)
+	if value, err := scanNullTime(stamp); err != nil || value == nil {
+		t.Fatalf("time.Time 必须直通: %v %v", value, err)
 	}
-	if value, err := scanNullTime(false, 12345); err == nil || value != nil {
+	if value, err := scanNullTime(12345); err == nil || value != nil {
 		t.Fatalf("不支持的类型必须报错: %v %v", value, err)
 	}
 }

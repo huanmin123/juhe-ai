@@ -10,7 +10,6 @@ package auditlog
 //     store.go cleanupBlobTemps/cleanup*StaleBlobTemps 的平台错误臂。
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -92,44 +91,6 @@ func TestW16aNodeUTF16StringMarshalEscapesEveryArm(t *testing.T) {
 	}
 }
 
-func TestW16aLoadConfigRejectsBusinessSettingsSameFile(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	if err := os.WriteFile(env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"], []byte("audit-db"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	env["JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH"] = env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"]
-	if _, err := LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH 不得指向 F3 SQLite 专库") {
-		t.Fatalf("business settings 同文件必须失败: %v", err)
-	}
-}
-
-func TestW16aLoadConfigRejectsUsageShardRootFile(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	usageRoot := filepath.Join(root, "usage-root")
-	if err := os.WriteFile(usageRoot, []byte("not-a-directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	env["JUHE_AI_USAGE_SHARD_ROOT"] = usageRoot
-	if _, err := LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_USAGE_SHARD_ROOT must be a directory") {
-		t.Fatalf("usage shard 根为文件必须失败: %v", err)
-	}
-}
-
-func TestW16aLoadConfigRejectsAuditInsideUsageShardRoot(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	usageRoot := filepath.Join(root, "usage-shards")
-	if err := os.MkdirAll(usageRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"] = filepath.Join(usageRoot, "audit.sqlite3")
-	if _, err := LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUDIT_LOG_DATABASE_PATH 不得放入 JUHE_AI_USAGE_SHARD_ROOT") {
-		t.Fatalf("审计库放入 usage shard 根必须失败: %v", err)
-	}
-}
-
 func TestW16aBlobPathHelpersRejectEmptyStorageKey(t *testing.T) {
 	root := t.TempDir()
 	if _, err := blobFilePath(root, "   "); err == nil || !strings.Contains(err.Error(), "不能为空") {
@@ -188,33 +149,6 @@ func TestW16aStaleBlobTempCleanerSkipsFreshOrphanTemps(t *testing.T) {
 	}
 	if err := cleanupOwnedStaleBlobTemps(filepath.Join(root, "missing"), "owner-7", time.Now()); err != nil {
 		t.Fatalf("缺失根目录必须按无临时处理: %v", err)
-	}
-}
-
-func TestW16aEnsureSchemaRejectsBlobGCNameConflict(t *testing.T) {
-	cfg := sqliteConfig(t, t.TempDir())
-	store := openSQLiteStore(t, cfg)
-	defer store.Close()
-	implementation := store.(*sqlStore)
-	if err := implementation.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// 第二个同库 store：schemaReady=false，先占名再触发 blob GC schema 失败臂。
-	second, err := OpenStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
-	secondImplementation := second.(*sqlStore)
-	secondImplementation.schemaReady = false
-	if _, err := implementation.db.Exec(`DROP TABLE audit_payload_blob_gc`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := implementation.db.Exec(`CREATE VIEW audit_payload_blob_gc AS SELECT 1 AS conflict`); err != nil {
-		t.Fatal(err)
-	}
-	if err := secondImplementation.EnsureSchema(context.Background()); err == nil || !strings.Contains(err.Error(), "blob GC schema") {
-		t.Fatalf("blob GC schema 建表冲突必须失败: %v", err)
 	}
 }
 

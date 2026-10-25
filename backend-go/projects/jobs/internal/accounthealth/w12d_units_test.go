@@ -1,9 +1,7 @@
 package accounthealth
 
 import (
-	"context"
 	"encoding/json"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,13 +16,13 @@ import (
 // TestW12dLoadConfigNilGetenv 覆盖 getenv 注入为 nil 的分支：nil 等价
 // os.Getenv，在完整 env 下正常通过（恒开终态，无 disabled 默认路径）。
 func TestW12dLoadConfigNilGetenv(t *testing.T) {
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "sqlite")
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH", filepath.Join(t.TempDir(), "j1.sqlite3"))
+	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL", "postgres://w12d.invalid/jobs")
+	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL", "postgres://w12d.invalid/business")
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", t.TempDir())
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", "w12d-secret")
 	config, err := LoadConfig(nil)
-	if err != nil || config.Store.Mode != StoreSQLite {
+	if err != nil || config.Store.Mode != StorePostgres {
 		t.Fatalf("nil getenv must behave like os.Getenv: %+v %v", config, err)
 	}
 }
@@ -114,9 +112,8 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL", "postgres://w12d/w12d")
-		// INPUT_SOURCE 显式 files：缺省已改为跟随 store 模式（2026-09-19），
-		// postgres store 会默认 direct input 并要求 INPUT_POSTGRES_URL。
-		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE", "files")
+		// D12：InputSource 恒 postgres 直读（INPUT_POSTGRES_URL 必填）。
+		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL", "postgres://w12d/business")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", t.TempDir())
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY", key)
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", "w12d-secret")
@@ -127,14 +124,11 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		frag string
 	}{
 		{"owner not go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}, "JOBS_OWNER"},
-		{"bad store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "mysql"}, "sqlite 或 postgres"},
+		{"missing input pg url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": ""}, "INPUT_POSTGRES_URL"},
 		// 「sqlite missing path」「missing input dir」「missing signing key」三个
 		// 失败臂已删除（2026-09-19 零配置决策：DATABASE_PATH/INPUT_DIRECTORY
 		// 按 DATA_DIR 派生，SIGNING_KEY 缺省生成/复用 key 文件，均不再必填）。
 		{"postgres missing url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": ""}, "POSTGRES_URL"},
-		{"sqlite db inside input dir", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY": filepath.Join(rootOnce(), "w12d-inputs"), "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(rootOnce(), "w12d-inputs", "x.sqlite3")}, "不得放入 input 目录"},
-		{"bad input source", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "redis"}, "files、postgres 或 sqlite"},
-		{"pg input with sqlite store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(t.TempDir(), "jobs", "x.sqlite3"), "JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres"}, "只允许与 postgres"},
 		{"missing input pg url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": ""}, "INPUT_POSTGRES_URL"},
 		{"short signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "aaaa"}, "至少 32 字节"},
 		{"bad signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "!!!"}, "至少 32 字节"},
@@ -160,38 +154,6 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 				t.Fatalf("err=%v want frag=%q", err, tc.frag)
 			}
 		})
-	}
-}
-
-// TestW12dLoadConfigSQLiteIsolationArms 覆盖 SQLite 共享文件隔离检查。
-func TestW12dLoadConfigSQLiteIsolationArms(t *testing.T) {
-	key := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
-	root := t.TempDir()
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "sqlite")
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH", filepath.Join(root, "jobs.sqlite3"))
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", filepath.Join(root, "inputs"))
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY", key)
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", "w12d-secret")
-	// 与既有 runtime 库同文件 → 拒绝。
-	t.Setenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH", filepath.Join(root, "jobs.sqlite3"))
-	if _, err := LoadConfig(os.Getenv); err == nil || !strings.Contains(err.Error(), "共用 SQLite 文件") {
-		t.Fatalf("shared file: %v", err)
-	}
-	t.Setenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "")
-	// 大小写不同的同文件路径（Windows 语义）同样拒绝。
-	t.Setenv("JUHE_AI_DATABASE_PATH", strings.ToUpper(filepath.Join(root, "jobs.sqlite3")))
-	if _, err := LoadConfig(os.Getenv); err == nil {
-		t.Skip("platform path folding differs")
-	}
-	t.Setenv("JUHE_AI_DATABASE_PATH", "")
-	config, err := LoadConfig(os.Getenv)
-	if err != nil {
-		t.Fatalf("isolated sqlite: %v", err)
-	}
-	if config.Store.Mode != StoreSQLite || config.InputSource != "sqlite" {
-		t.Fatalf("config=%+v", config)
 	}
 }
 
@@ -280,43 +242,4 @@ func TestW12dLoadSignedProbeRequestsArms(t *testing.T) {
 	})
 }
 
-// TestW12dExecuteInputProbeEarlyArms 覆盖 executor 的显式请求早退臂。
-func TestW12dExecuteInputProbeEarlyArms(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w12d-exec.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	lease := OwnerLease{OwnerID: "w12d-exec", FenceToken: 1}
-	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	input := testInput("http://127.0.0.1:1", "chat_json")
-	request := ProbeRequest{RequestID: "w12d-exec-1", AccountID: input.AccountID, Reason: "activation", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: now.Add(time.Minute)}
-	// deadline 已过。
-	expired := request
-	expired.Deadline = now.Add(-time.Minute)
-	outcome, err := ExecuteInputProbe(ctx, store, lease, input, expired, exactkeyprobe.ProbeOptions{Now: func() time.Time { return now }})
-	if err != nil || outcome.ErrorCode != "request_deadline_elapsed" {
-		t.Fatalf("expired deadline: %+v %v", outcome, err)
-	}
-	// oauth access 缺失。
-	oauth := input
-	oauth.Type = "oauth"
-	outcome, err = ExecuteInputProbe(ctx, store, lease, oauth, request, exactkeyprobe.ProbeOptions{Now: func() time.Time { return now }})
-	if err != nil || outcome.ErrorCode != "oauth_access_missing" {
-		t.Fatalf("oauth missing: %+v %v", outcome, err)
-	}
-	// api key pool 缺失。
-	keyless := input
-	keyless.KeySetFingerprint = ""
-	outcome, err = ExecuteInputProbe(ctx, store, lease, keyless, request, exactkeyprobe.ProbeOptions{Now: func() time.Time { return now }})
-	if err != nil || outcome.ErrorCode != "api_key_pool_missing" {
-		t.Fatalf("api keys missing: %+v %v", outcome, err)
-	}
-}
-
-// rootOnce 返回一个稳定的临时根目录，供跨用例共享 input/db 路径。
 func rootOnce() string { return os.TempDir() }

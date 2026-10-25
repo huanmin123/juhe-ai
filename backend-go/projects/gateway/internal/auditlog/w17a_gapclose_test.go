@@ -55,16 +55,14 @@ func TestW17AProducerNilDroppedTotalAndPanicIsolation(t *testing.T) {
 // ---- config：零配置默认驱动跟随 + 业务设置缺失 fail-fast 臂 ----
 
 func TestW17ALoadConfigZeroConfigDriverArms(t *testing.T) {
-	env := map[string]string{"JUHE_AI_DATABASE_DRIVER": "postgres"}
-	cfg, err := LoadConfig(func(name string) string { return env[name] })
+	// 2026-10-24 存储形态收口：全空 env 必须 fail-fast 且返回零值 Config
+	//（URL 缺失是首个错误臂）。
+	_, err := LoadConfig(func(string) string { return "" })
 	if err == nil {
-		t.Fatal("postgres 零配置且无任何业务设置与主 URL 时必须 fail-fast")
+		t.Fatal("零配置且无任何业务设置与主 URL 时必须 fail-fast")
 	}
-	if !strings.Contains(err.Error(), "JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH") {
+	if !strings.Contains(err.Error(), "JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL") {
 		t.Fatalf("错误必须指向业务设置缺失: %v", err)
-	}
-	if cfg.Mode != "" {
-		t.Fatalf("失败时必须返回零值 Config: %+v", cfg)
 	}
 }
 
@@ -127,7 +125,7 @@ func TestW17ARetentionDirectArms(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, fixture("w17a-log", LifecycleFinalized)); err != nil {
 		t.Fatalf("基线 persist: %v", err)
 	}
-	now := dbTime(impl.mode, time.Now().UTC())
+	now := time.Now().UTC()
 	if _, err := impl.db.Exec(
 		`INSERT INTO juhe_dataset.audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,compression,storage_key,first_seen_at,last_seen_at,created_at) VALUES ('w17a-blob-b','w17a-sha',1,1,'application/octet-stream','none','sha256/w17a-b.bin',$1,$1,$1)`,
 		now); err != nil {
@@ -196,15 +194,6 @@ func TestW17AWindowsOnlyPathArms(t *testing.T) {
 		t.Skip("filepath.Abs 仅在 Windows 拒绝内嵌 NUL 的路径，其余平台不存在该错误臂")
 	}
 	bad := "a" + string(rune(0)) + "b"
-	if _, err := sqliteDSN(bad); err == nil {
-		t.Fatal("含 NUL 的路径必须解析失败")
-	}
-	if ro := readOnlySQLiteDSN(bad); !strings.HasPrefix(ro, "file:") || !strings.HasSuffix(ro, "?mode=ro") {
-		t.Fatalf("只读回退 DSN 异常: %q", ro)
-	}
-	if target := targetSQLiteDSN(bad); !strings.HasPrefix(target, "file:") || !strings.HasSuffix(target, "?_pragma=busy_timeout(5000)") {
-		t.Fatalf("目标回退 DSN 异常: %q", target)
-	}
 	if _, err := blobFilePath(bad, "x/y.blob"); err == nil {
 		t.Fatal("非法 blob 根目录必须报错")
 	}

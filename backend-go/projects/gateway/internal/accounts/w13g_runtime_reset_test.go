@@ -169,17 +169,17 @@ func w13gSeedAuthInstance(t *testing.T, env *testEnv, ownerID, granteeID, suffix
 	env.login(t, "root", "root-pass", "super_admin")
 	// owner 与 grantee 的默认分组在整个测试内复用，先查再补种避免唯一冲突。
 	var seeded string
-	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, ownerID).Scan(&seeded); errors.Is(err, sql.ErrNoRows) {
+	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = $1 AND is_default = 1`, ownerID).Scan(&seeded); errors.Is(err, sql.ErrNoRows) {
 		env.seedProviderAndDefaultGroup(t, ownerID)
 	} else if err != nil {
 		t.Fatal(err)
 	}
 	sourceID = "acc-w13g-src-" + suffix
 	env.seedAccount(t, sourceID, ownerID, "w13g-src-"+suffix, "active")
-	err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, granteeID).Scan(&groupID)
+	err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = $1 AND is_default = 1`, granteeID).Scan(&groupID)
 	if errors.Is(err, sql.ErrNoRows) {
 		env.seedProviderAndDefaultGroup(t, granteeID)
-		err = env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, granteeID).Scan(&groupID)
+		err = env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = $1 AND is_default = 1`, granteeID).Scan(&groupID)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -860,7 +860,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 		t.Fatalf("失败列清理：%v %v", out, err)
 	}
 	var count int
-	if err := env.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE id = ? AND cooldown_until IS NULL
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE id = $1 AND cooldown_until IS NULL
 		AND last_error_code IS NULL AND last_error_trace_id IS NULL AND cooldown_retest_failure_count = 0
 		AND cooldown_retest_generation IS NULL AND cooldown_retest_last_status_code IS NULL
 		AND stream_failure_count = 0 AND stream_failure_window_started_at IS NULL`, id7).Scan(&count); err != nil {

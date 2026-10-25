@@ -134,7 +134,7 @@ func TestW14BExportFiltersAndProxyRef(t *testing.T) {
 
 	// 两个账户共享同一代理（引用复用臂）+ 一个绑定缺失代理。
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-w14b-sh', ?, 'w14b-sh-proxy', 'http', '127.0.0.1', 8080, 1, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w14b-sh', ?, 'w14b-sh-proxy', 'http', '127.0.0.1', 8080, true, ?, ?)`, adminID, now, now)
 	for _, item := range []struct{ id, name string }{{"acc-w14b-e1", "w14b-e1"}, {"acc-w14b-e2", "w14b-e2"}, {"acc-w14b-e3", "w14b-e3"}} {
 		sealed, err := EncryptJSON(testSecret, Credentials{"api_key": "sk-" + item.id, "base_url": "https://api.openai.com/v1"})
 		if err != nil {

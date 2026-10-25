@@ -596,8 +596,11 @@ func TestW1OwnerLoadConfigGetterBoundaries(t *testing.T) {
 	get := func(values map[string]string) func(string) string {
 		return func(key string) string { return values[key] }
 	}
-	base := map[string]string{"JUHE_AI_J3B_DATABASE_PATH": "j3b.db", "JUHE_AI_BUSINESS_DATABASE_PATH": "business.db"}
-	if cfg, err := LoadConfig(get(base)); err != nil || cfg.StoreMode != "sqlite" || cfg.SQLiteReadPoolSize != 4 {
+	// 2026-10-24 存储形态收口：恒 postgres，JUHE_AI_J3B_STORE / sqlite 路径 /
+	// JUHE_AI_SQLITE_READ_POOL 读取随生产删除；边界只剩 owner / 容量 / 保留
+	// 时长 / 连接串回退与 Redis namespace 必填。
+	base := map[string]string{"JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b"}
+	if cfg, err := LoadConfig(get(base)); err != nil || cfg.StoreMode != "postgres" {
 		t.Fatalf("default config=%+v err=%v", cfg, err)
 	}
 	for _, tc := range []struct {
@@ -605,9 +608,7 @@ func TestW1OwnerLoadConfigGetterBoundaries(t *testing.T) {
 		key  string
 		val  string
 	}{
-		{"bad store", "JUHE_AI_J3B_STORE", "mysql"},
-		{"same sqlite paths", "JUHE_AI_J3B_DATABASE_PATH", "business.db"},
-		{"bad pool", "JUHE_AI_SQLITE_READ_POOL", "17"},
+		{"bad owner", "JUHE_AI_J3B_OWNER", "jobs"},
 		{"bad capacity", "JUHE_AI_J3B_CIRCUIT_RUNTIME_CAPACITY", "0"},
 		{"bad retention", "JUHE_AI_J3B_CIRCUIT_RUNTIME_RETENTION", "0s"},
 	} {
@@ -622,19 +623,14 @@ func TestW1OwnerLoadConfigGetterBoundaries(t *testing.T) {
 			}
 		})
 	}
-	if _, err := LoadConfig(get(map[string]string{"JUHE_AI_DATABASE_DRIVER": "postgres"})); err == nil || !strings.Contains(err.Error(), "postgres") {
+	if _, err := LoadConfig(get(map[string]string{})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_J3B_POSTGRES_URL") {
 		t.Fatalf("missing postgres URL err=%v", err)
 	}
-	redis := map[string]string{"JUHE_AI_J3B_CIRCUIT_REDIS_URL": "redis://state", "JUHE_AI_J3B_DATABASE_PATH": "j3b.db", "JUHE_AI_BUSINESS_DATABASE_PATH": "business.db"}
+	redis := map[string]string{"JUHE_AI_J3B_CIRCUIT_REDIS_URL": "redis://state", "JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b"}
 	if _, err := LoadConfig(get(redis)); err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("missing redis namespace err=%v", err)
 	}
-	values := map[string]string{"JUHE_AI_SQLITE_READ_POOL": "8", "JUHE_AI_J3B_DATABASE_PATH": "j3b.db", "JUHE_AI_BUSINESS_DATABASE_PATH": "business.db"}
-	if cfg, err := LoadConfig(get(values)); err != nil || cfg.SQLiteReadPoolSize != 8 {
-		t.Fatalf("valid pool config=%+v err=%v", cfg, err)
-	}
 }
-
 func TestW1OwnerStoreMergeAndRunScoreFailureContracts(t *testing.T) {
 	ctx := context.Background()
 	if err := (*Store)(nil).MergeRunQualityDecision(ctx, "run", map[string]any{"result": "x"}); err == nil {

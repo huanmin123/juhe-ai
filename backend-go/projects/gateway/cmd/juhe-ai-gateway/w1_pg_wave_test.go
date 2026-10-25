@@ -399,13 +399,10 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 	}
 
 	cfg := runtimeConfig{
-		RuntimeMode:                   "performance",
-		DatabaseDriver:                "postgres",
+		// PG+Redis 唯一存储形态（2026-10-24 存储形态收口）。
 		PostgresURL:                   tempAppURL,
 		BusinessPostgresURL:           tempAppURL,
-		CacheDriver:                   "redis",
 		RedisCacheURL:                 cacheRedisURL,
-		RuntimeStateDriver:            "redis",
 		RedisStateURL:                 stateRedisURL,
 		RedisNamespace:                w1g2RedisNamespace,
 		Secret:                        "w1g2-compose-secret",
@@ -510,8 +507,8 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 	if composed.Kernel == nil || composed.Bus == nil || composed.DB == nil {
 		t.Fatalf("组合根关键字段缺失: Kernel=%v Bus=%v DB=%v", composed.Kernel != nil, composed.Bus != nil, composed.DB != nil)
 	}
-	if composed.ownDB || composed.ownStatsDB || composed.ownChatDB {
-		t.Fatalf("PG 模式业务/统计/chat 句柄必须来自共享池而非自有: ownDB=%v ownStatsDB=%v ownChatDB=%v", composed.ownDB, composed.ownStatsDB, composed.ownChatDB)
+	if composed.db == nil || composed.statsDB != composed.db {
+		t.Fatalf("PG 模式业务/统计句柄必须来自共享池: db=%v statsDB==db=%v", composed.db != nil, composed.statsDB == composed.db)
 	}
 	if composed.chain == nil || composed.chainServices == nil || composed.chainServices.Identity == nil {
 		t.Fatalf("链条开启时 chain/chainServices/Identity 必须装配: chain=%v services=%v", composed.chain != nil, composed.chainServices != nil)

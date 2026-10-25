@@ -33,10 +33,6 @@ const (
 // 缺失时登记 disabled，不阻塞其他 job。
 func (a *workerAssembly) wireVersionTrackingFamily(_ context.Context) error {
 	name := upstreamClientVersionRefreshJob
-	if a.config.Driver != "postgres" && a.config.BusinessSQLitePath == "" {
-		a.registerDisabledJob(name, "缺业务库路径（自动版本键写入不可用）")
-		return nil
-	}
 	business, err := openBusinessDB(a, "version-tracking-business")
 	if err != nil {
 		return err
@@ -44,7 +40,7 @@ func (a *workerAssembly) wireVersionTrackingFamily(_ context.Context) error {
 	a.addCloser(business.close)
 	source := jobssettings.NewSource(jobssettings.Options{
 		DB:   business.db,
-		Mode: settingsMode(business.postgres),
+		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	client := &http.Client{Timeout: versiontracking.SourceTimeout}

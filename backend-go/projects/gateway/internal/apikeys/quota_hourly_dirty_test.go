@@ -3,10 +3,11 @@ package apikeys
 // W2-A 待办1 回归：api_key 配额小时窗绑定重建 → 脏范围打脏
 // （request-quota-hourly-windows.repository.ts:79-106/:384-405）。
 //
-// PG 分支用 SQLite ATTACH juhe_business/juhe_stats 承载（SetMaxOpenConns(1)
-// 保证 ATTACH 对所有查询可见；表名限定与占位符改写走生产同款 s.table/
-// s.statsTable/s.bind）。SQLite 分支断言不打脏（归档同步语义：全量重建调度
-// 无脏范围消费者）。
+// PG 分支走 pgtestkit 隔离真实 PG（juhe_business 绑定表 + juhe_stats 脏范围
+// 表，表名限定与占位符改写走生产同款 s.table/s.statsTable/s.bind；校验查询
+// 手写 SQL 经 fixtureBind 对齐）。SQLite 分支断言不打脏（归档同步语义：全量
+// 重建调度无脏范围消费者）——SQLite-only 生产臂，组B保留，随生产 sqlite 臂
+// 删除批次同批退役。
 
 import (
 	"context"
@@ -16,49 +17,47 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const quotaDirtyLimitsJSON = `{"hourly":{"enabled":true,"hours":6,"limit":12.5}}`
 
-// newQuotaDirtyPGFixture opens one SQLite handle with the business and stats
-// schemas attached (production PG table qualification) and pre-creates the two
-// tables the quota binding sync and dirty mark touch.
+// newQuotaDirtyPGFixture opens one pgtestkit isolated PostgreSQL database and
+// pre-creates the two tables the quota binding sync and dirty mark touch
+// (column sets mirror maintenance pg_schema_business_tables.go /
+// pg_schema_stats.go).
 func newQuotaDirtyPGFixture(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "quota-dirty.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		`ATTACH ':memory:' AS juhe_business`,
-		`ATTACH ':memory:' AS juhe_stats`,
-		`CREATE TABLE juhe_business.request_quota_hourly_window_scope_bindings (
-			system_account_id TEXT NOT NULL,
-			scope_type TEXT NOT NULL,
-			scope_id TEXT NOT NULL,
-			source_type TEXT NOT NULL,
-			source_id TEXT NOT NULL,
-			window_hours INTEGER NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (system_account_id, scope_type, scope_id)
-		)`,
-		`CREATE TABLE juhe_stats.usage_quota_hourly_window_dirty_scopes (
-			system_account_id TEXT NOT NULL,
-			scope_type TEXT NOT NULL,
-			scope_id TEXT NOT NULL,
-			generation INTEGER NOT NULL,
-			first_dirty_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (system_account_id, scope_type, scope_id)
-		)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("fixture exec %q: %v", statement, err)
-		}
-	}
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `
+			CREATE SCHEMA IF NOT EXISTS juhe_business;
+			CREATE SCHEMA IF NOT EXISTS juhe_stats;
+			CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_scope_bindings (
+				system_account_id text NOT NULL,
+				scope_type text NOT NULL,
+				scope_id text NOT NULL,
+				source_type text NOT NULL,
+				source_id text NOT NULL,
+				window_hours integer NOT NULL,
+				created_at text NOT NULL,
+				updated_at text NOT NULL,
+				CHECK (window_hours BETWEEN 1 AND 720),
+				CHECK (scope_type IN ('api_key', 'account_authorization', 'group_authorization', 'account_authorization_team', 'group_authorization_team')),
+				CHECK (source_type IN ('api_key', 'resource_authorization_grant')),
+				PRIMARY KEY (system_account_id, scope_type, scope_id)
+			);
+			CREATE TABLE IF NOT EXISTS juhe_stats.usage_quota_hourly_window_dirty_scopes (
+				system_account_id text NOT NULL,
+				scope_type text NOT NULL,
+				scope_id text NOT NULL DEFAULT '',
+				generation bigint NOT NULL DEFAULT 1,
+				first_dirty_at text NOT NULL,
+				updated_at text NOT NULL,
+				PRIMARY KEY (system_account_id, scope_type, scope_id)
+			);`)
+		return err
+	})
 	return &Store{db: db, pg: true, secret: "quota-dirty-secret", now: func() time.Time { return time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC) }}
 }
 
@@ -75,7 +74,7 @@ func quotaDirtyGeneration(t *testing.T, store *Store, ownerID, keyID string) int
 	t.Helper()
 	var generation int
 	if err := store.db.QueryRow(`SELECT generation FROM juhe_stats.usage_quota_hourly_window_dirty_scopes
-		WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`, ownerID, keyID).Scan(&generation); err != nil {
+		WHERE system_account_id = $1 AND scope_type = 'api_key' AND scope_id = $2`, ownerID, keyID).Scan(&generation); err != nil {
 		t.Fatal(err)
 	}
 	return generation
@@ -85,7 +84,7 @@ func quotaBindingWindowHours(t *testing.T, store *Store, keyID string) int {
 	t.Helper()
 	var hours int
 	if err := store.db.QueryRow(`SELECT window_hours FROM juhe_business.request_quota_hourly_window_scope_bindings
-		WHERE source_type = 'api_key' AND source_id = ?`, keyID).Scan(&hours); err != nil {
+		WHERE source_type = 'api_key' AND source_id = $1`, keyID).Scan(&hours); err != nil {
 		t.Fatal(err)
 	}
 	return hours

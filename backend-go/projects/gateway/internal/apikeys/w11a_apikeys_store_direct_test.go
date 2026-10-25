@@ -38,16 +38,26 @@ func TestW11AStorePatchDirectArms(t *testing.T) {
 		}
 	})
 
-	t.Run("pg_lock", func(t *testing.T) {
+	t.Run("pg_lock_row_read", func(t *testing.T) {
+		// 迁真实 PG 后本臂升级为 FOR UPDATE 行锁读的真实执行：缺失键按契约
+		// no-op（nil, nil）；存量键沿 PG 臂 FOR UPDATE 读后按 revision 冲突
+		// 映射（原「PG 方言在 sqlite 上必失败」语义随 sqlite 夹具退役）。
 		env := newTestEnv(t)
 		ownerID := env.login(t, "root", "root-pass", "super_admin")
 		env.seedDefaultRouteStrategy(t, ownerID, "rs-w11a")
+		created, _, err := env.store.Create(ctx, CreateInput{Name: "w11a-key"}, AccessScope{ViewerID: ownerID})
+		if err != nil {
+			t.Fatal(err)
+		}
 		pgStore, err := NewStore(env.db, true, testSecret, time.Now, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pgStore.Patch(ctx, "w11a-missing", &PatchInput{ExpectedRevision: "2026-01-01T00:00:00.000Z"}, AccessScope{}); err == nil {
-			t.Fatal("PG FOR UPDATE must fail on SQLite")
+		if _, err := pgStore.Patch(ctx, "w11a-missing", &PatchInput{ExpectedRevision: "2026-01-01T00:00:00.000Z"}, AccessScope{}); err != nil {
+			t.Fatalf("missing key must stay a no-op on the PG arm: %v", err)
+		}
+		if _, err := pgStore.Patch(ctx, created.ID, &PatchInput{ExpectedRevision: "stale-revision"}, AccessScope{}); err == nil {
+			t.Fatal("FOR UPDATE row read must surface the revision conflict")
 		}
 	})
 
@@ -78,8 +88,13 @@ func TestW11AStorePatchDirectArms(t *testing.T) {
 	t.Run("update_trigger_failure", func(t *testing.T) {
 		store, db, id := seed(t)
 		revision := storeRevision(t, db, id)
+		if _, err := db.Exec(`CREATE FUNCTION w11a_block_update() RETURNS trigger AS $trig$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END
+			$trig$ LANGUAGE plpgsql`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := db.Exec(`CREATE TRIGGER w11a_block_update BEFORE UPDATE ON api_keys
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`); err != nil {
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_update()`); err != nil {
 			t.Fatal(err)
 		}
 		disabled := "disabled"
@@ -101,7 +116,7 @@ func TestW11AStorePatchDirectArms(t *testing.T) {
 			t.Fatalf("revision must advance: %+v", outcome.Result)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM request_quota_hourly_window_scope_bindings WHERE source_id = ?`, id).Scan(&count); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM request_quota_hourly_window_scope_bindings WHERE source_id = $1`, id).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {
@@ -113,7 +128,7 @@ func TestW11AStorePatchDirectArms(t *testing.T) {
 func storeRevision(t *testing.T, db *sql.DB, id string) string {
 	t.Helper()
 	var revision string
-	if err := db.QueryRow(`SELECT updated_at FROM api_keys WHERE id = ?`, id).Scan(&revision); err != nil {
+	if err := db.QueryRow(`SELECT updated_at FROM api_keys WHERE id = $1`, id).Scan(&revision); err != nil {
 		t.Fatal(err)
 	}
 	return revision
@@ -134,8 +149,13 @@ func TestW11AStoreRefreshAndDeleteDirectArms(t *testing.T) {
 
 	t.Run("refresh_trigger_failure", func(t *testing.T) {
 		store, db, id := seed(t)
+		if _, err := db.Exec(`CREATE FUNCTION w11a_block_refresh() RETURNS trigger AS $trig$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END
+			$trig$ LANGUAGE plpgsql`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := db.Exec(`CREATE TRIGGER w11a_block_refresh BEFORE UPDATE ON api_keys
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`); err != nil {
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_refresh()`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.RefreshSecret(ctx, id, AccessScope{}); err == nil {
@@ -155,7 +175,7 @@ func TestW11AStoreRefreshAndDeleteDirectArms(t *testing.T) {
 
 	t.Run("delete_binding_failure", func(t *testing.T) {
 		store, db, id := seed(t)
-		if _, err := db.Exec(`UPDATE api_keys SET quota_limits_json = ? WHERE id = ?`,
+		if _, err := db.Exec(`UPDATE api_keys SET quota_limits_json = $1 WHERE id = $2`,
 			`{"hourly":{"enabled":true,"limit":1,"hours":2}}`, id); err != nil {
 			t.Fatal(err)
 		}
@@ -167,16 +187,35 @@ func TestW11AStoreRefreshAndDeleteDirectArms(t *testing.T) {
 		}
 	})
 
-	t.Run("delete_pg_dialect_fails_on_sqlite", func(t *testing.T) {
+	t.Run("delete_pg_dialect_existing_key", func(t *testing.T) {
+		// 迁真实 PG 后本臂升级为 PG 臂删除路径的真实执行：缺失键按契约
+		// 幂等 no-op（&DeleteResult{}, nil）；存量键沿 PG 臂事务删除并落
+		// juhe_dataset cleanup 目标（原「pg-qualified 在 sqlite 必失败」语义
+		// 随 sqlite 夹具退役）。
 		env := newTestEnv(t)
 		ownerID := env.login(t, "root", "root-pass", "super_admin")
 		env.seedDefaultRouteStrategy(t, ownerID, "rs-w11a")
+		created, _, err := env.store.Create(ctx, CreateInput{Name: "w11a-key"}, AccessScope{ViewerID: ownerID})
+		if err != nil {
+			t.Fatal(err)
+		}
 		pgStore, err := NewStore(env.db, true, testSecret, time.Now, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pgStore.Delete(ctx, "w11a-any", AccessScope{}); err == nil {
-			t.Fatal("pg-qualified delete must fail on the sqlite fixture")
+		if _, err := pgStore.Delete(ctx, "w11a-any", AccessScope{}); err != nil {
+			t.Fatalf("missing key delete must stay a no-op on the PG arm: %v", err)
+		}
+		outcome, err := pgStore.Delete(ctx, created.ID, AccessScope{})
+		if err != nil || !outcome.Deleted {
+			t.Fatalf("pg delete on the existing key must succeed: %+v %v", outcome, err)
+		}
+		var count int
+		if err := env.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.api_key_record_cleanup_targets WHERE api_key_id = $1`, created.ID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("cleanup target rows = %d", count)
 		}
 	})
 }

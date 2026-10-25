@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,68 +17,88 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// composeTestConfig builds the sqlite-mode composition config over a temp
-// directory: the business owner gates are proven programmatically (the same
-// values the operator must provide through JUHE_AI_BUSINESS_* envs) and the
-// six-database storage preflight paths point at isolated temp files.
+// composeTestPostgres provisions the isolated PostgreSQL test database for
+// composition tests (PLAN-20261024T051925945Z 测试基建唯一存储设施): fresh
+// six-schema DDL + seed via the maintenance bootstrap surface, one database
+// per test, dropped afterwards.
+func composeTestPostgres(t *testing.T) *pgtestkit.TestDatabase {
+	t.Helper()
+	return pgtestkit.NewTestDatabase(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Now: time.Now, Secret: "compose-test-secret"})
+			return err
+		})
+}
+
+// composeTestConfig builds the PostgreSQL-mode composition config over an
+// isolated pgtestkit database + a private miniredis for the cache/state
+// drivers (PostgreSQL + Redis 是唯一存储形态): the business owner gates are
+// proven programmatically (the same values the operator must provide through
+// JUHE_AI_BUSINESS_* envs).
 func composeTestConfig(t *testing.T) runtimeConfig {
 	t.Helper()
+	tdb := composeTestPostgres(t)
+	return composeTestConfigForDSN(t, tdb.DSN)
+}
+
+// composeTestConfigForDSN builds the PG-mode composition config over an
+// existing test database DSN (shared by subprocess-scenario fixtures that
+// provision the database themselves).
+func composeTestConfigForDSN(t *testing.T, dsn string) runtimeConfig {
+	t.Helper()
 	root := t.TempDir()
-	// The codex context shard directory must exist before the preflight
-	// opens state-*.sqlite3 inside it.
-	if err := os.MkdirAll(filepath.Join(root, "codex-context"), 0o755); err != nil {
-		t.Fatalf("create codex context shard root: %v", err)
-	}
+	redisServer := miniredis.RunT(t)
 	return runtimeConfig{
-		RuntimeMode:        "standalone",
-		DatabaseDriver:     "sqlite",
-		CacheDriver:        "memory",
-		RuntimeStateDriver: "memory",
-		Secret:             "compose-test-secret",
+		PostgresURL:     dsn,
+		BusinessPostgresURL: dsn,
+		RedisCacheURL:   "redis://" + redisServer.Addr(),
+		RedisStateURL:   "redis://" + redisServer.Addr(),
+		RedisNamespace:  "compose-test",
+		Secret:          "compose-test-secret",
 		// Node runtime.ts:770: dispatchAccountCandidateLimit =
 		// integerConfig(..., globalConcurrencyMax, 1, 50_000) — the load path
 		// always provides the default (globalMax 5000); the hand-built config
 		// mirrors it.
 		DispatchAccountCandidateLimit: 5000,
-		BusinessDatabasePath:          filepath.Join(root, "business.sqlite3"),
-		StatsDatabasePath:             filepath.Join(root, "stats.sqlite3"),
-		ChatDatabasePath:              filepath.Join(root, "chat.sqlite3"),
-		DatasetDatabasePath:           filepath.Join(root, "dataset.sqlite3"),
-		RuntimeLogDatabasePath:        filepath.Join(root, "runtime-log.sqlite3"),
-		UsageCatalogDatabasePath:      filepath.Join(root, "usage-catalog.sqlite3"),
-		CodexContextShardRoot:         filepath.Join(root, "codex-context"),
-		CodexContextShardCount:        1,
+		ConcurrencyGlobalMax:          5000,
+		UsageSpoolDirectory:           filepath.Join(root, "usage-record-spool"),
 		ChatAssetsRoot:                filepath.Join(root, "chat-assets"),
+		ChatMaxTurnsPerConversation:   50,
+		ChatRetentionDays:             3,
+		ChatToolEnvironment:           "development",
 		BusinessOwner:                 "gateway",
 		BusinessHandoffConfirmed:      true,
 		BusinessNodeWriterStopped:     true,
 		BusinessSchemaReady:           true,
 		BusinessOwnerEpoch:            "epoch-compose-test",
-		BusinessCutoverEvidencePath:   filepath.Join(root, "evidence.json"),
 		SystemAPIEnabled:              true,
+		ChainEnabled:                  true,
 		CaptchaDisabled:               true,
+		AuditLogEnabled:               true,
 	}
 }
 
-func openComposeOperationStore(t *testing.T) operationlog.Store {
+func openComposeOperationStore(t *testing.T, dsn string) operationlog.Store {
 	t.Helper()
-	dir := t.TempDir()
 	config := operationlog.Config{
 		Enabled:              true,
-		Mode:                 operationlog.ModeSQLite,
+		Mode:                 operationlog.ModePostgres,
 		InstanceID:           "compose-test",
-		DatabasePath:         filepath.Join(dir, "operation-log.sqlite3"),
-		BusinessSettingsPath: filepath.Join(dir, "business-settings.sqlite3"),
+		PostgresURL:          dsn,
+		PostgresMaxOpenConns: 4,
+		PostgresMaxIdleConns: 2,
 		OwnerLease:           30 * time.Second,
 		RetentionInterval:    time.Minute,
 		RetentionDays:        365,
 		RetentionBatchSize:   100,
-	}
-	// The F4 read-only business settings mirror requires the existing file.
-	if err := os.WriteFile(config.BusinessSettingsPath, nil, 0o644); err != nil {
-		t.Fatalf("create business settings file: %v", err)
 	}
 	store, err := operationlog.OpenStore(config)
 	if err != nil {
@@ -107,23 +127,34 @@ func openComposeOperationLease(t *testing.T, store operationlog.Store) *operatio
 }
 
 // openComposeAuditSources prepares the X04 logreads audit inputs: the F3
-// config (dataset file, hot-search and payload-blob roots) plus a provisioned
-// F3 schema, mirroring what main does before composeSystemAPI. It also starts
-// the shared F3 lease keeper and the in-process audit producer the
-// composition requires (去跨进程战役第四刀). The returned closer releases the
-// producer lease and the F3 store.
-func openComposeAuditSources(t *testing.T, root string) (auditlog.Config, *auditlog.Producer, func()) {
+// config (PostgreSQL pool handle, hot-search and payload-blob roots) plus a
+// provisioned F3 schema, mirroring what main does before composeSystemAPI. It
+// also starts the shared F3 lease keeper and the in-process audit producer
+// the composition requires (去跨进程战役第四刀). The returned closer releases
+// the producer lease and the F3 store.
+func openComposeAuditSources(t *testing.T, dsn string) (auditlog.Config, *auditlog.Producer, func()) {
 	t.Helper()
-	config := auditlog.Config{
-		Mode:                 auditlog.ModeSQLite,
-		InstanceID:           "compose-test",
-		AuditDatabasePath:    filepath.Join(root, "audit-dataset.sqlite3"),
-		PayloadBlobDirectory: filepath.Join(root, "audit-blobs"),
-		HotSearchDirectory:   filepath.Join(root, "audit-hot"),
-		BusinessSettingsPath: filepath.Join(root, "audit-business-settings.sqlite3"),
+	pools := pgpool.NewRegistry()
+	t.Cleanup(func() { _ = pools.Close() })
+	pooled, err := pools.Acquire(dsn, "gateway-store", 4, 2)
+	if err != nil {
+		t.Fatalf("open F3 audit shared pool: %v", err)
 	}
-	if err := os.WriteFile(config.BusinessSettingsPath, nil, 0o644); err != nil {
-		t.Fatalf("create audit business settings file: %v", err)
+	config := auditlog.Config{
+		Mode:                     auditlog.ModePostgres,
+		InstanceID:               "compose-test",
+		PostgresURL:              dsn,
+		PostgresPool:             pooled,
+		PayloadBlobDirectory:     filepath.Join(t.TempDir(), "audit-blobs"),
+		HotSearchDirectory:       filepath.Join(t.TempDir(), "audit-hot"),
+		BusinessSettingsURL:      dsn,
+		OwnerLease:               30 * time.Second,
+		RetentionInterval:        time.Minute,
+		RetentionBatchSize:       100,
+		SuccessHotRetentionHours: 1,
+		SuccessSampleRate:        1.0,
+		SuccessRetentionDays:     3,
+		ProblemRetentionDays:     7,
 	}
 	store, err := auditlog.OpenStore(config)
 	if err != nil {
@@ -145,37 +176,29 @@ func openComposeAuditSources(t *testing.T, root string) (auditlog.Config, *audit
 	}
 }
 
-// createRuntimeLogDataset provisions the F1-jobs-owned runtime-log file with
-// the dataset tables the logreads routes read (the gateway itself never
-// creates another owner's schema; this mirrors a deployed F1 indexer).
-func createRuntimeLogDataset(t *testing.T, path string) *sql.DB {
+// createRuntimeLogDataset provisions the F1-jobs-owned runtime-log dataset
+// tables in the juhe_dataset schema (the gateway itself never creates another
+// owner's schema; this mirrors a deployed F1 indexer).
+func createRuntimeLogDataset(t *testing.T, db *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
 	statements := []string{
-		`CREATE TABLE IF NOT EXISTS runtime_logs (id TEXT PRIMARY KEY, time TEXT NOT NULL, level TEXT NOT NULL, trace_id TEXT, event TEXT, message TEXT, error_message TEXT, raw_json TEXT NOT NULL, created_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS runtime_log_facet_summary (bucket_key TEXT PRIMARY KEY, earliest_time TEXT, latest_time TEXT, total_count INTEGER NOT NULL DEFAULT 0)`,
-		`CREATE TABLE IF NOT EXISTS runtime_log_level_facets (bucket_key TEXT NOT NULL, level TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (bucket_key, level))`,
-		`CREATE TABLE IF NOT EXISTS runtime_log_event_facets (bucket_key TEXT NOT NULL, event TEXT NOT NULL, count INTEGER NOT NULL, latest_time TEXT, PRIMARY KEY (bucket_key, event))`,
+		`CREATE SCHEMA IF NOT EXISTS juhe_dataset`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_logs (id TEXT PRIMARY KEY, time TIMESTAMPTZ NOT NULL, level TEXT NOT NULL, trace_id TEXT, event TEXT, message TEXT, error_message TEXT, raw_json TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_facet_summary (bucket_key TEXT PRIMARY KEY, earliest_time TIMESTAMPTZ, latest_time TIMESTAMPTZ, total_count INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_level_facets (bucket_key TEXT NOT NULL, level TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (bucket_key, level))`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_event_facets (bucket_key TEXT NOT NULL, event TEXT NOT NULL, count INTEGER NOT NULL, latest_time TIMESTAMPTZ, PRIMARY KEY (bucket_key, event))`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("create runtime-log dataset table: %v", err)
 		}
 	}
-	return db
 }
 
 func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	store := openComposeOperationStore(t, cfg.PostgresURL)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, cfg.PostgresURL), composeTestAuditConfig(t, cfg.PostgresURL), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -273,28 +296,23 @@ func TestComposeSystemAPIMountsKernelContract(t *testing.T) {
 	}
 }
 
-// TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers proves the
-// runtime-state driver switch (BUG-0171.4): with JUHE_AI_RUNTIME_STATE_DRIVER
-// = redis and the captcha enabled, the captcha route serves challenges from
-// the shared auth_captcha state store under the Node-compatible namespace.
+// TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers proves the shared
+// runtime-state auth drivers: the captcha route serves challenges from the
+// shared auth_captcha state store under the Node-compatible namespace
+// (Redis 是唯一运行态形态 since the storage-shape retirement).
 func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
 	cfg := composeTestConfig(t)
 	redisServer := miniredis.RunT(t)
-	cfg.RuntimeStateDriver = "redis"
 	cfg.RedisStateURL = "redis://" + redisServer.Addr()
 	cfg.RedisNamespace = "dev"
 	cfg.CaptchaDisabled = false
 
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	store := openComposeOperationStore(t, cfg.PostgresURL)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, cfg.PostgresURL), composeTestAuditConfig(t, cfg.PostgresURL), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
 	defer composed.Shutdown()
-	seedSystemSettings(t, composed.DB)
 
 	server := httptest.NewServer(composed.Kernel)
 	defer server.Close()
@@ -329,10 +347,12 @@ func TestComposeSystemAPIWiresRedisRuntimeStateAuthDrivers(t *testing.T) {
 	}
 }
 
-// seedSystemSettings mirrors the Node system_settings seed (schema-defaults.ts
-// DEFAULT_SYSTEM_SETTINGS): the composition reads global settings through the
-// settings store, so a smoke environment needs the seeded rows to serve the
-// rate-limit settings before the schema migration owner lands.
+// seedSystemSettings re-applies the Node system_settings seed defaults
+// (schema-defaults.ts DEFAULT_SYSTEM_SETTINGS) on the test database: the
+// composition reads global settings through the settings store, so a smoke
+// environment needs the seeded rows to serve the rate-limit settings. The
+// rows are already present from bootstrap.SeedPostgres — this re-seed keeps
+// the fixture explicit and idempotent.
 func seedSystemSettings(t *testing.T, db *sql.DB) {
 	t.Helper()
 	defaults := map[string]any{
@@ -396,19 +416,67 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 		"usageStatsMonthlyRetentionMonths":           24,
 		"usageRankSnapshotRetentionDays":             30,
 	}
+	// 方言自适应：PG 组合根句柄（pgx）走 juhe_business 限定 + $n 占位符；
+	// sqlite 夹具句柄（chain fixture 家族，B5 迁移对象）走裸表 + `?` 占位符。
+	// modernc sqlite 驱动具体类型含 "sqlite"；pgx stdlib 驱动类型为 stdlib.Driver。
+	sqliteDialect := strings.Contains(fmt.Sprintf("%T", db.Driver()), "sqlite")
 	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
-		t.Fatalf("create system_settings: %v", err)
-	}
 	for key, value := range defaults {
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			t.Fatalf("marshal %s: %v", key, err)
 		}
-		if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`, key, string(encoded), "2026-09-04T00:00:00Z"); err != nil {
-			t.Fatalf("seed %s: %v", key, err)
+		if !sqliteDialect {
+			if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at)
+				VALUES ('sys_admin', $1, $2, '2026-09-04T00:00:00Z') ON CONFLICT (system_account_id, key) DO NOTHING`, key, string(encoded)); err != nil {
+				t.Fatalf("seed %s: %v", key, err)
+			}
+		} else {
+			if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at)
+				VALUES ('sys_admin', ?, ?, '2026-09-04T00:00:00Z')`, key, string(encoded)); err != nil {
+				t.Fatalf("seed %s: %v", key, err)
+			}
 		}
 	}
+}
+
+// composeTestAuditConfig builds the F3 PG audit config used by composition
+// tests that only need the config value (the producer comes from
+// mustComposeAuditProducer)。组合根要求 F3 数据集连接池在场，这里同样注入
+// 独立共享池句柄（registry 生命周期随测试结束释放）。
+func composeTestAuditConfig(t *testing.T, dsn string) auditlog.Config {
+	t.Helper()
+	pools := pgpool.NewRegistry()
+	t.Cleanup(func() { _ = pools.Close() })
+	pooled, err := pools.Acquire(dsn, "gateway-store", 4, 2)
+	if err != nil {
+		t.Fatalf("open F3 audit shared pool: %v", err)
+	}
+	return auditlog.Config{
+		Mode:                     auditlog.ModePostgres,
+		InstanceID:               "compose-test",
+		PostgresURL:              dsn,
+		PostgresPool:             pooled,
+		BusinessSettingsURL:      dsn,
+		PayloadBlobDirectory:     filepath.Join(t.TempDir(), "audit-blobs"),
+		HotSearchDirectory:       filepath.Join(t.TempDir(), "audit-hot"),
+		OwnerLease:               30 * time.Second,
+		RetentionInterval:        time.Minute,
+		RetentionBatchSize:       100,
+		SuccessHotRetentionHours: 1,
+		SuccessSampleRate:        1.0,
+		SuccessRetentionDays:     3,
+		ProblemRetentionDays:     7,
+	}
+}
+
+// mustComposeAuditProducer starts the shared F3 store + lease + producer for
+// a composition test; the closer is registered on t.Cleanup.
+func mustComposeAuditProducer(t *testing.T, dsn string) *auditlog.Producer {
+	t.Helper()
+	_, producer, closeAudit := openComposeAuditSources(t, dsn)
+	t.Cleanup(closeAudit)
+	return producer
 }
 
 func TestGateGatewayChainPassesAfterPhase2(t *testing.T) {
@@ -422,56 +490,61 @@ func TestGateGatewayChainPassesAfterPhase2(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "juhe-ai.sqlite3")
-
-	// Standalone defaults (no hints): sqlite + memory drivers. 2026-09-19 起
-	// sqlite 数据库路径未配置时按 datadir 固定名表派生（<DATA_DIR>/
-	// business.sqlite3），不再是启动失败条件（零配置可启动）。
-	empty, err := loadRuntimeConfig(func(string) string { return "" })
+// TestLoadRuntimeConfigRequiresStorageEndpoints pins the 2026-10-24
+// storage-shape contract: PostgreSQL + Redis 是唯一存储形态，三个连接串 env
+// 无条件必填（缺失启动即失败）；普通文件目录派生（usage spool / codex-context
+// segments / logs / chat-assets）保留。
+func TestLoadRuntimeConfigRequiresStorageEndpoints(t *testing.T) {
+	env := map[string]string{
+		"JUHE_AI_POSTGRES_URL":     "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL":  "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL":  "redis://127.0.0.1:6379/1",
+	}
+	cfg, err := loadRuntimeConfig(func(key string) string { return env[key] })
 	if err != nil {
-		t.Fatalf("sqlite without database path must derive a default, got %v", err)
+		t.Fatalf("full storage env must load: %v", err)
 	}
-	if empty.DatabasePath != filepath.Join("data", "business.sqlite3") {
-		t.Fatalf("derived database path = %q", empty.DatabasePath)
+	if cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] || cfg.RedisCacheURL != env["JUHE_AI_REDIS_CACHE_URL"] || cfg.RedisStateURL != env["JUHE_AI_REDIS_STATE_URL"] {
+		t.Fatalf("storage endpoints wrong: %#v", cfg)
 	}
-	cfg, err := loadRuntimeConfig(func(key string) string {
-		if key == "JUHE_AI_DATABASE_PATH" {
-			return databasePath
+	// Spool derivation lands under <DATA_DIR>/usage-record-spool (D1).
+	if cfg.UsageSpoolDirectory != filepath.Join("data", "usage-record-spool") {
+		t.Fatalf("derived spool directory = %q", cfg.UsageSpoolDirectory)
+	}
+	if cfg.CodexContextRoot != filepath.Join("data", "codex-context") {
+		t.Fatalf("derived codex context root = %q", cfg.CodexContextRoot)
+	}
+	// Missing任一连接串启动即失败（错误信息可定位）。
+	for _, missing := range []string{"JUHE_AI_POSTGRES_URL", "JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL"} {
+		partial := map[string]string{}
+		for key, value := range env {
+			if key != missing {
+				partial[key] = value
+			}
 		}
-		return ""
-	})
-	if err != nil {
-		t.Fatalf("standalone defaults: %v", err)
+		if _, err := loadRuntimeConfig(func(key string) string { return partial[key] }); err == nil || !strings.Contains(err.Error(), missing) {
+			t.Fatalf("missing %s must fail with a locatable error, got %v", missing, err)
+		}
 	}
-	if cfg.RuntimeMode != "standalone" || cfg.DatabaseDriver != "sqlite" || cfg.CacheDriver != "memory" || cfg.RuntimeStateDriver != "memory" {
-		t.Fatalf("standalone defaults wrong: %#v", cfg)
+	// 旧模式开关 env 不再被读取：显式配置不产生任何效果也不报错。
+	legacy := map[string]string{
+		"JUHE_AI_RUNTIME_MODE":         "standalone",
+		"JUHE_AI_DATABASE_DRIVER":      "sqlite",
+		"JUHE_AI_CACHE_DRIVER":         "memory",
+		"JUHE_AI_RUNTIME_STATE_DRIVER": "memory",
 	}
-
-	// Performance hints flip every driver default; a redis driver without its
-	// URL must fail fast like the Node runtime.ts validation.
-	performance := map[string]string{
-		"JUHE_AI_DATABASE_PATH":   databasePath,
-		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
-		"JUHE_AI_DATABASE_DRIVER": "sqlite",
+	for key, value := range env {
+		legacy[key] = value
 	}
-	cfg, err = loadRuntimeConfig(func(key string) string { return performance[key] })
-	if err != nil {
-		t.Fatalf("performance hints: %v", err)
-	}
-	if cfg.RuntimeMode != "performance" || cfg.CacheDriver != "redis" || cfg.RuntimeStateDriver != "redis" {
-		t.Fatalf("performance defaults wrong: %#v", cfg)
-	}
-	performance["JUHE_AI_RUNTIME_STATE_DRIVER"] = "redis"
-	delete(performance, "JUHE_AI_REDIS_STATE_URL")
-	if _, err := loadRuntimeConfig(func(key string) string { return performance[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
-		t.Fatalf("redis state driver without URL must fail, got %v", err)
+	if _, err := loadRuntimeConfig(func(key string) string { return legacy[key] }); err != nil {
+		t.Fatalf("legacy driver env must be ignored (not read), got %v", err)
 	}
 
 	// none-cookie requires secure.
-	cookieEnv := map[string]string{"JUHE_AI_DATABASE_PATH": databasePath, "JUHE_AI_COOKIE_SAME_SITE": "none"}
+	cookieEnv := map[string]string{"JUHE_AI_COOKIE_SAME_SITE": "none"}
+	for key, value := range env {
+		cookieEnv[key] = value
+	}
 	if _, err := loadRuntimeConfig(func(key string) string { return cookieEnv[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SECURE") {
 		t.Fatalf("none cookie without secure must fail, got %v", err)
 	}
@@ -481,33 +554,33 @@ func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
 // integerConfig('JUHE_AI_CONCURRENCY_GLOBAL_MAX', 5_000, 1, 50_000) bound —
 // values above 50000 must fail at startup (runtime.ts:410).
 func TestLoadRuntimeConfigConcurrencyGlobalMaxBound(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "juhe-ai.sqlite3")
-	env := func(value string) func(string) string {
+	storage := map[string]string{
+		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+	}
+	loaded := func(value string) func(string) string {
 		return func(key string) string {
 			if key == "JUHE_AI_CONCURRENCY_GLOBAL_MAX" {
 				return value
 			}
-			if key == "JUHE_AI_DATABASE_PATH" {
-				return databasePath
-			}
-			return ""
+			return storage[key]
 		}
 	}
-
-	cfg, err := loadRuntimeConfig(env("50000"))
+	cfg, err := loadRuntimeConfig(loaded("50000"))
 	if err != nil {
 		t.Fatalf("upper bound value must parse: %v", err)
 	}
 	if cfg.ConcurrencyGlobalMax != 50000 {
 		t.Fatalf("ConcurrencyGlobalMax = %d want 50000", cfg.ConcurrencyGlobalMax)
 	}
-	if _, err := loadRuntimeConfig(env("50001")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须在 1-50000 范围内") {
+	if _, err := loadRuntimeConfig(loaded("50001")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须在 1-50000 范围内") {
 		t.Fatalf("value above 50000 must fail with the integerConfig copy, got %v", err)
 	}
-	if _, err := loadRuntimeConfig(env("0")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须在 1-50000 范围内") {
+	if _, err := loadRuntimeConfig(loaded("0")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须在 1-50000 范围内") {
 		t.Fatalf("value below 1 must fail with the integerConfig copy, got %v", err)
 	}
-	if _, err := loadRuntimeConfig(env("abc")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须配置为整数") {
+	if _, err := loadRuntimeConfig(loaded("abc")); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CONCURRENCY_GLOBAL_MAX 必须配置为整数") {
 		t.Fatalf("non-integer must fail with the integerConfig copy, got %v", err)
 	}
 }
@@ -515,9 +588,9 @@ func TestLoadRuntimeConfigConcurrencyGlobalMaxBound(t *testing.T) {
 func TestBusinessOwnerGateKeepsConnectionPreconditions(t *testing.T) {
 	// 清理批次 C1（2026-09-30）：切流五证/cutover evidence 门禁随 Node 清零
 	// 整体退役，owner 事实恒 auto-claim——handoff 语义字段不再是门禁输入；
-	// businessOwnerGate 只保留连接性前置（postgres 模式缺业务连接串仍
-	// fail closed）。
-	cfg := composeTestConfig(t)
+	// businessOwnerGate 只保留连接性前置（缺业务连接串仍 fail closed）。
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	if err := cfg.businessOwnerGate(); err != nil {
 		t.Fatalf("auto-claimed owner gate must pass: %v", err)
 	}
@@ -525,10 +598,9 @@ func TestBusinessOwnerGateKeepsConnectionPreconditions(t *testing.T) {
 	if err := cfg.businessOwnerGate(); err != nil {
 		t.Fatalf("retired cutover-era fields must no longer gate startup: %v", err)
 	}
-	cfg.DatabaseDriver = "postgres"
 	cfg.BusinessPostgresURL = ""
 	if err := cfg.businessOwnerGate(); err == nil {
-		t.Fatal("postgres without business URL must fail closed")
+		t.Fatal("missing business URL must fail closed")
 	}
 }
 
@@ -537,12 +609,11 @@ func TestBusinessOwnerGateKeepsConnectionPreconditions(t *testing.T) {
 // logs route families answer the Node 200 contracts for an admin and deny
 // anonymous callers, instead of falling through to the kernel 404.
 func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	tdb := composeTestPostgres(t)
+	createRuntimeLogDataset(t, tdb.DB)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}

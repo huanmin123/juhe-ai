@@ -1,15 +1,12 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
@@ -19,12 +16,7 @@ func workerSmokeTestEnv(t *testing.T) map[string]string {
 	t.Helper()
 	root := t.TempDir()
 	return map[string]string{
-		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
-		"JUHE_AI_DATABASE_PATH":                   filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_STATS_DATABASE_PATH":             filepath.Join(root, "stats.sqlite3"),
-		"JUHE_AI_TASK_RUNS_DATABASE_PATH":         filepath.Join(root, "task-runs.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":     filepath.Join(root, "usage-catalog.sqlite3"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                filepath.Join(root, "usage-shards"),
+		"JUHE_AI_POSTGRES_URL":                    "postgres://smoke-test.invalid/juhe_ai_smoke",
 		"JUHE_AI_INSTANCE_ID":                     "smoke-instance",
 		"JUHE_AI_WORKER_ROLE":                     "stats-worker",
 		"JUHE_AI_SECRET":                          "0123456789abcdef0123456789abcdef",
@@ -53,13 +45,8 @@ func TestWorkerConfigGatesFailsClosed(t *testing.T) {
 	if config.Secret != "juhe-ai-dev-secret-change-me" {
 		t.Fatalf("非生产空 SECRET 应回退开发密钥（与 gateway defaultRuntimeSecret 同值）: %q", config.Secret)
 	}
-	if config.BusinessSQLitePath == "" {
-		t.Fatal("空 env 下业务库路径应按 DATA_DIR 派生，不应为空")
-	}
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
-		"JUHE_AI_DATABASE_DRIVER": "postgres",
-	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
-		t.Fatalf("postgres 模式缺少 JUHE_AI_POSTGRES_URL 必须 fail closed: %v", err)
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("缺 JUHE_AI_POSTGRES_URL 必须 fail closed（sqlite 零配置已退役）: %v", err)
 	}
 	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
 		"NODE_ENV": "production",
@@ -75,11 +62,9 @@ func TestWorkerConfigGatesFailsClosed(t *testing.T) {
 // TestWorkerAssemblySchedulerAndOutboxPrunerWiring：基础 assembly 恒分配
 // scheduler；outbox 消费面恒装配 drain 与 pruner（J1 恒开终态）。
 func TestWorkerAssemblySchedulerAndOutboxPrunerWiring(t *testing.T) {
-	config := workerConfig{
-		Driver:             "sqlite",
-		BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3"),
-	}
-	assembly := newWorkerAssembly(config, nil)
+	// PG 唯一形态：outbox face 惰性装配（原 sqlite 库文件 schema 断言随
+	// sqlite 形态退役删除；EnsureSchema 真实执行由 w16j PG outbox 臂覆盖）。
+	assembly := newWorkerAssembly(workerConfig{}, nil)
 	if assembly == nil || assembly.scheduler == nil {
 		t.Fatal("worker assembly must allocate its scheduler")
 	}
@@ -91,136 +76,8 @@ func TestWorkerAssemblySchedulerAndOutboxPrunerWiring(t *testing.T) {
 	if face == nil || face.pruner == nil || face.drain == nil {
 		t.Fatal("worker assembly must expose the health probe outbox drain and pruner")
 	}
-	var table string
-	if err := assembly.sqliteDBs[0].QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='account_health_probe_request_outbox'").Scan(&table); err != nil {
-		t.Fatalf("health probe outbox schema must be initialized: %v", err)
-	}
 }
 
-// TestWorkerSmokeRunsCycleAndDrains：SQLite 模式启动 → 至少一个任务
-// （background-task-run-reconcile）跑一轮成功 → 干净停机排空。
-// 调度时间语义（jitter/退避/超时/错过间隔）由 jobsched 假时钟单测覆盖。
-func TestWorkerSmokeRunsCycleAndDrains(t *testing.T) {
-	if testing.Short() {
-		t.Skip("smoke test skipped in -short mode")
-	}
-	config, err := loadWorkerConfig(getenvFrom(workerSmokeTestEnv(t)))
-	if err != nil {
-		t.Fatalf("loadWorkerConfig: %v", err)
-	}
-	assembly, err := buildWorkerAssembly(config, nil)
-	if err != nil {
-		t.Fatalf("buildWorkerAssembly: %v", err)
-	}
-	defer assembly.closeStores()
-	if assembly == nil {
-		t.Fatal("worker assembly must not be nil when enabled")
-	}
-	if len(assembly.wiredJobs) == 0 {
-		t.Fatal("worker assembly must wire at least one job")
-	}
-	components := assembly.components()
-	if len(components) == 0 {
-		t.Fatal("worker assembly must expose components")
-	}
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	runErr := make(chan error, 1)
-	go func() { runErr <- components[0].Run(runCtx) }()
-
-	readyDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(readyDeadline) && !assembly.ready() {
-		time.Sleep(2 * time.Millisecond)
-	}
-	if !assembly.ready() {
-		t.Fatal("scheduler component must report ready while running")
-	}
-	deadline := time.Now().Add(15 * time.Second)
-	reconcileDone := false
-	for time.Now().Before(deadline) {
-		for _, snapshot := range assembly.scheduler.Snapshots() {
-			if snapshot.Name == "background-task-run-reconcile" && snapshot.SuccessCount >= 1 {
-				reconcileDone = true
-			}
-		}
-		if reconcileDone {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !reconcileDone {
-		for _, snapshot := range assembly.scheduler.Snapshots() {
-			t.Logf("snapshot %s: runs=%d success=%d failure=%d skip=%s error=%s",
-				snapshot.Name, snapshot.RunCount, snapshot.SuccessCount, snapshot.FailureCount, snapshot.LastSkipReason, snapshot.LastError)
-		}
-		t.Fatal("background-task-run-reconcile 未在限期内完成一轮")
-	}
-
-	cancel()
-	select {
-	case err := <-runErr:
-		if err != nil {
-			t.Fatalf("scheduler component returned error: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("scheduler component did not stop in time")
-	}
-	if assembly.ready() {
-		t.Fatal("scheduler must report not-ready after stop")
-	}
-	assembly.closeStores()
-
-	status := assembly.statusPayload()
-	if _, err := json.Marshal(status); err != nil {
-		t.Fatalf("worker status payload must be JSON-serializable: %v", err)
-	}
-}
-
-// TestWorkerHealthExposesWorkerFields 验证 /health 在 worker 启用时报告
-// workerEnabled/workerReady，且就绪判定跟随调度循环。
-func TestWorkerHealthExposesWorkerFields(t *testing.T) {
-	config, err := loadWorkerConfig(getenvFrom(workerSmokeTestEnv(t)))
-	if err != nil {
-		t.Fatalf("loadWorkerConfig: %v", err)
-	}
-	assembly, err := buildWorkerAssembly(config, nil)
-	if err != nil {
-		t.Fatalf("buildWorkerAssembly: %v", err)
-	}
-	defer assembly.closeStores()
-	var running atomic.Bool
-	handler := healthHandler(healthDeps{
-		OwnerMode:      ownermode.Active,
-		RuntimeRunning: &running,
-		WorkerReady:    func() bool { return running.Load() },
-		WorkerStatus:   assembly.statusPayload,
-	})
-	record := httptest.NewRecorder()
-	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
-	var payload map[string]any
-	if record.Code != http.StatusOK || json.Unmarshal(record.Body.Bytes(), &payload) != nil {
-		t.Fatalf("health status=%d body=%s", record.Code, record.Body.String())
-	}
-	if payload["workerEnabled"] != true || payload["workerReady"] != false {
-		t.Fatalf("worker health fields wrong: workerEnabled=%v workerReady=%v", payload["workerEnabled"], payload["workerReady"])
-	}
-	running.Store(true)
-	record = httptest.NewRecorder()
-	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if err := json.Unmarshal(record.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload["workerReady"] != true {
-		t.Fatalf("workerReady should follow scheduler running state: %v", payload["workerReady"])
-	}
-	if _, ok := payload["worker"]; !ok {
-		t.Fatal("health payload must embed worker status")
-	}
-}
-
-// TestInternalDispatchRouteAbsent 验证 /__aiinternal__ 派发路由在 jobs 健康
-// 监听 mux 上整体消失（去跨进程战役第二刀：账户健康检查派发改走 DB outbox
-// 通道，jobs 不再持有任何 /__aiinternal__ handler）。
 func TestInternalDispatchRouteAbsent(t *testing.T) {
 	handler := jobsHTTPHandler(jobsHTTPDeps{OwnerMode: ownermode.Active, RuntimeRunning: &atomic.Bool{}})
 	for _, path := range []string{

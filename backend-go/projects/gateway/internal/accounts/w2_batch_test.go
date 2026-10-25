@@ -27,7 +27,7 @@ func w2BatchAccounts(t *testing.T, env *testEnv, adminID string) (string, string
 	}
 	revision := func(id string) int64 {
 		var value int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, id).Scan(&value); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, id).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
 		return value
@@ -94,7 +94,7 @@ func TestW2BatchUpdateFullFieldSuccess(t *testing.T) {
 	// DB 状态：调度字段、代理绑定、分组绑定与凭据覆盖。
 	var concurrency, priority int
 	var super bool
-	if err := env.db.QueryRow(`SELECT concurrency_limit, priority, super_priority_enabled FROM accounts WHERE id = ?`, first).
+	if err := env.db.QueryRow(`SELECT concurrency_limit, priority, super_priority_enabled FROM accounts WHERE id = $1`, first).
 		Scan(&concurrency, &priority, &super); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestW2BatchUpdateFullFieldSuccess(t *testing.T) {
 		t.Fatalf("未过期账户不应触发过期停用：%s", got)
 	}
 	var sealed string
-	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, first).Scan(&sealed); err != nil {
+	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = $1`, first).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	var credentials Credentials
@@ -189,7 +189,7 @@ func TestW2BatchUpdateNoChangeAndConflict(t *testing.T) {
 			}
 		}
 		var revision int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, first).Scan(&revision); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, first).Scan(&revision); err != nil {
 			t.Fatal(err)
 		}
 		if revision != rev1 {
@@ -279,7 +279,7 @@ func TestW2BatchUpdateValidationAndAccess(t *testing.T) {
 		}
 		// 事务回滚：修订号不变。
 		var revision int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, first).Scan(&revision); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, first).Scan(&revision); err != nil {
 			t.Fatal(err)
 		}
 		if revision != rev1 {
@@ -306,7 +306,7 @@ func TestW2BatchUpdateValidationAndAccess(t *testing.T) {
 		}
 		// 事务回滚：修订号不变。
 		var revision int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, first).Scan(&revision); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, first).Scan(&revision); err != nil {
 			t.Fatal(err)
 		}
 		if revision != rev1 {

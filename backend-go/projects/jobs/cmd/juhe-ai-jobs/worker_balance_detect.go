@@ -136,7 +136,7 @@ func parseBalanceInstant(value string) (time.Time, error) {
 }
 
 // balanceDueText 把 balance_query_next_refresh_at / updated_at 的写入值规范
-// 为毫秒截断的 UTC RFC3339Nano 文本。两列在 PG 与 SQLite 里都是 text 列，
+// 为毫秒截断的 UTC RFC3339Nano 文本。两列都是 text 列，
 // 必须写预格式化文本——把 time.Time 参数直接绑给 text 列会让比较落入驱动
 // 的文本语义、围栏永不相等（2026-09-26 生产事故根因：CommitDetectionDue
 // 恒 0 行，探测意图永不收口）。毫秒截断保证写回值下轮读回后仍能与
@@ -147,37 +147,26 @@ func balanceDueText(value time.Time) string {
 	return value.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
 }
 
-// balanceDueColumn 返回 due 围栏/比较使用的列表达式。该列在 PG 是 text：
-// 与 time.Time 参数做等值/大小比较必须先 cast 到 timestamptz（直接
-// text = $n 是文本比较、恒不命中）；SQLite 无 cast，参数经 timeParam 得到
-// 规范 RFC3339Nano 文本，与列内同规范文本直接比较。
-func balanceDueColumn(postgres bool) string {
-	if postgres {
-		return "balance_query_next_refresh_at::timestamptz"
-	}
-	return "balance_query_next_refresh_at"
+// balanceDueColumn 返回 due 围栏/比较使用的列表达式。该列是 text：
+// 与库内读回文本做等值/大小比较必须先 cast 到 timestamptz（直接
+// text = $n 是文本比较、恒不命中）。
+func balanceDueColumn() string {
+	return "balance_query_next_refresh_at::timestamptz"
 }
 
 // balanceDueCompare 返回 due 与「库内读回的 RFC3339Nano 文本」比较的 SQL
-// 片段与绑定值（op 为 "=" / ">" 等原样运算符）。PG 分支绑定原始文本参数并
-// cast 到 timestamptz 后比较：等值两侧同过 PG 的同一处 cast 舍入，纳秒精度
-// 存量值（如 .690411968 → .690412）与毫秒截断新值都能精确命中。绑定
-// time.Time（pgx 截断到微秒 .690411）时与列 cast 的四舍五入相差 1μs，
-// 等值围栏恒不命中——探测意图永不收口（2026-09-28 BUG-0206 根因）。
-// SQLite 列是文本，库内值经 Go RFC3339Nano 往返恒等，绑定原文直接比较。
-// dueText 为空（无游标占位）时绑定零值时间文本：占位臂在 SQL 里被
-// `? = ”` 守卫短路，但占位值仍必须是合法 timestamptz 输入，防求值报错。
-func balanceDueCompare(postgres bool, op string, dueText string) (string, any) {
-	if postgres {
-		if dueText == "" {
-			dueText = "0001-01-01T00:00:00Z"
-		}
-		return balanceDueColumn(true) + " " + op + " ?::timestamptz", textParam(dueText)
-	}
+// 片段与绑定值（op 为 "=" / ">" 等原样运算符）。绑定原始文本参数并 cast 到
+// timestamptz 后比较：等值两侧同过 PG 的同一处 cast 舍入，纳秒精度存量值
+// （如 .690411968 → .690412）与毫秒截断新值都能精确命中。绑定 time.Time
+// （pgx 截断到微秒 .690411）时与列 cast 的四舍五入相差 1μs，等值围栏恒不
+// 命中——探测意图永不收口（2026-09-28 BUG-0206 根因）。
+// dueText 为空（无游标占位）时绑定零值时间文本：占位臂在 SQL 里被守卫短路，
+// 但占位值仍必须是合法 timestamptz 输入，防求值报错。
+func balanceDueCompare(op string, dueText string) (string, any) {
 	if dueText == "" {
-		dueText = time.Time{}.UTC().Format(time.RFC3339Nano)
+		dueText = "0001-01-01T00:00:00Z"
 	}
-	return balanceDueColumn(false) + " " + op + " ?", textParam(dueText)
+	return balanceDueColumn() + " " + op + " ?::timestamptz", textParam(dueText)
 }
 
 // balanceDetectRuntime 承载探测意图仓储、互斥租约与 builtin 探测器共享的
@@ -185,7 +174,6 @@ func balanceDueCompare(postgres bool, op string, dueText string) (string, any) {
 type balanceDetectRuntime struct {
 	business   *businessDB
 	statsDB    *sql.DB
-	statsPG    bool
 	secret     string
 	client     *http.Client
 	nowFunc    func() time.Time
@@ -208,12 +196,12 @@ type balanceDueCursor struct {
 
 // balanceDetectionCandidateWhere 对齐 Node balanceDetectionCandidateWhere：
 // 首次探测读写必须保留的资格谓词。
-func balanceDetectionCandidateWhere(postgres bool) string {
+func balanceDetectionCandidateWhere() string {
 	return `
     status = 'active'
-    AND schedulable = ` + boolLit(postgres, true) + `
+    AND schedulable = ` + boolLit(true) + `
     AND type = 'api_key'
-    AND balance_query_enabled = ` + boolLit(postgres, false) + `
+    AND balance_query_enabled = ` + boolLit(false) + `
     AND balance_query_config_json = '{}'
     AND deleted_at IS NULL
     AND authorization_instance_authorization_id IS NULL
@@ -268,15 +256,14 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	postgres := r.business.postgres
 	selected := make([]opsjobs.BalanceDetectionCandidate, 0, limit)
 	selectedIDs := map[string]struct{}{}
 	cursor := r.cursor
 	wrapped := false
-	// due 比较统一走 balanceDueCompare（PG 绑定原文 cast 到 timestamptz，
-	// 两侧同过一处舍入；SQLite 文本直接比较）：等值分支若绑定 time.Time
+	// due 比较统一走 balanceDueCompare（绑定原文 cast 到 timestamptz，
+	// 两侧同过一处舍入）：等值分支若绑定 time.Time
 	// 会与列 cast 的纳秒舍入相差 1μs、恒不命中（BUG-0206）。
-	dueExpr := balanceDueColumn(postgres)
+	dueExpr := balanceDueColumn()
 	for page := 0; page < 4 && len(selected) < limit; page++ {
 		cursorText := ""
 		cursorID := ""
@@ -284,8 +271,8 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 			cursorText = cursor.nextRefreshAt.UTC().Format(time.RFC3339Nano)
 			cursorID = cursor.id
 		}
-		dueGTSQL, dueGTArg := balanceDueCompare(postgres, ">", cursorText)
-		dueEQSQL, dueEQArg := balanceDueCompare(postgres, "=", cursorText)
+		dueGTSQL, dueGTArg := balanceDueCompare(">", cursorText)
+		dueEQSQL, dueEQArg := balanceDueCompare("=", cursorText)
 		query := fmt.Sprintf(`
       SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
       FROM %s
@@ -295,9 +282,9 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
         AND %s
       ORDER BY balance_query_next_refresh_at ASC, id ASC
       LIMIT ?
-    `, r.business.table("accounts"), dueExpr, dueGTSQL, dueEQSQL, balanceDetectionCandidateWhere(postgres))
+    `, r.business.table("accounts"), dueExpr, dueGTSQL, dueEQSQL, balanceDetectionCandidateWhere())
 		rows, err := r.business.db.QueryContext(ctx, query,
-			timeParam(postgres, now), textParam(cursorText), dueGTArg, dueEQArg, textParam(cursorID), scanPageSize)
+			timeParam(now), textParam(cursorText), dueGTArg, dueEQArg, textParam(cursorID), scanPageSize)
 		if err != nil {
 			return nil, fmt.Errorf("读取余额自动探测候选失败: %w", err)
 		}
@@ -322,7 +309,7 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 			}
 			row.configRevision = revision.Int64
 			row.credentials = credentials.String
-			due, err := scanNullTime(postgres, dueRaw)
+			due, err := scanNullTime(dueRaw)
 			if err != nil {
 				rows.Close()
 				return nil, err
@@ -397,7 +384,6 @@ func ptrString(v string) *string { return &v }
 // CommitDetectionDue 对齐 commitAccountBalanceDetectionDueAsync：移动或清空
 // 持久化首次探测意图，不触碰用户余额配置。
 func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input opsjobs.BalanceCommitDueInput) (bool, error) {
-	postgres := r.business.postgres
 	if input.ExpectedNextRefreshAt == nil || *input.ExpectedNextRefreshAt == "" {
 		return false, errors.New("余额探测意图提交缺少 due 围栏")
 	}
@@ -413,7 +399,7 @@ func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input ops
 		// text 列写预格式化文本；next 为 nil 时保持传 NULL（清空意图语义）。
 		next = balanceDueText(parsed)
 	}
-	fenceSQL, fenceArg := balanceDueCompare(postgres, "=", *input.ExpectedNextRefreshAt)
+	fenceSQL, fenceArg := balanceDueCompare("=", *input.ExpectedNextRefreshAt)
 	query := fmt.Sprintf(`
     UPDATE %s
     SET balance_query_next_refresh_at = ?,
@@ -422,7 +408,7 @@ func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input ops
       AND config_revision = ?
       AND %s
       AND %s
-  `, r.business.table("accounts"), fenceSQL, balanceDetectionCandidateWhere(postgres))
+  `, r.business.table("accounts"), fenceSQL, balanceDetectionCandidateWhere())
 	result, err := r.business.db.ExecContext(ctx, query,
 		next, balanceDueText(r.nowFunc()), textParam(input.AccountID),
 		input.ExpectedConfigRevision, fenceArg)
@@ -439,7 +425,6 @@ func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input ops
 // EnableDetectedQuery 对齐 enableDetectedAccountBalanceQueryAsync：
 // expectedNextRefreshAt 为 nil 时与 Node `?? undefined` 一致——不加围栏子句。
 func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input opsjobs.BalanceEnableInput) (bool, error) {
-	postgres := r.business.postgres
 	configText, err := normalizeBalanceConfigJSON(input.Config.Adapter, input.Config.IntervalMinutes, input.Config.PreferredBuiltinAdapter)
 	if err != nil {
 		return false, err
@@ -457,9 +442,9 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 		if _, parseErr := parseBalanceInstant(*input.ExpectedNextRefreshAt); parseErr != nil {
 			return false, parseErr
 		}
-		// 围栏与 CommitDetectionDue 同范式：PG 绑定原文 cast 到 timestamptz，
-		// 两侧同过一处舍入；SQLite 保持规范文本等值。
-		fenceSQL, fenceArg := balanceDueCompare(postgres, "=", *input.ExpectedNextRefreshAt)
+		// 围栏与 CommitDetectionDue 同范式：绑定原文 cast 到 timestamptz，
+		// 两侧同过一处舍入。
+		fenceSQL, fenceArg := balanceDueCompare("=", *input.ExpectedNextRefreshAt)
 		fence = " AND " + fenceSQL
 		args = append(args, fenceArg)
 	}
@@ -472,7 +457,7 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
     WHERE id = ?
       AND config_revision = ?
       AND %s%s
-  `, r.business.table("accounts"), boolLit(postgres, true), balanceDetectionCandidateWhere(postgres), fence)
+  `, r.business.table("accounts"), boolLit(true), balanceDetectionCandidateWhere(), fence)
 	result, err := r.business.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
@@ -498,7 +483,7 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 type balanceSnapshotPersist struct {
 	Status         string  `json:"status"`
 	// InputDigest 是余额输入身份摘要（BUG-0286）：gateway 读端以账户当前
-	// 列值现算同一摘要做显示匹配；两个写入方（PG 投影 / SQLite 探测）都
+	// 列值现算同一摘要做显示匹配；投影与探测两个写入方都
 	// 从 shared J2 快照透传。
 	InputDigest    string  `json:"inputDigest,omitempty"`
 	ConfigRevision int64   `json:"configRevision"`
@@ -529,7 +514,6 @@ type balanceSnapshotPersist struct {
 // 配置一致（config_revision + 归一化配置 JSON 相等）才替换
 // account_usage_snapshots 的 relay_balance 行。
 func (r *balanceDetectRuntime) ReplaceSnapshotIfCurrent(ctx context.Context, input opsjobs.BalanceSnapshotInput) (bool, error) {
-	postgres := r.business.postgres
 	expectedConfigText, err := normalizeBalanceConfigJSON(input.ExpectedConfig.Adapter, input.ExpectedConfig.IntervalMinutes, input.ExpectedConfig.PreferredBuiltinAdapter)
 	if err != nil {
 		return false, err
@@ -543,7 +527,7 @@ func (r *balanceDetectRuntime) ReplaceSnapshotIfCurrent(ctx context.Context, inp
       AND balance_query_enabled = %s
       AND deleted_at IS NULL
     LIMIT 1
-  `, r.business.table("accounts"), boolLit(postgres, true))
+  `, r.business.table("accounts"), boolLit(true))
 	if err := r.business.db.QueryRowContext(ctx, configQuery, textParam(input.AccountID), input.ExpectedConfigRevision).Scan(&storedConfig); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
@@ -572,7 +556,7 @@ func (r *balanceDetectRuntime) ReplaceSnapshotIfCurrent(ctx context.Context, inp
 		if parseErr != nil {
 			return false, parseErr
 		}
-		nextRefreshAfter = timeParam(postgres, parsed)
+		nextRefreshAfter = timeParam(parsed)
 	}
 	upsert := fmt.Sprintf(`
     INSERT INTO %s (
@@ -588,7 +572,7 @@ func (r *balanceDetectRuntime) ReplaceSnapshotIfCurrent(ctx context.Context, inp
       next_refresh_after = excluded.next_refresh_after,
       last_error_message = excluded.last_error_message,
       updated_at = excluded.updated_at
-  `, statsTable(postgres, "account_usage_snapshots"))
+  `, statsTable("account_usage_snapshots"))
 	serialized, err := json.Marshal(snapshot)
 	if err != nil {
 		return false, err
@@ -596,7 +580,7 @@ func (r *balanceDetectRuntime) ReplaceSnapshotIfCurrent(ctx context.Context, inp
 	if _, err := r.statsDB.ExecContext(ctx, upsert,
 		textParam(input.SystemAccountID), textParam(input.AccountID), textParam(string(serialized)), textParam(snapshot.Status),
 		textParam(lastAttempt), lastSuccess, nextRefreshAfter, nullableTextPtr(snapshot.ErrorMessage),
-		timeParam(postgres, now), timeParam(postgres, now)); err != nil {
+		timeParam(now), timeParam(now)); err != nil {
 		return false, fmt.Errorf("写入余额探测快照失败: %w", err)
 	}
 	return true, nil
@@ -890,10 +874,6 @@ func (r *balanceDetectRuntime) proxyEnvelope(proxyID, kind, host string, port in
 // 任一依赖缺失→登记 disabled 并说明（不阻塞其他 job）。
 func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 	name := "account-balance-auto-detect-recovery"
-	if a.config.Driver != "postgres" && a.config.StatsSQLitePath == "" {
-		a.registerDisabledJob(name, "缺 JUHE_AI_STATS_DATABASE_PATH（relay_balance 快照库）")
-		return nil
-	}
 	if a.config.Secret == "" {
 		a.registerDisabledJob(name, "缺 JUHE_AI_SECRET（凭据封套解密不可用）")
 		return nil
@@ -906,20 +886,13 @@ func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	statsPG := a.config.Driver == "postgres"
 	statsDB := business.db
-	if !statsPG {
-		if statsDB, err = a.openSQLite(a.config.StatsSQLitePath, "balance-detect-stats"); err != nil {
-			_ = business.close()
-			return err
-		}
-	}
 	if err := ensureAccountsBalanceColumns(ctx, business); err != nil {
 		a.registerDisabledJob(name, "业务库契约校验失败："+err.Error())
 		_ = business.close()
 		return nil
 	}
-	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB, statsPG); err != nil {
+	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB); err != nil {
 		a.registerDisabledJob(name, "统计库快照表校验失败："+err.Error())
 		_ = business.close()
 		return nil
@@ -927,7 +900,6 @@ func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 	runtimeState := &balanceDetectRuntime{
 		business:   business,
 		statsDB:    statsDB,
-		statsPG:    statsPG,
 		secret:     a.config.Secret,
 		nowFunc:    func() time.Time { return time.Now().UTC() },
 		leasestore: a.taskRunsStore,
@@ -963,16 +935,10 @@ func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 // ensureAccountUsageSnapshotsTable 校验 relay_balance 快照表存在（冻结
 // schema；缺失时 fail closed 登记 disabled，不静默建表——生产 DDL 归
 // maintenance 项目）。
-func ensureAccountUsageSnapshotsTable(ctx context.Context, db *sql.DB, postgres bool) error {
+func ensureAccountUsageSnapshotsTable(ctx context.Context, db *sql.DB) error {
 	var count int
-	if postgres {
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'juhe_stats' AND table_name = 'account_usage_snapshots'`).Scan(&count); err != nil {
-			return err
-		}
-	} else {
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'account_usage_snapshots'`).Scan(&count); err != nil {
-			return err
-		}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'juhe_stats' AND table_name = 'account_usage_snapshots'`).Scan(&count); err != nil {
+		return err
 	}
 	if count < 1 {
 		return errors.New("缺少 account_usage_snapshots 表")

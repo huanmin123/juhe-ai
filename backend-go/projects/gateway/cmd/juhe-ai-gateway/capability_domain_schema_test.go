@@ -275,17 +275,15 @@ func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
 }
 
 // TestComposeSystemAPISealsCapabilityDomainStageRecord 验证 compose 夹具路径
-// 确实经过全新空库自动封存（AI 账户能力域拆分 v7）：SQLite storage preflight
-// 走 maintenance bootstrap.SeedSQLiteBusiness，fresh 业务库在组合根内获得
+// 确实经过全新空库自动封存（AI 账户能力域拆分 v7）：pgtestkit fresh 测试库
+// 走 maintenance bootstrap.SeedPostgres，fresh 业务库在组合根内获得
 // m2_finalized 阶段记录，启动阶段门禁因此放行（gateway 启动本身不是迁移
 // 执行者，封存发生在 bootstrap 种子路径）。
 func TestComposeSystemAPISealsCapabilityDomainStageRecord(t *testing.T) {
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -306,7 +304,7 @@ func TestComposeSystemAPISealsCapabilityDomainStageRecord(t *testing.T) {
 // capabilityDomainStageRecordJSON 读业务库阶段记录原始 JSON（无记录时报错）。
 func capabilityDomainStageRecordJSON(ctx context.Context, db *sql.DB) (string, error) {
 	var valueJSON string
-	err := db.QueryRowContext(ctx, `SELECT value_json FROM global_settings WHERE key = ?`, capdomain.MigrationSettingKey).Scan(&valueJSON)
+	err := db.QueryRowContext(ctx, `SELECT value_json FROM juhe_business.global_settings WHERE key = $1`, capdomain.MigrationSettingKey).Scan(&valueJSON)
 	if err != nil {
 		return "", fmt.Errorf("read capability domain stage record: %w", err)
 	}

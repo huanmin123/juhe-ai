@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -61,18 +60,16 @@ func TestInProcessAccountTestDispatchEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("end-to-end wiring test skipped in -short mode")
 	}
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
 	defer composed.Shutdown()
 
-	accountStore, err := accounts.NewStore(composed.DB, false, cfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composed.DB, true, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
@@ -86,11 +83,8 @@ func TestInProcessAccountTestDispatchEndToEnd(t *testing.T) {
 		t.Fatal("进程内装配后 TestDispatchEffects 端口必须已接线")
 	}
 
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(cfg.BusinessDatabasePath)+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	// 组合根业务句柄即 PG 共享池；夹具直读/直写 juhe_business 行。
+	db := composed.DB
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -193,17 +187,17 @@ func insertComposeDraftTask(t *testing.T, db *sql.DB, taskID, draftEnvelope stri
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
-		INSERT INTO account_test_tasks (
+		INSERT INTO juhe_business.account_test_tasks (
 			id, account_id, account_name, provider_protocol_profile_id,
 			protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, diagnostics,
 			model, test_endpoint_mode, draft_account_encrypted,
 			status, status_message, cancel_requested, queued_at, created_at, updated_at
-		) VALUES (?, 'acct-compose-e2e', '组合测试草稿账户', 'profile_openai_openai_v1',
+		) VALUES ($1, 'acct-compose-e2e', '组合测试草稿账户', 'profile_openai_openai_v1',
 			'openai', 'v1', 'api_key',
 			'sys_admin', 'user', 'full',
-			'gpt-compose', 'chat_json', ?,
-			'queued', '等待后台测试', 0, ?, ?, ?)`,
+			'gpt-compose', 'chat_json', $2,
+			'queued', '等待后台测试', FALSE, $3, $4, $5)`,
 		taskID, draftEnvelope, now, now, now); err != nil {
 		t.Fatalf("插入 draft 任务失败: %v", err)
 	}
@@ -217,7 +211,7 @@ func waitForComposeTaskStatus(t *testing.T, db *sql.DB, taskID string, statuses 
 	status := ""
 	var resultJSON sql.NullString
 	for time.Now().Before(deadline) {
-		if err := db.QueryRow(`SELECT status, result_json FROM account_test_tasks WHERE id = ?`, taskID).
+		if err := db.QueryRow(`SELECT status, result_json FROM juhe_business.account_test_tasks WHERE id = $1`, taskID).
 			Scan(&status, &resultJSON); err != nil {
 			t.Fatal(err)
 		}

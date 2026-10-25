@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -29,8 +28,6 @@ const (
 	defaultDirectInputLimit       = 512
 	defaultPostgresPoolSize       = 16
 	defaultPostgresMaxIdleConns   = sqlpool.MaxIdleConns
-	defaultSQLiteConcurrency      = 512
-	defaultPerformanceConcurrency = 512
 	defaultPostgresConcurrency    = 512
 	defaultDBConcurrency          = 16
 	defaultDBQueueSize            = 512
@@ -43,7 +40,8 @@ const (
 // LoadConfig 恒走完整校验路径、缺失必填项即 fail-fast。原「deliberately
 // opt-in」开关（JUHE_AI_ACCOUNT_HEALTH_ENABLED）的防双 owner 理由已随 Node
 // 后端归档（Node 归档，已移出仓库，git 历史可溯）
-// 失效，开关与 Config.Enabled 字段一并移除。
+// 失效，开关与 Config.Enabled 字段一并移除。存储形态唯一为 PostgreSQL
+// （Store.Mode 恒 StorePostgres），InputSource 恒 postgres 直读业务库。
 type Config struct {
 	InstanceID                      string
 	Store                           StoreConfig
@@ -51,8 +49,6 @@ type Config struct {
 	InputKeys                       map[string][]byte
 	InputSource                     string
 	BusinessPostgresURL             string
-	BusinessSQLitePath              string
-	StatsSQLitePath                 string
 	DirectInputLimit                int
 	DirectInputPostgresMaxOpenConns int
 	DirectInputPostgresMaxIdleConns int
@@ -87,43 +83,21 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		cfg.InstanceID = hostname
 	}
 	var err error
-	// STORE 缺省跟随 JUHE_AI_DATABASE_DRIVER（与 jobs 组合根 loadWorkerConfig
-	// 同一依据，2026-09-19 零配置决策）：postgres → StorePostgres，否则
-	// StoreSQLite；显式配置仍必须为 sqlite|postgres。
-	mode := StoreMode(strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_STORE"))))
-	if mode == "" {
-		if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")), "postgres") {
-			mode = StorePostgres
-		} else {
-			mode = StoreSQLite
-		}
-	}
-	if mode != StoreSQLite && mode != StorePostgres {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_STORE 必须为 sqlite 或 postgres")
-	}
-	// sqlite 库路径按 DATA_DIR 约定派生（account-health.sqlite3）；PG 连接串
-	// 无法凭空默认：显式 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL 优先，缺省回退
-	// worker/gateway 共用的 JUHE_AI_POSTGRES_URL，PG 模式仍空则 fail-fast。
-	storePath := datadir.Path(getenv, "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH", "account-health.sqlite3")
+	// STORE 恒 postgres（sqlite store 形态已随存储形态收口物理删除；
+	// JUHE_AI_ACCOUNT_HEALTH_STORE env 退役）。PG 连接串无法凭空默认：显式
+	// JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL 优先，缺省回退 worker/gateway 共用
+	// 的 JUHE_AI_POSTGRES_URL，仍空则 fail-fast。
 	postgresURL := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL"))
 	if postgresURL == "" {
 		postgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	}
-	cfg.Store = StoreConfig{Mode: mode, DatabasePath: storePath, PostgresURL: postgresURL}
-	if mode == StoreSQLite && strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH")) == "" {
-		// 派生路径的父目录由配置装载负责创建（显式配置保持既有语义，不代建）。
-		if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
-			return Config{}, fmt.Errorf("创建 J1 SQLite store 目录失败: %w", err)
-		}
-	}
-	if mode == StorePostgres && cfg.Store.PostgresURL == "" {
+	cfg.Store = StoreConfig{Mode: StorePostgres, PostgresURL: postgresURL}
+	if cfg.Store.PostgresURL == "" {
 		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL（或 JUHE_AI_POSTGRES_URL）")
 	}
-	if mode == StorePostgres {
-		// 清理批次 C4（2026-09-30）：连接池 env 族零引用收编为默认常量。
-		cfg.Store.PostgresMaxOpenConns = defaultPostgresPoolSize
-		cfg.Store.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
-	}
+	// 清理批次 C4（2026-09-30）：连接池 env 族零引用收编为默认常量。
+	cfg.Store.PostgresMaxOpenConns = defaultPostgresPoolSize
+	cfg.Store.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	cfg.InputDirectory = datadir.Path(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", "account-health-input")
 	if strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY")) == "" {
 		// 派生 input 目录在使用前创建；显式配置保持既有语义，不代建。
@@ -131,49 +105,20 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("创建 J1 input 目录失败: %w", err)
 		}
 	}
-	if mode == StoreSQLite {
-		if err := validateSQLiteIsolation(cfg.Store.DatabasePath, cfg.InputDirectory, getenv); err != nil {
-			return Config{}, err
-		}
-	}
-	cfg.InputSource = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE")))
-	if cfg.InputSource == "" {
-		// 缺省跟随 store 模式：PG store 直读业务库（2026-09-19 零配置决策）；
-		// sqlite store 自 2026-09 起改为直读业务/统计 SQLite 库
-		// （SQLiteDirectInputReader）——原签名文件通道的发布方已随 Node 归档、
-		// 目录恒空导致导入账户永停 pending_test，故降级为显式 files 后备。
-		if mode == StorePostgres {
-			cfg.InputSource = "postgres"
-		} else {
-			cfg.InputSource = "sqlite"
-		}
-	}
-	if cfg.InputSource != "files" && cfg.InputSource != "postgres" && cfg.InputSource != "sqlite" {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE 必须为 files、postgres 或 sqlite")
-	}
-	// SQLite 直读路径按 DATA_DIR 约定派生（与 worker/gateway 同名 env 同固定
-	// 名），不新增 env 名；不做文件存在性校验——业务库缺失由组合根打开/预检
-	// 时 fail-fast。
-	cfg.BusinessSQLitePath = datadir.Path(getenv, "JUHE_AI_DATABASE_PATH", "business.sqlite3")
-	cfg.StatsSQLitePath = datadir.Path(getenv, "JUHE_AI_STATS_DATABASE_PATH", "stats.sqlite3")
-	if cfg.InputSource == "sqlite" && mode != StoreSQLite {
-		return Config{}, errors.New("sqlite direct input 只允许与 sqlite jobs store 一起启用")
-	}
+	// InputSource 恒 postgres（D12：sqlite 直读臂与 files 臂删除，
+	// JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE env 退役；字段保留供启动日志与
+	// runner 装配语义）。
+	cfg.InputSource = "postgres"
 	if cfg.DirectInputLimit, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT", defaultDirectInputLimit, 1, maxJ1Capacity); err != nil {
 		return Config{}, err
 	}
-	if cfg.InputSource == "postgres" {
-		if mode != StorePostgres {
-			return Config{}, errors.New("PG direct input 只允许与 postgres jobs store 一起启用")
-		}
-		cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"))
-		if cfg.BusinessPostgresURL == "" {
-			return Config{}, errors.New("postgres direct input 缺少 JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL")
-		}
-		// 清理批次 C4（2026-09-30）：direct input 连接池 env 族零引用收编常量。
-		cfg.DirectInputPostgresMaxOpenConns = defaultPostgresPoolSize
-		cfg.DirectInputPostgresMaxIdleConns = defaultPostgresMaxIdleConns
+	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"))
+	if cfg.BusinessPostgresURL == "" {
+		return Config{}, errors.New("postgres direct input 缺少 JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL")
 	}
+	// 清理批次 C4（2026-09-30）：direct input 连接池 env 族零引用收编常量。
+	cfg.DirectInputPostgresMaxOpenConns = defaultPostgresPoolSize
+	cfg.DirectInputPostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	var key []byte
 	keyText := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"))
 	if keyText == "" {
@@ -229,12 +174,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.MaxResponseBytes, err = configInt64(getenv, "JUHE_AI_ACCOUNT_HEALTH_MAX_RESPONSE_BYTES", defaultMaxResponseBytes, 1, 16*1024*1024); err != nil {
 		return Config{}, err
 	}
-	concurrencyDefault := defaultSQLiteConcurrency
-	if mode == StorePostgres {
-		concurrencyDefault = defaultPostgresConcurrency
-	} else if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")), "performance") {
-		concurrencyDefault = defaultPerformanceConcurrency
-	}
+	concurrencyDefault := defaultPostgresConcurrency
 	if cfg.MaxConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY", concurrencyDefault, minJ1Concurrency, maxJ1Concurrency); err != nil {
 		return Config{}, err
 	}
@@ -271,53 +211,6 @@ func loadOrCreateInputSigningKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("写入 J1 input 签名密钥文件 %s 失败: %w", path, err)
 	}
 	return buffer, nil
-}
-
-func validateSQLiteIsolation(storePath, inputDirectory string, getenv func(string) string) error {
-	store, err := canonicalPath(storePath)
-	if err != nil {
-		return fmt.Errorf("解析 J1 SQLite store 路径失败: %w", err)
-	}
-	for _, name := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH"} {
-		other := strings.TrimSpace(getenv(name))
-		if other == "" {
-			continue
-		}
-		candidate, err := canonicalPath(other)
-		if err != nil {
-			return fmt.Errorf("解析 %s 失败: %w", name, err)
-		}
-		if equalPath(store, candidate) {
-			return fmt.Errorf("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH 不得与 %s 共用 SQLite 文件", name)
-		}
-	}
-	input, err := canonicalPath(inputDirectory)
-	if err != nil {
-		return fmt.Errorf("解析 J1 input 目录失败: %w", err)
-	}
-	relative, err := filepath.Rel(input, store)
-	if err != nil {
-		return err
-	}
-	if relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
-		return errors.New("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH 不得放入 input 目录")
-	}
-	return nil
-}
-
-func canonicalPath(value string) (string, error) {
-	absolute, err := filepath.Abs(strings.TrimSpace(value))
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(absolute), nil
-}
-
-func equalPath(left, right string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(left, right)
-	}
-	return left == right
 }
 
 func configDuration(getenv func(string) string, name string, fallback, minimum time.Duration) (time.Duration, error) {

@@ -152,16 +152,6 @@ func TestW11FDirectHelperBranches(t *testing.T) {
 	if dsn := legacySQLiteReadOnlyDSN(filepath.Join(t.TempDir(), "x.sqlite3")); !strings.Contains(dsn, "mode=ro") {
 		t.Fatalf("ro dsn = %q", dsn)
 	}
-	// config: validateUsageShardIsolation 分支（操作库位于分片根内 → 拒绝）。
-	shardRoot := t.TempDir()
-	inner := filepath.Join(shardRoot, "sub", "op.sqlite3")
-	if err := validateUsageShardIsolation(inner, shardRoot); err == nil {
-		t.Fatalf("inside shard root = %v", err)
-	}
-	outside := filepath.Join(t.TempDir(), "op.sqlite3")
-	if err := validateUsageShardIsolation(outside, shardRoot); err != nil {
-		t.Fatalf("outside shard root = %v", err)
-	}
 }
 
 // TestW11FLegacyQueryHelpers 用脚本驱动覆盖 FromQuery 辅助的错误臂。

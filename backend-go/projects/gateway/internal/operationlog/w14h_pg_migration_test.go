@@ -18,7 +18,6 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -464,23 +463,3 @@ func TestW14HNormalizedTargetRelationInvalid(t *testing.T) {
 	}
 }
 
-// TestW14HValidateUsageShardInsideRoot 确认操作库位于分片根内仍被拒绝（同文件臂由该检查遮蔽）。
-func TestW14HValidateUsageShardInsideRoot(t *testing.T) {
-	root := t.TempDir()
-	shardDir := filepath.Join(root, "2026", "09", "01")
-	if err := os.MkdirAll(shardDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	shard := filepath.Join(shardDir, "usage-20260901-s0.sqlite3")
-	file, err := os.Create(shard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = validateUsageShardIsolation(shard, root)
-	if err == nil || !strings.Contains(err.Error(), "must not be inside") {
-		t.Fatalf("inside shard root = %v", err)
-	}
-}

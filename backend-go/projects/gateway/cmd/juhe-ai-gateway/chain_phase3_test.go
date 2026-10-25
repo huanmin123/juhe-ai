@@ -9,12 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	miniredis "github.com/alicebob/miniredis/v2"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
@@ -22,16 +20,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
-// TestComposeChainRuntimeServicesWiresIdentity: with redis cache driver the
-// G14 identity services assemble (no silent nil). Note: RuntimeStateDriver=memory
-// because D-137 hot quality service only supports memory driver.
+// TestComposeChainRuntimeServicesWiresIdentity: the G14 identity services
+// assemble (no silent nil) over the PostgreSQL + Redis 恒定形态（存储形态收口
+// 后 cache/state 驱动轴恒 redis）。
 func TestComposeChainRuntimeServicesWiresIdentity(t *testing.T) {
-	server := miniredis.RunT(t)
-	cfg := composeTestConfig(t)
-	cfg.RedisNamespace = "compose-test"
-	cfg.CacheDriver = "redis"
-	cfg.RuntimeStateDriver = "memory"
-	cfg.RedisCacheURL = "redis://" + server.Addr()
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	composed := &composition{db: nil, pgDialect: false}
 	// composeChainRuntimeServices requires the composed handles: seed the
 	// minimal business + stats schema for the runtime cache read models.
@@ -84,7 +78,7 @@ func TestChainCostEstimatorEstimateVectors(t *testing.T) {
 			2.5, 10.0,
 			100000, 0,
 			2.0, 1.5,
-			?, ?, ?, ?)`, `["priority"]`, string(tiers), now, now)
+			$1, $2, $3, $4)`, `["priority"]`, string(tiers), now, now)
 	// The cache catalog cache must pick the new row up: build a fresh cache.
 	cache := fixture.cache
 
@@ -142,13 +136,11 @@ func absFloat64(value float64) float64 {
 // gateway key reaches the route surface, and a non-family /v1 path keeps the
 // Node 404 JSON.
 func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
-	cfg := composeTestConfig(t)
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	cfg.ChainEnabled = true
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -164,11 +156,11 @@ func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 	}
 	var strategyID string
 	if err := composed.DB.QueryRow(
-		`SELECT id FROM route_strategies WHERE system_account_id = 'sys_admin' AND status = 'active' ORDER BY created_at ASC LIMIT 1`,
+		`SELECT id FROM juhe_business.route_strategies WHERE system_account_id = 'sys_admin' AND status = 'active' ORDER BY created_at ASC LIMIT 1`,
 	).Scan(&strategyID); err != nil {
 		t.Fatalf("query default strategy: %v", err)
 	}
-	if _, err := composed.DB.Exec(`INSERT INTO api_keys (
+	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.api_keys (
 			id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix,
 			key_secret_encrypted, status, is_default, scheduling_preference_id, created_at, updated_at
 		) VALUES ('key_compat', 'sys_admin', ?, '兼容探测', ?, 'sk-compose', 'compat', ?, 'active', 0, 'schpref-builtin-chat-cost-first', ?, ?)`,

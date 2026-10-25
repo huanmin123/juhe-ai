@@ -72,13 +72,6 @@ var schedulingPreferenceColumns = [8]string{
 	"built_in", "created_at", "updated_at",
 }
 
-// schedulingPreferenceSQLiteCheckTexts 是 SQLite 建表文本中两组 CHECK 的判据
-// 片段（比较前双方归一化；enabled 词表已随 v2 第 4 条退役）。
-var schedulingPreferenceSQLiteCheckTexts = [2]string{
-	"chat_mode in ('cost_first','speed_first')",
-	"built_in in (0,1)",
-}
-
 // schedulingPreferencePostgresCheckTexts 是 PG pg_get_constraintdef 归一化
 // 文本中两组 CHECK 的判定：chat_mode 按字符串字面量齐备判定（PG 保留字面
 // 量）；built_in 的整数词表按「列名 + in(0,1) 或 array[0,1] 双形态」判定
@@ -88,155 +81,32 @@ var schedulingPreferencePostgresCheckTexts = [2][3]string{
 	{"built_in", "in(0,1)", "array[0,1]"},
 }
 
-// checkSchedulingPreferenceSchemaAtStartup 按装配方言打开一次性只读连接执行
-// 调度偏好三臂校验；worker 配置层面的 fail-fast 已在此前完成。
+// checkSchedulingPreferenceSchemaAtStartup 打开一次性只读 PG 连接执行调度
+// 偏好四臂校验；worker 配置层面的 fail-fast 已在此前完成。
 func checkSchedulingPreferenceSchemaAtStartup(ctx context.Context, config workerConfig) error {
 	checkCtx, cancel := context.WithTimeout(ctx, schedulingPreferenceStartupCheckTimeout)
 	defer cancel()
-	if config.Driver == "postgres" {
-		db, err := sql.Open("pgx", config.PostgresURL)
-		if err != nil {
-			return fmt.Errorf("scheduling_preferences 启动校验失败：打开业务 PostgreSQL 连接失败: %w", err)
-		}
-		defer db.Close()
-		if err := db.PingContext(checkCtx); err != nil {
-			return fmt.Errorf("scheduling_preferences 启动校验失败：连接业务 PostgreSQL 失败: %w", err)
-		}
-		return checkSchedulingPreferenceSchema(checkCtx, db, true)
-	}
-	dsn, err := sqliteReadOnlyFileDSN(config.BusinessSQLitePath)
+	db, err := sql.Open("pgx", config.PostgresURL)
 	if err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败: %w", err)
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：打开业务 SQLite 只读句柄失败: %w", err)
+		return fmt.Errorf("scheduling_preferences 启动校验失败：打开业务 PostgreSQL 连接失败: %w", err)
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 	if err := db.PingContext(checkCtx); err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：连接业务 SQLite 失败（%s）: %w", config.BusinessSQLitePath, err)
+		return fmt.Errorf("scheduling_preferences 启动校验失败：连接业务 PostgreSQL 失败: %w", err)
 	}
-	return checkSchedulingPreferenceSchema(checkCtx, db, false)
+	return checkSchedulingPreferenceSchemaPostgres(checkCtx, db, schedulingPreferenceBusinessPGSchema)
 }
 
-// checkSchedulingPreferenceSchema 对业务库做调度偏好四臂只读校验；postgres
-// 选择方言。返回 nil 表示表形状、绑定列、内置行与 P2 迁移完成记录全部符合契
-// 约。
-func checkSchedulingPreferenceSchema(ctx context.Context, db *sql.DB, postgres bool) error {
-	if db == nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：业务库句柄为空（%s）", schedulingPreferenceStartupRemedy)
-	}
-	if postgres {
-		return checkSchedulingPreferenceSchemaPostgres(ctx, db, schedulingPreferenceBusinessPGSchema)
-	}
-	return checkSchedulingPreferenceSchemaSQLite(ctx, db)
-}
-
-// checkSchedulingPreferenceMigrationRecord 是第四臂：P2 迁移完成记录必须存在
-// 且 stage=completed（判定语义与文案单源于 schedprefdomain.RequireCompleted，
-// 本文件只做方言选择；与 gateway 镜像同实现）。
-func checkSchedulingPreferenceMigrationRecord(ctx context.Context, db *sql.DB, postgres bool) error {
-	dialect := capabilitydomain.DialectSQLite
-	if postgres {
-		dialect = capabilitydomain.DialectPostgres
-	}
-	return schedprefdomain.RequireCompleted(ctx, db, dialect)
-}
-
-// schedulingPreferenceNormalized 小写化并移除全部空白（空格/换行/制表），供
-// CHECK 判据包含匹配使用（与 capabilityDomainNormalized 同实现，镜像文件不
-// 共享包故各自持有）。
 func schedulingPreferenceNormalized(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), "")
 }
 
-// checkSchedulingPreferenceSchemaSQLite 执行 SQLite 方言四臂校验。
-func checkSchedulingPreferenceSchemaSQLite(ctx context.Context, db *sql.DB) error {
-	// 臂 1：表形状（8 列精确集合 + 两组 CHECK 词表）。
-	columns := map[string]bool{}
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info("scheduling_preferences")`)
-	if err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：读取 PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, columnType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			rows.Close()
-			return fmt.Errorf("scheduling_preferences 启动校验失败：扫描 PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-		}
-		columns[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("scheduling_preferences 启动校验失败：遍历 PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	rows.Close()
-	if len(columns) == 0 {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：表缺失，期望形状 %s（%s）", schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-	}
-	for _, column := range schedulingPreferenceColumns {
-		if !columns[column] {
-			return fmt.Errorf("scheduling_preferences 启动校验失败：缺列 %s，期望形状 %s（%s）", column, schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-		}
-	}
-	var ddl sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='scheduling_preferences'`).Scan(&ddl); err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：读取建表文本失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	if !ddl.Valid {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：建表文本为空，期望形状 %s（%s）", schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-	}
-	normalizedDDL := schedulingPreferenceNormalized(ddl.String)
-	for _, checkText := range schedulingPreferenceSQLiteCheckTexts {
-		if !strings.Contains(normalizedDDL, schedulingPreferenceNormalized(checkText)) {
-			return fmt.Errorf("scheduling_preferences 启动校验失败：建表文本缺少 CHECK 判据 %s，期望形状 %s（%s）", checkText, schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-		}
-	}
-
-	// 臂 2：api_keys.scheduling_preference_id 绑定列（TEXT 可空）。
-	foundAPIKeyColumn := false
-	apiKeyRows, err := db.QueryContext(ctx, `PRAGMA table_info("api_keys")`)
-	if err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：读取 api_keys PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	for apiKeyRows.Next() {
-		var cid, notNull, pk int
-		var name, columnType string
-		var defaultValue any
-		if err := apiKeyRows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			apiKeyRows.Close()
-			return fmt.Errorf("scheduling_preferences 启动校验失败：扫描 api_keys PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-		}
-		if name == "scheduling_preference_id" {
-			foundAPIKeyColumn = true
-			if !strings.EqualFold(strings.TrimSpace(columnType), "TEXT") {
-				apiKeyRows.Close()
-				return fmt.Errorf("scheduling_preferences 启动校验失败：api_keys.scheduling_preference_id 列类型为 %q，期望 TEXT（%s）", columnType, schedulingPreferenceStartupRemedy)
-			}
-			if notNull != 0 {
-				apiKeyRows.Close()
-				return fmt.Errorf("scheduling_preferences 启动校验失败：api_keys.scheduling_preference_id 列不可空，期望可空 TEXT 绑定列（%s）", schedulingPreferenceStartupRemedy)
-			}
-		}
-	}
-	if err := apiKeyRows.Err(); err != nil {
-		apiKeyRows.Close()
-		return fmt.Errorf("scheduling_preferences 启动校验失败：遍历 api_keys PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	apiKeyRows.Close()
-	if !foundAPIKeyColumn {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：api_keys.scheduling_preference_id 绑定列缺失，期望 api_keys 增加 scheduling_preference_id TEXT NULL（%s）", schedulingPreferenceStartupRemedy)
-	}
-
-	// 臂 3：内置行存在且 built_in=1、chat_mode 合法。
-	if err := checkSchedulingPreferenceBuiltinRow(ctx, db, "scheduling_preferences", "?"); err != nil {
-		return err
-	}
-	// 臂 4：P2 迁移完成记录存在且 stage=completed。
-	return checkSchedulingPreferenceMigrationRecord(ctx, db, false)
+// checkSchedulingPreferenceMigrationRecord 是第四臂：P2 迁移完成记录必须存在
+// 且 stage=completed（判定语义与文案单源于 schedprefdomain.RequireCompleted；
+// 与 gateway 镜像同实现）。
+func checkSchedulingPreferenceMigrationRecord(ctx context.Context, db *sql.DB) error {
+	dialect := capabilitydomain.DialectPostgres
+	return schedprefdomain.RequireCompleted(ctx, db, dialect)
 }
 
 // checkSchedulingPreferenceBuiltinRow 读取内置行并做两值校验（built_in +
@@ -356,5 +226,5 @@ func checkSchedulingPreferenceSchemaPostgres(ctx context.Context, db *sql.DB, sc
 		return err
 	}
 	// 臂 4：P2 迁移完成记录存在且 stage=completed。
-	return checkSchedulingPreferenceMigrationRecord(ctx, db, true)
+	return checkSchedulingPreferenceMigrationRecord(ctx, db)
 }

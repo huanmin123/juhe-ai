@@ -70,12 +70,12 @@ import (
 
 func TestW1MComposeChatFamilyChatAssetsFailureArm(t *testing.T) {
 	stack := w1oNewComposeStack(t)
-	w1oRedirectDatabasePaths(t, stack)
+	w1oRedirectChatAssetsRoot(t, stack)
 	stack.cfg.ChainEnabled = true
 	// ChatAssetsRoot 指向一个已存在的文件：newChatAssetObjectStore 的
 	// os.MkdirAll 必然失败，composeChatFamily 错误沿
-	// "compose my-chat family" 包装层返回（compose.go 1173-1175）。
-	assetsBlocker := filepath.Join(filepath.Dir(stack.cfg.BusinessDatabasePath), "w1m-assets-blocker")
+	// "compose my-chat family" 包装层返回。
+	assetsBlocker := filepath.Join(t.TempDir(), "w1m-assets-blocker")
 	if err := os.WriteFile(assetsBlocker, []byte("not-a-dir"), 0o644); err != nil {
 		t.Fatalf("写入 chat 资产根目录占位文件失败: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestW1MComposeChatFamilyChatAssetsFailureArm(t *testing.T) {
 
 func TestW1MComposeApiKeyStoreBlankSecretArm(t *testing.T) {
 	stack := w1oNewComposeStack(t)
-	w1oRedirectDatabasePaths(t, stack)
+	w1oRedirectChatAssetsRoot(t, stack)
 	stack.cfg.Secret = "   "
 	composed, err := stack.compose(t)
 	if err == nil {

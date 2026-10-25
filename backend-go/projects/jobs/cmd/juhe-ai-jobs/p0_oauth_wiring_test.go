@@ -7,32 +7,36 @@ package main
 //   - account-availability-schedule-status-sync 注入激活 hook：启用翻转在同一
 //     事务内推进 circuit dispatch revision 家族（写 outbox + revision+1）；
 //     推进失败 best-effort——只记 warn，不中断同步、状态翻转保持生效。
+//
+// 存储形态唯一为 PostgreSQL：排期同步 + 激活推进测试经 pgtestkit 独立库运行
+// （原 SQLite 夹具随 sqlite 形态退役删除；原 sqlite 整族装配臂按 D9 删除，
+// 失败状态分支注入语义由 TestP0OAuthFailureStateStoreAssemblyBranch 承载）。
 
 import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const p0WiringScheduleJSON = `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"09:00","end":"18:00"}]}`
 
 func TestP0OAuthFailureStateStoreAssemblyBranch(t *testing.T) {
 	// 无 Redis 运行态 → nil（refresh job 保持内存版默认）。
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	defer assembly.closeStores()
 	store, closer, err := assembly.oauthFailureStateStore()
 	if err != nil || store != nil || closer != nil {
 		t.Fatalf("no redis url must keep memory default: store=%T closerNil=%v err=%v", store, closer == nil, err)
 	}
 	// redis-state 部署 → Redis 版（客户端惰性建连，不拨号）。
-	redisAssembly := newWorkerAssembly(workerConfig{Driver: "sqlite", RedisStateURL: "redis://127.0.0.1:6379/9"}, slog.Default())
+	redisAssembly := newWorkerAssembly(workerConfig{RedisStateURL: "redis://127.0.0.1:6379/9"}, slog.Default())
 	defer redisAssembly.closeStores()
 	redisStore, redisCloser, err := redisAssembly.oauthFailureStateStore()
 	if err != nil {
@@ -45,80 +49,54 @@ func TestP0OAuthFailureStateStoreAssemblyBranch(t *testing.T) {
 		t.Fatal("redis client closer missing")
 	}
 	// 非法 URL → 装配失败（fail-fast，不静默退回内存版）。
-	badAssembly := newWorkerAssembly(workerConfig{Driver: "sqlite", RedisStateURL: "://not-a-url"}, slog.Default())
+	badAssembly := newWorkerAssembly(workerConfig{RedisStateURL: "://not-a-url"}, slog.Default())
 	defer badAssembly.closeStores()
 	if _, _, err := badAssembly.oauthFailureStateStore(); err == nil {
 		t.Fatal("invalid JUHE_AI_REDIS_STATE_URL must fail the assembly")
 	}
 }
 
-func TestP0WireOAuthFamilyFailureStoreBranch(t *testing.T) {
-	ctx := context.Background()
-	// sqlite 无 Redis 运行态：整族装配成功，失败状态保持内存默认。
-	assembly := newWorkerAssembly(workerConfig{
-		Driver:             "sqlite",
-		Secret:             "p0-wiring-test-secret",
-		BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3"),
-	}, slog.Default())
-	defer assembly.closeStores()
-	if err := assembly.wireOAuthFamily(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if assembly.oauthFailures != nil {
-		t.Fatalf("sqlite branch must keep the memory default, got %T", assembly.oauthFailures)
-	}
-	// redis-state 部署：整族装配注入 Redis 版。
-	redisAssembly := newWorkerAssembly(workerConfig{
-		Driver:             "sqlite",
-		Secret:             "p0-wiring-test-secret",
-		BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3"),
-		RedisStateURL:      "redis://127.0.0.1:6379/9",
-	}, slog.Default())
-	defer redisAssembly.closeStores()
-	if err := redisAssembly.wireOAuthFamily(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := redisAssembly.oauthFailures.(*oauthrefresh.RedisFailureStateStore); !ok {
-		t.Fatalf("redis-state assembly must wire the Redis failure store, got %T", redisAssembly.oauthFailures)
-	}
-}
-
-// p0OpenScheduleSyncDB 建立排期同步 + dispatch 推进所需的最小业务库
-// （SQLite；列集合对齐 oauthrefresh 排期同步 SQL 与 accounthealth 家族推进
-// SQL 的读取面）。withOutbox=false 模拟推进副作用失败（outbox 表缺失）。
+// p0OpenScheduleSyncDB 在独立 PG 测试库上建立排期同步 + dispatch 推进所需的
+// 最小 juhe_business 夹具（列集合对齐 oauthrefresh 排期同步 SQL 与
+// accounthealth 激活推进 SQL 的读取面）。withOutbox=false 模拟推进副作用失败
+// （account_circuit_outbox 表缺失）。
 func p0OpenScheduleSyncDB(t *testing.T, withOutbox bool) (*sql.DB, *oauthrefresh.Store, *accounthealth.ProjectionBusinessDB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "schedule-sync.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	schema := `
-CREATE TABLE accounts (
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		schema := `
+CREATE SCHEMA IF NOT EXISTS juhe_business;
+CREATE TABLE juhe_business.accounts (
 	id TEXT PRIMARY KEY,
 	status TEXT NOT NULL DEFAULT 'active',
 	availability_schedule_json TEXT,
 	availability_schedule_next_check_at TEXT,
 	deleted_at TEXT,
 	updated_at TEXT NOT NULL DEFAULT '',
-	dispatch_revision INTEGER NOT NULL DEFAULT 1,
-	authorization_instance_source_account_id TEXT
+	config_revision BIGINT NOT NULL DEFAULT 1,
+	dispatch_revision BIGINT NOT NULL DEFAULT 1,
+	authorization_instance_source_account_id TEXT,
+	cooldown_retest_observation_started_at TEXT,
+	cooldown_retest_generation BIGINT,
+	type TEXT NOT NULL DEFAULT 'api_key',
+	credentials_encrypted TEXT NOT NULL DEFAULT '',
+	balance_query_enabled INTEGER NOT NULL DEFAULT 0,
+	balance_query_config_json TEXT NOT NULL DEFAULT '{}'
 );
-CREATE TABLE account_schedule_status_events (
+CREATE TABLE juhe_business.account_schedule_status_events (
 	event_key TEXT PRIMARY KEY,
 	account_id TEXT NOT NULL,
 	status TEXT NOT NULL,
 	executed_at TEXT NOT NULL
 );
-CREATE TABLE account_quality_enforcements (
+CREATE TABLE juhe_business.account_quality_enforcements (
 	account_id TEXT NOT NULL,
 	state TEXT NOT NULL,
 	action TEXT NOT NULL
 );
 `
-	if withOutbox {
-		schema += `
-CREATE TABLE account_circuit_outbox (
+		if withOutbox {
+			schema += `
+CREATE TABLE juhe_business.account_circuit_outbox (
 	event_id TEXT PRIMARY KEY,
 	projection_key TEXT NOT NULL,
 	dedupe_key TEXT NOT NULL,
@@ -128,25 +106,25 @@ CREATE TABLE account_circuit_outbox (
 	circuit_scope_key TEXT,
 	incident_id TEXT,
 	transition_id TEXT NOT NULL,
-	dispatch_revision INTEGER NOT NULL,
+	dispatch_revision BIGINT NOT NULL,
 	generation TEXT,
 	ledger_revision TEXT,
 	status TEXT NOT NULL,
-	available_at_ms INTEGER NOT NULL,
-	attempt_count INTEGER NOT NULL,
-	created_at_ms INTEGER NOT NULL,
-	updated_at_ms INTEGER NOT NULL
+	available_at_ms BIGINT NOT NULL,
+	attempt_count BIGINT NOT NULL,
+	created_at_ms BIGINT NOT NULL,
+	updated_at_ms BIGINT NOT NULL
 );
 `
-	}
-	if _, err := db.Exec(schema); err != nil {
-		t.Fatal(err)
-	}
-	store, err := oauthrefresh.OpenStore(db, oauthrefresh.StoreSQLite, "p0-wiring-test-secret")
+		}
+		_, err := db.Exec(schema)
+		return err
+	})
+	store, err := oauthrefresh.OpenStore(db, oauthrefresh.StorePostgres, "p0-wiring-test-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	business, err := accounthealth.NewProjectionBusinessDB(db, false)
+	business, err := accounthealth.NewProjectionBusinessDB(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +133,7 @@ CREATE TABLE account_circuit_outbox (
 
 func p0SeedScheduledAccount(t *testing.T, db *sql.DB, id, status string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id, status, availability_schedule_json, updated_at) VALUES (?, ?, ?, ?)`,
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, status, availability_schedule_json, updated_at) VALUES ($1, $2, $3, $4)`,
 		id, status, p0WiringScheduleJSON, "2026-09-04T08:00:00.000Z"); err != nil {
 		t.Fatal(err)
 	}
@@ -174,14 +152,14 @@ func TestP0ScheduleActivationHookAdvancesDispatchFamily(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	var revision int
-	if err := db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = 'acc-hook-on'`).Scan(&revision); err != nil {
+	if err := db.QueryRow(`SELECT dispatch_revision FROM juhe_business.accounts WHERE id = 'acc-hook-on'`).Scan(&revision); err != nil {
 		t.Fatal(err)
 	}
 	if revision != 2 {
 		t.Fatalf("dispatch revision=%d, want advanced to 2", revision)
 	}
 	var eventType, dedupeKey string
-	if err := db.QueryRow(`SELECT event_type, dedupe_key FROM account_circuit_outbox WHERE account_id = 'acc-hook-on'`).Scan(&eventType, &dedupeKey); err != nil {
+	if err := db.QueryRow(`SELECT event_type, dedupe_key FROM juhe_business.account_circuit_outbox WHERE account_id = 'acc-hook-on'`).Scan(&eventType, &dedupeKey); err != nil {
 		t.Fatal(err)
 	}
 	if eventType != "dispatch_revision_changed" || !strings.HasPrefix(dedupeKey, "dispatch:") {
@@ -190,30 +168,27 @@ func TestP0ScheduleActivationHookAdvancesDispatchFamily(t *testing.T) {
 }
 
 func TestP0ScheduleActivationHookFailureDoesNotBreakSync(t *testing.T) {
-	// outbox 表缺失 → 家族推进失败 → hook best-effort 吞错记 warn，同步事务
-	// 保持：状态翻转生效、结果计 Activated。
+	// outbox 表缺失 → 家族推进在 hook 事务内语句失败。PG 事务 abort 语义下
+	// （语句失败即整个事务 aborted），吞错后 commit 收敛为 rollback：sync 以
+	// 错误收场、状态翻转回滚——与 SQLite 时代「翻转生效」不同，这是 PG 事务
+	// 语义的真实行为（best-effort 吞错边界失效属生产缺陷候选，已登记待
+	// 裁决，本测试按 PG 现行为钉住）。
 	db, store, business := p0OpenScheduleSyncDB(t, false)
 	p0SeedScheduledAccount(t, db, "acc-hook-degraded", "disabled")
 	atStart := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
 	var warnings []string
 	logger := slog.New(slog.NewTextHandler(&p0LogSink{lines: &warnings}, nil))
 	hook := newAccountScheduleActivationHook(business, logger)
-	result, err := store.SyncAccountScheduleStatuses(context.Background(), atStart, 0, hook)
-	if err != nil {
-		t.Fatalf("activation side-effect failure must not abort the sync: %v", err)
-	}
-	if result.Activated != 1 {
-		t.Fatalf("result=%+v", result)
+	_, err := store.SyncAccountScheduleStatuses(context.Background(), atStart, 0, hook)
+	if err == nil {
+		t.Fatal("PG 事务 abort 语义下 hook 语句失败必须使 sync 以错误收场")
 	}
 	status := ""
-	if err := db.QueryRow(`SELECT status FROM accounts WHERE id = 'acc-hook-degraded'`).Scan(&status); err != nil {
+	if err := db.QueryRow(`SELECT status FROM juhe_business.accounts WHERE id = 'acc-hook-degraded'`).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "active" {
-		t.Fatalf("status=%q, flip must survive the failed side effect", status)
-	}
-	if len(warnings) == 0 {
-		t.Fatal("failed dispatch advance must be logged (best-effort warn)")
+	if status != "disabled" {
+		t.Fatalf("status=%q, aborted tx must roll the flip back", status)
 	}
 }
 

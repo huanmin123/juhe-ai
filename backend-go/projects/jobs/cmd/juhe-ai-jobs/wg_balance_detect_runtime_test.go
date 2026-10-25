@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -24,16 +23,12 @@ const wgBalanceSecret = "0123456789abcdef0123456789abcdef"
 // 单测入口）。
 func wgNewBalanceRuntime(t *testing.T, upstreamURL string, withLease bool) (*balanceDetectRuntime, *sql.DB, *sql.DB) {
 	t.Helper()
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	statsPath := filepath.Join(root, "stats.sqlite3")
-	biz := mustOpenSQLite(t, businessPath)
-	t.Cleanup(func() { _ = biz.Close() })
-	statsDB := mustOpenSQLite(t, statsPath)
-	t.Cleanup(func() { _ = statsDB.Close() })
-	if err := balanceFixtureSchema(context.Background(), biz, statsDB); err != nil {
-		t.Fatal(err)
-	}
+	// PG 唯一形态：隔离 PG 测试库 + sqldialect 改写（保留测试内 `?` 写法）；
+	// business/stats 两个返回值指向同一库（schema 限定由 SQL 承担）。
+	biz, dsn := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
+		return balanceFixtureSchema(ctx, db, db)
+	})
+	statsDB := biz
 	runtime := &balanceDetectRuntime{
 		business: &businessDB{db: biz},
 		statsDB:  statsDB,
@@ -45,8 +40,8 @@ func wgNewBalanceRuntime(t *testing.T, upstreamURL string, withLease bool) (*bal
 	}
 	if withLease {
 		store, err := taskruns.OpenStore(taskruns.StoreConfig{
-			Mode:         taskruns.ModeSQLite,
-			DatabasePath: filepath.Join(root, "leases.sqlite3"),
+			Mode:        taskruns.ModePostgres,
+			PostgresURL: dsn,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -398,13 +393,13 @@ func TestEnsureAccountUsageSnapshotsTableBranches(t *testing.T) {
 	_, _, statsDB := wgNewBalanceRuntime(t, "", false)
 	ctx := context.Background()
 	// 表存在 → 通过。
-	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB, false); err != nil {
+	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB); err != nil {
 		t.Fatalf("快照表存在必须通过: %v", err)
 	}
 	if _, err := statsDB.Exec(`DROP TABLE account_usage_snapshots`); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB, false); err == nil {
+	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB); err == nil {
 		t.Fatal("缺表必须报错")
 	}
 }

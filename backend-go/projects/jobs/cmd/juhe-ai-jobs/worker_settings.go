@@ -56,14 +56,6 @@ func jobssettingsWarn(logger *slog.Logger) jobssettings.WarnFunc {
 	}
 }
 
-// settingsMode 映射 driver 到读模型模式。
-func settingsMode(postgres bool) jobssettings.Mode {
-	if postgres {
-		return jobssettings.Postgres
-	}
-	return jobssettings.SQLite
-}
-
 // refreshUpstreamClientVersionOverrides 把 system_settings 的手动键与自动键
 // 当前值应用到 upstreamidentity 的进程内覆盖（worker_assembly 装配期启动一次
 // + 每 60s 周期调用，不新增 ticker）。两层各自独立：读取失败只 warn 并保持
@@ -92,7 +84,7 @@ func (a *workerAssembly) refreshUpstreamClientVersionOverrides(source *jobssetti
 func (a *workerAssembly) probeSettingsSource(business *businessDB) accountquality.SettingsNumber {
 	source := jobssettings.NewSource(jobssettings.Options{
 		DB:   business.db,
-		Mode: settingsMode(business.postgres),
+		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	logger := a.logger

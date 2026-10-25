@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,13 +65,11 @@ func TestComposeSystemAPIRequiresOwnerHealthWiring(t *testing.T) {
 }
 
 func TestComposeSystemAPIServesAISysHealth(t *testing.T) {
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
 	ownerHealth := composeTestOwnerHealth()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, ownerHealth)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), ownerHealth)
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}

@@ -55,7 +55,7 @@ func TestW13GUpdateAuthorizedDispatchDirectArms(t *testing.T) {
 		t.Fatalf("clearFailure 重置：%v %v", result, err)
 	}
 	var count int
-	if err := env.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE id = ? AND cooldown_until IS NULL
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE id = $1 AND cooldown_until IS NULL
 		AND last_error_code IS NULL AND last_error_message IS NULL AND last_error_trace_id IS NULL
 		AND cooldown_retest_failure_count = 0 AND cooldown_retest_observation_started_at IS NULL
 		AND cooldown_retest_generation IS NULL AND cooldown_retest_last_at IS NULL

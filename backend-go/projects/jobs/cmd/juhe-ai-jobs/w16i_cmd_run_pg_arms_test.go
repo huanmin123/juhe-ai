@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,27 @@ import (
 // TestW16HIPGFullChainOwnerShutdown 进程内驱动 run() 完成 J1/J2/J3a PG 装配
 // 成功链、management API 装配与优雅停机（覆盖 w14q 同一生产路径的进程内
 // 形态）。
+// w16iBaseEnv 构造 PG 唯一形态的 owner env 基底：F1 store 与 J1 store/input
+// 全部走覆盖库（原 w16hBaseEnv 的 sqlite 基底随 sqlite 形态退役删除；连接串
+// 不落日志）。
+func w16iBaseEnv(t *testing.T, pgURL string) map[string]string {
+	t.Helper()
+	return map[string]string{
+		"JUHE_AI_POSTGRES_URL":                      pgURL,
+		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":          pgURL,
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "w16i-run",
+		"JUHE_AI_LOG_DIR":                           t.TempDir(),
+		"JUHE_AI_CHAT_ASSETS_ROOT":                  filepath.Join(t.TempDir(), "chat-assets"),
+		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(t.TempDir(), "codex-context"),
+		"JUHE_AI_SECRET":                            "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "w16i-j1",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    t.TempDir(),
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": pgURL,
+	}
+}
+
 func TestW16HIPGFullChainOwnerShutdown(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 全链 skipped in -short mode")
@@ -165,8 +187,12 @@ func TestW16HIPGModelRecoveryPingFailArm(t *testing.T) {
 	if pgURL == "" {
 		t.Skip("w16i: 覆盖库连接串不可用")
 	}
+	if db, err := sql.Open("pgx", pgURL); err == nil {
+		w14jEnsurePGFixture(t, db)
+		_ = db.Close()
+	}
 	w16jEnsurePGJobsFixture(t, pgURL)
-	env := w16hBaseEnv(t)
+	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":         "go",
@@ -195,8 +221,12 @@ func TestW16HIPGJ3aInputPingFailArm(t *testing.T) {
 	if pgURL == "" {
 		t.Skip("w16i: 覆盖库连接串不可用")
 	}
+	if db, err := sql.Open("pgx", pgURL); err == nil {
+		w14jEnsurePGFixture(t, db)
+		_ = db.Close()
+	}
 	w16jEnsurePGJobsFixture(t, pgURL)
-	env := w16hBaseEnv(t)
+	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
@@ -221,8 +251,12 @@ func TestW16HIPGJ1InputPingFailArm(t *testing.T) {
 	if pgURL == "" {
 		t.Skip("w16i: 覆盖库连接串不可用")
 	}
+	if db, err := sql.Open("pgx", pgURL); err == nil {
+		w14jEnsurePGFixture(t, db)
+		_ = db.Close()
+	}
 	w16jEnsurePGJobsFixture(t, pgURL)
-	env := w16hBaseEnv(t)
+	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":         "go",
@@ -250,9 +284,13 @@ func TestW16HIPGJ3aManagementFailArms(t *testing.T) {
 	if pgURL == "" {
 		t.Skip("w16i: 覆盖库连接串不可用")
 	}
+	if db, err := sql.Open("pgx", pgURL); err == nil {
+		w14jEnsurePGFixture(t, db)
+		_ = db.Close()
+	}
 	w16jEnsurePGJobsFixture(t, pgURL)
 	managementPort := wgFreePort(t)
-	env := w16hBaseEnv(t)
+	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":                "go",

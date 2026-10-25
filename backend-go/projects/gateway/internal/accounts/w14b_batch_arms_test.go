@@ -17,14 +17,16 @@ func w14bBatchSetup(t *testing.T, env *testEnv, suffix string) (string, []BatchU
 	t.Helper()
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	now := "2026-09-17T00:00:00.000Z"
-	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '["gpt-4o-mini"]', ?, ?)`, now, now)
-	env.exec(t, `INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '["gpt-4o-mini"]', ?, ?)
+		ON CONFLICT DO NOTHING`, now, now)
+	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
 		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
 		VALUES ('profile_openai_openai_v1', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1',
-		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)`, now, now)
+		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)
+		ON CONFLICT DO NOTHING`, now, now)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-w14b`+suffix+`', ?, 'w14b-proxy', 'http', '127.0.0.1', 7890, 1, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w14b`+suffix+`', ?, 'w14b-proxy', 'http', '127.0.0.1', 7890, true, ?, ?)`, adminID, now, now)
 	for _, name := range []string{"w14b-x1" + suffix, "w14b-x2" + suffix} {
 		sealed, err := EncryptJSON(testSecret, Credentials{"api_key": "sk-w14b-" + name, "base_url": "https://api.openai.com/v1"})
 		if err != nil {
@@ -37,7 +39,7 @@ func w14bBatchSetup(t *testing.T, env *testEnv, suffix string) (string, []BatchU
 	}
 	revision := func(id string) int64 {
 		var revision int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, id).Scan(&revision); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, id).Scan(&revision); err != nil {
 			t.Fatal(err)
 		}
 		return revision
@@ -53,7 +55,7 @@ func w14bRefreshTargets(t *testing.T, env *testEnv, targets []BatchUpdateTarget)
 	t.Helper()
 	for index := range targets {
 		var revision int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, targets[index].AccountID).Scan(&revision); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, targets[index].AccountID).Scan(&revision); err != nil {
 			t.Fatal(err)
 		}
 		targets[index].ConfigRevision = revision
@@ -210,7 +212,7 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	}
 	for _, id := range []string{targets[0].AccountID, targets[1].AccountID} {
 		var sealed string
-		if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+		if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = $1`, id).Scan(&sealed); err != nil {
 			t.Fatal(err)
 		}
 		var credentials Credentials
@@ -244,7 +246,7 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	}, scope); err == nil || !strings.Contains(err.Error(), "代理不存在或已停用") {
 		t.Fatalf("缺失代理应拒绝：%v", err)
 	}
-	env.exec(t, `UPDATE proxy_profiles SET enabled = 0 WHERE id = 'proxy-w14b'`)
+	env.exec(t, `UPDATE proxy_profiles SET enabled = false WHERE id = 'proxy-w14b'`)
 	w14bRefreshTargets(t, env, targets)
 	if _, err := env.store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: targets,
@@ -252,7 +254,7 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	}, scope); err == nil || !strings.Contains(err.Error(), "代理不存在或已停用") {
 		t.Fatalf("停用代理应拒绝：%v", err)
 	}
-	env.exec(t, `UPDATE proxy_profiles SET enabled = 1 WHERE id = 'proxy-w14b'`)
+	env.exec(t, `UPDATE proxy_profiles SET enabled = true WHERE id = 'proxy-w14b'`)
 
 	// 凭据覆盖字段传空白/非法值臂。
 	w14bRefreshTargets(t, env, targets)

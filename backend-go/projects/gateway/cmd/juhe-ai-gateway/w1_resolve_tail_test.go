@@ -922,15 +922,13 @@ func TestW1KBusinessOwnerGateArms(t *testing.T) {
 	// schema/epoch/evidence）不再是 businessOwnerGate 输入，置任何值都
 	// 不得阻断启动；gate 只保留连接性前置。
 	valid := runtimeConfig{
-		SystemAPIEnabled:            true,
-		BusinessOwner:               "gateway",
-		BusinessHandoffConfirmed:    true,
-		BusinessNodeWriterStopped:   true,
-		BusinessSchemaReady:         true,
-		BusinessOwnerEpoch:          "epoch-w1k",
-		BusinessCutoverEvidencePath: "evidence-w1k.json",
-		DatabaseDriver:              "sqlite",
-		BusinessDatabasePath:        "data/business.sqlite3",
+		SystemAPIEnabled:          true,
+		BusinessOwner:             "gateway",
+		BusinessHandoffConfirmed:  true,
+		BusinessNodeWriterStopped: true,
+		BusinessSchemaReady:       true,
+		BusinessOwnerEpoch:        "epoch-w1k",
+		BusinessPostgresURL:       "postgres://user:pass@127.0.0.1:5432/juhe",
 	}
 
 	disabled := runtimeConfig{}
@@ -938,13 +936,7 @@ func TestW1KBusinessOwnerGateArms(t *testing.T) {
 		t.Fatalf("未启用系统 API 必须直通: %v", err)
 	}
 	if err := valid.businessOwnerGate(); err != nil {
-		t.Fatalf("完整 sqlite 交接配置必须通过: %v", err)
-	}
-	postgres := valid
-	postgres.DatabaseDriver = "postgres"
-	postgres.BusinessPostgresURL = "postgres://user:pass@127.0.0.1:5432/juhe"
-	if err := postgres.businessOwnerGate(); err != nil {
-		t.Fatalf("完整 postgres 交接配置必须通过: %v", err)
+		t.Fatalf("完整连接配置必须通过: %v", err)
 	}
 
 	// 退役字段反向断言：切流语义字段全部置无效值时 gate 仍通过。
@@ -954,7 +946,6 @@ func TestW1KBusinessOwnerGateArms(t *testing.T) {
 	retired.BusinessNodeWriterStopped = false
 	retired.BusinessSchemaReady = false
 	retired.BusinessOwnerEpoch = ""
-	retired.BusinessCutoverEvidencePath = ""
 	if err := retired.businessOwnerGate(); err != nil {
 		t.Fatalf("已退役的切流语义字段不得再阻断启动: %v", err)
 	}
@@ -964,8 +955,7 @@ func TestW1KBusinessOwnerGateArms(t *testing.T) {
 		mutate func(*runtimeConfig)
 		want   string
 	}{
-		{"postgres 缺少 URL", func(c *runtimeConfig) { c.DatabaseDriver = "postgres" }, "JUHE_AI_BUSINESS_POSTGRES_URL"},
-		{"sqlite 缺少路径", func(c *runtimeConfig) { c.BusinessDatabasePath = "" }, "JUHE_AI_BUSINESS_DATABASE_PATH"},
+		{"缺少业务 URL", func(c *runtimeConfig) { c.BusinessPostgresURL = "" }, "JUHE_AI_BUSINESS_POSTGRES_URL"},
 	}
 	for _, fail := range fails {
 		candidate := valid

@@ -14,10 +14,10 @@ func wgFullValidWorkerEnv(t *testing.T) map[string]string {
 	return workerSmokeTestEnv(t)
 }
 
-// TestLoadWorkerConfigZeroConfigDataDirDerivation 覆盖 2026-09-19 零配置
-// 决策：仅注 DATA_DIR（SECRET 非生产回退开发密钥）即可通过校验，全部路径
-// 类 env 派生为 <DATA_DIR>/<固定名>，与 gateway 侧同名字段共享同一数据目录。
-func TestLoadWorkerConfigZeroConfigDataDirDerivation(t *testing.T) {
+// TestLoadWorkerConfigDataDirAndSpoolDerivation 锁定 DATA_DIR 目录类派生
+// 契约（D1）：spool 派生挂 DATA_DIR；原 sqlite 库路径族派生随 sqlite 形态
+// 退役删除。
+func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
 	dataDir := t.TempDir()
 	env := map[string]string{
 		"JUHE_AI_DATA_DIR": dataDir,
@@ -27,38 +27,37 @@ func TestLoadWorkerConfigZeroConfigDataDirDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DATA_DIR + SECRET 必须构成可启动配置: %v", err)
 	}
-	pathExpectations := []struct {
-		field string
-		got   string
-		fixed string
-	}{
-		{"BusinessSQLitePath", config.BusinessSQLitePath, "business.sqlite3"},
-		{"StatsSQLitePath", config.StatsSQLitePath, "stats.sqlite3"},
-		{"TaskRunsSQLitePath", config.TaskRunsSQLitePath, "task-runs.sqlite3"},
-		{"UsageCatalogSQLitePath", config.UsageCatalogSQLitePath, "usage-catalog.sqlite3"},
-		{"DatasetSQLitePath", config.DatasetSQLitePath, "dataset.sqlite3"},
-		{"ChatSQLitePath", config.ChatSQLitePath, "chat.sqlite3"},
-		{"UsageShardRoot", config.UsageShardRoot, "usage-shards"},
-		{"CodexContextStateShardRoot", config.CodexContextStateShardRoot, filepath.Join("codex-context", "state-shards")},
-	}
-	for _, item := range pathExpectations {
-		want := filepath.Join(dataDir, item.fixed)
-		if item.got != want {
-			t.Fatalf("%s 必须派生为 %q，得到 %q", item.field, want, item.got)
-		}
-	}
-	// usage spool 目录从派生的 stats 库目录派生，同落 DATA_DIR。
 	if want := filepath.Join(dataDir, "usage-record-spool"); config.UsageSpoolDirectory != want {
 		t.Fatalf("UsageSpoolDirectory 必须派生为 %q，得到 %q", want, config.UsageSpoolDirectory)
 	}
-	// 显式配置始终优先。
-	env["JUHE_AI_DATABASE_PATH"] = filepath.Join(t.TempDir(), "explicit.sqlite3")
+	if want := filepath.Join(dataDir, "chat-assets"); config.ChatAssetsRoot != want {
+		t.Fatalf("ChatAssetsRoot 必须派生为 %q，得到 %q", want, config.ChatAssetsRoot)
+	}
+	if want := filepath.Join(dataDir, "codex-context"); config.CodexContextRoot != want {
+		t.Fatalf("CodexContextRoot 必须派生为 %q，得到 %q", want, config.CodexContextRoot)
+	}
+	if config.DataDir != dataDir {
+		t.Fatalf("DataDir 必须透传 %q，得到 %q", dataDir, config.DataDir)
+	}
+	// spool 显式配置始终优先。
+	explicit := filepath.Join(t.TempDir(), "explicit-spool")
+	env["JUHE_AI_USAGE_SPOOL_DIRECTORY"] = explicit
 	config, err = loadWorkerConfig(getenvFrom(env))
 	if err != nil {
-		t.Fatalf("显式路径必须可解析: %v", err)
+		t.Fatalf("显式 spool 必须可解析: %v", err)
 	}
-	if config.BusinessSQLitePath != env["JUHE_AI_DATABASE_PATH"] {
-		t.Fatalf("显式 DATABASE_PATH 必须优先: %q", config.BusinessSQLitePath)
+	if config.UsageSpoolDirectory != explicit {
+		t.Fatalf("显式 SPOOL_DIRECTORY 必须优先: %q", config.UsageSpoolDirectory)
+	}
+	// 旧名 JUHE_AI_USAGE_SPOOL_DIR 兜底 + 披露标记。
+	delete(env, "JUHE_AI_USAGE_SPOOL_DIRECTORY")
+	env["JUHE_AI_USAGE_SPOOL_DIR"] = explicit
+	config, err = loadWorkerConfig(getenvFrom(env))
+	if err != nil {
+		t.Fatalf("旧名 spool 必须可解析: %v", err)
+	}
+	if config.UsageSpoolDirectory != explicit || !config.usageSpoolDirectoryLegacyName {
+		t.Fatalf("旧名 SPOOL_DIR 必须兜底并打标: %q %v", config.UsageSpoolDirectory, config.usageSpoolDirectoryLegacyName)
 	}
 }
 
@@ -86,9 +85,6 @@ func TestLoadWorkerConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("合法 env 必须通过校验: %v", err)
 	}
-	if config.Driver != "sqlite" {
-		t.Fatalf("驱动错误: %+v", config)
-	}
 	if config.InstanceID != "smoke-instance" || config.WorkerRole != "stats-worker" || config.WorkerReplicaIdx != 0 {
 		t.Fatalf("调度 seed 三元组错误: %+v", config)
 	}
@@ -102,20 +98,14 @@ func TestLoadWorkerConfigDefaults(t *testing.T) {
 	if config.DrainTimeout != 5*time.Second {
 		t.Fatalf("env 指定的停机排空上限必须生效，得到 %v", config.DrainTimeout)
 	}
-	if config.UsageShardCount != 16 {
-		t.Fatalf("usage 分片数默认必须是 16，得到 %d", config.UsageShardCount)
-	}
-	// smoke env 显式给出 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT=1。
-	if config.CodexContextStateShardCount != 1 {
-		t.Fatalf("env 指定的 codex 分片数必须生效，得到 %d", config.CodexContextStateShardCount)
-	}
+	// usage 分片数 env 已删除：写计划 ID 路由基数收编为常量 16。
 	if config.ChatRetentionDays != 3 || config.RecordMaintenanceBatchSize != 10 || config.RecordMaintenanceShutdownFlushMaxBatches != 1 {
 		t.Fatalf("retention/维护默认值漂移: %+v", config)
 	}
-	// spool 目录从 stats 库目录派生（与 gateway 组合根同规则）。
+	// spool 目录按 D1 从 DATA_DIR 派生。
 	expectedSpool := "usage-record-spool"
 	if !strings.HasSuffix(config.UsageSpoolDirectory, expectedSpool) {
-		t.Fatalf("spool 目录必须从 stats 库目录派生: %s", config.UsageSpoolDirectory)
+		t.Fatalf("spool 目录必须从 DATA_DIR 派生: %s", config.UsageSpoolDirectory)
 	}
 	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 10 {
 		t.Fatalf("PG 池默认值漂移: %+v", config)

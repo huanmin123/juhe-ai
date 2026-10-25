@@ -24,21 +24,19 @@ const (
 	DefaultDirName = "data"
 )
 
-// Fixed names under the data root (gateway-side table, 2026-09-19).
+// Fixed names under the data root (gateway-side table, 2026-09-19;
+// 2026-10-24 存储形态收口：全部 *.sqlite3 专库文件名与 usage-shards /
+// codex-context/state-shards 分片子目录随 sqlite 存储形态删除，保留的只有
+// PG+Redis 形态仍消费的普通文件目录面).
 const (
-	BusinessDatabase           = "business.sqlite3"
-	ChatDatabase               = "chat.sqlite3"
-	DatasetDatabase            = "dataset.sqlite3"
-	RuntimeLogDatabase         = "runtime-log.sqlite3"
-	UsageCatalogDatabase       = "usage-catalog.sqlite3"
-	StatsDatabase              = "stats.sqlite3"
-	UsageShardRoot             = "usage-shards"
-	CodexContextRoot           = "codex-context"
-	CodexContextStateShardRoot = "codex-context/state-shards"
-	AuditLogDatabase           = "audit-log.sqlite3"
-	AuditBlobDirectory         = "audit-blob"
-	OperationLogDatabase       = "operation-log.sqlite3"
-	ChatAssetsDirectory        = "chat-assets"
+	CodexContextRoot = "codex-context"
+	// UsageRecordSpoolDirectory 是 gateway↔jobs 用量记录 spool 交接目录
+	// （D1，PLAN-20261024T051925945Z）：JUHE_AI_USAGE_SPOOL_DIRECTORY 未配置
+	// 时组合根派生 <DATA_DIR>/usage-record-spool（显式配置优先；旧名
+	// JUHE_AI_USAGE_SPOOL_DIR 回落语义保留在组合根）。
+	UsageRecordSpoolDirectory = "usage-record-spool"
+	AuditBlobDirectory        = "audit-blob"
+	ChatAssetsDirectory       = "chat-assets"
 	// RuntimeLogsDirectory is the 2026-09-28 default-on derivation for
 	// JUHE_AI_LOG_DIR: an unset env derives <DATA_DIR>/logs (symmetric with
 	// the jobs runtimelog config derivation); the gateway file sink and the
@@ -46,16 +44,6 @@ const (
 	// deployment. The literal "disabled" stays a composition-root concern
 	// (explicit opt-out), not a fixed name.
 	RuntimeLogsDirectory = "logs"
-	// ModelCheckDatabase is the J3b model-check owner's dedicated store
-	// (2026-09-20 zero-config arm). It must stay distinct from
-	// BusinessDatabase: the J3b owner contract requires a separate file.
-	ModelCheckDatabase = "model-check.sqlite3"
-	// AccountBalanceDatabase 是余额手动刷新租约库（SQLite 模式 gateway 独占，
-	// 2026-10-04 装配臂）。必须与 BusinessDatabase 分文件：共享核心
-	// accountbalance 的租约四表（owner/account leases、snapshots、outcomes）
-	// 独立落盘，gateway 独占该文件、无跨进程争用；PG 模式不打开该文件（同构
-	// 四表在 juhe_jobs schema）。
-	AccountBalanceDatabase = "account-balance.sqlite3"
 )
 
 // Dir resolves the data root: JUHE_AI_DATA_DIR when configured (trimmed),

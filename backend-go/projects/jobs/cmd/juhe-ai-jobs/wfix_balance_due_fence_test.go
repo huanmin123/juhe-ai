@@ -53,14 +53,11 @@ func TestBalanceDueTextTruncatesSubMillisecond(t *testing.T) {
 	}
 }
 
-// TestBalanceDueColumnExpressions：方言列表达式契约——PG 必须 cast 到
-// timestamptz，SQLite 保持裸列（文本比较）。
+// TestBalanceDueColumnExpressions：列表达式契约——due 比较恒 cast 到
+// timestamptz（原 SQLite 裸列分支随 sqlite 形态退役删除）。
 func TestBalanceDueColumnExpressions(t *testing.T) {
-	if got := balanceDueColumn(true); got != "balance_query_next_refresh_at::timestamptz" {
-		t.Fatalf("PG 分支 due 比较必须 cast 到 timestamptz，得到 %q", got)
-	}
-	if got := balanceDueColumn(false); got != "balance_query_next_refresh_at" {
-		t.Fatalf("SQLite 分支必须保持裸列文本比较，得到 %q", got)
+	if got := balanceDueColumn(); got != "balance_query_next_refresh_at::timestamptz" {
+		t.Fatalf("due 比较必须 cast 到 timestamptz，得到 %q", got)
 	}
 }
 
@@ -263,9 +260,8 @@ func newFencePGRuntime(t *testing.T) (*balanceDetectRuntime, *fenceRecorder) {
 	t.Cleanup(func() { _ = db.Close() })
 	fixedNow := time.Date(2026, 9, 26, 16, 0, 0, 0, time.UTC)
 	runtime := &balanceDetectRuntime{
-		business: &businessDB{db: db, postgres: true},
+		business: &businessDB{db: db},
 		statsDB:  db,
-		statsPG:  true,
 		secret:   wgBalanceSecret,
 		nowFunc:  func() time.Time { return fixedNow },
 	}

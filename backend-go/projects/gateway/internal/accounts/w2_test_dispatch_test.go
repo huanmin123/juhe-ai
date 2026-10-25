@@ -55,10 +55,11 @@ func TestW2TestOptionsRoutes(t *testing.T) {
 	t.Run("keyword 与 limit", func(t *testing.T) {
 		// 额外目录行：keyword 命中时返回两个模型（B4 ⑧：models 单表 REPLACE
 		// seedFixtureModels 同名行）。
-		env.exec(t, `REPLACE INTO models
+		env.exec(t, `INSERT INTO models
 			(id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, release_date, created_at, updated_at)
 			VALUES ('mod-fixture-gpt-4-1-gpt', 'gpt', 'gpt-4.1', 'gpt-4.1', 'builtin', 'active',
-			'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-02-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+			'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-02-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+			ON CONFLICT (id) DO UPDATE SET vendor_code = EXCLUDED.vendor_code, public_model = EXCLUDED.public_model, upstream_model = EXCLUDED.upstream_model, scope = EXCLUDED.scope, system_account_id = EXCLUDED.system_account_id, status = EXCLUDED.status, supported_endpoint_modes_json = EXCLUDED.supported_endpoint_modes_json, release_date = EXCLUDED.release_date, shutdown_date = EXCLUDED.shutdown_date, catalog_visible = EXCLUDED.catalog_visible, catalog_order = EXCLUDED.catalog_order, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`)
 		code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts/"+accountID+"/test-options?keyword=gpt-4", "")
 		if code != http.StatusOK || len(dataArray(t, payload)) != 2 {
 			t.Fatalf("keyword 命中数量不一致：%d %v", code, payload)
@@ -186,7 +187,7 @@ func TestW2TestAccountDispatch(t *testing.T) {
 		}
 		taskID := dataMap(t, payload)["id"].(string)
 		var draft string
-		if err := env.db.QueryRow(`SELECT draft_account_encrypted FROM account_test_tasks WHERE id = ?`, taskID).Scan(&draft); err != nil || draft == "" {
+		if err := env.db.QueryRow(`SELECT draft_account_encrypted FROM account_test_tasks WHERE id = $1`, taskID).Scan(&draft); err != nil || draft == "" {
 			t.Fatalf("草稿快照未落库：%v", err)
 		}
 	})

@@ -22,16 +22,17 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 )
 
@@ -102,7 +103,7 @@ func TestW12CSpeedFirstCandidateSourceExpiryArms(t *testing.T) {
 	ctx := context.Background()
 
 	// 合法 RFC3339 到期时间 → ExpiresAtMS 解析。
-	if _, err := handle.db.Exec(`UPDATE accounts SET account_expires_at = '2030-01-01T00:00:00Z' WHERE id = 'acc-rt'`); err != nil {
+	if _, err := handle.db.Exec(`UPDATE juhe_business.accounts SET account_expires_at = '2030-01-01T00:00:00Z' WHERE id = 'acc-rt'`); err != nil {
 		t.Fatal(err)
 	}
 	summary, err := source.FindAccountForTest(ctx, "acc-rt", runtimeKey)
@@ -111,7 +112,7 @@ func TestW12CSpeedFirstCandidateSourceExpiryArms(t *testing.T) {
 	}
 	// 非法时间戳经 proberepo panic 防线之外的错误通道不可达（w9h 已锁定
 	// panic 行为）；这里补充 effective availability 透传。
-	if _, err := handle.db.Exec(`UPDATE accounts SET account_expires_at = '2030-01-01T00:00:00Z', status = 'active', schedulable = 1 WHERE id = 'acc-rt'`); err != nil {
+	if _, err := handle.db.Exec(`UPDATE juhe_business.accounts SET account_expires_at = '2030-01-01T00:00:00Z', status = 'active', schedulable = 1 WHERE id = 'acc-rt'`); err != nil {
 		t.Fatal(err)
 	}
 	summary, err = source.FindAccountForTest(ctx, "acc-rt", runtimeKey)
@@ -202,181 +203,6 @@ func TestW12CBalanceConfigHelpers(t *testing.T) {
 	}
 }
 
-func TestW12CBalanceRuntimeCandidateArms(t *testing.T) {
-	runtime, biz, statsDB := wgNewBalanceRuntime(t, "", false)
-	ctx := context.Background()
-
-	// ListDueCandidates：limit 钳制与空库回绕。
-	candidates, err := runtime.ListDueCandidates(ctx, 500)
-	if err != nil || len(candidates) != 0 {
-		t.Fatalf("空库扫描: %d %v", len(candidates), err)
-	}
-	wgSeedDueAccount(t, biz, "acc-due-1", "http://127.0.0.1:1", -time.Minute)
-	candidates, err = runtime.ListDueCandidates(ctx, 0)
-	if err != nil || len(candidates) != 1 {
-		t.Fatalf("到期候选: %d %v", len(candidates), err)
-	}
-	// 不可解密凭据的候选被跳过但仍推进游标。
-	if _, err := biz.Exec(`UPDATE accounts SET credentials_encrypted = '{}' WHERE id = 'acc-due-1'`); err != nil {
-		t.Fatal(err)
-	}
-	runtime.cursor = nil
-	candidates, err = runtime.ListDueCandidates(ctx, 5)
-	if err != nil || len(candidates) != 0 {
-		t.Fatalf("凭据不可用候选应跳过: %d %v", len(candidates), err)
-	}
-
-	// CommitDetectionDue：缺围栏 / 非法时间 / 不匹配。
-	due := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := runtime.CommitDetectionDue(ctx, opsjobs.BalanceCommitDueInput{AccountID: "acc-due-1"}); err == nil {
-		t.Fatal("缺 due 围栏必须拒绝")
-	}
-	badTime := "not-a-time"
-	if _, err := runtime.CommitDetectionDue(ctx, opsjobs.BalanceCommitDueInput{AccountID: "acc-due-1", ExpectedNextRefreshAt: &badTime}); err == nil {
-		t.Fatal("非法到期时间必须拒绝")
-	}
-	matched, err := runtime.CommitDetectionDue(ctx, opsjobs.BalanceCommitDueInput{
-		AccountID: "acc-due-1", ExpectedConfigRevision: 1, ExpectedNextRefreshAt: &due,
-	})
-	if err != nil || matched {
-		t.Fatalf("配置不一致应 false: %v %v", matched, err)
-	}
-
-	// ReplaceSnapshotIfCurrent：账户缺失 false；非法 nextRefreshAfter 错误。
-	written, err := runtime.ReplaceSnapshotIfCurrent(ctx, opsjobs.BalanceSnapshotInput{AccountID: "acc-absent", SystemAccountID: "sys-1"})
-	if err != nil || written {
-		t.Fatalf("缺失账户应 false: %v %v", written, err)
-	}
-	// 启用候选（balance_query_enabled=1）后配置不匹配 → false。
-	enabledConfig, err := normalizeBalanceConfigJSON("builtin", 5, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := biz.Exec(`UPDATE accounts SET balance_query_enabled = 1, balance_query_config_json = ?, balance_query_next_refresh_at = NULL WHERE id = 'acc-due-1'`, enabledConfig); err != nil {
-		t.Fatal(err)
-	}
-	matchedConfig := opsjobs.BalanceQueryConfig{Adapter: "builtin", IntervalMinutes: 5}
-	written, err = runtime.ReplaceSnapshotIfCurrent(ctx, opsjobs.BalanceSnapshotInput{
-		AccountID: "acc-due-1", SystemAccountID: "sys-1", ExpectedConfigRevision: 1,
-		ExpectedConfig: matchedConfig, NextRefreshAfter: time.Now().UTC().Format(time.RFC3339Nano),
-		Snapshot: opsjobs.BalanceSnapshotWrite{Status: opsjobs.BalanceSnapshotFresh, ConfigRevision: 1, LastAttemptAt: time.Now().UTC().Format(time.RFC3339Nano)},
-	})
-	if err != nil || !written {
-		t.Fatalf("配置一致应写入: %v %v", written, err)
-	}
-	badAfter := "not-a-time"
-	if _, err := runtime.ReplaceSnapshotIfCurrent(ctx, opsjobs.BalanceSnapshotInput{
-		AccountID: "acc-due-1", SystemAccountID: "sys-1", ExpectedConfigRevision: 1, ExpectedConfig: matchedConfig,
-		NextRefreshAfter: badAfter,
-		Snapshot:         opsjobs.BalanceSnapshotWrite{Status: opsjobs.BalanceSnapshotFresh, ConfigRevision: 1},
-	}); err == nil {
-		t.Fatal("非法 nextRefreshAfter 必须拒绝")
-	}
-	// 配置不一致 → false。
-	written, err = runtime.ReplaceSnapshotIfCurrent(ctx, opsjobs.BalanceSnapshotInput{
-		AccountID: "acc-due-1", SystemAccountID: "sys-1", ExpectedConfigRevision: 1,
-		ExpectedConfig: opsjobs.BalanceQueryConfig{Adapter: "builtin", IntervalMinutes: 30},
-		Snapshot:       opsjobs.BalanceSnapshotWrite{Status: opsjobs.BalanceSnapshotFresh, ConfigRevision: 1},
-	})
-	if err != nil || written {
-		t.Fatalf("配置不一致应 false: %v %v", written, err)
-	}
-
-	// RunWithLease：未初始化租约存储必须报错。
-	if _, err := runtime.RunWithLease(ctx, opsjobs.BalanceDetectionCandidate{ID: "acc-due-1"}, func(context.Context) error { return nil }); err == nil {
-		t.Fatal("缺租约存储必须报错")
-	}
-	leaseStore, err := taskruns.OpenStore(taskruns.StoreConfig{
-		Mode:         taskruns.ModeSQLite,
-		DatabasePath: filepath.Join(t.TempDir(), "w12c-leases.sqlite3"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = leaseStore.Close() })
-	if err := leaseStore.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	runtime.leasestore = leaseStore
-	ran := false
-	acquired, err := runtime.RunWithLease(ctx, opsjobs.BalanceDetectionCandidate{ID: "acc-due-1", SystemAccountID: "sys-1"}, func(context.Context) error {
-		ran = true
-		return nil
-	})
-	if err != nil || !acquired || !ran {
-		t.Fatalf("租约执行: %v %v %v", acquired, ran, err)
-	}
-	_ = statsDB
-}
-
-func TestW12CBalanceBuildQueryInputArms(t *testing.T) {
-	runtime, biz, _ := wgNewBalanceRuntime(t, "", false)
-	ctx := context.Background()
-	// 账户缺失。
-	if _, err := runtime.buildQueryInput(ctx, opsjobs.BalanceDetectionCandidate{ID: "acc-absent"}, opsjobs.BalanceQueryConfig{}); err == nil {
-		t.Fatal("缺失账户必须拒绝")
-	}
-	// 凭据不可解密。
-	wgSeedDueAccount(t, biz, "acc-q-1", "", -time.Minute)
-	if _, err := biz.Exec(`UPDATE accounts SET credentials_encrypted = '{}' WHERE id = 'acc-q-1'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runtime.buildQueryInput(ctx, opsjobs.BalanceDetectionCandidate{ID: "acc-q-1"}, opsjobs.BalanceQueryConfig{}); err == nil {
-		t.Fatal("凭据不可用必须拒绝")
-	}
-	// 明文凭据 + 缺 base_url。
-	if _, err := biz.Exec(`UPDATE accounts SET credentials_encrypted = '{"api_key":"sk-plain"}' WHERE id = 'acc-q-1'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runtime.buildQueryInput(ctx, opsjobs.BalanceDetectionCandidate{ID: "acc-q-1"}, opsjobs.BalanceQueryConfig{}); err == nil {
-		t.Fatal("缺 base_url 必须拒绝")
-	}
-	// 带 base_url 与代理绑定。
-	credentials, err := json.Marshal(map[string]any{"api_key": "sk-q", "base_url": "http://127.0.0.1:1/"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := biz.Exec(`INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted, enabled)
-		VALUES ('pp-1', 'socks5', '127.0.0.1', 1080, '', '', 1)`); err != nil {
-		t.Fatal(err)
-	}
-	next := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := biz.Exec(`UPDATE accounts SET credentials_encrypted = ?, proxy_profile_id = 'pp-1', balance_query_next_refresh_at = ? WHERE id = 'acc-q-1'`, string(credentials), next); err != nil {
-		t.Fatal(err)
-	}
-	input, err := runtime.buildQueryInput(ctx, opsjobs.BalanceDetectionCandidate{
-		ID: "acc-q-1", SystemAccountID: "sys-1", ConfigRevision: 1,
-		NextRefreshAt: &next, ProxyProfileID: "pp-1",
-	}, opsjobs.BalanceQueryConfig{Adapter: "builtin", IntervalMinutes: 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if input.BaseURL != "http://127.0.0.1:1" || input.Proxy == nil {
-		t.Fatalf("输入构造: %+v", input)
-	}
-	// 非法 NextRefreshAt。
-	badNext := "not-a-time"
-	if _, err := runtime.buildQueryInput(ctx, opsjobs.BalanceDetectionCandidate{ID: "acc-q-1", NextRefreshAt: &badNext}, opsjobs.BalanceQueryConfig{}); err == nil {
-		t.Fatal("非法 nextRefreshAt 必须拒绝")
-	}
-}
-
-func TestW12CEnsureAccountUsageSnapshotsTableArms(t *testing.T) {
-	_, _, statsDB := wgNewBalanceRuntime(t, "", false)
-	ctx := context.Background()
-	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB, false); err != nil {
-		t.Fatalf("SQLite 建表: %v", err)
-	}
-	// 已存在时幂等。
-	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB, false); err != nil {
-		t.Fatalf("幂等建表: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// loadWorkerConfig 错误矩阵
-// ---------------------------------------------------------------------------
-
 func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
 	base := func() map[string]string {
 		return workerSmokeTestEnv(t)
@@ -385,7 +211,6 @@ func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
 		name string
 		env  map[string]string
 	}{
-		{"非法 driver", map[string]string{"JUHE_AI_DATABASE_DRIVER": "mysql"}},
 		// replica / PG pool conns / projection 批量族 / record maintenance
 		// 批量族错误臂已删除（2026-09-30 C4 收编为常量，env 不再被读取）。
 		{"非法 chat retention", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}},
@@ -419,7 +244,7 @@ func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite", BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3")}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{PostgresURL: "postgres://unit-test.invalid/j1", PostgresMaxOpenConns: 50, PostgresMaxIdleConns: 10}, slog.Default())
 	defer assembly.closeStores()
 	ctx := context.Background()
 
@@ -442,8 +267,8 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 	getenv := func(name string) string {
 		pairs := map[string]string{
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-			"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     filepath.Join(t.TempDir(), "j1.sqlite3"),
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://unit-test.invalid/j1",
+			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://unit-test.invalid/j1",
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
 			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
@@ -458,8 +283,8 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 	getenvBatch := func(name string) string {
 		pairs := map[string]string{
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-			"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     filepath.Join(t.TempDir(), "j1.sqlite3"),
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://unit-test.invalid/j1",
+			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://unit-test.invalid/j1",
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
 			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
@@ -476,8 +301,8 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 		pairs := map[string]string{
 			"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w12c-j1",
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-			"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     filepath.Join(t.TempDir(), "j1.sqlite3"),
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://unit-test.invalid/j1",
+			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://unit-test.invalid/j1",
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
 			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
@@ -496,15 +321,8 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW12COpenBusinessDBArms(t *testing.T) {
-	// SQLite 空路径：openSQLite 会落到当前目录的库文件；断言可开且可关闭。
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite", BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3")}, slog.Default())
-	defer assembly.closeStores()
-	business, err := openBusinessDB(assembly, "w12c-ok")
-	if err != nil || business == nil || business.postgres {
-		t.Fatalf("SQLite 业务库应可开: %v %v", business, err)
-	}
-	// PG 驱动缺 URL → 错误。
-	pgAssembly := newWorkerAssembly(workerConfig{Driver: "postgres"}, slog.Default())
+	// PG 缺 URL → acquirePool fail-fast（sqlite 臂已随 sqlite 形态退役删除）。
+	pgAssembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	defer pgAssembly.closeStores()
 	if _, err := openBusinessDB(pgAssembly, "w12c-pg-missing"); err == nil {
 		t.Fatal("PG 缺 URL 必须报错")
@@ -512,22 +330,16 @@ func TestW12COpenBusinessDBArms(t *testing.T) {
 }
 
 func TestW12CProbeSettingsSourceFallback(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sqlOpenSQLiteFile(filepath.Join(dir, "business.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = db.Close()
-		time.Sleep(50 * time.Millisecond)
-		_ = os.RemoveAll(dir)
+	// PG 唯一形态：读模型走独立 PG 测试库的 juhe_business.system_settings
+	//（原 SQLite 文件库夹具随 sqlite 形态退役删除）。
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business;
+CREATE TABLE juhe_business.system_settings (
+	system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
+	PRIMARY KEY (system_account_id, key))`)
+		return err
 	})
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (
-		system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
-		PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	defer assembly.closeStores()
 	settings := assembly.probeSettingsSource(&businessDB{db: db})
 	// 未知键 → DefaultNumber 未收录 → 回落 min。
@@ -535,43 +347,28 @@ func TestW12CProbeSettingsSourceFallback(t *testing.T) {
 		t.Fatalf("未知键应回落 min: %d", got)
 	}
 	// 非法值 → Number 错误 → DefaultNumber 命中 → 默认值。
-	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin', 'accountQualityWindowMinutes', '"abc"')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings VALUES ('sys_admin', 'accountQualityWindowMinutes', '"abc"')`); err != nil {
 		t.Fatal(err)
 	}
-	fallback := settings("accountQualityWindowMinutes", 1, 600)
-	if fallback <= 0 {
-		t.Fatalf("非法值应回落默认: %d", fallback)
+	if got := settings("accountQualityWindowMinutes", 1, 1440); got != 10 {
+		t.Fatalf("非法值应回落默认 10: %d", got)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// wireFamilies 错误传播与代理信封补充分支
-// ---------------------------------------------------------------------------
 
 func TestW12CWireFamiliesErrorPropagation(t *testing.T) {
 	// PG 驱动 + 非法连接参数：家族装配在 schedule-settings 池获取处失败，
 	// buildWorkerAssembly 必须回收已打开句柄并上抛错误（wireFamilies 61.1%
 	// 的错误传播臂）。
 	config := workerConfig{
-		Driver:                      "postgres",
-		PostgresURL:                 "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable",
-		PostgresMaxOpenConns:        10,
-		PostgresMaxIdleConns:        5,
-		Secret:                      wgBalanceSecret,
-		InstanceID:                  "w12c-propagation",
-		ProbeConcurrency:            1,
-		DrainTimeout:                time.Second,
-		BusinessSQLitePath:          filepath.Join(t.TempDir(), "business.sqlite3"),
-		StatsSQLitePath:             filepath.Join(t.TempDir(), "stats.sqlite3"),
-		TaskRunsSQLitePath:          filepath.Join(t.TempDir(), "task-runs.sqlite3"),
-		ChatSQLitePath:              filepath.Join(t.TempDir(), "chat.sqlite3"),
-		DatasetSQLitePath:           filepath.Join(t.TempDir(), "dataset.sqlite3"),
-		UsageCatalogSQLitePath:      filepath.Join(t.TempDir(), "usage.sqlite3"),
-		UsageShardRoot:              filepath.Join(t.TempDir(), "usage-shards"),
-		CodexContextStateShardRoot:  filepath.Join(t.TempDir(), "codex-state"),
-		CodexContextStateShardCount: 1,
-		ChatAssetsRoot:              filepath.Join(t.TempDir(), "chat-assets"),
-		CodexContextRoot:            filepath.Join(t.TempDir(), "codex-context"),
+		PostgresURL:          "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable",
+		PostgresMaxOpenConns: 10,
+		PostgresMaxIdleConns: 5,
+		Secret:               wgBalanceSecret,
+		InstanceID:           "w12c-propagation",
+		ProbeConcurrency:     1,
+		DrainTimeout:         time.Second,
+		ChatAssetsRoot:       filepath.Join(t.TempDir(), "chat-assets"),
+		CodexContextRoot:     filepath.Join(t.TempDir(), "codex-context"),
 	}
 	assembly, err := buildWorkerAssembly(config, slog.Default())
 	if err == nil {
@@ -583,32 +380,5 @@ func TestW12CWireFamiliesErrorPropagation(t *testing.T) {
 	// 装配失败后组合根必须返回 nil assembly（内部已回收句柄）。
 	if assembly != nil {
 		t.Fatal("失败装配必须返回 nil assembly")
-	}
-}
-
-func TestW12CProxyEnvelopeEncryptedPassword(t *testing.T) {
-	runtime, _, _ := wgNewBalanceRuntime(t, "", false)
-	envelope, err := accountbalance.NewCredentialEnvelope(wgBalanceSecret, "proxy_password", map[string]any{"password": "w12c-pass"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 加密密码字段是与 NewCredentialEnvelope 输出同构的信封文本。
-	proxy, err := runtime.proxyEnvelope("p1", "http", "127.0.0.1", 8080, "user", envelope.Ciphertext)
-	if err != nil || proxy == nil {
-		t.Fatalf("加密代理解析: %v %v", proxy, err)
-	}
-}
-
-func TestW12CCommitDetectionDueExecError(t *testing.T) {
-	runtime, biz, _ := wgNewBalanceRuntime(t, "", false)
-	wgSeedDueAccount(t, biz, "acc-due-1", "http://127.0.0.1:1", -time.Minute)
-	if err := biz.Close(); err != nil {
-		t.Fatal(err)
-	}
-	due := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := runtime.CommitDetectionDue(context.Background(), opsjobs.BalanceCommitDueInput{
-		AccountID: "acc-due-1", ExpectedConfigRevision: 1, ExpectedNextRefreshAt: &due,
-	}); err == nil {
-		t.Fatal("业务库关闭后的执行错误必须暴露")
 	}
 }

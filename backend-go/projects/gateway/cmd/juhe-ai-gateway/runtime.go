@@ -24,15 +24,15 @@ const (
 
 // runtimeConfig mirrors the env conventions of the Node composition root
 // (backend/src/config/runtime.ts) for the scope the Go gateway composition
-// consumes: runtime mode, storage drivers (sqlite/postgres, memory/redis),
-// dual-mode database paths, Redis URLs + namespace, secret, cookie/cors/
-// trust-proxy HTTP security and the composition gates.
+// consumes: PostgreSQL + Redis URLs + namespace, secret, cookie/cors/
+// trust-proxy HTTP security, the local file-face derivations (usage spool,
+// codex-context segments, logs, chat-assets) and the composition gates.
 //
-// Validation mirrors the Node fail-fast contract: an enabled redis driver
-// without its URL, a none-cookie
-// without secure, a production process without a strong secret or an explicit
-// CORS origin allowlist, or an enabled composition without the business owner
-// handoff gates exits at startup instead of serving a partial owner.
+// Validation mirrors the Node fail-fast contract: missing PostgreSQL/Redis
+// URLs, a none-cookie without secure, a production process without a strong
+// secret or an explicit CORS origin allowlist, or an enabled composition
+// without the business owner connection gates exits at startup instead of
+// serving a partial owner.
 //
 // The production signal for every HTTP security gate is the normalized
 // NODE_ENV (Node isProductionRuntime, runtime.ts:979-980); the same-process
@@ -41,45 +41,28 @@ const (
 // (falling back to NODE_ENV when unset) and carries no production semantics;
 // ownermode and JUHE_AI_DEPLOY_MODE carry none either.
 //
-// 2026-09-19 产品决策（开源项目降门槛）：gateway 二进制在空 env（standalone
-// sqlite）下零配置可启动——system-api 与 /v1 网关链组合根默认开启（显式
-// false 才关闭），路径类 env 未配置时按 internal/datadir 固定名表派生到
-// JUHE_AI_DATA_DIR（缺省 ./data）下，非生产未配置 JUHE_AI_SECRET 时回退
-// 内置开发密钥。生产切流/性能拓扑仍通过显式 env 控制（NODE_ENV=production
-// 保留全部强校验；显式配置的业务 owner handoff 证据门禁原样生效）。
+// 2026-10-24 存储形态收口（PLAN-20261024T051925945Z）：sqlite + memory 本地
+// 模式彻底退役，PostgreSQL + Redis 是唯一存储形态——JUHE_AI_RUNTIME_MODE /
+// JUHE_AI_DATABASE_DRIVER / JUHE_AI_CACHE_DRIVER / JUHE_AI_RUNTIME_STATE_DRIVER
+// 四开关与全部 sqlite 库路径 env 随之删除，三个连接串 env
+// （JUHE_AI_POSTGRES_URL / JUHE_AI_REDIS_CACHE_URL / JUHE_AI_REDIS_STATE_URL）
+// 无条件必填（缺失启动即失败）。普通文件目录派生保留：usage-record-spool、
+// codex-context segments、logs、chat-assets 等仍按 internal/datadir 固定名表
+// 派生到 JUHE_AI_DATA_DIR（缺省 ./data）下；非生产未配置 JUHE_AI_SECRET 时
+// 回退内置开发密钥。
 type runtimeConfig struct {
-	RuntimeMode        string // "standalone" | "performance"
-	DatabaseDriver     string // "sqlite" | "postgres"
-	CacheDriver        string // "memory" | "redis"
-	RuntimeStateDriver string // "memory" | "redis"
-
 	PostgresURL    string
 	RedisCacheURL  string
 	RedisStateURL  string
 	RedisNamespace string
 	Secret         string
 
-	DatabasePath             string
-	ChatDatabasePath         string
-	DatasetDatabasePath      string
-	RuntimeLogDatabasePath   string
-	UsageCatalogDatabasePath string
-	StatsDatabasePath        string
-	// AccountBalanceDatabasePath 是余额手动刷新租约库路径（SQLite 模式
-	// gateway 独占的 account-balance.sqlite3；JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH
-	// 显式配置优先）。PG 模式不打开该文件（租约四表在 juhe_jobs schema）。
-	AccountBalanceDatabasePath string
 	// CodexContextRoot is the codex-context segments root (Node
 	// runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_ROOT, default
 	// <DATA_DIR>/codex-context): the Responses↔Chat bridge SegmentStore root
 	// on the gateway and the retention segments cleanup root on jobs — both
 	// processes must derive the same directory.
 	CodexContextRoot string
-	// Codex context state shard layout (Node JUHE_AI_CODEX_CONTEXT_STATE_*,
-	// Node default 16 shards within the 1..256 bound). Consumed by the SQLite
-	// six-database startup preflight.
-	CodexContextShardRoot  string
-	CodexContextShardCount int
 
 	OpenAICompatibleFilesRoot string
 
@@ -176,10 +159,7 @@ type runtimeConfig struct {
 	// (0 → dispatches report input_unavailable), matching the old
 	// jobs-side missing-assembly semantics.
 	AccountHealthProbeDeadlineMS int64
-	// AccountHealthOutcomeSQLitePath is the J1 jobs outcome store the ai-health
-	// reads merge (Node JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH).
-	AccountHealthOutcomeSQLitePath string
-	// AccountHealthOutcomePostgresURL is the performance-topology J1 outcome
+	// AccountHealthOutcomePostgresURL is the J1 outcome
 	// database the ai-health reads merge (jobs JUHE_AI_JOBS_OUTCOME_POSTGRES_URL
 	// counterpart; Node merged readPostgresOutcomesForAccounts from the same DB).
 	AccountHealthOutcomePostgresURL string
@@ -232,40 +212,23 @@ type runtimeConfig struct {
 	// 越界 fail-fast。
 	LogMaxFileMB int
 
-	// Business owner handoff gates for the business database this composition
-	// would own. Names mirror the J3b owner contract (modelcheckowner).
-	BusinessOwner               string
-	BusinessDatabasePath        string
-	BusinessPostgresURL         string
-	BusinessHandoffConfirmed    bool
-	BusinessNodeWriterStopped   bool
-	BusinessSchemaReady         bool
-	BusinessOwnerEpoch          string
-	BusinessCutoverEvidencePath string
-	// BusinessOwnerAutoClaimed marks the 2026-09-19 zero-config standalone
-	// arm: sqlite 模式下 JUHE_AI_BUSINESS_* 家族全部未配置时，组合根自动认领
-	// 业务库 owner（无 Node 切流历史的新装部署）。显式配置任一家族成员则
-	// 保持原 handoff 证据门禁。main 据此跳过 cutover evidence 校验。
-	BusinessOwnerAutoClaimed bool
+	// Business owner connection gates for the business database this
+	// composition owns. Names mirror the J3b owner contract (modelcheckowner).
+	// 2026-10-24 存储形态收口：owner 事实一律按零配置自动认领（PostgreSQL 是
+	// 唯一存储形态，独立凭据仍可显式配置 BUSINESS_POSTGRES_URL，空值回落主
+	// JUHE_AI_POSTGRES_URL）。
+	BusinessOwner             string
+	BusinessPostgresURL       string
+	BusinessHandoffConfirmed  bool
+	BusinessNodeWriterStopped bool
+	BusinessSchemaReady       bool
+	BusinessOwnerEpoch        string
 }
 
 // UpstreamURLSecurityConfig mirrors Node runtimeConfig.upstreamUrlSecurity.
 // It aliases the shared transport type so the composition can hand the
 // loaded config straight to the dispatch URL policy.
 type UpstreamURLSecurityConfig = sharedupstreamhttp.URLSecurityConfig
-
-func hasAnyRawConfig(getenv func(string) string, keys ...string) bool {
-	for _, key := range keys {
-		if strings.TrimSpace(getenv(key)) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func envBoolTrue(value string) bool {
-	return strings.EqualFold(strings.TrimSpace(value), "true")
-}
 
 // strictEnvBool mirrors Node strictBooleanConfig (runtime.ts:1575-1582):
 // true/1/yes/on -> true and false/0/no/off -> false (case-insensitive), any
@@ -330,58 +293,10 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.ChatToolEnvironment = "development"
 	}
 
-	performanceHints := hasAnyRawConfig(getenv,
-		"JUHE_AI_POSTGRES_URL",
-		"JUHE_AI_REDIS_CACHE_URL",
-		"JUHE_AI_REDIS_STATE_URL")
-	cfg.RuntimeMode = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_MODE")))
-	if cfg.RuntimeMode == "" {
-		if performanceHints {
-			cfg.RuntimeMode = "performance"
-		} else {
-			cfg.RuntimeMode = "standalone"
-		}
-	}
-	if cfg.RuntimeMode != "standalone" && cfg.RuntimeMode != "performance" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_RUNTIME_MODE 必须为 standalone 或 performance: %q", cfg.RuntimeMode)
-	}
-
-	cfg.DatabaseDriver = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")))
-	if cfg.DatabaseDriver == "" {
-		if cfg.RuntimeMode == "performance" {
-			cfg.DatabaseDriver = "postgres"
-		} else {
-			cfg.DatabaseDriver = "sqlite"
-		}
-	}
-	if cfg.DatabaseDriver != "sqlite" && cfg.DatabaseDriver != "postgres" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_DATABASE_DRIVER 必须为 sqlite 或 postgres: %q", cfg.DatabaseDriver)
-	}
-
-	cfg.CacheDriver = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_CACHE_DRIVER")))
-	if cfg.CacheDriver == "" {
-		if cfg.RuntimeMode == "performance" {
-			cfg.CacheDriver = "redis"
-		} else {
-			cfg.CacheDriver = "memory"
-		}
-	}
-	if cfg.CacheDriver != "memory" && cfg.CacheDriver != "redis" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_CACHE_DRIVER 必须为 memory 或 redis: %q", cfg.CacheDriver)
-	}
-
-	cfg.RuntimeStateDriver = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_RUNTIME_STATE_DRIVER")))
-	if cfg.RuntimeStateDriver == "" {
-		if cfg.RuntimeMode == "performance" {
-			cfg.RuntimeStateDriver = "redis"
-		} else {
-			cfg.RuntimeStateDriver = "memory"
-		}
-	}
-	if cfg.RuntimeStateDriver != "memory" && cfg.RuntimeStateDriver != "redis" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_RUNTIME_STATE_DRIVER 必须为 memory 或 redis: %q", cfg.RuntimeStateDriver)
-	}
-
+	// 2026-10-24 存储形态收口：JUHE_AI_RUNTIME_MODE / JUHE_AI_DATABASE_DRIVER /
+	// JUHE_AI_CACHE_DRIVER / JUHE_AI_RUNTIME_STATE_DRIVER 随 sqlite+memory 模式
+	// 退役删除；PostgreSQL + Redis 是唯一存储形态，三个连接串无条件必填
+	// （缺失启动即失败，保留原 fail-fast 文案口径）。
 	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	cfg.RedisCacheURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_CACHE_URL"))
 	cfg.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
@@ -389,14 +304,14 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// anywhere in the Go gateway or jobs projects (dead Node-era config): the
 	// queue URL had no consumer and its performance-mode mandatory check only
 	// forced deployments to configure a value that was never used.
-	if cfg.CacheDriver == "redis" && cfg.RedisCacheURL == "" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_CACHE_DRIVER=redis 时缺少 JUHE_AI_REDIS_CACHE_URL")
+	if cfg.RedisCacheURL == "" {
+		return runtimeConfig{}, fmt.Errorf("缺少 JUHE_AI_REDIS_CACHE_URL（PostgreSQL + Redis 是唯一存储形态，三个连接串均为必填）")
 	}
-	if cfg.RuntimeStateDriver == "redis" && cfg.RedisStateURL == "" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_RUNTIME_STATE_DRIVER=redis 时缺少 JUHE_AI_REDIS_STATE_URL")
+	if cfg.RedisStateURL == "" {
+		return runtimeConfig{}, fmt.Errorf("缺少 JUHE_AI_REDIS_STATE_URL（PostgreSQL + Redis 是唯一存储形态，三个连接串均为必填）")
 	}
-	if cfg.DatabaseDriver == "postgres" && cfg.PostgresURL == "" {
-		return runtimeConfig{}, fmt.Errorf("JUHE_AI_DATABASE_DRIVER=postgres 时缺少 JUHE_AI_POSTGRES_URL")
+	if cfg.PostgresURL == "" {
+		return runtimeConfig{}, fmt.Errorf("缺少 JUHE_AI_POSTGRES_URL（PostgreSQL + Redis 是唯一存储形态，三个连接串均为必填）")
 	}
 
 	cfg.Secret = strings.TrimSpace(getenv("JUHE_AI_SECRET"))
@@ -419,33 +334,15 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// 去重型输入收敛一致。短名输入逐字节不变。
 	cfg.RedisNamespace = rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 
-	// 路径类 env 派生（2026-09-19 零配置约定，internal/datadir 固定名表）：
-	// 未配置时落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。PG 模式下
-	// 这些派生值仅作为 spool 等本地目录派生的根，不改变 PG 存储语义。
+	// 路径类 env 派生（普通文件目录面，PG+Redis 形态仍消费；internal/datadir
+	// 固定名表）：usage-record-spool（D1，gateway↔jobs 用量交接）、codex-context
+	// segments 根、chat-assets、logs 均落 <JUHE_AI_DATA_DIR=./data>/<固定名>。
+	// sqlite 专库文件族路径派生已随存储形态退役删除。
 	dataDir := datadir.Dir(getenv)
-	cfg.DatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_DATABASE_PATH", datadir.BusinessDatabase)
-	cfg.ChatDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_CHAT_DATABASE_PATH", datadir.ChatDatabase)
-	cfg.DatasetDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_DATASET_DATABASE_PATH", datadir.DatasetDatabase)
-	cfg.RuntimeLogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", datadir.RuntimeLogDatabase)
-	cfg.UsageCatalogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", datadir.UsageCatalogDatabase)
-	cfg.StatsDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_STATS_DATABASE_PATH", datadir.StatsDatabase)
-	// 余额租约库（共享核心 accountbalance 的 SQLite 模式四表自建于该文件；
-	// gateway 独占，与 jobs 的 task-runs 租约/直写 stats 链路无文件级交集）。
-	cfg.AccountBalanceDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH", datadir.AccountBalanceDatabase)
 	// Codex Context segments 根（JUHE_AI_CODEX_CONTEXT_ROOT，缺省
-	// <DATA_DIR>/codex-context，与 docs/functions/SQLite存储说明.md 同名同
-	// 默认）：gateway Responses↔Chat 桥 SegmentStore 与 jobs retention
-	// segments 清理的同源根，两侧派生规则必须一致。
+	// <DATA_DIR>/codex-context）：gateway Responses↔Chat 桥 SegmentStore 与
+	// jobs retention segments 清理的同源根，两侧派生规则必须一致。
 	cfg.CodexContextRoot = datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_ROOT", datadir.CodexContextRoot)
-	cfg.CodexContextShardRoot = datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", datadir.CodexContextStateShardRoot)
-	cfg.CodexContextShardCount = 16
-	if raw := strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT")); raw != "" {
-		shardCount, err := strconv.Atoi(raw)
-		if err != nil || shardCount < 1 || shardCount > 256 {
-			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 必须在 1 到 256 之间: %q", raw)
-		}
-		cfg.CodexContextShardCount = shardCount
-	}
 
 	cfg.OpenAICompatibleFilesRoot = strings.TrimSpace(getenv("JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT"))
 
@@ -640,6 +537,14 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if cfg.UsageSpoolDirectory == "" {
 		cfg.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIR"))
 	}
+	// D1（PLAN-20261024T051925945Z）：spool 目录派生改挂 JUHE_AI_DATA_DIR
+	// （缺省 <cwd>/data），不再以已退役的 JUHE_AI_STATS_DATABASE_PATH 目录为
+	// 派生根。PG 零配置派生路径不变（<DATA_DIR>/usage-record-spool——stats
+	// 库路径时代即派生到同一 DATA_DIR 下），gateway↔jobs 交接链不受影响；
+	// 显式 JUHE_AI_USAGE_SPOOL_DIRECTORY（含旧名 DIR 回落）覆盖语义保留。
+	if cfg.UsageSpoolDirectory == "" {
+		cfg.UsageSpoolDirectory = filepath.Join(dataDir, datadir.UsageRecordSpoolDirectory)
+	}
 	// Node runtimeConfig.usageSpool（runtime.ts:661-666）四个容量旋钮：
 	// numberConfig 边界与默认值逐一对齐；非数字或越界启动报错（D-209）。
 	cfg.UsageSpoolMaxItems = 250_000
@@ -721,7 +626,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 			cfg.AccountHealthProbeDeadlineMS = parsed
 		}
 	}
-	cfg.AccountHealthOutcomeSQLitePath = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH"))
 	cfg.AccountHealthOutcomePostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL"))
 	cfg.ConcurrencyGlobalMax = 5000
 	// Node integerConfig('JUHE_AI_CONCURRENCY_GLOBAL_MAX', 5_000, 1, 50_000)
@@ -800,43 +704,37 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 
 	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
-	cfg.BusinessDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_BUSINESS_DATABASE_PATH", datadir.BusinessDatabase)
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_POSTGRES_URL"))
 	// 清理批次 C1（2026-09-30）：Node→Go 切流已完成且 Node 进程已于
 	// 2026-09-05 清零（不可恢复），BUSINESS 切流五证 env 家族与 cutover
 	// evidence 校验链整体退役——owner 事实一律按零配置自动认领（原显式配置
 	// 分支在所有现存部署中从未被配置过，五源核对零引用）。ownermode 输入
-	// 字段保留并恒为 auto-claim 真值组合；postgres 模式业务连接回落共享
+	// 字段保留并恒为 auto-claim 真值组合；业务连接回落共享
 	// JUHE_AI_POSTGRES_URL 的语义不变（独立凭据仍可显式配置）。
-	if cfg.DatabaseDriver == "sqlite" || cfg.DatabaseDriver == "postgres" {
-		cfg.BusinessOwner = "gateway"
-		cfg.BusinessHandoffConfirmed = true
-		cfg.BusinessNodeWriterStopped = true
-		cfg.BusinessSchemaReady = true
-		cfg.BusinessOwnerEpoch = "standalone"
-		cfg.BusinessOwnerAutoClaimed = true
-		if cfg.DatabaseDriver == "postgres" && cfg.BusinessPostgresURL == "" {
-			cfg.BusinessPostgresURL = cfg.PostgresURL
-		}
+	// 2026-10-24 存储形态收口：sqlite 臂删除，自动认领无条件化。
+	cfg.BusinessOwner = "gateway"
+	cfg.BusinessHandoffConfirmed = true
+	cfg.BusinessNodeWriterStopped = true
+	cfg.BusinessSchemaReady = true
+	cfg.BusinessOwnerEpoch = "standalone"
+	if cfg.BusinessPostgresURL == "" {
+		cfg.BusinessPostgresURL = cfg.PostgresURL
 	}
 
 	return cfg, nil
 }
 
-// businessOwnerGate keeps only the connection preconditions after the C1
-// cutover-gate retirement (2026-09-30): the handoff/cutover evidence family is
-// gone with the Node cutover era; an enabled system api composition still
-// fails closed when its business database connection is not resolvable.
+// businessOwnerGate keeps only the connection precondition after the C1
+// cutover-gate retirement (2026-09-30) and the 2026-10-24 storage-shape
+// retirement: the handoff/cutover evidence family is gone with the Node
+// cutover era; an enabled system api composition still fails closed when its
+// business PostgreSQL connection is not resolvable.
 func (c *runtimeConfig) businessOwnerGate() error {
 	if !c.SystemAPIEnabled {
 		return nil
 	}
-	if c.DatabaseDriver == "postgres" {
-		if c.BusinessPostgresURL == "" {
-			return fmt.Errorf("postgres 模式缺少 JUHE_AI_BUSINESS_POSTGRES_URL")
-		}
-	} else if c.BusinessDatabasePath == "" {
-		return fmt.Errorf("sqlite 模式缺少 JUHE_AI_BUSINESS_DATABASE_PATH")
+	if c.BusinessPostgresURL == "" {
+		return fmt.Errorf("缺少 JUHE_AI_BUSINESS_POSTGRES_URL（未配置时回落 JUHE_AI_POSTGRES_URL）")
 	}
 	return nil
 }

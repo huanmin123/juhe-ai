@@ -33,7 +33,7 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 	}
 	store, err := proberepo.NewStore(proberepo.Config{
 		DB:       business.db,
-		Postgres: business.postgres,
+		Postgres: true,
 		Secret:   a.config.Secret,
 	})
 	if err != nil {
@@ -67,22 +67,18 @@ func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
 	settings := a.probeSettingsSource(business)
 	concurrency := accountquality.QueueConcurrency(func() int { return a.config.ProbeConcurrency })
 
-	// 质量统计存储（RefreshRunner 的 account_quality_* 读写）。
+	// 质量统计存储（RefreshRunner 的 account_quality_* 读写；PG 唯一形态，
+	// 原 StatsSQLite 臂随 sqlite 形态退役删除）。
 	statsConfig := accountquality.StatsStoreConfig{
 		Business: probeBusinessMetaLookup{store: store},
 		Clock:    accountquality.SystemClock{},
 	}
-	if a.config.Driver == "postgres" {
-		handle, err := a.acquirePool(a.config.PostgresURL, "account-quality")
-		if err != nil {
-			return err
-		}
-		statsConfig.Mode = accountquality.StatsPostgres
-		statsConfig.PostgresDB = handle.DB()
-	} else {
-		statsConfig.Mode = accountquality.StatsSQLite
-		statsConfig.DatabasePath = a.config.StatsSQLitePath
+	handle, err := a.acquirePool(a.config.PostgresURL, "account-quality")
+	if err != nil {
+		return err
 	}
+	statsConfig.Mode = accountquality.StatsPostgres
+	statsConfig.PostgresDB = handle.DB()
 	statsStore, err := accountquality.OpenStatsStore(statsConfig)
 	if err != nil {
 		return err

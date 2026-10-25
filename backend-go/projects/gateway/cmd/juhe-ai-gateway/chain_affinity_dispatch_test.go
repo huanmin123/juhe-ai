@@ -160,35 +160,6 @@ func TestChainSessionAffinityDispatchPortRedisRoundTrip(t *testing.T) {
 	}
 }
 
-// TestComposeGatewayChainAffinityPortLocalDegrade: memory cacheDriver（组合
-// 测试 Identity）下 engine.Affinity 保持 localSessionAffinity——本地降级路径
-// 行为不变。
-func TestComposeGatewayChainAffinityPortLocalDegrade(t *testing.T) {
-	fixture := newChainFixture(t)
-	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
-	identityService, err := gatewaysession.NewIdentityService(w17AffinitySecret)
-	if err != nil {
-		t.Fatalf("create identity service: %v", err)
-	}
-	localAffinity, err := gatewaysession.NewAffinityService(gatewaysession.AffinityConfig{
-		CacheDriver:        gatewaysession.CacheDriverMemory,
-		RuntimeStateDriver: gatewaysession.RuntimeStateDriverMemory,
-		Secret:             w17AffinitySecret,
-	})
-	if err != nil {
-		t.Fatalf("create memory affinity service: %v", err)
-	}
-	deps.Identity = &sessionIdentityServices{Identity: identityService, Affinity: localAffinity, Secret: w17AffinitySecret}
-	chain, shutdown, assembleErr := composeGatewayChain(deps)
-	if assembleErr != nil {
-		t.Fatalf("composeGatewayChain: %v", assembleErr)
-	}
-	defer shutdown()
-	if _, isLocal := chain.engine.Affinity.(*localSessionAffinity); !isLocal {
-		t.Fatalf("memory driver 下 engine.Affinity 必须保持 localSessionAffinity, got %T", chain.engine.Affinity)
-	}
-}
-
 // TestComposeGatewayChainAffinityPortRedisShared: Redis cacheDriver 下
 // engine.Affinity 切到共享 AffinityService 适配器——dispatch 写入落 Redis，
 // preauth 读侧（services.Identity.Affinity）可见。
@@ -196,8 +167,6 @@ func TestComposeGatewayChainAffinityPortRedisShared(t *testing.T) {
 	server := miniredis.RunT(t)
 	cfg := composeTestConfig(t)
 	cfg.RedisNamespace = "w17-compose"
-	cfg.CacheDriver = "redis"
-	cfg.RuntimeStateDriver = "memory"
 	cfg.RedisCacheURL = "redis://" + server.Addr()
 	fixture := newChainFixture(t)
 	composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: nil}

@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,13 +24,11 @@ import (
 //  3. M05 WithGlobalConcurrencyMax: the parsed JUHE_AI_CONCURRENCY_GLOBAL_MAX
 //     lands in the stored high-concurrency default policy projection.
 func TestComposeSystemAPIWiresAPIKeyHandovers(t *testing.T) {
-	cfg := composeTestConfig(t)
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	cfg.ConcurrencyGlobalMax = 4321
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -107,7 +103,7 @@ func TestComposeSystemAPIWiresAPIKeyHandovers(t *testing.T) {
 	}
 	groupID := data(payload)["id"].(string)
 	var policyJSON string
-	if err := composed.DB.QueryRow(`SELECT scheduling_policy_json FROM groups WHERE id = ?`, groupID).Scan(&policyJSON); err != nil {
+	if err := composed.DB.QueryRow(`SELECT scheduling_policy_json FROM juhe_business.groups WHERE id = $1`, groupID).Scan(&policyJSON); err != nil {
 		t.Fatalf("read group policy: %v", err)
 	}
 	var policy map[string]any
@@ -125,16 +121,11 @@ func TestComposeSystemAPIWiresAPIKeyHandovers(t *testing.T) {
 	}
 	keyID := data(payload)["id"].(string)
 
-	// M07 StatsUsageSource: a stats-database aggregate row renders through the
+	// M07 StatsUsageSource: a juhe_stats aggregate row renders through the
 	// detail projection (a nil source would render the zero summary).
-	statsDB, err := sql.Open("sqlite", "file:"+cfg.StatsDatabasePath+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open stats database: %v", err)
-	}
-	t.Cleanup(func() { _ = statsDB.Close() })
-	if _, err := statsDB.Exec(`INSERT INTO usage_stats_totals
+	if _, err := composed.statsDB.Exec(`INSERT INTO juhe_stats.usage_stats_totals
 		(system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_cost_usd, total_cost_usd, updated_at)
-		VALUES (?, 'api_key', ?, 3, 10, 20, 0.25, 0.5, ?)`,
+		VALUES ($1, 'api_key', $2, 3, 10, 20, 0.25, 0.5, $3)`,
 		admin.ID, keyID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("seed usage aggregate: %v", err)
 	}
@@ -151,19 +142,14 @@ func TestComposeSystemAPIWiresAPIKeyHandovers(t *testing.T) {
 		t.Fatalf("stats usage source handover drift: %v", usage)
 	}
 
-	// M07 cleanup handover: the delete lands the cleanup target in the dataset
-	// database (business database stays clean) and answers 204.
+	// M07 cleanup handover: the delete registers the cleanup target in the
+	// shared juhe_dataset schema and answers 204.
 	code, payload = do(http.MethodDelete, "/__aisys__/api/api-keys/"+keyID, "")
 	if code != http.StatusNoContent {
 		t.Fatalf("delete api key: %d %v", code, payload)
 	}
-	datasetDB, err := sql.Open("sqlite", "file:"+cfg.DatasetDatabasePath+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatalf("open dataset database: %v", err)
-	}
-	t.Cleanup(func() { _ = datasetDB.Close() })
 	var targets int
-	if err := datasetDB.QueryRow(`SELECT COUNT(*) FROM api_key_record_cleanup_targets WHERE api_key_id = ?`, keyID).Scan(&targets); err != nil {
+	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.api_key_record_cleanup_targets WHERE api_key_id = $1`, keyID).Scan(&targets); err != nil {
 		t.Fatalf("read dataset cleanup target: %v", err)
 	}
 	if targets != 1 {

@@ -445,7 +445,7 @@ func TestCreateWiresModelMappingCatalogAssertion(t *testing.T) {
 	if hit := store.table("account_entry_mappings"); true {
 		var count int
 		if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+hit+
-			" WHERE account_id = ? AND target_connection_id IN (SELECT id FROM "+store.table("account_connections")+" WHERE account_id = ? AND connection_preset_code = 'gpt_openai_v1')", created.ID, created.ID).Scan(&count); err != nil {
+			" WHERE account_id = $1 AND target_connection_id IN (SELECT id FROM "+store.table("account_connections")+" WHERE account_id = $2 AND connection_preset_code = 'gpt_openai_v1')", created.ID, created.ID).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {
@@ -518,13 +518,15 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	// generic 语义供应商（openai，vendor_code=NULL）：身份键 COALESCE(vendor,'')
 	// 命中夹具的 NULL vendor 行 → 同名模型放行（协议档案过滤段已随 legacy 面
 	// 拆除，models 行即权威）。
-	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
-	env.exec(t, `INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled,
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
+		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+		ON CONFLICT DO NOTHING`)
+	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
 		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
 		capabilities_json, created_at, updated_at)
 		VALUES ('prof-openai-compat', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1', 'https://compat.example.com/v1',
-		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+		ON CONFLICT DO NOTHING`)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-openai-compat-default', ?, '兼容默认分组', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, scope.EffectiveViewerID())
 	compatInput := catalogWiringCreateInput("supported-generic-hit",

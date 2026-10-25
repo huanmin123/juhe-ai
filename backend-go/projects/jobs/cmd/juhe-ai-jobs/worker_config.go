@@ -18,68 +18,52 @@ const defaultRuntimeSecret = "juhe-ai-dev-secret-change-me"
 // JUHE_AI_SECRET 至少 32 位。
 const minimumProductionSecretLength = 32
 
-// workerConfig 是 jobs 组合根 worker 侧的 env 约定，与 Node worker 进程
-// （backend/src/worker.ts + config/runtime.ts）同名 env 对齐：
-//   - JUHE_AI_DATABASE_DRIVER：sqlite（默认）| postgres；
-//   - JUHE_AI_DATABASE_PATH / JUHE_AI_STATS_DATABASE_PATH：SQLite 双库；
-//   - JUHE_AI_POSTGRES_URL：PostgreSQL 连接（performance 模式）；
+// workerConfig 是 jobs 组合根 worker 侧的 env 约定（存储形态唯一为
+// PostgreSQL + Redis，sqlite/memory 形态已物理删除）：
+//   - JUHE_AI_POSTGRES_URL：PostgreSQL 连接（必填，缺失启动即失败）；
 //   - JUHE_AI_INSTANCE_ID / JUHE_AI_WORKER_ROLE：调度器 stable seed 与
 //     租约 owner 前缀（replica index 恒 0，见 loadWorkerConfig）；
-//   - JUHE_AI_SECRET：凭据封套密钥（oauthrefresh / internalapi 派发签名）；
-//   - JUHE_AI_USAGE_CATALOG_DATABASE_PATH / JUHE_AI_USAGE_SHARD_ROOT /
-//     JUHE_AI_USAGE_SHARD_COUNT：usagewriter 分片写入。
+//   - JUHE_AI_SECRET：凭据封套密钥（oauthrefresh / internalapi 派发签名）。
 //
 // jobs 专属 env：
 //   - JUHE_AI_DATA_DIR（2026-09-19 零配置决策）：数据根目录，缺省 ./data
-//     （相对进程 cwd，TrimSpace 后为空也视为未配置）。上列「路径类」env
-//     未配置时派生为 <DATA_DIR>/<固定名>（internal/datadir），显式配置始终
-//     优先；固定名与 gateway 侧一致，两进程靠相同 DATA_DIR 共享同一业务库。
+//     （相对进程 cwd，TrimSpace 后为空也视为未配置）。目录类派生（usage
+//     spool / overflow spool / codex-context segments / chat-assets / logs）
+//     未配置时落 <DATA_DIR>/<固定名>，显式配置始终优先；
 //   - JUHE_AI_JOBS_WORKER_ENABLED 与 JUHE_AI_JOBS_<FAMILY>_ENABLED（stats/
 //     oauth/task_runs/usage_writer/balance_detect/retention/probe）已废弃
 //     （2026-09-19 决策）：worker 调度器与全部任务族强制常开，这些变量不再
 //     被读取（总开关非 true 值仍在启动早期输出废弃告警）；usage spool 消费、
 //     用量记录与统计预聚合/额度快照由常开的 worker 任务族承载；
-//   - JUHE_AI_TASK_RUNS_DATABASE_PATH / JUHE_AI_TASK_RUNS_POSTGRES_URL：
-//     background_task_runs + background_job_leases 双模存储；
 //   - JUHE_AI_JOBS_DRAIN_TIMEOUT_MS：停机排空上限（默认 10s，对齐 Node
 //     stopBackgroundJobs(10_000)）。
 type workerConfig struct {
-	Driver string // sqlite | postgres
-
 	InstanceID       string
 	WorkerRole       string
 	WorkerReplicaIdx int
 
 	Secret string
 
-	BusinessSQLitePath string
-	StatsSQLitePath    string
-	TaskRunsSQLitePath string
+	// DataDir 是数据根目录（JUHE_AI_DATA_DIR，缺省 ./data）；spool 类目录
+	// 派生挂这里（D1：不再以已删除的 sqlite 库路径为派生根）。
+	DataDir string
 
 	PostgresURL          string
 	PostgresMaxOpenConns int
 	PostgresMaxIdleConns int
 
-	UsageCatalogSQLitePath string
-	UsageShardRoot         string
-	UsageShardCount        int
 	// UsageSpoolDirectory 是 gateway usage-record 文件 spool 交接表的根目录
 	// （BUG-0175 D-72 消费侧）：env JUHE_AI_USAGE_SPOOL_DIRECTORY，未配置时
 	// 先回退旧名 JUHE_AI_USAGE_SPOOL_DIR（与 gateway 组合根同款兼容路径，
 	// 高性能部署指南与 install-performance-topology.sh 仍使用旧名），仍未配置
-	// 时按 gateway 组合根同规则从 JUHE_AI_STATS_DATABASE_PATH 目录派生
-	// <目录>/usage-record-spool（两侧必须同源，drain 才能读到 gateway 写出的
-	// 交接文件；PG 模式无 stats 文件路径，须显式配置 env）。
+	// 时按 D1 从 JUHE_AI_DATA_DIR 派生 <DATA_DIR>/usage-record-spool（两侧
+	// 必须同源，drain 才能读到 gateway 写出的交接文件）。
 	UsageSpoolDirectory string
 	// usageSpoolDirectoryLegacyName 记录 UsageSpoolDirectory 是否来自旧名
 	// JUHE_AI_USAGE_SPOOL_DIR 回退（新名未配置、旧名兜底生效）。组合根据此
 	// 打一行 warn 披露旧名是兼容路径。
 	usageSpoolDirectoryLegacyName bool
 
-	DatasetSQLitePath              string
-	ChatSQLitePath                 string
-	CodexContextStateShardRoot     string
-	CodexContextStateShardCount    int
 	ChatAssetsRoot                 string
 	CodexContextRoot               string
 	ChatRetentionDays              int
@@ -109,7 +93,7 @@ type workerConfig struct {
 	// accountListAvailabilityProjection* 同值）：
 	//   - ListProjectionIntervalMS env 1000..60000 默认 1000（运维节奏保留）；
 	//   - ListProjectionBatchSize / MaxBatchesPerRun / WorkerConcurrency
-	//     C4 收编为常量 100/200/4（仅 PG 生效，与 Node 一致）。
+	//     C4 收编为常量 100/200/4（与 Node 一致）。
 	ListProjectionIntervalMS        int
 	ListProjectionBatchSize         int
 	ListProjectionMaxBatchesPerRun  int
@@ -149,21 +133,13 @@ func (c workerConfig) CircuitCapacity() int64 {
 
 func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	config := workerConfig{
-		Driver:           "sqlite",
 		InstanceID:       "juhe-ai-jobs",
 		WorkerRole:       "worker",
 		WorkerReplicaIdx: 0,
 		// PG pool 常量 50/10（C4 收编，见 loadWorkerConfig 内注释）。
 		PostgresMaxOpenConns: 50,
 		PostgresMaxIdleConns: 10,
-		UsageShardCount:      16,
-		// CodexContextStateShardCount 对齐 Node runtime.ts:694
-		// （JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 默认 16，1..256）与 gateway
-		// 组合根 runtime.go 的同款默认：codex context 状态写入按 key 哈希路由到
-		// 每分片独立 SQLite 文件（WAL），写并发上限等于分片数，不是单写者串行
-		// 设计；原默认 4 会把写入吞吐压到 1/4，且与 gateway 默认 16 不一致会让
-		// retention 清理漏掉 gateway 写出的分片文件。
-		CodexContextStateShardCount:              16,
+		DataDir:              datadir.Root(getenv),
 		ChatRetentionDays:                        3,
 		RecordMaintenanceQueueMaxItems:           5000,
 		RecordMaintenanceQueueMaxMb:              32,
@@ -179,12 +155,6 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		DrainTimeout:                    10 * time.Second,
 	}
 	var err error
-	if value := strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")); value != "" {
-		config.Driver = strings.ToLower(value)
-	}
-	if config.Driver != "sqlite" && config.Driver != "postgres" {
-		return config, fmt.Errorf("JUHE_AI_DATABASE_DRIVER 必须为 sqlite 或 postgres")
-	}
 	if value := strings.TrimSpace(getenv("JUHE_AI_INSTANCE_ID")); value != "" {
 		config.InstanceID = value
 	}
@@ -210,25 +180,17 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if production && (config.Secret == defaultRuntimeSecret || len(config.Secret) < minimumProductionSecretLength) {
 		return config, fmt.Errorf("JUHE_AI_SECRET 在生产环境必须配置为至少 %d 位的稳定随机密钥，不能使用默认开发密钥或过短密钥", minimumProductionSecretLength)
 	}
-	// 路径类 env 按 DATA_DIR 约定派生（internal/datadir）：显式配置优先，
-	// 未配置落 <DATA_DIR>/<固定名>；固定名与 gateway 侧同名 env 一致。
-	config.BusinessSQLitePath = datadir.Path(getenv, "JUHE_AI_DATABASE_PATH", "business.sqlite3")
-	config.StatsSQLitePath = datadir.Path(getenv, "JUHE_AI_STATS_DATABASE_PATH", "stats.sqlite3")
-	config.TaskRunsSQLitePath = datadir.Path(getenv, "JUHE_AI_TASK_RUNS_DATABASE_PATH", "task-runs.sqlite3")
 	config.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	// PG pool 覆盖族（原 env JUHE_AI_POSTGRES_MAX_OPEN_CONNS /
 	// JUHE_AI_POSTGRES_MAX_IDLE_CONNS）五源零引用，2026-09-30 C4 收编为常量
 	// 50/10。idle 上限受平台 pgpool 校验约束（idle <= min(open, 10)），常量值
-	// 必须落在合法区间内，否则 postgres 模式组装 worker pool 时直接失败。
-	config.UsageCatalogSQLitePath = datadir.Path(getenv, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "usage-catalog.sqlite3")
-	config.UsageShardRoot = datadir.Path(getenv, "JUHE_AI_USAGE_SHARD_ROOT", "usage-shards")
+	// 必须落在合法区间内，否则组装 worker pool 时直接失败。
 	// usage spool 交接表目录：与 gateway 组合根（compose.go spoolDirectory）
 	// 同名 env、同派生规则；新名优先，旧名 JUHE_AI_USAGE_SPOOL_DIR 兜底（与
 	// gateway runtime.go 回退同款，docs/deploy/高性能模式部署指南.md 宣称
-	// 「旧名仍兼容，DIRECTORY 优先」），两者都未配置时才从 stats 库目录派生
-	// （stats 库路径按 datadir 约定派生恒非空，PG 模式同样生效），因此本字段
-	// 恒非空；wireUsageSpoolDrain 常驻按该目录接线 drain。旧名回退生效时由
-	// 组合根打 warn 披露兼容路径。
+	// 「旧名仍兼容，DIRECTORY 优先」），两者都未配置时按 D1 从 DATA_DIR 派生
+	// <DATA_DIR>/usage-record-spool，因此本字段恒非空；wireUsageSpoolDrain
+	// 常驻按该目录接线 drain。旧名回退生效时由组合根打 warn 披露兼容路径。
 	config.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
 	if config.UsageSpoolDirectory == "" {
 		if legacySpoolDirectory := strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIR")); legacySpoolDirectory != "" {
@@ -236,31 +198,18 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 			config.usageSpoolDirectoryLegacyName = true
 		}
 	}
-	if config.UsageSpoolDirectory == "" && config.StatsSQLitePath != "" {
-		config.UsageSpoolDirectory = filepath.Join(filepath.Dir(config.StatsSQLitePath), "usage-record-spool")
+	if config.UsageSpoolDirectory == "" {
+		config.UsageSpoolDirectory = filepath.Join(config.DataDir, "usage-record-spool")
 	}
-	config.UsageShardCount, err = workerEnvInt(getenv, "JUHE_AI_USAGE_SHARD_COUNT", config.UsageShardCount)
-	if err != nil {
-		return config, err
-	}
-	config.DatasetSQLitePath = datadir.Path(getenv, "JUHE_AI_DATASET_DATABASE_PATH", "dataset.sqlite3")
-	config.ChatSQLitePath = datadir.Path(getenv, "JUHE_AI_CHAT_DATABASE_PATH", "chat.sqlite3")
-	config.CodexContextStateShardRoot = datadir.Path(getenv, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", "codex-context/state-shards")
-	config.CodexContextStateShardCount, err = workerEnvInt(getenv, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT", config.CodexContextStateShardCount)
-	if err != nil {
-		return config, err
-	}
-	// 与 gateway runtime.go 同口径 1..256 fail-fast：分片数是按 key 哈希路由
-	// 文件的基数，两侧不一致会让 retention 漏清 gateway 写出的分片文件。
-	if config.CodexContextStateShardCount < 1 || config.CodexContextStateShardCount > 256 {
-		return config, fmt.Errorf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 必须在 1 到 256 之间")
-	}
+	// 与 gateway runtime.go 同口径派生（显式优先，缺省 <DATA_DIR> 下固定名）：
+	//   - chat-assets：chat 资产根（retention ChatStore 资产认领删除）；
+	//   - codex-context segments 根：retention 的 codex storage 清理按它解析
+	//     storageKey（相对该根的 segments 相对路径，gateway
+	//     gatewaycodex.SegmentStorageKey 语义）；根与 gateway 写侧不同源会让
+	//     删除永远 miss 而按「不存在=成功」结算（segment 文件永不清理，存储
+	//     泄漏）。原 sqlite state-shards 分片子面已随 sqlite 形态退役删除
+	//     （D2：删子不伤父，segments 文件根保留）。
 	config.ChatAssetsRoot = datadir.Path(getenv, "JUHE_AI_CHAT_ASSETS_ROOT", "chat-assets")
-	// Codex Context segments 根：与 gateway runtime.go 同名 env 同派生规则
-	// （显式优先，缺省 <DATA_DIR>/codex-context）。retention 的 codex storage
-	// 清理按它解析 storageKey（相对该根的 segments 相对路径，gateway
-	// gatewaycodex.SegmentStorageKey 语义）；根与 gateway 写侧不同源会让删除
-	// 永远 miss 而按「不存在=成功」结算（segment 文件永不清理，存储泄漏）。
 	config.CodexContextRoot = datadir.Path(getenv, "JUHE_AI_CODEX_CONTEXT_ROOT", "codex-context")
 	config.ChatRetentionDays, err = workerEnvInt(getenv, "JUHE_AI_CHAT_RETENTION_DAYS", config.ChatRetentionDays)
 	if err != nil {
@@ -276,10 +225,6 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	// 家族级开关（JUHE_AI_JOBS_<FAMILY>_ENABLED）已随 2026-09-19 零配置决策
 	// 删除：全部任务族强制常开，该循环不再读取任何家族开关变量。
 	config.ProbeConcurrency, err = workerEnvInt(getenv, "JUHE_AI_JOBS_PROBE_CONCURRENCY", config.ProbeConcurrency)
-	if err != nil {
-		return config, err
-	}
-	config.DatasetSQLitePath = datadir.Path(getenv, "JUHE_AI_DATASET_DATABASE_PATH", "dataset.sqlite3")
 	if err != nil {
 		return config, err
 	}
@@ -302,7 +247,7 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	// 投影批量族（原 env ..._PROJECTION_BATCH_SIZE / MAX_BATCHES_PER_RUN /
 	// WORKER_CONCURRENCY）五源零引用，2026-09-30 C4 收编为常量 100/200/4
-	// （仅 PG 生效，与 Node 一致）；轮询间隔 INTERVAL_MS 属运维节奏保留 env。
+	// （与 Node 一致）；轮询间隔 INTERVAL_MS 属运维节奏保留 env。
 	config.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
 	config.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 	capacity := int64(50_000)
@@ -326,13 +271,12 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	config.DrainTimeout = time.Duration(drainMS) * time.Millisecond
 
-	// 配置门禁（机制强制常开，2026-09-19 决策）：路径类 env 已按 DATA_DIR
-	// 约定派生（恒非空），原 sqlite 路径门禁随之整体删除；仅保留 PG 模式
-	// 连接串必填（无法凭空默认）。凭据封套密钥已在上方回退：显式 SECRET
-	// 优先，非生产空值回退开发密钥，production 空/短值/默认开发密钥与
-	// gateway 同口径 fail-fast。
-	if config.Driver == "postgres" && config.PostgresURL == "" {
-		return config, fmt.Errorf("JUHE_AI_DATABASE_DRIVER=postgres 必须配置 JUHE_AI_POSTGRES_URL（worker 任务族强制常开）")
+	// 配置门禁（机制强制常开，2026-09-19 决策）：sqlite 模式开关与路径族 env
+	// 已随 sqlite 形态退役整体删除；保留 PG 连接串必填（无法凭空默认）。凭据
+	// 封套密钥已在上方回退：显式 SECRET 优先，非生产空值回退开发密钥，
+	// production 空/短值/默认开发密钥与 gateway 同口径 fail-fast。
+	if config.PostgresURL == "" {
+		return config, fmt.Errorf("必须配置 JUHE_AI_POSTGRES_URL（worker 任务族强制常开）")
 	}
 	return config, nil
 }

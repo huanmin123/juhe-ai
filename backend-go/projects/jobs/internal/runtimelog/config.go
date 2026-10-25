@@ -3,7 +3,6 @@ package runtimelog
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,13 +40,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// STORE 缺省跟随 JUHE_AI_DATABASE_DRIVER（与 jobs 组合根 loadWorkerConfig
-	// 同一依据，2026-09-19 零配置决策）：postgres → ModePostgres，否则
-	// ModeSQLite；显式配置仍必须为 sqlite|postgres。
-	mode, err := parseStoreMode(getenv)
-	if err != nil {
-		return Config{}, err
-	}
+	// STORE 恒 postgres（sqlite store 形态已随存储形态收口物理删除；
+	// JUHE_AI_RUNTIME_LOG_STORE env 退役）。PG 连接串无法凭空默认。
+	mode := ModePostgres
 	// 2026-09-21 起文件日志为常驻能力，JUHE_AI_LOG_FILE_ENABLED 开关移除。
 	fileEnabled := true
 	once, err := parseBool("JUHE_AI_RUNTIME_LOG_ONCE", getenv("JUHE_AI_RUNTIME_LOG_ONCE"), false)
@@ -93,26 +88,18 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		OwnerID:    fmt.Sprintf("%s:%d", ownerInstance, os.Getpid()),
 		OwnerLease: ownerLease,
 		Mode:       mode,
-		// 路径类 env 按 DATA_DIR 约定派生（2026-09-19 零配置决策，
-		// internal/datadir）：显式配置优先，固定名与 gateway/worker_config 一致。
-		DatasetPath:            datadir.Path(getenv, "JUHE_AI_DATASET_DATABASE_PATH", "dataset.sqlite3"),
-		RuntimeLogDatabasePath: datadir.Path(getenv, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "runtime-log.sqlite3"),
-		BusinessPath:           datadir.Path(getenv, "JUHE_AI_DATABASE_PATH", "business.sqlite3"),
-		UsageCatalogPath:       datadir.Path(getenv, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "usage-catalog.sqlite3"),
-		StatsPath:              datadir.Path(getenv, "JUHE_AI_STATS_DATABASE_PATH", "stats.sqlite3"),
-		CodexShardRoot:         datadir.Path(getenv, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", "codex-context/state-shards"),
-		PostgresURL:            strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL")),
-		PostgresMaxConns:       postgresMaxConns,
-		PostgresMinConns:       postgresMinConns,
-		LogDirectory:           strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
-		FileEnabled:            fileEnabled,
-		Once:                   once,
-		PollInterval:           pollInterval,
-		RetentionInterval:      retentionInterval,
-		RetentionDays:          retentionDays,
-		LogRetentionDays:       logRetentionDays,
-		LogMaxFiles:            logMaxFiles,
-		BatchSize:              batchSize,
+		PostgresURL:      strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL")),
+		PostgresMaxConns: postgresMaxConns,
+		PostgresMinConns: postgresMinConns,
+		LogDirectory:     strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
+		FileEnabled:      fileEnabled,
+		Once:             once,
+		PollInterval:      pollInterval,
+		RetentionInterval: retentionInterval,
+		RetentionDays:     retentionDays,
+		LogRetentionDays:  logRetentionDays,
+		LogMaxFiles:       logMaxFiles,
+		BatchSize:         batchSize,
 	}
 	if config.LogDirectory == "" {
 		// JUHE_AI_LOG_DIR 是路径类 env 但不在固定名表内；为满足空环境可启动，
@@ -124,89 +111,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	// 2026-09-21 起文件日志恒开（JUHE_AI_LOG_FILE_ENABLED 开关移除），
 	// FileEnabled 恒为 true，原「索引进程要求开关为 true」守卫不可达已删除。
-	switch config.Mode {
-	case ModeSQLite:
-		if config.RuntimeLogDatabasePath == "" {
-			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH")
-		}
-		if err := validateSQLiteIsolation(config); err != nil {
-			return Config{}, err
-		}
-	case ModePostgres:
-		if config.PostgresURL == "" {
-			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_RUNTIME_LOG_POSTGRES_URL")
-		}
+	if config.PostgresURL == "" {
+		return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_RUNTIME_LOG_POSTGRES_URL")
 	}
 	return config, nil
-}
-
-func validateSQLiteIsolation(config Config) error {
-	candidates := []struct {
-		name string
-		path string
-	}{
-		{name: "JUHE_AI_DATABASE_PATH", path: config.BusinessPath},
-		{name: "JUHE_AI_DATASET_DATABASE_PATH", path: config.DatasetPath},
-		{name: "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", path: config.UsageCatalogPath},
-		{name: "JUHE_AI_STATS_DATABASE_PATH", path: config.StatsPath},
-	}
-	for _, candidate := range candidates {
-		if candidate.path == "" {
-			return fmt.Errorf("sqlite 模式缺少 %s，无法验证运行日志专库隔离", candidate.name)
-		}
-		same, err := sameSQLitePath(candidate.path, config.RuntimeLogDatabasePath)
-		if err != nil {
-			return fmt.Errorf("校验 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 与 %s 的 SQLite 隔离失败: %w", candidate.name, err)
-		}
-		if same {
-			return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 %s 指向同一个 SQLite 文件", candidate.name)
-		}
-	}
-	if config.CodexShardRoot == "" {
-		return fmt.Errorf("sqlite 模式缺少 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT，无法验证运行日志专库隔离")
-	}
-	within, err := sqlitePathWithin(config.CodexShardRoot, config.RuntimeLogDatabasePath)
-	if err != nil {
-		return fmt.Errorf("校验 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 与运行日志 SQLite 隔离失败: %w", err)
-	}
-	if within {
-		return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
-	}
-	entries, err := filepath.Glob(filepath.Join(config.CodexShardRoot, "*.sqlite3"))
-	if err != nil {
-		return fmt.Errorf("枚举 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 失败: %w", err)
-	}
-	for _, entry := range entries {
-		same, err := sameSQLitePath(entry, config.RuntimeLogDatabasePath)
-		if err != nil {
-			return fmt.Errorf("校验 Codex context SQLite shard %q 与运行日志 SQLite 隔离失败: %w", entry, err)
-		}
-		if same {
-			return fmt.Errorf("JUHE_AI_RUNTIME_LOG_DATABASE_PATH 不得与 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 中的 SQLite shard 指向同一个文件")
-		}
-	}
-	return nil
-}
-
-// parseStoreMode 解析 JUHE_AI_RUNTIME_LOG_STORE：缺省跟随
-// JUHE_AI_DATABASE_DRIVER（postgres → ModePostgres，否则 ModeSQLite）；显式
-// 配置必须为 sqlite|postgres。
-func parseStoreMode(getenv func(string) string) (Mode, error) {
-	value := strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_STORE"))
-	if value == "" {
-		if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")), "postgres") {
-			return ModePostgres, nil
-		}
-		return ModeSQLite, nil
-	}
-	switch Mode(strings.ToLower(value)) {
-	case ModeSQLite:
-		return ModeSQLite, nil
-	case ModePostgres:
-		return ModePostgres, nil
-	default:
-		return "", fmt.Errorf("JUHE_AI_RUNTIME_LOG_STORE 必须为 sqlite 或 postgres")
-	}
 }
 
 func parseBool(name string, value string, defaultValue bool) (bool, error) {

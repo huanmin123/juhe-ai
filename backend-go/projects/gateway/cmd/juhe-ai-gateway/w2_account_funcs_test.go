@@ -427,16 +427,13 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 		t.Skip("composition 装配测试在 -short 下跳过")
 	}
 	composeCfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, composeCfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(composeCfg.DatasetDatabasePath))
-	defer closeAudit()
-	composedFull, err := composeSystemAPI(composeCfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	store := openComposeOperationStore(t, composeCfg.PostgresURL)
+	composedFull, err := composeSystemAPI(composeCfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, composeCfg.PostgresURL), composeTestAuditConfig(t, composeCfg.PostgresURL), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
 	defer composedFull.Shutdown()
-	accountStore, err := accounts.NewStore(composedFull.DB, false, composeCfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composedFull.DB, true, composeCfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
@@ -452,7 +449,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 			'openai', 'v1', 'api_key',
 			'sys_admin', 'user', 'full',
 			'gpt-w2b', 'chat_json', 'junk-envelope',
-			'running', '中断恢复', 0, ?, ?, ?, ?)`, stale, stale, stale, stale); err != nil {
+			'running', '中断恢复', 0, $1, $2, $3, $4)`, stale, stale, stale, stale); err != nil {
 		t.Fatalf("seed 中断任务失败: %v", err)
 	}
 
@@ -577,7 +574,7 @@ func TestW2BTurnRetryRedisArms(t *testing.T) {
 	}
 
 	// 167：非 nil client + 空 namespace → 构建失败并降级为 nil（告警面）。
-	if store := newChainTurnRetryRedisStateStoreOrNil(&goredis.Client{}, ""); store != nil {
+	if _, err := newChainTurnRetryRedisStateStoreOrNil(&goredis.Client{}, ""); err == nil {
 		t.Fatalf("空 namespace 必须降级为 nil store")
 	}
 }

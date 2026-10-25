@@ -17,11 +17,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 )
 
-// healthHourlyWriter 是统计库小时条带写入的双模句柄。
+// healthHourlyWriter 是统计库小时条带写入句柄（juhe_stats schema 同池）。
 type healthHourlyWriter struct {
-	db       *sql.DB
-	pool     *pgpool.Handle
-	postgres bool
+	db   *sql.DB
+	pool *pgpool.Handle
 	// timezone 解析统计时区（usageStatsTimezone，投影 stat_hour 键与读面
 	// aihealth.go 的口径一致）。
 	timezone func(ctx context.Context) (*time.Location, error)
@@ -41,21 +40,12 @@ func openHealthHourlyWriter(a *workerAssembly, label string) (*healthHourlyWrite
 		timezone: statsTimezoneSource{store: a.statsStore}.StatsTimezone,
 		now:      time.Now,
 	}
-	if a.config.Driver == "postgres" {
-		handle, err := a.acquirePool(a.config.PostgresURL, label)
-		if err != nil {
-			return nil, err
-		}
-		writer.db = handle.DB()
-		writer.pool = handle
-		writer.postgres = true
-		return writer, nil
-	}
-	db, err := a.openSQLite(a.config.StatsSQLitePath, label)
+	handle, err := a.acquirePool(a.config.PostgresURL, label)
 	if err != nil {
 		return nil, err
 	}
-	writer.db = db
+	writer.db = handle.DB()
+	writer.pool = handle
 	return writer, nil
 }
 
@@ -70,9 +60,6 @@ func (w *healthHourlyWriter) close() error {
 }
 
 func (w *healthHourlyWriter) bind(query string) string {
-	if !w.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -108,7 +95,7 @@ func (w *healthHourlyWriter) RecordAccountHealthHourly(ctx context.Context, obse
 	statHour := observation.ObservedAt.In(location).Format("2006-01-02T15")
 	lastObservedAt := observation.ObservedAt.UTC().Format("2006-01-02T15:04:05.000Z")
 	updatedAt := w.now().UTC().Format(time.RFC3339Nano)
-	table := statsTable(w.postgres, "account_health_hourly")
+	table := statsTable("account_health_hourly")
 	query := w.bind(`INSERT INTO ` + table + ` (
 		  account_id, system_account_id, provider_code, stat_hour, status,
 		  last_observed_at, last_record_id, status_code, error_code, error_message, updated_at)

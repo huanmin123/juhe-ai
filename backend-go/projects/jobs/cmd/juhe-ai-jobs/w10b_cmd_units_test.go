@@ -184,11 +184,15 @@ func TestW10BWorkerAssemblyRootHelpers(t *testing.T) {
 }
 
 func TestW10BWorkerStatusPayloadFields(t *testing.T) {
-	config := workerConfig{Driver: "sqlite", InstanceID: "w10b", WorkerRole: "owner", WorkerReplicaIdx: 0}
+	config := workerConfig{InstanceID: "w10b", WorkerRole: "owner", WorkerReplicaIdx: 0}
 	assembly := newWorkerAssembly(config, slog.Default())
 	payload := assembly.statusPayload()
-	if payload["workerEnabled"] != true || payload["workerDriver"] != "sqlite" {
+	// workerDriver 键已随 driver 概念退役删除。
+	if payload["workerEnabled"] != true {
 		t.Fatalf("statusPayload=%v", payload)
+	}
+	if _, ok := payload["workerDriver"]; ok {
+		t.Fatalf("workerDriver 键必须已删除: %v", payload)
 	}
 	if payload["workerUsageWriter"] != false || payload["workerUsageSpoolDrain"] != false {
 		t.Fatalf("空 assembly 必须报告无 writer: %v", payload)

@@ -36,11 +36,11 @@ func newAuthorizedTestEnv(t *testing.T) (*testEnv, *authz.Store) {
 			t.Fatal(err)
 		}
 	}
-	authzStore, err := authz.NewStore(base.db, false, nil)
+	authzStore, err := authz.NewStore(base.db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(base.db, false, testSecret, nil, nil)
+	store, err := NewStore(base.db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func newAuthorizedTestEnv(t *testing.T) (*testEnv, *authz.Store) {
 	t.Cleanup(server.Close)
 	// store 一并保留（列表运行态 overlay 等端口 setter 需要 store 引用；
 	// wired.kernel 挂载的是本 store，base.store 是未接 authz reader 的旧实例）。
-	wired := &testEnv{deps: base.deps, k: k, server: server, jar: map[string]string{}, db: base.db, store: store}
+	wired := &testEnv{deps: base.deps, k: k, server: server, jar: map[string]string{}, db: base.db, pg: true, store: store}
 	return wired, authzStore
 }
 

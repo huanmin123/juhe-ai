@@ -33,7 +33,7 @@ func TestW10AImportProxyFailedArm(t *testing.T) {
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port,
 		enabled, test_status, created_at, updated_at)
 		VALUES ('proxy-w10a-dup', ?, '来源代理', 'socks5', 'proxy.example.com', 1080,
-		0, 'unknown', ?, ?)`, adminID, now, now)
+		false, 'unknown', ?, ?)`, adminID, now, now)
 
 	document := map[string]any{
 		"type": "sub2api-export", "version": float64(2), "exported_at": "2026-01-01T00:00:00Z",

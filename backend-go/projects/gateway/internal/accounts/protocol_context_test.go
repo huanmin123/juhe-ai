@@ -194,8 +194,9 @@ func TestB4DraftBalanceRespectsInputProfileID(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
-	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
-		VALUES ('ven-fixture-gemini', 'gemini', 'Gemini', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-fixture-gemini', 'gemini', 'Gemini', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+		ON CONFLICT DO NOTHING`)
 	access := AccessScope{ViewerID: adminID}
 	groupID := "grp-default-" + adminID
 

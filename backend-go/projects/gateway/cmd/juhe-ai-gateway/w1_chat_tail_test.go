@@ -442,21 +442,18 @@ func TestW1YComposeChatFamilyRequiresChatAssetsRoot(t *testing.T) {
 func TestW1YOpenChatDatabasePostgresArms(t *testing.T) {
 	// 修复后契约（历史缺陷：Acquire 传 0/0 池上限恒被 ValidatePoolLimits
 	// 拒绝，PG 模式 chat 库永远打不开）：合法池规格 + pgx 惰性打开 → 成功
-	// 返回共享池句柄（不做真实连接）。
-	handle, isSQLite, err := openChatDatabase(runtimeConfig{BusinessPostgresURL: "postgres://w1y-chat"}, pgpool.NewRegistry(), nil, true)
+	// 返回共享池句柄（不做真实连接）。存储形态收口后 PG 是唯一形态。
+	handle, err := openChatDatabase(runtimeConfig{BusinessPostgresURL: "postgres://w1y-chat"}, pgpool.NewRegistry())
 	if err != nil {
-		t.Fatalf("pgDialect openChatDatabase = %v, want nil", err)
-	}
-	if isSQLite {
-		t.Fatal("pgDialect isSQLite = true, want false")
+		t.Fatalf("PG openChatDatabase = %v, want nil", err)
 	}
 	if handle == nil {
-		t.Fatal("pgDialect handle = nil")
+		t.Fatal("PG handle = nil")
 	}
 	if closeErr := handle.Close(); closeErr != nil {
 		t.Fatalf("关闭池句柄: %v", closeErr)
 	}
-	_, _, err = openChatDatabase(runtimeConfig{BusinessPostgresURL: "postgres://w1y-chat"}, nil, nil, true)
+	_, err = openChatDatabase(runtimeConfig{BusinessPostgresURL: "postgres://w1y-chat"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "未初始化") {
 		t.Fatalf("nil registry openChatDatabase = %v, want 未初始化错误", err)
 	}

@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,33 +20,27 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 func TestP0ProjectionFamilyWiresActivationHook(t *testing.T) {
 	ctx := context.Background()
-	unitDir := t.TempDir()
+	// PG 唯一形态：业务句柄用独立 PG 测试库（装配路径对句柄惰性，只构造
+	// activation hook 与同步闭包，不触发 schema 校验；OAuth store 同库惰性
+	// 打开）。
+	business := pgtestkit.New(t)
 	assembly := w13g8NewUnitAssembly(t, func(config *workerConfig) {
-		config.Driver = "postgres"
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "p0"
 	})
 	defer assembly.closeStores()
-	business, err := assembly.openSQLite(filepath.Join(unitDir, "projection-business.sqlite3"), "p0-projection")
-	if err != nil {
-		t.Fatal(err)
-	}
-	oauthDB, err := sql.Open("sqlite", filepath.Join(unitDir, "oauth.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = oauthDB.Close() })
-	oauthStore, err := oauthrefresh.OpenStore(oauthDB, oauthrefresh.StoreSQLite, "p0-projection-secret")
+	oauthStore, err := oauthrefresh.OpenStore(business, oauthrefresh.StorePostgres, "p0-projection-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assembly.oauthStore = oauthStore
-	// 全部门禁就绪：本任务族（PG-only 物化器）走完整装配路径，激活 hook 与
-	// 同步闭包在该路径上构造。Redis 客户端惰性建连，无需真实实例。
+	// 全部门禁就绪：本任务族走完整装配路径，激活 hook 与同步闭包在该路径上
+	// 构造。Redis 客户端惰性建连，无需真实实例。
 	if err := assembly.wireListProjectionFamily(ctx, &businessDB{db: business}, &proberepo.Store{}); err != nil {
 		t.Fatalf("投影族装配必须成功（含激活 hook 构造）: %v", err)
 	}

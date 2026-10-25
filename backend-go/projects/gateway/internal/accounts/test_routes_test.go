@@ -17,6 +17,9 @@ import (
 // or reads (the gateway never creates them; the fixtures stand in for the
 // maintenance schema).
 var testFamilySchema = []string{
+	// 诊断家族表列类型对齐生产 PG DDL（pg_schema_business_tables.go：诊断
+	// 时间列 timestamptz、cancel_requested boolean）；种子 RFC3339 文本经
+	// 隐式转换落列。
 	`CREATE TABLE IF NOT EXISTS account_test_sessions (
 		id TEXT PRIMARY KEY,
 		request_system_account_id TEXT NOT NULL,
@@ -24,11 +27,11 @@ var testFamilySchema = []string{
 		request_system_account_filter_id TEXT,
 		status TEXT NOT NULL,
 		cancel_reason TEXT,
-		last_heartbeat_at TEXT NOT NULL,
-		cancel_requested_at TEXT,
-		finished_at TEXT,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
+		last_heartbeat_at timestamptz NOT NULL,
+		cancel_requested_at timestamptz,
+		finished_at timestamptz,
+		created_at timestamptz NOT NULL,
+		updated_at timestamptz NOT NULL
 	)`,
 	`CREATE TABLE IF NOT EXISTS account_test_tasks (
 		id TEXT PRIMARY KEY,
@@ -49,18 +52,18 @@ var testFamilySchema = []string{
 		status_message TEXT,
 		result_json TEXT,
 		error_message TEXT,
-		cancel_requested INTEGER NOT NULL DEFAULT 0,
-		queued_at TEXT NOT NULL,
-		queued_deadline_at TEXT,
-		started_at TEXT,
-		finished_at TEXT,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
+		cancel_requested boolean NOT NULL DEFAULT false,
+		queued_at timestamptz NOT NULL,
+		queued_deadline_at timestamptz,
+		started_at timestamptz,
+		finished_at timestamptz,
+		created_at timestamptz NOT NULL,
+		updated_at timestamptz NOT NULL
 	)`,
 	`CREATE TABLE IF NOT EXISTS account_test_session_tasks (
 		session_id TEXT NOT NULL,
 		task_id TEXT NOT NULL,
-		created_at TEXT NOT NULL,
+		created_at timestamptz NOT NULL,
 		PRIMARY KEY (session_id, task_id)
 	)`,
 	// B4 ⑧ 迁移窗口 fixture 壳：目录读取已切 models 单表，两张旧目录表仅供
@@ -100,10 +103,11 @@ var testFamilySchema = []string{
 // testCatalogDDL 是测试目录行的唯一权威 seed：models 单表 builtin 行按
 // seedFixtureModels 的同名 id REPLACE 覆盖（精确保控 gpt-4o-mini 的目录行，
 // 避免种子全集 mode 行的 video 派生挡住对话测试形态）。B4 ⑧（设计 §4）。
-const testCatalogDDL = `REPLACE INTO models
+const testCatalogDDL = `INSERT INTO models
 	(id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, release_date, created_at, updated_at)
 	VALUES ('mod-fixture-gpt-4o-mini-gpt', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', 'active',
-	'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-01-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`
+	'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-01-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+			ON CONFLICT (id) DO UPDATE SET vendor_code = EXCLUDED.vendor_code, public_model = EXCLUDED.public_model, upstream_model = EXCLUDED.upstream_model, scope = EXCLUDED.scope, system_account_id = EXCLUDED.system_account_id, status = EXCLUDED.status, supported_endpoint_modes_json = EXCLUDED.supported_endpoint_modes_json, release_date = EXCLUDED.release_date, shutdown_date = EXCLUDED.shutdown_date, catalog_visible = EXCLUDED.catalog_visible, catalog_order = EXCLUDED.catalog_order, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`
 
 type fakeTestEffects struct {
 	mu         sync.Mutex
@@ -152,8 +156,10 @@ func newTestFamilyEnv(t *testing.T, effects *fakeTestEffects) *testEnv {
 // models，无需 OR IGNORE 语义）.
 func (e *testEnv) seedTestCatalog(t *testing.T) {
 	t.Helper()
-	e.exec(t, strings.Replace(testProviderDDL, "INSERT INTO providers", "INSERT OR IGNORE INTO providers", 1))
-	e.exec(t, strings.Replace(testProfileDDL, "INSERT INTO provider_protocol_profiles", "INSERT OR IGNORE INTO provider_protocol_profiles", 1))
+	// testProviderDDL / testProfileDDL 自带 ON CONFLICT DO NOTHING 幂等
+	//（原 INSERT OR IGNORE 的 strings.Replace 注入随 sqlite 夹具退役）。
+	e.exec(t, testProviderDDL)
+	e.exec(t, testProfileDDL)
 	e.exec(t, testCatalogDDL)
 }
 

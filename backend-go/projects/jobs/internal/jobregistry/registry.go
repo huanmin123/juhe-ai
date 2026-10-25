@@ -98,14 +98,14 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:usage_rank_snapshots"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages(rank 阶段集合按 databaseDriver 分叉（T6b，冻结清单 §4.1）：PG 分支剔除 ai_performance_summary_windows（由独立 job 承担）；默认/SQLite 分支并入该 stage），组合根 rankSnapshotCoreStages(postgres) 消费",
+			GoBinding: "WindowRefresher.RunStages(rankSnapshotCoreStages()：ai_performance_summary_windows 由独立 job 承担、不入列；原 databaseDriver 分叉随 sqlite 形态退役坍缩为 PG 分支恒定)",
 		},
 		{
 			JobName: "ai-performance-summary-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:ai_performance_summary_windows", "stats:ai_performance_summary_dirty_system_accounts"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([ai_performance_summary_windows])；仅 PG 分支注册（T6b 已落 ModeConstraint.PostgresOnly），默认/SQLite 分支该 stage 并入 usage-rank-snapshots-refresh（Node background-jobs.ts:310），执行语义按 stage 幂等",
+			GoBinding: "WindowRefresher.RunStages([ai_performance_summary_windows])；恒注册（原 ModeConstraint.PostgresOnly 分叉随 sqlite 形态退役坍缩），执行语义按 stage 幂等",
 		},
 		{
 			JobName: "usage-overview-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
@@ -115,15 +115,11 @@ func ScheduledEntries() []Entry {
 			// INSERT 四表），写面登记必须与实际写面对齐（防漂移边界审计 2026-10-06）。
 			Writes:   []string{"stats:usage_overview_summary_windows", "stats:usage_overview_trend_windows", "stats:usage_model_rank_windows", "stats:usage_error_rank_windows"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([usage_overview_windows])；interval 按 databaseDriver 分叉（T6b 已落 ModeConstraint.SQLiteInterval）：PG=5min（Node :294 usageOverviewWindowRefreshIntervalMs）、SQLite=30min（Node :312 usageRankSnapshotRefreshIntervalMs）",
+			GoBinding: "WindowRefresher.RunStages([usage_overview_windows])；interval 恒 5min（Node :294 usageOverviewWindowRefreshIntervalMs；原 SQLite 30min 覆盖随 sqlite 形态退役删除）",
 		},
-		{
-			JobName: "usage-scope-range-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
-			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"stats:usage_scope_range_windows"},
-			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([usage_scope_range_windows])；仅默认/SQLite 分支注册（T6b 已落 ModeConstraint.SQLiteOnly），PG 高性能分支跳过并打 background_cold_range_window_refresh_disabled（Node :296-300，冻结清单 §4.1 不得回退）",
-		},
+		// usage-scope-range-windows-refresh（原 sqlite-only 冷历史范围窗口重刷）
+		// 已随 sqlite 存储形态退役删除（D13）：PG 唯一形态下该任务不可达；
+		// scope 范围窗口写面由 usage-hot-window-refresh（热窗口阶段）承载。
 		// authorization-usage-range-windows-refresh 已按设计消灭（原登记位置，
 		// Node 31 项名单第 11 项）：授权消耗明细读端改为按日范围直读
 		// authorization_*_usage_summary_daily（约 60 秒聚合节拍近实时），
@@ -153,14 +149,14 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "api-key-record-cleanup-retry", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ingest-worker",
 			SingleOwner: true, LeaseRequired: true,
-			Writes:   []string{"dataset:api_key_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-shards:usage_records"},
+			Writes:   []string{"dataset:api_key_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
 			GoBinding: "RecordCleanupRetryJob.RunAPIKey + cleanuprepo.RecordCleanupStore（SQLite 全链：targets/分片游标/统计扣减结算；PostgreSQL 全链：CleanupAPIKeyRelatedPostgres/CleanupPendingAPIKeyTargetsPostgres，subtractPostgresUsageStatsRows 扣减家族 + usage_record_cleanup_deductions 台账 + scope stats 清理）",
 		},
 		{
 			JobName: "account-record-cleanup-retry", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ingest-worker",
 			SingleOwner: true, LeaseRequired: true,
-			Writes:   []string{"dataset:account_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-shards:usage_records"},
+			Writes:   []string{"dataset:account_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
 			GoBinding: "RecordCleanupRetryJob.RunAccount + cleanuprepo.RecordCleanupStore（SQLite 全链：targets/分片游标/统计扣减结算；PostgreSQL 全链：CleanupAccountRelatedPostgres/CleanupPendingAccountTargetsPostgres，subtractPostgresUsageStatsRows 扣减家族 + usage_record_cleanup_deductions 台账 + scope stats 清理）",
 		},
@@ -197,7 +193,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:accounts", "stats:account_usage_snapshots"},
 			GoStatus: GoEquivalent, GoPackage: "accountbalance",
-			GoBinding: "J2 Service 已由 jobs 组件装配（自有调度循环与账户租约）。PG-only 组件，SQLite 部署由 account-balance-auto-detect-recovery 承担首探补偿",
+			GoBinding: "J2 Service 已由 jobs 组件装配（自有调度循环与账户租约）。PG 唯一存储形态（原 SQLite 部署首探补偿表述随 sqlite 形态退役删除)",
 		},
 		{
 			JobName: "account-balance-auto-detect-recovery", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
@@ -238,7 +234,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:account_usage_snapshots"},
 			GoStatus: GoWired, GoPackage: "cmd/juhe-ai-jobs（worker_balance_projection.go 组合根适配器）",
-			GoBinding: "wireBalanceStatsProjectionFamily 经组合根接线：全量读 juhe_jobs.account_balance_snapshots（J2 余额服务每周期写入，无游标/幂等 UPSERT）→ join 业务账户取 system_account_id → snapshot_json 映射为 balanceSnapshotPersist camelCase 形状（configRevision 取 juhe_jobs 行 config_revision 列，多 Key 字段 keyCount/queriedKeyCount/scope/aggregation/keyBalances 透传）→ UPSERT juhe_stats.account_usage_snapshots kind='relay_balance'（列集合/冲突目标/next_refresh_after 语义与 ReplaceSnapshotIfCurrent 一致）。仅 PG 分支注册（J2 投影链 PG-only；SQLite 部署无投影源——周期快照由 balance-detect 直写 stats、手动刷新由 gateway 进程内直写 stats，登记 disabled）",
+			GoBinding: "wireBalanceStatsProjectionFamily 经组合根接线：全量读 juhe_jobs.account_balance_snapshots（J2 余额服务每周期写入，无游标/幂等 UPSERT）→ join 业务账户取 system_account_id → snapshot_json 映射为 balanceSnapshotPersist camelCase 形状（configRevision 取 juhe_jobs 行 config_revision 列，多 Key 字段 keyCount/queriedKeyCount/scope/aggregation/keyBalances 透传）→ UPSERT juhe_stats.account_usage_snapshots kind='relay_balance'（列集合/冲突目标/next_refresh_after 语义与 ReplaceSnapshotIfCurrent 一致）。恒注册（原「仅 PG 分支注册」门禁随 sqlite 形态退役删除）",
 		},
 		{
 			JobName: "openai-oauth-access-token-refresh", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
@@ -261,14 +257,14 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "account-api-key-cooldown-retest", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
 			Hotspot: true, SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"business:account_api_key_runtime_states", "usage-shards:usage_records"},
+			Writes:   []string{"business:account_api_key_runtime_states", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "accountquality + proberepo + accountprobe",
 			GoBinding: "CooldownRetestRunner 经组合根接线：CooldownCandidateSource（到期候选 claim CAS）与 CooldownMutation（record/defer + config_revision CAS）由 proberepo 提供，探针走 accountprobe limited 诊断",
 		},
 		{
 			JobName: "normal-route-speed-first-recovery-probe", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
 			Hotspot: true, SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"runtime-state:gateway-normal-route-latency-degradation", "usage-shards:usage_records"},
+			Writes:   []string{"runtime-state:gateway-normal-route-latency-degradation", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "opsjobs + proberepo + accountprobe",
 			GoBinding: "SpeedFirstProbeRunner 经组合根接线：SpeedFirstClaimStore 由 proberepo 的 Redis 降级运行态实现提供（与 Node 网关同键同 Lua 契约，state/probe-index/claim 键形状逐字段一致），探针走 accountprobe 完整分级诊断；缺 JUHE_AI_REDIS_STATE_URL 时组合根登记 disabled",
 		},
@@ -284,7 +280,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:account_list_availability_projections", "business:account_list_availability_projection_tags", "business:account_list_availability_dirty"},
 			GoStatus: GoWired, GoPackage: "opsjobs + circuitstore",
-			GoBinding: "RunListAvailabilityMaintenance 经组合根接线：ListAvailabilityRepo（17 方法 runtime dependency fail-closed 状态机/dirty claim 围栏/tombstone 删除/重放退避）、overlay Redis 对账（account-concurrency-v2 同键 Lua）与 LoadItems 物化载荷（circuitstore.ProjectionItemLoader：management list 同源 SQL 双模 + accountEffectiveAvailability 状态机/quota/usage/balance/apiKeyRuntime + Redis 运行态读 gateway-account-recovery/policy-avoidance 只读，payload 逐字段对照 Node AccountListItem）全部就绪。2026-09-21 起投影开关 JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED 移除、投影写入面恒开注册（worker_config.go），interval=accountListAvailabilityProjectionIntervalMs（env 1s..60s 默认 1s）、batchSize=100(1..100)/maxBatchesPerRun=200(1..400)/workerConcurrency=4(1..8)；非 PG driver 不注册（Node PG-only 物化器）。登记差异：payload 的 isAccountBalanceSnapshotSuppressed 依赖网关进程内清理协调器内存态，jobs 进程无该组件（等价 Node 空协调器恒 false）",
+			GoBinding: "RunListAvailabilityMaintenance 经组合根接线：ListAvailabilityRepo（17 方法 runtime dependency fail-closed 状态机/dirty claim 围栏/tombstone 删除/重放退避）、overlay Redis 对账（account-concurrency-v2 同键 Lua）与 LoadItems 物化载荷（circuitstore.ProjectionItemLoader：management list 同源 SQL 双模 + accountEffectiveAvailability 状态机/quota/usage/balance/apiKeyRuntime + Redis 运行态读 gateway-account-recovery/policy-avoidance 只读，payload 逐字段对照 Node AccountListItem）全部就绪。2026-09-21 起投影开关 JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED 移除、投影写入面恒开注册（worker_config.go），interval=accountListAvailabilityProjectionIntervalMs（env 1s..60s 默认 1s）、batchSize=100(1..100)/maxBatchesPerRun=200(1..400)/workerConcurrency=4(1..8)；恒注册（原「非 PG driver 不注册」门禁随 sqlite 形态退役删除）。登记差异：payload 的 isAccountBalanceSnapshotSuppressed 依赖网关进程内清理协调器内存态，jobs 进程无该组件（等价 Node 空协调器恒 false）",
 		},
 		{
 			JobName: "account-circuit-recovery", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
@@ -303,23 +299,23 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "data-retention-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ingest-worker",
 			SingleOwner: true, LeaseRequired: true,
-			Writes:   []string{"dataset:*", "stats:*", "usage-shards:usage_records"},
+			Writes:   []string{"dataset:*", "stats:*", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
-			GoBinding: "DataRetentionJob + cleanuprepo（public_api_logs/usage records 分区裁剪与分片清理/stats+metrics 保留/system_sessions/codex-context 清理结算/非业务数据硬清理）双模接线；SQLite settings 读模型暂用 Node 默认策略值",
+			GoBinding: "DataRetentionJob + cleanuprepo（public_api_logs/usage records 分区裁剪/stats+metrics 保留/system_sessions/codex-context 清理结算/非业务数据硬清理）PG 接线（原分片清理与 SQLite settings 读模型回退随 sqlite 形态退役删除）",
 		},
 		{
 			JobName: "chat-retention-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{"chat:*"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
-			GoBinding: "ChatRetentionJob + cleanuprepo.ChatStore（cleanupChatRetention 全链：PG 每日分区/轮次/幂等键/容量窗口/标题/压缩恢复/检查点/资产认领删除）双模接线；isActiveTurn 钩子跨进程不可见保持 nil",
+			GoBinding: "ChatRetentionJob + cleanuprepo.ChatStore（cleanupChatRetention 全链：每日分区/轮次/幂等键/容量窗口/标题/压缩恢复/检查点/资产认领删除）PG 接线；isActiveTurn 钩子跨进程不可见保持 nil",
 		},
 		{
 			JobName: "expired-deleted-account-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{"business:accounts", "business:resource_authorizations"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
-			GoBinding: "ExpiredDeletedAccountJob + cleanuprepo.DeletedAccountStore（候选/相关记录守卫/物理删除双模 + 孤儿授权实例扫尾双模：PG bulk 臂 + SQLite 同终态 bulk 臂，Node per-grant 同步链不随迁、终态等价）+ 本地 record maintenance 队列投递",
+			GoBinding: "ExpiredDeletedAccountJob + cleanuprepo.DeletedAccountStore（候选/相关记录守卫/物理删除 + 孤儿授权实例扫尾 PG bulk 臂，Node per-grant 同步链不随迁、终态等价）+ 本地 record maintenance 队列投递",
 		},
 		{
 			// Go 新增条目：media_jobs TTL 保留清理（媒体设计 §8.2 清理任务，
@@ -333,7 +329,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{"business:media_jobs"},
 			GoStatus: GoWired, GoPackage: "retention",
-			GoBinding: "MediaJobsRetentionJob + retention.MediaJobsSQLStore（worker_retention.go 组合根接线：retention-business 句柄双模复用；未终态置 expired → 全部超期行删除，id 子查询 LIMIT 500 限流）",
+			GoBinding: "MediaJobsRetentionJob + retention.MediaJobsSQLStore（worker_retention.go 组合根接线：retention-business 句柄复用；未终态置 expired → 全部超期行删除，id 子查询 LIMIT 500 限流）",
 		},
 	}
 }
@@ -350,12 +346,12 @@ func QueueEntries() []Entry {
 			Writes: []string{}, GoStatus: status, GoBinding: binding}
 	}
 	return []Entry{
-		batch("background_worker_usage_records", []string{"usage-shards:usage_records"}, GoWired, "usagewriter",
+		batch("background_worker_usage_records", []string{"usage-catalog:usage_records"}, GoWired, "usagewriter",
 			"Redis Stream/IPC 分派按总设计消灭；usagewriter 直接异步写分片（组合根 Start/Close）"),
 		batch("background_worker_public_api_logs", []string{"dataset:public_api_logs"}, GoOwnedElsewhere, "gateway/internal/publicapilogs",
 			"W7 已随 gateway 进程内写路径接管"),
 		{JobName: "background_worker_record_maintenance", Category: CategoryIPCQueue, Kind: "maintenance", DefaultRole: "ingest-worker",
-			Writes: []string{"dataset:*", "stats:*", "usage-shards:usage_records"}, GoStatus: GoWired, GoPackage: "cleanuprepo + retention + recordmaintenance",
+			Writes: []string{"dataset:*", "stats:*", "usage-catalog:usage_records"}, GoStatus: GoWired, GoPackage: "cleanuprepo + retention + recordmaintenance",
 			GoBinding: "recordmaintenance runner + cleanuprepo 执行器 + 组合根本地队列 flush 循环 + record_maintenance_jobs 交接表 drain（gateway cleanup POST 落行：ORDER BY created_at、成功删行、失败保留；Redis Stream/IPC 按 Go 总设计消灭）。通道已扩展 v2 契约：record_maintenance_jobs 在既有 6 清理列上加快照列 account_id/kind/source/snapshot_json/updated_at（清理行与快照行互斥填充各自列组，gateway/jobs 两侧按列名幂等 ALTER ADD），gateway recordmaintenance.DurableDispatch 快照行投递（含 codex 用量响应头快照通道 compose_codex_usage_headers.go），jobs drain 读 v2 列并把 account_usage_snapshot_upsert 连续段合并为一次批量 upsert"},
 		batch("background_worker_account_test_tasks", []string{"business:account_test_tasks"}, GoOwnedElsewhere, "gateway（共享 backend-go-platform/accounttest）",
 			"去跨进程战役：手动测试执行链（shared accounttest 的 ManualTestQueue + manualtestrepo + manualtest + accountprobe）随 gateway 进程内装配单持有者运行，jobs 不再 sweep，internalapi 账户测试派发/取消路由已删除"),
@@ -383,7 +379,7 @@ func QueueEntries() []Entry {
 			Writes: []string{"business:account_test_tasks"}, GoStatus: GoOwnedElsewhere, GoPackage: "gateway（共享 backend-go-platform/accounttest）",
 			GoBinding: "ManualTestQueue 引擎 + manualtestrepo 双模仓储 + manualtest 执行器全链路随 gateway 组合根长驻（Start 启动维护 + sweep + Run 消费），诊断经 accountprobe.ManualDiagnostics（Key 池 / 单凭据分级）；jobs 不再运行本队列"},
 		{JobName: "account-api-key-cooldown-retest-queue", Category: CategoryLocalQueue, Kind: "probe", DefaultRole: "ops-worker",
-			Hotspot: true, LeaseRequired: true, Writes: []string{"business:account_api_key_runtime_states", "usage-shards:usage_records"},
+			Hotspot: true, LeaseRequired: true, Writes: []string{"business:account_api_key_runtime_states", "usage-catalog:usage_records"},
 			GoStatus: GoWired, GoPackage: "accountquality + proberepo + accountprobe", GoBinding: "CooldownRetestRunner 队列随组合根探针家族接线执行"},
 		{JobName: "account-quality-failure-precheck-queue", Category: CategoryLocalQueue, Kind: "probe", DefaultRole: "ops-worker",
 			LeaseRequired: true, Writes: []string{"business:accounts"}, GoStatus: GoWired, GoPackage: "accountquality + proberepo + accountprobe",
@@ -398,16 +394,16 @@ func QueueEntries() []Entry {
 			LeaseRequired: true, Writes: []string{"business:accounts"}, GoStatus: GoOwnedElsewhere, GoPackage: "gateway",
 			GoBinding: "gateway 账户副作用队列归 gateway"},
 		{JobName: "record-maintenance:api_key_related_cleanup", Category: CategoryMaintenanceTask, Kind: "maintenance", DefaultRole: "ops-worker",
-			LeaseRequired: true, Writes: []string{"dataset:api_key_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-shards:usage_records"},
-			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "recordmaintenance runner + cleanuprepo 相关清理执行器（SQLite；PG 扣减链显式未迁移）"},
+			LeaseRequired: true, Writes: []string{"dataset:api_key_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-catalog:usage_records"},
+			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "recordmaintenance runner + cleanuprepo 相关清理执行器（PG 扣减链）"},
 		{JobName: "record-maintenance:account_related_cleanup", Category: CategoryMaintenanceTask, Kind: "maintenance", DefaultRole: "ops-worker",
-			LeaseRequired: true, Writes: []string{"dataset:account_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-shards:usage_records"},
-			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "recordmaintenance runner + cleanuprepo 相关清理执行器（SQLite；PG 扣减链显式未迁移）"},
+			LeaseRequired: true, Writes: []string{"dataset:account_record_cleanup_targets", "stats:usage_record_cleanup_deductions", "usage-catalog:usage_records"},
+			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "recordmaintenance runner + cleanuprepo 相关清理执行器（PG 扣减链）"},
 		{JobName: "record-maintenance:usage_records_cleanup", Category: CategoryMaintenanceTask, Kind: "maintenance", DefaultRole: "ingest-worker",
-			LeaseRequired: true, Writes: []string{"usage-shards:usage_records"},
-			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "cleanuprepo.UsageRecordsStore（SQLite 目录+分片；PG 分区裁剪+行删除）"},
+			LeaseRequired: true, Writes: []string{"usage-catalog:usage_records"},
+			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "cleanuprepo.UsageRecordsStore（PG 分区裁剪+行删除；SQLite 分片清理面随 sqlite 形态退役，实现本体属 B6 删臂对象）"},
 		{JobName: "record-maintenance:non_business_data_cleanup", Category: CategoryMaintenanceTask, Kind: "maintenance", DefaultRole: "ingest-worker",
-			LeaseRequired: true, Writes: []string{"dataset:*", "stats:*", "usage-shards:usage_records", "audit-payload-files:*"},
+			LeaseRequired: true, Writes: []string{"dataset:*", "stats:*", "usage-catalog:usage_records", "audit-payload-files:*"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention", GoBinding: "cleanuprepo.NonBusinessDatasetStore + StatsRetentionStore（dataset/usage-catalog/stats 三 scope 双模；audit payload 归 F3）"},
 		{JobName: "record-maintenance:account_usage_snapshot_upsert", Category: CategoryMaintenanceTask, Kind: "maintenance", DefaultRole: "ingest-worker",
 			Writes: []string{"stats:account_usage_snapshots"}, GoStatus: GoWired, GoPackage: "cleanuprepo + retention",

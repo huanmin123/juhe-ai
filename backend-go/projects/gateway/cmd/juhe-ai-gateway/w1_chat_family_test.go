@@ -288,35 +288,6 @@ func TestW1HChatAttachStreamHandlerSubscribeMiss(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// A3. openChatDatabase（SQLite 分支；pgDialect=true 需要 pgpool Registry，跳过）
-// ---------------------------------------------------------------------------
-
-func TestW1HOpenChatDatabaseSQLite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chat-w1h.sqlite3")
-	db, isSQLite, err := openChatDatabase(runtimeConfig{ChatDatabasePath: path}, nil, nil, false)
-	if err != nil {
-		t.Fatalf("openChatDatabase(sqlite) = %v, want nil", err)
-	}
-	defer db.Close()
-	if !isSQLite {
-		t.Fatalf("sqlite 分支 isSQLite = false, want true")
-	}
-	if err := db.Ping(); err != nil {
-		t.Fatalf("chat sqlite 句柄 Ping 失败: %v", err)
-	}
-}
-
-func TestW1HOpenChatDatabaseSQLiteRequiresPath(t *testing.T) {
-	_, _, err := openChatDatabase(runtimeConfig{}, nil, nil, false)
-	if err == nil {
-		t.Fatalf("缺少 JUHE_AI_CHAT_DATABASE_PATH 时 openChatDatabase 未报错")
-	}
-	if !strings.Contains(err.Error(), "JUHE_AI_CHAT_DATABASE_PATH") {
-		t.Fatalf("错误未指向 JUHE_AI_CHAT_DATABASE_PATH: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // A4. composeChatFamily（guard 表 + 最小装配）
 // ---------------------------------------------------------------------------
 

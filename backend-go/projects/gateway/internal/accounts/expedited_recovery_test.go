@@ -34,7 +34,7 @@ func expeditedAccountState(t *testing.T, env *testEnv, id string) (string, strin
 	t.Helper()
 	var flag, revision, updatedAt string
 	if err := env.db.QueryRow(`SELECT CAST(expedited_recovery_enabled AS TEXT),
-		CAST(config_revision AS TEXT), updated_at FROM accounts WHERE id = ?`, id).
+		CAST(config_revision AS TEXT), updated_at FROM accounts WHERE id = $1`, id).
 		Scan(&flag, &revision, &updatedAt); err != nil {
 		t.Fatal(err)
 	}

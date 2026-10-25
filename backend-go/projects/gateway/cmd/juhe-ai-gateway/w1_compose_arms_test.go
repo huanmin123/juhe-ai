@@ -13,7 +13,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,9 +21,9 @@ import (
 
 func TestW1ComposeSystemAPIErrorArms(t *testing.T) {
 	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
+	store := openComposeOperationStore(t, cfg.PostgresURL)
 	lease := openComposeOperationLease(t, store)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, cfg.PostgresURL)
 	defer closeAudit()
 	// nil 三件套守卫。
 	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), nil, lease, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
@@ -36,22 +35,13 @@ func TestW1ComposeSystemAPIErrorArms(t *testing.T) {
 	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, lease, nil, auditConfig, composeTestOwnerHealth()); err == nil {
 		t.Fatal("nil audit producer 必须拒绝")
 	}
-	// stats 路径缺失。
-	statsCfg := cfg
-	statsCfg.StatsDatabasePath = ""
-	if _, err := composeSystemAPI(statsCfg, pgpool.NewRegistry(), store, lease, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
-		t.Fatal("缺失 stats 路径必须拒绝")
-	}
-	// 业务库路径不可创建：configure 阶段 fail fast。
+	// 业务池 URL 不可达：Acquire 阶段 fail fast（PG+Redis 唯一存储形态；
+	// 原 sqlite stats/dataset/usage-catalog 路径缺失臂随生产臂删除）。
 	badBizCfg := cfg
-	badBizCfg.BusinessDatabasePath = filepath.Join(filepath.Dir(cfg.BusinessDatabasePath), "no-such-dir", "business.sqlite3")
+	badBizCfg.BusinessPostgresURL = "postgres://w1-no-user@127.0.0.1:1/w1?sslmode=disable&connect_timeout=1"
 	if _, err := composeSystemAPI(badBizCfg, pgpool.NewRegistry(), store, lease, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
-		t.Fatal("业务库路径不可创建必须拒绝")
+		t.Fatal("业务池 URL 不可达必须拒绝")
 	}
-	// 说明：usage-catalog/runtime-log/audit/dataset 的缺失
-	// 分支在错误返回时不关闭 composed.db，Windows 下泄漏句柄会阻塞
-	// t.TempDir 清理——这些分支由 w1_main_boot_test.go 的进程级场景收割
-	//（子进程自然释放句柄）。
 }
 
 // TestW1SelectorListAccountsForGroupResultArms 打通选择器 Result 全管线：
@@ -185,8 +175,8 @@ func mustJSONMapForArms(t *testing.T, body string) map[string]any {
 // runtime-log 保留天数的默认值回退（settings 读取失败时返回 14 天）。
 func TestW1ComposeReadsDepsMountArms(t *testing.T) {
 	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	store := openComposeOperationStore(t, cfg.PostgresURL)
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, cfg.PostgresURL)
 	defer closeAudit()
 	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
 	if err != nil {

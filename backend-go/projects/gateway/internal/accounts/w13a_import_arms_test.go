@@ -289,7 +289,7 @@ func TestW13AImportPlanValidationArms(t *testing.T) {
 	// 代理复用：已有同名代理 → reuse。
 	now := "2026-09-17T00:00:00.000Z"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-exist', ?, 'w13a-exist-proxy', 'socks5', 'h', 1080, 1, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13a-exist', ?, 'w13a-exist-proxy', 'socks5', 'h', 1080, true, 'unknown', ?, ?)`, adminID, now, now)
 	result, err = env.store.PreviewImport(context.Background(), w2NativeDoc(
 		[]map[string]any{w2APIKeyAccount("w13a-n2", "w13a-g1")},
 		[]map[string]any{map[string]any{"ref": "p9", "name": "w13a-exist-proxy", "type": "socks5", "host": "h", "port": float64(1)}},
@@ -353,7 +353,7 @@ func TestW13AImportGroupAndProxyResolutionArms(t *testing.T) {
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
 	now := "2026-09-17T00:00:00.000Z"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-off', ?, 'w13a-off-proxy', 'socks5', 'h', 1080, 0, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13a-off', ?, 'w13a-off-proxy', 'socks5', 'h', 1080, false, 'unknown', ?, ?)`, adminID, now, now)
 
 	account := func(overrides map[string]any) map[string]any {
 		base := w2APIKeyAccount("w13a-r1", "w13a-g")
@@ -482,7 +482,7 @@ func TestW13AImportExecuteArms(t *testing.T) {
 	// 重名复用臂依赖 PG 唯一索引，SQLite 测试 schema 无该索引，不可达）。
 	now := "2026-09-17T00:00:00.000Z"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-reuse-hit', ?, 'w13a-reuse-proxy', 'socks5', 'h', 1080, 1, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13a-reuse-hit', ?, 'w13a-reuse-proxy', 'socks5', 'h', 1080, true, 'unknown', ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO "groups" (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-w13a-reuse-hit', ?, 'w13a-reuse-group', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	result, err = env.store.ExecuteImport(context.Background(), w2NativeDoc(
@@ -546,13 +546,14 @@ func TestW13AImportCreateInputAndFullExecute(t *testing.T) {
 		t.Fatalf("备注应落库：%q", got)
 	}
 
-	// PG 方言 PreviewImport → 表缺失错误（434-436）。
+	// PG 臂 PreviewImport 真实执行（原「PG 方言在 sqlite 缺表 → 错误」注入
+	// 随 sqlite 夹具退役）：同一载荷在真实 PG 上应完成预览不报错。
 	pgStore, err := NewStore(env.db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pgStore.PreviewImport(context.Background(), w2NativeDoc(nil, nil), "", ImportOptions{}, scope); err == nil {
-		t.Fatal("PG 方言预览应失败")
+	if _, err := pgStore.PreviewImport(context.Background(), w2NativeDoc(nil, nil), "", ImportOptions{}, scope); err != nil {
+		t.Fatalf("PG 臂预览应成功：%v", err)
 	}
 }
 

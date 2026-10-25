@@ -2,22 +2,18 @@ package main
 
 import (
 	"database/sql"
+	"os"
+	"path/filepath"
+	"os/exec"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"golang.org/x/sys/windows"
 )
 
@@ -277,13 +273,9 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 			t.Fatal(err)
 		}
 	}
-	// M2 启动阶段门禁夹具契约：main() 子进程启动会读阶段记录，手建业务库
-	// 必须自带已封存的 m2_finalized 记录。
-	w16hSeedCapabilityDomainStageRecord(t, business)
-	// 调度偏好启动校验夹具契约（scheduling_preference_schema.go 四臂只读校
-	// 验，2026-10-12 P1+P2）：手建业务库必须自带表形状 / 绑定列 / 内置行与
-	// 已完成迁移记录（seedSchedulingPreferenceStartupFixture 幂等可重入）。
-	seedSchedulingPreferenceStartupFixture(t, business)
+	// M2 启动阶段门禁与调度偏好启动校验夹具已随 sqlite 子进程 e2e 退役：
+	// owner 全链装配在 PG 上由 w14q/w16i 覆盖库 e2e 承接（w14j seed + w16j
+	// fixture 提供契约形状）。
 	if err := business.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -310,32 +302,6 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 // TestMainOwnerModeRunsAndShutsDownGracefully 在子进程运行完整生产 main()
 // （worker + J1 + F1/F2），断言 /health 报告全部组件就绪，CTRL_BREAK 后
 // 干净退出（覆盖 main() 组合根主体与 supervisor 停机排空）。
-func TestMainOwnerModeRunsAndShutsDownGracefully(t *testing.T) {
-	if testing.Short() {
-		t.Skip("main e2e skipped in -short mode")
-	}
-	root := t.TempDir()
-	port := wgFreePort(t)
-	cmd := wgSpawnMainChild(t, wgOwnerModeMainEnv(t, root), wgScenarioOwner, port)
-	payload := wgPollHealthPayload(t, port, wgChildReadyTimeout, func(current map[string]any) bool {
-		ready, _ := current["ready"].(bool)
-		return ready
-	})
-	if payload["workerEnabled"] != true || payload["accountHealthEnabled"] != true {
-		t.Fatalf("owner 模式健康载荷错误: %v", payload)
-	}
-	if payload["workerReady"] != true || payload["accountHealthReady"] != true {
-		t.Fatalf("组件未全部就绪: %v", payload)
-	}
-	worker, ok := payload["worker"].(map[string]any)
-	if !ok || worker["workerEnabled"] != true {
-		t.Fatalf("worker 快照必须内嵌健康载荷: %v", payload["worker"])
-	}
-	wgInterruptAndWait(t, cmd)
-}
-
-// TestMainPassiveModeServesStandbyHealth 验证 standby owner 模式走
-// runPassiveJobs：/health 永不声明 owner 就绪，CTRL_BREAK 后干净退出。
 func TestMainPassiveModeServesStandbyHealth(t *testing.T) {
 	if testing.Short() {
 		t.Skip("main e2e skipped in -short mode")
@@ -353,111 +319,4 @@ func TestMainPassiveModeServesStandbyHealth(t *testing.T) {
 		t.Fatalf("passive 健康载荷不得声明 owner 就绪: %v", payload)
 	}
 	wgInterruptAndWait(t, cmd)
-}
-
-// TestMainGoRuntimeMetricsEnabledComponent 的继任：完整 owner 装配下健康
-// 监听与 /__aisys__/metrics（prommetrics）同时可用。
-func TestMainPromMetricsEndpointServesOwnerAssembly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("main e2e skipped in -short mode")
-	}
-	root := t.TempDir()
-	env := wgOwnerModeMainEnv(t, root)
-	port := wgFreePort(t)
-	cmd := wgSpawnMainChild(t, env, wgScenarioOwner, port)
-	wgPollHealthPayload(t, port, wgChildReadyTimeout, func(current map[string]any) bool {
-		ready, _ := current["ready"].(bool)
-		return ready
-	})
-	response, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/__aisys__/metrics", port))
-	if err != nil {
-		t.Fatalf("metrics 端点请求失败: %v", err)
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("metrics 端点必须 200，得到 %d", response.StatusCode)
-	}
-	wgInterruptAndWait(t, cmd)
-}
-
-// TestMainFlagEarlyReturnPaths 进程内覆盖 --version 与 --check-boundary 的
-// flag 早退分支（不触碰存储与信号）；run() 重构后直调并断言退出码 0。
-func TestMainFlagEarlyReturnPaths(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		flagText string
-		contains string
-	}{
-		{"--version 输出契约版本", "--version", wgChildVersionOutputLine},
-		{"--check-boundary 输出边界", "--check-boundary", "boundary=ready"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			reader, writer, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			code := run([]string{test.flagText}, writer, io.Discard)
-			_ = writer.Close()
-			output := make([]byte, 512)
-			read, _ := reader.Read(output)
-			_ = reader.Close()
-			if code != 0 {
-				t.Fatalf("%s 必须以退出码 0 返回，得到 %d", test.flagText, code)
-			}
-			if !strings.Contains(string(output[:read]), test.contains) {
-				t.Fatalf("输出必须包含 %q，得到 %q", test.contains, string(output[:read]))
-			}
-		})
-	}
-}
-
-// TestHealthHandlerFallbackSlotsAndNotFound 覆盖 healthHandler 的默认依赖
-// 回落（未显式提供的探针全部回落禁用态/恒就绪）与非 GET/health 请求的 404
-// 分支。
-func TestHealthHandlerFallbackSlotsAndNotFound(t *testing.T) {
-	var running atomic.Bool
-	running.Store(true)
-	handler := healthHandler(healthDeps{OwnerMode: ownermode.Active, RuntimeRunning: &running})
-	record := httptest.NewRecorder()
-	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
-	var payload map[string]any
-	if record.Code != http.StatusOK || json.Unmarshal(record.Body.Bytes(), &payload) != nil {
-		t.Fatalf("无附加依赖的 /health 必须 200: %d %s", record.Code, record.Body.String())
-	}
-	if payload["accountBalanceEnabled"] != false || payload["proxyLatencyEnabled"] != false ||
-		payload["workerEnabled"] != true || payload["ready"] != true {
-		t.Fatalf("未启用组件必须回落禁用默认（worker 恒开）: %v", payload)
-	}
-	notFound := httptest.NewRecorder()
-	handler.ServeHTTP(notFound, httptest.NewRequest(http.MethodPost, "/health", nil))
-	if notFound.Code != http.StatusNotFound {
-		t.Fatalf("POST /health 必须 404，得到 %d", notFound.Code)
-	}
-}
-
-// TestPassiveJobsHealthHandlerRejectsNonHealthRequests 覆盖 passive 健康面
-// 的 404 分支。
-func TestPassiveJobsHealthHandlerRejectsNonHealthRequests(t *testing.T) {
-	handler := passiveJobsHealthHandler(ownermode.Active)
-	record := httptest.NewRecorder()
-	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/other", nil))
-	if record.Code != http.StatusNotFound {
-		t.Fatalf("GET /other 必须 404，得到 %d", record.Code)
-	}
-	post := httptest.NewRecorder()
-	handler.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/health", nil))
-	if post.Code != http.StatusNotFound {
-		t.Fatalf("POST /health 必须 404，得到 %d", post.Code)
-	}
-}
-
-// TestProxylatencyTimeFormatsAndZero 覆盖时间字段序列化助手。
-func TestProxylatencyTimeFormatsAndZero(t *testing.T) {
-	if got := proxylatencyTime(time.Time{}); got != "" {
-		t.Fatalf("零值必须输出空串: %q", got)
-	}
-	stamp := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	if got := proxylatencyTime(stamp); got != "2026-09-10T12:00:00Z" {
-		t.Fatalf("RFC3339Nano 序列化错误: %q", got)
-	}
 }

@@ -36,19 +36,14 @@ import (
 //     AdvancePeriodicDue 同源同值）；
 //   - 列集合、主键/冲突目标与 opsjobs 路径 ReplaceSnapshotIfCurrent 完全一致
 //     （维护冻结 DDL 归 maintenance 项目，本任务不建表只校验）；
-//   - J2 Go owner 仅支持 PostgreSQL（JUHE_AI_ACCOUNT_BALANCE_STORE=postgres），
-//     SQLite 部署无 juhe_jobs.account_balance_snapshots → 登记 disabled。
-//
 // 独立 lane=balance-projection，与 external-account-maintenance 的余额族错峰，
 // 避免相互争抢 lane 并发槽。
 
-// balanceProjectionRuntime 承载投影读写的单一双模句柄：PG 模式下 juhe_jobs /
-// juhe_business / juhe_stats 三个 schema 同库，业务池一个连接即可；SQLite 模式
-// 仅测试构造使用（生产 SQLite 部署在装配层登记 disabled）。
+// balanceProjectionRuntime 承载投影读写的单一句柄：juhe_jobs /
+// juhe_business / juhe_stats 三个 schema 同库，业务池一个连接即可。
 type balanceProjectionRuntime struct {
-	db       *sql.DB
-	postgres bool
-	nowFunc  func() time.Time
+	db      *sql.DB
+	nowFunc func() time.Time
 }
 
 // balanceProjectionResult 是一轮投影的计数汇总。
@@ -61,20 +56,14 @@ type balanceProjectionResult struct {
 	SkippedCount int
 }
 
-// sourceTable 限定 J2 快照表名（PG 走 juhe_jobs schema；SQLite 测试直名）。
+// sourceTable 限定 J2 快照表名（juhe_jobs schema）。
 func (r *balanceProjectionRuntime) sourceTable() string {
-	if r.postgres {
-		return "juhe_jobs.account_balance_snapshots"
-	}
-	return "account_balance_snapshots"
+	return "juhe_jobs.account_balance_snapshots"
 }
 
-// businessTable 限定业务表名（PG 走 juhe_business schema；SQLite 测试直名）。
+// businessTable 限定业务表名（juhe_business schema）。
 func (r *balanceProjectionRuntime) businessTable(name string) string {
-	if r.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 // projectSourceRow 是 juhe_jobs.account_balance_snapshots 的读取投影。
@@ -109,7 +98,7 @@ func (r *balanceProjectionRuntime) ProjectAll(ctx context.Context) (balanceProje
 			return result, err
 		}
 		row.SnapshotJSON = snapshotJSON.String
-		if row.NextRefreshAt, err = scanNullTime(r.postgres, nextRefresh); err != nil {
+		if row.NextRefreshAt, err = scanNullTime(nextRefresh); err != nil {
 			rows.Close()
 			return result, fmt.Errorf("解析 J2 快照 next_refresh_at 失败: %w", err)
 		}
@@ -273,7 +262,7 @@ func (r *balanceProjectionRuntime) projectRow(ctx context.Context, row projectSo
 	}
 	var nextRefreshAfter any
 	if row.NextRefreshAt != nil {
-		nextRefreshAfter = timeParam(r.postgres, *row.NextRefreshAt)
+		nextRefreshAfter = timeParam(*row.NextRefreshAt)
 	}
 	upsert := fmt.Sprintf(`
     INSERT INTO %s (
@@ -289,11 +278,11 @@ func (r *balanceProjectionRuntime) projectRow(ctx context.Context, row projectSo
       next_refresh_after = excluded.next_refresh_after,
       last_error_message = excluded.last_error_message,
       updated_at = excluded.updated_at
-  `, statsTable(r.postgres, "account_usage_snapshots"))
+  `, statsTable("account_usage_snapshots"))
 	if _, err := r.db.ExecContext(ctx, upsert,
 		textParam(systemAccountID), textParam(row.AccountID), textParam(serialized), textParam(persist.Status),
 		textParam(lastAttempt), lastSuccess, nextRefreshAfter, nullableTextPtr(persist.ErrorMessage),
-		timeParam(r.postgres, now), timeParam(r.postgres, now)); err != nil {
+		timeParam(now), timeParam(now)); err != nil {
 		return fmt.Errorf("写入余额快照投影失败: %w", err)
 	}
 	return nil
@@ -302,41 +291,34 @@ func (r *balanceProjectionRuntime) projectRow(ctx context.Context, row projectSo
 // ensureBalanceProjectionContract 校验投影两端表存在（冻结 schema；缺失时
 // fail closed 登记 disabled，不静默建表——生产 DDL 归 maintenance 项目，
 // juhe_jobs.account_balance_snapshots 由 shared accountbalance store 契约管理）。
-func ensureBalanceProjectionContract(ctx context.Context, db *sql.DB, postgres bool) error {
-	if postgres {
-		var count int
-		check := `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'juhe_jobs' AND table_name = 'account_balance_snapshots'`
-		if err := db.QueryRowContext(ctx, check).Scan(&count); err != nil {
-			return err
-		}
-		if count < 1 {
-			return errors.New("缺少 juhe_jobs.account_balance_snapshots 表")
-		}
+func ensureBalanceProjectionContract(ctx context.Context, db *sql.DB) error {
+	var count int
+	check := `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'juhe_jobs' AND table_name = 'account_balance_snapshots'`
+	if err := db.QueryRowContext(ctx, check).Scan(&count); err != nil {
+		return err
 	}
-	return ensureAccountUsageSnapshotsTable(ctx, db, postgres)
+	if count < 1 {
+		return errors.New("缺少 juhe_jobs.account_balance_snapshots 表")
+	}
+	return ensureAccountUsageSnapshotsTable(ctx, db)
 }
 
 // wireBalanceStatsProjectionFamily 装配 account-balance-stats-projection。
 // 任一依赖缺失→登记 disabled 并说明（不阻塞其他 job）。
 func (a *workerAssembly) wireBalanceStatsProjectionFamily(ctx context.Context) error {
 	name := "account-balance-stats-projection"
-	if a.config.Driver != "postgres" {
-		a.registerDisabledJob(name, "J2 投影链 PG-only（juhe_jobs.account_balance_snapshots 仅 PG 形态存在）；SQLite 部署无投影源：周期快照由 balance-detect 直写 stats、手动刷新由 gateway 进程内直写 stats")
-		return nil
-	}
 	business, err := openBusinessDB(a, "balance-projection-business")
 	if err != nil {
 		return err
 	}
-	if err := ensureBalanceProjectionContract(ctx, business.db, true); err != nil {
+	if err := ensureBalanceProjectionContract(ctx, business.db); err != nil {
 		a.registerDisabledJob(name, "统计库投影契约校验失败："+err.Error())
 		_ = business.close()
 		return nil
 	}
 	runtime := &balanceProjectionRuntime{
-		db:       business.db,
-		postgres: true,
-		nowFunc:  func() time.Time { return time.Now().UTC() },
+		db:      business.db,
+		nowFunc: func() time.Time { return time.Now().UTC() },
 	}
 	a.addCloser(business.close)
 	a.scheduleWiredJob(name, func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {

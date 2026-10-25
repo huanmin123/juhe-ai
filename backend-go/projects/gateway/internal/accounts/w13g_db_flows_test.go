@@ -170,8 +170,9 @@ func TestW13GFindCloneContextArms(t *testing.T) {
 		now := "2026-01-01T00:00:00Z"
 		// B4 W2 目标形态直插：克隆源账户的连接 + 支持成员 + 入口映射行。
 		env.seedEntryMapping(t, "acc-w13g-clone", "generic_openai_v1", "gpt-4o", "chat_completions", "up-4o", "chat_completions", 1)
-		env.exec(t, `INSERT OR IGNORE INTO account_supported_models (account_id, model_id, created_at)
-			VALUES ('acc-w13g-clone', (SELECT id FROM models WHERE upstream_model = 'gpt-4o'), ?)`, now)
+		env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+			VALUES ('acc-w13g-clone', (SELECT id FROM models WHERE upstream_model = 'gpt-4o' ORDER BY id LIMIT 1), ?)
+			ON CONFLICT DO NOTHING`, now)
 		env.exec(t, `INSERT INTO account_tags (id, system_account_id, name, created_at, updated_at)
 			VALUES ('tag-w13g-clone', ?, '克隆标签', ?, ?)`, adminID, now, now)
 		env.exec(t, `INSERT INTO account_tag_bindings (system_account_id, account_id, tag_id, created_at)
@@ -219,7 +220,7 @@ func TestW13GFindCloneContextArms(t *testing.T) {
 		env2.seedProviderAndDefaultGroup(t, userID)
 		env2.seedAccount(t, "acc-w13g-clone2", userID, "w13g-clone2", "active")
 		env2.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
-			VALUES ('acc-w13g-clone2', (SELECT id FROM models WHERE upstream_model = 'gpt-4o'), '2026-01-01T00:00:00Z')`)
+			VALUES ('acc-w13g-clone2', (SELECT id FROM models WHERE upstream_model = 'gpt-4o' ORDER BY id LIMIT 1), '2026-01-01T00:00:00Z')`)
 		context, err := env2.store.FindCloneContext(context.Background(), "acc-w13g-clone2", AccessScope{ViewerID: userID})
 		if err != nil || context == nil {
 			t.Fatalf("非管理员克隆上下文：%v %v", context, err)

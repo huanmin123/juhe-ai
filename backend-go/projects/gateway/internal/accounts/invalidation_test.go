@@ -159,8 +159,10 @@ func TestDeleteInvalidationChannels(t *testing.T) {
 		t.Fatalf("quota reasons = %v, want [account_deleted]", quotaReasons)
 	}
 	// refreshGroupAccountStatsAfterWrite({all:true, reason:'account_deleted'})
-	// lands the single __all__ dirty row (markAllGroupAccountStatsDirty).
-	if got := env.queryCell(t, `SELECT reason FROM group_account_stats_dirty WHERE group_id = '__all__'`); got != "account_deleted" {
-		t.Fatalf("__all__ dirty row reason = %q, want account_deleted", got)
+	// 的 __all__ 脏行只走 SQLite 臂（markAllGroupStatsDirty 的 if !s.pg 门控；
+	// PG 由 compose 的 stats slice 承接）——PG 臂夹具内断言无该行（原 SQLite
+	// 臂断言随 sqlite 夹具退役）。
+	if got := env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty WHERE group_id = '__all__'`); got != 0 {
+		t.Fatalf("__all__ dirty rows = %d, want 0 on the PG arm", got)
 	}
 }

@@ -12,10 +12,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,13 +44,6 @@ func main() {
 // 直接转发真实现；进程内测试覆写为可编程取消的 ctx，以驱动优雅停机序列
 // （真实 SIGTERM 在测试进程内无法安全投递）。
 var hooksSignalNotifyContext = signal.NotifyContext
-
-// hooksSQLiteDirectInputLayoutEnsured 是 J1 sqlite 直读布局前置成功之后、只
-// 读直读句柄打开之前的测试注入点：生产路径恒为 nil 不介入。布局前置与只读
-// 句柄的 DSN 路径转义统一后两者解析同一物理路径，env 级注入无法只命中后
-// 一侧；进程内测试用它在该窗口对 ensure 刚落盘的库文件做确定性破坏，驱动
-// 「布局 ensure 成功 → 只读 ping 失败」臂。
-var hooksSQLiteDirectInputLayoutEnsured func()
 
 // run 承载原 main() 的全部线性流程并返回进程退出码。原 fail()（stderr 错误
 // 行 + os.Exit(1)）与 flag 用法错误（os.Exit(2)）收敛为返回值；stderr 错误
@@ -137,11 +128,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	runtimeStore, err := runtimelog.OpenStore(context.Background(), runtimeConfig)
 	if err != nil {
-		if runtimeConfig.Mode == runtimelog.ModeSQLite {
-			if _, statErr := os.Stat(runtimeConfig.BusinessPath); statErr != nil {
-				return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w（业务库 %s 尚不存在：先启动 juhe-ai-gateway（零配置下会自动初始化业务库），或先运行 juhe-ai-maintenance --ensure-schema）", err, runtimeConfig.BusinessPath))
-			}
-		}
 		return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
 	}
 	defer runtimeStore.Close()
@@ -156,24 +142,19 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return failWith(stderr, fmt.Errorf("load J1 account-health config: %w", err))
 	}
 	var accountHealthStore *accounthealth.Store
-	var accountHealthInputDB *sql.DB
 	var accountHealthInputPool *pgpool.Handle
-	// sqlite 直读的输入句柄（业务库 + 统计库；先输入句柄后 store 的 Close
-	// 顺序由 J1 组件 Close 链保证）。
-	var accountHealthBusinessInputDB *sql.DB
-	var accountHealthStatsInputDB *sql.DB
 	var accountHealthRunner *accounthealth.Runner
 	var accountHealthReader accounthealth.DirectInputReader
 	// J1 runner 恒装配（机制强制常开，2026-09-19 决策）；J1 outbox drain 的
 	// 装配事实由下方 wireHealthProbeOutboxFace + SetProbeRequestDrain 承担。
-	if accountHealthConfig.Store.Mode == accounthealth.StorePostgres {
-		accountHealthConfig.Store.PostgresPool, err = postgresPools.Acquire("pgx", accountHealthConfig.Store.PostgresURL, "jobs-store", accountHealthConfig.Store.PostgresMaxOpenConns, accountHealthConfig.Store.PostgresMaxIdleConns)
-		// 池获取失败必须显式 fail-fast：不检查会被下方 OpenStore 覆盖 err，
-		// 带着 nil pool 进入 J1 装配（对齐 :388 J3a 同型检查）。
-		if err != nil {
-			return failWith(stderr, fmt.Errorf("open J1 account-health jobs-store PostgreSQL pool: %w", err))
-		}
-		// 死臂已删（w16j 证据：pgx 惰性 Open）
+	// InputSource 已收敛 postgres 单值（D12：sqlite 直读臂与 files 臂随
+	// sqlite/files 本地形态物理删除，JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE env
+	// 退役）。
+	accountHealthConfig.Store.PostgresPool, err = postgresPools.Acquire("pgx", accountHealthConfig.Store.PostgresURL, "jobs-store", accountHealthConfig.Store.PostgresMaxOpenConns, accountHealthConfig.Store.PostgresMaxIdleConns)
+	// 池获取失败必须显式 fail-fast：不检查会被下方 OpenStore 覆盖 err，
+	// 带着 nil pool 进入 J1 装配（对齐 :388 J3a 同型检查）。
+	if err != nil {
+		return failWith(stderr, fmt.Errorf("open J1 account-health jobs-store PostgreSQL pool: %w", err))
 	}
 	accountHealthStore, err = accounthealth.OpenStore(accountHealthConfig.Store)
 	if err != nil {
@@ -183,137 +164,53 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		_ = accountHealthStore.Close()
 		return failWith(stderr, fmt.Errorf("initialize J1 account-health schema: %w", err))
 	}
-	if accountHealthConfig.InputSource == "postgres" {
-		accountHealthInputPool, err = postgresPools.Acquire("pgx", accountHealthConfig.BusinessPostgresURL, "business-input", accountHealthConfig.DirectInputPostgresMaxOpenConns, accountHealthConfig.DirectInputPostgresMaxIdleConns)
-		if err != nil {
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("open J1 account-health direct-input PostgreSQL pool: %w", err))
-		}
-		accountHealthInputDB = accountHealthInputPool.DB()
-		pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		pingErr := accountHealthInputDB.PingContext(pingContext)
-		pingCancel()
-		if pingErr != nil {
-			_ = accountHealthInputPool.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("ping J1 account-health direct-input database: %w", pingErr))
-		}
-		// 死臂已删（w16j 证据：reader secret/TTL 校验与 LoadConfig 完全重叠）
-		// 契约：NewPostgresDirectInputReader 仅在 db/secret/TTL 配置无效时
-		// 失败，这些条件已由 LoadConfig 与上方装配覆盖，当前路径不可达；但
-		// 该构造返回 nil reader + error，吞错会让下方 reader.CheckContract
-		// nil-deref。契约上必须显式失败（fail-fast），不允许忽略。
-		reader, readerErr := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
-		if readerErr != nil {
-			_ = accountHealthInputPool.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("create J1 account-health direct-input reader: %w", readerErr))
-		}
-		contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		contractErr := reader.CheckContract(contractContext)
-		contractCancel()
-		if contractErr != nil {
-			_ = accountHealthInputPool.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
-		}
-		// 基线播种（BUG-0194）：versions 表只被事件路径惰性创建，迁移/导入
-		// 账户无事件即恒空，直读候选 INNER JOIN 筛空导致 J1 无探针可发。
-		// 幂等 INSERT...ON CONFLICT DO NOTHING，已播种账户零写入。
-		baselineContext, baselineCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		seeded, baselineErr := accounthealth.EnsurePostgresDirectInputBaseline(baselineContext, accountHealthInputDB)
-		baselineCancel()
-		if baselineErr != nil {
-			_ = accountHealthInputPool.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("seed J1 account-health direct-input baseline: %w", baselineErr))
-		}
-		logger.Info("J1 直读输入基线播种完成", "seeded", seeded)
-		accountHealthReader = reader
-		accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
-	} else if accountHealthConfig.InputSource == "sqlite" {
-		// 冷启动布局前置：全新环境下 business/stats 两库（含 J1 契约表与
-		// settings 缺省）可能尚不存在，而 stats 库布局真正的常规创建方
-		// buildWorkerAssembly 在本分支之后才运行——不前置会让只读 Ping/
-		// CheckContract 拉停零配置冷启动（旧 files 模式不依赖两库，此为
-		// sqlite 直读缺省化引入的回归）。ensure 与 stats-verify ensure 同一
-		// DDL 且幂等，内部以 WAL 可写句柄即开即关，不与下方只读句柄共存。
-		layoutCtx, layoutCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		layoutErr := accounthealth.EnsureSQLiteDirectInputLayout(layoutCtx, accountHealthConfig.BusinessSQLitePath, accountHealthConfig.StatsSQLitePath)
-		layoutCancel()
-		if layoutErr != nil {
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("初始化 J1 sqlite 直读所需 SQLite 布局失败: %w", layoutErr))
-		}
-		if hooksSQLiteDirectInputLayoutEnsured != nil {
-			hooksSQLiteDirectInputLayoutEnsured()
-		}
-		// sqlite 直读：业务库/统计库两个只读句柄（query_only 强制只读，
-		// busy_timeout 与 gateway 写侧短事务错峰；禁止 WAL/txlock=immediate 的
-		// 写方 DSN——业务库写入由 gateway 单进程持有）。路径转义与布局前置
-		// 同款（url.URL），ensure 落盘文件与只读句柄解析必然同一；经布局前置
-		// 后文件必已存在，Ping 失败只剩真实打开故障（损坏/锁死），仍 fail-fast。
-		businessDSN, businessDSNErr := sqliteReadOnlyFileDSN(accountHealthConfig.BusinessSQLitePath)
-		if businessDSNErr != nil {
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input business database: %w", businessDSNErr))
-		}
-		businessDB, businessErr := sql.Open("sqlite", businessDSN)
-		if businessErr != nil {
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input business database: %w", businessErr))
-		}
-		businessDB.SetMaxOpenConns(1)
-		businessPingCtx, businessPingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		businessPingErr := businessDB.PingContext(businessPingCtx)
-		businessPingCancel()
-		if businessPingErr != nil {
-			_ = businessDB.Close()
-			_ = accountHealthStore.Close()
-			// 布局前置已保证库文件存在，Ping 失败只剩打开/权限/锁或文件损坏
-			// 类真实故障：提示指向路径与磁盘排查，不再误导为「gateway 未自举」。
-			return failWith(stderr, fmt.Errorf("ping J1 account-health sqlite direct-input business database: %w（%s 已由布局前置创建；请检查路径、进程权限与文件是否被其他进程锁死或损坏）", businessPingErr, accountHealthConfig.BusinessSQLitePath))
-		}
-		statsDSN, statsDSNErr := sqliteReadOnlyFileDSN(accountHealthConfig.StatsSQLitePath)
-		if statsDSNErr != nil {
-			_ = businessDB.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input stats database: %w", statsDSNErr))
-		}
-		statsDB, statsErr := sql.Open("sqlite", statsDSN)
-		if statsErr != nil {
-			_ = businessDB.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input stats database: %w", statsErr))
-		}
-		statsDB.SetMaxOpenConns(1)
-		statsPingCtx, statsPingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		statsPingErr := statsDB.PingContext(statsPingCtx)
-		statsPingCancel()
-		if statsPingErr != nil {
-			_ = statsDB.Close()
-			_ = businessDB.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("ping J1 account-health sqlite direct-input stats database: %w", statsPingErr))
-		}
-		// 死臂已删（w16j 证据：reader secret/TTL 校验与 LoadConfig 完全重叠）。
-		reader, _ := accounthealth.NewSQLiteDirectInputReader(businessDB, statsDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
-		contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		contractErr := reader.CheckContract(contractContext)
-		contractCancel()
-		if contractErr != nil {
-			_ = statsDB.Close()
-			_ = businessDB.Close()
-			_ = accountHealthStore.Close()
-			return failWith(stderr, fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
-		}
-		accountHealthBusinessInputDB = businessDB
-		accountHealthStatsInputDB = statsDB
-		accountHealthReader = reader
-		accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
-	} else {
-		accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
+	accountHealthInputPool, err = postgresPools.Acquire("pgx", accountHealthConfig.BusinessPostgresURL, "business-input", accountHealthConfig.DirectInputPostgresMaxOpenConns, accountHealthConfig.DirectInputPostgresMaxIdleConns)
+	if err != nil {
+		_ = accountHealthStore.Close()
+		return failWith(stderr, fmt.Errorf("open J1 account-health direct-input PostgreSQL pool: %w", err))
 	}
+	accountHealthInputDB := accountHealthInputPool.DB()
+	pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pingErr := accountHealthInputDB.PingContext(pingContext)
+	pingCancel()
+	if pingErr != nil {
+		_ = accountHealthInputPool.Close()
+		_ = accountHealthStore.Close()
+		return failWith(stderr, fmt.Errorf("ping J1 account-health direct-input database: %w", pingErr))
+	}
+	// 死臂已删（w16j 证据：reader secret/TTL 校验与 LoadConfig 完全重叠）
+	// 契约：NewPostgresDirectInputReader 仅在 db/secret/TTL 配置无效时
+	// 失败，这些条件已由 LoadConfig 与上方装配覆盖，当前路径不可达；但
+	// 该构造返回 nil reader + error，吞错会让下方 reader.CheckContract
+	// nil-deref。契约上必须显式失败（fail-fast），不允许忽略。
+	reader, readerErr := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
+	if readerErr != nil {
+		_ = accountHealthInputPool.Close()
+		_ = accountHealthStore.Close()
+		return failWith(stderr, fmt.Errorf("create J1 account-health direct-input reader: %w", readerErr))
+	}
+	contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	contractErr := reader.CheckContract(contractContext)
+	contractCancel()
+	if contractErr != nil {
+		_ = accountHealthInputPool.Close()
+		_ = accountHealthStore.Close()
+		return failWith(stderr, fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
+	}
+	// 基线播种（BUG-0194）：versions 表只被事件路径惰性创建，迁移/导入
+	// 账户无事件即恒空，直读候选 INNER JOIN 筛空导致 J1 无探针可发。
+	// 幂等 INSERT...ON CONFLICT DO NOTHING，已播种账户零写入。
+	baselineContext, baselineCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	seeded, baselineErr := accounthealth.EnsurePostgresDirectInputBaseline(baselineContext, accountHealthInputDB)
+	baselineCancel()
+	if baselineErr != nil {
+		_ = accountHealthInputPool.Close()
+		_ = accountHealthStore.Close()
+		return failWith(stderr, fmt.Errorf("seed J1 account-health direct-input baseline: %w", baselineErr))
+	}
+	logger.Info("J1 直读输入基线播种完成", "seeded", seeded)
+	accountHealthReader = reader
+	accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
 	modelRecoveryConfig, err := keymodelrecovery.LoadRedisConfig(os.Getenv)
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("load model-recovery config: %w", err))
@@ -321,9 +218,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var modelRecoveryStore *keymodelrecovery.RedisStore
 	var modelRecoveryRunner *keymodelrecovery.Runner
 	if modelRecoveryConfig.Enabled {
-		if accountHealthReader == nil {
-			return failWith(stderr, errors.New("启用 model-recovery 必须同时启用 J1 direct input reader（postgres 或 sqlite）"))
-		}
 		modelRecoveryStore, err = keymodelrecovery.OpenRedisStore(modelRecoveryConfig)
 		if err != nil {
 			return failWith(stderr, fmt.Errorf("open model-recovery Redis store: %w", err))
@@ -618,16 +512,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				if accountHealthInputPool != nil {
 					closeErr = accountHealthInputPool.Close()
 				}
-				if accountHealthStatsInputDB != nil {
-					if err := accountHealthStatsInputDB.Close(); err != nil && closeErr == nil {
-						closeErr = err
-					}
-				}
-				if accountHealthBusinessInputDB != nil {
-					if err := accountHealthBusinessInputDB.Close(); err != nil && closeErr == nil {
-						closeErr = err
-					}
-				}
 				if err := accountHealthStore.Close(); err != nil && closeErr == nil {
 					closeErr = err
 				}
@@ -771,7 +655,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "accountHealthEnabled", true, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "accountHealthEnabled", true, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
 	components = append(components, worker.components()...)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1140,27 +1024,6 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-// sqliteReadOnlyFileDSN 构造只读打开业务/统计 SQLite 的 file URI。路径处理
-// 与布局前置（EnsureSQLiteDirectInputLayout 的 accounthealth/statsverify
-// sqliteDSN）同款：filepath.Abs → POSIX 斜杠 → 补根斜杠 → url.URL 转义，
-// 含 '#' 等特殊字符的路径两侧解析到同一物理文件。裸拼接已废弃：SQLite 内核
-// URI 解析在首个 '#' 处截断文件名并丢弃其后内容（mode=ro 失效，截断路径不
-// 存在时还会被 READWRITE|CREATE 静默新建），modernc Go 侧虽按首个 '?' 应用
-// _pragma 参数，路径也已错。mode=ro + query_only 双保险只读，busy_timeout=
-// 5000 与 gateway 写侧短事务错峰。禁止照抄写方 openSQLite 的
-// WAL/txlock=immediate。
-func sqliteReadOnlyFileDSN(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("解析 J1 sqlite 直读只读句柄路径失败: %w", err)
-	}
-	uriPath := filepath.ToSlash(absolute)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"}).String(), nil
 }
 
 // failWith 保持原 fail() 的错误输出行为（单行错误到 stderr，逐字节一致），

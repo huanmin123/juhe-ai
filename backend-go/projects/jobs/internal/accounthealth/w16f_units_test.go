@@ -55,10 +55,9 @@ func TestW16fLoadConfigPoolArms(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":  "w16f-instance",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":        "postgres",
 		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": "postgres://w16f.invalid:5432/db",
-		// INPUT_SOURCE 显式 files：缺省已改为跟随 store 模式（2026-09-19），
-		// postgres store 会默认 direct input 并要求 INPUT_POSTGRES_URL。
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE":      "files",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   `C:\w16f\inputs`,
+		// D12：InputSource 恒 postgres 直读（INPUT_POSTGRES_URL 必填）。
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w16f.invalid:5432/business",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    `C:\w16f\inputs`,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": w16fSigningKey(),
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "w16f-secret",
 	}
@@ -69,17 +68,15 @@ func TestW16fLoadConfigPoolArms(t *testing.T) {
 	}
 }
 
-// TestW16fLoadConfigSQLiteCrossDrive 覆盖 Windows 跨盘符 input 目录的
+// TestW16fLoadConfigCrossDriveInputRel 覆盖 Windows 跨盘符 input 目录的
 // filepath.Rel 失败臂（非 Windows 跳过）。
-func TestW16fLoadConfigSQLiteCrossDrive(t *testing.T) {
+func TestW16fLoadConfigCrossDriveInputRel(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Rel 跨盘符失败臂只在 Windows 可达")
 	}
 	cfg := map[string]string{
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w16f-instance",
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     `C:\w16f\state.sqlite3`,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   `Q:\w16f-inputs`,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": w16fSigningKey(),
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "w16f-secret",

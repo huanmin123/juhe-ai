@@ -41,26 +41,6 @@ func TestW16gRunOwnerReturnsLeaseLostWithoutCause(t *testing.T) {
 	}
 }
 
-func TestW16gLoadConfigRejectsUnstatableAuditDatabasePath(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	env["JUHE_AI_AUDIT_LOG_DATABASE_PATH"] = filepath.Join(root, "audit\x00bad.sqlite3")
-	_, err := LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "物理隔离失败") {
-		t.Fatalf("不可 Stat 的 F3 专库路径必须报物理隔离校验失败: %v", err)
-	}
-}
-
-func TestW16gLoadConfigRejectsUnstatableBusinessSettingsPath(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	env["JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH"] = filepath.Join(root, "settings\x00bad.sqlite3")
-	_, err := LoadConfig(func(name string) string { return env[name] })
-	if err == nil || !strings.Contains(err.Error(), "业务设置") {
-		t.Fatalf("不可 Stat 的业务设置只读路径必须报隔离校验失败: %v", err)
-	}
-}
-
 // w16gMissingDriveRoot 探测一个本机不存在的盘符并返回其下的 shard 根目录。
 // CanonicalPath 向上找不到任何存在的物理父目录时会报错，从而命中
 // PathWithin 的错误臂；找不到缺失盘符时跳过。
@@ -76,25 +56,6 @@ func w16gMissingDriveRoot(t *testing.T) string {
 	}
 	t.Skip("未找到不存在的盘符")
 	return ""
-}
-
-func TestW16gLoadConfigRejectsUnresolvableShardRoots(t *testing.T) {
-	missing := w16gMissingDriveRoot(t)
-
-	// Codex shard 根目录无法解析为物理路径 → PathWithin 错误臂。
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"] = missing
-	if _, err := LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "Codex shard 根目录隔离失败") {
-		t.Fatalf("不可解析的 Codex shard 根目录必须报隔离校验失败: %v", err)
-	}
-
-	// usage shard 根目录无法解析为物理路径 → PathWithin 错误臂。
-	env = sqliteEnv(root)
-	env["JUHE_AI_USAGE_SHARD_ROOT"] = missing
-	if _, err := LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "usage shard 根目录隔离失败") {
-		t.Fatalf("不可解析的 usage shard 根目录必须报隔离校验失败: %v", err)
-	}
 }
 
 func TestW16gBlobFileMatchesMetadataRejectsUnstatableKey(t *testing.T) {
@@ -118,7 +79,7 @@ func TestW16gSearchHotSearchFailsOnOversizedLine(t *testing.T) {
 
 func TestW16gRetentionSortsMultipleUnreferencedBlobs(t *testing.T) {
 	ctx := context.Background()
-	store, lease := w14hStore(t)
+	store, lease := w14hPostgresStore(t)
 	// 两个不同 body → 两条独立 blob 行，retention 调度 GC 时必须按 id 排序。
 	if _, err := store.Persist(ctx, lease, w14hPayloadInput("w16g-gc-1", `{"n":1}`)); err != nil {
 		t.Fatal(err)

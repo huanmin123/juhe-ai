@@ -17,8 +17,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,165 +28,14 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// ---------------------------------------------------------------------------
-// health probe outbox
-// ---------------------------------------------------------------------------
-
-func w12cOutboxFixture(t *testing.T) (*businessDB, *sql.DB) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	db, err := sqlOpenSQLiteFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	business := &businessDB{db: db}
-	if err := EnsureHealthProbeOutboxSchema(context.Background(), business); err != nil {
-		t.Fatal(err)
-	}
-	return business, db
-}
-
-func w12cInsertOutboxRow(t *testing.T, db *sql.DB, requestID string, availableAt time.Time, created time.Time, fence string) {
-	t.Helper()
-	_, err := db.Exec(`INSERT INTO account_health_probe_request_outbox
-		(request_id, account_id, reason, source_fence, deadline_at, status, available_at, created_at, updated_at)
-		VALUES (?, 'acc-w12c', 'probe', ?, '2030-01-01T00:00:00Z', 'pending', ?, ?, ?)`,
-		requestID, fence, availableAt.UTC().Format(time.RFC3339Nano), created.UTC().Format(time.RFC3339Nano), created.UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestW12CHealthProbeOutboxClaimCompletePrune(t *testing.T) {
-	business, db := w12cOutboxFixture(t)
-	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
-	fence := `{"state_key":"k","account_id":"acc-w12c","runtime_key":"acc-w12c","source_generation":1,"source_fence_id":"f1","probe_generation":2}`
-	w12cInsertOutboxRow(t, db, "req-due", now.Add(-time.Minute), now.Add(-2*time.Minute), fence)
-	w12cInsertOutboxRow(t, db, "req-future", now.Add(time.Hour), now.Add(-2*time.Minute), fence)
-	w12cInsertOutboxRow(t, db, "req-old", now.Add(-time.Minute), now.Add(-72*time.Hour), fence)
-
-	store := healthProbeOutboxStore{business: business}
-	rows, err := store.ClaimPendingProbeRequests(context.Background(), 10, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 2 || rows[0].RequestID != "req-old" || rows[1].RequestID != "req-due" {
-		t.Fatalf("认领按 created_at 排序的到期行: %+v", rows)
-	}
-	if rows[1].SourceFence.SourceFenceID != "f1" || rows[1].SourceFence.ProbeGeneration != 2 {
-		t.Fatalf("fence 解析错误: %+v", rows[1].SourceFence)
-	}
-	deleted, err := store.CompleteProbeRequest(context.Background(), "req-due", now)
-	if err != nil || !deleted {
-		t.Fatalf("处理成功应删行: %v %v", deleted, err)
-	}
-	again, err := store.CompleteProbeRequest(context.Background(), "req-due", now)
-	if err != nil || again {
-		t.Fatalf("重复删除应幂等 false: %v %v", again, err)
-	}
-
-	// 确定性损坏行（非法 fence）按已处理收敛出队：claim 不报错、损坏行被删、
-	// 其余行正常返回（毒丸隔离；2026-09-23 mockdata 占位行曾卡死 J1）。
-	badFence, db2 := w12cOutboxFixture(t)
-	w12cInsertOutboxRow(t, db2, "req-good", now.Add(-time.Minute), now.Add(-3*time.Minute), fence)
-	w12cInsertOutboxRow(t, db2, "req-bad", now.Add(-time.Minute), now.Add(-2*time.Minute), "{not-json")
-	isolated, err := (healthProbeOutboxStore{business: badFence}).ClaimPendingProbeRequests(context.Background(), 10, now)
-	if err != nil {
-		t.Fatalf("损坏 fence 行不应让 claim 报错: %v", err)
-	}
-	if len(isolated) != 1 || isolated[0].RequestID != "req-good" {
-		t.Fatalf("损坏行应被隔离，只返回合法行: %+v", isolated)
-	}
-	var badLeft int
-	if err := db2.QueryRow(`SELECT COUNT(*) FROM account_health_probe_request_outbox WHERE request_id = 'req-bad'`).Scan(&badLeft); err != nil || badLeft != 0 {
-		t.Fatalf("损坏行应被幂等出队: count=%d err=%v", badLeft, err)
-	}
-
-	// prune：保留期外行删除（含 consumed 无关）。
-	pruner := healthProbeOutboxPruner{business: business, retention: 48 * time.Hour, logger: slog.Default()}
-	deletedCount, err := pruner.pruneOnce(context.Background(), now)
-	if err != nil || deletedCount != 1 {
-		t.Fatalf("prune 应删除保留期外行: %d %v", deletedCount, err)
-	}
-	// pruneCycle 失败告警不终止（业务库关闭后查询失败）。
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	pruner.pruneCycle(context.Background())
-}
-
-// TestW12CHealthProbeOutboxClaimIsolatesCorruptDeadline：deadline_at 文本级
-// 损坏与非法 fence 同类（重试永不成功），claim 必须隔离出队而不是整体报错。
-func TestW12CHealthProbeOutboxClaimIsolatesCorruptDeadline(t *testing.T) {
-	business, db := w12cOutboxFixture(t)
-	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
-	stamp := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(`INSERT INTO account_health_probe_request_outbox
-		(request_id, account_id, reason, source_fence, deadline_at, status, available_at, created_at, updated_at)
-		VALUES ('req-bad-deadline', 'acc-w12c', 'probe', '', 'not-a-time', 'pending', ?, ?, ?)`,
-		stamp, stamp, stamp); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := (healthProbeOutboxStore{business: business}).ClaimPendingProbeRequests(context.Background(), 10, now)
-	if err != nil {
-		t.Fatalf("损坏 deadline 行不应让 claim 报错: %v", err)
-	}
-	if len(rows) != 0 {
-		t.Fatalf("损坏行应被隔离: %+v", rows)
-	}
-	var badLeft int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_health_probe_request_outbox WHERE request_id = 'req-bad-deadline'`).Scan(&badLeft); err != nil || badLeft != 0 {
-		t.Fatalf("损坏行应被出队: %d %v", badLeft, err)
-	}
-}
-
-func TestW12CHealthProbeOutboxBoundaryAndRetentionParse(t *testing.T) {
-	business, db := w12cOutboxFixture(t)
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS accounts (
-		id TEXT PRIMARY KEY,
-		config_revision INTEGER NOT NULL DEFAULT 1,
-		dispatch_revision INTEGER NOT NULL DEFAULT 1,
-		deleted_at TEXT
-	)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
-		account_id TEXT PRIMARY KEY,
-		current_version INTEGER NOT NULL,
-		reserved_at TEXT NOT NULL
-	)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO accounts (id) VALUES ('acc-w12c-boundary')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO account_health_jobs_input_versions VALUES ('acc-w12c-boundary', 3, '2026-01-01')`); err != nil {
-		t.Fatal(err)
-	}
-	boundary := healthProbeBoundary{business: business}
-	configRev, dispatchRev, inputVersion, ok, err := boundary.CurrentProbeInput(context.Background(), "acc-w12c-boundary")
-	if err != nil || !ok || configRev != 1 || dispatchRev != 1 || inputVersion != 3 {
-		t.Fatalf("boundary=%d %d %d ok=%v err=%v", configRev, dispatchRev, inputVersion, ok, err)
-	}
-	if _, _, _, ok, err := boundary.CurrentProbeInput(context.Background(), "missing"); ok || err != nil {
-		t.Fatalf("缺失账户必须 ok=false: %v %v", ok, err)
-	}
-	if _, _, _, ok, err := boundary.CurrentProbeInput(context.Background(), "missing"); ok || err != nil {
-		t.Fatalf("缺失账户必须 ok=false: %v %v", ok, err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, _, err := boundary.CurrentProbeInput(context.Background(), "x"); err == nil {
-		t.Fatal("业务库关闭必须暴露错误")
-	}
-
-	// 保留天数解析：默认 / 越界回退 / 非法回退 / 合法值。
+// parseProbeOutboxRetentionDaysArms：保留天数解析（默认/越界回退/非法回退/
+// 合法透传/nil getenv）。原 sqlite 存储 face 臂随 sqlite 形态退役删除，语义
+// 由 w16i PG 全链 e2e 承接。
+func TestW12CProbeOutboxRetentionParseArms(t *testing.T) {
 	warned := 0
 	warn := func(string) { warned++ }
 	if got := parseProbeOutboxRetentionDays(func(string) string { return "" }, warn); got != 7 {
@@ -209,107 +56,39 @@ func TestW12CHealthProbeOutboxBoundaryAndRetentionParse(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// oauth sweep fanout 与 stats 脏标记交接
-// ---------------------------------------------------------------------------
-
-func TestW12CAuthorizationGrantFanoutAndDirtyMarker(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	db, err := sqlOpenSQLiteFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
-		account_id TEXT PRIMARY KEY,
-		current_version INTEGER NOT NULL CHECK (current_version >= 1),
-		reserved_at TEXT NOT NULL
-	)`); err != nil {
-		t.Fatal(err)
-	}
-	store, err := oauthrefresh.OpenStore(db, oauthrefresh.StoreSQLite, wgBalanceSecret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fanout := authorizationGrantHealthFanout{store: store}
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	err = fanout.FinalizeExpiredGrant(context.Background(), tx, oauthrefresh.ResourceAuthorizationGrant{
-		ResourceType: "resource_authorization", ResourceID: "wg-missing",
-	}, "w12c")
-	if err != nil {
-		t.Fatalf("不存在授权的 fanout 应幂等成功: %v", err)
-	}
-
-	// 脏标记：nil marker warn 跳过；marker 错误上抛；成功路径打 info。
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := markAllGroupAccountStatsAfterAuthzWrite(context.Background(), logger, nil, "w12c-reason"); err != nil {
-		t.Fatal(err)
-	}
-	failing := &w12cFailingMarker{err: errors.New("w12c: mark boom")}
-	if err := markAllGroupAccountStatsAfterAuthzWrite(context.Background(), logger, failing, "w12c-reason"); err == nil {
-		t.Fatal("mark 错误必须暴露")
-	}
-	ok := &w12cFailingMarker{}
-	if err := markAllGroupAccountStatsAfterAuthzWrite(context.Background(), logger, ok, "w12c-reason"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-type w12cFailingMarker struct{ err error }
-
-func (m *w12cFailingMarker) MarkAllGroupAccountStatsDirty(context.Context, string, time.Time) error {
-	return m.err
-}
-
-// ---------------------------------------------------------------------------
 // retention 设置读模型与本地队列
 // ---------------------------------------------------------------------------
 
 func TestW12CRetentionSettingsRuntimeArms(t *testing.T) {
-	dir, dirErr := os.MkdirTemp("", "w12c-retention-settings")
-	if dirErr != nil {
-		t.Fatal(dirErr)
-	}
-	db, err := sqlOpenSQLiteFile(filepath.Join(dir, "business.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = db.Close()
-		time.Sleep(100 * time.Millisecond)
-		_ = os.RemoveAll(dir)
+	// PG 唯一形态：juhe_business.system_settings 独立测试库（原 SQLite 文件
+	// 库夹具随 sqlite 形态退役删除）。
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business;
+CREATE TABLE juhe_business.system_settings (
+	system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
+	PRIMARY KEY (system_account_id, key))`)
+		return err
 	})
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (
-		system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
-		PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
-	runtime := newRetentionSettingsRuntime(db, false, slog.Default())
+	runtime := newRetentionSettingsRuntime(db, slog.Default())
 	ctx := context.Background()
 	settings, err := runtime.settings(ctx)
 	if err != nil || len(settings) != len(retentionPolicySettingKeys) {
 		t.Fatalf("settings=%v err=%v", settings, err)
 	}
 	// 非法整数 → 新建读模型绕开 60s 缓存后任务失败。
-	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin', 'usageRecordRetentionDays', '"abc"')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings VALUES ('sys_admin', 'usageRecordRetentionDays', '"abc"')`); err != nil {
 		t.Fatal(err)
 	}
-	freshRuntime := newRetentionSettingsRuntime(db, false, slog.Default())
+	freshRuntime := newRetentionSettingsRuntime(db, slog.Default())
 	if _, err := freshRuntime.settings(ctx); err == nil {
 		t.Fatal("非法设置值必须失败")
 	}
-	if _, err := db.Exec(`DELETE FROM system_settings WHERE key = 'usageRecordRetentionDays'`); err != nil {
+	if _, err := db.Exec(`DELETE FROM juhe_business.system_settings WHERE key = 'usageRecordRetentionDays'`); err != nil {
 		t.Fatal(err)
 	}
 
-	// 时区：读取 JSON 值 → 缓存命中 → 缺行回落种子默认 → 非法 JSON 失败 →
+	// 时区：缺行回落种子默认 → 缓存命中 → 显式值生效 → 非法 JSON 失败 →
 	// 非法时区失败 → location。
-	if err := runtime.db.QueryRowContext(ctx, "SELECT 1").Err(); err != nil {
-		t.Fatal(err)
-	}
 	name, err := runtime.timezoneName(ctx)
 	if err != nil || name != "Asia/Shanghai" {
 		t.Fatalf("缺行应回落种子时区 Asia/Shanghai: %q %v", name, err)
@@ -317,7 +96,7 @@ func TestW12CRetentionSettingsRuntimeArms(t *testing.T) {
 	if name, err = runtime.timezoneName(ctx); err != nil || name != "Asia/Shanghai" {
 		t.Fatalf("缓存命中: %q %v", name, err)
 	}
-	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"Asia/Shanghai"')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"Asia/Shanghai"')`); err != nil {
 		t.Fatal(err)
 	}
 	runtime.mu.Lock()
@@ -327,7 +106,7 @@ func TestW12CRetentionSettingsRuntimeArms(t *testing.T) {
 	if name, err = runtime.timezoneName(ctx); err != nil || name != "Asia/Shanghai" {
 		t.Fatalf("显式时区应生效: %q %v", name, err)
 	}
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = 'not-json' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = 'not-json' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatal(err)
 	}
 	runtime.mu.Lock()
@@ -337,7 +116,7 @@ func TestW12CRetentionSettingsRuntimeArms(t *testing.T) {
 	if _, err := runtime.timezoneName(ctx); err == nil {
 		t.Fatal("非法 JSON 必须失败")
 	}
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '"Mars/Phobos"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"Mars/Phobos"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runtime.timezoneName(ctx); err == nil {
@@ -347,28 +126,20 @@ func TestW12CRetentionSettingsRuntimeArms(t *testing.T) {
 	if err == nil || location != nil {
 		t.Fatalf("非法时区 location 必须失败: %v %v", location, err)
 	}
-	if _, err := db.Exec(`UPDATE system_settings SET value_json = '"UTC"' WHERE key = 'usageStatsTimezone'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.system_settings SET value_json = '"UTC"' WHERE key = 'usageStatsTimezone'`); err != nil {
 		t.Fatal(err)
 	}
 	if location, err = runtime.location(ctx); err != nil || location == nil {
 		t.Fatalf("UTC location: %v %v", location, err)
 	}
-	// PG 模式读失败回落默认 + 告警。
-	pgRuntime := newRetentionSettingsRuntime(db, true, slog.Default())
-	if name, err = pgRuntime.timezoneName(ctx); err != nil || name == "" {
+	// PG 读失败（表缺失）→ 告警 + 回落默认时区（postgresBackgroundJobSettingValue
+	// 语义：快照刷新失败不拉停任务）。新建 runtime 绕开 60s 缓存。
+	if _, err := db.Exec(`DROP TABLE juhe_business.system_settings`); err != nil {
+		t.Fatal(err)
+	}
+	brokenRuntime := newRetentionSettingsRuntime(db, slog.Default())
+	if name, err = brokenRuntime.timezoneName(ctx); err != nil || name != "Asia/Shanghai" {
 		t.Fatalf("PG 读失败应回落默认: %q %v", name, err)
-	}
-	// 非缺表 SQL 错误 → 任务失败：把 value_json 列移除，读取变成列缺失错误
-	// （不是 missing-table 语义，必须暴露）。
-	if _, err := db.Exec(`DROP TABLE system_settings`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	brokenRuntime := newRetentionSettingsRuntime(db, false, slog.Default())
-	if _, err := brokenRuntime.timezoneName(ctx); err == nil {
-		t.Fatal("列缺失的读失败必须暴露")
 	}
 	if _, ok := jobssettings.DefaultSystemSettings["usageStatsTimezone"]; !ok {
 		t.Fatal("DEFAULT_SYSTEM_SETTINGS 必须含时区种子")
@@ -434,18 +205,15 @@ func TestW12CRecordMaintenanceQueueLimits(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW12CScheduleSettingsAndProbeSettings(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	db, err := sqlOpenSQLiteFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (
-		system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
-		PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
-	source := jobssettings.NewSource(jobssettings.Options{DB: db, Mode: jobssettings.SQLite, Warn: jobssettingsWarn(slog.Default())})
+	// PG 唯一形态：juhe_business.system_settings 独立测试库。
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business;
+CREATE TABLE juhe_business.system_settings (
+	system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
+	PRIMARY KEY (system_account_id, key))`)
+		return err
+	})
+	source := jobssettings.NewSource(jobssettings.Options{DB: db, Mode: jobssettings.Postgres, Warn: jobssettingsWarn(slog.Default())})
 	logger := slog.Default()
 	// 非设置驱动 job。
 	if _, ok := resolveScheduleSettingsInterval(context.Background(), source, logger, "unknown-job"); ok {
@@ -457,7 +225,7 @@ func TestW12CScheduleSettingsAndProbeSettings(t *testing.T) {
 		t.Fatalf("设置驱动 job 应解析: %v %v", interval, ok)
 	}
 	// 越界值 → Number 错误 → 回落注册表默认。
-	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsAggregationIntervalSeconds', '999999')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings VALUES ('sys_admin', 'usageStatsAggregationIntervalSeconds', '999999')`); err != nil {
 		t.Fatal(err)
 	}
 	interval, ok = resolveScheduleSettingsInterval(context.Background(), source, logger, "usage-stats-aggregation")
@@ -471,7 +239,15 @@ func TestW12CScheduleSettingsAndProbeSettings(t *testing.T) {
 	if probeSettings == nil {
 		t.Fatal("设置源不得为 nil")
 	}
-	_ = probeSettings
+	if got := probeSettings("accountQualityWindowMinutes", 1, 1440); got != 10 {
+		t.Fatalf("缺行应回落默认 10: %d", got)
+	}
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings VALUES ('sys_admin', 'accountQualityWindowMinutes', '"abc"')`); err != nil {
+		t.Fatal(err)
+	}
+	if got := probeSettings("accountQualityWindowMinutes", 1, 1440); got != 10 {
+		t.Fatalf("非法值应回落默认 10: %d", got)
+	}
 
 	// jobssettingsWarn：nil logger 返回 nil；非 nil 时不 panic。
 	if jobssettingsWarn(nil) != nil {
@@ -488,15 +264,13 @@ func TestW12CLoadWorkerConfigAndDisabledStartup(t *testing.T) {
 	}
 	// 非法数值 env 失败分支（bad drain timeout）。
 	badEnv := getenvFrom(map[string]string{
-		"JUHE_AI_DATABASE_DRIVER":       "sqlite",
-		"JUHE_AI_DATABASE_PATH":         filepath.Join(t.TempDir(), "business.sqlite3"),
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS": "abc",
 	})
 	if _, err := loadWorkerConfig(badEnv); err == nil {
 		t.Fatal("非法 drain timeout 必须失败")
 	}
 	// 禁用任务登记：空清单 + 家族未启用登记。
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	defer assembly.closeStores()
 	registerDisabledJobsStartup(assembly, slog.Default())
 	if len(assembly.disabledJobs) == 0 {
@@ -510,7 +284,7 @@ func TestW12CLoadWorkerConfigAndDisabledStartup(t *testing.T) {
 
 func TestW12CMinimalAssemblyFenceSettlerArms(t *testing.T) {
 	redisServer := miniredis.RunT(t)
-	config := workerConfig{Driver: "sqlite", BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3")}
+	config := workerConfig{}
 	assembly := newWorkerAssembly(config, slog.Default())
 	defer assembly.closeStores()
 	// Redis 未配置 → nil settler。
@@ -553,7 +327,7 @@ func TestW12CMinimalAssemblyFenceSettlerArms(t *testing.T) {
 func TestW12CMinimalAssemblyFenceSettlerStandaloneNotWarn(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	config := workerConfig{Driver: "sqlite", BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3")}
+	config := workerConfig{}
 	assembly := newWorkerAssembly(config, logger)
 	defer assembly.closeStores()
 	settler, closer, err := assembly.wireHealthProbeFenceSettler()

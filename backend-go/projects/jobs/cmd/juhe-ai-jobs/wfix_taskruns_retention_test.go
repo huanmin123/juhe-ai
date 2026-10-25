@@ -12,7 +12,6 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,75 +19,13 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 )
-
-// TestWorkerRetentionTaskRunsHistoryCleanupRound：组合根 seed → 跑一轮
-// data-retention-cleanup → 断言过期运行历史/租约被删、新鲜行保留。
-func TestWorkerRetentionTaskRunsHistoryCleanupRound(t *testing.T) {
-	dir := t.TempDir()
-	seedDataRetention(t, dir)
-	assembly, err := buildWorkerAssembly(retentionTestConfig(dir), slog.Default())
-	if err != nil {
-		t.Fatalf("build worker assembly: %v", err)
-	}
-	defer assembly.closeStores()
-
-	// background_task_runs / background_job_leases 已由 wireTaskRunsFamily 的
-	// EnsureSchema 建表。租约行 job_name 用 'worker'（scheduled 形态）：
-	// ReconcileStale 只收口 temporary-maintenance-worker 租约，不会替本测试
-	// 提前删行，删除只能来自新的保留清理。
-	taskRuns := openTestSQLite(t, filepath.Join(dir, "task-runs.sqlite3"))
-	mustExec(t, taskRuns,
-		`INSERT INTO background_task_runs (run_id, job_name, job_type, worker_role, status, lease_key, submitted_at, created_at, updated_at)
-		 VALUES ('run-old', 'usage-stats-aggregation', 'usage-stats-aggregation', 'worker', 'completed', 'k', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`)
-	mustExec(t, taskRuns,
-		`INSERT INTO background_task_runs (run_id, job_name, job_type, worker_role, status, lease_key, submitted_at, created_at, updated_at)
-		 VALUES ('run-fresh', 'usage-stats-aggregation', 'usage-stats-aggregation', 'worker', 'completed', 'k', '2100-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z')`)
-	mustExec(t, taskRuns,
-		`INSERT INTO background_job_leases (lease_key, job_name, shard_key, owner_id, lease_until, heartbeat_at, started_at, updated_at)
-		 VALUES ('lease-old', 'worker', 'global', 'o', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`)
-	mustExec(t, taskRuns,
-		`INSERT INTO background_job_leases (lease_key, job_name, shard_key, owner_id, lease_until, heartbeat_at, started_at, updated_at)
-		 VALUES ('lease-fresh', 'worker', 'global', 'o', '2100-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z')`)
-
-	if _, err := assembly.runWiredJobOnce(context.Background(), "data-retention-cleanup"); err != nil {
-		t.Fatalf("data-retention-cleanup round: %v", err)
-	}
-
-	var oldRuns int64
-	if err := taskRuns.QueryRow(`SELECT COUNT(*) FROM background_task_runs WHERE run_id = 'run-old'`).Scan(&oldRuns); err != nil {
-		t.Fatal(err)
-	}
-	if oldRuns != 0 {
-		t.Fatal("过期 background_task_runs 行未被保留清理删除")
-	}
-	var freshRuns int64
-	if err := taskRuns.QueryRow(`SELECT COUNT(*) FROM background_task_runs WHERE run_id = 'run-fresh'`).Scan(&freshRuns); err != nil {
-		t.Fatal(err)
-	}
-	if freshRuns != 1 {
-		t.Fatal("新鲜 background_task_runs 行被误删")
-	}
-	var oldLeases int64
-	if err := taskRuns.QueryRow(`SELECT COUNT(*) FROM background_job_leases WHERE lease_key = 'lease-old'`).Scan(&oldLeases); err != nil {
-		t.Fatal(err)
-	}
-	if oldLeases != 0 {
-		t.Fatal("过期 background_job_leases 行未被保留清理删除")
-	}
-	var freshLeases int64
-	if err := taskRuns.QueryRow(`SELECT COUNT(*) FROM background_job_leases WHERE lease_key = 'lease-fresh'`).Scan(&freshLeases); err != nil {
-		t.Fatal(err)
-	}
-	if freshLeases != 1 {
-		t.Fatal("有效 background_job_leases 行被误删")
-	}
-}
 
 // TestScheduleWiredJobDuplicateRegistrationFailsFast：重名注册必须记录
 // fail-fast 错误（指名任务），且首次注册保持原状（记账不失真）。
 func TestScheduleWiredJobDuplicateRegistrationFailsFast(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	defer assembly.scheduler.Stop()
 
 	var firstCalls, secondCalls atomic.Int64
@@ -116,6 +53,27 @@ func TestScheduleWiredJobDuplicateRegistrationFailsFast(t *testing.T) {
 	if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
 		t.Fatalf("重名注册必须保留首个任务闭包: first=%d second=%d", firstCalls.Load(), secondCalls.Load())
 	}
+}
+
+// newTaskRunHistoryAssembly 在独立 PG 测试库上构造带 taskruns 运行历史的
+// 装配体（PG 唯一形态；原 sqlite 文件夹具随 sqlite 形态退役删除）。
+func newTaskRunHistoryAssembly(t *testing.T, _ string) (*workerAssembly, *sql.DB) {
+	t.Helper()
+	db, dsn := wgOpenPGDialectDB(t, nil)
+	store, err := taskruns.OpenStore(taskruns.StoreConfig{Mode: taskruns.ModePostgres, PostgresURL: dsn})
+	if err != nil {
+		t.Fatalf("open taskruns store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	assembly := &workerAssembly{
+		config:        workerConfig{InstanceID: "wg-history", WorkerRole: "worker", WorkerReplicaIdx: 1},
+		logger:        slog.Default(),
+		taskRunsStore: store,
+	}
+	return assembly, db
 }
 
 // TestWithLeasePanicRecordsFailedTerminalAndReleasesLease：包裹任务 panic 后
@@ -157,8 +115,7 @@ func TestWithLeasePanicRecordsFailedTerminalAndReleasesLease(t *testing.T) {
 func TestWorkerSchedulerDrainTruncationDisclosedWarn(t *testing.T) {
 	var buffer syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buffer, nil))
-	config := retentionTestConfig(t.TempDir())
-	config.DrainTimeout = 100 * time.Millisecond
+	config := workerConfig{DrainTimeout: 100 * time.Millisecond}
 	assembly := newWorkerAssembly(config, logger)
 	defer assembly.closeStores()
 

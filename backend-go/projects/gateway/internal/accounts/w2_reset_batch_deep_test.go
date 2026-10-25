@@ -179,7 +179,7 @@ func TestW2BatchScheduleAndDispatchOutbox(t *testing.T) {
 	// 相同时间表再次提交 → 无变化。
 	revision := func(id string) int64 {
 		var value int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, id).Scan(&value); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, id).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
 		return value

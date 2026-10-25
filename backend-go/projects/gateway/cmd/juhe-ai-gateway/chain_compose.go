@@ -343,10 +343,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// 使两个 env 对队列失效，只能吃到包级默认。
 	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, deps.UsageFinalizationMaxItems, deps.ConcurrencyGlobalMax)
 	dispatch.OverflowEnabled = spool != nil
-	// chainSyncPricingAllowed 是同步定价目录 gate 的组合根字面量（Node
-	// canUseSynchronousCatalogPricingInGatewayRequest：cacheDriver !== 'redis'
-	// ⇒ true）：usageService 的 ServiceConfig.SyncPricingAllowed 与完成尝试
-	// 记录（chainFinalizationUsage.syncPricingAllowed）同源共用，不另设配置项。
+	// chainSyncPricingAllowed 是同步定价目录 gate 的组合根字面量（D6，存储
+	// 形态收口：原按 cacheDriver 判断的写法本就以常量表达，redis 下现行为
+	// true 逐字节保持；启用同步定价属独立行为裁决，不在收口战役内）：usage
+	// Service 的 ServiceConfig.SyncPricingAllowed 与完成尝试记录
+	//（chainFinalizationUsage.syncPricingAllowed）同源共用，不另设配置项。
 	const chainSyncPricingAllowed = true
 	// 同步定价目录（chain_pricing.go）单实例共享：usageService 与完成尝试
 	// 记录（gatewayChain.finalizationPricing）走同一 catalog 实例。

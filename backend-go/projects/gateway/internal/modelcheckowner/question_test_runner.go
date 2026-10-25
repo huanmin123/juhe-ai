@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 )
 
@@ -22,8 +24,9 @@ const questionTestProbeTimeout = 2 * time.Minute
 
 // NewQuestionTestRunner 构造题库提交门禁的测试执行器。resolve 是目标解析
 // 端口（main 装配传 businessSource.Resolver()）；dispatcher 是检测链路的
-// 传输派发端口（main 装配传 HostDependencies 同款 ProbeAdapter）。dispatcher
-// 为 nil 时 probe 回退直连——提交前诊断直连不走新的调度语义。
+// 传输派发端口（main 装配传 HostDependencies 同款 ProbeAdapter，与 J3b
+// 运行链同 KeyModel gate 与账户熔断 gate 语义：Diagnostic 探针不写 usage、
+// 传输失败对被测账户中性结算）。dispatcher 为 nil 时 probe 回退直连。
 func NewQuestionTestRunner(resolve Resolver, dispatcher modelcheckprobe.DispatcherPort) modelcheckquestionbank.TestRunner {
 	return &questionTestRunner{resolve: resolve, dispatcher: dispatcher}
 }
@@ -81,8 +84,23 @@ func (r *questionTestRunner) TestQuestion(ctx context.Context, input modelcheckq
 // 进度 hook（本链路只跑 quiz 诊断族，其余家族不执行，快照依赖无观测面）。
 // Model 用解析出的上游映射模型，RequestModel 保留公开请求模型，二者不等
 // 即 ModelMappingApplied；Retry 取 quick 档（与手动检测默认档一致）。
+// Capability 构造与 J3b 运行链（runtime.go probeSuite.Capability）同构：
+// 派发器接通时账户熔断门以 CredentialSourceAccountID 为准入键，缺失会被
+// Prepare 直接拦截（"account id is required"），故回退链与运行链逐字段对齐。
 func (r *questionTestRunner) suiteFor(target Target, input modelcheckquestionbank.TestQuestionInput) modelcheckprobe.Suite {
 	probeModel := target.UpstreamModel
+	upstreamEndpointMode := target.UpstreamEndpointMode
+	if upstreamEndpointMode == "" {
+		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(target.UpstreamProtocol, false)
+	}
+	credentialSourceID := target.CredentialSourceAccountID
+	if credentialSourceID == "" {
+		credentialSourceID = input.AccountID
+	}
+	clientEndpointFamily := string(target.SourceEndpointFamily)
+	if clientEndpointFamily == "" {
+		clientEndpointFamily = string(target.Protocol)
+	}
 	return modelcheckprobe.Suite{
 		Endpoint:                  target.Endpoint,
 		ProviderCode:              target.ProviderCode,
@@ -101,6 +119,7 @@ func (r *questionTestRunner) suiteFor(target Target, input modelcheckquestionban
 		Client:                    target.Client,
 		Adapter:                   target.UpstreamAdapter,
 		Dispatcher:                r.dispatcher,
+		Capability:                keymodelruntime.Capability{CredentialSourceAccountID: credentialSourceID, KeyFingerprint: credentialSourceID, ClientModel: input.Model, ClientEndpointFamily: clientEndpointFamily, FinalUpstreamModel: probeModel, UpstreamEndpointMode: upstreamEndpointMode, DispatchRevision: target.DispatchRevision},
 		Retry:                     modelcheckprobe.RetryOptionsForProfile("quick"),
 		QuizRequested:             true,
 		QuizQuestions: []modelcheckprobe.QuizQuestion{{

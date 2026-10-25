@@ -381,9 +381,9 @@ func TestW2ImportPreviewProxyResolution(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	now := "2026-01-01T00:00:00.000Z"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('pp-existing', ?, '已有代理', 'socks5', 'proxy.example.com', 1080, 1, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('pp-existing', ?, '已有代理', 'socks5', 'proxy.example.com', 1080, true, 'unknown', ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('pp-disabled', ?, '停用代理', 'socks5', 'proxy.example.com', 1080, 0, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('pp-disabled', ?, '停用代理', 'socks5', 'proxy.example.com', 1080, false, 'unknown', ?, ?)`, adminID, now, now)
 
 	t.Run("proxyRef 与 proxyProfileId 互斥", func(t *testing.T) {
 		account := w2APIKeyAccount("a", "g")
@@ -547,13 +547,13 @@ func TestW2ImportConfirmExecutesPlan(t *testing.T) {
 
 	// DB 副作用：账户、分组、代理均落库；active 导入重映射为 pending_test。
 	var status, groupID, proxyID string
-	if err := env.db.QueryRow(`SELECT status, proxy_profile_id FROM accounts WHERE id = ?`, createdID).Scan(&status, &proxyID); err != nil {
+	if err := env.db.QueryRow(`SELECT status, proxy_profile_id FROM accounts WHERE id = $1`, createdID).Scan(&status, &proxyID); err != nil {
 		t.Fatalf("账户未落库：%v", err)
 	}
 	if status != "pending_test" {
 		t.Fatalf("导入账户状态应为 pending_test，实际 %s", status)
 	}
-	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND name = '导入分组'`, adminID).Scan(&groupID); err != nil {
+	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = $1 AND name = '导入分组'`, adminID).Scan(&groupID); err != nil {
 		t.Fatalf("分组未落库：%v", err)
 	}
 	if err := env.db.QueryRow(`SELECT id FROM proxy_profiles WHERE name = '导入代理'`).Scan(&proxyID); err != nil {

@@ -18,12 +18,14 @@ func w13aBatchAccounts(t *testing.T, env *testEnv, suffix string) (adminID strin
 	t.Helper()
 	adminID = env.login(t, "root", "root-pass", "super_admin")
 	now := "2026-09-17T00:00:00.000Z"
-	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '["gpt-4o-mini"]', ?, ?)`, now, now)
-	env.exec(t, `INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '["gpt-4o-mini"]', ?, ?)
+		ON CONFLICT DO NOTHING`, now, now)
+	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
 		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
 		VALUES ('profile_openai_openai_v1', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1',
-		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)`, now, now)
+		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)
+		ON CONFLICT DO NOTHING`, now, now)
 	env.seedAccount(t, "acc-w13a-b1"+suffix, adminID, "w13a-b1"+suffix, "active")
 	env.seedAccount(t, "acc-w13a-b2"+suffix, adminID, "w13a-b2"+suffix, "active")
 	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
@@ -40,7 +42,7 @@ func w13aBatchAccounts(t *testing.T, env *testEnv, suffix string) (adminID strin
 	}
 	revision := func(id string) int64 {
 		var revision int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, id).Scan(&revision); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, id).Scan(&revision); err != nil {
 			t.Fatal(err)
 		}
 		return revision
@@ -90,7 +92,7 @@ func TestW13ABatchUpdateFieldMatrix(t *testing.T) {
 		t.Helper()
 		for index := range targets {
 			var revision int64
-			if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, targets[index].AccountID).Scan(&revision); err != nil {
+			if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, targets[index].AccountID).Scan(&revision); err != nil {
 				t.Fatal(err)
 			}
 			targets[index].ConfigRevision = revision
@@ -163,7 +165,7 @@ func TestW13ABatchUpdateFieldMatrix(t *testing.T) {
 	}
 	now := "2026-09-17T00:00:00.000Z"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-batch', ?, 'w13a-batch-proxy', 'socks5', 'h', 1080, 1, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13a-batch', ?, 'w13a-batch-proxy', 'socks5', 'h', 1080, true, 'unknown', ?, ?)`, adminID, now, now)
 	refresh()
 	if _, err := env.store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: targets,
@@ -245,7 +247,7 @@ func TestW13ABatchUpdateValidationArms(t *testing.T) {
 	env.seedAccount(t, "acc-w13a-b2x", adminID, "w13a-b2x", "active")
 	revision := func(id string) int64 {
 		var value int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, id).Scan(&value); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, id).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
 		return value

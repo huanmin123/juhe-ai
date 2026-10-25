@@ -19,23 +19,18 @@ import (
 // 运行态读面，对照 Node loadProjectedAccountListItems）。
 //
 // 依赖门禁（逐项登记 disabled，不静默跳过）：
-//   - databaseDriver=postgres：Node PostgreSQL-only 物化器，非 PG 返回空结果，
-//     SQLite 分支不注册（account-list-availability-projection.service.ts）；
 //   - JUHE_AI_REDIS_STATE_URL + 合法 namespace：concurrency/runtime
 //     availability 为 Redis 单实现（同 Node 网关键空间）；
 //   - JUHE_AI_SECRET：apiKeyRuntime 汇总需凭据解密与 Key 指纹；
 //   - 探针族（proberepo 凭据解码）与 OAuth 族（schedule 边界同步）已装配。
+// 原 databaseDriver=postgres 门禁（Node PostgreSQL-only 物化器，非 PG 分支
+// 不注册）已随 sqlite 形态退役删除：PG 分支恒注册。
 //
 // 登记差异（不构成静默降级）：payload 的
 // isAccountBalanceSnapshotSuppressed 依赖网关进程内清理协调器内存态；jobs
 // 进程无该组件，等价于 Node 协调器空状态（恒 false）。
 func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business *businessDB, probeStore *proberepo.Store) error {
 	const jobName = "account-list-availability-projection-maintenance"
-	if a.config.Driver != "postgres" {
-		a.registerDisabledJob(jobName,
-			"Node PostgreSQL-only 物化器：databaseDriver != postgres 时 runAccountListAvailabilityProjectionMaintenance 返回空结果，默认/SQLite 分支不注册（account-list-availability-projection.service.ts）")
-		return nil
-	}
 	if a.config.RedisStateURL == "" {
 		a.registerDisabledJob(jobName,
 			"缺 JUHE_AI_REDIS_STATE_URL（账户并发与运行态可用性为 Redis 单实现，jobs 与 Node/Go 网关共用键空间，无 Redis 时不得落库复制）")
@@ -80,7 +75,7 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 
 	repo, err := circuitstore.NewListAvailabilityRepo(circuitstore.ListAvailabilityConfig{
 		DB:       business.db,
-		Postgres: business.postgres,
+		Postgres: true,
 	})
 	if err != nil {
 		return err
@@ -88,8 +83,8 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 	loader, err := circuitstore.NewProjectionItemLoader(circuitstore.ProjectionLoadConfig{
 		Business:            business.db,
 		Stats:               business.db,
-		Postgres:            business.postgres,
-		StatsPostgres:       business.postgres,
+		Postgres:            true,
+		StatsPostgres:       true,
 		Secret:              a.config.Secret,
 		Credentials:         projectionCredentials{store: probeStore},
 		Concurrency:         circuitstore.NewOverlayConcurrencySource(overlayStore),
@@ -104,7 +99,7 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 	// dispatch revision 家族，认领后仍被网关 dispatch revision 门控拒绝。复用
 	// 本族入参的既有业务库句柄做方言渲染（同步事务本身经 hook 传入，不新建
 	// 连接池）；推进失败 best-effort 只记 warn（见 worker_oauth_activation.go）。
-	activationBusiness, activationBusinessErr := accounthealth.NewProjectionBusinessDB(business.db, business.postgres)
+	activationBusiness, activationBusinessErr := accounthealth.NewProjectionBusinessDB(business.db)
 	if activationBusinessErr != nil {
 		return activationBusinessErr
 	}
@@ -134,7 +129,7 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 		}
 		return 0, false
 	}, func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		// driverPostgres 恒 true：非 PG 分支已在装配门禁登记 disabled。
+		// driverPostgres 恒 true：PG 唯一形态（原非 PG 门禁已删除）。
 		if _, err := opsjobs.RunListAvailabilityMaintenance(taskCtx, maintenance, true); err != nil {
 			return jobsched.TaskResult{}, err
 		}

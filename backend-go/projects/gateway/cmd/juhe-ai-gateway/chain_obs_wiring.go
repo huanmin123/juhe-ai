@@ -141,16 +141,15 @@ func routingWallBudgetObserverOf() gatewayrouting.RoutingObserver {
 
 // wireGatewayObservabilityArms 装配观测暗区（chain_runtime.go 组合根调用，
 // 位置在 AccountCircuits 与 HotQuality 构造之后）。Observer 取 gatewayobs
-// 包级单例（按 runtime 驱动身份构造 store；standalone=memory /
-// performance=redis，与 hotquality 同轴），构造失败 fail-fast——与该文件的
-// 组合根契约一致。
+// 包级单例（redis 运行态驱动身份构造 store，与 hotquality 同轴），构造失败
+// fail-fast——与该文件的组合根契约一致。
 func wireGatewayObservabilityArms(services *chainRuntimeServices, cfg runtimeConfig) error {
 	if services == nil {
 		return nil
 	}
 	observer, err := gatewayobs.GetGatewayRoutingObservability(context.Background(), gatewayobs.RuntimeDriverConfig{
-		RuntimeMode:        cfg.RuntimeMode,
-		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		RuntimeMode:        "performance",
+		RuntimeStateDriver: "redis",
 		RedisStateURL:      cfg.RedisStateURL,
 		RedisNamespace:     cfg.RedisNamespace,
 	}, func(options *gatewayobs.ObserverOptions) {

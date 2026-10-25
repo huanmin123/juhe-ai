@@ -83,7 +83,7 @@ func TestChainGroupBindingOrdererRotatesRoundRobinBindings(t *testing.T) {
 func TestComposeWiresDynamicRouteOrderer(t *testing.T) {
 	runtime := readSource(t, "chain_runtime.go")
 	for _, needle := range []string{
-		"gatewayrouting.NewAPIKeyGroupRouteSelector(cfg.RuntimeStateDriver",
+		"gatewayrouting.NewAPIKeyGroupRouteSelector(\"redis\"",
 		"Orderer: newChainGroupBindingOrderer(routeSelector)",
 	} {
 		if !strings.Contains(runtime, needle) {

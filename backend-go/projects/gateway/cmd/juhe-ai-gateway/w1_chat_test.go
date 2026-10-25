@@ -239,15 +239,3 @@ func TestW1ChatAttachSubscriberTrySend(t *testing.T) {
 		t.Fatal("dropped 后必须直接 false")
 	}
 }
-
-func TestW1OpenChatDatabase(t *testing.T) {
-	// SQLite 缺路径：fail fast。
-	if _, _, err := openChatDatabase(runtimeConfig{}, nil, nil, false); err == nil {
-		t.Fatal("缺 chat 数据库路径必须报错")
-	}
-	db, owns, err := openChatDatabase(runtimeConfig{ChatDatabasePath: filepath.Join(t.TempDir(), "chat.sqlite3")}, nil, nil, false)
-	if err != nil || db == nil || !owns {
-		t.Fatalf("open sqlite chat db = %v, %v", owns, err)
-	}
-	_ = db.Close()
-}

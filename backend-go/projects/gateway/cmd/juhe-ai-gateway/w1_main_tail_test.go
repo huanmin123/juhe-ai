@@ -1037,6 +1037,7 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1WChainRuntimeSuppressionConcurrencyClosure(t *testing.T) {
+	stateRedis := miniredis.RunT(t)
 	composed := &composition{
 		db:        w1uOpenSeededBusinessDB(t),
 		statsDB:   w1uOpenPlainSQLite(t, "w1w-sup-stats.sqlite3"),
@@ -1044,17 +1045,18 @@ func TestW1WChainRuntimeSuppressionConcurrencyClosure(t *testing.T) {
 		Bus:       inval.New(time.Now),
 	}
 	cfg := runtimeConfig{
-		RuntimeMode:                   "standalone",
-		DatabaseDriver:                "sqlite",
-		CacheDriver:                   "memory",
-		RuntimeStateDriver:            "memory",
+		// PG+Redis 恒定形态（存储形态收口）：redis 端点由 miniredis 承载；
+		// db 句柄走 internal 读模型的 sqlite 方言夹具（B5 迁移对象）。
+		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
+		RedisStateURL:                 "redis://" + stateRedis.Addr(),
+		RedisNamespace:                "w1w-chain-ns",
 		Secret:                        "w1w-chain-runtime-secret",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
 	}
 	services, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue)
 	if err != nil {
-		t.Fatalf("内存驱动组合失败: %v", err)
+		t.Fatalf("组合失败: %v", err)
 	}
 	defer services.Close()
 	if services.SuppressionStore == nil || services.AccountAPIKeyEffects == nil {
@@ -1095,10 +1097,7 @@ func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 	}
 	stateRedis := miniredis.RunT(t)
 	cfg := runtimeConfig{
-		RuntimeMode:                   "performance",
-		DatabaseDriver:                "sqlite",
-		CacheDriver:                   "memory",
-		RuntimeStateDriver:            "redis",
+		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
 		RedisStateURL:                 "redis://" + stateRedis.Addr(),
 		RedisNamespace:                "juhe-ai:" + w1wJ3bRedisNS,
 		Secret:                        "w1w-chain-runtime-secret",
@@ -1145,12 +1144,12 @@ func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 }
 
 // TestW1WChainRuntimeEmptySecretArm 覆盖空 Secret 组合 fail-fast 臂：
-// ebb241a85 起内存形态的电路恢复驱动（chain_runtime.go newChainAccountCircuit
-// RecoveryComponent 接线）先于 accountkeystates.NewStore 装配，其 proberepo
-// 探针 store 同样强依赖 JUHE_AI_SECRET（凭据解密与 Key 指纹），成为空 Secret
-// 的最早失败点；accountkeystates.NewStore 自身的空 Secret 校验臂由
-// internal/accountkeystates TestW9DStoreDialectArms 覆盖。
+// 2026-10-24 存储形态收口删除 memory 电路恢复驱动后，空 Secret 的最早失败点
+// 回到 accountkeyStates.NewStore 的空密钥校验（D-111 效果链 Key 指纹与凭据
+// 解密强依赖 JUHE_AI_SECRET）；accountkeystates 自身的空 Secret 校验臂由
+// internal/accountkeystates 覆盖。
 func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
+	stateRedis := miniredis.RunT(t)
 	composed := &composition{
 		db:        w1uOpenSeededBusinessDB(t),
 		statsDB:   w1uOpenPlainSQLite(t, "w1w-empty-secret-stats.sqlite3"),
@@ -1158,10 +1157,9 @@ func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
 		Bus:       inval.New(time.Now),
 	}
 	cfg := runtimeConfig{
-		RuntimeMode:                   "standalone",
-		DatabaseDriver:                "sqlite",
-		CacheDriver:                   "memory",
-		RuntimeStateDriver:            "memory",
+		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
+		RedisStateURL:                 "redis://" + stateRedis.Addr(),
+		RedisNamespace:                "w1w-chain-ns",
 		Secret:                        "   ",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
@@ -1171,10 +1169,10 @@ func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
 		services.Close()
 		t.Fatalf("空 Secret 的组合必须 fail-fast")
 	}
-	if !strings.Contains(err.Error(), "create gateway circuit recovery probe store") {
-		t.Fatalf("期望电路恢复探针 store 构造失败（先于 accountkeystates），实际: %v", err)
+	if !strings.Contains(err.Error(), "account api-key effects key states store") {
+		t.Fatalf("期望 accountkeystates store 构造失败，实际: %v", err)
 	}
-	t.Logf("chain_runtime 空 Secret 失败臂（电路恢复探针 store）已驱动")
+	t.Logf("chain_runtime 空 Secret 失败臂（accountkeystates store）已驱动")
 }
 
 // ---------------------------------------------------------------------------

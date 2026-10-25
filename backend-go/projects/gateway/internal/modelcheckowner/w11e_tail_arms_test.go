@@ -341,10 +341,11 @@ func TestW11EOutcomeCursorAndHealthTimeArms(t *testing.T) {
 }
 
 func TestW11ELoadConfigArms(t *testing.T) {
-	// 2026-09-21 起无总开关：空 env 也返回 Enabled=true 的自动认领配置。
-	cfgEmpty, err := LoadConfig(func(string) string { return "" })
-	if err != nil || !cfgEmpty.Enabled || !cfgEmpty.AutoClaimed {
-		t.Fatalf("空 env 必须得到默认常驻配置: cfg=%+v err=%v", cfgEmpty, err)
+	// 2026-10-24 存储形态收口：JUHE_AI_J3B_STORE env 读取删除（恒 postgres）；
+	// 空 env 缺连接串必须 fail-fast 且指名 env。
+	_, err := LoadConfig(func(string) string { return "" })
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_J3B_POSTGRES_URL") {
+		t.Fatalf("空 env 必须 fail-fast 指名 J3B POSTGRES_URL: %v", err)
 	}
 	getenv := func(overrides map[string]string) func(string) string {
 		return func(key string) string {
@@ -354,12 +355,12 @@ func TestW11ELoadConfigArms(t *testing.T) {
 			return ""
 		}
 	}
-	// 2026-09-20 零配置自动认领：owner/instance/store/PG URL 都有默认或回退，
+	// 2026-09-20 零配置自动认领：owner/instance/PG URL 都有默认或回退，
 	// 仅显式非法 owner 仍拒绝。
-	if _, err := LoadConfig(getenv(map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "jobs"})); err == nil || !strings.Contains(err.Error(), "OWNER") {
+	if _, err := LoadConfig(getenv(map[string]string{"JUHE_AI_J3B_OWNER": "jobs"})); err == nil || !strings.Contains(err.Error(), "OWNER") {
 		t.Fatalf("非法 owner 必须拒绝: %v", err)
 	}
-	zero := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_DATABASE_DRIVER": "postgres", "JUHE_AI_POSTGRES_URL": "postgres://w11e.invalid/main"}
+	zero := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://w11e.invalid/main"}
 	cfg, err := LoadConfig(getenv(zero))
 	if err != nil || !cfg.AutoClaimed {
 		t.Fatalf("零配置 postgres 必须自动认领: cfg=%+v err=%v", cfg, err)
@@ -368,8 +369,6 @@ func TestW11ELoadConfigArms(t *testing.T) {
 		t.Fatalf("postgres URL 回退=%+v", cfg)
 	}
 	explicit := map[string]string{
-		"JUHE_AI_J3B_ENABLED":               "true",
-		"JUHE_AI_J3B_STORE":                 "postgres",
 		"JUHE_AI_J3B_POSTGRES_URL":          "postgres://w11e.invalid/db",
 		"JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://w11e.invalid/business",
 	}

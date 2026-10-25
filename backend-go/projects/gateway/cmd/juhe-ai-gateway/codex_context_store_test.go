@@ -5,6 +5,7 @@ package main
 // 点，gateway 不读 JUHE_AI_CODEX_CONTEXT_ROOT，链上 preflight 恒走 no-op
 // 适配器。组合根测试证明装配后适配器持有真实桥；装配助手单测锁定空根
 // no-op 退出与 postgres 分支 nil 池 fail-fast 两条确定性臂。
+// 2026-10-24 存储形态收口：行存储恒 PostgreSQL（juhe_codex_context schema）。
 
 import (
 	"path/filepath"
@@ -14,24 +15,22 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
-// TestComposeSystemAPIWiresCodexBridgeState: sqlite standalone + chain 开启
-// 时，组合根必须把 CodexContextRoot + CodexContextStateStore 装进
-// chainRuntimeDeps，链上 preauth.Codex 适配器持有真实 ChatBridgeStateService。
-// 修复前 deps.CodexContextStateStore 无赋值点（依赖缺席 → no-op 适配器），
-// 即便 cfg 提供了 segments 根，bridge 断言也必红；修复后经
-// newChainCodexContextStateStore 装配真实行存储（sqlite 分片 schema 由
-// 组合根 storage preflight 前置确保）而转绿。
+// TestComposeSystemAPIWiresCodexBridgeState: PostgreSQL + chain 开启时，组合
+// 根必须把 CodexContextRoot + CodexContextStateStore 装进 chainRuntimeDeps，
+// 链上 preauth.Codex 适配器持有真实 ChatBridgeStateService。修复前
+// deps.CodexContextStateStore 无赋值点（依赖缺席 → no-op 适配器），即便 cfg
+// 提供了 segments 根，bridge 断言也必红；修复后经 newChainCodexContextStateStore
+// 装配真实行存储（juhe_codex_context schema 由 maintenance --ensure-schema
+// 预置，pgtestkit fresh 库经 bootstrap.EnsurePostgres 获得）而转绿。
 func TestComposeSystemAPIWiresCodexBridgeState(t *testing.T) {
-	cfg := composeTestConfig(t)
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	cfg.ChainEnabled = true
-	// composeTestConfig 是手管配置（不走 loadRuntimeConfig 派生），按
+	// composeTestConfigForDSN 是手管配置（不走 loadRuntimeConfig 派生），按
 	// datadir 固定名表同款补 segments 根（<DATA_DIR>/codex-context）。
-	cfg.CodexContextRoot = filepath.Join(filepath.Dir(cfg.CodexContextShardRoot), "codex-context")
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	cfg.CodexContextRoot = filepath.Join(t.TempDir(), "codex-context")
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api with chain: %v", err)
 	}
@@ -76,7 +75,6 @@ func TestNewChainCodexContextStateStoreArms(t *testing.T) {
 	})
 	t.Run("postgres分支nil池注册表fail-fast", func(t *testing.T) {
 		cfg := runtimeConfig{
-			DatabaseDriver:      "postgres",
 			CodexContextRoot:    filepath.Join(t.TempDir(), "codex-context"),
 			BusinessPostgresURL: "postgres://127.0.0.1:1/juhe_ai?sslmode=disable",
 		}

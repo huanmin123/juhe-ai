@@ -165,8 +165,12 @@ func TestAccountBatchUpdateDispatchGatedByProxyChange(t *testing.T) {
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
 		t.Fatal("non-proxy batch must not write outbox rows beyond the two create-chain rows")
 	}
-	if env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`) != 1 {
-		t.Fatal("notes-only batch must not mark group stats dirty beyond the create-chain marker")
+	// PG 臂契约（invalidation.go finishCreateSideEffects 的 if !s.pg 门控）：
+	// 创建链 stats 脏标记只走 SQLite 臂，PG 由 compose 的 stats slice 承接，
+	// 夹具内无该行；notes-only 批量不落脏标记 → 计数恒 0（原 SQLite 臂基线
+	// 1 随 sqlite 夹具退役）。
+	if got := env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`); got != 0 {
+		t.Fatalf("notes-only batch must not mark group stats dirty: got %d", got)
 	}
 	lookups, reasons := fake.snapshot()
 	if len(lookups) != 2 || len(reasons) != 0 {
@@ -317,9 +321,9 @@ func TestAccountBatchUpdateDispatchRollsBackWithBatch(t *testing.T) {
 	if env.count(t, `SELECT COUNT(*) FROM account_circuit_outbox`) != 2 {
 		t.Fatal("rollback must remove the batch outbox rows")
 	}
-	// Only the create-chain stats dirty marker survives.
-	if env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`) != 1 {
-		t.Fatal("aborted batch must not mark stats dirty beyond the create-chain marker")
+	// PG 臂契约同上：无 create-chain 脏标记基线，中止批量不得落任何脏标记。
+	if env.count(t, `SELECT COUNT(*) FROM group_account_stats_dirty`) != 0 {
+		t.Fatal("aborted batch must not mark stats dirty")
 	}
 }
 

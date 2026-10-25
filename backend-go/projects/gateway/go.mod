@@ -51,9 +51,10 @@ replace github.com/huanminabc/juhe-ai/backend-go-contracts => ../../shared/contr
 
 replace github.com/huanminabc/juhe-ai/backend-go-platform => ../../shared/platform
 
-// User-approved baseline amendment (2026-09-04, X05 / BUG-0167-0168): the
-// gateway composition root runs the Node db-service startup ensure+seed for
-// the six SQLite databases through the maintenance bootstrap export surface
-// (backend-go/projects/maintenance/bootstrap). This is the documented,
-// tightly scoped exception to the no-cross-project-import baseline.
+// Test-only baseline amendment (originally 2026-09-04 X05 six-database sqlite
+// preflight; 2026-10-24 存储形态收口后仅存测试用途): the gateway cmd-layer
+// tests provision isolated pgtestkit databases through the maintenance
+// bootstrap export surface (bootstrap.EnsurePostgres/SeedPostgres fresh DDL).
+// Production code no longer imports this module (D11: the composition-root
+// sqlite preflight was the only runtime consumer and is deleted).
 replace github.com/huanminabc/juhe-ai/backend-go-maintenance => ../maintenance

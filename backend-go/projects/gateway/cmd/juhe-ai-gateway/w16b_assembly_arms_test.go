@@ -17,17 +17,12 @@ package main
 //     （1306-1308）与 image lane 报错臂（1311-1313）——注入桩并发事实源。
 //  4. compose.go businesssettings.New ownerGate 不完整 fail-fast 臂（基线
 //     458-460）：复用 composeSystemAPI 全量夹具，仅翻转 NodeWriterStopped。
-//  5. storage_bootstrap.go：SeedSQLiteBusiness 失败臂（基线 40）与
-//     chat / dataset / usage-catalog 三个 ensureFile 失败臂（基线 88 / 97 /
-//     100）——直驱 ensureGatewaySQLiteStoragePreflight，路径指向不可创建
-//     位置；stats ensureFile 成功面保持在前。
+//  （原第 5 条 storage_bootstrap.go 失败臂随六库 preflight 的存储形态退役
+//  删除——2026-10-24 PLAN-20261024T051925945Z。）
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -206,90 +201,3 @@ func TestW16BHighConcurrencyBusyLaneArms(t *testing.T) {
 // 【w16b 登记】compose.go 458-460（businesssettings.New 错误臂）不可达候选：
 // New 只在 db==nil / mode 非法时失败——mode 由 businessDialect(pgDialect) 恒
 // 合法、db 由组合根先期打开成功；OwnerGate 不在构造期校验（读操作时才生效）。
-
-// ---------------------------------------------------------------------------
-// storage_bootstrap.go：seed 失败臂 + ensureFile 失败臂
-// ---------------------------------------------------------------------------
-
-func w16bStorageConfig(root string, mutate func(cfg *runtimeConfig)) runtimeConfig {
-	cfg := runtimeConfig{
-		DatabaseDriver:            "sqlite",
-		Secret:                    "w16b-storage-secret",
-		DatabasePath:              filepath.Join(root, "business.sqlite3"),
-		StatsDatabasePath:         filepath.Join(root, "stats.sqlite3"),
-		ChatDatabasePath:          filepath.Join(root, "chat.sqlite3"),
-		DatasetDatabasePath:       filepath.Join(root, "dataset.sqlite3"),
-		UsageCatalogDatabasePath:  filepath.Join(root, "usage-catalog.sqlite3"),
-		CodexContextShardRoot:     filepath.Join(root, "codex-context"),
-		CodexContextShardCount:    0,
-		BusinessHandoffConfirmed:  true,
-		BusinessSchemaReady:       true,
-		BusinessNodeWriterStopped: true,
-	}
-	if mutate != nil {
-		mutate(&cfg)
-	}
-	return cfg
-}
-
-func TestW16BStoragePreflightArms(t *testing.T) {
-	ctx := context.Background()
-
-	// 【w16b 登记】storage_bootstrap.go 40（SeedSQLiteBusiness 错误臂）暂不可
-	// 达候选：种子全程 INSERT OR IGNORE / ON CONFLICT，健康句柄上无法构造
-	// 中途失败；句柄级失败会先命中 36 行 EnsureSQLiteSchema 的错误臂。
-
-	// 88：chat 库路径落在不可创建的文件内部目录（stats ensureFile 在前成功）。
-	chatRoot := t.TempDir()
-	blocker := filepath.Join(chatRoot, "blocker.file")
-	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
-	chatDB, err := sql.Open("sqlite", filepath.Join(chatRoot, "business.sqlite3"))
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	t.Cleanup(func() { _ = chatDB.Close() })
-	chatCfg := w16bStorageConfig(chatRoot, func(c *runtimeConfig) {
-		c.ChatDatabasePath = filepath.Join(blocker, "nested", "chat.sqlite3")
-	})
-	if err := ensureGatewaySQLiteStoragePreflight(ctx, chatCfg, chatDB); err == nil {
-		t.Fatal("chat 库路径不可创建必须失败")
-	}
-
-	// 97：dataset 库路径不可创建（chat 成功在前）。
-	datasetRoot := t.TempDir()
-	blocker2 := filepath.Join(datasetRoot, "blocker.file")
-	if err := os.WriteFile(blocker2, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
-	datasetDB, err := sql.Open("sqlite", filepath.Join(datasetRoot, "business.sqlite3"))
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	t.Cleanup(func() { _ = datasetDB.Close() })
-	datasetCfg := w16bStorageConfig(datasetRoot, func(c *runtimeConfig) {
-		c.DatasetDatabasePath = filepath.Join(blocker2, "nested", "dataset.sqlite3")
-	})
-	if err := ensureGatewaySQLiteStoragePreflight(ctx, datasetCfg, datasetDB); err == nil {
-		t.Fatal("dataset 库路径不可创建必须失败")
-	}
-
-	// 100：usage-catalog 库路径不可创建（dataset 成功在前）。
-	catalogRoot := t.TempDir()
-	blocker3 := filepath.Join(catalogRoot, "blocker.file")
-	if err := os.WriteFile(blocker3, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
-	catalogDB, err := sql.Open("sqlite", filepath.Join(catalogRoot, "business.sqlite3"))
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	t.Cleanup(func() { _ = catalogDB.Close() })
-	catalogCfg := w16bStorageConfig(catalogRoot, func(c *runtimeConfig) {
-		c.UsageCatalogDatabasePath = filepath.Join(blocker3, "nested", "usage-catalog.sqlite3")
-	})
-	if err := ensureGatewaySQLiteStoragePreflight(ctx, catalogCfg, catalogDB); err == nil {
-		t.Fatal("usage-catalog 库路径不可创建必须失败")
-	}
-}

@@ -6,7 +6,8 @@ package main
 // 与既有覆盖的边界（不重复）：
 //   - composeSystemAPI 成功路径的 HTTP 契约由 compose_test.go /
 //     compose_assembly_test.go / chain_test.go 覆盖；这里只补 nil 依赖失败臂、
-//     SQLite 命名路径失败臂与三条不同分支组合的成功变体。
+//     PG 业务池失败臂与成功变体（2026-10-24 存储形态收口：PG+Redis 唯一形态，
+//     原 SQLite 命名路径失败臂随生产臂删除）。
 //   - settingsString / settingsValueReader 由 w1_compose_pure_test.go 覆盖；
 //     settingsTimezone / businessDialect / configureSQLiteConnection /
 //     trustProxyCount / settingsTimezoneProvider 由 w1_misc_pure_test.go 与
@@ -15,7 +16,7 @@ package main
 //     覆盖；这里补守卫臂、坏 redis URL 失败臂、memory 全字段成功路径与
 //     runtime-state 驱动分叉（standalone fail-fast / performance 成功）。
 //
-// 全部用例确定性可重放：redis 一律 miniredis；数据库一律临时 SQLite 文件；
+// 全部用例确定性可重放：redis 一律 miniredis；数据库一律 pgtestkit 隔离库；
 // 无并发等待、无网络依赖；composeChainRuntimeServices 返回值携带 Close，
 // 成功路径统一经 t.Cleanup(services.Close) 回收后台协调器与客户端。
 
@@ -59,10 +60,10 @@ type w1oComposeStack struct {
 
 func w1oNewComposeStack(t *testing.T) *w1oComposeStack {
 	t.Helper()
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, tdb.DSN)
 	t.Cleanup(closeAudit)
 	lease := openComposeOperationLease(t, store)
 	return &w1oComposeStack{
@@ -125,46 +126,30 @@ func TestW1OComposeSystemAPINilDependencyArms(t *testing.T) {
 // 手管目录：组合根在这些 fail-fast 失败路径上不回收已打开的 SQLite 句柄
 // （Windows 上句柄锁定文件会导致 t.TempDir 清理失败），因此改走尽力清理
 // （RemoveAll 错误不判失败），锁残留文件由进程退出后操作系统回收。
-func w1oRedirectDatabasePaths(t *testing.T, stack *w1oComposeStack) {
+func w1oRedirectChatAssetsRoot(t *testing.T, stack *w1oComposeStack) string {
 	t.Helper()
 	root := filepath.Join(os.TempDir(), "w1o-compose-failure-"+newCompositionID("id"))
-	if err := os.MkdirAll(filepath.Join(root, "codex-context"), 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("create manual compose root: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	stack.cfg.BusinessDatabasePath = filepath.Join(root, "business.sqlite3")
-	stack.cfg.StatsDatabasePath = filepath.Join(root, "stats.sqlite3")
-	stack.cfg.ChatDatabasePath = filepath.Join(root, "chat.sqlite3")
-	stack.cfg.DatasetDatabasePath = filepath.Join(root, "dataset.sqlite3")
-	stack.cfg.RuntimeLogDatabasePath = filepath.Join(root, "runtime-log.sqlite3")
-	stack.cfg.UsageCatalogDatabasePath = filepath.Join(root, "usage-catalog.sqlite3")
-	stack.cfg.CodexContextShardRoot = filepath.Join(root, "codex-context")
 	stack.cfg.ChatAssetsRoot = filepath.Join(root, "chat-assets")
+	return root
 }
 
-func TestW1OComposeSystemAPISQLitePathFailureArms(t *testing.T) {
+func TestW1OComposeSystemAPIPostgresFailureArms(t *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(t *testing.T, stack *w1oComposeStack)
 		want   string
 	}{
-		{"缺审计库路径", func(_ *testing.T, stack *w1oComposeStack) {
-			stack.auditConfig.AuditDatabasePath = ""
-		}, "JUHE_AI_AUDIT_LOG_DATABASE_PATH"},
-		{"审计数据集文件缺失", func(t *testing.T, stack *w1oComposeStack) {
-			stack.auditConfig.AuditDatabasePath = filepath.Join(t.TempDir(), "w1o-missing-audit.sqlite3")
-		}, "audit 数据集文件不存在"},
-		{"缺运行日志库路径", func(_ *testing.T, stack *w1oComposeStack) {
-			stack.cfg.RuntimeLogDatabasePath = ""
-		}, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH"},
-		{"业务库路径不可用", func(_ *testing.T, stack *w1oComposeStack) {
-			stack.cfg.BusinessDatabasePath = filepath.Join(filepath.Dir(stack.cfg.BusinessDatabasePath), "w1o-no-such-dir", "business.sqlite3")
-		}, "business sqlite database"},
+		{"业务池 URL 不可达", func(_ *testing.T, stack *w1oComposeStack) {
+			stack.cfg.BusinessPostgresURL = "postgres://w1o-no-user@127.0.0.1:1/w1o?sslmode=disable&connect_timeout=1"
+		}, "open business PostgreSQL pool"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stack := w1oNewComposeStack(t)
-			w1oRedirectDatabasePaths(t, stack)
 			tc.mutate(t, stack)
 			composed, err := stack.compose(t)
 			if err == nil {
@@ -200,8 +185,8 @@ func TestW1OComposeSystemAPISQLiteSuccessVariants(t *testing.T) {
 		if composed.chain != nil || composed.chainServices != nil {
 			t.Fatalf("链条关闭时 chain/chainServices 必须为 nil，实际 %v/%v", composed.chain != nil, composed.chainServices != nil)
 		}
-		if !composed.ownDB || !composed.ownStatsDB || composed.db == nil || composed.statsDB == nil {
-			t.Fatalf("SQLite 变体必须自有业务/统计句柄: ownDB=%v ownStatsDB=%v", composed.ownDB, composed.ownStatsDB)
+		if composed.db == nil || composed.statsDB == nil || composed.statsDB != composed.db {
+			t.Fatalf("PG 变体必须共享池业务句柄: db=%v statsDB==db=%v", composed.db != nil, composed.statsDB == composed.db)
 		}
 		if composed.settingsStore == nil || composed.AuthzStore == nil || composed.producer == nil || composed.auditProducer == nil {
 			t.Fatalf("settings/authz/F4/F3 组件必须装配完成")
@@ -209,12 +194,8 @@ func TestW1OComposeSystemAPISQLiteSuccessVariants(t *testing.T) {
 		composed.Shutdown()
 	})
 
-	t.Run("redis运行态驱动加验证码关闭", func(t *testing.T) {
-		redisServer := miniredis.RunT(t)
+	t.Run("redis登录守卫加验证码关闭", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		stack.cfg.RuntimeStateDriver = "redis"
-		stack.cfg.RedisStateURL = "redis://" + redisServer.Addr()
-		stack.cfg.RedisNamespace = "w1o-compose-ns"
 		stack.cfg.CaptchaDisabled = true
 		composed, err := stack.compose(t)
 		if err != nil {
@@ -477,52 +458,6 @@ func TestW1ONewCompositionIDFormat(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// B9. compose.go：openSQLiteReadOnly（存在文件可读不可写 / 缺失文件连接失败）
-// ---------------------------------------------------------------------------
-
-func TestW1OOpenSQLiteReadOnlyArms(t *testing.T) {
-	root := t.TempDir()
-	sourcePath := filepath.Join(root, "w1o-source.sqlite3")
-	source, err := sql.Open("sqlite", sourcePath)
-	if err != nil {
-		t.Fatalf("打开源库: %v", err)
-	}
-	if _, err := source.Exec("CREATE TABLE w1o_probe (value TEXT)"); err != nil {
-		t.Fatalf("建表: %v", err)
-	}
-	if _, err := source.Exec("INSERT INTO w1o_probe (value) VALUES ('行值')"); err != nil {
-		t.Fatalf("写入: %v", err)
-	}
-	if err := source.Close(); err != nil {
-		t.Fatalf("关闭源库: %v", err)
-	}
-
-	ro, err := openSQLiteReadOnly(sourcePath)
-	if err != nil {
-		t.Fatalf("openSQLiteReadOnly 存在文件: %v", err)
-	}
-	t.Cleanup(func() { _ = ro.Close() })
-	var value string
-	if err := ro.QueryRow("SELECT value FROM w1o_probe LIMIT 1").Scan(&value); err != nil {
-		t.Fatalf("只读查询: %v", err)
-	}
-	if value != "行值" {
-		t.Fatalf("只读查询值 = %q，want 行值", value)
-	}
-	if _, err := ro.Exec("INSERT INTO w1o_probe (value) VALUES ('写入')"); err == nil {
-		t.Fatal("只读句柄写入必须报错")
-	}
-
-	missing, err := openSQLiteReadOnly(filepath.Join(root, "w1o-missing.sqlite3"))
-	if err != nil {
-		t.Fatalf("openSQLiteReadOnly 缺失文件（惰性打开）: %v", err)
-	}
-	t.Cleanup(func() { _ = missing.Close() })
-	if err := missing.Ping(); err == nil {
-		t.Fatal("缺失文件只读连接必须报错")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // C10. chain_runtime.go：composeChainRuntimeServices 守卫臂与坏 redis URL
@@ -557,7 +492,6 @@ func TestW1OComposeChainRuntimeServicesGuardsAndBadRedisURLs(t *testing.T) {
 	})
 	t.Run("坏缓存redis URL", func(t *testing.T) {
 		cfg := composeTestConfig(t)
-		cfg.CacheDriver = "redis"
 		cfg.RedisCacheURL = "://w1o-bad-cache-url"
 		services, err := composeChainRuntimeServices(&composition{}, cfg, fakeRead)
 		if err == nil {
@@ -572,7 +506,6 @@ func TestW1OComposeChainRuntimeServicesGuardsAndBadRedisURLs(t *testing.T) {
 	})
 	t.Run("坏状态redis URL", func(t *testing.T) {
 		cfg := composeTestConfig(t)
-		cfg.RuntimeStateDriver = "redis"
 		cfg.RedisStateURL = "://w1o-bad-state-url"
 		services, err := composeChainRuntimeServices(&composition{}, cfg, fakeRead)
 		if err == nil {
@@ -588,9 +521,10 @@ func TestW1OComposeChainRuntimeServicesGuardsAndBadRedisURLs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// C11. chain_runtime.go：composeChainRuntimeServices memory 全字段成功路径
+// C11. chain_runtime.go：composeChainRuntimeServices 全字段成功路径
 // （复用 chain_test.go 的 newChainFixture：其 schema 已被 chain_phase3_test.go
-// 证明满足该函数的读模型 / 选择器 / 策略源构造需求）
+// 证明满足该函数的读模型 / 选择器 / 策略源构造需求。存储形态收口后服务恒
+// PG+Redis 形态；redis 面由 composeTestConfig 私有 miniredis 承载）
 // ---------------------------------------------------------------------------
 
 func TestW1OComposeChainRuntimeServicesMemorySuccess(t *testing.T) {
@@ -644,66 +578,41 @@ func TestW1OComposeChainRuntimeServicesMemorySuccess(t *testing.T) {
 		t.Fatalf("G14 内部服务缺失: Identity=%v Affinity=%v",
 			services.Identity.Identity != nil, services.Identity.Affinity != nil)
 	}
-	if services.StateClient != nil || services.RateLimitStore != nil {
-		t.Fatalf("memory 驱动下 redis 协作者必须为 nil: StateClient=%v RateLimitStore=%v",
+	if services.StateClient == nil || services.RateLimitStore == nil {
+		t.Fatalf("PG+Redis 恒定形态下 redis 协作者必须装配: StateClient=%v RateLimitStore=%v",
 			services.StateClient != nil, services.RateLimitStore != nil)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// C12. chain_runtime.go：runtime-state 驱动分叉（standalone fail-fast /
-// performance + miniredis 成功）
+// C12. chain_runtime.go：redis 运行态装配（存储形态收口后恒定形态，
+// miniredis 承载状态/缓存端点；原 standalone/performance 驱动分叉测试随
+// 生产分叉删除）
 // ---------------------------------------------------------------------------
 
 func TestW1OComposeChainRuntimeServicesRedisStateArms(t *testing.T) {
 	fakeRead := func(string) (string, error) { return "UTC", nil }
+	redisServer := miniredis.RunT(t)
+	fixture := newChainFixture(t)
+	cfg := composeTestConfig(t)
+	cfg.RedisStateURL = "redis://" + redisServer.Addr()
+	cfg.RedisCacheURL = "redis://" + redisServer.Addr()
+	cfg.RedisNamespace = "w1o-chain-ns"
+	composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: inval.New(time.Now)}
+	services, err := composeChainRuntimeServices(composed, cfg, fakeRead)
+	if err != nil {
+		t.Fatalf("redis 恒定形态成功路径: %v", err)
+	}
+	t.Cleanup(services.Close)
 
-	t.Run("standalone加redis状态驱动fail-fast", func(t *testing.T) {
-		redisServer := miniredis.RunT(t)
-		fixture := newChainFixture(t)
-		cfg := composeTestConfig(t)
-		cfg.RuntimeStateDriver = "redis"
-		cfg.RedisStateURL = "redis://" + redisServer.Addr()
-		cfg.RedisNamespace = "w1o-chain-ns"
-		composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: inval.New(time.Now)}
-		services, err := composeChainRuntimeServices(composed, cfg, fakeRead)
-		if err == nil {
-			if services != nil {
-				services.Close()
-			}
-			t.Fatal("standalone 模式 + redis 状态驱动必须在热质量装配处 fail-fast")
-		}
-		if !strings.Contains(err.Error(), "热质量") {
-			t.Fatalf("错误 = %v，want 包含 热质量", err)
-		}
-	})
-
-	t.Run("performance加redis状态驱动成功", func(t *testing.T) {
-		redisServer := miniredis.RunT(t)
-		fixture := newChainFixture(t)
-		cfg := composeTestConfig(t)
-		cfg.RuntimeMode = "performance"
-		cfg.RuntimeStateDriver = "redis"
-		cfg.RedisStateURL = "redis://" + redisServer.Addr()
-		cfg.RedisNamespace = "w1o-chain-ns"
-		composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: inval.New(time.Now)}
-		services, err := composeChainRuntimeServices(composed, cfg, fakeRead)
-		if err != nil {
-			t.Fatalf("performance + redis 状态驱动成功路径: %v", err)
-		}
-		t.Cleanup(services.Close)
-
-		if services.StateClient == nil {
-			t.Error("redis 状态驱动必须暴露共享 StateClient")
-		}
-		if services.HotQuality == nil || services.Identity == nil || services.Affinity == nil {
-			t.Errorf("热质量 / 身份服务必须装配: HotQuality=%v Identity=%v Affinity=%v",
-				services.HotQuality != nil, services.Identity != nil, services.Affinity != nil)
-		}
-		// 缓存驱动仍为 memory：系统限流 redis store 不得装配。
-		if services.RateLimitStore != nil {
-			t.Errorf("memory 缓存驱动下 RateLimitStore 必须为 nil: %v",
-				services.RateLimitStore != nil)
-		}
-	})
+	if services.StateClient == nil {
+		t.Error("redis 状态驱动必须暴露共享 StateClient")
+	}
+	if services.HotQuality == nil || services.Identity == nil || services.Affinity == nil {
+		t.Errorf("热质量 / 身份服务必须装配: HotQuality=%v Identity=%v Affinity=%v",
+			services.HotQuality != nil, services.Identity != nil, services.Affinity != nil)
+	}
+	if services.RateLimitStore == nil {
+		t.Error("redis 缓存驱动必须装配系统限流 redis store")
+	}
 }

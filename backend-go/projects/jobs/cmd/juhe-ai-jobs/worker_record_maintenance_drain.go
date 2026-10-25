@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
@@ -15,14 +14,10 @@ import (
 // record_maintenance_jobs 交接表 drain 接线。
 //
 // gateway cleanup POST（internal/recordmaintenance）把 Node 形状的
-// non_business_data_cleanup 任务写入该表：SQLite 落业务库文件
-// （JUHE_AI_DATABASE_PATH，与 api_key_record_cleanup_targets 同放置约定）、
-// PostgreSQL 落 juhe_dataset schema。jobs 侧按同源读取：
-//   - SQLite：复用 retention 家族已打开的业务库句柄（business.DB，与
-//     worker_business_db.go 的 getBusinessDatabase 等价句柄同文件共享，
-//     WAL + busy_timeout 串行化跨进程读写）；
-//   - PostgreSQL：复用 retention 家族的 dataset pool 句柄
-//     （dataset.DB，schema 限定 juhe_dataset 后与 gateway 写入同表）。
+// non_business_data_cleanup 任务写入该表（PostgreSQL 落 juhe_dataset
+// schema）。jobs 侧复用 retention 家族的 dataset pool 句柄
+// （dataset.DB，schema 限定 juhe_dataset 后与 gateway 写入同表）；原 SQLite
+// 业务库文件臂已随 sqlite 形态退役删除。
 //
 // drain 循环对照 Node 本地队列 flush 语义（100ms 节拍、批次 10、失败固定
 // 1s 退避、失败行保留重试），执行面复用 retention.RecordMaintenanceRunner
@@ -46,14 +41,8 @@ func (r familyTableDrainRunner) RunAccountUsageSnapshotUpserts(ctx context.Conte
 	return r.family.runMaintenanceSnapshotUpserts(ctx, jobs)
 }
 
-func (a *workerAssembly) wireRecordMaintenanceTableDrain(family *retentionFamily, business *cleanuprepo.DB, dataset *cleanuprepo.DB) error {
-	var db *sql.DB
-	if family.postgres {
-		db = dataset.DB
-	} else {
-		db = business.DB
-	}
-	store, err := recordmaintenance.OpenStore(db, family.postgres)
+func (a *workerAssembly) wireRecordMaintenanceTableDrain(family *retentionFamily, dataset *cleanuprepo.DB) error {
+	store, err := recordmaintenance.OpenStore(dataset.DB, true)
 	if err != nil {
 		return fmt.Errorf("open record_maintenance_jobs store: %w", err)
 	}

@@ -15,7 +15,7 @@ func patchRow(t *testing.T, env *testEnv, keyID string) (name, description, stat
 	var rowName, rowDescription, rowExpiresAt, rowQuotaJSON, rowScheduleJSON, rowUpdatedAt []byte
 	err := env.db.QueryRow(`SELECT name, COALESCE(description, ''), status, route_strategy_id,
 			COALESCE(expires_at, ''), COALESCE(quota_limits_json, ''), COALESCE(availability_schedule_json, ''), updated_at
-		FROM api_keys WHERE id = ?`, keyID).
+		FROM api_keys WHERE id = $1`, keyID).
 		Scan(&rowName, &rowDescription, &status, &routeStrategyID, &rowExpiresAt, &rowQuotaJSON, &rowScheduleJSON, &rowUpdatedAt)
 	if err != nil {
 		t.Fatal(err)

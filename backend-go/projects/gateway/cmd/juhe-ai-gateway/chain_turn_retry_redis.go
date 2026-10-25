@@ -20,15 +20,14 @@ package main
 //	incr:       the incrWithMaxScript verbatim without max (first write sets
 //	            the PX window, later increments keep it).
 //
-// nil client (runtimeStateDriver !== 'redis') keeps the TurnRetryService on
-// its in-memory driver.
+// 2026-10-24 存储形态收口：StateClient 恒注入（redis 运行态唯一形态），
+// 「nil client → 进程内驱动」判据删除；构造失败由组合根 fail-fast。
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	redis "github.com/redis/go-redis/v9"
@@ -80,13 +79,9 @@ type chainTurnRetryRedisStateStore struct {
 	prefix string
 }
 
-// newChainTurnRetryRedisStateStore builds the adapter; a nil client returns
-// nil so the caller keeps the memory driver (Node runtimeStateDriver !==
-// 'redis' fork).
+// newChainTurnRetryRedisStateStore builds the adapter over the runtime-state
+// redis client (恒注入；nil client 不再有 memory 回退语义).
 func newChainTurnRetryRedisStateStore(client *redis.Client, namespace string) (*chainTurnRetryRedisStateStore, error) {
-	if client == nil {
-		return nil, nil
-	}
 	prefix, err := chainTurnRetryKeyPrefix(namespace)
 	if err != nil {
 		return nil, err
@@ -159,19 +154,15 @@ func (s *chainTurnRetryRedisStateStore) Incr(ctx context.Context, key string, tt
 }
 
 // newChainTurnRetryRedisStateStoreOrNil builds the adapter for the chain
-// deps: a nil client (runtimeStateDriver !== 'redis') yields nil so the
-// TurnRetryService keeps its memory driver; a construction failure fails the
-// assembly with the named cause instead of degrading silently.
-func newChainTurnRetryRedisStateStoreOrNil(client *redis.Client, namespace string) gatewaycodex.TurnRetryStateStore {
+// deps: the runtime-state client is always injected since the storage-shape
+// retirement; a construction failure fails the assembly with the named cause
+// instead of degrading silently.
+func newChainTurnRetryRedisStateStoreOrNil(client *redis.Client, namespace string) (gatewaycodex.TurnRetryStateStore, error) {
 	store, err := newChainTurnRetryRedisStateStore(client, namespace)
 	if err != nil {
-		slog.Error("codex turn retry redis 状态驱动构建失败", "event", "chain_turn_retry_redis_store_failed", "error", err)
-		return nil
+		return nil, fmt.Errorf("codex turn retry redis 状态驱动构建失败: %w", err)
 	}
-	if store == nil {
-		return nil
-	}
-	return store
+	return store, nil
 }
 
 // compile-time: the adapter satisfies the turn-retry store port.

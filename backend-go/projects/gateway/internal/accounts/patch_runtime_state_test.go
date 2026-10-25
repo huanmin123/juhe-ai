@@ -23,7 +23,7 @@ func seedEnabledProxyProfile(t *testing.T, env *testEnv, ownerID, id string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES (?, ?, '出口代理', 'http', 'proxy.example.internal', 8080, 1, ?, ?)`, id, ownerID, now, now)
+		VALUES (?, ?, '出口代理', 'http', 'proxy.example.internal', 8080, true, ?, ?)`, id, ownerID, now, now)
 }
 
 // seedPoolAccount inserts an active api_key account carrying a Key pool plus
@@ -413,7 +413,7 @@ func TestPatchBalanceSnapshotCleanupPort(t *testing.T) {
 
 	// An unwired port (a second store sharing the env DB, cleaner left nil)
 	// keeps the patch path self-contained.
-	silentStore, err := NewStore(env.db, false, testSecret, nil, nil)
+	silentStore, err := NewStore(env.db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestPatchProxySwitchRevalidatesBalanceIdentity(t *testing.T) {
 	}
 	// …advanced the refresh schedule to the save instant…
 	var nextRefreshAt string
-	if err := env.db.QueryRow(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`, id).Scan(&nextRefreshAt); err != nil {
+	if err := env.db.QueryRow(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = $1`, id).Scan(&nextRefreshAt); err != nil {
 		t.Fatal(err)
 	}
 	if nextRefreshAt == "" || nextRefreshAt == "2030-01-01T00:00:00.000Z" {
@@ -495,21 +495,9 @@ func TestStoreBalanceSnapshotCleanerDeletesSupersededSnapshots(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
-	env.exec(t, `CREATE TABLE IF NOT EXISTS account_usage_snapshots (
-		system_account_id TEXT NOT NULL,
-		account_id TEXT NOT NULL,
-		kind TEXT NOT NULL,
-		source TEXT NOT NULL DEFAULT 'upstream_api',
-		snapshot_json TEXT NOT NULL,
-		refresh_status TEXT NOT NULL DEFAULT 'pending',
-		last_attempt_at TEXT,
-		last_success_at TEXT,
-		next_refresh_after TEXT,
-		last_error_message TEXT,
-		updated_at TEXT NOT NULL,
-		created_at TEXT NOT NULL,
-		PRIMARY KEY (system_account_id, account_id, kind)
-	)`)
+	// account_usage_snapshots 由 PG 夹具建在生产形态 juhe_stats schema
+	//（pgkit_test.go）；原内联 CREATE 在 PG search_path 下会于 juhe_business
+	// 落出影子表、与生产 statsTable 限定读写错位，随 sqlite 夹具退役删除。
 
 	fixedNow := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	cleaner := NewStoreBalanceSnapshotCleaner(env.store)

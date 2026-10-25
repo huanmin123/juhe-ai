@@ -108,7 +108,7 @@ func TestW18ChannelModelsPersistDedupOrder(t *testing.T) {
 	accountID := *executed.Accounts[0].AccountID
 	// 落库顺序即写入顺序（replaceAccountSupportedModels 按映射列表逐条插入），
 	// 按 rowid 读取验证首次出现顺序与去重。
-	rows, err := env.db.Query(`SELECT models.upstream_model FROM account_supported_models INNER JOIN models ON models.id = account_supported_models.model_id WHERE account_supported_models.account_id = ? ORDER BY account_supported_models.rowid`, accountID)
+	rows, err := env.db.Query(`SELECT models.upstream_model FROM account_supported_models INNER JOIN models ON models.id = account_supported_models.model_id WHERE account_supported_models.account_id = $1 ORDER BY account_supported_models.ctid`, accountID) // PG 无 rowid，ctid 同为物理写入序
 	if err != nil {
 		t.Fatalf("读取 supported_models 失败：%v", err)
 	}
@@ -174,7 +174,7 @@ func TestW18Sub2APIModelFieldsPersist(t *testing.T) {
 		t.Fatalf("supportedModels 应逐条落库：%d", count)
 	}
 	var healthModel, healthMode string
-	if err := env.db.QueryRow(`SELECT health_check_model, health_check_endpoint_mode FROM accounts WHERE id = ?`, accountID).
+	if err := env.db.QueryRow(`SELECT health_check_model, health_check_endpoint_mode FROM accounts WHERE id = $1`, accountID).
 		Scan(&healthModel, &healthMode); err != nil {
 		t.Fatalf("账户未落库：%v", err)
 	}

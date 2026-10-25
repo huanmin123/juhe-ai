@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -81,7 +80,6 @@ type workerAssembly struct {
 	// 链关闭（Handle.Close 引用计数归零时才真正关库，即"registry 的关闭
 	// 挂在既有 closer 链"）。
 	poolRegistry *pgpool.Registry
-	sqliteDBs    []*sql.DB
 	closers      []func() error
 
 	wiredJobs []string
@@ -126,22 +124,6 @@ func (a *workerAssembly) ownerID() string {
 	return fmt.Sprintf("%s:%s:%d:%s", a.config.InstanceID, a.config.WorkerRole, a.config.WorkerReplicaIdx, newRandomToken())
 }
 
-// openSQLite 打开单 writer SQLite（与既有 jobs store 约定一致）。
-func (a *workerAssembly) openSQLite(path string, label string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_txlock=immediate")
-	if err != nil {
-		return nil, fmt.Errorf("open %s sqlite 失败: %w", label, err)
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("配置 %s sqlite WAL 失败: %w", label, err)
-	}
-	a.sqliteDBs = append(a.sqliteDBs, db)
-	return db, nil
-}
-
 // workerPoolRole 是 worker 侧共享 PG 池的统一 role。历史实现按任务族拼
 // "worker-<label>"，role 进入 pgpool 去重键导致同库每族一池；统一为常量后
 // 同 URL 全部复用同一池。label 仍保留在错误文案中用于定位获取点。
@@ -179,18 +161,8 @@ func newWorkerAssembly(config workerConfig, logger *slog.Logger) *workerAssembly
 		// W2：调度器逐轮 outcome 日志复用进程 logger（JSON stdout）。
 		Logger: logger,
 	})
-	// 先登记原始句柄关闭器（closeStores 逆向执行 → 家族 store 先关，原始
-	// SQLite 连接与 PG 池最后关）。
-	assembly.addCloser(func() error {
-		var firstErr error
-		for _, db := range assembly.sqliteDBs {
-			if err := db.Close(); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		assembly.sqliteDBs = nil
-		return firstErr
-	})
+	// 先登记原始句柄关闭器（closeStores 逆向执行 → 家族 store 先关，PG 池
+	// 最后关）。
 	assembly.addCloser(func() error {
 		var firstErr error
 		for _, handle := range assembly.pools {
@@ -283,22 +255,19 @@ func (a *workerAssembly) registerDisabledJob(name, reason string) {
 
 // wireTaskRunsFamily：background_task_runs + background_job_leases 存储、
 // 启动对账（kill-restart 收口）与 background-task-run-reconcile 任务；
-// 同时作为 postgres 模式下 scheduled lease 的获取点。
+// 同时作为 scheduled lease 的获取点。
 func (a *workerAssembly) wireTaskRunsFamily(ctx context.Context) error {
 	config := taskruns.StoreConfig{
-		Mode:                 taskruns.StoreMode(a.config.Driver),
-		DatabasePath:         a.config.TaskRunsSQLitePath,
+		Mode:                 taskruns.ModePostgres,
 		PostgresURL:          a.config.PostgresURL,
 		PostgresMaxOpenConns: a.config.PostgresMaxOpenConns,
 		PostgresMaxIdleConns: a.config.PostgresMaxIdleConns,
 	}
-	if config.Mode == taskruns.ModePostgres {
-		handle, err := a.acquirePool(a.config.PostgresURL, "task-runs")
-		if err != nil {
-			return err
-		}
-		config.PostgresPool = handle
+	handle, err := a.acquirePool(a.config.PostgresURL, "task-runs")
+	if err != nil {
+		return err
 	}
+	config.PostgresPool = handle
 	store, err := taskruns.OpenStore(config)
 	if err != nil {
 		return fmt.Errorf("open task-runs store: %w", err)
@@ -375,20 +344,16 @@ func (s statsTimezoneSource) StatsTimezone(ctx context.Context) (*time.Location,
 // statsagg（在线聚合与全部窗口刷新任务）。
 func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	config := statsverify.StoreConfig{
-		Mode:                 statsverify.StoreMode(a.config.Driver),
-		SQLiteStatsPath:      a.config.StatsSQLitePath,
-		SQLiteBusinessPath:   a.config.BusinessSQLitePath,
+		Mode:                 statsverify.StorePostgres,
 		PostgresURL:          a.config.PostgresURL,
 		PostgresMaxOpenConns: a.config.PostgresMaxOpenConns,
 		PostgresMaxIdleConns: a.config.PostgresMaxIdleConns,
 	}
-	if config.Mode == statsverify.StorePostgres {
-		handle, err := a.acquirePool(a.config.PostgresURL, "stats-verify")
-		if err != nil {
-			return err
-		}
-		config.PostgresPool = handle
+	handle, err := a.acquirePool(a.config.PostgresURL, "stats-verify")
+	if err != nil {
+		return err
 	}
+	config.PostgresPool = handle
 	store, err := statsverify.OpenStore(config)
 	if err != nil {
 		return fmt.Errorf("open stats-verify store: %w", err)
@@ -398,52 +363,35 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	if err := store.EnsureSchema(ctx); err != nil {
 		return fmt.Errorf("initialize stats-verify schema: %w", err)
 	}
-	postgres := a.config.Driver == "postgres"
 	// Node scheduler 首轮 PG 路径的一次性 mark_all_group_account_stats_dirty；
-	// SQLite 同样需要启动兜底：存量脏行（如 J1 投影标脏后进程重启、导入期
-	// 遗留）只在 RefreshDirtyGroupAccountStats 消费脏行时刷新，不启动兜底就
-	// 会一直滞留到下一次 availability 变化，dev 重启后分组统计停在旧快照。
+	// 存量脏行（如 J1 投影标脏后进程重启、导入期遗留）只在
+	// RefreshDirtyGroupAccountStats 消费脏行时刷新，不启动兜底就会一直滞留
+	// 到下一次 availability 变化，dev 重启后分组统计停在旧快照。
 	if err := store.MarkGroupAccountStatsStartupDirty(ctx, time.Now()); err != nil {
 		return fmt.Errorf("mark group account stats startup dirty: %w", err)
 	}
 
-	// statsagg 需要独立 SQL 句柄（SQLite WAL 双连接读写；PG 共享池）。
-	var aggDB *sql.DB
-	if postgres {
-		handle, err := a.acquirePool(a.config.PostgresURL, "stats-agg")
-		if err != nil {
-			return err
-		}
-		aggDB = handle.DB()
-	} else {
-		if aggDB, err = a.openSQLite(a.config.StatsSQLitePath, "stats-agg"); err != nil {
-			return err
-		}
+	// statsagg 复用同库共享池（独立句柄登记，去重后同一池条目）。
+	aggHandle, err := a.acquirePool(a.config.PostgresURL, "stats-agg")
+	if err != nil {
+		return err
 	}
-	dialect := statsagg.Dialect{Postgres: postgres}
+	aggDB := aggHandle.DB()
+	dialect := statsagg.Dialect{Postgres: true}
 	timezone := statsTimezoneSource{store: store}
 
-	// system_settings 读模型（background-jobs settingsNumber 移植）：PG 复用
-	// 共享池，SQLite 读 business 库；读取失败按 Node 语义降级默认（缺表/快照
-	// 失败 warn）或使任务失败（整数/边界校验）。
+	// system_settings 读模型（background-jobs settingsNumber 移植）：与 stats
+	// 同池；读取失败按 Node 语义降级默认（快照失败 warn）或使任务失败（整数/
+	// 边界校验）。
 	settingsDB := aggDB
-	if !postgres {
-		if settingsDB, err = a.openSQLite(a.config.BusinessSQLitePath, "settings"); err != nil {
-			return err
-		}
-	}
-	// BusinessDB：授权链查找（resource_authorizations/accounts）在 SQLite 下
-	// 走业务库句柄，stats 库没有这两张表（与 settings/窗口刷新同一连接，
-	// D-48 生产者接线）；PG 与 stats 同池，聚合事务内 juhe_business. 前缀
-	// 直查，句柄仅作占位。
+	// BusinessDB：授权链查找（resource_authorizations/accounts）与配额小时窗
+	// 绑定表（request_quota_hourly_window_scope_bindings）在 PG 与 stats 同池，
+	// 聚合事务内 juhe_business. 前缀直查。
 	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
-	// BusinessDB：配额小时窗读业务库绑定表（request_quota_hourly_window_scope_bindings）。
-	// PG 与 stats 同池共用 aggDB（juhe_business. 前缀）；SQLite 用业务库句柄
-	//（与 settings 同一连接，D-48 生产者接线）。
 	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
 	settingsSource := jobssettings.NewSource(jobssettings.Options{
 		DB:   settingsDB,
-		Mode: settingsMode(postgres),
+		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	a.settings = dbSettingsSource{source: settingsSource}
@@ -554,35 +502,18 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			return jobsched.TaskResult{}, nil
 		}
 	}
-	// 窗口刷新任务的 databaseDriver 注册分叉（T6b，Node background-jobs.ts
-	// :286-316，冻结清单 §2.2/§4.1）：
-	//   - usage-rank-snapshots-refresh 的 PG stage 集合剔除
-	//     ai_performance_summary_windows（:291 postgresUsageRankSnapshotCoreStageNames）；
-	//   - ai-performance-summary-windows-refresh 仅 PG 分支注册（:292），
-	//     默认/SQLite 分支该 stage 并入 usage-rank-snapshots-refresh（:310）；
-	//   - usage-scope-range-windows-refresh 仅默认/SQLite 分支注册（:313），
-	//     PG 分支跳过并打 background_cold_range_window_refresh_disabled（:296-300）；
-	//   - usage-overview-windows-refresh interval PG 5min / SQLite 30min
-	//     （:294 vs :312，经 ResolveScheduleForDriver 模式分叉消费）。
-	if postgres {
-		a.scheduleWiredJob("ai-performance-summary-windows-refresh", windowTask("ai_performance_summary_windows", []statsagg.WindowStageName{statsagg.StageAiPerformanceSummaryWindows}))
-	} else {
-		a.registerDisabledJob("ai-performance-summary-windows-refresh",
-			"默认/SQLite 分支不独立注册（Node background-jobs.ts:310 该 stage 并入 usage-rank-snapshots-refresh）")
-	}
-	a.scheduleWiredJob("usage-rank-snapshots-refresh", windowTask("usage-rank-snapshots-refresh", rankSnapshotCoreStages(postgres)))
+	// 窗口刷新任务注册（原 databaseDriver 注册分叉随 sqlite 形态退役坍缩为
+	// PG 分支恒定，D13）：
+	//   - usage-rank-snapshots-refresh 的 stage 集合剔除
+	//     ai_performance_summary_windows（由独立 job 承担）；
+	//   - ai-performance-summary-windows-refresh 恒注册；
+	//   - usage-scope-range-windows-refresh（原 sqlite-only 冷历史范围窗口
+	//     重刷，PG 分支跳过并打 background_cold_range_window_refresh_disabled）
+	//     已随调度注册表的 sqlite-only 行一并删除——scope 范围窗口的写面由
+	//     usage-hot-window-refresh（热窗口阶段）承载。
+	a.scheduleWiredJob("ai-performance-summary-windows-refresh", windowTask("ai_performance_summary_windows", []statsagg.WindowStageName{statsagg.StageAiPerformanceSummaryWindows}))
+	a.scheduleWiredJob("usage-rank-snapshots-refresh", windowTask("usage-rank-snapshots-refresh", rankSnapshotCoreStages()))
 	a.scheduleWiredJob("usage-overview-windows-refresh", windowTask("usage_overview_windows", []statsagg.WindowStageName{statsagg.StageUsageOverviewWindows}))
-	if postgres {
-		// Node PG 高性能分支跳过在线冷历史范围窗口重刷（:296-300 原文案）。
-		a.logger.Info("background_cold_range_window_refresh_disabled",
-			slog.String("driver", a.config.Driver),
-			slog.Any("hotStages", []string{"usage_scope_range_windows"}),
-			slog.String("message", "PG 高性能模式跳过在线冷历史范围窗口重刷，热窗口刷新保持今日范围数据新鲜"))
-		a.registerDisabledJob("usage-scope-range-windows-refresh",
-			"PG 高性能模式不注册（Node background-jobs.ts:296-300 跳过冷历史范围窗口重刷）")
-	} else {
-		a.scheduleWiredJob("usage-scope-range-windows-refresh", windowTask("usage_scope_range_windows", []statsagg.WindowStageName{statsagg.StageUsageScopeRangeWindows}))
-	}
 	a.scheduleWiredJob("usage-hot-window-refresh", windowTask("usage_hot_window_refresh", hotUsageWindowStages()))
 	// 配额小时窗刷新（BUG-0175 D-48/D-75/D-86）：不在 RunStages 的 watermark
 	// 阶段模型内（归档 :1795-1951 是独立的 expiry 游标 + 脏范围分批消费
@@ -611,21 +542,16 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 // <=128 个，正常积压在数百轮内排空，达到上限按任务失败上报（不静默截断）。
 const quotaHourlyWindowMaxPasses = 1000
 
-// rankSnapshotCoreStages 对齐 usageRankSnapshotCoreStageNames（SQLite 分支，
-// 含 ai_performance_summary_windows）与 postgresUsageRankSnapshotCoreStageNames
-// （PG 分支，由独立 job 承担、不重复入列）。
-func rankSnapshotCoreStages(postgres bool) []statsagg.WindowStageName {
-	core := []statsagg.WindowStageName{
+// rankSnapshotCoreStages 对齐 postgresUsageRankSnapshotCoreStageNames（PG 分
+// 支，ai_performance_summary_windows 由独立 job 承担、不重复入列）。
+func rankSnapshotCoreStages() []statsagg.WindowStageName {
+	return []statsagg.WindowStageName{
 		statsagg.StageAccountLast7dRequestRank,
 		statsagg.StageCallerAccountLast7dRequestRank,
 		statsagg.StageApiKeyCurrentMonthCostRank,
 		statsagg.StageAccountAuthorizationCurrentMonthRank,
 		statsagg.StageGroupAuthorizationCurrentMonthRank,
 	}
-	if postgres {
-		return core
-	}
-	return append(core, statsagg.StageAiPerformanceSummaryWindows)
 }
 
 // hotUsageWindowStages 只保留 usage_scope_range_windows 一个阶段（BUG-0285）：
@@ -643,25 +569,12 @@ func hotUsageWindowStages() []statsagg.WindowStageName {
 // wireOAuthFamily：J4 家族（OpenAI OAuth 刷新、anthropic/gemini/grok
 // keepalive 刷新、两类可用性排期同步、授权过期 sweep）。
 func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
-	var db *sql.DB
-	postgres := a.config.Driver == "postgres"
-	if postgres {
-		handle, err := a.acquirePool(a.config.PostgresURL, "oauth-refresh")
-		if err != nil {
-			return err
-		}
-		db = handle.DB()
-	} else {
-		var err error
-		if db, err = a.openSQLite(a.config.BusinessSQLitePath, "oauth-refresh"); err != nil {
-			return err
-		}
+	handle, err := a.acquirePool(a.config.PostgresURL, "oauth-refresh")
+	if err != nil {
+		return err
 	}
-	mode := oauthrefresh.StoreSQLite
-	if postgres {
-		mode = oauthrefresh.StorePostgres
-	}
-	store, err := oauthrefresh.OpenStore(db, mode, a.config.Secret)
+	db := handle.DB()
+	store, err := oauthrefresh.OpenStore(db, oauthrefresh.StorePostgres, a.config.Secret)
 	if err != nil {
 		return fmt.Errorf("open oauth-refresh store: %w", err)
 	}
@@ -749,7 +662,7 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	// 门控不解除。hook 复用本族已获取的业务库句柄做方言渲染（同步事务本身
 	// 经 hook 传入，不新建连接池）；推进失败 best-effort 只记 warn（见
 	// worker_oauth_activation.go）。
-	activationBusiness, activationBusinessErr := accounthealth.NewProjectionBusinessDB(db, postgres)
+	activationBusiness, activationBusinessErr := accounthealth.NewProjectionBusinessDB(db)
 	if activationBusinessErr != nil {
 		return activationBusinessErr
 	}
@@ -869,82 +782,45 @@ func logScheduleStatusSync(logger *slog.Logger, event, activeMsg, idleMsg string
 // 2 分钟时队头批次记录转死信丢弃（error 留痕），优于无限堆积。
 const usageWriterMaxWriteAttempts = 120
 
+// usageWriterShardCount 是 usage 记录 ID/逻辑分片路由基数（原
+// JUHE_AI_USAGE_SHARD_COUNT 的常量收编，对齐 Node runtimeConfig.usageShardCount
+// 默认 16）。PG 唯一形态下仍被写计划消费：BuildWritePlan 经
+// UsageRecordLogicalShardLocationForPostgres 把分片路由写进逻辑 location 与
+// 记录 ID，基数变更会让新旧 ID 路由不一致，故收编为常量不再暴露 env。
+const usageWriterShardCount = 16
+
 // usageOverflowSpoolDirName 是 writer 溢出 spool 目录名（与 gateway
-// usage-record-spool 同级、同派生规则：stats 库目录下）。
+// usage-record-spool 同级、同派生规则：DATA_DIR 下）。
 const usageOverflowSpoolDirName = "usage-record-overflow-spool"
 
-// workerUsageOverflowSpoolDirectory 派生 writer 溢出 spool 目录：stats 库
-// 目录下固定名（datadir 约定保证 StatsSQLitePath 恒非空，PG 模式同样生
-// 效；溢出 spool 是 jobs 进程私有目录，无需与 gateway 对齐）。
+// workerUsageOverflowSpoolDirectory 派生 writer 溢出 spool 目录：DATA_DIR
+// 下固定名（D1：溢出 spool 是 jobs 进程私有目录，无需与 gateway 对齐）。
 func workerUsageOverflowSpoolDirectory(config workerConfig) string {
-	return filepath.Join(filepath.Dir(config.StatsSQLitePath), usageOverflowSpoolDirName)
+	return filepath.Join(config.DataDir, usageOverflowSpoolDirName)
 }
 
-// wireUsageWriterFamily：usagewriter 直接异步写分片（Node Redis Stream /
+// wireUsageWriterFamily：usagewriter 直接异步写库（Node Redis Stream /
 // ingest-worker IPC 路径按总设计消灭后的 Go 单路径），启动 flush 循环、
 // 停机排空。BUG-0175 D-72 补齐注入缺口：
 //   - FreezePricing：Node 两条路径都在入队时点冻结定价事实；Go 单路径在
 //     writer 侧冻结（C03 目录适配器已接线，见 worker_usage_pricing_catalog.go：
 //     数据源=业务库 models 单表，内置 builtin + 自定义 global/personal 按
 //     vendor_code 合并；目录读取失败回落确定性 fallback 快照，读侧契约不变）；
-//   - CatalogSnapshot：镜像 usageRecordPricingSnapshotForWrite 的
-//     `databaseDriver !== 'postgres'` 守卫；
-//   - BusinessDB（仅 SQLite；PG 路径的 last_used_at 副作用在主事务内随
-//     juhe_business schema 同池完成，无需单独句柄）：openBusinessDB 打开
-//     业务库句柄，usagewriter SqliteShardStore 由此回写 accounts.last_used_at
-//     与账户健康副作用（此前 nil = queryOnly 静默跳过，业务库副作用断供）；
 //   - OverflowSpool + MaxWriteAttempts + Postgres（统计链路排查 B①/B②/B③，
 //     见 NewWriter 调用处注释）与溢出 spool 回放 drain。
 func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
-	postgres := a.config.Driver == "postgres"
-	var catalogDB *sql.DB
-	var store usagewriter.ShardStore
-	var pricingCatalog *usagePricingCatalog
-	if postgres {
-		handle, err := a.acquirePool(a.config.PostgresURL, "usage-writer")
-		if err != nil {
-			return err
-		}
-		catalogDB = handle.DB()
-		store = usagewriter.NewPostgresShardStore(usagewriter.PostgresShardStoreConfig{
-			DB:         catalogDB,
-			ShardCount: a.config.UsageShardCount,
-		})
-		// PG 模式：usage-writer 池与业务库同库（juhe_business schema 限定），
-		// 定价目录复用该句柄，不额外开池。
-		pricingCatalog = newUsagePricingCatalog(catalogDB, true)
-	} else {
-		var err error
-		if catalogDB, err = a.openSQLite(a.config.UsageCatalogSQLitePath, "usage-writer-catalog"); err != nil {
-			return err
-		}
-		business, err := openBusinessDB(a, "usage-writer-business")
-		if err != nil {
-			return err
-		}
-		a.addCloser(business.close)
-		// SQLite 模式：定价目录读业务库 models 单表，与 shard store 的业务库
-		// 副作用共用同一句柄。
-		pricingCatalog = newUsagePricingCatalog(business.db, false)
-		// stats 库镜像写句柄：SQLite standalone 模式下聚合器唯一输入源
-		//（usage_records 由 statsverify EnsureSchema 建为聚合形状；stats 家族
-		// 先于本家族装配，schema 已就绪）。句柄进入 openSQLite 的统一关闭链。
-		statsMirror, err := a.openSQLite(a.config.StatsSQLitePath, "usage-writer-stats-mirror")
-		if err != nil {
-			return err
-		}
-		sqliteStore := usagewriter.NewSqliteShardStore(usagewriter.SqliteShardStoreConfig{
-			CatalogDB:  catalogDB,
-			ShardRoot:  a.config.UsageShardRoot,
-			ShardCount: a.config.UsageShardCount,
-			BusinessDB: business.db,
-			StatsDB:    statsMirror,
-		})
-		if err := sqliteStore.EnsureCatalogSchema(); err != nil {
-			return fmt.Errorf("initialize usage-writer catalog schema: %w", err)
-		}
-		store = sqliteStore
+	handle, err := a.acquirePool(a.config.PostgresURL, "usage-writer")
+	if err != nil {
+		return err
 	}
+	catalogDB := handle.DB()
+	store := usagewriter.NewPostgresShardStore(usagewriter.PostgresShardStoreConfig{
+		DB:         catalogDB,
+		ShardCount: usageWriterShardCount,
+	})
+	// usage-writer 池与业务库同库（juhe_business schema 限定），定价目录复用
+	// 该句柄，不额外开池。
+	pricingCatalog := newUsagePricingCatalog(catalogDB, true)
 	// 统计链路排查 B②/B③：
 	//   - OverflowSpool：队列满时记录先落盘溢出 spool（历史装配缺省该选项，
 	//     溢出记录直接丢弃且无处恢复），再由本进程的回放 drain 幂等重投；
@@ -953,12 +829,11 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	//     systemAccountId"的快速失败（空值此前到 INSERT 才撞 NOT NULL）。
 	overflowSpool := usagewriter.NewFileOverflowSpool(workerUsageOverflowSpoolDirectory(a.config))
 	writer := usagewriter.NewWriter(usagewriter.Config{
-		ShardCount:       a.config.UsageShardCount,
-		ShardRoot:        a.config.UsageShardRoot,
+		ShardCount:       usageWriterShardCount,
 		FreezePricing:    true,
-		CatalogSnapshot:  !postgres,
+		CatalogSnapshot:  false,
 		MaxWriteAttempts: usageWriterMaxWriteAttempts,
-		Postgres:         postgres,
+		Postgres:         true,
 	}, store, nil,
 		usagewriter.WithLogger(slogWriterLogger{logger: a.logger}),
 		usagewriter.WithCatalog(pricingCatalog),
@@ -977,8 +852,8 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	}
 	// 溢出 spool 回放 drain：溢出文件的格式/目录布局与 gateway 交接表同构，
 	// 复用 usagespooldrain.Drainer 的解析、幂等入队（ON CONFLICT DO
-	// NOTHING）、删除与待删水位语义。目录恒非空（stats 库目录派生），恒接
-	// 线；未消费文件的队头水位并入 ingestgate 多源积压（B①）。
+	// NOTHING）、删除与待删水位语义。目录恒非空（DATA_DIR 派生），恒接线；
+	// 未消费文件的队头水位并入 ingestgate 多源积压（B①）。
 	a.usageOverflowReplay = &usagespooldrain.Drainer{
 		Directory: workerUsageOverflowSpoolDirectory(a.config),
 		Enqueuer:  writer,
@@ -991,15 +866,16 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 }
 
 // wireUsageSpoolDrain 接线 gateway usage spool 交接表 drain（supervisor
-// 组件由 components 提供）。目录取 JUHE_AI_USAGE_SPOOL_DIRECTORY（或
-// sqlite 模式从 stats 库目录的同规则派生，见 worker_config.go）；两者皆空
-// 时（PG 模式未配置 env）交接表无人消费，按组合根约定显式告警登记，不静默。
+// 组件由 components 提供）。目录取 JUHE_AI_USAGE_SPOOL_DIRECTORY（未配置时
+// 由 loadWorkerConfig 按 D1 从 DATA_DIR 派生 <DATA_DIR>/usage-record-spool，
+// 见 worker_config.go）；测试注入的零值 config 目录为空时按组合根约定显式
+// 告警登记，不静默。
 func (a *workerAssembly) wireUsageSpoolDrain() error {
 	if a.writer == nil {
 		return nil
 	}
 	if a.config.UsageSpoolDirectory == "" {
-		a.logger.Warn("usage spool drain 未接线：JUHE_AI_USAGE_SPOOL_DIRECTORY 未配置且无法从 stats 库路径派生，gateway 用量交接文件将无人消费",
+		a.logger.Warn("usage spool drain 未接线：JUHE_AI_USAGE_SPOOL_DIRECTORY 未配置且 DATA_DIR 派生不可用，gateway 用量交接文件将无人消费",
 			"event", "usage_record_spool_drain_unwired")
 		return nil
 	}
@@ -1059,23 +935,20 @@ func (l slogWriterLogger) Error(msg string, fields map[string]any) {
 }
 
 // scheduleWiredJob 按注册表登记的调度参数注册一个 GoWired 任务，并统一
-// 包裹 postgres 租约（对齐 Node runWithPostgresScheduledLease 只在
-// driver=postgres 生效的语义）。非 GoWired 名称一律拒绝注册。调度参数经
-// ResolveScheduleForDriver 应用 databaseDriver 注册分叉（T6b：
-// usage-overview-windows-refresh 的 SQLite 30min、usage-scope-range/ai-
-// performance 的分支独占注册）；反向模式返回 !ok 时拒绝注册。
+// 包裹 postgres 调度租约与运行历史（对齐 Node runWithPostgresScheduledLease）。
+// 非 GoWired 名称一律拒绝注册。
 func (a *workerAssembly) scheduleWiredJob(name string, task jobsched.Task) {
 	a.scheduleWiredJobWithSettings(name, nil, task)
 }
 
 // scheduleWiredJobWithSettings 是 scheduleWiredJob 的间隔覆盖变体（env 驱动
 // 的可变 interval，如 account-list-availability-projection-maintenance 的
-// accountListAvailabilityProjectionIntervalMs；T6b 冻结清单 §4）。
+// accountListAvailabilityProjectionIntervalMs）。
 //
 // F3-1：除调用方显式传入的 settings 覆盖外，统一叠加组合根的系统设置间隔
 // 源（a.scheduleIntervals），让 SettingsIntervalJobNames 的设置间隔真正
 // 生效；两个源对同一 job 不会同时命中（设置驱动 job 不用显式覆盖注册），
-// 显式覆盖优先经 ResolveScheduleForDriver 的既有语义保持。
+// 显式覆盖优先经 ResolveSchedule 的既有语义保持。
 func (a *workerAssembly) scheduleWiredJobWithSettings(name string, settings jobregistry.SettingsInterval, task jobsched.Task) {
 	// 缺陷4修复：重名注册此前被 scheduler.Schedule 静默忽略，但本层仍会
 	// append wiredJobs 并覆盖 wiredTasks——组装记账失真（重复条目 + 后注册
@@ -1096,9 +969,9 @@ func (a *workerAssembly) scheduleWiredJobWithSettings(name string, settings jobr
 	if settings == nil {
 		settings = a.scheduleIntervals
 	}
-	schedule, ok := jobregistry.ResolveScheduleForDriver(name, settings, a.config.Driver)
+	schedule, ok := jobregistry.ResolveSchedule(name, settings)
 	if !ok {
-		a.logger.Warn("任务在当前 databaseDriver 分支不注册（Node 调度分支冻结）", "job", name, "driver", a.config.Driver)
+		a.logger.Warn("任务无注册表调度参数，拒绝注册", "job", name)
 		return
 	}
 	spec := jobsched.Spec{
@@ -1151,11 +1024,10 @@ const workerTaskRunRole = "worker"
 var errTaskRunStartSkipped = errors.New("background_task_run 启动 CAS 未命中，本轮任务未执行")
 
 // withLease 包裹 taskruns.RunWithScheduledLease 与 taskruns.RunWithTaskRun：
-// PG 模式下每次 job 执行在持调度租约的同时登记 background_task_runs 运行
-// 历史（queued→running→终态）。SQLite 模式与 Node 一致（driver != postgres
-// 时任务直跑，不获取 PG 租约，也不写运行历史）。
+// 每次 job 执行在持调度租约的同时登记 background_task_runs 运行历史
+//（queued→running→终态）。
 func (a *workerAssembly) withLease(jobName string, ttl time.Duration, task jobsched.Task) jobsched.Task {
-	if a.taskRunsStore == nil || ttl <= 0 || a.config.Driver != "postgres" {
+	if a.taskRunsStore == nil || ttl <= 0 {
 		return task
 	}
 	store := a.taskRunsStore
@@ -1342,7 +1214,6 @@ func (a *workerAssembly) statusPayload() map[string]any {
 	}
 	statusPayload := map[string]any{
 		"workerEnabled":         true, // 机制强制常开（2026-09-19 决策），字段保留以稳定 /health 载荷契约
-		"workerDriver":          a.config.Driver,
 		"workerWiredJobs":       a.wiredJobs,
 		"workerRegisteredTodo":  registeredNotWired,
 		"workerDisabledJobs":    a.disabledJobs,

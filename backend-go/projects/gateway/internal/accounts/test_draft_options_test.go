@@ -14,10 +14,11 @@ import (
 // B4 ⑧：models 单表 REPLACE seedFixtureModels 同名行。
 func seedDraftCatalogExtra(t *testing.T, env *testEnv) {
 	t.Helper()
-	env.exec(t, `REPLACE INTO models
+	env.exec(t, `INSERT INTO models
 		(id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, release_date, created_at, updated_at)
 		VALUES ('mod-fixture-gpt-4-1-gpt', 'gpt', 'gpt-4.1', 'gpt-4.1', 'builtin', 'active',
-		'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-02-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+		'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-02-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+			ON CONFLICT (id) DO UPDATE SET vendor_code = EXCLUDED.vendor_code, public_model = EXCLUDED.public_model, upstream_model = EXCLUDED.upstream_model, scope = EXCLUDED.scope, system_account_id = EXCLUDED.system_account_id, status = EXCLUDED.status, supported_endpoint_modes_json = EXCLUDED.supported_endpoint_modes_json, release_date = EXCLUDED.release_date, shutdown_date = EXCLUDED.shutdown_date, catalog_visible = EXCLUDED.catalog_visible, catalog_order = EXCLUDED.catalog_order, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`)
 }
 
 func TestTestDraftOptionsRoutes(t *testing.T) {

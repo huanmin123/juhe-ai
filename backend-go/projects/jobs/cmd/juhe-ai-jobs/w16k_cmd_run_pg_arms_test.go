@@ -93,7 +93,6 @@ func TestW16KWithLeaseSkippedAndPartialArms(t *testing.T) {
 	}
 	w16kSeedPGJ1(t, pgURL)
 	assembly := w16jNewSilentAssembly(t, workerConfig{
-		Driver:               "postgres",
 		PostgresURL:          pgURL,
 		PostgresMaxOpenConns: 4,
 		PostgresMaxIdleConns: 2,

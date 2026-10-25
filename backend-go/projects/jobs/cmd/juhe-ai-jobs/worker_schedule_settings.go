@@ -4,13 +4,12 @@
 // (:286-308 / :331 / :379 / :406 / :461), so the interval is fixed at startup
 // in both runtimes — a settings change takes effect on the next process
 // assembly, not mid-run. The Go composition root resolves the same keys at
-// assembly time through internal/jobssettings (the PG/SQLite system_settings
-// read model) and hands the resolver to ResolveScheduleForDriver.
+// assembly time through internal/jobssettings (the PG system_settings
+// read model) and hands the resolver to ResolveSchedule.
 package main
 
 import (
 	"context"
-	"database/sql"
 	"log/slog"
 	"time"
 
@@ -39,31 +38,15 @@ var jobsScheduleIntervalSpecs = map[string]struct {
 	"account-quality-refresh":           {Min: 60, Max: 3600},
 }
 
-// wireScheduleSettings 打开调度间隔设置读模型并注册到装配体。PG 复用共享
-// URL 池；SQLite 直开业务库。业务库路径缺失时保持 nil（该模式下没有任何
-// settings 驱动 job 会注册，注册表默认间隔兜底），并打启动日志说明。
+// wireScheduleSettings 打开调度间隔设置读模型并注册到装配体（PG 共享池）。
 func (a *workerAssembly) wireScheduleSettings() error {
-	var db *sql.DB
-	if a.config.Driver == "postgres" {
-		handle, err := a.acquirePool(a.config.PostgresURL, "schedule-settings")
-		if err != nil {
-			return err
-		}
-		db = handle.DB()
-	} else {
-		if a.config.BusinessSQLitePath == "" {
-			a.logger.Warn("后台任务调度间隔设置源未装配（缺少业务库路径），按注册表默认间隔调度",
-				"event", "background_job_schedule_settings_source_missing")
-			return nil
-		}
-		var err error
-		if db, err = a.openSQLite(a.config.BusinessSQLitePath, "schedule-settings"); err != nil {
-			return err
-		}
+	handle, err := a.acquirePool(a.config.PostgresURL, "schedule-settings")
+	if err != nil {
+		return err
 	}
 	source := jobssettings.NewSource(jobssettings.Options{
-		DB:   db,
-		Mode: settingsMode(a.config.Driver == "postgres"),
+		DB:   handle.DB(),
+		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	a.scheduleIntervals = func(jobName string) (time.Duration, bool) {

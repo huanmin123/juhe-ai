@@ -40,7 +40,7 @@ func TestW2CreateFullFieldSuccess(t *testing.T) {
 	var concurrency, priority int
 	var super, schedulable bool
 	if err := env.db.QueryRow(`SELECT concurrency_limit, priority, super_priority_enabled, schedulable
-		FROM accounts WHERE id = ?`, id).Scan(&concurrency, &priority, &super, &schedulable); err != nil {
+		FROM accounts WHERE id = $1`, id).Scan(&concurrency, &priority, &super, &schedulable); err != nil {
 		t.Fatal(err)
 	}
 	// skipInitialHealthCheck 让 active 账户跳过 pending_test 直接可调度。
@@ -81,7 +81,7 @@ func TestW2CreateFullFieldSuccess(t *testing.T) {
 		t.Fatalf("映射 PATCH 应成功：%d %v", code, patched)
 	}
 	var enabled int
-	if err := env.db.QueryRow(`SELECT account_entry_mappings.enabled FROM account_entry_mappings WHERE account_id = ?`, id).Scan(&enabled); err != nil {
+	if err := env.db.QueryRow(`SELECT account_entry_mappings.enabled FROM account_entry_mappings WHERE account_id = $1`, id).Scan(&enabled); err != nil {
 		t.Fatalf("映射未落库：%v", err)
 	}
 	if enabled != 0 {

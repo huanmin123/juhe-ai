@@ -19,7 +19,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -29,7 +28,6 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/cleanuprepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
@@ -68,13 +66,13 @@ func TestW16DPGBalanceContractArms(t *testing.T) {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
 	pgDB := w16dPGOpen(t)
-	business := &businessDB{db: pgDB, postgres: true}
+	business := &businessDB{db: pgDB}
 	// ensureAccountsBalanceColumns PG 分支：生产形状 accounts 具备契约列。
 	if err := ensureAccountsBalanceColumns(context.Background(), business); err != nil {
 		t.Logf("覆盖库 accounts 契约列校验（登记不判失败）: %v", err)
 	}
 	// ensureAccountUsageSnapshotsTable PG 分支（853-856）。
-	if err := ensureAccountUsageSnapshotsTable(context.Background(), pgDB, true); err != nil {
+	if err := ensureAccountUsageSnapshotsTable(context.Background(), pgDB); err != nil {
 		t.Logf("覆盖库快照表校验（登记不判失败）: %v", err)
 	}
 	// 关闭句柄 → PG 查询错误分支（155-157 / 854-856）。
@@ -83,10 +81,10 @@ func TestW16DPGBalanceContractArms(t *testing.T) {
 		t.Skipf("w16d: 打开不可达句柄失败（跳过）: %v", err)
 	}
 	t.Cleanup(func() { _ = closed.Close() })
-	if err := ensureAccountsBalanceColumns(context.Background(), &businessDB{db: closed, postgres: true}); err == nil {
+	if err := ensureAccountsBalanceColumns(context.Background(), &businessDB{db: closed}); err == nil {
 		t.Fatal("不可达 PG 句柄的契约校验必须报错")
 	}
-	if err := ensureAccountUsageSnapshotsTable(context.Background(), closed, true); err == nil {
+	if err := ensureAccountUsageSnapshotsTable(context.Background(), closed); err == nil {
 		t.Fatal("不可达 PG 句柄的快照表校验必须报错")
 	}
 }
@@ -98,8 +96,7 @@ func TestW16DPGRetentionAdapterArms(t *testing.T) {
 	pgDB := w16dPGOpen(t)
 	pgHandle := &cleanuprepo.DB{DB: pgDB, Postgres: true}
 	family := &retentionFamily{
-		assembly: newWorkerAssembly(workerConfig{Driver: "postgres"}, slog.Default()),
-		postgres: true,
+		assembly: newWorkerAssembly(workerConfig{}, slog.Default()),
 		recordCleanup: &cleanuprepo.RecordCleanupStore{
 			Business: pgHandle, Stats: pgHandle, Dataset: pgHandle, UsageCatalog: pgHandle,
 		},
@@ -208,28 +205,24 @@ func TestW16DPGCodexSettleAndDrainArms(t *testing.T) {
 		t.Fatal("结算失败必须报错")
 	}
 	// record_maintenance 表 drain 的 PG 接线（50-52）与 closer 排空（74-78）。
-	assembly := newWorkerAssembly(workerConfig{
-		Driver: "postgres", InstanceID: "w16d-drain",
+	assembly := newWorkerAssembly(workerConfig{ InstanceID: "w16d-drain",
 		RecordMaintenanceBatchSize:               5,
 		RecordMaintenanceShutdownFlushMaxBatches: 1,
 	}, slog.Default())
 	t.Cleanup(assembly.closeStores)
-	family := &retentionFamily{assembly: assembly, postgres: true}
-	if err := assembly.wireRecordMaintenanceTableDrain(family, pgHandle, pgHandle); err != nil {
+	family := &retentionFamily{assembly: assembly}
+	if err := assembly.wireRecordMaintenanceTableDrain(family, pgHandle); err != nil {
 		t.Fatalf("PG drain 接线: %v", err)
 	}
 	assembly.closeStores()
 }
 
 func TestW16DPGFlushLoopFailureArms(t *testing.T) {
-	// flushLoop 任务失败 → 重排 + 错误日志（877-883）。
-	root := t.TempDir()
-	closed, err := sql.Open("sqlite", filepath.Join(root, "closed.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	// flushLoop 任务失败 → 重排 + 错误日志（877-883）。PG 唯一形态：空独立库
+	//（契约表缺失）使关联清理执行失败，错误分支由此驱动（原 sqlite closed
+	// 句柄夹具随 sqlite 形态退役删除）。
+	pgDB := w16dPGOpen(t)
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	family := &retentionFamily{
 		assembly: assembly,
 		runner: &retention.RecordMaintenanceRunner{
@@ -238,26 +231,33 @@ func TestW16DPGFlushLoopFailureArms(t *testing.T) {
 				RelatedRecords: &familyRelatedCleaner{family: &retentionFamily{
 					assembly: assembly,
 					recordCleanup: &cleanuprepo.RecordCleanupStore{
-						Dataset:      &cleanuprepo.DB{DB: closed},
-						Stats:        &cleanuprepo.DB{DB: closed},
-						UsageCatalog: &cleanuprepo.DB{DB: closed},
-						Business:     &cleanuprepo.DB{DB: closed},
-						Shards:       cleanuprepo.NewShardStore(t.TempDir()),
+						Dataset:      &cleanuprepo.DB{DB: pgDB, Postgres: true},
+						Stats:        &cleanuprepo.DB{DB: pgDB, Postgres: true},
+						UsageCatalog: &cleanuprepo.DB{DB: pgDB, Postgres: true},
+						Business:     &cleanuprepo.DB{DB: pgDB, Postgres: true},
 					},
 				}},
 			},
 		},
 	}
+	_ = family
 	queue := newRecordMaintenanceQueue(queueLimits{MaxItems: 10, MaxBytes: 1 << 20})
-	queued, _ := queue.enqueue(retention.RecordMaintenanceJob{
-		Type: retention.JobTypeAPIKeyRelatedCleanup, ID: "w16d-flush", APIKeyID: "w16d-key", SystemAccountID: "sys",
-	})
-	if !queued {
-		t.Fatal("队列必须接收任务")
-	}
 	stop := make(chan struct{})
+	assembly.retention = family
 	go family.flushLoop(stop, queue)
-	time.Sleep(300 * time.Millisecond)
+	if queued, _ := queue.enqueue(retention.RecordMaintenanceJob{Type: "w16d-unknown-type"}); !queued {
+		t.Fatal("空队列必须接受任务")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if queue.size() == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if queue.size() != 1 {
+		t.Fatalf("失败任务必须保留队头等待重试: size=%d", queue.size())
+	}
 	close(stop)
 }
 
@@ -267,8 +267,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	}
 	pgDB := w16dPGOpen(t)
 	redisServer := miniredis.RunT(t)
-	assembly := newWorkerAssembly(workerConfig{
-		Driver: "postgres", InstanceID: "w16d-list-projection",
+	assembly := newWorkerAssembly(workerConfig{ InstanceID: "w16d-list-projection",
 		Secret:                          w16dSecret,
 		ListProjectionIntervalMS:        1_000,
 		ListProjectionBatchSize:         10,
@@ -301,7 +300,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probe store: %v", err)
 	}
-	business := &businessDB{db: pgDB, postgres: true}
+	business := &businessDB{db: pgDB}
 	// miniredis URL + 全依赖齐备 → 完整接线（63-137）。
 	assembly.config.RedisStateURL = "redis://" + redisServer.Addr()
 	assembly.config.RedisNamespace = "juhe-ai:w16d"
@@ -401,104 +400,4 @@ func TestW16DPGManualBridgeArms(t *testing.T) {
 		t.Fatalf("缺失账户的 RunManual 不得成功: %d %s", response.Code, response.Body.String())
 	}
 	t.Logf("RunManual 缺失账户响应: %d %s", response.Code, response.Body.String())
-}
-
-func TestW16DSQLiteResolverAndProbeArms(t *testing.T) {
-	ctx := context.Background()
-	// 空分组账户：owner 身份 → groupID 空 → !ok（154-156）。
-	businessPath := filepath.Join(t.TempDir(), "business.sqlite3")
-	seedProbeCoreTables(t, businessPath)
-	businessDBForAlter := w16dOpenTestSQLite(t, businessPath)
-	if _, err := businessDBForAlter.Exec(`ALTER TABLE accounts ADD COLUMN proxy_profile_id TEXT`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := businessDBForAlter.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable,
-		credentials_encrypted, config_revision, dispatch_revision, proxy_profile_id)
-		VALUES ('w16d-orphan', 'sys-w16d', 'orphan', 'api_key', 'active', 1, '{}', 1, 2, NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	probeStore, err := proberepo.NewStore(proberepo.Config{DB: businessDBForAlter, Secret: w16dSecret})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolver := circuitRecoveryTargetResolver{store: probeStore}
-	target, ok, err := resolver.Resolve(ctx, opsjobs.CircuitState{
-		Scope: opsjobs.CircuitScope{AccountRuntimeKey: "w16d-orphan"},
-	})
-	if err != nil || ok || target.Probe != nil {
-		t.Fatalf("空分组账户必须 !ok: ok=%v err=%v", ok, err)
-	}
-	// authorized 身份 + 候选缺失 → !ok（161-163）。
-	target, ok, err = resolver.Resolve(ctx, opsjobs.CircuitState{
-		Scope: opsjobs.CircuitScope{AccountRuntimeKey: "w16d-orphan:authorized:sys-w16d:g-w16d:auth-w16d"},
-	})
-	if err != nil || ok {
-		t.Fatalf("候选缺失必须 !ok: ok=%v err=%v", ok, err)
-	}
-	// 关闭句柄的候选读取错误（158-160）。
-	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
-	// 账户可读、候选库关闭在真实结构中不可分离；此处覆盖 FindAccountForTest 错误臂。
-	brokenSource := speedFirstCandidateSource{store: mustClosedProbeStore(t)}
-	if _, err := brokenSource.FindAccountForTest(ctx, "w16d-x", "sys"); err == nil {
-		t.Fatal("关闭句柄 FindAccountForTest 必须报错")
-	}
-	// proxyEnvelope：密码封套解密后非 JSON（752-754）。
-	runtime := &balanceDetectRuntime{secret: w16dSecret}
-	sealedPassword, err := accountbalance.EncryptV1Envelope(w16dSecret, []byte("w16d-not-json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runtime.proxyEnvelope("w16d-p", "http", "127.0.0.1", 8080, "user", sealedPassword); err == nil {
-		t.Fatal("密码封套明文非 JSON 必须报错")
-	}
-}
-
-func mustClosedProbeStore(t *testing.T) *proberepo.Store {
-	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	store, err := proberepo.NewStore(proberepo.Config{DB: db, Secret: w16dSecret})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return store
-}
-
-// TestW16DSQLiteProbeFamilyStatsFailArm 覆盖探针族 stats 存储打开失败臂
-// （90-92）：业务库通过核心表校验、stats 路径为垃圾文件。
-func TestW16DSQLiteProbeFamilyStatsFailArm(t *testing.T) {
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	seedProbeCoreTables(t, businessPath)
-	statsGarbage := filepath.Join(root, "garbage-stats.sqlite3")
-	if err := osWriteFileForTest(statsGarbage, []byte("w16d not a sqlite database")); err != nil {
-		t.Fatal(err)
-	}
-	assembly := newWorkerAssembly(workerConfig{
-		Driver: "sqlite", InstanceID: "w16d-probe-stats-fail",
-		BusinessSQLitePath: businessPath,
-		StatsSQLitePath:    statsGarbage,
-		Secret:             w16dSecret,
-		// 家族开关字段已删除（2026-09-19）：探针族恒装配，直接调
-		// wireProbeFamily 驱动 stats 打开失败臂。
-	}, slog.Default())
-	t.Cleanup(assembly.closeStores)
-	armErr := assembly.wireProbeFamily(context.Background())
-	if armErr == nil {
-		for _, disabled := range assembly.disabledJobs {
-			t.Logf("探针族 disabled: %s: %s", disabled.JobName, disabled.Reason)
-		}
-		t.Fatal("垃圾 stats 路径必须使探针族装配失败")
-	}
-}
-
-func osWriteFileForTest(path string, data []byte) error {
-	return os.WriteFile(path, data, 0o644)
 }

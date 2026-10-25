@@ -25,24 +25,9 @@ import (
 // accounts.authorization_instance_owner_system_account_id) and the
 // juhe_stats.account_usage_snapshots relay_balance rows (SQLite keeps one
 // file).
-var m11ExtraDDL = []string{
-	`ALTER TABLE accounts ADD COLUMN authorization_instance_owner_system_account_id TEXT`,
-	`CREATE TABLE IF NOT EXISTS account_usage_snapshots (
-		system_account_id TEXT NOT NULL,
-		account_id TEXT NOT NULL,
-		kind TEXT NOT NULL,
-		source TEXT NOT NULL DEFAULT 'upstream_api',
-		snapshot_json TEXT NOT NULL,
-		refresh_status TEXT NOT NULL DEFAULT 'pending',
-		last_attempt_at TEXT,
-		last_success_at TEXT,
-		next_refresh_after TEXT,
-		last_error_message TEXT,
-		updated_at TEXT NOT NULL,
-		created_at TEXT NOT NULL,
-		PRIMARY KEY (system_account_id, account_id, kind)
-	)`,
-}
+// m11 面的附加 schema（authorization_instance_owner_system_account_id 列与
+// account_usage_snapshots）由 PG 夹具承载（pgkit_test.go：生产列集 + juhe_stats
+// 形态）；原 m11ExtraDDL 为 sqlite 共享夹具的补列/补表，随其退役删除。
 
 // fakeBalanceRefresher records the manual refresh invocations and replays the
 // canned outcome.
@@ -115,14 +100,7 @@ func (r *recordingReturner) Return(_ context.Context, grantID, expectedUpdatedAt
 func newM11TestEnv(t *testing.T) (*testEnv, *Store) {
 	t.Helper()
 	base := newTestEnv(t)
-	for _, statement := range m11ExtraDDL {
-		// Multiple envs over one test share the named in-memory database; a
-		// column added by a previous env is fine.
-		if _, err := base.db.Exec(statement); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-			t.Fatal(err)
-		}
-	}
-	store, err := NewStore(base.db, false, testSecret, nil, nil)
+	store, err := NewStore(base.db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,8 +232,9 @@ func TestM11OAuthReauthorizationContext(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	// The gemini provider row the interaction context filters on.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-gemini', 'gemini', 'Gemini', 1, ?, ?)`, now, now)
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
+		VALUES ('prov-gemini', 'gemini', 'Gemini', 1, ?, ?)
+		ON CONFLICT DO NOTHING`, now, now)
 	sealed, err := EncryptJSON(testSecret, Credentials{
 		"oauth_type": "ai_studio", "client_id": "cid-1", "client_secret": "sec-1",
 		"quota_project_id": "qp-1", "project_id": "pj-1", "tier_id": "tier-1",
@@ -325,7 +304,7 @@ func TestM11BalanceDetailsProjection(t *testing.T) {
 	// One stored per-Key entry keyed by the HMAC fingerprint; the config
 	// revision matches so the snapshot counts as current.
 	env.exec(t, "UPDATE accounts SET config_revision = 3 WHERE id = 'acc-bal'")
-	store, err := NewStore(env.db, false, testSecret, nil, nil)
+	store, err := NewStore(env.db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,8 +574,9 @@ func TestM11TrafficMigrationContract(t *testing.T) {
 	bind := func(accountID string) {
 		t.Helper()
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		env.exec(t, `INSERT OR REPLACE INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)`, adminID, groupID, accountID, now, now)
+		env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?)
+			ON CONFLICT (group_id, account_id) DO UPDATE SET system_account_id = EXCLUDED.system_account_id, account_authorization_id = EXCLUDED.account_authorization_id, local_priority = EXCLUDED.local_priority, local_super_priority_enabled = EXCLUDED.local_super_priority_enabled, local_fallback_enabled = EXCLUDED.local_fallback_enabled, enabled = EXCLUDED.enabled, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`, adminID, groupID, accountID, now, now)
 	}
 	env.seedM11Account(t, "acc-src", adminID, "源账户", "api_key", "active", Credentials{"api_key": "sk-src"})
 	env.seedM11Account(t, "acc-dst", adminID, "目标账户", "api_key", "active", Credentials{"api_key": "sk-dst"})
@@ -623,8 +603,9 @@ func TestM11TrafficMigrationContract(t *testing.T) {
 	// fraction when the repository orders by updated_at.
 	env.exec(t, `DELETE FROM group_accounts WHERE account_id = 'acc-dst'`)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT OR REPLACE INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-		VALUES (?, 'grp-other', 'acc-dst', 1, ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+		VALUES (?, 'grp-other', 'acc-dst', 1, ?, ?)
+			ON CONFLICT (group_id, account_id) DO UPDATE SET system_account_id = EXCLUDED.system_account_id, account_authorization_id = EXCLUDED.account_authorization_id, local_priority = EXCLUDED.local_priority, local_super_priority_enabled = EXCLUDED.local_super_priority_enabled, local_fallback_enabled = EXCLUDED.local_fallback_enabled, enabled = EXCLUDED.enabled, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`, adminID, now, now)
 	code, crossGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts/acc-src/traffic-migration",
 		`{"targetAccountId":"acc-dst"}`)
 	if code != http.StatusBadRequest || crossGroup["message"] != "目标账户必须和当前账户在同一个分组内" {
@@ -701,8 +682,9 @@ func TestM11TrafficMigrationRuntimeMigratorWiring(t *testing.T) {
 	bind := func(accountID string) {
 		t.Helper()
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		env.exec(t, `INSERT OR REPLACE INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)`, adminID, groupID, accountID, now, now)
+		env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?)
+			ON CONFLICT (group_id, account_id) DO UPDATE SET system_account_id = EXCLUDED.system_account_id, account_authorization_id = EXCLUDED.account_authorization_id, local_priority = EXCLUDED.local_priority, local_super_priority_enabled = EXCLUDED.local_super_priority_enabled, local_fallback_enabled = EXCLUDED.local_fallback_enabled, enabled = EXCLUDED.enabled, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`, adminID, groupID, accountID, now, now)
 	}
 	env.seedM11Account(t, "acc-src", adminID, "源账户", "api_key", "active", Credentials{"api_key": "sk-src"})
 	env.seedM11Account(t, "acc-dst", adminID, "目标账户", "api_key", "active", Credentials{"api_key": "sk-dst"})

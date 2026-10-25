@@ -93,28 +93,28 @@ func TestW16DBalanceConfigParsersArms(t *testing.T) {
 func TestW16DScanNullTimeArms(t *testing.T) {
 	stamp := time.Date(2026, 9, 18, 1, 2, 3, 0, time.UTC)
 	// nil / time.Time / string / []byte。
-	if value, err := scanNullTime(false, nil); err != nil || value != nil {
+	if value, err := scanNullTime(nil); err != nil || value != nil {
 		t.Fatalf("nil 必须 → nil,nil: %v %v", value, err)
 	}
-	if value, err := scanNullTime(false, stamp); err != nil || value == nil || !value.Equal(stamp) {
+	if value, err := scanNullTime(stamp); err != nil || value == nil || !value.Equal(stamp) {
 		t.Fatalf("time.Time 直通失败: %v %v", value, err)
 	}
-	if value, err := scanNullTime(false, stamp.UTC().Format(time.RFC3339Nano)); err != nil || value == nil {
+	if value, err := scanNullTime(stamp.UTC().Format(time.RFC3339Nano)); err != nil || value == nil {
 		t.Fatalf("string 解析失败: %v %v", value, err)
 	}
-	if value, err := scanNullTime(false, []byte(stamp.UTC().Format(time.RFC3339Nano))); err != nil || value == nil {
+	if value, err := scanNullTime([]byte(stamp.UTC().Format(time.RFC3339Nano))); err != nil || value == nil {
 		t.Fatalf("[]byte 解析失败: %v %v", value, err)
 	}
-	if value, err := scanNullTime(true, []byte(stamp.UTC().Format(time.RFC3339Nano))); err != nil || value == nil {
+	if value, err := scanNullTime([]byte(stamp.UTC().Format(time.RFC3339Nano))); err != nil || value == nil {
 		t.Fatalf("PG []byte 解析失败: %v %v", value, err)
 	}
-	if _, err := scanNullTime(false, "bad-time"); err == nil {
+	if _, err := scanNullTime("bad-time"); err == nil {
 		t.Fatal("非法 string 必须报错")
 	}
-	if _, err := scanNullTime(false, []byte("bad-time")); err == nil {
+	if _, err := scanNullTime([]byte("bad-time")); err == nil {
 		t.Fatal("非法 []byte 必须报错")
 	}
-	if _, err := scanNullTime(false, 12345); err == nil {
+	if _, err := scanNullTime(12345); err == nil {
 		t.Fatal("不支持类型必须报错")
 	}
 }

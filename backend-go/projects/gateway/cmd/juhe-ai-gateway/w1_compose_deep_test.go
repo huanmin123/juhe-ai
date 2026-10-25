@@ -22,7 +22,7 @@ package main
 //
 // 全部用例确定性可重放：redis 一律 miniredis 或立即解析失败的坏 URL；数据库
 // 一律临时 SQLite 文件；无并发等待、无网络依赖。失败臂统一走
-// w1oRedirectDatabasePaths 的手管目录（组合根失败路径不回收 SQLite 句柄，
+// w1oRedirectChatAssetsRoot 的手管目录（组合根失败路径不回收 SQLite 句柄，
 // Windows 上 t.TempDir 清理会因句柄锁失败）。
 
 import (
@@ -80,32 +80,12 @@ func TestW1QComposeSmallAdapterArms(t *testing.T) {
 // compose.go：composeSystemAPI 配置变体成功臂与命名错误臂
 //
 // 组合根依赖栈与手管目录清理策略直接复用 w1_compose_root_test.go 的
-// w1oNewComposeStack / w1oRedirectDatabasePaths，避免二次聚合造成漂移。
+// w1oNewComposeStack / w1oRedirectChatAssetsRoot，避免二次聚合造成漂移。
 // ---------------------------------------------------------------------------
 
 func TestW1QComposeSystemAPIStorageFailureArms(t *testing.T) {
-	t.Run("缺统计库路径组合根守卫失败", func(t *testing.T) {
+	t.Run("缺业务URL连接池错误臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		w1oRedirectDatabasePaths(t, stack)
-		stack.cfg.StatsDatabasePath = ""
-		composed, err := stack.compose(t)
-		if err == nil {
-			if composed != nil {
-				composed.Shutdown()
-			}
-			t.Fatal("缺统计库路径必须 fail-fast")
-		}
-		// 2026-09-19 起 preflight 不再缺路径 fail-fast（loadRuntimeConfig 已
-		// 派生默认路径，直接构造的空路径由物理门禁跳过空项），空 stats 路径
-		// 由组合根打开 stats 数据库前的守卫指名拒绝。
-		if !strings.Contains(err.Error(), "JUHE_AI_STATS_DATABASE_PATH") {
-			t.Fatalf("错误 = %v，want 组合根守卫指名统计库路径", err)
-		}
-	})
-
-	t.Run("postgres驱动缺业务URL连接池错误臂", func(t *testing.T) {
-		stack := w1oNewComposeStack(t)
-		stack.cfg.DatabaseDriver = "postgres"
 		stack.cfg.BusinessPostgresURL = ""
 		composed, err := stack.compose(t)
 		if err == nil {
@@ -136,9 +116,8 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 
 	t.Run("坏redis状态URL验证码服务失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		w1oRedirectDatabasePaths(t, stack)
+		w1oRedirectChatAssetsRoot(t, stack)
 		stack.cfg.CaptchaDisabled = false
-		stack.cfg.RuntimeStateDriver = "redis"
 		stack.cfg.RedisStateURL = "://w1q-bad-captcha-url"
 		composed, err := stack.compose(t)
 		if err == nil {
@@ -154,9 +133,8 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 
 	t.Run("坏redis状态URL登录守卫失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		w1oRedirectDatabasePaths(t, stack)
+		w1oRedirectChatAssetsRoot(t, stack)
 		stack.cfg.CaptchaDisabled = true
-		stack.cfg.RuntimeStateDriver = "redis"
 		stack.cfg.RedisStateURL = "://w1q-bad-guard-url"
 		composed, err := stack.compose(t)
 		if err == nil {
@@ -172,9 +150,9 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 }
 
 func TestW1QComposeSystemAPIMetricsAndHealthOutcomeArms(t *testing.T) {
-	t.Run("健康结果SQLite路径变体组装成功", func(t *testing.T) {
+	t.Run("健康结果PostgresURL变体组装成功", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		stack.cfg.AccountHealthOutcomeSQLitePath = filepath.Join(filepath.Dir(stack.cfg.DatasetDatabasePath), "w1q-outcomes.sqlite3")
+		stack.cfg.AccountHealthOutcomePostgresURL = stack.cfg.PostgresURL
 		composed, err := stack.compose(t)
 		if err != nil {
 			t.Fatalf("带健康结果路径必须组装成功: %v", err)
@@ -189,9 +167,8 @@ func TestW1QComposeSystemAPIMetricsAndHealthOutcomeArms(t *testing.T) {
 func TestW1QComposeSystemAPIChainRuntimeArms(t *testing.T) {
 	t.Run("坏缓存redisURL链条组装失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		w1oRedirectDatabasePaths(t, stack)
+		w1oRedirectChatAssetsRoot(t, stack)
 		stack.cfg.ChainEnabled = true
-		stack.cfg.CacheDriver = "redis"
 		stack.cfg.RedisCacheURL = "://w1q-bad-cache-url"
 		composed, err := stack.compose(t)
 		if err == nil {
@@ -208,9 +185,6 @@ func TestW1QComposeSystemAPIChainRuntimeArms(t *testing.T) {
 	t.Run("redis缓存加状态驱动全链条成功变体", func(t *testing.T) {
 		redisServer := miniredis.RunT(t)
 		stack := w1oNewComposeStack(t)
-		stack.cfg.RuntimeMode = "performance"
-		stack.cfg.CacheDriver = "redis"
-		stack.cfg.RuntimeStateDriver = "redis"
 		stack.cfg.RedisCacheURL = "redis://" + redisServer.Addr()
 		stack.cfg.RedisStateURL = "redis://" + redisServer.Addr()
 		stack.cfg.RedisNamespace = "w1q-ns"
@@ -778,14 +752,18 @@ func TestW1QAuthzGrantReturnerArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "w1q-runtime.sqlite3")
+	// 2026-10-24 存储形态收口：模式/驱动/codex 分片 env 随生产删除，表驱动
+	// 基座改为三连接串必填 env。
 	env := func(extra map[string]string) func(string) string {
-		return func(key string) string {
-			if key == "JUHE_AI_DATABASE_PATH" {
-				return databasePath
-			}
-			return extra[key]
+		merged := map[string]string{
+			"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+			"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
 		}
+		for key, value := range extra {
+			merged[key] = value
+		}
+		return func(key string) string { return merged[key] }
 	}
 
 	errorCases := []struct {
@@ -793,9 +771,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		extra map[string]string
 		want  string
 	}{
-		{"运行态驱动非法", map[string]string{"JUHE_AI_RUNTIME_STATE_DRIVER": "grid"}, "JUHE_AI_RUNTIME_STATE_DRIVER 必须为 memory 或 redis"},
-		{"postgres驱动缺URL", map[string]string{"JUHE_AI_DATABASE_DRIVER": "postgres"}, "JUHE_AI_DATABASE_DRIVER=postgres 时缺少 JUHE_AI_POSTGRES_URL"},
-		{"codex分片数下界", map[string]string{"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "0"}, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 必须在 1 到 256 之间"},
 		{"会话轮数下界", map[string]string{"JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION": "0"}, "JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION 必须在 1 到 1000 之间"},
 		{"会话保留天下界", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}, "JUHE_AI_CHAT_RETENTION_DAYS 必须在 1 到 365 之间"},
 		{"聊天工具环境非法", map[string]string{"JUHE_AI_NODE_ENV": "staging"}, "必须是 production、test 或 development"},
@@ -819,7 +794,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 
 	t.Run("解析成功臂", func(t *testing.T) {
 		cfg, err := loadRuntimeConfig(env(map[string]string{
-			"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT":          "7",
 			"JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION":          "80",
 			"JUHE_AI_CHAT_RETENTION_DAYS":                      "30",
 			"JUHE_AI_AUDIT_LOG_ENABLED":                        "false",
@@ -828,9 +802,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		}))
 		if err != nil {
 			t.Fatalf("合法覆盖必须通过: %v", err)
-		}
-		if cfg.CodexContextShardCount != 7 {
-			t.Fatalf("CodexContextShardCount = %d，want 7", cfg.CodexContextShardCount)
 		}
 		if cfg.ChatMaxTurnsPerConversation != 80 {
 			t.Fatalf("ChatMaxTurnsPerConversation = %d，want 80", cfg.ChatMaxTurnsPerConversation)

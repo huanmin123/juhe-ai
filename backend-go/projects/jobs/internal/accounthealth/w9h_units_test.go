@@ -1,7 +1,6 @@
 package accounthealth
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -196,30 +195,6 @@ func TestW9HVerifySignedPayloadArms(t *testing.T) {
 	}
 }
 
-func TestW9HLoadSignedInputFilesArms(t *testing.T) {
-	if _, err := LoadSignedInputFiles("  ", nil); err == nil || !strings.Contains(err.Error(), "目录缺失") {
-		t.Fatalf("missing directory err=%v", err)
-	}
-	if _, err := LoadSignedInputFiles(filepath.Join(t.TempDir(), "absent"), nil); err == nil || !strings.Contains(err.Error(), "读取 account-health input 目录失败") {
-		t.Fatalf("absent directory err=%v", err)
-	}
-	keys := map[string][]byte{"k1": []byte("key-w9h-00000000000000000000000000")}
-	directory := t.TempDir()
-	input := exactkeyprobe.Input{AccountID: "acc-file", InputVersion: 7}
-	w9hWrite(t, filepath.Join(directory, "acc.account-health-input.json"), w9hSign(t, keys["k1"], "k1", input))
-	// An unrelated file is ignored.
-	w9hWrite(t, filepath.Join(directory, "notes.txt"), []byte("ignore me"))
-	inputs, err := LoadSignedInputFiles(directory, keys)
-	if err != nil || len(inputs) != 1 || inputs[0].AccountID != "acc-file" {
-		t.Fatalf("inputs=%+v err=%v", inputs, err)
-	}
-	// A corrupt signed file surfaces as a per-file error.
-	w9hWrite(t, filepath.Join(directory, "bad.account-health-input.json"), []byte("{"))
-	if _, err := LoadSignedInputFiles(directory, keys); err == nil {
-		t.Fatal("corrupt file must fail")
-	}
-}
-
 func w9hWrite(t *testing.T, path string, content []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, content, 0o600); err != nil {
@@ -231,118 +206,17 @@ func w9hWrite(t *testing.T, path string, content []byte) {
 // Executor early-return arms
 // ---------------------------------------------------------------------------
 
-func TestW9HExecuteInputProbeEarlyArms(t *testing.T) {
-	store, lease := openSQLiteStoreWithLease(t)
-	ctx := context.Background()
-	base := exactkeyprobe.Input{AccountID: "w9h-exec-acc", InputVersion: 3, ConfigRevision: 2, DispatchRevision: 5, Type: "api_key"}
-	request := ProbeRequest{RequestID: "req-w9h-exec", AccountID: "w9h-exec-acc", Reason: "cycle", InputVersion: 3, ConfigRevision: 2, DispatchRevision: 5, Deadline: time.Now().Add(time.Hour)}
-
-	// Fence mismatch.
-	mismatch := request
-	mismatch.ConfigRevision = 9
-	outcome, err := ExecuteInputProbe(ctx, store, lease, base, mismatch, exactkeyprobe.ProbeOptions{})
-	if err != nil || outcome.ErrorCode != "request_fence_invalid" {
-		t.Fatalf("fence outcome=%+v err=%v", outcome, err)
-	}
-	// Elapsed deadline.
-	expired := request
-	expired.Deadline = time.Now().Add(-time.Minute)
-	outcome, err = ExecuteInputProbe(ctx, store, lease, base, expired, exactkeyprobe.ProbeOptions{})
-	if err != nil || outcome.ErrorCode != "request_deadline_elapsed" {
-		t.Fatalf("deadline outcome=%+v err=%v", outcome, err)
-	}
-	// OAuth input without an access envelope.
-	oauth := base
-	oauth.Type = "oauth"
-	outcome, err = ExecuteInputProbe(ctx, store, lease, oauth, request, exactkeyprobe.ProbeOptions{})
-	if err != nil || outcome.ErrorCode != "oauth_access_missing" {
-		t.Fatalf("oauth outcome=%+v err=%v", outcome, err)
-	}
-	// api_key input with an empty pool.
-	outcome, err = ExecuteInputProbe(ctx, store, lease, base, request, exactkeyprobe.ProbeOptions{})
-	if err != nil || outcome.ErrorCode != "api_key_pool_missing" {
-		t.Fatalf("api key outcome=%+v err=%v", outcome, err)
-	}
-	// newOutcomeID uniqueness.
-	first, second := newOutcomeID(), newOutcomeID()
-	if first == "" || first == second {
-		t.Fatalf("outcome ids %q %q", first, second)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Projector cursor arms over the sqlite business fixture
-// ---------------------------------------------------------------------------
-
-func TestW9HProjectorCursorArms(t *testing.T) {
-	fixture := newProjectionFixture(t)
-	ctx := context.Background()
-
-	// Empty database: no cursor.
-	if cursor, err := fixture.projector.loadCursor(ctx); err != nil || cursor != nil {
-		t.Fatalf("empty cursor=%+v err=%v", cursor, err)
-	}
-	// Two textual renderings of the same instant (Node writes millisecond
-	// precision, Go writes nanosecond): the cursor arm canonicalizes in place.
-	next := w9hCursor("2026-09-06T12:00:00.000Z", "w9h-out-1")
-	// First advance inserts.
-	if updated, err := fixture.projector.advanceCursor(ctx, next); err != nil || !updated {
-		t.Fatalf("first advance=%t err=%v", updated, err)
-	}
-	precision := w9hCursor("2026-09-06T12:00:00Z", "w9h-out-1")
-	if updated, err := fixture.projector.advanceCursor(ctx, precision); err != nil || !updated {
-		t.Fatalf("precision advance=%t err=%v", updated, err)
-	}
-	if updated, err := fixture.projector.advanceCursor(ctx, precision); err != nil || updated {
-		t.Fatalf("idempotent advance=%t err=%v", updated, err)
-	}
-	// A re-anchored cursor loads with the storage-observed timestamp.
-	cursor, err := fixture.projector.loadCursor(ctx)
-	if err != nil || cursor == nil || cursor.OutcomeID != "w9h-out-1" {
-		t.Fatalf("load cursor=%+v err=%v", cursor, err)
-	}
-	// A newer position overwrites.
-	newer := w9hCursor("2026-09-06T12:01:00Z", "w9h-out-2")
-	if updated, err := fixture.projector.advanceCursor(ctx, newer); err != nil || !updated {
-		t.Fatalf("newer advance=%t err=%v", updated, err)
-	}
-	// An older position stays behind.
-	if updated, err := fixture.projector.advanceCursor(ctx, next); err != nil || updated {
-		t.Fatalf("older advance=%t err=%v", updated, err)
-	}
-	// 不可达分支登记：游标"半空存储损坏"臂（observed_at/outcome_id 恰一为
-	// NULL）被表级 CHECK 约束 (observed_at IS NULL AND outcome_id IS NULL)
-	// OR (... NOT NULL ...) 阻断，只能由绕过约束的外部写入触发；显式跳过。
-	// normalizeProjectionCursor rejects junk timestamps.
-	if _, err := normalizeProjectionCursor("junk", "out"); err == nil {
-		t.Fatal("junk timestamp must fail")
-	}
-	// resolveCursorStorage: missing outcome anchors empty.
-	if resolved, err := fixture.projector.resolveCursorStorage(ctx, "absent"); err != nil || resolved != "" {
-		t.Fatalf("absent resolve=%q err=%v", resolved, err)
-	}
-	// The projection cursor storage query covers both dialects.
-	if got := projectionCursorStorageQuery(StorePostgres); !strings.Contains(got, "juhe_jobs.account_health_outcomes") {
-		t.Fatalf("pg query=%q", got)
-	}
-	if got := projectionCursorStorageQuery(StoreSQLite); !strings.Contains(got, "FROM account_health_outcomes") {
-		t.Fatalf("sqlite query=%q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Config loading matrix
-// ---------------------------------------------------------------------------
-
-func w9hValidConfigEnv(storeMode, storePath, inputDir string) map[string]string {
+func w9hValidConfigEnv(_, _, inputDir string) map[string]string {
+	// PG 唯一形态：store/input URL 必填（原 sqlite storeMode/storePath 参数
+	// 保留签名以减少调用点扰动，一律忽略）。
 	return map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "inst-w9h",
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             storeMode,
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     storePath,
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   inputDir,
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "secret-w9h",
+		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":         "go",
+		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "inst-w9h",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":       "postgres://w9h.invalid/jobs",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w9h.invalid/business",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":    inputDir,
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":  base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "secret-w9h",
 	}
 }
 
@@ -359,57 +233,11 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "仅支持 go") {
 		t.Fatalf("owner err=%v", err)
 	}
-	// Bad store mode.
-	env = w9hValidConfigEnv("redis", storePath, inputDir)
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "sqlite 或 postgres") {
-		t.Fatalf("store err=%v", err)
-	}
-	// sqlite mode without a path derives <DATA_DIR>/account-health.sqlite3
-	// (2026-09-19 zero-config decision); DATA_DIR points at a temp dir so the
-	// derived store stays on the same volume as the input directory.
-	dataDir := t.TempDir()
-	env = w9hValidConfigEnv("sqlite", "", inputDir)
-	env["JUHE_AI_DATA_DIR"] = dataDir
-	cfg, err := load(env)
-	if err != nil {
-		t.Fatalf("sqlite path err=%v", err)
-	}
-	if expected := filepath.Join(dataDir, "account-health.sqlite3"); cfg.Store.DatabasePath != expected {
-		t.Fatalf("derived store path = %q, want %q", cfg.Store.DatabasePath, expected)
-	}
-	// postgres mode without a URL.
-	env = w9hValidConfigEnv("postgres", storePath, inputDir)
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "POSTGRES_URL") {
-		t.Fatalf("pg url err=%v", err)
-	}
-	// 清理批次 C4（2026-09-30）：连接池上限 env 已收编常量，"idle 超平台
-	// 上限"臂退役。
-	// Missing input directory derives <DATA_DIR>/account-health-input and is
-	// created on load (2026-09-19 zero-config decision).
-	dataDir = t.TempDir()
-	env = w9hValidConfigEnv("sqlite", storePath, "")
-	env["JUHE_AI_DATA_DIR"] = dataDir
-	cfg, err = load(env)
-	if err != nil {
-		t.Fatalf("input dir err=%v", err)
-	}
-	expectedInputDir := filepath.Join(dataDir, "account-health-input")
-	if cfg.InputDirectory != expectedInputDir {
-		t.Fatalf("derived input dir = %q, want %q", cfg.InputDirectory, expectedInputDir)
-	}
-	if _, statErr := os.Stat(expectedInputDir); statErr != nil {
-		t.Fatalf("derived input dir must be created: %v", statErr)
-	}
-	// Store file inside the input directory is rejected.
-	env = w9hValidConfigEnv("sqlite", filepath.Join(inputDir, "j1.sqlite3"), inputDir)
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "不得放入 input 目录") {
-		t.Fatalf("isolation err=%v", err)
-	}
-	// Store file colliding with a business SQLite path is rejected.
-	env = w9hValidConfigEnv("sqlite", storePath, inputDir)
-	env["JUHE_AI_DATABASE_PATH"] = storePath
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "共用 SQLite 文件") {
-		t.Fatalf("collision err=%v", err)
+	// Bad input direct URL.
+	env = w9hValidConfigEnv("", "", inputDir)
+	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL"] = ""
+	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "INPUT_POSTGRES_URL") {
+		t.Fatalf("input err=%v", err)
 	}
 	// Bad signing key material.
 	env = w9hValidConfigEnv("sqlite", storePath, inputDir)
@@ -431,25 +259,12 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "必须大于") {
 		t.Fatalf("lease vs timeout err=%v", err)
 	}
-	// PG direct input requires the postgres jobs store.
-	env = w9hValidConfigEnv("sqlite", storePath, inputDir)
-	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "postgres"
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "只允许与 postgres jobs store") {
-		t.Fatalf("direct input store err=%v", err)
-	}
-	// PG direct input without a business URL.
-	env = w9hValidConfigEnv("postgres", storePath, inputDir)
-	env["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL"] = "postgres://example"
-	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "postgres"
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "INPUT_POSTGRES_URL") {
-		t.Fatalf("direct input url err=%v", err)
-	}
-	// The happy sqlite path parses every knob.
-	cfg, err = load(w9hValidConfigEnv("sqlite", storePath, inputDir))
+	// The happy path parses every knob（D12：InputSource 恒 postgres）。
+	cfg, err := load(w9hValidConfigEnv("", "", inputDir))
 	if err != nil {
-		t.Fatalf("valid sqlite config err=%v", err)
+		t.Fatalf("valid config err=%v", err)
 	}
-	if cfg.InstanceID != "inst-w9h" || cfg.InputSource != "sqlite" {
+	if cfg.InstanceID != "inst-w9h" || cfg.InputSource != "postgres" {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 	// The happy postgres path accepts pool limits and the direct input source.
@@ -466,47 +281,6 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 // ---------------------------------------------------------------------------
 // store guard arms (sqlite)
 // ---------------------------------------------------------------------------
-
-func TestW9HStoreGuardArms(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "guard.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	lease, acquired, err := store.AcquireOwnerLease(ctx, "w9h-guard-owner", time.Minute)
-	if err != nil || !acquired {
-		t.Fatalf("acquire: %v acquired=%t", err, acquired)
-	}
-	// verifyLease rejects a foreign lease (bad fence token).
-	forged := lease
-	forged.FenceToken = lease.FenceToken + 1
-	if _, err := store.AppendOutcome(ctx, forged, Outcome{OutcomeID: "w9h-x"}); err == nil {
-		t.Fatal("forged lease must fail")
-	}
-	// Renewing a forged lease fails.
-	if renewed, err := store.RenewOwnerLease(ctx, forged, time.Minute); err != nil || renewed {
-		t.Fatalf("forged renew=%t err=%v", renewed, err)
-	}
-	// AppendOutcome field validation.
-	if _, err := store.AppendOutcome(ctx, lease, Outcome{}); err == nil || !strings.Contains(err.Error(), "缺少幂等或账户字段") {
-		t.Fatalf("empty outcome err=%v", err)
-	}
-	// LoadCurrentState on an unknown account reads as absent.
-	if _, found, err := store.LoadCurrentState(ctx, "w9h-absent"); err != nil || found {
-		t.Fatalf("absent state found=%t err=%v", found, err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatalf("close err=%v", err)
-	}
-	var nilStore *Store
-	if err := nilStore.Close(); err != nil {
-		t.Fatalf("nil close err=%v", err)
-	}
-}
 
 func w9hCursor(observedAtText, outcomeID string) *OutcomeCursor {
 	cursor, err := normalizeProjectionCursor(observedAtText, outcomeID)

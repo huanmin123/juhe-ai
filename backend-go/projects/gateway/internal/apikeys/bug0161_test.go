@@ -253,7 +253,7 @@ func TestAPIKeyDefaultScheduleTimezoneFromSettings(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
-	env.exec(t, `CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT)`)
+	// system_settings 由 PG 夹具建生产形态（pgkit_test.go），此处只做读写。
 
 	// Valid business setting wins over the process timezone.
 	env.exec(t, `INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"Asia/Shanghai"', '')`)
@@ -349,7 +349,10 @@ func TestPGDialectQueryContracts(t *testing.T) {
 // the maintenance submission runs after commit. ---
 
 func TestAPIKeyDeleteSQLiteCleanupTargetPlacement(t *testing.T) {
-	env := newTestEnv(t)
+	// 组B（D17）：SQLite-only 删除臂的 cleanup 目标放置契约（业务库零落行、
+	// 提交后写独立 dataset 句柄、提交后维护提交）——走 SQLite 环境，随生产
+	// sqlite 臂删除批次同批退役。
+	env := newSQLiteTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"cleanup-key"}`)
@@ -391,7 +394,10 @@ func TestAPIKeyDeleteSQLiteCleanupTargetPlacement(t *testing.T) {
 }
 
 func TestAPIKeyDeleteWithoutDatasetDBKeepsSuccess(t *testing.T) {
-	env := newTestEnv(t)
+	// 组B（D17）：SQLite 臂未接 dataset 句柄时删除仍成功且
+	// CleanupRegisterError 可观察（PG 臂为事务内原子落目标，无此契约）——
+	// 走 SQLite 环境，随生产 sqlite 臂删除批次同批退役。
+	env := newSQLiteTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"no-dataset"}`)

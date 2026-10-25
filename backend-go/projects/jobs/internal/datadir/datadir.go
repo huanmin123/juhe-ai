@@ -1,8 +1,11 @@
 // Package datadir 实现 jobs 侧的数据目录派生约定（2026-09-19 零配置决策）：
 // 新 env JUHE_AI_DATA_DIR 指定数据根目录，缺省 ./data（相对进程 cwd，
-// TrimSpace 后为空也视为未配置）；所有「路径类」env 未配置时派生为
+// TrimSpace 后为空也视为未配置）；目录类「路径类」env 未配置时派生为
 // <DATA_DIR>/<固定名>，显式配置始终优先。gateway 进程对同名 env 使用相同
-// 固定名，两进程靠相同 DATA_DIR 约定共享同一业务库/运行日志库。
+// 固定名，两进程靠相同 DATA_DIR 约定共享同一派生目录（usage spool 交接表、
+// codex-context segments、chat-assets、logs）。原 sqlite 库文件族固定名
+// （business/stats/... *.sqlite3 与分片根）已随 sqlite 存储形态退役删除，
+// 本包只保留目录类派生。
 //
 // 派生 helper 在 jobs 模块内本地实现，不放 backend-go/shared：该约定只服务
 // 空环境可启动的组合根默认值，不是平台级通用能力。

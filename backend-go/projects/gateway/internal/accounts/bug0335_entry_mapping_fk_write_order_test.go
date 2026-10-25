@@ -2,57 +2,55 @@ package accounts
 
 // BUG-0335 回归：replaceAccountSupportedModels 的写序必须先维护
 // account_entry_mappings 的复合外键不变量，再替换 account_supported_models。
-// fresh DDL（maintenance SQLite 形态与 PG 同构）声明复合外键
+// fresh DDL（maintenance 生产形态，原 SQLite 形态的 PG 对应物）声明复合外键
 // (account_id, target_model_id) → account_supported_models(account_id, model_id)
 // （设计 §5.1，无级联动作）；修复前支持模型集合变化时先 DELETE
 // account_supported_models，仍指向被替换模型行的入口映射悬空，DELETE 被
-// 23503 拦截（生产编辑账户保存 500）。本文件用 maintenance fresh business
-// DDL + `PRAGMA foreign_keys = ON`（b1_fresh_ddl_test.go 同款建库方式）在
-// SQLite 上对复合外键真实生效的写序做回归验证。
+// 23503 拦截（生产编辑账户保存 500）。本文件用 maintenance fresh 生产 DDL
+// （bootstrap.EnsurePostgres，PG 外键恒生效——原 SQLite 臂经
+// `PRAGMA foreign_keys = ON` 启用）对复合外键真实生效的写序做回归验证。
 
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
 
-// bug0335FreshStore 建单连接内存 SQLite：fresh business DDL + 外键 PRAGMA
-// （外键约束必须真实启用，否则回归退化为纯语句序列断言）。
+// bug0335FreshStore 建 pgtestkit 隔离库上的生产 fresh DDL 连接（外键约束
+// 恒生效，否则回归退化为纯语句序列断言）。
 func bug0335FreshStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:bug0335-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("fresh business DDL ensure: %v", err)
-	}
-	store, err := NewStore(db, false, testSecret, nil, nil)
+	db := newFreshPGDatabase(t)
+	bug0335SeedOwner(t, db, "owner-bug0335")
+	bug0335SeedOwner(t, db, "owner-bug0335b")
+	store, err := NewStore(db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return store, db
 }
 
+// bug0335SeedOwner 落 fresh DDL 属主行（accounts.system_account_id 生产外键，
+// 种子必须满足，避免与被测复合外键混淆）。
+func bug0335SeedOwner(t *testing.T, db *sql.DB, owner string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO system_accounts (id, username, display_name, password_hash, created_at, updated_at)
+		VALUES ($1, $2, $3, 'hash', $4, $5)`, owner, owner, owner, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"); err != nil {
+		t.Fatalf("seed owner %s: %v", owner, err)
+	}
+}
+
 // bug0335SeedAccount 建 vendor + gpt api_key 账户（owner 即 system_account_id）。
 func bug0335SeedAccount(t *testing.T, db *sql.DB, accountID, owner, now string) {
 	t.Helper()
 	if _, err := db.Exec(`INSERT INTO vendors (id, code, name, created_at, updated_at)
-		VALUES (?, 'gpt', 'GPT', ?, ?)`, "ven-"+owner, now, now); err != nil {
+		VALUES ($1, 'gpt', 'GPT', $2, $3)`, "ven-"+owner, now, now); err != nil {
 		t.Fatalf("seed vendor: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, capability_domain,
 		created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active', 'sealed', 'chat', ?, ?)`,
+		VALUES ($1, $2, 'gpt', 'gpt', 'openai', 'v1', $3, 'api_key', 'active', 'sealed', 'chat', $4, $5)`,
 		accountID, owner, accountID, now, now); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
@@ -63,7 +61,7 @@ func bug0335SeedCatalogModel(t *testing.T, db *sql.DB, id, upstreamModel, now st
 	t.Helper()
 	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 		supported_endpoint_modes_json, created_at, updated_at)
-		VALUES (?, 'gpt', ?, ?, 'builtin', 'active', '["chat_json","chat_sse"]', ?, ?)`,
+		VALUES ($1, 'gpt', $2, $3, 'builtin', 'active', '["chat_json","chat_sse"]', $4, $5)`,
 		id, upstreamModel, upstreamModel, now, now); err != nil {
 		t.Fatalf("seed model %s: %v", id, err)
 	}
@@ -76,7 +74,7 @@ func bug0335SeedEntryMapping(t *testing.T, db *sql.DB, accountID, mappingID, tar
 	if _, err := db.Exec(`INSERT INTO account_entry_mappings (id, account_id, source_model,
 		source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family,
 		enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 'chat_completions', ?, ?, 'chat_completions', 1, ?, ?)`,
+		VALUES ($1, $2, $3, 'chat_completions', $4, $5, 'chat_completions', 1, $6, $7)`,
 		mappingID, accountID, "src-"+mappingID, "conn-"+accountID, targetModelID, now, now); err != nil {
 		t.Fatalf("seed entry mapping %s: %v", mappingID, err)
 	}
@@ -98,7 +96,7 @@ func TestBug0335ReplaceSupportedModelsCleansDanglingEntryMappings(t *testing.T) 
 	bug0335SeedCatalogModel(t, db, "mod-bug0335-m3", "gpt-33-m3", now)
 	for _, modelID := range []string{"mod-bug0335-m1", "mod-bug0335-m2"} {
 		if _, err := db.Exec(`INSERT INTO account_supported_models (account_id, model_id, created_at)
-			VALUES ('acc-bug0335', ?, ?)`, modelID, now); err != nil {
+			VALUES ('acc-bug0335', $1, $2)`, modelID, now); err != nil {
 			t.Fatalf("seed supported model: %v", err)
 		}
 	}
@@ -106,7 +104,7 @@ func TestBug0335ReplaceSupportedModelsCleansDanglingEntryMappings(t *testing.T) 
 	if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code,
 		protocol_surface_code, base_url, enabled, created_at, updated_at)
 		VALUES ('conn-acc-bug0335', 'acc-bug0335', 'gpt_openai_v1', 'openai_v1',
-		'https://api.openai.com/v1', 1, ?, ?)`, now, now); err != nil {
+		'https://api.openai.com/v1', 1, $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed connection: %v", err)
 	}
 	bug0335SeedEntryMapping(t, db, "acc-bug0335", "em-bug0335-m1", "mod-bug0335-m1", now)
@@ -116,7 +114,7 @@ func TestBug0335ReplaceSupportedModelsCleansDanglingEntryMappings(t *testing.T) 
 	// 入口映射先删支持模型集合）必须被外键拒绝（SQLite
 	// "FOREIGN KEY constraint failed"，PG 即 23503/SQLSTATE 约束违反）。
 	if _, err := db.Exec(`DELETE FROM account_supported_models WHERE account_id = 'acc-bug0335'`); err == nil {
-		t.Fatal("悬空入口映射下的支持模型删除未被外键拦截：测试库 PRAGMA foreign_keys 未生效，回归前提不成立")
+		t.Fatal("悬空入口映射下的支持模型删除未被外键拦截：测试库外键未生效，回归前提不成立")
 	}
 
 	// 修复对象调用：同事务内先解析 next → 清理悬空映射 → 替换支持模型集合。
@@ -172,13 +170,13 @@ func TestBug0335ReplaceSupportedModelsEmptySetClearsAllEntryMappings(t *testing.
 	bug0335SeedAccount(t, db, "acc-bug0335b", "owner-bug0335b", now)
 	bug0335SeedCatalogModel(t, db, "mod-bug0335b-m1", "gpt-33-m1", now)
 	if _, err := db.Exec(`INSERT INTO account_supported_models (account_id, model_id, created_at)
-		VALUES ('acc-bug0335b', 'mod-bug0335b-m1', ?)`, now); err != nil {
+		VALUES ('acc-bug0335b', 'mod-bug0335b-m1', $1)`, now); err != nil {
 		t.Fatalf("seed supported model: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code,
 		protocol_surface_code, base_url, enabled, created_at, updated_at)
 		VALUES ('conn-acc-bug0335b', 'acc-bug0335b', 'gpt_openai_v1', 'openai_v1',
-		'https://api.openai.com/v1', 1, ?, ?)`, now, now); err != nil {
+		'https://api.openai.com/v1', 1, $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed connection: %v", err)
 	}
 	bug0335SeedEntryMapping(t, db, "acc-bug0335b", "em-bug0335b-m1", "mod-bug0335b-m1", now)

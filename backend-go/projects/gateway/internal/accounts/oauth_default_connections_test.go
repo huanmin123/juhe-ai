@@ -187,11 +187,12 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			now := "2026-01-01T00:00:00.000Z"
 			// gpt vendor 已由 env 夹具预置（INSERT OR IGNORE 幂等）；其余厂商按
 			// §2.1 真实厂商规则补行。创建链要求 owner 有启用的默认分组。
-			env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
-				VALUES (?, ?, ?, 1, ?, ?)`, "ven-"+testCase.provider, testCase.provider, testCase.provider, now, now)
+			env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+				VALUES (?, ?, ?, 1, ?, ?)
+		ON CONFLICT DO NOTHING`, "ven-"+testCase.provider, testCase.provider, testCase.provider, now, now)
 			env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 				VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`,
-				"grp-default-"+ownerID, ownerID, testCase.provider, now, now)
+				"grp-default-"+ownerID, ownerID, now, now)
 			env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 				supported_endpoint_modes_json, created_at, updated_at)
 				VALUES (?, ?, ?, ?, 'builtin', 'active', ?, ?, ?)`,
@@ -249,7 +250,7 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			// 健康检查三字段事务闭环：指向派生连接 + 缺省 JSON 检查形态。
 			var gotHealthConnection, gotHealthMode, gotHealthModel string
 			if err := env.db.QueryRow(`SELECT health_check_connection_id, health_check_endpoint_mode, health_check_model
-				FROM accounts WHERE id = ?`, result.ID).Scan(&gotHealthConnection, &gotHealthMode, &gotHealthModel); err != nil {
+				FROM accounts WHERE id = $1`, result.ID).Scan(&gotHealthConnection, &gotHealthMode, &gotHealthModel); err != nil {
 				t.Fatal(err)
 			}
 			if gotHealthConnection != connectionID || gotHealthMode != defaults.HealthCheckEndpointMode || gotHealthModel != testCase.model {

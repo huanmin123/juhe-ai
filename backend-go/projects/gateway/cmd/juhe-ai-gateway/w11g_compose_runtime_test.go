@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,27 +17,17 @@ import (
 )
 
 func TestW11GComposeEarlyAndPostgresArms(t *testing.T) {
-	// 中段（stats/catalog 等）失败场景在 Windows 上泄漏已打开的 business
-	// 句柄导致 TempDir 清理失败（compose 失败路径不回滚已开句柄），故此
-	// 处只覆盖早期参数守卫与 PG 池分支（不开任何 sqlite 文件）。
+	// 早期参数守卫与 PG 池分支（PG+Redis 是唯一存储形态；不落任何本地文件）。
 	if _, err := composeSystemAPI(composeTestConfig(t), pgpool.NewRegistry(), nil, nil, nil, auditlog.Config{}, composeTestOwnerHealth()); err == nil {
 		t.Fatal("nil operation store must fail")
 	}
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	_, _, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	_ = cfg
-	_ = store
 	// PG 模式坏 URL：连接池 ping 失败（独立 store 避免租约互抢）。
 	pgTry := func(url string) error {
 		pgCfg := composeTestConfig(t)
-		pgCfg.DatabaseDriver = "postgres"
 		pgCfg.BusinessPostgresURL = url
-		pgStore := openComposeOperationStore(t)
-		pgAuditConfig, pgProducer, closePgAudit := openComposeAuditSources(t, filepath.Dir(pgCfg.DatasetDatabasePath))
-		defer closePgAudit()
-		_, err := composeSystemAPI(pgCfg, pgpool.NewRegistry(), pgStore, openComposeOperationLease(t, pgStore), pgProducer, pgAuditConfig, composeTestOwnerHealth())
+		pgStore := openComposeOperationStore(t, pgCfg.PostgresURL)
+		pgProducer := mustComposeAuditProducer(t, pgCfg.PostgresURL)
+		_, err := composeSystemAPI(pgCfg, pgpool.NewRegistry(), pgStore, openComposeOperationLease(t, pgStore), pgProducer, composeTestAuditConfig(t, pgCfg.PostgresURL), composeTestOwnerHealth())
 		return err
 	}
 	if err := pgTry("postgres://w11g-no-user@127.0.0.1:1/w11g?sslmode=disable&connect_timeout=1"); err == nil {
@@ -59,15 +48,15 @@ func TestW11GComposeRuntimeBadRedisArms(t *testing.T) {
 	}
 	setting := func(string) (string, error) { return "", nil }
 	// 坏 cache URL。
-	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{CacheDriver: "redis", RedisCacheURL: "://w11g-bad"}, setting); err == nil {
+	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisCacheURL: "://w11g-bad"}, setting); err == nil {
 		t.Fatal("bad cache url must fail")
 	}
 	// 坏 state URL。
-	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RuntimeStateDriver: "redis", RedisStateURL: "://w11g-bad"}, setting); err == nil {
+	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisStateURL: "://w11g-bad"}, setting); err == nil {
 		t.Fatal("bad state url must fail")
 	}
-	// 空 URL（driver=redis 但 URL 缺失）。
-	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{CacheDriver: "redis", RedisCacheURL: ""}, setting); err == nil {
+	// 空 URL。
+	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{RedisCacheURL: ""}, setting); err == nil {
 		t.Fatal("empty cache url must fail")
 	}
 }

@@ -590,10 +590,12 @@ func TestW13GDraftOAuthAndHelpers(t *testing.T) {
 
 	// 问题 B：anthropic / xai OAuth 草稿缺省 base_url 得到各自上游根（不再是
 	// 恒 OpenAI 官方根）。两例均不带 providerProtocolProfileId（入参已非契约）。
-	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
-		VALUES ('ven-w13g-anthropic', 'anthropic', 'Anthropic', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
-	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
-		VALUES ('ven-w13g-xai', 'xai', 'xAI', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-w13g-anthropic', 'anthropic', 'Anthropic', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+		ON CONFLICT DO NOTHING`)
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-w13g-xai', 'xai', 'xAI', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+		ON CONFLICT DO NOTHING`)
 	vendorCases := []struct {
 		providerCode, name, model, endpointMode, wantBaseURL string
 	}{

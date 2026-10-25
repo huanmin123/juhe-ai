@@ -3,8 +3,9 @@ package modelcheckowner
 // question_test_runner_test.go 覆盖题库提交门禁测试执行器：fake resolver
 // 断言 RunRequest 契约（SystemAccountID/TargetType/TargetID/Model，空
 // revision fence）、单题最小套件的组装关键字段（模型映射、quick 档重试、
-// QuizQuestions=1）与诊断结果/账户名映射的端到端链路（fake transport，
-// 不发真实 HTTP）。
+// QuizQuestions=1、Capability 账户准入键回退链）与诊断结果/账户名映射的
+// 端到端链路（fake transport，不发真实 HTTP）；派发器接通时另断言每跳
+// 到达派发边界的 Capability 均携带非空账户准入键（熔断门 Prepare 拦截面）。
 
 import (
 	"context"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 )
@@ -129,6 +131,35 @@ func TestQuestionTestRunnerSuiteAssembly(t *testing.T) {
 	if suite.Dispatcher != nil {
 		t.Fatal("nil dispatcher 必须原样传递（probe 回退直连）")
 	}
+	// Capability 准入键：目标未携带 CredentialSourceAccountID 时回退
+	// input.AccountID（与 J3b 运行链 runtime.go 回退链同构），熔断门
+	// Prepare 对空账户 id 直接拦截。
+	capability := suite.Capability
+	if capability.CredentialSourceAccountID != "acct-9" || capability.KeyFingerprint != "acct-9" {
+		t.Fatalf("capability 账户准入键 = %+v", capability)
+	}
+	if capability.ClientModel != "public-model" || capability.FinalUpstreamModel != "upstream-mapped-model" {
+		t.Fatalf("capability 模型 = %+v", capability)
+	}
+	if capability.ClientEndpointFamily != "openai_chat" || capability.UpstreamEndpointMode != "chat_json" {
+		t.Fatalf("capability 端点族/模式 = %+v", capability)
+	}
+	// 目标显式携带 CredentialSourceAccountID / SourceEndpointFamily 时优先。
+	explicit := questionTestTarget()
+	explicit.CredentialSourceAccountID = "acct-source"
+	explicit.SourceEndpointFamily = "openai_responses"
+	explicit.UpstreamEndpointMode = ""
+	explicit.UpstreamProtocol = "openai_responses"
+	explicitCapability := runner.suiteFor(explicit, input).Capability
+	if explicitCapability.CredentialSourceAccountID != "acct-source" || explicitCapability.KeyFingerprint != "acct-source" {
+		t.Fatalf("显式 credential source 必须优先: %+v", explicitCapability)
+	}
+	if explicitCapability.ClientEndpointFamily != "openai_responses" {
+		t.Fatalf("端点族必须取 SourceEndpointFamily: %+v", explicitCapability)
+	}
+	if explicitCapability.UpstreamEndpointMode == "" {
+		t.Fatalf("UpstreamEndpointMode 空缺必须按协议回退: %+v", explicitCapability)
+	}
 	// 相同模型（无映射）时 ModelMappingApplied 必须为 false。
 	same := questionTestTarget()
 	same.UpstreamModel = "public-model"
@@ -186,5 +217,58 @@ func TestQuestionTestRunnerEndToEnd(t *testing.T) {
 	}
 	if result.AccountName != "acct-fallback" {
 		t.Fatalf("accountName fallback = %q", result.AccountName)
+	}
+}
+
+// capabilityCapturingDispatcher 捕获派发边界收到的 Capability 后把请求交还
+// 套件客户端执行（不发真实网络）。回归覆盖：派发器接通时套件必须携带
+// Capability——账户熔断门以其 CredentialSourceAccountID 为准入键，缺失会被
+// Prepare 以 "account id is required" 拦截（2026-10 题库测试全量失败根因）。
+type capabilityCapturingDispatcher struct {
+	transport    *qbTestRoundTripper
+	capabilities []keymodelruntime.Capability
+}
+
+func (d *capabilityCapturingDispatcher) Dispatch(ctx context.Context, request *http.Request, capability keymodelruntime.Capability, attemptID string) (*http.Response, func(bool), error) {
+	d.capabilities = append(d.capabilities, capability)
+	response, err := (&http.Client{Transport: d.transport}).Do(request)
+	return response, func(bool) {}, err
+}
+
+func (d *capabilityCapturingDispatcher) DispatchWithClient(ctx context.Context, request *http.Request, capability keymodelruntime.Capability, attemptID string, client *http.Client) (*http.Response, func(bool), error) {
+	d.capabilities = append(d.capabilities, capability)
+	if client == nil {
+		client = &http.Client{Transport: d.transport}
+	}
+	response, err := client.Do(request)
+	return response, func(bool) {}, err
+}
+
+// TestQuestionTestRunnerDispatchCapabilityContract 走通 resolve → 派发器
+// 两跳诊断，断言每跳到达派发边界的 Capability 均携带非空账户准入键。
+func TestQuestionTestRunnerDispatchCapabilityContract(t *testing.T) {
+	transport := &qbTestRoundTripper{}
+	target := questionTestTarget()
+	target.CredentialSourceAccountID = "acct-9"
+	target.Client = &http.Client{Transport: transport}
+	dispatcher := &capabilityCapturingDispatcher{transport: transport}
+	runner := NewQuestionTestRunner((&fakeQuestionTestResolver{target: target}).Resolve, dispatcher)
+	result, err := runner.TestQuestion(context.Background(), modelcheckquestionbank.TestQuestionInput{
+		SystemAccountID: "sys-actor", AccountID: "acct-9", Model: "public-model",
+		QuestionText: "题面。", ReferenceAnswer: "答案。",
+	})
+	if err != nil {
+		t.Fatalf("test question: %v", err)
+	}
+	if result.Verdict != modelcheckquestionbank.TestVerdictPass {
+		t.Fatalf("verdict = %q", result.Verdict)
+	}
+	if len(dispatcher.capabilities) != 2 {
+		t.Fatalf("两跳各派发一次: %d", len(dispatcher.capabilities))
+	}
+	for i, capability := range dispatcher.capabilities {
+		if capability.CredentialSourceAccountID != "acct-9" || capability.KeyFingerprint != "acct-9" {
+			t.Fatalf("第 %d 跳 capability 账户准入键缺失: %+v", i+1, capability)
+		}
 	}
 }

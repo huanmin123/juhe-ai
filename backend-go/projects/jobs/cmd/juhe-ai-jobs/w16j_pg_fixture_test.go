@@ -68,6 +68,21 @@ func w16jEnsurePGJobsFixture(t *testing.T, pgURL string) {
 			t.Skipf("w16j: juhe_jobs fixture 预置失败: %v", err)
 		}
 	}
+	// J1 PG direct input 契约预检（accounthealth directInputRequiredRelations）
+	// 要求 juhe_stats 统计面表存在；覆盖库缺失时按最小形状幂等补齐
+	// （CheckContract 只做关系存在性校验，不读行）。
+	for _, statement := range []string{
+		`CREATE SCHEMA IF NOT EXISTS juhe_stats`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_totals (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_daily (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, stat_date TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_weekly (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_monthly (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_quota_hourly_windows (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Skipf("w16j: J1 契约 stats 表预置失败: %v", err)
+		}
+	}
 }
 
 // w16jContractlessInputURL 返回同一 PG 服务器上无业务契约面的输入库连接串

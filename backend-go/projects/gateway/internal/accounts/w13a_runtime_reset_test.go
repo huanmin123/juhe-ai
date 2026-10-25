@@ -40,7 +40,7 @@ func TestW13ARuntimeResetSkipArms(t *testing.T) {
 		}
 		env.exec(t, state.update, args...)
 		var revision int64
-		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, id).Scan(&revision); err != nil {
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = $1`, id).Scan(&revision); err != nil {
 			t.Fatal(err)
 		}
 		outcome, err := env.store.ResetAccountRuntimeState(context.Background(), id, revision,

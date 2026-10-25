@@ -32,7 +32,7 @@ func TestW2PatchCredentialsOverrideAndNullDelete(t *testing.T) {
 		t.Fatalf("credentials 覆盖: %d %v", code, payload)
 	}
 	var sealed string
-	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = $1`, id).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	var credentials Credentials
@@ -48,7 +48,7 @@ func TestW2PatchCredentialsOverrideAndNullDelete(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("credentialsPatch: %d %v", code, payload)
 	}
-	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+	if err := env.db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = $1`, id).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	credentials = Credentials{}
@@ -284,7 +284,7 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 	}
 	var enabled int
 	if err := env.db.QueryRow(`SELECT account_entry_mappings.enabled FROM account_entry_mappings
-		WHERE account_id = ? AND source_model = 'gpt-4.1'`, id).Scan(&enabled); err != nil {
+		WHERE account_id = $1 AND source_model = 'gpt-4.1'`, id).Scan(&enabled); err != nil {
 		t.Fatalf("映射未落库：%v", err)
 	}
 	if enabled != 0 {

@@ -70,6 +70,10 @@ func w14qCleanupPGMainRows(t *testing.T, db *sql.DB) {
 func w14qPGMainEnv(t *testing.T, root string, pgURL, redisURL string, managementPort int) map[string]string {
 	t.Helper()
 	env := wgOwnerModeMainEnv(t, root)
+	// F1：PG 唯一形态（原 wgOwnerModeMainEnv 的 sqlite runtime-log 路径族已
+	// 退役，env 不再被读取；POSTGRES_URL 必填）。
+	env["JUHE_AI_RUNTIME_LOG_POSTGRES_URL"] = pgURL
+	env["JUHE_AI_POSTGRES_URL"] = pgURL
 	// J1：postgres store + postgres 直连输入（替换 wgOwnerModeMainEnv 的 sqlite 形状）。
 	delete(env, "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH")
 	env["JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID"] = "w14q-pg-main-e2e"

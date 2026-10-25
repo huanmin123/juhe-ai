@@ -1,8 +1,8 @@
 // scheduling_preferences 启动只读校验（调度偏好独立实体 P1）jobs 侧测试：
-// SQLite 方言走三失败臂 + 成功臂矩阵（表形状 / api_keys 绑定列 / 内置行三值）
-// 与 AtStartup 包装（临时目录业务库）；PostgreSQL 方言复用 w12c 覆盖库连接串
-// （不可用时跳过），在独立 scratch schema 上验证真实 PG 判定（含整数 CHECK
-// 的 = ANY(ARRAY[...]) 归一化形态），不触碰 juhe_business 数据。
+// PostgreSQL 方言复用 w12c 覆盖库连接串（不可用时跳过），在独立 scratch
+// schema 上验证真实 PG 判定（含整数 CHECK 的 = ANY(ARRAY[...]) 归一化形态），
+// 不触碰 juhe_business 数据。原 SQLite 方言三臂矩阵与 AtStartup 包装臂已随
+// sqlite 存储形态退役删除（生产校验恒走 PG）。
 package main
 
 import (
@@ -10,58 +10,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
-
-// schedulingPreferenceCorrectTableDDL 是与 maintenance DDL 同构的正确表声明。
-const schedulingPreferenceCorrectTableDDL = `CREATE TABLE scheduling_preferences (
-	id TEXT PRIMARY KEY,
-	system_account_id TEXT,
-	name TEXT NOT NULL,
-	chat_mode TEXT NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
-	chat_speed_first_config_json TEXT,
-	built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`
-
-// schedulingPreferenceCorrectAPIKeysDDL 是含绑定列的最小 api_keys 同构声明。
-const schedulingPreferenceCorrectAPIKeysDDL = `CREATE TABLE api_keys (
-	id TEXT PRIMARY KEY,
-	scheduling_preference_id TEXT REFERENCES scheduling_preferences(id)
-)`
-
-// schedulingPreferenceGlobalSettingsDDL 是迁移记录臂的最小 global_settings
-// 同构声明（权威 DDL 在 maintenance schema，键值对形状与之同构）。
-const schedulingPreferenceGlobalSettingsDDL = `CREATE TABLE IF NOT EXISTS global_settings (
-	key TEXT PRIMARY KEY,
-	value_json TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`
-
-// seedSchedulingPreferenceMigrationRecord 在已打开的业务库写入/清除 P2 迁移
-// 记录（recordJSON 为空串时清除）：记录 JSON 经共享包 Record 序列化，不在测
-// 试侧手写记录字面量。
-func seedSchedulingPreferenceMigrationRecord(t *testing.T, db *sql.DB, recordJSON string) {
-	t.Helper()
-	if _, err := db.Exec(`DELETE FROM global_settings WHERE key = ?`, schedprefdomain.MigrationSettingKey); err != nil {
-		t.Fatalf("clear migration record: %v", err)
-	}
-	if recordJSON == "" {
-		return
-	}
-	if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`,
-		schedprefdomain.MigrationSettingKey, recordJSON); err != nil {
-		t.Fatalf("seed migration record: %v", err)
-	}
-}
 
 // schedulingPreferenceCompletedRecordJSON 序列化一条合规完成记录。
 func schedulingPreferenceCompletedRecordJSON(t *testing.T) string {
@@ -75,208 +30,6 @@ func schedulingPreferenceCompletedRecordJSON(t *testing.T) string {
 		t.Fatalf("marshal record: %v", err)
 	}
 	return string(payload)
-}
-
-// seedSchedulingPreferenceBuiltinRow 按契约权威值插入内置行（enabled 已随
-// v2 用户裁决修订第 4 条退役，行不再携带该列）。
-func seedSchedulingPreferenceBuiltinRow(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, built_in, created_at, updated_at)
-		VALUES (?, NULL, ?, 'cost_first', 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`,
-		schedulingPreferenceBuiltinID, "默认调度偏好"); err != nil {
-		t.Fatalf("seed builtin row: %v", err)
-	}
-}
-
-// seedSchedulingPreferenceStartupFixture 在已打开的业务库补齐 jobs 启动只读
-// 校验（scheduling_preference_schema.go）的夹具消费面：scheduling_preferences
-// 表、api_keys.scheduling_preference_id 绑定列与合规内置行（DDL 与权威值和
-// maintenance 同构同源，幂等可重入）。供 w16h 基底业务库夹具随能力域消费面
-// 一并调用。
-func seedSchedulingPreferenceStartupFixture(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(schedulingPreferenceCorrectTableDDL); err != nil {
-		t.Fatalf("seed scheduling_preferences ddl: %v", err)
-	}
-	if _, err := db.Exec(schedulingPreferenceCorrectAPIKeysDDL); err != nil {
-		t.Fatalf("seed api_keys ddl: %v", err)
-	}
-	seedSchedulingPreferenceBuiltinRow(t, db)
-	// 第四臂（P2 迁移完成记录）：global_settings + completed 记录（幂等可
-	// 重入；w16h 基底业务库可能已由能力域夹具建过该表）。
-	if _, err := db.Exec(schedulingPreferenceGlobalSettingsDDL); err != nil {
-		t.Fatalf("seed global_settings ddl: %v", err)
-	}
-	seedSchedulingPreferenceMigrationRecord(t, db, schedulingPreferenceCompletedRecordJSON(t))
-}
-
-func openSchedulingPreferenceFixture(t *testing.T, schedulingDDL, apiKeysDDL string, seedBuiltin bool) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:schpref-check-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{schedulingDDL, apiKeysDDL} {
-		if ddl == "" {
-			continue
-		}
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatalf("fixture DDL: %v: %v", ddl, err)
-		}
-	}
-	if seedBuiltin {
-		seedSchedulingPreferenceBuiltinRow(t, db)
-	}
-	return db
-}
-
-func TestSchedulingPreferenceSchemaSQLitePasses(t *testing.T) {
-	db := openSchedulingPreferenceFixture(t, schedulingPreferenceCorrectTableDDL, schedulingPreferenceCorrectAPIKeysDDL, true)
-	// 第四臂（P2 迁移完成记录）：global_settings + completed 记录。
-	if _, err := db.Exec(schedulingPreferenceGlobalSettingsDDL); err != nil {
-		t.Fatalf("fixture global_settings ddl: %v", err)
-	}
-	seedSchedulingPreferenceMigrationRecord(t, db, schedulingPreferenceCompletedRecordJSON(t))
-	if err := checkSchedulingPreferenceSchema(context.Background(), db, false); err != nil {
-		t.Fatalf("标准形状必须通过: %v", err)
-	}
-}
-
-// TestSchedulingPreferenceMigrationRecordGateArms 覆盖 P2 迁移完成记录臂的
-// 失败矩阵（记录缺失 / running 未完成 / 记录损坏）与放行臂：前三臂形状合规，
-// 仅记录状态不同。错误必须携带 --migrate-scheduling-preferences 运维动作。
-func TestSchedulingPreferenceMigrationRecordGateArms(t *testing.T) {
-	scenarios := []struct {
-		name    string
-		record  string
-		wantErr string
-	}{
-		{"record-pass", schedulingPreferenceCompletedRecordJSON(t), ""},
-		{"record-missing", "", "不存在"},
-		{"record-running", `{"stage":"running","ruleVersion":1,"completedAt":"2026-10-12T08:00:00Z","counts":{}}`, "running"},
-		{"record-corrupt", `{"stage":`, "不是合法 JSON"},
-	}
-	for _, scenario := range scenarios {
-		t.Run(scenario.name, func(t *testing.T) {
-			db := openSchedulingPreferenceFixture(t, schedulingPreferenceCorrectTableDDL, schedulingPreferenceCorrectAPIKeysDDL, true)
-			if _, err := db.Exec(schedulingPreferenceGlobalSettingsDDL); err != nil {
-				t.Fatalf("fixture global_settings ddl: %v", err)
-			}
-			seedSchedulingPreferenceMigrationRecord(t, db, scenario.record)
-			err := checkSchedulingPreferenceSchema(context.Background(), db, false)
-			if scenario.wantErr == "" {
-				if err != nil {
-					t.Fatalf("completed 记录必须放行: %v", err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("记录状态 %q 必须 fail-fast", scenario.name)
-			}
-			if !strings.Contains(err.Error(), scenario.wantErr) || !strings.Contains(err.Error(), "--migrate-scheduling-preferences") {
-				t.Fatalf("错误应包含 %q 与迁移命令指引，got: %v", scenario.wantErr, err)
-			}
-		})
-	}
-}
-
-func TestSchedulingPreferenceSchemaSQLiteFailureArms(t *testing.T) {
-	const builtinID = schedulingPreferenceBuiltinID
-	scenarios := []struct {
-		name          string
-		schedulingDDL string
-		apiKeysDDL    string
-		seedBuiltin   bool
-		corrupt       string
-		wantErr       string
-	}{
-		{"missing-table", "", schedulingPreferenceCorrectAPIKeysDDL, false, "", "表缺失"},
-		{"missing-column", strings.Replace(schedulingPreferenceCorrectTableDDL, "built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),\n", "", 1), schedulingPreferenceCorrectAPIKeysDDL, false, "", "缺列 built_in"},
-		{"missing-check", `CREATE TABLE scheduling_preferences (
-	id TEXT PRIMARY KEY,
-	system_account_id TEXT,
-	name TEXT NOT NULL,
-	chat_mode TEXT NOT NULL,
-	chat_speed_first_config_json TEXT,
-	built_in INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`, schedulingPreferenceCorrectAPIKeysDDL, true, "", "CHECK"},
-		{"missing-apikey-column", schedulingPreferenceCorrectTableDDL, `CREATE TABLE api_keys (id TEXT PRIMARY KEY)`, true, "", "绑定列缺失"},
-		{"builtin-row-missing", schedulingPreferenceCorrectTableDDL, schedulingPreferenceCorrectAPIKeysDDL, false, "", "内置调度偏好行"},
-		{"builtin-built-in-zero", schedulingPreferenceCorrectTableDDL, schedulingPreferenceCorrectAPIKeysDDL, true,
-			`UPDATE scheduling_preferences SET built_in = 0 WHERE id = '` + builtinID + `'`, "built_in=0"},
-	}
-	for _, scenario := range scenarios {
-		t.Run(scenario.name, func(t *testing.T) {
-			db := openSchedulingPreferenceFixture(t, scenario.schedulingDDL, scenario.apiKeysDDL, scenario.seedBuiltin)
-			if scenario.corrupt != "" {
-				if _, err := db.Exec(scenario.corrupt); err != nil {
-					t.Fatalf("corrupt builtin row: %v", err)
-				}
-			}
-			err := checkSchedulingPreferenceSchema(context.Background(), db, false)
-			if err == nil {
-				t.Fatalf("三臂任一不符必须 fail-fast")
-			}
-			if !strings.Contains(err.Error(), scenario.wantErr) || !strings.Contains(err.Error(), "--ensure-schema") {
-				t.Fatalf("错误应包含 %q 与运维动作指引，got: %v", scenario.wantErr, err)
-			}
-		})
-	}
-}
-
-// TestSchedulingPreferenceSchemaAtStartupSQLite 走 AtStartup 包装：临时目录业
-// 务库（正确形状 + 内置行）必须通过；错误形状必须 fail-fast。
-func TestSchedulingPreferenceSchemaAtStartupSQLite(t *testing.T) {
-	dir := t.TempDir()
-	businessPath := filepath.Join(dir, "business.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(businessPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(schedulingPreferenceCorrectTableDDL); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(schedulingPreferenceCorrectAPIKeysDDL); err != nil {
-		t.Fatal(err)
-	}
-	seedSchedulingPreferenceBuiltinRow(t, db)
-	// 第四臂（P2 迁移完成记录）：global_settings + completed 记录。
-	if _, err := db.Exec(schedulingPreferenceGlobalSettingsDDL); err != nil {
-		t.Fatal(err)
-	}
-	seedSchedulingPreferenceMigrationRecord(t, db, schedulingPreferenceCompletedRecordJSON(t))
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkSchedulingPreferenceSchemaAtStartup(context.Background(), workerConfig{Driver: "sqlite", BusinessSQLitePath: businessPath}); err != nil {
-		t.Fatalf("标准形状必须通过: %v", err)
-	}
-
-	brokenPath := filepath.Join(dir, "broken.sqlite3")
-	db, err = sql.Open("sqlite", "file:"+filepath.ToSlash(brokenPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(schedulingPreferenceCorrectTableDDL); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = checkSchedulingPreferenceSchemaAtStartup(context.Background(), workerConfig{Driver: "sqlite", BusinessSQLitePath: brokenPath})
-	if err == nil || !strings.Contains(err.Error(), "绑定列缺失") {
-		t.Fatalf("缺 api_keys 绑定列必须 fail-fast，got: %v", err)
-	}
-
-	// 业务库文件缺失（F1 store 先于本校验打开，生产不可达；包装层仍须显式
-	// 报错而不是 panic）。
-	err = checkSchedulingPreferenceSchemaAtStartup(context.Background(), workerConfig{Driver: "sqlite", BusinessSQLitePath: filepath.Join(dir, "missing.sqlite3")})
-	if err == nil {
-		t.Fatalf("业务库缺失必须 fail-fast")
-	}
 }
 
 // TestSchedulingPreferenceSchemaPostgresArms 在 w12c 覆盖库上以独立 scratch

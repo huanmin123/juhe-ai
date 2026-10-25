@@ -209,19 +209,18 @@ func TestBalanceProjectionMappingRejectsInvalid(t *testing.T) {
 	}
 }
 
-// newProjectionSQLiteRuntime 构造单文件 SQLite 投影运行时：业务 accounts +
-// J2 account_balance_snapshots + stats account_usage_snapshots 同库直名
-// （生产 PG 三者按 schema 限定，方言分叉由 postgres 标志承担）。
+// newProjectionSQLiteRuntime 构造独立 PG 测试库投影运行时：业务 accounts +
+// J2 account_balance_snapshots + stats account_usage_snapshots 同库（生产
+// PG 三者按 schema 限定；原单文件 SQLite 夹具随 sqlite 形态退役删除）。
 func newProjectionSQLiteRuntime(t *testing.T) (*balanceProjectionRuntime, *sql.DB) {
 	t.Helper()
-	db := mustOpenSQLite(t, t.TempDir()+"/projection.sqlite3")
-	t.Cleanup(func() { _ = db.Close() })
-	ctx := context.Background()
-	if err := balanceFixtureSchema(ctx, db, db); err != nil {
-		t.Fatal(err)
-	}
-	j2Schema := `
-CREATE TABLE IF NOT EXISTS account_balance_snapshots (
+	db, _ := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
+		if err := balanceFixtureSchema(ctx, db, db); err != nil {
+			return err
+		}
+		j2Schema := `
+CREATE SCHEMA IF NOT EXISTS juhe_jobs;
+CREATE TABLE IF NOT EXISTS juhe_jobs.account_balance_snapshots (
   account_id TEXT PRIMARY KEY,
   input_version INTEGER NOT NULL,
   config_revision INTEGER NOT NULL,
@@ -231,10 +230,10 @@ CREATE TABLE IF NOT EXISTS account_balance_snapshots (
   updated_at TEXT NOT NULL
 );
 `
-	if _, err := db.ExecContext(ctx, j2Schema); err != nil {
-		t.Fatal(err)
-	}
-	runtime := &balanceProjectionRuntime{db: db, postgres: false, nowFunc: func() time.Time { return fixedProjectionClock }}
+		_, err := db.ExecContext(ctx, j2Schema)
+		return err
+	})
+	runtime := &balanceProjectionRuntime{db: db, nowFunc: func() time.Time { return fixedProjectionClock }}
 	return runtime, db
 }
 
@@ -246,13 +245,13 @@ func seedProjectionSource(t *testing.T, db *sql.DB, accountID, systemAccountID s
 		deletedAt = "2026-09-01T00:00:00Z"
 	}
 	if _, err := db.Exec(`
-INSERT INTO accounts (id, system_account_id, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at, deleted_at)
+INSERT INTO juhe_business.accounts (id, system_account_id, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at, deleted_at)
 VALUES (?, ?, 'api_key', 'active', 1, '{"api_key":"sk-x"}', 1, '{"adapter":"builtin","intervalMinutes":5}', ?, ?, ?)
 `, accountID, systemAccountID, nextRefreshAt, nextRefreshAt, deletedAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
-INSERT INTO account_balance_snapshots (account_id, input_version, config_revision, trigger, snapshot_json, next_refresh_at, updated_at)
+INSERT INTO juhe_jobs.account_balance_snapshots (account_id, input_version, config_revision, trigger, snapshot_json, next_refresh_at, updated_at)
 VALUES (?, 1, ?, 'periodic', ?, ?, ?)
 `, accountID, configRevision, snapshotJSON, nextRefreshAt, nextRefreshAt); err != nil {
 		t.Fatal(err)
@@ -317,7 +316,7 @@ func TestBalanceProjectionUpsertIdempotent(t *testing.T) {
 	loadRows := func() map[string]snapshotRow {
 		t.Helper()
 		rows, err := db.Query(`SELECT system_account_id, account_id, refresh_status, snapshot_json, last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at, created_at
-      FROM account_usage_snapshots WHERE kind = 'relay_balance' ORDER BY account_id`)
+      FROM juhe_stats.account_usage_snapshots WHERE kind = 'relay_balance' ORDER BY account_id`)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -393,7 +392,7 @@ func TestBalanceProjectionMissingAccountSkipped(t *testing.T) {
 	ctx := context.Background()
 	snapshotJSON := j2SnapshotJSON(t, accountbalance.Snapshot{Status: accountbalance.StatusFresh})
 	if _, err := db.Exec(`
-INSERT INTO account_balance_snapshots (account_id, input_version, config_revision, trigger, snapshot_json, next_refresh_at, updated_at)
+INSERT INTO juhe_jobs.account_balance_snapshots (account_id, input_version, config_revision, trigger, snapshot_json, next_refresh_at, updated_at)
 VALUES ('acc-orphan', 1, 1, 'periodic', ?, NULL, '2026-09-27T07:59:00Z')
 `, snapshotJSON); err != nil {
 		t.Fatal(err)
@@ -532,7 +531,7 @@ func TestBalanceProjectionPGSQLContract(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { _ = db.Close() })
-	runtime := &balanceProjectionRuntime{db: db, postgres: true, nowFunc: func() time.Time { return fixedProjectionClock }}
+	runtime := &balanceProjectionRuntime{db: db, nowFunc: func() time.Time { return fixedProjectionClock }}
 	result, err := runtime.ProjectAll(context.Background())
 	if err != nil {
 		t.Fatalf("PG 录制投影必须成功: %v", err)
@@ -580,7 +579,7 @@ func TestBalanceProjectionPGSQLContract(t *testing.T) {
 func TestEnsureBalanceProjectionContractBranches(t *testing.T) {
 	ctx := context.Background()
 	_, db := newProjectionSQLiteRuntime(t)
-	if err := ensureBalanceProjectionContract(ctx, db, false); err != nil {
+	if err := ensureBalanceProjectionContract(ctx, db); err != nil {
 		t.Fatalf("SQLite 分支契约校验必须通过: %v", err)
 	}
 	// PG 分支：录制驱动对 information_schema 计数返回 0 → 缺源表报错。
@@ -592,7 +591,7 @@ func TestEnsureBalanceProjectionContractBranches(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { _ = pgDB.Close() })
-	if err := ensureBalanceProjectionContract(ctx, pgDB, true); err == nil {
+	if err := ensureBalanceProjectionContract(ctx, pgDB); err == nil {
 		t.Fatal("缺 juhe_jobs 源表必须报错")
 	}
 }

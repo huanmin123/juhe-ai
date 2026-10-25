@@ -5,13 +5,11 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"fmt"
 	"image"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,25 +17,6 @@ import (
 
 	_ "modernc.org/sqlite"
 )
-
-func w11gPreflightBase(t *testing.T) (runtimeConfig, *sql.DB) {
-	t.Helper()
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "business.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return runtimeConfig{
-		ChatDatabasePath:         filepath.Join(root, "chat.sqlite3"),
-		DatasetDatabasePath:      filepath.Join(root, "dataset.sqlite3"),
-		UsageCatalogDatabasePath: filepath.Join(root, "usage-catalog.sqlite3"),
-		CodexContextShardRoot:    filepath.Join(root, "codex-context"),
-		StatsDatabasePath:        filepath.Join(root, "stats.sqlite3"),
-		CodexContextShardCount:   1,
-		Secret:                   "w11g-preflight-secret",
-	}, db
-}
 
 // TestW11GPreflightMissingPathArms 已随 2026-09-19 零配置改造移除：路径类
 // env 未配置时由 loadRuntimeConfig 按 datadir 固定名表派生，preflight 不再

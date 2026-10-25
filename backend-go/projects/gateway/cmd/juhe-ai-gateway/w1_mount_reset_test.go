@@ -74,22 +74,6 @@ func TestW1ChatAttachStreamHandlerNotAttached(t *testing.T) {
 	}
 }
 
-func TestW1OpenChatDatabaseSQLite(t *testing.T) {
-	// SQLite 模式缺路径：报错。
-	if _, _, err := openChatDatabase(runtimeConfig{}, nil, nil, false); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CHAT_DATABASE_PATH") {
-		t.Fatalf("missing path = %v", err)
-	}
-	// 有效路径：打开并配置（单连接）。
-	db, owns, err := openChatDatabase(runtimeConfig{ChatDatabasePath: t.TempDir() + "/chat.sqlite3"}, nil, nil, false)
-	if err != nil || !owns || db == nil {
-		t.Fatalf("open = %v, %v", owns, err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec("SELECT 1"); err != nil {
-		t.Fatalf("ping = %v", err)
-	}
-}
-
 func TestW1ResetBridgePureMemoryFace(t *testing.T) {
 	bridge := &accountsRuntimeResetBridge{now: time.Now}
 	// 瞬态代次记忆：写后可读，键按账户+指纹隔离。

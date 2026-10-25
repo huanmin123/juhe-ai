@@ -17,7 +17,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,6 +25,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/circuitstore"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // w13g8StubRuntime / w13g8StubConcurrency 是 projectionRuntimeProbe 的读源
@@ -52,7 +52,10 @@ func (s w13g8StubConcurrency) LoadConcurrency(_ context.Context, _ []string) (ma
 func w13g8NewUnitAssembly(t *testing.T, patch func(*workerConfig)) *workerAssembly {
 	t.Helper()
 	config := workerConfig{
-		Driver:       "sqlite",
+		// PG 唯一形态：哑连接串（pgpool Acquire 惰性拨号，单元装配不触库）。
+		PostgresURL:          "postgres://unit-test.invalid/juhe_ai_unit",
+		PostgresMaxOpenConns: 50,
+		PostgresMaxIdleConns: 10,
 		InstanceID:   "w13g8-units",
 		WorkerRole:   "ingest-worker",
 		Secret:       wgBalanceSecret,
@@ -69,9 +72,7 @@ func w13g8NewUnitAssembly(t *testing.T, patch func(*workerConfig)) *workerAssemb
 // 缺失/OAuth 族缺失）。
 func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 	ctx := context.Background()
-	// 先注册 TempDir 清理（RemoveAll），再在 build() 内注册 closeStores；
-	// t.Cleanup 是 LIFO：closeStores 必须先于 RemoveAll 执行。
-	unitDir := t.TempDir()
+	// 先注册清理，再在 build() 内注册 closeStores；t.Cleanup 是 LIFO。
 	build := func(patch func(*workerConfig)) *workerAssembly {
 		assembly := w13g8NewUnitAssembly(t, patch)
 		t.Cleanup(assembly.closeStores)
@@ -90,21 +91,9 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 			t.Fatalf("disabled 原因必须包含 %q: %s", wantFragment, last.Reason)
 		}
 	}
-	// SQLite 驱动：Node PostgreSQL-only 物化器。
-	sqliteAssembly := build(func(config *workerConfig) {})
-	business, err := sqliteAssembly.openSQLite(filepath.Join(unitDir, "unit-business.sqlite3"), "w13g8-projection")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sqliteAssembly.wireListProjectionFamily(ctx, &businessDB{db: business}, nil); err != nil {
-		t.Fatalf("SQLite 门禁必须走 disabled 登记而非错误: %v", err)
-	}
-	assertDisabled(t, sqliteAssembly, "PostgreSQL-only")
-
-	// PG 驱动 + 缺 Redis。
-	noRedis := build(func(config *workerConfig) {
-		config.Driver = "postgres"
-	})
+	// 缺 Redis（原「SQLite 驱动不注册」门禁臂已随 sqlite 形态退役删除：装配
+	// 恒走 PG 完整路径）。
+	noRedis := build(func(config *workerConfig) {})
 	if err := noRedis.wireListProjectionFamily(ctx, &businessDB{}, nil); err != nil {
 		t.Fatalf("缺 Redis 必须 disabled: %v", err)
 	}
@@ -112,7 +101,6 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 
 	// PG + Redis + 非法 namespace。
 	badNamespace := build(func(config *workerConfig) {
-		config.Driver = "postgres"
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8 bad namespace!"
 	})
@@ -123,7 +111,6 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 
 	// PG + Redis + 合法 namespace + 缺 secret。
 	noSecret := build(func(config *workerConfig) {
-		config.Driver = "postgres"
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8"
 		config.Secret = ""
@@ -135,7 +122,6 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 
 	// secret 就绪 + 探针族未装配。
 	noProbe := build(func(config *workerConfig) {
-		config.Driver = "postgres"
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8"
 	})
@@ -204,12 +190,10 @@ func TestW13G8ProjectionCredentialsAdapter(t *testing.T) {
 // TestW13G8ProbeFamilyDisabledOnMissingCoreTables 驱动 wireProbeFamily 的
 // SQLite 契约校验失败 → 三任务 disabled 登记分支。
 func TestW13G8ProbeFamilyDisabledOnMissingCoreTables(t *testing.T) {
-	dir := t.TempDir()
-	assembly := w13g8NewUnitAssembly(t, func(config *workerConfig) {
-		// ProbeEnabled 字段已删除（2026-09-19 家族开关移除）：探针族恒装配。
-		config.BusinessSQLitePath = filepath.Join(dir, "business.sqlite3")
-		config.StatsSQLitePath = filepath.Join(dir, "stats.sqlite3")
-	})
+	// PG 唯一形态：空独立库（无业务契约表）→ 探针族契约校验 fail closed 登记
+	// disabled（原 sqlite 文件库夹具随 sqlite 形态退役删除）。
+	pgtestkit.New(t)
+	assembly := w13g8NewUnitAssembly(t, func(config *workerConfig) {})
 	t.Cleanup(assembly.closeStores)
 	if err := assembly.wireProbeFamily(context.Background()); err != nil {
 		t.Fatalf("缺核心表必须走 disabled 登记而非错误: %v", err)
@@ -248,79 +232,6 @@ func TestW13G8SpeedFirstCandidateSourceArms(t *testing.T) {
 	}
 	if _, err := source.FindCandidateAccount(ctx, "g", "w13g8-x", "sys"); err == nil {
 		t.Fatal("连接关闭后必须报错")
-	}
-}
-
-// TestW13G8BuildWorkerAssemblySQLiteStoreFailArms 用目录路径（openSQLite 的
-// PRAGMA WAL 立即失败）驱动各家族存储打开错误传播臂。
-func TestW13G8BuildWorkerAssemblySQLiteStoreFailArms(t *testing.T) {
-	dir := t.TempDir()
-	base := func(config *workerConfig) {
-		config.BusinessSQLitePath = filepath.Join(dir, "business.sqlite3")
-		config.StatsSQLitePath = filepath.Join(dir, "stats.sqlite3")
-		config.TaskRunsSQLitePath = filepath.Join(dir, "task-runs.sqlite3")
-		config.UsageCatalogSQLitePath = filepath.Join(dir, "usage-catalog.sqlite3")
-		config.UsageShardRoot = filepath.Join(dir, "usage-shards")
-	}
-	for _, test := range []struct {
-		name     string
-		patch    func(*workerConfig)
-		fragment string
-	}{
-		{"task-runs 目录路径", func(config *workerConfig) {
-			config.TaskRunsSQLitePath = dir
-		}, "task-runs"},
-		{"stats 目录路径", func(config *workerConfig) {
-			config.StatsSQLitePath = dir
-		}, "stats"},
-		{"usage-writer 目录路径", func(config *workerConfig) {
-			config.UsageCatalogSQLitePath = dir
-		}, "usage-writer"},
-		// 「balance-detect stats 目录路径」臂已删除（2026-09-19 家族开关移除）：
-		// stats 家族先于 balance-detect 装配，同一垃圾路径在 stats-verify 打开处
-		// 先行失败，balance-detect 臂在恒装配顺序下不可达。
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			config := workerConfig{
-				Driver:       "sqlite",
-				InstanceID:   "w13g8-fail-arms",
-				WorkerRole:   "ingest-worker",
-				Secret:       wgBalanceSecret,
-				DrainTimeout: time.Second,
-			}
-			base(&config)
-			test.patch(&config)
-			assembly, err := buildWorkerAssembly(config, nil)
-			if err == nil {
-				assembly.closeStores()
-				t.Fatalf("目录路径必须使装配失败")
-			}
-			if !strings.Contains(err.Error(), test.fragment) {
-				t.Fatalf("错误必须属于 %s 家族: %v", test.fragment, err)
-			}
-		})
-	}
-	// retention：SQLite 模式缺 Codex shard 根的显式报错分支（家族开关已删除，
-	// 报错文案不再携带 RETENTION_ENABLED；其余路径给到临时目录，让装配推进
-	// 到 retention 家族的 shard 根校验处失败）。
-	retentionDir := t.TempDir()
-	retentionConfig := workerConfig{
-		Driver:                      "sqlite",
-		InstanceID:                  "w13g8-retention-fail",
-		WorkerRole:                  "ingest-worker",
-		Secret:                      wgBalanceSecret,
-		DrainTimeout:                time.Second,
-		BusinessSQLitePath:          filepath.Join(retentionDir, "business.sqlite3"),
-		StatsSQLitePath:             filepath.Join(retentionDir, "stats.sqlite3"),
-		TaskRunsSQLitePath:          filepath.Join(retentionDir, "task-runs.sqlite3"),
-		ChatSQLitePath:              filepath.Join(retentionDir, "chat.sqlite3"),
-		DatasetSQLitePath:           filepath.Join(retentionDir, "dataset.sqlite3"),
-		UsageCatalogSQLitePath:      filepath.Join(retentionDir, "usage.sqlite3"),
-		UsageShardRoot:              filepath.Join(retentionDir, "usage-shards"),
-		CodexContextStateShardCount: 1,
-	}
-	if _, err := buildWorkerAssembly(retentionConfig, nil); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
-		t.Fatalf("缺 codex shard 根路径必须报 retention 配置错误: %v", err)
 	}
 }
 

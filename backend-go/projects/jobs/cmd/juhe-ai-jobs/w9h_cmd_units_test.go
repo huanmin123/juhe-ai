@@ -1,11 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
@@ -21,14 +21,13 @@ import (
 
 func w9hProbeStoreFixture(t *testing.T) (*proberepo.Store, *proberepoStoreHandle) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	seedProbeCoreTables(t, path)
-	db, err := sqlOpenSQLiteFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	probeStore, err := proberepo.NewStore(proberepo.Config{DB: db, Secret: wgBalanceSecret})
+	// PG 唯一形态：独立 PG 测试库 + sqldialect 改写（原 sqlite 文件夹具随
+	// sqlite 形态退役删除）。
+	db, _ := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(probeCoreTablesPGDDL)
+		return err
+	})
+	probeStore, err := proberepo.NewStore(proberepo.Config{DB: db, Postgres: true, Secret: wgBalanceSecret})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +36,49 @@ func w9hProbeStoreFixture(t *testing.T) (*proberepo.Store, *proberepoStoreHandle
 	}
 	handle := &proberepoStoreHandle{db: db}
 	return probeStore, handle
+}
+
+// wgSeedRecoveryAccount 在探针夹具上写入恢复解析用的账户/分组/连接三元组，
+// 返回 owner runtime key（原 sqlite 直名 SQL 随 sqlite 形态退役改 juhe_business
+// 限定；列集合对齐 LoadAccountForTest/LoadAccountForGroup 读取面）。
+func wgSeedRecoveryAccount(t *testing.T, store *proberepoStoreHandle) string {
+	t.Helper()
+	if _, err := store.db.Exec(`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS proxy_profile_id TEXT`); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := json.Marshal(map[string]any{"api_key": "sk-rt", "base_url": "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := accountbalance.EncryptV1Envelope(wgBalanceSecret, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO juhe_business.groups (id, system_account_id) VALUES ('g-rt', 'sys-rt')`,
+		`INSERT INTO juhe_business.group_accounts (group_id, system_account_id, account_id) VALUES ('g-rt', 'sys-rt', 'acc-rt')`,
+		`INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code, credentials_encrypted, config_revision, dispatch_revision)
+		 VALUES ('acc-rt', 'sys-rt', 'rt', 'api_key', 'active', 1, 'gpt', 'gpt', $1, 1, 2)`,
+		`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+		 VALUES ('model-acc-rt', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '')`,
+		`INSERT INTO juhe_business.account_supported_models (account_id, model_id, created_at) VALUES ('acc-rt', 'model-acc-rt', '')`,
+		`INSERT INTO juhe_business.account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		 VALUES ('conn-acc-rt', 'acc-rt', 'gpt_openai_v1', 'openai_v1', 'http://127.0.0.1:1', 1, '', '')`,
+		`INSERT INTO juhe_business.account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-acc-rt', 'chat_json')`,
+		`UPDATE juhe_business.accounts SET health_check_connection_id = 'conn-acc-rt' WHERE id = 'acc-rt'`,
+	}
+	for index, statement := range statements {
+		var execErr error
+		if index == 2 {
+			_, execErr = store.db.Exec(statement, envelope)
+		} else {
+			_, execErr = store.db.Exec(statement)
+		}
+		if execErr != nil {
+			t.Fatal(execErr)
+		}
+	}
+	return "acc-rt"
 }
 
 func w9hProbeService(t *testing.T, store *proberepo.Store) *accountprobe.Service {
@@ -78,7 +120,7 @@ func TestW9HSpeedFirstCandidateSourceArms(t *testing.T) {
 	}
 	// 到期列损坏（非 RFC3339）→ proberepo 按错误上抛（BUG-0180：原 panic
 	// 会使长驻 probe worker 进入崩溃循环，由调用方按读取失败处理）。
-	if _, err := handle.db.Exec(`UPDATE accounts SET account_expires_at = 'not-a-time' WHERE id = 'acc-rt'`); err != nil {
+	if _, err := handle.db.Exec(`UPDATE juhe_business.accounts SET account_expires_at = 'not-a-time' WHERE id = 'acc-rt'`); err != nil {
 		t.Fatal(err)
 	}
 	if summary, err := source.FindAccountForTest(ctx, "acc-rt", runtimeKey); err == nil {

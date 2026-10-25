@@ -56,7 +56,9 @@ func statsDBRowCount(t *testing.T, handle *sql.DB, kind, accountID string) int {
 }
 
 func TestStatsDatabaseSplitFilesListAndSnapshotReads(t *testing.T) {
-	env := newTestEnv(t)
+	// 组B（D17）：SQLite 双文件 stats 拆分回归（AttachStatsDatabase 独立句柄
+	// 语义）——走 SQLite 环境，随生产 sqlite 臂删除批次同批退役。
+	env := newSQLiteTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
 	env.seedAccount(t, "acc-statsdb-oauth", adminID, "statsdb-oauth", "active")

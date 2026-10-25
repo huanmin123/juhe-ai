@@ -471,10 +471,15 @@ func TestW10AStoreBindAndTable(t *testing.T) {
 	if bound != "SELECT * FROM t WHERE a = $1 AND b = $2 AND c = $3" {
 		t.Fatalf("PG 占位符改写不一致：%s", bound)
 	}
-	if env.store.bind("SELECT ?") != "SELECT ?" {
+	// sqlite 臂渲染锁：env.store 已是 PG 臂，另构造 sqlite 视角 Store 直测。
+	sqliteStore, err := NewStore(env.db, false, testSecret, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sqliteStore.bind("SELECT ?") != "SELECT ?" {
 		t.Fatal("SQLite 不应改写占位符")
 	}
-	if env.store.table("accounts") != "accounts" {
+	if sqliteStore.table("accounts") != "accounts" {
 		t.Fatal("SQLite 无表前缀")
 	}
 }

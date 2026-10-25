@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -19,17 +18,23 @@ func strongProductionSecret(length int) string {
 func productionSecurityEnv(t *testing.T) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"NODE_ENV":                "production",
-		"JUHE_AI_DATABASE_PATH":   filepath.Join(t.TempDir(), "juhe-ai.sqlite3"),
-		"JUHE_AI_SECRET":          strongProductionSecret(32),
-		"JUHE_AI_ALLOWED_ORIGINS": "https://admin.example.com",
+		"NODE_ENV":                    "production",
+		"JUHE_AI_POSTGRES_URL":        "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL":     "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL":     "redis://127.0.0.1:6379/1",
+		"JUHE_AI_SECRET":              strongProductionSecret(32),
+		"JUHE_AI_ALLOWED_ORIGINS":     "https://admin.example.com",
 	}
 }
 
 func developmentSecurityEnv(t *testing.T) map[string]string {
 	t.Helper()
+	// 2026-10-24 存储形态收口：PostgreSQL + Redis 是唯一存储形态，三个连接串
+	// env 无条件必填（HTTP 安全门测试只关心 NODE_ENV/secret/CORS 面）。
 	return map[string]string{
-		"JUHE_AI_DATABASE_PATH": filepath.Join(t.TempDir(), "juhe-ai.sqlite3"),
+		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
 	}
 }
 
@@ -484,29 +489,15 @@ func TestLoadRuntimeConfigQueueDriverConfigRemoved(t *testing.T) {
 	env := developmentSecurityEnv(t)
 	env["JUHE_AI_QUEUE_DRIVER"] = "bogus-driver"
 	env["JUHE_AI_REDIS_QUEUE_URL"] = "redis://127.0.0.1:6379/2"
-	cfg, err := loadRuntimeConfigEnv(t, env)
-	if err != nil {
+	if _, err := loadRuntimeConfigEnv(t, env); err != nil {
 		t.Fatalf("dead queue config must be inert, got %v", err)
 	}
-	if cfg.RuntimeMode != "standalone" {
-		t.Fatalf("dead queue URL must not flip the runtime mode: %q", cfg.RuntimeMode)
-	}
-
-	// 仅设置 JUHE_AI_REDIS_QUEUE_URL 不再触发 performance 提示。
-	// 2026-09-19 起缺省 DATABASE_PATH 按 datadir 派生（不再启动失败），
-	// 断言改为校验派生默认值与 standalone 模式保持。
+	// 仅设置 JUHE_AI_REDIS_QUEUE_URL 不产生任何效果（2026-10-24 存储形态收口
+	// 后模式开关已不存在，死配置保持完全惰性）。
 	env = developmentSecurityEnv(t)
-	delete(env, "JUHE_AI_DATABASE_PATH")
 	env["JUHE_AI_REDIS_QUEUE_URL"] = "redis://127.0.0.1:6379/2"
-	cfg, err = loadRuntimeConfigEnv(t, env)
-	if err != nil {
-		t.Fatalf("sqlite without database path must derive a default, got %v", err)
-	}
-	if cfg.RuntimeMode != "standalone" {
-		t.Fatalf("dead queue URL must not flip the runtime mode: %q", cfg.RuntimeMode)
-	}
-	if cfg.DatabasePath != filepath.Join("data", "business.sqlite3") {
-		t.Fatalf("derived database path = %q", cfg.DatabasePath)
+	if _, err := loadRuntimeConfigEnv(t, env); err != nil {
+		t.Fatalf("dead queue URL must stay inert, got %v", err)
 	}
 }
 

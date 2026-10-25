@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -142,23 +141,23 @@ type composition struct {
 	// kernel 404 JSON contract) no longer exists since the 2026-09-21
 	// JUHE_AI_GATEWAY_CHAIN_ENABLED switch removal.
 	chain *gatewayChain
-	// DB is the business database handle (SQLite file handle or the shared
-	// PostgreSQL pool connection). Exposed for seed/maintenance helpers.
+	// DB is the business database handle (the shared PostgreSQL pool
+	// connection). Exposed for seed/maintenance helpers.
 	DB *sql.DB
 
+	// db is the business pool handle; pgDialect is the storage dialect handed
+	// to every internal store constructor. 2026-10-24 存储形态收口：
+	// PostgreSQL 是唯一存储形态，句柄恒来自共享池（ownDB/ownStatsDB/ownChatDB
+	// 自有句柄护栏随 sqlite 臂删除），pgDialect 恒 true。
 	db        *sql.DB
-	ownDB     bool
 	pgDialect bool
-	// statsDB backs the ipstats reads (client_ip_* tables live in the stats
-	// database, never the business file). SQLite mode owns a dedicated stats
-	// file handle closed in Shutdown; PostgreSQL mode aliases the shared pool
-	// handle (juhe_stats.* qualification) and closes nothing here.
-	statsDB    *sql.DB
-	ownStatsDB bool
-	// chatDB backs the my-chat family (chat_* tables in the dedicated chat
-	// database / juhe_chat schema). Same dual-mode ownership as statsDB.
-	chatDB    *sql.DB
-	ownChatDB bool
+	// statsDB backs the ipstats reads (client_ip_* tables live in the juhe_stats
+	// schema); it aliases the shared pool handle (schema qualification) and
+	// closes nothing here.
+	statsDB *sql.DB
+	// chatDB backs the my-chat family (chat_* tables in the juhe_chat schema).
+	// Same shared-pool alias as statsDB.
+	chatDB *sql.DB
 
 	// kernel + authDeps are retained so later families (my-chat) can mount
 	// with the session middleware.
@@ -191,27 +190,11 @@ type composition struct {
 
 // Shutdown mirrors the Node db-service shutdown order (db-service.ts
 // shutdownDbService): background workers drain first (chat generation hub,
-// usage/audit dispatchers land with the chain slice), then the F4 producer,
-// then the owned SQL handles (stats file, business handle). The HTTP servers
-// and the shared pools are closed by main around this.
+// usage/audit dispatchers land with the chain slice), then the F4 producer.
+// The HTTP servers and the shared pools are closed by main around this.
 func (c *composition) Shutdown() {
 	for i := len(c.shutdowns) - 1; i >= 0; i-- {
 		c.shutdowns[i]()
-	}
-	if c.ownStatsDB && c.statsDB != nil {
-		if err := c.statsDB.Close(); err != nil {
-			slog.Debug("停机关闭 stats 库句柄失败", "event", "gateway_shutdown_close_failed", "component", "stats_db", "error", err)
-		}
-	}
-	if c.ownChatDB && c.chatDB != nil {
-		if err := c.chatDB.Close(); err != nil {
-			slog.Debug("停机关闭 chat 库句柄失败", "event", "gateway_shutdown_close_failed", "component", "chat_db", "error", err)
-		}
-	}
-	if c.ownDB && c.db != nil {
-		if err := c.db.Close(); err != nil {
-			slog.Debug("停机关闭业务库句柄失败", "event", "gateway_shutdown_close_failed", "component", "business_db", "error", err)
-		}
 	}
 }
 
@@ -311,67 +294,23 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, errors.New("系统 API 组合根要求 F3 审计进程内 producer（main 已基于共享 audit lease 构造）")
 	}
 
-	composed := &composition{pgDialect: cfg.DatabaseDriver == "postgres"}
+	// 2026-10-24 存储形态收口：PostgreSQL 是唯一存储形态——业务/统计/chat/
+	// usage-catalog/全部数据集读面与 capture 写面都经共享池（schema 限定），
+	// sqlite 双臂、六库 preflight 与自有句柄护栏整体删除。
+	composed := &composition{pgDialect: true}
 
-	// Business database (dual mode): Postgres shares the managed pool
-	// registry; SQLite opens a single writer handle over the handoff file.
-	if composed.pgDialect {
-		handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-system-api",
-			gatewayPostgresPoolMaxOpen, gatewayPostgresPoolMaxIdle)
-		if err != nil {
-			return nil, fmt.Errorf("open business PostgreSQL pool: %w", err)
-		}
-		composed.db = handle.DB()
-	} else {
-		db, err := sql.Open("sqlite", sqliteFileDSN(cfg.BusinessDatabasePath))
-		if err != nil {
-			return nil, fmt.Errorf("open business sqlite database: %w", err)
-		}
-		db.SetMaxOpenConns(1)
-		if err := configureSQLiteConnection(db); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("configure business sqlite database: %w", err)
-		}
-		composed.db = db
-		composed.ownDB = true
+	// Business database: the managed pool registry owns the handle.
+	handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-system-api",
+		gatewayPostgresPoolMaxOpen, gatewayPostgresPoolMaxIdle)
+	if err != nil {
+		return nil, fmt.Errorf("open business PostgreSQL pool: %w", err)
 	}
-	// SQLite 失败路径需要先关闭已持有的业务句柄：Windows 文件锁会让泄漏的
-	// business.sqlite3 句柄阻塞测试 TempDir 清理（X05 时代缺失分支的句柄
-	// 泄漏由注释约定规避；2026-09-19 起 stats 等守卫不再经由会关闭句柄的
-	// preflight，统一在此收口）。
-	closeOwnedBusiness := func() {
-		if composed.ownDB && composed.db != nil {
-			_ = composed.db.Close()
-		}
-	}
+	composed.db = handle.DB()
 
-	// ipstats data source (Node getStatsDatabase() split): the client_ip_*
-	// tables live only in the stats database — PostgreSQL reaches juhe_stats
-	// through schema qualification on the shared business pool, SQLite needs
-	// its own handle over the dedicated stats file. The stats path derives
-	// from JUHE_AI_DATA_DIR in loadRuntimeConfig since 2026-09-19 (explicit
-	// env still wins); compose keeps the empty-path guard below for directly
-	// constructed configs.
-	//
-	// X05 six-database startup preflight (BUG-0167/0168): SQLite mode runs the
-	// Node db-service open path (database.ts getBusinessDatabase ->
-	// applyBusinessSchema + seedDefaults, plus the lazy per-file schema
-	// application for stats/chat/codex-context/dataset/usage-catalog) through
-	// the maintenance bootstrap surface. PostgreSQL mode mirrors the Node PG
-	// contract (runtime refuses the driver; the external
-	// juhe-ai-maintenance --ensure-schema --seed --driver postgres command
-	// owns the schema/seed), so no startup ensure runs here.
-	if !composed.pgDialect {
-		if err := ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, composed.db); err != nil {
-			_ = composed.db.Close()
-			return nil, fmt.Errorf("sqlite storage preflight: %w", err)
-		}
-	}
 	// accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）：
 	// 加列/迁移归 maintenance，gateway 启动仅校验；缺失或四值形状不符即
 	// fail-fast（部署顺序契约：先迁移后启动新版）。只读，一次性，不做 DDL。
 	if err := checkAccountsCapabilityDomainSchema(context.Background(), composed.db, composed.pgDialect); err != nil {
-		closeOwnedBusiness()
 		return nil, fmt.Errorf("verify accounts capability_domain schema: %w", err)
 	}
 	// M2 启动阶段门禁（AI 账户能力域拆分 v7）：形状合法之外还要求阶段记录
@@ -379,142 +318,39 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 携带 maintenance 迁移命令序列（判定与文案在共享包，与 jobs 镜像共用）。
 	// 全新空库经 maintenance ensure-schema/bootstrap 的自动封存获得记录。
 	if err := checkAccountCapabilityDomainStageRecord(context.Background(), composed.db, composed.pgDialect); err != nil {
-		closeOwnedBusiness()
 		return nil, fmt.Errorf("verify accounts capability_domain stage record: %w", err)
 	}
 	// scheduling_preferences 启动只读校验（调度偏好独立实体 P1）：表形状 /
 	// api_keys 绑定列 / 内置行由 maintenance --ensure-schema（ensure 臂补种
-	// 内置行；SQLite fresh 库另经上方 preflight 的 bootstrap 种子路径自动满
-	// 足）保证，缺失或不符即 fail-fast（部署顺序契约：先 ensure-schema 后启
-	// 动新版）。只读，一次性，不做 DDL、不补种。
+	// 内置行）保证，缺失或不符即 fail-fast（部署顺序契约：先 ensure-schema 后
+	// 启动新版）。只读，一次性，不做 DDL、不补种。
 	if err := checkSchedulingPreferenceSchema(context.Background(), composed.db, composed.pgDialect); err != nil {
-		closeOwnedBusiness()
 		return nil, fmt.Errorf("verify scheduling preference schema: %w", err)
 	}
-	if composed.pgDialect {
-		composed.statsDB = composed.db
-	} else {
-		if cfg.StatsDatabasePath == "" {
-			closeOwnedBusiness()
-			return nil, errors.New("sqlite 模式缺少 JUHE_AI_STATS_DATABASE_PATH，无法打开 ip-stats stats 数据库")
-		}
-		statsDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.StatsDatabasePath))
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open stats sqlite database: %w", err)
-		}
-		statsDB.SetMaxOpenConns(1)
-		if err := configureSQLiteConnection(statsDB); err != nil {
-			_ = statsDB.Close()
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("configure stats sqlite database: %w", err)
-		}
-		composed.statsDB = statsDB
-		composed.ownStatsDB = true
-	}
+	// ipstats data source (Node getStatsDatabase() split): the client_ip_*
+	// tables live only in juhe_stats — reached through schema qualification on
+	// the shared business pool.
+	composed.statsDB = composed.db
+	// X04 read faces: the usage-catalog registry (usage-records shard walk)
+	// and the table-monitor snapshot database reach juhe_usage/juhe_stats
+	// through the shared pool.
+	usageCatalogDB := composed.db
 
-	// X04 read faces: SQLite mode additionally opens the usage-catalog
-	// registry (usage-records shard walk) and the table-monitor snapshot
-	// database. PostgreSQL mode reaches juhe_usage/juhe_stats through the
-	// shared pool, mirroring the Node PG branches.
-	var usageCatalogDB *sql.DB
-	if composed.pgDialect {
-		usageCatalogDB = composed.db
-	} else {
-		if cfg.UsageCatalogDatabasePath == "" {
-			closeOwnedBusiness()
-			return nil, errors.New("sqlite 模式缺少 JUHE_AI_USAGE_CATALOG_DATABASE_PATH，无法打开 usage-records 目录数据库")
-		}
-		catalog, err := sql.Open("sqlite", sqliteFileDSN(cfg.UsageCatalogDatabasePath))
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open usage catalog sqlite database: %w", err)
-		}
-		catalog.SetMaxOpenConns(1)
-		if err := configureSQLiteConnection(catalog); err != nil {
-			_ = catalog.Close()
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("configure usage catalog sqlite database: %w", err)
-		}
-		usageCatalogDB = catalog
-		composed.shutdowns = append(composed.shutdowns, func() { _ = catalog.Close() })
-	}
-
-	// X04 404 项补齐 (logreads three-family reads): the audit F3 dataset, the
-	// runtime-log F1 dataset and the F5 dataset file. Node opens all three
-	// read-only (database.ts shouldOpenSqliteDatabaseReadOnly), so SQLite mode
-	// opens read-only handles here and PostgreSQL mode reaches juhe_dataset
-	// through the shared pools: audit through the F3 store pool (the same
-	// JUHE_AI_AUDIT_LOG_POSTGRES_URL pool main acquired), runtime-log and
-	// public-api-logs through the business pool like every other dataset
-	// repository. The runtime-log file stays F1-jobs-owned: a missing file
-	// keeps composing (the routes answer 500 like the Node readOnly open
-	// would) instead of failing the whole composition.
+	// X04 404 项补齐 (logreads three-family reads): PostgreSQL reaches
+	// juhe_dataset through the shared pools — audit through the F3 store pool
+	// (the same JUHE_AI_AUDIT_LOG_POSTGRES_URL pool main acquired),
+	// runtime-log and public-api-logs through the business pool like every
+	// other dataset repository.
 	var auditDatasetDB *sql.DB
-	if composed.pgDialect {
-		if auditConfig.Mode == auditlog.ModePostgres && auditConfig.PostgresPool != nil {
-			auditDatasetDB = auditConfig.PostgresPool.DB()
-		}
-		if auditDatasetDB == nil {
-			return nil, errors.New("postgres 模式缺少 F3 audit 数据集连接池，无法挂载审计日志读面")
-		}
-	} else {
-		if auditConfig.AuditDatabasePath == "" {
-			closeOwnedBusiness()
-			return nil, errors.New("sqlite 模式缺少 JUHE_AI_AUDIT_LOG_DATABASE_PATH，无法打开审计日志读面数据库")
-		}
-		if _, err := os.Stat(auditConfig.AuditDatabasePath); err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("audit 数据集文件不存在（F3 input server 应已初始化）: %w", err)
-		}
-		handle, err := openSQLiteReadOnly(auditConfig.AuditDatabasePath)
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open audit dataset sqlite database: %w", err)
-		}
-		auditDatasetDB = handle
-		composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
+	if auditConfig.Mode == auditlog.ModePostgres && auditConfig.PostgresPool != nil {
+		auditDatasetDB = auditConfig.PostgresPool.DB()
 	}
-	logReadsMode := logreads.ReadSQLite
-	if composed.pgDialect {
-		logReadsMode = logreads.ReadPostgres
+	if auditDatasetDB == nil {
+		return nil, errors.New("缺少 F3 audit 数据集连接池，无法挂载审计日志读面")
 	}
-	var runtimeLogDatasetDB *sql.DB
-	if composed.pgDialect {
-		runtimeLogDatasetDB = composed.db
-	} else {
-		if cfg.RuntimeLogDatabasePath == "" {
-			closeOwnedBusiness()
-			return nil, errors.New("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH，无法打开运行日志读面数据库")
-		}
-		handle, err := openSQLiteReadOnly(cfg.RuntimeLogDatabasePath)
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open runtime-log dataset sqlite database: %w", err)
-		}
-		runtimeLogDatasetDB = handle
-		composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
-	}
-	var publicApiLogDatasetDB *sql.DB
-	if composed.pgDialect {
-		publicApiLogDatasetDB = composed.db
-	} else {
-		if cfg.DatasetDatabasePath == "" {
-			closeOwnedBusiness()
-			return nil, errors.New("sqlite 模式缺少 JUHE_AI_DATASET_DATABASE_PATH，无法打开公开接口日志读面数据库")
-		}
-		if _, err := os.Stat(cfg.DatasetDatabasePath); err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("dataset 数据集文件不存在（启动 preflight 应已创建）: %w", err)
-		}
-		handle, err := openSQLiteReadOnly(cfg.DatasetDatabasePath)
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open public-api-log dataset sqlite database: %w", err)
-		}
-		publicApiLogDatasetDB = handle
-		composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
-	}
+	logReadsMode := logreads.ReadPostgres
+	runtimeLogDatasetDB := composed.db
+	publicApiLogDatasetDB := composed.db
 
 	ownerGate := businesssettings.OwnerGate{
 		Confirmed:         cfg.BusinessHandoffConfirmed,
@@ -529,20 +365,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	bus.SetLogger(slog.Default())
 	composed.Bus = bus
 
-	businessSettings, err := businesssettings.New(composed.db, businessDialect(composed.pgDialect), businessSchema, ownerGate)
+	businessSettings, err := businesssettings.New(composed.db, businesssettings.Postgres, businessSchema, ownerGate)
 	if err != nil {
 		return nil, fmt.Errorf("create business settings store: %w", err)
 	}
 	settingsStore, err := settings.NewStore(composed.db, composed.pgDialect, time.Now, bus)
 	if err != nil {
 		return nil, fmt.Errorf("create settings store: %w", err)
-	}
-	// The usageStatsTimezone guard probes the dedicated stats database (Node
-	// getStatsDatabase()); probing the business handle 500s every online
-	// timezone change in the six-database SQLite split. PostgreSQL mode never
-	// probes (the guard rejects the online change first).
-	if !composed.pgDialect {
-		settingsStore.SetStatsDatabase(composed.statsDB)
 	}
 	composed.settingsStore = settingsStore
 	settingValue := settingsValueReader(settingsStore)
@@ -609,31 +438,20 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, fmt.Errorf("create authorization store: %w", err)
 	}
 	// The authorization usage window reads (usage reads family) live in the
-	// stats database: SQLite mode must inject the dedicated stats file handle
-	// (same split as settingsStore.SetStatsDatabase above; Node
-	// getStatsDatabase()), otherwise statsQueryDB falls back to the business
-	// handle and every usage read misses the table in the six-database split.
-	// PostgreSQL qualifies juhe_stats over the shared business pool and never
-	// needs the handle. The usageStatsTimezone source keeps the in-package
-	// default (system_settings read over the business handle — the same table
-	// the settings store persists; AttachTimezoneSource stays nil-safe).
-	if !composed.pgDialect {
-		authzStore.AttachStatsDatabase(composed.statsDB)
-	}
+	// juhe_stats schema: PostgreSQL qualifies it over the shared business pool.
+	// The usageStatsTimezone source keeps the in-package default (system_settings
+	// read over the business handle — the same table the settings store
+	// persists; AttachTimezoneSource stays nil-safe).
 	composed.AuthzStore = authzStore
 	// C9 committed-write side effects (Node refreshGroupAccountStatsAfterWriteAsync
 	// + invalidateAuthorizationRuntimeAfterBusinessWrite,
-	// system-team.repository.ts:1483-1494): both dialects mark the
-	// group-account-stats dirty row through the groupdirtycursor store (its
-	// owner gate mirrors the business handoff evidence validated above), and
-	// the gateway runtime / authorization quota caches invalidate through the
-	// K5 bus — *inval.Bus satisfies the RuntimeInvalidator port directly, the
-	// same adapter shape as accountsBusInvalidator below without translation.
-	groupStatsDirtyMode := groupdirtycursor.SQLite
-	if composed.pgDialect {
-		groupStatsDirtyMode = groupdirtycursor.Postgres
-	}
-	groupStatsDirtyMarker, err := groupdirtycursor.NewStore(composed.db, groupStatsDirtyMode, businessSchema,
+	// system-team.repository.ts:1483-1494): the group-account-stats dirty row
+	// goes through the groupdirtycursor store (its owner gate mirrors the
+	// business connection gates validated above), and the gateway runtime /
+	// authorization quota caches invalidate through the K5 bus —
+	// *inval.Bus satisfies the RuntimeInvalidator port directly, the same
+	// adapter shape as accountsBusInvalidator below without translation.
+	groupStatsDirtyMarker, err := groupdirtycursor.NewStore(composed.db, groupdirtycursor.Postgres, businessSchema,
 		groupdirtycursor.OwnerGate{
 			Confirmed:         ownerGate.Confirmed,
 			SchemaReady:       ownerGate.SchemaReady,
@@ -686,39 +504,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create api-key store: %w", err)
 	}
-	// M07 handover closures: the list/detail usage projection reads the stats
-	// database through the StatsUsageSource (zero summaries stay the nil-source
-	// degradation), and the delete-transaction cleanup handoff reaches the
-	// dataset placement. PostgreSQL registers the target in-transaction through
-	// the shared juhe_dataset schema; SQLite needs the writable dataset file
-	// handle Node opens for registerDeletedApiKeyRecordCleanupTarget.
+	// M07 handover closures: the list/detail usage projection reads the
+	// juhe_stats schema through the StatsUsageSource (zero summaries stay the
+	// nil-source degradation), and the delete-transaction cleanup handoff
+	// reaches the dataset placement through the shared juhe_dataset schema
+	// registered in-transaction.
 	usageSource, err := apikeys.NewStatsUsageSource(composed.statsDB, composed.pgDialect)
 	if err != nil {
 		return nil, fmt.Errorf("create api-key stats usage source: %w", err)
 	}
 	apiKeyStore.SetUsageSource(usageSource)
 	apiKeyStore.SetCleanupSubmitter(apiKeyCleanupSubmitter{store: apiKeyStore})
-	if !composed.pgDialect {
-		if cfg.DatasetDatabasePath == "" {
-			closeOwnedBusiness()
-			return nil, errors.New("sqlite 模式缺少 JUHE_AI_DATASET_DATABASE_PATH，无法登记 API Key 删除清理目标")
-		}
-		apiKeyDatasetDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.DatasetDatabasePath))
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open api-key cleanup dataset sqlite database: %w", err)
-		}
-		apiKeyDatasetDB.SetMaxOpenConns(1)
-		if err := configureSQLiteConnection(apiKeyDatasetDB); err != nil {
-			if closeErr := apiKeyDatasetDB.Close(); closeErr != nil {
-				slog.Debug("关闭 api-key dataset sqlite 句柄失败", "event", "gateway_handle_close_failed", "component", "api_key_dataset_db", "error", closeErr)
-			}
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("configure api-key cleanup dataset sqlite database: %w", err)
-		}
-		apiKeyStore.SetDatasetDB(apiKeyDatasetDB)
-		composed.shutdowns = append(composed.shutdowns, func() { _ = apiKeyDatasetDB.Close() })
-	}
 	accountStore, err := accounts.NewStore(composed.db, composed.pgDialect, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		return nil, fmt.Errorf("create account store: %w", err)
@@ -861,53 +657,35 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// logged original error, Node logOperationLogFailure semantics).
 	sink := &authsys.OperationLogProducerSink{Producer: producer, MaxChanges: 100, Logger: producerLogger{}}
 
-	// Auth captcha / login-guard drivers switch on the runtime-state driver
-	// (BUG-0171.4): memory keeps the process-local modelcheckauth services,
-	// redis shares challenges / issue windows / failure locks across
-	// instances through the Node-compatible auth_captcha / auth_login_guard
-	// state stores.
+	// Auth captcha / login-guard drivers share challenges / issue windows /
+	// failure locks across instances through the Node-compatible auth_captcha /
+	// auth_login_guard runtime-state stores. 2026-10-24 存储形态收口：Redis
+	// 是唯一运行态形态，进程内 memory 服务臂删除。
 	var captchaService authsys.CaptchaIssuer
 	var captchaClose func()
 	if !cfg.CaptchaDisabled {
-		if cfg.RuntimeStateDriver == "redis" {
-			// Redis runtime-state driver: challenges and the per-IP issue
-			// window live in the shared auth_captcha state store (Node
-			// captcha.service.ts async paths) so captcha consumption is atomic
-			// across instances.
-			svc, closeFn, err := authsys.NewRedisCaptchaService(cfg.RedisStateURL, cfg.RedisNamespace, time.Now)
-			if err != nil {
-				return nil, fmt.Errorf("create shared captcha service: %w", err)
-			}
-			captchaService, captchaClose = svc, closeFn
-		} else {
-			captchaService = modelcheckauth.NewCaptchaService(time.Now)
+		// Redis runtime-state driver: challenges and the per-IP issue
+		// window live in the shared auth_captcha state store (Node
+		// captcha.service.ts async paths) so captcha consumption is atomic
+		// across instances.
+		svc, closeFn, err := authsys.NewRedisCaptchaService(cfg.RedisStateURL, cfg.RedisNamespace, time.Now)
+		if err != nil {
+			return nil, fmt.Errorf("create shared captcha service: %w", err)
 		}
+		captchaService, captchaClose = svc, closeFn
 	}
 	if captchaClose != nil {
 		composed.shutdowns = append(composed.shutdowns, captchaClose)
 	}
-	var loginGuard authsys.LoginGuardDriver
-	var loginGuardClose func()
-	if cfg.RuntimeStateDriver == "redis" {
-		// Redis runtime-state driver: failure counters and locks live in the
-		// shared auth_login_guard state store (Node login-guard.service.ts
-		// async paths) so throttling is shared across instances.
-		guard, closeFn, err := authsys.NewRedisLoginGuard(cfg.RedisStateURL, cfg.RedisNamespace, time.Now)
-		if err != nil {
-			return nil, fmt.Errorf("create shared login guard: %w", err)
-		}
-		loginGuard, loginGuardClose = guard, closeFn
-	} else {
-		loginGuard = modelcheckauth.NewLoginGuard(time.Now)
+	// Redis runtime-state driver: failure counters and locks live in the
+	// shared auth_login_guard state store (Node login-guard.service.ts
+	// async paths) so throttling is shared across instances.
+	loginGuard, loginGuardClose, err := authsys.NewRedisLoginGuard(cfg.RedisStateURL, cfg.RedisNamespace, time.Now)
+	if err != nil {
+		return nil, fmt.Errorf("create shared login guard: %w", err)
 	}
-	if loginGuardClose != nil {
-		composed.shutdowns = append(composed.shutdowns, loginGuardClose)
-	}
-	authMode := modelcheckauth.SQLite
-	if composed.pgDialect {
-		authMode = modelcheckauth.Postgres
-	}
-	businessAuth, err := businessauth.New(composed.db, authMode, time.Now, businessauth.OwnerGate(ownerGate))
+	composed.shutdowns = append(composed.shutdowns, loginGuardClose)
+	businessAuth, err := businessauth.New(composed.db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate(ownerGate))
 	if err != nil {
 		return nil, fmt.Errorf("create business auth service: %w", err)
 	}
@@ -919,7 +697,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// The system-account store is fail-closed behind the same business owner
 	// gate: without a proven handoff it never writes the business database
 	// (BUG-0169.3).
-	systemAccountStore, err := authsys.NewAccountStore(composed.db, authMode, time.Now, authsys.OwnerGate{
+	systemAccountStore, err := authsys.NewAccountStore(composed.db, modelcheckauth.Postgres, time.Now, authsys.OwnerGate{
 		Confirmed:         cfg.BusinessHandoffConfirmed,
 		SchemaReady:       cfg.BusinessSchemaReady,
 		NodeWriterStopped: cfg.BusinessNodeWriterStopped,
@@ -1046,16 +824,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, fmt.Errorf("create record maintenance dispatch: %w", err)
 	}
 	var healthOutcomes *statreads.HealthOutcomeSource
-	if cfg.AccountHealthOutcomeSQLitePath != "" {
-		healthOutcomes = &statreads.HealthOutcomeSource{SQLitePath: cfg.AccountHealthOutcomeSQLitePath}
-	}
-	if healthOutcomes == nil {
-		healthOutcomes = &statreads.HealthOutcomeSource{}
-	}
-	// J1 durable outcomes in the performance topology live in the jobs
-	// Postgres database (juhe_jobs); the SQLite path above stays the
-	// standalone-mode source. Mirrors Node readPostgresOutcomesForAccounts.
-	healthOutcomes.PostgresURL = cfg.AccountHealthOutcomePostgresURL
+	// J1 durable outcomes live in the jobs Postgres database (juhe_jobs);
+	// mirrors Node readPostgresOutcomesForAccounts. 2026-10-24 存储形态收口：
+	// sqlite 专库直读臂（JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_SQLITE_PATH）随
+	// 双模式退役删除。
+	healthOutcomes = &statreads.HealthOutcomeSource{PostgresURL: cfg.AccountHealthOutcomePostgresURL}
 	(&statreads.Deps{
 		Business:       composed.db,
 		Stats:          composed.statsDB,
@@ -1065,7 +838,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		Now:            time.Now,
 		Timezone:       statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
 		HealthOutcomes: healthOutcomes,
-		RuntimeMode:    cfg.RuntimeMode,
+		// D3（存储形态收口）：RuntimeMode 判据收敛——standalone 不再是合法值，
+		// 恒传 performance（PG+Redis 唯一形态的既有取值）。
+		RuntimeMode: "performance",
 	}).Mount(kern)
 	// M2 媒体任务管理面（媒体设计 §8.2 只读列表）：GET /__aisys__/api/media-jobs，
 	// 权限沿使用记录列表（requireAdmin）；与 /v1 任务面同源业务库（repo 只读
@@ -1096,18 +871,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// limiter.
 	var chainServices *chainRuntimeServices
 	if cfg.ChainEnabled {
+		// D1（存储形态收口）：spool 目录已由 loadRuntimeConfig 派生到
+		// JUHE_AI_DATA_DIR（缺省 <cwd>/data）下的 usage-record-spool（显式
+		// JUHE_AI_USAGE_SPOOL_DIRECTORY 优先）；此守卫只剩直接构造 runtimeConfig
+		// 且 spool 为空的组合测试语义（env 路径不可达）。
 		spoolDirectory := cfg.UsageSpoolDirectory
-		if spoolDirectory == "" && cfg.StatsDatabasePath != "" {
-			spoolDirectory = filepath.Join(filepath.Dir(cfg.StatsDatabasePath), "usage-record-spool")
-		}
-		// BUG-0175 D-72：spool 是 /v1 用量记录唯一持久投递面（gateway 写入、
-		// jobs usage spool drain 消费）。2026-09-19 起 loadRuntimeConfig 把
-		// JUHE_AI_STATS_DATABASE_PATH 派生到 JUHE_AI_DATA_DIR（缺省 ./data）
-		// 下，未配置 spool 的 standalone 部署默认落 <DATA_DIR>/usage-record-
-		// spool；显式 JUHE_AI_USAGE_SPOOL_DIRECTORY 仍优先。此分支只剩直接
-		// 构造 runtimeConfig 且 stats/spool 均为空的护栏（env 路径不可达）。
 		if spoolDirectory == "" {
-			return nil, fmt.Errorf("AI 网关链缺少用量 spool 目录（gateway→jobs 用量交接表，用量记录将无处投递）：设置 JUHE_AI_USAGE_SPOOL_DIRECTORY，或配置 JUHE_AI_STATS_DATABASE_PATH 以派生 <目录>/usage-record-spool")
+			return nil, fmt.Errorf("AI 网关链缺少用量 spool 目录（gateway→jobs 用量交接表，用量记录将无处投递）：设置 JUHE_AI_USAGE_SPOOL_DIRECTORY")
 		}
 		// BUG-0193 防复发诊断：相对路径按进程 cwd 解析（镜像无 WORKDIR 时为
 		// /），两侧解析到各自容器私有目录即静默断链。启动期打印解析后的绝对
@@ -1121,6 +891,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		services, chainErr := composeChainRuntimeServices(composed, cfg, settingValue)
 		if chainErr != nil {
 			return nil, fmt.Errorf("compose gateway chain runtime services: %w", chainErr)
+		}
+		// turn-retry Redis 状态驱动：StateClient 恒注入（存储形态收口后 redis
+		// 是唯一运行态形态），构造失败 fail-fast。
+		turnRetryStateStore, turnRetryStateErr := newChainTurnRetryRedisStateStoreOrNil(services.StateClient, cfg.RedisNamespace)
+		if turnRetryStateErr != nil {
+			services.Close()
+			return nil, turnRetryStateErr
 		}
 		chainServices = services
 		// 列表运行时并发 hydrate 装配（单机 go-only 进程内事实源）：分组列表
@@ -1261,11 +1038,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// :421-434 挂起失败观察代际）。
 			AccountAPIKeyObservation: chainServices.AccountAPIKeyGuard,
 			// 失败派发链：request-failure 健康检查派发的进程内 outbox writer +
-			// turn-retry Redis 状态驱动（StateClient 为 nil 时适配器返回 nil，
-			// 链条保持 memory 驱动——见 chain_request_failure_health.go /
+			// turn-retry Redis 状态驱动（运行态客户端恒注入，构造失败按组合根
+			// 契约 fail-fast——见 chain_request_failure_health.go /
 			// chain_turn_retry_redis.go）。
 			HealthProbeOutbox:   healthProbeOutbox,
-			TurnRetryStateStore: newChainTurnRetryRedisStateStoreOrNil(chainServices.StateClient, cfg.RedisNamespace),
+			TurnRetryStateStore: turnRetryStateStore,
 			// key-model attempt 的健康检查派发（gatewayaccounteffects
 			// SetDispatcher 的生产接线）：经 chainKeyModelHealthDispatcher 复用
 			// runtime-reset bridge 的 DispatchAccountHealthCheck（同一条
@@ -1351,21 +1128,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// G20 phase-3 my-chat family: the chat database owner + the
 		// generation-wave ports mount together (the family dispatches into
 		// the in-process chain).
-		chatDB, ownChatDB, chatOpenErr := openChatDatabase(cfg, postgresPools, composed.db, composed.pgDialect)
+		chatDB, chatOpenErr := openChatDatabase(cfg, postgresPools)
 		if chatOpenErr != nil {
 			return nil, chatOpenErr
 		}
 		composed.chatDB = chatDB
-		composed.ownChatDB = ownChatDB
 		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, accountStore, accountStore); chatErr != nil {
 			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
 		}
-		// cacheDriver==='redis': the system-api limiter switches onto the
-		// shared fixed-window redis store (task item 9); memory driver keeps
-		// the in-process store built above.
-		if chainServices.RateLimitStore != nil {
-			limiter.Store = chainServices.RateLimitStore
-		}
+		// The fixed-window redis store backs the system-api limiter
+		// (task item 9); the chain services always own it since the
+		// 2026-10-24 storage-shape retirement.
+		limiter.Store = chainServices.RateLimitStore
 		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditUsageDispatch", auditProducer != nil, "chatFamily", "mounted")
 	}
 
@@ -1409,47 +1183,26 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		Sink:           sink,
 	}
 	// Penalty-window limiter shares the runtime-state redis keyspace with the
-	// gatewayproxyhealth limiter family (memory fallback keeps single-instance
-	// semantics when runtimeStateDriver !== 'redis').
+	// gatewayproxyhealth limiter family (one shared StateClient since the
+	// 2026-10-24 storage-shape retirement).
 	if chainServices != nil && chainServices.StateClient != nil {
 		aipublicDeps.RedisDriver = true
 		aipublicDeps.RedisStateClient = chainServices.StateClient
 		aipublicDeps.RedisNamespace = cfg.RedisNamespace
 	}
-	// capturePublicApiLog (Node /__aipublic__ prefix middleware): a writable
-	// dataset handle feeds the P05 pipeline (bounded channel → batch insert).
-	// The read families open dataset handles read-only; the capture writer is
-	// the go-only gateway's one writable dataset consumer. 2026-09-28 默认开启
-	// 整改：每条静默降级路径（数据集文件缺失 / 句柄打开失败 / store 初始化
-	// 失败）补 public_api_log_capture_unavailable Warn——公开面日志捕获保持
-	// 降级语义（不 fail-fast），但降级必须可见。
-	var captureDatasetDB *sql.DB
-	if composed.pgDialect {
-		captureDatasetDB = composed.db
-	} else if cfg.DatasetDatabasePath != "" {
-		if _, err := os.Stat(cfg.DatasetDatabasePath); err != nil {
-			slog.Warn("公开面日志捕获不可用（数据集文件缺失，capture 静默降级）",
-				"event", "public_api_log_capture_unavailable",
-				"path", cfg.DatasetDatabasePath, "error", err.Error())
-		} else if handle, err := openSQLiteCaptureDatasetHandle(cfg.DatasetDatabasePath); err != nil {
-			slog.Warn("公开面日志捕获不可用（数据集句柄打开失败，capture 静默降级）",
-				"event", "public_api_log_capture_unavailable",
-				"path", cfg.DatasetDatabasePath, "error", err.Error())
-		} else {
-			captureDatasetDB = handle
-			composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
-		}
-	}
-	if captureDatasetDB != nil {
-		if logStore, err := publicapilogs.NewStore(captureDatasetDB, composed.pgDialect, time.Now, nil); err == nil {
-			pipeline := publicapilogs.NewPipeline(logStore, publicapilogs.Config{})
-			composed.shutdowns = append(composed.shutdowns, func() { pipeline.Close(context.Background()) })
-			aipublicDeps.Capture = aipublic.PublicApiLogCaptureSink(pipeline.Enqueue)
-		} else {
-			slog.Warn("公开面日志捕获不可用（日志 store 初始化失败，capture 静默降级）",
-				"event", "public_api_log_capture_unavailable",
-				"path", cfg.DatasetDatabasePath, "error", err.Error())
-		}
+	// capturePublicApiLog (Node /__aipublic__ prefix middleware): the shared
+	// business pool feeds the P05 pipeline (bounded channel → batch insert).
+	// The read families share the same juhe_dataset schema; the capture writer
+	// is the gateway's one writable dataset consumer.
+	captureDatasetDB := composed.db
+	if logStore, err := publicapilogs.NewStore(captureDatasetDB, composed.pgDialect, time.Now, nil); err == nil {
+		pipeline := publicapilogs.NewPipeline(logStore, publicapilogs.Config{})
+		composed.shutdowns = append(composed.shutdowns, func() { pipeline.Close(context.Background()) })
+		aipublicDeps.Capture = aipublic.PublicApiLogCaptureSink(pipeline.Enqueue)
+	} else {
+		slog.Warn("公开面日志捕获不可用（日志 store 初始化失败，capture 静默降级）",
+			"event", "public_api_log_capture_unavailable",
+			"error", err.Error())
 	}
 	aipublicDeps.Mount(kern)
 
@@ -1700,71 +1453,6 @@ func trimSpace(value string) string {
 		end--
 	}
 	return value[start:end]
-}
-
-// openSQLiteReadOnly opens a read-only SQLite handle over an existing file
-// (Node createSqliteDatabase readOnly open: the gateway never creates or
-// migrates another owner's database).
-func openSQLiteReadOnly(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	return db, nil
-}
-
-// openSQLiteCaptureDatasetHandle opens the writable aipublic capture dataset
-// handle with the same shape as the api-key cleanup dataset handle
-// (sqliteFileDSN busy_timeout + SetMaxOpenConns(1) + WAL pragmas): both
-// handles write the same dataset file, so the capture writer must share the
-// lock-wait semantics. 打开或配置失败时返回原始错误（2026-09-28 默认开启
-// 整改：调用方据此记录 public_api_log_capture_unavailable，不再静默）；
-// 调用方先用 os.Stat 守卫文件存在，本函数不负责建库契约。
-func openSQLiteCaptureDatasetHandle(path string) (*sql.DB, error) {
-	handle, err := sql.Open("sqlite", sqliteFileDSN(path))
-	if err != nil {
-		return nil, err
-	}
-	handle.SetMaxOpenConns(1)
-	if err := configureSQLiteConnection(handle); err != nil {
-		_ = handle.Close()
-		return nil, err
-	}
-	return handle, nil
-}
-
-// businessDialect converts the storage dialect for the business-owner stores.
-func businessDialect(pg bool) businesssettings.Mode {
-	if pg {
-		return businesssettings.Postgres
-	}
-	return businesssettings.SQLite
-}
-
-// sqliteFileDSN mirrors operationlog.sqliteDSN: absolute file URL with the
-// busy timeout pragma so concurrent readers never fail on lock contention.
-// _txlock=immediate 与 jobs 侧跨进程共写语义对齐（worker_assembly.go /
-// taskruns/store.go 等一律同款 DSN）：standalone 部署下 gateway 与 jobs 共写
-// business.sqlite3，BEGIN DEFERRED 事务升级为写锁时遇到的 SQLITE_BUSY 不受
-// busy_timeout 重试（SQLite 已知语义），会启动/写入即失败；BEGIN IMMEDIATE
-// 在事务起点取写锁，由 busy_timeout 统一等待。gateway 侧 SQLite 池均为
-// MaxOpenConns(1)，单进程内本就串行，立即锁只是把串行化窗口前移。
-func sqliteFileDSN(path string) string {
-	return "file:" + path + "?_pragma=busy_timeout(5000)&_txlock=immediate"
-}
-
-// configureSQLiteConnection applies the Node-compatible SQLite pragmas
-// (foreign keys, busy timeout, WAL) once per handle.
-func configureSQLiteConnection(db *sql.DB) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for _, query := range []string{"PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000", "PRAGMA journal_mode=WAL"} {
-		if _, err := db.ExecContext(ctx, query); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // aiAccountLimitSettingsAdapter adapts the settings store snapshot to the

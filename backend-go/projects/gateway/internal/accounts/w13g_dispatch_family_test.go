@@ -38,10 +38,10 @@ func TestW13GAdvanceDispatchFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sourceRevision, instanceRevision int
-	if err := env.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = ?`, sourceID).Scan(&sourceRevision); err != nil {
+	if err := env.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = $1`, sourceID).Scan(&sourceRevision); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = ?`, instanceID).Scan(&instanceRevision); err != nil {
+	if err := env.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = $1`, instanceID).Scan(&instanceRevision); err != nil {
 		t.Fatal(err)
 	}
 	if sourceRevision != 2 || instanceRevision != 2 {
@@ -63,7 +63,7 @@ func TestW13GAdvanceDispatchFamily(t *testing.T) {
 	if err := tx2.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = ?`, sourceID).Scan(&sourceRevision); err != nil {
+	if err := env.db.QueryRow(`SELECT dispatch_revision FROM accounts WHERE id = $1`, sourceID).Scan(&sourceRevision); err != nil {
 		t.Fatal(err)
 	}
 	if sourceRevision != 3 {

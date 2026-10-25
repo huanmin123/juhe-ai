@@ -529,9 +529,15 @@ func TestChainTurnRetryRedisStateStoreRoundTrip(t *testing.T) {
 		t.Fatal("corrupt value must be deleted")
 	}
 
-	// nil client → memory 驱动（nil 适配器）。
-	if memoryStore, buildErr := newChainTurnRetryRedisStateStore(nil, "dev"); memoryStore != nil || buildErr != nil {
-		t.Fatalf("nil client must keep the memory driver: %v, %v", memoryStore, buildErr)
+	// nil 客户端 + 合法 namespace：构造不再回退 memory（存储形态收口后
+	// StateClient 恒注入；此处恒定形态下 adapter 持有 nil client 即恒失败面，
+	// 保留构造成功 + 前缀正确性的确定性断言）。
+	nilStore, buildErr := newChainTurnRetryRedisStateStore(nil, "dev")
+	if buildErr != nil || nilStore == nil {
+		t.Fatalf("nil client with valid namespace must still build: %v, %v", nilStore, buildErr)
+	}
+	if want := "juhe-ai:dev:state:gateway-codex-turn-retry:"; nilStore.prefix != want {
+		t.Fatalf("nil client store prefix = %q, want %q", nilStore.prefix, want)
 	}
 }
 

@@ -19,9 +19,9 @@ func TestW14BListPageProjectionArms(t *testing.T) {
 
 	// 代理可用 + 代理停用（绑定仍指向停用代理）两组。
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-w14b-l1', ?, 'w14b-l1-proxy', 'http', '127.0.0.1', 7890, 1, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w14b-l1', ?, 'w14b-l1-proxy', 'http', '127.0.0.1', 7890, true, ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-w14b-l2', ?, 'w14b-l2-proxy', 'http', '127.0.0.1', 7891, 0, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w14b-l2', ?, 'w14b-l2-proxy', 'http', '127.0.0.1', 7891, false, ?, ?)`, adminID, now, now)
 	for _, item := range []struct{ id, name string }{{"acc-w14b-l1", "w14b-l1"}, {"acc-w14b-l2", "w14b-l2"}, {"acc-w14b-l3", "w14b-l3"}} {
 		env.seedAccount(t, item.id, adminID, item.name, "active")
 	}
@@ -85,7 +85,8 @@ func TestW14BListPageProjectionArms(t *testing.T) {
 	if !strings.Contains(joins, "LEFT JOIN LATERAL") || cte != "" {
 		t.Fatal("pg 列表连接应使用 LATERAL")
 	}
-	sqliteCte, sqliteJoins := env.store.listJoins()
+	// env.store 已是 PG 臂；SQLite 臂 CTE 渲染用零值 Store 直测。
+	sqliteCte, sqliteJoins := (&Store{}).listJoins()
 	if sqliteCte == "" || !strings.Contains(sqliteJoins, "ranked_group_bindings") {
 		t.Fatal("sqlite 列表连接应使用 CTE")
 	}
@@ -145,7 +146,7 @@ func TestW14BBalanceDetailsAndSnapshotArms(t *testing.T) {
 	if (&Store{pg: true}).statsTable("account_usage_snapshots") != "juhe_stats.account_usage_snapshots" {
 		t.Fatal("pg stats 表应加前缀")
 	}
-	if env.store.statsTable("account_usage_snapshots") != "account_usage_snapshots" {
+	if (&Store{}).statsTable("account_usage_snapshots") != "account_usage_snapshots" {
 		t.Fatal("sqlite stats 表不应有前缀")
 	}
 

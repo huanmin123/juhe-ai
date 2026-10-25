@@ -27,7 +27,7 @@ func TestW13GPatchProxyArms(t *testing.T) {
 	env.seedAccount(t, "acc-w13g-px", adminID, "w13g-px", "active")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-w13g-off', ?, '停用代理', 'http', '192.0.2.1', 8080, 0, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13g-off', ?, '停用代理', 'http', '192.0.2.1', 8080, false, ?, ?)`, adminID, now, now)
 	admin := AccessScope{ViewerID: adminID, IsAdmin: true}
 
 	// 不存在的代理。
@@ -58,7 +58,7 @@ func TestW13GPatchProxyArms(t *testing.T) {
 	env.seedAccount(t, "acc-w13g-px2", adminID, "w13g-px2", "active")
 	enabled := "proxy-w13g-on"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-w13g-on', ?, '启用代理', 'http', '192.0.2.2', 8080, 1, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13g-on', ?, '启用代理', 'http', '192.0.2.2', 8080, true, ?, ?)`, adminID, now, now)
 	if _, err := env.store.Patch(context.Background(), "acc-w13g-px2", PatchInput{
 		ExpectedConfigRevision: 1, ProxyProfileID: &enabled, ProxyProfileIDPresent: true,
 	}, admin); err != nil {

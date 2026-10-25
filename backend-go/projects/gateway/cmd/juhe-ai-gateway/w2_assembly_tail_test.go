@@ -227,7 +227,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -663,196 +662,6 @@ func newChatAssetObjectStoreForTest(t *testing.T, root string, files map[string]
 }
 
 // ---------------------------------------------------------------------------
-// storage_bootstrap.go（37/76/80/93）与 storage_bootstrap_physical.go（97/162）
-// ---------------------------------------------------------------------------
-
-// w2cFullPreflightConfig 返回六个库路径齐全的 runtimeConfig（不要求文件已存在）。
-func w2cFullPreflightConfig(t *testing.T) runtimeConfig {
-	t.Helper()
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "codex-context"), 0o750); err != nil {
-		t.Fatalf("create shard root: %v", err)
-	}
-	return runtimeConfig{
-		Secret:                   "w2c-preflight-secret",
-		BusinessDatabasePath:     filepath.Join(root, "business.sqlite3"),
-		StatsDatabasePath:        filepath.Join(root, "stats.sqlite3"),
-		ChatDatabasePath:         filepath.Join(root, "chat.sqlite3"),
-		DatasetDatabasePath:      filepath.Join(root, "dataset.sqlite3"),
-		RuntimeLogDatabasePath:   filepath.Join(root, "runtime-log.sqlite3"),
-		UsageCatalogDatabasePath: filepath.Join(root, "usage-catalog.sqlite3"),
-		CodexContextShardRoot:    filepath.Join(root, "codex-context"),
-		CodexContextShardCount:   1,
-	}
-}
-
-// w2cOpenSeededBusiness 打开并 ensure+seed 一个真实业务库。
-func w2cOpenSeededBusiness(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	db, err := bootstrap.OpenSQLiteFile(path)
-	if err != nil {
-		t.Fatalf("open business: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if _, err := bootstrap.EnsureSQLiteSchema(ctx, bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("ensure business schema: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(ctx, db, bootstrap.SeedOptions{Now: time.Now, Secret: "w2c-preflight-secret"}); err != nil {
-		t.Fatalf("seed business: %v", err)
-	}
-	return db
-}
-
-// w2cSabotageSchemaIndex 把库中第一个真实索引对应的表换成残缺列，保证下一次
-// EnsureSQLiteSchema 的 CREATE INDEX 因 no such column 失败。
-func w2cSabotageSchemaIndex(t *testing.T, path string) {
-	t.Helper()
-	db, err := bootstrap.OpenSQLiteFile(path)
-	if err != nil {
-		t.Fatalf("open sabotage target: %v", err)
-	}
-	defer db.Close()
-	var indexName, tableName string
-	if err := db.QueryRow(`SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL AND tbl_name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 1`).Scan(&indexName, &tableName); err != nil {
-		t.Fatalf("find index: %v", err)
-	}
-	if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
-		t.Fatalf("fk off: %v", err)
-	}
-	if _, err := db.Exec(fmt.Sprintf(`DROP INDEX "%s"`, indexName)); err != nil {
-		t.Fatalf("drop index: %v", err)
-	}
-	if _, err := db.Exec(fmt.Sprintf(`DROP TABLE "%s"`, tableName)); err != nil {
-		t.Fatalf("drop table: %v", err)
-	}
-	if _, err := db.Exec(fmt.Sprintf(`CREATE TABLE "%s" (w2c_junk_column INTEGER)`, tableName)); err != nil {
-		t.Fatalf("recreate junk table: %v", err)
-	}
-}
-
-func TestW2CStoragePreflightFailureArms(t *testing.T) {
-	t.Run("业务库schema失败37", func(t *testing.T) {
-		cfg := w2cFullPreflightConfig(t)
-		// 业务库文件先写入垃圾字节 → EnsureSQLiteSchema 的 DDL 失败。
-		if err := os.WriteFile(cfg.BusinessDatabasePath, []byte("definitely not a sqlite database"), 0o644); err != nil {
-			t.Fatalf("write garbage: %v", err)
-		}
-		db, err := sql.Open("sqlite", cfg.BusinessDatabasePath)
-		if err != nil {
-			t.Fatalf("open garbage db: %v", err)
-		}
-		defer func() { _ = db.Close() }()
-		err = ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, db)
-		if err == nil || !strings.Contains(err.Error(), "ensure business sqlite schema") {
-			t.Fatalf("err = %v, want ensure business sqlite schema", err)
-		}
-	})
-
-	t.Run("辅助库打开失败76", func(t *testing.T) {
-		cfg := w2cFullPreflightConfig(t)
-		business := w2cOpenSeededBusiness(t, cfg.BusinessDatabasePath)
-		// stats 路径落在一个“文件充当目录”的位置 → OpenSQLiteFile 的
-		// MkdirAll 失败。
-		blocker := filepath.Join(t.TempDir(), "blocker-file")
-		if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
-			t.Fatalf("write blocker: %v", err)
-		}
-		cfg.StatsDatabasePath = filepath.Join(blocker, "stats.sqlite3")
-		err := ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, business)
-		if err == nil || !strings.Contains(err.Error(), "create sqlite directory") {
-			t.Fatalf("err = %v, want create sqlite directory", err)
-		}
-	})
-
-	t.Run("辅助库schema失败80", func(t *testing.T) {
-		cfg := w2cFullPreflightConfig(t)
-		business := w2cOpenSeededBusiness(t, cfg.BusinessDatabasePath)
-		// 先真实建 stats schema，再破坏一个索引列集 → 重跑失败。
-		stats, err := bootstrap.OpenSQLiteFile(cfg.StatsDatabasePath)
-		if err != nil {
-			t.Fatalf("open stats: %v", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		if _, err := bootstrap.EnsureSQLiteSchema(ctx, bootstrap.SQLiteSchemaStats, stats); err != nil {
-			_ = stats.Close()
-			cancel()
-			t.Fatalf("ensure stats baseline: %v", err)
-		}
-		_ = stats.Close()
-		cancel()
-		w2cSabotageSchemaIndex(t, cfg.StatsDatabasePath)
-		err = ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, business)
-		if err == nil || !strings.Contains(err.Error(), "ensure stats sqlite schema") {
-			t.Fatalf("err = %v, want ensure stats sqlite schema", err)
-		}
-	})
-
-	t.Run("codex分片schema失败93", func(t *testing.T) {
-		cfg := w2cFullPreflightConfig(t)
-		business := w2cOpenSeededBusiness(t, cfg.BusinessDatabasePath)
-		shardPath := filepath.Join(cfg.CodexContextShardRoot, "state-000.sqlite3")
-		shard, err := bootstrap.OpenSQLiteFile(shardPath)
-		if err != nil {
-			t.Fatalf("open shard: %v", err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		if _, err := bootstrap.EnsureSQLiteSchema(ctx, bootstrap.SQLiteSchemaCodexContext, shard); err != nil {
-			_ = shard.Close()
-			cancel()
-			t.Fatalf("ensure shard baseline: %v", err)
-		}
-		_ = shard.Close()
-		cancel()
-		w2cSabotageSchemaIndex(t, shardPath)
-		err = ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, business)
-		if err == nil || !strings.Contains(err.Error(), "ensure codex-context[0] sqlite schema") {
-			t.Fatalf("err = %v, want ensure codex-context[0] sqlite schema", err)
-		}
-	})
-}
-
-func TestW2CPhysicalGateArms(t *testing.T) {
-	if runtime.GOOS != "windows" && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		t.Skipf("未验证平台 %s", runtime.GOOS)
-	}
-
-	t.Run("非法路径97", func(t *testing.T) {
-		cfg := w2cFullPreflightConfig(t)
-		business := w2cOpenSeededBusiness(t, cfg.BusinessDatabasePath)
-		// Windows 保留字符让 Lstat 产生非 NotExist 错误 → CanonicalPath 失败。
-		cfg.StatsDatabasePath = filepath.Join(filepath.Dir(cfg.StatsDatabasePath), "w2c<bad>.sqlite3")
-		err := ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, business)
-		if err == nil || !strings.Contains(err.Error(), "无法解析为物理文件") {
-			t.Fatalf("err = %v, want 无法解析为物理文件", err)
-		}
-	})
-
-	t.Run("硬链接同文件碰撞162", func(t *testing.T) {
-		cfg := w2cFullPreflightConfig(t)
-		business := w2cOpenSeededBusiness(t, cfg.BusinessDatabasePath)
-		seed, err := bootstrap.OpenSQLiteFile(cfg.ChatDatabasePath)
-		if err != nil {
-			t.Fatalf("create chat file: %v", err)
-		}
-		if err := seed.Close(); err != nil {
-			t.Fatalf("close chat file: %v", err)
-		}
-		link := cfg.ChatDatabasePath + ".hardlink"
-		if linkErr := os.Link(cfg.ChatDatabasePath, link); linkErr != nil {
-			t.Skipf("当前文件系统不支持硬链接（跳过碰撞臂）: %v", linkErr)
-		}
-		t.Cleanup(func() { _ = os.Remove(link) })
-		cfg.StatsDatabasePath = link
-		err = ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, business)
-		if err == nil || !strings.Contains(err.Error(), "指向同一个 SQLite 物理文件") {
-			t.Fatalf("err = %v, want 指向同一个 SQLite 物理文件", err)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // chain_wiring_w2c.go 343：恢复等待 Refresh 在屏蔽过期后返回可继续状态
 // ---------------------------------------------------------------------------
 
@@ -908,33 +717,21 @@ var w2cRateLimitKeys = []string{
 }
 
 // w2cComposeWithSetting 以 stack 为模板组装组合根，并把一条全局 system_settings
-// 行预写入业务库（preflight ensure 幂等，不清理已存在行）。
+// 行预写入 PG 测试库（种子行已由 bootstrap.SeedPostgres 预置，此处按坏值覆盖）。
 func w2cComposeWithSetting(t *testing.T, key, valueJSON string) *composition {
 	t.Helper()
 	stack := w1oNewComposeStack(t)
-	business, err := bootstrap.OpenSQLiteFile(stack.cfg.BusinessDatabasePath)
-	if err != nil {
-		t.Fatalf("open business for seed: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if _, err := bootstrap.EnsureSQLiteSchema(ctx, bootstrap.SQLiteSchemaBusiness, business); err != nil {
-		_ = business.Close()
-		t.Fatalf("ensure business for seed: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(ctx, business, bootstrap.SeedOptions{Now: time.Now, Secret: stack.cfg.Secret}); err != nil {
-		_ = business.Close()
-		t.Fatalf("seed business for seed: %v", err)
-	}
 	if key != "" {
-		if _, err := business.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, '2026-09-14T00:00:00.000Z')
+		business, err := sql.Open("pgx", stack.cfg.PostgresURL)
+		if err != nil {
+			t.Fatalf("open business for seed: %v", err)
+		}
+		if _, err := business.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', $1, $2, '2026-09-14T00:00:00.000Z')
 			ON CONFLICT(system_account_id, key) DO UPDATE SET value_json = excluded.value_json`, key, valueJSON); err != nil {
 			_ = business.Close()
 			t.Fatalf("seed setting %s: %v", key, err)
 		}
-	}
-	if err := business.Close(); err != nil {
-		t.Fatalf("close business after seed: %v", err)
+		_ = business.Close()
 	}
 	composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), stack.store, stack.lease, stack.auditProducer, stack.auditConfig, composeTestOwnerHealth())
 	if err != nil {
@@ -981,8 +778,9 @@ func TestW2CComposeRateLimitSettingErrorArms(t *testing.T) {
 // compose.go 1039/1040（账户锁失效回调）+ 1137（可恢复等待者唤醒）
 // ---------------------------------------------------------------------------
 
-// w2cComposeChainStack 组装一个开启链条、带真实上游的 SQLite 组合根，并按
-// w1l 手法向业务库补 /v1 所需的分组/账户/路由/API Key 行。
+// w2cComposeChainStack 组装一个开启链条、带真实上游的 PG 组合根，并按
+// w1l 手法向业务库补 /v1 所需的分组/账户/路由/API Key 行（schema/种子行由
+// pgtestkit fresh 库的 bootstrap EnsurePostgres/SeedPostgres 预置）。
 func w2cComposeChainStack(t *testing.T, upstream *httptest.Server) *composition {
 	t.Helper()
 	stack := w1oNewComposeStack(t)
@@ -992,24 +790,12 @@ func w2cComposeChainStack(t *testing.T, upstream *httptest.Server) *composition 
 	// 默认不受影响）。
 	stack.cfg.UpstreamURLSecurity = sharedupstreamhttp.URLSecurityConfig{AllowPrivateBaseUrls: true}
 
-	business, err := bootstrap.OpenSQLiteFile(stack.cfg.BusinessDatabasePath)
+	business, err := sql.Open("pgx", stack.cfg.PostgresURL)
 	if err != nil {
 		t.Fatalf("open business for chain seed: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	if _, err := bootstrap.EnsureSQLiteSchema(ctx, bootstrap.SQLiteSchemaBusiness, business); err != nil {
-		_ = business.Close()
-		t.Fatalf("ensure business for chain seed: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(ctx, business, bootstrap.SeedOptions{Now: time.Now, Secret: stack.cfg.Secret}); err != nil {
-		_ = business.Close()
-		t.Fatalf("seed business for chain seed: %v", err)
-	}
 	w2cSeedChainRows(t, business, upstream.URL)
-	if err := business.Close(); err != nil {
-		t.Fatalf("close business after chain seed: %v", err)
-	}
+	_ = business.Close()
 	composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), stack.store, stack.lease, stack.auditProducer, stack.auditConfig, composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose chain stack: %v", err)
@@ -1030,7 +816,7 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 		}
 	}
 	seed(`INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
-		VALUES ('w2c_group', 'sys_admin', 'W2C 分组', 1, 'personal', ?, ?)`, now, now)
+		VALUES ('w2c_group', 'sys_admin', 'W2C 分组', 1, 'personal', $1, $2)`, now, now)
 	sealed, err := accounts.EncryptJSON("compose-test-secret", map[string]any{
 		"api_key":  "sk-w2c-upstream",
 		"base_url": upstreamBaseURL,
@@ -1045,35 +831,36 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 			name, type, status, schedulable, credentials_encrypted, health_check_model, health_check_endpoint_mode,
 			created_at, updated_at
 		) VALUES ('w2c_acc', 'sys_admin', 'gpt', 'gpt', 'openai', 'v1',
-			'W2C 账户', 'api_key', 'active', 1, ?, 'gpt-test', 'chat_json', ?, ?)`,
+			'W2C 账户', 'api_key', 'active', 1, $1, 'gpt-test', 'chat_json', $2, $3)`,
 		sealed, now, now)
 	seed(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-		VALUES ('sys_admin', 'w2c_group', 'w2c_acc', 1, ?, ?)`, now, now)
+		VALUES ('sys_admin', 'w2c_group', 'w2c_acc', 1, $1, $2)`, now, now)
 	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_w2c_sm_gpt-test', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '["chat_json","chat_sse"]', ?, ?)`, now, now)
+		VALUES ('mdl_w2c_sm_gpt-test', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '["chat_json","chat_sse"]', $1, $2)`, now, now)
 	seed(`INSERT INTO account_supported_models (account_id, model_id, created_at)
-		VALUES ('w2c_acc', 'mdl_w2c_sm_gpt-test', ?)`, now)
+		VALUES ('w2c_acc', 'mdl_w2c_sm_gpt-test', $1)`, now)
 	// B4 第一批单连接事实源：w2c_acc 需要 enabled 连接行（health 三字段经
 	// 真实 DDL 复合外键互指，连接行先行、health_check_connection_id 回填）。
 	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
-		VALUES ('conn_w2c_acc', 'w2c_acc', 'gpt_openai_v1', 'openai_v1', ?, 1, ?, ?)`, upstreamBaseURL, now, now)
+		VALUES ('conn_w2c_acc', 'w2c_acc', 'gpt_openai_v1', 'openai_v1', $1, 1, $2, $3)`, upstreamBaseURL, now, now)
 	seed(`UPDATE accounts SET health_check_connection_id = 'conn_w2c_acc' WHERE id = 'w2c_acc'`)
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, created_at, updated_at)
-		VALUES ('w2c_rs', 'sys_admin', 'W2C 路由', 'normal', 'active', ?, ?)`, now, now)
+		VALUES ('w2c_rs', 'sys_admin', 'W2C 路由', 'normal', 'active', $1, $2)`, now, now)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
-		VALUES ('w2c_rsg', 'w2c_rs', 'sys_admin', 'w2c_group', 1, 1, 'active', ?, ?)`, now, now)
+		VALUES ('w2c_rsg', 'w2c_rs', 'sys_admin', 'w2c_group', 1, 1, 'active', $1, $2)`, now, now)
 	secret := "sk-w2c-gateway-key"
 	secretEncrypted, err := accounts.EncryptJSON("compose-test-secret", map[string]any{"key": secret})
 	if err != nil {
 		t.Fatalf("encrypt key secret: %v", err)
 	}
 	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, scheduling_preference_id, created_at, updated_at)
-		VALUES ('w2c_key', 'sys_admin', 'w2c_rs', 'W2C Key', ?, ?, ?, ?, 'active', 'schpref-builtin-chat-cost-first', ?, ?)`,
+		VALUES ('w2c_key', 'sys_admin', 'w2c_rs', 'W2C Key', $1, $2, $3, $4, 'active', 'schpref-builtin-chat-cost-first', $5, $6)`,
 		gatewayruntimecache.HashSecret(secret), secret[:8], secret[len(secret)-8:], secretEncrypted, now, now)
 	// 供应商解耦（设计 §3）：目录读侧收敛 models 单表；gpt-test 目录行种
 	// openai vendor 的 global 自定义行（带价格）。
-	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
-		VALUES ('mdl_w2c_cat', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', 1, '["chat_json","chat_sse"]', 1.0, ?, ?)`, now, now)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_w2c_cat', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', 1, '["chat_json","chat_sse"]', 1.0, $1, $2)
+		ON CONFLICT (id) DO NOTHING`, now, now)
 }
 
 func TestW2CComposeAccountLockInvalidationCallback(t *testing.T) {

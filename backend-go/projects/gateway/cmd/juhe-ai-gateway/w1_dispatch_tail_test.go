@@ -1752,8 +1752,8 @@ func TestW1XHotQualityLifecycleMarkFirstByte(t *testing.T) {
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "standalone",
-		RuntimeStateDriver: "memory",
+		RuntimeMode:        "performance",
+		RuntimeStateDriver: "redis",
 	})
 	if err != nil {
 		t.Fatalf("create hot quality runtime: %v", err)
@@ -1863,7 +1863,6 @@ func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 	server := miniredis.RunT(t)
 	if _, err := composeChainRuntimeServices(composed, runtimeConfig{
 		DispatchAccountCandidateLimit: 20,
-		RuntimeStateDriver:            "redis",
 		RedisStateURL:                 "redis://" + server.Addr(),
 		RedisNamespace:                "   ",
 	}, settingValue); err == nil || !strings.Contains(err.Error(), "error circuit") {

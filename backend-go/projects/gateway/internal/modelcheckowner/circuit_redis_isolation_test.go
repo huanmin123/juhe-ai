@@ -25,11 +25,10 @@ func aCircuitIsolationEnv(pairs map[string]string) func(string) string {
 }
 
 func aCircuitIsolationBaseEnv() map[string]string {
+	// 2026-10-24 存储形态收口：恒 postgres（JUHE_AI_J3B_STORE env 读取删除）。
 	return map[string]string{
-		"JUHE_AI_J3B_STORE":                  "sqlite",
-		"JUHE_AI_J3B_DATABASE_PATH":          "F:/tmp/a-isolation-j3b.db",
-		"JUHE_AI_J3B_BUSINESS_DATABASE_PATH": "F:/tmp/a-isolation-business.db",
-		"JUHE_AI_J3B_CREDENTIAL_SECRET":      "cred",
+		"JUHE_AI_J3B_POSTGRES_URL":     "postgres://a-isolation-j3b",
+		"JUHE_AI_J3B_CREDENTIAL_SECRET": "cred",
 	}
 }
 
@@ -133,12 +132,10 @@ func TestACircuitRedisLoadConfigFallbackBehaviorUnchanged(t *testing.T) {
 	// 行为不变"的断言（REDIS_STATE_URL 回退 + FellBack 标记）；原严格模式
 	// "无 URL 拒绝面"与"非自动认领 fail-fast"随门禁退役（auto-claim 恒真）。
 	values := map[string]string{
-		"JUHE_AI_J3B_STORE":                  "sqlite",
-		"JUHE_AI_J3B_DATABASE_PATH":          "F:/tmp/a-isolation-j3b.db",
-		"JUHE_AI_J3B_BUSINESS_DATABASE_PATH": "F:/tmp/a-isolation-business.db",
-		"JUHE_AI_J3B_CREDENTIAL_SECRET":      "cred",
-		"JUHE_AI_REDIS_STATE_URL":            "redis://main-chain:6379/9",
-		"JUHE_AI_REDIS_NAMESPACE":            "juhe-ai:dev",
+		"JUHE_AI_J3B_POSTGRES_URL":     "postgres://a-isolation-j3b",
+		"JUHE_AI_J3B_CREDENTIAL_SECRET": "cred",
+		"JUHE_AI_REDIS_STATE_URL":      "redis://main-chain:6379/9",
+		"JUHE_AI_REDIS_NAMESPACE":      "juhe-ai:dev",
 	}
 	cfg, err := LoadConfig(aCircuitIsolationEnv(values))
 	if err != nil {

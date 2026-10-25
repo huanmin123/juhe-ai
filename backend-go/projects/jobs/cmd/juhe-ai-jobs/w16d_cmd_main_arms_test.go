@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
@@ -98,10 +101,6 @@ func TestW16DMainFailFastArms(t *testing.T) {
 			"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":       w16dClosedPortURL(),
 			"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL": "pgx://w16d-invalid-url",
 		})},
-		// migrate 分发 + 运行日志库不可写 → OpenStore 失败（1007-1009）。
-		{"migrate-open-store-fail", []string{"-migrate-runtime-log-legacy-sqlite"}, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": ".",
-		}},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -185,15 +184,25 @@ func mergeEnv(base, extra map[string]string) map[string]string {
 	return merged
 }
 
-// TestW16DMainProjectionWarnArm 驱动「J1 开启 + worker 关闭 + 投影 env 非法」
-// 的 minimal assembly 降级臂：装配 warn 不阻塞，进程正常服务后干净停机
-// （434-437 与 minimal assembly 分支）。
+// TestW16DMainProjectionWarnArm 驱动「J1 开启 + 投影 env 非法」的装配降级
+// 臂：wireHealthOutcomeProjector 因 poll env 低于下限装配失败，main 降级
+// warn 不阻塞，进程正常服务后干净停机。PG 唯一形态：F1/J1 指向共享覆盖库
+// （w13g8FullOwnerEnv 内自愈 fixture），连接串不落日志。
 func TestW16DMainProjectionWarnArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("main e2e skipped in -short mode")
 	}
-	root := t.TempDir()
-	env := wgOwnerModeMainEnv(t, root)
+	pgURL := w12cPGOverrideURL(t)
+	if pgURL == "" {
+		t.Skip("w16d: 覆盖库连接串不可用")
+	}
+	env := w13g8FullOwnerEnv(t)
+	// 探针型 e2e 护栏（w14q 同款）：due 候选超过个位数护栏即跳过。
+	if db, err := sql.Open("pgx", pgURL); err == nil {
+		w14qDueCandidateGuard(t, db)
+		_ = db.Close()
+	}
+	// poll 低于下界 100ms → 投影器装配失败 → main 降级 warn。
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS"] = "1"
 	port := wgFreePort(t)
 	cmd := wgSpawnMainChild(t, env, "w16d-projection-warn", port)
@@ -230,8 +239,7 @@ func TestW16DPGWithLeaseArms(t *testing.T) {
 	if err := store.EnsureSchema(context.Background()); err != nil {
 		t.Skipf("w16d: taskruns PG schema 初始化失败（跳过）: %v", err)
 	}
-	assembly := newWorkerAssembly(workerConfig{
-		Driver: "postgres", InstanceID: "w16d-lease",
+	assembly := newWorkerAssembly(workerConfig{ InstanceID: "w16d-lease",
 	}, slog.Default())
 	assembly.taskRunsStore = store
 	// 唯一 jobName：共享覆盖库上他人（历史 e2e 子进程）可能持有同名未过期

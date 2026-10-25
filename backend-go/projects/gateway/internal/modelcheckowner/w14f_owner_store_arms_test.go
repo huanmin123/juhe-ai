@@ -438,6 +438,9 @@ func TestW14fOwnerModelLimitsArms(t *testing.T) {
 }
 
 func TestW14fOwnerLoadConfigNilGetenv(t *testing.T) {
+	// nil getenv 应回落 os.Getenv；宿主注入合法 URL 保证加载成功（2026-10-24
+	// 存储形态收口后 URL 必填，nil-getenv 回落语义本身不变）。
+	t.Setenv("JUHE_AI_J3B_POSTGRES_URL", "postgres://w14f-nil-getenv")
 	if _, err := LoadConfig(nil); err != nil {
 		t.Fatalf("nil getenv 应回落 os.Getenv: %v", err)
 	}

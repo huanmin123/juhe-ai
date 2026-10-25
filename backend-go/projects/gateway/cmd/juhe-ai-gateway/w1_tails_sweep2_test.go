@@ -847,23 +847,23 @@ func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 			db:      w1uOpenPlainSQLite(t, "w1t-rt-sec-b.sqlite3"),
 			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-sec-s.sqlite3"),
 		}
-		cfg := runtimeConfig{Secret: "", CacheDriver: "memory", RuntimeStateDriver: "memory", DispatchAccountCandidateLimit: 20}
+		cfg := runtimeConfig{Secret: "", DispatchAccountCandidateLimit: 20}
 		if _, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue); err == nil {
 			t.Fatal("空 Secret 的组合必须失败（会话身份/凭据解封需要 Secret）")
 		}
 	})
 
-	t.Run("非法 runtime state 驱动组合失败", func(t *testing.T) {
+	t.Run("坏 state redis URL 组合失败", func(t *testing.T) {
 		composed := &composition{
 			db:      w1uOpenPlainSQLite(t, "w1t-rt-drv-b.sqlite3"),
 			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-drv-s.sqlite3"),
 		}
 		cfg := runtimeConfig{
-			Secret: "w1t-runtime-secret", CacheDriver: "memory", RuntimeStateDriver: "w1t-bogus-driver",
+			Secret: "w1t-runtime-secret", RedisStateURL: "redis://[::w1t-bad-url",
 			DispatchAccountCandidateLimit: 20,
 		}
 		if _, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue); err == nil {
-			t.Fatal("非法 runtime state 驱动的组合必须失败")
+			t.Fatal("坏 state redis URL 的组合必须失败")
 		}
 	})
 }

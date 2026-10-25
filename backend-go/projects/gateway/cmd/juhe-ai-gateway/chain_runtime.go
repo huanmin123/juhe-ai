@@ -35,7 +35,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
 // chainRuntimeServices bundles every concrete service the chain assembly
@@ -104,24 +103,11 @@ type chainRuntimeServices struct {
 	ConfiguredPolicyAvoidance *gatewayaccounteffects.ConfiguredPolicyAvoidanceService
 
 	// ---- W2-C production wiring (BUG-0175: D-109/D-110/D-131/D-133/
-	// D-134/D-136/D-137/D-129). Every field is driver-forked in
-	// composeChainRuntimeServices; the chain assembly degrades the absent
-	// ones exactly like the Node missing-runtime branches. ----
+	// D-134/D-136/D-137/D-129). 2026-10-24 存储形态收口后这些字段在
+	// composeChainRuntimeServices 中按 PostgreSQL + Redis 恒定形态装配；
+	// 组合测试的 nil 仅出现在未装配组合（链条回落 disabled*/degraded*）。----
 	// AccountCircuits is the D-131 account-circuit service.
 	AccountCircuits *gatewaycircuit.CircuitService
-	// AccountCircuitRuntime 外露主链电路的 store 与 persist mutation hook
-	//（PLAN-20261008T113056000Z）：memory 形态由恢复组件
-	//（chain_circuit_recovery.go）复用同一 store 与投影管道；redis 形态
-	// 不消费（恢复职责归 jobs）。
-	AccountCircuitRuntime chainAccountCircuitRuntime
-	// AccountCircuitRecovery 是 memory 形态的进程内恢复驱动组件
-	//（redis 形态与构造失败降级路径保持零值，main.go 判 Run 非 nil 才挂载）。
-	AccountCircuitRecovery supervisor.Component
-	// KeyModelMemoryRecovery 是 memory 形态的 key-model 能力熔断记忆恢复
-	// 驱动组件（PLAN-20261008T113056000Z 根治阶段，chain_keymodel_recovery.go；
-	// redis 形态恢复归 jobs keymodelrecovery，字段保持零值，main.go 判
-	// Run 非 nil 才挂载）。
-	KeyModelMemoryRecovery supervisor.Component
 	// ClientIPSlots is the D-109 high-concurrency client-IP slot family.
 	ClientIPSlots *gatewayclientip.ClientIPConcurrency
 	// HighConcurrencyQueue is the D-109 high-concurrency group short queue
@@ -267,57 +253,52 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if settingValue == nil {
 		return nil, errors.New("网关链组合根缺少全局设置读取器")
 	}
+	// ---- W2-C production wiring (BUG-0175: D-109/D-110/D-131/D-133/
+	// D-134/D-136/D-137/D-129). 2026-10-24 存储形态收口：原按驱动轴分叉的
+	// 装配全部收敛为 PostgreSQL + Redis 恒定形态（redis 客户端恒建、
+	// require-shared 恒开、memory 臂删除）。 ----
 	logger := chainRuntimeLogger{inner: slog.Default()}
 	// services 承载逆序 closeFuncs；任何一步失败都必须先 Close 再返回，
 	// 否则已启动的 coordinator goroutine、cache、circuit 等会泄漏到进程。
 	services := &chainRuntimeServices{}
-	redisCache := cfg.CacheDriver == "redis"
-	redisState := cfg.RuntimeStateDriver == "redis"
 
 	// ---- redis clients ----
-	var cacheClient *redis.Client
-	var sharedFactory gatewayruntimecache.SharedCacheFactory
-	if redisCache {
-		factory, closeFactory, err := gatewayruntimecache.NewRedisSharedCacheFactory(cfg.RedisCacheURL, cfg.RedisNamespace)
-		if err != nil {
-			services.Close()
-			return nil, fmt.Errorf("create gateway redis shared cache factory: %w", err)
-		}
-		sharedFactory = factory
-		services.closeFuncs = append(services.closeFuncs, closeFactory)
-		options, parseErr := redis.ParseURL(cfg.RedisCacheURL)
-		if parseErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("parse cache redis url: %w", parseErr)
-		}
-		cacheClient = redis.NewClient(options)
-		services.closeFuncs = append(services.closeFuncs, func() { _ = cacheClient.Close() })
-		// system-api rate limiter fixed-window store (task item 9).
-		services.RateLimitStore = &ratelimit.RedisStore{Client: redisEvalClient{client: cacheClient}}
+	factory, closeFactory, err := gatewayruntimecache.NewRedisSharedCacheFactory(cfg.RedisCacheURL, cfg.RedisNamespace)
+	if err != nil {
+		services.Close()
+		return nil, fmt.Errorf("create gateway redis shared cache factory: %w", err)
 	}
-	var stateClient *redis.Client
-	if redisState {
-		options, err := redis.ParseURL(cfg.RedisStateURL)
-		if err != nil {
-			services.Close()
-			return nil, fmt.Errorf("parse state redis url: %w", err)
-		}
-		stateClient = redis.NewClient(options)
-		services.closeFuncs = append(services.closeFuncs, func() { _ = stateClient.Close() })
-		// Exposed for siblings that share the runtime-state client (aipublic
-		// penalty-window limiter). nil when runtimeStateDriver !== 'redis'.
-		services.StateClient = stateClient
-		// M5b realtime ephemeral token 面（Realtime 设计 §4）：与状态键空间
-		// 共用同一客户端（键位 realtime_token:<t> 经 namespace 隔离）。
-		services.RealtimeTokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: stateClient}, cfg.RedisNamespace)
-		// K5 invalidation shared-version persistence (inval.SharedStore, T2
-		// audit wiring): the runtime-state redis, mirroring the Node topology
-		// (publish + sync both gated on runtimeStateDriver === 'redis', which
-		// is also the SyncInvalidationsOnRead gate of the runtime cache below).
-		// Go-only int64 monotonic protocol — see internal/inval package docs.
-		if composed.Bus != nil {
-			composed.Bus.SetSharedStore(inval.NewRedisSharedStore(stateClient, cfg.RedisNamespace))
-		}
+	sharedFactory := factory
+	services.closeFuncs = append(services.closeFuncs, closeFactory)
+	cacheOptions, parseErr := redis.ParseURL(cfg.RedisCacheURL)
+	if parseErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("parse cache redis url: %w", parseErr)
+	}
+	cacheClient := redis.NewClient(cacheOptions)
+	services.closeFuncs = append(services.closeFuncs, func() { _ = cacheClient.Close() })
+	// system-api rate limiter fixed-window store (task item 9).
+	services.RateLimitStore = &ratelimit.RedisStore{Client: redisEvalClient{client: cacheClient}}
+
+	stateOptions, err := redis.ParseURL(cfg.RedisStateURL)
+	if err != nil {
+		services.Close()
+		return nil, fmt.Errorf("parse state redis url: %w", err)
+	}
+	stateClient := redis.NewClient(stateOptions)
+	services.closeFuncs = append(services.closeFuncs, func() { _ = stateClient.Close() })
+	// Exposed for siblings that share the runtime-state client (aipublic
+	// penalty-window limiter).
+	services.StateClient = stateClient
+	// M5b realtime ephemeral token 面（Realtime 设计 §4）：与状态键空间
+	// 共用同一客户端（键位 realtime_token:<t> 经 namespace 隔离）。
+	services.RealtimeTokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: stateClient}, cfg.RedisNamespace)
+	// K5 invalidation shared-version persistence (inval.SharedStore, T2
+	// audit wiring): the runtime-state redis is also the SyncInvalidationsOnRead
+	// gate of the runtime cache below. Go-only int64 monotonic protocol —
+	// see internal/inval package docs.
+	if composed.Bus != nil {
+		composed.Bus.SetSharedStore(inval.NewRedisSharedStore(stateClient, cfg.RedisNamespace))
 	}
 
 	// ---- runtime cache (G10) ----
@@ -347,8 +328,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	// D-110（BUG-0175）：G08 动态路由选择器（Node
 	// api-key-group-route-selector.service.ts）。redis 驱动共享轮转/权重
-	// 计数器；非动态模式保持存储顺序（selector 语义）。
-	routeSelector := gatewayrouting.NewAPIKeyGroupRouteSelector(cfg.RuntimeStateDriver, gatewayrouting.NewRedisRouteStateCounter(cfg.RedisStateURL), cfg.RedisStateURL)
+	// 计数器（存储形态收口后恒 redis）。
+	routeSelector := gatewayrouting.NewAPIKeyGroupRouteSelector("redis", gatewayrouting.NewRedisRouteStateCounter(cfg.RedisStateURL), cfg.RedisStateURL)
 	catalogSource, catalogErr := newChainCatalogSource(composed.db, composed.pgDialect)
 	if catalogErr != nil {
 		services.Close()
@@ -365,11 +346,16 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// HighConcurrencyQueue 共用同一事实源。
 	services.ConcurrencyTracker = concurrencyTracker
 	models.SetConcurrencySource(concurrencyTracker)
-	cacheOptions := gatewayruntimecache.Options{
-		Bus:                     composed.Bus,
+	cacheOptions2 := gatewayruntimecache.Options{
+		Bus: composed.Bus,
 		Logger:                  chainCacheEventLogger{inner: slog.Default()},
-		UpdateAgeOnGet:          cfg.RuntimeMode == "standalone",
-		SyncInvalidationsOnRead: redisState,
+		// D3（存储形态收口）：UpdateAgeOnGet 是 standalone memory 缓存的读龄
+		// 语义，redis 形态恒 false（原 `cfg.RuntimeMode == "standalone"` 判据
+		// 收敛为常量）。
+		UpdateAgeOnGet:          false,
+		// redis 运行态下跨实例失效同步恒开（原 SyncInvalidationsOnRead:
+		// redisState 判据收敛）。
+		SyncInvalidationsOnRead: true,
 		// 2026-09-18 热路径加固：跨实例失效同步合并窗口（0 恢复逐读同步）。
 		SyncMinIntervalMs: cfg.RuntimeInvalidationSyncMinIntervalMs,
 		// D-110: the dynamic group-binding orderer seam (nil would keep the
@@ -383,13 +369,13 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// /v1/models 分组模型并集装载端口（chain_gatewaykeymodels.go）。
 		Union: unionLoader,
 	}
-	// 高性能模式（cacheDriver=redis）下，模型目录 / 分组访问 / 响应检查策略
-	// 的跨进程事实源固定为 Redis；进程内 LRU 只允许作易失 L1。Shared 为
-	// nil 时 runtime cache 会把本地缓存当作事实源，堆随 API Key/分组/模型
-	// 组合增长（2026-10-21 生产堆逼近 GOMEMLIMIT 的接线根因）。
-	cacheOptions.Shared = sharedFactory
-	cacheOptions.RequireShared = redisCache
-	cache, err := gatewayruntimecache.New(models, cacheOptions)
+	// 模型目录 / 分组访问 / 响应检查策略的跨进程事实源固定为 Redis（PG+Redis
+	// 唯一形态）；进程内 LRU 只作易失 L1。Shared 为 nil 时 runtime cache 会把
+	// 本地缓存当作事实源，堆随 API Key/分组/模型组合增长（2026-10-21 生产堆
+	// 逼近 GOMEMLIMIT 的接线根因）。
+	cacheOptions2.Shared = sharedFactory
+	cacheOptions2.RequireShared = true
+	cache, err := gatewayruntimecache.New(models, cacheOptions2)
 	if err != nil {
 		services.Close()
 		return nil, fmt.Errorf("create gateway runtime cache: %w", err)
@@ -399,7 +385,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 
 	// ---- G13 client-ip circuits / policy / avoidance ----
 	circuits, err := gatewayclientip.NewErrorCircuit(gatewayclientip.ErrorCircuitOptions{
-		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		RuntimeStateDriver: "redis",
 		StateRedisURL:      cfg.RedisStateURL,
 		RedisNamespace:     cfg.RedisNamespace,
 	})
@@ -420,9 +406,10 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// 恒 false，IP 命中缓冲直接经 Source.RecordClientIPPolicyHits 写本进程
 		// 统计库（Node stats-writer 桥仅多进程拆分时启用，接线时需同步补齐角色）。
 		// Logger 让命中缓冲丢弃/写回失败可观测（零值时这些警告被静默丢弃）。
+		// CacheDriver/RuntimeMode 传 redis 形态既有值（存储形态收口后判据收敛）。
 		Logger:      chainCacheEventLogger{inner: slog.Default()},
-		CacheDriver: cfg.CacheDriver,
-		RuntimeMode: cfg.RuntimeMode,
+		CacheDriver: "redis",
+		RuntimeMode: "performance",
 		Source:      policySource,
 		Shared:      sharedFactory,
 	})
@@ -434,7 +421,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	services.closeFuncs = append(services.closeFuncs, policyCache.Close)
 
 	avoidance, err := gatewayclientip.NewAvoidance(gatewayclientip.AvoidanceOptions{
-		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		RuntimeStateDriver: "redis",
 		StateRedisURL:      cfg.RedisStateURL,
 		RedisNamespace:     cfg.RedisNamespace,
 	})
@@ -447,13 +434,13 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 
 	// ---- G13 proxy health (models rate limit + user request limits) ----
 	// gatewayproxyhealth.Clock nil means the wall clock.
-	penaltyLimiter := gatewayproxyhealth.NewPenaltyWindowRateLimiter(nil, redisState, stateClient, cfg.RedisNamespace)
+	penaltyLimiter := gatewayproxyhealth.NewPenaltyWindowRateLimiter(nil, true, stateClient, cfg.RedisNamespace)
 	services.ModelsRateLimit = gatewayproxyhealth.NewAuthenticatedModelsRateLimitService(nil, penaltyLimiter, func(fields map[string]any, message string) {
 		logger.Warn("gateway_models_rate_limit", fields, message)
 	})
 	counter := gatewayproxyhealth.NewUserRequestLimitCounter(nil, gatewayproxyhealth.UserRequestLimitCounterOptions{})
 	coordinator := gatewayproxyhealth.NewUserRequestLimitCoordinator(counter, nil, gatewayproxyhealth.UserRequestLimitCoordinatorOptions{
-		RedisEnabled:   redisState,
+		RedisEnabled:   true,
 		Namespace:      cfg.RedisNamespace,
 		ClientProvider: redisStateClientProvider{client: stateClient},
 		Log: func(fields map[string]any, message string) {
@@ -467,9 +454,9 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 
 	// ---- G07 quota services ----
 	quotaModes := gatewayquota.Modes{
-		PostgresDatabase:  composed.pgDialect,
-		RedisCache:        redisCache,
-		RedisRuntimeState: redisState,
+		PostgresDatabase:  true,
+		RedisCache:        true,
+		RedisRuntimeState: true,
 		ServerRole:        false,
 	}
 	statsStore, err := gatewayquota.NewStatsStore(composed.statsDB, composed.pgDialect)
@@ -478,13 +465,10 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create gateway quota stats store: %w", err)
 	}
 	services.QuotaStats = statsStore
-	var snapshotRuntimeState gatewayquota.RuntimeStateStore
-	if redisCache && redisState {
-		snapshotRuntimeState, err = gatewayquota.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayquota.GatewayQuotaSnapshotRuntimeStateStoreName)
-		if err != nil {
-			services.Close()
-			return nil, fmt.Errorf("create gateway quota snapshot runtime state: %w", err)
-		}
+	snapshotRuntimeState, err := gatewayquota.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayquota.GatewayQuotaSnapshotRuntimeStateStoreName)
+	if err != nil {
+		services.Close()
+		return nil, fmt.Errorf("create gateway quota snapshot runtime state: %w", err)
 	}
 	snapshotCache, err := gatewayquota.NewSnapshotCache(quotaModes, snapshotRuntimeState, time.Now, nil)
 	if err != nil {
@@ -492,9 +476,6 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create gateway quota snapshot cache: %w", err)
 	}
 	newQuotaShared := func(name string) (gatewayquota.SharedJSONCache, error) {
-		if !redisCache {
-			return nil, nil
-		}
 		return gatewayquota.NewRedisSharedCache(cacheClient, cfg.RedisNamespace, name)
 	}
 	apiKeyQuotaShared, err := newQuotaShared("gateway:api-key-quota")
@@ -549,26 +530,19 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.InflightQuota = inflightQuota
 
-	// ---- Gemini interaction affinity (runtimeStateDriver fork) ----
-	if redisState && stateClient != nil {
-		affinityState, affinityErr := gatewayquota.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-gemini-interaction-affinity")
-		if affinityErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("create gemini interaction affinity state: %w", affinityErr)
-		}
-		services.Affinity = gatewaygemini.NewInteractionAffinity(quotaRuntimeStateBridge{store: affinityState, storeName: "gateway-gemini-interaction-affinity"}).WithLogger(slog.Default())
-	} else {
-		// Node runtimeStateDriver !== 'redis' fallback: the affinity service
-		// keeps an in-process TTL cache (documented NewInteractionAffinity
-		// nil-store behaviour).
-		services.Affinity = gatewaygemini.NewInteractionAffinity(nil)
+	// ---- Gemini interaction affinity (redis runtime state) ----
+	affinityState, affinityErr := gatewayquota.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-gemini-interaction-affinity")
+	if affinityErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create gemini interaction affinity state: %w", affinityErr)
 	}
+	services.Affinity = gatewaygemini.NewInteractionAffinity(quotaRuntimeStateBridge{store: affinityState, storeName: "gateway-gemini-interaction-affinity"}).WithLogger(slog.Default())
 
 	// ---- W2-C production wiring (BUG-0175) ----
 	// D-109：high_concurrency 分组的 client-IP 并发槽（Node
 	// client-ip-concurrency.service.ts；redis 驱动共享 180s TTL 槽）。
 	clientIPSlots, slotsErr := gatewayclientip.NewClientIPConcurrency(gatewayclientip.ClientIPConcurrencyOptions{
-		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		RuntimeStateDriver: "redis",
 		StateRedisURL:      cfg.RedisStateURL,
 		PolicyDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
 			MaxQueueSize:        cfg.ConcurrencyGlobalMax,
@@ -585,11 +559,11 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// D-109 补齐（E2E-FINDING #5）：high_concurrency 分组的分组级短队列
 	//（Node runtime/high-concurrency-queue.service.ts 单例 fork）。此前
 	// engine.HighConcurrencyQueue 从未装配，并发满时直接 nil panic
-	//（4×EOF + panic 栈）。实现复用 gatewayclientip 队列：memory 驱动进程内
-	// 队列，redis 驱动共享 juhe-ai:state:high-concurrency-queue 键空间；账户
-	// 并发事实源与 cache/dispatch 同用一个 concurrencyTracker（G10 seam）。
+	//（4×EOF + panic 栈）。实现复用 gatewayclientip 队列：redis 驱动共享
+	// juhe-ai:state:high-concurrency-queue 键空间；账户并发事实源与
+	// cache/dispatch 同用一个 concurrencyTracker（G10 seam）。
 	highConcurrencyQueue, queueErr := gatewayclientip.NewHighConcurrencyGroupQueue(gatewayclientip.HighConcurrencyQueueOptions{
-		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		RuntimeStateDriver: "redis",
 		StateRedisURL:      cfg.RedisStateURL,
 		RedisNamespace:     cfg.RedisNamespace,
 		PolicyDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
@@ -606,14 +580,15 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	services.closeFuncs = append(services.closeFuncs, highConcurrencyQueue.Close)
 
 	// D-131：账户电路服务（Node GatewayAccountCircuitService 单例 fork；
-	// SUSPECT/confirmation/父升级/恢复状态机的存储随 runtimeStateDriver 分叉）。
-	// 缺陷 E（熔断观测断链）：persist 配置把主链熔断状态转换接到既有
-	// control-plane 持久化管道（juhe_business.account_circuit_incidents CAS
-	// + outbox；jobs 投影与管理页 circuitSummary 复用同一业务库事实源），
-	// owner gate 与 businesssettings/businessauth/groupdirtycursor 同源
-	// （cfg.Business*，零配置自动认领时已置真）；gate 未就绪/契约缺失时
-	// 保持既有无持久观测行为（见 chain_circuit_controlplane.go）。
-	accountCircuitRuntime, closeAccountCircuits, circuitsErr := newChainAccountCircuitService(cfg.RuntimeStateDriver, cfg.RedisStateURL, cfg.RedisNamespace, chainAccountCircuitPersistConfig{
+	// SUSPECT/confirmation/父升级/恢复状态机的存储在 redis 运行态共享——
+	// 存储形态收口后恒 redis）。缺陷 E（熔断观测断链）：persist 配置把主链
+	// 熔断状态转换接到既有 control-plane 持久化管道（juhe_business.
+	// account_circuit_incidents CAS + outbox；jobs 投影与管理页
+	// circuitSummary 复用同一业务库事实源），owner gate 与
+	// businesssettings/businessauth/groupdirtycursor 同源（cfg.Business*，
+	// 零配置自动认领时已置真）；gate 未就绪/契约缺失时保持既有无持久观测
+	// 行为（见 chain_circuit_controlplane.go）。
+	accountCircuitRuntime, closeAccountCircuits, circuitsErr := newChainAccountCircuitService("redis", cfg.RedisStateURL, cfg.RedisNamespace, chainAccountCircuitPersistConfig{
 		DB:                composed.db,
 		Postgres:          composed.pgDialect,
 		Confirmed:         cfg.BusinessHandoffConfirmed,
@@ -625,23 +600,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create gateway account circuit service: %w", circuitsErr)
 	}
 	services.AccountCircuits = accountCircuitRuntime.Service
-	// PLAN-20261008T113056000Z：store 与 mutation hook 外露给恢复组件
-	// 装配（chain_circuit_recovery.go，仅 memory 形态消费；redis 形态字段
-	// 保持原样不消费，恢复职责仍归 jobs）。
-	services.AccountCircuitRuntime = accountCircuitRuntime
 	services.closeFuncs = append(services.closeFuncs, closeAccountCircuits)
-	// 本地单机形态恢复驱动（PLAN-20261008T113056000Z）：memory 运行态归
-	// gateway 进程所有，恢复驱动随进程装配；redis 形态恢复职责归 jobs，
-	// 组件保持零值（main.go 判 Run 非 nil 才挂载）。构造失败按组合根
-	// fail-fast 契约向上传播。
-	if cfg.RuntimeStateDriver != "redis" {
-		recoveryComponent, recoveryErr := newChainAccountCircuitRecoveryComponent(accountCircuitRuntime, composed, cfg)
-		if recoveryErr != nil {
-			services.Close()
-			return nil, recoveryErr
-		}
-		services.AccountCircuitRecovery = recoveryComponent
-	}
 
 	// D-134：本地账户屏蔽状态（Node account-local-suppression-store 单例；
 	// 进程内实现，装配未设 CanUseProcessLocal——构造器默认恒可用），
@@ -660,26 +619,22 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	})
 
 	// D-136：上游桶健康服务（Node proxy-health.service.ts 单例 fork；
-	// runtimeStateStore 随 runtimeStateDriver 分叉，memory 保持进程内 LRU）。
-	proxyHealthStore := gatewayproxyhealth.RuntimeStateStore(gatewayproxyhealth.NewMemoryRuntimeStateStore(nil))
-	if redisState && stateClient != nil {
-		redisHealthStore, healthErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-proxy-health")
-		if healthErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("create proxy health runtime state: %w", healthErr)
-		}
-		proxyHealthStore = redisHealthStore
+	// runtimeStateStore 在 redis 运行态跨实例共享）。
+	proxyHealthStore, healthErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-proxy-health")
+	if healthErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create proxy health runtime state: %w", healthErr)
 	}
 	services.ProxyHealth = gatewayproxyhealth.NewProxyHealthService(nil, proxyHealthStore, gatewayproxyhealth.ProxyHealthOptions{}, func(fields map[string]any, message string) {
 		logger.Warn("gateway_proxy_health", fields, message)
 	})
 
 	// D-137：热质量运行时（Node hot-quality-runtime.service.ts 单例；
-	// standalone=memory / performance=redis，GetGatewayHotQualityRuntime 按
-	// 驱动轴构建 store 对）。
+	// PG+Redis 唯一形态，GetGatewayHotQualityRuntime 按 redis 驱动轴构建
+	// store 对）。
 	hotQuality, hotQualityErr := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        cfg.RuntimeMode,
-		RuntimeStateDriver: cfg.RuntimeStateDriver,
+		RuntimeMode:        "performance",
+		RuntimeStateDriver: "redis",
 		RedisStateURL:      cfg.RedisStateURL,
 		RedisNamespace:     cfg.RedisNamespace,
 	})
@@ -699,35 +654,20 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 
 	// D-133：key-model 前台准入状态存储（Node getKeyModelRuntimeStore；
-	// memory 单例 + redis 惰性构建）。启动时急切选择，驱动轴非法即
-	// fail-fast，不在请求路径上回退。
+	// redis 惰性构建）。启动时急切选择，redis 是唯一运行态驱动轴，构造
+	// 失败 fail-fast，不在请求路径上回退。
 	keyModelStores := newChainKeyModelRuntimeStoreSelector(cfg.RedisStateURL, cfg.RedisNamespace)
-	keyModelStore, keyModelErr := keyModelStores.Select(cfg.RuntimeStateDriver)
+	keyModelStore, keyModelErr := keyModelStores.Select("redis")
 	if keyModelErr != nil {
 		services.Close()
 		return nil, fmt.Errorf("select key-model runtime store: %w", keyModelErr)
 	}
 	services.KeyModelStore = keyModelStore
-
-	// PLAN-20261008T113056000Z 根治阶段：key-model 能力熔断记忆的恢复驱动。
-	// memory 形态（RuntimeStateDriver != "redis"）下 Select 返回的就是
-	// selector 内建的进程内 store，类型断言外露给恢复组件（不二次
-	// Select("memory")——那会改写 selector 的 driver 状态）；redis 形态
-	// 恢复职责归 jobs keymodelrecovery，组件保持零值不挂载。构造失败按
-	// 组合根 fail-fast 契约向上传播。
-	if cfg.RuntimeStateDriver != "redis" {
-		keyModelMemoryStore, memoryOK := keyModelStore.(*gatewayaccounteffects.InMemoryKeyModelRuntimeStore)
-		if !memoryOK {
-			services.Close()
-			return nil, fmt.Errorf("select key-model runtime store: memory 驱动未返回进程内 store")
-		}
-		keyModelRecoveryComponent, keyModelRecoveryErr := newChainKeyModelMemoryRecoveryComponent(keyModelMemoryStore, composed, cfg)
-		if keyModelRecoveryErr != nil {
-			services.Close()
-			return nil, keyModelRecoveryErr
-		}
-		services.KeyModelMemoryRecovery = keyModelRecoveryComponent
-	}
+	// D4（存储形态收口）：原 memory 形态的 key-model 能力熔断记忆恢复驱动
+	//（chain_keymodel_recovery.go）与账户电路恢复组件
+	//（chain_circuit_recovery.go）随 memory 运行态退役删除——redis 形态
+	// 恢复职责归 jobs（keymodelrecovery / account-circuit-recovery 任务族），
+	// 生产现状即如此，gateway 进程不再装配任何进程内恢复驱动。
 
 	// ---- recoverable wait (G11 circuit wait engine) ----
 	// preauth 与 dispatch 共用同一等待引擎实例（无状态；dispatch 侧经
@@ -740,36 +680,25 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	services.Recoverable = chainRecoverableWait
 	services.DispatchRecoverableWait = chainRecoverableWait
 
-	// ---- normal-route latency degradation (runtimeStateDriver fork) ----
+	// ---- normal-route latency degradation (redis runtime state) ----
 	// Node createRuntimeStateStore('gateway-normal-route-latency-degradation');
-	// memory keeps the process-local store, redis shares it across instances.
-	var latencyStore gatewayproxyhealth.RuntimeStateStore
-	if redisState && stateClient != nil {
-		store, storeErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-normal-route-latency-degradation")
-		if storeErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("create normal route latency degradation runtime state: %w", storeErr)
-		}
-		latencyStore = store
-	} else {
-		latencyStore = gatewayproxyhealth.NewMemoryRuntimeStateStore(nil)
+	// redis shares it across instances.
+	latencyStore, storeErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, "gateway-normal-route-latency-degradation")
+	if storeErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create normal route latency degradation runtime state: %w", storeErr)
 	}
 	services.LatencyDegradation = gatewayproxyhealth.NewLatencyDegradationService(latencyStore, nil, gatewayproxyhealth.LatencyDegradationOptions{})
 
-	// ---- account api-key failure guard (runtimeStateDriver fork) ----
-	// gatewayaccounteffects module state: the process-local suppression map in
-	// the memory driver, the Redis transient tombstones through the lazy
-	// store factory in the redis driver (Node
-	// gatewayAccountApiKeyTransientStateStore()).
-	guardConfig := gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: cfg.RuntimeStateDriver}
-	var guardFactory gatewayaccounteffects.TransientStateStoreFactory
-	if redisState {
-		guardFactory = func() (gatewayaccounteffects.AccountApiKeyTransientStateStore, error) {
-			return gatewayaccounteffects.NewRedisAccountApiKeyTransientStateStore(gatewayaccounteffects.RedisAccountApiKeyTransientStateStoreOptions{
-				RedisURL:  cfg.RedisStateURL,
-				Namespace: cfg.RedisNamespace,
-			})
-		}
+	// ---- account api-key failure guard (redis transient tombstones) ----
+	// gatewayaccounteffects module state: the Redis transient tombstones
+	// through the lazy store factory (Node gatewayAccountApiKeyTransientStateStore()).
+	guardConfig := gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: "redis"}
+	guardFactory := func() (gatewayaccounteffects.AccountApiKeyTransientStateStore, error) {
+		return gatewayaccounteffects.NewRedisAccountApiKeyTransientStateStore(gatewayaccounteffects.RedisAccountApiKeyTransientStateStoreOptions{
+			RedisURL:  cfg.RedisStateURL,
+			Namespace: cfg.RedisNamespace,
+		})
 	}
 	services.AccountAPIKeyGuard = gatewayaccounteffects.NewAccountAPIKeyFailureGuard(guardConfig, gatewayaccounteffects.SystemClock{}, nil, guardFactory)
 
@@ -805,16 +734,12 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		gatewayaccounteffects.SlogLogger(slog.Default()),
 	)
 
-	// D-132：避让状态存储随 runtimeStateDriver 分叉（与 jobs 只读消费同一
+	// D-132：避让状态存储在 redis 运行态（与 jobs 只读消费同一
 	// `juhe-ai:<ns>:state:gateway-configured-account-policy-avoidance:` 键空间）。
-	var avoidanceStore gatewayaccounteffects.PolicyAvoidanceStateStore = gatewayproxyhealth.NewMemoryRuntimeStateStore(nil)
-	if redisState && stateClient != nil {
-		redisAvoidanceStore, avoidanceErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayaccounteffects.ConfiguredPolicyAvoidanceStoreName)
-		if avoidanceErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("create configured policy avoidance runtime state: %w", avoidanceErr)
-		}
-		avoidanceStore = redisAvoidanceStore
+	avoidanceStore, avoidanceErr := gatewayproxyhealth.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace, gatewayaccounteffects.ConfiguredPolicyAvoidanceStoreName)
+	if avoidanceErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create configured policy avoidance runtime state: %w", avoidanceErr)
 	}
 	services.ConfiguredPolicyAvoidance = gatewayaccounteffects.NewConfiguredPolicyAvoidanceService(
 		avoidanceStore,
@@ -833,18 +758,13 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		services.Close()
 		return nil, fmt.Errorf("create gateway session identity service: %w", identityErr)
 	}
+	// redis 驱动轴恒定（存储形态收口）：账户级亲和的 cache/state 都走 Redis。
 	affinityConfig := gatewaysession.AffinityConfig{
-		CacheDriver:        gatewaysession.CacheDriverMemory,
-		RuntimeStateDriver: gatewaysession.RuntimeStateDriverMemory,
+		CacheDriver:        gatewaysession.CacheDriverRedis,
+		RuntimeStateDriver: gatewaysession.RuntimeStateDriverRedis,
+		RedisCacheURL:      cfg.RedisCacheURL,
+		RedisNamespace:     cfg.RedisNamespace,
 		Secret:             cfg.Secret,
-	}
-	if redisCache {
-		affinityConfig.CacheDriver = gatewaysession.CacheDriverRedis
-		affinityConfig.RedisCacheURL = cfg.RedisCacheURL
-		affinityConfig.RedisNamespace = cfg.RedisNamespace
-	}
-	if redisState {
-		affinityConfig.RuntimeStateDriver = gatewaysession.RuntimeStateDriverRedis
 	}
 	affinityService, affinityErr := gatewaysession.NewAffinityService(affinityConfig)
 	if affinityErr != nil {
@@ -852,16 +772,15 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create gateway session affinity service: %w", affinityErr)
 	}
 	// 组级会话黏性（策略路由分组会话亲和设计 §3）：独立数据面（键空间/记录/
-	// 端口独立），驱动与账户级亲和同源（redisCache 置位走 Redis，否则进程内
-	// TTL——Redis TTL 1h 读不刷新，memory TTL 24h）。
+	// 端口独立），驱动与账户级亲和同源（redisCache 恒置位走 Redis，Redis
+	// TTL 1h 读不刷新）。D5（存储形态收口）：memory TTL 臂（24h）随 memory
+	// 驱动退役；trafficMigrationPreference 在 redis 下本无实现，生产行为
+	// （关闭）不变。
 	groupAffinityConfig := gatewaysession.GroupAffinityConfig{
-		CacheDriver: gatewaysession.CacheDriverMemory,
-		Secret:      cfg.Secret,
-	}
-	if redisCache {
-		groupAffinityConfig.CacheDriver = gatewaysession.CacheDriverRedis
-		groupAffinityConfig.RedisCacheURL = cfg.RedisCacheURL
-		groupAffinityConfig.RedisNamespace = cfg.RedisNamespace
+		CacheDriver:      gatewaysession.CacheDriverRedis,
+		RedisCacheURL:    cfg.RedisCacheURL,
+		RedisNamespace:   cfg.RedisNamespace,
+		Secret:           cfg.Secret,
 	}
 	groupAffinityService, groupAffinityErr := gatewaysession.NewGroupAffinityService(groupAffinityConfig)
 	if groupAffinityErr != nil {

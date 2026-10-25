@@ -36,11 +36,10 @@ func TestListChatAccountOptionsAdminSeesAllUndeleted(t *testing.T) {
 		{id: "acc_active_2", owner: "owner-b", name: "可用账户", status: "active", schedulable: 1, deletedAt: nil, authorization: nil},
 		{id: "acc_active_1", owner: "owner-a", name: "可用账户", status: "active", schedulable: 1, deletedAt: nil, authorization: nil},
 	} {
-		if _, err := env.db.Exec(
-			`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+		if _, err := env.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 				protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted,
 				deleted_at, authorization_instance_authorization_id, created_at, updated_at)
-			VALUES (?, ?, NULL, 'generic_http', 'openai', 'v1', ?, 'api_key', ?, ?, 'enc', ?, ?,
+			VALUES ($1, $2, NULL, 'generic_http', 'openai', 'v1', $3, 'api_key', $4, $5, 'enc', $6, $7,
 				'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 			row.id, row.owner, row.name, row.status, row.schedulable, row.deletedAt, row.authorization); err != nil {
 			t.Fatal(err)
@@ -107,11 +106,10 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 		{id: "acc_own_deleted", owner: viewer, name: "d 自有已删", status: "active", schedulable: 1, deletedAt: "2026-01-02T00:00:00.000Z", authorization: nil},
 		{id: "acc_own_stamped", owner: viewer, name: "e 自有实例戳", status: "active", schedulable: 1, deletedAt: nil, authorization: "authz-1"},
 	} {
-		if _, err := env.db.Exec(
-			`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+		if _, err := env.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 				protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted,
 				deleted_at, authorization_instance_authorization_id, created_at, updated_at)
-			VALUES (?, ?, NULL, 'generic_http', 'openai', 'v1', ?, 'api_key', ?, ?, 'enc', ?, ?,
+			VALUES ($1, $2, NULL, 'generic_http', 'openai', 'v1', $3, 'api_key', $4, $5, 'enc', $6, $7,
 				'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 			row.id, row.owner, row.name, row.status, row.schedulable, row.deletedAt, row.authorization); err != nil {
 			t.Fatal(err)

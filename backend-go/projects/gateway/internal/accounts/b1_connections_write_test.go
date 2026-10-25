@@ -74,7 +74,7 @@ func TestB1CreateWritesConnectionRows(t *testing.T) {
 	// health-check 三字段事务闭环：全部非 NULL 且指向 enabled 连接行。
 	var healthConnection, healthMode, healthModel string
 	if err := env.db.QueryRow(`SELECT health_check_connection_id, health_check_endpoint_mode, health_check_model
-		FROM accounts WHERE id = ?`, id).Scan(&healthConnection, &healthMode, &healthModel); err != nil {
+		FROM accounts WHERE id = $1`, id).Scan(&healthConnection, &healthMode, &healthModel); err != nil {
 		t.Fatal(err)
 	}
 	if healthConnection != connectionID || healthMode != "chat_json" || healthModel != "gpt-4o-mini" {
@@ -288,7 +288,7 @@ func TestB1CloneCopiesConnectionRows(t *testing.T) {
 	// health 三字段指向克隆体自己的连接行。
 	var healthConnection, healthMode, healthModel string
 	if err := env.db.QueryRow(`SELECT health_check_connection_id, health_check_endpoint_mode, health_check_model
-		FROM accounts WHERE id = ?`, cloneID).Scan(&healthConnection, &healthMode, &healthModel); err != nil {
+		FROM accounts WHERE id = $1`, cloneID).Scan(&healthConnection, &healthMode, &healthModel); err != nil {
 		t.Fatal(err)
 	}
 	if healthConnection != cloneConnectionID || healthMode != "chat_json" || healthModel != "gpt-4o-mini" {

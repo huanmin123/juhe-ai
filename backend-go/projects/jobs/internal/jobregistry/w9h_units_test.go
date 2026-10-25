@@ -24,21 +24,6 @@ func TestW9HWiredJobNamesAndModeConstraints(t *testing.T) {
 		t.Fatal("both stats jobs share the aggregation interval key")
 	}
 
-	if constraint, ok := ModeConstraintFor("usage-stats-aggregation"); ok {
-		t.Fatalf("usage-stats-aggregation must not carry a constraint: %+v", constraint)
-	}
-	found := false
-	for name := range modeConstraints() {
-		constraint, ok := ModeConstraintFor(name)
-		if !ok {
-			t.Fatalf("%s listed in modeConstraints but lookup missed", name)
-		}
-		found = true
-		_ = constraint
-	}
-	if !found {
-		t.Fatal("modeConstraints must not be empty")
-	}
 }
 
 func w9hSettingsInterval(duration time.Duration) SettingsInterval {
@@ -67,51 +52,5 @@ func TestW9HResolveScheduleArms(t *testing.T) {
 	}
 	if _, ok := ResolveSchedule("usage-stats-aggregation", nil); !ok {
 		t.Fatal("nil settings must still resolve")
-	}
-}
-
-func TestW9HResolveScheduleForDriverArms(t *testing.T) {
-	constrained := ""
-	for name := range modeConstraints() {
-		constrained = name
-		break
-	}
-	if constrained == "" {
-		t.Fatal("modeConstraints must not be empty")
-	}
-	constraint, _ := ModeConstraintFor(constrained)
-
-	if constraint.PostgresOnly {
-		if _, ok := ResolveScheduleForDriver(constrained, nil, "sqlite"); ok {
-			t.Fatalf("%s postgres-only 必须在 sqlite 下不注册", constrained)
-		}
-		if _, ok := ResolveScheduleForDriver(constrained, nil, "postgres"); !ok {
-			t.Fatalf("%s postgres-only 必须在 postgres 下注册", constrained)
-		}
-	}
-	if constraint.SQLiteOnly {
-		if _, ok := ResolveScheduleForDriver(constrained, nil, "postgres"); ok {
-			t.Fatalf("%s sqlite-only 必须在 postgres 下不注册", constrained)
-		}
-		if _, ok := ResolveScheduleForDriver(constrained, nil, "sqlite"); !ok {
-			t.Fatalf("%s sqlite-only 必须在 sqlite 下注册", constrained)
-		}
-	}
-	if !constraint.PostgresOnly && !constraint.SQLiteOnly && constraint.SQLiteInterval > 0 {
-		schedule, ok := ResolveScheduleForDriver(constrained, nil, "sqlite")
-		if !ok || schedule.Interval != constraint.SQLiteInterval {
-			t.Fatalf("sqlite interval schedule=%+v want %d", schedule, constraint.SQLiteInterval)
-		}
-		schedule, ok = ResolveScheduleForDriver(constrained, w9hSettingsInterval(777*time.Second), "sqlite")
-		if !ok || schedule.Interval != 777*time.Second {
-			t.Fatalf("settings override schedule=%+v", schedule)
-		}
-		pgSchedule, ok := ResolveScheduleForDriver(constrained, nil, "postgres")
-		if !ok || pgSchedule.Interval == constraint.SQLiteInterval {
-			t.Fatalf("postgres branch keeps base interval: %+v", pgSchedule)
-		}
-	}
-	if _, ok := ResolveScheduleForDriver("w9h-unknown", nil, "sqlite"); ok {
-		t.Fatal("unknown job must not resolve")
 	}
 }

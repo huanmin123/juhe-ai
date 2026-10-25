@@ -71,7 +71,7 @@ func TestT52PatchMappingTargetValidatedAgainstPostPatchSupportedModels(t *testin
 		t.Fatalf("生效后集合内的 target 应放行：%d %v", code, payload)
 	}
 	if got := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ?
-		AND source_model = 'gpt-4o' AND target_model_id = (SELECT id FROM models WHERE upstream_model = 'gpt-4o')`, id); got != 1 {
+		AND source_model = 'gpt-4o' AND target_model_id = (SELECT id FROM models WHERE upstream_model = 'gpt-4o' AND vendor_code = 'gpt')`, id); got != 1 {
 		t.Fatalf("映射未落库：%d", got)
 	}
 }

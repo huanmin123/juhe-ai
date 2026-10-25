@@ -11,13 +11,11 @@ import (
 
 func newHourlyWriterFixture(t *testing.T) (*healthHourlyWriter, func(t *testing.T) (string, string, string, sql.NullString)) {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(context.Background(), `CREATE TABLE account_health_hourly (
+	// PG 唯一形态：独立 PG 测试库 + sqldialect 改写（`:memory:` sqlite 夹具
+	// 随 sqlite 形态退役删除；`?` 由 sqldialect 保留测试内写法）。
+	db, _ := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_stats;
+CREATE TABLE juhe_stats.account_health_hourly (
 		account_id text NOT NULL,
 		system_account_id text NOT NULL,
 		provider_code text NOT NULL,
@@ -29,13 +27,12 @@ func newHourlyWriterFixture(t *testing.T) (*healthHourlyWriter, func(t *testing.
 		error_code text,
 		error_message text,
 		updated_at text NOT NULL,
-		PRIMARY KEY (account_id, stat_hour))`); err != nil {
-		t.Fatalf("create table: %v", err)
-	}
+		PRIMARY KEY (account_id, stat_hour))`)
+		return err
+	})
 	location := time.FixedZone("cjz", 8*3600)
 	writer := &healthHourlyWriter{
 		db:       db,
-		postgres: false,
 		timezone: func(context.Context) (*time.Location, error) { return location, nil },
 		now:      func() time.Time { return time.Date(2026, 9, 26, 15, 0, 0, 0, time.UTC) },
 	}
@@ -44,7 +41,7 @@ func newHourlyWriterFixture(t *testing.T) (*healthHourlyWriter, func(t *testing.
 		var status, statHour, lastObserved string
 		var statusCode sql.NullString
 		if err := db.QueryRowContext(context.Background(), `SELECT status, stat_hour, last_observed_at, status_code
-			FROM account_health_hourly WHERE account_id = 'acc-1'`).Scan(&status, &statHour, &lastObserved, &statusCode); err != nil {
+			FROM juhe_stats.account_health_hourly WHERE account_id = 'acc-1'`).Scan(&status, &statHour, &lastObserved, &statusCode); err != nil {
 			t.Fatalf("read strip row: %v", err)
 		}
 		return status, statHour, lastObserved, statusCode

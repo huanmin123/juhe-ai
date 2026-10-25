@@ -20,7 +20,7 @@ func seedImportProxy(t *testing.T, env *testEnv, id, ownerID, name string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES (?, ?, ?, 'socks5', '127.0.0.1', 1080, 1, 'unknown', ?, ?)`, id, ownerID, name, now, now)
+		VALUES (?, ?, ?, 'socks5', '127.0.0.1', 1080, true, 'unknown', ?, ?)`, id, ownerID, name, now, now)
 }
 
 // seedOpenAICompatibleProvider mirrors the adapter constants: the openai

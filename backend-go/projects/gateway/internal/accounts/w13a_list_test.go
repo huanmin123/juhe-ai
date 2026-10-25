@@ -19,9 +19,9 @@ func TestW13AListFilterMatrixAndHydration(t *testing.T) {
 
 	// 代理三态：启用 / 停用。
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-on', ?, 'w13a-on', 'socks5', 'h', 1080, 1, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13a-on', ?, 'w13a-on', 'socks5', 'h', 1080, true, 'unknown', ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-off', ?, 'w13a-off', 'http', 'h', 8080, 0, 'unknown', ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w13a-off', ?, 'w13a-off', 'http', 'h', 8080, false, 'unknown', ?, ?)`, adminID, now, now)
 
 	env.seedAccount(t, "acc-w13a-l1", adminID, "w13a-l1", "active")
 	env.exec(t, `UPDATE accounts SET proxy_profile_id = 'proxy-w13a-on' WHERE id = 'acc-w13a-l1'`)
@@ -112,7 +112,7 @@ func TestW13AListAuthorizedProxyProjection(t *testing.T) {
 	now := "2026-09-17T00:00:00.000Z"
 	// 来源账户绑定启用代理。
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
-		VALUES ('proxy-w13a-lsrc', ?, 'w13a-lsrc-proxy', 'socks5', 'h', 1080, 1, 'unknown', ?, ?)`, ownerID, now, now)
+		VALUES ('proxy-w13a-lsrc', ?, 'w13a-lsrc-proxy', 'socks5', 'h', 1080, true, 'unknown', ?, ?)`, ownerID, now, now)
 	env.exec(t, `UPDATE accounts SET proxy_profile_id = 'proxy-w13a-lsrc' WHERE id = 'acc-w13a-lsrc'`)
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-w13a-list", ownerID, memberID)
@@ -142,7 +142,7 @@ func TestW13AListAuthorizedProxyProjection(t *testing.T) {
 	}
 
 	// 来源代理停用 → 实例侧不可用（无管理员文案）。
-	env.exec(t, `UPDATE proxy_profiles SET enabled = 0 WHERE id = 'proxy-w13a-lsrc'`)
+	env.exec(t, `UPDATE proxy_profiles SET enabled = false WHERE id = 'proxy-w13a-lsrc'`)
 	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/my-accounts", ""); code != http.StatusOK {
 		t.Fatalf("成员列表二应 200：%d %v", code, payload)
 	} else {

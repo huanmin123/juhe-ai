@@ -18,8 +18,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,7 +40,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	platformaccountbalance "github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 )
@@ -1058,23 +1055,6 @@ func TestW1TSSEOverflowClosesSubscriberChannel(t *testing.T) {
 		t.Fatalf("溢出关闭分支未收敛")
 	}
 }
-
-func TestW1TOpenChatDatabaseSQLiteArms(t *testing.T) {
-	if _, _, err := openChatDatabase(runtimeConfig{}, pgpool.NewRegistry(), nil, false); err == nil ||
-		!strings.Contains(err.Error(), "JUHE_AI_CHAT_DATABASE_PATH") {
-		t.Fatalf("err = %v, want 缺少 JUHE_AI_CHAT_DATABASE_PATH", err)
-	}
-
-	garbage := filepath.Join(t.TempDir(), "w1t-not-sqlite.bin")
-	if err := os.WriteFile(garbage, []byte("this is not a sqlite database at all"), 0o600); err != nil {
-		t.Fatalf("写垃圾文件: %v", err)
-	}
-	if _, _, err := openChatDatabase(runtimeConfig{ChatDatabasePath: garbage}, pgpool.NewRegistry(), nil, false); err == nil ||
-		!strings.Contains(err.Error(), "configure chat sqlite database") {
-		t.Fatalf("err = %v, want configure chat sqlite database 失败", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // chain_runtime.go：组合根 redis 驱动闭包 + 错误臂
 // ---------------------------------------------------------------------------
@@ -1091,12 +1071,9 @@ func TestW1TRuntimeComposeRedisDriverClosures(t *testing.T) {
 	}
 	cfg := runtimeConfig{
 		Secret:                        "w1t-runtime-secret",
-		CacheDriver:                   "redis",
-		RuntimeStateDriver:            "redis",
 		RedisCacheURL:                 "redis://" + mr.Addr(),
 		RedisStateURL:                 "redis://" + mr.Addr(),
 		RedisNamespace:                "juhe-ai:w1t",
-		RuntimeMode:                   "performance",
 		DispatchAccountCandidateLimit: 20,
 		ConcurrencyGlobalMax:          64,
 	}
@@ -1144,7 +1121,7 @@ func TestW1TRuntimeComposeErrorArms(t *testing.T) {
 		if err := composed.statsDB.Close(); err != nil {
 			t.Fatalf("关闭 stats 库: %v", err)
 		}
-		cfg := runtimeConfig{Secret: "w1t-runtime-secret", CacheDriver: "memory", RuntimeStateDriver: "memory", DispatchAccountCandidateLimit: 20}
+		cfg := runtimeConfig{Secret: "w1t-runtime-secret", DispatchAccountCandidateLimit: 20}
 		if _, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue); err == nil {
 			t.Fatal("关闭的 stats 库必须使组合失败")
 		}
@@ -1156,7 +1133,7 @@ func TestW1TRuntimeComposeErrorArms(t *testing.T) {
 			statsDB:   w1uOpenPlainSQLite(t, "w1t-err2-stats.sqlite3"),
 			pgDialect: false,
 		}
-		cfg := runtimeConfig{Secret: "w1t-runtime-secret", CacheDriver: "memory", RuntimeStateDriver: "memory", DispatchAccountCandidateLimit: 20}
+		cfg := runtimeConfig{Secret: "w1t-runtime-secret", DispatchAccountCandidateLimit: 20}
 		if _, err := composeChainRuntimeServices(composed, cfg, func(string) (string, error) { return "", errors.New("设置读取失败") }); err == nil {
 			t.Fatal("报错的设置读取器必须使组合失败")
 		}
@@ -1380,12 +1357,10 @@ func TestW1TOpenAICompatMountGuards(t *testing.T) {
 }
 
 func TestW1TTurnRetryRedisStateStoreTails(t *testing.T) {
-	// nil 客户端构造为 (nil, nil)；OrMaintain 同样收敛 nil。
-	if store, err := newChainTurnRetryRedisStateStore(nil, ""); err != nil || store != nil {
-		t.Fatalf("nil 客户端构造 = (%+v, %v), want (nil, nil)", store, err)
-	}
-	if store := newChainTurnRetryRedisStateStoreOrNil(nil, ""); store != nil {
-		t.Fatalf("nil 客户端 OrNil = %+v, want nil", store)
+	// 空命名空间构造失败（nil 客户端回退臂已随存储形态退役删除）。
+	if _, err := newChainTurnRetryRedisStateStoreOrNil(nil, ""); err == nil ||
+		!strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("空命名空间 OrNil err = %v, want 缺少 namespace", err)
 	}
 
 	_, client := w1tSetupRedis(t)

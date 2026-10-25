@@ -302,8 +302,14 @@ func TestW11AStoreConstructorAndCleanupArms(t *testing.T) {
 	invalidator.InvalidateQuota("w11a-key", "w11a-reason")
 	invalidator.InvalidateRuntime("w11a-key", "w11a-reason")
 
-	// SQLite store without the dataset handle refuses the cleanup target.
-	if err := env.store.RegisterCleanupTarget(context.Background(), "w11a-key", "w11a-owner"); err == nil {
+	// SQLite store without the dataset handle refuses the cleanup target
+	// （SQLite-only 生产臂契约，组B：显式构造 sqlite 臂 store；PG 臂在同一
+	// 连接池的 juhe_dataset schema 落目标，无此拒绝臂）。
+	sqliteStore, err := NewStore(env.db, false, "w11a-secret", time.Now, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqliteStore.RegisterCleanupTarget(context.Background(), "w11a-key", "w11a-owner"); err == nil {
 		t.Fatal("missing dataset db must fail")
 	}
 
@@ -320,9 +326,9 @@ func TestW11AStoreConstructorAndCleanupArms(t *testing.T) {
 		last_blocked_reason TEXT, last_error_message TEXT)`); err != nil {
 		t.Fatal(err)
 	}
-	wired, err := NewStore(env.db, false, "w11a-secret", time.Now, nil, nil)
-	if err != nil {
-		t.Fatal(err)
+	wired, wiredErr := NewStore(env.db, false, "w11a-secret", time.Now, nil, nil)
+	if wiredErr != nil {
+		t.Fatal(wiredErr)
 	}
 	wired.datasetDB = dataset
 	if err := wired.RegisterCleanupTarget(context.Background(), "w11a-key", "w11a-owner"); err != nil {
@@ -347,19 +353,22 @@ func TestW11AScheduleTimezoneFallbacks(t *testing.T) {
 		t.Fatalf("timezone cache = %q vs %q", first, second)
 	}
 	// Malformed stored values degrade to the fallback.
-	if _, err := env.db.Exec(`INSERT OR REPLACE INTO system_settings (system_account_id, key, value_json, updated_at)
-		VALUES ('sys_admin', 'usageStatsTimezone', 'not-json', ?)`, isoMillis(time.Now())); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+		VALUES ('sys_admin', 'usageStatsTimezone', 'not-json', ?)
+		ON CONFLICT (system_account_id, key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at`), isoMillis(time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.db.Exec(`INSERT OR REPLACE INTO system_settings (system_account_id, key, value_json, updated_at)
-		VALUES ('sys_admin', 'usageStatsTimezone', '""', ?)`, isoMillis(time.Now())); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+		VALUES ('sys_admin', 'usageStatsTimezone', '""', ?)
+		ON CONFLICT (system_account_id, key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at`), isoMillis(time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if got := env.store.readUsageStatsTimezoneSetting(); got != "" {
 		t.Fatalf("blank timezone = %q", got)
 	}
-	if _, err := env.db.Exec(`INSERT OR REPLACE INTO system_settings (system_account_id, key, value_json, updated_at)
-		VALUES ('sys_admin', 'usageStatsTimezone', '"Mars/Olympus"', ?)`, isoMillis(time.Now())); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+		VALUES ('sys_admin', 'usageStatsTimezone', '"Mars/Olympus"', ?)
+		ON CONFLICT (system_account_id, key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at`), isoMillis(time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if got := env.store.readUsageStatsTimezoneSetting(); got != "" {
@@ -437,8 +446,11 @@ func TestW11AStoreBrokenSchemaArms(t *testing.T) {
 	t.Run("update_trigger_failure", func(t *testing.T) {
 		env := newTestEnv(t)
 		created := create(t, env)
+		env.exec(t, `CREATE FUNCTION w11a_block_key_update() RETURNS trigger AS $trig$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END
+			$trig$ LANGUAGE plpgsql`)
 		env.exec(t, `CREATE TRIGGER w11a_block_key_update BEFORE UPDATE ON api_keys
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`)
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_key_update()`)
 		revision := env.queryCell(t, `SELECT updated_at FROM api_keys WHERE id = ?`, created)
 		status, body := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/"+created,
 			`{"expectedRevision":"`+revision+`","status":"disabled"}`)
@@ -450,8 +462,11 @@ func TestW11AStoreBrokenSchemaArms(t *testing.T) {
 	t.Run("delete_trigger_failure", func(t *testing.T) {
 		env := newTestEnv(t)
 		created := create(t, env)
+		env.exec(t, `CREATE FUNCTION w11a_block_key_delete() RETURNS trigger AS $trig$
+			BEGIN RAISE EXCEPTION 'w11a blocked'; END
+			$trig$ LANGUAGE plpgsql`)
 		env.exec(t, `CREATE TRIGGER w11a_block_key_delete BEFORE DELETE ON api_keys
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`)
+			FOR EACH ROW EXECUTE FUNCTION w11a_block_key_delete()`)
 		status, body := env.do(t, http.MethodDelete, "/__aisys__/api/api-keys/"+created, "")
 		if status != http.StatusInternalServerError {
 			t.Fatalf("delete trigger = %d (%v)", status, body)

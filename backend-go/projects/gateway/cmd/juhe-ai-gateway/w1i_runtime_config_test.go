@@ -6,38 +6,23 @@ import (
 	"testing"
 )
 
+// w1i 测试基座（2026-10-24 存储形态收口）：PostgreSQL + Redis 是唯一存储
+// 形态，三个连接串 env 无条件必填；模式/驱动开关 env 已随生产删除。
+
 func w1iFakeEnv(values map[string]string) func(string) string {
 	return func(key string) string { return values[key] }
 }
 
-func TestW1iHasAnyRawConfig(t *testing.T) {
-	empty := w1iFakeEnv(map[string]string{})
-	if hasAnyRawConfig(empty, "A", "B") {
-		t.Fatal("empty env should return false")
+func w1iStorageEnv(extra map[string]string) map[string]string {
+	merged := map[string]string{
+		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
 	}
-	one := w1iFakeEnv(map[string]string{"A": "val"})
-	if !hasAnyRawConfig(one, "A", "B") {
-		t.Fatal("non-empty env should return true")
+	for key, value := range extra {
+		merged[key] = value
 	}
-	whitespace := w1iFakeEnv(map[string]string{"A": "   "})
-	if hasAnyRawConfig(whitespace, "A") {
-		t.Fatal("whitespace-only should return false")
-	}
-}
-
-func TestW1iEnvBoolTrue(t *testing.T) {
-	trueVals := []string{"true", "TRUE", "True"}
-	for _, v := range trueVals {
-		if !envBoolTrue(v) {
-			t.Fatalf("envBoolTrue(%q) = false", v)
-		}
-	}
-	falseVals := []string{"false", "", "no", "0", "x", "   "}
-	for _, v := range falseVals {
-		if envBoolTrue(v) {
-			t.Fatalf("envBoolTrue(%q) = true", v)
-		}
-	}
+	return merged
 }
 
 func TestW1iStrictEnvBool(t *testing.T) {
@@ -102,25 +87,9 @@ func TestW1iProductionRuntime(t *testing.T) {
 }
 
 func TestW1iLoadRuntimeConfigDefaults(t *testing.T) {
-	dir := t.TempDir()
-	env := w1iFakeEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH": filepath.Join(dir, "db.sqlite3"),
-	})
-	cfg, err := loadRuntimeConfig(env)
+	cfg, err := loadRuntimeConfig(w1iFakeEnv(w1iStorageEnv(nil)))
 	if err != nil {
 		t.Fatalf("default config: %v", err)
-	}
-	if cfg.RuntimeMode != "standalone" {
-		t.Fatalf("mode = %q", cfg.RuntimeMode)
-	}
-	if cfg.DatabaseDriver != "sqlite" {
-		t.Fatalf("db driver = %q", cfg.DatabaseDriver)
-	}
-	if cfg.CacheDriver != "memory" {
-		t.Fatalf("cache driver = %q", cfg.CacheDriver)
-	}
-	if cfg.RuntimeStateDriver != "memory" {
-		t.Fatalf("state driver = %q", cfg.RuntimeStateDriver)
 	}
 	if cfg.Host != "127.0.0.1" {
 		t.Fatalf("host = %q", cfg.Host)
@@ -131,37 +100,18 @@ func TestW1iLoadRuntimeConfigDefaults(t *testing.T) {
 	if cfg.ChatAssetsRoot != filepath.Join("data", "chat-assets") {
 		t.Fatalf("chat assets = %q", cfg.ChatAssetsRoot)
 	}
-}
-
-func TestW1iLoadRuntimeConfigPerformanceHints(t *testing.T) {
-	dir := t.TempDir()
-	env := w1iFakeEnv(map[string]string{
-		"JUHE_AI_POSTGRES_URL":    "postgres://x",
-		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
-		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
-		"JUHE_AI_DATABASE_PATH":   filepath.Join(dir, "db.sqlite3"),
-	})
-	cfg, err := loadRuntimeConfig(env)
-	if err != nil {
-		t.Fatalf("config: %v", err)
-	}
-	if cfg.RuntimeMode != "performance" {
-		t.Fatalf("mode = %q", cfg.RuntimeMode)
-	}
-	if cfg.CacheDriver != "redis" {
-		t.Fatalf("cache = %q", cfg.CacheDriver)
+	if cfg.UsageSpoolDirectory != filepath.Join("data", "usage-record-spool") {
+		t.Fatalf("usage spool = %q", cfg.UsageSpoolDirectory)
 	}
 }
 
 func TestW1iLoadRuntimeConfigInvalidValues(t *testing.T) {
-	dir := t.TempDir()
 	tests := []struct {
 		env     map[string]string
 		wantErr string
 	}{
-		{map[string]string{"JUHE_AI_DATABASE_PATH": filepath.Join(dir, "db.sqlite3"), "JUHE_AI_RUNTIME_MODE": "bogus"}, "standalone"},
-		{map[string]string{"JUHE_AI_DATABASE_PATH": filepath.Join(dir, "db.sqlite3"), "JUHE_AI_DATABASE_DRIVER": "bogus"}, "sqlite"},
-		{map[string]string{"JUHE_AI_DATABASE_PATH": filepath.Join(dir, "db.sqlite3"), "JUHE_AI_CACHE_DRIVER": "bogus"}, "memory"},
+		{w1iStorageEnv(map[string]string{"JUHE_AI_PORT": "bogus"}), "JUHE_AI_PORT"},
+		{w1iStorageEnv(map[string]string{"JUHE_AI_NODE_ENV": "staging"}), "production、test 或 development"},
 	}
 	for _, tc := range tests {
 		_, err := loadRuntimeConfig(w1iFakeEnv(tc.env))
@@ -172,49 +122,32 @@ func TestW1iLoadRuntimeConfigInvalidValues(t *testing.T) {
 }
 
 func TestW1iLoadRuntimeConfigMissingRedisURL(t *testing.T) {
-	dir := t.TempDir()
-	env := w1iFakeEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH": filepath.Join(dir, "db.sqlite3"),
-		"JUHE_AI_CACHE_DRIVER":  "redis",
-	})
-	_, err := loadRuntimeConfig(env)
+	env := w1iStorageEnv(nil)
+	delete(env, "JUHE_AI_REDIS_CACHE_URL")
+	_, err := loadRuntimeConfig(w1iFakeEnv(env))
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") {
 		t.Fatalf("missing redis cache url: %v", err)
 	}
 }
 
-// 2026-10-23 K2 本地收口批：redis runtime-state 驱动缺 JUHE_AI_REDIS_STATE_URL
-// 的启动负例断言，错误串对齐 runtime.go 原文（shared captcha/login-guard
-// 双驱动都依赖该 URL，缺失必须在装配前失败）。
 func TestW1iLoadRuntimeConfigMissingRedisStateURL(t *testing.T) {
-	dir := t.TempDir()
-	env := w1iFakeEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH":        filepath.Join(dir, "db.sqlite3"),
-		"JUHE_AI_RUNTIME_STATE_DRIVER": "redis",
-	})
-	_, err := loadRuntimeConfig(env)
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_STATE_DRIVER=redis 时缺少 JUHE_AI_REDIS_STATE_URL") {
+	env := w1iStorageEnv(nil)
+	delete(env, "JUHE_AI_REDIS_STATE_URL")
+	_, err := loadRuntimeConfig(w1iFakeEnv(env))
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_STATE_URL") {
 		t.Fatalf("missing redis state url: %v", err)
 	}
 }
 
 func TestW1iLoadRuntimeConfigPort(t *testing.T) {
-	dir := t.TempDir()
-	env := w1iFakeEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH": filepath.Join(dir, "db.sqlite3"),
-		"JUHE_AI_PORT":          "8080",
-	})
-	cfg, err := loadRuntimeConfig(env)
+	cfg, err := loadRuntimeConfig(w1iFakeEnv(w1iStorageEnv(map[string]string{"JUHE_AI_PORT": "8080"})))
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
 	if cfg.Port != 8080 {
 		t.Fatalf("port = %d", cfg.Port)
 	}
-	_, err = loadRuntimeConfig(w1iFakeEnv(map[string]string{
-		"JUHE_AI_DATABASE_PATH": filepath.Join(dir, "db.sqlite3"),
-		"JUHE_AI_PORT":          "abc",
-	}))
+	_, err = loadRuntimeConfig(w1iFakeEnv(w1iStorageEnv(map[string]string{"JUHE_AI_PORT": "abc"})))
 	if err == nil {
 		t.Fatal("non-numeric port accepted")
 	}
@@ -224,7 +157,6 @@ func TestW1iLoadRuntimeConfigPort(t *testing.T) {
 // 配置与短名落同一短形式，避免下游直接拼接型实现产生
 // `juhe-ai:juhe-ai:dev:...` 键空间分裂；短名逐字节不变。
 func TestW1iLoadRuntimeConfigCanonicalizesRedisNamespace(t *testing.T) {
-	dir := t.TempDir()
 	cases := map[string]string{
 		"juhe-ai:dev":   "dev",
 		"dev":           "dev",
@@ -232,10 +164,9 @@ func TestW1iLoadRuntimeConfigCanonicalizesRedisNamespace(t *testing.T) {
 		"juhe-ai:dev:":  "dev",
 	}
 	for raw, want := range cases {
-		cfg, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
-			"JUHE_AI_DATABASE_PATH":   filepath.Join(dir, "db.sqlite3"),
+		cfg, err := loadRuntimeConfig(w1iFakeEnv(w1iStorageEnv(map[string]string{
 			"JUHE_AI_REDIS_NAMESPACE": raw,
-		}))
+		})))
 		if err != nil {
 			t.Fatalf("namespace %q: %v", raw, err)
 		}

@@ -15,12 +15,13 @@ import (
 // 同名 id REPLACE 覆盖（精确保控该模型名的目录行，避免种子全集 mode 行漏进
 // 判定）；custom 行落 global/personal scope（旧表行等价形态）。
 const w14bTestCatalogRows = `
-REPLACE INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
 	supported_endpoint_modes_json, release_date, catalog_visible, created_at, updated_at)
 VALUES ('mod-fixture-gpt-4o-mini-gpt', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', NULL, 'active',
-	'["chat_json","chat_sse","responses_json","responses_sse"]', '2024-07-18', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+	'["chat_json","chat_sse","responses_json","responses_sse"]', '2024-07-18', true, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
        ('mdl-b4-w14b-gpt-old', 'gpt', 'gpt-old', 'gpt-old', 'builtin', NULL, 'active',
-	'[]', NULL, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+	'[]', NULL, true, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+			ON CONFLICT (id) DO UPDATE SET vendor_code = EXCLUDED.vendor_code, public_model = EXCLUDED.public_model, upstream_model = EXCLUDED.upstream_model, scope = EXCLUDED.scope, system_account_id = EXCLUDED.system_account_id, status = EXCLUDED.status, supported_endpoint_modes_json = EXCLUDED.supported_endpoint_modes_json, release_date = EXCLUDED.release_date, shutdown_date = EXCLUDED.shutdown_date, catalog_visible = EXCLUDED.catalog_visible, catalog_order = EXCLUDED.catalog_order, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at;
 `
 
 const w14bTestSessionDDL = `
@@ -61,7 +62,7 @@ CREATE TABLE IF NOT EXISTS account_test_tasks (
 	model TEXT,
 	test_endpoint_mode TEXT,
 	result_json TEXT,
-	cancel_requested INTEGER NOT NULL DEFAULT 0,
+	cancel_requested boolean NOT NULL DEFAULT false,
 	created_at TEXT NOT NULL DEFAULT '',
 	queued_at TEXT NOT NULL DEFAULT '',
 	queued_deadline_at TEXT,
@@ -94,14 +95,15 @@ func TestW14BManualTestOptionsFlow(t *testing.T) {
 
 	// 自定义目录：全局 + 个人 scope，同名模型两条不同发布日期（胜者比较臂）；
 	// retired 行不进候选。
-	env.exec(t, `REPLACE INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
 		supported_endpoint_modes_json, release_date, created_at, updated_at)
 		VALUES ('mdl-b4-w14b-custom-a-global', 'gpt', 'custom-a', 'custom-a', 'global', NULL, 'active',
 			'["chat_json","chat_sse"]', '2024-01-01', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
 		       ('mdl-b4-w14b-custom-a-personal', 'gpt', 'custom-a', 'custom-a', 'personal', ?, 'active',
 			'["chat_json","chat_sse"]', '2024-06-01', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
 		       ('mdl-b4-w14b-custom-old', 'gpt', 'custom-old', 'custom-old', 'global', NULL, 'retired',
-			'[]', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)
+			'[]', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+			ON CONFLICT (id) DO UPDATE SET vendor_code = EXCLUDED.vendor_code, public_model = EXCLUDED.public_model, upstream_model = EXCLUDED.upstream_model, scope = EXCLUDED.scope, system_account_id = EXCLUDED.system_account_id, status = EXCLUDED.status, supported_endpoint_modes_json = EXCLUDED.supported_endpoint_modes_json, release_date = EXCLUDED.release_date, shutdown_date = EXCLUDED.shutdown_date, catalog_visible = EXCLUDED.catalog_visible, catalog_order = EXCLUDED.catalog_order, created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at`, adminID)
 
 	// 空 accountID → nil, nil。
 	if got, err := env.store.FindManualTestOptionsContext(ctx, "", &scope); err != nil || got != nil {
@@ -161,13 +163,14 @@ func TestW14BManualTestOptionsFlow(t *testing.T) {
 		t.Fatalf("损坏密文能力上下文应返回 nil：%v %v", got, err)
 	}
 
-	// pg 字面量分支（直接构造 pg 视角 Store）。
+	// 字面量分支（零值 Store 即 sqlite 臂视角；env.store 已是 PG 臂）。
+	sqliteStore := &Store{pg: false}
 	pgStore := &Store{pg: true}
-	if testTodayText(pgStore) != "CURRENT_DATE::text" || testTodayText(env.store) != "date('now')" {
+	if testTodayText(pgStore) != "CURRENT_DATE::text" || testTodayText(sqliteStore) != "date('now')" {
 		t.Fatal("今日字面量分支不符")
 	}
 	if pgStore.boolTrueLiteral() != "TRUE" || pgStore.boolFalseLiteral() != "FALSE" ||
-		env.store.boolTrueLiteral() != "1" || env.store.boolFalseLiteral() != "0" {
+		sqliteStore.boolTrueLiteral() != "1" || sqliteStore.boolFalseLiteral() != "0" {
 		t.Fatal("pg 布尔字面量分支不符")
 	}
 	if normalizeTestProviderCodeList([]string{" openai ", "", "openai", "OPENAI"})[0] != "openai" {

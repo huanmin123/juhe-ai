@@ -439,28 +439,27 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 	return secret
 }
 
-// seedSettingsDefaults mirrors seedSystemSettings with the settings the chain
-// preflight reads.
+// seedSettingsDefaults reuses the shared dialect-aware seedSystemSettings
+// (sqlite fixture handle → bare table + `?` placeholders; PG handle →
+// juhe_business qualification), so the chain fixture cannot drift from the
+// canonical defaults the request pipeline reads.
 func seedSettingsDefaults(t *testing.T, db *sql.DB) {
 	t.Helper()
-	// Reuse the canonical composition seed so this fixture cannot silently
-	// drift when a new runtime system setting becomes part of the request
-	// pipeline. The chain database already has the compatible schema.
 	seedSystemSettings(t, db)
 }
+
+
 
 // ---------------------------------------------------------------------------
 // compose-level chain assembly
 // ---------------------------------------------------------------------------
 
 func TestComposeSystemAPIServesGatewayChain(t *testing.T) {
-	cfg := composeTestConfig(t)
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	cfg.ChainEnabled = true
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api with chain: %v", err)
 	}

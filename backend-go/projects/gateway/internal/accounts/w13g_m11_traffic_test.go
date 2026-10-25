@@ -35,11 +35,11 @@ func w13gTrafficAuthorizedEnv(t *testing.T) (*testEnv, *authz.Store, *Store) {
 	for _, statement := range m10AuthzDDL {
 		base.exec(t, statement)
 	}
-	authzStore, err := authz.NewStore(base.db, false, nil)
+	authzStore, err := authz.NewStore(base.db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(base.db, false, testSecret, nil, nil)
+	store, err := NewStore(base.db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestW13GMigrateAuthorizedTrafficMatrix(t *testing.T) {
 		t.Fatalf("unchanged 结果：%+v", result)
 	}
 	var status string
-	if err := env.db.QueryRow(`SELECT status FROM accounts WHERE id = ?`, instA).Scan(&status); err != nil {
+	if err := env.db.QueryRow(`SELECT status FROM accounts WHERE id = $1`, instA).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "active" {
@@ -167,7 +167,7 @@ func TestW13GMigrateAuthorizedTrafficMatrix(t *testing.T) {
 	if result.SourceStatus != string(trafficSourceTemporaryUnavailable) || result.SourceCooldownUntil == nil {
 		t.Fatalf("临时不可用结果：%+v", result)
 	}
-	if err := env.db.QueryRow(`SELECT status, schedulable FROM accounts WHERE id = ?`, instA).Scan(&status, new(int)); err != nil {
+	if err := env.db.QueryRow(`SELECT status, schedulable FROM accounts WHERE id = $1`, instA).Scan(&status, new(int)); err != nil {
 		t.Fatal(err)
 	}
 	if status != "temporary_unavailable" {
@@ -185,7 +185,7 @@ func TestW13GMigrateAuthorizedTrafficMatrix(t *testing.T) {
 		t.Fatalf("停用结果：%+v", result)
 	}
 	var schedulable int
-	if err := env.db.QueryRow(`SELECT status, schedulable FROM accounts WHERE id = ?`, instA).Scan(&status, &schedulable); err != nil {
+	if err := env.db.QueryRow(`SELECT status, schedulable FROM accounts WHERE id = $1`, instA).Scan(&status, &schedulable); err != nil {
 		t.Fatal(err)
 	}
 	if status != "disabled" || schedulable != 0 {

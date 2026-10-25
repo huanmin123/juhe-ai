@@ -5,13 +5,10 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	_ "modernc.org/sqlite"
 )
 
@@ -64,41 +61,6 @@ func TestW1TrustProxyCountAndTrim(t *testing.T) {
 	}
 	if got := trimSpace("\t 甲乙 \t"); got != "甲乙" {
 		t.Fatalf("trim = %q", got)
-	}
-}
-
-func TestW1SQLiteComposeHelpers(t *testing.T) {
-	// DSN：绝对 file URL + busy timeout + _txlock=immediate（与 jobs 侧
-	// 跨进程共写语义对齐，理由见 sqliteFileDSN 注释）。
-	path := filepath.Join(t.TempDir(), "w1.sqlite3")
-	if got := sqliteFileDSN(path); got != "file:"+path+"?_pragma=busy_timeout(5000)&_txlock=immediate" {
-		t.Fatalf("dsn = %q", got)
-	}
-	// 方言转换。
-	if businessDialect(false) != businesssettings.SQLite || businessDialect(true) != businesssettings.Postgres {
-		t.Fatal("方言转换错误")
-	}
-	// 只读打开不存在的文件：打开成功但查询报错（ro 模式不建库）。
-	ro, err := openSQLiteReadOnly(filepath.Join(t.TempDir(), "missing.sqlite3"))
-	if err != nil {
-		t.Fatalf("ro open = %v", err)
-	}
-	t.Cleanup(func() { _ = ro.Close() })
-	if _, err := ro.Query("SELECT 1"); err == nil {
-		t.Fatal("只读打开缺失库必须查询失败")
-	}
-	// PRAGMA 配置：正常句柄全通过。
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open = %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := configureSQLiteConnection(db); err != nil {
-		t.Fatalf("configure = %v", err)
-	}
-	var mode string
-	if err := db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
-		t.Fatalf("journal = %q, %v", mode, err)
 	}
 }
 

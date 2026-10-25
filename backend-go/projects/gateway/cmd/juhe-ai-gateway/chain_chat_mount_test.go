@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,16 +22,14 @@ import (
 // token-less request authenticates as the seeded admin account).
 func composeChatTestSystemAPI(t *testing.T, devAutoLogin bool) (*composition, *httptest.Server) {
 	t.Helper()
-	cfg := composeTestConfig(t)
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
 	cfg.ChainEnabled = true
 	if devAutoLogin {
 		cfg.DevAutoLoginUsername = "admin"
 	}
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api with chat family: %v", err)
 	}
@@ -104,7 +101,7 @@ func TestComposeSystemAPIMountsChatFamily(t *testing.T) {
 	// 免 Key 直调：库中不得出现 purpose='chat' 键（供给链已删除）。
 	var count int
 	if err := composed.DB.QueryRow(
-		`SELECT COUNT(*) FROM api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat'`,
+		`SELECT COUNT(*) FROM juhe_business.api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat'`,
 	).Scan(&count); err != nil {
 		t.Fatalf("count chat api keys: %v", err)
 	}
@@ -123,7 +120,7 @@ func TestComposeSystemAPIMountsChatFamily(t *testing.T) {
 		t.Fatalf("second provision status=%d body=%s", second.StatusCode, body)
 	}
 	if err := composed.DB.QueryRow(
-		`SELECT COUNT(*) FROM api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat'`,
+		`SELECT COUNT(*) FROM juhe_business.api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat'`,
 	).Scan(&count); err != nil {
 		t.Fatalf("recount chat api keys: %v", err)
 	}

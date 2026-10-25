@@ -24,14 +24,19 @@ import (
 
 const testSecret = "m08-accounts-test-secret"
 
+// testProviderDDL / testProfileDDL 是 provider/profile 壳表的夹具种子（生产
+// §9.11 已无 provider 维度读写，表仅承接旧种子助手直插）；幂等以
+// ON CONFLICT DO NOTHING 承载（原 INSERT OR IGNORE 的 PG 对应物）。
 const testProviderDDL = `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-	VALUES ('prov-gpt', 'gpt', 'OpenAI', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`
+	VALUES ('prov-gpt', 'gpt', 'OpenAI', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+	ON CONFLICT DO NOTHING`
 
 const testProfileDDL = `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
 	protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
 	capabilities_json, created_at, updated_at)
 	VALUES ('prof-gpt', 'gpt', 'OpenAI 官方协议', 1, 'openai', 'v1', 'https://api.openai.com/v1',
-	'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`
+	'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+	ON CONFLICT DO NOTHING`
 
 type recordingSink struct {
 	mu      sync.Mutex
@@ -85,36 +90,34 @@ type testEnv struct {
 	sink   *recordingSink
 	db     *sql.DB
 	store  *Store
+	// pg 标记环境存储方言：组A PG 环境为 true（e.exec/count/queryCell 经
+	// fixtureBind 对齐 $n）；newSQLiteTestEnv 组B环境为 false（原样 ?）。
+	pg bool
 }
 
+// newTestEnv 是组A测试的共享环境：pgtestkit 隔离 PG 测试库 + 生产 store 的
+// PG 臂（NewStore postgres=true，与生产 PG 装配同一方言）；schema 与手写 SQL
+// 方言见 pgkit_test.go。SQLite-only 生产臂的组B测试走 newSQLiteTestEnv
+// （本文件末尾，随生产 sqlite 臂删除批次同批退役）。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:accounts-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range schemaStatements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newAccountsPGDatabase(t)
 	// vendors 种子（设计 §9.1）：创建链 vendor 归属校验按 vendors 表判定，
 	// gpt 为夹具默认真实厂商；anthropic 等其余厂商保持未预置（供「不支持的
 	// 供应商」臂断言），openai 为 generic 语义（无 vendors 行，校验跳过）。
 	// default_supported_models_json 与生产 pgSeedProviders 的 gpt 缺省同口径
 	//（导入链在来源未携带 models 时按 vendor 缺省回落，B4 ⑦）。
-	if _, err := db.Exec(`INSERT OR IGNORE INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '["gpt-4o-mini"]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '["gpt-4o-mini"]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+		ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
-	seedFixtureModels(t, db)
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	seedFixtureModels(t, db, true)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +126,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
 	sink := &recordingSink{}
-	store, err := NewStore(db, false, testSecret, nil, nil)
+	store, err := NewStore(db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,11 +135,13 @@ func newTestEnv(t *testing.T) *testEnv {
 	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db, store: store}
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db, store: store, pg: true}
 }
 
 // schemaStatements mirrors the maintenance business schema subset the slice
-// owns (accounts and its satellite tables).
+// owns (accounts and its satellite tables). 组B SQLite-only 生产臂测试专用
+// （newSQLiteTestEnv，随生产 sqlite 臂删除批次同批退役）；组A PG 夹具见
+// pgkit_test.go accountsPGFixtureSchema。
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
@@ -482,16 +487,17 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 // 表判定，设计 §9.1）；默认夹具只预置 gpt，非 gpt 厂商的创建用例按需补种。
 func (e *testEnv) seedVendor(t *testing.T, code string) {
 	t.Helper()
-	e.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, "ven-"+code, code, code)
+	e.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+		ON CONFLICT DO NOTHING`, "ven-"+code, code, code)
 }
 
 func (e *testEnv) seedProviderAndDefaultGroup(t *testing.T, ownerID string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// Idempotent per env: several fixtures seed the same provider/profile.
-	e.exec(t, strings.Replace(testProviderDDL, "INSERT INTO providers", "INSERT OR IGNORE INTO providers", 1))
-	e.exec(t, strings.Replace(testProfileDDL, "INSERT INTO provider_protocol_profiles", "INSERT OR IGNORE INTO provider_protocol_profiles", 1))
+	e.exec(t, testProviderDDL)
+	e.exec(t, testProfileDDL)
 	e.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`, "grp-default-"+ownerID, ownerID, now, now)
 }
@@ -511,7 +517,7 @@ func nullStringForFixture(code string) any {
 // 字面量与直插种子）。每个名字按 §1.1 九厂商 + NULL(generic) 全值域落 vendor 身份：写侧
 // 按账户 provider 推导的 vendor_code（gpt→'gpt'，openai/generic→”）做身份键
 // 匹配。
-func seedFixtureModels(t *testing.T, db *sql.DB) {
+func seedFixtureModels(t *testing.T, db *sql.DB, bindPlaceholders bool) {
 	t.Helper()
 	for _, model := range []struct{ id, name string }{
 		{"gpt-4o", "gpt-4o"},
@@ -539,8 +545,13 @@ func seedFixtureModels(t *testing.T, db *sql.DB) {
 			{"-gemini", "gemini"}, {"-glm", "glm"}, {"-minimax", "minimax"}, {"-volcengine", "volcengine"},
 			{"-qwen", "qwen"}, {"-generic", ""},
 		} {
-			if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+			statement := `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', false, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+			ON CONFLICT DO NOTHING`
+			if bindPlaceholders {
+				statement = fixtureBind(statement)
+			}
+			if _, err := db.Exec(statement,
 				"mod-fixture-"+model.id+vendor.id, nullStringForFixture(vendor.code), model.name, model.name); err != nil {
 				t.Fatal(err)
 			}
@@ -556,16 +567,20 @@ func (e *testEnv) seedEntryMapping(t *testing.T, accountID, preset, sourceModel,
 	t.Helper()
 	now := "2026-01-01T00:00:00Z"
 	connectionID := "conn-" + accountID + "-" + preset
-	e.exec(t, `INSERT OR IGNORE INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 'https://fixture.invalid/v1', 1, ?, ?)`, connectionID, accountID, preset, now, now)
+	e.exec(t, `INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 'https://fixture.invalid/v1', 1, ?, ?)
+		ON CONFLICT DO NOTHING`, connectionID, accountID, preset, now, now)
 	for _, mode := range []string{"chat_json", "chat_sse"} {
-		e.exec(t, `INSERT OR IGNORE INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)`, connectionID, mode)
+		e.exec(t, `INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)
+			ON CONFLICT DO NOTHING`, connectionID, mode)
 	}
-	e.exec(t, `INSERT OR IGNORE INTO account_supported_models (account_id, model_id, created_at)
-		VALUES (?, (SELECT id FROM models WHERE upstream_model = ?), ?)`, accountID, upstreamModel, now)
-	e.exec(t, `INSERT OR IGNORE INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family,
+	e.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+		VALUES (?, (SELECT id FROM models WHERE upstream_model = ? ORDER BY id LIMIT 1), ?)
+		ON CONFLICT DO NOTHING`, accountID, upstreamModel, now)
+	e.exec(t, `INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family,
 		target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('entmap-fix-'||?||'-'||?, ?, ?, ?, ?, (SELECT id FROM models WHERE upstream_model = ?), ?, ?, ?, ?)`,
+		VALUES ('entmap-fix-'||?||'-'||?, ?, ?, ?, ?, (SELECT id FROM models WHERE upstream_model = ? ORDER BY id LIMIT 1), ?, ?, ?, ?)
+		ON CONFLICT DO NOTHING`,
 		accountID, sourceModel, accountID, sourceModel, sourceFamily, connectionID, upstreamModel, targetFamily, enabled, now, now)
 }
 
@@ -576,14 +591,17 @@ func (e *testEnv) seedAccountConnection(t *testing.T, accountID, preset string, 
 	t.Helper()
 	now := "2026-01-01T00:00:00Z"
 	connectionID := "conn-" + accountID + "-" + preset
-	e.exec(t, `INSERT OR IGNORE INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 'https://fixture.invalid/v1', 1, ?, ?)`, connectionID, accountID, preset, now, now)
+	e.exec(t, `INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 'https://fixture.invalid/v1', 1, ?, ?)
+		ON CONFLICT DO NOTHING`, connectionID, accountID, preset, now, now)
 	for _, mode := range []string{"chat_json", "chat_sse"} {
-		e.exec(t, `INSERT OR IGNORE INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)`, connectionID, mode)
+		e.exec(t, `INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)
+			ON CONFLICT DO NOTHING`, connectionID, mode)
 	}
 	for _, upstream := range upstreamModels {
-		e.exec(t, `INSERT OR IGNORE INTO account_supported_models (account_id, model_id, created_at)
-			VALUES (?, (SELECT id FROM models WHERE upstream_model = ?), ?)`, accountID, upstream, now)
+		e.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+			VALUES (?, (SELECT id FROM models WHERE upstream_model = ? ORDER BY id LIMIT 1), ?)
+			ON CONFLICT DO NOTHING`, accountID, upstream, now)
 	}
 }
 
@@ -598,13 +616,13 @@ func (e *testEnv) seedAccount(t *testing.T, id, ownerID, name, status string) {
 	e.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, ?, 'sk-see***'+?, 'gpt-4o-mini', ?, ?)`,
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, ?, 'sk-see***'||?, 'gpt-4o-mini', ?, ?)`,
 		id, ownerID, name, status, sealed, id, now, now)
 }
 
 func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(e.bindFixture(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -612,7 +630,7 @@ func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var count int
-	if err := e.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := e.db.QueryRow(e.bindFixture(query), args...).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
@@ -621,10 +639,19 @@ func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 func (e *testEnv) queryCell(t *testing.T, query string, args ...any) string {
 	t.Helper()
 	var value sql.NullString
-	if err := e.db.QueryRow(query, args...).Scan(&value); err != nil {
+	if err := e.db.QueryRow(e.bindFixture(query), args...).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	return value.String
+}
+
+// bindFixture 按环境方言改写占位符（PG 环境经 fixtureBind 对齐 $n；sqlite
+// 组B环境原样 ?）。
+func (e *testEnv) bindFixture(query string) string {
+	if e.pg {
+		return fixtureBind(query)
+	}
+	return query
 }
 
 func dataMap(t *testing.T, payload map[string]any) map[string]any {
@@ -1613,8 +1640,11 @@ func TestCreateDerivesClientCompatibilityColumn(t *testing.T) {
 	}
 	id := dataMap(t, payload)["id"].(string)
 	// 设计 §9.11：client_compatibility 列已从账户表退役，写侧派生值只进凭据
-	// 归一化（下方 responses_sse 断言保持），不再有列可读。
-	if columns := env.count(t, `SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'client_compatibility'`); columns != 0 {
+	// 归一化（下方 responses_sse 断言保持），不再有列可读。列存在性内省按 PG
+	// information_schema（原 sqlite pragma_table_info 的 PG 对应物，列集契约
+	// 与断言值不变）。
+	if columns := env.count(t, `SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = 'juhe_business' AND table_name = 'accounts' AND column_name = 'client_compatibility'`); columns != 0 {
 		t.Fatalf("accounts.client_compatibility 列应已退役，实际存在 %d 列", columns)
 	}
 	// 端点模式默认集与列语义同源：codex_responses 账户必须带 responses_sse。
@@ -1636,4 +1666,52 @@ func TestCreateDerivesClientCompatibilityColumn(t *testing.T) {
 	if !hasSSE {
 		t.Fatalf("codex_responses 账户端点模式应含 responses_sse: %v", modes)
 	}
+}
+
+// newSQLiteTestEnv 是组B SQLite-only 生产臂测试的环境（原 newTestEnv 的
+// SQLite 形态原样保留）：单连接内存 SQLite + 生产 store 的 sqlite 臂 +
+// modelcheckauth.SQLite 组合（与生产 SQLite 装配同一方言）。仅
+// statsdb_attach_test.go 与 delete_authorization_sqlite_test.go 在用；随
+// 生产 sqlite 臂删除批次同批退役（D17）。
+func newSQLiteTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:accounts-sqlite-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	for _, statement := range schemaStatements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '["gpt-4o-mini"]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	seedFixtureModels(t, db, false)
+	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := &authsys.Deps{
+		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
+		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
+	}
+	sink := &recordingSink{}
+	store, err := NewStore(db, false, testSecret, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := kernel.New(kernel.Options{CompressionDisabled: true})
+	deps.MountAuth(k, "lax", false)
+	(&Deps{Store: store, Auth: deps, Sink: sink}).Mount(k)
+	server := httptest.NewServer(k.Handler())
+	t.Cleanup(server.Close)
+	return &testEnv{deps: deps, k: k, server: server, jar: map[string]string{}, sink: sink, db: db, store: store, pg: false}
 }

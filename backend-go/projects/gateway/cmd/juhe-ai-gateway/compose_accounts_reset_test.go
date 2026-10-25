@@ -11,7 +11,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -22,35 +21,37 @@ import (
 )
 
 func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
 	defer composed.Shutdown()
 	seedSystemSettings(t, composed.DB)
 
-	// 生产同款桥接：guard 为 memory 驱动（与 chain_runtime.go 的非 redis 路径一致）；
-	// outbox writer 为 inert（本测试未接业务库 outbox 表），健康检查派发按
-	// inert 契约跳过。
+	// 生产同款桥接：guard 为 redis 瞬态墓碑驱动（chain_runtime.go 同款工厂，
+	// 端点为 composeTestConfig 私有 miniredis）；outbox writer 为 inert（本
+	// 测试未接业务库 outbox 表），健康检查派发按 inert 契约跳过。
 	guard := gatewayaccounteffects.NewAccountAPIKeyFailureGuard(
-		gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: cfg.RuntimeStateDriver},
-		gatewayaccounteffects.SystemClock{}, nil, nil)
+		gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: "redis"},
+		gatewayaccounteffects.SystemClock{}, nil, func() (gatewayaccounteffects.AccountApiKeyTransientStateStore, error) {
+			return gatewayaccounteffects.NewRedisAccountApiKeyTransientStateStore(gatewayaccounteffects.RedisAccountApiKeyTransientStateStoreOptions{
+				RedisURL: cfg.RedisStateURL, Namespace: cfg.RedisNamespace,
+			})
+		})
 	resetEffects, err := newAccountsRuntimeResetBridge(composed, settingsValueReader(composed.settingsStore), &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainProbeRequestOutboxWriter(nil, false, 65_000))
 	if err != nil {
 		t.Fatalf("assemble runtime reset bridge: %v", err)
 	}
-	accountStore, err := accounts.NewStore(composed.DB, false, cfg.Secret, time.Now, newCompositionID)
+	accountStore, err := accounts.NewStore(composed.DB, true, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
 	accountStore.SetRuntimeResetEffects(resetEffects)
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
-		DB: composed.DB, Postgres: false, Secret: cfg.Secret, Now: time.Now,
+		DB: composed.DB, Postgres: true, Secret: cfg.Secret, Now: time.Now,
 	})
 	if err != nil {
 		t.Fatalf("accountkeystates store: %v", err)
@@ -59,7 +60,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	const accountID = "acc-e2e"
 	// 真实 schema 带外键（system_accounts / accounts），复用引导种子的系统账户。
 	var ownerID string
-	if err := composed.DB.QueryRow(`SELECT id FROM system_accounts ORDER BY created_at ASC LIMIT 1`).Scan(&ownerID); err != nil {
+	if err := composed.DB.QueryRow(`SELECT id FROM juhe_business.system_accounts ORDER BY created_at ASC LIMIT 1`).Scan(&ownerID); err != nil {
 		t.Fatalf("seed system account lookup: %v", err)
 	}
 	// 三把 Key 的 openai api_key 池账户（active + schedulable，无持久失败态）。
@@ -74,23 +75,23 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	}
 	nowISO := time.Now().UTC().Format(time.RFC3339Nano)
 	// 供应商解耦（设计 §8）：账户身份列为 vendor_code / connection_driver_code。
-	if _, err := composed.DB.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable,
+	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, schedulable,
 		vendor_code, connection_driver_code, protocol_code, protocol_version,
 		config_revision, dispatch_revision, credentials_encrypted,
 		health_check_model, health_check_endpoint_mode, created_at, updated_at)
-		VALUES (?, ?, 'reset-e2e', 'api_key', 'active', 1,
+		VALUES ($1, $2, 'reset-e2e', 'api_key', 'active', 1,
 		'gpt', 'gpt', 'openai', 'v1',
-		1, 1, ?,
-		'', 'chat_json', ?, ?)`,
+		1, 1, $3,
+		'', 'chat_json', $4, $5)`,
 		accountID, ownerID, sealed, nowISO, nowISO); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 	// 运行态：k1 rate_limited（到期时间在未来）、k2 error、k3 disabled。
 	seedState := func(fingerprint, status string) {
 		t.Helper()
-		if _, err := composed.DB.Exec(`INSERT INTO account_api_key_runtime_states
+		if _, err := composed.DB.Exec(`INSERT INTO juhe_business.account_api_key_runtime_states
 			(id, system_account_id, account_id, key_fingerprint, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			"state-"+fingerprint[:12], ownerID, accountID, fingerprint, status, nowISO, nowISO); err != nil {
 			t.Fatalf("seed state %s: %v", fingerprint[:8], err)
 		}
@@ -99,12 +100,12 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	seedState(fingerprints[1], "error")
 	seedState(fingerprints[2], "disabled")
 	// group_accounts.group_id 外键 groups(id)；供应商解耦后 groups 无 provider 维度。
-	if _, err := composed.DB.Exec(`INSERT INTO groups (id, system_account_id, name, created_at, updated_at)
-		VALUES ('grp-e2e', ?, 'reset-e2e-group', ?, ?)`, ownerID, nowISO, nowISO); err != nil {
+	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, name, created_at, updated_at)
+		VALUES ('grp-e2e', $1, 'reset-e2e-group', $2, $3)`, ownerID, nowISO, nowISO); err != nil {
 		t.Fatalf("seed group: %v", err)
 	}
-	if _, err := composed.DB.Exec(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-		VALUES (?, 'grp-e2e', ?, 1, ?, ?)`, ownerID, accountID, nowISO, nowISO); err != nil {
+	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+		VALUES ($1, 'grp-e2e', $2, 1, $3, $4)`, ownerID, accountID, nowISO, nowISO); err != nil {
 		t.Fatalf("seed group binding: %v", err)
 	}
 
@@ -137,7 +138,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	// 新包副作用断言：error → unverified、cooldown 清空、next_probe_at 到期。
 	var status string
 	var cooldownUntil, nextProbeAt sql.NullString
-	if err := composed.DB.QueryRow(`SELECT status, cooldown_until, next_probe_at FROM account_api_key_runtime_states
+	if err := composed.DB.QueryRow(`SELECT status, cooldown_until, next_probe_at FROM juhe_business.account_api_key_runtime_states
 		WHERE account_id = ? AND key_fingerprint = ?`, accountID, fingerprints[1]).
 		Scan(&status, &cooldownUntil, &nextProbeAt); err != nil {
 		t.Fatal(err)
@@ -145,7 +146,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	if status != "unverified" || cooldownUntil.Valid || !nextProbeAt.Valid {
 		t.Fatalf("error key row: %s %v %v", status, cooldownUntil.Valid, nextProbeAt.Valid)
 	}
-	if err := composed.DB.QueryRow(`SELECT status FROM account_api_key_runtime_states
+	if err := composed.DB.QueryRow(`SELECT status FROM juhe_business.account_api_key_runtime_states
 		WHERE account_id = ? AND key_fingerprint = ?`, accountID, fingerprints[2]).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +155,7 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	}
 	// runtime-state-changed 标记：group_account_stats_dirty 脏行 + reason。
 	var reason string
-	if err := composed.DB.QueryRow(`SELECT reason FROM group_account_stats_dirty WHERE group_id = 'grp-e2e'`).Scan(&reason); err != nil {
+	if err := composed.DB.QueryRow(`SELECT reason FROM juhe_business.group_account_stats_dirty WHERE group_id = 'grp-e2e'`).Scan(&reason); err != nil {
 		t.Fatalf("stats dirty row: %v", err)
 	}
 	if reason != "account_api_key_runtime" {

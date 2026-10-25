@@ -1,12 +1,15 @@
 package accounts
 
-// B1 断点批：maintenance 真 fresh SQLite DDL（bootstrap.EnsureSQLiteSchema 的
-// business 形态）上的连接写入原语与草稿/探针快照链测试。创建链 legacy 读取面
-// 已随 `7d86c1cbf` 清零（profile 解析切 registry/vendor 推导、分组解析去
-// provider 维度、目录断言切 models 身份）；本批（profile 解析第三处残留拆除）
-// 之后，草稿/探针快照链同样只读 groups + vendors（§8 组无 provider 维度、
-// §2.1 vendor 归属），协议上下文与 oauth 缺省 base_url 由 registry 语义推导，
-// fresh DDL（无 providers / provider_protocol_profiles）上端到端可用。
+// B1 断点批：maintenance 真 fresh DDL（bootstrap.EnsurePostgres 的生产形态，
+// 原 SQLite 形态 bootstrap.EnsureSQLiteSchema 的 PG 对应物）上的连接写入原语
+// 与草稿/探针快照链测试。创建链 legacy 读取面已随 `7d86c1cbf` 清零（profile
+// 解析切 registry/vendor 推导、分组解析去 provider 维度、目录断言切 models
+// 身份）；本批（profile 解析第三处残留拆除）之后，草稿/探针快照链同样只读
+// groups + vendors（§8 组无 provider 维度、§2.1 vendor 归属），协议上下文与
+// oauth 缺省 base_url 由 registry 语义推导，fresh DDL（无 providers /
+// provider_protocol_profiles）上端到端可用。生产 DDL 外键真实生效：种子先落
+// system_accounts 属主行（accounts.system_account_id 生产外键），使断言命中的
+// 约束与被测语义一致。
 
 import (
 	"context"
@@ -15,23 +18,25 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
+
+// b1FreshSeedOwner 落 fresh DDL 的属主行（accounts.system_account_id 生产
+// 外键引用 system_accounts(id)，种子必须满足，避免与被测约束混淆）。
+func b1FreshSeedOwner(t *testing.T, db *sql.DB, owner string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO system_accounts (id, username, display_name, password_hash, created_at, updated_at)
+		VALUES ($1, $2, $3, 'hash', $4, $5)`, owner, owner, owner, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"); err != nil {
+		t.Fatalf("seed owner %s: %v", owner, err)
+	}
+}
 
 // TestB1FreshMaintenanceDDLConnectionWrite 在 maintenance fresh business DDL
 // 上驱动 insertAccountConnections + finalizeAccountHealthCheckTrio：连接行
 // （UNIQUE (account_id, id) 表）、endpoint mode 行与 health 三字段事务闭环。
 func TestB1FreshMaintenanceDDLConnectionWrite(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:b1fresh-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	defer db.Close()
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("fresh business DDL ensure: %v", err)
-	}
-	store, err := NewStore(db, false, testSecret, nil, nil)
+	db := newFreshPGDatabase(t)
+	b1FreshSeedOwner(t, db, "owner-b1-fresh")
+	store, err := NewStore(db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,20 +47,20 @@ func TestB1FreshMaintenanceDDLConnectionWrite(t *testing.T) {
 	// protocol_code / protocol_version，无 provider 列；vendor_code 外键引用
 	// vendors.code）+ 目标模型行。
 	if _, err := db.Exec(`INSERT INTO vendors (id, code, name, created_at, updated_at)
-		VALUES ('ven-b1-fresh', 'gpt', 'GPT', ?, ?)`, now, now); err != nil {
+		VALUES ('ven-b1-fresh', 'gpt', 'GPT', $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed vendor: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, capability_domain,
 		created_at, updated_at)
 		VALUES ('acc-b1-fresh', 'owner-b1-fresh', 'gpt', 'gpt', 'gemini', 'v1beta', 'b1-fresh', 'api_key',
-		'active', 'sealed', 'chat', ?, ?)`, now, now); err != nil {
+		'active', 'sealed', 'chat', $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 		supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mod-b1-fresh', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', 'active',
-		'["chat_json","chat_sse"]', ?, ?)`, now, now); err != nil {
+		'["chat_json","chat_sse"]', $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
 
@@ -89,7 +94,7 @@ func TestB1FreshMaintenanceDDLConnectionWrite(t *testing.T) {
 		t.Fatalf("fresh 连接行事实不符：%q %q %q", connectionID, surface, baseURL)
 	}
 	var modeCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ?`, connectionID).Scan(&modeCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = $1`, connectionID).Scan(&modeCount); err != nil {
 		t.Fatal(err)
 	}
 	if modeCount != 2 {
@@ -105,36 +110,27 @@ func TestB1FreshMaintenanceDDLConnectionWrite(t *testing.T) {
 	}
 	// (account_id, id) 唯一键：同账户重复 id 必须被 fresh 约束拒绝。
 	if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url,
-		enabled, created_at, updated_at) VALUES (?, 'acc-b1-fresh', 'xai_openai_v1', 'https://x.example', 1, ?, ?)`,
+		enabled, created_at, updated_at) VALUES ($1, 'acc-b1-fresh', 'xai_openai_v1', 'https://x.example', 1, $2, $3)`,
 		connectionID, now, now); err == nil {
 		t.Fatal("fresh UNIQUE (account_id, id) 未生效")
 	}
 }
 
 // TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection 是复合外
-// 键的显式行为验证（#B1 剩余④；此前仅有列集验证）：SQLite
-// `PRAGMA foreign_keys=ON` 下，accounts.health_check_connection_id 的复合外键
+// 键的显式行为验证（#B1 剩余④；此前仅有列集验证）：生产 DDL 下
+// accounts.health_check_connection_id 的复合外键
 // (id, health_check_connection_id) → account_connections(account_id, id)
-//   - 插入指向不存在连接的账户行 → 外键拒绝；
+//   - 插入指向不存在连接的账户行 → 外键拒绝（SQLite 臂经
+//     `PRAGMA foreign_keys=ON` 启用，PG 外键恒生效）；
 //   - 连接行 + 账户行的正常写入序（先 accounts 三字段 NULL——复合外键任一列
 //     NULL 跳过 MATCH，再连接行，再回填三字段）通过。
 func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:b1fresh-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	defer db.Close()
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("fresh business DDL ensure: %v", err)
-	}
+	db := newFreshPGDatabase(t)
+	b1FreshSeedOwner(t, db, "owner-b1-fk")
 	ctx := context.Background()
 	now := "2026-01-01T00:00:00.000Z"
 	if _, err := db.Exec(`INSERT INTO vendors (id, code, name, created_at, updated_at)
-		VALUES ('ven-b1-fk', 'gpt', 'GPT', ?, ?)`, now, now); err != nil {
+		VALUES ('ven-b1-fk', 'gpt', 'GPT', $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed vendor: %v", err)
 	}
 
@@ -143,7 +139,7 @@ func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *test
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, capability_domain,
 		health_check_connection_id, created_at, updated_at)
 		VALUES ('acc-b1-fk-orphan', 'owner-b1-fk', 'gpt', 'gpt', 'openai', 'v1', 'b1-fk-orphan', 'api_key',
-		'active', 'sealed', 'chat', 'conn-not-exists', ?, ?)`, now, now); err == nil {
+		'active', 'sealed', 'chat', 'conn-not-exists', $1, $2)`, now, now); err == nil {
 		t.Fatal("fresh 复合外键未拒绝孤儿 health_check_connection_id")
 	}
 
@@ -153,31 +149,31 @@ func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *test
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, capability_domain,
 		created_at, updated_at)
 		VALUES ('acc-b1-fk-ok', 'owner-b1-fk', 'gpt', 'gpt', 'openai', 'v1', 'b1-fk-ok', 'api_key',
-		'active', 'sealed', 'chat', ?, ?)`, now, now); err != nil {
+		'active', 'sealed', 'chat', $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code,
 		protocol_surface_code, base_url, enabled, created_at, updated_at)
-		VALUES ('conn-b1-fk-ok', 'acc-b1-fk-ok', 'gpt_openai_v1', 'openai_v1', 'https://api.openai.com/v1', 1, ?, ?)`, now, now); err != nil {
+		VALUES ('conn-b1-fk-ok', 'acc-b1-fk-ok', 'gpt_openai_v1', 'openai_v1', 'https://api.openai.com/v1', 1, $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed connection: %v", err)
 	}
 	for _, mode := range []string{"chat_json", "chat_sse"} {
 		if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode)
-			VALUES ('conn-b1-fk-ok', ?)`, mode); err != nil {
+			VALUES ('conn-b1-fk-ok', $1)`, mode); err != nil {
 			t.Fatalf("seed endpoint mode: %v", err)
 		}
 	}
 	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 		supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mod-b1-fk', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', 'active',
-		'["chat_json","chat_sse"]', ?, ?)`, now, now); err != nil {
+		'["chat_json","chat_sse"]', $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_supported_models (account_id, model_id, created_at)
-		VALUES ('acc-b1-fk-ok', 'mod-b1-fk', ?)`, now); err != nil {
+		VALUES ('acc-b1-fk-ok', 'mod-b1-fk', $1)`, now); err != nil {
 		t.Fatalf("seed supported model: %v", err)
 	}
-	store, err := NewStore(db, false, testSecret, nil, nil)
+	store, err := NewStore(db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,16 +195,8 @@ func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *test
 // 拆除后只读 groups + vendors，协议上下文由 vendorDefaultProtocolContext 推导、
 // oauth 缺省 base_url 按 §1.1 default_base_url 表落 vendor 根。
 func TestB1FreshMaintenanceDDLDraftTestSnapshot(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:b1fresh-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	defer db.Close()
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("fresh business DDL ensure: %v", err)
-	}
-	store, err := NewStore(db, false, testSecret, nil, nil)
+	db := newFreshPGDatabase(t)
+	store, err := NewStore(db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,13 +207,13 @@ func TestB1FreshMaintenanceDDLDraftTestSnapshot(t *testing.T) {
 		{"ven-b1-draft-anthropic", "anthropic", "Anthropic"},
 	} {
 		if _, err := db.Exec(`INSERT INTO vendors (id, code, name, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)`, vendor.id, vendor.code, vendor.name, now, now); err != nil {
+			VALUES ($1, $2, $3, $4, $5)`, vendor.id, vendor.code, vendor.name, now, now); err != nil {
 			t.Fatalf("seed vendor %s: %v", vendor.code, err)
 		}
 	}
 	// fresh groups 无 provider 维度列（§8）：直插行即目标形态。
 	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-b1-draft', 'owner-b1-draft', '默认分组', 1, 1, 'personal', ?, ?)`, now, now); err != nil {
+		VALUES ('grp-b1-draft', 'owner-b1-draft', '默认分组', 1, 1, 'personal', $1, $2)`, now, now); err != nil {
 		t.Fatalf("seed group: %v", err)
 	}
 	access := AccessScope{ViewerID: "owner-b1-draft", IsAdmin: true}

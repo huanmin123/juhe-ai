@@ -4,7 +4,8 @@ package accounts
 // 超级优先/降级互斥、过期时间、时间计划、代理三态、支持模型空集、检查模型/
 // 协议、凭据损坏解密、余额身份保持、重复名唯一性、授权实例跟随、候选名阶梯
 // 与可用性探测）以及 helper 纯函数直测。HTTP 臂走内核；事务内不可注入的
-// 错误臂通过 pg 方言存储（juhe_business 前缀在 sqlite 缺表）与假 queryer 触发。
+// 错误臂通过零值 sql.DB（任意查询即失败）与假 queryer 触发（原 pg 方言
+// 存储注入随 sqlite 夹具退役）。
 
 import (
 	"context"
@@ -354,13 +355,17 @@ func TestW13APatchStoreErrorArms(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, adminID)
 	env.seedAccount(t, "acc-w13a-err", adminID, "w13a-err", "active")
 
-	// PG 方言在 sqlite 上缺 juhe_business 前缀 → 行扫描错误（266-268）。
+	// PG 臂 Patch 真实执行（原「PG 方言在 sqlite 缺 juhe_business 前缀 →
+	// 行扫描错误」注入随 sqlite 夹具退役；错误传播由下方关闭库臂承接）。
 	pgStore, err := NewStore(env.db, true, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pgStore.Patch(context.Background(), "acc-w13a-err", PatchInput{ExpectedConfigRevision: 1}, AccessScope{ViewerID: adminID, IsAdmin: true}); err == nil {
-		t.Fatal("PG 方言查询应失败")
+	notes := "w13a-pg-arm"
+	if _, err := pgStore.Patch(context.Background(), "acc-w13a-err", PatchInput{
+		ExpectedConfigRevision: 1, Notes: &notes,
+	}, AccessScope{ViewerID: adminID, IsAdmin: true}); err != nil {
+		t.Fatalf("PG 臂 Patch 应真实执行成功：%v", err)
 	}
 
 	// 非管理员访问他人账户：行已被 owner 过滤，返回 nil, nil（ErrNoRows 臂）。
@@ -403,7 +408,9 @@ func TestW13APatchHelperArms(t *testing.T) {
 	if got := credentialValueJSONText(make(chan int)); got != "unmarshalable" {
 		t.Fatalf("不可序列化值应返回占位文本：%q", got)
 	}
-	// loadEnabledGroupBindingID：无绑定 → ""（1626-1628）；PG 方言查询错误（1629-1631）。
+	// loadEnabledGroupBindingID：无绑定 → ""（1626-1628）；查询错误臂（1629-1631）
+	// 以零值 sql.DB 注入（任意查询即失败；原「PG 方言在 sqlite 缺前缀」注入
+	// 随 sqlite 夹具退役）。
 	got, err := env.store.loadEnabledGroupBindingID(context.Background(), env.db, "acc-w13a-none", "owner")
 	if err != nil || got != "" {
 		t.Fatalf("无绑定应返回空：%q %v", got, err)
@@ -412,32 +419,62 @@ func TestW13APatchHelperArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pgStore.loadEnabledGroupBindingID(context.Background(), env.db, "acc", "owner"); err == nil {
-		t.Fatal("PG 方言应失败")
+	brokenDB, err := sql.Open("pgx", "host=127.0.0.1 port=1 sslmode=disable connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = brokenDB.Close() // 已关闭池：任意查询即返回 sql: database is closed
+	if _, err := pgStore.loadEnabledGroupBindingID(context.Background(), brokenDB, "acc", "owner"); err == nil {
+		t.Fatal("绑定查询错误应上抛")
 	}
 	// assertGroupCanBind：PG 锁后缀臂（1641-1643）与查询错误（1650-1652）。
-	if err := pgStore.assertGroupCanBind(context.Background(), env.db, "grp", "owner"); err == nil {
-		t.Fatal("PG 方言分组断言应失败")
+	if err := pgStore.assertGroupCanBind(context.Background(), brokenDB, "grp", "owner"); err == nil {
+		t.Fatal("分组断言查询错误应上抛")
 	}
 	// replaceGroupBinding：PG 方言 DELETE 失败（1665-1667）。
-	if err := pgStore.replaceGroupBinding(context.Background(), env.db, "acc", "owner",
+	if err := pgStore.replaceGroupBinding(context.Background(), brokenDB, "acc", "owner",
 		sql.NullString{}, "grp", 0, false, false, nowISO); err == nil {
-		t.Fatal("PG 方言替换绑定应失败")
+		t.Fatal("替换绑定查询错误应上抛")
 	}
 	// propagateProbeSwitchToAuthorizationInstances：PG 后缀（1241-1243）+ 查询错误（1248-1250）。
-	// syncAuthorizationInstanceNames：PG 方言查询错误（1320-1322）。两者收
-	// *sql.Tx，走真实事务让方言差异在查询期报错。
+	// syncAuthorizationInstanceNames：查询错误臂（1320-1322）。两者收
+	// *sql.Tx，走真实事务；授权链表先删使查询在事务内报错（原「PG 方言在
+	// sqlite 缺前缀」注入随 sqlite 夹具退役）。
+	// propagateProbeSwitch 先读源账户行（存在才进实例扇出），孤儿 ID 会在
+	// 触及被删表前按无实例早退——先落一行存在的账户。
+	if _, err := env.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+		protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
+		VALUES ('acc-w13a-prop', 'owner-w13a-prop', 'gpt', 'gpt', 'openai', 'v1', 'w13a-prop', 'api_key',
+		'active', 'sealed', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	// 实例行（authorization_instance_source_account_id 指向源账户、授权引用
+	// 非空）让同步链走到被删的授权链表。
+	if _, err := env.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+		protocol_code, protocol_version, name, type, status, credentials_encrypted,
+		authorization_instance_source_account_id, authorization_instance_authorization_id, created_at, updated_at)
+		VALUES ('acc-w13a-prop-inst', 'owner-w13a-prop', 'gpt', 'gpt', 'openai', 'v1', 'w13a-prop-inst', 'api_key',
+		'active', 'sealed', 'acc-w13a-prop', 'ra-w13a-dropped', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := env.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// PG 臂传播真实执行（原「PG 方言在 sqlite 缺前缀必失败」注入随 sqlite
+	// 夹具退役；该 helper 只读写 accounts 表，删表注入对其不可达，错误传播
+	// 由 syncAuthorizationInstanceNames 臂与 brokenDB 臂承接）。
 	if err := pgStore.propagateProbeSwitchToAuthorizationInstances(context.Background(), tx,
-		"acc", 0, false, "", now, nowISO); err == nil {
-		t.Fatal("PG 方言传播应失败")
+		"acc-w13a-prop", 0, false, "", now, nowISO); err != nil {
+		t.Fatalf("PG 臂传播应真实执行成功：%v", err)
 	}
-	if _, err := pgStore.syncAuthorizationInstanceNames(context.Background(), tx,
-		"acc", "name", nowISO); err == nil {
-		t.Fatal("PG 方言实例同步应失败")
+	changed, err := pgStore.syncAuthorizationInstanceNames(context.Background(), tx,
+		"acc-w13a-prop", "w13a-renamed", nowISO)
+	if err != nil {
+		t.Fatalf("PG 臂实例同步应真实执行成功：%v", err)
+	}
+	if len(changed) != 1 || changed[0] != "acc-w13a-prop-inst" {
+		t.Fatalf("实例同步应跟随源账户新名：%v", changed)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)

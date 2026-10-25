@@ -174,7 +174,7 @@ func TestW14BCreateValidationArms(t *testing.T) {
 	// 成功路径（覆盖代理解析 + 过期 + 备注 + 超级优先臂）。
 	enabledProxy := "proxy-w14b-on"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES (?, ?, 'w14b-on-proxy', 'http', '127.0.0.1', 7890, 1, ?, ?)`, enabledProxy, adminID, now, now)
+		VALUES (?, ?, 'w14b-on-proxy', 'http', '127.0.0.1', 7890, true, ?, ?)`, enabledProxy, adminID, now, now)
 	expires := "2031-01-01T00:00:00Z"
 	notes := "w14b 创建备注"
 	success := valid
@@ -237,7 +237,7 @@ func TestW14BExportAccountsArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-w14b-exp', ?, 'w14b-exp-proxy', 'socks5', 'h', 1080, 1, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-w14b-exp', ?, 'w14b-exp-proxy', 'socks5', 'h', 1080, true, ?, ?)`, adminID, now, now)
 	// 正常账户：超级优先 + 降级备用 + 代理 + 分组绑定 + 备注。
 	env.seedAccount(t, "acc-w14b-exp-a", adminID, "w14b-exp-a", "active")
 	env.exec(t, `UPDATE accounts SET credentials_encrypted = ?, super_priority_enabled = 1, fallback_enabled = 1,

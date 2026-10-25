@@ -2,7 +2,6 @@ package runtimelog
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,90 +12,6 @@ import (
 
 // wn_gaps_test.go 覆盖 SQLite store、配置解析、日志行解析、旧 SQLite 迁移
 // 与文件清理中的剩余分支。业务契约与既有测试保持一致。
-
-func TestSQLiteStoreVerifyOwnerLeaseRejectsStaleToken(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	ctx := context.Background()
-	lease, acquired, err := store.AcquireOwnerLease(ctx, "verify-owner", time.Minute)
-	if err != nil || !acquired {
-		t.Fatalf("获取 lease 失败: lease=%#v acquired=%t err=%v", lease, acquired, err)
-	}
-	t.Cleanup(func() {
-		if err := store.ReleaseOwnerLease(ctx, lease); err != nil && !errors.Is(err, ErrOwnerLeaseFenced) {
-			t.Errorf("清理 lease 失败: %v", err)
-		}
-	})
-	if err := store.VerifyOwnerLease(ctx, lease); err != nil {
-		t.Fatalf("有效 lease 校验必须通过: %v", err)
-	}
-	stale := OwnerLease{OwnerID: "verify-owner", FenceToken: lease.FenceToken - 1}
-	if err := store.VerifyOwnerLease(ctx, stale); !errors.Is(err, ErrOwnerLeaseFenced) {
-		t.Fatalf("过期 fence token 校验必须失败: %v", err)
-	}
-}
-
-func TestSQLiteStoreCommitRejectsInvalidRecordBeforeWrite(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	lease := testOwnerLease(t, ctx)
-	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "invalid:1:1"}
-	if err := store.Commit(ctx, lease, []Record{{ID: "bad-time", Time: "garbage", CreatedAt: "2026-08-08T00:00:00.000Z", RawJSON: "{}"}}, cursor, time.Now()); err == nil {
-		t.Fatal("非法 time 的记录必须在写库前被拒绝")
-	}
-	assertRuntimeLogCount(t, store, 0)
-	if err := store.Commit(ctx, lease, []Record{{ID: "bad-created", Time: "2026-08-08T00:00:00.000Z", CreatedAt: "garbage", RawJSON: "{}"}}, cursor, time.Now()); err == nil {
-		t.Fatal("非法 createdAt 的记录必须在写库前被拒绝")
-	}
-	assertRuntimeLogCount(t, store, 0)
-}
-
-func TestSQLiteStoreRuntimeRetentionDaysFallbackAndErrors(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := context.Background()
-
-	// businessDB 为空时必须直接回退（PG 模式对齐语义）。
-	withoutBusiness := &sqliteStore{db: store.db}
-	days, err := withoutBusiness.RuntimeRetentionDays(ctx, 9)
-	if err != nil || days != 9 {
-		t.Fatalf("无业务库必须回退默认保留期: days=%d err=%v", days, err)
-	}
-
-	// 空设置表回退默认值。
-	emptyBusiness := filepath.Join(t.TempDir(), "empty.sqlite")
-	emptyDB, err := sql.Open("sqlite", emptyBusiness)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := emptyDB.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
-	if err := emptyDB.Close(); err != nil {
-		t.Fatal(err)
-	}
-	config.BusinessPath = emptyBusiness
-	businessStore := &sqliteStore{db: store.db, businessDB: openReadOnlyBusiness(t, emptyBusiness)}
-	t.Cleanup(func() { _ = businessStore.businessDB.Close() })
-	if days, err = businessStore.RuntimeRetentionDays(ctx, 5); err != nil || days != 5 {
-		t.Fatalf("空设置表必须回退默认保留期: days=%d err=%v", days, err)
-	}
-
-	// 查询失败必须暴露（只读连接关闭后查询立即报错）。
-	if err := businessStore.businessDB.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = businessStore.RuntimeRetentionDays(ctx, 5); err == nil {
-		t.Fatal("业务设置查询失败必须返回错误")
-	}
-}
-
-func openReadOnlyBusiness(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	db, err := openSQLiteReadOnly(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return db
-}
 
 func TestNormalizeLevelCoversNodeLevels(t *testing.T) {
 	tests := []struct {
@@ -222,32 +137,23 @@ func TestConfigValueParsers(t *testing.T) {
 	if value, err := positiveIntOrDefault("X", "", 3); err != nil || value != 3 {
 		t.Fatalf("连接数缺省值必须生效: %d %v", value, err)
 	}
-	if mode, err := parseStoreMode(func(name string) string {
-		if name == "JUHE_AI_RUNTIME_LOG_STORE" {
-			return " postgres "
+}
+
+// TestLoadConfigModeConstantPostgres 锁定 STORE env 退役后的恒定语义：
+// LoadConfig 产出的 Mode 恒 ModePostgres（原 sqlite 缺省/跟随 driver 臂随
+// sqlite 形态退役删除）。
+func TestLoadConfigModeConstantPostgres(t *testing.T) {
+	config, err := LoadConfig(func(name string) string {
+		if name == "JUHE_AI_RUNTIME_LOG_POSTGRES_URL" {
+			return "postgres://unit-test.invalid/f1"
 		}
 		return ""
-	}); err != nil || mode != ModePostgres {
-		t.Fatalf("postgres 模式必须可解析: %s %v", mode, err)
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
 	}
-	if _, err := parseStoreMode(func(name string) string {
-		if name == "JUHE_AI_RUNTIME_LOG_STORE" {
-			return "bogus"
-		}
-		return ""
-	}); err == nil {
-		t.Fatal("未知 Store 模式必须报错")
-	}
-	if mode, err := parseStoreMode(func(string) string { return "" }); err != nil || mode != ModeSQLite {
-		t.Fatalf("缺省 Store 必须跟随默认 sqlite 驱动: %s %v", mode, err)
-	}
-	if mode, err := parseStoreMode(func(name string) string {
-		if name == "JUHE_AI_DATABASE_DRIVER" {
-			return "postgres"
-		}
-		return ""
-	}); err != nil || mode != ModePostgres {
-		t.Fatalf("缺省 Store 必须跟随 postgres 驱动: %s %v", mode, err)
+	if config.Mode != ModePostgres {
+		t.Fatalf("Mode 恒 postgres: %s", config.Mode)
 	}
 }
 
@@ -347,121 +253,6 @@ func TestLoadConfigPostgresModeAndRejects(t *testing.T) {
 	}
 }
 
-func TestCheckSQLiteColumnsReportsMissingColumn(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "broken.sqlite")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec("CREATE TABLE runtime_logs (id TEXT)"); err != nil {
-		t.Fatal(err)
-	}
-	err = checkSQLiteColumns(context.Background(), db, "runtime_logs")
-	if err == nil || !strings.Contains(err.Error(), "缺少运行日志字段") {
-		t.Fatalf("缺少字段的表必须报可诊断错误: %v", err)
-	}
-}
-
-func TestSQLiteCleanupBoundaryPaths(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	lease := testOwnerLease(t, testOwnerContext(t, store))
-	ctx := context.Background()
-	cutoff := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
-
-	// 无过期记录时必须直接返回零结果。
-	result, err := store.Cleanup(ctx, lease, cutoff, 10, 3)
-	if err != nil || result.RuntimeLogs != 0 || result.RuntimeLogCursors != 0 {
-		t.Fatalf("空库清理必须返回零结果: %#v err=%v", result, err)
-	}
-
-	// 未满批的过期记录删除后必须立即结束批次循环。
-	old := nodeISO(cutoff.Add(-time.Hour))
-	if err := store.Commit(ctx, lease, []Record{{ID: "only-one", Time: old, Level: "info", Event: "cleanup", RawJSON: "{}", CreatedAt: old}},
-		Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "current:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}, cutoff); err != nil {
-		t.Fatal(err)
-	}
-	result, err = store.Cleanup(ctx, lease, cutoff, 100, 3)
-	if err != nil || result.RuntimeLogs != 1 {
-		t.Fatalf("单条过期记录必须一次清理完成: %#v err=%v", result, err)
-	}
-
-	// maxBatches=0 时不得进入任何批次循环。
-	result, err = store.Cleanup(ctx, lease, cutoff, 10, 0)
-	if err != nil || result.RuntimeLogs != 0 {
-		t.Fatalf("maxBatches=0 必须跳过清理: %#v err=%v", result, err)
-	}
-}
-
-func TestSQLiteCleanupSkipsCursorBatchWithoutCandidates(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	lease := testOwnerLease(t, testOwnerContext(t, store))
-	ctx := context.Background()
-	cutoff := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
-	old := nodeISO(cutoff.Add(-time.Hour))
-	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "current:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}
-	// 只有 current cursor（不应被清理）与带错误的 rotated cursor（不满足清理条件）。
-	if err := store.CopyCursor(ctx, lease, cursor); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CopyCursor(ctx, lease, Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log"), FileIdentity: "rotated:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old, LastErrorMessage: "保留失败的 cursor"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec("UPDATE runtime_log_file_cursors SET updated_at = ?", old); err != nil {
-		t.Fatal(err)
-	}
-	result, err := store.Cleanup(ctx, lease, cutoff, 10, 2)
-	if err != nil || result.RuntimeLogCursors != 0 {
-		t.Fatalf("无候选 cursor 必须跳过 cursor 批: %#v err=%v", result, err)
-	}
-}
-
-func TestSQLiteCleanupSkipsRecordsBelowCountedBaseline(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	lease := testOwnerLease(t, testOwnerContext(t, store))
-	ctx := context.Background()
-	cutoff := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
-	old := nodeISO(cutoff.Add(-time.Hour))
-	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "current:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}
-	if err := store.Commit(ctx, lease, []Record{{ID: "below-baseline", Time: old, Level: "info", Event: "cleanup", RawJSON: "{}", CreatedAt: old}},
-		cursor, time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatal(err)
-	}
-	// facet 汇总基线晚于被删记录：已删记录不得再扣减 facet。
-	future := nodeISO(cutoff.Add(time.Hour))
-	if _, err := store.db.Exec("UPDATE runtime_log_facet_summary SET earliest_time = ? WHERE bucket_key = ?", future, facetBucketKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Cleanup(ctx, lease, cutoff, 10, 1); err != nil {
-		t.Fatal(err)
-	}
-	var total int
-	if err := store.db.QueryRow("SELECT total_count FROM runtime_log_facet_summary WHERE bucket_key = ?", facetBucketKey).Scan(&total); err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Fatalf("低于计数基线的记录不得扣减 facet 汇总: total=%d", total)
-	}
-}
-
-func TestOpenStoreSQLiteRejectsMissingPaths(t *testing.T) {
-	if _, err := OpenStore(context.Background(), Config{Mode: ModeSQLite, RuntimeLogDatabasePath: " "}); err == nil {
-		t.Fatal("缺少运行日志 SQLite 路径必须拒绝启动")
-	}
-	missingBusiness := filepath.Join(t.TempDir(), "runtime-log.sqlite")
-	_, err := OpenStore(context.Background(), Config{Mode: ModeSQLite, RuntimeLogDatabasePath: missingBusiness, BusinessPath: filepath.Join(t.TempDir(), "missing.sqlite")})
-	if err == nil || !strings.Contains(err.Error(), "只读数据源") {
-		t.Fatalf("业务库不可访问必须拒绝启动: %v", err)
-	}
-}
-
-func TestOpenSQLiteReadOnlyReportsMissingSource(t *testing.T) {
-	_, err := openSQLiteReadOnly(context.Background(), filepath.Join(t.TempDir(), "missing.sqlite"))
-	if err == nil {
-		t.Fatal("缺失只读数据源必须报错")
-	}
-}
-
 func TestOwnerLeaseContextHelpers(t *testing.T) {
 	if _, err := ownerLeaseFromContext(context.Background()); err == nil {
 		t.Fatal("无 lease 上下文必须报错")
@@ -517,203 +308,3 @@ func TestRunWithOwnerLeaseReportsAcquireFailures(t *testing.T) {
 	}
 }
 
-func TestRunRetentionRejectsStaleLease(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	// 不持有 lease 的上下文必须直接失败。
-	indexer := NewIndexer(Config{BatchSize: 1}, store)
-	if err := indexer.RunRetention(context.Background()); err == nil {
-		t.Fatal("缺少 owner lease 必须拒绝保留清理")
-	}
-}
-
-func TestRemoveRotatedLogFileHandlesMissingAndCanceled(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	lease := testOwnerLease(t, testOwnerContext(t, store))
-	if err := removeRotatedLogFile(context.Background(), store, lease, filepath.Join(t.TempDir(), "already-gone.log")); err != nil {
-		t.Fatalf("不存在的轮转文件必须视为已删除: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := removeRotatedLogFile(ctx, store, lease, filepath.Join(t.TempDir(), "target.log")); !errors.Is(err, context.Canceled) {
-		t.Fatalf("取消的上下文必须中止删除: %v", err)
-	}
-}
-
-func TestCleanupRotatedFilesHonorsMaxFilesAndIdentityFallback(t *testing.T) {
-	t.Run("maxRotatedFilesZeroDeletesFreshRotated", func(t *testing.T) {
-		store, config := openTestSQLiteStore(t)
-		ctx := testOwnerContext(t, store)
-		currentPath := filepath.Join(config.LogDirectory, "juhe-ai.log")
-		rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
-		writeTestFile(t, currentPath, logLine("current", "2026-08-08T00:00:00.000Z")+"\n")
-		writeTestFile(t, rotatedPath, logLine("rotated", "2026-08-08T00:00:01.000Z")+"\n")
-		config.LogMaxFiles = 1
-		indexer := NewIndexer(config, store)
-		if err := indexer.RunOnce(ctx); err != nil {
-			t.Fatal(err)
-		}
-		deleted, err := indexer.cleanupRotatedFiles(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if deleted != 1 {
-			t.Fatalf("配额为 0 时新轮转文件也必须删除，实际删除 %d", deleted)
-		}
-		if _, err := os.Stat(rotatedPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("超配额轮转文件未删除: %v", err)
-		}
-	})
-
-	t.Run("identityCursorFallbackProtectsIncompleteFile", func(t *testing.T) {
-		store, config := openTestSQLiteStore(t)
-		ctx := testOwnerContext(t, store)
-		rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
-		writeTestFile(t, rotatedPath, logLine("archived", "2026-08-08T00:00:00.000Z")+"\n")
-		old := time.Now().AddDate(0, 0, -config.LogRetentionDays-1)
-		if err := os.Chtimes(rotatedPath, old, old); err != nil {
-			t.Fatal(err)
-		}
-		indexer := NewIndexer(config, store)
-		if err := indexer.RunOnce(ctx); err != nil {
-			t.Fatal(err)
-		}
-		// 把 cursor 行改写为 displaced identity 形态，模拟直接路径 cursor 丢失。
-		var identity string
-		if err := store.db.QueryRow("SELECT file_identity FROM runtime_log_file_cursors WHERE log_file = ?", rotatedPath).Scan(&identity); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.db.Exec("UPDATE runtime_log_file_cursors SET log_file = ? WHERE log_file = ?", displacedIdentityPrefix+identity, rotatedPath); err != nil {
-			t.Fatal(err)
-		}
-		deleted, err := indexer.cleanupRotatedFiles(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if deleted != 1 {
-			t.Fatalf("identity cursor 命中且已索引完成的轮转文件必须删除，实际删除 %d", deleted)
-		}
-		if _, err := os.Stat(rotatedPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("identity fallback 后轮转文件未删除: %v", err)
-		}
-	})
-}
-
-func TestSameSQLitePathVariants(t *testing.T) {
-	root := t.TempDir()
-	left := filepath.Join(root, "a.sqlite")
-	if err := os.WriteFile(left, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	same, err := sameSQLitePath(left, filepath.Join(root, ".", "a.sqlite"))
-	if err != nil || !same {
-		t.Fatalf("同文件的相对写法必须判定相同: same=%t err=%v", same, err)
-	}
-	other := filepath.Join(root, "b.sqlite")
-	if err := os.WriteFile(other, []byte("y"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if same, err = sameSQLitePath(left, other); err != nil || same {
-		t.Fatalf("不同文件必须判定不同: same=%t err=%v", same, err)
-	}
-	if _, err = sameSQLitePath("", left); err == nil {
-		t.Fatal("空路径必须报错")
-	}
-	if _, err = sameSQLitePath(left, ""); err == nil {
-		t.Fatal("空路径必须报错")
-	}
-	// 两个都不存在但绝对路径相同的场景走 canonical 分支。
-	missing := filepath.Join(root, "missing.sqlite")
-	if same, err = sameSQLitePath(missing, filepath.Join(root, "missing.sqlite")); err != nil || !same {
-		t.Fatalf("同路径的不存在文件必须判定相同: same=%t err=%v", same, err)
-	}
-	if same, err = sameSQLitePath(missing, filepath.Join(root, "missing2.sqlite")); err != nil || same {
-		t.Fatalf("不同路径的不存在文件必须判定不同: same=%t err=%v", same, err)
-	}
-}
-
-func TestSQLitePathWithinVariants(t *testing.T) {
-	root := t.TempDir()
-	inside := filepath.Join(root, "state.sqlite")
-	within, err := sqlitePathWithin(root, inside)
-	if err != nil || !within {
-		t.Fatalf("根内路径必须判定在内: within=%t err=%v", within, err)
-	}
-	within, err = sqlitePathWithin(root, root)
-	if err != nil || !within {
-		t.Fatalf("根自身必须判定在内: within=%t err=%v", within, err)
-	}
-	within, err = sqlitePathWithin(root, filepath.Join(root, "..", "outside.sqlite"))
-	if err != nil || within {
-		t.Fatalf("根外路径必须判定在外: within=%t err=%v", within, err)
-	}
-	if _, err = sqlitePathWithin("", inside); err == nil {
-		t.Fatal("空根路径必须报错")
-	}
-}
-
-func TestEqualSQLitePathCaseInsensitiveOnWindows(t *testing.T) {
-	if !equalSQLitePath(filepath.Clean(`C:\A\b.sqlite`), filepath.Clean(`c:\a\B.SQLITE`)) {
-		t.Fatal("Windows 下路径比较必须忽略大小写")
-	}
-	if equalSQLitePath("x.sqlite", "y.sqlite") {
-		t.Fatal("不同路径不得判定相等")
-	}
-}
-
-func TestCanonicalSQLitePathResolvesParentChains(t *testing.T) {
-	root := t.TempDir()
-	missing := filepath.Join(root, "not-created.sqlite")
-	canonical, err := canonicalSQLitePath(missing)
-	if err != nil || filepath.IsAbs(canonical) == false {
-		t.Fatalf("未创建文件必须返回规范绝对路径: %q err=%v", canonical, err)
-	}
-	// TempDir 可能返回 8.3 短路径，与 EvalSymlinks 后的真实父目录比较。
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !equalSQLitePath(canonical, filepath.Join(realRoot, "not-created.sqlite")) {
-		t.Fatalf("未创建文件必须落在真实父目录下: got=%q want=%q", canonical, filepath.Join(realRoot, "not-created.sqlite"))
-	}
-	if _, err = canonicalSQLitePath("   "); err == nil {
-		t.Fatal("空路径必须报错")
-	}
-	// 父路径是文件时必须 fail-closed。
-	filePath := filepath.Join(root, "plain.txt")
-	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = canonicalSQLitePath(filepath.Join(filePath, "child.sqlite")); err == nil {
-		t.Fatal("父路径不是目录必须报错")
-	}
-}
-
-func TestDanglingSQLiteSymlinkDetection(t *testing.T) {
-	root := t.TempDir()
-	link := filepath.Join(root, "dangling.sqlite")
-	target := filepath.Join(root, "missing-target.sqlite")
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("当前环境不能创建悬空 symlink fixture: %v", err)
-	}
-	t.Cleanup(func() {
-		// Windows 在目标缺失时可能无法删除悬空 symlink，先落地目标再清理。
-		_ = os.WriteFile(target, []byte("cleanup"), 0o600)
-		_ = os.Remove(link)
-	})
-	// 无论 Lstat 还是 EvalSymlinks 命中，悬空 symlink 都必须 fail-closed。
-	if _, err := canonicalSQLitePath(link); err == nil {
-		t.Fatal("悬空 symlink 必须 fail-closed")
-	}
-	if !danglingSQLiteSymlink(link) {
-		t.Fatal("悬空 symlink 必须被识别")
-	}
-	if danglingSQLiteSymlink(filepath.Join(root, "not-listed.sqlite")) {
-		t.Fatal("目录中不存在的名称不得判定为 symlink")
-	}
-}
-
-// detachLegacy 显式分离旧库，避免 Windows 文件句柄延迟释放影响临时目录清理。
-func detachLegacy(t *testing.T, store *sqliteStore) {
-	t.Helper()
-	_, _ = store.db.Exec("DETACH DATABASE legacy_runtime_log")
-}

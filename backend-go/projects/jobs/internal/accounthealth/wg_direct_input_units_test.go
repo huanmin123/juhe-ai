@@ -86,39 +86,3 @@ func TestConfigHelpersMatrix(t *testing.T) {
 		}
 	})
 }
-
-// TestValidateSQLiteIsolation 覆盖 store/input 路径隔离的放行与冲突分支。
-func TestValidateSQLiteIsolation(t *testing.T) {
-	base := map[string]string{}
-	if err := validateSQLiteIsolation("/tmp/j1/jobs.sqlite3", "/tmp/j1/inputs", getenvFrom(base)); err != nil {
-		t.Fatalf("无冲突路径必须放行: %v", err)
-	}
-	// 与业务库共用文件 → 报错。
-	if err := validateSQLiteIsolation("/tmp/j1/jobs.sqlite3", "/tmp/j1/inputs", getenvFrom(map[string]string{
-		"JUHE_AI_DATABASE_PATH": "/TMP/J1/jobs.sqlite3",
-	})); err == nil {
-		t.Fatal("共用业务库文件必须报错（Windows 大小写不敏感等价）")
-	}
-	// store 放进 input 目录 → 报错。
-	if err := validateSQLiteIsolation("/tmp/j1/inputs/jobs.sqlite3", "/tmp/j1/inputs", getenvFrom(base)); err == nil {
-		t.Fatal("store 不得放入 input 目录")
-	}
-	// input 目录内一层子目录仍然算放入 → 报错。
-	if err := validateSQLiteIsolation("/tmp/j1/inputs/sub/jobs.sqlite3", "/tmp/j1/inputs", getenvFrom(base)); err == nil {
-		t.Fatal("input 子目录内的 store 必须报错")
-	}
-	// input 目录之外 → 放行。
-	if err := validateSQLiteIsolation("/tmp/j1/other/jobs.sqlite3", "/tmp/j1/inputs", getenvFrom(base)); err != nil {
-		t.Fatalf("input 之外的 store 必须放行: %v", err)
-	}
-}
-
-// TestEqualPathWindowsCaseInsensitive 锁定 Windows 路径等价比较语义。
-func TestEqualPathWindowsCaseInsensitive(t *testing.T) {
-	if !equalPath(`C:\A\B`, `c:\a\b`) {
-		t.Fatal("Windows 路径必须大小写不敏感等价")
-	}
-	if equalPath(`C:\A\B`, `C:\A\C`) {
-		t.Fatal("不同路径不得判等")
-	}
-}

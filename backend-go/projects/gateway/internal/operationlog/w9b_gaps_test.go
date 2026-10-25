@@ -275,38 +275,3 @@ func TestW9BRunOwnerDefaultLogger(t *testing.T) {
 	}
 }
 
-func TestW9BValidateUsageShardIsolationArms(t *testing.T) {
-	// shard root 不存在 → RequirePhysicalRoot 失败。
-	if err := validateUsageShardIsolation("unused.sqlite3", filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("缺失 shard root 必须报错")
-	}
-	// shard root 是文件 → ListUsageShardFiles 失败。
-	root := t.TempDir()
-	file := filepath.Join(root, "file.sqlite3")
-	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateUsageShardIsolation(filepath.Join(root, "op.sqlite3"), file); err == nil {
-		t.Fatal("文件型 shard root 必须报错")
-	}
-	// shard 外的数据库与 shard 内文件同 inode（硬链接）→ SameFile 拒绝。
-	shard := filepath.Join(root, "shard")
-	if err := os.Mkdir(shard, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	inside := filepath.Join(shard, "2026", "09", "01")
-	if err := os.MkdirAll(inside, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	inside = filepath.Join(inside, "usage-20260901-s1.sqlite3")
-	if err := os.WriteFile(inside, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	outside := filepath.Join(root, "outside.sqlite3")
-	if err := os.Link(inside, outside); err != nil {
-		t.Skipf("当前文件系统不支持硬链接：%v", err)
-	}
-	if err := validateUsageShardIsolation(outside, shard); err == nil || !strings.Contains(err.Error(), "must not share a SQLite file") {
-		t.Fatalf("同 inode=%v", err)
-	}
-}

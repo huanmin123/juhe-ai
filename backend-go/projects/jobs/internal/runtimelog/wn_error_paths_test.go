@@ -3,8 +3,6 @@ package runtimelog
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -205,6 +203,8 @@ func registerCommitSuccessPath(t *testing.T, server *pgFakeServer) {
 }
 
 // registerCleanupSuccessPath 注册 Cleanup 成功路径所需的其余脚本。
+
+// registerCleanupSuccessPath 注册 Cleanup 成功路径所需的其余脚本。
 func registerCleanupSuccessPath(t *testing.T, server *pgFakeServer) {
 	t.Helper()
 	server.handleFunc(pgFakeCleanupSelectSQL, []pgFakeColumn{
@@ -252,6 +252,8 @@ func registerCleanupSuccessPath(t *testing.T, server *pgFakeServer) {
 }
 
 // TestPostgresFakeInsertRecordsFailure 注入批量 INSERT 失败（动态前缀脚本）。
+
+// TestPostgresFakeInsertRecordsFailure 注入批量 INSERT 失败（动态前缀脚本）。
 func TestPostgresFakeInsertRecordsFailure(t *testing.T) {
 	server := newPGFakeServer(t)
 	registerPostgresCatalog(t, server)
@@ -267,6 +269,8 @@ func TestPostgresFakeInsertRecordsFailure(t *testing.T) {
 		t.Fatalf("批量写入失败必须暴露: %v", err)
 	}
 }
+
+// TestPostgresFakeCleanupSecondBatchEmpty 覆盖第二批无数据的提前结束分支。
 
 // TestPostgresFakeCleanupSecondBatchEmpty 覆盖第二批无数据的提前结束分支。
 func TestPostgresFakeCleanupSecondBatchEmpty(t *testing.T) {
@@ -328,19 +332,6 @@ func TestPostgresFakeCursorQueryFailure(t *testing.T) {
 	}
 }
 
-// TestOpenStoreSQLiteRejectsMemoryAndDirectory 覆盖 WAL 与文件打开失败分支。
-func TestOpenStoreSQLiteRejectsMemoryAndDirectory(t *testing.T) {
-	// 目录路径无法作为 SQLite 文件打开。
-	if _, err := OpenStore(context.Background(), Config{Mode: ModeSQLite, RuntimeLogDatabasePath: t.TempDir(), BusinessPath: t.TempDir()}); err == nil {
-		t.Fatal("目录路径必须拒绝作为运行日志数据库")
-	}
-	// 内存库不支持 WAL journal_mode，必须 fail-closed。
-	if _, err := OpenStore(context.Background(), Config{Mode: ModeSQLite, RuntimeLogDatabasePath: ":memory:", BusinessPath: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "WAL journal_mode") {
-		t.Fatalf("不支持 WAL 的存储必须拒绝启动: %v", err)
-	}
-}
-
-// TestOpenStorePostgresRejectsInvalidMaxConns 覆盖连接池配置非法分支。
 func TestOpenStorePostgresRejectsInvalidMaxConns(t *testing.T) {
 	server := newPGFakeServer(t)
 	_, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: server.URL(), PostgresMaxConns: -1})
@@ -349,125 +340,17 @@ func TestOpenStorePostgresRejectsInvalidMaxConns(t *testing.T) {
 	}
 }
 
-// TestSQLiteCursorNormalizeRejectsInvalidTimestamps 覆盖 cursor 归一化失败分支。
-func TestSQLiteCursorNormalizeRejectsInvalidTimestamps(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	lease := testOwnerLease(t, ctx)
-	if err := store.CopyCursor(ctx, lease, Cursor{LogFile: "x", CreatedAt: "bad-time"}); err == nil {
-		t.Fatal("非法 createdAt 必须拒绝")
-	}
-	if err := store.CopyCursor(ctx, lease, Cursor{LogFile: "x", LastReadAt: "bad-time"}); err == nil {
-		t.Fatal("非法 lastReadAt 必须拒绝")
-	}
-	if err := store.ReplaceCursor(ctx, lease, nil, Cursor{LogFile: "x", CreatedAt: "bad-time"}); err == nil {
-		t.Fatal("ReplaceCursor 非法 createdAt 必须拒绝")
-	}
-}
-
-// TestSQLiteCommitFacetFailure 注入 facet 写入失败，Commit 必须整体失败。
-func TestSQLiteCommitFacetFailure(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	lease := testOwnerLease(t, ctx)
-	if _, err := store.db.Exec("CREATE TRIGGER reject_facet_summary BEFORE INSERT ON runtime_log_facet_summary BEGIN SELECT RAISE(ABORT, 'forced facet failure'); END"); err != nil {
-		t.Fatal(err)
-	}
-	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "facet:1:1"}
-	err := store.Commit(ctx, lease, []Record{{ID: "facet-record", Time: "2026-08-08T00:00:00.000Z", Level: "info", Event: "e", RawJSON: "{}", CreatedAt: "2026-08-08T00:00:00.000Z"}}, cursor, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC))
-	if err == nil {
-		t.Fatal("facet 写入失败必须让 Commit 整体失败")
-	}
-	if _, err := store.db.Exec("DROP TRIGGER reject_facet_summary"); err != nil {
-		t.Fatal(err)
-	}
-	// 失败后无部分写入：记录与游标都不存在。
-	assertRuntimeLogCount(t, store, 0)
-	if got, err := store.FindCursor(context.Background(), cursor.LogFile); err != nil || got != nil {
-		t.Fatalf("失败事务不得残留 cursor: cursor=%v err=%v", got, err)
-	}
-}
-
-// TestSQLiteCheckSchemaRejectsMissingTable 覆盖表缺失分支。
-func TestSQLiteCheckSchemaRejectsMissingTable(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	if _, err := store.db.Exec("DROP TABLE runtime_log_event_facets"); err != nil {
-		t.Fatal(err)
-	}
-	err := store.CheckSchema(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "runtime_log_event_facets") {
-		t.Fatalf("缺少表必须阻止启动: %v", err)
-	}
-}
-
-// TestSQLiteWithOwnerLeaseFencePropagatesCallbackError 覆盖 SQLite fence 回调失败分支。
-func TestSQLiteWithOwnerLeaseFencePropagatesCallbackError(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	lease := testOwnerLease(t, testOwnerContext(t, store))
-	callbackErr := errors.New("sqlite fence callback fixture failure")
-	if err := store.WithOwnerLeaseFence(context.Background(), lease, func() error { return callbackErr }); !errors.Is(err, callbackErr) {
-		t.Fatalf("callback 失败必须原样返回: %v", err)
-	}
-}
-
-// TestSameSQLitePathRejectsDanglingAlias 覆盖别名解析失败分支。
-func TestSameSQLitePathRejectsDanglingAlias(t *testing.T) {
-	root := t.TempDir()
-	left := filepath.Join(root, "left.sqlite")
-	if err := os.WriteFile(left, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	dangling := filepath.Join(root, "dangling.sqlite")
-	target := filepath.Join(root, "missing-target.sqlite")
-	if err := os.Symlink(target, dangling); err != nil {
-		t.Skipf("当前环境不能创建悬空 symlink fixture: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.WriteFile(target, []byte("cleanup"), 0o600)
-		_ = os.Remove(dangling)
-	})
-	if _, err := sameSQLitePath(left, dangling); err == nil {
-		t.Fatal("悬空别名必须报错")
-	}
-}
-
-// TestSQLitePathWithinRejectsCrossVolume 覆盖跨盘符路径比较失败分支。
-func TestSQLitePathWithinRejectsCrossVolume(t *testing.T) {
-	if _, err := sqlitePathWithin(`C:\roots\logs`, `D:\other\place.sqlite`); err == nil {
-		t.Fatal("跨盘符路径必须报错")
-	}
-}
-
-// TestDanglingSQLiteSymlinkHandlesReadFailure 覆盖目录枚举失败分支。
-func TestDanglingSQLiteSymlinkHandlesReadFailure(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "plain.txt")
-	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if danglingSQLiteSymlink(filepath.Join(filePath, "child.sqlite")) {
-		t.Fatal("枚举失败的路径不得判定为 symlink")
-	}
-}
-
-// TestLoadConfigRejectsEachInvalidEnv 逐项覆盖配置校验失败分支。
 func TestLoadConfigRejectsEachInvalidEnv(t *testing.T) {
 	base := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "inst-1",
-		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
-		"JUHE_AI_DATASET_DATABASE_PATH":          "dataset.sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      "runtime-log.sqlite",
-		"JUHE_AI_DATABASE_PATH":                  "business.sqlite",
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    "usage-catalog.sqlite",
-		"JUHE_AI_STATS_DATABASE_PATH":            "stats.sqlite",
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": "codex-shards",
-		"JUHE_AI_LOG_DIR":                        "logs",
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":  "inst-1",
+		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": "postgres://unit-test.invalid/f1",
+		"JUHE_AI_LOG_DIR":                  "logs",
 	}
 	cases := []struct {
 		name  string
 		key   string
 		value string
 	}{
-		{name: "store mode", key: "JUHE_AI_RUNTIME_LOG_STORE", value: "bogus"},
 		{name: "retention interval", key: "JUHE_AI_RUNTIME_LOG_RETENTION_INTERVAL", value: "0s"},
 		{name: "poll interval", key: "JUHE_AI_RUNTIME_LOG_POLL_INTERVAL", value: "0s"},
 		{name: "log retention days", key: "JUHE_AI_LOG_RETENTION_DAYS", value: "0"},
@@ -491,40 +374,6 @@ func TestLoadConfigRejectsEachInvalidEnv(t *testing.T) {
 			}
 		})
 	}
-
-	// 运行日志库放入 Codex shard 根目录必须拒绝。
-	withinShard := map[string]string{}
-	for name, value := range base {
-		withinShard[name] = value
-	}
-	withinShard["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = filepath.Join(base["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "runtime-log.sqlite")
-	if _, err := LoadConfig(func(name string) string { return withinShard[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
-		t.Fatalf("运行日志库放入 shard 根目录必须拒绝: %v", err)
-	}
-
-	// shard 目录中的 .sqlite3 文件与运行日志库同文件必须拒绝（硬链接别名）。
-	root := t.TempDir()
-	shardRoot := filepath.Join(root, "codex-shards")
-	if err := os.MkdirAll(shardRoot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	runtimePath := filepath.Join(root, "runtime-log.sqlite")
-	if err := os.WriteFile(runtimePath, []byte("fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	shardAlias := filepath.Join(shardRoot, "state-001.sqlite3")
-	if err := os.Link(runtimePath, shardAlias); err != nil {
-		t.Fatalf("创建 shard 硬链接 fixture 失败: %v", err)
-	}
-	shardConflict := map[string]string{}
-	for name, value := range base {
-		shardConflict[name] = value
-	}
-	shardConflict["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"] = shardRoot
-	shardConflict["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = runtimePath
-	if _, err := LoadConfig(func(name string) string { return shardConflict[name] }); err == nil || !strings.Contains(err.Error(), "shard") {
-		t.Fatalf("与 shard 文件共用必须拒绝: %v", err)
-	}
 }
 
 // TestParseLogFileNameServerInstance 覆盖 server 实例命名分支。
@@ -535,125 +384,10 @@ func TestParseLogFileNameServerInstance(t *testing.T) {
 	}
 }
 
-// TestImportFileSkipsDanglingSymlink 覆盖 Stat 失败跳过分支。
-func TestImportFileSkipsDanglingSymlink(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	target := filepath.Join(config.LogDirectory, "missing-target.log")
-	link := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("当前环境不能创建悬空 symlink fixture: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.WriteFile(target, []byte("cleanup"), 0o600)
-		_ = os.Remove(link)
-	})
-	indexer := NewIndexer(config, store)
-	if err := indexer.RunOnce(ctx); err != nil {
-		t.Fatalf("悬空日志 symlink 必须被安静跳过: %v", err)
-	}
-}
-
-// TestCleanupRotatedFilesNegativeQuotaDeletes 覆盖 maxRotatedFiles<0 分支。
-func TestCleanupRotatedFilesNegativeQuotaDeletes(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	currentPath := filepath.Join(config.LogDirectory, "juhe-ai.log")
-	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
-	writeTestFile(t, currentPath, logLine("current", "2026-08-08T00:00:00.000Z")+"\n")
-	writeTestFile(t, rotatedPath, logLine("rotated", "2026-08-08T00:00:01.000Z")+"\n")
-	config.LogMaxFiles = 0
-	indexer := NewIndexer(config, store)
-	if err := indexer.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	deleted, err := indexer.cleanupRotatedFiles(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleted != 1 {
-		t.Fatalf("负配额必须按 0 处理并清理轮转文件，实际删除 %d", deleted)
-	}
-}
-
-// TestRunWithOwnerLeaseStopsWhenRenewalFails 覆盖续约失败取消运行分支。
-// 续约固定失败，结果与调度时机无关：callback 在续约取消后必然收到 Done。
-func TestRunWithOwnerLeaseStopsWhenRenewalFails(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	renewing := &failingRenewStore{Store: store}
-	config := Config{OwnerID: "renew-owner", OwnerLease: 3 * time.Millisecond}
-	started := make(chan struct{})
-	run := func(ctx context.Context) error {
-		close(started)
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- RunWithOwnerLease(context.Background(), config, renewing, run) }()
-	<-started
-	select {
-	case err := <-errCh:
-		// 当前实现：run 被取消后，续约错误会作为最终错误返回（取消不吞掉续约失败）。
-		if err == nil || !strings.Contains(err.Error(), "renewal fixture failure") {
-			t.Fatalf("续约失败必须作为最终错误返回: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("续约失败必须在短时间内取消运行")
-	}
-}
-
 type failingRenewStore struct{ Store }
 
 func (store *failingRenewStore) RenewOwnerLease(context.Context, OwnerLease, time.Duration) (bool, error) {
 	return false, errors.New("renewal fixture failure")
-}
-
-// TestRunWithOwnerLeaseCoversZeroInterval 覆盖续约间隔兜底分支。
-func TestRunWithOwnerLeaseCoversZeroInterval(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	runErr := errors.New("run fixture failure")
-	err := RunWithOwnerLease(context.Background(), Config{OwnerID: "zero-owner"}, store, func(context.Context) error { return runErr })
-	if !errors.Is(err, runErr) {
-		t.Fatalf("run 错误必须原样返回: %v", err)
-	}
-}
-
-// TestIndexerRunStopsOnContextCancel 覆盖 Run 的轮询循环与取消退出分支。
-// 以第 N 次 RuntimeRetentionDays 作为同步点，断言不依赖具体时序。
-func TestIndexerRunStopsOnContextCancel(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	lease, acquired, err := store.AcquireOwnerLease(context.Background(), t.Name(), time.Minute)
-	if err != nil || !acquired {
-		t.Fatalf("测试必须获得 owner lease: acquired=%t err=%v", acquired, err)
-	}
-	t.Cleanup(func() {
-		if releaseErr := store.ReleaseOwnerLease(context.Background(), lease); releaseErr != nil && !errors.Is(releaseErr, ErrOwnerLeaseFenced) {
-			t.Errorf("清理测试 owner lease 失败: %v", releaseErr)
-		}
-	})
-	config.PollInterval = time.Millisecond
-	config.RetentionInterval = time.Hour
-	runs := make(chan struct{}, 32)
-	probed := &runSignalStore{Store: store, runs: runs}
-	indexer := NewIndexer(config, probed)
-
-	runCtx, cancel := context.WithCancel(withOwnerLease(context.Background(), lease))
-	defer cancel()
-	errCh := make(chan error, 1)
-	go func() { errCh <- indexer.Run(runCtx) }()
-	// 初次 RunOnce 同步完成后，再等两次轮询，保证循环已经运转。
-	<-runs
-	<-runs
-	<-runs
-	cancel()
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("取消后 Run 必须返回 ctx.Err，实际为 %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run 未在取消后退出")
-	}
 }
 
 type runSignalStore struct {

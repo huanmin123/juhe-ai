@@ -17,8 +17,6 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -119,85 +117,18 @@ type testEnv struct {
 	store  *Store
 }
 
+// newTestEnv 是组A测试的共享环境：pgtestkit 隔离 PG 测试库 + 生产 store 的
+// PG 臂（NewStore postgres=true，与生产 PG 装配同一方言）；schema 与手写 SQL
+// 方言见 pgkit_test.go。SQLite-only 生产臂的组B测试走 newSQLiteTestEnv
+// （pgkit_test.go，随生产 sqlite 臂删除批次同批退役）。
 func newTestEnv(t *testing.T, wrapInvalidator ...func(CacheInvalidator) CacheInvalidator) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:apikeys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newAPIKeysPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS api_keys (
-			id TEXT PRIMARY KEY,
-			system_account_id TEXT NOT NULL,
-			route_strategy_id TEXT NOT NULL,
-			name TEXT NOT NULL,
-			description TEXT,
-			key_hash TEXT NOT NULL UNIQUE,
-			key_prefix TEXT NOT NULL,
-			key_suffix TEXT NOT NULL,
-			key_secret_encrypted TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'active',
-			is_default INTEGER NOT NULL DEFAULT 0,
-			purpose TEXT NOT NULL DEFAULT 'general',
-			expires_at TEXT,
-			quota_limits_json TEXT,
-			availability_schedule_json TEXT,
-			availability_schedule_next_check_at TEXT,
-			scheduling_preference_id TEXT,
-			last_used_at TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		// 调度偏好独立实体 P1（api_keys.scheduling_preference_id 引用目标）。
-		`CREATE TABLE IF NOT EXISTS scheduling_preferences (
-			id TEXT PRIMARY KEY,
-			system_account_id TEXT,
-			name TEXT NOT NULL,
-			chat_mode TEXT NOT NULL,
-			chat_speed_first_config_json TEXT,
-			built_in INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique ON api_keys(system_account_id, name)`,
-		`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (
-			system_account_id TEXT NOT NULL,
-			scope_type TEXT NOT NULL,
-			scope_id TEXT NOT NULL,
-			source_type TEXT NOT NULL,
-			source_id TEXT NOT NULL,
-			window_hours INTEGER NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (system_account_id, scope_type, scope_id)
-		)`,
-		`CREATE TABLE IF NOT EXISTS api_key_record_cleanup_targets (
-			api_key_id TEXT PRIMARY KEY,
-			system_account_id TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			attempt_count INTEGER NOT NULL DEFAULT 0,
-			last_attempt_at TEXT,
-			last_blocked_reason TEXT,
-			last_error_message TEXT
-		)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +142,7 @@ func newTestEnv(t *testing.T, wrapInvalidator ...func(CacheInvalidator) CacheInv
 	for _, wrap := range wrapInvalidator {
 		storeInvalidator = wrap(storeInvalidator)
 	}
-	store, err := NewStore(db, false, testSecret, nil, nil, storeInvalidator)
+	store, err := NewStore(db, true, testSecret, nil, nil, storeInvalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +233,7 @@ func (e *testEnv) seedDefaultRouteStrategy(t *testing.T, ownerID, strategyID str
 
 func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(fixtureBind(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -310,7 +241,7 @@ func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var count int
-	if err := e.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := e.db.QueryRow(fixtureBind(query), args...).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
@@ -319,7 +250,7 @@ func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 func (e *testEnv) queryCell(t *testing.T, query string, args ...any) string {
 	t.Helper()
 	var value sql.NullString
-	if err := e.db.QueryRow(query, args...).Scan(&value); err != nil {
+	if err := e.db.QueryRow(fixtureBind(query), args...).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	return value.String
@@ -365,7 +296,7 @@ func TestAPIKeyAdminLifecycleAndSealedSecret(t *testing.T) {
 
 	// Stored row: hash matches, ciphertext differs from plaintext, decrypts back.
 	var storedHash, storedSealed string
-	if err := env.db.QueryRow(`SELECT key_hash, key_secret_encrypted FROM api_keys WHERE id = ?`, keyID).
+	if err := env.db.QueryRow(fixtureBind(`SELECT key_hash, key_secret_encrypted FROM api_keys WHERE id = ?`), keyID).
 		Scan(&storedHash, &storedSealed); err != nil {
 		t.Fatal(err)
 	}
@@ -500,12 +431,12 @@ func TestAPIKeyAdminLifecycleAndSealedSecret(t *testing.T) {
 	if code != http.StatusNotFound || gone["message"] != "API Key 不存在" {
 		t.Fatalf("after delete: %d %v", code, gone)
 	}
-	// BUG-0161 claim 11: SQLite deletes no longer write the cleanup target
-	// into the BUSINESS database (Node registers it in the separate dataset
-	// database after commit; wiring the dataset handle is the owner handoff,
-	// see bug0161_test.go for the placement and submitter contracts).
-	if env.count(t, `SELECT COUNT(*) FROM api_key_record_cleanup_targets`) != 0 {
-		t.Fatal("cleanup target must not land in the business database on SQLite")
+	// BUG-0161 claim 11（PG 臂形态）：删除在事务内把 cleanup 目标落进生产
+	// datasetTable 形态的 juhe_dataset.api_key_record_cleanup_targets（SQLite
+	// 臂为提交后写独立 dataset 库、业务库零落行——该契约由 bug0161_test.go 的
+	// 组B SQLite 环境锁定，随生产 sqlite 臂删除批次同批退役）。
+	if env.count(t, `SELECT COUNT(*) FROM juhe_dataset.api_key_record_cleanup_targets WHERE api_key_id = $1`, keyID) != 1 {
+		t.Fatal("cleanup target must land in the juhe_dataset table on PostgreSQL")
 	}
 	if !env.inval.has("api_key_deleted") {
 		t.Fatalf("invalidation reasons: %v", env.inval.reasons)

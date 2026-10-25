@@ -224,7 +224,6 @@ func credentialText(credentials map[string]any, key string) string {
 type xaiGrokUsageRuntime struct {
 	business *businessDB
 	statsDB  *sql.DB
-	statsPG  bool
 	secret   string
 	nowFunc  func() time.Time
 	logger   *slog.Logger
@@ -603,11 +602,11 @@ func (r *xaiGrokUsageRuntime) upsertSuccess(ctx context.Context, account xaiGrok
       next_refresh_after = excluded.next_refresh_after,
       last_error_message = excluded.last_error_message,
       updated_at = excluded.updated_at
-  `, statsTable(r.statsPG, "account_usage_snapshots"), xaiGrokSnapshotKind, xaiGrokSnapshotSource)
+  `, statsTable("account_usage_snapshots"), xaiGrokSnapshotKind, xaiGrokSnapshotSource)
 	_, err = r.statsDB.ExecContext(ctx, upsert,
 		textParam(account.systemAccountID), textParam(account.id), textParam(string(serialized)),
-		timeParam(r.statsPG, now), timeParam(r.statsPG, now), timeParam(r.statsPG, now.Add(xaiGrokUsageRefreshInterval)),
-		timeParam(r.statsPG, now), timeParam(r.statsPG, now))
+		timeParam(now), timeParam(now), timeParam(now.Add(xaiGrokUsageRefreshInterval)),
+		timeParam(now), timeParam(now))
 	if err != nil {
 		return fmt.Errorf("写入 Grok 用量快照失败: %w", err)
 	}
@@ -632,11 +631,11 @@ func (r *xaiGrokUsageRuntime) upsertFailure(ctx context.Context, account xaiGrok
       next_refresh_after = excluded.next_refresh_after,
       last_error_message = excluded.last_error_message,
       updated_at = excluded.updated_at
-  `, statsTable(r.statsPG, "account_usage_snapshots"), xaiGrokSnapshotKind, xaiGrokSnapshotSource)
+  `, statsTable("account_usage_snapshots"), xaiGrokSnapshotKind, xaiGrokSnapshotSource)
 	_, err := r.statsDB.ExecContext(ctx, upsert,
 		textParam(account.systemAccountID), textParam(account.id),
-		timeParam(r.statsPG, now), timeParam(r.statsPG, now.Add(xaiGrokUsageRefreshInterval)),
-		textParam(errorMessage), timeParam(r.statsPG, now), timeParam(r.statsPG, now))
+		timeParam(now), timeParam(now.Add(xaiGrokUsageRefreshInterval)),
+		textParam(errorMessage), timeParam(now), timeParam(now))
 	if err != nil {
 		return fmt.Errorf("写入 Grok 用量快照失败状态失败: %w", err)
 	}
@@ -647,10 +646,6 @@ func (r *xaiGrokUsageRuntime) upsertFailure(ctx context.Context, account xaiGrok
 // disabled 并说明（不阻塞其他 job）。
 func (a *workerAssembly) wireXAIGrokUsageFamily(ctx context.Context) error {
 	name := "xai-grok-usage-refresh"
-	if a.config.Driver != "postgres" && a.config.StatsSQLitePath == "" {
-		a.registerDisabledJob(name, "缺 JUHE_AI_STATS_DATABASE_PATH（xai_grok 快照库）")
-		return nil
-	}
 	if a.config.Secret == "" {
 		a.registerDisabledJob(name, "缺 JUHE_AI_SECRET（凭据封套解密不可用）")
 		return nil
@@ -659,15 +654,8 @@ func (a *workerAssembly) wireXAIGrokUsageFamily(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	statsPG := a.config.Driver == "postgres"
 	statsDB := business.db
-	if !statsPG {
-		if statsDB, err = a.openSQLite(a.config.StatsSQLitePath, "xai-grok-usage-stats"); err != nil {
-			_ = business.close()
-			return err
-		}
-	}
-	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB, statsPG); err != nil {
+	if err := ensureAccountUsageSnapshotsTable(ctx, statsDB); err != nil {
 		a.registerDisabledJob(name, "统计库快照表校验失败："+err.Error())
 		_ = business.close()
 		return nil
@@ -675,7 +663,6 @@ func (a *workerAssembly) wireXAIGrokUsageFamily(ctx context.Context) error {
 	runtime := &xaiGrokUsageRuntime{
 		business: business,
 		statsDB:  statsDB,
-		statsPG:  statsPG,
 		secret:   a.config.Secret,
 		nowFunc:  func() time.Time { return time.Now().UTC() },
 		logger:   a.logger,

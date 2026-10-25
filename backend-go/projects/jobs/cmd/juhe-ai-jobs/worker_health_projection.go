@@ -62,7 +62,7 @@ func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, 
 	if err != nil {
 		return nil, err
 	}
-	handle, handleErr := accounthealth.NewProjectionBusinessDB(business.db, business.postgres)
+	handle, handleErr := accounthealth.NewProjectionBusinessDB(business.db)
 	if handleErr != nil {
 		_ = business.close()
 		return nil, handleErr

@@ -10,8 +10,17 @@ import (
 )
 
 func w4gEnv(values map[string]string) func(string) string {
+	// 2026-10-24 存储形态收口：三连接串 env 无条件必填，基座统一注入。
+	base := map[string]string{
+		"JUHE_AI_POSTGRES_URL":    "postgres://127.0.0.1:5432/juhe",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://127.0.0.1:6379/0",
+		"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/1",
+	}
+	for key, value := range values {
+		base[key] = value
+	}
 	return func(key string) string {
-		return values[key]
+		return base[key]
 	}
 }
 

@@ -89,30 +89,3 @@ func TestLoadWorkerConfigProductionSecretGate(t *testing.T) {
 		t.Fatalf("非生产空 SECRET 必须回退开发密钥: %v", err)
 	}
 }
-
-// TestLoadWorkerConfigCodexShardCountBounds 对齐 gateway runtime.go 的
-// 1..256 fail-fast：两侧分片数不一致会让 retention 漏清 gateway 写出的
-// 分片文件。
-func TestLoadWorkerConfigCodexShardCountBounds(t *testing.T) {
-	for _, bad := range []string{"0", "257", "-1"} {
-		env := wgFullValidWorkerEnv(t)
-		env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT"] = bad
-		if _, err := loadWorkerConfig(getenvFrom(env)); err == nil || !strings.Contains(err.Error(), "必须在 1 到 256 之间") {
-			t.Fatalf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT=%s 必须 fail-fast: %v", bad, err)
-		}
-	}
-	for _, good := range []struct {
-		raw  string
-		want int
-	}{{"1", 1}, {"256", 256}} {
-		env := wgFullValidWorkerEnv(t)
-		env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT"] = good.raw
-		config, err := loadWorkerConfig(getenvFrom(env))
-		if err != nil {
-			t.Fatalf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT=%s 必须合法: %v", good.raw, err)
-		}
-		if config.CodexContextStateShardCount != good.want {
-			t.Fatalf("分片数必须生效: got %d want %d", config.CodexContextStateShardCount, good.want)
-		}
-	}
-}

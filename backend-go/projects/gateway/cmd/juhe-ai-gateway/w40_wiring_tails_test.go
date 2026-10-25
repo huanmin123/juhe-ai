@@ -6,7 +6,7 @@ package main
 //   - chain_usage_wiring.go 头投影的宽容值形态
 //   - health_route.go validate 的 nil-atomic fail-fast 臂
 //   - j3b_memory_keymodel.go RecordFailureIntent 零 ObservedAt 回落臂（零配置自动认领）
-//   - storage_bootstrap.go ensureJ3bDedicatedSQLiteBootstrap 打开失败臂
+//   （原 ensureJ3bDedicatedSQLiteBootstrap 打开失败臂随 sqlite 存储形态退役删除）
 //   - compose_routestrategies_wiring.go facade 的 nil-service 端口臂
 
 import (
@@ -14,8 +14,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -185,21 +183,6 @@ func TestJ3bMemoryKeyModelGateRecordFailureIntentZeroObservedAt(t *testing.T) {
 	case keymodelruntime.StatusApplied, keymodelruntime.StatusIdempotent, keymodelruntime.StatusNotDue:
 	default:
 		t.Fatalf("unexpected mutation status: %v", status)
-	}
-}
-
-func TestEnsureJ3bDedicatedSQLiteBootstrapRejectsBlockedPath(t *testing.T) {
-	root := t.TempDir()
-	blocker := filepath.Join(root, "block")
-	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
-	err := ensureJ3bDedicatedSQLiteBootstrap(context.Background(), filepath.Join(blocker, "j3b.sqlite3"))
-	if err == nil {
-		t.Fatal("父路径是文件时必须打开失败")
-	}
-	if !strings.Contains(err.Error(), "open J3b dedicated sqlite") {
-		t.Fatalf("错误应保留原始打开语义: %v", err)
 	}
 }
 

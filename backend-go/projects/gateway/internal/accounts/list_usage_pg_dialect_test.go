@@ -1,10 +1,9 @@
 package accounts
 
-// 账户面 list usage 读口的 PG 方言契约回归（fixture 模式沿用 groups
-// usage_reader_pg_dialect_test.go：SQLite 句柄 ATTACH ':memory:' AS juhe_stats
-// 承载生产同款限定形式，SetMaxOpenConns(1) 保证 ATTACH 对所有查询可见；列
-// 定义照抄 maintenance pg_schema_stats.go 的 usage_stats_daily /
-// usage_stats_totals 建表，只保留读口 SELECT 的列）。
+// 账户面 list usage 读口的 PG 方言契约回归（原 SQLite 句柄 ATTACH
+// ':memory:' AS juhe_stats 承载生产限定形式的载体随 sqlite 夹具退役，改由
+// pgtestkit 隔离真实 PG 承载；列定义照抄 maintenance pg_schema_stats.go 的
+// usage_stats_daily / usage_stats_totals 建表，只保留读口 SELECT 的列）。
 //
 // 契约（docs/functions/缓存率感知调度与用量缓存率展示设计.md 9.1）：PG 上必须
 // 以 juhe_stats. 限定 usage_stats_daily（AND stat_date = ?）/
@@ -15,10 +14,9 @@ package accounts
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const accountUsageDailyFixtureDDL = `CREATE TABLE juhe_stats.usage_stats_daily (
@@ -48,22 +46,18 @@ const accountUsageTotalsFixtureDDL = `CREATE TABLE juhe_stats.usage_stats_totals
 
 func newAccountUsagePGFixture(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "account-usage-dialect.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		`ATTACH ':memory:' AS juhe_stats`,
-		accountUsageDailyFixtureDDL,
-		accountUsageTotalsFixtureDDL,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("fixture exec %q: %v", statement, err)
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		for _, statement := range []string{
+			`CREATE SCHEMA IF NOT EXISTS juhe_stats`,
+			accountUsageDailyFixtureDDL,
+			accountUsageTotalsFixtureDDL,
+		} {
+			if _, err := db.ExecContext(ctx, statement); err != nil {
+				return err
+			}
 		}
-	}
-	return db
+		return nil
+	})
 }
 
 // TestAccountListUsageSummariesPGDialectBranches locks the production dialect

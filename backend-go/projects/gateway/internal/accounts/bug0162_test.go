@@ -398,7 +398,7 @@ func TestBug0162PatchExtendedFieldsAndHealthReset(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-alt', ?, '备用分组', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
-		VALUES ('proxy-1', ?, '出口代理', 'http', 'proxy.example.internal', 8080, 1, ?, ?)`, adminID, now, now)
+		VALUES ('proxy-1', ?, '出口代理', 'http', 'proxy.example.internal', 8080, true, ?, ?)`, adminID, now, now)
 
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", createPayload("alpha"))
 	if code != http.StatusCreated {

@@ -7,6 +7,8 @@ package main
 // SQL 用临时 SQLite 句柄，不连真实服务。
 
 import (
+	"github.com/alicebob/miniredis/v2"
+
 	"bytes"
 	"context"
 	"database/sql"
@@ -28,8 +30,10 @@ func newW2CHotQualityRuntime(t *testing.T) *gatewayhotquality.GatewayHotQualityR
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "standalone",
-		RuntimeStateDriver: "memory",
+		RuntimeMode:        "performance",
+		RuntimeStateDriver: "redis",
+		RedisStateURL:      "redis://" + miniredis.RunT(t).Addr(),
+		RedisNamespace:     "w2c-hot-quality",
 	})
 	if err != nil {
 		t.Fatalf("create hot quality runtime: %v", err)

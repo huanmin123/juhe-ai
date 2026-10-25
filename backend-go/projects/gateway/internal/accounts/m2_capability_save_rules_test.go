@@ -38,17 +38,21 @@ func m2SeedProvider(t *testing.T, env *testEnv, ownerID, code, profileID, protoc
 		t.Fatal(err)
 	}
 	// vendors 行（设计 §9.1）：创建链 vendor 归属校验按 vendors 表判定。
-	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 1, ?, ?)`, "ven-"+code, code, code, now, now)
-	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 1, ?, ?)`, "prov-"+code, code, code, now, now)
-	env.exec(t, `INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled,
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 1, ?, ?)
+		ON CONFLICT DO NOTHING`, "ven-"+code, code, code, now, now)
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 1, ?, ?)
+		ON CONFLICT DO NOTHING`, "prov-"+code, code, code, now, now)
+	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
 		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
 		capabilities_json, created_at, updated_at)
-		VALUES (?, ?, ?, 1, ?, ?, 'https://upstream.example.com/v1', 'm-default', ?, '[]', ?, ?)`,
+		VALUES (?, ?, ?, 1, ?, ?, 'https://upstream.example.com/v1', 'm-default', ?, '[]', ?, ?)
+		ON CONFLICT DO NOTHING`,
 		profileID, code, code+" 协议", protocolCode, protocolVersion, string(typesJSON), now, now)
-	env.exec(t, `INSERT OR IGNORE INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
-		VALUES (?, ?, ?, 1, 1, 'personal', ?, ?)`, "grp-"+code+"-"+ownerID, ownerID, "默认分组-"+code, code, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 1, 'personal', ?, ?)
+		ON CONFLICT DO NOTHING`, "grp-"+code+"-"+ownerID, ownerID, "默认分组-"+code, now, now)
 }
 
 // m2SeedAccountWithModes 直插一个带指定 modes 的存量账户（遗留混合账户夹具）。
@@ -1005,7 +1009,7 @@ func TestM2BatchSameDomain(t *testing.T) {
 	m2SeedAccountWithModes(t, env, "acc-m2-batch-legacy", adminID, "m2-batch-legacy", []string{"chat_json", "video_create"})
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
-		VALUES ('acc-m2-batch-legacy', (SELECT id FROM models WHERE upstream_model = 'm-default'), ?)`, now)
+		VALUES ('acc-m2-batch-legacy', (SELECT id FROM models WHERE upstream_model = 'm-default' ORDER BY id LIMIT 1), ?)`, now)
 
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update",
 		batchBody([]map[string]any{target(chatA, revisionA+1), target("acc-m2-batch-legacy", 1)},

@@ -8,7 +8,6 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,9 +18,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// w16dBalanceFixture 是余额探测运行时的完整 SQLite fixture：业务库具备
-// balance 契约列与 proxy_profiles，统计库具备 account_usage_snapshots
-// （withSnapshots=false 时省略以触发 fail closed 臂）。
+// w16dBalanceFixture 是余额探测运行时的完整 PG fixture：独立 PG 测试库，
+// juhe_business.accounts 具备 balance 契约列与 proxy_profiles，
+// juhe_stats.account_usage_snapshots（withSnapshots=false 时省略以触发
+// fail closed 臂）。原 SQLite 双文件夹具随 sqlite 形态退役删除。
 type w16dBalanceFixture struct {
 	business *sql.DB
 	stats    *sql.DB
@@ -30,54 +30,35 @@ type w16dBalanceFixture struct {
 
 func w16dNewBalanceFixture(t *testing.T, withSnapshots bool) *w16dBalanceFixture {
 	t.Helper()
-	root := t.TempDir()
-	businessPath := root + "/business.sqlite3"
-	seedProbeCoreTables(t, businessPath)
-	business := w16dOpenTestSQLite(t, businessPath)
-	for _, statement := range []string{
-		`ALTER TABLE accounts ADD COLUMN balance_query_enabled INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE accounts ADD COLUMN balance_query_config_json TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE accounts ADD COLUMN balance_query_next_refresh_at TEXT`,
-		`ALTER TABLE accounts ADD COLUMN proxy_profile_id TEXT`,
-		`CREATE TABLE IF NOT EXISTS proxy_profiles (
-			id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER,
-			username TEXT, password_encrypted TEXT)`,
-	} {
-		if _, err := business.Exec(statement); err != nil {
-			t.Fatal(err)
+	db, _ := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
+		if err := balanceFixtureSchema(ctx, db, db); err != nil {
+			return err
 		}
-	}
-	statsPath := root + "/stats.sqlite3"
-	stats := w16dOpenTestSQLite(t, statsPath)
-	if withSnapshots {
-		if _, err := stats.Exec(`CREATE TABLE account_usage_snapshots (
-			system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, kind TEXT NOT NULL,
-			source TEXT, snapshot_json TEXT, refresh_status TEXT,
-			last_attempt_at TEXT, last_success_at TEXT, next_refresh_after TEXT,
-			last_error_message TEXT, updated_at TEXT NOT NULL, created_at TEXT NOT NULL,
-			PRIMARY KEY (system_account_id, account_id, kind))`); err != nil {
+		// name 列（insertDueAccount 使用）。
+		_, err := db.Exec(`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`)
+		return err
+	})
+	stats := db
+	if !withSnapshots {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS juhe_stats.account_usage_snapshots`); err != nil {
 			t.Fatal(err)
 		}
 	}
 	runtime := &balanceDetectRuntime{
-		business: &businessDB{db: business},
+		business: &businessDB{db: db},
 		statsDB:  stats,
 		secret:   "0123456789abcdef0123456789abcdef",
 		nowFunc: func() time.Time {
 			return time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 		},
 	}
-	t.Cleanup(func() {
-		_ = business.Close()
-		_ = stats.Close()
-	})
-	return &w16dBalanceFixture{business: business, stats: stats, runtime: runtime}
+	return &w16dBalanceFixture{business: db, stats: stats, runtime: runtime}
 }
 
 // w16dInsertDueAccount 写入一条符合 first-detect 资格谓词的候选账户。
 func (f *w16dBalanceFixture) insertDueAccount(t *testing.T, id string, dispatch any, due any, credentials string) {
 	t.Helper()
-	if _, err := f.business.Exec(`INSERT INTO accounts
+	if _, err := f.business.Exec(`INSERT INTO juhe_business.accounts
 		(id, system_account_id, name, type, status, schedulable, credentials_encrypted,
 		 config_revision, dispatch_revision, deleted_at, balance_query_enabled,
 		 balance_query_config_json, balance_query_next_refresh_at)
@@ -124,22 +105,10 @@ func TestW16DBalanceListDueCandidatesArms(t *testing.T) {
 	fixture := w16dNewBalanceFixture(t, true)
 	now := fixture.runtime.nowFunc()
 	due := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	// scan 错误臂：dispatch_revision 存文本（INTEGER 亲和列存 TEXT 合法）。
-	fixture.insertDueAccount(t, "w16d-scan-bad", "not-int", due, `{"api_key":"sk-x"}`)
-	if _, err := fixture.runtime.ListDueCandidates(context.Background(), 5); err == nil {
-		t.Fatal("dispatch_revision 文本必须触发 scan 错误")
-	}
-	if _, err := fixture.business.Exec(`DELETE FROM accounts WHERE id = 'w16d-scan-bad'`); err != nil {
-		t.Fatal(err)
-	}
-	// scanNullTime 错误臂：due 列存整数。
-	fixture.insertDueAccount(t, "w16d-due-int", int64(2), 12345, `{"api_key":"sk-x"}`)
-	if _, err := fixture.runtime.ListDueCandidates(context.Background(), 5); err == nil {
-		t.Fatal("整数 due 必须触发 scanNullTime 错误")
-	}
-	if _, err := fixture.business.Exec(`DELETE FROM accounts WHERE id = 'w16d-due-int'`); err != nil {
-		t.Fatal(err)
-	}
+	// scan 错误臂已随 PG 化退役：dispatch_revision BIGINT 列在 PG 下拒绝文
+	// 本插入（22P02 于 fixture 写入时暴露），运行期 scan 错误臂不可达。
+	// scanNullTime 整数 due 错误臂已随 PG 化退役：text 列拒绝整数参数
+	// （encode plan 失败于 fixture 写入时暴露），运行期不可达。
 	// 正常路径：解密通过 → 候选入选。
 	fixture.insertDueAccount(t, "w16d-ok", int64(2), due, `{"api_key":"sk-ok","base_url":"http://127.0.0.1:1"}`)
 	fixture.insertDueAccount(t, "w16d-bad-cred", int64(3), due, `{"base_url":"http://127.0.0.1:1"}`)
@@ -159,8 +128,7 @@ func TestW16DBalanceListDueCandidatesArms(t *testing.T) {
 		t.Fatalf("未提交的候选必须仍在扫描窗口内: %+v", again)
 	}
 	// 关闭句柄错误臂。
-	closedPath := filepath.Join(t.TempDir(), "closed.sqlite3")
-	closed, err := sql.Open("sqlite", closedPath)
+	closed, err := sql.Open("pgx", "postgres://w16d-closed.invalid/db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +166,7 @@ func TestW16DBalanceCommitAndEnableArms(t *testing.T) {
 		t.Fatal("非法 next 必须报错")
 	}
 	// 关闭句柄 → exec 错误。
-	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.sqlite3"))
+	closed, err := sql.Open("pgx", "postgres://w16d-closed.invalid/db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +210,7 @@ func TestW16DBalanceReplaceSnapshotArms(t *testing.T) {
 	}
 	// 启用查询并写入等价配置 → 配置一致 → stats 缺表 → 写入失败错误臂。
 	next := now.Add(time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := fixture.business.Exec(`UPDATE accounts SET balance_query_enabled = 1,
+	if _, err := fixture.business.Exec(`UPDATE juhe_business.accounts SET balance_query_enabled = 1,
 		balance_query_config_json = '{"adapter":"builtin","intervalMinutes":5}',
 		balance_query_next_refresh_at = ? WHERE id = 'w16d-snap'`, next); err != nil {
 		t.Fatal(err)
@@ -318,9 +286,13 @@ func TestW16DBalanceRunWithLeaseArms(t *testing.T) {
 // w16dOpenTaskRunsStore 打开独立 taskruns 租约存储。
 func w16dOpenTaskRunsStore(t *testing.T) *taskruns.Store {
 	t.Helper()
+	_, dsn := wgOpenPGDialectDB(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec("CREATE SCHEMA IF NOT EXISTS juhe_stats")
+		return err
+	})
 	store, err := taskruns.OpenStore(taskruns.StoreConfig{
-		Mode:         taskruns.ModeSQLite,
-		DatabasePath: filepath.Join(t.TempDir(), "task-runs.sqlite3"),
+		Mode:        taskruns.ModePostgres,
+		PostgresURL: dsn,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -346,14 +318,14 @@ func TestW16DBalanceQueryBuiltinArms(t *testing.T) {
 		t.Fatal("缺 base_url 必须报错")
 	}
 	// 代理 envelope 错误：候选携带 proxy_profile_id，代理解析失败（713-715）。
-	if _, err := fixture.business.Exec(`DELETE FROM accounts WHERE id = 'w16d-nobase'`); err != nil {
+	if _, err := fixture.business.Exec(`DELETE FROM juhe_business.accounts WHERE id = 'w16d-nobase'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.business.Exec(`INSERT INTO proxy_profiles (id, type, host, port) VALUES ('w16d-proxy-bad', 'ftp', '127.0.0.1', 1080)`); err != nil {
+	if _, err := fixture.business.Exec(`INSERT INTO juhe_business.proxy_profiles (id, type, host, port) VALUES ('w16d-proxy-bad', 'ftp', '127.0.0.1', 1080)`); err != nil {
 		t.Fatal(err)
 	}
 	fixture.insertDueAccount(t, "w16d-proxy-bad", int64(3), due, `{"api_key":"sk-ok","base_url":"http://127.0.0.1:1"}`)
-	if _, err := fixture.business.Exec(`UPDATE accounts SET proxy_profile_id = 'w16d-proxy-bad' WHERE id = 'w16d-proxy-bad'`); err != nil {
+	if _, err := fixture.business.Exec(`UPDATE juhe_business.accounts SET proxy_profile_id = 'w16d-proxy-bad' WHERE id = 'w16d-proxy-bad'`); err != nil {
 		t.Fatal(err)
 	}
 	selected, err = fixture.runtime.ListDueCandidates(ctx, 5)
@@ -364,7 +336,7 @@ func TestW16DBalanceQueryBuiltinArms(t *testing.T) {
 		t.Fatal("非法代理类型必须报错")
 	}
 	// 上游不可达 → ExecuteBalanceQuery 错误（630-632）。先清掉上一候选避免混入。
-	if _, err := fixture.business.Exec(`DELETE FROM accounts WHERE id = 'w16d-proxy-bad'`); err != nil {
+	if _, err := fixture.business.Exec(`DELETE FROM juhe_business.accounts WHERE id = 'w16d-proxy-bad'`); err != nil {
 		t.Fatal(err)
 	}
 	fixture.insertDueAccount(t, "w16d-unreachable", int64(4), due, `{"api_key":"sk-ok","base_url":"http://127.0.0.1:1"}`)
@@ -392,88 +364,13 @@ func TestW16DBalanceQueryBuiltinArms(t *testing.T) {
 	}
 }
 
-func TestW16DBalanceEnsureSnapshotsTableArms(t *testing.T) {
-	ctx := context.Background()
-	fixture := w16dNewBalanceFixture(t, false)
-	if err := ensureAccountUsageSnapshotsTable(ctx, fixture.stats, false); err == nil {
-		t.Fatal("缺快照表必须报错")
-	}
-	closed, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = closed.Close()
-	if err := ensureAccountUsageSnapshotsTable(ctx, closed, false); err == nil {
-		t.Fatal("关闭句柄必须报错")
-	}
-}
-
 // ---- 组合根装配失败臂 ----
-
-// w16dSQLiteAssemblyConfig 构造一个路径齐备的 SQLite worker 配置基座。
-func w16dSQLiteAssemblyConfig(t *testing.T, mutate func(*workerConfig)) workerConfig {
-	root := t.TempDir()
-	config := workerConfig{
-		Driver: "sqlite", InstanceID: "w16d-assembly",
-		WorkerRole:                  "worker",
-		Secret:                      "0123456789abcdef0123456789abcdef",
-		BusinessSQLitePath:          filepath.Join(root, "business.sqlite3"),
-		StatsSQLitePath:             filepath.Join(root, "stats.sqlite3"),
-		TaskRunsSQLitePath:          filepath.Join(root, "task-runs.sqlite3"),
-		UsageCatalogSQLitePath:      filepath.Join(root, "usage-catalog.sqlite3"),
-		UsageShardRoot:              filepath.Join(root, "usage-shards"),
-		DatasetSQLitePath:           filepath.Join(root, "dataset.sqlite3"),
-		ChatSQLitePath:              filepath.Join(root, "chat.sqlite3"),
-		CodexContextStateShardRoot:  filepath.Join(root, "codex-state"),
-		CodexContextStateShardCount: 4,
-		ChatAssetsRoot:              filepath.Join(root, "chat-assets"),
-		// 家族开关字段已删除（2026-09-19）：全部家族恒装配。
-	}
-	if mutate != nil {
-		mutate(&config)
-	}
-	return config
-}
-
-func TestW16DBuildWorkerAssemblyFailArms(t *testing.T) {
-	writeGarbage := func(name string) string {
-		path := filepath.Join(t.TempDir(), name)
-		if err := os.WriteFile(path, []byte("w16d not a sqlite database"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	// usage-catalog 垃圾文件 → openSQLite WAL 失败（101-103）。
-	garbageConfig := w16dSQLiteAssemblyConfig(t, func(config *workerConfig) {
-		config.UsageCatalogSQLitePath = writeGarbage("garbage-catalog.sqlite3")
-	})
-	if assembly, err := buildWorkerAssembly(garbageConfig, slog.Default()); err == nil {
-		if assembly != nil {
-			assembly.closeStores()
-		}
-		t.Fatal("垃圾 usage-catalog 必须使装配失败")
-	}
-	// task-runs 垃圾文件 → OpenStore 失败（263-265）。
-	taskRunsConfig := w16dSQLiteAssemblyConfig(t, func(config *workerConfig) {
-		config.TaskRunsSQLitePath = writeGarbage("garbage-taskruns.sqlite3")
-	})
-	if assembly, err := buildWorkerAssembly(taskRunsConfig, slog.Default()); err == nil {
-		if assembly != nil {
-			assembly.closeStores()
-		}
-		t.Fatal("垃圾 task-runs 必须使装配失败")
-	}
-	// 空 secret 的装配失败臂已删除（2026-09-19）：loadWorkerConfig 现在对空
-	// JUHE_AI_SECRET fail-fast，组合根不再有「OAuth/探针族各自撞空 secret」
-	// 的到达路径；装配层空 secret 由 family 侧既有错误保留。
-}
 
 func TestW16DWireBalanceDetectFamilyArms(t *testing.T) {
 	ctx := context.Background()
 	// openBusinessDB 失败臂（postgres 坏 URL；791-793）。需先过 secret 与
 	// 租约存储门禁才能触达业务库打开。
-	pgAssembly := newWorkerAssembly(workerConfig{
-		Driver: "postgres", PostgresURL: "pgx://w16d-invalid",
+	pgAssembly := newWorkerAssembly(workerConfig{ PostgresURL: "pgx://w16d-invalid",
 		Secret: "0123456789abcdef0123456789abcdef",
 	}, slog.Default())
 	pgAssembly.taskRunsStore = w16dOpenTaskRunsStore(t)
@@ -481,44 +378,4 @@ func TestW16DWireBalanceDetectFamilyArms(t *testing.T) {
 		t.Fatal("postgres 坏 URL 必须使 balance 族失败")
 	}
 	pgAssembly.closeStores()
-
-	// 快照表缺失臂：业务库具备契约列但 stats 无 account_usage_snapshots（807-811）。
-	root := t.TempDir()
-	businessPath := filepath.Join(root, "business.sqlite3")
-	seedProbeCoreTables(t, businessPath)
-	businessDBFile := w16dOpenTestSQLite(t, businessPath)
-	for _, statement := range []string{
-		`ALTER TABLE accounts ADD COLUMN balance_query_enabled INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE accounts ADD COLUMN balance_query_config_json TEXT NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE accounts ADD COLUMN balance_query_next_refresh_at TEXT`,
-		`ALTER TABLE accounts ADD COLUMN proxy_profile_id TEXT`,
-		`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER, username TEXT, password_encrypted TEXT)`,
-	} {
-		if _, err := businessDBFile.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	assembly := newWorkerAssembly(workerConfig{
-		Driver: "sqlite", InstanceID: "w16d-balance",
-		BusinessSQLitePath: businessPath,
-		StatsSQLitePath:    filepath.Join(root, "stats-no-snapshots.sqlite3"),
-		TaskRunsSQLitePath: filepath.Join(root, "task-runs.sqlite3"),
-		Secret:             "0123456789abcdef0123456789abcdef",
-	}, slog.Default())
-	t.Cleanup(assembly.closeStores)
-	if err := assembly.wireTaskRunsFamily(ctx); err != nil {
-		t.Fatalf("task-runs 装配: %v", err)
-	}
-	if err := assembly.wireBalanceDetectFamily(ctx); err != nil {
-		t.Fatalf("balance 族装配: %v", err)
-	}
-	found := false
-	for _, disabled := range assembly.disabledJobs {
-		if disabled.JobName == "account-balance-auto-detect-recovery" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("缺快照表必须登记 disabled: %v", assembly.disabledJobs)
-	}
 }

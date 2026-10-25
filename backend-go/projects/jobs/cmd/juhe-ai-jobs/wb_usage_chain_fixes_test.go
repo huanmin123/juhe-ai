@@ -16,7 +16,7 @@ import (
 // TestAcquirePoolSharesRegistryEntry 锁定 B④：同 URL 的任务族必须命中同
 // 一个共享池条目（refs 引用计数），不再每族一池。
 func TestAcquirePoolSharesRegistryEntry(t *testing.T) {
-	config := workerConfig{Driver: "postgres", PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 1}
+	config := workerConfig{PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 1}
 	assembly := newWorkerAssembly(config, nil)
 	url := "postgres://wb:secret@127.0.0.1:1/db?sslmode=disable"
 	_, err := assembly.acquirePool(url, "task-runs")
@@ -56,7 +56,7 @@ func TestAcquirePoolSharesRegistryEntry(t *testing.T) {
 // TestAcquirePoolDistinctURLsDistinctEntries 保留去重键语义：不同 URL 各自
 // 独立条目。
 func TestAcquirePoolDistinctURLsDistinctEntries(t *testing.T) {
-	config := workerConfig{Driver: "postgres", PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 1}
+	config := workerConfig{PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 1}
 	assembly := newWorkerAssembly(config, nil)
 	t.Cleanup(assembly.closeStores)
 	for index, url := range []string{
@@ -75,7 +75,8 @@ func TestAcquirePoolDistinctURLsDistinctEntries(t *testing.T) {
 // TestWorkerUsageOverflowSpoolDirectory 锁定溢出 spool 目录派生：stats 库
 // 目录下的固定名。
 func TestWorkerUsageOverflowSpoolDirectory(t *testing.T) {
-	config := workerConfig{StatsSQLitePath: filepath.Join("data", "stats.sqlite3")}
+	// D1：溢出 spool 派生改挂 DATA_DIR（原 stats 库路径派生随 sqlite 形态退役）。
+	config := workerConfig{DataDir: filepath.Join("data")}
 	got := workerUsageOverflowSpoolDirectory(config)
 	if want := filepath.Join("data", "usage-record-overflow-spool"); got != want {
 		t.Fatalf("溢出 spool 目录 = %q, want %q", got, want)
@@ -87,15 +88,11 @@ func TestWorkerUsageOverflowSpoolDirectory(t *testing.T) {
 func TestWireUsageWriterFamilyWiresOverflowReplay(t *testing.T) {
 	root := t.TempDir()
 	config := workerConfig{
-		Driver:                 "sqlite",
-		InstanceID:             "wb-usage",
-		Secret:                 "wb-secret",
-		BusinessSQLitePath:     filepath.Join(root, "business.sqlite3"),
-		StatsSQLitePath:        filepath.Join(root, "stats.sqlite3"),
-		UsageCatalogSQLitePath: filepath.Join(root, "usage-catalog.sqlite3"),
-		UsageShardRoot:         filepath.Join(root, "usage-shards"),
-		UsageShardCount:        4,
-		UsageSpoolDirectory:    filepath.Join(root, "usage-record-spool"),
+		InstanceID:          "wb-usage",
+		Secret:              "wb-secret",
+		PostgresURL:         "postgres://wb:secret@127.0.0.1:1/db?sslmode=disable",
+		DataDir:             root,
+		UsageSpoolDirectory: filepath.Join(root, "usage-record-spool"),
 	}
 	assembly := newWorkerAssembly(config, nil)
 	t.Cleanup(assembly.closeStores)
@@ -140,15 +137,11 @@ func (wbFailingEnqueuer) EnqueueDurable(ctx usagewriter.Ctx, input usagewriter.U
 func TestIngestDrainProbeAggregatesSpoolWatermark(t *testing.T) {
 	root := t.TempDir()
 	config := workerConfig{
-		Driver:                 "sqlite",
-		InstanceID:             "wb-probe",
-		Secret:                 "wb-secret",
-		BusinessSQLitePath:     filepath.Join(root, "business.sqlite3"),
-		StatsSQLitePath:        filepath.Join(root, "stats.sqlite3"),
-		UsageCatalogSQLitePath: filepath.Join(root, "usage-catalog.sqlite3"),
-		UsageShardRoot:         filepath.Join(root, "usage-shards"),
-		UsageShardCount:        4,
-		UsageSpoolDirectory:    filepath.Join(root, "usage-record-spool"),
+		InstanceID:          "wb-probe",
+		Secret:              "wb-secret",
+		PostgresURL:         "postgres://wb:secret@127.0.0.1:1/db?sslmode=disable",
+		DataDir:             root,
+		UsageSpoolDirectory: filepath.Join(root, "usage-record-spool"),
 	}
 	assembly := newWorkerAssembly(config, nil)
 	t.Cleanup(assembly.closeStores)

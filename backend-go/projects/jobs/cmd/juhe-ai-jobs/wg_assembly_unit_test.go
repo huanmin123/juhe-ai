@@ -37,28 +37,9 @@ func TestStaticSettingsDefaults(t *testing.T) {
 }
 
 // TestOpenSQLiteWALAndRegistry 验证 openSQLite 注册连接与 PRAGMA 失败分支。
-func TestOpenSQLiteWALAndRegistry(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, nil)
-	defer assembly.closeStores()
-	db, err := assembly.openSQLite(filepath.Join(t.TempDir(), "unit.sqlite3"), "unit")
-	if err != nil {
-		t.Fatalf("打开合法 SQLite 必须成功: %v", err)
-	}
-	if len(assembly.sqliteDBs) != 1 {
-		t.Fatalf("连接必须登记到 sqliteDBs: %d", len(assembly.sqliteDBs))
-	}
-	if _, err := db.Exec("CREATE TABLE t (id TEXT)"); err != nil {
-		t.Fatalf("连接必须可用: %v", err)
-	}
-	// 目录不存在 → sql.Open 惰性成功，PRAGMA WAL 执行失败 → 显式报错。
-	if _, err := assembly.openSQLite(filepath.Join(t.TempDir(), "missing-dir", "x.sqlite3"), "bad"); err == nil {
-		t.Fatal("非法路径必须报错")
-	}
-}
-
 // TestCloseStoresReportsCloserError 验证 closer 报错时逆向关闭继续执行。
 func TestCloseStoresReportsCloserError(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	order := []string{}
 	assembly.addCloser(func() error { order = append(order, "first"); return nil })
 	assembly.addCloser(func() error { order = append(order, "second"); return errors.New("关闭失败") })
@@ -74,7 +55,7 @@ func TestCloseStoresReportsCloserError(t *testing.T) {
 // TestStatusPayloadWithoutScheduler 验证手工构造的最小装配体也能输出健康载荷
 // （nil 调度器分支不 panic）。
 func TestStatusPayloadWithoutScheduler(t *testing.T) {
-	assembly := &workerAssembly{config: workerConfig{Driver: "sqlite"}}
+	assembly := &workerAssembly{config: workerConfig{}}
 	payload := assembly.statusPayload()
 	if payload["workerEnabled"] != true || payload["workerDriver"] != "sqlite" {
 		t.Fatalf("健康载荷基础字段错误: %v", payload)
@@ -87,14 +68,11 @@ func TestStatusPayloadWithoutScheduler(t *testing.T) {
 // TestRankSnapshotCoreStagesBranches 锁定 usage-rank-snapshots-refresh 的
 // databaseDriver 注册分叉：PG 剔除 ai_performance_summary_windows。
 func TestRankSnapshotCoreStagesBranches(t *testing.T) {
-	sqliteStages := rankSnapshotCoreStages(false)
-	pgStages := rankSnapshotCoreStages(true)
-	if len(sqliteStages) != len(pgStages)+1 {
-		t.Fatalf("SQLite 分支必须多一个 ai_performance stage: sqlite=%d pg=%d", len(sqliteStages), len(pgStages))
-	}
+	// D13：rank 阶段集合恒 PG 形态（ai_performance 由独立 job 承担，不入列）。
+	pgStages := rankSnapshotCoreStages()
 	for _, stage := range pgStages {
 		if stage == statsagg.StageAiPerformanceSummaryWindows {
-			t.Fatal("PG 分支不得包含 ai_performance_summary_windows")
+			t.Fatal("rank 阶段不得包含 ai_performance_summary_windows")
 		}
 	}
 	// BUG-0285：热任务只保留 scope 阶段——overview 阶段生产实测 ~52-55s 超
@@ -107,7 +85,7 @@ func TestRankSnapshotCoreStagesBranches(t *testing.T) {
 
 // TestRegisterDisabledJobLogsUnknownRegistry 验证非注册表 job 的登记分支。
 func TestRegisterDisabledJobLogsUnknownRegistry(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	assembly.registerDisabledJob("wg-not-in-registry", "测试缺口")
 	if len(assembly.disabledJobs) != 1 || assembly.disabledJobs[0].JobName != "wg-not-in-registry" {
 		t.Fatalf("登记清单错误: %+v", assembly.disabledJobs)
@@ -116,7 +94,7 @@ func TestRegisterDisabledJobLogsUnknownRegistry(t *testing.T) {
 
 // TestRunWiredJobOnceUnknownName 验证未注册任务的显式报错。
 func TestRunWiredJobOnceUnknownName(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, nil)
+	assembly := newWorkerAssembly(workerConfig{}, nil)
 	if _, err := assembly.runWiredJobOnce(context.Background(), "wg-nope"); err == nil {
 		t.Fatal("未注册任务必须报错")
 	}
@@ -129,7 +107,7 @@ func noopWiredTask(_ context.Context, _ jobsched.TaskContext) (jobsched.TaskResu
 
 // TestScheduleWiredJobRejectsNonGoWired 验证非 GoWired 名称被拒绝注册。
 func TestScheduleWiredJobRejectsNonGoWired(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	assembly.scheduleWiredJob("wg-definitely-not-a-job", noopWiredTask)
 	if len(assembly.wiredJobs) != 0 || len(assembly.wiredTasks) != 0 {
 		t.Fatalf("非 GoWired 任务不得注册: %v", assembly.wiredJobs)
@@ -139,7 +117,7 @@ func TestScheduleWiredJobRejectsNonGoWired(t *testing.T) {
 // TestScheduleWiredJobDriverForkRejectsRegistration 验证 PG 独占任务在
 // ResolveScheduleForDriver 反向分支下拒绝注册（T6b 冻结语义）。
 func TestScheduleWiredJobDriverForkRejectsRegistration(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "postgres"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	// usage-scope-range-windows-refresh 仅默认/SQLite 分支注册。
 	assembly.scheduleWiredJob("usage-scope-range-windows-refresh", noopWiredTask)
 	if len(assembly.wiredJobs) != 0 {
@@ -197,7 +175,7 @@ func TestWithLeaseWrapsTaskWhenPostgres(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 	assembly := &workerAssembly{
-		config:        workerConfig{Driver: "postgres", InstanceID: "wg", WorkerRole: "worker", WorkerReplicaIdx: 3},
+		config:        workerConfig{InstanceID: "wg", WorkerRole: "worker", WorkerReplicaIdx: 3},
 		taskRunsStore: store,
 	}
 	executed := false
@@ -232,7 +210,7 @@ func TestWithLeaseWrapsTaskWhenPostgres(t *testing.T) {
 
 // TestWithLeaseSkipsWhenSQLiteOrNoStore 验证 SQLite/无租约存储时任务直跑。
 func TestWithLeaseSkipsWhenSQLiteOrNoStore(t *testing.T) {
-	assembly := &workerAssembly{config: workerConfig{Driver: "sqlite"}}
+	assembly := &workerAssembly{config: workerConfig{}}
 	called := false
 	wrapped := assembly.withLease("usage-stats-aggregation", time.Minute, func(_ context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		called = true
@@ -241,7 +219,7 @@ func TestWithLeaseSkipsWhenSQLiteOrNoStore(t *testing.T) {
 	if _, err := wrapped(context.Background(), jobsched.TaskContext{}); err != nil || !called {
 		t.Fatalf("SQLite 必须直跑任务: %v %v", called, err)
 	}
-	nilStoreAssembly := &workerAssembly{config: workerConfig{Driver: "postgres"}}
+	nilStoreAssembly := &workerAssembly{config: workerConfig{}}
 	nilStoreCalled := false
 	nilStoreWrapped := nilStoreAssembly.withLease("usage-stats-aggregation", time.Minute, func(_ context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		nilStoreCalled = true
@@ -290,7 +268,7 @@ func TestProbeSettingsSourceFallsBackOnError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	// 不建 system_settings 表 → SQLite 读模型按语义回落默认。
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	settings := assembly.probeSettingsSource(&businessDB{db: db})
 	value := settings("accountQualityWindowMinutes", 5, 120)
 	if value < 5 || value > 120 {
@@ -357,7 +335,7 @@ func TestResolveScheduleSettingsInterval(t *testing.T) {
 // TestIngestDrainGateWithoutWriter 验证 usagewriter 缺席时门控按
 // 「快照不可用」失败本轮（Node ingest worker 不可达语义）。
 func TestIngestDrainGateWithoutWriter(t *testing.T) {
-	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, nil)
+	assembly := newWorkerAssembly(workerConfig{}, nil)
 	probe := assembly.ingestDrainProbe()
 	// probe 本身是闭包；writer 缺席在调用时返回 (nil, nil) 等价 Node
 	// ingest worker 不可达。
@@ -389,24 +367,24 @@ func TestBusinessDBDialectHelpers(t *testing.T) {
 	if bound := sqlite.bind("WHERE id = ? AND name = ?"); bound != "WHERE id = ? AND name = ?" {
 		t.Fatalf("SQLite bind 原样返回: %s", bound)
 	}
-	pg := &businessDB{postgres: true}
+	pg := &businessDB{}
 	if pg.table("accounts") != "juhe_business.accounts" {
 		t.Fatalf("PG 表名必须限定 schema: %s", pg.table("accounts"))
 	}
 	if bound := pg.bind("WHERE id = ? AND name = ?"); bound != "WHERE id = $1 AND name = $2" {
 		t.Fatalf("PG bind 必须改写占位符: %s", bound)
 	}
-	if statsTable(true, "account_usage_snapshots") != "juhe_stats.account_usage_snapshots" {
+	if statsTable("account_usage_snapshots") != "juhe_stats.account_usage_snapshots" {
 		t.Fatal("PG 统计表必须限定 juhe_stats")
 	}
-	if statsTable(false, "account_usage_snapshots") != "account_usage_snapshots" {
+	if statsTable("account_usage_snapshots") != "account_usage_snapshots" {
 		t.Fatal("SQLite 统计表不加前缀")
 	}
-	if timeParam(true, time.Unix(0, 0).UTC()) != time.Unix(0, 0).UTC() {
+	if timeParam(time.Unix(0, 0).UTC()) != time.Unix(0, 0).UTC() {
 		t.Fatal("PG 时间参数必须保持 time.Time")
 	}
-	if text, ok := timeParam(false, time.Unix(0, 0).UTC()).(string); !ok || text != "1970-01-01T00:00:00Z" {
-		t.Fatalf("SQLite 时间参数必须是 RFC3339Nano 文本: %#v", timeParam(false, time.Unix(0, 0).UTC()))
+	if text, ok := timeParam(time.Unix(0, 0).UTC()).(string); !ok || text != "1970-01-01T00:00:00Z" {
+		t.Fatalf("SQLite 时间参数必须是 RFC3339Nano 文本: %#v", timeParam(time.Unix(0, 0).UTC()))
 	}
 	if textParam("x") != "x" {
 		t.Fatal("textParam 必须原样返回")
@@ -421,7 +399,7 @@ func TestBusinessDBDialectHelpers(t *testing.T) {
 		{true, true, "1"}, {true, false, "0"}, {false, true, "1"}, {false, false, "0"},
 	}
 	for _, item := range cases {
-		if got := boolLit(item.postgres, item.value); got != item.expected {
+		if got := boolLit(item.value); got != item.expected {
 			t.Fatalf("boolLit(%v,%v)=%s 期望 %s", item.postgres, item.value, got, item.expected)
 		}
 	}
@@ -451,7 +429,7 @@ func TestScanNullTimeMatrix(t *testing.T) {
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			parsed, err := scanNullTime(item.postgres, item.value)
+			parsed, err := scanNullTime(item.value)
 			if item.wantErr {
 				if err == nil {
 					t.Fatalf("必须报错，得到 %v", parsed)
@@ -654,23 +632,5 @@ func TestRecordMaintenanceQueueDrainShutdown(t *testing.T) {
 	})
 	if queue.size() != 0 {
 		t.Fatalf("成功排空后队列必须清空: %d", queue.size())
-	}
-}
-
-// TestCheckpointSQLite 验证 nil 与真实连接两条路径。
-func TestCheckpointSQLite(t *testing.T) {
-	if err := checkpointSQLite(context.Background(), nil); err != nil {
-		t.Fatalf("nil 连接必须直接成功: %v", err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "cp.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkpointSQLite(context.Background(), db); err != nil {
-		t.Fatalf("PASSIVE checkpoint 必须成功: %v", err)
 	}
 }

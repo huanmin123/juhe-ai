@@ -20,187 +20,17 @@ package accounthealth
 import (
 	"context"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"modernc.org/sqlite"
 )
-
-// w13g5HealthOpenStore 打开一个真实 SQLite store 并完成建表。
-func w13g5HealthOpenStore(t *testing.T) *Store {
-	t.Helper()
-	_ = sqlite.Driver{}
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w13g5-health.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	return store
-}
-
-// w13g5HealthClosedStore 打开、建表并关闭底层句柄的 store，用于批量错误臂。
-func w13g5HealthClosedStore(t *testing.T) *Store {
-	t.Helper()
-	store := w13g5HealthOpenStore(t)
-	if err := store.db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return store
-}
 
 func w13g5HealthOutcome() Outcome {
 	return Outcome{
 		OutcomeID: "w13g5-outcome", RequestID: "w13g5-request", AccountID: "w13g5-acc",
 		Outcome: "success", ObservedAt: time.Date(2026, 9, 18, 8, 0, 0, 0, time.UTC),
 		InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
-	}
-}
-
-func TestW13g5HealthClosedStoreWriteArms(t *testing.T) {
-	store := w13g5HealthClosedStore(t)
-	ctx := context.Background()
-	lease := OwnerLease{OwnerID: "w13g5-owner", FenceToken: 1}
-	if _, _, err := store.AcquireOwnerLease(ctx, "w13g5-owner", time.Minute); err == nil {
-		t.Fatal("关闭句柄后租约获取必须报错")
-	}
-	if _, err := store.RenewOwnerLease(ctx, lease, time.Minute); err == nil {
-		t.Fatal("关闭句柄后租约续约必须报错")
-	}
-	if err := store.ReleaseOwnerLease(ctx, lease); err == nil {
-		t.Fatal("关闭句柄后租约释放必须报错")
-	}
-	if _, err := store.AppendOutcome(ctx, lease, w13g5HealthOutcome()); err == nil {
-		t.Fatal("关闭句柄后追加 outcome 必须报错")
-	}
-	if _, _, err := store.LoadCurrentState(ctx, "w13g5-acc"); err == nil {
-		t.Fatal("关闭句柄后读取状态必须报错")
-	}
-	if _, err := store.LoadDirectInputSuppressions(ctx, time.Now()); err == nil {
-		t.Fatal("关闭句柄后读取抑制必须报错")
-	}
-	if _, err := store.HasRequest(ctx, "w13g5-request"); err == nil {
-		t.Fatal("关闭句柄后 HasRequest 必须报错")
-	}
-	if _, _, err := store.LoadKeyCursor(ctx, "w13g5-acc", "w13g5-purpose", "w13g5-fp"); err == nil {
-		t.Fatal("关闭句柄后读取 cursor 必须报错")
-	}
-	if err := store.SaveKeyCursor(ctx, lease, "w13g5-acc", "w13g5-purpose", "w13g5-fp", 1); err == nil {
-		t.Fatal("关闭句柄后保存 cursor 必须报错")
-	}
-	// BUG-0307 记忆化：上方 setup 已成功 EnsureSchema（schemaReady=true），
-	// 关闭句柄后再调用按设计短路 no-op；要验证"实际执行时失败"需先复位。
-	store.schemaReady.Store(false)
-	if err := store.EnsureSchema(ctx); err == nil {
-		t.Fatal("关闭句柄后建表必须报错")
-	}
-	if store.schemaReady.Load() {
-		t.Fatal("失败的 EnsureSchema 不得记忆 schemaReady")
-	}
-}
-
-func TestW13g5HealthStoreValidationArms(t *testing.T) {
-	store := w13g5HealthOpenStore(t)
-	ctx := context.Background()
-	// 租约参数校验。
-	if _, _, err := store.AcquireOwnerLease(ctx, "", time.Minute); err == nil {
-		t.Fatal("空 owner 必须报错")
-	}
-	if _, _, err := store.AcquireOwnerLease(ctx, "w13g5-owner", 0); err == nil {
-		t.Fatal("零 duration 必须报错")
-	}
-	if _, err := store.RenewOwnerLease(ctx, OwnerLease{OwnerID: "o"}, 0); err == nil {
-		t.Fatal("零续约 duration 必须报错")
-	}
-	if err := store.ReleaseOwnerLease(ctx, OwnerLease{FenceToken: 0}); err == nil {
-		t.Fatal("无效释放参数必须报错")
-	}
-	// AppendOutcome 幂等字段校验（在 DB 调用之前）。
-	bad := w13g5HealthOutcome()
-	bad.OutcomeID = ""
-	if _, err := store.AppendOutcome(ctx, OwnerLease{OwnerID: "w13g5-owner", FenceToken: 1}, bad); err == nil {
-		t.Fatal("缺 outcomeID 必须报错")
-	}
-	noRequest := w13g5HealthOutcome()
-	noRequest.RequestID = ""
-	if _, err := store.AppendOutcome(ctx, OwnerLease{}, noRequest); err == nil {
-		t.Fatal("缺 requestID 必须报错")
-	}
-	noAccount := w13g5HealthOutcome()
-	noAccount.AccountID = ""
-	if _, err := store.AppendOutcome(ctx, OwnerLease{}, noAccount); err == nil {
-		t.Fatal("缺 accountID 必须报错")
-	}
-	zeroObserved := w13g5HealthOutcome()
-	zeroObserved.ObservedAt = time.Time{}
-	if _, err := store.AppendOutcome(ctx, OwnerLease{}, zeroObserved); err == nil {
-		t.Fatal("零 observedAt 必须报错")
-	}
-	lowVersion := w13g5HealthOutcome()
-	lowVersion.InputVersion = 0
-	if _, err := store.AppendOutcome(ctx, OwnerLease{}, lowVersion); err == nil {
-		t.Fatal("inputVersion<1 必须报错")
-	}
-	lowConfig := w13g5HealthOutcome()
-	lowConfig.ConfigRevision = 0
-	if _, err := store.AppendOutcome(ctx, OwnerLease{}, lowConfig); err == nil {
-		t.Fatal("configRevision<1 必须报错")
-	}
-	lowDispatch := w13g5HealthOutcome()
-	lowDispatch.DispatchRevision = 0
-	if _, err := store.AppendOutcome(ctx, OwnerLease{}, lowDispatch); err == nil {
-		t.Fatal("dispatchRevision<1 必须报错")
-	}
-}
-
-func TestW13g5HealthStoreSQLiteFlows(t *testing.T) {
-	store := w13g5HealthOpenStore(t)
-	ctx := context.Background()
-	lease, acquired, err := store.AcquireOwnerLease(ctx, "w13g5-owner", time.Minute)
-	if err != nil || !acquired {
-		t.Fatalf("租约必须获取: %v %v", acquired, err)
-	}
-	// 未到期重复获取 → false。
-	if _, acquiredAgain, err := store.AcquireOwnerLease(ctx, "w13g5-owner-2", time.Minute); err != nil || acquiredAgain {
-		t.Fatalf("未到期租约不得被夺取: %v %v", acquiredAgain, err)
-	}
-	if ok, err := store.RenewOwnerLease(ctx, lease, time.Minute); err != nil || !ok {
-		t.Fatalf("续约必须成功: %v %v", ok, err)
-	}
-	// 错误 owner 续约 → false。
-	if ok, err := store.RenewOwnerLease(ctx, OwnerLease{OwnerID: "w13g5-other", FenceToken: lease.FenceToken}, time.Minute); err != nil || ok {
-		t.Fatalf("错误 owner 续约必须未命中: %v %v", ok, err)
-	}
-	written, err := store.AppendOutcome(ctx, lease, w13g5HealthOutcome())
-	if err != nil || !written {
-		t.Fatalf("outcome 必须写入: %v %v", written, err)
-	}
-	// 重复 request 幂等 → false。
-	duplicate, err := store.AppendOutcome(ctx, lease, w13g5HealthOutcome())
-	if err != nil || duplicate {
-		t.Fatalf("重复 request 必须幂等: %v %v", duplicate, err)
-	}
-	state, found, err := store.LoadCurrentState(ctx, "w13g5-acc")
-	if err != nil || !found || state.AccountID != "w13g5-acc" {
-		t.Fatalf("状态必须可读: %+v %v %v", state, found, err)
-	}
-	has, err := store.HasRequest(ctx, "w13g5-request")
-	if err != nil || !has {
-		t.Fatalf("request 必须存在: %v %v", has, err)
-	}
-	if err := store.SaveKeyCursor(ctx, lease, "w13g5-acc", "w13g5-purpose", "w13g5-fp", 7); err != nil {
-		t.Fatal(err)
-	}
-	index, found, err := store.LoadKeyCursor(ctx, "w13g5-acc", "w13g5-purpose", "w13g5-fp")
-	if err != nil || !found || index != 7 {
-		t.Fatalf("cursor 必须可读: %d %v %v", index, found, err)
-	}
-	if err := store.ReleaseOwnerLease(ctx, lease); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -230,38 +60,6 @@ func TestW13g5HealthCryptoArms(t *testing.T) {
 	}
 	if _, err := exactkeyprobe.DecryptV1Envelope("w13g5-secret", parts[0]+":"+parts[1]+":AQ:AQ"); err == nil {
 		t.Fatal("非法 IV/tag 长度必须报错")
-	}
-}
-
-func TestW13g5HealthConfigIsolationArms(t *testing.T) {
-	getenv := func(name string) string {
-		if name == "JUHE_AI_DATABASE_PATH" {
-			return `F:\w13g5-conflict\stats.sqlite3`
-		}
-		return ""
-	}
-	// 与其他库共用文件 → 报错。
-	if err := validateSQLiteIsolation(`F:\w13g5-conflict\STATS.sqlite3`, `F:\w13g5-input`, getenv); err == nil {
-		t.Fatal("共用 SQLite 文件必须报错")
-	}
-	// store 放入 input 目录 → 报错。
-	if err := validateSQLiteIsolation(`F:\w13g5-input\health.sqlite3`, `F:\w13g5-input`, func(string) string { return "" }); err == nil {
-		t.Fatal("store 放入 input 目录必须报错")
-	}
-	// 正常隔离 → 通过。
-	if err := validateSQLiteIsolation(`F:\w13g5-health\health.sqlite3`, `F:\w13g5-input`, func(string) string { return "" }); err != nil {
-		t.Fatal(err)
-	}
-	if !equalPath(`F:\A\a.db`, `f:\a\A.DB`) {
-		t.Fatal("Windows 大小写不敏感比较失败")
-	}
-	if err := validateSQLiteIsolation(`F:\w13g5-health\health.sqlite3`, `F:\w13g5-input`, func(name string) string {
-		if name == "JUHE_AI_DATASET_DATABASE_PATH" {
-			return "relative\\..\\path"
-		}
-		return ""
-	}); err != nil {
-		t.Fatalf("可解析的相对路径不得报错: %v", err)
 	}
 }
 

@@ -303,29 +303,13 @@ func (s *chatAttachSubscriber) TrySend(event chat.ChatGenerationEvent) bool {
 }
 
 // openChatDatabase opens the chat database handle the chat store owns:
-// SQLite opens the dedicated chat file (schema ensured by the startup
-// preflight), PostgreSQL aliases the shared pool handle (juhe_chat schema
-// qualification) and closes nothing here.
-func openChatDatabase(cfg runtimeConfig, postgresPools *pgpool.Registry, businessDB *sql.DB, pgDialect bool) (*sql.DB, bool, error) {
-	if pgDialect {
-		handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-chat",
-			gatewayPostgresPoolMaxOpen, gatewayPostgresPoolMaxIdle)
-		if err != nil {
-			return nil, false, fmt.Errorf("open chat postgres pool: %w", err)
-		}
-		return handle.DB(), false, nil
-	}
-	if strings.TrimSpace(cfg.ChatDatabasePath) == "" {
-		return nil, false, fmt.Errorf("sqlite 模式缺少 JUHE_AI_CHAT_DATABASE_PATH，无法打开 chat 数据库")
-	}
-	db, err := sql.Open("sqlite", sqliteFileDSN(cfg.ChatDatabasePath))
+// PostgreSQL aliases a shared pool handle (juhe_chat schema qualification)
+// and closes nothing here. 2026-10-24 存储形态收口：sqlite 专库文件臂删除。
+func openChatDatabase(cfg runtimeConfig, postgresPools *pgpool.Registry) (*sql.DB, error) {
+	handle, err := postgresPools.Acquire(cfg.BusinessPostgresURL, "gateway-chat",
+		gatewayPostgresPoolMaxOpen, gatewayPostgresPoolMaxIdle)
 	if err != nil {
-		return nil, false, fmt.Errorf("open chat sqlite database: %w", err)
+		return nil, fmt.Errorf("open chat postgres pool: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-	if err := configureSQLiteConnection(db); err != nil {
-		_ = db.Close()
-		return nil, false, fmt.Errorf("configure chat sqlite database: %w", err)
-	}
-	return db, true, nil
+	return handle.DB(), nil
 }

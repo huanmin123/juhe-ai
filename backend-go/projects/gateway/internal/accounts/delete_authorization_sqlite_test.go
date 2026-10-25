@@ -24,7 +24,10 @@ import (
 //   - 每个被回收的 grant 都触发一次账户健康快照扇出
 //     (reason='authorization_grant_changed')。
 func TestDeleteAuthorizationChainSQLitePerGrantSync(t *testing.T) {
-	env := newTestEnv(t)
+	// 组B（D17）：SQLite 删除臂的逐 grant 运行态同步域断言（与批量 PG 语义
+	// 的既定差异全部钉在这里）——走 SQLite 环境，随生产 sqlite 臂删除批次
+	// 同批退役。
+	env := newSQLiteTestEnv(t)
 	authzStore, err := authz.NewStore(env.db, false, nil)
 	if err != nil {
 		t.Fatal(err)

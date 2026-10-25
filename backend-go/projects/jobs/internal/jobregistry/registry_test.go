@@ -21,7 +21,6 @@ var nodeScheduledJobNames = []string{
 	"usage-rank-snapshots-refresh",
 	"ai-performance-summary-windows-refresh",
 	"usage-overview-windows-refresh",
-	"usage-scope-range-windows-refresh",
 	"usage-stats-consistency-check",
 	"background-task-run-reconcile",
 	"api-key-record-cleanup-retry",
@@ -78,15 +77,16 @@ var goAddedAfterRetentionJobNames = []string{
 }
 
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
-// usage-scope-range-windows-refresh 之后（原锚点 authorization-usage-range-
-// windows-refresh 已消灭），keepalive 刷新插在 openai-oauth-access-token-
-// refresh 之后，grok 用量快照刷新插在 account-balance-auto-detect-recovery
-// 之后（客户端版本自动跟版紧随 grok 用量快照），与 ScheduledEntries 的登记位置一致。
+// usage-overview-windows-refresh 之后（原锚点 usage-scope-range-windows-
+// refresh 已随 D13 sqlite-only 行删除），keepalive 刷新插在 openai-oauth-
+// access-token-refresh 之后，grok 用量快照刷新插在 account-balance-auto-
+// detect-recovery 之后（客户端版本自动跟版紧随 grok 用量快照），与
+// ScheduledEntries 的登记位置一致。
 func expectedScheduledOrder() []string {
 	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames))
 	for _, name := range nodeScheduledJobNames {
 		result = append(result, name)
-		if name == "usage-scope-range-windows-refresh" {
+		if name == "usage-overview-windows-refresh" {
 			result = append(result, goAddedScheduledJobNames...)
 		}
 		if name == "account-balance-auto-detect-recovery" {

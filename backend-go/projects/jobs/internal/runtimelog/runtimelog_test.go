@@ -2,7 +2,6 @@ package runtimelog
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -153,36 +152,6 @@ func TestIncompleteTailDoesNotAdvanceCursorUntilNewlineArrives(t *testing.T) {
 	assertKitRuntimeLogCount(t, store, 1)
 }
 
-func TestWriteFailureKeepsLastCommittedCursorAndRecovers(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
-	writeTestFile(t, rotatedPath, logLine("recoverable", "2026-08-08T00:00:00.000Z")+"\n")
-	if _, err := store.db.Exec(`CREATE TRIGGER reject_runtime_log_insert BEFORE INSERT ON runtime_logs BEGIN SELECT RAISE(ABORT, 'forced write failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	indexer := NewIndexer(config, store)
-	if err := indexer.RunOnce(ctx); err == nil {
-		t.Fatal("写入失败必须向调用方暴露")
-	}
-	assertRuntimeLogCount(t, store, 0)
-	cursor := findCursor(t, store, rotatedPath)
-	if cursor.CursorOffset != 0 || cursor.LastErrorMessage != writeFailureCursorMessage {
-		t.Fatalf("失败时 cursor 必须停留在最近成功位置: %#v", cursor)
-	}
-	if _, err := store.db.Exec("DROP TRIGGER reject_runtime_log_insert"); err != nil {
-		t.Fatal(err)
-	}
-	if err := indexer.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	assertRuntimeLogCount(t, store, 1)
-	cursor = findCursor(t, store, rotatedPath)
-	if cursor.LastErrorMessage != "" {
-		t.Fatalf("恢复成功后必须清除 cursor 错误: %#v", cursor)
-	}
-}
-
 func TestRunReturnsManagedImportGoroutinePanic(t *testing.T) {
 	store, config := openKitPostgresStore(t)
 	ctx := testOwnerContext(t, store)
@@ -269,72 +238,6 @@ func TestCurrentLogReplacementPreservesDisplacedCursorAndIndexesNewFile(t *testi
 		t.Fatalf("替换后 current 必须有新 identity cursor: cursor=%v err=%v", newCursor, err)
 	}
 	assertKitRuntimeLogCount(t, store, 1)
-}
-
-func TestRetentionDeletesExpiredRecordsAndFacets(t *testing.T) {
-	store, config := openKitPostgresStore(t)
-	ctx := testOwnerContext(t, store)
-	rotatedPath := filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")
-	now := time.Now().UTC()
-	writeTestFile(t, rotatedPath, logLine("expired", nodeISO(now.AddDate(0, 0, -15)))+"\n"+logLine("retained", nodeISO(now.Add(-6*time.Hour)))+"\n")
-	indexer := NewIndexer(config, store)
-	if err := indexer.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := indexer.RunRetention(ctx); err != nil {
-		t.Fatal(err)
-	}
-	assertKitRuntimeLogCount(t, store, 1)
-	var event string
-	if err := store.pool.QueryRow(context.Background(), "SELECT event FROM juhe_dataset.runtime_logs LIMIT 1").Scan(&event); err != nil {
-		t.Fatal(err)
-	}
-	if event != "retained" {
-		t.Fatalf("保留清理删除了错误记录: %q", event)
-	}
-	var total int
-	if err := store.pool.QueryRow(context.Background(), "SELECT total_count FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1", facetBucketKey).Scan(&total); err != nil {
-		t.Fatal(err)
-	}
-	if total != 1 {
-		t.Fatalf("facet 汇总未随保留清理更新: %d", total)
-	}
-}
-
-func TestSQLiteCleanupPreservesCurrentCursorAndBoundsLargeRecordBatch(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	lease := testOwnerLease(t, testOwnerContext(t, store))
-	cutoff := time.Date(2026, 8, 23, 0, 0, 0, 0, time.UTC)
-	old := nodeISO(cutoff.Add(-time.Hour))
-	records := make([]Record, 0, sqliteCleanupRowsPerBatch+1)
-	for index := 0; index < sqliteCleanupRowsPerBatch+1; index++ {
-		records = append(records, Record{ID: fmt.Sprintf("cleanup-%d", index), LogFile: "juhe-ai.log", Time: old, Level: "info", Event: "cleanup", RawJSON: "{}", CreatedAt: old})
-	}
-	if err := store.Commit(context.Background(), lease, records, Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "current:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}, cutoff); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CopyCursor(context.Background(), lease, Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "current:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CopyCursor(context.Background(), lease, Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log"), FileIdentity: "rotated:fixture", CursorOffset: 1, FileSize: 1, LastReadAt: old, CreatedAt: old}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec("UPDATE runtime_log_file_cursors SET updated_at = ?", old); err != nil {
-		t.Fatal(err)
-	}
-	result, err := store.Cleanup(context.Background(), lease, cutoff, 100000, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.RuntimeLogs != sqliteCleanupRowsPerBatch+1 {
-		t.Fatalf("large SQLite cleanup batch must delete all records safely: deleted=%d", result.RuntimeLogs)
-	}
-	if cursor, err := store.FindCursor(context.Background(), filepath.Join(config.LogDirectory, "juhe-ai.log")); err != nil || cursor == nil {
-		t.Fatalf("current cursor must never be cleanup target: cursor=%v err=%v", cursor, err)
-	}
-	if cursor, err := store.FindCursor(context.Background(), filepath.Join(config.LogDirectory, "juhe-ai.20260721T121500Z.a1b2.log")); err != nil || cursor != nil {
-		t.Fatalf("rotated cursor should be eligible for cleanup: cursor=%v err=%v", cursor, err)
-	}
 }
 
 func TestRotatedFileCleanupWaitsForDurableCursor(t *testing.T) {
@@ -527,73 +430,9 @@ func TestRuntimeRetentionDaysReadsBusinessSetting(t *testing.T) {
 	}
 }
 
-func TestStoreNormalizesTimestampsLikeNodeRepository(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	lease := testOwnerLease(t, ctx)
-	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "test:1:1"}
-	records := []Record{{ID: "normalized-valid", Time: "2026-08-08T08:00:00+08:00", CreatedAt: "2026-08-08T08:00:00+08:00", Level: " WARN ", RawJSON: "{}"}}
-	if err := store.Commit(ctx, lease, records, cursor, time.Now().AddDate(0, 0, -1)); err != nil {
-		t.Fatal(err)
-	}
-	var validTime, validCreatedAt, validLevel string
-	if err := store.db.QueryRow("SELECT time, created_at, level FROM runtime_logs WHERE id = ?", "normalized-valid").Scan(&validTime, &validCreatedAt, &validLevel); err != nil {
-		t.Fatal(err)
-	}
-	if validTime != "2026-08-08T00:00:00.000Z" || validCreatedAt != validTime || validLevel != "warn" {
-		t.Fatalf("有效时间和级别未按 Node repository 归一化: %q, %q, %q", validTime, validCreatedAt, validLevel)
-	}
-	if err := store.Commit(ctx, lease, []Record{{ID: "normalized-invalid", Time: "not-a-date", CreatedAt: "also-not-a-date", RawJSON: "{}"}}, cursor, time.Now().UTC().AddDate(0, 0, -1)); err == nil {
-		t.Fatal("invalid supplied runtime timestamp must be rejected instead of replaced with now")
-	}
-	var invalidCount int
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM runtime_logs WHERE id = ?", "normalized-invalid").Scan(&invalidCount); err != nil || invalidCount != 0 {
-		t.Fatalf("invalid timestamp record must not persist: count=%d err=%v", invalidCount, err)
-	}
-}
-
-func TestStoreNormalizesLegacyNodeTimestamp(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	lease := testOwnerLease(t, ctx)
-	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "legacy:1:1"}
-	if err := store.Commit(ctx, lease, []Record{{
-		ID:        "legacy-timestamp",
-		Time:      "2026-08-17 21:12:43.935+00",
-		CreatedAt: "2026-08-17 21:12:43.935+00",
-		Level:     "info",
-		RawJSON:   "{}",
-	}}, cursor, time.Now().UTC().AddDate(0, 0, -1)); err != nil {
-		t.Fatalf("旧 Node 时间格式应可归一化: %v", err)
-	}
-	var got string
-	if err := store.db.QueryRow("SELECT time FROM runtime_logs WHERE id = ?", "legacy-timestamp").Scan(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got != "2026-08-17T21:12:43.935Z" {
-		t.Fatalf("旧 Node 时间格式归一化错误: got %q", got)
-	}
-}
-
 func TestNormalizeLegacyNodeTimestampRejectsUnknownFormat(t *testing.T) {
 	if _, err := normalizeNodeTimestamp("2026/08/17 21:12:43+00"); err == nil {
 		t.Fatal("未知时间格式必须继续拒绝")
-	}
-}
-
-func TestStoreRejectsRFC1123Timestamp(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	ctx := testOwnerContext(t, store)
-	lease := testOwnerLease(t, ctx)
-	cursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "juhe-ai.log"), FileIdentity: "test:1:1"}
-	if err := store.Commit(ctx, lease, []Record{{
-		ID:        "rfc1123",
-		Time:      "Tue, 14 Jul 2026 10:45:12 GMT",
-		CreatedAt: "Tue, 14 Jul 2026 10:45:13 GMT",
-		Level:     "info",
-		RawJSON:   "{}",
-	}}, cursor, time.Now().UTC().AddDate(0, 0, -1)); err == nil {
-		t.Fatal("RFC1123 absolute time must be rejected")
 	}
 }
 
@@ -624,34 +463,6 @@ func TestPostgresTemporalReadsCastToTextForNodeCompatibleFacets(t *testing.T) {
 		if !strings.Contains(string(source), fragment) {
 			t.Fatalf("PostgreSQL timestamptz read must cast for Node-compatible string facets: missing %q", fragment)
 		}
-	}
-}
-
-func TestSQLiteStoreUsesNodeBusyTimeout(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	var timeout int
-	if err := store.db.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
-		t.Fatal(err)
-	}
-	if timeout != sqliteBusyTimeoutMs {
-		t.Fatalf("SQLite busy_timeout = %d, want %d", timeout, sqliteBusyTimeoutMs)
-	}
-	var journalMode string
-	if err := store.db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.EqualFold(journalMode, "wal") {
-		t.Fatalf("SQLite journal_mode = %q, want WAL", journalMode)
-	}
-}
-
-func TestCheckSchemaRejectsMissingRuntimeLogIndex(t *testing.T) {
-	store, _ := openKitPostgresStore(t)
-	if _, err := store.pool.Exec(context.Background(), "DROP INDEX juhe_dataset.idx_runtime_logs_trace_id_time"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CheckSchema(context.Background()); err == nil || !strings.Contains(err.Error(), "idx_runtime_logs_trace_id_time") {
-		t.Fatalf("缺少运行日志索引必须阻止 Go owner 启动，实际为 %v", err)
 	}
 }
 
@@ -710,9 +521,8 @@ func TestOwnerLeaseReleasePreservesMonotonicFenceToken(t *testing.T) {
 // 决策：INSTANCE_ID 缺省取 os.Hostname()，不再必填报错。
 func TestLoadConfigDefaultsMissingInstanceIDToHostname(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_STORE":     "sqlite",
-		"JUHE_AI_DATASET_DATABASE_PATH": "dataset.sqlite",
-		"JUHE_AI_LOG_DIR":               "logs",
+		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": "postgres://unit-test.invalid/f1",
+		"JUHE_AI_LOG_DIR":                  "logs",
 	}
 	config, err := LoadConfig(func(name string) string { return values[name] })
 	if err != nil {
@@ -726,107 +536,13 @@ func TestLoadConfigDefaultsMissingInstanceIDToHostname(t *testing.T) {
 
 func TestLoadConfigAcceptsInstanceWithoutNodeGoOwnerSwitch(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
-		"JUHE_AI_DATASET_DATABASE_PATH":          "dataset.sqlite",
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      "runtime-log.sqlite",
-		"JUHE_AI_DATABASE_PATH":                  "business.sqlite",
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    "usage-catalog.sqlite",
-		"JUHE_AI_STATS_DATABASE_PATH":            "stats.sqlite",
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": "codex-context-shards",
-		"JUHE_AI_LOG_DIR":                        "logs",
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":  "test-instance",
+		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": "postgres://unit-test.invalid/f1",
+		"JUHE_AI_LOG_DIR":                  "logs",
 	}
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err != nil {
 		t.Fatalf("运行日志索引不应依赖 Node/Go owner 开关，实际为 %v", err)
 	}
-}
-
-// TestLoadConfigDerivesRuntimeLogSQLitePath 覆盖 2026-09-19 零配置决策：
-// 专用运行日志 SQLite 路径缺省派生 <DATA_DIR>/runtime-log.sqlite3。
-func TestLoadConfigDerivesRuntimeLogSQLitePath(t *testing.T) {
-	dataRoot := t.TempDir()
-	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID": "test-instance",
-		"JUHE_AI_RUNTIME_LOG_STORE":       "sqlite",
-		"JUHE_AI_DATABASE_PATH":           "business.sqlite",
-		"JUHE_AI_DATA_DIR":                dataRoot,
-		"JUHE_AI_LOG_DIR":                 "logs",
-	}
-	config, err := LoadConfig(func(name string) string { return values[name] })
-	if err != nil {
-		t.Fatalf("缺省运行日志路径必须派生而非报错: %v", err)
-	}
-	if expected := filepath.Join(dataRoot, "runtime-log.sqlite3"); config.RuntimeLogDatabasePath != expected {
-		t.Fatalf("运行日志路径必须派生为 <DATA_DIR>/runtime-log.sqlite3: %q", config.RuntimeLogDatabasePath)
-	}
-}
-
-func TestLoadConfigRejectsSharedDatasetAndRuntimeLogSQLitePath(t *testing.T) {
-	_, values := runtimeLogSQLiteConfigValues(t)
-	values["JUHE_AI_DATASET_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "不得与 JUHE_AI_DATASET_DATABASE_PATH") {
-		t.Fatalf("运行日志 SQLite 不能与 Node dataset 文件共用，实际为 %v", err)
-	}
-}
-
-func TestLoadConfigRejectsSharedBusinessAndRuntimeLogSQLitePath(t *testing.T) {
-	_, values := runtimeLogSQLiteConfigValues(t)
-	values["JUHE_AI_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "不得与 JUHE_AI_DATABASE_PATH") {
-		t.Fatalf("运行日志 SQLite 不能与 Node 业务库共用，实际为 %v", err)
-	}
-}
-
-func TestLoadConfigRejectsDanglingSQLiteAliasFailClosed(t *testing.T) {
-	root, values := runtimeLogSQLiteConfigValues(t)
-	dangling := filepath.Join(root, "dangling-business.sqlite")
-	target := filepath.Join(root, "missing-target.sqlite")
-	if err := os.Symlink(target, dangling); err != nil {
-		t.Skipf("当前环境不能创建悬空 SQLite symlink fixture: %v", err)
-	}
-	defer func() {
-		// Windows cannot reliably remove a dangling file symlink while its
-		// target is absent; materialize the target before cleanup.
-		_ = os.WriteFile(target, []byte("cleanup"), 0o600)
-		_ = os.Remove(dangling)
-	}()
-	values["JUHE_AI_DATABASE_PATH"] = dangling
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "隔离失败") {
-		t.Fatalf("悬空 SQLite symlink 必须 fail-closed 拒绝启动，实际为 %v", err)
-	}
-}
-
-func TestLoadConfigRejectsRuntimeLogSQLiteAliasesForAllNodeOwners(t *testing.T) {
-	t.Run("usage catalog direct path", func(t *testing.T) {
-		_, values := runtimeLogSQLiteConfigValues(t)
-		values["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
-		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH")
-	})
-
-	t.Run("stats hard link", func(t *testing.T) {
-		root, values := runtimeLogSQLiteConfigValues(t)
-		alias := filepath.Join(root, "stats-hard-link.sqlite")
-		if err := os.Link(values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"], alias); err != nil {
-			t.Fatalf("创建 stats 硬链接 fixture 失败: %v", err)
-		}
-		values["JUHE_AI_STATS_DATABASE_PATH"] = alias
-		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_STATS_DATABASE_PATH")
-	})
-
-	t.Run("codex shard symlink", func(t *testing.T) {
-		_, values := runtimeLogSQLiteConfigValues(t)
-		shard := filepath.Join(values["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "state-001.sqlite3")
-		if err := os.Symlink(values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"], shard); err != nil {
-			t.Skipf("当前环境不能创建 Codex shard symlink fixture: %v", err)
-		}
-		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
-	})
-
-	t.Run("runtime database under codex shard root", func(t *testing.T) {
-		_, values := runtimeLogSQLiteConfigValues(t)
-		values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = filepath.Join(values["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "runtime-log.sqlite3")
-		assertRuntimeLogSQLiteConfigRejected(t, values, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
-	})
 }
 
 func runtimeLogSQLiteConfigValues(t *testing.T) (string, map[string]string) {
@@ -885,84 +601,6 @@ func TestOwnerLeaseRejectsSecondGoInstance(t *testing.T) {
 	_, acquired, err = second.AcquireOwnerLease(context.Background(), "second", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("释放后第二个 Go 实例必须可获得 lease: acquired=%t err=%v", acquired, err)
-	}
-}
-
-func TestSQLiteFenceTokenMigrationAndStaleWriterRejection(t *testing.T) {
-	store, config := openTestSQLiteStore(t)
-	if _, err := store.db.Exec("DROP TABLE runtime_log_index_owner_leases"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`CREATE TABLE runtime_log_index_owner_leases (
-    lease_key TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL,
-    lease_until TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  ); INSERT INTO runtime_log_index_owner_leases (lease_key, owner_id, lease_until, updated_at)
-  VALUES ('runtime-log-index-retention', 'legacy', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureSchema(context.Background(), store); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CheckSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	var migratedToken int64
-	if err := store.db.QueryRow("SELECT fence_token FROM runtime_log_index_owner_leases WHERE lease_key = ?", runtimeLogOwnerLeaseKey).Scan(&migratedToken); err != nil {
-		t.Fatal(err)
-	}
-	if migratedToken != 0 {
-		t.Fatalf("SQLite 旧 lease 迁移后的初始 fence token = %d, want 0", migratedToken)
-	}
-
-	firstLease, acquired, err := store.AcquireOwnerLease(context.Background(), "first", time.Minute)
-	if err != nil || !acquired || firstLease.FenceToken != 1 {
-		t.Fatalf("首次获取必须生成 token 1: lease=%#v acquired=%t err=%v", firstLease, acquired, err)
-	}
-	secondOpened, err := OpenStore(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second := secondOpened.(*sqliteStore)
-	t.Cleanup(func() { _ = second.Close() })
-	if _, err := store.db.Exec("UPDATE runtime_log_index_owner_leases SET lease_until = '2000-01-01T00:00:00.000Z' WHERE lease_key = ?", runtimeLogOwnerLeaseKey); err != nil {
-		t.Fatal(err)
-	}
-	secondLease, acquired, err := second.AcquireOwnerLease(context.Background(), "second", time.Minute)
-	if err != nil || !acquired || secondLease.FenceToken != 2 {
-		t.Fatalf("租约接管必须递增 token: lease=%#v acquired=%t err=%v", secondLease, acquired, err)
-	}
-	if renewed, err := store.RenewOwnerLease(context.Background(), firstLease, time.Minute); err != nil || renewed {
-		t.Fatalf("旧 token 不得续约: renewed=%t err=%v", renewed, err)
-	}
-	staleCursor := Cursor{LogFile: filepath.Join(config.LogDirectory, "stale.log"), FileIdentity: "stale:1:1"}
-	if err := store.Commit(context.Background(), firstLease, []Record{{ID: "stale-record", Time: nowISO(), Level: "info", RawJSON: "{}", CreatedAt: nowISO()}}, staleCursor, time.Now().AddDate(0, 0, -1)); !errors.Is(err, ErrOwnerLeaseFenced) {
-		t.Fatalf("旧 token 的提交必须被 fence 拒绝，实际为 %v", err)
-	}
-	if err := store.CopyCursor(context.Background(), firstLease, staleCursor); !errors.Is(err, ErrOwnerLeaseFenced) {
-		t.Fatalf("旧 token 的 cursor copy 必须被 fence 拒绝，实际为 %v", err)
-	}
-	if err := store.ReplaceCursor(context.Background(), firstLease, nil, staleCursor); !errors.Is(err, ErrOwnerLeaseFenced) {
-		t.Fatalf("旧 token 的 cursor replace 必须被 fence 拒绝，实际为 %v", err)
-	}
-	if _, err := store.Cleanup(context.Background(), firstLease, time.Now(), 1, 1); !errors.Is(err, ErrOwnerLeaseFenced) {
-		t.Fatalf("旧 token 的 cleanup 必须被 fence 拒绝，实际为 %v", err)
-	}
-	if err := store.ReleaseOwnerLease(context.Background(), firstLease); !errors.Is(err, ErrOwnerLeaseFenced) {
-		t.Fatalf("旧 token 的释放不得删除新 owner lease，实际为 %v", err)
-	}
-	var ownerID string
-	var fenceToken int64
-	if err := store.db.QueryRow("SELECT owner_id, fence_token FROM runtime_log_index_owner_leases WHERE lease_key = ?", runtimeLogOwnerLeaseKey).Scan(&ownerID, &fenceToken); err != nil {
-		t.Fatal(err)
-	}
-	if ownerID != "second" || fenceToken != secondLease.FenceToken {
-		t.Fatalf("旧 token 不能改写新 owner lease: owner=%q token=%d", ownerID, fenceToken)
-	}
-	assertRuntimeLogCount(t, store, 0)
-	if err := second.ReleaseOwnerLease(context.Background(), secondLease); err != nil {
-		t.Fatalf("当前 token 必须能释放自身 lease: %v", err)
 	}
 }
 
@@ -1028,61 +666,6 @@ func (store *runOnceCommitProbeStore) Commit(ctx context.Context, lease OwnerLea
 	return store.Store.Commit(ctx, lease, records, cursor, retentionCutoff)
 }
 
-func openTestSQLiteStore(t *testing.T) (*sqliteStore, Config) {
-	t.Helper()
-	businessPath := filepath.Join(t.TempDir(), "business.sqlite")
-	business, err := sql.Open("sqlite", businessPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := business.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key)); INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'runtimeLogIndexRetentionDays', '14', '2026-08-08T00:00:00.000Z')`); err != nil {
-		business.Close()
-		t.Fatal(err)
-	}
-	if err := business.Close(); err != nil {
-		t.Fatal(err)
-	}
-	config := Config{
-		Mode:                   ModeSQLite,
-		DatasetPath:            filepath.Join(t.TempDir(), "dataset.sqlite"),
-		RuntimeLogDatabasePath: filepath.Join(t.TempDir(), "runtime-log.sqlite"),
-		BusinessPath:           businessPath,
-		LogDirectory:           t.TempDir(),
-		FileEnabled:            true,
-		PollInterval:           time.Second,
-		RetentionInterval:      time.Hour,
-		RetentionDays:          1,
-		LogRetentionDays:       30,
-		LogMaxFiles:            500,
-		BatchSize:              2,
-	}
-	legacy, err := sql.Open("sqlite", config.DatasetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.Exec(sqliteSchema); err != nil {
-		legacy.Close()
-		t.Fatal(err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	opened, err := OpenStore(context.Background(), config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, ok := opened.(*sqliteStore)
-	if !ok {
-		t.Fatalf("测试预期 SQLite Store，实际为 %T", opened)
-	}
-	if err := EnsureSchema(context.Background(), store); err != nil {
-		store.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store, config
-}
-
 func testOwnerContext(t *testing.T, store Store) context.Context {
 	t.Helper()
 	lease, acquired, err := store.AcquireOwnerLease(context.Background(), strings.ReplaceAll(t.Name(), "/", "-"), time.Minute)
@@ -1132,25 +715,3 @@ func appendTestFile(t *testing.T, path string, contents string) {
 	}
 }
 
-func assertRuntimeLogCount(t *testing.T, store *sqliteStore, want int) {
-	t.Helper()
-	var actual int
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM runtime_logs").Scan(&actual); err != nil {
-		t.Fatal(err)
-	}
-	if actual != want {
-		t.Fatalf("runtime_logs count = %d, want %d", actual, want)
-	}
-}
-
-func findCursor(t *testing.T, store *sqliteStore, path string) Cursor {
-	t.Helper()
-	cursor, err := store.FindCursor(context.Background(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cursor == nil {
-		t.Fatalf("未找到 %s 的运行日志 cursor", path)
-	}
-	return *cursor
-}

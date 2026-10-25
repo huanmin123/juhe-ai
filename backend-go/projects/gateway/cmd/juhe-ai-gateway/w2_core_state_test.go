@@ -554,10 +554,10 @@ func TestW2ATurnRetryRedisMarshalFailureAndNilNamespace(t *testing.T) {
 	if _, err := store.CompareSetJSON(context.Background(), "w2a-key", nil, func() {}, 1000); err == nil {
 		t.Fatalf("CompareSetJSON with unencodable next must fail")
 	}
-	// namespace 非法：newChainTurnRetryRedisStateStoreOrNil 记录错误并返回
-	// nil（167-170 行），客户端不参与拨号。
-	if store := newChainTurnRetryRedisStateStoreOrNil(client, "   "); store != nil {
-		t.Fatalf("empty namespace must yield nil store, got %T", store)
+	// namespace 非法：newChainTurnRetryRedisStateStoreOrNil 返回错误
+	//（组合根 fail-fast；进程内回退臂已随存储形态退役删除）。
+	if _, err := newChainTurnRetryRedisStateStoreOrNil(client, "   "); err == nil {
+		t.Fatal("empty namespace must fail")
 	}
 }
 
@@ -1189,11 +1189,8 @@ func w2aComposeSettingValue(key string) (string, error) {
 func TestW2AComposeQuotaSharedNamespaceError(t *testing.T) {
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
-		RuntimeMode:                   "standalone",
-		CacheDriver:                   "redis",
 		RedisCacheURL:                 "redis://127.0.0.1:1",
 		RedisNamespace:                "",
-		RuntimeStateDriver:            "memory",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
 	}
@@ -1231,9 +1228,6 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 	}
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
-		RuntimeMode:                   "performance",
-		CacheDriver:                   "memory",
-		RuntimeStateDriver:            "redis",
 		RedisStateURL:                 stateURL,
 		RedisNamespace:                "juhe-ai:dev:w1cover:" + strings.Repeat("w2a", 30),
 		Secret:                        "w2a-compose-secret",
@@ -1252,9 +1246,6 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 func TestW2AComposeRuntimeInvalidationClosures(t *testing.T) {
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
-		RuntimeMode:                   "standalone",
-		CacheDriver:                   "memory",
-		RuntimeStateDriver:            "memory",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
 	}

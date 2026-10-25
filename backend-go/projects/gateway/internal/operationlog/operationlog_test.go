@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -120,75 +119,12 @@ func TestListRejectsInvalidAbsoluteTimesAndCanonicalizesOffsets(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsUsageShardPhysicalOverlap(t *testing.T) {
-	root := t.TempDir()
-	shardRoot := filepath.Join(root, "usage-shards")
-	shard := filepath.Join(shardRoot, "2026", "08", "13", "usage-20260813-s0.sqlite3")
-	if err := os.MkdirAll(filepath.Dir(shard), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(shard, []byte("shard"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	base := map[string]string{
-		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "f4-test",
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                     shardRoot,
-	}
-	load := func(databasePath string) error {
-		values := make(map[string]string, len(base))
-		for key, value := range base {
-			values[key] = value
-		}
-		values["JUHE_AI_OPERATION_LOG_DATABASE_PATH"] = databasePath
-		_, err := LoadConfig(func(key string) string { return values[key] })
-		return err
-	}
-	if err := load(filepath.Join(shardRoot, "operation.sqlite3")); err == nil {
-		t.Fatal("F4 database inside usage shard root must be rejected")
-	}
-	hardLink := filepath.Join(root, "operation-hardlink.sqlite3")
-	if err := os.Link(shard, hardLink); err != nil {
-		t.Fatalf("create usage shard hardlink: %v", err)
-	}
-	if err := load(hardLink); err == nil {
-		t.Fatal("F4 database hardlink to a usage shard must be rejected")
-	}
-	if runtime.GOOS != "windows" {
-		linkRoot := filepath.Join(root, "usage-link")
-		if err := os.Symlink(shardRoot, linkRoot); err != nil {
-			t.Fatal(err)
-		}
-		base["JUHE_AI_USAGE_SHARD_ROOT"] = linkRoot
-		if err := load(filepath.Join(root, "operation.sqlite3")); err == nil {
-			t.Fatal("symlink usage shard root must be rejected")
-		}
-
-		base["JUHE_AI_USAGE_SHARD_ROOT"] = shardRoot
-		operation := filepath.Join(root, "operation.sqlite3")
-		if err := os.WriteFile(operation, []byte("operation"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		childLink := filepath.Join(filepath.Dir(shard), "usage-20260813-symlink.sqlite3")
-		if err := os.Symlink(operation, childLink); err != nil {
-			t.Fatal(err)
-		}
-		if err := load(operation); err == nil {
-			t.Fatal("symlink inside usage shard root must be rejected")
-		}
-	}
-}
 
 func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
-	root := t.TempDir()
 	values := map[string]string{
-		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "f4-config",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":          filepath.Join(root, "operation.sqlite3"),
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                     filepath.Join(root, "usage-shards"),
-		"JUHE_AI_OPERATION_LOG_OWNER_LEASE":            "45s",
+		"JUHE_AI_OPERATION_LOG_INSTANCE_ID": "f4-config",
+		"JUHE_AI_POSTGRES_URL":              "postgres://f4-main",
+		"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "45s",
 		"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL":     "2m",
 		"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE":   "321",
 	}

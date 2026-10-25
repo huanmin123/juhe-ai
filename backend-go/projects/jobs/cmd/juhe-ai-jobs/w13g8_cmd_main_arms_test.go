@@ -15,6 +15,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -22,11 +24,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
@@ -68,35 +71,91 @@ func w13g8RunMainChild(argsJSON string) {
 	os.Exit(0)
 }
 
-// w13g8FullOwnerEnv 包装 wgOwnerModeMainEnv 为单参 envBuilder。
-func w13g8FullOwnerEnv(t *testing.T) map[string]string {
-	return wgOwnerModeMainEnv(t, t.TempDir())
+// w13g8EnsurePGMainFixture 自愈共享覆盖库上 main() 装配链需要的 bootstrap
+// 面（w14q 预置序列的子集，全部加法幂等）：juhe_jobs schema、w14j 业务/
+// 任务形状、sys_admin 种子、F4 operation_logs 审计面（J3a management
+// CheckContract 的只读契约）、J3a/jobs 侧预 provision（w16j）。连接串不落
+// 日志；失败按各 helper 既有约定降级（记录或 skip）。
+func w13g8EnsurePGMainFixture(t *testing.T, pgURL string) {
+	t.Helper()
+	db, err := sql.Open("pgx", pgURL)
+	if err != nil {
+		t.Skipf("w13g8: 打开覆盖库失败: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		t.Skipf("w13g8: 覆盖库不可达: %v", err)
+	}
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
+		t.Skipf("w13g8: 建立 juhe_jobs schema 失败: %v", err)
+	}
+	for _, statement := range w14jPGSeedStatements() {
+		if _, err := db.Exec(statement); err != nil {
+			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "multiple primary keys") {
+				continue
+			}
+			t.Logf("w13g8 pg seed 跳过: %v", err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts
+		(id, username, display_name, role, status, password_hash, created_at, updated_at)
+		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w13g8-test-seed-not-a-login-hash', $1, $1)
+		ON CONFLICT (id) DO NOTHING`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Skipf("w13g8: sys_admin seed 失败（共享库形状漂移，跳过）: %v", err)
+	}
+	for _, statement := range strings.Split(w14qOperationLogsSchema, ";") {
+		if statement = strings.TrimSpace(statement); statement == "" {
+			continue
+		}
+		if _, err := db.Exec(statement); err != nil {
+			t.Logf("w13g8 F4 seed 跳过: %v", err)
+		}
+	}
+	w16jEnsurePGJobsFixture(t, pgURL)
 }
 
-// w13g8WorkerAssemblyFailEnv 构造 worker 装配失败臂的 env：把 usage-catalog
-// 路径指向非 SQLite 垃圾文件（F1/F2/J1 与隔离校验不受影响，usage-writer
-// 家族 openSQLite 的 PRAGMA WAL 失败 → buildWorkerAssembly 错误传播）。
-func w13g8WorkerAssemblyFailEnv(t *testing.T) map[string]string {
-	root := t.TempDir()
-	env := wgOwnerModeMainEnv(t, root)
-	garbage := filepath.Join(root, "w13g8-garbage-catalog.sqlite3")
-	if err := os.WriteFile(garbage, []byte("w13g8 not a sqlite database"), 0o644); err != nil {
-		t.Fatal(err)
+// w13g8FullOwnerEnv 构造 owner 模式中深度臂基座：PG 唯一形态下 F1 与
+// worker/J1（store/input URL 缺省回退 JUHE_AI_POSTGRES_URL）全部指向共享
+// 覆盖库，使 main() 越过 F1 装配前置、命中各场景的目标失败分支（原 SQLite
+// 路径族 env 已退役不再被读取）。覆盖库门禁：连接串不可用即 skip。
+func w13g8FullOwnerEnv(t *testing.T) map[string]string {
+	t.Helper()
+	pgURL := w12cPGOverrideURL(t)
+	if pgURL == "" {
+		t.Skip("w13g8: 覆盖库连接串不可用")
 	}
-	env["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"] = garbage
+	w13g8EnsurePGMainFixture(t, pgURL)
+	env := wgOwnerModeMainEnv(t, t.TempDir())
+	env["JUHE_AI_RUNTIME_LOG_POSTGRES_URL"] = pgURL
+	env["JUHE_AI_POSTGRES_URL"] = pgURL
 	return env
 }
 
-// w13g8GarbageRuntimeEnv 构造 F1 OpenStore 失败臂的 env：运行日志库路径指向
-// 非 SQLite 垃圾文件（隔离校验通过，OpenStore 的 PRAGMA 失败）。
+// w13g8NoPostgresURLEnv 构造 worker 配置 fail closed 臂：F1 独立 URL 可加载，
+// JUHE_AI_POSTGRES_URL 缺失 → loadWorkerConfig fail-fast（PG 唯一形态下的
+// worker 配置守卫）。
+func w13g8NoPostgresURLEnv(t *testing.T) map[string]string {
+	env := w13g8FullOwnerEnv(t)
+	delete(env, "JUHE_AI_POSTGRES_URL")
+	return env
+}
+
+// w13g8WorkerAssemblyFailEnv 构造 worker 装配失败臂的 env：PG 连接串指向
+// 不可达端口（业务/usage 句柄 Acquire 失败 → buildWorkerAssembly 错误传播；
+// F1 走独立 URL 不受影响）。
+func w13g8WorkerAssemblyFailEnv(t *testing.T) map[string]string {
+	env := w13g8FullOwnerEnv(t)
+	env["JUHE_AI_POSTGRES_URL"] = w16dClosedPortURL()
+	return env
+}
+
+// w13g8GarbageRuntimeEnv 构造 F1 OpenStore 失败臂的 env：F1 运行日志 PG
+// 连接串指向不可达端口（OpenStore/Ping 失败）。
 func w13g8GarbageRuntimeEnv(t *testing.T) map[string]string {
-	root := t.TempDir()
-	env := wgOwnerModeMainEnv(t, root)
-	garbage := filepath.Join(root, "w13g8-garbage-runtime.sqlite3")
-	if err := os.WriteFile(garbage, []byte("w13g8 not a sqlite database"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	env["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"] = garbage
+	env := w13g8FullOwnerEnv(t)
+	env["JUHE_AI_RUNTIME_LOG_POSTGRES_URL"] = w16dClosedPortURL()
 	return env
 }
 
@@ -108,8 +167,8 @@ func w13g8PassiveEnv(t *testing.T) map[string]string {
 	return env
 }
 
-// TestW13G8MainFailFastArms 覆盖 main() 的早失败分支（配置校验/互斥 flag/
-// 守卫/监听失败）与 --migrate-runtime-log-legacy-sqlite 分发臂。
+// TestW13G8MainFailFastArms 覆盖 main() 的早失败分支（flag/配置校验/守卫/
+// 装配失败/监听失败）。
 func TestW13G8MainFailFastArms(t *testing.T) {
 	if os.Getenv(w13g8ChildMode) == "1" {
 		w13g8RunMainChild(os.Getenv(w13g8ChildArgs))
@@ -123,18 +182,17 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 		args       []string
 		envBuilder func(*testing.T) map[string]string
 		patch      map[string]string
-		anyCode    bool // 迁移链路成功/失败都可能，仅要求限时退出。
+		anyCode    bool // true 时仅要求限时退出（不限具体退出码）。
 		expectCode int
 	}{
 		// flag 早失败臂（os.Exit(2)）。
 		{"多余位置参数", []string{"w13g8-positional"}, workerSmokeTestEnv, nil, false, 2},
-		{"run-jobs-once 与 migrate 互斥", []string{"-run-jobs-once=usage-stats-aggregation", "-migrate-runtime-log-legacy-sqlite"}, workerSmokeTestEnv, nil, false, 2},
 		// 配置加载失败臂（fail → exit 1）。
 		{"无效日志级别", nil, workerSmokeTestEnv, map[string]string{"JUHE_AI_LOG_LEVEL": "w13g8-bogus"}, false, 1},
 		{"owner 模式非法", nil, workerSmokeTestEnv, map[string]string{"JUHE_AI_BLUE_GREEN_OWNER_MODE": "w13g8"}, false, 1},
 		{"runtime log 配置缺失", nil, workerSmokeTestEnv, nil, false, 1},
-		// 中深度臂：以 wgOwnerModeMainEnv 为基座（F1 数据源文件已存在、隔离
-		// 校验通过），fail 前置点之后才命中目标分支。
+		// 中深度臂：以 w13g8FullOwnerEnv 为基座（F1/J1 指向共享覆盖库、
+		// fixture 自愈通过），fail 前置点之后才命中目标分支。
 		{"runtime log ONCE 不支持", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_RUNTIME_LOG_ONCE": "true"}, false, 1},
 		{"J1 owner 非 go", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "w13g8-not-go"}, false, 1},
 		{"model-recovery 非法 namespace", nil, w13g8FullOwnerEnv, map[string]string{
@@ -148,11 +206,9 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 		{"J3a 管理接口守卫", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED": "true"}, false, 1},
 		{"F1 OpenStore 失败", nil, w13g8GarbageRuntimeEnv, nil, false, 1},
 		{"J3b 由网关持有", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_MODEL_CHECK_ENABLED": "true"}, false, 1},
-		{"worker 配置 fail closed", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_DATABASE_DRIVER": "postgres"}, false, 1},
+		{"worker 配置 fail closed", nil, w13g8NoPostgresURLEnv, nil, false, 1},
 		{"worker 装配失败", nil, w13g8WorkerAssemblyFailEnv, nil, false, 1},
-		// migrate flag 分发臂（102-105）：迁移链路成功或失败均可，仅要求退出。
-		{"migrate 完整分发", []string{"-migrate-runtime-log-legacy-sqlite"}, w13g8FullOwnerEnv, nil, true, 0},
-		// 监听失败臂（F1 SQLite 全部成功后 listen 校验失败）。
+		// 监听失败臂（装配面全部成功后 listen 校验失败）。
 		{"健康监听地址非法", []string{"-health-listen-address=w13g8-not-an-address"}, w13g8FullOwnerEnv, map[string]string{}, false, 1},
 		// passive standby 模式的监听失败臂（runPassiveJobs listen fail）。
 		{"passive 监听地址非法", []string{"-health-listen-address=w13g8-not-an-address"}, w13g8PassiveEnv, nil, false, 1},

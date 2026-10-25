@@ -1,11 +1,8 @@
 package auditlog
 
 import (
-	"errors"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,7 +10,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
@@ -37,9 +33,11 @@ const (
 	defaultPostgresMaxIdleConns = sqlpool.MaxIdleConns
 )
 
+// Config 承载 F3 审计存储与保留策略配置；2026-10-24 存储形态收口后仅有
+// PostgreSQL + 普通 blob/hot 文件目录形态（sqlite 专库路径族字段已随
+// sqlite 存储形态物理删除）。
 type Config struct {
 	InstanceID               string
-	Mode                     Mode
 	OwnerLease               time.Duration
 	RetentionInterval        time.Duration
 	RetentionBatchSize       int
@@ -47,75 +45,42 @@ type Config struct {
 	SuccessSampleRate        float64
 	SuccessRetentionDays     int
 	ProblemRetentionDays     int
-	AuditDatabasePath        string
 	PayloadBlobDirectory     string
 	HotSearchDirectory       string
 	PostgresURL              string
 	PostgresMaxOpenConns     int
 	PostgresMaxIdleConns     int
 	PostgresPool             *pgpool.Handle
-	BusinessSettingsPath     string
 	BusinessSettingsURL      string
-	BusinessPath             string
-	DatasetPath              string
-	UsageCatalogPath         string
-	StatsPath                string
-	RuntimeLogDatabasePath   string
-	CodexShardRoot           string
-	UsageShardRoot           string
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
-	modeRaw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_STORE"))
-	mode := Mode(strings.ToLower(modeRaw))
-	if modeRaw == "" {
-		// 2026-09-19 零配置默认：跟随业务库驱动（JUHE_AI_DATABASE_DRIVER，
-		// postgres→postgres，否则 sqlite）；显式配置优先，非法值保持 fail-fast。
-		if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")), "postgres") {
-			mode = ModePostgres
-		} else {
-			mode = ModeSQLite
-		}
-	} else if mode != ModeSQLite && mode != ModePostgres {
-		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_STORE 必须为 sqlite 或 postgres")
-	}
+	// 2026-10-24 存储形态收口：JUHE_AI_AUDIT_LOG_STORE 仅剩单一合法形态
+	// postgres——整个 env 读取删除（不留解析不留告警）；Mode 恒 ModePostgres。
 	postgresURL := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_POSTGRES_URL"))
 	// F3 PG 连接池上限为内部常量（2026-09-30 C4 收编：原
 	// JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS / MAX_IDLE_CONNS 全库五源
 	// 零引用，pool 覆盖族旋钮从未被配置，取值固定为下方默认值）。
 	postgresMaxOpen := defaultPostgresPoolSize
 	postgresMaxIdle := defaultPostgresMaxIdleConns
-	// 路径类 env 派生（2026-09-19 零配置约定，internal/datadir 固定名表）：
-	// 未配置时落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。隔离校验
-	// 逐对核验派生结果（派生固定名互不相同，天然满足）。
+	// 路径类 env 派生（普通文件目录面；internal/datadir 固定名表）：
+	// audit-blob 落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。
 	dataDir := datadir.Dir(getenv)
 	cfg := Config{
-		InstanceID:             strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INSTANCE_ID")),
-		Mode:                   mode,
-		AuditDatabasePath:      datadir.Path(getenv, dataDir, "JUHE_AI_AUDIT_LOG_DATABASE_PATH", datadir.AuditLogDatabase),
-		PayloadBlobDirectory:   datadir.Path(getenv, dataDir, "JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY", datadir.AuditBlobDirectory),
-		HotSearchDirectory:     strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY")),
-		PostgresURL:            postgresURL,
-		PostgresMaxOpenConns:   postgresMaxOpen,
-		PostgresMaxIdleConns:   postgresMaxIdle,
-		BusinessSettingsPath:   strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH")),
-		BusinessSettingsURL:    strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL")),
-		BusinessPath:           datadir.Path(getenv, dataDir, "JUHE_AI_DATABASE_PATH", datadir.BusinessDatabase),
-		DatasetPath:            datadir.Path(getenv, dataDir, "JUHE_AI_DATASET_DATABASE_PATH", datadir.DatasetDatabase),
-		UsageCatalogPath:       datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", datadir.UsageCatalogDatabase),
-		StatsPath:              datadir.Path(getenv, dataDir, "JUHE_AI_STATS_DATABASE_PATH", datadir.StatsDatabase),
-		RuntimeLogDatabasePath: datadir.Path(getenv, dataDir, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", datadir.RuntimeLogDatabase),
-		CodexShardRoot:         datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", datadir.CodexContextStateShardRoot),
-		UsageShardRoot:         datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_SHARD_ROOT", datadir.UsageShardRoot),
+		InstanceID:           strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_INSTANCE_ID")),
+		PayloadBlobDirectory: datadir.Path(getenv, dataDir, "JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY", datadir.AuditBlobDirectory),
+		HotSearchDirectory:   strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY")),
+		PostgresURL:          postgresURL,
+		PostgresMaxOpenConns: postgresMaxOpen,
+		PostgresMaxIdleConns: postgresMaxIdle,
+		BusinessSettingsURL:  strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL")),
+	}
+	if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
+		return Config{}, fmt.Errorf("F3 PostgreSQL 连接池配置无效: %w", err)
 	}
 	if cfg.InstanceID == "" {
 		// 2026-09-19 零配置默认：os.Hostname()，空/错退化 "juhe-ai-gateway"。
 		cfg.InstanceID = datadir.DefaultInstanceID()
-	}
-	if cfg.Mode == ModePostgres {
-		if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
-			return Config{}, fmt.Errorf("F3 PostgreSQL 连接池配置无效: %w", err)
-		}
 	}
 	lease, err := parseDuration("JUHE_AI_AUDIT_LOG_OWNER_LEASE", getenv("JUHE_AI_AUDIT_LOG_OWNER_LEASE"), defaultOwnerLease)
 	if err != nil || lease < 5*time.Second {
@@ -155,147 +120,26 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err := cfg.validateRetentionPolicy(); err != nil {
 		return Config{}, err
 	}
-	// 2026-09-19 零配置默认：F3 只读业务设置的二选一按模式回退——sqlite 模式
-	// 回落派生业务库文件路径（与部署契约“只读 settings 直接指向业务库文件”
-	// 一致），postgres 模式回落主 JUHE_AI_POSTGRES_URL；显式配置优先，仍为空
-	// 时保持原 fail-fast。
-	if cfg.BusinessSettingsPath == "" && cfg.BusinessSettingsURL == "" {
-		if mode == ModePostgres {
-			cfg.BusinessSettingsURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-		} else {
-			cfg.BusinessSettingsPath = cfg.BusinessPath
-		}
+	// F3 只读业务设置连接串：未显式配置时回落主 JUHE_AI_POSTGRES_URL；
+	// 仍为空时保持原 fail-fast。
+	if cfg.BusinessSettingsURL == "" {
+		cfg.BusinessSettingsURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	}
-	if cfg.BusinessSettingsPath == "" && cfg.BusinessSettingsURL == "" {
-		return Config{}, fmt.Errorf("必须设置 JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH 或 JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL；F3 只能只读业务设置")
+	if cfg.BusinessSettingsURL == "" {
+		return Config{}, fmt.Errorf("必须设置 JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL；F3 只能只读业务设置")
 	}
-	if mode == ModePostgres {
-		if cfg.PostgresURL == "" {
-			// 2026-09-19：PG 模式 F3 store URL 缺省回退主 JUHE_AI_POSTGRES_URL，
-			// 仍为空时按原契约报错。
-			cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-		}
-		if cfg.PostgresURL == "" {
-			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_AUDIT_LOG_POSTGRES_URL")
-		}
-		if cfg.PayloadBlobDirectory == "" {
-			return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")
-		}
-		return cfg, nil
+	if cfg.PostgresURL == "" {
+		// PG 模式 F3 store URL 缺省回退主 JUHE_AI_POSTGRES_URL，
+		// 仍为空时按原契约报错。
+		cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	}
-	if cfg.AuditDatabasePath == "" || cfg.PayloadBlobDirectory == "" {
-		return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_AUDIT_LOG_DATABASE_PATH 或 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")
+	if cfg.PostgresURL == "" {
+		return Config{}, fmt.Errorf("缺少 JUHE_AI_AUDIT_LOG_POSTGRES_URL")
 	}
-	for _, candidate := range []struct{ name, path string }{
-		{"JUHE_AI_DATABASE_PATH", cfg.BusinessPath},
-		{"JUHE_AI_DATASET_DATABASE_PATH", cfg.DatasetPath},
-		{"JUHE_AI_USAGE_CATALOG_DATABASE_PATH", cfg.UsageCatalogPath},
-		{"JUHE_AI_STATS_DATABASE_PATH", cfg.StatsPath},
-		{"JUHE_AI_RUNTIME_LOG_DATABASE_PATH", cfg.RuntimeLogDatabasePath},
-	} {
-		if candidate.path == "" {
-			return Config{}, fmt.Errorf("sqlite 模式缺少 %s，无法验证 F3 专库隔离", candidate.name)
-		}
-		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, candidate.path)
-		if err != nil {
-			return Config{}, fmt.Errorf("校验 JUHE_AI_AUDIT_LOG_DATABASE_PATH 与 %s 的物理隔离失败: %w", candidate.name, err)
-		}
-		if same {
-			return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_DATABASE_PATH 不得与 %s 共用 SQLite 文件", candidate.name)
-		}
-	}
-	if cfg.BusinessSettingsPath != "" {
-		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, cfg.BusinessSettingsPath)
-		if err != nil {
-			return Config{}, fmt.Errorf("校验业务设置只读路径与 F3 SQLite 专库隔离失败: %w", err)
-		}
-		if same {
-			return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH 不得指向 F3 SQLite 专库")
-		}
-	}
-	if cfg.CodexShardRoot == "" {
-		return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT，无法验证 Node SQLite shard 隔离")
-	}
-	if err := sqlitepath.RequirePhysicalRoot(cfg.CodexShardRoot, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"); err != nil {
-		return Config{}, err
-	}
-	within, err := sqlitepath.PathWithin(cfg.CodexShardRoot, cfg.AuditDatabasePath)
-	if err != nil {
-		return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 Codex shard 根目录隔离失败: %w", err)
-	}
-	if within {
-		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_DATABASE_PATH 不得放入 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
-	}
-	codexEntries, err := listCodexStateShardFiles(cfg.CodexShardRoot)
-	if err != nil {
-		return Config{}, fmt.Errorf("递归枚举 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 失败: %w", err)
-	}
-	for _, entry := range codexEntries {
-		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, entry)
-		if err != nil {
-			return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 Codex state shard %q 的物理隔离失败: %w", entry, err)
-		}
-		if same {
-			return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_DATABASE_PATH 不得与 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 中的 state shard 共用文件")
-		}
-	}
-	if cfg.UsageShardRoot == "" {
-		return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_USAGE_SHARD_ROOT，无法验证 usage shard 物理隔离")
-	}
-	if err := sqlitepath.RequirePhysicalRoot(cfg.UsageShardRoot, "JUHE_AI_USAGE_SHARD_ROOT"); err != nil {
-		return Config{}, err
-	}
-	within, err = sqlitepath.PathWithin(cfg.UsageShardRoot, cfg.AuditDatabasePath)
-	if err != nil {
-		return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 usage shard 根目录隔离失败: %w", err)
-	}
-	if within {
-		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_DATABASE_PATH 不得放入 JUHE_AI_USAGE_SHARD_ROOT")
-	}
-	entries, err := sqlitepath.ListUsageShardFiles(cfg.UsageShardRoot)
-	if err != nil {
-		return Config{}, fmt.Errorf("递归枚举 JUHE_AI_USAGE_SHARD_ROOT 失败: %w", err)
-	}
-	for _, entry := range entries {
-		same, err := sqlitepath.SameFile(cfg.AuditDatabasePath, entry)
-		if err != nil {
-			return Config{}, fmt.Errorf("校验 F3 SQLite 专库与 usage shard %q 隔离失败: %w", entry, err)
-		}
-		if same {
-			return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_DATABASE_PATH 不得与 JUHE_AI_USAGE_SHARD_ROOT 中的 SQLite shard 共用文件")
-		}
+	if cfg.PayloadBlobDirectory == "" {
+		return Config{}, fmt.Errorf("缺少 JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY")
 	}
 	return cfg, nil
-}
-
-var codexStateShardFileName = regexp.MustCompile(`^state-\d{3}\.sqlite3$`)
-
-// listCodexStateShardFiles follows Node's state-NNN.sqlite3 files. The root
-// currently stores them directly, but recurse to fail closed if a future
-// layout nests actual shard files. Any symlink below the root is rejected so
-// that a root outside F3 cannot hide a physical alias to the audit database.
-func listCodexStateShardFiles(root string) ([]string, error) {
-	entries := make([]string, 0)
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) && path == root {
-				return nil
-			}
-			return err
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("Codex state shard 路径不允许 symbolic link: %q", path)
-		}
-		if entry.IsDir() || !codexStateShardFileName.MatchString(entry.Name()) {
-			return nil
-		}
-		entries = append(entries, path)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
 }
 
 func parseDuration(name, value string, fallback time.Duration) (time.Duration, error) {

@@ -5,12 +5,14 @@ package main
 //  1. 组合根源码断言：compose.go 必须经
 //     wireInProcessBalanceAndCatalogRefresh 装配（先于该装配行的
 //     provider store 构造）；
-//  2. SQLite fixture 生效断言：生产同款装配后目录刷新与余额手动刷新端口
-//     双双可达（2026-10-04 起 SQLite 模式经独立 account-balance.sqlite3
-//     租约库装配，不再保持 nil 端口）；
-//  3. SQLite 手动刷新闭环：RefreshManual 经共享执行核心真实跑通 mock 上游
-//     （outcome committed + 租约四表落行 + stats account_usage_snapshots
-//     relay_balance 行直写），TestDraft 草稿探测在 SQLite 模式可用；
+//  2. PG fixture 生效断言：生产同款装配后目录刷新与余额手动刷新端口双双
+//     可达（PostgreSQL + Redis 是唯一存储形态；租约四表在 juhe_jobs schema，
+//     fixture 经 accountbalance EnsureSchema 幂等预置）；
+//  3. PG 手动刷新闭环：RefreshManual 经共享执行核心真实跑通 mock 上游
+//     （outcome committed + juhe_jobs 租约四表落行），TestDraft 草稿探测
+//     可用（committed 快照 stats relay_balance 直写是已删除的 SQLite 专属
+//     臂——PG 形态由 jobs 的 account-balance-stats-projection 周期投影承担，
+//     gateway 不直写，无对应断言）；
 //  4. 目录刷新 handler 闭环：登录会话经真实 kernel 路由
 //     POST /accounts/model-catalog/refresh，prepareBalanceDraft → 进程内
 //     端口 → mock 上游 /v1/models，返回 {addedModels,
@@ -36,7 +38,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	platformaccountbalance "github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // 组合根测试的 mock 上游监听 127.0.0.1；上游 Base URL 内网防护是进程级
@@ -74,30 +76,29 @@ func TestComposeSystemAPIWiresBalanceAndCatalogRefresh(t *testing.T) {
 	}
 }
 
-// TestInProcessRefreshPortsSQLiteFixture pins the SQLite assembly contract
-// (2026-10-04 起双方言装配): the catalog refresher and the manual balance
-// refresher are both wired in SQLite mode — the latter over the dedicated
-// account-balance.sqlite3 lease store（路由不再命中 500/降级快照契约）.
-func TestInProcessRefreshPortsSQLiteFixture(t *testing.T) {
-	_, accountStore, _ := composeBalanceRefreshFixture(t)
+// TestInProcessRefreshPortsPGFixture pins the PG assembly contract
+// (PostgreSQL 是唯一存储形态): the catalog refresher and the manual balance
+// refresher are both wired — the latter over the juhe_jobs lease tables
+// （路由不再命中 500/降级快照契约）.
+func TestInProcessRefreshPortsPGFixture(t *testing.T) {
+	_, _, accountStore, _ := composeBalanceRefreshFixture(t)
 	if accountStore.ModelCatalogRefresherPort() == nil {
-		t.Fatal("模型目录刷新端口必须在 SQLite 模式装配（无 store 依赖）")
+		t.Fatal("模型目录刷新端口必须装配（无 store 依赖）")
 	}
 	if accountStore.BalanceRefresherPort() == nil {
-		t.Fatal("SQLite 模式余额手动刷新端口必须装配（独立租约库，双方言能力）")
+		t.Fatal("余额手动刷新端口必须装配（juhe_jobs 租约四表）")
 	}
 }
 
-// TestInProcessRefreshSQLiteManualRefreshEndToEnd drives the wired SQLite
-// balance refresher port end to end over the mock upstream（Mock 优先：上游
-// 响应可回放、结果稳定）：RefreshManual 真实跑通共享执行核心（outcome
-// committed）+ 租约四表落行 + stats account_usage_snapshots relay_balance
-// 直写行 + TestDraft 草稿探测可用。
-func TestInProcessRefreshSQLiteManualRefreshEndToEnd(t *testing.T) {
+// TestInProcessRefreshPGManualRefreshEndToEnd drives the wired balance
+// refresher port end to end over the mock upstream（Mock 优先：上游响应可回放、
+// 结果稳定）：RefreshManual 真实跑通共享执行核心（outcome committed）+
+// juhe_jobs 租约四表落行 + TestDraft 草稿探测可用。
+func TestInProcessRefreshPGManualRefreshEndToEnd(t *testing.T) {
 	if testing.Short() {
-		t.Skip("SQLite 装配闭环测试 skipped in -short mode")
+		t.Skip("PG 装配闭环测试 skipped in -short mode")
 	}
-	composed, accountStore, cfg := composeBalanceRefreshFixture(t)
+	tdb, _, accountStore, cfg := composeBalanceRefreshFixture(t)
 	refresher := accountStore.BalanceRefresherPort()
 	if refresher == nil {
 		t.Fatal("SQLite 模式余额手动刷新端口必须装配")
@@ -116,20 +117,15 @@ func TestInProcessRefreshSQLiteManualRefreshEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !outcome.Persisted || outcome.Outcome != "committed" {
-		t.Fatalf("SQLite committed outcome: %+v err=%v", outcome, err)
+		t.Fatalf("PG committed outcome: %+v err=%v", outcome, err)
 	}
 	if outcome.Snapshot["status"] != "fresh" || outcome.Snapshot["remainingUsd"] != "12.500000" {
-		t.Fatalf("SQLite committed snapshot: %v", outcome.Snapshot)
+		t.Fatalf("PG committed snapshot: %v", outcome.Snapshot)
 	}
 
-	// 租约四表落行断言（独立只读连接打开同一 account-balance.sqlite3）。
-	leaseDB, err := sql.Open("sqlite", cfg.AccountBalanceDatabasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = leaseDB.Close() }()
+	// 租约四表落行断言（juhe_jobs schema，与周期任务同库同表）。
 	var snapshotAccount, trigger string
-	if err := leaseDB.QueryRow(`SELECT account_id, trigger FROM account_balance_snapshots WHERE account_id = ?`,
+	if err := tdb.DB.QueryRow(`SELECT account_id, trigger FROM juhe_jobs.account_balance_snapshots WHERE account_id = $1`,
 		candidate.ID).Scan(&snapshotAccount, &trigger); err != nil {
 		t.Fatalf("lease snapshots row: %v", err)
 	}
@@ -137,7 +133,7 @@ func TestInProcessRefreshSQLiteManualRefreshEndToEnd(t *testing.T) {
 		t.Fatalf("lease snapshot = %q/%q, want %q/manual", snapshotAccount, trigger, candidate.ID)
 	}
 	var committedOutcomes int
-	if err := leaseDB.QueryRow(`SELECT COUNT(*) FROM account_balance_outcomes WHERE account_id = ? AND committed = 1`,
+	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.account_balance_outcomes WHERE account_id = $1 AND committed`,
 		candidate.ID).Scan(&committedOutcomes); err != nil {
 		t.Fatal(err)
 	}
@@ -145,13 +141,13 @@ func TestInProcessRefreshSQLiteManualRefreshEndToEnd(t *testing.T) {
 		t.Fatalf("committed outcomes = %d, want 1", committedOutcomes)
 	}
 	var leaseRows int
-	if err := leaseDB.QueryRow(`SELECT COUNT(*) FROM account_balance_owner_leases WHERE lease_key = 'account-balance-owner'`).Scan(&leaseRows); err != nil {
+	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.account_balance_owner_leases WHERE lease_key = 'account-balance-owner'`).Scan(&leaseRows); err != nil {
 		t.Fatal(err)
 	}
 	if leaseRows != 1 {
 		t.Fatalf("owner lease rows = %d, want 1", leaseRows)
 	}
-	if err := leaseDB.QueryRow(`SELECT COUNT(*) FROM account_balance_account_leases WHERE account_id = ?`,
+	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.account_balance_account_leases WHERE account_id = $1`,
 		candidate.ID).Scan(&leaseRows); err != nil {
 		t.Fatal(err)
 	}
@@ -159,36 +155,7 @@ func TestInProcessRefreshSQLiteManualRefreshEndToEnd(t *testing.T) {
 		t.Fatalf("account lease rows = %d, want 1", leaseRows)
 	}
 
-	// stats relay_balance 直写行断言（composed.statsDB 即 stats.sqlite3 句柄；
-	// 列集合/冲突目标/next_refresh_after 语义与 jobs ReplaceSnapshotIfCurrent
-	// 一致，configRevision 满足读端配置比对契约）。
-	var systemAccountID, source, refreshStatus, snapshotJSON, nextRefreshAfter string
-	if err := composed.statsDB.QueryRow(`SELECT system_account_id, source, refresh_status, snapshot_json, next_refresh_after
-		FROM account_usage_snapshots WHERE account_id = ? AND kind = 'relay_balance'`,
-		candidate.ID).Scan(&systemAccountID, &source, &refreshStatus, &snapshotJSON, &nextRefreshAfter); err != nil {
-		t.Fatalf("stats relay_balance row: %v", err)
-	}
-	if systemAccountID != candidate.SystemAccountID {
-		t.Fatalf("stats system_account_id = %q, want %q", systemAccountID, candidate.SystemAccountID)
-	}
-	if source != "upstream_api" || refreshStatus != "fresh" {
-		t.Fatalf("stats source/refresh_status = %q/%q, want upstream_api/fresh", source, refreshStatus)
-	}
-	if nextRefreshAfter == "" {
-		t.Fatal("stats next_refresh_after 必须写入（outcome.NextRefreshAt 同源语义）")
-	}
-	var persisted map[string]any
-	if err := json.Unmarshal([]byte(snapshotJSON), &persisted); err != nil {
-		t.Fatal(err)
-	}
-	if persisted["status"] != "fresh" || persisted["remainingUsd"] != "12.500000" {
-		t.Fatalf("stats snapshot_json: %v", persisted)
-	}
-	if persisted["configRevision"] != float64(1) {
-		t.Fatalf("stats snapshot_json configRevision = %v, want 1（读端 configRevision 比对契约）", persisted["configRevision"])
-	}
-
-	// TestDraft 在 SQLite 模式可用（非持久化草稿探测）。
+	// TestDraft 可用（非持久化草稿探测）。
 	draft, err := refresher.TestDraft(context.Background(), accounts.BalanceDraftProbeInput{
 		Credentials: accounts.Credentials{"api_key": "sk-sqlite-draft", "base_url": upstream.URL},
 		Config:      map[string]any{"adapter": "builtin", "intervalMinutes": 5},
@@ -197,33 +164,47 @@ func TestInProcessRefreshSQLiteManualRefreshEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if draft["status"] != "fresh" || draft["remainingUsd"] != "12.500000" {
-		t.Fatalf("SQLite draft snapshot: %v", draft)
+		t.Fatalf("PG draft snapshot: %v", draft)
 	}
 }
 
-// composeBalanceRefreshFixture is the production-same SQLite composition; the
+// composeBalanceRefreshFixture is the production-same PG composition; the
 // two ports are wired exactly like compose.go does over a fresh account store.
-// cfg 原样返回（余额租约库路径与组合根 secret 供闭环测试复用）。
-func composeBalanceRefreshFixture(t *testing.T) (*composition, *accounts.Store, runtimeConfig) {
+// juhe_jobs 余额租约四表由 accountbalance EnsureSchema 幂等预置（生产由受控
+// 数据库流程预置，测试等价物）。返回 tdb（租约四表断言用）与 cfg（组合根
+// secret 供闭环测试复用）。
+func composeBalanceRefreshFixture(t *testing.T) (*pgtestkit.TestDatabase, *composition, *accounts.Store, runtimeConfig) {
 	t.Helper()
-	cfg := composeTestConfig(t)
-	// 余额租约库与 stats 库同根派生（datadir 零配置约定：同一 DATA_DIR 下
-	// 固定名 account-balance.sqlite3）。
-	cfg.AccountBalanceDatabasePath = filepath.Join(filepath.Dir(cfg.StatsDatabasePath), "account-balance.sqlite3")
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	t.Cleanup(closeAudit)
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
 	t.Cleanup(func() { composed.Shutdown() })
-	accountStore, err := accounts.NewStore(composed.DB, false, cfg.Secret, time.Now, newCompositionID)
+	// juhe_jobs 租约四表幂等预置（生产由受控数据库流程预置 schema，测试等价
+	// 物先建 schema，EnsureSchema 走 advisory-lock DDL 建表）。
+	if _, err := tdb.DB.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
+		t.Fatalf("create juhe_jobs schema: %v", err)
+	}
+	leaseStore, err := platformaccountbalance.OpenStore(platformaccountbalance.StoreConfig{
+		Mode:         platformaccountbalance.StorePostgres,
+		PostgresPool: sharedDBPool{db: tdb.DB},
+	})
+	if err != nil {
+		t.Fatalf("open fixture lease store: %v", err)
+	}
+	if err := leaseStore.EnsureSchema(context.Background()); err != nil {
+		_ = leaseStore.Close()
+		t.Fatalf("ensure fixture lease schema: %v", err)
+	}
+	_ = leaseStore.Close()
+	accountStore, err := accounts.NewStore(composed.DB, true, cfg.Secret, time.Now, newCompositionID)
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
-	providerStore, err := providers.NewStore(composed.DB, false, time.Now)
+	providerStore, err := providers.NewStore(composed.DB, true, time.Now)
 	if err != nil {
 		t.Fatalf("providers store: %v", err)
 	}
@@ -231,7 +212,7 @@ func composeBalanceRefreshFixture(t *testing.T) (*composition, *accounts.Store, 
 	if err := wireInProcessBalanceAndCatalogRefresh(composed, cfg, accountStore, providerStore); err != nil {
 		t.Fatalf("wire in-process balance and catalog refresh: %v", err)
 	}
-	return composed, accountStore, cfg
+	return tdb, composed, accountStore, cfg
 }
 
 // TestModelCatalogRefreshHandlerClosedLoop drives the real kernel route with
@@ -240,7 +221,7 @@ func TestModelCatalogRefreshHandlerClosedLoop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("composition closed-loop test skipped in -short mode")
 	}
-	composed, _, _ := composeBalanceRefreshFixture(t)
+	_, composed, _, _ := composeBalanceRefreshFixture(t)
 	seedSystemSettings(t, composed.DB)
 	server := httptest.NewServer(composed.Kernel)
 	t.Cleanup(server.Close)
@@ -279,10 +260,10 @@ func TestModelCatalogRefreshHandlerClosedLoop(t *testing.T) {
 		{id: "cpm-b", model: "mock-model-configured"},
 	}
 	for _, item := range models {
-		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
+		if _, err := db.Exec(`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
 			status, supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			created_by, created_at, updated_at)
-			VALUES (?, 'gpt', ?, ?, 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'catalog-admin', ?, ?)`,
+			VALUES ($1, 'gpt', $2, $3, 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'catalog-admin', $4, $5)`,
 			item.id, item.model, item.model, now, now); err != nil {
 			t.Fatalf("seed custom model: %v", err)
 		}
@@ -686,7 +667,7 @@ func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("composition closed-loop test skipped in -short mode")
 	}
-	composed, accountStore, _ := composeBalanceRefreshFixture(t)
+	_, composed, accountStore, _ := composeBalanceRefreshFixture(t)
 	seedSystemSettings(t, composed.DB)
 	db := composed.DB
 
@@ -706,10 +687,10 @@ func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
 	adminID := createComposeSessionAdmin(t, composed)
 	seedCatalogRefreshDraftFixtures(t, db, adminID)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
+	if _, err := db.Exec(`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
 			status, supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			created_by, created_at, updated_at)
-			VALUES (?, 'gpt', ?, ?, 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'catalog-admin', ?, ?)`,
+			VALUES ($1, 'gpt', $2, $3, 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'catalog-admin', $4, $5)`,
 		"cpm-oauth", "mock-model-a", "mock-model-a", now, now); err != nil {
 		t.Fatalf("seed custom model: %v", err)
 	}
@@ -741,7 +722,7 @@ func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
 	}
 	added, _ := result["addedModels"].([]string)
 	if len(added) != 1 || added[0] != "mock-model-a" {
-		providerStore, providerErr := providers.NewStore(db, false, time.Now)
+		providerStore, providerErr := providers.NewStore(db, true, time.Now)
 		if providerErr == nil {
 			items, listErr := providerStore.ListProviderModelsForRequest(context.Background(), "gpt", adminID, false, true)
 			t.Fatalf("addedModels = %v result=%v localProjection=%v listErr=%v", added, result, items, listErr)
@@ -821,7 +802,7 @@ func seedCatalogRefreshDraftFixtures(t *testing.T, db *sql.DB, adminID string) s
 		query string
 		args  []any
 	}{
-		{"INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at) VALUES ('prov-gpt', 'gpt', 'OpenAI', 1, ?, ?)", []any{now, now}},
+		{"INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at) VALUES ('prov-gpt', 'gpt', 'OpenAI', 1, $1, $2) ON CONFLICT (code) DO NOTHING", []any{now, now}},
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement.query, statement.args...); err != nil {
@@ -831,7 +812,7 @@ func seedCatalogRefreshDraftFixtures(t *testing.T, db *sql.DB, adminID string) s
 	// groups.provider_code 随供应商解耦删除：默认组按 (system_account_id,
 	// is_default) 定位。
 	var groupID string
-	if err := db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1
+	if err := db.QueryRow(`SELECT id FROM juhe_business.groups WHERE system_account_id = $1 AND is_default = 1
 		ORDER BY updated_at DESC, id ASC LIMIT 1`, adminID).Scan(&groupID); err != nil {
 		t.Fatalf("locate default group: %v", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
 )
 
-// composeStatsWiringFixture assembles the SQLite standalone composition the
+// composeStatsWiringFixture assembles the PostgreSQL composition the
 // same way compose_assembly_test.go does and logs in a fresh admin, returning
 // the composition plus a JSON helper over the httptest server.
 type composeStatsWiringFixture struct {
@@ -29,12 +28,10 @@ type composeStatsWiringFixture struct {
 
 func newComposeStatsWiringFixture(t *testing.T) *composeStatsWiringFixture {
 	t.Helper()
-	cfg := composeTestConfig(t)
-	store := openComposeOperationStore(t)
-	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	tdb := composeTestPostgres(t)
+	cfg := composeTestConfigForDSN(t, tdb.DSN)
+	store := openComposeOperationStore(t, tdb.DSN)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), mustComposeAuditProducer(t, tdb.DSN), composeTestAuditConfig(t, tdb.DSN), composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}
@@ -122,7 +119,7 @@ func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 	if composed.statsDB == nil {
 		t.Fatal("composition must own a stats database handle in sqlite mode")
 	}
-	if _, err := composed.statsDB.Exec(`INSERT INTO authorization_team_usage_summary_daily
+	if _, err := composed.statsDB.Exec(`INSERT INTO juhe_stats.authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 row_count, request_count, success_count, error_count, input_tokens, output_tokens,
 		 cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
@@ -198,7 +195,7 @@ func TestComposeSystemAPIWiresSystemTeamsSideEffects(t *testing.T) {
 	}
 
 	var reason string
-	if err := composed.DB.QueryRow(`SELECT reason FROM group_account_stats_dirty WHERE group_id = '__all__'`).Scan(&reason); err != nil {
+	if err := composed.DB.QueryRow(`SELECT reason FROM juhe_business.group_account_stats_dirty WHERE group_id = '__all__'`).Scan(&reason); err != nil {
 		t.Fatalf("group-stats dirty marker must land in the business database: %v", err)
 	}
 	if reason != "team_authorization_changed" {

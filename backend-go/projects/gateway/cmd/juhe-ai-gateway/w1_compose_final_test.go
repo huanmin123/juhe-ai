@@ -186,15 +186,9 @@ func w1uFinalNewPGComposeFixture(t *testing.T) *w1uFinalPGComposeFixture {
 	auditProducer := auditlog.NewProducer(auditStore, auditKeeper, auditConfig, producerLogger{})
 
 	cfg := runtimeConfig{
-		// standalone + memory 驱动：performance 模式的热质量运行时强制要求
-		// redis runtime state（composeChainRuntimeServices 守卫），与组合根
-		// 守卫臂无关；SQLite 变体测试已证明 standalone/memory 链条可完整装配。
-		RuntimeMode:                   "standalone",
-		DatabaseDriver:                "postgres",
+		// PG+Redis 唯一存储形态（2026-10-24 存储形态收口）。
 		PostgresURL:                   tempAppURL,
 		BusinessPostgresURL:           tempAppURL,
-		CacheDriver:                   "memory",
-		RuntimeStateDriver:            "memory",
 		RedisNamespace:                w1g2RedisNamespace,
 		Secret:                        "w1u-final-compose-secret",
 		DispatchAccountCandidateLimit: 5000,
@@ -241,7 +235,7 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 		if composed != nil {
 			t.Fatal("失败臂不得返回组合根")
 		}
-		if !strings.Contains(err.Error(), "postgres 模式缺少 F3 audit 数据集连接池") {
+		if !strings.Contains(err.Error(), "缺少 F3 audit 数据集连接池") {
 			t.Fatalf("错误 = %v，want 包含 %q", err, "postgres 模式缺少 F3 audit 数据集连接池")
 		}
 	})
@@ -249,7 +243,6 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 	t.Run("链条缺spool目录", func(t *testing.T) {
 		cfg := fixture.cfg
 		cfg.UsageSpoolDirectory = ""
-		cfg.StatsDatabasePath = ""
 		composed, err := composeSystemAPI(cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, fixture.auditConfig, composeTestOwnerHealth())
 		if err == nil {
 			if composed != nil {

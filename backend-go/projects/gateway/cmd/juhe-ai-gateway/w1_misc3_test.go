@@ -627,11 +627,8 @@ func TestW1AuthorizationQuotaExceededArms(t *testing.T) {
 func TestW1ComposeRuntimeServicesRedisStateArm(t *testing.T) {
 	server := miniredis.RunT(t)
 	cfg := composeTestConfig(t)
-	// D-137：standalone 热质量只支持 memory 运行态驱动，redis 驱动分支
-	// 必须 performance 模式（与主流程 GetGatewayHotQualityRuntime 契约一致）。
-	cfg.RuntimeMode = "performance"
+	// D-137：redis 运行态恒定形态（存储形态收口）。
 	cfg.RedisNamespace = "w1-compose-state"
-	cfg.RuntimeStateDriver = "redis"
 	cfg.RedisStateURL = "redis://" + server.Addr()
 	fixture := newChainFixture(t)
 	composed := &composition{db: fixture.db, statsDB: fixture.statsDB}
@@ -648,7 +645,6 @@ func TestW1ComposeRuntimeServicesRedisStateArm(t *testing.T) {
 	}
 	// 非法 redis URL：fail fast 契约。
 	badCfg := composeTestConfig(t)
-	badCfg.RuntimeStateDriver = "redis"
 	badCfg.RedisStateURL = "redis://[::bad-url"
 	if _, err := composeChainRuntimeServices(&composition{db: fixture.db, statsDB: fixture.statsDB}, badCfg, func(string) (string, error) { return "UTC", nil }); err == nil {
 		t.Fatal("非法 state URL 必须报错")
