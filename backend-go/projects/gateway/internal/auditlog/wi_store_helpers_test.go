@@ -180,33 +180,21 @@ func TestWIStoreScalarHelpers(t *testing.T) {
 	if got := boolValue(nil); got != false {
 		t.Fatalf("nil boolValue=%v", got)
 	}
-	// dbTime / dbTimeText / nullableTime。
-	zero := time.Time{}
-	if got := dbTime(ModeSQLite, zero); got != "0001-01-01T00:00:00Z" {
-		t.Fatalf("zero dbTime=%v", got)
-	}
+	// dbTimeText / nullableTime。
 	utc := time.Date(2026, 9, 10, 8, 30, 0, 123_000_000, time.UTC)
-	sqliteTime, isText := dbTime(ModeSQLite, utc).(string)
-	if !isText || !strings.HasPrefix(sqliteTime, "2026-09-10T08:30:00.123") {
-		t.Fatalf("dbTime=%v", sqliteTime)
-	}
-	// postgres 模式返回 time.Time。
-	if _, isTime := dbTime(ModePostgres, utc).(time.Time); !isTime {
-		t.Fatal("postgres dbTime 必须是 time.Time")
-	}
 	if got := dbTimeText(utc.Format(time.RFC3339Nano)); got == nil {
 		t.Fatal("合法文本必须归一化")
 	}
 	if got := dbTimeText("not-a-time"); got != nil {
 		t.Fatalf("非法文本=%v", got)
 	}
-	if got := nullableTime(ModeSQLite, "  "); got != nil {
+	if got := nullableTime("  "); got != nil {
 		t.Fatalf("空 nullableTime=%v", got)
 	}
-	if got := nullableTime(ModeSQLite, "not-a-time"); got != nil {
+	if got := nullableTime("not-a-time"); got != nil {
 		t.Fatalf("非法 nullableTime=%v", got)
 	}
-	if got := nullableTime(ModeSQLite, utc.Format(time.RFC3339Nano)); got == nil {
+	if got := nullableTime(utc.Format(time.RFC3339Nano)); got == nil {
 		t.Fatal("合法时间必须非 nil")
 	}
 	// nodeStatusCode：nil → 空串，非 nil → 原值。
@@ -319,7 +307,7 @@ func TestWICleanupHotSearchAndBucketParsing(t *testing.T) {
 }
 
 func TestWIConfigValidateRetentionPolicyMatrix(t *testing.T) {
-	base := sqliteConfig(t, t.TempDir())
+	base := Config{OwnerLease: 30 * time.Second, RetentionInterval: time.Minute, RetentionBatchSize: 512, SuccessHotRetentionHours: 1, SuccessSampleRate: 1.0, SuccessRetentionDays: 3, ProblemRetentionDays: 7}
 	if err := base.validateRetentionPolicy(); err != nil {
 		t.Fatalf("基线配置必须合法: %v", err)
 	}

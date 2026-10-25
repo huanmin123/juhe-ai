@@ -276,7 +276,7 @@ func TestW16fPGDispatchFamilyChildLockArm(t *testing.T) {
 	w9hSeedBusinessAccount(t, db, "w16f-pg-root", "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json", sql.NullString{}, sql.NullString{})
 	w9hSeedBusinessAccount(t, db, "w16f-pg-inst", "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json", sql.NullString{}, sql.NullString{})
 	w9hMustExec(t, db, `UPDATE juhe_business.accounts SET authorization_instance_source_account_id = 'w16f-pg-root' WHERE id = 'w16f-pg-inst'`)
-	business, err := NewProjectionBusinessDB(db, true)
+	business, err := NewProjectionBusinessDB(db)
 	if err != nil {
 		t.Fatal(err)
 	}

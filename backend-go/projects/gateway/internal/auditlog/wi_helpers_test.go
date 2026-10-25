@@ -3,7 +3,6 @@ package auditlog
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -196,48 +195,6 @@ func TestWINormalizeHotKeywords(t *testing.T) {
 	}
 }
 
-func TestWILegacyMigrationPathHelpers(t *testing.T) {
-	// equalLegacyPath：清洗后比较。
-	if !equalLegacyPath("/v1/x", "/v1/x") || equalLegacyPath("/v1/x", "/v1/y") {
-		t.Fatal("equalLegacyPath 错误")
-	}
-	// 只读 / 目标 DSN 的构造。
-	if !strings.Contains(readOnlySQLiteDSN("audit.sqlite3"), "mode=ro") {
-		t.Fatalf("readOnlyDSN=%q", readOnlySQLiteDSN("audit.sqlite3"))
-	}
-	if !strings.Contains(targetSQLiteDSN("audit.sqlite3"), "audit.sqlite3") {
-		t.Fatalf("targetDSN=%q", targetSQLiteDSN("audit.sqlite3"))
-	}
-	// verifyBlobFile：越界 / 绝对路径 storage_key 必须拒绝。
-	root := t.TempDir()
-	if _, err := verifyBlobFile(root, "../escape", "d", 1, 1, "none"); err == nil {
-		t.Fatal("越界 storage_key 必须报错")
-	}
-	if _, err := verifyBlobFile(root, "missing.bin", "d", 1, 1, "none"); err == nil {
-		t.Fatal("缺失 blob 文件必须报错")
-	}
-	// 大小不匹配。
-	if err := os.WriteFile(filepath.Join(root, "blob.bin"), []byte("abcd"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := verifyBlobFile(root, "blob.bin", "d", 4, 3, "none"); err == nil {
-		t.Fatal("大小不匹配必须报错")
-	}
-	// 不支持的压缩格式。
-	if _, err := verifyBlobFile(root, "blob.bin", "d", 4, 4, "br"); err == nil {
-		t.Fatal("未知压缩必须报错")
-	}
-	// digest 不匹配。
-	if _, err := verifyBlobFile(root, "blob.bin", strings.Repeat("0", 64), 4, 4, "none"); err == nil {
-		t.Fatal("digest 不匹配必须报错")
-	}
-	// 完全匹配（含 gzip）往返。
-	summary := fmt.Sprintf("%x", sha256.Sum256([]byte("abcd")))
-	if data, err := verifyBlobFile(root, "blob.bin", summary, 4, 4, "none"); err != nil || string(data) != "abcd" {
-		t.Fatalf("匹配 blob=%s err=%v", data, err)
-	}
-}
-
 func TestWILeaseKeeperLostWhenLeaseUsurped(t *testing.T) {
 	store, implementation := openPostgresStore(t)
 	defer store.Close()
@@ -248,9 +205,9 @@ func TestWILeaseKeeperLostWhenLeaseUsurped(t *testing.T) {
 	}
 	// 手工把租约行置为过期，随后由另一个 owner 抢占（fence 递增）。
 	// keeper 的自动续租会不断延长 lease_until，无法靠等待过期。
-	past := dbTime(implementation.mode, time.Now().UTC().Add(-time.Minute))
+	past := time.Now().UTC().Add(-time.Minute)
 	if _, err := implementation.db.Exec(
-		implementation.bind(`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id='wi-usurped'`),
+		implementation.bind(`UPDATE `+implementation.table("audit_log_owner_leases")+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id='wi-usurped'`),
 		past); err != nil {
 		t.Fatalf("过期租约失败: %v", err)
 	}

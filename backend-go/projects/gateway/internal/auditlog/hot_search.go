@@ -57,10 +57,6 @@ func (s *sqlStore) AppendHotSearch(ctx context.Context, lease OwnerLease, inputs
 	if err := s.EnsureSchema(ctx); err != nil {
 		return 0, err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("开始 F3 hot-search 追加事务失败: %w", err)
@@ -112,10 +108,6 @@ func (s *sqlStore) CleanupHotSearch(ctx context.Context, lease OwnerLease, cutof
 	}
 	if err := s.EnsureSchema(ctx); err != nil {
 		return 0, err
-	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

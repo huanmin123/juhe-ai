@@ -4,7 +4,7 @@ package auditlog
 // 以当前生效保留配置（DB 行 → env 固化值 → 代码默认的优先级链，与后台自动
 // 轮共用 EffectiveRetentionSettings 同一合成函数）立即执行一轮
 // CleanupRetention——有界批次 + owner lease 事务内校验，与后台自动轮共用
-// 同一 lease 与 SQLite 写锁，天然串行安全。防护顺序：auth.RequireAdmin +
+// 同一 lease，天然串行安全。防护顺序：auth.RequireAdmin +
 // kernel.MutationGuardMiddleware（防重放指纹）+ 操作日志 Sink.Record
 // （契约见 docs/functions/日志与审计设置设计.md）。
 

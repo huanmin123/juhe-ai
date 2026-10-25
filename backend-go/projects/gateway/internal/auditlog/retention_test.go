@@ -144,7 +144,7 @@ func TestRetentionRemovesPreexistingUnreferencedBlob(t *testing.T) {
 	if err := os.WriteFile(path, []byte("orphan"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	now := dbTime(implementation.mode, time.Now().UTC())
+	now := time.Now().UTC()
 	if _, err := implementation.db.Exec(`INSERT INTO juhe_dataset.audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,storage_key,first_seen_at,last_seen_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7)`, "orphan", "orphan-hash", 6, 6, "text/plain", "orphan.blob", now); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestRetentionBlobDeleteFailureKeepsRetryableGCLocator(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "held"), []byte("block deletion"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	now := dbTime(implementation.mode, time.Now().UTC())
+	now := time.Now().UTC()
 	if _, err := implementation.db.Exec(`INSERT INTO juhe_dataset.audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,storage_key,first_seen_at,last_seen_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7)`, "delete-failure", "delete-failure-hash", 1, 1, "text/plain", storageKey, now); err != nil {
 		t.Fatal(err)
 	}

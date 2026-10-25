@@ -1,17 +1,10 @@
 package auditlog
 
-// w13g4 覆盖率补齐：hot-search 文件/纯函数臂、迁移 DSN/完整性校验臂。
-//
-// 不可达 / 高成本语句登记（基于 2026-09-18 覆盖率 profile w13g4_auditlog.out）：
-//   - legacy_migration.go 217-221（readOnlySQLiteDSN/targetSQLiteDSN 的
-//     sqliteDSN 失败回退）：sqliteDSN 仅在 filepath.Abs 失败时出错，常规路径
-//     不触发。
-//   - legacy_migration.go equalLegacyPath 的非 Windows 分支：当前测试平台为
-//     windows，runtime.GOOS 编译期恒定，跨平台分支由构建矩阵覆盖。
+// w13g4 覆盖率补齐：hot-search 文件/纯函数臂（2026-10-24 存储形态收口：
+// legacy sqlite 迁移链及其测试随臂退役，本文件仅保留 hot-search 面）。
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,47 +13,8 @@ import (
 )
 
 // TestW13G4LegacyMigrationHelpers 覆盖旧迁移的路径比较与只读 DSN 拼接。
-func TestW13G4LegacyMigrationHelpers(t *testing.T) {
-	// 当前平台（windows）走 EqualFold + Clean 分支。
-	if !equalLegacyPath(`A/B`, `a\b`) {
-		t.Fatal("EqualFold 路径应相等")
-	}
-	if equalLegacyPath(`a/b`, `a/c`) {
-		t.Fatal("不同路径不应相等")
-	}
-
-	dsn := readOnlySQLiteDSN(filepath.Join(t.TempDir(), "legacy.sqlite3"))
-	if !strings.Contains(dsn, "mode=ro") {
-		t.Fatalf("只读 DSN = %q", dsn)
-	}
-	target := targetSQLiteDSN(filepath.Join(t.TempDir(), "target.sqlite3"))
-	if !strings.Contains(target, "busy_timeout(5000)") {
-		t.Fatalf("目标 DSN = %q", target)
-	}
-}
 
 // TestW13G4VerifySQLiteIntegrityDB 覆盖完整性校验的成功与损坏文件失败臂。
-func TestW13G4VerifySQLiteIntegrityDB(t *testing.T) {
-	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
-	defer store.Close()
-	impl := store.(*sqlStore)
-	if err := verifySQLiteIntegrityDB(context.Background(), impl.db, "w13g4-good"); err != nil {
-		t.Fatalf("健康库校验 = %v", err)
-	}
-
-	corrupt := filepath.Join(t.TempDir(), "corrupt.sqlite3")
-	if err := os.WriteFile(corrupt, []byte("not a sqlite database at all"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", corrupt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := verifySQLiteIntegrityDB(context.Background(), db, "w13g4-corrupt"); err == nil {
-		t.Fatal("损坏库应校验失败")
-	}
-}
 
 // TestW13G4BuildHotSearchLines 覆盖热搜行构建的过滤、非法时间与分片。
 func TestW13G4BuildHotSearchLines(t *testing.T) {

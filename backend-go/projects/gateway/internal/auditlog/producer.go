@@ -30,7 +30,7 @@ import (
 
 const (
 	// producerQueueCapacity bounds the number of in-flight audit inputs; the
-	// store is the bottleneck (SQLite single-writer / pooled PG), so the queue
+	// store is the bottleneck (pooled PG), so the queue
 	// absorbs bursts instead of unbounded goroutine growth.
 	producerQueueCapacity = 4096
 	// producerWorkers caps concurrent store writers; renewal + persist +

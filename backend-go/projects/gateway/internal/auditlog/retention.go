@@ -25,10 +25,6 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, lease OwnerLease, confi
 	if err := s.EnsureSchema(ctx); err != nil {
 		return RetentionResult{}, err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RetentionResult{}, fmt.Errorf("开始 F3 retention 事务失败: %w", err)
@@ -43,7 +39,7 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, lease OwnerLease, confi
 	appendCandidates := func(ids []string) { candidateBlobIDs = append(candidateBlobIDs, ids...) }
 
 	trimWhere := `audit_outcome = 'success' AND created_at < ? AND created_at >= ? AND sample_bucket >= ? AND capture_status <> 'metadata_only'`
-	trimArgs := []any{dbTime(s.mode, config.SuccessHotCutoff), dbTime(s.mode, config.SuccessCutoff), config.SuccessSampleBucketThreshold}
+	trimArgs := []any{config.SuccessHotCutoff, config.SuccessCutoff, config.SuccessSampleBucketThreshold}
 	trimIDs, err := s.retentionIDs(ctx, tx, trimWhere, trimArgs, config.BatchSize)
 	if err != nil {
 		return RetentionResult{}, err
@@ -94,7 +90,7 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, lease OwnerLease, confi
 	}
 
 	deleteWhere := `((audit_outcome = 'success' AND created_at < ?) OR (audit_outcome <> 'success' AND created_at < ?))`
-	deleteArgs := []any{dbTime(s.mode, config.SuccessCutoff), dbTime(s.mode, config.FailureCutoff)}
+	deleteArgs := []any{config.SuccessCutoff, config.FailureCutoff}
 	deleteIDs, err := s.retentionIDs(ctx, tx, deleteWhere, deleteArgs, config.BatchSize)
 	if err != nil {
 		return RetentionResult{}, err
@@ -114,13 +110,13 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, lease OwnerLease, confi
 		result.DeletedLogs = int64(deleted)
 	}
 
-	groupIDs, err := s.retentionIDsFromTable(ctx, tx, "audit_error_groups", `updated_at < ? AND NOT EXISTS (SELECT 1 FROM `+s.table("audit_logs")+` WHERE `+s.table("audit_logs")+`.error_group_id = `+s.table("audit_error_groups")+`.id)`, []any{dbTime(s.mode, config.ErrorGroupCutoff)}, config.BatchSize)
+	groupIDs, err := s.retentionIDsFromTable(ctx, tx, "audit_error_groups", `updated_at < ? AND NOT EXISTS (SELECT 1 FROM `+s.table("audit_logs")+` WHERE `+s.table("audit_logs")+`.error_group_id = `+s.table("audit_error_groups")+`.id)`, []any{config.ErrorGroupCutoff}, config.BatchSize)
 	if err != nil {
 		return RetentionResult{}, err
 	}
 	if len(groupIDs) > 0 {
 		query := `DELETE FROM ` + s.table("audit_error_groups") + ` WHERE id IN (` + placeholders(len(groupIDs)) + `) AND updated_at < ? AND NOT EXISTS (SELECT 1 FROM ` + s.table("audit_logs") + ` WHERE ` + s.table("audit_logs") + `.error_group_id = ` + s.table("audit_error_groups") + `.id)`
-		deleted, err := tx.ExecContext(ctx, s.bind(query), append(stringArgs(groupIDs), dbTime(s.mode, config.ErrorGroupCutoff))...)
+		deleted, err := tx.ExecContext(ctx, s.bind(query), append(stringArgs(groupIDs), config.ErrorGroupCutoff)...)
 		if err != nil {
 			return RetentionResult{}, fmt.Errorf("删除 F3 error groups 失败: %w", err)
 		}
@@ -373,10 +369,7 @@ func (s *sqlStore) scheduleUnreferencedBlobGC(ctx context.Context, tx *sql.Tx, r
 		if err := s.lockBlobLifecycleTx(ctx, tx, row.id); err != nil {
 			return err
 		}
-		query := `SELECT storage_key FROM ` + s.table("audit_payload_blobs") + ` WHERE id=? AND NOT EXISTS (SELECT 1 FROM ` + s.table("audit_payload_refs") + ` WHERE headers_blob_id=? OR body_blob_id=?)`
-		if s.mode == ModePostgres {
-			query += ` FOR UPDATE`
-		}
+		query := `SELECT storage_key FROM ` + s.table("audit_payload_blobs") + ` WHERE id=? AND NOT EXISTS (SELECT 1 FROM ` + s.table("audit_payload_refs") + ` WHERE headers_blob_id=? OR body_blob_id=?) FOR UPDATE`
 		var storageKey string
 		err := tx.QueryRowContext(ctx, s.bind(query), row.id, row.id, row.id).Scan(&storageKey)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -385,7 +378,7 @@ func (s *sqlStore) scheduleUnreferencedBlobGC(ctx context.Context, tx *sql.Tx, r
 		if err != nil {
 			return fmt.Errorf("复核 F3 unreferenced blob 失败: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("audit_payload_blob_gc")+` (blob_id,storage_key,scheduled_at) VALUES (?,?,?) ON CONFLICT(blob_id) DO UPDATE SET storage_key=excluded.storage_key,scheduled_at=excluded.scheduled_at`), row.id, storageKey, dbTime(s.mode, time.Now().UTC())); err != nil {
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("audit_payload_blob_gc")+` (blob_id,storage_key,scheduled_at) VALUES (?,?,?) ON CONFLICT(blob_id) DO UPDATE SET storage_key=excluded.storage_key,scheduled_at=excluded.scheduled_at`), row.id, storageKey, time.Now().UTC()); err != nil {
 			return fmt.Errorf("记录 F3 pending blob GC 失败: %w", err)
 		}
 	}

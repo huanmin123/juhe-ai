@@ -19,10 +19,6 @@ func (s *sqlStore) RetractInProgress(ctx context.Context, lease OwnerLease, audi
 	if err := s.EnsureSchema(ctx); err != nil {
 		return false, err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err

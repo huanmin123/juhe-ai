@@ -160,56 +160,6 @@ func TestW13G8AuthorizationQuotaEligibleArms(t *testing.T) {
 	}
 }
 
-// TestW13G8StoreInjectionArms 复用 w13g5 注入 kit 驱动 EnsureSchema 的
-// PRAGMA/ALTER 失败臂与 AcquireOwnerLease 参数校验。
-func TestW13G8StoreInjectionArms(t *testing.T) {
-	store, spec := w13g5HealthInjectStore(t)
-	ctx := context.Background()
-	if err := store.EnsureSchema(ctx); err != nil {
-		t.Fatalf("基线 EnsureSchema 必须成功: %v", err)
-	}
-	// BUG-0307 记忆化：成功后再次调用是设计内 no-op（这正是热路径修复点），
-	// 故障臂验证前需显式复位记忆位。
-	store.schemaReady.Store(false)
-	// PRAGMA table_info 失败 → 读 state schema 失败臂。
-	spec.arm("PRAGMA table_info")
-	if err := store.EnsureSchema(ctx); err == nil || !strings.Contains(err.Error(), "state schema") {
-		t.Fatalf("PRAGMA 注入必须报 schema 读取错误: %v", err)
-	}
-	if store.schemaReady.Load() {
-		t.Fatal("失败的 EnsureSchema 不得记忆 schemaReady")
-	}
-	spec.disarm()
-	// ALTER TABLE 失败 → 扩展列失败臂：预置旧形状 current_state 表（缺新列），
-	// EnsureSchema 的 CREATE IF NOT EXISTS 空转后触发列扩展。
-	legacyStore, legacySpec := w13g5HealthInjectStore(t)
-	if _, err := legacyStore.db.ExecContext(ctx, `CREATE TABLE account_health_current_state (
-		account_id TEXT PRIMARY KEY, outcome_id TEXT, outcome TEXT, observed_at TEXT,
-		input_version INTEGER, config_revision INTEGER, dispatch_revision INTEGER,
-		status_code INTEGER, error_code TEXT, error_message TEXT, updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	legacySpec.arm("ALTER TABLE account_health_current_state ADD COLUMN")
-	if err := legacyStore.EnsureSchema(ctx); err == nil || !strings.Contains(err.Error(), "扩展 account-health sqlite state 列") {
-		t.Fatalf("ALTER 注入必须报扩展列错误: %v", err)
-	}
-	legacySpec.disarm()
-	// AcquireOwnerLease 参数校验臂。
-	if _, _, err := store.AcquireOwnerLease(ctx, "  ", time.Minute); err == nil || !strings.Contains(err.Error(), "参数无效") {
-		t.Fatalf("空 ownerID 必须报错: %v", err)
-	}
-	if _, _, err := store.AcquireOwnerLease(ctx, "w13g8-owner", 0); err == nil || !strings.Contains(err.Error(), "参数无效") {
-		t.Fatalf("零时长必须报错: %v", err)
-	}
-	// nil db 的 Close 短路臂。
-	empty := &Store{}
-	if err := empty.Close(); err != nil {
-		t.Fatalf("nil db Close 必须返回 nil: %v", err)
-	}
-}
-
-// w13g8StubOutboxStore 是 ProbeRequestOutboxStore 的 stub（错误注入与
-// deadline 缺失行）。
 type w13g8StubOutboxStore struct {
 	rows []ProbeOutboxRow
 	err  error

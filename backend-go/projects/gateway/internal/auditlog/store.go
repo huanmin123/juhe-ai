@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,10 +23,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
-
-const sqliteBusyTimeoutMS = 5000
 
 const (
 	auditBlobCompressionThresholdBytes    = 4 * 1024
@@ -41,10 +37,8 @@ var ErrOwnerLeaseLost = errors.New("F3 audit owner lease 已失效或已移交")
 
 type sqlStore struct {
 	db          *sql.DB
-	mode        Mode
 	blobDir     string
 	hotDir      string
-	writeMu     sync.Mutex
 	hotMu       sync.Mutex
 	schemaMu    sync.Mutex
 	schemaReady bool
@@ -59,13 +53,6 @@ type blobPlan struct {
 	tempPath string
 	existing bool
 }
-
-const sqliteBlobGCSchema = `
-CREATE TABLE IF NOT EXISTS audit_payload_blob_gc (
-  blob_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL, scheduled_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_audit_payload_blob_gc_scheduled ON audit_payload_blob_gc(scheduled_at, blob_id);
-`
 
 const postgresBlobGCSchema = `
 CREATE TABLE IF NOT EXISTS juhe_dataset.audit_payload_blob_gc (
@@ -100,27 +87,6 @@ func OpenStore(cfg Config) (Store, error) {
 	// Opening a store (and the current foundation CLI) has no blob-directory
 	// side effects. Blob files may only be created or cleaned by an acquired,
 	// fenced owner during Persist/CleanupOwnedBlobTemps.
-	if cfg.Mode == ModeSQLite {
-		dsn, err := sqliteDSN(cfg.AuditDatabasePath)
-		if err != nil {
-			return nil, fmt.Errorf("解析 F3 SQLite 专库路径失败: %w", err)
-		}
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, fmt.Errorf("打开 F3 SQLite 专库失败: %w", err)
-		}
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if err := configureSQLite(db); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-		hotDir := cfg.HotSearchDirectory
-		if hotDir == "" {
-			hotDir = filepath.Join(filepath.Dir(cfg.PayloadBlobDirectory), "search-hot")
-		}
-		return &sqlStore{db: db, mode: cfg.Mode, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
-	}
 	maxOpen := cfg.PostgresMaxOpenConns
 	if maxOpen == 0 {
 		maxOpen = 1000
@@ -142,44 +108,7 @@ func OpenStore(cfg Config) (Store, error) {
 	if hotDir == "" {
 		hotDir = filepath.Join(filepath.Dir(cfg.PayloadBlobDirectory), "search-hot")
 	}
-	return &sqlStore{db: pool.DB(), mode: cfg.Mode, pool: pool, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
-}
-
-func sqliteDSN(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	uriPath := filepath.ToSlash(abs)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_pragma=busy_timeout(5000)"}).String(), nil
-}
-
-func configureSQLite(db *sql.DB) error {
-	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		return fmt.Errorf("启用 F3 SQLite foreign_keys 失败: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteBusyTimeoutMS)); err != nil {
-		return fmt.Errorf("设置 F3 SQLite busy_timeout 失败: %w", err)
-	}
-	var timeout int
-	if err := db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout); err != nil {
-		return fmt.Errorf("回读 F3 SQLite busy_timeout 失败: %w", err)
-	}
-	if timeout != sqliteBusyTimeoutMS {
-		return fmt.Errorf("F3 SQLite busy_timeout 未生效，实际为 %d", timeout)
-	}
-	var journal string
-	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&journal); err != nil {
-		return fmt.Errorf("启用 F3 SQLite WAL 失败: %w", err)
-	}
-	if !strings.EqualFold(strings.TrimSpace(journal), "wal") {
-		return fmt.Errorf("F3 SQLite WAL 未生效，实际为 %q", journal)
-	}
-	return nil
+	return &sqlStore{db: pool.DB(), pool: pool, blobDir: cfg.PayloadBlobDirectory, hotDir: hotDir}, nil
 }
 
 func (s *sqlStore) Close() error {
@@ -198,22 +127,7 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 	if s.schemaReady {
 		return nil
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-		if _, err := s.db.ExecContext(ctx, sqliteSchema); err != nil {
-			return fmt.Errorf("初始化 F3 SQLite schema 失败: %w", err)
-		}
-		if _, err := s.db.ExecContext(ctx, sqliteBlobGCSchema); err != nil {
-			return fmt.Errorf("初始化 F3 SQLite blob GC schema 失败: %w", err)
-		}
-		// 超级分组双层身份列（设计 §4.3）：存量库幂等补列。
-		for _, column := range sqliteSuperGroupAuditColumns {
-			if err := ensureSQLiteAuditColumn(ctx, s.db, column.table, column.column, column.definition); err != nil {
-				return fmt.Errorf("补 F3 SQLite 列 %s.%s 失败: %w", column.table, column.column, err)
-			}
-		}
-	} else {
+	{
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("开始 F3 PostgreSQL schema 事务失败: %w", err)
@@ -230,7 +144,7 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 				return fmt.Errorf("初始化 F3 PostgreSQL schema 失败: %w", err)
 			}
 		}
-		for _, column := range sqliteSuperGroupAuditColumns {
+		for _, column := range superGroupAuditColumns {
 			if _, err := tx.ExecContext(ctx, "ALTER TABLE "+s.table(column.table)+" ADD COLUMN IF NOT EXISTS "+column.column+" "+column.definition); err != nil {
 				return fmt.Errorf("补 F3 PostgreSQL 列 %s.%s 失败: %w", column.table, column.column, err)
 			}
@@ -251,51 +165,21 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
-func (s *sqlStore) leaseTable() string {
-	if s.mode == ModePostgres {
-		return "juhe_dataset.audit_log_owner_leases"
-	}
-	return "audit_log_owner_leases"
-}
 func (s *sqlStore) table(name string) string {
-	if s.mode == ModePostgres {
-		return "juhe_dataset." + name
-	}
-	return name
+	return "juhe_dataset." + name
 }
 
 func (s *sqlStore) AcquireOwnerLease(ctx context.Context, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
 	if err := s.EnsureSchema(ctx); err != nil {
 		return OwnerLease{}, false, err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
-	if s.mode == ModePostgres {
-		var token int64
-		err := s.db.QueryRowContext(ctx, s.bind(postgresAcquireLeaseSQL), "f3-audit-log-persistence", ownerID, duration.Milliseconds()).Scan(&token)
-		if errors.Is(err, sql.ErrNoRows) {
-			return OwnerLease{}, false, nil
-		}
-		if err != nil {
-			return OwnerLease{}, false, fmt.Errorf("获取 F3 PostgreSQL owner lease 失败: %w", err)
-		}
-		return OwnerLease{OwnerID: ownerID, FenceToken: token}, true, nil
-	}
-	now := time.Now().UTC()
-	until := now.Add(duration)
-	query := `INSERT INTO ` + s.leaseTable() + ` (lease_key, owner_id, fence_token, lease_until, updated_at)
-VALUES (?, ?, 1, ?, ?) ON CONFLICT (lease_key) DO UPDATE SET owner_id=excluded.owner_id,
-fence_token=` + s.leaseTable() + `.fence_token + 1, lease_until=excluded.lease_until, updated_at=excluded.updated_at
-WHERE ` + s.leaseTable() + `.lease_until <= ? OR ` + s.leaseTable() + `.owner_id = excluded.owner_id RETURNING fence_token`
 	var token int64
-	err := s.db.QueryRowContext(ctx, s.bind(query), "f3-audit-log-persistence", ownerID, dbTime(s.mode, until), dbTime(s.mode, now), dbTime(s.mode, now)).Scan(&token)
+	err := s.db.QueryRowContext(ctx, s.bind(postgresAcquireLeaseSQL), "f3-audit-log-persistence", ownerID, duration.Milliseconds()).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
 	if err != nil {
-		return OwnerLease{}, false, fmt.Errorf("获取 F3 owner lease 失败: %w", err)
+		return OwnerLease{}, false, fmt.Errorf("获取 F3 PostgreSQL owner lease 失败: %w", err)
 	}
 	return OwnerLease{OwnerID: ownerID, FenceToken: token}, true, nil
 }
@@ -304,44 +188,23 @@ func (s *sqlStore) RenewOwnerLease(ctx context.Context, lease OwnerLease, durati
 	if err := s.EnsureSchema(ctx); err != nil {
 		return false, err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
-	if s.mode == ModePostgres {
-		result, err := s.db.ExecContext(ctx, s.bind(postgresRenewLeaseSQL), duration.Milliseconds(), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken)
-		if err != nil {
-			return false, fmt.Errorf("续约 F3 PostgreSQL owner lease 失败: %w", err)
-		}
-		count, err := result.RowsAffected()
-		return count == 1, err
-	}
-	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE `+s.leaseTable()+` SET lease_until=?, updated_at=? WHERE lease_key=? AND owner_id=? AND fence_token=? AND lease_until > ?`), dbTime(s.mode, now.Add(duration)), dbTime(s.mode, now), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken, dbTime(s.mode, now))
+	result, err := s.db.ExecContext(ctx, s.bind(postgresRenewLeaseSQL), duration.Milliseconds(), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken)
 	if err != nil {
-		return false, fmt.Errorf("续约 F3 owner lease 失败: %w", err)
+		return false, fmt.Errorf("续约 F3 PostgreSQL owner lease 失败: %w", err)
 	}
-	n, err := result.RowsAffected()
-	return n == 1, err
+	count, err := result.RowsAffected()
+	return count == 1, err
 }
 
 func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 	if err := s.EnsureSchema(ctx); err != nil {
 		return err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
 	// Keep the fence row and only expire it. Deleting it would reset the next
 	// token to 1, allowing a delayed former owner to become indistinguishable
 	// from a new owner after a voluntary handoff.
-	query := `UPDATE ` + s.leaseTable() + ` SET lease_until=?, updated_at=? WHERE lease_key=? AND owner_id=? AND fence_token=?`
-	arguments := []any{dbTime(s.mode, time.Unix(0, 0).UTC()), dbTime(s.mode, time.Now().UTC()), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken}
-	if s.mode == ModePostgres {
-		query = `UPDATE ` + s.leaseTable() + ` SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key=? AND owner_id=? AND fence_token=?`
-		arguments = []any{"f3-audit-log-persistence", lease.OwnerID, lease.FenceToken}
-	}
+	query := `UPDATE ` + s.table("audit_log_owner_leases") + ` SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key=? AND owner_id=? AND fence_token=?`
+	arguments := []any{"f3-audit-log-persistence", lease.OwnerID, lease.FenceToken}
 	result, err := s.db.ExecContext(ctx, s.bind(query), arguments...)
 	if err != nil {
 		return fmt.Errorf("释放 F3 owner lease 失败: %w", err)
@@ -364,10 +227,6 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 	}
 	if err := s.EnsureSchema(ctx); err != nil {
 		return PersistResult{}, err
-	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -453,7 +312,7 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 // an audit row lock. It prevents Persist from holding a blob lifecycle lock
 // while retention holds the same audit row and waits for that blob lock.
 func (s *sqlStore) lockAuditLogLifecycleTx(ctx context.Context, tx *sql.Tx, auditLogID string) error {
-	if s.mode != ModePostgres || auditLogID == "" {
+	if auditLogID == "" {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, `+strconv.FormatInt(postgresAuditLogLifecycleLockSeed, 10)+`::bigint))`), auditLogID); err != nil {
@@ -478,11 +337,11 @@ func (s *sqlStore) lockAuditLogLifecycleIDs(ctx context.Context, tx *sql.Tx, aud
 // cross-window handover (dedupe) read a stable latest window row: without it,
 // concurrent producer workers could both materialize payloads for one window
 // and leave the duplicate's blobs stored until retention trims the row.
-// SQLite is serialized by writeMu. It must be taken before any blob lifecycle
+// It must be taken before any blob lifecycle
 // lock — the fingerprint gate joins the audit-ID gate at the head of the
 // persist lock order (retention takes neither, so no new lock cycles).
 func (s *sqlStore) lockErrorGroupFingerprintTx(ctx context.Context, tx *sql.Tx, fingerprint string) error {
-	if s.mode != ModePostgres || fingerprint == "" {
+	if fingerprint == "" {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, `+strconv.FormatInt(postgresErrorGroupFingerprintLockSeed, 10)+`::bigint))`), fingerprint); err != nil {
@@ -517,7 +376,7 @@ func (s *sqlStore) lockBlobLifecyclePlans(ctx context.Context, tx *sql.Tx, plans
 }
 
 func (s *sqlStore) lockBlobLifecycleTx(ctx context.Context, tx *sql.Tx, blobID string) error {
-	if s.mode != ModePostgres || blobID == "" {
+	if blobID == "" {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, `+strconv.FormatInt(postgresBlobLifecycleLockSeed, 10)+`::bigint))`), blobID); err != nil {
@@ -593,24 +452,6 @@ func (s *sqlStore) verifyLeaseTx(ctx context.Context, tx *sql.Tx, lease OwnerLea
 	if lease.OwnerID == "" || lease.FenceToken <= 0 {
 		return ErrOwnerLeaseLost
 	}
-	if s.mode == ModeSQLite {
-		// This matching UPDATE acquires SQLite's writer reservation before any
-		// audit rows are changed. A separate F3 process cannot advance the
-		// expired lease between this fence check and COMMIT.
-		result, err := tx.ExecContext(ctx, `UPDATE audit_log_owner_leases SET updated_at = updated_at
-WHERE lease_key=? AND owner_id=? AND fence_token=? AND lease_until > ?`, "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken, dbTime(s.mode, time.Now().UTC()))
-		if err != nil {
-			return fmt.Errorf("校验 F3 SQLite owner lease fence 失败: %w", err)
-		}
-		matched, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("读取 F3 SQLite owner lease fence 结果失败: %w", err)
-		}
-		if matched != 1 {
-			return ErrOwnerLeaseLost
-		}
-		return nil
-	}
 	var found int
 	err := tx.QueryRowContext(ctx, s.bind(postgresInitialFenceSQL), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -623,9 +464,6 @@ WHERE lease_key=? AND owner_id=? AND fence_token=? AND lease_until > ?`, "f3-aud
 }
 
 func (s *sqlStore) verifyLeaseBeforeCommit(ctx context.Context, tx *sql.Tx, lease OwnerLease) error {
-	if s.mode == ModeSQLite {
-		return s.verifyLeaseTx(ctx, tx, lease)
-	}
 	var token int64
 	err := tx.QueryRowContext(ctx, s.bind(postgresCommitFenceSQL), "f3-audit-log-persistence", lease.OwnerID, lease.FenceToken).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -958,10 +796,6 @@ func (s *sqlStore) cleanupBlobTempsWithLease(ctx context.Context, lease OwnerLea
 	if err := s.EnsureSchema(ctx); err != nil {
 		return err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("开始 F3 临时 blob 清理事务失败: %w", err)
@@ -1048,7 +882,7 @@ func (s *sqlStore) resolveBlobIDs(ctx context.Context, tx *sql.Tx, plans []blobP
 	for index := range plans {
 		plan := &plans[index]
 		query := `INSERT INTO ` + s.table("audit_payload_blobs") + ` (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,content_encoding,compression,storage_key,ref_count,first_seen_at,last_seen_at,created_at) VALUES (?,?,?,?,?,?,?,?,0,?,?,?) ON CONFLICT(sha256,raw_size_bytes,content_type) DO NOTHING RETURNING id,storage_key,content_encoding,compression,compressed_size_bytes`
-		now := dbTime(s.mode, time.Now().UTC())
+		now := time.Now().UTC()
 		var id, storageKey, compression string
 		var contentEncoding sql.NullString
 		var compressedSize int64
@@ -1143,7 +977,7 @@ func (s *sqlStore) upsertLog(ctx context.Context, tx *sql.Tx, input AuditLogInpu
 	query := `INSERT INTO ` + s.table("audit_logs") + ` (id,trace_id,traffic_source,system_account_id,api_key_id,conversation_key,session_id,session_client_type,group_id,route_group_id,account_id,provider_code,method,path,query_string,model,upstream_model,pricing_model,model_mapping_applied,model_mapping_source,source_endpoint_family,upstream_endpoint_family,stream,client_ip,user_agent,audit_outcome,success,final_status_code,error_phase,error_code,error_message,sample_bucket,sample_reason,attempt_count,payload_count,raw_payload_bytes,compressed_payload_bytes,compression_saved_bytes,capture_status,lifecycle_status,started_at,ended_at,duration_ms,http_completed_at,http_duration_ms,first_token_ms,created_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET trace_id=excluded.trace_id,traffic_source=excluded.traffic_source,system_account_id=excluded.system_account_id,api_key_id=excluded.api_key_id,conversation_key=excluded.conversation_key,session_id=excluded.session_id,session_client_type=excluded.session_client_type,group_id=excluded.group_id,route_group_id=excluded.route_group_id,account_id=excluded.account_id,provider_code=excluded.provider_code,method=excluded.method,path=excluded.path,query_string=excluded.query_string,model=excluded.model,upstream_model=excluded.upstream_model,pricing_model=excluded.pricing_model,model_mapping_applied=excluded.model_mapping_applied,model_mapping_source=excluded.model_mapping_source,source_endpoint_family=excluded.source_endpoint_family,upstream_endpoint_family=excluded.upstream_endpoint_family,stream=excluded.stream,client_ip=excluded.client_ip,user_agent=excluded.user_agent,audit_outcome=excluded.audit_outcome,success=excluded.success,final_status_code=excluded.final_status_code,error_phase=excluded.error_phase,error_code=excluded.error_code,error_message=excluded.error_message,sample_bucket=excluded.sample_bucket,sample_reason=excluded.sample_reason,attempt_count=excluded.attempt_count,payload_count=excluded.payload_count,raw_payload_bytes=excluded.raw_payload_bytes,compressed_payload_bytes=excluded.compressed_payload_bytes,compression_saved_bytes=excluded.compression_saved_bytes,error_group_id=excluded.error_group_id,capture_status=excluded.capture_status,lifecycle_status=excluded.lifecycle_status,started_at=excluded.started_at,ended_at=excluded.ended_at,duration_ms=excluded.duration_ms,http_completed_at=excluded.http_completed_at,http_duration_ms=excluded.http_duration_ms,first_token_ms=excluded.first_token_ms,created_at=excluded.created_at WHERE ` + s.table("audit_logs") + `.lifecycle_status='in_progress' AND excluded.lifecycle_status='finalized'`
-	result, err := tx.ExecContext(ctx, s.bind(query), input.ID, input.TraceID, string(input.TrafficSource), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.ConversationKey), nullText(input.SessionID), nullText(input.SessionClientType), nullText(input.GroupID), nullText(input.RouteGroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Method, input.Path, nullText(input.QueryString), nullText(input.Model), nullText(input.UpstreamModel), nullText(input.PricingModel), boolValue(input.ModelMappingApplied), nullText(input.ModelMappingSource), nullText(input.SourceEndpointFamily), nullText(input.UpstreamEndpointFamily), boolValue(input.Stream), nullText(input.ClientIP), nullText(input.UserAgent), string(input.AuditOutcome), input.Success, input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), nullText(input.ErrorMessage), input.SampleBucket, input.SampleReason, len(input.Attempts), len(input.Payloads), raw, compressed, maxInt64(0, raw-compressed), capture, string(lifecycle), dbTimeText(input.StartedAt), dbTimeText(input.EndedAt), input.DurationMS, nullableTime(s.mode, input.HTTPCompletedAt), input.HTTPDurationMS, input.FirstTokenMS, nullableTime(s.mode, createdAt))
+	result, err := tx.ExecContext(ctx, s.bind(query), input.ID, input.TraceID, string(input.TrafficSource), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.ConversationKey), nullText(input.SessionID), nullText(input.SessionClientType), nullText(input.GroupID), nullText(input.RouteGroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Method, input.Path, nullText(input.QueryString), nullText(input.Model), nullText(input.UpstreamModel), nullText(input.PricingModel), boolValue(input.ModelMappingApplied), nullText(input.ModelMappingSource), nullText(input.SourceEndpointFamily), nullText(input.UpstreamEndpointFamily), boolValue(input.Stream), nullText(input.ClientIP), nullText(input.UserAgent), string(input.AuditOutcome), input.Success, input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), nullText(input.ErrorMessage), input.SampleBucket, input.SampleReason, len(input.Attempts), len(input.Payloads), raw, compressed, maxInt64(0, raw-compressed), capture, string(lifecycle), dbTimeText(input.StartedAt), dbTimeText(input.EndedAt), input.DurationMS, nullableTime(input.HTTPCompletedAt), input.HTTPDurationMS, input.FirstTokenMS, nullableTime(createdAt))
 	if err != nil {
 		return false, fmt.Errorf("写入 audit_logs 失败: %w", err)
 	}
@@ -1163,7 +997,7 @@ func (s *sqlStore) insertFinalChildren(ctx context.Context, tx *sql.Tx, input Au
 		}
 		query := `INSERT INTO ` + s.table("audit_log_attempts") + ` (id,audit_log_id,attempt_index,account_id,account_owner_system_account_id,group_id,member_group_id,proxy_url,provider_code,attempt_model,attempt_upstream_model,attempt_pricing_model,attempt_model_mapping_applied,attempt_model_mapping_source,attempt_source_endpoint_family,attempt_upstream_endpoint_family,upstream_method,upstream_url,upstream_status_code,success,error_phase,error_code,error_message,started_at,ended_at,duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING id`
 		var insertedID string
-		err := tx.QueryRowContext(ctx, s.bind(query), id, input.ID, attempt.AttemptIndex, nullText(attempt.AccountID), nullText(attempt.AccountOwnerSystemAccountID), nullText(attempt.GroupID), nullText(attempt.MemberGroupID), nullText(attempt.ProxyURL), nullText(attempt.ProviderCode), nullText(attempt.Model), nullText(attempt.UpstreamModel), nullText(attempt.PricingModel), boolValue(attempt.ModelMappingApplied), nullText(attempt.ModelMappingSource), nullText(attempt.SourceEndpointFamily), nullText(attempt.UpstreamEndpointFamily), attempt.UpstreamMethod, attempt.UpstreamURL, attempt.UpstreamStatusCode, boolValue(attempt.Success), nullText(attempt.ErrorPhase), nullText(attempt.ErrorCode), nullText(attempt.ErrorMessage), dbTimeText(attempt.StartedAt), nullableTime(s.mode, attempt.EndedAt), attempt.DurationMS).Scan(&insertedID)
+		err := tx.QueryRowContext(ctx, s.bind(query), id, input.ID, attempt.AttemptIndex, nullText(attempt.AccountID), nullText(attempt.AccountOwnerSystemAccountID), nullText(attempt.GroupID), nullText(attempt.MemberGroupID), nullText(attempt.ProxyURL), nullText(attempt.ProviderCode), nullText(attempt.Model), nullText(attempt.UpstreamModel), nullText(attempt.PricingModel), boolValue(attempt.ModelMappingApplied), nullText(attempt.ModelMappingSource), nullText(attempt.SourceEndpointFamily), nullText(attempt.UpstreamEndpointFamily), attempt.UpstreamMethod, attempt.UpstreamURL, attempt.UpstreamStatusCode, boolValue(attempt.Success), nullText(attempt.ErrorPhase), nullText(attempt.ErrorCode), nullText(attempt.ErrorMessage), dbTimeText(attempt.StartedAt), nullableTime(attempt.EndedAt), attempt.DurationMS).Scan(&insertedID)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("audit_log_attempts")+` WHERE id=? AND audit_log_id=?`), id, input.ID).Scan(&insertedID)
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1212,7 +1046,7 @@ func (s *sqlStore) insertFinalChildren(ctx context.Context, tx *sql.Tx, input Au
 		if strings.TrimSpace(createdAt) == "" {
 			createdAt = input.CreatedAt
 		}
-		result, err := tx.ExecContext(ctx, s.bind(query), id, input.ID, attemptRef, string(payload.input.PartType), payload.sequenceIndex, nullText(payload.input.ContentType), nullText(payload.input.ContentEncoding), headerID, bodyID, headerSHA, bodySHA, raw, compressed, string(status), nullText(string(payload.input.DropReason)), nullableTime(s.mode, createdAt))
+		result, err := tx.ExecContext(ctx, s.bind(query), id, input.ID, attemptRef, string(payload.input.PartType), payload.sequenceIndex, nullText(payload.input.ContentType), nullText(payload.input.ContentEncoding), headerID, bodyID, headerSHA, bodySHA, raw, compressed, string(status), nullText(string(payload.input.DropReason)), nullableTime(createdAt))
 		if err != nil {
 			return fmt.Errorf("写入 audit_payload_refs 失败: %w", err)
 		}
@@ -1220,11 +1054,11 @@ func (s *sqlStore) insertFinalChildren(ctx context.Context, tx *sql.Tx, input Au
 		if err != nil {
 			return err
 		}
-		if inserted == 1 {
-			if err := s.incrementRefs(ctx, tx, payload.headers, payload.body); err != nil {
-				return err
-			}
-		}
+		// PostgreSQL treats audit_payload_refs as the source of truth; the
+		// audit_payload_blobs.ref_count cache column is left untouched (a
+		// mutable counter here would race retention/readers and drift under
+		// concurrent writers).
+		_ = inserted
 	}
 	if input.AuditOutcome != AuditOutcomeSuccess {
 		if err := s.upsertErrorGroup(ctx, tx, input, payloads); err != nil {
@@ -1238,7 +1072,7 @@ func (s *sqlStore) insertBlob(ctx context.Context, tx *sql.Tx, blob *blobRecord)
 	if blob == nil {
 		return nil
 	}
-	now := dbTime(s.mode, time.Now().UTC())
+	now := time.Now().UTC()
 	// resolveBlobIDs inserted or selected the canonical row before references
 	// are written. This second idempotent touch keeps last_seen observable.
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("audit_payload_blobs")+` SET last_seen_at=? WHERE id=?`), now, blob.id); err != nil {
@@ -1247,26 +1081,6 @@ func (s *sqlStore) insertBlob(ctx context.Context, tx *sql.Tx, blob *blobRecord)
 	return nil
 }
 
-func (s *sqlStore) incrementRefs(ctx context.Context, tx *sql.Tx, blobs ...*blobRecord) error {
-	if !shouldMaintainBlobRefCount(s.mode) {
-		// PostgreSQL treats audit_payload_refs as the source of truth. Updating a
-		// mutable cache counter here races retention/readers and can drift under
-		// concurrent writers; F3 PG therefore leaves ref_count untouched.
-		return nil
-	}
-	for _, blob := range blobs {
-		if blob == nil {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("audit_payload_blobs")+` SET ref_count=ref_count+1,last_seen_at=? WHERE sha256=? AND raw_size_bytes=? AND content_type=?`), dbTime(s.mode, time.Now().UTC()), blob.sha256, blob.rawSize, blob.contentType); err != nil {
-			return fmt.Errorf("更新 audit blob 引用计数失败: %w", err)
-		}
-	}
-	return nil
-}
-
-func shouldMaintainBlobRefCount(mode Mode) bool { return mode == ModeSQLite }
-
 func (s *sqlStore) upsertErrorGroup(ctx context.Context, tx *sql.Tx, input AuditLogInput, payloads []preparedPayload) error {
 	group, err := derivedErrorGroup(input, payloads)
 	if err != nil {
@@ -1274,7 +1088,7 @@ func (s *sqlStore) upsertErrorGroup(ctx context.Context, tx *sql.Tx, input Audit
 	}
 	id := stableID("error", shortHash(group.fingerprint), shortHash(group.windowStartedAt))
 	eventAt := input.CreatedAt
-	eventTime := nullableTime(s.mode, eventAt)
+	eventTime := nullableTime(eventAt)
 	table := s.table("audit_error_groups")
 	// 错误组存储去重：fingerprint 不含窗口，样本只在跨窗口时移交；窗口内重复
 	// 事件的响应部件已在 stripErrorGroupWindowDuplicates 出生即降级（不落盘、
@@ -1326,8 +1140,8 @@ func (s *sqlStore) latestErrorGroupSample(ctx context.Context, tx *sql.Tx, finge
 // over only when a new window opens — the previous window's sample keeps the
 // payloads until then. The handover downgrades the previous sample in the same
 // transaction (blob ids NULLed, capture_status='deduped', drop_reason
-// 'error_group_deduped', SHA256 values kept), released blobs decrement the
-// SQLite ref counter and receive a durable GC intent through the retention
+// 'error_group_deduped', SHA256 values kept), released blobs receive a durable
+// GC intent through the retention
 // scheduling path, and the previous window row follows the sample pointer to
 // the new event. Same-window duplicates never reach the downgrade: their own
 // response parts were born deduped in stripErrorGroupWindowDuplicates, and the
@@ -1388,15 +1202,6 @@ func (s *sqlStore) dedupePreviousErrorGroupSample(ctx context.Context, tx *sql.T
 	if _, err := tx.ExecContext(ctx, s.bind(downgrade), string(PayloadCaptureDeduped), string(PayloadDropErrorGroupDeduped), previousSampleID, string(dedupeDowngradedParts[0]), string(dedupeDowngradedParts[1]), string(dedupeDowngradedParts[2])); err != nil {
 		return fmt.Errorf("降级错误组历史样本失败: %w", err)
 	}
-	if shouldMaintainBlobRefCount(s.mode) {
-		// SQLite keeps a local ref counter aligned with incrementRefs; every
-		// released reference decrements once, clamped at zero.
-		for _, blobID := range releasedBlobIDs {
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("audit_payload_blobs")+` SET ref_count=MAX(ref_count-1,0) WHERE id=?`), blobID); err != nil {
-				return fmt.Errorf("递减错误组旧样本 blob 引用计数失败: %w", err)
-			}
-		}
-	}
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("audit_error_groups")+` SET sample_event_id=? WHERE id=?`), currentEventID, previousGroupID); err != nil {
 		return fmt.Errorf("移交错误组样本事件失败: %w", err)
 	}
@@ -1434,7 +1239,7 @@ func (s *sqlStore) stripErrorGroupWindowDuplicates(ctx context.Context, tx *sql.
 	if err != nil {
 		return nil, nil, err
 	}
-	// 同指纹并发写先在此串行化（PG；SQLite 已由 writeMu 串行）：strip 分类与
+	// 同指纹并发写先在此串行化（PG advisory lock）：strip 分类与
 	// 同事务稍后的 dedupe 移交读到稳定的最近窗口行，"窗口内仅首条保留"按提交
 	// 顺序确定生效。
 	if err := s.lockErrorGroupFingerprintTx(ctx, tx, group.fingerprint); err != nil {
@@ -1661,9 +1466,6 @@ func (value nodeUTF16String) MarshalJSON() ([]byte, error) {
 const unicodeReplacementRune = '\uFFFD'
 
 func (s *sqlStore) bind(query string) string {
-	if s.mode != ModePostgres {
-		return query
-	}
 	var builder strings.Builder
 	index := 0
 	for _, character := range query {
@@ -1678,12 +1480,6 @@ func (s *sqlStore) bind(query string) string {
 	return builder.String()
 }
 
-func dbTime(mode Mode, value time.Time) any {
-	if mode == ModePostgres {
-		return value.UTC()
-	}
-	return value.UTC().Format(time.RFC3339Nano)
-}
 func dbTimeText(value string) any {
 	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
 	if err != nil {
@@ -1691,7 +1487,7 @@ func dbTimeText(value string) any {
 	}
 	return parsed.UTC().Format(time.RFC3339Nano)
 }
-func nullableTime(mode Mode, value string) any {
+func nullableTime(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}
@@ -1699,10 +1495,7 @@ func nullableTime(mode Mode, value string) any {
 	if err != nil {
 		return nil
 	}
-	if mode == ModePostgres {
-		return parsed.UTC()
-	}
-	return parsed.UTC().Format(time.RFC3339Nano)
+	return parsed.UTC()
 }
 func nullText(value string) any {
 	if strings.TrimSpace(value) == "" {

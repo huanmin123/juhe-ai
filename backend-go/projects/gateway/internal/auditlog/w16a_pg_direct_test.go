@@ -63,7 +63,7 @@ func TestW16aPgCanceledContextArms(t *testing.T) {
 
 func TestW16aPgFreshStoreReleaseEnsureSchemaArm(t *testing.T) {
 	negURL := w10bCreateNegativeDatabaseNamed(t, "juhe_ai_sub2api_dev_w16aneg")
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: negURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
+	store, err := OpenStore(Config{PostgresURL: negURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

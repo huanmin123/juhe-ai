@@ -9,8 +9,7 @@ package accounthealth
 //	之后    才允许 receipts 查询 / accounts、input_versions 行锁。
 //
 // 若顺序倒置（health 键在前），UPDATE accounts 的库端触发器在触发器内等
-// 7001001，与首锁 7001001 的合规方交叉持锁形成 40P01 死锁环。同时锁定
-// SQLite 方言 no-op（不产生任何 pg_advisory 语句）。
+// 7001001，与首锁 7001001 的合规方交叉持锁形成 40P01 死锁环。
 
 import (
 	"context"
@@ -129,12 +128,12 @@ func (w184Driver) Open(string) (driver.Conn, error) { return nil, driver.ErrSkip
 // w184RecordedProjector 用录制驱动装配 postgres 方言投影器并执行一次
 // projectOutcome（outcome 无 Projection，走 terminal ignored 早退路径：两把
 // advisory 锁 → receipt 查询 → receipt 写入 → 提交）。
-func w184RecordedProjector(t *testing.T, postgres bool) []w184RecordedStatement {
+func w184RecordedProjector(t *testing.T) []w184RecordedStatement {
 	t.Helper()
 	recorder := &w184Recorder{}
 	db := sql.OpenDB(w184Connector{recorder: recorder})
 	t.Cleanup(func() { _ = db.Close() })
-	business, err := NewProjectionBusinessDB(db, postgres)
+	business, err := NewProjectionBusinessDB(db)
 	if err != nil {
 		t.Fatalf("装配录制业务库失败: %v", err)
 	}
@@ -163,7 +162,7 @@ func w184RecordedProjector(t *testing.T, postgres bool) []w184RecordedStatement 
 // 等价）开头，随后前两条取锁语句分别是 7001001 与 health-projection 键（顺序
 // 不可倒置），且任何表访问语句不得先于两把锁。
 func TestW184ProjectionDualAdvisoryLockOrderContract(t *testing.T) {
-	statements := w184RecordedProjector(t, true)
+	statements := w184RecordedProjector(t)
 	if len(statements) < 5 {
 		t.Fatalf("录制语句过少: %+v", statements)
 	}
@@ -188,16 +187,6 @@ func TestW184ProjectionDualAdvisoryLockOrderContract(t *testing.T) {
 		}
 		if index == 0 && !strings.Contains(statement.query, "account_health_projection_receipts") {
 			t.Fatalf("锁后第一条语句应是 receipt 幂等查询，实际: %q", statement.query)
-		}
-	}
-}
-
-// TestW184ProjectionAdvisoryLocksPostgresOnly 断言非 PG 方言不产生任何
-// pg_advisory 语句（SQLite 单 writer no-op 契约）。
-func TestW184ProjectionAdvisoryLocksPostgresOnly(t *testing.T) {
-	for _, statement := range w184RecordedProjector(t, false) {
-		if strings.Contains(statement.query, "pg_advisory") {
-			t.Fatalf("SQLite 方言不应执行 pg_advisory 语句: %q", statement.query)
 		}
 	}
 }

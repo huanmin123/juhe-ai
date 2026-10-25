@@ -408,7 +408,7 @@ func TestW10BNormalizeRetentionAndHelperArms(t *testing.T) {
 	if nodeStatusCode(nil) != "" {
 		t.Fatal("nil 状态码必须映射为空字符串")
 	}
-	if dbTimeText("garbage") != nil || nullableTime(ModeSQLite, "garbage") != nil {
+	if dbTimeText("garbage") != nil || nullableTime("garbage") != nil {
 		t.Fatal("非法时间必须映射为 nil")
 	}
 	if nullIfEmpty("") != nil || nullIfEmpty("v") != "v" {
@@ -489,36 +489,22 @@ func TestW10BPersistArms(t *testing.T) {
 }
 
 func TestW10BPgTypedHelpers(t *testing.T) {
-	// bind()：SQLite 恒返回原查询；PG 占位符替换由 PG 门禁测试覆盖。
-	store := &sqlStore{mode: ModeSQLite}
-	if got := store.bind("VALUES (?, ?)"); got != "VALUES (?, ?)" {
-		t.Fatalf("SQLite bind: %q", got)
-	}
-	pgStore := &sqlStore{mode: ModePostgres}
+	store := &sqlStore{}
 	// bind() 不识别 SQL 字符串字面量中的 '?'（现有实现契约；生产查询不含带 ? 的字面量）。
-	if got := pgStore.bind("VALUES (?, ?) WHERE a=? AND '?'"); got != "VALUES ($1, $2) WHERE a=$3 AND '$4'" {
+	if got := store.bind("VALUES (?, ?) WHERE a=? AND '?'"); got != "VALUES ($1, $2) WHERE a=$3 AND '$4'" {
 		t.Fatalf("PG bind: %q", got)
 	}
-	if dbTime(ModePostgres, time.Now()) == nil || dbTime(ModeSQLite, time.Now()) == nil {
-		t.Fatal("dbTime")
-	}
-	if nullableTime(ModePostgres, time.Now().UTC().Format(time.RFC3339Nano)) == nil {
-		t.Fatal("nullableTime PG 分支")
-	}
-	if shouldMaintainBlobRefCount(ModePostgres) || !shouldMaintainBlobRefCount(ModeSQLite) {
-		t.Fatal("ref_count 维护只属于 SQLite")
+	if nullableTime(time.Now().UTC().Format(time.RFC3339Nano)) == nil {
+		t.Fatal("nullableTime")
 	}
 	// 空 receiver / 空字段。
 	var nilStore *sqlStore
 	if err := nilStore.Close(); err != nil {
 		t.Fatalf("nil store Close: %v", err)
 	}
-	empty := &sqlStore{mode: ModeSQLite}
-	if leaseTable := empty.leaseTable(); leaseTable != "audit_log_owner_leases" {
-		t.Fatalf("SQLite leaseTable: %q", leaseTable)
-	}
-	if table := empty.table("audit_logs"); table != "audit_logs" {
-		t.Fatalf("SQLite table: %q", table)
+	empty := &sqlStore{}
+	if table := empty.table("audit_logs"); table != "juhe_dataset.audit_logs" {
+		t.Fatalf("table: %q", table)
 	}
 	var nilDB *sql.DB
 	_ = nilDB

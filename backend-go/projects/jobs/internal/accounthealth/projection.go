@@ -48,7 +48,7 @@ const accountHealthProjectionAdvisoryLockKey = "juhe-ai:account-health-projectio
 const accountCircuitProjectionKey = "account_circuit_runtime_v1"
 
 // OutcomeCursor 是 drain 游标（jobs store 的 durable 排序键）。ObservedAtText
-// 保留存储原文（SQLite 文本精度回写无损），ObservedAt 供单调比较与查询绑定。
+// 保留存储原文，ObservedAt 供单调比较与查询绑定。
 type OutcomeCursor struct {
 	ObservedAtText string
 	ObservedAt     time.Time
@@ -88,34 +88,27 @@ type ProjectionDrainResult struct {
 	LastCursor *OutcomeCursor
 }
 
-// ProjectionBusinessDB 是投影器专用的双模业务库句柄（SQLite/PG；业务表在
-// juhe_business schema）。组合根复用 worker 的业务库连接（worker_business_db
-// 同一开库约定），投影器自身不做 schema DDL（receipts/cursors 由 maintenance
-// bootstrap 负责，与归档一致）。
+// ProjectionBusinessDB 是投影器专用的业务库句柄（业务表在 juhe_business
+// schema）。组合根复用 worker 的业务库连接（worker_business_db 同一开库约定），
+// 投影器自身不做 schema DDL（receipts/cursors 由 maintenance bootstrap 负责，
+// 与归档一致）。
 type ProjectionBusinessDB struct {
-	db       *sql.DB
-	postgres bool
+	db *sql.DB
 }
 
-func NewProjectionBusinessDB(db *sql.DB, postgres bool) (*ProjectionBusinessDB, error) {
+func NewProjectionBusinessDB(db *sql.DB) (*ProjectionBusinessDB, error) {
 	if db == nil {
 		return nil, errors.New("J1 outcome 投影缺少业务库句柄")
 	}
-	return &ProjectionBusinessDB{db: db, postgres: postgres}, nil
+	return &ProjectionBusinessDB{db: db}, nil
 }
 
 func (b *ProjectionBusinessDB) table(name string) string {
-	if b.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
-// bind 在 PostgreSQL 方言下把 ? 占位符改写为 $n（worker_business_db 同约定）。
+// bind 把 ? 占位符改写为 $n（worker_business_db 同约定）。
 func (b *ProjectionBusinessDB) bind(query string) string {
-	if !b.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -325,7 +318,7 @@ func (p *OutcomeProjector) DrainOnce(ctx context.Context) (ProjectionDrainResult
 	return result, nil
 }
 
-// projectionDBTime 是投影读取侧可空时间列扫描器；SQLite 文本列保留存储原文，
+// projectionDBTime 是投影读取侧可空时间列扫描器；文本列保留存储原文，
 // 保证游标回写与 WHERE 比较无损。
 type projectionDBTime struct {
 	Time    time.Time
@@ -370,23 +363,13 @@ func (s *Store) listProjectedOutcomes(ctx context.Context, after *OutcomeCursor,
 	}
 	var query string
 	var args []any
-	if s.mode == StorePostgres {
-		query = `SELECT payload, observed_at FROM juhe_jobs.account_health_outcomes`
-		if after != nil {
-			query += ` WHERE observed_at > $1 OR (observed_at = $1 AND outcome_id > $2)`
-			args = append(args, after.ObservedAt, after.OutcomeID)
-		}
-		query += ` ORDER BY observed_at ASC, outcome_id ASC LIMIT $` + strconv.Itoa(len(args)+1)
-		args = append(args, limit)
-	} else {
-		query = `SELECT payload, observed_at FROM account_health_outcomes`
-		if after != nil {
-			query += ` WHERE observed_at > ? OR (observed_at = ? AND outcome_id > ?)`
-			args = append(args, after.ObservedAtText, after.ObservedAtText, after.OutcomeID)
-		}
-		query += ` ORDER BY observed_at ASC, outcome_id ASC LIMIT ?`
-		args = append(args, limit)
+	query = `SELECT payload, observed_at FROM juhe_jobs.account_health_outcomes`
+	if after != nil {
+		query += ` WHERE observed_at > $1 OR (observed_at = $1 AND outcome_id > $2)`
+		args = append(args, after.ObservedAt, after.OutcomeID)
 	}
+	query += ` ORDER BY observed_at ASC, outcome_id ASC LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("读取 J1 outcome 投影页失败: %w", err)
@@ -450,9 +433,9 @@ func (p *OutcomeProjector) loadCursor(ctx context.Context) (*OutcomeCursor, erro
 }
 
 // resolveCursorStorage 返回 outcome_id 当前的存储排序时间文本（缺失时返回空，
-// 保持原游标；归档 resolvePostgresCursor/resolveSqliteCursor）。
+// 保持原游标；归档 resolvePostgresCursor）。
 func (p *OutcomeProjector) resolveCursorStorage(ctx context.Context, outcomeID string) (string, error) {
-	query := projectionCursorStorageQuery(p.store.mode)
+	query := projectionCursorStorageQuery()
 	var observed projectionDBTime
 	err := p.store.db.QueryRowContext(ctx, query, outcomeID).Scan(&observed)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -467,11 +450,8 @@ func (p *OutcomeProjector) resolveCursorStorage(ctx context.Context, outcomeID s
 	return observed.RawText, nil
 }
 
-func projectionCursorStorageQuery(mode StoreMode) string {
-	if mode == StorePostgres {
-		return `SELECT observed_at FROM juhe_jobs.account_health_outcomes WHERE outcome_id = $1`
-	}
-	return `SELECT observed_at FROM account_health_outcomes WHERE outcome_id = ?`
+func projectionCursorStorageQuery() string {
+	return `SELECT observed_at FROM juhe_jobs.account_health_outcomes WHERE outcome_id = $1`
 }
 
 // advanceCursor 单调推进游标（归档 advanceAccountHealthProjectionCursor）。
@@ -590,13 +570,11 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	// 器互斥），最后才取 accounts/input_versions 行锁。仅 PG 方言执行。
 	// BUG-0313：7001001 的取锁等待受事务级 lock_timeout 约束，超时 55P03
 	// 失败本轮——J1 投影 receipt 未落库，下轮重放同一 outcome，不无限排队。
-	if p.business.postgres {
-		if err := advisorylock.LockAccountListDirty(ctx, tx); err != nil {
-			return base, err
-		}
-		if _, err := tx.ExecContext(ctx, p.business.bind("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))"), accountHealthProjectionAdvisoryLockKey); err != nil {
-			return base, err
-		}
+	if err := advisorylock.LockAccountListDirty(ctx, tx); err != nil {
+		return base, err
+	}
+	if _, err := tx.ExecContext(ctx, p.business.bind("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))"), accountHealthProjectionAdvisoryLockKey); err != nil {
+		return base, err
 	}
 	existing, err := p.findReceipt(ctx, tx, outcome.OutcomeID)
 	if err != nil {
@@ -613,10 +591,8 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 		return ProjectionResult{OutcomeID: base.OutcomeID, AccountID: base.AccountID, InputVersion: base.InputVersion, Disposition: validation.disposition, Reason: validation.reason}, tx.Commit()
 	}
 	record := validation.outcome
-	if p.business.postgres {
-		if _, err := p.lockDispatchFamilyRoot(ctx, tx, record.AccountID); err != nil {
-			return base, err
-		}
+	if _, err := p.lockDispatchFamilyRoot(ctx, tx, record.AccountID); err != nil {
+		return base, err
 	}
 	account, err := p.findAccountFence(ctx, tx, record.AccountID)
 	if err != nil {
@@ -732,10 +708,7 @@ func (p *OutcomeProjector) findAccountFence(ctx context.Context, tx *sql.Tx, acc
 }
 
 func (p *OutcomeProjector) forUpdate() string {
-	if p.business.postgres {
-		return " FOR UPDATE"
-	}
-	return ""
+	return " FOR UPDATE"
 }
 
 // fenceMismatchReason 对齐归档 fenceMismatchReason 的 stale 真值表（reason
@@ -982,7 +955,7 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		params = append(params, *projection.SourceRevision)
 	}
 	if projection.ExpectedCooldownFence != nil {
-		guards = append(guards, cooldownObservationFenceGuard(p.business.postgres), "target.cooldown_retest_generation = ?")
+		guards = append(guards, cooldownObservationFenceGuard(), "target.cooldown_retest_generation = ?")
 		params = append(params, fenceGuardText(projection.ExpectedCooldownFence.ObservationStartedAt), projection.ExpectedCooldownFence.Generation)
 	}
 	query := p.business.bind(`UPDATE ` + accountsTable + ` AS target SET ` + strings.Join(updates, ", ") + ` WHERE ` + strings.Join(guards, " AND "))
@@ -1059,9 +1032,9 @@ func projectedHealthFailureCount(outcome Outcome) int {
 	return outcome.FailureCount
 }
 
-// fenceGuardText 输出与业务库 text 列一致的 fence 时间文本（accounts 相关列在
-// SQLite/PG 均为 TEXT）。format/parse 往返稳定，保证投影自写 fence 的后续
-// cooldown 复测 fence 守卫文本逐字一致。
+// fenceGuardText 输出与业务库 text 列一致的 fence 时间文本（accounts 相关列
+// 为 TEXT）。format/parse 往返稳定，保证投影自写 fence 的后续 cooldown 复测
+// fence 守卫文本逐字一致。
 func fenceGuardText(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
@@ -1070,11 +1043,8 @@ func fenceGuardText(value time.Time) string {
 // at millisecond precision. The PostgreSQL production schema has historically
 // received both Node millisecond text and Go time.Time values rendered with
 // microseconds/+00; exact text equality rejects the former against the latter.
-func cooldownObservationFenceGuard(postgres bool) string {
-	if postgres {
-		return "date_trunc('milliseconds', target.cooldown_retest_observation_started_at::timestamptz) = date_trunc('milliseconds', ?::timestamptz)"
-	}
-	return "strftime('%Y-%m-%dT%H:%M:%fZ', target.cooldown_retest_observation_started_at) = strftime('%Y-%m-%dT%H:%M:%fZ', ?)"
+func cooldownObservationFenceGuard() string {
+	return "date_trunc('milliseconds', target.cooldown_retest_observation_started_at::timestamptz) = date_trunc('milliseconds', ?::timestamptz)"
 }
 
 // limitedText 镜像归档 limited：trim 后超长截断，空文本返回空串（调用方
@@ -1253,7 +1223,7 @@ func (p *OutcomeProjector) advanceDispatchRevisionFamily(ctx context.Context, tx
 	if err != nil {
 		return fmt.Errorf("锁定 J1 投影家族根失败: %w", err)
 	}
-	if p.business.postgres && familyRootID != accountID {
+	if familyRootID != accountID {
 		var childID string
 		if err := tx.QueryRowContext(ctx, p.business.bind(`SELECT id FROM `+p.business.table("accounts")+` WHERE id = ?`+p.forUpdate()), accountID).Scan(&childID); err != nil {
 			return fmt.Errorf("锁定 J1 投影授权实例失败: %w", err)
@@ -1326,8 +1296,7 @@ func (p *OutcomeProjector) advanceDispatchRevision(ctx context.Context, tx *sql.
 	return nil
 }
 
-// lockDispatchFamilyRoot 归档 PG 路径的事务首锁（父→子顺序，防死锁；SQLite
-// 单 writer 不需要，归档 sqlite 路径同样无此锁）。
+// lockDispatchFamilyRoot 归档 PG 路径的事务首锁（父→子顺序，防死锁）。
 func (p *OutcomeProjector) lockDispatchFamilyRoot(ctx context.Context, tx *sql.Tx, accountID string) (string, error) {
 	var sourceID sql.NullString
 	err := tx.QueryRowContext(ctx, p.business.bind(`SELECT authorization_instance_source_account_id FROM `+p.business.table("accounts")+` WHERE id = ?`), accountID).Scan(&sourceID)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -356,54 +355,3 @@ func TestW12dSchedulerPureHelpers(t *testing.T) {
 	}
 }
 
-// TestW12dRunCycleArms 覆盖 runCycle 的输入/请求装载错误臂（SQLite store）。
-func TestW12dRunCycleArms(t *testing.T) {
-	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w12d-cycle.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	lease, acquired, err := store.AcquireOwnerLease(context.Background(), "w12d-cycle", time.Minute)
-	if err != nil || !acquired {
-		t.Fatalf("lease: %v %t", err, acquired)
-	}
-	// 缺失 input 目录 → LoadSignedInputFiles 报错。
-	runner := NewRunner(Config{InputDirectory: filepath.Join(t.TempDir(), "absent"), InputKeys: map[string][]byte{"current": []byte("k")}, Now: time.Now}, store, nil)
-	if err := runner.runCycle(context.Background(), lease); err == nil {
-		t.Fatal("missing input directory must fail")
-	}
-	// directInputReader.LoadDue 错误臂。
-	failing := &failingDirectReader{}
-	runner = NewRunner(Config{InputDirectory: t.TempDir(), InputKeys: map[string][]byte{"current": []byte("k")}, Now: time.Now}, store, nil)
-	runner.directInputReader = failing
-	if err := runner.runCycle(context.Background(), lease); err == nil || err.Error() != "load due failed" {
-		t.Fatalf("reader failure: %v", err)
-	}
-	// 显式请求装载错误臂。
-	failing.failExplicit = true
-	if err := runner.runCycle(context.Background(), lease); err == nil || err.Error() != "load explicit failed" {
-		t.Fatalf("explicit failure: %v", err)
-	}
-}
-
-type failingDirectReader struct {
-	failExplicit bool
-}
-
-func (r *failingDirectReader) LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error) {
-	if r.failExplicit {
-		return DirectInputLoadResult{}, errors.New("load explicit failed")
-	}
-	return DirectInputLoadResult{}, errors.New("load due failed")
-}
-
-func (r *failingDirectReader) LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error) {
-	return nil, errors.New("load due failed")
-}
-
-func (r *failingDirectReader) LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error) {
-	return nil, errors.New("load explicit failed")
-}

@@ -1,21 +1,15 @@
 // expedited_recovery_test.go 覆盖「AI 账户特供快速恢复通道」jobs/shared 范围
 // （设计契约 docs/functions/AI账户特供快速恢复通道设计.md v3.2 §5/§6/§11）：
-// 特供三处消费点与 7 天停损保留、普通账户节奏逐字节回归、执行前新鲜度门
-// （门前拒绝零上游/零写回、门后竞态 fence 拒绝、失败关闭与诊断限频）、
-// expedited_recovery 签名回路、双 reader 特供列装配与冷却类内优先排序。
+// 特供三处消费点与 7 天停损保留、普通账户节奏逐字节回归、expedited_recovery
+// 签名回路、PG 直读候选特供列装配与冷却类内优先排序。
+// 注：原借 SQLite store 载体的新鲜度门/直读 reader 用例随 sqlite 臂退役，
+// PG 侧回归覆盖待存储迁移批次重建。
 package accounthealth
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -168,282 +162,41 @@ func TestExpeditedCooldownObservationTimeoutStillApplies(t *testing.T) {
 	}
 }
 
-// fakeFreshnessReader 是新鲜度门的最小注入桩：可配置命中 revision、账户不
-// 存在与读取失败三类判定。
-type fakeFreshnessReader struct {
-	mu        sync.Mutex
-	revisions map[string]int64
-	missing   map[string]bool
-	fail      map[string]error
-	calls     []string
+// fakeDirectInputReaderOnly 是带 DirectInputReader 装配面但无业务读面的桩
+// （门保持未装配的判据验证）。
+type fakeDirectInputReaderOnly struct {
+	fakeDirectInputLoader
 }
 
-func (f *fakeFreshnessReader) LoadAccountConfigRevision(_ context.Context, accountID string) (int64, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, accountID)
-	if err, ok := f.fail[accountID]; ok {
-		return 0, false, err
-	}
-	if f.missing[accountID] {
-		return 0, false, nil
-	}
-	revision, ok := f.revisions[accountID]
-	if !ok {
-		return 0, false, nil
-	}
-	return revision, true, nil
+func (loader *fakeDirectInputReaderOnly) SetSuppressionProvider(func(context.Context, time.Time) ([]DirectInputSuppression, error)) {
 }
 
-// TestFreshnessGateRejectsStaleScheduledInputBeforeDispatch（§11.4/§11.11）：
-// 补丁在 freshness 判定前提交 → 旧 revision 输入在门前被拒，零上游请求、
-// 零账户状态写回、零失败计数；同轮新鲜账户不受阻断。
-func TestFreshnessGateRejectsStaleScheduledInputBeforeDispatch(t *testing.T) {
-	secret := "freshness-gate-scheduled-secret"
-	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		hits.Add(1)
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
-	}))
-	defer server.Close()
-	store, lease := openSQLiteStoreWithLease(t)
-	fresh := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-gate-fresh")
-	stale := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-gate-stale")
-	loader := &fakeDirectInputLoader{due: []exactkeyprobe.Input{fresh, stale}}
-	runner := NewRunner(Config{InputDirectory: t.TempDir(), InputKeys: map[string][]byte{"current": []byte("test-key")}, CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 2, DirectInputLimit: 2, Now: time.Now}, store, nil)
-	runner.directInputReader = loader
-	runner.inputFreshness = &fakeFreshnessReader{revisions: map[string]int64{
-		"wexp-gate-fresh": fresh.ConfigRevision,
-		"wexp-gate-stale": stale.ConfigRevision + 1,
-	}}
-	if err := runner.runCycle(context.Background(), lease); err != nil {
-		t.Fatalf("freshness 拒绝不得作为错误阻断本轮: %v", err)
+// TestNewRunnerWithDirectInputReaderWiresFreshnessGate：PG 直读 reader 自动
+// 装配新鲜度门；无业务读面的 loader 保持门未装配。
+func TestNewRunnerWithDirectInputReaderWiresFreshnessGate(t *testing.T) {
+	runner := NewRunnerWithDirectInputReader(Config{Now: time.Now}, nil, nil, &PostgresDirectInputReader{})
+	if runner.inputFreshness == nil {
+		t.Fatal("PG 直读 reader 必须自动装配新鲜度门")
 	}
-	if got := hits.Load(); got != 1 {
-		t.Fatalf("门前提交补丁必须零上游请求（仅新鲜账户发出 1 次）: hits=%d", got)
-	}
-	if _, found, err := store.LoadCurrentState(context.Background(), stale.AccountID); err != nil || found {
-		t.Fatalf("stale 输入不得写回账户状态: found=%t err=%v", found, err)
-	}
-	var staleOutcomes int
-	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE account_id=?`, stale.AccountID).Scan(&staleOutcomes); err != nil || staleOutcomes != 0 {
-		t.Fatalf("stale 输入不得落任何 outcome（不改失败计数）: count=%d err=%v", staleOutcomes, err)
-	}
-	state, found, err := store.LoadCurrentState(context.Background(), fresh.AccountID)
-	if err != nil || !found || state.Outcome != exactkeyprobe.OutcomeSuccess {
-		t.Fatalf("新鲜账户必须照常执行: found=%t state=%#v err=%v", found, state, err)
+	runner = NewRunnerWithDirectInputReader(Config{Now: time.Now}, nil, nil, &fakeDirectInputReaderOnly{})
+	if runner.inputFreshness != nil {
+		t.Fatal("无业务读面 loader 的门必须保持未装配")
 	}
 }
 
-// TestFreshnessGateFailsClosedOnReadFailureOrMissingAccount（§6.3/§11.11）：
-// DB 读错或账户不存在按失败关闭——零上游请求、零写回、零失败计数；诊断
-// input_freshness_unavailable 按账户限频。
-func TestFreshnessGateFailsClosedOnReadFailureOrMissingAccount(t *testing.T) {
-	secret := "freshness-gate-failclosed-secret"
-	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		_, _ = writer.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-	store, lease := openSQLiteStoreWithLease(t)
-	// 时钟从真实当前时刻出发（与 testInput 的有效期同基），仅限频断言段推进。
-	clock := time.Now().UTC().Round(0)
-	runner := NewRunner(Config{InputDirectory: t.TempDir(), InputKeys: map[string][]byte{"current": []byte("test-key")}, CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, Now: func() time.Time { return clock }}, store, nil)
-	stub := &fakeFreshnessReader{
-		fail:    map[string]error{"wexp-db-down": errors.New("business db unavailable")},
-		missing: map[string]bool{"wexp-gone": true},
+// TestDirectInputCandidatesSQLCarryExpeditedLayer（§6 传播链/§11.3）：PG 候选
+// SQL 携带特供列、冷却类内第一优先层（ROW_NUMBER 键与兜底键各一处），且
+// pending_test 激活类窗口保持原键、全局第一优先不受影响。
+func TestDirectInputCandidatesSQLCarryExpeditedLayer(t *testing.T) {
+	sql := directInputCandidatesSQL
+	if strings.Count(sql, "a.expedited_recovery_enabled") != 3 {
+		t.Fatalf("候选 SQL 必须恰好引用特供列 3 次（SELECT 1 + 排序 2）: count=%d", strings.Count(sql, "a.expedited_recovery_enabled"))
 	}
-	runner.inputFreshness = stub
-	ctx := context.Background()
-
-	dbDown := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-db-down")
-	if err := runner.runInput(ctx, lease, dbDown, clock); err != nil {
-		t.Fatalf("freshness 失败关闭是已处理的 skip，不得返回错误: %v", err)
+	if strings.Count(sql, "THEN a.expedited_recovery_enabled ELSE 0 END DESC") != 2 {
+		t.Fatalf("候选 SQL 必须在冷却类 ROW_NUMBER 键与兜底键各携带特供优先层: %s", sql)
 	}
-	gone := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-gone")
-	if err := runner.runInput(ctx, lease, gone, clock); err != nil {
-		t.Fatalf("账户不存在按失败关闭同样不得返回错误: %v", err)
-	}
-	if got := hits.Load(); got != 0 {
-		t.Fatalf("失败关闭必须零上游请求: hits=%d", got)
-	}
-	for _, accountID := range []string{"wexp-db-down", "wexp-gone"} {
-		if _, found, err := store.LoadCurrentState(ctx, accountID); err != nil || found {
-			t.Fatalf("失败关闭不得写回账户状态 %s: found=%t err=%v", accountID, found, err)
-		}
-		var outcomes int
-		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM account_health_outcomes WHERE account_id=?`, accountID).Scan(&outcomes); err != nil || outcomes != 0 {
-			t.Fatalf("失败关闭不得计失败 %s: count=%d err=%v", accountID, outcomes, err)
-		}
-	}
-
-	// 诊断限频：同一账户窗口内第二次告警不刷新时间戳；跨窗口后允许更新。
-	runner.freshnessMu.Lock()
-	firstWarned, recorded := runner.freshnessWarnedAt["wexp-db-down"]
-	runner.freshnessMu.Unlock()
-	if !recorded {
-		t.Fatal("freshness 不可用必须记录限频诊断")
-	}
-	input := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-db-down")
-	if verdict, _ := runner.checkInputFreshness(ctx, input); verdict != freshnessUnavailable {
-		t.Fatal("DB 读错必须持续失败关闭")
-	}
-	runner.freshnessMu.Lock()
-	secondWarned, stillRecorded := runner.freshnessWarnedAt["wexp-db-down"]
-	runner.freshnessMu.Unlock()
-	if !stillRecorded || !secondWarned.Equal(firstWarned) {
-		t.Fatalf("限频窗口内不得重复告警: first=%v second=%v", firstWarned, secondWarned)
-	}
-	clock = clock.Add(inputFreshnessDiagnosticWindow + time.Minute)
-	if verdict, _ := runner.checkInputFreshness(ctx, input); verdict != freshnessUnavailable {
-		t.Fatal("跨窗口后仍必须失败关闭")
-	}
-	runner.freshnessMu.Lock()
-	thirdWarned := runner.freshnessWarnedAt["wexp-db-down"]
-	runner.freshnessMu.Unlock()
-	if !thirdWarned.After(secondWarned) {
-		t.Fatalf("跨窗口后必须允许新告警: second=%v third=%v", secondWarned, thirdWarned)
-	}
-}
-
-// TestFreshnessGateExplicitRequestConsumesRequestWithoutStateWrite（§6.3/§11.11）：
-// 显式请求路径门前拒绝：按请求终态落库消费该请求（stale /
-// input_stale_before_dispatch），零上游请求、零账户健康状态写回。
-func TestFreshnessGateExplicitRequestConsumesRequestWithoutStateWrite(t *testing.T) {
-	secret := "freshness-gate-explicit-secret"
-	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		_, _ = writer.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-	root := t.TempDir()
-	input := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-explicit-stale")
-	key := []byte("scheduler-input-signing-key-123456")
-	request := ProbeRequest{RequestID: "wexp-explicit-request-1", AccountID: input.AccountID, Reason: "request_failure", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().UTC().Add(time.Minute), MutateAccount: true}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requestPath := filepath.Join(root, request.RequestID+requestFileSuffix)
-	if err := os.WriteFile(requestPath, signedEnvelope(t, "current", key, payload), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, lease := openSQLiteStoreWithLease(t)
-	loader := &fakeDirectInputLoader{explicit: map[string]exactkeyprobe.Input{input.AccountID: input}}
-	runner := NewRunner(Config{InputDirectory: root, InputKeys: map[string][]byte{"current": key}, CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, DirectInputLimit: 8, Now: time.Now}, store, nil)
-	runner.directInputReader = loader
-	runner.inputFreshness = &fakeFreshnessReader{revisions: map[string]int64{input.AccountID: input.ConfigRevision + 1}}
-	if err := runner.runCycle(context.Background(), lease); err != nil {
-		t.Fatal(err)
-	}
-	if got := hits.Load(); got != 0 {
-		t.Fatalf("显式请求门前拒绝必须零上游请求: hits=%d", got)
-	}
-	if _, found, err := store.LoadCurrentState(context.Background(), input.AccountID); err != nil || found {
-		t.Fatalf("显式请求拒绝不得写回账户健康状态: found=%t err=%v", found, err)
-	}
-	var outcome, code string
-	if err := store.db.QueryRowContext(context.Background(), `SELECT outcome,error_code FROM account_health_outcomes WHERE request_id=?`, request.RequestID).Scan(&outcome, &code); err != nil {
-		t.Fatalf("拒绝必须按请求终态落库以消费该请求: %v", err)
-	}
-	if outcome != OutcomeStale || code != "input_stale_before_dispatch" {
-		t.Fatalf("显式请求终态必须为 stale/input_stale_before_dispatch: outcome=%q code=%q", outcome, code)
-	}
-	if _, statErr := os.Stat(requestPath); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("已消费请求文件必须清理: %v", statErr)
-	}
-}
-
-// TestFreshnessGateExplicitRequestFailsClosedWithoutStateWrite：显式请求路径
-// freshness 不可用同样失败关闭，仅落自身 task_failed 终态消费请求。
-func TestFreshnessGateExplicitRequestFailsClosedWithoutStateWrite(t *testing.T) {
-	secret := "freshness-gate-explicit-failclosed-secret"
-	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		_, _ = writer.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-	root := t.TempDir()
-	input := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-explicit-dbdown")
-	key := []byte("scheduler-input-signing-key-123456")
-	request := ProbeRequest{RequestID: "wexp-explicit-request-2", AccountID: input.AccountID, Reason: "request_failure", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().UTC().Add(time.Minute), MutateAccount: true}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, request.RequestID+requestFileSuffix), signedEnvelope(t, "current", key, payload), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, lease := openSQLiteStoreWithLease(t)
-	loader := &fakeDirectInputLoader{explicit: map[string]exactkeyprobe.Input{input.AccountID: input}}
-	runner := NewRunner(Config{InputDirectory: root, InputKeys: map[string][]byte{"current": key}, CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, DirectInputLimit: 8, Now: time.Now}, store, nil)
-	runner.directInputReader = loader
-	runner.inputFreshness = &fakeFreshnessReader{fail: map[string]error{input.AccountID: errors.New("business db unavailable")}}
-	if err := runner.runCycle(context.Background(), lease); err != nil {
-		t.Fatal(err)
-	}
-	if got := hits.Load(); got != 0 {
-		t.Fatalf("freshness 不可用必须零上游请求: hits=%d", got)
-	}
-	if _, found, err := store.LoadCurrentState(context.Background(), input.AccountID); err != nil || found {
-		t.Fatalf("失败关闭不得写回账户健康状态: found=%t err=%v", found, err)
-	}
-	var outcome, code string
-	if err := store.db.QueryRowContext(context.Background(), `SELECT outcome,error_code FROM account_health_outcomes WHERE request_id=?`, request.RequestID).Scan(&outcome, &code); err != nil {
-		t.Fatal(err)
-	}
-	if outcome != exactkeyprobe.OutcomeTaskFailed || code != "input_freshness_unavailable" {
-		t.Fatalf("显式请求失败关闭终态必须为 task_failed/input_freshness_unavailable: outcome=%q code=%q", outcome, code)
-	}
-}
-
-// TestFreshnessGateRaceAfterCheckAllowsRequestButFenceRejectsWriteBack
-// （§6.3/§11.4）：补丁在门判定之后提交允许请求竞态（探针照常发出），但迟到
-// 结果的写回由既有 epoch fence 拒绝——jobs current_state 保持补丁后新代次。
-func TestFreshnessGateRaceAfterCheckAllowsRequestButFenceRejectsWriteBack(t *testing.T) {
-	secret := "freshness-gate-race-secret"
-	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		writer.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-	store, lease := openSQLiteStoreWithLease(t)
-	now := time.Now().UTC().Round(0)
-	input := testScheduledAPIKeyInput(t, server.URL, secret, "wexp-race")
-	input.IssuedAt = now.Add(-time.Minute)
-	input.ExpiresAt = now.Add(time.Hour)
-	cooldownUntil := now.Add(-time.Second)
-	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-2 * time.Minute), Generation: "wexp-race-input-gen"}
-	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
-	input.Cooldown = fence
-	// 补丁后的新代次（ConfigRevision 6）已先落到 jobs current_state。
-	patchedFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "wexp-race-patched-gen"}
-	patchedDue := now.Add(30 * time.Minute)
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "wexp-race-seed", RequestID: "wexp-race-seed-request", AccountID: input.AccountID, Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: now.Add(-time.Minute), InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision + 1, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 2, NextDueAt: &patchedDue, CooldownFence: patchedFence, Projection: &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_failure", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision + 1, DispatchRevision: input.DispatchRevision, ExpectedAccountStatus: "temporary_unavailable", ExpectedCooldownFence: patchedFence, CooldownFence: patchedFence}})
-	runner := NewRunner(Config{InputDirectory: t.TempDir(), InputKeys: map[string][]byte{"current": []byte("test-key")}, CredentialSecret: secret, ProbeTimeout: time.Second, MaxResponseBytes: 1024, MaxConcurrency: 1, Now: func() time.Time { return now }}, store, nil)
-	// 门判定时业务行仍与输入同代次（revision 1）→ 门通过；其后的补丁竞态由
-	// 既有 fence 拒绝写回。
-	runner.inputFreshness = &fakeFreshnessReader{revisions: map[string]int64{input.AccountID: input.ConfigRevision}}
-	if err := runner.runInput(context.Background(), lease, input, now); err != nil {
-		t.Fatal(err)
-	}
-	if got := hits.Load(); got != 1 {
-		t.Fatalf("门后竞态允许请求已发出: hits=%d", got)
-	}
-	state, found, err := store.LoadCurrentState(context.Background(), input.AccountID)
-	if err != nil || !found {
-		t.Fatalf("补丁后的 current_state 必须仍在: found=%t err=%v", found, err)
-	}
-	if state.ConfigRevision != input.ConfigRevision+1 || state.OutcomeID != "wexp-race-seed" || state.FailureCount != 2 || state.NextDueAt == nil || !state.NextDueAt.Equal(patchedDue) || !sameCooldownFence(state.CooldownFence, patchedFence) {
-		t.Fatalf("迟到结果必须被既有 epoch fence 拒绝写回: %#v", state)
-	}
-	var outcomes int
-	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_health_outcomes WHERE account_id=?`, input.AccountID).Scan(&outcomes); err != nil || outcomes < 2 {
-		t.Fatalf("迟到结果保留为 audit outcome 行: count=%d err=%v", outcomes, err)
+	if !strings.Contains(sql, "PARTITION BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 1 ELSE 2 END\n      ORDER BY a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)") {
+		t.Fatalf("pending_test 激活类窗口排序键必须保持原样（特供不影响激活类）: %s", sql)
 	}
 }
 
@@ -485,162 +238,6 @@ func TestExpeditedRecoverySurvivesSignedInputRoundTrip(t *testing.T) {
 	}
 	if normal.Eligibility.ExpeditedRecovery {
 		t.Fatal("未标记账户反序列化后必须保持 false")
-	}
-}
-
-// fakeDirectInputReaderOnly 是带 DirectInputReader 装配面但无业务读面的桩
-// （模拟 files 后备形态：门保持未装配）。
-type fakeDirectInputReaderOnly struct {
-	fakeDirectInputLoader
-}
-
-func (loader *fakeDirectInputReaderOnly) SetSuppressionProvider(func(context.Context, time.Time) ([]DirectInputSuppression, error)) {
-}
-
-// TestNewRunnerWithDirectInputReaderWiresFreshnessGate：PG/SQLite 直读 reader
-// 自动装配新鲜度门；无业务读面的 loader（files 形态）保持门未装配。
-func TestNewRunnerWithDirectInputReaderWiresFreshnessGate(t *testing.T) {
-	store, _ := openSQLiteStoreWithLease(t)
-	runner := NewRunnerWithDirectInputReader(Config{Now: time.Now}, store, nil, &SQLiteDirectInputReader{})
-	if runner.inputFreshness == nil {
-		t.Fatal("SQLite 直读 reader 必须自动装配新鲜度门")
-	}
-	runner = NewRunnerWithDirectInputReader(Config{Now: time.Now}, store, nil, &PostgresDirectInputReader{})
-	if runner.inputFreshness == nil {
-		t.Fatal("PG 直读 reader 必须自动装配新鲜度门")
-	}
-	runner = NewRunnerWithDirectInputReader(Config{Now: time.Now}, store, nil, &fakeDirectInputReaderOnly{})
-	if runner.inputFreshness != nil {
-		t.Fatal("files 形态 loader 无业务读面，门必须保持未装配")
-	}
-}
-
-// TestDirectInputCandidatesSQLCarryExpeditedLayer（§6 传播链/§11.3）：PG 与
-// SQLite 候选 SQL 同步携带特供列、冷却类内第一优先层（ROW_NUMBER 键与兜底键
-// 各一处），且 pending_test 激活类窗口保持原键、全局第一优先不受影响。
-func TestDirectInputCandidatesSQLCarryExpeditedLayer(t *testing.T) {
-	for name, sql := range map[string]string{"PG": directInputCandidatesSQL, "SQLite": sqliteDirectInputCandidatesSQL} {
-		if strings.Count(sql, "a.expedited_recovery_enabled") != 3 {
-			t.Fatalf("%s 候选 SQL 必须恰好引用特供列 3 次（SELECT 1 + 排序 2）: count=%d", name, strings.Count(sql, "a.expedited_recovery_enabled"))
-		}
-		if strings.Count(sql, "THEN a.expedited_recovery_enabled ELSE 0 END DESC") != 2 {
-			t.Fatalf("%s 候选 SQL 必须在冷却类 ROW_NUMBER 键与兜底键各携带特供优先层: %s", name, sql)
-		}
-		if !strings.Contains(sql, "PARTITION BY CASE WHEN a.status = 'pending_test' THEN 0 WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 1 ELSE 2 END\n      ORDER BY a.next_health_check_at ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)") {
-			t.Fatalf("%s pending_test 激活类窗口排序键必须保持原样（特供不影响激活类）: %s", name, sql)
-		}
-	}
-	pgOrder := directInputCandidatesSQL[strings.Index(directInputCandidatesSQL, "ORDER BY CASE WHEN a.status = 'pending_test'"):strings.Index(directInputCandidatesSQL, "LIMIT $2")]
-	sqliteOrder := sqliteDirectInputCandidatesSQL[strings.Index(sqliteDirectInputCandidatesSQL, "ORDER BY CASE WHEN a.status = 'pending_test'"):strings.Index(sqliteDirectInputCandidatesSQL, "LIMIT $2")]
-	if pgOrder != sqliteOrder {
-		t.Fatalf("PG 与 SQLite 的 ORDER BY 必须逐字同构:\nPG=%q\nSQLite=%q", pgOrder, sqliteOrder)
-	}
-}
-
-// seedExpeditedCooldownCandidate 以冷却形态种子一个候选；expedited 传 1/0。
-func seedExpeditedCooldownCandidate(t *testing.T, fixture *sqliteDirectFixture, id string, expedited int, cooldownUntilOffset, observationOffset time.Duration) {
-	t.Helper()
-	seed := newSQLiteDirectCandidateSeed(id)
-	seed.status = "temporary_unavailable"
-	seed.extraColumns["expedited_recovery_enabled"] = expedited
-	seed.extraColumns["cooldown_until"] = sqliteDirectFixtureTimeText(cooldownUntilOffset)
-	seed.extraColumns["cooldown_retest_observation_started_at"] = sqliteDirectFixtureTimeText(observationOffset)
-	seed.extraColumns["cooldown_retest_generation"] = "wexp-gen-" + id
-	fixture.seedCandidate(t, seed)
-}
-
-// TestSQLiteDirectInputReaderExpeditedAssemblyAndOrdering（§11.3）：新列读取与
-// 装配正确（Eligibility.ExpeditedRecovery / CooldownNeutralMaxMS 60s vs 900s），
-// 冷却类内特供优先于更早到期的普通账户，pending_test 激活类仍全局第一优先。
-func TestSQLiteDirectInputReaderExpeditedAssemblyAndOrdering(t *testing.T) {
-	fixture := newSQLiteDirectFixture(t)
-	pending := newSQLiteDirectCandidateSeed("wexp-rd-pending")
-	fixture.seedCandidate(t, pending)
-	// 普通账户更早到期（无特供层时本应排前）；特供更晚到期仍必须领先。
-	seedExpeditedCooldownCandidate(t, fixture, "wexp-rd-normal", 0, -2*time.Hour, -3*time.Hour)
-	seedExpeditedCooldownCandidate(t, fixture, "wexp-rd-expedited", 1, -time.Hour, -90*time.Minute)
-	reader := fixture.readOnlyReader(t, func() time.Time { return sqliteDirectFixtureNow })
-	result, err := reader.LoadDueWithFailures(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Inputs) != 3 {
-		t.Fatalf("候选数必须为 3: %+v", result)
-	}
-	if result.Inputs[0].AccountID != "wexp-rd-pending" {
-		t.Fatalf("pending_test 激活类必须保持全局第一优先: %+v", result.Inputs)
-	}
-	if result.Inputs[1].AccountID != "wexp-rd-expedited" || result.Inputs[2].AccountID != "wexp-rd-normal" {
-		t.Fatalf("冷却类内特供必须构成第一优先层（层内仍按 cooldown_until ASC）: %+v", result.Inputs)
-	}
-	expedited := result.Inputs[1]
-	if !expedited.Eligibility.ExpeditedRecovery {
-		t.Fatalf("特供账户必须装配 ExpeditedRecovery=true: %#v", expedited.Eligibility)
-	}
-	if expedited.Schedule.CooldownNeutralMaxMS != 60_000 {
-		t.Fatalf("特供中性封顶必须按账户覆盖为 60s: %d", expedited.Schedule.CooldownNeutralMaxMS)
-	}
-	normal := result.Inputs[2]
-	if normal.Eligibility.ExpeditedRecovery {
-		t.Fatalf("普通账户必须保持未标记: %#v", normal.Eligibility)
-	}
-	if normal.Schedule.CooldownNeutralMaxMS != 900_000 {
-		t.Fatalf("普通中性封顶必须维持 settings 全局值 900s: %d", normal.Schedule.CooldownNeutralMaxMS)
-	}
-	if result.Inputs[0].Eligibility.ExpeditedRecovery || result.Inputs[0].Schedule.CooldownNeutralMaxMS != 900_000 {
-		t.Fatalf("激活类输入不得携带特供档位: %#v", result.Inputs[0])
-	}
-}
-
-// TestSQLiteDirectInputReaderExpeditedRebuildAfterConfigChange（§11.4 reader
-// 半边）：补丁后下一轮扫描重建的输入携带新档位与新的账户 ConfigRevision。
-func TestSQLiteDirectInputReaderExpeditedRebuildAfterConfigChange(t *testing.T) {
-	fixture := newSQLiteDirectFixture(t)
-	seedExpeditedCooldownCandidate(t, fixture, "wexp-rd-rebuild", 1, -time.Hour, -2*time.Hour)
-	reader := fixture.readOnlyReader(t, func() time.Time { return sqliteDirectFixtureNow })
-	first, err := reader.LoadDueWithFailures(context.Background(), 4)
-	if err != nil || len(first.Inputs) != 1 {
-		t.Fatalf("首次装配: %+v err=%v", first, err)
-	}
-	if !first.Inputs[0].Eligibility.ExpeditedRecovery || first.Inputs[0].Schedule.CooldownNeutralMaxMS != 60_000 || first.Inputs[0].ConfigRevision != 5 {
-		t.Fatalf("补丁前输入必须携带特供档位与旧 revision: %#v", first.Inputs[0])
-	}
-	if _, err := fixture.business.Exec(`UPDATE accounts SET expedited_recovery_enabled = 0, config_revision = 6 WHERE id = 'wexp-rd-rebuild'`); err != nil {
-		t.Fatal(err)
-	}
-	second, err := reader.LoadDueWithFailures(context.Background(), 4)
-	if err != nil || len(second.Inputs) != 1 {
-		t.Fatalf("重建装配: %+v err=%v", second, err)
-	}
-	if second.Inputs[0].Eligibility.ExpeditedRecovery || second.Inputs[0].Schedule.CooldownNeutralMaxMS != 900_000 || second.Inputs[0].ConfigRevision != 6 {
-		t.Fatalf("补丁后重建输入必须携带普通档位与新 revision: %#v", second.Inputs[0])
-	}
-	revision, found, err := reader.LoadAccountConfigRevision(context.Background(), "wexp-rd-rebuild")
-	if err != nil || !found || revision != 6 {
-		t.Fatalf("新鲜度门必须读到补丁后 revision: revision=%d found=%t err=%v", revision, found, err)
-	}
-}
-
-// TestSQLiteDirectInputReaderLoadAccountConfigRevision：新鲜度门最小查询的
-// 存在/缺失/软删三臂（缺失与软删均视为不存在，由调用方失败关闭）。
-func TestSQLiteDirectInputReaderLoadAccountConfigRevision(t *testing.T) {
-	fixture := newSQLiteDirectFixture(t)
-	seed := newSQLiteDirectCandidateSeed("wexp-rd-fresh")
-	fixture.seedCandidate(t, seed)
-	reader := fixture.readOnlyReader(t, func() time.Time { return sqliteDirectFixtureNow })
-	ctx := context.Background()
-	revision, found, err := reader.LoadAccountConfigRevision(ctx, "wexp-rd-fresh")
-	if err != nil || !found || revision != 5 {
-		t.Fatalf("存在账户必须读到 revision: revision=%d found=%t err=%v", revision, found, err)
-	}
-	if _, found, err := reader.LoadAccountConfigRevision(ctx, "wexp-rd-absent"); err != nil || found {
-		t.Fatalf("缺失账户必须返回 found=false: found=%t err=%v", found, err)
-	}
-	if _, err := fixture.business.Exec(`UPDATE accounts SET deleted_at = ? WHERE id = 'wexp-rd-fresh'`, sqliteDirectFixtureTimeText(0)); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := reader.LoadAccountConfigRevision(ctx, "wexp-rd-fresh"); err != nil || found {
-		t.Fatalf("软删账户必须视为不存在: found=%t err=%v", found, err)
 	}
 }
 

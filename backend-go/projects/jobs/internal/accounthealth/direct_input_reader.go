@@ -14,7 +14,7 @@ import (
 )
 
 // PostgresDirectInputReader reads only frozen business facts through a
-// separately configured read-only connection. It never opens Node SQLite and
+// separately configured read-only connection. It never opens legacy Node
 // never touches the jobs output schema.
 type PostgresDirectInputReader struct {
 	db               *sql.DB
@@ -668,14 +668,14 @@ func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (exactkeyprobe.Schedule
 }
 
 // directScheduleQueryer 是 loadDirectScheduleFrom 需要的最小只读查询面
-// （*sql.Tx 满足；PG 与 SQLite reader 都经由各自只读事务读取 settings）。
+// （*sql.Tx 满足；PG reader 经由只读事务读取 settings）。
 type directScheduleQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // loadDirectScheduleFrom 是 loadDirectSchedule 的方言无关内核：table 承载
-// juhe_business 前缀差异，label 承载错误文案的方言前缀；PG 与 SQLite reader
-// 共用，修改 settings 语义时必须同步全部调用方。
+// juhe_business 前缀差异，label 承载错误文案的方言前缀；PG reader
+// 使用，修改 settings 语义时必须同步全部调用方。
 func loadDirectScheduleFrom(ctx context.Context, queryer directScheduleQueryer, table, label string) (exactkeyprobe.Schedule, *time.Location, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT key, value_json FROM `+table+` WHERE system_account_id = 'sys_admin' AND key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold', 'defaultTemporaryUnschedulableMinutes', 'cooldownAccountRetestMaxBackoffHours', 'usageStatsTimezone')`)
 	if err != nil {

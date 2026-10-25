@@ -68,9 +68,9 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 
 	// 真实失租：把租约行置为过期，再由 rival 接管（fence 递增）；keeper 的
 	// 下一次续租 0 行更新 → 按既有语义终态 ErrOwnerLeaseLost。
-	expired := dbTime(implementation.mode, time.Now().UTC().Add(-time.Minute))
+	expired := time.Now().UTC().Add(-time.Minute)
 	if _, err := implementation.db.Exec(
-		implementation.bind(`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id=?`),
+		implementation.bind(`UPDATE `+implementation.table("audit_log_owner_leases")+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id=?`),
 		expired, cfg.InstanceID); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 	// rival 释放（行重新过期）后的下一次重启：入口重新 AcquireOwnerLease 成功，
 	// keeper 清空终态并以新 fence 恢复运行；取消上下文应优雅 nil 返回。
 	if _, err := implementation.db.Exec(
-		implementation.bind(`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence'`),
+		implementation.bind(`UPDATE `+implementation.table("audit_log_owner_leases")+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence'`),
 		expired); err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +234,6 @@ func ageAuditRow(t *testing.T, store Store, id string) error {
 	}
 	_, err := implementation.db.Exec(
 		implementation.bind(`UPDATE `+implementation.table("audit_logs")+` SET created_at=? WHERE id=?`),
-		dbTime(implementation.mode, time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)), id)
+		time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), id)
 	return err
 }

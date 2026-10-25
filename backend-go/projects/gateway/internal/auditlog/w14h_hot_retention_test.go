@@ -21,18 +21,6 @@ func w14hPostgresStore(t *testing.T) (*sqlStore, OwnerLease) {
 	return implementation, acquireLease(t, store)
 }
 
-func w14hStore(t *testing.T) (*sqlStore, OwnerLease) {
-	t.Helper()
-	cfg := sqliteConfig(t, t.TempDir())
-	cfg.HotSearchDirectory = filepath.Join(filepath.Dir(cfg.AuditDatabasePath), "w14h-hot")
-	store, err := OpenStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store.(*sqlStore), acquireLease(t, store)
-}
-
 func w14hPayloadInput(id string, body string) AuditLogInput {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	input := fixture(id, LifecycleFinalized)
@@ -58,7 +46,7 @@ func w14hPayloadInput(id string, body string) AuditLogInput {
 
 func TestW14HPersistPayloadBlobLifecycle(t *testing.T) {
 	ctx := context.Background()
-	store, lease := w14hStore(t)
+	store, lease := w14hPostgresStore(t)
 	body := `{"model":"gpt-x","prompt":"w14h payload"}`
 	// 首次持久化：blob 写入 + 发布 + 引用计数。
 	if _, err := store.Persist(ctx, lease, w14hPayloadInput("w14h-pl-1", body)); err != nil {
@@ -79,21 +67,21 @@ func TestW14HPersistPayloadBlobLifecycle(t *testing.T) {
 	}
 	// blob 元数据存在。2026-10-16 错误组存储去重后：两条输入非 success、同错误
 	// 指纹（同 body 同 outcome），第二条跨窗口写入把第一条样本移交降级为 deduped
-	// 并释放其引用；共享 canonical blob 由最新事件继续引用，ref_count 收敛为 1
-	// 且不登记 GC。
-	var refCount int
-	if err := store.db.QueryRow(`SELECT ref_count FROM audit_payload_blobs LIMIT 1`).Scan(&refCount); err != nil {
-		t.Fatal(err)
-	}
-	if refCount != 1 {
-		t.Fatalf("引用计数=%d", refCount)
-	}
+	// 并释放其引用；PG 以 audit_payload_refs 为引用事实源（ref_count 缓存列不
+	// 维护），共享 canonical blob 由最新事件继续引用。
 	var supersededCapture string
-	if err := store.db.QueryRow(`SELECT capture_status FROM audit_payload_refs WHERE audit_log_id='w14h-pl-1'`).Scan(&supersededCapture); err != nil {
+	if err := store.db.QueryRow(`SELECT capture_status FROM juhe_dataset.audit_payload_refs WHERE audit_log_id='w14h-pl-1'`).Scan(&supersededCapture); err != nil {
 		t.Fatal(err)
 	}
 	if supersededCapture != string(PayloadCaptureDeduped) {
 		t.Fatalf("同指纹旧样本应降级=%q", supersededCapture)
+	}
+	var liveRefs int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.audit_payload_refs WHERE body_blob_id IS NOT NULL AND capture_status='complete'`).Scan(&liveRefs); err != nil {
+		t.Fatal(err)
+	}
+	if liveRefs != 1 {
+		t.Fatalf("共享 canonical blob 必须由最新事件继续引用=%d", liveRefs)
 	}
 	// retention：删除两条日志并调度 + 执行 blob 文件 GC。
 	config := RetentionConfig{

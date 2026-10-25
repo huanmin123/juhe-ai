@@ -6,105 +6,12 @@ package auditlog
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestW11ELegacyMigrationPreflightArms(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	base := LegacyMigrationOptions{NodeStopped: true, GoStopped: true, SourceDatabasePath: filepath.Join(root, "source.sqlite3"), TargetDatabasePath: filepath.Join(root, "target.sqlite3"), SourceBlobDirectory: filepath.Join(root, "source-blobs"), TargetBlobDirectory: filepath.Join(root, "target-blobs")}
-	// 未停机。
-	notStopped := base
-	notStopped.NodeStopped = false
-	if _, err := MigrateLegacySQLite(ctx, notStopped); err == nil || !strings.Contains(err.Error(), "停机") {
-		t.Fatalf("未停机必须拒绝: %v", err)
-	}
-	// 缺路径。
-	missingPath := base
-	missingPath.TargetDatabasePath = " "
-	if _, err := MigrateLegacySQLite(ctx, missingPath); err == nil || !strings.Contains(err.Error(), "source 和 target") {
-		t.Fatalf("缺路径必须拒绝: %v", err)
-	}
-	// 源与目标同一文件。
-	sameFile := filepath.Join(root, "same.sqlite3")
-	if err := os.WriteFile(sameFile, []byte("x"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	same := base
-	same.SourceDatabasePath, same.TargetDatabasePath = sameFile, sameFile
-	if _, err := MigrateLegacySQLite(ctx, same); err == nil || !strings.Contains(err.Error(), "同一文件") {
-		t.Fatalf("同文件必须拒绝: %v", err)
-	}
-	// 缺源文件。
-	missingSource := base
-	if _, err := MigrateLegacySQLite(ctx, missingSource); err == nil || !strings.Contains(err.Error(), "源文件失败") {
-		t.Fatalf("缺源文件必须拒绝: %v", err)
-	}
-	// 空源库（缺 legacy 表）。
-	emptySource := filepath.Join(root, "empty.sqlite3")
-	emptyDB, err := sql.Open("sqlite", "file:"+emptySource+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := emptyDB.Exec(`CREATE TABLE unrelated (id TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	_ = emptyDB.Close()
-	empty := base
-	empty.SourceDatabasePath = emptySource
-	if _, err := MigrateLegacySQLite(ctx, empty); err == nil || !strings.Contains(err.Error(), "缺少必需表") {
-		t.Fatalf("缺 legacy 表必须拒绝: %v", err)
-	}
-	// 缺 blob 目录参数。
-	noBlobs := base
-	noBlobs.TargetBlobDirectory = " "
-	legacy := filepath.Join(root, "legacy.sqlite3")
-	legacyDB, err := sql.Open("sqlite", "file:"+legacy+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, table := range legacyAuditTables {
-		if _, err := legacyDB.Exec("CREATE TABLE " + table.name + " (" + table.columns + ")"); err != nil {
-			t.Fatalf("建表 %s: %v", table.name, err)
-		}
-	}
-	_ = legacyDB.Close()
-	noBlobs.SourceDatabasePath = legacy
-	if _, err := MigrateLegacySQLite(ctx, noBlobs); err == nil || !strings.Contains(err.Error(), "blob 目录") {
-		t.Fatalf("缺 blob 目录必须拒绝: %v", err)
-	}
-	// source 与 target blob 目录相同。
-	sameBlobs := base
-	sameBlobs.SourceDatabasePath = legacy
-	sameBlobs.TargetBlobDirectory = sameBlobs.SourceBlobDirectory
-	if _, err := MigrateLegacySQLite(ctx, sameBlobs); err == nil || !strings.Contains(err.Error(), "不得相同") {
-		t.Fatalf("相同 blob 目录必须拒绝: %v", err)
-	}
-	// 源 blob 文件缺失。
-	blobRoot := filepath.Join(root, "legacy-blobs")
-	if err := os.MkdirAll(filepath.Join(blobRoot, "sha256"), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	legacyDB, err = sql.Open("sqlite", "file:"+legacy+"?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacyDB.Exec(`INSERT INTO audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,compression,storage_key) VALUES ('b1','deadbeef',1,1,'none','sha256/missing.bin')`); err != nil {
-		t.Fatal(err)
-	}
-	_ = legacyDB.Close()
-	missingBlob := base
-	missingBlob.SourceDatabasePath = legacy
-	missingBlob.SourceBlobDirectory = blobRoot
-	if _, err := MigrateLegacySQLite(ctx, missingBlob); err == nil || !strings.Contains(err.Error(), "校验失败") {
-		t.Fatalf("缺源 blob 文件必须拒绝: %v", err)
-	}
-}
 
 func TestW11ECompressAndBlobRecordArms(t *testing.T) {
 	// 小于阈值不压缩。

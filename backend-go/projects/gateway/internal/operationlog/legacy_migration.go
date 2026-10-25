@@ -6,14 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
 
 	_ "modernc.org/sqlite"
 )
@@ -98,13 +96,6 @@ func (r *legacyLeaseRenewer) Stop() error {
 	return r.Err()
 }
 
-var legacyOperationLogTables = []string{
-	"operation_logs",
-	"operation_log_targets",
-	"operation_log_viewers",
-	"operation_log_summary_search_terms",
-}
-
 func requireLegacyMigrationGates(options LegacyMigrationOptions) error {
 	if !options.NodeStopped || !options.GoStopped {
 		return errors.New("F4 操作日志离线迁移要求停机：必须同时确认 Node 和 Go 已停止（--node-stopped --go-stopped）")
@@ -118,121 +109,6 @@ func requireLegacyMigrationGates(options LegacyMigrationOptions) error {
 // MigrateLegacySQLite copies the old Node dataset operation-log tables into
 // the dedicated F4 SQLite store. It keeps the stable operation-log IDs and
 // rebuilds only the derived search-term index with the current Go algorithm.
-func MigrateLegacySQLite(ctx context.Context, cfg Config, options LegacyMigrationOptions) (LegacyMigrationResult, error) {
-	if err := requireLegacyMigrationGates(options); err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	if cfg.Mode != ModeSQLite {
-		return LegacyMigrationResult{}, errors.New("F4 SQLite 历史迁移要求 JUHE_AI_OPERATION_LOG_STORE=sqlite")
-	}
-	sourcePath := strings.TrimSpace(options.SourceDatabasePath)
-	if sourcePath == "" {
-		return LegacyMigrationResult{}, errors.New("F4 SQLite 历史迁移必须提供 --operation-log-source-db")
-	}
-	same, err := sqlitepath.SameFile(sourcePath, cfg.DatabasePath)
-	if err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("校验 F4 SQLite 迁移源/目标隔离失败: %w", err)
-	}
-	if same {
-		return LegacyMigrationResult{}, errors.New("F4 SQLite 历史迁移源与目标不得是同一物理文件")
-	}
-	if err := verifyDistinctSQLiteMigrationPaths(sourcePath, cfg.DatabasePath); err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	source, err := sql.Open("sqlite", legacySQLiteReadOnlyDSN(sourcePath))
-	if err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("打开旧 Node 操作日志 SQLite 源失败: %w", err)
-	}
-	defer source.Close()
-	if err := source.PingContext(ctx); err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("连接旧 Node 操作日志 SQLite 源失败: %w", err)
-	}
-	if err := verifyLegacySQLiteOperationLogSchema(ctx, source); err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	sourceCounts, err := operationLogCounts(ctx, source, "")
-	if err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	if err := verifySQLiteOperationLogReferences(ctx, source, "旧 Node 操作日志 SQLite"); err != nil {
-		return LegacyMigrationResult{}, err
-	}
-
-	target, err := OpenStore(cfg)
-	if err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("打开 F4 SQLite 目标失败: %w", err)
-	}
-	defer target.Close()
-	if err := target.EnsureSchema(ctx); err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("初始化 F4 SQLite 目标 schema 失败: %w", err)
-	}
-	lease, ok, err := target.AcquireOwnerLease(ctx, cfg.InstanceID, cfg.OwnerLease)
-	if err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("获取 F4 SQLite 迁移 owner lease 失败: %w", err)
-	}
-	if !ok {
-		return LegacyMigrationResult{}, errors.New("F4 SQLite 历史迁移无法获取 owner lease，确认没有其他迁移或 sidecar 正在运行")
-	}
-	renewer := startLegacyLeaseRenewer(ctx, target, lease, cfg.OwnerLease)
-	defer func() {
-		_ = renewer.Stop()
-		_ = target.ReleaseOwnerLease(context.Background(), lease)
-	}()
-
-	rows, err := source.QueryContext(ctx, `SELECT id,COALESCE(trace_id,''),actor_system_account_id,COALESCE(actor_username,''),COALESCE(actor_display_name,''),actor_role,COALESCE(operation_scope_system_account_id,''),mode,module,action,operation_key,resource_type,COALESCE(resource_id,''),COALESCE(resource_name,''),summary,detail_level,visibility_scope,changes_json,metadata_json,COALESCE(method,''),COALESCE(path,''),status_code,COALESCE(client_ip,''),COALESCE(user_agent,''),created_at FROM operation_logs ORDER BY created_at,id`)
-	if err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("读取旧 Node 操作日志失败: %w", err)
-	}
-	defer rows.Close()
-	var migrated int64
-	for rows.Next() {
-		if err := renewer.Err(); err != nil {
-			return LegacyMigrationResult{}, fmt.Errorf("F4 SQLite 历史迁移 owner lease 续租失败: %w", err)
-		}
-		record, err := scanLegacyOperationLog(rows)
-		if err != nil {
-			return LegacyMigrationResult{}, err
-		}
-		if record.Targets, err = readLegacyTargets(ctx, source, record.Input.ID); err != nil {
-			return LegacyMigrationResult{}, err
-		}
-		if record.Viewers, err = readLegacyViewers(ctx, source, record.Input.ID); err != nil {
-			return LegacyMigrationResult{}, err
-		}
-		ignored, err := persistLegacySQLiteOperationLog(ctx, target.(*sqlStore), lease, record)
-		if err != nil {
-			return LegacyMigrationResult{}, fmt.Errorf("迁移操作日志 %s 失败: %w", record.Input.ID, err)
-		}
-		if !ignored {
-			migrated++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("读取旧 Node 操作日志行失败: %w", err)
-	}
-	targetCounts, err := operationLogCounts(ctx, target.(*sqlStore).db, "")
-	if err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	if err := verifySQLiteOperationLogReferences(ctx, target.(*sqlStore).db, "F4 SQLite 目标"); err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	for _, table := range []string{"operation_logs", "operation_log_targets", "operation_log_viewers"} {
-		if sourceCounts[table] != targetCounts[table] {
-			return LegacyMigrationResult{}, fmt.Errorf("F4 SQLite 历史迁移 %s 行数不一致: source=%d target=%d", table, sourceCounts[table], targetCounts[table])
-		}
-	}
-	if err := verifyLegacySQLiteReadability(ctx, target, sourceCounts["operation_logs"]); err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	if err := verifyLegacySQLiteSamples(ctx, source, target.(*sqlStore).db); err != nil {
-		return LegacyMigrationResult{}, err
-	}
-	if err := renewer.Stop(); err != nil {
-		return LegacyMigrationResult{}, fmt.Errorf("F4 SQLite 历史迁移 owner lease 续租失败: %w", err)
-	}
-	return LegacyMigrationResult{Mode: "sqlite-copy", NoOp: migrated == 0, SourceCounts: sourceCounts, TargetCounts: targetCounts, SearchTermsRebuilt: true, MigratedOperationLogs: migrated}, nil
-}
 
 // MigrateLegacyPostgres upgrades the historical Node viewer primary key in
 // place. PostgreSQL uses the same juhe_dataset table names for F4, so copying
@@ -241,9 +117,6 @@ func MigrateLegacySQLite(ctx context.Context, cfg Config, options LegacyMigratio
 func MigrateLegacyPostgres(ctx context.Context, cfg Config, options LegacyMigrationOptions) (LegacyMigrationResult, error) {
 	if err := requireLegacyMigrationGates(options); err != nil {
 		return LegacyMigrationResult{}, err
-	}
-	if cfg.Mode != ModePostgres {
-		return LegacyMigrationResult{}, errors.New("F4 PostgreSQL 历史迁移要求 JUHE_AI_OPERATION_LOG_STORE=postgres")
 	}
 	store, err := OpenStore(cfg)
 	if err != nil {
@@ -479,64 +352,15 @@ func readPostgresLegacyViewers(ctx context.Context, tx *sql.Tx, operationLogID s
 	return viewers, rows.Err()
 }
 
-func verifyDistinctSQLiteMigrationPaths(sourcePath, targetPath string) error {
-	sourceAbs, err := filepath.Abs(sourcePath)
-	if err != nil {
-		return err
-	}
-	targetAbs, err := filepath.Abs(targetPath)
-	if err != nil {
-		return err
-	}
-	if strings.EqualFold(filepath.Clean(sourceAbs), filepath.Clean(targetAbs)) {
-		return errors.New("F4 SQLite 历史迁移源与目标路径不得相同")
-	}
-	return nil
-}
 
-func legacySQLiteReadOnlyDSN(path string) string {
-	dsn, err := sqliteDSN(path)
-	if err != nil {
-		return "file:" + filepath.ToSlash(path) + "?mode=ro"
-	}
-	return dsn + "&mode=ro"
-}
 
-func verifyLegacySQLiteOperationLogSchema(ctx context.Context, db *sql.DB) error {
-	for _, table := range legacyOperationLogTables {
-		var name string
-		if err := db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name); err != nil {
-			return fmt.Errorf("旧 Node 操作日志 SQLite 缺少必需表 %s: %w", table, err)
-		}
-	}
-	var integrity string
-	if err := db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrity); err != nil {
-		return fmt.Errorf("旧 Node 操作日志 SQLite integrity_check 失败: %w", err)
-	}
-	if !strings.EqualFold(strings.TrimSpace(integrity), "ok") {
-		return fmt.Errorf("旧 Node 操作日志 SQLite integrity_check 返回异常: %s", integrity)
-	}
-	return verifySQLiteOperationLogReferences(ctx, db, "旧 Node 操作日志 SQLite")
-}
 
-func verifySQLiteOperationLogReferences(ctx context.Context, db *sql.DB, label string) error {
-	for _, item := range []struct {
-		name  string
-		query string
-	}{
-		{"target", "SELECT COUNT(*) FROM operation_log_targets t LEFT JOIN operation_logs l ON l.id=t.operation_log_id WHERE l.id IS NULL"},
-		{"viewer", "SELECT COUNT(*) FROM operation_log_viewers v LEFT JOIN operation_logs l ON l.id=v.operation_log_id WHERE l.id IS NULL"},
-		{"search term", "SELECT COUNT(*) FROM operation_log_summary_search_terms s LEFT JOIN operation_logs l ON l.id=s.operation_log_id WHERE l.id IS NULL"},
-	} {
-		var dangling int64
-		if err := db.QueryRowContext(ctx, item.query).Scan(&dangling); err != nil {
-			return fmt.Errorf("%s %s 引用完整性校验失败: %w", label, item.name, err)
-		}
-		if dangling != 0 {
-			return fmt.Errorf("%s %s 存在 %d 条悬空引用", label, item.name, dangling)
-		}
-	}
-	return nil
+
+var legacyOperationLogTables = []string{
+	"operation_logs",
+	"operation_log_targets",
+	"operation_log_viewers",
+	"operation_log_summary_search_terms",
 }
 
 type operationLogCounter interface {
@@ -605,55 +429,7 @@ func scanLegacyOperationLog(row legacyOperationLogScanner) (legacyOperationLog, 
 	return record, nil
 }
 
-func readLegacyTargets(ctx context.Context, source *sql.DB, operationLogID string) ([]legacyTarget, error) {
-	rows, err := source.QueryContext(ctx, `SELECT id,target_type,COALESCE(target_id,''),COALESCE(target_name,''),COALESCE(target_owner_system_account_id,''),relation,created_at FROM operation_log_targets WHERE operation_log_id=? ORDER BY created_at,id`, operationLogID)
-	if err != nil {
-		return nil, fmt.Errorf("读取旧 Node 操作日志 %s targets 失败: %w", operationLogID, err)
-	}
-	defer rows.Close()
-	targets := make([]legacyTarget, 0)
-	for rows.Next() {
-		var target legacyTarget
-		if err := rows.Scan(&target.ID, &target.Target.TargetType, &target.Target.TargetID, &target.Target.TargetName, &target.Target.TargetOwnerSystemAccountID, &target.Target.Relation, &target.CreatedAt); err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(target.ID) == "" || strings.TrimSpace(target.Target.TargetType) == "" || !known(target.Target.Relation, "primary", "affected", "created", "deleted", "owner", "grantee", "team_member", "bound_resource") {
-			return nil, fmt.Errorf("旧 Node 操作日志 %s target 不兼容", operationLogID)
-		}
-		canonical, err := parseStorageTime(target.CreatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("旧 Node 操作日志 %s target created_at 无效: %w", operationLogID, err)
-		}
-		target.CreatedAt = canonical
-		targets = append(targets, target)
-	}
-	return targets, rows.Err()
-}
 
-func readLegacyViewers(ctx context.Context, source *sql.DB, operationLogID string) ([]legacyViewer, error) {
-	rows, err := source.QueryContext(ctx, `SELECT system_account_id,visibility_reason,detail_level,created_at FROM operation_log_viewers WHERE operation_log_id=? ORDER BY system_account_id,visibility_reason,detail_level`, operationLogID)
-	if err != nil {
-		return nil, fmt.Errorf("读取旧 Node 操作日志 %s viewers 失败: %w", operationLogID, err)
-	}
-	defer rows.Close()
-	viewers := make([]legacyViewer, 0)
-	for rows.Next() {
-		var viewer legacyViewer
-		if err := rows.Scan(&viewer.Viewer.SystemAccountID, &viewer.Viewer.VisibilityReason, &viewer.Viewer.DetailLevel, &viewer.CreatedAt); err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(viewer.Viewer.SystemAccountID) == "" || !known(viewer.Viewer.VisibilityReason, "actor_self", "resource_owner", "admin_managed_my_resource", "authorization_owner", "authorization_grantee", "team_member", "team_authorization", "global_affected", "bound_resource_affected") || !known(viewer.Viewer.DetailLevel, "full", "summary") {
-			return nil, fmt.Errorf("旧 Node 操作日志 %s viewer 不兼容", operationLogID)
-		}
-		canonical, err := parseStorageTime(viewer.CreatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("旧 Node 操作日志 %s viewer created_at 无效: %w", operationLogID, err)
-		}
-		viewer.CreatedAt = canonical
-		viewers = append(viewers, viewer)
-	}
-	return viewers, rows.Err()
-}
 
 func normalizeLegacyOperationLogInput(input Input) error {
 	for name, value := range map[string]string{"id": input.ID, "actorSystemAccountId": input.ActorSystemAccountID, "actorRole": input.ActorRole, "mode": input.Mode, "module": input.Module, "action": input.Action, "operationKey": input.OperationKey, "resourceType": input.ResourceType, "summary": input.Summary, "detailLevel": input.DetailLevel, "visibilityScope": input.VisibilityScope, "createdAt": input.CreatedAt} {
@@ -676,238 +452,21 @@ func normalizeLegacyOperationLogInput(input Input) error {
 // persistLegacySQLiteOperationLog intentionally bypasses normalizeInput. The
 // ordinary write path derives viewers/targets for new data; a history copy must
 // retain exactly the source facts, including original target row IDs.
-func persistLegacySQLiteOperationLog(ctx context.Context, store *sqlStore, lease OwnerLease, record legacyOperationLog) (bool, error) {
-	store.writeMu.Lock()
-	defer store.writeMu.Unlock()
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	if err = store.verifyLease(ctx, tx, lease); err != nil {
-		return false, err
-	}
-	input := record.Input
-	result, err := tx.ExecContext(ctx, `INSERT INTO operation_logs (id,trace_id,actor_system_account_id,actor_username,actor_display_name,actor_role,operation_scope_system_account_id,mode,module,action,operation_key,resource_type,resource_id,resource_name,summary,detail_level,visibility_scope,changes_json,metadata_json,method,path,status_code,client_ip,user_agent,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, input.ID, nilIf(input.TraceID), input.ActorSystemAccountID, nilIf(input.ActorUsername), nilIf(input.ActorDisplayName), input.ActorRole, nilIf(input.OperationScopeSystemAccountID), input.Mode, input.Module, input.Action, input.OperationKey, input.ResourceType, nilIf(input.ResourceID), nilIf(input.ResourceName), input.Summary, input.DetailLevel, input.VisibilityScope, record.RawChangesJSON, record.RawMetadataJSON, nilIf(input.Method), nilIf(input.Path), input.StatusCode, nilIf(input.ClientIP), nilIf(input.UserAgent), input.CreatedAt)
-	if err != nil {
-		return false, err
-	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	if inserted == 0 {
-		if err := verifyLegacySQLiteExistingRecord(ctx, tx, record); err != nil {
-			return false, err
-		}
-		return true, tx.Commit()
-	}
-	for _, target := range record.Targets {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO operation_log_targets (id,operation_log_id,target_type,target_id,target_name,target_owner_system_account_id,relation,created_at) VALUES (?,?,?,?,?,?,?,?)`, target.ID, input.ID, target.Target.TargetType, nilIf(target.Target.TargetID), nilIf(target.Target.TargetName), nilIf(target.Target.TargetOwnerSystemAccountID), target.Target.Relation, target.CreatedAt); err != nil {
-			return false, err
-		}
-	}
-	for _, viewer := range record.Viewers {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO operation_log_viewers (operation_log_id,system_account_id,visibility_reason,detail_level,created_at) VALUES (?,?,?,?,?)`, input.ID, viewer.Viewer.SystemAccountID, viewer.Viewer.VisibilityReason, viewer.Viewer.DetailLevel, viewer.CreatedAt); err != nil {
-			return false, err
-		}
-	}
-	for _, term := range searchTerms(input.Summary) {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO operation_log_summary_search_terms (operation_log_id,term,created_at) VALUES (?,?,?)`, input.ID, term, input.CreatedAt); err != nil {
-			return false, err
-		}
-	}
-	if err = store.verifyLease(ctx, tx, lease); err != nil {
-		return false, err
-	}
-	return false, tx.Commit()
-}
 
 type legacyRecordQueryer interface {
 	legacyQueryer
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func verifyLegacySQLiteExistingRecord(ctx context.Context, queryer legacyRecordQueryer, record legacyOperationLog) error {
-	var actual legacyOperationLog
-	var changes, metadata string
-	err := queryer.QueryRowContext(ctx, `SELECT id,COALESCE(trace_id,''),actor_system_account_id,COALESCE(actor_username,''),COALESCE(actor_display_name,''),actor_role,COALESCE(operation_scope_system_account_id,''),mode,module,action,operation_key,resource_type,COALESCE(resource_id,''),COALESCE(resource_name,''),summary,detail_level,visibility_scope,changes_json,metadata_json,COALESCE(method,''),COALESCE(path,''),status_code,COALESCE(client_ip,''),COALESCE(user_agent,''),created_at FROM operation_logs WHERE id=?`, record.Input.ID).Scan(&actual.Input.ID, &actual.Input.TraceID, &actual.Input.ActorSystemAccountID, &actual.Input.ActorUsername, &actual.Input.ActorDisplayName, &actual.Input.ActorRole, &actual.Input.OperationScopeSystemAccountID, &actual.Input.Mode, &actual.Input.Module, &actual.Input.Action, &actual.Input.OperationKey, &actual.Input.ResourceType, &actual.Input.ResourceID, &actual.Input.ResourceName, &actual.Input.Summary, &actual.Input.DetailLevel, &actual.Input.VisibilityScope, &changes, &metadata, &actual.Input.Method, &actual.Input.Path, &actual.Input.StatusCode, &actual.Input.ClientIP, &actual.Input.UserAgent, &actual.Input.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("已存在操作日志 %s 未找到", record.Input.ID)
-	}
-	if err != nil {
-		return fmt.Errorf("校验已迁移操作日志 %s 失败: %w", record.Input.ID, err)
-	}
-	// created_at 两侧对称归一化后再比较：parseStorageTime 输出 RFC3339Nano
-	// 文本，只归一化回读侧会让 DeepEqual 对格式完全一致的记录也判不一致，
-	// 吞掉 target/viewer/search-terms 三个定位分支（任何差异都报通用文案）。
-	if actual.Input.CreatedAt, err = parseStorageTime(actual.Input.CreatedAt); err != nil {
-		return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
-	}
-	if record.Input.CreatedAt, err = parseStorageTime(record.Input.CreatedAt); err != nil {
-		return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
-	}
-	if err := json.Unmarshal([]byte(changes), &actual.Input.Changes); err != nil {
-		return fmt.Errorf("校验已迁移操作日志 %s changes_json 失败: %w", record.Input.ID, err)
-	}
-	actual.Input.Metadata = json.RawMessage(metadata)
-	actual.RawChangesJSON, actual.RawMetadataJSON = changes, metadata
-	if !reflect.DeepEqual(actual.Input, record.Input) || actual.RawChangesJSON != record.RawChangesJSON || actual.RawMetadataJSON != record.RawMetadataJSON {
-		return fmt.Errorf("已存在操作日志 %s 与迁移源不一致", record.Input.ID)
-	}
-	if actual.Targets, err = readLegacyTargetsFromQuery(ctx, queryer, record.Input.ID); err != nil {
-		return err
-	}
-	if actual.Viewers, err = readLegacyViewersFromQuery(ctx, queryer, record.Input.ID); err != nil {
-		return err
-	}
-	// 回读侧的 target/viewer created_at 同样被归一化为 RFC3339Nano；比较前
-	// 对源侧做对称归一化（副本方式，record 的 slice 底层数组归调用方共享）。
-	recordTargets := make([]legacyTarget, len(record.Targets))
-	for i, target := range record.Targets {
-		if target.CreatedAt, err = parseStorageTime(target.CreatedAt); err != nil {
-			return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
-		}
-		recordTargets[i] = target
-	}
-	recordViewers := make([]legacyViewer, len(record.Viewers))
-	for i, viewer := range record.Viewers {
-		if viewer.CreatedAt, err = parseStorageTime(viewer.CreatedAt); err != nil {
-			return fmt.Errorf("校验已迁移操作日志 %s created_at 失败: %w", record.Input.ID, err)
-		}
-		recordViewers[i] = viewer
-	}
-	if !reflect.DeepEqual(actual.Targets, recordTargets) || !reflect.DeepEqual(actual.Viewers, recordViewers) {
-		return fmt.Errorf("已存在操作日志 %s 的 target 或 viewer 与迁移源不一致", record.Input.ID)
-	}
-	terms, err := legacySearchTerms(ctx, queryer, record.Input.ID)
-	if err != nil {
-		return err
-	}
-	wantTerms := searchTerms(record.Input.Summary)
-	if !reflect.DeepEqual(terms, wantTerms) {
-		return fmt.Errorf("已存在操作日志 %s 的 search terms 与当前 Go 规则不一致", record.Input.ID)
-	}
-	return nil
-}
 
 type legacyQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-func readLegacyTargetsFromQuery(ctx context.Context, queryer legacyQueryer, operationLogID string) ([]legacyTarget, error) {
-	rows, err := queryer.QueryContext(ctx, `SELECT id,target_type,COALESCE(target_id,''),COALESCE(target_name,''),COALESCE(target_owner_system_account_id,''),relation,created_at FROM operation_log_targets WHERE operation_log_id=? ORDER BY created_at,id`, operationLogID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]legacyTarget, 0)
-	for rows.Next() {
-		var item legacyTarget
-		if err := rows.Scan(&item.ID, &item.Target.TargetType, &item.Target.TargetID, &item.Target.TargetName, &item.Target.TargetOwnerSystemAccountID, &item.Target.Relation, &item.CreatedAt); err != nil {
-			return nil, err
-		}
-		canonical, err := parseStorageTime(item.CreatedAt)
-		if err != nil {
-			return nil, err
-		}
-		item.CreatedAt = canonical
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
 
-func readLegacyViewersFromQuery(ctx context.Context, queryer legacyQueryer, operationLogID string) ([]legacyViewer, error) {
-	rows, err := queryer.QueryContext(ctx, `SELECT system_account_id,visibility_reason,detail_level,created_at FROM operation_log_viewers WHERE operation_log_id=? ORDER BY system_account_id,visibility_reason,detail_level`, operationLogID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]legacyViewer, 0)
-	for rows.Next() {
-		var item legacyViewer
-		if err := rows.Scan(&item.Viewer.SystemAccountID, &item.Viewer.VisibilityReason, &item.Viewer.DetailLevel, &item.CreatedAt); err != nil {
-			return nil, err
-		}
-		canonical, err := parseStorageTime(item.CreatedAt)
-		if err != nil {
-			return nil, err
-		}
-		item.CreatedAt = canonical
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
 
-func legacySearchTerms(ctx context.Context, queryer legacyQueryer, operationLogID string) ([]string, error) {
-	rows, err := queryer.QueryContext(ctx, `SELECT term FROM operation_log_summary_search_terms WHERE operation_log_id=? ORDER BY term`, operationLogID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	terms := make([]string, 0)
-	for rows.Next() {
-		var term string
-		if err := rows.Scan(&term); err != nil {
-			return nil, err
-		}
-		terms = append(terms, term)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return terms, nil
-}
 
-func verifyLegacySQLiteReadability(ctx context.Context, target Store, expected int64) error {
-	result, err := target.List(ctx, ListOptions{Page: 1, PageSize: 50})
-	if err != nil {
-		return fmt.Errorf("F4 SQLite 迁移后列表可读性校验失败: %w", err)
-	}
-	if expected != 0 && len(result.Items) == 0 {
-		return errors.New("F4 SQLite 迁移后列表为空")
-	}
-	return nil
-}
 
-func verifyLegacySQLiteSamples(ctx context.Context, source, target *sql.DB) error {
-	rows, err := source.QueryContext(ctx, `SELECT id,COALESCE(trace_id,''),actor_system_account_id,COALESCE(actor_username,''),COALESCE(actor_display_name,''),actor_role,COALESCE(operation_scope_system_account_id,''),mode,module,action,operation_key,resource_type,COALESCE(resource_id,''),COALESCE(resource_name,''),summary,detail_level,visibility_scope,changes_json,metadata_json,COALESCE(method,''),COALESCE(path,''),status_code,COALESCE(client_ip,''),COALESCE(user_agent,''),created_at FROM operation_logs ORDER BY created_at,id`)
-	if err != nil {
-		return fmt.Errorf("读取 F4 SQLite 迁移抽样失败: %w", err)
-	}
-	defer rows.Close()
-	var samples [2]legacyOperationLog
-	count := 0
-	for rows.Next() {
-		item, err := scanLegacyOperationLog(rows)
-		if err != nil {
-			return err
-		}
-		if item.Targets, err = readLegacyTargets(ctx, source, item.Input.ID); err != nil {
-			return err
-		}
-		if item.Viewers, err = readLegacyViewers(ctx, source, item.Input.ID); err != nil {
-			return err
-		}
-		if count == 0 {
-			samples[0] = item
-		}
-		samples[1] = item
-		count++
-	}
-	if err := rows.Err(); err != nil || count == 0 {
-		return err
-	}
-	for _, sample := range samples {
-		if sample.Input.ID == "" {
-			continue
-		}
-		if err := verifyLegacySQLiteExistingRecord(ctx, target, sample); err != nil {
-			return fmt.Errorf("F4 SQLite 迁移抽样 %s 校验失败: %w", sample.Input.ID, err)
-		}
-	}
-	return nil
-}
 
 func postgresPrimaryKey(ctx context.Context, db operationLogCounter, qualifiedTable string) (string, error) {
 	var primaryKey sql.NullString

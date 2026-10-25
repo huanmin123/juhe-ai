@@ -2,109 +2,13 @@ package accounthealth
 
 import (
 	"context"
-	"errors"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
-// w12d_runner_pg_test.go 覆盖 w12d 波次的 Runner.Run 主循环分支与 PG team
-// grant 配额臂。SQLite 部分本地运行；team grant 部分走 w1cover 覆盖库。
-
-// TestW12dRunnerRunLoopArms 覆盖 Run 主循环的租约失败/未获得/owned 错误臂。
-func TestW12dRunnerRunLoopArms(t *testing.T) {
-	base, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w12d-loop.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = base.Close() })
-	config := Config{
-		InstanceID:       "w12d-loop-owner",
-		InputDirectory:   t.TempDir(),
-		InputKeys:        map[string][]byte{"current": []byte("k")},
-		CredentialSecret: "s",
-		ScanInterval:     30 * time.Millisecond,
-		OwnerLease:       2 * time.Second,
-		ProbeTimeout:     time.Second,
-		MaxResponseBytes: 1024,
-		MaxConcurrency:   1,
-		Now:              time.Now,
-	}
-	// (a) Acquire 持续失败（closed store）→ setError + 重试，ctx 取消后返回。
-	closed, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w12d-loop-closed.sqlite3")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := closed.Close(); err != nil {
-		t.Fatal(err)
-	}
-	brokenRunner := NewRunner(config, closed, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- brokenRunner.Run(ctx) }()
-	deadline := time.Now().Add(300 * time.Millisecond)
-	lastError := ""
-	for time.Now().Before(deadline) {
-		brokenRunner.mu.RLock()
-		lastError = brokenRunner.status.LastError
-		brokenRunner.mu.RUnlock()
-		if lastError != "" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if lastError == "" {
-		cancel()
-		<-done
-		t.Fatal("acquire failure must surface in status")
-	}
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("run loop shutdown: %v", err)
-	}
-	// (b) lease 被他人占用 → 未获得分支（无错误、持续重试）。
-	lease, acquired, err := base.AcquireOwnerLease(context.Background(), "w12d-other-owner", time.Minute)
-	if err != nil || !acquired {
-		t.Fatalf("pre-acquire: %v %t", err, acquired)
-	}
-	t.Cleanup(func() { _ = base.ReleaseOwnerLease(context.Background(), lease) })
-	busyRunner := NewRunner(config, base, nil)
-	busyDone := make(chan error, 1)
-	busyCtx, busyCancel := context.WithCancel(context.Background())
-	go func() { busyDone <- busyRunner.Run(busyCtx) }()
-	time.Sleep(120 * time.Millisecond)
-	busyRunner.mu.RLock()
-	busyHeld := busyRunner.status.OwnerHeld
-	busyRunner.mu.RUnlock()
-	if busyHeld {
-		t.Fatal("busy lease must not be held by runner")
-	}
-	busyCancel()
-	if err := <-busyDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("busy runner shutdown: %v", err)
-	}
-	// (c) runOwned 返回错误（input 目录缺失）→ 警告后 owner 释放并重试。
-	errRunner := NewRunner(config, base, nil)
-	errRunner.cfg.InputDirectory = filepath.Join(t.TempDir(), "absent")
-	errDone := make(chan error, 1)
-	errCtx, errCancel := context.WithCancel(context.Background())
-	go func() { errDone <- errRunner.Run(errCtx) }()
-	deadline = time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		errRunner.mu.RLock()
-		held := errRunner.status.OwnerHeld
-		errRunner.mu.RUnlock()
-		if !held {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	errCancel()
-	if err := <-errDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("error runner shutdown: %v", err)
-	}
-}
+// w12d_runner_pg_test.go 覆盖 w12d 波次的 PG team grant 配额臂（w1cover 覆盖库）。
+// 注：原借 SQLite store 载体的 Run 主循环分支用例随 sqlite 臂退役。
 
 // TestW12dReaderTeamGrantQuotaArms 覆盖 team grant 配额臂（PG 覆盖库）。
 func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {

@@ -94,13 +94,11 @@ func TestWIMarshalNodeHeadersNil(t *testing.T) {
 }
 
 func TestWINullableTimePostgresBranch(t *testing.T) {
-	// postgres 模式返回 time.Time，SQLite 返回归一化文本。
+	// nullableTime 返回 time.Time（UTC）。
 	utc := time.Date(2026, 9, 10, 8, 0, 0, 0, time.UTC)
 	value := utc.Format(time.RFC3339Nano)
-	if _, isTime := nullableTime(ModePostgres, value).(time.Time); !isTime {
-		t.Fatal("postgres nullableTime 必须是 time.Time")
-	}
-	if got := nullableTime(ModeSQLite, value); got == nil {
-		t.Fatal("sqlite nullableTime 必须非 nil")
+	got, isTime := nullableTime(value).(time.Time)
+	if !isTime || !got.Equal(utc) {
+		t.Fatalf("nullableTime=%v isTime=%t", got, isTime)
 	}
 }

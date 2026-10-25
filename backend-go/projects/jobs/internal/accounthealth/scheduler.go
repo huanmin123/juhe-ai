@@ -21,7 +21,7 @@ import (
 )
 
 // Runner is the only J1 scheduler.  Its inputs come from the configured
-// direct input reader (PostgreSQL or SQLite business/statistics reads); the
+// direct input reader (PostgreSQL business/statistics reads); the
 // signed-files channel is only an explicit fallback. Durable state lives in
 // the jobs-owned store; it has no Node/Gateway/IPC or Redis dependency.
 type Runner struct {
@@ -44,7 +44,7 @@ type Runner struct {
 	// backlogWarnedAt 是 outbox 堆积告警的上次触发时刻（drain 频控用；
 	// mu 保护：告警窗口 10 分钟内不重复）。
 	backlogWarnedAt time.Time
-	// inputFreshness 是执行前新鲜度门（设计 §6.3）的业务库读面：PG/SQLite
+	// inputFreshness 是执行前新鲜度门（设计 §6.3）的业务库读面：PG
 	// 直读 reader 各自实现按账户主键单列重读 accounts.config_revision；
 	// nil（files 显式后备通道没有业务读连接）时门结构性不可用，跳过判定。
 	inputFreshness inputFreshnessReader
@@ -71,7 +71,7 @@ type scheduledDBTask struct {
 // inputs from the independently configured business read model.  It deliberately
 // has no Node/Gateway client surface: signed request files only carry a trigger
 // and fences; the effective probe input is read directly from the business
-// PostgreSQL or SQLite store.  Signed-files input stays as the explicit
+// PostgreSQL store.  Signed-files input stays as the explicit
 // fallback source (JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE=files).
 type directInputLoader interface {
 	LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error)
@@ -82,15 +82,15 @@ type directInputFailureLoader interface {
 	LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error)
 }
 
-// directInputAccountFailureLoader 是单账户显式请求的隔离加载面（PG/SQLite
-// 直读 reader 均实现）：构造失败的账户返回 Failures 而非错误，调用方按
+// directInputAccountFailureLoader 是单账户显式请求的隔离加载面（PG
+// 直读 reader 实现）：构造失败的账户返回 Failures 而非错误，调用方按
 // input_stale 收敛而不是中断整轮（BUG-0218）。
 type directInputAccountFailureLoader interface {
 	LoadAccountWithFailures(ctx context.Context, accountID string) (DirectInputLoadResult, error)
 }
 
-// DirectInputReader 是 PG 与 SQLite 直读适配器的公共装配面：组合根用它承载
-// 两种输入源；SetSuppressionProvider 由 Runner 装配时注入 jobs 重试窗口。
+// DirectInputReader 是 PG 直读适配器的公共装配面：组合根用它承载
+// 直读输入源；SetSuppressionProvider 由 Runner 装配时注入 jobs 重试窗口。
 type DirectInputReader interface {
 	LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error)
 	LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error)
@@ -296,26 +296,19 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	}
 	var err error
 	var inputs []exactkeyprobe.Input
-	if r.directInputReader != nil {
-		if reader, ok := r.directInputReader.(directInputFailureLoader); ok {
-			result, loadErr := reader.LoadDueWithFailures(ctx, r.cfg.DirectInputLimit)
-			if loadErr != nil {
-				return loadErr
-			}
-			for _, failure := range result.Failures {
-				if err := r.persistDirectInputFailure(ctx, lease, failure, now); err != nil {
-					return err
-				}
-			}
-			inputs = result.Inputs
-		} else {
-			inputs, err = r.directInputReader.LoadDue(ctx, r.cfg.DirectInputLimit)
+	if reader, ok := r.directInputReader.(directInputFailureLoader); ok {
+		result, loadErr := reader.LoadDueWithFailures(ctx, r.cfg.DirectInputLimit)
+		if loadErr != nil {
+			return loadErr
 		}
-		if err != nil {
-			return err
+		for _, failure := range result.Failures {
+			if err := r.persistDirectInputFailure(ctx, lease, failure, now); err != nil {
+				return err
+			}
 		}
-	} else {
-		inputs, err = LoadSignedInputFiles(r.cfg.InputDirectory, r.cfg.InputKeys)
+		inputs = result.Inputs
+	} else if r.directInputReader != nil {
+		inputs, err = r.directInputReader.LoadDue(ctx, r.cfg.DirectInputLimit)
 		if err != nil {
 			return err
 		}

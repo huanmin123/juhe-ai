@@ -6,9 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -20,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/text/unicode/norm"
-	_ "modernc.org/sqlite"
 )
 
 var ErrOwnerLeaseLost = errors.New("F4 operation-log owner lease lost")
@@ -61,66 +57,13 @@ type Store interface {
 	Close() error
 }
 type sqlStore struct {
-	db         *sql.DB
-	businessDB *sql.DB
-	// businessFallbackDB 是业务库本体的只读兜底句柄（SQLite 模式，组合根
-	// 经 Config.BusinessDatabasePath 传入）：镜像文件是静态同步产物时，
-	// 运行期新建/改名的系统账户名字解析在这里兜底。与镜像同文件时为 nil
-	// 且 businessFallbackSameFile 置位（复用 businessDB 句柄）；
-	// ownsBusinessFallback 标记是否需要关闭独立句柄。
-	businessFallbackDB       *sql.DB
-	businessFallbackSameFile bool
-	ownsBusinessFallback     bool
-	mode                     Mode
-	writeMu                  sync.Mutex
-	schemaMu                 sync.Mutex
-	schemaReady              bool
-	pool                     *pgpool.Handle
+	db          *sql.DB
+	schemaMu    sync.Mutex
+	schemaReady bool
+	pool        *pgpool.Handle
 }
 
 func OpenStore(cfg Config) (Store, error) {
-	if cfg.Mode == ModeSQLite {
-		if err := ensureDistinctSQLitePaths(cfg.DatabasePath, append([]string{cfg.BusinessSettingsPath}, cfg.SQLiteIsolationPaths...)...); err != nil {
-			return nil, err
-		}
-		dsn, err := sqliteDSN(cfg.DatabasePath)
-		if err != nil {
-			return nil, err
-		}
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, err
-		}
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if err := configureSQLite(db); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-		businessDB, err := openSQLiteReadOnly(cfg.BusinessSettingsPath)
-		if err != nil {
-			_ = db.Close()
-			return nil, err
-		}
-		store := &sqlStore{db: db, businessDB: businessDB, mode: cfg.Mode}
-		// 业务库兜底句柄（F4 镜像运行期同步选型：consumer 侧读业务库）。
-		// 镜像文件与业务库同文件时复用 businessDB，不重复打开。
-		if strings.TrimSpace(cfg.BusinessDatabasePath) != "" {
-			if sameSQLiteFile(cfg.BusinessSettingsPath, cfg.BusinessDatabasePath) {
-				store.businessFallbackSameFile = true
-			} else {
-				fallback, fallbackErr := openSQLiteReadOnly(cfg.BusinessDatabasePath)
-				if fallbackErr != nil {
-					_ = businessDB.Close()
-					_ = db.Close()
-					return nil, fallbackErr
-				}
-				store.businessFallbackDB = fallback
-				store.ownsBusinessFallback = true
-			}
-		}
-		return store, nil
-	}
 	maxOpen := cfg.PostgresMaxOpenConns
 	if maxOpen == 0 {
 		maxOpen = 1000
@@ -150,12 +93,12 @@ func OpenStore(cfg Config) (Store, error) {
 			return nil, fmt.Errorf("open F4 PostgreSQL pool: %w", err)
 		}
 	}
-	return &sqlStore{db: pool.DB(), mode: cfg.Mode, pool: pool}, nil
+	return &sqlStore{db: pool.DB(), pool: pool}, nil
 }
 
 func (s *sqlStore) beginTx(ctx context.Context) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil || s.mode != ModePostgres {
+	if err != nil {
 		return tx, err
 	}
 	for _, setting := range []string{
@@ -173,7 +116,7 @@ func (s *sqlStore) beginTx(ctx context.Context) (*sql.Tx, error) {
 
 func (s *sqlStore) beginLegacyMigrationTx(ctx context.Context) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil || s.mode != ModePostgres {
+	if err != nil {
 		return tx, err
 	}
 	for _, setting := range []string{
@@ -189,130 +132,18 @@ func (s *sqlStore) beginLegacyMigrationTx(ctx context.Context) (*sql.Tx, error) 
 	return tx, nil
 }
 
-func ensureDistinctSQLitePaths(operationPath string, otherPaths ...string) error {
-	operationAbs, err := filepath.Abs(operationPath)
-	if err != nil {
-		return err
-	}
-	canonical := func(path string) string {
-		abs, _ := filepath.Abs(path)
-		if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
-			return filepath.Clean(resolved)
-		}
-		return filepath.Clean(abs)
-	}
-	operationCanonical := canonical(operationAbs)
-	operationInfo, operationStatErr := os.Stat(operationAbs)
-	for _, otherPath := range otherPaths {
-		if strings.TrimSpace(otherPath) == "" {
-			continue
-		}
-		otherAbs, absErr := filepath.Abs(otherPath)
-		if absErr != nil {
-			return absErr
-		}
-		if operationCanonical == canonical(otherAbs) {
-			return fmt.Errorf("F4 operation log SQLite database must be physically distinct from %s", otherPath)
-		}
-		if operationStatErr == nil {
-			if otherInfo, statErr := os.Stat(otherAbs); statErr == nil && os.SameFile(operationInfo, otherInfo) {
-				return fmt.Errorf("F4 operation log SQLite database must not share an inode with %s", otherPath)
-			}
-		}
-	}
-	return nil
-}
-func sqliteDSN(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	p := filepath.ToSlash(abs)
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return (&url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=busy_timeout(5000)"}).String(), nil
-}
-func configureSQLite(db *sql.DB) error {
-	ctx := context.Background()
-	for _, q := range []string{"PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000", "PRAGMA journal_mode=WAL"} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			return err
-		}
-	}
-	var timeout int
-	if err := db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout); err != nil || timeout != 5000 {
-		return fmt.Errorf("F4 SQLite busy timeout invalid: %d: %w", timeout, err)
-	}
-	return nil
-}
 func (s *sqlStore) Close() error {
-	if s.businessFallbackDB != nil && s.ownsBusinessFallback {
-		_ = s.businessFallbackDB.Close()
-	}
-	if s.businessDB != nil {
-		_ = s.businessDB.Close()
-	}
 	if s.pool != nil {
 		return s.pool.Close()
 	}
 	return s.db.Close()
 }
 
-// sameSQLiteFile 复用 ensureDistinctSQLitePaths 的规范化规则比较两个 SQLite
-// 路径是否指向同一文件（大小写/符号链接/相对路径鲁棒）。
-func sameSQLiteFile(left, right string) bool {
-	canonical := func(path string) string {
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return filepath.Clean(path)
-		}
-		if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
-			return filepath.Clean(resolved)
-		}
-		return filepath.Clean(abs)
-	}
-	if left == "" || right == "" {
-		return false
-	}
-	return canonical(left) == canonical(right)
-}
-
-func openSQLiteReadOnly(path string) (*sql.DB, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(abs); err != nil {
-		return nil, fmt.Errorf("read F4 business settings SQLite: %w", err)
-	}
-	filePath := filepath.ToSlash(abs)
-	if !strings.HasPrefix(filePath, "/") {
-		filePath = "/" + filePath
-	}
-	dsn := (&url.URL{Scheme: "file", Path: filePath, RawQuery: "mode=ro&_pragma=query_only(1)"}).String()
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
-}
-
 func (s *sqlStore) RetentionDays(ctx context.Context, fallback int) (int, error) {
 	ctx, cancel := storeContext(ctx)
 	defer cancel()
 	var value string
-	var err error
-	if s.mode == ModeSQLite {
-		err = s.businessDB.QueryRowContext(ctx, "SELECT value_json FROM system_settings WHERE system_account_id=? AND key=?", "sys_admin", "operationLogRetentionDays").Scan(&value)
-	} else {
-		err = s.db.QueryRowContext(ctx, "SELECT value_json FROM juhe_business.system_settings WHERE system_account_id=$1 AND key=$2", "sys_admin", "operationLogRetentionDays").Scan(&value)
-	}
+	err := s.db.QueryRowContext(ctx, "SELECT value_json FROM juhe_business.system_settings WHERE system_account_id=$1 AND key=$2", "sys_admin", "operationLogRetentionDays").Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fallback, nil
 	}
@@ -330,15 +161,9 @@ func (s *sqlStore) RetentionDays(ctx context.Context, fallback int) (int, error)
 	return int(parsed), nil
 }
 func (s *sqlStore) table(name string) string {
-	if s.mode == ModePostgres {
-		return "juhe_dataset." + name
-	}
-	return name
+	return "juhe_dataset." + name
 }
 func (s *sqlStore) bind(q string) string {
-	if s.mode != ModePostgres {
-		return q
-	}
 	for n := 1; strings.Contains(q, "?"); n++ {
 		q = strings.Replace(q, "?", fmt.Sprintf("$%d", n), 1)
 	}
@@ -352,13 +177,7 @@ func (s *sqlStore) EnsureSchema(ctx context.Context) error {
 	if s.schemaReady {
 		return nil
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-		if _, err := s.db.ExecContext(ctx, sqliteSchema); err != nil {
-			return fmt.Errorf("initialize F4 sqlite schema: %w", err)
-		}
-	} else {
+	{
 		tx, err := s.beginTx(ctx)
 		if err != nil {
 			return err
@@ -555,11 +374,7 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.D
 	if err := s.EnsureSchema(ctx); err != nil {
 		return OwnerLease{}, false, err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
-	if s.mode == ModePostgres {
+	{
 		tx, err := s.beginTx(ctx)
 		if err != nil {
 			return OwnerLease{}, false, err
@@ -583,82 +398,38 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.D
 		}
 		return OwnerLease{owner, token}, true, nil
 	}
-	now := time.Now()
-	q := `INSERT INTO operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,?,?) ON CONFLICT(lease_key) DO UPDATE SET owner_id=excluded.owner_id,fence_token=operation_log_owner_leases.fence_token+1,lease_until=excluded.lease_until,updated_at=excluded.updated_at WHERE operation_log_owner_leases.lease_until<=? OR operation_log_owner_leases.owner_id=excluded.owner_id RETURNING fence_token`
-	var token int64
-	err := s.db.QueryRowContext(ctx, q, owner, storageTime(now.Add(d)), storageTime(now), storageTime(now)).Scan(&token)
-	if errors.Is(err, sql.ErrNoRows) {
-		return OwnerLease{}, false, nil
-	}
-	return OwnerLease{owner, token}, err == nil, err
 }
 func (s *sqlStore) RenewOwnerLease(ctx context.Context, l OwnerLease, d time.Duration) (bool, error) {
 	ctx, cancel := storeContext(ctx)
 	defer cancel()
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
+	q := `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=clock_timestamp()+(? * INTERVAL '1 millisecond'),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp()`
+	args := []any{d.Milliseconds(), l.OwnerID, l.FenceToken}
+	tx, err := s.beginTx(ctx)
+	if err != nil {
+		return false, err
 	}
-	q := `UPDATE ` + s.table("operation_log_owner_leases") + ` SET lease_until=?,updated_at=? WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>?`
-	now := time.Now()
-	args := []any{storageTime(now.Add(d)), storageTime(now), l.OwnerID, l.FenceToken, storageTime(now)}
-	if s.mode == ModePostgres {
-		q = `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=clock_timestamp()+(? * INTERVAL '1 millisecond'),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp()`
-		args = []any{d.Milliseconds(), l.OwnerID, l.FenceToken}
-	}
-	if s.mode == ModePostgres {
-		tx, err := s.beginTx(ctx)
-		if err != nil {
-			return false, err
-		}
-		defer tx.Rollback()
-		r, err := tx.ExecContext(ctx, s.bind(q), args...)
-		if err != nil {
-			return false, err
-		}
-		n, err := r.RowsAffected()
-		if err != nil || n != 1 {
-			return n == 1, err
-		}
-		return true, tx.Commit()
-	}
-	r, err := s.db.ExecContext(ctx, q, args...)
+	defer tx.Rollback()
+	r, err := tx.ExecContext(ctx, s.bind(q), args...)
 	if err != nil {
 		return false, err
 	}
 	n, err := r.RowsAffected()
-	return n == 1, err
+	if err != nil || n != 1 {
+		return n == 1, err
+	}
+	return true, tx.Commit()
 }
 func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, l OwnerLease) error {
 	ctx, cancel := storeContext(ctx)
 	defer cancel()
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
+	q := `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=?`
+	args := []any{l.OwnerID, l.FenceToken}
+	tx, err := s.beginTx(ctx)
+	if err != nil {
+		return err
 	}
-	q := `UPDATE ` + s.table("operation_log_owner_leases") + ` SET lease_until=?,updated_at=? WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=?`
-	args := []any{storageTime(time.Unix(0, 0)), storageTime(time.Now()), l.OwnerID, l.FenceToken}
-	if s.mode == ModePostgres {
-		q = `UPDATE juhe_dataset.operation_log_owner_leases SET lease_until=to_timestamp(0),updated_at=clock_timestamp() WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=?`
-		args = []any{l.OwnerID, l.FenceToken}
-	}
-	if s.mode == ModePostgres {
-		tx, err := s.beginTx(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		r, err := tx.ExecContext(ctx, s.bind(q), args...)
-		if err != nil {
-			return err
-		}
-		n, _ := r.RowsAffected()
-		if n != 1 {
-			return ErrOwnerLeaseLost
-		}
-		return tx.Commit()
-	}
-	r, err := s.db.ExecContext(ctx, q, args...)
+	defer tx.Rollback()
+	r, err := tx.ExecContext(ctx, s.bind(q), args...)
 	if err != nil {
 		return err
 	}
@@ -666,15 +437,11 @@ func (s *sqlStore) ReleaseOwnerLease(ctx context.Context, l OwnerLease) error {
 	if n != 1 {
 		return ErrOwnerLeaseLost
 	}
-	return nil
+	return tx.Commit()
 }
 func (s *sqlStore) verifyLease(ctx context.Context, tx *sql.Tx, l OwnerLease) error {
-	q := `SELECT 1 FROM ` + s.table("operation_log_owner_leases") + ` WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>?`
-	args := []any{l.OwnerID, l.FenceToken, storageTime(time.Now())}
-	if s.mode == ModePostgres {
-		q = `SELECT 1 FROM juhe_dataset.operation_log_owner_leases WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp() FOR UPDATE`
-		args = []any{l.OwnerID, l.FenceToken}
-	}
+	q := `SELECT 1 FROM juhe_dataset.operation_log_owner_leases WHERE lease_key='f4-operation-log-persistence' AND owner_id=? AND fence_token=? AND lease_until>clock_timestamp() FOR UPDATE`
+	args := []any{l.OwnerID, l.FenceToken}
 	var one int
 	if err := tx.QueryRowContext(ctx, s.bind(q), args...).Scan(&one); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -694,10 +461,6 @@ func (s *sqlStore) Persist(ctx context.Context, l OwnerLease, input Input) (bool
 	if err = s.EnsureSchema(ctx); err != nil {
 		return false, err
 	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
-	}
 	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return false, err
@@ -707,10 +470,7 @@ func (s *sqlStore) Persist(ctx context.Context, l OwnerLease, input Input) (bool
 		return false, err
 	}
 	changes, _ := json.Marshal(input.Changes)
-	q := `INSERT INTO ` + s.table("operation_logs") + ` (id,trace_id,actor_system_account_id,actor_username,actor_display_name,actor_role,operation_scope_system_account_id,mode,module,action,operation_key,resource_type,resource_id,resource_name,summary,detail_level,visibility_scope,changes_json,metadata_json,method,path,status_code,client_ip,user_agent,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`
-	if s.mode == ModePostgres {
-		q = `INSERT INTO juhe_dataset.operation_logs (id,trace_id,actor_system_account_id,actor_username,actor_display_name,actor_role,operation_scope_system_account_id,mode,module,action,operation_key,resource_type,resource_id,resource_name,summary,detail_level,visibility_scope,changes_json,metadata_json,method,path,status_code,client_ip,user_agent,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`
-	}
+	q := `INSERT INTO juhe_dataset.operation_logs (id,trace_id,actor_system_account_id,actor_username,actor_display_name,actor_role,operation_scope_system_account_id,mode,module,action,operation_key,resource_type,resource_id,resource_name,summary,detail_level,visibility_scope,changes_json,metadata_json,method,path,status_code,client_ip,user_agent,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`
 	r, err := tx.ExecContext(ctx, s.bind(q), input.ID, nilIf(input.TraceID), input.ActorSystemAccountID, nilIf(input.ActorUsername), nilIf(input.ActorDisplayName), input.ActorRole, nilIf(input.OperationScopeSystemAccountID), input.Mode, input.Module, input.Action, input.OperationKey, input.ResourceType, nilIf(input.ResourceID), nilIf(input.ResourceName), input.Summary, input.DetailLevel, input.VisibilityScope, string(changes), string(input.Metadata), nilIf(input.Method), nilIf(input.Path), input.StatusCode, nilIf(input.ClientIP), nilIf(input.UserAgent), input.CreatedAt)
 	if err != nil {
 		return false, err
@@ -719,36 +479,13 @@ func (s *sqlStore) Persist(ctx context.Context, l OwnerLease, input Input) (bool
 	if n == 0 {
 		return true, tx.Commit()
 	}
-	if s.mode == ModePostgres {
-		if err = persistPostgresChildren(ctx, tx, input); err != nil {
-			return false, err
-		}
-	} else if err = persistSQLiteChildren(ctx, tx, s, input); err != nil {
+	if err = persistPostgresChildren(ctx, tx, input); err != nil {
 		return false, err
 	}
 	if err = s.verifyLease(ctx, tx, l); err != nil {
 		return false, err
 	}
 	return false, tx.Commit()
-}
-
-func persistSQLiteChildren(ctx context.Context, tx *sql.Tx, store *sqlStore, input Input) error {
-	for i, target := range input.Targets {
-		if _, err := tx.ExecContext(ctx, store.bind(`INSERT INTO `+store.table("operation_log_targets")+` (id,operation_log_id,target_type,target_id,target_name,target_owner_system_account_id,relation,created_at) VALUES (?,?,?,?,?,?,?,?)`), fmt.Sprintf("optgt_%s_%d", input.ID, i), input.ID, target.TargetType, nilIf(target.TargetID), nilIf(target.TargetName), nilIf(target.TargetOwnerSystemAccountID), target.Relation, input.CreatedAt); err != nil {
-			return err
-		}
-	}
-	for _, viewer := range input.Viewers {
-		if _, err := tx.ExecContext(ctx, store.bind(`INSERT INTO `+store.table("operation_log_viewers")+` (operation_log_id,system_account_id,visibility_reason,detail_level,created_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING`), input.ID, viewer.SystemAccountID, viewer.VisibilityReason, viewer.DetailLevel, input.CreatedAt); err != nil {
-			return err
-		}
-	}
-	for _, term := range searchTerms(input.Summary) {
-		if _, err := tx.ExecContext(ctx, store.bind(`INSERT INTO `+store.table("operation_log_summary_search_terms")+` (operation_log_id,term,created_at) VALUES (?,?,?) ON CONFLICT DO NOTHING`), input.ID, term, input.CreatedAt); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func persistPostgresChildren(ctx context.Context, tx *sql.Tx, input Input) error {
@@ -882,10 +619,7 @@ func (s *sqlStore) List(ctx context.Context, options ListOptions) (ListResult, e
 	add("ol.actor_system_account_id", options.ActorSystemAccountID)
 	add("ol.operation_scope_system_account_id", options.OperationScopeSystemAccountID)
 	if traceID := strings.TrimSpace(options.TraceID); traceID != "" {
-		traceColumn := "ol.trace_id"
-		if s.mode == ModePostgres {
-			traceColumn += ` COLLATE "C"`
-		}
+		traceColumn := `ol.trace_id COLLATE "C"`
 		where = append(where, traceColumn+">=? AND "+traceColumn+"<?")
 		args = append(args, traceID, textPrefixUpperBound(traceID))
 	}
@@ -1152,20 +886,7 @@ func (s *sqlStore) accountNames(ctx context.Context, ids []string) (map[string]s
 	if len(unique) == 0 {
 		return result, nil
 	}
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if s.mode == ModeSQLite {
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
-		args := make([]any, len(unique))
-		for index := range unique {
-			args[index] = unique[index]
-		}
-		rows, err = s.businessDB.QueryContext(ctx, "SELECT id,COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM system_accounts WHERE id IN ("+placeholders+")", args...)
-	} else {
-		rows, err = s.db.QueryContext(ctx, "SELECT id,COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM juhe_business.system_accounts WHERE id=ANY($1::text[])", unique)
-	}
+	rows, err := s.db.QueryContext(ctx, "SELECT id,COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM juhe_business.system_accounts WHERE id=ANY($1::text[])", unique)
 	if err != nil {
 		return nil, fmt.Errorf("read F4 system account names: %w", err)
 	}
@@ -1180,43 +901,6 @@ func (s *sqlStore) accountNames(ctx context.Context, ids []string) (map[string]s
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate F4 system account names: %w", err)
 	}
-	// 业务库兜底（consumer 侧读业务库）：镜像为静态同步产物时，运行期新建/
-	// 改名的账户不在镜像里；对仍未解析的 id 用业务库本体句柄补一次。镜像
-	// 与业务库同文件时 businessFallbackSameFile 置位——主查询已读实时数据，
-	// 兜底查询只会原样重复，直接跳过。
-	fallback := s.businessFallbackDB
-	if fallback != nil {
-		missing := make([]string, 0, len(unique))
-		for _, id := range unique {
-			if result[id] == "\x00" {
-				missing = append(missing, id)
-			}
-		}
-		if len(missing) > 0 {
-			placeholders := strings.TrimRight(strings.Repeat("?,", len(missing)), ",")
-			fallbackArgs := make([]any, len(missing))
-			for index := range missing {
-				fallbackArgs[index] = missing[index]
-			}
-			fallbackRows, fallbackErr := fallback.QueryContext(ctx, "SELECT id,COALESCE(NULLIF(display_name,''),NULLIF(username,''),id) FROM system_accounts WHERE id IN ("+placeholders+")", fallbackArgs...)
-			if fallbackErr != nil {
-				return nil, fmt.Errorf("read F4 system account names from business fallback: %w", fallbackErr)
-			}
-			for fallbackRows.Next() {
-				var id, name string
-				if err := fallbackRows.Scan(&id, &name); err != nil {
-					fallbackRows.Close()
-					return nil, fmt.Errorf("scan F4 system account name from business fallback: %w", fallbackErr)
-				}
-				result[id] = name
-			}
-			if err := fallbackRows.Err(); err != nil {
-				fallbackRows.Close()
-				return nil, fmt.Errorf("iterate F4 system account names from business fallback: %w", fallbackErr)
-			}
-			fallbackRows.Close()
-		}
-	}
 	for _, id := range unique {
 		if result[id] == "\x00" {
 			delete(result, id)
@@ -1230,10 +914,6 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, l OwnerLease, cutoff ti
 	defer cancel()
 	if limit < 1 {
 		limit = 1
-	}
-	if s.mode == ModeSQLite {
-		s.writeMu.Lock()
-		defer s.writeMu.Unlock()
 	}
 	tx, err := s.beginTx(ctx)
 	if err != nil {
@@ -1259,16 +939,8 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, l OwnerLease, cutoff ti
 	}
 	rows.Close()
 	if len(ids) > 0 {
-		if s.mode == ModePostgres {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM juhe_dataset.operation_logs WHERE id=ANY($1::text[])`, ids); err != nil {
-				return 0, err
-			}
-		} else {
-			for _, id := range ids {
-				if _, err = tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("operation_logs")+` WHERE id=?`), id); err != nil {
-					return 0, err
-				}
-			}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM juhe_dataset.operation_logs WHERE id=ANY($1::text[])`, ids); err != nil {
+			return 0, err
 		}
 	}
 	if err = s.verifyLease(ctx, tx, l); err != nil {

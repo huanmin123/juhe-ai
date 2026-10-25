@@ -13,13 +13,6 @@ import (
 	"time"
 )
 
-type Mode string
-
-const (
-	ModeSQLite   Mode = "sqlite"
-	ModePostgres Mode = "postgres"
-)
-
 type LifecycleStatus string
 
 const (

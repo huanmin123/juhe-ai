@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
-	"net/url"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -16,13 +14,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 type StoreMode string
 
 const (
-	StoreSQLite   StoreMode = "sqlite"
 	StorePostgres StoreMode = "postgres"
 )
 
@@ -44,7 +40,6 @@ type OwnerLease struct {
 
 type Store struct {
 	db        *sql.DB
-	mode      StoreMode
 	writeGate chan struct{}
 	pool      *pgpool.Handle
 	// schemaReady 记忆化成功过的 EnsureSchema：AcquireOwnerLease 等热路径
@@ -55,72 +50,50 @@ type Store struct {
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
-	switch config.Mode {
-	case StoreSQLite:
-		path := strings.TrimSpace(config.DatabasePath)
-		if path == "" {
-			return nil, errors.New("account-health sqlite 缺少数据库路径")
-		}
-		dsn, err := sqliteDSN(path)
-		if err != nil {
-			return nil, err
-		}
-		db, err := sql.Open("sqlite", dsn)
-		if err != nil {
-			return nil, err
-		}
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if _, err := db.Exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;"); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("配置 account-health sqlite 单 writer 失败: %w", err)
-		}
-		return newStore(db, config.Mode, nil), nil
-	case StorePostgres:
-		if strings.TrimSpace(config.PostgresURL) == "" {
-			return nil, errors.New("account-health postgres 缺少连接 URL")
-		}
-		maxOpenConns := config.PostgresMaxOpenConns
-		if maxOpenConns == 0 {
-			maxOpenConns = defaultPostgresPoolSize
-		}
-		maxIdleConns := config.PostgresMaxIdleConns
-		if maxIdleConns == 0 {
-			// The platform idle ceiling (sqlpool.MaxIdleConns=10) owns the idle
-			// default; the 16-connection open default violates it otherwise
-			// (sqlpool.ValidatePoolLimits rejects idle > min(open, 10)).
-			maxIdleConns = defaultPostgresMaxIdleConns
-			if maxIdleConns > maxOpenConns {
-				maxIdleConns = maxOpenConns
-			}
-		}
-		if maxOpenConns < 1 || maxIdleConns < 1 || maxIdleConns > maxOpenConns {
-			return nil, fmt.Errorf("account-health postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpenConns, maxIdleConns)
-		}
-		var err error
-		pool := config.PostgresPool
-		if pool == nil {
-			registry := pgpool.NewRegistry()
-			pool, err = registry.Acquire("pgx", config.PostgresURL, "account-health-store", maxOpenConns, maxIdleConns)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return newStore(pool.DB(), config.Mode, pool), nil
-	default:
-		return nil, errors.New("account-health store mode 必须为 sqlite 或 postgres")
+	if config.Mode != StorePostgres {
+		return nil, errors.New("account-health store mode 必须为 postgres")
 	}
+	if strings.TrimSpace(config.PostgresURL) == "" {
+		return nil, errors.New("account-health postgres 缺少连接 URL")
+	}
+	maxOpenConns := config.PostgresMaxOpenConns
+	if maxOpenConns == 0 {
+		maxOpenConns = defaultPostgresPoolSize
+	}
+	maxIdleConns := config.PostgresMaxIdleConns
+	if maxIdleConns == 0 {
+		// The platform idle ceiling (sqlpool.MaxIdleConns=10) owns the idle
+		// default; the 16-connection open default violates it otherwise
+		// (sqlpool.ValidatePoolLimits rejects idle > min(open, 10)).
+		maxIdleConns = defaultPostgresMaxIdleConns
+		if maxIdleConns > maxOpenConns {
+			maxIdleConns = maxOpenConns
+		}
+	}
+	if maxOpenConns < 1 || maxIdleConns < 1 || maxIdleConns > maxOpenConns {
+		return nil, fmt.Errorf("account-health postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpenConns, maxIdleConns)
+	}
+	var err error
+	pool := config.PostgresPool
+	if pool == nil {
+		registry := pgpool.NewRegistry()
+		pool, err = registry.Acquire("pgx", config.PostgresURL, "account-health-store", maxOpenConns, maxIdleConns)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return newStore(pool.DB(), pool), nil
 }
 
-func newStore(db *sql.DB, mode StoreMode, pool *pgpool.Handle) *Store {
+func newStore(db *sql.DB, pool *pgpool.Handle) *Store {
 	gate := make(chan struct{}, 1)
 	gate <- struct{}{}
-	return &Store{db: db, mode: mode, writeGate: gate, pool: pool}
+	return &Store{db: db, writeGate: gate, pool: pool}
 }
 
 // lockWrite uses the same process-local gate for every writer, including the
 // owner-fenced transactions.  Unlike sync.Mutex it lets a short owner-renewal
-// context expire while another SQLite/PG write is in progress, without
+// context expire while another PG write is in progress, without
 // creating a second renewal path that could bypass the transaction fence.
 func (s *Store) lockWrite(ctx context.Context) error {
 	select {
@@ -161,55 +134,27 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	defer s.unlockWrite()
-	if s.mode == StorePostgres {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(918271446)"); err != nil {
-			return err
-		}
-		if err := ensurePostgresJobsSchema(ctx, tx); err != nil {
-			return err
-		}
-		for _, statement := range strings.Split(postgresSchema, ";") {
-			if statement = strings.TrimSpace(statement); statement != "" {
-				if _, err := tx.ExecContext(ctx, statement); err != nil {
-					return fmt.Errorf("初始化 account-health postgres schema 失败: %w", err)
-				}
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		s.schemaReady.Store(true)
-		return nil
-	}
-	conn, err := s.db.Conn(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("获取 account-health sqlite schema 锁失败: %w", err)
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(918271446)"); err != nil {
+		return err
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+	if err := ensurePostgresJobsSchema(ctx, tx); err != nil {
+		return err
+	}
+	for _, statement := range strings.Split(postgresSchema, ";") {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("初始化 account-health postgres schema 失败: %w", err)
+			}
 		}
-	}()
-	if _, err := conn.ExecContext(ctx, sqliteSchema); err != nil {
-		return fmt.Errorf("初始化 account-health sqlite schema 失败: %w", err)
 	}
-	if err := ensureSQLiteCurrentStateColumns(ctx, conn); err != nil {
+	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return err
-	}
-	committed = true
 	s.schemaReady.Store(true)
 	return nil
 }
@@ -234,45 +179,6 @@ WHERE nspname = 'juhe_jobs'`).Scan(&owner, &currentUser)
 	return nil
 }
 
-func ensureSQLiteCurrentStateColumns(ctx context.Context, conn *sql.Conn) error {
-	rows, err := conn.QueryContext(ctx, "PRAGMA table_info(account_health_current_state)")
-	if err != nil {
-		return fmt.Errorf("读取 account-health sqlite state schema 失败: %w", err)
-	}
-	defer rows.Close()
-	existing := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, columnType string
-		var notNull, primaryKey int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return err
-		}
-		existing[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for name, definition := range map[string]string{
-		"next_due_at":                     "TEXT",
-		"failure_count":                   "INTEGER NOT NULL DEFAULT 0",
-		"failure_started_at":              "TEXT",
-		"account_status":                  "TEXT NOT NULL DEFAULT ''",
-		"cooldown_observation_started_at": "TEXT",
-		"cooldown_generation":             "TEXT",
-		"cooldown_source_config_revision": "INTEGER",
-	} {
-		if existing[name] {
-			continue
-		}
-		if _, err := conn.ExecContext(ctx, "ALTER TABLE account_health_current_state ADD COLUMN "+name+" "+definition); err != nil {
-			return fmt.Errorf("扩展 account-health sqlite state 列 %s 失败: %w", name, err)
-		}
-	}
-	return nil
-}
-
 func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
 	if strings.TrimSpace(ownerID) == "" || duration <= 0 {
 		return OwnerLease{}, false, errors.New("owner lease 参数无效")
@@ -285,28 +191,12 @@ func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration 
 	}
 	defer s.unlockWrite()
 	now := time.Now().UTC()
-	if s.mode == StorePostgres {
-		var token int64
-		err := s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_health_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
+	var token int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_health_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
 VALUES ('account-health-owner', $1, 1, $2, $3)
 ON CONFLICT (lease_key) DO UPDATE SET owner_id = EXCLUDED.owner_id, fence_token = juhe_jobs.account_health_owner_leases.fence_token + 1, lease_until = EXCLUDED.lease_until, updated_at = EXCLUDED.updated_at
 WHERE juhe_jobs.account_health_owner_leases.lease_until <= $3
 RETURNING fence_token`, ownerID, now.Add(duration), now).Scan(&token)
-		if errors.Is(err, sql.ErrNoRows) {
-			return OwnerLease{}, false, nil
-		}
-		if err != nil {
-			return OwnerLease{}, false, err
-		}
-		return OwnerLease{OwnerID: ownerID, FenceToken: token}, true, nil
-	}
-	nowText := now.Format(time.RFC3339Nano)
-	var token int64
-	err := s.db.QueryRowContext(ctx, `INSERT INTO account_health_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
-VALUES ('account-health-owner', ?, 1, ?, ?)
-ON CONFLICT (lease_key) DO UPDATE SET owner_id = excluded.owner_id, fence_token = account_health_owner_leases.fence_token + 1, lease_until = excluded.lease_until, updated_at = excluded.updated_at
-WHERE account_health_owner_leases.lease_until <= ?
-RETURNING fence_token`, ownerID, now.Add(duration).Format(time.RFC3339Nano), nowText, nowText).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
@@ -325,16 +215,8 @@ func (s *Store) RenewOwnerLease(ctx context.Context, lease OwnerLease, duration 
 	}
 	defer s.unlockWrite()
 	now := time.Now().UTC()
-	var result sql.Result
-	var err error
-	if s.mode == StorePostgres {
-		result, err = s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_health_owner_leases SET lease_until=$1, updated_at=$2
+	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_health_owner_leases SET lease_until=$1, updated_at=$2
 WHERE lease_key='account-health-owner' AND owner_id=$3 AND fence_token=$4 AND lease_until > $2`, now.Add(duration), now, lease.OwnerID, lease.FenceToken)
-	} else {
-		nowText := now.Format(time.RFC3339Nano)
-		result, err = s.db.ExecContext(ctx, `UPDATE account_health_owner_leases SET lease_until=?, updated_at=?
-WHERE lease_key='account-health-owner' AND owner_id=? AND fence_token=? AND lease_until > ?`, now.Add(duration).Format(time.RFC3339Nano), nowText, lease.OwnerID, lease.FenceToken, nowText)
-	}
 	if err != nil {
 		return false, err
 	}
@@ -352,14 +234,8 @@ func (s *Store) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
 		return err
 	}
 	defer s.unlockWrite()
-	var err error
-	if s.mode == StorePostgres {
-		_, err = s.db.ExecContext(ctx, `DELETE FROM juhe_jobs.account_health_owner_leases
+	_, err := s.db.ExecContext(ctx, `DELETE FROM juhe_jobs.account_health_owner_leases
 WHERE lease_key='account-health-owner' AND owner_id=$1 AND fence_token=$2`, lease.OwnerID, lease.FenceToken)
-	} else {
-		_, err = s.db.ExecContext(ctx, `DELETE FROM account_health_owner_leases
-WHERE lease_key='account-health-owner' AND owner_id=? AND fence_token=?`, lease.OwnerID, lease.FenceToken)
-	}
 	return err
 }
 
@@ -399,63 +275,33 @@ func (s *Store) AppendOutcome(ctx context.Context, lease OwnerLease, outcome Out
 		return false, err
 	}
 	var inserted bool
-	if s.mode == StorePostgres {
-		var id string
-		err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_health_outcomes (outcome_id, request_id, account_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, payload)
+	var id string
+	err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_health_outcomes (outcome_id, request_id, account_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, payload)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 ON CONFLICT (request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.Outcome, outcome.ObservedAt.UTC(), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), string(payload)).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			matches, matchErr := s.duplicateDirectInputOutcomeMatchesTx(ctx, tx, outcome)
-			if matchErr != nil {
-				return false, matchErr
+	if errors.Is(err, sql.ErrNoRows) {
+		matches, matchErr := s.duplicateDirectInputOutcomeMatchesTx(ctx, tx, outcome)
+		if matchErr != nil {
+			return false, matchErr
+		}
+		if matches && outcome.NextDueAt != nil {
+			if err := s.refreshDirectInputSuppressionTx(ctx, tx, outcome); err != nil {
+				return false, err
 			}
-			if matches && outcome.NextDueAt != nil {
-				if err := s.refreshDirectInputSuppressionTx(ctx, tx, outcome); err != nil {
-					return false, err
-				}
-			}
-			return false, tx.Commit()
 		}
-		if err != nil {
-			return false, err
-		}
-		inserted = true
-		stateApplied, stateErr := s.writeCurrentStateTx(ctx, tx, outcome)
-		err = stateErr
-		if err == nil && outcome.ErrorCode == "direct_input_invalid" && outcome.NextDueAt != nil {
-			err = s.writeDirectInputSuppressionTx(ctx, tx, outcome)
-		}
-		if err == nil && stateApplied && outcome.Projection != nil {
-			err = s.writeOutcomePayloadTx(ctx, tx, outcome)
-		}
-	} else {
-		result, execErr := tx.ExecContext(ctx, `INSERT INTO account_health_outcomes (outcome_id, request_id, account_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, payload)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (request_id) DO NOTHING`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.Outcome, outcome.ObservedAt.UTC().Format(time.RFC3339Nano), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), string(payload))
-		if execErr != nil {
-			return false, execErr
-		}
-		count, _ := result.RowsAffected()
-		if count == 0 {
-			matches, matchErr := s.duplicateDirectInputOutcomeMatchesTx(ctx, tx, outcome)
-			if matchErr != nil {
-				return false, matchErr
-			}
-			if matches && outcome.NextDueAt != nil {
-				if err := s.refreshDirectInputSuppressionTx(ctx, tx, outcome); err != nil {
-					return false, err
-				}
-			}
-			return false, tx.Commit()
-		}
-		inserted = true
-		stateApplied, stateErr := s.writeCurrentStateTx(ctx, tx, outcome)
-		err = stateErr
-		if err == nil && outcome.ErrorCode == "direct_input_invalid" && outcome.NextDueAt != nil {
-			err = s.writeDirectInputSuppressionTx(ctx, tx, outcome)
-		}
-		if err == nil && stateApplied && outcome.Projection != nil {
-			err = s.writeOutcomePayloadTx(ctx, tx, outcome)
-		}
+		return false, tx.Commit()
+	}
+	if err != nil {
+		return false, err
+	}
+	inserted = true
+	stateApplied, stateErr := s.writeCurrentStateTx(ctx, tx, outcome)
+	err = stateErr
+	if err == nil && outcome.ErrorCode == "direct_input_invalid" && outcome.NextDueAt != nil {
+		err = s.writeDirectInputSuppressionTx(ctx, tx, outcome)
+	}
+	if err == nil && stateApplied && outcome.Projection != nil {
+		err = s.writeOutcomePayloadTx(ctx, tx, outcome)
 	}
 	if err != nil {
 		return false, err
@@ -470,10 +316,7 @@ func (s *Store) duplicateDirectInputOutcomeMatchesTx(ctx context.Context, tx *sq
 	var accountID string
 	var inputVersion, configRevision, dispatchRevision int64
 	var errorCode sql.NullString
-	query := `SELECT account_id,input_version,config_revision,dispatch_revision,error_code FROM account_health_outcomes WHERE request_id=?`
-	if s.mode == StorePostgres {
-		query = `SELECT account_id,input_version,config_revision,dispatch_revision,error_code FROM juhe_jobs.account_health_outcomes WHERE request_id=$1`
-	}
+	query := `SELECT account_id,input_version,config_revision,dispatch_revision,error_code FROM juhe_jobs.account_health_outcomes WHERE request_id=$1`
 	err := tx.QueryRowContext(ctx, query, outcome.RequestID).Scan(&accountID, &inputVersion, &configRevision, &dispatchRevision, &errorCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -493,15 +336,9 @@ func (s *Store) refreshDirectInputSuppressionTx(ctx context.Context, tx *sql.Tx,
 	if outcome.NextDueAt == nil {
 		return nil
 	}
-	if s.mode == StorePostgres {
-		_, err := tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_direct_input_suppressions
+	_, err := tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_direct_input_suppressions
 SET next_due_at=$1, updated_at=$2
 WHERE account_id=$3 AND input_version=$4 AND config_revision=$5 AND dispatch_revision=$6`, outcome.NextDueAt.UTC(), outcome.ObservedAt.UTC(), outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `UPDATE account_health_direct_input_suppressions
-SET next_due_at=?, updated_at=?
-WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=?`, nullableTimeText(outcome.NextDueAt), outcome.ObservedAt.UTC().Format(time.RFC3339Nano), outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
 	return err
 }
 
@@ -509,25 +346,14 @@ func (s *Store) writeDirectInputSuppressionTx(ctx context.Context, tx *sql.Tx, o
 	if outcome.NextDueAt == nil {
 		return nil
 	}
-	if s.mode == StorePostgres {
-		_, err := tx.ExecContext(ctx, `DELETE FROM juhe_jobs.account_health_direct_input_suppressions
+	_, err := tx.ExecContext(ctx, `DELETE FROM juhe_jobs.account_health_direct_input_suppressions
 WHERE account_id=$1 AND NOT (input_version=$2 AND config_revision=$3 AND dispatch_revision=$4)`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_direct_input_suppressions (account_id,input_version,config_revision,dispatch_revision,next_due_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6)
-ON CONFLICT (account_id,input_version,config_revision,dispatch_revision) DO UPDATE SET next_due_at=EXCLUDED.next_due_at, updated_at=EXCLUDED.updated_at`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, outcome.NextDueAt.UTC(), outcome.ObservedAt.UTC())
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM account_health_direct_input_suppressions
-WHERE account_id=? AND NOT (input_version=? AND config_revision=? AND dispatch_revision=?)`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO account_health_direct_input_suppressions (account_id,input_version,config_revision,dispatch_revision,next_due_at,updated_at)
-VALUES (?,?,?,?,?,?)
-ON CONFLICT (account_id,input_version,config_revision,dispatch_revision) DO UPDATE SET next_due_at=excluded.next_due_at, updated_at=excluded.updated_at`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableTimeText(outcome.NextDueAt), outcome.ObservedAt.UTC().Format(time.RFC3339Nano))
+	_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_direct_input_suppressions (account_id,input_version,config_revision,dispatch_revision,next_due_at,updated_at)
+VALUES ($1,$2,$3,$4,$5,$6)
+ON CONFLICT (account_id,input_version,config_revision,dispatch_revision) DO UPDATE SET next_due_at=EXCLUDED.next_due_at, updated_at=EXCLUDED.updated_at`, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, outcome.NextDueAt.UTC(), outcome.ObservedAt.UTC())
 	return err
 }
 
@@ -536,11 +362,7 @@ func (s *Store) writeOutcomePayloadTx(ctx context.Context, tx *sql.Tx, outcome O
 	if err != nil {
 		return fmt.Errorf("编码可投影 account-health outcome 失败: %w", err)
 	}
-	if s.mode == StorePostgres {
-		_, err = tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_outcomes SET payload=$1 WHERE outcome_id=$2`, string(payload), outcome.OutcomeID)
-	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE account_health_outcomes SET payload=? WHERE outcome_id=?`, string(payload), outcome.OutcomeID)
-	}
+	_, err = tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_outcomes SET payload=$1 WHERE outcome_id=$2`, string(payload), outcome.OutcomeID)
 	return err
 }
 
@@ -579,21 +401,12 @@ func (s *Store) writeCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Out
 }
 
 func (s *Store) updateTaskFailureRetryTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
-	var result sql.Result
-	var err error
 	observedText := outcome.ObservedAt.UTC().Format(time.RFC3339Nano)
 	dueText := nullableTimeText(outcome.NextDueAt)
-	if s.mode == StorePostgres {
-		result, err = tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_current_state
+	result, err := tx.ExecContext(ctx, `UPDATE juhe_jobs.account_health_current_state
 SET outcome_id=$1, outcome=$2, observed_at=$3, status_code=$4, error_code=$5, error_message=$6, next_due_at=$7, updated_at=$3
 WHERE account_id=$8 AND input_version=$9 AND config_revision=$10 AND dispatch_revision=$11 AND observed_at <= $3`,
-			outcome.OutcomeID, outcome.Outcome, observedText, outcome.StatusCode, outcome.ErrorCode, outcome.ErrorMessage, dueText, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
-	} else {
-		result, err = tx.ExecContext(ctx, `UPDATE account_health_current_state
-SET outcome_id=?, outcome=?, observed_at=?, status_code=?, error_code=?, error_message=?, next_due_at=?, updated_at=?
-WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revision=? AND observed_at <= ?`,
-			outcome.OutcomeID, outcome.Outcome, observedText, outcome.StatusCode, outcome.ErrorCode, outcome.ErrorMessage, dueText, observedText, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, observedText)
-	}
+		outcome.OutcomeID, outcome.Outcome, observedText, outcome.StatusCode, outcome.ErrorCode, outcome.ErrorMessage, dueText, outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision)
 	if err != nil {
 		return false, err
 	}
@@ -612,16 +425,9 @@ WHERE account_id=? AND input_version=? AND config_revision=? AND dispatch_revisi
 // insertCurrentStateBaselineTx is insert-only: it may bootstrap a missing
 // current-state row, but an existing row always wins and is never overwritten.
 func (s *Store) insertCurrentStateBaselineTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
-	args := currentStateArgs(outcome, s.mode)
-	var result sql.Result
-	var err error
-	if s.mode == StorePostgres {
-		result, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+	args := currentStateArgs(outcome)
+	result, err := tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4) ON CONFLICT (account_id) DO NOTHING`, args...)
-	} else {
-		result, err = tx.ExecContext(ctx, `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (account_id) DO NOTHING`, args...)
-	}
 	if err != nil {
 		return false, err
 	}
@@ -630,13 +436,11 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (account_id) DO NOTHING
 }
 
 func (s *Store) upsertCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
-	args := currentStateArgs(outcome, s.mode)
-	var query string
+	args := currentStateArgs(outcome)
 	// The expected status fences a replay in the same input/config/dispatch
 	// epoch. A newer epoch must be allowed to replace stale jobs state, even
 	// when the previous epoch ended in a different status.
-	if s.mode == StorePostgres {
-		query = `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+	query := `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4)
 ON CONFLICT (account_id) DO UPDATE SET outcome_id=EXCLUDED.outcome_id, outcome=EXCLUDED.outcome, observed_at=EXCLUDED.observed_at, input_version=EXCLUDED.input_version, config_revision=EXCLUDED.config_revision, dispatch_revision=EXCLUDED.dispatch_revision, status_code=EXCLUDED.status_code, error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, next_due_at=EXCLUDED.next_due_at, failure_count=EXCLUDED.failure_count, failure_started_at=EXCLUDED.failure_started_at, account_status=EXCLUDED.account_status, cooldown_observation_started_at=EXCLUDED.cooldown_observation_started_at, cooldown_generation=EXCLUDED.cooldown_generation, cooldown_source_config_revision=EXCLUDED.cooldown_source_config_revision, updated_at=EXCLUDED.updated_at
 WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_version
@@ -649,49 +453,24 @@ WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_ver
        AND juhe_jobs.account_health_current_state.config_revision = EXCLUDED.config_revision
        AND juhe_jobs.account_health_current_state.dispatch_revision = EXCLUDED.dispatch_revision
 	   AND juhe_jobs.account_health_current_state.observed_at <= EXCLUDED.observed_at`
-		if outcome.Projection != nil {
-			// The business account is the source of truth for the current
-			// eligibility epoch. When it is already active, a manual/legacy
-			// recovery may leave jobs state in a cooldown or terminal status;
-			// allow the current input projection to reconcile that split-brain
-			// row instead of recording an outcome that can never advance state.
-			// A quarantined direct-input baseline (blank account_status, retry
-			// metadata only) carries no status authority: a same-epoch
-			// pending_test health success must advance it, otherwise the
-			// account can never activate (BUG-0284 — the active escape below
-			// does not cover the activation epoch).
-			query += ` AND (juhe_jobs.account_health_current_state.account_status = $18
+	if outcome.Projection != nil {
+		// The business account is the source of truth for the current
+		// eligibility epoch. When it is already active, a manual/legacy
+		// recovery may leave jobs state in a cooldown or terminal status;
+		// allow the current input projection to reconcile that split-brain
+		// row instead of recording an outcome that can never advance state.
+		// A quarantined direct-input baseline (blank account_status, retry
+		// metadata only) carries no status authority: a same-epoch
+		// pending_test health success must advance it, otherwise the
+		// account can never activate (BUG-0284 — the active escape below
+		// does not cover the activation epoch).
+		query += ` AND (juhe_jobs.account_health_current_state.account_status = $18
                  OR ($18 = 'active' AND juhe_jobs.account_health_current_state.account_status <> 'active')
                  OR ($18 = 'pending_test' AND juhe_jobs.account_health_current_state.account_status = ''
                      AND juhe_jobs.account_health_current_state.error_code = 'direct_input_invalid'))`
-			args = append(args, outcome.Projection.ExpectedAccountStatus)
-		}
-		query += `))`
-	} else {
-		query = `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT (account_id) DO UPDATE SET outcome_id=excluded.outcome_id, outcome=excluded.outcome, observed_at=excluded.observed_at, input_version=excluded.input_version, config_revision=excluded.config_revision, dispatch_revision=excluded.dispatch_revision, status_code=excluded.status_code, error_code=excluded.error_code, error_message=excluded.error_message, next_due_at=excluded.next_due_at, failure_count=excluded.failure_count, failure_started_at=excluded.failure_started_at, account_status=excluded.account_status, cooldown_observation_started_at=excluded.cooldown_observation_started_at, cooldown_generation=excluded.cooldown_generation, cooldown_source_config_revision=excluded.cooldown_source_config_revision, updated_at=excluded.updated_at
-WHERE (account_health_current_state.input_version < excluded.input_version
-	   OR (account_health_current_state.input_version = excluded.input_version
-       AND account_health_current_state.config_revision < excluded.config_revision)
-	   OR (account_health_current_state.input_version = excluded.input_version
-       AND account_health_current_state.config_revision = excluded.config_revision
-       AND account_health_current_state.dispatch_revision < excluded.dispatch_revision)
-	   OR (account_health_current_state.input_version = excluded.input_version
-       AND account_health_current_state.config_revision = excluded.config_revision
-       AND account_health_current_state.dispatch_revision = excluded.dispatch_revision
-	   AND account_health_current_state.observed_at <= excluded.observed_at`
-		if outcome.Projection != nil {
-			query += ` AND (account_health_current_state.account_status = ?
-                 OR (? = 'active' AND account_health_current_state.account_status <> 'active')
-                 OR (? = 'pending_test' AND account_health_current_state.account_status = ''
-                     AND account_health_current_state.error_code = 'direct_input_invalid'))`
-			args = append(args, outcome.Projection.ExpectedAccountStatus)
-			args = append(args, outcome.Projection.ExpectedAccountStatus)
-			args = append(args, outcome.Projection.ExpectedAccountStatus)
-		}
-		query += `))`
+		args = append(args, outcome.Projection.ExpectedAccountStatus)
 	}
+	query += `))`
 	return execCurrentStateCAS(ctx, tx, query, args...)
 }
 
@@ -704,9 +483,8 @@ WHERE (account_health_current_state.input_version < excluded.input_version
 // decision for the durable cooldown projection.
 func (s *Store) updateCooldownCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
 	fence := outcome.Projection.ExpectedCooldownFence
-	if s.mode == StorePostgres {
-		args := currentStateArgs(outcome, s.mode)
-		query := `UPDATE juhe_jobs.account_health_current_state SET outcome_id=$2, outcome=$3, observed_at=$4, input_version=$5, config_revision=$6, dispatch_revision=$7, status_code=$8, error_code=$9, error_message=$10, next_due_at=$11, failure_count=$12, failure_started_at=$13, account_status=$14, cooldown_observation_started_at=$15, cooldown_generation=$16, cooldown_source_config_revision=$17, updated_at=$4
+	args := currentStateArgs(outcome)
+	query := `UPDATE juhe_jobs.account_health_current_state SET outcome_id=$2, outcome=$3, observed_at=$4, input_version=$5, config_revision=$6, dispatch_revision=$7, status_code=$8, error_code=$9, error_message=$10, next_due_at=$11, failure_count=$12, failure_started_at=$13, account_status=$14, cooldown_observation_started_at=$15, cooldown_generation=$16, cooldown_source_config_revision=$17, updated_at=$4
 WHERE account_id=$1
   AND input_version=$5
   AND config_revision=$6
@@ -721,33 +499,7 @@ WHERE account_id=$1
            AND cooldown_observation_started_at IS NULL
            AND cooldown_generation IS NULL
            AND cooldown_source_config_revision IS NULL))`
-		args = append(args, outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC(), fence.Generation, nullableInt64(fence.SourceConfigRevision))
-		stateApplied, err := execCurrentStateCAS(ctx, tx, query, args...)
-		if err != nil || stateApplied {
-			return stateApplied, err
-		}
-		return s.upsertCooldownCurrentStateEpochTx(ctx, tx, outcome)
-	}
-	query := `UPDATE account_health_current_state SET outcome_id=?, outcome=?, observed_at=?, input_version=?, config_revision=?, dispatch_revision=?, status_code=?, error_code=?, error_message=?, next_due_at=?, failure_count=?, failure_started_at=?, account_status=?, cooldown_observation_started_at=?, cooldown_generation=?, cooldown_source_config_revision=?, updated_at=?
-WHERE account_id=?
-  AND input_version=?
-  AND config_revision=?
-  AND dispatch_revision=?
-  AND observed_at <= ?
-  AND ((account_status=?
-        AND cooldown_observation_started_at=?
-	    AND cooldown_generation=?
-	    AND cooldown_source_config_revision IS ?)
-       OR (account_status=''
-           AND error_code='direct_input_invalid'
-           AND cooldown_observation_started_at IS NULL
-           AND cooldown_generation IS NULL
-           AND cooldown_source_config_revision IS NULL))`
-	args := append(currentStateUpdateArgs(outcome),
-		outcome.ObservedAt.UTC().Format(time.RFC3339Nano),
-		outcome.AccountID, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, outcome.ObservedAt.UTC().Format(time.RFC3339Nano),
-		outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC().Format(time.RFC3339Nano), fence.Generation, nullableInt64(fence.SourceConfigRevision),
-	)
+	args = append(args, outcome.Projection.ExpectedAccountStatus, fence.ObservationStartedAt.UTC(), fence.Generation, nullableInt64(fence.SourceConfigRevision))
 	stateApplied, err := execCurrentStateCAS(ctx, tx, query, args...)
 	if err != nil || stateApplied {
 		return stateApplied, err
@@ -760,10 +512,8 @@ WHERE account_id=?
 // replace a same-epoch row whose cooldown generation/status fence mismatches;
 // that outcome remains available to Node for its business-fence stale check.
 func (s *Store) upsertCooldownCurrentStateEpochTx(ctx context.Context, tx *sql.Tx, outcome Outcome) (bool, error) {
-	args := currentStateArgs(outcome, s.mode)
-	var query string
-	if s.mode == StorePostgres {
-		query = `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
+	args := currentStateArgs(outcome)
+	query := `INSERT INTO juhe_jobs.account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$4)
 ON CONFLICT (account_id) DO UPDATE SET outcome_id=EXCLUDED.outcome_id, outcome=EXCLUDED.outcome, observed_at=EXCLUDED.observed_at, input_version=EXCLUDED.input_version, config_revision=EXCLUDED.config_revision, dispatch_revision=EXCLUDED.dispatch_revision, status_code=EXCLUDED.status_code, error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, next_due_at=EXCLUDED.next_due_at, failure_count=EXCLUDED.failure_count, failure_started_at=EXCLUDED.failure_started_at, account_status=EXCLUDED.account_status, cooldown_observation_started_at=EXCLUDED.cooldown_observation_started_at, cooldown_generation=EXCLUDED.cooldown_generation, cooldown_source_config_revision=EXCLUDED.cooldown_source_config_revision, updated_at=EXCLUDED.updated_at
 WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_version
@@ -772,17 +522,6 @@ WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_ver
        OR (juhe_jobs.account_health_current_state.input_version = EXCLUDED.input_version
        AND juhe_jobs.account_health_current_state.config_revision = EXCLUDED.config_revision
        AND juhe_jobs.account_health_current_state.dispatch_revision < EXCLUDED.dispatch_revision))`
-	} else {
-		query = `INSERT INTO account_health_current_state (account_id, outcome_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, failure_count, failure_started_at, account_status, cooldown_observation_started_at, cooldown_generation, cooldown_source_config_revision, updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT (account_id) DO UPDATE SET outcome_id=excluded.outcome_id, outcome=excluded.outcome, observed_at=excluded.observed_at, input_version=excluded.input_version, config_revision=excluded.config_revision, dispatch_revision=excluded.dispatch_revision, status_code=excluded.status_code, error_code=excluded.error_code, error_message=excluded.error_message, next_due_at=excluded.next_due_at, failure_count=excluded.failure_count, failure_started_at=excluded.failure_started_at, account_status=excluded.account_status, cooldown_observation_started_at=excluded.cooldown_observation_started_at, cooldown_generation=excluded.cooldown_generation, cooldown_source_config_revision=excluded.cooldown_source_config_revision, updated_at=excluded.updated_at
-WHERE (account_health_current_state.input_version < excluded.input_version
-       OR (account_health_current_state.input_version = excluded.input_version
-       AND account_health_current_state.config_revision < excluded.config_revision)
-       OR (account_health_current_state.input_version = excluded.input_version
-       AND account_health_current_state.config_revision = excluded.config_revision
-       AND account_health_current_state.dispatch_revision < excluded.dispatch_revision))`
-	}
 	return execCurrentStateCAS(ctx, tx, query, args...)
 }
 
@@ -798,16 +537,9 @@ func execCurrentStateCAS(ctx context.Context, tx *sql.Tx, query string, args ...
 	return count == 1, nil
 }
 
-func currentStateArgs(outcome Outcome, mode StoreMode) []any {
+func currentStateArgs(outcome Outcome) []any {
 	observed := outcome.ObservedAt.UTC()
-	if mode == StorePostgres {
-		return []any{outcome.AccountID, outcome.OutcomeID, outcome.Outcome, observed, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTime(outcome.NextDueAt), outcome.FailureCount, nullableTime(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservation(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome)}
-	}
-	return []any{outcome.AccountID, outcome.OutcomeID, outcome.Outcome, observed.Format(time.RFC3339Nano), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTimeText(outcome.NextDueAt), outcome.FailureCount, nullableTimeText(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservationText(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome), observed.Format(time.RFC3339Nano)}
-}
-
-func currentStateUpdateArgs(outcome Outcome) []any {
-	return []any{outcome.OutcomeID, outcome.Outcome, outcome.ObservedAt.UTC().Format(time.RFC3339Nano), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTimeText(outcome.NextDueAt), outcome.FailureCount, nullableTimeText(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservationText(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome)}
+	return []any{outcome.AccountID, outcome.OutcomeID, outcome.Outcome, observed, outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTime(outcome.NextDueAt), outcome.FailureCount, nullableTime(outcome.FailureStartedAt), outcome.AccountStatus, cooldownObservation(outcome), cooldownGeneration(outcome), cooldownSourceRevision(outcome)}
 }
 
 func validateOutcomeStateContract(outcome Outcome) error {
@@ -888,11 +620,7 @@ func (s *Store) LoadCurrentState(ctx context.Context, accountID string) (Current
 	var cooldownSourceRevision sql.NullInt64
 	var observed nullableDBTime
 	var err error
-	if s.mode == StorePostgres {
-		err = s.db.QueryRowContext(ctx, `SELECT account_id,outcome_id,outcome,observed_at,input_version,config_revision,dispatch_revision,status_code,error_code,error_message,next_due_at,failure_count,failure_started_at,account_status,cooldown_observation_started_at,cooldown_generation,cooldown_source_config_revision FROM juhe_jobs.account_health_current_state WHERE account_id=$1`, accountID).Scan(&state.AccountID, &state.OutcomeID, &state.Outcome, &observed, &state.InputVersion, &state.ConfigRevision, &state.DispatchRevision, &statusCode, &errorCode, &errorMessage, &nextDue, &state.FailureCount, &failureStarted, &accountStatus, &cooldownObserved, &cooldownGeneration, &cooldownSourceRevision)
-	} else {
-		err = s.db.QueryRowContext(ctx, `SELECT account_id,outcome_id,outcome,observed_at,input_version,config_revision,dispatch_revision,status_code,error_code,error_message,next_due_at,failure_count,failure_started_at,account_status,cooldown_observation_started_at,cooldown_generation,cooldown_source_config_revision FROM account_health_current_state WHERE account_id=?`, accountID).Scan(&state.AccountID, &state.OutcomeID, &state.Outcome, &observed, &state.InputVersion, &state.ConfigRevision, &state.DispatchRevision, &statusCode, &errorCode, &errorMessage, &nextDue, &state.FailureCount, &failureStarted, &accountStatus, &cooldownObserved, &cooldownGeneration, &cooldownSourceRevision)
-	}
+	err = s.db.QueryRowContext(ctx, `SELECT account_id,outcome_id,outcome,observed_at,input_version,config_revision,dispatch_revision,status_code,error_code,error_message,next_due_at,failure_count,failure_started_at,account_status,cooldown_observation_started_at,cooldown_generation,cooldown_source_config_revision FROM juhe_jobs.account_health_current_state WHERE account_id=$1`, accountID).Scan(&state.AccountID, &state.OutcomeID, &state.Outcome, &observed, &state.InputVersion, &state.ConfigRevision, &state.DispatchRevision, &statusCode, &errorCode, &errorMessage, &nextDue, &state.FailureCount, &failureStarted, &accountStatus, &cooldownObserved, &cooldownGeneration, &cooldownSourceRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CurrentState{}, false, nil
 	}
@@ -932,13 +660,8 @@ func (s *Store) LoadCurrentState(ctx context.Context, accountID string) (Current
 func (s *Store) LoadDirectInputSuppressions(ctx context.Context, now time.Time) ([]DirectInputSuppression, error) {
 	now = now.UTC()
 	query := `SELECT account_id,input_version,config_revision,dispatch_revision,next_due_at
-FROM account_health_direct_input_suppressions
-WHERE next_due_at IS NOT NULL`
-	if s.mode == StorePostgres {
-		query = `SELECT account_id,input_version,config_revision,dispatch_revision,next_due_at
 	FROM juhe_jobs.account_health_direct_input_suppressions
 	WHERE next_due_at IS NOT NULL`
-	}
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -971,11 +694,7 @@ func (s *Store) HasRequest(ctx context.Context, requestID string) (bool, error) 
 	}
 	var marker int
 	var err error
-	if s.mode == StorePostgres {
-		err = s.db.QueryRowContext(ctx, `SELECT 1 FROM juhe_jobs.account_health_outcomes WHERE request_id=$1`, requestID).Scan(&marker)
-	} else {
-		err = s.db.QueryRowContext(ctx, `SELECT 1 FROM account_health_outcomes WHERE request_id=?`, requestID).Scan(&marker)
-	}
+	err = s.db.QueryRowContext(ctx, `SELECT 1 FROM juhe_jobs.account_health_outcomes WHERE request_id=$1`, requestID).Scan(&marker)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1016,11 +735,7 @@ func (s *Store) LoadKeyCursor(ctx context.Context, accountID, purpose, fingerpri
 	}
 	var index int
 	var err error
-	if s.mode == StorePostgres {
-		err = s.db.QueryRowContext(ctx, `SELECT next_index FROM juhe_jobs.account_health_key_cursors WHERE account_id=$1 AND purpose=$2 AND key_set_fingerprint=$3`, accountID, purpose, fingerprint).Scan(&index)
-	} else {
-		err = s.db.QueryRowContext(ctx, `SELECT next_index FROM account_health_key_cursors WHERE account_id=? AND purpose=? AND key_set_fingerprint=?`, accountID, purpose, fingerprint).Scan(&index)
-	}
+	err = s.db.QueryRowContext(ctx, `SELECT next_index FROM juhe_jobs.account_health_key_cursors WHERE account_id=$1 AND purpose=$2 AND key_set_fingerprint=$3`, accountID, purpose, fingerprint).Scan(&index)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -1044,13 +759,8 @@ func (s *Store) SaveKeyCursor(ctx context.Context, lease OwnerLease, accountID, 
 		return err
 	}
 	now := time.Now().UTC()
-	if s.mode == StorePostgres {
-		_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_key_cursors (account_id, purpose, key_set_fingerprint, next_index, updated_at) VALUES ($1,$2,$3,$4,$5)
+	_, err = tx.ExecContext(ctx, `INSERT INTO juhe_jobs.account_health_key_cursors (account_id, purpose, key_set_fingerprint, next_index, updated_at) VALUES ($1,$2,$3,$4,$5)
 ON CONFLICT (account_id,purpose,key_set_fingerprint) DO UPDATE SET next_index=EXCLUDED.next_index, updated_at=EXCLUDED.updated_at`, accountID, purpose, fingerprint, nextIndex, now)
-	} else {
-		_, err = tx.ExecContext(ctx, `INSERT INTO account_health_key_cursors (account_id, purpose, key_set_fingerprint, next_index, updated_at) VALUES (?,?,?,?,?)
-ON CONFLICT (account_id,purpose,key_set_fingerprint) DO UPDATE SET next_index=excluded.next_index, updated_at=excluded.updated_at`, accountID, purpose, fingerprint, nextIndex, now.Format(time.RFC3339Nano))
-	}
 	if err != nil {
 		return err
 	}
@@ -1061,38 +771,12 @@ func (s *Store) verifyLease(ctx context.Context, tx *sql.Tx, lease OwnerLease) e
 	if strings.TrimSpace(lease.OwnerID) == "" || lease.FenceToken <= 0 {
 		return ErrOwnerLeaseLost
 	}
-	if s.mode == StorePostgres {
-		var token int64
-		err := tx.QueryRowContext(ctx, `SELECT fence_token FROM juhe_jobs.account_health_owner_leases WHERE lease_key='account-health-owner' AND owner_id=$1 AND fence_token=$2 AND lease_until > $3 FOR UPDATE`, lease.OwnerID, lease.FenceToken, time.Now().UTC()).Scan(&token)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrOwnerLeaseLost
-		}
-		return err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE account_health_owner_leases SET updated_at=updated_at WHERE lease_key='account-health-owner' AND owner_id=? AND fence_token=? AND lease_until > ?`, lease.OwnerID, lease.FenceToken, time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return err
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count != 1 {
+	var token int64
+	err := tx.QueryRowContext(ctx, `SELECT fence_token FROM juhe_jobs.account_health_owner_leases WHERE lease_key='account-health-owner' AND owner_id=$1 AND fence_token=$2 AND lease_until > $3 FOR UPDATE`, lease.OwnerID, lease.FenceToken, time.Now().UTC()).Scan(&token)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrOwnerLeaseLost
 	}
-	return nil
-}
-
-func sqliteDSN(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	uriPath := filepath.ToSlash(abs)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_pragma=busy_timeout(5000)"}).String(), nil
+	return err
 }
 
 func nullableStatus(value int) any {
@@ -1146,14 +830,6 @@ func cooldownObservation(outcome Outcome) any {
 	return fence.ObservationStartedAt.UTC()
 }
 
-func cooldownObservationText(outcome Outcome) any {
-	fence := outcomeCooldownFence(outcome)
-	if fence == nil || fence.ObservationStartedAt.IsZero() || strings.TrimSpace(fence.Generation) == "" {
-		return nil
-	}
-	return fence.ObservationStartedAt.UTC().Format(time.RFC3339Nano)
-}
-
 func cooldownGeneration(outcome Outcome) any {
 	fence := outcomeCooldownFence(outcome)
 	if fence == nil || fence.ObservationStartedAt.IsZero() || strings.TrimSpace(fence.Generation) == "" {
@@ -1170,16 +846,6 @@ func cooldownSourceRevision(outcome Outcome) any {
 	return *fence.SourceConfigRevision
 }
 
-const sqliteSchema = `
-CREATE TABLE IF NOT EXISTS account_health_owner_leases (lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token INTEGER NOT NULL, lease_until TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS account_health_outcomes (outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, account_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, payload TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS account_health_current_state (account_id TEXT PRIMARY KEY, outcome_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, next_due_at TEXT, failure_count INTEGER NOT NULL DEFAULT 0, failure_started_at TEXT, account_status TEXT NOT NULL DEFAULT '', cooldown_observation_started_at TEXT, cooldown_generation TEXT, cooldown_source_config_revision INTEGER, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS account_health_direct_input_suppressions (account_id TEXT NOT NULL, input_version INTEGER NOT NULL, config_revision INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, next_due_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, input_version, config_revision, dispatch_revision));
-CREATE TABLE IF NOT EXISTS account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
-CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON account_health_outcomes(account_id, observed_at DESC, outcome_id DESC);
-CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_observed ON account_health_outcomes(observed_at DESC, outcome_id DESC);
-`
-
 const postgresSchema = `
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_owner_leases (lease_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, lease_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_outcomes (outcome_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, account_id TEXT NOT NULL, outcome TEXT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, input_version BIGINT NOT NULL, config_revision BIGINT NOT NULL, dispatch_revision BIGINT NOT NULL, status_code INTEGER, error_code TEXT, error_message TEXT, payload JSONB NOT NULL);
@@ -1192,7 +858,7 @@ ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS acco
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_observation_started_at TIMESTAMPTZ;
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_generation TEXT;
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_source_config_revision BIGINT;
-CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index INTEGER NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
+CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC);
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed_non_stale ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC) INCLUDE (payload) WHERE outcome <> 'stale';
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_observed ON juhe_jobs.account_health_outcomes(observed_at DESC, outcome_id DESC);

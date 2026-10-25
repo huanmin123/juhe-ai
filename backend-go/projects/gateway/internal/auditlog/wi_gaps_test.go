@@ -107,19 +107,6 @@ func TestWISearchHotSearchContract(t *testing.T) {
 	}
 }
 
-func TestWIOpenStoreRejectsDirectoryAsDatabase(t *testing.T) {
-	root := t.TempDir()
-	cfg := sqliteConfig(t, root)
-	// 数据库路径指向一个目录 → 打开失败（PRAGMA 阶段报错）。
-	if err := os.MkdirAll(cfg.AuditDatabasePath, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := OpenStore(cfg); err == nil {
-		t.Fatal("目录作为数据库必须打开失败")
-	}
-	_ = filepath.Join(root, "unused")
-}
-
 func TestWIBlobFileMetadataGuards(t *testing.T) {
 	dir := t.TempDir()
 	storageKey := "2026/09/blob.bin"

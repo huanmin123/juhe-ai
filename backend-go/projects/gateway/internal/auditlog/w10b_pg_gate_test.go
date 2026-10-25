@@ -155,7 +155,7 @@ func w10bCreateNegativeDatabase(t *testing.T) string {
 func w10bOpenCoverStore(t *testing.T) (Store, string) {
 	t.Helper()
 	blobDir := t.TempDir()
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: w10bCoverPostgresURL(t), PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobDir})
+	store, err := OpenStore(Config{PostgresURL: w10bCoverPostgresURL(t), PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobDir})
 	if err != nil {
 		t.Fatalf("OpenStore PG: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestW10BPgStoreFullChain(t *testing.T) {
 	defer cancel()
 
 	// PG 表名前缀与 OpenStore 默认 hotDir 推导。
-	if implementation.leaseTable() != "juhe_dataset.audit_log_owner_leases" || implementation.table("audit_logs") != "juhe_dataset.audit_logs" {
+	if implementation.table("audit_log_owner_leases") != "juhe_dataset.audit_log_owner_leases" || implementation.table("audit_logs") != "juhe_dataset.audit_logs" {
 		t.Fatal("PG 表名前缀错误")
 	}
 	if implementation.hotDir != filepath.Join(filepath.Dir(blobDir), "search-hot") {
@@ -492,7 +492,7 @@ func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
 	coverURL := w10bCoverPostgresURL(t)
 
 	// 零值池配置触发 ValidatePoolLimits 失败（pgx 惰性解析 DSN，OpenStore 层不报错）。
-	if _, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: coverURL}); err == nil || !strings.Contains(err.Error(), "连接池") {
+	if _, err := OpenStore(Config{PostgresURL: coverURL}); err == nil || !strings.Contains(err.Error(), "连接池") {
 		t.Fatalf("零值池配置必须失败: %v", err)
 	}
 
@@ -502,7 +502,7 @@ func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	pooled, err := OpenStore(Config{Mode: ModePostgres, PostgresPool: pool, PayloadBlobDirectory: t.TempDir()})
+	pooled, err := OpenStore(Config{PostgresPool: pool, PayloadBlobDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("OpenStore with pool: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
 
 	// 负臂库：canceled context 命中各事务入口失败臂。
 	negURL := w10bCreateNegativeDatabase(t)
-	negStore, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: negURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
+	negStore, err := OpenStore(Config{PostgresURL: negURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("OpenStore neg: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
 
 	// 无 schema 的负臂库上 Persist 落入 EnsureSchema 失败。
 	freshURL := w10bCreateNegativeDatabaseNamed(t, "juhe_ai_sub2api_dev_w10cneg2")
-	freshStore, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: freshURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
+	freshStore, err := OpenStore(Config{PostgresURL: freshURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("OpenStore fresh: %v", err)
 	}

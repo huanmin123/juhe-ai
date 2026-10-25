@@ -73,13 +73,6 @@ func (timestamp *storageTimestamp) Scan(value any) error {
 	}
 }
 
-type Mode string
-
-const (
-	ModeSQLite   Mode = "sqlite"
-	ModePostgres Mode = "postgres"
-)
-
 type Change struct {
 	Field     string `json:"field"`
 	Label     string `json:"label"`

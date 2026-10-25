@@ -3,36 +3,12 @@ package auditlog
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 // w16l：legacy 迁移路径 helper 与 appendHotSearchFile 的定向补测
 // （全模块扫描发现 94.8% < 95% 硬门槛，补齐边际）。
-func TestW16LEqualLegacyPath(t *testing.T) {
-	same := `internal/auditlog/./legacy.db`
-	if runtime.GOOS == "windows" {
-		same = `internal\auditlog\.\legacy.db`
-	}
-	if !equalLegacyPath(same, filepath.Join("internal", "auditlog", "legacy.db")) {
-		t.Fatal("Clean 归一后应相等")
-	}
-	if equalLegacyPath("a.db", "b.db") {
-		t.Fatal("不同路径不应相等")
-	}
-}
-
-func TestW16LDSNHelpers(t *testing.T) {
-	ro := readOnlySQLiteDSN("legacy.db")
-	if !strings.Contains(ro, "mode=ro") {
-		t.Fatalf("只读 DSN 应含 mode=ro: %q", ro)
-	}
-	target := targetSQLiteDSN("target.db")
-	if !strings.Contains(target, "busy_timeout(5000)") {
-		t.Fatalf("目标 DSN 应含 busy_timeout: %q", target)
-	}
-}
 
 func TestW16LAppendHotSearchFileRoundTripAndErrorArm(t *testing.T) {
 	t.Run("写读回", func(t *testing.T) {

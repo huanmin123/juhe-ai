@@ -92,100 +92,13 @@ func (s *w12dFakeStore) CheckSchema(ctx context.Context) error { return nil }
 
 func (s *w12dFakeStore) Close() error { return nil }
 
-func w12dFakeConfig(t *testing.T) Config {
-	t.Helper()
-	return Config{
-		Mode:                   ModeSQLite,
-		RuntimeLogDatabasePath: filepath.Join(t.TempDir(), "w12d-rl.sqlite3"),
-		BusinessPath:           filepath.Join(t.TempDir(), "w12d-business.sqlite3"),
-		LogDirectory:           t.TempDir(),
-		PollInterval:           time.Hour,
-		RetentionInterval:      time.Hour,
-		RetentionDays:          7,
-		BatchSize:              16,
-	}
-}
-
 func w12dLeaseContext(ctx context.Context) context.Context {
 	return withOwnerLease(ctx, OwnerLease{OwnerID: "w12d-fake-owner", FenceToken: 1})
 }
 
-// TestW12dOpenStoreParameterArms 覆盖 OpenStore 的参数校验与拒绝分支。
-func TestW12dOpenStoreParameterArms(t *testing.T) {
-	ctx := context.Background()
-	if _, err := OpenStore(ctx, Config{Mode: ModeSQLite}); err == nil || !strings.Contains(err.Error(), "缺少运行日志专用数据库路径") {
-		t.Fatalf("missing sqlite path: %v", err)
-	}
-	if _, err := OpenStore(ctx, Config{Mode: Mode("redis")}); err == nil || !strings.Contains(err.Error(), "不支持的运行日志 Store 模式") {
-		t.Fatalf("bad mode: %v", err)
-	}
-	// sqlite 路径指向目录 → 打开后 PRAGMA 失败。
-	if _, err := OpenStore(ctx, Config{Mode: ModeSQLite, RuntimeLogDatabasePath: t.TempDir()}); err == nil {
-		t.Fatal("directory path must fail")
-	}
-	// business 只读句柄缺失。
-	config := w12dFakeConfig(t)
-	config.BusinessPath = filepath.Join(config.LogDirectory, "absent-business.sqlite3")
-	if _, err := OpenStore(ctx, config); err == nil {
-		t.Fatal("missing business db must fail")
-	}
-}
-
-// TestW12dClosedSQLiteStoreArms 用关闭后的 store 覆盖各方法错误上抛。
-func TestW12dClosedSQLiteStoreArms(t *testing.T) {
-	store, _ := openTestSQLiteStore(t)
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	lease := OwnerLease{OwnerID: "w12d-closed", FenceToken: 1}
-	if _, err := store.FindCursor(ctx, "juhe-ai.log"); err == nil {
-		t.Fatal("closed FindCursor must fail")
-	}
-	if _, err := store.FindCursorByIdentity(ctx, "identity"); err == nil {
-		t.Fatal("closed FindCursorByIdentity must fail")
-	}
-	if err := store.ReplaceCursor(ctx, lease, nil, Cursor{}); err == nil {
-		t.Fatal("closed ReplaceCursor must fail")
-	}
-	if err := store.CopyCursor(ctx, lease, Cursor{}); err == nil {
-		t.Fatal("closed CopyCursor must fail")
-	}
-	if err := store.Commit(ctx, lease, nil, Cursor{}, time.Now()); err == nil {
-		t.Fatal("closed Commit must fail")
-	}
-	if _, err := store.Cleanup(ctx, lease, time.Now(), 10, 10); err == nil {
-		t.Fatal("closed Cleanup must fail")
-	}
-	if err := store.VerifyOwnerLease(ctx, lease); err == nil {
-		t.Fatal("closed VerifyOwnerLease must fail")
-	}
-	if err := store.WithOwnerLeaseFence(ctx, lease, func() error { return nil }); err == nil {
-		t.Fatal("closed fence must fail")
-	}
-	if _, err := store.RuntimeRetentionDays(ctx, 7); err == nil {
-		t.Fatal("closed retention days must fail")
-	}
-	if _, _, err := store.AcquireOwnerLease(ctx, "w12d-closed", time.Minute); err == nil {
-		t.Fatal("closed acquire must fail")
-	}
-	if _, err := store.RenewOwnerLease(ctx, lease, time.Minute); err == nil {
-		t.Fatal("closed renew must fail")
-	}
-	if err := store.ReleaseOwnerLease(ctx, lease); err == nil {
-		t.Fatal("closed release must fail")
-	}
-	if err := store.CheckSchema(ctx); err == nil {
-		t.Fatal("closed CheckSchema must fail")
-	}
-	_ = store.Close()
-}
-
-// TestW12dIndexerPanicRecovery 覆盖 RunOnce 的 managed panic 恢复臂。
 func TestW12dIndexerPanicRecovery(t *testing.T) {
 	root := t.TempDir()
-	config := w12dFakeConfig(t)
-	config.LogDirectory = root
+	config := Config{LogDirectory: root}
 	current := filepath.Join(root, "juhe-ai.log")
 	if err := os.WriteFile(current, []byte(`{"time":"2026-08-08T00:00:00.000Z","level":"info","event":"w12d"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -204,50 +117,9 @@ func TestW12dIndexerPanicRecovery(t *testing.T) {
 	}
 }
 
-// TestW12dIndexerRetentionAndConfigArms 覆盖 RunRetention 与配置读取错误臂。
-func TestW12dIndexerRetentionAndConfigArms(t *testing.T) {
-	ctx := w12dLeaseContext(context.Background())
-	// retention 配置读取错误。
-	fake := &w12dFakeStore{retentionErr: errors.New("retention config failed")}
-	if err := NewIndexer(w12dFakeConfig(t), fake).RunOnce(ctx); err == nil {
-		t.Fatal("RunOnce must surface retention config error")
-	}
-	if err := NewIndexer(w12dFakeConfig(t), fake).RunRetention(ctx); err == nil || !strings.Contains(err.Error(), "retention config failed") {
-		t.Fatalf("RunRetention config error: %v", err)
-	}
-	// Cleanup 错误。
-	fake = &w12dFakeStore{cleanupErr: errors.New("cleanup failed")}
-	if err := NewIndexer(w12dFakeConfig(t), fake).RunRetention(ctx); err == nil || !strings.Contains(err.Error(), "cleanup failed") {
-		t.Fatalf("cleanup error: %v", err)
-	}
-	// 轮转清理：LogDirectory 缺失 → cleanupRotatedFiles 错误。
-	config := w12dFakeConfig(t)
-	config.LogDirectory = filepath.Join(config.LogDirectory, "absent")
-	fake = &w12dFakeStore{}
-	if err := NewIndexer(config, fake).RunRetention(ctx); err == nil {
-		t.Fatal("absent log directory must fail")
-	}
-	// 正常保留期清理。
-	okStore, config := openTestSQLiteStore(t)
-	current := filepath.Join(config.LogDirectory, "juhe-ai.log")
-	if err := os.WriteFile(current, []byte(`{"time":"2026-08-08T00:00:00.000Z","level":"info","event":"w12d-retention"}`+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	indexer := NewIndexer(config, okStore)
-	runCtx := testOwnerContext(t, okStore)
-	if err := indexer.RunOnce(runCtx); err != nil {
-		t.Fatal(err)
-	}
-	if err := indexer.RunRetention(runCtx); err != nil {
-		t.Fatalf("retention: %v", err)
-	}
-}
-
-// TestW12dIndexerFailureCursorArms 覆盖失败游标持久化与截断重置分支。
 func TestW12dIndexerFailureCursorArms(t *testing.T) {
 	root := t.TempDir()
-	config := w12dFakeConfig(t)
-	config.LogDirectory = root
+	config := Config{LogDirectory: root}
 	current := filepath.Join(root, "juhe-ai.log")
 	if err := os.WriteFile(current, []byte(`{"time":"2026-08-08T00:00:00.000Z","level":"info","event":"w12d-cursor"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)

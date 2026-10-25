@@ -63,9 +63,9 @@ func RunOwner(ctx context.Context, store Store, keeper *LeaseKeeper, cfg Config,
 				if errors.Is(err, ErrOwnerLeaseLost) {
 					return err
 				}
-				logger.Error("F4 operation log retention failed", "error", err, "mode", cfg.Mode, "cutoff", cutoff.Format(time.RFC3339Nano))
+				logger.Error("F4 operation log retention failed", "error", err, "cutoff", cutoff.Format(time.RFC3339Nano))
 			} else {
-				logger.Info("F4 operation log retention complete", "mode", cfg.Mode, "retentionDays", days, "cutoff", cutoff.Format(time.RFC3339Nano), "deleted", deleted)
+				logger.Info("F4 operation log retention complete", "retentionDays", days, "cutoff", cutoff.Format(time.RFC3339Nano), "deleted", deleted)
 			}
 			retention.Reset(schedulejitter.Delay(cfg.RetentionInterval))
 		}

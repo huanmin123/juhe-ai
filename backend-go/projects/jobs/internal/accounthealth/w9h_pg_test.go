@@ -374,7 +374,7 @@ func TestW9HPgOutcomeProjectionEndToEnd(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
-	business, err := NewProjectionBusinessDB(db, true)
+	business, err := NewProjectionBusinessDB(db)
 	if err != nil {
 		t.Fatalf("projection business db: %v", err)
 	}

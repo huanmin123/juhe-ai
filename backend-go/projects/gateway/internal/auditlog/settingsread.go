@@ -12,16 +12,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
 )
 
 // postgresSettingsApplicationName 区分该只读句柄的业务库访问来源。
@@ -72,25 +68,19 @@ func (cfg Config) EffectiveRetentionSettings(settings RetentionSettings) Config 
 // BusinessSettingsReader 是业务库 system_settings 的只读懒加载 reader：首读
 // 打开单句柄并复用；并发安全（owner tick 与手动清理路由可各持一个实例）。
 type BusinessSettingsReader struct {
-	mode        Mode
-	sqlitePath  string
 	postgresURL string
 
 	mu sync.Mutex
 	db *sql.DB
 }
 
-// NewBusinessSettingsReader 按 Config 的业务设置目标构建 reader：postgres
-// 模式用 BusinessSettingsURL（juhe_business schema 限定），sqlite 模式用
-// BusinessSettingsPath（mode=ro + query_only 只读句柄）。两者都为空时
+// NewBusinessSettingsReader 按 Config 的业务设置目标构建 reader：使用
+// BusinessSettingsURL（juhe_business schema 限定）。为空时
 // ReadRetentionSettings 返回全缺省（无 DB 覆盖，仅 env 生效）——生产
-// LoadConfig 保证二选一非空，空目标只出现在未走 LoadConfig 的直接构造
+// LoadConfig 保证非空，空目标只出现在未走 LoadConfig 的直接构造
 // （单测 fake）场景。
 func NewBusinessSettingsReader(cfg Config) *BusinessSettingsReader {
-	if cfg.Mode == ModePostgres {
-		return &BusinessSettingsReader{mode: ModePostgres, postgresURL: strings.TrimSpace(cfg.BusinessSettingsURL)}
-	}
-	return &BusinessSettingsReader{mode: ModeSQLite, sqlitePath: strings.TrimSpace(cfg.BusinessSettingsPath)}
+	return &BusinessSettingsReader{postgresURL: strings.TrimSpace(cfg.BusinessSettingsURL)}
 }
 
 // Close 关闭懒打开的句柄；幂等。owner 侧随 maintenance 代际退出调用。
@@ -107,10 +97,7 @@ func (r *BusinessSettingsReader) Close() error {
 
 // configured 报告 reader 是否装配了业务设置读取目标。
 func (r *BusinessSettingsReader) configured() bool {
-	if r.mode == ModePostgres {
-		return r.postgresURL != ""
-	}
-	return r.sqlitePath != ""
+	return r.postgresURL != ""
 }
 
 // database 懒打开并复用只读句柄（进程内每 reader 单句柄）。
@@ -120,60 +107,21 @@ func (r *BusinessSettingsReader) database() (*sql.DB, error) {
 	if r.db != nil {
 		return r.db, nil
 	}
-	if r.mode == ModePostgres {
-		if r.postgresURL == "" {
-			return nil, fmt.Errorf("F3 审计保留设置未装配业务库读取目标（postgres URL 为空）")
-		}
-		pgConfig, err := pgx.ParseConfig(r.postgresURL)
-		if err != nil {
-			return nil, fmt.Errorf("解析 F3 审计保留设置 PostgreSQL URL 失败: %w", err)
-		}
-		if pgConfig.RuntimeParams == nil {
-			pgConfig.RuntimeParams = map[string]string{}
-		}
-		pgConfig.RuntimeParams["application_name"] = postgresSettingsApplicationName
-		db := stdlib.OpenDB(*pgConfig)
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		r.db = db
-		return db, nil
+	if r.postgresURL == "" {
+		return nil, fmt.Errorf("F3 审计保留设置未装配业务库读取目标（postgres URL 为空）")
 	}
-	if r.sqlitePath == "" {
-		return nil, fmt.Errorf("F3 审计保留设置未装配业务库读取目标（sqlite 路径为空）")
-	}
-	db, err := openSettingsSQLiteReadOnly(r.sqlitePath)
+	pgConfig, err := pgx.ParseConfig(r.postgresURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析 F3 审计保留设置 PostgreSQL URL 失败: %w", err)
 	}
-	r.db = db
-	return db, nil
-}
-
-// openSettingsSQLiteReadOnly 以 mode=ro + query_only 打开业务库只读句柄
-// （F4 operationlog openSQLiteReadOnly 同款双保险）。
-func openSettingsSQLiteReadOnly(path string) (*sql.DB, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
+	if pgConfig.RuntimeParams == nil {
+		pgConfig.RuntimeParams = map[string]string{}
 	}
-	if _, err := os.Stat(abs); err != nil {
-		return nil, fmt.Errorf("读取 F3 审计保留设置业务库失败: %w", err)
-	}
-	filePath := filepath.ToSlash(abs)
-	if !strings.HasPrefix(filePath, "/") {
-		filePath = "/" + filePath
-	}
-	dsn := (&url.URL{Scheme: "file", Path: filePath, RawQuery: "mode=ro&_pragma=query_only(1)"}).String()
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, err
-	}
+	pgConfig.RuntimeParams["application_name"] = postgresSettingsApplicationName
+	db := stdlib.OpenDB(*pgConfig)
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
+	r.db = db
 	return db, nil
 }
 
@@ -191,10 +139,7 @@ func (r *BusinessSettingsReader) ReadRetentionSettings(ctx context.Context) (Ret
 	if err != nil {
 		return RetentionSettings{}, err
 	}
-	query := `SELECT key, value_json FROM system_settings WHERE system_account_id = ? AND key IN (?,?,?,?)`
-	if r.mode == ModePostgres {
-		query = `SELECT key, value_json FROM juhe_business.system_settings WHERE system_account_id = $1 AND key IN ($2,$3,$4,$5)`
-	}
+	query := `SELECT key, value_json FROM juhe_business.system_settings WHERE system_account_id = $1 AND key IN ($2,$3,$4,$5)`
 	args := []any{"sys_admin", settingsKeySuccessRetentionDays, settingsKeyProblemRetentionDays, settingsKeySuccessHotRetentionHours, settingsKeySuccessSampleRate}
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
