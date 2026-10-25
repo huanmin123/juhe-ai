@@ -8,7 +8,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
@@ -183,11 +182,6 @@ func TestPostgresDialectSQLConstruction(t *testing.T) {
 	listRepo := &ListAvailabilityRepo{}
 	if got := listRepo.table("accounts"); got != "juhe_business.accounts" {
 		t.Fatalf("投影 repo PG 表前缀: %s", got)
-	}
-	// instantParam 的 time.Time 分支。
-	parsed, ok := instantParam("2030-01-01T00:00:00.000Z", nil).(time.Time)
-	if !ok || parsed.IsZero() {
-		t.Fatalf("合法时间应返回 time.Time: %v", parsed)
 	}
 }
 

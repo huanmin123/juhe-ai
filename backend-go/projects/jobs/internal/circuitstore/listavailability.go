@@ -370,6 +370,11 @@ func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS 
 	if limit < 1 || limit > maximumDirtyClaimLimit {
 		return 0, fmt.Errorf("limit 必须是 1..%d 的正整数", maximumDirtyClaimLimit)
 	}
+	// next_transition_at 在两种方言里都是 text 列（RFC3339Nano 文本），到期
+	// 比较靠双方言一致的字典序，参数必须绑定同格式文本。此前经 instantParam
+	// 解析成原生 time.Time 绑定，pgx 对 text 列参数以 Go 默认文本形态（含
+	// 空格与 " +0000 UTC" 后缀）参与比较，与行内 RFC3339Nano 恒不匹配——
+	// 到期候选恒空、PG 模式到期转移静默失效（W24①，2026-10-25 生产采样实证）。
 	now := time.UnixMilli(nowMS).UTC().Format(time.RFC3339Nano)
 	return r.enqueueSubTransactions(ctx, limit, nowMS, "projection_due_transition", func(tx txLike, batchRows int) ([]string, error) {
 		rows, err := tx.QueryContext(ctx, `
@@ -381,7 +386,7 @@ func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS 
       AND projections.next_transition_at <= ?
       AND dirty_accounts.account_id IS NULL
     ORDER BY projections.next_transition_at ASC, projections.account_id ASC
-    LIMIT ?`, instantParam(now, r.now), batchRows)
+    LIMIT ?`, now, batchRows)
 		if err != nil {
 			return nil, err
 		}
@@ -1343,13 +1348,6 @@ func normalizedIDList(values []string) ([]string, error) {
 
 func placeholdersFor(count int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", count), ", ")
-}
-
-func instantParam(value string, _ func() time.Time) any {
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-		return parsed
-	}
-	return value
 }
 
 // boolParam 把布尔绑定为整数 1/0 参数：投影索引列在两种方言里都是

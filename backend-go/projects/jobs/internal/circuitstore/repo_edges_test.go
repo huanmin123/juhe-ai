@@ -428,9 +428,6 @@ func TestListAvailabilityRepoSmallHelpers(t *testing.T) {
 	if err != nil || len(ids) != 2 || ids[0] != "a" {
 		t.Fatalf("归一去重不符: %v %v", ids, err)
 	}
-	if got := instantParam("bad-time", nil); got != "bad-time" {
-		t.Fatalf("解析失败回退文本: %v", got)
-	}
 	if got := boolParam(true); got != 1 {
 		t.Fatalf("布尔参数 true: %v", got)
 	}
