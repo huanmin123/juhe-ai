@@ -8,7 +8,7 @@
 - `projects/jobs`：定时探活、复制、统计和周期维护。
 - `projects/maintenance`：一次性 schema、迁移、回填、重建和诊断。
 
-三个项目只共享 `shared/contracts` 和无业务编排的 `shared/platform`，互相禁止 import；唯一受控例外是 gateway 组合根经 `maintenance/bootstrap` 在 SQLite 启动时做 schema 引导（ensure+seed，登记于《Go 三项目架构基线》）。项目边界、并发和迁移顺序见 [Go 三项目架构基线](../docs/architecture/Go三项目架构基线.md) 与 [Go 开发手册](../docs/architecture/Go开发手册.md)。
+三个项目只共享 `shared/contracts` 和无业务编排的 `shared/platform`，互相禁止 import；唯一受控例外是 gateway（cmd 层测试专用）经 `maintenance/bootstrap.EnsurePostgres` 为 pgtestkit 隔离库注入 DDL（运行时 schema 引导已随 2026-10-24/25 SQLite 退役删除，唯一入口是 `juhe-ai-maintenance --ensure-schema`；登记于《Go 三项目架构基线》）。项目边界、并发和迁移顺序见 [Go 三项目架构基线](../docs/architecture/Go三项目架构基线.md) 与 [Go 开发手册](../docs/architecture/Go开发手册.md)。
 
 `shared/platform` 还提供无业务的 `sqlpool` 生命周期/引用计数基础设施；gateway/jobs 只保留各自的 `pgx` opener 和项目薄适配层。`shared/platform/upstreamhttp` 是跨项目的上游传输基础设施：统一直连与 HTTP(S)/SOCKS5(SOCKS5H) 代理、禁用环境代理、HTTP/2、响应头大小/超时、无重定向 client、SOCKS5 握手和有界响应体读取/排空。它不包含供应商协议、SSE、余额适配器、探测结果或重试策略。当前 `jobs` 的 J1 健康探活、J2 余额查询和 J3a 代理延迟/出口检测都使用该包；`gateway` 的 `/v1` 转发链生产上游 client 位于 `projects/gateway/internal/gatewaydispatch/gatewayupstream`（transport.go 等），`maintenance` 当前没有上游请求。
 
@@ -37,13 +37,7 @@ go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3b-model-check-po
 Remove-Item Env:JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL -ErrorAction SilentlyContinue
 ```
 
-J3b 专属 SQLite 库用 `--apply-j3b-model-check-sqlite` 引导（读 `JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH`，apply 需 `-node-stopped -go-stopped -backup-confirmed` 三确认）：
-
-```powershell
-$env:JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH = '<path-to>\j3b-model-check.sqlite3'
-go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3b-model-check-sqlite -node-stopped -go-stopped -backup-confirmed
-Remove-Item Env:JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH -ErrorAction SilentlyContinue
-```
+（原 J3b 专属 SQLite 库的 `--apply-j3b-model-check-sqlite` 命令与 `JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH` env 已于 2026-10-24 随 SQLite 退役批物理删除，不再提供该引导路径。）
 
 维护项目的真实 bootstrap 回归也是显式 opt-in，仅接受直连 `5432` 的一次性 `juhe_ai_sub2api_dev_j3a_` scratch，且要求管理员预先创建 `juhe_jobs` schema：
 
@@ -63,25 +57,19 @@ Remove-Item Env:J3A_PG_SCHEMA_CONTRACT_SMOKE_URL -ErrorAction SilentlyContinue
 
 它验证完整结构能被 runtime 接受、错误列会在启动 preflight 被拒绝；同样只适用于可销毁 scratch。
 
-离线迁移按 owner 分开执行：F3/F4 使用 `juhe-ai-gateway --migrate-audit-log-legacy-sqlite`、`--migrate-operation-log-legacy-sqlite` 或 `--migrate-operation-log-legacy-postgres`。F3/F4 离线模式必须显式传入 `--node-stopped --go-stopped --backup-confirmed`，不得和相应常驻 owner 并发运行。F1 运行日志的旧 SQLite 离线迁移命令 `--migrate-runtime-log-legacy-sqlite` 已于 2026-10-24 随 SQLite 退役批删除（用户裁决），存量旧库不再提供该迁移路径。
+离线迁移按 owner 分开执行：F4 使用 `juhe-ai-gateway --migrate-operation-log-legacy-postgres`（原 `--migrate-audit-log-legacy-sqlite` / `--migrate-operation-log-legacy-sqlite` 两个 SQLite 形态命令已于 2026-10-24 随 SQLite 退役批物理删除）。离线模式必须显式传入 `--node-stopped --go-stopped --backup-confirmed`，不得和相应常驻 owner 并发运行。F1 运行日志的旧 SQLite 离线迁移命令 `--migrate-runtime-log-legacy-sqlite` 已于 2026-10-24 随 SQLite 退役批删除（用户裁决），存量旧库不再提供该迁移路径。
 
 ## F4：操作日志离线历史迁移
 
-F4 正常由 `projects/gateway/internal/operationlog` 负责签名输入、写入、读取和保留。历史迁移不是常驻启动的一部分，也不能在 Node 或任何 Go owner 仍可能写入时执行。两种模式均必须先完成可恢复备份，并显式传入 `--node-stopped --go-stopped --backup-confirmed`。
+F4 正常由 `projects/gateway/internal/operationlog` 负责签名输入、写入、读取和保留。历史迁移不是常驻启动的一部分，也不能在 Node 或任何 Go owner 仍可能写入时执行，必须先完成可恢复备份，并显式传入 `--node-stopped --go-stopped --backup-confirmed`。
 
-SQLite 旧 Node dataset 只读复制到已配置的 F4 专库，保留原始稳定 ID、JSON 与 target/viewer 事实，只重建 Go 的派生 search terms：
-
-```powershell
-go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-sqlite --operation-log-source-db 'F:\path\to\legacy-dataset.sqlite' --node-stopped --go-stopped --backup-confirmed
-```
-
-源和目标是同一物理文件（包括 hard link/symlink）会明确拒绝，源库不会被修改。PostgreSQL 的旧 Node 表与 Go F4 表同名并位于 `juhe_dataset`，因此只能在停机窗口内原地升级旧 viewer 三列主键、重建索引和 search terms；不复制到第二个运行中的 owner：
+PostgreSQL 的旧 Node 表与 Go F4 表同名并位于 `juhe_dataset`，因此只能在停机窗口内原地升级旧 viewer 三列主键、重建索引和 search terms；不复制到第二个运行中的 owner：
 
 ```powershell
 go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-postgres --node-stopped --go-stopped --backup-confirmed
 ```
 
-两条命令都会输出 JSON 计数和迁移结果。它们不是生产切流授权：完成后仍须按 F4 操作日志完整迁移契约 核验可读性、首尾样本、发布候选与回滚提交。
+命令输出 JSON 计数和迁移结果。它不是生产切流授权：完成后仍须按 F4 操作日志完整迁移契约 核验可读性、首尾样本、发布候选与回滚提交。
 
 ## F1：运行日志索引与保留
 
@@ -90,32 +78,21 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-pos
 运行前必须满足：
 
 - 稳定且唯一的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`；它用于 Go 多实例 fencing，不是 Node/Go 选择开关。
-- `JUHE_AI_RUNTIME_LOG_STORE=sqlite` 或 `postgres`；必须显式设置，不再从通用数据库变量回退。
-- SQLite 提供 F1 专用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，以及业务、数据集目录、usage catalog、stats 和 Codex Context shard 的路径。F1 会拒绝这些任一路径或任一 shard 与 F1 指向同一个物理 SQLite 文件；只读业务库的 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 必须提供专用 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
-- 两种模式均提供 `JUHE_AI_LOG_DIR`；Go 启动时初始化并验证自己的 F1 schema。
+- 必须提供专用 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`（无主 URL 回退），并从 `juhe_business.system_settings` 读取 `runtimeLogIndexRetentionDays`。原 `JUHE_AI_RUNTIME_LOG_STORE` env 与 SQLite 路径族（`JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 等）已于 2026-10-24 随 SQLite 退役删除，不再读取。
+- 提供 `JUHE_AI_LOG_DIR`；Go 启动时初始化并验证自己的 F1 schema。
 
 示例：
 
 ```powershell
 $env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'go-jobs-runtime-log-a'
-$env:JUHE_AI_RUNTIME_LOG_STORE = 'sqlite'
-$env:JUHE_AI_RUNTIME_LOG_DATABASE_PATH = 'F:\temp\juhe-ai\runtime-log.sqlite'
-$env:JUHE_AI_DATABASE_PATH = 'F:\temp\juhe-ai\business.sqlite'
-$env:JUHE_AI_DATASET_DATABASE_PATH = 'F:\temp\juhe-ai\dataset.sqlite'
-$env:JUHE_AI_USAGE_CATALOG_DATABASE_PATH = 'F:\temp\juhe-ai\usage-catalog.sqlite'
-$env:JUHE_AI_STATS_DATABASE_PATH = 'F:\temp\juhe-ai\stats.sqlite'
-$env:JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = 'F:\temp\juhe-ai\codex-context\state-shards'
+$env:JUHE_AI_RUNTIME_LOG_POSTGRES_URL = 'postgres://<user>:<password>@<host>:5432/juhe_ai?sslmode=require&application_name=juhe-ai-jobs-runtime-log'
 $env:JUHE_AI_LOG_DIR = 'F:\temp\juhe-ai\logs'
 go run ./projects/jobs/cmd/juhe-ai-jobs
 ```
 
 主程序初始化并验证 F1 schema。Node 的 importer、保留清理、writer、scheduler 与所有 F1 表的通用清理已下线；Go 是该功能唯一 writer。
 
-已存在的 Node F1 索引数据不能在常驻启动时自动复制。先停止 Node 与 Go indexer，设置 `JUHE_AI_DATASET_DATABASE_PATH` 指向旧 dataset 文件，并提供所有 SQLite owner 路径以完成物理隔离校验，再执行：
-
-> F1 运行日志的旧 SQLite 离线迁移（`--migrate-runtime-log-legacy-sqlite`）已于 2026-10-24 随 SQLite 退役批删除。
-
-该一次性命令会校验源库完整性、F1 表、数量、主键和字段值；失败时保留原文件，不能回退到 Node F1 或将 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 改成 dataset 文件。
+已存在的 Node F1 索引数据不能在常驻启动时自动复制；F1 的旧 SQLite 离线迁移命令（`--migrate-runtime-log-legacy-sqlite`）已于 2026-10-24 随 SQLite 退役批删除，存量旧库不再提供迁移路径，也不允许把 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL` 指向其他域的库。
 
 验证：
 
