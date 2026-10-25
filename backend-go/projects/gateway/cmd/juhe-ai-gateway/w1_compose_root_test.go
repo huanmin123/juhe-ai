@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
@@ -352,14 +352,19 @@ func TestW1OApikeySecretSealerRoundTrip(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1ORatelimitSettingsProviderArms(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1o-ratelimit-settings.sqlite3"))
+	// PG 唯一形态（PLAN-20261024T051925945Z）：pgtestkit 隔离库；种子后置到
+	// 阶段二（原 SQLite ensure 先建空 schema 的阶段一「无设置行」臂由
+	// EnsurePostgres 之后的空 system_settings 表承载）。
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := bootstrap.EnsurePostgres(ctx, db)
+		return err
+	})
+	_ = testDB.DB.Close()
+	db, err := sql.Open("pgx", testDB.DSN+"&search_path=juhe_business")
 	if err != nil {
-		t.Fatalf("打开临时库: %v", err)
+		t.Fatalf("打开夹具连接池: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("ensure 业务 schema: %v", err)
-	}
 
 	base := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
 	step := 0
@@ -367,7 +372,7 @@ func TestW1ORatelimitSettingsProviderArms(t *testing.T) {
 		step++
 		return base.Add(time.Duration(step) * 2 * time.Minute)
 	}
-	store, err := settings.NewStore(db, false, now, nil)
+	store, err := settings.NewStore(db, true, now, nil)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -383,7 +388,7 @@ func TestW1ORatelimitSettingsProviderArms(t *testing.T) {
 
 	// 阶段二：seed 业务库（Node seedDefaults 移植，写入系统设置默认行）→
 	// provider 必须能加载完整快照（缺行臂由阶段一锁定，不再重复）。
-	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Secret: "w1o-provider-secret"}); err != nil {
+	if _, err := bootstrap.SeedPostgres(context.Background(), db, bootstrap.SeedOptions{Secret: "w1o-provider-secret"}); err != nil {
 		t.Fatalf("seed 业务库: %v", err)
 	}
 	got, err := provider(ctx)
@@ -427,7 +432,7 @@ func TestW1ORatelimitSettingsProviderArms(t *testing.T) {
 	}
 
 	// 阶段四：表损坏 → Load 错误透传（时钟步进必然越过 60s 缓存 TTL）。
-	if _, err := db.Exec("DROP TABLE system_settings"); err != nil {
+	if _, err := db.Exec("DROP TABLE juhe_business.system_settings"); err != nil {
 		t.Fatalf("DROP system_settings: %v", err)
 	}
 	if _, err := provider(ctx); err == nil {

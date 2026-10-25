@@ -264,7 +264,7 @@ func openTestDBPostgres(t *testing.T) *testDB {
 		_, err := db.ExecContext(ctx, proberepoBusinessSchemaPG)
 		return err
 	})
-	store, err := NewStore(Config{DB: db, Postgres: true, Secret: testSecret, Now: func() time.Time { return testNow }})
+	store, err := NewStore(Config{DB: db, Secret: testSecret, Now: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func openTestDBPostgres(t *testing.T) *testDB {
 func openBareTestDBPostgres(t *testing.T) *testDB {
 	t.Helper()
 	db := pgtestkit.New(t)
-	store, err := NewStore(Config{DB: db, Postgres: true, Secret: testSecret, Now: func() time.Time { return testNow }})
+	store, err := NewStore(Config{DB: db, Secret: testSecret, Now: func() time.Time { return testNow }})
 	if err != nil {
 		t.Fatal(err)
 	}

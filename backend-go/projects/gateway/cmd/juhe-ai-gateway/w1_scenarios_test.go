@@ -73,11 +73,11 @@ func newW1ScenarioChain(t *testing.T, upstream http.HandlerFunc) *w1ScenarioChai
 	t.Cleanup(upstreamServer.Close)
 	// B4 第一批单连接事实源：上游指向改连接行 base_url（secret BaseURL =
 	// account_connections.base_url）；credentials.base_url 依赖已解除。
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key"}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
-	if _, err := fixture.db.Exec(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`, upstreamServer.URL); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`), upstreamServer.URL); err != nil {
 		t.Fatalf("update connection base url: %v", err)
 	}
 	spoolDir := filepath.Join(t.TempDir(), "spool")
@@ -203,7 +203,7 @@ func TestW1ScenarioDeadUpstream(t *testing.T) {
 	deadURL := dead.URL
 	dead.Close()
 	fixture := newChainFixture(t)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": deadURL}), fixture.accountID); err != nil {
 		t.Fatalf("update credentials: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestW1ScenarioResponsesEndpoint(t *testing.T) {
 	if _, err := fixture.db.Exec(`UPDATE models SET supported_endpoint_modes_json = '["chat_json","chat_sse","responses_json","responses_sse"]' WHERE public_model = 'gpt-test'`); err != nil {
 		t.Fatalf("update catalog: %v", err)
 	}
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update credentials: %v", err)
 	}

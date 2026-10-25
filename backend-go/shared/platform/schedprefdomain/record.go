@@ -20,8 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // MigrationSettingKey 是业务库 global_settings 的专用 key。
@@ -91,20 +89,17 @@ func ParseRecord(valueJSON string) (Record, error) {
 	return record, nil
 }
 
-// ReadRecord 读取迁移记录（方言分支：PG 走 juhe_business 限定与 $1 占位符，
-// SQLite 走裸表名与 ?）；无记录返回 ok=false。gateway/jobs 启动门禁与
-// maintenance 迁移执行器共用此读取语义，解析语义只此一份。
-func ReadRecord(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect) (Record, bool, error) {
-	return readRecordWith(ctx, db, dialect)
+// ReadRecord 读取迁移记录（PostgreSQL 业务库，juhe_business schema 限定与 $1
+// 占位符）；无记录返回 ok=false。gateway/jobs 启动门禁与 maintenance 迁移
+// 执行器共用此读取语义，解析语义只此一份。
+func ReadRecord(ctx context.Context, db *sql.DB) (Record, bool, error) {
+	return readRecordWith(ctx, db)
 }
 
 // readRecordWith 是 ReadRecord 的最小 SQL 面（供 *sql.DB 与 seed 链的语句录
 // 制假驱动共用）。
-func readRecordWith(ctx context.Context, client FreshInstallClient, dialect capabilitydomain.Dialect) (Record, bool, error) {
-	query := "SELECT value_json FROM global_settings WHERE key = ?"
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `SELECT value_json FROM "juhe_business"."global_settings" WHERE key = $1`
-	}
+func readRecordWith(ctx context.Context, client FreshInstallClient) (Record, bool, error) {
+	query := `SELECT value_json FROM "juhe_business"."global_settings" WHERE key = $1`
 	var valueJSON string
 	err := client.QueryRowContext(ctx, query, MigrationSettingKey).Scan(&valueJSON)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -137,8 +132,8 @@ const startupGateActionText = "运维动作：先停写（停止 gateway/jobs）
 // 此报错）。任一不满足即返回携带运维动作的错误，调用方原样 fail-fast；启动
 // 只读，不把启动变成迁移执行者。两侧启动门禁共用本函数，禁止在调用侧复制
 // 判定语义与文案。
-func RequireCompleted(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect) error {
-	record, present, err := ReadRecord(ctx, db, dialect)
+func RequireCompleted(ctx context.Context, db *sql.DB) error {
+	record, present, err := ReadRecord(ctx, db)
 	if err != nil {
 		return fmt.Errorf("调度偏好迁移记录 %s 读取失败：%v。%s（记录损坏或 ruleVersion 不符时迁移命令同样拒绝执行，先核对记录来源与 maintenance 版本，禁止手工改写记录）", MigrationSettingKey, err, startupGateActionText)
 	}
@@ -163,15 +158,12 @@ func recordPayload(stage Stage, counts Counts, now time.Time) (string, string, e
 // ClaimRunningStage 首次写入 running 迁移记录（要求记录尚不存在）。并发竞争
 // 下只有一个 INSERT 生效；返回 acquired=false 表示另一个执行者已写入。fresh
 // 空库封存与其他写入方共用同一唯一 key 竞争语义。
-func ClaimRunningStage(ctx context.Context, tx *sql.Tx, dialect capabilitydomain.Dialect, now time.Time) (bool, error) {
+func ClaimRunningStage(ctx context.Context, tx *sql.Tx, now time.Time) (bool, error) {
 	payload, updatedAt, err := recordPayload(StageRunning, Counts{}, now)
 	if err != nil {
 		return false, err
 	}
-	query := `INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING`
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING`
-	}
+	query := `INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING`
 	result, err := tx.ExecContext(ctx, query, MigrationSettingKey, payload, updatedAt)
 	if err != nil {
 		return false, fmt.Errorf("写入迁移记录 %s 失败: %w", MigrationSettingKey, err)
@@ -185,26 +177,13 @@ func ClaimRunningStage(ctx context.Context, tx *sql.Tx, dialect capabilitydomain
 
 // CompleteStage 条件更新 running → completed 并写入工作量计数。返回
 // acquired=false 表示当前 stage 已被并行执行者改变（保留 running）。
-func CompleteStage(ctx context.Context, tx *sql.Tx, dialect capabilitydomain.Dialect, counts Counts, now time.Time) (bool, error) {
+func CompleteStage(ctx context.Context, tx *sql.Tx, counts Counts, now time.Time) (bool, error) {
 	payload, updatedAt, err := recordPayload(StageCompleted, counts, now)
 	if err != nil {
 		return false, err
 	}
-	if dialect == capabilitydomain.DialectPostgres {
-		query := `UPDATE "juhe_business"."global_settings" SET value_json = $1, updated_at = $2
-			WHERE key = $3 AND value_json::jsonb->>'stage' = $4`
-		result, err := tx.ExecContext(ctx, query, payload, updatedAt, MigrationSettingKey, string(StageRunning))
-		if err != nil {
-			return false, fmt.Errorf("条件更新迁移记录 %s 失败: %w", MigrationSettingKey, err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return false, fmt.Errorf("读取迁移记录条件更新行数失败: %w", err)
-		}
-		return affected == 1, nil
-	}
-	query := `UPDATE global_settings SET value_json = ?, updated_at = ?
-		WHERE key = ? AND json_extract(value_json, '$.stage') = ?`
+	query := `UPDATE "juhe_business"."global_settings" SET value_json = $1, updated_at = $2
+		WHERE key = $3 AND value_json::jsonb->>'stage' = $4`
 	result, err := tx.ExecContext(ctx, query, payload, updatedAt, MigrationSettingKey, string(StageRunning))
 	if err != nil {
 		return false, fmt.Errorf("条件更新迁移记录 %s 失败: %w", MigrationSettingKey, err)
@@ -222,16 +201,13 @@ func CompleteStage(ctx context.Context, tx *sql.Tx, dialect capabilitydomain.Dia
 // 调用方保证顺序）；满足则以单条 INSERT ON CONFLICT DO NOTHING 原子写入
 // completed 记录（与迁移命令的领取/完成竞争同一 key）。记录已存在或
 // api_keys 非空的库一律不写（存量库由迁移命令负责）。返回是否本次写入。
-func SealFreshInstall(ctx context.Context, client FreshInstallClient, dialect capabilitydomain.Dialect) (bool, error) {
-	if _, present, err := readRecordWith(ctx, client, dialect); err != nil {
+func SealFreshInstall(ctx context.Context, client FreshInstallClient) (bool, error) {
+	if _, present, err := readRecordWith(ctx, client); err != nil {
 		return false, err
 	} else if present {
 		return false, nil
 	}
-	countQuery := `SELECT COUNT(*) FROM api_keys`
-	if dialect == capabilitydomain.DialectPostgres {
-		countQuery = `SELECT COUNT(*) FROM "juhe_business"."api_keys"`
-	}
+	countQuery := `SELECT COUNT(*) FROM "juhe_business"."api_keys"`
 	var keys int
 	if err := client.QueryRowContext(ctx, countQuery).Scan(&keys); err != nil {
 		return false, fmt.Errorf("空库封存检查 api_keys 行数失败: %w", err)
@@ -243,10 +219,7 @@ func SealFreshInstall(ctx context.Context, client FreshInstallClient, dialect ca
 	if err != nil {
 		return false, err
 	}
-	query := `INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING`
-	if dialect == capabilitydomain.DialectPostgres {
-		query = `INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING`
-	}
+	query := `INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING`
 	result, err := client.ExecContext(ctx, query, MigrationSettingKey, payload, updatedAt)
 	if err != nil {
 		return false, fmt.Errorf("空库封存写入迁移记录 %s 失败: %w", MigrationSettingKey, err)

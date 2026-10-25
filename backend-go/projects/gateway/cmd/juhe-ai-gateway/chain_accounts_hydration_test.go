@@ -23,7 +23,7 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
@@ -64,7 +64,7 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 	// keeps the 24h freshness window satisfied regardless of the wall clock).
 	seedStats := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.statsDB.Exec(query, args...); err != nil {
+		if _, err := fixture.statsDB.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed stats row: %v: %v", query, err)
 		}
 	}
@@ -189,7 +189,7 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
@@ -261,7 +261,7 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 func TestChainAccountsSelectorUnavailableCooldown(t *testing.T) {
 	fixture := newChainFixture(t)
 	db := fixture.db
-	if _, err := db.Exec(`UPDATE accounts SET status = 'temporary_unavailable', cooldown_until = '2999-01-01T00:00:00.000Z' WHERE id = ?`, fixture.accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE accounts SET status = 'temporary_unavailable', cooldown_until = '2999-01-01T00:00:00.000Z' WHERE id = ?`), fixture.accountID); err != nil {
 		t.Fatalf("cooldown account: %v", err)
 	}
 	defaultWindow, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, fixture.systemAccount, gatewayruntimecache.OpenAIAccountsForGroupOptions{})
@@ -294,7 +294,7 @@ func TestChainAccountsSelectorGroupAuthorization(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}

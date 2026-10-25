@@ -4,8 +4,8 @@
 // pg_schema_business_tables.go：契约列为最小依赖集，CREATE TABLE + 幂等 ALTER
 // 后全部存在；PG 侧多出的列为前向兼容面，不进契约），CheckBusinessPostgresSchema
 // （gateway modelcheckowner）继续以本 map 为唯一事实源，校验语义不变。
-// 文件尾的 SQLite* 别名是 gateway 侧尚未退役的 CheckBusinessSQLiteSchema 的
-// 编译桥，随该 checker 删除批次（B5/B8）一并移除。
+// （原文件尾 SQLite* 别名编译桥已随 CheckBusinessSQLiteSchema 退役一并删除，
+// B8。）
 package contracts
 
 // BusinessTableSpec describes the minimum Business (juhe_business, PostgreSQL)
@@ -109,22 +109,3 @@ var BusinessSchema = map[string]BusinessTableSpec{
 		},
 	},
 }
-
-// ---- 退役编译桥（B5/B8 随 gateway CheckBusinessSQLiteSchema 一并删除）----
-// 以下别名仅为 gateway modelcheckowner 尚未退役的 SQLite 校验面保持编译；
-// 权威名是上方的 Business* 族。禁止新代码使用本段别名。
-
-// SQLiteTableSpec is the retired name of BusinessTableSpec.
-type SQLiteTableSpec = BusinessTableSpec
-
-// SQLiteIndexDefinition is the retired name of BusinessIndexDefinition.
-type SQLiteIndexDefinition = BusinessIndexDefinition
-
-// SQLiteForeignKeySpec is the retired name of BusinessForeignKeySpec.
-type SQLiteForeignKeySpec = BusinessForeignKeySpec
-
-// BusinessSQLiteSchemaVersion is the retired name of BusinessSchemaVersion.
-const BusinessSQLiteSchemaVersion = BusinessSchemaVersion
-
-// BusinessSQLiteSchema is the retired name of BusinessSchema.
-var BusinessSQLiteSchema = BusinessSchema

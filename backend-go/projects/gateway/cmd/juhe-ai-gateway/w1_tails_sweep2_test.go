@@ -111,13 +111,13 @@ func (w1tFailReader) Close() error             { return nil }
 // w1tSeedObservationAsset 写入一条可 claim 的资产行 + user_input 引用行。
 func w1tSeedObservationAsset(t *testing.T, db *sql.DB, assetID string, withReference bool) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
-		VALUES (?, 'sys-w1t', 'conv-w1t', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`, assetID); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
+		VALUES (?, 'sys-w1t', 'conv-w1t', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`), assetID); err != nil {
 		t.Fatalf("seed 资产行(%s): %v", assetID, err)
 	}
 	if withReference {
-		if _, err := db.Exec(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
-			VALUES (?, 'conv-w1t', 'turn-w1t', 'msg-w1t', 'user_input', '2027-01-01T00:00:00.000Z')`, assetID); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
+			VALUES (?, 'conv-w1t', 'turn-w1t', 'msg-w1t', 'user_input', '2027-01-01T00:00:00.000Z')`), assetID); err != nil {
 			t.Fatalf("seed 引用行(%s): %v", assetID, err)
 		}
 	}
@@ -130,17 +130,17 @@ func w1tSeedObservationAssetBytes(t *testing.T, db *sql.DB, store *w1tObsObjectS
 	data := []byte("w1t-png-bytes")
 	sum := sha256.Sum256(data)
 	storageKey := assetID + "-key"
-	if _, err := db.Exec(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at,
 			storage_key, processed_mime_type, processed_bytes, processed_sha256, source_kind)
 		VALUES (?, 'sys-w1t', 'conv-w1t', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z',
-			?, 'image/png', ?, ?, ?)`, assetID, storageKey, len(data), hex.EncodeToString(sum[:]), sourceKind); err != nil {
+			?, 'image/png', ?, ?, ?)`), assetID, storageKey, len(data), hex.EncodeToString(sum[:]), sourceKind); err != nil {
 		t.Fatalf("seed 带存储资产行(%s): %v", assetID, err)
 	}
 	if err := store.Write(storageKey, data, int64(len(data)), ""); err != nil {
 		t.Fatalf("写对象存储: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
-		VALUES (?, 'conv-w1t', 'turn-w1t', 'msg-w1t', 'user_input', '2027-01-01T00:00:00.000Z')`, assetID); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
+		VALUES (?, 'conv-w1t', 'turn-w1t', 'msg-w1t', 'user_input', '2027-01-01T00:00:00.000Z')`), assetID); err != nil {
 		t.Fatalf("seed 引用行(%s): %v", assetID, err)
 	}
 }
@@ -396,14 +396,16 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 	ctx := context.Background()
 	db := seedChainSelectorDB(t)
 	t.Cleanup(func() { _ = db.Close() })
-	selector, err := newChainAccountsSelector(db, false, "w1t-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, true, "w1t-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("构造 selector: %v", err)
 	}
 
 	t.Run("裸库查询错误臂", func(t *testing.T) {
+		// 裸库无 juhe_business/juhe_stats schema，恰好承载「表缺失必须查询
+		// 失败」负向臂（原 sqlite 裸文件臂重钉，T67 批）。
 		bare := w1uOpenPlainSQLite(t, "w1t-selector-bare.sqlite3")
-		bareSelector, err := newChainAccountsSelector(bare, false, "w1t-secret", time.Now, 20)
+		bareSelector, err := newChainAccountsSelector(bare, true, "w1t-secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("构造裸库 selector: %v", err)
 		}
@@ -421,7 +423,7 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 	t.Run("中毒行扫描错误臂", func(t *testing.T) {
 		mustExec := func(query string, args ...any) {
 			t.Helper()
-			if _, err := db.Exec(query, args...); err != nil {
+			if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 				t.Fatalf("seed 中毒行 %q: %v", query, err)
 			}
 		}
@@ -449,6 +451,12 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 		if _, err := selector.resolveProxyURLsForProfiles(ctx, []string{"pp-w1t-p4"}); err == nil {
 			t.Fatal("NULL host 必须扫描失败")
 		}
+		// PG 的 REAL 列在写入期即拒绝非数值（22P02），中毒列按列型重钉为
+		// TEXT：非数值写入成功、扫描进 float64 时失败（T67 批披露）。
+		mustExec(`DROP TABLE IF EXISTS juhe_stats.account_quality_scores`)
+		mustExec(`CREATE TABLE juhe_stats.account_quality_scores (
+			account_id TEXT PRIMARY KEY, quality_score TEXT, quality_state TEXT,
+			ewma_first_token_ms REAL, last_sample_at TEXT NOT NULL)`)
 		mustExec(`INSERT INTO account_quality_scores (account_id, quality_score, quality_state, ewma_first_token_ms, last_sample_at)
 			VALUES ('acc-w1t-p5', 'oops', 'bad', 120, '2026-09-14T00:00:00.000Z')`)
 		if _, err := selector.loadFreshQualityRows(ctx, []string{"acc-w1t-p5"}, "2026-01-01T00:00:00.000Z"); err == nil {
@@ -470,7 +478,7 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 		if credErr != nil {
 			t.Fatalf("加密凭据: %v", credErr)
 		}
-		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at) VALUES ('acc-w1t-extra', 'sys_admin', 'extra', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, ?, NULL)`, credentials); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at) VALUES ('acc-w1t-extra', 'sys_admin', 'extra', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, ?, NULL)`), credentials); err != nil {
 			t.Fatalf("seed 额外账户: %v", err)
 		}
 		if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acc-w1t-extra', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '2026-01-01T00:00:00.000Z')`); err != nil {
@@ -545,10 +553,10 @@ func w1tLocksOpenReadWrite(t *testing.T, name string) *sql.DB {
 
 func w1tLocksInsertState(t *testing.T, db *sql.DB, row chainAccountLockRow) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO account_lock_states (account_id, enabled, lock_state, lock_death_timeout_seconds,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO account_lock_states (account_id, enabled, lock_state, lock_death_timeout_seconds,
 			lock_retry_interval_seconds, incident_id, generation, incident_started_at, deadline_at, original_status,
 			provenance, next_retry_at_ms, lease_id, lease_until_ms, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, '2026-09-14T00:00:00.000Z')`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, '2026-09-14T00:00:00.000Z')`),
 		row.accountID, row.enabled, row.lockState, row.deathTimeout, row.retryInterval,
 		row.incidentID, row.generation, row.deadlineAt, row.originalStatus,
 		row.nextRetryAtMs, row.leaseID, row.leaseUntilMs); err != nil {
@@ -558,7 +566,7 @@ func w1tLocksInsertState(t *testing.T, db *sql.DB, row chainAccountLockRow) {
 
 func w1tLocksSeedAccount(t *testing.T, db *sql.DB, accountID string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, updated_at, deleted_at) VALUES (?, 'sys-w1t', 'acc', 'api_key', 'active', 1, '2026-09-14T00:00:00.000Z', NULL)`, accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, updated_at, deleted_at) VALUES (?, 'sys-w1t', 'acc', 'api_key', 'active', 1, '2026-09-14T00:00:00.000Z', NULL)`), accountID); err != nil {
 		t.Fatalf("seed 账户(%s): %v", accountID, err)
 	}
 }
@@ -764,7 +772,9 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 	options := gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt", IncludeInactive: true}
 
 	t.Run("models 表缺失", func(t *testing.T) {
-		source, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-cat-bare.sqlite3"), false)
+		// 裸库无 juhe_business schema，恰好承载「缺 models 表必须查询失败」
+		//（原 sqlite 裸文件臂重钉，T67 批）。
+		source, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-cat-bare.sqlite3"), true)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -775,10 +785,11 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 
 	t.Run("models 表缺失（种子库删表）", func(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
-		if _, err := db.Exec(`DROP TABLE models`); err != nil {
+		// bootstrap 在 models 上建有视图等依赖对象，随表一并删（一次性测试库）。
+		if _, err := db.Exec(`DROP TABLE juhe_business.models CASCADE`); err != nil {
 			t.Fatalf("删 models: %v", err)
 		}
-		source, err := newChainCatalogSource(db, false)
+		source, err := newChainCatalogSource(db, true)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -789,11 +800,16 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 
 	t.Run("内置目录坏数值行解码失败", func(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
-		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, context_window_tokens, source, created_at, updated_at)
-			VALUES ('w1t-cat-poison', 'gpt', 'w1t-m-poison', 'w1t-m-poison', 'builtin', 'active', 1, 'not-a-number', 'builtin', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
+		// PG 的 integer 列在写入期即拒绝非数值（22P02），按列型重钉为
+		// TEXT：非数值写入成功、行投影 JSON 解码进 int64 时失败（T67 批披露）。
+		if _, err := db.Exec(`ALTER TABLE juhe_business.models ALTER COLUMN context_window_tokens TYPE text USING context_window_tokens::text`); err != nil {
+			t.Fatalf("重钉 context_window_tokens 列型: %v", err)
+		}
+		if _, err := db.Exec(`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, context_window_tokens, source, created_at, updated_at)
+			VALUES ('w1t-cat-poison', 'gpt', 'w1t-m-poison', 'w1t-m-poison', 'builtin', 'active', TRUE, 'not-a-number', 'builtin', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed 坏数值目录行: %v", err)
 		}
-		source, err := newChainCatalogSource(db, false)
+		source, err := newChainCatalogSource(db, true)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -804,11 +820,14 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 
 	t.Run("自定义目录坏数值行解码失败", func(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
-		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, context_window_tokens, created_at, updated_at)
+		if _, err := db.Exec(`ALTER TABLE juhe_business.models ALTER COLUMN context_window_tokens TYPE text USING context_window_tokens::text`); err != nil {
+			t.Fatalf("重钉 context_window_tokens 列型: %v", err)
+		}
+		if _, err := db.Exec(`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, context_window_tokens, created_at, updated_at)
 			VALUES ('w1t-cpm-poison', 'gpt', 'w1t-m-poison', 'w1t-m-poison', 'global', NULL, 'active', 'not-a-number', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed 坏数值自定义行: %v", err)
 		}
-		source, err := newChainCatalogSource(db, false)
+		source, err := newChainCatalogSource(db, true)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -823,12 +842,12 @@ func TestW1TBalanceRefresherEmptySecretArms(t *testing.T) {
 	db := w1tProxyDB(t, `INSERT INTO proxy_profiles (id, type, host, port) VALUES ('p-w1t-plain', 'socks5', '10.0.0.8', 1080)`)
 
 	// resolveProxyURLEnvelope：空 secret 构建 proxy_url 信封失败上抛。
-	if _, err := resolveProxyURLEnvelope(ctx, db, false, "", "p-w1t-plain"); err == nil {
+	if _, err := resolveProxyURLEnvelope(ctx, db, true, "", "p-w1t-plain"); err == nil {
 		t.Fatal("空 secret 的代理信封构建必须报错")
 	}
 
 	// TestDraft：空 secret 构建 api_key 信封失败上抛（在配置校验之后）。
-	refresher := &gatewayManualBalanceRefresher{db: db, pg: false, secret: "", now: time.Now}
+	refresher := &gatewayManualBalanceRefresher{db: db, pg: true, secret: "", now: time.Now}
 	if _, err := refresher.TestDraft(ctx, accounts.BalanceDraftProbeInput{
 		Credentials: accounts.Credentials{"api_key": "sk-w1t", "base_url": "http://127.0.0.1:9"},
 		Config:      map[string]any{"adapter": "builtin", "intervalMinutes": 5},
@@ -844,8 +863,9 @@ func TestW1TBalanceRefresherEmptySecretArms(t *testing.T) {
 func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 	t.Run("空 Secret 组合失败", func(t *testing.T) {
 		composed := &composition{
-			db:      w1uOpenPlainSQLite(t, "w1t-rt-sec-b.sqlite3"),
-			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-sec-s.sqlite3"),
+			db:        w1uOpenPlainSQLite(t, "w1t-rt-sec-b.sqlite3"),
+			statsDB:   w1uOpenPlainSQLite(t, "w1t-rt-sec-s.sqlite3"),
+			pgDialect: true,
 		}
 		cfg := runtimeConfig{Secret: "", DispatchAccountCandidateLimit: 20}
 		if _, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue); err == nil {
@@ -855,8 +875,9 @@ func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 
 	t.Run("坏 state redis URL 组合失败", func(t *testing.T) {
 		composed := &composition{
-			db:      w1uOpenPlainSQLite(t, "w1t-rt-drv-b.sqlite3"),
-			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-drv-s.sqlite3"),
+			db:        w1uOpenPlainSQLite(t, "w1t-rt-drv-b.sqlite3"),
+			statsDB:   w1uOpenPlainSQLite(t, "w1t-rt-drv-s.sqlite3"),
+			pgDialect: true,
 		}
 		cfg := runtimeConfig{
 			Secret: "w1t-runtime-secret", RedisStateURL: "redis://[::w1t-bad-url",

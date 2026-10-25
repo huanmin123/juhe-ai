@@ -15,6 +15,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
+
 )
 
 // superMemberGroup 描述超级分组的一个成员组及其账号。
@@ -32,7 +33,7 @@ func superSeedFixture(t *testing.T, second superMemberGroup) *chainFixture {
 	now := chainRouteTestNow
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed super fixture: %v: %v", query, err)
 		}
 	}
@@ -266,7 +267,7 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 		}
 		var status string
 		var schedulable int
-		if err := fixture.db.QueryRow(`SELECT status, schedulable FROM accounts WHERE id = ?`, fixture.accountID).Scan(&status, &schedulable); err != nil {
+		if err := fixture.db.QueryRow(fixtureBind(`SELECT status, schedulable FROM accounts WHERE id = ?`), fixture.accountID).Scan(&status, &schedulable); err != nil {
 			t.Fatal(err)
 		}
 		if status != "active" || schedulable != 1 {

@@ -282,8 +282,11 @@ func TestW7BAuthenticatorDirectSurface(t *testing.T) {
 	if got := pg.bind("SELECT * FROM t WHERE a=? AND b=?"); got != "SELECT * FROM t WHERE a=$1 AND b=$2" {
 		t.Fatalf("bind = %q", got)
 	}
-	if sq := (&Authenticator{mode: SQLite}); sq.table("system_sessions") != "system_sessions" || sq.bind("a=?") != "a=?" {
-		t.Fatal("SQLite 语义必须保持")
+	// 生产 table()/bind() 的非 Postgres 回退分支尚未坍缩：以非 Postgres Mode
+	// 值（Mode(9)，New 已拒绝的非法值，仅经结构体字面量触达）锁定现存分支
+	// 语义；该臂随生产回退分支坍缩批退役。
+	if sq := (&Authenticator{mode: Mode(9)}); sq.table("system_sessions") != "system_sessions" || sq.bind("a=?") != "a=?" {
+		t.Fatal("非 Postgres 回退语义必须保持")
 	}
 
 	// parseTime / 哈希 / base64 / maxInt 分支。

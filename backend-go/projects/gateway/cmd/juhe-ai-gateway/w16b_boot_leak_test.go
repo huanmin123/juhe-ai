@@ -35,8 +35,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
-
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 func TestW16BInProcessBootCoverage(t *testing.T) {
@@ -50,37 +49,41 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 	}
 	mainPort := w1FreePort(t)
 	healthPort := w1FreePort(t)
+	// PostgreSQL + Redis 是唯一存储形态（PLAN-20261024T051925945Z）：业务库、
+	// F3 审计库与 F4 操作日志库共用 pgtestkit 隔离库（fresh DDL + seed 等价
+	// maintenance --ensure-schema --seed 的 business 面）；文件面只剩 blob/hot
+	// 搜索目录。
+	businessDB := pgtestkit.NewTestDatabase(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Secret: "w16b-boot-secret"})
+			return err
+		})
+	businessDSN := businessDB.DSN
 	_, evidenceEnv := w1BuildSystemApiEvidence(t, root)
 	env := map[string]string{
-		"NODE_ENV":                                 "development",
-		"JUHE_AI_SECRET":                           "w16b-boot-secret-0123456789abcdef",
-		"JUHE_AI_DATABASE_PATH":                    filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_AUDIT_LOG_STORE":                  "sqlite",
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":            "w16b-boot-instance",
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "business-settings.sqlite3"),
-		"JUHE_AI_DATASET_DATABASE_PATH":            filepath.Join(root, "dataset.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":      filepath.Join(root, "usage-catalog.sqlite3"),
-		"JUHE_AI_STATS_DATABASE_PATH":              filepath.Join(root, "stats.sqlite3"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":        filepath.Join(root, "runtime-log.sqlite3"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":   filepath.Join(root, "codex-shards"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT":  "2",
-		"JUHE_AI_USAGE_SHARD_ROOT":                 filepath.Join(root, "usage-shards"),
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH":          filepath.Join(root, "audit.sqlite3"),
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":         filepath.Join(root, "blobs"),
-		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY":   filepath.Join(root, "hotsearch"),
+		"NODE_ENV":                             "development",
+		"JUHE_AI_SECRET":                       "w16b-boot-secret-0123456789abcdef",
+		"JUHE_AI_POSTGRES_URL":                 businessDSN,
+		"JUHE_AI_BUSINESS_POSTGRES_URL":        businessDSN,
+		"JUHE_AI_AUDIT_LOG_POSTGRES_URL":       businessDSN,
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": businessDSN,
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":           "w16b-boot-instance",
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":        filepath.Join(root, "blobs"),
+		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY":  filepath.Join(root, "hotsearch"),
 		// F4 操作日志：composeSystemAPI 硬要求 store 已启用（缺失即 fail-fast）。
-		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "w16b-boot-instance",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":          filepath.Join(root, "operation-log.sqlite3"),
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "business-settings.sqlite3"),
-		"JUHE_AI_HOST":                          "127.0.0.1",
-		"JUHE_AI_PORT":                          mainPort,
+		"JUHE_AI_OPERATION_LOG_POSTGRES_URL": businessDSN,
+		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":  "w16b-boot-instance",
+		"JUHE_AI_HOST":                       "127.0.0.1",
+		"JUHE_AI_PORT":                       mainPort,
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS": "127.0.0.1:" + healthPort,
 	}
 	for key, value := range evidenceEnv {
 		if key == "JUHE_AI_BUSINESS_DATABASE_PATH" || key == "JUHE_AI_CHAT_DATABASE_PATH" {
-			// 证据夹具的库路径钉进同一隔离根。
-			env[key] = value
+			// 证据夹具的 sqlite 库路径键已随存储形态退役，不注入。
 			continue
 		}
 		env[key] = value
@@ -88,27 +91,6 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 	for key, value := range env {
 		t.Setenv(key, value)
 	}
-
-	// F4 只读业务设置镜像要求文件先在（openComposeOperationStore 同约定）。
-	if err := os.WriteFile(filepath.Join(root, "business-settings.sqlite3"), nil, 0o644); err != nil {
-		t.Fatalf("write business settings mirror: %v", err)
-	}
-	// F4 store 还要求业务库文件已存在（main 在 compose preflight 前打开
-	// F4）；用 maintenance bootstrap 进程内建库 + 种子（等价
-	// maintenance --ensure-schema --seed -driver sqlite 的 business 面）。
-	businessDB, err := sql.Open("sqlite", filepath.Join(root, "business.sqlite3"))
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, businessDB); err != nil {
-		_ = businessDB.Close()
-		t.Fatalf("ensure business schema: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), businessDB, bootstrap.SeedOptions{Secret: "w16b-boot-secret"}); err != nil {
-		_ = businessDB.Close()
-		t.Fatalf("seed business db: %v", err)
-	}
-	_ = businessDB.Close()
 
 	// main() 前置状态换装：os.Args / flag.CommandLine / stdout 捕获。
 	oldArgs := os.Args

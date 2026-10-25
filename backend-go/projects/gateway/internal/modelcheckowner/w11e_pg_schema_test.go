@@ -150,7 +150,7 @@ func w11ePgFixturePredicate(predicate string) string {
 	return w11eBareIntegerComparison.ReplaceAllString(predicate, "${1}::integer = ${2}")
 }
 
-// w11eSchemaDDL 从 contracts.BusinessSQLiteSchema 生成结构等价的 PostgreSQL
+// w11eSchemaDDL 从 contracts.BusinessSchema 生成结构等价的 PostgreSQL
 // DDL。类型全部使用 TEXT：本契约只校验结构（列名/主键/唯一/外键/索引），
 // 不校验列类型。被外键引用的列在 PostgreSQL 中必须有唯一约束，契约未声明的
 // 一律补 UNIQUE（多余约束对本契约是前向兼容的）。
@@ -158,14 +158,14 @@ func w11eSchemaDDL(schema string, plan w11eSchemaPlan) []string {
 	q := w11eQuoteIdentifier
 	qualify := func(name string) string { return q(schema) + "." + q(name) }
 	referencedUnique := map[string]bool{}
-	for _, spec := range contracts.BusinessSQLiteSchema {
+	for _, spec := range contracts.BusinessSchema {
 		for _, fk := range spec.ForeignKeys {
 			referencedUnique[fk.RefTable+"("+strings.Join(fk.RefColumns, ",")+")"] = true
 		}
 	}
 	statements := []string{`CREATE SCHEMA ` + q(schema)}
-	tables := make([]string, 0, len(contracts.BusinessSQLiteSchema))
-	for table := range contracts.BusinessSQLiteSchema {
+	tables := make([]string, 0, len(contracts.BusinessSchema))
+	for table := range contracts.BusinessSchema {
 		tables = append(tables, table)
 	}
 	sort.Strings(tables)
@@ -173,7 +173,7 @@ func w11eSchemaDDL(schema string, plan w11eSchemaPlan) []string {
 		if plan.skipTable[table] || plan.viewTables[table] {
 			continue
 		}
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		parts := make([]string, 0, len(spec.Columns))
 		for _, column := range spec.Columns {
 			if plan.missingColumn[table] == column {
@@ -224,7 +224,7 @@ func w11eSchemaDDL(schema string, plan w11eSchemaPlan) []string {
 		if plan.skipTable[table] || plan.viewTables[table] {
 			continue
 		}
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		for _, fk := range spec.ForeignKeys {
 			signature := table + "->" + fk.RefTable
 			if plan.skipFK[signature] {
@@ -257,7 +257,7 @@ func w11eSchemaDDL(schema string, plan w11eSchemaPlan) []string {
 		if plan.skipTable[table] || plan.viewTables[table] {
 			continue
 		}
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		definitionNames := map[string]bool{}
 		for _, definition := range spec.IndexDefinitions {
 			definitionNames[definition.Name] = true
@@ -307,7 +307,7 @@ func w11eSchemaDDL(schema string, plan w11eSchemaPlan) []string {
 		}
 	}
 	for table := range plan.viewTables {
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		selects := make([]string, 0, len(spec.Columns))
 		for index, column := range spec.Columns {
 			if plan.missingColumn[table] == column {

@@ -42,7 +42,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 )
 
@@ -137,7 +136,7 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 	// 策略/Key 预置之前）时原子写入 completed 记录（counts 全零）；记录已存在
 	// 或 api_keys 非空的库一律跳过（存量库由 --migrate-scheduling-preferences
 	// 负责，见 internal/schedprefmigration）。
-	sealed, err := schedprefdomain.SealFreshInstall(ctx, client, capabilitydomain.DialectPostgres)
+	sealed, err := schedprefdomain.SealFreshInstall(ctx, client)
 	if err != nil {
 		return PGSeedResult{}, fmt.Errorf("postgres seed seal scheduling preferences fresh install: %w", err)
 	}

@@ -27,8 +27,8 @@ import (
 func wdGrantRuntimeStatus(t *testing.T, f *fixture, resourceType, resourceID, grantee string) (string, string) {
 	t.Helper()
 	var status, effective string
-	if err := f.db.QueryRow(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
-		WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?`, resourceType, resourceID, grantee).
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
+		WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?`), resourceType, resourceID, grantee).
 		Scan(&status, &effective); err != nil {
 		t.Fatalf("runtime row: %v", err)
 	}
@@ -37,8 +37,8 @@ func wdGrantRuntimeStatus(t *testing.T, f *fixture, resourceType, resourceID, gr
 
 func wdSourceRows(t *testing.T, f *fixture, runtimeID string) []map[string]string {
 	t.Helper()
-	rows, err := f.db.Query(`SELECT source_team_id, status, COALESCE(ended_reason,'') FROM resource_authorization_sources
-		WHERE authorization_id = ? ORDER BY source_team_id`, runtimeID)
+	rows, err := f.db.Query(fixtureBind(`SELECT source_team_id, status, COALESCE(ended_reason,'') FROM resource_authorization_sources
+		WHERE authorization_id = ? ORDER BY source_team_id`), runtimeID)
 	if err != nil {
 		t.Fatalf("sources: %v", err)
 	}
@@ -133,8 +133,8 @@ func TestWdTeamCascadeRevokeMemberRevokeAllReactivate(t *testing.T) {
 		}
 	}
 	var revokedBy string
-	if err := f.db.QueryRow(`SELECT COALESCE(revoked_by,'') FROM resource_authorization_sources
-		WHERE authorization_id = ? AND source_team_id = 'team_wd' LIMIT 1`, wdRuntimeID(t, f, "group", "grp_wd", "member1")).Scan(&revokedBy); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT COALESCE(revoked_by,'') FROM resource_authorization_sources
+		WHERE authorization_id = ? AND source_team_id = 'team_wd' LIMIT 1`), wdRuntimeID(t, f, "group", "grp_wd", "member1")).Scan(&revokedBy); err != nil {
 		t.Fatalf("revoked_by: %v", err)
 	}
 	if revokedBy != "admin-actor" {
@@ -159,8 +159,8 @@ func TestWdCascadeMemberOverLimitRejected(t *testing.T) {
 	for index := 0; index <= MaxTeamMembersPerTeam; index++ {
 		memberID := "m" + strconv.Itoa(index)
 		f.seedAccount(t, memberID, "active")
-		if _, err := f.db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-			VALUES (?, 'team_limit', ?, 'active', ?, ?, ?)`, "tm_"+memberID, memberID, now, now, now); err != nil {
+		if _, err := f.db.Exec(fixtureBind(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
+			VALUES (?, 'team_limit', ?, 'active', ?, ?, ?)`), "tm_"+memberID, memberID, now, now, now); err != nil {
 			t.Fatalf("seed member: %v", err)
 		}
 	}
@@ -182,14 +182,14 @@ func TestWdCascadeGrantsOverLimitRejected(t *testing.T) {
 		groupID := "grp_gl_" + strconv.Itoa(index)
 		f.seedGroup(t, groupID, "owner")
 		grantID := "glg_" + strconv.Itoa(index)
-		if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
+		if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_team_id, status, created_by, created_at, updated_at)
-			VALUES (?, 'group', ?, 'owner', 'team', 'team_gl', 'active', 'owner', ?, ?)`, grantID, groupID, now, now); err != nil {
+			VALUES (?, 'group', ?, 'owner', 'team', 'team_gl', 'active', 'owner', ?, ?)`), grantID, groupID, now, now); err != nil {
 			t.Fatalf("seed grant: %v", err)
 		}
-		if _, err := f.db.Exec(`INSERT INTO resource_authorizations
+		if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorizations
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)
-			VALUES (?, 'group', ?, 'owner', 'member', 'returned', 'owner', ?, ?)`, grantID, groupID, now, now); err != nil {
+			VALUES (?, 'group', ?, 'owner', 'member', 'returned', 'owner', ?, ?)`), grantID, groupID, now, now); err != nil {
 			t.Fatalf("seed runtime: %v", err)
 		}
 	}
@@ -238,7 +238,7 @@ func TestWdRevokeGrantsForResourceDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	var grantStatus, revokedBy string
-	if err := f.db.QueryRow(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants WHERE id = ?`, active.Item.ID).
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(revoked_by,'') FROM resource_authorization_grants WHERE id = ?`), active.Item.ID).
 		Scan(&grantStatus, &revokedBy); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestWdRevokeGrantsForResourceDeleted(t *testing.T) {
 		t.Fatalf("活跃 grant 应被删除回收: %s by %s", grantStatus, revokedBy)
 	}
 	// 终态 grant 保持 returned。
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, returned2.Item.ID).
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), returned2.Item.ID).
 		Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
@@ -280,8 +280,8 @@ func TestWdReconcileExpiredGrantsReplaysProjection(t *testing.T) {
 	// 模拟 jobs sweep：把 grant 翻成 expired——真实到期由 expires_at 过去时
 	// 驱动，refreshEffectiveSource 也据此刻画运行时状态。
 	past := f.now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET status = 'expired', expires_at = ?,
-		revoked_by = 'jobs-sweep', revoked_at = ?, updated_at = ? WHERE id = ?`, past, past, past, created.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'expired', expires_at = ?,
+		revoked_by = 'jobs-sweep', revoked_at = ?, updated_at = ? WHERE id = ?`), past, past, past, created.Item.ID); err != nil {
 		t.Fatal(err)
 	}
 	reconciled, err := f.store.ReconcileExpiredGrants(context.Background(), 0, 0)
@@ -297,7 +297,7 @@ func TestWdReconcileExpiredGrantsReplaysProjection(t *testing.T) {
 		t.Fatalf("幂等重放错误: %d %v", again, err)
 	}
 	var grantStatus, runtimeStatus string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&grantStatus); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
 	runtimeStatus, _ = wdGrantRuntimeStatus(t, f, "group", "grp_exp", "grantee")
@@ -314,8 +314,8 @@ func TestWdReconcileExpiredGrantsReplaysProjection(t *testing.T) {
 func wdRuntimeID(t *testing.T, f *fixture, resourceType, resourceID, grantee string) string {
 	t.Helper()
 	var runtimeID string
-	if err := f.db.QueryRow(`SELECT id FROM resource_authorizations
-		WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?`,
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorizations
+		WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?`),
 		resourceType, resourceID, grantee).Scan(&runtimeID); err != nil {
 		t.Fatalf("runtime id: %v", err)
 	}

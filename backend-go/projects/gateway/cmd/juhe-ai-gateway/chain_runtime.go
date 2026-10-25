@@ -631,10 +631,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// PG+Redis 唯一形态，GetGatewayHotQualityRuntime 按 redis 驱动轴构建
 	// store 对）。
 	hotQuality, hotQualityErr := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "performance",
-		RuntimeStateDriver: "redis",
-		RedisStateURL:      cfg.RedisStateURL,
-		RedisNamespace:     cfg.RedisNamespace,
+		RedisStateURL:  cfg.RedisStateURL,
+		RedisNamespace: cfg.RedisNamespace,
 	})
 	if hotQualityErr != nil {
 		services.Close()

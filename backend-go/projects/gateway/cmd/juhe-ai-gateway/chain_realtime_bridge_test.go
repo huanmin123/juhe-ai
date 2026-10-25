@@ -43,12 +43,12 @@ func seedRealtimeCatalogRow(t *testing.T, db *sql.DB) {
 		{"cat_realtime_1", "gpt"},
 		{"cat_realtime_1_openai_gate", "openai"},
 	} {
-		if _, err := db.Exec(`INSERT INTO models (
+		if _, err := db.Exec(fixtureBind(`INSERT INTO models (
 				id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
 				supported_endpoint_modes_json, audio_input_usd_per_1m, audio_output_usd_per_1m,
 				created_at, updated_at)
-			VALUES (?, ?, 'gpt-realtime', 'gpt-realtime', 'global', 'active', 1,
-				'["realtime_session"]', 32, 64, ?, ?)`, row.id, row.vendorCode, now, now); err != nil {
+			VALUES (?, ?, 'gpt-realtime', 'gpt-realtime', 'global', 'active', TRUE,
+				'["realtime_session"]', 32, 64, ?, ?)`), row.id, row.vendorCode, now, now); err != nil {
 			t.Fatalf("seed realtime catalog: %v", err)
 		}
 	}
@@ -66,16 +66,16 @@ func seedRealtimeAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 			"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session",
 		},
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'gpt', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'gpt', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`),
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials)); err != nil {
 		t.Fatalf("seed realtime account: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
-		VALUES (?, ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.groupID, fixture.systemAccount, id); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES (?, ?, ?, 1, '2026-10-04T00:00:00.000Z')`), fixture.groupID, fixture.systemAccount, id); err != nil {
 		t.Fatalf("seed realtime group binding: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
-		VALUES (?, 'gpt-realtime', 'cat_realtime_1', '2026-10-04T00:00:00.000Z')`, id); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
+		VALUES (?, 'gpt-realtime', 'cat_realtime_1', '2026-10-04T00:00:00.000Z')`), id); err != nil {
 		t.Fatalf("seed realtime supported model: %v", err)
 	}
 	// B4 第一批单连接事实源：BaseURL 改连接行（credentials.base_url 不再消费）。

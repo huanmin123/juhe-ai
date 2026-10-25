@@ -182,7 +182,7 @@ func TestMediaJobPollRecoveryAdmissionIsVideoOnly(t *testing.T) {
 func TestW1MediaAdmissionCandidateWindow(t *testing.T) {
 	fixture := newChainFixture(t)
 	db := fixture.db
-	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode = 'video_create' WHERE id = ?`, fixture.accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE accounts SET health_check_endpoint_mode = 'video_create' WHERE id = ?`), fixture.accountID); err != nil {
 		t.Fatalf("seed media mode: %v", err)
 	}
 
@@ -196,8 +196,8 @@ func TestW1MediaAdmissionCandidateWindow(t *testing.T) {
 	}
 
 	// rate_limited + 过期冷却：视频族准入；TTS/chat/空族零变化。
-	if _, err := db.Exec(`UPDATE accounts SET status = 'rate_limited',
-		cooldown_until = '2020-01-01T00:00:00.000Z' WHERE id = ?`, fixture.accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE accounts SET status = 'rate_limited',
+		cooldown_until = '2020-01-01T00:00:00.000Z' WHERE id = ?`), fixture.accountID); err != nil {
 		t.Fatalf("seed rate_limited: %v", err)
 	}
 	if got := countAccounts(gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedEndpointFamily: "tts"}); got != 0 {
@@ -214,7 +214,7 @@ func TestW1MediaAdmissionCandidateWindow(t *testing.T) {
 	}
 
 	// 未过期冷却：即使媒体族也不准入。
-	if _, err := db.Exec(`UPDATE accounts SET cooldown_until = '2999-01-01T00:00:00.000Z' WHERE id = ?`, fixture.accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE accounts SET cooldown_until = '2999-01-01T00:00:00.000Z' WHERE id = ?`), fixture.accountID); err != nil {
 		t.Fatalf("seed future cooldown: %v", err)
 	}
 	if got := countAccounts(gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedEndpointFamily: "tts"}); got != 0 {
@@ -222,7 +222,7 @@ func TestW1MediaAdmissionCandidateWindow(t *testing.T) {
 	}
 
 	// pending_test 滞留行（cooldown NULL）：媒体族治愈入选，chat 族不可见。
-	if _, err := db.Exec(`UPDATE accounts SET status = 'pending_test', cooldown_until = NULL WHERE id = ?`, fixture.accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE accounts SET status = 'pending_test', cooldown_until = NULL WHERE id = ?`), fixture.accountID); err != nil {
 		t.Fatalf("seed pending_test: %v", err)
 	}
 	if got := countAccounts(gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedEndpointFamily: "tts"}); got != 0 {
@@ -299,7 +299,7 @@ func TestW1MediaJobSuccessReactivatesAccount(t *testing.T) {
 		if cooldown != "" {
 			cooldownArg = cooldown
 		}
-		if _, err := db.Exec(`INSERT INTO accounts (id, capability_domain, health_check_endpoint_mode, status,
+		if _, err := db.Exec(fixtureBind(`INSERT INTO accounts (id, capability_domain, health_check_endpoint_mode, status,
 			schedulable, cooldown_until, next_health_check_at, last_error_code, last_error_message,
 			last_error_trace_id, cooldown_retest_failure_count, cooldown_retest_observation_started_at,
 			cooldown_retest_generation, cooldown_retest_last_at, cooldown_retest_last_status_code,
@@ -307,7 +307,7 @@ func TestW1MediaJobSuccessReactivatesAccount(t *testing.T) {
 			last_health_check_error_message, updated_at)
 			VALUES (?, ?, ?, ?, 1, ?, '2026-01-01T00:00:00.000Z', 'upstream_error', 'boom', 'trace-1',
 			2, '2026-01-01T00:00:00.000Z', 'cooldown:gen-1', '2026-01-01T00:01:00.000Z', 503,
-			3, '2026-01-01T00:00:00.000Z', 'upstream_error', 'boom', '2026-01-01T00:00:00.000Z')`,
+			3, '2026-01-01T00:00:00.000Z', 'upstream_error', 'boom', '2026-01-01T00:00:00.000Z')`),
 			id, domain, mode, status, cooldownArg); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}

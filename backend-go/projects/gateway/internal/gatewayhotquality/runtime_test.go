@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	miniredis "github.com/alicebob/miniredis/v2"
 )
 
 func TestGatewayHotQualityRuntimeSingletonIdentity(t *testing.T) {
@@ -13,29 +15,29 @@ func TestGatewayHotQualityRuntimeSingletonIdentity(t *testing.T) {
 	ResetGatewayHotQualityRuntimeForTest()
 	ctx := context.Background()
 
-	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RuntimeMode: "standalone", RuntimeStateDriver: "memory", RedisNamespace: "dev"})
+	// PG+Redis 唯一形态（PLAN-20261024T051925945Z）：单例身份按 redis 驱动轴
+	// 构建（原 standalone/memory 双模身份与守卫臂随存储形态退役删除，redis
+	// 构建与缓存复用断言由 w9c 的 TestW9CGetGatewayHotQualityRuntimeRedisDriver
+	// 承载）。miniredis 承载真实 redis 客户端构造。
+	server := miniredis.RunT(t)
+	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev", RedisStateURL: "redis://" + server.Addr()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	again, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RuntimeMode: "standalone", RuntimeStateDriver: "memory", RedisNamespace: "dev"})
+	again, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev", RedisStateURL: "redis://" + server.Addr()})
 	if err != nil || again != runtime {
 		t.Fatalf("singleton broken: %v", err)
 	}
-	if _, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RuntimeMode: "standalone", RuntimeStateDriver: "redis"}); err == nil || err.Error() != "standalone 热质量要求 memory runtime state driver" {
+	if _, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev"}); err == nil || err.Error() != "热质量缺少 JUHE_AI_REDIS_STATE_URL" {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "memory"}); err == nil || err.Error() != "performance 热质量要求 redis runtime state driver" {
-		t.Fatalf("err = %v", err)
-	}
-	if _, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis"}); err == nil || err.Error() != "performance 热质量缺少 JUHE_AI_REDIS_STATE_URL" {
-		t.Fatalf("err = %v", err)
-	}
-	identity, identityErr := gatewayHotQualityRuntimeIdentity(RuntimeDriverConfig{RuntimeMode: "performance", RuntimeStateDriver: "redis", RedisStateURL: "redis://x"})
-	if identityErr != nil || !strings.HasPrefix(identity, "performance:redis:") {
+	identity, identityErr := gatewayHotQualityRuntimeIdentity(RuntimeDriverConfig{RedisStateURL: "redis://x"})
+	if identityErr != nil || !strings.HasPrefix(identity, "redis:") {
 		t.Fatalf("identity = %v, err = %v", identity, identityErr)
 	}
 	ResetGatewayHotQualityRuntimeForTest()
-	if runtime2, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RuntimeMode: "standalone", RuntimeStateDriver: "memory"}); err != nil || runtime2 == runtime {
+	server2 := miniredis.RunT(t)
+	if runtime2, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RedisNamespace: "dev2", RedisStateURL: "redis://" + server2.Addr()}); err != nil || runtime2 == runtime {
 		t.Fatalf("reset must rebuild the singleton")
 	}
 	ResetGatewayHotQualityRuntimeForTest()

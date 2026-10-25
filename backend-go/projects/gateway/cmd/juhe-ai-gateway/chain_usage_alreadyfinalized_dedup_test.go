@@ -126,8 +126,7 @@ func TestGatewayChainCommittedStreamFailureRecordsSingleUsageRow(t *testing.T) {
 		}
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
@@ -193,8 +192,7 @@ func TestGatewayChainSuccessfulStreamKeepsSingleUsageRow(t *testing.T) {
 			"data: [DONE]\n\n"))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
@@ -247,8 +245,7 @@ func TestGatewayChainNonStreamProtocolFailureRecordsSingleUsageRow(t *testing.T)
 		_, _ = w.Write([]byte(`{"error":{"message":"上游成功响应携带失败终态","code":"thinking_signature_invalid","type":"invalid_request_error"}}`))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}

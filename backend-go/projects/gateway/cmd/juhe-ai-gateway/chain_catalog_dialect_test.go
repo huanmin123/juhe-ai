@@ -17,19 +17,9 @@ func TestChainCatalogCustomModelOrderDualDialect(t *testing.T) {
 	fixture := newChainFixture(t)
 	options := gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "openai", SystemAccountID: "sys_owner"}
 
-	sqliteSource, err := newChainCatalogSource(fixture.db, false)
-	if err != nil {
-		t.Fatalf("create sqlite source: %v", err)
-	}
-	sqliteQuery, _ := sqliteSource.customCatalogQuery(options, "2026-09-04", []string{"openai"})
-	if !strings.Contains(sqliteQuery, "public_model COLLATE NOCASE") {
-		t.Fatalf("sqlite query lost the Node NOCASE ordering: %s", sqliteQuery)
-	}
-	// The rendered SQLite query must actually run end to end.
-	if _, err := sqliteSource.ListProviderModelCatalog(context.Background(), options); err != nil {
-		t.Fatalf("sqlite catalog read: %v", err)
-	}
-
+	// PostgreSQL 唯一存储形态（PLAN-20261024T051925945Z）：原 sqlite 臂的
+	// COLLATE NOCASE 排序断言随方言退役删除；pg 臂 lower(public_model) 排序
+	// 断言保留（fixture 上真实执行 end to end）。
 	pgSource, err := newChainCatalogSource(fixture.db, true)
 	if err != nil {
 		t.Fatalf("create pg source: %v", err)
@@ -50,15 +40,15 @@ func TestChainCatalogCustomModelNOCASEOrdering(t *testing.T) {
 	fixture := newChainFixture(t)
 	now := "2026-09-04T00:00:00.000Z"
 	for index, model := range []string{"beta", "Gamma", "alpha"} {
-		if _, err := fixture.db.Exec(`INSERT INTO models (
+		if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO models (
 				id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
 				supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at
-			) VALUES (?, 'openai', ?, ?, 'personal', ?, 'active', 1, '["chat_json","chat_sse"]', 1.0, ?, ?)`,
+			) VALUES (?, 'openai', ?, ?, 'personal', ?, 'active', TRUE, '["chat_json","chat_sse"]', 1.0, ?, ?)`),
 			"mdl_cpm_"+string(rune('a'+index)), model, model, fixture.systemAccount, now, now); err != nil {
 			t.Fatalf("seed custom row %s: %v", model, err)
 		}
 	}
-	source, err := newChainCatalogSource(fixture.db, false)
+	source, err := newChainCatalogSource(fixture.db, true)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}

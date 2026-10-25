@@ -14,10 +14,10 @@ import (
 
 func wdInsertScopeWindow(t *testing.T, f *fixture, systemAccountID, scopeType, scopeID, start, end string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO usage_scope_range_windows
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO usage_scope_range_windows
 		(system_account_id, scope_type, scope_id, start_date, end_date,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),
 		systemAccountID, scopeType, scopeID, start, end, requestCount, inputTokens, outputTokens, totalCost, lastUsedAt)
 	if err != nil {
 		t.Fatalf("seed scope window: %v", err)
@@ -26,10 +26,10 @@ func wdInsertScopeWindow(t *testing.T, f *fixture, systemAccountID, scopeType, s
 
 func wdInsertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, teamID, resourceType, resourceID string, requestCount, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO authorization_team_usage_summary_daily
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, total_cost_usd, last_used_at, updated_at)
-		VALUES (?, '2026-09-01', ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
+		VALUES (?, '2026-09-01', ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),
 		systemAccountID, teamID, resourceType, resourceID, requestCount, totalCost, lastUsedAt)
 	if err != nil {
 		t.Fatalf("seed team daily row: %v", err)
@@ -89,7 +89,7 @@ func TestWdUsageDetailDirectGrant(t *testing.T) {
 	}
 
 	// 成员无运行时行（运行时行被删）：用量为空但授权摘要仍返回。
-	if _, err := f.db.Exec(`DELETE FROM resource_authorizations WHERE id = ?`, runtimeID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`DELETE FROM resource_authorizations WHERE id = ?`), runtimeID); err != nil {
 		t.Fatal(err)
 	}
 	empty, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 1, 0)
@@ -231,8 +231,8 @@ func TestWdUsageDetailTeamAccountFallbackViaInstances(t *testing.T) {
 	}
 	runtimeID := wdRuntimeID(t, f, "account", "acc_wd", "member1")
 	// 授权实例账户（克隆）：authorization id → 实例账户 id。
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, authorization_instance_authorization_id)
-		VALUES ('inst_1', 'member1', '实例A', ?)`, runtimeID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, authorization_instance_authorization_id)
+		VALUES ('inst_1', 'member1', '实例A', ?)`), runtimeID); err != nil {
 		t.Fatal(err)
 	}
 	// 账户回退键 = 实例账户 id + 团队 id，账户归属被授权成员。
@@ -254,7 +254,7 @@ func TestWdUsageDetailTeamAccountFallbackViaInstances(t *testing.T) {
 
 func (f *fixture) execResourceAccount(t *testing.T, id, ownerID string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name) VALUES (?, ?, ?)`, id, ownerID, "Account "+id); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name) VALUES (?, ?, ?)`), id, ownerID, "Account "+id); err != nil {
 		t.Fatalf("seed resource account: %v", err)
 	}
 }

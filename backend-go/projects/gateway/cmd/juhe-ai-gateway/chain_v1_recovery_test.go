@@ -66,12 +66,12 @@ func shortenChainWaitBudgets(t *testing.T, fixture *chainFixture) {
 	// [0,3600]，0 表示重试不等待——失败演练里的耗尽/回退语义不依赖该
 	// 等待，此前写 10 使每个 dead-upstream 链路测试空烧 ~20s（2 次重试
 	// ×10s），是整包超出测试超时预算的主因（w14n）。
-	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '0' WHERE key = ?`, "temporaryUnschedulableRetryIntervalSeconds"); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE system_settings SET value_json = '0' WHERE key = ?`),"temporaryUnschedulableRetryIntervalSeconds"); err != nil {
 		t.Fatalf("shorten %s: %v", "temporaryUnschedulableRetryIntervalSeconds", err)
 	}
 	// 10 是 noAvailableAccountWaitTimeoutSeconds 的校验下限（读侧
 	// numberSetting [10,3600]），只能取到 10。
-	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '10' WHERE key = ?`, "noAvailableAccountWaitTimeoutSeconds"); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE system_settings SET value_json = '10' WHERE key = ?`),"noAvailableAccountWaitTimeoutSeconds"); err != nil {
 		t.Fatalf("shorten %s: %v", "noAvailableAccountWaitTimeoutSeconds", err)
 	}
 }
@@ -148,7 +148,7 @@ func TestGatewayChainGroupFallbackAfterFirstGroupExhausted(t *testing.T) {
 
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
@@ -201,8 +201,7 @@ func TestGatewayChainDispatchExhaustedRendersFixedCopy(t *testing.T) {
 	fixture := newChainFixture(t)
 	shortenChainWaitBudgets(t, fixture)
 	dead := newDeadUpstreamAddr(t)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": dead}), fixture.accountID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": dead}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 	// B4 第一批单连接事实源：上游指向同步改连接行。
@@ -502,8 +501,7 @@ func TestAuditCaptureLifecycleClosesOverChainRequest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-audit","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"审计"},"finish_reason":"stop"}]}`))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 	// B4 第一批单连接事实源：上游指向同步改连接行。

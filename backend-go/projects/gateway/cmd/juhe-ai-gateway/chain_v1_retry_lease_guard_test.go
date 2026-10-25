@@ -106,7 +106,7 @@ func TestV1DispatchLoopConsumesAccountLockRetryLeaseAfterResponseHandling(t *tes
 	fixture := newChainFixture(t)
 	// 同账户重试的 configuredDelayMs = temporaryUnschedulableRetryIntervalSeconds
 	// （引擎内真实 sleep），归零避免测试空等；重试次数默认 ≥1 即可。
-	if _, err := fixture.db.Exec(`UPDATE system_settings SET value_json = '0' WHERE key = ?`, "temporaryUnschedulableRetryIntervalSeconds"); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE system_settings SET value_json = '0' WHERE key = ?`), "temporaryUnschedulableRetryIntervalSeconds"); err != nil {
 		t.Fatalf("shorten retry interval: %v", err)
 	}
 	secret := w1vSeedMultiGroupKey(t, fixture, []string{"w1v_group_retry_lease_guard"},

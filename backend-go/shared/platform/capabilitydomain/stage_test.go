@@ -65,7 +65,7 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err := ClaimNewStage(context.Background(), tx, DialectPostgres, StageM1Running, now)
+	acquired, err := ClaimNewStage(context.Background(), tx, StageM1Running, now)
 	if err != nil || !acquired {
 		t.Fatalf("首次领取应成功: acquired=%v err=%v", acquired, err)
 	}
@@ -77,7 +77,7 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err = ClaimNewStage(context.Background(), tx2, DialectPostgres, StageM1Running, now)
+	acquired, err = ClaimNewStage(context.Background(), tx2, StageM1Running, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err = TransitionStage(context.Background(), tx3, DialectPostgres, StageM1Complete, StageM2Running, now)
+	acquired, err = TransitionStage(context.Background(), tx3, StageM1Complete, StageM2Running, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,14 +103,14 @@ func TestClaimTransitionRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	acquired, err = TransitionStage(context.Background(), tx4, DialectPostgres, StageM1Running, StageM1Complete, now)
+	acquired, err = TransitionStage(context.Background(), tx4, StageM1Running, StageM1Complete, now)
 	if err != nil || !acquired {
 		t.Fatalf("命中跃迁应成功: acquired=%v err=%v", acquired, err)
 	}
 	if err := tx4.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	record, ok, err := ReadRecord(context.Background(), db, DialectPostgres)
+	record, ok, err := ReadRecord(context.Background(), db)
 	if err != nil || !ok {
 		t.Fatalf("ReadRecord: ok=%v err=%v", ok, err)
 	}
@@ -124,7 +124,7 @@ func TestClaimTransitionRace(t *testing.T) {
 func TestReadRecordMissingAndCorrupt(t *testing.T) {
 	db := openStageSettingsDB(t)
 	ctx := context.Background()
-	if _, present, err := ReadRecord(ctx, db, DialectPostgres); present || err != nil {
+	if _, present, err := ReadRecord(ctx, db); present || err != nil {
 		t.Fatalf("无记录应 ok=false nil err: present=%v err=%v", present, err)
 	}
 	cases := []string{
@@ -133,7 +133,7 @@ func TestReadRecordMissingAndCorrupt(t *testing.T) {
 		`not-json`,
 	}
 	for _, valueJSON := range cases {
-		if _, _, err := ReadRecord(ctx, db, DialectPostgres); err == nil {
+		if _, _, err := ReadRecord(ctx, db); err == nil {
 			continue
 		} else {
 			_ = err
@@ -144,7 +144,7 @@ func TestReadRecordMissingAndCorrupt(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, '2026-10-12T08:00:00Z')`, MigrationSettingKey, valueJSON); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := ReadRecord(ctx, db, DialectPostgres); err == nil {
+		if _, _, err := ReadRecord(ctx, db); err == nil {
 			t.Fatalf("损坏记录 %q 必须原样报错", valueJSON)
 		}
 	}
@@ -156,7 +156,7 @@ func TestReadRecordMissingAndCorrupt(t *testing.T) {
 		MigrationSettingKey, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`); err != nil {
 		t.Fatal(err)
 	}
-	record, present, err := ReadRecord(ctx, db, DialectPostgres)
+	record, present, err := ReadRecord(ctx, db)
 	if err != nil || !present {
 		t.Fatalf("已封存记录应可读: present=%v err=%v", present, err)
 	}

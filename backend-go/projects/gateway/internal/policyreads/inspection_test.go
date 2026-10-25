@@ -90,29 +90,12 @@ type policyTestEnv struct {
 
 func newPolicyTestEnv(t *testing.T) *policyTestEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:policyreads-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newPolicyReadsPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS external_integration_sources (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, scopes_json TEXT NOT NULL, rate_limits_json TEXT, expires_at TEXT, notes TEXT, last_used_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS external_integration_source_tokens (id TEXT PRIMARY KEY, source_ref_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, token_secret_encrypted TEXT, token_prefix TEXT NOT NULL, token_suffix TEXT NOT NULL, status TEXT NOT NULL, scopes_json TEXT NOT NULL, expires_at TEXT, last_used_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revoked_at TEXT)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +114,7 @@ func newPolicyTestEnv(t *testing.T) *policyTestEnv {
 }
 
 func (e *policyTestEnv) mountInspection(t *testing.T) *InspectionStore {
-	store, err := NewInspectionStore(e.db, false, nil, nil, e.inval)
+	store, err := NewInspectionStore(e.db, true, nil, nil, e.inval)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +123,7 @@ func (e *policyTestEnv) mountInspection(t *testing.T) *InspectionStore {
 }
 
 func (e *policyTestEnv) mountExternal(t *testing.T) *ExternalStore {
-	store, err := NewExternalStore(e.db, false, nil, nil, e.inval, "test-crypto-secret")
+	store, err := NewExternalStore(e.db, true, nil, nil, e.inval, "test-crypto-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +198,7 @@ func (e *policyTestEnv) login(t *testing.T, username, password, role string) str
 
 func (e *policyTestEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(fixtureBind(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -223,7 +206,7 @@ func (e *policyTestEnv) exec(t *testing.T, statement string, args ...any) {
 func (e *policyTestEnv) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var count int
-	if err := e.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := e.db.QueryRow(fixtureBind(query), args...).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count

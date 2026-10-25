@@ -6,47 +6,52 @@ package main
 // 覆盖块的专项收敛测试（w1w 标识符前缀，TestW1W 入口）。复用既有插桩二进制
 // 与覆盖目录帮手（w1b*）和 PG 门禁帮手（w1g2*），只新增本文件的场景。
 //
+// PostgreSQL + Redis 是唯一存储形态（PLAN-20261024T051925945Z）：owner 子进
+// 程夹具的库角色全部收敛为 pgtestkit 隔离库连接串（业务库 fresh DDL+种子、
+// J3b 专属 schema 由 w1g2EnsureJ3bSchema 补建、F3/F4 独立库自 EnsureSchema），
+// 文件面只剩 blob/hot 搜索、usage spool 与日志目录。（原 sqlite 六库组合根
+// 场景与 legacy sqlite 迁移编码失败场景已随存储形态/命令退役删除，D9。）
+//
 // 覆盖手法总览：
-//   A. main.go owner 全栈启动中段臂：sqlite 组合根 + J3b 全量 env 直接完整
-//      启动，让 enforcement/tokenizer/mount/管理监听/采样器/captcha 臂自然
-//      覆盖（336-338 captcha、569-574 Go 运行时采样器）。
-//   B. main.go fail-fast 臂：在完整 env 基础上做单点破坏（DROP 表 / 删设置
-//      行 / 非法 env / 占用端口 / 不 seed meta / 空 J3b 库），每个场景断言
-//      stderr 的 fail 特征与 exit 1。
-//   C. main.go 运行期臂：启动就绪后从 miniredis 删 runtime-index-meta，让
-//      circuit runtime 组件在 CheckReady 处失败 → supervisor fail（243-245、
-//      698-700）；部分请求头挂住 main server → Shutdown 超时（676-678）。
-//   D. main.go scheduler 闭包（311-323）：向 J3b 专属库预插 due 调度任务，
-//      1s 节拍的调度器 claim 后执行 SchedulerFactory 的 build 闭包。
-//   E. 迁移结果编码失败（785-787、795-797）：把子进程 stdout 指向读端已关闭
-//      的管道，json Encode 写入即 broken pipe → fail。
-//   F. chain_runtime.go 进程内：内存驱动组合 + Bus 非空，驱动本地屏蔽存储的
-//      并发投影闭包（510-512）；redis 状态驱动组合后关闭共享 state client，
-//      驱动认证模型限流 warn 闭包（368-370）与用户请求限制协调器 warn 闭包
-//      （376-378）。
+//   A. main.go owner 全栈启动中段臂：PG 组合根 + J3b 全量 env 直接完整
+//      启动，让 enforcement/tokenizer/mount/管理监听/captcha 臂自然覆盖
+//      （336-338 captcha；Go 运行时采样器臂已随监控改造删除）。
+//   B. main.go fail-fast 臂：在完整 env 基础上做单点破坏（非法 env /
+//      非法 Redis URL / 不 seed meta），每个场景断言 stderr 的 fail 特征
+//      与 exit 1。
+//   B1b. J3b 契约检查失败臂（真实 dev PG 临时子库，不可达即 Skip）：权限
+//      收缩使契约检查按列/权限真实失败。
+//   B2. F3/F4 EnsureSchema 失败臂：PG store 的 OpenStore 惰性不连接，
+//      EnsureSchema 首次连库时对不可达 URL 确定性失败。
+//   C. main.go 运行期臂：启动就绪后关停 state miniredis，让 circuit runtime
+//      组件在 CheckReady 处失败 → supervisor fail；部分请求头挂住 main
+//      server → Shutdown 超时。
+//   F. chain_runtime.go 进程内：Bus 非空组合驱动本地屏蔽存储的并发投影闭包
+//      （510-512）；redis 状态驱动组合后关闭共享 state client，驱动认证模型
+//      限流 warn 闭包（368-370）与用户请求限制协调器 warn 闭包（376-378）。
 //   G. chain_ports.go 进程内：usage 非空的 downstream-closed 分支（896-903）、
 //      失败 Store 的来源级避让记录错误臂（747-752）、激活后探针错误臂
 //      （760-763、770-774）。
 //
 // 记录性跳过（构造器防御臂，无触发缝，证据见各块注释）：
-//   main.go 117-119（gateGatewayChain 恒 nil）、171-173/187-189/203-205
-//   （New 只校验 nil db/非法 mode/非法 schema，main 流程恒合法）、190-192
-//   （retention 契约读的 system_sessions 列集与 auth 契约首表相同，auth 先
-//   败）、222-225/226-230（keymodel 与 circuitruntime 共用同一 URL/命名空间
-//   与 gate，前一级先败）、232-235（projector 仅空 InstanceID 失败，而
-//   LoadConfig 拒绝空 InstanceID）、268-290（enforcement/recovery/quality/
-//   tokenizer/modelLimits 构造只校验 nil db）、340-348（mount 仅重复模式
-//   冲突失败）、388-390/442-444/514-516（租约错误臂需要启动中途 DB 故障注入，
-//   无缝）、679-681/689-691/701-706/728-733（Serve/Shutdown 错误臂需要进程外
-//   关闭监听或超过 ReadHeaderTimeout 的慢 handler，健康面 handler 恒快返）。
-//   chain_runtime.go 252-254/348-350/359-361/393-395/397-407 系（错误臂被
-//   同 URL/同命名空间的更早构造或恒真守卫遮蔽）、415-433/443-460 系（quota
-//   服务校验在 main 装配恒满足）、466-468/488-490/497-499/521-523/549-551/
-//   566-568/628-630/649-658/664-666/681-683（同理，见 w1w 注释与报告）。
-//   chain_ports.go 454-456/631-633/690-692/903-905（usage 服务错误臂：队列
-//   容量 64MB 恒大于 2MB 估算上限，RecordFailedUpstreamAttempt 无错误路径）、
-//   1444-1446（identity secret 经构造校验非空，HMAC 恒成功）、1761-1768
-//   （AuditLogInput JSON round-trip 恒可逆）。
+//   main.go 171-173/187-189/203-205（New 只校验 nil db/非法 mode/非法
+//   schema，main 流程恒合法）、190-192（retention 契约读的 system_sessions
+//   列集与 auth 契约首表相同，auth 先败）、222-225/226-230（keymodel 与
+//   circuitruntime 共用同一 URL/命名空间与 gate，前一级先败）、232-235
+//   （projector 仅空 InstanceID 失败，而 LoadConfig 拒绝空 InstanceID）、
+//   268-290（enforcement/recovery/quality/tokenizer/modelLimits 构造只校验
+//   nil db）、340-348（mount 仅重复模式冲突失败）、388-390/442-444/514-516
+//   （租约错误臂需要启动中途 DB 故障注入，无缝）、679-681/689-691/701-706/
+//   728-733（Serve/Shutdown 错误臂需要进程外关闭监听或超过 ReadHeaderTimeout
+//   的慢 handler，健康面 handler 恒快返）。chain_runtime.go 252-254/348-350/
+//   359-361/393-395/397-407 系（错误臂被同 URL/同命名空间的更早构造或恒真
+//   守卫遮蔽）、415-433/443-460 系（quota 服务校验在 main 装配恒满足）、
+//   466-468/488-490/497-499/521-523/549-551/566-568/628-630/649-658/664-666/
+//   681-683（同理，见 w1w 注释与报告）。chain_ports.go 454-456/631-633/
+//   690-692/903-905（usage 服务错误臂：队列容量 64MB 恒大于 2MB 估算上限，
+//   RecordFailedUpstreamAttempt 无错误路径）、1444-1446（identity secret 经
+//   构造校验非空，HMAC 恒成功）、1761-1768（AuditLogInput JSON round-trip
+//   恒可逆）。
 
 import (
 	"bytes"
@@ -75,8 +80,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
-
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const (
@@ -86,37 +90,36 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// sqlite owner fixture：业务库 + J3b 专属库 + 双 miniredis + 端口
+// PG owner fixture：业务库 + J3b 专属库 + F3/F4 库 + 双 miniredis + 端口
 // ---------------------------------------------------------------------------
 
 type w1wOwnerFixture struct {
-	root         string
-	businessPath string
-	j3bPath      string
-	cache        *miniredis.Miniredis
-	state        *miniredis.Miniredis
-	healthAddr   string
-	mainAddr     string
-	j3bAddr      string
+	root       string
+	pg         *pgtestkit.TestDatabase // 业务库（fresh DDL + seed）
+	j3b        *pgtestkit.TestDatabase // J3b 专属库（prepareJ3b=false 时无 schema）
+	audit      *pgtestkit.TestDatabase // F3 审计库
+	oper       *pgtestkit.TestDatabase // F4 操作日志库
+	cache      *miniredis.Miniredis
+	state      *miniredis.Miniredis
+	healthAddr string
+	mainAddr   string
+	j3bAddr    string
 }
 
 // w1wNewOwnerFixture 组装 owner 二进制场景 fixture。prepareJ3b=false 时 J3b
-// 专属库是零字节空文件（合法空 SQLite，用于 OpenHost CheckSchema 失败臂）；
+// 专属库是空 PG 库（合法空库，用于 OpenHost CheckSchema 失败臂）；
 // seedMeta=false 时不写 runtime-index-meta（CheckReady 失败臂）。
 func w1wNewOwnerFixture(t *testing.T, prepareJ3b, seedMeta bool) *w1wOwnerFixture {
 	t.Helper()
 	f := &w1wOwnerFixture{root: t.TempDir()}
-	f.businessPath = filepath.Join(f.root, "business.sqlite")
-	w1v2PrepareBusinessSQLite(t, f.businessPath)
-	f.j3bPath = filepath.Join(f.root, "j3b-dedicated.sqlite")
+	f.pg = w1v2PrepareBusinessPostgres(t)
+	f.j3b = pgtestkit.NewTestDatabase(t)
 	if prepareJ3b {
-		w1v2PrepareJ3bSQLite(t, f.j3bPath)
-	} else {
-		if err := os.WriteFile(f.j3bPath, nil, 0o644); err != nil {
-			t.Fatalf("预建空 J3b 库失败: %v", err)
-		}
+		w1g2EnsureJ3bSchema(t, f.j3b.DB)
 	}
-	for _, name := range []string{"business-evidence", "j3b-evidence", "codex-shards", "usage-shards", "audit-blobs", "audit-hot", "usage-spool", "logs"} {
+	f.audit = pgtestkit.NewTestDatabase(t)
+	f.oper = pgtestkit.NewTestDatabase(t)
+	for _, name := range []string{"business-evidence", "j3b-evidence", "usage-spool", "logs"} {
 		if err := os.MkdirAll(filepath.Join(f.root, name), 0o750); err != nil {
 			t.Fatalf("创建目录 %s 失败: %v", name, err)
 		}
@@ -124,7 +127,7 @@ func w1wNewOwnerFixture(t *testing.T, prepareJ3b, seedMeta bool) *w1wOwnerFixtur
 	f.cache = miniredis.RunT(t)
 	f.state = miniredis.RunT(t)
 	if seedMeta {
-		w1v2SeedCircuitRuntimeIndex(t, f.state.Addr(), w1wJ3bRedisNS)
+		w1g2SeedCircuitRuntimeIndex(t, "redis://"+f.state.Addr(), w1wJ3bRedisNS)
 	}
 	f.healthAddr = fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
 	f.mainAddr = fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
@@ -132,19 +135,15 @@ func w1wNewOwnerFixture(t *testing.T, prepareJ3b, seedMeta bool) *w1wOwnerFixtur
 	return f
 }
 
-// w1wOwnerEnv 组装 w1v2 同款 sqlite owner 完整启动 env；pairs 里的键覆盖
-// 同名基线项（大小写不敏感、按键全名匹配）。
+// w1wOwnerEnv 组装 PG owner 完整启动 env；pairs 里的键覆盖同名基线项
+// （大小写不敏感、按键全名匹配）。
 func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...string) []string {
-	runtimeLog := filepath.Join(f.root, "runtime-log.sqlite")
-	if err := os.WriteFile(runtimeLog, nil, 0o644); err != nil {
-		t.Fatalf("预建 runtime-log 失败: %v", err)
-	}
 	base := []string{
-		"JUHE_AI_RUNTIME_MODE=performance",
-		"JUHE_AI_DATABASE_DRIVER=sqlite",
+		"JUHE_AI_POSTGRES_URL=" + f.pg.DSN,
+		"JUHE_AI_BUSINESS_POSTGRES_URL=" + f.pg.DSN,
 		"JUHE_AI_CACHE_DRIVER=redis",
-		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
 		"JUHE_AI_REDIS_CACHE_URL=redis://" + f.cache.Addr(),
+		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
 		"JUHE_AI_REDIS_STATE_URL=redis://" + f.state.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:" + w1wJ3bRedisNS,
 		"JUHE_AI_SECRET=" + w1wRuntimeSecret,
@@ -157,26 +156,20 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=" + f.healthAddr,
 		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
 		"JUHE_AI_AUTH_CAPTCHA_DISABLED=true",
-		"JUHE_AI_DATABASE_PATH=" + f.businessPath,
-		"JUHE_AI_CHAT_DATABASE_PATH=" + filepath.Join(f.root, "chat.sqlite"),
-		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(f.root, "dataset.sqlite"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(f.root, "usage-catalog.sqlite"),
-		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(f.root, "stats.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + runtimeLog,
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(f.root, "codex-shards"),
+		// business owner handoff（postgres 模式 owner 门槛事实）
 		"JUHE_AI_BUSINESS_OWNER=gateway",
-		"JUHE_AI_BUSINESS_DATABASE_PATH=" + f.businessPath,
 		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
 		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
 		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
 		"JUHE_AI_BUSINESS_OWNER_EPOCH=" + w1wOwnerEpoch,
 		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH=" + w1bWriteCutoverEvidence(t, filepath.Join(f.root, "business-evidence"), w1wOwnerEpoch),
+		// J3b owner（postgres 专属库 + business 目标库）
 		"JUHE_AI_J3B_ENABLED=true",
 		"JUHE_AI_J3B_OWNER=gateway",
 		"JUHE_AI_J3B_INSTANCE_ID=w1w-owner-boot",
-		"JUHE_AI_J3B_STORE=sqlite",
-		"JUHE_AI_J3B_DATABASE_PATH=" + f.j3bPath,
-		"JUHE_AI_J3B_BUSINESS_DATABASE_PATH=" + f.businessPath,
+		"JUHE_AI_J3B_STORE=postgres",
+		"JUHE_AI_J3B_POSTGRES_URL=" + f.j3b.DSN,
+		"JUHE_AI_J3B_BUSINESS_POSTGRES_URL=" + f.pg.DSN,
 		"JUHE_AI_J3B_CREDENTIAL_SECRET=w1w-credential-secret-value",
 		"JUHE_AI_J3B_IDENTITY_SECRET=w1w-identity-secret-value",
 		"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
@@ -189,17 +182,16 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://" + f.state.Addr(),
 		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=" + w1wJ3bRedisNS,
 		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=" + f.j3bAddr,
-		"JUHE_AI_AUDIT_LOG_STORE=sqlite",
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH=" + filepath.Join(f.root, "audit.sqlite"),
+		// F3 审计（postgres 模式）
+		"JUHE_AI_AUDIT_LOG_POSTGRES_URL=" + f.audit.DSN,
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL=" + f.pg.DSN,
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=" + filepath.Join(f.root, "audit-blobs"),
 		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY=" + filepath.Join(f.root, "audit-hot"),
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH=" + f.businessPath,
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-owner-boot",
-		"JUHE_AI_OPERATION_LOG_STORE=sqlite",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH=" + filepath.Join(f.root, "operation.sqlite"),
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH=" + f.businessPath,
+		// F4 操作日志（postgres 模式）
+		"JUHE_AI_OPERATION_LOG_POSTGRES_URL=" + f.oper.DSN,
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-owner-boot",
-		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(f.root, "usage-shards"),
+		// chain 协作面（spool / 日志 grep 目录）
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(f.root, "usage-spool"),
 		"JUHE_AI_LOG_DIR=" + filepath.Join(f.root, "logs"),
 	}
@@ -330,32 +322,24 @@ func TestW1WOwnerFullBootTailArms(t *testing.T) {
 	//     （EnforcementID 非空走 quality_recovery trigger）。
 	nowText := time.Now().UTC().Format(time.RFC3339Nano)
 	pastText := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
-	businessDB, err := sql.Open("sqlite", "file:"+filepath.ToSlash(f.businessPath)+"?mode=rw&_pragma=foreign_keys(OFF)")
-	if err != nil {
-		t.Fatalf("打开业务库失败: %v", err)
-	}
 	seedStatements := []string{
-		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc','w1w-sys',NULL,'generic_http','openai','v1','w1w-account','api_key','active','w1w-encrypted','gpt-4o','chat_json',42,7,'` + nowText + `','` + nowText + `')`,
-		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc-iso','w1w-sys',NULL,'generic_http','openai','v1','w1w-account-isolated','api_key','quality_isolated','w1w-encrypted','gpt-4o','chat_json',11,3,'` + nowText + `','` + nowText + `')`,
-		`INSERT INTO model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
-			VALUES ('w1w-sched-ok','w1w-sys','w1w-acc','gpt-4o',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
-		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc-bad','w1w-sys',NULL,'generic_http','openai','v1','w1w-account-bad','api_key','active','w1w-encrypted','gpt-4o','chat_json',13,2,'` + nowText + `','` + nowText + `')`,
-		`INSERT INTO model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
-			VALUES ('w1w-sched-bad-model','w1w-sys','w1w-acc-bad','w1w-nonexistent-model',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
-		`INSERT INTO account_quality_enforcements (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,policy_revision,profile,account_config_revision,before_status,after_status,started_at,recovery_due_at,recovery_model,created_at,updated_at)
-			VALUES ('w1w-acc-iso','w1w-sys','w1w-enforcement-1',1,'active','quality_isolate','w1w-trigger-run',0,'quick',11,'active','quality_isolated','` + nowText + `','` + pastText + `','gpt-4o','` + nowText + `','` + nowText + `')`,
+		`INSERT INTO juhe_business.accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
+			VALUES ('w1w-acc','sys_admin',NULL,'generic_http','openai','v1','w1w-account','api_key','active','w1w-encrypted','gpt-4o','chat_json',42,7,'` + nowText + `','` + nowText + `')`,
+		`INSERT INTO juhe_business.accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
+			VALUES ('w1w-acc-iso','sys_admin',NULL,'generic_http','openai','v1','w1w-account-isolated','api_key','quality_isolated','w1w-encrypted','gpt-4o','chat_json',11,3,'` + nowText + `','` + nowText + `')`,
+		`INSERT INTO juhe_business.model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
+			VALUES ('w1w-sched-ok','sys_admin','w1w-acc','gpt-4o',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
+		`INSERT INTO juhe_business.accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
+			VALUES ('w1w-acc-bad','sys_admin',NULL,'generic_http','openai','v1','w1w-account-bad','api_key','active','w1w-encrypted','gpt-4o','chat_json',13,2,'` + nowText + `','` + nowText + `')`,
+		`INSERT INTO juhe_business.model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
+			VALUES ('w1w-sched-bad-model','sys_admin','w1w-acc-bad','w1w-nonexistent-model',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
+		`INSERT INTO juhe_business.account_quality_enforcements (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,policy_revision,profile,account_config_revision,before_status,after_status,started_at,recovery_due_at,recovery_model,created_at,updated_at)
+			VALUES ('w1w-acc-iso','sys_admin','w1w-enforcement-1',1,'active','quality_isolate','w1w-trigger-run',0,'quick',11,'active','quality_isolated','` + nowText + `','` + pastText + `','gpt-4o','` + nowText + `','` + nowText + `')`,
 	}
 	for _, statement := range seedStatements {
-		if _, execErr := businessDB.Exec(statement); execErr != nil {
-			_ = businessDB.Close()
+		if _, execErr := f.pg.DB.Exec(statement); execErr != nil {
 			t.Fatalf("执行调度 fixture DML 失败: %v\nstatement=%s", execErr, statement)
 		}
-	}
-	if err := businessDB.Close(); err != nil {
-		t.Fatalf("关闭业务库失败: %v", err)
 	}
 
 	// 场景 A：不设 JUHE_AI_AUTH_CAPTCHA_DISABLED（336-338 captcha 臂）。
@@ -376,21 +360,17 @@ func TestW1WOwnerFullBootTailArms(t *testing.T) {
 	w1bAppendCoverageManifest(t, coverageDir)
 	w1wShutdownGraceful(t, cmd, done, cancel, stdout, stderr, 30*time.Second)
 	// 诊断：回读调度计划执行状态，确认调度器确实 claim 并执行了 build 闭包。
-	taskDB, taskErr := sql.Open("sqlite", "file:"+filepath.ToSlash(f.businessPath)+"?mode=ro")
-	if taskErr == nil {
-		rows, queryErr := taskDB.Query(`SELECT id,last_run_id,last_run_status FROM model_quality_schedules ORDER BY id`)
-		if queryErr == nil {
-			for rows.Next() {
-				var id string
-				var lastRunID, lastRunStatus sql.NullString
-				_ = rows.Scan(&id, &lastRunID, &lastRunStatus)
-				t.Logf("调度计划 %s last_run_id=%v last_run_status=%v", id, lastRunID, lastRunStatus)
-			}
-			rows.Close()
-		} else {
-			t.Logf("回读调度计划失败: %v", queryErr)
+	rows, queryErr := f.pg.DB.Query(`SELECT id,last_run_id,last_run_status FROM juhe_business.model_quality_schedules ORDER BY id`)
+	if queryErr == nil {
+		for rows.Next() {
+			var id string
+			var lastRunID, lastRunStatus sql.NullString
+			_ = rows.Scan(&id, &lastRunID, &lastRunStatus)
+			t.Logf("调度计划 %s last_run_id=%v last_run_status=%v", id, lastRunID, lastRunStatus)
 		}
-		_ = taskDB.Close()
+		rows.Close()
+	} else {
+		t.Logf("回读调度计划失败: %v", queryErr)
 	}
 	t.Logf("场景 A/D 完成: captcha 臂 + 调度闭包（health=%s main=%s j3b=%s）", f.healthAddr, f.mainAddr, f.j3bAddr)
 }
@@ -632,28 +612,14 @@ func TestW1WManagementAliasDemotesWhenPortTaken(t *testing.T) {
 func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
 	root := t.TempDir()
-	for _, name := range []string{"audit-blobs", "audit-hot", "usage-shards", "logs"} {
+	for _, name := range []string{"audit-blobs", "audit-hot", "logs"} {
 		if err := os.MkdirAll(filepath.Join(root, name), 0o750); err != nil {
 			t.Fatalf("创建目录 %s 失败: %v", name, err)
 		}
 	}
-	businessSettings := filepath.Join(root, "business-settings.sqlite3")
-	w1bCreateBusinessSettingsSQLite(t, businessSettings)
+	business := w1mBusinessPostgres(t)
 	args := []string{"-health-listen-address", fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))}
-	rolePaths := []string{
-		"JUHE_AI_DATABASE_PATH=" + filepath.Join(root, "business.sqlite"),
-		"JUHE_AI_CHAT_DATABASE_PATH=" + filepath.Join(root, "chat.sqlite"),
-		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(root, "dataset.sqlite"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(root, "usage-catalog.sqlite"),
-		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(root, "stats.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(root, "codex-shards"),
-		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(root, "usage-shards"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(root, "usage-spool"),
-		"JUHE_AI_LOG_DIR=" + filepath.Join(root, "logs"),
-	}
 	auditBase := []string{
-		"JUHE_AI_AUDIT_LOG_STORE=postgres",
 		"JUHE_AI_AUDIT_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
 		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL=postgres://127.0.0.1:1/w1w_unused",
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=" + filepath.Join(root, "audit-blobs"),
@@ -663,24 +629,27 @@ func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
 
 	// F3 PG EnsureSchema 连接失败臂（378-380）。
 	coverageDir := w1bCoverageDir(t, "W1W-f3-schema-fail")
-	env := w1bScenarioEnv(t, coverageDir, append(append([]string{}, rolePaths...), auditBase...)...)
+	env := w1bScenarioEnv(t, coverageDir, append(append([]string{}, auditBase...),
+		"JUHE_AI_POSTGRES_URL="+business.DSN,
+		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
 	_, stderr, code := w1bRunScenario(t, "W1W-f3-schema-fail", env, args...)
 	w1bRequireExitCode(t, "f3-schema-fail", code, 1)
 	w1bRequireContains(t, "f3-schema-fail", stderr, "initialize F3 audit-log schema")
 
-	// F4 PG EnsureSchema 连接失败臂（425-427）。
+	// F4 PG EnsureSchema 连接失败臂（425-427）：F3 用可用库让启动推进到
+	// F4 EnsureSchema，再以不可达 URL 命中失败。
 	coverageDir = w1bCoverageDir(t, "W1W-f4-schema-fail")
-	env = w1bScenarioEnv(t, coverageDir, append(append([]string{}, rolePaths...),
-		"JUHE_AI_AUDIT_LOG_STORE=sqlite",
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH="+filepath.Join(root, "audit-ok.sqlite"),
+	auditOK := pgtestkit.NewTestDatabase(t)
+	env = w1bScenarioEnv(t, coverageDir,
+		"JUHE_AI_AUDIT_LOG_POSTGRES_URL="+auditOK.DSN,
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="+business.DSN,
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
 		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH="+businessSettings,
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-schema",
-		"JUHE_AI_OPERATION_LOG_STORE=postgres",
 		"JUHE_AI_OPERATION_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-schema",
-	)...)
+		"JUHE_AI_POSTGRES_URL="+business.DSN,
+		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)
 	_, stderr, code = w1bRunScenario(t, "W1W-f4-schema-fail", env, args...)
 	w1bRequireExitCode(t, "f4-schema-fail", code, 1)
 	w1bRequireContains(t, "f4-schema-fail", stderr, "initialize F4 operation-log schema")
@@ -831,108 +800,8 @@ func TestW1WOwnerMainServerShutdownTimeout(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 场景 E：迁移结果 JSON 编码失败（785-787、795-797）——stdout 读端关闭
-// ---------------------------------------------------------------------------
-
-func TestW1WMigrationResultEncodeFailArms(t *testing.T) {
-	exe := w1bBuildCoverBinary(t)
-	root := t.TempDir()
-
-	// F3：合法 legacy 审计源库，迁移成功但 stdout broken pipe → encode 失败。
-	sourcePath := filepath.Join(root, "audit-source.sqlite")
-	targetPath := filepath.Join(root, "audit-target.sqlite")
-	sourceBlobs := filepath.Join(root, "audit-source-blobs")
-	targetBlobs := filepath.Join(root, "audit-target-blobs")
-	w1bCreateLegacyAuditSQLite(t, sourcePath, sourceBlobs)
-
-	coverageDir := w1bCoverageDir(t, "W1W-audit-encode-fail")
-	env := w1bScenarioEnv(t, coverageDir)
-	pr, pw, pipeErr := os.Pipe()
-	if pipeErr != nil {
-		t.Fatalf("创建管道失败: %v", pipeErr)
-	}
-	if closeErr := pr.Close(); closeErr != nil {
-		t.Fatalf("关闭管道读端失败: %v", closeErr)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), w1bScenarioTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe,
-		"-migrate-audit-log-legacy-sqlite",
-		"-source-db", sourcePath,
-		"-target-db", targetPath,
-		"-source-blob-dir", sourceBlobs,
-		"-target-blob-dir", targetBlobs,
-		"-node-stopped", "-go-stopped")
-	cmd.Env = env
-	cmd.Stdout = pw
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
-	_ = pw.Close()
-	if ctx.Err() != nil {
-		t.Fatalf("F3 encode 失败场景超过 %s 有界等待", w1bScenarioTimeout)
-	}
-	exitCode := 0
-	if runErr != nil {
-		exitErr, ok := runErr.(*exec.ExitError)
-		if !ok {
-			t.Fatalf("F3 encode 场景启动失败: %v", runErr)
-		}
-		exitCode = exitErr.ExitCode()
-	}
-	w1bRequireExitCode(t, "audit-encode-fail", exitCode, 1)
-	w1bRequireContains(t, "audit-encode-fail", stderr.String(), "encode F3 audit migration result")
-	w1bAppendCoverageManifest(t, coverageDir)
-
-	// F4：合法 legacy operation 源库，同样以 broken stdout 驱动 encode 失败。
-	opSource := filepath.Join(root, "node-dataset.sqlite3")
-	opTarget := filepath.Join(root, "f4-operation.sqlite3")
-	usageShardRoot := filepath.Join(root, "usage-shards")
-	w1bCreateLegacyOperationLogSQLite(t, opSource)
-	w1bCreateBusinessSettingsSQLite(t, filepath.Join(root, "business-settings.sqlite3"))
-	coverageDir = w1bCoverageDir(t, "W1W-oplog-encode-fail")
-	env = w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_OPERATION_LOG_STORE=sqlite",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH="+opTarget,
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH="+filepath.Join(root, "business-settings.sqlite3"),
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-encode",
-		"JUHE_AI_USAGE_SHARD_ROOT="+usageShardRoot)
-	pr2, pw2, pipeErr := os.Pipe()
-	if pipeErr != nil {
-		t.Fatalf("创建 F4 管道失败: %v", pipeErr)
-	}
-	if closeErr := pr2.Close(); closeErr != nil {
-		t.Fatalf("关闭 F4 管道读端失败: %v", closeErr)
-	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), w1bScenarioTimeout)
-	defer cancel2()
-	cmd2 := exec.CommandContext(ctx2, exe,
-		"-migrate-operation-log-legacy-sqlite",
-		"-operation-log-source-db", opSource,
-		"-node-stopped", "-go-stopped", "-backup-confirmed")
-	cmd2.Env = env
-	cmd2.Stdout = pw2
-	var stderr2 bytes.Buffer
-	cmd2.Stderr = &stderr2
-	runErr2 := cmd2.Run()
-	_ = pw2.Close()
-	if ctx2.Err() != nil {
-		t.Fatalf("F4 encode 失败场景超过 %s 有界等待", w1bScenarioTimeout)
-	}
-	exitCode2 := 0
-	if runErr2 != nil {
-		exitErr, ok := runErr2.(*exec.ExitError)
-		if !ok {
-			t.Fatalf("F4 encode 场景启动失败: %v", runErr2)
-		}
-		exitCode2 = exitErr.ExitCode()
-	}
-	w1bRequireExitCode(t, "oplog-encode-fail", exitCode2, 1)
-	w1bRequireContains(t, "oplog-encode-fail", stderr2.String(), "encode F4 operation-log migration result")
-	w1bAppendCoverageManifest(t, coverageDir)
-	t.Logf("场景 E 完成: F3/F4 迁移结果编码失败臂覆盖")
-}
+// 场景 E（原 F3/F4 legacy sqlite 迁移结果编码失败臂）已随迁移命令与
+// sqlite 存储形态退役删除（PLAN-20261024T051925945Z D9：无 PG 对应物）。
 
 // ---------------------------------------------------------------------------
 // 场景 B4：F4 PG 租约被占（445-447）——真实 dev PG 临时子库，不可达即 Skip
@@ -984,44 +853,26 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 			t.Fatalf("创建目录 %s 失败: %v", name, err)
 		}
 	}
-	businessPath := filepath.Join(root, "business.sqlite")
-	w1v2PrepareBusinessSQLite(t, businessPath)
-	if err := os.MkdirAll(filepath.Join(root, "evidence"), 0o750); err != nil {
-		t.Fatalf("创建 evidence 目录失败: %v", err)
-	}
-	businessEvidence := w1bWriteCutoverEvidence(t, filepath.Join(root, "evidence"), w1wOwnerEpoch)
+	// F3 审计走独立 pgtestkit 库；业务 settings 镜像指向 fresh 种子业务库。
+	business := w1mBusinessPostgres(t)
+	audit := pgtestkit.NewTestDatabase(t)
 	healthPort := w1bFreePort(t)
 	coverageDir := w1bCoverageDir(t, "W1W-f4-lease-held")
 	env := w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_RUNTIME_MODE=standalone",
-		"JUHE_AI_DATABASE_DRIVER=postgres",
 		"JUHE_AI_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_SECRET=w1w-f4-lease-secret",
-		"JUHE_AI_DATABASE_PATH="+filepath.Join(root, "business.sqlite"),
-		"JUHE_AI_CHAT_DATABASE_PATH="+filepath.Join(root, "chat.sqlite"),
-		"JUHE_AI_DATASET_DATABASE_PATH="+filepath.Join(root, "dataset.sqlite"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH="+filepath.Join(root, "usage-catalog.sqlite"),
-		"JUHE_AI_STATS_DATABASE_PATH="+filepath.Join(root, "stats.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH="+filepath.Join(root, "runtime-log.sqlite"),
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT="+filepath.Join(root, "codex-shards"),
-		"JUHE_AI_USAGE_SHARD_ROOT="+filepath.Join(root, "usage-shards"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY="+filepath.Join(root, "usage-spool"),
 		"JUHE_AI_LOG_DIR="+filepath.Join(root, "logs"),
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
 		"JUHE_AI_BUSINESS_OWNER=gateway",
 		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
 		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
 		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
 		"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1wOwnerEpoch,
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+businessEvidence,
-		"JUHE_AI_AUDIT_LOG_STORE=sqlite",
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH="+filepath.Join(root, "audit.sqlite"),
+		"JUHE_AI_AUDIT_LOG_POSTGRES_URL="+audit.DSN,
+		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="+business.DSN,
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
 		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH="+businessPath,
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-lease",
-		"JUHE_AI_OPERATION_LOG_STORE=postgres",
 		"JUHE_AI_OPERATION_LOG_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-lease-holder",
 	)
@@ -1038,14 +889,15 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 func TestW1WChainRuntimeSuppressionConcurrencyClosure(t *testing.T) {
 	stateRedis := miniredis.RunT(t)
 	composed := &composition{
-		db:        w1uOpenSeededBusinessDB(t),
-		statsDB:   w1uOpenPlainSQLite(t, "w1w-sup-stats.sqlite3"),
-		pgDialect: false,
+		db:        w1uOpenSeededBusinessPG(t),
+		statsDB:   nil,
+		pgDialect: true,
 		Bus:       inval.New(time.Now),
 	}
+	composed.statsDB = composed.db
 	cfg := runtimeConfig{
 		// PG+Redis 恒定形态（存储形态收口）：redis 端点由 miniredis 承载；
-		// db 句柄走 internal 读模型的 sqlite 方言夹具（B5 迁移对象）。
+		// db 句柄走 pgtestkit fresh DDL 夹具（PG 唯一路径）。
 		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
 		RedisStateURL:                 "redis://" + stateRedis.Addr(),
 		RedisNamespace:                "w1w-chain-ns",
@@ -1089,11 +941,12 @@ func TestW1WChainRuntimeSuppressionConcurrencyClosure(t *testing.T) {
 
 func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 	composed := &composition{
-		db:        w1uOpenSeededBusinessDB(t),
-		statsDB:   w1uOpenPlainSQLite(t, "w1w-warn-stats.sqlite3"),
-		pgDialect: false,
+		db:        w1uOpenSeededBusinessPG(t),
+		statsDB:   nil,
+		pgDialect: true,
 		Bus:       inval.New(time.Now),
 	}
+	composed.statsDB = composed.db
 	stateRedis := miniredis.RunT(t)
 	cfg := runtimeConfig{
 		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
@@ -1150,11 +1003,12 @@ func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
 	stateRedis := miniredis.RunT(t)
 	composed := &composition{
-		db:        w1uOpenSeededBusinessDB(t),
-		statsDB:   w1uOpenPlainSQLite(t, "w1w-empty-secret-stats.sqlite3"),
-		pgDialect: false,
+		db:        w1uOpenSeededBusinessPG(t),
+		statsDB:   nil,
+		pgDialect: true,
 		Bus:       inval.New(time.Now),
 	}
+	composed.statsDB = composed.db
 	cfg := runtimeConfig{
 		RedisCacheURL:                 "redis://" + stateRedis.Addr(),
 		RedisStateURL:                 "redis://" + stateRedis.Addr(),

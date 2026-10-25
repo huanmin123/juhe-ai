@@ -462,7 +462,7 @@ func seedRetryAttemptCountGroupAccounts(t *testing.T, fixture *chainFixture, gro
 	now := "2026-09-14T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", err, query)
 		}
 	}

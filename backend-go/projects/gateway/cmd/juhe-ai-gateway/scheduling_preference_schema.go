@@ -3,11 +3,10 @@
 // v2 用户裁决修订 2026-10-13）。
 //
 // 边界：建表 / api_keys 加列 / 内置行补种 / enabled 列退役 DROP COLUMN 归
-// maintenance（--ensure-schema 的 ensure 臂恢复式补种内置行并幂等删列；SQLite
-// 另有 gateway preflight 的 bootstrap 种子路径自动满足 fresh 库），gateway 启
-// 动只做一次性只读校验，不 DDL、不补种。四臂任一不符 fail-fast（部署顺序契
-// 约：先 ensure-schema，再在停写窗口跑 --migrate-scheduling-preferences，后启
-// 动新版本）：
+// maintenance（--ensure-schema 的 ensure 臂恢复式补种内置行并幂等删列），
+// gateway 启动只做一次性只读校验，不 DDL、不补种。四臂任一不符 fail-fast
+// （部署顺序契约：先 ensure-schema，再在停写窗口跑
+// --migrate-scheduling-preferences，后启动新版本）：
 //  1. scheduling_preferences 表形状（8 列 + chat_mode / built_in 两组 CHECK
 //     词表；enabled 已随 v2 第 4 条退役）；
 //  2. api_keys.scheduling_preference_id 绑定列（TEXT 可空）；
@@ -20,16 +19,14 @@
 // 错误信息统一给出运维动作（juhe-ai-maintenance --ensure-schema /
 // --migrate-scheduling-preferences）。本文件与 juhe-ai-jobs 同名文件互为镜像
 // （形状校验两模块无共享包），权威 DDL 在 maintenance/internal/schema
-// （sqlite_schema_business.go scheduling_preferences 建表语句 /
-// pg_schema_business_tables.go 同构条目）。
+// （pg_schema_business_tables.go 同构条目）。
 //
-// 判据说明（与 capability_domain_schema.go 同口径）：
-//   - SQLite：PRAGMA table_info 取列集与类型/可空；CHECK 读 sqlite_master
-//     建表文本做包含匹配，比较前小写化并去空白。
-//   - PostgreSQL：information_schema.columns 取列集/类型/可空/默认值；CHECK
-//     读 pg_constraint 的 pg_get_constraintdef——PG 会把 IN 归一化为
-//     = ANY(ARRAY[...])，整数词表按「列名 + 去空白后的 in(0,1) 或
-//     array[0,1]」双形态判定，字符串词表按字面量齐备判定。
+// 判据说明（与 capability_domain_schema.go 同口径，PostgreSQL 唯一形态）：
+// information_schema.columns 取列集/类型/可空/默认值；CHECK 读 pg_constraint
+// 的 pg_get_constraintdef——PG 会把 IN 归一化为 = ANY(ARRAY[...])，整数词表
+// 按「列名 + 去空白后的 in(0,1) 或 array[0,1]」双形态判定，字符串词表按字面
+// 量齐备判定。（原 SQLite PRAGMA/sqlite_master 判据臂随 sqlite 存储形态退役
+// 删除，PLAN-20261024T051925945Z。）
 package main
 
 import (
@@ -38,7 +35,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 )
 
@@ -66,27 +62,21 @@ var schedulingPreferenceColumns = [8]string{
 	"built_in", "created_at", "updated_at",
 }
 
-// checkSchedulingPreferenceSchema 对业务库做调度偏好四臂只读校验；postgres
-// 选择方言。返回 nil 表示表形状、绑定列、内置行与 P2 迁移完成记录全部符合契约。
-func checkSchedulingPreferenceSchema(ctx context.Context, db *sql.DB, postgres bool) error {
+// checkSchedulingPreferenceSchema 对业务库做调度偏好四臂只读校验
+// （PostgreSQL 业务库唯一形态）。返回 nil 表示表形状、绑定列、内置行与 P2
+// 迁移完成记录全部符合契约。
+func checkSchedulingPreferenceSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("scheduling_preferences 启动校验失败：业务库句柄为空（%s）", schedulingPreferenceStartupRemedy)
 	}
-	if postgres {
-		return checkSchedulingPreferenceSchemaPostgres(ctx, db, schedulingPreferenceBusinessPGSchema)
-	}
-	return checkSchedulingPreferenceSchemaSQLite(ctx, db)
+	return checkSchedulingPreferenceSchemaPostgres(ctx, db, schedulingPreferenceBusinessPGSchema)
 }
 
 // checkSchedulingPreferenceMigrationRecord 是第四臂：P2 迁移完成记录必须存在
 // 且 stage=completed（判定语义与文案单源于 schedprefdomain.RequireCompleted，
-// 本文件只做方言选择）。
-func checkSchedulingPreferenceMigrationRecord(ctx context.Context, db *sql.DB, postgres bool) error {
-	dialect := capabilitydomain.DialectSQLite
-	if postgres {
-		dialect = capabilitydomain.DialectPostgres
-	}
-	return schedprefdomain.RequireCompleted(ctx, db, dialect)
+// 本文件不复制）。
+func checkSchedulingPreferenceMigrationRecord(ctx context.Context, db *sql.DB) error {
+	return schedprefdomain.RequireCompleted(ctx, db)
 }
 
 // schedulingPreferenceNormalized 小写化并移除全部空白（空格/换行/制表），供
@@ -94,101 +84,6 @@ func checkSchedulingPreferenceMigrationRecord(ctx context.Context, db *sql.DB, p
 // 共享包故各自持有）。
 func schedulingPreferenceNormalized(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), "")
-}
-
-// schedulingPreferenceSQLiteCheckTexts 是 SQLite 建表文本中两组 CHECK 的判据
-// 片段（比较前双方归一化；enabled 词表已随 v2 第 4 条退役）。
-var schedulingPreferenceSQLiteCheckTexts = [2]string{
-	"chat_mode in ('cost_first','speed_first')",
-	"built_in in (0,1)",
-}
-
-// checkSchedulingPreferenceSchemaSQLite 执行 SQLite 方言四臂校验。
-func checkSchedulingPreferenceSchemaSQLite(ctx context.Context, db *sql.DB) error {
-	// 臂 1：表形状（8 列精确集合 + 两组 CHECK 词表）。
-	columns := map[string]bool{}
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info("scheduling_preferences")`)
-	if err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：读取 PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, columnType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			rows.Close()
-			return fmt.Errorf("scheduling_preferences 启动校验失败：扫描 PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-		}
-		columns[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("scheduling_preferences 启动校验失败：遍历 PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	rows.Close()
-	if len(columns) == 0 {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：表缺失，期望形状 %s（%s）", schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-	}
-	for _, column := range schedulingPreferenceColumns {
-		if !columns[column] {
-			return fmt.Errorf("scheduling_preferences 启动校验失败：缺列 %s，期望形状 %s（%s）", column, schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-		}
-	}
-	var ddl sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='scheduling_preferences'`).Scan(&ddl); err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：读取建表文本失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	if !ddl.Valid {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：建表文本为空，期望形状 %s（%s）", schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-	}
-	normalizedDDL := schedulingPreferenceNormalized(ddl.String)
-	for _, checkText := range schedulingPreferenceSQLiteCheckTexts {
-		if !strings.Contains(normalizedDDL, schedulingPreferenceNormalized(checkText)) {
-			return fmt.Errorf("scheduling_preferences 启动校验失败：建表文本缺少 CHECK 判据 %s，期望形状 %s（%s）", checkText, schedulingPreferenceExpectedShape, schedulingPreferenceStartupRemedy)
-		}
-	}
-
-	// 臂 2：api_keys.scheduling_preference_id 绑定列（TEXT 可空）。
-	foundAPIKeyColumn := false
-	apiKeyRows, err := db.QueryContext(ctx, `PRAGMA table_info("api_keys")`)
-	if err != nil {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：读取 api_keys PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	for apiKeyRows.Next() {
-		var cid, notNull, pk int
-		var name, columnType string
-		var defaultValue any
-		if err := apiKeyRows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			apiKeyRows.Close()
-			return fmt.Errorf("scheduling_preferences 启动校验失败：扫描 api_keys PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-		}
-		if name == "scheduling_preference_id" {
-			foundAPIKeyColumn = true
-			if !strings.EqualFold(strings.TrimSpace(columnType), "TEXT") {
-				apiKeyRows.Close()
-				return fmt.Errorf("scheduling_preferences 启动校验失败：api_keys.scheduling_preference_id 列类型为 %q，期望 TEXT（%s）", columnType, schedulingPreferenceStartupRemedy)
-			}
-			if notNull != 0 {
-				apiKeyRows.Close()
-				return fmt.Errorf("scheduling_preferences 启动校验失败：api_keys.scheduling_preference_id 列不可空，期望可空 TEXT 绑定列（%s）", schedulingPreferenceStartupRemedy)
-			}
-		}
-	}
-	if err := apiKeyRows.Err(); err != nil {
-		apiKeyRows.Close()
-		return fmt.Errorf("scheduling_preferences 启动校验失败：遍历 api_keys PRAGMA table_info 失败: %w（%s）", err, schedulingPreferenceStartupRemedy)
-	}
-	apiKeyRows.Close()
-	if !foundAPIKeyColumn {
-		return fmt.Errorf("scheduling_preferences 启动校验失败：api_keys.scheduling_preference_id 绑定列缺失，期望 api_keys 增加 scheduling_preference_id TEXT NULL（%s）", schedulingPreferenceStartupRemedy)
-	}
-
-	// 臂 3：内置行存在且 built_in=1、chat_mode 合法。
-	if err := checkSchedulingPreferenceBuiltinRow(ctx, db, "scheduling_preferences", ""); err != nil {
-		return err
-	}
-	// 臂 4：P2 迁移完成记录存在且 stage=completed。
-	return checkSchedulingPreferenceMigrationRecord(ctx, db, false)
 }
 
 // checkSchedulingPreferenceBuiltinRow 读取内置行并做两值校验（built_in +
@@ -320,5 +215,5 @@ func checkSchedulingPreferenceSchemaPostgres(ctx context.Context, db *sql.DB, sc
 		return err
 	}
 	// 臂 4：P2 迁移完成记录存在且 stage=completed。
-	return checkSchedulingPreferenceMigrationRecord(ctx, db, true)
+	return checkSchedulingPreferenceMigrationRecord(ctx, db)
 }

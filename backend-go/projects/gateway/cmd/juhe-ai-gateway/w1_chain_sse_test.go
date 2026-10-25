@@ -328,7 +328,7 @@ func w1vSeedPlainGroup(t *testing.T, fixture *chainFixture, groupID, baseURL str
 	now := "2026-09-14T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
@@ -352,7 +352,7 @@ func w1vSeedMultiGroupKey(t *testing.T, fixture *chainFixture, groupIDs []string
 	now := "2026-09-14T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
@@ -475,7 +475,7 @@ func w1vSeedSpeedFirstStack(t *testing.T, fixture *chainFixture, suffix, schedul
 	now := "2026-09-14T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
@@ -949,7 +949,7 @@ func w1vSeedInspectionRetry(t *testing.T, fixture *chainFixture, fallbackGroup s
 	now := "2026-09-14T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
@@ -974,7 +974,7 @@ func TestW1VResponseInspectionRetryRotatesWithinGroup(t *testing.T) {
 	now := "2026-09-14T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}

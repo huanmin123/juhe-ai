@@ -3,7 +3,9 @@ package modelcheckauth
 // w14f_auth_arms_test.go 用脚本化 database/sql 驱动补齐 modelcheckauth 的
 // 剩余分支：CheckContract 的 PostgreSQL 特权臂、会话签发/改密/清理的行级
 // 故障注入、HTTP 处理器的 429/404/409/500 臂、验证码限流与淘汰分支、登录
-// 守卫按用户名锁定臂。
+// 守卫按用户名锁定臂。生产 Mode 收敛为 Postgres 单态后（SQLite 常量退役），
+// 原 SQLite 模式臂按 D9 同语义改走 Postgres 装配：scripted 驱动的注入规则
+// 按查询子串命中，方言渲染（table/bind）不影响子串匹配，断言逐字节保持。
 //
 // 不可达语句登记（进程内确实无法触发的 crypto/rand 失败臂，保持原文不改）：
 //   - captcha.go Issue 内 randomCaptchaAnswer / randomCaptchaID 的错误臂及其
@@ -137,7 +139,7 @@ func w14fAuthOpenDB(t *testing.T, state *w14fAuthState) *sql.DB {
 	return db
 }
 
-// w14fAuthScripted 以脚本化驱动组装 Authenticator（mode 切换方言臂）。
+// w14fAuthScripted 以脚本化驱动组装 Authenticator（生产 Postgres 单态）。
 func w14fAuthScripted(t *testing.T, mode Mode, state *w14fAuthState) *Authenticator {
 	t.Helper()
 	auth, err := New(w14fAuthOpenDB(t, state), mode, func() time.Time { return time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC) })
@@ -201,8 +203,13 @@ func TestW14fCheckContractPostgresPrivilegeArms(t *testing.T) {
 		t.Fatalf("缺少 UPDATE 特权应报错: %v", err)
 	}
 
-	// 提交失败（同臂覆盖 SQLite 事务提交）。
-	auth = w14fAuthScripted(t, SQLite, &w14fAuthState{commitErr: errors.New("w14f commit failure")})
+	// 提交失败（PG 臂：特权查询先放行，再让事务提交失败）。
+	auth = w14fAuthScripted(t, Postgres, &w14fAuthState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
+		if strings.Contains(query, "has_table_privilege") {
+			return w14fStaticRows(1, true), nil
+		}
+		return &w14fAuthRows{}, nil
+	}, commitErr: errors.New("w14f commit failure")})
 	if err := auth.CheckContract(context.Background()); err == nil || !strings.Contains(err.Error(), "commit management auth contract transaction") {
 		t.Fatalf("契约提交失败应报错: %v", err)
 	}
@@ -212,7 +219,7 @@ func TestW14fCheckContractPostgresPrivilegeArms(t *testing.T) {
 
 func TestW14fTouchUpdateFailureAndRequireAdminForbidden(t *testing.T) {
 	// 会话有效、last_seen 超过 1 分钟 → touch UPDATE 失败。
-	auth := w14fAuthScripted(t, SQLite, &w14fAuthState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
+	auth := w14fAuthScripted(t, Postgres, &w14fAuthState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 		if strings.Contains(query, "SELECT ss.id,ss.expires_at") {
 			return w14fStaticRows(8, w14fSessionValues("admin")...), nil
 		}
@@ -231,7 +238,7 @@ func TestW14fTouchUpdateFailureAndRequireAdminForbidden(t *testing.T) {
 	}
 
 	// RequireAdmin：非管理员角色 → ErrForbidden。
-	auth = w14fAuthScripted(t, SQLite, &w14fAuthState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
+	auth = w14fAuthScripted(t, Postgres, &w14fAuthState{queryFn: func(query string, args []driver.NamedValue) (driver.Rows, error) {
 		if strings.Contains(query, "SELECT ss.id,ss.expires_at") {
 			return w14fStaticRows(8, w14fSessionValues("viewer")...), nil
 		}
@@ -523,7 +530,7 @@ func TestW14fDisplayNameAndCleanupArms(t *testing.T) {
 	ctx := context.Background()
 
 	// UpdateDisplayName 执行失败。
-	auth := w14fAuthScripted(t, SQLite, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
+	auth := w14fAuthScripted(t, Postgres, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
 		if strings.Contains(query, "SET display_name=") {
 			return nil, errors.New("w14f display name failure")
 		}
@@ -536,7 +543,7 @@ func TestW14fDisplayNameAndCleanupArms(t *testing.T) {
 	}
 
 	// UpdateDisplayName 未命中行。
-	auth = w14fAuthScripted(t, SQLite, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
+	auth = w14fAuthScripted(t, Postgres, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
 		_ = args
 		return w14fResult(0), nil
 	}})
@@ -546,7 +553,7 @@ func TestW14fDisplayNameAndCleanupArms(t *testing.T) {
 	}
 
 	// CleanupExpiredSessions 执行失败。
-	auth = w14fAuthScripted(t, SQLite, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
+	auth = w14fAuthScripted(t, Postgres, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
 		if strings.Contains(query, "DELETE FROM") && strings.Contains(query, "expires_at<=") {
 			return nil, errors.New("w14f cleanup failure")
 		}
@@ -559,7 +566,7 @@ func TestW14fDisplayNameAndCleanupArms(t *testing.T) {
 	}
 
 	// CleanupExpiredSessions RowsAffected 失败。
-	auth = w14fAuthScripted(t, SQLite, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
+	auth = w14fAuthScripted(t, Postgres, &w14fAuthState{execFn: func(query string, args []driver.NamedValue) (driver.Result, error) {
 		_ = args
 		return w14fAuthResult{rowsAffected: 0, raErr: errors.New("w14f cleanup count failure")}, nil
 	}})
@@ -591,7 +598,7 @@ func w14fHandlerDispatch(t *testing.T, mutate func(*w14fAuthState)) (*HTTPHandle
 		return &w14fAuthRows{}, nil
 	}}
 	mutate(state)
-	auth := w14fAuthScripted(t, SQLite, state)
+	auth := w14fAuthScripted(t, Postgres, state)
 	handler := &HTTPHandler{
 		Auth:                       auth,
 		TemporaryAccessIPAllowlist: []string{"192.0.2.1"},

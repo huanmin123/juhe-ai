@@ -21,8 +21,13 @@ import (
 func w17eOpenBusinessPostgres(t *testing.T) *sql.DB {
 	t.Helper()
 	db := composeTestPostgres(t).DB
-	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, dispatch_revision)
-		VALUES ('acc', 1) ON CONFLICT (id) DO NOTHING`); err != nil {
+	// 列集与最小 accounts 种子基线对齐（system_account_id 指向 seed 的
+	// sys_admin；connection_driver_code/protocol_code/protocol_version/
+	// credentials_encrypted/created_at/updated_at 生产 NOT NULL，
+	// dispatch_revision=1 与下方 ledger 行的围栏一致）。
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, credential_mask, created_at, updated_at, deleted_at)
+		VALUES ('acc', 'sys_admin', 'gpt', 'openai', 'openai', 'v1', 'acc', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, '', '', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z', NULL)
+		ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatalf("seed account row: %v", err)
 	}
 	return db
@@ -62,7 +67,7 @@ func TestChainAccountCircuitServiceOptionsRuntimeReadyHooks(t *testing.T) {
 		confirmation_failures_required, confirmation_failure_evidence_keys_json,
 		recovering_successes, next_transition_at_ms, created_at_ms, updated_at_ms)
 		VALUES ($1, 'acc', 'acc', 'account', 'inc-seed', '[]', 'SUSPECT', 1, 1, 1,
-		0, 't-seed', 0, false, 0, 1, 2, '[]', 0, $2, $3, $4)`,
+		0, 't-seed', 0, 0, 0, 1, 2, '[]', 0, $2, $3, $4)`,
 		gatewaycircuit.MustScopeKey(scope), nowMs+int64((10*time.Minute)/time.Millisecond), nowMs, nowMs); err != nil {
 		t.Fatalf("seed suspect incident: %v", err)
 	}

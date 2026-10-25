@@ -55,7 +55,7 @@ func TestChainCostEstimatorEstimateVectors(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed catalog row: %v: %v", query, err)
 		}
 	}
@@ -72,10 +72,10 @@ func TestChainCostEstimatorEstimateVectors(t *testing.T) {
 			long_context_input_cost_multiplier, long_context_output_cost_multiplier,
 			supported_service_tiers_json, service_tier_prices_json,
 			created_at, updated_at)
-		VALUES ('cat_est', 'gpt', 'gpt-est', 'gpt-est', 'builtin', 'active', 1, 'builtin',
+		VALUES ('cat_est', 'gpt', 'gpt-est', 'gpt-est', 'builtin', 'active', TRUE, 'builtin',
 			'["chat_json","chat_sse"]',
 			2.5, 10.0,
-			100000, 0,
+			100000, FALSE,
 			2.0, 1.5,
 			$1, $2, $3, $4)`, `["priority"]`, string(tiers), now, now)
 	// The cache catalog cache must pick the new row up: build a fresh cache.
@@ -159,10 +159,10 @@ func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 	).Scan(&strategyID); err != nil {
 		t.Fatalf("query default strategy: %v", err)
 	}
-	if _, err := composed.DB.Exec(`INSERT INTO juhe_business.api_keys (
+	if _, err := composed.DB.Exec(fixtureBind(`INSERT INTO juhe_business.api_keys (
 			id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix,
 			key_secret_encrypted, status, is_default, scheduling_preference_id, created_at, updated_at
-		) VALUES ('key_compat', 'sys_admin', ?, '兼容探测', ?, 'sk-compose', 'compat', ?, 'active', 0, 'schpref-builtin-chat-cost-first', ?, ?)`,
+		) VALUES ('key_compat', 'sys_admin', ?, '兼容探测', ?, 'sk-compose', 'compat', ?, 'active', 0, 'schpref-builtin-chat-cost-first', ?, ?)`),
 		strategyID, gatewayruntimecache.HashSecret(secret), sealed, "2026-09-04T00:00:00.000Z", "2026-09-04T00:00:00.000Z"); err != nil {
 		t.Fatalf("seed compat api key: %v", err)
 	}

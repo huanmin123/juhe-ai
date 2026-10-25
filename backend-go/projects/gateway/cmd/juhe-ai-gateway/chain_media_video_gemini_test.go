@@ -91,7 +91,7 @@ func seedMediaGeminiVideoAccount(t *testing.T, fixture *chainFixture, id, baseUR
 	t.Helper()
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed gemini video row: %v: %v", query, err)
 		}
 	}
@@ -108,8 +108,8 @@ func seedMediaGeminiVideoAccount(t *testing.T, fixture *chainFixture, id, baseUR
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_gem_video', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
-	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_gem_veo', 'gemini', 'veo-3.0-generate-preview', 'veo-3.0-generate-preview', 'global', 'active', '["generate_content_json","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_gem_veo', 'gemini', 'veo-3.0-generate-preview', 'veo-3.0-generate-preview', 'global', 'active', '["generate_content_json","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z') ON CONFLICT (id) DO NOTHING`)
 	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
 		VALUES (?, 'veo-3.0-generate-preview', 'mdl_gem_veo', '2026-10-04T00:00:00.000Z')`, id)
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。

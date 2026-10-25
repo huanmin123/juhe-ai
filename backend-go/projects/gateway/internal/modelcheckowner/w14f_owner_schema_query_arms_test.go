@@ -7,7 +7,6 @@ package modelcheckowner
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,84 +14,6 @@ import (
 )
 
 // ---- business_schema：SQLite 检查失败关闭臂 ----
-
-func TestW14fOwnerSQLiteSchemaFailClosedArms(t *testing.T) {
-	ctx := context.Background()
-	// nil 库。
-	if err := CheckBusinessSQLiteSchema(ctx, nil); err == nil {
-		t.Fatalf("nil 库应报错")
-	}
-	// 空库 → 缺表。
-	empty := wbOpenMemoryDB(t, nil)
-	if err := CheckBusinessSQLiteSchema(ctx, empty); err == nil ||
-		!strings.Contains(err.Error(), "missing table") {
-		t.Fatalf("空库应报缺表: %v", err)
-	}
-	// 每个必需表建一个占位列 → 缺列。
-	statements := []string{}
-	for table := range contracts.BusinessSQLiteSchema {
-		statements = append(statements, "CREATE TABLE "+table+" (placeholder TEXT)")
-	}
-	partial := wbOpenMemoryDB(t, statements)
-	if err := CheckBusinessSQLiteSchema(ctx, partial); err == nil {
-		t.Fatalf("占位列库应报错")
-	}
-}
-
-func TestW14fOwnerSQLiteSchemaHelperErrorArms(t *testing.T) {
-	ctx := context.Background()
-	store, fp := w13g2McFailStore(t)
-	db := store.db
-
-	// sqliteSchemaObjects / Columns / PrimaryKey / Unique / IndexColumns /
-	// ForeignKeys / IndexMatches 的查询错误臂。
-	arms := []struct {
-		name    string
-		pattern string
-		call    func() error
-	}{
-		{"objects", "FROM sqlite_master", func() error {
-			_, err := sqliteSchemaObjects(ctx, db, "table")
-			return err
-		}},
-		{"columns", "PRAGMA table_info", func() error {
-			_, err := sqliteSchemaColumns(ctx, db, "model_check_runs")
-			return err
-		}},
-		{"primaryKey", "PRAGMA table_info", func() error {
-			_, err := sqliteSchemaPrimaryKey(ctx, db, "model_check_runs")
-			return err
-		}},
-		{"uniqueConstraint", "PRAGMA index_list", func() error {
-			_, _, err := sqliteSchemaHasUniqueConstraint(ctx, db, "model_check_runs", []string{"id"})
-			return err
-		}},
-		{"indexColumns", "PRAGMA index_info", func() error {
-			_, err := sqliteSchemaIndexColumns(ctx, db, "idx")
-			return err
-		}},
-		{"foreignKeys", "PRAGMA foreign_key_list", func() error {
-			_, err := sqliteSchemaForeignKeys(ctx, db, "model_check_runs")
-			return err
-		}},
-		{"indexMatches", "PRAGMA index_list", func() error {
-			_, _, err := sqliteSchemaIndexMatches(ctx, db, "model_check_runs", contracts.SQLiteIndexDefinition{Name: "idx"})
-			return err
-		}},
-	}
-	for _, item := range arms {
-		item := item
-		t.Run(item.name, func(t *testing.T) {
-			fp.arm(item.pattern)
-			defer fp.disarm()
-			if err := item.call(); err == nil {
-				t.Fatalf("%s 失败注入应报错", item.name)
-			}
-		})
-	}
-}
-
-// ---- business_schema：PostgreSQL 方言纯函数臂 ----
 
 func TestW14fOwnerPostgresSchemaHelperArms(t *testing.T) {
 	// 参照动作映射（SQLite 缩写 → PG 动作）。
@@ -115,7 +36,7 @@ func TestW14fOwnerPostgresSchemaHelperArms(t *testing.T) {
 	foreignKeys := map[int64]*postgresSchemaForeignKey{
 		1: {refSchema: "juhe_business", refTable: "accounts", columns: []string{"account_id"}, refColumns: []string{"id"}, onUpdate: "CASCADE", onDelete: "NO ACTION"},
 	}
-	spec := contracts.SQLiteForeignKeySpec{Columns: []string{"account_id"}, RefTable: "accounts", RefColumns: []string{"id"}, OnUpdate: "CASCADE", OnDelete: "NO ACTION"}
+	spec := contracts.BusinessForeignKeySpec{Columns: []string{"account_id"}, RefTable: "accounts", RefColumns: []string{"id"}, OnUpdate: "CASCADE", OnDelete: "NO ACTION"}
 	if !hasPostgresForeignKey(foreignKeys, "juhe_business", spec) {
 		t.Fatalf("外键应命中")
 	}
@@ -125,20 +46,20 @@ func TestW14fOwnerPostgresSchemaHelperArms(t *testing.T) {
 		t.Fatalf("删除行为不同不应命中")
 	}
 	// 索引不匹配描述分支。
-	mismatch := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}}, contracts.SQLiteIndexDefinition{Name: "idx", Columns: []string{"a", "b"}})
+	mismatch := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}}, contracts.BusinessIndexDefinition{Name: "idx", Columns: []string{"a", "b"}})
 	if mismatch == "" {
 		t.Fatalf("列序差异应有描述")
 	}
-	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}, predicate: "WHERE x"}, contracts.SQLiteIndexDefinition{Name: "idx", Columns: []string{"a"}, Predicate: "WHERE y"}); code == "" {
+	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}, predicate: "WHERE x"}, contracts.BusinessIndexDefinition{Name: "idx", Columns: []string{"a"}, Predicate: "WHERE y"}); code == "" {
 		t.Fatalf("谓词差异应有描述")
 	}
-	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}, expression: true}, contracts.SQLiteIndexDefinition{Name: "idx", Columns: []string{"a"}}); code == "" {
+	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}, expression: true}, contracts.BusinessIndexDefinition{Name: "idx", Columns: []string{"a"}}); code == "" {
 		t.Fatalf("表达式索引应有描述")
 	}
-	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}}, contracts.SQLiteIndexDefinition{Name: "idx", Columns: []string{"a"}, Unique: true}); code == "" {
+	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}}, contracts.BusinessIndexDefinition{Name: "idx", Columns: []string{"a"}, Unique: true}); code == "" {
 		t.Fatalf("unique 差异应有描述")
 	}
-	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}}, contracts.SQLiteIndexDefinition{Name: "idx", Columns: []string{"a"}, Predicate: "x"}); code == "" {
+	if code := postgresSchemaIndexMismatch(postgresSchemaIndex{columns: []string{"a"}}, contracts.BusinessIndexDefinition{Name: "idx", Columns: []string{"a"}, Predicate: "x"}); code == "" {
 		t.Fatalf("缺失谓词应有描述")
 	}
 	// sameSchemaIndexColumns。

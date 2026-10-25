@@ -19,8 +19,7 @@ import (
 type Mode uint8
 
 const (
-	SQLite Mode = iota + 1
-	Postgres
+	Postgres Mode = iota + 1
 )
 
 const SessionCookieName = "juhe_ai_session"
@@ -70,7 +69,7 @@ func (a *Authenticator) SetInitialPasswordGateDisabled(disabled bool) {
 }
 
 func New(db *sql.DB, mode Mode, now func() time.Time) (*Authenticator, error) {
-	if db == nil || (mode != SQLite && mode != Postgres) {
+	if db == nil || mode != Postgres {
 		return nil, errors.New("invalid Gateway management authenticator")
 	}
 	if now == nil {

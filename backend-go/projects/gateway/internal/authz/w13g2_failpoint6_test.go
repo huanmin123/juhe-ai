@@ -200,9 +200,9 @@ func TestW13g2MutationDataBranches(t *testing.T) {
 
 	// sweep：actor 优先取 revoked_by（856-858）。
 	past := "2020-01-01T00:00:00.000Z"
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, scope, status, expires_at, revoked_by, created_by, created_at, updated_at)
-		VALUES ('grant_md13', 'group', 'grp_md13b', 'owner', 'system_account', 'md1', 'use', 'active', ?, 'early_actor', 'creator_md', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, past); err != nil {
+		VALUES ('grant_md13', 'group', 'grp_md13b', 'owner', 'system_account', 'md1', 'use', 'active', ?, 'early_actor', 'creator_md', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), past); err != nil {
 		t.Fatal(err)
 	}
 	w13g2InsertRuntimeRow(t, f, "rt_md13", "group", "grp_md13b", "owner", "md1", StatusActive, "manual", "", nil)

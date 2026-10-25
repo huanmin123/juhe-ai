@@ -46,8 +46,7 @@ func TestExpirySweepsFireExpiredFanout(t *testing.T) {
 
 	// Age the grant past its expiry so the sweep materializes the flip.
 	past := f.now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`,
-		past, created.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`), 		past, created.Item.ID); err != nil {
 		t.Fatal(err)
 	}
 	swept, err := f.store.ExpireSweep(context.Background(), 10)
@@ -56,8 +55,7 @@ func TestExpirySweepsFireExpiredFanout(t *testing.T) {
 	}
 	assertOneFanout(t, stats, bus, 1, 3, invalidationReasonExpired)
 	var grantStatus string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`,
-		created.Item.ID).Scan(&grantStatus); err != nil || grantStatus != StatusExpired {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), 		created.Item.ID).Scan(&grantStatus); err != nil || grantStatus != StatusExpired {
 		t.Fatalf("grant status = %q, %v", grantStatus, err)
 	}
 
@@ -135,10 +133,9 @@ func TestTeamCascadeStandaloneWrappersFireFanout(t *testing.T) {
 	// ReactivateTeamGrants: from the revoked runtime state left by the member
 	// removal, the committed re-expansion upserts the member runtime row back
 	// to active from the active team grant and fires the updated fan-out.
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
 		resource_owner_system_account_id, grantee_type, grantee_team_id, status, created_by, created_at, updated_at)
-		VALUES ('rauthgrant_t1', 'group', 'grp_1', 'owner', 'team', 'team_1', 'active', 'owner', ?, ?)`,
-		now, now); err != nil {
+		VALUES ('rauthgrant_t1', 'group', 'grp_1', 'owner', 'team', 'team_1', 'active', 'owner', ?, ?)`), 		now, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.store.ReactivateTeamGrants(context.Background(), "team_1", "owner"); err != nil {

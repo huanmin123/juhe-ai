@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
 
 // ---- trust_store：投影事务各写入臂 ----
@@ -250,46 +249,6 @@ func TestW14MAccountOptionsQueryArms(t *testing.T) {
 // ---- business_schema：SQLite 检查级失败臂 ----
 
 // w14mContractTablesDB 按契约 spec 创建全表（全部必需列，TEXT 类型），
-// 使 CheckBusinessSQLiteSchema 能越过缺表检查进入逐表 PRAGMA 检查。
-func w14mContractTablesDB(t *testing.T) (*sql.DB, *w14mFailpoint) {
-	t.Helper()
-	statements := make([]string, 0, len(contracts.BusinessSQLiteSchema))
-	for table, spec := range contracts.BusinessSQLiteSchema {
-		cols := make([]string, 0, len(spec.Columns))
-		for _, column := range spec.Columns {
-			cols = append(cols, `"`+column+`" TEXT`)
-		}
-		statements = append(statements, "CREATE TABLE \""+table+"\" ("+strings.Join(cols, ",")+")")
-	}
-	return w14mFailDB(t, statements)
-}
-
-func TestW14MBusinessSQLiteSchemaCheckArms(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("columns", func(t *testing.T) {
-		db, fp := w14mContractTablesDB(t)
-		fp.arm("PRAGMA table_info")
-		defer fp.disarm()
-		if err := CheckBusinessSQLiteSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "w14m") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	// 第二次 table_info 是主键检查；若首个遍历表未声明 PrimaryKey，该臂不会
-	// 到达（契约表均未显式声明主键时由 w14f 的 helper 级测试覆盖）。
-	t.Run("indexesList", func(t *testing.T) {
-		db, fp := w14mContractTablesDB(t)
-		fp.armAfter("FROM sqlite_master", 1)
-		defer fp.disarm()
-		if err := CheckBusinessSQLiteSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "list Business SQLite indexes") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-}
-
-// ---- HTTP：解码与作用域臂 ----
-
 func TestW14MHTTPDecodeAndScopeArms(t *testing.T) {
 	handler := newTestHTTPHandler()
 
@@ -370,4 +329,3 @@ func (w14mStubAccountOptions) ModelCheckOptions() ModelCheckOptions {
 }
 
 var _ = sql.ErrNoRows
-var _ = contracts.BusinessSQLiteSchemaVersion

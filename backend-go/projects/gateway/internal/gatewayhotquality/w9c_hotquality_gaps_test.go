@@ -47,8 +47,6 @@ func TestW9CGetGatewayHotQualityRuntimeRedisDriver(t *testing.T) {
 	ctx := context.Background()
 	url := "redis://" + server.Addr()
 	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
-		RuntimeMode:        "performance",
-		RuntimeStateDriver: "redis",
 		RedisStateURL:      url,
 		RedisNamespace:     "w9c-redis",
 	})
@@ -60,8 +58,6 @@ func TestW9CGetGatewayHotQualityRuntimeRedisDriver(t *testing.T) {
 	}
 	// Same identity returns the cached pair.
 	cached, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
-		RuntimeMode:        "performance",
-		RuntimeStateDriver: "redis",
 		RedisStateURL:      url,
 		RedisNamespace:     "w9c-redis",
 	})
@@ -358,71 +354,6 @@ func TestW9CExplorationRedisSettleAndBadReplies(t *testing.T) {
 		t.Fatalf("get = %+v, %v", state, err)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// memory_store.go gaps (freshEntry / freshAttempt expiry deletion).
-// ---------------------------------------------------------------------------
-
-func TestW9CMemoryStoreFreshEntryAndAttemptExpiry(t *testing.T) {
-	store := newTestMemoryStore(t, nil)
-	ctx := context.Background()
-	if _, err := store.RecordAttempt(ctx, HotQualityRecordAttemptInput{AttemptID: "at-exp", Scope: testScope("acc-exp")}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// freshEntry: live entry is returned; expired entry is deleted.
-	live := store.freshEntry("missing", 1_000)
-	if live != nil {
-		t.Fatal("missing entry must be nil")
-	}
-	store.mu.Lock()
-	var scopeKey string
-	var entry *memoryHotQualityEntry
-	for key, candidate := range store.entries {
-		scopeKey, entry = key, candidate
-		break
-	}
-	store.mu.Unlock()
-	if entry == nil {
-		t.Fatal("attempt must create an entry")
-	}
-	if got := store.freshEntry(scopeKey, entry.expiresAtMs-1); got != entry {
-		t.Fatal("live entry must be returned")
-	}
-	if got := store.freshEntry(scopeKey, entry.expiresAtMs+1); got != nil {
-		t.Fatal("expired entry must be dropped")
-	}
-	store.mu.Lock()
-	_, stillThere := store.entries[scopeKey]
-	store.mu.Unlock()
-	if stillThere {
-		t.Fatal("expired entry must be deleted from the map")
-	}
-
-	// freshAttempt: expired attempt identity is deleted with its terminal.
-	store.mu.Lock()
-	attemptID, attempt := "at-exp", store.attempts["at-exp"]
-	store.mu.Unlock()
-	if attempt == nil {
-		t.Fatal("attempt identity must exist")
-	}
-	if got := store.freshAttempt(attemptID, attempt.expiresAtMs-1); got != attempt {
-		t.Fatal("live attempt must be returned")
-	}
-	if got := store.freshAttempt(attemptID, attempt.expiresAtMs+1); got != nil {
-		t.Fatal("expired attempt must be dropped")
-	}
-	store.mu.Lock()
-	_, stillTracked := store.attempts[attemptID]
-	store.mu.Unlock()
-	if stillTracked {
-		t.Fatal("expired attempt must be deleted")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// speedfirst_body_admission.go gaps (SetClock / ClearForTest).
-// ---------------------------------------------------------------------------
 
 func TestW9CBodyAdmissionSetClockAndClear(t *testing.T) {
 	registry := NewSpeedFirstBodyAdmissionRegistry()

@@ -49,7 +49,7 @@ func seedChatDispatchPinGroup(t *testing.T, fixture *chainFixture, mainURL, pinU
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed pin group: %v: %s", err, query)
 		}
 	}
@@ -166,8 +166,8 @@ func TestChatConversationDispatchTargetReadsBindColumn(t *testing.T) {
 	bind := func(query string) string { return query }
 	insert := func(id string, accountID any) {
 		t.Helper()
-		if _, err := db.Exec(`INSERT INTO chat_conversations (id, system_account_id, bind_account_id)
-			VALUES (?, 'sys_owner', ?)`, id, accountID); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_conversations (id, system_account_id, bind_account_id)
+			VALUES (?, 'sys_owner', ?)`), id, accountID); err != nil {
 			t.Fatalf("insert conversation: %v", err)
 		}
 	}
@@ -336,11 +336,11 @@ func TestChatDispatchAccountMultiGroupConvergesFullChain(t *testing.T) {
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "active")
 	// 第二个启用分组（启用但不含 acc_pin）：验证逐组解析跳过无命中组。
 	now := "2026-09-04T00:00:00.000Z"
-	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_other', ?, 1, 'personal')`, fixture.systemAccount); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_other', ?, 1, 'personal')`), fixture.systemAccount); err != nil {
 		t.Fatalf("seed other group: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
-		VALUES ('group_other', ?, ?, 1, ?)`, fixture.systemAccount, fixture.accountID, now); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES ('group_other', ?, ?, 1, ?)`), fixture.systemAccount, fixture.accountID, now); err != nil {
 		t.Fatalf("seed other binding: %v", err)
 	}
 	// 承载分组（group_pin）位于启用分组列表第二位。
@@ -406,7 +406,7 @@ func TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics(t *testing.
 	pin := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "active")
 	// 空承载分组：存在但无任何账户。
-	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_empty', ?, 1, 'personal')`, fixture.systemAccount); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_empty', ?, 1, 'personal')`), fixture.systemAccount); err != nil {
 		t.Fatalf("seed empty group: %v", err)
 	}
 	withChatDispatchAccountGroups(t, "group_empty")
@@ -505,11 +505,11 @@ func TestChatDispatchPinnedDisabledAccountFullChain(t *testing.T) {
 func TestChatDispatchGroupContextAlignsPinnedPolicy(t *testing.T) {
 	fixture := newChainFixture(t)
 	now := "2026-09-04T00:00:00.000Z"
-	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('group_hc', ?, 1, 'high_concurrency', '{"weighted":{}}')`, fixture.systemAccount); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('group_hc', ?, 1, 'high_concurrency', '{"weighted":{}}')`), fixture.systemAccount); err != nil {
 		t.Fatalf("seed hc group: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
-		VALUES ('group_hc', ?, ?, 1, ?)`, fixture.systemAccount, fixture.accountID, now); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES ('group_hc', ?, ?, 1, ?)`), fixture.systemAccount, fixture.accountID, now); err != nil {
 		t.Fatalf("seed hc binding: %v", err)
 	}
 	access, err := fixture.cache.ResolveCachedGroupUsageAccessMetadataAsync(context.Background(), "group_hc", fixture.systemAccount)

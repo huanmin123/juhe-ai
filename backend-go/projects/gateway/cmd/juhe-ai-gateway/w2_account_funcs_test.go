@@ -93,14 +93,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
-	moderncsqlite "modernc.org/sqlite"
+	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
@@ -112,6 +111,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
 	platformaccountbalance "github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -317,6 +318,8 @@ func (r *w2bBadValueRows) Next(dest []driver.Value) error {
 }
 
 // w2bOpenPlainSQLiteAt 打开指定路径的普通 SQLite 句柄（先建表种子用）。
+// 范围外调用方仍在（t36_generic_runtime_test.go）；新用例一律走
+// w2bOpenBusinessPGFixture（T67 批）。
 func w2bOpenPlainSQLiteAt(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -327,11 +330,30 @@ func w2bOpenPlainSQLiteAt(t *testing.T, path string) *sql.DB {
 	return db
 }
 
-// w2bOpenFaultySQLiteAt 在指定路径上打开带故障注入规则的 SQLite 句柄（与
-// 普通句柄同文件：先用普通句柄建表种子，再用本句柄查询）。
-func w2bOpenFaultySQLiteAt(t *testing.T, path string, rules ...*w2bFaultRule) *sql.DB {
+// w2bOpenBusinessPGFixture 创建带 juhe_business/juhe_stats schema 的 pgtestkit
+// 隔离库，返回 search_path 连接池（夹具手写裸表名 SQL 直用）与裸 DSN
+// （故障注入句柄按需自接）。原 SQLite 文件夹具随存储形态退役重钉 PG
+//（T67 批）。
+func w2bOpenBusinessPGFixture(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	db := sql.OpenDB(&w2bFaultConnector{base: &moderncsqlite.Driver{}, dsn: "file:" + filepath.ToSlash(path), rules: rules})
+	testDB := pgtestkit.NewTestDatabase(t)
+	if _, err := testDB.DB.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business; CREATE SCHEMA IF NOT EXISTS juhe_stats`); err != nil {
+		t.Fatalf("create fixture schemas: %v", err)
+	}
+	_ = testDB.DB.Close()
+	pool, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_business,juhe_stats")
+	if err != nil {
+		t.Fatalf("open fixture pool: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	return pool, testDB.DSN
+}
+
+// w2bOpenFaultyPG 在指定 DSN 上打开带故障注入规则的 PG 句柄（与 w2b
+// 故障注入 connector 同款包装，底座为 pgx stdlib）。
+func w2bOpenFaultyPG(t *testing.T, dsn string, rules ...*w2bFaultRule) *sql.DB {
+	t.Helper()
+	db := sql.OpenDB(&w2bFaultConnector{base: stdlib.GetDefaultDriver(), dsn: dsn, rules: rules})
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
@@ -369,13 +391,18 @@ func TestW2BAccountTestDispatchWireArms(t *testing.T) {
 	}
 
 	// 172：契约表可读但 Secret 为空 → proberepo.NewStore 报错。
+	// manualtestrepo 按 PG 形态固定读 juhe_business.*，契约表按限定名建
+	//（原 sqlite 裸文件臂重钉，T67 批）。
 	db := w1uOpenPlainSQLite(t, "w2b-account-test-tables.sqlite3")
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+		t.Fatalf("建 juhe_business schema 失败: %v", err)
+	}
 	for _, table := range []string{"account_test_tasks", "account_test_sessions", "account_test_session_tasks"} {
-		if _, err := db.Exec("CREATE TABLE " + table + " (id TEXT PRIMARY KEY)"); err != nil {
+		if _, err := db.Exec("CREATE TABLE juhe_business." + table + " (id TEXT PRIMARY KEY)"); err != nil {
 			t.Fatalf("建契约表失败: %v", err)
 		}
 	}
-	composed := &composition{db: db, pgDialect: false}
+	composed := &composition{db: db, pgDialect: true}
 	if err := wireInProcessAccountTestDispatch(composed, runtimeConfig{Secret: ""}, nil); err == nil ||
 		!strings.Contains(err.Error(), "JUHE_AI_SECRET") {
 		t.Fatalf("空 Secret 必须在 proberepo.NewStore 处报错: %v", err)
@@ -390,15 +417,18 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 
 	// 162：业务库没有 account_test_* 契约表 → 按路由 503 契约降级为 nil 端口。
 	plain := w1uOpenPlainSQLite(t, "w2b-account-test-missing.sqlite3")
-	if err := wireInProcessAccountTestDispatch(&composition{db: plain, pgDialect: false}, cfg, nil); err != nil {
+	if err := wireInProcessAccountTestDispatch(&composition{db: plain, pgDialect: true}, cfg, nil); err != nil {
 		t.Fatalf("契约表缺失必须按 nil 端口降级，不得报错: %v", err)
 	}
 
 	// 205：契约表存在但列集残缺 → ValidateCoreTables 放行、启动维护查询失败
 	// → 告警后继续装配（端口照常接线，路由契约不受影响）。
 	minimal := w1uOpenPlainSQLite(t, "w2b-account-test-degraded.sqlite3")
+	if _, err := minimal.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+		t.Fatalf("建 juhe_business schema 失败: %v", err)
+	}
 	for _, table := range []string{"account_test_tasks", "account_test_sessions", "account_test_session_tasks"} {
-		if _, err := minimal.Exec("CREATE TABLE " + table + " (id TEXT PRIMARY KEY)"); err != nil {
+		if _, err := minimal.Exec("CREATE TABLE juhe_business." + table + " (id TEXT PRIMARY KEY)"); err != nil {
 			t.Fatalf("建残缺契约表失败: %v", err)
 		}
 	}
@@ -409,7 +439,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 	var degradedBuf bytes.Buffer
 	previousLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&degradedBuf, nil)))
-	degradedComposed := &composition{db: minimal, pgDialect: false}
+	degradedComposed := &composition{db: minimal, pgDialect: true}
 	if err := wireInProcessAccountTestDispatch(degradedComposed, cfg, degradedStore); err != nil {
 		t.Fatalf("启动维护失败必须按告警降级，不得报错: %v", err)
 	}
@@ -439,7 +469,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 	}
 
 	stale := time.Now().UTC().Add(-20 * time.Minute).Format("2006-01-02T15:04:05.000Z07:00")
-	if _, err := composedFull.DB.Exec(`INSERT INTO account_test_tasks (
+	if _, err := composedFull.DB.Exec(`INSERT INTO juhe_business.account_test_tasks (
 			id, account_id, account_name, provider_protocol_profile_id,
 			protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, diagnostics,
@@ -449,7 +479,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 			'openai', 'v1', 'api_key',
 			'sys_admin', 'user', 'full',
 			'gpt-w2b', 'chat_json', 'junk-envelope',
-			'running', '中断恢复', 0, $1, $2, $3, $4)`, stale, stale, stale, stale); err != nil {
+			'running', '中断恢复', FALSE, $1, $2, $3, $4)`, stale, stale, stale, stale); err != nil {
 		t.Fatalf("seed 中断任务失败: %v", err)
 	}
 
@@ -519,7 +549,7 @@ func TestW2BAccountBalanceHealthURLErrorArms(t *testing.T) {
 // 关闭句柄 → Queued=false → catch-warn 契约（不静默）。
 func TestW2BCodexUsageHeadersDispatchFailure(t *testing.T) {
 	db := w1uOpenPlainSQLite(t, "w2b-codex-closed.sqlite3")
-	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, false, time.Now)
+	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, true, time.Now)
 	if err != nil {
 		t.Fatalf("create dispatch: %v", err)
 	}
@@ -730,7 +760,7 @@ func TestW2BChainAccountsSelectionArms(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
@@ -794,24 +824,25 @@ func TestW2BChainAccountsSelectionArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestW2BChainAccountsScanFaultArms 用少报一列的包装句柄驱动候选窗口 Scan
-// 错误臂：529（基础窗口）与 635（模型窗口）。
+// 错误臂：529（基础窗口）与 635（模型窗口）。原 SQLite 文件夹具随存储形态
+// 退役重钉 PG（T67 批）：种子走 search_path 夹具池，被测选择器按生产形态
+// 以 juhe_business 限定名 + $n 占位符查询。
 func TestW2BChainAccountsScanFaultArms(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "w2b-selection-window.sqlite3")
-	plain := w2bOpenPlainSQLiteAt(t, dbPath)
+	plain, dsn := w2bOpenBusinessPGFixture(t)
 	seedChainBusinessSchema(t, plain)
 	seedChainStatsSchema(t, plain)
 	now := "2026-09-04T00:00:00.000Z"
 	if _, err := plain.Exec(`INSERT INTO accounts (id, system_account_id, protocol_code, protocol_version, name, type, status, schedulable) VALUES ('acc-w2b', 'sys-owner', 'openai', 'v1', 'W2B 账户', 'api_key', 'active', 1)`); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
-	if _, err := plain.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
-			VALUES ('grp-w2b', 'sys-owner', 'acc-w2b', 1, ?)`, now); err != nil {
+	if _, err := plain.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+			VALUES ('grp-w2b', 'sys-owner', 'acc-w2b', 1, ?)`), now); err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
 
-	wrapped := w2bOpenFaultySQLiteAt(t, dbPath,
+	wrapped := w2bOpenFaultyPG(t, dsn,
 		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "group_accounts") }, action: w2bFaultShortColumns})
-	selector := &chainAccountsSelector{db: wrapped, postgres: false, secret: "chain-test-secret", now: time.Now,
+	selector := &chainAccountsSelector{db: wrapped, postgres: true, secret: "chain-test-secret", now: time.Now,
 		candidateFinalLimit: 4, candidateScanLimit: 8}
 	groupAccess := &gatewayruntimecache.GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys-owner"}
 
@@ -831,10 +862,9 @@ func TestW2BChainAccountsScanFaultArms(t *testing.T) {
 }
 
 // TestW2BProxyRowsIterationFault 覆盖 1457：代理行迭代在 rows.Err() 处失败
-// （Next 首次即报错 → 循环体不执行 → 错误收口）。
+// （Next 首次即报错 → 循环体不执行 → 错误收口）。夹具重钉 PG（T67 批）。
 func TestW2BProxyRowsIterationFault(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "w2b-proxy-rows.sqlite3")
-	plain := w2bOpenPlainSQLiteAt(t, dbPath)
+	plain, dsn := w2bOpenBusinessPGFixture(t)
 	if _, err := plain.Exec(`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, name TEXT,
 			type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT,
 			password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
@@ -845,9 +875,10 @@ func TestW2BProxyRowsIterationFault(t *testing.T) {
 			VALUES ('proxy-w2b', 'http', '10.0.0.1', 8080, 1, '2026-09-04', '2026-09-04')`); err != nil {
 		t.Fatalf("seed proxy: %v", err)
 	}
-	wrapped := w2bOpenFaultySQLiteAt(t, dbPath,
-		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "FROM proxy_profiles") }, action: w2bFaultNextError})
-	selector := &chainAccountsSelector{db: wrapped, postgres: false, secret: "chain-test-secret", now: time.Now,
+	// 选择器按生产 PG 形态以 juhe_business 限定名查询，匹配键收窄为表名。
+	wrapped := w2bOpenFaultyPG(t, dsn,
+		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "proxy_profiles") }, action: w2bFaultNextError})
+	selector := &chainAccountsSelector{db: wrapped, postgres: true, secret: "chain-test-secret", now: time.Now,
 		candidateFinalLimit: 4, candidateScanLimit: 8}
 	if _, err := selector.resolveProxyURLsForProfiles(context.Background(), []string{"proxy-w2b"}); err == nil {
 		t.Fatal("代理行迭代失败必须上抛")
@@ -895,10 +926,10 @@ func TestW2BAccountSecretInstanceOwnerArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestW2BResetBridgeInstanceScanFault 覆盖授权实例清单的 Scan 错误臂（476）：
-// 包装句柄把结果集报成 0 列 → Scan 数量不匹配。
+// 包装句柄把结果集报成 0 列 → Scan 数量不匹配。夹具重钉 PG（T67 批）：
+// 桥按生产形态以 juhe_business.accounts + deleted_at 过滤查询。
 func TestW2BResetBridgeInstanceScanFault(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "w2b-reset-instances.sqlite3")
-	plain := w2bOpenPlainSQLiteAt(t, dbPath)
+	plain, dsn := w2bOpenBusinessPGFixture(t)
 	if _, err := plain.Exec(`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY,
 			authorization_instance_authorization_id TEXT, deleted_at TEXT)`); err != nil {
 		t.Fatalf("建 accounts 失败: %v", err)
@@ -906,11 +937,11 @@ func TestW2BResetBridgeInstanceScanFault(t *testing.T) {
 	if _, err := plain.Exec(`INSERT INTO accounts (id, authorization_instance_authorization_id) VALUES ('inst-1', 'auth-w2b')`); err != nil {
 		t.Fatalf("seed instance: %v", err)
 	}
-	wrapped := w2bOpenFaultySQLiteAt(t, dbPath,
+	wrapped := w2bOpenFaultyPG(t, dsn,
 		&w2bFaultRule{match: func(query string) bool {
-			return strings.Contains(query, "SELECT id FROM accounts") && strings.Contains(query, "authorization_instance_authorization_id")
+			return strings.Contains(query, "FROM juhe_business.accounts") && strings.Contains(query, "authorization_instance_authorization_id")
 		}, action: w2bFaultZeroColumns})
-	bridge := &accountsRuntimeResetBridge{db: wrapped, pg: false}
+	bridge := &accountsRuntimeResetBridge{db: wrapped, pg: true}
 	if _, err := bridge.authorizationInstanceIDs(context.Background(), "auth-w2b"); err == nil ||
 		!strings.Contains(err.Error(), "destination arguments") {
 		t.Fatalf("实例清单必须报 Scan 数量错误: %v", err)
@@ -924,19 +955,19 @@ func TestW2BResetBridgeInstanceScanFault(t *testing.T) {
 // TestW2BCatalogScanBadValueFault 覆盖目录行 JSON 编码错误臂（277）：首行
 // 首列被替换为 func() → json.Marshal(map) 必败。供应商码用非 openai 兼容
 // 目标（openai 目标源扩展后剔除自身内置目录，内置查询不会执行）。
+// 夹具重钉 PG（T67 批）：目录源按生产形态以 juhe_business 限定名查询。
 func TestW2BCatalogScanBadValueFault(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "w2b-catalog.sqlite3")
-	plain := w2bOpenPlainSQLiteAt(t, dbPath)
+	plain, dsn := w2bOpenBusinessPGFixture(t)
 	seedChainBusinessSchema(t, plain)
 	if _, err := plain.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, source,
 			created_at, updated_at) VALUES ('w2b-cat', 'gpt', 'w2b-model', 'w2b-model', 'builtin', 'active', 'builtin', '2026-09-04', '2026-09-04')`); err != nil {
 		t.Fatalf("seed catalog: %v", err)
 	}
-	wrapped := w2bOpenFaultySQLiteAt(t, dbPath,
+	wrapped := w2bOpenFaultyPG(t, dsn,
 		&w2bFaultRule{match: func(query string) bool {
 			return strings.Contains(query, "FROM juhe_business.models") || strings.Contains(query, " FROM models")
 		}, action: w2bFaultBadValue})
-	source := &chainCatalogSource{db: wrapped, postgres: false}
+	source := &chainCatalogSource{db: wrapped, postgres: true}
 	if _, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("不可序列化目录值必须报 JSON 编码错误: %v", err)
@@ -972,6 +1003,8 @@ func TestW2BBalanceDraftProbeExpiredInput(t *testing.T) {
 // 第二次本地目录投影读（testModels）失败 → 错误上抛。providers 读面已切
 // models 单表（W3 批）：种子与故障规则同步迁移——每次投影发 builtin + custom
 // 两条 models 查询，afterN=2 让第三次查询（第二次投影的 builtin 臂）失败。
+// 夹具重钉 PG（T67 批）：providers store 与 refresher 均按生产形态走
+// juhe_business 限定名 + $n 占位符。
 func TestW2BModelCatalogRefreshSecondListFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -979,8 +1012,7 @@ func TestW2BModelCatalogRefreshSecondListFailure(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	dbPath := filepath.Join(t.TempDir(), "w2b-catalog-refresh.sqlite3")
-	plain := w2bOpenPlainSQLiteAt(t, dbPath)
+	plain, dsn := w2bOpenBusinessPGFixture(t)
 	seedChainBusinessSchema(t, plain)
 	if _, err := plain.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 			supported_endpoint_modes_json, input_usd_per_1m, source, created_at, updated_at)
@@ -995,13 +1027,13 @@ func TestW2BModelCatalogRefreshSecondListFailure(t *testing.T) {
 		return strings.Contains(query, "FROM") && strings.Contains(query, "models")
 	},
 		action: w2bFaultQueryError, err: errors.New("w2b 第二次目录投影失败"), afterN: 2}
-	wrapped := w2bOpenFaultySQLiteAt(t, dbPath, rule)
+	wrapped := w2bOpenFaultyPG(t, dsn, rule)
 	wrapped.SetMaxOpenConns(1)
-	catalogStore, err := providers.NewStore(wrapped, false, time.Now)
+	catalogStore, err := providers.NewStore(wrapped, true, time.Now)
 	if err != nil {
 		t.Fatalf("providers store: %v", err)
 	}
-	refresher := &gatewayModelCatalogRefresher{db: wrapped, pg: false, secret: "w2b-refresh-secret", catalog: catalogStore, now: time.Now}
+	refresher := &gatewayModelCatalogRefresher{db: wrapped, pg: true, secret: "w2b-refresh-secret", catalog: catalogStore, now: time.Now}
 	if _, err := refresher.RefreshDraftModelCatalog(context.Background(), accounts.ModelCatalogDiscoveryInput{
 		ProviderCode: "gpt",
 		ProtocolCode: "openai",
@@ -1070,7 +1102,7 @@ func w2bNewPGBalanceRefresher(t *testing.T, db *sql.DB, ownerID string) *gateway
 	if err != nil {
 		t.Fatalf("create balance runner: %v", err)
 	}
-	return &gatewayManualBalanceRefresher{db: db, pg: false, secret: w2bRefreshSecret, store: store, runner: runner, now: time.Now}
+	return &gatewayManualBalanceRefresher{db: db, pg: true, secret: w2bRefreshSecret, store: store, runner: runner, now: time.Now}
 }
 
 // TestW2BBalanceRefreshLoadOutcomeArms 覆盖 RefreshManual 的 outcome 回读
@@ -1148,9 +1180,9 @@ func TestW2BAuthzExpirySyncReconciledLog(t *testing.T) {
 		}
 	}
 	nowText := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
 			resource_owner_system_account_id, grantee_type, status, created_at, updated_at)
-			VALUES ('grant-w2b-expired', 'account', 'acct-w2b', 'sys-w2b', 'system_account', 'expired', ?, ?)`,
+			VALUES ('grant-w2b-expired', 'account', 'acct-w2b', 'sys-w2b', 'system_account', 'expired', ?, ?)`),
 		nowText, nowText); err != nil {
 		t.Fatalf("seed expired grant: %v", err)
 	}

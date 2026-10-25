@@ -22,7 +22,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
@@ -58,29 +58,55 @@ func w1uSetupRedis(t *testing.T) *redis.Client {
 	return client
 }
 
-// w1uOpenPlainSQLite 打开临时目录下的独立 SQLite 文件句柄。
+// w1uOpenPlainSQLite 打开 pgtestkit 隔离 PG 裸库（无任何业务 schema）：
+// 供「表/schema 缺失必须降级或拒绝」的负向臂、纯句柄透传与 stats 辅助句柄
+// 使用（正常链路一律走 w1uOpenSeededBusinessDB）。T67 收口后原「冻结迁移
+// 批次过渡桥」身份终止：w1_tails_sweep、w1_tails_sweep2、w1_refresh_usage、
+// w2_account_funcs 的 pg=false 方言臂已全部翻 PG 或按 D9 处置，剩余调用方
+// 均为有意的裸库负向/无方言面。
 func w1uOpenPlainSQLite(t *testing.T, name string) *sql.DB {
 	t.Helper()
-	db, err := bootstrap.OpenSQLiteFile(filepath.Join(t.TempDir(), name))
-	if err != nil {
-		t.Fatalf("打开 SQLite 文件 %s 失败: %v", name, err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	_ = name
+	return pgtestkit.New(t)
 }
 
-// w1uOpenSeededBusinessDB 打开并 ensure+seed 临时业务库（真实 maintenance
-// bootstrap 面），供 authsys 账户仓与 settings 仓测试复用。
+// w1uOpenSeededBusinessPG 创建 pgtestkit 隔离测试库并应用 maintenance
+// bootstrap 的 fresh DDL + 种子（原 SQLite ensure+seed 业务库夹具的 PG 形态，
+// PLAN-20261024T051925945Z），供 authsys 账户仓、settings 仓、探针 outbox
+// 与 chat assets 夹具复用。
+func w1uOpenSeededBusinessPG(t *testing.T) *sql.DB {
+	t.Helper()
+	return pgtestkit.New(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Secret: "w1u-seed-secret"})
+			return err
+		})
+}
+
+// w1uOpenSeededBusinessPGTestDatabase 同 w1uOpenSeededBusinessPG，但返回
+// pgtestkit 完整句柄（需要 DSN 注入子进程 / 其他 store 构造时使用）。
+func w1uOpenSeededBusinessPGTestDatabase(t *testing.T) *pgtestkit.TestDatabase {
+	t.Helper()
+	return pgtestkit.NewTestDatabase(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Secret: "w1u-seed-secret"})
+			return err
+		})
+}
+
+// w1uOpenSeededBusinessDB 是 w1uOpenSeededBusinessPG 的既有短名别名，
+// w1t/w1z 夹具沿用；T67 收口后不再是过渡面。
 func w1uOpenSeededBusinessDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db := w1uOpenPlainSQLite(t, "business.sqlite3")
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("ensure 业务 schema 失败: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Secret: "w1u-seed-secret"}); err != nil {
-		t.Fatalf("seed 业务库失败: %v", err)
-	}
-	return db
+	return w1uOpenSeededBusinessPG(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +265,7 @@ func TestW1USettingsTimezoneAdapter(t *testing.T) {
 // aiAccountLimitSettingsAdapter 的 settings 字段是具体 *settings.Store，无法
 // 注入 fake，因此走真实仓：临时业务库上默认值 100 → Update 250 → 读表失败三段。
 func TestW1UAiAccountLimitSettingsAdapterBranches(t *testing.T) {
-	db := w1uOpenSeededBusinessDB(t)
+	db := w1uOpenSeededBusinessPG(t)
 	base := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
 	step := 0
 	// 每次 now 前进 2 分钟：settingsCacheTTL（60s）必然过期，Load 总是重读库。
@@ -247,7 +273,7 @@ func TestW1UAiAccountLimitSettingsAdapterBranches(t *testing.T) {
 		step++
 		return base.Add(time.Duration(step) * 2 * time.Minute)
 	}
-	store, err := settings.NewStore(db, false, now, nil)
+	store, err := settings.NewStore(db, true, now, nil)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -265,7 +291,7 @@ func TestW1UAiAccountLimitSettingsAdapterBranches(t *testing.T) {
 	if err != nil || got != 250 {
 		t.Fatalf("更新后上限 = (%d, %v)，want (250, nil)", got, err)
 	}
-	if _, err := db.Exec("DROP TABLE system_settings"); err != nil {
+	if _, err := db.Exec("DROP TABLE juhe_business.system_settings"); err != nil {
 		t.Fatalf("DROP system_settings: %v", err)
 	}
 	if got, err := adapter.UserAiAccountLimit(ctx); err == nil {
@@ -287,8 +313,8 @@ func TestW1UDevAutoLoginResolver(t *testing.T) {
 		t.Fatal("Accounts 为 nil 时 resolver 必须为 nil")
 	}
 
-	db := w1uOpenSeededBusinessDB(t)
-	accountStore, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, time.Now)
+	db := w1uOpenSeededBusinessPG(t)
+	accountStore, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, time.Now)
 	if err != nil {
 		t.Fatalf("NewAccountStore: %v", err)
 	}
@@ -317,7 +343,7 @@ func TestW1UDevAutoLoginResolver(t *testing.T) {
 	}
 
 	// 非 active 账户 → nil 上下文。
-	if _, err := db.Exec("UPDATE system_accounts SET status = 'disabled' WHERE username = 'admin'"); err != nil {
+	if _, err := db.Exec("UPDATE juhe_business.system_accounts SET status = 'disabled' WHERE username = 'admin'"); err != nil {
 		t.Fatalf("停用 admin: %v", err)
 	}
 	if got := resolver(nil); got != nil {
@@ -710,8 +736,8 @@ func TestW1UChainRequestDispatchMarks(t *testing.T) {
 // chain_failure_health_wiring_test.go 覆盖；这里补 source fence 投影与
 // 账户/reason/trace 归一化。
 func TestW1UEnqueueProbeRequestSourceFence(t *testing.T) {
-	db := w1uOpenPlainSQLite(t, "outbox-fence.sqlite3")
-	writer := newChainProbeRequestOutboxWriter(db, false, 30_000)
+	db := w1uOpenSeededBusinessPG(t)
+	writer := newChainProbeRequestOutboxWriter(db, true, 30_000)
 	fence := &chainHealthDispatchSourceFence{
 		StateKey:         "sk-w1u",
 		AccountID:        "acc-9",
@@ -727,7 +753,7 @@ func TestW1UEnqueueProbeRequestSourceFence(t *testing.T) {
 	}
 	var accountID, reason, traceID, sourceFence, status string
 	err := db.QueryRow(`SELECT account_id, reason, trace_id, source_fence, status
-		FROM account_health_probe_request_outbox ORDER BY created_at DESC LIMIT 1`).
+		FROM juhe_business.account_health_probe_request_outbox ORDER BY created_at DESC LIMIT 1`).
 		Scan(&accountID, &reason, &traceID, &sourceFence, &status)
 	if err != nil {
 		t.Fatalf("读取 outbox 行: %v", err)
@@ -857,32 +883,19 @@ func TestW1UNewChatTokenCount(t *testing.T) {
 
 const w1uChatAssetTimeLayout = "2006-01-02T15:04:05.000000000Z"
 
-func w1uCreateChatAssetsTable(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS chat_assets (
-		id TEXT PRIMARY KEY,
-		system_account_id TEXT NOT NULL,
-		conversation_id TEXT NOT NULL,
-		processing_status TEXT NOT NULL,
-		cleanup_status TEXT NOT NULL,
-		expires_at TEXT NOT NULL,
-		storage_key TEXT NOT NULL,
-		processed_mime_type TEXT NOT NULL,
-		processed_bytes INTEGER NOT NULL,
-		processed_sha256 TEXT NOT NULL,
-		source_kind TEXT NOT NULL
-	)`); err != nil {
-		t.Fatalf("建最小 chat_assets 表: %v", err)
-	}
-}
-
+// w1uInsertChatAssetRow 向 fresh DDL 夹具库的 juhe_business.chat_assets 生产
+// 表插入一行最小可消费资产（原始面与处理面列按生产 NOT NULL 契约补齐）。
 func w1uInsertChatAssetRow(t *testing.T, db *sql.DB, id, expiresAt, sourceKind string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO chat_assets
-		(id, system_account_id, conversation_id, processing_status, cleanup_status, expires_at,
-		 storage_key, processed_mime_type, processed_bytes, processed_sha256, source_kind)
-		VALUES (?, 'sys-1', 'conv-1', 'ready', 'active', ?, 'conv-1/asset.png', 'image/png', ?, ?, ?)`,
-		id, expiresAt, 0, "", sourceKind); err != nil {
+	originalSHA := chatAssetSHA256Hex([]byte("w1u-original-bytes"))
+	if _, err := db.Exec(`INSERT INTO juhe_business.chat_assets
+		(id, system_account_id, conversation_id, source_kind, original_filename, original_mime_type,
+		 original_bytes, original_sha256, processed_mime_type, processed_bytes, processed_sha256,
+		 storage_key, processing_status, cleanup_status, quota_bytes, created_at, updated_at, expires_at)
+		VALUES ($1, 'sys-1', 'conv-1', $2, 'asset.png', 'image/png', 18, $3,
+			'image/png', 0, '', 'conv-1/asset.png', 'ready', 'active', 1048576,
+			'2026-09-14T09:00:00.000Z', '2026-09-14T09:00:00.000Z', $4)`,
+		id, sourceKind, originalSHA, expiresAt); err != nil {
 		t.Fatalf("插入 chat_assets 行: %v", err)
 	}
 }
@@ -890,13 +903,12 @@ func w1uInsertChatAssetRow(t *testing.T, db *sql.DB, id, expiresAt, sourceKind s
 // buildAssetDataURL 走最小 chat_assets 表 + 临时目录对象存储，覆盖就绪回链、
 // 大小不符、完整性不符、无可消费行四个分支。
 func TestW1UBuildAssetDataURL(t *testing.T) {
-	db := w1uOpenPlainSQLite(t, "chat-assets.sqlite3")
-	w1uCreateChatAssetsTable(t, db)
+	db := w1uOpenSeededBusinessPG(t)
 	store, err := newChatAssetObjectStore(filepath.Join(t.TempDir(), "assets"))
 	if err != nil {
 		t.Fatalf("newChatAssetObjectStore: %v", err)
 	}
-	obs := newChatImageObservations(db, false, store, nil)
+	obs := newChatImageObservations(db, true, store, nil)
 	base := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 	now := base.Format(w1uChatAssetTimeLayout)
 	future := base.Add(time.Hour).Format(w1uChatAssetTimeLayout)
@@ -909,7 +921,7 @@ func TestW1UBuildAssetDataURL(t *testing.T) {
 		t.Fatalf("写入对象: %v", err)
 	}
 	w1uInsertChatAssetRow(t, db, "ast-ok", future, "user_uploaded")
-	if _, err := db.Exec(`UPDATE chat_assets SET processed_bytes = ?, processed_sha256 = ? WHERE id = 'ast-ok'`,
+	if _, err := db.Exec(`UPDATE juhe_business.chat_assets SET processed_bytes = $1, processed_sha256 = $2 WHERE id = 'ast-ok'`,
 		len(payload), sha); err != nil {
 		t.Fatalf("回填行: %v", err)
 	}
@@ -947,7 +959,7 @@ func TestW1UBuildAssetDataURL(t *testing.T) {
 		t.Fatalf("缺失资产 = (%q, %v)，want (\"\", nil)", got, err)
 	}
 	w1uInsertChatAssetRow(t, db, "ast-expired", past, "user_uploaded")
-	if _, err := db.Exec(`UPDATE chat_assets SET processed_bytes = ?, processed_sha256 = ? WHERE id = 'ast-expired'`,
+	if _, err := db.Exec(`UPDATE juhe_business.chat_assets SET processed_bytes = $1, processed_sha256 = $2 WHERE id = 'ast-expired'`,
 		len(tampered), chatAssetSHA256Hex(tampered)); err != nil {
 		t.Fatalf("回填过期行: %v", err)
 	}

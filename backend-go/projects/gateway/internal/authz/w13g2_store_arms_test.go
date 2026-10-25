@@ -63,10 +63,10 @@ func w13g2InsertRuntimeRow(t *testing.T, f *fixture, id, resourceType, resourceI
 	} else if sourceType == "manual" {
 		effectiveType = "manual"
 	}
-	if _, err := f.db.Exec(`INSERT INTO resource_authorizations
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorizations
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
 		 effective_source_type, effective_source_team_id, activated_at, limits_json, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, '2026-01-01T00:00:00Z', ?, 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, '2026-01-01T00:00:00Z', ?, 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`),
 		id, resourceType, resourceID, owner, granteeID, status, effectiveType, effectiveTeam, limits); err != nil {
 		t.Fatal(err)
 	}
@@ -78,9 +78,9 @@ func w13g2InsertSourceRow(t *testing.T, f *fixture, id, authorizationID, sourceT
 	if sourceTeamID != "" {
 		teamAny = sourceTeamID
 	}
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_sources
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_sources
 		(id, authorization_id, source_type, source_team_id, status, activated_at, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00Z', 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00Z', 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`),
 		id, authorizationID, sourceType, teamAny, status); err != nil {
 		t.Fatal(err)
 	}
@@ -323,8 +323,8 @@ func TestW13g2SyncTeamGrantArms(t *testing.T) {
 // seedTeamMemberRaw 绕开 seedTeamWithMember 的固定 id 后缀，插入指定成员。
 func (f *fixture) seedTeamMemberRaw(t *testing.T, teamID, memberID string) error {
 	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-		VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
+		VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`),
 		"teammem_raw_"+memberID+"_"+teamID, teamID, memberID)
 	return err
 }
@@ -437,7 +437,7 @@ func TestW13g2UpsertRuntimeArms(t *testing.T) {
 	}
 	tx.Commit()
 	var afterPause string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations WHERE id = ?`, runtimeID).Scan(&afterPause); err != nil || afterPause != StatusPaused {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&afterPause); err != nil || afterPause != StatusPaused {
 		t.Fatalf("team paused refresh 状态错误: %q %v", afterPause, err)
 	}
 }
@@ -486,8 +486,8 @@ func TestW13g2TeamCascadeArms(t *testing.T) {
 
 	// 成员超限：先补足到 MaxTeamMembersPerTeam+1 行。
 	for i := 0; i < MaxTeamMembersPerTeam; i++ {
-		if _, err := f.db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-			VALUES (?, 'team_c13', 'grantee', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		if _, err := f.db.Exec(fixtureBind(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
+			VALUES (?, 'team_c13', 'grantee', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`),
 			"teammem_extra_"+strings.Repeat("y", i)+string(rune('a'+i))); err != nil {
 			t.Fatal(err)
 		}
@@ -542,7 +542,7 @@ func TestW13g2ReconcileArms(t *testing.T) {
 	// sync actor 取 created_by（91-93）。runtime 行 + manual source 必须先
 	// 存在，否则 syncUserGrantRuntime 无行可写。
 	w13g2InsertGrantRow(t, f, "grant_r13_d", "group", "grp_s13", "owner", "system_account", "grantee_system_account_id", "grantee", StatusExpired, nil)
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET updated_at = ?, revoked_at = NULL, revoked_by = NULL, expires_at = '2020-01-01T00:00:00.000Z' WHERE id = 'grant_r13_d'`, past); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET updated_at = ?, revoked_at = NULL, revoked_by = NULL, expires_at = '2020-01-01T00:00:00.000Z' WHERE id = 'grant_r13_d'`), past); err != nil {
 		t.Fatal(err)
 	}
 	w13g2InsertRuntimeRow(t, f, "rt_r13_d", "group", "grp_s13", "owner", "grantee", StatusActive, "manual", "", nil)
@@ -555,7 +555,7 @@ func TestW13g2ReconcileArms(t *testing.T) {
 	// 资源避免与 direct runtime 撞 UNIQUE。
 	f.seedGroup(t, "grp2_r13", "owner")
 	w13g2InsertGrantRow(t, f, "grant_r13_t", "group", "grp2_r13", "owner", "team", "grantee_team_id", "team_r13", StatusExpired, nil)
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET updated_at = ?, revoked_at = ? WHERE id = 'grant_r13_t'`, past, past); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET updated_at = ?, revoked_at = ? WHERE id = 'grant_r13_t'`), past, past); err != nil {
 		t.Fatal(err)
 	}
 	w13g2InsertRuntimeRow(t, f, "rt_r13_t", "group", "grp2_r13", "owner", "grantee", StatusActive, "team", "team_r13", nil)
@@ -739,9 +739,9 @@ func TestW13g2MutationStoreArms(t *testing.T) {
 	// ExpireSweep：actor 取 created_by（855-860）；sweep 需要 runtime 行才有
 	// 投影写入；canceled ctx → 查询失败。
 	past := f.now.Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, scope, status, expires_at, created_by, created_at, updated_at)
-		VALUES ('grant_m13_x', 'group', 'grp2_m13', 'owner', 'system_account', 'grantee2', 'use', 'active', ?, 'creator_m13', '2026-01-01T00:00:00Z', ?)`,
+		VALUES ('grant_m13_x', 'group', 'grp2_m13', 'owner', 'system_account', 'grantee2', 'use', 'active', ?, 'creator_m13', '2026-01-01T00:00:00Z', ?)`),
 		past, past); err != nil {
 		t.Fatal(err)
 	}

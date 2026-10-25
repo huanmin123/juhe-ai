@@ -14,7 +14,6 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
 type fixture struct {
@@ -23,6 +22,8 @@ type fixture struct {
 	now   time.Time
 }
 
+// w13g2 scripted 假驱动族仍消费原 sqlite 形状 ddl（D17：生产 authz store 的
+// pg 轴尚未坍缩，fake 驱动臂随其坍缩批退役；真实库面测试已走 pgkit 夹具）。
 var ddl = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_teams (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -165,22 +166,12 @@ var ddl = []string{
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:authz-fixture-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range ddl {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newAuthzPGDatabase(t)
 	now := time.Unix(1_750_000_000, 0).UTC()
 	f := &fixture{db: db, now: now}
 	// The clock reads through the fixture pointer so tests can advance time
 	// for expiry state-machine coverage.
-	store, err := NewStore(db, false, func() time.Time { return f.now })
+	store, err := NewStore(db, true, func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,9 +181,8 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) seedAccount(t *testing.T, id, status string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES (?, ?, ?, 'user', ?, 'pbkdf2$sha512$120000$abc$def', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		id, id, id, status); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
+		VALUES (?, ?, ?, 'user', ?, 'pbkdf2$sha512$120000$abc$def', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), 		id, id, id, status); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -200,20 +190,19 @@ func (f *fixture) seedAccount(t *testing.T, id, status string) {
 func (f *fixture) seedTeamWithMember(t *testing.T, teamID, memberID string) {
 	t.Helper()
 	now := f.now.UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`INSERT INTO system_teams (id, name, status, created_by, created_at, updated_at)
-		VALUES (?, ?, 'active', 'owner', ?, ?) ON CONFLICT(id) DO NOTHING`, teamID, "Team "+teamID, now, now); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO system_teams (id, name, status, created_by, created_at, updated_at)
+		VALUES (?, ?, 'active', 'owner', ?, ?) ON CONFLICT(id) DO NOTHING`), teamID, "Team "+teamID, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-		VALUES (?, ?, ?, 'active', ?, ?, ?)`, "teammem_"+memberID, teamID, memberID, now, now, now); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
+		VALUES (?, ?, ?, 'active', ?, ?, ?)`), "teammem_"+memberID, teamID, memberID, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func (f *fixture) seedGroup(t *testing.T, groupID, ownerID string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status) VALUES (?, ?, ?, 'active')`,
-		groupID, "Group "+groupID, ownerID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status) VALUES (?, ?, ?, 'active')`), 		groupID, "Group "+groupID, ownerID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -313,7 +302,7 @@ func TestCreateGroupAuthorizationLifecycle(t *testing.T) {
 		t.Fatalf("terminal revival grant count = %d, want 1", grantCount)
 	}
 	var revivedRemark string
-	if err := f.db.QueryRow(`SELECT COALESCE(remark,'') FROM resource_authorization_grants WHERE id = ?`, revived.Item.ID).Scan(&revivedRemark); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT COALESCE(remark,'') FROM resource_authorization_grants WHERE id = ?`), revived.Item.ID).Scan(&revivedRemark); err != nil {
 		t.Fatal(err)
 	}
 	if revivedRemark != remark {
@@ -348,8 +337,8 @@ func TestTeamGrantEffectiveSourceAndRevoke(t *testing.T) {
 	// Each member gets a runtime row with effective team source.
 	for _, member := range []string{"member1", "member2"} {
 		var status, effective string
-		if err := f.db.QueryRow(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
-			WHERE grantee_system_account_id = ? AND resource_id = 'grp_1'`, member).Scan(&status, &effective); err != nil {
+		if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
+			WHERE grantee_system_account_id = ? AND resource_id = 'grp_1'`), member).Scan(&status, &effective); err != nil {
 			t.Fatal(err)
 		}
 		if status != StatusActive || effective != "team" {
@@ -376,8 +365,8 @@ func TestTeamGrantEffectiveSourceAndRevoke(t *testing.T) {
 	}
 	for _, member := range []string{"member1", "member2"} {
 		var status string
-		if err := f.db.QueryRow(`SELECT status FROM resource_authorizations
-			WHERE grantee_system_account_id = ? AND resource_id = 'grp_1'`, member).Scan(&status); err != nil {
+		if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations
+			WHERE grantee_system_account_id = ? AND resource_id = 'grp_1'`), member).Scan(&status); err != nil {
 			t.Fatal(err)
 		}
 		if status != StatusRevoked {
@@ -394,11 +383,10 @@ func TestTeamGrantActiveLimitRejectsTwentyFirstGrant(t *testing.T) {
 	for i := 0; i < MaxTeamActiveGrantCount-1; i++ {
 		resourceID := "grp_limit_" + itoa(i)
 		f.seedGroup(t, resourceID, "owner")
-		if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
+		if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_team_id,
 			 scope, status, created_by, created_at, updated_at)
-			VALUES (?, 'group', ?, 'owner', 'team', 'team_1', 'use', 'active', 'owner', ?, ?)`,
-			"grant_limit_"+itoa(i), resourceID, f.now.UTC().Format(time.RFC3339Nano), f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+			VALUES (?, 'group', ?, 'owner', 'team', 'team_1', 'use', 'active', 'owner', ?, ?)`), 			"grant_limit_"+itoa(i), resourceID, f.now.UTC().Format(time.RFC3339Nano), f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -479,7 +467,7 @@ func TestPatchRejectsResourceOutsideSelectedOwnerScope(t *testing.T) {
 		t.Fatalf("cross-scope patch outcome = %+v, want not_found", outcome)
 	}
 	var status string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&status); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != StatusActive {
@@ -527,7 +515,7 @@ func TestCreateNormalizesAndValidatesExpiry(t *testing.T) {
 	}
 	f.seedSourceAccount(t, "acc_expiry", "owner")
 	accountExpiry := f.now.Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`UPDATE accounts SET account_expires_at = ? WHERE id = 'acc_expiry'`, accountExpiry); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE accounts SET account_expires_at = ? WHERE id = 'acc_expiry'`), accountExpiry); err != nil {
 		t.Fatal(err)
 	}
 	tooLate := f.now.Add(3 * time.Hour).UTC().Format(time.RFC3339Nano)
@@ -605,11 +593,10 @@ func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 
 	// Expire sweep: force the grant past expiry, then sweep.
 	future := f.now.Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET expires_at = ?, status = 'active' WHERE id = ?`,
-		future, result.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ?, status = 'active' WHERE id = ?`), 		future, result.Item.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE resource_authorizations SET expires_at = ?`, future); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorizations SET expires_at = ?`), future); err != nil {
 		t.Fatal(err)
 	}
 	count, err := f.store.ExpireSweep(context.Background(), 20)
@@ -620,7 +607,7 @@ func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 		t.Fatalf("expire sweep count = %d", count)
 	}
 	var grantStatus, runtimeAfter string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, result.Item.ID).Scan(&grantStatus); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), result.Item.ID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations
@@ -631,8 +618,6 @@ func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 		t.Fatalf("after sweep: grant=%s runtime=%s", grantStatus, runtimeAfter)
 	}
 }
-
-var _ = modelcheckauth.SQLite
 
 // ---------------------------------------------------------------------------
 // Contract alignment tests for the 2026-09-04 independent review verdicts.
@@ -724,9 +709,9 @@ func TestPatchExpiresAtCanonicalizesAndProjectsRuntime(t *testing.T) {
 		t.Fatalf("grant canonical expiry = %v", outcome.Result.ExpiresAt)
 	}
 	var grantExpires, runtimeExpires string
-	if err := f.db.QueryRow(`SELECT g.expires_at, r.expires_at FROM resource_authorization_grants g
+	if err := f.db.QueryRow(fixtureBind(`SELECT g.expires_at, r.expires_at FROM resource_authorization_grants g
 		INNER JOIN resource_authorizations r ON r.resource_id = g.resource_id
-		WHERE g.id = ? AND r.grantee_system_account_id = 'grantee'`, created.Item.ID).Scan(&grantExpires, &runtimeExpires); err != nil {
+		WHERE g.id = ? AND r.grantee_system_account_id = 'grantee'`), created.Item.ID).Scan(&grantExpires, &runtimeExpires); err != nil {
 		t.Fatal(err)
 	}
 	if grantExpires != canonical || runtimeExpires != canonical {
@@ -866,7 +851,7 @@ func TestPatchExpiryStateMachineAndRestoreRules(t *testing.T) {
 	}
 	f.seedSourceAccount(t, "acc_state", "owner")
 	accountExpiry := f.now.Add(2 * hour).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`UPDATE accounts SET account_expires_at = ? WHERE id = 'acc_state'`, accountExpiry); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE accounts SET account_expires_at = ? WHERE id = 'acc_state'`), accountExpiry); err != nil {
 		t.Fatal(err)
 	}
 	targetGroupID := "target_group_state"
@@ -965,7 +950,7 @@ func TestCreateAndPatchLimitsNormalizationAndProjection(t *testing.T) {
 	// 10.123456 keeps its 6-decimal canonical form end to end.
 	canonical := `{"daily":{"enabled":true,"limit":10.123456}}`
 	var grantLimits, runtimeLimits sql.NullString
-	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&grantLimits); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT limits_json FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantLimits); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.db.QueryRow(`SELECT limits_json FROM resource_authorizations
@@ -1287,9 +1272,9 @@ func assertRuntime(t *testing.T, f *fixture, grantee, resourceID, status, effect
 	t.Helper()
 	var runtimeStatus, effective string
 	var reason sql.NullString
-	if err := f.db.QueryRow(`SELECT status, COALESCE(effective_source_type,''), revoked_reason
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(effective_source_type,''), revoked_reason
 		FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = ?`, grantee, resourceID).
+		WHERE grantee_system_account_id = ? AND resource_id = ?`), grantee, resourceID).
 		Scan(&runtimeStatus, &effective, &reason); err != nil {
 		t.Fatal(err)
 	}
@@ -1308,7 +1293,7 @@ func assertRuntime(t *testing.T, f *fixture, grantee, resourceID, status, effect
 func runtimeVersion(t *testing.T, f *fixture, grantID string) string {
 	t.Helper()
 	var updatedAt string
-	if err := f.db.QueryRow(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&updatedAt); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`), grantID).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	return updatedAt

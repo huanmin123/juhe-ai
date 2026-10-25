@@ -3,7 +3,8 @@ package main
 // G20 phase-2 composition adapter tests: the unit coverage for the account /
 // catalog read seams, the provider driver, the usage persistence bridge, the
 // chat executor bridge, plus the preauth→dispatch(mock upstream)→response
-// full-chain smoke test over a seeded SQLite business database.
+// full-chain smoke test over a pgtestkit 隔离 PG 业务库（PLAN-20261024T051925945Z；
+// 原 seeded SQLite business database 夹具随存储形态退役重钉 PG）。
 
 import (
 	"context"
@@ -14,11 +15,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
@@ -52,35 +57,78 @@ type chainFixture struct {
 	accountID     string
 }
 
+// newChainFixturePGDatabase 创建 pgtestkit 隔离 PG 库，建 juhe_business /
+// juhe_stats 两个 schema 并返回带 search_path 的连接池（夹具手写 SQL 的裸表
+// 名由 search_path 解析；生产 store 的 PG 臂本就全限定名，accounts/pgkit
+// 同款惯例。原 SQLite 文件夹具随存储形态退役重钉 PG）。
+func newChainFixturePGDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	testDB := pgtestkit.NewTestDatabase(t)
+	if _, err := testDB.DB.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business; CREATE SCHEMA IF NOT EXISTS juhe_stats`); err != nil {
+		t.Fatalf("create fixture schemas: %v", err)
+	}
+	_ = testDB.DB.Close()
+	// 生产 PG 路径经 sqldialect driver 兜底改写 `?`→$n（D3 非目标）；夹具
+	// 直连生产业务库 SQL 的测试面必须同构改写，否则裸 `?` 查询在普通 pgx
+	// 句柄上以 42601 失败（如 media 水合/账户行族）。
+	pool, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_business,juhe_stats")
+	if err != nil {
+		t.Fatalf("open fixture pool: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	return pool
+}
+
+// fixtureBind 把夹具手写 SQL 的 ? 占位符按序改写为 $n（与生产 Store.bind 同
+// 一惯例；夹具 SQL 的字符串字面量不含 ?）。
+func fixtureBind(query string) string {
+	if !strings.Contains(query, "?") {
+		return query
+	}
+	var out strings.Builder
+	index := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			out.WriteString("$" + strconv.Itoa(index))
+			index++
+			continue
+		}
+		out.WriteByte(query[i])
+	}
+	return out.String()
+}
+
 func newChainFixture(t *testing.T) *chainFixture {
 	t.Helper()
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(root, "business.sqlite3"))
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	statsDB, err := sql.Open("sqlite", filepath.Join(root, "stats.sqlite3"))
-	if err != nil {
-		t.Fatalf("open stats db: %v", err)
-	}
-	t.Cleanup(func() { _ = statsDB.Close() })
+	db := newChainFixturePGDatabase(t)
+	statsDB := db
 	seedChainBusinessSchema(t, db)
 	seedChainStatsSchema(t, statsDB)
+	// 候选质量面：pg 分支按 juhe_stats.account_quality_scores 读取，最小
+	// schema 一并建出（chainCandidateFrom 的 LEFT JOIN 对缺失表报 42P01）。
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS juhe_stats.account_quality_scores (
+		account_id TEXT PRIMARY KEY,
+		quality_score REAL,
+		quality_state TEXT,
+		ewma_first_token_ms REAL,
+		last_sample_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("seed stats quality table: %v", err)
+	}
 	fixture := &chainFixture{db: db, statsDB: statsDB, systemAccount: "sys_owner", groupID: "group_main", accountID: "acc_1"}
 	secret := seedChainRuntimeRows(t, db, fixture)
 	fixture.apiKeySecret = secret
 
-	models, err := gatewayruntimecache.NewSQLReadModels(db, false, time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(db, true, time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create sql read models: %v", err)
 	}
-	selector, err := newChainAccountsSelectorWithStats(db, statsDB, false, "chain-test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelectorWithStats(db, statsDB, true, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
 	models.SetAccountsSelector(selector)
-	catalogSource, err := newChainCatalogSource(db, false)
+	catalogSource, err := newChainCatalogSource(db, true)
 	if err != nil {
 		t.Fatalf("create catalog source: %v", err)
 	}
@@ -110,25 +158,43 @@ func gatewayclientipMemoryConcurrency() gatewayruntimecache.ConcurrencySource {
 func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	statements := []string{
-		`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 1, request_limits_json TEXT)`,
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
 		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
-			vendor_code TEXT, connection_driver_code TEXT, oauth_type TEXT, health_check_connection_id TEXT, 
+			vendor_code TEXT, connection_driver_code TEXT, oauth_type TEXT, health_check_connection_id TEXT,
 			provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT,
 			name TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL,
 			capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER NOT NULL DEFAULT 1,
 			concurrency_limit INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0,
 			super_priority_enabled INTEGER NOT NULL DEFAULT 0, fallback_enabled INTEGER NOT NULL DEFAULT 0,
 			client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER,
-			credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT,
-			last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER NOT NULL DEFAULT 0,
+			circuit_projection_revision INTEGER,
+			credentials_encrypted TEXT, credential_fingerprint TEXT, credential_mask TEXT,
+			oauth_access_token_expires_at TEXT, oauth_refresh_token_present INTEGER NOT NULL DEFAULT 0,
+			proxy_profile_id TEXT, cooldown_until TEXT,
+			availability_schedule_json TEXT, availability_schedule_next_check_at TEXT,
+			notes TEXT, last_used_at TEXT,
+			last_error_message TEXT, last_error_code TEXT, last_error_trace_id TEXT,
+			cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
+			cooldown_retest_observation_started_at TEXT, cooldown_retest_generation TEXT,
+			cooldown_retest_last_at TEXT, cooldown_retest_last_status_code INTEGER,
+			temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
+			expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0,
+			stream_failure_count INTEGER NOT NULL DEFAULT 0,
 			stream_failure_window_started_at TEXT, account_expires_at TEXT,
 			health_check_model TEXT, health_check_endpoint_mode TEXT,
+			last_health_check_at TEXT, next_health_check_at TEXT, last_health_success_at TEXT,
+			health_check_failure_count INTEGER NOT NULL DEFAULT 0, health_check_failure_started_at TEXT,
+			last_health_check_status_code INTEGER, last_health_check_error_code TEXT,
+			last_health_check_error_message TEXT, last_health_check_trace_id TEXT,
+			balance_query_enabled INTEGER NOT NULL DEFAULT 0, balance_query_config_json TEXT NOT NULL DEFAULT '{}',
+			balance_query_next_refresh_at TEXT,
 			authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT,
-			authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
+			authorization_instance_owner_system_account_id TEXT,
+			deleted_at TEXT, deleted_by TEXT, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE group_accounts (
 			group_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL,
 			enabled INTEGER NOT NULL, account_authorization_id TEXT,
@@ -199,18 +265,18 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			max_tokens INTEGER, input_usd_per_1m REAL, output_usd_per_1m REAL,
 			cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL,
 			cache_storage_usd_per_1m_per_hour REAL, service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
+			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive BOOLEAN NOT NULL DEFAULT FALSE,
 			long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
 			image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
 			audio_output_usd_per_1m REAL, output_usd_per_image REAL,
-			supports_prompt_caching INTEGER NOT NULL DEFAULT 0, catalog_visible INTEGER NOT NULL DEFAULT 1,
+			supports_prompt_caching BOOLEAN NOT NULL DEFAULT FALSE, catalog_visible BOOLEAN NOT NULL DEFAULT TRUE,
 			source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		// Real-DDL shape (Node custom-provider-models.repository.ts
 		// customProviderModelColumns()): the per-account catalog rows.
 		`CREATE TABLE custom_provider_models (
 			id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL,
 			scope TEXT NOT NULL DEFAULT 'personal', system_account_id TEXT,
-			status TEXT NOT NULL DEFAULT 'active', catalog_visible INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'active', catalog_visible BOOLEAN NOT NULL DEFAULT TRUE,
 			mode TEXT, supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
 			supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
 			supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
@@ -219,7 +285,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
 			cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL,
 			cache_storage_usd_per_1m_per_hour REAL, service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
+			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive BOOLEAN NOT NULL DEFAULT FALSE,
 			long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
 			image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
 			audio_output_usd_per_1m REAL, output_usd_per_image REAL, currency TEXT,
@@ -251,7 +317,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 		`CREATE TABLE models (
 			id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT NOT NULL, upstream_model TEXT NOT NULL,
 			scope TEXT NOT NULL, system_account_id TEXT, status TEXT NOT NULL DEFAULT 'active',
-			catalog_visible INTEGER NOT NULL DEFAULT 1, catalog_order INTEGER,
+			catalog_visible BOOLEAN NOT NULL DEFAULT TRUE, catalog_order INTEGER,
 			release_date TEXT, shutdown_date TEXT,
 			supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
 			supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
@@ -260,13 +326,13 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
 			codex_default_reasoning_level TEXT, codex_multi_agent_version TEXT,
 			context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER, max_tokens INTEGER,
-			supports_prompt_caching INTEGER NOT NULL DEFAULT 0, source TEXT,
+			supports_prompt_caching BOOLEAN NOT NULL DEFAULT FALSE, source TEXT,
 			pricing_notes TEXT, capability_notes TEXT, notes TEXT,
 			created_by TEXT, updated_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
 			input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
 			cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
 			service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
+			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive BOOLEAN NOT NULL DEFAULT FALSE,
 			long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
 			image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL,
 			output_usd_per_image REAL, currency TEXT NOT NULL DEFAULT 'USD')`,
@@ -295,7 +361,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			artifact_json TEXT NOT NULL DEFAULT '{}',
 			error_json TEXT NOT NULL DEFAULT '{}',
 			usage_json TEXT NOT NULL DEFAULT '{}',
-			cost_usd REAL NOT NULL DEFAULT 0,
+			cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 			params_applied_json TEXT NOT NULL DEFAULT '[]',
 			params_ignored_json TEXT NOT NULL DEFAULT '[]',
 			created_at TEXT NOT NULL,
@@ -313,18 +379,18 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 // 旧 credentials.base_url 写点保留无害（credentials.base_url 已不被消费）。
 func chainPointAccountAtUpstream(t *testing.T, db *sql.DB, accountID, baseURL string, modes ...string) {
 	t.Helper()
-	if _, err := db.Exec(`UPDATE account_connections SET base_url = ? WHERE account_id = ?`, baseURL, accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE account_connections SET base_url = ? WHERE account_id = ?`), baseURL, accountID); err != nil {
 		t.Fatalf("update connection base url (%s): %v", accountID, err)
 	}
 	// modes 非空时整集合替换该连接的 endpoint modes（旧世界凭据
 	// supported_endpoint_modes 写点的等价迁移）。
 	if len(modes) > 0 {
-		if _, err := db.Exec(`DELETE FROM account_endpoint_modes WHERE connection_id IN (SELECT id FROM account_connections WHERE account_id = ?)`, accountID); err != nil {
+		if _, err := db.Exec(fixtureBind(`DELETE FROM account_endpoint_modes WHERE connection_id IN (SELECT id FROM account_connections WHERE account_id = ?)`), accountID); err != nil {
 			t.Fatalf("reset connection endpoint modes (%s): %v", accountID, err)
 		}
 		for _, mode := range modes {
-			if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode)
-				SELECT id, ? FROM account_connections WHERE account_id = ?`, mode, accountID); err != nil {
+			if _, err := db.Exec(fixtureBind(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode)
+				SELECT id, ? FROM account_connections WHERE account_id = ?`), mode, accountID); err != nil {
 				t.Fatalf("seed connection endpoint mode (%s): %v", accountID, err)
 			}
 		}
@@ -339,16 +405,16 @@ func chainSeedAccountConnection(t *testing.T, db *sql.DB, accountID, baseURL str
 	t.Helper()
 	now := "2026-09-04T00:00:00.000Z"
 	connectionID := "conn_" + accountID
-	if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
-		VALUES (?, ?, 'gpt_openai_v1', 'openai_v1', ?, 1, ?, ?)`, connectionID, accountID, baseURL, now, now); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES (?, ?, 'gpt_openai_v1', 'openai_v1', ?, 1, ?, ?)`), connectionID, accountID, baseURL, now, now); err != nil {
 		t.Fatalf("seed account connection (%s): %v", accountID, err)
 	}
 	for _, mode := range modes {
-		if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)`, connectionID, mode); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)`), connectionID, mode); err != nil {
 			t.Fatalf("seed account endpoint mode (%s): %v", accountID, err)
 		}
 	}
-	if _, err := db.Exec(`UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`, connectionID, accountID); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`), connectionID, accountID); err != nil {
 		t.Fatalf("bind health check connection (%s): %v", accountID, err)
 	}
 }
@@ -358,7 +424,9 @@ func chainSeedAccountConnection(t *testing.T, db *sql.DB, accountID, baseURL str
 func seedChainStatsSchema(t *testing.T, statsDB *sql.DB) {
 	t.Helper()
 	statements := []string{
-		`CREATE TABLE account_quality_scores (
+		// 显式限定 juhe_stats：夹具连接 search_path 首位是 juhe_business，
+		// 而选择器 pg 分支按 juhe_stats.account_quality_scores 读取。
+		`CREATE TABLE IF NOT EXISTS juhe_stats.account_quality_scores (
 			account_id TEXT NOT NULL, quality_score REAL, quality_state TEXT,
 			ewma_first_token_ms REAL, last_sample_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	}
@@ -376,7 +444,7 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
@@ -434,7 +502,7 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 	seed(`INSERT INTO custom_provider_models (
 			id, provider_code, model, scope, system_account_id, status, catalog_visible,
 			supported_api_protocols_json, input_usd_per_1m, created_by, created_at, updated_at)
-		VALUES ('cat_1', 'openai', 'gpt-test', 'global', NULL, 'active', 1, '["chat_completions"]', 1.0, ?, ?, ?)`, fixture.systemAccount, now, now)
+		VALUES ('cat_1', 'openai', 'gpt-test', 'global', NULL, 'active', TRUE, '["chat_completions"]', 1.0, ?, ?, ?)`, fixture.systemAccount, now, now)
 	seedSettingsDefaults(t, db)
 	return secret
 }
@@ -542,7 +610,7 @@ func TestChainAccountsSelectorListsDispatchableAccounts(t *testing.T) {
 
 func TestChainCatalogSourceListsProviderModels(t *testing.T) {
 	fixture := newChainFixture(t)
-	source, err := newChainCatalogSource(fixture.db, false)
+	source, err := newChainCatalogSource(fixture.db, true)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -550,21 +618,21 @@ func TestChainCatalogSourceListsProviderModels(t *testing.T) {
 	// 供应商解耦（设计 §3）：目录维度 = models.vendor_code 恒等源，协议子供应
 	// 商聚合已随 providers/provider_protocol_profiles 退役。gpt vendor 的内置
 	// 行只随 "gpt" 维度可见。
-	if _, err := fixture.db.Exec(`INSERT INTO models (
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO models (
 			id, vendor_code, public_model, upstream_model, scope, status, catalog_order,
 			supported_endpoint_modes_json, source, catalog_visible, supports_prompt_caching,
 			input_usd_per_1m, created_at, updated_at)
 		VALUES ('cat_gpt_child', 'gpt', 'gpt-child-model', 'gpt-child-model', 'builtin', 'active', 0,
-			'["chat_json","chat_sse"]', 'builtin', 1, 0, 1.0, ?, ?)`, now, now); err != nil {
+			'["chat_json","chat_sse"]', 'builtin', TRUE, FALSE, 1.0, ?, ?)`), now, now); err != nil {
 		t.Fatalf("seed gpt builtin catalog: %v", err)
 	}
 	// openai vendor 自身的内置行：builtin 源剔除（openai 无自身内置目录）。
-	if _, err := fixture.db.Exec(`INSERT INTO models (
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO models (
 			id, vendor_code, public_model, upstream_model, scope, status, catalog_order,
 			supported_endpoint_modes_json, source, catalog_visible, supports_prompt_caching,
 			created_at, updated_at)
 		VALUES ('cat_openai_builtin', 'openai', 'openai-builtin-model', 'openai-builtin-model', 'builtin', 'active', 0,
-			'["chat_json","chat_sse"]', 'builtin', 1, 0, ?, ?)`, now, now); err != nil {
+			'["chat_json","chat_sse"]', 'builtin', TRUE, FALSE, ?, ?)`), now, now); err != nil {
 		t.Fatalf("seed openai builtin catalog: %v", err)
 	}
 	// gpt 维度：builtin 行在场（含端点集反推的 chat_completions 协议投影）。
@@ -970,11 +1038,11 @@ func TestGatewayChainServeSmokePreauthDispatchResponse(t *testing.T) {
 	// Point the seeded account at the mock upstream. B4 第一批单连接事实源：
 	// 上游指向改连接行 base_url（secret BaseURL = account_connections.base_url），
 	// 凭据 JSON 只承载 api_key（credentials.base_url 依赖已解除）。
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key"}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
-	if _, err := fixture.db.Exec(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`, upstream.URL); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`), upstream.URL); err != nil {
 		t.Fatalf("update connection base url: %v", err)
 	}
 
@@ -1178,24 +1246,28 @@ func mustEncryptCredentials(t *testing.T, credentials map[string]any) string {
 // with the entry-mappings ordering and the LEFT JOIN models upstream /
 // target_endpoint_family projection.
 func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "business.sqlite3"))
+	tdb := pgtestkit.NewTestDatabase(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Secret: "chain-test-secret"})
+			return err
+		})
+	_ = tdb.DB.Close()
+	db, err := sql.Open("pgx", tdb.DSN+"&search_path=juhe_business")
 	if err != nil {
-		t.Fatalf("open business db: %v", err)
+		t.Fatalf("open fresh DDL pool: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("apply real maintenance business DDL: %v", err)
-	}
-	// Seed the parent rows (vendors / sys_admin) the real DDL foreign keys
-	// point at, then add one account with a connection fact row and two
-	// supported models to map against.
-	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Secret: "chain-test-secret"}); err != nil {
-		t.Fatalf("seed real maintenance business data: %v", err)
-	}
+	// Seed the parent rows the real DDL foreign keys point at（sys_admin 由
+	// SeedPostgres 预置），then add one account with a connection fact row and
+	// two supported models to map against.
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
@@ -1216,26 +1288,24 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 		VALUES ('acc_real_ddl', 'mdl_real_1', ?), ('acc_real_ddl', 'mdl_real_2', ?)`, now, now)
 
 	// Schema-drift guard: the real entry-mappings table keeps the global id
-	// primary key and the composite natural key (设计 §5.1).
+	// primary key and the composite natural key (设计 §5.1)。
 	columns := map[string]bool{}
-	rows, err := db.Query(`PRAGMA table_info(account_entry_mappings)`)
+	rows, err := db.Query(`SELECT column_name FROM information_schema.columns
+		WHERE table_schema = 'juhe_business' AND table_name = 'account_entry_mappings'`)
 	if err != nil {
-		t.Fatalf("pragma table_info: %v", err)
+		t.Fatalf("information_schema columns: %v", err)
 	}
 	for rows.Next() {
-		var cid int
-		var name, columnType string
-		var notNull, pk int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			rows.Close()
-			t.Fatalf("scan table_info: %v", err)
+			t.Fatalf("scan column: %v", err)
 		}
 		columns[name] = true
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate table_info: %v", err)
+		t.Fatalf("iterate columns: %v", err)
 	}
 	for _, required := range []string{"id", "account_id", "source_model", "source_endpoint_family", "target_connection_id", "target_model_id", "target_endpoint_family", "enabled"} {
 		if !columns[required] {
@@ -1243,7 +1313,12 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 		}
 	}
 	var pkColumns string
-	if err := db.QueryRow(`SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_table_info('account_entry_mappings') WHERE pk > 0 ORDER BY pk)`).Scan(&pkColumns); err != nil {
+	if err := db.QueryRow(`SELECT COALESCE(string_agg(k.column_name, ',' ORDER BY k.ordinal_position), '')
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage k
+		  ON k.constraint_schema = tc.constraint_schema AND k.constraint_name = tc.constraint_name
+		WHERE tc.table_schema = 'juhe_business' AND tc.table_name = 'account_entry_mappings'
+		  AND tc.constraint_type = 'PRIMARY KEY'`).Scan(&pkColumns); err != nil {
 		t.Fatalf("read primary key: %v", err)
 	}
 	if pkColumns != "id" {
@@ -1264,7 +1339,7 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 			row.source, row.source, row.family, row.targetModel, row.family, now, now)
 	}
 
-	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 20)
+	selector, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 20)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -1297,7 +1372,7 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 func TestChainAccountsSelectorConsumesDispatchCandidateLimit(t *testing.T) {
 	db := seedChainSelectorDB(t)
 	defer db.Close()
-	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 7)
+	selector, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 7)
 	if err != nil {
 		t.Fatalf("create selector: %v", err)
 	}
@@ -1316,22 +1391,29 @@ func TestChainAccountsSelectorConsumesDispatchCandidateLimit(t *testing.T) {
 			result.Diagnostics.FinalLimit, result.Diagnostics.ScanLimit)
 	}
 	// Node integerConfig 边界：越界 limit 构造失败（1..50000）。
-	if _, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 0); err == nil {
+	if _, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 0); err == nil {
 		t.Fatal("limit=0 必须构造失败")
 	}
-	if _, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 50001); err == nil {
+	if _, err := newChainAccountsSelector(db, true, "chain-test-secret", time.Now, 50001); err == nil {
 		t.Fatal("limit=50001 必须构造失败")
 	}
 }
 
 // seedChainSelectorDB 建候选窗口查询所需的最小业务表（与 chainCandidateFrom
-// 对齐：group_accounts + accounts 自连接 + stats 质量表省略——共享 db 句柄）。
+// 对齐：group_accounts + accounts 自连接 + 空的 juhe_stats 质量表——PG 的
+// LEFT JOIN 对缺失表仍报 42P01，故建空表承载质量面缺省）。
 func seedChainSelectorDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "chain-limit.sqlite3"))
+	testDB := pgtestkit.NewTestDatabase(t)
+	if _, err := testDB.DB.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business; CREATE SCHEMA IF NOT EXISTS juhe_stats`); err != nil {
+		t.Fatalf("create fixture schemas: %v", err)
+	}
+	_ = testDB.DB.Close()
+	db, err := sql.Open("pgx", testDB.DSN+"&search_path=juhe_business,juhe_stats")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = db.Close() })
 	statements := []string{
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
 		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -1344,7 +1426,7 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 		`CREATE TABLE models (id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT, upstream_model TEXT, scope TEXT, system_account_id TEXT, status TEXT, supported_endpoint_modes_json TEXT)`,
 		`CREATE TABLE account_api_key_runtime_states (account_id TEXT, key_fingerprint TEXT, key_index INTEGER, status TEXT, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT)`,
 		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER, username TEXT, password_encrypted TEXT, enabled INTEGER)`,
-		`CREATE TABLE account_quality_scores (account_id TEXT PRIMARY KEY, quality_score REAL, quality_state TEXT, ewma_first_token_ms REAL, last_sample_at TEXT)`,
+		`CREATE TABLE juhe_stats.account_quality_scores (account_id TEXT PRIMARY KEY, quality_score REAL, quality_state TEXT, ewma_first_token_ms REAL, last_sample_at TEXT)`,
 		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('grp-limit', 'sys_admin', 1, 'personal', NULL)`,
 	}
 	now := "2026-01-01T00:00:00.000Z"

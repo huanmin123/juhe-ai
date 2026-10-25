@@ -68,7 +68,7 @@ func TestSPC2MyRouteStrategyRejectsRetiredSchedulingFields(t *testing.T) {
 }
 
 // TestSPC2TopologyPatchPreservesStoredSchedulingConfigByteForByte：存量行
-//（store 直建，代表迁移完成世界的旧数据/回滚 oracle）speed_first 配置在仅
+// （store 直建，代表迁移完成世界的旧数据/回滚 oracle）speed_first 配置在仅
 // 替换分组绑定（拓扑）时逐字节保持；payload 不含调度键故不触发退场拒绝，
 // 绑定变更照常生效——D7 第 6 条「其他合法数据不可整列误删」的拓扑臂。
 func TestSPC2TopologyPatchPreservesStoredSchedulingConfigByteForByte(t *testing.T) {
@@ -83,7 +83,7 @@ func TestSPC2TopologyPatchPreservesStoredSchedulingConfigByteForByte(t *testing.
 	})
 
 	var configJSON sql.NullString
-	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), strategyID).Scan(&configJSON); err != nil {
 		t.Fatal(err)
 	}
 	if !configJSON.Valid || !strings.Contains(configJSON.String, "speed_first") {
@@ -102,7 +102,7 @@ func TestSPC2TopologyPatchPreservesStoredSchedulingConfigByteForByte(t *testing.
 		t.Fatalf("groupBindings 必须出现在 changedFields: %v", patched)
 	}
 	// 存量 config_json 逐字节保持（调度键原样不变）。
-	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), strategyID).Scan(&configJSON); err != nil {
 		t.Fatal(err)
 	}
 	if !configJSON.Valid || configJSON.String != beforeJSON {

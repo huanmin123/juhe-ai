@@ -14,12 +14,14 @@ import (
 	"testing"
 	"time"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 type recordingSink struct {
@@ -141,36 +143,14 @@ var seedSystemSettings = map[string]any{
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:settings-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
-		`CREATE TABLE IF NOT EXISTS global_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The timezone guard probes the usage stats projections; the empty
-	// tables mirror a fresh stats database.
-	for _, tableName := range usageStatsDataTables {
-		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ` + tableName + ` (probe TEXT)`); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newSettingsPGDatabase(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for key, value := range seedSystemSettings {
 		raw, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
-		if _, execErr := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`, key, string(raw), now); execErr != nil {
+		if _, execErr := db.Exec(fixtureSQL(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`), key, string(raw), now); execErr != nil {
 			t.Fatal(execErr)
 		}
 	}
@@ -179,15 +159,15 @@ func newTestEnv(t *testing.T) *testEnv {
 		{"appIcon", "/__aisys__/brand-icon.svg"},
 	} {
 		raw, _ := json.Marshal(seed.value)
-		if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?)`, seed.key, string(raw), now); err != nil {
+		if _, err := db.Exec(fixtureSQL(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?)`), seed.key, string(raw), now); err != nil {
 			t.Fatal(err)
 		}
 	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +177,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, false, nil, invalidator)
+	store, err := NewStore(db, true, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +254,7 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 
 func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(fixtureSQL(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -282,7 +262,7 @@ func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 func (e *testEnv) queryCell(t *testing.T, query string, args ...any) string {
 	t.Helper()
 	var value sql.NullString
-	if err := e.db.QueryRow(query, args...).Scan(&value); err != nil {
+	if err := e.db.QueryRow(fixtureSQL(query), args...).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	return value.String
@@ -475,52 +455,10 @@ func TestSettingsPatchUpdatesSnapshotInvalidationAndLog(t *testing.T) {
 	}
 }
 
-// TestSettingsPatchUsageStatsTimezoneGuard mirrors
-// assertUsageStatsTimezoneUpdateAllowed in SQLite mode: no stats data allows
-// the change, existing stats data refuses it, same-value writes pass.
-func TestSettingsPatchUsageStatsTimezoneGuard(t *testing.T) {
-	env := newTestEnv(t)
-	env.login(t, "root", "root-pass", "super_admin")
-
-	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/settings", `{"usageStatsTimezone":"Asia/Shanghai"}`)
-	if code != http.StatusOK {
-		t.Fatalf("timezone change without stats data: %d %v", code, payload)
-	}
-	if dataMap(t, payload)["usageStatsTimezone"] != "Asia/Shanghai" {
-		t.Fatalf("timezone response: %v", dataMap(t, payload)["usageStatsTimezone"])
-	}
-	if got := env.queryCell(t, `SELECT value_json FROM system_settings WHERE system_account_id='sys_admin' AND key='usageStatsTimezone'`); got != `"Asia/Shanghai"` {
-		t.Fatalf("stored timezone: %v", got)
-	}
-
-	env.exec(t, `INSERT INTO usage_stats_totals (probe) VALUES ('x')`)
-
-	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings", `{"usageStatsTimezone":"Europe/Paris"}`)
-	if code != http.StatusBadRequest || message(t, payload) != "已有统计数据后不能直接修改统计时区，请先备份并重建统计缓存" {
-		t.Fatalf("timezone change with stats data: %d %v", code, payload)
-	}
-	// The same timezone stays writable even with stats data present.
-	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings", `{"usageStatsTimezone":"Asia/Shanghai"}`)
-	if code != http.StatusOK {
-		t.Fatalf("same timezone with stats data: %d %v", code, payload)
-	}
-	// Validation runs before the guard, so an invalid zone still reports the
-	// validation message.
-	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings", `{"usageStatsTimezone":"Mars/Phobos"}`)
-	if code != http.StatusBadRequest || message(t, payload) != "usageStatsTimezone 无效：统计时区不存在：Mars/Phobos" {
-		t.Fatalf("invalid timezone with stats data: %d %v", code, payload)
-	}
-}
-
 // TestSettingsPostgresModeForbidsTimezoneOnlineChange mirrors the PG branch
 // of the guard: any online timezone change is refused before touching SQL.
 func TestSettingsPostgresModeForbidsTimezoneOnlineChange(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:settings-pg-guard-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	db := newSettingsPGDatabase(t)
 	store, err := NewStore(db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -542,7 +480,7 @@ func TestSettingsSnapshotProviderFillsCompatibleDefaults(t *testing.T) {
 	env := newTestEnv(t)
 	env.exec(t, `DELETE FROM system_settings WHERE system_account_id='sys_admin' AND key='userAiAccountLimit'`)
 
-	store, err := NewStore(env.db, false, nil, nil)
+	store, err := NewStore(env.db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,60 +497,6 @@ func TestSettingsSnapshotProviderFillsCompatibleDefaults(t *testing.T) {
 	var provider SettingsProvider = store
 	if _, err := provider.SettingsSnapshot(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestSettingsPatchUsageStatsTimezoneSixDatabaseSplit is the X05 regression
-// for the six-database SQLite split: the usage_stats_* projection tables live
-// in the dedicated stats database, so the usageStatsDataExists probe must run
-// against the stats handle — probing the business handle 500s every online
-// timezone change ("no such table").
-func TestSettingsPatchUsageStatsTimezoneSixDatabaseSplit(t *testing.T) {
-	env := newTestEnv(t)
-	env.login(t, "root", "root-pass", "super_admin")
-
-	// Dedicated stats database: same tables the Node getStatsDatabase()
-	// carries, empty (fresh stats store). The business database keeps none of
-	// them — the exact fresh six-database shape.
-	statsDB, err := sql.Open("sqlite", "file:settings-stats-split-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	statsDB.SetMaxOpenConns(1)
-	t.Cleanup(func() { statsDB.Close() })
-	for _, table := range usageStatsDataTables {
-		if _, err := statsDB.Exec("CREATE TABLE " + table + " (probe TEXT)"); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	store, err := NewStore(env.db, false, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.SetStatsDatabase(statsDB)
-
-	// Empty stats database: the online timezone change must succeed and
-	// persist through the business handle.
-	updated, err := store.Update(context.Background(), map[string]any{"usageStatsTimezone": "Asia/Shanghai"})
-	if err != nil {
-		t.Fatalf("timezone change over six-database split: %v", err)
-	}
-	if updated["usageStatsTimezone"] != "Asia/Shanghai" {
-		t.Fatalf("updated timezone: %v", updated["usageStatsTimezone"])
-	}
-
-	// Stats data present in the stats database: the guard must refuse.
-	if _, err := statsDB.Exec(`INSERT INTO usage_stats_totals (probe) VALUES ('x')`); err != nil {
-		t.Fatal(err)
-	}
-	_, err = store.Update(context.Background(), map[string]any{"usageStatsTimezone": "Europe/Paris"})
-	var validation *ValidationError
-	if !errors.As(err, &validation) {
-		t.Fatalf("expected ValidationError, got %v", err)
-	}
-	if validation.Message != "已有统计数据后不能直接修改统计时区，请先备份并重建统计缓存" {
-		t.Fatalf("guard message: %q", validation.Message)
 	}
 }
 
@@ -984,27 +868,17 @@ func TestSettingsGlobalEndpoints(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // createAccountHealthFixtureTables builds the minimal account surface the
-// reservation touches. The versions DDL is verbatim from
-// maintenance/internal/schema/sqlite_schema_business.go:659-663.
+// reservation touches; both tables already exist in the pgkit fixture
+// (settingsPGFixtureSchema, production shapes), so this is a no-op kept for
+// call-site stability.
 func createAccountHealthFixtureTables(t *testing.T, db *sql.DB) {
 	t.Helper()
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, vendor_code TEXT, connection_driver_code TEXT NOT NULL, type TEXT NOT NULL, config_revision INTEGER NOT NULL DEFAULT 0, dispatch_revision INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
-      account_id TEXT PRIMARY KEY,
-      current_version INTEGER NOT NULL CHECK (current_version >= 1),
-      reserved_at TEXT NOT NULL
-    )`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	_ = db
 }
 
 func insertFixtureAccount(t *testing.T, db *sql.DB, id, vendorCode, driver, accountType, deletedAt string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, type, config_revision, dispatch_revision, deleted_at) VALUES (?, ?, ?, ?, 0, 0, ?)`,
+	if _, err := db.Exec(fixtureSQL(`INSERT INTO accounts (id, vendor_code, connection_driver_code, type, config_revision, dispatch_revision, deleted_at) VALUES (?, ?, ?, ?, 1, 1, ?)`),
 		id, nullableFixtureText(vendorCode), driver, accountType, nullableFixtureText(deletedAt)); err != nil {
 		t.Fatal(err)
 	}
@@ -1019,7 +893,7 @@ func nullableFixtureText(value string) any {
 
 func accountHealthVersionRows(t *testing.T, db *sql.DB) map[string]int64 {
 	t.Helper()
-	rows, err := db.Query(`SELECT account_id, current_version FROM account_health_jobs_input_versions ORDER BY account_id ASC`)
+	rows, err := db.Query(fixtureSQL(`SELECT account_id, current_version FROM account_health_jobs_input_versions ORDER BY account_id ASC`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1112,7 +986,7 @@ func TestSettingsAccountHealthReservationGatedArms(t *testing.T) {
 	}
 
 	// (d) The full-snapshot write never reserves.
-	store, err := NewStore(env.db, false, nil, nil)
+	store, err := NewStore(env.db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1133,14 +1007,14 @@ func TestSettingsAccountHealthReservationFailureRollsBack(t *testing.T) {
 	env := newW11FEnv(t)
 	createAccountHealthFixtureTables(t, env.db)
 	insertFixtureAccount(t, env.db, "acc-generic-key", "", "generic_http", "api_key", "")
-	env.script.failQuery("FROM account_health_jobs_input_versions")
+	env.script.failQuery("FROM juhe_business.account_health_jobs_input_versions")
 
 	if _, err := env.store.UpdateSection(context.Background(), "account-health",
 		map[string]any{"accountHealthCheckIntervalHours": 2.0}); err == nil {
 		t.Fatal("versions reservation fault must fail the section write")
 	}
 	var value sql.NullString
-	if err := env.db.QueryRow(`SELECT value_json FROM system_settings WHERE system_account_id='sys_admin' AND key='accountHealthCheckIntervalHours'`).Scan(&value); err != nil {
+	if err := env.db.QueryRow(fixtureSQL(`SELECT value_json FROM system_settings WHERE system_account_id='sys_admin' AND key='accountHealthCheckIntervalHours'`)).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	if value.String != "1" {
@@ -1242,10 +1116,13 @@ func (r *pgDialectRows) Next(dest []driver.Value) error {
 // SQL in PostgreSQL mode: juhe_business. schema prefix, $n positional
 // bindings and the FOR UPDATE row locks, with no outbox statement.
 func TestSettingsAccountHealthReservationPostgresDialect(t *testing.T) {
-	base, err := sqlite.NewConnector("file:settings-pg-acchealth-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t)
+	_ = testDB.DB.Close()
+	pgConfig, err := pgx.ParseConfig(testDB.DSN)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse pgtestkit DSN: %v", err)
 	}
+	base := stdlib.GetConnector(*pgConfig)
 	recorder := &pgDialectRecorder{}
 	db := sql.OpenDB(&pgDialectConnector{base: base, rec: recorder})
 	db.SetMaxOpenConns(1)
@@ -1305,33 +1182,20 @@ func TestSettingsAccountHealthReservationPostgresDialect(t *testing.T) {
 // 与 settings:global 的 60s 进程内快照，让下一次读回源数据库；nil 接收者
 // 安全（部分组合的测试夹具会无 store 接线该回调）。
 func TestStoreInvalidateSnapshotCacheClearsSystemAndGlobalCaches(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:invalidate-snapshot-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
-		`CREATE TABLE IF NOT EXISTS global_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newSettingsPGDatabase(t)
 	for key, value := range seedSystemSettings {
 		raw, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
-		if _, execErr := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`, key, string(raw), "2026-01-01T00:00:00.000Z"); execErr != nil {
+		if _, execErr := db.Exec(fixtureSQL(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`), key, string(raw), "2026-01-01T00:00:00.000Z"); execErr != nil {
 			t.Fatal(execErr)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES ('appName', '"聚合 AI"', '2026-01-01T00:00:00.000Z'), ('appIcon', '"/__aisys__/brand-icon.svg"', '2026-01-01T00:00:00.000Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.global_settings (key, value_json, updated_at) VALUES ('appName', '"聚合 AI"', '2026-01-01T00:00:00.000Z'), ('appIcon', '"/__aisys__/brand-icon.svg"', '2026-01-01T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, false, time.Now, nil)
+	store, err := NewStore(db, true, time.Now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1343,7 +1207,7 @@ func TestStoreInvalidateSnapshotCacheClearsSystemAndGlobalCaches(t *testing.T) {
 		t.Fatalf("load global snapshot: %v", err)
 	}
 	// 缓存老化窗口内直改数据库：读仍命中 60s 快照（证明缓存确实存在）。
-	if _, err := db.Exec(`UPDATE global_settings SET value_json = '"改名"' WHERE key = 'appName'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.global_settings SET value_json = '"改名"' WHERE key = 'appName'`); err != nil {
 		t.Fatal(err)
 	}
 	cached, err := store.LoadGlobal(ctx)

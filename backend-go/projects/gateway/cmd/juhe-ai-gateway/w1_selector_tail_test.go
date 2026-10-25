@@ -491,7 +491,7 @@ func TestW1NResolveProxyURLsForProfilesContracts(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed proxy: %v: %v", query, err)
 		}
 	}
@@ -558,7 +558,7 @@ func TestW1NLoadFreshQualityRowsMapsByAccountID(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seedStats := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.statsDB.Exec(query, args...); err != nil {
+		if _, err := fixture.statsDB.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed stats row: %v: %v", query, err)
 		}
 	}

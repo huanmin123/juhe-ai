@@ -561,7 +561,7 @@ func finalizeCompletedStage(target capdomain.Target) capdomain.Stage {
 //  6. 分批写入（赋域 + 声明裁剪同语句）→ 最终核验与完成阶段记录同事务提交。
 func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	report := Report{
-		Driver:          capdomain.DialectPostgres.String(),
+		Driver:          "postgres",
 		Target:          string(options.Target),
 		RuleVersion:     capdomain.RuleVersion,
 		DomainsAssigned: DomainCounts{},
@@ -576,7 +576,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		batchSize = DefaultBatchSize
 	}
 
-	record, present, err := capdomain.ReadRecord(ctx, db, capdomain.DialectPostgres)
+	record, present, err := capdomain.ReadRecord(ctx, db)
 	if err != nil {
 		return report, err
 	}
@@ -603,7 +603,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		if err != nil {
 			return report, err
 		}
-		claimed, err = capdomain.ClaimNewStage(ctx, tx, capdomain.DialectPostgres, next, now)
+		claimed, err = capdomain.ClaimNewStage(ctx, tx, next, now)
 		if err != nil {
 			_ = tx.Rollback()
 			return report, err
@@ -616,7 +616,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		if err != nil {
 			return report, err
 		}
-		claimed, err = capdomain.TransitionStage(ctx, tx, capdomain.DialectPostgres, current, next, now)
+		claimed, err = capdomain.TransitionStage(ctx, tx, current, next, now)
 		if err != nil {
 			_ = tx.Rollback()
 			return report, err
@@ -626,7 +626,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		}
 	}
 	if !claimed {
-		latest, _, readErr := capdomain.ReadRecord(ctx, db, capdomain.DialectPostgres)
+		latest, _, readErr := capdomain.ReadRecord(ctx, db)
 		if readErr != nil {
 			return report, readErr
 		}
@@ -685,7 +685,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		report.Failures = verifyFailures
 		return report, nil
 	}
-	claimed, err = capdomain.TransitionStage(ctx, tx, capdomain.DialectPostgres, next, completed, now)
+	claimed, err = capdomain.TransitionStage(ctx, tx, next, completed, now)
 	if err != nil {
 		return report, err
 	}
@@ -739,7 +739,7 @@ func ValidCheck(check string) bool {
 // 域值合法与实例同源一致检查。全程零写入。
 func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, error) {
 	report := VerifyReport{
-		Driver:          capdomain.DialectPostgres.String(),
+		Driver:          "postgres",
 		Check:           options.Check,
 		Target:          string(options.Target),
 		RuleVersion:     capdomain.RuleVersion,
@@ -765,7 +765,7 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 		}
 	}
 
-	record, present, err := capdomain.ReadRecord(ctx, db, capdomain.DialectPostgres)
+	record, present, err := capdomain.ReadRecord(ctx, db)
 	if err != nil {
 		return report, err
 	}
@@ -912,7 +912,7 @@ func sortFailures(failures []capdomain.Failure) {
 // 空）写 m2_finalized。记录已存在直接跳过（幂等）；accounts 非空的库一律
 // 不自动写记录（真实切换必须显式跑迁移命令）。返回是否本次写入封存记录。
 func SealFreshInstall(ctx context.Context, db *sql.DB) (bool, error) {
-	if _, present, err := capdomain.ReadRecord(ctx, db, capdomain.DialectPostgres); err != nil {
+	if _, present, err := capdomain.ReadRecord(ctx, db); err != nil {
 		return false, err
 	} else if present {
 		return false, nil

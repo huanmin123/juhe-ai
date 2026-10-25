@@ -566,8 +566,8 @@ func TestW1EEffectsApplyArms(t *testing.T) {
 
 	// 遗留策略前缀消息（last_error_code 为 NULL）同样围栏 generic 冷却。
 	fixture.seedAccount(t, "acc_w1e_legacy", "active", 1)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET last_error_code = NULL, last_error_message = ?,
-		cooldown_until = '2026-09-01T11:30:00.000Z' WHERE id = 'acc_w1e_legacy'`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET last_error_code = NULL, last_error_message = ?,
+		cooldown_until = '2026-09-01T11:30:00.000Z' WHERE id = 'acc_w1e_legacy'`),
 		legacyExplicitPolicyMessagePrefix+"旧规则」命中；上游调用失败：HTTP 429"); err != nil {
 		t.Fatalf("种子遗留冷却: %v", err)
 	}
@@ -644,15 +644,15 @@ func TestW1EEffectsBindingWrites(t *testing.T) {
 	bindRow := func(t *testing.T, id, status string) {
 		t.Helper()
 		fixture.seedAccount(t, id, status, 1)
-		if _, err := fixture.db.Exec(`UPDATE accounts SET system_account_id = 'sys-bind',
-			authorization_instance_authorization_id = 'authz-bind' WHERE id = ?`, id); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET system_account_id = 'sys-bind',
+			authorization_instance_authorization_id = 'authz-bind' WHERE id = ?`), id); err != nil {
 			t.Fatalf("绑定行更新: %v", err)
 		}
 	}
 	bindGroup := func(t *testing.T, id string, enabled int) {
 		t.Helper()
-		if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, account_authorization_id)
-			VALUES ('grp-bind', 'sys-bind', ?, ?, 'authz-bind')`, id, enabled); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, account_authorization_id)
+			VALUES ('grp-bind', 'sys-bind', ?, ?, 'authz-bind')`), id, enabled); err != nil {
 			t.Fatalf("种子 group_accounts: %v", err)
 		}
 	}
@@ -758,9 +758,9 @@ func TestW1EEffectsKeyScopedArms(t *testing.T) {
 	// 注意 store 的 normalizeObservedAt 会把晚于自身时钟的观察时刻钳回 now，
 	// 因此起点取固定时钟前 5 分钟（09:55），与缺省 10:00 可区分。
 	fixture.seedAccount(t, "acc_w1e_key", "active", 1)
-	if _, err := fixture.db.Exec(`INSERT INTO account_api_key_runtime_states
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO account_api_key_runtime_states
 		(id, system_account_id, account_id, key_fingerprint, status, created_at, updated_at)
-		VALUES ('w1e_state', 'sys_owner', 'acc_w1e_key', ?, 'active', '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z')`, fingerprint); err != nil {
+		VALUES ('w1e_state', 'sys_owner', 'acc_w1e_key', ?, 'active', '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z')`), fingerprint); err != nil {
 		t.Fatalf("种子 Key 状态: %v", err)
 	}
 	activeCandidate := disabledCandidate
@@ -794,9 +794,9 @@ func TestW1EEffectsKeyScopedArms(t *testing.T) {
 	// 指纹必须取自候选 APIKeys 列表（ResolveTarget 校验成员资格）。
 	secondFingerprint := fixture.keyStates.FingerprintAPIKey("key-b")
 	fixture.seedAccount(t, "acc_w1e_key2", "active", 1)
-	if _, err := fixture.db.Exec(`INSERT INTO account_api_key_runtime_states
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO account_api_key_runtime_states
 		(id, system_account_id, account_id, key_fingerprint, status, created_at, updated_at)
-		VALUES ('w1e_state2', 'sys_owner', 'acc_w1e_key2', ?, 'active', '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z')`, secondFingerprint); err != nil {
+		VALUES ('w1e_state2', 'sys_owner', 'acc_w1e_key2', ?, 'active', '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z')`), secondFingerprint); err != nil {
 		t.Fatalf("种子第二把 Key: %v", err)
 	}
 	secondCandidate := activeCandidate

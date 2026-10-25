@@ -50,7 +50,7 @@ func TestW13g2ProvisionRestoreArm(t *testing.T) {
 	}
 
 	// 软删实例后回收并重激活授权 → restore arm。
-	if _, err := f.db.Exec(`UPDATE accounts SET deleted_at = '2026-01-02T00:00:00Z', deleted_by = 'owner', dispatch_revision = dispatch_revision + 3 WHERE id = ?`, instanceID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE accounts SET deleted_at = '2026-01-02T00:00:00Z', deleted_by = 'owner', dispatch_revision = dispatch_revision + 3 WHERE id = ?`), instanceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.store.Revoke(ctx, created.Item.ID, created.Item.UpdatedAt, "owner"); err != nil {
@@ -71,7 +71,7 @@ func TestW13g2ProvisionRestoreArm(t *testing.T) {
 	// 前移并追加一条 outbox。
 	var name string
 	var dispatchRevision int
-	if err := f.db.QueryRow(`SELECT name, dispatch_revision FROM accounts WHERE id = ?`, instanceID).Scan(&name, &dispatchRevision); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT name, dispatch_revision FROM accounts WHERE id = ?`), instanceID).Scan(&name, &dispatchRevision); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(name, "源账户P") {
@@ -81,11 +81,11 @@ func TestW13g2ProvisionRestoreArm(t *testing.T) {
 		t.Fatalf("restore 应前移 dispatch revision: %d", dispatchRevision)
 	}
 	var outboxCount int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ?`, instanceID).Scan(&outboxCount); err != nil || outboxCount < 1 {
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_circuit_outbox WHERE account_id = ?`), instanceID).Scan(&outboxCount); err != nil || outboxCount < 1 {
 		t.Fatalf("restore 应写 dispatch outbox: %d %v", outboxCount, err)
 	}
 	var searchDocs int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`, instanceID).Scan(&searchDocs); err != nil || searchDocs != 1 {
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`), instanceID).Scan(&searchDocs); err != nil || searchDocs != 1 {
 		t.Fatalf("restore 应重写名字搜索文档: %d %v", searchDocs, err)
 	}
 }
@@ -115,7 +115,7 @@ func TestW13g2ProvisionNameLadder(t *testing.T) {
 	if err := f.db.QueryRow(`SELECT id FROM accounts WHERE authorization_instance_source_account_id = 'acc_p13' AND deleted_at IS NULL`).Scan(&instanceID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`DELETE FROM accounts WHERE id = ?`, instanceID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`DELETE FROM accounts WHERE id = ?`), instanceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.store.Revoke(ctx, created.Item.ID, created.Item.UpdatedAt, "owner"); err != nil {

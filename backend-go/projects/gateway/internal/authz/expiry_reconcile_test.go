@@ -16,13 +16,13 @@ func simulateJobsExpirySweepFlip(t *testing.T, f *fixture, grantID string) {
 	t.Helper()
 	nowText := f.now.UTC().Format("2006-01-02T15:04:05.000Z")
 	past := f.now.UTC().Add(-24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants
-		SET expires_at = ?, revoked_at = NULL WHERE id = ?`, past, grantID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants
+		SET expires_at = ?, revoked_at = NULL WHERE id = ?`), past, grantID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants
 		SET status = 'expired', revoked_at = COALESCE(revoked_at, ?), updated_at = ?
-		WHERE id = ? AND status IN ('active', 'paused')`, nowText, nowText, grantID); err != nil {
+		WHERE id = ? AND status IN ('active', 'paused')`), nowText, nowText, grantID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -55,7 +55,7 @@ func TestReconcileExpiredGrantsResyncsRuntimeAndBindings(t *testing.T) {
 	// jobs sweep flips the grant; the runtime row and binding go stale.
 	simulateJobsExpirySweepFlip(t, f, created.Item.ID)
 	var runtimeStatus string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations WHERE id = ?`, runtimeID).Scan(&runtimeStatus); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&runtimeStatus); err != nil {
 		t.Fatal(err)
 	}
 	if runtimeStatus != StatusActive {
@@ -69,7 +69,7 @@ func TestReconcileExpiredGrantsResyncsRuntimeAndBindings(t *testing.T) {
 	if reconciled != 1 {
 		t.Fatalf("reconciled = %d, want 1", reconciled)
 	}
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorizations WHERE id = ?`, runtimeID).Scan(&runtimeStatus); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&runtimeStatus); err != nil {
 		t.Fatal(err)
 	}
 	if runtimeStatus != StatusExpired {
@@ -124,8 +124,8 @@ func TestReconcileExpiredGrantsIgnoresOutsideWindowAndLiveGrants(t *testing.T) {
 	}
 	// 窗口外的旧 expired grant（jobs 已收敛，不再重放）。
 	old := f.now.UTC().Add(-30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants
-		SET status = 'expired', updated_at = ? WHERE id = ?`, old, created.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants
+		SET status = 'expired', updated_at = ? WHERE id = ?`), old, created.Item.ID); err != nil {
 		t.Fatal(err)
 	}
 	// 仍 active 的 due grant 不属于 reconcile 面（翻转归 jobs sweep）。
@@ -137,7 +137,7 @@ func TestReconcileExpiredGrantsIgnoresOutsideWindowAndLiveGrants(t *testing.T) {
 		t.Fatalf("reconciled = %d, want 0", reconciled)
 	}
 	var status string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, createdLive.Item.ID).Scan(&status); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), createdLive.Item.ID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != StatusActive {

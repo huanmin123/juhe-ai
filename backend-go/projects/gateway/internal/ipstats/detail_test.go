@@ -14,7 +14,7 @@ func newDetailEnv(t *testing.T) *testEnv {
 	t.Helper()
 	env := newTestEnv(t)
 	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS client_ip_account_usage_range_windows (
+		`CREATE TABLE IF NOT EXISTS juhe_stats.client_ip_account_usage_range_windows (
 			ip_hash TEXT NOT NULL,
 			account_id TEXT NOT NULL,
 			start_date TEXT NOT NULL,
@@ -46,7 +46,7 @@ func newDetailEnv(t *testing.T) *testEnv {
 			updated_at TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (ip_hash, account_id, start_date, end_date)
 		)`,
-		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, vendor_code TEXT NOT NULL DEFAULT 'gpt', account_expires_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS juhe_business.accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, vendor_code TEXT NOT NULL DEFAULT 'gpt', account_expires_at TEXT)`,
 	} {
 		if _, err := env.db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -54,7 +54,7 @@ func newDetailEnv(t *testing.T) *testEnv {
 	}
 	// The admin login already created a system_accounts row; the detail
 	// lookup reads display_name from the same table.
-	env.store.SetDetailAccountLookup(NewBusinessAccountLookup(env.db, false))
+	env.store.SetDetailAccountLookup(NewBusinessAccountLookup(env.db, true))
 	return env
 }
 
@@ -74,30 +74,30 @@ func seedDetailRows(t *testing.T, env *testEnv, adminID string) {
 	t.Helper()
 	now := "2026-09-04T00:00:00.000Z"
 	startDate, endDate := detailRangeKeys()
-	if _, err := env.db.Exec(`INSERT INTO client_ip_registry (ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version, first_seen_at, last_seen_at, created_at, updated_at)
-		VALUES (?, 1, ?, '203.0.113.7', 4, ?, ?, ?, ?)`, detailIPHash, strings.ToUpper(detailIPHash), now, now, now, now); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO client_ip_registry (ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version, first_seen_at, last_seen_at, created_at, updated_at)
+		VALUES (?, 1, ?, '203.0.113.7', 4, ?, ?, ?, ?)`), detailIPHash, strings.ToUpper(detailIPHash), now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.db.Exec(`INSERT INTO accounts (id, system_account_id, name) VALUES ('acc_alpha', ?, 'Alpha 账户')`, adminID); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name) VALUES ('acc_alpha', ?, 'Alpha 账户')`), adminID); err != nil {
 		t.Fatal(err)
 	}
 	// Materialize the range window row so the readiness probe passes (the
 	// stats_job_state cursor is absent; the fallback checks the window table).
-	if _, err := env.db.Exec(`INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at)
-		VALUES (?, ?, ?, ?)`, detailIPHash, startDate, endDate, now); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at)
+		VALUES (?, ?, ?, ?)`), detailIPHash, startDate, endDate, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.db.Exec(`INSERT INTO client_ip_account_usage_range_windows
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO client_ip_account_usage_range_windows
 		(ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
 		 input_tokens, output_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
 		 first_token_ms_sum, first_token_ms_count, active_days, last_used_at, updated_at)
-		VALUES (?, 'acc_alpha', ?, ?, 10, 8, 2, 100, 200, 1.25, 300, 3, 200, 600, 3, 2, ?, ?)`,
+		VALUES (?, 'acc_alpha', ?, ?, 10, 8, 2, 100, 200, 1.25, 300, 3, 200, 600, 3, 2, ?, ?)`),
 		detailIPHash, startDate, endDate, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.db.Exec(`INSERT INTO client_ip_account_usage_range_windows
+	if _, err := env.db.Exec(fixtureBind(`INSERT INTO client_ip_account_usage_range_windows
 		(ip_hash, account_id, start_date, end_date, request_count, updated_at)
-		VALUES (?, 'acc_beta', ?, ?, 4, ?)`, detailIPHash, startDate, endDate, now); err != nil {
+		VALUES (?, 'acc_beta', ?, ?, 4, ?)`), detailIPHash, startDate, endDate, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -187,7 +187,7 @@ func TestIPStatsDetailEndpointLocksIn(t *testing.T) {
 	}
 
 	// Not-ready window: dirty hashes force the empty-items envelope.
-	if _, err := env.db.Exec(`INSERT INTO client_ip_range_window_dirty_ips (ip_hash, generation, first_dirty_at, updated_at) VALUES ('dirty', 1, '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`); err != nil {
+	if _, err := env.db.Exec(`INSERT INTO juhe_stats.client_ip_range_window_dirty_ips (ip_hash, generation, first_dirty_at, updated_at) VALUES ('dirty', 1, '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
 	status, payload = env.do(t, http.MethodGet, "/__aisys__/api/ip-stats/"+detailIPHash+"/detail", "")

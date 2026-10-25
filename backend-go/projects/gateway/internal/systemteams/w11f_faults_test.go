@@ -19,7 +19,10 @@ import (
 	"testing"
 	"time"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
@@ -297,25 +300,26 @@ type w11fEnv struct {
 
 func newW11FEnv(t *testing.T) *w11fEnv {
 	t.Helper()
-	base, err := sqlite.NewConnector("file:w11f-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, handle *sql.DB) error {
+		_, err := handle.ExecContext(ctx, systemTeamsPGFixtureSchema)
+		return err
+	})
+	_ = testDB.DB.Close()
+	pgConfig, err := pgx.ParseConfig(testDB.DSN + "&search_path=juhe_business")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse pgtestkit DSN: %v", err)
 	}
+	base := stdlib.GetConnector(*pgConfig)
 	script := &w11fScript{t: t}
 	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w11fConnector{base: base, script: script})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
-	for _, statement := range ddl {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,11 +327,11 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	authzStore, err := authz.NewStore(db, false, nil)
+	authzStore, err := authz.NewStore(db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(db, false, nil, authzStore)
+	store, err := NewStore(db, true, nil, authzStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +355,7 @@ func (w11fFailingStats) MarkAllGroupAccountStatsDirty(context.Context, string) e
 
 // w11fStoreOver 在同一 DB 上重建 store，可注入失败副作用端口。
 func (e *w11fEnv) w11fStoreOver(options ...Option) (*Store, error) {
-	return NewStore(e.env.store.db, false, nil, e.env.authz, options...)
+	return NewStore(e.env.store.db, true, nil, e.env.authz, options...)
 }
 
 func w11fReq(method, target, body string) *http.Request {
@@ -590,7 +594,7 @@ func TestW11FFindDetailFaults(t *testing.T) {
 	}
 	// scope 计数查询错误。
 	scoped := AccessScope{ViewerID: "w11f-actor", IsAdmin: true, FilterID: "w11f-member"}
-	w.script.failQuery("AND system_account_id = ? AND status = 'active'")
+	w.script.failQuery("AND system_account_id = $2 AND status = 'active'")
 	if _, err := store.FindDetail(context.Background(), "w11f-t1", scoped); err == nil {
 		t.Fatal("FindDetail scope fault must fail")
 	}
@@ -601,7 +605,7 @@ func TestW11FFindDetailFaults(t *testing.T) {
 	// memberCount 查询错误。
 	mustExec(t, w.env, `INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_by, created_at, updated_at)
 		VALUES ('w11f-m2', 'w11f-t1', 'w11f-member', 'active', '2024-01-01T00:00:00.000Z', '', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
-	w.script.failQuery("WHERE team_id = ? AND status = 'active'")
+	w.script.failQuery("WHERE team_id = $1 AND status = 'active'")
 	if _, err := store.FindDetail(context.Background(), "w11f-t1", AccessScope{ViewerID: "w11f-member", IsAdmin: true, FilterID: "w11f-member"}); err == nil {
 		t.Fatal("FindDetail memberCount fault must fail")
 	}
@@ -640,7 +644,7 @@ func TestW11FListMembersFaults(t *testing.T) {
 	}
 	// scope 计数查询错误。
 	scoped := AccessScope{ViewerID: "w11f-actor", IsAdmin: true, FilterID: "w11f-other"}
-	w.script.failQuery("AND system_account_id = ? AND status = 'active'")
+	w.script.failQuery("AND system_account_id = $2 AND status = 'active'")
 	if _, err := store.ListMembers(context.Background(), teamID, scoped, 1, 20); err == nil {
 		t.Fatal("ListMembers scope fault must fail")
 	}
@@ -650,7 +654,7 @@ func TestW11FListMembersFaults(t *testing.T) {
 	}
 	// memberCount 查询错误。
 	inScope := AccessScope{ViewerID: memberAccount, IsAdmin: true, FilterID: memberAccount}
-	w.script.failQuery("WHERE team_id = ? AND status = 'active'")
+	w.script.failQuery("WHERE team_id = $1 AND status = 'active'")
 	if _, err := store.ListMembers(context.Background(), teamID, inScope, 1, 20); err == nil {
 		t.Fatal("ListMembers memberCount fault must fail")
 	}
@@ -702,7 +706,7 @@ func TestW11FListHistoryFaults(t *testing.T) {
 	}
 	// scope 计数查询错误。
 	scoped := AccessScope{ViewerID: "w11f-actor", IsAdmin: true, FilterID: "w11f-other"}
-	w.script.failQuery("AND system_account_id = ? AND status = 'active'")
+	w.script.failQuery("AND system_account_id = $2 AND status = 'active'")
 	if _, err := store.ListHistory(context.Background(), teamID, scoped, 1, 20); err == nil {
 		t.Fatal("ListHistory scope fault must fail")
 	}
@@ -754,7 +758,7 @@ func TestW11FCreateFaults(t *testing.T) {
 		t.Fatal("Create bogus status must fail")
 	}
 	// Exec 错误。
-	w.script.failExec("INSERT INTO system_teams")
+	w.script.failExec("INSERT INTO juhe_business.system_teams")
 	if _, err := store.Create(context.Background(), "w11f-ok", nil, nil, "w11f-actor"); err == nil {
 		t.Fatal("Create exec fault must fail")
 	}
@@ -820,12 +824,12 @@ func TestW11FPatchFaults(t *testing.T) {
 		t.Fatal("Patch bogus status must fail")
 	}
 	// UPDATE 错误。
-	w.script.failExec("UPDATE system_teams")
+	w.script.failExec("UPDATE juhe_business.system_teams")
 	if _, err := store.Patch(context.Background(), "w11f-pt", PatchInput{Name: &newName, ExpectedUpdatedAt: version}, access); err == nil {
 		t.Fatal("Patch update fault must fail")
 	}
 	// 受影响行为 0 → conflict。
-	w.script.execAffected("UPDATE system_teams", 0)
+	w.script.execAffected("UPDATE juhe_business.system_teams", 0)
 	outcome, err = store.Patch(context.Background(), "w11f-pt", PatchInput{Name: &newName, ExpectedUpdatedAt: version}, access)
 	if err != nil || outcome.Status != "conflict" {
 		t.Fatalf("Patch affected0 = %+v/%v", outcome, err)
@@ -897,7 +901,7 @@ func TestW11FAddMembersFaults(t *testing.T) {
 		t.Fatal("AddMembers begin fault must fail")
 	}
 	// 团队行查询错误。
-	w.script.failQuery("WHERE id = ? AND status = 'active'")
+	w.script.failQuery("WHERE id = $1 AND status = 'active'")
 	if _, err := store.AddMembers(context.Background(), "w11f-at", []string{"w11f-acc0"}, revision, access); err == nil {
 		t.Fatal("AddMembers team fault must fail")
 	}
@@ -936,11 +940,11 @@ func TestW11FAddMembersFaults(t *testing.T) {
 		t.Fatal("AddMembers account fault must fail")
 	}
 	// 团队 CAS 更新错误 / 受影响行为 0。
-	w.script.failExec("SET updated_at = ?")
+	w.script.failExec("updated_at = $")
 	if _, err := store.AddMembers(context.Background(), "w11f-at", []string{"w11f-acc0"}, revision, access); err == nil {
 		t.Fatal("AddMembers team update fault must fail")
 	}
-	w.script.execAffected("SET updated_at = ?", 0)
+	w.script.execAffected("updated_at = $", 0)
 	outcome, err := store.AddMembers(context.Background(), "w11f-at", []string{"w11f-acc0"}, revision, access)
 	if err != nil || outcome.Status != "conflict" {
 		t.Fatalf("AddMembers affected0 = %+v/%v", outcome, err)
@@ -963,7 +967,7 @@ func TestW11FAddMembersFaults(t *testing.T) {
 	// 新插入失败（复活流程已提交并推进版本，改用当前版本）。
 	currentRevision := mustQueryString(t, w.env, `SELECT updated_at FROM system_teams WHERE id = 'w11f-at'`)
 	mustExec(t, w.env, `DELETE FROM system_team_members WHERE team_id = 'w11f-at'`)
-	w.script.failExec("INSERT INTO system_team_members")
+	w.script.failExec("INSERT INTO juhe_business.system_team_members")
 	if _, err := store.AddMembers(context.Background(), "w11f-at", []string{"w11f-acc0"}, currentRevision, access); err == nil {
 		t.Fatal("AddMembers insert fault must fail")
 	}
@@ -1017,7 +1021,7 @@ func TestW11FRemoveMemberFaults(t *testing.T) {
 		t.Fatal("RemoveMember team fault must fail")
 	}
 	// 成员行查询错误。
-	w.script.failQuery("WHERE m.id = ?")
+	w.script.failQuery("WHERE m.id = $1")
 	if _, _, err := store.RemoveMember(context.Background(), "w11f-rt", "w11f-rm", revision, access); err == nil {
 		t.Fatal("RemoveMember member fault must fail")
 	}
@@ -1036,11 +1040,11 @@ func TestW11FRemoveMemberFaults(t *testing.T) {
 		t.Fatal("RemoveMember count scan fault must fail")
 	}
 	// 团队 CAS 更新错误 / 受影响行为 0。
-	w.script.failExec("SET updated_at = ?")
+	w.script.failExec("updated_at = $")
 	if _, _, err := store.RemoveMember(context.Background(), "w11f-rt", "w11f-rm", revision, access); err == nil {
 		t.Fatal("RemoveMember team update fault must fail")
 	}
-	w.script.execAffected("SET updated_at = ?", 0)
+	w.script.execAffected("updated_at = $", 0)
 	outcome, _, err = store.RemoveMember(context.Background(), "w11f-rt", "w11f-rm", revision, access)
 	if err != nil || outcome.Status != "conflict" {
 		t.Fatalf("RemoveMember affected0 = %+v/%v", outcome, err)
@@ -1182,7 +1186,7 @@ func TestW11FRoutesDirectFaults(t *testing.T) {
 
 	// create 存储错误 → 400 创建团队失败。
 	w2 := newW11FEnv(t)
-	w2.script.failExec("INSERT INTO system_teams")
+	w2.script.failExec("INSERT INTO juhe_business.system_teams")
 	request := w11fAuth(w11fReq(http.MethodPost, "/__aisys__/api/system-teams", `{"name":"w11f-route"}`), "super_admin")
 	if code, payload := w11fCode(t, w2.deps.create, request); code != http.StatusBadRequest || payload["message"] != "创建团队失败" {
 		t.Fatalf("create store fault = %d %v", code, payload)
@@ -1197,7 +1201,7 @@ func TestW11FRoutesDirectFaults(t *testing.T) {
 	}
 
 	// addMembers 存储错误 → 400 添加团队成员失败。
-	w2.script.failQuery("WHERE id = ? AND status = 'active'")
+	w2.script.failQuery("WHERE id = $1 AND status = 'active'")
 	request = w11fAuth(w11fReq(http.MethodPost, "/__aisys__/api/system-teams/x/members",
 		`{"systemAccountIds":["a"],"expectedUpdatedAt":"`+revision+`"}`), "super_admin")
 	if code, payload := w11fCode(t, w2.deps.addMembers, request); code != http.StatusBadRequest || payload["message"] != "添加团队成员失败" {
@@ -1228,8 +1232,8 @@ func TestW11FRoutesWithSink(t *testing.T) {
 	teamID := mustQueryString(t, w.env, `SELECT id FROM system_teams WHERE name = 'w11f-sink'`)
 
 	// addMembers 成功 → sink 记录 add_members（含成员显示名）。
-	w.env.store.db.Exec(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, must_change_password, created_at, updated_at)
-		VALUES ('w11f-sacc', 'w11f-suser', 'w11f-sname', 'user', 'active', 'x', 0, ?, ?)`, revision, revision)
+	w.env.store.db.Exec(fixtureBind(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, must_change_password, created_at, updated_at)
+		VALUES ('w11f-sacc', 'w11f-suser', 'w11f-sname', 'user', 'active', 'x', 0, ?, ?)`), revision, revision)
 	teamVersion := mustQueryString(t, w.env, `SELECT updated_at FROM system_teams WHERE id = ?`, teamID)
 	request = w11fAuth(w11fReq(http.MethodPost, "/__aisys__/api/system-teams/"+teamID+"/members",
 		`{"systemAccountIds":["w11f-sacc"],"expectedUpdatedAt":"`+teamVersion+`"}`), "super_admin")

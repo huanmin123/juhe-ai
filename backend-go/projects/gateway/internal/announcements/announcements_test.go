@@ -65,27 +65,12 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:announcements-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newAnnouncementsPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS announcements (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, level TEXT NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, updated_by TEXT NOT NULL, published_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS announcement_reads (announcement_id TEXT NOT NULL, system_account_id TEXT NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY (announcement_id, system_account_id), FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +82,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	// generator is second-granular and the pagination tests create many
 	// announcements in one burst).
 	var sequence atomic.Int64
-	store, err := NewStore(db, false, nil, func(prefix string) string {
+	store, err := NewStore(db, true, nil, func(prefix string) string {
 		return fmt.Sprintf("%s_%06d", prefix, sequence.Add(1))
 	})
 	if err != nil {
@@ -635,7 +620,7 @@ func TestCreateTimeColumns(t *testing.T) {
 		t.Helper()
 		var publishedAt sql.NullString
 		var createdAt, updatedAt string
-		if err := env.db.QueryRow(`SELECT published_at, created_at, updated_at FROM announcements WHERE id = ?`, id).
+		if err := env.db.QueryRow(fixtureBind(`SELECT published_at, created_at, updated_at FROM announcements WHERE id = ?`), id).
 			Scan(&publishedAt, &createdAt, &updatedAt); err != nil {
 			t.Fatal(err)
 		}
@@ -678,7 +663,7 @@ func TestPatchNoOpSemantics(t *testing.T) {
 	}
 
 	var updatedAt string
-	if err := env.db.QueryRow(`SELECT updated_at FROM announcements WHERE id = ?`, id).Scan(&updatedAt); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT updated_at FROM announcements WHERE id = ?`), id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	if updatedAt != revision {

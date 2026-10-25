@@ -42,6 +42,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	platformaccountbalance "github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest"
 )
@@ -52,12 +53,16 @@ import (
 
 const w1zRefreshSecret = "w1z-refresh-secret"
 
-// w1zOpenProxyProfileDB 打开带最小 proxy_profiles 表的独立 SQLite（列集按
-// resolveProxyURLEnvelope 的 SELECT 推导）。
+// w1zOpenProxyProfileDB 打开带最小 juhe_business.proxy_profiles 表的独立
+// pgtestkit 库（列集按 resolveProxyURLEnvelope 的 SELECT 推导；原 SQLite
+// 夹具随存储形态退役重钉 PG，T67 批）。
 func w1zOpenProxyProfileDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := w1uOpenPlainSQLite(t, "w1z-proxy.sqlite3")
-	if _, err := db.Exec(`CREATE TABLE proxy_profiles (
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+		t.Fatalf("建 juhe_business schema 失败: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE juhe_business.proxy_profiles (
 		id TEXT PRIMARY KEY,
 		type TEXT NOT NULL DEFAULT '',
 		host TEXT NOT NULL DEFAULT '',
@@ -73,19 +78,29 @@ func w1zOpenProxyProfileDB(t *testing.T) *sql.DB {
 // w1zSeedProxyProfile 插入一行代理 profile。
 func w1zSeedProxyProfile(t *testing.T, db *sql.DB, id, kind, host string, port int64, username, encryptedPassword string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted)
-		VALUES (?, ?, ?, ?, ?, ?)`, id, kind, host, port, username, encryptedPassword); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_business.proxy_profiles (id, type, host, port, username, password_encrypted)
+		VALUES (?, ?, ?, ?, ?, ?)`), id, kind, host, port, username, encryptedPassword); err != nil {
 		t.Fatalf("插入 proxy_profiles 行失败: %v", err)
 	}
 }
 
-// w1zNewBalanceRefresher 构造带独立 SQLite 执行 store 与 canned 上游 doer 的
+// w1zNewBalanceRefresher 构造带独立 PG 执行 store 与 canned 上游 doer 的
 // 手动余额刷新适配器；runnerNow 可注入 runner 侧时钟（与 refresher.now 解耦，
-// 用于触发 input 过期臂）；db 为候选代理解析句柄（可为 nil）。
+// 用于触发 input 过期臂）；db 为候选代理解析句柄（可为 nil）。juhe_jobs
+// 契约 schema 按组合根同款先由外部 bootstrap 预置（只校验不建）。
 func w1zNewBalanceRefresher(t *testing.T, upstreamBody string, runnerNow func() time.Time, db *sql.DB) *gatewayManualBalanceRefresher {
 	t.Helper()
+	testDB := pgtestkit.NewTestDatabase(t)
+	bootstrapDB, err := sql.Open("pgx", testDB.DSN)
+	if err != nil {
+		t.Fatalf("打开 juhe_jobs 契约引导句柄失败: %v", err)
+	}
+	w1uFinalEnsureBalanceJobsSchema(t, bootstrapDB)
+	if err := bootstrapDB.Close(); err != nil {
+		t.Fatalf("关闭 juhe_jobs 契约引导句柄失败: %v", err)
+	}
 	store, err := platformaccountbalance.OpenStore(platformaccountbalance.StoreConfig{
-		Mode: platformaccountbalance.StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "w1z-balance.sqlite"),
+		Mode: platformaccountbalance.StorePostgres, PostgresURL: testDB.DSN,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +119,7 @@ func w1zNewBalanceRefresher(t *testing.T, upstreamBody string, runnerNow func() 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &gatewayManualBalanceRefresher{db: db, pg: false, secret: w1zRefreshSecret, store: store, runner: runner, now: time.Now}
+	return &gatewayManualBalanceRefresher{db: db, pg: true, secret: w1zRefreshSecret, store: store, runner: runner, now: time.Now}
 }
 
 // w1zSealedCandidate 构造凭据已按 w1zRefreshSecret 加封的有效候选行。
@@ -224,7 +239,7 @@ func TestW1ZResolveProxyURLEnvelopeArms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			envelope, err := resolveProxyURLEnvelope(context.Background(), db, false, w1zRefreshSecret, tc.profileID)
+			envelope, err := resolveProxyURLEnvelope(context.Background(), db, true, w1zRefreshSecret, tc.profileID)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("resolveProxyURLEnvelope(%q) err = %v，want 包含 %q", tc.profileID, err, tc.wantErr)
@@ -259,9 +274,10 @@ func TestW1ZResolveProxyURLEnvelopeArms(t *testing.T) {
 		})
 	}
 
-	// 表缺失 → 查询错误上抛（不静默降级为直连）。
+	// 表缺失 → 查询错误上抛（不静默降级为直连）：裸库无 juhe_business
+	// schema，恰好承载「表缺失」负向臂（原 sqlite 裸文件臂重钉）。
 	bareDB := w1uOpenPlainSQLite(t, "w1z-proxy-bare.sqlite3")
-	if _, err := resolveProxyURLEnvelope(context.Background(), bareDB, false, w1zRefreshSecret, "w1z-prof-http"); err == nil {
+	if _, err := resolveProxyURLEnvelope(context.Background(), bareDB, true, w1zRefreshSecret, "w1z-prof-http"); err == nil {
 		t.Fatal("proxy_profiles 表缺失时必须报错")
 	}
 }
@@ -272,7 +288,7 @@ func TestW1ZResolveProxyURLEnvelopeArms(t *testing.T) {
 // TestGatewayManualBalanceRefresherMultiKeyManualRefresh 以真实 store + canned
 // runner 覆盖。
 func TestW1ZRefreshManualInputValidationArms(t *testing.T) {
-	refresher := &gatewayManualBalanceRefresher{db: nil, pg: false, secret: w1zRefreshSecret, now: time.Now}
+	refresher := &gatewayManualBalanceRefresher{db: nil, pg: true, secret: w1zRefreshSecret, now: time.Now}
 
 	brokenEnvelopeCandidate := w1zSealedCandidate(t, accounts.Credentials{"api_key": "sk-w1z", "base_url": "http://127.0.0.1:9"})
 	brokenEnvelopeCandidate.CredentialsEnvelope = "w1z-not-a-v1-envelope"
@@ -375,7 +391,7 @@ func TestW1ZTestDraftProbeArms(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(upstream.Close)
-	refresher := &gatewayManualBalanceRefresher{db: nil, pg: false, secret: w1zRefreshSecret, now: time.Now}
+	refresher := &gatewayManualBalanceRefresher{db: nil, pg: true, secret: w1zRefreshSecret, now: time.Now}
 	snapshot, err := refresher.TestDraft(context.Background(), draftInput(upstream.URL))
 	if err != nil {
 		t.Fatalf("成功臂: %v", err)
@@ -428,7 +444,7 @@ func TestW1ZTestDraftProbeArms(t *testing.T) {
 	// ⑥ 代理解析失败：profile 类型不支持 → 错误上抛。
 	proxyDB := w1zOpenProxyProfileDB(t)
 	w1zSeedProxyProfile(t, proxyDB, "w1z-prof-draft", "ftp", "127.0.0.1", 21, "", "")
-	proxyRefresher := &gatewayManualBalanceRefresher{db: proxyDB, pg: false, secret: w1zRefreshSecret, now: time.Now}
+	proxyRefresher := &gatewayManualBalanceRefresher{db: proxyDB, pg: true, secret: w1zRefreshSecret, now: time.Now}
 	proxyID := "w1z-prof-draft"
 	if _, err := proxyRefresher.TestDraft(context.Background(), accounts.BalanceDraftProbeInput{
 		Credentials:    accounts.Credentials{"api_key": "sk-w1z", "base_url": upstream.URL},
@@ -442,7 +458,7 @@ func TestW1ZTestDraftProbeArms(t *testing.T) {
 // TestW1ZRefreshDraftModelCatalogErrorArms 覆盖目录刷新的缺 base_url、上游
 // 非 2xx 与网络错误臂（错误臂在本地目录投影前返回，无需 provider store）。
 func TestW1ZRefreshDraftModelCatalogErrorArms(t *testing.T) {
-	refresher := &gatewayModelCatalogRefresher{db: nil, pg: false, secret: w1zRefreshSecret, catalog: nil, now: time.Now}
+	refresher := &gatewayModelCatalogRefresher{db: nil, pg: true, secret: w1zRefreshSecret, catalog: nil, now: time.Now}
 	discovery := func(baseURL string) accounts.ModelCatalogDiscoveryInput {
 		return accounts.ModelCatalogDiscoveryInput{
 			ProviderCode: "gpt", ProtocolCode: "openai", AccountType: "api_key",
@@ -746,12 +762,14 @@ func TestW1ZGatewayAccountTestDispatchArms(t *testing.T) {
 // TestW1ZEnqueueProbeRequestInsertFailureRejected：ensureSchema once 缓存命中
 // 后表被移除，INSERT 失败必须降级为 dispatch_rejected（非 queued）。
 func TestW1ZEnqueueProbeRequestInsertFailureRejected(t *testing.T) {
-	db := w1uOpenPlainSQLite(t, "w1z-outbox.sqlite3")
-	writer := newChainProbeRequestOutboxWriter(db, false, 30_000)
+	// ensureSchema 按 PG 方言在 juhe_business 建表：种子库恰好承载成功臂
+	//（裸库缺 schema 只能覆盖建表失败臂）。
+	db := w1uOpenSeededBusinessDB(t)
+	writer := newChainProbeRequestOutboxWriter(db, true, 30_000)
 	if outcome := writer.EnqueueProbeRequest(context.Background(), "acc-w1z", chainRequestFailureReason, "", nil); outcome.Outcome != gatewaycodex.HealthDispatchQueued {
 		t.Fatalf("首次派发必须 queued，got %#v", outcome)
 	}
-	if _, err := db.Exec(`DROP TABLE account_health_probe_request_outbox`); err != nil {
+	if _, err := db.Exec(`DROP TABLE juhe_business.account_health_probe_request_outbox`); err != nil {
 		t.Fatalf("删除 outbox 表失败: %v", err)
 	}
 	outcome := writer.EnqueueProbeRequest(context.Background(), "acc-w1z", chainRequestFailureReason, "", nil)

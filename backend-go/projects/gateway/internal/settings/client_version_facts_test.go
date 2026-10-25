@@ -18,7 +18,8 @@ func TestSettingsGatewayCoreSectionCarriesClientVersionFacts(t *testing.T) {
 
 	// 预置自动层：一个合法族值 + 一个非法族值（宽容过滤语义，与既有读取路径
 	// 一致）+ 其余缺族。
-	env.exec(t, `INSERT OR REPLACE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`,
+	env.exec(t, `INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)
+		ON CONFLICT (system_account_id, key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at`,
 		upstreamClientVersionAutoOverridesKey, `{"codex":"0.160.0","claudeCode":"not-a-version"}`, time.Now().UTC().Format(time.RFC3339Nano))
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/settings/sections/gateway-core", "")

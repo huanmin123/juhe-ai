@@ -26,11 +26,6 @@ import (
 type Config struct {
 	// DB 是业务库句柄（PostgreSQL juhe_business schema）。
 	DB *sql.DB
-	// Postgres 为 true 时表名限定 juhe_business schema 并使用原生时间绑定。
-	// 2026-10-25 sqlite 方言退役：生产组合根（jobs worker_probe_jobs）恒传
-	// true；gateway compose_account_test_local 的方言旗标随 B2 收口，非
-	// postgres 臂届时一并物理删除。
-	Postgres bool
 	// Secret 为凭据封套与 Key 指纹 HMAC 密钥（Node runtimeConfig.secret）。
 	Secret string
 	// Now 注入时间源；为空取 UTC time.Now。
@@ -39,10 +34,9 @@ type Config struct {
 
 // Store 承载探针族全部业务库读写。
 type Store struct {
-	db       *sql.DB
-	postgres bool
-	secret   string
-	now      func() time.Time
+	db     *sql.DB
+	secret string
+	now    func() time.Time
 }
 
 // NewStore 构建 Store；输入校验失败返回错误。
@@ -57,27 +51,20 @@ func NewStore(config Config) (*Store, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Store{db: config.DB, postgres: config.Postgres, secret: config.Secret, now: now}, nil
+	return &Store{db: config.DB, secret: config.Secret, now: now}, nil
 }
 
 func (s *Store) nowMS() int64 { return s.now().UnixMilli() }
 
-// table 限定业务表名（与组合根 businessDB.table 一致）。
+// table 限定业务表名（PostgreSQL 唯一形态，与组合根 businessDB.table 一致）。
 func (s *Store) table(name string) string {
-	if s.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 // bind 把 `?` 占位符改写为 PG 的 $n（ISSUE-005 同类）：本包查询按 Node
 // 语义书写 `?`，直达 pgx 触发 42601/参数错位（2026-09-25 测试环境「测试账号
-// 连接」1:1 数据复现定位）；非 postgres 臂原样透传（历史 sqlite 方言残臂，
-// 随组合根方言旗标收口清理）。
+// 连接」1:1 数据复现定位）。（原非 postgres 透传臂随 sqlite 方言退役删除。）
 func (s *Store) bind(query string) string {
-	if !s.postgres {
-		return query
-	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
@@ -100,22 +87,15 @@ const rfc3339Milli = "2006-01-02T15:04:05.000Z07:00"
 // pgx 对 text 列回退文本编码（Go time.String() 形态），与存量 RFC3339 行的
 // 字典序比较永不命中——ListDueForProbe 候选扫描恒空（W27①）与授权过期臂
 // 放行（W27③）皆源于此，行为修正待用户裁决，本批不改 PG 路径行为。
-// 非 postgres 臂返回 RFC3339Nano 文本（历史 sqlite 方言残臂）。
 func (s *Store) timeParam(t time.Time) any {
-	if s.postgres {
-		return t
-	}
-	return t.UTC().Format(time.RFC3339Nano)
+	return t
 }
 
-// instantParam 绑定 RFC3339 文本时间：postgres 臂解析为原生 time.Time 后
-// 绑定（同受上述 text 列事实约束，解析失败原样透传文本）；非 postgres 臂
-// 保留文本（历史 sqlite 方言残臂，与 Node nowIso 比较语义一致）。
+// instantParam 绑定 RFC3339 文本时间：解析为原生 time.Time 后绑定（同受
+// 上述 text 列事实约束，解析失败原样透传文本）。
 func (s *Store) instantParam(value string) any {
-	if s.postgres {
-		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-			return parsed
-		}
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed
 	}
 	return value
 }

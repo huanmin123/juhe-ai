@@ -190,8 +190,8 @@ func TestTeamReactivateRestoresInstanceCoverageIdempotently(t *testing.T) {
 	}
 	for _, member := range []string{"member1", "member2"} {
 		var runtimeStatus string
-		if err := f.db.QueryRow(`SELECT status FROM resource_authorizations
-			WHERE resource_id = 'acc-src' AND grantee_system_account_id = ?`, member).Scan(&runtimeStatus); err != nil {
+		if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations
+			WHERE resource_id = 'acc-src' AND grantee_system_account_id = ?`), member).Scan(&runtimeStatus); err != nil {
 			t.Fatal(err)
 		}
 		if runtimeStatus != StatusActive {
@@ -248,8 +248,8 @@ func TestGroupTeamGrantDoesNotProvisionInstances(t *testing.T) {
 	// 成员运行时授权仍然按团队来源展开。
 	for _, member := range []string{"member1", "member2"} {
 		var status, effective string
-		if err := f.db.QueryRow(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
-			WHERE resource_id = 'grp-owned' AND grantee_system_account_id = ?`, member).Scan(&status, &effective); err != nil {
+		if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
+			WHERE resource_id = 'grp-owned' AND grantee_system_account_id = ?`), member).Scan(&status, &effective); err != nil {
 			t.Fatal(err)
 		}
 		if status != StatusActive || effective != "team" {
@@ -276,7 +276,7 @@ func TestTeamGrantPatchReviveProvisionsMemberJoinedDuringExpiry(t *testing.T) {
 
 	// 授权置为 expired（置态用 SQL 即可；复活链路走真实 PATCH）。过期期间
 	// member2 加入团队。
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET status = 'expired' WHERE id = ?`,
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'expired' WHERE id = ?`),
 		created.Item.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -351,8 +351,8 @@ func TestTeamMemberJoinCascadeSyncsQuotaHourlyBindings(t *testing.T) {
 	countTeamBinding := func(instanceID string) int {
 		t.Helper()
 		var count int
-		if err := f.db.QueryRow(`SELECT COUNT(*) FROM request_quota_hourly_window_scope_bindings
-			WHERE scope_type = 'account_authorization_team' AND scope_id = ? AND source_id = ?`,
+		if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM request_quota_hourly_window_scope_bindings
+			WHERE scope_type = 'account_authorization_team' AND scope_id = ? AND source_id = ?`),
 			instanceID+":team_1", created.Item.ID).Scan(&count); err != nil {
 			t.Fatal(err)
 		}

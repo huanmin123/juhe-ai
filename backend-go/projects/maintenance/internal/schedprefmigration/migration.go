@@ -42,7 +42,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 )
 
@@ -727,7 +726,7 @@ func sortFailures(failures []Failure) {
 
 // readRecord 读取迁移记录（不存在返回 nil）。
 func readRecord(ctx context.Context, db *sql.DB) (*schedprefdomain.Record, error) {
-	record, present, err := schedprefdomain.ReadRecord(ctx, db, capabilitydomain.DialectPostgres)
+	record, present, err := schedprefdomain.ReadRecord(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -741,7 +740,7 @@ func readRecord(ctx context.Context, db *sql.DB) (*schedprefdomain.Record, error
 // Blocking 计数，不改变退出语义（退出语义由 CLI 层决定）。
 func Preflight(ctx context.Context, db *sql.DB, options Options) (PreflightReport, error) {
 	report := PreflightReport{
-		Driver:                  capabilitydomain.DialectPostgres.String(),
+		Driver:                  "postgres",
 		RuleVersion:             schedprefdomain.RuleVersion,
 		Modes:                   map[string]ModeReport{},
 		PlannedPreferences:      []PlannedPreference{},
@@ -841,7 +840,7 @@ func collectPreflight(report *PreflightReport, scanned *scanResult, plan *planOu
 //     提交；后检失败保留 running，不写完成记录。
 func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	report := Report{
-		Driver:           capabilitydomain.DialectPostgres.String(),
+		Driver:           "postgres",
 		RuleVersion:      schedprefdomain.RuleVersion,
 		SpeedRuntimeNote: speedRuntimeNote,
 		Failures:         []Failure{},
@@ -885,7 +884,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		if err != nil {
 			return report, err
 		}
-		acquired, err := schedprefdomain.ClaimRunningStage(ctx, tx, capabilitydomain.DialectPostgres, now)
+		acquired, err := schedprefdomain.ClaimRunningStage(ctx, tx, now)
 		if err != nil {
 			_ = tx.Rollback()
 			return report, err
@@ -937,7 +936,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		APIKeysNullGeneral:           report.APIKeysNullGeneral,
 		APIKeysBackfilled:            int(keysBackfilled),
 	}
-	acquired, err := schedprefdomain.CompleteStage(ctx, tx, capabilitydomain.DialectPostgres, counts, now)
+	acquired, err := schedprefdomain.CompleteStage(ctx, tx, counts, now)
 	if err != nil {
 		return report, err
 	}
@@ -1119,7 +1118,7 @@ func postcheck(ctx context.Context, q interface {
 // 引用完整。全程零写入。
 func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, error) {
 	report := VerifyReport{
-		Driver:      capabilitydomain.DialectPostgres.String(),
+		Driver:      "postgres",
 		RuleVersion: schedprefdomain.RuleVersion,
 		Failures:    []Failure{},
 	}

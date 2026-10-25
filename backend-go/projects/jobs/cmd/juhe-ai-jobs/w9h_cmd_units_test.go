@@ -27,7 +27,7 @@ func w9hProbeStoreFixture(t *testing.T) (*proberepo.Store, *proberepoStoreHandle
 		_, err := db.Exec(probeCoreTablesPGDDL)
 		return err
 	})
-	probeStore, err := proberepo.NewStore(proberepo.Config{DB: db, Postgres: true, Secret: wgBalanceSecret})
+	probeStore, err := proberepo.NewStore(proberepo.Config{DB: db, Secret: wgBalanceSecret})
 	if err != nil {
 		t.Fatal(err)
 	}

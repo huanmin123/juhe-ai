@@ -57,7 +57,7 @@ func TestW16KRecoveryResolverArms(t *testing.T) {
 		_, err := db.Exec(probeCoreTablesPGDDL)
 		return err
 	})
-	store, err := proberepo.NewStore(proberepo.Config{DB: db, Postgres: true, Secret: wgBalanceSecret})
+	store, err := proberepo.NewStore(proberepo.Config{DB: db, Secret: wgBalanceSecret})
 	if err != nil {
 		t.Fatalf("构造 w16k 探针 store 失败: %v", err)
 	}

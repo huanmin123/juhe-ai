@@ -1,7 +1,9 @@
 package announcements
 
-// w11f 覆盖波次：脚本化 sqlite 连接层故障注入 + 纯函数/直连分支测试。
-// 连接器默认直通真实 sqlite，按查询子串注入 Query/Exec/Begin/Commit 故障、
+// w11f 覆盖波次：脚本化连接层故障注入 + 纯函数/直连分支测试。生产存储形态
+// 收敛为 PostgreSQL 后，注入基座与 store 装配迁真实 PG（pgtestkit 隔离库 +
+// NewStore(db, true, ...)），含 ? 的规则子串按生产 PG 臂 bind 后的 $n 形式
+// 匹配、断言逐字节保持。
 // 受影响行数覆盖与罐装行（Scan 错误 / rows.Err 错误臂）。
 
 import (
@@ -22,9 +24,11 @@ import (
 	"testing"
 	"time"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
@@ -273,13 +277,6 @@ func (r *w11fRows) Next(dest []driver.Value) error {
 // 环境
 // ---------------------------------------------------------------------------
 
-var w11fDDL = []string{
-	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS announcements (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, level TEXT NOT NULL, status TEXT NOT NULL, created_by TEXT NOT NULL, updated_by TEXT NOT NULL, published_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS announcement_reads (announcement_id TEXT NOT NULL, system_account_id TEXT NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY (announcement_id, system_account_id), FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE)`,
-}
-
 type w11fEnv struct {
 	deps   *authsys.Deps
 	k      *kernel.Kernel
@@ -294,25 +291,26 @@ type w11fEnv struct {
 
 func newW11FEnv(t *testing.T) *w11fEnv {
 	t.Helper()
-	base, err := sqlite.NewConnector("file:w11f-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, handle *sql.DB) error {
+		_, err := handle.ExecContext(ctx, announcementsPGFixtureSchema)
+		return err
+	})
+	_ = testDB.DB.Close()
+	pgConfig, err := pgx.ParseConfig(testDB.DSN + "&search_path=juhe_business")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse pgtestkit DSN: %v", err)
 	}
+	base := stdlib.GetConnector(*pgConfig)
 	script := &w11fScript{t: t}
 	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w11fConnector{base: base, script: script})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
-	for _, statement := range w11fDDL {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +319,7 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
 	var sequence atomic.Int64
-	store, err := NewStore(db, false, nil, func(prefix string) string {
+	store, err := NewStore(db, true, nil, func(prefix string) string {
 		return fmt.Sprintf("%s_w11f_%06d", prefix, sequence.Add(1))
 	})
 	if err != nil {
@@ -392,7 +390,7 @@ func (e *w11fEnv) login(t *testing.T, username, password, role string) {
 
 func w11fExec(t *testing.T, env *w11fEnv, query string, args ...any) {
 	t.Helper()
-	if _, err := env.db.Exec(query, args...); err != nil {
+	if _, err := env.db.Exec(fixtureBind(query), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -756,23 +754,23 @@ func TestW11FStoreReadFaults(t *testing.T) {
 		t.Fatalf("ListPublic limit31 = %v/%v", items, err)
 	}
 	// 查询错误 / Scan 错误 / rows.Err。
-	env.script.failQuery("FROM announcements a")
+	env.script.failQuery("FROM juhe_business.announcements a")
 	if _, err := store.ListPublic(context.Background(), "w11f-user", 5); err == nil {
 		t.Fatal("ListPublic query fault must fail")
 	}
-	env.script.canned("FROM announcements a", []string{"id", "title", "level", "published_at", "read_at"},
+	env.script.canned("FROM juhe_business.announcements a", []string{"id", "title", "level", "published_at", "read_at"},
 		[][]driver.Value{{nil, "t", "l", "p", nil}}, nil)
 	if _, err := store.ListPublic(context.Background(), "w11f-user", 5); err == nil {
 		t.Fatal("ListPublic scan fault must fail")
 	}
-	env.script.canned("FROM announcements a", []string{"id", "title", "level", "published_at", "read_at"},
+	env.script.canned("FROM juhe_business.announcements a", []string{"id", "title", "level", "published_at", "read_at"},
 		[][]driver.Value{{"i", "t", "l", "p", nil}}, w11fBoom)
 	if _, err := store.ListPublic(context.Background(), "w11f-user", 5); err == nil {
 		t.Fatal("ListPublic rows.Err fault must fail")
 	}
 
 	// FindPublic: 通用错误 / 未命中（nil）/ 命中。
-	env.script.failQuery("WHERE id = ? AND status = 'published'")
+	env.script.failQuery("WHERE id = $1 AND status = 'published'")
 	if _, err := store.FindPublic(context.Background(), "w11f-ann1"); err == nil {
 		t.Fatal("FindPublic query fault must fail")
 	}
@@ -799,7 +797,7 @@ func TestW11FStoreReadFaults(t *testing.T) {
 	if _, err := store.MarkRead(context.Background(), "w11f-user", []string{" ", " "}); err != nil {
 		t.Fatalf("MarkRead empty ids = %v", err)
 	}
-	env.script.failExec("INSERT INTO announcement_reads")
+	env.script.failExec("INSERT INTO juhe_business.announcement_reads")
 	if _, err := store.MarkRead(context.Background(), "w11f-user", []string{"w11f-ann1"}); err == nil {
 		t.Fatal("MarkRead exec fault must fail")
 	}
@@ -869,12 +867,12 @@ func TestW11FStoreWriteFaults(t *testing.T) {
 	if _, err := store.Create(context.Background(), MutationInput{Title: &title, Content: &content, Status: &bad}, "w11f-actor"); err == nil {
 		t.Fatal("Create bogus status must fail")
 	}
-	env.script.failExec("INSERT INTO announcements")
+	env.script.failExec("INSERT INTO juhe_business.announcements")
 	if _, err := store.Create(context.Background(), input, "w11f-actor"); err == nil {
 		t.Fatal("Create exec fault must fail")
 	}
 	// 默认 ID 生成器（NewStore 传入 nil newID）。
-	defaultStore, err := NewStore(env.db, false, nil, nil)
+	defaultStore, err := NewStore(env.db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -914,17 +912,17 @@ func TestW11FStoreWriteFaults(t *testing.T) {
 		t.Fatal("Patch bogus status must fail")
 	}
 	newTitle := "w11f-新标题"
-	env.script.failExec("UPDATE announcements")
+	env.script.failExec("UPDATE juhe_business.announcements")
 	if _, err := store.Patch(context.Background(), "w11f-ann2", MutationInput{Title: &newTitle}, revision, "w11f-actor"); err == nil {
 		t.Fatal("Patch update fault must fail")
 	}
-	env.script.execAffected("UPDATE announcements", 0)
+	env.script.execAffected("UPDATE juhe_business.announcements", 0)
 	if _, err := store.Patch(context.Background(), "w11f-ann2", MutationInput{Title: &newTitle}, revision, "w11f-actor"); err == nil {
 		t.Fatal("Patch affected0 must conflict")
 	}
 	// 发布转换: 清空已读失败。
 	publishStatus := "published"
-	env.script.failExec("DELETE FROM announcement_reads")
+	env.script.failExec("DELETE FROM juhe_business.announcement_reads")
 	if _, err := store.Patch(context.Background(), "w11f-ann2", MutationInput{Status: &publishStatus}, revision, "w11f-actor"); err == nil {
 		t.Fatal("Patch reads-clear fault must fail")
 	}
@@ -960,11 +958,11 @@ func TestW11FStoreWriteFaults(t *testing.T) {
 	if _, err := store.Delete(context.Background(), "w11f-ann2", " "); err == nil {
 		t.Fatal("Delete blank revision must conflict")
 	}
-	env.script.failExec("DELETE FROM announcements")
+	env.script.failExec("DELETE FROM juhe_business.announcements")
 	if _, err := store.Delete(context.Background(), "w11f-ann2", revision); err == nil {
 		t.Fatal("Delete exec fault must fail")
 	}
-	env.script.execAffected("DELETE FROM announcements", 0)
+	env.script.execAffected("DELETE FROM juhe_business.announcements", 0)
 	if _, err := store.Delete(context.Background(), "w11f-ann2", revision); err == nil {
 		t.Fatal("Delete affected0 must conflict")
 	}
@@ -1105,30 +1103,30 @@ func TestW11FRouteStoreFaults(t *testing.T) {
 	revision := w11fSeedAnnouncement(t, env, "w11f-ann4", "draft")
 
 	// 公共列表 500。
-	env.script.failQuery("FROM announcements a")
+	env.script.failQuery("FROM juhe_business.announcements a")
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/announcements/public", "")
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("public list fault = %d %v", code, payload)
 	}
 	// 公共读取 500。
-	env.script.failExec("INSERT INTO announcement_reads")
+	env.script.failExec("INSERT INTO juhe_business.announcement_reads")
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/announcements/public/read", `{"announcementIds":["w11f-ann4"]}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("public read fault = %d %v", code, payload)
 	}
 	// 公共详情 500。
-	env.script.failQuery("WHERE id = ? AND status = 'published'")
+	env.script.failQuery("WHERE id = $1 AND status = 'published'")
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/announcements/public/w11f-ann4", "")
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("public detail fault = %d %v", code, payload)
 	}
 	// my-announcements 列表 / 读取 500。
-	env.script.failQuery("FROM announcements a")
+	env.script.failQuery("FROM juhe_business.announcements a")
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/my-announcements", "")
 	if code != http.StatusInternalServerError {
 		t.Fatalf("my-announcements fault = %d %v", code, payload)
 	}
-	env.script.failExec("INSERT INTO announcement_reads")
+	env.script.failExec("INSERT INTO juhe_business.announcement_reads")
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/my-announcements/read", `{"announcementIds":["w11f-ann4"]}`)
 	if code != http.StatusInternalServerError {
 		t.Fatalf("my-announcements read fault = %d %v", code, payload)
@@ -1145,7 +1143,7 @@ func TestW11FRouteStoreFaults(t *testing.T) {
 		t.Fatalf("admin detail fault = %d %v", code, payload)
 	}
 	// 创建 500（exec 错误）。
-	env.script.failExec("INSERT INTO announcements")
+	env.script.failExec("INSERT INTO juhe_business.announcements")
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/announcements", `{"title":"w11f-fault-title","content":"w11f-fault-content"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("create fault = %d %v", code, payload)
@@ -1157,13 +1155,13 @@ func TestW11FRouteStoreFaults(t *testing.T) {
 		t.Fatalf("update fault = %d %v", code, payload)
 	}
 	// 发布 500。
-	env.script.failExec("UPDATE announcements")
+	env.script.failExec("UPDATE juhe_business.announcements")
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/announcements/w11f-ann4/publish", `{"expectedRevision":"`+revision+`"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("publish fault = %d %v", code, payload)
 	}
 	// 删除 500。
-	env.script.failExec("DELETE FROM announcements")
+	env.script.failExec("DELETE FROM juhe_business.announcements")
 	code, payload = env.do(t, http.MethodDelete, "/__aisys__/api/announcements/w11f-ann4", `{"expectedRevision":"`+revision+`"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("delete fault = %d %v", code, payload)

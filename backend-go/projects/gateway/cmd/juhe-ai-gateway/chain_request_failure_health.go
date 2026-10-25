@@ -131,17 +131,27 @@ func (w *chainProbeRequestOutboxWriter) bind(query string) string {
 
 // ensureSchema 幂等建表 + 建索引（全新 Go-owned 交接表，无旧表补列；
 // record_maintenance_jobs DurableDispatch.ensureSchema 同款 once 缓存）。
+// PostgreSQL 业务表位于 juhe_business；DDL 与读写路径必须使用同一 schema，
+// 不能依赖连接 search_path（否则会在 public 建表而 INSERT/查询不到，W32
+// 同源缺陷；jobs 侧 EnsureHealthProbeOutboxSchema 同款限定先例）。
 func (w *chainProbeRequestOutboxWriter) ensureSchema(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.ensured {
 		return w.ensureErr
 	}
-	if _, err := w.db.ExecContext(ctx, w.bind(chainProbeRequestOutboxSchema)); err != nil {
+	tableName := w.table()
+	schema := strings.Replace(chainProbeRequestOutboxSchema,
+		"CREATE TABLE IF NOT EXISTS "+chainProbeRequestOutboxTableName,
+		"CREATE TABLE IF NOT EXISTS "+tableName, 1)
+	index := strings.Replace(chainProbeRequestOutboxIndex,
+		"ON "+chainProbeRequestOutboxTableName+"(",
+		"ON "+tableName+"(", 1)
+	if _, err := w.db.ExecContext(ctx, w.bind(schema)); err != nil {
 		w.ensureErr = err
 		return w.ensureErr
 	}
-	if _, err := w.db.ExecContext(ctx, w.bind(chainProbeRequestOutboxIndex)); err != nil {
+	if _, err := w.db.ExecContext(ctx, w.bind(index)); err != nil {
 		w.ensureErr = err
 		return w.ensureErr
 	}

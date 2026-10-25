@@ -212,7 +212,7 @@ func (f *w1ObservationFixture) seedReadyAsset(t *testing.T, assetID string) {
 	f.objects.data["key_"+assetID] = png
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := f.db.Exec(query, args...); err != nil {
+		if _, err := f.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}

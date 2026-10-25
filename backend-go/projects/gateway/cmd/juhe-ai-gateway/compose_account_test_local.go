@@ -115,8 +115,7 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		return err
 	}
 	repo, err := manualtestrepo.New(manualtestrepo.Config{
-		DB:       composed.db,
-		Postgres: composed.pgDialect,
+		DB: composed.db,
 	})
 	if err != nil {
 		return err
@@ -127,8 +126,7 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		return nil
 	}
 	savedStore, err := proberepo.NewStore(proberepo.Config{
-		DB:       composed.db,
-		Postgres: composed.pgDialect,
+		DB: composed.db,
 		Secret:   cfg.Secret,
 	})
 	if err != nil {

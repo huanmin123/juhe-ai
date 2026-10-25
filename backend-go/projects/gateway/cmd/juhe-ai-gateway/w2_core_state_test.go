@@ -271,8 +271,8 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		if !ok {
 			t.Fatalf("missing seed value for system setting %s", key)
 		}
-		if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
-			VALUES ('sys_admin', ?, ?, ?)`, key, value, now); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+			VALUES ('sys_admin', ?, ?, ?)`), key, value, now); err != nil {
 			t.Fatalf("seed setting %s: %v", key, err)
 		}
 	}

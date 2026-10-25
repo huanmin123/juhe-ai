@@ -40,7 +40,7 @@ func composeMediaVideoChain(t *testing.T, fixture *chainFixture, spoolDir string
 	t.Helper()
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir)
 	deps.MediaJobsDB = fixture.db
-	deps.MediaJobsPostgres = false
+	deps.MediaJobsPostgres = true
 	deps.MediaJobsSecret = "chain-test-secret"
 	chain, shutdown, err := composeGatewayChain(deps)
 	if err != nil {
@@ -66,7 +66,7 @@ func seedMediaVideoAccount(t *testing.T, db *sql.DB, fixture *chainFixture, id, 
 	}
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed video account row: %v: %v", query, err)
 		}
 	}
@@ -78,8 +78,8 @@ func seedMediaVideoAccount(t *testing.T, db *sql.DB, fixture *chainFixture, id, 
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, id, "2026-10-04T00:00:00.000Z")
 	// B4 第一批目标形态：支持模型经 models 单表 + model_id 外键解析。
-	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","responses_json","responses_sse","video_create"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","responses_json","responses_sse","video_create"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z') ON CONFLICT (id) DO NOTHING`)
 	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, 'sora-2', 'mdl_sora2', ?)`,
 		id, "2026-10-04T00:00:00.000Z")
 	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行（credentials.base_url 不再消费）。
@@ -564,8 +564,8 @@ func TestChainMediaVideoCancelSemantics(t *testing.T) {
 
 	// 非本人任务 404（归属校验；不存在同形）。种第二把有效 Key（他人归属）。
 	otherSecret := "sk-chain-other-owner"
-	if _, err := fixture.db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
-		VALUES ('key_other', ?, 'rs_1', '他人 Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`,
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_other', ?, 'rs_1', '他人 Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`),
 		fixture.systemAccount, gatewayruntimecache.HashSecret(otherSecret)); err != nil {
 		t.Fatalf("seed other api key: %v", err)
 	}
@@ -1038,7 +1038,7 @@ func seedMediaHybridAccount(t *testing.T, db *sql.DB, fixture *chainFixture, bas
 	})
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed hybrid media row: %v: %v", query, err)
 		}
 	}
@@ -1051,8 +1051,8 @@ func seedMediaHybridAccount(t *testing.T, db *sql.DB, fixture *chainFixture, bas
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES ('group_hyb_vid', ?, 'acc_hyb_vid', 1, ?)`,
 		fixture.systemAccount, now)
 	// B4 第一批目标形态：支持模型 + 入口映射走 models/account_entry_mappings。
-	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_hyb_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","video_create","video_get","video_content","video_cancel"]', ?, ?)`, now, now)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_hyb_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","video_create","video_get","video_content","video_cancel"]', ?, ?) ON CONFLICT (id) DO NOTHING`, now, now)
 	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_hyb_vid', 'sora-2', 'mdl_hyb_sora2', ?)`, now)
 	seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
 		VALUES ('entmap_hyb_sora2pro', 'acc_hyb_vid', 'sora-2-pro', 'video_generation', 'conn_acc_hyb_vid', 'mdl_hyb_sora2', 'video_generation', 1, ?, ?)`, now, now)

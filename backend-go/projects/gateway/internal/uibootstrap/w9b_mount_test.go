@@ -3,7 +3,6 @@ package uibootstrap
 // w9b Mount 注册：真实 authsys 链上的 admin/self 两个 bootstrap 面。
 
 import (
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,20 +17,12 @@ import (
 var mustChangeFalseW9B = false
 
 func TestW9BMountRegistersBothSurfaces(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db := newUIBootstrapMountPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	// authsys 依赖的账户表来自 bootstrapSchema（同库）。
-	if _, err := db.Exec(bootstrapSchema); err != nil {
-		t.Fatal(err)
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +30,7 @@ func TestW9BMountRegistersBothSurfaces(t *testing.T) {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	deps := &Deps{DB: db, PGDialect: false, Auth: authDeps}
+	deps := &Deps{DB: db, PGDialect: true, Auth: authDeps}
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	authDeps.MountAuth(k, "lax", false)
 	deps.Mount(k)

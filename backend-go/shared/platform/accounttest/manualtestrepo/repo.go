@@ -38,7 +38,6 @@ type Config struct {
 // Repo 实现 accounttest.ManualTestTaskRepo。
 type Repo struct {
 	db       *sql.DB
-	postgres bool
 	now      func() time.Time
 }
 
@@ -51,7 +50,7 @@ func New(config Config) (*Repo, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Repo{db: config.DB, postgres: config.Postgres, now: now}, nil
+	return &Repo{db: config.DB, now: now}, nil
 }
 
 // ValidateCoreTables 校验手动测试任务契约表存在（不代建）。
@@ -67,22 +66,16 @@ func (r *Repo) ValidateCoreTables(ctx context.Context) error {
 }
 
 func (r *Repo) table(name string) string {
-	if r.postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (r *Repo) nowIso() string { return r.now().UTC().Format(time.RFC3339Nano) }
 
-// bindSQL 把 SQLite 风格的 ? 占位符在 postgres 方言下改写为 $n。pgx 不会
-// 转换 ?，原样下发时 PG 词法把 ? 当操作符 token，报错位置后移（实测
-// cleanupExpired 报 syntax error at or near "ORDER"，42601），导致 PG 模式
-// 维护与任务生命周期 SQL 全部失效，故在仓储出口统一改写。
+// bindSQL 把 SQLite 风格的 ? 占位符改写为 $n。pgx 不会转换 ?，原样下发时
+// PG 词法把 ? 当操作符 token，报错位置后移（实测 cleanupExpired 报 syntax
+// error at or near "ORDER"，42601），导致维护与任务生命周期 SQL 全部失效，
+// 故在仓储出口统一改写。（原非 postgres 透传臂随 sqlite 方言退役删除。）
 func (r *Repo) bindSQL(query string) string {
-	if !r.postgres {
-		return query
-	}
 	var b strings.Builder
 	n := 0
 	inString := false
@@ -559,16 +552,12 @@ func (r *Repo) finalizeIfCanceledTx(ctx context.Context, tx queryContext, id str
 }
 
 // startedAtFence 返回 started_at 围栏子句与绑定参数（对齐 Node 的
-// (? IS NULL OR started_at = ?) 形状，两种驱动统一使用双绑定）。
-// postgres 方言必须给两个占位符显式 ::timestamptz：bindSQL 改写后第一个
-// 参数只出现在 `? IS NULL` 中，没有独立类型推导上下文，PG prepare 报
-// 42P18（could not determine data type）；显式类型后围栏退化为毫秒级
-// 时间戳相等比较，SQLite 侧保持原样。
+// (? IS NULL OR started_at = ?) 形状，统一使用双绑定）。占位符显式
+// ::timestamptz：bindSQL 改写后第一个参数只出现在 `? IS NULL` 中，没有独立
+// 类型推导上下文，PG prepare 报 42P18（could not determine data type）；
+// 显式类型后围栏退化为毫秒级时间戳相等比较。
 func (r *Repo) startedAtFence(expectedStartedAt *string) (string, []any) {
-	clause := ` AND (? IS NULL OR started_at = ?)`
-	if r.postgres {
-		clause = ` AND (?::timestamptz IS NULL OR started_at = ?::timestamptz)`
-	}
+	clause := ` AND (?::timestamptz IS NULL OR started_at = ?::timestamptz)`
 	if expectedStartedAt == nil {
 		return clause, []any{nil, nil}
 	}
@@ -576,17 +565,11 @@ func (r *Repo) startedAtFence(expectedStartedAt *string) (string, []any) {
 }
 
 func (r *Repo) boolTrue() string {
-	if r.postgres {
-		return "TRUE"
-	}
-	return "1"
+	return "TRUE"
 }
 
 func (r *Repo) boolFalse() string {
-	if r.postgres {
-		return "FALSE"
-	}
-	return "0"
+	return "FALSE"
 }
 
 func sqlString(condition bool, value string) any {
@@ -625,7 +608,7 @@ func (r *Repo) cleanupExpired(ctx context.Context) error {
         AND finished_at < ?
       ORDER BY finished_at ASC, id ASC
       LIMIT ?
-    )`), instantParam(r.postgres, cutoff, r.now), cleanupBatchSize); err != nil {
+    )`), instantParam(cutoff, r.now), cleanupBatchSize); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, r.bindSQL(`
@@ -643,7 +626,7 @@ func (r *Repo) cleanupExpired(ctx context.Context) error {
         )
       ORDER BY s.updated_at ASC, s.id ASC
       LIMIT ?
-    )`), instantParam(r.postgres, cutoff, r.now), cleanupBatchSize); err != nil {
+    )`), instantParam(cutoff, r.now), cleanupBatchSize); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -672,7 +655,7 @@ func (r *Repo) completeIdleSessions(ctx context.Context, limit int) (int, error)
           AND t.status IN ('queued', 'running')
       )
     ORDER BY s.last_heartbeat_at ASC, s.id ASC
-    LIMIT ?`), instantParam(r.postgres, cutoff, r.now), maxInt(1, limit))
+    LIMIT ?`), instantParam(cutoff, r.now), maxInt(1, limit))
 	if err != nil {
 		return 0, err
 	}
@@ -775,7 +758,7 @@ func (r *Repo) failExpiredQueued(ctx context.Context, maxQueuedMS int64, limit i
         OR s.status = 'running'
       )
     ORDER BY t.queued_at ASC, t.id ASC
-    LIMIT ?`), instantParam(r.postgres, r.nowIso(), r.now), instantParam(r.postgres, queuedCutoff, r.now), maxInt(1, limit))
+    LIMIT ?`), instantParam(r.nowIso(), r.now), instantParam(queuedCutoff, r.now), maxInt(1, limit))
 	if err != nil {
 		return nil, err
 	}
@@ -799,7 +782,7 @@ func (r *Repo) failExpiredQueued(ctx context.Context, maxQueuedMS int64, limit i
 	args := make([]any, 0, len(taskIDs)+4)
 	message := queuedWaitExpiredMessage(maxQueuedMS)
 	nowIso := r.nowIso()
-	args = append(args, message, message, instantParam(r.postgres, nowIso, r.now), instantParam(r.postgres, nowIso, r.now))
+	args = append(args, message, message, instantParam(nowIso, r.now), instantParam(nowIso, r.now))
 	for _, id := range taskIDs {
 		args = append(args, id)
 	}
@@ -827,7 +810,7 @@ func (r *Repo) requeueInterrupted(ctx context.Context, staleRunningMS int, refil
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	nowIso := instantParam(r.postgres, r.nowIso(), r.now)
+	nowIso := instantParam(r.nowIso(), r.now)
 	if _, err := tx.ExecContext(ctx, r.bindSQL(`
     UPDATE `+tasks+`
     SET status = 'canceled',
@@ -847,7 +830,7 @@ func (r *Repo) requeueInterrupted(ctx context.Context, staleRunningMS int, refil
         updated_at = ?
     WHERE status = 'running'
       AND cancel_requested = `+r.boolFalse()+`
-      AND updated_at < ?`), nowIso, instantParam(r.postgres, staleCutoff, r.now)); err != nil {
+      AND updated_at < ?`), nowIso, instantParam(staleCutoff, r.now)); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -858,11 +841,9 @@ func (r *Repo) requeueInterrupted(ctx context.Context, staleRunningMS int, refil
 
 // ---- 小工具 ----
 
-func instantParam(postgres bool, value string, now func() time.Time) any {
-	if postgres {
-		if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-			return parsed
-		}
+func instantParam(value string, now func() time.Time) any {
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed
 	}
 	return value
 }

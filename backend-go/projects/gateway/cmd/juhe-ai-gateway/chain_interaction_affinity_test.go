@@ -71,7 +71,7 @@ func seedInteractionGeminiAccount(t *testing.T, fixture *chainFixture, id, baseU
 	t.Helper()
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed gemini interactions row: %v: %v", query, err)
 		}
 	}

@@ -146,7 +146,7 @@ func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	})
 
 	var configJSON sql.NullString
-	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), strategyID).Scan(&configJSON); err != nil {
 		t.Fatal(err)
 	}
 	if !configJSON.Valid || configJSON.String == "" {
@@ -169,7 +169,7 @@ func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	if value, has := rowPatch["normalRoutingConfig"]; has && value != nil {
 		t.Fatalf("配置未变时 rowPatch 不得携带 normalRoutingConfig: %v", rowPatch)
 	}
-	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), strategyID).Scan(&configJSON); err != nil {
 		t.Fatal(err)
 	}
 	if !configJSON.Valid || configJSON.String != beforeJSON {
@@ -192,7 +192,7 @@ func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("name patch: %d %v", code, patched)
 	}
-	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
+	if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), strategyID).Scan(&configJSON); err != nil {
 		t.Fatal(err)
 	}
 	if !configJSON.Valid || configJSON.String != beforeJSON {
@@ -239,7 +239,7 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 			t.Fatalf("%s cost_first 响应: %v", mode, created["normalRoutingConfig"])
 		}
 		var configJSON sql.NullString
-		if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, created["id"].(string)).Scan(&configJSON); err != nil {
+		if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), created["id"].(string)).Scan(&configJSON); err != nil {
 			t.Fatal(err)
 		}
 		if configJSON.Valid {
@@ -344,7 +344,7 @@ func TestWlSchedulePrefRuntimeCleanupAndEnrich(t *testing.T) {
 // config_json 逐字节不变、updated_at 不变（与 normal 行为对称；修复前
 // currentJSON 被渲染成 NULL，会追加逐字节相同的 config_json 赋值并轮换
 // updated_at）。P2 起 HTTP 载荷不再接受调度字段，同值 no-op 语义留在存储层
-//（回滚 oracle 契约）。
+// （回滚 oracle 契约）。
 func TestWlSchedulePrefPatchIdenticalConfigNoOp(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -370,7 +370,7 @@ func TestWlSchedulePrefPatchIdenticalConfigNoOp(t *testing.T) {
 			strategyID := env.createStrategyViaStore(t, adminID, "noop-"+mode, mode, bindingsFor(mode), speedRaw())
 
 			var beforeJSON sql.NullString
-			if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&beforeJSON); err != nil {
+			if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), strategyID).Scan(&beforeJSON); err != nil {
 				t.Fatal(err)
 			}
 			if !beforeJSON.Valid || beforeJSON.String == "" {
@@ -390,7 +390,7 @@ func TestWlSchedulePrefPatchIdenticalConfigNoOp(t *testing.T) {
 			}
 
 			var afterJSON sql.NullString
-			if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&afterJSON); err != nil {
+			if err := env.db.QueryRow(fixtureBind(`SELECT config_json FROM route_strategies WHERE id = ?`), strategyID).Scan(&afterJSON); err != nil {
 				t.Fatal(err)
 			}
 			if afterJSON.Valid != beforeJSON.Valid || afterJSON.String != beforeJSON.String {

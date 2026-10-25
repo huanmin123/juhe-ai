@@ -84,7 +84,7 @@ func checkAccountCapabilityDomainStageRecord(ctx context.Context, db *sql.DB) er
 	if db == nil {
 		return fmt.Errorf("accounts.capability_domain 启动校验失败：业务库句柄为空")
 	}
-	return capdomain.RequireM2Finalized(ctx, db, capdomain.DialectPostgres)
+	return capdomain.RequireM2Finalized(ctx, db)
 }
 
 func checkAccountsCapabilityDomainSchemaPostgres(ctx context.Context, db *sql.DB, schema string) error {

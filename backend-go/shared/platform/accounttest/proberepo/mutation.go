@@ -459,23 +459,15 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 	errorMessage := sanitizeRuntimeMessage(firstNonEmptyStr(input.ErrorMessage, fmt.Sprintf("上游返回 HTTP %d", input.StatusCode)))
 	recoveryStartedAt := quotaRecoveryStartedAt(input.QuotaRecoveryMode, existing, observedAt, input.BreakQuotaRecoveryWindow)
 
+	// PG 唯一形态：cooldown_until 为 text 列，比较两侧显式 ::timestamptz。
 	genericGuard := `
-      AND NOT (
-        ? = 'generic'
-        AND last_error_code IN (?, ?)
-        AND cooldown_until IS NOT NULL
-        AND cooldown_until > ?
-      )`
-	genericParams := []any{input.QuotaRecoveryMode, accountquality.QuotaRecoveryExplicitErrorCode, accountquality.QuotaRecoveryGenericErrorCode, observedAt}
-	if s.postgres {
-		genericGuard = `
       AND NOT (
         ? = 'generic'
         AND last_error_code IN (?, ?)
         AND cooldown_until IS NOT NULL
         AND cooldown_until::timestamptz > ?::timestamptz
       )`
-	}
+	genericParams := []any{input.QuotaRecoveryMode, accountquality.QuotaRecoveryExplicitErrorCode, accountquality.QuotaRecoveryGenericErrorCode, observedAt}
 	recoverySQL := "COALESCE(recovery_started_at, ?)"
 	recoveryParams := []any{now}
 	switch {

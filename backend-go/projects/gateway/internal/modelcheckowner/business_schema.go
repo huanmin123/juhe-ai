@@ -3,7 +3,6 @@ package modelcheckowner
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -11,11 +10,6 @@ import (
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
-
-// errSQLiteIndexExpression 标记 PRAGMA index_info 返回 NULL 列名的表达式
-// 索引（如真实维护 DDL 的 lower(username) 大小写不敏感唯一索引）。它是
-// "该索引不是普通列约束候选"的分类信号，不是 schema 故障。
-var errSQLiteIndexExpression = errors.New("index contains an expression")
 
 type postgresSchemaConstraint struct {
 	kind    string
@@ -38,90 +32,13 @@ type postgresSchemaIndex struct {
 	predicate  string
 }
 
-// CheckBusinessSQLiteSchema verifies the versioned Gateway dependency set
-// without issuing DDL. It is intentionally local to Gateway because shared
-// contracts may describe schema but must not own database I/O.
-func CheckBusinessSQLiteSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("Business SQLite schema %s: database is nil", contracts.BusinessSQLiteSchemaVersion)
-	}
-	tables, err := sqliteSchemaObjects(ctx, db, "table")
-	if err != nil {
-		return fmt.Errorf("list Business SQLite tables: %w", err)
-	}
-	indexes, err := sqliteSchemaObjects(ctx, db, "index")
-	if err != nil {
-		return fmt.Errorf("list Business SQLite indexes: %w", err)
-	}
-	for table, spec := range contracts.BusinessSQLiteSchema {
-		if !tables[table] {
-			return fmt.Errorf("Business SQLite schema %s missing table %s", contracts.BusinessSQLiteSchemaVersion, table)
-		}
-		columns, err := sqliteSchemaColumns(ctx, db, table)
-		if err != nil {
-			return err
-		}
-		for _, required := range spec.Columns {
-			if !columns[required] {
-				return fmt.Errorf("Business SQLite schema %s missing column %s.%s", contracts.BusinessSQLiteSchemaVersion, table, required)
-			}
-		}
-		if len(spec.PrimaryKey) > 0 {
-			actual, err := sqliteSchemaPrimaryKey(ctx, db, table)
-			if err != nil {
-				return fmt.Errorf("inspect Business SQLite primary key %s: %w", table, err)
-			}
-			if !sameSchemaIndexColumns(actual, spec.PrimaryKey) {
-				return fmt.Errorf("Business SQLite schema %s incompatible primary key %s: columns=%v want=%v", contracts.BusinessSQLiteSchemaVersion, table, actual, spec.PrimaryKey)
-			}
-		}
-		for _, required := range spec.UniqueConstraints {
-			ok, actual, err := sqliteSchemaHasUniqueConstraint(ctx, db, table, required)
-			if err != nil {
-				return fmt.Errorf("inspect Business SQLite unique constraint %s(%s): %w", table, strings.Join(required, ","), err)
-			}
-			if !ok {
-				return fmt.Errorf("Business SQLite schema %s missing unique constraint %s(%s), observed=%v", contracts.BusinessSQLiteSchemaVersion, table, strings.Join(required, ","), actual)
-			}
-		}
-		for _, required := range spec.Indexes {
-			if !indexes[required] {
-				return fmt.Errorf("Business SQLite schema %s missing index %s", contracts.BusinessSQLiteSchemaVersion, required)
-			}
-		}
-		for _, required := range spec.IndexDefinitions {
-			ok, detail, err := sqliteSchemaIndexMatches(ctx, db, table, required)
-			if err != nil {
-				return fmt.Errorf("inspect Business SQLite index %s.%s: %w", table, required.Name, err)
-			}
-			if !ok {
-				return fmt.Errorf("Business SQLite schema %s incompatible index %s.%s: %s", contracts.BusinessSQLiteSchemaVersion, table, required.Name, detail)
-			}
-		}
-		foreignKeys, err := sqliteSchemaForeignKeys(ctx, db, table)
-		if err != nil {
-			return err
-		}
-		for _, required := range spec.ForeignKeys {
-			if !foreignKeys[businessSQLiteForeignKeySignature(table, required)] {
-				return fmt.Errorf("Business SQLite schema %s missing foreign key %s", contracts.BusinessSQLiteSchemaVersion, businessSQLiteForeignKeySignature(table, required))
-			}
-		}
-	}
-	return nil
-}
-
-// CheckBusinessPostgresSchema verifies the same versioned dependency set for
-// a PostgreSQL Business schema. It is intentionally read-only and only
-// consumes information_schema plus pg_catalog constraints/indexes; schema
-// lifecycle remains owned by maintenance and no DDL is issued here.
 func CheckBusinessPostgresSchema(ctx context.Context, db *sql.DB, schema string) error {
 	if db == nil {
-		return fmt.Errorf("Business PostgreSQL schema %s: database is nil", contracts.BusinessSQLiteSchemaVersion)
+		return fmt.Errorf("Business PostgreSQL schema %s: database is nil", contracts.BusinessSchemaVersion)
 	}
 	schema = strings.TrimSpace(schema)
 	if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(schema) {
-		return fmt.Errorf("Business PostgreSQL schema %s: schema name is invalid", contracts.BusinessSQLiteSchemaVersion)
+		return fmt.Errorf("Business PostgreSQL schema %s: schema name is invalid", contracts.BusinessSchemaVersion)
 	}
 	tableRows, err := db.QueryContext(ctx, `
 SELECT tables.table_name, tables.table_type, relation.relkind::text
@@ -175,13 +92,13 @@ WHERE tables.table_schema=$1`, schema)
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate Business PostgreSQL columns: %w", err)
 	}
-	tables := make([]string, 0, len(contracts.BusinessSQLiteSchema))
-	for table := range contracts.BusinessSQLiteSchema {
+	tables := make([]string, 0, len(contracts.BusinessSchema))
+	for table := range contracts.BusinessSchema {
 		tables = append(tables, table)
 	}
 	sort.Strings(tables)
 	for _, table := range tables {
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		tableShape, tableExists := tablesByName[table]
 		if !tableExists {
 			return fmt.Errorf("Business PostgreSQL schema %s missing table %s", schema, table)
@@ -242,7 +159,7 @@ ORDER BY c.relname, con.oid, keys.ordinality`, schema)
 	// 同上：显式 Close 错误不可达（w14m 甄别）。
 	_ = constraintRows.Close()
 	for _, table := range tables {
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		actual := constraints[table]
 		if len(spec.PrimaryKey) > 0 && !hasPostgresConstraint(actual, "p", spec.PrimaryKey) {
 			return fmt.Errorf("Business PostgreSQL schema %s missing primary key %s(%s)", schema, table, strings.Join(spec.PrimaryKey, ","))
@@ -302,10 +219,10 @@ ORDER BY source.relname, con.oid, keys.ordinality`, schema)
 	// 同上：显式 Close 错误不可达（w14m 甄别）。
 	_ = foreignKeyRows.Close()
 	for _, table := range tables {
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		for _, required := range spec.ForeignKeys {
 			if !hasPostgresForeignKey(foreignKeys[table], schema, required) {
-				return fmt.Errorf("Business PostgreSQL schema %s missing foreign key %s", schema, businessSQLiteForeignKeySignature(table, required))
+				return fmt.Errorf("Business PostgreSQL schema %s missing foreign key %s", schema, schemaForeignKeySignature(table, required))
 			}
 		}
 	}
@@ -356,7 +273,7 @@ ORDER BY relation.relname, index_relation.relname, keys.ordinality`, schema)
 	// 同上：显式 Close 错误不可达（w14m 甄别）。
 	_ = indexRows.Close()
 	for _, table := range tables {
-		spec := contracts.BusinessSQLiteSchema[table]
+		spec := contracts.BusinessSchema[table]
 		for _, required := range spec.Indexes {
 			if indexes[table][required] == nil {
 				return fmt.Errorf("Business PostgreSQL schema %s missing index %s.%s", schema, table, required)
@@ -375,154 +292,10 @@ ORDER BY relation.relname, index_relation.relname, keys.ordinality`, schema)
 	return nil
 }
 
-func sqliteSchemaObjects(ctx context.Context, db *sql.DB, objectType string) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type=?", objectType)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	objects := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		objects[name] = true
-	}
-	return objects, rows.Err()
-}
-
-func sqliteSchemaColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteSQLiteIdentifier(table)+")")
-	if err != nil {
-		return nil, fmt.Errorf("inspect Business SQLite table %s: %w", table, err)
-	}
-	defer rows.Close()
-	columns := map[string]bool{}
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var name, dataType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return nil, err
-		}
-		columns[name] = true
-	}
-	return columns, rows.Err()
-}
-
-func sqliteSchemaPrimaryKey(ctx context.Context, db *sql.DB, table string) ([]string, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteSQLiteIdentifier(table)+")")
-	if err != nil {
-		return nil, fmt.Errorf("inspect Business SQLite primary key for table %s: %w", table, err)
-	}
-	defer rows.Close()
-	type column struct {
-		name string
-		seq  int
-	}
-	keys := make([]column, 0)
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, dataType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
-			return nil, fmt.Errorf("scan Business SQLite primary key for table %s: %w", table, err)
-		}
-		if pk > 0 {
-			keys = append(keys, column{name: name, seq: pk})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i].seq < keys[j].seq })
-	result := make([]string, 0, len(keys))
-	for _, key := range keys {
-		result = append(result, key.name)
-	}
-	return result, nil
-}
-
-func sqliteSchemaHasUniqueConstraint(ctx context.Context, db *sql.DB, table string, required []string) (bool, [][]string, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA index_list("+quoteSQLiteIdentifier(table)+")")
-	if err != nil {
-		return false, nil, fmt.Errorf("inspect unique indexes for table %s: %w", table, err)
-	}
-	defer rows.Close()
-	type uniqueIndex struct{ name string }
-	indexes := make([]uniqueIndex, 0)
-	observed := make([][]string, 0)
-	for rows.Next() {
-		var seq, uniqueFlag, partialFlag int
-		var name, origin string
-		if err := rows.Scan(&seq, &name, &uniqueFlag, &origin, &partialFlag); err != nil {
-			return false, nil, fmt.Errorf("scan unique indexes for table %s: %w", table, err)
-		}
-		if uniqueFlag != 1 || partialFlag == 1 {
-			continue
-		}
-		indexes = append(indexes, uniqueIndex{name: name})
-	}
-	if err := rows.Err(); err != nil {
-		return false, nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return false, nil, err
-	}
-	for _, index := range indexes {
-		columns, err := sqliteSchemaIndexColumns(ctx, db, index.name)
-		if err != nil {
-			// 表达式唯一索引（维护 DDL 的大小写不敏感唯一约束等）不是
-			// 普通列唯一约束的候选：跳过并继续找普通列索引，而不是把
-			// 合法存在的表达式索引误判为 schema 故障。
-			if errors.Is(err, errSQLiteIndexExpression) {
-				continue
-			}
-			return false, nil, err
-		}
-		observed = append(observed, columns)
-		if sameSchemaIndexColumns(columns, required) {
-			return true, observed, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, nil, err
-	}
-	return false, observed, nil
-}
-
-func sqliteSchemaIndexColumns(ctx context.Context, db *sql.DB, requestedName string) ([]string, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA index_info("+quoteSQLiteIdentifier(requestedName)+")")
-	if err != nil {
-		return nil, fmt.Errorf("inspect Business SQLite index %s: %w", requestedName, err)
-	}
-	defer rows.Close()
-	type column struct {
-		seq  int
-		name string
-	}
-	columns := make([]column, 0)
-	for rows.Next() {
-		var seq, cid int
-		var columnName sql.NullString
-		if err := rows.Scan(&seq, &cid, &columnName); err != nil {
-			return nil, fmt.Errorf("scan Business SQLite index %s: %w", requestedName, err)
-		}
-		if !columnName.Valid {
-			return nil, fmt.Errorf("Business SQLite index %s: %w", requestedName, errSQLiteIndexExpression)
-		}
-		columns = append(columns, column{seq: seq, name: columnName.String})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	sort.Slice(columns, func(i, j int) bool { return columns[i].seq < columns[j].seq })
-	result := make([]string, 0, len(columns))
-	for _, column := range columns {
-		result = append(result, column.name)
-	}
-	return result, nil
+// schemaForeignKeySignature 渲染契约外键的可读签名（错误信息共用；原
+// businessSQLiteForeignKeySignature 更名——PG 校验路径同样消费）。
+func schemaForeignKeySignature(table string, spec contracts.BusinessForeignKeySpec) string {
+	return fmt.Sprintf("%s(%s)->%s(%s)", table, strings.Join(spec.Columns, ","), spec.RefTable, strings.Join(spec.RefColumns, ","))
 }
 
 func hasPostgresConstraint(constraints map[int64]*postgresSchemaConstraint, kind string, required []string) bool {
@@ -534,7 +307,7 @@ func hasPostgresConstraint(constraints map[int64]*postgresSchemaConstraint, kind
 	return false
 }
 
-func hasPostgresForeignKey(foreignKeys map[int64]*postgresSchemaForeignKey, schema string, required contracts.SQLiteForeignKeySpec) bool {
+func hasPostgresForeignKey(foreignKeys map[int64]*postgresSchemaForeignKey, schema string, required contracts.BusinessForeignKeySpec) bool {
 	wantDelete := required.OnDelete
 	if wantDelete == "" {
 		wantDelete = "NO ACTION"
@@ -575,7 +348,7 @@ func postgresReferentialAction(code string) string {
 	}
 }
 
-func postgresSchemaIndexMismatch(actual postgresSchemaIndex, required contracts.SQLiteIndexDefinition) string {
+func postgresSchemaIndexMismatch(actual postgresSchemaIndex, required contracts.BusinessIndexDefinition) string {
 	if actual.expression {
 		return "index contains an expression"
 	}
@@ -594,134 +367,6 @@ func postgresSchemaIndexMismatch(actual postgresSchemaIndex, required contracts.
 		return fmt.Sprintf("predicate=%q want=%q", actualPredicate, required.Predicate)
 	}
 	return ""
-}
-
-func sqliteSchemaForeignKeys(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA foreign_key_list("+quoteSQLiteIdentifier(table)+")")
-	if err != nil {
-		return nil, fmt.Errorf("inspect Business SQLite foreign keys for table %s: %w", table, err)
-	}
-	defer rows.Close()
-	type relation struct {
-		id       int
-		seq      int
-		table    string
-		from     string
-		to       string
-		onUpdate string
-		onDelete string
-	}
-	groups := map[int][]relation{}
-	for rows.Next() {
-		var item relation
-		var match string
-		if err := rows.Scan(&item.id, &item.seq, &item.table, &item.from, &item.to, &item.onUpdate, &item.onDelete, &match); err != nil {
-			return nil, fmt.Errorf("scan Business SQLite foreign keys for table %s: %w", table, err)
-		}
-		groups[item.id] = append(groups[item.id], item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	foreignKeys := map[string]bool{}
-	for _, group := range groups {
-		sort.Slice(group, func(i, j int) bool { return group[i].seq < group[j].seq })
-		fromColumns := make([]string, 0, len(group))
-		toColumns := make([]string, 0, len(group))
-		for _, item := range group {
-			fromColumns = append(fromColumns, item.from)
-			toColumns = append(toColumns, item.to)
-		}
-		foreignKeys[fmt.Sprintf("%s(%s)->%s(%s) onDelete=%s onUpdate=%s", table, strings.Join(fromColumns, ","), group[0].table, strings.Join(toColumns, ","), group[0].onDelete, group[0].onUpdate)] = true
-	}
-	return foreignKeys, nil
-}
-
-func businessSQLiteForeignKeySignature(table string, spec contracts.SQLiteForeignKeySpec) string {
-	onDelete := spec.OnDelete
-	if onDelete == "" {
-		onDelete = "NO ACTION"
-	}
-	onUpdate := spec.OnUpdate
-	if onUpdate == "" {
-		onUpdate = "NO ACTION"
-	}
-	return fmt.Sprintf("%s(%s)->%s(%s) onDelete=%s onUpdate=%s", table, strings.Join(spec.Columns, ","), spec.RefTable, strings.Join(spec.RefColumns, ","), onDelete, onUpdate)
-}
-
-func quoteSQLiteIdentifier(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
-}
-
-func sqliteSchemaIndexMatches(ctx context.Context, db *sql.DB, table string, required contracts.SQLiteIndexDefinition) (bool, string, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA index_list("+quoteSQLiteIdentifier(table)+")")
-	if err != nil {
-		return false, "read index_list failed", err
-	}
-	defer rows.Close()
-	var found, unique, partial bool
-	for rows.Next() {
-		var seq, uniqueFlag, partialFlag int
-		var name, origin string
-		if err := rows.Scan(&seq, &name, &uniqueFlag, &origin, &partialFlag); err != nil {
-			return false, "scan index_list failed", err
-		}
-		if name == required.Name {
-			found, unique, partial = true, uniqueFlag == 1, partialFlag == 1
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, "read index_list failed", err
-	}
-	if err := rows.Close(); err != nil {
-		return false, "close index_list failed", err
-	}
-	if !found {
-		return false, "index is missing", nil
-	}
-	if unique != required.Unique {
-		return false, fmt.Sprintf("unique=%t want=%t", unique, required.Unique), nil
-	}
-	colRows, err := db.QueryContext(ctx, "PRAGMA index_info("+quoteSQLiteIdentifier(required.Name)+")")
-	if err != nil {
-		return false, "read index_info failed", err
-	}
-	defer colRows.Close()
-	columns := make([]string, 0, len(required.Columns))
-	for colRows.Next() {
-		var seq, cid int
-		var name sql.NullString
-		if err := colRows.Scan(&seq, &cid, &name); err != nil {
-			return false, "scan index_info failed", err
-		}
-		if !name.Valid {
-			return false, "index contains an expression", nil
-		}
-		columns = append(columns, name.String)
-	}
-	if err := colRows.Err(); err != nil {
-		return false, "read index_info failed", err
-	}
-	if err := colRows.Close(); err != nil {
-		return false, "close index_info failed", err
-	}
-	if !sameSchemaIndexColumns(columns, required.Columns) {
-		return false, fmt.Sprintf("columns=%v want=%v", columns, required.Columns), nil
-	}
-	var definition sql.NullString
-	if err := db.QueryRowContext(ctx, "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", required.Name).Scan(&definition); err != nil {
-		return false, "read sqlite_master definition failed", err
-	}
-	actualPredicate := sqliteSchemaIndexPredicate(definition.String)
-	if strings.TrimSpace(required.Predicate) == "" {
-		if partial || actualPredicate != "" {
-			return false, "unexpected partial predicate", nil
-		}
-	} else if !partial || !schemaIndexPredicatesEquivalent(actualPredicate, required.Predicate) {
-		return false, fmt.Sprintf("predicate=%q want=%q", actualPredicate, required.Predicate), nil
-	}
-	return true, "", nil
 }
 
 func sameSchemaIndexColumns(actual, expected []string) bool {

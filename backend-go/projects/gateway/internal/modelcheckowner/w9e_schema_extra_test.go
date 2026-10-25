@@ -19,7 +19,7 @@ func TestW9EPostgresSchemaHelpers(t *testing.T) {
 	}
 	// postgresSchemaIndexMismatch：谓词不符。
 	actual := postgresSchemaIndex{columns: []string{"a", "b"}, predicate: "a > 0"}
-	required := contracts.SQLiteIndexDefinition{Name: "idx", Columns: []string{"a", "b"}, Unique: true, Predicate: "a > 1"}
+	required := contracts.BusinessIndexDefinition{Name: "idx", Columns: []string{"a", "b"}, Unique: true, Predicate: "a > 1"}
 	if postgresSchemaIndexMismatch(actual, required) == "" {
 		t.Fatal("谓词漂移应报不匹配")
 	}
@@ -41,7 +41,7 @@ func TestW9EPostgresSchemaHelpers(t *testing.T) {
 	foreignKeys := map[int64]*postgresSchemaForeignKey{
 		7: {refSchema: "public", refTable: "parent", columns: []string{"pid"}, refColumns: []string{"id"}, onUpdate: "a", onDelete: "c"},
 	}
-	spec := contracts.SQLiteForeignKeySpec{Columns: []string{"pid"}, RefTable: "parent", RefColumns: []string{"id"}, OnUpdate: "a", OnDelete: "c"}
+	spec := contracts.BusinessForeignKeySpec{Columns: []string{"pid"}, RefTable: "parent", RefColumns: []string{"id"}, OnUpdate: "a", OnDelete: "c"}
 	if !hasPostgresForeignKey(foreignKeys, "public", spec) {
 		t.Fatal("外键应命中")
 	}

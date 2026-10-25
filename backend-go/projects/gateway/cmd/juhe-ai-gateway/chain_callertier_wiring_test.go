@@ -71,7 +71,7 @@ func TestGatewayChainCallerTierDenominatorWiring(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-smoke","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"链路冒烟"},"finish_reason":"stop"}]}`))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}

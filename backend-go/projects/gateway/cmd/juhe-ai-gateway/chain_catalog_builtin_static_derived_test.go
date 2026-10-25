@@ -43,7 +43,7 @@ func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
@@ -54,25 +54,25 @@ func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 			max_output_tokens, input_usd_per_1m, output_usd_per_1m,
 			created_at, updated_at)
 		VALUES (?, 'gpt', ?, ?, 'builtin', 'active', 1, '2026-06-26',
-			'["chat_json","chat_sse","responses_json","responses_sse"]', 'builtin', 1,
+			'["chat_json","chat_sse","responses_json","responses_sse"]', 'builtin', TRUE,
 			?, 2.0, 12.0, ?, ?)`
 	seed(modelBuiltinInsert, "cat_terra", "gpt-5.6-terra", "gpt-5.6-terra", 128000, now, now)
 	seed(modelBuiltinInsert, "cat_sol", "gpt-5.6-sol", "gpt-5.6-sol", 64000, now, now)
 	seed(`INSERT INTO models (
 			id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
 			supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
-		VALUES ('mdl_cpm_plain', 'gpt', 'custom-plain-model', 'custom-plain-model', 'global', 'active', 1,
+		VALUES ('mdl_cpm_plain', 'gpt', 'custom-plain-model', 'custom-plain-model', 'global', 'active', TRUE,
 			'["chat_json","chat_sse"]', 1.0, ?, ?)`, now, now)
 	seed(`INSERT INTO models (
 			id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
 			supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
-		VALUES ('mdl_cpm_override', 'gpt', 'gpt-5.6-sol', 'gpt-5.6-sol', 'personal', ?, 'active', 1,
+		VALUES ('mdl_cpm_override', 'gpt', 'gpt-5.6-sol', 'gpt-5.6-sol', 'personal', ?, 'active', TRUE,
 			'["chat_json","chat_sse","responses_json","responses_sse"]', 1.5, ?, ?)`,
 		fixture.systemAccount, now, now)
 	seed(`INSERT INTO models (
 			id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
 			supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
-		VALUES ('mdl_cpm_new_personal', 'gpt', 'brand-new-personal-model', 'brand-new-personal-model', 'personal', ?, 'active', 1,
+		VALUES ('mdl_cpm_new_personal', 'gpt', 'brand-new-personal-model', 'brand-new-personal-model', 'personal', ?, 'active', TRUE,
 			'["chat_json","chat_sse"]', 1.0, ?, ?)`,
 		fixture.systemAccount, now, now)
 	// 管理面（旧表，同内容行）：providers.Store 迁移 models 前的 parity 基准。
@@ -82,7 +82,7 @@ func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 			max_output_tokens, input_usd_per_1m, output_usd_per_1m,
 			created_at, updated_at)
 		VALUES (?, 'active', 'gpt', ?, 1, '2026-06-26',
-			'["chat_completions","responses"]', 'builtin', 1,
+			'["chat_completions","responses"]', 'builtin', TRUE,
 			?, 2.0, 12.0, ?, ?)`
 	seed(builtinInsert, "cat_terra_admin", "gpt-5.6-terra", 128000, now, now)
 	seed(builtinInsert, "cat_sol_admin", "gpt-5.6-sol", 64000, now, now)
@@ -90,20 +90,20 @@ func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 			id, provider_code, model, scope, system_account_id, status, catalog_visible,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			input_usd_per_1m, service_tier_prices_json, created_by, created_at, updated_at)
-		VALUES ('cpm_plain', 'gpt', 'custom-plain-model', 'global', NULL, 'active', 1,
+		VALUES ('cpm_plain', 'gpt', 'custom-plain-model', 'global', NULL, 'active', TRUE,
 			'["chat_completions"]', '[]', '[]', 1.0, '{}', ?, ?, ?)`, now, now, now)
 	seed(`INSERT INTO custom_provider_models (
 			id, provider_code, model, scope, system_account_id, status, catalog_visible,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			input_usd_per_1m, service_tier_prices_json, created_by, created_at, updated_at)
-		VALUES ('cpm_override', 'gpt', 'gpt-5.6-sol', 'personal', ?, 'active', 1,
+		VALUES ('cpm_override', 'gpt', 'gpt-5.6-sol', 'personal', ?, 'active', TRUE,
 			'["chat_completions","responses"]', '[]', '[]', 1.5, '{}', ?, ?, ?)`,
 		fixture.systemAccount, now, now, now)
 	seed(`INSERT INTO custom_provider_models (
 			id, provider_code, model, scope, system_account_id, status, catalog_visible,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			input_usd_per_1m, service_tier_prices_json, created_by, created_at, updated_at)
-		VALUES ('cpm_new_personal', 'gpt', 'brand-new-personal-model', 'personal', ?, 'active', 1,
+		VALUES ('cpm_new_personal', 'gpt', 'brand-new-personal-model', 'personal', ?, 'active', TRUE,
 			'["chat_completions"]', '[]', '[]', 1.0, '{}', ?, ?, ?)`,
 		fixture.systemAccount, now, now, now)
 }
@@ -173,7 +173,7 @@ func staticDerivedCapabilityMapEqual(left, right map[string][]string) bool {
 func TestChainCatalogBuiltinStaticDerivedCapabilitiesRealDataChain(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, false)
+	source, err := newChainCatalogSource(fixture.db, true)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestChainCatalogBuiltinStaticDerivedCapabilitiesSurviveCacheHit(t *testing.
 func TestChainCatalogBuiltinStaticDerivedParityWithAdminFace(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, false)
+	source, err := newChainCatalogSource(fixture.db, true)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestChainCatalogBuiltinStaticDerivedParityWithAdminFace(t *testing.T) {
 func TestChainCatalogCustomRowInheritsBuiltinCapabilities(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, false)
+	source, err := newChainCatalogSource(fixture.db, true)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestChainCatalogCustomRowInheritsBuiltinCapabilities(t *testing.T) {
 func TestChainCatalogCustomCapabilityInheritAdminFaceParity(t *testing.T) {
 	fixture := newChainFixture(t)
 	seedBuiltinStaticDerivedRows(t, fixture)
-	source, err := newChainCatalogSource(fixture.db, false)
+	source, err := newChainCatalogSource(fixture.db, true)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestChainCatalogCustomCapabilityInheritAdminFaceParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list chat catalog: %v", err)
 	}
-	adminStore, err := providers.NewStore(fixture.db, false, time.Now)
+	adminStore, err := providers.NewStore(fixture.db, true, time.Now)
 	if err != nil {
 		t.Fatalf("create admin store: %v", err)
 	}

@@ -119,7 +119,7 @@ func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 	if composed.statsDB == nil {
 		t.Fatal("composition must own a stats database handle in sqlite mode")
 	}
-	if _, err := composed.statsDB.Exec(`INSERT INTO juhe_stats.authorization_team_usage_summary_daily
+	if _, err := composed.statsDB.Exec(fixtureBind(`INSERT INTO juhe_stats.authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 row_count, request_count, success_count, error_count, input_tokens, output_tokens,
 		 cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
@@ -128,7 +128,7 @@ func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 		 first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, updated_at)
 		VALUES ('global', ?, 'team_seed', 'group', 'grp_seed',
 		 1, 3, 3, 0, 10, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0.75,
-		 0, 0, 0, 0, 0, 0, NULL, ?)`,
+		 0, 0, 0, 0, 0, 0, NULL, ?)`),
 		startDate, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("seed authorization usage summary row: %v", err)
 	}

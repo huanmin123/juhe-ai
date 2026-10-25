@@ -17,42 +17,41 @@ package main
 //   5. Load 失败回退：DROP TABLE → 查询错误 → 回退 2。
 //
 // 步进时钟保证每次读取都越过 settings.Load 的 60s 快照缓存
-// （settingsCacheTTL），三臂都打在真实 SQL 状态上。
+// （settingsCacheTTL），三臂都打在真实 SQL 状态上。（原 SQLite 夹具随存储
+// 形态退役重钉 pgtestkit fresh DDL + 种子，PLAN-20261024T051925945Z。）
 
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
-
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// newCooldownSettingsAdapterStack 提供真实 settings 仓 + 步进时钟。
+// newCooldownSettingsAdapterStack 提供真实 settings 仓 + 步进时钟（PG 唯一
+// 形态：pgtestkit 隔离库 + EnsurePostgres/SeedPostgres，store 走 juhe_business
+// 限定 + $n 占位符分支）。
 func newCooldownSettingsAdapterStack(t *testing.T) (*settings.Store, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "cooldown-settings.sqlite3"))
-	if err != nil {
-		t.Fatalf("打开临时库: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("ensure 业务 schema: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Secret: "cooldown-settings-secret"}); err != nil {
-		t.Fatalf("seed 业务库: %v", err)
-	}
+	db := pgtestkit.New(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Secret: "cooldown-settings-secret"})
+			return err
+		})
 	base := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
 	step := 0
 	now := func() time.Time {
 		step++
 		return base.Add(time.Duration(step) * 2 * time.Minute)
 	}
-	store, err := settings.NewStore(db, false, now, nil)
+	store, err := settings.NewStore(db, true, now, nil)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -83,7 +82,7 @@ func TestRuntimeCooldownSettingsAdapterArms(t *testing.T) {
 	})
 
 	t.Run("missing row falls back", func(t *testing.T) {
-		if _, err := db.Exec(`DELETE FROM system_settings WHERE system_account_id = ? AND key = ?`,
+		if _, err := db.Exec(`DELETE FROM juhe_business.system_settings WHERE system_account_id = $1 AND key = $2`,
 			settings.SystemSettingsAccountID, "defaultTemporaryUnschedulableMinutes"); err != nil {
 			t.Fatalf("删除设置行: %v", err)
 		}
@@ -98,8 +97,8 @@ func TestRuntimeCooldownSettingsAdapterArms(t *testing.T) {
 	})
 
 	t.Run("out-of-range value falls back", func(t *testing.T) {
-		if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
-			VALUES (?, ?, ?, ?) ON CONFLICT(system_account_id, key) DO UPDATE SET value_json = excluded.value_json`,
+		if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at)
+			VALUES ($1, $2, $3, $4) ON CONFLICT(system_account_id, key) DO UPDATE SET value_json = excluded.value_json`,
 			settings.SystemSettingsAccountID, "defaultTemporaryUnschedulableMinutes", "5000", "2026-09-20T08:00:00.000Z"); err != nil {
 			t.Fatalf("直写越界值: %v", err)
 		}
@@ -112,7 +111,7 @@ func TestRuntimeCooldownSettingsAdapterArms(t *testing.T) {
 	})
 
 	t.Run("load failure falls back", func(t *testing.T) {
-		if _, err := db.Exec(`DROP TABLE system_settings`); err != nil {
+		if _, err := db.Exec(`DROP TABLE juhe_business.system_settings`); err != nil {
 			t.Fatalf("drop system_settings: %v", err)
 		}
 		if got := adapter.DefaultTemporaryUnschedulableMinutes(); got != fallback {

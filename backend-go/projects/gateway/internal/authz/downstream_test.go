@@ -19,9 +19,9 @@ func seedPhysicalAccount(t *testing.T, f *fixture, id, ownerID string) {
 	// 白名单外身份：目标 schema 只认 9 个真实厂商，minimax 是真实厂商但不在
 	// Node 健康 fanout 白名单，用来表达「明确排除」的源账户。
 	vendor, driver := downstreamVendorIdentity("minimax")
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
 		config_revision, dispatch_revision, deleted_at)
-		VALUES (?, ?, ?, ?, 'oauth', 'active', 1, 1, NULL)`, id, ownerID, vendor, driver); err != nil {
+		VALUES (?, ?, ?, ?, 'oauth', 'active', 1, 1, NULL)`), id, ownerID, vendor, driver); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -32,9 +32,9 @@ func seedPhysicalAccount(t *testing.T, f *fixture, id, ownerID string) {
 // instance provider（组无 provider 维度后，providerCode 入参仅为调用点兼容保留）。
 func seedGranteeDefaultGroup(t *testing.T, f *fixture, granteeID, _ string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
 		VALUES (?, 'default', ?, 'active', 1, 1, '2026-01-01T00:00:00Z')
-		ON CONFLICT(id) DO NOTHING`, "grp-default-"+granteeID, granteeID); err != nil {
+		ON CONFLICT(id) DO NOTHING`), "grp-default-"+granteeID, granteeID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -56,11 +56,10 @@ func seedDownstreamInstance(t *testing.T, f *fixture, id, sourceAccountID, grant
 		deletedArg = deletedAt
 	}
 	vendor, driver := downstreamVendorIdentity(providerCode)
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
 		config_revision, dispatch_revision, authorization_instance_source_account_id,
 		authorization_instance_authorization_id, deleted_at)
-		VALUES (?, ?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`,
-		id, granteeUserID, vendor, driver, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
+		VALUES (?, ?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`), 		id, granteeUserID, vendor, driver, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -83,10 +82,10 @@ func hourlyLimits(hours int) *string {
 
 func countGrantBindings(t *testing.T, f *fixture, grantID string) []scopeBinding {
 	t.Helper()
-	rows, err := f.db.Query(`SELECT system_account_id, scope_type, scope_id, source_type, source_id, window_hours
+	rows, err := f.db.Query(fixtureBind(`SELECT system_account_id, scope_type, scope_id, source_type, source_id, window_hours
 		FROM request_quota_hourly_window_scope_bindings
 		WHERE source_type = 'resource_authorization_grant' AND source_id = ?
-		ORDER BY scope_type ASC, scope_id ASC`, grantID)
+		ORDER BY scope_type ASC, scope_id ASC`), grantID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +140,8 @@ func countOutboxRows(t *testing.T, f *fixture) []outboxRow {
 func grantIDByResource(t *testing.T, f *fixture, resourceType, resourceID string) string {
 	t.Helper()
 	var id string
-	if err := f.db.QueryRow(`SELECT id FROM resource_authorization_grants
-		WHERE resource_type = ? AND resource_id = ?`, resourceType, resourceID).Scan(&id); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorization_grants
+		WHERE resource_type = ? AND resource_id = ?`), resourceType, resourceID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -151,9 +150,8 @@ func grantIDByResource(t *testing.T, f *fixture, resourceType, resourceID string
 func accountRuntimeIDFor(t *testing.T, f *fixture, resourceID, granteeID string) string {
 	t.Helper()
 	var id string
-	if err := f.db.QueryRow(`SELECT id FROM resource_authorizations
-		WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ?`,
-		resourceID, granteeID).Scan(&id); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorizations
+		WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ?`), 		resourceID, granteeID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -502,21 +500,19 @@ func TestExpireSweepFansOutHealthInputs(t *testing.T) {
 	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	// Seed the grant directly in the past so the sweep picks it up.
 	past := f.now.UTC().Add(-24 * 3600 * 1e9).UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
 		 grantee_system_account_id, scope, status, limits_json, created_by, created_at, updated_at, expires_at)
-		VALUES ('g-due', 'account', 'res-1', 'owner', 'system_account', 'grantee', 'use', 'active', ?, 'owner', ?, ?, ?)`,
-		*hourlyLimits(6), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
+		VALUES ('g-due', 'account', 'res-1', 'owner', 'system_account', 'grantee', 'use', 'active', ?, 'owner', ?, ?, ?)`), 		*hourlyLimits(6), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), past); err != nil {
 		t.Fatal(err)
 	}
 	// The runtime row the sweep re-projects must exist for the fanout join.
-	if _, err := f.db.Exec(`INSERT INTO resource_authorizations
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorizations
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 		 scope, status, effective_source_type, activated_at, last_source_changed_at,
 		 created_by, created_at, updated_at)
-		VALUES ('ra-due', 'account', 'res-1', 'owner', 'grantee', 'use', 'active', 'manual', ?, ?, 'owner', ?, ?)`,
-		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
+		VALUES ('ra-due', 'account', 'res-1', 'owner', 'grantee', 'use', 'active', 'manual', ?, ?, 'owner', ?, ?)`), 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z"),
 		f.now.UTC().Format("2006-01-02T15:04:05.000Z"), f.now.UTC().Format("2006-01-02T15:04:05.000Z")); err != nil {
 		t.Fatal(err)
 	}
@@ -608,16 +604,16 @@ func TestRevokeTeamGrantSourcesExpiredRuntimeLandsRevoked(t *testing.T) {
 	if _, err := f.db.Exec(`ALTER TABLE resource_authorizations ADD COLUMN grantee_team_id TEXT`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
 		grantee_system_account_id, grantee_team_id, status, effective_source_type, effective_source_team_id,
 		expires_at, created_by, created_at, updated_at)
 		VALUES ('ra_team_exp', 'account', 'acc-exp', 'owner', '', 'team-exp', 'expired', 'team', 'team-exp',
-		?, 'owner', ?, ?)`, now, now, now); err != nil {
+		?, 'owner', ?, ?)`), now, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_sources (id, authorization_id, source_type, source_team_id,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_sources (id, authorization_id, source_type, source_team_id,
 		status, created_by, created_at, updated_at)
-		VALUES ('ras_team_exp', ?, 'team', 'team-exp', 'active', 'owner', ?, ?)`, runtimeID, now, now); err != nil {
+		VALUES ('ras_team_exp', ?, 'team', 'team-exp', 'active', 'owner', ?, ?)`), runtimeID, now, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -634,7 +630,7 @@ func TestRevokeTeamGrantSourcesExpiredRuntimeLandsRevoked(t *testing.T) {
 	}
 
 	var status, revokedReason string
-	if err := f.db.QueryRow(`SELECT status, COALESCE(revoked_reason, '') FROM resource_authorizations WHERE id = ?`, runtimeID).
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, COALESCE(revoked_reason, '') FROM resource_authorizations WHERE id = ?`), runtimeID).
 		Scan(&status, &revokedReason); err != nil {
 		t.Fatal(err)
 	}

@@ -804,7 +804,7 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 	now := "2026-09-14T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}

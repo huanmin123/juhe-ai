@@ -2,7 +2,6 @@ package systemteams
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,8 +10,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
@@ -32,23 +29,6 @@ type testEnv struct {
 	stats  *statsSpy
 	inval  *invalSpy
 	mu     sync.Mutex
-}
-
-var ddl = []string{
-	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_teams (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT, status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_team_members (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, system_account_id TEXT NOT NULL, member_role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active', joined_at TEXT NOT NULL, removed_at TEXT, created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active', activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
-	// 成员加入 / 团队启用级联的 quota-scope 绑定尾（authz.ApplyActiveTeamGrants
-	// ToMembersTx → syncGrantQuotaScopeBindings）会准备这两张表：绑定表读写
-	// 绑定行，accounts 是 account_authorization_team 实例 LEFT JOIN 的目标。
-	`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT, authorization_instance_authorization_id TEXT, authorization_instance_source_account_id TEXT)`,
-	`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, source_type TEXT NOT NULL, source_id TEXT NOT NULL, window_hours INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
-	`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 }
 
 // statsSpy records MarkAllGroupAccountStatsDirty calls (the C9 group-stats
@@ -95,22 +75,12 @@ func (s *invalSpy) recorded() []string {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:teams-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newSystemTeamsPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range ddl {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,13 +88,13 @@ func newTestEnv(t *testing.T) *testEnv {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	authzStore, err := authz.NewStore(db, false, nil)
+	authzStore, err := authz.NewStore(db, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stats := &statsSpy{}
 	inval := &invalSpy{}
-	store, err := NewStore(db, false, nil, authzStore, WithSideEffects(stats, inval))
+	store, err := NewStore(db, true, nil, authzStore, WithSideEffects(stats, inval))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,9 +223,9 @@ func (e *testEnv) memberIDs(t *testing.T, teamID string) []string {
 func insertActiveMember(t *testing.T, env *testEnv, teamID, accountID, joinedAt string) string {
 	t.Helper()
 	memberID := "teammem_" + randomHex()
-	_, err := env.store.db.Exec(`INSERT INTO system_team_members
+	_, err := env.store.db.Exec(fixtureBind(`INSERT INTO system_team_members
 		(id, team_id, system_account_id, member_role, status, joined_at, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, 'member', 'active', ?, '', ?, ?)`, memberID, teamID, accountID, joinedAt, joinedAt, joinedAt)
+		VALUES (?, ?, ?, 'member', 'active', ?, '', ?, ?)`), memberID, teamID, accountID, joinedAt, joinedAt, joinedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,10 +235,10 @@ func insertActiveMember(t *testing.T, env *testEnv, teamID, accountID, joinedAt 
 // insertTeamGrant seeds an active team grant (resource_authorization_grants).
 func insertTeamGrant(t *testing.T, env *testEnv, id, resourceID, teamID, owner, createdAt string) {
 	t.Helper()
-	_, err := env.store.db.Exec(`INSERT INTO resource_authorization_grants
+	_, err := env.store.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_team_id,
 		 status, created_by, created_at, updated_at)
-		VALUES (?, 'group', ?, ?, 'team', ?, 'active', 'admin-id', ?, ?)`,
+		VALUES (?, 'group', ?, ?, 'team', ?, 'active', 'admin-id', ?, ?)`),
 		id, resourceID, owner, teamID, createdAt, createdAt)
 	if err != nil {
 		t.Fatal(err)
@@ -279,17 +249,17 @@ func insertTeamGrant(t *testing.T, env *testEnv, id, resourceID, teamID, owner, 
 // plus an active team source row pointing at the team.
 func insertRuntimeWithTeamSource(t *testing.T, env *testEnv, id, resourceID, granteeID, owner, teamID, createdAt string) {
 	t.Helper()
-	_, err := env.store.db.Exec(`INSERT INTO resource_authorizations
+	_, err := env.store.db.Exec(fixtureBind(`INSERT INTO resource_authorizations
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope,
 		 status, effective_source_type, effective_source_team_id, activated_at, created_by, created_at, updated_at)
-		VALUES (?, 'group', ?, ?, ?, 'use', 'active', 'team', ?, ?, 'admin-id', ?, ?)`,
+		VALUES (?, 'group', ?, ?, ?, 'use', 'active', 'team', ?, ?, 'admin-id', ?, ?)`),
 		id, resourceID, owner, granteeID, teamID, createdAt, createdAt, createdAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = env.store.db.Exec(`INSERT INTO resource_authorization_sources
+	_, err = env.store.db.Exec(fixtureBind(`INSERT INTO resource_authorization_sources
 		(id, authorization_id, source_type, source_team_id, status, activated_at, created_by, created_at, updated_at)
-		VALUES (?, ?, 'team', ?, 'active', ?, 'admin-id', ?, ?)`,
+		VALUES (?, ?, 'team', ?, 'active', ?, 'admin-id', ?, ?)`),
 		"src_"+id, id, teamID, createdAt, createdAt, createdAt)
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +268,7 @@ func insertRuntimeWithTeamSource(t *testing.T, env *testEnv, id, resourceID, gra
 
 func mustExec(t *testing.T, env *testEnv, query string, args ...any) {
 	t.Helper()
-	if _, err := env.store.db.Exec(query, args...); err != nil {
+	if _, err := env.store.db.Exec(fixtureBind(query), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -306,7 +276,7 @@ func mustExec(t *testing.T, env *testEnv, query string, args ...any) {
 func mustQueryString(t *testing.T, env *testEnv, query string, args ...any) string {
 	t.Helper()
 	var value string
-	if err := env.store.db.QueryRow(query, args...).Scan(&value); err != nil {
+	if err := env.store.db.QueryRow(fixtureBind(query), args...).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	return value
@@ -315,7 +285,7 @@ func mustQueryString(t *testing.T, env *testEnv, query string, args ...any) stri
 func mustQueryInt(t *testing.T, env *testEnv, query string, args ...any) int {
 	t.Helper()
 	var value int
-	if err := env.store.db.QueryRow(query, args...).Scan(&value); err != nil {
+	if err := env.store.db.QueryRow(fixtureBind(query), args...).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	return value

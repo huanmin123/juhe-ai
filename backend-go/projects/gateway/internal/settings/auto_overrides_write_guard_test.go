@@ -9,28 +9,30 @@ package settings
 import (
 	"context"
 	"database/sql"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"encoding/json"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 const autoOverridesWriteRejection = "客户端版本自动覆盖由系统任务维护，不支持通过管理接口写入"
 
 func newAutoOverridesGuardDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:settings-auto-guard-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`); err != nil {
-		t.Fatal(err)
-	}
+	// 只需要 system_settings 面：pgkit 夹具之外的独立库，注入该表即可。
+	db := pgtestkit.New(t, func(ctx context.Context, handle *sql.DB) error {
+		_, err := handle.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
+      system_account_id text NOT NULL,
+      key text NOT NULL,
+      value_json text NOT NULL,
+      updated_at text NOT NULL,
+      PRIMARY KEY (system_account_id, key)
+    )`)
+		return err
+	})
 	// 成功的写路径以全量快照回读收尾（refreshSystemCache →
 	// assertAllSettingsPresent），库内必须有白名单全键。整型键取 spec 上界
 	// （必在 [min,max] 内），时区、采样率与对象键按校验器认可的形状补齐。
@@ -49,7 +51,7 @@ func newAutoOverridesGuardDB(t *testing.T) *sql.DB {
 				valueJSON = strconv.Itoa(spec.max)
 			}
 		}
-		if _, execErr := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`, key, valueJSON, now); execErr != nil {
+		if _, execErr := db.Exec(fixtureSQL(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`), key, valueJSON, now); execErr != nil {
 			t.Fatal(execErr)
 		}
 	}
@@ -58,7 +60,7 @@ func newAutoOverridesGuardDB(t *testing.T) *sql.DB {
 
 func replaceSettingRow(t *testing.T, db *sql.DB, key, valueJSON string) {
 	t.Helper()
-	if _, err := db.Exec(`UPDATE system_settings SET value_json=? WHERE system_account_id='sys_admin' AND key=?`, valueJSON, key); err != nil {
+	if _, err := db.Exec(fixtureSQL(`UPDATE system_settings SET value_json=? WHERE system_account_id='sys_admin' AND key=?`), valueJSON, key); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -66,7 +68,7 @@ func replaceSettingRow(t *testing.T, db *sql.DB, key, valueJSON string) {
 func storedSettingJSON(t *testing.T, db *sql.DB, key string) string {
 	t.Helper()
 	var value string
-	err := db.QueryRow(`SELECT value_json FROM system_settings WHERE system_account_id='sys_admin' AND key=?`, key).Scan(&value)
+	err := db.QueryRow(fixtureSQL(`SELECT value_json FROM system_settings WHERE system_account_id='sys_admin' AND key=?`), key).Scan(&value)
 	if err == sql.ErrNoRows {
 		return ""
 	}
@@ -79,7 +81,7 @@ func storedSettingJSON(t *testing.T, db *sql.DB, key string) string {
 // TestAutoOverridesKeyRejectedOnUpdate：全量写路径携带自动键被拒绝且不落库。
 func TestAutoOverridesKeyRejectedOnUpdate(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
-	store, err := NewStore(db, false, nil, nil)
+	store, err := NewStore(db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +102,7 @@ func TestAutoOverridesKeyRejectedOnUpdate(t *testing.T) {
 // 目录，证明即使目录扩张把该键纳入分区，写守卫仍先于分区校验拒绝它。
 func TestAutoOverridesKeyRejectedOnUpdateSection(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
-	store, err := NewStore(db, false, nil, nil)
+	store, err := NewStore(db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +130,7 @@ func TestAutoOverridesKeyRejectedOnUpdateSection(t *testing.T) {
 func TestAutoOverridesKeyReadableViaLoadAndDirectRead(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
 	replaceSettingRow(t, db, upstreamClientVersionAutoOverridesKey, `{"codex":"1.2.3","claudeCode":"2.0.1"}`)
-	store, err := NewStore(db, false, nil, nil)
+	store, err := NewStore(db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +156,7 @@ func TestAutoOverridesKeyReadableViaLoadAndDirectRead(t *testing.T) {
 // TestManualOverridesWriteUnaffected：手动键写入行为不变（对照守卫不误伤）。
 func TestManualOverridesWriteUnaffected(t *testing.T) {
 	db := newAutoOverridesGuardDB(t)
-	store, err := NewStore(db, false, nil, nil)
+	store, err := NewStore(db, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

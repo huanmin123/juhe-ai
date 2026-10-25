@@ -1,10 +1,11 @@
 package manualtestrepo
 
-// w7c contract completion for the manual test task repository: the postgres
-// bindSQL placeholder rewriting, the dialect boolean/instant params, the Fail
-// lifecycle, session-cancel reason precedence, idle-session completion,
-// expired-row cleanup, and the small formatting helpers. The gated PG
-// end-to-end lives in w7c_repo_pg_gate_test.go.
+// w7c contract completion for the manual test task repository: the bindSQL
+// placeholder rewriting, the boolean/instant params, the Fail lifecycle,
+// session-cancel reason precedence, idle-session completion, expired-row
+// cleanup, and the small formatting helpers. The gated PG end-to-end lives in
+// w7c_repo_pg_gate_test.go.（原 SQLite 方言透传/1/0 布尔/文本时间断言随
+// sqlite 方言退役删除，PLAN-20261024T051925945Z。）
 
 import (
 	"context"
@@ -17,12 +18,11 @@ import (
 )
 
 func w7cPostgresRepo() *Repo {
-	return &Repo{postgres: true, now: func() time.Time { return time.Now().UTC() }}
+	return &Repo{now: func() time.Time { return time.Now().UTC() }}
 }
 
 func TestW7CBindSQLPlaceholderRewrite(t *testing.T) {
 	repo := w7cPostgresRepo()
-	sqlite := &Repo{postgres: false}
 
 	// Plain ? placeholders become $1..$n in order.
 	got := repo.bindSQL("SELECT * FROM t WHERE a = ? AND b = ? LIMIT ?")
@@ -34,11 +34,6 @@ func TestW7CBindSQLPlaceholderRewrite(t *testing.T) {
 	if got != "SELECT 'a?b' FROM t WHERE c = $1 AND d = 'x ? y' AND e = $2" {
 		t.Fatalf("literal guard: %q", got)
 	}
-	// SQLite dialect passes through untouched.
-	const query = "UPDATE t SET a = ? WHERE b = ? OR c = 'w?z'"
-	if sqlite.bindSQL(query) != query {
-		t.Fatalf("sqlite passthrough: %q", sqlite.bindSQL(query))
-	}
 }
 
 func TestW7CDialectHelpers(t *testing.T) {
@@ -46,27 +41,17 @@ func TestW7CDialectHelpers(t *testing.T) {
 	if pg.boolTrue() != "TRUE" || pg.boolFalse() != "FALSE" {
 		t.Fatalf("postgres booleans: %q %q", pg.boolTrue(), pg.boolFalse())
 	}
-	sqlite := &Repo{}
-	if sqlite.boolTrue() != "1" || sqlite.boolFalse() != "0" {
-		t.Fatalf("sqlite booleans: %q %q", sqlite.boolTrue(), sqlite.boolFalse())
-	}
 	if pg.table("account_test_tasks") != "juhe_business.account_test_tasks" {
 		t.Fatalf("postgres table: %q", pg.table("account_test_tasks"))
-	}
-	if sqlite.table("account_test_tasks") != "account_test_tasks" {
-		t.Fatalf("sqlite table: %q", sqlite.table("account_test_tasks"))
 	}
 
 	parsed := time.Date(2026, 9, 14, 8, 0, 0, 123456789, time.UTC)
 	text := parsed.Format(time.RFC3339Nano)
-	if got := instantParam(true, text, time.Now); got != parsed {
+	if got := instantParam(text, time.Now); got != parsed {
 		t.Fatalf("postgres instant: %#v", got)
 	}
-	if got := instantParam(true, "not-a-time", time.Now); got != "not-a-time" {
+	if got := instantParam("not-a-time", time.Now); got != "not-a-time" {
 		t.Fatalf("postgres fallback: %#v", got)
-	}
-	if got := instantParam(false, text, time.Now); got != text {
-		t.Fatalf("sqlite passthrough: %#v", got)
 	}
 
 	if got := sqlString(true, "envelope"); got != nil {

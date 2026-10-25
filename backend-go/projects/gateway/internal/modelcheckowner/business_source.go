@@ -72,7 +72,7 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 		return nil, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
 	}
 	// 2026-10-24 存储形态收口：StoreMode 恒 "postgres"（LoadConfig 单一形态），
-	// sqlite 文件形态与 CheckBusinessSQLiteSchema 文件形状守卫随批次退役。
+	// sqlite 文件形态守卫随 sqlite 存储形态退役批次删除。
 	postgres := cfg.StoreMode == "postgres"
 	driver, dsn := "", ""
 	if postgres {

@@ -92,7 +92,7 @@ func openTestRepo(t *testing.T) (*Repo, *sql.DB, func()) {
 		return err
 	})
 	current := time.Now().UTC()
-	repo, err := New(Config{DB: db, Postgres: true, Now: func() time.Time { return current }})
+	repo, err := New(Config{DB: db, Now: func() time.Time { return current }})
 	if err != nil {
 		t.Fatal(err)
 	}

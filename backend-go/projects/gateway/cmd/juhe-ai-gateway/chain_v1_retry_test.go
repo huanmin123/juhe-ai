@@ -147,11 +147,10 @@ func TestV1ResponseRetryExhaustedRenders503(t *testing.T) {
 // response_inspection_policies 行形状，scope_type='protocol'）。
 func seedInspectionRetryPolicy(t *testing.T, fixture *chainFixture, id, errorCode string) {
 	t.Helper()
-	if _, err := fixture.db.Exec(`INSERT INTO response_inspection_policies (
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO response_inspection_policies (
 			id, name, enabled, priority, scope_type, protocol_code, provider_code, match_json, action, notes, created_at, updated_at
 		) VALUES (?, '过载重试策略', 1, 10, 'protocol', 'openai', NULL, ?, 'retry_next_account', NULL,
-			'2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`,
-		id, `{"clientProfiles":["generic_openai"],"errorCodes":["`+errorCode+`"]}`); err != nil {
+			'2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`),		id, `{"clientProfiles":["generic_openai"],"errorCodes":["`+errorCode+`"]}`); err != nil {
 		t.Fatalf("seed inspection policy: %v", err)
 	}
 }
@@ -165,8 +164,7 @@ func newInspectionRetryChain(t *testing.T, fixture *chainFixture, badSSE string,
 		_, _ = w.Write([]byte(badSSE))
 	}))
 	t.Cleanup(badUpstream.Close)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": badUpstream.URL}), fixture.accountID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": badUpstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update bad account: %v", err)
 	}
 	// B4 第一批单连接事实源：上游指向同步改连接行。
@@ -177,7 +175,7 @@ func newInspectionRetryChain(t *testing.T, fixture *chainFixture, badSSE string,
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}

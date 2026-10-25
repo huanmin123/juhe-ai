@@ -61,7 +61,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -130,24 +130,24 @@ func TestW1MComposeApiKeyStoreBlankSecretArm(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1MUserAiAccountLimitArms(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1m-account-limit-settings.sqlite3"))
-	if err != nil {
-		t.Fatalf("打开临时库: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("ensure 业务 schema: %v", err)
-	}
-	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Secret: "w1m-limit-secret"}); err != nil {
-		t.Fatalf("seed 业务库: %v", err)
-	}
+	// PG 唯一形态（PLAN-20261024T051925945Z）：pgtestkit 隔离库 +
+	// EnsurePostgres/SeedPostgres（原 SQLite ensure+seed 夹具退役）。
+	db := pgtestkit.New(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Secret: "w1m-limit-secret"})
+			return err
+		})
 	base := time.Date(2026, 9, 14, 8, 0, 0, 0, time.UTC)
 	step := 0
 	now := func() time.Time {
 		step++
 		return base.Add(time.Duration(step) * 2 * time.Minute)
 	}
-	store, err := settings.NewStore(db, false, now, nil)
+	store, err := settings.NewStore(db, true, now, nil)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestW1MUserAiAccountLimitArms(t *testing.T) {
 	}
 
 	// Load 错误透传分支：删除底层表后必须原样报错。
-	if _, err := db.Exec("DROP TABLE system_settings"); err != nil {
+	if _, err := db.Exec("DROP TABLE juhe_business.system_settings"); err != nil {
 		t.Fatalf("DROP system_settings: %v", err)
 	}
 	if _, err := adapter.UserAiAccountLimit(ctx); err == nil {

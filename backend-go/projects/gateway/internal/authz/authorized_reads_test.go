@@ -23,8 +23,8 @@ const accountsFixtureDDL = `CREATE TABLE IF NOT EXISTS accounts (
 
 func (f *fixture) seedSourceAccount(t *testing.T, id, ownerID string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name)
-		VALUES (?, ?, ?)`, id, ownerID, "源账户 "+id); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name)
+		VALUES (?, ?, ?)`), id, ownerID, "源账户 "+id); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -34,9 +34,9 @@ func (f *fixture) seedSourceAccount(t *testing.T, id, ownerID string) {
 // namespace plus the source account id.
 func (f *fixture) seedInstanceAccount(t *testing.T, id, namespaceID, authorizationID, sourceID string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name,
 		authorization_instance_authorization_id, authorization_instance_source_account_id)
-		VALUES (?, ?, ?, ?, ?)`, id, namespaceID, "授权实例 "+id, nullableText(authorizationID), sourceID); err != nil {
+		VALUES (?, ?, ?, ?, ?)`), id, namespaceID, "授权实例 "+id, nullableText(authorizationID), sourceID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -51,8 +51,8 @@ func nullableText(value string) any {
 func runtimeIDFor(t *testing.T, f *fixture, grantee, resourceID string) string {
 	t.Helper()
 	var id string
-	if err := f.db.QueryRow(`SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = ?`, grantee, resourceID).Scan(&id); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorizations
+		WHERE grantee_system_account_id = ? AND resource_id = ?`), grantee, resourceID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -250,11 +250,11 @@ func TestAuthorizedReadableAccountIDsRevokedPausedAndExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 	expiredAt := f.now.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET status = ?, expires_at = ? WHERE id = ?`,
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = ?, expires_at = ? WHERE id = ?`),
 		StatusExpired, expiredAt, created.Item.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE resource_authorizations SET status = ?, expires_at = ? WHERE resource_type = 'account' AND resource_id = 'acc-src' AND grantee_system_account_id = 'member1'`,
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorizations SET status = ?, expires_at = ? WHERE resource_type = 'account' AND resource_id = 'acc-src' AND grantee_system_account_id = 'member1'`),
 		StatusExpired, expiredAt); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func outcomeUpdatedAtGrantID(t *testing.T, f *fixture, resourceID, granteeType, 
 func outcomeUpdatedAt(t *testing.T, f *fixture, grantID string) string {
 	t.Helper()
 	var updatedAt string
-	if err := f.db.QueryRow(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`, grantID).Scan(&updatedAt); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`), grantID).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	return updatedAt

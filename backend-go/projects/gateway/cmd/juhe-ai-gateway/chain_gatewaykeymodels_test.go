@@ -88,11 +88,11 @@ func gkmSeedAccount(t *testing.T, db *sql.DB, a gkmAccountSeed) {
 	}
 	// 供应商解耦（设计 §2.1）：vendor_code 是并集装载器 factProvider 的事实
 	// 来源；provider_code 旧列已随存储迁移退役，夹具只写 vendor_code。
-	_, err := db.Exec(`INSERT INTO accounts (
+	_, err := db.Exec(fixtureBind(`INSERT INTO accounts (
 			id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, deleted_at, account_expires_at, cooldown_until,
 			authorization_instance_source_account_id, authorization_instance_authorization_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		a.id, a.owner, a.provider, a.profile, a.protocol, a.version,
 		a.id, a.accountType, a.status, schedulable, deletedAt, expiresAt, cooldownUntil,
 		sourceID, instanceAuthz)
@@ -104,7 +104,7 @@ func gkmSeedAccount(t *testing.T, db *sql.DB, a gkmAccountSeed) {
 func gkmSeedGroup(t *testing.T, db *sql.DB, id, owner string, enabled int) {
 	t.Helper()
 	// groups.provider_code 列已随供应商解耦退役，分组不再带 provider 维度
-	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, ?, 'personal')`,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES (?, ?, ?, 'personal')`),
 		id, owner, enabled); err != nil {
 		t.Fatalf("seed group %s: %v", id, err)
 	}
@@ -116,8 +116,8 @@ func gkmSeedBinding(t *testing.T, db *sql.DB, groupID, bindingOwner, accountID, 
 	if accountAuthorizationID != "" {
 		authz = accountAuthorizationID
 	}
-	if _, err := db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, account_authorization_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, groupID, bindingOwner, accountID, enabled, authz, gkmTS(gkmBase)); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, account_authorization_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`), groupID, bindingOwner, accountID, enabled, authz, gkmTS(gkmBase)); err != nil {
 		t.Fatalf("seed binding %s/%s: %v", groupID, accountID, err)
 	}
 }
@@ -128,7 +128,7 @@ func gkmSeedBinding(t *testing.T, db *sql.DB, groupID, bindingOwner, accountID, 
 func gkmSeedSupportedModel(t *testing.T, db *sql.DB, accountID, provider, model string) {
 	t.Helper()
 	gkmSeedModelRow(t, db, provider, model)
-	if _, err := db.Exec(`INSERT OR IGNORE INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, ?, ?, ?)`,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES (?, ?, ?, ?)`),
 		accountID, model, gkmModelID(model), gkmTS(gkmBase)); err != nil {
 		t.Fatalf("seed supported model %s/%s: %v", accountID, model, err)
 	}
@@ -140,8 +140,9 @@ func gkmModelID(model string) string { return "mdl_" + model }
 // gkmSeedModelRow 幂等插入一条 builtin models 行（public=upstream=model）。
 func gkmSeedModelRow(t *testing.T, db *sql.DB, provider, model string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'builtin', 'active', '["chat_json","chat_sse"]', ?, ?)`,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'builtin', 'active', '["chat_json","chat_sse"]', ?, ?)
+		ON CONFLICT (id) DO NOTHING`),
 		gkmModelID(model), provider, model, model, gkmTS(gkmBase), gkmTS(gkmBase)); err != nil {
 		t.Fatalf("seed model row %s: %v", model, err)
 	}
@@ -156,9 +157,9 @@ func gkmSeedMapping(t *testing.T, db *sql.DB, accountID, provider, source, sourc
 	t.Helper()
 	gkmSeedModelRow(t, db, provider, upstream)
 	mappingID := "aem_" + accountID + "_" + source + "_" + sourceFamily
-	if _, err := db.Exec(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family,
 			target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		mappingID, accountID, source, sourceFamily, "conn-"+accountID, gkmModelID(upstream), upstreamFamily,
 		enabled, gkmTS(gkmBase), gkmTS(gkmBase)); err != nil {
 		t.Fatalf("seed mapping %s/%s: %v", accountID, source, err)
@@ -171,8 +172,8 @@ func gkmSeedAuthorization(t *testing.T, db *sql.DB, id, resourceType, resourceID
 	if !expiresAt.IsZero() {
 		expires = gkmTS(expiresAt)
 	}
-	if _, err := db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
-			grantee_system_account_id, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
+			grantee_system_account_id, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`),
 		id, resourceType, resourceID, owner, grantee, status, expires); err != nil {
 		t.Fatalf("seed authorization %s: %v", id, err)
 	}
@@ -180,15 +181,15 @@ func gkmSeedAuthorization(t *testing.T, db *sql.DB, id, resourceType, resourceID
 
 func gkmSeedGroupSettings(t *testing.T, db *sql.DB, authzID, grantee, groupID string, enabled int) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type)
-		VALUES (?, ?, ?, ?, 'personal')`, authzID, grantee, groupID, enabled); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type)
+		VALUES (?, ?, ?, ?, 'personal')`), authzID, grantee, groupID, enabled); err != nil {
 		t.Fatalf("seed group settings %s: %v", authzID, err)
 	}
 }
 
 func gkmUpdateAuthorizationStatus(t *testing.T, db *sql.DB, id, status string) {
 	t.Helper()
-	if _, err := db.Exec(`UPDATE resource_authorizations SET status = ? WHERE id = ?`, status, id); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE resource_authorizations SET status = ? WHERE id = ?`), status, id); err != nil {
 		t.Fatalf("update authorization %s: %v", id, err)
 	}
 }
@@ -415,7 +416,7 @@ func TestGKMUnionLoaderAuthorizationRevocation(t *testing.T) {
 	gkmAssertModels(t, entry)
 
 	gkmUpdateAuthorizationStatus(t, db, "authz_acc", "active")
-	if _, err := db.Exec(`UPDATE resource_authorizations SET expires_at = ? WHERE id = 'authz_acc'`, gkmTS(gkmBase.Add(-time.Minute))); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE resource_authorizations SET expires_at = ? WHERE id = 'authz_acc'`), gkmTS(gkmBase.Add(-time.Minute))); err != nil {
 		t.Fatalf("expire authz_acc: %v", err)
 	}
 	entry = gkmLoad(t, loader, "sys_owner", "gkm_acc_authz")
@@ -435,7 +436,7 @@ func TestGKMUnionLoaderAuthorizationRevocation(t *testing.T) {
 	gkmAssertModels(t, entry)
 
 	gkmUpdateAuthorizationStatus(t, db, "authz_grp", "active")
-	if _, err := db.Exec(`UPDATE resource_authorizations SET expires_at = ? WHERE id = 'authz_grp'`, gkmTS(gkmBase.Add(-time.Minute))); err != nil {
+	if _, err := db.Exec(fixtureBind(`UPDATE resource_authorizations SET expires_at = ? WHERE id = 'authz_grp'`), gkmTS(gkmBase.Add(-time.Minute))); err != nil {
 		t.Fatalf("expire authz_grp: %v", err)
 	}
 	entry = gkmLoad(t, loader, "sys_owner", "gkm_grp_authz")

@@ -232,7 +232,7 @@ func TestW1SChainAccountLocksAcquireCASHurdle(t *testing.T) {
 		nextRetryAtMs: sql.NullInt64{Int64: nowMs + 10_000, Valid: true}})
 
 	// generation 被并发改动 -> CAS 不命中。
-	if _, err := fixture.db.Exec(`UPDATE account_lock_states SET generation = 99 WHERE account_id = ?`, "w1s-1"); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE account_lock_states SET generation = 99 WHERE account_id = ?`), "w1s-1"); err != nil {
 		t.Fatalf("advance generation: %v", err)
 	}
 	denied, err := fixture.locks.AcquireRetryLeaseAsync(ctx, "w1s-1", 3_000)

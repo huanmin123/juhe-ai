@@ -25,6 +25,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 // readSource loads a composition-root source file for the text-level wiring
@@ -460,9 +462,10 @@ func TestChainProxyHealthPortRecordsFailureAndAvoidsBucket(t *testing.T) {
 func TestChainHotQualityPortOrdersAndDrivesLifecycle(t *testing.T) {
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
+	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "standalone",
-		RuntimeStateDriver: "memory",
+		RedisStateURL:  "redis://" + server.Addr(),
+		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
 		t.Fatalf("create hot quality runtime: %v", err)
@@ -532,9 +535,10 @@ func TestChainHotQualityPortOrdersAndDrivesLifecycle(t *testing.T) {
 func TestChainHotQualityPortPreservesCandidateIdentityThroughOrder(t *testing.T) {
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
+	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "standalone",
-		RuntimeStateDriver: "memory",
+		RedisStateURL:  "redis://" + server.Addr(),
+		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
 		t.Fatalf("create hot quality runtime: %v", err)
@@ -577,9 +581,10 @@ func TestChainHotQualityPortPreservesCandidateIdentityThroughOrder(t *testing.T)
 func TestChainHotQualityLifecycleScopeMatchesOrderingScope(t *testing.T) {
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
+	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "standalone",
-		RuntimeStateDriver: "memory",
+		RedisStateURL:  "redis://" + server.Addr(),
+		RedisNamespace: "w2c-hot-quality-lifecycle",
 	})
 	if err != nil {
 		t.Fatalf("create hot quality runtime: %v", err)

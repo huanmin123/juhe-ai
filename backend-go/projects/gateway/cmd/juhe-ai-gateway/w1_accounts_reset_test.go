@@ -411,8 +411,8 @@ func TestW1SAuthorizationInstanceIDsBranches(t *testing.T) {
 		if row[0] == "inst-deleted" {
 			deletedAt = "2026-09-01T00:00:00.000Z"
 		}
-		if _, err := fixture.db.Exec(`INSERT INTO accounts (id, authorization_instance_authorization_id, deleted_at)
-			VALUES (?, ?, ?)`, row[0], row[1], deletedAt); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, authorization_instance_authorization_id, deleted_at)
+			VALUES (?, ?, ?)`), row[0], row[1], deletedAt); err != nil {
 			t.Fatalf("seed account %s: %v", row[0], err)
 		}
 	}

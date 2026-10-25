@@ -38,34 +38,12 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:mediajobsadmin-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newMediaJobsAdminPGDatabase(t)
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`,
-		`CREATE TABLE media_jobs (
-			id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, owner_system_account_id TEXT NOT NULL DEFAULT '', account_id TEXT NOT NULL,
-			provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
-			status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
-			error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
-			params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
-			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("建表: %v: %v", statement, err)
-		}
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +51,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Port: service, Accounts: accounts, Captcha: modelcheckauth.NewCaptchaService(nil),
 		LoginGuard: modelcheckauth.NewLoginGuard(nil), CaptchaDisabled: true,
 	}
-	repo := gatewaymedia.NewMediaJobsRepo(db, false, time.Now)
+	repo := gatewaymedia.NewMediaJobsRepo(db, true, time.Now)
 	k := kernel.New(kernel.Options{CompressionDisabled: true})
 	deps.MountAuth(k, "lax", false)
 	(&Deps{Repo: repo, Auth: deps}).Mount(k)
@@ -200,7 +178,7 @@ func TestMediaJobsListRowsAndFilters(t *testing.T) {
 	for _, seed := range []struct{ id, vendor string }{
 		{"acc_1", "gpt"}, {"acc_2", "gpt"},
 	} {
-		if _, err := env.db.Exec("INSERT INTO accounts (id, vendor_code) VALUES (?, ?)", seed.id, seed.vendor); err != nil {
+		if _, err := env.db.Exec(fixtureBind("INSERT INTO accounts (id, vendor_code) VALUES (?, ?)"), seed.id, seed.vendor); err != nil {
 			t.Fatalf("seed accounts: %v", err)
 		}
 	}
@@ -490,7 +468,7 @@ func TestMyMediaJobsScopesToCaller(t *testing.T) {
 		{id: "key_a1", owner: userAID},
 		{id: "key_b1", owner: userBID},
 	} {
-		if _, err := env.db.Exec(`INSERT INTO api_keys (id, system_account_id) VALUES (?, ?)`, key.id, key.owner); err != nil {
+		if _, err := env.db.Exec(fixtureBind(`INSERT INTO api_keys (id, system_account_id) VALUES (?, ?)`), key.id, key.owner); err != nil {
 			t.Fatalf("seed api key: %v", err)
 		}
 	}

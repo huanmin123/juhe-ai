@@ -40,7 +40,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 )
 
@@ -105,8 +104,7 @@ func schedulingPreferenceNormalized(value string) string {
 // 且 stage=completed（判定语义与文案单源于 schedprefdomain.RequireCompleted；
 // 与 gateway 镜像同实现）。
 func checkSchedulingPreferenceMigrationRecord(ctx context.Context, db *sql.DB) error {
-	dialect := capabilitydomain.DialectPostgres
-	return schedprefdomain.RequireCompleted(ctx, db, dialect)
+	return schedprefdomain.RequireCompleted(ctx, db)
 }
 
 // checkSchedulingPreferenceBuiltinRow 读取内置行并做两值校验（built_in +

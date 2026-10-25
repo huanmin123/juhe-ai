@@ -303,10 +303,10 @@ func TestChainListProviderModelCatalogFilterArms(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seedModel := func(id, model, scope string, price any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(`INSERT INTO models (
+		if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO models (
 				id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
 				supported_endpoint_modes_json, input_usd_per_1m, source, created_at, updated_at)
-			VALUES (?, 'catdrop', ?, ?, ?, 'active', 1, '["chat_json","chat_sse"]', ?, 'builtin', ?, ?)`,
+			VALUES (?, 'catdrop', ?, ?, ?, 'active', TRUE, '["chat_json","chat_sse"]', ?, 'builtin', ?, ?)`),
 			id, model, model, scope, price, now, now); err != nil {
 			t.Fatalf("seed model row %s: %v", id, err)
 		}

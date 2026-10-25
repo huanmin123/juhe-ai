@@ -310,21 +310,21 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）：
 	// 加列/迁移归 maintenance，gateway 启动仅校验；缺失或四值形状不符即
 	// fail-fast（部署顺序契约：先迁移后启动新版）。只读，一次性，不做 DDL。
-	if err := checkAccountsCapabilityDomainSchema(context.Background(), composed.db, composed.pgDialect); err != nil {
+	if err := checkAccountsCapabilityDomainSchema(context.Background(), composed.db); err != nil {
 		return nil, fmt.Errorf("verify accounts capability_domain schema: %w", err)
 	}
 	// M2 启动阶段门禁（AI 账户能力域拆分 v7）：形状合法之外还要求阶段记录
 	// 已封存 m2_finalized；缺失/未封存/规则版本不符即 fail-fast，错误信息
 	// 携带 maintenance 迁移命令序列（判定与文案在共享包，与 jobs 镜像共用）。
 	// 全新空库经 maintenance ensure-schema/bootstrap 的自动封存获得记录。
-	if err := checkAccountCapabilityDomainStageRecord(context.Background(), composed.db, composed.pgDialect); err != nil {
+	if err := checkAccountCapabilityDomainStageRecord(context.Background(), composed.db); err != nil {
 		return nil, fmt.Errorf("verify accounts capability_domain stage record: %w", err)
 	}
 	// scheduling_preferences 启动只读校验（调度偏好独立实体 P1）：表形状 /
 	// api_keys 绑定列 / 内置行由 maintenance --ensure-schema（ensure 臂补种
 	// 内置行）保证，缺失或不符即 fail-fast（部署顺序契约：先 ensure-schema 后
 	// 启动新版）。只读，一次性，不做 DDL、不补种。
-	if err := checkSchedulingPreferenceSchema(context.Background(), composed.db, composed.pgDialect); err != nil {
+	if err := checkSchedulingPreferenceSchema(context.Background(), composed.db); err != nil {
 		return nil, fmt.Errorf("verify scheduling preference schema: %w", err)
 	}
 	// ipstats data source (Node getStatsDatabase() split): the client_ip_*

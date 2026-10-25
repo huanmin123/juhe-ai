@@ -52,7 +52,7 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 	now := "2026-09-04T00:00:00.000Z"
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(query, args...); err != nil {
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}

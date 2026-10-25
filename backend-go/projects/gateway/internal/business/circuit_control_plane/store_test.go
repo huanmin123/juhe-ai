@@ -347,7 +347,7 @@ func TestSharedSQLiteSchemaCoversCircuitContract(t *testing.T) {
 		"account_circuit_incidents": strings.Split(incidentColumns, ","),
 		"account_circuit_outbox":    strings.Split(outboxColumns, ","),
 	} {
-		spec, ok := contracts.BusinessSQLiteSchema[table]
+		spec, ok := contracts.BusinessSchema[table]
 		if !ok {
 			t.Fatalf("shared schema is missing %s", table)
 		}
@@ -361,7 +361,7 @@ func TestSharedSQLiteSchemaCoversCircuitContract(t *testing.T) {
 			}
 		}
 	}
-	incidentSpec := contracts.BusinessSQLiteSchema["account_circuit_incidents"]
+	incidentSpec := contracts.BusinessSchema["account_circuit_incidents"]
 	if !containsString(incidentSpec.Indexes, "idx_account_circuit_incidents_key_model_capability") {
 		t.Fatal("shared schema is missing the key_model capability index")
 	}

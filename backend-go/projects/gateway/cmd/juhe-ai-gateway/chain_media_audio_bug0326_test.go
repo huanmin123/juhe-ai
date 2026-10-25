@@ -42,7 +42,7 @@ func seedExtraVolcengineSpeechAccount(t *testing.T, fixture *chainFixture, id, s
 	}
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed extra volcengine speech row %s: %v: %v", id, query, err)
 		}
 	}

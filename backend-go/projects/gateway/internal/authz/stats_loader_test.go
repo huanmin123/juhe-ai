@@ -10,9 +10,9 @@ import (
 func (f *fixture) seedAuthorizationRow(t *testing.T, id, resourceType, resourceID, granteeID, status string) {
 	t.Helper()
 	now := f.now.UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (id, resource_type, resource_id,
 		resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, 'owner', ?, ?, 'owner', ?, ?)`, id, resourceType, resourceID, granteeID, status, now, now); err != nil {
+		VALUES (?, ?, ?, 'owner', ?, ?, 'owner', ?, ?)`), id, resourceType, resourceID, granteeID, status, now, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -20,9 +20,9 @@ func (f *fixture) seedAuthorizationRow(t *testing.T, id, resourceType, resourceI
 func (f *fixture) seedAuthorizationSource(t *testing.T, id, authorizationID, sourceType, teamID, status string) {
 	t.Helper()
 	now := f.now.UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_sources (id, authorization_id,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_sources (id, authorization_id,
 		source_type, source_team_id, status, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 'owner', ?, ?)`, id, authorizationID, sourceType, teamID, status, now, now); err != nil {
+		VALUES (?, ?, ?, ?, ?, 'owner', ?, ?)`), id, authorizationID, sourceType, teamID, status, now, now); err != nil {
 		t.Fatal(err)
 	}
 }

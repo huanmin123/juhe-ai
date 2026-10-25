@@ -72,17 +72,13 @@ func ParseRecord(valueJSON string) (Record, error) {
 	return record, nil
 }
 
-// ReadRecord 读取阶段记录（按方言用占位符）；无记录返回 ok=false。
-// gateway/jobs 启动门禁与 maintenance 迁移执行器共用此读取语义，解析语义
-// 只此一份。
-func ReadRecord(ctx context.Context, db *sql.DB, dialect Dialect) (Record, bool, error) {
-	query := "SELECT value_json FROM global_settings WHERE key = ?"
-	args := []any{MigrationSettingKey}
-	if dialect == DialectPostgres {
-		query = `SELECT value_json FROM "juhe_business"."global_settings" WHERE key = $1`
-	}
+// ReadRecord 读取阶段记录（PostgreSQL 业务库，juhe_business schema 限定与 $1
+// 占位符）；无记录返回 ok=false。gateway/jobs 启动门禁与 maintenance 迁移
+// 执行器共用此读取语义，解析语义只此一份。
+func ReadRecord(ctx context.Context, db *sql.DB) (Record, bool, error) {
+	query := `SELECT value_json FROM "juhe_business"."global_settings" WHERE key = $1`
 	var valueJSON string
-	err := db.QueryRowContext(ctx, query, args...).Scan(&valueJSON)
+	err := db.QueryRowContext(ctx, query, MigrationSettingKey).Scan(&valueJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, nil
 	}
@@ -105,8 +101,8 @@ const stageGateActionText = "运维动作：先停写（停止 gateway/jobs）�
 // 损坏记录同样在此报错）。任一不满足即返回携带运维动作（迁移命令序列）的
 // 错误，调用方原样 fail-fast；启动只读，不把启动变成迁移执行者。两侧启动
 // 门禁共用本函数，禁止在调用侧复制判定语义与文案。
-func RequireM2Finalized(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	record, present, err := ReadRecord(ctx, db, dialect)
+func RequireM2Finalized(ctx context.Context, db *sql.DB) error {
+	record, present, err := ReadRecord(ctx, db)
 	if err != nil {
 		return fmt.Errorf("AI 账户能力域阶段记录 %s 读取失败：%v。%s（记录损坏或 ruleVersion 不符时迁移命令同样拒绝执行，先核对记录来源与 maintenance 版本，禁止手工改写记录）", MigrationSettingKey, err, stageGateActionText)
 	}
@@ -119,32 +115,15 @@ func RequireM2Finalized(ctx context.Context, db *sql.DB, dialect Dialect) error 
 	return nil
 }
 
-// stagePredicate 是条件更新的 stage 谓词表达式（方言分支）。
-func stagePredicate(dialect Dialect) string {
-	if dialect == DialectPostgres {
-		return `value_json::jsonb->>'stage'`
-	}
-	return `json_extract(value_json, '$.stage')`
-}
-
 // ClaimNewStage 首次写入阶段记录（要求记录尚不存在）。并发竞争下只有一个
 // INSERT 生效；返回 acquired=false 表示另一个执行者已写入。
-func ClaimNewStage(ctx context.Context, tx *sql.Tx, dialect Dialect, stage Stage, now time.Time) (bool, error) {
+func ClaimNewStage(ctx context.Context, tx *sql.Tx, stage Stage, now time.Time) (bool, error) {
 	payload, err := json.Marshal(Record{Stage: stage, RuleVersion: RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)})
 	if err != nil {
 		return false, err
 	}
-	var (
-		query string
-		args  []any
-	)
-	if dialect == DialectPostgres {
-		query = `INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING`
-		args = []any{MigrationSettingKey, string(payload), now.UTC().Format(time.RFC3339)}
-	} else {
-		query = `INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO NOTHING`
-		args = []any{MigrationSettingKey, string(payload), now.UTC().Format(time.RFC3339)}
-	}
+	query := `INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING`
+	args := []any{MigrationSettingKey, string(payload), now.UTC().Format(time.RFC3339)}
 	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, fmt.Errorf("写入阶段记录 %s 失败: %w", MigrationSettingKey, err)
@@ -158,21 +137,14 @@ func ClaimNewStage(ctx context.Context, tx *sql.Tx, dialect Dialect, stage Stage
 
 // TransitionStage 条件更新阶段：仅当当前 stage 等于 expect 时写入 next。
 // 返回 acquired=false 表示当前 stage 已被并行执行者改变。
-func TransitionStage(ctx context.Context, tx *sql.Tx, dialect Dialect, expect, next Stage, now time.Time) (bool, error) {
+func TransitionStage(ctx context.Context, tx *sql.Tx, expect, next Stage, now time.Time) (bool, error) {
 	payload, err := json.Marshal(Record{Stage: next, RuleVersion: RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)})
 	if err != nil {
 		return false, err
 	}
 	updatedAt := now.UTC().Format(time.RFC3339)
-	var query string
-	var args []any
-	if dialect == DialectPostgres {
-		query = `UPDATE "juhe_business"."global_settings" SET value_json = $1, updated_at = $2 WHERE key = $3 AND ` + stagePredicate(dialect) + ` = $4`
-		args = []any{string(payload), updatedAt, MigrationSettingKey, string(expect)}
-	} else {
-		query = `UPDATE global_settings SET value_json = ?, updated_at = ? WHERE key = ? AND ` + stagePredicate(dialect) + ` = ?`
-		args = []any{string(payload), updatedAt, MigrationSettingKey, string(expect)}
-	}
+	query := `UPDATE "juhe_business"."global_settings" SET value_json = $1, updated_at = $2 WHERE key = $3 AND value_json::jsonb->>'stage' = $4`
+	args := []any{string(payload), updatedAt, MigrationSettingKey, string(expect)}
 	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, fmt.Errorf("条件更新阶段记录 %s 失败: %w", MigrationSettingKey, err)

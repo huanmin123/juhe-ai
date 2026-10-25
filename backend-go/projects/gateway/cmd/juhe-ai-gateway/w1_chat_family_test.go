@@ -477,12 +477,12 @@ func w1hNewObservationDB(t *testing.T) *sql.DB {
 		}
 	}
 	for _, assetID := range []string{"asset-w1h", "asset-w1h-b"} {
-		if _, err := db.Exec(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
-			VALUES (?, 'sys-w1h', 'conv-w1h', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`, assetID); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
+			VALUES (?, 'sys-w1h', 'conv-w1h', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`), assetID); err != nil {
 			t.Fatalf("seed chat_assets(%s): %v", assetID, err)
 		}
-		if _, err := db.Exec(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
-			VALUES (?, 'conv-w1h', 'turn-w1h', 'msg-w1h', 'user_input', '2027-01-01T00:00:00.000Z')`, assetID); err != nil {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
+			VALUES (?, 'conv-w1h', 'turn-w1h', 'msg-w1h', 'user_input', '2027-01-01T00:00:00.000Z')`), assetID); err != nil {
 			t.Fatalf("seed chat_asset_references(%s): %v", assetID, err)
 		}
 	}

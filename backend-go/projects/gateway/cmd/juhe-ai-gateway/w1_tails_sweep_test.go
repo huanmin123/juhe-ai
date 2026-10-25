@@ -497,7 +497,7 @@ func TestW1TBalanceWirePGDegradationArms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("accounts store: %v", err)
 		}
-		providerStore, err := providers.NewStore(db, false, time.Now)
+		providerStore, err := providers.NewStore(db, true, time.Now)
 		if err != nil {
 			t.Fatalf("providers store: %v", err)
 		}
@@ -522,7 +522,7 @@ func TestW1TBalanceWirePGDegradationArms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("accounts store: %v", err)
 		}
-		providerStore, err := providers.NewStore(w1uOpenPlainSQLite(t, "w1t-pg3.sqlite3"), false, time.Now)
+		providerStore, err := providers.NewStore(w1uOpenPlainSQLite(t, "w1t-pg3.sqlite3"), true, time.Now)
 		if err != nil {
 			t.Fatalf("providers store: %v", err)
 		}
@@ -540,10 +540,12 @@ func TestW1TBalanceWirePGDegradationArms(t *testing.T) {
 	})
 }
 
-// w1tProxyDB 打开带 proxy_profiles 表的 SQLite 并写入指定行。
+// w1tProxyDB 打开带 juhe_business.proxy_profiles 表的 pgtestkit 库并写入指定
+// 行（原 SQLite 文件夹具随存储形态退役重钉 PG，T67 批；search_path 夹具池让
+// 手写裸表名 SQL 落在 juhe_business，与生产 PG 臂同名同库）。
 func w1tProxyDB(t *testing.T, rows ...string) *sql.DB {
 	t.Helper()
-	db := w1uOpenPlainSQLite(t, "w1t-proxy.sqlite3")
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT NOT NULL, host TEXT NOT NULL,
 		port INTEGER NOT NULL, username TEXT NOT NULL DEFAULT '', password_encrypted TEXT NOT NULL DEFAULT '')`); err != nil {
 		t.Fatalf("建 proxy_profiles: %v", err)
@@ -561,15 +563,17 @@ func TestW1TProxyURLEnvelopeTails(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("pg 表名与 $1 绑定分支", func(t *testing.T) {
-		db := w1tProxyDB(t)
+		// 无 juhe_business schema 的库上按 PG 方言查询必须报错（原 SQLite
+		// 句柄臂随存储形态退役重钉为裸库缺 schema，T67 批）。
+		db := w1uOpenPlainSQLite(t, "w1t-proxy-pgbare.sqlite3")
 		if _, err := resolveProxyURLEnvelope(ctx, db, true, secret, "prof-1"); err == nil {
-			t.Fatal("SQLite 句柄上查询 juhe_business.proxy_profiles 必须报错")
+			t.Fatal("无 juhe_business schema 的库上查询 proxy_profiles 必须报错")
 		}
 	})
 
 	t.Run("不支持的代理类型报错", func(t *testing.T) {
 		db := w1tProxyDB(t, `INSERT INTO proxy_profiles (id, type, host, port) VALUES ('p1', 'ftp', '127.0.0.1', 21)`)
-		if _, err := resolveProxyURLEnvelope(ctx, db, false, secret, "p1"); err == nil ||
+		if _, err := resolveProxyURLEnvelope(ctx, db, true, secret, "p1"); err == nil ||
 			!strings.Contains(err.Error(), "不支持的 proxy 类型") {
 			t.Fatalf("err = %v, want 不支持的 proxy 类型", err)
 		}
@@ -582,7 +586,7 @@ func TestW1TProxyURLEnvelopeTails(t *testing.T) {
 		}
 		db := w1tProxyDB(t, fmt.Sprintf(`INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted)
 			VALUES ('p2', 'http', '127.0.0.1', 8080, 'u', '%s')`, envelope.Ciphertext))
-		if _, err := resolveProxyURLEnvelope(ctx, db, false, secret, "p2"); err == nil {
+		if _, err := resolveProxyURLEnvelope(ctx, db, true, secret, "p2"); err == nil {
 			t.Fatal("非 JSON 对象的密码明文必须报错")
 		}
 	})
@@ -594,7 +598,7 @@ func TestW1TProxyURLEnvelopeTails(t *testing.T) {
 		}
 		db := w1tProxyDB(t, fmt.Sprintf(`INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted)
 			VALUES ('p3', 'socks5', '127.0.0.1', 1080, '', '%s')`, envelope.Ciphertext))
-		refresher := &gatewayModelCatalogRefresher{db: db, pg: false, secret: secret, now: time.Now}
+		refresher := &gatewayModelCatalogRefresher{db: db, pg: true, secret: secret, now: time.Now}
 		got, err := refresher.resolveProxyURL(ctx, w1tStrPtr("p3"))
 		if err != nil {
 			t.Fatalf("resolveProxyURL: %v", err)
@@ -632,7 +636,7 @@ func TestW1TManualBuildInputDefaultsAndProxyError(t *testing.T) {
 
 	t.Run("代理信封解析失败上抛", func(t *testing.T) {
 		db := w1tProxyDB(t, `INSERT INTO proxy_profiles (id, type, host, port) VALUES ('bad', 'ftp', 'h', 1)`)
-		refresher := &gatewayManualBalanceRefresher{db: db, pg: false, secret: secret, now: time.Now}
+		refresher := &gatewayManualBalanceRefresher{db: db, pg: true, secret: secret, now: time.Now}
 		candidate := base
 		candidate.ProxyProfileID = sql.NullString{String: "bad", Valid: true}
 		if _, err := refresher.buildManualInput(context.Background(), candidate); err == nil {
@@ -667,7 +671,7 @@ func TestW1TModelCatalogRefresherTails(t *testing.T) {
 
 	t.Run("本地目录投影读取失败上抛", func(t *testing.T) {
 		bare := w1uOpenPlainSQLite(t, "w1t-catalog-bare.sqlite3")
-		store, err := providers.NewStore(bare, false, time.Now)
+		store, err := providers.NewStore(bare, true, time.Now)
 		if err != nil {
 			t.Fatalf("providers store 构造即失败: %v", err)
 		}
@@ -679,7 +683,7 @@ func TestW1TModelCatalogRefresherTails(t *testing.T) {
 
 	t.Run("代理档案解析失败上抛", func(t *testing.T) {
 		db := w1tProxyDB(t, `INSERT INTO proxy_profiles (id, type, host, port) VALUES ('bad', 'ftp', 'h', 1)`)
-		refresher := &gatewayModelCatalogRefresher{db: db, pg: false, secret: secret, now: time.Now}
+		refresher := &gatewayModelCatalogRefresher{db: db, pg: true, secret: secret, now: time.Now}
 		badInput := input
 		badInput.ProxyProfileID = w1tStrPtr("bad")
 		if _, err := refresher.RefreshDraftModelCatalog(ctx, badInput); err == nil {
@@ -691,18 +695,18 @@ func TestW1TModelCatalogRefresherTails(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		// models 单表（供应商解耦 §3）：global custom 行，modes 由协议正向投影。
-		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
+		if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
 			status, supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			created_by, created_at, updated_at)
-			VALUES ('cpm-w1t', 'gpt', 'm-add', 'm-add', 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'w1t', ?, ?)`,
+			VALUES ('cpm-w1t', 'gpt', 'm-add', 'm-add', 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'w1t', ?, ?)`),
 			now, now); err != nil {
 			t.Fatalf("seed custom model: %v", err)
 		}
-		store, err := providers.NewStore(db, false, time.Now)
+		store, err := providers.NewStore(db, true, time.Now)
 		if err != nil {
 			t.Fatalf("providers store: %v", err)
 		}
-		refresher := &gatewayModelCatalogRefresher{db: db, pg: false, secret: secret, catalog: store, now: time.Now}
+		refresher := &gatewayModelCatalogRefresher{db: db, pg: true, secret: secret, catalog: store, now: time.Now}
 		result, err := refresher.RefreshDraftModelCatalog(ctx, input)
 		if err != nil {
 			t.Fatalf("RefreshDraftModelCatalog: %v", err)
@@ -1067,7 +1071,7 @@ func TestW1TRuntimeComposeRedisDriverClosures(t *testing.T) {
 	composed := &composition{
 		db:        w1uOpenSeededBusinessDB(t),
 		statsDB:   w1uOpenPlainSQLite(t, "w1t-runtime-stats.sqlite3"),
-		pgDialect: false,
+		pgDialect: true,
 		Bus:       inval.New(time.Now),
 	}
 	cfg := runtimeConfig{
@@ -1117,7 +1121,7 @@ func TestW1TRuntimeComposeErrorArms(t *testing.T) {
 		composed := &composition{
 			db:        w1uOpenPlainSQLite(t, "w1t-err-business.sqlite3"),
 			statsDB:   w1uOpenPlainSQLite(t, "w1t-err-stats.sqlite3"),
-			pgDialect: false,
+			pgDialect: true,
 		}
 		if err := composed.statsDB.Close(); err != nil {
 			t.Fatalf("关闭 stats 库: %v", err)
@@ -1132,7 +1136,7 @@ func TestW1TRuntimeComposeErrorArms(t *testing.T) {
 		composed := &composition{
 			db:        w1uOpenPlainSQLite(t, "w1t-err2-business.sqlite3"),
 			statsDB:   w1uOpenPlainSQLite(t, "w1t-err2-stats.sqlite3"),
-			pgDialect: false,
+			pgDialect: true,
 		}
 		cfg := runtimeConfig{Secret: "w1t-runtime-secret", DispatchAccountCandidateLimit: 20}
 		if _, err := composeChainRuntimeServices(composed, cfg, func(string) (string, error) { return "", errors.New("设置读取失败") }); err == nil {
@@ -1159,8 +1163,10 @@ func TestW1TProbeOutboxTails(t *testing.T) {
 	})
 
 	t.Run("建表 + 插入成功", func(t *testing.T) {
-		db := w1uOpenPlainSQLite(t, "w1t-outbox.sqlite3")
-		writer := newChainProbeRequestOutboxWriter(db, false, 1000)
+		// ensureSchema 按 PG 方言在 juhe_business 建表：种子库承载成功臂
+		//（裸库缺 schema 只能覆盖建表失败臂）。
+		db := w1uOpenSeededBusinessDB(t)
+		writer := newChainProbeRequestOutboxWriter(db, true, 1000)
 		outcome := writer.EnqueueProbeRequest(ctx, "acc-1", "request_failure", "trace-1", &chainHealthDispatchSourceFence{
 			StateKey: "sk", AccountID: "acc-1", SourceGeneration: 1, SourceFenceID: "f1", RuntimeKey: "rk", ProbeGeneration: 1, ConfigRevision: 1,
 		})
@@ -1171,7 +1177,7 @@ func TestW1TProbeOutboxTails(t *testing.T) {
 
 	t.Run("关句柄：建表失败 → input_unavailable", func(t *testing.T) {
 		db := w1uOpenPlainSQLite(t, "w1t-outbox-closed.sqlite3")
-		writer := newChainProbeRequestOutboxWriter(db, false, 1000)
+		writer := newChainProbeRequestOutboxWriter(db, true, 1000)
 		if err := db.Close(); err != nil {
 			t.Fatalf("关闭句柄: %v", err)
 		}
@@ -1331,13 +1337,8 @@ func TestW1TCatalogSourceTails(t *testing.T) {
 	if !strings.Contains(bound, "$1") || !strings.Contains(bound, "$2") || strings.Contains(bound, "?") {
 		t.Fatalf("pg bind = %q, want $N 占位符", bound)
 	}
-	plain, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-catalog-src2.sqlite3"), false)
-	if err != nil {
-		t.Fatalf("构造目录源: %v", err)
-	}
-	if got := plain.bind("a = ?"); got != "a = ?" {
-		t.Fatalf("sqlite bind = %q, want 原样", got)
-	}
+	// 原「sqlite bind 原样透传」断言针对已随存储形态收口删除的 sqlite 方言
+	// 分支本身，按 D9 纪律随分支一并退役（T67 批）。
 }
 
 // ---------------------------------------------------------------------------
@@ -1413,7 +1414,7 @@ func TestW1TTrafficMigrationBridgeErrorArm(t *testing.T) {
 
 func TestW1TGrantReturnerNilMutationArm(t *testing.T) {
 	db := w1uOpenSeededBusinessDB(t)
-	store, err := authz.NewStore(db, false, time.Now)
+	store, err := authz.NewStore(db, true, time.Now)
 	if err != nil {
 		t.Fatalf("authz store: %v", err)
 	}

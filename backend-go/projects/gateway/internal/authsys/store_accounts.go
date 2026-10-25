@@ -141,7 +141,7 @@ type AccountStore struct {
 // proven ownerGate; the legacy form without the variadic gate implies a ready
 // gate and exists only for out-of-package test fixtures that seed accounts.
 func NewAccountStore(db *sql.DB, mode modelcheckauth.Mode, now func() time.Time, ownerGate ...OwnerGate) (*AccountStore, error) {
-	if db == nil || (mode != modelcheckauth.SQLite && mode != modelcheckauth.Postgres) {
+	if db == nil || mode != modelcheckauth.Postgres {
 		return nil, errors.New("invalid account store")
 	}
 	if now == nil {
@@ -178,17 +178,11 @@ func ensureCtx(ctx context.Context) context.Context {
 }
 
 func (s *AccountStore) table(name string) string {
-	if s.mode == modelcheckauth.Postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 
 func (s *AccountStore) bind(query string) string {
-	if s.mode == modelcheckauth.Postgres {
-		return replacePlaceholders(query)
-	}
-	return query
+	return replacePlaceholders(query)
 }
 
 func replacePlaceholders(query string) string {
@@ -816,10 +810,6 @@ func superAdminInvariantLockNeeded(input PatchInput) bool {
 }
 
 func (s *AccountStore) lockSuperAdminInvariant(ctx context.Context, tx *sql.Tx) error {
-	if s.mode != modelcheckauth.Postgres {
-		// SQLite: the single-writer transaction already serializes writers.
-		return nil
-	}
 	_, err := tx.ExecContext(ctx, s.bind(superAdminAdvisoryLockQuery), superAdminAdvisoryLockKey)
 	return err
 }
@@ -1121,10 +1111,7 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 }
 
 func (s *AccountStore) findRowForUpdate(ctx context.Context, tx *sql.Tx, where string, args ...any) (AccountSummary, string, error) {
-	query := `SELECT ` + accountColumns + `,password_hash FROM ` + s.table("system_accounts") + ` WHERE ` + where + ` LIMIT 1`
-	if s.mode == modelcheckauth.Postgres {
-		query += " FOR UPDATE"
-	}
+	query := `SELECT ` + accountColumns + `,password_hash FROM ` + s.table("system_accounts") + ` WHERE ` + where + ` LIMIT 1 FOR UPDATE`
 	row := tx.QueryRowContext(ctx, s.bind(query), args...)
 	var a AccountSummary
 	var description, requestLimitsJSON, lastLoginAt, passwordHash string

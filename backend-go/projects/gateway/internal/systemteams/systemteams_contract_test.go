@@ -298,8 +298,8 @@ func TestAddMembersFanoutAndSideEffects_C6_C9(t *testing.T) {
 
 	// The member got a runtime row with team source and the grant remark.
 	var status, effectiveType, remark string
-	if err := env.store.db.QueryRow(`SELECT status, effective_source_type, COALESCE(remark,'') FROM resource_authorizations
-		WHERE resource_id = 'grp_fan' AND grantee_system_account_id = ?`, memberAccountID).
+	if err := env.store.db.QueryRow(fixtureBind(`SELECT status, effective_source_type, COALESCE(remark,'') FROM resource_authorizations
+		WHERE resource_id = 'grp_fan' AND grantee_system_account_id = ?`), memberAccountID).
 		Scan(&status, &effectiveType, &remark); err != nil {
 		t.Fatalf("member runtime missing: %v", err)
 	}
@@ -354,8 +354,8 @@ func TestPatchDisableEnableCascade_C7_C8(t *testing.T) {
 		t.Fatalf("disable patch: %d %v", code, payload)
 	}
 	var revokedBy string
-	if err := env.store.db.QueryRow(`SELECT revoked_by FROM resource_authorization_sources
-		WHERE authorization_id = 'auth_cas' AND source_type = 'team' AND status = 'revoked'`).Scan(&revokedBy); err != nil {
+	if err := env.store.db.QueryRow(fixtureBind(`SELECT revoked_by FROM resource_authorization_sources
+		WHERE authorization_id = 'auth_cas' AND source_type = 'team' AND status = 'revoked'`)).Scan(&revokedBy); err != nil {
 		t.Fatalf("disable cascade did not revoke the team source: %v", err)
 	}
 	if revokedBy != adminID {

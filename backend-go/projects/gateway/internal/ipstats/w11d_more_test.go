@@ -40,7 +40,7 @@ func w11dDetailScanDB(t *testing.T) *Store {
 			t.Fatalf("建表: %v\n%s", err, statement)
 		}
 	}
-	store, err := NewStore(db, false, nil, nil, nil, nil)
+	store, err := NewStore(db, true, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestW11DListQueryAndScanErrorArms(t *testing.T) {
 		t.Fatalf("窗口外过滤 = %d err=%v", len(result.Items), err)
 	}
 	// lastUsedAt 坏时间戳 → sortRows 错误。
-	if _, err := env.db.Exec(`UPDATE client_ip_registry SET last_seen_at = 'not-a-time' WHERE ip_hash = ?`, testHashA); err != nil {
+	if _, err := env.db.Exec(fixtureBind(`UPDATE client_ip_registry SET last_seen_at = 'not-a-time' WHERE ip_hash = ?`), testHashA); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.store.List(ctx, ListOptions{Page: 1, PageSize: 20, SortField: "lastUsedAt", LastUsedSortScope: "global"}); err == nil {
@@ -172,11 +172,11 @@ func TestW11DListQueryAndScanErrorArms(t *testing.T) {
 		if _, err := scan.db.Exec(`DROP TABLE client_ip_policies`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := scan.db.Exec(`CREATE TABLE client_ip_policies (id TEXT PRIMARY KEY, ip_hash TEXT, policy_type TEXT, status TEXT, reason TEXT, expires_at TEXT, created_by_system_account_id TEXT, created_at TEXT, updated_at TEXT, disabled_at TEXT, disabled_by_system_account_id TEXT, disabled_reason TEXT)`); err != nil {
+		if _, err := scan.db.Exec(`CREATE TABLE juhe_stats.client_ip_policies (id TEXT PRIMARY KEY, ip_hash TEXT, policy_type TEXT, status TEXT, reason TEXT, expires_at TEXT, created_by_system_account_id TEXT, created_at TEXT, updated_at TEXT, disabled_at TEXT, disabled_by_system_account_id TEXT, disabled_reason TEXT)`); err != nil {
 			t.Fatal(err)
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if _, err := scan.db.Exec(`INSERT INTO client_ip_policies (id, ip_hash, policy_type, status, created_by_system_account_id, created_at, updated_at) VALUES ('p1', ?, NULL, 'active', 'sys', ?, ?)`, testHashA, now, now); err != nil {
+		if _, err := scan.db.Exec(fixtureBind(`INSERT INTO client_ip_policies (id, ip_hash, policy_type, status, created_by_system_account_id, created_at, updated_at) VALUES ('p1', ?, NULL, 'active', 'sys', ?, ?)`), testHashA, now, now); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := scan.store.List(context.Background(), ListOptions{Page: 1, PageSize: 20}); err == nil {
@@ -269,8 +269,8 @@ func TestW11DCreatePolicyTransactionArms(t *testing.T) {
 	env.insertRegistry(t, testHashA, "203.0.113.10", time.Now())
 	ctx := context.Background()
 
-	// BeginTx 错误：关闭连接池后新事务失败。
-	closed, err := NewStore(env.db, false, nil, nil, nil, nil)
+	// BeginTx 错误：关闭连接池后新事务失败（方言无关）。
+	closed, err := NewStore(env.db, true, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,18 +280,9 @@ func TestW11DCreatePolicyTransactionArms(t *testing.T) {
 	if _, err := closed.CreatePolicy(ctx, PolicyMutationInput{IPHash: testHashA, PolicyType: PolicyTypeBlacklist, ActorSystemAccountID: "sys"}); err == nil {
 		t.Fatal("BeginTx 失败必须上抛")
 	}
-	// PG lockSuffix 臂 + registry 查询错误：pg=true + 独立 SQLite 库。
-	t.Run("pg-lock-suffix", func(t *testing.T) {
-		fresh := newTestEnv(t)
-		fresh.insertRegistry(t, testHashA, "203.0.113.10", time.Now())
-		pgStore, err := NewStore(fresh.db, true, nil, nil, nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := pgStore.CreatePolicy(context.Background(), PolicyMutationInput{IPHash: testHashA, PolicyType: PolicyTypeBlacklist, ActorSystemAccountID: "sys"}); err == nil {
-			t.Fatal("PG 绑定在 SQLite 上必须失败")
-		}
-	})
+	// 「PG 绑定在 SQLite 上必须失败」的 lockSuffix 臂随 sqlite 引擎退役删除
+	//（D9）：夹具与 store 装配已迁真实 PG，PG FOR UPDATE 后缀的成功路径由
+	// newTestEnv 的策略创建回归覆盖。
 }
 
 func TestW11DNormalizeRangeHelperArms(t *testing.T) {

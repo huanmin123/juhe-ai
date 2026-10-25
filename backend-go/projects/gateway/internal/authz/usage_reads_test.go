@@ -155,7 +155,7 @@ func newUsageFixture(t *testing.T) *fixture {
 // lookups read (loadAccountLookupMap).
 func seedResourceAccount(t *testing.T, f *fixture, id, ownerID, name string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name) VALUES (?, ?, ?)`,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name) VALUES (?, ?, ?)`),
 		id, ownerID, name); err != nil {
 		t.Fatal(err)
 	}
@@ -166,10 +166,10 @@ func seedResourceAccount(t *testing.T, f *fixture, id, ownerID, name string) {
 // rows are plain system_account_id values).
 func insertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, teamID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO authorization_team_usage_summary_daily
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),
 		systemAccountID, statDate, teamID, resourceType, resourceID, requestCount, inputTokens, outputTokens, totalCost, lastUsedAt)
 	if err != nil {
 		t.Fatal(err)
@@ -179,10 +179,10 @@ func insertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, tea
 // insertUserDailyRow seeds one authorization_user_usage_summary_daily row.
 func insertUserDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, teamID, granteeID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO authorization_user_usage_summary_daily
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO authorization_user_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),
 		systemAccountID, statDate, teamID, granteeID, resourceType, resourceID, requestCount, inputTokens, outputTokens, totalCost, lastUsedAt)
 	if err != nil {
 		t.Fatal(err)
@@ -651,7 +651,7 @@ func TestRevokeOwnerScopeNegative(t *testing.T) {
 		t.Fatalf("out-of-scope revoke = %+v", mutation)
 	}
 	var status, version string
-	if err := f.db.QueryRow(`SELECT status, updated_at FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).
+	if err := f.db.QueryRow(fixtureBind(`SELECT status, updated_at FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).
 		Scan(&status, &version); err != nil {
 		t.Fatal(err)
 	}

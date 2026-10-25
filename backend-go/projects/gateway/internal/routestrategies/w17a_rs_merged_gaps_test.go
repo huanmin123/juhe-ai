@@ -144,22 +144,20 @@ func TestW17aRsPgStoreDialectArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 先用 SQLite 方言准备一行存量数据。
-	sqliteStore := env.store
-	created, err := sqliteStore.Create(context.Background(), MutationInput{
+	// 「PG 方言在 SQLite 上语法失败」臂随 sqlite 引擎退役（D9）：夹具与两个
+	// store 装配同为真实 PG，重钉为 FOR UPDATE 行锁路径在真实 PG 上的成功执行。
+	created, err := store.Create(context.Background(), MutationInput{
 		Name: ptrString("w17a pg"), HasBindings: true,
 		Bindings: []BindingInput{{GroupID: group, Priority: intPtr(1), Status: "active"}},
 	}, AccessScope{ViewerID: admin})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// pg 方言：Patch 追加 FOR UPDATE，SQLite 语法错误 → 错误臂。
-	if _, err := store.Patch(context.Background(), created.ID, MutationInput{Name: ptrString("x")}, env.strategyUpdatedAt(t, created.ID), AccessScope{IsAdmin: true}); err == nil {
-		t.Fatal("pg 方言 Patch 应因 FOR UPDATE 失败")
+	if _, err := store.Patch(context.Background(), created.ID, MutationInput{Name: ptrString("x")}, env.strategyUpdatedAt(t, created.ID), AccessScope{IsAdmin: true}); err != nil {
+		t.Fatalf("pg 方言 Patch（FOR UPDATE 行锁）= %v", err)
 	}
-	// pg 方言：Delete 行级锁失败臂。
-	if _, err := store.Delete(context.Background(), created.ID, AccessScope{IsAdmin: true}); err == nil {
-		t.Fatal("pg 方言 Delete 应因 FOR UPDATE 失败")
+	if _, err := store.Delete(context.Background(), created.ID, AccessScope{IsAdmin: true}); err != nil {
+		t.Fatalf("pg 方言 Delete（FOR UPDATE 行锁）= %v", err)
 	}
 }
 

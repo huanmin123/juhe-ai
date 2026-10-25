@@ -76,35 +76,15 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:ipstats-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	db := newIPStatsPGDatabase(t)
+	if _, err := db.Exec(fixtureBind(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"', $1)`), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
-		`CREATE TABLE IF NOT EXISTS client_ip_registry (ip_hash TEXT PRIMARY KEY, bucket_no INTEGER NOT NULL, aggregate_ip_key TEXT NOT NULL, client_ip TEXT NOT NULL, ip_version INTEGER NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS client_ip_usage_range_windows (ip_hash TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0, success_count INTEGER NOT NULL DEFAULT 0, error_count INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_read_cost_usd REAL NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0, cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0, cache_write_cost_usd REAL NOT NULL DEFAULT 0, thinking_tokens INTEGER NOT NULL DEFAULT 0, input_image_tokens INTEGER NOT NULL DEFAULT 0, output_image_tokens INTEGER NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0, duration_ms_sum INTEGER NOT NULL DEFAULT 0, duration_ms_count INTEGER NOT NULL DEFAULT 0, duration_ms_max INTEGER NOT NULL DEFAULT 0, average_duration_ms REAL, first_token_ms_sum INTEGER NOT NULL DEFAULT 0, first_token_ms_count INTEGER NOT NULL DEFAULT 0, average_first_token_ms REAL, active_days INTEGER NOT NULL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (ip_hash, start_date, end_date))`,
-		`CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips (ip_hash TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1, first_dirty_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS stats_job_state (scope_type TEXT NOT NULL, scope_id TEXT NOT NULL DEFAULT '', job_name TEXT NOT NULL, cursor_created_at TEXT, cursor_id TEXT, last_success_at TEXT, last_error_message TEXT, lag_seconds INTEGER, updated_at TEXT NOT NULL, PRIMARY KEY (scope_type, scope_id, job_name))`,
-		`CREATE TABLE IF NOT EXISTS client_ip_policies (id TEXT PRIMARY KEY, ip_hash TEXT NOT NULL, policy_type TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, expires_at TEXT, created_by_system_account_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, disabled_at TEXT, disabled_by_system_account_id TEXT, disabled_reason TEXT)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ip_policies_active_unique ON client_ip_policies(ip_hash) WHERE status = 'active'`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json) VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"')`); err != nil {
-		t.Fatal(err)
-	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +94,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, false, nil, nil, invalidator, nil)
+	store, err := NewStore(db, true, nil, nil, invalidator, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +164,7 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 
 func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(fixtureBind(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -192,7 +172,7 @@ func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var count int
-	if err := e.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := e.db.QueryRow(fixtureBind(query), args...).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count

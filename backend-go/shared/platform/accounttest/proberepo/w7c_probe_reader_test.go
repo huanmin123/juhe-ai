@@ -346,24 +346,18 @@ func TestW7CSchemaAndStoreGuards(t *testing.T) {
 	if _, err := NewStore(Config{DB: h.db, Secret: "s"}); err != nil {
 		t.Fatalf("default now: %v", err)
 	}
-	pg := &Store{db: h.db, postgres: true, secret: "s", now: func() time.Time { return testNow }}
+	pg := &Store{db: h.db, secret: "s", now: func() time.Time { return testNow }}
 	if pg.table("accounts") != "juhe_business.accounts" {
 		t.Fatalf("pg table: %q", pg.table("accounts"))
 	}
 	if _, ok := pg.timeParam(testNow).(interface{ IsZero() bool }); !ok {
 		t.Fatal("pg timeParam must keep the native time")
 	}
-	if text, ok := (&Store{db: h.db}).timeParam(testNow).(string); !ok || text != testNow.UTC().Format("2006-01-02T15:04:05.999999999Z07:00") {
-		t.Fatalf("sqlite timeParam: %#v", text)
-	}
 	if _, ok := pg.instantParam(nowMillisText()).(interface{ IsZero() bool }); !ok {
 		t.Fatal("pg instantParam must parse native times")
 	}
 	if text, ok := pg.instantParam("garbage").(string); !ok || text != "garbage" {
 		t.Fatalf("pg instantParam fallback: %#v", text)
-	}
-	if text, ok := (&Store{}).instantParam(nowMillisText()).(string); !ok {
-		t.Fatalf("sqlite instantParam passthrough: %#v", text)
 	}
 	if errInvalid("x").Error() != "x" {
 		t.Fatal("errInvalid contract")

@@ -46,7 +46,7 @@ import (
 
 func w1yExec(t *testing.T, db *sql.DB, query string, args ...any) {
 	t.Helper()
-	if _, err := db.Exec(query, args...); err != nil {
+	if _, err := db.Exec(fixtureBind(query), args...); err != nil {
 		t.Fatalf("执行 seed 语句失败: %v\nSQL: %s", err, query)
 	}
 }

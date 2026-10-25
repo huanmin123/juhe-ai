@@ -766,7 +766,7 @@ func TestGatewayChain429SSEFailureYieldsNonStreamErrorContract(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"rate limited by upstream\"}}\n\n"))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
@@ -820,7 +820,7 @@ func TestGatewayChain429JSONRetriesSameAccountThenSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-retry","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"重试后内容"},"finish_reason":"stop"}]}`))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
@@ -871,7 +871,7 @@ func TestGatewayChain5xxFailsOverToNextCandidate(t *testing.T) {
 
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
@@ -929,7 +929,7 @@ func TestGatewayChainAllUpstreamHTTPFailuresRenderExhaustion(t *testing.T) {
 
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
@@ -993,7 +993,7 @@ func TestGatewayChainResponsesRecoversRejectedEncryptedContent(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"resp-recovered","object":"response","status":"completed","model":"gpt-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"恢复后内容"}]}]}`))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
@@ -1387,14 +1387,14 @@ func newErrorPolicyEffectsFixture(t *testing.T) *errorPolicyEffectsFixture {
 
 func (f *errorPolicyEffectsFixture) seedAccount(t *testing.T, id, status string, configRevision int64) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, status, config_revision, stream_failure_count, stream_failure_window_started_at) VALUES (?, ?, ?, 3, '2026-08-31T00:00:00.000Z')`, id, status, configRevision); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, status, config_revision, stream_failure_count, stream_failure_window_started_at) VALUES (?, ?, ?, 3, '2026-08-31T00:00:00.000Z')`), id, status, configRevision); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 }
 
 func (f *errorPolicyEffectsFixture) accountRow(t *testing.T, id string) map[string]any {
 	t.Helper()
-	row := f.db.QueryRow(`SELECT status, schedulable, cooldown_until, last_error_code, last_error_message, stream_failure_count, config_revision FROM accounts WHERE id = ?`, id)
+	row := f.db.QueryRow(fixtureBind(`SELECT status, schedulable, cooldown_until, last_error_code, last_error_message, stream_failure_count, config_revision FROM accounts WHERE id = ?`), id)
 	var status string
 	var schedulable int
 	var cooldownUntil, errorCode, errorMessage sql.NullString
@@ -1500,7 +1500,7 @@ func TestChainErrorPolicyEffectsCooldownGuards(t *testing.T) {
 	fixture.seedAccount(t, "acc_disabled", "disabled", 1)
 	fixture.seedAccount(t, "acc_race", "active", 2)
 	fixture.seedAccount(t, "acc_explicit", "rate_limited", 1)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET last_error_code = ?, cooldown_until = '2026-09-01T11:30:00.000Z' WHERE id = 'acc_explicit'`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET last_error_code = ?, cooldown_until = '2026-09-01T11:30:00.000Z' WHERE id = 'acc_explicit'`),
 		systemQuotaExplicitResetCooldownCode); err != nil {
 		t.Fatalf("seed explicit cooldown: %v", err)
 	}
@@ -1583,9 +1583,9 @@ func TestChainErrorPolicyEffectsDisableWrites(t *testing.T) {
 // 写 Key 级运行态（rate_limited + quota 恢复码 + 决策冷却时间）。
 func TestChainErrorPolicyEffectsKeyScopedQuotaRecord(t *testing.T) {
 	fixture := newErrorPolicyEffectsFixture(t)
-	if _, err := fixture.db.Exec(`INSERT INTO account_api_key_runtime_states
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO account_api_key_runtime_states
 		(id, system_account_id, account_id, key_fingerprint, status, created_at, updated_at)
-		VALUES ('state_1', 'sys_owner', 'acc_1', ?, 'active', '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z')`,
+		VALUES ('state_1', 'sys_owner', 'acc_1', ?, 'active', '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z')`),
 		fixture.keyStates.FingerprintAPIKey("key-b")); err != nil {
 		t.Fatalf("seed key state: %v", err)
 	}
@@ -1604,7 +1604,7 @@ func TestChainErrorPolicyEffectsKeyScopedQuotaRecord(t *testing.T) {
 		t.Fatalf("record key scoped failure: %v", err)
 	}
 	var status, errorCode, cooldownUntil string
-	if err := fixture.db.QueryRow(`SELECT status, last_error_code, COALESCE(cooldown_until, '') FROM account_api_key_runtime_states WHERE account_id = 'acc_1' AND key_fingerprint = ?`,
+	if err := fixture.db.QueryRow(fixtureBind(`SELECT status, last_error_code, COALESCE(cooldown_until, '') FROM account_api_key_runtime_states WHERE account_id = 'acc_1' AND key_fingerprint = ?`),
 		fingerprint).Scan(&status, &errorCode, &cooldownUntil); err != nil {
 		t.Fatalf("read key state: %v", err)
 	}
@@ -1676,7 +1676,7 @@ func TestChainErrorPolicyEffectsRuntimeFailureObservationFence(t *testing.T) {
 	// 3) 决策之后有健康成功（last_health_success_at == observedAt，严格 <）
 	//    → 拒绝写入。
 	fixture.seedAccount(t, "acc_health", "active", 1)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_health'`, observedAt); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_health'`), observedAt); err != nil {
 		t.Fatalf("seed health success: %v", err)
 	}
 	changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(context.Background(),
@@ -1688,7 +1688,7 @@ func TestChainErrorPolicyEffectsRuntimeFailureObservationFence(t *testing.T) {
 
 	// 4) 决策之后其他写者已更新行（updated_at > observedAt）→ 拒绝写入。
 	fixture.seedAccount(t, "acc_writer", "active", 1)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET updated_at = ? WHERE id = 'acc_writer'`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET updated_at = ? WHERE id = 'acc_writer'`),
 		fixedErrorPolicyClock().Add(time.Millisecond).UTC().Format(rfc3339MillisUTC)); err != nil {
 		t.Fatalf("seed newer updated_at: %v", err)
 	}
@@ -1708,7 +1708,7 @@ func TestChainErrorPolicyEffectsRuntimeFailureObservationFence(t *testing.T) {
 		t.Fatalf("fenced disable must apply without health success: changed=%v err=%v", changed, err)
 	}
 	fixture.seedAccount(t, "acc_dis_fenced", "active", 1)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_dis_fenced'`, observedAt); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_dis_fenced'`), observedAt); err != nil {
 		t.Fatalf("seed fenced health success: %v", err)
 	}
 	fenced := candidateWithRevision("acc_dis_fenced", 1)
@@ -1721,7 +1721,7 @@ func TestChainErrorPolicyEffectsRuntimeFailureObservationFence(t *testing.T) {
 	// 6) 候选无 dispatchRevision 快照（Node guard undefined）→ 不设围栏，
 	//    健康成功列不拦截，updated_at 普通赋值。
 	fixture.seedAccount(t, "acc_noguard", "active", 1)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_noguard'`, observedAt); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET last_health_success_at = ? WHERE id = 'acc_noguard'`), observedAt); err != nil {
 		t.Fatalf("seed health success: %v", err)
 	}
 	noGuard := errorPolicyAccount(nil)
@@ -1733,7 +1733,7 @@ func TestChainErrorPolicyEffectsRuntimeFailureObservationFence(t *testing.T) {
 
 	// 7) 过期分支同样带围栏：健康成功晚于决策时不自动停用。
 	fixture.seedAccount(t, "acc_exp", "active", 1)
-	if _, err := fixture.db.Exec(`UPDATE accounts SET account_expires_at = '2026-08-01T00:00:00.000Z', last_health_success_at = ? WHERE id = 'acc_exp'`, observedAt); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET account_expires_at = '2026-08-01T00:00:00.000Z', last_health_success_at = ? WHERE id = 'acc_exp'`), observedAt); err != nil {
 		t.Fatalf("seed expired account: %v", err)
 	}
 	expired := candidateWithRevision("acc_exp", 1)
@@ -2049,31 +2049,21 @@ func TestGatewayChain402InsufficientQuotaCooldownsAccount(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"insufficient quota","code":"insufficient_quota"}}`))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 	// B4 第一批单连接事实源：上游指向同步改连接行。
 	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse", "responses_json", "responses_sse")
-	// 桥写侧需要测试 schema 未包含的运行态列（生产 schema 具备）。
-	for _, alter := range []string{
-		`ALTER TABLE accounts ADD COLUMN last_error_trace_id TEXT`,
-		`ALTER TABLE accounts ADD COLUMN cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE accounts ADD COLUMN cooldown_retest_observation_started_at TEXT`,
-		`ALTER TABLE accounts ADD COLUMN cooldown_retest_generation TEXT`,
-		`ALTER TABLE accounts ADD COLUMN cooldown_retest_last_at TEXT`,
-		`ALTER TABLE accounts ADD COLUMN cooldown_retest_last_status_code INTEGER`,
-		`ALTER TABLE accounts ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`,
-		`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT)`,
-	} {
-		if _, err := fixture.db.Exec(alter); err != nil {
-			t.Fatalf("extend fixture schema: %v: %v", alter, err)
-		}
+	// 桥写侧运行态列（last_error_trace_id/cooldown_retest_*/updated_at）已随
+	// 夹具 accounts DDL 与生产 schema 同构，无需再 ALTER；仅补脏组表。
+	if _, err := fixture.db.Exec(`CREATE TABLE IF NOT EXISTS group_account_stats_dirty (group_id TEXT PRIMARY KEY, reason TEXT, updated_at TEXT)`); err != nil {
+		t.Fatalf("extend fixture schema: %v", err)
 	}
 
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
-	errorPolicyBridge, errorPolicyService, err := newChainErrorPolicyEffectsBridge(&composition{db: fixture.db, pgDialect: false}, "chain-test-secret")
+	errorPolicyBridge, errorPolicyService, err := newChainErrorPolicyEffectsBridge(&composition{db: fixture.db, pgDialect: true}, "chain-test-secret")
 	if err != nil {
 		t.Fatalf("compose error policy bridge: %v", err)
 	}
@@ -2093,7 +2083,7 @@ func TestGatewayChain402InsufficientQuotaCooldownsAccount(t *testing.T) {
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d want 503: %s", status, raw)
 	}
-	row := fixture.db.QueryRow(`SELECT status, schedulable, last_error_code, COALESCE(cooldown_until, '') FROM accounts WHERE id = ?`, fixture.accountID)
+	row := fixture.db.QueryRow(fixtureBind(`SELECT status, schedulable, last_error_code, COALESCE(cooldown_until, '') FROM accounts WHERE id = ?`), fixture.accountID)
 	var accountStatus string
 	var schedulable int
 	var errorCode, cooldownUntil string

@@ -188,11 +188,11 @@ func TestW1SettingsLimitAndCatalogs(t *testing.T) {
 	// 追加一条 inactive 目录：override 目录必须过滤非 active（openai 兼容
 	// 目录源扩展后自身目录走 custom_provider_models，种子同步改种）。
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := fixture.db.Exec(`INSERT INTO models (
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO models (
 			id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
 			supported_endpoint_modes_json, created_at, updated_at)
 		VALUES ('mdl_cat_2', 'openai', 'gpt-test-inactive', 'gpt-test-inactive', 'global', 'disabled', 1,
-			'["chat_json","chat_sse"]', ?, ?)`, now, now); err != nil {
+			'["chat_json","chat_sse"]', ?, ?)`), now, now); err != nil {
 		t.Fatalf("insert inactive catalog = %v", err)
 	}
 	override := chainGptRequestOverrideModelCatalog{cache: fixture.cache}

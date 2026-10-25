@@ -1,5 +1,6 @@
 package gatewayhotquality
 
+
 import (
 	"context"
 	"math/rand"
@@ -11,6 +12,10 @@ import (
 // docs/functions/缓存率感知调度与用量缓存率展示设计.md sections 5/6/10/11.1).
 // Reuses the hqCandidate / baseOf / normalTier helpers from
 // hotquality_selection_test.go.
+
+// floatPtr 构造可选 float64（原 memory_store_test.go 的共享测试小工具，随
+// memory store 退役上移到仍消费它的排序测试文件）。
+func floatPtr(value float64) *float64 { return &value }
 
 // crSpeed builds a known/healthy snapshot with an optionally known EWMA and an
 // optional P95 bucket index (the bucket is never treated as milliseconds).

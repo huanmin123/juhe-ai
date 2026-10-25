@@ -235,10 +235,10 @@ func TestGapUsageDetailDoesNotSweepInline(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := "2020-01-01T00:00:00.000Z"
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`, past, created.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ? WHERE id = ?`), past, created.Item.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE resource_authorizations SET expires_at = ?`, past); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorizations SET expires_at = ?`), past); err != nil {
 		t.Fatal(err)
 	}
 
@@ -252,7 +252,7 @@ func TestGapUsageDetailDoesNotSweepInline(t *testing.T) {
 		t.Fatalf("usage detail = %d %s", rec.Code, rec.Body.String())
 	}
 	var grantStatus string
-	if err := f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&grantStatus); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
 	if grantStatus != StatusActive {

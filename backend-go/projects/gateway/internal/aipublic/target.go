@@ -15,7 +15,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
 // ownerLookup mirrors the findPublicXxxOwnerById projections.
@@ -389,5 +388,3 @@ func randomSecret() (string, error) {
 }
 
 func boolPtr(value bool) *bool { return &value }
-
-var _ = modelcheckauth.SQLite

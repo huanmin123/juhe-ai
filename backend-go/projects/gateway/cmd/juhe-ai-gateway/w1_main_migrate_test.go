@@ -54,10 +54,10 @@ func w1CreateLegacyAuditSource(t *testing.T, root string) (sourcePath string, so
 	raw := []byte("legacy audit payload for w1")
 	digest := sha256.Sum256(raw)
 	storageKey := "aa/payload.blob"
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,content_encoding,compression,storage_key,ref_count,first_seen_at,last_seen_at,created_at) VALUES ('blob-1',?,?,?,?,?,?,?,?,?,?,?)`, hex.EncodeToString(digest[:]), len(raw), len(raw), "text/plain", "", "none", storageKey, 1, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,content_encoding,compression,storage_key,ref_count,first_seen_at,last_seen_at,created_at) VALUES ('blob-1',?,?,?,?,?,?,?,?,?,?,?)`), hex.EncodeToString(digest[:]), len(raw), len(raw), "text/plain", "", "none", storageKey, 1, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatalf("insert legacy audit_payload_blobs = %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id,audit_log_id,attempt_id,part_type,sequence_index,content_type,body_blob_id,raw_size_bytes,compressed_size_bytes,capture_status,created_at) VALUES ('ref-1','log-1','alat-1','gateway_response',0,'text/plain','blob-1',?,?, 'complete','2026-01-01T00:00:00Z')`, len(raw), len(raw)); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO audit_payload_refs (id,audit_log_id,attempt_id,part_type,sequence_index,content_type,body_blob_id,raw_size_bytes,compressed_size_bytes,capture_status,created_at) VALUES ('ref-1','log-1','alat-1','gateway_response',0,'text/plain','blob-1',?,?, 'complete','2026-01-01T00:00:00Z')`), len(raw), len(raw)); err != nil {
 		t.Fatalf("insert legacy audit_payload_refs = %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO audit_error_groups (id,fingerprint,window_started_at,window_ended_at,system_account_id,path,count,sample_event_id,created_at,updated_at) VALUES ('aeg-1','fp-w1','2026-01-01T00:00:00Z','2026-01-01T00:01:00Z','sys_owner','/v1/test',1,'log-1','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {

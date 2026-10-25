@@ -34,54 +34,6 @@ func strings_ReplaceAll(v string) string {
 	return out
 }
 
-// TestW13g2McSchemaArms 覆盖 CheckBusinessSQLiteSchema 的查询失败分支
-// （business_schema.go 45-115）与 sqliteSchema* helper 的错误返回。
-func TestW13g2McSchemaArms(t *testing.T) {
-	s, fp := w13g2McSchemaFailStore(t)
-	ctx := context.Background()
-
-	// tables 列表失败（49-53）。
-	fp.arm("FROM sqlite_master")
-	defer fp.disarm()
-	if err := CheckBusinessSQLiteSchema(ctx, s.db); err == nil {
-		t.Fatalf("应失败")
-	}
-	fp.disarm()
-
-	// 空 DB：缺表分支（56-58 附近）。
-	if err := CheckBusinessSQLiteSchema(ctx, s.db); err == nil {
-		t.Fatalf("空库应失败")
-	}
-
-	// columns 查询失败（61-74 区间）。
-	fp.arm("PRAGMA table_info")
-	defer fp.disarm()
-	if err := CheckBusinessSQLiteSchema(ctx, s.db); err == nil {
-		t.Fatalf("应失败")
-	}
-	fp.disarm()
-
-	// sqliteSchemaColumns 直调（399-416 的 ErrNoRows/err 臂）。
-	fp.arm("PRAGMA table_info")
-	if _, err := sqliteSchemaColumns(ctx, s.db, "accounts"); err == nil {
-		t.Fatalf("应失败")
-	}
-	fp.disarm()
-	// 主键查询：缺表 → ErrNoRows（418-437）。
-	if _, err := sqliteSchemaPrimaryKey(ctx, s.db, "missing_table"); err != nil {
-		t.Fatalf("缺表主键应返回空: %v", err)
-	}
-	// 外键查询：缺表 → ErrNoRows 分支（603-640）。
-	if _, err := sqliteSchemaForeignKeys(ctx, s.db, "missing_table"); err != nil {
-		t.Fatalf("缺表外键应返回空: %v", err)
-	}
-	// 索引列查询：缺表 → 空列表（499-540）。
-	if cols, err := sqliteSchemaIndexColumns(ctx, s.db, "missing_index"); err != nil || len(cols) != 0 {
-		t.Fatalf("缺索引应空列表: %v %v", cols, err)
-	}
-}
-
-// TestW13g2McRuntimeAndRunGuards 覆盖 runtime/run 的 nil 与参数守卫。
 func TestW13g2McRuntimeAndRunGuards(t *testing.T) {
 	s, _ := w13g2McFailStore(t)
 	ctx := context.Background()

@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -501,7 +500,7 @@ func TestRunResumeFromRunningRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acquired, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, capabilitydomain.DialectPostgres, fixtureClock); err != nil || !acquired {
+	if acquired, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, fixtureClock); err != nil || !acquired {
 		t.Fatalf("claim running: acquired=%v err=%v", acquired, err)
 	}
 	if err := claimTx.Commit(); err != nil {
@@ -734,7 +733,7 @@ func TestVerifyFailureArms(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, capabilitydomain.DialectPostgres, fixtureClock); err != nil {
+		if _, err := schedprefdomain.ClaimRunningStage(context.Background(), claimTx, fixtureClock); err != nil {
 			t.Fatal(err)
 		}
 		if err := claimTx.Commit(); err != nil {

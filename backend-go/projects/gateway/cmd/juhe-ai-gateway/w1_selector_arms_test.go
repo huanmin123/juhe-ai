@@ -173,8 +173,8 @@ func TestW1ResolveChainAccountAccessAuthorizationInstanceOwnerMismatch(t *testin
 	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id, deleted_at) VALUES ('acc_authz_inst', 'sys_owner', '授权实例账户', 'api_key', 'active', 1, 'src_acc', 'authz_id_1', 'other_owner', NULL)`); err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
-		VALUES (?, 'sys_owner', 'acc_authz_inst', 1, '2026-01-01T00:00:00.000Z')`, fixture.groupID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES (?, 'sys_owner', 'acc_authz_inst', 1, '2026-01-01T00:00:00.000Z')`), fixture.groupID); err != nil {
 		t.Fatalf("insert group_accounts: %v", err)
 	}
 	result, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, "grantee_2",
@@ -194,13 +194,13 @@ func TestW1ResolveChainAccountAccessAuthorizationInstanceOwnerMismatch(t *testin
 func TestW1ResolveChainAccountAccessAuthorizedGroupOwnerAccount(t *testing.T) {
 	fixture := newChainFixture(t)
 	grantee := "sys_grantee_group"
-	if _, err := fixture.db.Exec(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`, grantee); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`), grantee); err != nil {
 		t.Fatalf("insert grantee: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO resource_authorizations (
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 		scope, status, expires_at, effective_source_type, effective_source_team_id, limits_json
-	) VALUES ('authz_g2', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`,
+	) VALUES ('authz_g2', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`),
 		fixture.groupID, fixture.systemAccount, grantee); err != nil {
 		t.Fatalf("insert authz: %v", err)
 	}
@@ -232,21 +232,21 @@ func TestW1ResolveChainAccountAccessAuthorizedGroupNonOwnerFiltered(t *testing.T
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, credentials_encrypted, deleted_at) VALUES ('acc_other_owner', 'sys_other', '第三方账户', 'api_key', 'active', 1, ?, NULL)`, credentials); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, credentials_encrypted, deleted_at) VALUES ('acc_other_owner', 'sys_other', '第三方账户', 'api_key', 'active', 1, ?, NULL)`), credentials); err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
-		VALUES (?, 'sys_owner', 'acc_other_owner', 1, '2026-01-01T00:00:00.000Z')`, fixture.groupID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES (?, 'sys_owner', 'acc_other_owner', 1, '2026-01-01T00:00:00.000Z')`), fixture.groupID); err != nil {
 		t.Fatalf("insert group_accounts: %v", err)
 	}
 	grantee := "sys_grantee_filtered"
-	if _, err := fixture.db.Exec(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`, grantee); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`), grantee); err != nil {
 		t.Fatalf("insert grantee: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO resource_authorizations (
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 		scope, status, expires_at, effective_source_type, effective_source_team_id, limits_json
-	) VALUES ('authz_filtered', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`,
+	) VALUES ('authz_filtered', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`),
 		fixture.groupID, fixture.systemAccount, grantee); err != nil {
 		t.Fatalf("insert authz: %v", err)
 	}
@@ -313,13 +313,13 @@ func TestW1ResolveChainAccountAccessOwnerScopeWithPrefetch(t *testing.T) {
 func TestW1LoadAccountAuthorizationsForSelectionAuthorizedGroupReturnsNil(t *testing.T) {
 	fixture := newChainFixture(t)
 	grantee := "sys_grantee_no_prefetch"
-	if _, err := fixture.db.Exec(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`, grantee); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`), grantee); err != nil {
 		t.Fatalf("insert grantee: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO resource_authorizations (
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
 		scope, status, expires_at, effective_source_type, effective_source_team_id, limits_json
-	) VALUES ('authz_no_pf', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`,
+	) VALUES ('authz_no_pf', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`),
 		fixture.groupID, fixture.systemAccount, grantee); err != nil {
 		t.Fatalf("insert authz: %v", err)
 	}
@@ -349,8 +349,8 @@ func TestW1ListAccountsHydrationDroppedCount(t *testing.T) {
 	if _, err := fixture.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, credentials_encrypted, deleted_at) VALUES ('acc_no_creds', 'sys_owner', '无凭据账户', 'api_key', 'active', 1, NULL, NULL)`); err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
-		VALUES (?, 'sys_owner', 'acc_no_creds', 1, '2026-01-01T00:00:00.000Z')`, fixture.groupID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES (?, 'sys_owner', 'acc_no_creds', 1, '2026-01-01T00:00:00.000Z')`), fixture.groupID); err != nil {
 		t.Fatalf("insert group_accounts: %v", err)
 	}
 	result, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, fixture.systemAccount,

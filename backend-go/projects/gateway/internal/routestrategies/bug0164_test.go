@@ -170,7 +170,7 @@ func TestRouteStrategyReadModelIntegrity(t *testing.T) {
 		{"status", "weird"},
 	} {
 		original := ""
-		if err := env.db.QueryRow(`SELECT `+dirty.column+` FROM route_strategies WHERE id = ?`, strategyID).Scan(&original); err != nil {
+		if err := env.db.QueryRow(fixtureBind(`SELECT `+dirty.column+` FROM route_strategies WHERE id = ?`), strategyID).Scan(&original); err != nil {
 			t.Fatal(err)
 		}
 		env.exec(t, `UPDATE route_strategies SET `+dirty.column+` = ? WHERE id = ?`, dirty.value, strategyID)
@@ -199,7 +199,9 @@ func TestRouteStrategyReadModelIntegrity(t *testing.T) {
 		t.Fatalf("weighted create: %d %v", code, weightedCreated)
 	}
 	weightedID := dataMap(t, weightedCreated)["id"].(string)
-	for _, weight := range []any{0, 101, "abc"} {
+	// "abc" 弱类型注入臂随 sqlite TEXT 列退役（D9：PG integer 列在写入侧即
+	// 拒收，读取侧脏数据仅剩越界整数形态）。
+	for _, weight := range []any{0, 101} {
 		env.exec(t, `UPDATE route_strategy_groups SET weight = ? WHERE route_strategy_id = ?`, weight, weightedID)
 		code, _ = env.do(t, http.MethodGet, path, "")
 		if code != http.StatusInternalServerError {

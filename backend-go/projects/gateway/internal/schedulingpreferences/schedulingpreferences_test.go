@@ -100,44 +100,16 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:schedulingpreferences-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS scheduling_preferences (
-			id TEXT PRIMARY KEY,
-			system_account_id TEXT,
-			name TEXT NOT NULL,
-			chat_mode TEXT NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
-			chat_speed_first_config_json TEXT,
-			built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique ON scheduling_preferences(system_account_id, name) WHERE built_in = 0`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique_lower ON scheduling_preferences(system_account_id, lower(name)) WHERE built_in = 0`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_builtin_id_unique ON scheduling_preferences(id) WHERE built_in = 1`,
-		`CREATE INDEX IF NOT EXISTS idx_scheduling_preferences_owner ON scheduling_preferences(system_account_id)`,
-		`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', scheduling_preference_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := newSchedulingPreferencesPGDatabase(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(seedBuiltinUpsert, builtinID, builtinName, now, now); err != nil {
+	if _, err := db.Exec(fixtureBind(seedBuiltinUpsert), builtinID, builtinName, now, now); err != nil {
 		t.Fatal(err)
 	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +119,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, false, nil, nil, invalidator)
+	store, err := NewStore(db, true, nil, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +219,7 @@ func (e *testEnv) switchUser(t *testing.T, username, password string) func() {
 
 func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(fixtureBind(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -255,7 +227,7 @@ func (e *testEnv) exec(t *testing.T, statement string, args ...any) {
 func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var count int
-	if err := e.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := e.db.QueryRow(fixtureBind(query), args...).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
@@ -264,7 +236,7 @@ func (e *testEnv) count(t *testing.T, query string, args ...any) int {
 func (e *testEnv) scalarText(t *testing.T, query string, args ...any) sql.NullString {
 	t.Helper()
 	var value sql.NullString
-	if err := e.db.QueryRow(query, args...).Scan(&value); err != nil {
+	if err := e.db.QueryRow(fixtureBind(query), args...).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	return value
@@ -273,7 +245,7 @@ func (e *testEnv) scalarText(t *testing.T, query string, args ...any) sql.NullSt
 func (e *testEnv) updatedAtOf(t *testing.T, id string) string {
 	t.Helper()
 	var updatedAt string
-	if err := e.db.QueryRow(`SELECT updated_at FROM scheduling_preferences WHERE id = ?`, id).Scan(&updatedAt); err != nil {
+	if err := e.db.QueryRow(fixtureBind(`SELECT updated_at FROM scheduling_preferences WHERE id = ?`), id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	return updatedAt
@@ -434,7 +406,7 @@ func TestSchedulingPreferenceBuiltinVisibilityAndWriteGuard(t *testing.T) {
 		// 外部篡改内置行名称（built_in 仍 1）→ 恢复式 upsert 拉回权威值 → 可见。
 		env.exec(t, `UPDATE scheduling_preferences SET name = '被篡改' WHERE id = ?`, builtinID)
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if _, err := env.db.Exec(seedBuiltinUpsert, builtinID, builtinName, now, now); err != nil {
+		if _, err := env.db.Exec(fixtureBind(seedBuiltinUpsert), builtinID, builtinName, now, now); err != nil {
 			t.Fatal(err)
 		}
 		code, payload := env.do(t, http.MethodGet, selfBase+"/"+builtinID, "")
@@ -491,7 +463,7 @@ func TestSchedulingPreferenceCreateMatrix(t *testing.T) {
 			t.Fatalf("self created row must not carry owner fields: %v", data)
 		}
 		var dbOwner string
-		if err := env.db.QueryRow(`SELECT system_account_id FROM scheduling_preferences WHERE id = ?`, data["id"]).Scan(&dbOwner); err != nil {
+		if err := env.db.QueryRow(fixtureBind(`SELECT system_account_id FROM scheduling_preferences WHERE id = ?`), data["id"]).Scan(&dbOwner); err != nil {
 			t.Fatal(err)
 		}
 		if dbOwner != ownerID {

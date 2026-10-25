@@ -40,9 +40,9 @@ type usageRouteEnv struct {
 
 func seedRoleAccount(t *testing.T, f *fixture, id, role string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
 		VALUES (?, ?, ?, ?, 'active', 'pbkdf2$sha512$120000$abc$def', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
-		ON CONFLICT(id) DO UPDATE SET role = excluded.role, status = 'active'`, id, id, id, role); err != nil {
+		ON CONFLICT(id) DO UPDATE SET role = excluded.role, status = 'active'`), id, id, id, role); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -68,11 +68,11 @@ func newUsageRouteEnv(t *testing.T, autoLogin string) *usageRouteEnv {
 	seedRoleAccount(t, f, "plainuser", "user")
 	seedRoleAccount(t, f, "owner1", "user")
 	seedRoleAccount(t, f, "grantee", "user")
-	service, err := businessauth.New(f.db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(f.db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(f.db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(f.db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,11 +269,10 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 	timezone := "UTC"
 	todayKey := dateKeyAt(env.f.now, timezone)
 	startKey := addCalendarDays(todayKey, -30)
-	_, err = env.f.db.Exec(`INSERT INTO usage_scope_range_windows
+	_, err = env.f.db.Exec(fixtureBind(`INSERT INTO usage_scope_range_windows
 		(system_account_id, scope_type, scope_id, start_date, end_date,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES ('owner1', 'group_authorization', ?, ?, ?, 3, 30, 15, 0.5, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
-		runtimeID, startKey, todayKey)
+		VALUES ('owner1', 'group_authorization', ?, ?, ?, 3, 30, 15, 0.5, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`), 		runtimeID, startKey, todayKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +329,7 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 		t.Fatalf("admin return status = %d body = %s", status, payload)
 	}
 	var grantStatus string
-	if err := env.f.db.QueryRow(`SELECT status FROM resource_authorization_grants WHERE id = ?`, created.Item.ID).Scan(&grantStatus); err != nil {
+	if err := env.f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorization_grants WHERE id = ?`), created.Item.ID).Scan(&grantStatus); err != nil {
 		t.Fatal(err)
 	}
 	if grantStatus != StatusReturned {

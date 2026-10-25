@@ -18,7 +18,7 @@ func (f *fixture) seedProvisionSource(t *testing.T, id, ownerID, name, providerC
 	t.Helper()
 	// vendor_code 由 providerCode 参数承载（generic 语义落 NULL + generic_http）。
 	vendor, driver := provisionVendorIdentity(providerCode)
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, status,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, status,
 		vendor_code,
 		connection_driver_code, protocol_code, protocol_version, type,
 		credentials_encrypted, credential_mask, concurrency_limit,
@@ -26,8 +26,7 @@ func (f *fixture) seedProvisionSource(t *testing.T, id, ownerID, name, providerC
 		schedulable, created_at, updated_at)
 		VALUES (?, ?, ?, 'active', ?, ?, 'chat_json', 'v1', 'oauth',
 		'{"api_key":"owner-secret"}', 'sk-****cret', 7000,
-		1, 'gpt-4o-mini', 'chat_json', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		id, ownerID, name, vendor, driver); err != nil {
+		1, 'gpt-4o-mini', 'chat_json', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), 		id, ownerID, name, vendor, driver); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -48,17 +47,16 @@ func provisionVendorIdentity(providerCode string) (any, string) {
 func (f *fixture) seedGranteeGroup(t *testing.T, id, granteeID, _ string, enabled, isDefault int) {
 	t.Helper()
 	// 组无 provider 维度（设计 §8）：providerCode 入参仅为调用点兼容保留。
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
-		VALUES (?, ?, ?, 'active', ?, ?, '2026-01-01T00:00:00Z')`,
-		id, "Group "+id, granteeID, enabled, isDefault); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES (?, ?, ?, 'active', ?, ?, '2026-01-01T00:00:00Z')`), 		id, "Group "+id, granteeID, enabled, isDefault); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func (f *fixture) seedNamedAccount(t *testing.T, id, ownerID, name string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, status, created_at, updated_at)
-		VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id, ownerID, name); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, status, created_at, updated_at)
+		VALUES (?, ?, ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), id, ownerID, name); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -96,14 +94,14 @@ func (f *fixture) provisionInstanceByAuthorization(t *testing.T, resourceID, gra
 	t.Helper()
 	runtimeID := accountRuntimeIDFor(t, f, resourceID, granteeID)
 	row := &provisionInstanceRow{}
-	err := f.db.QueryRow(`SELECT id, system_account_id, name, status, schedulable,
+	err := f.db.QueryRow(fixtureBind(`SELECT id, system_account_id, name, status, schedulable,
 		credentials_encrypted, credential_fingerprint, COALESCE(vendor_code, '') AS provider_code, '' AS provider_protocol_profile_id,
 		protocol_code, protocol_version, type, concurrency_limit,
 		temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
 		capability_domain,
 		authorization_instance_source_account_id, authorization_instance_authorization_id,
 		authorization_instance_owner_system_account_id, deleted_at, dispatch_revision
-		FROM accounts WHERE authorization_instance_authorization_id = ?`, runtimeID).
+		FROM accounts WHERE authorization_instance_authorization_id = ?`), runtimeID).
 		Scan(&row.id, &row.systemAccountID, &row.name, &row.status, &row.schedulable,
 			&row.credentialsEncrypted, &row.credentialFingerprint, &row.providerCode, &row.providerProtocolProfile,
 			&row.protocolCode, &row.protocolVersion, &row.accountType, &row.concurrencyLimit,
@@ -120,8 +118,8 @@ func (f *fixture) provisionInstanceByAuthorization(t *testing.T, resourceID, gra
 func (f *fixture) provisionBinding(t *testing.T, instanceID, resourceID, granteeID string) (groupID string, enabled int) {
 	t.Helper()
 	runtimeID := accountRuntimeIDFor(t, f, resourceID, granteeID)
-	err := f.db.QueryRow(`SELECT group_id, enabled FROM group_accounts
-		WHERE account_id = ? AND account_authorization_id = ?`, instanceID, runtimeID).
+	err := f.db.QueryRow(fixtureBind(`SELECT group_id, enabled FROM group_accounts
+		WHERE account_id = ? AND account_authorization_id = ?`), instanceID, runtimeID).
 		Scan(&groupID, &enabled)
 	if err != nil {
 		t.Fatalf("group_accounts binding: %v", err)
@@ -196,10 +194,10 @@ func TestProvisionInstanceOnCreateWithTargetGroup(t *testing.T) {
 
 	// Name search terms back the account list search.
 	var documentCount, termCount int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`, row.id).Scan(&documentCount); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_name_search_documents WHERE account_id = ?`), row.id).Scan(&documentCount); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ?`, row.id).Scan(&termCount); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_name_search_terms WHERE account_id = ?`), row.id).Scan(&termCount); err != nil {
 		t.Fatal(err)
 	}
 	if documentCount != 1 || termCount == 0 {
@@ -334,16 +332,16 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 	// source-account delete cascade in internal/accounts/delete.go): the
 	// terminal grant revives through a re-create while the instance row stays
 	// soft-deleted with degraded runtime fields.
-	if _, err := f.db.Exec(`UPDATE accounts SET deleted_at = '2026-02-01T00:00:00Z', deleted_by = 'owner',
+	if _, err := f.db.Exec(fixtureBind(`UPDATE accounts SET deleted_at = '2026-02-01T00:00:00Z', deleted_by = 'owner',
 		status = 'disabled', schedulable = 0, cooldown_until = '2026-02-01T01:00:00Z',
 		last_error_code = 'upstream_401', stream_failure_count = 3,
 		health_check_model = 'stale-model', temporary_unavailable_continuous_probe_enabled = 0,
 		name = '陈旧实例名'
-		WHERE id = ?`, first.id); err != nil {
+		WHERE id = ?`), first.id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET status = 'revoked',
-		revoked_by = 'owner', revoked_at = '2026-02-01T00:00:00Z' WHERE id = ?`, result.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'revoked',
+		revoked_by = 'owner', revoked_at = '2026-02-01T00:00:00Z' WHERE id = ?`), result.Item.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -381,9 +379,8 @@ func TestProvisionRestoresSoftDeletedInstance(t *testing.T) {
 		t.Fatalf("dispatch_revision = %d, want %d", restored.dispatchRevision, first.dispatchRevision+1)
 	}
 	var outboxCount int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM account_circuit_outbox
-		WHERE account_id = ? AND event_type = 'dispatch_revision_changed' AND status = 'pending'`,
-		restored.id).Scan(&outboxCount); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM account_circuit_outbox
+		WHERE account_id = ? AND event_type = 'dispatch_revision_changed' AND status = 'pending'`), 		restored.id).Scan(&outboxCount); err != nil {
 		t.Fatal(err)
 	}
 	if outboxCount != 1 {
@@ -415,7 +412,7 @@ func TestRevokeKeepsInstanceTerminalState(t *testing.T) {
 	row := f.provisionInstanceByAuthorization(t, "acc-src", "grantee")
 
 	var updatedAt string
-	if err := f.db.QueryRow(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`, result.Item.ID).Scan(&updatedAt); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT updated_at FROM resource_authorization_grants WHERE id = ?`), result.Item.ID).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	outcome, err := f.store.Revoke(context.Background(), result.Item.ID, updatedAt, "owner")
@@ -481,7 +478,7 @@ func TestSyncInstanceNamesFollowsSourceRename(t *testing.T) {
 		t.Fatalf("renamed instance = %q", renamed.name)
 	}
 	var normalizedName string
-	if err := f.db.QueryRow(`SELECT normalized_name FROM account_name_search_documents WHERE account_id = ?`, row.id).Scan(&normalizedName); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT normalized_name FROM account_name_search_documents WHERE account_id = ?`), row.id).Scan(&normalizedName); err != nil {
 		t.Fatal(err)
 	}
 	if normalizedName != "renamed 生产账户-"+shortID {

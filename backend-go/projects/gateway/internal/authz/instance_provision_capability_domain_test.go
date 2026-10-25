@@ -68,12 +68,12 @@ func TestProvisionRestoresInstanceCapabilityDomainFromSource(t *testing.T) {
 
 	// 实例软删除 + 陈旧域（模拟删除后源域语义变化的存量形态）：恢复臂必须
 	// 把实例域同步回源当前域，而不是保留陈旧值。
-	if _, err := f.db.Exec(`UPDATE accounts SET deleted_at = '2026-02-01T00:00:00Z', deleted_by = 'owner',
-		capability_domain = 'chat', status = 'disabled' WHERE id = ?`, first.id); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE accounts SET deleted_at = '2026-02-01T00:00:00Z', deleted_by = 'owner',
+		capability_domain = 'chat', status = 'disabled' WHERE id = ?`), first.id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET status = 'revoked',
-		revoked_by = 'owner', revoked_at = '2026-02-01T00:00:00Z' WHERE id = ?`, result.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET status = 'revoked',
+		revoked_by = 'owner', revoked_at = '2026-02-01T00:00:00Z' WHERE id = ?`), result.Item.ID); err != nil {
 		t.Fatal(err)
 	}
 

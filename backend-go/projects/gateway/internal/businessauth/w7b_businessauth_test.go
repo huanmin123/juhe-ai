@@ -2,33 +2,31 @@ package businessauth
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
-	_ "modernc.org/sqlite"
 )
 
-// w7b：Business SQLite owner 门禁适配层的全接口覆盖（进程内 sqlite 直驱）。
+// w7b：Business owner 门禁适配层的全接口覆盖（pgtestkit 真实 PG 直驱）。
 func TestW7BBusinessAuthFullSurface(t *testing.T) {
 	db := openBusinessAuthDB(t)
 	defer db.Close()
 	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
 	const passwordHash = "pbkdf2$sha512$120000$MDEyMzQ1Njc4OWFiY2RlZg$MB16ie0MUIkgM1Xio7iCM8x9uCDqJJf5rkQ297w84fg"
-	if _, err := db.Exec(`INSERT INTO system_accounts(id,username,display_name,role,status,password_hash,must_change_password) VALUES ('acct','admin','Admin','admin','active',?,0)`, passwordHash); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_business.system_accounts(id,username,display_name,role,status,password_hash,must_change_password,created_at,updated_at) VALUES ('acct','admin','Admin','admin','active',$1,0,$2,$2)`), passwordHash, now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO system_accounts(id,username,display_name,role,status,password_hash,must_change_password) VALUES ('acct2','mustchange','Must','admin','active',?,1)`, passwordHash); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_business.system_accounts(id,username,display_name,role,status,password_hash,must_change_password,created_at,updated_at) VALUES ('acct2','mustchange','Must','admin','active',$1,1,$2,$2)`), passwordHash, now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	// 构造参数校验。
-	if _, err := New(nil, modelcheckauth.SQLite, time.Now, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true}); err == nil {
+	if _, err := New(nil, modelcheckauth.Postgres, time.Now, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true}); err == nil {
 		t.Fatal("nil db 必须报错")
 	}
-	service, err := New(db, modelcheckauth.SQLite, func() time.Time { return now }, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := New(db, modelcheckauth.Postgres, func() time.Time { return now }, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +106,7 @@ func TestW7BBusinessAuthFullSurface(t *testing.T) {
 
 	// CleanupExpiredSessions：预置一条过期会话后清理。
 	expireAt := now.Add(-time.Hour).UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.Exec(`INSERT INTO system_sessions(id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('w7b-expired','acct','w7b-expired-hash',?,?,?)`, expireAt, expireAt, expireAt); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_business.system_sessions(id,system_account_id,token_hash,expires_at,created_at,last_seen_at) VALUES ('w7b-expired','acct','w7b-expired-hash',$1,$2,$3)`), expireAt, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	cleaned, err := service.CleanupExpiredSessions(ctx, now, 10)
@@ -120,7 +118,7 @@ func TestW7BBusinessAuthFullSurface(t *testing.T) {
 func TestW7BBusinessAuthGateFailsClosed(t *testing.T) {
 	db := openBusinessAuthDB(t)
 	defer db.Close()
-	partial, err := New(db, modelcheckauth.SQLite, time.Now, OwnerGate{Confirmed: true})
+	partial, err := New(db, modelcheckauth.Postgres, time.Now, OwnerGate{Confirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,11 +173,7 @@ func TestW7BBusinessAuthGateFailsClosed(t *testing.T) {
 	}
 
 	// 无效 mode 的构造错误分支。
-	badDB, err := sql.Open("sqlite", "file:w7b-bad?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer badDB.Close()
+	badDB := newUnreachablePGDatabase(t)
 	if _, err := New(badDB, modelcheckauth.Mode(42), time.Now, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true}); err == nil {
 		t.Fatal("非法 mode 必须报错")
 	}

@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -369,14 +368,18 @@ func loginComposeSession(t *testing.T, serverURL, username string) []*http.Cooki
 }
 
 // newAdapterBalanceRefresher builds the production adapter over an isolated
-// SQLite execution store and a canned upstream response (the adapter mapping
-// itself is mode-independent; the SQLite assembly closed loop is covered by
-// TestInProcessRefreshSQLiteManualRefreshEndToEnd).
+// pgtestkit PG execution store and a canned upstream response（原 SQLite 执行
+// 库夹具随存储形态退役重钉 PG，PLAN-20261024T051925945Z；PG 装配闭环由
+// TestInProcessRefreshPGManualRefreshEndToEnd 覆盖）。
 func newAdapterBalanceRefresher(t *testing.T, ownerID, upstreamBody string, holdOwnerLease bool) (*gatewayManualBalanceRefresher, *platformaccountbalance.Store) {
 	t.Helper()
 	const secret = "gateway-adapter-secret"
+	balanceDB := pgtestkit.NewTestDatabase(t)
+	if _, err := balanceDB.DB.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
+		t.Fatalf("create juhe_jobs schema: %v", err)
+	}
 	store, err := platformaccountbalance.OpenStore(platformaccountbalance.StoreConfig{
-		Mode: platformaccountbalance.StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "adapter-balance.sqlite"),
+		Mode: platformaccountbalance.StorePostgres, PostgresURL: balanceDB.DSN,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +404,7 @@ func newAdapterBalanceRefresher(t *testing.T, ownerID, upstreamBody string, hold
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &gatewayManualBalanceRefresher{db: nil, pg: false, secret: secret, store: store, runner: runner, now: time.Now}, store
+	return &gatewayManualBalanceRefresher{db: nil, pg: true, secret: secret, store: store, runner: runner, now: time.Now}, store
 }
 
 // adapterCandidate builds one manual-refresh candidate with the given input

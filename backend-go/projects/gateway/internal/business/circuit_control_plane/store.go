@@ -229,12 +229,12 @@ func (s *Store) CheckContract(ctx context.Context) error {
 }
 
 func (s *Store) checkKeyModelCapabilityIndex(ctx context.Context) error {
-	spec, exists := sharedcontracts.BusinessSQLiteSchema["account_circuit_incidents"]
+	spec, exists := sharedcontracts.BusinessSchema["account_circuit_incidents"]
 	const indexName = "idx_account_circuit_incidents_key_model_capability"
 	if !exists || len(spec.IndexDefinitions) == 0 {
 		return fmt.Errorf("verify circuit key_model capability index: shared contract definition is missing")
 	}
-	var required sharedcontracts.SQLiteIndexDefinition
+	var required sharedcontracts.BusinessIndexDefinition
 	foundDefinition := false
 	for _, definition := range spec.IndexDefinitions {
 		if definition.Name != indexName {

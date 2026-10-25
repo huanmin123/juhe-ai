@@ -11,13 +11,21 @@ import (
 	"context"
 	"reflect"
 	"testing"
+
+	miniredis "github.com/alicebob/miniredis/v2"
 )
 
 func TestOrderGatewayAccountsByHotQualityReturnsFirstGroupDecisionExplanation(t *testing.T) {
 	t.Cleanup(ResetGatewayHotQualityRuntimeForTest)
 	ResetGatewayHotQualityRuntimeForTest()
 	ctx := context.Background()
-	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{RuntimeMode: "standalone", RuntimeStateDriver: "memory"})
+	// PG+Redis 唯一形态：排序解释测试经 miniredis 承载 redis 运行态（原
+	// standalone memory 运行态随存储形态退役删除）。
+	server := miniredis.RunT(t)
+	runtime, err := GetGatewayHotQualityRuntime(ctx, RuntimeDriverConfig{
+		RedisStateURL:  "redis://" + server.Addr(),
+		RedisNamespace: "exp-explain",
+	})
 	if err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}

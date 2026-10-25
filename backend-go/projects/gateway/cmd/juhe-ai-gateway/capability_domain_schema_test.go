@@ -1,165 +1,55 @@
-// accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）测试：
-// SQLite 方言走形状矩阵（通过/缺列/缺表/类型错/可空/默认值错/缺 CHECK/收窄
-// CHECK）并与 maintenance bootstrap ensure 产出锁同形；PostgreSQL 方言复用
-// w1g2 覆盖子库（dev env 缺失或不可达时跳过），在独立 scratch schema 上做同
-// 矩阵验证，不触碰 juhe_business 数据。
+// accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）测试
+// （PostgreSQL 唯一存储形态，PLAN-20261024T051925945Z）：pgtestkit 隔离库 +
+// maintenance bootstrap.EnsurePostgres fresh DDL 锁同形（防启动校验与权威
+// DDL 漂移）；scratch schema 矩阵覆盖通过/缺列/类型错/可空/默认值错/缺
+// CHECK/收窄 CHECK；M2 阶段记录门禁覆盖记录缺失/仅 m1_complete/ruleVersion
+// 不符/global_settings 表缺失三个失败臂与已封存放行臂。（原 SQLite 形状矩阵
+// 与 SQLite ensure 同形锁随 sqlite 存储形态退役删除，D9。）
 package main
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // capabilityDomainCorrectColumn 是与 maintenance DDL 同构的正确列声明。
-const capabilityDomainCorrectColumn = `capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+const capabilityDomainCorrectColumn = `capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
 
-func openCapabilityDomainSQLiteFixture(t *testing.T, createTable string) *sql.DB {
+// openCapabilityDomainPGDatabase 创建 pgtestkit 隔离测试库并应用
+// maintenance bootstrap.EnsurePostgres 生产全量建表（与 accounts
+// newFreshPGDatabase 同款 fresh-DDL 契约设施）。
+func openCapabilityDomainPGDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:capdom-check-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if createTable != "" {
-		if _, err := db.Exec(createTable); err != nil {
-			t.Fatalf("fixture DDL: %v: %v", createTable, err)
-		}
-	}
-	return db
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := bootstrap.EnsurePostgres(ctx, db)
+		return err
+	})
 }
 
-func TestCapabilityDomainSchemaSQLitePasses(t *testing.T) {
-	db := openCapabilityDomainSQLiteFixture(t, `CREATE TABLE accounts (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		deleted_at TEXT,
-		`+capabilityDomainCorrectColumn+`
-	)`)
-	if err := checkAccountsCapabilityDomainSchema(context.Background(), db, false); err != nil {
-		t.Fatalf("标准形状必须通过: %v", err)
-	}
-}
-
-func TestCapabilityDomainSchemaSQLiteFailureArms(t *testing.T) {
-	scenarios := []struct {
-		name    string
-		create  string
-		wantErr string
-	}{
-		{"missing-table", "", "列缺失"},
-		{"missing-column", `CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT NOT NULL)`, "列缺失"},
-		{"wrong-type", `CREATE TABLE accounts (id TEXT PRIMARY KEY, capability_domain BIGINT NOT NULL DEFAULT 0)`, "期望 TEXT"},
-		{"nullable", `CREATE TABLE accounts (id TEXT PRIMARY KEY, capability_domain TEXT)`, "期望 NOT NULL"},
-		{"wrong-default", `CREATE TABLE accounts (id TEXT PRIMARY KEY, capability_domain TEXT NOT NULL DEFAULT 'video')`, "期望 'chat'"},
-		{"missing-check", `CREATE TABLE accounts (id TEXT PRIMARY KEY, capability_domain TEXT NOT NULL DEFAULT 'chat')`, "四值 CHECK"},
-		{"narrowed-check", `CREATE TABLE accounts (id TEXT PRIMARY KEY, capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video')))`, "四值 CHECK"},
-	}
-	for _, scenario := range scenarios {
-		t.Run(scenario.name, func(t *testing.T) {
-			db := openCapabilityDomainSQLiteFixture(t, scenario.create)
-			err := checkAccountsCapabilityDomainSchema(context.Background(), db, false)
-			if err == nil {
-				t.Fatalf("形状不符必须 fail-fast")
-			}
-			if !strings.Contains(err.Error(), scenario.wantErr) || !strings.Contains(err.Error(), capabilityDomainExpectedShape) {
-				t.Fatalf("错误应包含 %q 与期望形状，got: %v", scenario.wantErr, err)
-			}
-		})
-	}
-}
-
-// TestCapabilityDomainSchemaSQLiteMatchesMaintenanceBootstrap 锁定启动校验与
-// maintenance bootstrap ensure 的建表形状一致：同一次 ensure 产出的库必须通过
-// 校验（防两侧 DDL 漂移）。
-func TestCapabilityDomainSchemaSQLiteMatchesMaintenanceBootstrap(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, "business.sqlite3")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
-		t.Fatalf("bootstrap ensure: %v", err)
-	}
-	if err := checkAccountsCapabilityDomainSchema(context.Background(), db, false); err != nil {
+// TestCapabilityDomainSchemaMatchesMaintenanceBootstrap 锁定启动校验与
+// maintenance bootstrap ensure 的建表形状一致：同一次 EnsurePostgres 产出的
+// 业务库必须通过校验（防两侧 DDL 漂移）。
+func TestCapabilityDomainSchemaMatchesMaintenanceBootstrap(t *testing.T) {
+	db := openCapabilityDomainPGDatabase(t)
+	if err := checkAccountsCapabilityDomainSchema(context.Background(), db); err != nil {
 		t.Fatalf("bootstrap ensure 产出的业务库必须通过启动校验: %v", err)
 	}
 }
 
-// TestCapabilityDomainSchemaPostgresArms 在 dev PG 上开一次性子库，于独立
-// scratch schema 验证 PG 方言四值形状判定（含真实 PG 的默认值渲染
-// `'chat'::text`）；dev env 缺失或 PG 管理口不可达时跳过。不依赖也不触碰
-// w1g2 覆盖子库与 juhe_business 数据。
+// TestCapabilityDomainSchemaPostgresArms 在 pgtestkit 隔离库的独立 scratch
+// schema 上验证 PG 四值形状判定矩阵（含真实 PG 的默认值渲染 `'chat'::text`
+// 与 IN 归一化为 = ANY(ARRAY[...]) 的约束文本）；收窄 CHECK 臂锁定值集形状
+// 判定拒绝子集词表。不触碰 juhe_business 数据。
 func TestCapabilityDomainSchemaPostgresArms(t *testing.T) {
-	if testing.Short() {
-		t.Skip("short 模式跳过真实 PG")
-	}
-	env := w1pgEnvFile(t)
-	host := env["DEV_POSTGRES_HOST"]
-	directPort := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appUser := env["DEV_POSTGRES_APP_USERNAME"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || directPort == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过 PG 形状校验测试）")
-	}
-	adminDSN := fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, directPort)
-	adminDB, err := sql.Open("pgx", adminDSN)
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理口失败: %v", err)
-	}
-	defer adminDB.Close()
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := adminDB.PingContext(pingCtx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-
-	database := "juhe_ai_sub2api_dev_capdomcheck"
-	// dropDatabase 自管短连接：测试体内的 defer 关闭顺序先于 t.Cleanup，
-	// 复用外层句柄会在清理时已是关闭态。
-	dropDatabase := func() {
-		admin, err := sql.Open("pgx", adminDSN)
-		if err != nil {
-			t.Logf("清理一次性子库打开管理连接失败: %v", err)
-			return
-		}
-		defer admin.Close()
-		if _, err := admin.Exec(fmt.Sprintf(
-			`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s' AND pid <> pg_backend_pid()`, database)); err != nil {
-			t.Logf("终止残留会话失败: %v", err)
-		}
-		if _, err := admin.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS %s`, database)); err != nil {
-			t.Logf("清理一次性子库失败: %v", err)
-		}
-	}
-	dropDatabase()
-	owner := appUser
-	if owner == "" {
-		owner = adminUser
-	}
-	if _, err := adminDB.Exec(fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, database, owner)); err != nil {
-		t.Fatalf("创建一次性子库失败: %v", err)
-	}
-	t.Cleanup(dropDatabase)
-
-	sep := strings.LastIndex(appURL, "/")
-	db, err := sql.Open("pgx", appURL[:sep+1]+database)
-	if err != nil {
-		t.Fatalf("打开一次性子库失败: %v", err)
-	}
-	defer db.Close()
+	db := openCapabilityDomainPGDatabase(t)
 
 	schema := "capdom_probe"
 
@@ -170,10 +60,12 @@ func TestCapabilityDomainSchemaPostgresArms(t *testing.T) {
 	}{
 		{"pass", capabilityDomainCorrectColumn, ""},
 		{"missing-column", "", "缺列"},
+		{"missing-table", "", "缺列"},
 		{"wrong-type", `capability_domain bigint NOT NULL DEFAULT 0`, "期望 text"},
 		{"nullable", `capability_domain text`, "期望 NOT NULL"},
 		{"wrong-default", `capability_domain text NOT NULL DEFAULT 'video'`, "期望前缀 'chat'"},
 		{"missing-check", `capability_domain text NOT NULL DEFAULT 'chat'`, "CHECK"},
+		{"narrowed-check", `capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video'))`, "四值域集"},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -210,28 +102,15 @@ func TestCapabilityDomainSchemaPostgresArms(t *testing.T) {
 // 迁移命令指引；已封存 m2_finalized 放行。
 func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
 	const migrationCommandNeedle = "--migrate-account-capability-domain"
-	openGateFixture := func(t *testing.T, record string) *sql.DB {
+	seedStageRecord := func(t *testing.T, db *sql.DB, record string) {
 		t.Helper()
-		db := openCapabilityDomainSQLiteFixture(t, `CREATE TABLE accounts (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			deleted_at TEXT,
-			`+capabilityDomainCorrectColumn+`
-		)`)
-		if _, err := db.Exec(`CREATE TABLE global_settings (
-			key TEXT PRIMARY KEY,
-			value_json TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`); err != nil {
-			t.Fatalf("seed global_settings ddl: %v", err)
+		if record == "" {
+			return
 		}
-		if record != "" {
-			if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`,
-				capdomain.MigrationSettingKey, record); err != nil {
-				t.Fatalf("seed stage record: %v", err)
-			}
+		if _, err := db.Exec(`INSERT INTO juhe_business.global_settings (key, value_json, updated_at) VALUES ($1, $2, '2026-10-12T08:00:00Z')`,
+			capdomain.MigrationSettingKey, record); err != nil {
+			t.Fatalf("seed stage record: %v", err)
 		}
-		return db
 	}
 	scenarios := []struct {
 		name        string
@@ -244,8 +123,9 @@ func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
-			db := openGateFixture(t, scenario.record)
-			err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false)
+			db := openCapabilityDomainPGDatabase(t)
+			seedStageRecord(t, db, scenario.record)
+			err := checkAccountCapabilityDomainStageRecord(context.Background(), db)
 			if err == nil {
 				t.Fatalf("阶段门禁失败臂必须 fail-fast")
 			}
@@ -255,20 +135,19 @@ func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
 		})
 	}
 	t.Run("global-settings-table-missing", func(t *testing.T) {
-		db := openCapabilityDomainSQLiteFixture(t, `CREATE TABLE accounts (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			deleted_at TEXT,
-			`+capabilityDomainCorrectColumn+`
-		)`)
-		err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false)
+		db := openCapabilityDomainPGDatabase(t)
+		if _, err := db.Exec(`DROP TABLE juhe_business.global_settings`); err != nil {
+			t.Fatalf("drop global_settings: %v", err)
+		}
+		err := checkAccountCapabilityDomainStageRecord(context.Background(), db)
 		if err == nil || !strings.Contains(err.Error(), "读取失败") || !strings.Contains(err.Error(), migrationCommandNeedle) {
 			t.Fatalf("global_settings 缺失必须报读取失败且携带迁移命令指引，got: %v", err)
 		}
 	})
 	t.Run("m2-finalized-passes", func(t *testing.T) {
-		db := openGateFixture(t, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`)
-		if err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false); err != nil {
+		db := openCapabilityDomainPGDatabase(t)
+		seedStageRecord(t, db, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`)
+		if err := checkAccountCapabilityDomainStageRecord(context.Background(), db); err != nil {
 			t.Fatalf("已封存记录必须放行: %v", err)
 		}
 	})

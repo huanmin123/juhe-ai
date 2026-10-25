@@ -35,7 +35,7 @@ func seedSuperOuterFixture(t *testing.T, mode string, targets ...superOuterTarge
 	now := chainRouteTestNow
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed outer fixture: %v: %v", query, err)
 		}
 	}
@@ -121,7 +121,7 @@ func TestSuperGroupOuterFixtures(t *testing.T) {
 			}},
 		)
 		for _, accountID := range []string{"acc_sa1", "acc_sa2", "acc_sb1", "acc_sb2"} {
-			if _, err := fixture.db.Exec(`DELETE FROM account_supported_models WHERE account_id = ?`, accountID); err != nil {
+			if _, err := fixture.db.Exec(fixtureBind(`DELETE FROM account_supported_models WHERE account_id = ?`), accountID); err != nil {
 				t.Fatal(err)
 			}
 		}

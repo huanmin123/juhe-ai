@@ -649,10 +649,10 @@ func w1xSelectorAuthzFixture(t *testing.T) (*chainAccountsSelector, *sql.DB) {
 
 func w1xSeedAuthzRow(t *testing.T, db *sql.DB, resourceType, id, resourceID, grantee string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id,
+	_, err := db.Exec(fixtureBind(`INSERT INTO resource_authorizations (id, resource_type, resource_id,
 		resource_owner_system_account_id, grantee_system_account_id, status, expires_at,
 		effective_source_type, effective_source_team_id, limits_json)
-		VALUES (?, ?, ?, 'sys_owner', ?, 'active', NULL, 'direct', NULL, NULL)`, id, resourceType, resourceID, grantee)
+		VALUES (?, ?, ?, 'sys_owner', ?, 'active', NULL, 'direct', NULL, NULL)`), id, resourceType, resourceID, grantee)
 	if err != nil {
 		t.Fatalf("seed authorization: %v", err)
 	}
@@ -1063,7 +1063,7 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 		if sealErr != nil {
 			t.Fatalf("encrypt credentials: %v", sealErr)
 		}
-		if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'a-limit-acc'`, sealed); err != nil {
+		if _, err := db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = 'a-limit-acc'`), sealed); err != nil {
 			t.Fatalf("bind credentials: %v", err)
 		}
 		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 20)
@@ -1751,9 +1751,10 @@ func TestW1XDispatchSuppressionWaiterArms(t *testing.T) {
 func TestW1XHotQualityLifecycleMarkFirstByte(t *testing.T) {
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
+	server := miniredis.RunT(t)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "performance",
-		RuntimeStateDriver: "redis",
+		RedisStateURL:  "redis://" + server.Addr(),
+		RedisNamespace: "w1x-hot-quality",
 	})
 	if err != nil {
 		t.Fatalf("create hot quality runtime: %v", err)
@@ -2057,7 +2058,7 @@ func TestW1XHydrationLimitBreakAndBadCooldownError(t *testing.T) {
 		if sealErr != nil {
 			t.Fatalf("encrypt credentials: %v", sealErr)
 		}
-		if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id IN ('a-limit-acc', 'b-limit-acc', 'c-limit-acc', 'd-limit-acc')`, sealed); err != nil {
+		if _, err := db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id IN ('a-limit-acc', 'b-limit-acc', 'c-limit-acc', 'd-limit-acc')`), sealed); err != nil {
 			t.Fatalf("bind credentials: %v", err)
 		}
 		selector, err := newChainAccountsSelectorWithStats(db, db, false, "secret", time.Now, 2)

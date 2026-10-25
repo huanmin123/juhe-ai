@@ -53,8 +53,8 @@ func (e *modeFixtureEnv) createSuperGroup(t *testing.T, ownerID, name string, me
 // bindings 读取策略绑定事实（按 priority 排序）。
 func (e *modeFixtureEnv) bindings(t *testing.T, strategyID string) []map[string]any {
 	t.Helper()
-	rows, err := e.db.Query(`SELECT group_id, priority, weight, status FROM route_strategy_groups
-		WHERE route_strategy_id = ? ORDER BY priority ASC, group_id ASC`, strategyID)
+	rows, err := e.db.Query(fixtureBind(`SELECT group_id, priority, weight, status FROM route_strategy_groups
+		WHERE route_strategy_id = ? ORDER BY priority ASC, group_id ASC`), strategyID)
 	if err != nil {
 		t.Fatal(err)
 	}

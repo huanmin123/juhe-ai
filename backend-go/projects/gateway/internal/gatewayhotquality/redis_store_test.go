@@ -112,14 +112,11 @@ func TestRedisHotQualityStoreConstructorGuards(t *testing.T) {
 	}
 }
 
-// TestHotQualityStoreDualDriverConsistency runs the identical accounting
-// scenario against the memory driver and the Redis driver (the Redis replies
-// mirror the Lua scripts' real cjson output shape), asserting both drivers
-// agree on every observable status and counter.
+// TestHotQualityStoreDualDriverConsistency runs the accounting scenario via
+// canned Lua replies（the Redis replies mirror the Lua scripts' real cjson
+// output shape）。原 memory 驱动对跑臂随 memory store 退役删除
+// （PLAN-20261024T051925945Z）。
 func TestHotQualityStoreDualDriverConsistency(t *testing.T) {
-	t.Run("memory", func(t *testing.T) {
-		runHotQualityStoreScenario(t, newTestMemoryStore(t, nil))
-	})
 	t.Run("redis", func(t *testing.T) {
 		scope := testScope("acc-1")
 		scopeText := scopeJSON(scope)
@@ -283,6 +280,12 @@ func TestRedisHotQualityStoreScriptsWithMiniredis(t *testing.T) {
 // runHotQualityStoreScenario drives one identical accounting scenario against
 // any store implementation; both drivers must agree on every observable
 // status and counter (存储双驱一致性).
+// testScope 构造场景用 HotQualityScope（原 memory_store_test.go 共享测试
+// 小工具，随 memory store 退役上移）。
+func testScope(account string) HotQualityScope {
+	return HotQualityScope{AccountRuntimeKey: account, ProtocolProfile: "openai:2024", RequestLane: "text", ModelFamily: "model-bucket-01"}
+}
+
 func runHotQualityStoreScenario(t *testing.T, store HotQualityStore) {
 	t.Helper()
 	ctx := context.Background()
@@ -466,10 +469,6 @@ func runSameTierExplorationScenario(t *testing.T, store SameTierExplorationStore
 	if err != nil || cooldown.Status != ExplorationReservationTargetCooldown {
 		t.Fatalf("cooldown = %+v, err = %v", cooldown, err)
 	}
-}
-
-func TestMemorySameTierExplorationStoreSameScenario(t *testing.T) {
-	runSameTierExplorationScenario(t, newTestExplorationMemoryStore(t, nil))
 }
 
 // TestRedisSameTierExplorationStoreSameScenario replays the same scenario via

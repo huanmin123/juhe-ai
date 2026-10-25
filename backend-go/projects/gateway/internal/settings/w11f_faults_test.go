@@ -1,6 +1,9 @@
 package settings
 
-// w11f 覆盖波次：脚本化 sqlite 连接层故障注入 + 纯函数/直连分支测试。
+// w11f 覆盖波次：脚本化连接层故障注入 + 纯函数/直连分支测试。生产存储形态
+// 收敛为 PostgreSQL 后，本文件的注入基座与 store 装配迁真实 PG（pgtestkit
+// 隔离库 + NewStore(db, true, ...)，规则子串按生产 PG 臂 juhe_business 限定
+// 形式匹配）；SQLite 模式专属的时区探针/统计库探针臂按 D9 删除。
 
 import (
 	"context"
@@ -18,9 +21,11 @@ import (
 	"testing"
 	"time"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
@@ -264,37 +269,28 @@ type w11fEnv struct {
 
 func newW11FEnv(t *testing.T) *w11fEnv {
 	t.Helper()
-	base, err := sqlite.NewConnector("file:w11f-" + strings.ReplaceAll(t.Name(), "/", "-") + "-" + w11fNextDBName() + "?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, settingsPGFixtureSchema)
+		return err
+	})
+	_ = testDB.DB.Close()
+	pgConfig, err := pgx.ParseConfig(testDB.DSN)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse pgtestkit DSN: %v", err)
 	}
+	base := stdlib.GetConnector(*pgConfig)
 	script := &w11fScript{t: t}
 	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w11fConnector{base: base, script: script})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
-		`CREATE TABLE IF NOT EXISTS global_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, tableName := range usageStatsDataTables {
-		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ` + tableName + ` (probe TEXT)`); err != nil {
-			t.Fatal(err)
-		}
-	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for key, value := range seedSystemSettings {
 		raw, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
-		if _, execErr := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`, key, string(raw), now); execErr != nil {
+		if _, execErr := db.Exec(fixtureSQL(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`), key, string(raw), now); execErr != nil {
 			t.Fatal(execErr)
 		}
 	}
@@ -303,15 +299,15 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 		{"appIcon", "/__aisys__/brand-icon.svg"},
 	} {
 		raw, _ := json.Marshal(seed.value)
-		if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?)`, seed.key, string(raw), now); err != nil {
+		if _, err := db.Exec(fixtureSQL(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?)`), seed.key, string(raw), now); err != nil {
 			t.Fatal(err)
 		}
 	}
-	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := authsys.NewAccountStore(db, modelcheckauth.SQLite, nil)
+	accounts, err := authsys.NewAccountStore(db, modelcheckauth.Postgres, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +317,7 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 	}
 	sink := &recordingSink{}
 	invalidator := &recordingInvalidator{}
-	store, err := NewStore(db, false, nil, invalidator)
+	store, err := NewStore(db, true, nil, invalidator)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +385,7 @@ func (e *w11fEnv) login(t *testing.T, username, password, role string) {
 
 func (e *w11fEnv) exec(t *testing.T, statement string, args ...any) {
 	t.Helper()
-	if _, err := e.db.Exec(statement, args...); err != nil {
+	if _, err := e.db.Exec(fixtureSQL(statement), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -589,27 +585,27 @@ func TestW11FStoreFaults(t *testing.T) {
 	}
 
 	// 查询错误 / Scan 错误 / 坏 JSON / 未知键 / 越界值 / rows.Err / 缺键。
-	env.script.failQuery("FROM system_settings")
+	env.script.failQuery("FROM juhe_business.system_settings")
 	if _, err := store.loadFromDatabase(ctx); err == nil {
 		t.Fatal("load query fault must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{nil, "1"}}, nil)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{nil, "1"}}, nil)
 	if _, err := store.loadFromDatabase(ctx); err == nil {
 		t.Fatal("load scan fault must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{"userAiAccountLimit", "{bad"}}, nil)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{"userAiAccountLimit", "{bad"}}, nil)
 	if _, err := store.loadFromDatabase(ctx); err == nil {
 		t.Fatal("load bad json must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{"nope", "1"}}, nil)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{"nope", "1"}}, nil)
 	if _, err := store.loadFromDatabase(ctx); err == nil {
 		t.Fatal("load unknown key must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{"userAiAccountLimit", "99999999"}}, nil)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{"userAiAccountLimit", "99999999"}}, nil)
 	if _, err := store.loadFromDatabase(ctx); err == nil {
 		t.Fatal("load out-of-range must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{"userAiAccountLimit", "7"}}, w11fBoom)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{"userAiAccountLimit", "7"}}, w11fBoom)
 	if _, err := store.loadFromDatabase(ctx); err == nil {
 		t.Fatal("load rows.Err must fail")
 	}
@@ -619,23 +615,20 @@ func TestW11FStoreFaults(t *testing.T) {
 	}
 	env.exec(t, `INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', 'operationLogRetentionDays', '365', '2024-01-01T00:00:00Z')`)
 
-	// Update: 校验错误（未知键）/ 时区守卫（有数据时拒绝）/ upsert 故障。
+	// Update: 校验错误（未知键）/ upsert 故障。PG 模式的时区在线守卫在触
+	// SQL 前即拒绝（TestSettingsPostgresModeForbidsTimezoneOnlineChange 覆盖），
+	// SQLite 探针臂无 PG 对应物，按 D9 删除。
 	if _, err := store.Update(ctx, map[string]any{"nope": 1.0}); err == nil {
 		t.Fatal("Update unknown key must fail")
 	}
 	if _, err := store.Update(ctx, map[string]any{}); err == nil {
 		t.Fatal("Update empty must fail")
 	}
-	env.exec(t, `INSERT INTO usage_stats_totals (probe) VALUES ('x')`)
-	if _, err := store.Update(ctx, map[string]any{"usageStatsTimezone": "Asia/Shanghai"}); err == nil || !strings.Contains(err.Error(), "不能直接修改统计时区") {
-		t.Fatalf("Update timezone with data = %v", err)
-	}
-	env.exec(t, `DELETE FROM usage_stats_totals`)
 	env.script.failBegin()
 	if _, err := store.Update(ctx, map[string]any{"userAiAccountLimit": 9.0}); err == nil {
 		t.Fatal("Update begin fault must fail")
 	}
-	env.script.failExec("INSERT INTO system_settings")
+	env.script.failExec("INSERT INTO juhe_business.system_settings")
 	if _, err := store.Update(ctx, map[string]any{"userAiAccountLimit": 9.0}); err == nil {
 		t.Fatal("Update upsert fault must fail")
 	}
@@ -644,42 +637,29 @@ func TestW11FStoreFaults(t *testing.T) {
 		t.Fatal("Update commit fault must fail")
 	}
 	// 提交后刷新缓存失败。
-	env.script.failQuery("FROM system_settings")
+	env.script.failQuery("FROM juhe_business.system_settings")
 	if _, err := store.Update(ctx, map[string]any{"userAiAccountLimit": 9.0}); err == nil {
 		t.Fatal("Update refresh fault must fail")
 	}
-	// 时区守卫内部 Load 失败。
-	env.script.failQueryAlways("FROM system_settings")
-	if _, err := store.Update(ctx, map[string]any{"usageStatsTimezone": "Asia/Shanghai"}); err == nil {
-		t.Fatal("timezone guard load fault must fail")
-	}
-
-	// usageStatsDataExists 探针错误。
-	probeEnv := newW11FEnv(t)
-	probeEnv.script.failQueryAlways("FROM usage_stats_totals")
-	if _, err := probeEnv.store.usageStatsDataExists(ctx); err == nil {
-		t.Fatal("usageStatsDataExists probe fault must fail")
-	}
-
 	// LoadGlobal 故障族。
 	env2 := newW11FEnv(t)
-	env2.script.failQuery("FROM global_settings")
+	env2.script.failQuery("FROM juhe_business.global_settings")
 	if _, err := env2.store.loadGlobalFromDatabase(ctx); err == nil {
 		t.Fatal("global query fault must fail")
 	}
-	env2.script.canned("FROM global_settings", []string{"key", "value_json"}, [][]driver.Value{{nil, "v"}}, nil)
+	env2.script.canned("FROM juhe_business.global_settings", []string{"key", "value_json"}, [][]driver.Value{{nil, "v"}}, nil)
 	if _, err := env2.store.loadGlobalFromDatabase(ctx); err == nil {
 		t.Fatal("global scan fault must fail")
 	}
-	env2.script.canned("FROM global_settings", []string{"key", "value_json"}, [][]driver.Value{{"appName", "{bad"}}, nil)
+	env2.script.canned("FROM juhe_business.global_settings", []string{"key", "value_json"}, [][]driver.Value{{"appName", "{bad"}}, nil)
 	if _, err := env2.store.loadGlobalFromDatabase(ctx); err == nil {
 		t.Fatal("global bad json must fail")
 	}
-	env2.script.canned("FROM global_settings", []string{"key", "value_json"}, [][]driver.Value{{"nope", "v"}}, nil)
+	env2.script.canned("FROM juhe_business.global_settings", []string{"key", "value_json"}, [][]driver.Value{{"nope", "v"}}, nil)
 	if _, err := env2.store.loadGlobalFromDatabase(ctx); err == nil {
 		t.Fatal("global unknown key must fail")
 	}
-	env2.script.canned("FROM global_settings", []string{"key", "value_json"}, [][]driver.Value{{"appName", "\"n\""}}, w11fBoom)
+	env2.script.canned("FROM juhe_business.global_settings", []string{"key", "value_json"}, [][]driver.Value{{"appName", "\"n\""}}, w11fBoom)
 	if _, err := env2.store.loadGlobalFromDatabase(ctx); err == nil {
 		t.Fatal("global rows.Err must fail")
 	}
@@ -697,7 +677,7 @@ func TestW11FStoreFaults(t *testing.T) {
 	if _, err := env2.store.UpdateGlobal(ctx, map[string]any{"appName": "w11f 名"}); err == nil {
 		t.Fatal("UpdateGlobal begin fault must fail")
 	}
-	env2.script.failExec("INSERT INTO global_settings")
+	env2.script.failExec("INSERT INTO juhe_business.global_settings")
 	if _, err := env2.store.UpdateGlobal(ctx, map[string]any{"appName": "w11f 名"}); err == nil {
 		t.Fatal("UpdateGlobal exec fault must fail")
 	}
@@ -705,7 +685,7 @@ func TestW11FStoreFaults(t *testing.T) {
 	if _, err := env2.store.UpdateGlobal(ctx, map[string]any{"appName": "w11f 名"}); err == nil {
 		t.Fatal("UpdateGlobal commit fault must fail")
 	}
-	env2.script.failQuery("FROM global_settings")
+	env2.script.failQuery("FROM juhe_business.global_settings")
 	if _, err := env2.store.UpdateGlobal(ctx, map[string]any{"appName": "w11f 名"}); err == nil {
 		t.Fatal("UpdateGlobal refresh fault must fail")
 	}
@@ -723,23 +703,23 @@ func TestW11FSectionFaults(t *testing.T) {
 	if values, err := store.LoadSection(ctx, "brand"); err != nil || values["appName"] != "聚合 AI" {
 		t.Fatalf("brand section = %v/%v", values, err)
 	}
-	env.script.failQuery("FROM system_settings")
+	env.script.failQuery("FROM juhe_business.system_settings")
 	if _, err := store.LoadSection(ctx, "data-retention"); err == nil {
 		t.Fatal("section query fault must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{nil, "1"}}, nil)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{nil, "1"}}, nil)
 	if _, err := store.LoadSection(ctx, "data-retention"); err == nil {
 		t.Fatal("section scan fault must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{"usageRecordRetentionDays", "{bad"}}, nil)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{"usageRecordRetentionDays", "{bad"}}, nil)
 	if _, err := store.LoadSection(ctx, "data-retention"); err == nil {
 		t.Fatal("section bad json must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{"nope", "1"}}, nil)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{"nope", "1"}}, nil)
 	if _, err := store.LoadSection(ctx, "data-retention"); err == nil {
 		t.Fatal("section unknown key must fail")
 	}
-	env.script.canned("FROM system_settings", []string{"key", "value_json"}, [][]driver.Value{{"usageRecordRetentionDays", "30"}}, w11fBoom)
+	env.script.canned("FROM juhe_business.system_settings", []string{"key", "value_json"}, [][]driver.Value{{"usageRecordRetentionDays", "30"}}, w11fBoom)
 	if _, err := store.LoadSection(ctx, "data-retention"); err == nil {
 		t.Fatal("section rows.Err must fail")
 	}
@@ -774,12 +754,12 @@ func TestW11FSectionFaults(t *testing.T) {
 	if _, err := store.UpdateSection(ctx, "cooldown-retest", map[string]any{"cooldownAccountRetestMaxBackoffHours": 24.0}); err == nil {
 		t.Fatal("UpdateSection begin fault must fail")
 	}
-	env.script.failExec("INSERT INTO system_settings")
+	env.script.failExec("INSERT INTO juhe_business.system_settings")
 	if _, err := store.UpdateSection(ctx, "cooldown-retest", map[string]any{"cooldownAccountRetestMaxBackoffHours": 24.0}); err == nil {
 		t.Fatal("UpdateSection exec fault must fail")
 	}
 	// 提交后系统缓存刷新失败。
-	env.script.failQuery("FROM system_settings")
+	env.script.failQuery("FROM juhe_business.system_settings")
 	if _, err := store.UpdateSection(ctx, "cooldown-retest", map[string]any{"cooldownAccountRetestMaxBackoffHours": 24.0}); err == nil {
 		t.Fatal("UpdateSection refresh fault must fail")
 	}
@@ -788,11 +768,11 @@ func TestW11FSectionFaults(t *testing.T) {
 	if _, err := store.UpdateSection(ctx, "brand", map[string]any{"appName": "w11f 品牌"}); err == nil {
 		t.Fatal("brand begin fault must fail")
 	}
-	env.script.failExec("INSERT INTO global_settings")
+	env.script.failExec("INSERT INTO juhe_business.global_settings")
 	if _, err := store.UpdateSection(ctx, "brand", map[string]any{"appName": "w11f 品牌"}); err == nil {
 		t.Fatal("brand exec fault must fail")
 	}
-	env.script.failQuery("FROM global_settings")
+	env.script.failQuery("FROM juhe_business.global_settings")
 	if _, err := store.UpdateSection(ctx, "brand", map[string]any{"appName": "w11f 品牌"}); err == nil {
 		t.Fatal("brand refresh fault must fail")
 	}
@@ -800,8 +780,7 @@ func TestW11FSectionFaults(t *testing.T) {
 	if _, err := store.UpdateSection(ctx, "brand", map[string]any{"appName": "w11f 品牌"}); err != nil {
 		t.Fatal(err)
 	}
-	// 系统域时区守卫（带统计数据拒绝）。
-	env.exec(t, `INSERT INTO usage_stats_totals (probe) VALUES ('x')`)
+	// 系统域非时区分区写回（时区守卫探针臂无 PG 对应物，按 D9 删除）。
 	if _, err := store.UpdateSection(ctx, "gateway-core", map[string]any{"textFirstResponseTimeoutSeconds": 130.0}); err != nil {
 		t.Fatalf("non-timezone system section = %v", err)
 	}
@@ -816,13 +795,13 @@ func TestW11FRouteFaults(t *testing.T) {
 	env.login(t, "w11fadmin", "w11f-pass", "super_admin")
 
 	// 公共设置 500。
-	env.script.failQuery("FROM global_settings")
+	env.script.failQuery("FROM juhe_business.global_settings")
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/settings/public", "")
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("public fault = %d %v", code, payload)
 	}
 	// 全局设置 500 / PATCH 全局: 坏 JSON / LoadGlobal 错误。
-	env.script.failQuery("FROM global_settings")
+	env.script.failQuery("FROM juhe_business.global_settings")
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/settings/global", "")
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("global fault = %d %v", code, payload)
@@ -831,7 +810,7 @@ func TestW11FRouteFaults(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("patch global malformed = %d %v", code, payload)
 	}
-	env.script.failQuery("FROM global_settings")
+	env.script.failQuery("FROM juhe_business.global_settings")
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings/global", `{"appName":"n"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("patch global load fault = %d %v", code, payload)
@@ -842,7 +821,7 @@ func TestW11FRouteFaults(t *testing.T) {
 	if code != http.StatusBadRequest || payload["message"] != "未知设置分区：nope" {
 		t.Fatalf("section unknown = %d %v", code, payload)
 	}
-	env.script.failQuery("FROM system_settings")
+	env.script.failQuery("FROM juhe_business.system_settings")
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/settings/sections/data-retention", "")
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("section fault = %d %v", code, payload)
@@ -855,18 +834,18 @@ func TestW11FRouteFaults(t *testing.T) {
 	if code != http.StatusBadRequest || payload["message"] != "设置分区更新必须是普通 JSON 对象" {
 		t.Fatalf("patch section non object = %d %v", code, payload)
 	}
-	env.script.failQuery("FROM global_settings")
+	env.script.failQuery("FROM juhe_business.global_settings")
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/brand", `{"appName":"n"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("patch section load fault = %d %v", code, payload)
 	}
-	env.script.failExec("INSERT INTO global_settings")
+	env.script.failExec("INSERT INTO juhe_business.global_settings")
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/brand", `{"appName":"w11f 分区名"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("patch section update fault = %d %v", code, payload)
 	}
 	// 全量设置: GET 500 / PATCH 坏 JSON / PATCH Load 500 / PATCH 校验 400。
-	env.script.failQuery("FROM system_settings")
+	env.script.failQuery("FROM juhe_business.system_settings")
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/settings", "")
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("settings fault = %d %v", code, payload)
@@ -875,7 +854,7 @@ func TestW11FRouteFaults(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("patch settings malformed = %d %v", code, payload)
 	}
-	env.script.failQuery("FROM system_settings")
+	env.script.failQuery("FROM juhe_business.system_settings")
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings", `{"userAiAccountLimit":5}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("patch settings load fault = %d %v", code, payload)

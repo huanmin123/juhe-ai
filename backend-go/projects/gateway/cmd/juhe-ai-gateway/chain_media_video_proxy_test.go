@@ -113,12 +113,12 @@ func seedMediaProxyProfile(t *testing.T, fixture *chainFixture, accountID, host 
 		enabledValue = 0
 	}
 	now := "2026-10-16T00:00:00.000Z"
-	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
-		VALUES ('proxy_media', '任务面出口', 'http', ?, ?, 'proxyuser', ?, ?, ?, ?)`,
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO proxy_profiles (id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
+		VALUES ('proxy_media', '任务面出口', 'http', ?, ?, 'proxyuser', ?, ?, ?, ?)`),
 		host, port, proxyPassword, enabledValue, now, now); err != nil {
 		t.Fatalf("seed proxy profile: %v", err)
 	}
-	if _, err := fixture.db.Exec(`UPDATE accounts SET proxy_profile_id = 'proxy_media' WHERE id = ?`, accountID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET proxy_profile_id = 'proxy_media' WHERE id = ?`), accountID); err != nil {
 		t.Fatalf("bind account proxy profile: %v", err)
 	}
 	return "proxy_media"

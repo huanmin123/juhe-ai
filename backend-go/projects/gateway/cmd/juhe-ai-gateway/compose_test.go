@@ -430,7 +430,7 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 				t.Fatalf("seed %s: %v", key, err)
 			}
 		} else {
-			if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at)
+			if _, err := db.ExecContext(ctx, `INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
 				VALUES ('sys_admin', ?, ?, '2026-09-04T00:00:00Z')`, key, string(encoded)); err != nil {
 				t.Fatalf("seed %s: %v", key, err)
 			}

@@ -157,7 +157,7 @@ func (f *lockFixture) seedAccount(t *testing.T, id, status string, schedulable i
 	if deletedAt != "" {
 		deletedAtArg = deletedAt
 	}
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, updated_at, deleted_at) VALUES (?, 'sys_owner', ?, 'api_key', ?, ?, ?, ?)`,
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, updated_at, deleted_at) VALUES (?, 'sys_owner', ?, 'api_key', ?, ?, ?, ?)`),
 		id, nameOf(id), status, schedulable, isoMillisOf(f.clock.Now()), deletedAtArg); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
@@ -174,11 +174,11 @@ func (f *lockFixture) seedLockRow(t *testing.T, row chainAccountLockRow) {
 	if updatedAt == "" {
 		updatedAt = isoMillisOf(f.clock.Now())
 	}
-	if _, err := f.db.Exec(`INSERT INTO account_lock_states (
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO account_lock_states (
 			account_id, enabled, lock_state, lock_death_timeout_seconds, lock_retry_interval_seconds,
 			incident_id, generation, incident_started_at, deadline_at, original_status, provenance,
 			next_retry_at_ms, lease_id, lease_until_ms, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		row.accountID, row.enabled, row.lockState, row.deathTimeout, row.retryInterval,
 		nullStringOrNull(row.incidentID), row.generation, nullStringOrNull(row.incidentStart),
 		nullStringOrNull(row.deadlineAt), nullStringOrNull(row.originalStatus), nullStringOrNull(row.provenance),

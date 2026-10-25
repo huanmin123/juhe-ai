@@ -92,7 +92,7 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 	t.Helper()
 	seed := func(query string, args ...any) {
 		t.Helper()
-		if _, err := fixture.db.Exec(query, args...); err != nil {
+		if _, err := fixture.db.Exec(fixtureBind(query), args...); err != nil {
 			t.Fatalf("seed minimax media row: %v: %v", query, err)
 		}
 	}
@@ -109,10 +109,10 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_minimax_media', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
-	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_minimax_hailuo', 'minimax', 'MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3', 'global', 'active', '["audio_speech","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
-	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_minimax_speech', 'minimax', 'speech-02-turbo', 'speech-02-turbo', 'global', 'active', '["audio_speech","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_minimax_hailuo', 'minimax', 'MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3', 'global', 'active', '["audio_speech","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z') ON CONFLICT (id) DO NOTHING`)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_minimax_speech', 'minimax', 'speech-02-turbo', 'speech-02-turbo', 'global', 'active', '["audio_speech","video_create","video_get","video_content","video_cancel"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z') ON CONFLICT (id) DO NOTHING`)
 	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
 		VALUES (?, 'MiniMax-Hailuo-2.3', 'mdl_minimax_hailuo', '2026-10-04T00:00:00.000Z')`, id)
 	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)

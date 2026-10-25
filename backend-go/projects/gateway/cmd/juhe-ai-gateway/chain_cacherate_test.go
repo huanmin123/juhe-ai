@@ -4,7 +4,7 @@ package main
 // chainHotQualityPort 的缓存率注入/stale 门控/纯排序 ReorderOnly、缓存率
 // 快照加载器组合根装配（时区源 + 统计库真读）与决策日志观察者的缓存率排
 // 序块投影。runtime 用 standalone+memory 单例（与 w2c 既有测试同模式），
-// SQL 用临时 SQLite 句柄，不连真实服务。
+// SQL 面走 pgtestkit 隔离 PG 业务库（bootstrap fresh DDL）。
 
 import (
 	"github.com/alicebob/miniredis/v2"
@@ -14,7 +14,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +21,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycacherate"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
-	_ "modernc.org/sqlite"
 )
 
 func newW2CHotQualityRuntime(t *testing.T) *gatewayhotquality.GatewayHotQualityRuntime {
@@ -30,8 +28,6 @@ func newW2CHotQualityRuntime(t *testing.T) *gatewayhotquality.GatewayHotQualityR
 	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
 	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
 	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
-		RuntimeMode:        "performance",
-		RuntimeStateDriver: "redis",
 		RedisStateURL:      "redis://" + miniredis.RunT(t).Addr(),
 		RedisNamespace:     "w2c-hot-quality",
 	})
@@ -157,65 +153,39 @@ func TestChainHotQualityPortGatesStaleCacheRates(t *testing.T) {
 	}
 }
 
-// 组合根装配：缓存率加载器真读统计库 + 业务库时区源（SQLite 双句柄最小
-// DDL），Warmup 成功后 Snapshot 报有效快照；缺句柄 fail-fast。
+// 组合根装配：缓存率加载器真读统计库 + 业务库时区源（bootstrap fresh DDL 的
+// juhe_stats/juhe_business schema），Warmup 成功后 Snapshot 报有效快照；缺句
+// 柄 fail-fast。原 SQLite 临时句柄夹具随生产 sqlite 臂删除批次退役（D17）。
 func TestNewChainCacheRateSnapshotSourceWiring(t *testing.T) {
 	t.Run("nil handles fail fast", func(t *testing.T) {
-		if _, err := newChainCacheRateSnapshotSource(nil, &sql.DB{}, false); err == nil {
+		if _, err := newChainCacheRateSnapshotSource(nil, &sql.DB{}, true); err == nil {
 			t.Fatal("缺统计库句柄必须报错")
 		}
-		if _, err := newChainCacheRateSnapshotSource(&sql.DB{}, nil, false); err == nil {
+		if _, err := newChainCacheRateSnapshotSource(&sql.DB{}, nil, true); err == nil {
 			t.Fatal("缺业务库句柄必须报错")
 		}
 	})
 
 	t.Run("warmup loads via wired timezone source", func(t *testing.T) {
-		dir := t.TempDir()
-		statsDB, err := sql.Open("sqlite", filepath.Join(dir, "stats.sqlite"))
-		if err != nil {
-			t.Fatal(err)
+		// 生产单池双句柄（统计/业务同库异 schema）；快照与时区查询均已
+		// schema 限定，原生句柄即可（无裸 `?` 需要改写）。
+		db := composeTestPostgres(t).DB
+		// 时区显式钉回 UTC（seed 默认 Asia/Shanghai），保持窗口断言语境。
+		if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at)
+			VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"', $1)
+			ON CONFLICT (system_account_id, key) DO UPDATE SET value_json = EXCLUDED.value_json`,
+			time.Now().UTC().Format(time.RFC3339)); err != nil {
+			t.Fatalf("seed timezone setting: %v", err)
 		}
-		t.Cleanup(func() { _ = statsDB.Close() })
-		statsDB.SetMaxOpenConns(1)
-		businessDB, err := sql.Open("sqlite", filepath.Join(dir, "business.sqlite"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = businessDB.Close() })
-		for _, statement := range []string{
-			// 统计库：契约 8.1 聚合的列（SQLite 裸表名分支）。
-			`CREATE TABLE usage_stats_hourly (
-				system_account_id text NOT NULL,
-				scope_type text NOT NULL,
-				scope_id text NOT NULL DEFAULT '',
-				stat_hour text NOT NULL,
-				input_tokens bigint NOT NULL DEFAULT 0,
-				cache_read_tokens bigint NOT NULL DEFAULT 0
-			)`,
-			// 业务库：usageStatsTimezone 系统设置（statreads 时区源同源）。
-			`CREATE TABLE system_settings (
-				system_account_id text NOT NULL,
-				key text NOT NULL,
-				value_json text
-			)`,
-			`INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"')`,
-		} {
-			target := statsDB
-			if strings.HasPrefix(statement, "CREATE TABLE system_settings") || strings.HasPrefix(statement, "INSERT INTO system_settings") {
-				target = businessDB
-			}
-			if _, err := target.Exec(statement); err != nil {
-				t.Fatalf("fixture exec: %v", err)
-			}
-		}
-		source, err := newChainCacheRateSnapshotSource(statsDB, businessDB, false)
+		source, err := newChainCacheRateSnapshotSource(db, db, true)
 		if err != nil {
 			t.Fatalf("create source: %v", err)
 		}
 		currentHour := time.Now().UTC().Format("2006-01-02T15")
-		if _, err := statsDB.Exec(`INSERT INTO usage_stats_hourly
-			(system_account_id, scope_type, scope_id, stat_hour, input_tokens, cache_read_tokens)
-			VALUES ('global', 'account', 'acc-1', ?, 100000, 50000)`, currentHour); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_stats.usage_stats_hourly
+			(system_account_id, scope_type, scope_id, stat_hour, input_tokens, cache_read_tokens, updated_at)
+			VALUES ('global', 'account', 'acc-1', $1, 100000, 50000, $2)`,
+			currentHour, currentHour+":00"); err != nil {
 			t.Fatal(err)
 		}
 		source.Warmup(context.Background())

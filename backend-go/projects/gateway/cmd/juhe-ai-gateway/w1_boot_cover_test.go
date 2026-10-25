@@ -21,21 +21,22 @@ package main
 //	A  -version                        → exit 0，stdout 含版本契约字符串
 //	B  -check-boundary                 → exit 0，stdout 含 boundary=ready
 //	C  bogus-arg                       → exit 2，stderr 含 unsupported gateway arguments
-//	D  双迁移旗标互斥                   → exit 2，stderr 含 mutually exclusive
-//	E1 F3 审计 SQLite 迁移成功（自建 5 张 legacy 审计表 + blob 文件）
-//	F1 F3 缺 -node-stopped/-go-stopped → 非零，stderr 含停机 gate 文案
-//	F2 F3 源库不存在                    → 非零，stderr 含读源失败文案
-//	G  F4 operation SQLite 迁移成功（自建 legacy operation-log 源 + settings 库）
+//	D  不支持参数（含已退役 sqlite 迁移旗标）→ exit 2，stderr 含 unsupported gateway arguments
 //	H  F4 postgres 模式缺 -backup-confirmed → 非零，stderr 含备份确认文案（不连真 PG）
 //	I  被动网关 + 非法 -health-listen-address → 非零，stderr 含 listen passive gateway health endpoint
 //	J  被动网关优雅关闭（CTRL_BREAK_EVENT，尽力而为；3 次尝试不可行则 Skip 并保留本注释记录）
-//	K1 owner + JUHE_AI_DATABASE_DRIVER=bogus  → stderr 含 load gateway runtime config
+//	K1 owner 缺 JUHE_AI_POSTGRES_URL → stderr 含 load gateway runtime config
+//	   （原「JUHE_AI_DATABASE_DRIVER=bogus」臂随双模式退役：未知 env 不再被
+//	   读取，三连接串必填成为 loadRuntimeConfig 的首个 fail-fast）
 //	K2（已删除）原「仅 CHAIN 无 SYSTEM_API」联动门槛臂：2026-09-21 起两开关
 //	     移除、组合根与网关链恒开，被测对象不复存在。
-//	K3 owner + 非 gateway BUSINESS_OWNER（businessOwnerGate 首步失败）→ stderr 含 verify business owner gates
-//	K4 K3 全量 handoff 证据文件缺失 → stderr 含 read business owner cutover evidence
-//	K5 K4 有效证据 + J3b enabled 证据缺失 → stderr 含 read J3b cutover evidence
+//	K3~K5（已删除）原切流门禁/cutover evidence 失败臂已随清理批次 C1
+//	     （2026-09-30）退役——门禁 env 家族不再解析、证据分支不可达。
 //	L  JUHE_AI_BLUE_GREEN_OWNER_MODE=bogus → stderr 含 must be active, standby, or drain
+//
+// 原「双迁移旗标互斥（D）」「F3/F4 legacy SQLite 迁移（E1/F1/F2/G）」场景
+// 随 sqlite 存储形态与 legacy 迁移命令一并退役（PLAN-20261024T051925945Z）；
+// F4 postgres 迁移的备份确认门臂保留为 H。
 //
 // 注意：main.go 的 gateGatewayChain 自 G20 phase-2 起恒返回 nil（适配器全部
 // 已 author），原“fail-fast 适配器清单”语义已并入 loadRuntimeConfig 的
@@ -48,10 +49,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -65,10 +63,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/alicebob/miniredis/v2"
 	"golang.org/x/sys/windows"
-
-	_ "modernc.org/sqlite"
 )
 
 const (
@@ -170,22 +169,40 @@ func w1bScenarioEnv(t *testing.T, coverageDir string, pairs ...string) []string 
 		env = append(env, entry)
 	}
 	env = append(env, pairs...)
-	// 2026-09-21 起模型检测 owner 默认常驻：J3b 装配先于多数目标组件，
-	// 场景未显式提供 DATA_DIR 时准备一个隔离数据目录，并把零配置回落
-	// 路径 <DATA_DIR>/business.sqlite3 预置成带 schema 的业务库（不得注
-	// 入 BUSINESS_DATABASE_PATH——那会触发切流家族的严格门禁）；管理
-	// listener 用随机端口，避免抢占 3307。显式给出同名键的 pairs（场景
-	// 自身契约）一律不覆盖。
-	if !w1bEnvHasKey(pairs, "JUHE_AI_DATA_DIR") {
-		dataDir := t.TempDir()
-		w1v2PrepareBusinessSQLite(t, filepath.Join(dataDir, "business.sqlite3"))
-		env = append(env, "JUHE_AI_DATA_DIR="+dataDir)
+	// PostgreSQL + Redis 是唯一存储形态（PLAN-20261024T051925945Z）：场景未
+	// 显式提供连接串时，注入 pgtestkit 隔离库（fresh DDL + seed）的
+	// POSTGRES_URL / BUSINESS_POSTGRES_URL，使旗标/快速失败场景不必各自预置
+	// PG；需要专库语义（F4 租约冲突、J3b 不可达连接等）的场景显式给出同名
+	// 键，一律不覆盖。原零配置 sqlite 回落路径（<DATA_DIR>/business.sqlite3
+	// 预置）已随 sqlite 存储形态删除。
+	if !w1bEnvHasKey(pairs, "JUHE_AI_POSTGRES_URL") {
+		dsn := w1bScenarioPostgres(t).DSN
+		env = append(env, "JUHE_AI_POSTGRES_URL="+dsn)
+		if !w1bEnvHasKey(pairs, "JUHE_AI_BUSINESS_POSTGRES_URL") {
+			env = append(env, "JUHE_AI_BUSINESS_POSTGRES_URL="+dsn)
+		}
 	}
 	if !w1bEnvHasKey(pairs, "JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS") {
 		env = append(env, "JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=127.0.0.1:0")
 	}
 	env = append(env, "GOCOVERDIR="+coverageDir)
 	return env
+}
+
+// w1bScenarioPostgres 提供场景隔离 PG 测试库（fresh DDL + seed，等价
+// composeTestPostgres 的维护 bootstrap 面）；每个调用一个独立库，测试结束
+// 自动删库。
+func w1bScenarioPostgres(t *testing.T) *pgtestkit.TestDatabase {
+	t.Helper()
+	return pgtestkit.NewTestDatabase(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Now: time.Now, Secret: "w1b-scenario-secret"})
+			return err
+		})
 }
 
 // w1bEnvHasKey 判断场景 pairs 是否显式给出某个 env（"K=V" 形态，按键全名
@@ -267,12 +284,16 @@ func TestW1BBootCoverQuickFlags(t *testing.T) {
 	w1bRequireExitCode(t, "C-bogus-arg", code, 2)
 	w1bRequireContains(t, "C-bogus-arg", stderr, "unsupported gateway arguments")
 
-	// D: 互斥迁移旗标 → exit 2，stderr 含 mutually exclusive。
+	// D: 已退役的 sqlite 迁移旗标 → exit 2，stderr 含 unsupported gateway
+	// arguments（-migrate-audit-log-legacy-sqlite / -migrate-operation-log-
+	// legacy-sqlite 随 sqlite 存储形态退役删除；互斥校验臂同批失去被测对象）。
 	coverageDir = w1bCoverageDir(t, "D-mutually-exclusive")
 	_, stderr, code = w1bRunScenario(t, "D-mutually-exclusive", w1bScenarioEnv(t, coverageDir),
 		"-migrate-audit-log-legacy-sqlite", "-migrate-operation-log-legacy-sqlite")
 	w1bRequireExitCode(t, "D-mutually-exclusive", code, 2)
-	w1bRequireContains(t, "D-mutually-exclusive", stderr, "offline migration modes are mutually exclusive")
+	// flag 包在 main 参数白名单校验前先拦截未定义旗标，文案为 flag provided
+	// but not defined（与 C 场景「已定义但不支持」的 unsupported 文案不同层）。
+	w1bRequireContains(t, "D-mutually-exclusive", stderr, "flag provided but not defined: -migrate-audit-log-legacy-sqlite")
 
 	// L: 非法 owner mode → fail 退出，stderr 含 ownermode.Load 契约文案。
 	coverageDir = w1bCoverageDir(t, "L-owner-mode-invalid")
@@ -281,222 +302,9 @@ func TestW1BBootCoverQuickFlags(t *testing.T) {
 	w1bRequireContains(t, "L-owner-mode-invalid", stderr, "JUHE_AI_BLUE_GREEN_OWNER_MODE must be active, standby, or drain")
 }
 
-// ---- 场景 E/F：F3 审计 SQLite 迁移 ----
-
-// w1bLegacyAuditTables 的列清单与 internal/auditlog/legacy_migration.go 的
-// legacyAuditTables 复制列集一一对应；legacy 源表不声明列类型（无 affinity，
-// 值按插入时的存储类保存），保证迁移后 EXCEPT 字段一致性校验通过。
-var w1bLegacyAuditTables = map[string]string{
-	"audit_logs":          "id,trace_id,traffic_source,system_account_id,api_key_id,conversation_key,session_id,session_client_type,group_id,account_id,provider_code,method,path,query_string,model,upstream_model,pricing_model,model_mapping_applied,model_mapping_source,source_endpoint_family,upstream_endpoint_family,stream,client_ip,user_agent,audit_outcome,success,final_status_code,error_phase,error_code,error_message,sample_bucket,sample_reason,attempt_count,payload_count,raw_payload_bytes,compressed_payload_bytes,compression_saved_bytes,error_group_id,capture_status,lifecycle_status,started_at,ended_at,duration_ms,http_completed_at,http_duration_ms,first_token_ms,created_at",
-	"audit_log_attempts":  "id,audit_log_id,attempt_index,account_id,account_owner_system_account_id,group_id,proxy_url,provider_code,attempt_model,attempt_upstream_model,attempt_pricing_model,attempt_model_mapping_applied,attempt_model_mapping_source,attempt_source_endpoint_family,attempt_upstream_endpoint_family,upstream_method,upstream_url,upstream_status_code,success,error_phase,error_code,error_message,started_at,ended_at,duration_ms",
-	"audit_payload_blobs": "id,sha256,raw_size_bytes,compressed_size_bytes,content_type,content_encoding,compression,storage_key,ref_count,first_seen_at,last_seen_at,created_at",
-	"audit_payload_refs":  "id,audit_log_id,attempt_id,part_type,sequence_index,content_type,content_encoding,headers_blob_id,body_blob_id,headers_sha256,body_sha256,raw_size_bytes,compressed_size_bytes,capture_status,drop_reason,created_at",
-	"audit_error_groups":  "id,fingerprint,window_started_at,window_ended_at,system_account_id,api_key_id,group_id,account_id,provider_code,path,model,status_code,error_phase,error_code,error_type,request_fingerprint,error_fingerprint,count,first_event_id,last_event_id,sample_event_id,last_message,created_at,updated_at",
-}
-
-// w1bCreateLegacyAuditSQLite 构造含 5 张 legacy 审计表的最小源库：1 条
-// audit_logs、1 个 blob（aa/payload.blob，none 压缩）与 1 条 body 引用，
-// ref_count 与引用数一致以满足迁移后 ref_count 完整性校验。
-func w1bCreateLegacyAuditSQLite(t *testing.T, dbPath, blobDir string) {
-	t.Helper()
-	var ddl strings.Builder
-	for _, table := range []string{"audit_logs", "audit_log_attempts", "audit_payload_blobs", "audit_payload_refs", "audit_error_groups"} {
-		ddl.WriteString("CREATE TABLE " + table + " (" + w1bLegacyAuditTables[table] + ");")
-	}
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath))
-	if err != nil {
-		t.Fatalf("创建 legacy 审计源库失败: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(ddl.String()); err != nil {
-		t.Fatalf("创建 legacy 审计表失败: %v", err)
-	}
-	const payload = "legacy audit payload"
-	digest := sha256.Sum256([]byte(payload))
-	// NOT NULL DEFAULT 列必须显式给值：迁移按列清单 INSERT，显式列不触发
-	// 目标 schema 的 DEFAULT，源端 NULL 会让 INSERT OR IGNORE 静默吞行
-	// （表现为“行数不一致”）。
-	if _, err := db.Exec(`INSERT INTO audit_logs (id,trace_id,traffic_source,method,path,audit_outcome,sample_bucket,sample_reason,capture_status,lifecycle_status,model_mapping_applied,stream,success,attempt_count,payload_count,raw_payload_bytes,compressed_payload_bytes,compression_saved_bytes,started_at,ended_at,created_at) VALUES ('log-1','trace-1','gateway','GET','/v1/test','gateway_succeeded',1,'test','complete','finalized',0,0,0,0,0,0,0,0,'2026-01-01T00:00:00Z','2026-01-01T00:00:01Z','2026-01-01T00:00:00Z')`); err != nil {
-		t.Fatalf("插入 legacy audit_logs 失败: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_blobs (id,sha256,raw_size_bytes,compressed_size_bytes,content_type,compression,storage_key,ref_count,first_seen_at,last_seen_at,created_at) VALUES ('blob-1',?,?,?,?,?,?,1,?,?,?)`,
-		hex.EncodeToString(digest[:]), len(payload), len(payload), "text/plain", "none", "aa/payload.blob", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
-		t.Fatalf("插入 legacy audit_payload_blobs 失败: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO audit_payload_refs (id,audit_log_id,part_type,sequence_index,body_blob_id,raw_size_bytes,compressed_size_bytes,capture_status,created_at) VALUES ('ref-1','log-1','gateway_response',0,'blob-1',?,?,'complete','2026-01-01T00:00:00Z')`, len(payload), len(payload)); err != nil {
-		t.Fatalf("插入 legacy audit_payload_refs 失败: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("关闭 legacy 审计源库失败: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(blobDir, "aa"), 0o750); err != nil {
-		t.Fatalf("创建 legacy blob 目录失败: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(blobDir, "aa", "payload.blob"), []byte(payload), 0o640); err != nil {
-		t.Fatalf("写入 legacy blob 文件失败: %v", err)
-	}
-}
-
-func TestW1BBootCoverAuditLegacyMigration(t *testing.T) {
-	w1bBuildCoverBinary(t)
-	root := t.TempDir()
-
-	// E: F3 审计迁移成功臂。
-	sourcePath := filepath.Join(root, "audit-source.sqlite")
-	targetPath := filepath.Join(root, "audit-target.sqlite")
-	sourceBlobs := filepath.Join(root, "audit-source-blobs")
-	targetBlobs := filepath.Join(root, "audit-target-blobs")
-	w1bCreateLegacyAuditSQLite(t, sourcePath, sourceBlobs)
-	coverageDir := w1bCoverageDir(t, "E-audit-migrate-ok")
-	stdout, stderr, code := w1bRunScenario(t, "E-audit-migrate-ok", w1bScenarioEnv(t, coverageDir),
-		"-migrate-audit-log-legacy-sqlite",
-		"-source-db", sourcePath,
-		"-target-db", targetPath,
-		"-source-blob-dir", sourceBlobs,
-		"-target-blob-dir", targetBlobs,
-		"-node-stopped", "-go-stopped")
-	w1bRequireExitCode(t, "E-audit-migrate-ok", code, 0)
-	var result struct {
-		NoOp        bool             `json:"noOp"`
-		TableCounts map[string]int64 `json:"tableCounts"`
-		BlobCount   int64            `json:"blobCount"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &result); err != nil {
-		t.Fatalf("场景 E-audit-migrate-ok stdout 不是合法迁移结果 JSON: %v, stdout=%q stderr=%q", err, stdout, stderr)
-	}
-	if result.NoOp || result.TableCounts["audit_logs"] != 1 || result.TableCounts["audit_payload_blobs"] != 1 || result.BlobCount != 1 {
-		t.Fatalf("场景 E-audit-migrate-ok 迁移结果契约不符: %+v", result)
-	}
-	if _, err := os.Stat(filepath.Join(targetBlobs, "aa", "payload.blob")); err != nil {
-		t.Fatalf("场景 E-audit-migrate-ok 目标 blob 缺失: %v", err)
-	}
-
-	// F1: 缺 -node-stopped/-go-stopped → 非零退出 + 停机 gate 文案。
-	coverageDir = w1bCoverageDir(t, "F1-audit-gate-missing")
-	_, stderr, code = w1bRunScenario(t, "F1-audit-gate-missing", w1bScenarioEnv(t, coverageDir), "-migrate-audit-log-legacy-sqlite")
-	if code == 0 {
-		t.Fatalf("场景 F1-audit-gate-missing 期望非零退出码，实际 0")
-	}
-	w1bRequireContains(t, "F1-audit-gate-missing", stderr, "F3 audit SQLite migration failed: F3 审计 SQLite 迁移要求停机：必须同时确认 Node 和 Go 已停止")
-
-	// F2: 源库不存在 → 非零退出 + 读源失败文案。
-	coverageDir = w1bCoverageDir(t, "F2-audit-source-missing")
-	_, stderr, code = w1bRunScenario(t, "F2-audit-source-missing", w1bScenarioEnv(t, coverageDir),
-		"-migrate-audit-log-legacy-sqlite",
-		"-source-db", filepath.Join(root, "missing-source.sqlite"),
-		"-target-db", filepath.Join(root, "unused-target.sqlite"),
-		"-source-blob-dir", sourceBlobs,
-		"-target-blob-dir", targetBlobs,
-		"-node-stopped", "-go-stopped")
-	if code == 0 {
-		t.Fatalf("场景 F2-audit-source-missing 期望非零退出码，实际 0")
-	}
-	w1bRequireContains(t, "F2-audit-source-missing", stderr, "F3 audit SQLite migration failed: 访问旧审计 SQLite 源文件失败")
-}
+// ---- 场景 H：F4 postgres 迁移备份确认门（sqlite 迁移场景随存储形态退役）----
 
 // ---- 场景 G/H：F4 operation-log 迁移 ----
-
-// w1bCreateLegacyOperationLogSQLite 复刻 internal/operationlog 测试的 legacy
-// Node 源库形态：4 张 legacy 表 + 1 条完整操作日志（targets/viewers/search terms）。
-func w1bCreateLegacyOperationLogSQLite(t *testing.T, path string) {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
-	if err != nil {
-		t.Fatalf("创建 legacy operation-log 源库失败: %v", err)
-	}
-	defer db.Close()
-	_, err = db.Exec(`
-CREATE TABLE operation_logs (id TEXT PRIMARY KEY,trace_id TEXT,actor_system_account_id TEXT NOT NULL,actor_username TEXT,actor_display_name TEXT,actor_role TEXT NOT NULL,operation_scope_system_account_id TEXT,mode TEXT NOT NULL,module TEXT NOT NULL,action TEXT NOT NULL,operation_key TEXT NOT NULL,resource_type TEXT NOT NULL,resource_id TEXT,resource_name TEXT,summary TEXT NOT NULL,detail_level TEXT NOT NULL,visibility_scope TEXT NOT NULL,changes_json TEXT NOT NULL,metadata_json TEXT NOT NULL,method TEXT,path TEXT,status_code INTEGER,client_ip TEXT,user_agent TEXT,created_at TEXT NOT NULL);
-CREATE TABLE operation_log_targets (id TEXT PRIMARY KEY,operation_log_id TEXT NOT NULL,target_type TEXT NOT NULL,target_id TEXT,target_name TEXT,target_owner_system_account_id TEXT,relation TEXT NOT NULL,created_at TEXT NOT NULL,FOREIGN KEY(operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE);
-CREATE TABLE operation_log_viewers (operation_log_id TEXT NOT NULL,system_account_id TEXT NOT NULL,visibility_reason TEXT NOT NULL,detail_level TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(operation_log_id,system_account_id,visibility_reason),FOREIGN KEY(operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE);
-CREATE TABLE operation_log_summary_search_terms (operation_log_id TEXT NOT NULL,term TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(term,operation_log_id),FOREIGN KEY(operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE);`)
-	if err != nil {
-		t.Fatalf("创建 legacy operation-log 表失败: %v", err)
-	}
-	const createdAt = "2026-08-13T08:00:00.100000000+08:00"
-	if _, err := db.Exec(`INSERT INTO operation_logs (id,actor_system_account_id,actor_role,mode,module,action,operation_key,resource_type,resource_id,resource_name,summary,detail_level,visibility_scope,changes_json,metadata_json,created_at) VALUES ('oplog-legacy-1','actor','user','self','accounts','update','accounts.update','account','account-1','Legacy Account','legacy operation summary','full','targeted','[{"field":"name","label":"Name","before":"old","after":"new"}]','{}',?)`, createdAt); err != nil {
-		t.Fatalf("插入 legacy operation_logs 失败: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO operation_log_targets VALUES ('optgt-legacy-1','oplog-legacy-1','account','account-1','Legacy Account','owner','primary',?); INSERT INTO operation_log_viewers VALUES ('oplog-legacy-1','actor','actor_self','full',?); INSERT INTO operation_log_summary_search_terms VALUES ('oplog-legacy-1','legacy',?)`, createdAt, createdAt, createdAt); err != nil {
-		t.Fatalf("插入 legacy operation-log 子表失败: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("关闭 legacy operation-log 源库失败: %v", err)
-	}
-}
-
-// w1bCreateBusinessSettingsSQLite 构造 F4 OpenStore 必需的 business settings
-// 只读镜像库（system_accounts + system_settings）。
-func w1bCreateBusinessSettingsSQLite(t *testing.T, path string) {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
-	if err != nil {
-		t.Fatalf("创建 business settings 库失败: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL,key TEXT NOT NULL,value_json TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(system_account_id,key)); CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT NOT NULL); INSERT INTO system_accounts VALUES ('actor','actor','Actor'); INSERT INTO system_settings VALUES ('sys_admin','operationLogRetentionDays','365','2026-08-13T00:00:00Z')`); err != nil {
-		t.Fatalf("初始化 business settings 库失败: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("关闭 business settings 库失败: %v", err)
-	}
-}
-
-func TestW1BBootCoverOperationLegacyMigration(t *testing.T) {
-	w1bBuildCoverBinary(t)
-	root := t.TempDir()
-
-	// G: F4 SQLite 迁移成功臂（运行 -migrate-operation-log-legacy-sqlite）。
-	sourcePath := filepath.Join(root, "node-dataset.sqlite3")
-	targetPath := filepath.Join(root, "f4-operation.sqlite3")
-	businessSettings := filepath.Join(root, "business-settings.sqlite3")
-	usageShardRoot := filepath.Join(root, "usage-shards")
-	if err := os.MkdirAll(usageShardRoot, 0o750); err != nil {
-		t.Fatalf("创建 usage shard 根目录失败: %v", err)
-	}
-	w1bCreateLegacyOperationLogSQLite(t, sourcePath)
-	w1bCreateBusinessSettingsSQLite(t, businessSettings)
-	coverageDir := w1bCoverageDir(t, "G-operation-migrate-ok")
-	env := w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_OPERATION_LOG_STORE=sqlite",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH="+targetPath,
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH="+businessSettings,
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1b-f4-migrate",
-		"JUHE_AI_USAGE_SHARD_ROOT="+usageShardRoot)
-	stdout, stderr, code := w1bRunScenario(t, "G-operation-migrate-ok", env,
-		"-migrate-operation-log-legacy-sqlite",
-		"-operation-log-source-db", sourcePath,
-		"-node-stopped", "-go-stopped", "-backup-confirmed")
-	w1bRequireExitCode(t, "G-operation-migrate-ok", code, 0)
-	var result struct {
-		Mode                  string           `json:"mode"`
-		NoOp                  bool             `json:"noOp"`
-		TargetCounts          map[string]int64 `json:"targetCounts"`
-		SearchTermsRebuilt    bool             `json:"searchTermsRebuilt"`
-		MigratedOperationLogs int64            `json:"migratedOperationLogs"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &result); err != nil {
-		t.Fatalf("场景 G-operation-migrate-ok stdout 不是合法迁移结果 JSON: %v, stdout=%q stderr=%q", err, stdout, stderr)
-	}
-	if result.Mode != "sqlite-copy" || result.NoOp || result.MigratedOperationLogs != 1 || !result.SearchTermsRebuilt || result.TargetCounts["operation_logs"] != 1 {
-		t.Fatalf("场景 G-operation-migrate-ok 迁移结果契约不符: %+v", result)
-	}
-
-	// H: F4 postgres 模式缺 -backup-confirmed → 非零退出 + 备份确认文案
-	// （停机 gate 先于任何 PostgreSQL 连接执行，子进程不需要真实 PG）。
-	coverageDir = w1bCoverageDir(t, "H-operation-postgres-no-backup")
-	env = w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_OPERATION_LOG_STORE=postgres",
-		"JUHE_AI_OPERATION_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1b_unused",
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1b-f4-pg")
-	_, stderr, code = w1bRunScenario(t, "H-operation-postgres-no-backup", env,
-		"-migrate-operation-log-legacy-postgres",
-		"-node-stopped", "-go-stopped")
-	if code == 0 {
-		t.Fatalf("场景 H-operation-postgres-no-backup 期望非零退出码，实际 0")
-	}
-	w1bRequireContains(t, "H-operation-postgres-no-backup", stderr, "F4 operation-log legacy migration failed: F4 操作日志离线迁移要求已完成可恢复备份确认")
-}
 
 // ---- 场景 I/J：被动网关 ----
 
@@ -630,18 +438,39 @@ func w1bWriteCutoverEvidence(t *testing.T, dir, epoch string) string {
 
 func w1bOwnerBaseEnv(t *testing.T, coverageDir string, extra ...string) []string {
 	t.Helper()
-	base := []string{"JUHE_AI_DATABASE_PATH=" + filepath.Join(t.TempDir(), "w1b-business.sqlite")}
-	return w1bScenarioEnv(t, coverageDir, append(base, extra...)...)
+	return w1bScenarioEnv(t, coverageDir, extra...)
 }
 
 func TestW1BBootCoverOwnerFailFastArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
 
-	// K1: JUHE_AI_DATABASE_DRIVER=bogus → loadRuntimeConfig 快速失败。
-	coverageDir := w1bCoverageDir(t, "K1-driver-bogus")
-	_, stderr, code := w1bRunScenario(t, "K1-driver-bogus", w1bOwnerBaseEnv(t, coverageDir, "JUHE_AI_DATABASE_DRIVER=bogus"))
-	w1bRequireExitCode(t, "K1-driver-bogus", code, 1)
-	w1bRequireContains(t, "K1-driver-bogus", stderr, "load gateway runtime config: JUHE_AI_DATABASE_DRIVER 必须为 sqlite 或 postgres")
+	// K1: 缺 JUHE_AI_POSTGRES_URL → loadRuntimeConfig 快速失败（PostgreSQL
+	// + Redis 是唯一存储形态，三个连接串必填；原 JUHE_AI_DATABASE_DRIVER=bogus
+	// 臂随双模式删除退役——未知 env 不再被读取）。
+	coverageDir := w1bCoverageDir(t, "K1-missing-postgres-url")
+	env := make([]string, 0, len(os.Environ())+4)
+	for _, entry := range os.Environ() {
+		upper := strings.ToUpper(entry)
+		if strings.HasPrefix(upper, "JUHE_AI_") || strings.HasPrefix(upper, "NODE_ENV=") || strings.HasPrefix(upper, "GOCOVERDIR=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	// redis 两连接由 miniredis 承载：loadRuntimeConfig 的必填校验先查
+	// Redis 再查 POSTGRES_URL（runtime.go 308-314 的顺序），因此只注入
+	// Redis 两条即可让失败落点精确到缺 POSTGRES_URL。
+	cacheRedis := miniredis.RunT(t)
+	stateRedis := miniredis.RunT(t)
+	env = append(env,
+		"JUHE_AI_CACHE_DRIVER=redis",
+		"JUHE_AI_REDIS_CACHE_URL=redis://"+cacheRedis.Addr(),
+		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
+		"JUHE_AI_REDIS_STATE_URL=redis://"+stateRedis.Addr(),
+	)
+	env = append(env, "GOCOVERDIR="+coverageDir)
+	_, stderr, code := w1bRunScenario(t, "K1-missing-postgres-url", env)
+	w1bRequireExitCode(t, "K1-missing-postgres-url", code, 1)
+	w1bRequireContains(t, "K1-missing-postgres-url", stderr, "load gateway runtime config: 缺少 JUHE_AI_POSTGRES_URL")
 
 	// K2（已删除）：原「chain=true + system-api=false 联动门槛」臂依赖
 	// JUHE_AI_GATEWAY_CHAIN_ENABLED / JUHE_AI_GATEWAY_SYSTEM_API_ENABLED

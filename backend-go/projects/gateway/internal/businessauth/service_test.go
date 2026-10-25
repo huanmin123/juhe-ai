@@ -8,32 +8,17 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
-	_ "modernc.org/sqlite"
 )
 
 func openBusinessAuthDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:businessauth-"+t.Name()+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	for _, ddl := range []string{
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT,role TEXT NOT NULL,status TEXT NOT NULL,password_hash TEXT NOT NULL,must_change_password INTEGER NOT NULL,last_login_at TEXT,updated_at TEXT)`,
-		`CREATE TABLE system_sessions (id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT UNIQUE,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,last_seen_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			db.Close()
-			t.Fatal(err)
-		}
-	}
-	return db
+	return newBusinessAuthPGDatabase(t)
 }
 
 func TestServiceRequiresCompleteOwnerGate(t *testing.T) {
 	db := openBusinessAuthDB(t)
 	defer db.Close()
-	service, err := New(db, modelcheckauth.SQLite, time.Now, OwnerGate{Confirmed: true, SchemaReady: true})
+	service, err := New(db, modelcheckauth.Postgres, time.Now, OwnerGate{Confirmed: true, SchemaReady: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,10 +34,10 @@ func TestServiceSessionLifecycleAndPasswordCAS(t *testing.T) {
 	// Generated using Node's pbkdf2$sha512 representation; the test never
 	// stores or compares submitted plaintext outside the verification call.
 	const passwordHash = "pbkdf2$sha512$120000$MDEyMzQ1Njc4OWFiY2RlZg$MB16ie0MUIkgM1Xio7iCM8x9uCDqJJf5rkQ297w84fg"
-	if _, err := db.Exec(`INSERT INTO system_accounts(id,username,display_name,role,status,password_hash,must_change_password) VALUES ('acct','admin','Admin','admin','active',?,0)`, passwordHash); err != nil {
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_business.system_accounts(id,username,display_name,role,status,password_hash,must_change_password,created_at,updated_at) VALUES ('acct','admin','Admin','admin','active',$1,0,$2,$2)`), passwordHash, now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	service, err := New(db, modelcheckauth.SQLite, func() time.Time { return now }, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
+	service, err := New(db, modelcheckauth.Postgres, func() time.Time { return now }, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}

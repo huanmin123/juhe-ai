@@ -28,10 +28,11 @@ const (
 // reads: runtimeMode, runtimeStateDriver, redis.stateUrl and the Redis
 // namespace for key layout.
 type RuntimeDriverConfig struct {
-	RuntimeMode        string // 'standalone' | 'performance'
-	RuntimeStateDriver string // 'memory' | 'redis'
-	RedisStateURL      string
-	RedisNamespace     string
+	// PostgreSQL + Redis 是唯一存储形态（PLAN-20261024T051925945Z）：热质量
+	// 运行态恒 redis（原 RuntimeMode/RuntimeStateDriver 双模字段随 standalone
+	// + memory 形态退役删除）。
+	RedisStateURL  string
+	RedisNamespace string
 }
 
 // RoutingObservation mirrors one observeGatewayRouting event payload.
@@ -92,49 +93,30 @@ func GetGatewayHotQualityRuntime(ctx context.Context, config RuntimeDriverConfig
 	defer hotQualityRuntime.Unlock()
 	if hotQualityRuntime.identity != identity || hotQualityRuntime.hotQualityStore == nil || hotQualityRuntime.explorationStore == nil {
 		var runtime GatewayHotQualityRuntime
-		if config.RuntimeMode == "standalone" {
-			if config.RuntimeStateDriver != "memory" {
-				return nil, errors.New("standalone 热质量要求 memory runtime state driver")
-			}
-			hotQualityStore, err := NewMemoryHotQualityStore(MemoryHotQualityStoreOptions{KeyCapacity: intPtr(gatewayHotQualityCapacity)})
-			if err != nil {
-				return nil, err
-			}
-			explorationStore, err := NewMemorySameTierExplorationStore(MemorySameTierExplorationStoreOptions{PoolCapacity: intPtr(gatewayHotQualityCapacity)})
-			if err != nil {
-				return nil, err
-			}
-			runtime.HotQualityStore = hotQualityStore
-			runtime.ExplorationStore = explorationStore
-		} else {
-			if config.RuntimeStateDriver != "redis" {
-				return nil, errors.New("performance 热质量要求 redis runtime state driver")
-			}
-			if strings.TrimSpace(config.RedisStateURL) == "" {
-				return nil, errors.New("performance 热质量缺少 JUHE_AI_REDIS_STATE_URL")
-			}
-			client, err := GetRedisClient(ctx, config.RedisStateURL)
-			if err != nil {
-				return nil, err
-			}
-			runner := NewRedisScriptRunner(client)
-			hotQualityStore, err := NewRedisHotQualityStore(runner, RedisHotQualityStoreOptions{
-				Namespace:   config.RedisNamespace,
-				KeyCapacity: intPtr(gatewayHotQualityCapacity),
-			})
-			if err != nil {
-				return nil, err
-			}
-			explorationStore, err := NewRedisSameTierExplorationStore(runner, RedisSameTierExplorationStoreOptions{
-				Namespace:    config.RedisNamespace,
-				PoolCapacity: intPtr(gatewayHotQualityCapacity),
-			})
-			if err != nil {
-				return nil, err
-			}
-			runtime.HotQualityStore = hotQualityStore
-			runtime.ExplorationStore = explorationStore
+		if strings.TrimSpace(config.RedisStateURL) == "" {
+			return nil, errors.New("热质量缺少 JUHE_AI_REDIS_STATE_URL")
 		}
+		client, err := GetRedisClient(ctx, config.RedisStateURL)
+		if err != nil {
+			return nil, err
+		}
+		runner := NewRedisScriptRunner(client)
+		hotQualityStore, err := NewRedisHotQualityStore(runner, RedisHotQualityStoreOptions{
+			Namespace:   config.RedisNamespace,
+			KeyCapacity: intPtr(gatewayHotQualityCapacity),
+		})
+		if err != nil {
+			return nil, err
+		}
+		explorationStore, err := NewRedisSameTierExplorationStore(runner, RedisSameTierExplorationStoreOptions{
+			Namespace:    config.RedisNamespace,
+			PoolCapacity: intPtr(gatewayHotQualityCapacity),
+		})
+		if err != nil {
+			return nil, err
+		}
+		runtime.HotQualityStore = hotQualityStore
+		runtime.ExplorationStore = explorationStore
 		hotQualityRuntime.hotQualityStore = runtime.HotQualityStore
 		hotQualityRuntime.explorationStore = runtime.ExplorationStore
 		hotQualityRuntime.identity = identity
@@ -156,21 +138,12 @@ func ResetGatewayHotQualityRuntimeForTest() {
 }
 
 func gatewayHotQualityRuntimeIdentity(config RuntimeDriverConfig) (string, error) {
-	if config.RuntimeMode == "standalone" {
-		if config.RuntimeStateDriver != "memory" {
-			return "", errors.New("standalone 热质量要求 memory runtime state driver")
-		}
-		return "standalone:memory", nil
-	}
-	if config.RuntimeStateDriver != "redis" {
-		return "", errors.New("performance 热质量要求 redis runtime state driver")
-	}
 	redisURL := strings.TrimSpace(config.RedisStateURL)
 	if redisURL == "" {
-		return "", errors.New("performance 热质量缺少 JUHE_AI_REDIS_STATE_URL")
+		return "", errors.New("热质量缺少 JUHE_AI_REDIS_STATE_URL")
 	}
 	digest := sha256.Sum256([]byte(redisURL))
-	return "performance:redis:" + hex.EncodeToString(digest[:]), nil
+	return "redis:" + hex.EncodeToString(digest[:]), nil
 }
 
 // OnceGatewayHotQualityExplorationSettlement mirrors
@@ -870,6 +843,96 @@ func orDefaultString(value string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// derefOrDefault 解引用可选 int64（原 memory_store.go 的共享小工具，
+// redis store 继续消费）。
+func derefOrDefault(value *int64, fallback func() int64) int64 {
+	if value != nil {
+		return *value
+	}
+	return fallback()
+}
+
+// assertOutcomeClass / boundedIdentity / normalizedNowMs 是 redis store 共用
+// 的输入校验小工具（原 memory_store.go 共享面，随 memory store 退役上移）。
+func assertFailureScope(value string) error {
+	switch value {
+	case FailureScopeNone, FailureScopeKey, FailureScopeProtocolModel, FailureScopeAccount, FailureScopeUpstreamBucket:
+		return nil
+	}
+	return errors.New("热质量 failureScope 非法")
+}
+
+func assertTerminalSource(value string) error {
+	switch value {
+	case TerminalSourceGatewayTransport, TerminalSourceUpstreamResponse, TerminalSourceExplicitPolicy, TerminalSourceRequestLifecycle:
+		return nil
+	}
+	return errors.New("热质量 terminal source 非法")
+}
+
+func assertOutcomeClass(value string) error {
+	switch value {
+	case TerminalOutcomeCompletedResponse,
+		TerminalOutcomeUpstreamResponseFailure,
+		TerminalOutcomeExplicitPolicyFailure,
+		TerminalOutcomeTransportFailure,
+		TerminalOutcomeTimeout,
+		TerminalOutcomeReadInterruption,
+		TerminalOutcomeIncompleteResponse,
+		TerminalOutcomeUnknown,
+		TerminalOutcomeClientCancellation:
+		return nil
+	}
+	return errors.New("热质量 outcomeClass 非法")
+}
+
+func boundedIdentity(value string, name string) (string, error) {
+	normalized := trimSpace(value)
+	if normalized == "" || len(normalized) > 256 {
+		return "", fmt.Errorf("%s 必须是 1 到 256 字符", name)
+	}
+	return normalized, nil
+}
+
+func normalizedNowMs(value int64) (int64, error) {
+	if value < 0 || value > maxSafeInteger {
+		return 0, errors.New("nowMs 必须是非负安全整数")
+	}
+	return value, nil
+}
+
+func incrementInt64(value int64) int64 {
+	if value >= maxSafeInteger {
+		return maxSafeInteger
+	}
+	return value + 1
+}
+
+func expirationAt(now int64, ttlMs int64) int64 {
+	expires := now + ttlMs
+	if expires > maxSafeInteger {
+		return maxSafeInteger
+	}
+	return expires
+}
+
+func maximumInt64(left *int64, right int64) *int64 {
+	if left == nil {
+		value := right
+		return &value
+	}
+	if *left < right {
+		value := right
+		return &value
+	}
+	return left
+}
+
+// trimSpace mirrors the JS String.prototype.trim.
+func trimSpace(value string) string {
+	return strings.TrimSpace(value)
 }
 
 func intPtr(value int) *int { return &value }
