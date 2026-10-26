@@ -145,7 +145,7 @@ func TestWCFindGroupAndRotationFilters(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.exchanger.respond = staticToken(openAITokenPayload("filter"))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"过滤账户"}`)
+		`{"refreshToken":"rt","name":"过滤账户"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("建号: %d %v", code, created)
 	}

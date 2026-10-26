@@ -314,7 +314,7 @@ func TestWCAnthropicRefreshAndReauth(t *testing.T) {
 		return http.StatusOK, anthropicPayload
 	}
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-refresh-token",
-		`{"refreshToken":"ant-refresh","providerProtocolProfileId":"profile_anthropic_anthropic_v1"}`)
+		`{"refreshToken":"ant-refresh"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("创建: %d %v", code, created)
 	}
@@ -348,7 +348,7 @@ func TestWCGrokReauthorizeAndCreateRefresh(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 	env.exchanger.respond = staticToken(grokTokenPayload("grok-reauth"))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"grok-r0","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"refreshToken":"grok-r0"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("创建: %d %v", code, created)
 	}
@@ -368,7 +368,7 @@ func TestWCGrokReauthorizeAndCreateRefresh(t *testing.T) {
 	// openai expires_in 缺失 → 502 回退。
 	env.exchanger.respond = staticToken(`{"access_token":"x","token_type":"Bearer"}`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"no-exp","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"refreshToken":"no-exp"}`)
 	if code != http.StatusBadGateway || payload["message"] != "OpenAI 刷新令牌授权失败" {
 		t.Fatalf("缺 expires_in: %d %v", code, payload)
 	}
@@ -391,7 +391,7 @@ func TestWCGeminiReauthorizeRefresh(t *testing.T) {
 		return http.StatusOK, fmt.Sprintf(`{"access_token":"gem-ra-%d","refresh_token":"gem-ra2","expires_in":3600,"scope":"s2"}`, callIndex)
 	}
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"gem-r0","projectId":"proj-1","providerProtocolProfileId":"profile_gemini_native_v1beta"}`)
+		`{"refreshToken":"gem-r0","projectId":"proj-1"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("创建: %d %v", code, created)
 	}
@@ -419,10 +419,10 @@ func TestWCSSOInputValidation(t *testing.T) {
 		name string
 		body string
 	}{
-		{"非数组 ssoTokens", `{"ssoTokens":"x","providerProtocolProfileId":"profile_xai_openai_v1","name":"n1"}`},
-		{"非字符串项", `{"ssoTokens":[1],"providerProtocolProfileId":"profile_xai_openai_v1","name":"n2"}`},
-		{"超长 token", `{"ssoTokens":["` + strings.Repeat("x", 16385) + `"],"providerProtocolProfileId":"profile_xai_openai_v1","name":"n3"}`},
-		{"超长单 token", `{"ssoToken":"` + strings.Repeat("x", 16385) + `","providerProtocolProfileId":"profile_xai_openai_v1","name":"n4"}`},
+		{"非数组 ssoTokens", `{"ssoTokens":"x","name":"n1"}`},
+		{"非字符串项", `{"ssoTokens":[1],"name":"n2"}`},
+		{"超长 token", `{"ssoTokens":["` + strings.Repeat("x", 16385) + `"],"name":"n3"}`},
+		{"超长单 token", `{"ssoToken":"` + strings.Repeat("x", 16385) + `","name":"n4"}`},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -445,7 +445,7 @@ func TestWCCreateLogWithGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		fmt.Sprintf(`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","groupId":%q,"name":"带组账户"}`, groupID))
+		fmt.Sprintf(`{"refreshToken":"rt","groupId":%q,"name":"带组账户"}`, groupID))
 	if code != http.StatusCreated {
 		t.Fatalf("带组创建: %d %v", code, payload)
 	}

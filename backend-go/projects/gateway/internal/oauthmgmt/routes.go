@@ -112,9 +112,6 @@ func (d *Deps) guarded(plan providerPlan, operationKey string, ttl time.Duration
 			if value := kernel.TextField(kernel.BodyField(r, "clientSecret")); value != "" {
 				fingerprint["clientSecret"] = kernel.HashStableValue(value)
 			}
-			if value := kernel.TextField(kernel.BodyField(r, "providerProtocolProfileId")); value != "" {
-				fingerprint["providerProtocolProfileId"] = strings.TrimSpace(value)
-			}
 			fingerprint["status"] = creationStatusValue(body, "status")
 			if tokens := ssoFingerprintTokens(r); tokens != "" {
 				fingerprint["ssoTokens"] = tokens
@@ -298,8 +295,10 @@ func creationStatusText(value any) string {
 // --- managed account field mapping ------------------------------------------
 
 // managedFields are the shared managed-account body keys (managedAccountFields).
+// providerProtocolProfileId 不在词表：profile 身份由创建链按 §1.1 registry
+// 派生（profileIDForProvider），入参键提交即 strict-body 400。
 var managedFields = []string{
-	"providerProtocolProfileId", "name", "groupId", "concurrencyLimit", "priority",
+	"name", "groupId", "concurrencyLimit", "priority",
 	"status", "superPriorityEnabled", "fallbackEnabled", "supportedModels",
 	"healthCheckModel", "healthCheckEndpointMode", "temporaryUnavailableContinuousProbeEnabled",
 	"modelMappings", "tags", "proxyProfileId", "accountExpiresAt", "availabilitySchedule",
@@ -318,21 +317,6 @@ var healthCheckEndpointModes = map[string]bool{
 // probe slice).
 func parseManagedFields(body map[string]any) (managedInput, bool) {
 	input := managedInput{}
-	// providerProtocolProfileId 已收口为可选入参（创建端点 DTO 收口）：缺省
-	// （含空串，与本文件 optionalTrimmedText/guard fingerprint 的空白语义一致）
-	// 时由创建链经 managedProfileID 按 registry 派生该 provider 的唯一合法
-	// profile 身份；显式提交值原样透传，等值校验仍由 resolveProviderProfile
-	// 执行（词表外 → 400 供应商协议档案无效），旧客户端平滑。非字符串值保持
-	// 既有 400 参数无效。
-	if value, present := body["providerProtocolProfileId"]; present && value != nil {
-		text, ok := value.(string)
-		if !ok {
-			return input, false
-		}
-		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			input.ProviderProtocolProfileID = trimmed
-		}
-	}
 	if text, present := bodyString(body, "name"); present {
 		trimmed := strings.TrimSpace(text)
 		if trimmed == "" {
@@ -484,33 +468,28 @@ func parseStringSlice(value any, cap int) ([]string, bool) {
 
 // managedInput is the parsed managed-account field bundle.
 type managedInput struct {
-	ProviderProtocolProfileID string
-	Name                      *string
-	GroupID                   *string
-	ConcurrencyLimit          *int
-	Priority                  *int
-	Status                    string
-	SuperPriorityEnabled      *bool
-	FallbackEnabled           *bool
-	SupportedModels           []string
-	HealthCheckModel          *string
-	HealthCheckEndpointMode   *string
-	ModelMappings             []accounts.ModelMapping
-	Tags                      []string
-	ProxyProfileID            *string
-	AccountExpiresAt          *string
-	AvailabilitySchedule      any
-	Notes                     *string
+	Name                    *string
+	GroupID                 *string
+	ConcurrencyLimit        *int
+	Priority                *int
+	Status                  string
+	SuperPriorityEnabled    *bool
+	FallbackEnabled         *bool
+	SupportedModels         []string
+	HealthCheckModel        *string
+	HealthCheckEndpointMode *string
+	ModelMappings           []accounts.ModelMapping
+	Tags                    []string
+	ProxyProfileID          *string
+	AccountExpiresAt        *string
+	AvailabilitySchedule    any
+	Notes                   *string
 }
 
 // managedProfileID 渲染创建端点（create-from-*、sso-to-oauth）的 profile 入参：
-// DTO 收口后 providerProtocolProfileId 可缺省——空值按 §1.1 registry 取该
-// provider 唯一合法 profile 身份（与 resolveProviderProfile 的派生同表）；
-// 显式提交值原样透传，等值校验仍在 resolveProviderProfile 执行。
-func managedProfileID(plan providerPlan, managed managedInput) string {
-	if id := strings.TrimSpace(managed.ProviderProtocolProfileID); id != "" {
-		return id
-	}
+// providerProtocolProfileId 入参键已删除，profile 身份一律按 §1.1 registry 取
+// 该 provider 唯一合法档案（与 resolveProviderProfile 的等值校验同表）。
+func managedProfileID(plan providerPlan) string {
 	return profileIDForProvider(plan.providerCode)
 }
 
@@ -617,7 +596,7 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理：请在表单中选择出海代理后再提交（上游需要经代理访问）")
 		return
 	}
-	profile, err := d.Store.resolveProviderProfile(r.Context(), plan.providerCode, managedProfileID(plan, managed), plan.accountType, plan.requiredProfileID)
+	profile, err := d.Store.resolveProviderProfile(r.Context(), plan.providerCode, managedProfileID(plan), plan.accountType, plan.requiredProfileID)
 	if err != nil {
 		d.writeProfileError(w, err)
 		return
@@ -1012,10 +991,10 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 			return
 		}
 		if plan.requiresProxy && d.Store.proxyRequired && (managed.ProxyProfileID == nil || strings.TrimSpace(*managed.ProxyProfileID) == "") {
-		kernel.WriteBadRequest(w, "Grok SSO 导入必须绑定代理：请在表单中选择出海代理后再提交")
-		return
-	}
-	profile, err := d.Store.resolveProviderProfile(r.Context(), plan.providerCode, managedProfileID(plan, managed), plan.accountType, plan.requiredProfileID)
+			kernel.WriteBadRequest(w, "Grok SSO 导入必须绑定代理：请在表单中选择出海代理后再提交")
+			return
+		}
+		profile, err := d.Store.resolveProviderProfile(r.Context(), plan.providerCode, managedProfileID(plan), plan.accountType, plan.requiredProfileID)
 		if err != nil {
 			d.writeProfileError(w, err)
 			return

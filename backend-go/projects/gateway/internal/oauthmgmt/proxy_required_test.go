@@ -32,7 +32,7 @@ func TestProxyRequiredBlocksCreateWithoutProxy(t *testing.T) {
 
 	for _, route := range []string{"grok-oauth", "openai-oauth", "anthropic-oauth", "gemini-oauth"} {
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/"+route+"/create-from-code",
-			`{"sessionId":"missing","callbackUrl":"https://cb?code=c&state=s","providerProtocolProfileId":"ignored"}`)
+			`{"sessionId":"missing","callbackUrl":"https://cb?code=c&state=s"}`)
 		if code != http.StatusBadRequest {
 			t.Fatalf("%s create without proxy: %d %v", route, code, payload)
 		}
@@ -55,7 +55,7 @@ func TestProxyRequiredAllowsCreateWithProxy(t *testing.T) {
 	sessionID := authData["sessionId"].(string)
 	state := authData["state"].(string)
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://127.0.0.1:56121/callback?code=c1&state=%s","providerProtocolProfileId":"profile_xai_openai_v1","proxyProfileId":"proxy-oauth-test"}`, sessionID, state))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://127.0.0.1:56121/callback?code=c1&state=%s","proxyProfileId":"proxy-oauth-test"}`, sessionID, state))
 	if code != http.StatusCreated {
 		t.Fatalf("grok create with proxy: %d %v", code, created)
 	}
@@ -72,7 +72,7 @@ func TestProxyRequiredAllowsLegacyEnvironments(t *testing.T) {
 	}
 	sessionID := dataMap(t, authPayload)["sessionId"].(string)
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"bare-code","providerProtocolProfileId":"profile_xai_openai_v1"}`, sessionID))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"bare-code"}`, sessionID))
 	if code != http.StatusCreated {
 		t.Fatalf("legacy no-proxy create: %d %v", code, created)
 	}

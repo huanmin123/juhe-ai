@@ -83,7 +83,7 @@ func TestW14dSSOImportProfileAndGroupArms(t *testing.T) {
 	//（T30/B4 ⑧：档案域只读 vendors）。
 	env.exec(t, `DROP TABLE vendors`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoToken":"tok","providerProtocolProfileId":"profile_xai_openai_v1","name":"w14d-prof"}`)
+		`{"ssoToken":"tok","name":"w14d-prof"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("sso profile 500: %d %v", code, payload)
 	}
@@ -95,13 +95,13 @@ func TestW14dSSOImportUnknownGroup(t *testing.T) {
 
 	// An unknown group id fails before any token conversion.
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoToken":"tok","groupId":"grp-missing","name":"w14d-grp","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoToken":"tok","groupId":"grp-missing","name":"w14d-grp"}`)
 	if code != http.StatusBadRequest || payload["message"] != "账户分组无效" {
 		t.Fatalf("sso group 400: %d %v", code, payload)
 	}
 	// The duplicate group id variant rides the same arm.
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoToken":"tok","groupId":"grp-missing","groupId2":"x","name":"w14d-grp2","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoToken":"tok","groupId":"grp-missing","groupId2":"x","name":"w14d-grp2"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("unknown key guard: %d %v", code, payload)
 	}
@@ -119,7 +119,7 @@ func TestW14dSSOImportExpiresValidation(t *testing.T) {
 	successSteps := wcDeviceSuccessSteps(`{"access_token":"at","refresh_token":"rt","expires_in":3600,"token_type":"Bearer"}`)
 	env.sso.steps = append([]SSODeviceResponse{}, successSteps...)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoToken":"tok","accountExpiresAt":"not-a-date","name":"w14d-exp","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoToken":"tok","accountExpiresAt":"not-a-date","name":"w14d-exp"}`)
 	if code != http.StatusOK {
 		t.Fatalf("sso expires import: %d %v", code, payload)
 	}

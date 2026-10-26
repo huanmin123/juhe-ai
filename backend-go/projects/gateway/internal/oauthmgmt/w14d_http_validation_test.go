@@ -79,23 +79,24 @@ func TestW14dCreateFromCodeValidationMatrix(t *testing.T) {
 
 	// The managed fields must type-check (并发限制非数字).
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		`{"sessionId":"s2","callbackUrl":"https://cb2","concurrencyLimit":"x","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"sessionId":"s2","callbackUrl":"https://cb2","concurrencyLimit":"x"}`)
 	if code != http.StatusBadRequest || payload["message"] != "OpenAI 授权码参数无效" {
 		t.Fatalf("managed type check: %d %v", code, payload)
 	}
 
 	// An unknown group id renders the group validation 400.
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		`{"sessionId":"s3","callbackUrl":"https://cb3","groupId":"grp-missing","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"sessionId":"s3","callbackUrl":"https://cb3","groupId":"grp-missing"}`)
 	if code != http.StatusBadRequest || payload["message"] != "账户分组无效" {
 		t.Fatalf("unknown group: %d %v", code, payload)
 	}
 
-	// A malformed providerProtocolProfileId renders the profile 400.
+	// providerProtocolProfileId 键已出词表（B4⑩ 本体删除）：显式提交按
+	// strict-body 400 参数无效拒绝，profile 一律由 registry 派生。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
 		`{"refreshToken":"rt","providerProtocolProfileId":"profile-nope"}`)
-	if code != http.StatusBadRequest {
-		t.Fatalf("unknown profile: %d %v", code, payload)
+	if code != http.StatusBadRequest || payload["message"] != "Gemini 刷新令牌参数无效" {
+		t.Fatalf("retired profile key: %d %v", code, payload)
 	}
 }
 
@@ -110,9 +111,11 @@ func TestW14dCreateFromRefreshValidationMatrix(t *testing.T) {
 		t.Fatalf("strict refresh create: %d %v", code, payload)
 	}
 
-	// The managed fields must type-check (并发限制非数字).
+	// The managed fields must type-check (并发限制非数字)。refreshToken 与上一
+	// 请求不同：guard 指纹已无 providerProtocolProfileId 分支，同值会撞失败
+	// 指纹去重 409。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","priority":"x","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"refreshToken":"rt-type","priority":"x"}`)
 	if code != http.StatusBadRequest || payload["message"] != "Grok 刷新令牌参数无效" {
 		t.Fatalf("managed type check: %d %v", code, payload)
 	}
@@ -319,7 +322,7 @@ func TestW14dSSOImportValidation(t *testing.T) {
 		return http.StatusInternalServerError, `{"error":"upstream"}`
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["tok-bad"],"name":"w14d-failed","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoTokens":["tok-bad"],"name":"w14d-failed"}`)
 	if code != http.StatusOK {
 		t.Fatalf("failed exchange import: %d %v", code, payload)
 	}

@@ -28,7 +28,7 @@ func TestRotationInvalidationAndDispatchRevision(t *testing.T) {
 
 	// Seed one oauth account with a known identity.
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"openai-refresh-rot","clientId":"custom-openai-client","providerProtocolProfileId":"profile_gpt_openai_v1","name":"Rotation Probe"}`)
+		`{"refreshToken":"openai-refresh-rot","clientId":"custom-openai-client","name":"Rotation Probe"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create-from-refresh-token: %d %v", code, created)
 	}

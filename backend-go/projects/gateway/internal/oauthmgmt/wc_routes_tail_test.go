@@ -17,7 +17,7 @@ func TestWCRefreshStrictBodyAndRevision(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 	env.exchanger.respond = staticToken(openAITokenPayload("strict"))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"严格校验"}`)
+		`{"refreshToken":"rt","name":"严格校验"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("建号: %d %v", code, created)
 	}
@@ -86,7 +86,7 @@ func TestWCSsoUnknownKeyAndFailedItem(t *testing.T) {
 
 	// 未知键。
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["a"],"providerProtocolProfileId":"profile_xai_openai_v1","bogus":1}`)
+		`{"ssoTokens":["a"],"bogus":1}`)
 	if code != http.StatusBadRequest || payload["message"] != "Grok SSO 导入参数无效" {
 		t.Fatalf("未知键: %d %v", code, payload)
 	}
@@ -105,7 +105,7 @@ func TestWCSsoUnknownKeyAndFailedItem(t *testing.T) {
 		ssoStep(http.StatusOK, nil, tokenBody),
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["sso=expire"],"providerProtocolProfileId":"profile_xai_openai_v1","accountExpiresAt":"not-a-date"}`)
+		`{"ssoTokens":["sso=expire"],"accountExpiresAt":"not-a-date"}`)
 	if code != http.StatusOK {
 		t.Fatalf("导入: %d %v", code, payload)
 	}

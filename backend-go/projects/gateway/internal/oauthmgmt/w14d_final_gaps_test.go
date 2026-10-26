@@ -158,7 +158,7 @@ func TestW14dCreateServerErrorArms(t *testing.T) {
 	//（T30/B4 ⑧：档案域只读 vendors，不再读旧 profile 表）。
 	env.exec(t, `DROP TABLE vendors`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"sessionId":"s","callbackUrl":"https://cb"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("profile 500: %d %v", code, payload)
 	}
@@ -171,7 +171,7 @@ func TestW14dCreateGroupServerErrorArm(t *testing.T) {
 	// Dropping the groups table turns the group check into a 500.
 	env.exec(t, `DROP TABLE groups`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		`{"sessionId":"s","callbackUrl":"https://cb","groupId":"grp-x","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"sessionId":"s","callbackUrl":"https://cb","groupId":"grp-x"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {
 		t.Fatalf("group 500: %d %v", code, payload)
 	}
@@ -191,7 +191,7 @@ func TestW14dSSOImportDuplicateNameFails(t *testing.T) {
 		VALUES ('w14d-sso-dup', (SELECT id FROM system_accounts WHERE username='root'), 'xai',
 		'openai', 'v1', 'w14d-sso-name', 'oauth', 'active', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["tok-one"],"name":"w14d-sso-name","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoTokens":["tok-one"],"name":"w14d-sso-name"}`)
 	if code != http.StatusOK {
 		t.Fatalf("duplicate import: %d %v", code, payload)
 	}

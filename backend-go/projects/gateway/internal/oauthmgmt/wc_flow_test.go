@@ -35,7 +35,7 @@ func TestWCRequestTokenErrorMatrix(t *testing.T) {
 	_, authPayload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/auth-url", `{}`)
 	sessionID := dataMap(t, authPayload)["sessionId"].(string)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=c&state=s","providerProtocolProfileId":"profile_gpt_openai_v1"}`, sessionID))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=c&state=s"}`, sessionID))
 	// 2xx 但缺 access_token 是普通错误（非 UpstreamError）→ 502 路由回退文案。
 	if code != http.StatusBadGateway || payload["message"] != "OpenAI 授权码交换失败" {
 		t.Fatalf("缺 access_token（2xx）: %d %v", code, payload)
@@ -52,7 +52,7 @@ func TestWCRequestTokenErrorMatrix(t *testing.T) {
 	anthropicSession := dataMap(t, anthropicPayload)["sessionId"].(string)
 	anthropicState := authStateFromURL(t, dataMap(t, anthropicPayload)["authUrl"].(string))
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=c&state=%s","providerProtocolProfileId":"profile_anthropic_anthropic_v1"}`,
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=c&state=%s"}`,
 			anthropicSession, url.QueryEscape(anthropicState)))
 	if code != http.StatusBadGateway || !strings.Contains(payload["message"].(string), "HTTP 401") {
 		t.Fatalf("anthropic 上游 401: %d %v", code, payload)
@@ -66,7 +66,7 @@ func TestWCRequestTokenErrorMatrix(t *testing.T) {
 		return http.StatusBadRequest, `{"error":"invalid_grant"}`
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gemini_native_v1beta"}`)
+		`{"refreshToken":"rt"}`)
 	if code != http.StatusBadGateway || !strings.Contains(payload["message"].(string), "Gemini OAuth 令牌请求失败：HTTP 400，invalid_grant") {
 		t.Fatalf("gemini 上游 400: %d %v", code, payload)
 	}
@@ -85,7 +85,7 @@ func TestWCRequestTokenErrorMatrix(t *testing.T) {
 		return status, body
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"refreshToken":"rt"}`)
 	if code != http.StatusForbidden || !strings.Contains(payload["message"].(string), "HTTP 403") {
 		t.Fatalf("grok entitlement 403: %d %v", code, payload)
 	}
@@ -115,14 +115,14 @@ func TestWCGeminiCreateFromCode(t *testing.T) {
 
 	// state 不符 → 502 回退。
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=gem-code&state=wrong","providerProtocolProfileId":"profile_gemini_native_v1beta"}`, sessionID))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=gem-code&state=wrong"}`, sessionID))
 	if code != http.StatusBadGateway || payload["message"] != "Gemini 授权码交换失败" {
 		t.Fatalf("state 不符: %d %v", code, payload)
 	}
 
 	// 会话字段不符（projectId 变化）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=gem-code&state=%s","projectId":"other","providerProtocolProfileId":"profile_gemini_native_v1beta"}`,
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://cb?code=gem-code&state=%s","projectId":"other"}`,
 			sessionID, url.QueryEscape(state)))
 	if code != http.StatusBadGateway || payload["message"] != "Gemini 授权码交换失败" {
 		t.Fatalf("会话字段不符: %d %v", code, payload)
@@ -176,7 +176,7 @@ func TestWCReauthorizeFromCodeOpenAI(t *testing.T) {
 	}
 
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt-1","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"refreshToken":"rt-1"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("建号: %d %v", code, created)
 	}
@@ -232,7 +232,7 @@ func TestWCScopeQueryAndStrictBody(t *testing.T) {
 	// refresh-token：严格 body（每个请求用不同 refreshToken，避免 mutation
 	// guard 的失败指纹去重拦截后续请求）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt-strict","providerProtocolProfileId":"profile_gpt_openai_v1","bogus":1}`)
+		`{"refreshToken":"rt-strict","bogus":1}`)
 	if code != http.StatusBadRequest || payload["message"] != "OpenAI 刷新令牌参数无效" {
 		t.Fatalf("严格 body: %d %v", code, payload)
 	}
@@ -241,7 +241,7 @@ func TestWCScopeQueryAndStrictBody(t *testing.T) {
 	// 但 writeOAuthError 无 ValidationError 分支，映射为 502 回退文案
 	//（Node 侧 zod schema 应为 400）。按当前实际行为断言。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{}`)
 	if code != http.StatusBadGateway || payload["message"] != "OpenAI 刷新令牌授权失败" {
 		t.Fatalf("缺 refreshToken（行为存疑，当前 502）: %d %v", code, payload)
 	}
@@ -257,7 +257,7 @@ func TestWCScopeQueryAndStrictBody(t *testing.T) {
 		VALUES ('grp-gemini-x', 'seed-owner', 'Gemini 组', 1, 0, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	env.exchanger.respond = staticToken(openAITokenPayload("group-check"))
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt-group","providerProtocolProfileId":"profile_gpt_openai_v1","groupId":"grp-gemini-x"}`)
+		`{"refreshToken":"rt-group","groupId":"grp-gemini-x"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("带分组跨厂商建户必须成功: %d %v", code, payload)
 	}
@@ -272,8 +272,8 @@ func TestWCScopeQueryAndStrictBody(t *testing.T) {
 
 	// 重名冲突 → 409（ConflictError 映射）。
 	env.exchanger.respond = staticToken(openAITokenPayload("dup"))
-	first := fmt.Sprintf(`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"重名账户"}`)
-	second := fmt.Sprintf(`{"refreshToken":"rt-2","providerProtocolProfileId":"profile_gpt_openai_v1","name":"重名账户"}`)
+	first := fmt.Sprintf(`{"refreshToken":"rt","name":"重名账户"}`)
+	second := fmt.Sprintf(`{"refreshToken":"rt-2","name":"重名账户"}`)
 	if code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token", first); code != http.StatusCreated {
 		t.Fatalf("首个重名: %d %v", code, payload)
 	}
@@ -289,7 +289,7 @@ func TestWCOpenAIBlockedErrorAccount(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 	env.exchanger.respond = staticToken(openAITokenPayload("blocked-create"))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"异常账户"}`)
+		`{"refreshToken":"rt","name":"异常账户"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("建号: %d %v", code, created)
 	}
@@ -321,7 +321,7 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 	// superPriorityEnabled=true 会被 accounts store 拒绝（当前实现对 oauth
 	// 账户不支持超优先级标记），此处不启用。托管字段拆两组创建：组合联动
 	// 校验属于 accounts store 契约，不在此展开。
-	schedulingBody := `{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1",` +
+	schedulingBody := `{"refreshToken":"rt",` +
 		`"name":"调度字段账户","concurrencyLimit":7,"priority":2,"status":"active",` +
 		`"fallbackEnabled":true,"supportedModels":["m1","m2"]}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token", schedulingBody)
@@ -346,7 +346,7 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 
 	// 检查形态取 responses_json：gpt.oauth 连接的 endpoint modes 按 §2.2 收窄
 	// 为 {responses_json, responses_sse}，健康检查形态必须在该连接启用集内。
-	healthBody := `{"refreshToken":"rt-2","providerProtocolProfileId":"profile_gpt_openai_v1",` +
+	healthBody := `{"refreshToken":"rt-2",` +
 		`"name":"健康字段账户","healthCheckModel":"gpt-4o-mini","healthCheckEndpointMode":"responses_json",` +
 		`"tags":["tag1"],"proxyProfileId":"proxy-1","notes":"备注"}`
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token", healthBody)
@@ -376,7 +376,7 @@ func TestWCAccountExpiresAtCreation(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 	env.exchanger.respond = staticToken(openAITokenPayload("expiry"))
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","accountExpiresAt":"2030-06-01T00:00:00Z"}`)
+		`{"refreshToken":"rt","accountExpiresAt":"2030-06-01T00:00:00Z"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("创建: %d %v", code, payload)
 	}
@@ -408,7 +408,7 @@ func TestWCGrokSSOMultiTokenAndExpiry(t *testing.T) {
 		ssoStep(http.StatusOK, nil, tokenBody),
 	}
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/my-grok-oauth/sso-to-oauth",
-		`{"ssoToken":"cookie: sso=abc","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoToken":"cookie: sso=abc"}`)
 	if code != http.StatusOK || dataMap(t, payload)["createdCount"] != float64(1) {
 		t.Fatalf("单 token 导入: %d %v", code, payload)
 	}
@@ -434,7 +434,7 @@ func TestWCGeminiGoogleOneTier(t *testing.T) {
 		return http.StatusOK, `{"access_token":"a","expires_in":3600}`
 	}
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","oauthType":"google_one","tierId":"google-ai-pro","providerProtocolProfileId":"profile_gemini_native_v1beta"}`)
+		`{"refreshToken":"rt","oauthType":"google_one","tierId":"google-ai-pro"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("google_one 创建: %d %v", code, payload)
 	}
@@ -500,7 +500,7 @@ func TestWCRotateCredentialsDirect(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 	env.exchanger.respond = staticToken(openAITokenPayload("direct-rotate"))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"直连轮换"}`)
+		`{"refreshToken":"rt","name":"直连轮换"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("建号: %d %v", code, created)
 	}
@@ -562,7 +562,7 @@ func TestWCFindRotationAccountDecryptFailure(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 	env.exchanger.respond = staticToken(openAITokenPayload("corrupt"))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"refreshToken":"rt"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("建号: %d %v", code, created)
 	}

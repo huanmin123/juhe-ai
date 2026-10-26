@@ -93,7 +93,7 @@ func TestT30CreateAccountDefaultsFollowModelsCatalog(t *testing.T) {
 	// [gpt-4o-mini, gpt-5, m1]；m2（第 6 名）截断，图像/停用行排除。
 	env.exchanger.respond = staticToken(openAITokenPayload("t30-catalog"))
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"T30 目录默认账户"}`)
+		`{"refreshToken":"rt","name":"T30 目录默认账户"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("目录默认建户: %d %v", code, payload)
 	}
@@ -115,7 +115,7 @@ func TestT30CreateAccountFallsBackToProfileDefaultsWhenBuiltinEmpty(t *testing.T
 	env.exec(t, `UPDATE models SET scope = 'global' WHERE vendor_code = 'gpt'`)
 	env.exchanger.respond = staticToken(openAITokenPayload("t30-fallback"))
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"T30 回落账户"}`)
+		`{"refreshToken":"rt","name":"T30 回落账户"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("回落建户: %d %v", code, payload)
 	}

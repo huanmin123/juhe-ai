@@ -68,7 +68,7 @@ func TestGrokSSOToDeviceFlow(t *testing.T) {
 	env.exchanger.respond = staticToken(`{}`)
 
 	code, imported := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["sso=abc; other=1"],"providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoTokens":["sso=abc; other=1"]}`)
 	if code != http.StatusOK {
 		t.Fatalf("sso-to-oauth: %d %v", code, imported)
 	}
@@ -143,12 +143,12 @@ func TestGrokSSOToDeviceFlow(t *testing.T) {
 
 	// Input guards: empty → 400, >3 tokens → 400.
 	code, empty := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{}`)
 	if code != http.StatusBadRequest || empty["message"] != "Grok SSO Cookie 不能为空" {
 		t.Fatalf("empty sso: %d %v", code, empty)
 	}
 	code, tooMany := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["a","b","c","d"],"providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoTokens":["a","b","c","d"]}`)
 	if code != http.StatusBadRequest || tooMany["message"] != "Grok SSO Cookie 单次最多导入 3 个" {
 		t.Fatalf("too many sso: %d %v", code, tooMany)
 	}
@@ -158,7 +158,7 @@ func TestGrokSSOToDeviceFlow(t *testing.T) {
 		ssoStep(http.StatusUnauthorized, nil, `<html>sign-in</html>`),
 	}
 	code, failed := env.do(t, http.MethodPost, "/__aisys__/api/my-grok-oauth/sso-to-oauth",
-		`{"ssoToken":"cookie: sso=bad-token","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoToken":"cookie: sso=bad-token"}`)
 	if code != http.StatusOK {
 		t.Fatalf("failed sso import: %d %v", code, failed)
 	}
@@ -185,7 +185,7 @@ func TestGrokCodeAndRefreshFamily(t *testing.T) {
 	code, authURLPayload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/auth-url", `{}`)
 	sessionID := dataMap(t, authURLPayload)["sessionId"].(string)
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"bare-auth-code","providerProtocolProfileId":"profile_xai_openai_v1"}`, sessionID))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"bare-auth-code"}`, sessionID))
 	if code != http.StatusCreated {
 		t.Fatalf("grok create-from-code: %d %v", code, created)
 	}
@@ -199,7 +199,7 @@ func TestGrokCodeAndRefreshFamily(t *testing.T) {
 	code, fresh := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/auth-url", `{}`)
 	freshSession := dataMap(t, fresh)["sessionId"].(string)
 	code, badState := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://127.0.0.1:56121/callback?code=c1&state=nope","providerProtocolProfileId":"profile_xai_openai_v1"}`, freshSession))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://127.0.0.1:56121/callback?code=c1&state=nope"}`, freshSession))
 	if code != http.StatusBadRequest || badState["message"] != "Grok OAuth state 无效" {
 		t.Fatalf("grok wrong state: %d %v", code, badState)
 	}
@@ -207,14 +207,14 @@ func TestGrokCodeAndRefreshFamily(t *testing.T) {
 	// Pasting the x.ai consent page address (state but no code) → explicit
 	// 400 guidance instead of sending the whole URL upstream as a bare code.
 	code, consentPaste := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://accounts.x.ai/oauth2/consent?response_type=code&client_id=b1a00492-073a-47ea-816f-4c329264a828&state=abc&code_challenge=x&code_challenge_method=S256","providerProtocolProfileId":"profile_xai_openai_v1"}`, freshSession))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://accounts.x.ai/oauth2/consent?response_type=code&client_id=b1a00492-073a-47ea-816f-4c329264a828&state=abc&code_challenge=x&code_challenge_method=S256"}`, freshSession))
 	if code != http.StatusBadRequest || !strings.Contains(consentPaste["message"].(string), "不是授权结果") {
 		t.Fatalf("grok consent paste: %d %v", code, consentPaste)
 	}
 
 	// create-from-refresh-token + manual refresh + reauthorize.
 	code, fromRefresh := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"grok-refresh-A","name":"Grok Refresh Account","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"refreshToken":"grok-refresh-A","name":"Grok Refresh Account"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("grok create-from-refresh-token: %d %v", code, fromRefresh)
 	}
@@ -233,7 +233,7 @@ func TestGrokCodeAndRefreshFamily(t *testing.T) {
 	// Missing stored refresh token → 400 pre-check.
 	env.exchanger.respond = staticToken(`{"access_token":"x","token_type":"Bearer","expires_in":21600}`)
 	code, noRefresh := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"grok-refresh-E","name":"Grok Stripped Account","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"refreshToken":"grok-refresh-E","name":"Grok Stripped Account"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("grok create for refresh-token removal: %d %v", code, noRefresh)
 	}
@@ -287,7 +287,7 @@ func TestOAuthPermissionMatrix(t *testing.T) {
 		method, path, body string
 	}{
 		{"POST", "/__aisys__/api/openai-oauth/auth-url", `{}`},
-		{"POST", "/__aisys__/api/openai-oauth/create-from-refresh-token", `{"refreshToken":"x","providerProtocolProfileId":"profile_gpt_openai_v1"}`},
+		{"POST", "/__aisys__/api/openai-oauth/create-from-refresh-token", `{"refreshToken":"x"}`},
 		{"GET", "/__aisys__/api/gemini-oauth/capabilities", ""},
 	} {
 		code, payload := env.do(t, item.method, item.path, item.body)
@@ -299,7 +299,7 @@ func TestOAuthPermissionMatrix(t *testing.T) {
 	// Bob creates an account via my-*: owner is bob.
 	env.exchanger.respond = staticToken(openAITokenPayload("bob-access"))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/my-openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"bob-refresh-1","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"refreshToken":"bob-refresh-1"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("bob my create: %d %v", code, created)
 	}

@@ -49,11 +49,11 @@ func TestW14dCrossProtocolProfileValidation(t *testing.T) {
 	env := newTestEnv(t)
 	env.w14dLoginAdmin(t)
 
-	// 目标 schema 无档案表（T30/B4 ⑧）：跨厂商 profile 身份由 registry 词表
-	// 拒绝（anthropic 路由只接受 profile_anthropic_anthropic_v1）。
+	// B4⑩ profile 入参键本体删除：profile 身份一律由 registry 派生，跨厂商
+	// 伪装载荷在 strict-body 词表门即被整单拒绝（anthropic 路由 400 参数无效）。
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code",
 		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
-	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "供应商协议档案无效") {
+	if code != http.StatusBadRequest || payload["message"] != "Anthropic 授权码参数无效" {
 		t.Fatalf("cross vendor profile: %d %v", code, payload)
 	}
 }

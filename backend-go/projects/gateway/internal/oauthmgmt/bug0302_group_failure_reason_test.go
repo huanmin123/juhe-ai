@@ -101,19 +101,19 @@ func assertBUG0302GroupQuery500KeepsFailureReason(t *testing.T, path string, bod
 func TestBUG0302CreateFromCodeGroupFailureReason(t *testing.T) {
 	assertBUG0302GroupQuery500KeepsFailureReason(t,
 		"/__aisys__/api/openai-oauth/create-from-code",
-		`{"sessionId":"s","callbackUrl":"https://cb","groupId":"grp-x","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"sessionId":"s","callbackUrl":"https://cb","groupId":"grp-x"}`)
 }
 
 // TestBUG0302GrokSSOGroupFailureReason pins the grok sso-to-oauth group arm
 // (ssoToOAuth, routes.go). Request construction facts: the admin route is
 // mounted as "POST /__aisys__/api/grok-oauth/sso-to-oauth" (mountProvider,
 // plan.slug "grok" + plan.sso); the strict body allows ssoToken(s) plus the
-// managed fields (groupId, providerProtocolProfileId); WithProxyRequired(false)
+// managed fields (groupId); WithProxyRequired(false)
 // in newTestEnv skips the proxy gate; resolveProviderProfile resolves the
 // seeded profile_xai_openai_v1 (seedOAuthCatalog). The group query runs
 // before any SSO transport call, so no scripted SSO steps are needed.
 func TestBUG0302GrokSSOGroupFailureReason(t *testing.T) {
 	assertBUG0302GroupQuery500KeepsFailureReason(t,
 		"/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoToken":"w14d-sso-cookie","groupId":"grp-x","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoToken":"w14d-sso-cookie","groupId":"grp-x"}`)
 }

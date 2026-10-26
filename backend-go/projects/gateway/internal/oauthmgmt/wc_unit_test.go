@@ -543,45 +543,34 @@ func TestWCRouteBodyHelpers(t *testing.T) {
 // TestWCParseManagedFields：托管字段 schema 的全分支矩阵。
 func TestWCParseManagedFields(t *testing.T) {
 	bad := []map[string]any{
-		{"providerProtocolProfileId": 1.5},
-		{"providerProtocolProfileId": "p", "name": "  "},
-		{"providerProtocolProfileId": "p", "concurrencyLimit": 0.0},
-		{"providerProtocolProfileId": "p", "concurrencyLimit": "x"},
-		{"providerProtocolProfileId": "p", "priority": -1.0},
-		{"providerProtocolProfileId": "p", "status": "bogus"},
-		{"providerProtocolProfileId": "p", "status": 1.5},
-		{"providerProtocolProfileId": "p", "superPriorityEnabled": "x"},
-		{"providerProtocolProfileId": "p", "fallbackEnabled": "x"},
-		{"providerProtocolProfileId": "p", "supportedModels": []any{}},
-		{"providerProtocolProfileId": "p", "supportedModels": []any{""}},
-		{"providerProtocolProfileId": "p", "supportedModels": "x"},
-		{"providerProtocolProfileId": "p", "healthCheckModel": "  "},
-		{"providerProtocolProfileId": "p", "healthCheckEndpointMode": "bogus"},
-		{"providerProtocolProfileId": "p", "temporaryUnavailableContinuousProbeEnabled": "x"},
-		{"providerProtocolProfileId": "p", "modelMappings": "x"},
-		{"providerProtocolProfileId": "p", "modelMappings": []any{"x"}},
-		{"providerProtocolProfileId": "p", "modelMappings": []any{map[string]any{"sourceModel": "a"}}},
-		{"providerProtocolProfileId": "p", "tags": []any{""}},
-		{"providerProtocolProfileId": "p", "tags": "x"},
-		{"providerProtocolProfileId": "p", "accountExpiresAt": 1.5},
+		{"name": "  "},
+		{"concurrencyLimit": 0.0},
+		{"concurrencyLimit": "x"},
+		{"priority": -1.0},
+		{"status": "bogus"},
+		{"status": 1.5},
+		{"superPriorityEnabled": "x"},
+		{"fallbackEnabled": "x"},
+		{"supportedModels": []any{}},
+		{"supportedModels": []any{""}},
+		{"supportedModels": "x"},
+		{"healthCheckModel": "  "},
+		{"healthCheckEndpointMode": "bogus"},
+		{"temporaryUnavailableContinuousProbeEnabled": "x"},
+		{"modelMappings": "x"},
+		{"modelMappings": []any{"x"}},
+		{"modelMappings": []any{map[string]any{"sourceModel": "a"}}},
+		{"tags": []any{""}},
+		{"tags": "x"},
+		{"accountExpiresAt": 1.5},
 	}
 	for index, body := range bad {
 		if _, ok := parseManagedFields(body); ok {
 			t.Fatalf("case %d 必须拒绝: %v", index, body)
 		}
 	}
-	// DTO 收口：profile 缺省（含空白串）不再拒绝，入参留空由创建链按 registry
-	// 派生（managedProfileID）；非字符串值仍拒绝（见 bad[0]）。
-	absent, ok := parseManagedFields(map[string]any{})
-	if !ok || absent.ProviderProtocolProfileID != "" {
-		t.Fatalf("缺省 profile 解析: %+v %v", absent, ok)
-	}
-	blank, ok := parseManagedFields(map[string]any{"providerProtocolProfileId": "   "})
-	if !ok || blank.ProviderProtocolProfileID != "" {
-		t.Fatalf("空白 profile 解析: %+v %v", blank, ok)
-	}
 	good, ok := parseManagedFields(map[string]any{
-		"providerProtocolProfileId": " p ", "name": " n ", "groupId": " g ",
+		"name": " n ", "groupId": " g ",
 		"concurrencyLimit": 3.0, "priority": 1.0, "status": "disabled",
 		"superPriorityEnabled": true, "fallbackEnabled": false,
 		"supportedModels":                            []any{" m1 "},
@@ -595,7 +584,7 @@ func TestWCParseManagedFields(t *testing.T) {
 		"availabilitySchedule":                       map[string]any{"enabled": true},
 		"notes":                                      " note ",
 	})
-	if !ok || good.ProviderProtocolProfileID != "p" || good.Name == nil || good.GroupID == nil ||
+	if !ok || good.Name == nil || good.GroupID == nil ||
 		good.ConcurrencyLimit == nil || good.Priority == nil || good.Status != "disabled" ||
 		good.SuperPriorityEnabled == nil || good.FallbackEnabled == nil || len(good.SupportedModels) != 1 ||
 		good.HealthCheckModel == nil || good.HealthCheckEndpointMode == nil ||

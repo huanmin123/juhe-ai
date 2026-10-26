@@ -374,7 +374,7 @@ func TestW14dSSOImportSuccessPath(t *testing.T) {
 	successSteps := wcDeviceSuccessSteps(`{"access_token":"at","refresh_token":"rt","expires_in":3600,"token_type":"Bearer","id_token":"h.eyJlbWFpbCI6InVzZXJAeC5haSJ9.s"}`)
 	env.sso.steps = append(append([]SSODeviceResponse{}, successSteps...), successSteps...)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["tok-one","tok-two"],"name":"w14d-sso","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoTokens":["tok-one","tok-two"],"name":"w14d-sso"}`)
 	if code != http.StatusOK {
 		t.Fatalf("sso import: %d %v", code, payload)
 	}

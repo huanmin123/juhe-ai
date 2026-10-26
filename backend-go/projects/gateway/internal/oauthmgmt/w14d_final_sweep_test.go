@@ -69,7 +69,7 @@ func TestW14dConsumedSessionDiagnostics(t *testing.T) {
 	authData := dataMap(t, authPayload)
 	sessionID := authData["sessionId"].(string)
 	state := authStateFromURL(t, authData["authUrl"].(string))
-	body := `{"sessionId":"` + sessionID + `","callbackUrl":"https://cb?code=c&state=` + state + `","providerProtocolProfileId":"profile_anthropic_anthropic_v1"}`
+	body := `{"sessionId":"` + sessionID + `","callbackUrl":"https://cb?code=c&state=` + state + `"}`
 	for pass := 0; pass < 2; pass++ {
 		env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code", body)
 	}
@@ -106,7 +106,7 @@ func TestW14dSSOFingerprintTokenSorting(t *testing.T) {
 	// Out-of-order tokens force the fingerprint sort swaps (the import itself
 	// still fails the cap before any conversion).
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
-		`{"ssoTokens":["zed","alpha","mid","more"],"name":"w14d-sort","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"ssoTokens":["zed","alpha","mid","more"],"name":"w14d-sort"}`)
 	if code != http.StatusBadRequest || payload["message"] != "Grok SSO Cookie 单次最多导入 3 个" {
 		t.Fatalf("sso cap: %d %v", code, payload)
 	}

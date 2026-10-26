@@ -80,7 +80,7 @@ func TestGrokOverrideCreateLink(t *testing.T) {
 	// 合法值：patch 携带两个覆盖字段（服务等级带首尾空白，parser trim 后
 	// 放行），落库保留，运行时出站生效。
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"grok-r0","providerProtocolProfileId":"profile_xai_openai_v1",`+
+		`{"refreshToken":"grok-r0",`+
 			`"credentialsPatch":{"service_tier_override":" priority ","reasoning_effort_override":"max"}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("合法创建: %d %v", code, created)
@@ -95,7 +95,7 @@ func TestGrokOverrideCreateLink(t *testing.T) {
 	// 缺省值：不携带 credentialsPatch，覆盖字段不落库，运行时不改写请求。
 	// （refreshToken 与上一次不同：创建路由的防重指纹含 refreshToken。）
 	code, created = env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"grok-r1","providerProtocolProfileId":"profile_xai_openai_v1"}`)
+		`{"refreshToken":"grok-r1"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("缺省创建: %d %v", code, created)
 	}
@@ -113,7 +113,7 @@ func TestGrokOverrideCreateLink(t *testing.T) {
 	// （HTTP 层按既有 writeCreateError → writeOAuthError 映射为 502 回退文案）。
 	before := grokOverrideAccountCount(t, env)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
-		`{"refreshToken":"grok-r2","providerProtocolProfileId":"profile_xai_openai_v1",`+
+		`{"refreshToken":"grok-r2",`+
 			`"credentialsPatch":{"reasoning_effort_override":"ultra"}}`)
 	if code != http.StatusBadGateway || payload["message"] != "Grok 刷新令牌授权失败" {
 		t.Fatalf("非法创建: %d %v", code, payload)

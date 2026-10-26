@@ -131,7 +131,7 @@ func TestW14dSessionMissingDiagnostics(t *testing.T) {
 		want string
 	}{
 		{"/__aisys__/api/openai-oauth/create-from-code",
-			`{"sessionId":"w14d-missing","callbackUrl":"https://cb?code=c&state=s","providerProtocolProfileId":"profile_gpt_openai_v1"}`,
+			`{"sessionId":"w14d-missing","callbackUrl":"https://cb?code=c&state=s"}`,
 			"OpenAI 授权码交换失败"},
 	}
 	for _, testCase := range cases {
@@ -143,7 +143,7 @@ func TestW14dSessionMissingDiagnostics(t *testing.T) {
 
 	// Anthropic uses a session-scoped diagnostic of its own.
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code",
-		`{"sessionId":"w14d-missing","callbackUrl":"https://cb?code=c&state=s","providerProtocolProfileId":"profile_anthropic_anthropic_v1"}`)
+		`{"sessionId":"w14d-missing","callbackUrl":"https://cb?code=c&state=s"}`)
 	if code != http.StatusBadGateway || !strings.Contains(payload["message"].(string), "Anthropic") {
 		t.Fatalf("anthropic missing session: %d %v", code, payload)
 	}

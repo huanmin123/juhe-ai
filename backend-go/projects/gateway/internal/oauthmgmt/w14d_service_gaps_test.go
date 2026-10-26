@@ -59,21 +59,13 @@ func TestW14dProfileValidationErrorArms(t *testing.T) {
 	env := newTestEnv(t)
 	env.w14dLoginAdmin(t)
 
-	// 目标 schema 无档案表（T30/B4 ⑧）：停用门落在 vendors 行；未知 profile
-	// 身份仍按既有文案拒绝。
+	// 目标 schema 无档案表（T30/B4 ⑧）：停用门落在 vendors 行；B4⑩ 起
+	// profile 身份由 registry 派生，入参不再携带 profile 键。
 	env.exec(t, `UPDATE vendors SET enabled = 0 WHERE code = 'gpt'`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+		`{"sessionId":"s","callbackUrl":"https://cb"}`)
 	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "已停用") {
 		t.Fatalf("disabled vendor: %d %v", code, payload)
-	}
-	env.exec(t, `UPDATE vendors SET enabled = 1 WHERE code = 'gpt'`)
-
-	// An unknown profile id renders the invalid-profile message.
-	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code",
-		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile-nope"}`)
-	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "供应商协议档案无效") {
-		t.Fatalf("unknown profile: %d %v", code, payload)
 	}
 }
 

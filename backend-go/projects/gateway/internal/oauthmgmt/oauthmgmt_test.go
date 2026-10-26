@@ -453,7 +453,7 @@ func TestOpenAIOAuthFamily(t *testing.T) {
 	state := query.Get("state")
 
 	// create-from-code: exchange via mock → account row + credentials.
-	createBody := fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code-1&state=%s","providerProtocolProfileId":"profile_gpt_openai_v1"}`, sessionID, url.QueryEscape(state))
+	createBody := fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code-1&state=%s"}`, sessionID, url.QueryEscape(state))
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code", createBody)
 	if code != http.StatusCreated {
 		t.Fatalf("create-from-code: %d %v", code, created)
@@ -516,7 +516,7 @@ func TestOpenAIOAuthFamily(t *testing.T) {
 
 	// Session single consumption: same session, fresh callback → 502 fallback.
 	code, consumed := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code-2&state=%s","providerProtocolProfileId":"profile_gpt_openai_v1"}`, sessionID, url.QueryEscape(state)))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code-2&state=%s"}`, sessionID, url.QueryEscape(state)))
 	if code != http.StatusBadGateway || consumed["message"] != "OpenAI 授权码交换失败" {
 		t.Fatalf("consumed session: %d %v", code, consumed)
 	}
@@ -525,7 +525,7 @@ func TestOpenAIOAuthFamily(t *testing.T) {
 	code, freshAuth := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/auth-url", `{}`)
 	freshSession := dataMap(t, freshAuth)["sessionId"].(string)
 	code, wrongState := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code-3&state=wrong","providerProtocolProfileId":"profile_gpt_openai_v1"}`, freshSession))
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://localhost:1455/auth/callback?code=auth-code-3&state=wrong"}`, freshSession))
 	if code != http.StatusBadGateway || wrongState["message"] != "OpenAI 授权码交换失败" {
 		t.Fatalf("wrong state: %d %v", code, wrongState)
 	}
@@ -540,7 +540,7 @@ func TestOpenAIOAuthFamily(t *testing.T) {
 		return http.StatusOK, openAITokenPayload("openai-access-from-refresh")
 	}
 	code, fromRefresh := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
-		`{"refreshToken":"openai-refresh-A","clientId":"custom-openai-client","providerProtocolProfileId":"profile_gpt_openai_v1","name":"Named Account"}`)
+		`{"refreshToken":"openai-refresh-A","clientId":"custom-openai-client","name":"Named Account"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create-from-refresh-token: %d %v", code, fromRefresh)
 	}
@@ -651,7 +651,7 @@ func TestAnthropicOAuthFamily(t *testing.T) {
 	// create-from-code via the query callback form (and a bare fragment form
 	// for the reauthorize path).
 	callback := "https://platform.claude.com/oauth/code/callback?code=anthropic-code&state=" + url.QueryEscape(state)
-	createBody := fmt.Sprintf(`{"sessionId":%q,"callbackUrl":%q,"providerProtocolProfileId":"profile_anthropic_anthropic_v1"}`, sessionID, callback)
+	createBody := fmt.Sprintf(`{"sessionId":%q,"callbackUrl":%q}`, sessionID, callback)
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code", createBody)
 	if code != http.StatusCreated {
 		t.Fatalf("anthropic create-from-code: %d %v", code, created)
@@ -795,7 +795,7 @@ func TestGeminiOAuthCapabilitiesAndFamily(t *testing.T) {
 		return http.StatusOK, `{"access_token":"gem-access-1","refresh_token":"gem-refresh-1","expires_in":3600,"scope":"https://www.googleapis.com/auth/cloud-platform","token_type":"Bearer"}`
 	}
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"gemini-refresh-A","projectId":"proj-1","providerProtocolProfileId":"profile_gemini_native_v1beta"}`)
+		`{"refreshToken":"gemini-refresh-A","projectId":"proj-1"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("gemini create-from-refresh-token: %d %v", code, created)
 	}
@@ -824,7 +824,7 @@ func TestGeminiOAuthCapabilitiesAndFamily(t *testing.T) {
 	// ai_studio path: explicit client credentials, generativelanguage base URL,
 	// no endpoint modes.
 	code, createdStudio := env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"gemini-refresh-B","oauthType":"ai_studio","clientId":"studio-client","clientSecret":"studio-secret","providerProtocolProfileId":"profile_gemini_native_v1beta","name":"Studio"}`)
+		`{"refreshToken":"gemini-refresh-B","oauthType":"ai_studio","clientId":"studio-client","clientSecret":"studio-secret","name":"Studio"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("gemini ai_studio create: %d %v", code, createdStudio)
 	}
