@@ -132,10 +132,6 @@ func (s *Store) bind(query string) string {
 	return out.String()
 }
 
-// timeParam 绑定生成时间（PG 原生 timestamptz）。
-func (s *Store) timeParam(t time.Time) any { return t }
-
-// instantParam 绑定 RFC3339 文本时间（PG 解析为原生 timestamptz 比较）。
 // instantParam 返回 text 时间列（生产 DDL 全部为 text，存 Node ISO 文本）的
 // 绑定值：保持 RFC3339Nano 文本，不能绑定 time.Time——pgx 会给 text 参数编码
 // 出 Go time.String 形态，字典序比较与回读校验都会失真（W27① 同源）。

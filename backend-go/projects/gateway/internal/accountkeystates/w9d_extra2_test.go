@@ -32,9 +32,6 @@ func TestW9DStoreDialectArms(t *testing.T) {
 	if got := store.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("pg bind=%q", got)
 	}
-	if _, ok := store.timeParam(time.UnixMilli(1_000)).(time.Time); !ok {
-		t.Fatal("pg timeParam must be native time")
-	}
 	// 生产时间列全部为 text（Node ISO 文本），instantParam 必须原样返回文本：
 	// 绑定 time.Time 会让 pgx 编码出 Go time.String 形态，比较与回读失真。
 	if got, ok := store.instantParam(nowMillisText()).(string); !ok || got != nowMillisText() {

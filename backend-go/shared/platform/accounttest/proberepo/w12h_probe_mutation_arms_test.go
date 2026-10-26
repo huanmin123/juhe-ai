@@ -47,11 +47,36 @@ CREATE TRIGGER w12h_abort_acc BEFORE UPDATE ON juhe_business.accounts FOR EACH R
 	}
 }
 
-// ListDueForProbe：limit 上限钳制、config_revision<1 跳过、扫描错误传播的
-// 原 TestW12HListDueForProbeArms（openTestDB SQLite 夹具，含 key_index 弱类型
-// 注入臂）于 2026-10-25 随 sqlite 方言退役删除：该面被 W27①（PG 臂 time.Time
-// 绑 text 时间列致候选扫描恒空）阻塞，无行为等价的 PG 断言；limit 钳制与
-// 写中止语义由 TestW12HClaimProbeCandidatesArms 的 PG 直调臂覆盖。
+// ListDueForProbe：limit 上限钳制、config_revision<1 跳过（W27① 修复后的
+// PG 生产行为）。每个检查独立建库：limit 钳制检查会写入 claim 租约，租约
+// 未到期会把行从后续 SELECT 中排除。原 SQLite 形态的 key_index='garbage'
+// 弱类型注入臂不随迁：PG 生产列 key_index 为 integer，该输入属类型违约而非
+// 行为臂；写中止语义由 TestW12HClaimProbeCandidatesArms 的 PG 直调臂覆盖。
+func TestW12HListDueForProbeArms(t *testing.T) {
+	ctx := context.Background()
+	seed := func(t *testing.T) *testDB {
+		t.Helper()
+		h := openTestDBPostgres(t)
+		key1, _ := h.seedPoolAccount(t, "acc-1")
+		fp1 := h.store.FingerprintAPIKey(key1)
+		h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
+		return h
+	}
+
+	// limit>100 收敛到 100，正常返回到期候选。
+	h := seed(t)
+	candidates, err := h.store.ListDueForProbe(ctx, 500)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("limit 钳制后应返回 1 个候选: %d %v", len(candidates), err)
+	}
+
+	// config_revision<1 的候选必须被跳过。
+	h = seed(t)
+	h.exec(t, `UPDATE juhe_business.accounts SET config_revision=0 WHERE id='acc-1'`)
+	if candidates, err = h.store.ListDueForProbe(ctx, 10); err != nil || len(candidates) != 0 {
+		t.Fatalf("config_revision<1 必须跳过: %d %v", len(candidates), err)
+	}
+}
 
 // claimProbeCandidates 直调：时间解析守卫、limit=0 立即截断、CAS 竞争失败丢弃、写中止传播。
 func TestW12HClaimProbeCandidatesArms(t *testing.T) {

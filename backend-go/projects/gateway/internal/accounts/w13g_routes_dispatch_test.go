@@ -18,7 +18,6 @@ import (
 )
 
 func TestW13GUpdateAuthorizedDispatchDirectArms(t *testing.T) {
-	t.Skip("W28-①：UpdateAuthorizedDispatch/授权实例运行态重置的实例读 SELECT 在 LEFT JOIN 后追加 FOR UPDATE，PG 恒拒 0A000（注册中生产缺陷，修复层级待用户裁决，见 docs/待办与阻塞事项.md #W28）；sqlite 臂退役后本测试只能在真实 PG 上运行，裁决修复前跳过")
 	env, authzStore, store, ownerID, _ := w13gAdvancedAuthorizedEnv(t)
 	tmMember := env.login(t, "disp-member-w13g", "disp-pass", "user")
 	env.seedProviderAndDefaultGroup(t, tmMember)
@@ -130,7 +129,6 @@ func TestW13GUpdateAuthorizedDispatchBindingArms(t *testing.T) {
 }
 
 func TestW13GUpdateAuthorizedDispatchStateArms(t *testing.T) {
-	t.Skip("W28-①：UpdateAuthorizedDispatch/授权实例运行态重置的实例读 SELECT 在 LEFT JOIN 后追加 FOR UPDATE，PG 恒拒 0A000（注册中生产缺陷，修复层级待用户裁决，见 docs/待办与阻塞事项.md #W28）；sqlite 臂退役后本测试只能在真实 PG 上运行，裁决修复前跳过")
 	env, _, store, ownerID, _ := w13gAdvancedAuthorizedEnv(t)
 	tmMember := env.login(t, "disp4-member-w13g", "disp4-pass", "user")
 	env.seedProviderAndDefaultGroup(t, tmMember)

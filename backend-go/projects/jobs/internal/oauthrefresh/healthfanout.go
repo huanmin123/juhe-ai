@@ -107,11 +107,11 @@ func (s *Store) EnqueueAccountHealthInputsForAuthorizationSourceTx(ctx context.C
 			return enqueued, err
 		}
 		if _, err := tx.ExecContext(ctx, s.bind(fmt.Sprintf(`
-    INSERT INTO account_health_jobs_input_outbox (
+    INSERT INTO %s (
       event_id, account_id, input_version, event_kind, reason,
       config_revision, dispatch_revision, status, available_at,
       created_at, updated_at
-    ) VALUES (?, ?, ?, 'snapshot', ?, ?, ?, 'pending', ?, ?, ?)`)),
+    ) VALUES (?, ?, ?, 'snapshot', ?, ?, ?, 'pending', ?, ?, ?)`, s.table("account_health_jobs_input_outbox"))),
 			newSweepEventID(), instance.id, version, reason,
 			instance.configRevision, instance.dispatchRevision, now, now, now); err != nil {
 			return enqueued, err

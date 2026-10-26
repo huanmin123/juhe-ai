@@ -642,6 +642,24 @@ type balanceSnapshotRecord struct {
 	updatedAt        string
 }
 
+// millisISOLayout 是毫秒精度 RFC3339 UTC 文本（"2006-01-02T15:04:05.000Z"
+// 形态，Go 对 UTC 输出 "Z"），与 Node 侧写入的 nextRefreshAt 文本同构。
+const millisISOLayout = "2006-01-02T15:04:05.000Z07:00"
+
+// timestamptzMillisText 把 timestamptz 读值归一为 RFC3339 毫秒 UTC 文本，
+// NULL/零值输出空串。直接把 timestamptz 扫入 string 时 pgx 按会话时区渲染
+// （实测 "2026-10-24T12:00:00.123456+08:00" 形态，随连接 TZ 漂移；服务器端
+// ::text 则是空格形态，两者都不是稳定契约）。归一后与
+// accounts.balance_query_next_refresh_at（text 列，Node 侧 RFC3339 毫秒
+// 文本）同构，下游 balanceSnapshotMatchesConfiguration 的 rfc3339Millis
+// 毫秒比较不再依赖驱动渲染形态与 session 时区（W24②）。
+func timestamptzMillisText(value sql.NullTime) string {
+	if !value.Valid || value.Time.IsZero() {
+		return ""
+	}
+	return value.Time.UTC().Format(millisISOLayout)
+}
+
 // loadBalanceSnapshotRecords 对齐 loadAccountBalanceSnapshotRecordsByAccountIdsAsync
 // （juhe_stats.account_usage_snapshots kind='relay_balance'）。
 func (l *ProjectionItemLoader) loadBalanceSnapshotRecords(ctx context.Context, accountIDs []string) (map[string]*balanceSnapshotRecord, error) {
@@ -665,8 +683,8 @@ func (l *ProjectionItemLoader) loadBalanceSnapshotRecords(ctx context.Context, a
 	for rows.Next() {
 		var accountID string
 		var snapshotJSON string
-		var nextRefreshAfter sql.NullString
-		var updatedAt string
+		var nextRefreshAfter sql.NullTime
+		var updatedAt sql.NullTime
 		if err := rows.Scan(&accountID, &snapshotJSON, &nextRefreshAfter, &updatedAt); err != nil {
 			return nil, err
 		}
@@ -676,8 +694,8 @@ func (l *ProjectionItemLoader) loadBalanceSnapshotRecords(ctx context.Context, a
 		}
 		record := &balanceSnapshotRecord{
 			snapshot:         snapshot,
-			nextRefreshAfter: nextRefreshAfter.String,
-			updatedAt:        updatedAt,
+			nextRefreshAfter: timestamptzMillisText(nextRefreshAfter),
+			updatedAt:        timestamptzMillisText(updatedAt),
 		}
 		if revision, ok := snapshot["configRevision"].(float64); ok {
 			record.snapshotRevision = revision
@@ -1085,7 +1103,7 @@ func millisToISO(value int64) string {
 	if value <= 0 {
 		return ""
 	}
-	return time.UnixMilli(value).UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	return time.UnixMilli(value).UTC().Format(millisISOLayout)
 }
 
 var _ = oauthrefresh.ParseScheduleJSON

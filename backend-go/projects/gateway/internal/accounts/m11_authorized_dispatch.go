@@ -271,6 +271,9 @@ func (s *Store) UpdateAuthorizedDispatch(ctx context.Context, accountID string, 
 }
 
 // loadAuthorizedDispatchRow reads the instance row inside the transaction.
+// 锁语义（W29-①）：PG 恒拒对外连接空值侧的 FOR UPDATE（0A000），行锁用
+// `FOR UPDATE OF accounts` 限定到内连接基表别名（实例行）；LEFT JOIN 的
+// 授权行 / 源账户行与既有语义一致不加行锁，读-改-写串行化仍由实例行锁承担。
 func (s *Store) loadAuthorizedDispatchRow(ctx context.Context, q queryer, accountID, grantee string) (*authorizedDispatchRow, error) {
 	var row authorizedDispatchRow
 	err := q.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision, accounts.system_account_id,
@@ -296,7 +299,8 @@ func (s *Store) loadAuthorizedDispatchRow(ctx context.Context, q queryer, accoun
 			AND source_accounts.deleted_at IS NULL
 		WHERE accounts.id = ?
 			AND accounts.system_account_id = ?
-			AND accounts.deleted_at IS NULL`+s.forUpdate()+`
+			AND accounts.deleted_at IS NULL
+		FOR UPDATE OF accounts
 		LIMIT 1`), accountID, grantee).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID,
 		&row.name, &row.status, &row.schedulable, &row.accountExpiresAt,

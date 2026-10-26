@@ -481,7 +481,7 @@ type CandidateAccount struct {
 	ProxyURL                  string
 	// BaseURL 取自资源账户健康检查连接行 base_url（探针上游地址；凭据 JSON
 	// 不再承载 base_url，设计 §2.1）。
-	BaseURL     string
+	BaseURL              string
 	ConnectionPresetCode string
 	ConnectionModes      []string
 	Credentials          map[string]any
@@ -542,17 +542,17 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
     LIMIT 1
   `, s.table("accounts"), s.table("accounts"))
 	var (
-		id, systemID, name, accountType, status                sql.NullString
-		vendor, oauthType, protocolCode, protocolVersion       sql.NullString
-		credentials                                            sql.NullString
-		proxyProfileID                                         sql.NullString
-		authzID, sourceID, authzOwner                          sql.NullString
-		resourceAccountID, resourceVendor, resourceOAuthType   sql.NullString
-		resourceProtocol, resourceProtocolVersion              sql.NullString
-		resourceType, resourceStatus                           sql.NullString
-		resourceCredentials                                    sql.NullString
-		resourceProxyProfileID                                 sql.NullString
-		configRevision, dispatchRevision                       sql.NullInt64
+		id, systemID, name, accountType, status              sql.NullString
+		vendor, oauthType, protocolCode, protocolVersion     sql.NullString
+		credentials                                          sql.NullString
+		proxyProfileID                                       sql.NullString
+		authzID, sourceID, authzOwner                        sql.NullString
+		resourceAccountID, resourceVendor, resourceOAuthType sql.NullString
+		resourceProtocol, resourceProtocolVersion            sql.NullString
+		resourceType, resourceStatus                         sql.NullString
+		resourceCredentials                                  sql.NullString
+		resourceProxyProfileID                               sql.NullString
+		configRevision, dispatchRevision                     sql.NullInt64
 	)
 	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &vendor, &oauthType,
@@ -815,10 +815,13 @@ type authorizationRef struct {
 }
 
 func (s *Store) activeGroupAuthorizationOwner(ctx context.Context, groupID, granteeSystemAccountID string) (*authorizationRef, bool, error) {
+	// expires_at 为 text 列（存量 RFC3339 文本），比较两侧显式 ::timestamptz：
+	// 文本参数直接字典序比较对格式差异不稳健，time.Time 参数会被 pgx 编码成
+	// Go time.String() 形态致比较恒真、过期授权放行（W27③ 越权面，2026-10-25 修复）。
 	query := fmt.Sprintf(`
     SELECT id, resource_owner_system_account_id FROM %s
     WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ?
-      AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)
+      AND status = 'active' AND (expires_at IS NULL OR expires_at::timestamptz > ?::timestamptz)
     LIMIT 1
   `, s.table("resource_authorizations"))
 	var id, resourceOwner sql.NullString
@@ -832,9 +835,11 @@ func (s *Store) activeGroupAuthorizationOwner(ctx context.Context, groupID, gran
 }
 
 func (s *Store) activeAuthorizationOwnerByID(ctx context.Context, authorizationID, granteeSystemAccountID string) (string, bool, error) {
+	// 同 activeGroupAuthorizationOwner：expires_at text 列比较两侧 ::timestamptz
+	// （W27③ 越权面修复）。
 	query := fmt.Sprintf(`
     SELECT resource_owner_system_account_id FROM %s
-    WHERE id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)
+    WHERE id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at::timestamptz > ?::timestamptz)
     LIMIT 1
   `, s.table("resource_authorizations"))
 	var owner sql.NullString
@@ -878,10 +883,10 @@ func (s *Store) LoadAccountForGroupFull(ctx context.Context, accountID string) (
     LIMIT 1
   `, s.table("accounts"))
 	var (
-		id, name, accountType, status           sql.NullString
-		vendor, protocolCode, protocolVersion   sql.NullString
-		credentials, systemID                   sql.NullString
-		configRevision, dispatchRevision        sql.NullInt64
+		id, name, accountType, status         sql.NullString
+		vendor, protocolCode, protocolVersion sql.NullString
+		credentials, systemID                 sql.NullString
+		configRevision, dispatchRevision      sql.NullInt64
 	)
 	if err := s.db.QueryRowContext(ctx, s.bind(query), accountID).Scan(&id, &name, &accountType, &status,
 		&vendor, &protocolCode, &protocolVersion,

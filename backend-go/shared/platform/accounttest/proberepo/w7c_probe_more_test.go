@@ -170,10 +170,35 @@ func TestW7CCanceledContextMutationArms(t *testing.T) {
 	}
 }
 
-// 原 TestW7CListDueForProbeFiltersBrokenCandidates（openTestDB SQLite 夹具，
-// ListDueForProbe 坏候选过滤矩阵）于 2026-10-25 随 sqlite 方言退役删除：
-// 该扫描面被 W27①（PG 臂 time.Time 绑 text 时间列致候选扫描恒空）阻塞，
-// 坏候选在 PG 生产列形态下不可达，无行为等价断言。
+// ListDueForProbe 坏候选过滤矩阵（W27① 修复后的 PG 生产行为）：凭据不可解、
+// 单 Key、池外指纹、config_revision=0 的到期候选全部过滤。
+func TestW7CListDueForProbeFiltersBrokenCandidates(t *testing.T) {
+	h := openTestDBPostgres(t)
+	credentials := h.sealCredentials(t, map[string]any{"base_url": "https://x", "api_keys": []any{"a", "b"}})
+	single := h.sealCredentials(t, map[string]any{"api_key": "solo"})
+	h.exec(t, `INSERT INTO juhe_business.accounts (id, system_account_id, name, type, status, credentials_encrypted, connection_driver_code, protocol_code, protocol_version, config_revision, created_at, updated_at)
+	    VALUES
+	      ('bad-cred', 'sys-1', 'n', 'api_key', 'active', 'garbage', 'gpt', 'openai', 'v1', 1, $1, $1),
+	      ('solo-acct', 'sys-1', 'n', 'api_key', 'active', $2, 'gpt', 'openai', 'v1', 1, $1, $1),
+	      ('rotated', 'sys-1', 'n', 'api_key', 'active', $3, 'gpt', 'openai', 'v1', 1, $1, $1),
+	      ('rev-zero', 'sys-1', 'n', 'api_key', 'active', $3, 'gpt', 'openai', 'v1', 0, $1, $1)`,
+		nowMillisText(), single, credentials)
+	h.exec(t, `INSERT INTO juhe_business.account_api_key_runtime_states (id, system_account_id, account_id, key_fingerprint, key_index, status, next_probe_at, created_at, updated_at)
+	    VALUES
+	      ('s-bad', 'sys-1', 'bad-cred', 'fp-bad', 0, 'temporary_unavailable', $1, $2, $2),
+	      ('s-solo', 'sys-1', 'solo-acct', 'fp-solo', 0, 'temporary_unavailable', $1, $2, $2),
+	      ('s-rot', 'sys-1', 'rotated', 'fp-rot', 0, 'temporary_unavailable', $1, $2, $2),
+	      ('s-rev', 'sys-1', 'rev-zero', 'fp-rev', 0, 'temporary_unavailable', $1, $2, $2)`,
+		plusMillis(-1000), nowMillisText())
+
+	candidates, err := h.store.ListDueForProbe(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("all broken candidates must be filtered: %+v", candidates)
+	}
+}
 
 func TestW7CLoadProbeViewMissingArms(t *testing.T) {
 	h := openTestDBPostgres(t)

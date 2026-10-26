@@ -15,10 +15,11 @@ func w10aImportEnv(t *testing.T) (*testEnv, string) {
 	t.Helper()
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
-	// 生产 schema（maintenance/internal/schema/sqlite_schema.go）带代理名称
-	// 唯一索引；测试夹具补齐以对齐冲突语义。
-	if _, err := env.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_profiles_name_unique
-		ON proxy_profiles(name)`); err != nil {
+	// 生产 schema（maintenance/internal/schema/pg_schema_business_indexes.go）
+	// 的代理名称唯一索引 `idx_proxy_profiles_name_unique`；测试夹具补齐以对齐
+	// 冲突语义（DuplicateProxyNameError 的 PG 23505 臂按该约束名识别）。
+	if _, err := env.db.Exec(fixtureBind(`CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_profiles_name_unique
+		ON proxy_profiles(name)`)); err != nil {
 		t.Fatal(err)
 	}
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -26,7 +27,6 @@ func w10aImportEnv(t *testing.T) (*testEnv, string) {
 }
 
 func TestW10AImportProxyFailedArm(t *testing.T) {
-	t.Skip("W28-②：DuplicateProxyNameError 仅匹配 SQLite UNIQUE constraint failed 错误文本、缺 PG 23505/idx_proxy_profiles_name_unique 分支（注册中生产缺陷，修复层级待用户裁决，见 docs/待办与阻塞事项.md #W28）；裁决修复前跳过")
 	env, adminID := w10aImportEnv(t)
 	now := "2026-09-16T00:00:00.000Z"
 	// 预置同名停用代理：计划期查不到（enabled=1 过滤），创建期命中唯一索引，

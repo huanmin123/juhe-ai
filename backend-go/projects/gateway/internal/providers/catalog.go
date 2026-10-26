@@ -248,7 +248,10 @@ func modelCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderC
 
 // builtInCatalogColumns mirrors the models 单表 builtin 读投影：旧目录行形状
 // （provider_code/model 别名）+ supported_endpoint_modes_json（mode 与
-// supported_api_protocols_json 的物理来源）。
+// supported_api_protocols_json 的物理来源）。source 列在生产 DDL 可空且扫入
+// 非空 string 字段，必须 COALESCE 归空串——NULL 直接扫入 pgx 报 converting
+// NULL to string is unsupported，ListProviderModelsForRequest 整链 500（W31）。
+// 其余可空列均经 sql.Null* 扫描，无需同款处理。
 const builtInCatalogColumns = `id, COALESCE(vendor_code, '') AS provider_code, public_model AS model, status,
 	catalog_order, release_date, shutdown_date, supported_endpoint_modes_json,
 	supported_service_tiers_json, supported_reasoning_efforts_json,
@@ -259,7 +262,7 @@ const builtInCatalogColumns = `id, COALESCE(vendor_code, '') AS provider_code, p
 	long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
 	long_context_input_cost_multiplier, long_context_output_cost_multiplier,
 	image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-	output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at`
+	output_usd_per_image, supports_prompt_caching, catalog_visible, COALESCE(source, '') AS source, created_at, updated_at`
 
 // listBuiltInCatalogModels reads the builtin arm：scope='builtin' 行按
 // vendor_code 窗口，availability 过滤（active + catalog_visible + 未 shutdown）

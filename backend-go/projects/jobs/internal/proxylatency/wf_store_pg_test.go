@@ -215,18 +215,19 @@ func TestWFStorePGEnsureSchemaAndLeases(t *testing.T) {
 		t.Fatalf("释放丢失 err=%v", err)
 	}
 
-	// VerifyOwnerLease：租约行有效。
-	recLease.script("FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE",
-		[]string{"owner_id", "fence_token", "lease_until"},
-		[][]driver.Value{{owner.OwnerID, owner.FenceToken, time.Now().Add(time.Hour)}})
+	// VerifyOwnerLease：租约行有效（W26① 后有效期判定在 SQL 谓词内，
+	// 录制行不再携带 lease_until）。
+	recLease.script("FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND lease_until>statement_timestamp() FOR UPDATE",
+		[]string{"owner_id", "fence_token"},
+		[][]driver.Value{{owner.OwnerID, owner.FenceToken}})
 	if err := pgStore.VerifyOwnerLease(ctx, owner); err != nil {
 		t.Fatalf("VerifyOwnerLease 失败: %v", err)
 	}
 
 	// AcquireProxyLease：verify owner + UPSERT RETURNING。
-	recLease.script("FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE",
-		[]string{"owner_id", "fence_token", "lease_until"},
-		[][]driver.Value{{owner.OwnerID, owner.FenceToken, time.Now().Add(time.Hour)}})
+	recLease.script("FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND lease_until>statement_timestamp() FOR UPDATE",
+		[]string{"owner_id", "fence_token"},
+		[][]driver.Value{{owner.OwnerID, owner.FenceToken}})
 	recLease.script("INSERT INTO juhe_jobs.proxy_latency_proxy_leases", []string{"fence_token"}, [][]driver.Value{{int64(1)}})
 	proxyLease, acquired, err := pgStore.AcquireProxyLease(ctx, owner, "p-pg", time.Hour)
 	if err != nil || !acquired || proxyLease.FenceToken != 1 {
@@ -253,9 +254,9 @@ func TestWFStorePGAppendOutcomeAndAdmission(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("owner lease ok=%v err=%v", ok, err)
 	}
-	rec.script("FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE",
-		[]string{"owner_id", "fence_token", "lease_until"},
-		[][]driver.Value{{owner.OwnerID, owner.FenceToken, now.Add(time.Hour)}})
+	rec.script("FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND lease_until>statement_timestamp() FOR UPDATE",
+		[]string{"owner_id", "fence_token"},
+		[][]driver.Value{{owner.OwnerID, owner.FenceToken}})
 	rec.script("INSERT INTO juhe_jobs.proxy_latency_proxy_leases", []string{"fence_token"}, [][]driver.Value{{int64(2)}})
 	proxy, acquired, err := pgStore.AcquireProxyLease(ctx, owner, "p-pg", time.Hour)
 	if err != nil || !acquired {
@@ -284,12 +285,12 @@ func TestWFStorePGAppendOutcomeAndAdmission(t *testing.T) {
 	}
 	rec.script("SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE",
 		[]string{"payload", "digest"}, [][]driver.Value{{payload, digest}})
-	rec.script("SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE",
-		[]string{"owner_id", "fence_token", "lease_until"},
-		[][]driver.Value{{owner.OwnerID, owner.FenceToken, now.Add(time.Hour)}})
-	rec.script("SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 FOR UPDATE",
-		[]string{"owner_id", "fence_token", "lease_until"},
-		[][]driver.Value{{owner.OwnerID, proxy.FenceToken, now.Add(time.Hour)}})
+	rec.script("SELECT owner_id,fence_token FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND lease_until>statement_timestamp() FOR UPDATE",
+		[]string{"owner_id", "fence_token"},
+		[][]driver.Value{{owner.OwnerID, owner.FenceToken}})
+	rec.script("SELECT owner_id,fence_token FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 AND lease_until>statement_timestamp() FOR UPDATE",
+		[]string{"owner_id", "fence_token"},
+		[][]driver.Value{{owner.OwnerID, proxy.FenceToken}})
 	resolved, claimToken, replay, err := pgStore.AdmitExecution(ctx, owner, proxy, issued)
 	if err != nil || replay != nil || claimToken == "" || resolved.RequestID != issued.RequestID {
 		t.Fatalf("AdmitExecution claim=%q replay=%+v err=%v", claimToken, replay, err)
@@ -305,12 +306,12 @@ func TestWFStorePGAppendOutcomeAndAdmission(t *testing.T) {
 		OverallStatus: OverallPassed,
 		Items:         []ItemResult{{Provider: "gpt", ProfileID: "profile-gpt", Status: ItemPassed, HTTPStatus: 200, LatencyMS: 12, Outcome: OutcomeSuccess}},
 	}
-	rec.script("SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE",
-		[]string{"owner_id", "fence_token", "lease_until"},
-		[][]driver.Value{{owner.OwnerID, owner.FenceToken, now.Add(time.Hour)}})
-	rec.script("SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 FOR UPDATE",
-		[]string{"owner_id", "fence_token", "lease_until"},
-		[][]driver.Value{{owner.OwnerID, proxy.FenceToken, now.Add(time.Hour)}})
+	rec.script("SELECT owner_id,fence_token FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND lease_until>statement_timestamp() FOR UPDATE",
+		[]string{"owner_id", "fence_token"},
+		[][]driver.Value{{owner.OwnerID, owner.FenceToken}})
+	rec.script("SELECT owner_id,fence_token FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 AND lease_until>statement_timestamp() FOR UPDATE",
+		[]string{"owner_id", "fence_token"},
+		[][]driver.Value{{owner.OwnerID, proxy.FenceToken}})
 	rec.script("SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE",
 		[]string{"proxy_id", "input_version", "config_revision", "trigger", "issued_at", "expires_at"},
 		[][]driver.Value{{"p-pg", issued.InputVersion, wfProjRevision, string(TriggerPeriodic), issued.IssuedAt, issued.ExpiresAt}})

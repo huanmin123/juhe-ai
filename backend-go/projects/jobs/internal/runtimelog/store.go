@@ -674,6 +674,16 @@ func nodeISO(value time.Time) string {
 	return value.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
+// postgresNodeInstantText 把 timestamptz 列渲染为与 nodeISO 完全一致的毫秒
+// 文本（"2006-01-02T15:04:05.000Z"）。facet 链所有行时间与汇总边界的读出
+// 统一经该表达式归一：PG 默认 timestamptz::text 是空格分隔 + "+00" 形态
+// （"2026-10-24 04:00:00+00"），与 nodeISO 做字典序比较时空格(0x20) < 'T'，
+// 会把与 cutoff 同一自然日的记录系统性判早、facet 计数少计（W23）。归一后
+// 同格式定长字符串的字典序恒等于时间序。
+func postgresNodeInstantText(column string) string {
+	return fmt.Sprintf(`to_char(%s AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`, column)
+}
+
 func insertPostgresRecords(ctx context.Context, tx pgx.Tx, records []Record) ([]facetRow, error) {
 	inserted := make([]facetRow, 0, len(records))
 	for start := 0; start < len(records); start += postgresInsertRowsPerStatement {
@@ -701,7 +711,7 @@ func insertPostgresRecords(ctx context.Context, tx pgx.Tx, records []Record) ([]
 				record.CreatedAt,
 			)
 		}
-		rows, err := tx.Query(ctx, `INSERT INTO juhe_dataset.runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at) VALUES `+strings.Join(values, ",")+` ON CONFLICT(id) DO NOTHING RETURNING time::text, level, COALESCE(event, '')`, args...)
+		rows, err := tx.Query(ctx, `INSERT INTO juhe_dataset.runtime_logs (id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at) VALUES `+strings.Join(values, ",")+` ON CONFLICT(id) DO NOTHING RETURNING `+postgresNodeInstantText("time")+`, level, COALESCE(event, '')`, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -767,7 +777,7 @@ func cleanupPostgres(ctx context.Context, pool *pgxpool.Pool, lease OwnerLease, 
 			rollbackPostgresTx(tx)
 			return result, err
 		}
-		rows, err := tx.Query(ctx, "SELECT id, time::text, level, COALESCE(event, '') FROM juhe_dataset.runtime_logs WHERE time < $1 ORDER BY time ASC, id ASC LIMIT $2", cutoff, batchLimit)
+		rows, err := tx.Query(ctx, "SELECT id, "+postgresNodeInstantText("time")+", level, COALESCE(event, '') FROM juhe_dataset.runtime_logs WHERE time < $1 ORDER BY time ASC, id ASC LIMIT $2", cutoff, batchLimit)
 		if err != nil {
 			rollbackPostgresTx(tx)
 			return result, err
@@ -861,17 +871,17 @@ func decrementPostgresFacets(ctx context.Context, tx pgx.Tx, rows []facetRow, cu
 	}
 	now := nowISO()
 	var countedFrom, earliest, latest string
-	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", facetBucketKey).Scan(&countedFrom); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT "+postgresNodeInstantText("earliest_time")+" FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", facetBucketKey).Scan(&countedFrom); err != nil {
 		return err
 	}
 	counted := facetRowsFrom(rows, countedFrom)
 	if len(counted) == 0 {
 		return nil
 	}
-	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", cutoff).Scan(&earliest); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT "+postgresNodeInstantText("time")+" FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", cutoff).Scan(&earliest); err != nil {
 		return err
 	}
-	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", cutoff).Scan(&latest); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT COALESCE((SELECT "+postgresNodeInstantText("time")+" FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", cutoff).Scan(&latest); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, "UPDATE juhe_dataset.runtime_log_facet_summary SET total_count = GREATEST(0, total_count - $1), earliest_time = $2, latest_time = $3, updated_at = $4 WHERE bucket_key = $5", len(counted), nullable(earliest), nullable(latest), now, facetBucketKey); err != nil {

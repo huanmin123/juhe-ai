@@ -81,22 +81,22 @@ func (s *Store) bind(query string) string {
 // rfc3339Milli 与 Node toISOString() 输出一致（UTC + 毫秒 + Z）。
 const rfc3339Milli = "2006-01-02T15:04:05.000Z07:00"
 
-// timeParam 绑定时间值。事实基线（W27 根因登记，2026-10-25 注释纠偏）：
-// 生产 juhe_business DDL 的时间列为 text（maintenance pg_schema_business_tables），
-// 并非本注释早先声称的「PG 原生 timestamptz」；postgres 臂返回原生 time.Time，
-// pgx 对 text 列回退文本编码（Go time.String() 形态），与存量 RFC3339 行的
-// 字典序比较永不命中——ListDueForProbe 候选扫描恒空（W27①）与授权过期臂
-// 放行（W27③）皆源于此，行为修正待用户裁决，本批不改 PG 路径行为。
+// timeParam 把时间值绑定为 RFC3339 文本（UTC + 毫秒 + Z，本包 nowISO 口径）。
+// 生产 juhe_business DDL 的业务表时间列为 text（maintenance
+// pg_schema_business_tables），存量行是 RFC3339 文本；绑定原生 time.Time 会让
+// pgx 对 text 参数编码出 Go time.String() 形态，字典序比较与回读解析双双失真
+// （W27①/②/③，2026-10-25 修复）。涉及时间比较时统一在 SQL 侧对两侧
+// `::timestamptz` 转型（同包 RecordKeyFailure genericGuard 与 manualtestrepo
+// startedAtFence 先例），转型对存量文本的格式差异稳健。
 func (s *Store) timeParam(t time.Time) any {
-	return t
+	return t.UTC().Format(rfc3339Milli)
 }
 
-// instantParam 绑定 RFC3339 文本时间：解析为原生 time.Time 后绑定（同受
-// 上述 text 列事实约束，解析失败原样透传文本）。
+// instantParam 绑定 RFC3339 文本时间：text 时间列保持文本绑定，不得解析为
+// time.Time 再绑定——pgx 对 text 列回退 Go time.String() 形态，与存量 RFC3339
+// 行的字典序比较永不命中（W27① 同源）；比较语义由 SQL 侧 `::timestamptz`
+// 转型承担，非法文本不在此处静默改写。
 func (s *Store) instantParam(value string) any {
-	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
-		return parsed
-	}
 	return value
 }
 

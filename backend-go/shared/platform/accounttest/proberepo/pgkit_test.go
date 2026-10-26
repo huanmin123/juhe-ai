@@ -2,25 +2,24 @@ package proberepo
 
 // pgkit_test.go 是探针族仓储测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，proberepo 测试切片）：
-// pgtestkit 每测试独立库 + 生产 store 的 PG 形态（NewStore Config{Postgres:
-// true}，bind() $n 改写、juhe_business schema 限定，与生产 jobs 装配同方言）。
+// pgtestkit 每测试独立库 + 生产 store 的 PG 形态（bind() $n 改写、juhe_business
+// schema 限定，与生产 jobs 装配同方言）。
 //
-// 三组分类（D9/D17；组B 已于 2026-10-25 随 sqlite 方言退役物理删除）：
+// 三组分类（D9/D17）：
 //   - 组A（bind() 方言共享 SQL，无独立 sqlite 结构臂）：reader/mutation 行为族
 //     走本文件 openTestDBPostgres，测试侧 seed/校验 SQL 对齐生产 PG 臂
 //     （juhe_business 限定 + $n）；夹具 DDL 与 maintenance 权威生产 DDL
 //     （pg_schema_business_tables.go / pg_schema_business_indexes.go）逐列对齐，
 //     按 groups 夹具先例放宽：不建 FOREIGN KEY（seed 行不满足生产外键链），
 //     保留 store upsert 依赖的 idx_account_api_key_runtime_unique 唯一索引。
-//   - 组B（2026-10-25 退役清单，openTestDB SQLite 夹具随删）：
-//     TestListDueForProbeClaimsAndSkipsFreshLeases、TestW12HListDueForProbeArms
-//     （含 key_index='garbage' 弱类型注入臂）、
+//   - 组B（openTestDB SQLite 夹具随 2026-10-25 sqlite 方言退役删除）：
+//     TestListDueForProbeClaimsAndSkipsFreshLeases、TestW12HListDueForProbeArms、
 //     TestW7CListDueForProbeFiltersBrokenCandidates、
 //     TestW12HNewStoreValidationAndListDueClamp、
-//     TestW7CAuthorizedInstanceGroupPath——前四者被 W27①（PG 臂把 time.Time
-//     绑进 text 时间列致 ListDueForProbe 候选扫描恒空）阻塞，末者被 W27③
-//     （授权过期臂放行，同根因）阻塞；均无 PG 生产列形态下的行为等价断言，
-//     待缺陷修复后以组A 形态重建（store.go timeParam 注释登记事实基线）。
+//     TestW7CAuthorizedInstanceGroupPath——前四者曾被 W27①（time.Time 绑 text
+//     时间列致候选扫描恒空）阻塞、末者被 W27③（授权过期臂放行）阻塞，
+//     已随 W27 修复以组A 形态重建为真实 PG 断言；仅 key_index='garbage'
+//     弱类型注入臂不随迁（PG 生产列 key_index 为 integer，属类型违约非行为臂）。
 //   - 纯函数/凭据 helper 测试不依赖真库，保持原状。
 //
 // 连接串由 pgtestkit 自 .local dev env 解析，内容不进入任何文件、日志或断言。

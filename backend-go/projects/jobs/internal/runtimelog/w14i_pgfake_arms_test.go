@@ -125,13 +125,13 @@ func w14iRegisterHappyCleanup(t *testing.T, server *pgFakeServer) {
 	server.handlePrefixFunc("DELETE FROM juhe_dataset.runtime_logs WHERE id IN (", nil, func(sql string, args []string) ([][]any, string, *pgFakeError) {
 		return nil, "DELETE " + fmt.Sprintf("%d", len(args)), nil
 	})
-	server.handleFunc("SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
+	server.handleFunc("SELECT COALESCE((SELECT "+postgresNodeInstantText("earliest_time")+" FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
 		return [][]any{{"2026-08-01T00:00:00.000Z"}}, "SELECT 1", nil
 	})
-	server.handleFunc("SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
+	server.handleFunc("SELECT COALESCE((SELECT "+postgresNodeInstantText("time")+" FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
 		return [][]any{{""}}, "SELECT 1", nil
 	})
-	server.handleFunc("SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
+	server.handleFunc("SELECT COALESCE((SELECT "+postgresNodeInstantText("time")+" FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
 		return [][]any{{""}}, "SELECT 1", nil
 	})
 	server.handleFunc("UPDATE juhe_dataset.runtime_log_facet_summary SET total_count = GREATEST(0, total_count - $1), earliest_time = $2, latest_time = $3, updated_at = $4 WHERE bucket_key = $5", nil, func([]string) ([][]any, string, *pgFakeError) {
@@ -228,9 +228,9 @@ func TestW14iFakeDecrementArms(t *testing.T) {
 		errFn func(server *pgFakeServer)
 		boom  string
 	}{
-		{name: "counted-from", sql: "SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", boom: "w14i counted boom"},
-		{name: "earliest-select", sql: "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", boom: "w14i earliest boom"},
-		{name: "latest-select", sql: "SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", boom: "w14i latest boom"},
+		{name: "counted-from", sql: "SELECT COALESCE((SELECT " + postgresNodeInstantText("earliest_time") + " FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", boom: "w14i counted boom"},
+		{name: "earliest-select", sql: "SELECT COALESCE((SELECT " + postgresNodeInstantText("time") + " FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", boom: "w14i earliest boom"},
+		{name: "latest-select", sql: "SELECT COALESCE((SELECT " + postgresNodeInstantText("time") + " FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", boom: "w14i latest boom"},
 		{name: "summary-update", sql: "UPDATE juhe_dataset.runtime_log_facet_summary SET total_count = GREATEST(0, total_count - $1), earliest_time = $2, latest_time = $3, updated_at = $4 WHERE bucket_key = $5", boom: "w14i summary update boom"},
 		{name: "summary-delete", sql: "DELETE FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1 AND total_count <= 0", boom: "w14i summary delete boom"},
 		{name: "level-update", sql: "UPDATE juhe_dataset.runtime_log_level_facets SET count = GREATEST(0, count - $1), updated_at = $2 WHERE bucket_key = $3 AND level = $4", boom: "w14i level update boom"},

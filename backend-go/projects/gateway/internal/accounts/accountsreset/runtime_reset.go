@@ -931,6 +931,9 @@ func (s *Service) UpdateAuthorizedBindingDispatchForReset(ctx context.Context, i
 		args = append(args, scoped)
 	}
 	var row AuthorizedDispatchResetRow
+	// W29-①：行锁用 `FOR UPDATE OF accounts` 限定到基表别名（实例行）——
+	// PG 恒拒对 LEFT JOIN source_accounts 空值侧的 FOR UPDATE（0A000）；
+	// 实例行锁的读-改-写串行化语义不变。
 	err = tx.QueryRowContext(ctx, s.store.Bind(`SELECT
 			accounts.id, accounts.config_revision, accounts.system_account_id, accounts.name,
 			accounts.status, accounts.schedulable, accounts.account_expires_at, accounts.cooldown_until,
@@ -963,7 +966,7 @@ func (s *Service) UpdateAuthorizedBindingDispatchForReset(ctx context.Context, i
 		WHERE accounts.id = ?`+scopeClause+`
 			AND accounts.authorization_instance_authorization_id IS NOT NULL
 			AND accounts.deleted_at IS NULL
-		LIMIT 1`+s.forUpdate()), args...).Scan(
+		LIMIT 1 FOR UPDATE OF accounts`), args...).Scan(
 		&row.ID, &row.ConfigRevision, &row.SystemAccountID, &row.Name,
 		&row.Status, &row.Schedulable, &row.AccountExpiresAt, &row.CooldownUntil,
 		&row.LastErrorCode, &row.LastErrorMessage, &row.LastErrorTraceID,

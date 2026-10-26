@@ -2,7 +2,7 @@
 
 > **2026-10-25 存储形态注记：** 本文写于 Node→Go 迁移期，其中 SQLite / memory 本地模式与"双模式基线"表述已随存储形态收口整体退役——现行唯一存储形态为 PostgreSQL + Redis（`JUHE_AI_POSTGRES_URL` / `JUHE_AI_REDIS_CACHE_URL` / `JUHE_AI_REDIS_STATE_URL` 必填），权威契约见 [PostgreSQL 与 Redis 高性能模式设计](../functions/PostgreSQL与Redis高性能模式设计.md) 收口决策记录；本文其余项目边界与并发纪律继续有效，涉及 SQLite / 双模式的段落只作迁移期历史对照，不得作为新增实现的依据。
 
-> **现行双模式基线（2026-08-14）。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块；F1/F2 已物理在 `jobs`，F3/F4 已物理在 `gateway`。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 完整功能接管与 Node 归档迁移规则（已删除，git 历史可溯） 的 L1-L4 生命周期一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。功能批次编号 F1-F6 以 迁移状态与后续批次-20260812（已删除，git 历史可溯） 为准。
+> **双模式基线（2026-08-14；历史截面：「Go 要同时支持 SQLite 与 PostgreSQL/Redis」已于 2026-10-25 随存储收口作废，现行唯一形态为 PostgreSQL + Redis，见文首注记）。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块；F1/F2 已物理在 `jobs`，F3/F4 已物理在 `gateway`。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 完整功能接管与 Node 归档迁移规则（已删除，git 历史可溯） 的 L1-L4 生命周期一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。功能批次编号 F1-F6 以 迁移状态与后续批次-20260812（已删除，git 历史可溯） 为准。
 >
 > **终局补记（2026-09-30）。** 上述 L1-L4 迁移已全部完成：Node 后端于 2026-09-05 全量清零（归档已移出仓库，git 历史可溯），Go 三项目为唯一后端实现，现行生产形态为国内单机 Docker go-only。本文的通用技术、存储和并发规则继续生效；凡涉及 Node 共存期的条款（双模式并行的 owner bridge、typed command、DB-service HTTP/IPC、F1-F6 批次编号语境等）均为历史背景，按共存期边界理解，不再是现行运行事实。
 
@@ -20,7 +20,7 @@
 - 配置：使用 `internal/config` 封装 env 解析，不引入 Viper；配置库只在 config 层出现。
 - PostgreSQL：适配器使用连接池、事务函数和上下文超时收口；具体库选择在 B0 后固定。
 - Redis：仅 PostgreSQL/Redis 模式的 cache、state 可使用 Redis。当前 Node Redis Streams 是 Node 历史实现，新 Go 完整功能默认直接异步执行，不能混称或假定已接线。
-- SQLite：必须提供 SQLite Store adapter；具体 driver、连接方式和未迁移 legacy 功能的 Node owner bridge 在 B0 定案。该 bridge 规则不适用于 J3b：J3b 不得使用 Node owner bridge、typed command、HTTP、IPC、queue 或 RPC，必须由 gateway 完成完整 handoff 后同进程独占。SQLite 模式不要求 Redis，并继续遵守每个文件单 writer。
+- SQLite：必须提供 SQLite Store adapter；具体 driver、连接方式和未迁移 legacy 功能的 Node owner bridge 在 B0 定案。该 bridge 规则不适用于 J3b：J3b 不得使用 Node owner bridge、typed command、HTTP、IPC、queue 或 RPC，必须由 gateway 完成完整 handoff 后同进程独占。SQLite 模式不要求 Redis，并继续遵守每个文件单 writer。（历史截面：本条已随 2026-10-25 存储收口整体作废——SQLite Store adapter 与 owner bridge 已删除，现行唯一存储形态为 PostgreSQL + Redis。）
 - 观测：Prometheus `/__aisys__/metrics`、受控 pprof、结构化 `slog` 和内部系统监控 API 分层维护；Go runtime 指标以 `runtime/metrics`、Prometheus Go collector、PG/Redis adapter 和直接异步执行状态为基础，具体口径原定于「Go 迁移指标与观测规划」（已随迁移记录清退，git 历史可溯）。
 - 校验：使用 DTO 校验库处理字段形状和范围，跨字段业务规则仍写 service 校验，并转换为项目中文错误结构。
 - 测试：使用 Go 标准 `testing`、`httptest`、`go test ./... -race`、基准测试、testcontainers、必要的 mock upstream 和 goroutine 泄漏检查；跨服务依赖测试必须显式触发。
@@ -91,7 +91,7 @@ backend-go/
 - `internal/httpapi/` 放统一响应、错误结构、分页、路由注册和 API 契约工具。
 - `internal/modules/<module>/` 放模块 route、service、DTO 和模块私有测试。
 - `internal/platform/` 放 PG / Redis / 外部基础设施 health、client 和低层 adapter；第三方库类型不能穿透到业务模块。
-- `internal/store/port/` 定义业务语义接口；SQLite / PostgreSQL 方言、schema 与事务差异只在 store adapter 内出现，Redis cache / state 只通过项目封装访问。
+- `internal/store/port/` 定义业务语义接口；SQL 方言、schema 与事务差异只在 store adapter 内出现（历史口径「SQLite / PostgreSQL 双方言」已随 2026-10-25 存储收口退役，现行 SQL 方言以 PostgreSQL 为唯一方言），Redis cache / state 只通过项目封装访问。
 - `internal/jobs/` 仅放完整功能专属的定时触发与维护入口，禁止 HTTP route 直接启动失去生命周期管理的长期工作。
 - `internal/async/` 定义直接异步执行、`context` 取消、结果汇总和按资源维度的并发控制；不引入通用队列、常驻 worker pool 或第三方任务类型。
 - `internal/jobs/<domain>/` 放完整功能的触发、输入和直接异步入口；goroutine 内直接调用 Store Port 并返回提交结果，不通过内存队列伪装持久化。
@@ -106,7 +106,7 @@ Go 目标不是复制当前 Node 进程树。
 - 主 server：承载系统 API、公开 API、静态资源、网关入口、健康检查和必要 supervisor。
 - worker：保留 `ingest`、`stats`、`ops` 三类角色的业务边界，但不再因为 Node 事件循环阻塞而拆出额外 DB service。
 - maintenance：生产维护脚本以独立命令运行，必须明确 dry run、影响范围和失败行为。
-- DB service：当前 SQLite 模式保留。对仍由 Node 拥有且明确排除 J3b 的 legacy 功能，Go 只能经其既有 typed command / owner bridge 写入业务 SQLite；方案 A 的 J3b 不得采用这种过渡方式，必须在 Gateway 完整接管 Business SQLite writer 后才可启用。完成冻结、drain 与 handoff 后，owner 才可独占目标文件。
+- DB service（历史截面：SQLite 模式与 Node 共存期均已结束——Node 于 2026-09-05 清零、SQLite 模式于 2026-10-25 退役，本条仅为迁移期历史记录）：当前 SQLite 模式保留。对仍由 Node 拥有且明确排除 J3b 的 legacy 功能，Go 只能经其既有 typed command / owner bridge 写入业务 SQLite；方案 A 的 J3b 不得采用这种过渡方式，必须在 Gateway 完整接管 Business SQLite writer 后才可启用。完成冻结、drain 与 handoff 后，owner 才可独占目标文件。
 - W1b 到 W7 的既有 bridge 叙述是历史实现记录；当前 Node Web 与 `ops-worker` 仍需运行，直到对应完整功能完成 L1-L4 接管；不得由局部 Go 实现推导 Go-only、网关、账户管理或主要 HTTP 接口接管。
 
 历史 PG/Redis 进程与命令记录如下，仅用于保留原方案的接口和验证线索；当前不证明这些 Go 命令、worker runtime 或依赖已存在。B0 必须分别完成 legacy SQLite owner bridge 与 PostgreSQL/Redis Store、直接异步执行的 PoC；方案 A 的 J3b 以完整 Gateway handoff 取代 bridge：
@@ -147,7 +147,7 @@ Go 解决的是 Node 单事件循环问题。迁移默认使用 Go 原生 gorout
 - 数据库访问必须受连接池、事务作用域、上下文超时和热点 key 顺序约束。
 - PostgreSQL 通过 PgBouncer / pool budget 隔离 server、gateway hot path、management API、ingest、stats 和 ops；慢管理查询、后台批量写和网关热路径不能共用一个无差别池。
 - PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
-- 仅 PostgreSQL/Redis adapter 使用 Redis cache、state；SQLite adapter 默认不依赖 Redis。新 Go 功能不把 Redis / Asynq / Node Redis Streams 当作直接异步执行的默认前提；来源系统已有跨实例运行态契约时，按该功能的完整契约保留。
+- 仅 PostgreSQL/Redis adapter 使用 Redis cache、state；SQLite adapter 默认不依赖 Redis。（历史截面：SQLite adapter 已随 2026-10-25 存储收口退役，现行唯一形态必须配置 Redis cache / state。）新 Go 功能不把 Redis / Asynq / Node Redis Streams 当作直接异步执行的默认前提；来源系统已有跨实例运行态契约时，按该功能的完整契约保留。
 - W1b-W3 的 Redis queue、Node health bridge、`JUHE_AI_*_API_ENABLED` opt-in、会话鉴权和管理接口切片均只是历史 PG/Redis 灰度记录；它们不构成 B0/L1-L4 的实现前提。现行完整功能不得依赖 Node bridge、历史 queue 或局部 HTTP 切片。
 - B0 为每个 profile 定义 Store、直接异步执行和 owner 的启动 fail-fast 条件。
 - Node Redis Streams 是当前 Node adapter；它不进入新 Go 功能的默认执行模型。
@@ -191,10 +191,10 @@ Go 运行边界矩阵：
 
 ## 6. 未来可评估的 Node 专用复杂度（非 B0 / L1-L4 整体删除清单）
 
-只有未来另立退出决策且不破坏双模式契约时，才可评估下列实现收敛：
+只有未来另立退出决策且不破坏（历史口径的）双模式契约时，才可评估下列实现收敛。**2026-10-25 存储收口后，本节 SQLite 相关条目已整体失去对象**：SQLite 模式物理退役，下述 SQLite standalone、多库拆分、usage shard 文件、read worker、writer owner、`node:sqlite` 预检与 DB service 代理层均已在收口时随代码整体删除，不再是任何「现行边界」或未来评估项；本节仅保留迁移期对照价值。
 
 - `node:sqlite` 能力预检和 Node 版本分支。
-- SQLite standalone、SQLite 多库拆分、usage shard 文件写入、SQLite read worker、SQLite writer owner 和相关测试矩阵：**B0 / L1-L4 不整体删除**，它们是 SQLite profile 的现行边界；只有已接管完整功能的专属 Node 文件可在 L4 归档。
+- SQLite standalone、SQLite 多库拆分、usage shard 文件写入、SQLite read worker、SQLite writer owner 和相关测试矩阵：**B0 / L1-L4 不整体删除**，它们是 SQLite profile 的现行边界；只有已接管完整功能的专属 Node 文件可在 L4 归档。（历史截面：已于 2026-10-25 随 SQLite 模式退役整体删除，不再是现行边界。）
 - DB service HTTP/IPC 代理层：**B0 / L1-L4 不整体删除**，未接管的 legacy SQLite profile 可继续通过它保持单 writer / typed command 正确性；方案 A 的 J3b 明确禁止通过该层，必须切至 Gateway 单 owner 后才可下线其 Node 路径。
 - Node 专属系统指标：`eventLoopLagMs`、`process_event_loop_*`、V8 `processHeap*` / `external` / `arrayBuffers`、DB service 运行态、SQLite 文件体积、usage shard 文件路径和 IPC pending 队列指标。（该域连同 Go 侧 gometrics 采样链已于 2026-10-14 整体下线，应用进程监控与容量观测改由 Prometheus / postgres_exporter 承担，见 [Prometheus 指标暴露设计](../functions/Prometheus指标暴露设计.md)，不再存在"未来评估收敛"问题。）
 - worker thread 大 JSON 解析边界，改为 Go 请求 goroutine + 有界解析策略。

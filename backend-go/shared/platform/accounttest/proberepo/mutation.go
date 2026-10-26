@@ -116,7 +116,7 @@ func (s *Store) MarkPrecheckTemporaryUnavailable(ctx context.Context, input acco
       AND status = ?
   `, s.table("accounts"))
 	result, err := s.db.ExecContext(ctx, s.bind(query),
-		input.Reason, cooldownUntil, nowText, generation, s.timeParam(now),
+		input.Reason, cooldownUntil, nowText, generation, nowText,
 		input.AccountID, input.ExpectedDispatchRevision, input.ExpectedStatus)
 	if err != nil {
 		return accountquality.PrecheckMutationResult{}, err
@@ -180,6 +180,10 @@ func (s *Store) ListDueForProbe(ctx context.Context, limit int) ([]accountqualit
 		limit = 100
 	}
 	now := s.now().UTC().Format(rfc3339Milli)
+	// 三个时间比较统一 `::timestamptz` 转型（W27① 修复）：next_probe_at/
+	// probe_claimed_until/account_expires_at 均为 text 列（存量 RFC3339 文本），
+	// 直接文本绑定只对同格式行成立，转型对格式差异稳健且杜绝 pgx 对 time.Time
+	// 参数的 Go time.String() 文本编码回退（候选扫描恒空的根因）。
 	query := fmt.Sprintf(`
     SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
       states.updated_at, states.recovery_started_at, states.last_error_code,
@@ -190,12 +194,12 @@ func (s *Store) ListDueForProbe(ctx context.Context, limit int) ([]accountqualit
     JOIN %s accounts ON accounts.id = states.account_id
     WHERE states.status IN ('unverified', 'temporary_unavailable', 'rate_limited')
       AND states.next_probe_at IS NOT NULL
-      AND states.next_probe_at <= ?
-      AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
+      AND states.next_probe_at::timestamptz <= ?::timestamptz
+      AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until::timestamptz <= ?::timestamptz)
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('active', 'rate_limited', 'temporary_unavailable')
       AND accounts.schedulable = 1
-      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+      AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at::timestamptz > ?::timestamptz)
     ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
     LIMIT ?
   `, s.table("account_api_key_runtime_states"), s.table("accounts"))

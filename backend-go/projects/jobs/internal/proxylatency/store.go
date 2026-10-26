@@ -448,7 +448,7 @@ func (s *Store) VerifyOwnerLease(ctx context.Context, lease OwnerLease) error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := s.verifyOwnerTx(ctx, tx, lease, time.Now().UTC()); err != nil {
+	if err := s.verifyOwnerTx(ctx, tx, lease); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -469,7 +469,7 @@ func (s *Store) AcquireProxyLease(ctx context.Context, owner OwnerLease, proxyID
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	if err := s.verifyOwnerTx(ctx, tx, owner, now); err != nil {
+	if err := s.verifyOwnerTx(ctx, tx, owner); err != nil {
 		return ProxyLease{}, false, err
 	}
 	var token int64
@@ -485,7 +485,7 @@ RETURNING fence_token`, proxyID, owner.OwnerID, now.Add(duration), now).Scan(&to
 		if commitErr := tx.Commit(); commitErr != nil {
 			return ProxyLease{}, false, commitErr
 		}
-		if s.activeProxyLeaseBelongsTo(ctx, proxyID, owner.OwnerID, now) {
+		if s.activeProxyLeaseBelongsTo(ctx, proxyID, owner.OwnerID) {
 			return ProxyLease{}, false, nil
 		}
 		return ProxyLease{}, false, ErrProxyLeaseHeld
@@ -499,17 +499,13 @@ RETURNING fence_token`, proxyID, owner.OwnerID, now.Add(duration), now).Scan(&to
 	return ProxyLease{ProxyID: proxyID, OwnerID: owner.OwnerID, FenceToken: token, LeaseUntil: now.Add(duration)}, true, nil
 }
 
-func (s *Store) activeProxyLeaseBelongsTo(ctx context.Context, proxyID, ownerID string, now time.Time) bool {
-	var foundOwner string
-	var until any
-	query := `SELECT owner_id,lease_until FROM proxy_latency_proxy_leases WHERE proxy_id=?`
-	args := []any{proxyID}
-	query = `SELECT owner_id,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1`
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&foundOwner, &until); err != nil {
-		return false
-	}
-	leaseUntil, err := sqlTime(until)
-	return err == nil && foundOwner == ownerID && leaseUntil.After(now)
+// activeProxyLeaseBelongsTo 与 verifyProxyTx 同基准（DB statement_timestamp()），
+// ErrProxyLeaseHeld 的错误分类不因时钟偏移漂移（W26① 同族）。
+func (s *Store) activeProxyLeaseBelongsTo(ctx context.Context, proxyID, ownerID string) bool {
+	var one int
+	query := `SELECT 1 FROM proxy_latency_proxy_leases WHERE proxy_id=? AND owner_id=? AND lease_until>statement_timestamp()`
+	query = `SELECT 1 FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 AND owner_id=$2 AND lease_until>statement_timestamp()`
+	return s.db.QueryRowContext(ctx, query, proxyID, ownerID).Scan(&one) == nil
 }
 
 func (s *Store) ReleaseProxyLease(ctx context.Context, lease ProxyLease) error {
@@ -579,10 +575,10 @@ func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, proxy Proxy
 	if proxy.OwnerID != owner.OwnerID || proxy.ProxyID != outcome.ProxyID || !validOwnerLease(owner) || proxy.FenceToken < 1 || outcome.OwnerFenceToken != owner.FenceToken || outcome.ProxyFenceToken != proxy.FenceToken {
 		return false, errors.New("proxy-latency outcome lease 与输入不匹配")
 	}
-	if err := s.verifyOwnerTx(ctx, tx, owner, now); err != nil {
+	if err := s.verifyOwnerTx(ctx, tx, owner); err != nil {
 		return false, err
 	}
-	if err := s.verifyProxyTx(ctx, tx, proxy, now); err != nil {
+	if err := s.verifyProxyTx(ctx, tx, proxy); err != nil {
 		return false, err
 	}
 	if outcome.executionClaimToken != "" {
@@ -825,10 +821,10 @@ func (s *Store) VerifyExecutionInput(ctx context.Context, owner OwnerLease, prox
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	if err := s.verifyOwnerTx(ctx, tx, owner, now); err != nil {
+	if err := s.verifyOwnerTx(ctx, tx, owner); err != nil {
 		return err
 	}
-	if err := s.verifyProxyTx(ctx, tx, proxy, now); err != nil {
+	if err := s.verifyProxyTx(ctx, tx, proxy); err != nil {
 		return err
 	}
 	if err := s.verifyIssuedInputSnapshotTx(ctx, tx, input, now, true); err != nil {
@@ -874,10 +870,10 @@ func (s *Store) AdmitExecution(ctx context.Context, owner OwnerLease, proxy Prox
 		}
 		return persisted, "", committed, nil
 	}
-	if err := s.verifyOwnerTx(ctx, tx, owner, now); err != nil {
+	if err := s.verifyOwnerTx(ctx, tx, owner); err != nil {
 		return IssuedInput{}, "", nil, err
 	}
-	if err := s.verifyProxyTx(ctx, tx, proxy, now); err != nil {
+	if err := s.verifyProxyTx(ctx, tx, proxy); err != nil {
 		return IssuedInput{}, "", nil, err
 	}
 	if !persisted.ExpiresAt.After(now) || now.Before(persisted.IssuedAt) {
@@ -1213,7 +1209,11 @@ func (s *Store) verifyIssuedInputSnapshotTx(ctx context.Context, tx *sql.Tx, inp
 		return ErrInputFence
 	}
 	digest := sha256.Sum256(payload)
-	if proxyID != input.ProxyID || inputVersion != input.InputVersion || configRevision != input.ConfigRevision || trigger != string(input.Trigger) || !issuedAt.Equal(input.IssuedAt) || !expiresAt.Equal(input.ExpiresAt) || storedDigest != hex.EncodeToString(digest[:]) {
+	// PG timestamptz 以微秒精度存储：签发 draft 的纳秒精度 IssuedAt/ExpiresAt
+	// 写库后被截断，存储列读回值只有微秒。等值比较必须按
+	// canonicalPostgresTimestamp 把 draft 归一到微秒，否则纳秒 draft 在
+	// VerifyExecutionInput / LoadCommittedOutcome 上恒 ErrInputFence（W26②）。
+	if proxyID != input.ProxyID || inputVersion != input.InputVersion || configRevision != input.ConfigRevision || trigger != string(input.Trigger) || !issuedAt.Equal(canonicalPostgresTimestamp(input.IssuedAt)) || !expiresAt.Equal(canonicalPostgresTimestamp(input.ExpiresAt)) || storedDigest != hex.EncodeToString(digest[:]) {
 		return ErrInputFence
 	}
 	return nil
@@ -1268,40 +1268,40 @@ func (s *Store) beginTx(ctx context.Context) (*sql.Tx, error) {
 	return tx, nil
 }
 
-func (s *Store) verifyOwnerTx(ctx context.Context, tx *sql.Tx, owner OwnerLease, now time.Time) error {
+// verifyOwnerTx/verifyProxyTx 的租约有效期判定与释放（ReleaseOwnerLease/
+// ReleaseProxyLease）、过期回收同用 DB statement_timestamp()：跨机部署时
+// Go 进程时钟与 DB 时钟存在偏移，用进程时钟判定会让「释放后立即失效」
+// 依赖偏移方向（W26①）。谓词下推 SQL 后判定与释放共享同一时钟基准。
+func (s *Store) verifyOwnerTx(ctx context.Context, tx *sql.Tx, owner OwnerLease) error {
 	var foundOwner string
 	var token int64
-	var until any
-	query := `SELECT owner_id,fence_token,lease_until FROM proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner'`
-	query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' FOR UPDATE`
-	if err := tx.QueryRowContext(ctx, query).Scan(&foundOwner, &token, &until); err != nil {
+	query := `SELECT owner_id,fence_token FROM proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner'`
+	query = `SELECT owner_id,fence_token FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key='proxy-latency-owner' AND lease_until>statement_timestamp() FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, query).Scan(&foundOwner, &token); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOwnerLeaseLost
 		}
 		return err
 	}
-	leaseUntil, err := sqlTime(until)
-	if err != nil || foundOwner != owner.OwnerID || token != owner.FenceToken || !leaseUntil.After(now) {
+	if foundOwner != owner.OwnerID || token != owner.FenceToken {
 		return ErrOwnerLeaseLost
 	}
 	return nil
 }
 
-func (s *Store) verifyProxyTx(ctx context.Context, tx *sql.Tx, proxy ProxyLease, now time.Time) error {
+func (s *Store) verifyProxyTx(ctx context.Context, tx *sql.Tx, proxy ProxyLease) error {
 	var foundOwner string
 	var token int64
-	var until any
-	query := `SELECT owner_id,fence_token,lease_until FROM proxy_latency_proxy_leases WHERE proxy_id=?`
+	query := `SELECT owner_id,fence_token FROM proxy_latency_proxy_leases WHERE proxy_id=$1 AND lease_until>statement_timestamp()`
 	args := []any{proxy.ProxyID}
-	query = `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 FOR UPDATE`
-	if err := tx.QueryRowContext(ctx, query, args...).Scan(&foundOwner, &token, &until); err != nil {
+	query = `SELECT owner_id,fence_token FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 AND lease_until>statement_timestamp() FOR UPDATE`
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&foundOwner, &token); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrProxyLeaseLost
 		}
 		return err
 	}
-	leaseUntil, err := sqlTime(until)
-	if err != nil || foundOwner != proxy.OwnerID || token != proxy.FenceToken || !leaseUntil.After(now) {
+	if foundOwner != proxy.OwnerID || token != proxy.FenceToken {
 		return ErrProxyLeaseLost
 	}
 	return nil
@@ -1351,7 +1351,6 @@ func containsForbiddenPostgresDDL(schema string) bool {
 }
 
 const postgresSetLocalSQL = `SET LOCAL statement_timeout = '5000ms'; SET LOCAL lock_timeout = '1000ms'`
-
 
 const postgresSchema = `
 CREATE TABLE IF NOT EXISTS juhe_jobs.proxy_latency_owner_leases (

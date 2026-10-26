@@ -57,11 +57,11 @@ func TestW12fSelectBatchListDueError(t *testing.T) {
 func TestW12fRotateBeginTxError(t *testing.T) {
 	closed := w12fClosedStore(t)
 	if _, err := closed.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "w12f-x",
-		ExpectedConfigRevision:            1,
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		Credentials:                       map[string]any{"refresh_token": "w12f-rt"},
+		AccountID:              "w12f-x",
+		ExpectedConfigRevision: 1,
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		Credentials:            map[string]any{"refresh_token": "w12f-rt"},
 	}); err == nil {
 		t.Fatal("句柄关闭后 BeginTx 必须报错")
 	}
@@ -72,7 +72,9 @@ func TestW12fRotateBeginTxError(t *testing.T) {
 	if _, err := closedKeepalive.MarkAccountFailureState(context.Background(), "w12f-x", "code", "reason", 1, "active"); err == nil {
 		t.Fatal("句柄关闭后 MarkAccountFailureState 必须报错")
 	}
-	if _, _, err := closedKeepalive.ClearAccountFailureState(context.Background(), "w12f-x", nil); err == nil {
+	// 码集取生产形态（ManagedRefreshErrorCodes）：空码集按 IN 守卫不可满足
+	// 语义不触达 DB（W25 修复），关闭句柄的错误路径须经非空码集 UPDATE 验证。
+	if _, _, err := closedKeepalive.ClearAccountFailureState(context.Background(), "w12f-x", ManagedRefreshErrorCodes); err == nil {
 		t.Fatal("句柄关闭后 ClearAccountFailureState 必须报错")
 	}
 }

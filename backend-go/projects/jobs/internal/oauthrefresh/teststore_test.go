@@ -193,23 +193,6 @@ CREATE TABLE juhe_business.account_health_jobs_input_outbox (
 	created_at text NOT NULL,
 	updated_at text NOT NULL
 );
-CREATE TABLE account_health_jobs_input_outbox (
-	event_id text PRIMARY KEY,
-	account_id text NOT NULL,
-	input_version integer NOT NULL,
-	event_kind text NOT NULL,
-	reason text NOT NULL,
-	config_revision integer NOT NULL,
-	dispatch_revision bigint NOT NULL,
-	status text NOT NULL,
-	claim_token text,
-	claimed_until text,
-	attempt_count integer NOT NULL DEFAULT 0,
-	available_at text NOT NULL,
-	last_error text,
-	created_at text NOT NULL,
-	updated_at text NOT NULL
-);
 
 CREATE TABLE juhe_business.resource_authorization_grants (
 	id text PRIMARY KEY,

@@ -22,11 +22,11 @@ package main
 //     显形）。
 
 import (
-	"github.com/alicebob/miniredis/v2"
 	"context"
 	"database/sql"
 	"flag"
 	"fmt"
+	"github.com/alicebob/miniredis/v2"
 	"io"
 	"net/http"
 	"os"
@@ -43,11 +43,6 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short 模式跳过进程内 boot 泄漏驱动")
 	}
-	// 进程内 boot 需要 account circuit runtime 索引已由独立构建流程写入
-	// Redis（version/status/ownerMode 元数据 + scanned 索引）。该前置在本
-	// 进程内没有构建入口，属测试基础设施缺口（见 docs/待办与阻塞事项.md
-	// T70），不以产品降级绕过。
-	t.Skip("account circuit runtime 索引需外部构建，进程内 boot 驱动暂不可用（T70）")
 	// 独立临时根：有意不清理（见文件头边界说明）。
 	root, err := os.MkdirTemp("", "w16b-boot-")
 	if err != nil {
@@ -69,28 +64,37 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 			return err
 		})
 	businessDSN := businessDB.DSN
+	// J3b owner 装配段启动即校验 juhe_j3b schema（组合根按契约拒绝自行建
+	// schema）：与 w1 夹具 w1BootOwnerPostgres 同款，由夹具补建（等价
+	// maintenance --ensure-schema 的 juhe_j3b 面）。
+	j3bSchemaDB, err := sql.Open("pgx", businessDSN)
+	if err != nil {
+		t.Fatalf("open j3b schema handle: %v", err)
+	}
+	w1g2EnsureJ3bSchema(t, j3bSchemaDB)
+	_ = j3bSchemaDB.Close()
 	_, evidenceEnv := w1BuildSystemApiEvidence(t, root)
 	cacheRedis := miniredis.RunT(t)
 	stateRedis := miniredis.RunT(t)
 	env := map[string]string{
-		"NODE_ENV":                             "development",
-		"JUHE_AI_REDIS_CACHE_URL":              "redis://" + cacheRedis.Addr() + "/0",
-		"JUHE_AI_REDIS_STATE_URL":              "redis://" + stateRedis.Addr() + "/0",
-		"JUHE_AI_REDIS_NAMESPACE":              "w16b-boot",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":        "redis://" + stateRedis.Addr() + "/0",
-		"JUHE_AI_SECRET":                       "w16b-boot-secret-0123456789abcdef",
-		"JUHE_AI_POSTGRES_URL":                 businessDSN,
-		"JUHE_AI_BUSINESS_POSTGRES_URL":        businessDSN,
-		"JUHE_AI_AUDIT_LOG_POSTGRES_URL":       businessDSN,
+		"NODE_ENV":                                "development",
+		"JUHE_AI_REDIS_CACHE_URL":                 "redis://" + cacheRedis.Addr() + "/0",
+		"JUHE_AI_REDIS_STATE_URL":                 "redis://" + stateRedis.Addr() + "/0",
+		"JUHE_AI_REDIS_NAMESPACE":                 "w16b-boot",
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":           "redis://" + stateRedis.Addr() + "/0",
+		"JUHE_AI_SECRET":                          "w16b-boot-secret-0123456789abcdef",
+		"JUHE_AI_POSTGRES_URL":                    businessDSN,
+		"JUHE_AI_BUSINESS_POSTGRES_URL":           businessDSN,
+		"JUHE_AI_AUDIT_LOG_POSTGRES_URL":          businessDSN,
 		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": businessDSN,
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":           "w16b-boot-instance",
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":        filepath.Join(root, "blobs"),
 		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY":  filepath.Join(root, "hotsearch"),
 		// F4 操作日志：composeSystemAPI 硬要求 store 已启用（缺失即 fail-fast）。
-		"JUHE_AI_OPERATION_LOG_POSTGRES_URL": businessDSN,
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":  "w16b-boot-instance",
-		"JUHE_AI_HOST":                       "127.0.0.1",
-		"JUHE_AI_PORT":                       mainPort,
+		"JUHE_AI_OPERATION_LOG_POSTGRES_URL":    businessDSN,
+		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":     "w16b-boot-instance",
+		"JUHE_AI_HOST":                          "127.0.0.1",
+		"JUHE_AI_PORT":                          mainPort,
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS": "127.0.0.1:" + healthPort,
 	}
 	for key, value := range evidenceEnv {
@@ -103,6 +107,20 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 	for key, value := range env {
 		t.Setenv(key, value)
 	}
+
+	// 账户电路运行态索引前置（T70）：boot 的 J3b 装配段对 circuit runtime
+	// 索引执行 CheckReady（runtime-index-meta：version=1/status=ready/
+	// ownerMode=go-runtime-state-v1），而索引是"全量基线 + 增量投影"结构，
+	// 只能由一次性构建流程显式建立（网关不自建）。这里在 main() 启动前调用
+	// 生产真实入口 runAccountCircuitRuntimeIndexInit（-init-account-circuit-
+	// runtime-index 的执行体）：读同一份 env，经 modelcheckowner/
+	// circuitcontrolplane/circuitprojector 从 pgtestkit 业务库的
+	// accounts.dispatch_revision 回填 J3b circuit Redis（本夹具的 state
+	// miniredis，namespace 回退 JUHE_AI_REDIS_NAMESPACE="w16b-boot"，与 boot
+	// 读取的键空间一致）并发布就绪元数据。不注入任何索引种子旁路；构建路径
+	// 任一前置失败会走 fail() → os.Exit 拉垮测试进程（与文件头 boot fail()
+	// 风险同一约定，失败即显形）。
+	runAccountCircuitRuntimeIndexInit()
 
 	// main() 前置状态换装：os.Args / flag.CommandLine / stdout 捕获。
 	oldArgs := os.Args

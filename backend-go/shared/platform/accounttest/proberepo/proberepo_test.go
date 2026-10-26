@@ -29,10 +29,9 @@ type testDB struct {
 }
 
 // openTestDB（SQLite 夹具）与其专属 seedSchema DDL 已于 2026-10-25 随 sqlite
-// 方言退役整体删除（组B：W27 缺陷阻塞面 + 弱类型注入臂，见 pgkit_test.go
-// 退役登记）；全部存储行为测试统一走 openTestDBPostgres（pgtestkit 真库 +
-// 生产 PG 方言）。seed/校验 helper 按生产方言生成 SQL（juhe_business 表限定
-// + bind $n）。
+// 方言退役整体删除；全部存储行为测试统一走 openTestDBPostgres（pgtestkit 真库
+// + 生产 PG 方言）。seed/校验 helper 按生产方言生成 SQL（juhe_business 表限定
+// + bind $n），时间列断言一律按 RFC3339 文本契约（store.go timeParam 口径）。
 
 func (h *testDB) exec(t *testing.T, query string, args ...any) {
 	t.Helper()
@@ -107,6 +106,46 @@ func (h *testDB) seedRuntimeState(t *testing.T, accountID, fingerprint string, k
       id, system_account_id, account_id, key_fingerprint, key_index, status, next_probe_at, created_at, updated_at
     ) VALUES (?, 'sys-1', ?, ?, ?, ?, ?, ?, ?)`),
 		"state-"+fingerprint, accountID, fingerprint, keyIndex, status, nextProbeAt, nowMillisText(), nowMillisText())
+}
+
+// TestListDueForProbeClaimsAndSkipsFreshLeases 验证到期候选 claim（W27① 修复
+// 后的 PG 生产行为）：到期候选非空且命中后写入 claim 租约；未到期候选与租约
+// 未过期的候选不得返回。
+func TestListDueForProbeClaimsAndSkipsFreshLeases(t *testing.T) {
+	h := openTestDBPostgres(t)
+	key1, _ := h.seedPoolAccount(t, "acc-1")
+	fp1 := h.store.FingerprintAPIKey(key1)
+	h.seedRuntimeState(t, "acc-1", fp1, 0, "temporary_unavailable", plusMillis(-1000))
+	// 未到期候选（next_probe_at 在未来）：不得入选。
+	fpFuture := h.store.FingerprintAPIKey("sk-key-future")
+	h.seedRuntimeState(t, "acc-1", fpFuture, 1, "unverified", plusMillis(60_000))
+
+	candidates, err := h.store.ListDueForProbe(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("到期候选必须恰为 1（未到期不入选）: %d %+v", len(candidates), candidates)
+	}
+	candidate := candidates[0]
+	if candidate.AccountID != "acc-1" || candidate.APIKey != key1 || candidate.KeyFingerprint != fp1 {
+		t.Fatalf("candidate=%+v", candidate)
+	}
+	if candidate.ProbeClaimToken == "" || candidate.ProbeClaimedUntil == "" {
+		t.Fatalf("claim 未写入: %+v", candidate)
+	}
+	if candidate.AccountConfigRevision != 1 {
+		t.Fatalf("configRevision=%d", candidate.AccountConfigRevision)
+	}
+
+	// 已领取且租约未到期的候选，下一轮扫描不得重复返回。
+	repeat, err := h.store.ListDueForProbe(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeat) != 0 {
+		t.Fatalf("fresh lease 必须被排除: %+v", repeat)
+	}
 }
 
 // TestCooldownMutationsFlow 验证 record success / failure / defer 的 CAS 与
@@ -320,7 +359,10 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 	}
 
 	// fence 全部满足 → 更新成功且 dispatch_revision 前移。
-	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at = NULL WHERE id='acc-1'`)
+	// 先把 updated_at 钉到过去值，成功标记后必须被重写为 RFC3339 文本
+	// （W27②：text 时间列写入 Go time.String() 形态会让后续 instantMS
+	// 解析报 invalid_runtime_state）。
+	h.exec(t, `UPDATE juhe_business.accounts SET last_health_success_at = NULL, updated_at = $1 WHERE id='acc-1'`, plusMillis(-5000))
 	result, err = h.store.MarkPrecheckTemporaryUnavailable(ctx, accountquality.PrecheckMutationInput{
 		AccountID: "acc-1", Reason: "r", PrecheckStartedAt: nowMillisText(),
 		ExpectedDispatchRevision: 3, ExpectedStatus: "active",
@@ -337,6 +379,17 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 	}
 	if dispatchRevision != 4 {
 		t.Fatalf("dispatchRevision=%d", dispatchRevision)
+	}
+	// updated_at 必须为注入时钟的 RFC3339 毫秒文本（text 时间列写入口径）。
+	var updatedAt string
+	if err := h.db.QueryRow(`SELECT updated_at FROM juhe_business.accounts WHERE id='acc-1'`).Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		t.Fatalf("updated_at 必须是 RFC3339 文本: %q %v", updatedAt, err)
+	}
+	if updatedAt != nowMillisText() {
+		t.Fatalf("updated_at=%q（必须为注入时钟的 RFC3339 毫秒形态）", updatedAt)
 	}
 
 	// 成功标记必须写入冷却恢复锚点（BUG-0282）：缺失会把 temporary_unavailable

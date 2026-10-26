@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	"github.com/jackc/pgx/v5/pgconn"
 	"strings"
 )
 
@@ -2069,9 +2070,17 @@ func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID 
 }
 
 // DuplicateProxyNameError mirrors isDuplicateProxyNameError.
+// W29-②：生产 PG 臂按 SQLSTATE 23505 + 唯一索引名识别（生产 DDL 为
+// maintenance/internal/schema/pg_schema_business_indexes.go 的
+// `CREATE UNIQUE INDEX idx_proxy_profiles_name_unique ON proxy_profiles(name)`）；
+// 既有 `UNIQUE constraint failed` 文本臂保留为同一冲突的文本形态匹配。
 func DuplicateProxyNameError(err error, name string) error {
 	if err == nil {
 		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_proxy_profiles_name_unique" {
+		return &accountscore.ConflictError{Message: "代理名称已存在：" + name}
 	}
 	message := err.Error()
 	if strings.Contains(message, "UNIQUE constraint failed") && strings.Contains(message, "proxy_profiles") && strings.Contains(message, "name") {

@@ -35,8 +35,10 @@ func countOutboxRows(t *testing.T, db *sql.DB) (int, string, int) {
 	var count int
 	var reason, eventKind string
 	var version int
+	// 只读生产同款 schema 限定表：fanout 写入侧必须落在 juhe_business（W25
+	// 回归——裸表名在无 search_path 的生产 PG 上 relation does not exist）。
 	if err := db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(reason), ''), COALESCE(MAX(event_kind), ''), COALESCE(MAX(input_version), 0)
-		FROM account_health_jobs_input_outbox`).Scan(&count, &reason, &eventKind, &version); err != nil {
+		FROM juhe_business.account_health_jobs_input_outbox`).Scan(&count, &reason, &eventKind, &version); err != nil {
 		t.Fatal(err)
 	}
 	return count, reason + "|" + eventKind, version

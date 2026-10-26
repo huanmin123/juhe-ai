@@ -324,12 +324,17 @@ func w11eSchemaDDL(schema string, plan w11eSchemaPlan) []string {
 // w11eRecreateSchema 删除并按计划重建 schema；测试结束时再删一次。
 func w11eRecreateSchema(t *testing.T, db *sql.DB, schema string, plan w11eSchemaPlan) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
-	defer cancel()
+	// drop 必须自建 context：t.Cleanup 在本函数 return（defer cancel 已触发）
+	// 之后才运行，复用外层 ctx 会让 DROP 静默失败，把 w11e_fk_% 外键连同
+	// schema 泄漏进共享覆盖库，污染其它共享 w1cover 的门禁测试（W30）。
 	drop := func() {
-		_, _ = db.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+w11eQuoteIdentifier(schema)+` CASCADE`)
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), w11ePgBudget)
+		defer dropCancel()
+		_, _ = db.ExecContext(dropCtx, `DROP SCHEMA IF EXISTS `+w11eQuoteIdentifier(schema)+` CASCADE`)
 	}
 	drop()
+	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
+	defer cancel()
 	for _, statement := range w11eSchemaDDL(schema, plan) {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("执行 DDL 失败（schema=%s）: %v", schema, err)
@@ -371,7 +376,12 @@ func TestW11ECheckBusinessPostgresSchemaAcceptsContractShape(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `CREATE SCHEMA w11e_bs_empty`); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = db.ExecContext(ctx, `DROP SCHEMA IF EXISTS w11e_bs_empty CASCADE`) })
+	t.Cleanup(func() {
+		// 同 w11eRecreateSchema：清理必须自建 context，测试级 ctx 此刻已取消。
+		emptyCtx, emptyCancel := context.WithTimeout(context.Background(), w11ePgBudget)
+		defer emptyCancel()
+		_, _ = db.ExecContext(emptyCtx, `DROP SCHEMA IF EXISTS w11e_bs_empty CASCADE`)
+	})
 	if err := CheckBusinessPostgresSchema(ctx, db, "w11e_bs_empty"); err == nil || !strings.Contains(err.Error(), "contains no tables") {
 		t.Fatalf("空 schema 必须拒绝: %v", err)
 	}

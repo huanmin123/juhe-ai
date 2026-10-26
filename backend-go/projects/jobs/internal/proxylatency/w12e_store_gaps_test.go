@@ -20,7 +20,9 @@ import (
 // 子串注入，不依赖真实 PostgreSQL。
 
 const w12eOwnerRow = "FROM juhe_jobs.proxy_latency_owner_leases WHERE lease_key"
-const w12eProxyLeaseRow = "FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 FOR UPDATE"
+
+// W26① 后 verifyProxyTx 把租约有效期判定下推 SQL（lease_until>statement_timestamp()）。
+const w12eProxyLeaseRow = "FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 AND lease_until>statement_timestamp() FOR UPDATE"
 
 func TestW12EStoreNilGuards(t *testing.T) {
 	empty := &Store{}
@@ -246,8 +248,10 @@ func TestW12EEnsureRuntimeSchemaPGPreflight(t *testing.T) {
 }
 
 func w12eScriptLeases(rec *wfRecorder, owner OwnerLease, proxy ProxyLease) {
-	rec.script(w12eOwnerRow, []string{"owner", "token", "until"}, [][]driver.Value{{owner.OwnerID, owner.FenceToken, time.Now().Add(time.Minute)}})
-	rec.script(w12eProxyLeaseRow, []string{"owner", "token", "until"}, [][]driver.Value{{proxy.OwnerID, proxy.FenceToken, time.Now().Add(time.Minute)}})
+	// W26①：verify 查询只取 owner_id/fence_token，有效期由 SQL 谓词判定，
+	// 录制行不再携带 lease_until。
+	rec.script(w12eOwnerRow, []string{"owner", "token"}, [][]driver.Value{{owner.OwnerID, owner.FenceToken}})
+	rec.script(w12eProxyLeaseRow, []string{"owner", "token"}, [][]driver.Value{{proxy.OwnerID, proxy.FenceToken}})
 }
 
 func TestW12ELeaseArms(t *testing.T) {
@@ -307,13 +311,16 @@ func TestW12ELeaseArms(t *testing.T) {
 	if err := store.VerifyOwnerLease(ctx, owner); err == nil {
 		t.Fatalf("VerifyOwnerLease begin 失败应透传")
 	}
-	// activeProxyLeaseBelongsTo PG 查询：查到行但不属于当前 owner → held。
+	// activeProxyLeaseBelongsTo：W26① 后归属（owner_id）与有效期
+	// （lease_until>statement_timestamp()）判定都在 SQL 谓词内。查询不命中
+	// （他人持有或已过期）已由上一臂覆盖为 ErrProxyLeaseHeld；查询命中
+	// （当前 owner 已持有活跃租约）应返回 (false, nil)。
 	rec = newWFRecorder()
 	w12eScriptLeases(rec, owner, proxy)
-	rec.script("SELECT owner_id,lease_until FROM juhe_jobs.proxy_latency_proxy_leases", []string{"owner", "until"}, [][]driver.Value{{"someone-else", time.Now().Add(time.Minute)}})
+	rec.script("FROM juhe_jobs.proxy_latency_proxy_leases WHERE proxy_id=$1 AND owner_id=$2 AND lease_until>statement_timestamp()", []string{"one"}, [][]driver.Value{{int64(1)}})
 	store = wfNewPGStore(wfOpenRecorderDB(t, rec))
-	if _, _, err := store.AcquireProxyLease(ctx, owner, proxy.ProxyID, time.Minute); !errors.Is(err, ErrProxyLeaseHeld) {
-		t.Fatalf("他人持有应 ErrProxyLeaseHeld: %v", err)
+	if _, _, err := store.AcquireProxyLease(ctx, owner, proxy.ProxyID, time.Minute); err != nil {
+		t.Fatalf("自身持有活跃租约应返回 (false, nil): %v", err)
 	}
 }
 

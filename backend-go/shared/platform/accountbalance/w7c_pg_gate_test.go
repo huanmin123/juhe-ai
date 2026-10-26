@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
 		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS type text NOT NULL DEFAULT 'api_key'`,
 		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS credentials_encrypted text NOT NULL DEFAULT ''`,
+		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS credential_fingerprint text`,
 		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS schedulable integer NOT NULL DEFAULT 1`,
 		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_enabled integer NOT NULL DEFAULT 0`,
 		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_config_json text NOT NULL DEFAULT '{}'`,

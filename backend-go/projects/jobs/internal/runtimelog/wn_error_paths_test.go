@@ -141,7 +141,7 @@ func TestPostgresFakeStatementLevelFailures(t *testing.T) {
 				t.Fatal("cursor 清理失败必须暴露")
 			}
 		}},
-		{name: "decrement earliest baseline", failSQL: "SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", register: registerCleanupSuccessPath, execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
+		{name: "decrement earliest baseline", failSQL: "SELECT COALESCE((SELECT " + postgresNodeInstantText("earliest_time") + " FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", register: registerCleanupSuccessPath, execute: func(t *testing.T, store *postgresStore, server *pgFakeServer) {
 			lease := OwnerLease{OwnerID: "o", FenceToken: 7}
 			if _, err := store.Cleanup(context.Background(), lease, time.Now(), 10, 1); err == nil {
 				t.Fatal("facet 基线读取失败必须暴露")
@@ -218,14 +218,14 @@ func registerCleanupSuccessPath(t *testing.T, server *pgFakeServer) {
 	server.handlePrefixFunc("DELETE FROM juhe_dataset.runtime_logs WHERE id IN (", nil, func(string, []string) ([][]any, string, *pgFakeError) {
 		return nil, "DELETE 1", nil
 	})
-	server.handleFunc("SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
+	server.handleFunc("SELECT COALESCE((SELECT "+postgresNodeInstantText("earliest_time")+" FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}, func([]string) ([][]any, string, *pgFakeError) {
 		return [][]any{{""}}, "SELECT 1", nil
 	})
 	coalesceColumns := []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}
-	server.handleFunc("SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", coalesceColumns, func([]string) ([][]any, string, *pgFakeError) {
+	server.handleFunc("SELECT COALESCE((SELECT "+postgresNodeInstantText("time")+" FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time ASC, id ASC LIMIT 1), '')", coalesceColumns, func([]string) ([][]any, string, *pgFakeError) {
 		return [][]any{{""}}, "SELECT 1", nil
 	})
-	server.handleFunc("SELECT COALESCE((SELECT time::text FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", coalesceColumns, func([]string) ([][]any, string, *pgFakeError) {
+	server.handleFunc("SELECT COALESCE((SELECT "+postgresNodeInstantText("time")+" FROM juhe_dataset.runtime_logs WHERE time >= $1 ORDER BY time DESC, id DESC LIMIT 1), '')", coalesceColumns, func([]string) ([][]any, string, *pgFakeError) {
 		return [][]any{{""}}, "SELECT 1", nil
 	})
 	server.handleFunc("UPDATE juhe_dataset.runtime_log_facet_summary SET total_count = GREATEST(0, total_count - $1), earliest_time = $2, latest_time = $3, updated_at = $4 WHERE bucket_key = $5", nil, func([]string) ([][]any, string, *pgFakeError) {

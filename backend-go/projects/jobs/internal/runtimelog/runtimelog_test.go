@@ -456,12 +456,25 @@ func TestPostgresTemporalReadsCastToTextForNodeCompatibleFacets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// W23 守卫：facet 链 timestamptz 读出必须经 postgresNodeInstantText 归一
+	// 为 nodeISO 毫秒文本（与 cutoff 同格式、同格式定长字符串的字典序=时间
+	// 序），且禁止回到 PG 默认 ::text（空格分隔 + "+00"，与 nodeISO 字典序
+	// 不可比，会把与 cutoff 同一自然日的记录系统性判早、facet 计数少计）。
 	for _, fragment := range []string{
-		"ON CONFLICT(id) DO NOTHING RETURNING time::text, level, COALESCE(event, '')",
-		"SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary",
+		"postgresNodeInstantText(\"time\")",
+		"postgresNodeInstantText(\"earliest_time\")",
 	} {
 		if !strings.Contains(string(source), fragment) {
-			t.Fatalf("PostgreSQL timestamptz read must cast for Node-compatible string facets: missing %q", fragment)
+			t.Fatalf("PostgreSQL timestamptz facet 读出必须经 postgresNodeInstantText 归一（W23）: missing %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{
+		"RETURNING time::text",
+		"SELECT time::text",
+		"earliest_time::text",
+	} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("PostgreSQL facet 链禁止回到 timestamptz 默认 ::text 格式（W23）: found %q", forbidden)
 		}
 	}
 }
@@ -714,4 +727,3 @@ func appendTestFile(t *testing.T, path string, contents string) {
 		t.Fatal(err)
 	}
 }
-

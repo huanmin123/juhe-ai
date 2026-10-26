@@ -506,10 +506,17 @@ func (s *Store) MarkAccountFailureState(ctx context.Context, accountID, errorCod
 // ClearAccountFailureState mirrors clear_account_failure_state with the
 // expectedLastErrorCodes guard: the account returns to active when the current
 // last_error_code is one of the managed codes. changed reports the CAS guard.
+// 守卫谓词为 status = 'error' AND last_error_code IN (managed codes)；空码集
+// 时 IN 守卫恒不可满足（PG 不支持空 IN 列表），按 CAS 未命中返回，不发
+// UPDATE。占位符数（updated_at + id + n 个码）必须与参数数严格一致——pgx
+// 严格校验，多余参数即 mismatched param and argument count。
 func (s *Store) ClearAccountFailureState(ctx context.Context, accountID string, expectedLastErrorCodes []string) (changed bool, accountStatus string, err error) {
 	ctx = ensureCtx(ctx)
+	if len(expectedLastErrorCodes) == 0 {
+		return false, "", nil
+	}
 	guards := make([]string, len(expectedLastErrorCodes))
-	args := []any{s.nowISO(), accountID, "error"}
+	args := []any{s.nowISO(), accountID}
 	for i, code := range expectedLastErrorCodes {
 		guards[i] = "?"
 		args = append(args, code)
@@ -548,7 +555,7 @@ type KeepaliveCandidate struct {
 // ListDueKeepaliveAccounts mirrors the dispatch-preparation refresh window as a
 // batch query: oauth accounts of the vendor whose derived
 // oauth_access_token_expires_at is missing or within the lead window. gemini
-// accounts use type google_oauth；身份键 = COALESCE(vendor_code,'')（§2.1
+// accounts use type google_oauth；身份键为 COALESCE 后的 vendor_code（§2.1
 // 行为键；§9.11 目标列集无 provider_code / provider_protocol_profile_id，
 // profile 维度门已删除——vendor+type 在 §1.1 registry 已唯一绑定预设）。
 func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, accountType string, lead time.Duration, limit int, now time.Time) ([]KeepaliveCandidate, error) {

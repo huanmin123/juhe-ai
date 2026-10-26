@@ -122,7 +122,7 @@ func TestPostgresFakeDecrementSkipsRecordsBelowBaseline(t *testing.T) {
 	registerPostgresLeaseHandlers(t, server)
 	registerCleanupSuccessPath(t, server)
 	baselineColumns := []pgFakeColumn{{name: "coalesce", oid: pgFakeOIDText}}
-	server.handleFunc("SELECT COALESCE((SELECT earliest_time::text FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", baselineColumns, func([]string) ([][]any, string, *pgFakeError) {
+	server.handleFunc("SELECT COALESCE((SELECT "+postgresNodeInstantText("earliest_time")+" FROM juhe_dataset.runtime_log_facet_summary WHERE bucket_key = $1), '')", baselineColumns, func([]string) ([][]any, string, *pgFakeError) {
 		return [][]any{{"2027-01-01T00:00:00.000Z"}}, "SELECT 1", nil
 	})
 	store := openFakePostgresStore(t, server)
