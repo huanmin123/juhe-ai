@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
@@ -96,11 +98,8 @@ func TestW1NChainAccountsSelectorDialect(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1NNewChainAccountsSelectorWithStatsGuards(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
+	// 构造器守卫不触库，句柄零值即可（构造失败臂全部由 nil/limit 承担）。
+	db := &sql.DB{}
 	cases := []struct {
 		name        string
 		businessDB  *sql.DB
@@ -376,19 +375,16 @@ func TestW1NListAccountsForGroupQueryErrorArms(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			db := seedChainSelectorDB(t)
-			// 先于 TempDir RemoveAll 关闭句柄（Windows 文件锁），否则清理失败。
 			t.Cleanup(func() { _ = db.Close() })
 			if testCase.prepare != nil {
 				testCase.prepare(t, db)
 			}
 			statsDB := db
 			if testCase.separateStats {
-				empty, err := sql.Open("sqlite", ":memory:")
-				if err != nil {
-					t.Fatalf("open empty stats db: %v", err)
-				}
-				t.Cleanup(func() { _ = empty.Close() })
-				statsDB = empty
+				// 独立空 stats 库（无 juhe_stats.quality 表）：质量面 LEFT JOIN
+				// 读取报 42P01，构造 QueryContext 错误臂（pgtestkit 隔离 PG 库，
+				// 原 sqlite 内存库夹具随存储形态退役重钉 PG）。
+				statsDB = pgtestkit.New(t)
 			}
 			selector, err := newChainAccountsSelectorWithStats(db, statsDB, "chain-test-secret", time.Now, 20)
 			if err != nil {

@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
@@ -79,16 +78,11 @@ func TestRouteStrategySpeedFirstFacadeMapsAndDegrades(t *testing.T) {
 }
 
 // routestrategiesWiringEnv mirrors the routestrategies package test env
-// (bare in-memory sqlite + authsys deps, no schema: the probe never reaches a
+// (pgtestkit 隔离 PG 库 + authsys deps, no schema: the probe never reaches a
 // query — unauthenticated requests stop at the session middleware).
 func routestrategiesWiringEnv(t *testing.T) (*authsys.Deps, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:routestrategies-wiring-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t)
 	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)

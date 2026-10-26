@@ -2,20 +2,16 @@ package usagespooldrain
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
-
-	_ "modernc.org/sqlite"
 )
 
 // gatewaySpoolFile 复现 gateway spool Persist 的写出格式（单文件单记录，
@@ -219,35 +215,6 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(directory, "gateway-chain", "0001-run.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("停机排空未消费文件: %v", err)
 	}
-}
-
-
-func countShardRows(t *testing.T, shardRoot string, traceID string) int {
-	t.Helper()
-	total := 0
-	err := filepath.Walk(shardRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || !strings.HasSuffix(path, ".sqlite3") {
-			return nil
-		}
-		db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-		var count int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM usage_records WHERE trace_id = ?`, traceID).Scan(&count); err != nil {
-			return err
-		}
-		total += count
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return total
 }
 
 func intPtr(value int) *int           { return &value }

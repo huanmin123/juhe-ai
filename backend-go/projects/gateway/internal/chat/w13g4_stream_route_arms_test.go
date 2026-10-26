@@ -15,7 +15,7 @@ package chat
 //   - stream_route.go 614-637：需要 >21MiB 传输体；192KiB 消息上限（parse）与 16MiB
 //     本地装载上限（LoadModelContext）使其常规不可达，构造极端数据成本过高。
 //   - stream_route.go 659-662 Duplicate：需要 streamTurn 执行中外部写入幂等行；
-//     SQLite 单连接池 fixture 在事务外另一连接写入会触发 SQLITE_BUSY，不可行。
+//     单连接池 fixture 在事务外另一连接写入会阻塞/冲突，不可行。
 //   - stream_route.go 754-766 Launch false：runner 于 701 行新建，Start 前 started 恒
 //     为 false，Launch(runner) 恒成功。
 
@@ -30,7 +30,8 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
-	sqlite "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 func w13g4StreamPost(rt *chatRoutes, conversationID, owner, payload string) *httptest.ResponseRecorder {
@@ -176,13 +177,14 @@ type w13g4HookConn struct {
 }
 
 func (c *w13g4HookConn) runInterposition(query string) error {
+	normalized := chatFaultMatchQuery(query)
 	if c.script != nil {
 		if err := c.script.take(query); err != nil {
 			return err
 		}
 	}
 	for substr, hook := range c.hooks {
-		if strings.Contains(query, substr) {
+		if strings.Contains(normalized, chatFaultMatchQuery(substr)) {
 			hook()
 		}
 	}
@@ -231,27 +233,20 @@ func (c *w13g4HookConn) QueryContext(ctx context.Context, query string, args []d
 	return c.base.(driver.QueryerContext).QueryContext(ctx, query, args)
 }
 
-// w13g4HookFixture 仿 newFaultChatFixtureW10D，但连接带查询钩子。
+// w13g4HookFixture 仿 newFaultChatFixtureW10D，但连接带查询钩子
+// （pgtestkit 隔离 PG 测试库 + pgx stdlib 内核；外层 sqldialect 包装使夹具
+// DDL/测试手写 SQL 的裸 `?` 直发可用）。
 func w13g4HookFixture(t *testing.T, hooks map[string]func()) (*chatFixture, *faultScriptW10D) {
 	t.Helper()
-	name := strings.ReplaceAll(t.Name(), "/", "-")
-	base, err := sqlite.NewConnector("file:chat-w13g4-" + name + "?mode=memory&cache=shared")
+	base, err := sqldialect.WrapDriver(stdlib.GetDefaultDriver()).OpenConnector(chatPGFixtureDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	script := newFaultScriptW10D()
 	db := sql.OpenDB(w13g4HookConnector{base: base, script: script, hooks: hooks})
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range strings.Split(chatTestDDL, ";") {
-		trimmed := strings.TrimSpace(statement)
-		if trimmed == "" {
-			continue
-		}
-		if _, err := db.Exec(trimmed); err != nil {
-			t.Fatalf("ddl: %v", err)
-		}
-	}
+	db.SetMaxOpenConns(16)
+	t.Cleanup(func() { _ = db.Close() })
+	// 表结构已由 chatPGFixtureDSN 的 prepare 注入；钩子此刻未武装。
 	_, clock := fixedChatClock()
 	store, err := NewStore(db, clock, nil)
 	if err != nil {

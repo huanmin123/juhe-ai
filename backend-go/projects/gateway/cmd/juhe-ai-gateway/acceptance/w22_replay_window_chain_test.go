@@ -148,26 +148,26 @@ func TestW22WindowFailureChainReplaysUntilCandidateSucceeds(t *testing.T) {
 		t.Fatalf("成功候选命中 = %d, want 1", okHits.Load())
 	}
 	// 审计恰好 2 失败 + 1 成功（异步落库，轮询至稳定；fixture 审计库为本用例
-	// 独占，直接全表计数）。
-	auditPath := upstream.fixture.root + "/storage/audit.sqlite3"
+	// 独占，直接全表计数）。PG 唯一形态：直连网关隔离库读 juhe_dataset 审计
+	// 数据集（原 sqlite audit.sqlite3 文件轮询随存储形态退役重钉 pgx DSN）。
+	db, err := sql.Open("pgx", upstream.fixture.dsn)
+	if err != nil {
+		t.Fatalf("open audit db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 	deadline := time.Now().Add(20 * time.Second)
 	var failed, succeeded int
 	for time.Now().Before(deadline) {
-		db, err := sql.Open("sqlite", "file:"+auditPath+"?mode=ro&_pragma=busy_timeout(5000)")
-		if err != nil {
-			t.Fatalf("open audit db: %v", err)
-		}
 		queryErr := db.QueryRow(
-			`SELECT COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0),
-			        COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0)
-			 FROM audit_log_attempts`).Scan(&failed, &succeeded)
-		_ = db.Close()
+			`SELECT COALESCE(SUM(CASE WHEN success = FALSE THEN 1 ELSE 0 END), 0),
+			        COALESCE(SUM(CASE WHEN success = TRUE THEN 1 ELSE 0 END), 0)
+			 FROM juhe_dataset.audit_log_attempts`).Scan(&failed, &succeeded)
 		if queryErr == nil && failed == 2 && succeeded == 1 {
 			break
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
 	if failed != 2 || succeeded != 1 {
-		t.Fatalf("审计 attempts 期望 2 失败 + 1 成功, got failed=%d succeeded=%d (db=%s)", failed, succeeded, auditPath)
+		t.Fatalf("审计 attempts 期望 2 失败 + 1 成功, got failed=%d succeeded=%d", failed, succeeded)
 	}
 }

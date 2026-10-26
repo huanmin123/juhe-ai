@@ -1,8 +1,11 @@
 package groups
 
-// w11f 覆盖波次（文件 1/2）：脚本化 sqlite 连接层故障注入设施 + 纯函数分支。
-// 连接器默认直通真实 sqlite，按查询子串注入 Query/Exec/Begin/Commit 故障、
-// 受影响行数覆盖与罐装行（Scan 错误 / rows.Err 错误臂）。
+// w11f 覆盖波次（文件 1/2）：脚本化 PG 连接层故障注入设施 + 纯函数分支。
+// 连接器默认直通 pgx stdlib 真库（pgtestkit 隔离库，2026-10-25 存储形态收尾，
+// 自 modernc.org/sqlite 迁移；外层 sqldialect 包装使夹具/测试手写 SQL 的裸
+// `?` 直发可用），按查询子串注入 Query/Exec/Begin/Commit 故障、受影响行数
+// 覆盖与罐装行（Scan 错误 / rows.Err 错误臂）；匹配前按 w11fMatchQuery 归一
+// （去 schema 前缀、$n 还原 ?）。
 
 import (
 	"context"
@@ -13,21 +16,36 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	sqlite "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 var w11fBoom = errors.New("w11f boom")
+
+// w11fMatchQuery 把生产方言 SQL 归一成注入模式惯用的裸表名 + `?` 形态：去掉
+// schema 限定前缀、把 `$n` 占位符还原为 `?`。失败注入关心「命中了哪条语句」，
+// 与占位符编号和 schema 限定无关（与 modelcheckowner failpointMatchQuery 思路
+// 同源）。
+var w11fPlaceholderPattern = regexp.MustCompile(`\$\d+`)
+
+func w11fMatchQuery(query string) string {
+	for _, prefix := range []string{"juhe_business.", "juhe_stats.", "juhe_chat.", "juhe_j3b.", "juhe_dataset."} {
+		query = strings.ReplaceAll(query, prefix, "")
+	}
+	return w11fPlaceholderPattern.ReplaceAllString(query, "?")
+}
 
 // ---------------------------------------------------------------------------
 // 故障脚本
@@ -117,10 +135,11 @@ func (s *w11fScript) failCommit() {
 }
 
 func (s *w11fScript) take(query string) *w11fRule {
+	normalized := w11fMatchQuery(query)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, r := range s.rules {
-		if !strings.Contains(query, r.substr) {
+		if !strings.Contains(normalized, w11fMatchQuery(r.substr)) {
 			continue
 		}
 		if r.limit >= 0 && r.hits >= max(r.limit, 1) {
@@ -269,6 +288,9 @@ func (r *w11fRows) Next(dest []driver.Value) error {
 // 环境（与 newTestEnv 等价，但物理连接经过故障脚本）
 // ---------------------------------------------------------------------------
 
+// w11fDDL 是 w11f 故障注入环境的业务表夹具（PG 方言，裸名经
+// search_path=juhe_business 落生产 schema；group_account_stats 归 juhe_stats
+// 生产 schema，显式限定）。
 var w11fDDL = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
@@ -293,7 +315,7 @@ var w11fDDL = []string{
 	`ALTER TABLE accounts ADD COLUMN resource_owner_system_account_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN authorization_instance_authorization_id TEXT`,
 	`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`,
-	`CREATE TABLE IF NOT EXISTS group_account_stats (system_account_id TEXT NOT NULL DEFAULT 'sys_admin', group_id TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, available INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, error INTEGER NOT NULL DEFAULT 0, rate_limited INTEGER NOT NULL DEFAULT 0, current_concurrency INTEGER NOT NULL DEFAULT 0, concurrency_limit INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, group_id))`,
+	`CREATE TABLE IF NOT EXISTS juhe_stats.group_account_stats (system_account_id TEXT NOT NULL DEFAULT 'sys_admin', group_id TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, available INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, error INTEGER NOT NULL DEFAULT 0, rate_limited INTEGER NOT NULL DEFAULT 0, current_concurrency INTEGER NOT NULL DEFAULT 0, concurrency_limit INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, group_id))`,
 }
 
 type w11fEnv struct {
@@ -312,7 +334,16 @@ type w11fEnv struct {
 
 func newW11FEnv(t *testing.T) *w11fEnv {
 	t.Helper()
-	base, err := sqlite.NewConnector("file:w11f-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	tdb := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		for _, schema := range []string{"juhe_business", "juhe_stats"} {
+			if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+schema); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	_ = tdb.DB.Close()
+	base, err := sqldialect.WrapDriver(stdlib.GetDefaultDriver()).OpenConnector(tdb.DSN + "&search_path=juhe_business")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +351,7 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w11fConnector{base: base, script: script})
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	for _, statement := range w11fDDL {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -693,11 +724,9 @@ func TestW11FStoreHelpers(t *testing.T) {
 	if got := pgStore.bind("UPDATE g SET a = ?, b = ?"); got != "UPDATE g SET a = $1, b = $2" {
 		t.Fatalf("pg bind = %q", got)
 	}
-	// 默认 newI 与 nowISO。
-	db, err := sql.Open("sqlite", "file:w11f-groups-default-newid?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 默认 newI 与 nowISO（纯函数臂；sql.OpenDB(nil) 提供非 nil 句柄，与
+	// authsys 合同测试同先例，任何真实使用即 panic——正被本臂规避）。
+	db := sql.OpenDB(nil)
 	defer db.Close()
 	defaultStore, err := NewStore(db, nil, nil, nil)
 	if err != nil {

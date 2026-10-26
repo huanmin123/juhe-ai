@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
@@ -20,25 +22,20 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
-// schemaStatements mirrors the Node-owned catalog schema subset the slice
-// reads, aligned with backend/src/storage/schema/business-schema.ts:
-// providers, provider_protocol_profiles, provider_protocol_profile_families,
-// protocol_endpoint_families, provider_model_catalog, custom_provider_models,
-// provider_default_health_check_models,
-// provider_system_default_health_check_models plus the auth tables.
-// schemaStatements 是目录读写的目标 schema 子集（供应商与上游协议面重构设计
-// §3/§8 的 fresh DDL 等价形态）：vendors（只读种子）+ models 单表 +
-// account_supported_models / account_entry_mappings 目标形状 + auth 表。旧
-// providers/provider_protocol_profiles/provider_model_catalog/
+// schemaStatements 是目录读写与 auth 面的目标 schema 子集（供应商与上游协议
+// 面重构设计 §3/§8 的 fresh DDL 等价形态，PG 生产形状）：vendors（只读种子）
+// + models 单表 + account_supported_models / account_entry_mappings 目标形状
+// + auth 表。旧 providers/provider_protocol_profiles/provider_model_catalog/
 // custom_provider_models 与两张默认检查模型偏好表已随重构退役。
 var schemaStatements = []string{
-	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS models (
+	`CREATE SCHEMA IF NOT EXISTS juhe_business`,
+	`CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS juhe_business.system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS juhe_business.vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS juhe_business.models (
 		id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT NOT NULL, upstream_model TEXT NOT NULL,
 		scope TEXT NOT NULL, system_account_id TEXT,
-		status TEXT NOT NULL DEFAULT 'active', catalog_visible INTEGER NOT NULL DEFAULT 1,
+		status TEXT NOT NULL DEFAULT 'active', catalog_visible BOOLEAN NOT NULL DEFAULT TRUE,
 		catalog_order INTEGER, release_date TEXT, shutdown_date TEXT,
 		supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
 		supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
@@ -48,22 +45,22 @@ var schemaStatements = []string{
 		codex_default_reasoning_level TEXT,
 		codex_multi_agent_version TEXT,
 		context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER, max_tokens INTEGER,
-		input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
-		cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
+		input_usd_per_1m double precision, output_usd_per_1m double precision, cached_input_usd_per_1m double precision,
+		cache_write_usd_per_1m double precision, cache_write_1h_usd_per_1m double precision, cache_storage_usd_per_1m_per_hour double precision,
 		service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-		long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
-		long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
-		image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
-		audio_output_usd_per_1m REAL, output_usd_per_image REAL,
-		supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
+		long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive BOOLEAN NOT NULL DEFAULT FALSE,
+		long_context_input_cost_multiplier double precision, long_context_output_cost_multiplier double precision,
+		image_input_usd_per_1m double precision, image_output_usd_per_1m double precision, audio_input_usd_per_1m double precision,
+		audio_output_usd_per_1m double precision, output_usd_per_image double precision,
+		supports_prompt_caching BOOLEAN NOT NULL DEFAULT FALSE,
 		source TEXT, pricing_notes TEXT, capability_notes TEXT, notes TEXT,
 		created_by TEXT, updated_by TEXT,
 		currency TEXT NOT NULL DEFAULT 'USD',
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_models_identity_unique ON models (COALESCE(vendor_code, ''), scope, COALESCE(system_account_id, ''), upstream_model)`,
-	`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, deleted_at TEXT)`,
-	`CREATE TABLE IF NOT EXISTS account_supported_models (account_id TEXT NOT NULL, model_id TEXT NOT NULL, PRIMARY KEY (account_id, model_id))`,
-	`CREATE TABLE IF NOT EXISTS account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, source_model TEXT NOT NULL, target_model_id TEXT, enabled INTEGER NOT NULL DEFAULT 1)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_models_identity_unique ON juhe_business.models (COALESCE(vendor_code, ''), scope, COALESCE(system_account_id, ''), upstream_model)`,
+	`CREATE TABLE IF NOT EXISTS juhe_business.accounts (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, deleted_at TEXT)`,
+	`CREATE TABLE IF NOT EXISTS juhe_business.account_supported_models (account_id TEXT NOT NULL, model_id TEXT NOT NULL, PRIMARY KEY (account_id, model_id))`,
+	`CREATE TABLE IF NOT EXISTS juhe_business.account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, source_model TEXT NOT NULL, target_model_id TEXT, enabled INTEGER NOT NULL DEFAULT 1)`,
 }
 
 type testEnv struct {
@@ -81,17 +78,22 @@ var mustChangeFalse = false
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:providers-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		for _, statement := range schemaStatements {
+			if _, err := db.Exec(statement); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	// 经 sqldialect 改写 driver + search_path=juhe_business 直开测试池：夹具
+	// 与范围外测试手写 SQL 的裸表名由 search_path 解析、`?` 占位由 driver 层
+	// 兜底改写为 $n，生产 store/auth 面的 $n 绑定原样透传。
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_business")
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range schemaStatements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	t.Cleanup(func() { _ = db.Close() })
 	service, err := businessauth.New(db, modelcheckauth.Postgres, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
@@ -324,16 +326,15 @@ func (e *testEnv) seedBuiltinModel(t *testing.T, seed builtinModelSeed) {
 	if seed.Status == "" {
 		seed.Status = "active"
 	}
-	catalogVisible := 1
-	if seed.CatalogVisible != nil {
-		catalogVisible = *seed.CatalogVisible
-	}
 	if seed.Tiers == "" {
 		seed.Tiers = "[]"
 	}
 	if seed.Efforts == "" {
 		seed.Efforts = "[]"
 	}
+	// catalog_visible 在 PG 生产 DDL 为 boolean；seed 入参保持 *int（范围外
+	// 测试沿用 0/1 形态），此处转 bool 传参。
+	catalogVisible := seed.CatalogVisible == nil || *seed.CatalogVisible != 0
 	endpointModes := endpointModesJSONForProtocols(t, seed.Protocols)
 	e.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_order,
 		release_date, shutdown_date, supported_endpoint_modes_json, supported_service_tiers_json,

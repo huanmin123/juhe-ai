@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestW1SettingsStringProjection(t *testing.T) {

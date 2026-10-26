@@ -1,7 +1,10 @@
-// w13g2 失败注入驱动（仅测试编译）：包装 modernc.org/sqlite 驱动，在
+// w13g2 失败注入驱动（仅测试编译）：包装 pgx stdlib 驱动，在
 // QueryContext/ExecContext 层按 SQL 片段匹配注入错误，从而覆盖 store 各
 // 函数事务中途的错误返回臂（canceled context 只能命中事务内第一条语句，
 // 覆盖不到深层分支）。failpoint 用完立即 disarm，不影响正常路径。
+// 匹配前按 w13g2FailpointMatchQuery 归一（去 schema 前缀、$n 还原 ?），注入
+// 模式保持裸表名 + `?` 的方言惯用形态（2026-10-25 存储形态收尾，自
+// modernc.org/sqlite 内核迁 pgx stdlib 内核 + pgtestkit 隔离真库）。
 package authz
 
 import (
@@ -9,15 +12,33 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 var errW13g2Failpoint = errors.New("w13g2 failpoint: injected failure")
+
+// w13g2FailpointSchemaPrefixes 是归一化剥除的生产 schema 前缀（authz 生产
+// SQL 的 s.table 全限定 juhe_business；兜底列出其余前缀族）。
+var w13g2FailpointSchemaPrefixes = []string{"juhe_business.", "juhe_chat.", "juhe_stats.", "juhe_j3b.", "juhe_dataset."}
+
+var w13g2FailpointPlaceholderPattern = regexp.MustCompile(`\$\d+`)
+
+// w13g2FailpointMatchQuery 把生产方言 SQL 归一成注入模式惯用的裸表名 + `?`
+// 形态：失败注入关心「命中了哪条语句」，与占位符编号和 schema 限定无关。
+func w13g2FailpointMatchQuery(query string) string {
+	for _, prefix := range w13g2FailpointSchemaPrefixes {
+		query = strings.ReplaceAll(query, prefix, "")
+	}
+	return w13g2FailpointPlaceholderPattern.ReplaceAllString(query, "?")
+}
 
 type w13g2Failpoint struct {
 	mu      sync.Mutex
@@ -48,13 +69,13 @@ func (fp *w13g2Failpoint) disarm() {
 func (fp *w13g2Failpoint) armed(query string) bool {
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
-	return fp.pattern != "" && !fp.scan && strings.Contains(query, fp.pattern)
+	return fp.pattern != "" && !fp.scan && strings.Contains(w13g2FailpointMatchQuery(query), w13g2FailpointMatchQuery(fp.pattern))
 }
 
 func (fp *w13g2Failpoint) scanArmed(query string) bool {
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
-	return fp.pattern != "" && fp.scan && strings.Contains(query, fp.pattern)
+	return fp.pattern != "" && fp.scan && strings.Contains(w13g2FailpointMatchQuery(query), w13g2FailpointMatchQuery(fp.pattern))
 }
 
 // w13g2FakeRows 单列假行：与代码多列 Scan 目标不匹配，触发 rows.Scan 错误
@@ -89,6 +110,9 @@ func (d *w13g2FailDriver) Open(name string) (driver.Conn, error) {
 		return nil, err
 	}
 	conn := &w13g2FailConn{Conn: raw, fp: d.fp}
+	if beginTx, ok := raw.(driver.ConnBeginTx); ok {
+		conn.beginTx = beginTx
+	}
 	if queryer, ok := raw.(driver.QueryerContext); ok {
 		conn.queryer = queryer
 	}
@@ -100,9 +124,17 @@ func (d *w13g2FailDriver) Open(name string) (driver.Conn, error) {
 
 type w13g2FailConn struct {
 	driver.Conn
+	beginTx driver.ConnBeginTx
 	queryer driver.QueryerContext
 	execer  driver.ExecerContext
 	fp      *w13g2Failpoint
+}
+
+func (c *w13g2FailConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if c.beginTx == nil {
+		return nil, driver.ErrSkip
+	}
+	return c.beginTx.BeginTx(ctx, opts)
 }
 
 func (c *w13g2FailConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -131,12 +163,13 @@ func (c *w13g2FailConn) ExecContext(ctx context.Context, query string, args []dr
 var w13g2FailDrivers sync.Map
 
 // w13g2RegisterFailDriver 按唯一名字注册（或复用）失败注入驱动；重复运行
-// （-count=N）复用同一实例避免 sql.Register 重名 panic。
+// （-count=N）复用同一实例避免 sql.Register 重名 panic。内核为 pgx stdlib，
+// 外层 sqldialect 包装使夹具/测试手写 SQL 的裸 `?` 直发可用。
 func w13g2RegisterFailDriver(key string) *w13g2FailDriver {
 	if loaded, ok := w13g2FailDrivers.Load(key); ok {
 		return loaded.(*w13g2FailDriver)
 	}
-	inner := &sqlite.Driver{}
+	inner := sqldialect.WrapDriver(stdlib.GetDefaultDriver())
 	d := &w13g2FailDriver{inner: inner, fp: &w13g2Failpoint{}}
 	if actual, loaded := w13g2FailDrivers.LoadOrStore(key, d); loaded {
 		return actual.(*w13g2FailDriver)
@@ -145,22 +178,23 @@ func w13g2RegisterFailDriver(key string) *w13g2FailDriver {
 	return d
 }
 
-// w13g2FailStore 打开与 fixture 同构的失败注入库。
+// w13g2FailStore 打开与 fixture 同构的失败注入库：pgtestkit 隔离 PG 测试库
+// + authzPGFixtureSchema（juhe_business 限定，与 pgkit_test.go 组A 夹具同一
+// 生产形状）+ pgx 驱动内核（2026-10-25 存储形态收尾）。
 func w13g2FailStore(t *testing.T) (*Store, *w13g2Failpoint) {
 	t.Helper()
 	key := strings.ReplaceAll(t.Name(), "/", "-")
 	d := w13g2RegisterFailDriver(key)
-	db, err := sql.Open("w13g2fail-"+key, "file:authz-fail-"+key+"?mode=memory&cache=shared")
+	tdb := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, authzPGFixtureSchema)
+		return err
+	})
+	db, err := sql.Open("w13g2fail-"+key, tdb.DSN+"&search_path=juhe_business")
 	if err != nil {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range ddl {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	t.Cleanup(func() { _ = db.Close() })
 	store, err := NewStore(db, time.Now)
 	if err != nil {
 		t.Fatal(err)
@@ -235,8 +269,8 @@ func TestW13g2FailpointArms(t *testing.T) {
 			VALUES ('team_fp13', 'T', 'active', 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-			VALUES ('teammem_fp13', 'team_fp13', 'gm', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_by, created_at, updated_at)
+			VALUES ('teammem_fp13', 'team_fp13', 'gm', 'active', '2026-01-01T00:00:00Z', 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 			t.Fatal(err)
 		}
 		created, err := s.Create(ctx, CreateInput{

@@ -21,7 +21,7 @@ func TestW1ChainAccountLocksSmallHelpers(t *testing.T) {
 	if err != nil || locks == nil {
 		t.Fatalf("构造 = %v, %v", locks, err)
 	}
-	if got := locks.table("account_lock_states"); got != "account_lock_states" {
+	if got := locks.table("account_lock_states"); got != "juhe_business.account_lock_states" {
 		t.Fatalf("sqlite table = %q", got)
 	}
 	pgLocks, _ := newChainAccountLocks(&sql.DB{}, nil)
@@ -30,9 +30,6 @@ func TestW1ChainAccountLocksSmallHelpers(t *testing.T) {
 	}
 	if got := pgLocks.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("pg bind = %q", got)
-	}
-	if got := locks.bind("a = ?"); got != "a = ?" {
-		t.Fatalf("sqlite bind = %q", got)
 	}
 	// deadline 解析。
 	if _, ok := chainAccountLockDeadlineMs(sql.NullString{}); ok {

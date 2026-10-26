@@ -6,7 +6,6 @@ package accountkeystates
 import (
 	"context"
 	"database/sql"
-	_ "modernc.org/sqlite"
 	"strings"
 	"testing"
 	"time"
@@ -150,10 +149,9 @@ func TestW11EStoreConstructorsAndSQLFragments(t *testing.T) {
 	if _, err := NewStore(Config{}); err == nil || !strings.Contains(err.Error(), "业务库句柄") {
 		t.Fatalf("nil DB 必须拒绝: %v", err)
 	}
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/w11e-keys.db?mode=rwc")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 构造器校验与纯函数臂不触库；sql.OpenDB(nil) 提供非 nil 句柄（与
+	// authsys 合同测试同先例），任何使用即 panic——正被各臂规避。
+	db := sql.OpenDB(nil)
 	defer db.Close()
 	if _, err := NewStore(Config{DB: db, Secret: "  "}); err == nil || !strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("空 secret 必须拒绝: %v", err)

@@ -36,14 +36,16 @@ func testFullchainOwnFormSuperPriorityCase(t *testing.T, f *fullchainFixture) {
 		}},
 	}, nil, nil)
 
-	db, err := sql.Open("sqlite", f.gw.storage["business"])
+	// PG 唯一形态：直连网关隔离库直插业务行（原 sqlite storage 路径夹具随
+	// 存储形态退役重钉 pgx DSN）。
+	db, err := sql.Open("pgx", f.gw.dsn)
 	if err != nil {
 		t.Fatalf("open business db: %v", err)
 	}
 	defer db.Close()
 	// 生产自有账户形态：账户级 1 保持，绑定级清零（API 写链本会写 1）。
-	if _, err := db.Exec(`UPDATE group_accounts SET local_super_priority_enabled = 0
-		WHERE account_id IN (SELECT id FROM accounts WHERE super_priority_enabled = 1)`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.group_accounts SET local_super_priority_enabled = 0
+		WHERE account_id IN (SELECT id FROM juhe_business.accounts WHERE super_priority_enabled = 1)`); err != nil {
 		t.Fatalf("zero binding local super flag: %v", err)
 	}
 
@@ -61,7 +63,7 @@ func testFullchainOwnFormSuperPriorityCase(t *testing.T, f *fullchainFixture) {
 	// 双向对照：账户级也清零后超级优先完全消失，回落普通账户。负对照用独立
 	// 路由（新 API Key = 新会话亲和域）——第一个请求已把会话绑定到 super 账
 	// 户，同 Key 复用会因亲和继续命中它，污染「标志清零后回落」的断言。
-	if _, err := db.Exec(`UPDATE accounts SET super_priority_enabled = 0 WHERE super_priority_enabled = 1`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET super_priority_enabled = 0 WHERE super_priority_enabled = 1`); err != nil {
 		t.Fatalf("clear account-level super flag: %v", err)
 	}
 	clearRoute := f.newRoute("G3O2", "normal", []fullchainGroupSpec{

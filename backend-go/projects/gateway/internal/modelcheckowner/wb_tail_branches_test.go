@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
-	_ "modernc.org/sqlite"
 )
 
 // 游标比较契约：时间优先、ID 决胜，畸形时间必须给出确定性的排序。

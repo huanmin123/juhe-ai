@@ -1,6 +1,7 @@
 package openaicompatstorage
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -14,7 +15,9 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Test scope constants (越权 checks use a second scope).
@@ -25,25 +28,28 @@ const (
 	testKeyB   = "key-b"
 )
 
+// newTestDB 打开 pgtestkit 隔离 PG 测试库（预建 juhe_business schema 与生产
+// 同款四表）并返回经 sqldialect 改写 driver、search_path=juhe_business 的
+// 连接池：其他测试文件 execSQL 的裸表名由 search_path 解析，`?` 占位由
+// driver 层兜底改写为 $n，生产 store 的 $n 绑定原样透传。
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:openaicompat-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, strings.Join(openaicompatTestSchema(), ";\n"))
+		return err
+	})
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_business")
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range openaicompatTestSchema() {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
 func openaicompatTestSchema() []string {
 	return []string{
-		`CREATE TABLE IF NOT EXISTS openai_compatible_files (
+		`CREATE SCHEMA IF NOT EXISTS juhe_business`,
+		`CREATE TABLE IF NOT EXISTS juhe_business.openai_compatible_files (
 			id TEXT PRIMARY KEY,
 			system_account_id TEXT NOT NULL,
 			api_key_id TEXT NOT NULL,
@@ -60,7 +66,7 @@ func openaicompatTestSchema() []string {
 			expires_at TEXT,
 			deleted_at TEXT
 		)`,
-		`CREATE TABLE IF NOT EXISTS openai_compatible_vector_stores (
+		`CREATE TABLE IF NOT EXISTS juhe_business.openai_compatible_vector_stores (
 			id TEXT PRIMARY KEY,
 			system_account_id TEXT NOT NULL,
 			api_key_id TEXT NOT NULL,
@@ -76,7 +82,7 @@ func openaicompatTestSchema() []string {
 			expires_at TEXT,
 			deleted_at TEXT
 		)`,
-		`CREATE TABLE IF NOT EXISTS openai_compatible_vector_store_files (
+		`CREATE TABLE IF NOT EXISTS juhe_business.openai_compatible_vector_store_files (
 			vector_store_id TEXT NOT NULL,
 			file_id TEXT NOT NULL,
 			system_account_id TEXT NOT NULL,
@@ -91,7 +97,7 @@ func openaicompatTestSchema() []string {
 			deleted_at TEXT,
 			PRIMARY KEY (vector_store_id, file_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS openai_compatible_vector_store_chunks (
+		`CREATE TABLE IF NOT EXISTS juhe_business.openai_compatible_vector_store_chunks (
 			id TEXT PRIMARY KEY,
 			vector_store_id TEXT NOT NULL,
 			file_id TEXT NOT NULL,

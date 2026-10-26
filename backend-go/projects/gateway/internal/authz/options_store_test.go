@@ -10,30 +10,55 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
+
+// optionsPGFixtureSchema 是 authorization-options 家族契约测试的 PG 夹具：
+// 生产 store 的 PG 臂以 juhe_business 前缀 + $n 绑定读写（store.go table/bind），
+// 夹具按同构子集建表（pgtestkit 每测试独立库）。
+const optionsPGFixtureSchema = `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (
+      id text PRIMARY KEY,
+      username text NOT NULL,
+      display_name text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT 'active'
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.system_teams (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      status text NOT NULL DEFAULT 'active'
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.groups (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      system_account_id text NOT NULL,
+      enabled integer NOT NULL DEFAULT 1,
+      is_default integer NOT NULL DEFAULT 0,
+      group_kind text NOT NULL DEFAULT 'standard',
+      updated_at text NOT NULL DEFAULT ''
+    )
+`
 
 func newOptionsFixture(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, optionsPGFixtureSchema)
+		return err
+	})
 	statements := []string{
-		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active')`,
-		`CREATE TABLE system_teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active')`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_kind TEXT NOT NULL DEFAULT 'standard', updated_at TEXT NOT NULL DEFAULT '')`,
-		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sa-1', 'alice', 'Alice A'), ('sa-2', 'bob', 'Bob B'), ('sa-3', 'carol', 'Carol C')`,
-		`UPDATE system_accounts SET status = 'disabled' WHERE id = 'sa-3'`,
-		`INSERT INTO system_teams (id, name) VALUES ('team-1', 'Alpha'), ('team-2', 'Beta')`,
-		`INSERT INTO groups (id, name, system_account_id, enabled, is_default, updated_at) VALUES
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sa-1', 'alice', 'Alice A'), ('sa-2', 'bob', 'Bob B'), ('sa-3', 'carol', 'Carol C')`,
+		`UPDATE juhe_business.system_accounts SET status = 'disabled' WHERE id = 'sa-3'`,
+		`INSERT INTO juhe_business.system_teams (id, name) VALUES ('team-1', 'Alpha'), ('team-2', 'Beta')`,
+		`INSERT INTO juhe_business.groups (id, name, system_account_id, enabled, is_default, updated_at) VALUES
 			('g-1', '默认组', 'sa-1', 1, 1, '2026-01-02'),
 			('g-2', '备用组', 'sa-1', 1, 0, '2026-01-03'),
 			('g-3', '停用组', 'sa-1', 0, 0, '2026-01-04'),
 			('g-4', '他户组', 'sa-2', 1, 0, '2026-01-05')`,
 	}
 	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := db.Exec(fixtureBind(statement)); err != nil {
 			t.Fatalf("seed %q: %v", statement, err)
 		}
 	}

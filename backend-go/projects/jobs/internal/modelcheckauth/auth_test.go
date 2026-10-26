@@ -10,15 +10,14 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 func TestAuthenticateMatchesNodeCookieBearerAndSessionTouch(t *testing.T) {
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	db := newAuthDB(t)
-	defer db.Close()
 	insertSession(t, db, "session-token", "admin", "admin", false, now.Add(time.Hour), now.Add(-2*time.Minute))
-	auth, err := New(db, SQLite, func() time.Time { return now })
+	auth, err := New(db, Postgres, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +29,7 @@ func TestAuthenticateMatchesNodeCookieBearerAndSessionTouch(t *testing.T) {
 		t.Fatalf("actor=%+v err=%v", actor, err)
 	}
 	var lastSeen string
-	if err := db.QueryRow(`SELECT last_seen_at FROM system_sessions`).Scan(&lastSeen); err != nil || lastSeen != "2026-08-27T12:00:00.000Z" {
+	if err := db.QueryRow(`SELECT last_seen_at FROM juhe_business.system_sessions`).Scan(&lastSeen); err != nil || lastSeen != "2026-08-27T12:00:00.000Z" {
 		t.Fatalf("lastSeen=%q err=%v", lastSeen, err)
 	}
 	temporary := "juhe_tmp_" + strings.Repeat("A", 43)
@@ -47,11 +46,10 @@ func TestAuthenticateMatchesNodeCookieBearerAndSessionTouch(t *testing.T) {
 func TestAuthenticateRejectsExpiredPasswordChangeAndUser(t *testing.T) {
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	db := newAuthDB(t)
-	defer db.Close()
 	insertSession(t, db, "expired", "admin", "admin", false, now.Add(-time.Second), now)
 	insertSession(t, db, "change", "admin2", "admin", true, now.Add(time.Hour), now)
 	insertSession(t, db, "user", "user", "user", false, now.Add(time.Hour), now)
-	auth, _ := New(db, SQLite, func() time.Time { return now })
+	auth, _ := New(db, Postgres, func() time.Time { return now })
 	if _, err := auth.Authenticate(context.Background(), "", "juhe_ai_session=expired"); !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("expired err=%v", err)
 	}
@@ -78,34 +76,45 @@ func TestCookieValueMatchesNodePercentDecoding(t *testing.T) {
 	}
 }
 
+// newAuthDB 打开 pgtestkit 隔离 PG 测试库，并按生产 schema 前缀与生产列形
+// 建 juhe_business.system_accounts / juhe_business.system_sessions（text
+// 时间列，与生产 maintenance DDL 对齐；生产表另有 password_hash 等管理面
+// 列，非认证链路读写面，夹具不复刻）。库生命周期由 pgtestkit 承接。
 func newAuthDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(`CREATE TABLE system_accounts(id TEXT PRIMARY KEY,username TEXT NOT NULL,display_name TEXT NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL,must_change_password INTEGER NOT NULL); CREATE TABLE system_sessions(id TEXT PRIMARY KEY,system_account_id TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,last_seen_at TEXT NOT NULL)`); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	return db
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA juhe_business`); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, `CREATE TABLE juhe_business.system_accounts (id text PRIMARY KEY, username text NOT NULL, display_name text NOT NULL, role text NOT NULL, status text NOT NULL, must_change_password integer NOT NULL)`); err != nil {
+			return err
+		}
+		_, err := db.ExecContext(ctx, `CREATE TABLE juhe_business.system_sessions (id text PRIMARY KEY, system_account_id text NOT NULL, token_hash text NOT NULL UNIQUE, expires_at text NOT NULL, last_seen_at text NOT NULL)`)
+		return err
+	})
 }
+
+// insertSession 以 $n 占位符写入账户与会话行；时间戳用 nodeISOTime（生产
+// timeValue 的毫秒 ISO 格式）写入 text 列，保证与生产写入格式逐字节一致，
+// 触碰比较（text 字典序）与读回断言不受夹具格式影响。
 func insertSession(t *testing.T, db *sql.DB, token, account, role string, mustChange bool, expiresAt, lastSeen time.Time) {
 	t.Helper()
 	sum := sha256.Sum256([]byte(token))
-	if _, err := db.Exec(`INSERT INTO system_accounts(id,username,display_name,role,status,must_change_password) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, account, account, account, role, "active", boolToInt(mustChange)); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id, username, display_name, role, status, must_change_password) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING`, account, account, account, role, "active", boolToInt(mustChange)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO system_sessions(id,system_account_id,token_hash,expires_at,last_seen_at) VALUES(?,?,?,?,?)`, "session-"+account+"-"+token[:min(4, len(token))], account, hex.EncodeToString(sum[:]), expiresAt.Format(time.RFC3339Nano), lastSeen.Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_sessions (id, system_account_id, token_hash, expires_at, last_seen_at) VALUES ($1,$2,$3,$4,$5)`, "session-"+account+"-"+token[:min(4, len(token))], account, hex.EncodeToString(sum[:]), nodeISOTime(expiresAt), nodeISOTime(lastSeen)); err != nil {
 		t.Fatal(err)
 	}
 }
+
 func boolToInt(value bool) int {
 	if value {
 		return 1
 	}
 	return 0
 }
+
 func min(left, right int) int {
 	if left < right {
 		return left

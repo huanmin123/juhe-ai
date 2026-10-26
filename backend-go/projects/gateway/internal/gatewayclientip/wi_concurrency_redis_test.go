@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"database/sql"
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -430,17 +429,12 @@ func TestWIPreAuthSprayThresholdBothDrivers(t *testing.T) {
 	})
 }
 
-func TestWIPolicyHitsPostgresPath(t *testing.T) {
-	// PG 方言 + 注入时区：走 recordHitsPostgres 的 chunk 构建分支；
-	// 目标库是 SQLite（无 juhe_stats schema），写入必须报错而非静默成功。
-	db, err := sql.Open("sqlite", "file:wi-policy-pg-hits?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("打开 sqlite 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	fixed := time.UnixMilli(1_700_000_000_000)
-	source := &SQLPolicySource{db: db, now: func() time.Time { return fixed }}
-	source.timezone = func(context.Context) (string, error) { return "UTC", nil }
+func TestWIPolicyHitsPostgresChunksAndDefaultHitAt(t *testing.T) {
+	// PG 真库（policysql_test.go 夹具）：超过 policyHitsChunkSize 的批次走
+	// recordHitsPostgres 的 chunk 循环；hitAt 缺省回落批量时间戳（entries
+	// 构建分支），hit_count 下限钳到 1。
+	source, db := newPolicyPGSource(t)
+	ctx := context.Background()
 	hits := make([]PolicyHitInput, 0, policyHitsChunkSize+1)
 	for i := 0; i < policyHitsChunkSize+1; i++ {
 		hits = append(hits, PolicyHitInput{
@@ -449,38 +443,40 @@ func TestWIPolicyHitsPostgresPath(t *testing.T) {
 			HitCount: 2,
 		})
 	}
-	if err := source.RecordClientIPPolicyHits(context.Background(), hits); err == nil {
-		t.Fatal("postgres 方言写入 sqlite 必须报错")
+	if err := source.RecordClientIPPolicyHits(ctx, hits); err != nil {
+		t.Fatalf("chunk 写入失败: %v", err)
+	}
+	var rows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_stats.client_ip_policy_hits`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != policyHitsChunkSize+1 {
+		t.Fatalf("rows=%d want %d", rows, policyHitsChunkSize+1)
 	}
 	// hitAt 为空时回落批量时间戳（entries 构建分支）。
-	if err := source.RecordClientIPPolicyHits(context.Background(), []PolicyHitInput{{
+	if err := source.RecordClientIPPolicyHits(ctx, []PolicyHitInput{{
 		IPHash: strings.Repeat("b", 64), PolicyID: "p2", HitCount: 0,
-	}}); err == nil {
-		t.Fatal("postgres 方言写入 sqlite 必须报错（hitAt 缺省分支）")
+	}}); err != nil {
+		t.Fatalf("hitAt 缺省分支失败: %v", err)
+	}
+	var hitCount int64
+	var statDate, lastHitAt string
+	if err := db.QueryRow(`SELECT hit_count, stat_date, last_hit_at FROM juhe_stats.client_ip_policy_hits WHERE policy_id = 'p2'`).Scan(&hitCount, &statDate, &lastHitAt); err != nil {
+		t.Fatal(err)
+	}
+	if hitCount != 1 {
+		t.Fatalf("hitCount=%d want 1", hitCount)
+	}
+	fixed := time.UnixMilli(1_000_000).UTC()
+	if statDate != fixed.Format("2006-01-02") || lastHitAt != fixed.Format("2006-01-02T15:04:05.000Z") {
+		t.Fatalf("缺省 hitAt 未回落批量时间戳: statDate=%s lastHitAt=%s", statDate, lastHitAt)
 	}
 }
 
 func TestWIRecordHitsUpsertContract(t *testing.T) {
 	// PG 方言 upsert：命中按 (ip_hash, stat_date, policy_id) 累加，last_hit_at
-	// 取更晚者。SQLite 句柄 ATTACH juhe_stats 承载生产同款限定形式。
-	db, err := sql.Open("sqlite", "file:wi-policy-sqlite-hits?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("打开 sqlite 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`ATTACH ':memory:' AS juhe_stats`); err != nil {
-		t.Fatalf("attach 失败: %v", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE juhe_stats.client_ip_policy_hits (
-		ip_hash TEXT NOT NULL, stat_date TEXT NOT NULL, policy_id TEXT NOT NULL,
-		hit_count INTEGER NOT NULL DEFAULT 0, last_hit_at TEXT, updated_at TEXT,
-		PRIMARY KEY (ip_hash, stat_date, policy_id))`); err != nil {
-		t.Fatalf("建表失败: %v", err)
-	}
-	fixed := time.UnixMilli(1_700_000_000_000)
-	source := &SQLPolicySource{db: db, now: func() time.Time { return fixed }}
-	source.timezone = func(context.Context) (string, error) { return "UTC", nil }
+	// 取更晚者（生产同款 juhe_stats 夹具，见 newPolicyPGSource）。
+	source, db := newPolicyPGSource(t)
 	ctx := context.Background()
 	hitAt := "2030-01-02T03:04:05Z"
 	if err := source.RecordClientIPPolicyHits(ctx, []PolicyHitInput{

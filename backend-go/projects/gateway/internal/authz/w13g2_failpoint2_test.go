@@ -99,7 +99,7 @@ func TestW13g2FailpointProvisionArms(t *testing.T) {
 	})
 
 	t.Run("searchTermsInsert", func(t *testing.T) {
-		fp.arm("INSERT OR IGNORE INTO")
+		fp.arm("INSERT INTO account_name_search_terms")
 		defer fp.disarm()
 		w13g2CreateAccountGrant(t, "acc_f13", "grantee")
 	})

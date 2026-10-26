@@ -13,34 +13,41 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// w11dDetailScanDB 构造允许 NULL 的账户窗口表（触发 Detail 扫描错误）。
+// w11dScanPGSchema 是扫描错误臂的专用可空 schema：列集与生产同子集，
+// aggregate_ip_key / account_id / policy_type 允许 NULL 触发扫描错误；裸表
+// 名由连接池 search_path 解析到 juhe_business / juhe_stats。
+const w11dScanPGSchema = `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE SCHEMA IF NOT EXISTS juhe_stats;
+	CREATE TABLE juhe_business.system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY (system_account_id, key));
+	INSERT INTO juhe_business.system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"');
+	CREATE TABLE juhe_stats.client_ip_registry (ip_hash TEXT, aggregate_ip_key TEXT, client_ip TEXT, bucket_no INTEGER, ip_version INTEGER, first_seen_at TEXT, last_seen_at TEXT, created_at TEXT, updated_at TEXT);
+	CREATE TABLE juhe_stats.client_ip_range_window_dirty_ips (ip_hash TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1, first_dirty_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE juhe_stats.stats_job_state (scope_type TEXT NOT NULL, scope_id TEXT NOT NULL DEFAULT '', job_name TEXT NOT NULL, cursor_created_at TEXT, cursor_id TEXT, last_success_at TEXT, last_error_message TEXT, lag_seconds INTEGER, updated_at TEXT NOT NULL, PRIMARY KEY (scope_type, scope_id, job_name));
+	CREATE TABLE juhe_stats.client_ip_usage_range_windows (ip_hash TEXT, start_date TEXT, end_date TEXT, updated_at TEXT);
+	CREATE TABLE juhe_stats.client_ip_account_usage_range_windows (ip_hash TEXT, account_id TEXT, start_date TEXT, end_date TEXT, request_count INTEGER, success_count INTEGER, error_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_read_cost_usd double precision, cache_write_tokens INTEGER, cache_write_1h_tokens INTEGER, cache_write_cost_usd double precision, thinking_tokens INTEGER, input_image_tokens INTEGER, output_image_tokens INTEGER, total_cost_usd double precision, duration_ms_sum INTEGER, duration_ms_count INTEGER, duration_ms_max INTEGER, average_duration_ms double precision, first_token_ms_sum INTEGER, first_token_ms_count INTEGER, average_first_token_ms double precision, active_days INTEGER, last_used_at TEXT, last_error_at TEXT, updated_at TEXT);
+	CREATE TABLE juhe_stats.client_ip_policies (id TEXT PRIMARY KEY, ip_hash TEXT, policy_type TEXT, status TEXT, reason TEXT, expires_at TEXT, created_by_system_account_id TEXT, created_at TEXT, updated_at TEXT, disabled_at TEXT, disabled_by_system_account_id TEXT, disabled_reason TEXT)
+`
+
+// w11dDetailScanDB 打开扫描错误臂专用库：pgtestkit 隔离 PG 库 + 可空列夹具
+// 表 + 带 search_path 的连接池（夹具手写 SQL 用裸表名 + fixtureBind 的 $n，
+// 生产 store 的全限定表名与 $n 绑定不受影响）。
 func w11dDetailScanDB(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:w11d-ipstats-scan-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, w11dScanPGSchema)
+		return err
+	})
+	_ = testDB.DB.Close()
+	pool, err := sql.Open("pgx", testDB.DSN+"&search_path=juhe_business,juhe_stats")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("pgtestkit: 打开夹具连接池失败: %v", err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	statements := []string{
-		`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
-		`INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"UTC"')`,
-		`CREATE TABLE client_ip_registry (ip_hash TEXT, aggregate_ip_key TEXT, client_ip TEXT, bucket_no INTEGER, ip_version INTEGER, first_seen_at TEXT, last_seen_at TEXT, created_at TEXT, updated_at TEXT)`,
-		`CREATE TABLE client_ip_range_window_dirty_ips (ip_hash TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 1, first_dirty_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE stats_job_state (scope_type TEXT NOT NULL, scope_id TEXT NOT NULL DEFAULT '', job_name TEXT NOT NULL, cursor_created_at TEXT, cursor_id TEXT, last_success_at TEXT, last_error_message TEXT, lag_seconds INTEGER, updated_at TEXT NOT NULL, PRIMARY KEY (scope_type, scope_id, job_name))`,
-		`CREATE TABLE client_ip_usage_range_windows (ip_hash TEXT, start_date TEXT, end_date TEXT, updated_at TEXT)`,
-		`CREATE TABLE client_ip_account_usage_range_windows (ip_hash TEXT, account_id TEXT, start_date TEXT, end_date TEXT, request_count INTEGER, success_count INTEGER, error_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_read_cost_usd REAL, cache_write_tokens INTEGER, cache_write_1h_tokens INTEGER, cache_write_cost_usd REAL, thinking_tokens INTEGER, input_image_tokens INTEGER, output_image_tokens INTEGER, total_cost_usd REAL, duration_ms_sum INTEGER, duration_ms_count INTEGER, duration_ms_max INTEGER, average_duration_ms REAL, first_token_ms_sum INTEGER, first_token_ms_count INTEGER, average_first_token_ms REAL, active_days INTEGER, last_used_at TEXT, last_error_at TEXT, updated_at TEXT)`,
-		`CREATE TABLE client_ip_policies (id TEXT PRIMARY KEY, ip_hash TEXT, policy_type TEXT, status TEXT, reason TEXT, expires_at TEXT, created_by_system_account_id TEXT, created_at TEXT, updated_at TEXT, disabled_at TEXT, disabled_by_system_account_id TEXT, disabled_reason TEXT)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("建表: %v\n%s", err, statement)
-		}
-	}
-	store, err := NewStore(db, nil, nil, nil, nil)
+	t.Cleanup(func() { _ = pool.Close() })
+	store, err := NewStore(pool, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,21 +68,21 @@ func TestW11DDetailScanAndQueryErrorArms(t *testing.T) {
 		}
 	}
 	today := time.Now().UTC().Format("2006-01-02")
-	exec(`INSERT INTO client_ip_registry VALUES (?, ?, '203.0.113.9', 0, 4, ?, ?, ?, ?)`, w11dScanHash, strings.ToUpper(w11dScanHash), now, now, now, now)
-	exec(`INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at) VALUES (?, ?, ?, ?)`, w11dScanHash, today, today, now)
+	exec(fixtureBind(`INSERT INTO client_ip_registry VALUES (?, ?, '203.0.113.9', 0, 4, ?, ?, ?, ?)`), w11dScanHash, strings.ToUpper(w11dScanHash), now, now, now, now)
+	exec(fixtureBind(`INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at) VALUES (?, ?, ?, ?)`), w11dScanHash, today, today, now)
 	// 坏 hash → nil。
 	detail, err := store.Detail(ctx, DetailOptions{IPHash: "bad"})
 	if err != nil || detail != nil {
 		t.Fatalf("坏 hash = %v err=%v", detail, err)
 	}
 	// 扫描错误：account_id NULL。
-	exec(`INSERT INTO client_ip_account_usage_range_windows (ip_hash, account_id, start_date, end_date, updated_at) VALUES (?, NULL, ?, ?, ?)`, w11dScanHash, today, today, now)
+	exec(fixtureBind(`INSERT INTO client_ip_account_usage_range_windows (ip_hash, account_id, start_date, end_date, updated_at) VALUES (?, NULL, ?, ?, ?)`), w11dScanHash, today, today, now)
 	if _, err := store.Detail(ctx, DetailOptions{IPHash: w11dScanHash, StartDate: today, EndDate: today}); err == nil {
 		t.Fatal("NULL account_id 扫描必须报错")
 	}
 	// 名称水合错误：接入坏 lookup。
 	exec(`DELETE FROM client_ip_account_usage_range_windows`)
-	exec(`INSERT INTO client_ip_account_usage_range_windows (ip_hash, account_id, start_date, end_date, updated_at) VALUES (?, 'acc1', ?, ?, ?)`, w11dScanHash, today, today, now)
+	exec(fixtureBind(`INSERT INTO client_ip_account_usage_range_windows (ip_hash, account_id, start_date, end_date, updated_at) VALUES (?, 'acc1', ?, ?, ?)`), w11dScanHash, today, today, now)
 	store.SetDetailAccountLookup(w11dFailingLookup{})
 	if _, err := store.Detail(ctx, DetailOptions{IPHash: w11dScanHash, StartDate: today, EndDate: today}); err == nil {
 		t.Fatal("账户名查询失败必须上抛")
@@ -133,10 +140,10 @@ func TestW11DListQueryAndScanErrorArms(t *testing.T) {
 		scanDB := scanStore.db
 		now := "2026-09-04T00:00:00.000Z"
 		today := time.Now().UTC().Format("2006-01-02")
-		if _, err := scanDB.Exec(`INSERT INTO client_ip_registry VALUES (?, NULL, '203.0.113.9', 0, 4, ?, ?, ?, ?)`, w11dScanHash, now, now, now, now); err != nil {
+		if _, err := scanDB.Exec(fixtureBind(`INSERT INTO client_ip_registry VALUES (?, NULL, '203.0.113.9', 0, 4, ?, ?, ?, ?)`), w11dScanHash, now, now, now, now); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := scanDB.Exec(`INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at) VALUES (?, ?, ?, ?)`, w11dScanHash, today, today, now); err != nil {
+		if _, err := scanDB.Exec(fixtureBind(`INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at) VALUES (?, ?, ?, ?)`), w11dScanHash, today, today, now); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := scanStore.List(context.Background(), ListOptions{Page: 1, PageSize: 20}); err == nil {

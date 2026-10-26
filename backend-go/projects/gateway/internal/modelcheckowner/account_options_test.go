@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestListAccountOptionsFiltersAndFreezesCatalog(t *testing.T) {

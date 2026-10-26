@@ -15,8 +15,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
-
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // readyOwnerGate is the gate shape a proven handoff produces.
@@ -84,33 +83,24 @@ func (s *sealedSecrets) SealSecret(_ context.Context, plaintext string) (string,
 	return "v1:test-sealed:" + plaintext[len(plaintext)-4:], nil
 }
 
-// newContractTestDB mirrors newTestEnv's SQLite recipe plus the default
-// resource relations (groups / route_strategies / route_strategy_groups /
-// api_keys) with the Node production column defaults.
+// contractExtraDDL 是 newContractTestDB 在 authsys 基础夹具之上的默认资源
+// 关系（groups / route_strategies / route_strategy_groups / api_keys），带
+// Node 生产列默认值与部分唯一索引（PG 原生支持）。
+const contractExtraDDL = `
+	CREATE TABLE IF NOT EXISTS juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON juhe_business.groups(system_account_id, name);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_default_unique ON juhe_business.groups(system_account_id) WHERE is_default = 1;
+	CREATE TABLE IF NOT EXISTS juhe_business.route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, config_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS juhe_business.route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 1, weight INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, key_hash TEXT NOT NULL UNIQUE, key_prefix TEXT NOT NULL, key_suffix TEXT NOT NULL, key_secret_encrypted TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat')), expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)
+`
+
+// newContractTestDB 镜像 newTestEnv 的 PG 夹具形态加默认资源关系（groups /
+// route_strategies / route_strategy_groups / api_keys），列默认值保持 Node
+// 生产形状；连接池经 sqldialect 改写包装（见 authsys_test.go）。
 func newContractTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:authsys-contract-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER CHECK (ai_account_limit BETWEEN 0 AND 1000000), expedited_account_limit INTEGER CHECK (expedited_account_limit BETWEEN 0 AND 100), request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON groups(system_account_id, name)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_default_unique ON groups(system_account_id) WHERE is_default = 1`,
-		`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, config_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 1, weight INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, key_hash TEXT NOT NULL UNIQUE, key_prefix TEXT NOT NULL, key_suffix TEXT NOT NULL, key_secret_encrypted TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat')), expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username))`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return db
+	return openAuthsysPGFixtureDB(t, contractExtraDDL)
 }
 
 // TestAccountStoreOwnerGateFailsClosed proves BUG-0169.3: a store assembled
@@ -162,15 +152,12 @@ func TestAccountStoreOwnerGateFailsClosed(t *testing.T) {
 	}
 	// CheckContract fails closed on a database missing the relations this
 	// store (and its default-resource bootstrap) writes.
-	bare, err := sql.Open("sqlite", "file:authsys-contract-bare-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bare.Close()
+	bare := pgtestkit.New(t)
 	bareStore, err := NewAccountStore(bare, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer bare.Close()
 	if err := bareStore.CheckContract(ctx); err == nil || !strings.Contains(err.Error(), "verify") {
 		t.Fatalf("CheckContract on bare db err=%v want verification failure", err)
 	}
@@ -188,6 +175,8 @@ func TestSuperAdminAdvisoryLockContract(t *testing.T) {
 	if superAdminAdvisoryLockKey != "juhe-ai:system-accounts:active-super-admin" {
 		t.Fatalf("advisory lock key drifted from Node: %q", superAdminAdvisoryLockKey)
 	}
+	// 原「sqlite render 保持 ?」断言随 sqlite 方言退役删除：生产 bind() 恒定
+	// 渲染 $n（PG 单形态），不存在按驱动分叉的渲染臂。
 	pg, err := NewAccountStore(sql.OpenDB(nil), modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {
 		t.Fatal(err)
@@ -195,14 +184,6 @@ func TestSuperAdminAdvisoryLockContract(t *testing.T) {
 	defer pg.db.Close()
 	if rendered := pg.bind(superAdminAdvisoryLockQuery); rendered != "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))" {
 		t.Fatalf("postgres render=%q", rendered)
-	}
-	sqlite, err := NewAccountStore(sql.OpenDB(nil), modelcheckauth.Postgres, time.Now, readyOwnerGate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sqlite.db.Close()
-	if rendered := sqlite.bind(superAdminAdvisoryLockQuery); rendered != superAdminAdvisoryLockQuery {
-		t.Fatalf("sqlite render=%q", rendered)
 	}
 	cases := []struct {
 		input PatchInput
@@ -224,12 +205,13 @@ func TestSuperAdminAdvisoryLockContract(t *testing.T) {
 
 func strPtr(value string) *string { return &value }
 
-// TestPatchLastSuperAdminSQLiteSingleWriter proves the last-super-admin
-// invariant holds under concurrency on SQLite: the single-writer transaction
-// serializes the role/status patches (the equivalent of the PostgreSQL
-// advisory lock), so concurrent demotions can never both commit and leave
-// zero active super admins (BUG-0169.4).
-func TestPatchLastSuperAdminSQLiteSingleWriter(t *testing.T) {
+// TestPatchLastSuperAdminConcurrentSerialization proves the last-super-admin
+// invariant holds under concurrency on PostgreSQL: the patch-transaction
+// pg_advisory_xact_lock serializes concurrent role/status patches, so
+// concurrent demotions can never both commit and leave zero active super
+// admins (BUG-0169.4；原 SQLiteSingleWriter 形态于 2026-10-25 随 sqlite 夹具
+// 退役改名：PG 形态下同一不变量由 advisory lock 而非单写者连接保证)。
+func TestPatchLastSuperAdminConcurrentSerialization(t *testing.T) {
 	db := newContractTestDB(t)
 	store, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now, readyOwnerGate)
 	if err != nil {

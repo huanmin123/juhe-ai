@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
 // manualClock is the injected clock shared by the store/pipeline/retention
@@ -24,7 +26,8 @@ func (c *manualClock) Now() time.Time { return c.current }
 
 func (c *manualClock) Advance(d time.Duration) { c.current = c.current.Add(d) }
 
-const publicAPILogsDDL = `CREATE TABLE IF NOT EXISTS public_api_logs (
+const publicAPILogsDDL = `CREATE SCHEMA IF NOT EXISTS juhe_dataset;
+CREATE TABLE IF NOT EXISTS juhe_dataset.public_api_logs (
 	id TEXT PRIMARY KEY,
 	trace_id TEXT,
 	source_ref_id TEXT,
@@ -56,15 +59,18 @@ const publicAPILogsDDL = `CREATE TABLE IF NOT EXISTS public_api_logs (
 
 func newTestStore(t *testing.T) (*Store, *sql.DB, *manualClock) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:publicapilogs-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, publicAPILogsDDL)
+		return err
+	})
+	// 经 sqldialect 改写 driver + search_path=juhe_dataset 直开测试池：夹具
+	// 手写 SQL 的裸表名由 search_path 解析、`?` 占位由 driver 层兜底改写为
+	// $n，生产 store 的 bind($n) 与 juhe_dataset 限定表名原样透传。
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_dataset")
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(publicAPILogsDDL); err != nil {
-		t.Fatal(err)
-	}
 	clock := &manualClock{current: fixedTime(t, "2026-09-04T08:00:00Z")}
 	store, err := NewStore(db, clock.Now, nil)
 	if err != nil {
@@ -73,31 +79,23 @@ func newTestStore(t *testing.T) (*Store, *sql.DB, *manualClock) {
 	return store, db, clock
 }
 
-// countRows returns the number of rows matching an optional trace prefix.
+// countRows returns the number of rows matching an optional trace prefix
+// (LIKE literal-prefix match with escaped wildcards — the previous
+// trace_id >= AND < text-range trick depended on the database collation).
 func countRows(t *testing.T, db *sql.DB, tracePrefix string) int {
 	t.Helper()
 	var count int
 	query := "SELECT COUNT(*) FROM public_api_logs"
 	args := []any{}
 	if tracePrefix != "" {
-		query += " WHERE trace_id >= ? AND trace_id < ?"
-		args = append(args, tracePrefix, textPrefixUpperBoundForTest(tracePrefix))
+		query += " WHERE trace_id LIKE ? ESCAPE '~'"
+		escaped := strings.NewReplacer("~", "~~", "%", "~%", "_", "~_").Replace(tracePrefix)
+		args = append(args, escaped+"%")
 	}
 	if err := db.QueryRow(query, args...).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count
-}
-
-func textPrefixUpperBoundForTest(value string) string {
-	runes := []rune(value)
-	for index := len(runes) - 1; index >= 0; index-- {
-		if runes[index] < 0x10ffff {
-			runes[index]++
-			return string(runes[:index+1])
-		}
-	}
-	return value + "\uffff"
 }
 
 // TestStoreInsertBatchNormalization verifies row defaults and normalization
@@ -176,25 +174,33 @@ func TestStoreInsertBatchNormalization(t *testing.T) {
 	}
 }
 
-// TestStoreInsertBatchEmptyAndRollback covers the batch contract: empty is a
-// no-op and a failing row leaves no partial rows.
-func TestStoreInsertBatchEmptyAndRollback(t *testing.T) {
+// TestStoreInsertBatchEmptyAndIdempotent covers the batch contract: empty is
+// a no-op and duplicate ids are idempotently skipped — the production SQL is
+// INSERT ... ON CONFLICT(id) DO NOTHING（Node PostgreSQL 臂的 at-least-once
+// 幂等契约；旧 sqlite 夹具因 juhe_dataset 表缺失以报错假绿，本用例随 PG
+// 迁移钉住真实行为）。
+func TestStoreInsertBatchEmptyAndIdempotent(t *testing.T) {
 	store, db, _ := newTestStore(t)
 	ctx := context.Background()
 	if err := store.InsertBatch(ctx, nil); err != nil {
 		t.Fatalf("empty batch: %v", err)
 	}
 
-	// Duplicate primary key fails the whole transaction.
+	// Duplicate primary keys: the first row wins, the duplicate is absorbed
+	// by DO NOTHING, and no error surfaces.
 	batch := []Input{
 		{ID: "dup", Method: "GET", Path: "/a", StartedAt: "s", EndedAt: "e"},
 		{ID: "dup", Method: "GET", Path: "/b", StartedAt: "s", EndedAt: "e"},
 	}
-	if err := store.InsertBatch(ctx, batch); err == nil {
-		t.Fatal("duplicate id must fail the batch")
+	if err := store.InsertBatch(ctx, batch); err != nil {
+		t.Fatalf("duplicate id must be idempotently skipped: %v", err)
 	}
-	if count := countRows(t, db, ""); count != 0 {
-		t.Fatalf("failed batch must not leave partial rows, got %d", count)
+	var path string
+	if err := db.QueryRow(`SELECT path FROM public_api_logs WHERE id = 'dup'`).Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/a" {
+		t.Fatalf("first insert must win, got path %q", path)
 	}
 }
 
@@ -443,8 +449,8 @@ func TestRetentionErrorPropagation(t *testing.T) {
 	}
 }
 
-// TestRetentionEndToEndSQLite runs the retention against the real store.
-func TestRetentionEndToEndSQLite(t *testing.T) {
+// TestRetentionEndToEndPG runs the retention against the real PG store.
+func TestRetentionEndToEndPG(t *testing.T) {
 	store, db, clock := newTestStore(t)
 	ctx := context.Background()
 	insert := func(id, createdAt string) {

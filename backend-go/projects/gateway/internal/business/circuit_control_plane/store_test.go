@@ -11,7 +11,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	// 组B（wkSQLiteLegacyStoreLabeled/w9eDDLDB 的 SQLite-only 生产臂覆盖）仍
 	// 依赖 "sqlite" 驱动注册；组A 建库已迁 pgtestkit 真实 PG（pgkit_test.go）。
-	_ "modernc.org/sqlite"
 )
 
 // testStore 打开就绪控制面存储。建库已迁 pgtestkit 真实 PG（PLAN-20261024T051925945Z

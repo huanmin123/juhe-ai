@@ -7,11 +7,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 )
@@ -35,11 +36,9 @@ func TestMainWiresAuthzExpiryRuntimeSyncComponent(t *testing.T) {
 }
 
 func TestAuthzExpiryRuntimeSyncComponentExitsOnCancel(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:authz-expiry-component?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	// pgtestkit 隔离 PG 库（w2bOpenBarePG 同款惯例；原 sqlite 内存库夹具随
+	// 存储形态退役重钉 PG）。
+	db := pgtestkit.New(t)
 	// 组件只需要一个能执行 ReconcileExpiredGrants 扫描的 store；空库（无
 	// grants 表）会让首轮失败并被组件吞掉（尽力而为语义），ctx 取消即退出。
 	store, err := authz.NewStore(db, time.Now)

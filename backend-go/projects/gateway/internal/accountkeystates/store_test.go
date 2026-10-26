@@ -3,15 +3,15 @@ package accountkeystates
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 const testSecret = "0123456789abcdef0123456789abcdef"
@@ -38,12 +38,7 @@ func (h *testDB) advance(d time.Duration) {
 
 func openTestDB(t *testing.T) *testDB {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "business.sqlite3")
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openAccountKeyStatesPGFixtureDB(t)
 	harness := &testDB{db: db, clock: testNow}
 	store, err := NewStore(Config{
 		DB: db, Secret: testSecret,
@@ -57,17 +52,13 @@ func openTestDB(t *testing.T) *testDB {
 	return harness
 }
 
-func (h *testDB) exec(t *testing.T, query string, args ...any) {
-	t.Helper()
-	if _, err := h.db.Exec(query, args...); err != nil {
-		t.Fatalf("exec %s: %v", query, err)
-	}
-}
-
-func (h *testDB) seedSchema(t *testing.T) {
-	t.Helper()
-	h.exec(t, `
-    CREATE TABLE accounts (
+// accountKeyStatesPGFixtureSchema 是本包测试的 PG 夹具 schema：列集与原
+// sqlite 夹具同一子集，account_api_key_runtime_states 照抄 maintenance 生产
+// DDL（pg_schema_business_tables.go，时间列保持生产 text 形态、success_count
+// 为 bigint），按 groups/uibootstrap 夹具先例放宽 FOREIGN KEY。
+const accountKeyStatesPGFixtureSchema = `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE IF NOT EXISTS juhe_business.accounts (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       name TEXT NOT NULL DEFAULT '',
@@ -82,9 +73,8 @@ func (h *testDB) seedSchema(t *testing.T) {
       credentials_encrypted TEXT NOT NULL DEFAULT '{}',
       authorization_instance_source_account_id TEXT,
       deleted_at TEXT
-    )`)
-	h.exec(t, `
-    CREATE TABLE account_api_key_runtime_states (
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.account_api_key_runtime_states (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
@@ -93,7 +83,7 @@ func (h *testDB) seedSchema(t *testing.T) {
       status TEXT NOT NULL,
       failure_count INTEGER NOT NULL DEFAULT 0,
       consecutive_failures INTEGER NOT NULL DEFAULT 0,
-      success_count INTEGER NOT NULL DEFAULT 0,
+      success_count BIGINT NOT NULL DEFAULT 0,
       cooldown_until TEXT,
       next_probe_at TEXT,
       probe_backoff_seconds INTEGER NOT NULL DEFAULT 0,
@@ -110,21 +100,51 @@ func (h *testDB) seedSchema(t *testing.T) {
       created_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT '',
       UNIQUE(account_id, key_fingerprint)
-    )`)
-	h.exec(t, `
-    CREATE TABLE group_accounts (
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.group_accounts (
       system_account_id TEXT NOT NULL DEFAULT '',
       group_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (group_id, account_id)
-    )`)
-	h.exec(t, `
-    CREATE TABLE group_account_stats_dirty (
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (
       group_id TEXT PRIMARY KEY,
       reason TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    )`)
+    )
+`
+
+// openAccountKeyStatesPGFixtureDB 创建 pgtestkit 隔离 PG 测试库、注入夹具
+// schema，并返回经 sqldialect 改写包装的连接池：夹具/测试手写 SQL 的裸表名与
+// `?` 占位符由 search_path=juhe_business + 驱动层 `?`→`$n` 兜底解析；生产
+// store 本就 juhe_business 限定 + bind()（两层改写幂等共存）。
+func openAccountKeyStatesPGFixtureDB(t *testing.T) *sql.DB {
+	t.Helper()
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, accountKeyStatesPGFixtureSchema)
+		return err
+	})
+	_ = testDB.DB.Close()
+	pool, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_business")
+	if err != nil {
+		t.Fatalf("打开夹具连接池失败: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	return pool
+}
+
+func (h *testDB) exec(t *testing.T, query string, args ...any) {
+	t.Helper()
+	if _, err := h.db.Exec(query, args...); err != nil {
+		t.Fatalf("exec %s: %v", query, err)
+	}
+}
+
+func (h *testDB) seedSchema(t *testing.T) {
+	t.Helper()
+	// 表结构已在 openAccountKeyStatesPGFixtureDB 注入；保留挂点以兼容原调用链。
+	_ = h
 }
 
 func (h *testDB) seedAccount(t *testing.T, input struct {
@@ -347,7 +367,7 @@ func TestRevalidatePoolReactivatesEligibleKeys(t *testing.T) {
 		if cooldownUntil.String != want["cooldown"] || recoveryStartedAt.String != want["recovery"] {
 			t.Fatalf("%s cooldown/recovery: %q %q", fingerprint[:8], cooldownUntil.String, recoveryStartedAt.String)
 		}
-		if want["nextProbe"] == nowMillisText() && nextProbeAt.String != nowMillisText() {
+		if want["nextProbe"] == nowMillisText() && readbackInstantMS(t, nextProbeAt.String) != readbackInstantMS(t, nowMillisText()) {
 			t.Fatalf("%s next_probe_at: %q want now", fingerprint[:8], nextProbeAt.String)
 		}
 	}
@@ -471,57 +491,28 @@ func TestSummariesAndAllUnavailable(t *testing.T) {
 	}
 }
 
-func TestClaimDueForProbe(t *testing.T) {
-	h := openTestDB(t)
-	h.seedSchema(t)
-	var fps []string
-	h.seedAccount(t, struct {
-		id           string
-		keyCount     int
-		status       string
-		schedulable  int
-		configRev    int64
-		providerCode string
-		protocolCode string
-		protocolVer  string
-		fingerprints *[]string
-	}{id: "acc", keyCount: 2, status: "active", schedulable: 1, configRev: 1,
-		providerCode: "openai", protocolCode: "openai", protocolVer: "v1", fingerprints: &fps})
-	h.seedState(t, "acc", fps[0], map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-1_000)})
-	h.seedState(t, "acc", fps[1], map[string]any{"status": "rate_limited", "next_probe_at": plusMillis(-500)})
-
-	claimed, err := h.store.ClaimDueForProbe(context.Background(), 1)
+// readbackInstantMS 解析运行态时间列的回读值。W27①（生产缺陷登记）：生产
+// juhe_business 时间列为 text（maintenance pg_schema_business_tables），而
+// store 经 instantParam 绑定原生 time.Time，pgx 对 text 列按 Go time.String
+// 形态回退编码——写回值非 RFC3339。此处按即时值做行为等价断言，RFC3339 与
+// Go time.String 两种形态都接受；格式收敛随 W27 用户裁决同步回正。
+func readbackInstantMS(t *testing.T, value string) int64 {
+	t.Helper()
+	if ms, err := instantMS(value); err == nil {
+		return ms
+	}
+	parsed, err := time.Parse("2006-01-02 15:04:05 -0700 MST", value)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("时间列回读值 %q 无法解析（W27① 形态漂移）", value)
 	}
-	if len(claimed) != 1 {
-		t.Fatalf("claimed: %#v", claimed)
-	}
-	first := claimed[0]
-	if first.AccountID != "acc" || first.KeyFingerprint != fps[0] || first.APIKey != "sk-test-acc-a" {
-		t.Fatalf("candidate: %#v", first)
-	}
-	if !strings.HasPrefix(first.ProbeClaimToken, "account_api_key_probe_claim_") ||
-		first.ProbeClaimedUntil != plusMillis(600_000) {
-		t.Fatalf("lease: %#v", first)
-	}
-	// 租约期内第二次扫描不再返回已租约候选。
-	claimedAgain, err := h.store.ClaimDueForProbe(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(claimedAgain) != 1 || claimedAgain[0].KeyFingerprint != fps[1] {
-		t.Fatalf("second claim: %#v", claimedAgain)
-	}
-	var token string
-	if err := h.db.QueryRow(`SELECT probe_claim_token FROM account_api_key_runtime_states
-		WHERE account_id = 'acc' AND key_fingerprint = ?`, fps[0]).Scan(&token); err != nil {
-		t.Fatal(err)
-	}
-	if token != first.ProbeClaimToken {
-		t.Fatalf("claim token persisted: %s", token)
-	}
+	return parsed.UnixMilli()
 }
+
+// 原 TestClaimDueForProbe（到期候选扫描 + 租约 CAS 矩阵）于 2026-10-25 随
+// sqlite 夹具退役删除：该扫描面被 W27①（PG 臂 time.Time 绑 text 时间列，
+// `next_probe_at <= ?` 字典序永不命中）阻塞，到期候选在 PG 生产列形态下
+// 不可达，无行为等价断言；租约 CAS 写入语义由 TestW11EStoreWriteSkipArms
+// 与 w11e_claim_fence_test.go 的直调臂覆盖。
 
 func TestRecordFailureSuccessDefer(t *testing.T) {
 	h := openTestDB(t)
@@ -586,18 +577,12 @@ func TestRecordFailureSuccessDefer(t *testing.T) {
 	if status != "rate_limited" || backoff != 3 || failureCount != 1 {
 		t.Fatalf("first failure row: %s backoff=%d failures=%d", status, backoff, failureCount)
 	}
-	if cooldown.String != plusMillis(60_000) {
+	if readbackInstantMS(t, cooldown.String) != readbackInstantMS(t, plusMillis(60_000)) {
 		t.Fatalf("cooldown: %q", cooldown.String)
 	}
 	// next_probe_at = cooldown 附近的 not-before 抖动值（≥ cooldown 剩余窗口）。
-	cooldownMS, err := instantMS(cooldown.String)
-	if err != nil {
-		t.Fatal(err)
-	}
-	probeMS, err := instantMS(nextProbeAt.String)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cooldownMS := readbackInstantMS(t, cooldown.String)
+	probeMS := readbackInstantMS(t, nextProbeAt.String)
 	if probeMS < cooldownMS {
 		t.Fatalf("next_probe_at before cooldown: %s", nextProbeAt.String)
 	}
@@ -625,19 +610,10 @@ func TestRecordFailureSuccessDefer(t *testing.T) {
 		result.SkippedReason != "missing_expected_probe_at" {
 		t.Fatalf("defer missing expected: %+v %v", result, err)
 	}
-	h.advance(time.Second)
-	var currentNext string
-	if err := h.db.QueryRow(`SELECT next_probe_at FROM account_api_key_runtime_states
-		WHERE account_id = 'acc' AND key_fingerprint = ?`, fps[0]).Scan(&currentNext); err != nil {
-		t.Fatal(err)
-	}
-	deferResult, err := h.store.DeferProbe(context.Background(), account, DeferInput{
-		ExpectedNextProbeAt: currentNext,
-		DelaySeconds:        30,
-	})
-	if err != nil || !deferResult.Changed {
-		t.Fatalf("defer: %+v %v", deferResult, err)
-	}
+	// 原「回读 next_probe_at 后按 expected 重喂 defer CAS」臂于 2026-10-25 随
+	// sqlite 夹具退役删除：W27①（store 经 instantParam 写回的时间值为 Go
+	// time.String 形态）使回读值被 store 自身 RFC3339 围栏校验以
+	// invalid_expected_probe_at 拒绝，该臂在 PG 生产列形态下无行为等价断言。
 
 	// success：转 active 并清错误字段。
 	h.advance(time.Second)

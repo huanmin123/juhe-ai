@@ -9,9 +9,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
@@ -19,15 +20,12 @@ import (
 
 func newCodexUsageHeadersTestChannel(t *testing.T) (*sql.DB, *recordmaintenance.DurableDispatch) {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "codex-usage.sqlite3"))
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	// 单连接串行化：fire-and-forget 派发 goroutine 的一次性 ensureSchema/INSERT
-	// 与测试的轮询读共享同一 SQLite 锁空间，多连接下写者撞上读锁会立即
-	// SQLITE_BUSY 丢行（生产连接串自带 busy_timeout，测试以单连接达成同一
-	// 串行化语义）。
-	db.SetMaxOpenConns(1)
+	// pgtestkit 隔离 PG 库，预建 juhe_dataset schema（recordmaintenance
+	// DurableDispatch 的 PG 交接面；原 sqlite 文件夹具随存储形态退役重钉 PG）。
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_dataset`)
+		return err
+	})
 	t.Cleanup(func() { _ = db.Close() })
 	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, time.Now)
 	if err != nil {
@@ -72,7 +70,7 @@ func TestCodexUsageHeadersChannelDispatcherJobShape(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		readErr = db.QueryRow(`SELECT type, account_id, kind, source, snapshot_json, updated_at
-			FROM record_maintenance_jobs LIMIT 1`).
+			FROM juhe_dataset.record_maintenance_jobs LIMIT 1`).
 			Scan(&rowType, &accountID, &kind, &source, &snapshotJSON, &rowUpdatedAt)
 		if readErr == nil {
 			break
@@ -120,7 +118,7 @@ func TestCodexUsageHeadersChannelDispatcherJobShape(t *testing.T) {
 		http.Header{"X-Request-Id": []string{"plain"}}, "gateway_error")
 	time.Sleep(50 * time.Millisecond)
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM record_maintenance_jobs`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.record_maintenance_jobs`).Scan(&count); err != nil {
 		t.Fatalf("count rows: %v", err)
 	}
 	if count != 1 {

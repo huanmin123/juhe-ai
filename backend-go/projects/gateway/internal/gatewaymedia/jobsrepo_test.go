@@ -7,51 +7,50 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
-// openJobsRepoSQLite 打开仓储单测库：SQLite 句柄 ATTACH ':memory:' AS
-// juhe_business 承载生产同款限定形式（juhe_business.* 表名 + $n 绑定），
-// SetMaxOpenConns(1) 保证 ATTACH 对所有查询可见。media_jobs 与 maintenance
-// 建表 DDL 同构（含 owner_system_account_id），accounts 是 vendor 水合 JOIN
-// 的最小表，api_keys 仅用于证明 owner 过滤不依赖它。
-func openJobsRepoSQLite(t *testing.T) *sql.DB {
+// openJobsRepoPG 打开 pgtestkit 隔离 PG 测试库（预建 juhe_business schema 与
+// 生产同款三表）并返回经 sqldialect 改写 driver 的连接池：仓储 bind($n) 与
+// 测试手写 SQL 原样透传/兜底改写。media_jobs 与 maintenance 建表 DDL 同构
+// （含 owner_system_account_id），accounts 是 vendor 水合 JOIN 的最小表，
+// api_keys 仅用于证明 owner 过滤不依赖它。
+func openJobsRepoPG(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "media-jobs-owner.sqlite3"))
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business;
+			CREATE TABLE juhe_business.media_jobs (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
+			api_key_id TEXT NOT NULL,
+			owner_system_account_id TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL,
+			provider_protocol_profile_id TEXT,
+			upstream_job_id TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
+			request_snapshot_json TEXT NOT NULL DEFAULT '{}',
+			artifact_json TEXT NOT NULL DEFAULT '{}',
+			error_json TEXT NOT NULL DEFAULT '{}',
+			usage_json TEXT NOT NULL DEFAULT '{}',
+			cost_usd double precision NOT NULL DEFAULT 0,
+			params_applied_json TEXT NOT NULL DEFAULT '[]',
+			params_ignored_json TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL);
+			CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY, vendor_code TEXT);
+			CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`)
+		return err
+	})
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`ATTACH ':memory:' AS juhe_business`); err != nil {
-		t.Fatalf("attach: %v", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE juhe_business.media_jobs (
-		id TEXT PRIMARY KEY,
-		kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
-		api_key_id TEXT NOT NULL,
-		owner_system_account_id TEXT NOT NULL DEFAULT '',
-		account_id TEXT NOT NULL,
-		provider_protocol_profile_id TEXT,
-		upstream_job_id TEXT NOT NULL,
-		status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
-		request_snapshot_json TEXT NOT NULL DEFAULT '{}',
-		artifact_json TEXT NOT NULL DEFAULT '{}',
-		error_json TEXT NOT NULL DEFAULT '{}',
-		usage_json TEXT NOT NULL DEFAULT '{}',
-		cost_usd REAL NOT NULL DEFAULT 0,
-		params_applied_json TEXT NOT NULL DEFAULT '[]',
-		params_ignored_json TEXT NOT NULL DEFAULT '[]',
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL);
-		CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY, vendor_code TEXT);
-		CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`); err != nil {
-		t.Fatalf("create tables: %v", err)
-	}
 	return db
 }
 
@@ -77,7 +76,7 @@ func seedOwnerJob(t *testing.T, repo *MediaJobsRepo, record MediaJobRecord) {
 }
 
 func TestMediaJobsRepoOwnerSemantics(t *testing.T) {
-	db := openJobsRepoSQLite(t)
+	db := openJobsRepoPG(t)
 	repo := NewMediaJobsRepo(db, time.Now)
 	ctx := context.Background()
 

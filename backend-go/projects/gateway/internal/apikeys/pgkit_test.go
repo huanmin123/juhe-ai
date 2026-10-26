@@ -34,8 +34,6 @@ import (
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 

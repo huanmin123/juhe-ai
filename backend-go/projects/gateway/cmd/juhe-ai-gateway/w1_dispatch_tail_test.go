@@ -10,7 +10,7 @@ package main
 //   chain_accounts.go       资源访问器、可用性门、resolveGroupAccess、授权读取、
 //                           access 解析、eligibility 错误臂、排序尾巴
 //   chain_dispatch.go       Async 适配器剩余臂、configured-policy preflight 503、
-//                           list-availability 脏标记（sqlite ATTACH 模拟 PG 方言）
+//                           list-availability 脏标记（pgtestkit 隔离 PG 真实链路）
 //   chain_wiring_w2c.go     binding 行回退投影、并发槽错误臂、电路服务 fork、
 //                           suppression lease/result/waiter 臂、quota db-service 桥
 //   chain_runtime.go        ipstatsTimezone、composeChainRuntimeServices 前置错误臂
@@ -18,16 +18,15 @@ package main
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	sqlite "modernc.org/sqlite"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
@@ -44,28 +43,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// init 为本包 sqlite（modernc.org/sqlite）测试句柄注册 no-op 标量函数：
-//   - pg_advisory_xact_lock：chain_dispatch.go 的 list-availability 脏标记在
-//     pgDialect 事务首条取锁语句执行 SELECT pg_advisory_xact_lock($1)
-//     （问题-0184 串行化），SQLite 无此内置函数；
-//   - set_config：问题-0313 取锁助手以 SELECT set_config('lock_timeout', …,
-//     true)（与 SET LOCAL 等价）先行下发事务级等待上限，同为无内置函数。
-//
-// 两者占位为返回 NULL、忽略参数，ATTACH 模拟 PG 方言的
-// TestW1XListAvailabilityDirtyMarkerArms 事务才能推进。注册只对本 init 之后
-// 新开的连接生效；重复注册返回 error（不 panic），本包仅此一处注册，init
-// 一次性执行。
-func init() {
-	for name, arity := range map[string]int32{"pg_advisory_xact_lock": 1, "set_config": 3} {
-		if err := sqlite.RegisterDeterministicScalarFunction(name, arity,
-			func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-				return nil, nil
-			}); err != nil {
-			panic(err)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // 局部 helper（全部 w1x 前缀）
 // ---------------------------------------------------------------------------
@@ -76,16 +53,12 @@ func w1xEnvOf(values map[string]string) func(string) string {
 	return func(key string) string { return values[key] }
 }
 
-// w1xOpenBareSQLite 打开一个空业务库句柄（无任何业务表），用于确定性的
-// “表缺失 -> SQL 错误”错误臂与最小组合根构造。
-func w1xOpenBareSQLite(t *testing.T, name string) *sql.DB {
+// w1xOpenBarePG 打开一个空 PG 业务库句柄（无任何业务表），用于确定性的
+// “表缺失 -> SQL 错误”错误臂与最小组合根构造（pgtestkit 隔离库，测试结束
+// 自动删库）。
+func w1xOpenBarePG(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name))
-	if err != nil {
-		t.Fatalf("open sqlite %s: %v", name, err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return pgtestkit.New(t)
 }
 
 // w1xRouteCoordinator 是 gatewayrouting.GatewayRouteCoordinatorOwner 的记录用
@@ -621,10 +594,11 @@ func TestW1XAccountAvailabilityGatesArms(t *testing.T) {
 }
 
 // w1xSelectorAuthzFixture 建一个带 groups / resource_authorizations /
-// group_authorization_settings 的最小选择器库。
+// group_authorization_settings 的最小选择器库（pgtestkit 隔离 PG + search_path
+// 连接池，夹具裸表名经 search_path 落 juhe_business，与生产限定名同 schema）。
 func w1xSelectorAuthzFixture(t *testing.T) (*chainAccountsSelector, *sql.DB) {
 	t.Helper()
-	db := w1xOpenBareSQLite(t, "w1x-authz.sqlite3")
+	db := newChainFixturePGDatabase(t)
 	for _, statement := range []string{
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE resource_authorizations (
@@ -1159,7 +1133,7 @@ func TestW1XClientSourceAvoidanceErrorArm(t *testing.T) {
 }
 
 func TestW1XDispatchQuotaCheckBatchErrorArm(t *testing.T) {
-	statsDB := w1xOpenBareSQLite(t, "w1x-quota-stats.sqlite3")
+	statsDB := w1xOpenBarePG(t)
 	statsStore, err := gatewayquota.NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("create stats store: %v", err)
@@ -1194,7 +1168,7 @@ func TestW1XRuntimeCacheAndGuardArms(t *testing.T) {
 	ctx := context.Background()
 
 	// 空库缓存：分组用量元数据解析必须报错。
-	bare := w1xOpenBareSQLite(t, "w1x-cache-bare.sqlite3")
+	bare := w1xOpenBarePG(t)
 	models, err := gatewayruntimecache.NewSQLReadModels(bare, time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create read models: %v", err)
@@ -1385,17 +1359,12 @@ func TestW1XConfiguredPolicyResolveLocalArms(t *testing.T) {
 func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 	ctx := context.Background()
 
-	// 非 postgres 方言：写面缺席。2026-09-21 起投影开关移除，postgres
-	// 方言恒装配脏标记。
-	db := w1xOpenBareSQLite(t, "w1x-marker.sqlite3")
-	composed := &composition{db: db}
-	if marker := newChainListAvailabilityDirtyMarker(composed); marker != nil {
-		t.Fatal("sqlite 方言不得装配脏标记")
-	}
-	pgComposed := &composition{db: db}
-	marker := newChainListAvailabilityDirtyMarker(pgComposed)
+	// PG 唯一形态：业务库句柄在场即恒装配脏标记（2026-10-24 存储形态收口，
+	// 原方言判据臂随 sqlite 存储形态退役删除）。
+	db := w1xOpenBarePG(t)
+	marker := newChainListAvailabilityDirtyMarker(&composition{db: db})
 	if marker == nil {
-		t.Fatal("postgres 方言必须装配脏标记")
+		t.Fatal("PG 形态必须装配脏标记")
 	}
 
 	// 空白 / 超长来源账户：直接 no-op。
@@ -1407,50 +1376,46 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 	}
 
 	// 已关闭句柄：事务开启失败透传。
-	closedDB, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1x-closed.sqlite3"))
-	if err != nil {
-		t.Fatalf("open closed-case db: %v", err)
-	}
+	closedDB := w1xOpenBarePG(t)
 	closedMarker := newChainListAvailabilityDirtyMarker(&composition{db: closedDB})
 	_ = closedDB.Close()
 	if err := closedMarker(ctx, "w1x-src", "reason", 1); err == nil {
 		t.Fatal("关闭句柄必须透传事务错误")
 	}
 
-	// 完整链路：sqlite ATTACH juhe_business 模拟 PG 限定名，家族展开 + upsert。
-	attach := w1xOpenBareSQLite(t, "w1x-marker-full.sqlite3")
-	if _, err := attach.Exec(`ATTACH DATABASE '` + filepath.Join(t.TempDir(), "w1x-attached.sqlite3") + `' AS juhe_business`); err != nil {
-		t.Fatalf("attach juhe_business: %v", err)
-	}
-	attach.SetMaxOpenConns(1)
+	// 完整链路：pgtestkit 隔离 PG 的 juhe_business 限定夹具表，真实
+	// advisory 锁 + 家族展开 + upsert（原 sqlite ATTACH 模拟臂随方言坍缩
+	// 换为真实 PostgreSQL）。
+	fullDB := w1xOpenBarePG(t)
 	for _, statement := range []string{
+		`CREATE SCHEMA IF NOT EXISTS juhe_business`,
 		`CREATE TABLE juhe_business.accounts (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
 			authorization_instance_source_account_id TEXT, deleted_at TEXT)`,
 		`CREATE TABLE juhe_business.account_list_availability_projections (
 			account_id TEXT PRIMARY KEY, source_generation INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE juhe_business.account_list_availability_dirty (
-			account_id TEXT PRIMARY KEY, viewer_system_account_id TEXT, generation INTEGER NOT NULL DEFAULT 0,
-			applied_generation INTEGER NOT NULL DEFAULT 0, reason TEXT, available_at_ms INTEGER,
-			claim_token TEXT, claimed_by TEXT, claim_until_ms INTEGER, attempt_count INTEGER NOT NULL DEFAULT 0,
-			created_at_ms INTEGER, updated_at_ms INTEGER)`,
+			account_id TEXT PRIMARY KEY, viewer_system_account_id TEXT, generation BIGINT NOT NULL DEFAULT 0,
+			applied_generation INTEGER NOT NULL DEFAULT 0, reason TEXT, available_at_ms BIGINT,
+			claim_token TEXT, claimed_by TEXT, claim_until_ms BIGINT, attempt_count INTEGER NOT NULL DEFAULT 0,
+			created_at_ms BIGINT, updated_at_ms BIGINT)`,
 		`INSERT INTO juhe_business.accounts (id, system_account_id, deleted_at) VALUES ('w1x-src', 'sys_owner', NULL)`,
 		`INSERT INTO juhe_business.accounts (id, system_account_id, authorization_instance_source_account_id, deleted_at)
 			VALUES ('w1x-child', 'sys_owner', 'w1x-src', NULL)`,
 		`INSERT INTO juhe_business.account_list_availability_projections VALUES ('w1x-src', 4)`,
 	} {
-		if _, err := attach.Exec(statement); err != nil {
+		if _, err := fullDB.Exec(statement); err != nil {
 			t.Fatalf("seed attached schema: %v", err)
 		}
 	}
-	fullComposed := &composition{db: attach}
+	fullComposed := &composition{db: fullDB}
 	fullMarker := newChainListAvailabilityDirtyMarker(fullComposed)
 	if err := fullMarker(ctx, "w1x-src", "w1x 失败", 1234); err != nil {
 		t.Fatalf("脏标记写入: %v", err)
 	}
 	var generation int64
 	var reason string
-	if err := attach.QueryRow(`SELECT generation, reason FROM juhe_business.account_list_availability_dirty WHERE account_id = 'w1x-src'`).
+	if err := fullDB.QueryRow(`SELECT generation, reason FROM juhe_business.account_list_availability_dirty WHERE account_id = 'w1x-src'`).
 		Scan(&generation, &reason); err != nil {
 		t.Fatalf("read dirty row: %v", err)
 	}
@@ -1458,7 +1423,7 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 		t.Fatalf("脏行 = (gen %d, reason %q), want (5, w1x 失败)", generation, reason)
 	}
 	var childRows int
-	if err := attach.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_list_availability_dirty WHERE account_id = 'w1x-child'`).
+	if err := fullDB.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_list_availability_dirty WHERE account_id = 'w1x-child'`).
 		Scan(&childRows); err != nil {
 		t.Fatalf("read child row: %v", err)
 	}
@@ -1468,7 +1433,7 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 	if err := fullMarker(ctx, "w1x-src", "w1x 失败-2", 2345); err != nil {
 		t.Fatalf("重复写入: %v", err)
 	}
-	if err := attach.QueryRow(`SELECT generation FROM juhe_business.account_list_availability_dirty WHERE account_id = 'w1x-src'`).
+	if err := fullDB.QueryRow(`SELECT generation FROM juhe_business.account_list_availability_dirty WHERE account_id = 'w1x-src'`).
 		Scan(&generation); err != nil {
 		t.Fatalf("reread dirty row: %v", err)
 	}
@@ -1778,8 +1743,8 @@ func w1xFloat64Ptr(value float64) *float64 { return &value }
 
 func TestW1XQuotaDBServiceBridges(t *testing.T) {
 	ctx := context.Background()
-	statsDB := w1xOpenBareSQLite(t, "w1x-quotadb-stats.sqlite3")
-	businessDB := w1xOpenBareSQLite(t, "w1x-quotadb-business.sqlite3")
+	statsDB := w1xOpenBarePG(t)
+	businessDB := w1xOpenBarePG(t)
 	statsStore, err := gatewayquota.NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("create stats store: %v", err)
@@ -1845,26 +1810,40 @@ func TestW1XIPStatsTimezoneReaderArms(t *testing.T) {
 
 func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 	settingValue := SettingValueFunc(func(string) (string, error) { return "UTC", nil })
+	// PG+Redis 唯一形态下 redis 客户端恒建：错误臂先给合法 Redis 连接串
+	//（miniredis），让失败面精确落在被测装配步骤。
+	redisServer := miniredis.RunT(t)
+	redisURL := "redis://" + redisServer.Addr()
 
 	// composition 缺业务库：读模型构造失败。
-	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{DispatchAccountCandidateLimit: 20}, settingValue); err == nil ||
+	if _, err := composeChainRuntimeServices(&composition{}, runtimeConfig{
+		DispatchAccountCandidateLimit: 20,
+		RedisCacheURL:                 redisURL,
+		RedisStateURL:                 redisURL,
+		RedisNamespace:                "w1x-ns",
+	}, settingValue); err == nil ||
 		!strings.Contains(err.Error(), "sql read models") {
 		t.Fatalf("缺业务库必须报读模型错误: %v", err)
 	}
 
 	// 候选上限越界：选择器构造失败。
-	db := w1xOpenBareSQLite(t, "w1x-compose-limit.sqlite3")
+	db := w1xOpenBarePG(t)
 	composed := &composition{db: db, statsDB: db}
-	if _, err := composeChainRuntimeServices(composed, runtimeConfig{DispatchAccountCandidateLimit: 0}, settingValue); err == nil ||
+	if _, err := composeChainRuntimeServices(composed, runtimeConfig{
+		DispatchAccountCandidateLimit: 0,
+		RedisCacheURL:                 redisURL,
+		RedisStateURL:                 redisURL,
+		RedisNamespace:                "w1x-ns",
+	}, settingValue); err == nil ||
 		!strings.Contains(err.Error(), "accounts selector") {
 		t.Fatalf("候选上限越界必须报选择器错误: %v", err)
 	}
 
-	// runtime state redis 驱动 + 空 namespace：state 前缀构造失败于错误电路。
-	server := miniredis.RunT(t)
+	// runtime state 驱动 + 空 namespace：state 前缀构造失败于错误电路。
 	if _, err := composeChainRuntimeServices(composed, runtimeConfig{
 		DispatchAccountCandidateLimit: 20,
-		RedisStateURL:                 "redis://" + server.Addr(),
+		RedisCacheURL:                 redisURL,
+		RedisStateURL:                 redisURL,
 		RedisNamespace:                "   ",
 	}, settingValue); err == nil || !strings.Contains(err.Error(), "error circuit") {
 		t.Fatalf("redis 驱动空 namespace 必须报错误电路失败: %v", err)
@@ -1872,7 +1851,12 @@ func TestW1XComposeChainRuntimeErrorArms(t *testing.T) {
 
 	// stats 库缺失：client-ip 策略源构造失败。
 	businessOnly := &composition{db: db}
-	if _, err := composeChainRuntimeServices(businessOnly, runtimeConfig{DispatchAccountCandidateLimit: 20}, settingValue); err == nil ||
+	if _, err := composeChainRuntimeServices(businessOnly, runtimeConfig{
+		DispatchAccountCandidateLimit: 20,
+		RedisCacheURL:                 redisURL,
+		RedisStateURL:                 redisURL,
+		RedisNamespace:                "w1x-ns",
+	}, settingValue); err == nil ||
 		!strings.Contains(err.Error(), "policy source") {
 		t.Fatalf("缺 stats 库必须报策略源错误: %v", err)
 	}

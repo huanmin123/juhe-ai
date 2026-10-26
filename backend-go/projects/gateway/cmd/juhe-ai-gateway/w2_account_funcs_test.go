@@ -99,7 +99,6 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
-	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
@@ -317,23 +316,9 @@ func (r *w2bBadValueRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-// w2bOpenPlainSQLiteAt 打开指定路径的普通 SQLite 句柄（先建表种子用）。
-// 范围外调用方仍在（t36_generic_runtime_test.go）；新用例一律走
-// w2bOpenBusinessPGFixture（T67 批）。
-func w2bOpenPlainSQLiteAt(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("打开 SQLite %s 失败: %v", path, err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
-
 // w2bOpenBusinessPGFixture 创建带 juhe_business/juhe_stats schema 的 pgtestkit
 // 隔离库，返回 search_path 连接池（夹具手写裸表名 SQL 直用）与裸 DSN
-// （故障注入句柄按需自接）。原 SQLite 文件夹具随存储形态退役重钉 PG
-// （T67 批）。
+// （故障注入句柄按需自接）。
 func w2bOpenBusinessPGFixture(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	testDB := pgtestkit.NewTestDatabase(t)
@@ -347,6 +332,36 @@ func w2bOpenBusinessPGFixture(t *testing.T) (*sql.DB, string) {
 	}
 	t.Cleanup(func() { _ = pool.Close() })
 	return pool, testDB.DSN
+}
+
+// w2bOpenPlainSQLiteAt 打开 pgtestkit 隔离 PG 裸库（无任何业务表）：历史
+// sqlite 文件路径签名保留给范围外调用方（t36_generic_runtime_test.go），
+// 语义与 w1uOpenPlainSQLite 同款——路径参数不再承载存储事实。
+func w2bOpenPlainSQLiteAt(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	_ = path
+	tdb := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`)
+		return err
+	})
+	dsn := tdb.DSN
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), dsn+sep+"search_path=juhe_business,public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// w2bOpenBarePG 打开无任何业务表的 pgtestkit 隔离 PG 库（「表缺失 -> 错误/
+// 降级」臂与最小组合构造用，本文件新用例统一入口）。
+func w2bOpenBarePG(t *testing.T) *sql.DB {
+	t.Helper()
+	return pgtestkit.New(t)
 }
 
 // w2bOpenFaultyPG 在指定 DSN 上打开带故障注入规则的 PG 句柄（与 w2b
@@ -391,9 +406,8 @@ func TestW2BAccountTestDispatchWireArms(t *testing.T) {
 	}
 
 	// 172：契约表可读但 Secret 为空 → proberepo.NewStore 报错。
-	// manualtestrepo 按 PG 形态固定读 juhe_business.*，契约表按限定名建
-	//（原 sqlite 裸文件臂重钉，T67 批）。
-	db := w1uOpenPlainSQLite(t, "w2b-account-test-tables.sqlite3")
+	// manualtestrepo 按 PG 形态固定读 juhe_business.*，契约表按限定名建。
+	db := w2bOpenBarePG(t)
 	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
 		t.Fatalf("建 juhe_business schema 失败: %v", err)
 	}
@@ -416,14 +430,14 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 	cfg := runtimeConfig{Secret: "w2b-secret"}
 
 	// 162：业务库没有 account_test_* 契约表 → 按路由 503 契约降级为 nil 端口。
-	plain := w1uOpenPlainSQLite(t, "w2b-account-test-missing.sqlite3")
+	plain := w2bOpenBarePG(t)
 	if err := wireInProcessAccountTestDispatch(&composition{db: plain}, cfg, nil); err != nil {
 		t.Fatalf("契约表缺失必须按 nil 端口降级，不得报错: %v", err)
 	}
 
 	// 205：契约表存在但列集残缺 → ValidateCoreTables 放行、启动维护查询失败
 	// → 告警后继续装配（端口照常接线，路由契约不受影响）。
-	minimal := w1uOpenPlainSQLite(t, "w2b-account-test-degraded.sqlite3")
+	minimal := w2bOpenBarePG(t)
 	if _, err := minimal.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
 		t.Fatalf("建 juhe_business schema 失败: %v", err)
 	}
@@ -548,7 +562,7 @@ func TestW2BAccountBalanceHealthURLErrorArms(t *testing.T) {
 // TestW2BCodexUsageHeadersDispatchFailure 覆盖入队失败臂（66）：通道指向已
 // 关闭句柄 → Queued=false → catch-warn 契约（不静默）。
 func TestW2BCodexUsageHeadersDispatchFailure(t *testing.T) {
-	db := w1uOpenPlainSQLite(t, "w2b-codex-closed.sqlite3")
+	db := w2bOpenBarePG(t)
 	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, time.Now)
 	if err != nil {
 		t.Fatalf("create dispatch: %v", err)
@@ -824,9 +838,8 @@ func TestW2BChainAccountsSelectionArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestW2BChainAccountsScanFaultArms 用少报一列的包装句柄驱动候选窗口 Scan
-// 错误臂：529（基础窗口）与 635（模型窗口）。原 SQLite 文件夹具随存储形态
-// 退役重钉 PG（T67 批）：种子走 search_path 夹具池，被测选择器按生产形态
-// 以 juhe_business 限定名 + $n 占位符查询。
+// 错误臂：529（基础窗口）与 635（模型窗口）。种子走 search_path 夹具池，
+// 被测选择器按生产形态以 juhe_business 限定名 + $n 占位符查询。
 func TestW2BChainAccountsScanFaultArms(t *testing.T) {
 	plain, dsn := w2bOpenBusinessPGFixture(t)
 	seedChainBusinessSchema(t, plain)
@@ -1152,37 +1165,32 @@ func TestW2BBalanceRefreshLoadOutcomeArms(t *testing.T) {
 // TestW2BAuthzExpirySyncReconciledLog 覆盖组件首轮重放的 reconciled>0 臂
 // （37→40）：一条已翻转为 expired 的 grant（重扫窗口内）被幂等重放并计数。
 func TestW2BAuthzExpirySyncReconciledLog(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:w2b-authz-expiry-reconciled?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, statement := range []string{
-		`CREATE TABLE resource_authorization_grants (
-			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, resource_owner_system_account_id TEXT,
-			grantee_type TEXT, grantee_system_account_id TEXT, grantee_team_id TEXT, status TEXT,
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		// 重放链路消费的五张夹具表（juhe_business 限定，与 authz store 的
+		// 生产 PG 方言一致；列集取 sync 写侧消费的最小集）。
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business;
+		CREATE TABLE juhe_business.resource_authorization_grants (
+			id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT,
+			grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, status TEXT,
 			remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT, revoked_by TEXT, revoked_at TEXT,
-			created_at TEXT, updated_at TEXT)`,
-		`CREATE TABLE request_quota_hourly_window_scope_bindings (
-			scope_id TEXT, scope_type TEXT, source_type TEXT, source_id TEXT)`,
-		`CREATE TABLE resource_authorizations (
+			created_at TEXT, updated_at TEXT);
+		CREATE TABLE juhe_business.request_quota_hourly_window_scope_bindings (
+			scope_id TEXT, scope_type TEXT, source_type TEXT, source_id TEXT);
+		CREATE TABLE juhe_business.resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, resource_owner_system_account_id TEXT,
 			grantee_system_account_id TEXT, status TEXT, limits_json TEXT,
-			effective_source_type TEXT, effective_source_team_id TEXT)`,
-		`CREATE TABLE accounts (
+			effective_source_type TEXT, effective_source_team_id TEXT);
+		CREATE TABLE juhe_business.accounts (
 			id TEXT PRIMARY KEY, system_account_id TEXT, authorization_instance_authorization_id TEXT,
-			authorization_instance_source_account_id TEXT, deleted_at TEXT)`,
-		`CREATE TABLE resource_authorization_sources (
-			authorization_id TEXT, source_type TEXT, source_team_id TEXT)`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("建 authz 表失败: %v", err)
-		}
-	}
+			authorization_instance_source_account_id TEXT, deleted_at TEXT);
+		CREATE TABLE juhe_business.resource_authorization_sources (
+			authorization_id TEXT, source_type TEXT, source_team_id TEXT)`)
+		return err
+	})
 	nowText := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
+	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorization_grants (id, resource_type, resource_id,
 			resource_owner_system_account_id, grantee_type, status, created_at, updated_at)
-			VALUES ('grant-w2b-expired', 'account', 'acct-w2b', 'sys-w2b', 'system_account', 'expired', ?, ?)`),
+			VALUES ('grant-w2b-expired', 'account', 'acct-w2b', 'sys-w2b', 'system_account', 'expired', $1, $2)`,
 		nowText, nowText); err != nil {
 		t.Fatalf("seed expired grant: %v", err)
 	}
@@ -1226,11 +1234,7 @@ func TestW2BAuthzExpirySyncReconciledLog(t *testing.T) {
 // 通过注入短节拍（生产装配不传参仍为固定 1 分钟），首跑后等待多次 tick
 // 再取消退出，约 0.5 秒完成，失败信息不携带任何连接事实。
 func TestW2BAuthzExpirySyncTickerPass(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:w2b-authz-expiry-tick?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := w2bOpenBarePG(t)
 	store, err := authz.NewStore(db, time.Now)
 	if err != nil {
 		t.Fatal(err)

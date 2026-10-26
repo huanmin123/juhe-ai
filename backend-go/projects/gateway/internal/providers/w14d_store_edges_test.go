@@ -11,16 +11,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// w14dClosedStore opens then closes an in-memory SQLite handle so every
-// QueryContext/ExecContext/BeginTx fails with "database is closed".
+// w14dClosedStore opens then closes a real PostgreSQL test database so every
+// QueryContext/ExecContext/BeginTx fails with "database is closed"（关闭句柄
+// 的错误行为与驱动无关，夹具统一走 pgtestkit 真库）。
 func w14dClosedStore(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:w14d-closed-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := pgtestkit.New(t)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}

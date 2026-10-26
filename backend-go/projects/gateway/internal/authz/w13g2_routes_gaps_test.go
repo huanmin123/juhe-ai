@@ -116,7 +116,7 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 
 	// DELETE return 闭包：my-* 面 viewer 钉到调用者，归还必须由被授权人
 	//（grantee）发起——owner 视角归还他人授权会 404。
-	granteeEnv := newUsageRouteEnv(t, "grantee")
+	granteeEnv := newUsageRouteEnv(t, "grantee", f)
 	status, _ = granteeEnv.do(t, http.MethodDelete, selfPrefix+"/"+directID+"/return",
 		`{"expectedUpdatedAt":"`+w13g2UpdateAt(t, body)+`"}`)
 	if status != http.StatusNoContent {

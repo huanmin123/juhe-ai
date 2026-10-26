@@ -1,7 +1,7 @@
 package main
 
 // w1: chain_chat_observation.go 单测。图片语义观察适配器（Node
-// chat-image-observation.ts 移植）：纯解析函数、SQLite claim/settle 状态机、
+// chat-image-observation.ts 移植）：纯解析函数、PG claim/settle 状态机、
 // runObservation 全流程（ObjectStore/Executor 均为内存 stub，可回放）。
 
 import (
@@ -165,7 +165,8 @@ func TestW1ChatAssetHelpers(t *testing.T) {
 	}
 }
 
-// w1ObservationFixture 建观察状态机所需的最小 SQLite 表与适配器实例。
+// w1ObservationFixture 建观察状态机所需的最小 PG 表与适配器实例
+//（newChainFixturePGDatabase 同款惯例；表按生产 juhe_chat 限定名）。
 type w1ObservationFixture struct {
 	db       *sql.DB
 	objects  *w1FakeObjectStore
@@ -177,21 +178,19 @@ const w1Future = "2099-01-01T00:00:00.000Z"
 
 func newW1ObservationFixture(t *testing.T) *w1ObservationFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", t.TempDir()+"/chat.sqlite3")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+	db := newChainFixturePGDatabase(t)
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_chat`); err != nil {
+		t.Fatalf("create juhe_chat schema: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
 	for _, statement := range []string{
-		`CREATE TABLE chat_assets (
+		`CREATE TABLE juhe_chat.chat_assets (
 			id TEXT PRIMARY KEY, system_account_id TEXT, conversation_id TEXT,
 			observation_status TEXT, observation_json TEXT, observation_revision INTEGER NOT NULL DEFAULT 0,
 			observation_claim_id TEXT, observation_claimed_at TEXT,
 			processing_status TEXT, cleanup_status TEXT, expires_at TEXT, updated_at TEXT,
 			storage_key TEXT, processed_mime_type TEXT, processed_bytes INTEGER,
 			processed_sha256 TEXT, source_kind TEXT)`,
-		`CREATE TABLE chat_asset_references (
+		`CREATE TABLE juhe_chat.chat_asset_references (
 			asset_id TEXT, conversation_id TEXT, turn_id TEXT, message_id TEXT,
 			reference_kind TEXT, expires_at TEXT)`,
 	} {
@@ -216,20 +215,20 @@ func (f *w1ObservationFixture) seedReadyAsset(t *testing.T, assetID string) {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO chat_assets (id, system_account_id, conversation_id, observation_status,
+	seed(`INSERT INTO juhe_chat.chat_assets (id, system_account_id, conversation_id, observation_status,
 		observation_revision, processing_status, cleanup_status, expires_at, updated_at,
 		storage_key, processed_mime_type, processed_bytes, processed_sha256, source_kind)
 		VALUES (?, 'sys_1', 'conv_1', 'not_requested', 0, 'ready', 'active', ?, '2026-01-01T00:00:00.000Z',
 		?, 'image/png', ?, ?, 'user_upload')`,
 		assetID, w1Future, "key_"+assetID, len(png), chatAssetSHA256Hex(png))
-	seed(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
+	seed(`INSERT INTO juhe_chat.chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
 		VALUES (?, 'conv_1', 'turn_1', 'msg_1', 'user_input', ?)`, assetID, w1Future)
 }
 
 func (f *w1ObservationFixture) assetRow(t *testing.T, assetID string) (status string, observationJSON sql.NullString, revision int64) {
 	t.Helper()
 	if err := f.db.QueryRow(`SELECT observation_status, observation_json, observation_revision
-		FROM chat_assets WHERE id = ?`, assetID).Scan(&status, &observationJSON, &revision); err != nil {
+		FROM juhe_chat.chat_assets WHERE id = ?`, assetID).Scan(&status, &observationJSON, &revision); err != nil {
 		t.Fatalf("read asset: %v", err)
 	}
 	return status, observationJSON, revision
@@ -246,13 +245,7 @@ func w1ScheduleInput() chat.ScheduleObservationInput {
 }
 
 func TestW1ObservationTableAndBind(t *testing.T) {
-	sqlite := newChatImageObservations(nil, nil, nil)
-	if got := sqlite.table("chat_assets"); got != "chat_assets" {
-		t.Fatalf("sqlite table = %q", got)
-	}
-	if got := sqlite.bind("UPDATE t SET a = ? WHERE b = ?"); got != "UPDATE t SET a = ? WHERE b = ?" {
-		t.Fatalf("sqlite bind = %q", got)
-	}
+	// PG 方言投影（生产唯一形态）：juhe_chat 限定表名 + ?→$n 绑定符改写。
 	pg := newChatImageObservations(nil, nil, nil)
 	if got := pg.table("chat_assets"); got != "juhe_chat.chat_assets" {
 		t.Fatalf("pg table = %q", got)
@@ -281,7 +274,7 @@ func TestW1ObservationClaimAndSettle(t *testing.T) {
 	}
 	// 引用不存在：claim 落空。
 	f.seedReadyAsset(t, "asset_noref")
-	if _, err := f.db.Exec(`DELETE FROM chat_asset_references WHERE asset_id = 'asset_noref'`); err != nil {
+	if _, err := f.db.Exec(`DELETE FROM juhe_chat.chat_asset_references WHERE asset_id = 'asset_noref'`); err != nil {
 		t.Fatalf("delete ref: %v", err)
 	}
 	claim2, err := f.obs.claim(ctx, "asset_noref", "conv_1", "sys_1", "turn_1", "msg_1", now)
@@ -410,14 +403,14 @@ func TestW1BuildAssetDataURL(t *testing.T) {
 		t.Fatalf("dataURL = %q, %v", got, err)
 	}
 	// 字节数不匹配。
-	if _, err := f.db.Exec(`UPDATE chat_assets SET processed_bytes = 99 WHERE id = 'asset_du'`); err != nil {
+	if _, err := f.db.Exec(`UPDATE juhe_chat.chat_assets SET processed_bytes = 99 WHERE id = 'asset_du'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, err := f.obs.buildAssetDataURL(ctx, "asset_du", "conv_1", "sys_1", now); err == nil || !strings.Contains(err.Error(), "大小校验失败") {
 		t.Fatalf("字节数不匹配错误 = %v", err)
 	}
 	// sha 不匹配。
-	if _, err := f.db.Exec(`UPDATE chat_assets SET processed_bytes = 8, processed_sha256 = 'bad' WHERE id = 'asset_du'`); err != nil {
+	if _, err := f.db.Exec(`UPDATE juhe_chat.chat_assets SET processed_bytes = 8, processed_sha256 = 'bad' WHERE id = 'asset_du'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if _, err := f.obs.buildAssetDataURL(ctx, "asset_du", "conv_1", "sys_1", now); err == nil || !strings.Contains(err.Error(), "完整性校验失败") {
@@ -467,7 +460,7 @@ func TestW1RunObservationDispatchTargetAware(t *testing.T) {
 	// 会话缺失（表存在但无行）：同样 fail-closed。
 	missing := newW1ObservationFixture(t)
 	missing.seedReadyAsset(t, "asset_pin")
-	if _, err := missing.db.Exec(`CREATE TABLE chat_conversations (
+	if _, err := missing.db.Exec(`CREATE TABLE juhe_chat.chat_conversations (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, bind_account_id TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
@@ -486,11 +479,11 @@ func TestW1RunObservationDispatchTargetAware(t *testing.T) {
 	// 会话存在（绑定账户）：派发前绑定目标，观察正常完成。
 	bound := newW1ObservationFixture(t)
 	bound.seedReadyAsset(t, "asset_pin")
-	if _, err := bound.db.Exec(`CREATE TABLE chat_conversations (
+	if _, err := bound.db.Exec(`CREATE TABLE juhe_chat.chat_conversations (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, bind_account_id TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
-	if _, err := bound.db.Exec(`INSERT INTO chat_conversations (id, system_account_id, bind_account_id)
+	if _, err := bound.db.Exec(`INSERT INTO juhe_chat.chat_conversations (id, system_account_id, bind_account_id)
 		VALUES ('conv_1', 'sys_1', 'acc_pin')`); err != nil {
 		t.Fatalf("insert conversation: %v", err)
 	}

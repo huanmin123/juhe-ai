@@ -33,6 +33,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -51,24 +53,18 @@ func w1yExec(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
-func w1yOpenSQLite(t *testing.T, name string) *sql.DB {
+func w1yOpenPG(t *testing.T, name string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name+".sqlite3"))
-	if err != nil {
-		t.Fatalf("打开 sqlite %s: %v", name, err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	_ = name
+	// pgtestkit 隔离 PG 库（原 sqlite 文件夹具随存储形态退役重钉 PG）。
+	return pgtestkit.New(t)
 }
 
-func w1yOpenClosedSQLite(t *testing.T) *sql.DB {
+func w1yOpenClosedPG(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "closed.sqlite3"))
-	if err != nil {
-		t.Fatalf("打开待关闭 sqlite: %v", err)
-	}
+	db := pgtestkit.New(t)
 	if err := db.Close(); err != nil {
-		t.Fatalf("关闭 sqlite: %v", err)
+		t.Fatalf("关闭 PG 句柄: %v", err)
 	}
 	return db
 }
@@ -79,9 +75,12 @@ func w1yOpenClosedSQLite(t *testing.T) *sql.DB {
 
 func w1yChatAssetsDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db := w1yOpenSQLite(t, "w1y-chat-assets")
+	db := w1yOpenPG(t, "w1y-chat-assets")
+	// chatImageObservations 读写按生产 juhe_chat 限定名（table() 前缀），
+	// 夹具 schema 与表名同构。
+	w1yExec(t, db, `CREATE SCHEMA IF NOT EXISTS juhe_chat`)
 	for _, ddl := range []string{
-		`CREATE TABLE chat_assets (
+		`CREATE TABLE juhe_chat.chat_assets (
 			id TEXT PRIMARY KEY,
 			system_account_id TEXT NOT NULL,
 			conversation_id TEXT NOT NULL,
@@ -99,7 +98,7 @@ func w1yChatAssetsDB(t *testing.T) *sql.DB {
 			processed_bytes INTEGER NOT NULL DEFAULT 0,
 			processed_sha256 TEXT NOT NULL DEFAULT '',
 			source_kind TEXT NOT NULL DEFAULT 'user_uploaded')`,
-		`CREATE TABLE chat_asset_references (
+		`CREATE TABLE juhe_chat.chat_asset_references (
 			asset_id TEXT NOT NULL,
 			conversation_id TEXT NOT NULL,
 			turn_id TEXT NOT NULL,
@@ -113,7 +112,7 @@ func w1yChatAssetsDB(t *testing.T) *sql.DB {
 }
 
 func TestW1YChatObservationClosedDBArms(t *testing.T) {
-	db := w1yOpenClosedSQLite(t)
+	db := w1yOpenClosedPG(t)
 	observations := &chatImageObservations{db: db}
 	ctx := context.Background()
 
@@ -145,7 +144,7 @@ func TestW1YChatObservationArms(t *testing.T) {
 	}
 
 	// assistant_generated 走 generated 上限分支后，对象存储未接线 → 读失败。
-	w1yExec(t, db, `INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at, source_kind)
+	w1yExec(t, db, `INSERT INTO juhe_chat.chat_assets (id, system_account_id, conversation_id, expires_at, updated_at, source_kind)
 		VALUES ('ast-w1y-generated', 'sys', 'conv', '2027-01-01T00:00:00.000Z', 'now', 'assistant_generated')`)
 	unwired := &chatImageObservations{db: db, objects: nil}
 	if _, err := unwired.buildAssetDataURL(ctx, "ast-w1y-generated", "conv", "sys", w1yNow()); err == nil ||
@@ -154,7 +153,7 @@ func TestW1YChatObservationArms(t *testing.T) {
 	}
 
 	// 超出 64KiB 上限的 observation。
-	w1yExec(t, db, `INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
+	w1yExec(t, db, `INSERT INTO juhe_chat.chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
 		VALUES ('ast-w1y-huge', 'sys', 'conv', '2027-01-01T00:00:00.000Z', 'now')`)
 	huge := map[string]any{"summary": strings.Repeat("字", chatAssetObservationMaxBytes)}
 	if _, err := observations.setObservation(ctx, "ast-w1y-huge", "conv", "sys", "ready", huge,
@@ -163,7 +162,7 @@ func TestW1YChatObservationArms(t *testing.T) {
 	}
 
 	// revision/claim 不匹配 → RowsAffected = 0 → false。
-	w1yExec(t, db, `INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at,
+	w1yExec(t, db, `INSERT INTO juhe_chat.chat_assets (id, system_account_id, conversation_id, expires_at, updated_at,
 		observation_status, observation_revision, observation_claim_id)
 		VALUES ('ast-w1y-claim', 'sys', 'conv', '2027-01-01T00:00:00.000Z', 'now', 'pending', 3, 'claim-3')`)
 	ok, err := observations.setObservation(ctx, "ast-w1y-claim", "conv", "sys", "ready",

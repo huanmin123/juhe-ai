@@ -16,7 +16,7 @@ package main
 //     sqrtOf 64 轮牛顿迭代不收敛的兜底返回（基线 280）。
 //  4. chain_v1.go newRequestBudgets 空 RequestID 触发
 //     RouteCoordinationBudget 构造错误臂（基线 2685-2687）。
-//  5. compose_prewarm.go 预热失败的 logger.Warn 臂（关闭的 sqlite 运行态
+//  5. compose_prewarm.go 预热失败的 logger.Warn 臂（损坏的运行态
 //     缓存；基线 35-40）。
 //  6. compose_account_test_local.go wireInProcessAccountTestDispatch 的队列
 //     env 非法值 fail-closed 臂（基线 180-182）。
@@ -24,16 +24,17 @@ package main
 //     与 wireAccountReadCompanions 空 secret 的 accountkeystates 构造错误臂
 //     （基线 31-33 / 60-62）。
 //
-// 隔离说明：全部使用进程内 sqlite（t.TempDir）与关闭句柄，不触碰任何真实
+// 隔离说明：数据库臂使用 pgtestkit 隔离 PG 库与关闭句柄，不触碰任何真实
 // 数据库与 Redis 实例；不改变任何全局状态（os.Args/env 用 t.Setenv）。
 
 import (
-	"database/sql"
 	"image"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
@@ -193,10 +194,8 @@ func TestW16BAccountTestQueueEnvFailClosed(t *testing.T) {
 }
 
 func TestW16BAccountReadCompanionsArms(t *testing.T) {
-	root := t.TempDir()
-
 	// authorizationStatsSourceAdapter 读错误透传（31-33）：底库句柄关闭。
-	closedDB := w2aClosedSQLiteDB(t)
+	closedDB := w2aClosedPG(t)
 	authzStore, err := authz.NewStore(closedDB, time.Now)
 	if err != nil {
 		t.Fatalf("create authz store: %v", err)
@@ -207,12 +206,8 @@ func TestW16BAccountReadCompanionsArms(t *testing.T) {
 	}
 
 	// wireAccountReadCompanions 空 secret：accountkeystates.NewStore 构造失败
-	// （60-62）。业务/授权 store 用独立有效 sqlite 打开。
-	db, err := sql.Open("sqlite", root+"/w16b-business.sqlite3")
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	// （60-62）。业务/授权 store 用独立有效 pgtestkit 隔离 PG 库打开。
+	db := pgtestkit.New(t)
 	accountStore, err := accounts.NewStore(db, "w16b-secret", time.Now, func(kind string) string { return kind })
 	if err != nil {
 		t.Fatalf("create account store: %v", err)

@@ -16,7 +16,7 @@ const usageFixtureDDL = `
 	-- authorization_team_usage_range_windows 的 DDL 仅为冻结表回归保留
 	--（wd_authz_usage_detail_test.go 的锚点区间断言需要种一行冻结数据）；
 	-- 授权消耗明细读链已全部走日摘要表，不再读写两张范围窗口表。
-	CREATE TABLE IF NOT EXISTS authorization_team_usage_range_windows (
+	CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_range_windows (
 		system_account_id TEXT NOT NULL,
 		start_date TEXT NOT NULL,
 		end_date TEXT NOT NULL,
@@ -27,19 +27,19 @@ const usageFixtureDDL = `
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_read_cost_usd double precision NOT NULL DEFAULT 0,
 		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_write_cost_usd double precision NOT NULL DEFAULT 0,
 		thinking_tokens INTEGER NOT NULL DEFAULT 0,
 		input_image_tokens INTEGER NOT NULL DEFAULT 0,
 		output_image_tokens INTEGER NOT NULL DEFAULT 0,
-		total_cost_usd REAL NOT NULL DEFAULT 0,
+		total_cost_usd double precision NOT NULL DEFAULT 0,
 		last_used_at TEXT,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)
 	);
-	CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_daily (
+	CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_summary_daily (
 		system_account_id TEXT NOT NULL,
 		stat_date TEXT NOT NULL,
 		team_filter_id TEXT NOT NULL DEFAULT '',
@@ -52,14 +52,14 @@ const usageFixtureDDL = `
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_read_cost_usd double precision NOT NULL DEFAULT 0,
 		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_write_cost_usd double precision NOT NULL DEFAULT 0,
 		thinking_tokens INTEGER NOT NULL DEFAULT 0,
 		input_image_tokens INTEGER NOT NULL DEFAULT 0,
 		output_image_tokens INTEGER NOT NULL DEFAULT 0,
-		total_cost_usd REAL NOT NULL DEFAULT 0,
+		total_cost_usd double precision NOT NULL DEFAULT 0,
 		duration_ms_sum INTEGER NOT NULL DEFAULT 0,
 		duration_ms_count INTEGER NOT NULL DEFAULT 0,
 		duration_ms_max INTEGER NOT NULL DEFAULT 0,
@@ -71,7 +71,7 @@ const usageFixtureDDL = `
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id)
 	);
-	CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_daily (
+	CREATE TABLE IF NOT EXISTS juhe_stats.authorization_user_usage_summary_daily (
 		system_account_id TEXT NOT NULL,
 		stat_date TEXT NOT NULL,
 		team_filter_id TEXT NOT NULL DEFAULT '',
@@ -85,14 +85,14 @@ const usageFixtureDDL = `
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_read_cost_usd double precision NOT NULL DEFAULT 0,
 		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_write_cost_usd double precision NOT NULL DEFAULT 0,
 		thinking_tokens INTEGER NOT NULL DEFAULT 0,
 		input_image_tokens INTEGER NOT NULL DEFAULT 0,
 		output_image_tokens INTEGER NOT NULL DEFAULT 0,
-		total_cost_usd REAL NOT NULL DEFAULT 0,
+		total_cost_usd double precision NOT NULL DEFAULT 0,
 		duration_ms_sum INTEGER NOT NULL DEFAULT 0,
 		duration_ms_count INTEGER NOT NULL DEFAULT 0,
 		duration_ms_max INTEGER NOT NULL DEFAULT 0,
@@ -104,7 +104,7 @@ const usageFixtureDDL = `
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
 	);
-	CREATE TABLE IF NOT EXISTS usage_scope_range_windows (
+	CREATE TABLE IF NOT EXISTS juhe_stats.usage_scope_range_windows (
 		system_account_id TEXT NOT NULL,
 		scope_type TEXT NOT NULL,
 		scope_id TEXT NOT NULL,
@@ -114,14 +114,14 @@ const usageFixtureDDL = `
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_read_cost_usd double precision NOT NULL DEFAULT 0,
 		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_write_cost_usd double precision NOT NULL DEFAULT 0,
 		thinking_tokens INTEGER NOT NULL DEFAULT 0,
 		input_image_tokens INTEGER NOT NULL DEFAULT 0,
 		output_image_tokens INTEGER NOT NULL DEFAULT 0,
-		total_cost_usd REAL NOT NULL DEFAULT 0,
+		total_cost_usd double precision NOT NULL DEFAULT 0,
 		last_used_at TEXT,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
@@ -166,7 +166,7 @@ func seedResourceAccount(t *testing.T, f *fixture, id, ownerID, name string) {
 // rows are plain system_account_id values).
 func insertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, teamID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(fixtureBind(`INSERT INTO authorization_team_usage_summary_daily
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO juhe_stats.authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),
@@ -179,7 +179,7 @@ func insertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, tea
 // insertUserDailyRow seeds one authorization_user_usage_summary_daily row.
 func insertUserDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, teamID, granteeID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(fixtureBind(`INSERT INTO authorization_user_usage_summary_daily
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO juhe_stats.authorization_user_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),

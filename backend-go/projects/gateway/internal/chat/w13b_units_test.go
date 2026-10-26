@@ -1149,7 +1149,7 @@ func TestW13BUpstreamMessagePayload(t *testing.T) {
 func TestW13BRecoverChatTurnFinalization(t *testing.T) {
 	f := newChatFixture(t)
 	accepted := f.accept("owner", f.createConversation("conv_rec", "owner").ID, "cmid-r", "问题")
-	env := newGenerationEnv(t)
+	env := buildGenerationEnvW10D(t, f)
 	rt := newChatRoutesForTest(env.deps)
 	// 终态权威：完成该轮后恢复应返回 completed。
 	f.complete("owner", "conv_rec", accepted.TurnID, "答")

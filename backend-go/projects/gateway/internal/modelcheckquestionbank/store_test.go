@@ -9,28 +9,30 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
-// newTestStore 打开本测试专属的临时 SQLite 业务库并建最小题库表与提交
-// 门禁测试记录表（照 modelcheckowner business_quality_management_test.go 的
-// t.TempDir()+mode=rwc 基建；表结构与 maintenance SQLite DDL 一致）。
+// newTestStore 打开 pgtestkit 隔离 PG 测试库（预建 juhe_business schema 与
+// 生产同款题库/提交门禁测试记录/系统账户表）并返回经 sqldialect 改写 driver、
+// search_path=juhe_business 的连接池：夹具与同包测试手写 SQL 的裸表名由
+// search_path 解析，`?` 占位由 driver 层兜底改写为 $n，生产 store 的 bind($n)
+// 原样透传；表结构与 maintenance 生产 DDL 一致。
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/question-bank.db?mode=rwc")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business;
+			CREATE TABLE juhe_business.model_check_question_bank `+testQuestionBankDDL+`;
+			CREATE TABLE juhe_business.model_check_question_tests `+testQuestionTestsDDL+`;
+			CREATE TABLE juhe_business.system_accounts `+testSystemAccountsDDL)
+		return err
+	})
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_business")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(testQuestionBankDDL); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(testQuestionTestsDDL); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(testSystemAccountsDDL); err != nil {
-		t.Fatal(err)
-	}
 	store, err := NewStore(db)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +40,7 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	return store, db
 }
 
-const testQuestionBankDDL = `CREATE TABLE model_check_question_bank (
+const testQuestionBankDDL = `(
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       title_norm TEXT NOT NULL,
@@ -58,9 +60,9 @@ const testQuestionBankDDL = `CREATE TABLE model_check_question_bank (
       last_test_json TEXT
     )`
 
-// testQuestionTestsDDL 是提交门禁测试记录表（与 maintenance SQLite DDL
+// testQuestionTestsDDL 是提交门禁测试记录表（与 maintenance 生产 DDL
 // 一致的最小形状）。
-const testQuestionTestsDDL = `CREATE TABLE model_check_question_tests (
+const testQuestionTestsDDL = `(
       id TEXT PRIMARY KEY,
       created_by TEXT NOT NULL,
       account_id TEXT NOT NULL,
@@ -77,7 +79,7 @@ const testQuestionTestsDDL = `CREATE TABLE model_check_question_tests (
 
 // testSystemAccountsDDL 是 SystemAccountNames 依赖的最小系统账户表
 // （真实 schema 的相关列：id 主键 + display_name）。
-const testSystemAccountsDDL = `CREATE TABLE system_accounts (
+const testSystemAccountsDDL = `(
       id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL DEFAULT ''
     )`
@@ -539,7 +541,7 @@ func TestStoreListVisibilityAndFilters(t *testing.T) {
 		{aliceApproved.ID, "2026-01-01T00:00:00Z"},
 		{bobRejected.ID, "2025-12-31T00:00:00Z"},
 	} {
-		if _, err := db.Exec(`UPDATE model_check_question_bank SET created_at = ? WHERE id = ?`, tc.createdAt, tc.id); err != nil {
+		if _, err := db.Exec(`UPDATE juhe_business.model_check_question_bank SET created_at = ? WHERE id = ?`, tc.createdAt, tc.id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -719,7 +721,7 @@ func TestStoreSystemAccountNames(t *testing.T) {
 		{"sys-bob", ""},
 	}
 	for _, item := range seed {
-		if _, err := db.Exec(`INSERT INTO system_accounts (id, display_name) VALUES (?, ?)`, item.id, item.display); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (id, display_name) VALUES (?, ?)`, item.id, item.display); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -760,7 +762,7 @@ func TestStoreBuiltinQuestionWriteProtection(t *testing.T) {
 		CreatedAt: "2026-10-09T00:00:00Z", UpdatedAt: "2026-10-09T00:00:00Z",
 	}
 	keyPointsJSON := `["要点"]`
-	if _, err := db.Exec(`INSERT INTO model_check_question_bank (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,'approved',NULL,'system','system',1,NULL,NULL,?,?)`,
+	if _, err := db.Exec(`INSERT INTO juhe_business.model_check_question_bank (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,'approved',NULL,'system','system',1,NULL,NULL,?,?)`,
 		builtin.ID, builtin.Title, builtin.TitleNorm, builtin.QuestionText, builtin.ReferenceAnswer, keyPointsJSON, builtin.CreatedAt, builtin.UpdatedAt); err != nil {
 		t.Fatal(err)
 	}

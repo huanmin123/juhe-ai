@@ -13,32 +13,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 func TestW11AStoreConstructorAndDialectArms(t *testing.T) {
 	if _, err := NewStore(nil, time.Now); err == nil {
 		t.Fatal("nil db must fail")
 	}
-	db, err := sql.Open("sqlite", "file:w11a-unused-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
+	// 构造器只校验非 nil 句柄，不触库：夹具仅提供真实 PG 连接。
+	db := pgtestkit.New(t)
 	store, err := NewStore(db, nil) // nil clock falls back to time.Now
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := store.table("resource_authorizations"); got != "resource_authorizations" {
-		t.Fatalf("sqlite table = %q", got)
+	if got := store.table("resource_authorizations"); got != "juhe_business.resource_authorizations" {
+		t.Fatalf("pg table = %q", got)
 	}
-	if got := store.bind("a = ? AND b = ?"); got != "a = ? AND b = ?" {
-		t.Fatalf("sqlite bind = %q", got)
-	}
-	pgStore, err := NewStore(db, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := pgStore.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
+	if got := store.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("pg bind = %q", got)
 	}
 	if got := ensureCtx(nil); got == nil {
@@ -344,8 +336,10 @@ func TestW11AStrictBodyDecodeArms(t *testing.T) {
 func TestW11AExpiryForWriteArms(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "w11a-owner", "active")
-	f.exec(t, `INSERT INTO accounts (id, system_account_id, name, created_at, updated_at)
-		VALUES ('w11a-acct', 'w11a-owner', 'acct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	// accounts 夹具（pgkit_test.go）无 name 列；health_check_endpoint_mode 带
+	// CHECK 不接受缺省 ''，显式给合法值。被测校验只读 account_expires_at。
+	f.exec(t, `INSERT INTO accounts (id, system_account_id, health_check_endpoint_mode, created_at, updated_at)
+		VALUES ('w11a-acct', 'w11a-owner', 'chat_json', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	ctx := context.Background()
 	tx, err := f.db.BeginTx(ctx, nil)
 	if err != nil {

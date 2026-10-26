@@ -2,7 +2,6 @@ package gatewayclientip
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -11,7 +10,6 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -505,7 +503,10 @@ func TestWINumericRedisArrayAndMaxInt(t *testing.T) {
 	}
 }
 
-func TestWISQLPolicySourceGuardsAndPostgresDialect(t *testing.T) {
+// TestWISQLPolicySourceGuards 锁定 SQLPolicySource 的守卫与错误分支；触发
+// 路径都在触碰数据库之前，走 pgtestkit 隔离 PG 库的 source（「PG 方言在
+// sqlite 上必失败」的方言差异臂随 sqlite 引擎退役删除）。
+func TestWISQLPolicySourceGuards(t *testing.T) {
 	if _, err := NewSQLPolicySource(nil, nil, nil); err == nil {
 		t.Fatal("nil db 必须报错")
 	}
@@ -518,35 +519,14 @@ func TestWISQLPolicySourceGuardsAndPostgresDialect(t *testing.T) {
 		t.Fatalf("bind=%q", got)
 	}
 
-	// 契约：查询限定 juhe_stats schema。内存 SQLite 上该 schema 不存在，
-	// 写入必须报错（错误路径），而不是静默成功。
-	db, err := sql.Open("sqlite", "file:wi-policy-pg-dialect?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("打开 sqlite 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
 	fixed := time.UnixMilli(1_700_000_000_000)
-	pgSource, err := NewSQLPolicySource(db, func() time.Time { return fixed }, nil)
-	if err != nil {
-		t.Fatalf("NewSQLPolicySource 失败: %v", err)
-	}
-	err = pgSource.RecordClientIPPolicyHits(context.Background(), []PolicyHitInput{{
-		IPHash: strings.Repeat("a", 64), PolicyID: "p1", HitCount: 1,
-		HitAt: fixed.UTC().Format(time.RFC3339),
-	}})
-	if err == nil {
-		t.Fatal("postgres 方言写入 sqlite 必须报错")
-	}
-	if _, err := pgSource.ListActiveClientIPPolicies(context.Background()); err == nil {
-		t.Fatal("postgres 方言查询 sqlite 必须报错")
-	}
+	pgSource, db := newPolicyPGSource(t)
 	// 空 hits 直接成功，不触碰数据库。
 	if err := pgSource.RecordClientIPPolicyHits(context.Background(), nil); err != nil {
 		t.Fatalf("空 hits 必须无错: %v", err)
 	}
 	// hitAt 非法与 timezone 无效的错误分支。
-	badHitAt := pgSource
-	if err := badHitAt.RecordClientIPPolicyHits(context.Background(), []PolicyHitInput{{
+	if err := pgSource.RecordClientIPPolicyHits(context.Background(), []PolicyHitInput{{
 		IPHash: strings.Repeat("a", 64), PolicyID: "p1", HitAt: "not-a-time",
 	}}); err == nil {
 		t.Fatal("坏 hitAt 必须报错")
@@ -565,7 +545,7 @@ func TestWISQLPolicySourceGuardsAndPostgresDialect(t *testing.T) {
 	}}); err == nil {
 		t.Fatal("时区读取失败必须透传")
 	}
-	// normalizeIpHash 守卫：非法 hash 读作 missing。
+	// normalizeIpHash 守卫：非法 hash 读作 missing（先关库证明不触碰数据库）。
 	if err := db.Close(); err != nil {
 		t.Fatalf("关闭 db 失败: %v", err)
 	}

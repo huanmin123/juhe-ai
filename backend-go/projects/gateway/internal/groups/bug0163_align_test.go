@@ -2,12 +2,13 @@ package groups
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // BUG-0163 alignment tests: each case pins one reviewed deviation between the
@@ -445,10 +446,7 @@ func TestGroupRefreshStatsAfterWriteNeverFailsTheRequestOnPostgres(t *testing.T)
 	// A closed handle fails every statement; the PostgreSQL path hands the
 	// write to the background task (postgres_group_account_stats_dirty_mark_failed
 	// log only) and never fails the request.
-	db, err := sql.Open("sqlite", "file:closed-groups?mode=memory")
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := pgtestkit.New(t)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}

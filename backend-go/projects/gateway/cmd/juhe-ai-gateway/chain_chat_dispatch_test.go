@@ -5,12 +5,11 @@ package main
 //  - account 目标候选收敛单账户且 usage 归属按账户 BoundGroupID 记账；
 //  - 无 target 请求（外部请求）调度路径与现状一致；
 //  - 绑定目标不可用走既有"无可用账户"语义，分组回退被禁用不逃逸。
-// 测试风格与 chain_test.go 的 full-chain smoke 一致（真实 SQLite fixture +
+// 测试风格与 chain_test.go 的 full-chain smoke 一致（真实 PG fixture +
 // mock 上游 + spool 用量断言）。
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -154,11 +153,7 @@ func waitForSpoolRecords(t *testing.T, spoolDir string) []map[string]any {
 // TestChatConversationDispatchTargetReadsBindColumn：观察适配器的会话绑定
 // 账户只读查询（chat_conversations.bind_account_id 同表同列）。
 func TestChatConversationDispatchTargetReadsBindColumn(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "obs-target.sqlite3"))
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE chat_conversations (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, bind_account_id TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)

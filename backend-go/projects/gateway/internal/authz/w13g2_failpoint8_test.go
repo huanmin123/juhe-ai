@@ -40,7 +40,7 @@ func TestW13g2UsageDetailFinalArms(t *testing.T) {
 	detail := &UsageDetail{UsageBySystemAccount: []UsageDetailRow{}}
 
 	// loadUsageRangeSummaryForScope 查询失败（477-481）。
-	fp.arm("FROM usage_scope_range_windows")
+	fp.arm("FROM juhe_stats.usage_scope_range_windows")
 	if _, err := s.loadDirectUsageDetail(ctx, grant, detail, rng, 1); err == nil {
 		fp.disarm()
 		t.Fatalf("应失败")

@@ -1326,11 +1326,9 @@ type errorPolicyEffectsFixture struct {
 
 func newErrorPolicyEffectsFixture(t *testing.T) *errorPolicyEffectsFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "policy.sqlite3"))
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	// newChainFixturePGDatabase 同款惯例（原 sqlite 文件夹具随存储形态退役重
+	// 钉 PG）：juhe_business search_path 让夹具裸表 DDL 落在生产读取 schema。
+	db := newChainFixturePGDatabase(t)
 	statements := []string{
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL DEFAULT 'sys_owner',

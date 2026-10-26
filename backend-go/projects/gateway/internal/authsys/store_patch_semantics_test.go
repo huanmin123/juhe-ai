@@ -5,22 +5,19 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
-// openTestDB reopens the shared in-memory fixture database so the semantics
-// tests can observe raw column values (must_change_password) that the summary
-// projection normalizes away.
+// openTestDB 取回同测试内 newTestEnv 建立的 PG 夹具库句柄（登记见
+// authsys_test.go testEnvDBs），供语义测试观察 summary 投影归一掉的原始列值
+// （must_change_password）。独立 PG 库形态下不存在 sqlite 共享缓存内存库的
+// 按名重开。
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:authsys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
+	loaded, ok := testEnvDBs.Load(t.Name())
+	if !ok {
+		t.Fatalf("openTestDB 必须与 newTestEnv 同测试调用：%s", t.Name())
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	return db
+	return loaded.(*sql.DB)
 }
 
 func mustChangeColumn(t *testing.T, db *sql.DB, accountID string) int {

@@ -103,10 +103,17 @@ func (s *Store) provisionAuthorizedAccountInstance(ctx context.Context, tx *sql.
 // 恢复臂都从源行直读（列 NOT NULL DEFAULT 'chat'，无空值臂）。
 // 供应商解耦（设计 §2.1/§9.11）：账户身份改为 vendor_code +
 // connection_driver_code，provider_protocol_profile_id 列已删除。
-const sourceAccountColumns = `COALESCE(vendor_code, '') AS vendor_code, connection_driver_code,
-		protocol_code, protocol_version,
-		name, type, concurrency_limit, temporary_unavailable_continuous_probe_enabled,
-		health_check_model, health_check_endpoint_mode, capability_domain`
+const sourceAccountColumns = `COALESCE(vendor_code, '') AS vendor_code,
+		COALESCE(connection_driver_code, '') AS connection_driver_code,
+		COALESCE(protocol_code, '') AS protocol_code,
+		COALESCE(protocol_version, '') AS protocol_version,
+		COALESCE(name, '') AS name,
+		COALESCE(type, '') AS type,
+		COALESCE(concurrency_limit, 0) AS concurrency_limit,
+		COALESCE(temporary_unavailable_continuous_probe_enabled, 0) AS temporary_unavailable_continuous_probe_enabled,
+		COALESCE(health_check_model, '') AS health_check_model,
+		COALESCE(health_check_endpoint_mode, '') AS health_check_endpoint_mode,
+		COALESCE(capability_domain, 'chat') AS capability_domain`
 
 // ensureAccountAuthorizationInstance mirrors the archived :259-370: the live
 // instance is reused untouched, the soft-deleted instance is restored with

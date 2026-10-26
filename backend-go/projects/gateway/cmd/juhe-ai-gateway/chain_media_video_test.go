@@ -670,20 +670,21 @@ func TestChainMediaVideoProviderOptionsAppliedEcho(t *testing.T) {
 // TestChainMediaJobRepoRoundTrip 是仓储直连单测（插入/推进/终态回填/归属查询/
 // TTL 查询），钉住 JSON 列编解码与 ErrMediaJobNotFound 语义。
 func TestChainMediaJobRepoRoundTrip(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "media-jobs.sqlite3"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	// newChainFixturePGDatabase 同款惯例（原 sqlite 文件夹具随存储形态退役重
+	// 钉 PG）：sqldialect 包装连接承担生产同款 `?`→$n 改写，search_path 让
+	// 夹具裸表 DDL 落在生产读取 schema。
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE media_jobs (
 		id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, owner_system_account_id TEXT NOT NULL DEFAULT '', account_id TEXT NOT NULL,
 		provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
 		status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
-		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
+		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 		params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
-		created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-		CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`); err != nil {
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
 		t.Fatalf("create media_jobs: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`); err != nil {
+		t.Fatalf("create accounts: %v", err)
 	}
 	repo := gatewaymedia.NewMediaJobsRepo(db, time.Now)
 	ctx := context.Background()
@@ -817,20 +818,17 @@ func TestChainMediaVideoCreate400BadSizeKeepsAccount(t *testing.T) {
 // TestChainMediaJobTerminalUpdateRaceOnce 是 MAJOR-B 仓储级并发回归：同 job
 // 两 goroutine 并发终态回填，条件 UPDATE（非终态守卫）保证恰好一个写入
 // 生效（affected==1）；胜出后的取消写入被终态守卫拒绝（0 行，不回退）。
-// 单连接池把两条 UPDATE 串行化（modernc sqlite 无默认 busy_timeout，多连接
-// 并发写会 SQLITE_BUSY），胜负裁决完全由 WHERE 守卫承担。
+// TestChainMediaJobTerminalUpdateRaceOnce 是 MAJOR-B 仓储级并发回归：同 job
+// 两 goroutine 并发终态回填，条件 UPDATE（非终态守卫）保证恰好一个写入
+// 生效（affected==1）；胜出后的取消写入被终态守卫拒绝（0 行，不回退）。
+// PG 连接池真实并发，胜负裁决完全由 WHERE 守卫承担。
 func TestChainMediaJobTerminalUpdateRaceOnce(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "media-jobs-race.sqlite3"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	db.SetMaxOpenConns(1)
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE media_jobs (
 		id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, owner_system_account_id TEXT NOT NULL DEFAULT '', account_id TEXT NOT NULL,
 		provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
 		status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
-		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
+		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 		params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
 		t.Fatalf("create media_jobs: %v", err)
@@ -905,9 +903,7 @@ func (b *mediaVideoPollBarrier) arrive() {
 // 入队一条终态记录（终态只入队一次，否则同 job 双份 usage/计费）。
 func TestChainMediaVideoConcurrentTerminalSingleUsage(t *testing.T) {
 	fixture := newChainFixture(t)
-	// 单连接池：两轮询的 UPDATE 串行执行（modernc sqlite 无默认
-	// busy_timeout），胜负由 WHERE 非终态守卫裁决。
-	fixture.db.SetMaxOpenConns(1)
+	// PG 连接池真实并发执行两条轮询 UPDATE，胜负由 WHERE 非终态守卫裁决。
 	mock := platformmock.New()
 	defer mock.Close()
 

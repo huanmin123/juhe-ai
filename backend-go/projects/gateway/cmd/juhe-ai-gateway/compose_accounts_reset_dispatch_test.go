@@ -4,16 +4,17 @@ package main
 // reset/激活面的健康检查派发接到 chain_request_failure_health.go 的进程内
 // outbox writer（account_health_probe_request_outbox 行；消费端 jobs J1
 // Runner drain；Node dispatchAccountHealthCheck，internal-api service）。本
-// 文件用临时 SQLite 业务库断言：行契约（accountId/reason 投影 + pending 可
+// 文件用 pgtestkit 隔离 PG 库断言：行契约（accountId/reason 投影 + pending 可
 // 消费状态）、受理与 inert 降级两条路径（fire-and-forget，派发拒绝不中断
 // reset），以及派发的异步边界（不阻塞 reset 调用方）。
 
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
@@ -28,11 +29,7 @@ const (
 // （accountkeystates 构造只 fail-fast 空句柄/空密钥，派发路径不触库）。
 func newResetDispatchComposition(t *testing.T) *composition {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "business.sqlite3"))
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t)
 	return &composition{db: db, Bus: inval.New(time.Now)}
 }
 
@@ -40,12 +37,10 @@ func newResetDispatchComposition(t *testing.T) *composition {
 // 进程内 probe-request outbox writer（与 chain 装配共用同一 DDL ensure 路径）。
 func newResetDispatchBridge(t *testing.T, composed *composition) (accounts.RuntimeResetEffects, *chainProbeRequestOutboxWriter) {
 	t.Helper()
-	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "probe-outbox.sqlite3")) + "?_pragma=busy_timeout(5000)"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatalf("open outbox sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`)
+		return err
+	})
 	writer := newChainProbeRequestOutboxWriter(db, 65_000)
 	// 生产对等：与 chain 装配同一条 ensure 路径已在进程启动早期完成建表；
 	// 测试在派发 goroutine 之前主动 ensure，避免行查询与建表竞速。
@@ -62,7 +57,7 @@ func newResetDispatchBridge(t *testing.T, composed *composition) (accounts.Runti
 // resetDispatchRows 返回 outbox 全部行的 (accountID, reason) 投影。
 func resetDispatchRows(t *testing.T, writer *chainProbeRequestOutboxWriter) [][2]string {
 	t.Helper()
-	rows, err := writer.db.Query(`SELECT account_id, reason FROM account_health_probe_request_outbox ORDER BY created_at, request_id`)
+	rows, err := writer.db.Query(`SELECT account_id, reason FROM juhe_business.account_health_probe_request_outbox ORDER BY created_at, request_id`)
 	if err != nil {
 		t.Fatalf("query outbox rows: %v", err)
 	}

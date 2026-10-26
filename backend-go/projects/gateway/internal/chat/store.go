@@ -15,6 +15,7 @@
 package chat
 
 import (
+	"sync"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -37,6 +38,10 @@ type Store struct {
 	db    *sql.DB
 	now   func() time.Time
 	newID func(prefix string) string
+	// partitionMemo 是 chat_messages 日分区的进程内建表备忘，按 Store 实例
+	// 隔离：生产每进程一个 Store；测试每用例独立库 + 独立 Store，包级全局
+	// 备忘会让后续测试库跳过建分区（23514）。
+	partitionMemo sync.Map
 	// assets is the chatassets asset subdomain service (REFACTOR-0006 phase
 	// C). Constructed on the spot below; Store asset methods forward one
 	// line to it (assets_subdomain_bridge.go).

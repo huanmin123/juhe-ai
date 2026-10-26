@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,23 +25,30 @@ type w1sResetFixture struct {
 	now    time.Time
 }
 
+// w1sEnsureBusinessSchema / w1sEnsureStatsSchema 建授权/实例/Key 运行态与
+// usage stats 的最小夹具面。pgtestkit 隔离 PG 库 + search_path 连接池
+//（newChainFixturePGDatabase 同款惯例）：夹具 CREATE 显式限定 juhe_business /
+// juhe_stats（CREATE 只落 search_path 首位 schema，统计表必须显式限定），
+// 生产桥的限定名读取与测试的裸表名种子/删除经 search_path 同 schema 解析。
+// resource_authorization_grants.id 沿生产 text 主键，缺省表达式承载
+// 「免 id 种子」。
 func w1sEnsureBusinessSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, ddl := range []string{
-		`CREATE TABLE IF NOT EXISTS resource_authorizations (
+		`CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
 			effective_source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active',
 			expires_at TEXT, limits_json TEXT)`,
-		`CREATE TABLE IF NOT EXISTS resource_authorization_grants (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+		`CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
+			id TEXT PRIMARY KEY NOT NULL DEFAULT 'w1s-grant-' || md5(random()::text),
 			resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
 			grantee_type TEXT NOT NULL, grantee_team_id TEXT,
 			limits_json TEXT, status TEXT NOT NULL DEFAULT 'active',
 			expires_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS accounts (
+		`CREATE TABLE IF NOT EXISTS juhe_business.accounts (
 			id TEXT PRIMARY KEY, authorization_instance_authorization_id TEXT,
 			deleted_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (
+		`CREATE TABLE IF NOT EXISTS juhe_business.account_api_key_runtime_states (
 			id TEXT PRIMARY KEY, system_account_id TEXT, account_id TEXT,
 			key_fingerprint TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unverified',
 			cooldown_until TEXT, next_probe_at TEXT,
@@ -60,21 +65,21 @@ func w1sEnsureStatsSchema(t *testing.T, db *sql.DB) {
 	// usage_stats 四表带 success_cost_usd：quota 读点已切成功口径列；
 	// usage_quota_hourly_windows 的 total_cost_usd 本身承载成功口径成本。
 	for _, ddl := range []string{
-		`CREATE TABLE IF NOT EXISTS usage_stats_totals (
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_totals (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			total_cost_usd REAL, success_cost_usd REAL, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
-		`CREATE TABLE IF NOT EXISTS usage_stats_daily (
+			total_cost_usd DOUBLE PRECISION, success_cost_usd DOUBLE PRECISION, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_daily (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE IF NOT EXISTS usage_stats_weekly (
+			stat_date TEXT, total_cost_usd DOUBLE PRECISION, success_cost_usd DOUBLE PRECISION)`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_weekly (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE IF NOT EXISTS usage_stats_monthly (
+			stat_week TEXT, total_cost_usd DOUBLE PRECISION, success_cost_usd DOUBLE PRECISION)`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_stats_monthly (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE IF NOT EXISTS usage_quota_hourly_windows (
+			stat_month TEXT, total_cost_usd DOUBLE PRECISION, success_cost_usd DOUBLE PRECISION)`,
+		`CREATE TABLE IF NOT EXISTS juhe_stats.usage_quota_hourly_windows (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			window_hours INTEGER, total_cost_usd REAL)`,
+			window_hours INTEGER, total_cost_usd DOUBLE PRECISION)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatalf("seed stats schema: %v", err)
@@ -84,11 +89,7 @@ func w1sEnsureStatsSchema(t *testing.T, db *sql.DB) {
 
 func newW1SResetFixture(t *testing.T) *w1sResetFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1s-reset.sqlite3"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := newChainFixturePGDatabase(t)
 	w1sEnsureBusinessSchema(t, db)
 	w1sEnsureStatsSchema(t, db)
 

@@ -29,8 +29,9 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
+
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -597,9 +598,9 @@ type fullchainFixture struct {
 }
 
 // startFullchainFixture 组装：mock 上游（含场景控制器）+ chain 网关 + 真实
-// jobs worker（消费 usage spool 落 shard，让 usage-records 断言面可达）+
-// 管理面登录客户端。复用 acceptance harness（真实二进制 + SQLite 六库 +
-// 私网上游白名单 env）。
+// jobs worker（消费 usage spool 落 PG usage shard，让 usage-records 断言面
+// 可达）+ 管理面登录客户端。复用 acceptance harness（真实二进制 + pgtestkit
+// 隔离 PG 库 + 私网上游白名单 env）。
 func startFullchainFixture(t *testing.T) *fullchainFixture {
 	return startFullchainFixtureExtraEnv(t, nil)
 }
@@ -657,38 +658,31 @@ func (f *fullchainFixture) raiseSystemAPIRateLimits() {
 	}, wantStatus(http.StatusOK))
 }
 
-// startFullchainJobsWorker 以与 jobs 冒烟一致的隔离布局启动 juhe-ai-jobs，
-// 额外接上 gateway 的 usage spool 目录（BUG-0175 D-72 消费侧契约）与共享
-// usage-catalog 库，让用量记录经「gateway spool → jobs drain → usage shard →
-// usage-catalog 注册」的真实交接链进入 usage-records 读模型。
+// startFullchainJobsWorker 以 PG 唯一存储形态启动 juhe-ai-jobs，额外接上
+// gateway 的 usage spool 目录（BUG-0175 D-72 消费侧契约）与同一隔离 PG 库 /
+// Redis namespace，让用量记录经「gateway spool → jobs drain → PG usage
+// shard → usage-catalog 注册」的真实交接链进入 usage-records 读模型。
 func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess {
 	t.Helper()
 	jobsBinary := ensureJobsBinary(t)
 	root := gw.root
 	env := map[string]string{
-		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS":      fmt.Sprintf("127.0.0.1:%d", freePort(t)),
-		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
-		"JUHE_AI_DATABASE_PATH":                   gw.storage["business"],
-		"JUHE_AI_STATS_DATABASE_PATH":             gw.storage["stats"],
-		"JUHE_AI_DATASET_DATABASE_PATH":           gw.storage["dataset"],
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":     gw.storage["usage-catalog"],
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":       gw.storage["runtime-log"],
-		"JUHE_AI_TASK_RUNS_DATABASE_PATH":         filepath.Join(root, "storage", "task-runs.sqlite3"),
-		"JUHE_AI_CHAT_DATABASE_PATH":              gw.storage["chat"],
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  gw.storage["codex-root"],
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "1",
-		"JUHE_AI_CHAT_ASSETS_ROOT":                filepath.Join(root, "storage", "chat-assets"),
-		"JUHE_AI_CODEX_CONTEXT_ROOT":              filepath.Join(root, "storage", "codex-context-root"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                filepath.Join(root, "storage", "usage-jobs-shards"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY":           gw.spoolDir,
-		"JUHE_AI_INSTANCE_ID":                     "fullchain-jobs",
-		"JUHE_AI_WORKER_ROLE":                     "worker",
-		"JUHE_AI_WORKER_REPLICA_INDEX":            "0",
-		"JUHE_AI_SECRET":                          gw.secret,
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":         "fullchain-jobs",
-		"JUHE_AI_RUNTIME_LOG_STORE":               "sqlite",
-		"JUHE_AI_LOG_DIR":                         gw.storage["logs"],
-		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":           "5000",
+		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS": fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+		"JUHE_AI_POSTGRES_URL":               gw.dsn,
+		"JUHE_AI_REDIS_CACHE_URL":            gw.redisURL,
+		"JUHE_AI_REDIS_STATE_URL":            gw.redisURL,
+		"JUHE_AI_REDIS_NAMESPACE":            gw.redisNamespace,
+		"JUHE_AI_DATA_DIR":                   filepath.Join(root, "storage"),
+		"JUHE_AI_CHAT_ASSETS_ROOT":           filepath.Join(root, "storage", "chat-assets"),
+		"JUHE_AI_CODEX_CONTEXT_ROOT":         filepath.Join(root, "storage", "codex-context-root"),
+		"JUHE_AI_USAGE_SPOOL_DIRECTORY":      gw.spoolDir,
+		"JUHE_AI_INSTANCE_ID":                "fullchain-jobs",
+		"JUHE_AI_WORKER_ROLE":                "worker",
+		"JUHE_AI_WORKER_REPLICA_INDEX":       "0",
+		"JUHE_AI_SECRET":                     gw.secret,
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":    "fullchain-jobs",
+		"JUHE_AI_LOG_DIR":                    gw.storage["logs"],
+		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":      "5000",
 	}
 	jobs := startProcess(t, "fullchain-jobs", jobsBinary, envMapToSlice(env))
 	healthURL := fmt.Sprintf("http://%s", env["JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS"])
@@ -1056,14 +1050,14 @@ func (f *fullchainFixture) usageChainTriage() string {
 	if corrupt := firstCorruptSpoolHead(f.gw.spoolDir); corrupt != "" {
 		pieces = append(pieces, "corrupt-sample: "+corrupt)
 	}
-	catalog, err := sql.Open("sqlite", "file:"+f.gw.storage["usage-catalog"]+"?mode=ro")
+	catalog, err := sql.Open("pgx", f.gw.dsn)
 	if err != nil {
 		return strings.Join(pieces, "; ") + fmt.Sprintf("; catalog open: %v", err)
 	}
 	defer catalog.Close()
 	var shards, entries int
-	_ = catalog.QueryRow(`SELECT COUNT(*) FROM usage_record_shards`).Scan(&shards)
-	_ = catalog.QueryRow(`SELECT COUNT(*) FROM usage_record_shard_entries`).Scan(&entries)
+	_ = catalog.QueryRow(`SELECT COUNT(*) FROM juhe_usage.usage_record_shards`).Scan(&shards)
+	_ = catalog.QueryRow(`SELECT COUNT(*) FROM juhe_usage.usage_record_shard_entries`).Scan(&entries)
 	return strings.Join(pieces, "; ") + fmt.Sprintf("; catalog shards=%d entries=%d", shards, entries)
 }
 

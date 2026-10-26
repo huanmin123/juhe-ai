@@ -23,7 +23,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,12 +110,12 @@ func (w1tFailReader) Close() error             { return nil }
 // w1tSeedObservationAsset 写入一条可 claim 的资产行 + user_input 引用行。
 func w1tSeedObservationAsset(t *testing.T, db *sql.DB, assetID string, withReference bool) {
 	t.Helper()
-	if _, err := db.Exec(fixtureBind(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_chat.chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
 		VALUES (?, 'sys-w1t', 'conv-w1t', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`), assetID); err != nil {
 		t.Fatalf("seed 资产行(%s): %v", assetID, err)
 	}
 	if withReference {
-		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
+		if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_chat.chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
 			VALUES (?, 'conv-w1t', 'turn-w1t', 'msg-w1t', 'user_input', '2027-01-01T00:00:00.000Z')`), assetID); err != nil {
 			t.Fatalf("seed 引用行(%s): %v", assetID, err)
 		}
@@ -130,7 +129,7 @@ func w1tSeedObservationAssetBytes(t *testing.T, db *sql.DB, store *w1tObsObjectS
 	data := []byte("w1t-png-bytes")
 	sum := sha256.Sum256(data)
 	storageKey := assetID + "-key"
-	if _, err := db.Exec(fixtureBind(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at,
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_chat.chat_assets (id, system_account_id, conversation_id, expires_at, updated_at,
 			storage_key, processed_mime_type, processed_bytes, processed_sha256, source_kind)
 		VALUES (?, 'sys-w1t', 'conv-w1t', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z',
 			?, 'image/png', ?, ?, ?)`), assetID, storageKey, len(data), hex.EncodeToString(sum[:]), sourceKind); err != nil {
@@ -139,7 +138,7 @@ func w1tSeedObservationAssetBytes(t *testing.T, db *sql.DB, store *w1tObsObjectS
 	if err := store.Write(storageKey, data, int64(len(data)), ""); err != nil {
 		t.Fatalf("写对象存储: %v", err)
 	}
-	if _, err := db.Exec(fixtureBind(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
+	if _, err := db.Exec(fixtureBind(`INSERT INTO juhe_chat.chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
 		VALUES (?, 'conv-w1t', 'turn-w1t', 'msg-w1t', 'user_input', '2027-01-01T00:00:00.000Z')`), assetID); err != nil {
 		t.Fatalf("seed 引用行(%s): %v", assetID, err)
 	}
@@ -213,7 +212,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("关闭句柄 claim 失败", func(t *testing.T) {
-		port := &chatImageObservations{db: w1yOpenClosedSQLite(t), tasks: map[string][]chan struct{}{}}
+		port := &chatImageObservations{db: w1yOpenClosedPG(t), tasks: map[string][]chan struct{}{}}
 		if err := port.runObservation(ctx, w1tObsInput("ast-x"), w1tObsInput("ast-x").Targets[0]); err == nil ||
 			!strings.Contains(err.Error(), "sql: database is closed") {
 			t.Fatalf("关闭句柄 runObservation = %v, want database is closed", err)
@@ -238,7 +237,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 			t.Fatalf("对象存储未接线 runObservation = %v, want 未接线错误", err)
 		}
 		var status string
-		if err := db.QueryRow(`SELECT observation_status FROM chat_assets WHERE id = 'ast-unwired'`).Scan(&status); err != nil {
+		if err := db.QueryRow(`SELECT observation_status FROM juhe_chat.chat_assets WHERE id = 'ast-unwired'`).Scan(&status); err != nil {
 			t.Fatalf("回读状态: %v", err)
 		}
 		if status != "failed" {
@@ -344,7 +343,7 @@ func TestW1TObservationRunArms(t *testing.T) {
 			t.Fatalf("成功路径 runObservation = %v, want nil", err)
 		}
 		var status, observationJSON string
-		if err := db.QueryRow(`SELECT observation_status, observation_json FROM chat_assets WHERE id = 'ast-ok'`).Scan(&status, &observationJSON); err != nil {
+		if err := db.QueryRow(`SELECT observation_status, observation_json FROM juhe_chat.chat_assets WHERE id = 'ast-ok'`).Scan(&status, &observationJSON); err != nil {
 			t.Fatalf("回读观察结果: %v", err)
 		}
 		if status != "ready" {
@@ -404,7 +403,7 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 	t.Run("裸库查询错误臂", func(t *testing.T) {
 		// 裸库无 juhe_business/juhe_stats schema，恰好承载「表缺失必须查询
 		// 失败」负向臂（原 sqlite 裸文件臂重钉，T67 批）。
-		bare := w1uOpenPlainSQLite(t, "w1t-selector-bare.sqlite3")
+		bare := w1uOpenPlainSQLite(t, "w1t-selector-bare")
 		bareSelector, err := newChainAccountsSelector(bare, "w1t-secret", time.Now, 20)
 		if err != nil {
 			t.Fatalf("构造裸库 selector: %v", err)
@@ -528,21 +527,20 @@ func TestW1TLocalAffinityExpiredArm(t *testing.T) {
 // chain_account_locks.go：query_only 写失败臂 + 无主键重复行 CAS 竞争臂
 // ---------------------------------------------------------------------------
 
-// w1tLocksOpenReadWrite 写入锁 schema（无唯一约束，允许重复行）。
+// w1tLocksOpenReadWrite 写入锁 schema（无唯一约束，允许重复行；pgtestkit
+// 隔离 PG 库，原 sqlite 文件夹具随存储形态退役重钉 PG，search_path 让夹具
+// 裸表 DDL 落在生产读取 schema）。
 func w1tLocksOpenReadWrite(t *testing.T, name string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name))
-	if err != nil {
-		t.Fatalf("打开 sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	_ = name
+	db := newChainFixturePGDatabase(t)
 	for _, statement := range []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, type TEXT,
 			status TEXT, schedulable INTEGER DEFAULT 1, cooldown_until TEXT, updated_at TEXT, deleted_at TEXT)`,
 		`CREATE TABLE account_lock_states (account_id TEXT, enabled INTEGER, lock_state TEXT,
 			lock_death_timeout_seconds INTEGER, lock_retry_interval_seconds INTEGER, incident_id TEXT, generation INTEGER,
-			incident_started_at TEXT, deadline_at TEXT, original_status TEXT, provenance TEXT, next_retry_at_ms INTEGER,
-			lease_id TEXT, lease_until_ms INTEGER, updated_at TEXT)`,
+			incident_started_at TEXT, deadline_at TEXT, original_status TEXT, provenance TEXT, next_retry_at_ms BIGINT,
+			lease_id TEXT, lease_until_ms BIGINT, updated_at TEXT)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("建锁表: %v", err)
@@ -573,9 +571,12 @@ func w1tLocksSeedAccount(t *testing.T, db *sql.DB, accountID string) {
 
 func w1tLocksQueryOnly(t *testing.T, rw *sql.DB) *chainAccountLocks {
 	t.Helper()
+	// 单连接池 + 会话级 default_transaction_read_only：读操作照常、写操作以
+	// read-only transaction 错误失败（PG 等价 sqlite PRAGMA query_only 的
+	// 只读连接臂；单连接保证 SET 对后续全部语句生效）。
 	rw.SetMaxOpenConns(1)
-	if _, err := rw.Exec(`PRAGMA query_only = 1`); err != nil {
-		t.Fatalf("设置 query_only: %v", err)
+	if _, err := rw.Exec(`SET default_transaction_read_only = 1`); err != nil {
+		t.Fatalf("设置 read-only 会话: %v", err)
 	}
 	locks, err := newChainAccountLocks(rw, nil)
 	if err != nil {
@@ -604,7 +605,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 	}
 
 	t.Run("恢复自愈 UPDATE 失败", func(t *testing.T) {
-		locks := build(t, "locks-ro-find.sqlite3", func(t *testing.T, db *sql.DB) {
+		locks := build(t, "locks-ro-find", func(t *testing.T, db *sql.DB) {
 			w1tLocksSeedAccount(t, db, "acc-ro-find")
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-ro-find", enabled: 1,
 				lockState: "DEAD_CONFIRMED", deathTimeout: 300, retryInterval: 5, generation: 7})
@@ -614,7 +615,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 	})
 
 	t.Run("RecordFailure UPDATE 失败", func(t *testing.T) {
-		locks := build(t, "locks-ro-fail.sqlite3", func(t *testing.T, db *sql.DB) {
+		locks := build(t, "locks-ro-fail", func(t *testing.T, db *sql.DB) {
 			w1tLocksSeedAccount(t, db, "acc-ro-fail")
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-ro-fail", enabled: 1,
 				lockState: "LOCKED_IDLE", deathTimeout: 300, retryInterval: 5, generation: 3})
@@ -623,7 +624,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 	})
 
 	t.Run("结算 UPDATE 失败", func(t *testing.T) {
-		locks := build(t, "locks-ro-settle.sqlite3", func(t *testing.T, db *sql.DB) {
+		locks := build(t, "locks-ro-settle", func(t *testing.T, db *sql.DB) {
 			w1tLocksSeedAccount(t, db, "acc-ro-settle")
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-ro-settle", enabled: 1,
 				lockState: "ENGAGED", deathTimeout: 300, retryInterval: 5, generation: 4,
@@ -634,7 +635,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 	})
 
 	t.Run("预约租约 UPDATE 失败", func(t *testing.T) {
-		locks := build(t, "locks-ro-acquire.sqlite3", func(t *testing.T, db *sql.DB) {
+		locks := build(t, "locks-ro-acquire", func(t *testing.T, db *sql.DB) {
 			w1tLocksSeedAccount(t, db, "acc-ro-acquire")
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-ro-acquire", enabled: 1,
 				lockState: "ENGAGED", deathTimeout: 300, retryInterval: 5, generation: 2,
@@ -647,7 +648,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 	})
 
 	t.Run("消费租约 UPDATE 失败", func(t *testing.T) {
-		locks := build(t, "locks-ro-consume.sqlite3", func(t *testing.T, db *sql.DB) {
+		locks := build(t, "locks-ro-consume", func(t *testing.T, db *sql.DB) {
 			w1tLocksSeedAccount(t, db, "acc-ro-consume")
 			fixed := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-ro-consume", enabled: 1,
@@ -664,7 +665,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 	})
 
 	t.Run("释放租约 UPDATE 失败", func(t *testing.T) {
-		locks := build(t, "locks-ro-release.sqlite3", func(t *testing.T, db *sql.DB) {
+		locks := build(t, "locks-ro-release", func(t *testing.T, db *sql.DB) {
 			w1tLocksSeedAccount(t, db, "acc-ro-release")
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-ro-release", enabled: 1,
 				lockState: "ENGAGED", deathTimeout: 300, retryInterval: 5, generation: 6,
@@ -680,7 +681,7 @@ func TestW1TAccountLocksReadOnlyWriteArms(t *testing.T) {
 	})
 
 	t.Run("放弃预约 UPDATE 失败", func(t *testing.T) {
-		locks := build(t, "locks-ro-abandon.sqlite3", func(t *testing.T, db *sql.DB) {
+		locks := build(t, "locks-ro-abandon", func(t *testing.T, db *sql.DB) {
 			w1tLocksSeedAccount(t, db, "acc-ro-abandon")
 		})
 		requireWriteErr(t, "AbandonRetryReservationAsync", locks.AbandonRetryReservationAsync(ctx,
@@ -705,7 +706,7 @@ func TestW1TAccountLocksDuplicateRowCASArms(t *testing.T) {
 	}
 
 	t.Run("恢复 CAS 双行命中后按恢复态返回", func(t *testing.T) {
-		db, locks := newLocks(t, "locks-dup-find.sqlite3")
+		db, locks := newLocks(t, "locks-dup-find")
 		w1tLocksSeedAccount(t, db, "acc-dup-find")
 		for i := 0; i < 2; i++ {
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-dup-find", enabled: 1,
@@ -721,7 +722,7 @@ func TestW1TAccountLocksDuplicateRowCASArms(t *testing.T) {
 	})
 
 	t.Run("结算 CAS 双行命中放弃状态迁移", func(t *testing.T) {
-		db, locks := newLocks(t, "locks-dup-settle.sqlite3")
+		db, locks := newLocks(t, "locks-dup-settle")
 		w1tLocksSeedAccount(t, db, "acc-dup-settle")
 		for i := 0; i < 2; i++ {
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-dup-settle", enabled: 1,
@@ -744,7 +745,7 @@ func TestW1TAccountLocksDuplicateRowCASArms(t *testing.T) {
 	})
 
 	t.Run("预约 CAS 双行命中拒绝放行", func(t *testing.T) {
-		db, locks := newLocks(t, "locks-dup-acquire.sqlite3")
+		db, locks := newLocks(t, "locks-dup-acquire")
 		w1tLocksSeedAccount(t, db, "acc-dup-acquire")
 		for i := 0; i < 2; i++ {
 			w1tLocksInsertState(t, db, chainAccountLockRow{accountID: "acc-dup-acquire", enabled: 1,
@@ -774,7 +775,7 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 	t.Run("models 表缺失", func(t *testing.T) {
 		// 裸库无 juhe_business schema，恰好承载「缺 models 表必须查询失败」
 		//（原 sqlite 裸文件臂重钉，T67 批）。
-		source, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-cat-bare.sqlite3"))
+		source, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-cat-bare"))
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
@@ -863,8 +864,8 @@ func TestW1TBalanceRefresherEmptySecretArms(t *testing.T) {
 func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 	t.Run("空 Secret 组合失败", func(t *testing.T) {
 		composed := &composition{
-			db:      w1uOpenPlainSQLite(t, "w1t-rt-sec-b.sqlite3"),
-			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-sec-s.sqlite3"),
+			db:      w1uOpenPlainSQLite(t, "w1t-rt-sec-b"),
+			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-sec-s"),
 		}
 		cfg := runtimeConfig{Secret: "", DispatchAccountCandidateLimit: 20}
 		if _, err := composeChainRuntimeServices(composed, cfg, w1tSettingValue); err == nil {
@@ -874,8 +875,8 @@ func TestW1TRuntimeComposeSecretAndDriverArms(t *testing.T) {
 
 	t.Run("坏 state redis URL 组合失败", func(t *testing.T) {
 		composed := &composition{
-			db:      w1uOpenPlainSQLite(t, "w1t-rt-drv-b.sqlite3"),
-			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-drv-s.sqlite3"),
+			db:      w1uOpenPlainSQLite(t, "w1t-rt-drv-b"),
+			statsDB: w1uOpenPlainSQLite(t, "w1t-rt-drv-s"),
 		}
 		cfg := runtimeConfig{
 			Secret: "w1t-runtime-secret", RedisStateURL: "redis://[::w1t-bad-url",

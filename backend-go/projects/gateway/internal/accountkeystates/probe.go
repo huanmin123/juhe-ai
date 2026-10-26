@@ -142,6 +142,7 @@ type probeFence struct {
 	provided      bool
 	sql           string
 	params        []any
+	claimLease    bool
 	invalidReason string
 }
 
@@ -177,6 +178,7 @@ func buildProbeFence(expected ExpectedProbeState, columnPrefix string) probeFenc
 			return probeFence{provided: true, invalidReason: "invalid_expected_probe_claim_token"}
 		}
 		fence.provided = true
+		fence.claimLease = true
 		fence.sql += "\n        AND " + columnPrefix + "probe_claim_token = ?"
 		fence.params = append(fence.params, token)
 	}
@@ -191,7 +193,7 @@ func buildProbeFence(expected ExpectedProbeState, columnPrefix string) probeFenc
 
 // configRevisionFence 等价 expectedAccountConfigRevisionFence（不带 Node PG
 // 分支的 FOR UPDATE，见文件头偏差披露）。
-func (s *Store) configRevisionFence(expected ExpectedProbeState, stateAccountIDColumn, columnPrefix string) (string, []any) {
+func (s *Store) configRevisionFence(expected ExpectedProbeState, stateAccountIDColumn string) (string, []any) {
 	if expected.AccountConfigRevision == nil {
 		return "", nil
 	}
@@ -201,8 +203,8 @@ func (s *Store) configRevisionFence(expected ExpectedProbeState, stateAccountIDC
           FROM %s probe_account
           WHERE probe_account.id = %s
             AND probe_account.deleted_at IS NULL
-            AND %sprobe_account.config_revision = ?
-        )`, s.businessTable("accounts"), stateAccountIDColumn, columnPrefix)
+            AND probe_account.config_revision = ?
+        )`, s.businessTable("accounts"), stateAccountIDColumn)
 	return sqlText, []any{*expected.AccountConfigRevision}
 }
 
@@ -491,7 +493,7 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
 		recoverySQL = "?"
 		recoveryParams = []any{recoveryStartedAt}
 	}
-	configFenceSQL, configFenceParams := s.configRevisionFence(input.Expected, s.writeColumn("account_id"), s.writePrefix())
+	configFenceSQL, configFenceParams := s.configRevisionFence(input.Expected, s.writeColumn("account_id"))
 
 	fencedUpdate := func() (WriteResult, error) {
 		query := s.bind(fmt.Sprintf(`
@@ -504,8 +506,9 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
           probe_claim_token = NULL, probe_claimed_until = NULL,
           updated_at = ?
       WHERE %s = ? AND %s = ?
-        AND %s
+        AND %s <> 'disabled'
         AND (%s IS NULL OR %s < ?)
+        %s
         %s
         %s
         %s
@@ -513,7 +516,7 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
 			s.writeColumn("account_id"), s.writeColumn("key_fingerprint"),
 			s.writeColumn("status"),
 			s.writeColumn("last_attempt_at"), s.writeColumn("last_attempt_at"),
-			s.genericGuard(), expectedFence.sql, configFenceSQL))
+			s.genericGuard(), expectedFence.sql, claimLeaseGuard(s, expectedFence), configFenceSQL))
 		params := []any{
 			target.SystemAccountID, target.KeyIndex, status,
 			s.instantParam(persistedCooldownUntil), s.instantParam(nextProbeAt), nextBackoff,
@@ -524,6 +527,7 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
 			target.AccountID, target.KeyFingerprint, s.instantParam(observedAt))
 		params = append(params, genericGuardParams(input.QuotaRecoveryMode, observedAt, s.instantParam)...)
 		params = append(params, expectedFence.params...)
+		params = append(params, claimLeaseGuardParams(s, expectedFence, now)...)
 		params = append(params, configFenceParams...)
 		result, err := s.db.ExecContext(ctx, query, params...)
 		if err != nil {
@@ -610,7 +614,7 @@ func (s *Store) RecordSuccess(ctx context.Context, account TargetInput, input Su
 	}
 	now := s.nowISO()
 	observedAt := normalizeObservedAt(input.ObservedAt, now)
-	configFenceSQL, configFenceParams := s.configRevisionFence(input.Expected, s.writeColumn("account_id"), s.writePrefix())
+	configFenceSQL, configFenceParams := s.configRevisionFence(input.Expected, s.writeColumn("account_id"))
 
 	if expectedFence.provided {
 		query := s.bind(fmt.Sprintf(`
@@ -624,20 +628,22 @@ func (s *Store) RecordSuccess(ctx context.Context, account TargetInput, input Su
           probe_claim_token = NULL, probe_claimed_until = NULL,
           updated_at = ?
       WHERE %s = ? AND %s = ?
-        AND %s
+        AND %s <> 'disabled'
         AND (%s IS NULL OR %s <= ?)
+        %s
         %s
         %s
     `, s.updateTarget(),
 			s.writeColumn("account_id"), s.writeColumn("key_fingerprint"),
 			s.writeColumn("status"),
 			s.writeColumn("last_attempt_at"), s.writeColumn("last_attempt_at"),
-			expectedFence.sql, configFenceSQL))
+			expectedFence.sql, claimLeaseGuard(s, expectedFence), configFenceSQL))
 		params := []any{
 			target.SystemAccountID, target.KeyIndex, s.instantParam(observedAt), s.instantParam(observedAt), now,
 			target.AccountID, target.KeyFingerprint, s.instantParam(observedAt),
 		}
 		params = append(params, expectedFence.params...)
+		params = append(params, claimLeaseGuardParams(s, expectedFence, now)...)
 		params = append(params, configFenceParams...)
 		result, err := s.db.ExecContext(ctx, query, params...)
 		if err != nil {
@@ -719,7 +725,7 @@ func (s *Store) DeferProbe(ctx context.Context, account TargetInput, input Defer
 	if input.BreakQuotaRecoveryWindow {
 		recoverySQL = "NULL"
 	}
-	configFenceSQL, configFenceParams := s.configRevisionFence(input.Expected, s.writeColumn("account_id"), s.writePrefix())
+	configFenceSQL, configFenceParams := s.configRevisionFence(input.Expected, s.writeColumn("account_id"))
 	query := s.bind(fmt.Sprintf(`
     UPDATE %s
     SET next_probe_at = ?,
@@ -1011,4 +1017,21 @@ func boolSQL(value bool) string {
 		return "TRUE"
 	}
 	return "FALSE"
+}
+
+// claimLeaseGuard 给携带 claim token 的围栏补上租约有效性谓词：认领者只能在
+// 自己的租约窗口内写入，租约过期后（即使 token 尚未被他人覆盖）按 stale 拒绝。
+func claimLeaseGuard(s *Store, fence probeFence) string {
+	if !fence.claimLease {
+		return ""
+	}
+	column := s.writeColumn("probe_claimed_until")
+	return "AND (" + column + " IS NULL OR " + column + " > ?)"
+}
+
+func claimLeaseGuardParams(s *Store, fence probeFence, now string) []any {
+	if !fence.claimLease {
+		return nil
+	}
+	return []any{s.instantParam(now)}
 }

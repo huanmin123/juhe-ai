@@ -3,18 +3,18 @@ package main
 // w2（调度与状态核心组残余覆盖批次，w2a/TestW2A 前缀）：对照
 // %TEMP%/w1pkg-FINAL2.out 的零计数块逐块补测。全部进程内确定性驱动，
 // 不启动插桩二进制、不连接真实 dev PG/Redis（所有目标臂都可用
-// 关闭的 sqlite / 拒连 redis 地址 / 脚本化 database/sql driver 触达）。
+// 关闭的 PG 句柄 / 拒连 redis 地址 / 脚本化 database/sql driver 触达）。
 //
 // 覆盖手段：
 //  1. 直接调用包内函数/方法（error_policy 纯函数、routing 投影、
 //     preflight 窄口守卫、apikey_rotation / turn_retry redis 适配器的
 //     构造期错误臂）。
-//  2. 关闭的 sqlite 句柄 / 视图表制造 SQL 错误（error_policy_effects
+//  2. 关闭的 PG 句柄 / 视图表制造 SQL 错误（error_policy_effects
 //     写侧、routing cache 读侧）。
 //  3. 脚本化 database/sql driver（w2aScriptedSQL）：按调用次序返回行/
 //     错误/RowsAffected，覆盖 chain_account_locks 的 CAS 竞争与事务
 //     错误臂、newChainListAvailabilityDirtyMarker 闭包错误臂。
-//  4. 组合根直驱 composeChainRuntimeServices（sqlite fixture schema +
+//  4. 组合根直驱 composeChainRuntimeServices（PG fixture schema +
 //     memory/redis 驱动轴变体）覆盖 quota shared namespace、key-model
 //     选择器错误臂与 keyStates/效果链运行态失效闭包。
 //
@@ -84,8 +84,8 @@ package main
 //     驱动下 remember 恒成功，ThrowOnRedisError 分支无失败源）。
 //     （w3 保留：行为顺序依赖，不是死代码，维持登记）。
 //
-// 隔离说明：全部使用进程内 sqlite（t.TempDir）与 redis.ParseURL 可解析
-// 但拒连的 127.0.0.1:1 地址，不触碰任何真实数据库与 Redis 实例。
+// 隔离说明：数据库臂使用 pgtestkit 隔离 PG 库与关闭句柄，redis 用
+// ParseURL 可解析但拒连的 127.0.0.1:1 地址，不触碰任何真实数据库与 Redis 实例。
 
 import (
 	"context"
@@ -102,7 +102,10 @@ import (
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
@@ -145,16 +148,14 @@ func w2aGatewayRequestWithModel(rawBody string) *gatewaypreauth.GatewayRequest {
 	return &gatewaypreauth.GatewayRequest{HTTP: httpReq, Body: body}
 }
 
-// w2aClosedSQLiteDB 打开随后立即关闭的 sqlite 句柄（后续所有 SQL 报
-// "sql: database is closed"）。
-func w2aClosedSQLiteDB(t *testing.T) *sql.DB {
+// w2aClosedPG 打开随后立即关闭的 pgtestkit 隔离 PG 句柄（后续所有 SQL 报
+// "sql: database is closed"，与驱动无关；原 sqlite 关闭句柄夹具随存储形态
+// 退役重钉 PG）。
+func w2aClosedPG(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", t.TempDir()+"/w2a-closed.sqlite3")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
+	db := pgtestkit.New(t)
 	if err := db.Close(); err != nil {
-		t.Fatalf("close sqlite: %v", err)
+		t.Fatalf("close PG 句柄: %v", err)
 	}
 	return db
 }
@@ -162,7 +163,7 @@ func w2aClosedSQLiteDB(t *testing.T) *sql.DB {
 // w2aBrokenRoutingCache 构造底库已关闭的运行态缓存服务。
 func w2aBrokenRoutingCache(t *testing.T) *gatewayruntimecache.Service {
 	t.Helper()
-	models, err := gatewayruntimecache.NewSQLReadModels(w2aClosedSQLiteDB(t), time.Now, nil, nil, nil)
+	models, err := gatewayruntimecache.NewSQLReadModels(w2aClosedPG(t), time.Now, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create read models: %v", err)
 	}
@@ -174,21 +175,13 @@ func w2aBrokenRoutingCache(t *testing.T) *gatewayruntimecache.Service {
 	return cache
 }
 
-// w2aFixtureDatabases 复用 chain_test.go 的种子 schema 建独立 sqlite
-// 业务库/统计库（不与既有 fixture 共享文件）。
+// w2aFixtureDatabases 复用 chain_test.go 的种子 schema 建独立 pgtestkit
+// 隔离 PG 业务库/统计库（newChainFixturePGDatabase 同款惯例，不与既有
+// fixture 共享实例；原 sqlite 双文件夹具随存储形态退役重钉 PG）。
 func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 	t.Helper()
-	root := t.TempDir()
-	db, err := sql.Open("sqlite", root+"/w2a-business.sqlite3")
-	if err != nil {
-		t.Fatalf("open business db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	statsDB, err := sql.Open("sqlite", root+"/w2a-stats.sqlite3")
-	if err != nil {
-		t.Fatalf("open stats db: %v", err)
-	}
-	t.Cleanup(func() { _ = statsDB.Close() })
+	db := newChainFixturePGDatabase(t)
+	statsDB := db
 	seedChainBusinessSchema(t, db)
 	seedChainStatsSchema(t, statsDB)
 	// 系统设置：settings.Load 断言 SystemSettingKeys 全部存在（仅 5 个
@@ -625,17 +618,13 @@ func TestW2ASpeedFirstAdmissionCtxCancelledAborts(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW2AProbeOutboxIndexCreateFailure(t *testing.T) {
-	db, err := sql.Open("sqlite", t.TempDir()+"/w2a-outbox.sqlite3")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	// 预置同名表占用索引名：CREATE TABLE IF NOT EXISTS 幂等成功（既有表
-	// 即可），随后 CREATE INDEX IF NOT EXISTS 因索引名与表名冲突而失败
-	// （SQLite 中索引与表共用命名空间）。
+	db := newChainFixturePGDatabase(t)
+	// 预置缺索引列的窄表占用表名：CREATE TABLE IF NOT EXISTS 幂等成功（既有
+	// 表即可），随后 CREATE INDEX IF NOT EXISTS 按 (status, available_at,
+	// created_at, request_id) 建索引时因列不存在失败（42703；PG 的
+	// IF NOT EXISTS 对同名非索引关系静默跳过，不能用 sqlite 的同名表占位法）。
 	for _, statement := range []string{
-		`CREATE TABLE account_health_probe_request_outbox (request_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, reason TEXT NOT NULL, trace_id TEXT NOT NULL DEFAULT '', source_fence TEXT NOT NULL DEFAULT '', deadline_at TEXT NOT NULL, status TEXT NOT NULL, consumed_at TEXT, available_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE idx_account_health_probe_request_outbox_pending (placeholder TEXT)`,
+		`CREATE TABLE account_health_probe_request_outbox (request_id TEXT PRIMARY KEY)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed: %v: %v", statement, err)
@@ -757,16 +746,19 @@ func TestW2AQuotaRecoveryWeeklyScheduleRead(t *testing.T) {
 // chain_error_policy_effects.go
 // ---------------------------------------------------------------------------
 
-// w2aErrorPolicyBridgeViews 建一个以同名视图承载 accounts 的 sqlite 库：
-// SELECT 可读，UPDATE 触发 "cannot modify" 错误。
+// w2aErrorPolicyBridgeViews 建一个以同名视图承载 juhe_business.accounts 的
+// pgtestkit 隔离 PG 库：SELECT 可读，UPDATE 触发 "cannot update view" 错误
+//（原 sqlite 视图夹具随存储形态退役重钉 PG）。
 func w2aErrorPolicyBridgeViews(t *testing.T, expiresAt string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", t.TempDir()+"/w2a-view.sqlite3")
-	if err != nil {
-		t.Fatalf("open view db: %v", err)
+	db := newChainFixturePGDatabase(t)
+	// 先建同名表再替换为视图（PG 同样要求先 DROP 关系才能 CREATE VIEW）。
+	if _, err := db.Exec(`CREATE TABLE accounts (id TEXT)`); err != nil {
+		t.Fatalf("seed table: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	// 先建同名表再替换为视图（SQLite 需要先 DROP TABLE 才能 CREATE VIEW）。
+	if _, err := db.Exec(`DROP TABLE accounts`); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
 	if _, err := db.Exec(`CREATE TABLE accounts (id TEXT)`); err != nil {
 		t.Fatalf("seed table: %v", err)
 	}
@@ -833,7 +825,7 @@ func TestW2AErrorPolicyEffectsBridgeClosures(t *testing.T) {
 func TestW2AErrorPolicyApplyDecisionErrorArms(t *testing.T) {
 	// 关闭句柄：loadAccountRuntimeRow 直接报错 → disable/cooldown 两个
 	// Apply 出口（238-240 / 247-249）与非 ErrNoRows 的 409-411。
-	bridge := &chainErrorPolicyEffectsBridge{db: w2aClosedSQLiteDB(t), now: time.Now}
+	bridge := &chainErrorPolicyEffectsBridge{db: w2aClosedPG(t), now: time.Now}
 	account := gatewaydispatch.AccountCandidate{ID: "w2a-acc", Status: "active"}
 	if _, _, err := bridge.ApplyAccountErrorPolicyDecision(context.Background(), account, w2aErrorPolicyDecision(decisionActionDisable), chainErrorPolicyFailureInput{}); err == nil {
 		t.Fatalf("disable on closed db must fail")
@@ -920,12 +912,12 @@ func TestW2AAccountLocksFindStateLosesRecoveryRaces(t *testing.T) {
 	steps := []w2aScriptedStep{}
 	for i := 0; i < 3; i++ {
 		steps = append(steps,
-			w2aScriptedStep{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
-			w2aScriptedStep{contains: "FROM accounts", cols: []string{"status", "schedulable"}, row: []driver.Value{"active", int64(1)}},
-			w2aScriptedStep{contains: "UPDATE account_lock_states", affected: 0},
+			w2aScriptedStep{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
+			w2aScriptedStep{contains: "FROM juhe_business.accounts", cols: []string{"status", "schedulable"}, row: []driver.Value{"active", int64(1)}},
+			w2aScriptedStep{contains: "UPDATE juhe_business.account_lock_states", affected: 0},
 		)
 	}
-	steps = append(steps, w2aScriptedStep{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row})
+	steps = append(steps, w2aScriptedStep{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row})
 	port := w2aLocksPort(w2aOpenScriptedDB(t, steps))
 	result, err := port.FindStateAsync(context.Background(), "w2a-acc")
 	if err != nil || result == nil {
@@ -942,7 +934,7 @@ func TestW2AAccountLocksSettleTransactionArms(t *testing.T) {
 
 	// 431-433：BeginTx 失败。
 	steps := []w2aScriptedStep{
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
 		{contains: "BEGIN", beginErr: errors.New("w2a: begin refused")},
 	}
 	if err := w2aLocksPort(w2aOpenScriptedDB(t, steps)).SettleDeadlineAsync(ctx, "w2a-acc", time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC).UnixMilli(), nil); err == nil {
@@ -951,7 +943,7 @@ func TestW2AAccountLocksSettleTransactionArms(t *testing.T) {
 
 	// 442-444：事务内读为空（行已被并发迁移）。
 	steps = []w2aScriptedStep{
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
 		{contains: "BEGIN"},
 		{contains: "SELECT lock_state", noRows: true},
 	}
@@ -961,7 +953,7 @@ func TestW2AAccountLocksSettleTransactionArms(t *testing.T) {
 
 	// 445-447：事务内读直接报错。
 	steps = []w2aScriptedStep{
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
 		{contains: "BEGIN"},
 		{contains: "SELECT lock_state", rowsErr: errors.New("w2a: tx read refused")},
 	}
@@ -971,10 +963,10 @@ func TestW2AAccountLocksSettleTransactionArms(t *testing.T) {
 
 	// 487-489：结算 UPDATE 命中后 Commit 失败。
 	steps = []w2aScriptedStep{
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: w2aLockRow("ENGAGED", due, "inc-1", 7)},
 		{contains: "BEGIN"},
 		{contains: "SELECT lock_state", cols: []string{"lock_state", "generation", "deadline_at", "incident_id", "original_status", "lease_id"}, row: []driver.Value{"ENGAGED", int64(7), due, "inc-1", "disabled", nil}},
-		{contains: "UPDATE account_lock_states", affected: 1},
+		{contains: "UPDATE juhe_business.account_lock_states", affected: 1},
 		{contains: "COMMIT", commitErr: errors.New("w2a: commit refused")},
 	}
 	if err := w2aLocksPort(w2aOpenScriptedDB(t, steps)).SettleDeadlineAsync(ctx, "w2a-acc", time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC).UnixMilli(), nil); err == nil {
@@ -1189,6 +1181,7 @@ func TestW2AComposeQuotaSharedNamespaceError(t *testing.T) {
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
 		RedisCacheURL:                 "redis://127.0.0.1:1",
+		RedisStateURL:                 "redis://127.0.0.1:1",
 		RedisNamespace:                "",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
@@ -1227,6 +1220,7 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 	}
 	db, statsDB := w2aFixtureDatabases(t)
 	cfg := runtimeConfig{
+		RedisCacheURL:                 stateURL,
 		RedisStateURL:                 stateURL,
 		RedisNamespace:                "juhe-ai:dev:w1cover:" + strings.Repeat("w2a", 30),
 		Secret:                        "w2a-compose-secret",
@@ -1244,7 +1238,14 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 
 func TestW2AComposeRuntimeInvalidationClosures(t *testing.T) {
 	db, statsDB := w2aFixtureDatabases(t)
+	// 存储收口后恒建 redis 客户端：miniredis 提供进程内 redis（不触真实
+	// 实例），键空间由专用 namespace 隔离。
+	server := miniredis.RunT(t)
+	redisURL := "redis://" + server.Addr()
 	cfg := runtimeConfig{
+		RedisCacheURL:                 redisURL,
+		RedisStateURL:                 redisURL,
+		RedisNamespace:                "juhe-ai:dev:w2a-compose",
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
 	}

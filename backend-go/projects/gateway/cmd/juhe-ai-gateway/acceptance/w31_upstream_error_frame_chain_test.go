@@ -102,19 +102,20 @@ func TestW31StreamTopLevelErrorFrameAfterCommitNeverReachesClient(t *testing.T) 
 	}
 
 	// 审计 attempts：error_phase=stream + 上游错误原文（异步落库，轮询）。
-	auditPath := upstream.fixture.root + "/storage/audit.sqlite3"
+	// PG 唯一形态：直连网关隔离库读 juhe_dataset 审计数据集（原 sqlite
+	// audit.sqlite3 文件轮询随存储形态退役重钉 pgx DSN）。
+	db, err := sql.Open("pgx", upstream.fixture.dsn)
+	if err != nil {
+		t.Fatalf("open audit db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
 	deadline := time.Now().Add(20 * time.Second)
 	matched := false
 	for time.Now().Before(deadline) {
-		db, err := sql.Open("sqlite", "file:"+auditPath+"?mode=ro&_pragma=busy_timeout(5000)")
-		if err != nil {
-			t.Fatalf("open audit db: %v", err)
-		}
 		var count int
 		queryErr := db.QueryRow(
-			`SELECT COUNT(*) FROM audit_log_attempts WHERE error_phase = 'stream' AND error_message = ?`,
+			`SELECT COUNT(*) FROM juhe_dataset.audit_log_attempts WHERE error_phase = 'stream' AND error_message = $1`,
 			"upstream sent an error event").Scan(&count)
-		_ = db.Close()
 		if queryErr == nil && count >= 1 {
 			matched = true
 			break
@@ -122,7 +123,7 @@ func TestW31StreamTopLevelErrorFrameAfterCommitNeverReachesClient(t *testing.T) 
 		time.Sleep(300 * time.Millisecond)
 	}
 	if !matched {
-		t.Fatalf("audit_log_attempts 未在时限内出现 error_phase=stream 且 error_message=上游原文的记录（db=%s）", auditPath)
+		t.Fatalf("audit_log_attempts 未在时限内出现 error_phase=stream 且 error_message=上游原文的记录")
 	}
 }
 

@@ -19,8 +19,7 @@ import (
 type Mode uint8
 
 const (
-	SQLite Mode = iota + 1
-	Postgres
+	Postgres Mode = iota + 1
 )
 
 const SessionCookieName = "juhe_ai_session"
@@ -50,7 +49,7 @@ type Authenticator struct {
 }
 
 func New(db *sql.DB, mode Mode, now func() time.Time) (*Authenticator, error) {
-	if db == nil || (mode != SQLite && mode != Postgres) {
+	if db == nil || mode != Postgres {
 		return nil, errors.New("invalid model check management authenticator")
 	}
 	if now == nil {
@@ -75,14 +74,12 @@ func (a *Authenticator) CheckContract(ctx context.Context) error {
 			return fmt.Errorf("verify management auth relation %s: %w", relation, err)
 		}
 	}
-	if a.mode == Postgres {
-		var permitted bool
-		if err := tx.QueryRowContext(ctx, `SELECT has_table_privilege(current_user, 'juhe_business.system_sessions', 'UPDATE')`).Scan(&permitted); err != nil {
-			return fmt.Errorf("read management session update privilege: %w", err)
-		}
-		if !permitted {
-			return errors.New("management role lacks system session touch privilege")
-		}
+	var permitted bool
+	if err := tx.QueryRowContext(ctx, `SELECT has_table_privilege(current_user, 'juhe_business.system_sessions', 'UPDATE')`).Scan(&permitted); err != nil {
+		return fmt.Errorf("read management session update privilege: %w", err)
+	}
+	if !permitted {
+		return errors.New("management role lacks system session touch privilege")
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit management auth contract transaction: %w", err)
@@ -197,15 +194,9 @@ func cookieValue(header, name string) string {
 }
 
 func (a *Authenticator) table(name string) string {
-	if a.mode == Postgres {
-		return "juhe_business." + name
-	}
-	return name
+	return "juhe_business." + name
 }
 func (a *Authenticator) bind(query string) string {
-	if a.mode != Postgres {
-		return query
-	}
 	for index := 1; strings.Contains(query, "?"); index++ {
 		query = strings.Replace(query, "?", fmt.Sprintf("$%d", index), 1)
 	}

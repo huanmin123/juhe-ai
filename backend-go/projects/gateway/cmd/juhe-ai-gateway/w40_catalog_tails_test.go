@@ -8,9 +8,10 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -281,10 +282,9 @@ func TestChainCatalogSourceVendorCodesIdentity(t *testing.T) {
 }
 
 func TestChainCatalogSourceClosedDBErrorArms(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:w40-closed-catalog?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	// pgtestkit 隔离 PG 句柄（原 sqlite 内存库夹具随存储形态退役重钉 PG），
+	// 打开即关闭：目录读取报 "sql: database is closed"（148 臂）。
+	db := pgtestkit.New(t)
 	source, err := newChainCatalogSource(db)
 	if err != nil {
 		t.Fatalf("create source: %v", err)

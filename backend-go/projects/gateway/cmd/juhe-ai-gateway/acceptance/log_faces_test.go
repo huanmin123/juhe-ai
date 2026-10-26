@@ -4,53 +4,76 @@
 // 2026-09-28 默认开启整改后，未配 JUHE_AI_LOG_DIR 时组合根派生
 // <DATA_DIR>/logs（写侧 NewFileSink 代建目录），grep 面可用——无命中时
 // available:true + "没有匹配"提示；只有显式 disabled 才落回禁用契约。
+// PostgreSQL + Redis 唯一存储形态：runtime-logs 读面经 juhe_dataset schema，
+// F1 数据集表由 jobs 进程自建——fresh 验收环境由 harness 按生产 DDL 预置。
 package acceptance
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
-	"os"
 	"testing"
-
-	_ "modernc.org/sqlite"
+	"time"
 )
 
 // provisionRuntimeLogDataset mirrors a deployed F1 indexer for fresh
-// acceptance boots: the runtime-log SQLite file is F1-jobs-owned (the
-// gateway only opens it read-only), so the minimal dataset schema is applied
-// here to make the runtime-logs read faces answerable.
-func provisionRuntimeLogDataset(t *testing.T, path string) {
+// acceptance boots：F1 runtime-log 数据集表由 jobs 进程自建（jobs internal
+// runtimelog schema 的 PG DDL，juhe_dataset 限定；跨模块不可导入，此处按
+// 生产 DDL 摘录建读面四表 + 索引），让 runtime-logs 读面可答。
+func provisionRuntimeLogDataset(t *testing.T, dsn string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open runtime-log dataset: %v", err)
 	}
 	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	statements := []string{
-		`CREATE TABLE IF NOT EXISTS runtime_logs (
-		  id TEXT PRIMARY KEY, log_file TEXT, log_offset INTEGER, line_number INTEGER,
-		  time TEXT NOT NULL, level TEXT NOT NULL, trace_id TEXT, event TEXT, message TEXT,
-		  error_message TEXT, raw_json TEXT NOT NULL, created_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS runtime_log_facet_summary (
-		  bucket_key TEXT PRIMARY KEY, total_count INTEGER NOT NULL DEFAULT 0,
-		  earliest_time TEXT, latest_time TEXT, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS runtime_log_level_facets (
-		  bucket_key TEXT NOT NULL, level TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
-		  updated_at TEXT NOT NULL, PRIMARY KEY (bucket_key, level))`,
-		`CREATE TABLE IF NOT EXISTS runtime_log_event_facets (
-		  bucket_key TEXT NOT NULL, event TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
-		  latest_time TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (bucket_key, event))`,
+		`CREATE SCHEMA IF NOT EXISTS juhe_dataset`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_logs (
+		  id text PRIMARY KEY,
+		  log_file text,
+		  log_offset bigint,
+		  line_number integer,
+		  time timestamptz NOT NULL,
+		  level text NOT NULL,
+		  trace_id text,
+		  event text,
+		  message text,
+		  error_message text,
+		  raw_json text NOT NULL,
+		  created_at timestamptz NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_facet_summary (
+		  bucket_key text PRIMARY KEY,
+		  total_count integer NOT NULL DEFAULT 0,
+		  earliest_time timestamptz,
+		  latest_time timestamptz,
+		  updated_at timestamptz NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_level_facets (
+		  bucket_key text NOT NULL,
+		  level text NOT NULL,
+		  count integer NOT NULL DEFAULT 0,
+		  updated_at timestamptz NOT NULL,
+		  PRIMARY KEY (bucket_key, level)
+		)`,
+		`CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_event_facets (
+		  bucket_key text NOT NULL,
+		  event text NOT NULL,
+		  count integer NOT NULL DEFAULT 0,
+		  latest_time timestamptz,
+		  updated_at timestamptz NOT NULL,
+		  PRIMARY KEY (bucket_key, event)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_runtime_logs_time ON juhe_dataset.runtime_logs(time DESC, id DESC)`,
 	}
 	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("provision runtime-log dataset: %v", err)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close runtime-log dataset: %v", err)
-	}
-	_ = os.Remove(path + "-wal")
-	_ = os.Remove(path + "-shm")
 }
 
 func TestAcceptanceLogReadFaces(t *testing.T) {

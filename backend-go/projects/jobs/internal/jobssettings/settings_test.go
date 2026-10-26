@@ -1,18 +1,25 @@
 // Read-model tests for the jobs system_settings source: stored-value wins,
 // missing rows fall back to DEFAULT_SYSTEM_SETTINGS, the integer/bounds
-// guards reproduce the Node error messages, the missing-table degradation
-// warns once, and the 60s window shields repeat reads.
+// guards reproduce the Node error messages, the failed-read degradation
+// warns, and the 60s window shields repeat reads. 夹具走 pgtestkit 隔离
+// PG 测试库 + juhe_business.system_settings（生产 schema 前缀），Source
+// 统一以 Mode: Postgres 生产模式装配。
+//
+// PG 模式失败语义（settings.go 包注释）：任何设置读失败（含表缺失）都
+// 告警 background_job_settings_snapshot_refresh_failed 并回落默认值；
+// SQLite 分支的"非缺表读错误上抛"与 missingOnce 去重属已退役方言语义，
+// 不再有对应断言（原 TestSourceMissingTableWarnsOnceAndDegrades 与
+// TestSourceOtherReadErrorsPropagate 随夹具迁移重钉/删除）。
 package jobssettings
 
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 type warnCollector struct {
@@ -38,31 +45,36 @@ func (c *warnCollector) snapshot() (int, []string) {
 	return c.count, append([]string(nil), c.events...)
 }
 
+// newSettingsDB 打开 pgtestkit 隔离 PG 测试库并按生产 schema 前缀建
+// juhe_business.system_settings（生产列形：text 列 + (system_account_id,
+// key) 主键；指向 system_accounts 的外键属跨表管理面契约，非本读模型行为
+// 面，夹具不复刻）。withTable=false 只建 schema 命名空间，模拟设置表未
+// 初始化。
 func newSettingsDB(t *testing.T, withTable bool) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:jobssettings-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	if withTable {
-		if _, err := db.Exec(`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`); err != nil {
-			t.Fatal(err)
+	return pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA juhe_business`); err != nil {
+			return err
 		}
-	}
-	return db
+		if !withTable {
+			return nil
+		}
+		_, err := db.ExecContext(ctx, `CREATE TABLE juhe_business.system_settings (system_account_id text NOT NULL, key text NOT NULL, value_json text NOT NULL, updated_at text NOT NULL, PRIMARY KEY (system_account_id, key))`)
+		return err
+	})
 }
 
+// insertSetting 以 PG upsert 写入设置行（sqlite 夹具的 INSERT OR REPLACE
+// 改写为 ON CONFLICT DO UPDATE；updated_at 不被读模型消费，定值即可）。
 func insertSetting(t *testing.T, db *sql.DB, key, valueJSON string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT OR REPLACE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, '2026-09-04T00:00:00.000Z')`, key, valueJSON); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', $1, $2, '2026-09-04T00:00:00.000Z') ON CONFLICT (system_account_id, key) DO UPDATE SET value_json = EXCLUDED.value_json`, key, valueJSON); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func newTestSource(db *sql.DB, warn *warnCollector, now func() time.Time) *Source {
-	return NewSource(Options{DB: db, Mode: SQLite, Warn: warn.warn, Now: now})
+	return NewSource(Options{DB: db, Mode: Postgres, Warn: warn.warn, Now: now})
 }
 
 func TestSourceStoredValueWins(t *testing.T) {
@@ -116,33 +128,34 @@ func TestSourceIntegerAndBoundsErrors(t *testing.T) {
 	}
 }
 
-func TestSourceMissingTableWarnsOnceAndDegrades(t *testing.T) {
+func TestSourceMissingTableDegradesToDefaultsWithWarn(t *testing.T) {
 	db := newSettingsDB(t, false)
 	warn := newWarnCollector()
-	source := newTestSource(db, warn, time.Now)
-	for index := 0; index < 2; index++ {
-		value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000)
-		if err != nil {
-			t.Fatalf("missing-table degrade %d: %v", index, err)
-		}
-		if value != 2000 {
-			t.Fatalf("missing-table fallback mismatch: %d", value)
-		}
+	current := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	source := newTestSource(db, warn, func() time.Time { return current })
+	// 表缺失：PG 模式按快照刷新失败降级默认值并告警。
+	value, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000)
+	if err != nil || value != 2000 {
+		t.Fatalf("missing-table degrade: value=%d err=%v", value, err)
+	}
+	// 60s 窗口内的重复读取由快照承接，不触库、不新增告警。
+	if value, err = source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 2000 {
+		t.Fatalf("cached degrade: value=%d err=%v", value, err)
+	}
+	// 窗口过期后重新读库：PG 模式每次刷新失败都重新告警（missingOnce 去重
+	// 属 SQLite 分支语义，PG 路径与 Node 快照刷新失败语义一致）。
+	current = current.Add(SettingsSnapshotTTL)
+	if value, err = source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil || value != 2000 {
+		t.Fatalf("expired-window degrade: value=%d err=%v", value, err)
 	}
 	count, events := warn.snapshot()
-	if count != 1 || len(events) != 1 || events[0] != "background_job_settings_table_missing_default" {
-		t.Fatalf("missing-table must warn exactly once: %d %v", count, events)
+	if count != 2 || len(events) != 2 {
+		t.Fatalf("expected exactly two degrade warns: %d %v", count, events)
 	}
-}
-
-func TestSourceOtherReadErrorsPropagate(t *testing.T) {
-	db := newSettingsDB(t, true)
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	source := newTestSource(db, newWarnCollector(), time.Now)
-	if _, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err == nil {
-		t.Fatalf("non-missing-table errors must propagate")
+	for _, event := range events {
+		if event != "background_job_settings_snapshot_refresh_failed" {
+			t.Fatalf("unexpected degrade events: %v", events)
+		}
 	}
 }
 
@@ -150,7 +163,8 @@ func TestSourceCacheWindowShieldsReads(t *testing.T) {
 	db := newSettingsDB(t, true)
 	insertSetting(t, db, "statsAggregationBatchSize", "3500")
 	current := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	source := newTestSource(db, newWarnCollector(), func() time.Time { return current })
+	warn := newWarnCollector()
+	source := newTestSource(db, warn, func() time.Time { return current })
 	if _, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err != nil {
 		t.Fatalf("first read: %v", err)
 	}
@@ -163,9 +177,14 @@ func TestSourceCacheWindowShieldsReads(t *testing.T) {
 	if err != nil || value != 3500 {
 		t.Fatalf("cached read mismatch: %d %v", value, err)
 	}
-	// Past the window the closed DB surfaces the read error.
+	// Past the window the PG mode degrades the failed refresh to the defaults
+	// with a warn（SQLite 分支的"读错误上抛"语义不再适用）。
 	current = current.Add(SettingsSnapshotTTL)
-	if _, err := source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000); err == nil {
-		t.Fatalf("expired cache must re-read")
+	value, err = source.Number(context.Background(), "statsAggregationBatchSize", 100, 10000)
+	if err != nil || value != 2000 {
+		t.Fatalf("expired cache must fall back to default: value=%d err=%v", value, err)
+	}
+	if count, events := warn.snapshot(); count != 1 || len(events) != 1 || events[0] != "background_job_settings_snapshot_refresh_failed" {
+		t.Fatalf("expired cache must warn refresh failure: %d %v", count, events)
 	}
 }

@@ -92,8 +92,7 @@ func TestW11ACreateErrorArms(t *testing.T) {
 
 	t.Run("grant_insert_trigger_failure", func(t *testing.T) {
 		f := w11aGrantFixture(t)
-		f.exec(t, `CREATE TRIGGER w11a_block_grant BEFORE INSERT ON resource_authorization_grants
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`)
+		w11aBlockGrantTrigger(t, f, "w11a_block_grant", "INSERT")
 		if _, err := f.store.Create(ctx, input, "owner"); err == nil {
 			t.Fatal("grant insert failure must fail Create")
 		}
@@ -222,8 +221,7 @@ func TestW11APatchRevokeReturnErrorArms(t *testing.T) {
 	t.Run("patch_update_trigger_failure", func(t *testing.T) {
 		f := w11aGrantFixture(t)
 		item := w11aCreateGrant(t, f)
-		f.exec(t, `CREATE TRIGGER w11a_block_grant_update BEFORE UPDATE ON resource_authorization_grants
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`)
+		w11aBlockGrantTrigger(t, f, "w11a_block_grant_update", "UPDATE")
 		paused := "paused"
 		if _, err := f.store.Patch(ctx, item.ID, PatchInput{Status: &paused}, item.UpdatedAt, "owner"); err == nil {
 			t.Fatal("grant update failure must fail Patch")
@@ -264,8 +262,7 @@ func TestW11APatchRevokeReturnErrorArms(t *testing.T) {
 	t.Run("revoke_trigger_failure", func(t *testing.T) {
 		f := w11aGrantFixture(t)
 		item := w11aCreateGrant(t, f)
-		f.exec(t, `CREATE TRIGGER w11a_block_revoke BEFORE UPDATE ON resource_authorization_grants
-			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`)
+		w11aBlockGrantTrigger(t, f, "w11a_block_revoke", "UPDATE")
 		if _, err := f.store.Revoke(ctx, item.ID, item.UpdatedAt, "owner"); err == nil {
 			t.Fatal("revoke update failure must fail Revoke")
 		}
@@ -482,7 +479,7 @@ func TestW11ADownstreamSyncArms(t *testing.T) {
 
 func w11aExec(t *testing.T, f *fixture, query string, args ...any) {
 	t.Helper()
-	if _, err := f.db.Exec(query, args...); err != nil {
+	if _, err := f.db.Exec(fixtureBind(query), args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -801,3 +798,17 @@ func TestW11AExpireSweepHappyPath(t *testing.T) {
 }
 
 var _ = sql.ErrNoRows
+
+// w11aBlockGrantTrigger 安装一个在指定事件上抛错的 PG 触发器（等价于原
+// SQLite RAISE(FAIL) 注入）。
+func w11aBlockGrantTrigger(t *testing.T, f *fixture, name, event string) {
+	t.Helper()
+	fn := `CREATE OR REPLACE FUNCTION ` + name + `_fn() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'w11a blocked'; END; $$ LANGUAGE plpgsql`
+	if _, err := f.db.Exec(fn); err != nil {
+		t.Fatal(err)
+	}
+	trg := `CREATE TRIGGER ` + name + ` BEFORE ` + event + ` ON resource_authorization_grants FOR EACH ROW EXECUTE FUNCTION ` + name + `_fn()`
+	if _, err := f.db.Exec(trg); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -12,14 +12,14 @@
 //     在 model 比较处提前返回，provider-code 比较不可达。
 //   - custom_models.go:383/387/390 upsert 写失败/回读失败/saved==nil：upsert 先按 id 查重，写后回读同一行，
 //     单测无法在不篡改驱动的情况下让 INSERT 失败或让刚写入的行消失。
-//   - custom_models.go:433/446/479/487 RowsAffected/Commit 错误臂：modernc/sqlite 驱动不会对本地内存库
-//     返回这两类错误，无注入点。
+//   - custom_models.go:433/446/479/487 RowsAffected/Commit 错误臂：本地测试驱动不对
+//     真实库连接返回这两类错误，无注入点。
 //   - custom_models.go:563/574 绑定第 3/4 段计数错误：mappingSource/mappingUpstream/union 查询同一
 //     account_model_mappings 表，第 2 段失败后即返回，后两段无法独立失败。
 //   - custom_models.go:588/593 countDistinctBoundAccounts 扫描/rows.Err 臂：外层恒为
 //     COUNT(DISTINCT ...) 整数列，扫入 int64 不会失败。
 //   - store.go:273/313 rows.Err 兜底、store.go:458/599/657/693 纯字符串列 Scan 错误臂：
-//     SQLite 动态类型下 TEXT 扫入 *string 恒成功，无失败注入点。
+//     text 列扫入 *string 恒成功，无失败注入点。
 //   - store.go:539 ListProviderOptions 扫描错误臂：查询带 WHERE enabled=1，非整数值在 SQL 比较中被排除，
 //     通过筛选的行扫入 int 恒成功。
 //   - catalog.go:842/892 modelOption 扫描错误臂：扫描目标全为 string/NullString，同理不可失败。
@@ -220,6 +220,10 @@ func TestW13g6PatchAssignmentsMergeClosures(t *testing.T) {
 func TestW13g6BrokenScanRows(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
+	// PG 强类型列无法经 INSERT 注入类型错位值：把 enabled 列改为 text 模拟
+	// schema 漂移后的坏行（扫描臂防御的正是这类漂移），存量 0/1 值经 ::text
+	// 转换后仍可扫入 int。
+	env.exec(t, `ALTER TABLE vendors ALTER COLUMN enabled TYPE text USING enabled::text`)
 	env.exec(t, `INSERT INTO vendors (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('w13g6-broken', 'w13g6-broken', 'broken', NULL, 'abc', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	env.login(t, "root", "root-pass", "super_admin")
@@ -269,6 +273,10 @@ func TestW13g6PreferredProfileAndTokenSkips(t *testing.T) {
 func TestW13g6CatalogScanArms(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
+	// PG 强类型列无法经 INSERT/UPDATE 注入类型错位值：价格列改为 text 模拟
+	// schema 漂移后的坏行（可解析的数值文本仍扫入 float64，非数值触发扫描
+	// 错误）。
+	env.exec(t, `ALTER TABLE models ALTER COLUMN input_usd_per_1m TYPE text USING input_usd_per_1m::text`)
 	// 非数值价格列让内置目录行扫描失败。
 	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 		supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)

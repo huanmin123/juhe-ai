@@ -3,22 +3,23 @@ package gatewaycacherate
 // 缓存率快照加载器契约回归（设计 8.1）：SQL 口径（global/account 行、
 // stat_hour >= cutoff、按 scope_id 聚合）、cutoff 小时键按注入时区、TTL 内
 // 不重复查询、到点后台刷新（请求路径零 I/O）、失败保留旧快照、超龄 stale、
-// 限频 warn 与 juhe_stats 限定表名/$1 绑定。fixture 模式沿用
-// accounts/list_usage_pg_dialect_test.go：SQLite 句柄 ATTACH ':memory:' AS
-// juhe_stats 承载生产同款限定形式，SetMaxOpenConns(1) 保证 ATTACH 对所有
-// 查询可见。
+// 限频 warn 与 juhe_stats 限定表名/$1 绑定。fixture 走 pgtestkit 隔离 PG 库
+// （SQLite 与内存模式退役后唯一形态）：预建 juhe_stats.usage_stats_hourly，
+// 夹具 INSERT 的 `?` 占位经 sqldialect 改写 driver 落为 $n，生产查询的 $1
+// 原样透传。
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
 const cacherateFixtureDDL = `CREATE TABLE %s (
@@ -31,7 +32,7 @@ const cacherateFixtureDDL = `CREATE TABLE %s (
 		PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour)
 	)`
 
-// cacherateFixture 持有可注入 now/tz/warn 的加载器与临时统计库句柄。
+// cacherateFixture 持有可注入 now/tz/warn 的加载器与隔离 PG 统计库句柄。
 type cacherateFixture struct {
 	db     *sql.DB
 	source *SnapshotSource
@@ -45,19 +46,21 @@ type cacherateFixture struct {
 
 func newCacherateFixture(t *testing.T) *cacherateFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "cacherate.sqlite"))
+	table := "juhe_stats.usage_stats_hourly"
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats`); err != nil {
+			return err
+		}
+		_, err := db.ExecContext(ctx, ddlFor(table))
+		return err
+	})
+	// 夹具 INSERT 用 `?` 占位：经 sqldialect 改写 driver 直开测试池；生产
+	// SnapshotSource 的 $1 绑定不含 `?`，原样透传。
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	table := "juhe_stats.usage_stats_hourly"
-	statements := []string{`ATTACH ':memory:' AS juhe_stats`, ddlFor(table)}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("fixture exec %q: %v", statement, err)
-		}
-	}
 	fixture := &cacherateFixture{
 		db:       db,
 		table:    table,

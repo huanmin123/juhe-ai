@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -15,9 +14,6 @@ import (
 
 const chatMessagePartitionPrefix = "chat_messages_"
 
-// ensuredChatPartitionDateKeys mirrors the module-level ensuredDateKeys Set:
-// process-wide memoization of already-issued CREATE TABLE statements.
-var ensuredChatPartitionDateKeys sync.Map
 
 // chatMessagePartitionDateKeyFromISO mirrors
 // chatMessagePartitionDateKeyFromIso: a YYYY-MM-DD prefix validated as a real
@@ -87,7 +83,7 @@ func (s *Store) ensurePostgresChatMessagePartitions(tx queryer, createdAt string
 	}
 	next := nextDate.UTC().AddDate(0, 0, 1).Format("20060102")
 	for _, dateKey := range []string{current, next} {
-		if _, ensured := ensuredChatPartitionDateKeys.Load(dateKey); ensured {
+		if _, ensured := s.partitionMemo.Load(dateKey); ensured {
 			continue
 		}
 		startDate, endDate, err := chatMessagePartitionBounds(dateKey)
@@ -106,7 +102,7 @@ func (s *Store) ensurePostgresChatMessagePartitions(tx queryer, createdAt string
 		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
-		ensuredChatPartitionDateKeys.Store(dateKey, true)
+		s.partitionMemo.Store(dateKey, true)
 	}
 	return nil
 }

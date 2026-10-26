@@ -9,8 +9,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-
-	_ "modernc.org/sqlite"
 )
 
 // fakeUsageSource records the scopes the store requested and serves a fixed

@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // 授权实例解析的修订围栏矩阵：config/dispatch/source 修订任一过期都必须拒绝。

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-	_ "modernc.org/sqlite"
 )
 
 // wdErrTimezone 返回固定失败的时区源（模拟系统设置损坏）。

@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // BUG-0161 review-and-fix pairings. Every test below locks one adjudicated

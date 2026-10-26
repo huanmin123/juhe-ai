@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"sync"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // fakeListUsageSource records the requested scopes/statDates and serves fixed

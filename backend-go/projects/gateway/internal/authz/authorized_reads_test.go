@@ -271,8 +271,8 @@ func outcomeUpdatedAtGrantID(t *testing.T, f *fixture, resourceID, granteeType, 
 		column = "grantee_team_id"
 	}
 	var id string
-	if err := f.db.QueryRow(`SELECT id FROM resource_authorization_grants
-		WHERE resource_id = ? AND `+column+` = ? ORDER BY created_at DESC, id DESC LIMIT 1`, resourceID, granteeID).Scan(&id); err != nil {
+	if err := f.db.QueryRow(fixtureBind(`SELECT id FROM resource_authorization_grants
+		WHERE resource_id = ? AND `+column+` = ? ORDER BY created_at DESC, id DESC LIMIT 1`), resourceID, granteeID).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id

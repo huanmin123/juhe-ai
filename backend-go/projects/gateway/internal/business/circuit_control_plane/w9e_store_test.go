@@ -1,8 +1,8 @@
 package circuitcontrolplane
 
 // w9e 覆盖率战役：补 store.go 构造校验、索引契约分支、各入口的参数围栏、
-// CAS/出站的身份重放与幂等分支、损坏行扫描分支。全部基于既有 SQLite
-// 内存 fixture（wkStoreLabeled），不依赖外部资源。
+// CAS/出站的身份重放与幂等分支、损坏行扫描分支。建库统一走 PG 夹具
+// （wkReadyStore → wkPGStoreLabeled，pgtestkit 每测试独立库）。
 
 import (
 	"context"
@@ -32,26 +32,6 @@ func TestW9ENewStoreValidation(t *testing.T) {
 	if _, err := New(db, "  ", OwnerGate{Confirmed: true}); err != nil {
 		t.Fatalf("空白 schema 应默认化: %v", err)
 	}
-}
-
-func w9eDDLDB(t *testing.T, name string, indexDDL string) (*sql.DB, error) {
-	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+strings.ReplaceAll(t.Name(), "/", "-")+"-"+name+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range wkDDLs {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if indexDDL != "" {
-		if _, err := db.Exec(indexDDL); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return db, nil
 }
 
 func TestW9EPredicatesAndColumnsHelpers(t *testing.T) {

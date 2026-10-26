@@ -84,16 +84,7 @@ func TestW13g2ProvisionMisc(t *testing.T) {
 	if err := s.replaceInstanceNameSearchTerms(ctx, tx, "acc_misc_x", "grantee", "   ", "now"); err != nil {
 		t.Fatalf("空名应直接返回: %v", err)
 	}
-	// pg 分支：advanceInstanceDispatchRevision 的 FOR UPDATE（422-424）与
-	// enqueue 的 lockSuffix（354）、reserve（428）、bindings 的 stats 标记
-	//（103-108）。
-	pgStore := &Store{db: db, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
-	if err := pgStore.advanceInstanceDispatchRevision(ctx, tx, "acc_misc", 1); err == nil {
-		t.Fatalf("pg FOR UPDATE 在 sqlite 应报错")
-	}
-	pgStore.reserveAccountHealthInputVersion(ctx, tx, "acc_misc", "now")
-	pgLockTx := tx
-	_ = pgLockTx
+	// 夹具池为单连接：后续事务开始前必须释放当前事务，否则 BeginTx 永久等待。
 	tx.Rollback()
 
 	// pg enqueue / bindings：查询构造分支（352-356、428-430）经错误返回覆盖。
@@ -101,9 +92,9 @@ func TestW13g2ProvisionMisc(t *testing.T) {
 	s2 := &Store{db: db, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
 	if _, err := s2.enqueueGrantAccountHealthInputs(ctx, pgTx, &grantRow{
 		ResourceType: "account", ResourceID: "acc_misc",
-	}, "now"); err == nil {
+	}, "now"); err != nil {
 		pgTx.Rollback()
-		t.Fatalf("pg enqueue 应失败")
+		t.Fatalf("PG enqueue 应成功: %v", err)
 	}
 	pgTx.Rollback()
 }
@@ -204,7 +195,7 @@ func TestW13g2FailpointFinalArms(t *testing.T) {
 		t.Fatalf("应失败")
 	}
 	fp.disarm()
-	fp.arm("INSERT OR IGNORE INTO")
+	fp.arm("INSERT INTO account_name_search_terms")
 	defer fp.disarm()
 	if _, err := s.SyncAccountAuthorizationInstanceNamesForSourceAccount(ctx, "acc_f13", "又改名"); err == nil {
 		t.Fatalf("应失败")

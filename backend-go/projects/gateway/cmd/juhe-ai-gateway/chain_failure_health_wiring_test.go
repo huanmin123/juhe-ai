@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,11 +21,12 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------
@@ -38,18 +38,15 @@ type healthOutboxFixture struct {
 	writer *chainProbeRequestOutboxWriter
 }
 
-// newHealthOutboxFixture 在临时 SQLite 文件上构造 writer（与生产 SQLite 模式
-// 同一驱动、同一 DDL ensure 路径）。
+// newHealthOutboxFixture 在 pgtestkit 隔离 PG 库上构造 writer（与生产 PG 形态
+// 同一驱动、同一 juhe_business 限定 DDL ensure 路径；schema 由夹具预建，
+// 与部署的 maintenance ensure 流程一致）。
 func newHealthOutboxFixture(t *testing.T, deadlineMS int64) *healthOutboxFixture {
 	t.Helper()
-	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "probe-outbox.sqlite3")) + "?_pragma=busy_timeout(5000)"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		t.Fatalf("open outbox sqlite: %v", err)
-	}
-	// 单连接：测试串行执行，固定句柄消除连接池对 SQLite 文件的重复打开。
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`)
+		return err
+	})
 	writer := newChainProbeRequestOutboxWriter(db, deadlineMS)
 	return &healthOutboxFixture{db: db, writer: writer}
 }
@@ -67,7 +64,7 @@ func (f *healthOutboxFixture) dispatch(t *testing.T, req *gatewaypreauth.Gateway
 func (f *healthOutboxFixture) rows(t *testing.T) []map[string]any {
 	t.Helper()
 	result, err := f.db.Query(`SELECT request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at
-		FROM account_health_probe_request_outbox ORDER BY created_at, request_id`)
+		FROM juhe_business.account_health_probe_request_outbox ORDER BY created_at, request_id`)
 	if err != nil {
 		t.Fatalf("query outbox rows: %v", err)
 	}
@@ -145,7 +142,7 @@ func TestChainProbeRequestOutboxWire(t *testing.T) {
 	}
 
 	// trace_id 投影（dispatchWithOutcome 的 wire 契约延续）。
-	if _, err := fixture.db.Exec(`INSERT INTO account_health_probe_request_outbox
+	if _, err := fixture.db.Exec(`INSERT INTO juhe_business.account_health_probe_request_outbox
 		(request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at, updated_at)
 		VALUES ('j1-seed', 'acc_1', 'x', '', '', '2026-01-01T00:00:00.000000000Z', 'pending', NULL, '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`); err != nil {
 		t.Fatalf("seed second row: %v", err)
@@ -184,7 +181,8 @@ func TestChainProbeRequestOutboxWire(t *testing.T) {
 }
 
 // TestChainProbeRequestOutboxEnsureSchemaIdempotent：双侧幂等建表契约——同一
-// 句柄重复 ensure（gateway 先到、jobs 后到的同 DDL 幂等收敛）必须无错。
+// 句柄重复 ensure（gateway 先到、jobs 后到的同 DDL 幂等收敛）必须无错；生产
+// ensureSchema 的限定名替换形态（juhe_business 前缀）重放同样幂等。
 func TestChainProbeRequestOutboxEnsureSchemaIdempotent(t *testing.T) {
 	fixture := newHealthOutboxFixture(t, 65_000)
 	ctx := context.Background()
@@ -194,10 +192,16 @@ func TestChainProbeRequestOutboxEnsureSchemaIdempotent(t *testing.T) {
 	if err := fixture.writer.ensureSchema(ctx); err != nil {
 		t.Fatalf("second ensure: %v", err)
 	}
-	if _, err := fixture.db.Exec(chainProbeRequestOutboxSchema); err != nil {
+	qualifiedSchema := strings.Replace(chainProbeRequestOutboxSchema,
+		"CREATE TABLE IF NOT EXISTS "+chainProbeRequestOutboxTableName,
+		"CREATE TABLE IF NOT EXISTS juhe_business."+chainProbeRequestOutboxTableName, 1)
+	qualifiedIndex := strings.Replace(chainProbeRequestOutboxIndex,
+		"ON "+chainProbeRequestOutboxTableName+"(",
+		"ON juhe_business."+chainProbeRequestOutboxTableName+"(", 1)
+	if _, err := fixture.db.Exec(qualifiedSchema); err != nil {
 		t.Fatalf("re-run create: %v", err)
 	}
-	if _, err := fixture.db.Exec(chainProbeRequestOutboxIndex); err != nil {
+	if _, err := fixture.db.Exec(qualifiedIndex); err != nil {
 		t.Fatalf("re-run index: %v", err)
 	}
 }

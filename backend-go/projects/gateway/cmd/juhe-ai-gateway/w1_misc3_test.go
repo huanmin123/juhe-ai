@@ -45,11 +45,9 @@ func TestW1MiscSmallAdapters(t *testing.T) {
 	if derefInt64(&value) != 7 {
 		t.Fatal("derefInt64 必须解引用")
 	}
-	// sharedDBPool：DB 返回原句柄、Close 是 no-op。
-	if _, err := sql.Open("sqlite", ":memory:"); err != nil {
-		t.Fatalf("open = %v", err)
-	}
-	db, _ := sql.Open("sqlite", ":memory:")
+	// sharedDBPool：DB 返回原句柄、Close 是 no-op（句柄零值即可钉住指针
+	// 透传契约，不触库）。
+	db := &sql.DB{}
 	pool := sharedDBPool{db: db}
 	if pool.DB() != db {
 		t.Fatal("sharedDBPool.DB 必须返回原句柄")
@@ -57,7 +55,6 @@ func TestW1MiscSmallAdapters(t *testing.T) {
 	if err := pool.Close(); err != nil {
 		t.Fatalf("sharedDBPool.Close 必须是 no-op = %v", err)
 	}
-	_ = db.Close()
 	owner := newGatewayBalanceOwnerID()
 	if !strings.HasPrefix(owner, "gateway-manual-") || len(owner) != len("gateway-manual-")+12 {
 		t.Fatalf("owner id 契约不符 = %q", owner)
@@ -547,7 +544,9 @@ func TestW1ChainAccountLocksReadStateOnce(t *testing.T) {
 	if _, err := locks.readStateOnce(ctx, "acc_1"); err == nil {
 		t.Fatal("表缺失必须报错")
 	}
-	_, err := fixture.db.Exec(`CREATE TABLE account_lock_states (account_id TEXT PRIMARY KEY, enabled INTEGER, lock_state TEXT, lock_death_timeout_seconds INTEGER, lock_retry_interval_seconds INTEGER, incident_id TEXT, incident_started_at TEXT, deadline_at TEXT, original_status TEXT, provenance TEXT, next_retry_at_ms INTEGER, lease_id TEXT, lease_until_ms INTEGER, generation INTEGER, updated_at INTEGER)`)
+	// epoch 毫秒列 BIGINT（PG INTEGER 为 int4 会 22003 溢出，与
+	// chain_account_locks_test.go 权威夹具同型）。
+	_, err := fixture.db.Exec(`CREATE TABLE account_lock_states (account_id TEXT PRIMARY KEY, enabled INTEGER, lock_state TEXT, lock_death_timeout_seconds INTEGER, lock_retry_interval_seconds INTEGER, incident_id TEXT, incident_started_at TEXT, deadline_at TEXT, original_status TEXT, provenance TEXT, next_retry_at_ms BIGINT, lease_id TEXT, lease_until_ms BIGINT, generation INTEGER, updated_at BIGINT)`)
 	if err != nil {
 		t.Fatalf("create lock states = %v", err)
 	}
@@ -590,15 +589,16 @@ func TestW1AuthorizationQuotaExceededArms(t *testing.T) {
 	if _, err := fixture.db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth-1', 'group', 'group_main', 'user-1', 'active', '{"hourly":{"enabled":true,"hours":24,"limit":1}}')`); err != nil {
 		t.Fatalf("insert authorization = %v", err)
 	}
-	// juhe_stats 成本投影表（SQLite 无前缀）。usage_stats 四表带
+	// juhe_stats 成本投影表（quota 读点 statsTable 按 juhe_stats 限定名读取，
+	// 夹具 DDL/种子同构限定）。usage_stats 四表带
 	// success_cost_usd（quota 读点已切成功口径列）；小时窗口表的
 	// total_cost_usd 本身承载成功口径成本。
 	for _, ddl := range []string{
-		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE usage_quota_hourly_windows (system_account_id TEXT, scope_type TEXT, scope_id TEXT, window_hours INTEGER, total_cost_usd REAL)`,
+		`CREATE TABLE juhe_stats.usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE juhe_stats.usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE juhe_stats.usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE juhe_stats.usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE juhe_stats.usage_quota_hourly_windows (system_account_id TEXT, scope_type TEXT, scope_id TEXT, window_hours INTEGER, total_cost_usd REAL)`,
 	} {
 		if _, err := fixture.statsDB.Exec(ddl); err != nil {
 			t.Fatalf("create stats table = %v", err)
@@ -610,7 +610,7 @@ func TestW1AuthorizationQuotaExceededArms(t *testing.T) {
 		t.Fatalf("无成本必须未超限 = %v %v", ok, err)
 	}
 	// 小时窗口成本 5 >= 限额 1 → 超限。
-	if _, err := fixture.statsDB.Exec(`INSERT INTO usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd) VALUES ('user-1', 'account_authorization', 'auth-1', 24, 5)`); err != nil {
+	if _, err := fixture.statsDB.Exec(`INSERT INTO juhe_stats.usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd) VALUES ('user-1', 'account_authorization', 'auth-1', 24, 5)`); err != nil {
 		t.Fatalf("insert hourly cost = %v", err)
 	}
 	ok, err = bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{AuthorizationID: "auth-1", GranteeSystemAccountID: "user-1"})

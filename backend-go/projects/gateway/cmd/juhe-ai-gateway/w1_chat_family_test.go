@@ -2,14 +2,13 @@ package main
 
 // w1 波次补充单元测试（w1h 前缀，TestW1H 入口）：覆盖 my-chat 路由族装配
 // （chain_chat_mount.go 的 composeChatFamily / chatAttachStreamHandler /
-// chatAttachSubscriber.TrySend / openChatDatabase）、聊天图片观察 SQLite
-// 分支（chain_chat_observation.go 的 table/bind/claim/setObservation）与
+// chatAttachSubscriber.TrySend / openChatDatabase）、聊天图片观察 PG 分支
+//（chain_chat_observation.go 的 table/bind/claim/setObservation，pgtestkit
+// 隔离库 + juhe_chat 限定夹具，UPDATE...RETURNING 走真实 PostgreSQL）与
 // chain_compose.go 剩余可构造函数（ListClientModelCatalog、
 // spoolOverflow.PersistOverflow）。
 //
-// 不覆盖：openChatDatabase 的 pgDialect=true 分支与 chatImageObservations
-// 的 postgres 方言 SQL 真实执行（需要 pgpool.Registry 与真实 PostgreSQL，
-// SQLite 单测无法确定性重放）；Wait/Schedule/track 等 time.After / goroutine
+// 不覆盖：Wait/Schedule/track 等 time.After / goroutine
 // 等待路径按 w1 波次约定跳过。
 
 import (
@@ -17,14 +16,13 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
@@ -293,12 +291,8 @@ func TestW1HChatAttachStreamHandlerSubscribeMiss(t *testing.T) {
 
 func w1hNewChatFamilyDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "chat-family-w1h.sqlite3"))
-	if err != nil {
-		t.Fatalf("打开 chat family sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	// pgtestkit 隔离 PG 库（guard/装配断言不触业务表；chat.NewStore 构造惰性）。
+	return pgtestkit.New(t)
 }
 
 func TestW1HComposeChatFamilyGuards(t *testing.T) {
@@ -433,49 +427,46 @@ func TestW1HChatObservationTableAndBind(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// B6. claim / setObservation（SQLite + RETURNING）
+// B6. claim / setObservation（PG UPDATE...RETURNING 真实执行）
 // ---------------------------------------------------------------------------
 
 func w1hNewObservationDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "chat-observation-w1h.sqlite3"))
-	if err != nil {
-		t.Fatalf("打开观察 sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{
-		`CREATE TABLE chat_assets (
-			id TEXT PRIMARY KEY,
-			system_account_id TEXT NOT NULL,
-			conversation_id TEXT NOT NULL,
-			processing_status TEXT NOT NULL DEFAULT 'ready',
-			cleanup_status TEXT NOT NULL DEFAULT 'active',
-			expires_at TEXT NOT NULL,
-			observation_status TEXT NOT NULL DEFAULT 'not_requested',
-			observation_json TEXT,
-			observation_revision INTEGER NOT NULL DEFAULT 0,
-			observation_claim_id TEXT,
-			observation_claimed_at TEXT,
-			updated_at TEXT NOT NULL)`,
-		`CREATE TABLE chat_asset_references (
-			asset_id TEXT NOT NULL,
-			conversation_id TEXT NOT NULL,
-			turn_id TEXT NOT NULL,
-			message_id TEXT NOT NULL,
-			reference_kind TEXT NOT NULL,
-			expires_at TEXT NOT NULL)`,
-	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatalf("建观察表: %v", err)
-		}
-	}
+	// pgtestkit 隔离 PG 库 + juhe_chat 限定观察夹具表：生产
+	// chatImageObservations 恒以 juhe_chat 限定名 + $n 占位符读写，夹具表
+	// 列集取观察面消费的最小集（列型照抄 maintenance pg_schema_chat.go，
+	// FK/全列 CHECK 放宽，uibootstrap 夹具先例）。
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_chat;
+			CREATE TABLE juhe_chat.chat_assets (
+				id TEXT PRIMARY KEY,
+				system_account_id TEXT NOT NULL,
+				conversation_id TEXT NOT NULL,
+				processing_status TEXT NOT NULL DEFAULT 'ready',
+				cleanup_status TEXT NOT NULL DEFAULT 'active',
+				expires_at TEXT NOT NULL,
+				observation_status TEXT NOT NULL DEFAULT 'not_requested',
+				observation_json TEXT,
+				observation_revision INTEGER NOT NULL DEFAULT 0,
+				observation_claim_id TEXT,
+				observation_claimed_at TEXT,
+				updated_at TEXT NOT NULL);
+			CREATE TABLE juhe_chat.chat_asset_references (
+				asset_id TEXT NOT NULL,
+				conversation_id TEXT NOT NULL,
+				turn_id TEXT NOT NULL,
+				message_id TEXT NOT NULL,
+				reference_kind TEXT NOT NULL,
+				expires_at TEXT NOT NULL)`)
+		return err
+	})
 	for _, assetID := range []string{"asset-w1h", "asset-w1h-b"} {
-		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
-			VALUES (?, 'sys-w1h', 'conv-w1h', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`), assetID); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_chat.chat_assets (id, system_account_id, conversation_id, expires_at, updated_at)
+			VALUES ($1, 'sys-w1h', 'conv-w1h', '2027-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`, assetID); err != nil {
 			t.Fatalf("seed chat_assets(%s): %v", assetID, err)
 		}
-		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
-			VALUES (?, 'conv-w1h', 'turn-w1h', 'msg-w1h', 'user_input', '2027-01-01T00:00:00.000Z')`), assetID); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_chat.chat_asset_references (asset_id, conversation_id, turn_id, message_id, reference_kind, expires_at)
+			VALUES ($1, 'conv-w1h', 'turn-w1h', 'msg-w1h', 'user_input', '2027-01-01T00:00:00.000Z')`, assetID); err != nil {
 			t.Fatalf("seed chat_asset_references(%s): %v", assetID, err)
 		}
 	}
@@ -486,15 +477,10 @@ func w1hNewObservationPort(db *sql.DB) *chatImageObservations {
 	return &chatImageObservations{db: db, tasks: map[string][]chan struct{}{}}
 }
 
-// w1hClaim 封装 claim 断言：RETURNING 语法不被底层 SQLite 支持时跳过并保留
-// 原始错误，其余错误直接失败。
 func w1hClaim(t *testing.T, port *chatImageObservations, ctx context.Context, assetID, turnID, messageID, now string) *chatObservationClaim {
 	t.Helper()
 	claimed, err := port.claim(ctx, assetID, "conv-w1h", "sys-w1h", turnID, messageID, now)
 	if err != nil {
-		if strings.Contains(err.Error(), "syntax error") {
-			t.Skipf("当前 modernc.org/sqlite 不支持 UPDATE...RETURNING，跳过 claim 断言，原始错误: %v", err)
-		}
 		t.Fatalf("claim(%s) = %v, want nil", assetID, err)
 	}
 	return claimed
@@ -516,7 +502,7 @@ func TestW1HChatObservationClaim(t *testing.T) {
 		t.Errorf("claimID = %q, want chat_obs_claim_ 前缀", claimed.claimID)
 	}
 	var status, rowClaimID string
-	if err := db.QueryRow(`SELECT observation_status, observation_claim_id FROM chat_assets WHERE id = 'asset-w1h'`).
+	if err := db.QueryRow(`SELECT observation_status, observation_claim_id FROM juhe_chat.chat_assets WHERE id = 'asset-w1h'`).
 		Scan(&status, &rowClaimID); err != nil {
 		t.Fatalf("回读 claim 行态: %v", err)
 	}
@@ -537,7 +523,7 @@ func TestW1HChatObservationClaim(t *testing.T) {
 		t.Errorf("立即接管 observationRevision = %d, want 2", reClaim.observationRevision)
 	}
 	// 已被占且 claimed_at 在未来：抢占被阻塞，无行。
-	if _, err := db.Exec(`UPDATE chat_assets SET observation_claimed_at = '2027-01-01T00:00:00.000Z' WHERE id = 'asset-w1h'`); err != nil {
+	if _, err := db.Exec(`UPDATE juhe_chat.chat_assets SET observation_claimed_at = '2027-01-01T00:00:00.000Z' WHERE id = 'asset-w1h'`); err != nil {
 		t.Fatalf("前移 observation_claimed_at: %v", err)
 	}
 	if blocked := w1hClaim(t, port, ctx, "asset-w1h", "turn-w1h", "msg-w1h", w1hNow); blocked != nil {
@@ -599,7 +585,7 @@ func TestW1HChatObservationSetObservation(t *testing.T) {
 	}
 	var status string
 	var observationJSON, rowClaimID sql.NullString
-	if err := db.QueryRow(`SELECT observation_status, observation_json, observation_claim_id FROM chat_assets WHERE id = 'asset-w1h'`).
+	if err := db.QueryRow(`SELECT observation_status, observation_json, observation_claim_id FROM juhe_chat.chat_assets WHERE id = 'asset-w1h'`).
 		Scan(&status, &observationJSON, &rowClaimID); err != nil {
 		t.Fatalf("回读 setObservation 行态: %v", err)
 	}

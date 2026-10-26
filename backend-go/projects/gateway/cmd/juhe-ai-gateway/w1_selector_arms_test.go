@@ -22,11 +22,7 @@ import (
 
 // TestW1ResolveGroupAccessQueryError 覆盖：查询 groups 表失败（列缺失）。
 func TestW1ResolveGroupAccessQueryError(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
+	db := newChainFixturePGDatabase(t)
 	// 缺列的 groups 表结构，触发查询错误
 	if _, err := db.Exec(`CREATE TABLE groups (id TEXT, system_account_id TEXT)`); err != nil {
 		t.Fatalf("create groups: %v", err)
@@ -43,11 +39,7 @@ func TestW1ResolveGroupAccessQueryError(t *testing.T) {
 
 // TestW1ResolveGroupAccessEmptyOwner 覆盖：ownerID 为空时返回 nil。
 func TestW1ResolveGroupAccessEmptyOwner(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -69,11 +61,7 @@ func TestW1ResolveGroupAccessEmptyOwner(t *testing.T) {
 
 // TestW1ResolveGroupAccessDisabledGroup 覆盖：enabled != 1 返回 nil。
 func TestW1ResolveGroupAccessDisabledGroup(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -95,11 +83,7 @@ func TestW1ResolveGroupAccessDisabledGroup(t *testing.T) {
 
 // TestW1ResolveGroupAccessBadGroupType 覆盖：group type 解析错误返回错误。
 func TestW1ResolveGroupAccessBadGroupType(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -119,11 +103,7 @@ func TestW1ResolveGroupAccessBadGroupType(t *testing.T) {
 // TestW1ResolveGroupAccessAuthorizedGroupLocalSettings 覆盖：
 // 授权组 + local settings enabled=0 时返回 nil。
 func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
+	db := newChainFixturePGDatabase(t)
 	for _, ddl := range []string{
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE resource_authorizations (

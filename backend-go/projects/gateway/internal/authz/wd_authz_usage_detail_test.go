@@ -14,7 +14,7 @@ import (
 
 func wdInsertScopeWindow(t *testing.T, f *fixture, systemAccountID, scopeType, scopeID, start, end string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(fixtureBind(`INSERT INTO usage_scope_range_windows
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO juhe_stats.usage_scope_range_windows
 		(system_account_id, scope_type, scope_id, start_date, end_date,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),
@@ -26,7 +26,7 @@ func wdInsertScopeWindow(t *testing.T, f *fixture, systemAccountID, scopeType, s
 
 func wdInsertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, teamID, resourceType, resourceID string, requestCount, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(fixtureBind(`INSERT INTO authorization_team_usage_summary_daily
+	_, err := f.db.Exec(fixtureBind(`INSERT INTO juhe_stats.authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, total_cost_usd, last_used_at, updated_at)
 		VALUES (?, '2026-09-01', ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`),
@@ -147,7 +147,7 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 	}
 
 	// 无团队日摘要行 → 分组资源走 group_authorization_team 回退键。
-	if _, err := f.db.Exec(`DELETE FROM authorization_team_usage_summary_daily`); err != nil {
+	if _, err := f.db.Exec(`DELETE FROM juhe_stats.authorization_team_usage_summary_daily`); err != nil {
 		t.Fatal(err)
 	}
 	wdInsertScopeWindow(t, f, "owner", "group_authorization_team", "grp_t:team_d", "2026-08-08", "2026-09-06",
@@ -183,7 +183,7 @@ func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	insertTeamDailyRow(t, f, "owner", "2026-09-04", "team_w", "group", "grp_w", 3, 30, 15, 0.5, "2026-09-04T05:00:00.000Z")
 	insertTeamDailyRow(t, f, "owner", "2026-09-05", "team_w", "group", "grp_w", 99, 990, 495, 9.0, "2026-09-05T05:00:00.000Z")
 	// 冻结的旧锚点窗口行：值与日摘要聚合不同，若命中说明仍在读冻结表。
-	if _, err := f.db.Exec(`INSERT INTO authorization_team_usage_range_windows
+	if _, err := f.db.Exec(`INSERT INTO juhe_stats.authorization_team_usage_range_windows
 		(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, total_cost_usd, last_used_at, updated_at)
 		VALUES ('owner', '2026-08-08', '2026-09-06', 'team_w', 'group', 'grp_w',

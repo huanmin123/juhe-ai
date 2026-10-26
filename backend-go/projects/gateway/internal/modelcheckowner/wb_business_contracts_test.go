@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
-	_ "modernc.org/sqlite"
 )
 
 // wbBusinessQualityDDL 建出质量管理 CRUD 依赖的 Business 表。

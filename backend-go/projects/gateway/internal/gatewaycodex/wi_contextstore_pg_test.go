@@ -2,11 +2,8 @@ package gatewaycodex
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
 func TestWIJSONSmallHelpers(t *testing.T) {
@@ -221,20 +218,8 @@ func TestWICodexContextTablePostgresHelper(t *testing.T) {
 	}
 }
 
-// wiOpenSQLiteHandle 构造一个挂在 sqlpool 注册表上的 SQLite 句柄。
-func wiOpenSQLiteHandle(t *testing.T, dsn string) *sqlpool.Handle {
-	t.Helper()
-	registry := sqlpool.NewRegistry()
-	handle, err := registry.Acquire(
-		func() (*sql.DB, error) { return sql.Open("sqlite", dsn) },
-		"file:"+dsn, "test", 1, 1,
-	)
-	if err != nil {
-		t.Fatalf("sqlpool Acquire 失败: %v", err)
-	}
-	t.Cleanup(func() { _ = handle.Close() })
-	return handle
-}
+// wiOpenSQLiteHandle 已随 SQLite 分片生产臂退役（2026-10-24 存储形态收口）：
+// context 行存储测试统一走 pgkit_test.go 的 newPostgresContextStateStore。
 
 // ---------------------------------------------------------------------------
 // PostgresContextStateStore 臂正测试（组A，pgkit_test.go 夹具）：与分片臂既有

@@ -279,13 +279,13 @@ func TestW13g2FailpointUsageArms(t *testing.T) {
 	fp.disarm()
 
 	// teamUsageRows 中 loadTeamNameMap/loadPrincipalMap 失败（经预聚合行）。
-	if _, err := db.Exec(`INSERT INTO authorization_team_usage_summary_daily
+	if _, err := db.Exec(`INSERT INTO juhe_stats.authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, updated_at)
 		VALUES ('owner', '2026-09-01', 'team_x', 'group', 'grp_x', 1, 2, 3, 0.5, '2026-09-06T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO authorization_user_usage_summary_daily
+	if _, err := db.Exec(`INSERT INTO juhe_stats.authorization_user_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, updated_at)
 		VALUES ('owner', '2026-09-01', 'team_x', 'ua1', 'group', 'grp_x', 1, 2, 3, 0.5, '2026-09-06T00:00:00Z')`); err != nil {
@@ -308,7 +308,7 @@ func TestW13g2FailpointUsageArms(t *testing.T) {
 	}
 
 	// usageScopeRangeSummaries 的 scan 前 failpoint（查询失败 → 205-208）。
-	fp.arm("FROM usage_scope_range_windows")
+	fp.arm("FROM juhe_stats.usage_scope_range_windows")
 	defer fp.disarm()
 	if _, err := s.usageScopeRangeSummaries(ctx, []usageScopeRequest{{rowKey: "k", systemAccountID: "owner", scopeID: "s"}}, "account_authorization", rng); err == nil {
 		t.Fatalf("应失败")

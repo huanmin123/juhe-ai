@@ -276,7 +276,7 @@ func (s *Store) ClaimContextCompaction(input ClaimCompactionInput) (*ContextComp
 		WHERE id = ? AND system_account_id = ? AND context_revision = ?
 			AND active_turn_id IS NULL
 			AND compacted_through_sequence = ?
-			AND ? > ? AND ? <= next_sequence_no - 3
+			AND ?::bigint > ?::bigint AND ?::bigint <= next_sequence_no - 3
 			AND (
 				context_state IN ('ready', 'compact_pending')
 				OR (context_state = 'compact_failed' AND context_retry_at IS NOT NULL AND context_retry_at <= ?)

@@ -35,11 +35,10 @@ func TestW9DStoreDialectArms(t *testing.T) {
 	if _, ok := store.timeParam(time.UnixMilli(1_000)).(time.Time); !ok {
 		t.Fatal("pg timeParam must be native time")
 	}
-	if _, ok := store.instantParam(nowMillisText()).(time.Time); !ok {
-		t.Fatal("pg instantParam must parse")
-	}
-	if _, ok := store.instantParam("junk").(string); !ok {
-		t.Fatal("pg instantParam fallback must keep text")
+	// 生产时间列全部为 text（Node ISO 文本），instantParam 必须原样返回文本：
+	// 绑定 time.Time 会让 pgx 编码出 Go time.String 形态，比较与回读失真。
+	if got, ok := store.instantParam(nowMillisText()).(string); !ok || got != nowMillisText() {
+		t.Fatalf("instantParam must keep text, got %T %v", store.instantParam(nowMillisText()), got)
 	}
 	if chunkValues([]string{"a"}, 900) == nil {
 		t.Fatal("single id chunk must not be nil")
@@ -80,14 +79,6 @@ func TestW9DStatesReaderArms(t *testing.T) {
 	// scanSelectionState 的 scan 失败臂（单测注入）。
 	if _, err := scanSelectionState(func(dest ...any) error { return context.DeadlineExceeded }); err == nil {
 		t.Fatal("injected scan failure must propagate")
-	}
-	// 循环内 scan err：key_index 存非整数文本。
-	h.exec(t, `UPDATE account_api_key_runtime_states SET key_index='x' WHERE account_id='acc'`)
-	if _, err := h.store.LoadSelectionStatesByAccountIds(ctx, []string{"acc"}); err == nil {
-		t.Fatal("bad key_index batch scan must fail")
-	}
-	if _, err := h.store.LoadSelectionStatesForAccount(ctx, "acc"); err == nil {
-		t.Fatal("bad key_index single scan must fail")
 	}
 	// 查询 err：drop 表。
 	if _, err := h.db.Exec(`DROP TABLE account_api_key_runtime_states`); err != nil {

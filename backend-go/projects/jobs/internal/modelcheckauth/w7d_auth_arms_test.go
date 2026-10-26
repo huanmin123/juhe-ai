@@ -3,7 +3,7 @@ package modelcheckauth
 // w7d（modelcheckauth 覆盖补齐）：构造器守卫、token 解析边界、时间解析分支、
 // Postgres 专有路径（表前缀、$n 绑定改写、has_table_privilege 契约、
 // last_seen touch）与只读契约错误臂。PG 语义用脚本化 database/sql driver
-// 进程内模拟；SQLite 臂使用内存库。不连接真实数据库。
+// 进程内模拟；不连接真实数据库（SQLite 模式分支已随 sqlite 生产臂退役）。
 
 import (
 	"context"
@@ -146,18 +146,14 @@ func w7dOpenAuthDB(t *testing.T, steps []w7dAuthStep) *sql.DB {
 // ---------------------------------------------------------------------------
 
 func TestW7DNewRejectsNilDBAndUnknownMode(t *testing.T) {
-	if _, err := New(nil, SQLite, nil); err == nil {
+	if _, err := New(nil, Postgres, nil); err == nil {
 		t.Fatal("nil db 必须拒绝")
 	}
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := w7dOpenAuthDB(t, nil)
 	if _, err := New(db, Mode(9), nil); err == nil {
 		t.Fatal("未知 mode 必须拒绝")
 	}
-	auth, err := New(db, SQLite, nil)
+	auth, err := New(db, Postgres, nil)
 	if err != nil || auth == nil {
 		t.Fatalf("nil now 必须回落 time.Now: %v", err)
 	}
@@ -181,27 +177,17 @@ func TestW7DUninitializedAuthenticatorFailsClosed(t *testing.T) {
 		t.Fatal("nil authenticator RequireAdminToken 必须失败")
 	}
 	// table/bind 的 nil receiver 在生产路径被前置守卫拦截，这里不直呼；
-	// 两种 mode 的分支由构造实例驱动。
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	sqliteAuth, _ := New(db, SQLite, nil)
-	if got := sqliteAuth.table("system_sessions"); got != "system_sessions" {
-		t.Fatalf("SQLite 表名不加前缀: %q", got)
-	}
+	// 分支由 Postgres 构造实例驱动（SQLite 模式的裸表名/? 绑定分支已随
+	// sqlite 生产臂退役）。
+	db := w7dOpenAuthDB(t, nil)
 	postgresAuth, _ := New(db, Postgres, nil)
 	if got := postgresAuth.table("system_sessions"); got != "juhe_business.system_sessions" {
 		t.Fatalf("Postgres 表名必须带前缀: %q", got)
 	}
-	if got := sqliteAuth.bind("UPDATE t SET a=? WHERE b=?"); strings.Contains(got, "$") {
-		t.Fatalf("SQLite 绑定必须保留 ?: %q", got)
-	}
 	if got := postgresAuth.bind("UPDATE t SET a=? WHERE b=?"); got != "UPDATE t SET a=$1 WHERE b=$2" {
 		t.Fatalf("Postgres 绑定必须改写为 $n: %q", got)
 	}
-	timeValue := sqliteAuth.timeValue(time.Date(2026, 9, 14, 8, 0, 0, 123456789, time.UTC))
+	timeValue := postgresAuth.timeValue(time.Date(2026, 9, 14, 8, 0, 0, 123456789, time.UTC))
 	if timeValue != "2026-09-14T08:00:00.123Z" {
 		t.Fatalf("timeValue 必须截断到毫秒: %v", timeValue)
 	}
@@ -222,13 +208,8 @@ func TestW7DResolveTokenBoundaries(t *testing.T) {
 	if got, err := resolveToken("  BEARER  "+temporary+"  ", ""); err != nil || got != temporary {
 		t.Fatalf("大小写不敏感 Bearer 必须 trim 后通过: got=%q err=%v", got, err)
 	}
-	// AuthenticateToken 空白 token 守卫。
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	auth, _ := New(db, SQLite, nil)
+	// AuthenticateToken 空白 token 守卫（守卫先于任何查询，脚本化库即可）。
+	auth, _ := New(w7dOpenAuthDB(t, nil), Postgres, nil)
 	if _, err := auth.AuthenticateToken(context.Background(), "   "); err == nil {
 		t.Fatal("空白 token 必须拒绝")
 	}
@@ -346,7 +327,7 @@ func TestW7DAuthenticateTokenErrorArmsOverScriptedDriver(t *testing.T) {
 	db := w7dOpenAuthDB(t, []w7dAuthStep{
 		{queryErr: errors.New("w7d: session query boom")},
 	})
-	auth, _ := New(db, SQLite, func() time.Time { return now })
+	auth, _ := New(db, Postgres, func() time.Time { return now })
 	if _, err := auth.AuthenticateToken(context.Background(), token); err == nil || !strings.Contains(err.Error(), "read management session") {
 		t.Fatalf("会话查询错误必须暴露: %v", err)
 	}
@@ -355,7 +336,7 @@ func TestW7DAuthenticateTokenErrorArmsOverScriptedDriver(t *testing.T) {
 	db2 := w7dOpenAuthDB(t, []w7dAuthStep{
 		{cols: []string{"a"}, rowsEOFErr: errors.New("w7d: rows boom")},
 	})
-	auth2, _ := New(db2, SQLite, func() time.Time { return now })
+	auth2, _ := New(db2, Postgres, func() time.Time { return now })
 	if _, err := auth2.AuthenticateToken(context.Background(), token); err == nil || !strings.Contains(err.Error(), "read management session") {
 		t.Fatalf("行迭代错误必须暴露: %v", err)
 	}
@@ -364,7 +345,7 @@ func TestW7DAuthenticateTokenErrorArmsOverScriptedDriver(t *testing.T) {
 	db3 := w7dOpenAuthDB(t, []w7dAuthStep{
 		{cols: []string{"id", "expires_at", "last_seen_at", "sa.id", "username", "display_name", "role", "must_change_password"}, row: []driver.Value{"sess", "bad-time", "2026-09-14T07:00:00Z", "acc", "admin", "Admin", "admin", "false"}},
 	})
-	auth3, _ := New(db3, SQLite, func() time.Time { return now })
+	auth3, _ := New(db3, Postgres, func() time.Time { return now })
 	if _, err := auth3.AuthenticateToken(context.Background(), token); !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("非法 expires 必须按过期处理: %v", err)
 	}
@@ -373,7 +354,7 @@ func TestW7DAuthenticateTokenErrorArmsOverScriptedDriver(t *testing.T) {
 	db4 := w7dOpenAuthDB(t, []w7dAuthStep{
 		{cols: []string{"id", "expires_at", "last_seen_at", "sa.id", "username", "display_name", "role", "must_change_password"}, row: []driver.Value{"sess", "2026-09-14T09:00:00Z", "bad-seen", "acc", "admin", "Admin", "admin", "false"}},
 	})
-	auth4, _ := New(db4, SQLite, func() time.Time { return now })
+	auth4, _ := New(db4, Postgres, func() time.Time { return now })
 	if _, err := auth4.AuthenticateToken(context.Background(), token); !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("非法 last_seen 必须按过期处理: %v", err)
 	}
@@ -383,7 +364,7 @@ func TestW7DAuthenticateTokenErrorArmsOverScriptedDriver(t *testing.T) {
 		{cols: []string{"id", "expires_at", "last_seen_at", "sa.id", "username", "display_name", "role", "must_change_password"}, row: []driver.Value{"sess", "2026-09-14T09:00:00Z", "2026-09-14T07:00:00Z", "acc", "admin", "Admin", "admin", "false"}},
 		{execErr: errors.New("w7d: touch boom")},
 	})
-	auth5, _ := New(db5, SQLite, func() time.Time { return now })
+	auth5, _ := New(db5, Postgres, func() time.Time { return now })
 	if _, err := auth5.AuthenticateToken(context.Background(), token); err == nil || !strings.Contains(err.Error(), "touch management session") {
 		t.Fatalf("touch 失败必须暴露: %v", err)
 	}
@@ -392,7 +373,7 @@ func TestW7DAuthenticateTokenErrorArmsOverScriptedDriver(t *testing.T) {
 	db6 := w7dOpenAuthDB(t, []w7dAuthStep{
 		{cols: []string{"id", "expires_at", "last_seen_at", "sa.id", "username", "display_name", "role", "must_change_password"}, row: []driver.Value{"sess", "2026-09-14T09:00:00Z", "2026-09-14T07:59:30Z", "acc", "admin", "Admin", "admin", "true"}},
 	})
-	auth6, _ := New(db6, SQLite, func() time.Time { return now })
+	auth6, _ := New(db6, Postgres, func() time.Time { return now })
 	if _, err := auth6.AuthenticateToken(context.Background(), token); !errors.Is(err, ErrMustChange) {
 		t.Fatalf("1 分钟内的 last_seen 不得触发 touch: %v", err)
 	}
@@ -401,7 +382,7 @@ func TestW7DAuthenticateTokenErrorArmsOverScriptedDriver(t *testing.T) {
 	db7 := w7dOpenAuthDB(t, []w7dAuthStep{
 		{cols: []string{"id", "expires_at", "last_seen_at", "sa.id", "username", "display_name", "role", "must_change_password"}, row: []driver.Value{"sess", "2026-09-14T09:00:00Z", now.Format(time.RFC3339Nano), "acc", "user", "User", "user", "false"}},
 	})
-	auth7, _ := New(db7, SQLite, func() time.Time { return now })
+	auth7, _ := New(db7, Postgres, func() time.Time { return now })
 	if _, err := auth7.RequireAdminToken(context.Background(), token); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("非管理员必须拒绝: %v", err)
 	}

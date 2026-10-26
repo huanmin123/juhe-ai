@@ -27,7 +27,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
-	_ "modernc.org/sqlite"
 )
 
 // TestComposeSystemAPIWiresInProcessAccountTestDispatch pins the

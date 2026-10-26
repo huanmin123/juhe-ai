@@ -23,13 +23,6 @@ import (
 // authsys middleware stack touches (the systemteams fixture shape): the
 // account store reads description/must_change_password/... through FindByUsername.
 var usageRouteEnvDDL = []string{
-	`ALTER TABLE system_accounts ADD COLUMN description TEXT`,
-	`ALTER TABLE system_accounts ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE system_accounts ADD COLUMN image_generation_enabled INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE system_accounts ADD COLUMN ai_account_limit INTEGER`,
-	`ALTER TABLE system_accounts ADD COLUMN expedited_account_limit INTEGER`,
-	`ALTER TABLE system_accounts ADD COLUMN request_limits_json TEXT`,
-	`ALTER TABLE system_accounts ADD COLUMN last_login_at TEXT`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
 }
 
@@ -54,9 +47,12 @@ var usageEnvSchemaOnce sync.Map
 
 // newUsageRouteEnv mounts the full authz family behind the real authsys
 // middleware with development auto login pinned to the given account.
-func newUsageRouteEnv(t *testing.T, autoLogin string) *usageRouteEnv {
+func newUsageRouteEnv(t *testing.T, autoLogin string, shared ...*fixture) *usageRouteEnv {
 	t.Helper()
 	f := newUsageFixture(t)
+	if len(shared) > 0 && shared[0] != nil {
+		f = shared[0]
+	}
 	if _, loaded := usageEnvSchemaOnce.LoadOrStore(t.Name(), true); !loaded {
 		for _, statement := range usageRouteEnvDDL {
 			if _, err := f.db.Exec(statement); err != nil {
@@ -269,7 +265,7 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 	timezone := "UTC"
 	todayKey := dateKeyAt(env.f.now, timezone)
 	startKey := addCalendarDays(todayKey, -30)
-	_, err = env.f.db.Exec(fixtureBind(`INSERT INTO usage_scope_range_windows
+	_, err = env.f.db.Exec(fixtureBind(`INSERT INTO juhe_stats.usage_scope_range_windows
 		(system_account_id, scope_type, scope_id, start_date, end_date,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
 		VALUES ('owner1', 'group_authorization', ?, ?, ?, 3, 30, 15, 0.5, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`), 		runtimeID, startKey, todayKey)
@@ -304,13 +300,13 @@ func TestAdminReturnAndUsageDetail(t *testing.T) {
 	}
 
 	// The grantee reads the same detail on the my surface.
-	userEnv := newUsageRouteEnv(t, "grantee")
+	userEnv := newUsageRouteEnv(t, "grantee", env.f)
 	status, payload = userEnv.do(t, http.MethodGet, "/__aisys__/api/my-authorizations/"+created.Item.ID+"/usage", "")
 	if status != http.StatusOK {
 		t.Fatalf("my usage status = %d body = %s", status, payload)
 	}
 	// A third user cannot see the grant at all.
-	otherEnv := newUsageRouteEnv(t, "plainuser")
+	otherEnv := newUsageRouteEnv(t, "plainuser", env.f)
 	if status, _ := otherEnv.do(t, http.MethodGet, "/__aisys__/api/my-authorizations/"+created.Item.ID+"/usage", ""); status != http.StatusNotFound {
 		t.Fatalf("stranger usage status = %d", status)
 	}

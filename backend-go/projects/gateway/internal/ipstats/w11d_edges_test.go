@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
-	_ "modernc.org/sqlite"
 )
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,16 +10,19 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // errorsAs is a small alias so test cases read uniformly.
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
 
 // The DDL fixture mirrors backend-go/projects/maintenance/internal/schema
-// sqliteChatDDL (chat_* tables). Tests run against one shared in-memory
-// database per case with MaxOpenConns(1) so SQLite single-writer semantics
-// match production.
+// (chat_* tables), PG 方言（TEXT/INTEGER/CHECK 与 PG 兼容）。Tests run against
+// one pgtestkit isolated database per case; 夹具 DDL 在 search_path=juhe_chat
+// 连接上注入，表落生产 schema（2026-10-25 存储形态收尾，自 sqlite 内存库迁
+// pgtestkit 真库）。
 
 const chatTestDDL = `
 CREATE TABLE IF NOT EXISTS chat_conversations (
@@ -41,26 +45,26 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   is_pinned INTEGER NOT NULL DEFAULT 0,
   last_model TEXT,
   default_image_model TEXT NOT NULL DEFAULT 'gpt-image-2',
-  next_sequence_no INTEGER NOT NULL DEFAULT 1,
+  next_sequence_no BIGINT NOT NULL DEFAULT 1,
   user_turn_count INTEGER NOT NULL DEFAULT 0,
   message_revision INTEGER NOT NULL DEFAULT 0,
   active_turn_id TEXT,
   active_started_at TEXT,
   context_revision INTEGER NOT NULL DEFAULT 0,
   active_checkpoint_id TEXT,
-  compacted_through_sequence INTEGER NOT NULL DEFAULT 0,
+  compacted_through_sequence BIGINT NOT NULL DEFAULT 0,
   context_state TEXT NOT NULL DEFAULT 'ready',
   active_context_tokens INTEGER,
   effective_context_limit_tokens INTEGER,
   context_usage_estimated INTEGER NOT NULL DEFAULT 1,
   context_claim_id TEXT,
   context_claim_revision INTEGER,
-  context_claim_through_sequence INTEGER,
+  context_claim_through_sequence BIGINT,
   context_claimed_at TEXT,
   context_retry_at TEXT,
   context_attempt_count INTEGER NOT NULL DEFAULT 0,
   context_error_code TEXT,
-  context_progress_sequence INTEGER NOT NULL DEFAULT 0,
+  context_progress_sequence BIGINT NOT NULL DEFAULT 0,
   context_progress_earliest_expires_at TEXT,
   last_message_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -106,18 +110,18 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   )
 );
 CREATE TABLE IF NOT EXISTS chat_messages (
-  id TEXT PRIMARY KEY,
+  id TEXT NOT NULL,
   conversation_id TEXT NOT NULL,
   system_account_id TEXT NOT NULL,
   turn_id TEXT NOT NULL,
-  sequence_no INTEGER NOT NULL,
+  sequence_no BIGINT NOT NULL,
   client_message_id TEXT,
   role TEXT NOT NULL,
   status TEXT NOT NULL,
   content_text TEXT NOT NULL DEFAULT '',
   content_blocks_json TEXT NOT NULL DEFAULT '[]',
-  content_bytes INTEGER NOT NULL DEFAULT 0,
-  storage_reserved_bytes INTEGER NOT NULL DEFAULT 0,
+  content_bytes BIGINT NOT NULL DEFAULT 0,
+  storage_reserved_bytes BIGINT NOT NULL DEFAULT 0,
   model TEXT NOT NULL,
   trace_id TEXT,
   finish_reason TEXT,
@@ -138,8 +142,9 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   CHECK (
     (role = 'assistant' AND status = 'streaming' AND storage_reserved_bytes > 0)
     OR (status != 'streaming' AND storage_reserved_bytes = 0)
-  )
-);
+  ),
+  PRIMARY KEY (created_at, id)
+) PARTITION BY RANGE (created_at);
 CREATE TABLE IF NOT EXISTS chat_message_idempotency (
   conversation_id TEXT NOT NULL,
   client_message_id TEXT NOT NULL,
@@ -154,8 +159,8 @@ CREATE TABLE IF NOT EXISTS chat_message_idempotency (
 CREATE TABLE IF NOT EXISTS chat_user_storage_windows (
   system_account_id TEXT NOT NULL,
   bucket_date TEXT NOT NULL,
-  content_bytes INTEGER NOT NULL DEFAULT 0,
-  reserved_bytes INTEGER NOT NULL DEFAULT 0,
+  content_bytes BIGINT NOT NULL DEFAULT 0,
+  reserved_bytes BIGINT NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (system_account_id, bucket_date),
   CHECK (content_bytes >= 0),
@@ -163,8 +168,8 @@ CREATE TABLE IF NOT EXISTS chat_user_storage_windows (
 );
 CREATE TABLE IF NOT EXISTS chat_user_asset_usage (
   system_account_id TEXT PRIMARY KEY,
-  asset_bytes INTEGER NOT NULL DEFAULT 0,
-  asset_count INTEGER NOT NULL DEFAULT 0,
+  asset_bytes BIGINT NOT NULL DEFAULT 0,
+  asset_count BIGINT NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   CHECK (asset_bytes >= 0),
   CHECK (asset_count >= 0)
@@ -216,7 +221,7 @@ CREATE TABLE IF NOT EXISTS chat_context_entries (
   source_message_id TEXT,
   kind TEXT NOT NULL,
   content_json TEXT NOT NULL,
-  content_bytes INTEGER NOT NULL,
+  content_bytes BIGINT NOT NULL,
   provenance TEXT NOT NULL,
   trust_level TEXT NOT NULL,
   token_count INTEGER,
@@ -260,7 +265,7 @@ CREATE TABLE IF NOT EXISTS chat_assets (
   observation_revision INTEGER NOT NULL DEFAULT 0,
   observation_claim_id TEXT,
   observation_claimed_at TEXT,
-  quota_bytes INTEGER NOT NULL,
+  quota_bytes BIGINT NOT NULL,
   turn_id TEXT,
   message_id TEXT,
   committed_at TEXT,
@@ -351,28 +356,63 @@ func fixedChatClock() (time.Time, func() time.Time) {
 
 func newChatFixture(t *testing.T) *chatFixture {
 	t.Helper()
-	name := strings.ReplaceAll(t.Name(), "/", "-")
-	db, err := sql.Open("sqlite", "file:chat-"+name+"?mode=memory&cache=shared")
+	pool, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), chatPGFixtureDSN(t))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("打开夹具连接池失败: %v", err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range strings.Split(chatTestDDL, ";") {
-		trimmed := strings.TrimSpace(statement)
-		if trimmed == "" {
-			continue
-		}
-		if _, err := db.Exec(trimmed); err != nil {
-			t.Fatalf("ddl: %v", err)
-		}
-	}
+	t.Cleanup(func() { _ = pool.Close() })
 	_, clock := fixedChatClock()
-	store, err := NewStore(db, clock, nil)
+	store, err := NewStore(pool, clock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &chatFixture{t: t, db: db, store: store, nowISO: "2026-03-10T08:00:00.000Z"}
+	return &chatFixture{t: t, db: pool, store: store, nowISO: "2026-03-10T08:00:00.000Z"}
+}
+
+// chatPGFixtureDSN 创建 pgtestkit 隔离 PG 测试库并在 search_path=juhe_chat
+// 连接上注入 chatTestDDL（裸名建表落生产 schema），返回带
+// search_path=juhe_chat 的连接串。配 sqldialect 改写包装使用：夹具/测试手写
+// SQL 的裸表名与 `?` 占位符由 search_path + 驱动层 `?`→`$n` 兜底解析；生产
+// store 本就 juhe_chat 限定 + bind()（两层改写幂等共存）。
+func chatPGFixtureDSN(t *testing.T) string {
+	t.Helper()
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_chat`); err != nil {
+			return err
+		}
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, `SET search_path TO juhe_chat,public`); err != nil {
+			return err
+		}
+		for _, statement := range strings.Split(chatTestDDL, ";") {
+			trimmed := strings.TrimSpace(statement)
+			if trimmed == "" {
+				continue
+			}
+			if _, err := conn.ExecContext(ctx, trimmed); err != nil {
+				return err
+			}
+		}
+		// chat_messages 为 RANGE (created_at) 分区表（照抄 maintenance 生产
+		// DDL 形状）；生产由 ensurePostgresChatMessagePartitions 按写入日懒建
+		// 子表，但其进程级 memo（ensuredChatPartitionDateKeys）跨测试库复用会
+		// 跳过 CREATE，因此夹具按固定时钟（fixedChatClock 当日 + 次日）预建
+		// 生产同名分区。
+		for _, bounds := range [][2]string{{"2026-03-10", "2026-03-11"}, {"2026-03-11", "2026-03-12"}} {
+			name := "chat_messages_" + strings.ReplaceAll(bounds[0], "-", "")
+			statement := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS juhe_chat."%s" PARTITION OF juhe_chat.chat_messages FOR VALUES FROM ('%s') TO ('%s')`, name, bounds[0], bounds[1])
+			if _, err := conn.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	_ = testDB.DB.Close()
+	return testDB.DSN + "&search_path=juhe_chat"
 }
 
 // createConversation inserts a conversation directly through the store. 创建

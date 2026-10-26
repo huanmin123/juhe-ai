@@ -2,7 +2,7 @@ package main
 
 // chain_account_locks.go 的补充单元测试（w1 波次）：覆盖既有
 // chain_account_locks_test.go 12 个行为测试之外的构造、方言、纯逻辑辅助函数与
-// SQLite CAS 冲突/行缺失分支。复用现有 lockFixture / seedAccount / seedLockRow /
+// PG CAS 冲突/行缺失分支。复用现有 lockFixture / seedAccount / seedLockRow /
 // readLockRow 等 helper（不重复定义），新增标识符统一 w1s 前缀。
 
 import (
@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -28,11 +28,7 @@ func TestW1SNewChainAccountLocksRejectsNilDB(t *testing.T) {
 	if _, err := newChainAccountLocks(nil, nil); err == nil {
 		t.Fatal("newChainAccountLocks(nil) 应拒绝空业务库句柄")
 	}
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := pgtestkit.New(t)
 
 	locksWithNil, err := newChainAccountLocks(db, nil)
 	if err != nil {

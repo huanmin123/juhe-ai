@@ -1,15 +1,15 @@
 package operationlog
 
-// w9b owner/legacy 迁移补充臂：用接口 fake 与真实 SQLite 文件覆盖 RunOwner
-// 的租约与 retention 错误分支、legacy 迁移的源库校验失败、扫描与计数错误。
+// w9b owner/legacy 迁移补充臂：用接口 fake 与脚本化 database/sql driver 覆盖
+// RunOwner 的租约与 retention 错误分支、legacy 迁移的源库校验失败、扫描与计数
+// 错误（legacy 迁移链的真实库覆盖见 w14h_pg_migration_test.go 的脚本化 PG 矩阵；
+// 原 SQLite 文件形态夹具 w9bSeedLegacyPair 已随 sqlite 生产臂退役）。
 
 import (
 	"context"
-	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -209,42 +209,9 @@ func TestW9BScanLegacyOperationLogArms(t *testing.T) {
 	}
 }
 
-// w9bSeedLegacyPair 构造 source/target 两库，各含一条指定的操作日志行。
-func w9bSeedLegacyPair(t *testing.T, root, summary string) (source, target *sql.DB) {
-	t.Helper()
-	openAt := func(name string) *sql.DB {
-		db, err := sql.Open("sqlite", filepath.Join(root, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		return db
-	}
-	source, target = openAt("src.sqlite3"), openAt("tgt.sqlite3")
-	schema := `CREATE TABLE operation_logs (id TEXT PRIMARY KEY, trace_id TEXT, actor_system_account_id TEXT NOT NULL, actor_username TEXT, actor_display_name TEXT, actor_role TEXT NOT NULL, operation_scope_system_account_id TEXT, mode TEXT NOT NULL, module TEXT NOT NULL, action TEXT NOT NULL, operation_key TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, resource_name TEXT, summary TEXT NOT NULL, detail_level TEXT NOT NULL, visibility_scope TEXT NOT NULL, changes_json TEXT NOT NULL, metadata_json TEXT NOT NULL, method TEXT, path TEXT, status_code INTEGER, client_ip TEXT, user_agent TEXT, created_at TEXT NOT NULL);
-CREATE TABLE operation_log_targets (id TEXT PRIMARY KEY, operation_log_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT, target_name TEXT, target_owner_system_account_id TEXT, relation TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE operation_log_viewers (operation_log_id TEXT NOT NULL, system_account_id TEXT NOT NULL, visibility_reason TEXT NOT NULL, detail_level TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(operation_log_id,system_account_id,visibility_reason,detail_level));
-CREATE TABLE operation_log_summary_search_terms (operation_log_id TEXT NOT NULL, term TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(term,operation_log_id));`
-	for _, db := range []*sql.DB{source, target} {
-		if _, err := db.Exec(schema); err != nil {
-			t.Fatal(err)
-		}
-	}
-	insert := `INSERT INTO operation_logs (id,trace_id,actor_system_account_id,actor_username,actor_display_name,actor_role,operation_scope_system_account_id,mode,module,action,operation_key,resource_type,resource_id,resource_name,summary,detail_level,visibility_scope,changes_json,metadata_json,method,path,status_code,client_ip,user_agent,created_at) VALUES ('legacy-1','','actor','actor','Actor','admin','','self','accounts','update','accounts.update','account','acc-1','Alpha',?,'full','targeted','[{"field":"enabled","before":false,"after":true}]','{"source":"legacy"}','PATCH','/api/accounts/1',200,'203.0.113.5','w9b-agent','2026-09-01T00:00:00.000000000Z');
-INSERT INTO operation_log_targets VALUES ('legacy-target','legacy-1','account','acc-1','Alpha','owner','primary','2026-09-01T00:00:00.000000000Z');
-INSERT INTO operation_log_viewers VALUES ('legacy-1','viewer','resource_owner','full','2026-09-01T00:00:00.000000000Z');`
-	for _, db := range []*sql.DB{source, target} {
-		if _, err := db.Exec(insert, summary); err != nil {
-			t.Fatal(err)
-		}
-		for _, term := range searchTerms(summary) {
-			if _, err := db.Exec(`INSERT INTO operation_log_summary_search_terms VALUES ('legacy-1',?,'2026-09-01T00:00:00.000000000Z')`, term); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	return source, target
-}
+// w9bSeedLegacyPair（SQLite source/target 文件库夹具）已随 sqlite 生产臂退役：
+// legacy 迁移链的校验与回填覆盖统一走 w14h_pg_migration_test.go 的脚本化
+// PG driver 矩阵。
 
 // TestW9BSearchTermsBoundaryArms 覆盖 searchTerms 的长度/上限分支。
 func TestW9BSearchTermsBoundaryArms(t *testing.T) {

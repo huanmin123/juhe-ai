@@ -256,7 +256,9 @@ func createTestDatabase(t testing.TB, adminDSN, name string) {
 	pingCancel()
 	createCtx, createCancel := context.WithTimeout(context.Background(), opTimeout)
 	defer createCancel()
-	if _, err := admin.ExecContext(createCtx, fmt.Sprintf(`CREATE DATABASE %s`, quoteIdent(name))); err != nil {
+	// C collation：测试夹具与前缀范围断言依赖逐字节比较，宿主默认 collation
+	// （ICU/区域设置）会忽略标点并破坏区间语义。
+	if _, err := admin.ExecContext(createCtx, fmt.Sprintf(`CREATE DATABASE %s TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'`, quoteIdent(name))); err != nil {
 		t.Fatalf("pgtestkit: 创建测试库 %s 失败: %v", name, err)
 	}
 }

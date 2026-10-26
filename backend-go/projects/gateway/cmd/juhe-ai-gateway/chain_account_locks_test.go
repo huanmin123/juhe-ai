@@ -18,7 +18,6 @@ import (
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
-	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -51,7 +50,7 @@ func (c *lockClock) AdvanceMs(ms int64) {
 
 func (c *lockClock) NowMs() int64 { return c.Now().UnixMilli() }
 
-// lockFixture bundles the SQLite business handle with the bridge under test.
+// lockFixture bundles the PG business handle with the bridge under test.
 type lockFixture struct {
 	db      *sql.DB
 	locks   *chainAccountLocks
@@ -91,13 +90,12 @@ func (r *invalidationRecorder) All() []string {
 
 func newAccountLocksFixture(t *testing.T) *lockFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "locks.sqlite3"))
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	// pgtestkit 隔离 PG 库 + juhe_business schema + search_path 连接池
+	//（newChainFixturePGDatabase 同款惯例）：生产锁桥按 juhe_business 限定名
+	// 读写，夹具手写裸表名 SQL 经 search_path 落同一 schema。
+	db := newChainFixturePGDatabase(t)
 	for _, statement := range []string{
-		// Real-DDL shape (maintenance sqlite_schema.go): the runtime bridge
+		// Real-DDL shape (maintenance 生产 DDL)：the runtime bridge
 		// relies on the same CHECK constraints the archive assumes.
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY,
@@ -123,14 +121,14 @@ func newAccountLocksFixture(t *testing.T) *lockFixture {
 			lock_death_timeout_seconds INTEGER NOT NULL DEFAULT 300 CHECK (lock_death_timeout_seconds BETWEEN 30 AND 3600),
 			lock_retry_interval_seconds INTEGER NOT NULL DEFAULT 5 CHECK (lock_retry_interval_seconds BETWEEN 5 AND 30),
 			incident_id TEXT,
-			generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+			generation BIGINT NOT NULL DEFAULT 0 CHECK (generation >= 0),
 			incident_started_at TEXT,
 			deadline_at TEXT,
 			original_status TEXT,
 			provenance TEXT,
-			next_retry_at_ms INTEGER,
+			next_retry_at_ms BIGINT,
 			lease_id TEXT,
-			lease_until_ms INTEGER,
+			lease_until_ms BIGINT,
 			updated_at TEXT NOT NULL,
 			CHECK ((lock_state = 'UNLOCKED' AND enabled = 0) OR (lock_state <> 'UNLOCKED' AND enabled = 1))
 		)`,
@@ -935,7 +933,7 @@ func TestComposeWiresAccountLockSecretRotationFromConfig(t *testing.T) {
 		"EngineSecret: cfg.Secret,",
 		"AccountLocks: accountLockPort,",
 		"KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient),",
-		"newChainAccountLocks(composed.db, composed.pgDialect,",
+		"newChainAccountLocks(composed.db, func(reason string) {",
 	} {
 		if !strings.Contains(text, needle) {
 			t.Fatalf("compose.go missing wiring %q", needle)

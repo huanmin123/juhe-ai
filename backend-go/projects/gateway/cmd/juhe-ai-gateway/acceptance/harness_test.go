@@ -1,12 +1,15 @@
-// X05 验收夹具：隔离环境构建、J3b cutover evidence 生成、maintenance
-// ensure+seed、被测进程启停（带诊断日志尾部）、HTTP 客户端助手。
+// X05 验收夹具：隔离环境构建、maintenance ensure+seed、被测进程启停（带诊断
+// 日志尾部）、HTTP 客户端助手。PostgreSQL + Redis 是唯一存储形态
+//（PLAN-20261024T051925945Z）：显式 PGDSN 缺省时夹具经 pgtestkit 自建每测试
+// 隔离库（fresh DDL + seed，等价部署 runbook 的受控预置步骤）；Redis 连接串
+// 自仓库根 .local dev env 解析（与 pgtestkit 同源），缺失时显式失败。
 package acceptance
 
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,11 +21,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "modernc.org/sqlite"
+	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -61,71 +68,82 @@ func mustMkdirAll(t *testing.T, paths ...string) {
 	}
 }
 
-func mustTouchFile(t *testing.T, path string) {
-	t.Helper()
-	if err := os.WriteFile(path, nil, 0o644); err != nil {
-		t.Fatalf("touch %s: %v", path, err)
-	}
-}
-
 // acceptanceAdminPassword 是 seed 管理员密码（Node seedDefaults 与 Go
 // maintenance seed 一致：admin/admin，pbkdf2 封套按 Node crypto.ts 的
 // base64url salt 文本语义派生，Node 与 Go 双侧均可验证）。
 const acceptanceAdminPassword = "admin"
 
-// provisionOperationLogBusinessSettingsMirror 按 F4 读模型约定播种业务设置
-// 镜像：actor 显示名与 operationLogRetentionDays 都从该只读镜像解析。空
-// 镜像文件会让带条目的 operation-logs 列表 500（system_accounts 表不存在）。
-func provisionOperationLogBusinessSettingsMirror(t *testing.T, mirrorPath, businessPath string) {
-	t.Helper()
-	business, err := sql.Open("sqlite", "file:"+businessPath+"?mode=ro")
-	if err != nil {
-		t.Fatalf("open business db for F4 mirror: %v", err)
-	}
-	rows, err := business.Query(`SELECT id, username, COALESCE(display_name, '') FROM system_accounts`)
-	if err != nil {
-		business.Close()
-		t.Fatalf("read business system_accounts for F4 mirror: %v", err)
-	}
-	type accountRow struct{ id, username, displayName string }
-	accounts := []accountRow{}
-	for rows.Next() {
-		var row accountRow
-		if err := rows.Scan(&row.id, &row.username, &row.displayName); err != nil {
-			rows.Close()
-			business.Close()
-			t.Fatalf("scan system_accounts: %v", err)
-		}
-		accounts = append(accounts, row)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		business.Close()
-		t.Fatalf("iterate system_accounts: %v", err)
-	}
-	if err := business.Close(); err != nil {
-		t.Fatalf("close business db: %v", err)
-	}
+// acceptanceSharedEnvRelative 是 dev env 事实文件相对仓库根的固定位置（与
+// pgtestkit 同源；Redis 连接串只从这里或显式 env 读取，内容不进入任何
+// 文件、日志或断言）。
+const acceptanceSharedEnvRelative = ".local/project-resources/dev/env/shared.env"
 
-	mirror, err := sql.Open("sqlite", "file:"+mirrorPath+"?_pragma=busy_timeout(5000)")
+// acceptanceRedisEnvKey 是显式 Redis 连接串 env（值相同时 cache/state 可共用，
+// 验收隔离面以独立 namespace 隔离键空间）。
+const acceptanceRedisEnvOverride = "JUHE_AI_TEST_REDIS_URL"
+
+// acceptanceRedisURL 解析验收进程族的 Redis 连接串：显式 env 优先，缺失时回退
+// 仓库根 .local dev env 的 JUHE_AI_REDIS_CACHE_URL。未配置即显式失败（验收
+// boot 的 Redis 契约是必填面，不静默跳过）。
+func acceptanceRedisURL(t *testing.T) string {
+	t.Helper()
+	if raw := strings.TrimSpace(os.Getenv(acceptanceRedisEnvOverride)); raw != "" {
+		return raw
+	}
+	for _, key := range []string{"JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL"} {
+		if raw := strings.TrimSpace(os.Getenv(key)); raw != "" {
+			return raw
+		}
+	}
+	values := acceptanceSharedEnv(t)
+	raw := strings.TrimSpace(values["JUHE_AI_REDIS_CACHE_URL"])
+	if raw == "" {
+		t.Fatalf("acceptance: Redis 连接串不可用（设 %s 或在仓库根 %s 配置 JUHE_AI_REDIS_CACHE_URL）",
+			acceptanceRedisEnvOverride, acceptanceSharedEnvRelative)
+	}
+	return raw
+}
+
+// acceptanceSharedEnv 自当前目录向上查找并解析 shared.env 的 KEY=VALUE。
+func acceptanceSharedEnv(t *testing.T) map[string]string {
+	t.Helper()
+	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("open F4 business settings mirror: %v", err)
+		t.Fatalf("acceptance: 读取工作目录失败: %v", err)
 	}
-	defer mirror.Close()
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL)`,
-	}
-	for _, statement := range statements {
-		if _, err := mirror.Exec(statement); err != nil {
-			t.Fatalf("provision F4 mirror schema: %v: %v", statement, err)
+	var envPath string
+	for i := 0; i < 32; i++ {
+		candidate := filepath.Join(dir, filepath.FromSlash(acceptanceSharedEnvRelative))
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			envPath = candidate
+			break
 		}
-	}
-	for _, row := range accounts {
-		if _, err := mirror.Exec(`INSERT OR IGNORE INTO system_accounts (id, username, display_name) VALUES (?, ?, ?)`, row.id, row.username, row.displayName); err != nil {
-			t.Fatalf("seed F4 mirror account %s: %v", row.id, err)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
 		}
+		dir = parent
 	}
+	if envPath == "" {
+		t.Fatalf("acceptance: 未找到 %s", acceptanceSharedEnvRelative)
+	}
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("acceptance: 读取 dev env 失败: %v", err)
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return values
 }
 
 // ---------------------------------------------------------------------------
@@ -217,9 +235,8 @@ func provisionJ3bPostgresSchema(t *testing.T, dsn string) {
 	}
 }
 
-// runMaintenanceEnsureSeed 调用 juhe-ai-maintenance --ensure-schema --seed。
 // runMaintenanceJ3bPostgresApply 应用 juhe_j3b schema（幂等）：模型检测
-// owner 默认常驻后，PG 模式的专属 schema 按契约由 maintenance 显式补齐。
+// owner 默认常驻后，juhe_j3b 专属 schema 按契约由 maintenance 显式补齐。
 func runMaintenanceJ3bPostgresApply(t *testing.T, dsn string) {
 	t.Helper()
 	cmd := exec.Command(maintenanceBinary, "--apply-j3b-model-check-postgres")
@@ -232,20 +249,17 @@ func runMaintenanceJ3bPostgresApply(t *testing.T, dsn string) {
 	}
 }
 
-func runMaintenanceEnsureSeed(t *testing.T, driver string, paths string, dsn string, secret string) map[string]any {
+// runMaintenanceEnsureSeed 调用 juhe-ai-maintenance --ensure-schema --seed
+//（PostgreSQL 是唯一形态：--dsn 是唯一目标形态）。
+func runMaintenanceEnsureSeed(t *testing.T, dsn string, secret string) map[string]any {
 	t.Helper()
-	args := []string{"--ensure-schema", "--seed", "--driver", driver, "--secret", secret}
-	if driver == "sqlite" {
-		args = append(args, "--paths", paths)
-	} else {
-		args = append(args, "--dsn", dsn)
-	}
+	args := []string{"--ensure-schema", "--seed", "--secret", secret, "--dsn", dsn}
 	cmd := exec.Command(maintenanceBinary, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("maintenance ensure+seed (%s) failed: %v\nstdout=%s\nstderr=%s", driver, err, stdout.String(), stderr.String())
+		t.Fatalf("maintenance ensure+seed failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
 	var report map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
@@ -264,8 +278,8 @@ func runMaintenanceEnsureSeed(t *testing.T, driver string, paths string, dsn str
 type gatewayEnvOptions struct {
 	// ChainEnabled 打开 /v1 网关链 + my-chat 家族。
 	ChainEnabled bool
-	// PGDSN 非空时以 postgres 模式组装（其余路径仍指向隔离临时目录的
-	// 审计/操作日志等专用存储）。
+	// PGDSN 非空时使用该连接串；为空时夹具经 pgtestkit 自建每测试隔离库
+	//（fresh DDL + seed）。
 	PGDSN string
 	// J3bPinnedListener 固定模型检测管理 listener 地址并暴露到 fixture.j3bURL
 	//（模型检测已默认常驻，此项只为断言提供已知端口）。
@@ -277,23 +291,28 @@ type gatewayEnvOptions struct {
 }
 
 type gatewayFixture struct {
-	baseURL    string
-	healthURL  string
-	j3bURL     string
-	root       string
-	secret     string
-	spoolDir   string
-	assetsRoot string
-	// storage 暴露六库路径与专用目录（jobs 场景复用同一隔离存储布局）。
+	baseURL        string
+	healthURL      string
+	j3bURL         string
+	root           string
+	secret         string
+	dsn            string
+	redisURL       string
+	redisNamespace string
+	spoolDir       string
+	assetsRoot     string
+	// storage 暴露共享目录面（logs / codex-context 根 / usage-shards；jobs
+	// 场景复用同一隔离目录布局）。数据库面统一走 dsn。
 	storage map[string]string
 	process *managedProcess
 	admin   *http.Client
 	t       *testing.T
 }
 
-// startGateway 以 fresh 隔离环境组装并启动 juhe-ai-gateway。SQLite 模式先
-// 执行 maintenance ensure+seed（与部署 runbook 一致）；gateway 启动时的
-// SQLite preflight 会幂等地再跑一遍六库 ensure+seed（Node db-service 语义）。
+// startGateway 以 fresh 隔离环境组装并启动 juhe-ai-gateway。PostgreSQL +
+// Redis 唯一存储形态：schema/seed 由外部 maintenance 执行（与部署 runbook
+// 一致；显式 PGDSN 缺省时经 pgtestkit 自建每测试隔离库），juhe_j3b schema
+// 按契约由受控数据库流程预置。
 func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	t.Helper()
 	root := t.TempDir()
@@ -306,15 +325,25 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	secret := randomHex(t, 16)
 	fixture.secret = secret
 
-	pg := opts.PGDSN != ""
-	sixPaths := map[string]string{
-		"JUHE_AI_DATABASE_PATH":               filepath.Join(root, "storage", "business.sqlite3"),
-		"JUHE_AI_STATS_DATABASE_PATH":         filepath.Join(root, "storage", "stats.sqlite3"),
-		"JUHE_AI_CHAT_DATABASE_PATH":          filepath.Join(root, "storage", "chat.sqlite3"),
-		"JUHE_AI_DATASET_DATABASE_PATH":       filepath.Join(root, "storage", "dataset.sqlite3"),
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH": filepath.Join(root, "storage", "usage-catalog.sqlite3"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":   filepath.Join(root, "storage", "runtime-log.sqlite3"),
+	// 隔离 PG 库：显式 DSN 优先，缺省时 pgtestkit 自建（fresh DDL + seed）。
+	dsn := opts.PGDSN
+	if dsn == "" {
+		testDB := pgtestkit.NewTestDatabase(t,
+			func(ctx context.Context, db *sql.DB) error {
+				_, err := bootstrap.EnsurePostgres(ctx, db)
+				return err
+			},
+			func(ctx context.Context, db *sql.DB) error {
+				_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Now: time.Now, Secret: secret})
+				return err
+			})
+		dsn = testDB.DSN
+	} else {
+		// 外部库同样走受控 ensure+seed（幂等）。
+		runMaintenanceEnsureSeed(t, dsn, secret)
 	}
+	fixture.dsn = dsn
+
 	codexRoot := filepath.Join(root, "storage", "codex-context")
 	usageShardRoot := filepath.Join(root, "storage", "usage-shards")
 	mustMkdirAll(t, codexRoot, usageShardRoot,
@@ -323,16 +352,17 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		filepath.Join(root, "openai-files"),
 		filepath.Join(root, "logs"),
 	)
-	mustTouchFile(t, filepath.Join(root, "storage", "audit-business-settings.sqlite3"))
-	mustTouchFile(t, filepath.Join(root, "storage", "oplog-business-settings.sqlite3"))
-	// X04 logreads: the runtime-log file is F1-jobs-owned (the gateway
-	// only reads it); fresh boots provision the minimal dataset schema
-	// like a deployed F1 indexer would (helper in log_faces_test.go).
-	provisionRuntimeLogDataset(t, sixPaths["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"])
 
 	spoolDir := filepath.Join(root, "storage", "usage-record-spool")
 	fixture.spoolDir = spoolDir
 	fixture.assetsRoot = filepath.Join(root, "chat-assets")
+
+	// PG 唯一形态下 gateway↔jobs 经 spool 目录与 PG 交接；Redis 键空间以
+	// 每测试唯一 namespace 隔离，避免并发验收互踩。
+	redisURL := acceptanceRedisURL(t)
+	namespace := "acc-" + randomHex(t, 6)
+	fixture.redisURL = redisURL
+	fixture.redisNamespace = namespace
 
 	env := map[string]string{
 		"JUHE_AI_HOST":                          "127.0.0.1",
@@ -342,52 +372,37 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		// 管理 listener 用随机端口避免并发场景抢占 3307。
 		"JUHE_AI_DATA_DIR":                      filepath.Join(root, "storage"),
 		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1:0",
-		"JUHE_AI_RUNTIME_MODE":                  "standalone",
 		"JUHE_AI_SECRET":                        secret,
-		// 清理批次 C1（2026-09-30）：切流门禁 env 家族与证据路径已退役
-		//（零配置自动认领恒生效）。
+		// PostgreSQL + Redis 唯一存储形态（2026-10-24 存储形态收口）：三个
+		// 连接串必填；F3/F4 store URL 缺省回落主连接串，实例 ID 显式钉死。
+		"JUHE_AI_POSTGRES_URL":                     dsn,
+		"JUHE_AI_BUSINESS_POSTGRES_URL":            dsn,
+		"JUHE_AI_REDIS_CACHE_URL":                  redisURL,
+		"JUHE_AI_REDIS_STATE_URL":                  redisURL,
+		"JUHE_AI_REDIS_NAMESPACE":                  namespace,
+		// J3b 常驻（2026-09-21）后 circuit runtime 要求显式连接串（与主链
+		// 共享同一 Redis 实例时必须显式声明并隔离键空间：独立 namespace）。
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":            redisURL,
+		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE":      namespace + "-j3b",
 		"JUHE_AI_BUSINESS_OWNER":                   "gateway",
 		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":       "true",
 		"JUHE_AI_AUTH_CAPTCHA_DISABLED":            "true",
-		"JUHE_AI_AUDIT_LOG_STORE":                  "sqlite",
 		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":            "acceptance-gateway",
-		"JUHE_AI_AUDIT_LOG_DATABASE_PATH":          filepath.Join(root, "storage", "audit.sqlite3"),
 		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":         filepath.Join(root, "storage", "audit-blobs"),
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "storage", "audit-business-settings.sqlite3"),
 		// E2E-FINDING #10：验收链路要求每次成功请求的 attempts 归因都保留，
 		// 采样率 1 = 全采样（成功信封 retention days 默认 3，满足 LoadConfig
 		// 「rate 与 retention days 同时为 0 或同时 > 0」联动校验）。
-		"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE":        "1",
-		"JUHE_AI_OPERATION_LOG_STORE":                  "sqlite",
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":            "acceptance-gateway",
-		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":          filepath.Join(root, "storage", "operation-log.sqlite3"),
-		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": filepath.Join(root, "storage", "oplog-business-settings.sqlite3"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                     usageShardRoot,
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":       codexRoot,
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT":      "1",
-		"JUHE_AI_CHAT_ASSETS_ROOT":                     fixture.assetsRoot,
-		"JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT":         filepath.Join(root, "openai-files"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY":                spoolDir,
+		"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "1",
+		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":     "acceptance-gateway",
+		"JUHE_AI_CHAT_ASSETS_ROOT":              fixture.assetsRoot,
+		"JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT":  filepath.Join(root, "openai-files"),
+		"JUHE_AI_USAGE_SPOOL_DIRECTORY":         spoolDir,
 	}
-	for key, value := range sixPaths {
-		env[key] = value
-	}
-	// business owner 门禁要求显式的 Business 数据库路径（sqlite 模式，
-	// runtime.go businessOwnerGate）。
-	env["JUHE_AI_BUSINESS_DATABASE_PATH"] = sixPaths["JUHE_AI_DATABASE_PATH"]
-	// 验收场景把 AI 账户指向本机 mock 上游（gateway_chain / chat_flow），
-	// 属于 accounts upstream_base_url.go 明确允许的临时回归通道。
-	env["JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS"] = "true"
 	fixture.storage = map[string]string{
-		"business":      sixPaths["JUHE_AI_DATABASE_PATH"],
-		"stats":         sixPaths["JUHE_AI_STATS_DATABASE_PATH"],
-		"chat":          sixPaths["JUHE_AI_CHAT_DATABASE_PATH"],
-		"dataset":       sixPaths["JUHE_AI_DATASET_DATABASE_PATH"],
-		"usage-catalog": sixPaths["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"],
-		"runtime-log":   sixPaths["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"],
-		"codex-root":    codexRoot,
-		"usage-shards":  usageShardRoot,
-		"logs":          filepath.Join(root, "logs"),
+		"dsn":          dsn,
+		"codex-root":   codexRoot,
+		"usage-shards": usageShardRoot,
+		"logs":         filepath.Join(root, "logs"),
 	}
 	if opts.ChainEnabled {
 		env["JUHE_AI_GATEWAY_CHAIN_ENABLED"] = "true"
@@ -400,37 +415,42 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		fixture.j3bURL = fmt.Sprintf("http://127.0.0.1:%d", j3bPort)
 		env["JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS"] = fmt.Sprintf("127.0.0.1:%d", j3bPort)
 	}
-	if pg {
-		env["JUHE_AI_DATABASE_DRIVER"] = "postgres"
-		env["JUHE_AI_POSTGRES_URL"] = opts.PGDSN
-		env["JUHE_AI_BUSINESS_POSTGRES_URL"] = opts.PGDSN
-		env["JUHE_AI_AUDIT_LOG_STORE"] = "postgres"
-		env["JUHE_AI_AUDIT_LOG_POSTGRES_URL"] = opts.PGDSN
-		env["JUHE_AI_OPERATION_LOG_STORE"] = "postgres"
-		env["JUHE_AI_OPERATION_LOG_POSTGRES_URL"] = opts.PGDSN
-		// PG 模式没有启动期 ensure：schema/seed 由外部 maintenance 执行。
-		runMaintenanceEnsureSeed(t, "postgres", "", opts.PGDSN, secret)
-		// 模型检测 owner 默认常驻（2026-09-21）：juhe_j3b schema 按契约由
-		// 受控数据库流程预置，harness 与部署 runbook 保持一致。
-		provisionJ3bPostgresSchema(t, opts.PGDSN)
-		runMaintenanceJ3bPostgresApply(t, opts.PGDSN)
-	} else {
-		env["JUHE_AI_DATABASE_DRIVER"] = "sqlite"
-		pathsValue := fmt.Sprintf(
-			"business=%s,chat=%s,dataset=%s,usage-catalog=%s,stats=%s,codex-context-shard-root=%s,codex-context-shard-count=1",
-			sixPaths["JUHE_AI_DATABASE_PATH"], sixPaths["JUHE_AI_CHAT_DATABASE_PATH"], sixPaths["JUHE_AI_DATASET_DATABASE_PATH"],
-			sixPaths["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"], sixPaths["JUHE_AI_STATS_DATABASE_PATH"], codexRoot,
-		)
-		runMaintenanceEnsureSeed(t, "sqlite", pathsValue, "", secret)
-		provisionOperationLogBusinessSettingsMirror(t,
-			filepath.Join(root, "storage", "oplog-business-settings.sqlite3"),
-			sixPaths["JUHE_AI_DATABASE_PATH"])
-	}
+	// 模型检测 owner 默认常驻（2026-09-21）：juhe_j3b schema 按契约由受控
+	// 数据库流程预置，harness 与部署 runbook 保持一致。
+	provisionJ3bPostgresSchema(t, dsn)
+	runMaintenanceJ3bPostgresApply(t, dsn)
+	// J3b circuit runtime owner fence（与部署 jobs 预置 runtime-index-meta
+	// 同一契约）：fresh 验收环境的 state Redis 无历史就绪哈希，harness 按
+	// circuitruntime.Store.CheckReady 的键位契约预置。
+	provisionCircuitRuntimeIndex(t, redisURL, namespace+"-j3b")
+	// X04 logreads：F1 runtime-log 数据集表由 jobs 进程自建（gateway 只读）；
+	// fresh 验收环境由夹具按生产 DDL 预置读面（helper 在 log_faces_test.go）。
+	provisionRuntimeLogDataset(t, dsn)
 
 	fixture.process = startProcess(t, "gateway", gatewayBinary, envMapToSlice(env))
 	waitForSystemAPIReady(t, fixture)
 	fixture.admin = fixture.loginClient(t, "admin", acceptanceAdminPassword)
 	return fixture
+}
+
+// provisionCircuitRuntimeIndex 按 jobs 部署侧的 runtime-index-meta 预置契约
+// 写入就绪哈希（键位与 circuitruntime.Store.CheckReady 一致；namespace 走
+// 加载层同款 canonical 短形式）。
+func provisionCircuitRuntimeIndex(t *testing.T, redisURL, namespace string) {
+	t.Helper()
+	options, err := redis.ParseURL(redisURL)
+	if err != nil {
+		t.Fatalf("parse acceptance redis url: %v", err)
+	}
+	client := redis.NewClient(options)
+	t.Cleanup(func() { _ = client.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := "juhe-ai:" + namespace + ":account-circuit:gateway-account-circuit:runtime-index-meta"
+	if err := client.HSet(ctx, key,
+		"version", "1", "status", "ready", "ownerMode", "go-runtime-state-v1").Err(); err != nil {
+		t.Fatalf("seed circuit runtime index: %v", err)
+	}
 }
 
 // waitForSystemAPIReady 等待业务系统 API 面（/__aisys__/api/health 200 +

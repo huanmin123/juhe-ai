@@ -3,7 +3,7 @@ package main
 // w1_compose_deep_test.go —— w1 波次补充覆盖（w1q 前缀，TestW1Q 入口）。
 //
 // 与既有覆盖的边界（不重复）：
-//   - composeSystemAPI 的 nil 依赖臂、SQLite 命名路径失败臂、memory 成功变体
+//   - composeSystemAPI 的 nil 依赖臂、PG 命名路径失败臂、验证码成功变体
 //     由 w1_compose_root_test.go 覆盖；这里补 preflight fail-fast、PG pool
 //     错误臂、表监控 configure 失败臂、redis 认证驱动失败臂、memory 验证码
 //     臂、Go runtime metrics 打开失败臂、health outcome 路径变体、链条组装
@@ -21,8 +21,8 @@ package main
 //     与解析成功臂。
 //
 // 全部用例确定性可重放：redis 一律 miniredis 或立即解析失败的坏 URL；数据库
-// 一律临时 SQLite 文件；无并发等待、无网络依赖。失败臂统一走
-// w1oRedirectChatAssetsRoot 的手管目录（组合根失败路径不回收 SQLite 句柄，
+// 一律 pgtestkit 隔离 PG 库；无并发等待、无网络依赖。失败臂统一走
+// w1oRedirectChatAssetsRoot 的手管目录（组合根失败路径不回收 PG 句柄，
 // Windows 上 t.TempDir 清理会因句柄锁失败）。
 
 import (
@@ -34,13 +34,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	_ "modernc.org/sqlite"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
@@ -220,22 +220,18 @@ type w1qResetFixture struct {
 
 func w1qNewResetFixture(t *testing.T) *w1qResetFixture {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1q-reset.sqlite3"))
-	if err != nil {
-		t.Fatalf("打开临时业务库: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := newChainFixturePGDatabase(t)
 	w1sEnsureBusinessSchema(t, db)
 	w1sEnsureStatsSchema(t, db)
 	// w1s 共享 DDL 的 accounts 表缺 revalidate 读取列；按 accountkeystates
-	// loadRevalidateAccountRow 的列清单补齐（SQLite ADD COLUMN 逐列追加；
-	// 供应商解耦后连接身份列是 vendor_code，设计 §2.1）。
+	// loadRevalidateAccountRow 的列清单补齐（PG ADD COLUMN；供应商解耦后
+	// 连接身份列是 vendor_code，设计 §2.1）。
 	for _, column := range []string{
 		"vendor_code TEXT", "protocol_code TEXT", "protocol_version TEXT",
 		"type TEXT", "status TEXT", "schedulable INTEGER DEFAULT 1",
 		"config_revision INTEGER DEFAULT 1", "credentials_encrypted TEXT",
 	} {
-		if _, err := db.Exec("ALTER TABLE accounts ADD COLUMN " + column); err != nil {
+		if _, err := db.Exec("ALTER TABLE juhe_business.accounts ADD COLUMN " + column); err != nil {
 			t.Fatalf("补齐 accounts 列 %s: %v", column, err)
 		}
 	}
@@ -704,11 +700,7 @@ func TestW1QAuthzGrantReturnerArms(t *testing.T) {
 	now := func() time.Time { return time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC) }
 
 	t.Run("授权grant表缺失错误臂", func(t *testing.T) {
-		db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1q-return-missing.sqlite3"))
-		if err != nil {
-			t.Fatalf("打开临时库: %v", err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
+		db := pgtestkit.New(t)
 		store, err := authz.NewStore(db, now)
 		if err != nil {
 			t.Fatalf("构造 authz store: %v", err)
@@ -720,19 +712,35 @@ func TestW1QAuthzGrantReturnerArms(t *testing.T) {
 	})
 
 	t.Run("grant缺失not_found状态投影臂", func(t *testing.T) {
-		db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "w1q-return-empty.sqlite3"))
-		if err != nil {
-			t.Fatalf("打开临时库: %v", err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		if _, err := db.Exec(`CREATE TABLE resource_authorization_grants (
-			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
-			resource_owner_system_account_id TEXT, grantee_type TEXT,
-			grantee_system_account_id TEXT, grantee_team_id TEXT, status TEXT,
-			remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT,
-			revoked_by TEXT, revoked_at TEXT, created_at TEXT, updated_at TEXT)`); err != nil {
-			t.Fatalf("建 grants 表: %v", err)
-		}
+		db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+			// 生产形状 grants 夹具（列集摘自 internal/authz pgkit 夹具，
+			// juhe_business 限定，与 store 的 PG 方言一致）。
+			_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business;
+			CREATE TABLE juhe_business.resource_authorization_grants (
+				id text PRIMARY KEY,
+				resource_type text NOT NULL,
+				resource_id text NOT NULL,
+				resource_owner_system_account_id text NOT NULL,
+				grantee_type text NOT NULL,
+				grantee_system_account_id text,
+				grantee_team_id text,
+				scope text NOT NULL DEFAULT 'use',
+				status text NOT NULL DEFAULT 'active',
+				remark text,
+				expires_at text,
+				limits_json text,
+				created_by text NOT NULL,
+				created_at text NOT NULL,
+				revoked_by text,
+				revoked_at text,
+				updated_at text NOT NULL,
+				CHECK (
+					(grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
+					OR
+					(grantee_type = 'team' AND grantee_team_id IS NOT NULL AND grantee_system_account_id IS NULL)
+				))`)
+			return err
+		})
 		store, err := authz.NewStore(db, now)
 		if err != nil {
 			t.Fatalf("构造 authz store: %v", err)

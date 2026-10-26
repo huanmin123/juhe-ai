@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -105,19 +107,19 @@ func TestW1ResetBridgePureMemoryFace(t *testing.T) {
 
 func w1Int64Ptr(value int64) *int64 { return &value }
 
-func TestW1ProbeOutboxWriterSQLite(t *testing.T) {
-	db, err := sql.Open("sqlite", t.TempDir()+"/probe-outbox.sqlite3")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+func TestW1ProbeOutboxWriterPG(t *testing.T) {
+	db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business`)
+		return err
+	})
 	writer := newChainProbeRequestOutboxWriter(db, 1500)
-	// 方言投影：SQLite 无前缀、绑定符保持。
-	if got := writer.table(); got != "account_health_probe_request_outbox" {
+	// 方言投影：PG 按生产 juhe_business 限定表名、绑定符转 $n（与生产
+	// juhe_business.account_health_probe_request_outbox 读写面同一契约）。
+	if got := writer.table(); got != "juhe_business.account_health_probe_request_outbox" {
 		t.Fatalf("table = %q", got)
 	}
-	if strings.Contains(writer.bind("INSERT INTO t VALUES (?,?)"), "$") {
-		t.Fatal("SQLite 不得转换绑定符")
+	if !strings.Contains(writer.bind("INSERT INTO t VALUES (?,?)"), "$") {
+		t.Fatal("PG 必须转换绑定符")
 	}
 	// 首次入队自建 schema 并落行。
 	outcome := writer.EnqueueProbeRequest(context.Background(), "acc_probe", "reset", "trace_1", nil)
@@ -141,7 +143,7 @@ func TestW1ProbeOutboxWriterSQLite(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	rows := 0
 	for time.Now().Before(deadline) {
-		if err := db.QueryRow(`SELECT COUNT(*) FROM account_health_probe_request_outbox`).Scan(&rows); err == nil && rows >= 2 {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_business.account_health_probe_request_outbox`).Scan(&rows); err == nil && rows >= 2 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

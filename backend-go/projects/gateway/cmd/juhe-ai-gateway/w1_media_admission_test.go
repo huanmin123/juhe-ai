@@ -15,7 +15,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -240,11 +239,9 @@ func TestW1MediaAdmissionCandidateWindow(t *testing.T) {
 // 直连单测；列集覆盖 UPDATE 语句触达的全部投影列）。
 func newMediaWriteBackRuntime(t *testing.T) (*mediaJobsRuntime, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "media-writeback.sqlite3"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	// newChainFixturePGDatabase 同款惯例（原 sqlite 文件夹具随存储形态退役重
+	// 钉 PG）：search_path 让夹具裸表 DDL 落在生产读取 schema。
+	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE accounts (
 		id TEXT PRIMARY KEY, capability_domain TEXT NOT NULL DEFAULT 'chat', health_check_endpoint_mode TEXT,
 		status TEXT NOT NULL,
@@ -331,14 +328,17 @@ func TestW1MediaJobSuccessReactivatesAccount(t *testing.T) {
 		if cooldown.Valid || nextCheck.Valid || retestCount != 0 {
 			t.Fatalf("%s 应清空冷却/排期/retest 投影: got (%v, %v, %d)", id, cooldown, nextCheck, retestCount)
 		}
-		var lastErrorCode, lastMessage, healthFailureCount int
-		if err := db.QueryRow(`SELECT COUNT(last_error_code), COUNT(last_error_message),
+		// PG 不允许聚合与裸列混用于无 GROUP BY 查询（sqlite 宽容）：
+		// 单行主键查询直接以 IS NULL 断言空投影。
+		var lastErrorCodeMissing, lastMessageMissing bool
+		var healthFailureCount int
+		if err := db.QueryRow(`SELECT (last_error_code IS NULL), (last_error_message IS NULL),
 			health_check_failure_count FROM accounts WHERE id = ?`, id).
-			Scan(&lastErrorCode, &lastMessage, &healthFailureCount); err != nil {
+			Scan(&lastErrorCodeMissing, &lastMessageMissing, &healthFailureCount); err != nil {
 			t.Fatal(err)
 		}
-		if lastErrorCode != 0 || lastMessage != 0 || healthFailureCount != 0 {
-			t.Fatalf("%s 应清空错误与失败计数投影: got (%d, %d, %d)", id, lastErrorCode, lastMessage, healthFailureCount)
+		if !lastErrorCodeMissing || !lastMessageMissing || healthFailureCount != 0 {
+			t.Fatalf("%s 应清空错误与失败计数投影: got (last_error_code IS NULL=%t, last_error_message IS NULL=%t, health_check_failure_count=%d)", id, lastErrorCodeMissing, lastMessageMissing, healthFailureCount)
 		}
 	}
 	if status, _, _, _, updatedAt, _ := mediaWriteBackSnapshot(t, db, "acc_audio_pending"); status != "pending_test" || updatedAt != "2026-01-01T00:00:00.000Z" {

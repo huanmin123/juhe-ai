@@ -48,8 +48,8 @@ func TestW16BCompleteSuccessAsyncArms(t *testing.T) {
 
 	// 390-392：结算 UPDATE 直接报错。
 	steps := []w2aScriptedStep{
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
-		{contains: "UPDATE account_lock_states", execErr: errors.New("w16b: settle refused")},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
+		{contains: "UPDATE juhe_business.account_lock_states", execErr: errors.New("w16b: settle refused")},
 	}
 	if err := w2aLocksPort(w2aOpenScriptedDB(t, steps)).CompleteSuccessAsync(ctx, "w2a-acc", "", nil); err == nil {
 		t.Fatal("结算 UPDATE 失败必须上抛")
@@ -57,9 +57,9 @@ func TestW16BCompleteSuccessAsyncArms(t *testing.T) {
 
 	// 393-396：UPDATE 命中 0 行（CAS 失竞）→ 重读权威行不报错。
 	steps = []w2aScriptedStep{
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
-		{contains: "UPDATE account_lock_states", affected: 0},
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
+		{contains: "UPDATE juhe_business.account_lock_states", affected: 0},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
 	}
 	if err := w2aLocksPort(w2aOpenScriptedDB(t, steps)).CompleteSuccessAsync(ctx, "w2a-acc", "", nil); err != nil {
 		t.Fatalf("CAS 失竞必须静默重读, got %v", err)
@@ -72,8 +72,8 @@ func TestW16BAcquireRetryLeaseCASFailArm(t *testing.T) {
 	row := w2aLockRow("ENGAGED", "2026-12-01T00:00:00.000Z", "inc-1", 7)
 	// 646：租约 UPDATE 命中 0 行（CAS 失竞）→ Allowed=false 且 WaitMs 至少 1ms。
 	steps := []w2aScriptedStep{
-		{contains: "FROM account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
-		{contains: "UPDATE account_lock_states", affected: 0},
+		{contains: "FROM juhe_business.account_lock_states", cols: strings.Fields(chainAccountLockRowColumns), row: row},
+		{contains: "UPDATE juhe_business.account_lock_states", affected: 0},
 	}
 	result, err := w2aLocksPort(w2aOpenScriptedDB(t, steps)).AcquireRetryLeaseAsync(context.Background(), "w2a-acc", 0)
 	if err != nil {

@@ -8,44 +8,47 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
-// newSQLTestDB 建立隔离的 SQLite 内存库（MaxOpenConns(1)）并建业务表：
-// ATTACH ':memory:' AS juhe_business 承载生产同款限定形式（juhe_business.*
-// 表名 + $n 绑定），单连接保证 ATTACH 对所有查询可见。
+// gatewayRuntimeCacheFixtureSchema 是 read models 夹具的 PG schema（与生产
+// juhe_business 表形状同一子集，类型照生产 DDL）。
+const gatewayRuntimeCacheFixtureSchema = `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE juhe_business.system_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, system_account_id TEXT NOT NULL DEFAULT 'sys_admin');
+	CREATE TABLE juhe_business.system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT);
+	CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT);
+	-- 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
+	CREATE TABLE juhe_business.scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '');
+	CREATE TABLE juhe_business.route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL);
+	CREATE TABLE juhe_business.route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '');
+	-- groups 目标形态（供应商与上游协议面重构设计 §8，迁移窗口 shim 已按
+	-- A 路线一次性收敛撤除）：无 provider_code 列；owner 内名称唯一见
+	-- idx_groups_owner_name_unique（与权威 DDL 同名同列）。
+	CREATE TABLE juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT);
+	CREATE TABLE juhe_business.super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT);
+	CREATE TABLE juhe_business.group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT);
+	CREATE TABLE juhe_business.response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)
+`
+
+// newSQLTestDB 打开 pgtestkit 隔离 PG 测试库（预建 juhe_business schema 与
+// 生产同款业务表）并返回经 sqldialect 改写 driver 的连接池：夹具/测试手写
+// SQL 的 `?` 占位由 driver 层兜底改写为 $n，生产 read models 的 bind($n)
+// 原样透传。
 func newSQLTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:gatewayruntimecache-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, gatewayRuntimeCacheFixtureSchema)
+		return err
+	})
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN)
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("打开夹具连接池失败: %v", err)
 	}
-	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-
-	statements := []string{
-		`ATTACH ':memory:' AS juhe_business`,
-		`CREATE TABLE juhe_business.system_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, system_account_id TEXT NOT NULL DEFAULT 'sys_admin')`,
-		`CREATE TABLE juhe_business.system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT)`,
-		`CREATE TABLE juhe_business.api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT)`,
-		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
-		`CREATE TABLE juhe_business.scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE juhe_business.route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
-		`CREATE TABLE juhe_business.route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
-		// groups 目标形态（供应商与上游协议面重构设计 §8，迁移窗口 shim 已按
-		// A 路线一次性收敛撤除）：无 provider_code 列；owner 内名称唯一见
-		// idx_groups_owner_name_unique（与权威 DDL 同名同列）。
-		`CREATE TABLE juhe_business.groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
-		`CREATE TABLE juhe_business.super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`,
-		`CREATE TABLE juhe_business.group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
-		`CREATE TABLE juhe_business.response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("create table: %v\n%s", err, statement)
-		}
-	}
 	return db
 }
 

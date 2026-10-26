@@ -104,7 +104,7 @@ func TestTeamCascadeStandaloneWrappersFireFanout(t *testing.T) {
 				status, created_by, created_at, updated_at)
 				VALUES ('ras_m', 'rauth_m', 'team', 'team_1', 'active', 'owner', ?, ?)`,
 		} {
-			if _, err := f.db.Exec(statement, now, now); err != nil {
+			if _, err := f.db.Exec(fixtureBind(statement), now, now); err != nil {
 				t.Fatal(err)
 			}
 		}

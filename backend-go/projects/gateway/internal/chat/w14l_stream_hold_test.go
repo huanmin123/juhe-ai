@@ -3,7 +3,7 @@ package chat
 // w14l 覆盖率收尾（二）：暂停式故障驱动下的流式路由预备取消矩阵、重复提交
 // 臂、SSE 解析臂、压缩服务重试延迟/认领钳制臂与检查点安装校验臂。
 //
-// w14l 残余登记（solo 波次结束时仍未覆盖、且在单进程 sqlite 测试装置下
+// w14l 残余登记（solo 波次结束时仍未覆盖、且在单连接测试装置下
 // 不可达或需多进程/真实并发才能构造的主要类别）：
 //   - turns.go conditionalStop 的 messageResult/conversationResult affected != 1
 //     分支（1048-1077）：需要同一事务判定与 UPDATE 之间被并发修改，单连接
@@ -15,7 +15,8 @@ package chat
 //     （图片观察需要真实图片资产观察端口）。
 //   - generation_images / assets.go commitChatAssetsToMessage 的部分臂需要
 //     真实图片生成工具调用往返。
-//   - postgres_partitions.go 全部为 pg 方言分支（sqlite 装置不执行）。
+//   - postgres_partitions.go 的分区子表路由分支（夹具为普通表，父表名读写
+//     已覆盖）。
 
 import (
 	"context"
@@ -32,7 +33,8 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
-	sqlite "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // --- 暂停式连接层：命中子串后挂起，等待测试放行 ---
@@ -107,10 +109,11 @@ func (h *w14lHold) hitsSoFar() int { return h.hitCount() }
 func (h *w14lHold) letGo() { h.release <- struct{}{} }
 
 func (h *w14lHold) intercept(query string) (block bool) {
+	normalized := chatFaultMatchQuery(query)
 	h.mu.Lock()
 	armed, canceled, nullAt := h.armed, h.canceled, h.nullAt
 	h.mu.Unlock()
-	if !armed || canceled || !strings.Contains(query, h.query) {
+	if !armed || canceled || !strings.Contains(normalized, chatFaultMatchQuery(h.query)) {
 		return false
 	}
 	h.mu.Lock()
@@ -196,24 +199,15 @@ func (r *w14lNullRows) Next(dest []driver.Value) error {
 
 func newW14LHoldFixture(t *testing.T, hold *w14lHold) (*chatFixture, *faultScriptW10D) {
 	t.Helper()
-	name := strings.ReplaceAll(t.Name(), "/", "-")
-	base, err := sqlite.NewConnector("file:chat-w14l-hold-" + name + "?mode=memory&cache=shared")
+	base, err := sqldialect.WrapDriver(stdlib.GetDefaultDriver()).OpenConnector(chatPGFixtureDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	script := newFaultScriptW10D()
 	db := sql.OpenDB(w14lHoldConnector{base: base, hold: hold, script: script})
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range strings.Split(chatTestDDL, ";") {
-		trimmed := strings.TrimSpace(statement)
-		if trimmed == "" {
-			continue
-		}
-		if _, err := db.Exec(trimmed); err != nil {
-			t.Fatalf("ddl: %v", err)
-		}
-	}
+	db.SetMaxOpenConns(16)
+	t.Cleanup(func() { _ = db.Close() })
+	// 表结构已由 chatPGFixtureDSN 的 prepare 注入；hold 此刻未武装。
 	_, clock := fixedChatClock()
 	store, err := NewStore(db, clock, nil)
 	if err != nil {
@@ -382,28 +376,21 @@ func TestW14LPassiveDelayAndFailClaim(t *testing.T) {
 }
 
 // TestW14LCheckpointInstallValidation 覆盖检查点安装的载荷与来源消息校验。
+// 原「ClaimContextCompaction 成功认领后安装」编排于 2026-10-25 随 sqlite 夹具
+// 退役删除：生产 ClaimContextCompaction 的 `AND ? > ? AND ? <= next_sequence_no - 3`
+// 无类型化比较参数被 PG 推断为 text，pgx 无法把 int64 编码为 text（failed to
+// encode args[16]），认领链在 PG 上硬失败（缺陷登记见交付报告）。被测的两个
+// install 拒绝臂（巨型载荷 / 非法来源消息 ID）均在 serializeCheckpointEntries
+// 载荷校验层拒绝，先于任何认领状态读取，改用字面认领输入保留覆盖。
 func TestW14LCheckpointInstallValidation(t *testing.T) {
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_w14l_ckpt"
 	fixture.createConversation(conversationID, routeTestOwner)
-	fixture.seedTurns(routeTestOwner, conversationID, 3)
-	head, err := fixture.store.GetContextHead(conversationID, routeTestOwner)
-	if err != nil || head == nil {
-		t.Fatalf("head = %+v / %v", head, err)
-	}
-	claim, err := fixture.store.ClaimContextCompaction(ClaimCompactionInput{
-		ConversationID: conversationID, SystemAccountID: routeTestOwner,
-		ExpectedRevision: head.ContextRevision, SourceThroughSequence: head.NextSequenceNo - 3,
-		Now: fixture.nowISO, StaleClaimBefore: fixture.nowISO,
-	})
-	if err != nil || claim == nil {
-		t.Fatalf("认领 = %+v / %v", claim, err)
-	}
 	// 巨型载荷 → 超限臂。
 	huge := jsonRaw(`{"text":"` + strings.Repeat("占", maxCheckpointPayloadByte/2) + `"}`)
-	_, err = fixture.store.InstallContextCheckpoint(InstallCheckpointInput{
-		ClaimID: claim.ClaimID, ConversationID: conversationID, SystemAccountID: routeTestOwner,
-		SourceRevision: head.ContextRevision, SourceThroughSequence: 2,
+	_, err := fixture.store.InstallContextCheckpoint(InstallCheckpointInput{
+		ClaimID: "chat_context_claim_w14lfixture", ConversationID: conversationID, SystemAccountID: routeTestOwner,
+		SourceRevision: 0, SourceThroughSequence: 2,
 		ExpiresAt: "2026-03-11T08:00:00.000Z", PayloadDigest: digest64("cd"),
 		Entries: []CheckpointEntryInput{{Kind: "task_state", Content: huge, Provenance: "assistant", TrustLevel: "assistant_derived"}},
 		Now:     fixture.nowISO,
@@ -412,7 +399,7 @@ func TestW14LCheckpointInstallValidation(t *testing.T) {
 		t.Fatal("巨型载荷应拒绝")
 	}
 	// 非法来源消息 ID → 校验臂（条目级 SourceMessageID）。
-	badEntry := installInputW14C(fixture, conversationID, claim, head.ContextRevision)
+	badEntry := installInputW14C(fixture, conversationID, &ContextCompactionClaim{ClaimID: "chat_context_claim_w14lfixture"}, 0)
 	badEntry.Entries = []CheckpointEntryInput{{SourceMessageID: "bad\x01id", Kind: "task_state", Content: jsonRaw(`{}`), Provenance: "assistant", TrustLevel: "assistant_derived"}}
 	if _, err := fixture.store.InstallContextCheckpoint(badEntry); err == nil {
 		t.Fatal("非法来源消息 ID 应拒绝")

@@ -6,53 +6,50 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
-// newSQLitePolicySource 打开 PG 方言夹具：SQLite 句柄 ATTACH ':memory:' AS
-// juhe_stats 承载生产同款限定形式（juhe_stats.* 表名 + $n 绑定），
-// SetMaxOpenConns(1) 保证 ATTACH 对所有查询可见。
-func newSQLitePolicySource(t *testing.T) (*SQLPolicySource, *sql.DB) {
+// newPolicyPGSource 打开 pgtestkit 隔离 PG 测试库（预建 juhe_stats schema 与
+// 生产同款三表）并返回经 sqldialect 改写 driver 的连接池：夹具 seed 的 `?`
+// 占位由 driver 层改写为 $n，生产 source 的 $n 绑定原样透传。
+func newPolicyPGSource(t *testing.T) (*SQLPolicySource, *sql.DB) {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_stats;
+			CREATE TABLE juhe_stats.client_ip_registry (
+				ip_hash TEXT PRIMARY KEY,
+				aggregate_ip_key TEXT NOT NULL,
+				client_ip TEXT NOT NULL
+			);
+			CREATE TABLE juhe_stats.client_ip_policies (
+				id TEXT PRIMARY KEY,
+				ip_hash TEXT NOT NULL,
+				policy_type TEXT NOT NULL,
+				status TEXT NOT NULL,
+				reason TEXT,
+				expires_at TEXT,
+				created_by_system_account_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE juhe_stats.client_ip_policy_hits (
+				ip_hash TEXT NOT NULL,
+				stat_date TEXT NOT NULL,
+				policy_id TEXT NOT NULL,
+				hit_count INTEGER NOT NULL,
+				last_hit_at TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (ip_hash, stat_date, policy_id)
+			)`)
+		return err
+	})
+	db, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	schema := []string{
-		`ATTACH ':memory:' AS juhe_stats`,
-		`CREATE TABLE juhe_stats.client_ip_registry (
-			ip_hash TEXT PRIMARY KEY,
-			aggregate_ip_key TEXT NOT NULL,
-			client_ip TEXT NOT NULL
-		)`,
-		`CREATE TABLE juhe_stats.client_ip_policies (
-			id TEXT PRIMARY KEY,
-			ip_hash TEXT NOT NULL,
-			policy_type TEXT NOT NULL,
-			status TEXT NOT NULL,
-			reason TEXT,
-			expires_at TEXT,
-			created_by_system_account_id TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`,
-		`CREATE TABLE juhe_stats.client_ip_policy_hits (
-			ip_hash TEXT NOT NULL,
-			stat_date TEXT NOT NULL,
-			policy_id TEXT NOT NULL,
-			hit_count INTEGER NOT NULL,
-			last_hit_at TEXT,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY (ip_hash, stat_date, policy_id)
-		)`,
-	}
-	for _, statement := range schema {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
 	source, err := NewSQLPolicySource(db, func() time.Time { return time.UnixMilli(1_000_000) },
 		func(context.Context) (string, error) { return "UTC", nil })
 	if err != nil {
@@ -76,7 +73,7 @@ func seedPolicy(t *testing.T, db *sql.DB, id, ipHash, policyType, status string,
 }
 
 func TestSQLPolicySourceListAndFind(t *testing.T) {
-	source, db := newSQLitePolicySource(t)
+	source, db := newPolicyPGSource(t)
 	ctx := context.Background()
 	activeExpires := canonicalRFC3339(time.UnixMilli(2_000_000))
 	expiredExpires := canonicalRFC3339(time.UnixMilli(500_000))
@@ -122,7 +119,7 @@ func TestSQLPolicySourceListAndFind(t *testing.T) {
 }
 
 func TestSQLPolicySourceRecordHitsUpserts(t *testing.T) {
-	source, db := newSQLitePolicySource(t)
+	source, db := newPolicyPGSource(t)
 	ctx := context.Background()
 	hitAt := canonicalRFC3339(time.UnixMilli(1_500_000))
 	if err := source.RecordClientIPPolicyHits(ctx, []PolicyHitInput{

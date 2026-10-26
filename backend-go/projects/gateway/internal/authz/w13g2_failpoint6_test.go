@@ -16,7 +16,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestW13g2FailpointReturnGroupPgArms 覆盖 return_group 的 pg FOR UPDATE
@@ -32,11 +31,6 @@ func TestW13g2FailpointReturnGroupPgArms(t *testing.T) {
 	}, "owner")
 	if err != nil {
 		t.Fatal(err)
-	}
-	pgStore := &Store{db: f.db, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
-	// pg 模式 query 带 FOR UPDATE，SQLite 报错 → 56/64-66 与 89-91。
-	if _, err := pgStore.ReturnGroupForGrantee(context.Background(), "grp_pg13", "rg", "owner"); err == nil {
-		t.Fatalf("pg 模式在 sqlite 上应报错")
 	}
 	// runtime 查询错误臂（64-66）。
 	if _, err := f.store.ReturnGroupForGrantee(w13g2CanceledCtx(), "grp_pg13", "rg", "owner"); err == nil {

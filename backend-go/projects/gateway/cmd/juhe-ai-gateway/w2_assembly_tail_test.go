@@ -7,7 +7,7 @@ package main
 //  1. 进程内 mock 直驱：database/sql 自定义 driver 注入（chat keys 错误臂、
 //     图片观察观察臂）、假端口（tool capabilities 决策矩阵）、纯几何函数
 //     （图片管道）、畸形路径/只读破坏（storage preflight 与六库物理门禁）。
-//  2. composeSystemAPI SQLite 组合根 + 种子破坏（限流设置坏值六臂、runtime-log
+//  2. composeSystemAPI PG 组合根 + 种子破坏（限流设置坏值、runtime-log
 //     保留期坏值）+ 真实 /v1 派发（账户锁失效回调、可恢复等待者唤醒）。
 //  3. 插桩二进制场景（main.go 引导失败臂，见文件尾）。
 //
@@ -39,10 +39,9 @@ package main
 //     事件循环单线程，闭包不外露。（w3 已删除并级联清理 ended/writeMu/end()。）
 //   - 【已于 w3 清理】chain_chat_mount.go 168-170：心跳 !active——ended=true
 //     时循环必已退出（同上，end() 的调用点全部同步 return）。
-//   - chain_chat_mount.go 225-227：openChatDatabase 的 sql.Open("sqlite") 错误
-//     臂——modernc/sqlite 的 Open 惰性建连（DSN 解析在首用时），且 SQLite 模式
-//     下 ChatDatabasePath 为空已被启动 preflight（storage_bootstrap.go 48-51）
-//     先行拒绝，compose 内 224 行恒成功。（w3 保留：sql.Open 惰性类惯例守卫。）
+//   - 【已随 sqlite 存储形态退役】chain_chat_mount.go 225-227：openChatDatabase
+//     的 sql.Open("sqlite") 错误臂——原 modernc/sqlite 惰性建连守卫随生产
+//     sqlite 臂删除（2026-10-24 存储形态收口），chat 连接恒 PG 池共享臂。
 //   - 【已于 w3 清理】chain_chat_images.go 64：decodeChatImage 的全部错误出口
 //     （185/190 行）只返回 errChatImageDecode，errors.Is 恒真。
 //   - chain_chat_images.go 66-68：image.Decode 只会产出 init()（213-219）注册
@@ -122,11 +121,10 @@ package main
 //   - chain_openaicompat.go 33-35：openaicompat.NewStore 仅 db==nil 报错，
 //     mountChainOpenAICompatFamilies 26-28 行已守卫 composed.db==nil。（w3
 //     保留：导出构造器调用点守卫。）
-//   - compose.go 283-285/324-326/352-354/367-369：sql.Open("sqlite") 惰性建连
-//     恒成功（driver 已注册，错误延迟到 configureSQLiteConnection 首用）。
-//     （w3 保留：sql.Open 惰性类惯例守卫。）
-//   - compose.go 405-407/440-442：openSQLiteReadOnly 同为惰性 open，对存在
-//     文件恒成功（402 行 os.Stat 已守卫存在性）。（w3 保留：同上。）
+//   - 【已随 sqlite 存储形态退役】compose.go 283-285/324-326/352-354/367-369
+//     与 405-407/440-442：sql.Open("sqlite") / openSQLiteReadOnly 惰性建连
+//     守卫随生产 sqlite 臂删除（2026-10-24 存储形态收口），业务/聊天连接恒
+//     PG 池，只读面走限定名查询。
 //   - compose.go 462-464/481-483/502-504/513-515/547-549/552-554/565-567/
 //     569-571/583-585/597-599/605-607/615-617/647-649/655-657/675-677/679-681/
 //     683-685/693-695/762-764/773-775/867-869/873-875/877-879：各 store 构造器
@@ -140,9 +138,8 @@ package main
 //     通过同一非空校验。（w3 保留：同上。）
 //   - compose.go 1137-1139 之外的 1161-1163/1168-1170：mountChainOpenAICompat
 //     Families 的错误面（nil db/nil cache、NewStore nil db）在 ChainEnabled
-//     装配下恒非 nil；openChatDatabase 的 PG 臂共享已成功 Acquire 的池、
-//     SQLite 臂 chat 路径已被 preflight 要求非空并 ensure。（w3 保留：调用点
-//     守卫。）
+//     装配下恒非 nil；openChatDatabase 恒共享已成功 Acquire 的 PG 池
+//    （原 SQLite chat 路径臂随存储形态退役删除）。（w3 保留：调用点守卫。）
 //   - 【已于 w3 清理】compose.go 1440-1442：settings.Load 对 SystemSettingKeys
 //     全键合并 schema 默认值，`!ok || raw == nil` 不可达。
 //   - 【已于 w3 清理】compose.go 1444-1454/1457-1477：settings.loadFromDatabase
@@ -227,8 +224,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
@@ -808,7 +803,7 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+	seed(`INSERT INTO juhe_business.groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
 		VALUES ('w2c_group', 'sys_admin', 'W2C 分组', 1, 'personal', $1, $2)`, now, now)
 	sealed, err := accounts.EncryptJSON("compose-test-secret", map[string]any{
 		"api_key":  "sk-w2c-upstream",
@@ -819,41 +814,40 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 	}
 	// 供应商解耦（设计 §2.1/§4）：身份列 vendor_code/connection_driver_code，
 	// 支持模型走 models 单表 + model_id 外键。
-	seed(`INSERT INTO accounts (
+	seed(`INSERT INTO juhe_business.accounts (
 			id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			name, type, status, schedulable, credentials_encrypted, health_check_model, health_check_endpoint_mode,
 			created_at, updated_at
 		) VALUES ('w2c_acc', 'sys_admin', 'gpt', 'gpt', 'openai', 'v1',
 			'W2C 账户', 'api_key', 'active', 1, $1, 'gpt-test', 'chat_json', $2, $3)`,
 		sealed, now, now)
-	seed(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+	seed(`INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
 		VALUES ('sys_admin', 'w2c_group', 'w2c_acc', 1, $1, $2)`, now, now)
-	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_w2c_sm_gpt-test', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '["chat_json","chat_sse"]', $1, $2)`, now, now)
-	seed(`INSERT INTO account_supported_models (account_id, model_id, created_at)
+	seed(`INSERT INTO juhe_business.models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_w2c_sm_gpt-test', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', TRUE, '["chat_json","chat_sse"]', 1.0, $1, $2)`, now, now)
+	seed(`INSERT INTO juhe_business.account_supported_models (account_id, model_id, created_at)
 		VALUES ('w2c_acc', 'mdl_w2c_sm_gpt-test', $1)`, now)
 	// B4 第一批单连接事实源：w2c_acc 需要 enabled 连接行（health 三字段经
 	// 真实 DDL 复合外键互指，连接行先行、health_check_connection_id 回填）。
-	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+	seed(`INSERT INTO juhe_business.account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
 		VALUES ('conn_w2c_acc', 'w2c_acc', 'gpt_openai_v1', 'openai_v1', $1, 1, $2, $3)`, upstreamBaseURL, now, now)
-	seed(`UPDATE accounts SET health_check_connection_id = 'conn_w2c_acc' WHERE id = 'w2c_acc'`)
-	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, created_at, updated_at)
+	seed(`UPDATE juhe_business.accounts SET health_check_connection_id = 'conn_w2c_acc' WHERE id = 'w2c_acc'`)
+	seed(`INSERT INTO juhe_business.route_strategies (id, system_account_id, name, mode, status, created_at, updated_at)
 		VALUES ('w2c_rs', 'sys_admin', 'W2C 路由', 'normal', 'active', $1, $2)`, now, now)
-	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+	seed(`INSERT INTO juhe_business.route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
 		VALUES ('w2c_rsg', 'w2c_rs', 'sys_admin', 'w2c_group', 1, 1, 'active', $1, $2)`, now, now)
 	secret := "sk-w2c-gateway-key"
 	secretEncrypted, err := accounts.EncryptJSON("compose-test-secret", map[string]any{"key": secret})
 	if err != nil {
 		t.Fatalf("encrypt key secret: %v", err)
 	}
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, scheduling_preference_id, created_at, updated_at)
+	seed(`INSERT INTO juhe_business.api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, scheduling_preference_id, created_at, updated_at)
 		VALUES ('w2c_key', 'sys_admin', 'w2c_rs', 'W2C Key', $1, $2, $3, $4, 'active', 'schpref-builtin-chat-cost-first', $5, $6)`,
 		gatewayruntimecache.HashSecret(secret), secret[:8], secret[len(secret)-8:], secretEncrypted, now, now)
-	// 供应商解耦（设计 §3）：目录读侧收敛 models 单表；gpt-test 目录行种
-	// openai vendor 的 global 自定义行（带价格）。
-	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
-		VALUES ('mdl_w2c_cat', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', 1, '["chat_json","chat_sse"]', 1.0, $1, $2)
-		ON CONFLICT (id) DO NOTHING`, now, now)
+	// 供应商解耦（设计 §3）：目录读侧收敛 models 单表；gpt-test 目录行即
+	// 支持模型行本身（带价格、可见），不再另种第二行——生产
+	// idx_models_identity_unique 对 (vendor, public, upstream, scope) 身份
+	// 唯一，双行必冲突。
 }
 
 func TestW2CComposeAccountLockInvalidationCallback(t *testing.T) {
@@ -873,7 +867,7 @@ func TestW2CComposeAccountLockInvalidationCallback(t *testing.T) {
 	// 失效回调（1039/1040）以 account_lock_deadline 触发 K5 总线。
 	now := "2026-09-13T00:00:00.000Z"
 	seeded := []string{
-		`INSERT INTO account_lock_states (account_id, enabled, lock_state, lock_death_timeout_seconds, lock_retry_interval_seconds,
+		`INSERT INTO juhe_business.account_lock_states (account_id, enabled, lock_state, lock_death_timeout_seconds, lock_retry_interval_seconds,
 			incident_id, incident_started_at, deadline_at, original_status, provenance, generation, updated_at)
 		VALUES ('w2c_acc', 1, 'ENGAGED', 300, 30, 'w2c-incident', '` + now + `', '2026-09-13T00:05:00.000Z', 'active', 'lock_policy', 1, '` + now + `')`,
 	}
@@ -902,7 +896,7 @@ func TestW2CComposeAccountLockInvalidationCallback(t *testing.T) {
 		t.Fatal("账户锁失效回调未触发 K5 失效")
 	}
 	var status string
-	if err := composed.DB.QueryRow(`SELECT status FROM accounts WHERE id = 'w2c_acc'`).Scan(&status); err != nil {
+	if err := composed.DB.QueryRow(`SELECT status FROM juhe_business.accounts WHERE id = 'w2c_acc'`).Scan(&status); err != nil {
 		t.Fatalf("read account status: %v", err)
 	}
 	if status != "temporary_unavailable" {

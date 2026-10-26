@@ -2,25 +2,40 @@ package chat
 
 // w10d 覆盖收尾：脚本化驱动层故障注入。
 //
-// 通过 sqlite.NewConnector 的连接 interposition 包装物理连接，按查询子串注入
+// 通过连接器 interposition 包装 pgx stdlib 物理连接（2026-10-25 存储形态
+// 收尾，自 modernc.org/sqlite 迁移，pgtestkit 隔离真库），按查询子串注入
 // 一次性/持续失败，用于驱动 store 层真实可失败的 DB 错误臂（断连以外的
 // 单条语句失败路径）。事务边界（BeginTx/Commit/Rollback）单独包一层，
-// 以覆盖提交/回滚失败臂。
+// 以覆盖提交/回滚失败臂。匹配前按 chatFaultMatchQuery 归一（去 juhe_chat
+// 前缀、$n 还原 ?），注入子串保持裸表名 + `?` 的方言惯用形态。
 
 import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
-	sqlite "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // errInjectedW10D 是故障脚本返回的统一错误。
 var errInjectedW10D = errors.New("w10d 注入故障")
+
+// chatFaultMatchQuery 把生产方言 SQL 归一成注入模式惯用的裸表名 + `?` 形态。
+// 事务边界特殊匹配键（\x00w10d-commit 等）不含 schema 前缀与 $n，归一恒等。
+var chatFaultPlaceholderPattern = regexp.MustCompile(`\$\d+`)
+
+func chatFaultMatchQuery(query string) string {
+	query = strings.ReplaceAll(query, "juhe_chat.", "")
+	query = chatFaultPlaceholderPattern.ReplaceAllString(query, "?")
+	// 生产 SQL 的关键字大小写不统一（EXCLUDED/excluded），匹配统一小写。
+	return strings.ToLower(query)
+}
 
 // commitFaultKeyW10D / rollbackFaultKeyW10D 是事务边界故障的特殊匹配键。
 const (
@@ -64,11 +79,13 @@ func (s *faultScriptW10D) failNth(substr string, n int) {
 }
 
 // take 返回该查询命中的故障；一次性命中即出队，第 n 次命中按计数判断。
+// 双侧经 chatFaultMatchQuery 归一后匹配。
 func (s *faultScriptW10D) take(query string) error {
+	normalized := chatFaultMatchQuery(query)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for substr, queue := range s.once {
-		if strings.Contains(query, substr) && len(queue) > 0 {
+		if strings.Contains(normalized, chatFaultMatchQuery(substr)) && len(queue) > 0 {
 			err := queue[0]
 			s.once[substr] = queue[1:]
 			if len(s.once[substr]) == 0 {
@@ -78,12 +95,12 @@ func (s *faultScriptW10D) take(query string) error {
 		}
 	}
 	for substr, err := range s.rules {
-		if strings.Contains(query, substr) {
+		if strings.Contains(normalized, chatFaultMatchQuery(substr)) {
 			return err
 		}
 	}
 	for substr, targets := range s.nth {
-		if strings.Contains(query, substr) {
+		if strings.Contains(normalized, chatFaultMatchQuery(substr)) {
 			s.hits[substr]++
 			for i, n := range targets {
 				if n == s.hits[substr] {
@@ -96,7 +113,7 @@ func (s *faultScriptW10D) take(query string) error {
 	return nil
 }
 
-// faultConnectorW10D 包装 sqlite connector，在物理连接上叠加故障脚本。
+// faultConnectorW10D 包装 pgx 连接器，在物理连接上叠加故障脚本。
 type faultConnectorW10D struct {
 	base   driver.Connector
 	script *faultScriptW10D
@@ -183,27 +200,21 @@ func (t *faultTxW10D) Rollback() error {
 	return t.base.Rollback()
 }
 
-// newFaultChatFixtureW10D 与 newChatFixture 等价，但物理连接经过故障脚本。
+// newFaultChatFixtureW10D 与 newChatFixture 等价，但物理连接经过故障脚本
+// （pgtestkit 隔离 PG 测试库 + pgx stdlib 内核；外层 sqldialect 包装使夹具
+// DDL/测试手写 SQL 的裸 `?` 直发可用）。
 func newFaultChatFixtureW10D(t *testing.T) (*chatFixture, *faultScriptW10D) {
 	t.Helper()
-	name := strings.ReplaceAll(t.Name(), "/", "-")
-	base, err := sqlite.NewConnector("file:chat-w10d-" + name + "?mode=memory&cache=shared")
+	base, err := sqldialect.WrapDriver(stdlib.GetDefaultDriver()).OpenConnector(chatPGFixtureDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	script := newFaultScriptW10D()
 	db := sql.OpenDB(faultConnectorW10D{base: base, script: script})
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { db.Close() })
-	for _, statement := range strings.Split(chatTestDDL, ";") {
-		trimmed := strings.TrimSpace(statement)
-		if trimmed == "" {
-			continue
-		}
-		if _, err := db.Exec(trimmed); err != nil {
-			t.Fatalf("ddl: %v", err)
-		}
-	}
+	db.SetMaxOpenConns(16)
+	t.Cleanup(func() { _ = db.Close() })
+	// 表结构已由 chatPGFixtureDSN 的 prepare 注入（幂等 IF NOT EXISTS，故障
+	// 脚本此刻未武装）。
 	_, clock := fixedChatClock()
 	store, err := NewStore(db, clock, nil)
 	if err != nil {

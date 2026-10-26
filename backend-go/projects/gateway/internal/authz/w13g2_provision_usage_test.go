@@ -365,7 +365,7 @@ func TestW13g2UsageDetailMore(t *testing.T) {
 	}
 
 	// 日摘要行命中 → 直接按日范围聚合返回团队摘要（窗口表冻结后不再读）。
-	if _, err := f.db.Exec(`INSERT INTO authorization_team_usage_summary_daily
+	if _, err := f.db.Exec(`INSERT INTO juhe_stats.authorization_team_usage_summary_daily
 		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
 		VALUES ('owner', '2026-09-01', 'team_u13', 'group', 'grp_s13', 3, 30, 20, 1.5, NULL, '2026-09-06T00:00:00Z')`); err != nil {
@@ -380,7 +380,7 @@ func TestW13g2UsageDetailMore(t *testing.T) {
 	// 全部跳过后 total==nil → 零值（634-636）。
 	accountGrant := &grantRow{ResourceType: "account", ResourceID: "acc_none", OwnerID: "owner", GranteeType: "team",
 		GranteeTeamID: sql.NullString{String: "team_u13", Valid: true}}
-	if _, err := f.db.Exec(`DELETE FROM authorization_team_usage_summary_daily`); err != nil {
+	if _, err := f.db.Exec(`DELETE FROM juhe_stats.authorization_team_usage_summary_daily`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(`DELETE FROM resource_authorizations WHERE id = 'rt_u13_b'`); err != nil {
@@ -396,7 +396,7 @@ func TestW13g2UsageDetailMore(t *testing.T) {
 
 	// usageScopeRangeSummaries：合并分支——两个请求同 scope id 汇总
 	//（220-224 与 623-633）。
-	if _, err := f.db.Exec(`INSERT INTO usage_scope_range_windows
+	if _, err := f.db.Exec(`INSERT INTO juhe_stats.usage_scope_range_windows
 		(system_account_id, scope_type, scope_id, start_date, end_date, request_count, input_tokens, output_tokens, total_cost_usd, updated_at)
 		VALUES ('grantee', 'account_authorization', 'rt_u13_a', '2026-08-08', '2026-09-06', 2, 20, 10, 0.5, '2026-09-06T00:00:00Z')`); err != nil {
 		t.Fatal(err)

@@ -543,7 +543,13 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 func TestProvidersDeleteCustomModelCleansDeadAccountReferences(t *testing.T) {
 	env := newTestEnv(t)
 	// 外键约束必须真实生效（与生产 PG 口径一致），否则回归退化为语句序列断言。
-	env.exec(t, `PRAGMA foreign_keys = ON`)
+	// 夹具 schema 按先例放宽了 FK；此处按 maintenance 生产 DDL
+	// （pg_schema_business_tables.go：asm.model_id → models RESTRICT，
+	// aem.(account_id, target_model_id) → asm 复合外键）补齐本回归涉及的两条。
+	env.exec(t, `ALTER TABLE account_supported_models ADD CONSTRAINT w14d_asm_model_restrict
+		FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT`)
+	env.exec(t, `ALTER TABLE account_entry_mappings ADD CONSTRAINT w14d_aem_target_pair
+		FOREIGN KEY (account_id, target_model_id) REFERENCES account_supported_models(account_id, model_id)`)
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
 	env.login(t, "root", "root-pass", "super_admin")

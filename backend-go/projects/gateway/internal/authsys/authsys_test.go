@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,8 +17,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
-
-	_ "modernc.org/sqlite"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type revokeFailingPort struct {
@@ -64,36 +66,58 @@ func (p temporaryTokenCreationFailingPort) CreateTemporaryToken(context.Context,
 	return modelcheckauth.IssuedSession{}, false, p.err
 }
 
+// authsysPGFixtureSchema 是 authsys 面测试的 PG schema：列集照抄原 sqlite
+// 夹具与 maintenance 生产 DDL（pg_schema_business_tables.go），lower(username)
+// 唯一索引保留生产形状（列表页 keyword 大小写不敏感过滤依赖它）。
+const authsysPGFixtureSchema = `
+	CREATE SCHEMA IF NOT EXISTS juhe_business;
+	CREATE TABLE IF NOT EXISTS juhe_business.system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER CHECK (ai_account_limit BETWEEN 0 AND 1000000), expedited_account_limit INTEGER CHECK (expedited_account_limit BETWEEN 0 AND 100), request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS juhe_business.system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, FOREIGN KEY (system_account_id) REFERENCES juhe_business.system_accounts(id) ON DELETE CASCADE);
+	CREATE TABLE IF NOT EXISTS juhe_business.system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key));
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON juhe_business.system_accounts(lower(username))
+`
+
+// openAuthsysPGFixtureDB 创建 pgtestkit 隔离 PG 测试库、注入夹具 schema，并
+// 返回经 sqldialect 改写包装的连接池：夹具/测试手写 SQL 的裸表名与 `?` 占位
+// 符由 search_path=juhe_business + 驱动层 `?`→`$n` 兜底解析；生产 store 本就
+// juhe_business 限定 + bind()（两层改写幂等共存）。
+func openAuthsysPGFixtureDB(t *testing.T, extraDDL ...string) *sql.DB {
+	t.Helper()
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, authsysPGFixtureSchema); err != nil {
+			return err
+		}
+		for _, statement := range extraDDL {
+			if _, err := db.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	_ = testDB.DB.Close()
+	pool, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), testDB.DSN+"&search_path=juhe_business")
+	if err != nil {
+		t.Fatalf("打开夹具连接池失败: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	return pool
+}
+
+// testEnvDBs 记录各测试 newTestEnv 建立的夹具库句柄，供同测试内的
+// openTestDB（store_patch_semantics_test.go）直接观察原始列值；sqlite 共享
+// 缓存内存库的按名重开在独立 PG 库形态下由该登记取代。
+var testEnvDBs sync.Map
+
 func newTestEnv(t *testing.T) (*Deps, *kernel.Kernel, *httptest.Server) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:authsys-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// modernc sqlite serializes writers; a single pooled connection avoids
-	// cross-connection table-lock deadlocks (same recipe as businessauth tests).
-	db.SetMaxOpenConns(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	for i, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER CHECK (ai_account_limit BETWEEN 0 AND 1000000), expedited_account_limit INTEGER CHECK (expedited_account_limit BETWEEN 0 AND 100), request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE)`,
-		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username))`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("exec %d done", i)
-	}
+	db := openAuthsysPGFixtureDB(t)
+	testEnvDBs.Store(t.Name(), db)
+	t.Cleanup(func() { testEnvDBs.Delete(t.Name()) })
 	now := time.Now
 	service, err := businessauth.New(db, modelcheckauth.Postgres, now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("constructors done")
 	accounts, err := NewAccountStore(db, modelcheckauth.Postgres, now)
 	if err != nil {
 		t.Fatal(err)

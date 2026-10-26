@@ -14,8 +14,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestW11GPreflightMissingPathArms 已随 2026-09-19 零配置改造移除：路径类

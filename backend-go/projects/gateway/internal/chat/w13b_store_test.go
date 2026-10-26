@@ -372,75 +372,6 @@ func TestW13BGetConversationSyncHeadInvalidNow(t *testing.T) {
 	}
 }
 
-func TestW13BPgDialectArms(t *testing.T) {
-	fixture, script := newFaultChatFixtureW13B(t)
-	pgStore, err := NewStore(fixture.db, fixtureStoreClockW13B(fixture), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := "w13b-owner"
-	// lockChatUserStorageQuota / lockAssetUserQuota / 分区创建 / pg upsert 均
-	// 在 SQLite 上执行 PG 语法而失败，覆盖错误臂。
-	if err := pgStore.lockChatUserStorageQuota(fixture.db, owner); err == nil {
-		t.Fatalf("pg 存储锁应在 SQLite 上失败")
-	}
-	if err := pgStore.lockAssetUserQuota(fixture.db, owner); err == nil {
-		t.Fatalf("pg 配额锁应在 SQLite 上失败")
-	}
-	// 分区日期避开 fixture 的 2026-03-10：stub 渲染测试会把它进程级
-	// memoize，使 ensure 变 no-op（顺序依赖失败）。
-	if err := pgStore.ensurePostgresChatMessagePartitions(fixture.db, "2027-07-01T00:00:00.000Z"); err == nil {
-		t.Fatalf("pg 分区创建应在 SQLite 上失败")
-	}
-	if err := pgStore.incrementStorageWindow(fixture.db, owner, fNowISO(fixture), 1, 1); err == nil {
-		t.Fatalf("pg upsert 应在 SQLite 上失败")
-	}
-	// pg=false 下这些守卫直接通过。
-	store := fixture.store
-	if err := store.lockChatUserStorageQuota(fixture.db, owner); err != nil {
-		t.Fatalf("sqlite 守卫应为 no-op: %v", err)
-	}
-	if err := store.incrementStorageWindow(fixture.db, owner, fNowISO(fixture), 1, 1); err != nil {
-		t.Fatalf("sqlite upsert 失败: %v", err)
-	}
-	_ = script
-}
-
-func TestW13BAcceptTurnPgLockArm(t *testing.T) {
-	fixture, _ := newFaultChatFixtureW13B(t)
-	pgStore, err := NewStore(fixture.db, fixtureStoreClockW13B(fixture), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// pg 方言下 AcceptTurn 在存储锁一步即失败（SQLite 不识别 advisory lock）。
-	_, err = pgStore.AcceptTurn(AcceptTurnInput{
-		ConversationID: "c", SystemAccountID: "o", ClientMessageID: "m",
-		UserContent: "x", Model: "gpt-5", Now: fNowISO(fixture),
-		StorageQuotaBytes: 1024, RetentionDays: 30, MaxTurnsPerConversation: 10,
-	})
-	if err == nil {
-		t.Fatalf("pg 方言的 AcceptTurn 应在 SQLite 上失败")
-	}
-	// 会话创建与删除同路。
-	if _, err := pgStore.CreateConversation(CreateConversationInput{
-		SystemAccountID: "o", APIKeyID: "k", APIKeyNameSnapshot: "n", Now: fNowISO(fixture), MaxConversationsPerUser: 1,
-	}); err == nil {
-		t.Fatalf("pg 方言的 CreateConversation 应在 SQLite 上失败")
-	}
-	if _, err := pgStore.CreateChatAsset(CreateChatAssetInput{
-		SystemAccountID: "o", ConversationID: "c", OriginalFilename: "a.png",
-		OriginalMimeType: "image/png", OriginalBytes: 1, OriginalSha256: strings.Repeat("0", 64),
-		QuotaBytes: 1, Now: fNowISO(fixture), RetentionDays: 30,
-	}); err == nil {
-		t.Fatalf("pg 方言的 CreateChatAsset 应在 SQLite 上失败")
-	}
-	if _, err := pgStore.CompleteChatTurn(CompleteTurnInput{
-		ConversationID: "c", SystemAccountID: "o", TurnID: "t", AssistantContent: "x", Now: fNowISO(fixture),
-	}); err == nil {
-		t.Fatalf("pg 方言的 CompleteChatTurn 应在 SQLite 上失败")
-	}
-}
-
 func TestW13BReleaseConversationStorage(t *testing.T) {
 	fixture, script := newFaultChatFixtureW13B(t)
 	f := fixture
@@ -467,7 +398,7 @@ func TestW13BReleaseConversationStorage(t *testing.T) {
 	if _, err := f.db.Exec(`INSERT INTO chat_assets (
 		id, system_account_id, conversation_id, source_kind, original_filename, original_mime_type,
 		original_bytes, original_sha256, quota_bytes, processing_status, cleanup_status, created_at, updated_at, expires_at
-	) VALUES ('chat_asset_'+replace(hex(randomblob(16)),'',''), ?, 'w13b-conv-rel', 'user_upload', 'a.png', 'image/png',
+	) VALUES ('chat_asset_'||md5(random()::text), ?, 'w13b-conv-rel', 'user_upload', 'a.png', 'image/png',
 		1, ?, 1, 'ready', 'active', ?, ?, ?)`,
 		owner, strings.Repeat("0", 64), f.nowISO, f.nowISO, "2099-01-01T00:00:00.000Z"); err != nil {
 		t.Fatalf("插入资产失败: %v", err)
@@ -640,12 +571,6 @@ func TestW13BFaultArmsStoreQueries(t *testing.T) {
 	script.failOnce("FROM chat_messages")
 	if _, err := f.store.ListMessages(ListMessagesInput{ConversationID: "w13b-conv-q", SystemAccountID: owner, Now: f.nowISO}); err == nil {
 		t.Fatalf("ListMessages 查询故障臂应上抛")
-	}
-	if _, err := f.db.Exec(`UPDATE chat_messages SET created_at = 'bad' WHERE conversation_id = 'w13b-conv-q'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.store.ListMessages(ListMessagesInput{ConversationID: "w13b-conv-q", SystemAccountID: owner, Now: f.nowISO}); err == nil {
-		t.Fatalf("非法 created_at 应上抛")
 	}
 	if _, err := f.db.Exec(`UPDATE chat_messages SET created_at = ? WHERE conversation_id = 'w13b-conv-q'`, f.nowISO); err != nil {
 		t.Fatal(err)

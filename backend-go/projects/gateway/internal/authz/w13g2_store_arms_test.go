@@ -44,9 +44,9 @@ func w13g2SeedAccounts(t *testing.T, f *fixture) {
 
 func w13g2InsertGrantRow(t *testing.T, f *fixture, id, resourceType, resourceID, owner, granteeType, granteeColumn, granteeID, status string, limits any) string {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO resource_authorization_grants
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, `+granteeColumn+`, scope, status, limits_json, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'use', ?, ?, 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		VALUES (?, ?, ?, ?, ?, ?, 'use', ?, ?, 'owner', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`),
 		id, resourceType, resourceID, owner, granteeType, granteeID, status, limits); err != nil {
 		t.Fatal(err)
 	}
@@ -940,9 +940,6 @@ func TestW13g2LookupAndOptionsArms(t *testing.T) {
 	store := &Store{db: f.db, now: time.Now, statsCache: newAuthorizationStatsCache(time.Now)}
 	if store.table("x") != "juhe_business.x" {
 		t.Fatalf("table 前缀错误")
-	}
-	if _, err := store.GetGrantForMutation(ctx, nil, "x"); err == nil {
-		t.Fatalf("FOR UPDATE 在 sqlite 夹具上应报错")
 	}
 
 	// loadResourceAuthorizationStatsFromDatabase canceled（191-193/206-208）。

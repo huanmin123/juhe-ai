@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-	_ "modernc.org/sqlite"
 )
 
 const groupUsageDailyFixtureDDL = `CREATE TABLE juhe_stats.usage_stats_daily (

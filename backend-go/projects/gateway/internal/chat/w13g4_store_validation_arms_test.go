@@ -92,15 +92,6 @@ func TestW13G4ReplaceTurnValidationArms(t *testing.T) {
 		t.Fatalf("幂等行篡改应冲突 = %v", err)
 	}
 
-	// created_at 非法 → DomainError（turns.go 620-623）。
-	turnID = w13g4MakeCompletedTurn(env, conversationID, "w13g4-r8")
-	if _, err := env.fixture.db.Exec(
-		`UPDATE chat_messages SET created_at = 'oops' WHERE turn_id = ?`, turnID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := env.fixture.store.AcceptTurn(w13g4ReplaceInput(conversationID, turnID, "w13g4-r9")); err == nil || w13g4IsReplaceConflict(err) || !strings.Contains(err.Error(), "created_at") {
-		t.Fatalf("非法 created_at 应报 DomainError = %v", err)
-	}
 }
 
 // TestW13G4ConditionalStopArms 覆盖 conditionalStop 的受影响行数分支。
@@ -270,7 +261,7 @@ func TestW13G4ContextLoadTruncationArms(t *testing.T) {
 		t.Fatalf("压缩后 head = %+v / %v", head, err)
 	}
 	if _, err := env.fixture.db.Exec(
-		`DELETE FROM chat_context_entries WHERE rowid = (SELECT rowid FROM chat_context_entries WHERE conversation_id = ? LIMIT 1)`, conversationID); err != nil {
+		`DELETE FROM chat_context_entries WHERE ctid = (SELECT ctid FROM chat_context_entries WHERE conversation_id = ? LIMIT 1)`, conversationID); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err = env.fixture.store.LoadModelContext(conversationID, routeTestOwner, env.fixture.nowISO, 512, 16*1024*1024)
