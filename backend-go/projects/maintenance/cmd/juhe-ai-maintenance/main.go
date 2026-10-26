@@ -62,10 +62,11 @@ func runMaintenance(argv []string) int {
 	seedSecret := fs.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET); empty selects the Node dev default")
 	migrateChatBinding := fs.Bool("migrate-chat-account-only-binding", false, `one-shot idempotent migration of chat_conversations to the account-only binding model (docs/functions/AI问答会话账户唯一绑定设计.md): rows with bind_mode IS NULL OR bind_mode <> 'account' are stamped archived=1, the bind_mode/bind_group_id/bind_group_name_snapshot data is backed up to chat_conversations_bind_legacy_backup and the three columns are dropped (PostgreSQL uses DROP COLUMN IF EXISTS). Requires --dsn URL. The report JSON carries the rollback SQL (recreate the three columns from the backup table after rolling the code back): ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS bind_mode text NOT NULL DEFAULT 'api_key'; ADD COLUMN IF NOT EXISTS bind_group_id text; ADD COLUMN IF NOT EXISTS bind_group_name_snapshot text; UPDATE juhe_chat.chat_conversations c SET bind_mode = COALESCE(b.bind_mode, 'api_key'), bind_group_id = b.bind_group_id, bind_group_name_snapshot = b.bind_group_name_snapshot FROM juhe_chat.chat_conversations_bind_legacy_backup b WHERE b.id = c.id`)
 	postgresSchemaSnapshot := fs.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY)")
-	mockdataRun := fs.Bool("mockdata", false, "idempotently rebuild the development mockdata set in the target PostgreSQL database (PG seed rewrite pending; the command currently fails with the explicit pending-rewrite error)")
-	mockdataVerifyCoverage := fs.Bool("verify-mockdata-coverage", false, "read-only verify that every mockdata store table is non-empty (allowlisted runtime-state tables excepted) and that the key coverage assertions hold (PG rewrite pending)")
+	mockdataRun := fs.Bool("mockdata", false, "idempotently rebuild the development mockdata set in the target PostgreSQL database (schema ensure + seed + cleanup + per-domain seeding + summary; requires --dsn)")
+	mockdataVerifyCoverage := fs.Bool("verify-mockdata-coverage", false, "read-only verify that every wired mockdata domain store table is non-empty (allowlisted runtime-state tables excepted) and that the key coverage assertions hold (requires --dsn; exit 3 when not ready)")
 	mockdataDays := fs.Int("mockdata-days", mockdata.DefaultDays, "mockdata history span in days for detail and monitoring samples (1..90)")
 	mockdataDailyRequests := fs.Int("mockdata-daily-requests", mockdata.DefaultDailyRequests, "mockdata usage records generated per day (1..500)")
+	mockdataSummaryFile := fs.String("mockdata-summary-file", "", "optional mockdata summary JSON path: --mockdata writes it, --verify-mockdata-coverage reads the domain-wiring snapshot from it (no implicit fallback)")
 	rebuildUsageStats := fs.Bool("rebuild-usage-stats", false, "offline rebuild of the usage statistics cache from usage_records (requires --confirm-offline or JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1; gateway/jobs must be stopped; business database and usage_records stay read-only; BUG-0182)")
 	confirmOffline := fs.Bool("confirm-offline", false, "confirm an offline window for --rebuild-usage-stats (gateway/jobs stopped); alternatively set JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1")
 	rebuildBatchSize := fs.Int("batch-size", 2000, "rebuild-usage-stats aggregation batch size (clamped to 1..50000; default 2000)")
@@ -184,6 +185,7 @@ func runMaintenance(argv []string) int {
 			DailyRequests:  *mockdataDailyRequests,
 			DSN:            *bootstrapDSN,
 			Secret:         *seedSecret,
+			SummaryFile:    *mockdataSummaryFile,
 		})
 	}
 	if *rebuildUsageStats {

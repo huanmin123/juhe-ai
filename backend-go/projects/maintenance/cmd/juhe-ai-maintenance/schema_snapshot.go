@@ -20,6 +20,12 @@ import (
 // explicit read-only confirmation, a REPEATABLE READ READ ONLY transaction
 // and the schema JSON (with digest) written to stdout. PostgreSQL is the only
 // supported dialect; SQLite targets are rejected by openSnapshotDB.
+//
+// T60 保留裁决（2026-10-25）：BUG-0175 D-219 把 schema snapshot 列为 Node 时代
+// 「运维脚本真孤儿」运维能力缺口，本实现补齐该能力；作为部署前后跨环境
+// schema 漂移审计的只读诊断工具长期保留——三重门禁（target env + 只读确认
+// env + READ ONLY 事务 + statement/lock 超时）保证零写入、零运行时耦合，
+// 不参与任何业务链路。
 // postgresSchemaSnapshotResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func postgresSchemaSnapshotResult() int {
 	target, err := schemasnapshot.AssertSnapshotTarget(os.Getenv(schemasnapshot.EnvTarget))

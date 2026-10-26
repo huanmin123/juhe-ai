@@ -22,14 +22,16 @@ type Report struct {
 	// preset vocabulary fallback and reported for review.
 	UnresolvedEndpointModes []string `json:"unresolved_endpoint_modes"`
 	// CreatedAccounts counts accounts whose legacy row had no deleted_at
-	// (active resource accounts), ImportedAuthorizations counts instance
-	// clones, and SkippedDeleted counts soft-deleted rows left behind.
-	CreatedAccounts        int `json:"created_accounts"`
-	ImportedAuthorizations int `json:"imported_authorizations"`
+	// (active resource accounts).
+	CreatedAccounts int `json:"created_accounts"`
 	// Notes records normalisations applied while translating legacy rows.
-	Notes                   []string `json:"notes,omitempty"`
-	SkippedDeletedAcocunts  int      `json:"skipped_deleted_accounts"`
-	ConvertedHybridAccounts int      `json:"converted_hybrid_accounts"`
+	//
+	// T60（2026-10-25）：已删除 ImportedAuthorizations / SkippedDeletedAcocunts /
+	// ConvertedHybridAccounts 三个恒 0 统计字段及其 stdout JSON 键
+	// （imported_authorizations / skipped_deleted_accounts /
+	// converted_hybrid_accounts）——全仓无赋值点，脚本 / 文档 / 前端 / 测试
+	// 对这些键零解析，运维复核契约由其余字段承载。
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Ready reports whether the import committed without leaving any row it could

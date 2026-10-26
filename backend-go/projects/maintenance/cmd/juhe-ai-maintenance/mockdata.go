@@ -1,15 +1,15 @@
 // The juhe-ai-maintenance local mockdata commands (--mockdata /
-// --verify-mockdata-coverage): PG 造数重写（D7）的 CLI 契约面。
+// --verify-mockdata-coverage): PG 造数重写（T66 第一波）的 CLI 契约面。
 //
-// 存储形态（2026-10-24 SQLite 退役, PLAN-20261024T051925945Z B4）：目标改为
-// --dsn 指向的 PostgreSQL 库；sqlite 数据根（--mockdata-data-dir /
-// --mockdata-log-dir / JUHE_AI_DATA_DIR 派生）旗标族随 sqlite 实现删除。
-// PG 重写完成前命令返回退出码 2 与固定错误（internal/mockdata.ErrPGSeedPending
-// 同源文案）——切片边界，不是功能开关。
+// 存储形态（2026-10-24 SQLite 退役, PLAN-20261024T051925945Z B4；T66 第一波
+// 交付 PG 运行）：目标为 --dsn 指向的 PostgreSQL 单库多 schema 存储。
+// --mockdata-summary-file 是可选的摘要路径（无隐式回退）：--mockdata 把摘要
+// JSON 写到该路径；--verify-mockdata-coverage 从同一路径读域接线快照，路径为
+// 空时全部域按未接线评估。
 //
-// Exit codes follow the maintenance command contract: 0 success, 2 usage
-// errors (missing/invalid flags, pending rewrite), 1 runtime failure, and 3
-// for the coverage command when the report is not ready.
+// Exit codes follow the maintenance command contract: 0 success, 1 runtime
+// failure, 2 usage errors (missing/invalid flags), and 3 for the coverage
+// command when the report is not ready.
 package main
 
 import (
@@ -31,6 +31,7 @@ type mockdataCommandFlags struct {
 	DailyRequests  int
 	DSN            string
 	Secret         string
+	SummaryFile    string
 }
 
 // runMockdataCommand 是 --mockdata / --verify-mockdata-coverage 的统一入口。
@@ -43,6 +44,7 @@ func runMockdataCommand(flags mockdataCommandFlags) int {
 		Days:          flags.Days,
 		DailyRequests: flags.DailyRequests,
 		Secret:        seedSecretValue(flags.Secret),
+		SummaryFile:   strings.TrimSpace(flags.SummaryFile),
 	}
 	if flags.VerifyCoverage {
 		return runMockdataCoverage(options)
@@ -74,10 +76,10 @@ func runMockdataSeed(options mockdata.Options) int {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	report, err := mockdata.RunWithLogger(context.Background(), options, logger)
 	if err != nil {
-		// 失败也要打印已构建的报告骨架：参数回显与时间戳是排障的第一手证据。
+		// 失败也要打印已经完成的报告：清理计数与域结果是排障的第一手证据。
 		_ = json.NewEncoder(os.Stdout).Encode(report)
 		fmt.Fprintf(os.Stderr, "mockdata 造数失败：%v\n", err)
-		return 2
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode mockdata report: %v\n", err)
@@ -87,12 +89,12 @@ func runMockdataSeed(options mockdata.Options) int {
 }
 
 // runMockdataCoverage 执行覆盖校验：Ready 时 exit 0，未 Ready 时 exit 3
-// （与既有 read-only 门禁命令的 fail-closed 约定一致）。
+// （与既有 read-only 门禁命令的 fail-closed 约定一致）；校验运行失败 exit 1。
 func runMockdataCoverage(options mockdata.Options) int {
 	report, err := mockdata.VerifyCoverage(context.Background(), options)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mockdata 覆盖校验失败：%v\n", err)
-		return 2
+		return 1
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode mockdata coverage report: %v\n", err)
