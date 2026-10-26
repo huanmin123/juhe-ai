@@ -1,29 +1,56 @@
-// 波次 w16i：PG 门禁的进程内 run() 臂覆盖。复用 w14q 的 w1cover seed 与
-// env builder（w14qPGMainEnv），把 spawn 子进程换成进程内 run() + 注入停机
-// ctx：J1(postgres store + postgres 直连 input) + model-recovery + J2 + J3a
-// (+management) 全链装配、组件注册与优雅停机直接记入父进程覆盖 profile。
-// 连接串只从 shared.env 读取改写；连接失败 t.Skip；凭据不落日志。
+// 波次 w16i：PG 门禁的进程内 run() 臂覆盖。复用 w14q 的 env builder
+// （w14qPGMainEnv）与 wgCmdKitDB 隔离测试库（原 w1cover 共享覆盖库 seed 已
+// 退役），把 spawn 子进程换成进程内 run() + 注入停机 ctx：J1(postgres store
+// + postgres 直连 input) + model-recovery + J2 + J3a (+management) 全链装配、
+// 组件注册与优雅停机直接记入父进程覆盖 profile。凭据不落日志。
 package main
 
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+// w16iKitDBWithContractSurface 打开 wgCmdKitDB 隔离测试库并补齐 run() 装配链
+// 在各测试目标失败臂之前必须通过的外部 bootstrap 面（J2 accountbalance
+// EnsureSchema 与 F4 operation_logs 审计面），使失败收敛到目标臂而非更早的
+// J2/管理面契约缺失（w14q/w16i 全链同款前置）。
+func w16iKitDBWithContractSurface(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+	db, pgURL := wgCmdKitDB(t)
+	balanceStore, err := accountbalance.OpenStore(accountbalance.StoreConfig{Mode: accountbalance.StorePostgres, PostgresURL: pgURL})
+	if err != nil {
+		t.Fatalf("打开 J2 store 做 schema bootstrap: %v", err)
+	}
+	if err := balanceStore.EnsureSchema(context.Background()); err != nil {
+		_ = balanceStore.Close()
+		t.Fatalf("J2 schema bootstrap: %v", err)
+	}
+	if err := balanceStore.Close(); err != nil {
+		t.Logf("w16i: J2 bootstrap store 关闭: %v", err)
+	}
+	for _, statement := range strings.Split(w14qOperationLogsSchema, ";") {
+		if statement = strings.TrimSpace(statement); statement == "" {
+			continue
+		}
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("w16i F4 seed 失败: %v", err)
+		}
+	}
+	return db, pgURL
+}
 
 // TestW16HIPGFullChainOwnerShutdown 进程内驱动 run() 完成 J1/J2/J3a PG 装配
 // 成功链、management API 装配与优雅停机（覆盖 w14q 同一生产路径的进程内
 // 形态）。
 // w16iBaseEnv 构造 PG 唯一形态的 owner env 基底：F1 store 与 J1 store/input
-// 全部走覆盖库（原 w16hBaseEnv 的 sqlite 基底随 sqlite 形态退役删除；连接串
-// 不落日志）。
+// 全部走 wgCmdKitDB 隔离测试库（原 w16hBaseEnv 的 sqlite 基底随 sqlite 形态
+// 退役删除；连接串不落日志）。
 func w16iBaseEnv(t *testing.T, pgURL string) map[string]string {
 	t.Helper()
 	return map[string]string{
@@ -46,56 +73,14 @@ func TestW16HIPGFullChainOwnerShutdown(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 全链 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16i: 覆盖库连接串不可用")
-	}
+	db, pgURL := wgCmdKitDB(t)
 	redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_STATE_URL")
 	if redisURL == "" {
 		t.Skip("w16i: shared.env 无 Redis state URL")
 	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("w16i: 打开覆盖库失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("w16i: 覆盖库不可达: %v", err)
-	}
-	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
-		t.Skipf("w16i: 建立 juhe_jobs schema 失败: %v", err)
-	}
-	for _, statement := range w14jPGSeedStatements() {
-		if _, err := db.Exec(statement); err != nil {
-			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "multiple primary keys") {
-				continue
-			}
-			t.Logf("w16i pg seed 跳过: %v", err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts
-		(id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w16i-test-seed-not-a-login-hash', $1, $1)
-		ON CONFLICT (id) DO NOTHING`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Skipf("w16i: sys_admin seed 失败（共享库形状漂移，跳过）: %v", err)
-	}
-	for key, value := range map[string]string{
-		"accountHealthCheckIntervalHours":      "24",
-		"accountHealthCheckJitterMinutes":      "10",
-		"accountHealthCheckFailureThreshold":   "3",
-		"defaultTemporaryUnschedulableMinutes": "60",
-		"cooldownAccountRetestMaxBackoffHours": "24",
-		"usageStatsTimezone":                   "\"Asia/Shanghai\"",
-	} {
-		if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at)
-			VALUES ('sys_admin', $1, $2, $3) ON CONFLICT (system_account_id, key) DO NOTHING`, key, value, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			t.Fatalf("seed direct schedule settings: %v", err)
-		}
-	}
-	// J2 预置表：accountbalance EnsureSchema 是幂等 DDL（CheckSchema 只读，
-	// 须先 bootstrap；w14q 同款）。
+	// 子进程装配链的外部 bootstrap 前置（w14q 同款）：J2 accountbalance
+	// EnsureSchema（CheckSchema 只读，须先 bootstrap）与 F4 operation_logs
+	// 审计面（J3a management CheckContract 依赖 gateway-owned 审计表）。
 	balanceStore, err := accountbalance.OpenStore(accountbalance.StoreConfig{Mode: accountbalance.StorePostgres, PostgresURL: pgURL})
 	if err != nil {
 		t.Fatalf("打开 J2 store 做 schema bootstrap: %v", err)
@@ -107,18 +92,14 @@ func TestW16HIPGFullChainOwnerShutdown(t *testing.T) {
 	if err := balanceStore.Close(); err != nil {
 		t.Logf("w16i: J2 bootstrap store 关闭: %v", err)
 	}
-	// F4 operation_logs 审计面：J3a management CheckContract 依赖
-	// gateway-owned 审计表（加法幂等 DDL，登记；w14q 同款）。
 	for _, statement := range strings.Split(w14qOperationLogsSchema, ";") {
 		if statement = strings.TrimSpace(statement); statement == "" {
 			continue
 		}
 		if _, err := db.Exec(statement); err != nil {
-			t.Logf("w16i F4 seed 跳过: %v", err)
+			t.Fatalf("w16i F4 seed 失败: %v", err)
 		}
 	}
-	w14qCleanupPGMainRows(t, db)
-	t.Cleanup(func() { w14qCleanupPGMainRows(t, db) })
 	w14qDueCandidateGuard(t, db)
 
 	env := w14qPGMainEnv(t, t.TempDir(), pgURL, redisURL, wgFreePort(t))
@@ -183,15 +164,7 @@ func TestW16HIPGModelRecoveryPingFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16i: 覆盖库连接串不可用")
-	}
-	if db, err := sql.Open("pgx", pgURL); err == nil {
-		w14jEnsurePGFixture(t, db)
-		_ = db.Close()
-	}
-	w16jEnsurePGJobsFixture(t, pgURL)
+	_, pgURL := wgCmdKitDB(t)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
@@ -211,21 +184,13 @@ func TestW16HIPGModelRecoveryPingFailArm(t *testing.T) {
 }
 
 // TestW16HIPGJ3aInputPingFailArm 覆盖 J3a postgres 直连 input 的 ping 失败臂
-// （jobs store=w1cover 成功链前置 + input 指向不可达地址）。store CheckSchema
+// （jobs store=隔离测试库成功链前置 + input 指向不可达地址）。store CheckSchema
 // 依赖 juhe_jobs 预 provision 表，先自愈预置。
 func TestW16HIPGJ3aInputPingFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16i: 覆盖库连接串不可用")
-	}
-	if db, err := sql.Open("pgx", pgURL); err == nil {
-		w14jEnsurePGFixture(t, db)
-		_ = db.Close()
-	}
-	w16jEnsurePGJobsFixture(t, pgURL)
+	_, pgURL := w16iKitDBWithContractSurface(t)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
@@ -241,21 +206,13 @@ func TestW16HIPGJ3aInputPingFailArm(t *testing.T) {
 }
 
 // TestW16HIPGJ1InputPingFailArm 覆盖 J1 postgres 直连 input 的 ping 失败臂
-// （store=w1cover 成功链前置 + input 指向不可达地址）。store EnsureSchema
+// （store=隔离测试库成功链前置 + input 指向不可达地址）。store EnsureSchema
 // 依赖外部 bootstrap 的 juhe_jobs schema，先自愈预置。
 func TestW16HIPGJ1InputPingFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16i: 覆盖库连接串不可用")
-	}
-	if db, err := sql.Open("pgx", pgURL); err == nil {
-		w14jEnsurePGFixture(t, db)
-		_ = db.Close()
-	}
-	w16jEnsurePGJobsFixture(t, pgURL)
+	_, pgURL := wgCmdKitDB(t)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
@@ -273,22 +230,14 @@ func TestW16HIPGJ1InputPingFailArm(t *testing.T) {
 }
 
 // TestW16HIPGJ3aManagementFailArms 覆盖 J3a management 装配失败臂：store 三
-// 库均用 w1cover 成功链前置，management PostgreSQL 指向不可达地址 → source
+// 库均用隔离测试库成功链前置，management PostgreSQL 指向不可达地址 → source
 // 初始化或契约校验失败（两条错误出口之一，均收敛为退出码 1）。store 侧依赖
 // juhe_jobs 预 provision 表，先自愈预置。
 func TestW16HIPGJ3aManagementFailArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16i: 覆盖库连接串不可用")
-	}
-	if db, err := sql.Open("pgx", pgURL); err == nil {
-		w14jEnsurePGFixture(t, db)
-		_ = db.Close()
-	}
-	w16jEnsurePGJobsFixture(t, pgURL)
+	_, pgURL := w16iKitDBWithContractSurface(t)
 	managementPort := wgFreePort(t)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)

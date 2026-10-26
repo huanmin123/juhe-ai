@@ -36,7 +36,7 @@
   - 保留列：`bind_account_id` / `bind_account_name_snapshot`（会话唯一绑定载体）、`api_key_id`（历史保留列；2026-10-24 免 Key 直调改造后停止写入，新行为空串，不再有 chat 专用 Key）。
 - 新建会话即建行：`bind_account_id` 允许 NULL（「未选账户」状态），选定账户后 PATCH 写入；未选账户的会话不可发送（发送预检 400 `chat_account_required`）。
 - 工具绑定三列（`search_account_id`/`search_model_id`/`image_account_id`，见工具体系设计第 7 节）照常。
-- schema 执行方式：`maintenance` 新增一次性迁移命令（如 `--migrate-chat-account-only-binding`），幂等可重放：① `bind_mode IS NULL OR bind_mode != 'account'` 的行置 `archived=1`；② 备份将删三列数据到副表；③ 双方言 `DROP COLUMN`（SQLite 3.35+ / PostgreSQL 均支持）。dev 库按生命周期手册同命令处理。
+- schema 执行方式：`maintenance` 新增一次性迁移命令（如 `--migrate-chat-account-only-binding`），幂等可重放：① `bind_mode IS NULL OR bind_mode != 'account'` 的行置 `archived=1`；② 备份将删三列数据到副表；③ `DROP COLUMN`（历史双方言时期要求 SQLite 3.35+ / PostgreSQL 双方言，现行命令经 `--dsn` 仅 PostgreSQL，SQLite 分支已随 2026-10-25 存储收口退役）。dev 库按生命周期手册同命令处理。
 
 ## 5. API 契约变更
 
@@ -87,7 +87,7 @@
 | --- | --- | --- |
 | 扫描结构体/SQL 漏改，删列后查询报错 | `conversationRow` 十余列与多条会话 SQL 引用旧列 | 实施时以列为线索全量检索（`bind_mode`/`bind_group`），测试补「列不存在」回归；发布前隔离环境跑全链 |
 | 归档判定依赖被删列 | 原设计按 `bind_mode` 值判定 | 迁移命令先置 `archived=1` 再删列，判定与列解耦 |
-| 双方言 DDL 差异 | SQLite 需 3.35+ 支持 DROP COLUMN；PG 18 原生支持 | 迁移命令双方言实现并在 SQLite/PG 双环境测试；隔离预演先行 |
+| DDL 方言差异 | 历史双方言时期 SQLite 需 3.35+ 支持 DROP COLUMN，PG 18 原生支持（该差异已随 2026-10-25 存储收口退役，现行仅 PostgreSQL） | 迁移命令实现并在 PostgreSQL 隔离库测试；隔离预演先行 |
 | 一次性迁移失败中途态 | 迁移非事务包裹（ensure-schema 同款逐语句） | 命令幂等可重放；删列前先把三列数据备份到副表（`chat_conversations_bind_legacy_backup`），失败可重跑，误删可回补 |
 | 回滚窗口 | 删列后回滚到旧版本二进制会因缺列报错 | 发布单向窗口：迁移与发布同批执行；如需回滚，代码回滚 + 从备份副表重建列（回滚脚本随迁移命令一并交付） |
 | dev 库残留旧列 | dev 主库/临时子库存在旧列 | 按开发数据库生命周期手册对 dev 库执行同命令（或重建） |

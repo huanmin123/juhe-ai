@@ -4,15 +4,13 @@ package main
 
 // w1_pg_wave_test.go —— 真实 dev PG 门禁化覆盖测试（w1g2 前缀，TestW1G2 入口）。
 //
-// 隔离铁律（违反即事故）：
-//   - 只允许触碰临时子库 juhe_ai_sub2api_dev_w1cover（与 w1pg_probe_test.go
-//     同名约定）；主库 juhe_ai_sub2api_dev 一个字节都不动。连接串只从
-//     .local/project-resources/dev/env/shared.env 读取（w1pgEnvFile），任何
-//     失败信息不得携带 URL/密码。
-//   - Redis 只允许 namespace juhe-ai:dev:w1cover（共享 env 的 REDIS URL +
-//     覆盖 JUHE_AI_REDIS_NAMESPACE）。
-//   - 门禁：env 文件缺失或 dev PG 管理口不可达一律 t.Skip，保持无 dev 环境
-//     时全套测试可重放。
+// 隔离铁律（违反即事故；2026-10-26 收口：固定共享覆盖库 juhe_ai_sub2api_dev_
+// w1cover 装配退役，改走 pgtestkit 每测试独立库 + maintenance bootstrap
+// fresh DDL，PG 不可达由 pgtestkit 显式 Fatal）：
+//   - PG 只触碰 pgtestkit 隔离测试库；bootstrap DDL/种子由夹具承担，连接串
+//     不进入任何失败信息。
+//   - Redis 每测试唯一 namespace（w1g2TestNamespace，测试名清洗派生），不再
+//     跨测试/跨运行共享固定键空间。
 //   - 二进制场景（C/D）复用 w1_boot_cover_test.go 的插桩二进制与覆盖目录
 //     登记（w1bBuildCoverBinary / w1bCoverageDir / w1bScenarioEnv /
 //     w1bRunScenario），GOCOVERDIR 走 %TEMP%/w1b-cov 清单机制。
@@ -20,9 +18,9 @@ package main
 // 场景清单：
 //   A+E TestW1G2ComposeSystemAPIPostgresSuccess
 //       composeSystemAPI 的 DatabaseDriver=postgres 成功臂：业务/chat/stats/
-//       usage-catalog/三个数据集读面全部走临时库共享池，链条
-//       开启（performance + dev Redis cache/state，namespace=juhe-ai:dev:
-//       w1cover），my-chat 家族挂载；openChatDatabase PG 分支返回共享池句柄
+//       usage-catalog/三个数据集读面全部走隔离测试库共享池，链条
+//       开启（performance + dev Redis cache/state，namespace=w1g2TestNamespace
+//       每测试唯一值），my-chat 家族挂载；openChatDatabase PG 分支返回共享池句柄
 //       且可真实 Query（场景 E 并入此处）；/health 与 auth 面 HTTP 契约；
 //       Shutdown 干净。
 //       【已证实缺陷门禁】当前 PG 组合根在 wireInProcessBalanceAndCatalogRefresh
@@ -73,15 +71,14 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const (
-	// w1g2RedisNamespace 是本文件唯一允许的 Redis namespace（隔离铁律）。
-	w1g2RedisNamespace = "juhe-ai:dev:w1cover"
-	// w1g2SeedSecret 是临时子库（重）灌种子时的加密密钥，仅测试期使用。
+	// w1g2SeedSecret 是隔离测试库灌种子时的加密密钥，仅测试期使用。
 	w1g2SeedSecret = "w1g2-cover-secret"
 
 	w1g2BootPollTimeout  = 45 * time.Second
@@ -89,88 +86,78 @@ const (
 	w1g2BootTotalTimeout = 120 * time.Second
 )
 
+// w1g2TestNamespace 返回本测试唯一的 Redis namespace（测试名清洗派生；总长
+// 压在 key-model 的 ^[A-Za-z0-9_.:-]{1,64}$ 校验内）。原固定共享前缀
+// juhe-ai:dev:w1cover 已退役，不再跨测试/跨运行共享键空间。
+func w1g2TestNamespace(t *testing.T) string {
+	t.Helper()
+	sanitized := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.' {
+			return r
+		}
+		return '_'
+	}, t.Name())
+	if len(sanitized) > 40 {
+		sanitized = sanitized[len(sanitized)-40:]
+	}
+	return "juhe-ai:dev:w1g2-" + sanitized
+}
+
+// w1pgEnvFile 读取 dev env 文件的 KEY=VALUE 集合（Redis URL 等非 PG 事实）；
+// 文件不可读时 Fatal（调用方为真实 dev 资源用例，静默跳过等于假绿）。值不写
+// 入日志或断言。
+func w1pgEnvFile(t *testing.T) map[string]string {
+	t.Helper()
+	path := "../../../../../.local/project-resources/dev/env/shared.env"
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("dev env 不可读（真实 dev 资源用例需要）: %v", err)
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return values
+}
+
 // w1g2CoverSchemas 是临时子库的六个业务 schema（重灌时按此清单 DROP CASCADE，
 // 绝不触碰清单之外的任何对象）。
 var w1g2CoverSchemas = []string{"juhe_business", "juhe_chat", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage"}
 
-// w1g2CoverPostgres 解析 dev env 并确保临时子库就绪（存在 + 六 schema + 种子），
-// 返回指向临时子库的应用连接 URL。env 缺失或 PG 不可达时 t.Skip。
+// w1g2CoverPostgres 打开 pgtestkit 隔离 PG 测试库并应用 maintenance bootstrap
+// fresh DDL + 种子（原 dev env 手工建临时子库 + 漂移探测/重灌装配已退役），
+// 补种 M2 阶段记录，返回隔离库应用连接 URL。
 func w1g2CoverPostgres(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("short 模式跳过真实 dev PG 测试")
 	}
-	env := w1pgEnvFile(t)
-	host := env["DEV_POSTGRES_HOST"]
-	directPort := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || directPort == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过真实 PG 门禁测试）")
-	}
-	adminDSN := fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, directPort)
-	adminDB, err := sql.Open("pgx", adminDSN)
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
-	}
-	defer adminDB.Close()
-	if err := adminDB.Ping(); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	var exists bool
-	if err := adminDB.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, w1coverDB).Scan(&exists); err != nil {
-		t.Fatalf("查询临时子库存在性失败: %v", err)
-	}
-	if !exists {
-		if _, err := adminDB.Exec(fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, w1coverDB, env["DEV_POSTGRES_APP_USERNAME"])); err != nil {
-			t.Fatalf("创建临时子库失败: %v", err)
-		}
-	}
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env 的 JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	tempAppURL := appURL[:sep+1] + w1coverDB
-	appDB, err := sql.Open("pgx", tempAppURL)
-	if err != nil {
-		t.Fatalf("打开临时子库连接失败: %v", err)
-	}
-	defer appDB.Close()
-	appDB.SetMaxOpenConns(4)
+	testDB := pgtestkit.NewTestDatabase(t,
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.EnsurePostgres(ctx, db)
+			return err
+		},
+		func(ctx context.Context, db *sql.DB) error {
+			_, err := bootstrap.SeedPostgres(ctx, db, bootstrap.SeedOptions{Now: time.Now, Secret: w1g2SeedSecret})
+			return err
+		})
+	appDB := testDB.DB
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if err := appDB.PingContext(ctx); err != nil {
-		t.Fatalf("临时子库 ping 失败: %v", err)
+	// 六 schema 存在性核验（bootstrap 契约）。
+	if got := w1g2CountCoverSchemas(t, appDB); got != len(w1g2CoverSchemas) {
+		t.Fatalf("隔离测试库 schema 数 = %d, want %d", got, len(w1g2CoverSchemas))
 	}
-	schemaCount := w1g2CountCoverSchemas(t, appDB)
-	drifted := w1g2CoverPostgresDrifted(t, appDB)
-	if schemaCount != len(w1g2CoverSchemas) || drifted {
-		// 重灌：只允许 DROP 清单内的六个 schema（临时子库内部）。跨运行
-		// 持久子库的历史漂移有两种已取证形态（schema 数检查均覆盖不到）：
-		// 表 owner 漂移（system_sessions 非 app 角色 → modelcheckauth
-		// fail-closed 退出）与 schema 形状漂移（旧版 provider_protocol_profiles
-		// 缺 id 主键 → EnsurePostgres 建 FK 报 42830）。探针任一不满足即重灌。
-		for _, schema := range w1g2CoverSchemas {
-			if _, err := appDB.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`); err != nil {
-				t.Fatalf("重灌临时子库时 DROP SCHEMA %s 失败: %v", schema, err)
-			}
-		}
-		if _, err := bootstrap.EnsurePostgres(ctx, appDB); err != nil {
-			t.Fatalf("重灌临时子库 EnsurePostgres 失败: %v", err)
-		}
-		if _, err := bootstrap.SeedPostgres(ctx, appDB, bootstrap.SeedOptions{Now: time.Now, Secret: w1g2SeedSecret}); err != nil {
-			t.Fatalf("重灌临时子库 SeedPostgres 失败: %v", err)
-		}
-	} else {
-		// 幂等自愈：补齐可能被前置失败臂破坏后未恢复的索引/表。
-		if _, err := bootstrap.EnsurePostgres(ctx, appDB); err != nil {
-			t.Fatalf("临时子库幂等 EnsurePostgres 失败: %v", err)
-		}
-	}
-	// M2 启动阶段门禁夹具契约：持久子库 accounts 可能已有历史行，自动封存
-	// 不适用，fixture 直接补种已封存的 m2_finalized 阶段记录（ON CONFLICT
-	// DO NOTHING 幂等；记录 JSON 经共享包 Record 序列化）。
+	// M2 启动阶段门禁夹具契约：补种已封存的 m2_finalized 阶段记录（ON
+	// CONFLICT DO NOTHING 幂等；记录 JSON 经共享包 Record 序列化）。
 	stageRecordJSON, stageRecordErr := json.Marshal(capabilitydomain.Record{
 		Stage:       capabilitydomain.StageM2Finalized,
 		RuleVersion: capabilitydomain.RuleVersion,
@@ -182,25 +169,9 @@ func w1g2CoverPostgres(t *testing.T) string {
 	if _, err := appDB.ExecContext(ctx, `INSERT INTO juhe_business.global_settings (key, value_json, updated_at)
 		VALUES ($1, $2, '2026-10-12T08:00:00Z') ON CONFLICT (key) DO NOTHING`,
 		capabilitydomain.MigrationSettingKey, string(stageRecordJSON)); err != nil {
-		t.Fatalf("补种能力域阶段记录失败: %v", err)
+		t.Fatalf("补种能力域阶段记录失败: %v", stageRecordErr)
 	}
-	if got := w1g2CountCoverSchemas(t, appDB); got != len(w1g2CoverSchemas) {
-		t.Fatalf("临时子库 schema 数 = %d, want %d", got, len(w1g2CoverSchemas))
-	}
-	// F3/F4 租约残留行会让 owner 启动误判“另一进程持锁”（上一轮 fail 退出
-	// 不走 defer 释放，lease_until 未到期即报 held）；临时子库专用无并发，
-	// 直接清空两张租约表保证启动判定只反映本轮状态。表可能尚未建（本轮
-	// EnsureSchema 晚于本清理），未定义表按无需清理处理。
-	if _, err := appDB.ExecContext(ctx, `DO $$ BEGIN
-		DELETE FROM juhe_dataset.audit_log_owner_leases;
-		DELETE FROM juhe_dataset.operation_log_owner_leases;
-	EXCEPTION WHEN undefined_table THEN NULL; END $$;`); err != nil {
-		t.Fatalf("清理临时子库租约表失败: %v", err)
-	}
-	if err := appDB.Close(); err != nil {
-		t.Fatalf("关闭临时子库探测连接失败: %v", err)
-	}
-	return tempAppURL
+	return testDB.DSN
 }
 
 func w1g2CountCoverSchemas(t *testing.T, db *sql.DB) int {
@@ -219,80 +190,12 @@ func w1g2CountCoverSchemas(t *testing.T, db *sql.DB) int {
 	return count
 }
 
-// w1g2CoverPostgresDrifted 只读探测临时子库的两类跨运行历史漂移（均为已取证
-// 的真实失败形态，且 schema 数检查覆盖不到）：
-//   - 探针 A（owner）：has_table_privilege(current_user,
-//     'juhe_business.system_sessions','UPDATE') 为 false，说明表 owner 已
-//     漂移，网关启动时 modelcheckauth fail-closed 退出；
-//   - 探针 B（形状）：provider_protocol_profiles 的 id 列必须带 PK/UNIQUE
-//     约束，旧版缺 id 主键的表会让 EnsurePostgres 建
-//     provider_protocol_profile_families FK 时报 42830。
-//   - 探针 C（形状，AI 账户能力域拆分 M1）：juhe_business.accounts 必须带
-//     capability_domain 列；旧版无列的持久子库不重灌会直接撞组合根启动
-//     capability_domain 形状校验（capability_domain_schema.go）。
-//   - 探针 D（种子，调度偏好独立实体 P1）：juhe_business.scheduling_preferences
-//     表必须存在且带合规内置行（built_in=1 / chat_mode 合法 / enabled=1）；
-//     旧版 seed 建立的持久子库缺该行会直接撞组合根启动调度偏好校验
-//     （scheduling_preference_schema.go）。重灌分支经 EnsurePostgres（建表 /
-//     加列）+ SeedPostgres（恢复式补种内置行）一并修复。
-//
-// 表不存在或探针查询出错一律按漂移处理（交由重灌分支给出真实错误），不 Fatal。
-func w1g2CoverPostgresDrifted(t *testing.T, appDB *sql.DB) bool {
-	t.Helper()
-	// 探针 A：has_table_privilege 对缺失表返回 false 而非报错。
-	var canUpdate bool
-	if err := appDB.QueryRow(`SELECT has_table_privilege(current_user, 'juhe_business.system_sessions', 'UPDATE')`).Scan(&canUpdate); err != nil {
-		return true
-	}
-	if !canUpdate {
-		return true
-	}
-	// 探针 B：约束列集（conkey）须包含 id 列的 PK/UNIQUE 约束；表缺失时
-	// EXISTS 自然为 false。
-	var idConstrained bool
-	err := appDB.QueryRow(`SELECT EXISTS (
-		SELECT 1 FROM pg_constraint c
-		JOIN pg_class t ON t.oid = c.conrelid
-		JOIN pg_namespace n ON n.oid = t.relnamespace
-		WHERE n.nspname = 'juhe_business' AND t.relname = 'provider_protocol_profiles'
-			AND c.contype IN ('p','u')
-			AND c.conkey @> (SELECT ARRAY[(SELECT attnum::smallint FROM pg_attribute WHERE attrelid = t.oid AND attname = 'id')])
-	)`).Scan(&idConstrained)
-	if err != nil || !idConstrained {
-		return true
-	}
-	// 探针 C：accounts.capability_domain 列存在且声明为 text/NOT NULL。
-	var domainShaped bool
-	err = appDB.QueryRow(`SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'juhe_business' AND table_name = 'accounts'
-			AND column_name = 'capability_domain'
-			AND lower(data_type) = 'text' AND is_nullable = 'NO'
-	)`).Scan(&domainShaped)
-	if err != nil || !domainShaped {
-		return true
-	}
-	// 探针 D：调度偏好内置行存在且三值合规（表缺失时查询出错按漂移处理，
-	// 交由重灌分支 EnsurePostgres + SeedPostgres 一并修复）。
-	var builtinShaped bool
-	err = appDB.QueryRow(`SELECT EXISTS (
-		SELECT 1 FROM juhe_business.scheduling_preferences
-		WHERE id = 'schpref-builtin-chat-cost-first'
-			AND built_in = 1 AND enabled = 1
-			AND chat_mode IN ('cost_first', 'speed_first')
-	)`).Scan(&builtinShaped)
-	if err != nil || !builtinShaped {
-		return true
-	}
-	return false
-}
-
-// w1g2OpenApp 打开指向临时子库的独立 database/sql 句柄（B/D 场景直接 DDL/DML 用）。
+// w1g2OpenApp 打开指向隔离测试库的独立 database/sql 句柄（B/D 场景直接 DDL/DML 用）。
 func w1g2OpenApp(t *testing.T, tempAppURL string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("pgx", tempAppURL)
 	if err != nil {
-		t.Fatalf("打开临时子库句柄失败: %v", err)
+		t.Fatalf("打开隔离测试库句柄失败: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
@@ -404,7 +307,7 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 		BusinessPostgresURL:           tempAppURL,
 		RedisCacheURL:                 cacheRedisURL,
 		RedisStateURL:                 stateRedisURL,
-		RedisNamespace:                w1g2RedisNamespace,
+		RedisNamespace:                w1g2TestNamespace(t),
 		Secret:                        "w1g2-compose-secret",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,
@@ -793,7 +696,7 @@ func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 	j3bEvidence := w1bWriteCutoverEvidence(t, filepath.Join(root, "j3b-evidence"), "epoch-w1g2")
 
 	// ---- fixture：dev state Redis 的 circuit runtime index meta ----
-	w1g2SeedCircuitRuntimeIndex(t, stateRedisURL, w1g2RedisNamespace)
+	w1g2SeedCircuitRuntimeIndex(t, stateRedisURL, w1g2TestNamespace(t))
 
 	// ---- fixture：运行时目录 ----
 	for _, name := range []string{"audit-blobs", "audit-hot", "usage-spool", "logs"} {
@@ -821,7 +724,7 @@ func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 		"JUHE_AI_REDIS_CACHE_URL="+cacheRedisURL,
 		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
 		"JUHE_AI_REDIS_STATE_URL="+stateRedisURL,
-		"JUHE_AI_REDIS_NAMESPACE="+w1g2RedisNamespace,
+		"JUHE_AI_REDIS_NAMESPACE="+w1g2TestNamespace(t),
 		"JUHE_AI_SECRET=w1g2-owner-full-boot-secret",
 		"JUHE_AI_HOST=127.0.0.1",
 		fmt.Sprintf("JUHE_AI_PORT=%d", mainPort),
@@ -852,7 +755,7 @@ func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
 		"JUHE_AI_J3B_RUNTIME_READY=true",
 		"JUHE_AI_J3B_CIRCUIT_REDIS_URL="+stateRedisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1g2RedisNamespace,
+		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE="+w1g2TestNamespace(t),
 		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS="+j3bAddress,
 		// F3 审计（postgres 模式）
 		"JUHE_AI_AUDIT_LOG_STORE=postgres",

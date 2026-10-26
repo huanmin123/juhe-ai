@@ -2,76 +2,25 @@ package taskruns
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
 	"time"
 )
 
-// w12b_pg_gate_test.go 门禁化开发 PostgreSQL（w1cover 临时覆盖库）覆盖
-// taskruns 的 PG 专有分支：EnsureSchema PG 臂、advisory lock 获取与
-// advisory_busy 快路径、ScheduledLease 三段 SQL 的 PG 臂、ReconcileStale
-// PG 对账 SQL、`?` 占位符生命周期方法在 PG 模式下的真实行为（w12b 门控
-// 曾实测 pgx 下直接 42601，已按前波同类缺陷修复并在此回归）。
-// 数据全部 w12b- 前缀 ID，测试结束清理；数据库不可达时 t.Skip。
-
-func w12bPgSkip(reason string) string { return "w12b taskruns PG gated: " + reason }
-
-func w12bPgDSN(t *testing.T) string {
-	t.Helper()
-	if url := os.Getenv("JUHE_AI_W12B_TASKRUNS_PG_URL"); url != "" {
-		return url
-	}
-	raw, err := os.ReadFile(`F:\sub2api-lite\.local\project-resources\dev\env\shared.env`)
-	if err != nil {
-		t.Skip(w12bPgSkip("shared.env 不可读"))
-	}
-	base := ""
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "JUHE_AI_POSTGRES_URL=") {
-			base = strings.TrimPrefix(line, "JUHE_AI_POSTGRES_URL=")
-		}
-	}
-	if base == "" {
-		t.Skip(w12bPgSkip("shared.env 缺少 JUHE_AI_POSTGRES_URL"))
-	}
-	base = strings.Replace(base, ":6432/", ":5432/", 1)
-	base = strings.Replace(base, "/juhe_ai_sub2api_dev?", "/juhe_ai_sub2api_dev_w1cover?", 1)
-	return base
-}
+// w12b_pg_gate_test.go 覆盖 taskruns 的 PG 专有分支：EnsureSchema PG 臂、
+// advisory lock 获取与 advisory_busy 快路径、ScheduledLease 三段 SQL 的 PG
+// 臂、ReconcileStale PG 对账 SQL、`?` 占位符生命周期方法在 PG 模式下的真实
+// 行为（w12b 门控曾实测 pgx 下直接 42601，已按前波同类缺陷修复并在此回归）。
+// 建库走 taskruns_pgkit_test.go 的 pgtestkit 隔离 PG 测试库 + 生产
+// EnsureSchema（原 shared.env 门禁共享覆盖库装配已退役）：每测试独立
+// fresh 库，PG 不可达由 pgtestkit 显式 Fatal 而非 t.Skip；隔离库随测试
+// 结束删除，不再需要共享库行级清理纪律。
 
 func w12bOpenPgStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := OpenStore(StoreConfig{
-		Mode:                 ModePostgres,
-		PostgresURL:          w12bPgDSN(t),
-		PostgresMaxOpenConns: 4,
-		PostgresMaxIdleConns: 2,
-	})
-	if err != nil {
-		t.Skipf(w12bPgSkip("OpenStore PG 打开失败: %v"), err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("PG EnsureSchema 失败: %v", err)
-	}
+	store := openKitPostgresStore(t)
 	clock := NewFakeClock(time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC))
 	store.SetClock(clock)
 	return store
-}
-
-func w12bPgCleanupRuns(t *testing.T, store *Store) {
-	t.Helper()
-	t.Cleanup(func() {
-		ctx := context.Background()
-		if _, err := store.db.ExecContext(ctx, `DELETE FROM juhe_stats.background_task_runs WHERE run_id LIKE 'w12b-%' OR lease_key LIKE 'w12b-%' OR job_name LIKE 'w12b-%'`); err != nil {
-			t.Logf("w12b cleanup task_runs: %v", err)
-		}
-		if _, err := store.db.ExecContext(ctx, `DELETE FROM juhe_stats.background_job_leases WHERE lease_key LIKE 'w12b-%' OR run_id LIKE 'w12b-%' OR job_name LIKE 'w12b-%'`); err != nil {
-			t.Logf("w12b cleanup job_leases: %v", err)
-		}
-	})
 }
 
 // TestW12bPgScheduledLeaseFencing 覆盖 PG 臂：advisory 获取、advisory_busy、
@@ -79,7 +28,6 @@ func w12bPgCleanupRuns(t *testing.T, store *Store) {
 func TestW12bPgScheduledLeaseFencing(t *testing.T) {
 	store := w12bOpenPgStore(t)
 	ctx := context.Background()
-	w12bPgCleanupRuns(t, store)
 	leaseKey := "w12b-scheduled:account-quality-refresh:global"
 
 	first, err := store.TryAcquireScheduledLease(ctx, ScheduledLeaseAcquireInput{
@@ -157,7 +105,6 @@ func TestW12bPgScheduledLeaseFencing(t *testing.T) {
 func TestW12bPgTaskRunLifecycle(t *testing.T) {
 	store := w12bOpenPgStore(t)
 	ctx := context.Background()
-	w12bPgCleanupRuns(t, store)
 
 	run, err := store.CreateTaskRun(ctx, TaskRunCreateInput{
 		JobName:    "w12b-temporary-maintenance-worker",
@@ -214,7 +161,6 @@ func TestW12bPgTaskRunLifecycle(t *testing.T) {
 func TestW12bPgReconcileStale(t *testing.T) {
 	store := w12bOpenPgStore(t)
 	ctx := context.Background()
-	w12bPgCleanupRuns(t, store)
 
 	stale := time.Now().Add(-time.Hour).UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	insertRun := func(runID, status, submittedAt, heartbeatAt string) {

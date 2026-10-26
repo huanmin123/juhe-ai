@@ -11,8 +11,9 @@ package accountbalance
 //     w12h_store_runner_service_arms_test.go SQLite 失败注入族）已于
 //     2026-10-25 随生产 sqlite 臂物理删除整体退役（D9 裁决：无 PG 逐字节
 //     等价断言）；w7c_pg_gate_test.go / w7c_pg_gate_arms_test.go 中引用
-//     SQLite 夹具的注入子臂同批摘除，门禁共享 w1cover 库测试面保持现状
-//     （计划 §4.2）。
+//     SQLite 夹具的注入子臂同批摘除；PG 门禁测试面已迁 pgtestkit 每测试
+//     独立库（业务 DDL 由 golden 手法提取 maintenance 权威源文件，见
+//     w7c_pg_gate_test.go 文件头）。
 //   - scripted/mock（httptest、scripted HTTPDoer、fake pool）不依赖真库，
 //     原样保留。
 //   - 本包 PG 臂的租约/快照时间全部由 Go 侧 time.Now 参数驱动（SQL 语句内

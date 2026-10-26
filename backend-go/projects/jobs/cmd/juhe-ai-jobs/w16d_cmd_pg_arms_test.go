@@ -1,4 +1,5 @@
-// 波次 w16d：批次五。PG 门控臂（w1cover 覆盖库）与 SQLite 可达的深臂：
+// 波次 w16d：批次五。PG 门控臂（wgCmdKitDB 隔离测试库，原 w1cover 覆盖库
+// 门禁已退役）与深臂：
 //   - worker_retention.go 家族适配器的 postgres 分支（CleanupApiKeyRelated /
 //     CleanupAccountRelated / CleanupPendingTargets / ProcessBatch /
 //     SettleCodexContextStorageCleanup / flushLoop 失败重排）；
@@ -9,8 +10,7 @@
 //   - worker_probe_jobs.go FindAccountForTest 错误臂与 OpenStatsStore 失败臂；
 //   - worker_balance_detect.go proxyEnvelope 密码封套解密失败臂。
 //
-// 连接串只从 shared.env 读取改写，不写入日志与断言；共享库只做加法幂等
-// DDL，数据一律 w16d- 前缀 + t.Cleanup 清理。
+// 连接串不写入日志与断言；隔离库随测试结束删除，无需行级清理。
 package main
 
 import (
@@ -38,24 +38,10 @@ import (
 
 const w16dSecret = "0123456789abcdef0123456789abcdef"
 
-// w16dPGOpen 打开共享覆盖库连接（门控失败 t.Skip）。
-func w16dPGOpen(t *testing.T) *sql.DB {
+// w16dPGOpen 打开隔离 PG 测试库连接（pgtestkit 建删库，PG 不可达显式 Fatal）。
+func w16dPGOpen(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16d: 覆盖库连接串不可用")
-	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("w16d: 打开覆盖库失败（跳过）: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		t.Skipf("w16d: 覆盖库不可达（跳过）: %v", err)
-	}
-	return db
+	return wgCmdKitDB(t)
 }
 
 // TestW16DPGBalanceContractArms 覆盖余额契约校验的 PG 分支。
@@ -63,15 +49,15 @@ func TestW16DPGBalanceContractArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
-	pgDB := w16dPGOpen(t)
+	pgDB, _ := w16dPGOpen(t)
 	business := &businessDB{db: pgDB}
 	// ensureAccountsBalanceColumns PG 分支：生产形状 accounts 具备契约列。
 	if err := ensureAccountsBalanceColumns(context.Background(), business); err != nil {
-		t.Logf("覆盖库 accounts 契约列校验（登记不判失败）: %v", err)
+		t.Logf("隔离测试库 accounts 契约列校验（登记不判失败）: %v", err)
 	}
 	// ensureAccountUsageSnapshotsTable PG 分支（853-856）。
 	if err := ensureAccountUsageSnapshotsTable(context.Background(), pgDB); err != nil {
-		t.Logf("覆盖库快照表校验（登记不判失败）: %v", err)
+		t.Logf("隔离测试库快照表校验（登记不判失败）: %v", err)
 	}
 	// 关闭句柄 → PG 查询错误分支（155-157 / 854-856）。
 	closed, err := sql.Open("pgx", w16dClosedPortURL())
@@ -91,7 +77,7 @@ func TestW16DPGRetentionAdapterArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
-	pgDB := w16dPGOpen(t)
+	pgDB, _ := w16dPGOpen(t)
 	pgHandle := &cleanuprepo.DB{DB: pgDB}
 	family := &retentionFamily{
 		assembly: newWorkerAssembly(workerConfig{}, slog.Default()),
@@ -124,7 +110,7 @@ func TestW16DPGCodexSettleAndDrainArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
-	pgDB := w16dPGOpen(t)
+	pgDB, _ := w16dPGOpen(t)
 	pgHandle := &cleanuprepo.DB{DB: pgDB}
 	// SettleCodexContextStorageCleanup 错误臂：PG 句柄指向关闭连接（700-702；
 	// 原 sqlite closed 句柄夹具随 sqlite 形态退役删除，改隔离库 DSN 的关闭句柄）。
@@ -160,7 +146,7 @@ func TestW16DPGFlushLoopFailureArms(t *testing.T) {
 	// flushLoop 任务失败 → 重排 + 错误日志（877-883）。PG 唯一形态：空独立库
 	//（契约表缺失）使关联清理执行失败，错误分支由此驱动（原 sqlite closed
 	// 句柄夹具随 sqlite 形态退役删除）。
-	pgDB := w16dPGOpen(t)
+	pgDB, _ := w16dPGOpen(t)
 	assembly := newWorkerAssembly(workerConfig{}, slog.Default())
 	family := &retentionFamily{
 		assembly: assembly,
@@ -204,7 +190,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
-	pgDB := w16dPGOpen(t)
+	pgDB, pgURL := w16dPGOpen(t)
 	redisServer := miniredis.RunT(t)
 	assembly := newWorkerAssembly(workerConfig{InstanceID: "w16d-list-projection",
 		Secret:                          w16dSecret,
@@ -217,17 +203,17 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	// PG stats 读模型（loader 的时区源）。
 	statsStore, err := statsverify.OpenStore(statsverify.StoreConfig{
 		Mode:                 statsverify.StorePostgres,
-		PostgresURL:          w12cPGOverrideURL(t),
+		PostgresURL:          pgURL,
 		PostgresMaxOpenConns: 4,
 		PostgresMaxIdleConns: 2,
 	})
 	if err != nil {
-		t.Skipf("w16d: 打开 stats PG 存储失败（跳过）: %v", err)
+		t.Fatalf("打开 stats PG 存储失败: %v", err)
 	}
 	assembly.statsStore = statsStore
 	t.Cleanup(func() { _ = statsStore.Close() })
 	if err := statsStore.EnsureSchema(context.Background()); err != nil {
-		t.Skipf("w16d: stats PG schema 初始化失败（跳过）: %v", err)
+		t.Fatalf("stats PG schema 初始化失败: %v", err)
 	}
 	// OAuth 族 store（投影 SyncSchedules 依赖）。
 	oauthStore, err := oauthrefresh.OpenStore(pgDB, w16dSecret)
@@ -258,7 +244,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := assembly.runWiredJobOnce(ctx, "account-list-availability-projection-maintenance"); err != nil {
-		t.Logf("投影任务在覆盖库上执行失败（覆盖错误臂，登记不判失败）: %v", err)
+		t.Logf("投影任务在隔离测试库上执行失败（覆盖错误臂，登记不判失败）: %v", err)
 	}
 }
 
@@ -266,16 +252,13 @@ func TestW16DPGManualBridgeArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16d: 覆盖库连接串不可用")
-	}
+	_, pgURL := wgCmdKitDB(t)
 	// J2 store bootstrap（CheckSchema 只读，需先 EnsureSchema）。
 	bootstrap, err := accountbalance.OpenStore(accountbalance.StoreConfig{
 		Mode: accountbalance.StorePostgres, PostgresURL: pgURL,
 	})
 	if err != nil {
-		t.Skipf("w16d: 打开 J2 store 失败（跳过）: %v", err)
+		t.Fatalf("打开 J2 store 失败: %v", err)
 	}
 	if err := bootstrap.EnsureSchema(context.Background()); err != nil {
 		_ = bootstrap.Close()
@@ -284,7 +267,10 @@ func TestW16DPGManualBridgeArms(t *testing.T) {
 	if err := bootstrap.Close(); err != nil {
 		t.Logf("w16d: J2 bootstrap 关闭: %v", err)
 	}
+	// Enabled 必须显式开启：原共享库门禁以 t.Skip 吞掉了缺省 Enabled 的
+	// NewService 失败，迁 fresh 库后按服务真实启用形态装配。
 	service, err := accountbalance.NewService(accountbalance.RuntimeConfig{
+		Enabled:              true,
 		OwnerID:              "w16d-manual-bridge",
 		Store:                accountbalance.StoreConfig{Mode: accountbalance.StorePostgres, PostgresURL: pgURL},
 		BusinessPostgresURL:  pgURL,
@@ -294,7 +280,7 @@ func TestW16DPGManualBridgeArms(t *testing.T) {
 		InputPostgresMaxOpenConns: 4, InputPostgresMaxIdleConns: 2,
 	}, slog.Default())
 	if err != nil {
-		t.Skipf("w16d: J2 NewService 失败（跳过）: %v", err)
+		t.Fatalf("J2 NewService 失败: %v", err)
 	}
 	t.Cleanup(func() { _ = service.Close() })
 

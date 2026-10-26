@@ -18,8 +18,8 @@
 ## 设计目标
 
 - 建立独立的 IP 统计事实层，支撑系统管理员在“系统运维 / IP管理”查看来源 IP 的请求次数、Token、成本、失败情况和活跃情况。
-- 后台 job 按 `usage_records` 分片游标增量处理新记录，不能在页面、接口或普通请求路径按 IP 全量 `GROUP BY usage_records`。
-- 通过 IP 注册表和本进程懒加载分桶 Set 识别当前进程已见过的 IP，避免启动时全量预热造成 worker 长时间阻塞；最终正确性仍由 SQLite 唯一约束兜底。
+- 后台 job 按 `usage_records` 日分区游标增量处理新记录，不能在页面、接口或普通请求路径按 IP 全量 `GROUP BY usage_records`。
+- 通过 IP 注册表和本进程懒加载分桶 Set 识别当前进程已见过的 IP，避免启动时全量预热造成 worker 长时间阻塞；最终正确性仍由 PostgreSQL 唯一约束兜底（历史双方言时期由 SQLite 唯一约束兜底，该形态已随 2026-10-25 存储收口退役）。
 - 提供管理员可控的 IP 封禁、临时封禁、解封和后台内部接口白名单能力，作为 `juhe-ai` 自身运维能力。
 - IP 统计只服务后台管理员运维排障，不再作为外部来源系统公开读取能力。
 
@@ -46,7 +46,7 @@
 
 - IP 统计不再支撑公开来源接口；如后续重新评估对外聚合读取，需要重新立项并同步接口契约、鉴权和日志边界。
 - `client_ip_registry` 是 IP 管理列表成员的事实源；页面时间范围只选择每行统计窗口，不能决定 IP 是否出现在列表中。页面和接口不能为了 IP 列表临时扫描 `usage_records`。
-- IP 注册 Set 是懒加载性能优化，不是事实源；启动时不全量读取注册表，最终正确性依赖 SQLite 唯一约束和 `INSERT OR IGNORE`。
+- IP 注册 Set 是懒加载性能优化，不是事实源；启动时不全量读取注册表，最终正确性依赖 PostgreSQL 唯一约束和 `ON CONFLICT DO NOTHING`（历史双方言时期为 SQLite 唯一约束 + `INSERT OR IGNORE`，已随 2026-10-25 存储收口退役）。
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。
 - 统计 scope 使用 `ip_hash`；列表接口从 IP 注册表出发，按 `ip_hash + start_date + end_date` 左连接统计窗口。窗口内无用量的已注册 IP 仍返回，范围统计字段为零。
 - 当前 IP 管理只识别 IPv4；非 IPv4 来源不进入 IP 注册、统计和封禁策略。
@@ -314,7 +314,7 @@ client_ip_policy_hits
 - PRIMARY KEY (ip_hash, stat_date, policy_id)
 ```
 
-命中计数应异步批量写入，网关请求不能等待 SQLite 写入；server 内命中缓冲和单次 DB service 投递都必须有固定窗口。
+命中计数应异步批量写入，网关请求不能等待数据库写入；server 内命中缓冲和单次批量投递都必须有固定窗口（历史双方言时期经 DB service 投递并由 SQLite 承载，DB service 与 SQLite 形态已分别随 Node 清零与 2026-10-25 存储收口退役）。
 
 ## 内存分桶 Set
 
@@ -660,8 +660,8 @@ GET /__aipublic__/access/info
 | --- | --- | --- | --- |
 | IP 级账号回避 | 进程内短 TTL | 同一 IP 短期避开刚失败账号 | 保持易失，不变成统计或封禁事实 |
 | IP 级错误熔断 | 进程内短 TTL | 认证前 / 本地高置信错误短期止损 | 保持易失，不写永久黑名单 |
-| IP 统计 | SQLite 预聚合 | 管理员查看和外部 IP 聚合事实 | 本文新增 |
-| IP 封禁 | SQLite 策略 + 网关缓存 | 管理员明确操作后的拦截 | 本文新增 |
+| IP 统计 | PostgreSQL 预聚合（历史双方言时期为 SQLite，已随 2026-10-25 存储收口退役） | 管理员查看和外部 IP 聚合事实 | 本文新增 |
+| IP 封禁 | PostgreSQL 策略 + 网关缓存（历史双方言时期为 SQLite，已退役） | 管理员明确操作后的拦截 | 本文新增 |
 
 ## 实施阶段
 

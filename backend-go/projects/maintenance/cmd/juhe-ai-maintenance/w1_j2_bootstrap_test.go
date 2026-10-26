@@ -45,15 +45,17 @@ func TestW1J2BootstrapMutualExclusion(t *testing.T) {
 	for _, argv := range [][]string{
 		{"--apply-account-balance-postgres", "--migrate-chat-account-only-binding"},
 		{"--apply-account-balance-postgres", "--postgres-schema-snapshot"},
-		{"--apply-account-balance-postgres", "--export-business-dataset"},
-		{"--apply-account-balance-postgres", "--import-business-dataset"},
 		{"--apply-account-balance-postgres", "--ensure-schema"},
 		{"--apply-account-balance-postgres", "--seed"},
 		{"--apply-account-balance-postgres", "--mockdata"},
 		{"--apply-account-balance-postgres", "--verify-mockdata-coverage"},
 		{"--apply-account-balance-postgres", "--apply-j3a-proxy-latency-postgres"},
 		{"--apply-account-balance-postgres", "--apply-j3b-model-check-postgres"},
-		{"--apply-account-balance-postgres", "--apply-j3b-model-check-sqlite"},
+		// T60（2026-10-25）：移除 --export-business-dataset / --import-business-dataset
+		// / --apply-j3b-model-check-sqlite 三行——旗标已随业务数据集命令族与
+		// SQLite 退役批物理删除，残留行只会走「未知旗标返回 2」路径（该契约由
+		// w1_cli_maintenance_edges_test.go -w1-unknown-flag 臂直接覆盖），
+		// 不再是互斥断言。
 	} {
 		if got := runMaintenance(argv); got != 2 {
 			t.Fatalf("%v 必须因互斥返回 2: %d", argv, got)

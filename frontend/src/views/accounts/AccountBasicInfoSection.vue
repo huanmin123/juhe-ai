@@ -38,7 +38,7 @@
       <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。授权账号这里表示当前使用方本地分组内的调度优先级。">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
-      <a-form-item label="特权" tooltip="同族改名映射与直连同层参与调度排序；跨协议转换映射排在直连之后。超级优先只在其模型命中层级内提权。">
+      <a-form-item label="特权" tooltip="调度先比较模型命中方式：直连与同族改名映射同层、优先于跨协议转换映射；超级优先 / 降级备用等特权只在同一命中方式层级之内比较，不会越过该维度。">
         <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
           <a-select-option value="normal">无</a-select-option>
           <a-select-option value="super_priority">超级优先</a-select-option>

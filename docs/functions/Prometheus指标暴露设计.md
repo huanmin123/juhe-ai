@@ -70,10 +70,10 @@
 
 任务指标适用边界（2026-10-16 登记）：
 
-- 埋点唯一入口是 taskruns `RunWithTaskRun` 的终态收口，只覆盖「PostgreSQL 驱动 + 经任务调度器（租约 + 运行历史包裹）注册的任务」。SQLite / 非 PostgreSQL 装配、租约未启用、`runWiredJobOnce` 单轮直调与 once/migration 短命进程均不产生任务指标。
+- 埋点唯一入口是 taskruns `RunWithTaskRun` 的终态收口，只覆盖「PostgreSQL 驱动 + 经任务调度器（租约 + 运行历史包裹）注册的任务」（历史双方言时期的"SQLite / 非 PostgreSQL 装配不产生任务指标"表述已随 2026-10-25 存储收口退役，现行 PostgreSQL 是唯一装配）。租约未启用、`runWiredJobOnce` 单轮直调与 once/migration 短命进程均不产生任务指标。
 - 驻留型组件（runtime-log-indexer、account-health 探活、outcome projection、business-result-projector、proxy-latency）不经过调度器收口，没有 `juhe_ai_jobs_task_*` 序列。
 - `juhe_ai_jobs_task_last_success_timestamp_seconds` 子序列在任务首次 `completed` 时才创建：**从未成功的任务没有该序列**，纯 `time() - 指标值` 查询会漏掉"从未成功"。停摆告警需配合 `absent(...)` 或以 `juhe_ai_jobs_task_runs_total` 的存在性兜底。
-- 生产当前为 PostgreSQL 单机形态，经调度器注册的定时任务覆盖基本可用；SQLite 形态下任务指标整体缺席属预期。
+- 生产当前为 PostgreSQL 单机形态（唯一存储形态），经调度器注册的定时任务覆盖基本可用。
 
 ### 基数约束
 
@@ -159,4 +159,4 @@
 2. **抓取与面板**：infra Prometheus 两个 target UP（`scrape_interval=60s`，经 SSH 隧道）；Grafana 导入 monitoring/ 面板后可见网关请求 / 上游失败 / 首输出、jobs 任务运行与最近成功时间、`go_*` / `process_*` 运行时和 postgres_exporter 容量序列。
 3. **告警口径迁移**：原表监控告警判断（索引放大、异常增长）与系统指标页人工巡检改为 Prometheus 告警规则 / Grafana 面板表达；运维文档不再指向已删除页面。失联告警（`AppScrapeDown` / `AppScrapeTargetMissing`，2026-10-16 起）随 `juhe-app-alerts.yml` 同步 infra 后热加载生效，Grafana Alerting 可见规则状态。
 4. **减法回归**：启动器 / sidecar env 回归确认两家族 env 与 gateway 侧 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS` 不再转发（残留值被拒转清单剥离）；mockdata 任务清单不再引用 `system-metrics-sample` / `system-metrics-trend-windows-refresh`；`__aisys__` 前端路由不再包含已删除两页。
-5. **主业务池指标**（2026-10-16 起）：PostgreSQL 形态的 gateway `/__aisys__/metrics` 暴露 `juhe_ai_gateway_db_pool_*` 六序列且值与真实池一致（`wait_*` 两项为 counter 类型）；SQLite 形态整族缺席。
+5. **主业务池指标**（2026-10-16 起）：gateway `/__aisys__/metrics` 暴露 `juhe_ai_gateway_db_pool_*` 六序列且值与真实池一致（`wait_*` 两项为 counter 类型；历史双方言时期按"PostgreSQL 形态暴露、SQLite 形态缺席"区分，该区分已随 2026-10-25 存储收口失去意义，现行恒暴露）。

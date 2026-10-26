@@ -42,21 +42,40 @@ const (
 )
 
 // Entry 对齐 Node BackgroundJobRegistryEntry，并附加 Go 绑定信息。
+//
+// 读取面（T60 取证，2026-10-25）：运行时只读 JobName 与 GoStatus（组合根装配
+// 与 WiredJobNames）；测试另断言 Category / SingleOwner / LeaseRequired /
+// Writes / GoBinding 作 Node 对照契约。其余字段（Kind / DefaultRole / Hotspot /
+// Shardable / BlocksUserVisibleFreshness / GoPackage）零读取，是逐条目字面量
+// 填写的 Node 对照审计元数据：逐字段镜像 Node 注册表，供迁移比对与人工审计
+// （差异用注册表 diff 暴露，不进调度判定）；实际调度参数在 schedule.go，
+// 不读本结构。属 T60 裁决保留项，不是死字段。
 type Entry struct {
-	JobName                    string
-	Category                   Category
-	Kind                       string
-	DefaultRole                string
-	Hotspot                    bool
-	SingleOwner                bool
-	Shardable                  bool
-	LeaseRequired              bool
+	JobName string
+	// Category 与 Node BackgroundJobCategory 一致；测试断言用，运行时零读取。
+	Category Category
+	// Kind 镜像 Node 条目 kind（stats/snapshot/probe/…）；对照审计用，运行时零读取。
+	Kind string
+	// DefaultRole 镜像 Node 条目默认 worker 角色；对照审计用，运行时零读取。
+	DefaultRole string
+	// Hotspot 镜像 Node 条目热点标记；对照审计用，运行时零读取。
+	Hotspot bool
+	// SingleOwner / Shardable / LeaseRequired 镜像 Node 单持有者与分片语义；
+	// SingleOwner / LeaseRequired 另被注册表测试断言。调度租约实现在组合根
+	// withLease，不读本结构。
+	SingleOwner   bool
+	Shardable     bool
+	LeaseRequired bool
+	// BlocksUserVisibleFreshness 镜像 Node「影响用户可见新鲜度」分级；对照审计用，运行时零读取。
 	BlocksUserVisibleFreshness bool
-	Writes                     []string
-	GoStatus                   GoStatus
-	// GoPackage 是 Go 实现所在包（backend-go-jobs/internal/... 或其他进程）。
+	// Writes 登记该任务写面（键空间前缀），供注册表测试做防漂移断言。
+	Writes   []string
+	GoStatus GoStatus
+	// GoPackage 是 Go 实现所在包（backend-go-jobs/internal/... 或其他进程）；
+	// 对照审计用，运行时零读取。
 	GoPackage string
-	// GoBinding 说明绑定方式或缺口（组合根适配器、启用前置条件等）。
+	// GoBinding 说明绑定方式或缺口（组合根适配器、启用前置条件等）；测试断言
+	// NodeOnly 条目必含「登记缺失」。
 	GoBinding string
 }
 

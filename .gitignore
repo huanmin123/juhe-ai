@@ -36,6 +36,7 @@ Thumbs.db
 *.db-shm
 # Go 网关本地开发/测试运行时写出的目录（含密钥等非 SQLite 文件）
 /backend-go/projects/gateway/cmd/juhe-ai-gateway/data/
+/backend-go/projects/maintenance/cmd/juhe-ai-maintenance/data/
 /backend-go/juhe-ai-runtime-log-indexer
 /backend-go/juhe-ai-runtime-log-indexer.exe
 **/*.exe

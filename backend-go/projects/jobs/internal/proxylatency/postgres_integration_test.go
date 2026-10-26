@@ -467,10 +467,6 @@ func TestPostgresSmoke(t *testing.T) {
 	if err != nil || !inserted {
 		t.Fatalf("append J3a PostgreSQL outcome failed: inserted=%t err=%s", inserted, redactPGError(err, jobsURL))
 	}
-	loaded, found, err := store.LoadCommittedOutcome(ctx, issued)
-	if err != nil || !found || loaded.RequestID != outcome.RequestID {
-		t.Fatalf("load J3a PostgreSQL committed outcome failed: found=%t err=%s", found, redactPGError(err, jobsURL))
-	}
 	// Replay must be idempotent even after the first execution claim was
 	// consumed. It must not require a second upstream attempt or a new claim.
 	outcome.executionClaimToken = ""

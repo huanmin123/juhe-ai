@@ -1,6 +1,7 @@
 # AI 问答设计
 
 > **历史截面提示。** 本文部分章节撰写于 Node 过渡期，涉及 DB service 承载 chat 存储 / 聊天库等拓扑的段落为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明），不构成当前实现或操作授权。
+> **历史截面（SQLite 模式，已于 2026-10-25 退役）。** 文中 standalone 模式、`juhe-ai-chat.sqlite3` 独立文件、DB service 维持 SQLite 单写者、"SQLite 不模拟分区/使用同一契约"等双方言分支均为历史截面；现行唯一存储形态为 PostgreSQL `juhe_chat` schema 日分区 + Redis（见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)），会话/消息/幂等/容量契约语义不变。
 
 > **修订（2026-10-24）：AI 问答免 Key 直调内部通道已实施。** 不再有 `purpose=chat` 专用对话 Key（`EnsureChatAPIKey` 自愈链删除），对话派发改走进程内「内部身份通道」钉住会话绑定账户复用 /v1 网关管道，不写使用日志（审计保留）；本文涉及「真实 Bearer API Key / 专用对话 Key」的段落已按此修正，设计见 [AI问答免Key直调内部通道计划](../plans/计划-20261024T045719079Z-AI问答免Key直调内部通道.md)。
 
@@ -35,7 +36,7 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 | 消息列表 | 必须使用支持动态高度的虚拟列表和游标分页 |
 | 工具 | 上游联网等原生工具按协议透传；本站工具统一经过 Registry/Orchestrator，串行执行、有限轮次/调用数/结果大小、取消和精确重复调用复用 |
 | 历史操作 | 只支持重新编辑最近一个完整用户轮次；不支持任意历史分支、分享或多人会话 |
-| 数据模式 | standalone 使用独立 `juhe-ai-chat.sqlite3`，performance 使用独立 `juhe_chat` schema；两者使用同一业务契约 |
+| 数据模式 | 独立 `juhe_chat` schema（历史双方言时期另有 standalone `juhe-ai-chat.sqlite3` 文件形态，已随 2026-10-25 存储收口退役）；两者使用同一业务契约 |
 | 会话门禁 | 每用户最多 50 个现存会话，每会话最多接受 50 个用户轮次；均可通过运行配置调整，达到上限返回稳定 409 机器码 |
 | 容量门禁 | 每个用户当前聊天保留窗口（默认 3 天）正文默认最多 2 GiB；超限后禁止继续发送，但允许读取、停止和删除 |
 
@@ -74,7 +75,7 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 ```mermaid
 flowchart LR
   User["登录用户 / AI 问答页"] --> Chat["AI 问答模块（Go gateway chat 包）"]
-  Chat --> DB["独立聊天存储：juhe_chat / juhe-ai-chat.sqlite3"]
+  Chat --> DB["独立聊天存储：juhe_chat schema（历史双方言时期另有 standalone sqlite3 文件，已退役）"]
   Chat --> Gateway["本机 /v1/chat/completions 或 /v1/responses"]
   Gateway --> Identity["内部身份通道：会话归属系统账户（免 Key，2026-10-24）"]
   Identity --> Account["AI 账户（钉住会话绑定账户）"]
@@ -558,7 +559,7 @@ data: {"messageId":"msg_xxx"}
 
 当前聊天存储包含会话、消息、发送幂等登记、紧凑容量窗口、用户上传资产和助手生成资产引用；不新增站内工具执行 worker 或永久产物库。聊天正文属于高增长、短保留数据，不能继续放入 `juhe_business`：
 
-- standalone：新增独立 `juhe-ai-chat.sqlite3`，由 DB service 维持单写者边界；不得因为上线重建其他非业务数据库。
+- **历史截面（SQLite 模式，已于 2026-10-25 退役）。** standalone：曾新增独立 `juhe-ai-chat.sqlite3`，由 DB service 维持单写者边界；不得因为上线重建其他非业务数据库。
 - performance：在现有 PostgreSQL 集群新增独立 `juhe_chat` schema；会话元数据使用普通表，消息事实表按 UTC `created_at` 日分区。
 - Redis 只承担短期取消信号、SSE 协调或瞬时门禁，不保存聊天正文，也不是会话事实来源。
 - 聊天与业务库保持逻辑隔离，但 `system_account_id` 仍引用现有业务身份语义；`api_key_id` 为历史保留列（2026-10-24 免 Key 直调后停止写入，新行为空串）；跨库关联由受控 repository 查询完成，不在聊天请求路径扫描业务表。
@@ -633,7 +634,7 @@ PostgreSQL 约束：
 - `chat_messages` 按 UTC `created_at` 创建每日 range partition，写入前确保当天和下一天分区存在。
 - 主键包含分区键；PostgreSQL 不能在日分区表上直接建立不含分区键的跨分区唯一约束，因此会话序号由锁定 `chat_conversations` 后原子分配，发送幂等由非分区登记表保证。
 - 清理时先直接 drop 已完全早于当前配置保留窗口的日分区；最老的部分重叠分区再按 `(expires_at, id)` 游标小批删除，保证精确滚动 `retentionDays × 24` 小时。
-- SQLite 不模拟分区，使用 `(expires_at, id)` 覆盖索引和固定小批删除；不能在线执行阻塞式全库 `VACUUM`。
+- **历史截面（SQLite 模式，已于 2026-10-25 退役）。** SQLite 不模拟分区，使用 `(expires_at, id)` 覆盖索引和固定小批删除；不能在线执行阻塞式全库 `VACUUM`。
 
 ### 12.3 `chat_message_idempotency`
 
@@ -648,7 +649,7 @@ PostgreSQL 约束：
 
 - 接受发送时先锁定会话，再插入幂等登记和两条消息；冲突时返回已有轮次，不再次调用网关。
 - 清理完整轮次时同步删除登记；兜底任务按 `(expires_at, conversation_id, client_message_id)` 小批删除孤立过期登记。
-- SQLite 使用同一契约和联合主键。
+- **历史截面（SQLite 模式，已于 2026-10-25 退役）。** SQLite 使用同一契约和联合主键。
 
 ### 12.4 `chat_user_storage_windows`
 
@@ -804,7 +805,7 @@ Prompt Cache 是网关调用成本与延迟优化，不替代本站 checkpoint�
 - 会话已无消息时删除会话。
 - 没有消息的空会话超过 24 小时后删除。
 - 手动删除会话立即删除聊天表中的会话和消息。
-- PostgreSQL 先 drop 完全过期的日分区，再对部分重叠的最老分区按 `(expires_at, id)` 游标选择到期候选；SQLite 直接按同一游标固定小批推进。删除按候选 `turn_id` 成对执行，禁止全表读入内存，也不能在批次边界留下孤立的一问或一答。
+- PostgreSQL 先 drop 完全过期的日分区，再对部分重叠的最老分区按 `(expires_at, id)` 游标选择到期候选（历史双方言时期 SQLite 直接按同一游标固定小批推进，该分支已随 2026-10-25 存储收口退役）。删除按候选 `turn_id` 成对执行，禁止全表读入内存，也不能在批次边界留下孤立的一问或一答。
 
 ### 15.2 聊天与审计相互独立
 
@@ -881,7 +882,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 同一用户不同会话并发占用容量时，配额检查串行化且最终窗口不得超过上限。
 - 只有最近一个完整成功、失败或已停止轮次可以携带 `replaceTurnId`；文本与已提交图片资产均支持，旧轮次、生成中和并发替换返回 `409 chat_replace_conflict`。
 - 替换事务复用原轮次序号、删除旧幂等登记，且新请求上下文不包含被替换的旧轮次。
-- SQLite standalone 与 PostgreSQL performance 使用相同契约。
+- **历史截面（SQLite 模式，已于 2026-10-25 退役）。** SQLite standalone 与 PostgreSQL performance 使用相同契约；现行 PostgreSQL 单形态下契约不变。
 - 模型上下文只读取当前保留期内的 active checkpoint + recent suffix，并用行数、字节和请求体预算触发预压缩。
 - 上下文只包含完整成功轮次与至多一个尾部中断轮（§14.1，`failed`/`canceled` 同判据，需保留非空内容）；空内容中断轮、无提问配对或已被后续轮次覆盖的中断轮不进入上下文。
 - 清理按索引和游标推进，活跃会话只保留窗口内消息。
@@ -944,7 +945,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 4. 实现主进程 Chat Router、本机网关 client、内部元数据签名和 SSE 解析。
 5. 实现会话列表、Key / 模型选择、输入、发送、停止和普通文本流式展示。
 6. 实现 Markdown、代码、KaTeX、Mermaid、图片和动态虚拟列表。
-7. 完成 Mock AI、SQLite、PostgreSQL、网关使用记录、安全和浏览器验收。
+7. 完成 Mock AI、PostgreSQL、网关使用记录、安全和浏览器验收（原 SQLite 双模式验收为历史截面，已随 2026-10-25 存储收口退役）。
 
 ## 21. 后续规划
 
@@ -982,7 +983,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 6. 用户取消后不依赖已经断开的 SSE 再收到 canceled 事件，页面和存储各自收敛状态。
 7. System API 进程承载流式模型请求并维持 SQLite 单写者；主进程使用独立聊天代理池隔离长连接，避免占用普通 System API 准入槽。
 8. AI 问答明确作为平台内置客户端接入网关，聊天数据生命周期与网关审计生命周期各自独立。
-9. 高频聊天正文从业务库拆出：standalone 使用独立 SQLite，performance 使用独立 `juhe_chat` schema 和 PostgreSQL 日分区。
+9. 高频聊天正文从业务库拆出：**历史截面（2026-10-25 存储收口前双方言规划，standalone SQLite 文件形态已退役）**，现行使用独立 `juhe_chat` schema 和 PostgreSQL 日分区。
 10. 每用户当前保留窗口默认 2 GiB 容量门禁由日窗口增量维护；超限不阻断读取、停止与删除。
 
 以上修正不改变用户确认的产品方向，只移除会造成安全例外、孤立上下文、重复体系或不必要预设计的实现风险。

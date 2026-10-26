@@ -1,6 +1,6 @@
 # AI 账户短窗口热质量与精准切号设计
 
-> 当前状态：Node 实现与 Mock / SQLite / 隔离 Redis、PostgreSQL 证据已在本计划分层门禁中验证；最终代码收口、远端同步和真实账户探针仍待完成。生产部署与生产流量验证不在本次范围内。
+> 当前状态：Node 实现与 Mock / SQLite / 隔离 Redis、PostgreSQL 证据已在本计划分层门禁中验证（**历史截面（SQLite 模式，已于 2026-10-25 退役）**：其中 SQLite 分支证据为退役形态留存）；最终代码收口、远端同步和真实账户探针仍待完成。生产部署与生产流量验证不在本次范围内。
 >
 > 2026-07-22 多 Agent 复核修订稿：同层受控探索、整请求墙钟总预算（默认 270s handoff）、实例级运行态键与物理凭据去重、同层唯一候选最多一轮、生命周期 saga 闭环。
 >
@@ -654,7 +654,7 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 
 ### 7.6 本地单机形态恢复驱动（gateway 进程内，2026-10-08）
 
-§7.4 的生命周期闭环依赖一个后台恢复驱动按期推进到期状态（确认/金丝雀/退避）。在 Redis 共享运行态形态下该职责归 jobs 的 `account-circuit-recovery` 任务族；本地单机形态（SQLite + 无 Redis，memory 运行态）下该任务族 fail-closed disabled，而熔断运行态是 gateway 进程内事实——若 gateway 内无替补驱动，账户熔断后永久冻结直到进程重启（PLAN-20261008T113056000Z（已清理，git 历史可溯） 修复的缺口）。
+§7.4 的生命周期闭环依赖一个后台恢复驱动按期推进到期状态（确认/金丝雀/退避）。在 Redis 共享运行态形态下该职责归 jobs 的 `account-circuit-recovery` 任务族；**历史截面（SQLite 模式，已于 2026-10-25 退役）**：本地单机形态（SQLite + 无 Redis，memory 运行态）下该任务族 fail-closed disabled，而熔断运行态是 gateway 进程内事实——若 gateway 内无替补驱动，账户熔断后永久冻结直到进程重启（PLAN-20261008T113056000Z（已清理，git 历史可溯） 修复的缺口）。现行 Redis 为必填，恢复驱动由 jobs 任务族唯一承载。
 
 形态归属裁决：**谁拥有运行态，谁负责恢复**。运行态在 memory 驱动（`JUHE_AI_RUNTIME_STATE_DRIVER != "redis"`，即 runtime mode 自动推断的 standalone 默认形态）下归 gateway 进程所有，恢复驱动随 gateway 进程装配（supervisor 组件 `account-circuit-recovery`）；redis 驱动下运行态共享，恢复仍归 jobs，gateway 不装配——同进程不会出现双驱动重复探针（store 级 lease/generation/revision CAS 围栏兜底单 winner，但职责单一化）。这是运行态归属决定的依赖门禁，不是功能开关，无任何配置项。
 
@@ -675,7 +675,7 @@ key-model 能力熔断记忆（单进程内 `(凭据来源账户, Key 指纹, �
 2. **恢复驱动装配**：memory 形态（`JUHE_AI_RUNTIME_STATE_DRIVER != "redis"`）装配 supervisor 组件 `key-model-memory-recovery`：节拍 1s（对齐 `KeyModelRecoveryScanIntervalMs`）+ 初始延迟 5s + `schedulejitter` 抖动；每轮 `WithTimeout` 120s（runner 每 Sweep 的选中数受并发上限 32 收敛——batch 128 只约束 ListDue——32 探针并发执行且各受 30s 租约内硬超时，理论最坏约 30s，取 4× 余量覆盖调度毛刺）；单轮失败仅告警，组件只在进程 ctx 取消时退出。runner 内部契约（batch 128 / 并发 32 / 探针租约 45s 每 10s 续 / 探针超时 30s → unknown / 连续 3 次恢复成功 CLOSED）与 Redis 形态共享同一纯状态机。
 3. **探针执行链**（照抄 jobs `internal/keymodelrecovery` 适配契约；探针执行器为下沉共享包 `shared/platform/accounttest/exactkeyprobe`，两侧以包注释互指）：按 `state.CredentialSourceAccountID` 加载窄输入 → 账户行 `dispatch_revision` 与 `state.DispatchRevision` 不匹配（配置已变更）→ unknown 中性；账户加载失败 → unknown 中性；`ProbeExactKeyModel`（钉 `state.KeyFingerprint + state.FinalUpstreamModel + state.UpstreamEndpointMode`，保证"探测路由 == 熔断路由"）outcome 映射与 jobs `defaultProbe` 逐分支一致：`complete_success` → `complete_success`、`probe_task_failure` → `unknown`、其余（framing 中性/上游失败）→ `upstream_not_complete`。凭据密钥与 gateway 进程既有的业务凭据 secret 同源（`JUHE_AI_SECRET`，Key 指纹 HMAC 与 v1 封套同契约）。
 
-窄 InputLoader 职责边界（gateway 自己的单账户窄查询，SQLite/PG 双方言）：只取账户行凭据（解密 → API Key 重新封套 + HMAC 指纹，经下沉 `DirectInput.ToInput` 原语）+ base_url 解析 + 健康模型映射 + dispatch revision 围栏；**不做 J1 资格守卫**（调度谓词 / `next_health_check_at` / 输入版本 epoch）、**不做配额过滤**——恢复探针场景账户刚在服务流量。账户状态/有效期/冷却 fence/启用绑定由 `ToInput` 固有守卫 fail-closed：输入构造失败 → unknown 中性，不误治愈。已知限制：探针执行器首版仅支持 `api_key` 账户（OAuth 落 `key_model_credential_type_unsupported` → unknown 中性等待自然退避），扩大支持属产品决策另行评估。
+窄 InputLoader 职责边界（gateway 自己的单账户窄查询；历史双方言时期为 SQLite/PG 双方言，现行为 PostgreSQL 单形态）：只取账户行凭据（解密 → API Key 重新封套 + HMAC 指纹，经下沉 `DirectInput.ToInput` 原语）+ base_url 解析 + 健康模型映射 + dispatch revision 围栏；**不做 J1 资格守卫**（调度谓词 / `next_health_check_at` / 输入版本 epoch）、**不做配额过滤**——恢复探针场景账户刚在服务流量。账户状态/有效期/冷却 fence/启用绑定由 `ToInput` 固有守卫 fail-closed：输入构造失败 → unknown 中性，不误治愈。已知限制：探针执行器首版仅支持 `api_key` 账户（OAuth 落 `key_model_credential_type_unsupported` → unknown 中性等待自然退避），扩大支持属产品决策另行评估。
 
 双 owner 互斥裁决：redis 驱动下 key-model 运行态经 Redis 共享，恢复职责归 jobs `keymodelrecovery`，gateway 不装配本组件（`RuntimeStateDriver != "redis"` 是运行态归属决定的依赖门禁，非功能开关，无配置项），同进程不会双驱动重复探针。本组件与主链 `account-circuit-recovery`（本节上文）平行，同属 memory 形态的 gateway 进程内恢复族，互不管辖对方的状态面。
 

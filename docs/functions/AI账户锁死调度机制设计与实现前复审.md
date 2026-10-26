@@ -251,7 +251,7 @@ DEAD_CONFIRMED
 
 持久配置需要贯穿：
 
-- SQLite / PostgreSQL 账号 schema 与迁移；
+- PostgreSQL 账号 schema 与迁移（历史双方言时期含 SQLite schema 对照，已随 2026-10-25 存储收口退役）；
 - domain 类型、摘要、详情和 update delta；
 - 创建、更新、导入、导出、复制、批量编辑和操作日志；
 - 账号列表 / 高级详情 API 及权限矩阵；

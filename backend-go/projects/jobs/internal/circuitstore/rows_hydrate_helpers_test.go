@@ -474,7 +474,7 @@ func TestComposeEntrySynthesis(t *testing.T) {
 	if entry.effectiveStatus != "active" || !entry.effectiveAvailable {
 		t.Fatalf("active 可调度账户分类不符: %+v", entry)
 	}
-	if entry.currentConcurrency != 4 || entry.providerCode != "openai" || entry.priority != 5 {
+	if entry.currentConcurrency != 4 || entry.priority != 5 {
 		t.Fatalf("投影列输入不符: %+v", entry)
 	}
 	if entry.payload["effectiveAvailability"] == nil || entry.payload["availabilityPresentation"] == nil {

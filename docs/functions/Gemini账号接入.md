@@ -396,7 +396,7 @@ Gemini 账户测试必须复用真实网关链路。
 - Gemini OpenAI Chat 档案使用 OpenAI usage semantic；普通 Gemini OpenAI Chat 账号可通过显式 `responses -> chat_completions` 模型别名启用 Responses-to-Chat bridge。Gemini native 到 Chat bridge 仅在后续混合供应商账户命中时生效，并在下游还原 Gemini JSON / SSE。
 - mockai 覆盖 JSON、SSE、countTokens、模型列表、Gemini error object、流内坏 chunk、usage。
 - 新增 Google OAuth 协议契约、Code Assist runtime、token refresh、Interactions 定向回归，以及真实 Gemini OpenAI Chat E2E 和真实 `gemini-cli` E2E；真实 E2E 仍需用户提供可用账号和网络条件，不能用 mock 结果替代。
-- 更新导入协议、接口契约、SQLite 存储说明、模型目录清洗、模型价格和测试说明。
+- 更新导入协议、接口契约、[PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)（原 SQLite 存储说明，已随 2026-10-25 存储收口退役）、模型目录清洗、模型价格和测试说明。
 
 ## 验证要求
 

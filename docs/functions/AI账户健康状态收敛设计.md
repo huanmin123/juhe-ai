@@ -61,7 +61,7 @@
 
 ## 6. 存储契约
 
-SQLite 当前 schema 和 PostgreSQL migration 均包含：
+PostgreSQL migration（历史双方言时期另有 SQLite 当前 schema，已随 2026-10-25 存储收口退役）均包含：
 
 ```text
 accounts.health_check_failure_started_at
@@ -79,7 +79,7 @@ accounts.health_check_failure_started_at
 
 ## 7. 并发和原子性
 
-- SQLite 写入在业务事务中读取并更新账户行。
+- 写入在业务事务中读取并更新账户行（历史双方言时期该条款按 SQLite 单文件库表述；现行为 PostgreSQL 单形态）。
 - PostgreSQL 使用 `SELECT ... FOR UPDATE` 锁定账户行，并在同一事务内计算失败窗口和写入终态。
 - 健康检查写回继续使用 `config_revision` 和真实成功时间守卫；配置已变化或检查期间出现更新成功信号时，旧失败不得覆盖新状态。
 - 终态转换 SQL 同时校验当前状态，已被人工停用或其他任务改变的账户不得被迟到结果改写。
@@ -87,7 +87,7 @@ accounts.health_check_failure_started_at
 ## 8. 验证
 
 - `account-pending-test-regression`：完整 HTTP / 协议失败中性、独立 transport 失败的 1 小时复检与 24 小时终态、重新检查和异常恢复。
-- `account-health-check-regression`：SQLite 字段、PostgreSQL 行锁和双存储写入契约。
+- `account-health-check-regression`：PostgreSQL 行锁与写入契约（历史双方言时期含 SQLite 字段与双存储写入契约对照，已随 2026-10-25 存储收口退役）。
 - `cooldown-retest-recovery-regression`：长期阶段每小时复检、transport 与中性证据各自推进 7 天终态、本地任务失败不触发终态、显式来源恢复边界及终态恢复。
 - `disabled-account-state-guard-regression`：待检查和异常自有账户均可停用，异常恢复不直接激活。
 - `account-status-formatters-regression`：菜单名称、重新检查资格、异常/待检查停用入口和提示文案。

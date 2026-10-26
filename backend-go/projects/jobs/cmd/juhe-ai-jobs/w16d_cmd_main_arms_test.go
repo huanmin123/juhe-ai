@@ -7,21 +7,18 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
-
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 )
 
 // w16dClosedPortURL 返回一个格式合法但端口不可达的 postgres 连接串。
@@ -186,22 +183,13 @@ func mergeEnv(base, extra map[string]string) map[string]string {
 
 // TestW16DMainProjectionWarnArm 驱动「J1 开启 + 投影 env 非法」的装配降级
 // 臂：wireHealthOutcomeProjector 因 poll env 低于下限装配失败，main 降级
-// warn 不阻塞，进程正常服务后干净停机。PG 唯一形态：F1/J1 指向共享覆盖库
-// （w13g8FullOwnerEnv 内自愈 fixture），连接串不落日志。
+// warn 不阻塞，进程正常服务后干净停机。PG 唯一形态：F1/J1 指向隔离测试库
+// （w13g8FullOwnerEnv 内 kit 夹具），连接串不落日志。
 func TestW16DMainProjectionWarnArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("main e2e skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16d: 覆盖库连接串不可用")
-	}
 	env := w13g8FullOwnerEnv(t)
-	// 探针型 e2e 护栏（w14q 同款）：due 候选超过个位数护栏即跳过。
-	if db, err := sql.Open("pgx", pgURL); err == nil {
-		w14qDueCandidateGuard(t, db)
-		_ = db.Close()
-	}
 	// poll 低于下界 100ms → 投影器装配失败 → main 降级 warn。
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS"] = "1"
 	port := wgFreePort(t)
@@ -222,10 +210,7 @@ func TestW16DPGWithLeaseArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门控臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16d: 覆盖库连接串不可用")
-	}
+	_, pgURL := wgCmdKitDB(t)
 	store, err := taskruns.OpenStore(taskruns.StoreConfig{
 		Mode:                 taskruns.ModePostgres,
 		PostgresURL:          pgURL,
@@ -233,14 +218,13 @@ func TestW16DPGWithLeaseArms(t *testing.T) {
 		PostgresMaxIdleConns: 2,
 	})
 	if err != nil {
-		t.Skipf("w16d: 打开 taskruns PG 存储失败（跳过）: %v", err)
+		t.Fatalf("打开 taskruns PG 存储失败: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Skipf("w16d: taskruns PG schema 初始化失败（跳过）: %v", err)
+		t.Fatalf("taskruns PG schema 初始化失败: %v", err)
 	}
-	assembly := newWorkerAssembly(workerConfig{ InstanceID: "w16d-lease",
-	}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{InstanceID: "w16d-lease"}, slog.Default())
 	assembly.taskRunsStore = store
 	// 唯一 jobName：共享覆盖库上他人（历史 e2e 子进程）可能持有同名未过期
 	// 调度租约；隔离键空间保证本测试的 busy/skip 判定确定。

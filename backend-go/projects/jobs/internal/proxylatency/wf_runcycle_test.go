@@ -11,9 +11,8 @@ import (
 // 幂等语义。
 
 // wfCycleDraft 构造一个可用 store 正常签发的输入草稿。IssuedAt/ExpiresAt
-// 截断到微秒，与 PG timestamptz 微秒存储精度对齐（SQLite TEXT 臂无精度差异；
-// 纳秒精度会使 LoadCommittedOutcome/VerifyExecutionInput 的 issued_at 逐位
-// Equal 校验在 PG 臂上 fail closed——生产臂缺陷，另列报告，不在本切片修复）。
+// 截断到微秒，与 PG timestamptz 微秒存储精度对齐（SQLite TEXT 臂无精度差异），
+// 使 draft 时间经 DB 往返保持稳定。
 func wfCycleDraft(proxyID string) InputDraft {
 	return InputDraft{
 		ProxyID: proxyID, ConfigRevision: wfProjRevision, Trigger: TriggerPeriodic,

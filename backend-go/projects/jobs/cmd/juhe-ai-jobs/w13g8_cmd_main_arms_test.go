@@ -16,10 +16,13 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,11 +31,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
-
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
 // w13g8ChildMode / w13g8ChildArgs 是子进程协议 env：子进程检测到 mode 后
@@ -71,62 +69,36 @@ func w13g8RunMainChild(argsJSON string) {
 	os.Exit(0)
 }
 
-// w13g8EnsurePGMainFixture 自愈共享覆盖库上 main() 装配链需要的 bootstrap
-// 面（w14q 预置序列的子集，全部加法幂等）：juhe_jobs schema、w14j 业务/
-// 任务形状、sys_admin 种子、F4 operation_logs 审计面（J3a management
-// CheckContract 的只读契约）、J3a/jobs 侧预 provision（w16j）。连接串不落
-// 日志；失败按各 helper 既有约定降级（记录或 skip）。
-func w13g8EnsurePGMainFixture(t *testing.T, pgURL string) {
+// w13g8FullOwnerEnv 构造 owner 模式中深度臂基座：PG 唯一形态下 F1 与
+// worker/J1（store/input URL 缺省回退 JUHE_AI_POSTGRES_URL）全部指向
+// wgCmdKitDB 隔离测试库（bootstrap 面由 kit 夹具预置），使 main() 越过 F1
+// 装配前置、命中各场景的目标失败分支（原 SQLite 路径族 env 已退役不再被
+// 读取）。PG 不可达由 pgtestkit 显式 Fatal。
+func w13g8FullOwnerEnv(t *testing.T) map[string]string {
 	t.Helper()
-	db, err := sql.Open("pgx", pgURL)
+	db, pgURL := wgCmdKitDB(t)
+	// 子进程 main() 装配链的外部 bootstrap 前置（w14q/w16i 同款）：J2
+	// accountbalance EnsureSchema（CheckSchema 只读）与 F4 operation_logs
+	// 审计面（J3a management CheckContract 只读契约）。
+	balanceStore, err := accountbalance.OpenStore(accountbalance.StoreConfig{Mode: accountbalance.StorePostgres, PostgresURL: pgURL})
 	if err != nil {
-		t.Skipf("w13g8: 打开覆盖库失败: %v", err)
+		t.Fatalf("打开 J2 store 做 schema bootstrap: %v", err)
 	}
-	defer func() { _ = db.Close() }()
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("w13g8: 覆盖库不可达: %v", err)
+	if err := balanceStore.EnsureSchema(context.Background()); err != nil {
+		_ = balanceStore.Close()
+		t.Fatalf("J2 schema bootstrap: %v", err)
 	}
-	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
-		t.Skipf("w13g8: 建立 juhe_jobs schema 失败: %v", err)
-	}
-	for _, statement := range w14jPGSeedStatements() {
-		if _, err := db.Exec(statement); err != nil {
-			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "multiple primary keys") {
-				continue
-			}
-			t.Logf("w13g8 pg seed 跳过: %v", err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts
-		(id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w13g8-test-seed-not-a-login-hash', $1, $1)
-		ON CONFLICT (id) DO NOTHING`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Skipf("w13g8: sys_admin seed 失败（共享库形状漂移，跳过）: %v", err)
+	if err := balanceStore.Close(); err != nil {
+		t.Logf("w13g8: J2 bootstrap store 关闭: %v", err)
 	}
 	for _, statement := range strings.Split(w14qOperationLogsSchema, ";") {
 		if statement = strings.TrimSpace(statement); statement == "" {
 			continue
 		}
 		if _, err := db.Exec(statement); err != nil {
-			t.Logf("w13g8 F4 seed 跳过: %v", err)
+			t.Fatalf("w13g8 F4 seed 失败: %v", err)
 		}
 	}
-	w16jEnsurePGJobsFixture(t, pgURL)
-}
-
-// w13g8FullOwnerEnv 构造 owner 模式中深度臂基座：PG 唯一形态下 F1 与
-// worker/J1（store/input URL 缺省回退 JUHE_AI_POSTGRES_URL）全部指向共享
-// 覆盖库，使 main() 越过 F1 装配前置、命中各场景的目标失败分支（原 SQLite
-// 路径族 env 已退役不再被读取）。覆盖库门禁：连接串不可用即 skip。
-func w13g8FullOwnerEnv(t *testing.T) map[string]string {
-	t.Helper()
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w13g8: 覆盖库连接串不可用")
-	}
-	w13g8EnsurePGMainFixture(t, pgURL)
 	env := wgOwnerModeMainEnv(t, t.TempDir())
 	env["JUHE_AI_RUNTIME_LOG_POSTGRES_URL"] = pgURL
 	env["JUHE_AI_POSTGRES_URL"] = pgURL

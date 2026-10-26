@@ -1,5 +1,5 @@
 // accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）jobs
-// 侧测试：PostgreSQL 方言复用 w12c 覆盖库连接串（不可用时跳过），在独立
+// 侧测试：PostgreSQL 方言在 wgCmdKitDB 隔离 PG 测试库的独立
 // scratch schema 上验证真实 PG 判定（含默认值 `'chat'::text` 渲染），不触碰
 // juhe_business 数据。原 SQLite 方言形状矩阵与 AtStartup 包装臂已随 sqlite
 // 存储形态退役删除（生产校验恒走 PG）。
@@ -7,11 +7,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // capabilityDomainCorrectColumn 是与 maintenance DDL 同构的正确列声明。
@@ -23,20 +21,8 @@ func TestCapabilityDomainSchemaPostgresArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short 模式跳过真实 PG")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w12c: 覆盖库连接串不可用")
-	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("打开覆盖库失败（跳过）: %v", err)
-	}
-	defer db.Close()
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("覆盖库不可达（跳过）: %v", err)
-	}
+	db, pgURL := wgCmdKitDB(t)
+	_ = pgURL
 
 	schema := "w12c_capdom_probe"
 	// defer db.Close() 先于 t.Cleanup 执行，清理必须走测试体内的显式 DROP。

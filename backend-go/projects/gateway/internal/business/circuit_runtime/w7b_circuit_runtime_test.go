@@ -31,17 +31,24 @@ func w7bGate() OwnerGate {
 	return OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true}
 }
 
-// w7bRealRedisStore 以隔离命名空间（dev:w1cover:circuitrt，完整键前缀
-// juhe-ai:dev:w1cover:circuitrt:*）驱动真实 dev Redis；env 缺失或不可达时
-// 登记证据并跳过。用例结束后清理命名空间键，保证可重放。
+// w7bRealRedisStore 以每测试唯一命名空间（完整键前缀
+// juhe-ai:dev:w7b-real:<sanitized test name>:*）驱动真实 dev Redis；env 缺失
+// 或不可达时登记证据并跳过。命名空间按测试名隔离且用例前后各清理一次命名
+// 空间键，不与其他测试或历史运行共享固定前缀。
 func w7bRealRedisStore(t *testing.T, clock *w7bClock) *Store {
 	t.Helper()
 	url := w7bSharedEnvRedisURL(t)
-	store, err := New(Config{URL: url, Namespace: "dev:w1cover:circuitrt", Retention: time.Minute}, w7bGate())
+	namespace := "dev:w7b-real:" + strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, t.Name())
+	store, err := New(Config{URL: url, Namespace: namespace, Retention: time.Minute}, w7bGate())
 	if err != nil {
 		t.Skipf("真实 Redis store 构建失败，跳过: %v", err)
 	}
-	pattern := "juhe-ai:dev:w1cover:circuitrt:*"
+	pattern := "juhe-ai:" + namespace + ":*"
 	w7bScanDelete(store.client.client, pattern)
 	reader := DispatchRevisionReaderFunc(func(_ context.Context, _ GatewayAccountCircuitDispatchRevisionPageInput) (GatewayAccountCircuitDispatchRevisionPage, error) {
 		return GatewayAccountCircuitDispatchRevisionPage{}, nil
@@ -77,10 +84,10 @@ func w7bScanDelete(client *goredis.Client, pattern string) {
 }
 
 // w7bSharedEnvRedisURL 读取开发环境共享 env 的缓存 Redis 地址；
-// 支持 JUHE_AI_W1COVER_REDIS_URL 覆盖。值只用于连接，不写入日志或报告。
+// 支持 JUHE_AI_W7B_REAL_REDIS_URL 覆盖。值只用于连接，不写入日志或报告。
 func w7bSharedEnvRedisURL(t *testing.T) string {
 	t.Helper()
-	if override := os.Getenv("JUHE_AI_W1COVER_REDIS_URL"); override != "" {
+	if override := os.Getenv("JUHE_AI_W7B_REAL_REDIS_URL"); override != "" {
 		return override
 	}
 	raw, err := os.ReadFile(`F:\sub2api-lite\.local\project-resources\dev\env\shared.env`)

@@ -62,7 +62,7 @@ type wfCommitter struct {
 	t     *testing.T
 	store *Store
 	owner OwnerLease
-	// last 保存最近一次 IssueInput 结果，供 LoadCommittedOutcome 等读取方复用。
+	// last 保存最近一次 IssueInput 结果，供后续断言复用。
 	last IssuedInput
 }
 

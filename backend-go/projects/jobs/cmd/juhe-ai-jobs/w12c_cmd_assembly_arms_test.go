@@ -8,12 +8,12 @@
 //     同上，normalizeBalanceConfigJSON 恒成功。
 //
 // 依赖壁垒登记（本波未达 95% 的主因，非不可达但缺注入点）：
-//   - main.go main()（47.9%）：J1 PostgreSQL 直连输入、model-recovery、J2
-//     account-balance、J3a 三库装配的成功分支要求共享覆盖库存在生产形状的
-//     juhe_business/juhe_jobs schema 与网关 Redis 键空间；w1cover 覆盖库不
-//     承载该 schema（并发代理共享），子进程 e2e 在 fail-closed 下无法进入
-//     这些分支。fail() 的 os.Exit 路径无进程内注入点（wg TestMain 协议场景
-//     固定，本波不改既有测试文件），仅能以子进程退出码观察。
+//   - main.go main()（47.9%，历史登记，壁垒已消除）：J1 PostgreSQL 直连
+//     输入、model-recovery、J2 account-balance、J3a 三库装配的成功分支彼时
+//     要求共享覆盖库存在生产形状的 juhe_business/juhe_jobs schema；2026-10-26
+//     起 wgCmdKitDB 在每测试独立库上按生产形状预置该契约面，子进程 e2e
+//     已可进入这些分支。fail() 的 os.Exit 路径无进程内注入点（wg TestMain
+//     协议场景固定，本波不改既有测试文件），仅能以子进程退出码观察。
 //   - main.go jobsHTTPHandler（41.3%）：/account-balance/manual 桥的
 //     RunManual 成功/租约冲突/stale 分支需要可运行的 J2 服务存储面。
 //   - worker_probe_jobs.go speedFirstProbeFunc（31.8%）：完整分级诊断需要
@@ -234,4 +234,3 @@ CREATE TABLE juhe_business.system_settings (
 		t.Fatalf("非法值应回落默认 10: %d", got)
 	}
 }
-

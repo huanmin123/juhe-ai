@@ -2,7 +2,9 @@
 
 > **状态：已实施（2026-10-10），实现与本文档一致；后续行为变更先改本文。** 本文是"特供"能力的唯一设计契约；实现与本文冲突时按本文回正，或先修订本文。上位文档：[AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md)（状态机与恢复出口矩阵权威，本文不重复其状态机定义，只叠加特供覆盖档）。修订记录见 §13。
 >
-> 实现归属（现行）：jobs 冷却复测在 `backend-go/projects/jobs/internal/accounthealth/`（调度决策 `scheduler.go`、PG/SQLite 双 reader `direct_input_reader*.go`、签名输入 `signed_input.go`）；共享探针契约在 `backend-go/shared/platform/accounttest/exactkeyprobe/types.go`；调度 jitter 在 `backend-go/shared/platform/schedulejitter/jitter.go`；账户补丁与管理面在 `backend-go/projects/gateway/internal/accounts/`；系统账户限制在 `backend-go/projects/gateway/internal/authsys/`；schema 在 `backend-go/projects/maintenance/internal/schema/`。
+> 实现归属（现行）：jobs 冷却复测在 `backend-go/projects/jobs/internal/accounthealth/`（调度决策 `scheduler.go`、签名输入 `signed_input.go`）；共享探针契约在 `backend-go/shared/platform/accounttest/exactkeyprobe/types.go`；调度 jitter 在 `backend-go/shared/platform/schedulejitter/jitter.go`；账户补丁与管理面在 `backend-go/projects/gateway/internal/accounts/`；系统账户限制在 `backend-go/projects/gateway/internal/authsys/`；schema 在 `backend-go/projects/maintenance/internal/schema/`。
+>
+> **历史截面（SQLite 模式，已于 2026-10-25 退役）。** 本文实施落定于 PG/SQLite 双方言时期：文中"PG/SQLite 双 reader"、"SQLite 单写者事务"、"sqlite_schema_*.go / direct_input_reader_sqlite.go"、"SQLite fresh DDL + ensure 守卫"等双方言表述均为历史截面；现行唯一存储形态为 PostgreSQL + Redis，SQLite reader/schema 文件已物理删除（见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)），现行 reader 仅 `direct_input_reader_pg.go` 一条 PostgreSQL 直读路径，排序、名额与围栏语义不变。
 
 ## 1. 背景与目标
 
@@ -66,7 +68,7 @@
 | 失败初始退避 | 3s 基准（jitter 后 1.5–4.5s） | 不变 | 不改 | 首轮复测已经够快 |
 | 失败指数退避 | 3s 起每轮 ×2 | 不变 | 不改 | 特供只改封顶与慢速道 |
 | 中性顺延基数 | 30s 基准（jitter 后 15–45s） | 不变 | 不改 | 30s 起步已足够快，收益全在封顶 |
-| 候补扫描排序 | 冷却类内按 `cooldown_until` ASC | 冷却类内特供账户**最优先层**，层内仍按 `cooldown_until` ASC | `directInputCandidatesSQL` ORDER BY（PG/SQLite 双 reader 同步） | 大积压 + LIMIT 下特供不被饿死；名额大小不改变排序规则，普通账户受影响的边界与实际候选数见 §10 第 5 项 |
+| 候补扫描排序 | 冷却类内按 `cooldown_until` ASC | 冷却类内特供账户**最优先层**，层内仍按 `cooldown_until` ASC | `directInputCandidatesSQL` ORDER BY（历史双方言时期 PG/SQLite 双 reader 同步，现行仅 PostgreSQL reader） | 大积压 + LIMIT 下特供不被饿死；名额大小不改变排序规则，普通账户受影响的边界与实际候选数见 §10 第 5 项 |
 | `pending_test` 激活 | 全局第一优先类，5 分钟失败重试，24h 终态 | 不变 | 不改 | §3.9 |
 | active 常规巡检 | 全局设置（默认 1 小时） | 不变 | 不覆盖 `HealthIntervalMS` | 特供管"恢复快"，不管"巡检勤"，控制探针成本 |
 | jitter | 全局被动 jitter | 不变 | 不改 | §4 时间语义边界；特供账户 due 由各自冷却时点天然错开，全局被动 jitter 已提供非零偏移——该决策与名额数无关，不因名额调大而改变 |
@@ -151,7 +153,7 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 -- 按 status 过滤会被"先停用再新设"绕过）
 ```
 
-- **校验时序**：设置 `expeditedRecoveryEnabled = true` 的补丁事务内，先读归属行并加写锁（PG `LIMIT 1 FOR UPDATE`，照 `assertAiAccountCreationLimit` 的 `s.forUpdate()` 双方言模式；SQLite 经单写者事务天然串行），再执行上述计数；`COALESCE(expedited_account_limit, 3)` 为上限，`0` 直接拒绝新增/重新启用；计数 ≥ 上限时整体回滚并返回上限错误。创建通道必须在同一事务内计入本次待插入行（或等价地使用 `当前计数 + 本次请求增量`），不得先校验后插入造成超卖；已是特供的补丁幂等更新不重复占用名额。
+- **校验时序**：设置 `expeditedRecoveryEnabled = true` 的补丁事务内，先读归属行并加写锁（PG `LIMIT 1 FOR UPDATE`，照 `assertAiAccountCreationLimit` 的 `s.forUpdate()` 模式；历史双方言时期 SQLite 经单写者事务天然串行，该分支已退役），再执行上述计数；`COALESCE(expedited_account_limit, 3)` 为上限，`0` 直接拒绝新增/重新启用；计数 ≥ 上限时整体回滚并返回上限错误。创建通道必须在同一事务内计入本次待插入行（或等价地使用 `当前计数 + 本次请求增量`），不得先校验后插入造成超卖；已是特供的补丁幂等更新不重复占用名额。
 - **上限下调不回溯**：管理员下调后，已设特供的账户保留标记，只是不能再新增；当上限为 `0` 时也按此规则处理，表示禁止新增/重新启用，不强制清除存量标记。**列表必须可见地展示"已超限"状态**（归属人上限 < 当前特供计数时，账户列表对双方都展示超限标记），不得静默。
 - 取消特供不校验、无条件允许。
 

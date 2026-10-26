@@ -13,33 +13,26 @@ import (
 	"time"
 )
 
-func w14mOpenFailCoverDB(t *testing.T) *sql.DB {
+func w14mOpenFailCoverDB(t *testing.T, url string) *sql.DB {
 	t.Helper()
 	w14mSharedFailpoint() // 确保驱动已注册
-	url := w11eCoverPostgresURL(t)
 	db, err := sql.Open("w14mfailpg", url)
 	if err != nil {
-		t.Fatalf("打开注入覆盖库失败: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		t.Skipf("注入覆盖库不可达（跳过）: %v", err)
+		t.Fatalf("打开注入驱动句柄失败: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close(); w14mPgFP.disarm() })
 	return db
 }
 
 func TestW14MCheckBusinessPostgresSchemaRowErrorArms(t *testing.T) {
-	realDB := w11eOpenCoverDB(t)
+	realDB, coverURL := w11eOpenKitDB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
 	defer cancel()
 
 	schema := "w14m_bs_pg"
 	w11eRecreateSchema(t, realDB, schema, w11eNewPlan())
 
-	failDB := w14mOpenFailCoverDB(t)
+	failDB := w14mOpenFailCoverDB(t, coverURL)
 
 	cases := []struct {
 		name    string

@@ -1,12 +1,13 @@
 package accounthealth
 
 // w16f_reader_pg_test.go 波次 w16f 第四批：PG direct input 读链未覆盖臂
-// （w1cover 覆盖库，门禁复用 w9hPgDB，不可达即 t.Skip）：
+// （建库走 w9hOpenKitDB 的 pgtestkit 隔离 PG 测试库，原 w1cover 覆盖库门禁
+// 已退役，PG 不可达显式 Fatal；fresh 库随测试结束删除，无需行级清理）：
 //   - scanDirectCandidate 的 cooldown fence 构造臂与来源 revision 附加臂；
 //   - load() 的配额校验错误传播臂、配额耗尽跳过臂、LoadAccount 失败隔离臂；
 //   - authorizationQuotaEligible 的 team grant limits 解析失败臂；
 //   - loadDirectSchedule 各设置项的无效值臂（回滚事务内注入，不落库）。
-// 数据全部使用 w16f- 前缀 ID，t.Cleanup 清理；连接串永不进入日志或断言。
+// 连接串永不进入日志或断言。
 
 import (
 	"context"
@@ -29,34 +30,6 @@ func w16fCredentials(t *testing.T, plaintext string) string {
 		t.Fatal(err)
 	}
 	return envelope
-}
-
-// w16fCleanupJobsRows 清理本文件产生的全部 fixture 行。
-func w16fCleanupJobsRows(t *testing.T, db *sql.DB) {
-	t.Helper()
-	statements := []string{
-		`DELETE FROM juhe_jobs.account_health_outcomes WHERE outcome_id LIKE 'w16f-%' OR account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_jobs.account_health_current_state WHERE account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_jobs.account_health_direct_input_suppressions WHERE account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_jobs.account_health_key_cursors WHERE account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_jobs.account_health_owner_leases WHERE owner_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.account_health_projection_receipts WHERE outcome_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.account_health_projection_cursors WHERE consumer_key LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.account_circuit_outbox WHERE account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.group_accounts WHERE account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.account_health_jobs_input_versions WHERE account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.resource_authorization_grants WHERE id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.group_accounts WHERE account_id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.accounts WHERE id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.resource_authorizations WHERE id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_business.system_teams WHERE id LIKE 'w16f-%'`,
-		`DELETE FROM juhe_stats.usage_stats_totals WHERE scope_id LIKE 'w16f-%'`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Logf("w16f cleanup: %v", err)
-		}
-	}
 }
 
 // w16fSeedSettings 幂等写入读链所需的 canonical settings。
@@ -99,7 +72,7 @@ func w16fSeedAuthorizationChain(t *testing.T, db *sql.DB) {
 // TestW16fReaderPGSettingArms 在回滚事务内注入无效 settings，驱动
 // loadDirectSchedule 各设置项的无效值臂。
 func TestW16fReaderPGSettingArms(t *testing.T) {
-	db := w9hPgDB(t)
+	db, _ := w9hOpenKitDB(t)
 	ctx := context.Background()
 	base := map[string]string{
 		"accountHealthCheckIntervalHours":      "24",
@@ -138,10 +111,8 @@ func TestW16fReaderPGSettingArms(t *testing.T) {
 // TestW16fReaderPGScanQuotaArms 覆盖读链的 cooldown fence 扫描、来源
 // revision 附加、配额错误/耗尽、team grant 解析与 LoadAccount 隔离臂。
 func TestW16fReaderPGScanQuotaArms(t *testing.T) {
-	db := w9hPgDB(t)
+	db, _ := w9hOpenKitDB(t)
 	// 先清一次历史遗留（上一轮失败可能留下 FK 顺序导致未清净的行）。
-	w16fCleanupJobsRows(t, db)
-	t.Cleanup(func() { w16fCleanupJobsRows(t, db) })
 	w16fSeedSettings(t, db)
 	now := func() time.Time { return time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC) }
 
@@ -245,9 +216,8 @@ func TestW16fReaderPGScanQuotaArms(t *testing.T) {
 // TestW16fStorePGLeaseNoRowsArm 覆盖 PG 租约未到期时 acquire 的
 // ErrNoRows → (false, nil) 臂。
 func TestW16fStorePGLeaseNoRowsArm(t *testing.T) {
-	db := w9hPgDB(t)
-	t.Cleanup(func() { w16fCleanupJobsRows(t, db) })
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w9hPgDSN(t)})
+	_, dsn := w9hOpenKitDB(t)
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatalf("open pg store: %v", err)
 	}
@@ -271,8 +241,7 @@ func TestW16fStorePGLeaseNoRowsArm(t *testing.T) {
 // TestW16fPGDispatchFamilyChildLockArm 覆盖 PG 家族推进的授权实例子锁臂
 // （advanceDispatchRevisionFamily 1177-1181）。
 func TestW16fPGDispatchFamilyChildLockArm(t *testing.T) {
-	db := w9hPgDB(t)
-	t.Cleanup(func() { w16fCleanupJobsRows(t, db) })
+	db, dsn := w9hOpenKitDB(t)
 	w9hSeedBusinessAccount(t, db, "w16f-pg-root", "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json", sql.NullString{}, sql.NullString{})
 	w9hSeedBusinessAccount(t, db, "w16f-pg-inst", "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json", sql.NullString{}, sql.NullString{})
 	w9hMustExec(t, db, `UPDATE juhe_business.accounts SET authorization_instance_source_account_id = 'w16f-pg-root' WHERE id = 'w16f-pg-inst'`)
@@ -280,7 +249,7 @@ func TestW16fPGDispatchFamilyChildLockArm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jobsStore, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w9hPgDSN(t)})
+	jobsStore, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatalf("open pg store: %v", err)
 	}

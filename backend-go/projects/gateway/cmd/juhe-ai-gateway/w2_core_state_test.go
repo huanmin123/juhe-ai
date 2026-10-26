@@ -521,12 +521,12 @@ func TestW2AAPIKeyRotationNilContextGuard(t *testing.T) {
 	defer func() { _ = counter.client.Close() }()
 	// ctx 为 nil 且 modulo > 0：63-65 行把 nil 换成 context.Background()，
 	// 随后脚本执行在拒连客户端上失败（68-73 行错误出口）。
-	_, err := counter.NextIndex(nil, "w2a-acc", "juhe-ai:dev:w1cover:rot", 5)
+	_, err := counter.NextIndex(nil, "w2a-acc", "juhe-ai:dev:w2a-rot", 5)
 	if err == nil {
 		t.Fatalf("NextIndex with nil ctx on refused client must fail")
 	}
 	// modulo <= 0 的直通臂（57-59 行）保持既有覆盖。
-	if index, err := counter.NextIndex(context.Background(), "w2a-acc", "juhe-ai:dev:w1cover:rot", 0); err != nil || index != 0 {
+	if index, err := counter.NextIndex(context.Background(), "w2a-acc", "juhe-ai:dev:w2a-rot", 0); err != nil || index != 0 {
 		t.Fatalf("modulo<=0 must return 0,nil, got %d,%v", index, err)
 	}
 }
@@ -539,7 +539,7 @@ func TestW2AAPIKeyRotationNilContextGuard(t *testing.T) {
 func TestW2ATurnRetryRedisMarshalFailureAndNilNamespace(t *testing.T) {
 	client := w2aRefusedRedisClient()
 	defer func() { _ = client.Close() }()
-	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:dev:w1cover")
+	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:dev:w2a-turnretry")
 	if err != nil || store == nil {
 		t.Fatalf("build store: %v,%v", store, err)
 	}
@@ -748,7 +748,7 @@ func TestW2AQuotaRecoveryWeeklyScheduleRead(t *testing.T) {
 
 // w2aErrorPolicyBridgeViews 建一个以同名视图承载 juhe_business.accounts 的
 // pgtestkit 隔离 PG 库：SELECT 可读，UPDATE 触发 "cannot update view" 错误
-//（原 sqlite 视图夹具随存储形态退役重钉 PG）。
+// （原 sqlite 视图夹具随存储形态退役重钉 PG）。
 func w2aErrorPolicyBridgeViews(t *testing.T, expiresAt string) *sql.DB {
 	t.Helper()
 	db := newChainFixturePGDatabase(t)
@@ -983,7 +983,7 @@ func TestW2AClientIPAvoidanceOrderError(t *testing.T) {
 	avoidance, err := gatewayclientip.NewAvoidance(gatewayclientip.AvoidanceOptions{
 		RuntimeStateDriver: "redis",
 		StateRedisURL:      "redis://127.0.0.1:1",
-		RedisNamespace:     "juhe-ai:dev:w1cover",
+		RedisNamespace:     "juhe-ai:dev:w2a-avoidance",
 	})
 	if err != nil {
 		t.Fatalf("build avoidance: %v", err)
@@ -1222,7 +1222,7 @@ func TestW2AComposeKeyModelSelectError(t *testing.T) {
 	cfg := runtimeConfig{
 		RedisCacheURL:                 stateURL,
 		RedisStateURL:                 stateURL,
-		RedisNamespace:                "juhe-ai:dev:w1cover:" + strings.Repeat("w2a", 30),
+		RedisNamespace:                "juhe-ai:dev:w2a-oversized:" + strings.Repeat("w2a", 30),
 		Secret:                        "w2a-compose-secret",
 		DispatchAccountCandidateLimit: 20,
 	}

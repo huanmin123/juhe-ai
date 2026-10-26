@@ -14,13 +14,14 @@ package statsagg
 //     生产的 (created_at, id)）；juhe_business 两表只保留授权链查找消费的
 //     列，FK/其余 NOT NULL 不复刻；usage_stats 表族的
 //     account_list_availability_* 触发器族不复刻（依赖 juhe_business 函数，
-//     与聚合/窗口刷新写入语义无关，共享 cover 库臂由 w10c_pg_gate 覆盖）。
+//     与聚合/窗口刷新写入语义无关；原共享 cover 库上的函数族自愈 seed 已随
+//     w10c_pg_gate 迁入本 kit 一并退役）。
 //   - 组A 迁移面之外的保留项（本切片不动）：组B（SQLite-only 生产臂测试：
 //     配额全量重建、SQLite standalone 镜像链、单写者并发竞争等，随生产
 //     sqlite 臂删除批次退役，各文件注释披露）；scripted 假驱动（w13g5 注入
-//     族，包装 modernc.org/sqlite 的错误注入机制不动）；env-gated 共享
-//     cover 库门禁（w10c_pg_gate / w14j / authorization_write_pg，按 PLAN
-//     §4.2 与 taskruns w12b_pg_gate 先例保持现状，同批统一裁决）。
+//     族，包装 modernc.org/sqlite 的错误注入机制不动）；JUHE_AI_DUALMODE_PG_DSN
+//     门禁的 authorization_write_pg（共享 dev 库回滚事务冒烟，与 w1cover
+//     覆盖库无关，保持现状）。
 //   - 测试体内手写 SQL 按 PG 方言书写（juhe_ 前缀 schema 限定 + $n 占位
 //     符）；双模式共享的测试 helper（seedUsageRecord / quota 域 helper）
 //     经生产同款 Dialect.bind / StatsTable / BusinessTable 生成 SQL，两层

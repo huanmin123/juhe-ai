@@ -11,13 +11,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"io"
 	"log/slog"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 )
 
 // w16jNewSilentAssembly 构造不向测试输出刷 warn 日志的最小 assembly。
@@ -28,23 +27,12 @@ func w16jNewSilentAssembly(t *testing.T, config workerConfig) *workerAssembly {
 	return assembly
 }
 
-// w16jWireStatsAssembly 在独立 PG 测试库上装配 stats 家族（含建表），
-// 返回 assembly 与库连接（测试用它注入破坏性 fixture；原 TempDir SQLite
-// 夹具随 sqlite 形态退役删除）。
+// w16jWireStatsAssembly 在 wgCmdKitDB 隔离 PG 测试库上装配 stats 家族，
+// 返回 assembly 与库连接（测试用它注入破坏性 fixture）。
 func w16jWireStatsAssembly(t *testing.T) (*workerAssembly, *sql.DB) {
 	t.Helper()
-	// statsverify CheckSchema 是只读契约（18 表外部预置），fresh 独立库不满足；
-	// 沿用覆盖库 + w14j 幂等自愈 seed（§4.2 env-gated 门禁语义保持现状）。
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16j: 覆盖库连接串不可用")
-	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("打开覆盖库失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	w14jEnsurePGFixture(t, db)
+	// statsverify CheckSchema 的 18 表契约由 kit 夹具按生产形状预置。
+	db, pgURL := wgCmdKitDB(t)
 	assembly := w16jNewSilentAssembly(t, workerConfig{
 		PostgresURL:          pgURL,
 		PostgresMaxOpenConns: 50,
@@ -53,10 +41,7 @@ func w16jWireStatsAssembly(t *testing.T) (*workerAssembly, *sql.DB) {
 	})
 	_ = assembly
 	if err := assembly.wireStatsFamily(context.Background()); err != nil {
-		// 覆盖库 statsverify 全表预置不全（usage_stats_daily 等）时按 §4.2
-		// 门禁语义 skip（登记为遗留切片：待 B6 stats 包迁移后以 fresh 库
-		// DDL 回填）。
-		t.Skipf("覆盖库 stats schema 预置不全（skip）: %v", err)
+		t.Fatalf("stats schema 装配失败: %v", err)
 	}
 	return assembly, db
 }
@@ -66,16 +51,7 @@ func w16jWireStatsAssembly(t *testing.T) (*workerAssembly, *sql.DB) {
 // 就绪）。
 func w16jWireStatsAssemblyPrepared(t *testing.T, prepare func(db *sql.DB) error) (*workerAssembly, *sql.DB) {
 	t.Helper()
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16j: 覆盖库连接串不可用")
-	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("打开覆盖库失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	w14jEnsurePGFixture(t, db)
+	db, pgURL := wgCmdKitDB(t)
 	if err := prepare(db); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +63,7 @@ func w16jWireStatsAssemblyPrepared(t *testing.T, prepare func(db *sql.DB) error)
 	})
 	_ = assembly
 	if err := assembly.wireStatsFamily(context.Background()); err != nil {
-		t.Skipf("覆盖库 stats schema 预置不全（skip）: %v", err)
+		t.Fatalf("stats schema 装配失败: %v", err)
 	}
 	return assembly, db
 }
@@ -146,14 +122,13 @@ func TestW16JStatsQuotaCanceledContext(t *testing.T) {
 
 // TestW16JJ1InputContractFailArm：J1 postgres 直连 input 指向无业务契约面
 // 的可达库（同服务器 postgres 维护库）→ ping 通过但 CheckContract 在首个
-// 全限定契约关系上失败 → 装配失败返回 1。store 侧 EnsureSchema 依赖外部
-// bootstrap 的 juhe_jobs schema，先自愈预置。
+// 全限定契约关系上失败 → 装配失败返回 1。store 侧 juhe_jobs schema 由 kit
+// 夹具预置。
 func TestW16JJ1InputContractFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	w16jEnsurePGJobsFixture(t, pgURL)
+	_, pgURL := wgCmdKitDB(t)
 	contractlessURL := w16jContractlessInputURL(t, pgURL)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
@@ -173,13 +148,12 @@ func TestW16JJ1InputContractFailArm(t *testing.T) {
 
 // TestW16JJ3aInputContractFailArm：J3a postgres 直连 input 指向无业务契约面
 // 的可达库（同服务器 postgres 维护库）→ CheckContract 缺契约关系 → 装配失败
-// 返回 1。store 侧 CheckSchema 依赖 juhe_jobs 预 provision 表，先自愈预置。
+// 返回 1。store 侧 juhe_jobs 预 provision 表由 kit 夹具预置。
 func TestW16JJ3aInputContractFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	w16jEnsurePGJobsFixture(t, pgURL)
+	_, pgURL := w16iKitDBWithContractSurface(t)
 	contractlessURL := w16jContractlessInputURL(t, pgURL)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
@@ -195,15 +169,14 @@ func TestW16JJ3aInputContractFailArm(t *testing.T) {
 	w16hRunArms(t, nil, 1, "verify J3a proxy-latency direct-input contract")
 }
 
-// TestW16JJ3aResultContractFailArm：J3a store/input=w1cover 成功链前置，
+// TestW16JJ3aResultContractFailArm：J3a store/input=隔离测试库成功链前置，
 // business-result 库指向无业务契约面的可达库（同服务器 postgres 维护库）→
 // resultProjector.CheckContract 在首个全限定契约关系上失败 → 装配失败返回 1。
 func TestW16JJ3aResultContractFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	w16jEnsurePGJobsFixture(t, pgURL)
+	_, pgURL := w16iKitDBWithContractSurface(t)
 	contractlessURL := w16jContractlessInputURL(t, pgURL)
 	env := w16iBaseEnv(t, pgURL)
 	w16hApplyEnv(t, env)
@@ -233,10 +206,6 @@ func TestW16JOutboxStoreArms(t *testing.T) {
 		return EnsureHealthProbeOutboxSchema(ctx, &businessDB{db: db})
 	})
 	store := healthProbeOutboxStore{business: &businessDB{db: db}}
-	// 覆盖库为共享持久库：先清本测试 historical 行（幂等前置）。
-	if _, err := db.Exec(`DELETE FROM juhe_business.account_health_probe_request_outbox WHERE request_id LIKE 'w16j-%'`); err != nil {
-		t.Fatal(err)
-	}
 	// deadline 非法的行 Count 跳过（不致命）。
 	if _, err := db.Exec(`INSERT INTO juhe_business.account_health_probe_request_outbox
 		(request_id, account_id, reason, deadline_at, status, available_at, created_at, updated_at)
@@ -287,14 +256,10 @@ func TestW16JRegisterDisabledJobsStartupArms(t *testing.T) {
 	}
 }
 
-// w16jWireRetentionAssembly 在独立 PG 测试库上装配 retention 家族（原
-// TempDir SQLite 夹具随 sqlite 形态退役删除）。
+// w16jWireRetentionAssembly 在 wgCmdKitDB 隔离 PG 测试库上装配 retention 家族。
 func w16jWireRetentionAssembly(t *testing.T) *workerAssembly {
 	t.Helper()
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16j: 覆盖库连接串不可用")
-	}
+	_, pgURL := wgCmdKitDB(t)
 	assembly := w16jNewSilentAssembly(t, workerConfig{
 		PostgresURL:          pgURL,
 		PostgresMaxOpenConns: 50,

@@ -255,7 +255,7 @@ GLM 账户测试必须复用真实网关链路：
 | 范围 | 必补事项 | 风险 |
 | --- | --- | --- |
 | 官方资料 | 已核对 Coding Plan 工具接入表、Codex、Claude Code 和最新模型页：官方列出 Chat、Anthropic Messages、Responses 三个不同 Base URL；Responses 字段、事件和模型白名单仍需真实验证。 | 页面正文对 Responses 展开不足；若未按独立 profile 处理，容易把 `/responses` 错发到 Chat URL 或误把 bridge 当原生能力。 |
-| SQLite schema | `provider_protocol_profiles` 必须支持同一 `provider_code + protocol_code + protocol_version` 下多条档案，或新增 `connection_type/profile_kind` 参与业务唯一约束。 | 现有唯一约束如果只按供应商和协议版本，会阻止 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1` 同时 seed；Anthropic Messages 档案也必须独立保存。 |
+| Schema（PostgreSQL） | `provider_protocol_profiles` 必须支持同一 `provider_code + protocol_code + protocol_version` 下多条档案，或新增 `connection_type/profile_kind` 参与业务唯一约束。 | 现有唯一约束如果只按供应商和协议版本，会阻止 `profile_glm_general_openai_v1` 与 `profile_glm_coding_openai_v1` 同时 seed；Anthropic Messages 档案也必须独立保存。（原"SQLite schema"口径为双方言时期表述，已随 2026-10-25 存储收口退役。） |
 | 供应商档案 | 在现有三个档案外新增目标 `profile_glm_coding_openai_responses_v1`、Responses profile family 和单个默认 GLM 分组，不复用 GPT、通用 OpenAI 或官方 Anthropic 档案。 | 只靠 `base_url` 区分会导致模型目录、价格、账号测试和错误排障混用。 |
 | Driver 注册 | 新增 GLM provider driver、credential driver、model pricing/catalog driver 和前端 provider capability，不只新增数据库 seed。 | 未注册 driver 时会在凭据归一化、上游 URL 构造、模型目录或价格查找处失败。 |
 | 账户创建 | 前端、后端写接口、导入协议和外部推送接口都要显式接收 `providerProtocolProfileId`，编辑时默认不允许原地切换接入类型。 | 只保存 `accounts.type = api_key` 无法区分通用 API Key、Coding Plan Key 与 Coding Anthropic Key，后续无法判断额度、默认模型和测试入口。 |
@@ -325,7 +325,7 @@ GLM 账户测试必须复用真实网关链路：
 - [x] 模型映射和账号支持模型限制按 GLM 目录校验，并能把下游模型路由到正确 GLM 档案。
 - [x] 使用记录、审计尝试、错误处理、冷却恢复和统计链路复用现有 provider / profile / model 维度。
 - [x] 导入示例、mock AI 回归脚本、真实烟测脚本和测试说明同步更新。
-- [x] 文档、导入协议、接口契约、SQLite 存储说明、模型目录清洗和测试说明同步更新。
+- [x] 文档、导入协议、接口契约、[PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)（原 SQLite 存储说明，已随 2026-10-25 存储收口退役）、模型目录清洗和测试说明同步更新。
 
 ### 2026-09-09 三协议适配待实施
 

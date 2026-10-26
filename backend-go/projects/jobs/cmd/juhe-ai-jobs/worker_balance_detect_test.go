@@ -5,16 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/jackc/pgx/v5/stdlib"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
-	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // balanceFixtureSchema 建立余额探测依赖的冻结业务/统计表
@@ -112,35 +111,20 @@ VALUES ('acc-detect-1', 'sys_admin', 'gpt', 'gpt', 'acc-detect-1', 'gpt', '1', '
 	}
 }
 
-// wgBalanceAssemblyFixture 打开共享覆盖库（w14j 自愈 seed + 行卫生）供
-// 余额装配全链测试使用：statsverify 契约表属外部预置（fresh 独立库 DDL
-// 回填登记为 B6 遗留切片），装配全链沿用覆盖库（w16j 同惯例）。返回
-// sqldialect 改写句柄（测试内保留 `?` 写法）与覆盖库 URL（装配 env 用）。
-// 账户/快照行按调用方自有 ID 在前后双向清理，不触碰他人数据。
+// wgBalanceAssemblyFixture 打开 wgCmdKitDB 的 pgtestkit 隔离 PG 测试库供
+// 余额装配全链测试使用（statsverify 契约 18 表由 kit 夹具按生产形状预置）。
+// 返回 sqldialect 改写句柄（测试内保留 `?` 写法）与隔离库 URL（装配 env 用）。
+// 隔离库随测试结束删除，无需行级清理。
 func wgBalanceAssemblyFixture(t *testing.T, accountIDs []string) (*sql.DB, string) {
 	t.Helper()
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("balance: 覆盖库连接串不可用")
-	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("打开覆盖库失败（跳过）: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("覆盖库不可达（跳过）: %v", err)
-	}
-	w14jEnsurePGFixture(t, db)
+	_ = accountIDs
+	db, pgURL := wgCmdKitDB(t)
 	wrapped, err := sqldialect.OpenDB(stdlib.GetDefaultDriver(), pgURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = wrapped.Close() })
-	wgBalanceCleanupRows(t, wrapped, accountIDs)
-	t.Cleanup(func() { wgBalanceCleanupRows(t, wrapped, accountIDs) })
+	_ = db
 	return wrapped, pgURL
 }
 

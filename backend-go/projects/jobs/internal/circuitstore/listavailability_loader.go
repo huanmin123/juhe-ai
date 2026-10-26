@@ -155,8 +155,6 @@ type hydratedEntry struct {
 	effectiveStatus    string
 	effectiveAvailable bool
 	currentConcurrency int
-	providerCode       string
-	profileID          string
 	accountType        string
 	boundGroupID       string
 	name               string

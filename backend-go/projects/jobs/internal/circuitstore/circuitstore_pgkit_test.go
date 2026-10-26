@@ -15,9 +15,7 @@ package circuitstore
 //   - 本切片不迁、保持原状的部分：
 //     1) 失败注入/scripted 假驱动（w13g5CircuitFixture SQLite 注入族与
 //     w14jPGFixture PG 脚本化注入臂，其 PG 化留删臂批次统一裁决）；
-//     2) w15_claim_dirty_pg_test.go 的门禁化共享 cover 库测试（env-gated skip
-//     语义，按 PLAN §4.2 保持现状）；
-//     3) 组B（生产臂缺陷/适配缺口取证后保留 SQLite 原状，随生产臂修复批次再
+//     2) 组B（生产臂缺陷/适配缺口取证后保留 SQLite 原状，随生产臂修复批次再
 //     迁，各测试注释披露证据）：a) EnqueueDue 到期转移链——PG 分支经
 //     instantParam 把 time.Time 参数与 next_transition_at（text 列）比较，
 //     真实 PG 上无报错但恒不匹配（time.Time 以 Go 默认文本形态参与字典序
@@ -25,6 +23,8 @@ package circuitstore
 //     注释）；b) loader 族（ProjectionItemLoader 读面）——生产
 //     juhe_stats.account_usage_snapshots 时间列为 timestamptz，loader 读 SQL
 //     裸扫 text 断言，同族适配缺口（TestHydratePageFailClosed 注释）。
+//     原门禁化共享 cover 库的 w15_claim_dirty_pg_test.go（env-gated skip）
+//     已迁入本文件 kit 夹具。
 //   - ListAvailabilityRepo 的 ClaimDirty/ReleaseForReplay PG 分支租约时间由
 //     DB clock_timestamp() 驱动（Node 同语义），不消费注入时钟：相关断言按
 //     真实时钟重钉，重钉点在各测试内注释披露；ControlPlaneRepo 全部方法时间

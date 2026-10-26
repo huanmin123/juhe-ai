@@ -7,7 +7,7 @@ package main
 // 响应检查策略账号避让恒失效。这是 BUG-0177（manualtestrepo 全部 SQL 用 ?）
 // 的同类残留。SQLite fixture（modernc 同时接受 ? 与 $n 两种占位符）永远
 // 暴露不了此类缺陷，按 0177 先例以真实 PG 门禁化测试兜底：复用
-// w1g2CoverPostgres 的临时子库 juhe_ai_sub2api_dev_w1cover（隔离铁律：
+// w1g2CoverPostgres 的 pgtestkit 隔离测试库（隔离铁律：
 // env 缺失或 PG 不可达时 Skip），种子行全部 w0219 前缀并在事后清理，
 // 不触碰既有数据。
 //

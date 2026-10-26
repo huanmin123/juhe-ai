@@ -106,15 +106,15 @@ func TestW14MStoreHealthRetryScanArms(t *testing.T) {
 // ---- PostgreSQL 门控臂 ----
 
 func TestW14MStorePostgresSchemaArms(t *testing.T) {
-	failDB := w14mOpenFailCoverDB(t)
-	realDB := w11eOpenCoverDB(t)
+	realDB, coverURL := w11eOpenKitDB(t)
+	failDB := w14mOpenFailCoverDB(t, coverURL)
 	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
 	defer cancel()
 	schema := "w14m_bs_pg"
 	w11eRecreateSchema(t, realDB, schema, w11eNewPlan())
 
 	t.Run("openStorePostgresOK", func(t *testing.T) {
-		store, err := OpenStore(Config{Enabled: true, PostgresURL: w11eCoverPostgresURL(t), BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true})
+		store, err := OpenStore(Config{Enabled: true, PostgresURL: coverURL, BusinessHandoffConfirmed: true, NodeWriterStopped: true, SchemaReady: true, HealthBoundaryReady: true, RuntimeReady: true})
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}

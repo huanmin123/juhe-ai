@@ -3,179 +3,134 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"fmt"
 	"os"
-	"strconv"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
-// w9h_pg_test.go 通过门禁化的开发 PostgreSQL（临时覆盖库）运行 J1 jobs-owned
-// PG 分支：Store 的 postgres 臂、outcome 投影 PG 臂与 PG direct input 读链。
-// 数据全部使用 w9h- 前缀 ID，测试结束清理；数据库不可达时 t.Skip。
-// 连接串永不进入日志或断言消息。
+// w9h_pg_test.go 运行 J1 jobs-owned PG 分支：Store 的 postgres 臂、outcome
+// 投影 PG 臂与 PG direct input 读链。建库走 pgtestkit 每测试独立 fresh 库
+// （原 shared.env 门禁共享覆盖库装配已退役）：juhe_jobs schema 由 prepare
+// 预置（J1 EnsureSchema 契约是只校验属主不建 schema），业务/统计面表按
+// maintenance 权威 PG schema 源逐表提取执行（生产形状零漂移），PG 不可达
+// 由 pgtestkit 显式 Fatal 而非 t.Skip；隔离库随测试结束删除，不再需要
+// 共享库行级清理纪律与库形自适应探测。连接串永不进入日志或断言消息。
 
 const w9hFixtureNow = "2026-09-06T12:00:00.000Z"
 
-func w9hSkipMessage(reason string) string { return "w9h PG gated: " + reason }
-
-// w9hPgDSN returns the gated PostgreSQL URL for the temporary coverage
-// database (direct port, w1cover). Never log it.
-func w9hPgDSN(t *testing.T) string {
-	t.Helper()
-	if url := os.Getenv("JUHE_AI_W9H_PG_URL"); url != "" {
-		return url
-	}
-	raw, err := os.ReadFile(`F:\sub2api-lite\.local\project-resources\dev\env\shared.env`)
-	if err != nil {
-		t.Skip(w9hSkipMessage("shared.env 不可读: " + err.Error()))
-	}
-	base := ""
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "JUHE_AI_POSTGRES_URL=") {
-			base = strings.TrimPrefix(line, "JUHE_AI_POSTGRES_URL=")
-		}
-	}
-	if base == "" {
-		t.Skip(w9hSkipMessage("shared.env 缺少 JUHE_AI_POSTGRES_URL"))
-	}
-	base = strings.Replace(base, ":6432/", ":5432/", 1)
-	base = strings.Replace(base, "/juhe_ai_sub2api_dev?", "/juhe_ai_sub2api_dev_w1cover?", 1)
-	return base
+// w9hBusinessTables 是 fresh 库需要预置的 juhe_business 权威表，按 FK 依赖
+// 序排列（fixtures 以 sys_admin/gpt/deepseek 写行，相关外键全部落在集合内）。
+var w9hBusinessTables = []string{
+	"system_accounts", "system_teams", "vendors", "system_settings", "proxy_profiles",
+	"resource_authorizations", "resource_authorization_grants", "account_connections",
+	"account_endpoint_modes", "accounts", "groups", "group_accounts",
+	"group_account_stats_dirty",
+	"account_health_jobs_input_versions", "account_health_projection_cursors",
+	"account_health_projection_receipts", "account_circuit_outbox",
 }
 
-func w9hPgDB(t *testing.T) *sql.DB {
+// w9hStatsTables 是 J1 direct input 契约要求的 juhe_stats 只读面表。
+var w9hStatsTables = []string{
+	"usage_stats_totals", "usage_stats_daily", "usage_stats_weekly",
+	"usage_stats_monthly", "usage_quota_hourly_windows",
+}
+
+// w9hExtractTableDDL 从 maintenance 权威 schema 源提取指定表的 CREATE TABLE
+// 语句（DDL 在 Go 源里是裸串字面量，不含反引号，首个反引号即语句终点；
+// w14j statsagg seed 同款先例）。任一表提取失败显式 Fatal。
+func w9hExtractTableDDL(t *testing.T, source string, tables []string) map[string]string {
 	t.Helper()
-	db, err := sql.Open("pgx", w9hPgDSN(t))
+	raw, err := os.ReadFile(source)
 	if err != nil {
-		t.Skip(w9hSkipMessage("pgx 打开失败: " + err.Error()))
+		t.Fatalf("w9h: 无法读取权威 schema 源 %s: %v", source, err)
 	}
-	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		db.Close()
-		t.Skip(w9hSkipMessage("PG 不可达: " + err.Error()))
+	pattern := `(?s)CREATE TABLE IF NOT EXISTS (` + strings.Join(tables, "|") + `) \(.*?` + "`" + `,`
+	matches := regexp.MustCompile(pattern).FindAllStringSubmatch(string(raw), -1)
+	statements := map[string]string{}
+	for _, match := range matches {
+		// 剥掉捕获尾部的裸串终止符 "`,"，只留 SQL 本体（终终止于建表右括号）。
+		statements[match[1]] = strings.TrimSuffix(strings.ReplaceAll(match[0], "\r\n", "\n"), "`,")
 	}
-	// fresh DDL 的 system_settings 外键到 system_accounts(id)：fixtures 以
-	// 'sys_admin' 写 settings/账户行，先幂等补齐属主行（已存在则无操作）。
-	// 覆盖库可能处于新旧 schema 同步中途（可选列缺失），按 information_schema
-	// 实际列形拼装最小插入。
-	columnSet := map[string]bool{}
-	colRows, colErr := db.Query(`SELECT column_name FROM information_schema.columns WHERE table_schema = 'juhe_business' AND table_name = 'system_accounts'`)
-	if colErr != nil {
-		db.Close()
-		t.Skipf("w9h PG gated: system_accounts 列形读取失败: %v", colErr)
-	}
-	for colRows.Next() {
-		var name string
-		if err := colRows.Scan(&name); err == nil {
-			columnSet[name] = true
+	missing := []string{}
+	for _, table := range tables {
+		if statements[table] == "" {
+			missing = append(missing, table)
 		}
 	}
-	colRows.Close()
-	if err := colRows.Err(); err != nil {
-		db.Close()
-		t.Skipf("w9h PG gated: system_accounts 列形遍历失败: %v", err)
+	if len(missing) > 0 {
+		t.Fatalf("w9h: 权威 schema 源 %s 缺少表 DDL: %s", source, strings.Join(missing, ", "))
 	}
-	candidates := []struct{ column, value string }{
-		{"id", "sys_admin"},
-		{"username", "sys_admin"},
-		{"display_name", "sys_admin"},
-		{"role", "admin"},
-		{"status", "active"},
-		{"password_hash", "w9h-fixture-no-login"},
-		{"created_at", w9hFixtureNow},
-		{"updated_at", w9hFixtureNow},
-	}
-	columns, values, args := "", "", []any{}
-	for _, candidate := range candidates {
-		if !columnSet[candidate.column] {
-			continue
+	return statements
+}
+
+// w9hOpenKitDB 打开 pgtestkit 隔离 PG 测试库：预置三个 schema 命名空间、
+// 按权威 DDL 建业务/统计面表并种入 sys_admin 属主与 gpt/deepseek 厂商行
+// （fixtures 外键目标）。返回裸连接池（fixtures/projection/reader 用）与
+// 库连接串（store 构造注入）。测试结束自动关池并删库。
+func w9hOpenKitDB(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+	business := w9hExtractTableDDL(t, "../../../../projects/maintenance/internal/schema/pg_schema_business_tables.go", w9hBusinessTables)
+	stats := w9hExtractTableDDL(t, "../../../../projects/maintenance/internal/schema/pg_schema_stats.go", w9hStatsTables)
+	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
+		for _, schema := range []string{"juhe_jobs", "juhe_business", "juhe_stats"} {
+			if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS `+schema); err != nil {
+				return err
+			}
 		}
-		if columns != "" {
-			columns += ", "
-			values += ", "
+		for _, table := range w9hBusinessTables {
+			if _, err := db.ExecContext(ctx, `SET search_path = juhe_business; `+business[table]); err != nil {
+				return fmt.Errorf("预置 juhe_business.%s: %w", table, err)
+			}
 		}
-		columns += candidate.column
-		values += "$" + strconv.Itoa(len(args)+1)
-		if candidate.column == "id" {
-			args = append(args, "sys_admin")
-			continue
+		for _, table := range w9hStatsTables {
+			if _, err := db.ExecContext(ctx, `SET search_path = juhe_stats; `+stats[table]); err != nil {
+				return fmt.Errorf("预置 juhe_stats.%s: %w", table, err)
+			}
 		}
-		if candidate.column == "created_at" || candidate.column == "updated_at" {
-			args = append(args, w9hFixtureNow)
-			continue
+		// fixtures 以 'sys_admin' 写 settings/账户行（settings FK system_accounts），
+		// gpt/deepseek 账户行外键 vendors(code)：幂等补齐属主与厂商行。
+		if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
+			VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w9h-fixture-no-login', $1, $1)
+			ON CONFLICT (id) DO NOTHING`, w9hFixtureNow); err != nil {
+			return fmt.Errorf("system_accounts 种子失败: %w", err)
 		}
-		args = append(args, candidate.value)
-	}
-	if columns == "" {
-		db.Close()
-		t.Skip("w9h PG gated: coverage 库缺少 juhe_business.system_accounts 表")
-	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (`+columns+`) VALUES (`+values+`)
-		ON CONFLICT (id) DO NOTHING`, args...); err != nil {
-		db.Close()
-		t.Skipf("w9h PG gated: system_accounts 种子失败（库形不匹配，交由 schema 同步方处理）: %v", err)
-	}
-	// 本组 fixtures 与候选 SQL 以 canonical fresh DDL 类型为准（schedulable
-	// 等布尔/整型列必须可整型比较）。覆盖库若被同步成全文本镜像形态，比较
-	// 语义不成立，按门禁跳过（不降级生产 SQL 去迁就临时镜像）。
-	var dataType string
-	if err := db.QueryRow(`SELECT data_type FROM information_schema.columns WHERE table_schema='juhe_business' AND table_name='accounts' AND column_name='schedulable'`).Scan(&dataType); err != nil {
-		db.Close()
-		t.Skipf("w9h PG gated: accounts.schedulable 列形读取失败: %v", err)
-	}
-	if dataType != "integer" && dataType != "bigint" && dataType != "smallint" && dataType != "boolean" {
-		db.Close()
-		t.Skipf("w9h PG gated: coverage 库 accounts.schedulable 为 %s（全文本镜像形态，非 canonical DDL），等 schema 同步收敛", dataType)
-	}
-	// accounts.vendor_code 外键到 vendors(code)：幂等补齐 fixtures 用到的厂商。
-	for _, vendor := range []string{"gpt", "deepseek"} {
-		if _, err := db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at)
-			VALUES ($1, $1, $1, 1, $2, $2)
-			ON CONFLICT (code) DO NOTHING`, vendor, w9hFixtureNow); err != nil {
-			db.Close()
-			t.Skipf("w9h PG gated: vendors 种子失败（库形不匹配，交由 schema 同步方处理）: %v", err)
+		for _, vendor := range []string{"gpt", "deepseek"} {
+			if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at)
+				VALUES ($1, $1, $1, 1, $2, $2) ON CONFLICT (code) DO NOTHING`, vendor, w9hFixtureNow); err != nil {
+				return fmt.Errorf("vendors 种子失败: %w", err)
+			}
 		}
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+		// J1 direct schedule 的 canonical settings 是共享覆盖库形态下的既有
+		// 前置（w12d/w16f 各测试 seed 同值；w13g8 缺设置臂在事务内显式清空），
+		// fresh 库按同值预置，保持各臂断言语义不变。
+		for key, value := range map[string]string{
+			"accountHealthCheckIntervalHours":      "24",
+			"accountHealthCheckJitterMinutes":      "10",
+			"accountHealthCheckFailureThreshold":   "3",
+			"defaultTemporaryUnschedulableMinutes": "60",
+			"cooldownAccountRetestMaxBackoffHours": "24",
+			"usageStatsTimezone":                   `"Asia/Shanghai"`,
+		} {
+			if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at)
+				VALUES ('sys_admin', $1, $2, $3) ON CONFLICT (system_account_id, key) DO NOTHING`, key, value, w9hFixtureNow); err != nil {
+				return fmt.Errorf("canonical settings 种子失败: %w", err)
+			}
+		}
+		return nil
+	})
+	return testDB.DB, testDB.DSN
 }
 
 func w9hMustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
 		t.Fatalf("fixture exec 失败: %v (query: %.120s)", err, query)
-	}
-}
-
-// w9hCleanupJobsRows removes every fixture row this file created.
-func w9hCleanupJobsRows(t *testing.T, db *sql.DB) {
-	t.Helper()
-	statements := []string{
-		`DELETE FROM juhe_jobs.account_health_outcomes WHERE outcome_id LIKE 'w9h-%' OR account_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_jobs.account_health_current_state WHERE account_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_jobs.account_health_direct_input_suppressions WHERE account_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_jobs.account_health_key_cursors WHERE account_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_jobs.account_health_owner_leases WHERE owner_id LIKE 'w9h-%'`,
-		// receipts 表在 juhe_business schema（与 pg_schema.go / 查询一致）；
-		// 原语句误用 juhe_jobs 前缀导致清理永远失败、残留行让幂等重放短路。
-		`DELETE FROM juhe_business.account_health_projection_receipts WHERE outcome_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.account_health_projection_cursors WHERE consumer_key LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.account_circuit_outbox WHERE account_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.group_accounts WHERE account_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.groups WHERE id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.account_health_jobs_input_versions WHERE account_id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.resource_authorizations WHERE id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.proxy_profiles WHERE id LIKE 'w9h-%'`,
-		`DELETE FROM juhe_business.accounts WHERE id LIKE 'w9h-%'`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Logf("w9h cleanup: %v", err)
-		}
 	}
 }
 
@@ -274,9 +229,8 @@ func w9hCredentialsEnvelope(id string) string {
 }
 
 func TestW9HPgStoreLifecycleAndSuppression(t *testing.T) {
-	db := w9hPgDB(t)
-	t.Cleanup(func() { w9hCleanupJobsRows(t, db) })
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w9hPgDSN(t)})
+	_, dsn := w9hOpenKitDB(t)
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatalf("open pg store: %v", err)
 	}
@@ -357,15 +311,14 @@ func TestW9HPgStoreLifecycleAndSuppression(t *testing.T) {
 }
 
 func TestW9HPgOutcomeProjectionEndToEnd(t *testing.T) {
-	db := w9hPgDB(t)
-	t.Cleanup(func() { w9hCleanupJobsRows(t, db) })
+	db, dsn := w9hOpenKitDB(t)
 
 	// Projection fixtures: a pending_test account with an enabled schedule so
 	// the activation transition restores dispatch and writes the circuit outbox.
 	w9hSeedBusinessAccount(t, db, "w9h-proj-acc", "deepseek", "profile_deepseek_openai_v1", "api_key", "pending_test", "chat_json", sql.NullString{}, sql.NullString{})
 	w9hMustExec(t, db, `UPDATE juhe_business.accounts SET availability_schedule_json = $1 WHERE id = 'w9h-proj-acc'`, w9hScheduleJSON)
 
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w9hPgDSN(t)})
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatalf("open pg store: %v", err)
 	}
@@ -495,8 +448,7 @@ func mustLease(t *testing.T, store *Store) OwnerLease {
 }
 
 func TestW9HPgDirectInputReaderChain(t *testing.T) {
-	db := w9hPgDB(t)
-	t.Cleanup(func() { w9hCleanupJobsRows(t, db) })
+	db, dsn := w9hOpenKitDB(t)
 
 	// Settings needed by loadDirectSchedule (idempotent canonical values).
 	for key, value := range map[string]string{
@@ -543,7 +495,7 @@ func TestW9HPgDirectInputReaderChain(t *testing.T) {
 	if err := reader.CheckContract(context.Background()); err != nil {
 		t.Fatalf("check contract: %v", err)
 	}
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w9hPgDSN(t)})
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatalf("open pg store: %v", err)
 	}

@@ -1,5 +1,5 @@
 // scheduling_preferences 启动只读校验（调度偏好独立实体 P1）jobs 侧测试：
-// PostgreSQL 方言复用 w12c 覆盖库连接串（不可用时跳过），在独立 scratch
+// PostgreSQL 方言在 wgCmdKitDB 隔离 PG 测试库的独立 scratch
 // schema 上验证真实 PG 判定（含整数 CHECK 的 = ANY(ARRAY[...]) 归一化形态），
 // 不触碰 juhe_business 数据。原 SQLite 方言三臂矩阵与 AtStartup 包装臂已随
 // sqlite 存储形态退役删除（生产校验恒走 PG）。
@@ -7,12 +7,10 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -38,20 +36,8 @@ func TestSchedulingPreferenceSchemaPostgresArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short 模式跳过真实 PG")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w12c: 覆盖库连接串不可用")
-	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("打开覆盖库失败（跳过）: %v", err)
-	}
-	defer db.Close()
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("覆盖库不可达（跳过）: %v", err)
-	}
+	db, pgURL := wgCmdKitDB(t)
+	_ = pgURL
 
 	schema := "w12c_schpref_probe"
 	// juhe_business 归属探测：覆盖库的 juhe_business schema 可能承载其他域

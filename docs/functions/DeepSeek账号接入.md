@@ -461,7 +461,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 - DeepSeek 响应解析补充 `reasoning_content`、cache usage、`insufficient_system_resource` 原样终止字段、SSE comment / 非流式空行保活；解析不等于系统赋予业务语义
 - DeepSeek 账户错误处理、账号切换、半开恢复、后台复测全部复用现有统一链路
 - DeepSeek 导入导出、公开推送、前端供应商能力、模型检测入口隔离和账户测试补齐回归测试
-- 文档、导入协议、接口契约、SQLite 存储说明、模型目录清洗和测试说明同步更新
+- 文档、导入协议、接口契约、[PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)（原 SQLite 存储说明，已随 2026-10-25 存储收口退役）、模型目录清洗和测试说明同步更新
 
 ## 验证要求
 

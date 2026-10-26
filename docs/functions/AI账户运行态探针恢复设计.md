@@ -267,7 +267,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 
 - 成功恢复和失败退避都要校验任务入队时的 `configRevision` 与观察起点；旧配置或旧观察代次的迟到结果只能返回未变更，不能覆盖当前状态。
 - 可选 expectation 只能在值存在时生成 `AND column = ?` 条件。禁止使用 `(? IS NULL OR column = ?)` 传递无类型 nullable 参数；该写法在 PostgreSQL 扩展查询协议下会触发 `42P18`，同时阻断成功恢复和失败次数写回。
-- SQLite 与 PostgreSQL 必须复用相同的 expectation 条件构造规则，并分别执行真实 driver 回归，不能用 SQLite 通过替代 PostgreSQL 参数绑定验证。
+- expectation 条件构造规则唯一（历史双方言时期要求 SQLite 与 PostgreSQL 复用相同规则并分别执行真实 driver 回归、不能用 SQLite 通过替代 PostgreSQL 参数绑定验证；该双方言约束已随 2026-10-25 存储收口退役，现行仅 PostgreSQL 真实 driver 回归）。
 - 写回或后续副作用抛错时，本轮账户状态保持原有事务语义；队列耗尽日志必须保留经统一脱敏后的原始错误 code/message，不能只记录“重试耗尽”。
 
 `error` 只用于有明确本地来源或用户明确授权的硬异常：
@@ -356,7 +356,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - 后台探针 `framing_complete_neutral` 只能按匹配 generation 清理 transport 怀疑；只有匹配来源的 `complete_success` 才能清理系统自动建立的业务运行态 `runtime_degraded` 和 `precheck_pending`，不能提前清理用户显式策略建立的 TTL 避让。
 - 后台探针连续独立 `transport_failed` 且并发归零后才写系统自动 transport 来源的 `temporary_unavailable`；任意完整 `4xx/5xx`、`2xx-invalid-body` 或协议失败均不推进。
 - 系统自动 transport 来源的 `temporary_unavailable` 在后台复测 `complete_success` 后自动恢复 `active`；用户显式状态只走匹配恢复出口。
-- SQLite 与真实 PostgreSQL 都要覆盖冷却复测当前代次成功恢复、当前代次失败累加、错误配置版本拒绝和旧观察起点拒绝；PostgreSQL 回归必须真实执行参数绑定，防止无类型 nullable 参数重新进入写回 SQL。
+- 真实 PostgreSQL 回归覆盖冷却复测当前代次成功恢复、当前代次失败累加、错误配置版本拒绝和旧观察起点拒绝（历史双方言时期另要求 SQLite 覆盖同组用例，已随 2026-10-25 存储收口退役）；PostgreSQL 回归必须真实执行参数绑定，防止无类型 nullable 参数重新进入写回 SQL。
 - 各类请求的 opaque HTTP 与 transport 失败在语义提交前都能按唯一 Key/账户候选救回当前请求，整个请求最多 64 次真实 attempt。
 - 旧 generation 探针结果不能覆盖后台 / 主动健康 / 匹配租约半开成功、手动恢复或更新后的状态。
 - performance / Redis runtime state 下，多节点同时调度同一运行态允许短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。

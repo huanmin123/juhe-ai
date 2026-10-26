@@ -586,30 +586,13 @@ func TestW12EListAndFindArms(t *testing.T) {
 	}
 }
 
-// TestW12EVerifyAndAdmitArms：VerifyExecutionInput / AdmitExecution 失败臂。
-func TestW12EVerifyAndAdmitArms(t *testing.T) {
+// TestW12EAdmitArms：AdmitExecution 失败臂。
+func TestW12EAdmitArms(t *testing.T) {
 	ctx := context.Background()
 	owner := OwnerLease{OwnerID: "w12e-owner", FenceToken: 1}
 	proxy := ProxyLease{ProxyID: "w12e-proxy", OwnerID: owner.OwnerID, FenceToken: 1}
-	// VerifyExecutionInput begin 失败 / owner 失败 / proxy 失败。
-	rec := newWFRecorder()
-	rec.beginErr = errors.New("w12e begin verify")
-	if err := wfNewPGStore(wfOpenRecorderDB(t, rec)).VerifyExecutionInput(ctx, owner, proxy, testIssuedFor("j3a-w12e-verify")); err == nil {
-		t.Fatalf("verify begin 失败应透传")
-	}
-	rec = newWFRecorder()
-	rec.failQuery(w12eOwnerRow, errors.New("w12e owner verify"))
-	if err := wfNewPGStore(wfOpenRecorderDB(t, rec)).VerifyExecutionInput(ctx, owner, proxy, testIssuedFor("j3a-w12e-verify")); err == nil {
-		t.Fatalf("verify owner 失败应透传")
-	}
-	rec = newWFRecorder()
-	rec.failQuery(w12eProxyLeaseRow, errors.New("w12e proxy verify"))
-	if err := wfNewPGStore(wfOpenRecorderDB(t, rec)).VerifyExecutionInput(ctx, owner, proxy, testIssuedFor("j3a-w12e-verify")); err == nil {
-		t.Fatalf("verify proxy 失败应透传")
-	}
-
 	// AdmitExecution：ready=false + begin 失败 → 预检失败。
-	rec = newWFRecorder()
+	rec := newWFRecorder()
 	rec.beginErr = errors.New("w12e begin admit preflight")
 	if _, _, _, err := (&Store{db: wfOpenRecorderDB(t, rec), mode: StorePostgres}).AdmitExecution(ctx, owner, proxy, testIssuedFor("j3a-w12e-admit")); err == nil {
 		t.Fatalf("admit 预检失败应透传")

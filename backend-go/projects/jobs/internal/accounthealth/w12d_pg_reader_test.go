@@ -10,54 +10,16 @@ import (
 	"time"
 )
 
-// w12d_pg_reader_test.go 通过门禁化开发 PG（w1cover 覆盖库）补齐 w12d 波次
-// PG 分支：direct input 配额/抑制/错误隔离臂与 store 冷却状态 CAS 臂。
-// 数据全部使用 w12d- 前缀 ID，测试结束清理；数据库不可达时 t.Skip。
-// 连接串永不进入日志或断言消息。
+// w12d_pg_reader_test.go 补齐 w12d 波次 PG 分支：direct input 配额/抑制/
+// 错误隔离臂与 store 冷却状态 CAS 臂。建库走 w9hOpenKitDB 的 pgtestkit
+// 隔离 PG 测试库（原 w1cover 覆盖库门禁已退役，PG 不可达显式 Fatal）。
+// fresh 库随测试结束删除，不再需要共享库行级清理。
 
 const w12dFixtureNowText = "2026-09-06T12:00:00Z"
 
-func w12dPgDB(t *testing.T) *sql.DB {
+func w12dPgDB(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	db := w9hPgDB(t)
-	// 先清一次残留（上次失败运行的 w12d- 行会让本次插入撞主键），测试结束再清。
-	w12dCleanupRows(t, db)
-	t.Cleanup(func() { w12dCleanupRows(t, db) })
-	return db
-}
-
-func w12dCleanupRows(t *testing.T, db *sql.DB) {
-	t.Helper()
-	// 删除顺序遵循外键：group_accounts → grants → accounts →
-	// authorizations → system_teams（grants.grantee_team_id 引用 teams，
-	// accounts.authorization_instance_authorization_id 引用 authorizations）。
-	statements := []string{
-		`DELETE FROM juhe_jobs.account_health_outcomes WHERE outcome_id LIKE 'w12d-%' OR account_id LIKE 'w12d-%' OR request_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_jobs.account_health_current_state WHERE account_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_jobs.account_health_direct_input_suppressions WHERE account_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_jobs.account_health_key_cursors WHERE account_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_jobs.account_health_owner_leases WHERE owner_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.account_health_projection_receipts WHERE outcome_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.account_health_projection_cursors WHERE consumer_key LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.account_health_jobs_input_versions WHERE account_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.account_circuit_outbox WHERE account_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.group_accounts WHERE account_id LIKE 'w12d-%' OR group_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.groups WHERE id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.resource_authorization_grants WHERE id LIKE 'w12d-%' OR resource_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.proxy_profiles WHERE id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.accounts WHERE id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.resource_authorizations WHERE id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_business.system_teams WHERE id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_stats.usage_stats_totals WHERE system_account_id LIKE 'w12d-%' OR scope_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_stats.usage_stats_daily WHERE system_account_id LIKE 'w12d-%' OR scope_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_stats.usage_stats_weekly WHERE system_account_id LIKE 'w12d-%' OR scope_id LIKE 'w12d-%'`,
-		`DELETE FROM juhe_stats.usage_stats_monthly WHERE system_account_id LIKE 'w12d-%' OR scope_id LIKE 'w12d-%'`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Logf("w12d cleanup: %v", err)
-		}
-	}
+	return w9hOpenKitDB(t)
 }
 
 // w12dSeedSettings 保证 direct schedule settings 幂等存在（canonical 值）。
@@ -151,7 +113,7 @@ func w12dSeedConnection(t *testing.T, db *sql.DB, id, preset, baseURL string) {
 }
 
 func TestW12dReaderLimitAndValidationArms(t *testing.T) {
-	db := w12dPgDB(t)
+	db, _ := w12dPgDB(t)
 	w12dSeedSettings(t, db)
 	reader, err := NewPostgresDirectInputReader(db, "w12d-secret", time.Hour, func() time.Time {
 		return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
@@ -195,7 +157,7 @@ func TestW12dReaderLimitAndValidationArms(t *testing.T) {
 // TestW12dReaderQuotaArms 覆盖授权配额：无 team grant 直接通过；limits_json
 // 超限跳过候选；坏 limits_json 报错。
 func TestW12dReaderQuotaArms(t *testing.T) {
-	db := w12dPgDB(t)
+	db, _ := w12dPgDB(t)
 	w12dSeedSettings(t, db)
 	secret := "w12d-quota-secret"
 	// (a) 授权 + 无 limits → 候选通过 quota（grant ErrNoRows 臂）。
@@ -299,7 +261,7 @@ func TestW12dReaderQuotaArms(t *testing.T) {
 
 // TestW12dReaderSuppressionAndMalformedArms 覆盖抑制 CTE 与坏候选隔离。
 func TestW12dReaderSuppressionAndMalformedArms(t *testing.T) {
-	db := w12dPgDB(t)
+	db, _ := w12dPgDB(t)
 	w12dSeedSettings(t, db)
 	secret := "w12d-suppress-secret"
 	w12dSeedAPIKeyAccount(t, db, secret, "w12d-supp-1", "deepseek", "profile_deepseek_openai_v1")
@@ -341,8 +303,8 @@ func TestW12dReaderSuppressionAndMalformedArms(t *testing.T) {
 
 // TestW12dStoreCooldownStateArms 覆盖 store 的冷却 current state CAS PG 臂。
 func TestW12dStoreCooldownStateArms(t *testing.T) {
-	db := w12dPgDB(t)
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w9hPgDSN(t)})
+	db, dsn := w12dPgDB(t)
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

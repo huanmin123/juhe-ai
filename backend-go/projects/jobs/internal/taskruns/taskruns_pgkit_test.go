@@ -17,9 +17,8 @@ import (
 //     bootstrap 创建，属跨模块边界）。
 //   - 不在本迁移面、保持原状的部分：SQLite-only 生产臂测试（组B：OpenStore
 //     sqlite 装配/PRAGMA 臂等，随生产 sqlite 臂删除批次退役）；scripted 假
-//     驱动（w12bFailDriver 注入族及其消费方，PLAN §3 非目标）；env-gated
-//     skip 语义的 w12b_pg_gate_test.go（共享 cover 库，按计划 §4.2 保持
-//     现状，与 auditlog w10b_pg_gate 同批统一裁决）。
+//     驱动（w12bFailDriver 注入族及其消费方，PLAN §3 非目标）。原 env-gated
+//     skip 语义的 w12b_pg_gate_test.go（共享 cover 库）已同批迁入本 helper。
 //   - scheduled lease 家族（TryAcquire/Renew/Release/AssertScheduledLease）
 //     的 PG 臂租约时间由 DB clock_timestamp() 驱动，不消费注入时钟：相关
 //     测试的过期/续租时序按真实时钟重钉，重钉点在各测试内注释披露。

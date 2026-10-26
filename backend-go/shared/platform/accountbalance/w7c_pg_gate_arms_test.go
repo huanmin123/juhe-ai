@@ -15,8 +15,7 @@ import (
 )
 
 func TestW7CRunnerReleaseAndScanArms(t *testing.T) {
-	db := w7cOpenCoverDB(t)
-	w7cCleanupBalanceRows(t, db)
+	db, _ := w7cGateDatabase(t)
 	credential, err := NewCredentialEnvelope(w7cBalanceSecret, "api_key", map[string]string{"api_key": "sk-w7c", "base_url": "https://w7c-upstream.invalid"})
 	if err != nil {
 		t.Fatal(err)
@@ -64,9 +63,10 @@ func w7cIDsOf(candidates []Candidate) []string {
 }
 
 func TestW7CServiceRunLoopErrorClearsReadiness(t *testing.T) {
+	_, dsn := w7cGateDatabase(t)
 	config := RuntimeConfig{
-		Enabled: true, OwnerID: w7cOwnerID + "-loop", Store: StoreConfig{Mode: StorePostgres, PostgresURL: w7cCoverPostgresURL(t)},
-		BusinessPostgresURL: w7cCoverPostgresURL(t), CredentialSecret: w7cBalanceSecret,
+		Enabled: true, OwnerID: w7cOwnerID + "-loop", Store: StoreConfig{Mode: StorePostgres, PostgresURL: dsn},
+		BusinessPostgresURL: dsn, CredentialSecret: w7cBalanceSecret,
 		ScanInterval: 200 * time.Millisecond, OwnerLease: 10 * time.Minute, AccountLease: time.Minute,
 		InputTTL: 15 * time.Minute, ProbeTimeout: 15 * time.Second,
 		// A 1ns cycle budget makes every cycle fail its first read, so the

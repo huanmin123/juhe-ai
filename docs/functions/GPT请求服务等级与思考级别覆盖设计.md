@@ -199,7 +199,7 @@ interface CodexModelCapabilities {
 
 第一版不允许自定义模型直接声明 `ultra`。Codex Ultra 需要额外确认多代理版本、客户端能力和网关透传行为，不能由用户仅勾选一个字符串开启。
 
-项目不保留旧 schema 兼容分支。实现时直接更新 SQLite / PostgreSQL 当前 schema、repository 和接口契约，部署数据同步由维护者按当前 schema 单独执行。
+项目不保留旧 schema 兼容分支。实现时直接更新 PostgreSQL 当前 schema、repository 和接口契约（历史双方言时期表述为更新 SQLite / PostgreSQL 双 schema，已随 2026-10-25 存储收口退役），部署数据同步由维护者按当前 schema 单独执行。
 
 ## 5. GPT-5.6 当前能力基线
 

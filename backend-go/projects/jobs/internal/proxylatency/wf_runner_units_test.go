@@ -461,9 +461,9 @@ func TestWFStoreCommittedOutcomeReaders(t *testing.T) {
 	outcome := committer.commit("p-1", wfProjRevision)
 	issued := committer.last
 	ctx := context.Background()
-
-	// VerifyExecutionInput：为 p-verify 独立签发输入（fence 与代理一致）。
 	owner := committer.owner
+
+	// 为 p-verify 独立签发输入（fence 与代理一致），供后续 AdmitExecution 臂复用。
 	proxy, ok, err := store.AcquireProxyLease(ctx, owner, "p-verify", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("proxy lease ok=%v err=%v", ok, err)
@@ -477,39 +477,6 @@ func TestWFStoreCommittedOutcomeReaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueInput 失败: %v", err)
 	}
-	if err := store.VerifyExecutionInput(ctx, owner, proxy, issuedVerify); err != nil {
-		t.Fatalf("执行输入校验失败: %v", err)
-	}
-	mismatched := issuedVerify
-	mismatched.InputVersion = 99
-	if err := store.VerifyExecutionInput(ctx, owner, proxy, mismatched); !errors.Is(err, ErrInputFence) {
-		t.Fatalf("版本不匹配 err=%v", err)
-	}
-	if err := store.VerifyExecutionInput(ctx, OwnerLease{}, proxy, issuedVerify); err == nil {
-		t.Fatal("owner 不匹配必须拒绝")
-	}
-
-	// LoadCommittedOutcome：重放已提交 outcome。
-	loaded, found, err := store.LoadCommittedOutcome(ctx, issued)
-	if err != nil || !found || loaded.OutcomeID != outcome.OutcomeID {
-		t.Fatalf("重放 found=%v loaded=%+v err=%v", found, loaded, err)
-	}
-	if _, found, err := store.LoadCommittedOutcome(ctx, IssuedInput{RequestID: " ", InputVersion: 1}); err == nil || found {
-		t.Fatal("非法 input 必须拒绝")
-	}
-	foreign := IssuedInput{RequestID: "j3a-missing", InputVersion: 1, ConfigRevision: wfProjRevision, Trigger: TriggerPeriodic,
-		IssuedAt: wfProjBase.UTC(), ExpiresAt: wfProjBase.Add(5 * time.Minute).UTC(), PolicyVersion: proxyLatencyInputPolicyVersion,
-		ProxyType: "http", ProxyHost: "10.0.0.1", ProxyPort: 8080,
-		Targets: []Target{{Provider: "gpt", ProfileID: "profile-gpt", URL: "https://api.openai.com/v1"}}}
-	if _, _, err := store.LoadCommittedOutcome(ctx, foreign); !errors.Is(err, ErrInputFence) {
-		t.Fatalf("缺失重放 err=%v", err)
-	}
-	tampered := issued
-	tampered.InputVersion = 7
-	if _, _, err := store.LoadCommittedOutcome(ctx, tampered); !errors.Is(err, ErrInputFence) {
-		t.Fatalf("篡改重放 err=%v", err)
-	}
-	// ErrRequestConflict 的 payload 篡改分支由 store_test 的毒化摘要用例覆盖。
 
 	// FindCommittedOutcome：按 outcome id 读取。
 	stored, found, err := store.FindCommittedOutcome(ctx, outcome.OutcomeID)
@@ -559,6 +526,8 @@ func TestWFStoreCommittedOutcomeReaders(t *testing.T) {
 	if claimToken != "" || replay == nil || replay.OutcomeID != outcome.OutcomeID {
 		t.Fatalf("已提交 outcome 必须重放 claim=%q replay=%+v", claimToken, replay)
 	}
+	mismatched := issuedVerify
+	mismatched.InputVersion = 99
 	if _, _, _, err := store.AdmitExecution(ctx, owner, proxy, mismatched); !errors.Is(err, ErrInputFence) {
 		t.Fatalf("篡改 input 必须拒绝 err=%v", err)
 	}

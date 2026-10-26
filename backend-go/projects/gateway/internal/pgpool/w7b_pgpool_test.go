@@ -4,12 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"net/url"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -27,7 +25,7 @@ func TestW7BRefusedAddressLifecycle(t *testing.T) {
 	}
 
 	r := NewRegistry()
-	refused := "postgres://127.0.0.1:1/w1cover?sslmode=disable&connect_timeout=2"
+	refused := "postgres://127.0.0.1:1/w7b-refused?sslmode=disable&connect_timeout=2"
 	first, err := r.Acquire(refused, "gateway", 2, 1)
 	if err != nil {
 		t.Fatalf("懒打开必须成功: %v", err)
@@ -76,96 +74,20 @@ func TestW7BRefusedAddressLifecycle(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 真实 PG 臂：dev env shared.env + 临时库 juhe_ai_sub2api_dev_w1cover，
-// 不可达或无权限时登记证据并跳过。连接串只用于建池，不写入任何输出。
+// 真实 PG 臂：pgtestkit 每测试独立临时库（原 shared.env + 固定共享覆盖库
+// 装配已退役）；PG 不可达由 pgtestkit 显式 Fatal 而非 skip。连接串只用于
+// 建池，不写入任何输出；隔离库随测试结束删除。
 // ---------------------------------------------------------------------------
 
-func w7bSharedEnvValue(t *testing.T, key string) string {
-	t.Helper()
-	if override := os.Getenv("JUHE_AI_W1COVER_POSTGRES_URL"); override != "" && key == "JUHE_AI_POSTGRES_URL" {
-		return override
-	}
-	raw, err := os.ReadFile(`F:\sub2api-lite\.local\project-resources\dev\env\shared.env`)
-	if err != nil {
-		t.Skipf("dev env 不可读，真实 PG 用例跳过: %v", err)
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.HasPrefix(line, key+"=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, key+"="))
-		}
-	}
-	t.Skipf("shared.env 缺少 %s，真实 PG 用例跳过", key)
-	return ""
-}
-
-func w7bWithDatabase(rawURL, database string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	parsed.Path = "/" + database
-	return parsed.String()
-}
-
-func w7bPingQuick(t *testing.T, rawURL string) error {
-	t.Helper()
-	db, err := sql.Open("pgx", rawURL)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	pingCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	return db.PingContext(pingCtx)
-}
-
 func TestW7BRealPostgresPoolLifecycle(t *testing.T) {
-	baseURL := w7bSharedEnvValue(t, "JUHE_AI_POSTGRES_URL")
-	w1coverURL := w7bWithDatabase(baseURL, "juhe_ai_sub2api_dev_w1cover")
-	if err := w7bPingQuick(t, w1coverURL); err != nil {
-		// 临时库可能尚不存在：用直连管理端口补建，失败则跳过。
-		directPort := w7bSharedEnvValue(t, "DEV_POSTGRES_DIRECT_PORT")
-		adminUser := w7bSharedEnvValue(t, "DEV_POSTGRES_ADMIN_USERNAME")
-		adminPassword := w7bSharedEnvValue(t, "DEV_POSTGRES_ADMIN_PASSWORD")
-		adminBase := w7bWithDatabase(baseURL, "postgres")
-		parsed, err := url.Parse(adminBase)
-		if err != nil {
-			t.Skipf("管理连接串解析失败，真实 PG 用例跳过: %v", err)
-		}
-		if parsed.Port() == "" && directPort != "" {
-			parsed.Host = parsed.Hostname() + ":" + directPort
-		}
-		parsed.User = url.UserPassword(adminUser, adminPassword)
-		admin, err := sql.Open("pgx", parsed.String())
-		if err != nil {
-			t.Skipf("管理连接打开失败，真实 PG 用例跳过: %v", err)
-		}
-		pingCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		err = admin.PingContext(pingCtx)
-		cancel()
-		if err != nil {
-			t.Skipf("管理端口不可达，真实 PG 用例跳过: %v", err)
-		}
-		var exists bool
-		if err := admin.QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname='juhe_ai_sub2api_dev_w1cover')`).Scan(&exists); err != nil {
-			t.Skipf("查询临时库失败，真实 PG 用例跳过: %v", err)
-		}
-		if !exists {
-			if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE juhe_ai_sub2api_dev_w1cover`); err != nil {
-				t.Skipf("创建临时库失败，真实 PG 用例跳过: %v", err)
-			}
-		}
-		if err := w7bPingQuick(t, w1coverURL); err != nil {
-			t.Skipf("临时库仍不可达，真实 PG 用例跳过: %v", err)
-		}
-	}
+	testDB := pgtestkit.NewTestDatabase(t)
 
 	r := NewRegistry()
-	handle, err := r.Acquire(w1coverURL, "gateway", 4, 2)
+	handle, err := r.Acquire(testDB.DSN, "gateway", 4, 2)
 	if err != nil {
 		t.Fatalf("真实 PG Acquire = %v", err)
 	}
-	reuse, err := r.Acquire(w1coverURL, "gateway", 8, 2)
+	reuse, err := r.Acquire(testDB.DSN, "gateway", 8, 2)
 	if err != nil {
 		t.Fatalf("真实 PG 复用 = %v", err)
 	}

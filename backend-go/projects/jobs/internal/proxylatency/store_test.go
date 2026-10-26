@@ -241,9 +241,8 @@ func TestPGStoreRejectsPoisonedCommittedOutcomeDigest(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT payload FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1`, issued.RequestID).Scan(&payload); err != nil {
 		t.Fatal(err)
 	}
-	// Keep the original payload_digest while changing the bytes. Both direct
-	// replay and AdmitExecution must fail closed instead of trusting poisoned
-	// committed JSON.
+	// Keep the original payload_digest while changing the bytes. AdmitExecution
+	// must fail closed instead of trusting poisoned committed JSON.
 	// PG 重钉披露：payload 列为 JSONB，SQLite 形态的"追加空白字节"会被 JSONB
 	// 规范化吸收（canonicalJSONDigest 对空白/键序不敏感是 PG 臂的既定契约），
 	// 因此以改变 payload 语义值（首条 item 延迟 12→13）且不更新 payload_digest
@@ -259,9 +258,6 @@ func TestPGStoreRejectsPoisonedCommittedOutcomeDigest(t *testing.T) {
 	}
 	if _, err := store.db.Exec(`UPDATE juhe_jobs.proxy_latency_outcomes SET payload=$1 WHERE request_id=$2`, string(poisonedPayload), issued.RequestID); err != nil {
 		t.Fatal(err)
-	}
-	if _, found, err := store.LoadCommittedOutcome(ctx, issued); !errors.Is(err, ErrRequestConflict) || found {
-		t.Fatalf("poisoned direct replay found=%t err=%v", found, err)
 	}
 	if _, committed, err := ExecuteIssuedInput(ctx, store, owner, proxy, issued, ExecutorOptions{Timeout: time.Second}); !errors.Is(err, ErrRequestConflict) || committed {
 		t.Fatalf("poisoned admitted replay committed=%t err=%v", committed, err)
@@ -549,9 +545,7 @@ func testOutcomeForIssued(outcomeID string, issued IssuedInput, owner OwnerLease
 
 func testInputDraft(proxyID string, trigger Trigger) InputDraft {
 	// PG 重钉披露：IssuedAt/ExpiresAt 截断到微秒，与 PG timestamptz 微秒存储
-	// 精度对齐（SQLite TEXT 臂无精度差异）；纳秒精度会使 LoadCommittedOutcome/
-	// VerifyExecutionInput 的 issued_at 逐位 Equal 校验在 PG 臂上 fail closed
-	// （生产臂缺陷，另列报告，不在本切片修复）。
+	// 精度对齐（SQLite TEXT 臂无精度差异），使 draft 时间经 DB 往返保持稳定。
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	return InputDraft{
 		ProxyID: proxyID, ConfigRevision: now.Add(-time.Second).Format(time.RFC3339Nano), Trigger: trigger,

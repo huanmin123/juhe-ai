@@ -505,7 +505,7 @@ Key-模型的 phase 过滤必须在选择最终 Key 前完成，但 foreground p
 
 ## 14. 存储与接口契约
 
-最终实现复用现有 account circuit 的控制面接口、lease、generation、CAS 和 outbox 机制，但为 `key_model` 使用独立的 Redis 逻辑命名空间 `gateway-account-circuit-key-model` 和独立 50,000 条容量计数；它与现有 `gateway-account-circuit` 的账户/Key/`protocol_model` 容量互不争抢。foreground admission permit 和 `mainProbeFence` 只存短 TTL 的 Redis 计数/租约，不计入 50,000 条 `key_model` 状态容量，不写业务数据库；它们只允许在已持有现有账户并发槽的真实候选上创建，活跃数量因此受既有全局/账户并发上限约束，不得按任意请求参数无界建 Key。SQLite/PostgreSQL 业务库只接收现有 control-plane outbox 的脱敏投影，不作为 Node/Go 派发热路径的锁。新增明确的 `key_model` scope；旧 `protocol_model` 行不迁移、不复用。
+最终实现复用现有 account circuit 的控制面接口、lease、generation、CAS 和 outbox 机制，但为 `key_model` 使用独立的 Redis 逻辑命名空间 `gateway-account-circuit-key-model` 和独立 50,000 条容量计数；它与现有 `gateway-account-circuit` 的账户/Key/`protocol_model` 容量互不争抢。foreground admission permit 和 `mainProbeFence` 只存短 TTL 的 Redis 计数/租约，不计入 50,000 条 `key_model` 状态容量，不写业务数据库；它们只允许在已持有现有账户并发槽的真实候选上创建，活跃数量因此受既有全局/账户并发上限约束，不得按任意请求参数无界建 Key。PostgreSQL 业务库只接收现有 control-plane outbox 的脱敏投影，不作为派发热路径的锁（历史双方言时期表述为 SQLite/PostgreSQL 业务库双收，SQLite 分支已随 2026-10-25 存储收口退役）。新增明确的 `key_model` scope；旧 `protocol_model` 行不迁移、不复用。
 
 逻辑 Redis 键固定为 `state:<capabilityHash>`、`due`、`lease:<capabilityHash>`、`receipt:<intentId>`、`admission:<capabilityHash>`、`admissionLease:<capabilityHash>:<attemptId>`、`admissionWake:<capabilityHash>`、`mainProbeFence:<capabilityHash>`、`admission-events` 和 `capacity`，统一经过现有 namespace 包装。`admission` 是短期前置 permit 计数，`admissionWake` 是单调 wake sequence，`admission-events` 是跨副本通知通道；通知可以丢，state 和 sequence 才是权威事实。`mainProbeFence` 使用独立 owner 标识，不写入 `key_model.phase`。这些对象都不是第三套健康状态机。Node 和 Go 必须访问同一组键；禁止再建进程内 Map、第二个 Redis 前缀或独立数据库。
 

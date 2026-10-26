@@ -11,12 +11,6 @@ package proxylatency
 //  2. proxy lease 释放后可被同 owner 重新获取且 fence 单调 +1；
 //  3. DB 视角过期（lease_until = statement_timestamp()-1µs）即失效，与
 //     进程时钟无关。
-//
-// W26② 纳秒精度恒 fail-closed：verifyIssuedInputSnapshotTx 原对
-// issued_at/expires_at 逐位 Equal，PG timestamptz 微秒截断使纳秒精度
-// draft 必然 ErrInputFence。本批复用 canonicalPostgresTimestamp 按微秒
-// 归一比较。断言：纳秒精度 draft 签发后 VerifyExecutionInput /
-// LoadCommittedOutcome 正常工作（修复前恒 ErrInputFence）。
 
 import (
 	"context"
@@ -76,39 +70,5 @@ func TestW26LeaseVerifyUsesDatabaseClockOnPostgres(t *testing.T) {
 	}
 	if err := store.VerifyOwnerLease(ctx, owner2); !errors.Is(err, ErrOwnerLeaseLost) {
 		t.Fatalf("DB 视角过期必须 ErrOwnerLeaseLost，实际: %v", err)
-	}
-}
-
-func TestW26IssuedInputMicrosecondFenceOnPostgres(t *testing.T) {
-	store := openKitPostgresStore(t)
-	ctx := context.Background()
-
-	owner, acquired, err := store.AcquireOwnerLease(ctx, "w26f-owner", time.Hour)
-	if err != nil || !acquired {
-		t.Fatalf("获取 owner lease 失败: acquired=%v err=%v", acquired, err)
-	}
-	proxy, acquired, err := store.AcquireProxyLease(ctx, owner, "p-w26f", time.Hour)
-	if err != nil || !acquired {
-		t.Fatalf("获取 proxy lease 失败: acquired=%v err=%v", acquired, err)
-	}
-
-	// 纳秒精度 draft（+333ns 落在微秒截断边界上）：写库后 issued_at/
-	// expires_at 被 PG 截断到微秒，逐位 Equal 必然失配（W26② 缺陷形态）。
-	now := time.Now().UTC().Add(333 * time.Nanosecond)
-	issued, err := store.IssueInput(ctx, InputDraft{
-		ProxyID: "p-w26f", ConfigRevision: now.Add(-time.Minute).Format(time.RFC3339Nano), Trigger: TriggerPeriodic,
-		IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), PolicyVersion: proxyLatencyInputPolicyVersion,
-		ProxyType: "http", ProxyHost: "10.0.0.1", ProxyPort: 8080,
-		Targets: []Target{{Provider: "gpt", ProfileID: "profile-gpt", URL: "https://api.openai.com/v1"}},
-	})
-	if err != nil {
-		t.Fatalf("IssueInput 失败: %v", err)
-	}
-
-	if err := store.VerifyExecutionInput(ctx, owner, proxy, issued); err != nil {
-		t.Fatalf("纳秒精度 draft 的执行输入校验必须通过（W26② 微秒归一），实际: %v", err)
-	}
-	if _, found, err := store.LoadCommittedOutcome(ctx, issued); err != nil || found {
-		t.Fatalf("未提交 outcome 时 LoadCommittedOutcome 应 (found=false, nil): found=%v err=%v", found, err)
 	}
 }

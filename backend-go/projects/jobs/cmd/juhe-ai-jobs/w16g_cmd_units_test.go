@@ -11,19 +11,12 @@
 package main
 
 import (
-	"database/sql"
-	"path/filepath"
 	"context"
+	"path/filepath"
 	"testing"
-
 )
 
 const w16gNamespace = "juhe-ai:w16g"
-
-
-
-
-
 
 func TestW16GRetentionOpenDualAndCodexArms(t *testing.T) {
 	// PG 唯一形态：保留空 PostgresURL 的 acquirePool 失败臂（原 sqlite 路径
@@ -59,11 +52,11 @@ func TestW16GPGBadURLWireFamilyArms(t *testing.T) {
 	for _, family := range families {
 		t.Run(family.name, func(t *testing.T) {
 			config := workerConfig{
-				InstanceID:             "w16g-pg",
-				PostgresURL:            "",
-				PostgresMaxOpenConns:   2,
-				PostgresMaxIdleConns:   1,
-				Secret:                 wgBalanceSecret,
+				InstanceID:           "w16g-pg",
+				PostgresURL:          "",
+				PostgresMaxOpenConns: 2,
+				PostgresMaxIdleConns: 1,
+				Secret:               wgBalanceSecret,
 			}
 			assembly := newWorkerAssembly(config, nil)
 			if err := family.wire(assembly); err == nil {
@@ -74,18 +67,10 @@ func TestW16GPGBadURLWireFamilyArms(t *testing.T) {
 }
 
 func TestW16GAssemblyComponentsLifecycle(t *testing.T) {
-	// PG 唯一形态：stats-verify schema 初始化是只读 18 表契约（外部
-	// bootstrap 责任，独立空库必然缺失）→ 覆盖库门禁（w12c/w14q 同例，
-	// 连接串不可用即 skip）。探针/余额族在覆盖库上按契约接线或登记
-	// disabled，writer/drain/scheduler 组件面不受影响。
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16g: 覆盖库连接串不可用")
-	}
-	if db, err := sql.Open("pgx", pgURL); err == nil {
-		w14jEnsurePGFixture(t, db)
-		_ = db.Close()
-	}
+	// PG 唯一形态：stats-verify schema 的 18 表契约由 wgCmdKitDB 按生产
+	// 形状预置。探针/余额族在隔离测试库上按契约接线或登记 disabled，
+	// writer/drain/scheduler 组件面不受影响。
+	_, pgURL := wgCmdKitDB(t)
 	env := map[string]string{
 		"JUHE_AI_POSTGRES_URL":             pgURL,
 		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": pgURL,

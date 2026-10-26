@@ -607,7 +607,7 @@ func TestW2BTurnRetryRedisArms(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:dev:w1cover")
+	store, err := newChainTurnRetryRedisStateStore(client, "juhe-ai:dev:w2a-turnretry")
 	if err != nil || store == nil {
 		t.Fatalf("构建 redis 状态存储失败: %v", err)
 	}
@@ -1059,7 +1059,7 @@ func TestW2BModelCatalogRefreshSecondListFailure(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // compose_account_balance_refresh.go：118 / 298 / 301（真实 dev PG 门禁批，
-// 只触碰临时库 juhe_ai_sub2api_dev_w1cover）
+// 只触碰 w1g2CoverPostgres 的 pgtestkit 隔离测试库）
 // ---------------------------------------------------------------------------
 
 const w2bRefreshSecret = "w2b-refresh-secret"
@@ -1120,8 +1120,8 @@ func w2bNewPGBalanceRefresher(t *testing.T, db *sql.DB, ownerID string) *gateway
 
 // TestW2BBalanceRefreshLoadOutcomeArms 覆盖 RefreshManual 的 outcome 回读
 // 错误臂（298：LoadOutcome 报错）与未找到臂（301：outcome 查询恒空 →
-// “未生成结果”）。依赖真实 dev PG（临时子库 juhe_ai_sub2api_dev_w1cover +
-// juhe_jobs 租约四表），不可达即 t.Skip。
+// “未生成结果”）。依赖真实 dev PG（w1g2CoverPostgres 隔离测试库 +
+// juhe_jobs 租约四表），PG 不可达由 pgtestkit 显式 Fatal。
 func TestW2BBalanceRefreshLoadOutcomeArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short 模式跳过真实 dev PG 测试")

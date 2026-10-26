@@ -3,18 +3,18 @@ package modelcheckowner
 // w11e PostgreSQL 门控覆盖：CheckBusinessPostgresSchema 的完整正/负臂与
 // OpenBusinessTargetConnection 的 PostgreSQL 分支。
 //
-// 隔离铁律（沿用 auditlog w10b 先例）：
-//   - 只在共享临时库 juhe_ai_sub2api_dev_w1cover 内创建/删除本测试专属
-//     w11e_bs_* schema 与 juhe_business schema；主库对象一个字节不动。
-//   - 连接配置只从 .local/project-resources/dev/env/shared.env 读取；任何
-//     输出不得携带连接串或密码。
-//   - env 缺失或 PG 不可达一律 t.Skip。
+// 隔离铁律（沿用 auditlog w10b 先例，2026-10-26 收口）：
+//   - 建库走 pgtestkit 每测试独立临时库（用毕强制删库）；本测试专属
+//     w11e_bs_* schema 与 juhe_business schema 的建删都在隔离库内进行，
+//     主库对象一个字节不动。
+//   - 连接配置由 pgtestkit 自 .local dev env 或 JUHE_AI_TEST_PG_ADMIN_URL
+//     解析；任何输出不得携带连接串或密码。
+//   - env 缺失或 PG 不可达由 pgtestkit 显式 Fatal 而非 skip。
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -22,94 +22,25 @@ import (
 	"time"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-const (
-	w11eEnvPath  = "../../../../../.local/project-resources/dev/env/shared.env"
-	w11eCoverDB  = "juhe_ai_sub2api_dev_w1cover"
-	w11ePgBudget = 60 * time.Second
-)
+const w11ePgBudget = 60 * time.Second
 
-func w11eSharedEnv(t *testing.T) map[string]string {
-	t.Helper()
-	raw, err := os.ReadFile(w11eEnvPath)
-	if err != nil {
-		t.Skipf("dev env 不可达（跳过 PG 门禁测试）: %v", err)
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
-	}
-	return values
-}
-
-// w11eCoverPostgresURL 复用共享覆盖库（不存在则创建），返回应用连接 URL。
-func w11eCoverPostgresURL(t *testing.T) string {
-	t.Helper()
-	env := w11eSharedEnv(t)
-	host := env["DEV_POSTGRES_HOST"]
-	port := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || port == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过）")
-	}
-	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, port))
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
-	}
-	defer admin.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
-	defer cancel()
-	if err := admin.PingContext(ctx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	var exists bool
-	if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, w11eCoverDB).Scan(&exists); err != nil {
-		t.Fatalf("查询临时子库失败: %v", err)
-	}
-	if !exists {
-		owner := env["DEV_POSTGRES_APP_USERNAME"]
-		if owner == "" {
-			owner = adminUser
-		}
-		if _, err := admin.ExecContext(ctx, fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, w11eCoverDB, owner)); err != nil {
-			t.Fatalf("创建临时子库失败: %v", err)
-		}
-	}
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	return appURL[:sep+1] + w11eCoverDB
-}
-
+// w11eOpenCoverDB 打开 pgtestkit 隔离 PG 测试库（本测试专属 schema 的建删
+// 载体），返回已 ping 通过的连接池。测试结束自动关池并删库。
 func w11eOpenCoverDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("pgx", w11eCoverPostgresURL(t))
-	if err != nil {
-		t.Fatalf("打开覆盖库失败: %v", err)
-	}
-	db.SetMaxOpenConns(2)
-	db.SetMaxIdleConns(1)
-	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		t.Skipf("覆盖库不可达（跳过）: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return pgtestkit.New(t)
+}
+
+// w11eOpenKitDB 同 w11eOpenCoverDB，但同时返回库连接串（需要以同库 URL
+// 构造注入驱动或 store 的测试用）。
+func w11eOpenKitDB(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+	testDB := pgtestkit.NewTestDatabase(t)
+	return testDB.DB, testDB.DSN
 }
 
 // w11eSchemaPlan 描述对生成 DDL 的负向变体；零值生成满足契约的完整 schema。
@@ -326,7 +257,7 @@ func w11eRecreateSchema(t *testing.T, db *sql.DB, schema string, plan w11eSchema
 	t.Helper()
 	// drop 必须自建 context：t.Cleanup 在本函数 return（defer cancel 已触发）
 	// 之后才运行，复用外层 ctx 会让 DROP 静默失败，把 w11e_fk_% 外键连同
-	// schema 泄漏进共享覆盖库，污染其它共享 w1cover 的门禁测试（W30）。
+	// schema 泄漏进隔离库，破坏后续用例对 fresh 形状的前提（W30）。
 	drop := func() {
 		dropCtx, dropCancel := context.WithTimeout(context.Background(), w11ePgBudget)
 		defer dropCancel()
@@ -449,8 +380,9 @@ func TestW11ECheckBusinessPostgresSchemaRejectsDrifts(t *testing.T) {
 // OpenBusinessTargetConnection 的 PostgreSQL 分支：SchemaReady 门禁、
 // 缺 URL 拒绝与共享句柄契约。
 func TestW11EOpenBusinessTargetConnectionPostgresArms(t *testing.T) {
-	db := w11eOpenCoverDB(t)
-	coverURL := w11eCoverPostgresURL(t)
+	testDB := pgtestkit.NewTestDatabase(t)
+	db := testDB.DB
+	coverURL := testDB.DSN
 	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
 	defer cancel()
 

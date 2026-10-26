@@ -5,13 +5,13 @@
 //     空 secret、collectDirectCandidatePagesWithCap 页界校验、
 //     directInputScanCap 上限臂；
 //   - direct_input_reader.go PG 辅助臂：loadDirectSchedule 设置校验
-//     （回滚事务内注入坏 settings，不污染 w1cover）、loadDirectQuotaCosts
+//     （回滚事务内注入坏 settings，不污染共享行）、loadDirectQuotaCosts
 //     的 ErrNoRows/小时窗路径、authorizationQuotaEligible 的 limits 解析臂；
 //   - store.go：EnsureSchema 的 PRAGMA/ALTER 注入失败臂（复用 w13g5 注入
 //     kit）、AcquireOwnerLease 参数校验、nil store Close；
 //   - outbox_drain.go：claim 错误透传与 deadline 缺失收敛臂（stub store）。
 //
-// PG 门禁连接复用 w9hPgDB（w1cover 覆盖库），数据 ID 全部 w13g8- 前缀，
+// PG 门禁连接走 w9hOpenKitDB 的 pgtestkit 隔离测试库（fresh 库无跨波行），
 // 注入的坏 settings 位于回滚事务内、不落库。
 package accounthealth
 
@@ -62,9 +62,9 @@ func TestW13G8DirectInputScanCapUpperBound(t *testing.T) {
 
 // TestW13G8DirectScheduleSettingArms 在回滚事务内注入坏 settings，驱动
 // loadDirectSchedule/directSettingInt 的缺设置、无效设置与时区臂（不污染
-// w1cover 的 sys_admin 行）。
+// 夹具预置的 sys_admin 行）。
 func TestW13G8DirectScheduleSettingArms(t *testing.T) {
-	db := w9hPgDB(t)
+	db, _ := w9hOpenKitDB(t)
 	ctx := context.Background()
 	seed := func(t *testing.T, values map[string]string) *sql.Tx {
 		t.Helper()
@@ -113,9 +113,9 @@ func TestW13G8DirectScheduleSettingArms(t *testing.T) {
 }
 
 // TestW13G8DirectQuotaCostsArms 驱动 loadDirectQuotaCosts 的 ErrNoRows 零值
-// 路径与小时窗查询臂（w1cover 上无 w13g8- 行 → 全部 ErrNoRows）。
+// 路径与小时窗查询臂（fresh 库无 w13g8- 行 → 全部 ErrNoRows）。
 func TestW13G8DirectQuotaCostsArms(t *testing.T) {
-	db := w9hPgDB(t)
+	db, _ := w9hOpenKitDB(t)
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -140,7 +140,7 @@ func TestW13G8DirectQuotaCostsArms(t *testing.T) {
 // TestW13G8AuthorizationQuotaEligibleArms 驱动 authorizationQuotaEligible 的
 // nil 授权短路与 limits 解析失败臂。
 func TestW13G8AuthorizationQuotaEligibleArms(t *testing.T) {
-	db := w9hPgDB(t)
+	db, _ := w9hOpenKitDB(t)
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

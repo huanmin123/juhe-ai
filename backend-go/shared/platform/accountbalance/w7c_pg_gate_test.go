@@ -7,12 +7,22 @@ package accountbalance
 // PostgresDirectInputReader (candidate SQL, scan arms, proxy resolution) and
 // the Service composition (NewService, RunManual bridge, runCycle).
 //
-// 隔离铁律（与 gateway 侧 w1 先例一致）：
-//   - 只触碰临时子库 juhe_ai_sub2api_dev_w1cover；主库一个字节不动。
-//   - 连接配置只从 .local/project-resources/dev/env/shared.env 读取；任何
-//     输出不得携带连接串或密码。
-//   - env 缺失或 PG 不可达一律 t.Skip；业务行只使用 w7c- 前缀并在结束时
-//     删除自己写入的行，绝不 DROP 共享对象。
+// 存储载体（PLAN-20261024T051925945Z 迁移，原共享 cover 库退役）：
+//   - 每测试一个 pgtestkit 独立库，测试结束自动删库；业务行不再需要自清理，
+//     也不存在跨测试的 schema 漂移与 w11e 夹具 DROP/重建 juhe_business 的顺序
+//     耦合。
+//   - juhe_business 表族 DDL 以 golden 手法从 maintenance 权威源文件
+//     （pg_schema_business_tables.go）只读提取原文执行：本包与 maintenance 无
+//     模块依赖（platform 不得 import maintenance），跨模块文件读取是唯一不
+//     复制 DDL 的防漂移手段——2026-10-26 共享 cover 库即因缺
+//     credential_fingerprint 暴露 stand-in 列集漂移。执行模型与
+//     schema.EnsurePostgres 相同（SET search_path + 原文语句）。
+//   - juhe_jobs 命名空间由 prepare 建，四表由生产 EnsureSchema 自建（与
+//     accountbalance_pgkit_test.go 同一装配）。
+//   - env 缺失或 PG 不可达一律 t.Fatalf：存储测试迁移 PG 后即核心回归面，
+//     静默跳过等于假绿（pgtestkit 契约）。
+//   - 连接配置由 pgtestkit 自 JUHE_AI_TEST_PG_ADMIN_URL 或 .local dev env
+//     解析；任何输出不得携带连接串或密码。
 
 import (
 	"context"
@@ -22,270 +32,118 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const (
-	w7cCoverDB         = "juhe_ai_sub2api_dev_w1cover"
-	w7cEnvPath         = "../../../../.local/project-resources/dev/env/shared.env"
 	w7cBalanceSecret   = "w7c-balance-secret"
 	w7cOwnerID         = "w7c-pg-owner"
-	w7cNegDBName       = "juhe_ai_sub2api_dev_w7cneg"
 	w7cScanLimitBudget = 30 * time.Second
+
+	// w7cBusinessSchemaSource 是 maintenance 权威业务 DDL 源文件相对本测试
+	// 包目录的路径（golden 只读提取，跨模块文件读取而非模块依赖）。
+	w7cBusinessSchemaSource = "../../../projects/maintenance/internal/schema/pg_schema_business_tables.go"
 )
 
-func w7cSharedEnv(t *testing.T) map[string]string {
-	t.Helper()
-	raw, err := os.ReadFile(w7cEnvPath)
-	if err != nil {
-		t.Skipf("dev env 不可达（跳过 PG 门禁测试）: %v", err)
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
-	}
-	return values
+// w7cBusinessDDLTables 是本包读写面所需的业务表，按建表依赖序排列：accounts
+// 的内联外键要求 vendors / proxy_profiles / resource_authorizations /
+// account_connections 先建；system_accounts 是 resource_authorizations 的
+// 外键目标。只取 CREATE TABLE 原文，守卫 DO 块/触发器不在本包读写面。
+var w7cBusinessDDLTables = []string{
+	"system_accounts", "vendors", "proxy_profiles", "resource_authorizations", "account_connections", "accounts",
 }
 
-// w7cCoverPostgresURL ensures the temp cover database and the two schemas the
-// balance package needs exist, then returns an application connection URL.
-func w7cCoverPostgresURL(t *testing.T) string {
+// w7cGoldenBusinessDDL 从 maintenance 权威源文件逐表提取 CREATE TABLE 原文
+// （SQL 原始字面量不含反引号，提取到首个收尾反引号即语句全文）。任一表缺失
+// 即 Fatal：源文件结构调整时必须显式跟进，不得静默降级为本地 stand-in。
+func w7cGoldenBusinessDDL(t *testing.T) []string {
 	t.Helper()
-	env := w7cSharedEnv(t)
-	host := env["DEV_POSTGRES_HOST"]
-	port := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || port == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过）")
-	}
-	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, port))
+	raw, err := os.ReadFile(w7cBusinessSchemaSource)
 	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
+		t.Fatalf("读取 maintenance 权威业务 schema 源文件失败: %v", err)
 	}
-	defer admin.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
-	defer cancel()
-	if err := admin.PingContext(ctx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	var exists bool
-	if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, w7cCoverDB).Scan(&exists); err != nil {
-		t.Fatalf("查询临时子库失败: %v", err)
-	}
-	if !exists {
-		owner := env["DEV_POSTGRES_APP_USERNAME"]
-		if owner == "" {
-			owner = adminUser
+	statements := make([]string, 0, len(w7cBusinessDDLTables))
+	for _, table := range w7cBusinessDDLTables {
+		pattern := regexp.MustCompile("(?s)SQL: `CREATE TABLE IF NOT EXISTS " + table + " \\(.*?`")
+		matched := pattern.FindString(string(raw))
+		if matched == "" {
+			t.Fatalf("golden 提取失败：CREATE TABLE IF NOT EXISTS %s 不在 %s", table, w7cBusinessSchemaSource)
 		}
-		if _, err := admin.ExecContext(ctx, fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, w7cCoverDB, owner)); err != nil {
-			t.Fatalf("创建临时子库失败: %v", err)
-		}
+		statements = append(statements, strings.TrimSuffix(strings.TrimPrefix(matched, "SQL: `"), "`"))
 	}
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	tempURL := appURL[:sep+1] + w7cCoverDB
-
-	db, err := sql.Open("pgx", tempURL)
-	if err != nil {
-		t.Fatalf("打开临时子库失败: %v", err)
-	}
-	defer db.Close()
-	if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
-		t.Fatalf("补建 juhe_jobs schema 失败: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
-		t.Fatalf("补建 juhe_business schema 失败: %v", err)
-	}
-	// Minimal stand-in tables matching the bootstrap contract columns this
-	// package reads; no-ops when the bootstrap schema already exists.
-	if _, err := db.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS juhe_business.accounts (
-  id text PRIMARY KEY,
-  system_account_id text NOT NULL,
-  config_revision integer NOT NULL DEFAULT 1,
-  dispatch_revision bigint NOT NULL DEFAULT 1,
-  vendor_code text,
-  connection_driver_code text NOT NULL DEFAULT 'gpt',
-  protocol_code text NOT NULL DEFAULT '',
-  protocol_version text NOT NULL DEFAULT '',
-  name text NOT NULL DEFAULT '',
-  type text NOT NULL,
-  status text NOT NULL DEFAULT 'active',
-  credentials_encrypted text NOT NULL,
-  schedulable integer NOT NULL DEFAULT 1,
-  balance_query_enabled integer NOT NULL DEFAULT 0,
-  balance_query_config_json text NOT NULL DEFAULT '{}',
-  balance_query_next_refresh_at text,
-  proxy_profile_id text,
-  authorization_instance_authorization_id text,
-  deleted_at text,
-  health_check_model text NOT NULL DEFAULT '',
-  health_check_endpoint_mode text NOT NULL DEFAULT 'chat_json',
-  created_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z',
-  updated_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z'
-)`); err != nil {
-		t.Fatalf("补建 accounts 表失败: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS juhe_business.proxy_profiles (
-  id text PRIMARY KEY,
-  system_account_id text NOT NULL DEFAULT '',
-  name text NOT NULL DEFAULT '',
-  type text NOT NULL,
-  host text NOT NULL,
-  port integer NOT NULL,
-  username text,
-  password_encrypted text,
-  enabled boolean NOT NULL DEFAULT true,
-  created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-  updated_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00'
-	)`); err != nil {
-		t.Fatalf("补建 proxy_profiles 表失败: %v", err)
-	}
-	// provider_protocol_profiles 已随目标 schema 删除（设计 §9.11）；账户身份
-	// 列为 vendor_code/connection_driver_code，不再补建旧 profile 表。
-	// 旧版 stand-in 或历史 bootstrap 可能留下缺列的表；CREATE TABLE IF NOT
-	// EXISTS 会静默跳过，这里用加法 ALTER 把种子/读取契约列补齐（幂等）。
-	for _, statement := range []string{
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS system_account_id text NOT NULL DEFAULT ''`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS config_revision integer NOT NULL DEFAULT 1`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS dispatch_revision bigint NOT NULL DEFAULT 1`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS vendor_code text`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS connection_driver_code text NOT NULL DEFAULT 'gpt'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS protocol_code text NOT NULL DEFAULT 'chat_completions'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS protocol_version text NOT NULL DEFAULT 'v1'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT ''`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS type text NOT NULL DEFAULT 'api_key'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS credentials_encrypted text NOT NULL DEFAULT ''`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS credential_fingerprint text`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS schedulable integer NOT NULL DEFAULT 1`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_enabled integer NOT NULL DEFAULT 0`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_config_json text NOT NULL DEFAULT '{}'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS balance_query_next_refresh_at text`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS proxy_profile_id text`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS authorization_instance_authorization_id text`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS deleted_at text`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS health_check_model text NOT NULL DEFAULT ''`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS health_check_endpoint_mode text NOT NULL DEFAULT 'chat_json'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS created_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z'`,
-		`ALTER TABLE juhe_business.accounts ADD COLUMN IF NOT EXISTS updated_at text NOT NULL DEFAULT '1970-01-01T00:00:00Z'`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS system_account_id text NOT NULL DEFAULT ''`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT ''`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS type text NOT NULL DEFAULT 'http'`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS host text NOT NULL DEFAULT ''`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS port integer NOT NULL DEFAULT 0`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS username text`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS password_encrypted text`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00'`,
-		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00'`,
-	} {
-		if _, err := db.ExecContext(ctx, statement); err != nil {
-			t.Fatalf("补齐 stand-in 列失败: %v", err)
-		}
-	}
-	// 更早的 wave 曾把 stand-in 表建成全 text 列（SQLite 形状镜像）；reader
-	// 的扫描契约要求整数/布尔/时间戳类型（NullInt64/NullBool/time.Time），
-	// pgx 严格编码也会拒绝 int→text 列。这里逐列检测实际类型，仅在漂移时
-	// 做加法类型对齐（空串转 NULL，幂等可重入）。
-	for _, drift := range []struct{ table, column, dataType, using string }{
-		{"accounts", "config_revision", "integer", "NULLIF(btrim(config_revision::text), '')::integer"},
-		{"accounts", "dispatch_revision", "integer", "NULLIF(btrim(dispatch_revision::text), '')::integer"},
-		{"accounts", "schedulable", "integer", "NULLIF(btrim(schedulable::text), '')::integer"},
-		{"accounts", "balance_query_enabled", "integer", "NULLIF(btrim(balance_query_enabled::text), '')::integer"},
-		{"proxy_profiles", "port", "integer", "NULLIF(btrim(port::text), '')::integer"},
-		{"proxy_profiles", "enabled", "boolean", "CASE WHEN enabled IS NULL OR btrim(enabled::text) = '' THEN NULL ELSE enabled::text::boolean END"},
-		{"proxy_profiles", "created_at", "timestamptz", "NULLIF(btrim(created_at::text), '')::timestamptz"},
-		{"proxy_profiles", "updated_at", "timestamptz", "NULLIF(btrim(updated_at::text), '')::timestamptz"},
-	} {
-		var actual string
-		if err := db.QueryRowContext(ctx, `SELECT data_type FROM information_schema.columns
-  WHERE table_schema = 'juhe_business' AND table_name = $1 AND column_name = $2`, drift.table, drift.column).Scan(&actual); err != nil {
-			t.Fatalf("检测 %s.%s 类型失败: %v", drift.table, drift.column, err)
-		}
-		if actual == drift.dataType {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, `ALTER TABLE juhe_business.`+drift.table+` ALTER COLUMN `+drift.column+` TYPE `+drift.dataType+` USING `+drift.using); err != nil {
-			t.Fatalf("对齐 %s.%s 为 %s 失败: %v", drift.table, drift.column, drift.dataType, err)
-		}
-	}
-	// 历史遗留表可能没有 id 唯一约束，ON CONFLICT (id) 会报 42P10；先确认
-	// 无重复 id 再补唯一索引（不删除共享库中的既有行）。
-	for _, table := range []string{"accounts", "proxy_profiles"} {
-		var duplicates int
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM (
-  SELECT id FROM juhe_business.`+table+` GROUP BY id HAVING COUNT(*) > 1
-) d`).Scan(&duplicates); err != nil {
-			t.Fatalf("检查 %s 重复 id 失败: %v", table, err)
-		}
-		if duplicates > 0 {
-			t.Fatalf("临时子库 %s 存在 %d 组重复 id，无法补唯一索引", table, duplicates)
-		}
-		if _, err := db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS w7c_ux_`+table+`_id ON juhe_business.`+table+` (id)`); err != nil {
-			t.Fatalf("补建 %s 唯一索引失败: %v", table, err)
-		}
-	}
-	return tempURL
+	return statements
 }
 
-func w7cOpenCoverDB(t *testing.T) *sql.DB {
+// w7cBusinessGoldenPrepare 返回注入 golden 业务 schema 的 prepare：执行模型
+// 与 schema.EnsurePostgres 相同（SET search_path + 原文语句，专用连接保证
+// search_path 生效），随后种子 'gpt' vendor——候选 SQL 以 vendor_code 过滤且
+// 权威 accounts.vendor_code 带 FK→vendors.code（契约来源：供应商注册表九家
+// 真实厂商，'gpt' 保证候选通过 Input.Validate）。
+func w7cBusinessGoldenPrepare(statements []string) pgtestkit.PrepareFunc {
+	return func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_business`); err != nil {
+			return err
+		}
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		for _, statement := range statements {
+			if _, err := conn.ExecContext(ctx, "SET search_path TO juhe_business, public;\n"+statement); err != nil {
+				return fmt.Errorf("golden business DDL 执行失败: %w", err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at)
+VALUES ('w7c-vendor-gpt','gpt','GPT',1,$1,$1)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("种子 gpt vendor 失败: %w", err)
+		}
+		return nil
+	}
+}
+
+// w7cGateDatabase 打开本测试的 pgtestkit 独立库：golden 业务 schema +
+// juhe_jobs 命名空间由 prepare 注入，四张 juhe_jobs 表由生产 EnsureSchema
+// 自建（NewService 组装走只读 CheckSchema，必须在夹具内预建）。返回连接池
+// 与 DSN；测试结束 pgtestkit 自动关池删库。
+func w7cGateDatabase(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	db, err := sql.Open("pgx", w7cCoverPostgresURL(t))
+	statements := w7cGoldenBusinessDDL(t)
+	testDB := pgtestkit.NewTestDatabase(t, w7cBusinessGoldenPrepare(statements), func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_jobs`)
+		return err
+	})
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: testDB.DSN})
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(4)
-	t.Cleanup(func() { _ = db.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("临时子库不可达: %v", err)
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		_ = store.Close()
+		t.Fatalf("accountbalance PG EnsureSchema 失败: %v", err)
 	}
-	return db
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	testDB.DB.SetMaxOpenConns(4)
+	return testDB.DB, testDB.DSN
 }
 
-func w7cCleanupBalanceRows(t *testing.T, db *sql.DB) {
+// w7cEmptyDatabase 打开本测试的 pgtestkit 独立空库（零 prepare），供缺失
+// schema/关系的失败臂使用。
+func w7cEmptyDatabase(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
-		defer cancel()
-		for _, statement := range []string{
-			`DELETE FROM juhe_jobs.account_balance_outcomes WHERE account_id LIKE 'w7c-%' OR request_id LIKE 'w7c-%'`,
-			`DELETE FROM juhe_jobs.account_balance_snapshots WHERE account_id LIKE 'w7c-%'`,
-			`DELETE FROM juhe_jobs.account_balance_account_leases WHERE account_id LIKE 'w7c-%' OR owner_id LIKE 'w7c-%'`,
-			`DELETE FROM juhe_jobs.account_balance_owner_leases WHERE owner_id LIKE 'w7c-%'`,
-			`DELETE FROM juhe_business.accounts WHERE id LIKE 'w7c-%'`,
-			`DELETE FROM juhe_business.proxy_profiles WHERE id LIKE 'w7c-%'`,
-		} {
-			if _, err := db.ExecContext(ctx, statement); err != nil {
-				t.Logf("清理临时行失败（不影响断言）: %v", err)
-			}
-		}
-	})
+	testDB := pgtestkit.NewTestDatabase(t)
+	return testDB.DB, testDB.DSN
 }
 
 func TestW7CBalancePostgresStoreContract(t *testing.T) {
-	db := w7cOpenCoverDB(t)
-	w7cCleanupBalanceRows(t, db)
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w7cCoverPostgresURL(t), PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2})
+	_, dsn := w7cGateDatabase(t)
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,16 +207,9 @@ func w7cSeedCandidate(t *testing.T, db *sql.DB, id, baseURL, credentialJSON, con
 	defer cancel()
 	// 目标 schema 身份列：vendor_code + connection_driver_code（设计 §9.11，
 	// provider_code/provider_protocol_profile_id 已删除）。'gpt' 是注册表
-	// 真实厂商，非空 vendor 保证候选通过 Input.Validate。
-	// The seeded database keeps an availability-dirty trigger whose FK needs a
-	// real system account; a fresh minimal database has neither.
-	systemID := "w7c-sys"
-	var seededSystem string
-	if err := db.QueryRowContext(ctx, `SELECT id FROM juhe_business.system_accounts ORDER BY id LIMIT 1`).Scan(&seededSystem); err == nil {
-		systemID = seededSystem
-	} else if !errors.Is(err, sql.ErrNoRows) && !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("读取 system_accounts 失败: %v", err)
-	}
+	// 真实厂商（golden prepare 已种子 vendors 行），非空 vendor 保证候选通过
+	// Input.Validate；accounts.system_account_id 无外键，'w7c-sys' 字面量即
+	// 满足 NOT NULL 契约。
 	if _, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.accounts (
   id, system_account_id, config_revision, dispatch_revision, vendor_code, connection_driver_code,
@@ -366,12 +217,12 @@ INSERT INTO juhe_business.accounts (
   balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, proxy_profile_id,
   deleted_at, authorization_instance_authorization_id, health_check_model, health_check_endpoint_mode,
   created_at, updated_at
-) VALUES ($1,$8,1,1,'gpt','gpt','chat_completions','v1',$1,'api_key','active',$2,1,$3::integer,$4,$5,NULLIF($6,''),NULL,NULL,'','chat_json',$7,$7)
+) VALUES ($1,'w7c-sys',1,1,'gpt','gpt','chat_completions','v1',$1,'api_key','active',$2,1,$3::integer,$4,$5,NULLIF($6,''),NULL,NULL,'','chat_json',$7,$7)
 ON CONFLICT (id) DO UPDATE SET credentials_encrypted=excluded.credentials_encrypted,
   balance_query_enabled=excluded.balance_query_enabled, balance_query_config_json=excluded.balance_query_config_json,
   balance_query_next_refresh_at=excluded.balance_query_next_refresh_at, proxy_profile_id=excluded.proxy_profile_id,
   updated_at=excluded.updated_at`,
-		id, credentialJSON, enabled, configJSON, nextRefresh, proxyID, time.Now().UTC().Format(time.RFC3339Nano), systemID); err != nil {
+		id, credentialJSON, enabled, configJSON, nextRefresh, proxyID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("seed account %s: %v", id, err)
 	}
 }
@@ -391,8 +242,7 @@ ON CONFLICT (id) DO UPDATE SET type=excluded.type, host=excluded.host, port=excl
 }
 
 func TestW7CDirectInputReaderContract(t *testing.T) {
-	db := w7cOpenCoverDB(t)
-	w7cCleanupBalanceRows(t, db)
+	db, _ := w7cGateDatabase(t)
 
 	credential, err := NewCredentialEnvelope(w7cBalanceSecret, "api_key", map[string]string{"api_key": "sk-w7c", "base_url": "https://w7c-upstream.invalid"})
 	if err != nil {
@@ -537,8 +387,7 @@ func keysOf(values map[string]Candidate) []string {
 }
 
 func TestW7CServiceComposeAndManualBridgeOnPostgres(t *testing.T) {
-	db := w7cOpenCoverDB(t)
-	w7cCleanupBalanceRows(t, db)
+	db, dsn := w7cGateDatabase(t)
 
 	// Local upstream only; nothing leaves the machine.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -556,10 +405,10 @@ func TestW7CServiceComposeAndManualBridgeOnPostgres(t *testing.T) {
 	w7cSeedCandidate(t, db, "w7c-svc-first", upstream.URL, credential.Ciphertext, `{}`, 0, past, "")
 	w7cSeedCandidate(t, db, "w7c-svc-recovery", upstream.URL, credential.Ciphertext, `{"adapter":"builtin","intervalMinutes":5}`, 1, nil, "")
 
-	storeConfig := StoreConfig{Mode: StorePostgres, PostgresURL: w7cCoverPostgresURL(t), PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2}
+	storeConfig := StoreConfig{Mode: StorePostgres, PostgresURL: dsn, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2}
 	config := RuntimeConfig{
 		Enabled: true, OwnerID: w7cOwnerID, Store: storeConfig,
-		BusinessPostgresURL: w7cCoverPostgresURL(t), CredentialSecret: w7cBalanceSecret,
+		BusinessPostgresURL: dsn, CredentialSecret: w7cBalanceSecret,
 		ScanInterval: time.Hour, OwnerLease: 10 * time.Minute, AccountLease: time.Minute,
 		InputTTL: 15 * time.Minute, ProbeTimeout: 15 * time.Second, CycleBudget: 30 * time.Second,
 		MaxConcurrency: 4, IOConcurrency: 2, DBConcurrency: 2, DBQueueSize: 8,
@@ -567,7 +416,7 @@ func TestW7CServiceComposeAndManualBridgeOnPostgres(t *testing.T) {
 	}
 	service, err := NewService(config, nil)
 	if err != nil {
-		t.Fatalf("NewService on temp PG: %v", err)
+		t.Fatalf("NewService on isolated PG: %v", err)
 	}
 	defer service.Close()
 	if service.Ready() {
@@ -654,7 +503,7 @@ func TestW7CServiceComposeAndManualBridgeOnPostgres(t *testing.T) {
 // schema check failure, business ping failure and runner capacity rejection.
 // Each arm must close the resources it opened.
 func TestW7CServiceComposeFailureArms(t *testing.T) {
-	coverURL := w7cCoverPostgresURL(t)
+	_, coverURL := w7cGateDatabase(t)
 	base := RuntimeConfig{
 		Enabled: true, OwnerID: w7cOwnerID, Store: StoreConfig{Mode: StorePostgres, PostgresURL: coverURL},
 		CredentialSecret: w7cBalanceSecret, OwnerLease: 10 * time.Minute, AccountLease: time.Minute,
@@ -669,7 +518,7 @@ func TestW7CServiceComposeFailureArms(t *testing.T) {
 	}
 
 	// Store schema check fails on a database without the juhe_jobs schema.
-	freshURL := w7cCreateNegativeDatabase(t)
+	_, freshURL := w7cEmptyDatabase(t)
 	schemaFail := base
 	schemaFail.Store = StoreConfig{Mode: StorePostgres, PostgresURL: freshURL}
 	schemaFail.BusinessPostgresURL = freshURL
@@ -686,90 +535,33 @@ func TestW7CServiceComposeFailureArms(t *testing.T) {
 	}
 }
 
-// w7cCreateNegativeDatabase creates a short-lived dedicated database (created
-// and force-dropped by this test only) for schema-validation failure arms.
-func w7cCreateNegativeDatabase(t *testing.T) string {
-	t.Helper()
-	env := w7cSharedEnv(t)
-	host := env["DEV_POSTGRES_HOST"]
-	port := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || port == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过）")
-	}
-	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, port))
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
-	}
-	defer admin.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
-	defer cancel()
-	if err := admin.PingContext(ctx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	if _, err := admin.ExecContext(ctx, `DROP DATABASE IF EXISTS `+w7cNegDBName+` WITH (FORCE)`); err != nil {
-		t.Fatalf("清理负臂临时库失败: %v", err)
-	}
-	owner := env["DEV_POSTGRES_APP_USERNAME"]
-	if owner == "" {
-		owner = adminUser
-	}
-	if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+w7cNegDBName+` OWNER `+owner); err != nil {
-		t.Fatalf("创建负臂临时库失败: %v", err)
-	}
-	t.Cleanup(func() {
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
-		defer dropCancel()
-		_, _ = admin.ExecContext(dropCtx, `DROP DATABASE IF EXISTS `+w7cNegDBName+` WITH (FORCE)`)
-	})
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	return appURL[:sep+1] + w7cNegDBName
-}
-
 func TestW7CBalancePostgresSchemaValidationArms(t *testing.T) {
-	freshURL := w7cCreateNegativeDatabase(t)
-	db, err := sql.Open("pgx", freshURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("负臂临时库不可达: %v", err)
-	}
-
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: freshURL})
+	db, dsn := w7cEmptyDatabase(t)
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
+	defer cancel()
 
 	// Missing juhe_jobs schema at all.
 	if err := store.EnsureSchema(ctx); err == nil || !strings.Contains(err.Error(), "缺少外部 bootstrap") {
 		t.Fatalf("missing schema: %v", err)
 	}
 
-	// juhe_jobs owned by the admin role instead of the application role.
-	env := w7cSharedEnv(t)
-	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", env["DEV_POSTGRES_ADMIN_USERNAME"], env["DEV_POSTGRES_ADMIN_PASSWORD"], env["DEV_POSTGRES_HOST"], env["DEV_POSTGRES_DIRECT_PORT"], w7cNegDBName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA juhe_jobs`); err != nil {
-		t.Fatalf("admin 建 schema 失败: %v", err)
+	// juhe_jobs owned by another role instead of the current jobs role. The
+	// pgtestkit database has a single provisioning role, so the mismatch is
+	// injected with the pg_database_owner pseudo-role as schema owner（PG14+，
+	// 库 owner 即其成员，无需创建集群级角色）.
+	if _, err := db.ExecContext(ctx, `CREATE SCHEMA juhe_jobs AUTHORIZATION pg_database_owner`); err != nil {
+		t.Fatalf("建外主 schema 失败: %v", err)
 	}
 	if err := store.EnsureSchema(ctx); err == nil || !strings.Contains(err.Error(), "owner 必须是当前 jobs role") {
 		t.Fatalf("schema owner mismatch: %v", err)
 	}
 	// Rebuild owned by the application role.
-	if _, err := admin.ExecContext(ctx, `DROP SCHEMA juhe_jobs CASCADE`); err != nil {
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA juhe_jobs CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `CREATE SCHEMA juhe_jobs`); err != nil {
@@ -832,9 +624,8 @@ func TestW7CBalancePostgresSchemaValidationArms(t *testing.T) {
 }
 
 func TestW7CBalancePostgresLeaseContextArms(t *testing.T) {
-	db := w7cOpenCoverDB(t)
-	w7cCleanupBalanceRows(t, db)
-	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: w7cCoverPostgresURL(t)})
+	_, dsn := w7cGateDatabase(t)
+	store, err := OpenStore(StoreConfig{Mode: StorePostgres, PostgresURL: dsn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -893,12 +684,7 @@ func TestW7CBalanceRemainingErrorArms(t *testing.T) {
 	// （2026-10-25 sqlite 臂退役：非文本 payload 解码、垃圾时间戳租约、
 	// RAISE(IGNORE) 触发器三类注入臂为 SQLite 动态类型/触发器专属语义，
 	// 无 PG 等价断言（D9 裁决），随生产臂删除。）
-	freshURL := w7cCreateNegativeDatabase(t)
-	negDB, err := sql.Open("pgx", freshURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer negDB.Close()
+	negDB, _ := w7cEmptyDatabase(t)
 	reader, err := NewPostgresDirectInputReader(negDB, w7cBalanceSecret, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -916,8 +702,7 @@ func TestW7CBalanceRemainingErrorArms(t *testing.T) {
 }
 
 func TestW7CServiceRunReturnsOnLateCancel(t *testing.T) {
-	db := w7cOpenCoverDB(t)
-	w7cCleanupBalanceRows(t, db)
+	db, dsn := w7cGateDatabase(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"unit":"USD","remaining":"1"}`))
 	}))
@@ -930,8 +715,8 @@ func TestW7CServiceRunReturnsOnLateCancel(t *testing.T) {
 	w7cSeedCandidate(t, db, "w7c-run-due", upstream.URL, credential.Ciphertext, `{"adapter":"builtin","intervalMinutes":5}`, 1, past, "")
 
 	config := RuntimeConfig{
-		Enabled: true, OwnerID: w7cOwnerID + "-late", Store: StoreConfig{Mode: StorePostgres, PostgresURL: w7cCoverPostgresURL(t)},
-		BusinessPostgresURL: w7cCoverPostgresURL(t), CredentialSecret: w7cBalanceSecret,
+		Enabled: true, OwnerID: w7cOwnerID + "-late", Store: StoreConfig{Mode: StorePostgres, PostgresURL: dsn},
+		BusinessPostgresURL: dsn, CredentialSecret: w7cBalanceSecret,
 		ScanInterval: time.Hour, OwnerLease: 10 * time.Minute, AccountLease: time.Minute,
 		InputTTL: 15 * time.Minute, ProbeTimeout: 15 * time.Second, CycleBudget: 30 * time.Second,
 		MaxConcurrency: 2, IOConcurrency: 1, DBConcurrency: 1, DBQueueSize: 4,

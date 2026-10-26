@@ -12,7 +12,7 @@ import (
 
 // TestW12dReaderTeamGrantQuotaArms 覆盖 team grant 配额臂（PG 覆盖库）。
 func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
-	db := w12dPgDB(t)
+	db, _ := w12dPgDB(t)
 	w12dSeedSettings(t, db)
 	secret := "w12d-team-secret"
 	// 授权实例 + 源账户 + 授权（带 effective_source_team_id）。

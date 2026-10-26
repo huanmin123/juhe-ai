@@ -351,8 +351,6 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 	superPriority := booleanValue(row.superPriorityEnabled)
 	fallback := booleanValue(row.fallbackEnabled)
 	concurrencyLimit := numberValue(row.concurrencyLimit)
-	providerCode := row.providerCode
-	profileID := row.providerProtocolProfileID
 	accountType := row.accountType
 	if authorized {
 		// Node write 取 item（authorized 派生后的 base 值）。
@@ -361,12 +359,6 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		fallback = booleanValue(row.boundGroupLocalFallbackEnabled)
 		if row.sourceConcurrencyLimit != nil {
 			concurrencyLimit = numberValue(row.sourceConcurrencyLimit)
-		}
-		if row.sourceProviderCode.Valid && row.sourceProviderCode.String != "" {
-			providerCode = row.sourceProviderCode.String
-		}
-		if row.sourceProviderProfileID.Valid && row.sourceProviderProfileID.String != "" {
-			profileID = row.sourceProviderProfileID.String
 		}
 		if row.sourceType.Valid && row.sourceType.String != "" {
 			accountType = row.sourceType.String
@@ -395,8 +387,6 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 		effectiveStatus:                statuses[0],
 		effectiveAvailable:             availability.available,
 		currentConcurrency:             maxInt(0, input.concurrency),
-		providerCode:                   providerCode,
-		profileID:                      profileID,
 		accountType:                    accountType,
 		boundGroupID:                   boundGroupID,
 		name:                           row.name,

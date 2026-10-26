@@ -1,6 +1,6 @@
 // 波次 w16k（PG 门禁）：run() 与 J2 manual 桥的剩余 PG 臂补齐。
-// 连接串只从 shared.env 读取改写（w12cPGOverrideURL），连接失败 t.Skip；
-// 凭据不落日志；数据与标识一律 w16k- 前缀。
+// 建库走 wgCmdKitDB 的 pgtestkit 隔离 PG 测试库（bootstrap 面由 kit 夹具
+// 预置，原 w1cover 共享覆盖库门禁已退役）；凭据不落日志。
 //
 // 覆盖清单（对照 w16k_state.cov 零块）：
 //   - main.go 230：model-recovery 在 J1 PG reader 就绪后 OpenRedisStore
@@ -11,7 +11,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -19,47 +24,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
-
-// w16kSeedPGJ1 预置 J1 PG 前置：juhe_jobs schema + w14j 权威种子语句 +
-// sys_admin 行（加法幂等；形状漂移按约定 t.Skip，不静默吞掉）。
-func w16kSeedPGJ1(t *testing.T, pgURL string) {
-	t.Helper()
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("w16k: 打开覆盖库失败: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("w16k: 覆盖库不可达: %v", err)
-	}
-	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
-		t.Skipf("w16k: 建立 juhe_jobs schema 失败: %v", err)
-	}
-	for _, statement := range w14jPGSeedStatements() {
-		if _, err := db.Exec(statement); err != nil {
-			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "multiple primary keys") {
-				continue
-			}
-			t.Logf("w16k pg seed 跳过: %v", err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts
-		(id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w16k-test-seed-not-a-login-hash', $1, $1)
-		ON CONFLICT (id) DO NOTHING`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Skipf("w16k: sys_admin seed 失败（共享库形状漂移，跳过）: %v", err)
-	}
-}
 
 // TestW16KModelRecoveryRedisOpenFailArm 锁定 run() 的 model-recovery
 // Redis store 打开失败臂（230-232）：J1 PG store+input 装配成功、reader
@@ -68,12 +33,7 @@ func TestW16KModelRecoveryRedisOpenFailArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("w16k PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16k: 覆盖库连接串不可用")
-	}
-	w16kSeedPGJ1(t, pgURL)
-
+	_, pgURL := wgCmdKitDB(t)
 	env := w14qPGMainEnv(t, t.TempDir(), pgURL, "w16k-not-a-redis-url", wgFreePort(t))
 	w16hApplyEnv(t, env)
 	w16hRunArms(t, nil, 1, "open model-recovery Redis store")
@@ -87,11 +47,7 @@ func TestW16KWithLeaseSkippedAndPartialArms(t *testing.T) {
 	if testing.Short() {
 		t.Skip("w16k PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16k: 覆盖库连接串不可用")
-	}
-	w16kSeedPGJ1(t, pgURL)
+	pgDB, pgURL := wgCmdKitDB(t)
 	assembly := w16jNewSilentAssembly(t, workerConfig{
 		PostgresURL:          pgURL,
 		PostgresMaxOpenConns: 4,
@@ -126,11 +82,7 @@ func TestW16KWithLeaseSkippedAndPartialArms(t *testing.T) {
 
 	// 2. 任务返回前租约行被删 → 释放未命中 → partial。任务在首个续租 tick
 	// （TTL 3s → 1s）之前删行并立即返回，释放 DELETE 落空是确定性的。
-	pgDB, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("w16k: 打开覆盖库失败: %v", err)
-	}
-	t.Cleanup(func() { _ = pgDB.Close() })
+	// pgDB 即 kit 夹具句柄（fresh 库，无并发租约竞争）。
 	leaseKey := taskruns.ScheduledLeaseKey("w16k-lease-partial", "global")
 	partialTask := assembly.withLease("w16k-lease-partial", 3*time.Second, func(_ context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		if _, err := pgDB.Exec(`DELETE FROM juhe_stats.background_job_leases WHERE lease_key = $1`, leaseKey); err != nil {
@@ -154,19 +106,16 @@ func TestW16KManualBridgeTriggerDefaultArm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("w16k PG 门禁臂 skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w16k: 覆盖库连接串不可用")
-	}
+	_, pgURL := wgCmdKitDB(t)
 	bootstrap, err := accountbalance.OpenStore(accountbalance.StoreConfig{
 		Mode: accountbalance.StorePostgres, PostgresURL: pgURL,
 	})
 	if err != nil {
-		t.Skipf("w16k: 打开 J2 store 失败（跳过）: %v", err)
+		t.Fatalf("打开 J2 store 失败: %v", err)
 	}
 	if err := bootstrap.EnsureSchema(context.Background()); err != nil {
 		_ = bootstrap.Close()
-		t.Skipf("w16k: J2 schema bootstrap 失败（跳过）: %v", err)
+		t.Fatalf("J2 schema bootstrap 失败: %v", err)
 	}
 	if err := bootstrap.Close(); err != nil {
 		t.Logf("w16k: J2 bootstrap 关闭: %v", err)

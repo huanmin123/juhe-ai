@@ -506,31 +506,95 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 	)
 }
 
+// w1g2GrantSchemas 是受限连接角色需要授予权限的业务 schema（子进程全启动
+// 在契约校验前会触碰这些域）。
+var w1g2GrantSchemas = []string{"juhe_business", "juhe_chat", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage", "juhe_j3b"}
+
+// w1g2WithLimitedAppRole 在隔离库上创建每测试唯一的受限 LOGIN 角色（原共享
+// 覆盖库形态依赖 admin 建表 / app 角色连接的双角色划分；pgtestkit 单角色
+// 库上 REVOKE 对表 owner 无效，故显式建第二个角色承接权限收缩臂），授权
+// 全部业务 schema 的常规读写并返回该角色的连接 URL；测试结束回收权限并删
+// 角色（角色属集群级对象，用毕即删不残留）。
+func w1g2WithLimitedAppRole(t *testing.T, admin *sql.DB, ownerURL string) (string, string) {
+	t.Helper()
+	sanitized := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' {
+			return r
+		}
+		return '_'
+	}, t.Name())
+	if len(sanitized) > 32 {
+		sanitized = sanitized[len(sanitized)-32:]
+	}
+	// 全小写：场景 REVOKE/GRANT 语句以未加引号标识符拼接角色名，PG 会折叠
+	// 大小写，角色名必须与之同形。
+	role := strings.ToLower("w1g2_role_" + sanitized)
+	const roleSecret = "w1g2-limited-role-secret"
+	quote := func(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
+	// 先清同名残留（角色属集群级对象；上轮失败运行可能泄漏，旧测试库删除
+	// 后其对象权限已随库消失，DROP ROLE IF EXISTS 幂等安全）。
+	if _, err := admin.Exec(fmt.Sprintf(`DROP ROLE IF EXISTS %s`, quote(role))); err != nil {
+		t.Fatalf("清理残留受限连接角色失败: %v", err)
+	}
+	if _, err := admin.Exec(fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD '%s'`, quote(role), roleSecret)); err != nil {
+		t.Fatalf("创建受限连接角色失败: %v", err)
+	}
+	t.Cleanup(func() {
+		// t.Cleanup 晚于调用方 defer 的连接关闭运行：清理自开管理连接。
+		cleanupDB, err := sql.Open("pgx", ownerURL)
+		if err != nil {
+			t.Errorf("回收受限角色权限失败（打开连接）: %v", err)
+			return
+		}
+		defer cleanupDB.Close()
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer dropCancel()
+		for _, schema := range w1g2GrantSchemas {
+			_, _ = cleanupDB.ExecContext(dropCtx, fmt.Sprintf(`REVOKE ALL ON ALL TABLES IN SCHEMA %s FROM %s`, quote(schema), quote(role)))
+			_, _ = cleanupDB.ExecContext(dropCtx, fmt.Sprintf(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA %s FROM %s`, quote(schema), quote(role)))
+			_, _ = cleanupDB.ExecContext(dropCtx, fmt.Sprintf(`REVOKE ALL ON SCHEMA %s FROM %s`, quote(schema), quote(role)))
+		}
+		if _, err := cleanupDB.ExecContext(dropCtx, fmt.Sprintf(`DROP ROLE %s`, quote(role))); err != nil {
+			t.Errorf("删除受限连接角色失败（%s 可能残留）: %v", role, err)
+		}
+	})
+	for _, schema := range w1g2GrantSchemas {
+		if _, err := admin.Exec(fmt.Sprintf(`GRANT USAGE ON SCHEMA %s TO %s`, quote(schema), quote(role))); err != nil {
+			t.Fatalf("授权 schema %s 失败: %v", schema, err)
+		}
+		if _, err := admin.Exec(fmt.Sprintf(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %s TO %s`, quote(schema), quote(role))); err != nil {
+			t.Fatalf("授权 schema %s 表权限失败: %v", schema, err)
+		}
+		if _, err := admin.Exec(fmt.Sprintf(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %s TO %s`, quote(schema), quote(role))); err != nil {
+			t.Fatalf("授权 schema %s 序列权限失败: %v", schema, err)
+		}
+	}
+	parsed, err := url.Parse(ownerURL)
+	if err != nil {
+		t.Fatalf("解析隔离测试库 URL 失败: %v", err)
+	}
+	parsed.User = url.UserPassword(role, roleSecret)
+	return role, parsed.String()
+}
+
 func TestW1WOwnerJ3bPostgresContractArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
 	tempAppURL := w1g2CoverPostgres(t)
-	envFile := w1pgEnvFile(t)
-	parsed, err := url.Parse(tempAppURL)
+	adminDB, err := sql.Open("pgx", tempAppURL)
 	if err != nil {
-		t.Fatalf("解析临时子库 URL 失败: %v", err)
-	}
-	appRole := parsed.User.Username()
-	if appRole == "" {
-		t.Skipf("临时子库 URL 未携带角色（跳过权限收缩臂）")
-	}
-	adminDSN := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		envFile["DEV_POSTGRES_ADMIN_USERNAME"], envFile["DEV_POSTGRES_ADMIN_PASSWORD"],
-		envFile["DEV_POSTGRES_HOST"], envFile["DEV_POSTGRES_DIRECT_PORT"], w1coverDB)
-	adminDB, err := sql.Open("pgx", adminDSN)
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
+		t.Fatalf("打开隔离测试库管理连接失败: %v", err)
 	}
 	defer adminDB.Close()
-	if err := adminDB.Ping(); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过权限收缩臂）: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := adminDB.PingContext(ctx); err != nil {
+		t.Fatalf("隔离测试库不可达: %v", err)
 	}
+	// 先建 juhe_j3b 专属 schema（受限角色授权清单含它），再建受限连接角色：
+	// 子进程以受限角色连接，权限收缩臂才会真实命中。
 	db := w1g2OpenApp(t, tempAppURL)
 	w1g2EnsureJ3bSchema(t, db)
+	appRole, childURL := w1g2WithLimitedAppRole(t, adminDB, tempAppURL)
 
 	scenarios := []struct {
 		name       string
@@ -572,7 +636,7 @@ func TestW1WOwnerJ3bPostgresContractArms(t *testing.T) {
 			})
 			f := w1wNewOwnerFixture(t, true, true)
 			coverageDir := w1bCoverageDir(t, "W1W-pg-contract-"+scenario.name)
-			env := w1wJ3bPostgresContractEnv(t, coverageDir, tempAppURL,
+			env := w1wJ3bPostgresContractEnv(t, coverageDir, childURL,
 				w1bWriteCutoverEvidence(t, filepath.Join(f.root, "j3b-evidence"), w1wOwnerEpoch), f.state.Addr())
 			_, stderr, code := w1bRunScenario(t, "W1W-pg-contract-"+scenario.name, env)
 			w1bRequireExitCode(t, scenario.name, code, 1)

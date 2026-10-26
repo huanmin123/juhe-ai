@@ -52,7 +52,7 @@ xAI/Grok OAuth 账户（SuperGrok 订阅，上游 `https://cli-chat-proxy.grok.c
 复用 stats 库 `account_usage_snapshots`（PK `(system_account_id, account_id, kind)`，含 `snapshot_json/refresh_status/last_attempt_at/last_success_at/next_refresh_after/last_error_message` 完整刷新状态列）。
 
 - kind 新增 `'xai_grok'`：
-  - maintenance schema（`pg_schema_stats.go` / `sqlite_schema_stats.go`）CHECK 同步扩展；
+  - maintenance schema（`pg_schema_stats.go`；历史双方言时期另有 `sqlite_schema_stats.go`，已随 2026-10-25 存储收口删除）CHECK 同步扩展；
   - 存量库受控变更（加法式）：`ALTER TABLE <stats>.account_usage_snapshots DROP CONSTRAINT account_usage_snapshots_kind_check; ADD CHECK (kind IN ('openai_codex','relay_balance','xai_grok'))`。
 - `snapshot_json` 字段（全部 `grok_` 前缀，对齐 `codex_*` 惯例）：
 

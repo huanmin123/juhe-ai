@@ -607,7 +607,7 @@ MCP 是工具 / 上下文协议，不是本项目的上游模型网关协议。�
 - Anthropic 不新增协议专属账号状态机：generic HTTP 状态、错误体和正文中断不产生共享账户/Key 状态；只有可重放文本主派发已开始、响应头前 transport failure 可以消费整请求安全原地重试 token，兄弟 Key 先行且不占 token。账户状态动作只来自用户显式策略或带独立 generation 的后台 transport 证据，半开探测和冷却复测继续复用通用流程。
 - Anthropic 使用记录明细当前落地 input / output / cache read / cache write / 1h cache / thinking tokens 和 `usage_semantic`；统计预聚合和授权消耗的新增维度需要后续 schema 与 worker 扩展。
 - Anthropic 模型目录和价格目录单独维护，成本估算按 `providerCode=anthropic` 查找。
-- 文档、导入协议、接口契约、SQLite 存储说明、模型目录清洗、模型价格和测试说明同步更新。
+- 文档、导入协议、接口契约、[PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)（原 SQLite 存储说明，已随 2026-10-25 存储收口退役）、模型目录清洗、模型价格和测试说明同步更新。
 
 ## 验证要求
 

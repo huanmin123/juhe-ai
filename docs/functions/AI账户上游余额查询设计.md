@@ -169,7 +169,7 @@ WHERE status = 'active'
   AND authorization_instance_authorization_id IS NULL;
 ```
 
-业务库和统计库相互独立，禁止跨库 JOIN 判断到期。worker 直接按上述账户索引读取 `balance_query_next_refresh_at <= now` 的候选；列表展示再按当前页账户 ID 批量读取统计快照。SQLite 与 PostgreSQL 使用同一稳定排序：`balance_query_next_refresh_at ASC, id ASC`，单轮固定上限，禁止无界扫描。
+业务库和统计库相互独立，禁止跨库 JOIN 判断到期。worker 直接按上述账户索引读取 `balance_query_next_refresh_at <= now` 的候选；列表展示再按当前页账户 ID 批量读取统计快照。候选扫描使用统一稳定排序：`balance_query_next_refresh_at ASC, id ASC`（历史双方言时期表述为 SQLite 与 PostgreSQL 同一排序，现行为 PostgreSQL 单形态），单轮固定上限，禁止无界扫描。
 
 ### 3.4 多 Key 状态收敛
 
@@ -242,7 +242,7 @@ One API、New API、OneHub、DoneHub 和 Veloera 的当前源码将 API Key 不�
 当前生产运行时由 Node `ops-worker` 承接一个简单定时任务，每分钟执行一次：
 
 1. 按索引读取状态可用、启用余额查询、非授权实例、至少一个 API Key 的到期物理账户，worker 单轮总容量为 12 个，其中包含自愈预留名额。
-2. 每轮固定为自愈保留 4 个名额，再用剩余容量处理正常到期账户。自愈补充“活动、可调度、已开启但刷新时间为空”的账户，包括历史版本留下的 `unsupported` 停止计划；SQLite 和 PostgreSQL 都使用进程内游标按有界页轮转扫描。扫描页大于本轮返回容量时，游标只推进到本轮最后一个实际检查或消费的账户，不能跳到尚未消费的页末；只有整页消费完成后才允许页末 wrap。
+2. 每轮固定为自愈保留 4 个名额，再用剩余容量处理正常到期账户。自愈补充“活动、可调度、已开启但刷新时间为空”的账户，包括历史版本留下的 `unsupported` 停止计划；候选扫描使用进程内游标按有界页轮转（历史双方言时期 SQLite 与 PostgreSQL 各自执行，现行为 PostgreSQL 单形态）。扫描页大于本轮返回容量时，游标只推进到本轮最后一个实际检查或消费的账户，不能跳到尚未消费的页末；只有整页消费完成后才允许页末 wrap。
 3. 到期账户按 `next_refresh_after ASC, account_id ASC` 稳定排序。
 4. 以小并发执行查询；自动和手动查询复用现有 `background_job_leases`，以 `account-balance:<accountId>` 为租约 key、30 秒为租期，保证跨进程同一账户同一时刻只有一个查询。
 5. 成功、临时失败、确定性失败和 `unsupported` 都写当前快照并按用户配置周期安排下次刷新；余额结果永远不改变账户状态、可调度性或用户开关。
@@ -274,7 +274,7 @@ POST /__aisys__/api/accounts/:id/balance/refresh
 - 前端收到最新快照后必须替换当前页的目标账户对象和列表数组引用，只重渲染该行余额；禁止为了显示新金额重新请求整张账户列表。当前列表使用 `shallowRef`，不能只修改数组内部对象的 `balanceSnapshot`。
 - 列表人工刷新拿到本次结果后先替换当前行；失败或不支持立即显示“余额查询失败”，不能继续展示旧金额。
 - 人工刷新允许对当前不可调用账户主动检测；失败只保存本次诊断语义，不能取消自动周期。
-- **双方言装配（2026-10-04 起）**：手动刷新执行器在 gateway 进程内双方言装配——PG 模式经共享池使用 `juhe_jobs.account_balance_*` 租约四表（与 J2 周期任务同表互斥），SQLite standalone 模式经共享核心 `StoreSQLite` 在 `JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH`（默认 `<数据根>/account-balance.sqlite3`）自建同构四表（gateway 独占；与周期探测 auto-detect-recovery 的 task-runs 租约无四表级互斥，并发仅为幂等读）。SQLite 模式 committed 快照由 gateway 直写 `account_usage_snapshots`（kind='relay_balance'，UPSERT 语义与 J2 投影一致）供列表 overlay 读取；PG 模式该通道由 jobs `account-balance-stats-projection` 周期投影承担，行为不变。失败分级双方言一致：租约库路径缺失或契约校验（CheckSchema）失败时端口降级为既有 500/失败快照契约并登记告警（不阻塞启动）；store 打开或执行器创建失败则组合根启动失败（fail-fast）。
+- **历史截面（SQLite 模式，已于 2026-10-25 退役）——双方言装配（2026-10-04 起）**：手动刷新执行器曾按模式双方言装配——PG 模式经共享池使用 `juhe_jobs.account_balance_*` 租约四表（与 J2 周期任务同表互斥），SQLite standalone 模式曾经共享核心 `StoreSQLite` 在 `JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH`（默认 `<数据根>/account-balance.sqlite3`）自建同构四表（gateway 独占；与周期探测 auto-detect-recovery 的 task-runs 租约无四表级互斥，并发仅为幂等读）。SQLite 模式曾由 gateway 直写 `account_usage_snapshots`（kind='relay_balance'）供列表 overlay 读取；PG 模式该通道由 jobs `account-balance-stats-projection` 周期投影承担。现行唯一形态为 PG 路径：手动刷新与 J2 周期任务共用 `juhe_jobs.account_balance_*` 租约四表，快照投影统一走 jobs 周期投影，失败分级不变（租约契约校验失败降级为既有 500/失败快照契约并登记告警；store 打开或执行器创建失败则组合根启动失败，fail-fast）。
 
 新增/编辑弹窗使用独立草稿测试接口：
 
@@ -310,7 +310,7 @@ POST /__aisys__/api/accounts/balance/test-draft
 
 自动探测意图只由新账户首次激活创建一次；它允许因 worker 重启或临时失败进行受控补偿尝试。周期健康检查、旧账户和普通编辑不创建新意图，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
 
-go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除与第 5 节 due 写回同语义同格式：`balance_query_next_refresh_at` 为 TEXT 列，写入值统一为 RFC3339Nano UTC 毫秒截断文本，围栏以 `::timestamptz` 等值比较（SQLite 分支为同格式文本等值）；围栏未命中（期间被用户编辑或手动刷新抢先）只跳过本次推进/清除，不算失败。命中 `unsupported` 时清除意图（收口），临时失败按固定短周期延后，命中 `fresh/unlimited` 时开启配置并安排下次刷新。围栏格式失配会让意图永不收口、候选被 J2 探测循环按扫描节奏反复执行（见问题-0204），该格式家族回归由毫秒截断往返测试锁定。
+go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除与第 5 节 due 写回同语义同格式：`balance_query_next_refresh_at` 为 TEXT 列，写入值统一为 RFC3339Nano UTC 毫秒截断文本，围栏以 `::timestamptz` 等值比较（历史双方言时期 SQLite 分支为同格式文本等值，已随 2026-10-25 存储收口退役）；围栏未命中（期间被用户编辑或手动刷新抢先）只跳过本次推进/清除，不算失败。命中 `unsupported` 时清除意图（收口），临时失败按固定短周期延后，命中 `fresh/unlimited` 时开启配置并安排下次刷新。围栏格式失配会让意图永不收口、候选被 J2 探测循环按扫描节奏反复执行（见问题-0204），该格式家族回归由毫秒截断往返测试锁定。
 
 （历史 Node 时代首次上线的维护命令记录：命令与进程拓扑已随 Node 归档失效，仅作历史对照；现行一次性维护命令统一由 `juhe-ai-maintenance` 承载。）本功能首次上线后在 release 根目录执行一次维护命令 `pnpm --filter juhe-ai-backend maintenance:backfill-account-balance`，覆盖所有系统账户作用域下尚未开启余额查询的合格物理账户。发布包保留该命令和编译脚本。PostgreSQL 可在主服务运行时后台执行；SQLite 必须先停止主服务并设置 `JUHE_AI_SQLITE_OFFLINE_MAINTENANCE_CONFIRMED=1`，由专用离线维护启动器独占 business/stats 写入，禁止与在线 DB service/worker 并行。命令按账户 ID 游标每页 50 条读取、并发 2 探测，逐页输出 `scanned/enabled/unsupported/stale` 进度；不把全部账户载入内存，也不阻塞 PostgreSQL 主服务。上线后的常态只保留新账户首次激活探测，不把全量扫描注册为周期任务。
 
@@ -353,7 +353,7 @@ go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除�
 ## 11. 验收
 
 - 五类适配器都有成功、无限/未提供、鉴权失败、超时和字段异常回归。
-- 开启、关闭、修改间隔和修改适配器时，SQLite/PostgreSQL 读写一致。
+- 开启、关闭、修改间隔和修改适配器时，配置读写行为一致（历史双方言时期表述为 SQLite/PostgreSQL 读写一致，现行为 PostgreSQL 单形态）。
 - 自动刷新只处理到期且可用的物理 API Key 账户，单轮有界且稳定排序。
 - 自动刷新和首次探测恢复都只领取 `active && schedulable` 的物理账户；停用、错误和待检查账户保留用户配置或探测意图但不自动请求上游。人工刷新仍可跨账户状态用于诊断。
 - 后台临时错误前两次保留上次成功余额或显示“待重试”，连续第 3 次才显示“查询失败”并清空金额；每次临时失败都按账户配置的刷新周期继续查询，任意成功清零失败次数。

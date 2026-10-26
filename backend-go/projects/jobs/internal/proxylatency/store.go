@@ -660,51 +660,6 @@ func (s *Store) IssueInput(ctx context.Context, draft InputDraft) (IssuedInput, 
 	return issued, nil
 }
 
-// LoadCommittedOutcome returns a durable replay only when input is equivalent
-// to the Store-issued immutable request under the canonical JSON digest. It
-// deliberately does not require a currently valid execution lease: a
-// committed request remains idempotent after lease handoff or input expiry.
-func (s *Store) LoadCommittedOutcome(ctx context.Context, input IssuedInput) (Outcome, bool, error) {
-	if err := validateIssuedInput(input); err != nil {
-		return Outcome{}, false, err
-	}
-	tx, err := s.beginTx(ctx)
-	if err != nil {
-		return Outcome{}, false, err
-	}
-	defer tx.Rollback()
-	if err := s.verifyIssuedInputSnapshotTx(ctx, tx, input, time.Now().UTC(), false); err != nil {
-		return Outcome{}, false, err
-	}
-	query := `SELECT payload,payload_digest FROM proxy_latency_outcomes WHERE request_id=? AND committed=1`
-	query = `SELECT payload,payload_digest FROM juhe_jobs.proxy_latency_outcomes WHERE request_id=$1 AND committed=TRUE`
-	var payload []byte
-	var storedDigest string
-	if err := tx.QueryRowContext(ctx, query, input.RequestID).Scan(&payload, &storedDigest); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			if err := tx.Commit(); err != nil {
-				return Outcome{}, false, err
-			}
-			return Outcome{}, false, nil
-		}
-		return Outcome{}, false, fmt.Errorf("读取 J3a committed outcome 失败: %w", err)
-	}
-	var outcome Outcome
-	if err := json.Unmarshal(payload, &outcome); err != nil || validateOutcome(outcome) != nil {
-		return Outcome{}, false, ErrRequestConflict
-	}
-	if !payloadDigestMatches(payload, outcome, storedDigest) {
-		return Outcome{}, false, ErrRequestConflict
-	}
-	if outcome.RequestID != input.RequestID || outcome.ProxyID != input.ProxyID || outcome.InputVersion != input.InputVersion || outcome.ConfigRevision != input.ConfigRevision || outcome.Trigger != input.Trigger {
-		return Outcome{}, false, ErrRequestConflict
-	}
-	if err := tx.Commit(); err != nil {
-		return Outcome{}, false, err
-	}
-	return outcome, true, nil
-}
-
 // ListCommittedOutcomes exposes immutable jobs facts to the Go-owned business
 // projector. It verifies each row against its typed payload and digest before
 // returning it, so a malformed durable record cannot become a proxy update.
@@ -802,35 +757,6 @@ func (s *Store) FindCommittedOutcome(ctx context.Context, outcomeID string) (Sto
 	}
 	row.StoredAt = storedAt.UTC()
 	return row, true, nil
-}
-
-// VerifyExecutionInput checks the Store-issued input and the live owner/proxy
-// fences before an executor may contact an upstream. AppendOutcome repeats the
-// checks in its write transaction, so a lease lost during the probe cannot
-// commit a stale outcome.
-func (s *Store) VerifyExecutionInput(ctx context.Context, owner OwnerLease, proxy ProxyLease, input IssuedInput) error {
-	if err := validateIssuedInput(input); err != nil {
-		return err
-	}
-	if proxy.OwnerID != owner.OwnerID || proxy.ProxyID != input.ProxyID || !validOwnerLease(owner) || proxy.FenceToken < 1 {
-		return errors.New("proxy-latency executor lease 与 issued input 不匹配")
-	}
-	tx, err := s.beginTx(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	now := time.Now().UTC()
-	if err := s.verifyOwnerTx(ctx, tx, owner); err != nil {
-		return err
-	}
-	if err := s.verifyProxyTx(ctx, tx, proxy); err != nil {
-		return err
-	}
-	if err := s.verifyIssuedInputSnapshotTx(ctx, tx, input, now, true); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 // AdmitExecution atomically resolves the durable input, checks the live
@@ -1179,41 +1105,6 @@ func (s *Store) deleteExecutionClaimTx(ctx context.Context, tx *sql.Tx, requestI
 	}
 	count, err := result.RowsAffected()
 	if err != nil || count != 1 {
-		return ErrInputFence
-	}
-	return nil
-}
-
-func (s *Store) verifyIssuedInputSnapshotTx(ctx context.Context, tx *sql.Tx, input IssuedInput, now time.Time, requireActive bool) error {
-	query := `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload_digest FROM proxy_latency_inputs WHERE request_id=?`
-	query = `SELECT proxy_id,input_version,config_revision,trigger,issued_at,expires_at,payload_digest FROM juhe_jobs.proxy_latency_inputs WHERE request_id=$1 FOR UPDATE`
-	var proxyID, configRevision, trigger, storedDigest string
-	var inputVersion int64
-	var issuedAtRaw, expiresAtRaw any
-	if err := tx.QueryRowContext(ctx, query, input.RequestID).Scan(&proxyID, &inputVersion, &configRevision, &trigger, &issuedAtRaw, &expiresAtRaw, &storedDigest); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrInputFence
-		}
-		return fmt.Errorf("读取 J3a issued input snapshot 失败: %w", err)
-	}
-	issuedAt, err := sqlTime(issuedAtRaw)
-	if err != nil {
-		return ErrInputFence
-	}
-	expiresAt, err := sqlTime(expiresAtRaw)
-	if err != nil || (requireActive && (!expiresAt.After(now) || now.Before(issuedAt))) {
-		return ErrInputFence
-	}
-	payload, err := json.Marshal(input)
-	if err != nil {
-		return ErrInputFence
-	}
-	digest := sha256.Sum256(payload)
-	// PG timestamptz 以微秒精度存储：签发 draft 的纳秒精度 IssuedAt/ExpiresAt
-	// 写库后被截断，存储列读回值只有微秒。等值比较必须按
-	// canonicalPostgresTimestamp 把 draft 归一到微秒，否则纳秒 draft 在
-	// VerifyExecutionInput / LoadCommittedOutcome 上恒 ErrInputFence（W26②）。
-	if proxyID != input.ProxyID || inputVersion != input.InputVersion || configRevision != input.ConfigRevision || trigger != string(input.Trigger) || !issuedAt.Equal(canonicalPostgresTimestamp(input.IssuedAt)) || !expiresAt.Equal(canonicalPostgresTimestamp(input.ExpiresAt)) || storedDigest != hex.EncodeToString(digest[:]) {
 		return ErrInputFence
 	}
 	return nil

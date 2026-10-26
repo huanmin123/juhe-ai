@@ -18,13 +18,10 @@ func TestWFStoreUncommittedReplayAndClaimGuards(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("proxy lease ok=%v err=%v", ok, err)
 	}
-	// 已签发但未提交的 input：LoadCommittedOutcome 返回未找到。
+	// 已签发但未提交的 input：AdmitExecution 前先由 IssueInput 签发。
 	issued, err := store.IssueInput(ctx, wfCycleDraft("p-uncommitted"))
 	if err != nil {
 		t.Fatalf("IssueInput 失败: %v", err)
-	}
-	if _, found, err := store.LoadCommittedOutcome(ctx, issued); err != nil || found {
-		t.Fatalf("未提交 found=%v err=%v", found, err)
 	}
 
 	// outcome 携带未知 claim token：校验阶段必须 ErrInputFence。

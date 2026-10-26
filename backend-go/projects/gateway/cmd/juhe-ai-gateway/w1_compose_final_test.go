@@ -16,8 +16,8 @@ package main
 //	  （compose_account_balance_refresh.go；此前 PG 组合根该 wire 只能走
 //	  CheckSchema 降级臂）。
 //
-// 隔离铁律：只触碰临时子库 juhe_ai_sub2api_dev_w1cover 与（如需）Redis
-// namespace juhe-ai:dev:w1cover；凭据只从 dev env 读取（w1pgEnvFile），
+// 隔离铁律：只触碰 pgtestkit 隔离测试库与每测试唯一 Redis namespace
+// （w1g2TestNamespace）；dev Redis 地址只从 dev env 读取（w1pgEnvFile），
 // env 缺失或 PG 不可达一律 t.Skip；输出不携带任何连接串/密码。
 //
 // 明确跳过的零计数块（死代码/不可注入，详见最终报告）：
@@ -196,7 +196,7 @@ func w1uFinalNewPGComposeFixture(t *testing.T) *w1uFinalPGComposeFixture {
 		BusinessPostgresURL:           tempAppURL,
 		RedisCacheURL:                 "redis://" + redisCache.Addr(),
 		RedisStateURL:                 "redis://" + redisState.Addr(),
-		RedisNamespace:                w1g2RedisNamespace,
+		RedisNamespace:                w1g2TestNamespace(t),
 		Secret:                        "w1u-final-compose-secret",
 		DispatchAccountCandidateLimit: 5000,
 		ConcurrencyGlobalMax:          5000,

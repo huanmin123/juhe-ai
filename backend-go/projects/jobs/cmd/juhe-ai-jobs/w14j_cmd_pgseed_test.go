@@ -1,16 +1,12 @@
-// 波次 w14j：共享覆盖库（w1cover）PG 门控测试的自愈 seed。
-// 该库会被外部流程周期性重置为最小形状；这里集中沉淀加法幂等 DDL
-// （CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS / ADD CONSTRAINT /
-// SET DEFAULT / CREATE OR REPLACE FUNCTION / 种子行 ON CONFLICT DO NOTHING），
-// 各 PG 门控测试入口调用即可自愈。连接串绝不写入日志与断言。
+// 波次 w14j：jobs 自有面的加法幂等 DDL 清单（CREATE ... IF NOT EXISTS /
+// ADD COLUMN IF NOT EXISTS / ADD CONSTRAINT / SET DEFAULT / 种子行 ON
+// CONFLICT DO NOTHING）。原 w1cover 共享覆盖库自愈入口已退役，本清单现由
+// w16j_pg_fixture_test.go 的 wgCmdKitDB 在每测试独立 fresh 库上应用；语句
+// 面向「权威 schema 已存在」的库书写（已存在类错误由调用方容忍）。
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
-	"strings"
-	"testing"
-	"time"
 
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	schedprefdomain "github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
@@ -202,43 +198,4 @@ func w14jPGSeedStatements() []string {
 		`ALTER TABLE juhe_business.proxy_profiles ADD CONSTRAINT proxy_profiles_pkey PRIMARY KEY (id)`,
 	}
 	return statements
-}
-
-// w14jEnsurePGFixture 自愈共享覆盖库的测试形状；逐条应用，失败只记录不中断。
-func w14jEnsurePGFixture(t *testing.T, db *sql.DB) {
-	t.Helper()
-	for _, statement := range w14jPGSeedStatements() {
-		if _, err := db.Exec(statement); err != nil {
-			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "multiple primary keys") {
-				continue
-			}
-			t.Logf("w14j pg seed 跳过: %v", err)
-		}
-	}
-	w14jSeedSysAdminAccount(t, db)
-}
-
-// w14jSeedSysAdminAccount 幂等补齐 canonical sys_admin 系统账户。
-func w14jSeedSysAdminAccount(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts
-		(id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w14j-test-seed-not-a-login-hash', $1, $1)
-		ON CONFLICT (id) DO NOTHING`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Skipf("w14j: sys_admin seed 失败（共享库形状漂移，跳过）: %v", err)
-	}
-}
-
-// w14jBusinessColumnsAreTextTyped 探测共享库业务表是否仍是前波 text 桩形状。
-// true 时依赖类型化列（integer/boolean 比较）的候选查询必然 42883 失败，
-// 相关测试必须 Skip（列类型迁移属破坏性变更，未经授权不得执行）。
-func w14jBusinessColumnsAreTextTyped(t *testing.T, db *sql.DB) bool {
-	t.Helper()
-	var dataType string
-	err := db.QueryRow(`SELECT data_type FROM information_schema.columns
-		WHERE table_schema='juhe_business' AND table_name='accounts' AND column_name='schedulable'`).Scan(&dataType)
-	if err != nil {
-		return true
-	}
-	return dataType == "text"
 }

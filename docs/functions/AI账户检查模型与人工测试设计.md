@@ -59,7 +59,7 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 - 删除 `provider_default_test_models`。
 - 删除 `healthCheckEnabled / health_check_enabled`。系统检查是基础机制，不提供账户级关闭开关。账户高级配置中的“持续恢复探活”不是系统检查开关：它只决定 `temporary_unavailable` 在前 10 分钟有界最终确认后是否继续长期低频恢复，周期健康检查、首次激活、人工测试、`rate_limited` 和账户内 Key 复测始终不受影响。
 
-项目不在运行路径保留旧字段兼容、双读双写或自动迁移。唯一例外是 SQLite 初始化发现 `accounts.health_check_endpoint_mode` 的 CHECK 约束缺少 `images_json` 时：可在事务内重建该表、保留数据和关联对象并执行外键检查；任何失败必须回滚并中止启动。
+项目不在运行路径保留旧字段兼容、双读双写或自动迁移。**历史截面（SQLite 模式，已于 2026-10-25 退役）：** 曾有的唯一例外是 SQLite 初始化发现 `accounts.health_check_endpoint_mode` 的 CHECK 约束缺少 `images_json` 时，可在事务内重建该表、保留数据和关联对象并执行外键检查，任何失败必须回滚并中止启动；该自愈路径随 SQLite 退役删除，现行 PostgreSQL schema 由 `juhe-ai-maintenance --ensure-schema` 幂等承载，不含启动期表重建。
 
 ## 3. 检查模型
 

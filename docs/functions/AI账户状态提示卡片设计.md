@@ -325,7 +325,7 @@ interface AccountRuntimeProbePresentation {
 
 - 状态、最近检查、下次检查、原因和 `traceId` 来自同一份已组装摘要；跨数据库和运行态无法做到事务级一致时，响应以 `generatedAt` 的组装时刻为界，不宣称更强的一致性。
 - 已清空字段使用明确缺省覆盖旧值，不能保留首次列表的陈旧值。
-- SQLite 和 PostgreSQL 使用相同的投影语义。
+- 投影语义唯一（历史双方言时期表述为 SQLite 和 PostgreSQL 使用相同投影语义，该对齐条款已随 2026-10-25 存储收口退役，现行 PostgreSQL 单形态）。
 - Redis / memory 运行态不可用时不伪造运行探针时间。
 - 任务取消、队列丢失、进程重启且尚未重建 due 任务时，`scheduleState = 'none'`，清空 `nextAttemptAt`；due 但尚未执行时才使用 `due_waiting`。
 
@@ -354,7 +354,7 @@ interface AccountRuntimeProbePresentation {
 - 快照更新下次检查、traceId、冷却复测和运行态探测字段，并能清除旧值。
 - Key 运行态持久记录补充 `last_trace_id`；`db-service-types`、网关 Key 失败和后台 Key 复测都传递探针 `traceId`，成功或状态清理时同步清理陈旧 trace。账户级 Key 池摘要只在 `last_failure_at IS NOT NULL` 的记录中按 `last_failure_at DESC, key_index ASC, key_fingerprint ASC` 选择最近失败 observation，只在 `next_probe_at IS NOT NULL` 的不可用 Key 中选择最早下次计划；两类候选为空时分别省略 observation 或 schedule 时间。
 - active、pending_test、temporary_unavailable、rate_limited、error、disabled 和所有 effective availability 阻断选择正确摘要。
-- SQLite 与 PostgreSQL 投影行为一致。
+- 投影行为唯一（历史双方言时期表述为 SQLite 与 PostgreSQL 投影行为一致，已随 2026-10-25 存储收口退役）。
 - memory 与 Redis 运行态的最近探针、下次探针和 TTL 语义一致。
 
 ### 10.2 前端 formatter
@@ -374,4 +374,4 @@ interface AccountRuntimeProbePresentation {
 
 ## 11. 发布与回退
 
-本变更不修改状态机，但会为 Key 运行态补充当前 schema 所需的 `last_trace_id` 字段，并同步 SQLite / PostgreSQL 当前结构与回归；不在运行时代码中加入旧结构兼容或自动迁移。上线前需完成 SQLite、PostgreSQL、memory 和 Redis 两种运行态验证。发生问题时按提交回退 presentation 契约和 formatter；不通过兼容分支并行保留新旧卡片。生产部署必须等待用户另行通知。
+本变更不修改状态机，但会为 Key 运行态补充当前 schema 所需的 `last_trace_id` 字段，并同步当前 schema 与回归（历史双方言时期为同步 SQLite / PostgreSQL 双结构，已随 2026-10-25 存储收口退役为 PostgreSQL 单形态）；不在运行时代码中加入旧结构兼容或自动迁移。上线前需完成 PostgreSQL 与 Redis 运行态验证（原 SQLite、memory 运行态分支验收已随存储收口退役）。发生问题时按提交回退 presentation 契约和 formatter；不通过兼容分支并行保留新旧卡片。生产部署必须等待用户另行通知。

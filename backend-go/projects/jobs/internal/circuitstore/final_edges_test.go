@@ -89,7 +89,7 @@ func TestComposeEntryAuthorizedFullChain(t *testing.T) {
 		t.Fatalf("空 limits JSON 应为空对象: %v", entry.payload["authorizationLimits"])
 	}
 	// 授权实例投影列取来源值与 group local 排序值。
-	if entry.providerCode != "gpt" || entry.profileID != "src-profile" || entry.accountType != "api_key" {
+	if entry.accountType != "api_key" {
 		t.Fatalf("authorized 投影列应取来源: %+v", entry)
 	}
 	if entry.priority != 9 || entry.concurrencyLimit != 30 || !entry.fallback || entry.superPriority {

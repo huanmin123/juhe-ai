@@ -1,36 +1,32 @@
-// 波次 w14q：main() PG 直连装配成功链子进程 e2e。w1cover 共享库已重建为
-// 生产形状（accounts.schedulable 为 integer），此前被 42883 text 列死结阻塞
-// 的 J1 PG 直连输入 / model-recovery / J2 / J3a 装配链现在可测。
+// 波次 w14q：main() PG 直连装配成功链子进程 e2e。建库走 wgCmdKitDB 的
+// pgtestkit 隔离 PG 测试库（生产对齐契约面预置，原 w1cover 共享覆盖库装配
+// 已退役），accounts.schedulable 为 canonical integer 列，J1 PG 直连输入 /
+// model-recovery / J2 / J3a 装配链可直接测。
 //
 // 场景：owner 模式子进程以 F1/F2 SQLite + J1(postgres store + postgres 直连
 // input) + model-recovery(Redis) + J2(postgres) + J3a(postgres + management)
 // 全组件装配；父测试等 /health 报告各组件 enabled 且 worker 就绪后立即
 // CTRL_BREAK 干净停机。覆盖 main() 的 PG 装配成功分支、组件注册与停机排空。
 //
-// 安全边界：
-//   - 连接串只从 shared.env 读取改写，绝不写入日志与断言；
-//   - 共享库只做幂等 DDL 与 w14q- 前缀数据清理，不动他人行；
-//   - J1 初始扫描会读取共享库中 due 的测试 fixture 账户（w9h- 等波次
-//     seed 的无效凭据账户，探针为无效凭据的公开上游请求，量级个位数）；
-//     父测试先做只读 due 候选统计，超过护栏值时跳过。
+// 安全边界：连接串不写入日志与断言；隔离库随测试结束删除，无需行级清理；
+// fresh 库无第三方账户，due 候选护栏仅作回归哨兵。
 package main
 
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// w14qDueCandidateGuard 统计共享库当前 J1 直连 due 候选数量（只读）。仅输出
-// 数量；候选身份不落日志。超过护栏说明共享库被填充了大量真实账户，跳过 e2e。
+// w14qDueCandidateGuard 统计当前 J1 直连 due 候选数量（只读）。仅输出数量；
+// 候选身份不落日志。超过护栏说明夹具被填充了大量账户，跳过探针型 e2e。
 func w14qDueCandidateGuard(t *testing.T, db *sql.DB) int {
 	t.Helper()
 	reader, err := accounthealth.NewPostgresDirectInputReader(db, "0123456789abcdef0123456789abcdef", time.Hour, time.Now)
@@ -44,26 +40,9 @@ func w14qDueCandidateGuard(t *testing.T, db *sql.DB) int {
 		return 0
 	}
 	if count := len(result.Inputs); count > 20 {
-		t.Skipf("w14q: 共享库 due 候选 %d 超过护栏 20，跳过探针型 e2e", count)
+		t.Skipf("w14q: due 候选 %d 超过护栏 20，跳过探针型 e2e", count)
 	}
 	return len(result.Inputs)
-}
-
-// w14qCleanupPGMainRows 清理本测试在共享库写入的 w14q- 前缀行。
-func w14qCleanupPGMainRows(t *testing.T, db *sql.DB) {
-	t.Helper()
-	statements := []string{
-		`DELETE FROM juhe_jobs.account_health_owner_leases WHERE owner_id LIKE 'w14q-%'`,
-		`DELETE FROM juhe_jobs.account_balance_owner_leases WHERE owner_id LIKE 'w14q-%'`,
-		`DELETE FROM juhe_jobs.proxy_latency_owner_leases WHERE owner_id LIKE 'w14q-%'`,
-		`DELETE FROM juhe_jobs.proxy_latency_proxy_leases WHERE owner_id LIKE 'w14q-%'`,
-		`DELETE FROM juhe_business.account_health_projection_cursors WHERE consumer_key LIKE 'w14q-%'`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Logf("w14q pg main cleanup: %v", err)
-		}
-	}
 }
 
 // w14qPGMainEnv 在 owner 模式 SQLite F1/F2 环境上叠加 PG 装配链 env。
@@ -120,63 +99,16 @@ func TestW14QPGMainFullAssemblySmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PG main e2e skipped in -short mode")
 	}
-	pgURL := w12cPGOverrideURL(t)
-	if pgURL == "" {
-		t.Skip("w14q: 覆盖库连接串不可用")
-	}
+	db, pgURL := wgCmdKitDB(t)
 	redisURL := w14jSharedEnvValue(t, "JUHE_AI_REDIS_STATE_URL")
 	if redisURL == "" {
 		t.Skip("w14q: shared.env 无 Redis state URL")
 	}
-	db, err := sql.Open("pgx", pgURL)
-	if err != nil {
-		t.Skipf("w14q: 打开覆盖库失败: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		t.Skipf("w14q: 覆盖库不可达: %v", err)
-	}
-	// 自愈共享库形状（加法幂等 DDL）+ 清理本波次残留。
-	// 外部重建只建立六个业务 schema；juhe_jobs 由 app 角色所有、表由各测试
-	// EnsureSchema 自建，这里补 bootstrap 前置的 CREATE SCHEMA IF NOT EXISTS
-	//（gateway w1_compose_final_test.go 同款先例，登记：加法幂等 DDL）。
-	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_jobs`); err != nil {
-		t.Skipf("w14q: 建立 juhe_jobs schema 失败: %v", err)
-	}
-	// w14jPGSeedStatements 对生产形状 system_accounts 缺 created_at 列；
-	// w14q 用补齐 created_at 的 seed（ON CONFLICT DO NOTHING，不改既有行）。
-	for _, statement := range w14jPGSeedStatements() {
-		if _, err := db.Exec(statement); err != nil {
-			if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "multiple primary keys") {
-				continue
-			}
-			t.Logf("w14q pg seed 跳过: %v", err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts
-		(id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w14q-test-seed-not-a-login-hash', $1, $1)
-		ON CONFLICT (id) DO NOTHING`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Skipf("w14q: sys_admin seed 失败（共享库形状漂移，跳过）: %v", err)
-	}
-	// direct schedule canonical 设置行（w12d/w9h 同惯例，幂等补齐）。
-	for key, value := range map[string]string{
-		"accountHealthCheckIntervalHours":      "24",
-		"accountHealthCheckJitterMinutes":      "10",
-		"accountHealthCheckFailureThreshold":   "3",
-		"defaultTemporaryUnschedulableMinutes": "60",
-		"cooldownAccountRetestMaxBackoffHours": "24",
-		"usageStatsTimezone":                   "\"Asia/Shanghai\"",
-	} {
-		if _, err := db.Exec(`INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at)
-			VALUES ('sys_admin', $1, $2, $3) ON CONFLICT (system_account_id, key) DO NOTHING`, key, value, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			t.Fatalf("seed direct schedule settings: %v", err)
-		}
-	}
-	// J2 预置表：accountbalance EnsureSchema 是幂等 DDL（Go-owned 交接表，
-	// record_maintenance_jobs 先例；CheckSchema 只读不建表，须先 bootstrap）。
+	// 子进程装配链的外部 bootstrap 前置：J2 accountbalance EnsureSchema 是
+	// 幂等 DDL（Go-owned 交接表，CheckSchema 只读不建表）；F4 operation_logs
+	// 审计面 DDL 逐字摘自 gateway/internal/operationlog/schema.go
+	// postgresSchema（J3a management CheckContract 以 EXPLAIN INSERT 验证
+	// gateway-owned 审计表写契约，不写数据）。
 	balanceStore, err := accountbalance.OpenStore(accountbalance.StoreConfig{Mode: accountbalance.StorePostgres, PostgresURL: pgURL})
 	if err != nil {
 		t.Fatalf("打开 J2 store 做 schema bootstrap: %v", err)
@@ -188,20 +120,15 @@ func TestW14QPGMainFullAssemblySmoke(t *testing.T) {
 	if err := balanceStore.Close(); err != nil {
 		t.Logf("w14q: J2 bootstrap store 关闭: %v", err)
 	}
-	// F4 operation_logs 审计面：J3a management CheckContract 以 EXPLAIN INSERT
-	// 验证 gateway-owned 审计表写契约（不写数据）。表 DDL 逐字摘自
-	// gateway/internal/operationlog/schema.go postgresSchema（加法幂等，登记）。
 	for _, statement := range strings.Split(w14qOperationLogsSchema, ";") {
 		if statement = strings.TrimSpace(statement); statement == "" {
 			continue
 		}
 		if _, err := db.Exec(statement); err != nil {
-			t.Logf("w14q F4 seed 跳过: %v", err)
+			t.Fatalf("w14q F4 seed 失败: %v", err)
 		}
 	}
-	w14qCleanupPGMainRows(t, db)
-	t.Cleanup(func() { w14qCleanupPGMainRows(t, db) })
-	// 探针型 e2e 护栏：due 候选必须在个位数量级。
+	// 探针型 e2e 护栏：fresh 库 due 候选必须为空量级。
 	w14qDueCandidateGuard(t, db)
 
 	root := t.TempDir()
