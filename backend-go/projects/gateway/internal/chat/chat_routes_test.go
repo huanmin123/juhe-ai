@@ -529,6 +529,7 @@ func TestRouteAttachStream(t *testing.T) {
 }
 
 func TestRouteRegistrationPrefix(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	_, clock := fixedChatClock()
 	deps := &Deps{Store: fixture.store, MaxTurnsPerConversation: 100, Now: clock}

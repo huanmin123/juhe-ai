@@ -35,6 +35,7 @@ func (m mockAccountOptionsLookup) ListChatAccountOptions(_ context.Context, scop
 }
 
 func TestMyChatAccountsRoute(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
 	response := env.do("GET", "/__aisys__/api/my-chat/accounts", routeTestOwner, "")
@@ -53,6 +54,7 @@ func TestMyChatAccountsRoute(t *testing.T) {
 // viewer scope（IsAdmin=false）传给查询端口并拿到用户集合；admin/super_admin
 // 把 IsAdmin=true scope 传给查询端口并拿到全量集合。
 func TestMyChatAccountsScopeArms(t *testing.T) {
+	t.Parallel()
 	t.Run("普通用户传 viewer scope 且拿到用户集合", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		accountSeen := &bindScopeRecorder{}
@@ -128,6 +130,7 @@ func newBindOptionsEnvWithRole(t *testing.T, role string) *generationEnv {
 }
 
 func TestMyChatAccountsUnwiredArm(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	response := env.do("GET", "/__aisys__/api/my-chat/accounts", routeTestOwner, "")
 	if response.status != http.StatusInternalServerError || response.code() != "internal_generation_failed" {
@@ -140,6 +143,7 @@ func TestMyChatAccountsUnwiredArm(t *testing.T) {
 }
 
 func TestMyChatAccountsUnauthenticated(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
 	unauthorized := env.do("GET", "/__aisys__/api/my-chat/accounts", "", "")
@@ -151,6 +155,7 @@ func TestMyChatAccountsUnauthenticated(t *testing.T) {
 // TestMyChatAccountsNoStoreHeaders：账户列表内容随数据范围实时变化，成功
 // 响应必须携带 no-store（与 accounts 包 options 口径一致）。
 func TestMyChatAccountsNoStoreHeaders(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
 	request, err := http.NewRequest(http.MethodGet, env.server.URL+"/__aisys__/api/my-chat/accounts", nil)
@@ -177,6 +182,7 @@ func TestMyChatAccountsNoStoreHeaders(t *testing.T) {
 // TestConversationBindOptionsRetired：旧绑定下拉端点随三种绑定模式退场（设计
 // §9.3），不再注册。
 func TestConversationBindOptionsRetired(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
 	response := env.do("GET", "/__aisys__/api/my-chat/conversation-bind-options", routeTestOwner, "")

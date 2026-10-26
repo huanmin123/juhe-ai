@@ -14,7 +14,6 @@ import (
 
 const chatMessagePartitionPrefix = "chat_messages_"
 
-
 // chatMessagePartitionDateKeyFromISO mirrors
 // chatMessagePartitionDateKeyFromIso: a YYYY-MM-DD prefix validated as a real
 // UTC calendar date, rendered as YYYYMMDD.

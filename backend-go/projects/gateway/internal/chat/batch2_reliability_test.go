@@ -119,6 +119,7 @@ func (e *batch2GateExecutor) dispatchContext() context.Context {
 // Start 立即结算 acceptance（accepted），压缩仍在后台执行（二次 Start 报
 // already_running），执行结束后 active 槽释放。
 func TestCompactionStartAcceptsImmediatelyBatch2(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	fixture.createConversation("conv-batch2-start", "owner")
 	fixture.seedTurns("owner", "conv-batch2-start", 4)
@@ -176,6 +177,7 @@ func TestCompactionStartAcceptsImmediatelyBatch2(t *testing.T) {
 // 阻塞（压缩在途）时 compactionTrigger 立即返回 202；请求 context 取消后压缩
 // 执行 context 不被传染（WithoutCancel 脱钩）。
 func TestCompactionTriggerHandlerDecoupledContextBatch2(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	executor := &batch2GateExecutor{gate: make(chan struct{})}
 	compactions := NewCompactionService(env.fixture.store, executor, func(text string) int { return len(text) / 4 }, func() string { return env.fixture.nowISO })

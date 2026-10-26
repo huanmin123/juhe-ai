@@ -44,6 +44,7 @@ func (w10dWebSearchCatalog) ListProviderCatalog(providerCode, systemAccountID st
 // TestW10DStreamChatOnlyProtocol 验证主对话恒 chat_completions：目录矩阵声明
 // web_search 不再把协议偏好切到 responses。
 func TestW10DStreamChatOnlyProtocol(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.ModelCatalog = w10dWebSearchCatalog{}
 	env.fixture.createConversation("conv_w10d_chat", routeTestOwner)
@@ -71,6 +72,7 @@ func TestW10DStreamChatOnlyProtocol(t *testing.T) {
 // TestW10DWebSearchBindingRequired 驱动未绑定引导：主模型调用 web_search →
 // SSE tool.binding_required（含 toolId）+ 引导 tool result 回喂主模型，轮次正常完成。
 func TestW10DWebSearchBindingRequired(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.ModelCatalog = w10dWebSearchCatalog{}
 	env.fixture.createConversation("conv_w10d_unbound", routeTestOwner)
@@ -122,6 +124,7 @@ func TestW10DWebSearchBindingRequired(t *testing.T) {
 // web_search）→ 过程增量经 content_block.updated 下发（item.progress）→
 // response.completed 内完整响应提取结果与来源回喂主模型。
 func TestW10DWebSearchSubagentBound(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.ModelCatalog = w10dWebSearchCatalog{}
 	env.fixture.createConversation("conv_w10d_bound", routeTestOwner)
@@ -401,6 +404,7 @@ func TestW10DTerminalizeKeepsProgressSnapshot(t *testing.T) {
 // TestW10DToolBindingsEndpointShape 验证 GET tool-bindings 的响应形状（契约
 // §8.1）：model 工具携带 bound/binding/valid/candidates，code 工具仅列出。
 func TestW10DToolBindingsEndpointShape(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.ModelCatalog = w10dWebSearchCatalog{}
 	if env.deps.AccountOptionsLookup == nil {

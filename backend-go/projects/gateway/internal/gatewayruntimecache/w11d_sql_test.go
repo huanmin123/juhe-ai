@@ -34,7 +34,10 @@ func TestW11DSQLBindAndTable(t *testing.T) {
 	if got := models.bind("a = ? AND b = ?"); got != "a = $1 AND b = $2" {
 		t.Fatalf("PG 绑定 = %q", got)
 	}
-	// 空库缺行不是错误：runtime 匿名、分组访问 nil、检查策略/预热枚举空集。
+	// Node 契约：系统设置带全量安装期种子键（缺失值在投影层报错），runtime
+	// 读链对 sk- 键恒经设置投影；这里的“空库”指业务表为空的合法生产形态。
+	seedGatewaySettingsKeys(t, db)
+	// 空业务表缺行不是错误：runtime 匿名、分组访问 nil、检查策略/预热枚举空集。
 	runtime, err := models.ReadGatewayRuntime(ctx, "sk-pg")
 	if err != nil || runtime.APIKey != nil {
 		t.Fatalf("空库 runtime = %+v err=%v", runtime.APIKey, err)
@@ -45,15 +48,22 @@ func TestW11DSQLBindAndTable(t *testing.T) {
 	if meta, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys"); err != nil || meta != nil {
 		t.Fatalf("空库分组访问 = %v err=%v", meta, err)
 	}
-	if policies, err := models.ListActiveResponseInspectionPolicies(ctx, "openai", "gpt"); err != nil || len(policies) != 0 {
+	// 空存储表下检查策略仍含内置默认规则（默认规则是代码静态集，见
+	// TestSQLInspectionPoliciesForGateway 的 default rules must lead）。
+	policies, err := models.ListActiveResponseInspectionPolicies(ctx, "openai", "gpt")
+	if err != nil || len(policies) == 0 {
 		t.Fatalf("空库检查策略 = %v err=%v", policies, err)
+	}
+	for _, policy := range policies {
+		if !policy.DefaultRule {
+			t.Fatalf("空库检查策略只允许内置默认规则，混入存储行: %+v", policy)
+		}
 	}
 	if hashes, err := models.ListActiveGatewayAPIKeyHashes(ctx); err != nil || len(hashes) != 0 {
 		t.Fatalf("空库预热枚举 = %v err=%v", hashes, err)
 	}
-	// 无 sk- 前缀：设置投影不涉及参数化查询 → 成功（错误臂在 28-30 由坏设置覆盖）。
-	seedGatewaySettingsKeys(t, db)
-	// 设置存储不可用：删除表后（绕开 60s 快照缓存的）新读模型报错。
+	// 无 sk- 前缀匿名读取已在上面种子后的设置上覆盖；删除系统设置表后（绕开
+	// 60s 快照缓存的）新读模型报错。
 	plain, err := NewSQLReadModels(db, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -312,13 +322,7 @@ func TestW11DLoadGatewayAPIKeyByHashArms(t *testing.T) {
 	if err != nil || runtime.APIKey == nil || runtime.APIKey.GroupBindings[0].Weight != 3 {
 		t.Fatalf("正常装载 = %+v err=%v", runtime.APIKey, err)
 	}
-	// NULL 绑定行主键扫描错误（sqlite TEXT PRIMARY KEY 允许 NULL）。
-	if _, err := db.Exec(`UPDATE juhe_business.route_strategy_groups SET id = NULL WHERE id = 'bw0'`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := models.ReadGatewayRuntimeByKeyHash(ctx, HashSecret("sk-w11d-ok")); err == nil {
-		t.Fatal("NULL 绑定主键扫描必须报错")
-	}
+	// 生产 PG 主键 NOT NULL，sqlite 时代的 NULL 绑定主键扫描臂不可达，已删。
 
 	// 纯助手：权重归一、限额解析臂、路由配置解码臂。
 	if _, err := normalizeAPIKeyGroupBindingWeight(0); err == nil {

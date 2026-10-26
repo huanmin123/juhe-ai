@@ -421,21 +421,27 @@ func TestStorePostgresDialectMissingTable(t *testing.T) {
 	assertNotStatusError(t, err)
 }
 
-// TestStoreExecFailuresRollBack 用 RAISE(ABORT) 触发器注入写失败，固化
-// Create/Update/Delete/Review 四个写入口的执行错误原样上抛与无部分写入
-// （事务回滚，原题不变）。
+// TestStoreExecFailuresRollBack 用触发器注入写失败，固化 Create/Update/
+// Delete/Review 四个写入口的执行错误原样上抛与无部分写入（事务回滚，原题
+// 不变）。PG 无 sqlite RAISE(ABORT) 方言，改用 plpgsql 触发器函数等价注入。
 func TestStoreExecFailuresRollBack(t *testing.T) {
 	store, db := newTestStore(t)
 	ctx := context.Background()
 	mustCreate(t, store, actorAlice, "故障注入保留题", "故障注入保留的题目内容。")
 	target := mustCreate(t, store, actorAlice, "故障注入目标题", "故障注入目标的题目内容。")
-	for name, ddl := range map[string]string{
-		"insert": `CREATE TRIGGER block_qb_insert BEFORE INSERT ON model_check_question_bank BEGIN SELECT RAISE(ABORT, 'blocked-insert'); END`,
-		"update": `CREATE TRIGGER block_qb_update BEFORE UPDATE ON model_check_question_bank BEGIN SELECT RAISE(ABORT, 'blocked-update'); END`,
-		"delete": `CREATE TRIGGER block_qb_delete BEFORE DELETE ON model_check_question_bank BEGIN SELECT RAISE(ABORT, 'blocked-delete'); END`,
+	for name, message := range map[string]string{
+		"insert": "blocked-insert",
+		"update": "blocked-update",
+		"delete": "blocked-delete",
 	} {
-		if _, err := db.Exec(ddl); err != nil {
-			t.Fatalf("create trigger %s: %v", name, err)
+		statements := []string{
+			fmt.Sprintf(`CREATE FUNCTION block_qb_%s_fn() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN RAISE EXCEPTION '%s'; END $fn$`, name, message),
+			fmt.Sprintf(`CREATE TRIGGER block_qb_%s BEFORE %s ON model_check_question_bank FOR EACH ROW EXECUTE FUNCTION block_qb_%s_fn()`, name, strings.ToUpper(name), name),
+		}
+		for _, statement := range statements {
+			if _, err := db.Exec(statement); err != nil {
+				t.Fatalf("create blocker %s: %v", name, err)
+			}
 		}
 	}
 

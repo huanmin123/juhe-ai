@@ -360,6 +360,11 @@ func newChatFixture(t *testing.T) *chatFixture {
 	if err != nil {
 		t.Fatalf("打开夹具连接池失败: %v", err)
 	}
+	// 保留空闲物理连接供整个用例复用，避免 database/sql 默认 MaxIdleConns=2
+	// 造成的反复 TCP+SCRAM 建连；高频建拆连会耗尽本机临时端口（Windows 下
+	// connectex 报 WSAEADDRINUSE），污染 pgtestkit 建删库管理连接。只抬闲置
+	// 上限，不动 MaxOpenConns（保持无界，避免改变并发语义引入排队死锁）。
+	pool.SetMaxIdleConns(8)
 	t.Cleanup(func() { _ = pool.Close() })
 	_, clock := fixedChatClock()
 	store, err := NewStore(pool, clock, nil)
@@ -369,6 +374,12 @@ func newChatFixture(t *testing.T) *chatFixture {
 	return &chatFixture{t: t, db: pool, store: store, nowISO: "2026-03-10T08:00:00.000Z"}
 }
 
+// chatFixtureGate 限制同时存活的夹具库数量（建库→用例→删库全程占位）。
+// 高并行下每夹具经 pgtestkit 建/删库要产生数次物理建连，无节制并发会把
+// Windows 临时端口打满（connectex WSAEADDRINUSE），殃及管理连接；闸门把
+// 建连速率压在 TIME_WAIT 回收能力之内。
+var chatFixtureGate = make(chan struct{}, 16)
+
 // chatPGFixtureDSN 创建 pgtestkit 隔离 PG 测试库并在 search_path=juhe_chat
 // 连接上注入 chatTestDDL（裸名建表落生产 schema），返回带
 // search_path=juhe_chat 的连接串。配 sqldialect 改写包装使用：夹具/测试手写
@@ -376,6 +387,10 @@ func newChatFixture(t *testing.T) *chatFixture {
 // store 本就 juhe_chat 限定 + bind()（两层改写幂等共存）。
 func chatPGFixtureDSN(t *testing.T) string {
 	t.Helper()
+	chatFixtureGate <- struct{}{}
+	// 先注册释放再建库：t.Cleanup 后进先出，释放排在 pgtestkit 删库清理之后，
+	// 占位覆盖“建库→用例→删库”完整生命周期。
+	t.Cleanup(func() { <-chatFixtureGate })
 	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, `CREATE SCHEMA IF NOT EXISTS juhe_chat`); err != nil {
 			return err
@@ -399,9 +414,9 @@ func chatPGFixtureDSN(t *testing.T) string {
 		}
 		// chat_messages 为 RANGE (created_at) 分区表（照抄 maintenance 生产
 		// DDL 形状）；生产由 ensurePostgresChatMessagePartitions 按写入日懒建
-		// 子表，但其进程级 memo（ensuredChatPartitionDateKeys）跨测试库复用会
-		// 跳过 CREATE，因此夹具按固定时钟（fixedChatClock 当日 + 次日）预建
-		// 生产同名分区。
+		// 子表，备忘记在 Store.partitionMemo（每 Store 实例独立），跨测试库
+		// 不会复用；夹具按固定时钟（fixedChatClock 当日 + 次日）预建生产同名
+		// 分区，保证固定 nowISO 的首轮写入即可命中。
 		for _, bounds := range [][2]string{{"2026-03-10", "2026-03-11"}, {"2026-03-11", "2026-03-12"}} {
 			name := "chat_messages_" + strings.ReplaceAll(bounds[0], "-", "")
 			statement := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS juhe_chat."%s" PARTITION OF juhe_chat.chat_messages FOR VALUES FROM ('%s') TO ('%s')`, name, bounds[0], bounds[1])
@@ -519,6 +534,7 @@ func userBytesFor(t *testing.T, db *sql.DB, messageID, content string) int64 {
 }
 
 func TestCreateConversationAndDefaults(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversation := f.createConversation("chat_conv_a", "owner-1")
 	if conversation.Title != "新对话" || conversation.DefaultImageModel != ImageModelGPTImage2 {
@@ -551,6 +567,7 @@ func TestCreateConversationAndDefaults(t *testing.T) {
 }
 
 func TestConversationLimitConflict(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	if _, err := f.store.CreateConversation(CreateConversationInput{
 		SystemAccountID: "owner-1", APIKeyID: "k", APIKeyNameSnapshot: "n",
@@ -578,6 +595,7 @@ func TestConversationLimitConflict(t *testing.T) {
 }
 
 func TestListConversationsKeysetPagination(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	for i := 1; i <= 4; i++ {
 		f.createConversation(fmt.Sprintf("chat_conv_%02d", i), "owner-1")
@@ -627,6 +645,7 @@ func TestListConversationsKeysetPagination(t *testing.T) {
 // 档行（一次性迁移对旧模式会话的 archived=1 标记）照常读取。读取面必须容忍
 // NULL 与 archived 标记，否则存量用户的会话列表/详情整体 500。
 func TestListAndGetTolerateLegacyNullBindNameSnapshots(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_legacy", "owner-1")
 	if _, err := f.db.Exec(`UPDATE chat_conversations
@@ -651,6 +670,7 @@ func TestListAndGetTolerateLegacyNullBindNameSnapshots(t *testing.T) {
 }
 
 func TestUpdateConversationPartialAnd404(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	updated, err := f.store.UpdateConversation(UpdateConversationInput{
@@ -686,6 +706,7 @@ func TestUpdateConversationPartialAnd404(t *testing.T) {
 }
 
 func TestDeleteConversationLifecycle(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.seedTurns("owner-1", "chat_conv_a", 1)
@@ -712,6 +733,7 @@ func TestDeleteConversationLifecycle(t *testing.T) {
 }
 
 func TestDeleteConversationActiveTurnConflict(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.accept("owner-1", "chat_conv_a", "cmid-1", "你好")
@@ -726,6 +748,7 @@ func TestDeleteConversationActiveTurnConflict(t *testing.T) {
 }
 
 func TestClearConversationResetsState(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.seedTurns("owner-1", "chat_conv_a", 2)
@@ -763,6 +786,7 @@ func TestClearConversationResetsState(t *testing.T) {
 }
 
 func TestAcceptTurnLifecycleAndIdempotency(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	first := f.accept("owner-1", "chat_conv_a", "cmid-1", "第一问")
@@ -816,6 +840,7 @@ func TestAcceptTurnLifecycleAndIdempotency(t *testing.T) {
 }
 
 func TestAcceptTurnTitleFromMultilineContent(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	// Node replaces control characters before the first-line split, so the
@@ -855,6 +880,7 @@ func TestTitleFromContentTable(t *testing.T) {
 }
 
 func TestAcceptTurnTurnLimitAndQuota(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	_, err := f.store.AcceptTurn(AcceptTurnInput{
@@ -885,6 +911,7 @@ func TestAcceptTurnTurnLimitAndQuota(t *testing.T) {
 }
 
 func TestAcceptTurnActiveTurnConflict(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.accept("owner-1", "chat_conv_a", "cmid-1", "进行中")
@@ -910,6 +937,7 @@ func TestAcceptTurnActiveTurnConflict(t *testing.T) {
 }
 
 func TestReplaceTurnFlow(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.seedTurns("owner-1", "chat_conv_a", 1)
@@ -968,6 +996,7 @@ func TestReplaceTurnFlow(t *testing.T) {
 }
 
 func TestFinalizeTurnPaths(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_c", "owner-1")
 	f.createConversation("chat_conv_d", "owner-2")
@@ -1035,6 +1064,7 @@ func TestFinalizeTurnPaths(t *testing.T) {
 }
 
 func TestConditionalStopStates(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 
@@ -1097,6 +1127,7 @@ func TestConditionalStopStates(t *testing.T) {
 }
 
 func TestListMessagesPaginationBoundaries(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	for i := 1; i <= 5; i++ {
@@ -1164,6 +1195,7 @@ func TestListMessagesPaginationBoundaries(t *testing.T) {
 }
 
 func TestFindTurnByClientMessageID(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	accepted := f.accept("owner-1", "chat_conv_a", "cmid-1", "问")
@@ -1287,6 +1319,7 @@ func TestSerializeInputContentMarkers(t *testing.T) {
 }
 
 func TestConcurrentAcceptSerializesPerOwner(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	const goroutines = 8
@@ -1323,6 +1356,7 @@ func TestConcurrentAcceptSerializesPerOwner(t *testing.T) {
 }
 
 func TestStorageWindowReleaseStrictErrors(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	if err := f.store.releaseStorageWindowReservationStrict(f.store.db, "owner-9", f.nowISO, AssistantStorageReservationBytes, f.nowISO); err == nil {
 		t.Fatal("expected missing bucket error")
@@ -1337,6 +1371,7 @@ func TestStorageWindowReleaseStrictErrors(t *testing.T) {
 }
 
 func TestRecentStorageBytesRetentionWindow(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	// Buckets inside and outside the retention window.
 	inserts := []struct {

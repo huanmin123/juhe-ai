@@ -15,6 +15,7 @@ import (
 
 // TestSummarizePageW3 直接驱动压缩总结（恒 chat 协议）与失败路径。
 func TestSummarizePageW3(t *testing.T) {
+	t.Parallel()
 	_, clock := fixedChatClock()
 	newService := func(executor GenerationExecutor) *CompactionService {
 		return NewCompactionService(newChatFixture(t).store, executor, func(text string) int { return len(text) }, func() string { return isoMillis(clock()) })
@@ -218,6 +219,7 @@ func streamPostWithHeaderW3(t *testing.T, env *generationEnv, conversationID, ow
 
 // TestStreamRouteConflictBranchesW3 覆盖流式路由的 Hub 冲突与超大消息分支。
 func TestStreamRouteConflictBranchesW3(t *testing.T) {
+	t.Parallel()
 	t.Run("Hub 缺失 → 生成冲突", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("chat_conv_nohub", routeTestOwner)
@@ -372,6 +374,7 @@ func TestRequestEtagMatchesW3(t *testing.T) {
 
 // TestAssetRouteRuntimeGapsW3 覆盖资产路由的运行时缺口分支。
 func TestAssetRouteRuntimeGapsW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_gaps", routeTestOwner)
 	server := mountAssetMuxW3(t, env)

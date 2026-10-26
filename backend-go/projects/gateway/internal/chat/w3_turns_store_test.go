@@ -12,6 +12,7 @@ import (
 
 // TestAcceptTurnConflictMatrixW3 表驱动覆盖 AcceptTurn 的冲突与幂等分支。
 func TestAcceptTurnConflictMatrixW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_accept", "owner")
 
@@ -131,6 +132,7 @@ func TestAcceptTurnConflictMatrixW3(t *testing.T) {
 
 // TestFinalizeTurnMatrixW3 覆盖终结路径：完成、失败、取消与存储上限降级。
 func TestFinalizeTurnMatrixW3(t *testing.T) {
+	t.Parallel()
 	t.Run("完成", func(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_final", "owner")
@@ -198,6 +200,7 @@ func TestFinalizeTurnMatrixW3(t *testing.T) {
 
 // TestConditionalStopMatrixW3 覆盖条件停止状态机的全部状态。
 func TestConditionalStopMatrixW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_stop", "owner")
 	accepted := f.accept("owner", "conv_stop", "cmid-1", "问题")
@@ -257,6 +260,7 @@ func TestConditionalStopMatrixW3(t *testing.T) {
 
 // TestListMessagesPaginationW3 覆盖消息分页游标语义。
 func TestListMessagesPaginationW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_page", "owner")
 	f.seedTurns("owner", "conv_page", 3)
@@ -293,6 +297,7 @@ func TestListMessagesPaginationW3(t *testing.T) {
 
 // TestConversationSyncHeadW3 覆盖同步头契约。
 func TestConversationSyncHeadW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_sync", "owner")
 	accepted := f.accept("owner", "conv_sync", "cmid-1", "问题")
@@ -323,6 +328,7 @@ func TestConversationSyncHeadW3(t *testing.T) {
 
 // TestConversationLifecycleRoutesW3 覆盖会话更新/删除/清空路由分支。
 func TestConversationLifecycleRoutesW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_lc", routeTestOwner)
 	prefix := "/__aisys__/api/my-chat/conversations/chat_conv_lc"
@@ -384,6 +390,7 @@ func TestConversationLifecycleRoutesW3(t *testing.T) {
 
 // TestGetConversationPayloadW3 覆盖会话详情与工具能力载荷。
 func TestGetConversationPayloadW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_detail", routeTestOwner)
 	response := env.do("GET", "/__aisys__/api/my-chat/conversations/chat_conv_detail", routeTestOwner, "")
@@ -409,6 +416,7 @@ func TestGetConversationPayloadW3(t *testing.T) {
 
 // TestSubmissionAndContextStatusW3 覆盖提交状态与上下文状态路由。
 func TestSubmissionAndContextStatusW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_status", routeTestOwner)
 	accepted := env.fixture.accept(routeTestOwner, "chat_conv_status", "cmid-1", "问题")
@@ -428,6 +436,7 @@ func TestSubmissionAndContextStatusW3(t *testing.T) {
 
 // TestImagePolicyRouteW3 覆盖图片策略路由。
 func TestImagePolicyRouteW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	response := env.do("GET", "/__aisys__/api/my-chat/image-policy", routeTestOwner, "")
 	if response.status != http.StatusOK {
@@ -444,6 +453,7 @@ func TestImagePolicyRouteW3(t *testing.T) {
 
 // TestMapMessageRowW3 覆盖消息行映射的边界。
 func TestMapMessageRowW3(t *testing.T) {
+	t.Parallel()
 	raw := json.RawMessage(`[{"type":"input_text","order":0,"text":"hi"}]`)
 	f := newChatFixture(t)
 	f.createConversation("conv_map", "owner")

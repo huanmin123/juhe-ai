@@ -11,6 +11,7 @@ import (
 // TestW10DRenderUserContextMessageBranches 覆盖 renderUserContextMessage 分支
 // （恒 chat：无标记返回字符串、未就绪图片触发观察等待与 unsupported_image）。
 func TestW10DRenderUserContextMessageBranches(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("conv_w10d_rc", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -66,6 +67,7 @@ func TestW10DRenderUserContextMessageBranches(t *testing.T) {
 
 // TestW10DStreamTurnStoreErrorBranches 覆盖 streamTurn 的存储错误分支（路由故障注入）。
 func TestW10DStreamTurnStoreErrorBranches(t *testing.T) {
+	t.Parallel()
 	env, script := newFaultGenerationEnvW10D(t)
 	env.fixture.createConversation("conv_w10d_r", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -79,6 +81,7 @@ func TestW10DStreamTurnStoreErrorBranches(t *testing.T) {
 
 // TestW10DUploadAssetErrorBranches 覆盖上传配额/会话错误臂。
 func TestW10DUploadAssetErrorBranches(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("conv_w10d_r", routeTestOwner)
 	server := mountAssetMuxW3(t, env)

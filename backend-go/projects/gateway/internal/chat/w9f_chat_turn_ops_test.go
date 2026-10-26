@@ -26,6 +26,7 @@ func w9fInvokeJSON(rt *chatRoutes, method, conversationID, payload string) *http
 }
 
 func TestW9FStopTurnValidationAndFlows(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_stop", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -85,6 +86,7 @@ func TestW9FStopTurnValidationAndFlows(t *testing.T) {
 }
 
 func TestW9FStopTurnAcceptedTurnFlows(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_stop2", routeTestOwner)
 	accepted := env.fixture.accept(routeTestOwner, "chat_conv_stop2", "cmid-accept", "问题")
@@ -108,6 +110,7 @@ func TestW9FStopTurnAcceptedTurnFlows(t *testing.T) {
 }
 
 func TestW9FSubmissionStatusAcceptedAndPreparing(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_sub2", routeTestOwner)
 	accepted := env.fixture.accept(routeTestOwner, "chat_conv_sub2", "cmid-sub", "问题")
@@ -138,6 +141,7 @@ func TestW9FSubmissionStatusAcceptedAndPreparing(t *testing.T) {
 }
 
 func TestW9FContextStatusAndAttachStream(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_ctx", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)

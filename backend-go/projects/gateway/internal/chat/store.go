@@ -15,7 +15,6 @@
 package chat
 
 import (
-	"sync"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -24,6 +23,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat/chatassets"

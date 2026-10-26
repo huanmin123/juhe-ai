@@ -43,6 +43,7 @@ func w13g4SyncGet(rt *chatRoutes, conversationID, owner string) *httptest.Respon
 
 // TestW13G4ClearAndSyncArms 覆盖清理与同步头的冲突/故障/缺失臂。
 func TestW13G4ClearAndSyncArms(t *testing.T) {
+	t.Parallel()
 	env, script := newFaultGenerationEnvW10D(t)
 	conversationID := "chat_conv_w13g4_clr"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -84,6 +85,7 @@ func TestW13G4ClearAndSyncArms(t *testing.T) {
 // TestW13G4UnresolvedAssetArms 覆盖历史图片未就绪且观察端口为 nil 时的
 // 等待/二次装载/拒绝链（stream_route.go 546-570、838-845）。
 func TestW13G4UnresolvedAssetArms(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_unres"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -121,6 +123,7 @@ func TestW13G4UnresolvedAssetArms(t *testing.T) {
 // 已证不可行：modernc.org/sqlite 对 INTEGER 亲和列的文本写入保持整型可读，
 // 扫描错误无法通过数据构造触发，此处以 rows 迭代异常臂的等价故障注入替代。
 func TestW13G4ContextScanErrorArms(t *testing.T) {
+	t.Parallel()
 	env, script := newFaultGenerationEnvW10D(t)
 	conversationID := "chat_conv_w13g4_scan"
 	env.fixture.createConversation(conversationID, routeTestOwner)

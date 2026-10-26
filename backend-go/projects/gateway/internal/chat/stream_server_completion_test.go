@@ -74,6 +74,7 @@ func waitForExecutorCall(t *testing.T, executor *mockExecutor) {
 // TestStreamDetachRunsWithoutClientContext 模拟客户端断开（取消请求
 // context）：runner 不被取消，仍跑完并落库 completed——重附契约的核心行为。
 func TestStreamDetachRunsWithoutClientContext(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_detach_run"
 	fixture.createConversation(conversationID, routeTestOwner)
@@ -122,6 +123,7 @@ func TestStreamDetachRunsWithoutClientContext(t *testing.T) {
 // TestStoreTouchActiveChatTurn 存储层契约：streaming 轮次刷新
 // active_started_at；终态轮次不被复活。
 func TestStoreTouchActiveChatTurn(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_touch_store"
 	fixture.createConversation(conversationID, routeTestOwner)
@@ -157,6 +159,7 @@ func TestStoreTouchActiveChatTurn(t *testing.T) {
 // （生成期间被外部清 active_turn_id 并置 failed，模拟 jobs 误判中断）：
 // 成功路径不再裸 return err，走恢复收口并发终止事件。
 func TestStreamCompleteChatTurnFailureRecovers(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_complete_recover"
 	fixture.createConversation(conversationID, routeTestOwner)
@@ -215,6 +218,7 @@ func TestStreamCompleteChatTurnFailureRecovers(t *testing.T) {
 // TestStreamActiveTouchDuringRun 流式期间 ticker 周期推进
 // active_started_at；runner 完成后活跃轮清空。
 func TestStreamActiveTouchDuringRun(t *testing.T) {
+	t.Parallel()
 	originalInterval := chatActiveTurnTouchInterval
 	chatActiveTurnTouchInterval = 10 * time.Millisecond
 	t.Cleanup(func() { chatActiveTurnTouchInterval = originalInterval })

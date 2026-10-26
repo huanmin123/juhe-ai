@@ -74,6 +74,7 @@ func fixtureTailTurnID(t *testing.T, f *chatFixture, conversationID string) stri
 // TestW14LStreamContextLimitCompactionRetry 装载超限 → 压缩一次 → 重试装载
 // 成功 → 正常出流。
 func TestW14LStreamContextLimitCompactionRetry(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_w14l_limit"
 	fixture.createConversation(conversationID, routeTestOwner)
@@ -116,6 +117,7 @@ func (c w14lNoLimitCatalog) ListProviderCatalog(providerCode, systemAccountID st
 // TestW14LStreamBodyBudgetCompactionRetry 请求体超限但装载未超限 → 压缩
 // 一次 → 重建请求体成功。  在 JSON 序列化中固定放大 2 倍。
 func TestW14LStreamBodyBudgetCompactionRetry(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_w14l_budget"
 	fixture.createConversation(conversationID, routeTestOwner)
@@ -137,6 +139,7 @@ func TestW14LStreamBodyBudgetCompactionRetry(t *testing.T) {
 
 // TestW14LStreamBodyTooLargeWithoutCompaction 压缩端口不可用 → 硬拒绝臂。
 func TestW14LStreamBodyTooLargeWithoutCompaction(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_w14l_toolarge"
 	fixture.createConversation(conversationID, routeTestOwner)

@@ -182,6 +182,8 @@ func TestW14LStoreFaultSweep(t *testing.T) {
 			for n := 1; n <= 64; n++ {
 				n := n
 				t.Run(fmt.Sprintf("n%02d", n), func(t *testing.T) {
+					// 子测试各自独占隔离库与故障脚本，并行推进压缩墙钟。
+					t.Parallel()
 					fixture, script := newFaultChatFixtureW10D(t)
 					conversationID := fmt.Sprintf("chat_conv_w14l_sweep_%s_%d", name, n)
 					fixture.createConversation(conversationID, routeTestOwner)
@@ -196,6 +198,7 @@ func TestW14LStoreFaultSweep(t *testing.T) {
 
 // TestW14LStoreCommitFaultDirect 对第二轮序列直接注入 Commit 失败。
 func TestW14LStoreCommitFaultDirect(t *testing.T) {
+	t.Parallel()
 	for name, sequence := range w14lSequences() {
 		sequence := sequence
 		t.Run(name, func(t *testing.T) {
@@ -217,6 +220,8 @@ func TestW14LStoreRollbackFaultDirect(t *testing.T) {
 			for n := 2; n <= 10; n += 2 {
 				n := n
 				t.Run(fmt.Sprintf("n%02d", n), func(t *testing.T) {
+					// 子测试各自独占隔离库与故障脚本，并行推进压缩墙钟。
+					t.Parallel()
 					fixture, script := newFaultChatFixtureW10D(t)
 					conversationID := fmt.Sprintf("chat_conv_w14l_rb_%s_%d", name, n)
 					fixture.createConversation(conversationID, routeTestOwner)

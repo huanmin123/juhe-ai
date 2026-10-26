@@ -94,6 +94,7 @@ func setConversationLastModel(t *testing.T, fixture *chatFixture, conversationID
 // （bindMode/apiKeyId/groupId/accountId）的 body 均创建空会话（bindAccountId
 // NULL、archived=false）；免 Key 直调后不再创建任何 API Key（apiKeyId 恒空串）。
 func TestCreateConversationEmptyBody(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	prefix := "/__aisys__/api/my-chat"
 
@@ -141,6 +142,7 @@ func TestCreateConversationEmptyBody(t *testing.T) {
 // 修订）、不存在/空白值 400；
 // searchBinding/imageBinding 属工具阶段契约，本阶段按未知键拒绝。
 func TestPatchAccountIdFlow(t *testing.T) {
+	t.Parallel()
 	prefix := "/__aisys__/api/my-chat"
 
 	t.Run("首次写入绑定并回显名称快照", func(t *testing.T) {
@@ -255,6 +257,7 @@ func TestPatchAccountIdFlow(t *testing.T) {
 // TestAccountBindingSendPrechecks：发送预检——未绑定 400 chat_account_required；
 // 归档会话 403 只读（clear/delete 照常、PATCH accountId 拒绝、压缩同拒）。
 func TestAccountBindingSendPrechecks(t *testing.T) {
+	t.Parallel()
 	prefix := "/__aisys__/api/my-chat"
 
 	t.Run("未绑定发送 400 chat_account_required", func(t *testing.T) {
@@ -361,6 +364,7 @@ func (c *accountViewCatalog) snapshot() (groups, providers []string) {
 // 返回空列表与单模型 404；绑定账户的 provider 单值与 supported_models 交集；
 // 不在启用分组快照中为空作用域。
 func TestAccountBindingModelListSources(t *testing.T) {
+	t.Parallel()
 	prefix := "/__aisys__/api/my-chat"
 
 	t.Run("未绑定空列表与单模型 404", func(t *testing.T) {

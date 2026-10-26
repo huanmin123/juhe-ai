@@ -325,6 +325,7 @@ func sseEvents(body string) []sseEvent {
 // TestStreamLifecycleMatrix covers the table-driven lifecycle: missing
 // conversation 404, duplicate submission 409, active-turn 409.
 func TestStreamLifecycleMatrix(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		setup      func(env *generationEnv) string
@@ -408,6 +409,7 @@ func TestStreamLifecycleMatrix(t *testing.T) {
 }
 
 func TestStreamHappyPathChatCompletions(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_s", routeTestOwner)
 	bindStreamConversation(t, env, "chat_conv_s")
@@ -478,6 +480,7 @@ func TestStreamHappyPathChatCompletions(t *testing.T) {
 }
 
 func TestStreamResponsesWithDiagnosticTool(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_t", routeTestOwner)
 	bindStreamConversation(t, env, "chat_conv_t")
@@ -545,6 +548,7 @@ func TestStreamResponsesWithDiagnosticTool(t *testing.T) {
 }
 
 func TestStreamImageGenerationPipeline(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_i", routeTestOwner)
 	bindStreamConversation(t, env, "chat_conv_i")
@@ -621,6 +625,7 @@ func TestStreamImageGenerationPipeline(t *testing.T) {
 }
 
 func TestStreamStopAndConflicts(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_c", routeTestOwner)
 	bindStreamConversation(t, env, "chat_conv_c")
@@ -661,6 +666,7 @@ func TestStreamStopAndConflicts(t *testing.T) {
 }
 
 func TestStreamUpstreamHTTPFailureClassified(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_f", routeTestOwner)
 	bindStreamConversation(t, env, "chat_conv_f")
@@ -685,6 +691,7 @@ func TestStreamUpstreamHTTPFailureClassified(t *testing.T) {
 }
 
 func TestProvisionConversationsIdempotent(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	// 免弹窗直进：空 body 创建空会话；免 Key 直调后不再创建/复用任何 API Key
 	//（api_key_id/api_key_name_snapshot 恒空串，列保留存历史）。
@@ -718,6 +725,7 @@ func TestProvisionConversationsIdempotent(t *testing.T) {
 }
 
 func TestModelsRoutes(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.AccountLookup = mockAccountLookup{}
 	createBoundConversation(t, env.fixture, "chat_conv_m", routeTestOwner, CreateConversationInput{
@@ -745,6 +753,7 @@ func TestModelsRoutes(t *testing.T) {
 }
 
 func TestCompactionServiceLoop(t *testing.T) {
+	t.Parallel()
 	t.Run("skips empty conversation", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("chat_conv_z", routeTestOwner)
@@ -899,6 +908,7 @@ func jsonQuote(value string) string {
 }
 
 func TestAssetUploadBoundaries(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_a2", routeTestOwner)
 	// Direct mux: the kernel wraps every system request in a 256 KiB

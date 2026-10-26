@@ -118,6 +118,7 @@ func latestAssistantMessageID(t *testing.T, env *generationEnv, conversationID s
 // 调用 → mockupstream media_tts_ok（真实 HTTP，mp3 载荷）→ 资产落库 →
 // output_audio 块。
 func TestChatAudioToolE2EViaMockUpstream(t *testing.T) {
+	t.Parallel()
 	upstream := platformmock.New()
 	defer upstream.Close()
 	env := newGenerationEnv(t)
@@ -213,6 +214,7 @@ func TestChatAudioToolE2EViaMockUpstream(t *testing.T) {
 // output_media_task 块 → media-tasks 轮询推进 completed → 结算落资产（真实
 // 可播放 MP4 字节）→ 块 assetId 补丁。
 func TestGenerateVideoTaskChainE2E(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.ModelCatalog = mediaE2ECatalog{}
 	env.deps.AccountOptionsLookup = mediaTestOptions{}

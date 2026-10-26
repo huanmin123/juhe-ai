@@ -24,6 +24,7 @@ func w10dAuthReq(method, path string) *http.Request {
 
 // TestW10DStreamTurnImageModalityMismatch 覆盖 input_image + 文本专用模型的 476 分支。
 func TestW10DStreamTurnImageModalityMismatch(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("conv_w10d_r", routeTestOwner)
 	bindStreamConversation(t, env, "conv_w10d_r")
@@ -37,6 +38,7 @@ func TestW10DStreamTurnImageModalityMismatch(t *testing.T) {
 
 // TestW10DCompactionTriggerRouteBranches 覆盖 compactionTrigger 分支。
 func TestW10DCompactionTriggerRouteBranches(t *testing.T) {
+	t.Parallel()
 	t.Run("未选模型", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("conv_w10d_r", routeTestOwner)
@@ -122,6 +124,7 @@ func TestW10DCompactionTriggerRouteBranches(t *testing.T) {
 
 // TestW10DAssetRouteErrorBranches 覆盖资产路由校验/错误分支。
 func TestW10DAssetRouteErrorBranches(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("conv_w10d_r", routeTestOwner)
 	server := mountAssetMuxW3(t, env)

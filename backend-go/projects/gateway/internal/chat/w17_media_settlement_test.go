@@ -24,6 +24,7 @@ import (
 // --- store 层：PatchChatMediaTaskBlock (affected, error) 契约 ---
 
 func TestPatchChatMediaTaskBlockStoreContract(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversation := env.fixture.createConversation("chat_conv_patch1", "owner-a")
 	insertMediaTaskMessage(t, env, conversation.ID, "msg_asst_patch1", "in_progress")
@@ -79,6 +80,7 @@ func TestPatchChatMediaTaskBlockStoreContract(t *testing.T) {
 
 // TestPatchChatMediaTaskBlockSizeCap 钉住 256KiB DomainError（store 层）。
 func TestPatchChatMediaTaskBlockSizeCap(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversation := env.fixture.createConversation("chat_conv_patch2", "owner-a")
 	// 直插一条接近 256KiB 上限的消息块（绕过流式链路的写入上限，制造补丁
@@ -213,6 +215,7 @@ func updateMediaTaskBlock(t *testing.T, env *generationEnv, conversationID, mess
 // TestSettlementPatchCASRereadEquivalentCompleted：CAS 0 行且重读到并发方已
 // 写入的等价 completed 终态（含 assetId）→ 按正常 completed 返回。
 func TestSettlementPatchCASRereadEquivalentCompleted(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversation := env.fixture.createConversation("chat_conv_cas1", "owner-a")
 	insertMediaTaskMessage(t, env, conversation.ID, "msg_asst_cas1", "in_progress")
@@ -247,6 +250,7 @@ func TestSettlementPatchCASRereadEquivalentCompleted(t *testing.T) {
 // TestSettlementPatchCASRereadNoEquivalent：CAS 0 行且重读无等价终态 → 保守
 // 保持待轮形态（删除终态字段 + settlementError）。
 func TestSettlementPatchCASRereadNoEquivalent(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversation := env.fixture.createConversation("chat_conv_cas2", "owner-a")
 	insertMediaTaskMessage(t, env, conversation.ID, "msg_asst_cas2", "in_progress")
@@ -282,6 +286,7 @@ func TestSettlementPatchCASRereadNoEquivalent(t *testing.T) {
 // 且重读到并发等价 completed 终态时，块内事实为准——payload 保持 completed，
 // 不得被调用方覆盖为 failed+assetId 混合形态。
 func TestSettlementFailedPatchYieldsToEquivalentCompleted(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversation := env.fixture.createConversation("chat_conv_cas3", "owner-a")
 	insertMediaTaskMessage(t, env, conversation.ID, "msg_asst_cas3", "in_progress")

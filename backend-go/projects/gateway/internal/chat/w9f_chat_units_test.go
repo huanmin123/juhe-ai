@@ -416,6 +416,7 @@ func nullStringOf(value string) sql.NullString { return sql.NullString{String: v
 // ---------------------------------------------------------------------------
 
 func TestW9FChatStoreConstructorsAndHelpers(t *testing.T) {
+	t.Parallel()
 	if _, err := NewStore(nil, nil, nil); err == nil {
 		t.Fatal("nil db must fail")
 	}

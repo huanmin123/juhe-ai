@@ -542,6 +542,7 @@ func TestParseUpdateToolPreferencesBody(t *testing.T) {
 // TestUserToolPreferencesStoreUpsert：store 级 Get（无行 nil,nil）/整行 upsert
 // 幂等（二次写同值不报错）/覆盖更新（二次写全空 = 全部清除默认）。
 func TestUserToolPreferencesStoreUpsert(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	pref, err := fixture.store.GetUserToolPreferences("owner-pref")
 	if err != nil {

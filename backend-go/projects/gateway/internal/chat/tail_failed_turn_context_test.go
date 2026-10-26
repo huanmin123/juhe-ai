@@ -86,6 +86,7 @@ func suffixRoles(t *testing.T, loaded *ModelContextLoadResult) []string {
 // assistant failed 有内容）注入 suffix 末尾，顺序为 [...completed 轮, user 原
 // 问题, assistant 半截]。
 func TestLoadModelContextTailFailedTurnInjected(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_ok", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_ok", "tail-cmid-1", "问题1", "回答1")
@@ -118,6 +119,7 @@ func TestLoadModelContextTailFailedTurnInjected(t *testing.T) {
 // TestLoadModelContextTailFailedTurnCoveredByLaterTurn failed 轮之后存在更新的
 // completed 轮次（非尾部）→ 不注入。
 func TestLoadModelContextTailFailedTurnCoveredByLaterTurn(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_covered", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_covered", "tail-cmid-1", "问题1", "回答1")
@@ -143,6 +145,7 @@ func TestLoadModelContextTailFailedTurnCoveredByLaterTurn(t *testing.T) {
 // （canceled 且保留半截内容）与 failed 轮同判据注入 suffix 末尾，顺序为
 // [...completed 轮, user 原问题, assistant 半截]。
 func TestLoadModelContextTailCanceledTurnInjected(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_cancel", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_cancel", "tail-cmid-1", "问题1", "回答1")
@@ -175,6 +178,7 @@ func TestLoadModelContextTailCanceledTurnInjected(t *testing.T) {
 // TestLoadModelContextTailCanceledEmptyContentNotInjected 空内容取消轮不注入
 // （含 runner 不在 hub 时兜底取消不写内容的形态，由「内容非空」条件自然排除）。
 func TestLoadModelContextTailCanceledEmptyContentNotInjected(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_cancel_empty", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_cancel_empty", "tail-cmid-1", "问题1", "回答1")
@@ -192,6 +196,7 @@ func TestLoadModelContextTailCanceledEmptyContentNotInjected(t *testing.T) {
 // TestLoadModelContextTailCanceledTurnCoveredByLaterTurn canceled 轮之后存在
 // 更新的 completed 轮次（非尾部）→ 不注入。
 func TestLoadModelContextTailCanceledTurnCoveredByLaterTurn(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_cancel_covered", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_cancel_covered", "tail-cmid-1", "问题1", "回答1")
@@ -215,6 +220,7 @@ func TestLoadModelContextTailCanceledTurnCoveredByLaterTurn(t *testing.T) {
 
 // TestLoadModelContextTailFailedEmptyContentNotInjected 空内容失败轮不注入。
 func TestLoadModelContextTailFailedEmptyContentNotInjected(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_empty", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_empty", "tail-cmid-1", "问题1", "回答1")
@@ -232,6 +238,7 @@ func TestLoadModelContextTailFailedEmptyContentNotInjected(t *testing.T) {
 // TestLoadModelContextTailFailedWithoutUserPairNotInjected 无紧邻 completed 用户
 // 提问配对的失败轮不注入。
 func TestLoadModelContextTailFailedWithoutUserPairNotInjected(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_nopair", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_nopair", "tail-cmid-1", "问题1", "回答1")
@@ -249,6 +256,7 @@ func TestLoadModelContextTailFailedWithoutUserPairNotInjected(t *testing.T) {
 // TestLoadModelContextTailFailedTurnWithStreamingPlaceholder 存在更新的 streaming
 // 占位（崩溃遗留/发送时序）时不阻断注入。
 func TestLoadModelContextTailFailedTurnWithStreamingPlaceholder(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_streaming", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_streaming", "tail-cmid-1", "问题1", "回答1")
@@ -271,6 +279,7 @@ func TestLoadModelContextTailFailedTurnWithStreamingPlaceholder(t *testing.T) {
 // TestLoadModelContextExcludingTurnSkipsTailFailedTurn excludeTurnID 命中尾部
 // 中断轮时不注入；未命中时照常注入。
 func TestLoadModelContextExcludingTurnSkipsTailFailedTurn(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_exclude", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_exclude", "tail-cmid-1", "问题1", "回答1")
@@ -295,6 +304,7 @@ func TestLoadModelContextExcludingTurnSkipsTailFailedTurn(t *testing.T) {
 // TestLoadModelContextTailFailedTurnBudgetShortfall 行数或字节预算不足以容纳
 // 完整两行时放弃注入且不报错；Complete/TruncatedAt 语义不变。
 func TestLoadModelContextTailFailedTurnBudgetShortfall(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_budget", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_budget", "tail-cmid-1", "问题1", "回答1")
@@ -355,6 +365,7 @@ func decodeUpstreamMessages(t *testing.T, body string) []map[string]any {
 // （sourceThrough = next_sequence_no - 3）停在 failed 轮之前，压缩安装后
 // 尾部中断轮仍位于压缩水位之后、照常注入。
 func TestCompactionKeepsTailFailedTurnInSuffix(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_tail_compaction"
 	f.createConversation(conversationID, routeTestOwner)
@@ -447,6 +458,7 @@ func appendChatCompletionStep(env *generationEnv, answer string) {
 // 「继续」，发往上游的请求体 history 包含 user 原问题与 assistant 半截内容，
 // 且位于新用户消息之前。
 func TestStreamRouteTailFailedTurnEntersUpstreamHistory(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_tail_route"
 	f.createConversation(conversationID, routeTestOwner)
@@ -487,6 +499,7 @@ func TestStreamRouteTailFailedTurnEntersUpstreamHistory(t *testing.T) {
 // （canceled 且保留半截内容）之后发送「继续」，发往上游的请求体 history 包含
 // 停止轮 user 原问题与 assistant 半截内容，且位于新用户消息之前。
 func TestStreamRouteTailCanceledTurnEntersUpstreamHistory(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_tail_cancel_route"
 	f.createConversation(conversationID, routeTestOwner)
@@ -526,6 +539,7 @@ func TestStreamRouteTailCanceledTurnEntersUpstreamHistory(t *testing.T) {
 // TestStreamRouteReplaceExcludesTailFailedTurn 端到端：replace 命中尾部失败轮
 // 时，旧提问与半截回答不进入发往上游的请求体 history。
 func TestStreamRouteReplaceExcludesTailFailedTurn(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_tail_replace"
 	f.createConversation(conversationID, routeTestOwner)

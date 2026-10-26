@@ -10,6 +10,7 @@ import (
 
 // TestW10DCommitChatAssetsViaAcceptTurn 覆盖 commitChatAssetsToMessage 成功路径与错误臂。
 func TestW10DCommitChatAssetsViaAcceptTurn(t *testing.T) {
+	t.Parallel()
 	t.Run("成功路径", func(t *testing.T) {
 		fixture, _ := newFaultChatFixtureW10D(t)
 		fixture.createConversation("conv_w10d_ast", routeTestOwner)
@@ -132,6 +133,7 @@ func generatedCommitInputW10D(f *chatFixture, conversationID, turnID, msgID stri
 
 // TestW10DLoadCompactionSourcePageValidation 覆盖 LoadCompactionSourcePage 纯校验臂。
 func TestW10DLoadCompactionSourcePageValidation(t *testing.T) {
+	t.Parallel()
 	fixture, _ := newFaultChatFixtureW10D(t)
 	seedCompactionClaimW10D(t, fixture, "conv_w10d_src")
 	var cid string

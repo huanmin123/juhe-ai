@@ -212,6 +212,9 @@ func newFaultChatFixtureW10D(t *testing.T) (*chatFixture, *faultScriptW10D) {
 	script := newFaultScriptW10D()
 	db := sql.OpenDB(faultConnectorW10D{base: base, script: script})
 	db.SetMaxOpenConns(16)
+	// 闲置连接全量保留复用（理由同 newChatFixture）：故障驱动夹具被扫描类
+	// 测试高频批量创建，反复建拆物理连接会耗尽本机临时端口并拖慢每用例。
+	db.SetMaxIdleConns(16)
 	t.Cleanup(func() { _ = db.Close() })
 	// 表结构已由 chatPGFixtureDSN 的 prepare 注入（幂等 IF NOT EXISTS，故障
 	// 脚本此刻未武装）。

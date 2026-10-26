@@ -44,6 +44,7 @@ func w13g4StreamPost(rt *chatRoutes, conversationID, owner, payload string) *htt
 
 // TestW13G4StreamTurnPrologueArms 覆盖 streamTurn 前置链各错误臂。
 func TestW13G4StreamTurnPrologueArms(t *testing.T) {
+	t.Parallel()
 	env, script := newFaultGenerationEnvW10D(t)
 	conversationID := "chat_conv_w13g4_pro"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -96,6 +97,7 @@ func TestW13G4StreamTurnPrologueArms(t *testing.T) {
 // TestW13G4StreamTurnContextBudgetArms 覆盖历史估算超限的压缩尝试臂
 // （520-525 compactOnce 调用、572-582 85% 压缩链、583-586 ContextBudgetError）。
 func TestW13G4StreamTurnContextBudgetArms(t *testing.T) {
+	t.Parallel()
 	env, _ := newFaultGenerationEnvW10D(t)
 	conversationID := "chat_conv_w13g4_budget"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -129,6 +131,7 @@ func TestW13G4StreamTurnContextBudgetArms(t *testing.T) {
 // TestW13G4StreamTurnSuccessWithoutCompactions 覆盖 ToolEnvironment 缺省与
 // Compactions==nil 的成功流（467-469、520-521）。
 func TestW13G4StreamTurnSuccessWithoutCompactions(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_plain"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -245,6 +248,8 @@ func w13g4HookFixture(t *testing.T, hooks map[string]func()) (*chatFixture, *fau
 	script := newFaultScriptW10D()
 	db := sql.OpenDB(w13g4HookConnector{base: base, script: script, hooks: hooks})
 	db.SetMaxOpenConns(16)
+	// 闲置连接全量保留复用（理由同 newChatFixture）。
+	db.SetMaxIdleConns(16)
 	t.Cleanup(func() { _ = db.Close() })
 	// 表结构已由 chatPGFixtureDSN 的 prepare 注入；钩子此刻未武装。
 	_, clock := fixedChatClock()
@@ -274,6 +279,7 @@ func w13g4AbortPrepOnce(rt *chatRoutes, conversationID, clientMessageID string) 
 // （542-545）。383/398/423/439 臂在 claimPreparation 与 assertActive 之间无外部
 // 调用点（mock 直连），无法确定性注入取消，行为与 542 臂同型。
 func TestW13G4StreamTurnPrepCanceledArms(t *testing.T) {
+	t.Parallel()
 	conversationID := "chat_conv_w13g4_cancel"
 	rtRef := newChatRoutesForTest(&Deps{})
 	hooks := map[string]func(){
@@ -292,6 +298,7 @@ func TestW13G4StreamTurnPrepCanceledArms(t *testing.T) {
 // TestW13G4StreamTurnBeginAcceptanceArms 覆盖 beginAcceptance false 臂（638-641）：
 // load 阶段把 prep.phase 篡改为 accepting → assertActive 通过但 beginAcceptance 拒绝。
 func TestW13G4StreamTurnBeginAcceptanceArms(t *testing.T) {
+	t.Parallel()
 	conversationID := "chat_conv_w13g4_phase"
 	rtRef := newChatRoutesForTest(&Deps{})
 	hooks := map[string]func(){
@@ -319,6 +326,7 @@ func TestW13G4StreamTurnBeginAcceptanceArms(t *testing.T) {
 // TestW13G4StreamTurnAcceptAbortArms 覆盖 AcceptTurn 后取消臂（723-725）：
 // AcceptTurn 写幂等行时取消 prep → 723 isCanceled → runner.Abort，SSE 以取消终态收尾。
 func TestW13G4StreamTurnAcceptAbortArms(t *testing.T) {
+	t.Parallel()
 	conversationID := "chat_conv_w13g4_abort"
 	rtRef := newChatRoutesForTest(&Deps{})
 	hooks := map[string]func(){

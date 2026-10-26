@@ -15,6 +15,7 @@ import (
 
 // TestCompactionServiceSkipsW3 覆盖 runCompaction 的前置跳过分支。
 func TestCompactionServiceSkipsW3(t *testing.T) {
+	t.Parallel()
 	executor := &mockExecutor{}
 	service := NewCompactionService(newChatFixture(t).store, executor, func(text string) int { return len(text) / 4 }, func() string { return "2026-03-10T08:00:00.000Z" })
 	input := CompactionInput{ConversationID: "conv-missing", SystemAccountID: "owner", Model: "gpt-5"}

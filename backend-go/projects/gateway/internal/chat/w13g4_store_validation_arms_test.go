@@ -48,6 +48,7 @@ func w13g4IsReplaceConflict(err error) bool {
 
 // TestW13G4ReplaceTurnValidationArms 覆盖 requireReplaceableTurn 的坏数据分支。
 func TestW13G4ReplaceTurnValidationArms(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_rep"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -96,6 +97,7 @@ func TestW13G4ReplaceTurnValidationArms(t *testing.T) {
 
 // TestW13G4ConditionalStopArms 覆盖 conditionalStop 的受影响行数分支。
 func TestW13G4ConditionalStopArms(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_stop"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -137,6 +139,7 @@ func TestW13G4ConditionalStopArms(t *testing.T) {
 // TestW13G4StreamFailurePathArms 覆盖生成执行失败的收口路径与上下文用量
 // 触发的后台压缩调度。
 func TestW13G4StreamFailurePathArms(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_fail"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -161,6 +164,7 @@ func TestW13G4StreamFailurePathArms(t *testing.T) {
 // TestW13G4StreamScheduleCompactionArms 覆盖上游无 usage 且助手输出推高上下文
 // 估算时的后台压缩调度（stream_execute.go 239-250）。
 func TestW13G4StreamScheduleCompactionArms(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_sched"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -191,6 +195,7 @@ func TestW13G4StreamScheduleCompactionArms(t *testing.T) {
 // 条目计数截断（context.go 639-654、573-578），并经 streamTurn 驱动
 // ModelContextLoadLimit → 压缩 → 重载链（stream_route.go 528-541）。
 func TestW13G4ContextLoadTruncationArms(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_trunc"
 	env.fixture.createConversation(conversationID, routeTestOwner)

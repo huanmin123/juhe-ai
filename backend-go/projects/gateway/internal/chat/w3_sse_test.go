@@ -561,6 +561,7 @@ func TestPublishApplicationToolEventW3(t *testing.T) {
 
 // TestHeadRevisionW3 覆盖上下文版本读取的空值契约。
 func TestHeadRevisionW3(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	rt := &chatRoutes{deps: &Deps{Store: fixture.store}}
 	if got := headRevision(rt, "missing", "owner"); got != 0 {

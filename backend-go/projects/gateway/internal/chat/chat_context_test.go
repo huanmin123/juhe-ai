@@ -148,6 +148,7 @@ func digest64(seed string) string {
 }
 
 func TestContextCompactionStateMachine(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.seedTurns("owner-1", "chat_conv_a", 2)
@@ -256,6 +257,7 @@ func TestContextCompactionStateMachine(t *testing.T) {
 }
 
 func TestLoadModelContextTruncationBoundaries(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.seedTurns("owner-1", "chat_conv_a", 2)
@@ -390,6 +392,7 @@ func claimCompaction(t *testing.T, f *chatFixture, conversationID, ownerID strin
 }
 
 func TestCompactionProgressReleaseAndFailure(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.seedTurns("owner-1", "chat_conv_a", 2)
@@ -465,6 +468,7 @@ func TestCompactionProgressReleaseAndFailure(t *testing.T) {
 }
 
 func TestInstallCheckpointConflictGuards(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")
 	f.seedTurns("owner-1", "chat_conv_a", 2)

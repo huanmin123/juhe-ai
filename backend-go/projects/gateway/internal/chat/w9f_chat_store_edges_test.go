@@ -62,6 +62,7 @@ func TestW9FMapConversationValidation(t *testing.T) {
 }
 
 func TestW9FCreateConversationGuards(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	if _, err := fixture.store.CreateConversation(CreateConversationInput{SystemAccountID: "o", Now: "bad"}); err == nil {
 		t.Fatal("invalid now must fail")
@@ -109,6 +110,7 @@ func TestW9FAssetErrorMessages(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW9FCompactionScheduleFireAndForget(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	executor := &mockExecutor{}
 	compactions := NewCompactionService(fixture.store, executor, func(text string) int { return len(text) / 4 }, func() string { return fixture.nowISO })
@@ -118,6 +120,7 @@ func TestW9FCompactionScheduleFireAndForget(t *testing.T) {
 }
 
 func TestW9FCompactionCompactOnceMissingConversation(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	executor := &mockExecutor{}
 	compactions := NewCompactionService(fixture.store, executor, func(text string) int { return len(text) / 4 }, func() string { return fixture.nowISO })
@@ -128,6 +131,7 @@ func TestW9FCompactionCompactOnceMissingConversation(t *testing.T) {
 }
 
 func TestW9FCompactionCompactOnceStoreFailure(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	executor := &mockExecutor{}
 	compactions := NewCompactionService(fixture.store, executor, func(text string) int { return len(text) / 4 }, func() string { return fixture.nowISO })
@@ -160,6 +164,7 @@ func TestW9FChatSmallPureHelpers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW9FHandlerAuthFallbacksRender500(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_auth", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)

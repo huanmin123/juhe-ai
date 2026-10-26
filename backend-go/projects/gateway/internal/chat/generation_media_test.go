@@ -289,6 +289,7 @@ func TestChatMediaToolOrchestratorStages(t *testing.T) {
 }
 
 func TestChatAudioToolExecutionAndSink(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	_, clock := fixedChatClock()
 	objectStore, err := NewLocalObjectStore(filepath.Join(t.TempDir(), "objects"))

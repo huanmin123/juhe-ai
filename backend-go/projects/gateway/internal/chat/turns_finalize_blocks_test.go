@@ -31,6 +31,7 @@ const canceledRawBlocks = `[{"type":"reasoning","blockId":"blk_rsn","order":1,"t
 	`{"type":"output_text","blockId":"blk_txt","order":2,"text":"部分回答","status":"canceled"}]`
 
 func TestFailChatTurnPersistsContentBlocksRaw(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "bug0240-owner"
 	f.createConversation("bug0240-conv-fail", owner)
@@ -66,6 +67,7 @@ func TestFailChatTurnPersistsContentBlocksRaw(t *testing.T) {
 }
 
 func TestCancelChatTurnPersistsContentBlocksRaw(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "bug0240-owner"
 	f.createConversation("bug0240-conv-cancel", owner)
@@ -92,6 +94,7 @@ func TestCancelChatTurnPersistsContentBlocksRaw(t *testing.T) {
 }
 
 func TestFinalizeTurnEmptyRawFallsBackToTypedSerialization(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "bug0240-owner"
 

@@ -206,6 +206,8 @@ func newW14LHoldFixture(t *testing.T, hold *w14lHold) (*chatFixture, *faultScrip
 	script := newFaultScriptW10D()
 	db := sql.OpenDB(w14lHoldConnector{base: base, hold: hold, script: script})
 	db.SetMaxOpenConns(16)
+	// 闲置连接全量保留复用（理由同 newChatFixture）。
+	db.SetMaxIdleConns(16)
 	t.Cleanup(func() { _ = db.Close() })
 	// 表结构已由 chatPGFixtureDSN 的 prepare 注入；hold 此刻未武装。
 	_, clock := fixedChatClock()
@@ -228,6 +230,7 @@ func w14lStreamPostRaw(rt *chatRoutes, conversationID, payload, owner string) *h
 // TestW14LPreparationCanceledMatrix 逐点暂停存储查询，再取消预备，命中
 // 各个 assertActive 失败臂（402-560 区段）。
 func TestW14LPreparationCanceledMatrix(t *testing.T) {
+	t.Parallel()
 	for cancelAfter := 1; cancelAfter <= 4; cancelAfter++ {
 		cancelAfter := cancelAfter
 		t.Run(fmt.Sprintf("cancel%02d", cancelAfter), func(t *testing.T) {
@@ -278,6 +281,7 @@ func TestW14LPreparationCanceledMatrix(t *testing.T) {
 
 // TestW14LStreamDuplicateAccept 覆盖重复 clientMessageId 的冲突臂。
 func TestW14LStreamDuplicateAccept(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_w14l_dup"
 	fixture.createConversation(conversationID, routeTestOwner)
@@ -351,6 +355,7 @@ func TestW14LCollectOpenAIChatSseArms(t *testing.T) {
 
 // TestW14LPassiveDelayAndFailClaim 覆盖重试延迟窗口与认领失败钳制。
 func TestW14LPassiveDelayAndFailClaim(t *testing.T) {
+	t.Parallel()
 	_, clock := fixedChatClock()
 	service := NewCompactionService(nil, nil, nil, nil)
 	service.WallClock = clock
@@ -383,6 +388,7 @@ func TestW14LPassiveDelayAndFailClaim(t *testing.T) {
 // install 拒绝臂（巨型载荷 / 非法来源消息 ID）均在 serializeCheckpointEntries
 // 载荷校验层拒绝，先于任何认领状态读取，改用字面认领输入保留覆盖。
 func TestW14LCheckpointInstallValidation(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	conversationID := "chat_conv_w14l_ckpt"
 	fixture.createConversation(conversationID, routeTestOwner)

@@ -64,6 +64,7 @@ func scriptChatCompletions(env *generationEnv) {
 }
 
 func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	aware := &targetAwareExecutor{inner: env.executor}
 	env.deps.Executor = aware
@@ -109,6 +110,7 @@ func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
 }
 
 func TestStreamBindValidationFailures(t *testing.T) {
+	t.Parallel()
 	prefix := "bind_stream_fail"
 
 	t.Run("绑定停用账户可发送（pinned 直取链路）", func(t *testing.T) {
@@ -170,6 +172,7 @@ func TestStreamBindValidationFailures(t *testing.T) {
 // 器视图；未绑定会话不触碰端口（发送预检已拦截，服务层兜底）；会话缺失/读
 // 失败 fail-closed 返回跳过错误，不回落未 pin 执行器。
 func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
+	t.Parallel()
 	aware := &targetAwareExecutor{inner: &mockExecutor{}}
 
 	t.Run("绑定账户会话绑定目标", func(t *testing.T) {
@@ -280,6 +283,7 @@ func TestCompactionSummarizePageSkipsDispatchWhenTargetUnavailable(t *testing.T)
 // TestStreamUnboundConversationRejected 钉住未选账户会话的发送行为：发送预检
 // 400 chat_account_required，不产生覆盖目标、不派发上游。
 func TestStreamUnboundConversationRejected(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	aware := &targetAwareExecutor{inner: env.executor}
 	env.deps.Executor = aware

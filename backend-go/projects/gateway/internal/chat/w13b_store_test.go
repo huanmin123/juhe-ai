@@ -16,6 +16,7 @@ import (
 )
 
 func TestW13BAcceptTurnReplaceLifecycle(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-rep", owner)
@@ -64,6 +65,7 @@ func TestW13BAcceptTurnReplaceLifecycle(t *testing.T) {
 }
 
 func TestW13BAcceptTurnReplaceConflictArms(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-rep2", owner)
@@ -121,6 +123,7 @@ func TestW13BAcceptTurnReplaceConflictArms(t *testing.T) {
 }
 
 func TestW13BRequireReplaceableTurnArms(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-req", owner)
@@ -188,6 +191,7 @@ func TestW13BRequireReplaceableTurnArms(t *testing.T) {
 }
 
 func TestW13BFinalizeTurnStorageLimit(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-fin", owner)
@@ -217,6 +221,7 @@ func TestW13BFinalizeTurnStorageLimit(t *testing.T) {
 }
 
 func TestW13BFinalizeTurnValidationArms(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	complete := func(conversationID, turnID, now string) error {
@@ -261,6 +266,7 @@ func TestW13BFinalizeTurnValidationArms(t *testing.T) {
 }
 
 func TestW13BConditionalStopMatrix(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-stop", owner)
@@ -303,6 +309,7 @@ func TestW13BConditionalStopMatrix(t *testing.T) {
 }
 
 func TestW13BReadConditionalStopState(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-rcs", owner)
@@ -329,6 +336,7 @@ func TestW13BReadConditionalStopState(t *testing.T) {
 }
 
 func TestW13BListMessagesValidation(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-lm", owner)
@@ -362,6 +370,7 @@ func TestW13BListMessagesValidation(t *testing.T) {
 }
 
 func TestW13BGetConversationSyncHeadInvalidNow(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("w13b-conv-sh", "owner")
 	if _, err := f.store.GetConversationSyncHead("w13b-conv-sh", "owner", "bad"); err == nil {
@@ -780,6 +789,7 @@ func TestW13BAssetStoreLifecycle(t *testing.T) {
 }
 
 func TestW13BCommitGeneratedAssetLifecycle(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-gen", owner)
@@ -880,6 +890,7 @@ func TestW13BCommitAssetsToMessageMatrix(t *testing.T) {
 }
 
 func TestW13BImageGenerationRootAssetIDs(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-root", owner)
@@ -1025,6 +1036,7 @@ func TestW13BFaultArmsAssetsQueries(t *testing.T) {
 }
 
 func TestW13BContextStoreValidationArms(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-ctx", owner)
@@ -1192,6 +1204,7 @@ func TestW13BContextStoreClaimArms(t *testing.T) {
 }
 
 func TestW13BSerializableContextCheckpoint(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	// serializeCheckpointEntries 直接矩阵。
@@ -1211,6 +1224,7 @@ func TestW13BSerializableContextCheckpoint(t *testing.T) {
 }
 
 func TestW13BCompactionFaultArms(t *testing.T) {
+	t.Parallel()
 	fixture, script := newFaultChatFixtureW13B(t)
 	f := fixture
 	owner := "w13b-owner"
@@ -1261,6 +1275,7 @@ func TestW13BCompactionFaultArms(t *testing.T) {
 }
 
 func TestW13BSummarizePageProtocolBodies(t *testing.T) {
+	t.Parallel()
 	var seenPaths []string
 	summaryPayload := `{"choices":[{"message":{"content":"` + `{\"currentGoal\":\"g\",\"recentUserIntent\":\"i\"}` + `"}}],"output_text":"` + `{\"currentGoal\":\"g\",\"recentUserIntent\":\"i\"}` + `"}`
 	executor := &pathRecorderExecutorW13B{paths: &seenPaths, body: summaryPayload}
@@ -1345,6 +1360,7 @@ func (failingExecutorW13B) Dispatch(ctx context.Context, req GenerationDispatchR
 }
 
 func TestW13BEnrichSourceMessages(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-enrich", owner)
@@ -1453,6 +1469,7 @@ func TestW13BCommitFaultArmsDeletion(t *testing.T) {
 }
 
 func TestW13BLoadContextTruncationArms(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	owner := "w13b-owner"
 	f.createConversation("w13b-conv-trunc", owner)

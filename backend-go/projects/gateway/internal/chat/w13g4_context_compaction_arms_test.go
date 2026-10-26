@@ -94,6 +94,7 @@ func TestW13G4InstallCheckpointValidationArms(t *testing.T) {
 // TestW13G4ClaimCompactionArms 覆盖 ClaimContextCompaction 的会话缺失、
 // 版本冲突、无 checkpoint 认领与过期 checkpoint 失效链。
 func TestW13G4ClaimCompactionArms(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_claim"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -193,6 +194,7 @@ func w13g4CompactionStep(payload string) scriptStep {
 // TestW13G4CompactionFailureArms 覆盖 runClaimedCompaction 的页加载、进度、
 // 摘要校验与安装失败臂。
 func TestW13G4CompactionFailureArms(t *testing.T) {
+	t.Parallel()
 	t.Run("summary not smaller", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("chat_conv_w13g4_cf1", routeTestOwner)
@@ -264,6 +266,7 @@ func TestW13G4CompactionFailureArms(t *testing.T) {
 // TestW13G4StreamRecoverArms 覆盖 FailChatTurn 失败后的收口恢复链
 // （stream_execute.go 296-309 + recoverChatTurnFinalization）。
 func TestW13G4StreamRecoverArms(t *testing.T) {
+	t.Parallel()
 	env, script := newFaultGenerationEnvW10D(t)
 	conversationID := "chat_conv_w13g4_rec"
 	env.fixture.createConversation(conversationID, routeTestOwner)

@@ -91,6 +91,7 @@ func installInputW10D(f *chatFixture, conversationID string, claim *ContextCompa
 
 // TestW10DAssetStoreFaultArms 覆盖 assets_store 方法错误臂。
 func TestW10DAssetStoreFaultArms(t *testing.T) {
+	t.Parallel()
 	t.Run("AssertChatAssetUploadSlotAvailable/计数失败", func(t *testing.T) {
 		fixture, script := newFaultChatFixtureW10D(t)
 		fixture.createConversation("conv_w10d_slot", routeTestOwner)
@@ -217,6 +218,7 @@ func TestW10DAssetStoreFaultArms(t *testing.T) {
 
 // TestW10DAssetFaultArms 覆盖 assets.go 方法错误臂。
 func TestW10DAssetFaultArms(t *testing.T) {
+	t.Parallel()
 	t.Run("ClaimUncommittedAssetForDeletion/更新失败", func(t *testing.T) {
 		fixture, script := newFaultChatFixtureW10D(t)
 		fixture.createConversation("conv_w10d_asset", routeTestOwner)
@@ -283,6 +285,7 @@ func w10dClaimedClaimID(f *chatFixture) string {
 
 // TestW10DContextFaultArms 覆盖 context.go 方法错误臂。
 func TestW10DContextFaultArms(t *testing.T) {
+	t.Parallel()
 	t.Run("RequestContextCompaction/更新失败", func(t *testing.T) {
 		fixture, script := newFaultChatFixtureW10D(t)
 		fixture.createConversation("conv_w10d_ctx", routeTestOwner)

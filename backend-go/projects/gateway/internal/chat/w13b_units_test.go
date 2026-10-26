@@ -1111,6 +1111,7 @@ func TestW13BImageToolNormalizers(t *testing.T) {
 }
 
 func TestW13BUpstreamMessagePayload(t *testing.T) {
+	t.Parallel()
 	if msg := upstreamMessagePayload(`{"error":{"message":"上游错误"}}`, "fallback"); msg != "上游错误" {
 		t.Fatalf("上游错误消息失败: %q", msg)
 	}
@@ -1147,6 +1148,7 @@ func TestW13BUpstreamMessagePayload(t *testing.T) {
 }
 
 func TestW13BRecoverChatTurnFinalization(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	accepted := f.accept("owner", f.createConversation("conv_rec", "owner").ID, "cmid-r", "问题")
 	env := buildGenerationEnvW10D(t, f)
@@ -1431,6 +1433,7 @@ func TestW13BNewCompactionServiceDefaults(t *testing.T) {
 }
 
 func TestW13BCompactionConcurrencySameKey(t *testing.T) {
+	t.Parallel()
 	fixture := newChatFixture(t)
 	fixture.createConversation("w13b-conv-cc", "owner")
 	fixture.seedTurns("owner", "w13b-conv-cc", 5)

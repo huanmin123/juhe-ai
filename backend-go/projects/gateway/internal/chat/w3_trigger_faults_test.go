@@ -5,22 +5,41 @@ import (
 	"testing"
 )
 
-// 语句级故障注入：用 SQLite 触发器 RAISE(ABORT) 让事务中段的特定语句失败，
+// 语句级故障注入：用 PG 触发器 RAISE EXCEPTION 让事务中段的特定语句失败，
 // 覆盖各存储方法内部的错误延续与回滚分支（生产代码不变，等价于数据库层
-// 报错场景）。
+// 报错场景）。触发器体共用一个 plpgsql 函数（异常即中止当前语句并使事务
+// 进入 aborted 状态，语义对齐 sqlite RAISE(ABORT)）。
 
 type failTriggerW3 struct {
-	name    string
-	trigger string
+	name  string
+	table string
+	event string // INSERT / UPDATE / DELETE
+	when  string // 可空 WHEN 条件（PG 布尔表达式，引用 NEW/OLD）
 }
+
+// w3FailInjectedFuncW3 是所有故障触发器共用的抛错函数。
+const w3FailInjectedFuncW3 = "w3_fail_injected"
 
 func installFailTriggerW3(t *testing.T, f *chatFixture, target failTriggerW3) {
 	t.Helper()
-	if _, err := f.db.Exec(target.trigger); err != nil {
+	if _, err := f.db.Exec(`CREATE OR REPLACE FUNCTION ` + w3FailInjectedFuncW3 + `() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'injected';
+END;
+$$;`); err != nil {
+		t.Fatalf("安装触发器函数失败: %v", err)
+	}
+	statement := `CREATE TRIGGER ` + target.name + ` BEFORE ` + target.event + ` ON ` + target.table +
+		` FOR EACH ROW`
+	if target.when != "" {
+		statement += ` WHEN (` + target.when + `)`
+	}
+	statement += ` EXECUTE FUNCTION ` + w3FailInjectedFuncW3 + `()`
+	if _, err := f.db.Exec(statement); err != nil {
 		t.Fatalf("安装触发器失败: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = f.db.Exec(`DROP TRIGGER IF EXISTS ` + target.name)
+		_, _ = f.db.Exec(`DROP TRIGGER IF EXISTS ` + target.name + ` ON ` + target.table)
 	})
 }
 
@@ -34,15 +53,16 @@ func acceptInputW3(clientMessageID string) AcceptTurnInput {
 
 // TestAcceptTurnMidFlowFailuresW3 覆盖 AcceptTurn 各写入点的失败延续。
 func TestAcceptTurnMidFlowFailuresW3(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		trigger failTriggerW3
 	}{
-		{"用户消息插入失败", failTriggerW3{"fail_user_msg", `CREATE TRIGGER fail_user_msg BEFORE INSERT ON chat_messages WHEN NEW.role = 'user' BEGIN SELECT RAISE(ABORT, 'injected'); END`}},
-		{"助手消息插入失败", failTriggerW3{"fail_asst_msg", `CREATE TRIGGER fail_asst_msg BEFORE INSERT ON chat_messages WHEN NEW.role = 'assistant' BEGIN SELECT RAISE(ABORT, 'injected'); END`}},
-		{"幂等键插入失败", failTriggerW3{"fail_idem", `CREATE TRIGGER fail_idem BEFORE INSERT ON chat_message_idempotency BEGIN SELECT RAISE(ABORT, 'injected'); END`}},
-		{"容量窗口递增失败", failTriggerW3{"fail_window", `CREATE TRIGGER fail_window BEFORE UPDATE ON chat_user_storage_windows BEGIN SELECT RAISE(ABORT, 'injected'); END`}},
-		{"会话更新失败", failTriggerW3{"fail_conv", `CREATE TRIGGER fail_conv BEFORE UPDATE ON chat_conversations BEGIN SELECT RAISE(ABORT, 'injected'); END`}},
+		{"用户消息插入失败", failTriggerW3{"fail_user_msg", "chat_messages", "INSERT", "NEW.role = 'user'"}},
+		{"助手消息插入失败", failTriggerW3{"fail_asst_msg", "chat_messages", "INSERT", "NEW.role = 'assistant'"}},
+		{"幂等键插入失败", failTriggerW3{"fail_idem", "chat_message_idempotency", "INSERT", ""}},
+		{"容量窗口递增失败", failTriggerW3{"fail_window", "chat_user_storage_windows", "UPDATE", ""}},
+		{"会话更新失败", failTriggerW3{"fail_conv", "chat_conversations", "UPDATE", ""}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -70,7 +90,7 @@ func TestAcceptTurnMidFlowFailuresW3(t *testing.T) {
 		if _, err := f.db.Exec(`DELETE FROM chat_user_storage_windows`); err != nil {
 			t.Fatalf("清理失败: %v", err)
 		}
-		installFailTriggerW3(t, f, failTriggerW3{"fail_window_ins", `CREATE TRIGGER fail_window_ins BEFORE INSERT ON chat_user_storage_windows BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_window_ins", "chat_user_storage_windows", "INSERT", ""})
 		if _, err := f.store.AcceptTurn(acceptInputW3("cmid-1")); err == nil {
 			t.Fatalf("注入失败未生效")
 		}
@@ -79,11 +99,12 @@ func TestAcceptTurnMidFlowFailuresW3(t *testing.T) {
 
 // TestFinalizeAndStopMidFlowFailuresW3 覆盖终结与条件停止的中段失败。
 func TestFinalizeAndStopMidFlowFailuresW3(t *testing.T) {
+	t.Parallel()
 	t.Run("终结消息更新失败", func(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_trigger", "owner")
 		accepted := f.accept("owner", "conv_trigger", "cmid-1", "问题")
-		installFailTriggerW3(t, f, failTriggerW3{"fail_final", `CREATE TRIGGER fail_final BEFORE UPDATE ON chat_messages BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_final", "chat_messages", "UPDATE", ""})
 		if _, err := f.store.CompleteChatTurn(CompleteTurnInput{
 			ConversationID: "conv_trigger", SystemAccountID: "owner", TurnID: accepted.TurnID,
 			AssistantContent: "回答", Now: f.nowISO,
@@ -95,7 +116,7 @@ func TestFinalizeAndStopMidFlowFailuresW3(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_trigger", "owner")
 		accepted := f.accept("owner", "conv_trigger", "cmid-1", "问题")
-		installFailTriggerW3(t, f, failTriggerW3{"fail_settle", `CREATE TRIGGER fail_settle BEFORE UPDATE ON chat_user_storage_windows BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_settle", "chat_user_storage_windows", "UPDATE", ""})
 		if _, err := f.store.CompleteChatTurn(CompleteTurnInput{
 			ConversationID: "conv_trigger", SystemAccountID: "owner", TurnID: accepted.TurnID,
 			AssistantContent: "回答", Now: f.nowISO,
@@ -107,7 +128,7 @@ func TestFinalizeAndStopMidFlowFailuresW3(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_trigger", "owner")
 		accepted := f.accept("owner", "conv_trigger", "cmid-1", "问题")
-		installFailTriggerW3(t, f, failTriggerW3{"fail_conv_final", `CREATE TRIGGER fail_conv_final BEFORE UPDATE ON chat_conversations BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_conv_final", "chat_conversations", "UPDATE", ""})
 		if _, err := f.store.CompleteChatTurn(CompleteTurnInput{
 			ConversationID: "conv_trigger", SystemAccountID: "owner", TurnID: accepted.TurnID,
 			AssistantContent: "回答", Now: f.nowISO,
@@ -119,7 +140,7 @@ func TestFinalizeAndStopMidFlowFailuresW3(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_trigger", "owner")
 		accepted := f.accept("owner", "conv_trigger", "cmid-1", "问题")
-		installFailTriggerW3(t, f, failTriggerW3{"fail_stop", `CREATE TRIGGER fail_stop BEFORE UPDATE ON chat_messages BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_stop", "chat_messages", "UPDATE", ""})
 		if _, err := f.store.FailInterruptedTurnIfMatches(CancelIfMatchesInput{
 			ConversationID: "conv_trigger", SystemAccountID: "owner", ExpectedTurnID: accepted.TurnID, Now: f.nowISO,
 		}); err == nil {
@@ -130,11 +151,12 @@ func TestFinalizeAndStopMidFlowFailuresW3(t *testing.T) {
 
 // TestConversationLifecycleMidFlowFailuresW3 覆盖清空/删除的中段失败。
 func TestConversationLifecycleMidFlowFailuresW3(t *testing.T) {
+	t.Parallel()
 	t.Run("清空消息删除失败", func(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_trigger", "owner")
 		f.seedTurns("owner", "conv_trigger", 1)
-		installFailTriggerW3(t, f, failTriggerW3{"fail_clear", `CREATE TRIGGER fail_clear BEFORE DELETE ON chat_messages BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_clear", "chat_messages", "DELETE", ""})
 		if _, err := f.store.ClearConversation(ClearConversationInput{ConversationID: "conv_trigger", SystemAccountID: "owner", Now: f.nowISO}); err == nil {
 			t.Fatalf("注入失败未生效")
 		}
@@ -142,7 +164,7 @@ func TestConversationLifecycleMidFlowFailuresW3(t *testing.T) {
 	t.Run("删除会话失败", func(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_trigger", "owner")
-		installFailTriggerW3(t, f, failTriggerW3{"fail_del", `CREATE TRIGGER fail_del BEFORE DELETE ON chat_conversations BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_del", "chat_conversations", "DELETE", ""})
 		if _, err := f.store.DeleteConversation("conv_trigger", "owner"); err == nil {
 			t.Fatalf("注入失败未生效")
 		}
@@ -157,7 +179,7 @@ func TestConversationLifecycleMidFlowFailuresW3(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("造资产失败: %v", err)
 		}
-		installFailTriggerW3(t, f, failTriggerW3{"fail_expire", `CREATE TRIGGER fail_expire BEFORE UPDATE ON chat_assets BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_expire", "chat_assets", "UPDATE", ""})
 		if _, err := f.store.ClearConversation(ClearConversationInput{ConversationID: "conv_trigger", SystemAccountID: "owner", Now: f.nowISO}); err == nil {
 			t.Fatalf("注入失败未生效")
 		}
@@ -167,7 +189,7 @@ func TestConversationLifecycleMidFlowFailuresW3(t *testing.T) {
 		f.createConversation("conv_trigger", "owner")
 		turn1 := f.accept("owner", "conv_trigger", "cmid-1", "第一问")
 		f.complete("owner", "conv_trigger", turn1.TurnID, "回答")
-		installFailTriggerW3(t, f, failTriggerW3{"fail_replace", `CREATE TRIGGER fail_replace BEFORE DELETE ON chat_messages BEGIN SELECT RAISE(ABORT, 'injected'); END`})
+		installFailTriggerW3(t, f, failTriggerW3{"fail_replace", "chat_messages", "DELETE", ""})
 		if _, err := f.store.AcceptTurn(AcceptTurnInput{
 			ConversationID: "conv_trigger", SystemAccountID: "owner", ClientMessageID: "cmid-2",
 			UserContent: "替换", Model: "gpt-5", Now: f.nowISO,
@@ -181,6 +203,7 @@ func TestConversationLifecycleMidFlowFailuresW3(t *testing.T) {
 
 // TestCompactionTriggerFailureW3 覆盖压缩请求/认领的失败延续。
 func TestCompactionTriggerFailureW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_trigger", "owner")
 	f.seedTurns("owner", "conv_trigger", 2)
@@ -222,6 +245,7 @@ func TestCompactionTriggerFailureW3(t *testing.T) {
 
 // TestRecordContextUsageBranchesW3 覆盖用量记录的冲突分支。
 func TestRecordContextUsageBranchesW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_usage", "owner")
 	accepted := f.accept("owner", "conv_usage", "cmid-1", "问题")
@@ -256,6 +280,7 @@ func TestRecordContextUsageBranchesW3(t *testing.T) {
 
 // TestFailCompactionAndPendingW3 覆盖压缩失败登记与待处理失败。
 func TestFailCompactionAndPendingW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_compact_fail", "owner")
 	// FailCompaction / FailPendingCompaction 对无压缩态会话为 no-op。

@@ -215,6 +215,7 @@ func w10dActiveTurnID(f *chatFixture) string {
 
 // TestW10DCancelTurnFaultArms 覆盖轮次取消/中断的存储错误臂。
 func TestW10DCancelTurnFaultArms(t *testing.T) {
+	t.Parallel()
 	cancelCases := []struct {
 		name   string
 		substr string

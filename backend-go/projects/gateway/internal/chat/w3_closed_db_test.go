@@ -62,6 +62,7 @@ func TestClosedDatabaseStreamRouteW3(t *testing.T) {
 
 // TestReplaceWithRetainedImagesW3 覆盖替换时保留图片资产的记账分支。
 func TestReplaceWithRetainedImagesW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_retain", routeTestOwner)
 	server := mountAssetMuxW3(t, env)

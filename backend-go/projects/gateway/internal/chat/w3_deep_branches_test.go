@@ -11,6 +11,7 @@ import (
 
 // TestLoadImageEditReferencesW3 覆盖编辑引用装载的成功与失败分支。
 func TestLoadImageEditReferencesW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_editref", routeTestOwner)
 	server := mountAssetMuxW3(t, env)
@@ -34,6 +35,7 @@ func TestLoadImageEditReferencesW3(t *testing.T) {
 
 // TestCommitGeneratedImageSinkW3 覆盖生成图片落盘接收器。
 func TestCommitGeneratedImageSinkW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_sink", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -103,6 +105,7 @@ func (p *failingPreviewProcessorW3) CreatePreview(data []byte) (*ProcessedImage,
 
 // TestRecoverChatTurnFinalizationW3 覆盖终结恢复路径。
 func TestRecoverChatTurnFinalizationW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_recover", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -196,6 +199,7 @@ func TestGenerationParameterProvidersW3(t *testing.T) {
 
 // TestStorageWindowStrictBranchesW3 覆盖存储窗口的严格错误分支。
 func TestStorageWindowStrictBranchesW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_window", "owner")
 	if err := f.store.incrementStorageWindow(f.db, "owner", "bad", 1, 1); err == nil {
@@ -226,6 +230,7 @@ func TestStorageWindowStrictBranchesW3(t *testing.T) {
 
 // TestPoisonSchemaErrorsW3 以删表模拟 schema 损坏，覆盖事务内错误延续与回滚。
 func TestPoisonSchemaErrorsW3(t *testing.T) {
+	t.Parallel()
 	t.Run("chat_messages 缺失", func(t *testing.T) {
 		f := newChatFixture(t)
 		f.createConversation("conv_poison", "owner")

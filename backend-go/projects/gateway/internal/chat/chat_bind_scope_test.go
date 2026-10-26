@@ -29,6 +29,7 @@ func (m outOfScopeAccountLookup) FindChatAccount(scope ChatBindScope, accountID 
 // TestPatchAccountBindScopeEnforced：PATCH accountId 时绑定对象在请求者范围
 // 外（Find 对该 scope 返回 nil）→ 与"不存在"同型 400 文案。
 func TestPatchAccountBindScopeEnforced(t *testing.T) {
+	t.Parallel()
 	userScope := ChatBindScope{ViewerID: routeTestOwner, IsAdmin: false}
 	prefix := "/__aisys__/api/my-chat"
 
@@ -47,6 +48,7 @@ func TestPatchAccountBindScopeEnforced(t *testing.T) {
 // 紧后自然变为不可发送/不可列模型，与"对象不存在/停用"同型降级；admin
 // scope 下同一会话照常可用。
 func TestOutOfScopeBindingConversationDegrades(t *testing.T) {
+	t.Parallel()
 	userScope := ChatBindScope{ViewerID: routeTestOwner, IsAdmin: false}
 	prefix := "/__aisys__/api/my-chat"
 

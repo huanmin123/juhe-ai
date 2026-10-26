@@ -152,6 +152,7 @@ func TestW13BModelsRoutesMatrix(t *testing.T) {
 }
 
 func TestW13BCompactionTriggerMatrix(t *testing.T) {
+	t.Parallel()
 	env, rt, conversationID := w13bRoutes(t)
 	env.fixture.seedTurns(routeTestOwner, conversationID, 4)
 	post := func(body, owner string) *httptest.ResponseRecorder {
@@ -686,6 +687,7 @@ func TestW13BContextStatusRoute(t *testing.T) {
 }
 
 func TestW13BStreamTurnValidationArms(t *testing.T) {
+	t.Parallel()
 	env, _, conversationID := w13bRoutes(t)
 	env.fixture.seedTurns(routeTestOwner, conversationID, 2)
 

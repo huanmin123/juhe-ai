@@ -23,6 +23,7 @@ func w14cCompactionFixture(t *testing.T) (*chatFixture, *CompactionService, *moc
 
 // TestW14CCompactionSourcePageFaults 覆盖认领执行链的存储错误臂。
 func TestW14CCompactionSourcePageFaults(t *testing.T) {
+	t.Parallel()
 	// 来源分页查询失败 → failClaim。
 	fixture, script := newFaultChatFixtureW10D(t)
 	executor := &mockExecutor{}
@@ -40,6 +41,7 @@ func TestW14CCompactionSourcePageFaults(t *testing.T) {
 
 // TestW14CCompactionSummaryExecutorFaces 覆盖摘要执行器响应的解析分支。
 func TestW14CCompactionSummaryExecutorFaces(t *testing.T) {
+	t.Parallel()
 	t.Run("空响应解析失败", func(t *testing.T) {
 		fixture := newChatFixture(t)
 		executor := &mockExecutor{}

@@ -91,6 +91,8 @@ func TestW14LRouteFaultSweep(t *testing.T) {
 			for n := 1; n <= 40; n++ {
 				n := n
 				t.Run(fmt.Sprintf("n%02d", n), func(t *testing.T) {
+					// 子测试各自独占隔离库与故障脚本，并行推进压缩墙钟。
+					t.Parallel()
 					fixture, script := newFaultChatFixtureW10D(t)
 					conversationID := fmt.Sprintf("chat_conv_w14l_route_%s_%d", name, n)
 					fixture.createConversation(conversationID, routeTestOwner)
@@ -150,6 +152,8 @@ func TestW14LNullRowScanSweep(t *testing.T) {
 			for k := 1; k <= 40; k++ {
 				k := k
 				t.Run(fmt.Sprintf("k%02d", k), func(t *testing.T) {
+					// 子测试各自独占隔离库与 hold 驱动，并行推进压缩墙钟。
+					t.Parallel()
 					hold := newW14LHold("FROM ")
 					fixture, _ := newW14LHoldFixture(t, hold)
 					conversationID := fmt.Sprintf("chat_conv_w14l_null_%s_%d", name, k)

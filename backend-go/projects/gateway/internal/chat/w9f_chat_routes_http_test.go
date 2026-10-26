@@ -31,6 +31,7 @@ func w9fHexAssetID(seed byte) string {
 }
 
 func TestW9FStreamRouteBodyValidationCover(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_w9f", routeTestOwner)
 	// 非法 JSON / 非对象 / 必填缺失。
@@ -68,6 +69,7 @@ func TestW9FStreamRouteBodyValidationCover(t *testing.T) {
 }
 
 func TestW9FStreamRouteConflictsCover(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_cf", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -191,6 +193,7 @@ func (w9fCatalogOnlyMock) ListProviderCatalog(providerCode, _ string) []Provider
 }
 
 func TestW9FClearConversationConflicts(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_clr", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -235,6 +238,7 @@ func TestW9FClearConversationConflicts(t *testing.T) {
 }
 
 func TestW9FListMessagesQueryValidation(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_msg", routeTestOwner)
 	base := w9fPrefix + "/conversations/chat_conv_msg/messages"
@@ -265,6 +269,7 @@ func TestW9FListMessagesQueryValidation(t *testing.T) {
 }
 
 func TestW9FSyncHeadValidation(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_sync", routeTestOwner)
 	base := w9fPrefix + "/conversations/chat_conv_sync/sync"
@@ -293,6 +298,7 @@ func TestW9FSyncHeadValidation(t *testing.T) {
 }
 
 func TestW9FSubmissionStatusValidation(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_sub", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -329,6 +335,7 @@ func TestW9FSubmissionStatusValidation(t *testing.T) {
 }
 
 func TestW9FGetConversationToolCapabilities(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_tool", routeTestOwner)
 	response := env.do("GET", w9fPrefix+"/conversations/chat_conv_tool", routeTestOwner, "")

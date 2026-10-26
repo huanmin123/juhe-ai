@@ -303,6 +303,7 @@ func TestCreateConversationInheritsMediaPreferences(t *testing.T) {
 // 视频任务轮询恒失败、永不结算。发送链的身份解析与任务面同源，因此断言
 // WithChatDispatchAccount 收到 (会话绑定账户, 会话归属系统账户)。
 func TestMediaTaskPollBindsConversationIdentity(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	aware := &targetAwareExecutor{inner: env.executor}
 	env.deps.Executor = aware

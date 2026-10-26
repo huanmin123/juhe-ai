@@ -45,6 +45,7 @@ func TestChatGenerationContinuationMessage(t *testing.T) {
 // 半截内容 → message.failed 与落库 error_message 均为续写引导变体（§14.1
 // 续写可用），下发与落库同值。
 func TestStreamRouteFailureMessageContinuationVariant(t *testing.T) {
+	t.Parallel()
 	env := buildGenerationEnvW10D(t, newChatFixture(t))
 	conversationID := "chat_conv_failmsg"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -82,6 +83,7 @@ func TestStreamRouteFailureMessageContinuationVariant(t *testing.T) {
 // active_turn_id 匹配 → 收口 failed 且 content_text=传入正文，预留按实际字节
 // 结算（finalizeTurn 同型）。
 func TestFailInterruptedTurnWithContentPersistsPartialContent(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_rec_content"
 	f.createConversation(conversationID, routeTestOwner)
@@ -142,6 +144,7 @@ func TestFailInterruptedTurnWithContentPersistsPartialContent(t *testing.T) {
 // TestFailInterruptedTurnWithContentSkipsTerminalTurn 轮次已 completed 时恢复
 // 路径不写内容，返回既有终态（权威状态优先）。
 func TestFailInterruptedTurnWithContentSkipsTerminalTurn(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_rec_terminal"
 	f.createConversation(conversationID, routeTestOwner)
@@ -170,6 +173,7 @@ func TestFailInterruptedTurnWithContentSkipsTerminalTurn(t *testing.T) {
 // TestFailInterruptedTurnEmptyContentKeepsLegacySemantics 空内容调用兼容旧
 // 语义：不写内容列（content_text 保持空），错误码仍为 stream_interrupted。
 func TestFailInterruptedTurnEmptyContentKeepsLegacySemantics(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_rec_empty"
 	f.createConversation(conversationID, routeTestOwner)
@@ -196,6 +200,7 @@ func TestFailInterruptedTurnEmptyContentKeepsLegacySemantics(t *testing.T) {
 // TestFailInterruptedTurnContentTurnMismatch active_turn_id 不匹配（竞态：
 // 并发收口方已接管）时不收口、不写内容，行保持 streaming。
 func TestFailInterruptedTurnContentTurnMismatch(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_rec_mismatch"
 	f.createConversation(conversationID, routeTestOwner)
@@ -227,6 +232,7 @@ func TestFailInterruptedTurnContentTurnMismatch(t *testing.T) {
 // 预留时按 finalizeTurn 同型降级：空内容安全 failed 终态 + 存储上限错误码，
 // 不因正文超限产生新失败。
 func TestFailInterruptedTurnContentOverReservationDowngrades(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	conversationID := "chat_conv_rec_downgrade"
 	f.createConversation(conversationID, routeTestOwner)
@@ -263,6 +269,7 @@ func TestFailInterruptedTurnContentOverReservationDowngrades(t *testing.T) {
 // TestRecoverChatTurnFinalizationPersistsContent 路由级恢复入口携带正文：
 // streaming 轮恢复收口为 failed 且正文落库，并满足 §14.1 尾部注入条件。
 func TestRecoverChatTurnFinalizationPersistsContent(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_rec_route"
 	env.fixture.createConversation(conversationID, routeTestOwner)
@@ -296,6 +303,7 @@ func TestRecoverChatTurnFinalizationPersistsContent(t *testing.T) {
 // CompleteChatTurn 终结 UPDATE 失败一次 → 恢复收口按部分正文落库（不再丢弃
 // 已生成内容）；随后发送「继续」，§14.1 尾部中断轮进入上游 history。
 func TestStreamCompleteFailureRecoveryPersistsContent(t *testing.T) {
+	t.Parallel()
 	env, script := newFaultGenerationEnvW10D(t)
 	conversationID := "chat_conv_rec_e2e"
 	env.fixture.createConversation(conversationID, routeTestOwner)

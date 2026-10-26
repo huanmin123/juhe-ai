@@ -74,6 +74,7 @@ func doRequestW3(t *testing.T, request *http.Request) routeResponse {
 
 // TestAssetUploadExtraBranchesW3 覆盖 multipart 解析的剩余拒绝分支与下载头。
 func TestAssetUploadExtraBranchesW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_asset2", routeTestOwner)
 	server := mountAssetMuxW3(t, env)
@@ -245,6 +246,7 @@ func mimeForW3(filename string) string {
 
 // TestGenerationDepsRoutesW3 覆盖会话创建、模型目录与压缩触发路由。
 func TestGenerationDepsRoutesW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.deps.AccountLookup = mockAccountLookup{}
 	createBoundConversation(t, env.fixture, "chat_conv_models", routeTestOwner, CreateConversationInput{
@@ -405,6 +407,7 @@ func TestWriteChatRouteErrorW3(t *testing.T) {
 
 // TestStreamWithImageInputW3 覆盖带图片输入的完整流式链路。
 func TestStreamWithImageInputW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_img", routeTestOwner)
 	server := mountAssetMuxW3(t, env)
@@ -472,6 +475,7 @@ func mustDeleteW3(t *testing.T, url, owner string) *http.Request {
 
 // TestResolveChatAssetInputBranchesW3 直接驱动资产输入解析的错误分支。
 func TestResolveChatAssetInputBranchesW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_resolve", routeTestOwner)
 	rt := newChatRoutesForTest(env.deps)
@@ -509,6 +513,7 @@ func TestResolveChatAssetInputBranchesW3(t *testing.T) {
 
 // TestReadVerifiedChatAssetTamperW3 覆盖资产完整性校验失败分支。
 func TestReadVerifiedChatAssetTamperW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_tamper", routeTestOwner)
 	server := mountAssetMuxW3(t, env)
@@ -548,6 +553,7 @@ func TestReadVerifiedChatAssetTamperW3(t *testing.T) {
 
 // TestStreamTurnErrorBranchesW3 覆盖流式路由的快速失败分支。
 func TestStreamTurnErrorBranchesW3(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_stream", routeTestOwner)
 	prefix := "/__aisys__/api/my-chat"

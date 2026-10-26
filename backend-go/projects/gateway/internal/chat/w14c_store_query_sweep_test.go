@@ -14,9 +14,6 @@ import (
 
 const w14cSweepConv = "chat_conv_w14c_sweep"
 
-// t14cSweep 由 TestW14CStoreQueryFaultSweep 注入，供 fixture 内部 Fatal 使用。
-var t14cSweep *testing.T
-
 func w14cCompleteActiveTurn(f *chatFixture, conversationID string) error {
 	accepted, err := f.store.AcceptTurn(acceptTurnInputW10D(f, conversationID, "w14c-sweep-a"))
 	if err != nil {
@@ -73,7 +70,6 @@ func installInputW14C(f *chatFixture, conversationID string, claim *ContextCompa
 
 // TestW14CStoreQueryFaultSweep 扫描各序列的第 n 条查询失败。
 func TestW14CStoreQueryFaultSweep(t *testing.T) {
-	t14cSweep = t
 	sequences := map[string]func(f *chatFixture, conversationID string) error{
 		"accept-complete": func(f *chatFixture, conversationID string) error {
 			return w14cCompleteActiveTurn(f, conversationID)
@@ -182,11 +178,12 @@ func TestW14CStoreQueryFaultSweep(t *testing.T) {
 	for name, sequence := range sequences {
 		sequence := sequence
 		t.Run(name, func(t *testing.T) {
-			t14cSweep = t
 			for n := 1; n <= 48; n++ {
 				n := n
 				t.Run(fmt.Sprintf("n%02d", n), func(t *testing.T) {
-					t14cSweep = t
+					// 每个子测试独占一个 pgtestkit 隔离库与故障脚本，互不共享
+					// 状态；并行推进把 9×48 个夹具的墙钟压回预算内。
+					t.Parallel()
 					fixture, script := newFaultChatFixtureW10D(t)
 					conversationID := fmt.Sprintf("%s-%d", w14cSweepConv, n)
 					fixture.createConversation(conversationID, routeTestOwner)

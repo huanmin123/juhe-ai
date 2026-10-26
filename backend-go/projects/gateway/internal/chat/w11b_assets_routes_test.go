@@ -286,6 +286,7 @@ func (s *w11bFailingObjectStore) Open(storageKey string, maxBytes int64) ([]byte
 func (s *w11bFailingObjectStore) Delete(keys []string) error { return s.inner.Delete(keys) }
 
 func TestW11BUploadChatAssetProcessingFailures(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w11b_pf"
 	env.fixture.createConversation(conversationID, routeTestOwner)

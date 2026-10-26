@@ -10,6 +10,7 @@ import (
 
 // TestConversationStoreLifecycleW3 覆盖会话存储的更新/清空/删除分支。
 func TestConversationStoreLifecycleW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_lc", "owner")
 
@@ -118,6 +119,7 @@ func TestTitleFromContentW3(t *testing.T) {
 
 // TestAssetStoreLifecycleW3 覆盖资产生命周期存储契约。
 func TestAssetStoreLifecycleW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_asset", "owner")
 	created, err := f.store.CreateChatAsset(CreateChatAssetInput{
@@ -221,6 +223,7 @@ func TestAssetStoreLifecycleW3(t *testing.T) {
 
 // TestCommitGeneratedAssetW3 覆盖生成资产提交与谱系索引。
 func TestCommitGeneratedAssetW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_gen", "owner")
 	accepted := f.accept("owner", "conv_gen", "cmid-1", "画一只猫")
@@ -246,6 +249,7 @@ func TestCommitGeneratedAssetW3(t *testing.T) {
 // TestClosedDatabaseErrorsW3 以关闭数据库为故障注入，验证存储层错误传播
 // 而非 panic（连接丢失场景的错误分支覆盖）。
 func TestClosedDatabaseErrorsW3(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	f.createConversation("conv_closed", "owner")
 	if err := f.db.Close(); err != nil {

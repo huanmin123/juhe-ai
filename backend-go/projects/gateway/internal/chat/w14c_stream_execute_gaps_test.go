@@ -10,6 +10,7 @@ import (
 // TestW14CStreamUnresolvedImageObservation 覆盖历史图片语义说明缺失时的
 // 调度、等待与二次回读分支（546-570 区段）。
 func TestW14CStreamUnresolvedImageObservation(t *testing.T) {
+	t.Parallel()
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w14c_imgobs"
 	env.fixture.createConversation(conversationID, routeTestOwner)
