@@ -80,6 +80,19 @@ func postgresTransactionGuardStatements() []string {
 	}
 }
 
+// postgresRebuildStatementTimeout 是 facet 重建事务的语句时限：一次性全量
+// 聚合的语句时长超出常驻 30s 守卫（W33 生产 1.39M 行实测 57014）。重建持
+// 独占 owner lease 且幂等可重入，statement_timeout 单独放宽为有界 15 分钟；
+// lock_timeout 沿用常驻守卫，避免长聚合持锁阻塞业务读写。
+const postgresRebuildStatementTimeout = "15min"
+
+func postgresRebuildTransactionGuardStatements() []string {
+	return []string{
+		"SET LOCAL statement_timeout = '" + postgresRebuildStatementTimeout + "'",
+		"SET LOCAL lock_timeout = '" + postgresLockTimeout + "'",
+	}
+}
+
 func ownerLeaseContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, postgresOwnerLeaseTimeout)
 }

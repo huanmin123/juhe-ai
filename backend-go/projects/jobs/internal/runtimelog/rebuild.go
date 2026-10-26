@@ -83,7 +83,7 @@ func (store *postgresStore) rebuildFacets(ctx context.Context, config Config) (r
 		return result, err
 	}
 	defer rollbackPostgresTx(tx)
-	for _, statement := range postgresTransactionGuardStatements() {
+	for _, statement := range postgresRebuildTransactionGuardStatements() {
 		if _, err := tx.Exec(ctx, statement); err != nil {
 			return result, fmt.Errorf("设置 F1 PostgreSQL 事务时限失败: %w", err)
 		}

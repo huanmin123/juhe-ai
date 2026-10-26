@@ -419,6 +419,17 @@ func TestPostgresTransactionGuardsAreBounded(t *testing.T) {
 	}
 }
 
+func TestPostgresRebuildTransactionGuardsAreBounded(t *testing.T) {
+	statements := postgresRebuildTransactionGuardStatements()
+	want := []string{
+		"SET LOCAL statement_timeout = '15min'",
+		"SET LOCAL lock_timeout = '5s'",
+	}
+	if !reflect.DeepEqual(statements, want) {
+		t.Fatalf("F1 facet 重建事务 guards 不匹配: got=%#v want=%#v", statements, want)
+	}
+}
+
 func TestRuntimeRetentionDaysReadsBusinessSetting(t *testing.T) {
 	store, _ := openKitPostgresStore(t)
 	days, err := store.RuntimeRetentionDays(context.Background(), 7)
