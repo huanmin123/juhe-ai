@@ -360,6 +360,8 @@ type gatewayFixture struct {
 // 按契约由受控数据库流程预置。
 func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	t.Helper()
+	// 外部依赖授权门：未授权时 SKIP，绝不构建/启动子进程网关、绝不连 PG/Redis。
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	root := t.TempDir()
 	fixture := &gatewayFixture{root: root, t: t}
 

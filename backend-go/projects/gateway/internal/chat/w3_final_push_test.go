@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 // 最后一批高价值分支：压缩总结链路（两种协议 + 失败路径）、runner 订阅者
@@ -15,6 +17,10 @@ import (
 
 // TestSummarizePageW3 直接驱动压缩总结（恒 chat 协议）与失败路径。
 func TestSummarizePageW3(t *testing.T) {
+	// 授权门必须在父层级、子测试启动前执行：newService 闭包捕获本函数的 t，
+	// 子测试内触发 skip 会对父 t Goexit（"subtest may have called FailNow on
+	// a parent test"），故不能依赖 fixture 内部中央门。
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	t.Parallel()
 	_, clock := fixedChatClock()
 	newService := func(executor GenerationExecutor) *CompactionService {

@@ -20,6 +20,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 func wPlanDirtyTriggerStatement(t *testing.T) (statementSQL string, statementSchemaName string) {
@@ -60,6 +62,7 @@ func TestDirtyTriggerConvergenceBoundedWaitContract(t *testing.T) {
 
 func wPlanDirtyTriggerGateDSN(t *testing.T) string {
 	t.Helper()
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	if url := os.Getenv("JUHE_AI_WPLAN_PG_URL"); url != "" {
 		return url
 	}

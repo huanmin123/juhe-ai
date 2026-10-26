@@ -16,12 +16,14 @@ package upstreamhttp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"syscall"
 	"time"
 )
 
@@ -401,7 +403,17 @@ func (r w12hMapResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPA
 // DialGuard 回路：字面量直拨、nil IP 跳过、拨号失败聚合与无可拨地址。
 func TestW12HDialGuardLoopArms(t *testing.T) {
 	ctx := context.Background()
-	dialer := &net.Dialer{Timeout: 100 * time.Millisecond}
+	// Control 钩子在 socket 建立后、connect 发起前确定性拦截：guard 的字面量
+	// 校验、候选循环与 lastErr 聚合全部真实执行，但不对任何地址发起真实外发
+	// 连接（日常回归链路契约：禁止任何外部连接）。候选字面量保持非封锁公网
+	// 段（RFC 5737 文档保留段在本包封锁清单内，换成它们会把本测试的三条臂
+	// 变成封锁拒绝臂，被测行为改变）。
+	dialer := &net.Dialer{
+		Timeout: 100 * time.Millisecond,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			return fmt.Errorf("w12h dial guard loop: 外发连接已拦截（测试注入）: %s", address)
+		},
+	}
 
 	// 非封锁公网字面量：校验通过后直接拨（拨号失败原样返回）。
 	guard := NewDialGuard(URLSecurityConfig{}, nil, dialer)

@@ -26,6 +26,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const (
@@ -57,6 +59,7 @@ func w15bSettingsSharedEnv(t *testing.T) map[string]string {
 
 func w15bSettingsCoverPostgresDB(t *testing.T) *sql.DB {
 	t.Helper()
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	env := w15bSettingsSharedEnv(t)
 	host := env["DEV_POSTGRES_HOST"]
 	directPort := env["DEV_POSTGRES_DIRECT_PORT"]

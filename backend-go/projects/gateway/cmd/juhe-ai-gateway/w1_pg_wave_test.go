@@ -108,6 +108,7 @@ func w1g2TestNamespace(t *testing.T) string {
 // 入日志或断言。
 func w1pgEnvFile(t *testing.T) map[string]string {
 	t.Helper()
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	path := "../../../../../.local/project-resources/dev/env/shared.env"
 	raw, err := os.ReadFile(path)
 	if err != nil {

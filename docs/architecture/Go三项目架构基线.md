@@ -117,6 +117,6 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 ## 7. 验收门
 
 - 三个模块可分别 `go test ./...`、构建和查看版本；模块间无直接 import。
-- 新 jobs 任务有单元测试、取消/超时测试、单条失败隔离测试和 PostgreSQL 真实 smoke（存储测试统一经 pgtestkit 隔离库在真实 PG 上执行，PG 不可达时显式失败而非 skip）。
+- 新 jobs 任务有单元测试、取消/超时测试、单条失败隔离测试和 PostgreSQL 真实 smoke（存储测试统一经 pgtestkit 隔离库在真实 PG 上执行，PG 不可达时显式失败而非 skip；2026-10-27 测试链路治理起属授权外部链路——`JUHE_AI_TEST_EXTERNAL=1`，未授权 SKIP 不作通过证据、授权后行为不变，口径见[后端测试分层规则](../develop/后端测试分层规则.md) §3.6）。
 - 迁移完成前必须保留旧 owner 的回切证据；迁移完成后扫描 Node 活跃 import、旧 queue/worker、双写和 fallback 引用均为零。（迁移期门禁的历史记录：迁移已于 2026-09-05 完成验收，切流门禁与回切证据机制已于 2026-09-30 清理退役。）
 - 文档、启动器、Docker、systemd/launchd/PowerShell 和回归脚本必须以三项目边界为准；只更新代码不算架构完成。

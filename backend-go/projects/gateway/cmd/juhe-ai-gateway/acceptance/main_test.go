@@ -30,6 +30,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 var (
@@ -42,6 +44,12 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// 外部依赖授权门：未授权时跳过两个无条件 go build，测试包照常运行——
+	// 各场景测试经 startGateway 首行中央门以 SKIP 结束，绝不构建二进制、
+	// 绝不连 PG/Redis（退出码如实来自 m.Run，不伪装通过）。
+	if !pgtestkit.AuthorizedExternal() {
+		os.Exit(m.Run())
+	}
 	dir, err := os.MkdirTemp("", "juhe-ai-acceptance-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create shared temp root: %v\n", err)
@@ -81,6 +89,7 @@ func TestMain(m *testing.M) {
 // 验收场景的门禁。
 func ensureJobsBinary(t *testing.T) string {
 	t.Helper()
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	jobsBinaryOnce.Do(func() {
 		jobsProject, err := projectDir("jobs")
 		if err != nil {

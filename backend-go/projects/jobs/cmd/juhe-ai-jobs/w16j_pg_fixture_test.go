@@ -30,6 +30,7 @@ import (
 // 事实）；找不到返回空串。值绝不打印。
 func w14jSharedEnvValue(t *testing.T, key string) string {
 	t.Helper()
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
 	}

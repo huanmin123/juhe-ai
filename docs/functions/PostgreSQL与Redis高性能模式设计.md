@@ -313,7 +313,7 @@ schema 初始化与默认 seed 由 `juhe-ai-maintenance --ensure-schema / --seed
 
 ## 验证要求
 
-存储形态相关改动至少覆盖以下验证（以 Go 三项目构建与相关包 `go test` 为载体；存储测试统一经 pgtestkit 在真实 PG 上执行，PG 不可达时显式失败而非 skip）：
+存储形态相关改动至少覆盖以下验证（以 Go 三项目构建与相关包 `go test` 为载体；存储测试统一经 pgtestkit 在真实 PG 上执行，属授权外部链路——唯一授权开关 `JUHE_AI_TEST_EXTERNAL=1`，未授权时真实 PG 臂一律 SKIP、SKIP 不作验证通过证据，授权后行为不变；原「PG 不可达显式失败而非 skip」口径已随 2026-10-27 测试链路治理废止，见[后端测试分层规则](../develop/后端测试分层规则.md) §3.6）：
 
 | 类型 | 验证项 | 预期 |
 | --- | --- | --- |

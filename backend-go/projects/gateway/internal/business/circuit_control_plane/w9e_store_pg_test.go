@@ -20,6 +20,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const w9eCPPDB = "juhe_ai_sub2api_dev_w9ecpp"
@@ -71,6 +73,7 @@ const w9eCPPCapabilityIndex = `CREATE UNIQUE INDEX idx_account_circuit_incidents
 
 func w9eCPPPostgres(t *testing.T) *sql.DB {
 	t.Helper()
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	if testing.Short() {
 		t.Skip("short 模式跳过真实 dev PG 测试")
 	}

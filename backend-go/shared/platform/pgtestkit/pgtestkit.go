@@ -13,8 +13,13 @@
 //     bootstrap.EnsurePostgres）；kit 自身不 import 任何项目的 schema 包
 //     （跨模块边界由调用方回调承接）。
 //
-// 配置缺失或 PG 不可达时测试显式失败而非 skip：存储测试迁移 PG 后即为核心
-// 回归面，静默跳过等于假绿；离线环境须显式提供 JUHE_AI_TEST_PG_ADMIN_URL。
+// 外部依赖授权门：本包所有会建库/连网的入口在任何 env 解析、shared.env
+// 读取或网络连接之前先经 SkipUnlessExternalAuthorized——环境变量
+// JUHE_AI_TEST_EXTERNAL=1 表示本次测试运行被授权连接外部依赖（真实 PG 等）；
+// 未授权时测试以 SKIP 结束（skip 消息携带可操作的开启方式），日常回归默认
+// 不读 dev env、不发起任何网络连接。授权之后行为保持不变：配置缺失或 PG
+// 不可达仍显式失败而非 skip——存储测试迁移 PG 后即为核心回归面，静默跳过
+// 等于假绿；离线环境须显式提供 JUHE_AI_TEST_PG_ADMIN_URL。
 package pgtestkit
 
 import (
@@ -35,6 +40,25 @@ import (
 
 // EnvAdminURL 是显式管理员连接串 env（优先于 shared.env 回退）。
 const EnvAdminURL = "JUHE_AI_TEST_PG_ADMIN_URL"
+
+// EnvExternalAuthorized 是外部依赖授权门 env：值为 1 表示本次测试运行被
+// 授权连接外部依赖（真实 PG 等）。
+const EnvExternalAuthorized = "JUHE_AI_TEST_EXTERNAL"
+
+// AuthorizedExternal 报告本次测试运行是否被授权连接外部依赖。
+func AuthorizedExternal() bool {
+	return os.Getenv(EnvExternalAuthorized) == "1"
+}
+
+// SkipUnlessExternalAuthorized 是真实外部依赖测试的统一授权门：未授权时
+// 跳过当前测试（skip 消息携带可操作的开启方式）。所有会建库/连网的入口
+// 必须在读取任何 env 事实或发起网络连接之前先经过它。
+func SkipUnlessExternalAuthorized(t testing.TB) {
+	t.Helper()
+	if !AuthorizedExternal() {
+		t.Skip("真实 PG 测试属授权链路：设置 JUHE_AI_TEST_EXTERNAL=1 后运行（日常回归默认跳过）")
+	}
+}
 
 // sharedEnvRelative 是开发库 env 事实文件相对仓库根的固定位置。
 const sharedEnvRelative = ".local/project-resources/dev/env/shared.env"
@@ -67,9 +91,11 @@ func New(t testing.TB, prepares ...PrepareFunc) *sql.DB {
 	return NewTestDatabase(t, prepares...).DB
 }
 
-// NewTestDatabase 创建隔离测试库并返回完整句柄（含 DSN 与库名）。
+// NewTestDatabase 创建隔离测试库并返回完整句柄（含 DSN 与库名）。外部依赖
+// 授权门最先执行：未授权时 SKIP，绝不解析 env、读取 shared.env 或连网。
 func NewTestDatabase(t testing.TB, prepares ...PrepareFunc) *TestDatabase {
 	t.Helper()
+	SkipUnlessExternalAuthorized(t)
 	adminDSN := resolveAdminDSN(t)
 	name := newDatabaseName(t)
 	createTestDatabase(t, adminDSN, name)

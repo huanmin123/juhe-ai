@@ -27,6 +27,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const (
@@ -62,6 +64,7 @@ func w15bSharedEnv(t *testing.T) map[string]string {
 // CheckContract 契约一致），返回应用直连句柄。
 func w15bCoverPostgresDB(t *testing.T) *sql.DB {
 	t.Helper()
+	pgtestkit.SkipUnlessExternalAuthorized(t)
 	env := w15bSharedEnv(t)
 	host := env["DEV_POSTGRES_HOST"]
 	directPort := env["DEV_POSTGRES_DIRECT_PORT"]

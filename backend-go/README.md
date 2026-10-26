@@ -39,6 +39,8 @@ Remove-Item Env:JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL -ErrorAction SilentlyContin
 
 （原 J3b 专属 SQLite 库的 `--apply-j3b-model-check-sqlite` 命令与 `JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH` env 已于 2026-10-24 随 SQLite 退役批物理删除，不再提供该引导路径。）
 
+> **授权链路统一口径（2026-10-27 测试链路治理）**：本文各「显式 opt-in 真实 PG smoke」段（J3a bootstrap smoke、jobs runtime schema contract smoke、F1 runtime log adapter smoke 等）均属授权外部链路：执行时必须显式带 `JUHE_AI_TEST_EXTERNAL=1`（唯一授权开关，属单次授权执行，不进日常回归）；未授权时这些 smoke 一律 SKIP，**SKIP 不作验证通过证据**。各 smoke 自身的 URL / REQUIRED 等门控变量继续有效，与该开关不互替。口径权威见 `docs/develop/后端测试分层规则.md` §3.6。
+
 维护项目的真实 bootstrap 回归也是显式 opt-in，仅接受直连 `5432` 的一次性 `juhe_ai_sub2api_dev_j3a_` scratch，且要求管理员预先创建 `juhe_jobs` schema：
 
 ```powershell
