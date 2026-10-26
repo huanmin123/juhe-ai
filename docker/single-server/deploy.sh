@@ -239,7 +239,7 @@ fi
 # 迁移 stage=completed（P2），任一缺失都会 fail-fast 循环。此前流程先
 # build+up、发布后才提示跑迁移，顺序倒置。这里在组装镜像前用 maintenance 的
 # 只读 verify 命令核验（未就绪分别 exit 3/2，均按失败处理）。maintenance 的
-# verify 路径无 env 回退，--driver/--dsn 必须显式传参：非交互 SSH 命令先
+# verify 路径无 env 回退，--dsn 必须显式传参（--driver 旗标已随 SQLite 退役删除）：非交互 SSH 命令先
 # source 服务器 .env，DSN 以远端展开的 "$JUHE_AI_POSTGRES_URL" 传入（与
 # README「拓扑」节一次性命令同源；deploy.sh 本地变量用 $SERVER_DIR 前缀区分）。
 # maintenance 单独发布不核验：维护窗口的既定顺序是先更 CLI 镜像、后跑迁移
@@ -247,12 +247,12 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$TARGET" != "maintenance" ]; then
   echo "== 迁移前置核验（只读；未就绪先完成维护窗口再发布）=="
-  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-account-capability-domain --account-capability-domain-stage=m2-cutover --account-capability-domain-check=postflight --driver postgres --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
+  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-account-capability-domain --account-capability-domain-stage=m2-cutover --account-capability-domain-check=postflight --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
     echo "[FAIL] 账户能力域迁移未就绪（要求 global_settings 阶段记录已封存 m2_finalized），新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
     echo "       先按 docker/single-server/README.md「账户能力域迁移维护窗口」完成停写窗口迁移并以 postflight 核验通过，再重新发布。" >&2
     exit 1
   fi
-  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-scheduling-preferences --scheduling-preferences-check=postflight --driver postgres --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
+  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-scheduling-preferences --scheduling-preferences-check=postflight --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
     echo "[FAIL] 调度偏好迁移未完成（scheduling_preferences_migration stage != completed），新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
     echo "       先按 docker/single-server/README.md「调度偏好迁移维护窗口」完成停写窗口迁移并以 postflight 核验通过，再重新发布。" >&2
     exit 1

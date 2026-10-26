@@ -95,11 +95,11 @@ async function makeFixture(name) {
       '    fi ;;',
       '  "md5sum /opt/juhe-ai/Caddyfile" | "md5sum /opt/juhe-ai/Dockerfile.runtime" ) printf "%s  remote\\n" "$EXPECTED_MD5" ;;',
       '  "cd /opt/juhe-ai && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-account-capability-domain"* )',
-      '    grep -q -- "--driver postgres --dsn" <<< "$remote" || { printf "verify command missing --driver/--dsn: %s\\n" "$remote" >&2; exit 92; }',
+      '    grep -q -- "--dsn" <<< "$remote" && ! grep -q -- "--driver" <<< "$remote" || { printf "verify command must carry --dsn only, no --driver: %s\\n" "$remote" >&2; exit 92; }',
       '    if [[ "${CAPABILITY_VERIFY_STATUS:-0}" != 0 ]]; then printf "%s\\n" "${CAPABILITY_VERIFY_ERROR:-mock capability domain verify not ready}" >&2; exit "$CAPABILITY_VERIFY_STATUS"; fi',
       '    echo "capability domain verify: m2_finalized ready"; exit 0 ;;',
       '  "cd /opt/juhe-ai && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-scheduling-preferences"* )',
-      '    grep -q -- "--driver postgres --dsn" <<< "$remote" || { printf "verify command missing --driver/--dsn: %s\\n" "$remote" >&2; exit 92; }',
+      '    grep -q -- "--dsn" <<< "$remote" && ! grep -q -- "--driver" <<< "$remote" || { printf "verify command must carry --dsn only, no --driver: %s\\n" "$remote" >&2; exit 92; }',
       '    if [[ "${SCHEDPREF_VERIFY_STATUS:-0}" != 0 ]]; then printf "%s\\n" "${SCHEDPREF_VERIFY_ERROR:-mock scheduling preferences postflight not ready}" >&2; exit "$SCHEDPREF_VERIFY_STATUS"; fi',
       '    echo "scheduling preferences verify: stage=completed"; exit 0 ;;',
       '  "cd /opt/juhe-ai && docker compose --profile tool run --rm --no-deps --entrypoint md5sum maintenance /usr/local/bin/juhe-ai-go-project" )',
@@ -388,11 +388,12 @@ try {
   assert.match(jobsResult.stdout, /compose\.yml 漂移/u)
   assert.match(jobsResult.stdout, /配置同步完成并复核一致：compose\.yml/u)
   const jobsCommands = await readSshCommands(jobsSuccess)
-  const verifyCommandPattern = /^cd \/opt\/juhe-ai && set -a && \. \.\/\.env && set \+a && docker compose --profile tool run --rm --no-deps maintenance --verify-[a-z-]+ .+ --driver postgres --dsn "\$JUHE_AI_POSTGRES_URL"$/u
+  const verifyCommandPattern = /^cd \/opt\/juhe-ai && set -a && \. \.\/\.env && set \+a && docker compose --profile tool run --rm --no-deps maintenance --verify-[a-z-]+ .+ --dsn "\$JUHE_AI_POSTGRES_URL"$/u
   const capabilityVerifyCommand = jobsCommands.find((line) => line.includes('--verify-account-capability-domain'))
   const schedprefVerifyCommand = jobsCommands.find((line) => line.includes('--verify-scheduling-preferences'))
-  assert(capabilityVerifyCommand && verifyCommandPattern.test(capabilityVerifyCommand), `前置核验必须 source .env 且显式携带 --driver/--dsn（远端展开）：\n${jobsCommands.join('\n')}`)
-  assert(schedprefVerifyCommand && verifyCommandPattern.test(schedprefVerifyCommand), `调度偏好前置核验必须显式携带 --driver/--dsn：\n${jobsCommands.join('\n')}`)
+  assert(capabilityVerifyCommand && verifyCommandPattern.test(capabilityVerifyCommand), `前置核验必须 source .env 且显式携带 --dsn（远端展开）：\n${jobsCommands.join('\n')}`)
+  assert(schedprefVerifyCommand && verifyCommandPattern.test(schedprefVerifyCommand), `调度偏好前置核验必须显式携带 --dsn：\n${jobsCommands.join('\n')}`)
+  assert(!capabilityVerifyCommand.includes('--driver') && !schedprefVerifyCommand.includes('--driver'), `--driver 旗标已随 SQLite 退役删除，前置核验不得再传：\n${jobsCommands.join('\n')}`)
   assert(jobsCommands.some((line) => line === 'tar xzf - -C /opt/juhe-ai'), 'compose.yml 漂移时必须触发配置上传', jobsCommands.join('\n'))
   assert(jobsCommands.some((line) => /docker compose build jobs/u.test(line)), jobsCommands.join('\n'))
   assert(jobsCommands.some((line) => /docker compose up -d jobs/u.test(line)), jobsCommands.join('\n'))

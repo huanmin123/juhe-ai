@@ -235,7 +235,7 @@ services:
       start_period: 30s
 
   # 一次性工具：docker compose run --rm maintenance --ensure-schema --seed
-  # （--driver/--dsn/--secret 已由 env_file 提供，也可显式传参覆盖）
+  # （--dsn/--secret 已由 env_file 提供，也可显式传参覆盖）
   maintenance:
     build:
       context: .
