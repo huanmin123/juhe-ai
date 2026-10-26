@@ -56,8 +56,7 @@ var fullchainRealCandidates = []string{
 // fullchainProdAccount 是一个解密后的生产候选账户（仅内存）。
 type fullchainProdAccount struct {
 	ID                   string
-	ProviderCode         string
-	ProfileID            string
+	VendorCode           string
 	HealthModel          string
 	HealthMode           string
 	Status               string
@@ -115,7 +114,10 @@ func loadProdAccounts(t *testing.T, secret string) []fullchainProdAccount {
 		t.Skipf("生产 PG 不可达（只读会话建立失败）: %v", err)
 	}
 	defer conn.Close(ctx)
-	rows, err := conn.Query(ctx, `SELECT id, provider_code, provider_protocol_profile_id,
+	// B4 残留收口：accounts.provider_code/provider_protocol_profile_id 列已
+	// 随供应商连接面重构退役，现行投影是 vendor_code（协议语义由写侧按
+	// connection preset / vendor 默认派生，读面不再有 profile id 列）。
+	rows, err := conn.Query(ctx, `SELECT id, vendor_code,
 			COALESCE(health_check_model, ''), COALESCE(health_check_endpoint_mode, ''), status, credentials_encrypted
 		FROM juhe_business.accounts
 		WHERE id = ANY($1) AND type = 'api_key' AND deleted_at IS NULL`, fullchainRealCandidates)
@@ -127,13 +129,13 @@ func loadProdAccounts(t *testing.T, secret string) []fullchainProdAccount {
 	for rows.Next() {
 		var account fullchainProdAccount
 		var encrypted string
-		if err := rows.Scan(&account.ID, &account.ProviderCode, &account.ProfileID,
+		if err := rows.Scan(&account.ID, &account.VendorCode,
 			&account.HealthModel, &account.HealthMode, &account.Status, &encrypted); err != nil {
 			t.Fatalf("scan prod account: %v", err)
 		}
 		if err := accountcrypto.DecryptJSON(secret, encrypted, &account.DecryptedCredentials); err != nil {
 			// 解密失败只报账户 id（生产 secret 不匹配或信封异常），不落凭据。
-			t.Logf("账户 %s（%s）凭据解密失败，跳过导入", account.ID, account.ProviderCode)
+			t.Logf("账户 %s（%s）凭据解密失败，跳过导入", account.ID, account.VendorCode)
 			continue
 		}
 		out = append(out, account)
@@ -178,38 +180,37 @@ func startRealFixture(t *testing.T, prodSecret string) *fullchainRealFixture {
 		if prodAccount.HealthModel == "" {
 			prodAccount.HealthModel = "gpt-5.6-sol"
 		}
-		real.rawByProvider[prodAccount.ProviderCode] = append(real.rawByProvider[prodAccount.ProviderCode], prodAccount)
-		groupID, ok := groupByProvider[prodAccount.ProviderCode]
+		real.rawByProvider[prodAccount.VendorCode] = append(real.rawByProvider[prodAccount.VendorCode], prodAccount)
+		groupID, ok := groupByProvider[prodAccount.VendorCode]
 		if !ok {
-			groupID = f.createGroupWithProvider(fmt.Sprintf("全链路-真号导入组-%s", prodAccount.ProviderCode), prodAccount.ProviderCode)
-			groupByProvider[prodAccount.ProviderCode] = groupID
+			groupID = f.createGroupWithProvider(fmt.Sprintf("全链路-真号导入组-%s", prodAccount.VendorCode), prodAccount.VendorCode)
+			groupByProvider[prodAccount.VendorCode] = groupID
 		}
 		credentials := map[string]any{}
 		for key, value := range prodAccount.DecryptedCredentials {
 			credentials[key] = value
 		}
 		payload := map[string]any{
-			"providerCode":              prodAccount.ProviderCode,
-			"providerProtocolProfileId": prodAccount.ProfileID,
-			"name":                      fmt.Sprintf("全链路-真号-%s-%s", prodAccount.ProviderCode, prodAccount.ID[len(prodAccount.ID)-8:]),
-			"type":                      "api_key",
-			"credentials":               credentials,
-			"supportedModels":           []string{prodAccount.HealthModel, fullchainProbeModel},
-			"healthCheckModel":          fullchainProbeModel,
-			"status":                    "active",
-			"groupId":                   groupID,
+			"providerCode":     prodAccount.VendorCode,
+			"name":             fmt.Sprintf("全链路-真号-%s-%s", prodAccount.VendorCode, prodAccount.ID[len(prodAccount.ID)-8:]),
+			"type":             "api_key",
+			"credentials":      credentials,
+			"supportedModels":  []string{prodAccount.HealthModel, fullchainProbeModel},
+			"healthCheckModel": fullchainProbeModel,
+			"status":           "active",
+			"groupId":          groupID,
 		}
 		_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", payload, 0)
 		createdData := data(created)
 		if createdData == nil || str(createdData["id"]) == "" {
 			real.skipped++
 			// 400 消息只含字段名/校验文案（无凭据值），可安全留证。
-			t.Logf("账户 %s（%s）导入被拒：%s", prodAccount.ID, prodAccount.ProviderCode, str(created["message"]))
+			t.Logf("账户 %s（%s）导入被拒：%s", prodAccount.ID, prodAccount.VendorCode, str(created["message"]))
 			continue
 		}
-		real.byProvider[prodAccount.ProviderCode] = append(real.byProvider[prodAccount.ProviderCode], fullchainRealAccount{
+		real.byProvider[prodAccount.VendorCode] = append(real.byProvider[prodAccount.VendorCode], fullchainRealAccount{
 			ID:           str(createdData["id"]),
-			ProviderCode: prodAccount.ProviderCode,
+			ProviderCode: prodAccount.VendorCode,
 			Model:        prodAccount.HealthModel,
 			HealthMode:   prodAccount.HealthMode,
 		})
@@ -309,16 +310,15 @@ func (r *fullchainRealFixture) importRealAccountWith(tag string, prodAccount ful
 		credentials[key] = value
 	}
 	entry := map[string]any{
-		"name":                      fmt.Sprintf("全链路-真号导入-%s-%s", tag, prodAccount.ID[len(prodAccount.ID)-8:]),
-		"providerCode":              prodAccount.ProviderCode,
-		"providerProtocolProfileId": prodAccount.ProfileID,
-		"type":                      "api_key",
-		"status":                    "active",
-		"credentials":               credentials,
-		"supportedModels":           []any{model, fullchainProbeModel},
-		"healthCheckModel":          fullchainProbeModel,
-		"healthCheckEndpointMode":   "chat_json",
-		"groupId":                   groupID,
+		"name":                    fmt.Sprintf("全链路-真号导入-%s-%s", tag, prodAccount.ID[len(prodAccount.ID)-8:]),
+		"providerCode":            prodAccount.VendorCode,
+		"type":                    "api_key",
+		"status":                  "active",
+		"credentials":             credentials,
+		"supportedModels":         []any{model, fullchainProbeModel},
+		"healthCheckModel":        fullchainProbeModel,
+		"healthCheckEndpointMode": "chat_json",
+		"groupId":                 groupID,
 	}
 	for key, value := range payloadExtra {
 		entry[key] = value
@@ -333,7 +333,7 @@ func (r *fullchainRealFixture) importRealAccountWith(tag string, prodAccount ful
 	items, _ := data(preview)["accounts"].([]any)
 	for _, raw := range items {
 		if item, ok := raw.(map[string]any); ok && str(item["action"]) == "failed" {
-			r.f.t.Logf("导入预览失败（%s/%s）：%v", prodAccount.ProviderCode, prodAccount.ID, item["messages"])
+			r.f.t.Logf("导入预览失败（%s/%s）：%v", prodAccount.VendorCode, prodAccount.ID, item["messages"])
 			return fullchainRealAccount{}, false
 		}
 	}
@@ -347,13 +347,13 @@ func (r *fullchainRealFixture) importRealAccountWith(tag string, prodAccount ful
 		if accountID := str(item["accountId"]); accountID != "" {
 			return fullchainRealAccount{
 				ID:           accountID,
-				ProviderCode: prodAccount.ProviderCode,
+				ProviderCode: prodAccount.VendorCode,
 				Model:        model,
 				HealthMode:   prodAccount.HealthMode,
 			}, true
 		}
 	}
-	r.f.t.Logf("导入确认未返回 accountId（%s/%s）", prodAccount.ProviderCode, prodAccount.ID)
+	r.f.t.Logf("导入确认未返回 accountId（%s/%s）", prodAccount.VendorCode, prodAccount.ID)
 	return fullchainRealAccount{}, false
 }
 

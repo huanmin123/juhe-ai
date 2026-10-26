@@ -344,6 +344,9 @@ type chainFailureDispatcher struct {
 	// 响应头的失败面持久化窄口（AI账户Grok用量快照设计 §8.2）；nil 派发器
 	// 在 gatewaycodex 资格门后静默跳过，生产装配与 codex 同一通道适配器。
 	anthropicUsageHeaders gatewaycodex.AnthropicUsageHeadersDispatcher
+	// negativeCache 是 L2 请求负面缓存的进程内运行态（请求级提前耗尽与负面
+	// 缓存设计 §5）：nil 保持 L2 关闭（仅 L1 兜底），生产组合根恒装配。
+	negativeCache *chainRequestNegativeCache
 }
 
 // chainAPIKeyObservationPort 是 AccountAPIKeyFailureGuard.CaptureFailureObservation
@@ -741,7 +744,172 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			ObservationEpoch: chainObservationEpochOf(d.apiKeyObservation, input.Account),
 		}
 	}
+	// 请求级提前耗尽（L1，请求级提前耗尽与负面缓存设计 §4）：gateway 流量的
+	// 候选拒绝（skip_account）在此计数。结构性排除由分支形状保证——传输类
+	// 失败走 HandleUpstreamRequestError、语义提交后失败与配置截止取消不经本
+	// 函数、诊断 / 非网关 / 媒体透传不产生 skip_account。达到合取阈值后返回
+	// UpstreamAttemptError：引擎把派发器错误原样上抛（错误臂的二次
+	// CompleteAttempt 为 once 语义 no-op，审计保留真实状态码），链面既有
+	// settleDispatchError → renderDispatchExhausted 出口原样承接——响应契约
+	// 不变、不新建出口、不写任何账户 / Key / 供应商状态。
+	if exhaustErr := d.observeRequestFastExhaust(ctx, input, lastAttempt); exhaustErr != nil {
+		return gatewaydispatch.FailedUpstreamResponseResult{}, exhaustErr
+	}
 	return result, nil
+}
+
+// observeRequestFastExhaust 记一次完整非 2xx 候选拒绝并在合取阈值（桶内
+// ≥3 只不同账户且合计 ≥5 次，桶键 = usage 写库同源的 upstream_model）达到时
+// 返回既有耗尽出口形状的 UpstreamAttemptError；未触发时执行 L2 负面缓存的
+// 懒查询（本请求第一次候选拒绝后一次），命中同样中止进既有耗尽出口。计数
+// 器缺席（非 /v1 派发链调用方）时不计数、行为不变。
+func (d *chainFailureDispatcher) observeRequestFastExhaust(ctx context.Context, input gatewaydispatch.FailedUpstreamResponseInput, lastAttempt *gatewaydispatch.UpstreamAttempt) error {
+	state := requestFastExhaustStateFromContext(ctx)
+	if state == nil {
+		return nil
+	}
+	snapshot, triggered := state.observe(d.requestFastExhaustUpstreamModel(input), input.Account.ID)
+	if !triggered {
+		return d.lookupRequestNegativeCache(ctx, input, state, lastAttempt)
+	}
+	// L1 触发：懒写入 L2（仅合格来源与 body 参与缓存）+ 指标 + 审计标记 +
+	// 中止本引擎调用（同桶剩余候选不再扫描）。
+	d.writeRequestNegativeCache(input, state)
+	gatewayusage.RecordGatewayRequestFastExhaustedMetric()
+	input.AuditCapture.AddGatewayMetadata("request_level_fast_exhausted", map[string]any{
+		"upstreamModel":        snapshot.UpstreamModel,
+		"distinctAccountCount": snapshot.DistinctAccountCount,
+		"attemptCount":         snapshot.AttemptCount,
+		"failedAccountIds":     snapshot.FailedAccountIDs,
+	})
+	return &gatewaydispatch.UpstreamAttemptError{
+		Message:          requestFastExhaustFailureMessage(lastAttempt),
+		LastAttempt:      lastAttempt,
+		FailedAccountIDs: snapshot.FailedAccountIDs,
+	}
+}
+
+// lookupRequestNegativeCache 是 L2 的懒查询臂（设计 §5/§7）：本请求第一次
+// 候选拒绝后解析一次"来源键 + 请求指纹"并查缓存，命中即中止（重试请求最多
+// 多撞 1 只账户——一次上游 RTT）；来源键缺失 / invalid / conflict、body 超
+// 上限或缓存未装配时不查（仅 L1 兜底）。
+func (d *chainFailureDispatcher) lookupRequestNegativeCache(ctx context.Context, input gatewaydispatch.FailedUpstreamResponseInput, state *requestFastExhaustState, lastAttempt *gatewaydispatch.UpstreamAttempt) error {
+	if d.negativeCache == nil {
+		return nil
+	}
+	key, eligible, first := state.negativeCacheKey(func() (string, bool) {
+		return d.requestNegativeCacheKey(input)
+	})
+	if !first || !eligible {
+		return nil
+	}
+	if !d.negativeCache.get(key) {
+		return nil
+	}
+	gatewayusage.RecordGatewayRequestNegativeCacheHitMetric()
+	input.AuditCapture.AddGatewayMetadata("request_level_fast_exhausted", map[string]any{
+		"negativeCacheHit": true,
+		"upstreamModel":    d.requestFastExhaustUpstreamModel(input),
+	})
+	return &gatewaydispatch.UpstreamAttemptError{
+		Message:          requestFastExhaustFailureMessage(lastAttempt),
+		LastAttempt:      lastAttempt,
+		FailedAccountIDs: requestNegativeCacheFailedAccountIDs(state),
+	}
+}
+
+// writeRequestNegativeCache 是 L2 的懒写入臂：仅当 L1 提前耗尽事实成立且
+// 缓存键合格时写入；不合格来源 / body 超上限不写。
+func (d *chainFailureDispatcher) writeRequestNegativeCache(input gatewaydispatch.FailedUpstreamResponseInput, state *requestFastExhaustState) {
+	if d.negativeCache == nil {
+		return
+	}
+	key, eligible, _ := state.negativeCacheKey(func() (string, bool) {
+		return d.requestNegativeCacheKey(input)
+	})
+	if !eligible {
+		return
+	}
+	d.negativeCache.set(key)
+}
+
+// requestNegativeCacheKey 组装 L2 缓存键（clientSourceKey + requestFingerprint，
+// 会话级最小作用域）：来源身份复用既有 clientSourceKey 分层解析（与来源避让
+// 同一入口），来源键缺失 / invalid / conflict 时返回不合格；指纹复用审计
+// 既有聚合构造（auditlog.RequestFingerprint），bodySha256 优先读审计捕获
+// 已算出的全量摘要、缺失时按同款实现自算；body 原始字节超过审计内联上限
+// （1MB）不参与 L2。
+func (d *chainFailureDispatcher) requestNegativeCacheKey(input gatewaydispatch.FailedUpstreamResponseInput) (string, bool) {
+	if input.Req == nil || d.clientStrategy == nil {
+		return "", false
+	}
+	rawBody := rawBodySnapshotOf(input.Req)
+	if len(rawBody) > gatewayusage.AuditInlineSha256MaxBytes {
+		return "", false
+	}
+	strategy := d.clientStrategy.ResolveOpenAIGatewayClientStrategy(input.Req, gatewaycodex.ClientStrategyIdentity{
+		SystemAccountID:           input.UsageContext.SystemAccountID,
+		APIKeyID:                  input.UsageContext.APIKeyID,
+		GroupID:                   input.UsageContext.GroupID,
+		Endpoint:                  input.UsageContext.Endpoint,
+		ProviderProtocolProfileID: input.Account.ProviderProtocolProfileID,
+		ProtocolCode:              input.Account.ProtocolCode,
+		ProtocolVersion:           input.Account.ProtocolVersion,
+		ClientIP:                  input.UsageContext.ClientIP,
+	})
+	source := strategy.ClientSource
+	if source == nil || source.Status != gatewaycodex.SourceStatusResolved || source.SourceKey == "" {
+		return "", false
+	}
+	bodySha := ""
+	if concrete := auditCaptureConcrete(input.AuditCapture.Context); concrete != nil {
+		bodySha = concrete.ClientRequestBodySha256()
+	}
+	if bodySha == "" {
+		bodySha = gatewayusage.BodySha256Hex(rawBody)
+	}
+	fingerprint := auditlog.RequestFingerprint(auditlog.RequestFingerprintInput{
+		Method:     input.Req.MethodUpper(),
+		Path:       input.Req.Path(),
+		Model:      requestModelHintOf(input.Req),
+		Stream:     gatewaypreauth.RequestStream(input.Req),
+		BodySha256: bodySha,
+	})
+	return source.SourceKey + "\x1f" + fingerprint, true
+}
+
+// requestNegativeCacheFailedAccountIDs 投影请求内已累积的失败账户集（L2 命中
+// 中止时既有耗尽出口的 FailedAccountIDs 携带）。
+func requestNegativeCacheFailedAccountIDs(state *requestFastExhaustState) []string {
+	return state.failedAccountIDsSnapshot()
+}
+
+// requestFastExhaustUpstreamModel 解析 attempt 的上游派发模型：与 usage 写库
+// 同源（同一 account 投影 + 请求模型提示 + 客户端协议族，同一 provider model
+// resolver 与回落）；usage 服务缺席时回落请求模型提示。
+func (d *chainFailureDispatcher) requestFastExhaustUpstreamModel(input gatewaydispatch.FailedUpstreamResponseInput) string {
+	requestedModel := requestModelHintOf(input.Req)
+	if d.usage == nil {
+		return requestedModel
+	}
+	return d.usage.ResolveUpstreamModel(usageModelAccountOf(input.Account), requestedModel, requestMappingSourceFamilyOf(input.Req))
+}
+
+// requestFastExhaustFailureMessage 镜像引擎 buildUpstreamAttemptFailureMessage
+// 的前缀与收尾形状（仅日志 / 诊断面消费，不进客户端响应载荷）。
+func requestFastExhaustFailureMessage(lastAttempt *gatewaydispatch.UpstreamAttempt) string {
+	prefix := "所有上游账户均失败"
+	if lastAttempt == nil {
+		return prefix
+	}
+	result := lastAttempt.Message
+	if result == "" && lastAttempt.HasStatus {
+		result = strconv.Itoa(lastAttempt.Status)
+	}
+	if result == "" {
+		result = "未知错误"
+	}
+	return prefix + "；最后一次尝试 " + lastAttempt.AccountName + " " + lastAttempt.UpstreamURL + " 返回 " + result
 }
 
 func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context, input gatewaydispatch.UpstreamRequestErrorInput) (gatewaydispatch.UpstreamRequestErrorResult, error) {

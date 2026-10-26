@@ -30,6 +30,9 @@ func TestRunOwnerStopsWithContextAndReleasesLease(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("start keeper: ok=%v err=%v", ok, err)
 	}
+	// 失败路径兜底：keeper 不得活过 store 关闭（t.Cleanup LIFO 保证先停
+	// keeper 后关池），否则续租循环会以闭池续租噪声污染失败现场。
+	t.Cleanup(keeper.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- RunOwner(ctx, store, keeper, cfg, nil) }()
@@ -103,7 +106,9 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- RunOwner(ctx, store, keeper, cfg, nil) }()
-	deadline := time.Now().Add(5 * time.Second)
+	// 截止必须大于 reacquire 内部 5s 的 AcquireOwnerLease 预算：负载下重取
+	// 本身允许耗满预算，断言窗口小于内部预算会把正确的重取误判为失败。
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if keeper.LostError() == nil {
 			break
@@ -210,7 +215,10 @@ func TestRunOwnerRunsRetentionPass(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- RunOwner(ctx, store, keeper, cfg, nil) }()
 
-	deadline := time.Now().Add(5 * time.Second)
+	// 截止覆盖完整链路预算：schedulejitter(1s interval → ±0.5s) + 设置热读
+	// 新建远程连接 + retention SQL；负载下远程 PG 往返显著变慢，5s 会把
+	// 正确执行误判为超时。
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if remaining() == 0 {
 			break
@@ -236,4 +244,102 @@ func ageAuditRow(t *testing.T, store Store, id string) error {
 		implementation.bind(`UPDATE `+implementation.table("audit_logs")+` SET created_at=? WHERE id=?`),
 		time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), id)
 	return err
+}
+
+// closeOrderFakeStore 复用 renewGraceFakeStore 的接口骨架，覆写续租与释放以
+// 观测 Close 与续租循环的顺序：在途续租被通道阻塞，直到测试放行。
+type closeOrderFakeStore struct {
+	*renewGraceFakeStore
+	renewStarted chan struct{}
+	unblockRenew chan struct{}
+	released     chan struct{}
+	events       []string
+}
+
+func (s *closeOrderFakeStore) RenewOwnerLease(context.Context, OwnerLease, time.Duration) (bool, error) {
+	select {
+	case <-s.renewStarted:
+	default:
+		close(s.renewStarted)
+	}
+	<-s.unblockRenew
+	s.mu.Lock()
+	s.events = append(s.events, "renew-end")
+	s.mu.Unlock()
+	return true, nil
+}
+
+func (s *closeOrderFakeStore) ReleaseOwnerLease(context.Context, OwnerLease) error {
+	s.mu.Lock()
+	s.events = append(s.events, "release")
+	s.mu.Unlock()
+	select {
+	case <-s.released:
+	default:
+		close(s.released)
+	}
+	return nil
+}
+
+// TestLeaseKeeperCloseReleasesAfterLoopQuiesces 钉住 Close 的生命周期契约
+// （2026-10-26 W19 收口）：释放必须等续租循环完全静止——释放与最后一拍续租
+// 竞争会把 0 行续租误判成失租终态，且 Close 返回后 keeper 不再触碰 store，
+// 关池/删库的后续清理才是安全的。
+func TestLeaseKeeperCloseReleasesAfterLoopQuiesces(t *testing.T) {
+	store := &closeOrderFakeStore{
+		renewGraceFakeStore: &renewGraceFakeStore{acquireOK: true},
+		renewStarted:        make(chan struct{}),
+		unblockRenew:        make(chan struct{}),
+		released:            make(chan struct{}),
+	}
+	keeper, ok, err := StartLeaseKeeper(context.Background(), store, "close-order", 3*time.Second, nil)
+	if err != nil || !ok {
+		t.Fatalf("启动 keeper=%v err=%v", ok, err)
+	}
+	defer keeper.Close()
+
+	// 等第一拍续租进入阻塞（续租周期为下限 1s）。
+	select {
+	case <-store.renewStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("续租循环未按时进入第一拍续租")
+	}
+
+	closed := make(chan struct{})
+	go func() { keeper.Close(); close(closed) }()
+
+	// Close 必须等待在途续租完成：释放不得发生在续租静止之前。
+	select {
+	case <-store.released:
+		t.Fatal("Close 在续租循环静止前就释放了租约")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// 放行在途续租 → 循环退出 → Close 释放并返回。
+	close(store.unblockRenew)
+	select {
+	case <-store.released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("续租静止后 Close 未释放租约")
+	}
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close 未在释放后返回")
+	}
+	store.mu.Lock()
+	events := append([]string(nil), store.events...)
+	store.mu.Unlock()
+	renewEnded, releasedAt := -1, -1
+	for i, event := range events {
+		if event == "renew-end" && renewEnded < 0 {
+			renewEnded = i
+		}
+		if event == "release" && releasedAt < 0 {
+			releasedAt = i
+		}
+	}
+	if renewEnded < 0 || releasedAt < 0 || renewEnded > releasedAt {
+		t.Fatalf("释放必须晚于最后一拍续租完成: events=%v", events)
+	}
 }

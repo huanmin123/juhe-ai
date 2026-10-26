@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ModelMapping mirrors AccountModelMapping (accountModelMappingSchema).
@@ -354,19 +355,8 @@ func nullStringForOAuthType(value string) sql.NullString {
 // caller below, exactly like the Node route layer.
 func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScope) (*CreateResult, error) {
 	ctx = ensureCtx(ctx)
-	tx, err := s.db.BeginTx(ctx, nil)
+	result, err := s.createInTransactionWithRetry(ctx, input, access)
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	now := s.now()
-	nowISO := isoMillis(now)
-	result, err := s.createInTx(ctx, tx, input, access, now, nowISO)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	// Post-commit invalidation tail (repositories.ts:2440-2443): the group
@@ -383,6 +373,61 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 		}
 	}
 	return result, nil
+}
+
+// accountCreateTxAttempts 是账户创建事务在 PostgreSQL 死锁/序列化失败下的
+// 有界重试次数。创建事务与常驻 jobs（账户健康、可用性投影、分组统计等）
+// 并发写 accounts / group_accounts 相关行，PG 检测到锁环时会中止其中一方
+// （40P01 deadlock_detected / 40001 serialization_failure）；死锁是瞬态
+// 事实，重试整个事务即可恢复，不应把 500 暴露给调用方（2026-10-26 全链路
+// 验收实证：jobs 常驻后连续创建第三个账户时命中 40P01）。
+const accountCreateTxAttempts = 3
+
+func (s *Store) createInTransactionWithRetry(ctx context.Context, input CreateInput, access AccessScope) (*CreateResult, error) {
+	var lastErr error
+	for attempt := 1; attempt <= accountCreateTxAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt-1) * 50 * time.Millisecond)
+		}
+		result, err := s.createInTransaction(ctx, input, access)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !isRetryableAccountCreateTxError(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *Store) createInTransaction(ctx context.Context, input CreateInput, access AccessScope) (*CreateResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	now := s.now()
+	nowISO := isoMillis(now)
+	result, err := s.createInTx(ctx, tx, input, access, now, nowISO)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// isRetryableAccountCreateTxError 只识别 PostgreSQL 的瞬态事务中止码；其余
+// 错误（校验、约束、连接失败）原样上报，不做重试掩盖。
+func isRetryableAccountCreateTxError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "40P01" || pgErr.Code == "40001"
 }
 
 func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, access AccessScope, now time.Time, nowISO string) (*CreateResult, error) {

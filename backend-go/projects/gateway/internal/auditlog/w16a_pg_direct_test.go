@@ -1,9 +1,9 @@
 package auditlog
 
-// w16a 覆盖收尾第五批：PostgreSQL 门禁直调臂。复用 w10b 的 w1cover 夹具库
-// 与负臂库创建模式（连接配置仅从 .local/project-resources/dev/env/shared.env
-// 读取；不可达一律 t.Skip）。本文件只使用 w16a- 前缀的 owner/audit ID，并在
-// 结束时清理本前缀的全部行；任何输出不得携带连接串或密码。
+// w16a 覆盖收尾第五批：PostgreSQL 门禁直调臂。复用 w10b 的 pgtestkit 每测试
+// 独立库夹具（连接配置由 pgtestkit 解析，不可达显式失败；2026-10-26 W19
+// 收口：原固定共享子库 + 固定名负臂库的跨二进制互踩面已删除）。任何输出不得
+// 携带连接串或密码。
 
 import (
 	"context"
@@ -11,37 +11,13 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const w16aPgOwner = "w16a-pg-direct-owner"
 
-func w16aCleanupPgRows(t *testing.T, store Store) {
-	t.Helper()
-	implementation, ok := store.(*sqlStore)
-	if !ok {
-		t.Fatalf("store 不是 *sqlStore")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
-	defer cancel()
-	for _, statement := range []string{
-		`DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id LIKE 'w16a-%' OR headers_blob_id LIKE 'blob:w16a%' OR body_blob_id LIKE 'blob:w16a%'`,
-		`DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id LIKE 'w16a-%'`,
-		`DELETE FROM juhe_dataset.audit_logs WHERE id LIKE 'w16a-%'`,
-		`DELETE FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id LIKE 'blob:w16a%'`,
-		`DELETE FROM juhe_dataset.audit_error_groups WHERE first_event_id LIKE 'w16a-%' OR last_event_id LIKE 'w16a-%'`,
-		`DELETE FROM juhe_dataset.audit_payload_blobs WHERE NOT EXISTS (SELECT 1 FROM juhe_dataset.audit_payload_refs WHERE headers_blob_id = juhe_dataset.audit_payload_blobs.id OR body_blob_id = juhe_dataset.audit_payload_blobs.id)`,
-		`DELETE FROM juhe_dataset.audit_log_owner_leases WHERE owner_id LIKE 'w16a-%'`,
-	} {
-		if _, err := implementation.db.ExecContext(ctx, statement); err != nil {
-			t.Logf("清理 w16a 行失败（不影响断言）: %v", err)
-		}
-	}
-}
-
 func TestW16aPgCanceledContextArms(t *testing.T) {
 	store, _ := w10bOpenCoverStore(t)
-	w16aCleanupPgRows(t, store)
 	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
 	defer cancel()
 	// 先用健康上下文建 schema，再切换取消上下文命中各错误臂。
@@ -62,7 +38,7 @@ func TestW16aPgCanceledContextArms(t *testing.T) {
 }
 
 func TestW16aPgFreshStoreReleaseEnsureSchemaArm(t *testing.T) {
-	negURL := w10bCreateNegativeDatabaseNamed(t, "juhe_ai_sub2api_dev_w16aneg")
+	negURL := pgtestkit.NewTestDatabase(t).DSN
 	store, err := OpenStore(Config{PostgresURL: negURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +54,6 @@ func TestW16aPgFreshStoreReleaseEnsureSchemaArm(t *testing.T) {
 
 func TestW16aPgDirectTxFaultArms(t *testing.T) {
 	store, _ := w10bOpenCoverStore(t)
-	w16aCleanupPgRows(t, store)
 	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
 	defer cancel()
 	if err := store.EnsureSchema(ctx); err != nil {

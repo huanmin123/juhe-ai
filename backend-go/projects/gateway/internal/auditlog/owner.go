@@ -208,9 +208,14 @@ func (k *LeaseKeeper) fatal(err error) {
 }
 
 // Close stops the renewal loop and releases the lease so a successor process
-// can take over immediately. Closing an already-lost keeper only stops the
-// loop (the row is no longer ours; ReleaseOwnerLease would report
-// ErrOwnerLeaseLost).
+// can take over immediately. Close waits for the renewal loop to fully exit
+// before releasing: the release must not race the loop's final renewal tick
+// (a renewal committing after the row was expired would surface as a spurious
+// 0-row ErrOwnerLeaseLost at shutdown), and after Close returns the keeper
+// makes no further store calls, so closing the pool afterwards is safe. The
+// wait is bounded by the renewal's own context (≤5s). Closing an already-lost
+// keeper only stops the loop (the row is no longer ours; ReleaseOwnerLease
+// would report ErrOwnerLeaseLost).
 func (k *LeaseKeeper) Close() {
 	if k.closed.Load() {
 		lease := k.Lease()
@@ -224,6 +229,14 @@ func (k *LeaseKeeper) Close() {
 		k.stopOnce.Do(func() { close(k.stopCh) })
 		if k.LostError() != nil {
 			return
+		}
+		// 等待当前续租循环代际退出后再释放（reacquire 用同一 channel 排序旧
+		// 循环的落账；循环内续租有独立 5s 上限 ctx，等待有界）。
+		k.mu.RLock()
+		done := k.loopDone
+		k.mu.RUnlock()
+		if done != nil {
+			<-done
 		}
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

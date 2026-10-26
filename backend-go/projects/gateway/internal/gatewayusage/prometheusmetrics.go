@@ -117,6 +117,11 @@ type prometheusMetrics struct {
 	inFlight         prommetrics.GaugeVec
 	upstreamFailures prommetrics.CounterVec
 	firstOutput      prommetrics.HistogramVec
+	// 请求级提前耗尽与负面缓存设计 §8 三计数器：L1 提前耗尽、L2 负面缓存
+	// 命中、L2 容量拒绝。无标签维度（事件量按进程累计）。
+	requestFastExhausted         prommetrics.CounterVec
+	negativeCacheHits            prommetrics.CounterVec
+	negativeCacheCapacityRejects prommetrics.CounterVec
 
 	auditDropOnce     sync.Once
 	auditDropSlot     atomic.Pointer[func() int64]
@@ -142,6 +147,10 @@ func newPrometheusMetrics() *prometheusMetrics {
 		inFlight:         prommetrics.NewGaugeVec(registry, "juhe_ai_http_requests_in_flight", "In-flight HTTP requests grouped without paths or identifiers.", prometheusServiceLabels, []string{"route_group", "method"}),
 		upstreamFailures: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_upstream_failures_total", "Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.", prometheusServiceLabels, []string{"failure_class", "reason_class", "status_class"}),
 		firstOutput:      prommetrics.NewHistogramVec(registry, "juhe_ai_gateway_first_output_duration_seconds", "Time to first upstream output for gateway requests, excluding full stream duration.", prometheusServiceLabels, []string{"method"}, prometheusFirstOutputBuckets),
+
+		requestFastExhausted:         prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_fast_exhausted_total", "Request-level fast exhaustion events: one request bucket reached >=3 distinct accounts and >=5 complete non-2xx candidate rejections.", prometheusServiceLabels, nil),
+		negativeCacheHits:            prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_hits_total", "Request negative-cache hits that served the existing dispatch-exhausted exit without further candidate scanning.", prometheusServiceLabels, nil),
+		negativeCacheCapacityRejects: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_capacity_rejected_total", "Request negative-cache writes rejected because the bounded in-process store was at capacity.", prometheusServiceLabels, nil),
 	}
 	// The upstream-failure capability gauges keep the D-190 contract
 	// declaration series (client_golang gauges stay resident at their set
@@ -209,6 +218,21 @@ func (m *prometheusMetrics) recordUpstreamFailure(failureClass string, statusCod
 	m.upstreamFailures.WithLabelValues(failureClass, reasonClass, classifyHTTPMetricStatus(statusCode)).Inc()
 }
 
+// recordRequestFastExhausted 计一次 L1 请求内提前耗尽触发。
+func (m *prometheusMetrics) recordRequestFastExhausted() {
+	m.requestFastExhausted.WithLabelValues().Inc()
+}
+
+// recordNegativeCacheHit 计一次 L2 负面缓存命中。
+func (m *prometheusMetrics) recordNegativeCacheHit() {
+	m.negativeCacheHits.WithLabelValues().Inc()
+}
+
+// recordNegativeCacheCapacityRejected 计一次 L2 容量上限拒绝写入。
+func (m *prometheusMetrics) recordNegativeCacheCapacityRejected() {
+	m.negativeCacheCapacityRejects.WithLabelValues().Inc()
+}
+
 // recordFirstOutput mirrors recordGatewayFirstOutputMetric.
 func (m *prometheusMetrics) recordFirstOutput(durationMs int64, method string) {
 	if durationMs < 0 {
@@ -243,6 +267,23 @@ func FinishHTTPMetricRequest(request *HTTPMetricRequest, statusCode *int, outcom
 // RecordGatewayUpstreamFailureMetric mirrors recordGatewayUpstreamFailureMetric.
 func RecordGatewayUpstreamFailureMetric(failureClass string, statusCode *int, reasonClass string) {
 	prometheusDefault.recordUpstreamFailure(failureClass, statusCode, reasonClass)
+}
+
+// RecordGatewayRequestFastExhaustedMetric 计一次 L1 请求内提前耗尽触发
+// （请求级提前耗尽与负面缓存设计 §8）。
+func RecordGatewayRequestFastExhaustedMetric() {
+	prometheusDefault.recordRequestFastExhausted()
+}
+
+// RecordGatewayRequestNegativeCacheHitMetric 计一次 L2 负面缓存命中。
+func RecordGatewayRequestNegativeCacheHitMetric() {
+	prometheusDefault.recordNegativeCacheHit()
+}
+
+// RecordGatewayRequestNegativeCacheCapacityRejectedMetric 计一次 L2 容量上限
+// 拒绝写入。
+func RecordGatewayRequestNegativeCacheCapacityRejectedMetric() {
+	prometheusDefault.recordNegativeCacheCapacityRejected()
 }
 
 // RecordGatewayFirstOutputMetric mirrors recordGatewayFirstOutputMetric.

@@ -15,6 +15,7 @@
 package acceptance
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -457,9 +459,18 @@ func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(strings.NewReader(string(raw)))
 	var parsed struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
 	}
 	_ = json.Unmarshal(raw, &parsed)
+	// 账户健康探针（exactkeyprobe）要求上游对「请计算 a+b」挑战返回数字答案；
+	// mock 的固定文案会让探针判 upstream_protocol_invalid，jobs 启动后把账户
+	// 打成 temporary_unavailable，全链路业务请求随之 503。这里按探针协议回
+	// 答，不消耗场景队列（探针模型不在 scriptable 判定内）。
+	if answer, ok := fullchainProbeChallengeAnswer(raw, parsed.Model); ok {
+		fullchainWriteProbeChallengeResponse(w, r.URL.Path, parsed.Stream, answer)
+		return
+	}
 	scriptable := fullchainScriptableRequest(r, parsed.Model)
 	scenario := m.nextScenario(key, scriptable)
 	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, r.Header.Get("X-Api-Key"), r.Header.Get("X-Api-Resource-Id"), r.Header.Get("X-Api-Request-Id"), string(raw), scenario)
@@ -495,6 +506,72 @@ func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.proxy(w, r, scenario)
+}
+
+// fullchainProbeChallengeAnswer 解析 exactkeyprobe 的文本挑战
+// （"接口连通性自动测试：请计算 a+b，只回复数字"）并返回正确答案。账户健康
+// 探针与 Key-model 探测都会发这类请求；固定回复会被判 upstream_protocol_invalid
+// 并把账户打成 temporary_unavailable（jobs 常驻后全链路业务请求随之 503）。
+func fullchainProbeChallengeAnswer(raw []byte, model string) (string, bool) {
+	const marker = "请计算 "
+	index := bytes.Index(raw, []byte(marker))
+	if index < 0 {
+		return "", false
+	}
+	rest := raw[index+len(marker):]
+	plus := bytes.IndexByte(rest, '+')
+	if plus <= 0 {
+		return "", false
+	}
+	left, err := strconv.Atoi(string(bytes.TrimSpace(rest[:plus])))
+	if err != nil {
+		return "", false
+	}
+	rest = rest[plus+1:]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return "", false
+	}
+	right, err := strconv.Atoi(string(rest[:end]))
+	if err != nil {
+		return "", false
+	}
+	return strconv.Itoa(left + right), true
+}
+
+// fullchainWriteProbeChallengeResponse 按探针请求的协议形态回写挑战答案：
+// chat/responses 的 JSON 与 SSE、Anthropic messages、Gemini generateContent。
+func fullchainWriteProbeChallengeResponse(w http.ResponseWriter, path string, stream bool, answer string) {
+	switch {
+	case strings.Contains(path, "/chat/completions"):
+		if stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-probe\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-mock\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":%q},\"finish_reason\":null}]}\n\n", answer)
+			fmt.Fprint(w, "data: {\"id\":\"chatcmpl-probe\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-mock\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"chatcmpl-probe","object":"chat.completion","model":"gpt-mock","choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, answer)
+	case strings.HasSuffix(path, "/responses"):
+		if stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\n", answer)
+			fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-probe\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":%q}]}]}}\n\n", answer)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"resp-probe","object":"response","status":"completed","model":"gpt-mock","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}]}`, answer)
+	case strings.Contains(path, "/messages"):
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"msg-probe","type":"message","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":%q}]}`, answer)
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":%q}]},"finishReason":"STOP"}],"model":"gpt-mock"}`, answer)
+	}
 }
 
 // proxy 把请求转发给 mockupstream 引擎（服务端注入 X-Mock-Scenario）。
@@ -669,20 +746,25 @@ func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess 
 	env := map[string]string{
 		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS": fmt.Sprintf("127.0.0.1:%d", freePort(t)),
 		"JUHE_AI_POSTGRES_URL":               gw.dsn,
-		"JUHE_AI_REDIS_CACHE_URL":            gw.redisURL,
-		"JUHE_AI_REDIS_STATE_URL":            gw.redisURL,
-		"JUHE_AI_REDIS_NAMESPACE":            gw.redisNamespace,
-		"JUHE_AI_DATA_DIR":                   filepath.Join(root, "storage"),
-		"JUHE_AI_CHAT_ASSETS_ROOT":           filepath.Join(root, "storage", "chat-assets"),
-		"JUHE_AI_CODEX_CONTEXT_ROOT":         filepath.Join(root, "storage", "codex-context-root"),
-		"JUHE_AI_USAGE_SPOOL_DIRECTORY":      gw.spoolDir,
-		"JUHE_AI_INSTANCE_ID":                "fullchain-jobs",
-		"JUHE_AI_WORKER_ROLE":                "worker",
-		"JUHE_AI_WORKER_REPLICA_INDEX":       "0",
-		"JUHE_AI_SECRET":                     gw.secret,
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":    "fullchain-jobs",
-		"JUHE_AI_LOG_DIR":                    gw.storage["logs"],
-		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":      "5000",
+		// F1 runtime-log-indexer（jobs 进程内）显式必填（无回落主连接串）。
+		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL": gw.dsn,
+		// J1 账户健康 PG 直读输入连接串（docker/single-server/README 同款显式
+		// 必填，无回落）。
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": gw.dsn,
+		"JUHE_AI_REDIS_CACHE_URL":                   gw.redisURL,
+		"JUHE_AI_REDIS_STATE_URL":                   gw.redisURL,
+		"JUHE_AI_REDIS_NAMESPACE":                   gw.redisNamespace,
+		"JUHE_AI_DATA_DIR":                          filepath.Join(root, "storage"),
+		"JUHE_AI_CHAT_ASSETS_ROOT":                  filepath.Join(root, "storage", "chat-assets"),
+		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(root, "storage", "codex-context-root"),
+		"JUHE_AI_USAGE_SPOOL_DIRECTORY":             gw.spoolDir,
+		"JUHE_AI_INSTANCE_ID":                       "fullchain-jobs",
+		"JUHE_AI_WORKER_ROLE":                       "worker",
+		"JUHE_AI_WORKER_REPLICA_INDEX":              "0",
+		"JUHE_AI_SECRET":                            gw.secret,
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "fullchain-jobs",
+		"JUHE_AI_LOG_DIR":                           gw.storage["logs"],
+		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":             "5000",
 	}
 	jobs := startProcess(t, "fullchain-jobs", jobsBinary, envMapToSlice(env))
 	healthURL := fmt.Sprintf("http://%s", env["JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS"])

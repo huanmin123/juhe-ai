@@ -18,8 +18,10 @@ import (
 // OpenAIProtocolCode mirrors OPENAI_PROTOCOL_CODE (domain/provider-protocol.ts).
 const OpenAIProtocolCode = "openai"
 
-// auditInlineSha256MaxBytes mirrors auditInlineSha256MaxBytes.
-const auditInlineSha256MaxBytes = 1024 * 1024
+// AuditInlineSha256MaxBytes mirrors auditInlineSha256MaxBytes：审计内联
+// SHA-256 摘要的原始 body 字节上限（1MB）。请求级提前耗尽的 L2 负面缓存
+// 以同一上限判定 body 是否参与缓存（请求级提前耗尽与负面缓存设计 §5）。
+const AuditInlineSha256MaxBytes = 1024 * 1024
 
 // CaptureModeMetadataOnly mirrors captureMode: 'metadata_only'.
 const CaptureModeMetadataOnly = "metadata_only"
@@ -489,6 +491,28 @@ func (c *AuditCaptureContext) AuditLogID() string {
 	return c.auditLogID
 }
 
+// ClientRequestBodySha256 返回审计捕获已算出的客户端请求体全量 SHA-256
+// （同请求已在算时复用；捕获未启用、体超上限或尚未捕获时返回空串，调用方
+// 按缺失自算——请求级提前耗尽与负面缓存设计 §5 的 bodySha256 取值点）。
+func (c *AuditCaptureContext) ClientRequestBodySha256() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for index := range c.payloads {
+		payload := &c.payloads[index]
+		if payload.PartType != AuditPartClientRequest {
+			continue
+		}
+		return payload.BodySha256
+	}
+	return ""
+}
+
+// BodySha256Hex 计算全量 body 的 SHA-256 十六进制摘要：与审计摘要同一实现
+// （sha256Hex），L2 自算 body 摘要消费同款（请求级提前耗尽与负面缓存设计 §5）。
+func BodySha256Hex(body []byte) string {
+	return sha256Hex(body)
+}
+
 // AddGatewayMetadata mirrors addGatewayMetadata. metadata may be nil,
 // *OrderedObject or map[string]any.
 func (c *AuditCaptureContext) AddGatewayMetadata(label string, metadata any) {
@@ -553,7 +577,7 @@ func (c *AuditCaptureContext) OmitPayloadBodies(input OmitPayloadBodiesInput) {
 		bodyBytes := len(payload.Body)
 		omittedPayloadCount++
 		omittedBodyBytes += bodyBytes
-		if payload.BodySha256 == "" && bodyBytes <= auditInlineSha256MaxBytes {
+		if payload.BodySha256 == "" && bodyBytes <= AuditInlineSha256MaxBytes {
 			payload.BodySha256 = sha256Hex(payload.Body)
 		}
 		if payload.RawBodySizeBytes == nil {

@@ -58,6 +58,8 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 账户 `credentials.error_handling_rules` 与受控系统继承策略的动作只决定当前账户状态副作用，不决定当前请求是否切号：`retry_next` 只切号，`rate_limited`、`temp_unschedulable`、`error_disabled` 在写入对应账户状态后同样排除当前账户并继续切号；未匹配任一策略的完整非 `2xx` 也按统一 `response.ok=false` 规则切号。`system.upstream_insufficient_quota` 命中后不投递低上下文 `request_failure` 探测，避免其与明确的 `rate_limited` 状态竞争。只有同账户兄弟 Key 轮换仍需要 `retry_next` 明确授权。
 
+**事实登记（请求级提前耗尽与负面缓存，2026-10-25 实施）**：[请求级提前耗尽与负面缓存](请求级提前耗尽与负面缓存设计.md)是既有耗尽出口的快速到达，不构成账户 / Key / 供应商健康事实。其计数输入只有"完整非 `2xx` 的候选拒绝"这一结构事实（不解析状态码 / 错误码语义，不维护状态码或错误码黑白名单）；达到合取阈值（同上游模型桶内 ≥3 只不同账户且合计 ≥5 次）后停止扫描该桶剩余候选、进入既有统一耗尽出口，不写 `accounts.status`、Key 运行态、共享质量、传输电路、代理健康或供应商状态，不改变切号准入（切号仍是完整非 `2xx` 的统一无条件行为）；账户错误策略命中的失败同样计入其计数（计数语义"请求被多少只账户拒绝"与账户侧副作用正交）。
+
 当前请求的 Key 排除必须使用请求内集合或等价的 request generation。未知 HTTP 响应不得写入跨请求共享的 `temporary_unavailable`、`rate_limited`、`error` 或其他带语义的 Key 避让状态。
 
 未知 HTTP 响应或明确协议失败不得直接创建跨请求的客户端 IP × API Key × 账户健康状态，也不得直接降低共享账户质量。若请求已经解析出合法的 `clientSourceKey`，网关可以记录该来源的短 TTL 候选避让，并异步投递共享的独立账户健康探活；这不是账户健康状态或 transport circuit。来源键缺失、invalid 或 conflict 时不写来源避让。真实 gateway 请求每个请求最多选择一个账户投递独立健康检查；业务请求本身不能写账户状态。该二次确认成功时只清理匹配来源，确认 health failure 时才按专用阈值 1 写通用 `temporary_unavailable`；正常周期健康对完整真实诊断未通过的结果统一立即写入 `temporary_unavailable`，未形成可靠结论的任务失败、取消和 unknown 不改账户状态。
@@ -92,7 +94,7 @@ source-only owner 的 `complete_success` 只清该 generation 中完全匹配的
 
 余额查询和人工诊断同样不得解释上游状态码。完整非 `2xx` 可以继续尝试其他余额 adapter，但不能清配置、修改首选 adapter 或改变账户调度状态；人工诊断按既定 10/20/30 秒档位记录真实结果，不产生网关共享状态副作用。
 
-Key 冷却探针的 success、transport failure 和 neutral defer 都必须携带候选读取时的 status、next probe、updated-at、账户 config revision、fingerprint 和 secret 代次。SQLite / PostgreSQL 只能用 update-only CAS 回写；任何人工编辑、显式策略、凭据轮换或较新探针先完成后，迟到结果不得重新插入或覆盖状态。
+Key 冷却探针的 success、transport failure 和 neutral defer 都必须携带候选读取时的 status、next probe、updated-at、账户 config revision、fingerprint 和 secret 代次。状态回写只能用 update-only CAS（历史双方言时期表述为 SQLite / PostgreSQL 双方言约束，已随 2026-10-25 存储收口退役为 PostgreSQL 单形态）；任何人工编辑、显式策略、凭据轮换或较新探针先完成后，迟到结果不得重新插入或覆盖状态。
 
 多实例 Key 冷却探针必须先通过数据库原子 claim 领取带 token 的限时租约，success、transport failure 和 neutral defer 回写时同时校验 claim token 与完整代次。候选扫描应先有界过滤已失效 fingerprint，再领取当前 Key；旧 fingerprint 不能占满固定窗口并使当前 Key 永久饿死。租约到期可以由新 worker 接管，但旧 worker 的迟到结果必须被 CAS 拒绝。
 
@@ -135,7 +137,7 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 - 同一坏会话并发请求不会把多个正常账户或 Key 写成死亡；
 - 任意状态码互换（例如把 `400`、`401`、`429`、`500`、`503` 互换）不会改变 generic 请求的内部状态动作；
 - 用户显式策略或严格系统额度策略命中时，才会产生配置指定的持久状态；
-- 普通协议成功、低上下文探测、旧在途成功和 OAuth 刷新成功不能清理 provenance 不匹配的用户显式或系统额度硬错误；匹配来源恢复、TTL 和人工恢复分别有 SQLite / PostgreSQL 并发 fencing 测试；
+- 普通协议成功、低上下文探测、旧在途成功和 OAuth 刷新成功不能清理 provenance 不匹配的用户显式或系统额度硬错误；匹配来源恢复、TTL 和人工恢复分别有 PostgreSQL 并发 fencing 测试（历史双方言时期含 SQLite 对照，已随 2026-10-25 存储收口退役）；
 - OAuth token 端点的 `400/401/403/429/500/503`、错误正文、坏 JSON、缺字段、断连和 timeout 都只形成诊断与有界退避，不把账户写成永久 `error`；
 - 代理检测对任意完整 HTTP 状态都只记录 transport reachable，连接/TLS/绝对 timeout/读取未完成才失败，无请求事实时为 `unknown`；
 - 同一代理下账户 A 的 request-local transport failure 不得让账户 B 在本请求内被代理级排除；

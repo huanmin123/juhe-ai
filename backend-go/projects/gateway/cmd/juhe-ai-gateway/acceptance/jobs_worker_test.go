@@ -1,9 +1,12 @@
 // X05 场景 7：jobs 冒烟。worker 任务族强制常开（2026-09-19 起无 ENABLED
-// 开关），直接启动 juhe-ai-jobs（复用同一
-// 隔离 SQLite 存储布局）→ /health worker 字段正确接线（workerEnabled=true
-// + worker 快照）→ 至少一个后台任务轮次成功（外部可观测证据：JSON 日志
-// outcome=success 完成事件）→ 优雅信号停机（Windows CTRL_BREAK / POSIX
-// SIGTERM → supervisor signal.NotifyContext 干净退出，进程退出码 0）。
+// 开关），直接启动 juhe-ai-jobs（PostgreSQL + Redis 唯一存储形态：复用
+// startGateway 的隔离 PG 库 / Redis 连接串 / 每测试唯一 namespace 与
+// usage spool 同源目录，进程 env 对齐 jobs 现行必填契约，与
+// startFullchainJobsWorker 同一装配面）→ /health worker 字段正确接线
+// （workerEnabled=true + worker 快照）→ 至少一个后台任务轮次成功（外部
+// 可观测证据：JSON 日志 outcome=success 完成事件）→ 优雅信号停机
+// （Windows CTRL_BREAK / POSIX SIGTERM → supervisor signal.NotifyContext
+// 干净退出，进程退出码 0）。
 package acceptance
 
 import (
@@ -21,39 +24,38 @@ func TestAcceptanceJobsWorkerSmoke(t *testing.T) {
 	// jobs 二进制懒构建：jobs 项目由并行波次独立开发，编译失败时 skip。
 	jobsBinary := ensureJobsBinary(t)
 
-	// 先启动 gateway 完成 fresh 六库 ensure+seed，jobs 复用该存储布局。
+	// 先启动 gateway 完成 fresh 隔离 PG ensure+seed，jobs 复用同一隔离库与
+	// Redis 键空间（gateway↔jobs 经 spool 目录与 PG 交接）。
 	fixture := startGateway(t, gatewayEnvOptions{})
 
-	jobsHealthPort := freePort(t)
 	root := fixture.root
-	usageShards := filepath.Join(root, "storage", "usage-jobs-shards")
-	codexRoot := filepath.Join(root, "storage", "codex-context")
 	env := map[string]string{
-		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS":      fmt.Sprintf("127.0.0.1:%d", jobsHealthPort),
-		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
-		"JUHE_AI_DATABASE_PATH":                   fixture.storage["business"],
-		"JUHE_AI_STATS_DATABASE_PATH":             fixture.storage["stats"],
-		"JUHE_AI_DATASET_DATABASE_PATH":           fixture.storage["dataset"],
-		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":     fixture.storage["usage-catalog"],
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":       fixture.storage["runtime-log"],
-		"JUHE_AI_TASK_RUNS_DATABASE_PATH":         filepath.Join(root, "storage", "task-runs.sqlite3"),
-		"JUHE_AI_CHAT_DATABASE_PATH":              fixture.storage["chat"],
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  codexRoot,
-		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "4",
-		"JUHE_AI_CHAT_ASSETS_ROOT":                filepath.Join(root, "storage", "chat-assets"),
-		"JUHE_AI_CODEX_CONTEXT_ROOT":              filepath.Join(root, "storage", "codex-context-root"),
-		"JUHE_AI_USAGE_SHARD_ROOT":                usageShards,
-		"JUHE_AI_INSTANCE_ID":                     "acceptance-jobs",
-		"JUHE_AI_WORKER_ROLE":                     "worker",
-		"JUHE_AI_WORKER_REPLICA_INDEX":            "0",
-		"JUHE_AI_SECRET":                          fixture.secret,
-		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":         "acceptance-jobs",
-		"JUHE_AI_RUNTIME_LOG_STORE":               "sqlite",
-		"JUHE_AI_LOG_DIR":                         fixture.storage["logs"],
-		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":           "5000",
+		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS": fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+		// PG + Redis 唯一存储形态（2026-10-24 存储收口）：连接串与 namespace
+		// 同源 startGateway 夹具（cache/state 共用同一 Redis 实例，键空间以
+		// 夹具 namespace 隔离）。
+		"JUHE_AI_POSTGRES_URL": fixture.dsn,
+		// F1 runtime-log-indexer 与 J1 账户健康 PG 直读输入（docker/single-server/
+		// README 同款显式必填，均无回落主连接串）。
+		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":          fixture.dsn,
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": fixture.dsn,
+		"JUHE_AI_REDIS_CACHE_URL":                   fixture.redisURL,
+		"JUHE_AI_REDIS_STATE_URL":                   fixture.redisURL,
+		"JUHE_AI_REDIS_NAMESPACE":                   fixture.redisNamespace,
+		"JUHE_AI_DATA_DIR":                          filepath.Join(root, "storage"),
+		"JUHE_AI_CHAT_ASSETS_ROOT":                  filepath.Join(root, "storage", "chat-assets"),
+		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(root, "storage", "codex-context-root"),
+		"JUHE_AI_USAGE_SPOOL_DIRECTORY":             fixture.spoolDir,
+		"JUHE_AI_INSTANCE_ID":                       "acceptance-jobs",
+		"JUHE_AI_WORKER_ROLE":                       "worker",
+		"JUHE_AI_WORKER_REPLICA_INDEX":              "0",
+		"JUHE_AI_SECRET":                            fixture.secret,
+		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "acceptance-jobs",
+		"JUHE_AI_LOG_DIR":                           fixture.storage["logs"],
+		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":             "5000",
 	}
 
-	healthURL := fmt.Sprintf("http://127.0.0.1:%d", jobsHealthPort)
+	healthURL := fmt.Sprintf("http://%s", env["JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS"])
 	jobsProcess := startProcess(t, "jobs", jobsBinary, envMapToSlice(env))
 
 	// /health 就绪门：ready=true（owner + worker 面）；workerEnabled 与

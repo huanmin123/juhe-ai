@@ -1333,7 +1333,7 @@ func derivedErrorGroup(input AuditLogInput, payloads []preparedPayload) (derived
 		}
 		break
 	}
-	requestFingerprint := hashNodeValue(map[string]any{"method": input.Method, "path": input.Path, "model": input.Model, "stream": input.Stream != nil && *input.Stream, "bodySha256": requestBodySHA})
+	requestFingerprint := RequestFingerprint(RequestFingerprintInput{Method: input.Method, Path: input.Path, Model: input.Model, Stream: input.Stream != nil && *input.Stream, BodySha256: requestBodySHA})
 	failed := AuditLogAttemptInput{}
 	for _, attempt := range input.Attempts {
 		if attempt.Success != nil && !*attempt.Success {
@@ -1369,6 +1369,25 @@ func hashNodeValue(value any) string {
 	_ = encoder.Encode(value)
 	sum := sha256.Sum256(bytes.TrimSuffix(buffer.Bytes(), []byte("\n")))
 	return hex.EncodeToString(sum[:])
+}
+
+// RequestFingerprintInput 是请求内容指纹（audit_error_groups 复合分组键的
+// requestFingerprint 分量）的聚合输入；聚合构成与既有审计实现逐字段一致
+// （method + path + model + stream + bodySha256 的稳定 JSON 聚合 SHA-256）。
+// 请求级提前耗尽与负面缓存的 L2 缓存键消费同一构造，保证与审计错误分组的
+// request_fingerprint 列天然可对照排障。
+type RequestFingerprintInput struct {
+	Method     string
+	Path       string
+	Model      string
+	Stream     bool
+	BodySha256 string
+}
+
+// RequestFingerprint 计算请求内容指纹：与 derivedErrorGroup 的
+// requestFingerprint 分量共用同一实现（聚合构成不变），L2 与审计键值一致。
+func RequestFingerprint(input RequestFingerprintInput) string {
+	return hashNodeValue(map[string]any{"method": input.Method, "path": input.Path, "model": input.Model, "stream": input.Stream, "bodySha256": input.BodySha256})
 }
 
 func nodeISOString(value time.Time) string {

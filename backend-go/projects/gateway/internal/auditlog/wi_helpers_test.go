@@ -203,6 +203,8 @@ func TestWILeaseKeeperLostWhenLeaseUsurped(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("启动 keeper=%v err=%v", ok, err)
 	}
+	// 失败路径兜底：defer 先于 store.Close 的 defer 执行（LIFO）。
+	defer keeper.Close()
 	// 手工把租约行置为过期，随后由另一个 owner 抢占（fence 递增）。
 	// keeper 的自动续租会不断延长 lease_until，无法靠等待过期。
 	past := time.Now().UTC().Add(-time.Minute)
@@ -224,5 +226,4 @@ func TestWILeaseKeeperLostWhenLeaseUsurped(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("租约被抢占后 Lost 未关闭")
 	}
-	keeper.Close()
 }

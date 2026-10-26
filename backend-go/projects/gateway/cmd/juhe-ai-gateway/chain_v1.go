@@ -161,6 +161,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// 按冻结目标后置过滤（切号时有效上游目标设计 §3.1/§4）。初始 preflight
 	// 无冻结目标，过滤惰性。
 	ctx = gatewaydispatch.WithSwitchTargetCapture(ctx, &gatewaydispatch.SwitchTargetCapture{})
+	// 请求级提前耗尽（L1）请求内计数器（请求级提前耗尽与负面缓存设计 §4）：
+	// 与 SwitchTarget 载体同点安装，随请求 ctx 传播到失败派发器；纯循环内
+	// 内存计数，请求结束即销毁。
+	ctx = withRequestFastExhaustState(ctx)
 	startedAt := c.preauth.NowMs()
 	res := gatewaypreauth.NewTrackingWriter(w)
 	req.ClientIP = requestClientIP(req)

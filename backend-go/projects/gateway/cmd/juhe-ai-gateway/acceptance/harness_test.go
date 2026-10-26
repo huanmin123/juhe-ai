@@ -1,6 +1,6 @@
 // X05 验收夹具：隔离环境构建、maintenance ensure+seed、被测进程启停（带诊断
 // 日志尾部）、HTTP 客户端助手。PostgreSQL + Redis 是唯一存储形态
-//（PLAN-20261024T051925945Z）：显式 PGDSN 缺省时夹具经 pgtestkit 自建每测试
+// （PLAN-20261024T051925945Z）：显式 PGDSN 缺省时夹具经 pgtestkit 自建每测试
 // 隔离库（fresh DDL + seed，等价部署 runbook 的受控预置步骤）；Redis 连接串
 // 自仓库根 .local dev env 解析（与 pgtestkit 同源），缺失时显式失败。
 package acceptance
@@ -8,8 +8,8 @@ package acceptance
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -235,6 +235,51 @@ func provisionJ3bPostgresSchema(t *testing.T, dsn string) {
 	}
 }
 
+// provisionJobsPostgresSchema 按部署 runbook 预置 juhe_jobs schema：jobs 的
+// J1 account-health / J2 account-balance / J3a proxy-latency store 都要求
+// schema 由外部受控流程创建且 owner 为当前 jobs role，进程自身拒绝建 schema。
+func provisionJobsPostgresSchema(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres for juhe_jobs schema: %v", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS juhe_jobs"); err != nil {
+		t.Fatalf("create juhe_jobs schema: %v", err)
+	}
+}
+
+// runMaintenanceAccountBalancePostgresApply 按部署 runbook 应用 J2 账户余额
+// 四表（幂等）：jobs 的 J2 service 只读取已预置表，不自行建表。
+func runMaintenanceAccountBalancePostgresApply(t *testing.T, dsn string) {
+	t.Helper()
+	cmd := exec.Command(maintenanceBinary, "--apply-account-balance-postgres")
+	cmd.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL="+dsn)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("maintenance account-balance postgres apply failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
+// runMaintenanceProxyLatencyPostgresApply 按部署 runbook 应用 J3a 代理延迟
+// jobs 表（幂等）：jobs 启动只校验已预置表，不自行建表。
+func runMaintenanceProxyLatencyPostgresApply(t *testing.T, dsn string) {
+	t.Helper()
+	cmd := exec.Command(maintenanceBinary, "--apply-j3a-proxy-latency-postgres")
+	cmd.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL="+dsn)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("maintenance j3a proxy-latency postgres apply failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
 // runMaintenanceJ3bPostgresApply 应用 juhe_j3b schema（幂等）：模型检测
 // owner 默认常驻后，juhe_j3b 专属 schema 按契约由 maintenance 显式补齐。
 func runMaintenanceJ3bPostgresApply(t *testing.T, dsn string) {
@@ -250,7 +295,7 @@ func runMaintenanceJ3bPostgresApply(t *testing.T, dsn string) {
 }
 
 // runMaintenanceEnsureSeed 调用 juhe-ai-maintenance --ensure-schema --seed
-//（PostgreSQL 是唯一形态：--dsn 是唯一目标形态）。
+// （PostgreSQL 是唯一形态：--dsn 是唯一目标形态）。
 func runMaintenanceEnsureSeed(t *testing.T, dsn string, secret string) map[string]any {
 	t.Helper()
 	args := []string{"--ensure-schema", "--seed", "--secret", secret, "--dsn", dsn}
@@ -375,20 +420,20 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		"JUHE_AI_SECRET":                        secret,
 		// PostgreSQL + Redis 唯一存储形态（2026-10-24 存储形态收口）：三个
 		// 连接串必填；F3/F4 store URL 缺省回落主连接串，实例 ID 显式钉死。
-		"JUHE_AI_POSTGRES_URL":                     dsn,
-		"JUHE_AI_BUSINESS_POSTGRES_URL":            dsn,
-		"JUHE_AI_REDIS_CACHE_URL":                  redisURL,
-		"JUHE_AI_REDIS_STATE_URL":                  redisURL,
-		"JUHE_AI_REDIS_NAMESPACE":                  namespace,
+		"JUHE_AI_POSTGRES_URL":          dsn,
+		"JUHE_AI_BUSINESS_POSTGRES_URL": dsn,
+		"JUHE_AI_REDIS_CACHE_URL":       redisURL,
+		"JUHE_AI_REDIS_STATE_URL":       redisURL,
+		"JUHE_AI_REDIS_NAMESPACE":       namespace,
 		// J3b 常驻（2026-09-21）后 circuit runtime 要求显式连接串（与主链
 		// 共享同一 Redis 实例时必须显式声明并隔离键空间：独立 namespace）。
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":            redisURL,
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE":      namespace + "-j3b",
-		"JUHE_AI_BUSINESS_OWNER":                   "gateway",
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":       "true",
-		"JUHE_AI_AUTH_CAPTCHA_DISABLED":            "true",
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":            "acceptance-gateway",
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":         filepath.Join(root, "storage", "audit-blobs"),
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":       redisURL,
+		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE": namespace + "-j3b",
+		"JUHE_AI_BUSINESS_OWNER":              "gateway",
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":  "true",
+		"JUHE_AI_AUTH_CAPTCHA_DISABLED":       "true",
+		"JUHE_AI_AUDIT_LOG_INSTANCE_ID":       "acceptance-gateway",
+		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY":    filepath.Join(root, "storage", "audit-blobs"),
 		// E2E-FINDING #10：验收链路要求每次成功请求的 attempts 归因都保留，
 		// 采样率 1 = 全采样（成功信封 retention days 默认 3，满足 LoadConfig
 		// 「rate 与 retention days 同时为 0 或同时 > 0」联动校验）。
@@ -419,6 +464,12 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	// 数据库流程预置，harness 与部署 runbook 保持一致。
 	provisionJ3bPostgresSchema(t, dsn)
 	runMaintenanceJ3bPostgresApply(t, dsn)
+	// jobs 侧 J1/J2/J3a 三族 store 都只校验 juhe_jobs schema 存在且 owner
+	// 为当前 role，表由各 store 的 EnsureSchema 自建（与部署 runbook 的
+	// 「先 CREATE SCHEMA AUTHORIZATION 再 apply」序列一致）。
+	provisionJobsPostgresSchema(t, dsn)
+	runMaintenanceAccountBalancePostgresApply(t, dsn)
+	runMaintenanceProxyLatencyPostgresApply(t, dsn)
 	// J3b circuit runtime owner fence（与部署 jobs 预置 runtime-index-meta
 	// 同一契约）：fresh 验收环境的 state Redis 无历史就绪哈希，harness 按
 	// circuitruntime.Store.CheckReady 的键位契约预置。

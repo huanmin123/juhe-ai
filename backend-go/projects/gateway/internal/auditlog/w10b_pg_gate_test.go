@@ -6,18 +6,18 @@ package auditlog
 // with scheduled blob GC, reactivate-on-republish) plus negative-schema and
 // canceled-context arms.
 //
-// 隔离铁律（与 accountbalance w7c 先例一致）：
-//   - 只触碰临时子库 juhe_ai_sub2api_dev_w1cover；主库一个字节不动。
-//   - 连接配置只从 .local/project-resources/dev/env/shared.env 读取；任何
-//     输出不得携带连接串或密码。
-//   - env 缺失或 PG 不可达一律 t.Skip；审计行只使用 w10b- 前缀，负臂库
-//     juhe_ai_sub2api_dev_w10cneg 由本测试创建并强制 DROP，绝不 DROP 共享对象。
+// 隔离铁律（2026-10-26 W19 收口：从固定共享子库迁 pgtestkit 每测试独立库，
+// 与 pgkit_test.go 组A入口同构）：
+//   - 每个测试走 pgtestkit 独立临时库（进程号+计数保证唯一，用毕强制删库），
+//     固定库名/固定 lease 行/固定行前缀的跨二进制互踩面已删除；主库一个
+//     字节不动。
+//   - 连接配置由 pgtestkit 自 .local dev env 或 JUHE_AI_TEST_PG_ADMIN_URL
+//     解析，内容不进入任何文件、日志或断言；env 缺失或 PG 不可达显式失败
+//     而非 skip（与 pgkit_test.go 同一口径，静默跳过等于假绿）。
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,13 +25,10 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 const (
-	w10bCoverDB   = "juhe_ai_sub2api_dev_w1cover"
-	w10bNegDB     = "juhe_ai_sub2api_dev_w10cneg"
-	w10bEnvPath   = "../../../../../.local/project-resources/dev/env/shared.env"
 	w10bOwnerID   = "w10b-pg-owner"
 	w10bPgBudget  = 30 * time.Second
 	w10bLeaseKey  = "f3-audit-log-persistence"
@@ -41,156 +38,19 @@ const (
 	w10bArmCBody  = "w10b canonical arm-c body"
 )
 
-func w10bSharedEnv(t *testing.T) map[string]string {
-	t.Helper()
-	raw, err := os.ReadFile(w10bEnvPath)
-	if err != nil {
-		t.Skipf("dev env 不可达（跳过 PG 门禁测试）: %v", err)
-	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
-	}
-	return values
-}
-
-// w10bCoverPostgresURL ensures the temp cover database exists, then returns an
-// application connection URL. The audit store creates its own juhe_dataset
-// schema inside EnsureSchema.
-func w10bCoverPostgresURL(t *testing.T) string {
-	t.Helper()
-	env := w10bSharedEnv(t)
-	host := env["DEV_POSTGRES_HOST"]
-	port := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || port == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过）")
-	}
-	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, port))
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
-	}
-	defer admin.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
-	defer cancel()
-	if err := admin.PingContext(ctx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	var exists bool
-	if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, w10bCoverDB).Scan(&exists); err != nil {
-		t.Fatalf("查询临时子库失败: %v", err)
-	}
-	if !exists {
-		owner := env["DEV_POSTGRES_APP_USERNAME"]
-		if owner == "" {
-			owner = adminUser
-		}
-		if _, err := admin.ExecContext(ctx, fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, w10bCoverDB, owner)); err != nil {
-			t.Fatalf("创建临时子库失败: %v", err)
-		}
-	}
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	return appURL[:sep+1] + w10bCoverDB
-}
-
-// w10bCreateNegativeDatabase creates a short-lived dedicated database (created
-// and force-dropped by this test only) for canceled-context and schema-error
-// arms.
-func w10bCreateNegativeDatabase(t *testing.T) string {
-	t.Helper()
-	env := w10bSharedEnv(t)
-	host := env["DEV_POSTGRES_HOST"]
-	port := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || port == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过）")
-	}
-	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, port))
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
-	}
-	defer admin.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
-	defer cancel()
-	if err := admin.PingContext(ctx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	if _, err := admin.ExecContext(ctx, `DROP DATABASE IF EXISTS `+w10bNegDB+` WITH (FORCE)`); err != nil {
-		t.Fatalf("清理负臂临时库失败: %v", err)
-	}
-	owner := env["DEV_POSTGRES_APP_USERNAME"]
-	if owner == "" {
-		owner = adminUser
-	}
-	if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+w10bNegDB+` OWNER `+owner); err != nil {
-		t.Fatalf("创建负臂临时库失败: %v", err)
-	}
-	t.Cleanup(func() {
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), w10bPgBudget)
-		defer dropCancel()
-		_, _ = admin.ExecContext(dropCtx, `DROP DATABASE IF EXISTS `+w10bNegDB+` WITH (FORCE)`)
-	})
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	return appURL[:sep+1] + w10bNegDB
-}
-
+// w10bOpenCoverStore 创建 pgtestkit 隔离 PG 测试库并打开生产 store 的 PG
+// 形态（不预建 schema：EnsureSchema 首建/二次短路臂与懒建链路保持与生产
+// 一致）。t.Cleanup LIFO 保证 store 先关、库后删。
 func w10bOpenCoverStore(t *testing.T) (Store, string) {
 	t.Helper()
+	testDB := pgtestkit.NewTestDatabase(t)
 	blobDir := t.TempDir()
-	store, err := OpenStore(Config{PostgresURL: w10bCoverPostgresURL(t), PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobDir})
+	store, err := OpenStore(Config{PostgresURL: testDB.DSN, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobDir})
 	if err != nil {
 		t.Fatalf("OpenStore PG: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, blobDir
-}
-
-func w10bCleanupAuditRows(t *testing.T, store Store) {
-	t.Helper()
-	implementation, ok := store.(*sqlStore)
-	if !ok {
-		t.Fatalf("store 不是 *sqlStore")
-	}
-	statements := []string{
-		`DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id LIKE 'w10b-%'`,
-		`DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id LIKE 'w10b-%'`,
-		`DELETE FROM juhe_dataset.audit_logs WHERE id LIKE 'w10b-%'`,
-		`DELETE FROM juhe_dataset.audit_payload_blob_gc WHERE blob_id LIKE 'blob:w10b%'`,
-		`DELETE FROM juhe_dataset.audit_error_groups WHERE first_event_id LIKE 'w10b-%' OR last_event_id LIKE 'w10b-%'`,
-		`DELETE FROM juhe_dataset.audit_log_owner_leases WHERE owner_id LIKE 'w10b-%'`,
-		// 无引用 blob 行一并清理，避免下一个测试看到"有行无文件"的 canonical 记录。
-		`DELETE FROM juhe_dataset.audit_payload_blobs WHERE NOT EXISTS (SELECT 1 FROM juhe_dataset.audit_payload_refs WHERE headers_blob_id = juhe_dataset.audit_payload_blobs.id OR body_blob_id = juhe_dataset.audit_payload_blobs.id)`,
-	}
-	run := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
-		defer cancel()
-		for _, statement := range statements {
-			if _, err := implementation.db.ExecContext(ctx, statement); err != nil {
-				t.Logf("清理临时行失败（不影响断言）: %v", err)
-			}
-		}
-	}
-	// 测试开始先清理上一轮残留，结束时再清一次。
-	run()
-	t.Cleanup(run)
 }
 
 func w10bErrorFixture(id string, lifecycle LifecycleStatus, createdAt, body string) AuditLogInput {
@@ -245,7 +105,6 @@ func w10bSeedPendingGC(t *testing.T, store Store, blobID, storageKey string) {
 
 func TestW10BPgStoreFullChain(t *testing.T) {
 	store, blobDir := w10bOpenCoverStore(t)
-	w10bCleanupAuditRows(t, store)
 	implementation := store.(*sqlStore)
 	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
 	defer cancel()
@@ -384,7 +243,6 @@ func TestW10BPgStoreFullChain(t *testing.T) {
 
 func TestW10BPgBlobGCReactivationArms(t *testing.T) {
 	store, blobDir := w10bOpenCoverStore(t)
-	w10bCleanupAuditRows(t, store)
 	implementation := store.(*sqlStore)
 	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
 	defer cancel()
@@ -455,7 +313,6 @@ func TestW10BPgBlobGCReactivationArms(t *testing.T) {
 
 func TestW10BPgRetentionErrorGroupCleanup(t *testing.T) {
 	store, _ := w10bOpenCoverStore(t)
-	w10bCleanupAuditRows(t, store)
 	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
 	defer cancel()
 	lease, acquired, err := store.AcquireOwnerLease(ctx, w10bOwnerID+"-egc", time.Minute)
@@ -489,7 +346,7 @@ func TestW10BPgRetentionErrorGroupCleanup(t *testing.T) {
 }
 
 func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
-	coverURL := w10bCoverPostgresURL(t)
+	coverURL := pgtestkit.NewTestDatabase(t).DSN
 
 	// 零值池配置触发 ValidatePoolLimits 失败（pgx 惰性解析 DSN，OpenStore 层不报错）。
 	if _, err := OpenStore(Config{PostgresURL: coverURL}); err == nil || !strings.Contains(err.Error(), "连接池") {
@@ -515,8 +372,8 @@ func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
 		t.Fatalf("pooled Close: %v", err)
 	}
 
-	// 负臂库：canceled context 命中各事务入口失败臂。
-	negURL := w10bCreateNegativeDatabase(t)
+	// 负臂库（独立空库，无 schema）：canceled context 命中各事务入口失败臂。
+	negURL := pgtestkit.NewTestDatabase(t).DSN
 	negStore, err := OpenStore(Config{PostgresURL: negURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("OpenStore neg: %v", err)
@@ -550,8 +407,9 @@ func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
 		t.Fatal("canceled cleanup temps 必须失败")
 	}
 
-	// 无 schema 的负臂库上 Persist 落入 EnsureSchema 失败。
-	freshURL := w10bCreateNegativeDatabaseNamed(t, "juhe_ai_sub2api_dev_w10cneg2")
+	// 独立空库上的 Persist 失败臂：空库无租约行，提交前 fence 查不到行必须
+	// 拒绝写入（懒 EnsureSchema 会在空库建 schema，但租约拒绝先于落库）。
+	freshURL := pgtestkit.NewTestDatabase(t).DSN
 	freshStore, err := OpenStore(Config{PostgresURL: freshURL, PostgresMaxOpenConns: 2, PostgresMaxIdleConns: 1, PayloadBlobDirectory: t.TempDir()})
 	if err != nil {
 		t.Fatalf("OpenStore fresh: %v", err)
@@ -560,49 +418,6 @@ func TestW10BPgOpenStoreAndContextArms(t *testing.T) {
 	freshCtx, freshCancel := context.WithTimeout(context.Background(), w10bPgBudget)
 	defer freshCancel()
 	if _, err := freshStore.Persist(freshCtx, lease, fixture("w10b-noschema", LifecycleFinalized)); err == nil {
-		t.Fatal("无 schema 时 Persist 必须失败")
+		t.Fatal("空库无租约行时 Persist 必须失败")
 	}
-}
-
-func w10bCreateNegativeDatabaseNamed(t *testing.T, name string) string {
-	t.Helper()
-	env := w10bSharedEnv(t)
-	host := env["DEV_POSTGRES_HOST"]
-	port := env["DEV_POSTGRES_DIRECT_PORT"]
-	adminUser := env["DEV_POSTGRES_ADMIN_USERNAME"]
-	adminPass := env["DEV_POSTGRES_ADMIN_PASSWORD"]
-	appURL := env["JUHE_AI_POSTGRES_URL"]
-	if host == "" || port == "" || adminUser == "" || appURL == "" {
-		t.Skipf("dev env 缺少 PG 键（跳过）")
-	}
-	admin, err := sql.Open("pgx", fmt.Sprintf("postgres://%s:%s@%s:%s/postgres?sslmode=disable", adminUser, adminPass, host, port))
-	if err != nil {
-		t.Fatalf("打开 dev PG 管理连接失败: %v", err)
-	}
-	defer admin.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), w10bPgBudget)
-	defer cancel()
-	if err := admin.PingContext(ctx); err != nil {
-		t.Skipf("dev PG 管理口不可达（跳过）: %v", err)
-	}
-	if _, err := admin.ExecContext(ctx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`); err != nil {
-		t.Fatalf("清理临时库失败: %v", err)
-	}
-	owner := env["DEV_POSTGRES_APP_USERNAME"]
-	if owner == "" {
-		owner = adminUser
-	}
-	if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+name+` OWNER `+owner); err != nil {
-		t.Fatalf("创建临时库失败: %v", err)
-	}
-	t.Cleanup(func() {
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), w10bPgBudget)
-		defer dropCancel()
-		_, _ = admin.ExecContext(dropCtx, `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
-	})
-	sep := strings.LastIndex(appURL, "/")
-	if sep < 0 {
-		t.Skipf("dev env JUHE_AI_POSTGRES_URL 形态异常（跳过）")
-	}
-	return appURL[:sep+1] + name
 }

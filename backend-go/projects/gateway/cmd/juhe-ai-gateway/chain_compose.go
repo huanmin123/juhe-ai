@@ -538,6 +538,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// failureDispatcher 与 gatewayChain.streamFailureAvoidance（BUG-0298 流式
 	// 换号的来源级避让入口）同一实例——协作方（strategy/turnRetry/probe/affinity）
 	// 同源，避免第二份装配漂移。
+	// L2 请求负面缓存运行态（请求级提前耗尽与负面缓存设计 §5/§7）：进程内有
+	// 界 TTL map，与失败派发器同生命周期（单机单实例）。
+	requestNegativeCache := newChainRequestNegativeCache(func() int64 { return clock.Now().UnixMilli() })
 	failureDispatcher := &chainFailureDispatcher{
 		usage:                 usageService,
 		affinity:              dispatchSessionAffinity,
@@ -550,6 +553,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		apiKeyObservation:     deps.AccountAPIKeyObservation,
 		codexUsageHeaders:     deps.CodexUsageHeadersDispatcher,
 		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
+		negativeCache:         requestNegativeCache,
 	}
 	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache, chainBodyParser), failureDispatcher)
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源

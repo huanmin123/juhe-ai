@@ -31,19 +31,28 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 	// 持有的未完结事件尾字节不回灌 inspector（其 pending 行已持有同源字节，
 	// 重复推送会拼接成非法载荷），而是并入预提交缓冲走既有 flush/丢弃判定；
 	// 补投证据机使非语义帧清空判定与主循环同据（非 SSE 直通体等形态保持既有
-	// 提交前缓冲行为），尾字节也不随 EOF 空列表早退丢失。
+	// 提交前缓冲行为）。尾字节并入位置按「本段是否放行过完整事件」二分：
+	// 有完整事件放行时必须并入于 eofChunks 写出循环之后（真实触发形态「EOF
+	// 残片经隔离器既放行完整事件又持有新尾部」：尾字节在字节流上位于其前的
+	// 完整事件之后，循环前并入会随循环内的 flushPreCommitChunks 抢先写出造成
+	// 字节乱序）；无完整事件放行（残片全部被持有或本段为空）时不存在次序面，
+	// 保持既有循环前并入位置，循环 flush 与 EOF 空列表早退的尾字节存活语义
+	// 与既有行为逐字节一致。
 	eofChunks := eofInterceptResult.Chunks
+	isolatorReleasedEvents := false
 	if p.parseErrorIsolator != nil {
 		for index, chunk := range eofChunks {
 			if len(chunk) > 0 {
-				eofChunks[index] = p.parseErrorIsolator.push(chunk)
+				if pushed := p.parseErrorIsolator.push(chunk); len(pushed) > 0 {
+					eofChunks[index] = pushed
+					isolatorReleasedEvents = true
+				} else {
+					eofChunks[index] = nil
+				}
 			}
 		}
-		if tail := p.parseErrorIsolator.flushPending(); len(tail) > 0 {
-			if !p.preCommitSseEvidence.DataEventObserved && !p.downstreamCommit.SemanticCommitted {
-				p.preCommitSseEvidence.Push(tail)
-			}
-			p.appendPreCommitChunk(tail)
+		if !isolatorReleasedEvents {
+			p.flushParseErrorIsolatorTail()
 		}
 	}
 	if len(eofChunks) == 0 && eofInterceptResult.Intercepted == nil {
@@ -122,6 +131,12 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		}
 		eofWroteDownstream = true
 	}
+	// 本段放行过完整事件时：隔离器持有的未完结事件尾字节在 eofChunks 写出
+	// 循环之后并入预提交缓冲（字节序契约见 eofFlushPhase 头注：尾字节位于
+	// 其前的完整事件之后）。
+	if isolatorReleasedEvents {
+		p.flushParseErrorIsolatorTail()
+	}
 	if eofInterceptResult.PassthroughUpstreamFailure {
 		return p.handlePassthroughTerminal(latestInspection, true)
 	}
@@ -183,6 +198,28 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		return &result, nil
 	}
 	return nil, nil
+}
+
+// flushParseErrorIsolatorTail 把 ParseError 隔离器在上游 EOF 时持有的未完结
+// 事件尾字节并入预提交缓冲（既有截断透传语义，不新造截断行为）：未回灌
+// inspector（其 pending 行已持有同源字节），证据机补投条件与主循环一致。
+// eofFlushPhase 内按「本段是否放行过完整事件」二分调用：放行过完整事件时在
+// eofChunks 写出循环之后调用（尾字节在字节流上位于其前的完整事件之后，循环
+// 前并入会随循环内的 flushPreCommitChunks 抢先写出——字节乱序）；未放行完整
+// 事件时保持既有循环前并入位置（循环 flush 与 EOF 空列表早退的尾字节存活
+// 语义与既有行为一致）。
+func (p *streamPipe) flushParseErrorIsolatorTail() {
+	if p.parseErrorIsolator == nil {
+		return
+	}
+	tail := p.parseErrorIsolator.flushPending()
+	if len(tail) == 0 {
+		return
+	}
+	if !p.preCommitSseEvidence.DataEventObserved && !p.downstreamCommit.SemanticCommitted {
+		p.preCommitSseEvidence.Push(tail)
+	}
+	p.appendPreCommitChunk(tail)
 }
 
 // handleInterceptedBeforeWrite 对齐主循环与 EOF 段共用的
@@ -676,13 +713,15 @@ func (p *streamPipe) finalizeMissingTerminal(inspection gatewayproto.StreamInspe
 		return StreamPipeResult{}, err
 	}
 	p.logger.Warn("gateway_stream_missing_terminal", map[string]any{
-		"elapsedMs":           p.nowMs() - p.startedAt,
-		"chunkCount":          p.chunkIndex,
-		"totalUpstreamBytes":  p.totalUpstreamBytes,
-		"totalResponseBytes":  p.totalResponseBytes,
-		"sseEventCount":       inspection.EventCount,
-		"sseEventTypeCounts":  inspection.EventTypeCounts,
-		"recentSseEventTypes": inspection.RecentEventTypes,
+		"elapsedMs":                 p.nowMs() - p.startedAt,
+		"chunkCount":                p.chunkIndex,
+		"totalUpstreamBytes":        p.totalUpstreamBytes,
+		"totalResponseBytes":        p.totalResponseBytes,
+		"sseEventCount":             inspection.EventCount,
+		"sseEventTypeCounts":        inspection.EventTypeCounts,
+		"recentSseEventTypes":       inspection.RecentEventTypes,
+		"parseErrorEventCount":      inspection.ParseErrorEventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
 	}, "上游 EOF 前未收到协议终止事件")
 	if p.shouldFailBeforeDownstreamCommit() {
 		p.logger.Warn("gateway_stream_missing_terminal_before_downstream_commit", map[string]any{
@@ -701,11 +740,13 @@ func (p *streamPipe) finalizeMissingTerminal(inspection gatewayproto.StreamInspe
 		return StreamPipeResult{}, err
 	}
 	p.logger.Warn("gateway_stream_missing_terminal_interrupted", map[string]any{
-		"errorCode":           errorCode,
-		"totalUpstreamBytes":  p.totalUpstreamBytes,
-		"totalResponseBytes":  p.totalResponseBytes,
-		"sseEventCount":       inspection.EventCount,
-		"recentSseEventTypes": inspection.RecentEventTypes,
+		"errorCode":                 errorCode,
+		"totalUpstreamBytes":        p.totalUpstreamBytes,
+		"totalResponseBytes":        p.totalResponseBytes,
+		"sseEventCount":             inspection.EventCount,
+		"recentSseEventTypes":       inspection.RecentEventTypes,
+		"parseErrorEventCount":      inspection.ParseErrorEventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
 	}, "网关已因缺少终止事件中断连接")
 	return p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
@@ -731,12 +772,14 @@ func (p *streamPipe) finalizeIncompleteOrFailed(inspection gatewayproto.StreamIn
 	}
 	if p.shouldFailBeforeDownstreamCommit() {
 		p.logger.Warn("gateway_stream_finished_failed_before_downstream_commit", map[string]any{
-			"completed":           p.completed,
-			"errorCode":           errorCode,
-			"totalUpstreamBytes":  p.totalUpstreamBytes,
-			"totalResponseBytes":  p.totalResponseBytes,
-			"sseEventCount":       inspection.EventCount,
-			"recentSseEventTypes": inspection.RecentEventTypes,
+			"completed":                 p.completed,
+			"errorCode":                 errorCode,
+			"totalUpstreamBytes":        p.totalUpstreamBytes,
+			"totalResponseBytes":        p.totalResponseBytes,
+			"sseEventCount":             inspection.EventCount,
+			"recentSseEventTypes":       inspection.RecentEventTypes,
+			"parseErrorEventCount":      inspection.ParseErrorEventCount,
+			"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
 		}, "网关在 EOF pending 收尾后识别到失败，交由上层返回当前失败")
 		return p.finishStreamResult(finishArgs{
 			message: message, errorCode: errorCode, usage: inspection.Usage,
@@ -749,17 +792,19 @@ func (p *streamPipe) finalizeIncompleteOrFailed(inspection gatewayproto.StreamIn
 		return StreamPipeResult{}, err
 	}
 	p.logger.Warn("gateway_stream_finished_failed_interrupted", map[string]any{
-		"completed":           p.completed,
-		"elapsedMs":           p.nowMs() - p.startedAt,
-		"chunkCount":          p.chunkIndex,
-		"totalUpstreamBytes":  p.totalUpstreamBytes,
-		"totalResponseBytes":  p.totalResponseBytes,
-		"message":             message,
-		"terminalReceived":    inspection.TerminalReceived,
-		"failedReceived":      inspection.FailedReceived,
-		"sseEventCount":       inspection.EventCount,
-		"sseEventTypeCounts":  inspection.EventTypeCounts,
-		"recentSseEventTypes": inspection.RecentEventTypes,
+		"completed":                 p.completed,
+		"elapsedMs":                 p.nowMs() - p.startedAt,
+		"chunkCount":                p.chunkIndex,
+		"totalUpstreamBytes":        p.totalUpstreamBytes,
+		"totalResponseBytes":        p.totalResponseBytes,
+		"message":                   message,
+		"terminalReceived":          inspection.TerminalReceived,
+		"failedReceived":            inspection.FailedReceived,
+		"sseEventCount":             inspection.EventCount,
+		"sseEventTypeCounts":        inspection.EventTypeCounts,
+		"recentSseEventTypes":       inspection.RecentEventTypes,
+		"parseErrorEventCount":      inspection.ParseErrorEventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
 	}, "网关已中断失败流")
 	return p.finishStreamResult(finishArgs{
 		message: message, errorCode: errorCode, usage: inspection.Usage,
@@ -873,19 +918,21 @@ func (p *streamPipe) handlePipeError(loopErr error) (StreamPipeResult, error) {
 	// 一并释放。
 	p.closeReplayWindow()
 	p.logger.Warn("gateway_stream_pipe_error", map[string]any{
-		"elapsedMs":           p.nowMs() - p.startedAt,
-		"chunkCount":          p.chunkIndex,
-		"totalUpstreamBytes":  p.totalUpstreamBytes,
-		"totalResponseBytes":  p.totalResponseBytes,
-		"terminalReceived":    inspection.TerminalReceived,
-		"failedReceived":      inspection.FailedReceived,
-		"outputReceived":      inspection.OutputReceived,
-		"outputEventCount":    inspection.OutputEventCount,
-		"sseEventCount":       inspection.EventCount,
-		"sseEventTypeCounts":  inspection.EventTypeCounts,
-		"recentSseEventTypes": inspection.RecentEventTypes,
-		"parserSkipped":       inspection.Skipped,
-		"skipReason":          inspection.SkipReason,
+		"elapsedMs":                 p.nowMs() - p.startedAt,
+		"chunkCount":                p.chunkIndex,
+		"totalUpstreamBytes":        p.totalUpstreamBytes,
+		"totalResponseBytes":        p.totalResponseBytes,
+		"terminalReceived":          inspection.TerminalReceived,
+		"failedReceived":            inspection.FailedReceived,
+		"outputReceived":            inspection.OutputReceived,
+		"outputEventCount":          inspection.OutputEventCount,
+		"sseEventCount":             inspection.EventCount,
+		"sseEventTypeCounts":        inspection.EventTypeCounts,
+		"recentSseEventTypes":       inspection.RecentEventTypes,
+		"parserSkipped":             inspection.Skipped,
+		"skipReason":                inspection.SkipReason,
+		"parseErrorEventCount":      inspection.ParseErrorEventCount,
+		"invalidProtocolEventCount": inspection.InvalidProtocolEventCount,
 	}, "网关流式转发捕获异常")
 	if (p.terminalEventWritten || (inspection.TerminalReceived && p.downstreamCommit.SemanticCommitted)) && !p.interpretedProtocolFailure(inspection) {
 		p.endResponse()

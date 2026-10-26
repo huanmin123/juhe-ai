@@ -503,6 +503,26 @@ func (s *Service) accountUsageModelAccounting(account UsageModelAccount, request
 	}
 }
 
+// resolveUpstreamModel 是 usage 写库同源的上游派发模型解析（解析与空值回落
+// 与 accountUsageModelAccounting 的上游模型口径逐字节一致）。请求级提前耗尽
+// 的计数桶键消费同一口径（请求级提前耗尽与负面缓存设计 §4 计数桶键）。
+func (s *Service) resolveUpstreamModel(account UsageModelAccount, requestedModel string, sourceEndpointFamily string) string {
+	resolved := UsageModelResolution{UpstreamModel: requestedModel}
+	if s.models != nil {
+		resolved = s.models.ResolveUsageModel(account, requestedModel, sourceEndpointFamily)
+	}
+	if resolved.UpstreamModel == "" {
+		return requestedModel
+	}
+	return resolved.UpstreamModel
+}
+
+// ResolveUpstreamModel 导出 usage 写库同源的上游派发模型解析（仅取
+// upstreamModel；定价 / 映射归因字段不在此消费）。
+func (s *Service) ResolveUpstreamModel(account UsageModelAccount, requestedModel string, sourceEndpointFamily string) string {
+	return s.resolveUpstreamModel(account, requestedModel, sourceEndpointFamily)
+}
+
 // resolveUsagePricingModel mirrors resolveUsagePricingModel with the
 // synchronous-catalog gate.
 func (s *Service) resolveUsagePricingModel(account UsageModelAccount, catalogSystemAccountID string, upstreamModel string) string {

@@ -83,6 +83,9 @@ func TestWILeaseKeeperRenewsAndReleases(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("启动 keeper=%v err=%v", ok, err)
 	}
+	// 失败路径兜底：defer 先于 store.Close 的 defer 执行（LIFO），keeper
+	// 不得活过 store 关闭。
+	defer keeper.Close()
 	if got := keeper.TTL(); got != 3*time.Second {
 		t.Fatalf("TTL=%v", got)
 	}
@@ -116,6 +119,8 @@ func TestWILeaseKeeperRetriesTransportErrorsUntilGraceWindow(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("启动 keeper=%v err=%v", ok, err)
 	}
+	// 失败路径兜底：终态 keeper 的 Close 只停循环，任意退出路径都安全。
+	defer keeper.Close()
 	// 关闭底层库使后续每次续租传输失败（interval=1s、放宽窗口=2×3s=6s）。
 	_ = store.Close()
 	time.Sleep(2 * time.Second)
@@ -131,8 +136,6 @@ func TestWILeaseKeeperRetriesTransportErrorsUntilGraceWindow(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("超过放宽窗口后 Lost 未关闭")
 	}
-	// 已丢失的 keeper Close 只停循环，不尝试释放。
-	keeper.Close()
 }
 
 func TestWILeaseKeeperRefusesWhenHeld(t *testing.T) {
