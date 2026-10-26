@@ -143,9 +143,12 @@ func TestW1OComposeSystemAPIPostgresFailureArms(t *testing.T) {
 		mutate func(t *testing.T, stack *w1oComposeStack)
 		want   string
 	}{
+		// 业务池句柄走 sql.Open("pgx") 惰性连接：不可达 URL 在 Acquire 处不
+		// 拨号，首个确定性失败点是组合根随后的 capability_domain 只读形状
+		// 校验（真实连接读 information_schema），want 与该失败面对齐。
 		{"业务池 URL 不可达", func(_ *testing.T, stack *w1oComposeStack) {
 			stack.cfg.BusinessPostgresURL = "postgres://w1o-no-user@127.0.0.1:1/w1o?sslmode=disable&connect_timeout=1"
-		}, "open business PostgreSQL pool"},
+		}, "verify accounts capability_domain schema"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +178,9 @@ func TestW1OComposeSystemAPIPostgresFailureArms(t *testing.T) {
 func TestW1OComposeSystemAPISQLiteSuccessVariants(t *testing.T) {
 	t.Run("链条关闭", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
+		// 2026-09-21 起网关链为常驻能力（loadRuntimeConfig 恒置 true），链条
+		// 关闭分支只能由手建 config 显式构造；本变体即驱动该分支的契约面。
+		stack.cfg.ChainEnabled = false
 		composed, err := stack.compose(t)
 		if err != nil {
 			t.Fatalf("链条关闭变体必须组装成功: %v", err)
@@ -201,8 +207,8 @@ func TestW1OComposeSystemAPISQLiteSuccessVariants(t *testing.T) {
 		if err != nil {
 			t.Fatalf("redis 登录守卫 + 验证码关闭变体必须组装成功: %v", err)
 		}
-		if composed.chain != nil {
-			t.Fatalf("链条未开启时 chain 必须为 nil")
+		if composed.chain == nil || composed.chainServices == nil {
+			t.Fatalf("链条常开（2026-09-21 常驻能力），chain/chainServices 必须装配: chain=%v services=%v", composed.chain != nil, composed.chainServices != nil)
 		}
 		composed.Shutdown()
 	})

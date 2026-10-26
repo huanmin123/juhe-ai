@@ -26,17 +26,10 @@ func w1EffectsBridge(t *testing.T, fixture *chainFixture) *chainErrorPolicyEffec
 
 func TestW1ApplyAccountErrorPolicyDecision(t *testing.T) {
 	fixture := newChainFixture(t)
-	// markCooldown/markDisabledByFailure 的 UPDATE 引用生产新增列，fixture
-	// 建表语句尚未同步——测试内补列（SQLite ADD COLUMN 幂等前置于用例）。
-	for _, column := range []string{
-		"last_error_trace_id TEXT", "cooldown_retest_failure_count INTEGER",
-		"cooldown_retest_observation_started_at TEXT", "cooldown_retest_last_at TEXT",
-		"cooldown_retest_last_status_code INTEGER", "cooldown_retest_generation TEXT", "updated_at TEXT",
-	} {
-		if _, err := fixture.db.Exec("ALTER TABLE accounts ADD COLUMN " + column); err != nil {
-			t.Fatalf("add column %s = %v", column, err)
-		}
-	}
+	// markCooldown/markDisabledByFailure 的 UPDATE 引用的 last_error_trace_id、
+	// cooldown_retest_* 与 updated_at 列已全部进入 maintenance bootstrap 的
+	// accounts 生产 DDL（pg_schema_business_tables.go），fresh DDL 夹具原生
+	// 携带，无需测试内补列（原 ADD COLUMN 循环已随 DDL 同步删除）。
 	bridge := w1EffectsBridge(t, fixture)
 	ctx := context.Background()
 	account := gatewaydispatch.AccountCandidate{ID: fixture.accountID}

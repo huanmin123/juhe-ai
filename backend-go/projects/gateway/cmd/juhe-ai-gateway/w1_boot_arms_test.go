@@ -24,8 +24,9 @@ package main
 //		- 进程 3：复用进程 1 的 F3 审计 PG 库 + 换实例 ID → F3 租约被持有
 //		  快速失败；
 //		- 进程 1 CTRL_BREAK 优雅关闭。
-//	M2 配置快速失败臂：F3 OpenStore（不可达 URL）、F4 OpenStore（不可达
-//		URL）、owner 侧健康监听地址非法。（原 STORE=bogus 配置臂、sqlite
+//	M2 配置快速失败臂：F3 EnsureSchema（不可达 URL）、F4 EnsureSchema（不可达
+//		URL，PG store 打开惰性连接后首次连库的确定性失败面）、owner 侧健康
+//		监听地址非法。（原 STORE=bogus 配置臂、sqlite
 //		垃圾文件臂与 F4 迁移命令臂随存储形态/命令退役删除。）
 //	M3 J3b 臂：J3b LoadConfig 失败、J3b postgres 模式业务库连接失败、
 //		J3b 电路运行时 Redis 不可达。（原 sqlite 业务库空文件 schema 臂的
@@ -85,14 +86,37 @@ func w1mRuntimeBaseEnvPairs(t *testing.T) []string {
 	t.Helper()
 	cacheRedis := miniredis.RunT(t)
 	stateRedis := miniredis.RunT(t)
+	// J3b 账户电路运行时要求显式声明 JUHE_AI_J3B_CIRCUIT_REDIS_URL（回退自
+	// 主链 state URL 会被 ValidateCircuitRuntimeRedisIsolation fail-fast）；
+	// 测试里用第三个独立 miniredis 承载，语义与生产「独立 URL」一致，实例
+	// 由 t.Cleanup 关闭（晚于子进程 kill 的清理顺序）。
+	circuitRedis := miniredis.RunT(t)
+	// CheckReady 契约要求 circuit Redis 预置 runtime-index-meta（网关不自建，
+	// 见 w1wNewOwnerFixture 的 seedMeta 语义），就绪路径场景必须先种子。
+	w1g2SeedCircuitRuntimeIndex(t, "redis://"+circuitRedis.Addr(), "juhe-ai:w1m")
 	return []string{
 		"JUHE_AI_CACHE_DRIVER=redis",
 		"JUHE_AI_REDIS_CACHE_URL=redis://" + cacheRedis.Addr(),
 		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
 		"JUHE_AI_REDIS_STATE_URL=redis://" + stateRedis.Addr(),
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://" + circuitRedis.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m",
 		"JUHE_AI_SECRET=w1m-owner-arms-secret-0123456789abcdef",
 		"NODE_ENV=test",
+	}
+}
+
+// w1mMainChainRedisPairs 返回主链 cache/state 两条 miniredis 连接串（2026-10-24
+// 存储收口后 loadRuntimeConfig 对三连接串无条件必填；J3b 电路连接由场景按自身
+// 失败臂语义显式给值，不由本帮手注入）。实例由 t.Cleanup 关闭。
+func w1mMainChainRedisPairs(t *testing.T) []string {
+	t.Helper()
+	cacheRedis := miniredis.RunT(t)
+	stateRedis := miniredis.RunT(t)
+	return []string{
+		"JUHE_AI_REDIS_CACHE_URL=redis://" + cacheRedis.Addr(),
+		"JUHE_AI_REDIS_STATE_URL=redis://" + stateRedis.Addr(),
+		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:w1m",
 	}
 }
 
@@ -123,9 +147,14 @@ func w1mF4EnvPairs(t *testing.T, f4URL, instanceID string) []string {
 
 // w1mBusinessPostgres 提供 owner 场景的业务 PG 库（fresh DDL + seed：compose
 // preflight 的能力域形状校验、阶段记录门禁与调度偏好四臂全部需要种子面）。
+// J3B_POSTGRES_URL 未显式配置时回落业务库，J3b 装配的 schema 门禁要求
+// juhe_j3b 面就绪；maintenance bootstrap 不含 j3b schema（独立
+// j3bmodelcheck 面，gateway 从不自建），这里按同源 DDL 幂等补建。
 func w1mBusinessPostgres(t *testing.T) *pgtestkit.TestDatabase {
 	t.Helper()
-	return w1v2PrepareBusinessPostgres(t)
+	db := w1v2PrepareBusinessPostgres(t)
+	w1g2EnsureJ3bSchema(t, db.DB)
+	return db
 }
 
 // w1mSyncBuffer 是并发安全的 stdout/stderr 收集缓冲（子进程与测试 goroutine
@@ -384,15 +413,19 @@ func TestW1MBootConfigFastFailArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
 
 	t.Run("F3审计store打开不可达URL失败", func(t *testing.T) {
+		// PG 形态下 OpenStore/池 Acquire 均惰性连接，不可达 F3 URL 的确定性
+		// 失败面是 EnsureSchema 首次连库（与 W1W-f3-schema-fail 同语义）。
+		// 业务库显式给值：J3b 装配先于 F3 打开且回落业务库校验 juhe_j3b 面。
+		business := w1mBusinessPostgres(t)
 		root := w1mAuditRoot(t, "m2-f3-open")
 		coverageDir := w1bCoverageDir(t, "M2-f3-open-unreachable")
-		env := w1bScenarioEnv(t, coverageDir, append(
+		env := w1bScenarioEnv(t, coverageDir, append(append(
 			w1mRuntimeBaseEnvPairs(t),
 			w1mAuditEnvPairs(t, root, "w1m-m2-b", w1mUnreachablePostgresURL, w1mUnreachablePostgresURL)...,
-		)...)
+		), "JUHE_AI_POSTGRES_URL="+business.DSN, "JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
 		_, stderr, code := w1bRunScenario(t, "M2-f3-open-unreachable", env)
 		w1bRequireExitCode(t, "M2-f3-open-unreachable", code, 1)
-		w1bRequireContains(t, "M2-f3-open-unreachable", stderr, "open F3 audit-log store")
+		w1bRequireContains(t, "M2-f3-open-unreachable", stderr, "initialize F3 audit-log schema")
 	})
 
 	t.Run("F4操作日志store打开不可达URL失败", func(t *testing.T) {
@@ -410,7 +443,8 @@ func TestW1MBootConfigFastFailArms(t *testing.T) {
 		)
 		_, stderr, code := w1bRunScenario(t, "M2-f4-open-unreachable", env)
 		w1bRequireExitCode(t, "M2-f4-open-unreachable", code, 1)
-		w1bRequireContains(t, "M2-f4-open-unreachable", stderr, "open F4 operation-log store")
+		// OpenStore 惰性连接后，不可达 F4 URL 的确定性失败面是 EnsureSchema。
+		w1bRequireContains(t, "M2-f4-open-unreachable", stderr, "initialize F4 operation-log schema")
 	})
 
 	t.Run("owner侧健康监听地址非法", func(t *testing.T) {
@@ -443,9 +477,12 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 
 	t.Run("J3b配置非法", func(t *testing.T) {
 		coverageDir := w1bCoverageDir(t, "M3-j3b-config-bogus")
+		// 主链三连接串必填（PG+Redis 唯一形态）；补齐后失败落点精确到
+		// J3b LoadConfig 的 owner 校验臂。
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-config-bogus", w1bOwnerBaseEnv(t, coverageDir,
-			"JUHE_AI_J3B_ENABLED=true",
-			"JUHE_AI_J3B_OWNER=notgateway"))
+			append(w1mMainChainRedisPairs(t),
+				"JUHE_AI_J3B_ENABLED=true",
+				"JUHE_AI_J3B_OWNER=notgateway")...))
 		w1bRequireExitCode(t, "M3-j3b-config-bogus", code, 1)
 		w1bRequireContains(t, "M3-j3b-config-bogus", stderr, "load J3b gateway owner config")
 	})
@@ -455,16 +492,17 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 		// 指向不可达地址（127.0.0.1:1），schema 校验连接即失败，不连真 PG。
 		coverageDir := w1bCoverageDir(t, "M3-j3b-pg-business-unreachable")
 		env := w1bScenarioEnv(t, coverageDir,
-			"JUHE_AI_J3B_ENABLED=true",
-			"JUHE_AI_J3B_OWNER=gateway",
-			"JUHE_AI_J3B_INSTANCE_ID=w1m-j3b",
-			"JUHE_AI_J3B_STORE=postgres",
-			"JUHE_AI_J3B_POSTGRES_URL="+w1mUnreachablePostgresURL,
-			"JUHE_AI_J3B_BUSINESS_POSTGRES_URL="+w1mUnreachablePostgresURL,
-			"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
-			"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
-			"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
-			"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test")
+			append(w1mMainChainRedisPairs(t),
+				"JUHE_AI_J3B_ENABLED=true",
+				"JUHE_AI_J3B_OWNER=gateway",
+				"JUHE_AI_J3B_INSTANCE_ID=w1m-j3b",
+				"JUHE_AI_J3B_STORE=postgres",
+				"JUHE_AI_J3B_POSTGRES_URL="+w1mUnreachablePostgresURL,
+				"JUHE_AI_J3B_BUSINESS_POSTGRES_URL="+w1mUnreachablePostgresURL,
+				"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
+				"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
+				"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
+				"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-pg-business-unreachable", env)
 		w1bRequireExitCode(t, "M3-j3b-pg-business-unreachable", code, 1)
 		w1bRequireContains(t, "M3-j3b-pg-business-unreachable", stderr, "open J3b Business owner connection")
@@ -478,21 +516,22 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 		w1g2EnsureJ3bSchema(t, j3bDB.DB)
 		coverageDir := w1bCoverageDir(t, "M3-j3b-redis-unreachable")
 		env := w1bScenarioEnv(t, coverageDir,
-			"JUHE_AI_POSTGRES_URL="+business.DSN,
-			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
-			"JUHE_AI_J3B_ENABLED=true",
-			"JUHE_AI_J3B_OWNER=gateway",
-			"JUHE_AI_J3B_INSTANCE_ID=w1m-j3b",
-			"JUHE_AI_J3B_STORE=postgres",
-			"JUHE_AI_J3B_POSTGRES_URL="+j3bDB.DSN,
-			"JUHE_AI_J3B_BUSINESS_POSTGRES_URL="+business.DSN,
-			"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
-			"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
-			"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
-			"JUHE_AI_J3B_NODE_WRITER_STOPPED=true",
-			"JUHE_AI_J3B_SCHEMA_READY=true",
-			"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
-			"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test")
+			append(w1mMainChainRedisPairs(t),
+				"JUHE_AI_POSTGRES_URL="+business.DSN,
+				"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
+				"JUHE_AI_J3B_ENABLED=true",
+				"JUHE_AI_J3B_OWNER=gateway",
+				"JUHE_AI_J3B_INSTANCE_ID=w1m-j3b",
+				"JUHE_AI_J3B_STORE=postgres",
+				"JUHE_AI_J3B_POSTGRES_URL="+j3bDB.DSN,
+				"JUHE_AI_J3B_BUSINESS_POSTGRES_URL="+business.DSN,
+				"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
+				"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
+				"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
+				"JUHE_AI_J3B_NODE_WRITER_STOPPED=true",
+				"JUHE_AI_J3B_SCHEMA_READY=true",
+				"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
+				"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test")...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-redis-unreachable", env)
 		w1bRequireExitCode(t, "M3-j3b-redis-unreachable", code, 1)
 		w1bRequireContains(t, "M3-j3b-redis-unreachable", stderr, "ping J3b Gateway circuit runtime Redis")

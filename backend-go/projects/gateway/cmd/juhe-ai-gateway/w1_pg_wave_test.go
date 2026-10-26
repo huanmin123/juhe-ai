@@ -998,9 +998,10 @@ func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 			t.Fatalf("场景 C stdout 缺少启动日志 %q\nstdout=%s", expected, stdout.String())
 		}
 	}
-	if !bytes.Contains([]byte(stdout.String()), []byte(`"databaseDriver":"postgres"`)) {
-		t.Fatalf("场景 C 启动日志应声明 databaseDriver=postgres\nstdout=%s", stdout.String())
-	}
+	// 注：原「启动日志应声明 databaseDriver=postgres」断言随 2026-10-24 存储
+	// 收口（d6335b0e6 物理删除 databaseDriver 日志字段——PG+Redis 唯一形态下
+	// 驱动维度不复存在）退役；PG 形态由 /health owner 组件族就绪字段与
+	// compose/started 日志共同证明。
 
 	w1bAppendCoverageManifest(t, coverageDir)
 	t.Logf("场景 C PG owner 全栈启动→就绪→优雅关闭通过: health=%s main=%s j3b=%s", healthAddress, mainAddress, j3bAddress)

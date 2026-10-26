@@ -100,17 +100,10 @@ func TestW1HandleUpstreamRequestErrorArms(t *testing.T) {
 // 命中的深臂：系统配额规则（402）、账户限流规则（429）、规则读取错误。
 func TestW1HandleFailedUpstreamResponsePolicyArms(t *testing.T) {
 	fixture := newChainFixture(t)
-	// 补齐 markCooldown 引用的生产列。
-	for _, column := range []string{
-		"last_error_trace_id TEXT", "cooldown_retest_failure_count INTEGER",
-		"cooldown_retest_observation_started_at TEXT", "cooldown_retest_last_at TEXT",
-		"cooldown_retest_last_status_code INTEGER", "cooldown_retest_generation TEXT",
-		"updated_at TEXT",
-	} {
-		if _, err := fixture.db.Exec("ALTER TABLE accounts ADD COLUMN " + column); err != nil {
-			t.Fatalf("add column %s = %v", column, err)
-		}
-	}
+	// markCooldown 引用的生产列（last_error_trace_id、cooldown_retest_*、
+	// updated_at）已全部进入 maintenance bootstrap 的 accounts 生产 DDL，
+	// fresh DDL 夹具原生携带，无需测试内补列（原 ADD COLUMN 循环随 DDL
+	// 同步删除）。
 	bridge := w1EffectsBridge(t, fixture)
 	dispatcher := &chainFailureDispatcher{effects: bridge}
 	gatewayInput := func(account gatewaydispatch.AccountCandidate, status int, body string) gatewaydispatch.FailedUpstreamResponseInput {

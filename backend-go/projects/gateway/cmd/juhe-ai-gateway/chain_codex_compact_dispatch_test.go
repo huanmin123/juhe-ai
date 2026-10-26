@@ -16,6 +16,7 @@ package main
 // TestW1CodexBridgeComposeWiresRealPreflight。
 
 import (
+	"os"
 	"context"
 	"encoding/json"
 	"io"
@@ -37,12 +38,23 @@ import (
 // 不依赖 codex 桥装配（wired=false），晚绑定回填由组合级测试断言。
 func compactDispatchAdapter(t *testing.T) *chainCompactSummaryDispatcher {
 	t.Helper()
+	spoolDir := w1CodexBridgeSpoolDir(t)
 	deps := w1CodexBridgeChainDeps(t, false)
 	chain, shutdown, assembleErr := composeGatewayChain(deps)
 	if assembleErr != nil {
 		t.Fatalf("composeGatewayChain: %v", assembleErr)
 	}
-	t.Cleanup(shutdown)
+	// 关闭后 spool 写入方可能仍在落盘；先 shutdown 再显式重试清理 spool，
+	// 避免 t.TempDir 清理与异步写入竞态（清理顺序即 LIFO，本清理后注册）。
+	t.Cleanup(func() {
+		shutdown()
+		for attempt := 0; attempt < 100; attempt++ {
+			if err := os.RemoveAll(spoolDir); err == nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 	return &chainCompactSummaryDispatcher{engine: chain.engine, auditOf: chain.engineAuditCapture}
 }
 

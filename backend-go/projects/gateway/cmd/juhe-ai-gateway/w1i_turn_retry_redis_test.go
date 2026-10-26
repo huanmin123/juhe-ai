@@ -157,9 +157,10 @@ func TestW1iRedisIncr(t *testing.T) {
 }
 
 func TestW1iNewStoreNilClient(t *testing.T) {
+	// 构造器契约：nil client 不阻断构建（调用恒定但读写降级），namespace 仍必须合法。
 	store, err := newChainTurnRetryRedisStateStore(nil, "test")
-	if err != nil || store != nil {
-		t.Fatalf("nil client: %v %v", store, err)
+	if err != nil || store == nil {
+		t.Fatalf("nil client 仍须构建: store=%v err=%v", store, err)
 	}
 }
 

@@ -210,6 +210,25 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 	return w1bScenarioEnv(t, coverageDir, env...)
 }
 
+// w1wRuntimeRedisPairs 返回 2026-10-24 存储收口后 loadRuntimeConfig 无条件
+// 必填的三条 Redis 连接基线（cache/state/J3b 电路各用独立 miniredis 实例），
+// 并按调用方给 namespace（每场景唯一，避免键空间串扰）。实例由 t.Cleanup
+// 关闭，晚于子进程 kill 的清理顺序。
+func w1wRuntimeRedisPairs(t *testing.T, namespace string) []string {
+	t.Helper()
+	cacheRedis := miniredis.RunT(t)
+	stateRedis := miniredis.RunT(t)
+	circuitRedis := miniredis.RunT(t)
+	// CheckReady 契约要求 circuit Redis 预置 runtime-index-meta（网关不自建）。
+	w1g2SeedCircuitRuntimeIndex(t, "redis://"+circuitRedis.Addr(), namespace)
+	return []string{
+		"JUHE_AI_REDIS_CACHE_URL=redis://" + cacheRedis.Addr(),
+		"JUHE_AI_REDIS_STATE_URL=redis://" + stateRedis.Addr(),
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://" + circuitRedis.Addr(),
+		"JUHE_AI_REDIS_NAMESPACE=" + namespace,
+	}
+}
+
 // w1wStartOwner 启动插桩 owner 进程并返回等待通道。
 func w1wStartOwner(t *testing.T, exe string, env []string, total time.Duration) (*exec.Cmd, chan error, *bytes.Buffer, *bytes.Buffer, context.CancelFunc) {
 	t.Helper()
@@ -460,8 +479,12 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
 		"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1wOwnerEpoch,
 		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+evidencePath,
-		"JUHE_AI_CACHE_DRIVER=memory",
-		"JUHE_AI_RUNTIME_STATE_DRIVER=memory",
+		// 2026-10-24 存储收口：cache/state driver 开关退役，三连接串无条件
+		// 必填；主链 cache/state 由 fixture 的 state miniredis 承载（本场景
+		// 预期失败在 J3b 契约校验，先于主链 compose，连接可达即可）。
+		"JUHE_AI_REDIS_CACHE_URL=redis://"+stateRedisAddr,
+		"JUHE_AI_REDIS_STATE_URL=redis://"+stateRedisAddr,
+		"JUHE_AI_REDIS_NAMESPACE=juhe-ai:"+w1wJ3bRedisNS,
 		"JUHE_AI_SECRET=w1w-pg-contract-secret",
 		"JUHE_AI_J3B_ENABLED=true",
 		"JUHE_AI_J3B_OWNER=gateway",
@@ -572,11 +595,18 @@ func TestW1WManagementAliasDemotesWhenPortTaken(t *testing.T) {
 	mainPort := w1bFreePort(t)
 	healthPort := w1bFreePort(t)
 	coverageDir := w1bCoverageDir(t, "W1W-alias-demoted")
+	// 业务库显式给值：owner 全启动的 J3b 装配回落业务库并校验 juhe_j3b 面
+	// （w1bScenarioEnv 自动注入的裸 bootstrap 夹具不含 j3b schema）。
+	business := w1mBusinessPostgres(t)
 	env := w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS="+alias.Addr().String(),
-		"JUHE_AI_HOST=127.0.0.1",
-		fmt.Sprintf("JUHE_AI_PORT=%d", mainPort),
-		fmt.Sprintf("JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:%d", healthPort))
+		append(w1wRuntimeRedisPairs(t, "juhe-ai:w1w-alias"),
+			"JUHE_AI_SECRET="+w1wRuntimeSecret,
+			"JUHE_AI_POSTGRES_URL="+business.DSN,
+			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN,
+			"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS="+alias.Addr().String(),
+			"JUHE_AI_HOST=127.0.0.1",
+			fmt.Sprintf("JUHE_AI_PORT=%d", mainPort),
+			fmt.Sprintf("JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:%d", healthPort))...)
 	cmd, done, cancel, stdout, stderr := w1mStartOwnerProcess(t, coverageDir, env)
 	if !w1mWaitOutputContains(t, stdout, "J3b management alias endpoint", 30*time.Second) {
 		_ = cmd.Process.Kill()
@@ -629,7 +659,7 @@ func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
 
 	// F3 PG EnsureSchema 连接失败臂（378-380）。
 	coverageDir := w1bCoverageDir(t, "W1W-f3-schema-fail")
-	env := w1bScenarioEnv(t, coverageDir, append(append([]string{}, auditBase...),
+	env := w1bScenarioEnv(t, coverageDir, append(append(append([]string{}, w1wRuntimeRedisPairs(t, "juhe-ai:w1w-f3f4-schema")...), auditBase...),
 		"JUHE_AI_POSTGRES_URL="+business.DSN,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
 	_, stderr, code := w1bRunScenario(t, "W1W-f3-schema-fail", env, args...)
@@ -641,15 +671,16 @@ func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
 	coverageDir = w1bCoverageDir(t, "W1W-f4-schema-fail")
 	auditOK := pgtestkit.NewTestDatabase(t)
 	env = w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_AUDIT_LOG_POSTGRES_URL="+auditOK.DSN,
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="+business.DSN,
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
-		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-schema",
-		"JUHE_AI_OPERATION_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-schema",
-		"JUHE_AI_POSTGRES_URL="+business.DSN,
-		"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)
+		append(w1wRuntimeRedisPairs(t, "juhe-ai:w1w-f3f4-schema-f4"),
+			"JUHE_AI_AUDIT_LOG_POSTGRES_URL="+auditOK.DSN,
+			"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="+business.DSN,
+			"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
+			"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
+			"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-schema",
+			"JUHE_AI_OPERATION_LOG_POSTGRES_URL=postgres://127.0.0.1:1/w1w_unused",
+			"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-schema",
+			"JUHE_AI_POSTGRES_URL="+business.DSN,
+			"JUHE_AI_BUSINESS_POSTGRES_URL="+business.DSN)...)
 	_, stderr, code = w1bRunScenario(t, "W1W-f4-schema-fail", env, args...)
 	w1bRequireExitCode(t, "f4-schema-fail", code, 1)
 	w1bRequireContains(t, "f4-schema-fail", stderr, "initialize F4 operation-log schema")
@@ -859,23 +890,23 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 	healthPort := w1bFreePort(t)
 	coverageDir := w1bCoverageDir(t, "W1W-f4-lease-held")
 	env := w1bScenarioEnv(t, coverageDir,
-		"JUHE_AI_POSTGRES_URL="+tempAppURL,
-		"JUHE_AI_BUSINESS_POSTGRES_URL="+tempAppURL,
-		"JUHE_AI_SECRET=w1w-f4-lease-secret",
-		"JUHE_AI_LOG_DIR="+filepath.Join(root, "logs"),
-		"JUHE_AI_BUSINESS_OWNER=gateway",
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1wOwnerEpoch,
-		"JUHE_AI_AUDIT_LOG_POSTGRES_URL="+audit.DSN,
-		"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="+business.DSN,
-		"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
-		"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
-		"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-lease",
-		"JUHE_AI_OPERATION_LOG_POSTGRES_URL="+tempAppURL,
-		"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-lease-holder",
-	)
+		append(w1wRuntimeRedisPairs(t, "juhe-ai:w1w-f4-lease"),
+			"JUHE_AI_POSTGRES_URL="+tempAppURL,
+			"JUHE_AI_BUSINESS_POSTGRES_URL="+tempAppURL,
+			"JUHE_AI_SECRET=w1w-f4-lease-secret",
+			"JUHE_AI_LOG_DIR="+filepath.Join(root, "logs"),
+			"JUHE_AI_BUSINESS_OWNER=gateway",
+			"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
+			"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
+			"JUHE_AI_BUSINESS_SCHEMA_READY=true",
+			"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1wOwnerEpoch,
+			"JUHE_AI_AUDIT_LOG_POSTGRES_URL="+audit.DSN,
+			"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL="+business.DSN,
+			"JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY="+filepath.Join(root, "audit-blobs"),
+			"JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY="+filepath.Join(root, "audit-hot"),
+			"JUHE_AI_AUDIT_LOG_INSTANCE_ID=w1w-f4-lease",
+			"JUHE_AI_OPERATION_LOG_POSTGRES_URL="+tempAppURL,
+			"JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1w-f4-lease-holder")...)
 	_, stderr, code := w1bRunScenario(t, "W1W-f4-lease-held", env,
 		"-health-listen-address", fmt.Sprintf("127.0.0.1:%d", healthPort))
 	w1bRequireExitCode(t, "f4-lease-held", code, 1)

@@ -48,7 +48,7 @@ func TestAnthropicUsageHeadersChannelDispatcherJobShape(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		readErr = db.QueryRow(`SELECT type, account_id, kind, source, snapshot_json, updated_at
-			FROM record_maintenance_jobs LIMIT 1`).
+			FROM juhe_dataset.record_maintenance_jobs LIMIT 1`).
 			Scan(&rowType, &accountID, &kind, &source, &snapshotJSON, &rowUpdatedAt)
 		if readErr == nil {
 			break
@@ -92,7 +92,7 @@ func TestAnthropicUsageHeadersChannelDispatcherJobShape(t *testing.T) {
 		http.Header{"X-Request-Id": []string{"plain"}}, gatewaycodex.AnthropicUsageSnapshotSource)
 	time.Sleep(50 * time.Millisecond)
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM record_maintenance_jobs`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM juhe_dataset.record_maintenance_jobs`).Scan(&count); err != nil {
 		t.Fatalf("count rows: %v", err)
 	}
 	if count != 1 {

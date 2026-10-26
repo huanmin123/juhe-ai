@@ -883,19 +883,23 @@ func TestW1UNewChatTokenCount(t *testing.T) {
 
 const w1uChatAssetTimeLayout = "2006-01-02T15:04:05.000000000Z"
 
-// w1uInsertChatAssetRow 向 fresh DDL 夹具库的 juhe_business.chat_assets 生产
-// 表插入一行最小可消费资产（原始面与处理面列按生产 NOT NULL 契约补齐）。
-func w1uInsertChatAssetRow(t *testing.T, db *sql.DB, id, expiresAt, sourceKind string) {
+// w1uInsertChatAssetRow 向 fresh DDL 夹具库的 juhe_chat.chat_assets 生产
+// 表插入一行最小可消费资产。processing_status='ready' 受
+// chat_assets_media_ready_check 约束（processed_bytes/sha256 非空 + image
+// mime 必须带宽高），processed_bytes 另受 >0 约束，因此处理面三件套由调用
+// 方按被测对象真实值在插入时给全，插入后无需回填。
+func w1uInsertChatAssetRow(t *testing.T, db *sql.DB, id, expiresAt, sourceKind string, processedBytes int64, processedSHA string) {
 	t.Helper()
 	originalSHA := chatAssetSHA256Hex([]byte("w1u-original-bytes"))
-	if _, err := db.Exec(`INSERT INTO juhe_business.chat_assets
+	if _, err := db.Exec(`INSERT INTO juhe_chat.chat_assets
 		(id, system_account_id, conversation_id, source_kind, original_filename, original_mime_type,
 		 original_bytes, original_sha256, processed_mime_type, processed_bytes, processed_sha256,
+		 processed_width, processed_height,
 		 storage_key, processing_status, cleanup_status, quota_bytes, created_at, updated_at, expires_at)
 		VALUES ($1, 'sys-1', 'conv-1', $2, 'asset.png', 'image/png', 18, $3,
-			'image/png', 0, '', 'conv-1/asset.png', 'ready', 'active', 1048576,
-			'2026-09-14T09:00:00.000Z', '2026-09-14T09:00:00.000Z', $4)`,
-		id, sourceKind, originalSHA, expiresAt); err != nil {
+			'image/png', $4, $5, 1, 1, 'conv-1/asset.png', 'ready', 'active', 1048576,
+			'2026-09-14T09:00:00.000Z', '2026-09-14T09:00:00.000Z', $6)`,
+		id, sourceKind, originalSHA, processedBytes, processedSHA, expiresAt); err != nil {
 		t.Fatalf("插入 chat_assets 行: %v", err)
 	}
 }
@@ -920,11 +924,7 @@ func TestW1UBuildAssetDataURL(t *testing.T) {
 	if err := store.Write("conv-1/asset.png", payload, 1<<20, sha); err != nil {
 		t.Fatalf("写入对象: %v", err)
 	}
-	w1uInsertChatAssetRow(t, db, "ast-ok", future, "user_uploaded")
-	if _, err := db.Exec(`UPDATE juhe_business.chat_assets SET processed_bytes = $1, processed_sha256 = $2 WHERE id = 'ast-ok'`,
-		len(payload), sha); err != nil {
-		t.Fatalf("回填行: %v", err)
-	}
+	w1uInsertChatAssetRow(t, db, "ast-ok", future, "user_upload", int64(len(payload)), sha)
 
 	got, err := obs.buildAssetDataURL(ctx, "ast-ok", "conv-1", "sys-1", now)
 	if err != nil {
@@ -958,11 +958,7 @@ func TestW1UBuildAssetDataURL(t *testing.T) {
 	if got, err := obs.buildAssetDataURL(ctx, "ast-missing", "conv-1", "sys-1", now); err != nil || got != "" {
 		t.Fatalf("缺失资产 = (%q, %v)，want (\"\", nil)", got, err)
 	}
-	w1uInsertChatAssetRow(t, db, "ast-expired", past, "user_uploaded")
-	if _, err := db.Exec(`UPDATE juhe_business.chat_assets SET processed_bytes = $1, processed_sha256 = $2 WHERE id = 'ast-expired'`,
-		len(tampered), chatAssetSHA256Hex(tampered)); err != nil {
-		t.Fatalf("回填过期行: %v", err)
-	}
+	w1uInsertChatAssetRow(t, db, "ast-expired", past, "user_upload", int64(len(tampered)), chatAssetSHA256Hex(tampered))
 	if got, err := obs.buildAssetDataURL(ctx, "ast-expired", "conv-1", "sys-1", now); err != nil || got != "" {
 		t.Fatalf("过期资产 = (%q, %v)，want (\"\", nil)", got, err)
 	}

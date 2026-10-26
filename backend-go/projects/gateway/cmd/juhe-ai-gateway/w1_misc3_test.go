@@ -188,7 +188,7 @@ func TestW1SettingsLimitAndCatalogs(t *testing.T) {
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO models (
 			id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
 			supported_endpoint_modes_json, created_at, updated_at)
-		VALUES ('mdl_cat_2', 'openai', 'gpt-test-inactive', 'gpt-test-inactive', 'global', 'disabled', 1,
+		VALUES ('mdl_cat_2', 'openai', 'gpt-test-inactive', 'gpt-test-inactive', 'global', 'disabled', TRUE,
 			'["chat_json","chat_sse"]', ?, ?)`), now, now); err != nil {
 		t.Fatalf("insert inactive catalog = %v", err)
 	}

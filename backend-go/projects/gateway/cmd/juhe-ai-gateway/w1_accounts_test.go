@@ -1,8 +1,9 @@
 package main
 
-// w1: chain_accounts.go 收割——选择器构造守卫、SQLite/PostgreSQL 方言
-// 投影（table/bind）、候选行合并与派发排序（模型秩/回退/超优先/优先级/
-// 桶内质量决胜/中文整理排序，Node orderGatewayDispatchCandidateRowsForDispatch）。
+// w1: chain_accounts.go 收割——选择器构造守卫、PostgreSQL 方言投影（table/bind，
+// 2026-10-24 存储收口后单一 PG 形态）、候选行合并与派发排序（模型秩/回退/
+// 超优先/优先级/桶内质量决胜/中文整理排序，Node
+// orderGatewayDispatchCandidateRowsForDispatch）。
 
 import (
 	"database/sql"
@@ -39,18 +40,8 @@ func TestW1AccountsSelectorConstruction(t *testing.T) {
 	if got := dispatchCandidateScanLimitFor(20); got != 40 {
 		t.Fatalf("scan limit = %d", got)
 	}
-	// 方言投影：SQLite 前缀名直用，PostgreSQL 加 schema 前缀。
-	sqliteSelector, _ := newChainAccountsSelector(fixture.db, "secret", nil, 20)
-	if got := sqliteSelector.table("api_keys"); got != "api_keys" {
-		t.Fatalf("sqlite table = %q", got)
-	}
-	if got := sqliteSelector.statsTable("usage_daily"); got != "usage_daily" {
-		t.Fatalf("sqlite stats table = %q", got)
-	}
-	plainQuery := "SELECT * FROM api_keys WHERE id = ?"
-	if got := sqliteSelector.bind(plainQuery); got != plainQuery {
-		t.Fatalf("sqlite bind = %q", got)
-	}
+	// 方言投影：2026-10-24 存储收口后只剩 PG 单方言——表名统一 schema 限定，
+	// 占位符统一转 $N（原 sqlite 直用名断言随方言删除退役）。
 	pgSelector, _ := newChainAccountsSelector(fixture.db, "secret", nil, 20)
 	if got := pgSelector.table("api_keys"); got != "juhe_business.api_keys" {
 		t.Fatalf("pg table = %q", got)
