@@ -32,9 +32,9 @@ func TestW12HRepoMarkRunningSessionCancelArms(t *testing.T) {
 	seedTaskRow := func(t *testing.T, repo *Repo, id, status string, cancel bool) {
 		t.Helper()
 		if _, err := repo.db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+			id, account_id, account_name, protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ($1, 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', $2, $3, $4, $4, $4)`,
+		) VALUES ($1, 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', $2, $3, $4, $4, $4)`,
 			id, status, cancel, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
@@ -122,9 +122,9 @@ func TestW12HRepoMaintenancePreciseArms(t *testing.T) {
 		pgAbortTrigger(t, db, "w12h_abort_upd4", "UPDATE", "account_test_tasks", "w12h requeue abort")
 		now := time.Now().UTC()
 		if _, err := db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+			id, account_id, account_name, protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ('w12h-t', 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'running', true, $1, $1, $1)`, now); err != nil {
+		) VALUES ('w12h-t', 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'running', true, $1, $1, $1)`, now); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "start", StaleRunningMS: int64Ptr(60_000)}); err == nil {

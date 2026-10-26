@@ -59,11 +59,9 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
   const credentials = accountDraftTestCredentials(payload.credentials, input.accountDetail)
   return {
     providerCode: payload.providerCode,
-    // providerProtocolProfileId 是草稿链入参契约（#B4 ⑩）：后端
-    // prepareBalanceDraft 按入参推导协议上下文（gemini openai_chat 等双档案
-    // 供应商缺入参会被 vendor 默认归一 → 词表外 400），故从表单直取而不随
-    // 保存载荷收口（#B4 ⑫ 停发范围仅创建/更新载荷）。
-    providerProtocolProfileId: input.form.providerProtocolProfileId,
+    // providerProtocolProfileId 已停发（B4 两表退役批）：后端草稿链按
+    // vendor 语义推导协议上下文，入参为接受但忽略；协议档案维度在前端
+    // 仅经 buildAccountDraftTestSummary 的本地投影保留。
     name: payload.name ?? input.accountDetail?.name ?? input.form.name.trim(),
     type: payload.type,
     credentials,
@@ -89,7 +87,7 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     systemAccountId: ownerSystemAccountId,
     ownerSystemAccountId,
     providerCode: input.draftPayload.providerCode,
-    providerProtocolProfileId: input.draftPayload.providerProtocolProfileId,
+    providerProtocolProfileId: input.accountDetail?.providerProtocolProfileId ?? input.protocolProfile?.id ?? '',
     protocolCode: input.accountDetail?.protocolCode ?? input.protocolProfile?.protocolCode,
     protocolVersion: input.accountDetail?.protocolVersion ?? input.protocolProfile?.protocolVersion,
     name: input.draftPayload.name || input.accountDetail?.name || '未命名账户',

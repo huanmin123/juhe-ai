@@ -314,18 +314,17 @@ func (d *Deps) testAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task, err := d.Store.CreateTestTask(ctx, TestTaskCreateInput{
-		AccountID:                 view.item.ID,
-		AccountName:               view.item.Name,
-		ProviderProtocolProfileID: view.item.ProviderProtocolProfileID,
-		ProtocolCode:              view.item.ProtocolCode,
-		ProtocolVersion:           view.item.ProtocolVersion,
-		AccountType:               view.item.Type,
-		Access:                    access,
-		Diagnostics:               diagnostics,
-		SessionID:                 parsed.TestSessionID,
-		Model:                     model,
-		TestEndpointMode:          testEndpointMode,
-		Draft:                     draft,
+		AccountID:        view.item.ID,
+		AccountName:      view.item.Name,
+		ProtocolCode:     view.item.ProtocolCode,
+		ProtocolVersion:  view.item.ProtocolVersion,
+		AccountType:      view.item.Type,
+		Access:           access,
+		Diagnostics:      diagnostics,
+		SessionID:        parsed.TestSessionID,
+		Model:            model,
+		TestEndpointMode: testEndpointMode,
+		Draft:            draft,
 	})
 	if err != nil {
 		d.writeTestError(w, err)
@@ -393,10 +392,6 @@ func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessSc
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
 		return
 	}
-	profileID := ""
-	if draft.ProviderProtocolProfileID != nil {
-		profileID = *draft.ProviderProtocolProfileID
-	}
 	protocolCode := ""
 	if draft.ProtocolCode != nil {
 		protocolCode = *draft.ProtocolCode
@@ -406,18 +401,17 @@ func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessSc
 		protocolVersion = *draft.ProtocolVersion
 	}
 	task, err := d.Store.CreateTestTask(ctx, TestTaskCreateInput{
-		AccountID:                 draft.ID,
-		AccountName:               draft.Name,
-		ProviderProtocolProfileID: profileID,
-		ProtocolCode:              protocolCode,
-		ProtocolVersion:           protocolVersion,
-		AccountType:               draft.Type,
-		Access:                    access,
-		Diagnostics:               "full",
-		SessionID:                 parsed.TestSessionID,
-		Model:                     model,
-		TestEndpointMode:          testEndpointMode,
-		Draft:                     draft,
+		AccountID:        draft.ID,
+		AccountName:      draft.Name,
+		ProtocolCode:     protocolCode,
+		ProtocolVersion:  protocolVersion,
+		AccountType:      draft.Type,
+		Access:           access,
+		Diagnostics:      "full",
+		SessionID:        parsed.TestSessionID,
+		Model:            model,
+		TestEndpointMode: testEndpointMode,
+		Draft:            draft,
 	})
 	if err != nil {
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))

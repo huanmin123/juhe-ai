@@ -1,5 +1,6 @@
 // jobsrepo.go 是 media_jobs 表的网关侧仓储（媒体设计 §8.2：id 对外、
-// account_id/provider_code/provider_protocol_profile_id 账户亲和三元组、
+// account_id 账户亲和列——provider_code / provider_protocol_profile_id 供应商
+// 维度列已随 B4 存储迁移批退役，读面供应商经 accounts.vendor_code 水合、
 // 状态机/终态回填字段）。SQL 风格沿 chainAccountsSelector 先例：
 // juhe_business schema 限定 + PG $n 绑定。本文件只承载
 // 行存取与 JSON 列编解码，不触 chain/HTTP 执行（链上层 chain_media_video.go
@@ -44,22 +45,21 @@ type MediaJobRecord struct {
 	OwnerSystemAccountID string
 	AccountID            string
 	// VendorCode 是账户行 vendor_code 的读面水合值（LEFT JOIN accounts；B4①
-	// 起 media_jobs 不再持久化 provider_code 列——列名是 provider 维度但语义
-	// 已是 vendor，且对 gpt 账户持久化的是 legacy token "openai"）。创建响应
-	// 的内存行由派发账户直接赋值；不落库。
-	VendorCode                string
-	ProviderProtocolProfileID string
-	UpstreamJobID             string
-	Status                    MediaJobStatus
-	RequestSnapshot           MediaJobRequestSnapshot
-	Artifact                  MediaJobArtifact
-	Error                     *MediaJobError
-	Usage                     MediaJobUsage
-	CostUsd                   float64
-	ParamsApplied             []string
-	ParamsIgnored             []string
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	// 起 media_jobs 不再持久化 provider_code / provider_protocol_profile_id
+	// 列——列名是 provider 维度但语义已是 vendor，且对 gpt 账户持久化的是
+	// legacy token "openai"）。创建响应的内存行由派发账户直接赋值；不落库。
+	VendorCode      string
+	UpstreamJobID   string
+	Status          MediaJobStatus
+	RequestSnapshot MediaJobRequestSnapshot
+	Artifact        MediaJobArtifact
+	Error           *MediaJobError
+	Usage           MediaJobUsage
+	CostUsd         float64
+	ParamsApplied   []string
+	ParamsIgnored   []string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // MediaJobRequestSnapshot 是 request_snapshot_json 的轻量参数元数据（零资源
@@ -159,12 +159,12 @@ func (r *MediaJobsRepo) Insert(ctx context.Context, record MediaJobRecord) error
 	applied := marshalStringList(record.ParamsApplied)
 	ignored := marshalStringList(record.ParamsIgnored)
 	_, err = r.db.ExecContext(ctx, r.bind(`INSERT INTO `+r.table()+` (
-		id, kind, api_key_id, owner_system_account_id, account_id, provider_protocol_profile_id,
+		id, kind, api_key_id, owner_system_account_id, account_id,
 		upstream_job_id, status, request_snapshot_json, artifact_json, error_json, usage_json,
 		params_applied_json, params_ignored_json, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ID, string(record.Kind), record.APIKeyID, record.OwnerSystemAccountID, record.AccountID,
-		nullString(record.ProviderProtocolProfileID), record.UpstreamJobID, string(record.Status),
+		record.UpstreamJobID, string(record.Status),
 		string(snapshotJSON), string(artifactJSON), errorJSON, usageJSON,
 		applied, ignored, mediaJobTimeLayout(now), mediaJobTimeLayout(now))
 	if err != nil {
@@ -426,7 +426,7 @@ func (r *MediaJobsRepo) mediaJobManagementWhere(query MediaJobListQuery) (string
 // 供应商来源；账户删除后任务行仍存在，LEFT JOIN 空vendor 回空串）。JSON 列
 // 解码失败按坏行跳过（行级容错：单行损坏不拖垮列表/轮询）。
 func (r *MediaJobsRepo) query(ctx context.Context, where string, args ...any) ([]*MediaJobRecord, error) {
-	stmt := `SELECT mj.id, mj.kind, mj.api_key_id, mj.owner_system_account_id, mj.account_id, COALESCE(acc.vendor_code, '') AS vendor_code, mj.provider_protocol_profile_id,
+	stmt := `SELECT mj.id, mj.kind, mj.api_key_id, mj.owner_system_account_id, mj.account_id, COALESCE(acc.vendor_code, '') AS vendor_code,
 		mj.upstream_job_id, mj.status, mj.request_snapshot_json, mj.artifact_json, mj.error_json, mj.usage_json, mj.cost_usd,
 		mj.params_applied_json, mj.params_ignored_json, mj.created_at, mj.updated_at
 		FROM ` + r.table() + ` mj
@@ -453,19 +453,17 @@ func (r *MediaJobsRepo) scanRows(ctx context.Context, stmt string, args ...any) 
 		var (
 			record                                           MediaJobRecord
 			kind, status                                     string
-			providerProfileID                                sql.NullString
 			snapshotJSON, artifactJSON, errorJSON, usageJSON string
 			appliedJSON, ignoredJSON, createdAt, updatedAt   string
 		)
 		if err := dbRows.Scan(&record.ID, &kind, &record.APIKeyID, &record.OwnerSystemAccountID, &record.AccountID, &record.VendorCode,
-			&providerProfileID, &record.UpstreamJobID, &status, &snapshotJSON, &artifactJSON, &errorJSON, &usageJSON,
+			&record.UpstreamJobID, &status, &snapshotJSON, &artifactJSON, &errorJSON, &usageJSON,
 			&record.CostUsd,
 			&appliedJSON, &ignoredJSON, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("读取媒体任务行失败: %w", err)
 		}
 		record.Kind = MediaJobKind(kind)
 		record.Status = MediaJobStatus(status)
-		record.ProviderProtocolProfileID = providerProfileID.String
 		if err := json.Unmarshal([]byte(snapshotJSON), &record.RequestSnapshot); err != nil {
 			continue
 		}
@@ -571,13 +569,6 @@ func unmarshalStringList(raw string) []string {
 		return nil
 	}
 	return values
-}
-
-func nullString(value string) any {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	return value
 }
 
 // mediaJobTimeLayout / parseMediaJobTime：毫秒 RFC3339 UTC 文本（与链侧

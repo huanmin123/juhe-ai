@@ -414,7 +414,6 @@ var postgresSchemaBusinessTables = []PGStatement{
       id text PRIMARY KEY,
       account_id text NOT NULL,
       account_name text NOT NULL,
-      provider_protocol_profile_id text NOT NULL,
       protocol_code text NOT NULL,
       protocol_version text NOT NULL,
       account_type text NOT NULL,
@@ -2260,8 +2259,8 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
 	{
 		// media_jobs 异步媒体任务表（媒体设计 §8.2，M2）：id 是对外 job id
 		//（video_ 前缀，不用上游 id）；kind 覆盖视频与 M3 长音频两形态；
-		// account_id / provider_protocol_profile_id 是账户亲和二元组（§7：
-		// 任务面不进派发循环；provider_code 列已随 B4① 存储迁移批拆除——
+		// account_id 是账户亲和列（§7：任务面不进派发循环；provider_code /
+		// provider_protocol_profile_id 供应商维度列已随 B4 存储迁移批拆除——
 		// 列名是 provider 维度但语义已是 vendor，且对 gpt 账户持久化的是
 		// legacy token "openai"，读面供应商经 accounts.vendor_code 水合）；
 		// artifact_json 只存定位指针与上游时效时间，零资源存储（§8.1）。引用
@@ -2280,7 +2279,6 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
       api_key_id text NOT NULL,
       owner_system_account_id text NOT NULL DEFAULT '',
       account_id text NOT NULL,
-      provider_protocol_profile_id text,
       upstream_job_id text NOT NULL,
       status text NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
       request_snapshot_json text NOT NULL DEFAULT '{}',
@@ -2318,7 +2316,9 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
 		// media_jobs INSERT），fresh 库建表 DDL 已无这些列，DROP 仅对存量库
 		// 生效。维护链一次性执行（BUG-0307 纪律：schema 保证收敛到
 		// maintenance，ACCESS EXCLUSIVE 不进热路径）；发版顺序与回滚口径见
-		// docker/single-server/README.md。
+		// docker/single-server/README.md。account_test_tasks / media_jobs 的
+		// provider_protocol_profile_id 两列随 B4 两表退役批追加（写入面同批
+		// 停写，读面分别经 accounts.vendor_code 水合 / 草稿快照承载协议上下文）。
 		SchemaName: "juhe_business",
 		Source:     "business-provider-dimension-retirement",
 		SQL:        `ALTER TABLE juhe_business.account_list_availability_projections DROP COLUMN IF EXISTS provider_code`,
@@ -2346,7 +2346,17 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
 	{
 		SchemaName: "juhe_business",
 		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.account_test_tasks DROP COLUMN IF EXISTS provider_protocol_profile_id`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
 		SQL:        `ALTER TABLE juhe_business.media_jobs DROP COLUMN IF EXISTS provider_code`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business-provider-dimension-retirement",
+		SQL:        `ALTER TABLE juhe_business.media_jobs DROP COLUMN IF EXISTS provider_protocol_profile_id`,
 	},
 	{
 		SchemaName: "juhe_business",

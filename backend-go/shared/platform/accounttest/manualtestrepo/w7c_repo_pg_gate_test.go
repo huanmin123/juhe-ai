@@ -6,7 +6,8 @@ package manualtestrepo
 // database (PLAN-20261024T051925945Z 迁移：原常驻 cover 库
 // juhe_ai_sub2api_dev_w1cover 的共享 schema 会过期漂移——2026-10-24 基线即因
 // 旧表缺列失败；每测试独立库 + pgkit_test.go 生产 DDL 根治。种子行不再写
-// provider_code：供应商解耦后 maintenance 权威 DDL 已删该列。连接串内容不进
+// provider_code / provider_protocol_profile_id：供应商解耦后 maintenance
+// 权威 DDL 已删这些列。连接串内容不进
 // 任何文件、日志或断言）。
 
 import (
@@ -26,10 +27,10 @@ func w7cSeedPGTask(t *testing.T, db *sql.DB, id, status string, cancelRequested 
 	now := time.Now().UTC()
 	if _, err := db.ExecContext(ctx, `
 INSERT INTO juhe_business.account_test_tasks (
-  id, account_id, account_name, provider_protocol_profile_id, protocol_code,
+  id, account_id, account_name, protocol_code,
   protocol_version, account_type, request_system_account_id, request_role, diagnostics,
   status, status_message, cancel_requested, queued_at, created_at, updated_at
-) VALUES ($1,'w7c-acc','w7c','','chat_completions','v1','api_key','w7c-viewer','user','full',
+) VALUES ($1,'w7c-acc','w7c','chat_completions','v1','api_key','w7c-viewer','user','full',
   $2,'等待后台测试',$3,$4,$5,$5)
 ON CONFLICT (id) DO UPDATE SET status = excluded.status, cancel_requested = excluded.cancel_requested,
   updated_at = excluded.updated_at`,

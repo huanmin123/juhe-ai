@@ -192,7 +192,6 @@ function storeTask(task: AccountTestTask): AccountTestTask {
     accountId: task.accountId,
     accountName: task.accountName,
     providerCode: task.providerCode,
-    providerProtocolProfileId: task.providerProtocolProfileId,
     protocolCode: task.protocolCode,
     protocolVersion: task.protocolVersion,
     type: task.type,

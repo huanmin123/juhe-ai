@@ -108,8 +108,8 @@ func TestW12HRepoPostgresBehaviorArms(t *testing.T) {
 	now := time.Now().UTC()
 
 	seed := func(id, status string, cancelRequested bool, extraCols []string, extraArgs []any) {
-		columns := "id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type, request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at"
-		placeholders := "$1, 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', $2, $3, $4, $4, $4"
+		columns := "id, account_id, account_name, protocol_code, protocol_version, account_type, request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at"
+		placeholders := "$1, 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', $2, $3, $4, $4, $4"
 		args := []any{id, status, cancelRequested, now}
 		for i, col := range extraCols {
 			columns += ", " + col
@@ -164,9 +164,9 @@ func TestW12HRepoPostgresBehaviorArms(t *testing.T) {
 	// queued_at 覆盖为过期时间：PG 拒绝 INSERT 列重复（SQLite 夹具曾容忍
 	// 同名重复列），过期行单独注入。
 	if _, err := db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-		id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+		id, account_id, account_name, protocol_code, protocol_version, account_type,
 		request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at
-	) VALUES ('w12h-expired', 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'queued', false, $1, $1, $1)`,
+	) VALUES ('w12h-expired', 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'queued', false, $1, $1, $1)`,
 		nowMillisOff(-120_000)); err != nil {
 		t.Fatal(err)
 	}
@@ -194,9 +194,9 @@ func TestW12HRepoPostgresBehaviorArms(t *testing.T) {
 	// stale running 需要真实过期的 started_at/updated_at（PG 原生 timestamptz
 	// 比较；updated_at 与基础列重名，SQLite 夹具曾容忍重复列）。
 	if _, err := db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-		id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+		id, account_id, account_name, protocol_code, protocol_version, account_type,
 		request_system_account_id, request_role, status, cancel_requested, queued_at, started_at, created_at, updated_at
-	) VALUES ('w12h-stale-run', 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'running', false, $1, $1, $1, $1)`,
+	) VALUES ('w12h-stale-run', 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'running', false, $1, $1, $1, $1)`,
 		nowMillisOff(-120_000)); err != nil {
 		t.Fatal(err)
 	}
@@ -260,9 +260,9 @@ func TestW12HRepoWriteAbortMatrix(t *testing.T) {
 	}
 	seed := func(t *testing.T, db *sql.DB, id, status string, cancel bool) {
 		if _, err := db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+			id, account_id, account_name, protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ($1, 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', $2, $3, $4, $4, $4)`,
+		) VALUES ($1, 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', $2, $3, $4, $4, $4)`,
 			id, status, cancel, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
@@ -311,9 +311,9 @@ func TestW12HRepoWriteAbortMatrix(t *testing.T) {
 		// 类型排序偶然命中的前提在此改为显式过期 updated_at）。
 		old := time.Now().Add(-time.Hour).UTC()
 		if _, err := db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+			id, account_id, account_name, protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ('t', 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'running', false, $1, $1, $1)`, old); err != nil {
+		) VALUES ('t', 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'running', false, $1, $1, $1)`, old); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "start", StaleRunningMS: int64Ptr(60_000)}); err == nil {
@@ -325,9 +325,9 @@ func TestW12HRepoWriteAbortMatrix(t *testing.T) {
 		// queued_at 直接写成过期时间（UPDATE 已被触发器拦截）。
 		old := time.Now().Add(-time.Hour).UTC()
 		if _, err := db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+			id, account_id, account_name, protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, status, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ('t', 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'queued', false, $1, $1, $1)`, old); err != nil {
+		) VALUES ('t', 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'queued', false, $1, $1, $1)`, old); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "sweep", MaxQueuedMS: 60_000}); err == nil {
@@ -348,9 +348,9 @@ func TestW12HRepoCleanupAbortArms(t *testing.T) {
 		repo, db := newRepo(t, "w12h_abort_task_delete", "DELETE", "account_test_tasks", "w12h task delete aborted")
 		old := time.Now().Add(-48 * time.Hour).UTC()
 		if _, err := db.Exec(`INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id, protocol_code, protocol_version, account_type,
+			id, account_id, account_name, protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, status, cancel_requested, queued_at, finished_at, created_at, updated_at
-		) VALUES ('t', 'acc', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'failed', false, $1, $2, $1, $1)`, old, old); err != nil {
+		) VALUES ('t', 'acc', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'sys', 'user', 'failed', false, $1, $2, $1, $1)`, old, old); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repo.Maintenance(ctx, accounttest.ManualTestMaintenanceInput{Action: "sweep"}); err == nil {

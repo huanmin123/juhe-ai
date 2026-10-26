@@ -250,7 +250,6 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
 function draftAccountFixture(): AccountDraftTestPayload['account'] {
   return {
     providerCode: 'openai',
-    providerProtocolProfileId: 'profile_openai_openai_v1',
     name: '草稿测试账户',
     type: 'api_key',
     credentials: { api_key: 'sk-test' },

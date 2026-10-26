@@ -97,27 +97,26 @@ func (r *AccountTestResult) UnmarshalJSON(raw []byte) error {
 
 // AccountTestTask mirrors AccountTestTask.
 type AccountTestTask struct {
-	ID                        string            `json:"id"`
-	SessionID                 *string           `json:"sessionId,omitempty"`
-	AccountID                 string            `json:"accountId"`
-	AccountName               string            `json:"accountName"`
-	ProviderCode              string            `json:"providerCode"`
-	ProviderProtocolProfileID string            `json:"providerProtocolProfileId"`
-	ProtocolCode              string            `json:"protocolCode"`
-	ProtocolVersion           string            `json:"protocolVersion"`
-	Type                      string            `json:"type"`
-	Status                    string            `json:"status"`
-	Message                   *string           `json:"message,omitempty"`
-	Model                     *string           `json:"model,omitempty"`
-	TestEndpointMode          *string           `json:"testEndpointMode,omitempty"`
-	Result                    AccountTestResult `json:"result,omitempty"`
-	CancelRequested           bool              `json:"cancelRequested"`
-	CreatedAt                 string            `json:"createdAt"`
-	QueuedAt                  string            `json:"queuedAt"`
-	QueuedDeadlineAt          string            `json:"queuedDeadlineAt"`
-	StartedAt                 *string           `json:"startedAt,omitempty"`
-	FinishedAt                *string           `json:"finishedAt,omitempty"`
-	UpdatedAt                 string            `json:"updatedAt"`
+	ID               string            `json:"id"`
+	SessionID        *string           `json:"sessionId,omitempty"`
+	AccountID        string            `json:"accountId"`
+	AccountName      string            `json:"accountName"`
+	ProviderCode     string            `json:"providerCode"`
+	ProtocolCode     string            `json:"protocolCode"`
+	ProtocolVersion  string            `json:"protocolVersion"`
+	Type             string            `json:"type"`
+	Status           string            `json:"status"`
+	Message          *string           `json:"message,omitempty"`
+	Model            *string           `json:"model,omitempty"`
+	TestEndpointMode *string           `json:"testEndpointMode,omitempty"`
+	Result           AccountTestResult `json:"result,omitempty"`
+	CancelRequested  bool              `json:"cancelRequested"`
+	CreatedAt        string            `json:"createdAt"`
+	QueuedAt         string            `json:"queuedAt"`
+	QueuedDeadlineAt string            `json:"queuedDeadlineAt"`
+	StartedAt        *string           `json:"startedAt,omitempty"`
+	FinishedAt       *string           `json:"finishedAt,omitempty"`
+	UpdatedAt        string            `json:"updatedAt"`
 }
 
 // TestDraftSnapshot mirrors AccountTestDraftSnapshot (the encrypted
@@ -154,20 +153,20 @@ type TestDraftSnapshot struct {
 
 // TestTaskCreateInput mirrors CreateAccountTestTaskInput. ProviderCode 列已随
 // B4① 存储迁移退役：行读面 providerCode 由 accounts.vendor_code 水合，不再
-// 随任务行落列。
+// 随任务行落列；provider_protocol_profile_id 列随 B4 两表退役批同批拆除，
+// 协议上下文由派发账户/草稿快照（draft_account_encrypted）承载，不落任务行。
 type TestTaskCreateInput struct {
-	AccountID                 string
-	AccountName               string
-	ProviderProtocolProfileID string
-	ProtocolCode              string
-	ProtocolVersion           string
-	AccountType               string
-	Access                    accountscore.AccessScope
-	Diagnostics               string // full | limited
-	SessionID                 string
-	Model                     string
-	TestEndpointMode          string
-	Draft                     *TestDraftSnapshot
+	AccountID        string
+	AccountName      string
+	ProtocolCode     string
+	ProtocolVersion  string
+	AccountType      string
+	Access           accountscore.AccessScope
+	Diagnostics      string // full | limited
+	SessionID        string
+	Model            string
+	TestEndpointMode string
+	Draft            *TestDraftSnapshot
 }
 
 // TestSessionCancel mirrors the cancelAccountTestSession return shape.
@@ -186,7 +185,6 @@ type TestTaskRow struct {
 	AccountID                  string
 	AccountName                string
 	ProviderCode               string
-	ProviderProfileID          string
 	ProtocolCode               string
 	ProtocolVersion            string
 	AccountType                string
@@ -209,7 +207,7 @@ type TestTaskRow struct {
 }
 
 const testTaskSelectColumns = `t.id, st.session_id, t.account_id, t.account_name, COALESCE(acc.vendor_code, '') AS provider_code,
-	t.provider_protocol_profile_id, t.protocol_code, t.protocol_version, t.account_type,
+	t.protocol_code, t.protocol_version, t.account_type,
 	t.request_system_account_id, t.request_role, t.request_system_account_filter_id,
 	t.status, t.status_message, t.model, t.test_endpoint_mode, t.result_json,
 	t.cancel_requested, t.created_at, t.queued_at, t.queued_deadline_at, t.started_at,
@@ -218,7 +216,7 @@ const testTaskSelectColumns = `t.id, st.session_id, t.account_id, t.account_name
 func (s *Service) scanTestTaskRow(scan func(...any) error) (*TestTaskRow, error) {
 	var row TestTaskRow
 	if err := scan(&row.ID, &row.SessionID, &row.AccountID, &row.AccountName, &row.ProviderCode,
-		&row.ProviderProfileID, &row.ProtocolCode, &row.ProtocolVersion, &row.AccountType,
+		&row.ProtocolCode, &row.ProtocolVersion, &row.AccountType,
 		&row.RequestSystemAccountID, &row.RequestRole, &row.RequestSystemAccountFilter,
 		&row.Status, &row.StatusMessage, &row.Model, &row.TestEndpointMode, &row.ResultJSON,
 		&row.CancelRequested, &row.CreatedAt, &row.QueuedAt, &row.QueuedDeadlineAt, &row.StartedAt,
@@ -237,25 +235,24 @@ func (r *TestTaskRow) ToTask() *AccountTestTask {
 		deadline = TestQueuedDeadlineAt(queuedAt)
 	}
 	task := &AccountTestTask{
-		ID:                        r.ID,
-		SessionID:                 accountscore.NullPtrString(r.SessionID),
-		AccountID:                 r.AccountID,
-		AccountName:               r.AccountName,
-		ProviderCode:              r.ProviderCode,
-		ProviderProtocolProfileID: r.ProviderProfileID,
-		ProtocolCode:              r.ProtocolCode,
-		ProtocolVersion:           r.ProtocolVersion,
-		Type:                      r.AccountType,
-		Status:                    TestTaskStatus(r.Status),
-		Model:                     accountscore.NullPtrString(r.Model),
-		TestEndpointMode:          TestEndpointModeOrNull(r.TestEndpointMode),
-		CancelRequested:           r.CancelRequested,
-		CreatedAt:                 r.CreatedAt,
-		QueuedAt:                  queuedAt,
-		QueuedDeadlineAt:          deadline,
-		StartedAt:                 TestOptionalTimestamp(r.StartedAt),
-		FinishedAt:                TestOptionalTimestamp(r.FinishedAt),
-		UpdatedAt:                 r.UpdatedAt,
+		ID:               r.ID,
+		SessionID:        accountscore.NullPtrString(r.SessionID),
+		AccountID:        r.AccountID,
+		AccountName:      r.AccountName,
+		ProviderCode:     r.ProviderCode,
+		ProtocolCode:     r.ProtocolCode,
+		ProtocolVersion:  r.ProtocolVersion,
+		Type:             r.AccountType,
+		Status:           TestTaskStatus(r.Status),
+		Model:            accountscore.NullPtrString(r.Model),
+		TestEndpointMode: TestEndpointModeOrNull(r.TestEndpointMode),
+		CancelRequested:  r.CancelRequested,
+		CreatedAt:        r.CreatedAt,
+		QueuedAt:         queuedAt,
+		QueuedDeadlineAt: deadline,
+		StartedAt:        TestOptionalTimestamp(r.StartedAt),
+		FinishedAt:       TestOptionalTimestamp(r.FinishedAt),
+		UpdatedAt:        r.UpdatedAt,
 	}
 	if r.StatusMessage.Valid && r.StatusMessage.String != "" {
 		message := r.StatusMessage.String
@@ -692,13 +689,13 @@ func (s *Service) CreateTestTask(ctx context.Context, input TestTaskCreateInput)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, s.store.Bind(`INSERT INTO `+s.store.Table("account_test_tasks")+`
-		(id, account_id, account_name, provider_protocol_profile_id,
+		(id, account_id, account_name,
 		 protocol_code, protocol_version, account_type,
 		 request_system_account_id, request_role, request_system_account_filter_id,
 		 diagnostics, model, test_endpoint_mode, draft_account_encrypted, status, status_message,
 		 cancel_requested, queued_at, queued_deadline_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', `+s.store.BoolFalseLiteral()+`, ?, ?, ?, ?)`),
-		id, input.AccountID, input.AccountName, input.ProviderProtocolProfileID,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', `+s.store.BoolFalseLiteral()+`, ?, ?, ?, ?)`),
+		id, input.AccountID, input.AccountName,
 		input.ProtocolCode, input.ProtocolVersion, input.AccountType,
 		input.Access.ViewerID, TestRequestRole(input.Access), TestTrimmedOrNull(input.Access.FilterID),
 		input.Diagnostics, TestTrimmedOrNull(input.Model), TestTrimmedOrNull(input.TestEndpointMode),

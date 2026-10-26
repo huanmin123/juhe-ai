@@ -48,7 +48,6 @@ CREATE TABLE IF NOT EXISTS account_test_tasks (
 	id TEXT PRIMARY KEY,
 	account_id TEXT NOT NULL,
 	account_name TEXT,
-	provider_protocol_profile_id TEXT,
 	protocol_code TEXT,
 	protocol_version TEXT,
 	account_type TEXT,

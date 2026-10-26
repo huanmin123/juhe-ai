@@ -26,7 +26,7 @@ func TestW14BTestTaskCancelFailArms(t *testing.T) {
 	}
 	task, err := env.store.CreateTestTask(ctx, TestTaskCreateInput{
 		AccountID: "acc-w14b-tc", AccountName: "w14b-tc",
-		ProviderProtocolProfileID: "prof-gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
+		ProtocolCode: "openai", ProtocolVersion: "v1",
 		AccountType: "api_key", Access: scope, Diagnostics: "full", SessionID: session.ID,
 	})
 	if err != nil || task == nil {

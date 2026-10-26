@@ -676,7 +676,7 @@ func TestChainMediaJobRepoRoundTrip(t *testing.T) {
 	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE media_jobs (
 		id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, owner_system_account_id TEXT NOT NULL DEFAULT '', account_id TEXT NOT NULL,
-		provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
+		upstream_job_id TEXT NOT NULL,
 		status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
 		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 		params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
@@ -826,7 +826,7 @@ func TestChainMediaJobTerminalUpdateRaceOnce(t *testing.T) {
 	db := newChainFixturePGDatabase(t)
 	if _, err := db.Exec(`CREATE TABLE media_jobs (
 		id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, owner_system_account_id TEXT NOT NULL DEFAULT '', account_id TEXT NOT NULL,
-		provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
+		upstream_job_id TEXT NOT NULL,
 		status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
 		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
 		params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',

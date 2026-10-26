@@ -1977,8 +1977,9 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 			started: -30 * time.Minute, ended: -29 * time.Minute},
 	}
 	for _, seed := range taskSeeds {
-		// 协议二元组随账户的主连接 preset（vendor 维度已随 B4① 存储迁移批
-		// 退役：account_test_tasks 不再有 provider_code 列，种子不写）。
+		// 协议二元组随账户的主连接 preset（vendor 维度已随 B4 存储迁移批
+		// 退役：account_test_tasks 不再有 provider_code /
+		// provider_protocol_profile_id 列，种子不写）。
 		preset := seed.account.preset
 		if preset == "" {
 			preset = contracts.PresetGPTOpenAIV1
@@ -1990,8 +1991,8 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 		protocolCode, protocolVersion := protocolForSurface(surface)
 		if err := w.put(tx, "account_test_tasks", map[string]any{
 			"id": CleanupIDPrefix + "test_task_" + seed.suffix, "account_id": seed.account.id,
-			"account_name":                 seed.account.name,
-			"provider_protocol_profile_id": preset, "protocol_code": protocolCode,
+			"account_name":     seed.account.name,
+			"protocol_code":    protocolCode,
 			"protocol_version": protocolVersion, "account_type": seed.account.typ,
 			"request_system_account_id": guard.adminID, "request_role": "super_admin",
 			"diagnostics": "full", "model": guard.catalog.modelAt(0).name,
@@ -3096,11 +3097,10 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		return w.put(tx, "media_jobs", map[string]any{
 			"id": id, "kind": kind,
 			"api_key_id": rowAPIKeyID, "account_id": accountID,
-			"owner_system_account_id":      ownerSystemAccountID,
-			"provider_protocol_profile_id": nil,
-			"upstream_job_id":              "upstream_" + CleanupIDPrefix + id,
-			"status":                       status,
-			"request_snapshot_json":        requestJSON, "artifact_json": artifactJSON,
+			"owner_system_account_id": ownerSystemAccountID,
+			"upstream_job_id":         "upstream_" + CleanupIDPrefix + id,
+			"status":                  status,
+			"request_snapshot_json":   requestJSON, "artifact_json": artifactJSON,
 			"error_json": errorJSON, "usage_json": usageJSON, "cost_usd": cost,
 			"params_applied_json": appliedJSON, "params_ignored_json": ignoredJSON,
 			"created_at": createdAt, "updated_at": updatedAt,

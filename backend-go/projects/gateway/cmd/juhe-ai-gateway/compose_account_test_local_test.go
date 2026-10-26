@@ -187,12 +187,12 @@ func insertComposeDraftTask(t *testing.T, db *sql.DB, taskID, draftEnvelope stri
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
 		INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id,
+			id, account_id, account_name,
 			protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, diagnostics,
 			model, test_endpoint_mode, draft_account_encrypted,
 			status, status_message, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ($1, 'acct-compose-e2e', '组合测试草稿账户', 'profile_openai_openai_v1',
+		) VALUES ($1, 'acct-compose-e2e', '组合测试草稿账户',
 			'openai', 'v1', 'api_key',
 			'sys_admin', 'user', 'full',
 			'gpt-compose', 'chat_json', $2,

@@ -384,7 +384,7 @@ func TestW10ATestSessionCancelReasonAndTask(t *testing.T) {
 	row := &testTaskRow{
 		ID: "task-1", SessionID: sql.NullString{String: "sess-1", Valid: true},
 		AccountID: "acc-1", AccountName: "账户", ProviderCode: "gpt",
-		ProviderProfileID: "prof-1", ProtocolCode: "openai", ProtocolVersion: "v1",
+		ProtocolCode: "openai", ProtocolVersion: "v1",
 		AccountType: "api_key", Status: TestTaskSuccess,
 		Model:            sql.NullString{String: "gpt-4o-mini", Valid: true},
 		TestEndpointMode: sql.NullString{String: "chat_json", Valid: true},

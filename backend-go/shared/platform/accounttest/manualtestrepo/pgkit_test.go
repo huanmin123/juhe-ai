@@ -39,7 +39,6 @@ CREATE TABLE IF NOT EXISTS juhe_business.account_test_tasks (
   id text PRIMARY KEY,
   account_id text NOT NULL,
   account_name text NOT NULL,
-  provider_protocol_profile_id text NOT NULL,
   protocol_code text NOT NULL,
   protocol_version text NOT NULL,
   account_type text NOT NULL,
@@ -110,10 +109,10 @@ func seedTask(t *testing.T, db *sql.DB, id string, status string, cancelRequeste
 	defer cancel()
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id, protocol_code,
+			id, account_id, account_name, protocol_code,
 			protocol_version, account_type, request_system_account_id, request_role, diagnostics,
 			status, status_message, cancel_requested, queued_at, created_at, updated_at
-		) VALUES ($1, 'acc-1', 'w12h-seed', '', 'chat_completions', 'v1', 'api_key', 'viewer-1', 'user', 'limited', $2, '等待后台测试', $3, $4, $4, $4)`,
+		) VALUES ($1, 'acc-1', 'w12h-seed', 'chat_completions', 'v1', 'api_key', 'viewer-1', 'user', 'limited', $2, '等待后台测试', $3, $4, $4, $4)`,
 		id, status, cancelRequested != 0, queuedAt.UTC()); err != nil {
 		t.Fatal(err)
 	}

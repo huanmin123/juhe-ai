@@ -484,12 +484,12 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 
 	stale := time.Now().UTC().Add(-20 * time.Minute).Format("2006-01-02T15:04:05.000Z07:00")
 	if _, err := composedFull.DB.Exec(`INSERT INTO juhe_business.account_test_tasks (
-			id, account_id, account_name, provider_protocol_profile_id,
+			id, account_id, account_name,
 			protocol_code, protocol_version, account_type,
 			request_system_account_id, request_role, diagnostics,
 			model, test_endpoint_mode, draft_account_encrypted,
 			status, status_message, cancel_requested, queued_at, created_at, updated_at, started_at
-		) VALUES ('task-w2b-resume', 'acct-w2b', '恢复任务', 'profile-w2b',
+		) VALUES ('task-w2b-resume', 'acct-w2b', '恢复任务',
 			'openai', 'v1', 'api_key',
 			'sys_admin', 'user', 'full',
 			'gpt-w2b', 'chat_json', 'junk-envelope',

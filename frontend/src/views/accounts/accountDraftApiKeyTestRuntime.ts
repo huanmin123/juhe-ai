@@ -90,7 +90,6 @@ function sameDraftApiKeyTestTarget(left: AccountDraftTestAccountPayload, right: 
 function draftApiKeyTestTarget(payload: AccountDraftTestAccountPayload): Record<string, unknown> {
   return {
     providerCode: payload.providerCode,
-    providerProtocolProfileId: payload.providerProtocolProfileId,
     type: payload.type,
     groupId: payload.groupId,
     proxyProfileId: payload.proxyProfileId,

@@ -189,7 +189,10 @@ export interface AccountTestPayload {
 
 export interface AccountDraftTestAccountPayload {
   providerCode: string
-  providerProtocolProfileId: string
+  // providerProtocolProfileId 已随 B4 两表退役批停发：后端草稿链
+  // （prepareAccountDraftTestSnapshot）改由 vendor 语义推导协议上下文，
+  // 该键仅为滚动期旧部署的接受但忽略入参保留可选形状。
+  providerProtocolProfileId?: string
   name: string
   type: string
   credentials: Record<string, unknown>

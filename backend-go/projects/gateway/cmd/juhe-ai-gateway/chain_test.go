@@ -354,7 +354,6 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			api_key_id TEXT NOT NULL,
 			owner_system_account_id TEXT NOT NULL DEFAULT '',
 			account_id TEXT NOT NULL,
-			provider_protocol_profile_id TEXT,
 			upstream_job_id TEXT NOT NULL,
 			status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
 			request_snapshot_json TEXT NOT NULL DEFAULT '{}',

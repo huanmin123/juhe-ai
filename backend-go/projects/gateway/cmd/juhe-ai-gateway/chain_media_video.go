@@ -1084,27 +1084,28 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, message, "internal_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
-	// provider_code 持久列已随 B4① 存储迁移退役：列名是 provider 维度但语义
-	// 已是 vendor，且 adapter.Provider() 对 gpt 账户持久化的是 legacy token
-	// "openai"。读面供应商一律经 accounts.vendor_code 水合；创建响应的内存行
-	// 直接携带派发账户 vendor。OwnerSystemAccountID 是归属列（AI 问答免 Key
+	// provider_code / provider_protocol_profile_id 持久列已随 B4 存储迁移批
+	// 退役：列名是 provider 维度但语义已是 vendor，且 adapter.Provider() 对
+	// gpt 账户持久化的是 legacy token "openai"。读面供应商一律经
+	// accounts.vendor_code 水合；创建响应的内存行直接携带派发账户 vendor，
+	// 协议档案维度随派发账户视图保留在 usage 记录链（不入任务行）。
+	// OwnerSystemAccountID 是归属列（AI 问答免 Key
 	// 直调计划 §3.3）：内部通道写注入的会话 owner，外部写 API Key 属主系统
 	// 账户；APIKeyID 在内部通道下为空串（免 Key 直调无 Key 身份），保留为
 	// 历史审计列。
 	record := gatewaymedia.MediaJobRecord{
-		ID:                        newChainMediaJobID(kind),
-		Kind:                      kind,
-		APIKeyID:                  context.UsageContext.APIKeyID,
-		OwnerSystemAccountID:      apiKeyOwnerSystemAccountIDOf(req),
-		AccountID:                 dispatched.Account.ID,
-		VendorCode:                dispatched.Account.VendorCode,
-		ProviderProtocolProfileID: dispatched.Account.ProviderProtocolProfileID,
-		UpstreamJobID:             ir.UpstreamJobID,
-		Status:                    ir.Status,
-		RequestSnapshot:           chainMediaJobSnapshotScopeOf(plan.snapshotFields(), dispatched.Account, context),
-		Artifact:                  ir.Artifact,
-		ParamsApplied:             plan.paramsApplied(),
-		ParamsIgnored:             plan.paramsIgnored(),
+		ID:                   newChainMediaJobID(kind),
+		Kind:                 kind,
+		APIKeyID:             context.UsageContext.APIKeyID,
+		OwnerSystemAccountID: apiKeyOwnerSystemAccountIDOf(req),
+		AccountID:            dispatched.Account.ID,
+		VendorCode:           dispatched.Account.VendorCode,
+		UpstreamJobID:        ir.UpstreamJobID,
+		Status:               ir.Status,
+		RequestSnapshot:      chainMediaJobSnapshotScopeOf(plan.snapshotFields(), dispatched.Account, context),
+		Artifact:             ir.Artifact,
+		ParamsApplied:        plan.paramsApplied(),
+		ParamsIgnored:        plan.paramsIgnored(),
 	}
 	if insertErr := c.mediaJobs.repo.Insert(ctx, record); insertErr != nil {
 		// 受理凭据已确立但本地行落库失败：任务已在上游存在，客户端拿到错误
@@ -2196,8 +2197,10 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 		Endpoint:                    endpoint,
 		// vendor 身份：账户行 vendor（B4① 拆除 media_jobs.provider_code 后
 		// usage 行供应商与 sync 链 chain_usage.go 同源——账号视图 vendor 值）。
+		// 协议档案 id 同步切到水合账户视图（B4 两表退役批：任务行不再冻结
+		// provider 维度，usage 行身份维度与 sync 链同源）。
 		ProviderCode:              account.ProviderCode,
-		ProviderProtocolProfileID: record.ProviderProtocolProfileID,
+		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		Model:                     record.RequestSnapshot.Model,
 		UpstreamModel:             record.RequestSnapshot.Model,
 		StatusCode:                &statusCode,

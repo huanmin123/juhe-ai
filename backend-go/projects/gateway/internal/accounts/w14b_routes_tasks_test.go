@@ -83,7 +83,7 @@ func TestW14BTestTaskAndCancelChain(t *testing.T) {
 	draft := &TestDraftSnapshot{ID: "acc-w14b-task", OwnerSystemAccountID: adminID, GroupID: "grp-x", ProviderCode: "gpt", Name: "w14b-task"}
 	task, err := env.store.CreateTestTask(ctx, TestTaskCreateInput{
 		AccountID: "acc-w14b-task", AccountName: "w14b-task",
-		ProviderProtocolProfileID: "prof-gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
+		ProtocolCode: "openai", ProtocolVersion: "v1",
 		AccountType: "api_key", Access: scope, Diagnostics: "full",
 		SessionID: session.ID, Model: "gpt-4o-mini", TestEndpointMode: "chat_json", Draft: draft,
 	})

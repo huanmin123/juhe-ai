@@ -65,7 +65,6 @@ const mediaJobsAdminPGFixtureSchema = `
       api_key_id text NOT NULL,
       owner_system_account_id text NOT NULL DEFAULT '',
       account_id text NOT NULL,
-      provider_protocol_profile_id text,
       upstream_job_id text NOT NULL,
       status text NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
       request_snapshot_json text NOT NULL DEFAULT '{}',

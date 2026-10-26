@@ -970,7 +970,6 @@ export interface AccountTestTask {
   accountId: string
   accountName: string
   providerCode: ProviderCode
-  providerProtocolProfileId?: string
   protocolCode?: string
   protocolVersion?: string
   type: AccountType
