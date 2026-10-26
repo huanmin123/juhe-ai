@@ -97,6 +97,24 @@ assertTrue(
     && accountMenuItems(pendingAccount).some((item) => item.key === 'fallback-on'),
   '待检查账户应允许直接设置超级优先或降级备用'
 )
+assertTrue(
+  accountMenuItems(accountFixture({ status: 'temporary_unavailable' })).some((item) => item.key === 'super-priority-on'),
+  '临时不可调用自有账户应允许预置超级优先（恢复可调度后自动生效）'
+)
+assertTrue(
+  !accountMenuItems(accountFixture({ status: 'temporary_unavailable' })).some((item) => item.key === 'fallback-on'),
+  '临时不可调用自有账户不放开降级备用新设入口'
+)
+const temporaryUnavailableWithSuperPriority = accountFixture({ status: 'temporary_unavailable', superPriorityEnabled: true })
+assertTrue(
+  accountMenuItems(temporaryUnavailableWithSuperPriority).some((item) => item.key === 'super-priority-off')
+    && accountMenuItems(temporaryUnavailableWithSuperPriority).every((item) => item.key !== 'super-priority-on'),
+  '临时不可调用账户已开启超级优先时只显示取消入口'
+)
+assertTrue(
+  !accountMenuItems(accountFixture({ status: 'temporary_unavailable', accessType: 'authorized', boundGroupId: 'grp_temp' })).some((item) => item.key === 'super-priority-on'),
+  '临时不可调用的授权账户仍不得新设超级优先'
+)
 const pendingHealthCheckFailedAccount = accountFixture({
   status: 'pending_test',
   lastHealthCheckAt: '2026-07-11T01:00:00.000Z',

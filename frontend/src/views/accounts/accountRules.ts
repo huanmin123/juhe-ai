@@ -417,7 +417,11 @@ function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountListIte
   const canEnableDispatchFlag = isAuthorizedAccount(account)
     ? canUseBoundAuthorizedAccount(account)
     : account.status === 'active' || account.status === 'pending_test'
-  if (canEnableDispatchFlag || account.superPriorityEnabled) {
+  // 超级优先是可保留的配置标记：临时不可调用的自有账户也允许预置，恢复可
+  // 调度后自动生效；降级备用仍按调度可用面放开（核心功能设计 超级优先节）。
+  const canEnableSuperPriority = canEnableDispatchFlag
+    || (!isAuthorizedAccount(account) && account.status === 'temporary_unavailable')
+  if (canEnableSuperPriority || account.superPriorityEnabled) {
     items.push({
       key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
       label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'

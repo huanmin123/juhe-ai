@@ -380,15 +380,22 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能设置调度标记')
         return
       }
-      if (enabled && account.status !== 'active' && account.status !== 'pending_test') {
-        message.warning('只有可调度或待检查状态的账户可以设置超级优先')
+      // 临时不可调用的自有账户允许预置超级优先：只写配置不改可用性，恢复
+      // 可调度后自动生效；授权账户维持实例可用面校验，不放开（核心功能设计
+      // 超级优先节）。
+      if (enabled && account.status !== 'active' && account.status !== 'pending_test'
+        && !(account.status === 'temporary_unavailable' && !isAuthorizedAccount(account))) {
+        message.warning('只有可调度、待检查或临时不可调用的账户可以设置超级优先')
         return
       }
       if (isAuthorizedAccount(account) && !account.boundGroupId) {
         message.warning('请先把授权账户绑定到你的分组')
         return
       }
-      await updateAccountState(account, { superPriorityEnabled: enabled }, enabled ? '已开启超级优先' : '已取消超级优先')
+      const superPrioritySuccessText = enabled
+        ? (account.status === 'temporary_unavailable' ? '已开启超级优先，账户恢复可调度后自动生效' : '已开启超级优先')
+        : '已取消超级优先'
+      await updateAccountState(account, { superPriorityEnabled: enabled }, superPrioritySuccessText)
       return
     }
     if (key === 'fallback-on' || key === 'fallback-off') {
