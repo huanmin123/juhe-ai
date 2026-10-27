@@ -55,6 +55,7 @@
 ## 私有环境资源
 
 - `/.local/` 是当前工作区的私有环境资源根目录，已由 `.gitignore` 忽略；其中的任何文件都不得 `git add`、提交、打包进发布产物或复制到 `docs/`。
+- `.local/project-resources` 只保存当前最新事实（现行部署形态、现行配置与凭据、现行手册），不留存历史备份、日期流水账（发布记录、操作时间线、巡检记录）或一次性过程产物；过期即删，不设归档。
 - 开发与生产资料统一放在 `.local/project-resources/`，仅供本机维护者和 Agent 在用户授权的范围内读取：
 
   ```text
@@ -69,14 +70,14 @@
       ├── README.md         # 范围、导航与当前待办
       ├── assets/           # 服务器资产台账（含 SSH 密钥）
       ├── database/         # 单机 PostgreSQL/Redis 事实与密钥留档
-      ├── issues/           # 当前形态生产问题记录
+      ├── backup/           # 生产备份机制与脚本镜像（203 主动拉）
       ├── logs/             # 日志查询口径
       └── runbooks/         # 国内单机 Docker 部署与运维（唯一手册）
   ```
 
 - `dev` 使用远端 `192.168.1.203` 的 PostgreSQL 数据库 `juhe_ai_sub2api_dev`、专用登录角色 `juhe_ai_sub2api_dev_app`，以及 cache/state/queue 三个 Redis 实例各自的 DB `9`；统一 namespace 是 `juhe-ai:dev`。真实连接配置在 `dev/env/shared.env`，初始化和加载入口在 `dev/runbooks/`。
 - `F:\juhe-ai-public-welfare\.local` 仅供目录设计参考；当前项目不读取或复用其中的数据库、Redis、连接串或命名空间。
-- `prod` 只保存当前唯一生产形态（国内单机 Docker，`103.36.63.105`）的私有资料：资产台账 `assets/国内单机-103.36.63.105.md`（含 SSH 密钥）、数据库事实 `database/国内单机-postgresql-redis.md`、唯一运维手册 `runbooks/国内单机Docker部署与运维.md`。旧 Mac + K3s + Edge 形态资料已于 2026-09-26 清理，清理前全量备份在 `.local/archive/project-resources-pre-cleanup-20260926.tar.gz`（确认无用后可删）。单机形态的变更通过 `docker/single-server/` 配置 + 上传发布；在当前任务获得明确授权时，允许在目标服务器上以受控方式执行限定的数据修复、回填和向前兼容的加法式 schema 变更（执行前先备份）。不允许把 Secret、env、logs、releases、backups 数据复制到本目录之外的任何位置。
+- `prod` 只保存当前唯一生产形态（国内单机 Docker，`103.36.63.105`）的私有资料：资产台账 `assets/国内单机-103.36.63.105.md`（含 SSH 密钥）、数据库事实 `database/国内单机-postgresql-redis.md`、唯一运维手册 `runbooks/国内单机Docker部署与运维.md`。旧 Mac + K3s + Edge 形态资料已清理，不另留备份。单机形态的变更通过 `docker/single-server/` 配置 + 上传发布；在当前任务获得明确授权时，允许在目标服务器上以受控方式执行限定的数据修复、回填和向前兼容的加法式 schema 变更（执行前先备份）。不允许把 Secret、env、logs、releases、backups 数据复制到本目录之外的任何位置。
 - 操作 `.local` 后必须验证 `git check-ignore -v --no-index .local/<探针路径>` 命中忽略规则，并确认 `git ls-files -- .local` 没有输出。
 
 ## 事件导航
