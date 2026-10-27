@@ -202,7 +202,6 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	t.Cleanup(assembly.closeStores)
 	// PG stats 读模型（loader 的时区源）。
 	statsStore, err := statsverify.OpenStore(statsverify.StoreConfig{
-		Mode:                 statsverify.StorePostgres,
 		PostgresURL:          pgURL,
 		PostgresMaxOpenConns: 4,
 		PostgresMaxIdleConns: 2,

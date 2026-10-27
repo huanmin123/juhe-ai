@@ -1,4 +1,4 @@
-// Package businessauth exposes the Gateway-owned Business SQLite session
+// Package businessauth exposes the Gateway-owned business session
 // lifecycle. It is deliberately a thin in-process adapter over the existing
 // modelcheckauth implementation: credentials are verified and fenced there,
 // while this package adds the explicit Business-owner handoff gate required
@@ -16,11 +16,11 @@ import (
 )
 
 var (
-	ErrOwnerGate = errors.New("Business SQLite owner handoff gate is not satisfied")
+	ErrOwnerGate = errors.New("business owner handoff gate is not satisfied")
 )
 
 // OwnerGate is the immutable evidence captured when Gateway becomes the
-// Business SQLite writer. Every mutating operation requires all fields to be
+// Business writer. Every mutating operation requires all fields to be
 // true; a partial handoff fails closed.
 type OwnerGate struct {
 	Confirmed         bool

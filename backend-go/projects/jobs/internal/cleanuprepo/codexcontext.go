@@ -11,12 +11,12 @@ import (
 
 // codex-context-state.repository.ts 的清理侧移植：过期会话批清理
 // （cleanupExpiredCodexContextStates / Async）与 storage cleanup queue 结算
-// （settleCodexContextStorageCleanup / Async）。SQLite 为多分片库
-// （state-<i>.sqlite3），PostgreSQL 为 juhe_codex_context 单 schema。
+// （settleCodexContextStorageCleanup / Async）。清理面为 juhe_codex_context
+// 单 schema（SQLite 多分片库随存储形态退役删除）。
 
 // CodexContextStore 承载 codex context 状态清理访问。
 type CodexContextStore struct {
-	// PG 是 postgres 模式的共享句柄。
+	// PG 是共享 PostgreSQL 句柄。
 	PG *DB
 	// Now 注入时钟（nil 取 time.Now）。
 	Now func() time.Time

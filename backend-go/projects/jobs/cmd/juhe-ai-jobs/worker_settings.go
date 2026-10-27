@@ -84,7 +84,6 @@ func (a *workerAssembly) refreshUpstreamClientVersionOverrides(source *jobssetti
 func (a *workerAssembly) probeSettingsSource(business *businessDB) accountquality.SettingsNumber {
 	source := jobssettings.NewSource(jobssettings.Options{
 		DB:   business.db,
-		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	logger := a.logger

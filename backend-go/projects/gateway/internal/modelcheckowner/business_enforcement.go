@@ -13,7 +13,7 @@ import (
 
 // BusinessEnforcementApplier is the narrow Business-owner mutation port used
 // by J3b quality projection. It must be opened only after the complete
-// Business SQLite writer handoff (or an equivalent PostgreSQL owner grant).
+// Business writer handoff (or an equivalent PostgreSQL owner grant).
 // The adapter performs account status and enforcement persistence in one
 // transaction and never talks to Node or another process.
 type BusinessEnforcementApplier struct {

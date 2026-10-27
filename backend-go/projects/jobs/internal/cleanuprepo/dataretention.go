@@ -512,33 +512,6 @@ func (s *UsageRecordsStore) missingCursorBlockedReason() string {
 	return "使用记录清理的统计聚合安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试"
 }
 
-func (s *UsageRecordsStore) sqliteHasRecordsBefore(ctx context.Context, cutoffCreatedAt string) (bool, error) {
-	query := s.Catalog.Bind(`
-      SELECT ue.usage_id
-      FROM usage_record_shard_entries ue
-      JOIN usage_record_shards s ON s.shard_key = ue.shard_key
-      WHERE s.status = 'active'
-        AND ue.created_at < ?
-      ORDER BY ue.created_at ASC, ue.usage_id ASC
-      LIMIT 1
-	`)
-	rows, err := s.Catalog.QueryContext(ctx, query, cutoffCreatedAt)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	found := false
-	for rows.Next() {
-		var usageID sql.NullString
-		if err := rows.Scan(&usageID); err != nil {
-			return false, err
-		}
-		found = usageID.String != ""
-		break
-	}
-	return found, rows.Err()
-}
-
 type ShardCleanupRow struct {
 	ID        string
 	CreatedAt string

@@ -46,7 +46,6 @@ func (a *workerAssembly) wireScheduleSettings() error {
 	}
 	source := jobssettings.NewSource(jobssettings.Options{
 		DB:   handle.DB(),
-		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	a.scheduleIntervals = func(jobName string) (time.Duration, bool) {

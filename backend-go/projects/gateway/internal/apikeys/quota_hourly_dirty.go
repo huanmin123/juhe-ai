@@ -7,9 +7,8 @@ package apikeys
 // 绑定 upsert 之后调用 markPostgresRequestQuotaHourlyWindowDirtyScopes
 // （:384-405，:105 调用点），让 jobs 侧增量消费
 // （jobs internal/statsagg claimQuotaHourlyWindowDirtyScopes）立即重算该
-// scope 的 usage_quota_hourly_windows；SQLite 分支（:53-77）不打脏——SQLite
-// 调度走全量重建（refreshUsageQuotaHourlyWindowsCache），脏范围表在 SQLite
-// 无消费者，写脏只会积累垃圾行。
+// scope 的 usage_quota_hourly_windows（SQLite 全量重建分支随存储形态退役
+// 删除，现行只有 PG 增量消费路径）。
 //
 // 失败契约：打脏是提交后的尾随效果，失败不回滚主写，落 warn 告警
 // （与既有失效面同一位置：主事务提交成功后才执行）。
@@ -19,17 +18,16 @@ import (
 	"log/slog"
 )
 
-// statsTable qualifies a juhe_stats table (PostgreSQL schema-qualified, bare
-// on SQLite), matching the authz/accounts stats table helpers.
+// statsTable qualifies a juhe_stats table (PostgreSQL schema-qualified), matching
+// the authz/accounts stats table helpers.
 func (s *Store) statsTable(name string) string {
 	return "juhe_stats." + name
 }
 
 // markQuotaHourlyWindowDirtyScope mirrors
 // markPostgresRequestQuotaHourlyWindowDirtyScopes (:384-405) for one api_key
-// scope: generation-counting upsert into the stats dirty scope table. Callable
-// on either dialect (SQLite tests ATTACH juhe_stats); production callers gate
-// on s.pg via markQuotaHourlyWindowDirtyScopeAfterCommit.
+// scope: generation-counting upsert into the stats dirty scope table. Production
+// callers gate on s.pg via markQuotaHourlyWindowDirtyScopeAfterCommit.
 func (s *Store) markQuotaHourlyWindowDirtyScope(ctx context.Context, q queryer, ownerID, apiKeyID, timestamp string) error {
 	query := `INSERT INTO ` + s.statsTable("usage_quota_hourly_window_dirty_scopes") + ` (
 		system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at

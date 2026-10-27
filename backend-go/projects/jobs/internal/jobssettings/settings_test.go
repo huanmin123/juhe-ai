@@ -3,7 +3,7 @@
 // guards reproduce the Node error messages, the failed-read degradation
 // warns, and the 60s window shields repeat reads. 夹具走 pgtestkit 隔离
 // PG 测试库 + juhe_business.system_settings（生产 schema 前缀），Source
-// 统一以 Mode: Postgres 生产模式装配。
+// 统一以生产模式（PG 单形态）装配。
 //
 // PG 模式失败语义（settings.go 包注释）：任何设置读失败（含表缺失）都
 // 告警 background_job_settings_snapshot_refresh_failed 并回落默认值；
@@ -74,7 +74,7 @@ func insertSetting(t *testing.T, db *sql.DB, key, valueJSON string) {
 }
 
 func newTestSource(db *sql.DB, warn *warnCollector, now func() time.Time) *Source {
-	return NewSource(Options{DB: db, Mode: Postgres, Warn: warn.warn, Now: now})
+	return NewSource(Options{DB: db, Warn: warn.warn, Now: now})
 }
 
 func TestSourceStoredValueWins(t *testing.T) {

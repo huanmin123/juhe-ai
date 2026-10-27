@@ -190,8 +190,8 @@ func buildProxyTestVendorTargets() []proxyTestTarget {
 
 // proxyTestVendorTargetsSQL 把 registry target 全集内联为 SELECT ... UNION ALL
 // 派生表（provider/profile_id/target_url），运行时与 vendors.enabled 相交。
-// 用 UNION ALL 而不是 JOIN (VALUES ...) AS t(...)：后者 SQLite 不支持列别名
-// （开发实例跑 SQLite，生产跑 PostgreSQL，语句必须双方言可执行）。
+// 用 UNION ALL 而不是 JOIN (VALUES ...) AS t(...)，避免依赖列别名派生表的
+// 支持度。
 func proxyTestVendorTargetsSQL() string {
 	rows := make([]string, 0, len(proxyTestVendorTargets))
 	for i, target := range proxyTestVendorTargets {

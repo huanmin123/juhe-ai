@@ -1,9 +1,13 @@
 // Package jobssettings implements the background-jobs system_settings read
 // model, ported from modules/background/background-jobs.ts
-// (settingsNumber:855-871 + sqliteBackgroundJobSettingValue /
-// postgresBackgroundJobSettingValue) on top of storage/settings.repository.ts
-// (system_settings, system_account_id='sys_admin', JSON value_json) and
+// (settingsNumber:855-871 + postgresBackgroundJobSettingValue) on top of
+// storage/settings.repository.ts (system_settings,
+// system_account_id='sys_admin', JSON value_json) and
 // storage/schema-defaults.ts DEFAULT_SYSTEM_SETTINGS.
+//
+// 2026-10-27 SQLite 方言臂物理删除（存储形态唯一化收尾）：原
+// sqliteBackgroundJobSettingValue 分支、Mode 开关与 SQLite 查询串随 SQLite
+// 存储形态退役移除，本包收敛为 PostgreSQL 单形态。
 //
 // Semantics kept from Node:
 //   - a stored value must decode to a finite integer
@@ -12,19 +16,14 @@
 //   - a missing row falls back to the DEFAULT_SYSTEM_SETTINGS value
 //     (applyCompatibleSystemSettingDefaults guarantees the key exists in
 //     Node); the default travels through the same integer/bounds validation;
-//   - SQLite: a missing system_settings table degrades to the defaults with a
-//     one-time warn (sqliteBackgroundJobSettingValue
-//     isMissingSystemSettingsTableError); every other read error propagates
-//     and fails the job;
-//   - PostgreSQL: a failed settings read degrades to the defaults with a warn
+//   - a failed settings read degrades to the defaults with a warn
 //     (postgresBackgroundJobSettingValue snapshot-refresh failure) instead of
 //     failing the job.
 //
 // Deviation (deliberate): the values are cached per key for 60s — the Node
-// PostgreSQL path keeps a 60s backgroundJobSettingsSnapshotTtlMs snapshot and
-// the SQLite path an in-process settings cache; a per-key TTL window keeps the
-// same staleness bound without wiring the cross-process invalidation the
-// settings writer owns.
+// PostgreSQL path keeps a 60s backgroundJobSettingsSnapshotTtlMs snapshot; a
+// per-key TTL window keeps the same staleness bound without wiring the
+// cross-process invalidation the settings writer owns.
 package jobssettings
 
 import (
@@ -45,46 +44,22 @@ const SettingsSnapshotTTL = 60 * time.Second
 // SystemSettingsAccountID mirrors SYSTEM_SETTINGS_ACCOUNT_ID.
 const SystemSettingsAccountID = "sys_admin"
 
-// systemSettingSelectSQLite / systemSettingSelectPostgres 是单键设置读取的
-// 唯二查询串（readValue 与 readValueStrict 共用，禁止在调用点内联 SQL）。
-// 实参顺序固定为 (system_account_id, key)：SQLite 的 ? 按位置绑定，PG 的
-// $1/$2 必须与之对应——$1 = system_account_id、$2 = key。
+// systemSettingSelect 是单键设置读取的唯一查询串（readValue 与
+// readValueStrict 共用，禁止在调用点内联 SQL）。实参顺序固定为
+// (system_account_id, key)：$1 = system_account_id、$2 = key。
 //
-// BUG-0297：PG 分支曾写反为 system_account_id = $2 AND key = $1，与实参
+// BUG-0297：本查询曾写反为 system_account_id = $2 AND key = $1，与实参
 // (SystemSettingsAccountID, key) 错配，PG 下恒 ErrNoRows 回退默认值，jobs
-// 进程全部经这两条路径的设置读取在生产从未读到真实值。SQLite 分支不受影响，
-// 测试因此全绿未暴露。占位符映射由 TestPostgresSettingSelectPlaceholderOrder
-// 锁定。
-const (
-	systemSettingSelectSQLite   = `SELECT value_json FROM system_settings WHERE system_account_id = ? AND key = ? LIMIT 1`
-	systemSettingSelectPostgres = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = $1 AND key = $2 LIMIT 1`
-)
-
-// systemSettingSelectQuery 按模式返回单键设置查询串。
-func systemSettingSelectQuery(mode Mode) string {
-	if mode == Postgres {
-		return systemSettingSelectPostgres
-	}
-	return systemSettingSelectSQLite
-}
-
-// Mode selects the table qualifier and the failure semantics.
-type Mode int
-
-const (
-	// SQLite reads the business database (system_settings without schema).
-	SQLite Mode = iota
-	// Postgres reads juhe_business.system_settings.
-	Postgres
-)
+// 进程全部经这条路径的设置读取在生产从未读到真实值，测试因此全绿未暴露。
+// 占位符映射由 TestPostgresSettingSelectPlaceholderOrder 锁定。
+const systemSettingSelect = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = $1 AND key = $2 LIMIT 1`
 
 // WarnFunc receives the Node logger.warn payloads (event fields + message).
 type WarnFunc func(event string, fields map[string]any, message string)
 
 // Options carries the read-model collaborators.
 type Options struct {
-	DB   *sql.DB
-	Mode Mode
+	DB *sql.DB
 	// Warn receives the default-fallback warnings; nil drops them.
 	Warn WarnFunc
 	// Now overrides the cache clock; nil falls back to time.Now.
@@ -95,12 +70,10 @@ type Options struct {
 
 // Source is the read model one background worker keeps per database handle.
 type Source struct {
-	db          *sql.DB
-	mode        Mode
-	warn        WarnFunc
-	now         func() time.Time
-	ttl         time.Duration
-	missingOnce sync.Once
+	db   *sql.DB
+	warn WarnFunc
+	now  func() time.Time
+	ttl  time.Duration
 
 	mutex    sync.Mutex
 	loadedAt map[string]time.Time
@@ -119,7 +92,6 @@ func NewSource(options Options) *Source {
 	}
 	return &Source{
 		db:       options.DB,
-		mode:     options.Mode,
 		warn:     options.Warn,
 		now:      now,
 		ttl:      ttl,
@@ -219,11 +191,10 @@ func (s *Source) UpstreamClientVersionAutoOverrides(ctx context.Context) (map[st
 }
 
 // readValueStrict 直读一行设置：缺行回退 DEFAULT_SYSTEM_SETTINGS，其余
-// 读错误原样返回（不走 readValue 的 PG 降级/SQLite 缺表降级路径）。
+// 读错误原样返回（不走 readValue 的快照刷新失败降级路径）。
 func (s *Source) readValueStrict(ctx context.Context, key string) (any, error) {
-	query := systemSettingSelectQuery(s.mode)
 	var rawValue sql.NullString
-	readErr := s.db.QueryRowContext(ctx, query, SystemSettingsAccountID, key).Scan(&rawValue)
+	readErr := s.db.QueryRowContext(ctx, systemSettingSelect, SystemSettingsAccountID, key).Scan(&rawValue)
 	if readErr == sql.ErrNoRows {
 		return DefaultSystemSettings[key], nil
 	}
@@ -264,9 +235,8 @@ func (s *Source) settingValue(ctx context.Context, key string) (any, error) {
 }
 
 func (s *Source) readValue(ctx context.Context, key string) (any, error) {
-	query := systemSettingSelectQuery(s.mode)
 	var rawValue sql.NullString
-	readErr := s.db.QueryRowContext(ctx, query, SystemSettingsAccountID, key).Scan(&rawValue)
+	readErr := s.db.QueryRowContext(ctx, systemSettingSelect, SystemSettingsAccountID, key).Scan(&rawValue)
 	if readErr == nil || readErr == sql.ErrNoRows {
 		// A missing row falls back to DEFAULT_SYSTEM_SETTINGS exactly like
 		// Node's applyCompatibleSystemSettingDefaults.
@@ -279,23 +249,11 @@ func (s *Source) readValue(ctx context.Context, key string) (any, error) {
 		}
 		return DefaultSystemSettings[key], nil
 	}
-	if isMissingSystemSettingsTableError(readErr) {
-		// sqliteBackgroundJobSettingValue: the settings table may not exist
-		// yet at job startup — one warn, then the defaults.
-		s.missingOnce.Do(func() {
-			s.warnDefault("background_job_settings_table_missing_default",
-				"后台任务启动时系统设置表尚未初始化，将临时使用默认设置", readErr)
-		})
-		return DefaultSystemSettings[key], nil
-	}
-	if s.mode == Postgres {
-		// postgresBackgroundJobSettingValue: a failed snapshot refresh warns
-		// and keeps serving the defaults.
-		s.warnDefault("background_job_settings_snapshot_refresh_failed",
-			"后台任务系统设置快照刷新失败，将临时使用默认设置", readErr)
-		return DefaultSystemSettings[key], nil
-	}
-	return nil, readErr
+	// postgresBackgroundJobSettingValue: a failed snapshot refresh warns
+	// and keeps serving the defaults.
+	s.warnDefault("background_job_settings_snapshot_refresh_failed",
+		"后台任务系统设置快照刷新失败，将临时使用默认设置", readErr)
+	return DefaultSystemSettings[key], nil
 }
 
 func (s *Source) warnDefault(event, message string, err error) {
@@ -303,11 +261,6 @@ func (s *Source) warnDefault(event, message string, err error) {
 		return
 	}
 	s.warn(event, map[string]any{"error": err.Error()}, message)
-}
-
-// isMissingSystemSettingsTableError mirrors isMissingSystemSettingsTableError.
-func isMissingSystemSettingsTableError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "no such table: system_settings")
 }
 
 // DefaultNumber returns the DEFAULT_SYSTEM_SETTINGS numeric default clamped

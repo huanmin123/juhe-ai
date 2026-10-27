@@ -40,7 +40,6 @@ func (a *workerAssembly) wireVersionTrackingFamily(_ context.Context) error {
 	a.addCloser(business.close)
 	source := jobssettings.NewSource(jobssettings.Options{
 		DB:   business.db,
-		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	client := &http.Client{Timeout: versiontracking.SourceTimeout}

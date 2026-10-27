@@ -1,7 +1,6 @@
 package usagewriter
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,41 +54,6 @@ func TestStableShardIDDistribution(t *testing.T) {
 	}
 }
 
-func TestUsageRecordShardLocationForRecord(t *testing.T) {
-	root := string(filepath.Separator) + filepath.Join("tmp", "shards")
-	// Generated ids carry bucket + shard in the id itself.
-	id := "usage_20260102_s07_1767225600000_abc"
-	location, err := UsageRecordShardLocationForRecord(id, "2026-09-09T00:00:00.000Z", 16, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if location.ShardKey != "20260102:s07" {
-		t.Fatalf("shardKey = %q", location.ShardKey)
-	}
-	if location.BucketDate != "2026-01-02" || location.ShardID != 7 {
-		t.Fatalf("location = %+v", location)
-	}
-	wantPath := filepath.Join(root, "2026", "01", "02", "usage-20260102-s07.sqlite3")
-	if location.FilePath != wantPath {
-		t.Fatalf("filePath = %q, want %q", location.FilePath, wantPath)
-	}
-
-	// Opaque ids fall back to the createdAt bucket and the hash of the id.
-	location, err = UsageRecordShardLocationForRecord("opaque-id", "2026-05-06T07:08:09.000Z", 16, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantShard := StableShardID("opaque-id", 16)
-	if location.ShardKey != "20260506:s"+FormatShardID(wantShard) {
-		t.Fatalf("fallback shardKey = %q", location.ShardKey)
-	}
-
-	// Invalid createdAt errors.
-	if _, err := UsageRecordShardLocationForRecord("opaque-id", "bad", 16, root); err == nil {
-		t.Fatal("expected createdAt error")
-	}
-}
-
 func TestUsageRecordLogicalShardLocationForPostgres(t *testing.T) {
 	location, err := UsageRecordLogicalShardLocationForPostgres("usage_20260102_s007_x", "2026-01-02T00:00:00.000Z", 16)
 	if err != nil {
@@ -131,16 +95,5 @@ func TestSanitizeShardEntropy(t *testing.T) {
 	got := SanitizeShardEntropy("ab-cd/ef gh!ij@kl#mn$op%qr^st&uv*wx()yz01")
 	if got != "abcdefghijklmnopqrstuvwx" {
 		t.Fatalf("sanitized = %q", got)
-	}
-}
-
-func TestUsageRecordShardLocationFromKey(t *testing.T) {
-	root := string(filepath.Separator) + "shards"
-	location, ok := UsageRecordShardLocationFromKey("20260102:s03", root)
-	if !ok || location.ShardID != 3 || location.BucketDateKey != "20260102" {
-		t.Fatalf("location = %+v, ok = %v", location, ok)
-	}
-	if _, ok := UsageRecordShardLocationFromKey("bogus", root); ok {
-		t.Fatal("bogus key should not parse")
 	}
 }

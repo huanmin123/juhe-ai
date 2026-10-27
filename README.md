@@ -1,6 +1,6 @@
 # juhe-ai（聚合 AI）
 
-![Go](https://img.shields.io/badge/Go-1.26-00ADD8) ![Vue](https://img.shields.io/badge/Vue-3-42b883) ![License](https://img.shields.io/badge/License-Apache--2.0-blue) ![Storage](https://img.shields.io/badge/存储-SQLite%20%7C%20PostgreSQL%20%2B%20Redis-green)
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8) ![Vue](https://img.shields.io/badge/Vue-3-42b883) ![License](https://img.shields.io/badge/License-Apache--2.0-blue) ![Storage](https://img.shields.io/badge/存储-PostgreSQL%20%2B%20Redis-blue)
 
 **轻量 OpenAI 兼容中转与账号调度网关**：客户端长期固定一个本地入口和一个本地 API Key；账号凭据、模型能力、分组、路由、授权、用量与审计统一留在后台管理。
 
@@ -14,7 +14,7 @@
 - 上游限流、冷却、换号、重新授权频繁，不想每次都去改客户端 Base URL 和 Key。
 - 需要把不同用户、团队的用量隔离，并给 API Key / 授权设置美元额度。
 - 需要看清每一次请求：命中了哪个账号、为什么选它、失败在链路哪一环。
-- 优先从单机轻量部署开始（默认 SQLite 零外部依赖），需要时再切 PostgreSQL + Redis。
+- 优先从单机轻量部署开始（PostgreSQL + Redis），配置面与依赖保持精简。
 
 ## 与 Sub2API / New API / CLIProxyAPI 的区别
 
@@ -24,7 +24,7 @@
 | --- | --- | --- | --- | --- |
 | 定位 | 轻量账号调度网关 + 完整管理后台 | AI API 网关平台（订阅配额分发与运营） | 大模型网关与 AI 资产管理 | 面向 CLI 的多协议 OAuth 代理 |
 | 最适合 | 多个上游账号，给客户端一个稳定入口，后台管得住、查得清 | 做平台、拼车分发、Token 级计费 | 多模型、多渠道资产管理与渠道运营 | 快速把多种 CLI OAuth 变成 API |
-| 部署 | 2 个 Go 常驻进程；默认 SQLite，可选 PostgreSQL + Redis | Docker Compose + PostgreSQL + Redis | Docker 单容器起步 | 单二进制 / 容器 |
+| 部署 | 2 个 Go 常驻进程；PostgreSQL + Redis | Docker Compose + PostgreSQL + Redis | Docker 单容器起步 | 单二进制 / 容器 |
 | 计费 / 支付 | 美元额度与用量统计，无支付 | Token 级计费、内置支付 | 充值额度、商业组件 | 无 |
 | 调度重点 | 12 类实时信号多因子调度 + 语义提交边界 + 自愈闭环 | 智能调度、粘性会话、并发速率限制 | 渠道管理、格式转换面最宽 | 多账户轮询 |
 | 排障能力 | 使用记录 + 原始审计全链路内置 | 平台级日志统计 | 平台级日志看板 | 统计依赖生态项目 |
@@ -148,8 +148,7 @@
 
 ### 存储与部署形态
 
-- **standalone（默认）**：纯 SQLite，多库按职责拆分，零外部依赖，单机即用。
-- **performance（显式开启）**：PostgreSQL + Redis（缓存 / 运行态 / 队列分实例），面向更高并发。
+- **唯一存储形态**：PostgreSQL + Redis（缓存 / 运行态 / 队列分实例）；SQLite 与内存本地模式已于 2026-10-24/25 物理退役，不再提供。
 - 常驻进程只有两个 Go 二进制：`juhe-ai-gateway`（唯一 HTTP 入口）+ `juhe-ai-jobs`（后台任务）；`juhe-ai-maintenance` 仅作一次性 schema / seed CLI。
 
 ## 快速开始
@@ -212,8 +211,7 @@ pnpm package:release:windows
 
 ## 部署
 
-- 默认单机：SQLite standalone，两个 Go 常驻进程即可运行。
-- 生产 / 更高并发：PostgreSQL + Redis performance 模式，参考 [Docker Compose 单机部署](docker/single-server/README.md)（配置契约权威）。
+- 单机部署：PostgreSQL + Redis，两个 Go 常驻进程即可运行，参考 [Docker Compose 单机部署](docker/single-server/README.md)（配置契约权威）。
 - 场景入口（Windows / Linux / macOS、代理、HTTPS、反向代理、备份迁移、排障）：[部署文档](docs/deploy/README.md) 与 [部署指南](docs/deploy/部署指南.md)；systemd / 裸进程直跑差异见 [Linux 直跑说明](docs/deploy/linux/README.md)。
 
 ## 架构一览
@@ -246,7 +244,7 @@ flowchart LR
     A --> U4
 
     J["🔁 juhe-ai-jobs<br/>健康探针 · 冷却复测 · 统计 · 审计落库"]
-    D[("🗄️ SQLite（默认）<br/>或 PostgreSQL + Redis")]
+    D[("🗄️ PostgreSQL + Redis")]
 
     J -.->|"后台恢复 / 复测"| A
     A --- D

@@ -46,7 +46,7 @@ func TestW9HSourceArms(t *testing.T) {
 	db := w9hSettingsDB(t)
 
 	// system_settings 表缺失：PG 模式按快照刷新失败降级默认值并告警。
-	source := NewSource(Options{DB: db, Mode: Postgres, Warn: func(event string, _ map[string]any, message string) {
+	source := NewSource(Options{DB: db, Warn: func(event string, _ map[string]any, message string) {
 		warnings = append(warnings, event+"|"+message)
 	}, Now: func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }})
 	value, err := source.Number(ctx, "statsAggregationIntervalSeconds", 1, 100000)
@@ -66,7 +66,7 @@ func TestW9HSourceArms(t *testing.T) {
 	}
 
 	// nil Warn 也不得崩（缺表降级分支）。
-	quiet := NewSource(Options{DB: db, Mode: Postgres})
+	quiet := NewSource(Options{DB: db})
 	if _, err := quiet.Number(ctx, "statsAggregationIntervalSeconds", 1, 100000); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestW9HSourceArms(t *testing.T) {
 	// 每次读取推进一分钟，避免 60s 快照窗口吞掉后续行变更。
 	tick := 0
 	clock := func() time.Time { tick++; return time.Date(2026, 1, 1, 0, tick, 0, 0, time.UTC) }
-	populated := NewSource(Options{DB: db, Mode: Postgres, Warn: func(event string, fields map[string]any, message string) {
+	populated := NewSource(Options{DB: db, Warn: func(event string, fields map[string]any, message string) {
 		t.Fatalf("populated table must not warn: %s %v %s", event, fields, message)
 	}, Now: clock})
 	if value, err := populated.Number(ctx, "statsAggregationIntervalSeconds", 1, 100000); err != nil || value <= 0 {

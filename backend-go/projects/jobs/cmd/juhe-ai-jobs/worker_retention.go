@@ -426,7 +426,6 @@ func newRetentionSettingsRuntime(business *sql.DB, logger *slog.Logger) *retenti
 	return &retentionSettingsRuntime{
 		source: jobssettings.NewSource(jobssettings.Options{
 			DB:   business,
-			Mode: jobssettings.Postgres,
 			Warn: jobssettingsWarn(logger),
 		}),
 		db:   business,

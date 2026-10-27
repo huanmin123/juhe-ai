@@ -8,10 +8,9 @@ import (
 	"time"
 )
 
-// SQL value coercion helpers. The PostgreSQL mode reads the externally
-// provisioned juhe_stats/juhe_business schemas where timestamps are
-// TIMESTAMPTZ and money columns are NUMERIC; the SQLite mode stores the
-// RFC3339 text Node writes. All helpers accept either representation.
+// SQL value coercion helpers. The externally provisioned
+// juhe_stats/juhe_business schemas carry TIMESTAMPTZ timestamps and NUMERIC
+// money columns; helpers also accept RFC3339 text for legacy row shapes.
 
 // sqlTime converts a scanned timestamp cell into a UTC time.
 func sqlTime(value any) (time.Time, error) {

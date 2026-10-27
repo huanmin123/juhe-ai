@@ -1,7 +1,7 @@
 // BUG-0297 回归：PG 单键设置查询的占位符必须与实参顺序
 // QueryRowContext(ctx, query, SystemSettingsAccountID, key) 对齐——
 // $1 = system_account_id、$2 = key。曾写反为 $2/$1，PG 下查询条件互换、
-// 恒 ErrNoRows 回退默认值，SQLite（? 按位置绑定）测试全绿未能暴露。
+// 恒 ErrNoRows 回退默认值，测试全绿未能暴露。
 //
 // 本文件用脚本化 driver 捕获实际下发的 SQL 与实参，断言：
 //   - PG 查询串的占位符映射为 system_account_id=$1、key=$2（字符串钉桩）；
@@ -142,7 +142,7 @@ func TestPostgresSettingSelectPlaceholderOrder(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db, capture := newPGPlaceholderDB(t)
-			source := NewSource(Options{DB: db, Mode: Postgres, Now: func() time.Time { return time.Unix(0, 0) }})
+			source := NewSource(Options{DB: db, Now: func() time.Time { return time.Unix(0, 0) }})
 			if err := tc.read(source); err != nil {
 				t.Fatalf("缺行回退默认不应报错: %v", err)
 			}
@@ -151,20 +151,13 @@ func TestPostgresSettingSelectPlaceholderOrder(t *testing.T) {
 	}
 }
 
-// TestSystemSettingSelectQueryConstants 直接钉桩包级查询常量：PG 占位符
-// 映射与 SQLite 位置参数形状，防止调用点绕过 systemSettingSelectQuery。
-func TestSystemSettingSelectQueryConstants(t *testing.T) {
-	if got := systemSettingSelectQuery(Postgres); got != pgPlaceholderQuery {
-		t.Fatalf("Postgres 查询常量漂移: %s", got)
+// TestSystemSettingSelectConstants 直接钉桩包级查询常量：PG 占位符映射，
+// 防止调用点绕过 systemSettingSelect 内联 SQL。
+func TestSystemSettingSelectConstants(t *testing.T) {
+	if got := systemSettingSelect; got != pgPlaceholderQuery {
+		t.Fatalf("PG 查询常量漂移: %s", got)
 	}
-	sqliteQuery := systemSettingSelectQuery(SQLite)
-	if strings.Contains(sqliteQuery, "$") {
-		t.Fatalf("SQLite 查询不得含 PG 占位符: %s", sqliteQuery)
-	}
-	if !strings.Contains(sqliteQuery, "system_account_id = ? AND key = ?") {
-		t.Fatalf("SQLite 查询占位符顺序漂移: %s", sqliteQuery)
-	}
-	if systemSettingSelectQuery(Mode(9)) != sqliteQuery {
-		t.Fatal("未知模式必须回落 SQLite 查询（保持既有行为）")
+	if !strings.Contains(systemSettingSelect, "system_account_id = $1") || !strings.Contains(systemSettingSelect, "key = $2") {
+		t.Fatalf("PG 查询占位符映射漂移: %s", systemSettingSelect)
 	}
 }

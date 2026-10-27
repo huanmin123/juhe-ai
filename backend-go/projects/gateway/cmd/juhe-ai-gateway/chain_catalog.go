@@ -304,9 +304,8 @@ func (s *chainCatalogSource) builtinCatalogQuery(input gatewayruntimecache.Model
 
 // customCatalogQuery mirrors listCustomProviderModelsForCatalog: the
 // global/personal scope window over models across the source vendor codes
-// （owner 可见性按 system_account_id）。The model ordering is dual-dialect like
-// the Node read: SQLite orders by `public_model COLLATE NOCASE`, PostgreSQL
-// has no such collation and orders by `lower(public_model)`.
+// （owner 可见性按 system_account_id）。Model ordering is case-insensitive
+// via `lower(public_model)` (PostgreSQL).
 func (s *chainCatalogSource) customCatalogQuery(input gatewayruntimecache.ModelCatalogListOptions, now string, codes []string) (string, []any) {
 	clauses := []string{"vendor_code IN (" + chainCatalogPlaceholders(len(codes)) + ")"}
 	args := chainCatalogCodeArgs(codes)
@@ -794,8 +793,8 @@ func catalogRowString(value any) string {
 	return text
 }
 
-// catalogRowInt64Ptr reads a nullable integer row value; SQLite decodes
-// INTEGER as float64/int64 and PostgreSQL as int64.
+// catalogRowInt64Ptr reads a nullable integer row value (PostgreSQL int64;
+// float64 accepted for legacy row shapes).
 func catalogRowInt64Ptr(value any) *int64 {
 	switch typed := value.(type) {
 	case float64:
@@ -876,8 +875,8 @@ func scanCatalogRows(rows *sql.Rows, columns [][2]string, decorate func(map[stri
 	return items, rows.Err()
 }
 
-// catalogBoolColumns are the boolean table columns the SQLite driver surfaces
-// as integers (0/1) and the item JSON shape expects as bools.
+// catalogBoolColumns are the boolean table columns surfaced as 0/1 integers by
+// the driver and expected as bools by the item JSON shape.
 var catalogBoolColumns = map[string]bool{
 	"supportsPromptCaching":                   true,
 	"supportsServiceTier":                     true,
@@ -885,8 +884,8 @@ var catalogBoolColumns = map[string]bool{
 	"longContextInputTokenThresholdInclusive": true,
 }
 
-// catalogBoolValue renders 0/1 integers (SQLite ints decode as float64) into
-// JSON bools; NULL stays absent.
+// catalogBoolValue renders 0/1 integers (decoded as int64/float64) into JSON
+// bools; NULL stays absent.
 func catalogBoolValue(value any) any {
 	switch typed := value.(type) {
 	case float64:
@@ -904,7 +903,7 @@ func catalogBoolValue(value any) any {
 
 // normalizeCatalogValue renders SQL values into the JSON shapes the item
 // decode expects (JSON text columns decode through a second pass; numerics
-// arrive as float64 from SQLite; booleans arrive as int).
+// may arrive as float64; booleans arrive as int).
 func normalizeCatalogValue(value any) any {
 	switch typed := value.(type) {
 	case []byte:

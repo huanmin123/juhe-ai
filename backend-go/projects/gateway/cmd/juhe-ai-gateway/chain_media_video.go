@@ -927,7 +927,7 @@ func (e *mediaJobProxyUnavailableError) Error() string { return e.message }
 // 出站，不回落直连）。占位符裸 `?` 与 hydrateAccount 同先例（PG 侧由
 // sqldialect driver 兜底改写 $n）；表前缀 PG 方言为 juhe_business.
 // proxy_profiles。enabled 列 NullBool 扫描沿 resolveProxyURLsForProfiles 的
-// 既有注释（PG boolean / sqlite INTEGER 双方言可扫）。
+// PG boolean 列经 database/sql 可扫（int64 0/1 同样接受）。
 func (m *mediaJobsRuntime) resolveMediaJobAccountProxyURL(ctx context.Context, proxyProfileID string) (string, error) {
 	profileID := strings.TrimSpace(proxyProfileID)
 	if profileID == "" {

@@ -41,12 +41,12 @@ type BusinessForeignKeySpec struct {
 	OnUpdate   string   `json:"onUpdate,omitempty"`
 }
 
-// BusinessSQLiteSchemaVersion changes whenever Gateway starts depending on a
+// BusinessSchemaVersion changes whenever Gateway starts depending on a
 // new table, column, index, or foreign key. This is a contract identifier,
 // not a migration instruction; maintenance never creates missing objects at
 // runtime.
 //
-// v16 (business-sqlite-gateway-v16) tracks the maintenance vendor/model DDL
+// v16 (historical name business-sqlite-gateway-v16) tracks the maintenance vendor/model DDL
 // target shape: retired provider-facing tables (providers,
 // provider_protocol_profiles, provider_model_catalog, account_model_mappings)
 // are removed together with the provider columns on groups/accounts;
@@ -61,7 +61,7 @@ type BusinessForeignKeySpec struct {
 // account_connections, account_endpoint_modes and account_entry_mappings are
 // declared (models.idx_models_identity_unique stays name-only because it is
 // an expression index, which IndexDefinitions cannot describe).
-// v17 (business-sqlite-gateway-v17) adds the super-group target shape:
+// v17 (historical name business-sqlite-gateway-v17) adds the super-group target shape:
 // groups.group_kind ('standard' | 'super', default 'standard') and the
 // super_group_members relation table with its member-side reference index.
 // Gateway runtime reads both, so an old database fails the schemaReady gate

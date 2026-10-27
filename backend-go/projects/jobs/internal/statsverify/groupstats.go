@@ -523,7 +523,7 @@ func sqlTextPtr(value any) (*string, error) {
 // authorized accounts are accumulated, then the cache rows are replaced.
 // businessQ reads groups/group_accounts/accounts/authorizations; statsQ
 // rewrites group_account_stats (same transaction on PostgreSQL, two handles
-// on SQLite).
+// on the legacy local layout).
 func (s *Store) refreshGroupAccountStatsCache(ctx context.Context, businessQ queryer, statsQ execer, groupIDs []string, updatedAt string, now time.Time) error {
 	targets := uniqueStrings(groupIDs)
 	if len(targets) == 0 {

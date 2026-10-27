@@ -155,12 +155,6 @@ func w9gShardRow(bucketDateKey, id string) (ShardWriteRow, error) {
 var w9gTempRoot string
 
 func TestW9GShardRoutingEdges(t *testing.T) {
-	// 负 shardID 归零。
-	location := UsageRecordShardLocationForBucket("20260102", -7, t.TempDir())
-	if location.ShardID != 0 || !strings.HasSuffix(location.FilePath, "usage-20260102-s00.sqlite3") {
-		t.Fatalf("location = %+v", location)
-	}
-
 	// 溢出的 shard id 数字：回退 LogicalShardID。
 	location, err := UsageRecordLogicalShardLocationForPostgres(
 		"usage_20260102_s99999999999999999999_1_x", "2026-01-02T00:00:00.000Z", 4)
@@ -175,19 +169,6 @@ func TestW9GShardRoutingEdges(t *testing.T) {
 	if _, err := UsageRecordLogicalShardLocationForPostgres("zzz", "nope", 4); err == nil {
 		t.Fatal("非法 createdAt 必须上抛")
 	}
-	if _, err := UsageRecordShardLocationForRecord("zzz", "nope", 4, t.TempDir()); err == nil {
-		t.Fatal("非法 createdAt 必须上抛")
-	}
-
-	// ParseUsageRecordShardID 溢出拒绝。
-	if _, _, ok := ParseUsageRecordShardID("usage_20260102_s99999999999999999999_1_x"); ok {
-		t.Fatal("溢出 shard id 必须解析失败")
-	}
-
-	// shard key 溢出拒绝。
-	if _, ok := UsageRecordShardLocationFromKey("20260102:s99999999999999999999", t.TempDir()); ok {
-		t.Fatal("溢出 shard key 必须解析失败")
-	}
 }
 
 // ---------- BuildWritePlan 与 jsonSnapshot ----------
@@ -197,7 +178,7 @@ func TestW9GBuildWritePlanInvalidCreatedAt(t *testing.T) {
 		SystemAccountID: "sys1",
 		TrafficSource:   TrafficSourceGateway,
 		CreatedAt:       "not-a-time",
-	}}, WritePlanOptions{ShardCount: 4, }, fixedClock("2026-01-02T03:04:05.000Z"))
+	}}, WritePlanOptions{ShardCount: 4}, fixedClock("2026-01-02T03:04:05.000Z"))
 	if err == nil {
 		t.Fatal("非法 createdAt 必须上抛")
 	}

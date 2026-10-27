@@ -96,41 +96,12 @@ function Get-DeployMode {
 function Invoke-GoMaintenanceBootstrap {
   $binaryPath = Join-Path $appDir 'backend-go/juhe-ai-maintenance'
   if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) { throw "Go maintenance binary not found: $binaryPath. Rebuild the release package for Windows." }
-  $databaseDriver = if ($env:JUHE_AI_DATABASE_DRIVER) { $env:JUHE_AI_DATABASE_DRIVER } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_DATABASE_DRIVER' -Fallback 'sqlite' }
-  $databaseDriver = $databaseDriver.Trim().ToLowerInvariant()
+  # 存储唯一形态：PostgreSQL + Redis（2026-10-24/25 SQLite 与内存模式退役）。
+  # maintenance bootstrap 只收 --dsn 单形态（--driver/--paths 旗标已随退役删除）。
   $bootstrapArguments = [System.Collections.Generic.List[string]]::new()
-  switch ($databaseDriver) {
-    'sqlite' {
-      # 回退值与 gateway/jobs 零配置 datadir 派生表同源（短名固定表，2026-09-19 起）：
-      # 数据根先解析 JUHE_AI_DATA_DIR（进程 env 优先、backend/.env 回退，缺省 ./data，
-      # 对齐 Go internal/datadir.Dir），五个库路径与 codex shard root 未显式配置时
-      # 派生到 <数据根>/<固定名>；显式配置的路径同样进程 env 优先、backend/.env
-      # 回退（对齐 postgres 分支 JUHE_AI_POSTGRES_URL 的读法，gateway/jobs 同序）。
-      $dataDir = if ($env:JUHE_AI_DATA_DIR) { $env:JUHE_AI_DATA_DIR } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_DATA_DIR' -Fallback './data' }
-      $businessPath = if ($env:JUHE_AI_DATABASE_PATH) { $env:JUHE_AI_DATABASE_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_DATABASE_PATH' -Fallback "$dataDir/business.sqlite3" }
-      $chatPath = if ($env:JUHE_AI_CHAT_DATABASE_PATH) { $env:JUHE_AI_CHAT_DATABASE_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_CHAT_DATABASE_PATH' -Fallback "$dataDir/chat.sqlite3" }
-      $datasetPath = if ($env:JUHE_AI_DATASET_DATABASE_PATH) { $env:JUHE_AI_DATASET_DATABASE_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_DATASET_DATABASE_PATH' -Fallback "$dataDir/dataset.sqlite3" }
-      $usageCatalogPath = if ($env:JUHE_AI_USAGE_CATALOG_DATABASE_PATH) { $env:JUHE_AI_USAGE_CATALOG_DATABASE_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_USAGE_CATALOG_DATABASE_PATH' -Fallback "$dataDir/usage-catalog.sqlite3" }
-      $statsPath = if ($env:JUHE_AI_STATS_DATABASE_PATH) { $env:JUHE_AI_STATS_DATABASE_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_STATS_DATABASE_PATH' -Fallback "$dataDir/stats.sqlite3" }
-      $codexShardRoot = if ($env:JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT) { $env:JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT' -Fallback "$dataDir/codex-context/state-shards" }
-      $paths = "business=$businessPath,chat=$chatPath,dataset=$datasetPath,usage-catalog=$usageCatalogPath,stats=$statsPath,codex-context-shard-root=$codexShardRoot"
-      $codexShardCount = if ($env:JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT) { $env:JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT' -Fallback '' }
-      if ($codexShardCount) {
-        $parsedShardCount = 0
-        if (-not [int]::TryParse($codexShardCount, [ref]$parsedShardCount) -or $parsedShardCount -lt 1 -or $parsedShardCount -gt 256) {
-          throw "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT must be an integer between 1 and 256 (got: $codexShardCount)."
-        }
-        $paths = "$paths,codex-context-shard-count=$codexShardCount"
-      }
-      $bootstrapArguments.AddRange([string[]]@('--ensure-schema', '--driver', 'sqlite', '--paths', $paths))
-    }
-    'postgres' {
-      $postgresDsn = if ($env:JUHE_AI_POSTGRES_URL) { $env:JUHE_AI_POSTGRES_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_POSTGRES_URL' -Fallback '' }
-      if (-not $postgresDsn) { throw 'JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true with postgres driver requires JUHE_AI_POSTGRES_URL.' }
-      $bootstrapArguments.AddRange([string[]]@('--ensure-schema', '--driver', 'postgres', '--dsn', $postgresDsn))
-    }
-    default { throw "Unsupported JUHE_AI_DATABASE_DRIVER for go maintenance bootstrap: $databaseDriver (expected sqlite or postgres)." }
-  }
+  $postgresDsn = if ($env:JUHE_AI_POSTGRES_URL) { $env:JUHE_AI_POSTGRES_URL } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_POSTGRES_URL' -Fallback '' }
+  if (-not $postgresDsn) { throw 'JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true requires JUHE_AI_POSTGRES_URL (PostgreSQL is the only storage form).' }
+  $bootstrapArguments.AddRange([string[]]@('--ensure-schema', '--dsn', $postgresDsn))
   $seedValue = if ($env:JUHE_AI_GO_MAINTENANCE_SEED) { $env:JUHE_AI_GO_MAINTENANCE_SEED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_GO_MAINTENANCE_SEED' -Fallback 'false' }
   if ($seedValue.Trim().ToLowerInvariant() -eq 'true') { $bootstrapArguments.Add('--seed') }
   if ($env:JUHE_AI_SECRET) { $bootstrapArguments.AddRange([string[]]@('--secret', $env:JUHE_AI_SECRET)) }

@@ -24,7 +24,7 @@ package main
 // acquire 直接放行（Node：无锁配置的账户不进入 ENGAGED）。
 //
 // SQL 直连业务库与 chainAccountsSelector 同构（PostgreSQL 走 juhe_business
-// 限定名 + $n 占位符，SQLite 用裸表名 + ?）；internal/accounts 不暴露运行态
+// 限定名 + $n 占位符）；internal/accounts 不暴露运行态
 // 存储口（波1/波2 并行约束不改该包），故桥接落在 cmd 组合根。
 
 import (

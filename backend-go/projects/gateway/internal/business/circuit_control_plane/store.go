@@ -21,7 +21,7 @@ import (
 const ProjectionKey = "account_circuit_runtime_v1"
 
 var (
-	ErrOwnerGate      = errors.New("Business SQLite owner handoff gate is not satisfied")
+	ErrOwnerGate      = errors.New("business owner handoff gate is not satisfied")
 	ErrCAS            = errors.New("account circuit compare-and-set conflict")
 	ErrIdentityReplay = errors.New("account circuit replay identity conflict")
 	ErrInvalidSchema  = errors.New("circuit control-plane PostgreSQL schema is invalid")

@@ -1842,7 +1842,7 @@ func (s *chainAccountsSelector) resolveProxyURLsForProfiles(ctx context.Context,
 		username          sql.NullString
 		passwordEncrypted sql.NullString
 		// proxy_profiles.enabled 在权威 PG DDL 中是 boolean（sqlite 为
-		// INTEGER 0/1）：NullBool 经 database/sql 双方言可扫（int64 0/1 经
+		// INTEGER 0/1）：NullBool 经 database/sql 可扫（int64 0/1 经
 		// driver.Bool 转换），NullInt64 会在 PG 上 bool→int64 扫描失败。
 		enabled sql.NullBool
 	}

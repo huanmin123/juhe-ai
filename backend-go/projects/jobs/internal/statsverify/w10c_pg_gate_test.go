@@ -189,7 +189,6 @@ func w10cSvOpenKitStore(t *testing.T) (*Store, string) {
 		return err
 	})
 	store, err := OpenStore(StoreConfig{
-		Mode:                 StorePostgres,
 		PostgresURL:          testDB.DSN,
 		PostgresMaxOpenConns: 4,
 		PostgresMaxIdleConns: 2,
@@ -204,9 +203,6 @@ func w10cSvOpenKitStore(t *testing.T) (*Store, string) {
 func TestW10CPGStoreGroupStatsAndClientIP(t *testing.T) {
 	ctx := context.Background()
 	store, fixtureDatabase := w10cSvOpenKitStore(t)
-	if store.mode != StorePostgres {
-		t.Fatalf("模式应为 postgres")
-	}
 	var currentDatabase string
 	if err := store.db.QueryRowContext(ctx, "SELECT current_database()").Scan(&currentDatabase); err != nil {
 		t.Fatalf("PG 读取 current_database 失败: %v", err)

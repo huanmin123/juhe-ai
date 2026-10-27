@@ -95,7 +95,6 @@
 
 ```text
 PG reader    directInputCandidatesSQL 增列 a.expedited_recovery_enabled
-SQLite reader 同名同列同步（direct_input_reader_sqlite.go）
   → scanDirectCandidate / directCandidate 增字段
   → 输入装配：Eligibility.ExpeditedRecovery = 列值；
               Schedule.CooldownNeutralMaxMS = 特供 ? 60_000 : 900_000
@@ -114,9 +113,7 @@ SQLite reader 同名同列同步（direct_input_reader_sqlite.go）
    - **`new_accounts` / `old_accounts` 触发器 ROW 投影两处清单同步加列**（该 ROW `IS DISTINCT FROM` 比较是 accounts 变更检测投影，漏加任一侧会导致该列变更不触发投影）；
    - **`accounts` 既有库守卫（BUG-0305 发布事故修正；v3.1/v3.2 本条曾错误省略）**：`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1))`——CREATE TABLE 只救新库，存量 PG 库（生产与开发主库）缺它时新二进制启动契约校验缺列 fail-closed 崩溃循环；"probe 列无 ALTER"的先例不成立（该列先于存量库存在，新列没有这个前提）。
    - `system_accounts` 建表 DDL 同步增加 `expedited_account_limit integer CHECK (expedited_account_limit BETWEEN 0 AND 100)`，既有库再照 `ai_account_limit` 模式执行 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
-2. **SQLite**（`sqlite_schema_business.go` + `sqlite_schema.go`）：
-   - 新库：两表 CREATE TABLE DDL 同步加列；
-   - **既有库：新增 ensure 守卫**（照 `ensureSystemAccountAiAccountLimitSchema` 的 PRAGMA table_info 早退模式）：`ensureAccountExpeditedRecoverySchema`（accounts 列）与 `ensureSystemAccountExpeditedAccountLimitSchema`（system_accounts 列），挂入 `EnsureSQLiteBusiness` 升级路径。只改 fresh DDL 不迁移既有库是阻断级错误。
+2. ~~**SQLite**（`sqlite_schema_business.go` + `sqlite_schema.go`）~~ **已随 2026-10-25 存储形态收口删除**：SQLite fresh DDL 与 `ensureAccountExpeditedRecoverySchema` / `ensureSystemAccountExpeditedAccountLimitSchema` 两个 ensure 守卫不再存在，加列只走本节第 1 条的 PostgreSQL 路径。
 3. 两列进 contracts 契约清单与 bootstrap 守卫测试（加列后守卫早退的幂等断言）。
 4. maintenance bootstrap 加法幂等，随 `--ensure-schema` 生效，**无独立迁移命令、无新增环境变量**。
 
@@ -163,7 +160,7 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 2. **临期终局**：特供不阻止死亡；7 天观察超时仍写 `error` 停损。特供的价值区间是"账户尚能复活的窗口期"。
 3. **探针成本**：默认名额 3、中性路径下对探针池与 DB service 窗口可忽略；持续失败路径与更大名额按本节第 1 条的 N 上界评估，不由实现或文档宣称"可忽略"。约 11,520 次/天/账户是没有并发、限速、租约和上游拒绝等其他预算时的**策略路径理论最密上界**，实际吞吐只能更低；N=100 时单池理论上界约 1,152,000 次/天。
 4. **误判不变性**：因证据标准未降，特供不会让坏号进入调度；加速的全部代价是探针密度。
-5. **普通账户公平性**：扫描排序特供层只影响冷却类内部次序，类间槽位份额机制保留；普通账户的节奏参数逐字节不变（回归测试锁定）。大名额下（极端 N=100），普通账户可能因当轮实际入选的特供候选而延后出本轮扫描；设计上受影响幅度与该轮特供候选数同阶，不能把配置上限 N 直接当成每轮必后移的精确值，具体边界由 PG/SQLite 同 SQL 回归锁定。
+5. **普通账户公平性**：扫描排序特供层只影响冷却类内部次序，类间槽位份额机制保留；普通账户的节奏参数逐字节不变（回归测试锁定）。大名额下（极端 N=100），普通账户可能因当轮实际入选的特供候选而延后出本轮扫描；设计上受影响幅度与该轮特供候选数同阶，不能把配置上限 N 直接当成每轮必后移的精确值，具体边界由 PostgreSQL 同 SQL 回归锁定。
 
 ## 11. 验证要求
 
@@ -171,12 +168,12 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 
 1. jobs `accounthealth` 单测：特供分支的中性封顶基准 60s、慢速道 15s、长期道跳过、有界 10 分钟 `error` 绕开；**普通账户节奏逐字节不变的回归**（中性 15 分钟封顶、60 秒慢速道、1 小时长期道仍生效）；jitter 上下界断言按 §4 换算（60s → [30s, 90s]，15s → [7.5s, 22.5s]，且恒不等于基准值）。
 2. 7 天观察超时对特供同样生效的终态测试。
-3. reader：PG 与 SQLite 双回归——新列读取、`Eligibility.ExpeditedRecovery` / `CooldownNeutralMaxMS` 装配正确；排序特供在冷却类内优先、激活类仍全局第一优先。
+3. reader：PostgreSQL 回归（SQLite reader 已删除）——新列读取、`Eligibility.ExpeditedRecovery` / `CooldownNeutralMaxMS` 装配正确；排序特供在冷却类内优先、激活类仍全局第一优先。
 4. **特供变更传播**：补丁后下一轮扫描重建的输入携带新档位与新的账户 `ConfigRevision`；只有授权实例且存在来源账户时，相关来源版本才填入 `SourceConfigRevision`。旧代次输入的迟到结果按 fence 校验返回未变更。执行前新鲜度门（§6.3）必须覆盖“补丁在 freshness 判定前提交”这一时序（Mock 观测零上游请求、零状态写回、失败计数不变）；补丁在判定后提交的竞态允许请求已发出，但必须验证写回 fence 拒绝，不能把该时序写成绝对的零上游请求保证。
 5. 签名输入回路：`expedited_recovery` 随 Eligibility 序列化 → `VerifySignedInput` 反序列化无损。
-6. gateway 补丁：默认上限 3、管理员调整生效、显式 `null` 清除覆盖值、`0` 禁止新增/重新启用、超限文案与事务回滚、并发双写不超卖（PG `FOR UPDATE` 语义真实驱动验证，SQLite 单写者等价）、取消不校验、上限下调后列表"已超限"展示；审计与 `config_revision` 断言。
+6. gateway 补丁：默认上限 3、管理员调整生效、显式 `null` 清除覆盖值、`0` 禁止新增/重新启用、超限文案与事务回滚、并发双写不超卖（PG `FOR UPDATE` 语义真实驱动验证）、取消不校验、上限下调后列表"已超限"展示；审计与 `config_revision` 断言。
 7. 克隆 / 导出 / 导入：克隆产物与导出载荷恒不含该标记；导入载荷含 `expeditedRecoveryEnabled` 键时按既有未知字段策略将**该条目标记失败且不落库**（`import.go` 未知键错误路径），不得新增"忽略未知键"特例。
-8. schema：PG 建表 DDL + `new/old_accounts` 投影 + system_accounts `ADD COLUMN IF NOT EXISTS`；SQLite fresh DDL + 两个 ensure 守卫（既有库无列 → 加列，已有列 → 早退）；contracts 清单与守卫测试同步。
+8. schema：PG 建表 DDL + `new/old_accounts` 投影 + system_accounts `ADD COLUMN IF NOT EXISTS`；contracts 清单与守卫测试同步（SQLite fresh DDL 与 ensure 守卫随存储形态退役删除）。
 9. Mock AI 覆盖全链路：特供账户失败 → 持续不可用 → 复活，复活发现延迟显著小于普通账户；授权实例特供与来源账户隔离、实例计入被授权方名额。
 10. 人工测试（账户测试按钮）对特供状态零副作用，与现行一致。
 11. 新鲜度门专项：定时 `prepareScheduledInput` 与显式 `runExplicitRequest` 都在 `ExecuteInputProbe` 前执行门；补丁在门前提交时验证 `input_stale_before_dispatch`（零上游请求、零账户状态写回、失败计数不变；显式请求只允许写入自身终态以消费请求）；补丁在门后提交时验证允许请求竞态但 fence 拒绝账户状态写回；数据库读失败或账户不存在时按失败关闭，文件输入源不删除发布方文件、在替换前持续拒绝上游且诊断限频。

@@ -23,9 +23,9 @@ import (
 //     run exactly like an unavailable Node drain snapshot.
 //   - PostgreSQL fencing leases are pinned by the jobs supervisor, not
 //     inside this package.
-//   - Node's SQLite driver scans usage-record shard files; the Go SQLite
-//     layout keeps one local usage_records table and therefore one global
-//     cursor (same semantics as Node's PostgreSQL path).
+//   - One global ingest cursor over juhe_usage.usage_records (the Node SQLite
+//     shard-file layout and its per-shard cursors are gone; same semantics as
+//     Node's PostgreSQL path).
 //   - the consistency job only detects and reports: Node has no repair
 //     write-back either.
 
@@ -149,11 +149,9 @@ func (s *Store) RunClientIPStatsAggregation(ctx context.Context, options RunClie
 }
 
 // RunGroupAccountStatsRefresh mirrors runGroupAccountStatsRefresh ->
-// refreshGroupAccountStats: PostgreSQL refreshes inside one leased
-// transaction; SQLite consumes dirty rows across the business/stats
-// databases. startupDirtyMark mirrors the one-shot
-// mark_all_group_account_stats_dirty the scheduler performs on its first
-// PostgreSQL round.
+// refreshGroupAccountStats: refreshes inside one leased transaction.
+// startupDirtyMark mirrors the one-shot mark_all_group_account_stats_dirty
+// the scheduler performs on its first round.
 func (s *Store) RunGroupAccountStatsRefresh(ctx context.Context, now time.Time) (int, error) {
 	return s.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Limit: GroupAccountStatsRefreshLimit, Now: now})
 }

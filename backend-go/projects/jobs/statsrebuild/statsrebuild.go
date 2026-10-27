@@ -22,9 +22,8 @@
 //     ai_performance_summary_windows、scope range windows、system metrics
 //     trend windows），使统计缓存面在一次离线执行内回到与在线收敛一致的
 //     状态；
-//  4. 绝不写业务库（juhe_business / 业务 SQLite 文件只读）与 usage_records
-//     源表（SQLite standalone 的聚合事实源是 stats 库内 usage_records
-//     镜像，PG 是 juhe_usage.usage_records，两者都只读）。
+//  4. 绝不写业务库（juhe_business 只读）与 usage_records 源表
+//     （juhe_usage.usage_records 只读）。
 //
 // dirty 队列处置（显式契约，见 BUG-0182 验收记录；2026-10-17 起两表在线
 // 消费方为窗口刷新 job 的同日增量轮，见 BUG-0327）：
@@ -32,8 +31,8 @@
 //     重放会再生标记，但窗口阶段已在同一次执行内按当前口径全量重建，标记
 //     失去语义——完成路径末尾清空；
 //   - usage_quota_hourly_window_dirty_scopes：保留重放再生的标记。离线不重刷
-//     配额小时窗（SQLite 全量重建需要业务库绑定表输入且在线任务每轮全量重建；
-//     PG 增量路径消费这些标记即可把清空后的 usage_quota_hourly_windows 补建），
+//     配额小时窗（增量路径消费这些标记即可把清空后的
+//     usage_quota_hourly_windows 补建），
 //     恢复在线后的首轮 usage-quota-hourly-windows-refresh 负责补齐；
 //   - account_quality_dirty_accounts：保留（gateway 账号质量刷新按它重算
 //     account_quality_scores，重放已为其再生标记）。

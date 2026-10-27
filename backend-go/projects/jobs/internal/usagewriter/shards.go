@@ -2,7 +2,6 @@ package usagewriter
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,9 +19,6 @@ type UsageRecordShardLocation struct {
 	ShardID       int
 	FilePath      string
 }
-
-// usageRecordShardSchemaVersion mirrors usageRecordShardSchemaVersion.
-const usageRecordShardSchemaVersion = 8
 
 // DefaultUsageShardCount mirrors the JUHE_AI_USAGE_SHARD_COUNT default (16).
 const DefaultUsageShardCount = 16
@@ -65,55 +61,6 @@ func SanitizeShardEntropy(entropy string) string {
 	return builder.String()
 }
 
-// UsageRecordShardLocationForRecord mirrors usageRecordShardLocationForRecord:
-// parse the shard id from the record id; fall back to the createdAt bucket
-// and the stable hash of the whole id.
-func UsageRecordShardLocationForRecord(id string, createdAt string, shardCount int, shardRoot string) (UsageRecordShardLocation, error) {
-	parsedBucketDateKey, parsedShardID, parsed := ParseUsageRecordShardID(id)
-	bucketDateKey := ""
-	if parsed {
-		bucketDateKey = parsedBucketDateKey
-	} else {
-		resolved, err := BucketDateKey(createdAt)
-		if err != nil {
-			return UsageRecordShardLocation{}, err
-		}
-		bucketDateKey = resolved
-	}
-	shardID := 0
-	if parsed {
-		shardID = parsedShardID
-	} else {
-		shardID = StableShardID(id, shardCount)
-	}
-	return UsageRecordShardLocationForBucket(bucketDateKey, shardID, shardRoot), nil
-}
-
-// UsageRecordShardLocationForBucket mirrors usageRecordShardLocation: the
-// SQLite shard file path layout root/YYYY/MM/DD/usage-YYYYMMDD-sNN.sqlite3.
-func UsageRecordShardLocationForBucket(bucketDateKey string, shardIDInput int, shardRoot string) UsageRecordShardLocation {
-	shardID := shardIDInput
-	if shardID < 0 {
-		shardID = 0
-	}
-	bucketDate := bucketDateKey[0:4] + "-" + bucketDateKey[4:6] + "-" + bucketDateKey[6:8]
-	shardKey := bucketDateKey + ":s" + FormatShardID(shardID)
-	filePath := filepath.Join(
-		shardRoot,
-		bucketDateKey[0:4],
-		bucketDateKey[4:6],
-		bucketDateKey[6:8],
-		"usage-"+bucketDateKey+"-s"+FormatShardID(shardID)+".sqlite3",
-	)
-	return UsageRecordShardLocation{
-		ShardKey:      shardKey,
-		BucketDate:    bucketDate,
-		BucketDateKey: bucketDateKey,
-		ShardID:       shardID,
-		FilePath:      filePath,
-	}
-}
-
 // UsageRecordLogicalShardLocationForPostgres mirrors
 // usageRecordLogicalShardLocationForPostgres: a logical location (no file)
 // for the partitioned juhe_usage.usage_records table. Note the Node source
@@ -148,34 +95,6 @@ func UsageRecordLogicalShardLocationForPostgres(id string, createdAt string, sha
 		FilePath:      "postgres:juhe_usage.usage_records:" + shardKey,
 	}, nil
 }
-
-// ParseUsageRecordShardID mirrors parseUsageRecordShardId.
-func ParseUsageRecordShardID(id string) (bucketDateKey string, shardID int, ok bool) {
-	match := usageRecordShardIDPattern.FindStringSubmatch(strings.TrimSpace(id))
-	if match == nil {
-		return "", 0, false
-	}
-	parsed, err := strconv.Atoi(match[2])
-	if err != nil || parsed < 0 {
-		return "", 0, false
-	}
-	return match[1], parsed, true
-}
-
-// UsageRecordShardLocationFromKey mirrors usageRecordShardLocationFromKey.
-func UsageRecordShardLocationFromKey(shardKey string, shardRoot string) (UsageRecordShardLocation, bool) {
-	match := shardKeyPattern.FindStringSubmatch(strings.TrimSpace(shardKey))
-	if match == nil {
-		return UsageRecordShardLocation{}, false
-	}
-	shardID, err := strconv.Atoi(match[2])
-	if err != nil {
-		return UsageRecordShardLocation{}, false
-	}
-	return UsageRecordShardLocationForBucket(match[1], shardID, shardRoot), true
-}
-
-var shardKeyPattern = regexp.MustCompile(`^(\d{8}):s(\d+)$`)
 
 // StableShardID mirrors stableShardId: FNV-1a 32-bit hash modulo shardCount.
 func StableShardID(value string, shardCount int) int {

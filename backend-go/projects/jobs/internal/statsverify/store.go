@@ -15,30 +15,19 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// StoreMode mirrors runtimeConfig.databaseDriver: the jobs can run against
-// the local SQLite files (Go-owned layout) or the externally provisioned
-// PostgreSQL schemas.
-type StoreMode string
-
-const (
-	StorePostgres StoreMode = "postgres"
-)
-
 // UsageStatsTimezoneCacheTTL mirrors usageStatsTimezoneCacheTtlMs
 // (usage-stats-helpers.ts line 13, 60_000).
 const UsageStatsTimezoneCacheTTL = 60 * time.Second
 
 // Store owns the three jobs' storage facts. PostgreSQL writes target the
 // externally provisioned juhe_stats/juhe_business/juhe_usage schemas and are
-// never migrated by this package; SQLite is the Go-owned local layout with
-// separate business and stats database files mirroring Node's
-// getBusinessDatabase()/getStatsDatabase() split.
+// never migrated by this package（SQLite 本地布局随存储形态退役删除，本包
+// 收敛为 PG 单形态）.
 type Store struct {
-	mode     StoreMode
-	db       *sql.DB // stats DB (SQLite) or shared PostgreSQL pool
-	pool     *pgpool.Handle
+	db   *sql.DB // shared PostgreSQL pool
+	pool *pgpool.Handle
 
-	writeMu sync.Mutex // serializes multi-statement SQLite write paths
+	writeMu sync.Mutex // serializes multi-statement write paths
 
 	tzMu        sync.Mutex
 	tzValue     string
@@ -50,7 +39,6 @@ type Store struct {
 }
 
 type StoreConfig struct {
-	Mode                 StoreMode
 	PostgresURL          string
 	PostgresMaxOpenConns int
 	PostgresMaxIdleConns int
@@ -58,35 +46,30 @@ type StoreConfig struct {
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
-	switch config.Mode {
-	case StorePostgres:
-		if strings.TrimSpace(config.PostgresURL) == "" {
-			return nil, errors.New("statsverify postgres 缺少连接 URL")
-		}
-		maxOpen := config.PostgresMaxOpenConns
-		if maxOpen == 0 {
-			maxOpen = 1000
-		}
-		maxIdle := config.PostgresMaxIdleConns
-		if maxIdle == 0 {
-			maxIdle = 1000
-		}
-		if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen {
-			return nil, fmt.Errorf("statsverify postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpen, maxIdle)
-		}
-		pool := config.PostgresPool
-		if pool == nil {
-			registry := pgpool.NewRegistry()
-			var err error
-			pool, err = registry.Acquire("pgx", config.PostgresURL, "statsverify-store", maxOpen, maxIdle)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return &Store{mode: StorePostgres, db: pool.DB(), pool: pool}, nil
-	default:
-		return nil, errors.New("statsverify store mode 必须为 postgres")
+	if strings.TrimSpace(config.PostgresURL) == "" {
+		return nil, errors.New("statsverify postgres 缺少连接 URL")
 	}
+	maxOpen := config.PostgresMaxOpenConns
+	if maxOpen == 0 {
+		maxOpen = 1000
+	}
+	maxIdle := config.PostgresMaxIdleConns
+	if maxIdle == 0 {
+		maxIdle = 1000
+	}
+	if maxOpen < 1 || maxIdle < 1 || maxIdle > maxOpen {
+		return nil, fmt.Errorf("statsverify postgres max open/idle 必须满足 1 <= idle <= open，实际为 %d/%d", maxOpen, maxIdle)
+	}
+	pool := config.PostgresPool
+	if pool == nil {
+		registry := pgpool.NewRegistry()
+		var err error
+		pool, err = registry.Acquire("pgx", config.PostgresURL, "statsverify-store", maxOpen, maxIdle)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &Store{db: pool.DB(), pool: pool}, nil
 }
 
 func (s *Store) Close() error {
@@ -99,9 +82,8 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// EnsureSchema creates the Go-owned SQLite layout. PostgreSQL is externally
-// provisioned: the check fails closed instead of issuing DDL, matching the
-// Node migration contract.
+// EnsureSchema 校验外部供给的 PostgreSQL schema（SQLite 本地布局已随存储
+// 形态退役删除）：校验失败 fail-closed 而非下发 DDL，对齐 Node 迁移契约。
 func (s *Store) EnsureSchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return errors.New("statsverify store 未初始化")
@@ -279,12 +261,10 @@ func (s *Store) usageTable(name string) string {
 	return "juhe_usage." + name
 }
 
-// greatest renders the two-arg maximum: GREATEST on PostgreSQL, MAX(a,b)
-// scalar form on SQLite.
+// greatest renders the two-arg maximum (GREATEST).
 func (s *Store) greatest(left, right string) string {
 	return fmt.Sprintf("GREATEST(%s, %s)", left, right)
 }
-
 
 var postgresRequiredTables = []string{
 	"juhe_usage.usage_records",
@@ -319,9 +299,6 @@ var postgresRequiredTables = []string{
 // 缺任何聚合列都会让聚合查询以 "no such column" 失败。存量窄形状库文件由
 // ensureAggregateColumnBackfills 幂等补列。
 
-
 // sqliteStatsSchema 及其后的 business schema 常量承接建库；历史错口径行的
 // 数据回填唯一入口是 maintenance --apply-success-cost-backfill 一次性子命令
 // （计划 PLAN-20261011T225418），ensure 不再执行任何同谓词回填扫描。
-
-

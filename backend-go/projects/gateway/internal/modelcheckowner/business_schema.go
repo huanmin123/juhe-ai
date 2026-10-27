@@ -381,15 +381,6 @@ func sameSchemaIndexColumns(actual, expected []string) bool {
 	return true
 }
 
-func sqliteSchemaIndexPredicate(sqlText string) string {
-	lower := strings.ToLower(sqlText)
-	idx := strings.Index(lower, " where ")
-	if idx < 0 {
-		return ""
-	}
-	return strings.TrimSpace(sqlText[idx+7:])
-}
-
 func schemaIndexPredicatesEquivalent(actual, expected string) bool {
 	normalize := func(value string) []string {
 		value = strings.ToLower(strings.TrimSpace(value))

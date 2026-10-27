@@ -344,7 +344,6 @@ func (s statsTimezoneSource) StatsTimezone(ctx context.Context) (*time.Location,
 // statsagg（在线聚合与全部窗口刷新任务）。
 func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	config := statsverify.StoreConfig{
-		Mode:                 statsverify.StorePostgres,
 		PostgresURL:          a.config.PostgresURL,
 		PostgresMaxOpenConns: a.config.PostgresMaxOpenConns,
 		PostgresMaxIdleConns: a.config.PostgresMaxIdleConns,
@@ -391,7 +390,6 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
 	settingsSource := jobssettings.NewSource(jobssettings.Options{
 		DB:   settingsDB,
-		Mode: jobssettings.Postgres,
 		Warn: jobssettingsWarn(a.logger),
 	})
 	a.settings = dbSettingsSource{source: settingsSource}

@@ -271,44 +271,14 @@ run_go_maintenance_bootstrap() {
     echo "Go maintenance binary not found or not executable: $binary. Rebuild the release package for this Unix platform." >&2
     return 1
   fi
-  database_driver="$(printf '%s' "${JUHE_AI_DATABASE_DRIVER:-$(read_dotenv_value JUHE_AI_DATABASE_DRIVER sqlite)}" | tr '[:upper:]' '[:lower:]')"
-  bootstrap_args=()
-  case "$database_driver" in
-    sqlite)
-      # 回退值与 gateway/jobs 零配置 datadir 派生表同源（短名固定表，2026-09-19 起）：
-      # 数据根先解析 JUHE_AI_DATA_DIR（进程 env 优先、backend/.env 回退，缺省 ./data，
-      # 对齐 Go internal/datadir.Dir），五个库路径与 codex shard root 未显式配置时
-      # 派生到 <数据根>/<固定名>；显式配置的路径同样进程 env 优先、backend/.env
-      # 回退（对齐 postgres 分支 JUHE_AI_POSTGRES_URL 的读法，gateway/jobs 同序）。
-      data_dir="${JUHE_AI_DATA_DIR:-$(read_dotenv_value JUHE_AI_DATA_DIR './data')}"
-      business_path="${JUHE_AI_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_DATABASE_PATH "${data_dir}/business.sqlite3")}"
-      chat_path="${JUHE_AI_CHAT_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_CHAT_DATABASE_PATH "${data_dir}/chat.sqlite3")}"
-      dataset_path="${JUHE_AI_DATASET_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_DATASET_DATABASE_PATH "${data_dir}/dataset.sqlite3")}"
-      usage_catalog_path="${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_USAGE_CATALOG_DATABASE_PATH "${data_dir}/usage-catalog.sqlite3")}"
-      stats_path="${JUHE_AI_STATS_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_STATS_DATABASE_PATH "${data_dir}/stats.sqlite3")}"
-      codex_shard_root="${JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT:-$(read_dotenv_value JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT "${data_dir}/codex-context/state-shards")}"
-      paths="business=${business_path},chat=${chat_path},dataset=${dataset_path},usage-catalog=${usage_catalog_path},stats=${stats_path},codex-context-shard-root=${codex_shard_root}"
-      codex_shard_count="${JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT:-$(read_dotenv_value JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT '')}"
-      case "$codex_shard_count" in
-        '') ;;
-        *[!0-9]*|'0') echo "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT must be an integer between 1 and 256 (got: $codex_shard_count)." >&2; return 1 ;;
-        *) paths="${paths},codex-context-shard-count=${codex_shard_count}" ;;
-      esac
-      bootstrap_args=(--ensure-schema --driver sqlite --paths "$paths")
-      ;;
-    postgres)
-      postgres_dsn="${JUHE_AI_POSTGRES_URL:-$(read_dotenv_value JUHE_AI_POSTGRES_URL '')}"
-      if [ -z "$postgres_dsn" ]; then
-        echo 'JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true with postgres driver requires JUHE_AI_POSTGRES_URL.' >&2
-        return 1
-      fi
-      bootstrap_args=(--ensure-schema --driver postgres --dsn "$postgres_dsn")
-      ;;
-    *)
-      echo "Unsupported JUHE_AI_DATABASE_DRIVER for go maintenance bootstrap: $database_driver (expected sqlite or postgres)." >&2
-      return 1
-      ;;
-  esac
+  # 存储唯一形态：PostgreSQL + Redis（2026-10-24/25 SQLite 与内存模式退役）。
+  # maintenance bootstrap 只收 --dsn 单形态（--driver/--paths 旗标已随退役删除）。
+  postgres_dsn="${JUHE_AI_POSTGRES_URL:-$(read_dotenv_value JUHE_AI_POSTGRES_URL '')}"
+  if [ -z "$postgres_dsn" ]; then
+    echo 'JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true requires JUHE_AI_POSTGRES_URL (PostgreSQL is the only storage form).' >&2
+    return 1
+  fi
+  bootstrap_args=(--ensure-schema --dsn "$postgres_dsn")
   go_maintenance_seed="$(printf '%s' "${JUHE_AI_GO_MAINTENANCE_SEED:-$(read_dotenv_value JUHE_AI_GO_MAINTENANCE_SEED false)}" | tr '[:upper:]' '[:lower:]')"
   if [ "$go_maintenance_seed" = 'true' ]; then
     bootstrap_args+=(--seed)

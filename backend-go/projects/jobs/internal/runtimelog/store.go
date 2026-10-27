@@ -515,7 +515,6 @@ func postgresRuntimeLogSchemaBootstrapRequired(checkErr error) (bool, error) {
 	return false, fmt.Errorf("检查 PostgreSQL 运行日志 schema 失败，拒绝执行初始化 DDL: %w", checkErr)
 }
 
-const sqliteCursorSelect = `SELECT log_file, COALESCE(file_identity, ''), cursor_offset, line_number, file_size, truncation_generation, COALESCE(file_mtime_ms, 0), COALESCE(last_read_at, ''), COALESCE(last_error_message, ''), created_at, updated_at FROM runtime_log_file_cursors`
 const postgresCursorSelect = `SELECT log_file, COALESCE(file_identity, ''), cursor_offset, line_number, file_size, truncation_generation, COALESCE(file_mtime_ms, 0), COALESCE(last_read_at::text, ''), COALESCE(last_error_message, ''), created_at::text, updated_at::text FROM juhe_dataset.runtime_log_file_cursors`
 
 func scanPostgresCursor(row pgx.Row) (*Cursor, error) {

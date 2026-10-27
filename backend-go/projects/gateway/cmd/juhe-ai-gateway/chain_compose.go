@@ -152,8 +152,8 @@ type chainRuntimeDeps struct {
 	// 会话状态（gatewaycodex.ChatBridgeStateService，Node codex-responses/
 	// chat-bridge-state.ts）的组合根装配输入：CodexContextRoot 携带
 	// JUHE_AI_CODEX_CONTEXT_ROOT（Node runtimeConfig.codexContextRoot，
-	// segments 根目录），CodexContextStateStore 是 codex context 双模行存储
-	//（gatewaycodex.CodexContextRowStore 的 sqlite shard / postgres 实现）。
+	// segments 根目录），CodexContextStateStore 是 codex context 行存储
+	//（gatewaycodex.CodexContextRowStore 的 PostgreSQL 实现）。
 	// 背景迁移漏装配（与终局波 TrafficRuntimeMigrator 同类断线）：
 	// NewChatBridgeStateService 实现完整但组合根从未装配，CodexBridge 恒
 	// nil 使 preflight 恒走 no-op 适配器；2026-09-28 哲学裁定（功能默认

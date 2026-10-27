@@ -66,7 +66,7 @@ func openMigrationDB(t *testing.T) *sql.DB {
 
 // openLegacyDB 打开一个「capability_domain 加列前」形状的业务库（无阶段
 // 记录路径依赖，只建迁移面最小表集）。
-func openLegacyDB(t *testing.T, name string, capabilityLine string) *sql.DB {
+func openLegacyDB(t *testing.T, _ string, capabilityLine string) *sql.DB {
 	t.Helper()
 	ddl := `
 CREATE SCHEMA juhe_business;
@@ -814,7 +814,7 @@ func TestRunCorruptRecordRejected(t *testing.T) {
 // TestRunAddsMissingColumn 覆盖执行协议「加列并校验形状」：存量库缺列时
 // 迁移命令补列（存量行落 'chat'），形状错误时原样拒绝。
 func TestRunAddsMissingColumn(t *testing.T) {
-	legacyDB := openLegacyDB(t, "legacy.sqlite3", "")
+	legacyDB := openLegacyDB(t, "legacy-db", "")
 	seedFixtures(t, legacyDB, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
 	report, err := Run(context.Background(), legacyDB, migrationOptions(capdomain.TargetM1))
 	if err != nil {
@@ -827,7 +827,7 @@ func TestRunAddsMissingColumn(t *testing.T) {
 		t.Fatal("补列后存量行应落 'chat'")
 	}
 
-	brokenDB := openLegacyDB(t, "broken.sqlite3", "capability_domain TEXT")
+	brokenDB := openLegacyDB(t, "broken-db", "capability_domain TEXT")
 	seedFixtures(t, brokenDB, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
 	if _, err := Run(context.Background(), brokenDB, migrationOptions(capdomain.TargetM1)); err == nil || !strings.Contains(err.Error(), "形状不符") {
 		t.Fatalf("错误形状必须原样报错，got err=%v", err)
@@ -837,7 +837,7 @@ func TestRunAddsMissingColumn(t *testing.T) {
 // TestVerifyPreflightAndPostflight 覆盖只读核验两模式：
 // preflight 允许缺列（预计赋域 N 个账户是正常结果）；postflight 要求列存在。
 func TestVerifyPreflightAndPostflight(t *testing.T) {
-	db := openLegacyDB(t, "legacy-verify.sqlite3", "")
+	db := openLegacyDB(t, "legacy-verify-db", "")
 	seedFixtures(t, db, []accountFixture{
 		{id: "acct-chat", modesJSON: `["chat_json"]`},
 		{id: "acct-bad", modesJSON: `[]`},

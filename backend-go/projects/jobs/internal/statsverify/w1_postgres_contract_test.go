@@ -195,7 +195,7 @@ func TestW1PostgresSchemaContract(t *testing.T) {
 			queryContainsAll: []string{"table_schema = ANY($1)", "table_schema = ANY($2)", "(table_schema || '.' || table_name) = ANY($3)"},
 			columns:          []string{"qualified"}, rows: allRows,
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		if err := store.checkPostgresSchema(context.Background()); err != nil {
 			t.Fatalf("complete external schema should pass: %v", err)
 		}
@@ -214,7 +214,7 @@ func TestW1PostgresSchemaContract(t *testing.T) {
 			queryContainsAll: []string{"table_schema = ANY($1)", "table_schema = ANY($2)", "(table_schema || '.' || table_name) = ANY($3)"},
 			columns:          []string{"qualified"}, rows: rows,
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		err := store.checkPostgresSchema(context.Background())
 		if err == nil || err.Error() != "statsverify PostgreSQL 缺少外部预置表: "+missing {
 			t.Fatalf("missing schema error = %v", err)
@@ -227,7 +227,7 @@ func TestW1PostgresSchemaContract(t *testing.T) {
 			kind: "query", queryContains: query, args: args, err: cause,
 			queryContainsAll: []string{"table_schema = ANY($1)", "table_schema = ANY($2)", "(table_schema || '.' || table_name) = ANY($3)"},
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		err := store.checkPostgresSchema(context.Background())
 		if !errors.Is(err, cause) || err.Error() != "读取 statsverify postgres tables 失败: "+cause.Error() {
 			t.Fatalf("schema query error = %v", err)
@@ -240,7 +240,7 @@ func TestW1PostgresSchemaContract(t *testing.T) {
 			queryContainsAll: []string{"table_schema = ANY($1)", "table_schema = ANY($2)", "(table_schema || '.' || table_name) = ANY($3)"},
 			columns:          []string{"qualified"}, rows: [][]driver.Value{{nil}},
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		err := store.checkPostgresSchema(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "读取 statsverify postgres table 名称失败:") || !strings.Contains(err.Error(), "converting NULL to string") {
 			t.Fatalf("schema row scan error = %v", err)
@@ -254,7 +254,7 @@ func TestW1PostgresSchemaContract(t *testing.T) {
 			queryContainsAll: []string{"table_schema = ANY($1)", "table_schema = ANY($2)", "(table_schema || '.' || table_name) = ANY($3)"},
 			columns:          []string{"qualified"}, rows: allRows, rowsErr: cause,
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		err := store.checkPostgresSchema(context.Background())
 		if !errors.Is(err, cause) || err.Error() != "遍历 statsverify postgres tables 失败: "+cause.Error() {
 			t.Fatalf("schema row iteration error = %v", err)
@@ -276,7 +276,7 @@ func TestW1PostgresGroupAccountStatsDirtyContract(t *testing.T) {
 			},
 			args: []any{groupAccountStatsDirtyAll, "w1-contract", updatedAt},
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		if err := store.MarkAllGroupAccountStatsDirty(ctx, "w1-contract", now); err != nil {
 			t.Fatalf("MarkAllGroupAccountStatsDirty: %v", err)
 		}
@@ -297,7 +297,7 @@ func TestW1PostgresGroupAccountStatsDirtyContract(t *testing.T) {
 			},
 			args: []any{groupAccountStatsDirtyAll, "w1-contract", updatedAt}, err: cause,
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		err := store.MarkAllGroupAccountStatsDirty(ctx, "w1-contract", now)
 		want := "标记 group_account_stats_dirty 失败: " + cause.Error()
 		if !errors.Is(err, cause) || err.Error() != want {
@@ -332,7 +332,7 @@ func TestW1PostgresGroupAccountStatsDirtyContract(t *testing.T) {
 				args:             []any{groupAccountStatsDirtyAll, dirtyAt},
 			},
 		)
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		refreshed, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		if err != nil || refreshed != 1 {
 			t.Fatalf("RefreshDirtyGroupAccountStats = %d, %v; want 1, nil", refreshed, err)
@@ -351,7 +351,7 @@ func TestW1PostgresGroupAccountStatsDirtyContract(t *testing.T) {
 			queryContainsAll: []string{"WHERE group_id = $1", "LIMIT 1"},
 			args:             []any{groupAccountStatsDirtyAll}, err: cause,
 		})
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		_, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		want := "读取 group_account_stats_dirty __all__ 失败: " + cause.Error()
 		if !errors.Is(err, cause) || err.Error() != want {
@@ -405,7 +405,7 @@ func TestW1PostgresGroupAccountStatsFailureBoundaries(t *testing.T) {
 				err:              cause,
 			},
 		)
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		_, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		want := "读取 group_account_stats_dirty 失败: " + cause.Error()
 		if !errors.Is(err, cause) || err.Error() != want {
@@ -428,7 +428,7 @@ func TestW1PostgresGroupAccountStatsFailureBoundaries(t *testing.T) {
 				err: cause,
 			},
 		)
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		_, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		want := "检查 group_account_stats 失败: " + cause.Error()
 		if !errors.Is(err, cause) || err.Error() != want {
@@ -453,7 +453,7 @@ func TestW1PostgresGroupAccountStatsFailureBoundaries(t *testing.T) {
 				err:              cause,
 			},
 		)
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		_, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		want := "读取 groups 失败: " + cause.Error()
 		if !errors.Is(err, cause) || err.Error() != want {
@@ -478,7 +478,7 @@ func TestW1PostgresGroupAccountStatsFailureBoundaries(t *testing.T) {
 				rows:             [][]driver.Value{{nil, "sys-1"}},
 			},
 		)
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		_, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		if err == nil || !strings.Contains(err.Error(), "converting NULL to string") {
 			t.Fatalf("group page scan error = %v", err)
@@ -504,7 +504,7 @@ func TestW1PostgresGroupAccountStatsFailureBoundaries(t *testing.T) {
 				rowsErr:          cause,
 			},
 		)
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		_, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		if !errors.Is(err, cause) || err.Error() != cause.Error() {
 			t.Fatalf("group page iteration error = %v", err)
@@ -539,7 +539,7 @@ func TestW1PostgresGroupAccountStatsFailureBoundaries(t *testing.T) {
 			},
 		)
 		script.commitErr = cause
-		store := &Store{mode: StorePostgres, db: db}
+		store := &Store{db: db}
 		refreshed, err := store.RefreshDirtyGroupAccountStats(ctx, GroupAccountStatsRefreshOptions{Now: now})
 		if refreshed != 0 || !errors.Is(err, cause) || err.Error() != cause.Error() {
 			t.Fatalf("commit result = %d, %v; want 0, %v", refreshed, err, cause)
