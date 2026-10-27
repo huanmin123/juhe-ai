@@ -128,6 +128,20 @@ func TestWdAiHealthPostgresOutcomeUnavailableSurfaces500(t *testing.T) {
 	}
 }
 
+func TestWdAiHealthEmptyOutcomeURLKeepsMergeAbsent(t *testing.T) {
+	fixture := newWdFixture(t)
+	fixture.exec(t,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, vendor_code, type, status) VALUES ('acct-pg-empty', 'PGAccountEmpty', 'sys-user-1', 'openai', 'api_key', 'active')`,
+	)
+	// 组合根恒建源对象：空 URL 必须按未配置处理（合并缺席 → 200），不得
+	// 下探 sql.Open("") 拨驱动默认地址（B5 生产 500 根因）。
+	fixture.deps.HealthOutcomes = &HealthOutcomeSource{PostgresURL: ""}
+	recorder := wdGet(t, fixture.deps.aiHealthListHandler(false), "/?hours=24", adminAuth(""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("空 URL outcome 源应保持合并缺席得 200: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestWdAiHealthOversizedKeywordYieldsEmptyPage(t *testing.T) {
 	fixture := newWdFixture(t)
 	// 关键字超过 128 rune：n-gram 词表为空 → "0 = 1" 恒假过滤，空集而非错误。

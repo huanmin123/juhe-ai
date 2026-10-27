@@ -29,8 +29,9 @@ type Deps struct {
 	Now      func() time.Time
 	Timezone TimezoneSource
 	// HealthOutcomes optionally points at the J1 account-health outcome
-	// store (jobs Postgres juhe_jobs.account_health_outcomes); nil
-	// keeps the merge absent exactly like an unconfigured Node source.
+	// store (jobs Postgres juhe_jobs.account_health_outcomes); nil or an
+	// empty PostgresURL keeps the merge absent exactly like an unconfigured
+	// Node source.
 	HealthOutcomes *HealthOutcomeSource
 	// RuntimeMode mirrors runtimeConfig.runtimeMode ('standalone' |
 	// 'performance'); empty keeps the standalone contract.

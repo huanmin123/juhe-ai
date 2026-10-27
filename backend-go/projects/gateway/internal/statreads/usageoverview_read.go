@@ -1,6 +1,7 @@
 package statreads
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -10,6 +11,9 @@ import (
 // timezone settings are a server-side configuration fault like Node's thrown
 // errors (500 服务器内部错误 via the error middleware).
 func (d *Deps) writeReadError(w http.ResponseWriter, err error) {
+	// 对外契约保持泛化 500；原始错误必须落进程默认 logger，否则生产排障无据
+	// （B5：吞错导致 500 根因只能靠复现反推）。
+	slog.Default().Error("统计读面存储读取失败", "event", "statreads_read_failed", "error", err)
 	kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 }
 

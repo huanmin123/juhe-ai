@@ -448,7 +448,9 @@ type j1Outcome struct {
 }
 
 func (d *Deps) j1OutcomesForAccounts(ctx context.Context, accountIds []string, now time.Time, hours int, location *time.Location, hourBuckets []string) ([]j1Outcome, error) {
-	if d.HealthOutcomes == nil || len(accountIds) == 0 || len(hourBuckets) == 0 {
+	// 空 URL 与 nil 同义：未配置的源保持合并缺席（Node absent-source 语义），
+	// 不得下探 sql.Open("")——那会拨驱动默认地址并把整个读面打成 500（B5）。
+	if d.HealthOutcomes == nil || d.HealthOutcomes.PostgresURL == "" || len(accountIds) == 0 || len(hourBuckets) == 0 {
 		return nil, nil
 	}
 	observedAfter := time.UnixMilli(now.UnixMilli() - int64(hours+2)*int64(time.Hour/time.Millisecond)).UTC().Format("2006-01-02T15:04:05.000Z")
