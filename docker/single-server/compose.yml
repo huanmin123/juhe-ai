@@ -96,8 +96,11 @@ services:
     image: juhe-ai-single-server:gateway
     container_name: juhe-ai-go-gateway
     # BUG-0313 内存治理：GOMEMLIMIT 软限（见 environment）让 GC 封顶堆增长（流量高峰 RSS 曾冲
-    # 3.56GiB 挤爆整机页缓存引发僵死），mem_limit 3g 为最后防线——超限只杀 gateway 自身，不拖整机。
-    mem_limit: "3g"
+    # 3.56GiB 挤爆整机页缓存引发僵死），mem_limit 为最后防线——超限只杀 gateway 自身，不拖整机。
+    # 2026-10-27 整机转 juhe-ai 专供（juhe-pw 应用族下线）后重划：3g→4g，配合
+    # GOMEMLIMIT 2300MiB→3072MiB（维持 75% 比例）；整机最坏预算 gateway ~3.2GiB
+    # + PG ~3GiB + jobs/监控/caddy ~0.5GiB ≈ 6.7GiB，8G 物理仍留页缓存与 swap 兜底。
+    mem_limit: "4g"
     restart: unless-stopped
     # datadir/日志等相对路径约定以进程 cwd 为基准（缺省 ./data 相对 cwd）；
     # 镜像未设 WORKDIR，必须显式锚定到 /app/backend，相对 data/logs 才落在
@@ -120,8 +123,9 @@ services:
     environment:
       TZ: Asia/Shanghai
       NODE_ENV: production
-      # Go 堆软限制（BUG-0313）：接近 2300MiB 时 GC 激进回收，RSS 实际封顶约 2.5GiB，把页缓存还给系统。
-      GOMEMLIMIT: 2300MiB
+      # Go 堆软限制（BUG-0313；2026-10-27 专供重划 2300MiB→3072MiB）：接近 3072MiB 时
+      # GC 激进回收，RSS 实际封顶约 3.2GiB，把页缓存还给系统。
+      GOMEMLIMIT: 3072MiB
       JUHE_AI_HOST: 0.0.0.0
       JUHE_AI_PORT: 3000
       # 不显式指向 dist 就不挂管理 SPA（代码默认空）

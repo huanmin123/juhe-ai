@@ -288,10 +288,10 @@ docker compose start gateway jobs
 - 服务器 `/opt/juhe-ai/.env`：除下述业务变量外，必须包含 `POSTGRES_PASSWORD`、`REDIS_PASSWORD`（既有必填）与 **`JUHE_AI_PROXY_IP_A` / `JUHE_AI_PROXY_IP_B`**——出海代理隧道两条域名（`data.aijh.huanmin.top` / `egress.aijh.huanmin.top`）的公网 IP，注入 gateway/jobs/maintenance 三服务的 `extra_hosts`；缺失时 `docker compose config` 阶段即报错（`:?required` 模式，与 `POSTGRES_PASSWORD` 一致）。真实取值属实例事实，只在 `.local/project-resources/prod/` 私有留档。
 - 本地发布机 `docker/single-server/.env`（gitignore，不入库）：须含 `JUHE_AI_DEPLOY_SERVER=<user>@<服务器IP>`——`deploy.sh` 的 ssh 目标，环境变量同名导出优先，`.env` 次之，均缺时脚本 fail-fast 并提示取值位置。
 
-### 容器内存治理（BUG-0313，2026-10-14）
+### 容器内存治理（BUG-0313，2026-10-14；2026-10-27 整机转 juhe-ai 专供后重划）
 
-- `GOMEMLIMIT=2300MiB`：compose gateway `environment` 固定值（**非 .env 变量**），Go 堆软限制——接近时 GC 激进回收，RSS 实际封顶约 2.5GiB。背景：流量高峰下 gateway RSS 曾冲 3.56GiB（goroutines 全程平坦无泄漏，纯堆膨胀），与 PG（~3GiB）合计挤光 8G 整机页缓存引发 I/O 活锁僵死（10-14 11:51-13:48）。调大前必须复核整机内存预算：`gateway RSS ≈ GOMEMLIMIT + ~200MiB 运行时开销`，须与 PG ~3GiB、系统与其余容器共存后仍留 ≥1.5GiB 页缓存。
-- `mem_limit`（cgroup 硬限，最后防线）：gateway `3g`、jobs `1g`——超限 OOM kill 只波及容器自身（restart: unless-stopped 自动拉起），不再拖死整机。PG **有意不设限**：PG 被 OOM 强杀的恢复代价远大于保护收益，其 RSS 由 shared_buffers/work_mem 自控（历史稳定 3.0-3.2GiB）。
+- `GOMEMLIMIT=3072MiB`：compose gateway `environment` 固定值（**非 .env 变量**），Go 堆软限制——接近时 GC 激进回收，RSS 实际封顶约 3.2GiB。背景：流量高峰下 gateway RSS 曾冲 3.56GiB（goroutines 全程平坦无泄漏，纯堆膨胀），与 PG（~3GiB）合计挤光 8G 整机页缓存引发 I/O 活锁僵死（10-14 11:51-13:48），彼时定 2300MiB/3g 收口。**2026-10-27 juhe-pw 应用族下线、整机转 juhe-ai 专供后重划：2300MiB→3072MiB、mem_limit 3g→4g**（维持 75% 比例；当时白天峰值 RSS 仅 ~0.8GiB，上调为增长留余量并降低高峰 GC 压力）。调大前必须复核整机内存预算：`gateway RSS ≈ GOMEMLIMIT + ~200MiB 运行时开销`，须与 PG（shared_buffers 2.5GiB、历史 RSS 2.7-3.2GiB）、系统与其余容器共存后仍留 ≥1.5GiB 页缓存（专供后实测预算 ~1.5-1.9GiB，另有 4G swap 兜底）。
+- `mem_limit`（cgroup 硬限，最后防线）：gateway `4g`、jobs `1g`——超限 OOM kill 只波及容器自身（restart: unless-stopped 自动拉起），不再拖死整机。PG **有意不设限**：PG 被 OOM 强杀的恢复代价远大于保护收益，其 RSS 由 shared_buffers/work_mem 自控（历史稳定 3.0-3.2GiB）。Redis **有意不设 maxmemory**：其上承载 cache/state/queue 三域，触发逐出会破坏队列语义，且当前用量 ~16MiB 无压力。
 - 主机层配套：4G swapfile（`/swapfile`，fstab 持久，`vm.swappiness=10` 仅作耗尽兜底）+ `vm.min_free_kbytes=262144`、`vm.watermark_scale_factor=125`（提前启动回收防 D 状态活锁）。三项主机层治理（swap/sysctl/journald 上限）已固化为幂等脚本 **`host-init.sh`**（已纳入版本控制，见上「目录」节；swap 激活与 fstab 持久化、sysctl 配置文件与运行值分别核对，漂移自动重写并重新应用）——`deploy.sh` 每次发布自动自检（单项失败仅告警不阻塞发布），新机初始化按 `docs/deploy/部署指南.md` 第 1 节执行。
 
 - `NODE_ENV=production`：触发全部生产校验（SECRET 强度、CORS 白名单必填、禁 dev 自动登录）。
