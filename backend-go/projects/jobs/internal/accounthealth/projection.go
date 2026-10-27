@@ -956,7 +956,8 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 	}
 	if projection.ExpectedCooldownFence != nil {
 		guards = append(guards, cooldownObservationFenceGuard(), "target.cooldown_retest_generation = ?")
-		params = append(params, fenceGuardText(projection.ExpectedCooldownFence.ObservationStartedAt), projection.ExpectedCooldownFence.Generation)
+		observationText := fenceGuardText(projection.ExpectedCooldownFence.ObservationStartedAt)
+		params = append(params, observationText, observationText, projection.ExpectedCooldownFence.Generation)
 	}
 	query := p.business.bind(`UPDATE ` + accountsTable + ` AS target SET ` + strings.Join(updates, ", ") + ` WHERE ` + strings.Join(guards, " AND "))
 	result, err := tx.ExecContext(ctx, query, params...)
@@ -1039,12 +1040,20 @@ func fenceGuardText(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-// cooldownObservationFenceGuard compares the business text/timestamp column
-// at millisecond precision. The PostgreSQL production schema has historically
-// received both Node millisecond text and Go time.Time values rendered with
-// microseconds/+00; exact text equality rejects the former against the latter.
+// cooldownObservationFenceGuard compares the business anchor to the fence
+// time with a ±2ms tolerance instead of exact millisecond truncation (W35).
+// Anchors are written as Go RFC3339Nano text; a nanosecond tail ≥ .9995µs
+// rounds UP across the millisecond boundary when PostgreSQL parses the text
+// to µs (.103999859Z → .104000), while the projection fence carries the same
+// physical anchor as µs text that truncates down (.103999Z → .103000) —
+// per-side date_trunc('milliseconds') equality then rejects the identical
+// anchor forever and the revival projection goes stale on every cycle. The
+// structural drift of one anchor is bounded by 1ms, so ±2ms covers it with
+// margin; the generation guard is the strong identity and the Go-side
+// fenceMismatchReason has already applied the floor-millisecond contract,
+// so the wider SQL window cannot admit a genuinely different anchor.
 func cooldownObservationFenceGuard() string {
-	return "date_trunc('milliseconds', target.cooldown_retest_observation_started_at::timestamptz) = date_trunc('milliseconds', ?::timestamptz)"
+	return "target.cooldown_retest_observation_started_at::timestamptz BETWEEN ?::timestamptz - interval '2 milliseconds' AND ?::timestamptz + interval '2 milliseconds'"
 }
 
 // limitedText 镜像归档 limited：trim 后超长截断，空文本返回空串（调用方
