@@ -579,7 +579,7 @@ var pgSeedProviders = []pgSeedProvider{
 		Name:                       "GPT",
 		Description:                "GPT 官方供应商，继承通用 OpenAI-compatible 能力，并启用 OAuth、Codex Responses 等 GPT 专属能力",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
+		DefaultSupportedModelsJSON: "[\"gpt-6.1-terra\",\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
 	},
 	{
 		ID:                         "xai",

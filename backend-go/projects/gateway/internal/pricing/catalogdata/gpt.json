@@ -149,6 +149,76 @@
       "supportsPromptCaching": true
     },
     {
+      "cacheCreationInputTokenCost": 1.25e-06,
+      "cacheCreationInputTokenCostFlex": 6.25e-07,
+      "cacheCreationInputTokenCostPriority": 2.5e-06,
+      "cacheReadInputTokenCost": 5e-08,
+      "cacheReadInputTokenCostFlex": 2.5e-08,
+      "cacheReadInputTokenCostPriority": 1e-07,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1e-06,
+      "inputCostPerTokenFlex": 5e-07,
+      "inputCostPerTokenPriority": 2e-06,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-6.1-terra",
+      "outputCostPerToken": 5e-06,
+      "outputCostPerTokenFlex": 2.5e-06,
+      "outputCostPerTokenPriority": 1e-05,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-10-26",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
       "cacheCreationInputTokenCost": 2.5e-06,
       "cacheCreationInputTokenCostFlex": 1.25e-06,
       "cacheCreationInputTokenCostPriority": 5e-06,

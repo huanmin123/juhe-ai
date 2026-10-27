@@ -50,15 +50,16 @@ func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	// 模型清理批两阶段 -24 行 + 缺口补录 +3 + 火山 ASR 承接 +1 + 缺口补录
 	// 第二批 +8 + 方舟全能力实测 +1 → 210；同日火山方舟 +2（视频 1 行 +
 	// 图像 1 行，快照数据本体冻结）→ 212；同日全能力覆盖批终态（并发协调后合并口径）：+1 vision 向量行（doubao-embedding-vision-251215，现役唯一向量模型）−2 官方退役死行（doubao-embedding-large-text-250515 文本向量系 Retiring、/v1/embeddings 面 404 实证；doubao-seededit-3-0-i2i-250628 官方 /api/v3/models 列表 status=Shutdown，现役图生图由 seedream 4.0/5.0 原生 image 参数承接）→ 211；同日流式语音桥接批 +1（volcengine seed-tts-2.0，按字符 3 元/万字符 ÷7.0）→ 212。models 表口径下全量行落库
-	//（disabled 行计入），行数仍等于快照行数。
-	if len(modelCatalogSeedRows) != 212 {
-		t.Fatalf("model catalog seed rows = %d, want 212 (stale snapshot? rerun the generator from backend-go/projects/gateway/internal/pricing/catalogdata/*.json)", len(modelCatalogSeedRows))
+	//（disabled 行计入），行数仍等于快照行数。2026-10-27 GPT-6.1 Terra 新增批
+	// +1（官方 changelog 2026-10-26 明文发布，gpt 69→70）→ 213。
+	if len(modelCatalogSeedRows) != 213 {
+		t.Fatalf("model catalog seed rows = %d, want 213 (stale snapshot? rerun the generator from backend-go/projects/gateway/internal/pricing/catalogdata/*.json)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 69, "xai": 17, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 23, "minimax": 19, "volcengine": 19, "qwen": 16}
+	want := map[string]int{"gpt": 70, "xai": 17, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 23, "minimax": 19, "volcengine": 19, "qwen": 16}
 	if len(perProvider) != len(want) {
 		t.Fatalf("vendor set = %v, want %v", perProvider, want)
 	}
@@ -121,6 +122,7 @@ func TestProviderModelCatalogID(t *testing.T) {
 		{"gpt", "gpt-5.6-sol", "provider_model_gpt_gpt_5_6_sol_69ec47b65152"},
 		{"gpt", "gpt-6-astra", "provider_model_gpt_gpt_6_astra_14ec3d68eae1"},
 		{"gpt", "gpt-6.1-sol", "provider_model_gpt_gpt_6_1_sol_09b2adf74e3b"},
+		{"gpt", "gpt-6.1-terra", "provider_model_gpt_gpt_6_1_terra_9845cc0ead46"},
 	}
 	for _, testCase := range cases {
 		if got := providerModelCatalogID(testCase.provider, testCase.model); got != testCase.want {
@@ -207,7 +209,7 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse"]`:                                        1,
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse","interactions_json","interactions_sse"]`: 11,
 		`["chat_json","chat_sse","messages_json","messages_sse","responses_json","responses_sse"]`:                                      3,
-		`["chat_json","chat_sse","responses_json","responses_sse"]`:                                                                     42,
+		`["chat_json","chat_sse","responses_json","responses_sse"]`:                                                                     43,
 		`["embed_content"]`: 3,
 		`["generate_content_json","generate_content_sse"]`: 5,
 		`["images_json"]`: 13,
@@ -225,9 +227,10 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 			t.Fatalf("mode set %s rows = %d, want %d", modesJSON, distribution[modesJSON], wantCount)
 		}
 	}
-	// 身份与可见性按投影规则搬运：抽查首行（gpt-6.1-sol）。
+	// 身份与可见性按投影规则搬运：抽查首行（gpt-6.1-terra，2026-10-26 发布
+	// 排 gpt 段最前）。
 	first := rows[0]
-	if first.VendorCode != "gpt" || first.PublicModel != "gpt-6.1-sol" || first.UpstreamModel != "gpt-6.1-sol" {
+	if first.VendorCode != "gpt" || first.PublicModel != "gpt-6.1-terra" || first.UpstreamModel != "gpt-6.1-terra" {
 		t.Fatalf("first projected row identity = %s/%s/%s", first.VendorCode, first.PublicModel, first.UpstreamModel)
 	}
 	if first.Status != modelSeedStatusActive || !first.CatalogVisible {

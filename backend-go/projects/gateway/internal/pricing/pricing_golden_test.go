@@ -305,35 +305,38 @@ func TestListProviderModelPricingOrderAndVendor(t *testing.T) {
 		t.Fatal("openai list must not be empty")
 	}
 	// compareProviderModels: catalog order first, but the release-date rule
-	// outranks it when only one side defines catalog_order: the 2026-09-30
-	// gpt-6.1-sol row (no catalog order) sorts first, then the 2026-09-22
-	// gpt-6-sol/luna rows (no catalog order), then the 2026-09-08
-	// gpt-image-2.5 rows (also no catalog order) sort ahead of gpt-6-astra
-	// (catalog_order -1, 2026-09-03), the 2026-08-10 gpt-5.6-cyber row
-	// (no catalog order), then gpt-5.6-sol (order 0).
-	if openai[0].Model != "gpt-6.1-sol" {
-		t.Fatalf("first model = %q, want gpt-6.1-sol (release 2026-09-30)", openai[0].Model)
+	// outranks it when only one side defines catalog order: the 2026-10-26
+	// gpt-6.1-terra row (no catalog order) sorts first, then the 2026-09-30
+	// gpt-6.1-sol row, the 2026-09-22 gpt-6-sol/luna rows, then the
+	// 2026-09-08 gpt-image-2.5 rows (also no catalog order) sort ahead of
+	// gpt-6-astra (catalog_order -1, 2026-09-03), the 2026-08-10
+	// gpt-5.6-cyber row (no catalog order), then gpt-5.6-sol (order 0).
+	if openai[0].Model != "gpt-6.1-terra" {
+		t.Fatalf("first model = %q, want gpt-6.1-terra (release 2026-10-26)", openai[0].Model)
 	}
-	if openai[1].Model != "gpt-6-luna" {
-		t.Fatalf("second model = %q, want gpt-6-luna (release 2026-09-22)", openai[1].Model)
+	if openai[1].Model != "gpt-6.1-sol" {
+		t.Fatalf("second model = %q, want gpt-6.1-sol (release 2026-09-30)", openai[1].Model)
 	}
-	if openai[2].Model != "gpt-6-sol" {
-		t.Fatalf("third model = %q, want gpt-6-sol (release 2026-09-22)", openai[2].Model)
+	if openai[2].Model != "gpt-6-luna" {
+		t.Fatalf("third model = %q, want gpt-6-luna (release 2026-09-22)", openai[2].Model)
 	}
-	if openai[3].Model != "gpt-image-2.5-flare" {
-		t.Fatalf("fourth model = %q, want gpt-image-2.5-flare (release 2026-09-08)", openai[3].Model)
+	if openai[3].Model != "gpt-6-sol" {
+		t.Fatalf("fourth model = %q, want gpt-6-sol (release 2026-09-22)", openai[3].Model)
 	}
-	if openai[4].Model != "gpt-image-2.5-sunburst" {
-		t.Fatalf("fifth model = %q, want gpt-image-2.5-sunburst (release 2026-09-08)", openai[4].Model)
+	if openai[4].Model != "gpt-image-2.5-flare" {
+		t.Fatalf("fifth model = %q, want gpt-image-2.5-flare (release 2026-09-08)", openai[4].Model)
 	}
-	if openai[5].Model != "gpt-6-astra" {
-		t.Fatalf("sixth model = %q, want gpt-6-astra (catalog_order -1)", openai[5].Model)
+	if openai[5].Model != "gpt-image-2.5-sunburst" {
+		t.Fatalf("sixth model = %q, want gpt-image-2.5-sunburst (release 2026-09-08)", openai[5].Model)
 	}
-	if openai[6].Model != "gpt-5.6-cyber" {
-		t.Fatalf("seventh model = %q, want gpt-5.6-cyber (release 2026-08-10)", openai[6].Model)
+	if openai[6].Model != "gpt-6-astra" {
+		t.Fatalf("seventh model = %q, want gpt-6-astra (catalog_order -1)", openai[6].Model)
 	}
-	if openai[7].Model != "gpt-5.6-sol" {
-		t.Fatalf("eighth model = %q, want gpt-5.6-sol (catalog_order 0)", openai[7].Model)
+	if openai[7].Model != "gpt-5.6-cyber" {
+		t.Fatalf("eighth model = %q, want gpt-5.6-cyber (release 2026-08-10)", openai[7].Model)
+	}
+	if openai[8].Model != "gpt-5.6-sol" {
+		t.Fatalf("ninth model = %q, want gpt-5.6-sol (catalog_order 0)", openai[8].Model)
 	}
 	for _, item := range openai {
 		if item.ShutdownDate != "" && item.ShutdownDate <= currentUTCDate() {
