@@ -1,9 +1,11 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
-// 前端逻辑域单测配置：
-// - 覆盖对象是纯逻辑代码（api/shared/composables/lib/utils/config/directives），
-//   不做页面交互测试；src/scripts/**（tsx 回归脚本）与 views/components 不纳入。
+// 前端单测配置：
+// - 单测执行覆盖 src/**/*.test.ts（含 views/components 的纯逻辑测试），
+//   src/scripts/**（tsx 回归脚本）不纳入。
+// - 覆盖率统计与门槛只守逻辑域（api/shared/composables/lib/utils/config/directives），
+//   views 的 Vue 组件不纳入覆盖率门（纳入属测试基建立项）。
 // - environment 用 happy-dom：composables/directives 会触碰 DOM 接口。
 export default defineConfig({
   resolve: {

@@ -114,8 +114,8 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 func (d *Deps) cloneContext(w http.ResponseWriter, r *http.Request) {
 	context, err := d.Store.FindCloneContext(r.Context(), r.PathValue("id"), requestScope(r))
 	if err != nil {
-		var forbidden *cloneInteractionForbiddenError
-		var conflict *cloneInteractionConflictError
+		var forbidden *CloneInteractionForbiddenError
+		var conflict *CloneInteractionConflictError
 		if errors.As(err, &forbidden) {
 			kernel.WriteError(w, http.StatusForbidden, forbidden.Message)
 			return
@@ -340,8 +340,8 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 	if input.CloneSourceID != nil {
 		context, err := d.Store.FindCloneContext(r.Context(), *input.CloneSourceID, requestScope(r))
 		if err != nil {
-			var forbidden *cloneInteractionForbiddenError
-			var conflict *cloneInteractionConflictError
+			var forbidden *CloneInteractionForbiddenError
+			var conflict *CloneInteractionConflictError
 			if errors.As(err, &forbidden) {
 				kernel.WriteError(w, http.StatusForbidden, forbidden.Message)
 				return

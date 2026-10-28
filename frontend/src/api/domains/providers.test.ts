@@ -49,6 +49,7 @@ describe('providersApi 请求形状', () => {
     await providersApi.modelOptions()
     await providersApi.modelCapabilities('openai', 'gpt-4o')
     await providersApi.models('openai')
+    await providersApi.modelPlaza()
     await providersApi.createModel('openai', { model: 'gpt-4o' } as never)
     await providersApi.updateModel('openai', 'm-1', { pricing: {} } as never)
     await providersApi.deleteModel('openai', 'm-1')
@@ -61,6 +62,7 @@ describe('providersApi 请求形状', () => {
       ['GET', '/providers/models/options'],
       ['GET', '/providers/openai/models/gpt-4o/capabilities'],
       ['GET', '/providers/openai/models'],
+      ['GET', '/providers/models/plaza'],
       ['POST', '/providers/openai/models'],
       ['PATCH', '/providers/openai/models/m-1'],
       ['DELETE', '/providers/openai/models/m-1']
@@ -80,6 +82,17 @@ describe('providersApi 请求形状', () => {
   it('models 透传查询参数', async () => {
     await providersApi.models('openai', { page: 1, keyword: 'gpt' } as never)
     expect(requests[0].params).toEqual({ page: 1, keyword: 'gpt' })
+  })
+
+  it('modelPlaza 透传查询参数；缺省时无参数', async () => {
+    await providersApi.modelPlaza()
+    expect(requests[0].url).toBe('/providers/models/plaza')
+    expect(requests[0].params).toBeUndefined()
+    await providersApi.modelPlaza({ viewScope: 'admin', systemAccountId: 'sa-1' })
+    expect(requests[1].params).toEqual({ viewScope: 'admin', systemAccountId: 'sa-1' })
+    // 空值由调用方归一后透传 undefined，axios 序列化时跳过（toEqual 忽略 undefined 键）。
+    await providersApi.modelPlaza({ viewScope: 'admin', systemAccountId: undefined })
+    expect(requests[2].params).toEqual({ viewScope: 'admin' })
   })
 
   it('detail 返回解包后的供应商定义', async () => {

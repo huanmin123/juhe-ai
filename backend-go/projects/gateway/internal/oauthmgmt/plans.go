@@ -354,6 +354,13 @@ func geminiPlan() providerPlan {
 			Scope:        stringCredential(credentials, "scope"),
 		}), nil
 	}
+	plan.enrichOutcome = func(ctx context.Context, s *Store, body map[string]any, outcome *tokenOutcome, proxyURL string) (*tokenOutcome, error) {
+		// T65-②：建号链（create-from-code / create-from-refresh-token）换发
+		// 成功后、落库前执行一次 Code Assist project/tier 探测与 onboarding；
+		// ai_studio 与显式提交 projectId 的请求在此短路返回。reauthorize 与
+		// rotation 链不经 enrichOutcome 钩子，行为保持现状。
+		return s.geminiCreateOnboarding(ctx, body, outcome, proxyURL)
+	}
 	return plan
 }
 

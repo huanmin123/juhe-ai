@@ -120,7 +120,8 @@ func (s *Store) exchangeOpenAIAuthorizationCode(ctx context.Context, sessionID, 
 	if err := unmarshalSession(raw, &session); err != nil {
 		return nil, errors.New("OAuth 会话不存在或已过期")
 	}
-	if state == "" || state != session.State {
+	// state 校验与 grok.go 同款恒时比较（constantTimeEqual），防时序侧信道。
+	if state == "" || !constantTimeEqual(state, session.State) {
 		return nil, errors.New("OAuth state 无效")
 	}
 	if session.OwnerSystemAccountID != "" && normalizeText(ownerID) != session.OwnerSystemAccountID {

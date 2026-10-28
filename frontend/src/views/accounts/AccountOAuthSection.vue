@@ -157,11 +157,12 @@
       hint="自动生成，可修改"
     />
 
-    <a-form-item :required="supportedModelsRequired">
+    <!-- 支持模型/检查模型渲染即必填；仅 chat 域托管四家 OAuth 创建态隐藏
+         （后端 CreateOAuthAccount 自动派生，创建成功后弹窗转入编辑态继续调整）。 -->
+    <a-form-item v-if="renderModelFields" required>
       <template #label>
         <div class="supported-models-label">
           <span>支持模型</span>
-          <span v-if="supportedModelsHint" class="supported-models-auto-hint">{{ supportedModelsHint }}</span>
           <a-tooltip title="声明这个 OAuth 账户实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
             <QuestionCircleOutlined class="supported-models-help" />
           </a-tooltip>
@@ -199,6 +200,7 @@
       </div>
     </a-form-item>
     <AccountHealthCheckModelField
+      v-if="renderModelFields"
       :editing="editing"
       :form="form"
       :model-options="modelOptions"
@@ -247,16 +249,24 @@ const props = withDefaults(defineProps<{
   capabilityDomain: 'chat'
 })
 
-// 媒体域（video/audio/image）支持模型一律必选（D7）：「OAuth 建号支持模型可留空」
-// 的默认 affordance（含「可留空」注记）只属于对话域，媒体域整体裁剪；chat 域不变。
+// 媒体域（video/audio/image）经 AccountMediaForm 复用本组件。支持模型/检查模型
+// 仅在「chat 域托管四家（gpt/anthropic/gemini/xai）OAuth 创建态 + 后端会派生模型
+// 的授权形态」隐藏——托管派生只存在于 code/refresh_token/sso 三形态（oauthmgmt
+// CreateOAuthAccount）；access_token 直录走普通 create 端点，后端对空支持模型硬
+// 拒绝，必须渲染两字段让用户必填。编辑态、媒体域创建态与非托管供应商创建态照旧
+// 渲染且必填。
 const mediaDomain = computed(() => capabilityDomainIsMedia(props.capabilityDomain))
 const managedOAuthDefaultsAllowed = computed(() => (
   !mediaDomain.value
   && ['oauth', 'google_oauth'].includes(props.form.type)
   && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode)
 ))
-const supportedModelsRequired = computed(() => props.editing || !managedOAuthDefaultsAllowed.value)
-const supportedModelsHint = computed(() => (!props.editing && managedOAuthDefaultsAllowed.value) ? '可留空' : '')
+const renderModelFields = computed(() => (
+  props.editing
+  || mediaDomain.value
+  || !managedOAuthDefaultsAllowed.value
+  || props.form.oauthMode === 'access_token'
+))
 
 const oauthModeOptions = computed(() => {
   if (props.isAnthropicOAuth || props.isGoogleOAuth || isGrokOAuth.value) {
@@ -431,12 +441,6 @@ defineEmits<{
 .supported-models-help {
   color: rgba(0, 0, 0, 0.45);
   cursor: help;
-}
-
-.supported-models-auto-hint {
-  color: var(--juhe-faint);
-  font-size: 11px;
-  font-weight: 400;
 }
 
 :deep(.ant-form-item-label > label:has(.supported-models-label)) {

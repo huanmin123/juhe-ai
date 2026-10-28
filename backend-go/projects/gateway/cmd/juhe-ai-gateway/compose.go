@@ -960,7 +960,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// the chain drained its usage buffer.
 		composed.shutdowns = append(composed.shutdowns, chainServices.Close)
 		chain, chainShutdown, chainAssembleErr := composeGatewayChain(chainRuntimeDeps{
-			Cache:           chainServices.Cache,
+			Cache: chainServices.Cache,
+			// T65-①：OAuth 401 自动刷新协调器——刷新写侧是 :620 的 oauthStore
+			//（组合根唯一实例），重新水合读侧与引擎候选同源（chainServices.Cache，
+			// 轮换后 finishRotationSideEffects 同步清缓存，组级重读即新凭据）。
+			OAuthTokenRefresh: &chainOAuthRefreshCoordinator{
+				store: oauthStore,
+				cache: chainServices.Cache,
+			},
 			Clock:           gatewaypreauth.SystemClock{},
 			AuditLogEnabled: func() bool { return cfg.AuditLogEnabled },
 			// E2E-FINDING #10：成功采样配置链接线（值源 auditlog.LoadConfig，与审计存储侧同源）。

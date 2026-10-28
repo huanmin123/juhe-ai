@@ -2,10 +2,15 @@ package oauthmgmt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Gemini OAuth constants mirror gemini-oauth.service.ts.
@@ -329,10 +334,12 @@ func assertGeminiSessionField(label, provided, sessionValue string) error {
 	return nil
 }
 
-// exchangeGeminiAuthorizationCode mirrors exchangeGeminiAuthCode minus the
-// upstream code-assist/drive enrichment probes (M17 deferral: project/tier
-// detection rides the probe slice; request-supplied project/tier inputs are
-// carried through instead). proxyURL 是账户绑定代理的出站 URL（空 = 直连）。
+// exchangeGeminiAuthorizationCode mirrors exchangeGeminiAuthCode，只负责换发与
+// 会话一致性（project/tier 入参沿用请求/会话透传）。M17 曾把 Code Assist
+// project/tier 探测整体后移到探针切片（"rides the probe slice"，与探针实现不
+// 符）；T65-② 起该探测改在建号链换发成功后执行（plans.go geminiPlan 的
+// enrichOutcome 钩子 → geminiCreateOnboarding），本函数不再承载探测。
+// proxyURL 是账户绑定代理的出站 URL（空 = 直连）。
 func (s *Store) exchangeGeminiAuthorizationCode(ctx context.Context, input geminiExchangeOptions, proxyURL string) (*geminiTokenInfo, error) {
 	code, state, err := extractGeminiCodeAndState(input.CallbackURL)
 	if err != nil {
@@ -346,7 +353,7 @@ func (s *Store) exchangeGeminiAuthorizationCode(ctx context.Context, input gemin
 	if err := unmarshalSession(raw, &session); err != nil {
 		return nil, errors.New("Gemini OAuth 会话不存在或已过期")
 	}
-	if state == "" || state != session.State {
+	if state == "" || !constantTimeEqual(state, session.State) {
 		return nil, errors.New("Gemini OAuth state 无效")
 	}
 	if session.OwnerSystemAccountID != "" && normalizeText(input.OwnerID) != session.OwnerSystemAccountID {
@@ -508,10 +515,11 @@ func (s *Store) requestGeminiToken(ctx context.Context, form map[string]string, 
 	}, nil
 }
 
-// enrichGeminiTokenInfo mirrors enrichGeminiTokenInfo's static tier defaults
-// (the code-assist/drive upstream probes are an M17 deferral): ai_studio pins
-// aistudio_free, code_assist pins gcp_standard, google_one pins
-// google_one_free unless a tier was already resolved.
+// enrichGeminiTokenInfo 落静态档位兜底：ai_studio 钉 aistudio_free、code_assist
+// 钉 gcp_standard、google_one 钉 google_one_free（已有归一档位时保持原值）。
+// T65-② 起建号链探测成功时由 geminiCreateOnboarding 以探测档位覆盖凭据
+// tier_id；本函数的静态默认仍是刷新/轮换链与探测失败回落面的兜底（探针侧、
+// keepalive 刷新回填均保持现状）。
 func enrichGeminiTokenInfo(info *geminiTokenInfo) *geminiTokenInfo {
 	switch info.OAuthType {
 	case "ai_studio":
@@ -534,6 +542,246 @@ func enrichGeminiTokenInfo(info *geminiTokenInfo) *geminiTokenInfo {
 		}
 	}
 	return info
+}
+
+// --- T65-②：建号链 Code Assist 探测 / onboarding -----------------------------
+
+// geminiCodeAssistProbeTimeout 与包内既有上游 token 调用同一量级（token 端点
+// 25s，见 transport.go defaultTokenTimeout）；响应体超限由共用 exchanger 报错
+//（transport.go 的 256KiB 上限）。
+const geminiCodeAssistProbeTimeout = defaultTokenTimeout
+
+// geminiOnboardingError 标记建号链 Code Assist 探测/onboarding 的确定性失败：
+// writeOAuthError 将其渲染为 400 + 行动文案，不落 502 兜底——一次性交互路径
+// 上不静默产出注定不可用的账户（探针在缺 project_id 时直接报错）。
+type geminiOnboardingError struct {
+	Reason string
+}
+
+func (e *geminiOnboardingError) Error() string {
+	return "未能自动开通 Code Assist 项目（" + e.Reason + "），请手填 projectId 后重试"
+}
+
+// geminiCodeAssistMetadata 是 cloudcode-pa v1internal 两端点共用的 CLI 仿真
+// 元数据，取值与参考实现（sub2api_source geminicli 默认请求、CLIProxyAPI
+// antigravity）同一形态，不另造指纹。
+func geminiCodeAssistMetadata() map[string]any {
+	return map[string]any{
+		"ideType":    "ANTIGRAVITY",
+		"platform":   "PLATFORM_UNSPECIFIED",
+		"pluginType": "GEMINI",
+	}
+}
+
+// geminiCreateOnboarding 是 geminiPlan.enrichOutcome 的实现：code_assist /
+// google_one 且凭据未携带 projectId 时，用新换发的 access token 执行一次
+// loadCodeAssist → onboardUser，把探测到的 project 与归一档位写回凭据。
+// 失败回落契约：用户在建号请求 body 显式提交过 tierId（归一非空）→ 按现状
+// 继续建号并落日志；否则 400「未能自动开通 Code Assist 项目（原因），请手填
+// projectId 后重试」。ai_studio 与显式 projectId 全程短路，零探测调用。
+// 判定口径：回落标记只认建号请求的显式字段（两条建号路由 body 均携带
+// tierId）；授权链接阶段提交进会话的 tier 在换发成功后会话即被消费，不再作
+// 为回落依据。
+func (s *Store) geminiCreateOnboarding(ctx context.Context, body map[string]any, outcome *tokenOutcome, proxyURL string) (*tokenOutcome, error) {
+	if outcome == nil || outcome.Credentials == nil {
+		return outcome, nil
+	}
+	oauthType := normalizeGeminiOAuthType(stringCredential(outcome.Credentials, "oauth_type"))
+	if oauthType == "ai_studio" {
+		return outcome, nil
+	}
+	if stringCredential(outcome.Credentials, "project_id") != "" {
+		// 用户显式提交 projectId：现状不变，零探测调用。
+		return outcome, nil
+	}
+	explicitTier := canonicalGeminiTierID(oauthType, optionalTrimmedText(body, "tierId"))
+	projectID, tierRaw, err := s.detectGeminiCodeAssistProject(ctx, oauthType,
+		stringCredential(outcome.Credentials, "access_token"),
+		stringCredential(outcome.Credentials, "base_url"), proxyURL)
+	if err != nil {
+		if explicitTier != "" {
+			// 用户显式提交过档位：按现状继续建号（无 project 账户保持既有
+			// 形态），失败原因落日志供排查。
+			slog.Warn("Gemini Code Assist 探测失败，按用户显式档位回落",
+				"event", "gemini_code_assist_onboarding_fallback",
+				"oauthType", oauthType, "error", err)
+			return outcome, nil
+		}
+		return nil, &geminiOnboardingError{Reason: err.Error()}
+	}
+	if projectID != "" {
+		outcome.Credentials["project_id"] = projectID
+	}
+	if canonical := canonicalGeminiTierID(oauthType, tierRaw); canonical != "" {
+		outcome.Credentials["tier_id"] = canonical
+	}
+	return outcome, nil
+}
+
+// detectGeminiCodeAssistProject 执行一次探测序列（对齐 Gemini CLI 系公开实现，
+// 参考 CLIProxyAPI antigravity 与 sub2api_source gemini_oauth_service）：
+// POST /v1internal:loadCodeAssist，响应含 cloudaicompanionProject 即命中；
+// 否则 POST /v1internal:onboardUser（tierId 取 allowedTiers 归一可用档位）取回
+// project。两步各自单次调用、失败不重试（建号是一次性交互路径，上游失败直接
+// 给出明确错误）；tierRaw 始终返回 loadCodeAssist 报告的 paidTier/currentTier
+// 原始值供归一落库。
+func (s *Store) detectGeminiCodeAssistProject(ctx context.Context, oauthType, accessToken, baseURL, proxyURL string) (projectID, tierRaw string, err error) {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = defaultGeminiBaseURL(oauthType)
+	}
+	load, err := s.postGeminiCodeAssistInternal(ctx, baseURL, "loadCodeAssist", accessToken, proxyURL, map[string]any{
+		"metadata": geminiCodeAssistMetadata(),
+	})
+	if err != nil {
+		return "", "", err
+	}
+	tierRaw = geminiLoadTierID(load)
+	if projectID := extractGeminiCompanionProject(load); projectID != "" {
+		return projectID, tierRaw, nil
+	}
+	onboard, err := s.postGeminiCodeAssistInternal(ctx, baseURL, "onboardUser", accessToken, proxyURL, map[string]any{
+		"tierId":   geminiOnboardUserTierID(oauthType, load, tierRaw),
+		"metadata": geminiCodeAssistMetadata(),
+	})
+	if err != nil {
+		return "", tierRaw, err
+	}
+	if done, _ := onboard["done"].(bool); !done {
+		return "", tierRaw, errors.New("onboardUser 未完成（done=false）")
+	}
+	response, _ := onboard["response"].(map[string]any)
+	if projectID := extractGeminiCompanionProject(response); projectID != "" {
+		return projectID, tierRaw, nil
+	}
+	return "", tierRaw, errors.New("onboardUser 已完成但未返回 cloudaicompanionProject")
+}
+
+// postGeminiCodeAssistInternal 发出一次 cloudcode-pa v1internal 调用：Bearer 新
+// access token + JSON 头 + 与既有 cloudcode-pa 出站请求同一口径的 Gemini CLI
+// user-agent（upstreamidentity.EffectiveGeminiCLIUserAgent，与运行时
+// generate_content 链同源，不新造第二套指纹），经账户绑定代理出站，走共用
+// s.exchange 统一日志。非 2xx 返回带截断响应体的错误原文。
+func (s *Store) postGeminiCodeAssistInternal(ctx context.Context, baseURL, action, accessToken, proxyURL string, payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	response, err := s.exchange(ctx, TokenHTTPRequest{
+		URL: strings.TrimSuffix(baseURL, "/") + "/v1internal:" + action,
+		Headers: map[string]string{
+			"authorization": "Bearer " + accessToken,
+			"content-type":  "application/json",
+			"user-agent":    upstreamidentity.EffectiveGeminiCLIUserAgent(),
+		},
+		Body:     string(body),
+		Timeout:  geminiCodeAssistProbeTimeout,
+		ProxyURL: proxyURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		detail := strings.TrimSpace(response.Body)
+		if len(detail) > 300 {
+			detail = detail[:300]
+		}
+		return nil, fmt.Errorf("%s HTTP %d：%s", action, response.StatusCode, detail)
+	}
+	return parseTokenPayload(response.Body), nil
+}
+
+// geminiLoadTierID 提取 loadCodeAssist 报告的档位原始值：paidTier 优先、其次
+// currentTier（与 sub2api_source GetTier 同序），两者均兼容字符串与 {id} 对象
+// 两种上游形态。
+func geminiLoadTierID(load map[string]any) string {
+	for _, key := range []string{"paidTier", "currentTier"} {
+		if id := geminiTierObjectID(load[key]); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// geminiTierObjectID 归一「字符串档位或 {id} 对象档位」两种上游形态。
+func geminiTierObjectID(value any) string {
+	switch tier := value.(type) {
+	case string:
+		return strings.TrimSpace(tier)
+	case map[string]any:
+		return normalizeText(tier["id"])
+	}
+	return ""
+}
+
+// extractGeminiCompanionProject 从 cloudcode-pa 响应提取项目 ID：
+// cloudaicompanionProject 在参考实现里既有字符串形态也有 {id} 对象形态，顺带
+// 兼容 projectId/project 键（与 CLIProxyAPI extractCloudaicompanionProject 同构）。
+func extractGeminiCompanionProject(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	for _, key := range []string{"cloudaicompanionProject", "projectId", "project"} {
+		switch value := data[key].(type) {
+		case string:
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		case map[string]any:
+			if id := normalizeText(value["id"]); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// geminiOnboardUserTierID 从 loadCodeAssist 响应挑选 onboardUser 的 tierId：
+// 优先取 allowedTiers 中能被 canonicalGeminiTierID 归一的档位（isDefault 优先，
+// 其次保持上游顺序），无可用档位时回落原始档位（isDefault 优先），再回落
+// paidTier/currentTier 原始值，最后落 free-tier 兜底（两参考实现的 floor）。
+func geminiOnboardUserTierID(oauthType string, load map[string]any, fallbackTier string) string {
+	type tierOption struct {
+		id        string
+		isDefault bool
+	}
+	options := []tierOption{}
+	if tiers, ok := load["allowedTiers"].([]any); ok {
+		for _, raw := range tiers {
+			tier, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := normalizeText(tier["id"])
+			if id == "" {
+				continue
+			}
+			isDefault, _ := tier["isDefault"].(bool)
+			options = append(options, tierOption{id: id, isDefault: isDefault})
+		}
+	}
+	for _, wantDefault := range []bool{true, false} {
+		for _, option := range options {
+			if option.isDefault != wantDefault {
+				continue
+			}
+			if canonicalGeminiTierID(oauthType, option.id) != "" {
+				return option.id
+			}
+		}
+	}
+	for _, wantDefault := range []bool{true, false} {
+		for _, option := range options {
+			if option.isDefault != wantDefault {
+				continue
+			}
+			return option.id
+		}
+	}
+	if fallbackTier != "" {
+		return fallbackTier
+	}
+	return "free-tier"
 }
 
 // buildGeminiOAuthCredentials mirrors buildGeminiOAuthCredentials.

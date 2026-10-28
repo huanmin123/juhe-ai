@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,12 @@ const (
 	KeepalivePersistAttempts = 3
 	// DefaultKeepaliveBatch mirrors the OpenAI refresh batch default scale.
 	DefaultKeepaliveBatch = 20
+	// KeepaliveFailureBackoff mirrors the OpenAI refresh family's default
+	// retry backoff: both failure classes (local configuration and untrusted
+	// upstream/runtime) record the same 300s backoff in the failure state
+	// store; only local-configuration failures escalate to the terminal
+	// stopped state.
+	KeepaliveFailureBackoff = DefaultRefreshBackoffSeconds * time.Second
 )
 
 // KeepaliveResult mirrors the refresh result shape for the three-vendor job.
@@ -30,16 +37,23 @@ type KeepaliveResult struct {
 	Failed        int
 	SkippedLocked int
 	SkippedFresh  int
+	// SkippedBackoff counts accounts held out of the batch by a live failure
+	// backoff (OpenAI refresh parity).
+	SkippedBackoff int
 }
 
 // KeepaliveJob runs the anthropic/gemini/grok OAuth keepalive refresh family.
 // The refresh trigger/window semantics come from the dispatch preparation
-// (oauth-dispatch-preparation.ts); the failure handling follows the OpenAI
-// refresh family (upstream failures only back off via the caller's scheduler,
-// local configuration failures surface verbatim).
+// (oauth-dispatch-preparation.ts); the failure bookkeeping mirrors the OpenAI
+// refresh family exactly (doc.go): both failure classes record a 300s backoff,
+// three applied local-configuration failures stop an active account through
+// the shared oauth_token_refresh_local_configuration_invalid code, a
+// successful refresh clears the recorded state and restores a managed-code
+// stop, and live backoffs filter the batch (unreadable states skip the round).
 type KeepaliveJob struct {
 	store     *Store
 	exchanger TokenExchanger
+	failures  FailureStateStore
 	locks     *accountLocks
 	clock     Clock
 	logger    *slog.Logger
@@ -48,11 +62,14 @@ type KeepaliveJob struct {
 	updateCredentials func(ctx context.Context, accountID string, credentials map[string]any, expectedConfigRevision int64) (*RotationAccount, error)
 }
 
-// NewKeepaliveJob wires the job.
+// NewKeepaliveJob wires the job. failures defaults to the in-process store
+// (memory version); redis-state deployments inject the family-isolated Redis
+// store through WithKeepaliveFailureStateStore.
 func NewKeepaliveJob(store *Store, exchanger TokenExchanger, opts ...func(*KeepaliveJob)) *KeepaliveJob {
 	job := &KeepaliveJob{
 		store:     store,
 		exchanger: exchanger,
+		failures:  NewMemoryFailureStateStore(),
 		locks:     newAccountLocks(),
 		clock:     SystemClock(),
 		logger:    slog.Default(),
@@ -71,6 +88,13 @@ func WithKeepaliveClock(clock Clock) func(*KeepaliveJob) {
 // WithKeepaliveLogger overrides the logger.
 func WithKeepaliveLogger(logger *slog.Logger) func(*KeepaliveJob) {
 	return func(job *KeepaliveJob) { job.logger = logger }
+}
+
+// WithKeepaliveFailureStateStore overrides the failure state store (the
+// Redis-backed store under the keepalive family key namespace in redis-state
+// deployments). The default stays the process-local memory store.
+func WithKeepaliveFailureStateStore(store FailureStateStore) func(*KeepaliveJob) {
+	return func(job *KeepaliveJob) { job.failures = store }
 }
 
 // KeepalivePlan describes one provider's keepalive query parameters.
@@ -100,6 +124,7 @@ func (j *KeepaliveJob) RunOnce(ctx context.Context, plan KeepalivePlan, limit in
 		limit = DefaultKeepaliveBatch
 	}
 	now := j.now()
+	j.failures.CleanupBackoff(now.UnixMilli())
 	candidates, err := j.store.ListDueKeepaliveAccounts(ctx, plan.Provider, plan.AccountType, plan.Lead, limit, now)
 	if err != nil {
 		return result, err
@@ -108,6 +133,23 @@ func (j *KeepaliveJob) RunOnce(ctx context.Context, plan KeepalivePlan, limit in
 	for _, candidate := range candidates {
 		account := candidate.Account
 		if account == nil {
+			continue
+		}
+		// Batch-level backoff filter (OpenAI selectBatchCandidates parity):
+		// an unreadable failure state must not read as "no backoff" (a Redis
+		// outage would otherwise hammer the upstream), so the account skips
+		// this round; a live backoff counts SkippedBackoff and never reaches
+		// the token endpoint.
+		observedFailure, readErr := j.failures.Read(ctx, account.ID, j.now().UnixMilli(), account.ConfigRevision)
+		if readErr != nil {
+			j.logger.Warn("供应商 OAuth 保活失败状态读取失败，本轮跳过该账户",
+				"event", "oauth_keepalive_failure_state_read_failed",
+				"error", readErr,
+				"accountId", account.ID)
+			continue
+		}
+		if observedFailure != nil && observedFailure.BackoffUntil > j.now().UnixMilli() {
+			result.SkippedBackoff++
 			continue
 		}
 		result.Due++
@@ -124,18 +166,19 @@ func (j *KeepaliveJob) RunOnce(ctx context.Context, plan KeepalivePlan, limit in
 				continue
 			}
 			result.Failed++
-			logAttrs := append([]any{
-				"event", "oauth_keepalive_refresh_account_failed",
-				"provider", plan.Provider,
-				"accountId", account.ID,
-				"accountName", account.Name,
-			}, tokenExchangeFailureLogAttrs(lockErr, plan.Provider, "oauth_keepalive_refresh", map[string]any{
-				"provider":  plan.Provider,
-				"accountId": account.ID,
-			})...)
-			j.logger.Warn("供应商 OAuth 保活刷新失败", logAttrs...)
+			j.recordKeepaliveFailure(ctx, plan, account, lockErr)
 			continue
 		}
+		// Success: clear the observed failure state and restore a previously
+		// stopped account (OpenAI restoreIfRecovered parity).
+		if observedFailure != nil {
+			if clearErr := j.failures.Clear(ctx, account.ID, *observedFailure); clearErr != nil {
+				j.logger.Warn("OAuth 保活刷新成功后清理失败退避状态失败，退避残留至到期自然失效",
+					"event", "oauth_keepalive_backoff_clear_failed",
+					"accountId", account.ID, "error", clearErr)
+			}
+		}
+		j.restoreIfRecovered(ctx, account)
 		if !refreshed {
 			result.SkippedFresh++
 			continue
@@ -143,6 +186,82 @@ func (j *KeepaliveJob) RunOnce(ctx context.Context, plan KeepalivePlan, limit in
 		result.Refreshed++
 	}
 	return result, nil
+}
+
+// recordKeepaliveFailure mirrors the OpenAI processCandidate failure branch:
+// classify (local configuration vs untrusted upstream/runtime), record the
+// failure state with the default 300s backoff, and write the terminal stopped
+// state after 3 applied local-configuration failures on an active account.
+// Upstream failures never mark an account terminal.
+func (j *KeepaliveJob) recordKeepaliveFailure(ctx context.Context, plan KeepalivePlan, account *RotationAccount, refreshErr error) {
+	failureKind := FailureKindUntrustedUpstream
+	if IsLocalConfigurationError(refreshErr) {
+		failureKind = FailureKindLocalConfiguration
+	}
+	failureState, recordErr := j.failures.Record(ctx, account.ID, j.now().Add(KeepaliveFailureBackoff).UnixMilli(), failureKind, account.ConfigRevision)
+	if recordErr != nil {
+		j.logger.Error("供应商 OAuth 保活失败状态写入失败", "error", recordErr, "accountId", account.ID)
+		return
+	}
+	logAttrs := append([]any{
+		"event", "oauth_keepalive_refresh_account_failed",
+		"provider", plan.Provider,
+		"accountId", account.ID,
+		"accountName", account.Name,
+		"failureCount", failureState.Count,
+		"localConfigurationFailureCount", failureState.LocalConfigurationCount,
+		"failureKind", string(failureKind),
+		"failureStateApplied", failureState.Applied,
+	}, tokenExchangeFailureLogAttrs(refreshErr, plan.Provider, "oauth_keepalive_refresh", map[string]any{
+		"provider":  plan.Provider,
+		"accountId": account.ID,
+	})...)
+	j.logger.Warn("供应商 OAuth 保活刷新失败", logAttrs...)
+
+	if failureState.Applied &&
+		failureState.LocalConfigurationCount >= openAIOAuthRefreshFailureThreshold &&
+		account.Status == "active" {
+		updated, err := j.store.MarkAccountFailureState(ctx, account.ID,
+			OpenAIOAuthTokenRefreshLocalConfigurationInvalidCode,
+			keepaliveLocalConfigurationStoppedMessage(plan.Provider, int(failureState.LocalConfigurationCount), sanitizedErrorMessage(refreshErr)),
+			failureState.ConfigRevision, "active")
+		if err != nil {
+			j.logger.Error("供应商 OAuth 保活本地配置异常标记失败", "error", err, "accountId", account.ID)
+			return
+		}
+		if updated {
+			if clearErr := j.failures.Clear(ctx, account.ID, failureState); clearErr != nil {
+				j.logger.Warn("OAuth 保活本地配置异常停用后清理失败退避状态失败",
+					"event", "oauth_keepalive_backoff_clear_failed",
+					"accountId", account.ID, "error", clearErr)
+			}
+			j.logger.Warn("供应商 OAuth 保活连续本地配置失败，已停止该账户自动刷新",
+				"event", "oauth_keepalive_local_configuration_invalid",
+				"provider", plan.Provider,
+				"accountId", account.ID)
+		}
+	}
+}
+
+// restoreIfRecovered mirrors the OpenAI restoreIfRecovered: a successful
+// keepalive refresh restores an account previously stopped by a managed
+// refresh error code (re-authorization bumps the revision so the next batch
+// refresh confirms recovery and clears the stop).
+func (j *KeepaliveJob) restoreIfRecovered(ctx context.Context, account *RotationAccount) {
+	if account.Status != "error" || !isManagedOpenAIOAuthRefreshErrorCode(account.LastErrorCode) {
+		return
+	}
+	changed, status, err := j.store.ClearAccountFailureState(ctx, account.ID, ManagedRefreshErrorCodes)
+	if err != nil {
+		j.logger.Error("供应商 OAuth 保活刷新失败账户恢复失败", "error", err, "accountId", account.ID)
+		return
+	}
+	if changed && status == "active" {
+		j.logger.Info("供应商 OAuth 保活刷新成功，已自动恢复此前刷新失败异常",
+			"event", "oauth_keepalive_refresh_account_restored",
+			"accountId", account.ID,
+			"accountName", account.Name)
+	}
 }
 
 // refreshOne mirrors refreshAndPersistXxxOAuthAccount: re-read the source,
@@ -311,4 +430,31 @@ func providerMissingRefreshTokenMessage(provider string) string {
 		return "Gemini OAuth 账户缺少 Refresh Token"
 	}
 	return "Grok OAuth 账户缺少 Refresh Token"
+}
+
+func providerDisplayName(provider string) string {
+	switch provider {
+	case ProviderAnthropic:
+		return "Anthropic"
+	case ProviderGemini:
+		return "Gemini"
+	}
+	return "Grok"
+}
+
+// keepaliveLocalConfigurationStoppedMessage mirrors the OpenAI terminal reason
+// copy with the provider display name (the terminal error code is the shared
+// oauth_token_refresh_local_configuration_invalid; joined and truncated to
+// 1000 characters).
+func keepaliveLocalConfigurationStoppedMessage(provider string, failureCount int, lastError string) string {
+	message := strings.Join([]string{
+		fmt.Sprintf("%s OAuth 访问令牌连续 %d 次因本地配置错误无法启动刷新，已停止自动刷新。", providerDisplayName(provider), failureCount),
+		"该结论只来自本地可验证的凭据、代理配置解析或解密失败，不使用上游 HTTP 状态、错误码或响应正文推断账户状态。",
+		"请在账户页检查并修正 OAuth 凭据或代理配置，然后重新检查账户。",
+		fmt.Sprintf("最后本地错误：%s", lastError),
+	}, " ")
+	if len([]rune(message)) > 1000 {
+		message = truncateRunes(message, 1000)
+	}
+	return message
 }

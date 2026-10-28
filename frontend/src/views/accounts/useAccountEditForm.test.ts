@@ -16,7 +16,8 @@ import {
   OPENAI_VIDEO_GENERATION_FAMILY,
   VOLCENGINE_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
-import type { ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import { api } from '@/api/client'
+import type { AccountEditBasicDetail, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
 import {
   applyProviderDefinitionDefaultsAfterLoad,
@@ -132,7 +133,8 @@ type EditFormContext = ReturnType<typeof useAccountEditForm>
 
 function mountMediaEditForm(
   buildEnsure: (providerDefinitions: Ref<ProviderDefinition[]>) => UseAccountEditFormOptions['ensureProviderDefinition'],
-  capabilityDomain: Ref<'chat' | 'video' | 'audio' | 'image'> = ref('chat')
+  capabilityDomain: Ref<'chat' | 'video' | 'audio' | 'image'> = ref('chat'),
+  overrides: Partial<UseAccountEditFormOptions> = {}
 ) {
   const providers = ref<ProviderDefinition[]>([])
   const providerDefinitions = ref<ProviderDefinition[]>([])
@@ -156,7 +158,8 @@ function mountMediaEditForm(
         refreshAccountMutationRows: async () => {},
         providerDefinitions,
         providers,
-        systemAccounts
+        systemAccounts,
+        ...overrides
       })
       // 模拟 AccountMediaForm 新建态域默认 watch（编辑态不重放；用例不触发
       // 域外类型回退分支，故省略 select-type-choice 回退）。
@@ -398,6 +401,102 @@ describe('useAccountEditForm.openCreate（v8-D：媒体域新建默认供应商�
       expect(chat.ctx.form.providerCode).toBe('gpt')
     } finally {
       chat.unmount()
+    }
+  })
+})
+
+// ---- 方案 B：托管 OAuth 创建成功后转编辑（reopenCreatedAccountForEdit） ----
+
+const createdOAuthDetail: AccountEditBasicDetail = {
+  id: 'account-created-new',
+  configRevision: 3,
+  ownerSystemAccountId: '',
+  providerCode: 'gpt',
+  providerProtocolProfileId: 'gpt_openai_v1',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  name: '后端派生的 OAuth 账户',
+  type: 'oauth',
+  // 后端 CreateOAuthAccount 派生连接时会写入 base_url；edit-basic 装配按 openEdit
+  // 既有契约要求该凭据存在，缺失即装配失败（openEditAtPath 复位并关闭弹窗）。
+  credentials: { base_url: 'https://api.openai.com/v1' },
+  status: 'pending_test',
+  concurrencyLimit: 20,
+  priority: 0,
+  superPriorityEnabled: false,
+  fallbackEnabled: false,
+  clientCompatibility: 'openai_standard',
+  supportedModels: ['gpt-5.5', 'gpt-5.4'],
+  tags: [],
+  healthCheckModel: 'gpt-5.4',
+  healthCheckEndpointMode: 'chat_json',
+  boundGroupId: 'group-created',
+  boundGroupName: '默认分组'
+}
+
+describe('useAccountEditForm.reopenCreatedAccountForEdit（方案 B：创建成功转编辑）', () => {
+  it('创建态转编辑：弹窗保持打开，editingId 与表单按 edit-basic 详情装配，派生模型回填', async () => {
+    const detailSpy = vi.spyOn(api.myAccounts, 'editBasicDetail').mockResolvedValue(createdOAuthDetail)
+    const { ctx, unmount } = mountMediaEditForm(() => async () => undefined)
+    try {
+      await ctx.openCreate()
+      // 创建表单残留：用户已输入的名称与派生值不同，转编辑后必须被详情整体覆盖。
+      ctx.form.name = '待创建账户'
+      const loadingTransitions: Array<[boolean, boolean]> = []
+      watch(ctx.accountEditDetailLoading, (next, prev) => { loadingTransitions.push([prev, next]) })
+      await ctx.reopenCreatedAccountForEdit(createdOAuthDetail.id)
+      await flushTicks()
+      expect(detailSpy).toHaveBeenCalledWith(createdOAuthDetail.id)
+      // 弹窗不关闭（坑 a：open 保持 true，不触发 open watch 重置）。
+      expect(ctx.modalOpen.value).toBe(true)
+      expect(ctx.editingId.value).toBe(createdOAuthDetail.id)
+      expect(ctx.form.name).toBe(createdOAuthDetail.name)
+      expect(ctx.form.supportedModels).toEqual(['gpt-5.5', 'gpt-5.4'])
+      expect(ctx.form.healthCheckModel).toBe('gpt-5.4')
+      expect(ctx.cloningSourceId.value).toBeUndefined()
+      expect(ctx.authResult.value).toBeUndefined()
+      // 坑 b：loading 必须 true→false 跳变（编辑态 advanced 自动加载依赖该跳变）。
+      expect(loadingTransitions).toContainEqual([true, false])
+      expect(ctx.accountEditDetailLoading.value).toBe(false)
+    } finally {
+      unmount()
+      detailSpy.mockRestore()
+    }
+  })
+
+  it('edit-basic 详情加载失败：沿用 openEdit 失败行为，关闭弹窗并复位编辑态', async () => {
+    // 真实失败路径是请求异常：loadAccountDetailForForm catch 后提示并返回 undefined。
+    const detailSpy = vi.spyOn(api.myAccounts, 'editBasicDetail').mockRejectedValue(new Error('网络失败'))
+    const { ctx, unmount } = mountMediaEditForm(() => async () => undefined)
+    try {
+      await ctx.openCreate()
+      await ctx.reopenCreatedAccountForEdit('account-missing')
+      await flushTicks()
+      expect(ctx.modalOpen.value).toBe(false)
+      expect(ctx.editingId.value).toBeUndefined()
+      expect(ctx.accountEditDetailLoading.value).toBe(false)
+    } finally {
+      unmount()
+      detailSpy.mockRestore()
+    }
+  })
+
+  it('管理视图转编辑：无列表行时编辑 scope 用创建时 accountScopeParams 桥接 systemAccountId', async () => {
+    const adminDetailSpy = vi.spyOn(api.accounts, 'editBasicDetail').mockResolvedValue(createdOAuthDetail)
+    const { ctx, unmount } = mountMediaEditForm(() => async () => undefined, ref('chat'), {
+      isManagementView: computed(() => true),
+      accountScopeParams: computed(() => ({ systemAccountId: 'sys-1' }))
+    })
+    try {
+      await ctx.openCreate()
+      await ctx.reopenCreatedAccountForEdit(createdOAuthDetail.id)
+      await flushTicks()
+      expect(adminDetailSpy).toHaveBeenCalledWith(createdOAuthDetail.id, { systemAccountId: 'sys-1' })
+      expect(ctx.editingId.value).toBe(createdOAuthDetail.id)
+      expect(ctx.modalOpen.value).toBe(true)
+    } finally {
+      unmount()
+      adminDetailSpy.mockRestore()
     }
   })
 })

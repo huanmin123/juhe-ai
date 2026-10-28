@@ -28,7 +28,23 @@
 //     environments) — only local-configuration failures do.
 //   - keepalive window: anthropic 60s, gemini 60s, grok 300s
 //     (oauth-dispatch-preparation lead constants) with a 3-attempt
-//     config-revision CAS retry per refresh.
+//     config-revision CAS retry per refresh. Keepalive failure bookkeeping
+//     mirrors the OpenAI refresh family exactly (T65-③, 2026-10-28): both
+//     failure classes — IsLocalConfigurationError (missing refresh token,
+//     unusable proxy, missing source row) and everything else including
+//     upstream responses — record a default 300s backoff in the failure state
+//     store; 3 applied local-configuration failures on an active account write
+//     the shared terminal code oauth_token_refresh_local_configuration_invalid
+//     and then clear the failure state (the due scan excludes terminal
+//     accounts, so the family stops refreshing); a successful refresh clears
+//     the recorded state and restores an account stopped by a managed refresh
+//     error code; accounts with a live backoff are filtered out of the batch
+//     (SkippedBackoff) and an unreadable failure state skips the account for
+//     the round. Upstream failures never mark a keepalive account terminal.
+//     Redis failure-state keys use a family-isolated prefix
+//     (juhe-ai:state:oauth-keepalive-failure:{hash}) while the OpenAI family
+//     keeps its historical openai-oauth-refresh-failure prefix byte-for-byte,
+//     so existing records stay readable and the two families never alias.
 //   - sweep threshold: grants with status active/paused and expires_at <= now
 //     become expired, batch 20, ordered expires_at/updated_at/id.
 //   - sync semantics: due schedule rows are evaluated for boundary events,

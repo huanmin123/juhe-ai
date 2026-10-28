@@ -102,14 +102,15 @@ func TestCatalogDisplayRequiredSectionsByMode(t *testing.T) {
 	}
 }
 
-// TestCatalogDisplaySourceDisclosureAlwaysPresent 钉住「凡有
-// SourcePricingNote 必有来源披露」：CNY 行出美元换算、USD 行出来源披露，
-// 不因 provider 未知或币种缺失而丢披露（USD 行无出口缺陷回归钉）。
-func TestCatalogDisplaySourceDisclosureAlwaysPresent(t *testing.T) {
+// TestCatalogDisplaySourceDisclosureNotGenerated 钉住披露 section 停生成契约
+//（供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
+// 来源文本不进客户可见目录；CNY 行、USD 行、未声明币种行都不再渲染
+// currency_conversion / source_disclosure，原始来源留档仍在 catalogdata
+// JSON 的 sourcePricingNote 字段。
+func TestCatalogDisplaySourceDisclosureNotGenerated(t *testing.T) {
 	cases := []struct {
-		name    string
-		item    ModelCatalogItem
-		wantKey string
+		name string
+		item ModelCatalogItem
 	}{
 		{
 			name: "CNY 行",
@@ -118,7 +119,6 @@ func TestCatalogDisplaySourceDisclosureAlwaysPresent(t *testing.T) {
 				SourceExchangeRateToUsd: ptrFloat64(7.0), SourceExchangeRateDate: "2026-10-05",
 				SourcePricingNote: "官方人民币价",
 			},
-			wantKey: "currency_conversion",
 		},
 		{
 			name: "USD 行",
@@ -126,21 +126,80 @@ func TestCatalogDisplaySourceDisclosureAlwaysPresent(t *testing.T) {
 				ProviderCode: "glm", SourcePricingCurrency: "USD",
 				SourcePricingNote: "官方国际站 USD 明文价",
 			},
-			wantKey: "source_disclosure",
 		},
 		{
 			name: "未声明币种但有 note 的行",
 			item: ModelCatalogItem{
 				ProviderCode: "unknown", SourcePricingNote: "官方明文价",
 			},
-			wantKey: "source_disclosure",
 		},
 	}
 	for _, tc := range cases {
 		item := tc.item
 		keys := sectionKeysOf(&item)
-		if !keys[tc.wantKey] {
-			t.Errorf("%s: 缺 %q（实际 keys %v）", tc.name, tc.wantKey, keys)
+		for _, forbidden := range []string{"currency_conversion", "source_disclosure"} {
+			if keys[forbidden] {
+				t.Errorf("%s: 不应再生成 %q（实际 keys %v）", tc.name, forbidden, keys)
+			}
+		}
+	}
+}
+
+// TestCatalogDisplayDeepSeekOffPeakOnlyForDeepSeek 钉住 offpeak_pricing 的
+// 供应商边界：仅 deepseek 投影生成「空闲时段参考价」，key/label 与
+// token_pricing 一一对应、值为高峰价 × deepSeekOffPeakRatio；其余供应商
+// 同形状行不生成（半价规则不散落复制）。
+func TestCatalogDisplayDeepSeekOffPeakOnlyForDeepSeek(t *testing.T) {
+	price := 1.14285714
+	cacheRead := 0.28571429
+	deepseek := &ModelCatalogItem{
+		ProviderCode:       "deepseek",
+		Model:              "deepseek-chat",
+		InputUsdPer1M:      &price,
+		CachedInputUsdPer1M: &cacheRead,
+	}
+	sections := map[string]catalogDisplaySection{}
+	for _, section := range buildProviderCatalogDisplay(deepseek) {
+		sections[section.Key] = section
+	}
+	offpeak, ok := sections["offpeak_pricing"]
+	if !ok {
+		t.Fatalf("deepseek 缺少 offpeak_pricing: %+v", sections)
+	}
+	token, ok := sections["token_pricing"]
+	if !ok {
+		t.Fatalf("deepseek 缺少 token_pricing: %+v", sections)
+	}
+	peakByKey := map[string]catalogDisplayItem{}
+	for _, entry := range token.Items {
+		peakByKey[entry.Key] = entry
+	}
+	want := map[string]float64{"cache_miss": price * 0.5, "cache_hit": cacheRead * 0.5}
+	for _, entry := range offpeak.Items {
+		expect, ok := want[entry.Key]
+		if !ok {
+			t.Fatalf("offpeak 条目 %q 不在预期 key 集", entry.Key)
+		}
+		got, ok := entry.Value.(float64)
+		if !ok || got != expect {
+			t.Fatalf("offpeak 条目 %q = %v, want %v", entry.Key, entry.Value, expect)
+		}
+	}
+	if _, exists := sections["peak_schedule"]; exists {
+		t.Fatalf("deepseek 不应再生成 peak_schedule（时段口径唯一落点为价格表说明）: %+v", sections)
+	}
+
+	glm := &ModelCatalogItem{
+		ProviderCode: "glm",
+		Model:        "glm-5",
+		InputUsdPer1M: &price,
+	}
+	for _, section := range buildProviderCatalogDisplay(glm) {
+		if section.Key == "offpeak_pricing" {
+			t.Fatalf("非 deepseek 投影不应生成 offpeak_pricing: %+v", section)
+		}
+		if section.Key == "peak_schedule" {
+			t.Fatalf("非 deepseek 投影不应生成 peak_schedule: %+v", section)
 		}
 	}
 }

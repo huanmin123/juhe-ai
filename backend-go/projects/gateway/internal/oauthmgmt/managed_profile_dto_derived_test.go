@@ -38,8 +38,11 @@ func TestManagedCreateProfileIDDTOGeminiDerivesNative(t *testing.T) {
 	env.exchanger.respond = staticToken(`{"access_token":"gem-dto-access","refresh_token":"gem-dto-refresh","expires_in":3600,"token_type":"Bearer"}`)
 
 	// gemini 缺省派生值必须等于 native pin：等值门只在派生正确时放行。
+	// 显式 projectId 走零探测路径（T65-② 起 code_assist/google_one 未带
+	// project 的建户会先做 Code Assist 探测/onboarding，与本测钉的派生契约
+	// 无关）。
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"rt-gem-dto","name":"DTO gemini 派生"}`)
+		`{"refreshToken":"rt-gem-dto","projectId":"dto-gem-proj","name":"DTO gemini 派生"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("gemini 缺省派生建户: %d %v", code, payload)
 	}

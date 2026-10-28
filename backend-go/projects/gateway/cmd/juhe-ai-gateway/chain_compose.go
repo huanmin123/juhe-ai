@@ -222,6 +222,12 @@ type chainRuntimeDeps struct {
 	// record_maintenance_jobs 快照行，kind anthropic_claude）。
 	AnthropicUsageHeadersDispatcher gatewaycodex.AnthropicUsageHeadersDispatcher
 
+	// OAuthTokenRefresh 是 OAuth 401 自动刷新协调器（T65-①，
+	// chain_oauth_refresh.go；optional：nil 时派发器保持现状 SkipAccount，自动
+	// 刷新整体缺席——仅组合测试）。生产装配在 compose.go：oauthStore +
+	// chainServices.Cache 同源注入。
+	OAuthTokenRefresh *chainOAuthRefreshCoordinator
+
 	// 失败派发链装配（chain_request_failure_health.go / chain_turn_probe_store.go /
 	// chain_turn_retry_redis.go）：健康检查派发的进程内 outbox writer（常驻，
 	// 无 HTTP 目标）+ Redis 驱动的 turn-retry 状态存储（nil → memory 驱动，
@@ -554,6 +560,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		codexUsageHeaders:     deps.CodexUsageHeadersDispatcher,
 		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
 		negativeCache:         requestNegativeCache,
+		oauthRefresh:          deps.OAuthTokenRefresh,
 	}
 	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache, chainBodyParser), failureDispatcher)
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源

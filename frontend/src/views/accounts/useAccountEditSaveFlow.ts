@@ -28,6 +28,7 @@ import {
   type AccountSavePayload
 } from './accountSavePayload'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
+import { capabilityDomainIsMedia } from './accountCapabilityDomains'
 import { normalizedAccountApiKeys } from './accountCredentials'
 import { managedOAuthProviderKind, type ManagedOAuthProviderKind } from './accountProviderCapabilities'
 import { normalizeGrokSsoTokens } from './grokSsoTokens'
@@ -73,6 +74,8 @@ interface UseAccountEditSaveFlowOptions {
   providerModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   modalOpen: Ref<boolean>
   providers: ReadonlyValue<ProviderDefinition[]>
+  /** 方案 B：托管 OAuth 单账户创建成功且锁死配置保存成功后，以新账户 id 转入编辑态（弹窗保持打开）。 */
+  reopenCreatedAccountForEdit?: (accountId: string) => Promise<void>
 }
 
 export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
@@ -211,10 +214,29 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
             return
           }
         } else {
-          const created = usesManagedOAuthCreateFlow(options.form, options.providers.value) && options.form.oauthMode !== 'access_token'
+          const managedCreate = usesManagedOAuthCreateFlow(options.form, options.providers.value) && options.form.oauthMode !== 'access_token'
+          const created = managedCreate
             ? await createOAuthAccountFromUnifiedForm()
             : await createApiKeyAccount(payload)
           await saveCreatedAccountLockConfig(created)
+          // 方案 B：托管 OAuth 创建成功且锁死配置已保存（或本就无需保存）时不关弹窗，
+          // 先刷新列表再转入该账户编辑态——支持模型/检查模型/连接已由后端
+          // CreateOAuthAccount 自动派生，编辑态供用户继续调整。转编辑仅限 chat 域：
+          // managedCreate 同时决定创建路由（媒体域 gemini google_oauth 依赖托管路由
+          // 换取凭据），域排除必须落在转编辑判定上，媒体域创建成功仍走既有路径关
+          // 弹窗、用旧文案。锁死保存失败在上一步抛错走 catch，保持创建态由
+          // pendingCreatedLock 重试，不进入转编辑。
+          if (
+            managedCreate
+            && !capabilityDomainIsMedia(options.form.capabilityDomain)
+            && created.id
+            && options.reopenCreatedAccountForEdit
+          ) {
+            message.success(managedOAuthCreatedAccountText())
+            await options.loadData()
+            await options.reopenCreatedAccountForEdit(created.id)
+            return
+          }
           message.success(accountCreatedSuccessText('OAuth 账户', created?.status === 'active'))
         }
       } else {
@@ -752,4 +774,10 @@ function geminiOAuthClientPayload(form: AccountFormModel): Record<string, unknow
 // 创建成功提示：加入分组为必选项（validateAccountSaveForm 创建/编辑一致强校验），不存在未分组分支。
 export function accountCreatedSuccessText(label: string, active: boolean): string {
   return active ? `${label}已创建并启用` : `${label}已创建，等待后台检查`
+}
+
+// 方案 B 转编辑提示：托管 OAuth 创建成功后弹窗转入该账户编辑态，支持模型与检查模型
+// 已由后端自动派生，不再使用「已创建并启用/等待后台检查」的关弹窗文案。
+export function managedOAuthCreatedAccountText(): string {
+  return '账户已创建，支持模型与检查项已自动配置，可继续调整'
 }

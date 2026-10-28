@@ -94,6 +94,11 @@ assert.match(basicInfoSource, /<a-form-item class="dispatch-status-field" label=
 assert.match(basicInfoSource, /@change="form\.statusSelectionExplicit = true"/, '手动切换状态必须标记为显式选择')
 assert.doesNotMatch(healthCheckModelFieldSource, /allow-clear/, '必填检查模型不得暴露清空入口并生成后端不接受的 null PATCH')
 assert.match(savePayloadSource, /if \(!healthCheckModel && !oauthDefaultsAllowed\) return '请选择检查模型'/, '保存前必须在前端拦截空检查模型（国外 OAuth 供应商创建留空时由后端默认模型兜底）')
+assert.match(
+  savePayloadSource,
+  /const oauthDefaultsAllowed = !editingId[\s\S]*?includes\(form\.providerCode\)\s*&& form\.oauthMode !== 'access_token'/,
+  'access_token 直录创建走普通 create 端点且后端硬拒绝空支持模型，前端派生放行必须排除该形态'
+)
 assert.match(editFormSource, /supportedModels\[0\] \?\? ''/, '已选检查模型离开支持模型集合时应回落到首个可用模型')
 assert.match(cachedDefaultGroupSource, /getCachedUserReferenceData\(referenceParams\)/, '新增表单应直接读取登录后预热的默认分组缓存')
 assert.doesNotMatch(cachedDefaultGroupSource, /loadUserReferenceData|api\./, '默认分组缓存缺失时弹窗不得补发网络请求')
@@ -636,6 +641,47 @@ assert.equal(
   }),
   '检查模型必须从账户支持模型中选择',
   '检查模型不属于支持模型时必须拒绝保存'
+)
+
+// access_token 直录形态没有后端派生兜底（accounts/routes.go create → Store.Create
+// 硬拒绝空支持模型）：空模型必须在提交前被前端校验拦截，与必填星号和后端对齐。
+const directTokenForm = defaultAccountForm('gpt', 'oauth', FALLBACK_PROVIDERS)
+directTokenForm.oauthMode = 'access_token'
+directTokenForm.name = '直录 Token 回归账户'
+directTokenForm.groupId = 'group_direct_token'
+directTokenForm.group = { id: directTokenForm.groupId, name: '直录 Token 回归分组' }
+directTokenForm.baseUrl = 'https://api.openai.com/v1'
+directTokenForm.accessToken = 'at-direct-token-regression'
+assert.equal(
+  validateAccountSaveForm({
+    form: directTokenForm,
+    hasAuthSession: false,
+    errorPolicyRules: [],
+    responseInspectionRules: [],
+    providers: FALLBACK_PROVIDERS
+  }),
+  '请选择支持模型',
+  'access_token 直录创建空支持模型必须在提交前被前端校验拦截'
+)
+// 托管授权形态（refresh_token）空模型仍放行：oauthmgmt CreateOAuthAccount 派生兜底。
+const managedRefreshForm = defaultAccountForm('gpt', 'oauth', FALLBACK_PROVIDERS)
+managedRefreshForm.oauthMode = 'refresh_token'
+managedRefreshForm.name = '托管创建回归账户'
+managedRefreshForm.groupId = 'group_managed_create'
+managedRefreshForm.group = { id: managedRefreshForm.groupId, name: '托管创建回归分组' }
+managedRefreshForm.baseUrl = 'https://api.openai.com/v1'
+managedRefreshForm.refreshToken = 'rt-managed-regression'
+managedRefreshForm.proxyProfileId = 'proxy-managed-regression'
+assert.equal(
+  validateAccountSaveForm({
+    form: managedRefreshForm,
+    hasAuthSession: false,
+    errorPolicyRules: [],
+    responseInspectionRules: [],
+    providers: FALLBACK_PROVIDERS
+  }),
+  undefined,
+  '托管授权形态创建留空支持模型仍由后端派生兜底，前端不得拦截'
 )
 
 assert.equal(

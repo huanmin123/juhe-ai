@@ -648,9 +648,11 @@ func TestW13g6RouteBodyArms(t *testing.T) {
 	}
 	// gemini create-from-refresh：无 safePatch 的 tokenOutcome（plans.go 252-254）。
 	// DTO 收口后 profile 缺省派生放行（旧 400 来自 profile 必填门），脚本上游
-	// 返回合法 token → 全链建户成功。
+	// 返回合法 token → 全链建户成功。显式 projectId 走零探测路径（T65-② 起
+	// 未带 project 的 code_assist 建户会先做 Code Assist 探测/onboarding，与
+	// 本臂钉的 safePatch 契约无关）。
 	if code, payload := w13g6Do(t, env, server, http.MethodPost, "/__aisys__/api/gemini-oauth/create-from-refresh-token",
-		`{"refreshToken":"r","clientId":"c"}`); code != http.StatusCreated {
+		`{"refreshToken":"r","clientId":"c","projectId":"w13g6-gem-proj"}`); code != http.StatusCreated {
 		t.Fatalf("gemini create-from-refresh: %d %v", code, payload)
 	}
 }

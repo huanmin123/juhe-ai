@@ -65,7 +65,14 @@ const managedOAuthDefaultsAllowed = computed(() => (
   ['oauth', 'google_oauth'].includes(props.form.type)
   && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode)
 ))
-const checkModelRequired = computed(() => props.editing || !managedOAuthDefaultsAllowed.value)
+const checkModelRequired = computed(() => (
+  props.editing
+  // access_token 直录创建走普通 create 端点，健康检查三件套后端显式必填且无派生
+  // 兜底（accounts/write.go 三件套缺失即 ValidationError），必填感知须与「支持模型」
+  // 字段一致；AccountApiKeySection 场景 form.oauthMode 为 undefined，条件不触发。
+  || props.form.oauthMode === 'access_token'
+  || !managedOAuthDefaultsAllowed.value
+))
 const autoHintText = computed(() => {
   if (props.editing) return ''
   return checkModelRequired.value ? '自动推荐' : '可留空'

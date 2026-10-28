@@ -4,6 +4,7 @@ import type {
   ProviderModelOption,
   ProviderModelCapabilities,
   ProviderModelMutationResult,
+  ProviderModelPlaza,
   ProviderOption,
   ProviderModelPatchPayload,
   ProviderModelPricing,
@@ -12,6 +13,14 @@ import type {
 } from '@/types/domain'
 import type { ListParams } from '../contracts'
 import { http, unwrap } from '../http'
+
+/** `/providers/models/plaza` 查询参数：参数序列化与 models 方法同口径（空值不传，'all' 归一由调用方完成）。 */
+export interface ProviderModelPlazaParams {
+  /** 管理面请求（单值 + admin 角色判定）；缺省为用户面窗口，后端把归属 pin 到本人。 */
+  viewScope?: 'admin'
+  /** 管理面归属过滤；非管理面请求后端忽略并恒 pin 本人。 */
+  systemAccountId?: string
+}
 
 export interface ProviderModelOptionsParams extends ListParams {
   providerCode?: string
@@ -52,6 +61,8 @@ export const providersApi = {
   modelOptionProviderCodes: (params?: ProviderModelOptionsParams) => unwrap<{ providerCodes: string[] }>(http.get('/providers/models/options/provider-codes', { params })),
   modelCapabilities: (code: string, modelId: string, params?: ListParams) => unwrap<ProviderModelCapabilities>(http.get(`/providers/${code}/models/${encodeURIComponent(modelId)}/capabilities`, { params })),
   models: (code: string, params?: ProviderModelsParams) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`, { params })),
+  /** 模型广场聚合读：providers 摘要 + 逐供应商目录行（跨供应商不合并），一次性加载 + 客户端筛选分页。 */
+  modelPlaza: (params?: ProviderModelPlazaParams) => unwrap<ProviderModelPlaza>(http.get('/providers/models/plaza', { params })),
   createModel: async (code: string, payload: ProviderModelUpsertPayload, params?: ListParams) => {
     return unwrap<ProviderModelPricing>(http.post(`/providers/${code}/models`, payload, { params }))
   },

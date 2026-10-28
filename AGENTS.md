@@ -33,11 +33,12 @@
 
 ## 本地管理页面测试
 
-- 需要通过项目管理页面执行 AI 账户、模型、探针或其他本地联调测试时，默认启动隔离的 Go 后端开发实例（`backend-go/projects/gateway` 的 `juhe-ai-gateway`，需 schema 时先用 `backend-go/projects/maintenance` 的 `juhe-ai-maintenance --ensure-schema/--seed` 初始化隔离库）并使用开发自动登录；不得把截图、识别或人工输入验证码作为默认测试步骤。
-- 隔离后端至少设置 `JUHE_AI_DEV_AUTO_LOGIN_USERNAME=admin` 和 `JUHE_AI_AUTH_CAPTCHA_DISABLED=true`（Go gateway 支持这两个变量），并使用隔离的 PostgreSQL/Redis 连接（独立库或独立 schema，schema 经 `juhe-ai-maintenance --ensure-schema --seed --dsn` 初始化）与独立的日志、用量 spool 等运行时文件目录，禁止污染现有开发数据。
-- 隔离前端通过 `VITE_JUHE_AI_BACKEND_TARGET` 和 `VITE_JUHE_AI_GATEWAY_BASE_URL` 指向该隔离后端；使用未占用的新端口，不停止或复用用户已经运行的前后端进程。
-- 浏览器打开前必须完成隔离预检：确认后端健康检查指向本次新端口，`/auth/me` 已返回配置的开发账户，且 `/auth/captcha` 返回 `required: false`；任一检查失败都必须先修复启动配置，禁止把登录页当作目标页面继续操作。
-- 端口选择必须以实时监听检查为准；默认端口被占用时自动选择未占用的新后端端口和前端端口，并同步更新 `VITE_JUHE_AI_BACKEND_TARGET`，不得复用已有服务、抢占端口或停止用户进程。
+> 2026-10-28 用户裁决：不再要求隔离子库/独立 schema，本地管理页面测试直接使用 dev 环境（真实 dev PostgreSQL / Redis）；旧的"隔离实例"条款已按此收窄。
+
+- 需要通过项目管理页面执行 AI 账户、模型、探针或其他本地联调测试（含视觉自查 / E2E）时，直接使用 dev 环境：仓库根 `.env` 已绑定 `shared.env`，根目录 `pnpm dev` 一键拉起 gateway → jobs → 前端 vite，连接真实 dev PostgreSQL / Redis；开发自动登录与验证码关闭由 dev profile 提供。不得把截图、识别或人工输入验证码作为默认测试步骤。
+- 浏览器打开前必须完成预检：gateway 管理面 API 可达（如 `/auth/captcha` 返回 `required: false`），登录后页面为配置的开发账户；任一检查失败先修复启动配置，禁止把登录页当作目标页面继续操作。
+- 后端代码改动后必须重启 gateway 进程（vite 热更新只覆盖前端），否则页面渲染的是旧后端响应。
+- 端口被占用或进程冲突时，先向用户说明并获得许可再重启其进程；用户已明确授权"随便搞"的会话内可直接重启 dev 实例。
 - 只有自动登录功能本身就是被测对象，或自动登录经上述预检确认不可用时，才允许测试登录流程；仍不得尝试破解验证码。
 - 测试凭据只能从用户明确指定的本地文件或当次消息读取，不写入源码、文档、日志或测试产物；输出、审计检查和最终报告必须脱敏。
 

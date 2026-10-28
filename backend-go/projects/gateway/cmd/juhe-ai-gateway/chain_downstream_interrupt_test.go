@@ -265,3 +265,177 @@ func TestGatewayChainCommittedStreamFailureInterruptsWithoutAccountSwitch(t *tes
 		t.Fatalf("upstream hits = %d, want 1（提交后失败只有一次上游请求）", upstreamHits.Load())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 链级契约补形：上游「无 error 帧突然断开」的两形态——用户可见现象即
+// 「上游在返回内容途中消失」。提交后契约与 error 帧形态一致：客户端在已收
+// 到的部分输出之后拿到网络级读错误，不换号、不收到任何失败载荷。
+// ---------------------------------------------------------------------------
+
+// committedInterruptOutcome 汇总中断契约用例的客户端可观测结果。
+type committedInterruptOutcome struct {
+	raw          []byte
+	readErr      error
+	upstreamHits *atomic.Int64
+	failKeyHits  *atomic.Int64
+	okKeyHits    *atomic.Int64
+}
+
+// runCommittedStreamInterruptScenario 装配两候选链路：候选 1（acc_1）指向
+// mock 上游，其流式响应体由 candidate1 定义失败形态；候选 2（acc_2）可正常
+// 完成但必须零命中。客户端读到的字节、读错误与上游命中计数见 outcome。
+func runCommittedStreamInterruptScenario(t *testing.T, candidate1 http.HandlerFunc) committedInterruptOutcome {
+	t.Helper()
+	fixture := newChainFixture(t)
+	var upstreamHits, failKeyHits, okKeyHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch r.Header.Get("Authorization") {
+		case "Bearer sk-upstream-account-key":
+			failKeyHits.Add(1)
+			candidate1(w, r)
+		case "Bearer sk-upstream-account-key-2":
+			okKeyHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-next\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"候选二内容\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer upstream.Close()
+
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model) VALUES ('acc_2', ?, 'prof_1', 'openai', 'v1', '账户二', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`),
+		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": upstream.URL})); err != nil {
+		t.Fatalf("seed acc_2: %v", err)
+	}
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, created_at) VALUES (?, ?, 'acc_2', 1, 10, '2026-09-04T00:00:00.000Z')`),
+		fixture.groupID, fixture.systemAccount); err != nil {
+		t.Fatalf("seed acc_2 group binding: %v", err)
+	}
+	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc_2', 'gpt-test', 'mdl_gpt-test', '2026-09-04T00:00:00.000Z')`); err != nil {
+		t.Fatalf("seed acc_2 models: %v", err)
+	}
+	chainSeedAccountConnection(t, fixture.db, "acc_2", upstream.URL, "chat_json", "chat_sse")
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL,
+			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
+		t.Fatalf("update acc_1 credentials: %v", err)
+	}
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse")
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	t.Cleanup(func() {
+		target := filepath.Join(spoolDir, "gateway-chain")
+		for attempt := 0; attempt < 5; attempt++ {
+			if err := os.RemoveAll(target); err == nil {
+				time.Sleep(50 * time.Millisecond)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir))
+	if err != nil {
+		t.Fatalf("compose gateway chain: %v", err)
+	}
+	defer shutdown()
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-test","stream":true,"messages":[{"role":"user","content":"你好"}]}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+fixture.apiKeySecret)
+	request.Header.Set("X-Juhe-Client-Profile", "codex")
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream status=%d want 200", response.StatusCode)
+	}
+	raw, readErr := io.ReadAll(response.Body)
+	return committedInterruptOutcome{
+		raw: raw, readErr: readErr,
+		upstreamHits: &upstreamHits, failKeyHits: &failKeyHits, okKeyHits: &okKeyHits,
+	}
+}
+
+// assertCommittedInterruptOutcome 断言「提交后失败 → 网络级断开」公共契约：
+// 部分输出先到、无任何失败载荷、以 io.ErrUnexpectedEOF 收尾、不换号。
+func assertCommittedInterruptOutcome(t *testing.T, outcome committedInterruptOutcome) {
+	t.Helper()
+	if !errors.Is(outcome.readErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("提交后失败流必须以网络级读错误（io.ErrUnexpectedEOF）收尾, got %v (body=%q)", outcome.readErr, string(outcome.raw))
+	}
+	if !strings.Contains(string(outcome.raw), "部分输出") {
+		t.Fatalf("已提交的部分输出必须先于断开到达客户端: %q", string(outcome.raw))
+	}
+	if strings.Contains(string(outcome.raw), `{"error"`) {
+		t.Fatalf("客户端不得收到失败载荷（含网关补发形态）: %q", string(outcome.raw))
+	}
+	if outcome.failKeyHits.Load() != 1 {
+		t.Fatalf("candidate-1 hits = %d, want 1", outcome.failKeyHits.Load())
+	}
+	if outcome.okKeyHits.Load() != 0 {
+		t.Fatalf("candidate-2 hits = %d, want 0（提交后中断不得换号重试）", outcome.okKeyHits.Load())
+	}
+	if outcome.upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1（提交后失败只有一次上游请求）", outcome.upstreamHits.Load())
+	}
+}
+
+// TestGatewayChainUpstreamAbruptDisconnectInterruptsClient：上游提交语义输出
+// 后进程级裸断开（Hijack+Close：无 error 帧、无 [DONE]、无 chunked 终止帧，
+// 对应真实上游崩溃/LB 截断）→ 网关传输读失败 → 客户端拿 unexpected EOF。
+func TestGatewayChainUpstreamAbruptDisconnectInterruptsClient(t *testing.T) {
+	candidate1 := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-cut\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"部分输出" + strings.Repeat("输", 3000) + "\"},\"finish_reason\":null}]}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("mock 上游必须支持 Hijack")
+			return
+		}
+		conn, rw, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		if rw != nil {
+			_ = rw.Flush()
+		}
+		_ = conn.Close()
+	}
+	assertCommittedInterruptOutcome(t, runCommittedStreamInterruptScenario(t, candidate1))
+}
+
+// TestGatewayChainUpstreamCleanEOFBWithoutTerminalInterruptsClient：上游发完
+// 部分内容后 handler 正常返回（chunked 干净 EOF），但 SSE 层没有 [DONE]/
+// finish 终止事件 → finalizeMissingTerminal → 提交后中断连接。
+func TestGatewayChainUpstreamCleanEOFBWithoutTerminalInterruptsClient(t *testing.T) {
+	candidate1 := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-cut\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"部分输出" + strings.Repeat("输", 3000) + "\"},\"finish_reason\":null}]}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		// handler 正常返回：传输层干净 EOF、协议层缺终止事件。
+	}
+	assertCommittedInterruptOutcome(t, runCommittedStreamInterruptScenario(t, candidate1))
+}

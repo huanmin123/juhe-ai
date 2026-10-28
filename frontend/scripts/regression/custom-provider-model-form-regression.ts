@@ -102,9 +102,10 @@ assert.deepEqual(
   {},
   '编辑模型没有变化时必须生成空 PATCH'
 )
-const providersViewSource = readFileSync(new URL('../../src/views/providers/ProvidersView.vue', import.meta.url), 'utf8')
+// 模型广场页与供应商目录退役设计 §4.3：表单载荷构建已随 UI 抽到 CustomModelFormModal，锚点同步迁移
+const customFormModalSource = readFileSync(new URL('../../src/views/providers/CustomModelFormModal.vue', import.meta.url), 'utf8')
 assert.match(
-  providersViewSource,
+  customFormModalSource,
   /function buildCurrentCustomModelPayload\(\)[\s\S]+?includeDefaultReasoningEffort: false/,
   '自定义模型编辑提交也必须固定清空默认思考级别'
 )

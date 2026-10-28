@@ -122,7 +122,6 @@ import {
   ProfileOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
-  SoundOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UserSwitchOutlined,
@@ -248,6 +247,8 @@ const menuIconMap = {
   // 媒体工作室（媒体工作室形态设计 §2/§4）：素材库/视频项目。
   '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
+  // 模型广场（模型广场页与供应商目录退役设计 §4）：双路由同组件，沿用同款网格图标。
+  '/models': AppstoreOutlined,
   // AI 账户四域菜单（M2）：对话/视频/音频/图像图标区分，双面共用同一组图标。
   '/my-accounts/chat': MessageOutlined,
   '/my-accounts/video': VideoCameraOutlined,

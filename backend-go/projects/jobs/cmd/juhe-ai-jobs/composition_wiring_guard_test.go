@@ -85,6 +85,12 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		MissingImpact: "OAuth 刷新退避状态只在进程内存：重启清零、多副本不共享，故障账号被重复刷新打上游",
 	},
 	{
+		Identifier:    "WithKeepaliveFailureStateStore(",
+		Name:          "OAuth keepalive 失败状态注入",
+		Purpose:       "keepalive 三族必须与 refresh 同分支接入失败记账（WithKeepaliveFailureStateStore，worker_assembly.go / worker_oauth_failurestate.go，key 前缀族隔离），本地 3 次终态、300s 退避与成功恢复口径对齐 OpenAI 族",
+		MissingImpact: "keepalive 失败退避只在进程内存：重启清零、多副本不共享，故障账号被重复保活打上游；本地配置终态与恢复通道缺失，三族口径与 OpenAI 族脱节",
+	},
+	{
 		Identifier:    "newAccountScheduleActivationHook(",
 		Name:          "排期激活 dispatch revision 推进 hook",
 		Purpose:       "account-availability-schedule-status-sync 必须注入激活 hook（worker_oauth_activation.go），在激活翻转时推进 circuit dispatch revision 家族",

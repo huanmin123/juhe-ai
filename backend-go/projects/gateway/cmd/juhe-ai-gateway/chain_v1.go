@@ -165,6 +165,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// 与 SwitchTarget 载体同点安装，随请求 ctx 传播到失败派发器；纯循环内
 	// 内存计数，请求结束即销毁。
 	ctx = withRequestFastExhaustState(ctx)
+	// T65-①：OAuth 401 自动刷新的请求级 once 标记——同一请求内同一账户至多
+	// 触发一次刷新（重试后的 401 不得再次触发刷新；与协调器 60s min-interval
+	// 双保险）。与 fast-exhaust 计数器同点安装，随请求 ctx 传播。
+	ctx = withChainOAuthRefreshOnceState(ctx)
 	startedAt := c.preauth.NowMs()
 	res := gatewaypreauth.NewTrackingWriter(w)
 	req.ClientIP = requestClientIP(req)

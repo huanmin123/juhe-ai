@@ -285,7 +285,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     mappingSourceModelOptions,
     providerModelOptions,
     modalOpen,
-    providers: availableProviders
+    providers: availableProviders,
+    reopenCreatedAccountForEdit
   })
   const editingSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return ''
@@ -580,9 +581,25 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   async function openEdit(account: AccountListItem) {
+    await openEditAtPath(account.id, accountOperationScopeParams(account, options.accountScopeParams.value), account)
+  }
+
+  /**
+   * openEdit 的状态装配主体（列表编辑与「创建成功转编辑」共用）：清创建/克隆残留、
+   * 置 editingId 与加载态，拉取 edit-basic 基础详情并回填表单。modalOpen 的开合由
+   * 调用方语义决定：openEdit 从关闭态打开，转编辑路径保持已开的弹窗不重置；
+   * basic 详情加载失败时沿用 openEdit 既有行为复位并关闭弹窗。
+   * listAccount 仅列表编辑路径传入：授权账户走只读授权分支；转编辑场景新账户
+   * 尚无列表行且必为 owner 账户，传 undefined 直接走普通编辑分支。
+   */
+  async function openEditAtPath(
+    accountId: string,
+    scopeParams: AccountScopeParams,
+    listAccount: AccountListItem | undefined
+  ): Promise<void> {
     const requestToken = nextFormOpenRequestToken()
-    const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-    editingId.value = account.id
+    const editScopeParams = scopeParams
+    editingId.value = accountId
     editingAccountDetail.value = undefined
     editingAccountAdvancedDetail.value = undefined
     accountAdvancedDetailLoaded.value = false
@@ -600,10 +617,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingAdvancedBaseline.value = undefined
     resetDeferredAccountOptionState()
 
-    if (isAuthorizedAccount(account)) {
+    if (listAccount && isAuthorizedAccount(listAccount)) {
       accountEditDetailLoading.value = true
       modalOpen.value = true
-      const advancedDetail = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户详情失败')
+      const advancedDetail = await loadAccountDetailForForm(accountId, editScopeParams, '加载账户详情失败')
       if (!isCurrentFormOpenRequest(requestToken)) return
       if (!advancedDetail || advancedDetail.accessType !== 'authorized') {
         accountEditDetailLoading.value = false
@@ -613,7 +630,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         editingAccountAdvancedDetail.value = undefined
         return
       }
-      const sourceAccount = authorizedAccountBasicDetail(account, advancedDetail)
+      const sourceAccount = authorizedAccountBasicDetail(listAccount, advancedDetail)
       if (!applyLoadedAccountDetailToEditForm(
         sourceAccount,
         advancedDetail,
@@ -636,7 +653,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
     accountEditDetailLoading.value = true
     modalOpen.value = true
-    const basicDetailRequest = loadAccountDetailForForm(account.id, editScopeParams, '加载账户基础配置失败', 'edit-basic')
+    const basicDetailRequest = loadAccountDetailForForm(accountId, editScopeParams, '加载账户基础配置失败', 'edit-basic')
     const sourceAccount = await basicDetailRequest
     if (!isCurrentFormOpenRequest(requestToken)) return
     if (!sourceAccount) {
@@ -663,6 +680,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountAdvancedDetailLoaded.value = false
     accountEditDetailLoading.value = false
     void loadAccountApiKeyRuntimeDetails()
+  }
+
+  // 方案 B（创建成功转编辑）：托管 OAuth 单账户创建成功后弹窗不关，直接转入该账户
+  // 编辑态（后端 CreateOAuthAccount 已派生支持模型、检查模型与连接）。创建场景没有
+  // 列表行，编辑 scope 用创建时的 createScopeParams 桥接——新账户就建在该
+  // systemAccount 下；openEditAtPath 会清掉 creatingAccountScopeParams，必须先取快照。
+  async function reopenCreatedAccountForEdit(accountId: string): Promise<void> {
+    await openEditAtPath(accountId, createScopeParams.value, undefined)
   }
 
   async function ensureAccountEditDetailLoaded(): Promise<boolean> {
@@ -1085,6 +1110,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     openClone,
     openCreate,
     openEdit,
+    reopenCreatedAccountForEdit,
     ensureAccountEditDetailLoaded,
     loadAdvancedAccountDetail,
     loadAccountApiKeyRuntimeDetails,

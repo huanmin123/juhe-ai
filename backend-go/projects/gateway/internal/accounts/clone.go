@@ -71,15 +71,17 @@ type CloneContext struct {
 	BalanceQueryConfig                         map[string]any         `json:"balanceQueryConfig,omitempty"`
 }
 
-// cloneInteractionForbiddenError mirrors AccountInteractionContextForbiddenError.
-type cloneInteractionForbiddenError struct{ Message string }
+// CloneInteractionForbiddenError mirrors AccountInteractionContextForbiddenError.
+// 导出类型：oauthmgmt 托管建户克隆预检按 errors.As 类型判别（403 透出 Message），
+// 不再做错误文案 Contains 匹配。
+type CloneInteractionForbiddenError struct{ Message string }
 
-func (e *cloneInteractionForbiddenError) Error() string { return e.Message }
+func (e *CloneInteractionForbiddenError) Error() string { return e.Message }
 
-// cloneInteractionConflictError mirrors AccountInteractionContextConflictError.
-type cloneInteractionConflictError struct{}
+// CloneInteractionConflictError mirrors AccountInteractionContextConflictError.
+type CloneInteractionConflictError struct{}
 
-func (e *cloneInteractionConflictError) Error() string {
+func (e *CloneInteractionConflictError) Error() string {
 	return "账户配置已发生变化，请重试"
 }
 
@@ -104,7 +106,7 @@ func (s *Store) FindCloneContext(ctx context.Context, accountID string, access A
 			return context, nil
 		}
 	}
-	return nil, &cloneInteractionConflictError{}
+	return nil, &CloneInteractionConflictError{}
 }
 
 // boundGroupProjection mirrors accountInteractionContextCloneGroupProjection:
@@ -239,7 +241,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 	}
 	if row.authorizationID.Valid && row.authorizationID.String != "" ||
 		row.sourceAccountID.Valid && row.sourceAccountID.String != "" {
-		return nil, false, &cloneInteractionForbiddenError{Message: "授权实例不能克隆"}
+		return nil, false, &CloneInteractionForbiddenError{Message: "授权实例不能克隆"}
 	}
 
 	// Relations: models, tags and mappings in the Node UNION ordering.

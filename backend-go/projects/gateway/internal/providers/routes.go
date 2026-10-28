@@ -48,6 +48,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/providers/options", read(http.HandlerFunc(d.options)))
 	k.Register("GET "+prefix+"/providers/definitions", read(http.HandlerFunc(d.definitions)))
 	k.Register("GET "+prefix+"/providers/models/options", read(http.HandlerFunc(d.modelOptions)))
+	k.Register("GET "+prefix+"/providers/models/plaza", read(http.HandlerFunc(d.providerModelPlaza)))
 	k.Register("GET "+prefix+"/providers/models/options/provider-codes", read(http.HandlerFunc(d.modelOptionProviderCodes)))
 	k.Register("GET "+prefix+"/providers/{code}", read(http.HandlerFunc(d.find)))
 	k.Register("GET "+prefix+"/providers/{code}/models", read(http.HandlerFunc(d.models)))

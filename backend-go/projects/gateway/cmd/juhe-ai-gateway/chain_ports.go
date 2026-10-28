@@ -347,6 +347,11 @@ type chainFailureDispatcher struct {
 	// negativeCache 是 L2 请求负面缓存的进程内运行态（请求级提前耗尽与负面
 	// 缓存设计 §5）：nil 保持 L2 关闭（仅 L1 兜底），生产组合根恒装配。
 	negativeCache *chainRequestNegativeCache
+	// oauthRefresh 是 OAuth 401 自动刷新协调器（T65-①，chain_oauth_refresh.go）：
+	// 上游 401 + OAuth 账户 + decision == nil + 自动轮换同资格时单飞刷新一次并
+	// 重新水合候选，返回非 nil 即同账户新凭据重试一次。nil（组合测试）保持
+	// 现状 SkipAccount，刷新整体缺席。
+	oauthRefresh *chainOAuthRefreshCoordinator
 }
 
 // chainAPIKeyObservationPort 是 AccountAPIKeyFailureGuard.CaptureFailureObservation
@@ -714,6 +719,27 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	// ——探针只由文本域失败、显式策略与后台探针编排触发。
 	if !mediaDispatchRequest && (decision == nil || decision.RuleSource != chainErrorPolicyRuleSourceSystem) {
 		d.dispatchRequestFailureHealthCheck(ctx, input.Req, input.UsageContext.TrafficSource, input.Account.ID)
+	}
+	// T65-①（网关上游 401 自动刷新）：显式用户规则未命中（decision == nil）且
+	// 自动轮换资格成立（automaticRotation 已含非媒体域与非 Defer 排除）时，
+	// OAuth 账户的上游 401 走进程内单飞刷新一次 + 同账户新凭据重试一次。用户
+	// 显式 401 规则命中（decision != nil）完全维持现状，不让位给自动刷新。
+	// 协调器返回 nil（节流中 / 刷新失败 / 水合缺席 / 非 OAuth）一律落回下方
+	// 既有 SkipAccount 面，账户状态与终态写法不变。
+	if hasStatus && statusCode == 401 && decision == nil && automaticRotation {
+		if refreshed := d.oauthRefresh.refreshForRetry(ctx, input); refreshed != nil {
+			input.AuditCapture.AddGatewayMetadata("oauth_token_auto_refresh_retry", map[string]any{
+				"accountId": input.Account.ID,
+				"vendor":    input.Account.VendorCode,
+			})
+			return gatewaydispatch.FailedUpstreamResponseResult{
+				Action:                gatewaydispatch.FailedResponseActionRetryRefreshedSameAccount,
+				FailureKind:           chainFailureKindOpaqueHTTP,
+				LastAttempt:           lastAttempt,
+				RefreshedAccount:      refreshed,
+				UpstreamStageRecorded: true,
+			}, nil
+		}
 	}
 	result := gatewaydispatch.FailedUpstreamResponseResult{
 		Action:           gatewaydispatch.FailedResponseActionSkipAccount,

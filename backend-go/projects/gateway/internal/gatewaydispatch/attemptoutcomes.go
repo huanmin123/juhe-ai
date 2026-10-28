@@ -318,6 +318,26 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 	if c.keyModelAttempt != nil {
 		_ = c.keyModelAttempt.ReportUnknown(ctx)
 	}
+	// T65-①（网关上游 401 自动刷新）：失败派发器完成一次 OAuth 单飞刷新并把
+	// 重新水合的候选带回时，同账户以新凭据重试一次。复用
+	// retry_with_compatibility_recovery 的引擎处理形态（改写循环态 + 新语义
+	// 重试 ID 注册 → attemptIndex++; continue），same-account retry 预算
+	//（reserveSameAccountRetry / TryReserveSameAccountRetry）语义不变；候选
+	// 缺失或请求件重建失败时不吞证据，落回既有候选拒绝面（下方 skip 路径）。
+	if failedResponseResult.Action == FailedResponseActionRetryRefreshedSameAccount && failedResponseResult.RefreshedAccount != nil {
+		rebuilt, partsErr := e.BuildPreparedUpstreamRequestParts(ctx, in.args.Req, *failedResponseResult.RefreshedAccount, *usageContext, in.args.RequestClientCompatibility)
+		if partsErr == nil {
+			c.loop.account = *failedResponseResult.RefreshedAccount
+			c.loop.headers = rebuilt.Headers
+			c.loop.body = rebuilt.Body
+			in.semanticRetryID = "oauth-refresh:" + uuid4String()
+			return responseKindContinue, responseStopSemanticRetry, nil
+		}
+		auditCapture.AddGatewayMetadata("oauth_refreshed_retry_rebuild_failed", map[string]any{
+			"accountId": failedResponseResult.RefreshedAccount.ID,
+			"reason":    partsErr.Error(),
+		})
+	}
 	if failedResponseResult.Action == FailedResponseActionRetryWithCompatibilityRecovery {
 		c.loop.body = failedResponseResult.Recovery.Body
 		// Node keeps the recovery semantic-retry id in the local

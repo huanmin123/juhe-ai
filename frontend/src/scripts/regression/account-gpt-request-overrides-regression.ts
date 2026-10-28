@@ -1,6 +1,5 @@
 import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
-import { buildProviderModelColumns } from '../../views/providers/providerModelTableState'
 
 import {
   accountGptRequestOverrideCapabilities,
@@ -32,7 +31,8 @@ import {
   customModelTierPriceFields,
   formatModelReasoningCapabilities,
   formatModelRequestCapabilities,
-  formatTokens
+  formatTokens,
+  modelPriceSlots
 } from '../../views/providers/providerModelFormatters'
 import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
 import type {
@@ -42,25 +42,60 @@ import type {
 import type { AccountFormModel } from '../../views/accounts/accountFormTypes'
 import type { AccountModelSelectOption } from '../../views/accounts/accountEditFormPayload'
 
-const emptyTextColumnKeys = buildProviderModelColumns('text', []).map((column) => column.key)
-assert.equal(emptyTextColumnKeys.some((key) => String(key).startsWith('catalogDisplay:')), false, '空目录不能生成无事实依据的动态列')
-const declaredTextColumnKeys = buildProviderModelColumns('text', [providerModel({
-  catalogDisplay: [
-    { key: 'tier_priority', label: 'Priority', items: [{ key: 'input', label: '输入', format: 'usd_per_1m_tokens', value: 2 }] },
-    { key: 'reasoning', label: 'Reasoning', items: [{ key: 'levels', label: '级别', format: 'text', value: 'high / max' }] }
-  ]
-})]).map((column) => column.key)
-assert(declaredTextColumnKeys.includes('catalogDisplay:tier_priority'), '模型目录必须按后端 descriptor 展示服务档位')
-assert(declaredTextColumnKeys.includes('catalogDisplay:reasoning'), '模型目录必须按后端 descriptor 展示思考能力')
-assert.equal(declaredTextColumnKeys.includes('serviceTiers'), false, '模型目录不能保留固定服务等级列')
-assert.equal(declaredTextColumnKeys.includes('reasoningEfforts'), false, '模型目录不能保留固定思考级别列')
+assert.deepEqual(
+  modelPriceSlots(providerModel({
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 2.5,
+    cachedInputUsdPer1M: 0.1
+  })),
+  [
+    { label: '输入', value: '1.25', unit: '/1M tokens' },
+    { label: '输出', value: '2.5', unit: '/1M tokens' },
+    { label: '缓存读', value: '0.1', unit: '/1M tokens' }
+  ],
+  'text 模型卡片必须按候选序列展示输入/输出/缓存读三槽'
+)
+assert.deepEqual(
+  modelPriceSlots(providerModel({ mode: 'audio', ttsInputUsdPer1MChars: 20 })),
+  [{ label: '语音合成', value: '20', unit: '/1M 字符' }],
+  '音频目录行必须命中字符价槽位，不得因固定三槽隐藏价格区'
+)
+assert.deepEqual(
+  modelPriceSlots(providerModel({ mode: 'video', videoOutputUsdPerSecond: 0.5 })),
+  [{ label: '视频（每秒）', value: '0.5', unit: '/秒' }],
+  '视频目录行必须命中秒价槽位'
+)
+assert.deepEqual(modelPriceSlots(providerModel()), [], '全部直价字段为空才允许返回空槽位')
+assert.equal(modelPriceSlots(providerModel({ inputUsdPer1M: 0 }))[0]?.value, '0', '显式 0 是真实价，必须保留槽位')
+assert.deepEqual(
+  modelPriceSlots(providerModel({
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 2,
+    catalogDisplay: [
+      { key: 'token_pricing', label: 'Token 计费', items: [{ key: 'token', label: 'Token', format: 'usd_per_1m_tokens', value: 2 }] }
+    ]
+  })),
+  [{ label: 'Token', value: '2', unit: '/1M tokens' }],
+  '后端投影呈单 Token 条目时卡片必须合并为单槽 Token'
+)
+assert.deepEqual(
+  modelPriceSlots(providerModel({ inputUsdPer1M: 2, outputUsdPer1M: 2 })).map((slot) => slot.label),
+  ['输入', '输出'],
+  '无单 Token 投影的同值行必须保持输入/输出两槽，不做字段级全局合并'
+)
 assert.equal(formatTokens(131_072), '128K', '模型容量只显示 K，不追加精确括号数字')
 assert.equal(formatTokens(1_048_576), '1M', '模型容量只显示 M，不追加精确括号数字')
-const modelCatalogModalSource = readFileSync(new URL('../../views/providers/ProviderModelCatalogModal.vue', import.meta.url), 'utf8')
-assert.match(modelCatalogModalSource, /modelCatalogDisplaySections\(record\)/, '移动端模型目录必须循环当前模型的动态 section')
-assert.doesNotMatch(modelCatalogModalSource, /column\.key === '(?:serviceTiers|reasoningEfforts|prices|cacheWrite|context)'/, '模型目录不能继续渲染固定计费或能力列')
-assert.doesNotMatch(modelCatalogModalSource, /codexSupportedReasoningLevels/, '模型目录思考列只能消费 API reasoning effort')
-assert.doesNotMatch(modelCatalogModalSource, /codexMultiAgentVersion/, '模型目录思考列不能展示 Codex 多代理能力')
+// 模型目录卡片化形态已随模型广场退役平移：源码断言目标从 ProviderModelCatalogModal.vue 换为 ModelPlazaView.vue
+// （模型广场页与供应商目录退役设计 §5），四条契约（动态 section 循环、槽位接线、不回退固定列、不消费 codex* 字段）原样保留。
+const plazaViewSource = readFileSync(new URL('../../views/providers/ModelPlazaView.vue', import.meta.url), 'utf8')
+// 模型广场页与供应商目录退役设计 + 卡片化 §6.2：抽屉「计费价格」为一张价格表，
+// 动态 section 经 modelPriceTable 合并配对、非价格分组走 modelInfoItems。
+assert.match(plazaViewSource, /modelPriceTable\(record\)/, '详情抽屉「计费价格」必须按一张价格表渲染当前模型的动态 section')
+assert.match(plazaViewSource, /modelInfoItems\(record\)/, '非价格分组必须经「基础信息」网格渲染当前模型的动态 section')
+assert.match(plazaViewSource, /modelPriceSlots\(/, '模型目录卡片必须接线 modelPriceSlots 槽位契约')
+assert.doesNotMatch(plazaViewSource, /column\.key === '(?:serviceTiers|reasoningEfforts|prices|cacheWrite|context)'/, '模型目录不能继续渲染固定计费或能力列')
+assert.doesNotMatch(plazaViewSource, /codexSupportedReasoningLevels/, '模型目录思考列只能消费 API reasoning effort')
+assert.doesNotMatch(plazaViewSource, /codexMultiAgentVersion/, '模型目录思考列不能展示 Codex 多代理能力')
 const requestOverridesSectionSource = readFileSync(new URL('../../views/accounts/AccountGptRequestOverridesSection.vue', import.meta.url), 'utf8')
 const batchEditModalSource = readFileSync(new URL('../../views/accounts/AccountBatchEditModal.vue', import.meta.url), 'utf8')
 const accountSavePayloadSource = readFileSync(new URL('../../views/accounts/accountSavePayload.ts', import.meta.url), 'utf8')

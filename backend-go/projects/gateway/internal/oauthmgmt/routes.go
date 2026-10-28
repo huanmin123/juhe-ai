@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
@@ -297,19 +298,21 @@ func creationStatusText(value any) string {
 // managedFields are the shared managed-account body keys (managedAccountFields).
 // providerProtocolProfileId 不在词表：profile 身份由创建链按 §1.1 registry
 // 派生（profileIDForProvider），入参键提交即 strict-body 400。
+// capabilityDomain / cloneSourceId 是 B5 托管建户新收的两个键（create-from-*、
+// sso-to-oauth 三端点共用本词表，admin 与 self 双面同 handler）：不帷新键的
+// 载荷行为完全不变（capabilityDomain 缺省 = chat，现状语义）。
 var managedFields = []string{
 	"name", "groupId", "concurrencyLimit", "priority",
 	"status", "superPriorityEnabled", "fallbackEnabled", "supportedModels",
 	"healthCheckModel", "healthCheckEndpointMode", "temporaryUnavailableContinuousProbeEnabled",
 	"modelMappings", "tags", "proxyProfileId", "accountExpiresAt", "availabilitySchedule",
 	"credentialsPatch", "notes",
+	"capabilityDomain", "cloneSourceId",
 }
 
-var healthCheckEndpointModes = map[string]bool{
-	"chat_json": true, "chat_sse": true, "responses_json": true, "responses_sse": true,
-	"messages_json": true, "messages_sse": true,
-	"generate_content_json": true, "generate_content_sse": true,
-}
+// healthCheckEndpointModes 词表与 accounts 写面落值白名单同源（B5 之前本包只
+// 手抄 8 个 chat 值，媒体域显式提交 video_create/audio_speech 会被误拒）：
+// 直接复用 accountscore.AccountHealthCheckEndpointModes，不维护第二份。
 
 // parseManagedFields mirrors the shared managedAccountFields schema subset the
 // M08 create consumes (temporaryUnavailableContinuousProbeEnabled is accepted
@@ -378,7 +381,7 @@ func parseManagedFields(body map[string]any) (managedInput, bool) {
 		input.HealthCheckModel = &trimmed
 	}
 	if text, present := bodyString(body, "healthCheckEndpointMode"); present {
-		if !healthCheckEndpointModes[strings.TrimSpace(text)] {
+		if !accountscore.AccountHealthCheckEndpointModes[strings.TrimSpace(text)] {
 			return input, false
 		}
 		trimmed := strings.TrimSpace(text)
@@ -439,6 +442,27 @@ func parseManagedFields(body map[string]any) (managedInput, bool) {
 	if text, present := bodyString(body, "notes"); present {
 		input.Notes = &text
 	}
+	// capabilityDomain（B5 收键）：可选，仅类型校验（非字符串 → 参数无效）；
+	// 值域（四枚举）与「空 → chat」缺省由 accounts 写面统一承载（非法值 400
+	// 「能力域无效」），路由层透传不重复校验（契约 §2）。
+	if value, present := body["capabilityDomain"]; present && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return input, false
+		}
+		input.CapabilityDomain = strings.TrimSpace(text)
+	}
+	// cloneSourceId（B5 收键 × M2 克隆契约）：可选；非空时由 CreateOAuthAccount
+	// 在创建事务前加载克隆上下文并断言目标域 = 源账户域；空串 = 普通新建。
+	if value, present := body["cloneSourceId"]; present && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return input, false
+		}
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			input.CloneSourceID = &trimmed
+		}
+	}
 	return input, true
 }
 
@@ -478,12 +502,16 @@ type managedInput struct {
 	SupportedModels         []string
 	HealthCheckModel        *string
 	HealthCheckEndpointMode *string
-	ModelMappings           []accounts.ModelMapping
-	Tags                    []string
-	ProxyProfileID          *string
-	AccountExpiresAt        *string
-	AvailabilitySchedule    any
-	Notes                   *string
+	// CapabilityDomain / CloneSourceID 是 B5 托管建户新收键（capabilityDomain
+	// 缺省 chat、cloneSourceId 克隆源账户）；语义见 parseManagedFields。
+	CapabilityDomain     string
+	CloneSourceID        *string
+	ModelMappings        []accounts.ModelMapping
+	Tags                 []string
+	ProxyProfileID       *string
+	AccountExpiresAt     *string
+	AvailabilitySchedule any
+	Notes                *string
 }
 
 // managedProfileID 渲染创建端点（create-from-*、sso-to-oauth）的 profile 入参：
@@ -629,6 +657,17 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		d.writeOAuthError(w, err, fallback, "")
 		return
 	}
+	// T65-② 建号链 enrichment：换发成功后、落库前执行一次 per-provider
+	// 钩子（gemini Code Assist project/tier 探测与 onboarding）。仅在
+	// handleCreate（create-from-code / create-from-refresh-token）触发；
+	// reauthorize 与 rotation 链不经此处，行为保持现状。
+	if plan.enrichOutcome != nil {
+		outcome, err = plan.enrichOutcome(r.Context(), d.Store, body, outcome, proxyURL)
+		if err != nil {
+			d.writeOAuthError(w, err, fallback, "")
+			return
+		}
+	}
 	name := accountName(managed.Name, outcome, plan, time.Now())
 	result, err := d.Store.CreateOAuthAccount(r.Context(), CreateAccountInput{
 		ProviderCode:              plan.providerCode,
@@ -636,6 +675,8 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		Name:                      name,
 		AccountType:               plan.accountType,
 		Credentials:               outcome.Credentials,
+		CapabilityDomain:          managed.CapabilityDomain,
+		CloneSourceID:             managed.CloneSourceID,
 		Status:                    managed.Status,
 		ConcurrencyLimit:          managed.ConcurrencyLimit,
 		Priority:                  managed.Priority,
@@ -1038,6 +1079,8 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 				Name:                      name,
 				AccountType:               plan.accountType,
 				Credentials:               outcome.Credentials,
+				CapabilityDomain:          managed.CapabilityDomain,
+				CloneSourceID:             managed.CloneSourceID,
 				Status:                    managed.Status,
 				ConcurrencyLimit:          managed.ConcurrencyLimit,
 				Priority:                  managed.Priority,
@@ -1057,7 +1100,10 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 			if createErr != nil {
 				failed = append(failed, map[string]any{
 					"index": position,
-					"error": oauthErrorText(createErr, "Grok SSO Cookie 转换失败"),
+					// 确定性业务失败（克隆预检 403/404/409、克隆域不一致 400 等）
+					// 直写具体文案，不折叠进「转换失败」兜底；上游转换错误仍走
+					// oauthErrorText 兜底。
+					"error": ssoCreateErrorText(createErr, "Grok SSO Cookie 转换失败"),
 				})
 				continue
 			}

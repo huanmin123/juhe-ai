@@ -20,11 +20,13 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // ConflictError maps to the route family 409 paths (owner-scoped duplicate
@@ -517,34 +519,101 @@ type CreateAccountInput struct {
 	Name                      string
 	AccountType               string
 	Credentials               map[string]any
-	Status                    string
-	ConcurrencyLimit          *int
-	Priority                  *int
-	SuperPriorityEnabled      *bool
-	FallbackEnabled           *bool
-	SupportedModels           []string
-	HealthCheckModel          *string
-	HealthCheckEndpointMode   *string
-	ModelMappings             []accounts.ModelMapping
-	Tags                      []string
-	ProxyProfileID            *string
-	GroupID                   *string
-	AccountExpiresAt          *string
-	AvailabilitySchedule      any
-	Notes                     *string
+	// CapabilityDomain 是 B5 托管建户新收的入参键（camelCase capabilityDomain）：
+	// 可选，空串 = chat 缺省（现状语义）；值域校验由 accounts 写面统一承载
+	// （非法值 400「能力域无效」），本层只透传不重复校验。
+	CapabilityDomain string
+	// CloneSourceID 是 M2 克隆契约的托管建户入径（camelCase cloneSourceId）：
+	// 可选；非空时 CreateOAuthAccount 在创建事务前加载克隆上下文并断言目标域
+	// = 源账户域。不传入 accounts.CreateInput——托管 OAuth 连接一律注册表派生，
+	// 不触发写面的克隆连接事实拷贝。
+	CloneSourceID           *string
+	Status                  string
+	ConcurrencyLimit        *int
+	Priority                *int
+	SuperPriorityEnabled    *bool
+	FallbackEnabled         *bool
+	SupportedModels         []string
+	HealthCheckModel        *string
+	HealthCheckEndpointMode *string
+	ModelMappings           []accounts.ModelMapping
+	Tags                    []string
+	ProxyProfileID          *string
+	GroupID                 *string
+	AccountExpiresAt        *string
+	AvailabilitySchedule    any
+	Notes                   *string
 }
 
 // CreateOAuthAccount mirrors createAccountAsync on the M08 slice: profile
 // defaults for supported models, accountCreationStatusInput semantics and the
 // delegated owner-scoped insert with group binding. 连接维度（供应商与上游协
 // 议面重构设计 §8）：OAuth 建户路由不携带 connections 与健康检查连接维度，
-// 按 vendor/账户类型经 accounts.DefaultConnectionsForOAuthVendor 派生默认连
-// 接集合与健康检查连接维度（显式入参优先）；派生载荷进入 Store.Create 后仍
-// 受写面 §8 全量校验，必填门不放宽。
+// 按 vendor/账户类型/能力域经 accounts.DefaultConnectionsForOAuthVendor 派生
+// 默认连接集合与健康检查连接维度（显式入参优先）；派生载荷进入 Store.Create
+// 后仍受写面 §8 全量校验，必填门不放宽。
 func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput, access AccessScope) (*accounts.CreateResult, error) {
-	defaults, err := accounts.DefaultConnectionsForOAuthVendor(input.ProviderCode, input.AccountType, accounts.Credentials(input.Credentials))
+	// 克隆预检（B5 托管建户 × M2 克隆契约，创建事务前执行）：复用 accounts 包
+	// FindCloneContext（访问范围/归属/授权实例禁克隆判定与通用路由同源），
+	// 403/409/404 语义照搬 accounts/routes.go create 的克隆分支——错误类型已
+	// 导出（CloneInteractionForbiddenError / CloneInteractionConflictError），
+	// 按 errors.As 类型判别，不做错误文案 Contains 匹配。通过后断言目标域 =
+	// 源账户域（域缺省 chat）。
+	if input.CloneSourceID != nil && strings.TrimSpace(*input.CloneSourceID) != "" {
+		cloneSource, err := s.Accounts.FindCloneContext(ensureContext(ctx), strings.TrimSpace(*input.CloneSourceID), access.accountsScope())
+		if err != nil {
+			var forbidden *accounts.CloneInteractionForbiddenError
+			var conflict *accounts.CloneInteractionConflictError
+			switch {
+			case errors.As(err, &forbidden):
+				return nil, &CloneSourceError{Status: http.StatusForbidden, Message: forbidden.Error()}
+			case errors.As(err, &conflict):
+				return nil, &CloneSourceError{Status: http.StatusConflict, Message: conflict.Error()}
+			}
+			return nil, err
+		}
+		if cloneSource == nil {
+			return nil, &CloneSourceError{Status: http.StatusNotFound, Message: "账户不存在"}
+		}
+		requestedDomain := strings.TrimSpace(input.CapabilityDomain)
+		if requestedDomain == "" {
+			requestedDomain = accountscore.CapabilityDomainChat
+		}
+		if cloneSource.CapabilityDomain != requestedDomain {
+			return nil, &ValidationError{Message: "克隆账户能力域必须与源账户一致"}
+		}
+		// 裁决：托管 OAuth 建户不做克隆连接事实拷贝——OAuth 连接一律按注册表
+		// 派生，克隆同 provider/账户类型/域 时派生结果与源一致；input.CloneSourceID
+		// 到此为止，不传入 accounts.CreateInput，写面的克隆连接综合分支
+		// （write.go CloneSourceID 非空臂）不触发。
+	}
+	defaults, err := accounts.DefaultConnectionsForOAuthVendor(input.ProviderCode, input.AccountType, input.CapabilityDomain, accounts.Credentials(input.Credentials))
 	if err != nil {
+		// 派生门错误（accounts.ValidationError：非法域值/组合缺席）与函数出口的
+		// accounts.Create 错误映射同形，保证 400 面文案逐字透出，不落 502 兜底。
+		var validation *accounts.ValidationError
+		if errors.As(err, &validation) {
+			return nil, &ValidationError{Message: validation.Message}
+		}
 		return nil, err
+	}
+	credentials := input.Credentials
+	if normalizedDomain := strings.TrimSpace(input.CapabilityDomain); normalizedDomain != "" && normalizedDomain != accountscore.CapabilityDomainChat {
+		// 媒体域托管建户不继承 chat 形态的凭据声明集（gemini 构建器为
+		// code_assist/google_one 钉入 generate_content CLI 对，属 chat 域声明，
+		// 会被写面「声明集 ⊆ 域允许集」校验拒绝）：去掉该键，让写面对缺省键按
+		// 域种子 DefaultEndpointModesForDomain（媒体域落媒体 lane 集；ai_studio
+		// 构建器本就不带该键，chat 域行为不变）。不改动调用方持有的 map。
+		if _, present := credentials["supported_endpoint_modes"]; present {
+			seeded := make(map[string]any, len(credentials)-1)
+			for key, value := range credentials {
+				if key == "supported_endpoint_modes" {
+					continue
+				}
+				seeded[key] = value
+			}
+			credentials = seeded
+		}
 	}
 	profile, err := s.resolveProviderProfile(ctx, input.ProviderCode, input.ProviderProtocolProfileID, input.AccountType, requiredProfileForProvider(input.ProviderCode))
 	if err != nil {
@@ -586,7 +655,8 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 		ProviderProtocolProfileID:       input.ProviderProtocolProfileID,
 		Name:                            input.Name,
 		AccountType:                     input.AccountType,
-		Credentials:                     accounts.Credentials(input.Credentials),
+		Credentials:                     accounts.Credentials(credentials),
+		CapabilityDomain:                input.CapabilityDomain,
 		SupportedModels:                 supportedModels,
 		Connections:                     defaults.Connections,
 		HealthCheckConnectionPresetCode: &healthCheckPreset,

@@ -170,10 +170,10 @@ export const menuRoutes: RouteRecordRaw[] = [
   },
   {
     path: '/my-models',
-    component: () => import('@/views/providers/ProvidersView.vue'),
+    component: () => import('@/views/providers/ModelPlazaView.vue'),
     meta: {
-      title: '模型目录',
-      description: '查看可用供应商模型目录，并维护自己的个人模型、价格和映射目标候选。',
+      title: '模型广场',
+      description: '跨供应商浏览全部可用模型，并维护自己的个人模型、价格和映射目标候选。',
       viewScope: 'self'
     }
   },
@@ -544,6 +544,18 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '供应商',
       description: '管理当前支持的供应商能力与模型定价，当前启用 GPT / OpenAI v1。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: managementRoles
+    }
+  },
+  {
+    path: '/models',
+    component: () => import('@/views/providers/ModelPlazaView.vue'),
+    meta: {
+      title: '模型广场',
+      description: '跨供应商浏览与维护模型目录：新增、改配、删除与归属筛选。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

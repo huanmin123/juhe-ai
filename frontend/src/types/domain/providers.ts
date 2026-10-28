@@ -153,6 +153,14 @@ export interface ProviderModelPricing {
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
+  /** 视频输出每秒价（USD/秒）。 */
+  videoOutputUsdPerSecond?: number
+  /** 视频输出每次价（USD/次），目录中与每秒价互斥落库。 */
+  videoOutputUsdPerCall?: number
+  /** 语音合成（TTS）每百万字符价（USD/1M 字符）。 */
+  ttsInputUsdPer1MChars?: number
+  /** 语音识别（ASR）每秒价（USD/秒）。 */
+  audioInputUsdPerSecond?: number
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
@@ -248,4 +256,18 @@ export interface ProviderModelMutationResult {
   model: string
   status: ProviderModelStatus
   updatedAt: string
+}
+
+/** 模型广场供应商摘要（GET /providers/models/plaza 的 providers 数组项，字段口径同 ProviderListItem）。 */
+export interface ProviderPlazaMeta {
+  code: string
+  name: string
+  enabled: boolean
+  defaultHealthCheckModel: string
+}
+
+/** 模型广场聚合响应：items 为逐供应商目录行（含 providerCode），跨供应商同名模型不合并。 */
+export interface ProviderModelPlaza {
+  providers: ProviderPlazaMeta[]
+  items: ProviderModelPricing[]
 }

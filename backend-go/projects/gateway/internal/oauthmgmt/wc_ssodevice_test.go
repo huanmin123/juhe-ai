@@ -139,9 +139,11 @@ func TestWCPollTokenBranches(t *testing.T) {
 	if _, err = wcConvert(t, emptyOKSteps, clock); err == nil || !strings.Contains(err.Error(), "xAI token 轮询失败") {
 		t.Fatalf("空成功响应: %v", err)
 	}
-	// 持续 pending 直到超期 → 轮询超时（时钟推进需大于 75s 上限）。
+	// 持续 pending 直到超期 → 轮询超时。时钟按真实节奏推进（nowMs 是毫秒，
+	// Sleep 推进 delay 毫秒 + 1s 模拟开销：interval=1s 时每次轮询 +2s，
+	// deadline 前 150 次请求，脚本给 160 步留余量）。
 	longPending := append([]SSODeviceResponse{}, steps[:7]...)
-	for index := 0; index < 40; index++ {
+	for index := 0; index < 160; index++ {
 		longPending = append(longPending, ssoStep(http.StatusBadRequest, nil, `{"error":"authorization_pending"}`))
 	}
 	advancing := &wcClock{nowMs: 1_000_000}
@@ -150,7 +152,7 @@ func TestWCPollTokenBranches(t *testing.T) {
 	deps := SSODeviceDeps{
 		Request: device,
 		Sleep: func(_ context.Context, delay time.Duration) error {
-			advancing.nowMs += int64(delay) + 1000
+			advancing.nowMs += delay.Milliseconds() + 1000
 			return nil
 		},
 		Now: advancingNow,
@@ -158,6 +160,33 @@ func TestWCPollTokenBranches(t *testing.T) {
 	if _, err = convertGrokSSOToOAuth(context.Background(), "sso-token-value", deps); err == nil ||
 		err.Error() != "xAI device flow token 轮询超时" {
 		t.Fatalf("轮询超时: %v", err)
+	}
+	// 旧 75s 上限会超时的场景（pending 约 90s 后成功）在 5min 窗口内继续轮询至
+	// 成功：45 步 pending（每次 Sleep 推进 2s ≈ 90s > 75s 旧上限，< 5min）后
+	// 返回 token。
+	oldCapSteps := append([]SSODeviceResponse{}, steps[:7]...)
+	for index := 0; index < 45; index++ {
+		oldCapSteps = append(oldCapSteps, ssoStep(http.StatusBadRequest, nil, `{"error":"authorization_pending"}`))
+	}
+	oldCapSteps = append(oldCapSteps,
+		ssoStep(http.StatusOK, nil, `{"access_token":"late-at","refresh_token":"rt","id_token":"id","expires_in":600,"scope":"s"}`))
+	lateClock := &wcClock{nowMs: 1_000_000}
+	lateNow := lateClock.Now
+	lateDevice := &wcScriptedDevice{steps: oldCapSteps}
+	lateDeps := SSODeviceDeps{
+		Request: lateDevice,
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			lateClock.nowMs += delay.Milliseconds() + 1000
+			return nil
+		},
+		Now: lateNow,
+	}
+	lateToken, err := convertGrokSSOToOAuth(context.Background(), "sso-token-value", lateDeps)
+	if err != nil {
+		t.Fatalf("75s 旧上限场景必须继续轮询至成功: %v", err)
+	}
+	if lateToken.AccessToken != "late-at" {
+		t.Fatalf("迟到 token: %+v", lateToken)
 	}
 	// Sleep 取消。
 	cancelSteps := append(append([]SSODeviceResponse{}, steps[:7]...),

@@ -274,6 +274,12 @@ const (
 	FailedResponseActionReturnResponse                 = "return_response"
 	FailedResponseActionSkipAccount                    = "skip_account"
 	FailedResponseActionRetryWithCompatibilityRecovery = "retry_with_compatibility_recovery"
+	// FailedResponseActionRetryRefreshedSameAccount 是 Go 侧扩展动作（Node 动作
+	// 联合无对应成员，T65-① 网关上游 401 自动刷新）：失败派发器完成一次 OAuth
+	// 单飞刷新并重新水合候选后，引擎以新凭据同账户重试一次。引擎处理形态与
+	// retry_with_compatibility_recovery 同型（改写循环态 + 新语义重试 ID →
+	// attemptIndex++; continue），不触碰 same-account retry 预算语义。
+	FailedResponseActionRetryRefreshedSameAccount = "retry_refreshed_same_account"
 )
 
 // FailureKind values mirror failureKind.
@@ -309,6 +315,10 @@ type FailedUpstreamResponseResult struct {
 	// 阶段（gateway 流量分支）；经引擎带入 UpstreamDispatchResult 后，链面对
 	// 同一 attempt 不再重复发射该 stage。
 	UpstreamStageRecorded bool
+	// RefreshedAccount 携带 Action = retry_refreshed_same_account 时刷新后重新
+	// 水合的账户候选（含新凭据）；引擎以它替换循环内账户并重建上游请求件。
+	// nil（含其它 Action）按既有候选拒绝面处理。
+	RefreshedAccount *AccountCandidate
 }
 
 // CompatibilityRecovery mirrors recovery.

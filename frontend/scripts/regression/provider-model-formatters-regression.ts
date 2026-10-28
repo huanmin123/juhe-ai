@@ -15,14 +15,17 @@ import {
   getModelCategory,
   modelCatalogDisplaySections
 } from '../../src/views/providers/providerModelFormatters'
-import { buildProviderModelColumns } from '../../src/views/providers/providerModelTableState'
+import * as providerModelTableState from '../../src/views/providers/providerModelTableState'
 import type { ProviderDefinition, ProviderModelPricing } from '../../src/types/domain'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
 const formatterSource = readFileSync(resolve(frontendRoot, 'src/views/providers/providerModelFormatters.ts'), 'utf8')
 const categoryRulesSource = readFileSync(resolve(frontendRoot, 'src/views/providers/providerModelCategoryRules.ts'), 'utf8')
-const catalogModalSource = readFileSync(resolve(frontendRoot, 'src/views/providers/ProviderModelCatalogModal.vue'), 'utf8')
+// 模型广场页与供应商目录退役设计 §5：卡片/抽屉形态锚点从 ProviderModelCatalogModal.vue（已删除）
+// 换为 ModelPlazaView.vue；表单接线锚点从 ProvidersView.vue 换为 CustomModelFormModal.vue。
+const plazaViewSource = readFileSync(resolve(frontendRoot, 'src/views/providers/ModelPlazaView.vue'), 'utf8')
+const customFormModalSource = readFileSync(resolve(frontendRoot, 'src/views/providers/CustomModelFormModal.vue'), 'utf8')
 const providersViewSource = readFileSync(resolve(frontendRoot, 'src/views/providers/ProvidersView.vue'), 'utf8')
 const providerTableConfigSource = readFileSync(resolve(frontendRoot, 'src/views/providers/providerTableConfig.ts'), 'utf8')
 
@@ -81,13 +84,11 @@ const descriptorModel = providerModel({
   ]
 })
 assert.deepEqual(modelCatalogDisplaySections(descriptorModel).map((section) => section.key), ['standard', 'capacity'], '目录 presenter 必须忽略空 section')
-assert.deepEqual(
-  buildProviderModelColumns('text', [providerModel(), descriptorModel])
-    .filter((column) => 'catalogDisplaySectionKey' in column)
-    .map((column) => column.key),
-  ['catalogDisplay:standard', 'catalogDisplay:capacity'],
-  '桌面目录列必须取当前模型 descriptor section 的有序并集'
-)
+assert.equal(typeof providerModelTableState.buildModelCategoryTabs, 'function', '用途分类 Tabs 构造必须保留')
+assert.equal(typeof providerModelTableState.filterProviderModelsByKeyword, 'function', '关键词过滤必须保留')
+assert.equal(typeof providerModelTableState.buildConfigurationTemplateOptions, 'function', '配置模板选项构造必须保留')
+assert.equal('baseModelColumns' in providerModelTableState, false, '表格基列已随模型目录卡片化移除')
+assert.equal('buildProviderModelColumns' in providerModelTableState, false, '动态目录列构造已随模型目录卡片化移除')
 assert.deepEqual(defaultProtocolsForModelCategory('image'), ['images'], '图片模型默认协议不应变化')
 assert.deepEqual(defaultProtocolsForModelCategory('text'), ['responses', 'chat_completions'], '文本模型默认协议不应变化')
 assert.deepEqual(
@@ -192,26 +193,50 @@ assert.deepEqual(
 assert.match(formatterSource, /from '\.\/providerModelCategoryRules'/, 'providerModelFormatters 应从分类规则文件读取模型类别能力')
 assert.doesNotMatch(formatterSource, /gpt-image|dall-e|whisper|startsWith\('gpt-'|startsWith\('claude-'/, 'providerModelFormatters 不应继续内联模型名前缀分类规则')
 assert.match(categoryRulesSource, /modelNameCategoryRules/, '模型名前缀分类规则应集中在 providerModelCategoryRules')
-assert.match(catalogModalSource, /isDefaultHealthCheckModel\(record\).*默认检查/s, '个人模型目录应在当前默认模型名称旁保留默认检查标签')
-assert.doesNotMatch(catalogModalSource, /我的默认检查模型|column\.key === 'defaultTest'/, '个人模型目录不应重复增加顶部说明或独立默认检查列')
+assert.doesNotMatch(plazaViewSource, />默认检查<|isDefaultHealthCheckModel\(/, '内置来源与默认检查属内部机制，卡面与抽屉不得渲染')
+assert.match(plazaViewSource, /v-if="item\.scope !== 'built_in'"/, '范围徽标仅自定义模型（全局/个人）显示，内置不展示')
+assert.match(plazaViewSource, /v-if="record\.scope !== 'built_in'"/, '抽屉 Hero 的范围徽标同样仅自定义模型显示')
+assert.doesNotMatch(plazaViewSource, /我的默认检查模型|column\.key === 'defaultTest'/, '个人模型目录不应重复增加顶部说明或独立默认检查列')
 assert.doesNotMatch(providersViewSource, /ensureActiveProviderDetail|activeProviderDetail\.value|api\.providers\.detail/, '新增或编辑模型必须直接使用目录行与已加载目录能力，不得预取 provider 详情')
-assert.match(providersViewSource, /defaultProtocolsForCurrentProviderCategory[\s\S]*providerModels\.value/, '新增模型协议默认值必须优先复用已加载目录能力')
-assert.match(providersViewSource, /defaultProtocolsForProviderModelCategory\(activeProvider\.value \?\? undefined, category\)/, '空模型目录必须复用轻量供应商列表中的协议常量')
+assert.match(customFormModalSource, /defaultProtocolsForCurrentProviderCategory[\s\S]*props\.models/, '新增模型协议默认值必须优先复用已加载目录能力')
+assert.match(customFormModalSource, /defaultProtocolsForProviderModelCategory\(providerDefinition, category\)/, '空模型目录必须复用轻量供应商列表中的协议常量')
 assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*默认检查模型[\s\S]*defaultHealthCheckModel/, '普通用户模型目录列表应展示个人默认检查模型列')
 assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认检查模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认检查模型')
-assert.match(providersViewSource, /const canManageModelPrices = computed\(\(\) => canManageModelPricesForView\(isManagementView\.value, authState\.isAdmin\.value\)\)/, '新增和编辑必须使用统一的价格维护判定')
-assert.match(providersViewSource, /availableCustomModelModeOptions/, '新增模型用途必须按当前供应商能力生成')
-assert.match(providersViewSource, /label="服务等级"[\s\S]*:mode="customModelCapabilitySelectMode"[\s\S]*:options="customModelServiceTierOptions"/, '服务等级必须使用当前供应商的选择模式和已知选项')
-assert.match(providersViewSource, /label="思考能力"[\s\S]*:mode="customModelCapabilitySelectMode"[\s\S]*:options="customModelReasoningEffortOptions"/, '思考能力必须使用当前供应商的选择模式和已知选项')
-assert.match(providersViewSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
-assert.doesNotMatch(providersViewSource, /:disabled="editingBuiltInModel"/, '管理员编辑内置模型时状态、用途、协议、服务等级、思考和 token 上限不能被锁死')
-assert.doesNotMatch(providersViewSource, /编辑模型价格/, '内置模型编辑已不是仅价格编辑')
-assert.match(catalogModalSource, /column\.catalogDisplaySectionKey/, '桌面模型目录必须渲染动态 descriptor 列')
-assert.match(catalogModalSource, /v-for="section in modelCatalogDisplaySections\(record\)"/, '移动端模型目录必须只循环当前模型的非空 section')
-assert.doesNotMatch(catalogModalSource, /column\.key === '(?:serviceTiers|reasoningEfforts|prices|cacheWrite|imageTokenPrice|audioTokenPrice|imageUnitPrice|context)'/, '模型目录不能保留按模型类别硬编码的计费、能力和容量列')
-assert.doesNotMatch(catalogModalSource, />仅标准<|>不支持<|>不适用<|>暂无价格</, '动态目录不能用无意义负面占位填充缺失 section')
+assert.match(customFormModalSource, /const canManageModelPrices = computed\(\(\) => canManageModelPricesForView\(props\.isManagementView, authState\.isAdmin\.value\)\)/, '新增和编辑必须使用统一的价格维护判定')
+assert.match(customFormModalSource, /availableCustomModelModeOptions/, '新增模型用途必须按当前供应商能力生成')
+assert.match(customFormModalSource, /label="服务等级"[\s\S]*:mode="customModelCapabilitySelectMode"[\s\S]*:options="customModelServiceTierOptions"/, '服务等级必须使用当前供应商的选择模式和已知选项')
+assert.match(customFormModalSource, /label="思考能力"[\s\S]*:mode="customModelCapabilitySelectMode"[\s\S]*:options="customModelReasoningEffortOptions"/, '思考能力必须使用当前供应商的选择模式和已知选项')
+assert.match(customFormModalSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
+assert.doesNotMatch(customFormModalSource, /:disabled="editingBuiltInModel"/, '管理员编辑内置模型时状态、用途、协议、服务等级、思考和 token 上限不能被锁死')
+assert.doesNotMatch(customFormModalSource, /编辑模型价格/, '内置模型编辑已不是仅价格编辑')
+assert.match(plazaViewSource, /repeat\(auto-fill, minmax\(280px, 1fr\)\)/, '模型目录必须使用 auto-fill 卡片网格承载模型列表')
+assert.match(plazaViewSource, /modelPriceSlots\(/, '模型目录卡片必须按候选序列接线价格槽位')
+// 抽屉「计费价格」一张表 + 「基础信息」网格（§6.2/§6.3，对齐 portal 形态）：
+// 模板字面调用 modelPriceTable(record) / modelInfoItems(record)（不得包 computed 别名，否则断言失效）。
+assert.match(plazaViewSource, /modelPriceTable\(record\)/, '详情抽屉「计费价格」必须按一张价格表渲染当前模型')
+assert.match(plazaViewSource, /modelInfoItems\(record\)/, '非价格分组必须经「基础信息」网格渲染')
+assert.match(plazaViewSource, /<table class="model-drawer-table">/, '计费价格必须渲染为表格')
+assert.match(plazaViewSource, /table-layout: fixed/, '价格表必须 fixed 布局锚定列宽')
+assert.match(plazaViewSource, /width: 38%/, '价格表首列必须锚定 38% 宽，禁止被数值列挤压塌陷成竖排单字')
+// 列语义对齐官方「正常价 / 高峰价」：单列模型「正常价」，DeepSeek 两列「正常价 | 高峰价」。
+// 列头文案的单一来源在 modelPriceTable（模板只渲染 column.label），锚点打 formatters 源码。
+assert.match(formatterSource, /label: '正常价'/, '价格表必须以「正常价」为基准列头')
+assert.match(formatterSource, /label: '高峰价'/, '存在高峰档（DeepSeek）时价格表必须追加「高峰价」列')
+assert.match(plazaViewSource, /高峰时段为工作日 09:00–12:00、14:00–18:00（北京时间）；时段计费未启用，当前所有请求按高峰价结算。/, '高峰列下方必须附官方时段口径与计费说明')
+assert.match(plazaViewSource, /基础信息/, '非价格分组必须落在「基础信息」区块')
+// §6.3 追加裁决：接入事实并入基础信息网格（接口协议整行宽项；工具矩阵属 AI 问答搜索绑定内部机制，不展示），无独立「接入信息」区块，「模型模式」不展示。
+assert.match(plazaViewSource, /model-drawer-info-item--wide/, '接口协议必须以整行宽项并入基础信息网格')
+assert.doesNotMatch(plazaViewSource, />工具矩阵<|model-drawer-tools|modelToolsByProtocol\(/, '工具矩阵属内部机制数据，抽屉不得渲染')
+assert.match(plazaViewSource, /hasModelAccessInfo\(record\)/, '基础信息区块必须带接入事实存在性门控')
+assert.doesNotMatch(plazaViewSource, /接入信息|模型模式/, '抽屉不得再出现独立「接入信息」区块或「模型模式」行')
+// §6.4：banned 分组在任何渲染路径都不得出现（formatters 函数层已过滤，模板/注释不得复活字面）。
+assert.doesNotMatch(plazaViewSource, /currency_conversion|source_disclosure/, 'banned 分组不得出现在广场页任何渲染路径')
+assert.doesNotMatch(plazaViewSource, /column\.key === '(?:serviceTiers|reasoningEfforts|prices|cacheWrite|imageTokenPrice|audioTokenPrice|imageUnitPrice|context)'/, '模型目录不能保留按模型类别硬编码的计费、能力和容量列')
+assert.doesNotMatch(plazaViewSource, />仅标准<|>不支持<|>不适用<|>暂无价格</, '动态目录不能用无意义负面占位填充缺失 section')
 assert.doesNotMatch(formatterSource, /按上下文推导|官方未单独公布|官方未公布/, '容量与计费格式化不能伪造推导值或堆叠缺失文案')
-assert.match(catalogModalSource, /:row-key="modelRowKey"/, '聚合模型目录必须使用稳定复合键，不能只用可能跨供应商重复的模型名')
+assert.match(plazaViewSource, /<a-drawer/, '模型目录详情必须迁移到右侧抽屉承载完整分组')
+assert.match(plazaViewSource, /a-pagination/, '模型目录必须保留显式分页')
+assert.match(plazaViewSource, /:key="modelRowKey\(item\)"/, '卡片列表必须使用稳定复合键，不能只用可能跨供应商重复的模型名')
 
 console.log('供应商模型 formatter 回归通过：模型类别规则已拆分，现有分类和默认协议行为保持不变')
 

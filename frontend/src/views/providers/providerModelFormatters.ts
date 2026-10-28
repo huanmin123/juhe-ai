@@ -95,13 +95,14 @@ export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFi
   image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
   // 音频直接价格对齐后端写路径契约（write_routes.go customInputHasDirectPrice
   // 的 audio 分支）：TTS（语音合成）记 audioOutputUsdPer1M、STT（转写）记
-  // audioInputUsdPer1M，均为 USD / 1M 口径；目录 API 无独立的字符价/秒价字段
-  // （TtsInputUsdPer1MChars / AudioInputUsdPerSecond 仅存在于后端内部计费
-  // 静态目录，不暴露给管理面）。
+  // audioInputUsdPer1M，均为 USD / 1M 口径。字符价/秒价（ttsInputUsdPer1MChars /
+  // audioInputUsdPerSecond）由后端静态定价表透传、随目录 API 下发，只读展示
+  // （卡片价格槽位、抽屉媒体计费分组），不走管理面直接价格编辑字段。
   audio: ['audioOutputUsdPer1M', 'audioInputUsdPer1M'],
-  // 视频分类（M2）无管理面价格通道：秒价（VideoOutputUsdPerSecond）仅存在于
-  // 后端内部计费静态目录，直接价格编辑字段随 M3 计价完善交付（后端
-  // write_routes.go customInputHasDirectPrice 的 video 分支同款裁决）。
+  // 视频分类（M2）无管理面直接价格编辑通道：秒价/次价（videoOutputUsdPerSecond /
+  // videoOutputUsdPerCall）由后端静态定价表透传、随目录 API 下发，只读展示；
+  // 直接价格编辑字段随 M3 计价完善交付（后端 write_routes.go
+  // customInputHasDirectPrice 的 video 分支同款裁决）。
   video: []
 }
 
@@ -446,11 +447,108 @@ export function modelCatalogDisplaySections(item: ProviderModelPricing): Provide
   return (item.catalogDisplay ?? []).filter((section) => section.items.length > 0)
 }
 
-export function modelCatalogDisplaySection(
-  item: ProviderModelPricing,
-  sectionKey: string
-): ProviderModelCatalogDisplaySection | undefined {
-  return modelCatalogDisplaySections(item).find((section) => section.key === sectionKey)
+/** 抽屉「计费价格」表列（模型目录卡片化与详情抽屉设计 §6.2：一张表，不是每组一张）。 */
+export interface ModelPriceTableColumn {
+  key: string
+  label: string
+}
+
+/** 价格表行：label 为主显示列；cells 按列 key 配对各档位条目，缺配对 undefined（UI 显示 -）。 */
+export interface ModelPriceTableRow {
+  key: string
+  label: string
+  cells: Record<string, ProviderModelCatalogDisplayItem | undefined>
+}
+
+export interface ModelPriceTable {
+  columns: ModelPriceTableColumn[]
+  rows: ModelPriceTableRow[]
+  hasOffpeak: boolean
+}
+
+/** 永不渲染的分组（§6.4）：后端已停止生成，前端按 key 过滤兜底旧后端响应。 */
+const BANNED_CATALOG_SECTION_KEYS = new Set(['currency_conversion', 'source_disclosure'])
+
+/** 价格类 section 判定（从「基础信息」排除）：token_pricing / offpeak_pricing /
+ * tier_ 前缀 / image_generation / media_pricing 承载计费价；新增非价格 section
+ * 自动落 false，无需改此处。 */
+function isPriceSectionKey(key: string): boolean {
+  return key === 'token_pricing'
+    || key === 'offpeak_pricing'
+    || key === 'image_generation'
+    || key === 'media_pricing'
+    || key.startsWith('tier_')
+}
+
+const TIER_SECTION_PREFIX = 'tier_'
+
+/** 抽屉「计费价格」表（§6.2，对齐 juhe-ai-portal 模型广场抽屉：一张表；列语义对齐官方「正常价 / 高峰价」）：
+ * - 列 = 价格档位：无 offpeak_pricing 的模型（绝大多数）单列「正常价」（token_pricing 值）；
+ *   有 offpeak_pricing（DeepSeek）时两列「正常价 | 高峰价」——正常价 = offpeak_pricing 值
+ *   （官方空闲/正常时段价）、高峰价 = token_pricing 值（官方高峰时段价），正常价在前；
+ *   tier_* 分组每档追加一列（formatModelServiceTier 列头）。
+ * - 行 = 价格项：token_pricing 条目顺序为主行；image_generation / media_pricing
+ *   条目追加为额外行（key 冲突时以 section key 前缀去重）。
+ * - cells 按 item.key 配对，列 key 稳定区分来源：normal→offpeak 数据源（无高峰档模型
+ *   →token_pricing）、peak→token_pricing 数据源、tier 分组→对应档位列，缺配对 undefined。
+ * - 不含 reasoning / capacity / long_context（见 modelInfoItems）与 banned 分组。 */
+export function modelPriceTable(item: ProviderModelPricing): ModelPriceTable {
+  const sections = modelCatalogDisplaySections(item)
+  const tokenSection = sections.find((section) => section.key === 'token_pricing')
+  const offpeakSection = sections.find((section) => section.key === 'offpeak_pricing')
+  const tierSections = sections.filter((section) => section.key.startsWith(TIER_SECTION_PREFIX))
+
+  const columns: ModelPriceTableColumn[] = [{ key: 'normal', label: '正常价' }]
+  if (offpeakSection) columns.push({ key: 'peak', label: '高峰价' })
+  for (const tierSection of tierSections) {
+    const tier = tierSection.key.slice(TIER_SECTION_PREFIX.length)
+    columns.push({ key: tier, label: formatModelServiceTier(tier) })
+  }
+
+  const offpeakByKey = new Map((offpeakSection?.items ?? []).map((entry) => [entry.key, entry]))
+  const rows: ModelPriceTableRow[] = []
+  const usedRowKeys = new Set<string>()
+  // normal 列语义：有高峰档时取官方正常时段价（offpeak_pricing），无高峰档模型取 token_pricing 本身；
+  // peak 列恒为官方高峰时段价（token_pricing）。tier 档按 item.key 从对应分组配对。
+  const buildCells = (entry: ProviderModelCatalogDisplayItem): Record<string, ProviderModelCatalogDisplayItem | undefined> => {
+    const cells: Record<string, ProviderModelCatalogDisplayItem | undefined> = offpeakSection
+      ? { normal: offpeakByKey.get(entry.key), peak: entry }
+      : { normal: entry }
+    for (const tierSection of tierSections) {
+      const tier = tierSection.key.slice(TIER_SECTION_PREFIX.length)
+      cells[tier] = tierSection.items.find((tierEntry) => tierEntry.key === entry.key)
+    }
+    return cells
+  }
+  for (const entry of tokenSection?.items ?? []) {
+    rows.push({ key: entry.key, label: entry.label, cells: buildCells(entry) })
+    usedRowKeys.add(entry.key)
+  }
+  for (const section of sections) {
+    if (section.key !== 'image_generation' && section.key !== 'media_pricing') continue
+    for (const entry of section.items) {
+      const rowKey = usedRowKeys.has(entry.key) ? `${section.key}_${entry.key}` : entry.key
+      rows.push({ key: rowKey, label: entry.label, cells: buildCells(entry) })
+      usedRowKeys.add(rowKey)
+    }
+  }
+  return { columns, rows, hasOffpeak: Boolean(offpeakSection) }
+}
+
+/** 抽屉「基础信息」分组（§6.3，对齐 portal info-grid）：非价格分组（reasoning /
+ * capacity / long_context 及未来任何未归类分组）按后端顺序返回，供 label/value
+ * 两列网格渲染；banned 分组（§6.4）前端兜底过滤（旧后端响应仍可能携带）。 */
+export interface ModelCatalogInfoGroup {
+  key: string
+  label: string
+  items: ProviderModelCatalogDisplayItem[]
+}
+
+export function modelInfoItems(item: ProviderModelPricing): ModelCatalogInfoGroup[] {
+  return modelCatalogDisplaySections(item)
+    .filter((section) => !BANNED_CATALOG_SECTION_KEYS.has(section.key))
+    .filter((section) => !isPriceSectionKey(section.key))
+    .map((section) => ({ key: section.key, label: section.label, items: section.items }))
 }
 
 export function formatModelCatalogDisplayValue(item: ProviderModelCatalogDisplayItem): string {
@@ -464,6 +562,11 @@ export function formatModelCatalogDisplayValue(item: ProviderModelCatalogDisplay
   if (item.format === 'usd_per_image') return `$${trimNumber(numericValue)} / 张`
   if (item.format === 'usd_per_1m_token_hour') return `$${trimNumber(numericValue)} / 1M tokens·小时`
   return `$${trimNumber(numericValue)} / 1M tokens`
+}
+
+/** 价格表单元格（模型目录卡片化与详情抽屉设计 §6.2）：单位语义由列头与区块标题承担，值只留 $ 数字。 */
+export function formatPriceTableCell(item: ProviderModelCatalogDisplayItem): string {
+  return formatModelCatalogDisplayValue(item).replace(/ \/ 1M tokens$/, '')
 }
 
 export function formatTokens(value?: number): string {
@@ -539,6 +642,106 @@ export function modelToolsByProtocolMatchKeyword(item: ProviderModelPricing, key
   ))
 }
 
+// 数值格式化口径（模型目录卡片化与详情抽屉设计 §5.1）：最多 2 位小数——
+// |v| ≥ 0.01 走 toFixed(2) 去尾零（0.28571429 → 0.29、1.14285714 → 1.14）；
+// 0 < |v| < 0.01 保留 2 位有效数字（0.00571429 → 0.0057、0.00083333 → 0.00083），
+// 避免缓存读等小单价被舍成 0.01 或 0；0 显示 '0'。卡片槽位与抽屉价格值同源。
 export function trimNumber(value: number): string {
-  return Number(value.toFixed(8)).toString()
+  const absolute = Math.abs(value)
+  if (absolute >= 0.01) return Number(value.toFixed(2)).toString()
+  if (absolute > 0) return Number(value.toPrecision(2)).toString()
+  return '0'
+}
+
+/** 卡片容量速览：0 或缺失显示 -，千进制量级单位（k/m），与抽屉内精确 token 值分层。 */
+export function formatSpec(value?: number | null): string {
+  if (typeof value !== 'number' || value === 0) return '-'
+  if (value >= 1_000_000) return `${parseFloat((value / 1_000_000).toFixed(1))}m`
+  if (value >= 1_000) return `${parseFloat((value / 1_000).toFixed(1))}k`
+  return String(value)
+}
+
+type ModelPriceSlotField =
+  | 'inputUsdPer1M'
+  | 'outputUsdPer1M'
+  | 'cachedInputUsdPer1M'
+  | 'outputUsdPerImage'
+  | 'imageInputUsdPer1M'
+  | 'imageOutputUsdPer1M'
+  | 'audioInputUsdPer1M'
+  | 'audioOutputUsdPer1M'
+  | 'ttsInputUsdPer1MChars'
+  | 'audioInputUsdPerSecond'
+  | 'videoOutputUsdPerSecond'
+  | 'videoOutputUsdPerCall'
+
+export interface ModelPriceSlot {
+  label: string
+  value: string
+  unit: string
+}
+
+// 卡片锚点价候选序列（模型目录卡片化与详情抽屉设计 5.1）：按序取真实存在
+// （非 null/undefined，显式 0 保留）的字段，最多 3 个。
+const modelPriceSlotCandidates: Record<ModelCategoryKey, Array<{ label: string; field: ModelPriceSlotField; unit: string }>> = {
+  text: [
+    { label: '输入', field: 'inputUsdPer1M', unit: '/1M tokens' },
+    { label: '输出', field: 'outputUsdPer1M', unit: '/1M tokens' },
+    { label: '缓存读', field: 'cachedInputUsdPer1M', unit: '/1M tokens' }
+  ],
+  image: [
+    { label: '每张输出', field: 'outputUsdPerImage', unit: '/张' },
+    { label: '图片输入', field: 'imageInputUsdPer1M', unit: '/1M tokens' },
+    { label: '图片输出', field: 'imageOutputUsdPer1M', unit: '/1M tokens' }
+  ],
+  audio: [
+    { label: '音频输入', field: 'audioInputUsdPer1M', unit: '/1M tokens' },
+    { label: '音频输出', field: 'audioOutputUsdPer1M', unit: '/1M tokens' },
+    { label: '语音合成', field: 'ttsInputUsdPer1MChars', unit: '/1M 字符' },
+    { label: '语音识别', field: 'audioInputUsdPerSecond', unit: '/秒' },
+    { label: '输入', field: 'inputUsdPer1M', unit: '/1M tokens' }
+  ],
+  video: [
+    { label: '视频（每秒）', field: 'videoOutputUsdPerSecond', unit: '/秒' },
+    { label: '视频（每次）', field: 'videoOutputUsdPerCall', unit: '/次' },
+    { label: '输入', field: 'inputUsdPer1M', unit: '/1M tokens' }
+  ]
+}
+
+// 分类候选全空时的回退序列（设计 5.1「分类回退」）：按 text→image→audio→video
+// 展平候选表并按字段去重，label/unit 与候选表同字段保持单一来源。
+const modelPriceSlotFallbackCandidates: Array<{ label: string; field: ModelPriceSlotField; unit: string }> = modelCategoryOrder
+  .flatMap((category) => modelPriceSlotCandidates[category])
+  .filter((candidate, index, all) => all.findIndex((entry) => entry.field === candidate.field) === index)
+
+function collectModelPriceSlots(
+  item: ProviderModelPricing,
+  candidates: Array<{ label: string; field: ModelPriceSlotField; unit: string }>
+): ModelPriceSlot[] {
+  const slots: ModelPriceSlot[] = []
+  for (const candidate of candidates) {
+    if (slots.length >= 3) break
+    const value = item[candidate.field]
+    if (typeof value !== 'number') continue
+    slots.push({ label: candidate.label, value: trimNumber(value), unit: candidate.unit })
+  }
+  return slots
+}
+
+export function modelPriceSlots(item: ProviderModelPricing): ModelPriceSlot[] {
+  // 单 Token 价合并只跟随后端投影（token_pricing 分组恰为单「token」条目），
+  // 不做字段级全局判定；其余行保持候选序列原口径。
+  const tokenPricingSection = modelCatalogDisplaySections(item).find((section) => section.key === 'token_pricing')
+  if (
+    tokenPricingSection?.items.length === 1
+    && tokenPricingSection.items[0]?.key === 'token'
+    && typeof item.inputUsdPer1M === 'number'
+  ) {
+    return [{ label: 'Token', value: trimNumber(item.inputUsdPer1M), unit: '/1M tokens' }]
+  }
+  // 分类候选 0 槽时按全字段顺序回退取存在者（mode 缺失行会被误分类为 text），
+  // 价格区不因分类误配隐藏真实媒体价；全部直价字段为空才返回空数组。
+  const slots = collectModelPriceSlots(item, modelPriceSlotCandidates[getModelCategory(item)])
+  if (slots.length) return slots
+  return collectModelPriceSlots(item, modelPriceSlotFallbackCandidates)
 }

@@ -184,11 +184,11 @@ func TestW10ABatchAndCloneErrorTypes(t *testing.T) {
 	if versionErr.Error() != "账户配置已发生变化，请刷新后重试：acc-1" {
 		t.Fatalf("版本冲突消息不一致：%s", versionErr.Error())
 	}
-	forbidden := &cloneInteractionForbiddenError{Message: "授权实例不能克隆"}
+	forbidden := &CloneInteractionForbiddenError{Message: "授权实例不能克隆"}
 	if forbidden.Error() != "授权实例不能克隆" {
 		t.Fatalf("克隆禁止消息不一致：%s", forbidden.Error())
 	}
-	if (&cloneInteractionConflictError{}).Error() != "账户配置已发生变化，请重试" {
+	if (&CloneInteractionConflictError{}).Error() != "账户配置已发生变化，请重试" {
 		t.Fatal("克隆冲突消息不一致")
 	}
 }

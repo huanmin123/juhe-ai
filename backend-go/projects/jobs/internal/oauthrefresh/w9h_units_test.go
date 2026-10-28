@@ -1448,6 +1448,45 @@ func TestW9HFailureStatePureHelpers(t *testing.T) {
 	}
 }
 
+// T65-③：Redis 失败状态 key 前缀按族隔离——OpenAI 族默认构造保持既有前缀
+// 逐字节不变（存量记录继续可读），keepalive 族构造使用独立前缀；同一账户在
+// 两族下的 key 必须不同（计数与退避互不别名），且派生后缀一致。
+func TestW9HFailureStateKeyPrefixFamilyIsolation(t *testing.T) {
+	var captured []string
+	scripter := &w9hScripter{
+		evalFunc: func(_ context.Context, _ string, keys []string, _ ...any) (any, error) {
+			captured = append(captured, keys[0])
+			return []any{int64(1), int64(0), int64(0), int64(1), int64(1), "m", "{}"}, nil
+		},
+		getFunc: func(context.Context, string) (string, error) { return "", nil },
+	}
+	if _, err := NewRedisFailureStateStore(scripter).Record(context.Background(), "acc", 0, FailureKindUntrustedUpstream, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRedisFailureStateStoreWithKeyPrefix(scripter, KeepaliveFailureStateKeyPrefix).Record(context.Background(), "acc", 0, FailureKindUntrustedUpstream, 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("captured keys=%v", captured)
+	}
+	openAIKey, keepaliveKey := captured[0], captured[1]
+	if openAIKey != failureStateKey("acc") {
+		t.Fatalf("default store must keep the historical OpenAI key: %q", openAIKey)
+	}
+	if !strings.HasPrefix(openAIKey, "juhe-ai:state:openai-oauth-refresh-failure:") {
+		t.Fatalf("openai key=%q", openAIKey)
+	}
+	if !strings.HasPrefix(keepaliveKey, "juhe-ai:state:oauth-keepalive-failure:") {
+		t.Fatalf("keepalive key=%q", keepaliveKey)
+	}
+	if openAIKey == keepaliveKey {
+		t.Fatal("family keys must not alias for the same account")
+	}
+	if suffix := openAIKey[len("juhe-ai:state:openai-oauth-refresh-failure:"):]; !strings.HasSuffix(keepaliveKey, suffix) {
+		t.Fatalf("derived suffix must match: openai=%q keepalive=%q", openAIKey, keepaliveKey)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Failure log attrs arms
 // ---------------------------------------------------------------------------
@@ -1560,12 +1599,21 @@ func TestW9HNewRefreshJobOptionWiring(t *testing.T) {
 
 func TestW9HNewKeepaliveJobOptionWiring(t *testing.T) {
 	logger := slog.Default()
-	job := NewKeepaliveJob(nil, &w9hFakeExchanger{}, WithKeepaliveLogger(logger), WithKeepaliveClock(ClockFunc(defaultNow)))
+	keepaliveFailures := NewMemoryFailureStateStore()
+	job := NewKeepaliveJob(nil, &w9hFakeExchanger{}, WithKeepaliveLogger(logger), WithKeepaliveClock(ClockFunc(defaultNow)),
+		WithKeepaliveFailureStateStore(keepaliveFailures))
 	if job.logger != logger {
 		t.Fatal("keepalive logger wiring")
 	}
+	if job.failures != keepaliveFailures {
+		t.Fatalf("keepalive failure store wiring: %T", job.failures)
+	}
 	if job.now().Compare(defaultNow()) != 0 {
 		t.Fatalf("keepalive clock=%v", job.now())
+	}
+	// 缺省装配保持进程内存版默认。
+	if defaultJob := NewKeepaliveJob(nil, &w9hFakeExchanger{}); defaultJob.failures == nil {
+		t.Fatal("keepalive failure store must default to the in-process store")
 	}
 	plans := KeepalivePlans()
 	if len(plans) != 3 || plans[0].Provider != ProviderAnthropic || plans[1].Provider != ProviderGemini || plans[2].Provider != ProviderXAI {

@@ -226,14 +226,17 @@ export function validateAccountSaveForm(input: {
     return form.providerCode === 'anthropic' ? '请填写 Claude Code OAuth Token' : '请填写 Access Token'
   }
   const supportedModels = normalizeSupportedModels(form.supportedModels)
-  // 国外 OAuth 供应商创建时支持模型/检查模型允许留空：后端自动取模型目录
-  // 最新的对话模型并默认检查模型（留空项由系统兜底，见 oauthmgmt
-  // CreateOAuthAccount）。其余场景保持必填；媒体域无该兜底（D7：支持模型
-  // 一律必选），gemini native google_oauth 媒体账户同样必选。
+  // 托管 OAuth 授权形态（manual code / refresh_token / sso_cookie）创建时支持模型/
+  // 检查模型允许留空：后端自动取模型目录最新的对话模型并默认检查模型（留空项由
+  // 系统兜底，见 oauthmgmt CreateOAuthAccount）。access_token 直录走普通 create 端
+  // 点（accounts/routes.go create → Store.Create），后端对空支持模型硬拒绝且无任何
+  // 派生兜底，必须排除在放行之外、提交前由前端拦截。其余场景保持必填；媒体域无
+  // 该兜底（D7：支持模型一律必选），gemini native google_oauth 媒体账户同样必选。
   const oauthDefaultsAllowed = !editingId
     && !capabilityDomainIsMedia(form.capabilityDomain)
     && (form.type === 'oauth' || form.type === 'google_oauth')
     && ['gpt', 'anthropic', 'gemini', 'xai'].includes(form.providerCode)
+    && form.oauthMode !== 'access_token'
   if (!supportedModels.length && !oauthDefaultsAllowed) return '请选择支持模型'
   const healthCheckModel = form.healthCheckModel.trim()
   if (!healthCheckModel && !oauthDefaultsAllowed) return '请选择检查模型'

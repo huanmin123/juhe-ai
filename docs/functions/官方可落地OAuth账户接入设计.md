@@ -62,9 +62,10 @@ Anthropic 这里的 “OAuth” 现在同时覆盖两种入口：
 
 Gemini 的 “Google OAuth” 必须继续区分三种模式：
 
-- `code_assist`：内置 Gemini CLI client，使用 `cloudcode-pa.googleapis.com`，Project 必填。
+- `code_assist`：内置 Gemini CLI client，使用 `cloudcode-pa.googleapis.com`，Project 必填（可由探测链自动取得，见下）。
 - `google_one`：内置 Gemini CLI client，使用 Code Assist runtime，并增加 Drive metadata scope 识别订阅档位。
 - `ai_studio`：自定义 Google OAuth client，使用 `generativelanguage.googleapis.com`。
+- code_assist / google_one 建号（`create-from-code` / `create-from-refresh-token`）的 Project 来源：用户显式提交 projectId 优先（不探测，现状不变）；凭据未携带 projectId 时，换发成功后对 cloudcode-pa 执行一次 `loadCodeAssist` →（无 project 时）`onboardUser` 探测链，探测到的 cloudaicompanionProject 与档位（paidTier 优先于 currentTier）经 `canonicalGeminiTierID` 归一后写入凭据；探测 / onboarding 失败时，建号请求显式提交过 tierId（归一非空）则按现状继续建号并落日志，否则建户返回 400 并提示手填 projectId，不静默产出不可用账户。`ai_studio` 不参与该探测；重新授权、keepalive 回填与模型检测探针侧的 project / tier 探测均不在范围。
 
 ## 统一建模
 
@@ -92,7 +93,7 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 
 ## 后端设计
 
-实现落点（Go）：管理面授权、换码、刷新与 SSO device flow 位于 `backend-go/projects/gateway/internal/oauthmgmt`（按供应商拆分为 `openai.go`、`gemini.go`、`anthropic.go`、`grok.go`、`groksso.go` 等，路由见 `routes.go`）；后台保活刷新位于 `backend-go/projects/jobs/internal/oauthrefresh/keepalive.go`，Anthropic / Gemini 提前量为 60 秒、Grok 为 5 分钟，单批默认 20 个账户。以下小节保留设计契约。
+实现落点（Go）：管理面授权、换码、刷新与 SSO device flow 位于 `backend-go/projects/gateway/internal/oauthmgmt`（按供应商拆分为 `openai.go`、`gemini.go`、`anthropic.go`、`grok.go`、`groksso.go` 等，路由见 `routes.go`）；后台保活刷新位于 `backend-go/projects/jobs/internal/oauthrefresh/keepalive.go`，Anthropic / Gemini 提前量为 60 秒、Grok 为 5 分钟，单批默认 20 个账户。网关请求面对 chat 域 `oauth` / `google_oauth` 账户的完整上游 `401` 提供兜底刷新：未命中账户级 `error_handling_rules` 的 `401` 规则时按账户单飞就地刷新一次并用新凭据同账户重试，上游换发失败（含 `invalid_grant`）记 5 分钟不再自动刷新并回落既有 `SkipAccount` 换账户行为（本地错误仅本次跳过），触发条件、节流与状态边界以 [AI账户错误语义与状态变更边界](AI账户错误语义与状态变更边界.md) 为权威。anthropic / gemini / grok 三族 keepalive 失败已接入与 OpenAI 族同口径的账户级 failurestate 记账：本地可验证失败与上游失败均记 300s 退避（批内读退避失败保守跳过本轮），本地可验证失败累计 3 次且账户 active 时写 `oauth_token_refresh_local_configuration_invalid` 并停止该账户自动刷新，上游失败永不写账户终态，刷新成功清账并恢复 `error` / 管理码账户；三族 Redis key 使用独立前缀，OpenAI 既有 key 不变。以下小节保留设计契约。
 
 ### 存储与默认档案
 
@@ -104,7 +105,7 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 
 - `oauth` 凭据归一化改为按 profile 做最小必填校验。
 - Anthropic OAuth 缺少 `access_token` 时直接拒绝保存或测试。
-- Gemini Code Assist 缺少 `project_id` 时拒绝创建；Grok OAuth 缺少 `access_token` 时拒绝派发。
+- Gemini code_assist / google_one 建号缺省 projectId 时先走 `loadCodeAssist` / `onboardUser` 探测链自动开通（口径见「供应商 OAuth 矩阵」），探测 / onboarding 失败时，建号请求显式提交过 tierId（归一非空）则按现状继续建号并落日志，否则拒绝创建并提示手填 projectId，不静默产出不可用账户；用户显式提交 projectId 时维持直接校验、不探测。Grok OAuth 缺少 `access_token` 时拒绝派发。
 - 不能沿用“有 refresh token 即视为可用 OAuth”这类 OpenAI 假设。
 
 ### 网关鉴权
@@ -137,6 +138,7 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 - 新建 Anthropic / Gemini / Grok OAuth 账户时按供应商能力展示授权回调 URL、Refresh Token、Access Token；Grok 额外展示 SSO Cookie，Gemini 额外展示模式、Project、Tier 和 AI Studio client 字段。
 - OpenAI 保持现有授权按钮与回填逻辑。
 - endpoint modes、文案说明、可选协议能力说明都按供应商 profile 切换。
+- chat 域托管 OAuth（`oauth` / `google_oauth`）建号创建态不收集支持模型与检查模型（直接 Token 录入形态除外，仍显式选择），由后端派生；经托管路由（手动授权 / Refresh Token）创建成功后弹窗直接切换为该账户编辑模式。口径权威出处：[样式规范 §8.1](../architecture/frontend/样式规范.md) 与 [AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md)。
 
 ### 编辑与维护
 

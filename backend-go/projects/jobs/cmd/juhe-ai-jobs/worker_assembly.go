@@ -579,20 +579,22 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	a.oauthStore = store
 
 	// P0 修复：OAuth 刷新失败状态存储按运行态部署注入。缺省（无
-	// JUHE_AI_REDIS_STATE_URL）保持 NewRefreshJob 的内存版；redis-state 部署
-	// 注入 Redis 版，退避状态跨重启与多副本共享（refresh.go 注释声明的装配
-	// 约定）。Redis 读取失败由 refresh 任务保守跳过该账户，不静默当“无退避”。
-	failures, closeFailures, failureStoreErr := a.oauthFailureStateStore()
+	// JUHE_AI_REDIS_STATE_URL）保持各 job 的内存版默认；redis-state 部署注入
+	// Redis 版（refresh 注入 OpenAI 族既有 key 前缀、keepalive 注入独立
+	// oauth-keepalive-failure 前缀，共用同一客户端），退避状态跨重启与多副本
+	// 共享（refresh.go / keepalive.go 注释声明的装配约定）。Redis 读取失败由
+	// 两个任务保守跳过该账户，不静默当“无退避”。
+	refreshFailures, keepaliveFailures, closeFailures, failureStoreErr := a.oauthFailureStateStores()
 	if failureStoreErr != nil {
 		return failureStoreErr
 	}
 	if closeFailures != nil {
 		a.addCloser(closeFailures)
 	}
-	a.oauthFailures = failures
+	a.oauthFailures = refreshFailures
 	var refreshOptions []func(*oauthrefresh.RefreshJob)
-	if failures != nil {
-		refreshOptions = append(refreshOptions, oauthrefresh.WithFailureStateStore(failures))
+	if refreshFailures != nil {
+		refreshOptions = append(refreshOptions, oauthrefresh.WithFailureStateStore(refreshFailures))
 		a.logger.Info("OAuth 刷新失败状态存储已接入 Redis 运行态",
 			"event", "oauth_refresh_failure_state_store_redis")
 	}
@@ -613,7 +615,16 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	// （NewHTTPTokenExchanger，与 refresh job 同一换发实现）；keepalive 只
 	// 处理 anthropic/gemini/grok 三族计划（oauthrefresh.KeepalivePlans），
 	// openai 族仍归 openai-oauth-access-token-refresh，互不重叠。
-	keepaliveJob := oauthrefresh.NewKeepaliveJob(store, oauthrefresh.NewHTTPTokenExchanger(), oauthrefresh.WithKeepaliveLogger(a.logger))
+	// T65-③：keepalive 与 OpenAI 族对齐接入失败记账——redis-state 部署经
+	// WithKeepaliveFailureStateStore 注入族隔离前缀的 Redis 存储，失败退避
+	// 与本地配置终态口径与 openai-oauth-access-token-refresh 一致。
+	keepaliveOptions := []func(*oauthrefresh.KeepaliveJob){oauthrefresh.WithKeepaliveLogger(a.logger)}
+	if keepaliveFailures != nil {
+		keepaliveOptions = append(keepaliveOptions, oauthrefresh.WithKeepaliveFailureStateStore(keepaliveFailures))
+		a.logger.Info("OAuth keepalive 失败状态存储已接入 Redis 运行态",
+			"event", "oauth_keepalive_failure_state_store_redis")
+	}
+	keepaliveJob := oauthrefresh.NewKeepaliveJob(store, oauthrefresh.NewHTTPTokenExchanger(), keepaliveOptions...)
 	a.scheduleWiredJob("oauth-keepalive-token-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		for _, plan := range oauthrefresh.KeepalivePlans() {
 			if taskCtx.Err() != nil {
@@ -634,9 +645,10 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 				"failed", result.Failed,
 				"skippedLocked", result.SkippedLocked,
 				"skippedFresh", result.SkippedFresh,
+				"skippedBackoff", result.SkippedBackoff,
 				"durationMs", time.Since(planStart).Milliseconds(),
 			}
-			if result.Scanned+result.Due+result.Refreshed+result.Failed+result.SkippedLocked+result.SkippedFresh > 0 {
+			if result.Scanned+result.Due+result.Refreshed+result.Failed+result.SkippedLocked+result.SkippedFresh+result.SkippedBackoff > 0 {
 				a.logger.Info("oauth keepalive 计划执行完成", keepaliveFields...)
 				continue
 			}

@@ -60,9 +60,12 @@ func (s *recordingSink) has(operationKey string) bool {
 
 // exchangeCall records one upstream token request.
 type exchangeCall struct {
-	URL     string
-	Body    string
-	Headers map[string]string
+	URL  string
+	Body string
+	// ProxyURL 记录 TokenHTTPRequest.ProxyURL（T65-② 起建号链探测断言
+	// 「探测经账户绑定代理出站」用；既有断言不读该字段，加法不破坏）。
+	ProxyURL string
+	Headers  map[string]string
 }
 
 type mockExchanger struct {
@@ -75,7 +78,7 @@ type mockExchanger struct {
 func (m *mockExchanger) Do(_ context.Context, request TokenHTTPRequest) (TokenHTTPResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	call := exchangeCall{URL: request.URL, Body: request.Body, Headers: request.Headers}
+	call := exchangeCall{URL: request.URL, Body: request.Body, ProxyURL: request.ProxyURL, Headers: request.Headers}
 	m.calls = append(m.calls, call)
 	status, body := m.respond(len(m.calls)-1, call)
 	return TokenHTTPResponse{StatusCode: status, Body: body}, nil

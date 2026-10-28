@@ -359,7 +359,10 @@ func buildProviderCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection
 	case "qwen":
 		sections = qwenCatalogDisplay(item)
 	}
-	return appendSourceDisclosureSection(appendStaticMediaPriceSections(sections, item), item)
+	// currency_conversion / source_disclosure 已停止生成（供应商独立计费与模型
+	// 目录展示设计 §3.2：系统统一美元计价，币种/汇率/来源文本不进客户可见目录；
+	// 原始来源留档仍在 catalogdata/*.json 的 sourcePricingNote 字段）。
+	return appendStaticMediaPriceSections(sections, item)
 }
 
 // appendStaticMediaPriceSections 把目录表无列的媒体单价（视频每秒/每次、
@@ -477,9 +480,35 @@ func deepSeekCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 			priceEntry("cache_hit", "缓存读", item.CachedInputUsdPer1M, "usd_per_1m_tokens"),
 			priceEntry("output", "输出", item.OutputUsdPer1M, "usd_per_1m_tokens"),
 		}))
+	sections = appendSection(sections, deepSeekOffPeakSection(item))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
 	return sections
+}
+
+// deepSeekOffPeakRatio 是 DeepSeek 官方空闲时段半价规则（data_deepseek.go：
+// time-of-day billing 支持落地前计费只匹配高峰窗口）。offpeak_pricing 分组
+// 仅供目录两档并列留档展示，计费未启用、仍按计费价（高峰价）结算。
+const deepSeekOffPeakRatio = 0.5
+
+// deepSeekOffPeakSection 是「空闲时段参考价」分组：items 与 token_pricing 的
+// key/label 一一对应（cache_miss 输入 / cache_hit 缓存读 / output 输出），
+// value = 对应高峰价 × deepSeekOffPeakRatio，格式化复用 priceEntry 同一路径
+// （同 format/单位，8 位内部精度由前端 2 位展示规则收口）。仅 deepseek 投影生成。
+func deepSeekOffPeakSection(item *ModelCatalogItem) *catalogDisplaySection {
+	return priceSection("offpeak_pricing", "空闲时段参考价", []catalogDisplayItem{
+		priceEntry("cache_miss", "输入", offPeakPrice(item.InputUsdPer1M), "usd_per_1m_tokens"),
+		priceEntry("cache_hit", "缓存读", offPeakPrice(item.CachedInputUsdPer1M), "usd_per_1m_tokens"),
+		priceEntry("output", "输出", offPeakPrice(item.OutputUsdPer1M), "usd_per_1m_tokens"),
+	})
+}
+
+func offPeakPrice(price *float64) *float64 {
+	if price == nil {
+		return nil
+	}
+	output := *price * deepSeekOffPeakRatio
+	return &output
 }
 
 func glmCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
@@ -536,19 +565,19 @@ func qwenCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 // genericMediaCatalogDisplay 按 item.Mode 场景化输出（列表按场景不同），
 // 价格只在 ModelCatalogItem 有真实通道时落 section（宁缺勿假）：
 //   - chat（含 mode 未标注的 custom 行兜底）：Token 计费（输入/缓存读/
-//     缓存写入/输出/音频输入）+ 思考能力 + 容量 + 美元换算；
+//     缓存写入/输出/音频输入）+ 思考能力 + 容量；
 //   - image / image_generation：Token 计费 + 图片生成（每张，走
-//     OutputUsdPerImage 通道）+ 思考能力 + 容量 + 美元换算；
+//     OutputUsdPerImage 通道）+ 思考能力 + 容量；
 //   - audio（audio_speech / audio_transcription 协议行）、video、embedding：
 //     TTS 字符价 / ASR 秒价 / 视频秒价只在 internal/pricing 静态层计费面
 //     （PriceSet 的 TtsInputUsdPer1MChars / AudioInputUsdPerSecond /
 //     VideoOutputUsdPerSecond），目录表无对应列、ModelCatalogItem 无对应
 //     字段 → 不落价格 section；行恰带 token 价（如 chat 通道回填）时照实
-//     显示 Token 计费。容量与美元换算照常。
+//     显示 Token 计费。容量照常。
 //
-// 人民币来源行的披露位是统一 appendSourceDisclosureSection（官方币种 CNY + 约定汇率
-// 7.0 + 官方源价 note），经 ApplyBuiltInStaticDerivedFields 从静态表透传，
-// 媒体行同样携带。无值 section 由 priceSection/textSection 自动丢弃。
+// 美元换算/来源披露 section 已停止生成（供应商独立计费与模型目录展示设计
+// §3.2），CatalogItem 上的 SourcePricingNote 仍随静态透传留档。无值 section
+// 由 priceSection/textSection 自动丢弃。
 func genericMediaCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	mode := ""
 	if item.Mode != nil {
@@ -696,42 +725,6 @@ func serviceTierSections(item *ModelCatalogItem) []catalogDisplaySection {
 		}
 	}
 	return sections
-}
-
-// appendSourceDisclosureSection 是全厂商统一的「价格来源披露」收尾
-//（与 appendStaticMediaPriceSections 同构，buildProviderCatalogDisplay
-// 统一附加——投影内不再各自调用）：凡落了 SourcePricingNote 的行必须在
-// 目录页可见其价格来源，USD 明文行不再因无换算三元组而无披露（2026-10-05
-// 验收批：cogvideox-3 等 z.ai USD 行此前只有价格没有来源，与 CNY 行信息
-// 不对称）。非 USD 币种（现役全部 CNY）保持「美元换算」形态（币种 + 约定
-// 汇率 + 日期 + note）；USD/未声明币种行渲染「来源披露」（币种 + note）。
-func appendSourceDisclosureSection(sections []catalogDisplaySection, item *ModelCatalogItem) []catalogDisplaySection {
-	if item.SourcePricingNote == "" {
-		return sections
-	}
-	if item.SourcePricingCurrency != "" && item.SourcePricingCurrency != "USD" {
-		rate := ""
-		if item.SourceExchangeRateToUsd != nil && *item.SourceExchangeRateToUsd > 0 {
-			// SourceExchangeRateToUsd 语义是「1 USD = N 源币种」；展示同
-			// 口径，不做倒数换算（1 CNY ≈ $0.1429 这类倒数值易被误读为
-			// 报价精度）。
-			rate = trimTrailingZeros(fixedNumber(*item.SourceExchangeRateToUsd, 4))
-		}
-		return appendSection(sections, textSection("currency_conversion", "美元换算", []catalogDisplayItem{
-			{Key: "source_currency", Label: "官方币种", Value: item.SourcePricingCurrency, Format: "text"},
-			{Key: "exchange_rate", Label: "1 USD 兑", Value: rate + " " + item.SourcePricingCurrency, Format: "text"},
-			{Key: "exchange_rate_date", Label: "汇率日期", Value: item.SourceExchangeRateDate, Format: "text"},
-			{Key: "source_note", Label: "官方源价", Value: item.SourcePricingNote, Format: "text"},
-		}))
-	}
-	currency := item.SourcePricingCurrency
-	if currency == "" {
-		currency = "USD"
-	}
-	return appendSection(sections, textSection("source_disclosure", "来源披露", []catalogDisplayItem{
-		{Key: "source_currency", Label: "官方币种", Value: currency, Format: "text"},
-		{Key: "source_note", Label: "官方源价", Value: item.SourcePricingNote, Format: "text"},
-	}))
 }
 
 func longContextTokenEntries(item *ModelCatalogItem, cacheReadLabel string) []catalogDisplayItem {

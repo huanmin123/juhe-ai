@@ -36,6 +36,13 @@ type providerPlan struct {
 
 	parseCredentialsPatch func(body map[string]any) (map[string]any, bool)
 
+	// enrichOutcome 是建号链（create-from-code / create-from-refresh-token）
+	// 换发成功后、落库前的 per-provider enrichment 钩子（T65-②：gemini
+	// Code Assist project/tier 探测与 onboarding 在此执行）。nil = 无建号期
+	// enrichment；reauthorize 与 rotation 链不经 handleCreate，天然不触发，
+	// 行为保持现状。
+	enrichOutcome func(ctx context.Context, s *Store, body map[string]any, outcome *tokenOutcome, proxyURL string) (*tokenOutcome, error)
+
 	// proxyURL 是路由层经 Store.proxyProfileRequestURL 解析出的账户绑定代理
 	// 出站 URL（空 = 未绑定，保持既有直连行为）；四个 token 闭包对称透传。
 	authURL         func(ctx context.Context, s *Store, body map[string]any, ownerID string) (map[string]any, error)

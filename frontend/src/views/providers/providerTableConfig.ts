@@ -36,7 +36,9 @@ export function providerEmptyDescriptionForScope(isManagementView: boolean): str
 }
 
 export function providerActionsForScope(isManagementView: boolean): RowActionItem[] {
+  void isManagementView
   return [
-    { key: 'models', label: isManagementView ? '模型目录' : '查看模型', icon: 'detail', tone: 'info' }
+    // 模型目录弹窗已退役：管理面「查看模型」跳转模型广场并预选该供应商（模型广场页与供应商目录退役设计 §4.5）。
+    { key: 'models', label: '查看模型', icon: 'detail', tone: 'info' }
   ]
 }

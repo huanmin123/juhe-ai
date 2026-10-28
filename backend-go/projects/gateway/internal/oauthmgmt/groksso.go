@@ -24,8 +24,13 @@ const (
 	GrokSSOClientID             = "b1a00492-073a-47ea-816f-4c329264a828"
 	grokSSODefaultPollInterval  = 5 * time.Second
 	grokSSODefaultDeviceExpires = 30 * time.Minute
-	grokSSOMaxPollDuration      = 75 * time.Second
-	grokSSOMaxRedirects         = 8
+	// grokSSOMaxPollDuration 收口单次 sso-to-oauth 请求的 token 轮询窗口：服务端
+	// 自动 approve 场景一般秒级完成，5 分钟覆盖慢网/排队；同时 sso-to-oauth 是
+	// 同步管理面请求，窗口不能逼近 device code 的 30 分钟默认过期（
+	// grokSSODefaultDeviceExpires），避免 HTTP 请求悬挂过久。判定形态保持
+	// min(expiresIn, grokSSOMaxPollDuration)。
+	grokSSOMaxPollDuration = 5 * time.Minute
+	grokSSOMaxRedirects    = 8
 )
 
 // grokSSOUserAgent mirrors grokSSODefaultUserAgent.

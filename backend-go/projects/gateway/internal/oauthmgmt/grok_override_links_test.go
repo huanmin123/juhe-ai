@@ -110,12 +110,13 @@ func TestGrokOverrideCreateLink(t *testing.T) {
 	grokOverrideAssertInert(t, credentials)
 
 	// 非法值：ultra 不在 openai 族思考级别全集，写入面拒绝、账户不落库
-	// （HTTP 层按既有 writeCreateError → writeOAuthError 映射为 502 回退文案）。
+	// （B5 起 writeCreateError 将 ValidationError 逐字 400 透出——组合拒绝等
+	// 确定性校验面不再折叠为 502 兜底文案）。
 	before := grokOverrideAccountCount(t, env)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-refresh-token",
 		`{"refreshToken":"grok-r2",`+
 			`"credentialsPatch":{"reasoning_effort_override":"ultra"}}`)
-	if code != http.StatusBadGateway || payload["message"] != "Grok 刷新令牌授权失败" {
+	if code != http.StatusBadRequest || payload["message"] != "思考级别覆盖无效" {
 		t.Fatalf("非法创建: %d %v", code, payload)
 	}
 	if after := grokOverrideAccountCount(t, env); after != before {

@@ -197,18 +197,35 @@ type Scripter interface {
 }
 
 // RedisFailureStateStore mirrors the redisRecordRefreshFailureScript /
-// redisCompareDeleteRefreshFailureScript pair byte-for-byte.
+// redisCompareDeleteRefreshFailureScript pair byte-for-byte. The keyPrefix
+// namespaces the family's Redis keys: the OpenAI refresh family keeps the
+// historical prefix (NewRedisFailureStateStore default, byte-for-byte
+// compatible with existing records), the keepalive family uses its own
+// isolated prefix so counters and backoffs never alias across families.
 type RedisFailureStateStore struct {
-	redis Scripter
-	now   func() time.Time
+	redis     Scripter
+	now       func() time.Time
+	keyPrefix string
 }
 
 // errRedisShape guards malformed Eval replies.
 var errRedisShape = errors.New("OAuth 刷新失败状态 Redis 返回结构无效")
 
-// NewRedisFailureStateStore builds the Redis-backed store.
+// NewRedisFailureStateStore builds the Redis-backed store under the historical
+// OpenAI refresh family key prefix.
 func NewRedisFailureStateStore(redis Scripter) *RedisFailureStateStore {
-	return &RedisFailureStateStore{redis: redis, now: func() time.Time { return time.Now() }}
+	return newRedisFailureStateStore(redis, openAIFailureStateKeyPrefix)
+}
+
+// NewRedisFailureStateStoreWithKeyPrefix builds the Redis-backed store under an
+// explicit key namespace (keepalive family isolation; see
+// KeepaliveFailureStateKeyPrefix).
+func NewRedisFailureStateStoreWithKeyPrefix(redis Scripter, keyPrefix string) *RedisFailureStateStore {
+	return newRedisFailureStateStore(redis, keyPrefix)
+}
+
+func newRedisFailureStateStore(redis Scripter, keyPrefix string) *RedisFailureStateStore {
+	return &RedisFailureStateStore{redis: redis, now: func() time.Time { return time.Now() }, keyPrefix: keyPrefix}
 }
 
 // redisRecordRefreshFailureScript mirrors the Node record script: the stored
@@ -281,7 +298,7 @@ func (r *RedisFailureStateStore) Record(ctx context.Context, accountID string, b
 	normalizedRevision := normalizedRevisionOr(configRevision)
 	mutationID := newMutationID()
 	result, err := r.redis.Eval(ctx, redisRecordRefreshFailureScript,
-		[]string{failureStateKey(accountID)},
+		[]string{r.failureStateKey(accountID)},
 		formatInt64(clampInt64(backoffUntil, 0, math.MaxInt64)),
 		formatInt64(FailureStateTTL.Milliseconds()),
 		kindBool(kind == FailureKindLocalConfiguration),
@@ -315,7 +332,7 @@ func (r *RedisFailureStateStore) Record(ctx context.Context, accountID string, b
 // caller must not treat an unreadable state as "no backoff" and hammer the
 // upstream (selectBatchCandidates skips such accounts for the round).
 func (r *RedisFailureStateStore) Read(ctx context.Context, accountID string, now int64, configRevision int64) (*RefreshFailureState, error) {
-	raw, err := r.redis.Get(ctx, failureStateKey(accountID))
+	raw, err := r.redis.Get(ctx, r.failureStateKey(accountID))
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +395,7 @@ func (r *RedisFailureStateStore) Clear(ctx context.Context, accountID string, gu
 		return nil
 	}
 	_, err := r.redis.Eval(ctx, redisCompareDeleteRefreshFailureScript,
-		[]string{failureStateKey(accountID)},
+		[]string{r.failureStateKey(accountID)},
 		guard.Snapshot, formatInt64(guard.ConfigRevision))
 	return err
 }
@@ -471,9 +488,32 @@ func newMutationID() string {
 
 func formatInt64(value int64) string { return strconv.FormatInt(value, 10) }
 
-// failureStateKey mirrors redisRefreshFailureStateKey:
+// Failure state Redis key namespaces (T65-③). openAIFailureStateKeyPrefix
+// keeps the historical OpenAI refresh family prefix byte-for-byte so existing
+// records and in-flight backoffs stay readable after the namespace split; the
+// keepalive family (anthropic/gemini/grok) uses its own isolated prefix so
+// the two families' counters and backoffs never alias. The memory store needs
+// no namespace: each instance is process-local by construction.
+const (
+	openAIFailureStateKeyPrefix    = "juhe-ai:state:openai-oauth-refresh-failure:"
+	KeepaliveFailureStateKeyPrefix = "juhe-ai:state:oauth-keepalive-failure:"
+)
+
+// failureStateKeySuffix derives base64url(sha256(accountId)).
+func failureStateKeySuffix(accountID string) string {
+	sum := sha256.Sum256([]byte(accountID))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// failureStateKey mirrors redisRefreshFailureKey with the historical OpenAI
+// family prefix:
 // juhe-ai:state:openai-oauth-refresh-failure:{base64url(sha256(accountId))}.
 func failureStateKey(accountID string) string {
-	sum := sha256.Sum256([]byte(accountID))
-	return "juhe-ai:state:openai-oauth-refresh-failure:" + base64.RawURLEncoding.EncodeToString(sum[:])
+	return openAIFailureStateKeyPrefix + failureStateKeySuffix(accountID)
+}
+
+// failureStateKey is the family-namespaced key:
+// {prefix}{base64url(sha256(accountId))}.
+func (r *RedisFailureStateStore) failureStateKey(accountID string) string {
+	return r.keyPrefix + failureStateKeySuffix(accountID)
 }

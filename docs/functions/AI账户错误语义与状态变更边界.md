@@ -88,6 +88,8 @@ source-only owner 的 `complete_success` 只清该 generation 中完全匹配的
 
 同一账户的多个 Key 只有在实际命中 `retry_next` 后才能在本请求内继续按池顺序选择；未知失败不得轮换兄弟 Key。跨账户重复的同一物理凭据在一个请求内只允许命中一次；显式重试仍受总墙钟和 attempt 预算约束。安全预算截断与真实 Key 池穷尽必须使用不同审计结果，均不得写成 Key 或账户死亡。
 
+chat 域 `oauth` / `google_oauth` 账户收到完整上游 `401` 且未命中账户级 `error_handling_rules` 的 `401` 规则时，网关允许在当前请求内执行一次凭据生命周期自动刷新重试：进程内按账户单飞（per-account 锁 + 60 秒最小间隔）调用 `oauthmgmt` 就地刷新，提交使用 DB 现读 revision CAS，CAS 冲突视同刷新已被其他路径完成；成功后用新凭据在同一账户重试一次（该重试不占用既有同账户 Key 轮换的重试预算，仅受单次请求的总 attempt 预算约束），重试再次 `401` 不得二次刷新；上游换发失败（含 token 端点 `invalid_grant`）后 5 分钟内不再自动刷新并回落既有 `SkipAccount` 换账户行为，本地错误（代理缺失、plan 不支持等）仅本次跳过不进入节流。该路径只属于凭据生命周期，不构成上游语义分类：`401` 触发的是刷新与请求内重试，不写 `accounts.status`、不参与内部账户状态推断，上游响应不改变账户状态与终态的原则不变；账户级 `error_handling_rules` 命中时维持既有规则动作，规则优先于自动刷新；媒体域账户沿用既有自动轮换资格排除，不进入该路径；刷新成功按既有 `oauth_credentials_rotated` 失效面同步清除 runtime cache。
+
 客户端重试是新的网关请求，不继承上次请求的失败游标。新请求必须基于当时的优先级、质量、速度、可用状态、全局轮换游标和恢复结果重新选择；因此高优先级账户已经恢复时可以重新选择高优先级账户，而不是机械延续到上次失败账户的下一个号码。
 
 流式失败只允许在精确协议适配器中按协议声明的事件结构识别，例如 SSE 事件名 `event: error`、Responses 的 `response.failed` 或图片协议的 `image_generation.failed`。普通 SSE 事件的 `data` JSON 仅包含 `error`、`data.error`、`metadata.error`、`code` 或 `message` 字段时只是普通 payload，不能被猜测为失败终态；事件携带的 code、type、message 和 HTTP 状态同样不可信。结构失败只证明本次 attempt 失败，不授权共享账户状态或候选切换。下游尚未语义提交时返回当前失败；输出后必须保留已提交内容，并按协议补发包含错误摘要的终态或关闭连接，不能拼接第二个候选的结果。`generic_*` 客户端仍保持事件透明。

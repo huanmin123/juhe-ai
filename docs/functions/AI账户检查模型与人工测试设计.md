@@ -63,7 +63,7 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 
 ## 3. 检查模型
 
-每个已保存且参与后台检查的 AI 账户最终保存一个检查模型。账户表单创建或编辑必须选择非空 `supportedModels` 和其中的 `healthCheckModel`；表单不会自动上游目录发现，用户可手动刷新补全候选。点击测试或确认时，缺少任一模型只提示并中止，不把目录同步当作隐式补全：
+每个已保存且参与后台检查的 AI 账户最终保存一个检查模型。账户表单编辑态与 API Key / 媒体域 / OAuth 直接 Token 录入创建态必须选择非空 `supportedModels` 和其中的 `healthCheckModel`；chat 域托管 OAuth 的手动授权、Refresh Token（及 Grok SSO 导入）创建态不收集这两个字段，由后端 `CreateOAuthAccount` 派生（见 §4）。表单不会自动上游目录发现，用户可手动刷新补全候选。点击测试或确认时，缺少任一模型只提示并中止，不把目录同步当作隐式补全：
 
 - 表单输入中的 `healthCheckModel` 不可为空，必须由用户从最终 `supportedModels` 中选择；不能依赖前端先请求模型目录或默认值补全。
 - 必须属于账户最终的 `supportedModels`。
@@ -90,6 +90,7 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 - 用户手动目录发现时，推荐模型必须同时存在于成功上游目录、当前账户支持模型和当前协议可测试目录；它只更新当前未保存表单推荐。多 API Key 账户分别固定每把 Key 探测，所有探测成功后取模型交集；任一 Key 失败时不返回部分目录，避免把某把可调度 Key 不支持的模型写入账户能力边界。
 - 用户手动上游模型同步对单把 Key 都只有一次 `10s` 截止；不得复用文本生成诊断的 `10s/20s/30s` 阶梯。浏览器断开同步请求时，服务端必须把取消信号传入草稿凭据处理和上游目录请求，停止尚未开始的后续 Key 探测，不再继续占用上游连接。
 - 服务端发起的上游模型目录探针必须携带不可由客户端伪造的内部标记；只有账户所属驱动能在“已标记 + 精确 `GET` 模型目录路径 + 允许的账户类型”同时满足时放行上游 URL。客户端的 `GET /models`、`GET /v1/models` 和 `GET /v1beta/models` 仍由本地目录处理，不能因账户探针而变成网关热路径的上游请求。
+- chat 域托管 OAuth 建号时，前端创建表单不再提交 `supportedModels` 与 `healthCheckModel`，后端派生（`CreateOAuthAccount`）是 chat 域托管 OAuth 建号的唯一来源；创建接口仍接受显式提交并优先于派生（供 API 直调）。
 - 后端创建接口在未显式提交 `supportedModels` 或 `healthCheckModel` 时，必须按同一 owner 作用域解析并持久化：在最终支持模型集内取首个声明该账户检查形态的模型，无模型声明时回落首个支持模型；解析结果仍通过支持模型和协议能力校验。
 - 账户保存后，后台所有检查只读取账户自己的 `healthCheckModel`。
 - 定时健康检查使用独立流量来源 `account_health_check`；`cooldown_retest` 只表示临时不可调用或限流账户的恢复复测。

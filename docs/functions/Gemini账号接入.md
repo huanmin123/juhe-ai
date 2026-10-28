@@ -103,8 +103,8 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 |
 | --- | --- | --- | --- | --- |
 | Gemini API Key | `api_key` | `profile_gemini_native_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes` | `gemini-3.5-flash` |
-| Gemini Code Assist OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=code_assist`、token、必需 `project_id`、`tier_id`、`base_url` | `gemini-3.5-flash` |
-| Google One OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=google_one`、token、探测到的 `project_id` / Drive 配额与 `tier_id` | `gemini-3.5-flash` |
+| Gemini Code Assist OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=code_assist`、token、`project_id`（缺省时探测链自动开通，见「Google OAuth 认证边界」）、`tier_id`、`base_url` | `gemini-3.5-flash` |
+| Google One OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=google_one`、token、自动探测的 `project_id` / `tier_id` | `gemini-3.5-flash` |
 | Google AI Studio OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 自定义 Client ID / Secret；`oauth_type=ai_studio`、token、可选 `quota_project_id` / `project_id` | `gemini-3.5-flash` |
 | Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选同协议 `modelMappings` | `gemini-3.5-flash` |
 
@@ -124,8 +124,8 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 - `GET /gemini-oauth/capabilities` 与个人端同源接口返回三种模式；默认是 `code_assist`。授权 URL 与 code 换取 token 都使用 Google 官方 OAuth endpoint、PKCE S256、30 分钟一次性会话和账户作用域绑定。
 - `code_assist` / `google_one` 使用内置 Gemini CLI client，回调为 `https://codeassist.google.com/authcode`；当前新授权 scope 都是 Cloud Platform + userinfo email/profile。只有历史凭据实际包含 Drive metadata scope 时才 best-effort 读取 Drive 配额，不再为新授权扩大 scope。
 - `ai_studio` 必须提供自定义 Client ID 与 Client Secret（请求字段或后端环境变量），回调为 `http://localhost:1455/auth/callback`，scope 为 Cloud Platform + Generative Language Retriever。
-- 三种模式都支持回调 URL、Refresh Token 和直接 Access Token 创建。凭据保存 `access_token`、`refresh_token`、`client_id`、`client_secret`、`token_type`、`scope`、`expires_at`、`oauth_type`、`project_id`、`tier_id`、`quota_project_id`、`base_url`；Google One 另保存 Drive limit / usage / tier 更新时间。
-- Code Assist 授权后通过 `loadCodeAssist`、Resource Manager fallback 和 onboarding 取得 Project / Tier，最终缺少 `project_id` 时拒绝创建，默认 Tier 为 `gcp_standard`。Google One 复用 Code Assist project 探测并按 Drive 配额识别档位，失败时默认 `google_one_free`；AI Studio 默认 `aistudio_free`。
+- 三种模式都支持回调 URL、Refresh Token 和直接 Access Token 创建。凭据保存 `access_token`、`refresh_token`、`client_id`、`client_secret`、`token_type`、`scope`、`expires_at`、`oauth_type`、`project_id`、`tier_id`、`quota_project_id`、`base_url`、`supported_endpoint_modes`。gateway 建号与刷新链不再写入 Drive 配额字段；存量含 Drive metadata scope 的 google_one 凭据在后台保活刷新中仍按 scope 门控 best-effort 探测 Drive 配额并更新写回 `drive_storage_limit` / `drive_storage_usage` / `drive_tier_updated_at`（探测失败保留存量值）。
+- Code Assist / Google One 建号缺省 projectId 时经 `loadCodeAssist` →（无 project 时）`onboardUser` 探测链自动取得 Project 与档位（paidTier 优先于 currentTier，经 `canonicalGeminiTierID` 归一，无 Resource Manager fallback）；探测 / onboarding 失败时，建号显式提交过 tierId 则按现状继续建号并落日志，否则拒绝创建并提示手填 projectId。档位缺省仍为 `gcp_standard` / `google_one_free`，AI Studio 默认 `aistudio_free`。
 - Google token 刷新复用账户绑定代理和 `256 KiB` 响应上限，不把 token 写入 URL、模型目录、错误文本或日志。429/5xx 使用最多四次的有界退避；`invalid_grant`、`invalid_client`、`unauthorized_client` 和 `access_denied` 不做普通重试。内置 client 收到 `unauthorized_client` 且历史凭据同时保存了不同的 client ID/Secret 时，只回退一次到原 client。Access-only 账户按静态 token 使用。
 
 ### Code Assist runtime

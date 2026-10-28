@@ -146,7 +146,9 @@ func (s *Store) exchangeAnthropicAuthorizationCode(ctx context.Context, sessionI
 	if authorization.requiresState && authorization.state == "" {
 		return nil, errors.New("Anthropic OAuth 回调缺少 state")
 	}
-	if authorization.state != "" && authorization.state != session.State {
+	// state 校验与 grok.go 同款恒时比较（constantTimeEqual），防时序侧信道；
+	// 裸 code 无 state 的分支语义不变（state 为空不校验）。
+	if authorization.state != "" && !constantTimeEqual(authorization.state, session.State) {
 		return nil, errors.New("Anthropic OAuth state 无效")
 	}
 	if session.OwnerSystemAccountID != "" && normalizeText(ownerID) != session.OwnerSystemAccountID {

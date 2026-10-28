@@ -18,12 +18,16 @@ import (
 // gpt.oauth / xai.oauth 按 §2.2 收窄为 {responses_json, responses_sse}；
 // anthropic.oauth 允许完整 Anthropic 词表；gemini.google_oauth 三种 oauth_type
 // 同用 Gemini native 词表（不按 oauth_type 再收窄）。baseUrl 取 §1.1 注册表
-// default_base_url；健康检查缺省形态取连接 JSON（非流式）形态。
+// default_base_url；健康检查缺省形态取连接 JSON（非流式）形态。B5 域透传：
+// domain 入参（空 = chat 缺省）驱动媒体域派生——gemini google_oauth ×
+// video/audio 允许且健康检查落 video_create/audio_speech（域缺省值 ∈ 启用
+// modes）；gpt oauth × video 与 gemini google_oauth × image 组合缺席即拒绝。
 func TestDefaultConnectionsForOAuthVendorTable(t *testing.T) {
 	cases := []struct {
 		name          string
 		provider      string
 		accountType   string
+		domain        string
 		credentials   Credentials
 		wantPreset    string
 		wantBaseURL   string
@@ -73,10 +77,24 @@ func TestDefaultConnectionsForOAuthVendorTable(t *testing.T) {
 			wantModes: []string{"count_tokens", "embed_content", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"}, wantSurface: "gemini_v1beta",
 			wantHealthMod: "generate_content_sse",
 		},
+		{
+			name: "gemini google_oauth video", provider: "gemini", accountType: "google_oauth", domain: "video",
+			credentials: Credentials{"access_token": "at", "oauth_type": "code_assist", "base_url": "https://generativelanguage.googleapis.com"},
+			wantPreset:  "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com",
+			wantModes: []string{"video_cancel", "video_content", "video_create", "video_get"}, wantSurface: "gemini_v1beta",
+			wantHealthMod: "video_create",
+		},
+		{
+			name: "gemini google_oauth audio", provider: "gemini", accountType: "google_oauth", domain: "audio",
+			credentials: Credentials{"access_token": "at", "oauth_type": "google_one", "base_url": "https://generativelanguage.googleapis.com"},
+			wantPreset:  "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com",
+			wantModes: []string{"audio_speech"}, wantSurface: "gemini_v1beta",
+			wantHealthMod: "audio_speech",
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			defaults, err := DefaultConnectionsForOAuthVendor(testCase.provider, testCase.accountType, testCase.credentials)
+			defaults, err := DefaultConnectionsForOAuthVendor(testCase.provider, testCase.accountType, testCase.domain, testCase.credentials)
 			if err != nil {
 				t.Fatalf("派生: %v", err)
 			}
@@ -103,8 +121,12 @@ func TestDefaultConnectionsForOAuthVendorTable(t *testing.T) {
 				t.Fatalf("健康检查缺省形态: %q", defaults.HealthCheckEndpointMode)
 			}
 			// 派生连接与 §2 组合表的 registry surface 一致（写面回显校验同源）。
+			domain := testCase.domain
+			if domain == "" {
+				domain = "chat"
+			}
 			surface, ok := connectorComboSurface(testCase.provider, testCase.accountType,
-				accountOAuthTypeForRegistry(testCase.accountType, "", testCase.credentials), testCase.wantPreset, "chat")
+				accountOAuthTypeForRegistry(testCase.accountType, "", testCase.credentials), testCase.wantPreset, domain)
 			if !ok || surface != testCase.wantSurface {
 				t.Fatalf("registry surface: %q ok=%v", surface, ok)
 			}
@@ -113,22 +135,26 @@ func TestDefaultConnectionsForOAuthVendorTable(t *testing.T) {
 }
 
 // TestDefaultConnectionsForOAuthVendorRejectsUnsupported：非 OAuth 账户类型、
-// 未知供应商组合与缺 oauth_type 的 google_oauth 显式拒绝。
+// 未知供应商组合、缺 oauth_type 的 google_oauth 与媒体域组合缺席（gpt oauth
+// × video、gemini google_oauth × image）显式拒绝。
 func TestDefaultConnectionsForOAuthVendorRejectsUnsupported(t *testing.T) {
 	cases := []struct {
 		name        string
 		provider    string
 		accountType string
+		domain      string
 		credentials Credentials
 	}{
-		{"api_key 账户不是 OAuth 建户入径", "gpt", "api_key", Credentials{"api_key": "sk-x"}},
-		{"generic 供应商无 OAuth 组合", "openai", "oauth", Credentials{"access_token": "at"}},
-		{"google_oauth 缺 oauth_type", "gemini", "google_oauth", Credentials{"access_token": "at"}},
-		{"google_oauth 未知 oauth_type", "gemini", "google_oauth", Credentials{"access_token": "at", "oauth_type": "bogus"}},
+		{"api_key 账户不是 OAuth 建户入径", "gpt", "api_key", "", Credentials{"api_key": "sk-x"}},
+		{"generic 供应商无 OAuth 组合", "openai", "oauth", "", Credentials{"access_token": "at"}},
+		{"google_oauth 缺 oauth_type", "gemini", "google_oauth", "", Credentials{"access_token": "at"}},
+		{"google_oauth 未知 oauth_type", "gemini", "google_oauth", "", Credentials{"access_token": "at", "oauth_type": "bogus"}},
+		{"gpt oauth × video 组合缺席", "gpt", "oauth", "video", Credentials{"access_token": "at", "base_url": "https://api.openai.com/v1"}},
+		{"gemini google_oauth × image 组合缺席", "gemini", "google_oauth", "image", Credentials{"access_token": "at", "oauth_type": "code_assist"}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if _, err := DefaultConnectionsForOAuthVendor(testCase.provider, testCase.accountType, testCase.credentials); err == nil {
+			if _, err := DefaultConnectionsForOAuthVendor(testCase.provider, testCase.accountType, testCase.domain, testCase.credentials); err == nil {
 				t.Fatalf("必须拒绝")
 			}
 		})
@@ -138,11 +164,14 @@ func TestDefaultConnectionsForOAuthVendorRejectsUnsupported(t *testing.T) {
 // TestOAuthManagedDefaultsCreateWritesConnectionRows 把四类 OAuth 的派生缺省
 // 按 CreateOAuthAccount 的组装形态送入 Store.Create（OAuth 入径），断言连接行、
 // endpoint mode 行与健康检查三字段落库形态（B1 完成判定范式的 OAuth 版）。
+// B5 域透传：gemini google_oauth × video 媒体域臂断言派生 video 全集、域缺省
+// 检查形态 video_create 与 capability_domain 列落库。
 func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 	cases := []struct {
 		name        string
 		provider    string
 		accountType string
+		domain      string
 		credentials Credentials
 		model       string
 		modelModes  string
@@ -179,6 +208,13 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			wantPreset: "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com", wantSurface: "gemini_v1beta",
 			wantModes: []string{"count_tokens", "embed_content", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"},
 		},
+		{
+			name: "gemini google_oauth video", provider: "gemini", accountType: "google_oauth", domain: "video",
+			credentials: Credentials{"access_token": "at-gemini-video", "oauth_type": "code_assist", "base_url": "https://generativelanguage.googleapis.com"},
+			model:       "gemini-media-video", modelModes: `["video_create","video_get","video_content","video_cancel"]`,
+			wantPreset:  "gemini_native_v1beta", wantBaseURL: "https://generativelanguage.googleapis.com", wantSurface: "gemini_v1beta",
+			wantModes: []string{"video_cancel", "video_content", "video_create", "video_get"},
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -189,7 +225,7 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			// §2.1 真实厂商规则补行。创建链要求 owner 有启用的默认分组。
 			env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
 				VALUES (?, ?, ?, 1, ?, ?)
-		ON CONFLICT DO NOTHING`, "ven-"+testCase.provider, testCase.provider, testCase.provider, now, now)
+			ON CONFLICT DO NOTHING`, "ven-"+testCase.provider, testCase.provider, testCase.provider, now, now)
 			env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 				VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`,
 				"grp-default-"+ownerID, ownerID, now, now)
@@ -198,7 +234,7 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 				VALUES (?, ?, ?, ?, 'builtin', 'active', ?, ?, ?)`,
 				"mod-"+testCase.provider, testCase.provider, testCase.model, testCase.model, testCase.modelModes, now, now)
 
-			defaults, err := DefaultConnectionsForOAuthVendor(testCase.provider, testCase.accountType, testCase.credentials)
+			defaults, err := DefaultConnectionsForOAuthVendor(testCase.provider, testCase.accountType, testCase.domain, testCase.credentials)
 			if err != nil {
 				t.Fatalf("派生: %v", err)
 			}
@@ -210,6 +246,7 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 				Name:                            "oauth-defaults-" + testCase.provider,
 				AccountType:                     testCase.accountType,
 				Credentials:                     testCase.credentials,
+				CapabilityDomain:                testCase.domain,
 				SupportedModels:                 []string{testCase.model},
 				Connections:                     defaults.Connections,
 				HealthCheckConnectionPresetCode: &defaults.HealthCheckConnectionPresetCode,
@@ -219,6 +256,15 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			}, AccessScope{ViewerID: ownerID, IsAdmin: true})
 			if err != nil {
 				t.Fatalf("OAuth 入径创建: %v", err)
+			}
+
+			// 能力域列：入参域透传（空 = chat 缺省）。
+			wantDomain := testCase.domain
+			if wantDomain == "" {
+				wantDomain = "chat"
+			}
+			if got := env.queryCell(t, `SELECT capability_domain FROM accounts WHERE id = ?`, result.ID); got != wantDomain {
+				t.Fatalf("capability_domain：%q（want %q）", got, wantDomain)
 			}
 
 			// 连接行：单行、preset 自然键、registry surface、注册默认 base URL、enabled。

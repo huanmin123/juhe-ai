@@ -170,15 +170,21 @@ func weRichCatalogItem(providerCode string) *ModelCatalogItem {
 }
 
 func TestWeCatalogDisplayPerProvider(t *testing.T) {
-	// gpt：含模态价格前缀、长上下文、层级、思考、容量与美元换算。
+	// gpt：含模态价格前缀、长上下文、层级、思考、容量；美元换算已停生成
+	//（供应商独立计费与模型目录展示设计 §3.2）。
 	gptDisplay := buildProviderCatalogDisplay(weRichCatalogItem("gpt"))
 	sections := map[string]bool{}
 	for _, section := range gptDisplay {
 		sections[section.Key] = true
 	}
-	for _, expected := range []string{"token_pricing", "image_generation", "tier_priority", "long_context", "reasoning", "capacity", "currency_conversion"} {
+	for _, expected := range []string{"token_pricing", "image_generation", "tier_priority", "long_context", "reasoning", "capacity"} {
 		if !sections[expected] {
 			t.Fatalf("gpt 展示缺少 %s: %+v", expected, gptDisplay)
+		}
+	}
+	for _, forbidden := range []string{"currency_conversion", "source_disclosure"} {
+		if sections[forbidden] {
+			t.Fatalf("gpt 展示不应再生成 %s: %+v", forbidden, gptDisplay)
 		}
 	}
 
@@ -221,7 +227,65 @@ func TestWeCatalogDisplayPerProvider(t *testing.T) {
 		t.Fatalf("xai image 标题 = %s", xaiDisplay[0].Label)
 	}
 
-	// deepseek 与 glm。
+	// deepseek：offpeak_pricing 与 token_pricing 的 key/label 一一对应，
+	// 值 = 对应高峰价 × deepSeekOffPeakRatio（官方半价，仅展示不计费）；
+	// peak_schedule 不再生成（时段口径唯一落点是价格表下方说明）。
+	deepseekItem := weRichCatalogItem("deepseek")
+	deepseekDisplay := buildProviderCatalogDisplay(deepseekItem)
+	deepseekSections := map[string]catalogDisplaySection{}
+	for _, section := range deepseekDisplay {
+		deepseekSections[section.Key] = section
+	}
+	tokenPricing, ok := deepseekSections["token_pricing"]
+	if !ok {
+		t.Fatalf("deepseek 缺少 token_pricing: %+v", deepseekDisplay)
+	}
+	offpeak, ok := deepseekSections["offpeak_pricing"]
+	if !ok {
+		t.Fatalf("deepseek 缺少 offpeak_pricing: %+v", deepseekDisplay)
+	}
+	if _, exists := deepseekSections["peak_schedule"]; exists {
+		t.Fatalf("deepseek 不应再生成 peak_schedule: %+v", deepseekDisplay)
+	}
+	if glmProbe := buildProviderCatalogDisplay(weRichCatalogItem("glm")); func() bool {
+		for _, section := range glmProbe {
+			if section.Key == "peak_schedule" {
+				return true
+			}
+		}
+		return false
+	}() {
+		t.Fatalf("非 deepseek 投影不应生成 peak_schedule: %+v", glmProbe)
+	}
+	if len(offpeak.Items) != len(tokenPricing.Items) {
+		t.Fatalf("offpeak 与 token_pricing 条目数不一致: token=%+v offpeak=%+v", tokenPricing.Items, offpeak.Items)
+	}
+	peakByKey := map[string]catalogDisplayItem{}
+	for _, entry := range tokenPricing.Items {
+		peakByKey[entry.Key] = entry
+	}
+	for _, entry := range offpeak.Items {
+		peak, ok := peakByKey[entry.Key]
+		if !ok {
+			t.Fatalf("offpeak 条目 %q 在 token_pricing 无对应 key", entry.Key)
+		}
+		if entry.Label != peak.Label {
+			t.Fatalf("offpeak 条目 %q label = %q，应与 token_pricing 同 label %q", entry.Key, entry.Label, peak.Label)
+		}
+		if entry.Format != peak.Format {
+			t.Fatalf("offpeak 条目 %q format = %q，应与 token_pricing 同 format %q", entry.Key, entry.Format, peak.Format)
+		}
+		peakValue, peakOK := peak.Value.(float64)
+		offpeakValue, offpeakOK := entry.Value.(float64)
+		if !peakOK || !offpeakOK {
+			t.Fatalf("offpeak 条目 %q 值类型异常: peak=%v offpeak=%v", entry.Key, peak.Value, entry.Value)
+		}
+		if want := peakValue * 0.5; offpeakValue != want {
+			t.Fatalf("offpeak 条目 %q = %v，应为高峰价 %v × 0.5 = %v", entry.Key, offpeakValue, peakValue, want)
+		}
+	}
+
+	// glm。
 	if display := buildProviderCatalogDisplay(weRichCatalogItem("deepseek")); len(display) == 0 {
 		t.Fatal("deepseek 展示为空")
 	}
@@ -239,53 +303,59 @@ func TestWeCatalogDisplayPerProvider(t *testing.T) {
 		t.Fatalf("glm 单价合并: %+v", glmSingle[0].Items)
 	}
 
-	// 未知供应商 → 无具名投影内容，仅统一收尾 section（weRichCatalogItem
-	// 带 CNY 来源三元组 → 来源披露位仍应渲染——凡有 note 必披露，不因
-	// provider 未知而丢信息；2026-10-05 验收批统一入口化）。
+	// 未知供应商 → 无具名投影内容；来源披露已停生成（§3.2，来源留档在
+	// catalogdata JSON 的 sourcePricingNote），展示为空数组（宁缺勿假）。
 	unknownDisplay := buildProviderCatalogDisplay(weRichCatalogItem("unknown"))
-	if len(unknownDisplay) != 1 || unknownDisplay[0].Key != "currency_conversion" {
-		t.Fatalf("未知供应商应只剩来源披露: %+v", unknownDisplay)
+	if len(unknownDisplay) != 0 {
+		t.Fatalf("未知供应商应无任何展示 section（披露已停生成）: %+v", unknownDisplay)
 	}
 }
 
-// TestWeCatalogDisplaySourceDisclosureUSD 钉住 USD 明文行的来源披露：
-// z.ai 国际站直落行（如 cogvideox-3）无换算三元组，此前 sourceConversion
-// 对 USD 返回空导致「有价格没来源」；统一入口化后渲染 source_disclosure
-// section（官方币种 USD + 官方源价 note），与 CNY 行的美元换算 section
-// 信息对称。
-func TestWeCatalogDisplaySourceDisclosureUSD(t *testing.T) {
-	item := ModelCatalogItem{
-		ProviderCode:          "glm",
-		Model:                 "cogvideox-3",
-		Mode:                  ptr("video"),
-		VideoOutputUsdPerCall: ptrFloat64(0.2),
-		SourcePricingCurrency: "USD",
-		SourcePricingNote:     "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.2/video，按次计费每条=每次）；国内人民币价 1 元/次原句留档（docs.bigmodel.cn 定价页）",
+// TestWeCatalogDisplaySourceDisclosureNotGenerated 钉住披露 section 停生成契约
+//（供应商独立计费与模型目录展示设计 §3.2）：系统统一美元计价，币种/汇率/
+// 来源文本不进客户可见目录；CNY 行与 USD 行都不再渲染美元换算或来源披露，
+// 原始来源留档仍在 catalogdata JSON 的 sourcePricingNote 字段。
+func TestWeCatalogDisplaySourceDisclosureNotGenerated(t *testing.T) {
+	cases := []struct {
+		name string
+		item ModelCatalogItem
+	}{
+		{
+			name: "CNY 行",
+			item: ModelCatalogItem{
+				ProviderCode: "volcengine", SourcePricingCurrency: "CNY",
+				SourceExchangeRateToUsd: ptrFloat64(7.0), SourceExchangeRateDate: "2026-10-05",
+				SourcePricingNote: "官方人民币价",
+			},
+		},
+		{
+			name: "USD 行",
+			item: ModelCatalogItem{
+				ProviderCode: "glm", SourcePricingCurrency: "USD",
+				SourcePricingNote: "官方国际站 USD 明文价",
+			},
+		},
+		{
+			name: "未声明币种但有 note 的行",
+			item: ModelCatalogItem{
+				ProviderCode: "unknown", SourcePricingNote: "官方明文价",
+			},
+		},
 	}
-	sections := buildProviderCatalogDisplay(&item)
-	byKey := map[string]catalogDisplaySection{}
-	for _, section := range sections {
-		byKey[section.Key] = section
-	}
-	disclosure, ok := byKey["source_disclosure"]
-	if !ok {
-		t.Fatalf("USD 行缺 source_disclosure: %+v", sections)
-	}
-	if _, exists := byKey["currency_conversion"]; exists {
-		t.Fatalf("USD 行不应渲染美元换算: %+v", sections)
-	}
-	joined := ""
-	for _, entry := range disclosure.Items {
-		joined += fmt.Sprint(entry.Label, entry.Value)
-	}
-	if !strings.Contains(joined, "USD") || !strings.Contains(joined, "z.ai") {
-		t.Fatalf("source_disclosure 内容不完整: %+v", disclosure.Items)
+	for _, tc := range cases {
+		item := tc.item
+		keys := sectionKeysOf(&item)
+		for _, forbidden := range []string{"currency_conversion", "source_disclosure"} {
+			if keys[forbidden] {
+				t.Errorf("%s: 不应再生成 %q（实际 keys %v）", tc.name, forbidden, keys)
+			}
+		}
 	}
 }
 
 // TestWeCatalogDisplayGenericMediaProviders 覆盖 minimax/volcengine/qwen 三家
 // 的 genericMediaCatalogDisplay 投影：场景化 section 矩阵（chat 带 token 价、
-// image 带每张价、audio/video 无目录价格通道只落容量与美元换算披露）。
+// image 带每张价、audio/video 无目录价格通道只落容量；来源披露已停生成 §3.2）。
 func TestWeCatalogDisplayGenericMediaProviders(t *testing.T) {
 	sectionByKey := func(display []catalogDisplaySection) map[string]catalogDisplaySection {
 		sections := map[string]catalogDisplaySection{}
@@ -335,8 +405,8 @@ func TestWeCatalogDisplayGenericMediaProviders(t *testing.T) {
 		t.Fatalf("minimax chat 不应有美元换算: %+v", minimaxSections)
 	}
 
-	// volcengine chat（doubao-seed-2-1-lite 形状，CNY 换算 + 音频输入）：
-	// token_pricing 含音频输入条目；currency_conversion 落官方币种 CNY。
+	// volcengine chat（doubao-seed-2-1-lite 形状，CNY 来源留档 + 音频输入）：
+	// token_pricing 含音频输入条目；美元换算已停生成（§3.2）。
 	volcengineChat := &ModelCatalogItem{
 		ID: "v1", ProviderCode: "volcengine", Model: "doubao-seed-2-1-lite-260915", Status: "active",
 		Mode:                      ptr("chat"),
@@ -359,23 +429,12 @@ func TestWeCatalogDisplayGenericMediaProviders(t *testing.T) {
 	if !entryKeys(volcenginePricing)["audio_input"] {
 		t.Fatalf("volcengine chat token_pricing 缺少音频输入: %+v", volcenginePricing.Items)
 	}
-	conversion, ok := volcengineSections["currency_conversion"]
-	if !ok {
-		t.Fatalf("volcengine chat 缺少 currency_conversion: %+v", volcengineSections)
-	}
-	conversionValues := map[string]any{}
-	for _, item := range conversion.Items {
-		conversionValues[item.Key] = item.Value
-	}
-	if conversionValues["source_currency"] != "CNY" {
-		t.Fatalf("volcengine chat 官方币种应为大写 CNY: %+v", conversion.Items)
-	}
-	if conversionValues["exchange_rate"] != "7 CNY" {
-		t.Fatalf("volcengine chat 汇率展示 = %v", conversionValues["exchange_rate"])
+	if _, exists := volcengineSections["currency_conversion"]; exists {
+		t.Fatalf("volcengine chat 不应再生成 currency_conversion: %+v", volcengineSections)
 	}
 
 	// qwen TTS / ASR（mode=audio，协议区分）：目录 Item 无字符/秒价通道 →
-	// 无 token_pricing；CNY 来源披露照落。
+	// 无 token_pricing；来源披露已停生成（§3.2）。
 	qwenTTS := &ModelCatalogItem{
 		ID: "q1", ProviderCode: "qwen", Model: "qwen3-tts-flash", Status: "active",
 		Mode:                    ptr("audio"),
@@ -389,8 +448,8 @@ func TestWeCatalogDisplayGenericMediaProviders(t *testing.T) {
 	if _, ok := qwenTTSSections["token_pricing"]; ok {
 		t.Fatalf("qwen TTS 无目录价格通道，不应有 token_pricing: %+v", qwenTTSSections)
 	}
-	if _, ok := qwenTTSSections["currency_conversion"]; !ok {
-		t.Fatalf("qwen TTS 缺少 currency_conversion: %+v", qwenTTSSections)
+	if _, exists := qwenTTSSections["currency_conversion"]; exists {
+		t.Fatalf("qwen TTS 不应再生成 currency_conversion: %+v", qwenTTSSections)
 	}
 	qwenASR := &ModelCatalogItem{
 		ID: "q2", ProviderCode: "qwen", Model: "qwen3-asr-flash", Status: "active",
@@ -406,7 +465,7 @@ func TestWeCatalogDisplayGenericMediaProviders(t *testing.T) {
 	}
 
 	// volcengine video（seedance 形状）：秒价无目录通道 → 无价格 section；
-	// CNY 披露照落。
+	// 来源披露已停生成（§3.2）。
 	volcengineVideo := &ModelCatalogItem{
 		ID: "v2", ProviderCode: "volcengine", Model: "doubao-seedance-2-0-260128", Status: "active",
 		Mode:                    ptr("video"),
@@ -422,8 +481,8 @@ func TestWeCatalogDisplayGenericMediaProviders(t *testing.T) {
 	if _, ok := volcengineVideoSections["image_generation"]; ok {
 		t.Fatalf("volcengine video 不应有图片生成 section: %+v", volcengineVideoSections)
 	}
-	if _, ok := volcengineVideoSections["currency_conversion"]; !ok {
-		t.Fatalf("volcengine video 缺少 currency_conversion: %+v", volcengineVideoSections)
+	if _, exists := volcengineVideoSections["currency_conversion"]; exists {
+		t.Fatalf("volcengine video 不应再生成 currency_conversion: %+v", volcengineVideoSections)
 	}
 
 	// minimax image（image-01 形状，mode=image_generation）：每张价落
@@ -875,9 +934,9 @@ func TestWeCatalogDisplayMediaPricingSections(t *testing.T) {
 }
 
 // TestWeCatalogDisplayVolcengineDoubaoTtsSections 钉住 doubao-tts 占位行的
-// 三 section 组合：naming_notice（占位名标注，SourcePricingNote 前缀触发）+
-// currency_conversion（CNY 换算披露）+ media_pricing（TTS 字符价，静态层
-// 透传）同现——命名性质、来源口径与计费单价在同一目录页可见（照
+// section 组合：naming_notice（占位名标注，SourcePricingNote 前缀触发）+
+// media_pricing（TTS 字符价，静态层透传）同现，且来源披露已停生成（§3.2，
+// 来源留档在 catalogdata JSON）——命名性质与计费单价在同一目录页可见（照
 // TestWeCatalogDisplayMediaPricingSections 风格）。
 func TestWeCatalogDisplayVolcengineDoubaoTtsSections(t *testing.T) {
 	ttsChars := 4.2857
@@ -906,16 +965,8 @@ func TestWeCatalogDisplayVolcengineDoubaoTtsSections(t *testing.T) {
 		t.Fatalf("naming_notice 条目 = %+v", naming.Items)
 	}
 
-	conversion, ok := byKey["currency_conversion"]
-	if !ok {
-		t.Fatalf("doubao-tts 缺少 currency_conversion: %+v", sections)
-	}
-	conversionValues := map[string]any{}
-	for _, entry := range conversion.Items {
-		conversionValues[entry.Key] = entry.Value
-	}
-	if conversionValues["source_currency"] != "CNY" {
-		t.Fatalf("doubao-tts 官方币种应为大写 CNY: %+v", conversion.Items)
+	if _, exists := byKey["currency_conversion"]; exists {
+		t.Fatalf("doubao-tts 不应再生成 currency_conversion: %+v", sections)
 	}
 
 	media, ok := byKey["media_pricing"]
