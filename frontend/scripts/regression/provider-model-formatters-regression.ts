@@ -26,8 +26,6 @@ const categoryRulesSource = readFileSync(resolve(frontendRoot, 'src/views/provid
 // 换为 ModelPlazaView.vue；表单接线锚点从 ProvidersView.vue 换为 CustomModelFormModal.vue。
 const plazaViewSource = readFileSync(resolve(frontendRoot, 'src/views/providers/ModelPlazaView.vue'), 'utf8')
 const customFormModalSource = readFileSync(resolve(frontendRoot, 'src/views/providers/CustomModelFormModal.vue'), 'utf8')
-const providersViewSource = readFileSync(resolve(frontendRoot, 'src/views/providers/ProvidersView.vue'), 'utf8')
-const providerTableConfigSource = readFileSync(resolve(frontendRoot, 'src/views/providers/providerTableConfig.ts'), 'utf8')
 
 assert.equal(categoryFromModeOrModel('image_generation', 'custom-model'), 'image', '图片 mode 应识别为图像模型')
 assert.equal(categoryFromModeOrModel(undefined, 'gpt-image-2'), 'image', 'gpt-image 模型名应识别为图像模型')
@@ -197,11 +195,8 @@ assert.doesNotMatch(plazaViewSource, />默认检查<|isDefaultHealthCheckModel\(
 assert.match(plazaViewSource, /v-if="item\.scope !== 'built_in'"/, '范围徽标仅自定义模型（全局/个人）显示，内置不展示')
 assert.match(plazaViewSource, /v-if="record\.scope !== 'built_in'"/, '抽屉 Hero 的范围徽标同样仅自定义模型显示')
 assert.doesNotMatch(plazaViewSource, /我的默认检查模型|column\.key === 'defaultTest'/, '个人模型目录不应重复增加顶部说明或独立默认检查列')
-assert.doesNotMatch(providersViewSource, /ensureActiveProviderDetail|activeProviderDetail\.value|api\.providers\.detail/, '新增或编辑模型必须直接使用目录行与已加载目录能力，不得预取 provider 详情')
 assert.match(customFormModalSource, /defaultProtocolsForCurrentProviderCategory[\s\S]*props\.models/, '新增模型协议默认值必须优先复用已加载目录能力')
 assert.match(customFormModalSource, /defaultProtocolsForProviderModelCategory\(providerDefinition, category\)/, '空模型目录必须复用轻量供应商列表中的协议常量')
-assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*默认检查模型[\s\S]*defaultHealthCheckModel/, '普通用户模型目录列表应展示个人默认检查模型列')
-assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认检查模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认检查模型')
 assert.match(customFormModalSource, /const canManageModelPrices = computed\(\(\) => canManageModelPricesForView\(props\.isManagementView, authState\.isAdmin\.value\)\)/, '新增和编辑必须使用统一的价格维护判定')
 assert.match(customFormModalSource, /availableCustomModelModeOptions/, '新增模型用途必须按当前供应商能力生成')
 assert.match(customFormModalSource, /label="服务等级"[\s\S]*:mode="customModelCapabilitySelectMode"[\s\S]*:options="customModelServiceTierOptions"/, '服务等级必须使用当前供应商的选择模式和已知选项')

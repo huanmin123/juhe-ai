@@ -23,12 +23,8 @@
       <template #actions>
         <span class="plaza-status-line">
           共 {{ plazaItems.length }} 个模型 · {{ plazaProviders.length }} 家供应商
-          <span v-if="isManagementView" class="plaza-status-hint">含停用供应商与草稿行</span>
         </span>
-        <a-space wrap class="plaza-status-meta">
-          <a-tag>{{ filteredModels.length }} / {{ vendorScopedItems.length }} 个模型</a-tag>
-          <a-tag>USD 结算</a-tag>
-        </a-space>
+        <span class="plaza-status-meta">{{ filteredModels.length }} / {{ vendorScopedItems.length }} 个模型 · USD 结算</span>
       </template>
     </ResponsiveListToolbar>
 
@@ -98,7 +94,6 @@
             </div>
             <div class="model-card-badges">
               <a-tag v-if="item.scope !== 'built_in'" :color="modelScopeColor(item.scope)">{{ formatModelScope(item.scope) }}</a-tag>
-              <a-tag>{{ formatModelCategory(item) }}</a-tag>
               <a-tag v-for="tier in modelServiceTierBadges(item)" :key="tier">{{ formatModelServiceTier(tier) }}</a-tag>
               <a-tag v-if="item.status !== 'active'" :color="modelStatusColor(item.status)">{{ formatModelStatus(item.status) }}</a-tag>
               <a-tag v-if="item.shutdownDate" color="orange">将停用 {{ item.shutdownDate }}</a-tag>
@@ -111,11 +106,8 @@
                 </div>
               </div>
             </div>
-            <div
-              v-if="(item.contextWindowTokens ?? null) !== null || (item.maxOutputTokens ?? null) !== null"
-              class="model-card-capacity"
-            >
-              上下文 {{ formatSpec(item.contextWindowTokens) }} · 输出 {{ formatSpec(item.maxOutputTokens) }}
+            <div class="model-card-capacity">
+              {{ formatModelCategory(item) }} · 上下文 {{ formatSpec(item.contextWindowTokens) }} · 输出 {{ formatSpec(item.maxOutputTokens) }}
             </div>
             <div v-if="rowActions(item).length" class="model-card-actions" @click.stop @keydown.stop>
               <RowActions :actions="rowActions(item)" @action-click="handleModelAction($event, item)" />
@@ -155,7 +147,6 @@
       <template v-if="record">
         <div class="model-drawer-badges">
           <a-tag v-if="record.scope !== 'built_in'" :color="modelScopeColor(record.scope)">{{ formatModelScope(record.scope) }}</a-tag>
-          <a-tag>{{ formatModelCategory(record) }}</a-tag>
           <a-tag v-for="tier in modelServiceTierBadges(record)" :key="tier">{{ formatModelServiceTier(tier) }}</a-tag>
           <a-tag v-if="record.status !== 'active'" :color="modelStatusColor(record.status)">{{ formatModelStatus(record.status) }}</a-tag>
           <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
@@ -200,7 +191,7 @@
                 <strong>{{ formatModelCatalogDisplayValue(entry) }}</strong>
               </div>
             </template>
-            <div class="model-drawer-info-item">
+            <div class="model-drawer-info-item model-drawer-info-item--wide">
               <span>能力</span>
               <strong>{{ modelCapabilityLine(record) }}</strong>
             </div>
@@ -208,7 +199,7 @@
               <span>接口协议</span>
               <strong>
                 <template v-if="record.supportedApiProtocols?.length">
-                  <a-tag v-for="protocol in record.supportedApiProtocols" :key="protocol" :color="getApiProtocolTagColor(protocol)">{{ formatApiProtocol(protocol) }}</a-tag>
+                  {{ record.supportedApiProtocols.map(formatApiProtocol).join(' · ') }}
                 </template>
                 <template v-else>-</template>
               </strong>
@@ -290,7 +281,6 @@ import {
   formatModelStatus,
   formatPriceTableCell,
   formatSpec,
-  getApiProtocolTagColor,
   getModelCategory,
   modelInfoItems,
   modelPriceSlots,
@@ -672,11 +662,6 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
   gap: 8px;
   color: var(--juhe-muted);
   font-size: 13px;
-}
-
-.plaza-status-hint {
-  color: var(--juhe-faint);
-  font-size: 12px;
 }
 
 .plaza-status-meta {
@@ -1072,6 +1057,11 @@ function extractModelErrorMessage(error: unknown, fallback: string): string {
 /* 接入事实宽项（接口协议 / 工具矩阵）：占满两列网格整行。 */
 .model-drawer-info-item--wide {
   grid-column: 1 / -1;
+}
+
+/* 浅灰卡底会让 AntD 预设浅彩底 tag 发白，卡内 tag 提纯白底恢复轮廓。 */
+.model-drawer-info-item :deep(.ant-tag) {
+  background: var(--juhe-surface);
 }
 
 .model-drawer-table-label {

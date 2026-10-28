@@ -48,21 +48,8 @@ assert.doesNotMatch(groupsAuthWatcher, /\b(?:loadData|loadGroupOptions)\s*\(/, '
 // groups.provider_code 已删——watcher 契约只保留系统账户选项失效与主数据清空）
 assert.match(groupsAuthWatcher, /invalidateSystemAccountOptions\(\)[\s\S]*invalidatePendingLoads\(\)[\s\S]*groups\.value = \[\][\s\S]*systemAccountFilterSelection\.value = undefined[\s\S]*systemAccounts\.value = \[\][\s\S]*resetSystemAccountOptionsSearch\(\)/, '分组身份变化必须使主数据和系统账户选项失效并清空筛选')
 
-const providers = source('views/providers/ProvidersView.vue')
-const providerRequestInvalidation = sourceBetween(providers, 'function invalidateProviderPageRequests', 'function deactivateProviderPage')
-assert.doesNotMatch(providerRequestInvalidation, /providers\.value = \[\]/, '供应商 KeepAlive 失活只能作废请求，不得清空已加载列表')
-assert.doesNotMatch(providerRequestInvalidation, /pageActive\s*=/, '供应商请求失效不得关闭当前页面的手动刷新门禁')
-assert.match(providerRequestInvalidation, /providerListRequestSequence \+= 1[\s\S]*loading\.value = false/, '供应商请求失效必须同步清除列表加载态')
-assert.match(providers, /function deactivateProviderPage\(\): void \{\s*pageActive = false[\s\S]*invalidateProviderPageRequests\(\)/, '供应商页面失活必须单独关闭请求门禁并作废在途请求')
-assert.doesNotMatch(sourceBetween(providers, 'function resetProviderPageState', 'onMounted(loadProviders)'), /pageActive\s*=/, '身份切换清空供应商状态后必须保留当前页面的手动刷新门禁')
-const providersAuthWatcher = authRevisionWatcher(providers)
-assert.doesNotMatch(activated(providers), /\bloadProviders\s*\(/, '供应商重新激活不得加载业务数据')
-assert.doesNotMatch(providersAuthWatcher, /\bloadProviders\s*\(/, '供应商身份变化不得自动加载主数据')
-assert.match(providersAuthWatcher, /resetProviderPageState\(\)/, '供应商身份变化必须清空旧供应商列表')
-assert.match(providers, /@refresh="loadProviders\(true\)"/, '身份切换后供应商页面必须保留手动刷新入口')
-
-// 模型广场页（模型广场页与供应商目录退役设计 §4.4）：进入加载一次 + 显式重载门禁，
-// KeepAlive 失活/身份切换只作废请求与清态，不自动重载。
+// 供应商只读页已整体退役（模型广场页与供应商目录退役设计 §4.5 追加）：系统运维组只留「模型广场」，
+// 原 ProvidersView 门禁段随之删除；广场页段保留。
 const plaza = source('views/providers/ModelPlazaView.vue')
 const plazaRequestInvalidation = sourceBetween(plaza, 'function invalidatePlazaRequests', 'function deactivatePlazaPage')
 assert.doesNotMatch(plazaRequestInvalidation, /plazaProviders\.value = \[\]|plazaItems\.value = \[\]/, '模型广场 KeepAlive 失活只能作废请求，不得清空已加载聚合数据')

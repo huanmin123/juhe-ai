@@ -10,16 +10,6 @@
     <a-form layout="vertical" class="custom-model-form">
       <div class="custom-model-grid">
         <a-divider class="custom-model-grid-wide" orientation="left">基本信息</a-divider>
-        <a-form-item v-if="!customModelEditing" label="配置模板" class="custom-model-grid-wide" extra="复制同一供应商已有模型的用途、协议、能力、容量和价格；模型 ID 不会被复制。">
-          <a-select
-            v-model:value="customModelForm.configurationTemplateId"
-            show-search
-            option-filter-prop="label"
-            :options="configurationTemplateOptions"
-            placeholder="选择当前供应商的已有模型"
-            @change="handleConfigurationTemplateChange"
-          />
-        </a-form-item>
         <a-form-item v-if="isManagementView && !editingBuiltInModel" label="作用域" class="custom-model-grid-wide" extra="个人模型只对所选用户可见；全局模型对所有用户可见。">
           <a-radio-group v-model:value="customModelForm.scope" :disabled="customModelEditing" button-style="solid" @change="handleCustomModelScopeChange">
             <a-radio-button value="personal">{{ selectedModelOwnerLabel }}个人模型</a-radio-button>
@@ -31,6 +21,16 @@
         </a-form-item>
         <a-form-item label="状态" extra="启用后进入可用模型目录；草稿和停用状态不会参与正常调用。">
           <a-select v-model:value="customModelForm.status" :options="customModelStatusOptions" />
+        </a-form-item>
+        <a-form-item v-if="!customModelEditing" label="配置模板" extra="复制同一供应商已有模型的用途、协议、能力、容量和价格；模型 ID 不会被复制。">
+          <a-select
+            v-model:value="customModelForm.configurationTemplateId"
+            show-search
+            option-filter-prop="label"
+            :options="configurationTemplateOptions"
+            placeholder="选择当前供应商的已有模型"
+            @change="handleConfigurationTemplateChange"
+          />
         </a-form-item>
         <a-form-item label="用途" extra="决定模型所在目录分类、默认接口协议和可填写的计费字段。">
           <a-select v-model:value="customModelForm.mode" :options="customModelModeOptions" @change="handleCustomModelModeChange" />
@@ -75,10 +75,10 @@
         </template>
         <a-divider class="custom-model-grid-wide" orientation="left">生命周期与容量</a-divider>
         <a-form-item label="发布时间" extra="模型首次公开可用的日期，用于模型目录排序。">
-          <a-input v-model:value="customModelForm.releaseDate" placeholder="YYYY-MM-DD" />
+          <a-date-picker v-model:value="customModelForm.releaseDate" value-format="YYYY-MM-DD" placeholder="选择发布日期" style="width: 100%" />
         </a-form-item>
         <a-form-item label="停用日期" extra="供应商计划停止提供该模型的日期；没有明确日期时留空。">
-          <a-input v-model:value="customModelForm.shutdownDate" placeholder="YYYY-MM-DD" />
+          <a-date-picker v-model:value="customModelForm.shutdownDate" value-format="YYYY-MM-DD" placeholder="选择停用日期" style="width: 100%" />
         </a-form-item>
         <a-form-item label="上下文" extra="一次请求可使用的输入与输出 Token 总上限。">
           <a-input-number v-model:value="customModelForm.contextWindowTokens" :min="0" style="width: 100%" />
@@ -93,18 +93,18 @@
           <a-divider class="custom-model-grid-wide" orientation="left">{{ customModelPriceSectionTitle }}</a-divider>
           <template v-if="customModelPricingCategory === 'text'">
             <a-form-item v-for="field in customModelDirectPriceFields" :key="field.key" :label="field.label" :extra="field.description">
-              <a-input-number v-model:value="customModelForm[field.key]" :min="0" :precision="8" style="width: 100%" />
+              <a-input-number v-model:value="customModelForm[field.key]" :min="0" style="width: 100%" />
             </a-form-item>
             <template v-for="tier in customModelForm.supportedServiceTiers" :key="tier">
               <a-divider class="custom-model-grid-wide" orientation="left">{{ formatModelServiceTier(tier) }} · USD / 1M Token</a-divider>
               <a-form-item v-for="field in customModelTierPriceFieldOptions" :key="`${tier}-${field.key}`" :label="field.label" :extra="field.description">
-                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier][field.key]" :min="0" :precision="8" style="width: 100%" />
+                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier][field.key]" :min="0" style="width: 100%" />
               </a-form-item>
             </template>
           </template>
           <template v-else>
             <a-form-item v-for="field in customModelDirectPriceFields" :key="field.key" :label="field.label" :extra="field.description">
-              <a-input-number v-model:value="customModelForm[field.key]" :min="0" :precision="8" style="width: 100%" />
+              <a-input-number v-model:value="customModelForm[field.key]" :min="0" style="width: 100%" />
             </a-form-item>
           </template>
         </template>

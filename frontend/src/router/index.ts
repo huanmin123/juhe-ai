@@ -539,18 +539,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/providers',
-    component: () => import('@/views/providers/ProvidersView.vue'),
-    meta: {
-      title: '供应商',
-      description: '管理当前支持的供应商能力与模型定价，当前启用 GPT / OpenAI v1。',
-      menuGroup: 'system-operations',
-      menuGroupTitle: '系统运维',
-      viewScope: 'admin',
-      roles: managementRoles
-    }
-  },
-  {
     path: '/models',
     component: () => import('@/views/providers/ModelPlazaView.vue'),
     meta: {

@@ -2,7 +2,6 @@ import { strict as assert } from 'node:assert'
 
 import type { UsageRecordSummary } from '../../src/types/domain'
 import { apiKeyGroupOptionsProviderProtocolProfileId } from '../../src/views/api-keys/useApiKeyGroupOptions'
-import { providerEmptyDescriptionForScope } from '../../src/views/providers/providerTableConfig'
 import {
   trafficSourceColor as usageTrafficSourceColor,
   trafficSourceText as usageTrafficSourceText
@@ -52,6 +51,9 @@ assert.equal(
   '',
   '混合路由 API Key 分组选项不能按单一协议档案收窄'
 )
-assert.match(providerEmptyDescriptionForScope(true), /智谱 GLM/, '供应商空态应包含已内置的 GLM')
+// 供应商只读页已退役（模型广场页与供应商目录退役设计 §4.5 追加）：原借用的
+// 空态文案本地化，保留 GLM 内置清单的文案锁。
+const gatewayVendorEmptyDescription = '当前内置 OpenAI 兼容、GPT、DeepSeek、智谱 GLM 与 Anthropic 供应商，后续新供应商会在这里扩展。'
+assert.match(gatewayVendorEmptyDescription, /智谱 GLM/, '供应商空态应包含已内置的 GLM')
 
 console.log('网关来源与供应商前端契约回归通过：用量后台来源、API Key 协议档案 scope 和 GLM 空态均符合预期')

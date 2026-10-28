@@ -244,8 +244,6 @@ const ApiKeyMenuIcon = () =>
 
 const menuIconMap = {
   '/my-chat': MessageOutlined,
-  // 媒体工作室（媒体工作室形态设计 §2/§4）：素材库/视频项目。
-  '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
   // 模型广场（模型广场页与供应商目录退役设计 §4）：双路由同组件，沿用同款网格图标。
   '/models': AppstoreOutlined,

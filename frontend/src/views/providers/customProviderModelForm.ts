@@ -81,18 +81,18 @@ export function createCustomModelFormFromPricing(
     contextWindowTokens: record.contextWindowTokens,
     maxInputTokens: record.maxInputTokens,
     maxOutputTokens: record.maxOutputTokens,
-    inputUsdPer1M: record.inputUsdPer1M,
-    outputUsdPer1M: record.outputUsdPer1M,
-    cachedInputUsdPer1M: record.cachedInputUsdPer1M,
-    cacheWriteUsdPer1M: record.cacheWriteUsdPer1M,
-    cacheWrite1hUsdPer1M: record.cacheWrite1hUsdPer1M,
-    cacheStorageUsdPer1MPerHour: record.cacheStorageUsdPer1MPerHour,
+    inputUsdPer1M: normalizePriceInput(record.inputUsdPer1M),
+    outputUsdPer1M: normalizePriceInput(record.outputUsdPer1M),
+    cachedInputUsdPer1M: normalizePriceInput(record.cachedInputUsdPer1M),
+    cacheWriteUsdPer1M: normalizePriceInput(record.cacheWriteUsdPer1M),
+    cacheWrite1hUsdPer1M: normalizePriceInput(record.cacheWrite1hUsdPer1M),
+    cacheStorageUsdPer1MPerHour: normalizePriceInput(record.cacheStorageUsdPer1MPerHour),
     serviceTierPrices: cloneServiceTierPrices(record.serviceTierPrices),
-    imageInputUsdPer1M: record.imageInputUsdPer1M,
-    imageOutputUsdPer1M: record.imageOutputUsdPer1M,
-    audioInputUsdPer1M: record.audioInputUsdPer1M,
-    audioOutputUsdPer1M: record.audioOutputUsdPer1M,
-    outputUsdPerImage: record.outputUsdPerImage
+    imageInputUsdPer1M: normalizePriceInput(record.imageInputUsdPer1M),
+    imageOutputUsdPer1M: normalizePriceInput(record.imageOutputUsdPer1M),
+    audioInputUsdPer1M: normalizePriceInput(record.audioInputUsdPer1M),
+    audioOutputUsdPer1M: normalizePriceInput(record.audioOutputUsdPer1M),
+    outputUsdPerImage: normalizePriceInput(record.outputUsdPerImage)
   }
 
   const category = categoryFromModeOrModel(form.mode, form.model)
@@ -194,7 +194,7 @@ export function applyConfigurationTemplateToCustomModelForm(
   form.shutdownDate = template.shutdownDate
   const visibleFields = new Set(directPriceFieldsByCategory[category])
   for (const field of directPriceFieldKeys) {
-    form[field] = visibleFields.has(field) ? template[field] : undefined
+    form[field] = visibleFields.has(field) ? normalizePriceInput(template[field]) : undefined
   }
   form.serviceTierPrices = cloneServiceTierPrices(template.serviceTierPrices)
   reconcileCustomModelServiceTierPrices(form)
@@ -245,8 +245,22 @@ export function availableCustomModelModeOptions(providerCode: string, providerMo
   return modelModeOptions.filter((option) => categories.has(option.value))
 }
 
+/** 表单回填价格归一：Number() 天然去尾零（0.10000000 → 0.1、2.00000000 → 2），数值等价不损精度。 */
+function normalizePriceInput(value?: number | null): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? Number(value) : undefined
+}
+
 function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
-  return Object.fromEntries(Object.entries(value ?? {}).map(([tier, prices]) => [tier, { ...prices }]))
+  return Object.fromEntries(
+    Object.entries(value ?? {}).map(([tier, prices]) => [
+      tier,
+      Object.fromEntries(
+        Object.entries(prices)
+          .filter(([, v]) => typeof v === 'number' && Number.isFinite(v))
+          .map(([k, v]) => [k, Number(v)])
+      )
+    ])
+  )
 }
 
 const editableProviderModelPayloadKeys = [
