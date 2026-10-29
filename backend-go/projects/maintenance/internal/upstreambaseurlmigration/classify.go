@@ -155,7 +155,9 @@ func bareOriginRoot(family Family, preset string) string {
 func familyKeepSuffixes(family Family) []string {
 	switch family {
 	case FamilyOpenAI:
-		return []string{"/v1", "/api/paas/v4", "/api/coding/paas/v4", "/v1beta/openai"}
+		// 方舟 Plan 套餐根（/api/plan/v3、/api/coding/v3）是真实官方版本根，
+		// 账户无论挂在哪个 openai 系供应商档案下都直拼可达，识别为已合规。
+		return []string{"/v1", "/api/paas/v4", "/api/coding/paas/v4", "/v1beta/openai", "/api/plan/v3", "/api/coding/v3"}
 	case FamilyAnthropic:
 		return []string{"/v1"}
 	case FamilyGemini:

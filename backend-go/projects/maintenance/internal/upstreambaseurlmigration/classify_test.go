@@ -102,6 +102,8 @@ func TestClassifyBaseURL(t *testing.T) {
 			wantDisposition: DispositionUnchanged},
 		{name: "ark/coding plan 官方根已合规不变", preset: contracts.PresetVolcengineArk, raw: "https://ark.cn-beijing.volces.com/api/coding/v3",
 			wantDisposition: DispositionUnchanged},
+		{name: "openai/方舟agent plan根（deepseek档案挂载）已合规不变", preset: contracts.PresetDeepSeekOpenAIV1, raw: "https://ark.cn-beijing.volces.com/api/plan/v3",
+			wantDisposition: DispositionUnchanged},
 		{name: "ark/其他版本路径进复核", preset: contracts.PresetVolcengineArk, raw: "https://ark.cn-beijing.volces.com/api/v2",
 			wantDisposition: DispositionReview, wantReview: ReviewNonconforming},
 		// ── 无规则家族 ───────────────────────────────────────────────
