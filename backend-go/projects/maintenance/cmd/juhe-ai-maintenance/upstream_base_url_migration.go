@@ -91,11 +91,19 @@ func upstreamBaseURLMigrationResult(dryRun bool, dsn, manifestOut, secret string
 }
 
 // upstreamBaseURLVerifyResult 返回 verify 命令的 CLI 退出码；
-// runMaintenance 派发它，测试进程内直调。只读：全程零写入。
-func upstreamBaseURLVerifyResult(dsn, check string) int {
+// runMaintenance 派发它，测试进程内直调。只读：全程零写入。secret 是凭据
+// 信封密钥（--secret / JUHE_AI_SECRET，与 migrate 分支同源）：preflight 与
+// postflight 都要对 accounts.credentials_encrypted 解封分类，密钥缺失会使
+// 全部凭据误报 credential_decrypt_failed，故在开库扫描前 fail-fast（用法
+// 错误，退出码 2），不静默退化成全量误报。
+func upstreamBaseURLVerifyResult(dsn, check, secret string) int {
 	normalizedCheck := strings.ToLower(strings.TrimSpace(check))
 	if normalizedCheck != "preflight" && normalizedCheck != "postflight" {
 		fmt.Fprintln(os.Stderr, "--verify-upstream-base-url-version-root 需要 --upstream-base-url-check=preflight|postflight（preflight=迁移前只读分类报告；postflight=完成态核验；不隐式切换核验语义）")
+		return 2
+	}
+	if strings.TrimSpace(secret) == "" {
+		fmt.Fprintln(os.Stderr, "--verify-upstream-base-url-version-root 需要 --secret（或环境变量 JUHE_AI_SECRET）提供凭据信封密钥：preflight 与 postflight 都凭它解密 accounts.credentials_encrypted 做分类，缺失会使全部凭据误报 credential_decrypt_failed，核验结论不可信")
 		return 2
 	}
 	db, usageCode := openBusinessPostgres(dsn)
@@ -104,7 +112,7 @@ func upstreamBaseURLVerifyResult(dsn, check string) int {
 	}
 	defer db.Close()
 	if normalizedCheck == "preflight" {
-		manifest, err := upstreambaseurlmigration.Plan(context.Background(), db, upstreambaseurlmigration.Options{})
+		manifest, err := upstreambaseurlmigration.Plan(context.Background(), db, upstreambaseurlmigration.Options{Secret: secret})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "上游 Base URL 版本根预检失败: %v\n", err)
 			return 1
@@ -119,7 +127,7 @@ func upstreamBaseURLVerifyResult(dsn, check string) int {
 		}
 		return 0
 	}
-	report, err := upstreambaseurlmigration.Verify(context.Background(), db, upstreambaseurlmigration.Options{})
+	report, err := upstreambaseurlmigration.Verify(context.Background(), db, upstreambaseurlmigration.Options{Secret: secret})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "上游 Base URL 版本根核验失败: %v\n", err)
 		return 1

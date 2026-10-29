@@ -143,7 +143,7 @@ func runMaintenance(argv []string) int {
 		if *migrateUpstreamBaseURLVersionRoot {
 			return upstreamBaseURLMigrationResult(*backfillDryRun, *bootstrapDSN, *manifestOut, *seedSecret, *nodeStopped, *goStopped, *backupConfirmed)
 		}
-		return upstreamBaseURLVerifyResult(*bootstrapDSN, *upstreamBaseURLCheck)
+		return upstreamBaseURLVerifyResult(*bootstrapDSN, *upstreamBaseURLCheck, *seedSecret)
 	}
 	if *migrateMergeSuperGroups {
 		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
