@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,11 +15,16 @@ import (
 // manualTimerHub 用可控通道替代真实计时器：每次排程把协调器时钟推进
 // 计时延迟，使"计时器触发后轮到等待者"在固定测试时钟下可重放。
 type manualTimerHub struct {
+	mu     sync.Mutex
 	timers []chan struct{}
 	clock  int64
 }
 
 func (h *manualTimerHub) newTimer(delay time.Duration) (<-chan struct{}, func()) {
+	// WaitCoordinator 在其派生协程上创建计时器、测试协程经 fireAll 读取，
+	// -race 门禁要求假体自身同步（W36 批次 2026-10-29 补锁）。
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.clock += delay.Milliseconds()
 	done := make(chan struct{})
 	h.timers = append(h.timers, done)
@@ -26,6 +32,8 @@ func (h *manualTimerHub) newTimer(delay time.Duration) (<-chan struct{}, func())
 }
 
 func (h *manualTimerHub) fireAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for _, done := range h.timers {
 		select {
 		case <-done:

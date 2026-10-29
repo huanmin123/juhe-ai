@@ -458,14 +458,17 @@ func TestW11CCompleteConfirmationEscalationFlow(t *testing.T) {
 	if err != nil || state.Phase != PhaseOpen {
 		t.Fatalf("scope after failures = (%+v, %v)", state, err)
 	}
-	foundEscalation := false
+	// W36（2026-10-28）契约收口：recorded 臂（低于阈值且账户态缺席）的
+	// AccountState 是 store 层 closedAccountState 占位（无 transitionId/
+	// incidentId），service 层不得把它交给持久化桥——此处升级未触发，不应
+	// 存在无持久化身份的 record_parent_evidence 事件，占位状态外泄即回归。
 	for _, event := range mutations {
-		if event.Operation == OperationRecordParentEvidence {
-			foundEscalation = true
+		if event.Operation != OperationRecordParentEvidence {
+			continue
 		}
-	}
-	if !foundEscalation {
-		t.Fatalf("expected record_parent_evidence mutation events, got %d", len(mutations))
+		if durableIncidentID(event.State) == "" {
+			t.Fatalf("占位账户状态外泄到持久化桥: %+v", event)
+		}
 	}
 }
 

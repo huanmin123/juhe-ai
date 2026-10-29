@@ -938,7 +938,16 @@ func (s *CircuitService) CompleteConfirmation(
 				}
 			}
 		}
-		if s.onMutation != nil {
+		// W36（2026-10-28 生产取证定案）：升级记录在账户态缺席的各返回臂
+		// （not_found/stale_*/state_mismatch/recorded）会把 store 层的
+		// closedAccountState 占位（transitionId 与 incidentId 均空）当
+		// AccountState 返回，此处不得把它交给持久化桥——真实 store 的 CAS
+		// 输入校验恒拒「incident id is required」，该确定性失败会被桥的重试
+		// 循环空转至耗尽（2026-10-28 上游失败风暴中单日 1324 条「持久化重试
+		// 耗尽」告警即此形态；桥层 W14E 的 rebuild 回退契约只服务真实状态，
+		// 不得作为占位状态的入账通道）。账户态真实存在（含升级新开）时
+		// AccountState 恒带 transitionId，照常同步。
+		if s.onMutation != nil && durableIncidentID(escalation.AccountState) != "" {
 			event := MutationEvent{
 				Scope:     Scope{Kind: ScopeKindAccount, AccountRuntimeKey: confirmation.AccountRuntimeKey},
 				State:     escalation.AccountState,

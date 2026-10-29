@@ -230,11 +230,34 @@ func (p *Producer) Retract(auditLogID string) {
 		return
 	}
 	p.start.Do(p.startWorkers)
+	if p.tryEnqueueRetract(auditLogID) {
+		return
+	}
+	p.warn("F3 审计采集队列已满，丢弃信封撤回命令", "auditLogID", auditLogID)
+}
+
+// tryEnqueueRetract 以非阻塞方式把撤回命令并入采集队列（免预算：撤回项
+// bytes=0，不占 W14 字节预算），返回是否入队成功。
+func (p *Producer) tryEnqueueRetract(auditLogID string) bool {
 	select {
 	case p.queue <- queuedAudit{retractionID: auditLogID}:
+		return true
 	default:
-		p.warn("F3 审计采集队列已满，丢弃信封撤回命令", "auditLogID", auditLogID)
+		return false
 	}
+}
+
+// retractBestEffort 是 persistOne 失败分支的撤回入口（W13 残留②收口，
+// 2026-10-28）：优先免预算入队；队列饱和时（饱和与存储故障同窗，正是该
+// 路径丢命令的触发形态）在当前 worker 协程上内联执行撤回——lifecycle 守卫
+// 对无行/终态行均为无害 no-op，最坏为本次结算增加一次有界（10s）DELETE，
+// 确定性消除「失败分支派发的撤回命令被同一饱和队列丢弃」的空壳残留。
+func (p *Producer) retractBestEffort(auditLogID string) {
+	if p.tryEnqueueRetract(auditLogID) {
+		return
+	}
+	p.warn("F3 审计采集队列饱和，信封撤回转 worker 内联执行", "auditLogID", auditLogID)
+	p.retractOne(auditLogID)
 }
 
 func (p *Producer) workerLoop() {
@@ -289,6 +312,10 @@ func (p *Producer) persistOne(input AuditLogInput) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			p.warn("F3 审计采集持久化 panic 已隔离", "panic", recovered, "traceID", input.TraceID, "auditLogID", input.ID)
+			// W13 残留①收口（2026-10-28）：panic 点可能已写入 in_progress
+			// 信封，不派发撤回即残留空壳；lifecycle 守卫使无行/终态行的
+			// 撤回为无害 no-op，与两条失败分支同口径。
+			p.retractBestEffort(input.ID)
 			p.observePersistDuration("panic", startedAt)
 			return
 		}
@@ -311,7 +338,7 @@ func (p *Producer) persistOne(input AuditLogInput) {
 			p.warn("F3 owner lease renewal failed; dropping audit capture", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
 			// W13 生产复核（2026-10-24）：丢弃采集时该 id 的 in_progress 信封
 			// 行可能已落库，不派发撤回就永久残留空壳；与 Cancel() 同口径。
-			p.Retract(input.ID)
+			p.retractBestEffort(input.ID)
 			return
 		}
 	}
@@ -321,7 +348,7 @@ func (p *Producer) persistOne(input AuditLogInput) {
 		p.warn("F3 审计采集持久化失败", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
 		// 终态写入失败同样留下已落库的信封行（生产 13:16 blob 锁/元数据
 		// 超时形态）；lifecycle 守卫使撤回对无行/终态行都是无害 no-op。
-		p.Retract(input.ID)
+		p.retractBestEffort(input.ID)
 		return
 	}
 	if persistResult.Ignored {
