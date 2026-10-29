@@ -51,7 +51,18 @@ func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
-			input := w12dProbeInput(server.URL, tc.mode, tc.protocol)
+			// R3：探针 base_url 携带协议版本根（R1 删除运行时补根），线上路径
+			// = 根 + 去版本前缀操作路径，case 表 want 路径不变。
+			probeBase := server.URL
+			switch tc.protocol {
+			case "anthropic":
+				probeBase += "/v1"
+			case "gemini":
+				probeBase += "/v1beta"
+			default:
+				probeBase += "/v1"
+			}
+			input := w12dProbeInput(probeBase, tc.mode, tc.protocol)
 			switch tc.protocol {
 			case "anthropic":
 				input.Provider = "anthropic"

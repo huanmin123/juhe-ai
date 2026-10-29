@@ -110,7 +110,8 @@ func TestGlmVideoAdapterCreateRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create err = %v", err)
 	}
-	if out.Method != http.MethodPost || out.Path != "/api/paas/v4/videos/generations" {
+	// 动机（v2 直拼契约）：opPath 不含版本段，/api/paas/v4 由 base_url 版本根承载。
+	if out.Method != http.MethodPost || out.Path != "/videos/generations" {
 		t.Fatalf("method/path = %s %s", out.Method, out.Path)
 	}
 	var body struct {
@@ -170,7 +171,8 @@ func containsString(values []string, want string) bool {
 func TestGlmVideoAdapterPollRequest(t *testing.T) {
 	adapter := VideoAdapterForProvider("glm")
 	method, path, body := adapter.BuildPollRequest("0123456789ab")
-	if method != http.MethodGet || path != "/api/paas/v4/async-result/0123456789ab" || body != nil {
+	// 动机（v2 直拼契约）：opPath 不含版本段，/api/paas/v4 由 base_url 版本根承载。
+	if method != http.MethodGet || path != "/async-result/0123456789ab" || body != nil {
 		t.Fatalf("poll request = %s %s %v", method, path, body)
 	}
 }

@@ -385,10 +385,12 @@ func TestWlBuildURLVariants(t *testing.T) {
 			endpoint string
 			wantURL  string
 		}{
-			{name: "chat 自动补 /v1", protocol: modelcheckprofile.ProtocolOpenAIChat, endpoint: "https://api.example.com", wantURL: "https://api.example.com/v1/chat/completions"},
-			{name: "chat 保留既有 /v1", protocol: modelcheckprofile.ProtocolOpenAIChat, endpoint: "https://api.example.com/v1/", wantURL: "https://api.example.com/v1/chat/completions"},
-			{name: "gemini 自动补 /v1beta", protocol: modelcheckprofile.ProtocolGeminiNative, endpoint: "https://api.example.com", wantURL: "https://api.example.com/v1beta/models/m:generateContent"},
-			{name: "gemini sse 保留查询串", protocol: modelcheckprofile.ProtocolGeminiNative, stream: true, endpoint: "https://api.example.com", wantURL: "https://api.example.com/v1beta/models/m:streamGenerateContent?alt=sse"},
+			// v2 直拼（上游 Base URL 版本根契约）：base 不再自动补 /v1、
+			// /v1beta，opPath 取 catalog 模板原样；base 自带版本根时直拼保留。
+			{name: "chat base 无版本根直拼", protocol: modelcheckprofile.ProtocolOpenAIChat, endpoint: "https://api.example.com", wantURL: "https://api.example.com/chat/completions"},
+			{name: "chat base 自带 /v1 版本根直拼", protocol: modelcheckprofile.ProtocolOpenAIChat, endpoint: "https://api.example.com/v1/", wantURL: "https://api.example.com/v1/chat/completions"},
+			{name: "gemini base 无版本根直拼", protocol: modelcheckprofile.ProtocolGeminiNative, endpoint: "https://api.example.com", wantURL: "https://api.example.com/models/m:generateContent"},
+			{name: "gemini sse 保留查询串", protocol: modelcheckprofile.ProtocolGeminiNative, stream: true, endpoint: "https://api.example.com", wantURL: "https://api.example.com/models/m:streamGenerateContent?alt=sse"},
 			{name: "codex 固定官方基址", protocol: modelcheckprofile.ProtocolOpenAIResponses, adapter: AdapterOpenAIOAuthCodex, headers: func() http.Header {
 				headers := http.Header{}
 				headers.Set("Authorization", "Bearer wl-codex")

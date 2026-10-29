@@ -5,14 +5,18 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 // 协议与供应商标识（对齐 domain/provider-protocol.ts）。
 const (
-	ProtocolCode      = "gemini"
-	ProtocolVersion   = "v1beta"
-	ProviderCode      = "gemini"
-	defaultGeminiBase = "https://generativelanguage.googleapis.com"
+	ProtocolCode    = "gemini"
+	ProtocolVersion = "v1beta"
+	ProviderCode    = "gemini"
+	// defaultGeminiBase 按 v2 直拼契约即版本根：base_url 缺省时自带 /v1beta
+	// 版本服务根（上游 Base URL 版本根语义 v2，R3）。
+	defaultGeminiBase = "https://generativelanguage.googleapis.com/v1beta"
 )
 
 // 端点能力模式（对齐 domain/gemini-endpoint-modes.ts）。
@@ -250,32 +254,42 @@ func BuildUpstreamURLsForAccount(account UpstreamAccount, r *http.Request, model
 	return []string{built}
 }
 
-// BuildUpstreamURL 对齐 buildGeminiUpstreamUrl：请求路径统一挂 /v1beta 前缀，
-// baseUrl 已含 /v1beta 时去重；interactions 删除 alt；stream 时补 alt=sse；
-// 一律删除请求 query 中的 key（凭据经 header 注入）。
+// BuildUpstreamURL 按 v2 直拼契约构造：入站路径剥 /v1beta 前缀后作为 opPath，
+// base_url 即版本根（缺省回落 defaultGeminiBase，自带 /v1beta），base 与
+// opPath 的拼接统一走共享 upstreamenvelope.JoinUpstreamURL（R1：不再强制挂
+// /v1beta、不做 base 侧补挂或去重）；跨段斜杠折叠（collapseSlashes）与 query
+// 归并（一律删除请求 query 中的 key、stream 补 alt=sse、interactions 删除
+// alt）保留在调用侧。
 func BuildUpstreamURL(baseURL, pathAndQuery string, stream bool) (string, error) {
 	normalizedPath, sourceQuery := normalizedGeminiPathAndQuery(pathAndQuery)
 	base, err := normalizedGeminiBaseURL(baseURL)
 	if err != nil {
 		return "", err
 	}
-	basePath := strings.TrimRight(base.Path, "/")
-	suffixPath := normalizedPath
-	if strings.HasSuffix(strings.ToLower(basePath), "/v1beta") {
-		suffixPath = stripV1BetaPrefixExact(normalizedPath)
+	joined, err := upstreamenvelope.JoinUpstreamURL(base.Scheme+"://"+base.Host,
+		collapseSlashes(strings.TrimRight(base.Path, "/")+mapSlashToEmpty(normalizedPath)))
+	if err != nil {
+		return "", err
 	}
-	merged := basePath + mapSlashToEmpty(suffixPath)
-	merged = collapseSlashes(merged)
-	base.Path = merged
-
+	target, err := url.Parse(joined)
+	if err != nil {
+		return "", err
+	}
+	// base 自带 query（如有）先并入 target，再由 source 覆盖合并——与原实现
+	// 在同一 url.Values 上先装 base query 再 merge 的语义一致。
+	mergedQuery := target.Query()
+	for key, values := range base.Query() {
+		for _, value := range values {
+			mergedQuery.Set(key, value)
+		}
+	}
 	endpointFamily := EndpointFamilyFromPath(normalizedPath)
 	if endpointFamily == EndpointFamilyInteractions {
 		sourceQuery.Del("alt")
 	}
-	target := base.Query()
-	mergeGeminiQuery(target, sourceQuery, stream)
-	base.RawQuery = target.Encode()
-	return base.String(), nil
+	mergeGeminiQuery(mergedQuery, sourceQuery, stream)
+	target.RawQuery = mergedQuery.Encode()
+	return target.String(), nil
 }
 
 func mapSlashToEmpty(path string) string {
@@ -292,19 +306,6 @@ func collapseSlashes(value string) string {
 	return value
 }
 
-// stripV1BetaPrefixExact 对齐 path.replace(/^\/v1beta(?=\/|$)/, ”)
-// （区分大小写版本；匹配时直接移除，可能得到空串，与 Node 一致）。
-func stripV1BetaPrefixExact(path string) string {
-	if !strings.HasPrefix(path, "/v1beta") {
-		return path
-	}
-	rest := path[len("/v1beta"):]
-	if rest == "" || strings.HasPrefix(rest, "/") {
-		return rest
-	}
-	return path
-}
-
 func normalizedGeminiBaseURL(baseURL string) (*url.URL, error) {
 	normalized := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if normalized == "" {
@@ -313,19 +314,19 @@ func normalizedGeminiBaseURL(baseURL string) (*url.URL, error) {
 	return url.Parse(normalized)
 }
 
-// normalizedGeminiPathAndQuery 对齐 normalizedGeminiPathAndQuery：路径补全
-// 并强制挂 /v1beta 前缀。
+// normalizedGeminiPathAndQuery 按 v2 契约产出 opPath：路径补全后剥去入站
+// /v1beta 前缀（入站边界语义保留），不再强制挂 /v1beta——版本段只存在于
+// base_url 一侧。
 func normalizedGeminiPathAndQuery(pathAndQuery string) (string, *url.Values) {
 	parts := splitPathAndQuery(pathAndQuery)
 	rawPath := parts.Path
 	if !strings.HasPrefix(rawPath, "/") {
 		rawPath = "/" + rawPath
 	}
-	pathWithoutVersion := stripV1BetaPrefixInsensitive(rawPath)
-	if pathWithoutVersion == "" || pathWithoutVersion == "/" {
-		pathWithoutVersion = ""
+	normalizedPath := stripV1BetaPrefixInsensitive(rawPath)
+	if normalizedPath == "/" {
+		normalizedPath = ""
 	}
-	normalizedPath := "/v1beta" + pathWithoutVersion
 	query := url.Values{}
 	if parts.Query != "" {
 		if parsed, err := url.ParseQuery(strings.TrimPrefix(parts.Query, "?")); err == nil {

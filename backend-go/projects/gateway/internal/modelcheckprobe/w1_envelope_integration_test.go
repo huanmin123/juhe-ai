@@ -106,11 +106,13 @@ func TestW1SuiteEnvelopeProfileAndCredentialReachTransport(t *testing.T) {
 			wantURL:  "https://proxy.example/v1/chat/completions", wantAccept: "application/json",
 		},
 		{
+			// v2 直拼：base 无版本根时不再补 /v1，出站=origin+模板
+			//（旧「GLM 空根补 /v1」行为随上游 Base URL 版本根契约删除）。
 			name: "GLM 空根", profile: "profile_glm_general_openai_v1", provider: "glm",
 			endpoint: "https://proxy.example", mode: modelcheckprofile.EndpointModeChatJSON,
 			headers:  http.Header{"Authorization": []string{"Bearer glm-token"}},
 			response: `{"model":"glm-model","choices":[{"message":{"content":"OK-MODEL-CHECK"}}]}`,
-			wantURL:  "https://proxy.example/v1/chat/completions", wantAccept: "application/json",
+			wantURL:  "https://proxy.example/chat/completions", wantAccept: "application/json",
 		},
 		{
 			name: "Gemini OpenAI OAuth SSE", profile: "profile_gemini_openai_chat_v1beta", provider: "gemini",
@@ -120,12 +122,14 @@ func TestW1SuiteEnvelopeProfileAndCredentialReachTransport(t *testing.T) {
 			wantURL:  "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", wantAccept: "text/event-stream",
 		},
 		{
+			// v2 直拼：base 不再补 /v1（profile_anthropic_anthropic_v1 的版本
+			// 段由账户 base_url 版本根承载，如 https://api.anthropic.com/v1）。
 			name: "Anthropic OAuth messages SSE", profile: "profile_anthropic_anthropic_v1", provider: "anthropic",
 			endpoint: "https://api.anthropic.com", mode: modelcheckprofile.EndpointModeMessagesSSE,
 			credentialType: "oauth", protocol: modelcheckprofile.ProtocolAnthropic,
 			headers:        http.Header{"Authorization": []string{"Bearer anthropic-token"}},
 			response:       "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"OK-MODEL-CHECK\"}}\n\n",
-			wantURL:        "https://api.anthropic.com/v1/messages",
+			wantURL:        "https://api.anthropic.com/messages",
 			wantAccept:     "text/event-stream",
 			wantAuthHeader: "Bearer anthropic-token",
 		},

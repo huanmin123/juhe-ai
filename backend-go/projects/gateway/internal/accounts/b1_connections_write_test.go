@@ -191,12 +191,12 @@ func TestB1CreateRejectsInvalidConnections(t *testing.T) {
 	}
 }
 
-// TestB1ValidateConnectionBaseURLTable 是 §2.1 base_url validator 的表驱动
-// 用例（合法 http/https + suffix、非法 scheme/userinfo/query/fragment/dot
-// segment/坏 percent/编码斜杠/operation 前缀）。
+// TestB1ValidateConnectionBaseURLTable 是 §2.1 + R8 base_url validator 的
+// 表驱动用例（合法 http/https + 版本根/服务前缀、非法 scheme/userinfo/query/
+// fragment/dot segment/坏 percent/编码斜杠/operation 后缀命中）。
 func TestB1ValidateConnectionBaseURLTable(t *testing.T) {
-	// gpt_openai_v1：suffix ["", "/v1"]，openai operation template 全集。
-	suffixes, templates, ok := connectionURLContract("gpt", "api_key", "", "gpt_openai_v1", "chat")
+	// gpt_openai_v1：openai operation template 全集（R2 去版本前缀）。
+	templates, ok := connectionURLContract("gpt", "api_key", "", "gpt_openai_v1", "chat")
 	if !ok {
 		t.Fatal("registry URL 契约缺失")
 	}
@@ -207,46 +207,109 @@ func TestB1ValidateConnectionBaseURLTable(t *testing.T) {
 		"https://api.openai.com/v1/",
 		"http://api.openai.com/v1",
 		"https://proxy.example.com:8443/custom-prefix/v1",
+		// R8 放行集合：版本根与云厂商服务前缀（版本根语义 R3）。
+		"https://ark.cn-beijing.volces.com/api/v3",
+		"https://open.bigmodel.cn/api/paas/v4",
+		"https://open.bigmodel.cn/api/plan/v3",
+		// R8 取消 allowed_base_path_suffixes 白名单后，尾部多余段不再因
+		// 「suffix 未命中」被拒——拒绝只由操作模板后缀命中触发；`/v1/chat/comp`
+		// 的尾部段 comp 与模板段 completions 不构成按段前缀（段对齐），放行。
+		"https://api.openai.com/v1/chat/completions/extra",
+		"https://api.openai.com/v1/chat/comp",
 	}
 	for _, raw := range valid {
-		if err := validateConnectionBaseURL(suffixes, templates, raw); err != nil {
+		if err := validateConnectionBaseURL(templates, raw); err != nil {
 			t.Fatalf("合法 base URL 被拒绝 %q：%v", raw, err)
 		}
 	}
 	invalid := []string{
-		"",                                                 // 空
-		"ftp://api.openai.com/v1",                          // 非 http/https
-		"https://user:pass@api.openai.com/v1",              // userinfo
-		"https://api.openai.com/v1?x=1",                    // query
-		"https://api.openai.com/v1#frag",                   // fragment
-		"https://api.openai.com/../v1",                     // dot segment
-		"https://api.openai.com/%zz/v1",                    // 坏 percent escape
-		"https://api.openai.com/%2F/v1",                    // percent-decoded slash
-		"https://api.openai.com/%5C/v1",                    // percent-decoded backslash
-		"https://api.openai.com/v1/chat/completions",       // operation 完整路径
-		"https://api.openai.com/v1/chat",                   // operation 中间前缀
-		"https://api.openai.com/v1/chat/comp",              // 字面段非空前缀
-		"https://api.openai.com/audio",                     // 非法 suffix
-		"https://api.openai.com/v1/chat/completions/extra", // suffix 未命中 + operation 前缀
+		"",                                    // 空
+		"ftp://api.openai.com/v1",             // 非 http/https
+		"https://user:pass@api.openai.com/v1", // userinfo
+		"https://api.openai.com/v1?x=1",       // query
+		"https://api.openai.com/v1#frag",      // fragment
+		"https://api.openai.com/../v1",        // dot segment
+		"https://api.openai.com/%zz/v1",       // 坏 percent escape
+		"https://api.openai.com/%2F/v1",       // percent-decoded slash
+		"https://api.openai.com/%5C/v1",       // percent-decoded backslash
+		"https://api.openai.com/v1/chat/completions", // operation 完整路径（R8 后缀命中）
+		"https://api.openai.com/v1/chat",             // operation 按段前缀（后缀 /chat）
+		"https://api.openai.com/responses",           // operation 完整路径（R2 去前缀模板）
+		"https://api.openai.com/audio",               // /audio/speech 等模板的按段前缀
 	}
 	for _, raw := range invalid {
-		if err := validateConnectionBaseURL(suffixes, templates, raw); err == nil {
+		if err := validateConnectionBaseURL(templates, raw); err == nil {
 			t.Fatalf("非法 base URL 被放行 %q", raw)
 		} else if !strings.Contains(err.Error(), "invalid_connection_base_url") {
 			t.Fatalf("错误码不符合 §8 %q：%v", raw, err)
 		}
 	}
-	// gemini native 模板的嵌入式占位符（{model}:generateContent）与文档示例
-	// /v1beta/models/foo。
-	geminiSuffixes, geminiTemplates, ok := connectionURLContract("gemini", "api_key", "", "gemini_native_v1beta", "chat")
+	// R8 拒绝集合固定钉点：/chat/completions、/v1/chat、/responses。
+	for _, raw := range []string{
+		"https://api.openai.com/chat/completions",
+		"https://api.openai.com/v1/chat",
+		"https://api.openai.com/responses",
+	} {
+		err := validateConnectionBaseURL(templates, raw)
+		if err == nil || !strings.Contains(err.Error(), "不能填写具体接口路径") {
+			t.Fatalf("R8 拒绝集合 %q 应返回统一文案：%v", raw, err)
+		}
+	}
+	// gemini native 模板的嵌入式占位符（{model}:generateContent）：R8 段对齐
+	// 后缀命中——/models 是模板按段前缀应拒绝；完整 generateContent 操作路径
+	// 应拒绝；/v1beta/models/foo 的尾段不构成占位符段前缀，随 R8 取消 suffix
+	// 白名单后放行（旧行为靠 suffix 白名单拒绝）。
+	geminiTemplates, ok := connectionURLContract("gemini", "api_key", "", "gemini_native_v1beta", "chat")
 	if !ok {
 		t.Fatal("gemini registry URL 契约缺失")
 	}
-	if err := validateConnectionBaseURL(geminiSuffixes, geminiTemplates, "https://generativelanguage.googleapis.com/v1beta/models/foo"); err == nil {
-		t.Fatal("嵌入式占位符中间前缀 /v1beta/models/foo 应拒绝")
+	if err := validateConnectionBaseURL(geminiTemplates, "https://generativelanguage.googleapis.com/v1beta/models"); err == nil {
+		t.Fatal("模板按段前缀 /v1beta/models 应拒绝")
 	}
-	if err := validateConnectionBaseURL(geminiSuffixes, geminiTemplates, "https://generativelanguage.googleapis.com/v1beta"); err != nil {
-		t.Fatalf("gemini suffix /v1beta 应放行：%v", err)
+	if err := validateConnectionBaseURL(geminiTemplates, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5:generateContent"); err == nil {
+		t.Fatal("完整 generateContent 操作路径应拒绝")
+	}
+	if err := validateConnectionBaseURL(geminiTemplates, "https://generativelanguage.googleapis.com/v1beta/models/foo"); err != nil {
+		t.Fatalf("R8 段对齐语义下 /v1beta/models/foo 应放行：%v", err)
+	}
+	if err := validateConnectionBaseURL(geminiTemplates, "https://generativelanguage.googleapis.com/v1beta"); err != nil {
+		t.Fatalf("gemini 版本根 /v1beta 应放行：%v", err)
+	}
+	// R6：qwen preset 模板保持全路径（/compatible-mode/v1/chat/completions），
+	// base 填 /compatible-mode/v1 因是其按段前缀被拒——qwen base_url 语义是
+	// origin，应回填 origin。
+	qwenTemplates, ok := connectionURLContract("qwen", "api_key", "", "qwen_dashscope", "chat")
+	if !ok {
+		t.Fatal("qwen registry URL 契约缺失")
+	}
+	if err := validateConnectionBaseURL(qwenTemplates, "https://dashscope.aliyuncs.com/compatible-mode/v1"); err == nil {
+		t.Fatal("qwen /compatible-mode/v1 是全路径模板的按段前缀，应拒绝")
+	}
+	if err := validateConnectionBaseURL(qwenTemplates, "https://dashscope.aliyuncs.com"); err != nil {
+		t.Fatalf("qwen origin 应放行：%v", err)
+	}
+	// R8/R9 回归钉点：registry 默认 base_url（版本根）必须能过连接域校验
+	// （修复前 glm/deepseek_anthropic/glm_coding_anthropic 等默认值会被
+	// suffix 白名单或旧模板前缀误拒）。
+	defaults := []struct {
+		driver, accountType, oauthType, preset, domain, raw string
+	}{
+		{"glm", "api_key", "", "glm_general_openai_v1", "chat", "https://open.bigmodel.cn/api/paas/v4"},
+		{"deepseek", "api_key", "", "deepseek_anthropic_v1", "chat", "https://api.deepseek.com/anthropic/v1"},
+		{"glm", "api_key", "", "glm_coding_anthropic_v1", "chat", "https://open.bigmodel.cn/api/anthropic/v1"},
+		{"volcengine", "api_key", "", "volcengine_ark", "chat", "https://ark.cn-beijing.volces.com/api/v3"},
+		{"minimax", "api_key", "", "minimax_media", "audio", "https://api.minimax.chat/v1"},
+		{"gemini", "api_key", "", "gemini_native_v1beta", "chat", "https://generativelanguage.googleapis.com/v1beta"},
+		{"deepseek", "api_key", "", "deepseek_openai_v1", "chat", "https://api.deepseek.com/v1"},
+	}
+	for _, tc := range defaults {
+		presetTemplates, ok := connectionURLContract(tc.driver, tc.accountType, tc.oauthType, tc.preset, tc.domain)
+		if !ok {
+			t.Fatalf("%s registry URL 契约缺失", tc.preset)
+		}
+		if err := validateConnectionBaseURL(presetTemplates, tc.raw); err != nil {
+			t.Fatalf("%s 默认 base_url %s 应过连接域校验：%v", tc.preset, tc.raw, err)
+		}
 	}
 }
 

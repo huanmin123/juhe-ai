@@ -28,8 +28,9 @@ func streamUsageInjectAccount() gatewaydispatch.AccountCandidate {
 		VendorCode:   "openai",
 		ProtocolCode: "openai",
 		Type:         "api_key",
-		BaseURL:      "https://api.example",
-		APIKey:       "gk-1",
+		// 动机（v2 直拼契约）：openai 族 base_url 即版本根（/v1 结尾）。
+		BaseURL: "https://api.example/v1",
+		APIKey:  "gk-1",
 	}
 }
 

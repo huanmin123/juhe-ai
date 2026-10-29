@@ -31,6 +31,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/openaicompatcore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
@@ -239,45 +240,25 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// M2 视频创建（媒体设计 §5）：视频请求出站报文经 gatewaymedia 注册表
 		// adapter 构造（URL 与 body 同源 adapter.Create），与 M1 gemini speech
 		// adapter 同模式短路返回；不进通用映射/改写链（统一参数规范在归一层
-		// 完成，不透传厂商参数面）。glm 账户（M3 cogvideo adapter）的出站路径
-		// 自带 /api/paas/v4 服务根，volcengine 账户（M3 seedance adapter，契约
-		// §9.1）自带 /api/v3 服务根，qwen 账户（M3 万相 adapter，契约 §10.1）
-		// 自带 /api/v1 服务根，URL 分别按 chainGlmVideoUpstreamURL /
-		// chainVolcengineVideoUpstreamURL / chainQwenVideoUpstreamURL 归一
-		//（官方根去重，不走 openai /v1 强制补缀）；其余走 openai 归一。
+		// 完成，不透传厂商参数面）。v2 直拼契约（R1/R2）：adapter 出站 opPath
+		// 不含版本段——glm（M3 cogvideo adapter，/api/paas/v4 服务根）、
+		// volcengine（M3 seedance adapter，契约 §9.1，/api/v3 服务根）由账户
+		// base_url 版本根承载，qwen（M3 万相 adapter，契约 §10.1）/api/v1 域
+		// opPath 自带全路径（双根特例 base=origin）——全部经共享 upstreamenvelope.
+		// JoinUpstreamURL 统一直拼，不再有厂商服务根归一分支。
 		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
-			// 媒体适配器身份源（供应商与上游协议面重构设计 §2.1 切片）：vendor
-			// 值域与旧 providerCode 同名，分支键取 VendorCode。generic/空 vendor
-			// 在 videoCreateRequest 已按能力缺失直接失败，不会进入本 URL 归一。
-			if chainVideoAdapterKeyOfProvider(account.VendorCode) == "glm" {
-				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
-				if urlErr != nil {
-					return nil, urlErr
-				}
-				return []string{upstreamURL}, nil
+			upstreamURL, urlErr := upstreamenvelope.JoinUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
+			if urlErr != nil {
+				return nil, urlErr
 			}
-			if chainVideoAdapterKeyOfProvider(account.VendorCode) == "volcengine" {
-				upstreamURL, urlErr := chainVolcengineVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
-				if urlErr != nil {
-					return nil, urlErr
-				}
-				return []string{upstreamURL}, nil
-			}
-			if chainVideoAdapterKeyOfProvider(account.VendorCode) == "qwen" {
-				upstreamURL, urlErr := chainQwenVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
-				if urlErr != nil {
-					return nil, urlErr
-				}
-				return []string{upstreamURL}, nil
-			}
-			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)}, nil
+			return []string{upstreamURL}, nil
 		} else if videoErr != nil {
 			return nil, videoErr
 		}
 		// M3f 长音频任务创建（POST /v1/audio/jobs）：qwen 账户（paraformer，
-		// 契约 §10.2）出站路径自带 /api/v1 服务根，URL 按
-		// chainQwenVideoUpstreamURL 归一（官方根去重，与万相视频共用该 /api/v1
-		// 归一）；volcengine 账户（录音文件识别 2.0，契约 §9.2 长转写臂）host
+		// 契约 §10.2）出站 opPath 自带 /api/v1 全路径（双根特例 base=origin），
+		// 经 upstreamenvelope.JoinUpstreamURL 直拼；volcengine 账户（录音文件识别 2.0，契约
+		// §9.2 长转写臂）host
 		// 恒 openspeech 语音服务域且 speech_token 凭据在 URL 层先验（同 TTS
 		// 凭据特例先验形态——缺凭据是确定性配置缺位，400 显式失败）；其余无
 		// 长转写 adapter 的 provider 在 audioJobCreateRequest 内显式失败（能力
@@ -285,7 +266,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		if audioPlan, audioErr := d.audioJobCreateRequest(req, account); audioPlan != nil {
 			switch chainAudioJobAdapterKeyOfProvider(account.VendorCode) {
 			case "qwen":
-				upstreamURL, urlErr := chainQwenVideoUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
+				upstreamURL, urlErr := upstreamenvelope.JoinUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
 				if urlErr != nil {
 					return nil, urlErr
 				}
@@ -296,19 +277,22 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 				}
 				return []string{chainVolcengineASRUpstreamURL(audioPlan.createRequest.Path)}, nil
 			}
-			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)}, nil
+			openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{openaiURL}, nil
 		} else if audioErr != nil {
 			return nil, audioErr
 		}
 		// M6 同步音频（契约 §7.2）：glm 账户的 speech/transcriptions 请求走
 		// openai 透传（报文零改写，provider_options.glm 深合并在 prepared
-		// parts 分支承载），仅 URL 按 glm 通用根 /api/paas/v4 归一（官方
-		// audio/speech|transcriptions 端点，CogVideo §7.1 同根先例——不得走
-		// openai /v1 强制补缀归一，否则 /api/paas/v4 base 会被错拼
-		// /api/paas/v4/v1/audio/...）。
+		// parts 分支承载），URL 按 v2 直拼（官方 audio/speech|transcriptions
+		// 端点；opPath /audio/... 不含版本段，/api/paas/v4 通用根由账户
+		// base_url 版本根承载——glmSpeechUpstreamPathOf 同规）。
 		if chainNormalizeProviderToken(account.VendorCode) == "glm" {
 			if glmPath, ok := glmSpeechUpstreamPathOf(req); ok {
-				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, glmPath)
+				upstreamURL, urlErr := upstreamenvelope.JoinUpstreamURL(account.BaseURL, glmPath)
 				if urlErr != nil {
 					return nil, urlErr
 				}
@@ -345,10 +329,15 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 			if err != nil {
 				return nil, geminiSpeechAdapterBoundaryError(err)
 			}
-			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, path)}, nil
+		openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
+		if urlErr != nil {
+			return nil, urlErr
 		}
-		// openai-compatible (openai / hybrid and any other OpenAI-style
-		// upstream): always /v1-suffixed base + version-stripped path. Mapped
+		return []string{openaiURL}, nil
+	}
+	// openai-compatible (openai / hybrid and any other OpenAI-style
+		// upstream): v2 直拼——base_url 即版本根 + 入站剥 /v1 后的 opPath
+		//（不再补 /v1）。Mapped
 		// requests carry the same path rewrite as the driver body transform
 		//（BUG-0178：responses -> chat_completions 需改写到 /chat/completions，
 		// 否则 Responses 形态请求会打到上游原生 /responses 端点）。持有原生
@@ -360,50 +349,17 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 				pathAndQuery = rewritten
 			}
 		}
-		// 对话批（火山方舟/通义百炼对话承接）：两档案的 chat completions
-		// 官方 OpenAI 兼容端点自带版本服务根（ark /api/v3、百炼 compatible-
-		// mode /compatible-mode/v1），不得走 openai /v1 强制补缀归一——会把
-		// 官方根错拼 /v1/chat/completions（同 glm 语音 /api/paas/v4 归一先例，
-		// 服务根去重语义见 chainVolcengineChatUpstreamURL /
-		// chainQwenChatUpstreamURL）。仅 chat 路径进本归一：模型映射与
+		// 对话批（通义百炼对话承接）：qwen chat 通用 opPath 恒定拼厂商前缀
+		// /compatible-mode/v1（R6，chainQwenChatPathPrefix，registry preset
+		// qwen_dashscope 同源）后与 base_url 直拼——官方 origin 形态 base +
+		// /compatible-mode/v1/chat/completions。volcengine 不再有专用分支：
+		// ark 的 /api/v3 版本服务根由账户 base_url 版本根承载（v2 契约），
+		// chat/images/embeddings 与其他 openai 族同走 openai 直拼归一。
+		// 仅 chat 路径进 qwen 归一：模型映射与
 		// responses→chat 桥改写后的路径同为 /chat/completions，一并覆盖；
 		// 其余路径（媒体面有专用 adapter 分支承接）维持 openai 归一不变。
-		// 图像批（火山方舟图像承接，2026-10-17）：官方 OpenAI 兼容图像端点
-		// 自带 /api/v3 服务根（ark /api/v3/images/generations，Agent Plan 为
-		// /api/plan/v3/images/generations），不得走 openai /v1 强制补缀归一
-		//（会把官方根错拼 /v1/images/generations）——沿 chat 面同构的服务根
-		// 归一先例（chainVolcengineImagesUpstreamURL 显式路径模式）。
-		if chainNormalizeProviderToken(account.VendorCode) == "volcengine" &&
-			chainIsImagesGenerationsPathAndQuery(pathAndQuery) {
-			upstreamURL, urlErr := chainVolcengineImagesUpstreamURL(account.BaseURL, pathAndQuery)
-			if urlErr != nil {
-				return nil, urlErr
-			}
-			return []string{upstreamURL}, nil
-		}
-		// 向量批（火山方舟向量承接，2026-10-18 重接线）：官方 OpenAI 兼容
-		// 向量端点自带 /api/v3 服务根（/api/v3/embeddings 与多模态面
-		// /api/v3/embeddings/multimodal），不得走 openai /v1 强制补缀归一
-		//（会把官方根错拼 /v1/embeddings*——上游 404 实证）——沿 chat/images
-		// 面同构的服务根归一先例（chainVolcengineChatUpstreamURL 显式路径
-		// 模式；包含匹配同时覆盖多模态子路径）。
-		if chainNormalizeProviderToken(account.VendorCode) == "volcengine" &&
-			chainIsEmbeddingsPathAndQuery(pathAndQuery) {
-			upstreamURL, urlErr := chainVolcengineChatUpstreamURL(account.BaseURL, pathAndQuery)
-			if urlErr != nil {
-				return nil, urlErr
-			}
-			return []string{upstreamURL}, nil
-		}
 		if chainIsChatCompletionsPathAndQuery(pathAndQuery) {
-			switch chainNormalizeProviderToken(account.VendorCode) {
-			case "volcengine":
-				upstreamURL, urlErr := chainVolcengineChatUpstreamURL(account.BaseURL, pathAndQuery)
-				if urlErr != nil {
-					return nil, urlErr
-				}
-				return []string{upstreamURL}, nil
-			case "qwen":
+			if chainNormalizeProviderToken(account.VendorCode) == "qwen" {
 				upstreamURL, urlErr := chainQwenChatUpstreamURL(account.BaseURL, pathAndQuery)
 				if urlErr != nil {
 					return nil, urlErr
@@ -411,7 +367,11 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 				return []string{upstreamURL}, nil
 			}
 		}
-		return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, pathAndQuery)}, nil
+		openaiURL, urlErr := gatewayopenai.BuildUpstreamURL(account.BaseURL, pathAndQuery)
+		if urlErr != nil {
+			return nil, urlErr
+		}
+		return []string{openaiURL}, nil
 	}
 }
 
@@ -600,8 +560,12 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	} else if modelMapping != nil {
 		parsedBody := d.materializedParsedJSONObjectBody(req)
 		transformed, err := d.openai.BuildUpstreamRequest(gatewayproto.BuildUpstreamRequestInput{
-			Method:              req.MethodUpper(),
-			ClientPathAndQuery:  req.PathAndQuery(),
+			Method:             req.MethodUpper(),
+			ClientPathAndQuery: req.PathAndQuery(),
+			// UpstreamBaseURL 供共享 driver 出站 URL 构造（JoinUpstreamURL 空
+			// base 显式报错）；本调用只消费 body 转换与 stream 标志，URL 结果
+			// 不出站（出站 URL 由派发 URL 构建面另行生成）。
+			UpstreamBaseURL:     account.BaseURL,
 			Body:                body,
 			Header:              req.HTTP.Header,
 			ParsedBody:          parsedBody,
@@ -1865,9 +1829,10 @@ func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.Gatewa
 	return adapter, ir, true, nil
 }
 
-// glmSpeechUpstreamPathOf 把 glm 账户的同步音频请求路径改写为官方通用根
-// 形态（契约 §7.2：/api/paas/v4/audio/speech|transcriptions|translations——
-// CogVideo §7.1 同根先例）。ok=false 表示非同步音频端点（chat/videos 等
+// glmSpeechUpstreamPathOf 把 glm 账户的同步音频请求路径产出为 v2 opPath
+//（契约 §7.2：{base}/audio/speech|transcriptions|translations——CogVideo
+// §7.1 同根先例；opPath 不含版本段，/api/paas/v4 通用根由账户 base_url
+// 版本根承载）。ok=false 表示非同步音频端点（chat/videos 等
 // 维持既有归一）。
 func glmSpeechUpstreamPathOf(req *gatewaypreauth.GatewayRequest) (string, bool) {
 	if req == nil || req.HTTP == nil {
@@ -1877,7 +1842,8 @@ func glmSpeechUpstreamPathOf(req *gatewaypreauth.GatewayRequest) (string, bool) 
 	if !ok {
 		return "", false
 	}
-	return glmVideoServiceRoot + suffix, true
+	// v2 直拼：opPath 不含版本段，/api/paas/v4 通用根由账户 base_url 承载。
+	return suffix, true
 }
 
 // glmSpeechUpstreamBody 构造 glm 账户 speech 请求的上游 body（M6，契约

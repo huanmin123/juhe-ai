@@ -263,7 +263,8 @@ func TestVendorDefaultBaseURL(t *testing.T) {
 	// OAuth 草稿缺省 base_url（§1.1 default_base_url 表）：按 vendor 默认
 	// preset 查 registry 注册根——anthropic/xai 得到各自上游根，不再是恒
 	// OpenAI 官方根（问题 B 修复）；generic 语义无 vendor preset 返回空串，
-	// 由调用方落 legacy OpenAI 官方根。
+	// 由调用方落 legacy OpenAI 官方根。R9：deepseek/gemini registry 默认值
+	// 改写为版本根（/v1、/v1beta），断言随 registry 同步。
 	cases := []struct {
 		providerCode string
 		want         string
@@ -271,8 +272,8 @@ func TestVendorDefaultBaseURL(t *testing.T) {
 		{"anthropic", "https://api.anthropic.com/v1"},
 		{"xai", "https://api.x.ai/v1"},
 		{"gpt", "https://api.openai.com/v1"},
-		{"deepseek", "https://api.deepseek.com"},
-		{"gemini", "https://generativelanguage.googleapis.com"},
+		{"deepseek", "https://api.deepseek.com/v1"},
+		{"gemini", "https://generativelanguage.googleapis.com/v1beta"},
 		{"glm", "https://open.bigmodel.cn/api/paas/v4"},
 		{"openai", ""},
 		{"hybrid", ""},

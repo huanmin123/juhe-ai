@@ -1145,7 +1145,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			group: groups["experiment"], slug: "media", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
 			priority: 55, concurrency: 16,
 			vendor: contracts.VendorVolcengine, preset: contracts.PresetVolcengineArk,
-			domain: contracts.DomainVideo, baseURL: "https://ark.cn-beijing.volces.com",
+			domain: contracts.DomainVideo, baseURL: "https://ark.cn-beijing.volces.com/api/v3",
 			extraPresets: []string{contracts.PresetVolcengineOpenSpeech},
 			modelSlots:   []int{2},
 			extraModels:  []string{mockCustomModelAudio}, mediaModels: true, tags: []string{"音频", "视频任务"},

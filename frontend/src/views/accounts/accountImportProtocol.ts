@@ -81,7 +81,7 @@ export const importTemplate = JSON.stringify({
       priority: 50,
       credentials: {
         api_key: 'sk-deepseek-xxx',
-        base_url: 'https://api.deepseek.com',
+        base_url: 'https://api.deepseek.com/v1',
         supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
       },
       notes: 'DeepSeek API Key 账号'
@@ -98,7 +98,7 @@ export const importTemplate = JSON.stringify({
       priority: 50,
       credentials: {
         api_key: 'sk-deepseek-claude-code-xxx',
-        base_url: 'https://api.deepseek.com/anthropic',
+        base_url: 'https://api.deepseek.com/anthropic/v1',
         supported_endpoint_modes: ['messages_json', 'messages_sse']
       },
       notes: 'DeepSeek Anthropic v1 / Claude Code 账号'
@@ -115,7 +115,7 @@ export const importTemplate = JSON.stringify({
       priority: 50,
       credentials: {
         api_key: 'sk-glm-general-xxx',
-        base_url: 'https://open.bigmodel.cn/api/paas/v4/',
+        base_url: 'https://open.bigmodel.cn/api/paas/v4',
         supported_endpoint_modes: ['chat_json', 'chat_sse']
       },
       notes: '智谱通用 GLM API Key 账号'
@@ -149,7 +149,7 @@ export const importTemplate = JSON.stringify({
       priority: 50,
       credentials: {
         api_key: 'sk-glm-coding-anthropic-xxx',
-        base_url: 'https://open.bigmodel.cn/api/anthropic',
+        base_url: 'https://open.bigmodel.cn/api/anthropic/v1',
         supported_endpoint_modes: ['messages_json', 'messages_sse']
       },
       notes: 'GLM Coding Anthropic v1 账号'
@@ -335,7 +335,7 @@ export const accountImportProtocolMarkdown = [
   '  "oauth_type": "ai_studio",',
   '  "tier_id": "aistudio_free",',
   '  "quota_project_id": "project-id",',
-  '  "base_url": "https://generativelanguage.googleapis.com",',
+  '  "base_url": "https://generativelanguage.googleapis.com/v1beta",',
   '  "supported_endpoint_modes": ["generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse", "count_tokens", "embed_content"]',
   '}',
   '```',
@@ -347,7 +347,7 @@ export const accountImportProtocolMarkdown = [
   '```json',
   '{',
   '  "api_key": "sk-deepseek-xxx",',
-  '  "base_url": "https://api.deepseek.com",',
+  '  "base_url": "https://api.deepseek.com/v1",',
   '  "supported_endpoint_modes": ["chat_json", "chat_sse", "responses_json", "responses_sse"]',
   '}',
   '```',
@@ -361,7 +361,7 @@ export const accountImportProtocolMarkdown = [
   '  "type": "api_key",',
   '  "credentials": {',
   '    "api_key": "sk-deepseek-claude-code-xxx",',
-  '    "base_url": "https://api.deepseek.com/anthropic",',
+  '    "base_url": "https://api.deepseek.com/anthropic/v1",',
   '    "supported_endpoint_modes": ["messages_json", "messages_sse"]',
   '  }',
   '}',
@@ -376,7 +376,7 @@ export const accountImportProtocolMarkdown = [
   '  "type": "api_key",',
   '  "credentials": {',
   '    "api_key": "sk-glm-general-xxx",',
-  '    "base_url": "https://open.bigmodel.cn/api/paas/v4/",',
+  '    "base_url": "https://open.bigmodel.cn/api/paas/v4",',
   '    "supported_endpoint_modes": ["chat_json", "chat_sse"]',
   '  }',
   '}',
@@ -406,7 +406,7 @@ export const accountImportProtocolMarkdown = [
   '  "type": "api_key",',
   '  "credentials": {',
   '    "api_key": "sk-glm-coding-anthropic-xxx",',
-  '    "base_url": "https://open.bigmodel.cn/api/anthropic",',
+  '    "base_url": "https://open.bigmodel.cn/api/anthropic/v1",',
   '    "supported_endpoint_modes": ["messages_json", "messages_sse"]',
   '  }',
   '}',
@@ -472,9 +472,9 @@ export const accountImportProtocolMarkdown = [
   '- `api_key` 账户必须有 `credentials.api_key`。',
   '- `oauth` 账户必须有 `credentials.refresh_token` 或 `credentials.access_token`。`google_oauth` 必须填写可用 Access Token，或同时填写 Refresh Token、Client ID 与 Client Secret。只有 Access Token 的 Google OAuth 账户按静态 token 使用，不会自动刷新。',
   '- `providerCode = xai` 必须使用 `profile_xai_openai_v1`，可选 `api_key` 或 `oauth`。API Key 必须有 `credentials.api_key`，通常使用 `https://api.x.ai/v1`；Grok OAuth 必须有 `credentials.access_token`，通常使用 `https://cli-chat-proxy.grok.com/v1`，`supported_endpoint_modes` 只能是 `responses_json`、`responses_sse`。导入 JSON 不接受 SSO、`sso`、`sso-rw` 或 Cookie 字段。',
-  '- Gemini `google_oauth` 必须使用 `profile_gemini_native_v1beta` 并显式填写 `oauth_type`。`ai_studio` 使用 `https://generativelanguage.googleapis.com`；`code_assist`、`google_one` 必须有 `project_id`，使用 `https://cloudcode-pa.googleapis.com`，并且只能启用 `generate_content_json`、`generate_content_sse`，不能借 endpoint modes 放开 Interactions、Count Tokens 或 Embedding。',
+  '- Gemini `google_oauth` 必须使用 `profile_gemini_native_v1beta` 并显式填写 `oauth_type`。`ai_studio` 使用 `https://generativelanguage.googleapis.com/v1beta`；`code_assist`、`google_one` 必须有 `project_id`，使用 `https://cloudcode-pa.googleapis.com`，并且只能启用 `generate_content_json`、`generate_content_sse`，不能借 endpoint modes 放开 Interactions、Count Tokens 或 Embedding。',
   '- 文本模型账户可选填写字符串 `service_tier_override`、`reasoning_effort_override`；空值表示不覆盖客户端请求。保存校验只做 token 形状与协议族全集校验：openai 族思考级别 `none|minimal|low|medium|high|xhigh|max`、服务等级 `default|priority|flex`；anthropic 族思考级别 `low|medium|high|xhigh|max`、无服务等级；gemini 族思考级别 `minimal|low|medium|high`、服务等级 `default|priority|flex`。不再要求已选模型在当前供应商目录声明该值，`service_tier_override=default` 恒可保存。模型映射和协议桥接确定最终实际上游模型后逐字段处理：思考级别按档位序向下兼容降级到不高于配置值的最高可用档，无可用档位时保留客户端原值；服务等级不降级，`default` 恒删除客户端 `service_tier`，`priority`/`flex` 仅在最终模型声明支持时写入。',
-  '- `credentials.base_url` 必须显式填写服务根地址或 `/v1` 版本根地址，OpenAI / GPT 通常为 `https://api.openai.com/v1`，xAI 为 `https://api.x.ai/v1`，DeepSeek OpenAI-compatible 通常为 `https://api.deepseek.com`，DeepSeek Claude Code 通常为 `https://api.deepseek.com/anthropic`，GLM 通用 API 通常为 `https://open.bigmodel.cn/api/paas/v4/`，GLM Coding OpenAI Chat 通常为 `https://open.bigmodel.cn/api/coding/paas/v4`，GLM Coding Anthropic 通常为 `https://open.bigmodel.cn/api/anthropic`，Anthropic 通常为 `https://api.anthropic.com/v1`，Gemini native 通常为 `https://generativelanguage.googleapis.com`，Gemini OpenAI Chat 通常为 `https://generativelanguage.googleapis.com/v1beta/openai`；混合供应商账户填写它自己的真实上游根地址；不要填写 `/chat/completions`、`/responses`、`/messages`、`/interactions` 或 `:generateContent` 等具体接口路径。',
+  '- `credentials.base_url` 必须显式填写包含版本前缀的根地址（如 `/v1`、`/api/v3`；通义千问例外，填 DashScope 裸根 `https://dashscope.aliyuncs.com`），OpenAI / GPT 通常为 `https://api.openai.com/v1`，xAI 为 `https://api.x.ai/v1`，DeepSeek OpenAI-compatible 通常为 `https://api.deepseek.com/v1`，DeepSeek Claude Code 通常为 `https://api.deepseek.com/anthropic/v1`，GLM 通用 API 通常为 `https://open.bigmodel.cn/api/paas/v4`，GLM Coding OpenAI Chat 通常为 `https://open.bigmodel.cn/api/coding/paas/v4`，GLM Coding Anthropic 通常为 `https://open.bigmodel.cn/api/anthropic/v1`，Anthropic 通常为 `https://api.anthropic.com/v1`，Gemini native 通常为 `https://generativelanguage.googleapis.com/v1beta`，Gemini OpenAI Chat 通常为 `https://generativelanguage.googleapis.com/v1beta/openai`；混合供应商账户填写它自己的真实上游根地址；不要填写 `/chat/completions`、`/responses`、`/messages`、`/interactions` 或 `:generateContent` 等具体接口路径。',
   '- Anthropic API Key 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`；`anthropic-version` 是客户端请求头，缺省时由网关按当前协议默认 `2023-06-01` 补齐，`anthropic-beta` 只透传客户端显式 header。Claude Code 是客户端画像，不是账户类型；不要导入 Claude 订阅 OAuth / Setup Token。',
   '- 省略 `credentials.supported_endpoint_modes` 时，DeepSeek OpenAI-compatible 默认启用 Chat Completions 与 Responses 的 JSON/Streaming；目录将 `deepseek-v4-flash` 与预兼容的 `deepseek-v4-pro` 标为原生 Responses 目标，V4 Pro 的真实可用性仍以其上游响应为准。DeepSeek Claude Code 默认 Messages (JSON/Streaming)，GLM 通用 / Coding OpenAI Chat 默认 Chat JSON/SSE，GLM Coding Anthropic 默认 Messages JSON/SSE。',
   '- `credentials.supported_endpoint_modes` 用于声明上游接口能力，OpenAI / GPT / xAI 枚举为 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；Anthropic 枚举为 `messages_json`、`messages_sse`、`message_token_counting`；Gemini native 枚举为 `generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`count_tokens`、`embed_content`；混合供应商账户可在这些枚举中按真实上游支持情况选择，省略时默认全量开放。字段名保持 snake_case，不要改成 camelCase。',

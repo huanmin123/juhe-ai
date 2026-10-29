@@ -36,8 +36,10 @@ func TestChainDriverGeminiSpeechUpstreamRoundTrip(t *testing.T) {
 		VendorCode:   "gemini",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
-		BaseURL:      mock.URL,
-		APIKey:       "gk-live-1",
+		// 动机（v2 直拼契约）：gemini native lane 的 base_url 即版本根，自带
+		// /v1beta；mock 上游 canonical 路径不变（R3），最终 URL 与旧形态一致。
+		BaseURL: mock.URL + "/v1beta",
+		APIKey:  "gk-live-1",
 	}
 	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",
 		`{"model":"gemini-2.5-flash-preview-tts","input":"Say cheerfully: hi","voice":"Kore","response_format":"pcm"}`)

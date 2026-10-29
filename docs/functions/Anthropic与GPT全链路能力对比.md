@@ -48,7 +48,7 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 | 模型限制 | 候选账号按请求 `model` 过滤 | 已复用候选过滤 | 已对齐 |
 | 模型映射 | OpenAI adapter 会改写请求体 `model` | Anthropic native 请求会按账户模型映射改写顶层 `model`，保留其他原生字段 | 已对齐 |
 | 上游请求头 | 替换上游 `Authorization`，过滤本地敏感头；OpenAI Beta 只透传客户端值 | 替换上游 `x-api-key`，默认补 `anthropic-version`，只透传客户端 `anthropic-beta` | 已对齐 |
-| 路径归一 | OpenAI 根路径和 `/v1` 归一到上游 `/v1/*` | Anthropic 根路径和 `/v1` 归一到 `/v1/messages` 等 | 已对齐 |
+| 路径归一 | OpenAI 根路径和 `/v1` 入站归一到同一语义，发往上游按账户版本根 `base_url`（含 `/v1`）直拼操作路径 | Anthropic 根路径和 `/v1` 入站归一到同一语义，发往上游按版本根 `base_url` 直拼 `/messages` 等 | 已对齐 |
 | 非流式响应语义 | OpenAI Chat / Responses JSON 提取输出、usage、错误 | Anthropic JSON 提取 text、thinking、tool_use 摘要、usage、error object | 主链路已对齐 |
 | 流式响应语义 | OpenAI / Codex SSE 解析、首 token、usage、错误事件 | Anthropic SSE 解析 `message_*`、`content_block_*`、`event:error`，`message_stop` 后主动结束 | 主链路已对齐 |
 | 本地错误响应 | OpenAI-compatible JSON，Codex 流式可写 `response.failed` | Anthropic native 本地错误按 `{type:"error", error:{...}}` 渲染，流式已提交后的本地错误使用 Anthropic `event: error` | 已补齐 |

@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	testOpenAIBase     = "https://probe.example.com"
-	testAnthropicBase  = "https://anthropic.example.com"
-	testGeminiBase     = "https://gemini.example.com"
+	// 三个测试 base 都是版本根形态（上游 Base URL 版本根语义 v2 R3）：
+	// 版本段只出现在 base_url，catalog 模板与 wantURL 均无版本前缀（R1/R2）。
+	testOpenAIBase     = "https://probe.example.com/v1"
+	testAnthropicBase  = "https://anthropic.example.com/v1"
+	testGeminiBase     = "https://gemini.example.com/v1beta"
 	testBearerToken    = "tok-probe"
 	testAnthropicToken = "sk-ant-probe"
 	testGeminiToken    = "gm-probe"
@@ -56,7 +58,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: false},
 				},
 			},
-			wantURL:         testOpenAIBase + "/v1/chat/completions",
+			wantURL:         testOpenAIBase + "/chat/completions",
 			wantAccept:      "application/json",
 			wantContentType: "application/json",
 			wantAuthName:    "Authorization", wantAuthValue: "Bearer " + testBearerToken,
@@ -77,7 +79,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: true},
 				},
 			},
-			wantURL:         testOpenAIBase + "/v1/chat/completions",
+			wantURL:         testOpenAIBase + "/chat/completions",
 			wantAccept:      "application/json, text/event-stream",
 			wantContentType: "application/json",
 			wantAuthName:    "Authorization", wantAuthValue: "Bearer " + testBearerToken,
@@ -98,7 +100,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: false},
 				},
 			},
-			wantURL:         testOpenAIBase + "/v1/responses",
+			wantURL:         testOpenAIBase + "/responses",
 			wantAccept:      "application/json",
 			wantContentType: "application/json",
 			wantAuthName:    "Authorization", wantAuthValue: "Bearer " + testBearerToken,
@@ -120,7 +122,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: true},
 				},
 			},
-			wantURL:         testOpenAIBase + "/v1/responses",
+			wantURL:         testOpenAIBase + "/responses",
 			wantAccept:      "application/json, text/event-stream",
 			wantContentType: "application/json",
 			wantAuthName:    "Authorization", wantAuthValue: "Bearer " + testBearerToken,
@@ -141,7 +143,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: false},
 				},
 			},
-			wantURL:         testAnthropicBase + "/v1/messages",
+			wantURL:         testAnthropicBase + "/messages",
 			wantAccept:      "application/json",
 			wantContentType: "application/json",
 			wantAuthName:    "X-Api-Key", wantAuthValue: testAnthropicToken,
@@ -164,7 +166,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: true},
 				},
 			},
-			wantURL:         testAnthropicBase + "/v1/messages",
+			wantURL:         testAnthropicBase + "/messages",
 			wantAccept:      "application/json, text/event-stream",
 			wantContentType: "application/json",
 			wantAuthName:    "X-Api-Key", wantAuthValue: testAnthropicToken,
@@ -184,7 +186,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "contents", Value: []map[string]any{{"role": "user", "parts": []map[string]any{{"text": "接口连通性自动测试"}}}}},
 				},
 			},
-			wantURL:         testGeminiBase + "/v1beta/models/" + testGeminiModel + ":generateContent",
+			wantURL:         testGeminiBase + "/models/" + testGeminiModel + ":generateContent",
 			wantAccept:      "application/json",
 			wantContentType: "application/json",
 			wantAuthName:    "X-Goog-Api-Key", wantAuthValue: testGeminiToken,
@@ -202,7 +204,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "contents", Value: []map[string]any{{"role": "user", "parts": []map[string]any{{"text": "接口连通性自动测试"}}}}},
 				},
 			},
-			wantURL:         testGeminiBase + "/v1beta/models/" + testGeminiModel + ":streamGenerateContent?alt=sse",
+			wantURL:         testGeminiBase + "/models/" + testGeminiModel + ":streamGenerateContent?alt=sse",
 			wantAccept:      "application/json, text/event-stream",
 			wantContentType: "application/json",
 			wantAuthName:    "X-Goog-Api-Key", wantAuthValue: testGeminiToken,
@@ -221,7 +223,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: false},
 				},
 			},
-			wantURL:         testGeminiBase + "/v1beta/interactions",
+			wantURL:         testGeminiBase + "/interactions",
 			wantAccept:      "application/json",
 			wantContentType: "application/json",
 			wantAuthName:    "X-Goog-Api-Key", wantAuthValue: testGeminiToken,
@@ -243,7 +245,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "stream", Value: true},
 				},
 			},
-			wantURL:         testGeminiBase + "/v1beta/interactions",
+			wantURL:         testGeminiBase + "/interactions",
 			wantAccept:      "application/json, text/event-stream",
 			wantContentType: "application/json",
 			wantAuthName:    "X-Goog-Api-Key", wantAuthValue: testGeminiToken,
@@ -264,7 +266,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "n", Value: 1},
 				},
 			},
-			wantURL:         testOpenAIBase + "/v1/images/generations",
+			wantURL:         testOpenAIBase + "/images/generations",
 			wantAccept:      "application/json",
 			wantContentType: "application/json",
 			wantAuthName:    "Authorization", wantAuthValue: "Bearer " + testBearerToken,
@@ -283,7 +285,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					{Key: "response_format", Value: "wav"},
 				},
 			},
-			wantURL:         testOpenAIBase + "/v1/audio/speech",
+			wantURL:         testOpenAIBase + "/audio/speech",
 			wantAccept:      "application/json",
 			wantContentType: "application/json",
 			wantAuthName:    "Authorization", wantAuthValue: "Bearer " + testBearerToken,
@@ -300,7 +302,7 @@ func TestBuildEndpointContract(t *testing.T) {
 					File:   MultipartFile{FieldName: "file", Filename: "probe.wav", ContentType: "audio/wav", Data: []byte("RIFFwav-bytes")},
 				},
 			},
-			wantURL:         testOpenAIBase + "/v1/audio/transcriptions",
+			wantURL:         testOpenAIBase + "/audio/transcriptions",
 			wantAccept:      "application/json",
 			wantContentType: "multipart/form-data",
 			wantAuthName:    "Authorization", wantAuthValue: "Bearer " + testBearerToken,
@@ -353,9 +355,52 @@ func TestBuildEndpointContract(t *testing.T) {
 	}
 }
 
-// TestBuildURLBaseNormalization 覆盖 base 归一化的三种形态（OpenAI 系补
-// /v1、Anthropic 保留全路径、Gemini /v1beta 剥前缀），全部经 Build 走真实
-// 构造路径。
+// TestJoinUpstreamURLVersionRootGolden 是 R1/R7 唯一构造规则的版本根直拼
+// 全族 golden：各供应商版本根 base + 去版本前缀操作路径直拼，覆盖
+// volcengine（/api/v3）、GLM（/api/paas/v4）、deepseek anthropic
+//（/anthropic/v1）、gemini（/v1beta）、gemini-openai（/v1beta/openai）、
+// 通用 /v1 根、尾斜杠 base 与带 query 的 opPath。
+func TestJoinUpstreamURLVersionRootGolden(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		opPath  string
+		wantURL string
+	}{
+		{name: "volcengine ark /api/v3 版本根", baseURL: "https://ark.cn-beijing.volces.com/api/v3", opPath: "/chat/completions", wantURL: "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		{name: "GLM /api/paas/v4 版本根", baseURL: "https://open.bigmodel.cn/api/paas/v4", opPath: "/chat/completions", wantURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
+		{name: "deepseek anthropic /anthropic/v1 版本根", baseURL: "https://api.deepseek.com/anthropic/v1", opPath: "/messages", wantURL: "https://api.deepseek.com/anthropic/v1/messages"},
+		{name: "gemini /v1beta 版本根", baseURL: "https://generativelanguage.googleapis.com/v1beta", opPath: "/models/gemini-pro:generateContent", wantURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"},
+		{name: "gemini-openai /v1beta/openai 版本根", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", opPath: "/chat/completions", wantURL: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"},
+		{name: "尾斜杠 base 去尾后直拼", baseURL: "https://up.example.com/v1/", opPath: "/chat/completions", wantURL: "https://up.example.com/v1/chat/completions"},
+		{name: "base 与 opPath 首尾空白 trim", baseURL: "  https://up.example.com/v1  ", opPath: " /responses", wantURL: "https://up.example.com/v1/responses"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			got, err := JoinUpstreamURL(item.baseURL, item.opPath)
+			if err != nil {
+				t.Fatalf("JoinUpstreamURL 失败: %v", err)
+			}
+			if got != item.wantURL {
+				t.Fatalf("URL = %q，期望 %q", got, item.wantURL)
+			}
+		})
+	}
+
+	t.Run("base 为空显式失败", func(t *testing.T) {
+		if _, err := JoinUpstreamURL("  ", "/chat/completions"); err == nil {
+			t.Fatal("空 base 必须报错")
+		}
+	})
+	t.Run("opPath 不以 / 开头显式失败", func(t *testing.T) {
+		if _, err := JoinUpstreamURL("https://up.example.com/v1", "chat/completions"); err == nil {
+			t.Fatal("相对 opPath 必须报错")
+		}
+	})
+}
+
+// TestBuildURLBaseNormalization 覆盖版本根 base 经 Build 全链路的直拼结果
+//（R1/R3：版本段只在 base，opPath 无版本前缀；不再补插或剥离任何版本段）。
 func TestBuildURLBaseNormalization(t *testing.T) {
 	bounded := BudgetBounded(DefaultProbeOutputTokens)
 	chatBody := func(stream bool) []BodyField {
@@ -370,21 +415,19 @@ func TestBuildURLBaseNormalization(t *testing.T) {
 		spec    Spec
 		wantURL string
 	}{
-		// OpenAI 系三种 base 形态。
-		{name: "openai 无版本根", spec: Spec{BaseURL: "https://up.example.com", EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/v1/chat/completions"},
-		{name: "openai 带 /v1 根", spec: Spec{BaseURL: "https://up.example.com/v1", EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/v1/chat/completions"},
-		{name: "openai 带 /v1/ 尾斜杠", spec: Spec{BaseURL: "https://up.example.com/v1/", EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/v1/chat/completions"},
-		{name: "openai 带路径前缀", spec: Spec{BaseURL: "https://up.example.com/gw", EndpointMode: ModeResponsesJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/gw/v1/responses"},
-		// Anthropic base 原样保留全路径。
-		{name: "anthropic 裸根", spec: Spec{BaseURL: "https://a.example.com", EndpointMode: ModeMessagesJSON, Auth: Auth{Strategy: AuthAnthropicAPIKey, Token: testAnthropicToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://a.example.com/v1/messages"},
-		{name: "anthropic 带路径", spec: Spec{BaseURL: "https://a.example.com/anthropic", EndpointMode: ModeMessagesJSON, Auth: Auth{Strategy: AuthAnthropicAPIKey, Token: testAnthropicToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://a.example.com/anthropic/v1/messages"},
-		{name: "anthropic 带 /v1 根", spec: Spec{BaseURL: "https://a.example.com/anthropic/v1", EndpointMode: ModeMessagesJSON, Auth: Auth{Strategy: AuthAnthropicAPIKey, Token: testAnthropicToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://a.example.com/anthropic/v1/messages"},
-		{name: "anthropic 带 /v1/ 尾斜杠", spec: Spec{BaseURL: "https://a.example.com/anthropic/v1/", EndpointMode: ModeMessagesJSON, Auth: Auth{Strategy: AuthAnthropicAPIKey, Token: testAnthropicToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://a.example.com/anthropic/v1/messages"},
-		// Gemini base pathname 拼接。
-		{name: "gemini 裸根", spec: Spec{BaseURL: "https://g.example.com", EndpointMode: ModeGenerateContentJSON, Model: testGeminiModel, Auth: Auth{Strategy: AuthGeminiAPIKey, Token: testGeminiToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://g.example.com/v1beta/models/" + testGeminiModel + ":generateContent"},
-		{name: "gemini 带 /v1beta 根", spec: Spec{BaseURL: "https://g.example.com/v1beta", EndpointMode: ModeGenerateContentJSON, Model: testGeminiModel, Auth: Auth{Strategy: AuthGeminiAPIKey, Token: testGeminiToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://g.example.com/v1beta/models/" + testGeminiModel + ":generateContent"},
-		{name: "gemini 带 /v1beta/ 尾斜杠", spec: Spec{BaseURL: "https://g.example.com/v1beta/", EndpointMode: ModeGenerateContentJSON, Model: testGeminiModel, Auth: Auth{Strategy: AuthGeminiAPIKey, Token: testGeminiToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://g.example.com/v1beta/models/" + testGeminiModel + ":generateContent"},
-		{name: "gemini 带路径前缀", spec: Spec{BaseURL: "https://g.example.com/gv", EndpointMode: ModeGenerateContentSSE, Model: testGeminiModel, Auth: Auth{Strategy: AuthGeminiAPIKey, Token: testGeminiToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://g.example.com/gv/v1beta/models/" + testGeminiModel + ":streamGenerateContent?alt=sse"},
+		// OpenAI 系：版本根、尾斜杠、代理前缀 + 版本根、空根直拼。
+		{name: "openai /v1 版本根", spec: Spec{BaseURL: "https://up.example.com/v1", EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/v1/chat/completions"},
+		{name: "openai /v1/ 尾斜杠", spec: Spec{BaseURL: "https://up.example.com/v1/", EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/v1/chat/completions"},
+		// R1：不再给空根补 /v1——直拼去前缀操作路径（旧行为补 /v1 已删除）。
+		{name: "openai 空根直拼不补版本段", spec: Spec{BaseURL: "https://up.example.com", EndpointMode: ModeResponsesJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/responses"},
+		{name: "openai 代理前缀 + /v1 版本根", spec: Spec{BaseURL: "https://up.example.com/gw/v1", EndpointMode: ModeResponsesJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://up.example.com/gw/v1/responses"},
+		// Anthropic：版本根直拼（不再自动补 /v1）。
+		{name: "anthropic /v1 版本根", spec: Spec{BaseURL: "https://a.example.com/v1", EndpointMode: ModeMessagesJSON, Auth: Auth{Strategy: AuthAnthropicAPIKey, Token: testAnthropicToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://a.example.com/v1/messages"},
+		{name: "anthropic /anthropic/v1 版本根", spec: Spec{BaseURL: "https://a.example.com/anthropic/v1", EndpointMode: ModeMessagesJSON, Auth: Auth{Strategy: AuthAnthropicAPIKey, Token: testAnthropicToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://a.example.com/anthropic/v1/messages"},
+		{name: "anthropic /anthropic/v1/ 尾斜杠", spec: Spec{BaseURL: "https://a.example.com/anthropic/v1/", EndpointMode: ModeMessagesJSON, Auth: Auth{Strategy: AuthAnthropicAPIKey, Token: testAnthropicToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://a.example.com/anthropic/v1/messages"},
+		// Gemini：/v1beta 版本根 + 去前缀模板直拼（R1 直拼，无 EscapedPath 重组）。
+		{name: "gemini /v1beta 版本根", spec: Spec{BaseURL: "https://g.example.com/v1beta", EndpointMode: ModeGenerateContentJSON, Model: testGeminiModel, Auth: Auth{Strategy: AuthGeminiAPIKey, Token: testGeminiToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://g.example.com/v1beta/models/" + testGeminiModel + ":generateContent"},
+		{name: "gemini /v1beta/ 尾斜杠", spec: Spec{BaseURL: "https://g.example.com/v1beta/", EndpointMode: ModeGenerateContentJSON, Model: testGeminiModel, Auth: Auth{Strategy: AuthGeminiAPIKey, Token: testGeminiToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://g.example.com/v1beta/models/" + testGeminiModel + ":generateContent"},
 		{name: "gemini models/ 前缀模型名归一", spec: Spec{BaseURL: "https://g.example.com/v1beta", EndpointMode: ModeGenerateContentJSON, Model: "Models/" + testGeminiModel, Auth: Auth{Strategy: AuthGeminiAPIKey, Token: testGeminiToken}, Budget: bounded, BodyFields: chatBody(false)}, wantURL: "https://g.example.com/v1beta/models/" + testGeminiModel + ":generateContent"},
 	}
 	for _, item := range cases {
@@ -400,8 +443,10 @@ func TestBuildURLBaseNormalization(t *testing.T) {
 	}
 }
 
-// TestBuildURLVariantPathRules 覆盖 GLM / gemini-openai 路径规约与 Codex
-// 固定上游（URL 规约；适配器包装 body golden 见 adapterwrap_test.go）。
+// TestBuildURLVariantPathRules 覆盖保留的两个拼接分支（URL 规约；适配器包装
+// body golden 见 adapterwrap_test.go）：gemini-openai 档案经 url.URL 规范化
+// 直拼、Codex 适配器 fixedBaseURL 整体替换；其余档案（含 GLM）与通用路径
+// 一致走 R1 直拼——GLM 豁免/补 /v1 分支已随版本根语义 v2（R7）删除。
 func TestBuildURLVariantPathRules(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -413,54 +458,45 @@ func TestBuildURLVariantPathRules(t *testing.T) {
 		wantURL      string
 	}{
 		{
-			name:    "gemini-openai base 自带 /v1beta/openai 时剥请求 /v1",
+			// gemini-openai 档案：base 自带 /v1beta/openai 版本根，opPath
+			// 直拼（保留该档案经 url.URL 规范化输出的既有行为）。
+			name:    "gemini-openai 版本根直拼",
 			baseURL: "https://g.example.com/v1beta/openai", profileID: profileGeminiOpenAIChat,
-			protocol: ProtocolOpenAI, pathAndQuery: "/v1/chat/completions",
+			protocol: ProtocolOpenAI, pathAndQuery: "/chat/completions",
 			wantURL: "https://g.example.com/v1beta/openai/chat/completions",
 		},
 		{
-			name:    "gemini-openai 常规 base 走默认归一化",
+			name:    "gemini-openai 空根直拼不补版本段",
 			baseURL: "https://g.example.com", profileID: profileGeminiOpenAIChat,
-			protocol: ProtocolOpenAI, pathAndQuery: "/v1/chat/completions",
-			wantURL: "https://g.example.com/v1/chat/completions",
+			protocol: ProtocolOpenAI, pathAndQuery: "/chat/completions",
+			wantURL: "https://g.example.com/chat/completions",
 		},
 		{
-			name:    "GLM 官方版本根剥请求 /v1",
+			// GLM 档案与通用规则同规（R7）：版本根 + 直拼。
+			name:    "GLM 官方版本根直拼",
 			baseURL: "https://open.bigmodel.example/api/paas/v4", profileID: profileGLMGeneralOpenAI,
-			protocol: ProtocolOpenAI, pathAndQuery: "/v1/chat/completions",
+			protocol: ProtocolOpenAI, pathAndQuery: "/chat/completions",
 			wantURL: "https://open.bigmodel.example/api/paas/v4/chat/completions",
 		},
 		{
-			name:    "GLM coding 官方版本根剥请求 /v1",
+			name:    "GLM coding 版本根直拼",
 			baseURL: "https://open.bigmodel.example/api/coding/paas/v4", profileID: profileGLMCodingOpenAI,
-			protocol: ProtocolOpenAI, pathAndQuery: "/v1/chat/completions",
+			protocol: ProtocolOpenAI, pathAndQuery: "/chat/completions",
 			wantURL: "https://open.bigmodel.example/api/coding/paas/v4/chat/completions",
 		},
 		{
-			name:    "GLM 代理 /v1 根保留请求 /v1",
-			baseURL: "https://proxy.example.com/v1", profileID: profileGLMCodingOpenAI,
-			protocol: ProtocolOpenAI, pathAndQuery: "/v1/chat/completions",
-			wantURL: "https://proxy.example.com/v1/chat/completions",
-		},
-		{
-			name:    "GLM 空路径 base 保留请求 /v1",
-			baseURL: "https://proxy.example.com", profileID: profileGLMGeneralOpenAI,
-			protocol: ProtocolOpenAI, pathAndQuery: "/v1/chat/completions",
-			wantURL: "https://proxy.example.com/v1/chat/completions",
+			name:    "非 GLM 档案同样直拼",
+			baseURL: "https://open.bigmodel.example/api/paas/v4", profileID: "",
+			protocol: ProtocolOpenAI, pathAndQuery: "/chat/completions",
+			wantURL: "https://open.bigmodel.example/api/paas/v4/chat/completions",
 		},
 		{
 			// accountprobe 现状：codex 分支先校验并解析账户 base，再整体替换为
 			// 固定上游，因此 base 仍必填。
-			name:    "Codex 适配器固定上游 + 剥 /v1",
+			name:    "Codex 适配器固定上游 + /responses",
 			baseURL: "https://account.example.com/v1", adapter: AdapterOpenAIOAuthCodex,
 			protocol: ProtocolOpenAI, pathAndQuery: "/responses",
 			wantURL: CodexBaseURL + "/responses",
-		},
-		{
-			name:    "非 GLM 档案不受路径规约影响",
-			baseURL: "https://open.bigmodel.example/api/paas/v4", profileID: "",
-			protocol: ProtocolOpenAI, pathAndQuery: "/v1/chat/completions",
-			wantURL: "https://open.bigmodel.example/api/paas/v4/v1/chat/completions",
 		},
 	}
 	for _, item := range cases {
@@ -483,17 +519,20 @@ func TestBuildURLVariantPathRules(t *testing.T) {
 		})
 	}
 
-	if _, err := buildUpstreamURL(Spec{}, Endpoint{Protocol: ProtocolOpenAI}, adapterDef{}, "/v1/chat/completions"); err == nil {
+	if _, err := buildUpstreamURL(Spec{}, Endpoint{Protocol: ProtocolOpenAI}, adapterDef{}, "/chat/completions"); err == nil {
 		t.Fatal("缺少 base_url 必须返回错误")
+	}
+	if _, err := buildUpstreamURL(Spec{BaseURL: "https://up.example.com/v1"}, Endpoint{Protocol: ProtocolOpenAI}, adapterDef{}, "chat/completions"); err == nil {
+		t.Fatal("opPath 不以 / 开头必须返回错误")
 	}
 }
 
 // TestBuildGLMBaseFullChainGolden 覆盖 GLM 三种 base 形态经 Build 全链路的
-// 最终 URL（§9.2-5，期望值与 TestBuildURLVariantPathRules 的 URL 层直测同源）：
-// 官方版本根（/api/paas/v4 等）剥请求 /v1，代理 /v1 根与空根保留请求 /v1；
-// 覆盖 C 形态（普通 API Key + GLM profile）与 B 形态
-// （AdapterOpenAICodexCompatibility：无固定上游，URL 走账户 base + 档案路径
-// 规约）各至少一组。
+// 最终 URL（期望值与 TestBuildURLVariantPathRules 的 URL 层直测同源）：官方
+// 版本根与代理 /v1 根按 R1 直拼；空根不再补 /v1（R1 直拼去前缀操作路径，
+// 旧行为补 /v1 已随版本根语义 v2 删除）；覆盖 C 形态（普通 API Key + GLM
+// profile）与 B 形态（AdapterOpenAICodexCompatibility：无固定上游，URL 走
+// 账户 base 直拼）各至少一组。
 func TestBuildGLMBaseFullChainGolden(t *testing.T) {
 	chatBody := []BodyField{
 		{Key: "model", Value: "glm-probe"},
@@ -506,7 +545,7 @@ func TestBuildGLMBaseFullChainGolden(t *testing.T) {
 		wantURL string
 	}{
 		{
-			name: "C 形态 GLM 官方版本根剥请求 /v1",
+			name: "C 形态 GLM 官方版本根直拼",
 			spec: Spec{
 				BaseURL: "https://open.bigmodel.example/api/paas/v4", ProtocolProfileID: profileGLMGeneralOpenAI,
 				EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken},
@@ -515,7 +554,7 @@ func TestBuildGLMBaseFullChainGolden(t *testing.T) {
 			wantURL: "https://open.bigmodel.example/api/paas/v4/chat/completions",
 		},
 		{
-			name: "C 形态 GLM 代理 /v1 根保留请求 /v1",
+			name: "C 形态 GLM 代理 /v1 根直拼",
 			spec: Spec{
 				BaseURL: "https://proxy.example.com/v1", ProtocolProfileID: profileGLMCodingOpenAI,
 				EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken},
@@ -524,16 +563,18 @@ func TestBuildGLMBaseFullChainGolden(t *testing.T) {
 			wantURL: "https://proxy.example.com/v1/chat/completions",
 		},
 		{
-			name: "C 形态 GLM 空根保留请求 /v1",
+			// R1：空根 base 不再补 /v1，直拼得到无版本段 URL（动机：版本段
+			// 只能来自 base_url 版本根，构造器不再补缀）。
+			name: "C 形态 GLM 空根直拼不补版本段",
 			spec: Spec{
 				BaseURL: "https://proxy.example.com", ProtocolProfileID: profileGLMGeneralOpenAI,
 				EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken},
 				Budget: BudgetBounded(DefaultProbeOutputTokens), BodyFields: chatBody,
 			},
-			wantURL: "https://proxy.example.com/v1/chat/completions",
+			wantURL: "https://proxy.example.com/chat/completions",
 		},
 		{
-			name: "B 形态 CodexCompatibility 官方版本根剥请求 /v1",
+			name: "B 形态 CodexCompatibility 官方版本根直拼",
 			spec: Spec{
 				BaseURL: "https://open.bigmodel.example/api/paas/v4", ProtocolProfileID: profileGLMGeneralOpenAI,
 				EndpointMode: ModeResponsesJSON, Adapter: AdapterOpenAICodexCompatibility,
@@ -545,7 +586,7 @@ func TestBuildGLMBaseFullChainGolden(t *testing.T) {
 			wantURL: "https://open.bigmodel.example/api/paas/v4/responses",
 		},
 		{
-			name: "B 形态 CodexCompatibility 代理 /v1 根保留请求 /v1",
+			name: "B 形态 CodexCompatibility 代理 /v1 根直拼",
 			spec: Spec{
 				BaseURL: "https://proxy.example.com/v1", ProtocolProfileID: profileGLMCodingOpenAI,
 				EndpointMode: ModeResponsesJSON, Adapter: AdapterOpenAICodexCompatibility,
@@ -557,7 +598,8 @@ func TestBuildGLMBaseFullChainGolden(t *testing.T) {
 			wantURL: "https://proxy.example.com/v1/responses",
 		},
 		{
-			name: "B 形态 CodexCompatibility 空根保留请求 /v1",
+			// R1：空根 base 直拼，不再补 /v1（同 C 形态空根用例）。
+			name: "B 形态 CodexCompatibility 空根直拼不补版本段",
 			spec: Spec{
 				BaseURL: "https://proxy.example.com", ProtocolProfileID: profileGLMGeneralOpenAI,
 				EndpointMode: ModeResponsesJSON, Adapter: AdapterOpenAICodexCompatibility,
@@ -566,7 +608,7 @@ func TestBuildGLMBaseFullChainGolden(t *testing.T) {
 				Budget:        BudgetBounded(DefaultProbeOutputTokens),
 				BodyFields:    []BodyField{{Key: "model", Value: "gpt-5.4"}, {Key: "input", Value: "ok"}, {Key: "stream", Value: false}},
 			},
-			wantURL: "https://proxy.example.com/v1/responses",
+			wantURL: "https://proxy.example.com/responses",
 		},
 	}
 	for _, item := range cases {
@@ -885,8 +927,9 @@ func TestResponsesBudgetIncidentRegression(t *testing.T) {
 		if code := do(t, build(t, BudgetBounded(DefaultProbeOutputTokens))); code != http.StatusOK {
 			t.Fatalf("1024 预算请求应被接受，实际状态码 %d", code)
 		}
-		if seenPath != "/v1/responses" {
-			t.Fatalf("mock 上游收到的路径 = %q，期望 /v1/responses", seenPath)
+		// httptest 根 base 无版本段，R1 直拼后 mock 收到去前缀路径（R2）。
+		if seenPath != "/responses" {
+			t.Fatalf("mock 上游收到的路径 = %q，期望 /responses", seenPath)
 		}
 		if !sawField || seenValue != float64(DefaultProbeOutputTokens) {
 			t.Fatalf("上游应收到 max_output_tokens=1024，实际 sawField=%v value=%v", sawField, seenValue)

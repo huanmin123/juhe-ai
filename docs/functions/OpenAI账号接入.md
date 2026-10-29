@@ -21,8 +21,8 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 | 账户类型 | 上游链路 | 当前路径策略 | 主要限制 |
 | --- | --- | --- | --- |
-| 通用 OpenAI 兼容 API Key | 任意 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 只支持 `api_key`；请求体默认 raw passthrough；本地过滤危险 header 和本地认证 header；不启用 GPT OAuth、Codex adapter 或 Codex 专属客户端策略。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
-| GPT API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，都会按账户 `base_url` 归一到上游 `/v1` 后透传，例如 `/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions`。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 账号能力同时覆盖 OpenAI 标准和 Codex Responses；只有请求被识别为 Codex Responses 客户端形态时才改写 `/responses` 请求，普通 OpenAI Responses 请求仍按 raw body 透传。本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
+| 通用 OpenAI 兼容 API Key | 任意 OpenAI-compatible API，账户 `base_url` 为上游版本根（含 `/v1`） | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，入站 `/v1` 归一保留，发往上游按版本根 `base_url` + 不含版本前缀的操作路径直拼透传（运行时不再自动补 `/v1`）。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 只支持 `api_key`；请求体默认 raw passthrough；本地过滤危险 header 和本地认证 header；不启用 GPT OAuth、Codex adapter 或 Codex 专属客户端策略。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
+| GPT API Key | 公开 OpenAI-compatible API，账户 `base_url` 为上游版本根（含 `/v1`） | 网关不维护逐路径白名单；客户端访问根路径或 `/v1/*` 时，入站 `/v1` 归一保留，发往上游按版本根 `base_url` + 不含版本前缀的操作路径直拼（例如 `/responses`、`/v1/responses` 都命中 `base_url` + `/responses`）。`GET /models` / `/v1/models` 由本地模型目录直接返回。 | 账号能力同时覆盖 OpenAI 标准和 Codex Responses；只有请求被识别为 Codex Responses 客户端形态时才改写 `/responses` 请求，普通 OpenAI Responses 请求仍按 raw body 透传。本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。某条路径最终能否成功取决于该 API Key 上游 `base_url` 本身是否支持。 |
 | GPT OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | 只为 `POST /responses`、`POST /v1/responses`、`POST /responses/compact` 和 `POST /v1/responses/compact` 构造 Codex 上游请求；`GET /models` / `/v1/models` 由本地模型目录返回。 | 账号能力固定为 Codex Responses，不提供用户侧切换；不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。OAuth-only 分组请求不支持的路径时不会落到公开 OpenAI API。 |
 
 混合分组中如果同时存在 API Key 账号和 OAuth 账号，某条路径是否可用取决于调度命中的账号类型：OAuth 账号不支持的路径会跳过该账号，仍可由同分组内可用的 API Key 账号承接；如果当前 API Key 所选路由策略还有后续号池，且当前分组没有任何账号类型能承接该路径，网关应继续尝试下一号池；如果所有号池都没有可用账号，则返回“没有可用的上游账户”一类网关错误，而不是自动协议翻译。多号池混合规则见 [策略路由设计](策略路由设计.md)。
@@ -143,9 +143,9 @@ OAuth 运行时修复口径：
 - 新建 API Key 账户默认写入 `status = pending_test` 且 `schedulable = false`，事务完成后投递后台激活检查；添加账户表单明确选择 `可调度`（`status = active`）时，后端才派生跳过首次健康检查和 `schedulable = true`，账户立即参与调度；套餐过期和当前时间计划仍可限制实际状态。创建请求不接受人工测试任务 ID 作为直接激活凭证。
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
 - 列表不展示 API Key，编辑弹窗可查看和修改
-- `base_url` 默认使用 OpenAI 官方地址
+- `base_url` 默认使用 OpenAI 官方版本根地址 `https://api.openai.com/v1`
 - 高级配置中的“接口能力限制”用于声明该上游支持的 Chat / Responses 与 JSON / SSE 组合；网关调度会按该配置筛选，不做未声明的 Chat 与 Responses 自动互转。测试弹窗中的“测试请求形态”从接口能力限制中选择，本次提交后只按所选 `testEndpointMode` 测试，不回写账户，也不从最近真实请求或客户端画像推导。需要让 Chat-only OpenAI v1 上游承接 Responses 入站时，必须在账号模型别名中显式配置 `responses -> chat_completions`，且账号真实能力仍只保存 `chat_json/chat_sse`。
-- `base_url` 保存时按 OpenAI-compatible 上游根地址校验：必须是完整绝对地址，协议允许 `http` 和 `https`，主机允许域名和公网 IP；默认仍通过 SSRF 防护拒绝本机、内网、链路本地和保留地址。私网 IP 只有在部署者显式配置匹配 `scheme + IP + effective port` 的 `JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST` 时放行；生产默认不配置，路径不参与白名单匹配。禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。可填写服务根地址或 `/v1` 版本根地址，例如 `https://api.openai.com`、`https://api.openai.com/v1`、`http://103.236.84.213:48222/v1`、`https://example.com/openai`、`https://example.com/openai/v1`；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
+- `base_url` 保存时按 OpenAI-compatible 上游版本根校验：必须是完整绝对地址，协议允许 `http` 和 `https`，主机允许域名和公网 IP；默认仍通过 SSRF 防护拒绝本机、内网、链路本地和保留地址。私网 IP 只有在部署者显式配置匹配 `scheme + IP + effective port` 的 `JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST` 时放行；生产默认不配置，路径不参与白名单匹配。禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。Base URL 语义为版本根，应填写含 `/v1` 的版本根地址，例如 `https://api.openai.com/v1`、`http://103.236.84.213:48222/v1`、`https://example.com/openai/v1`；运行时不再自动补 `/v1`（存量裸根历史值由 maintenance 迁移命令回填版本根），不推荐再填写裸根地址；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
 - 时间计划和人工启停共用账户 `status`。后台只在计划开始 / 结束边界自动写入 `active` 或 `disabled`；时段外手动启用、计划内手动停用也只提交 `status`，后续到下一次计划边界再由计划接管。计划不会把 `pending_test`、`error`、`rate_limited`、`temporary_unavailable` 自动恢复为正常。时区跟随系统默认值，用户表单不提供时区配置。
@@ -249,7 +249,7 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 
 - API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
-- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接客户端网关 `/*` 和 `/v1/*` 请求；GPT API Key 上游仍归一到 `/v1/*`。
+- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`（版本根），承接客户端网关 `/*` 和 `/v1/*` 请求；GPT API Key 上游版本段由 `base_url` 承载，操作路径不含版本前缀。
 - OAuth 账户不把 `access_token` 当作官方 OpenAI API Key 打到 `api.openai.com/v1`；真实转发走 ChatGPT / Codex backend 专用链路 `https://chatgpt.com/backend-api/codex`，账号协议能力固定为 Codex Responses。
 - OAuth Codex 网关当前支持 Codex 原生 `POST /responses` 和 `POST /responses/compact`，暂不做 `/chat/completions` 到 Responses 的重型协议翻译。
 - `GET /v1/models` 由本地供应商模型目录返回，并叠加调用方可见的内置、全局自定义和个人自定义模型；它不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。

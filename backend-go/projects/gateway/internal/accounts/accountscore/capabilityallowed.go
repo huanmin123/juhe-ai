@@ -133,7 +133,7 @@ var capabilityDomainMatrix = map[string]map[string]bool{
 	// 兼容图像端点 /api/v3/images/generations 实测出图成功
 	//（doubao-seedream-5-0-flash-260915，OpenAI images 形态响应 data[].url +
 	// usage）；Agent Plan 专属端点 /api/plan/v3/images/generations 实测可用，
-	// 出站 URL 由链上 chainVolcengineImagesUpstreamURL 服务根归一承接）。
+	// 出站 URL 由链上层按 base_url 版本根直拼承接）。
 	capabilityMatrixVolcengine: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
 	capabilityMatrixQwen:       {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
 }

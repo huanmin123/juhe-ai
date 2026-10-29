@@ -6,10 +6,10 @@
 // storage, no gateway chain, no cross-process bridge. The comparison against
 // the local provider model catalog stays with the caller.
 //
-// Protocol → models path mapping (account-test-request.ts:25-26,42-44):
-//
-//	gemini    -> {base}/v1beta/models
-//	otherwise -> {base}/v1/models   (openai and anthropic both use /v1/models)
+// Models URL follows the upstream Base URL version-root semantics (v2 R1/R3):
+// the account base_url carries the protocol version root (/v1, /v1beta, ...),
+// the operation path is the version-prefix-free "/models", and the final URL
+// is joined via upstreamenvelope.JoinUpstreamURL.
 //
 // Auth headers follow the upstream protocol conventions, with exact profile
 // identities supplied by FetchOptions for system-generated requests. The
@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
@@ -77,39 +78,20 @@ type FetchOptions struct {
 }
 
 // modelsPathForProtocol mirrors accountTestModelsPathForProtocol
-// (account-test-request.ts:42-44): gemini uses /v1beta/models, everything
-// else /v1/models.
-func modelsPathForProtocol(protocolCode string) string {
-	if strings.EqualFold(strings.TrimSpace(protocolCode), "gemini") {
-		return "/v1beta/models"
-	}
-	return "/v1/models"
-}
+// (account-test-request.ts:42-44) under the version-root semantics: the
+// version prefix (/v1, /v1beta) belongs to the account base_url, so both
+// protocol families share the version-prefix-free "/models" operation path
+// (openai and anthropic both listed /v1/models, gemini /v1beta/models).
+const modelsPathForProtocol = "/models"
 
-// versionRootForProtocol is the base-path normalization root per protocol
-// (mirrors the gatewayopenai BuildUpstreamURL /v1 normalization idea, plus
-// the gemini /v1beta root).
-func versionRootForProtocol(protocolCode string) string {
-	if strings.EqualFold(strings.TrimSpace(protocolCode), "gemini") {
-		return "/v1beta"
-	}
-	return "/v1"
-}
-
-// upstreamModelsURL normalizes the account base URL against the protocol
-// models path: the version root is appended only when the base does not
-// already end with it, so both host-only and version-prefixed base URLs land
-// on the same absolute URL.
+// upstreamModelsURL joins the account base_url (the protocol version root,
+// e.g. https://api.deepseek.com/v1 or https://generativelanguage.googleapis
+// .com/v1beta) with the "/models" operation path via the shared
+// upstreamenvelope.JoinUpstreamURL rule: trim, right-strip base slashes,
+// direct concatenation — no version segment is inserted or stripped here.
 func upstreamModelsURL(baseURL, protocolCode string) (string, error) {
-	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if trimmed == "" {
-		return "", errors.New("获取上游模型目录失败：账户缺少 base_url")
-	}
-	root := versionRootForProtocol(protocolCode)
-	if !strings.HasSuffix(trimmed, root) {
-		trimmed += root
-	}
-	return trimmed + strings.TrimPrefix(modelsPathForProtocol(protocolCode), root), nil
+	_ = protocolCode
+	return upstreamenvelope.JoinUpstreamURL(baseURL, modelsPathForProtocol)
 }
 
 // requestHeadersForProtocol mirrors the upstream auth conventions the gateway

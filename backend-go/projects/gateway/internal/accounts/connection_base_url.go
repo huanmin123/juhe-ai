@@ -1,10 +1,11 @@
 package accounts
 
 // 连接 base_url validator（供应商与上游协议面重构设计 §2.1 base_url 约束，
-// B1 断点批）。规则全部由 registry 数据驱动（backend-go/shared/contracts 的
-// connector registry：allowed_base_path_suffixes[] + operation_path_templates[]），
-// 不维护第二份 endpoint/前缀清单（设计 §1.1「URL validator 与 route builder 均
-// 只能读取这两组数组」）：
+// 上游 Base URL 版本根语义 v2 R8 统一规则）。规则全部由 registry 数据驱动
+// （backend-go/shared/contracts 的 connector registry：operation_path_templates
+// []，连接域按 preset 取 EndpointModeCombo.OperationTemplates），不维护第二份
+// endpoint/前缀清单（设计 §1.1「URL validator 与 route builder 均只能读取这组
+// 数组」）：
 //
 //   - Unicode TrimSpace 后原样保存且长度 1..2048 UTF-8 bytes；
 //   - 带 hostname 的绝对 http/https URL（两 scheme 均合法）；
@@ -13,10 +14,11 @@ package accounts
 //     slash/backslash、非 UTF-8 path segment；
 //   - path 按 `/` 切段、每段 strict percent-decode 恰好一次；匹配前去掉 path
 //     末尾全部 `/`（空 path 保持空，因此 `/v1` 与 `/v1/` 等价）；
-//   - 解码后的 path 必须以该 preset 注册的一个 allowed_base_path_suffix 结束
-//     （空 suffix 表示根路径，仅空 path 满足）；
-//   - 拒绝任何 operation path template 的完整路径或中间前缀（如
-//     `/v1beta/models/foo`），但已登记的 service/version suffix 不拒绝；
+//   - R8 统一路径规则：base 路径按段切分后取任意连续后缀，命中登记的操作
+//     模板（已去版本前缀；qwen preset 保持全路径为唯一例外）的完整路径或其
+//     按段前缀 → 拒绝；版本根（/v1、/api/v3、/api/paas/v4、/compatible-mode
+//     /v1 等）、`/api/plan/v3` 类服务前缀与空路径放行。allowed_base_path_
+//     suffixes 自 R8 起不再参与写面判定（registry 数据保留）；
 //     模板字面段区分大小写，`{name}` 匹配单个非空 segment，嵌入式占位符
 //     （`{model}:generateContent`）匹配该 segment 的非空部分。
 //
@@ -34,19 +36,19 @@ import (
 )
 
 // connectionURLContract 返回 (driver, account_type, oauth_type, preset, domain)
-// 组合在 registry 注册的 base path suffix 与 operation path template 集合；
-// 未注册组合 ok=false（组合合法性由 IsAllowedConnectorCombo 另行判定，这里只
-// 取 URL 契约数据）。registry 的公开 API 以单 mode 组合展开导出，同一 preset
-// 的 suffix/template 全组合一致，取首个命中组合的副本。
-func connectionURLContract(driver, accountType, oauthType, preset, domain string) (suffixes, templates []string, ok bool) {
+// 组合在 registry 注册的 operation path template 集合；未注册组合 ok=false
+// （组合合法性由 IsAllowedConnectorCombo 另行判定，这里只取 URL 契约数据）。
+// registry 的公开 API 以单 mode 组合展开导出，同一 preset 的 template 全组合
+// 一致，取首个命中组合的副本。R8：allowed_base_path_suffixes 不再参与写面
+// 判定，不再返回。
+func connectionURLContract(driver, accountType, oauthType, preset, domain string) (templates []string, ok bool) {
 	for _, combo := range contracts.AllowedEndpointModeCombos() {
 		if combo.Driver == driver && combo.AccountType == accountType &&
 			combo.OAuthType == oauthType && combo.Preset == preset && combo.Domain == domain {
-			return append([]string(nil), combo.AllowedBaseSuffixes...),
-				append([]string(nil), combo.OperationTemplates...), true
+			return append([]string(nil), combo.OperationTemplates...), true
 		}
 	}
-	return nil, nil, false
+	return nil, false
 }
 
 // invalidConnectionBaseURL 渲染 §8 固定错误码 400。
@@ -54,9 +56,13 @@ func invalidConnectionBaseURL(reason string) error {
 	return &ValidationError{Message: "invalid_connection_base_url: " + reason}
 }
 
-// validateConnectionBaseURL 按 §2.1 校验一个连接 base_url；suffixes/templates
+// connectionBasePathViolationMessage 是凭据域/连接域统一的 R8 违规文案
+// （各域保留自己的前缀风格，见 upstream_base_url.go 的凭据域常量）。
+const connectionBasePathViolationMessage = "连接 Base URL 不能填写具体接口路径，请填写包含版本前缀的根地址，例如 /v1、/api/v3"
+
+// validateConnectionBaseURL 按 §2.1 + R8 校验一个连接 base_url；templates
 // 来自 registry preset record（connectionURLContract）。
-func validateConnectionBaseURL(suffixes, templates []string, raw string) error {
+func validateConnectionBaseURL(templates []string, raw string) error {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return invalidConnectionBaseURL("连接 Base URL 不能为空")
@@ -110,14 +116,12 @@ func validateConnectionBaseURL(suffixes, templates []string, raw string) error {
 	if err != nil {
 		return err
 	}
-	if connectionPathEndsWithSuffix(decoded, suffixes) {
-		return nil
+	// R8 统一路径规则：空路径放行（版本根可省略为 origin）；任意连续后缀
+	// 命中登记操作模板的完整路径或按段前缀 → 拒绝。
+	if basePathHitsOperationPath(templates, decoded) {
+		return invalidConnectionBaseURL(connectionBasePathViolationMessage)
 	}
-	// suffix 未命中时，先区分「operation 路径」与「普通越界前缀」两类文案。
-	if connectionOperationPathViolation(templates, decoded) {
-		return invalidConnectionBaseURL("连接 Base URL 不能填写接口路径或其前缀，请填写服务根地址或已登记的版本前缀")
-	}
-	return invalidConnectionBaseURL("连接 Base URL 路径必须以该连接预设登记的版本前缀结束")
+	return nil
 }
 
 // decodedConnectionPathSegments 把 raw path 按 `/` 切段并对每段 strict
@@ -176,29 +180,12 @@ func connectionSuffixSegments(suffix string) []string {
 	return segments
 }
 
-// connectionPathEndsWithSuffix 判定解码 path 段序列是否以任一注册 suffix 的段
-// 序列结束；空 suffix 仅空 path 满足（根路径）。
-func connectionPathEndsWithSuffix(path []string, suffixes []string) bool {
-	for _, suffix := range suffixes {
-		want := connectionSuffixSegments(suffix)
-		if len(want) == 0 {
-			if len(path) == 0 {
-				return true
-			}
-			continue
-		}
-		if len(path) < len(want) {
-			continue
-		}
-		tail := path[len(path)-len(want):]
-		matched := true
-		for index := range want {
-			if tail[index] != want[index] {
-				matched = false
-				break
-			}
-		}
-		if matched {
+// basePathHitsOperationPath 实现 R8 统一路径规则（凭据域/连接域共用）：base
+// 解码段序列的任意连续后缀命中任一操作模板的完整路径或按段前缀 → true。
+// 空段序列（空路径）恒 false（版本根可省略为 origin）。
+func basePathHitsOperationPath(templates []string, path []string) bool {
+	for index := range path {
+		if connectionOperationPathViolation(templates, path[index:]) {
 			return true
 		}
 	}

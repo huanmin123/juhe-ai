@@ -419,10 +419,19 @@ func TestWABuildUpstreamURL(t *testing.T) {
 		name, base, path, want string
 		wantErr                bool
 	}{
-		{"base 自动补 /v1", "https://api.anthropic.com", "/v1/messages?beta=true", "https://api.anthropic.com/v1/messages?beta=true", false},
-		{"base 已含 /v1 去重", "https://api.anthropic.com/v1/", "/messages", "https://api.anthropic.com/v1/messages", false},
+		// 动机（v2 直拼契约）：base_url 即版本根，不再自动补 /v1——裸域直拼。
+		{"base 不再补 /v1（v2 直拼）", "https://api.anthropic.com", "/v1/messages?beta=true", "https://api.anthropic.com/messages?beta=true", false},
+		// 动机（v2 直拼契约）：版本根 base（/v1 结尾）原样直拼，无去重分支。
+		{"base 已含 /v1 直拼", "https://api.anthropic.com/v1/", "/messages", "https://api.anthropic.com/v1/messages", false},
 		{"空 base 报错", "   ", "/messages", "", true},
-		{"根路径只保留 query", "https://api.anthropic.com/v1", "/?a=1", "https://api.anthropic.com/v1?a=1", false},
+		// 收敛到共享 upstreamenvelope.JoinUpstreamURL（R1）后，opPath 必须以
+		// / 开头：根路径仅 query 的形态在拼接层显式失败（生产面本函数仅经
+		// BuildUpstreamURLsForAccount 的 IsNativeRequest 白名单到达，opPath
+		// 恒为 /messages 等 / 前缀路径，不受影响）。
+		{"根路径仅 query 显式失败（JoinUpstreamURL 契约）", "https://api.anthropic.com/v1", "/?a=1", "", true},
+		// 动机（v2 直拼契约，deepseek 版本根验收用例）：/anthropic/v1 版本根
+		// + 入站 /v1 剥离直拼。
+		{"deepseek /anthropic/v1 版本根直拼", "https://api.deepseek.com/anthropic/v1", "/v1/messages", "https://api.deepseek.com/anthropic/v1/messages", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -446,8 +455,10 @@ func TestWABuildUpstreamURL(t *testing.T) {
 func TestWABuildUpstreamURLsForAccount(t *testing.T) {
 	request := httptest.NewRequest("POST", "/v1/messages?beta=true", nil)
 	t.Run("api_key 账户", func(t *testing.T) {
+		// 动机（v2 直拼契约）：base_url 即版本根，裸域不再补 /v1，期望值改为
+		// 直拼形态（含 /messages）。
 		urls := BuildUpstreamURLsForAccount(UpstreamAccount{Type: "api_key", BaseURL: "https://up.example"}, request)
-		if len(urls) != 1 || !strings.HasSuffix(urls[0], "/v1/messages?beta=true") {
+		if len(urls) != 1 || !strings.HasSuffix(urls[0], "/messages?beta=true") {
 			t.Fatalf("api_key URL = %v", urls)
 		}
 		// Claude Code 兼容会在 messages 上追加 beta=true（该请求已带）。

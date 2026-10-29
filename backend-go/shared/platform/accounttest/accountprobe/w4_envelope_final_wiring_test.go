@@ -318,10 +318,11 @@ func TestW4FormAOAuthCodexOutboundShape(t *testing.T) {
 
 // TestW4FormCOpenAIArms 断言 C 形态（普通 API Key / 非 A 的 OAuth）OpenAI 系
 // 出站形状：URL/Accept/认证头/预算字段/body 语义（§9.1-C，迁移前后不变式，
-// 键序差异除外）。
+// 键序差异除外）。R3：probeView base 携带 /v1 版本根（R1 删除运行时补根），
+// want URL 不变。
 func TestW4FormCOpenAIArms(t *testing.T) {
 	t.Run("chat_json", func(t *testing.T) {
-		request, body := w4BuildRequest(t, probeView("https://w4-upstream.test"), ModeChatJSON, "w4-model")
+		request, body := w4BuildRequest(t, probeView("https://w4-upstream.test/v1"), ModeChatJSON, "w4-model")
 		if request.URL.String() != "https://w4-upstream.test/v1/chat/completions" {
 			t.Fatalf("URL=%s", request.URL)
 		}
@@ -349,7 +350,7 @@ func TestW4FormCOpenAIArms(t *testing.T) {
 		}
 	})
 	t.Run("responses_json", func(t *testing.T) {
-		view := probeView("https://w4-upstream.test")
+		view := probeView("https://w4-upstream.test/v1")
 		view.ProviderProtocolProfileID = "profile_openai_openai_v1"
 		request, body := w4BuildRequest(t, view, ModeResponsesJSON, "w4-model")
 		if request.URL.String() != "https://w4-upstream.test/v1/responses" {
@@ -370,7 +371,7 @@ func TestW4FormCOpenAIArms(t *testing.T) {
 		}
 	})
 	t.Run("oauth 空 profile chat 保持账户 base 与伴随头", func(t *testing.T) {
-		view := probeView("https://w4-upstream.test")
+		view := probeView("https://w4-upstream.test/v1")
 		view.Type = "oauth"
 		view.ProviderProtocolProfileID = ""
 		view.Credentials = map[string]any{"account_id": "w4-acct"}
@@ -390,7 +391,7 @@ func TestW4FormCOpenAIArms(t *testing.T) {
 		}
 	})
 	t.Run("oauth 非 gpt 档案 responses 保留 store=false", func(t *testing.T) {
-		view := probeView("https://w4-upstream.test")
+		view := probeView("https://w4-upstream.test/v1")
 		view.Type = "oauth"
 		view.ProviderProtocolProfileID = "profile_openai_other_v1"
 		view.SelectedAPIKey = "oauth-token"
@@ -412,7 +413,7 @@ func TestW4FormCOpenAIArms(t *testing.T) {
 // file bytes/MIME 与 Content-Type boundary-body 匹配；不比较随机 boundary
 // 字面值（标准库 writer 的 boundary 与原手写编码不同属预期收敛）。
 func TestW4MultipartTranscription(t *testing.T) {
-	request, body := w4BuildRequest(t, probeView("https://w4-upstream.test"), ModeAudioTranscriptionJSON, "whisper-1")
+	request, body := w4BuildRequest(t, probeView("https://w4-upstream.test/v1"), ModeAudioTranscriptionJSON, "whisper-1")
 	if request.URL.String() != "https://w4-upstream.test/v1/audio/transcriptions" {
 		t.Fatalf("URL=%s", request.URL)
 	}
@@ -459,7 +460,7 @@ func TestW4MultipartTranscription(t *testing.T) {
 // TestW4AudioSpeechArms 断言两类 audio_speech 出站形状（音频设计 §11.9/§5.1）。
 func TestW4AudioSpeechArms(t *testing.T) {
 	t.Run("openai", func(t *testing.T) {
-		request, body := w4BuildRequest(t, probeView("https://w4-upstream.test"), ModeAudioSpeech, "tts-1")
+		request, body := w4BuildRequest(t, probeView("https://w4-upstream.test/v1"), ModeAudioSpeech, "tts-1")
 		if request.URL.String() != "https://w4-upstream.test/v1/audio/speech" {
 			t.Fatalf("URL=%s", request.URL)
 		}
@@ -504,7 +505,7 @@ func TestW4AudioSpeechArms(t *testing.T) {
 // TestW4ImagesJSONArm 断言图片生成出站形状（§1：不是图片输入；不套用文本
 // 输出预算）。
 func TestW4ImagesJSONArm(t *testing.T) {
-	request, body := w4BuildRequest(t, probeView("https://w4-upstream.test"), ModeImagesJSON, "img-1")
+	request, body := w4BuildRequest(t, probeView("https://w4-upstream.test/v1"), ModeImagesJSON, "img-1")
 	if request.URL.String() != "https://w4-upstream.test/v1/images/generations" {
 		t.Fatalf("URL=%s", request.URL)
 	}
@@ -525,11 +526,11 @@ func TestW4ImagesJSONArm(t *testing.T) {
 
 // TestW4AnthropicMessagesArms 断言 Anthropic Messages 出站形状：catalog 固定
 // 头、x-api-key、session 恒等（x-claude-code-session-id 头与 body
-// metadata.user_id.session_id 同源）与预算必填注入。
+// metadata.user_id.session_id 同源）与预算必填注入。R3：base 携带 /v1 版本根。
 func TestW4AnthropicMessagesArms(t *testing.T) {
 	for _, mode := range []EndpointMode{ModeMessagesJSON, ModeMessagesSSE} {
 		t.Run(string(mode), func(t *testing.T) {
-			view := probeView("https://claude.test")
+			view := probeView("https://claude.test/v1")
 			view.ProtocolCode = "anthropic"
 			request, body := w4BuildRequest(t, view, mode, "claude-1")
 			if request.URL.String() != "https://claude.test/v1/messages" {
@@ -578,7 +579,7 @@ func TestW4AnthropicMessagesArms(t *testing.T) {
 // 策略口径（api-key 双 accept / google_oauth 纯流式；§9.1-C 收敛 diff）。
 func TestW4InteractionsArms(t *testing.T) {
 	t.Run("api_key json", func(t *testing.T) {
-		view := probeView("https://gem.test")
+		view := probeView("https://gem.test/v1beta")
 		view.ProtocolCode = "gemini"
 		request, body := w4BuildRequest(t, view, ModeInteractionsJSON, "gemini-2")
 		if request.URL.String() != "https://gem.test/v1beta/interactions" {
@@ -635,18 +636,18 @@ func TestW4InteractionsArms(t *testing.T) {
 	})
 }
 
-// TestW4GLMThreeBaseForms 断言 GLM 恢复消费 profile 后的三种 base 形态
-// （§9.2-5 裁决的寻址修正：官方版本根剥请求 /v1；代理 /v1 根与空根保留）。
-// 原 F2 屏蔽 GLM 档案导致官方根被拼成 /api/paas/v4/v1/chat/completions。
+// TestW4GLMThreeBaseForms 断言 GLM 恢复消费 profile 后的 base 形态 × R1 直拼：
+// 版本根 base（/api/paas/v4、/v1）原样拼接；无版本根 base 不再补 /v1（R3：
+// 版本段只随 base_url 传入，R1 删除运行时补插/剥离）。
 func TestW4GLMThreeBaseForms(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		base    string
 		wantURL string
 	}{
-		{name: "官方版本根剥请求 /v1", base: "https://open.bigmodel.cn/api/paas/v4", wantURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
-		{name: "代理 /v1 根保留请求 /v1", base: "https://glm-proxy.test/v1", wantURL: "https://glm-proxy.test/v1/chat/completions"},
-		{name: "空根补 /v1", base: "https://glm-proxy.test", wantURL: "https://glm-proxy.test/v1/chat/completions"},
+		{name: "官方版本根直拼", base: "https://open.bigmodel.cn/api/paas/v4", wantURL: "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
+		{name: "代理 /v1 根直拼", base: "https://glm-proxy.test/v1", wantURL: "https://glm-proxy.test/v1/chat/completions"},
+		{name: "空根直拼不补 /v1", base: "https://glm-proxy.test", wantURL: "https://glm-proxy.test/chat/completions"},
 	} {
 		for _, profile := range []string{"profile_glm_general_openai_v1", "profile_glm_coding_openai_v1"} {
 			t.Run(tc.name+"/"+profile, func(t *testing.T) {
@@ -660,9 +661,10 @@ func TestW4GLMThreeBaseForms(t *testing.T) {
 			})
 		}
 	}
-	// GLM anthropic 档案不受 OpenAI 剥 /v1 规约影响（anthropic 分支补 /v1）。
+	// GLM anthropic 档案：base 携带版本根（R9 默认值 /api/anthropic/v1），
+	// R1 直拼出线上路径。
 	t.Run("glm anthropic 档案", func(t *testing.T) {
-		view := probeView("https://open.bigmodel.cn/api/anthropic")
+		view := probeView("https://open.bigmodel.cn/api/anthropic/v1")
 		view.ProtocolCode = "anthropic"
 		view.ProviderProtocolProfileID = "profile_glm_coding_anthropic_v1"
 		request, _ := w4BuildRequest(t, view, ModeMessagesJSON, "glm-4.6")

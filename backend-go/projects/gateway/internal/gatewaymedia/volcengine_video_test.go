@@ -91,8 +91,9 @@ func TestVolcengineVideoAdapterCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if output.Method != http.MethodPost || output.Path != "/api/v3/contents/generations/tasks" {
-		t.Fatalf("create 出站形态 = %s %s, want POST /api/v3/contents/generations/tasks", output.Method, output.Path)
+	// 动机（v2 直拼契约）：opPath 不含版本段，/api/v3 由 base_url 版本根承载。
+	if output.Method != http.MethodPost || output.Path != "/contents/generations/tasks" {
+		t.Fatalf("create 出站形态 = %s %s, want POST /contents/generations/tasks", output.Method, output.Path)
 	}
 	var body struct {
 		Model       string           `json:"model"`
@@ -197,7 +198,8 @@ func TestVolcengineVideoAdapterCreateSizeRatioOutOfVocabulary(t *testing.T) {
 
 func TestVolcengineVideoAdapterPollRequest(t *testing.T) {
 	method, path, body := VideoAdapterForProvider("volcengine").BuildPollRequest("cgt-20261004101122abcdef")
-	if method != http.MethodGet || path != "/api/v3/contents/generations/tasks/cgt-20261004101122abcdef" {
+	// 动机（v2 直拼契约）：opPath 不含版本段，/api/v3 由 base_url 版本根承载。
+	if method != http.MethodGet || path != "/contents/generations/tasks/cgt-20261004101122abcdef" {
 		t.Fatalf("poll 出站形态 = %s %s", method, path)
 	}
 	if body != nil {

@@ -281,9 +281,12 @@ func TestSwitchTargetFreezeFilterFamilyVocabularyConsistent(t *testing.T) {
 	t.Run("responses_compact_family_consistent", func(t *testing.T) {
 		req := switchTargetRequest(t, "/v1/responses/compact", `{"model":"gpt-5"}`, "gpt-5", false)
 		account := gatewaydispatch.AccountCandidate{
-			ID:              "acc-1",
-			VendorCode:      "gpt",
-			ProtocolCode:    "openai",
+			ID:           "acc-1",
+			VendorCode:   "gpt",
+			ProtocolCode: "openai",
+			// 生产水合（chainBaseURLOf）保证 openai 族 base 非空（空回落官方
+			// /v1 根）；出站 URL 构造（JoinUpstreamURL）要求非空 base。
+			BaseURL:         "https://up.example/v1",
 			ProtocolVersion: "v1",
 			SupportedModels: []string{"gpt-5-up"},
 			ModelMappings:   []gatewayruntimecache.AccountModelMapping{switchTargetMapping("gpt-5", "chat_completions", "gpt-5-up", "chat_completions")},

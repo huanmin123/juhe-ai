@@ -84,9 +84,11 @@ type Endpoint struct {
 	Protocol Protocol
 	Mode     EndpointMode
 	Method   string
-	// PathTemplate 是相对请求路径（可含 query）。{model} 占位符仅 gemini
-	// generateContent 使用，替换值为 geminiModelPath（含 "models/" 前缀，
-	// 见 envelope.go）。
+	// PathTemplate 是相对请求路径（可含 query），不含版本前缀：版本段
+	//（/v1、/v1beta、/api/v3 等）属于 base_url 版本根（上游 Base URL 版本
+	// 根语义 v2 R2/R3），拼接规则见 JoinUpstreamURL。{model} 占位符仅
+	// gemini generateContent 使用，替换值为 geminiModelPath（含 "models/"
+	// 前缀，见 envelope.go）。
 	PathTemplate string
 	Encoding     BodyEncoding
 	BudgetField  BudgetField
@@ -110,7 +112,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolOpenAI,
 		Mode:         ModeChatJSON,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1/chat/completions",
+		PathTemplate: "/chat/completions",
 		Encoding:     EncodingJSON,
 		BudgetField:  BudgetFieldMaxTokens,
 		Auth:         AuthBearer,
@@ -119,7 +121,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolOpenAI,
 		Mode:         ModeChatSSE,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1/chat/completions",
+		PathTemplate: "/chat/completions",
 		Encoding:     EncodingSSE,
 		BudgetField:  BudgetFieldMaxTokens,
 		Auth:         AuthBearer,
@@ -130,7 +132,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolOpenAI,
 		Mode:         ModeResponsesJSON,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1/responses",
+		PathTemplate: "/responses",
 		Encoding:     EncodingJSON,
 		BudgetField:  BudgetFieldMaxOutputTokens,
 		Auth:         AuthBearer,
@@ -139,7 +141,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolOpenAI,
 		Mode:         ModeResponsesSSE,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1/responses",
+		PathTemplate: "/responses",
 		Encoding:     EncodingSSE,
 		BudgetField:  BudgetFieldMaxOutputTokens,
 		Auth:         AuthBearer,
@@ -150,7 +152,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:       ProtocolAnthropic,
 		Mode:           ModeMessagesJSON,
 		Method:         http.MethodPost,
-		PathTemplate:   "/v1/messages",
+		PathTemplate:   "/messages",
 		Encoding:       EncodingJSON,
 		BudgetField:    BudgetFieldMaxTokens,
 		BudgetRequired: true,
@@ -161,7 +163,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:       ProtocolAnthropic,
 		Mode:           ModeMessagesSSE,
 		Method:         http.MethodPost,
-		PathTemplate:   "/v1/messages",
+		PathTemplate:   "/messages",
 		Encoding:       EncodingSSE,
 		BudgetField:    BudgetFieldMaxTokens,
 		BudgetRequired: true,
@@ -174,7 +176,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolGemini,
 		Mode:         ModeGenerateContentJSON,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1beta/{model}:generateContent",
+		PathTemplate: "/{model}:generateContent",
 		Encoding:     EncodingJSON,
 		BudgetField:  BudgetFieldGeminiGenerationConfig,
 		Auth:         AuthGeminiAPIKey,
@@ -183,7 +185,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolGemini,
 		Mode:         ModeGenerateContentSSE,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1beta/{model}:streamGenerateContent?alt=sse",
+		PathTemplate: "/{model}:streamGenerateContent?alt=sse",
 		Encoding:     EncodingSSE,
 		BudgetField:  BudgetFieldGeminiGenerationConfig,
 		Auth:         AuthGeminiAPIKey,
@@ -196,7 +198,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolGemini,
 		Mode:         ModeInteractionsJSON,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1beta/interactions",
+		PathTemplate: "/interactions",
 		Encoding:     EncodingJSON,
 		BudgetField:  BudgetFieldNone,
 		Auth:         AuthGeminiAPIKey,
@@ -206,7 +208,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolGemini,
 		Mode:         ModeInteractionsSSE,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1beta/interactions",
+		PathTemplate: "/interactions",
 		Encoding:     EncodingSSE,
 		BudgetField:  BudgetFieldNone,
 		Auth:         AuthGeminiAPIKey,
@@ -218,7 +220,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolOpenAI,
 		Mode:         ModeImagesJSON,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1/images/generations",
+		PathTemplate: "/images/generations",
 		Encoding:     EncodingJSON,
 		BudgetField:  BudgetFieldNone,
 		Auth:         AuthBearer,
@@ -230,7 +232,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolOpenAI,
 		Mode:         ModeAudioSpeech,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1/audio/speech",
+		PathTemplate: "/audio/speech",
 		Encoding:     EncodingJSON,
 		BudgetField:  BudgetFieldNone,
 		Auth:         AuthBearer,
@@ -239,7 +241,7 @@ var catalog = map[EndpointMode]Endpoint{
 		Protocol:     ProtocolOpenAI,
 		Mode:         ModeAudioTranscriptionJSON,
 		Method:       http.MethodPost,
-		PathTemplate: "/v1/audio/transcriptions",
+		PathTemplate: "/audio/transcriptions",
 		Encoding:     EncodingMultipart,
 		BudgetField:  BudgetFieldNone,
 		Auth:         AuthBearer,

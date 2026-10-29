@@ -30,9 +30,10 @@ func TestModeAudioVocabulary(t *testing.T) {
 }
 
 // TestBuildSpeechPayloadContract 经 buildTestRequest 断言 audio_speech 报文
-// 契约（body 编码归信封 Build 后，载荷断言指向最终出站请求）。
+// 契约（body 编码归信封 Build 后，载荷断言指向最终出站请求）。R3：probeView
+// base 携带 /v1 版本根（R1 删除运行时补根），断言路径不变。
 func TestBuildSpeechPayloadContract(t *testing.T) {
-	request, body := w4BuildRequest(t, probeView("https://audio.test"), ModeAudioSpeech, "tts-1")
+	request, body := w4BuildRequest(t, probeView("https://audio.test/v1"), ModeAudioSpeech, "tts-1")
 	if request.URL.Path != "/v1/audio/speech" {
 		t.Fatalf("speech path = %q", request.URL.Path)
 	}
@@ -47,7 +48,7 @@ func TestBuildSpeechPayloadContract(t *testing.T) {
 }
 
 func TestBuildTestRequestAudioModes(t *testing.T) {
-	speech, speechBody := w4BuildRequest(t, probeView("https://audio.test"), ModeAudioSpeech, "tts-1")
+	speech, speechBody := w4BuildRequest(t, probeView("https://audio.test/v1"), ModeAudioSpeech, "tts-1")
 	if speech.URL.Path != "/v1/audio/speech" {
 		t.Fatalf("speech path = %q", speech.URL.Path)
 	}
@@ -62,7 +63,7 @@ func TestBuildTestRequestAudioModes(t *testing.T) {
 		t.Fatalf("speech body = %v", speechPayload)
 	}
 
-	stt, sttBody := w4BuildRequest(t, probeView("https://audio.test"), ModeAudioTranscriptionJSON, "whisper-1")
+	stt, sttBody := w4BuildRequest(t, probeView("https://audio.test/v1"), ModeAudioTranscriptionJSON, "whisper-1")
 	if stt.URL.Path != "/v1/audio/transcriptions" {
 		t.Fatalf("stt path = %q", stt.URL.Path)
 	}
@@ -290,7 +291,8 @@ func TestProbeGeminiAudioSpeechAgainstMockUpstream(t *testing.T) {
 	}))
 	defer server.Close()
 
-	view := probeView(server.URL)
+	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
+	view := probeView(server.URL + "/v1beta")
 	view.ProviderCode = "gemini"
 	view.ProtocolCode = "gemini"
 	view.HealthCheckModel = "gemini-2.5-flash-preview-tts"

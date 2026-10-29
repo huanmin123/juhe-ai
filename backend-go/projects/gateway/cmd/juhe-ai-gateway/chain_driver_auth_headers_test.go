@@ -198,7 +198,8 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 			ID: "acc_g2", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "google_oauth", APIKey: "oa-token-1",
 			Credentials: map[string]any{"oauth_type": "ai_studio", "quota_project_id": "proj-quota"},
-			BaseURL:     "https://gem.example",
+			// 动机（v2 直拼契约）：base_url 即版本根，自带 /v1beta。
+			BaseURL: "https://gem.example/v1beta",
 		}
 		urls, err := driver.BuildGatewayUpstreamURLsForAccount(ctx, account, req)
 		if err != nil {
@@ -300,7 +301,8 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 			ID: "acc_g5", ProtocolCode: "gemini", VendorCode: "gemini",
 			Type: "google_oauth", APIKey: "oa-token-4",
 			Credentials: map[string]any{"oauth_type": "ai_studio", "project_id": "proj-ignored"},
-			BaseURL:     "https://gem.example",
+			// 动机（v2 直拼契约）：base_url 即版本根，自带 /v1beta。
+			BaseURL: "https://gem.example/v1beta",
 		}
 		urls, err := driver.BuildGatewayUpstreamURLsForAccount(ctx, account, req)
 		if err != nil {

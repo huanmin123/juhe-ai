@@ -76,11 +76,13 @@ func TestW1GBuildGatewayUpstreamURLsForAccountArms(t *testing.T) {
 		}
 	})
 
-	t.Run("anthropic native messages builds base v1 url", func(t *testing.T) {
+	t.Run("anthropic native messages builds version-root url", func(t *testing.T) {
 		req := w1gNewDriverRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x","max_tokens":16}`)
 		account := gatewaydispatch.AccountCandidate{
+			// 动机（v2 直拼契约）：anthropic base_url 即版本根（/v1 结尾），
+			// 不再依赖归一补 /v1。
 			ID: "acc_u4", ProtocolCode: "anthropic", VendorCode: "anthropic",
-			Type: "api_key", BaseURL: "https://ant.example",
+			Type: "api_key", BaseURL: "https://ant.example/v1",
 		}
 		urls, err := driver.BuildGatewayUpstreamURLsForAccount(ctx, account, req)
 		if err != nil {
@@ -106,8 +108,10 @@ func TestW1GBuildGatewayUpstreamURLsForAccountArms(t *testing.T) {
 	t.Run("openai default keeps version stripped path", func(t *testing.T) {
 		req := w1gNewDriverRequest(t, http.MethodPost, "/v1/chat/completions", `{"model":"gpt-x"}`)
 		account := gatewaydispatch.AccountCandidate{
+			// 动机（v2 直拼契约）：openai base_url 即版本根（/v1 结尾），不再
+			// 依赖归一补 /v1。
 			ID: "acc_u6", ProtocolCode: "openai", Type: "api_key",
-			BaseURL: "https://up.example", APIKey: "sk-1",
+			BaseURL: "https://up.example/v1", APIKey: "sk-1",
 		}
 		urls, err := driver.BuildGatewayUpstreamURLsForAccount(ctx, account, req)
 		if err != nil {

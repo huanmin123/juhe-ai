@@ -54,8 +54,8 @@ type minimaxSpeechAdapter struct{}
 
 func (minimaxSpeechAdapter) Provider() string { return "minimax" }
 
-// BuildRequest 构造 §8.2 报文：POST /v1/t2a_v2（路径相对账户 base_url，
-// URL 由链上层经 gatewayopenai.BuildUpstreamURL 归一为 /v1 前缀形态）。
+// BuildRequest 构造 §8.2 报文：POST {base}/t2a_v2（opPath 按 v2 契约不含
+// 版本段，/v1 由账户 base_url 版本根承载；URL 由链上层直拼归一）。
 // 能力边界裁决（契约 §2.4 规则 2，本地 400 不换账户）：
 //   - response_format 词表外（如 opus/aac）→ 拒绝（零转码）；
 //   - speed 超厂商区间 0.5–2.0 → 拒绝（公共区间 0.25–4.0 与厂商区间的
@@ -112,7 +112,7 @@ func (a minimaxSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte, er
 	if err != nil {
 		return "", nil, fmt.Errorf("编码 minimax TTS 请求体失败: %w", err)
 	}
-	return "/v1/t2a_v2", encoded, nil
+	return "/t2a_v2", encoded, nil
 }
 
 // minimaxSpeechResponseBody 是 §8.2 响应的最小消费面：data.audio（hex

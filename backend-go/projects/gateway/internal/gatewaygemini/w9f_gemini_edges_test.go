@@ -149,21 +149,19 @@ func TestW9FMapSlashToEmptyAndStripExact(t *testing.T) {
 	if got := mapSlashToEmpty("/v1beta"); got != "/v1beta" {
 		t.Fatalf("mapSlashToEmpty other = %q", got)
 	}
-	if got := stripV1BetaPrefixExact("/other"); got != "/other" {
-		t.Fatalf("strip exact other = %q", got)
-	}
-	if got := stripV1BetaPrefixExact("/v1betaX"); got != "/v1betaX" {
-		t.Fatalf("strip exact prefix-like = %q", got)
-	}
+	// 动机（v2 直拼契约）：stripV1BetaPrefixExact 随 base 侧 /v1beta 去重分支
+	// 删除，边界语义由入站 stripV1BetaPrefix 承载，不再单独断言 exact 变体。
 }
 
 func TestW9FNormalizedGeminiPathAndQueryRoot(t *testing.T) {
+	// 动机（v2 直拼契约）：opPath 不再强制挂 /v1beta——入站 /v1beta 剥离后
+	// 直接作为 opPath，版本根由 base_url 承载。
 	path, _ := normalizedGeminiPathAndQuery("/v1beta")
-	if path != "/v1beta" {
+	if path != "" {
 		t.Fatalf("root normalize = %q", path)
 	}
 	path, _ = normalizedGeminiPathAndQuery("/")
-	if path != "/v1beta" {
+	if path != "" {
 		t.Fatalf("slash normalize = %q", path)
 	}
 }

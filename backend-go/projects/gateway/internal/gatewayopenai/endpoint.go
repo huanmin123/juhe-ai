@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 // endpointFamilyFromPath mirrors openAIEndpointFamilyFromPath
@@ -100,27 +101,15 @@ func IsModelsRequest(method, originalPathAndQuery string) bool {
 	return normalizedPathWithoutVersion(path) == "/models"
 }
 
-// BuildUpstreamURL mirrors buildUpstreamUrl: normalize the account base URL
-// (always /v1-suffixed) and append the version-stripped path + query.
-// For gemini-openai-chat v1beta accounts (base URL ends with /v1beta/openai),
-// the client's /v1 prefix is stripped instead of appending another /v1.
-func BuildUpstreamURL(baseURL, pathAndQuery string) string {
-	normalizedBase := strings.TrimSpace(baseURL)
-	normalizedBase = strings.TrimRight(normalizedBase, "/")
-	// D-152: gemini-openai-chat v1beta profiles end with /v1beta/openai
-	if !geminiOpenAIChatBaseUrlOwnsOpenAIPath(normalizedBase) {
-		if !strings.HasSuffix(normalizedBase, "/v1") {
-			normalizedBase += "/v1"
-		}
-	}
-	return normalizedBase + upstreamPathSuffix(pathAndQuery)
-}
-
-// geminiOpenAIChatBaseUrlOwnsOpenAIPath returns true if the base URL ends
-// with /v1beta/openai (gemini-openai-chat v1beta profile base URL).
-func geminiOpenAIChatBaseUrlOwnsOpenAIPath(baseURL string) bool {
-	normalized := strings.ToLower(strings.TrimRight(baseURL, "/"))
-	return strings.HasSuffix(normalized, "/v1beta/openai")
+// BuildUpstreamURL 按上游 Base URL 版本根语义 v2 直拼最终上游 URL：
+// base_url 即版本根（如 https://ark.cn-beijing.volces.com/api/v3），直拼
+// opPath（入站路径剥去可选 /v1 前缀的剩余路径 + query）。拼接规则统一收敛
+// 到共享 upstreamenvelope.JoinUpstreamURL（R1：TrimRight 去尾斜杠直拼，不
+// 补插、不剥离、不去重版本段——原 D-152 补 /v1 与 gemini-openai-chat 豁免
+// 分支随 v2 契约删除）；base 为空或 opPath 非 / 前缀显式报错。入站 /v1
+// 剥离（upstreamPathSuffix）保留在入站边界，属客户端入站语义（R5）。
+func BuildUpstreamURL(baseURL, pathAndQuery string) (string, error) {
+	return upstreamenvelope.JoinUpstreamURL(baseURL, upstreamPathSuffix(pathAndQuery))
 }
 
 func upstreamPathSuffix(pathAndQuery string) string {

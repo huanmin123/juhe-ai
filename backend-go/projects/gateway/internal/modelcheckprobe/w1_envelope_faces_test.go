@@ -299,7 +299,9 @@ func w1AssertFaceShape(t *testing.T, face w1CapturedFace, form string) {
 	t.Helper()
 	request := face.request
 	body := face.body
-	wantURL := w1CrossFaceBaseURL + "/v1/responses"
+	// v2 直拼：base 无版本根时不再补 /v1（B/C 形态出站=base+catalog 模板；
+	// A 形态 Codex 固定上游不变）。
+	wantURL := w1CrossFaceBaseURL + "/responses"
 	wantAccept := "application/json, text/event-stream"
 	wantBeta := ""
 	wantBudget := true

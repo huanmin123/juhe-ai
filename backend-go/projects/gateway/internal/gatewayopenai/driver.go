@@ -186,9 +186,14 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 		header[key] = append([]string(nil), values...)
 	}
 
+	upstreamURL, urlErr := BuildUpstreamURL(input.UpstreamBaseURL, upstreamPathAndQuery)
+	if urlErr != nil {
+		return nil, urlErr
+	}
+
 	return &gatewayproto.BuildUpstreamRequestResult{
 		Method:        method,
-		URL:           BuildUpstreamURL(input.UpstreamBaseURL, upstreamPathAndQuery),
+		URL:           upstreamURL,
 		PathAndQuery:  upstreamPathAndQuery,
 		Header:        header,
 		Body:          body,

@@ -47,6 +47,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 // mediaAudioDecodeList 解码任务面列表响应的 data 数组。
@@ -474,23 +475,17 @@ func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
 	}, "glm tts 请求字符自算终态记录")
 }
 
-// TestChainMediaGlmSpeechUpstreamURLDedup 钉住 glm 语音 URL 归一的服务根去重
-// （契约 §7.2/CogVideo §7.1 同一先例）：base 已含 /api/paas/v4 时不重复拼接，
-// 不含时直拼官方根——两种形态都不得出现 openai /v1 强制补缀。
+// TestChainMediaGlmSpeechUpstreamURLDedup 重写为 v2 直拼钉值（动机：原
+// chainGlmVideoUpstreamURL 的服务根去重归一随 v2 删除）：glm 语音 opPath
+// 不含版本段（/audio/speech），/api/paas/v4 由 base_url 版本根承载，经共享
+// upstreamenvelope.JoinUpstreamURL 直拼——不再有 base 侧服务根判定。
 func TestChainMediaGlmSpeechUpstreamURLDedup(t *testing.T) {
-	dedup, err := chainGlmVideoUpstreamURL("https://open.bigmodel.cn/api/paas/v4", "/api/paas/v4/audio/speech")
+	versionRoot, err := upstreamenvelope.JoinUpstreamURL("https://open.bigmodel.cn/api/paas/v4", "/audio/speech")
 	if err != nil {
-		t.Fatalf("dedup url: %v", err)
+		t.Fatalf("version root url: %v", err)
 	}
-	if dedup != "https://open.bigmodel.cn/api/paas/v4/audio/speech" {
-		t.Fatalf("base 含服务根时未去重: %q", dedup)
-	}
-	plain, err := chainGlmVideoUpstreamURL("https://open.bigmodel.cn", "/api/paas/v4/audio/speech")
-	if err != nil {
-		t.Fatalf("plain url: %v", err)
-	}
-	if plain != "https://open.bigmodel.cn/api/paas/v4/audio/speech" {
-		t.Fatalf("base 不含服务根时未直拼官方根: %q", plain)
+	if versionRoot != "https://open.bigmodel.cn/api/paas/v4/audio/speech" {
+		t.Fatalf("版本根 base 直拼结果不符: %q", versionRoot)
 	}
 }
 

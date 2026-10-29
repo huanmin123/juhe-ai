@@ -244,7 +244,9 @@ func TestW2F3BaselineOAuthCodexOutboundShape(t *testing.T) {
 // TestW2F3BaselineAPIKeyOutboundShape 断言普通 API Key（C 形态）出站请求：
 // URL 与 Accept 按 endpointMode（信封口径：JSON application/json、SSE
 // api-key 双 accept）、Content-Type application/json、认证头逐字保留、
-// body 结构等价于请求载荷。
+// body 结构等价于请求载荷。URL 钉值随上游 Base URL 版本根契约 v2 收口：
+// 端点无版本根时出站=origin+catalog 模板（opPath 不含 /v1、/v1beta 版本段，
+// 版本段由账户 base_url 版本根承载；旧自动补 /v1、/v1beta 行为已删除）。
 func TestW2F3BaselineAPIKeyOutboundShape(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -263,7 +265,7 @@ func TestW2F3BaselineAPIKeyOutboundShape(t *testing.T) {
 				headers.Set("Authorization", "Bearer w2f3-key")
 				return headers
 			},
-			wantURL: "https://w2f3-up.example/v1/responses", wantAccept: "application/json",
+			wantURL: "https://w2f3-up.example/responses", wantAccept: "application/json",
 		},
 		{
 			name: "responses_sse", protocol: modelcheckprofile.ProtocolOpenAIResponses, model: "gpt-5.2", stream: true,
@@ -272,7 +274,7 @@ func TestW2F3BaselineAPIKeyOutboundShape(t *testing.T) {
 				headers.Set("Authorization", "Bearer w2f3-key")
 				return headers
 			},
-			wantURL: "https://w2f3-up.example/v1/responses", wantAccept: "application/json, text/event-stream",
+			wantURL: "https://w2f3-up.example/responses", wantAccept: "application/json, text/event-stream",
 		},
 		{
 			name: "chat_json", protocol: modelcheckprofile.ProtocolOpenAIChat, model: "chat-model",
@@ -281,7 +283,7 @@ func TestW2F3BaselineAPIKeyOutboundShape(t *testing.T) {
 				headers.Set("Authorization", "Bearer w2f3-key")
 				return headers
 			},
-			wantURL: "https://w2f3-up.example/v1/chat/completions", wantAccept: "application/json",
+			wantURL: "https://w2f3-up.example/chat/completions", wantAccept: "application/json",
 		},
 		{
 			name: "messages_json", protocol: modelcheckprofile.ProtocolAnthropic, model: "claude-model",
@@ -291,7 +293,7 @@ func TestW2F3BaselineAPIKeyOutboundShape(t *testing.T) {
 				headers.Set("anthropic-version", "2023-06-01")
 				return headers
 			},
-			wantURL: "https://w2f3-up.example/v1/messages", wantAccept: "application/json",
+			wantURL: "https://w2f3-up.example/messages", wantAccept: "application/json",
 		},
 		{
 			name: "generate_content_sse", protocol: modelcheckprofile.ProtocolGeminiNative, model: "gem-model", stream: true,
@@ -300,7 +302,7 @@ func TestW2F3BaselineAPIKeyOutboundShape(t *testing.T) {
 				headers.Set("x-goog-api-key", "w2f3-gemini-key")
 				return headers
 			},
-			wantURL: "https://w2f3-up.example/v1beta/models/gem-model:streamGenerateContent?alt=sse",
+			wantURL: "https://w2f3-up.example/models/gem-model:streamGenerateContent?alt=sse",
 			// OAuth/Code Assist 纯流式；api-key 形态双 accept（现行信封口径）。
 			wantAccept: "application/json, text/event-stream",
 		},

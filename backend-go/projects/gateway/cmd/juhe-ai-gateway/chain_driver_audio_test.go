@@ -22,8 +22,10 @@ func TestChainDriverGeminiSpeechAdapterDispatch(t *testing.T) {
 		VendorCode:   "gemini",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
-		BaseURL:      "https://gem.example",
-		APIKey:       "gk-1",
+		// 动机（v2 直拼契约）：gemini native lane 的 base_url 即版本根，自带
+		// /v1beta；最终 URL 形态不变。
+		BaseURL: "https://gem.example/v1beta",
+		APIKey:  "gk-1",
 	}
 	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",
 		`{"model":"gemini-2.5-flash-preview-tts","input":"Say cheerfully: hi","voice":"Kore","response_format":"pcm"}`)
@@ -89,11 +91,12 @@ func TestChainDriverGeminiTranscriptionStillNativeGated(t *testing.T) {
 }
 
 func TestChainDriverOpenAISpeechStaysPassthrough(t *testing.T) {
-	// openai 族：/v1-suffixed base + 原样客户端 body（无 adapter 改写）。
+	// openai 族：v2 直拼——base_url 即版本根（/v1 结尾）+ 入站剥 /v1 的
+	// opPath，客户端 body 原样透传（无 adapter 改写）。
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
 		ID: "acc_oai", VendorCode: "gpt", ProtocolCode: "openai",
-		Type: "api_key", BaseURL: "https://api.openai.example", APIKey: "sk-1",
+		Type: "api_key", BaseURL: "https://api.openai.example/v1", APIKey: "sk-1",
 	}
 	body := `{"model":"tts-1","input":"hi","voice":"alloy","response_format":"wav"}`
 	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech", body)

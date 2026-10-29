@@ -203,8 +203,13 @@ func TestW9DUpstreamURLArms(t *testing.T) {
 	if !matchConsecutiveSlashes("a//b") || matchConsecutiveSlashes("a/b") {
 		t.Fatal("consecutive slash arms")
 	}
-	if !matchesOpenAIEndpointPath([]string{"chat", "completions"}) {
+	// R8：openAIEndpointPathPrefixes 硬编码清单已删除，路径命中改由
+	// basePathHitsOperationPath（registry 公共模板后缀规则）判定。
+	if !basePathHitsOperationPath([]string{"POST /chat/completions"}, []string{"chat", "completions"}) {
 		t.Fatal("openai endpoint path must match")
+	}
+	if basePathHitsOperationPath([]string{"POST /chat/completions"}, []string{"v1"}) {
+		t.Fatal("version root must not match")
 	}
 	// validationMessageOrPolicy：非 upstream 校验错误 → 通用文案。
 	if validationMessageOrPolicy(nil) != "上游 Base URL 格式无效" {

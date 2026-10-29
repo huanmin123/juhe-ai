@@ -71,7 +71,8 @@ func minimaxInputReferenceBase64(reference string) (string, error) {
 	return trimmed, nil
 }
 
-// Create 构造契约 §8.1 创建报文：POST /v1/video_generation，body 为
+// Create 构造契约 §8.1 创建报文：POST {base}/video_generation（opPath 按
+// v2 契约不含版本段，/v1 由账户 base_url 版本根承载），body 为
 // {model,prompt,duration?,first_frame_image?}。映射与透传规则：
 //   - seconds → duration：数值秒直传（Hailuo 请求面为数值形态，档位
 //     合法性由上游裁决，契约 §2.4 规则 3 不做换算猜测）；
@@ -109,16 +110,17 @@ func (a minimaxVideoAdapter) Create(_ context.Context, in VideoCreateInput) (Vid
 	}
 	return VideoCreateOutput{
 		Method: http.MethodPost,
-		Path:   "/v1/video_generation",
+		Path:   "/video_generation",
 		Body:   encoded,
 	}, nil
 }
 
-// BuildPollRequest 构造轮询请求：GET /v1/query/video_generation?task_id=
-// （契约 §8.1；task_id 即创建响应的受理凭据）。task_id 由官方 API 使用
+// BuildPollRequest 构造轮询请求：GET {base}/query/video_generation?task_id=
+// （契约 §8.1；task_id 即创建响应的受理凭据；opPath 不含版本段，/v1 由
+// base_url 版本根承载）。task_id 由官方 API 使用
 // URL 安全的十六进制任务号，query 直拼不经额外编码（与官方示例一致）。
 func (minimaxVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
-	return http.MethodGet, "/v1/query/video_generation?task_id=" + upstreamJobID, nil
+	return http.MethodGet, "/query/video_generation?task_id=" + upstreamJobID, nil
 }
 
 // ContentFromArtifact 声明 minimax 形态的产物下载定位：completed 的下载

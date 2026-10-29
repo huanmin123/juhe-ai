@@ -38,10 +38,12 @@ func TestM3EnvelopeMigrationAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantURL, err := upstreamenvelope.UpstreamURL("https://open.bigmodel.cn/api/paas/v4", upstreamenvelope.ModeChatJSON, "profile_glm_general_openai_v1", upstreamenvelope.AdapterNone, "/v1/chat/completions")
+	wantURL, err := upstreamenvelope.UpstreamURL("https://open.bigmodel.cn/api/paas/v4", upstreamenvelope.ModeChatJSON, "profile_glm_general_openai_v1", upstreamenvelope.AdapterNone, "/chat/completions")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// R2：pathAndQuery 传去版本前缀操作路径（旧值 /v1/chat/completions 依赖
+	// 运行时剥前缀，已随 R1 删除）；版本段只随 base 版本根传入（R3）。
 	if request.URL.String() != wantURL {
 		t.Fatalf("chat_json URL = %q, want envelope UpstreamURL %q", request.URL.String(), wantURL)
 	}

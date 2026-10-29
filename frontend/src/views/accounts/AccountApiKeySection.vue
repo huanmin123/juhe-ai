@@ -125,7 +125,8 @@
         <a-popover placement="bottomLeft" trigger="hover">
           <template #content>
             <div class="base-url-help-content">
-              <div><strong>填写内容</strong><span>填写上游服务根地址，或带版本号的根地址，例如 <code>https://api.openai.com/v1</code>。</span></div>
+              <div><strong>填写内容</strong><span>填写包含版本前缀的根地址，例如 <code>https://api.openai.com/v1</code>；火山引擎（Ark）填 <code>https://ark.cn-beijing.volces.com/api/v3</code>；GLM 官方根直接填 <code>https://open.bigmodel.cn/api/paas/v4</code>。</span></div>
+              <div><strong>通义千问</strong><span>填 DashScope 裸根 <code>https://dashscope.aliyuncs.com</code>，不要带 compatible-mode 路径。</span></div>
               <div><strong>不要填写</strong><span>不要填写具体接口路径，例如 <code>/chat/completions</code>、<code>/responses</code>、<code>/messages</code> 或 <code>:generateContent</code>。</span></div>
               <div><strong>混合供应商</strong><span>填写该账户真实上游的根地址，协议转换由账户配置负责。</span></div>
               <div><strong>本地联调</strong><span>CLIProxyAPI sidecar 可填写 <code>http://127.0.0.1:&lt;port&gt;/v1</code>；Gemini native 使用 <code>/v1beta</code>。</span></div>

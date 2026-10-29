@@ -45,7 +45,9 @@ func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
 		}))
 		defer server.Close()
 	
-		result := ProbeOpenAI(context.Background(), testInput(server.URL, "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+		// R3：探针 base_url 携带 /v1 版本根，线上路径 = 根 + 去前缀操作路径
+		//（R1 删除运行时补 /v1），mock 断言路径不变。
+		result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 		if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
 			t.Fatalf("unexpected probe result: %#v", result)
 		}
@@ -72,7 +74,8 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 		}))
 		defer server.Close()
 	
-		result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+		// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
+		result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected SSE probe result: %#v", result)
 	}
@@ -223,7 +226,8 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 	}))
 	defer server.Close()
 
-	result := ProbeOpenAI(context.Background(), testInput(server.URL, "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
+	result := ProbeOpenAI(context.Background(), testInput(server.URL+"/v1", "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected image probe result: %#v", result)
 	}
@@ -329,7 +333,8 @@ func TestProbeAnthropicMessagesUsesNativeHeadersAndCompletion(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"` + challengeAnswerFromRequest(request) + `"}]}`))
 	}))
 	defer server.Close()
-	input := testInput(server.URL, "messages_json")
+	// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
+	input := testInput(server.URL+"/v1", "messages_json")
 	input.Provider = "anthropic"
 	input.ProtocolProfileID = "profile_anthropic_anthropic_v1"
 	input.ProtocolCode = "anthropic"
@@ -349,7 +354,8 @@ func TestProbeGeminiNativeUsesGoogleOAuthHeadersAndCompletion(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"` + challengeAnswerFromRequest(request) + `"}]}}]}`))
 	}))
 	defer server.Close()
-	input := testInput(server.URL, "generate_content_json")
+	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
+	input := testInput(server.URL+"/v1beta", "generate_content_json")
 	input.Provider = "gemini"
 	input.ProtocolProfileID = "profile_gemini_native_v1beta"
 	input.ProtocolCode = "gemini"
@@ -375,7 +381,8 @@ func TestProbeGeminiInteractionsSSERequiresCompletedEvent(t *testing.T) {
 			_, _ = writer.Write([]byte("data: {\"type\":\"interaction.delta\",\"text\":\"" + challengeAnswerFromRequest(request) + "\"}\n\ndata: {\"type\":\"interaction.completed\",\"status\":\"completed\"}\n\n"))
 	}))
 	defer server.Close()
-	input := testInput(server.URL, "interactions_sse")
+	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
+	input := testInput(server.URL+"/v1beta", "interactions_sse")
 	input.Provider = "gemini"
 	input.ProtocolProfileID = "profile_gemini_native_v1beta"
 	input.ProtocolCode = "gemini"
@@ -727,7 +734,9 @@ func TestBuildProbeRequestGLMOpenAIUsesManualCompatibleBasePaths(t *testing.T) {
 		{
 			name:     "generic service root",
 			profile:  "profile_glm_general_openai_v1",
-			base:     "https://glm-proxy.test",
+			// R3：base_url 必须自带版本根（R1 删除运行时补 /v1 后，无根 base
+			// 会直拼成 /chat/completions）——fixture 改为带 /v1 的服务根。
+			base:     "https://glm-proxy.test/v1",
 			wantPath: "/v1/chat/completions",
 		},
 	}
@@ -755,6 +764,9 @@ func TestBuildProbeRequestGLMOpenAIUsesManualCompatibleBasePaths(t *testing.T) {
 }
 
 func TestBuildProbeRequestProviderBasePathsRemainAligned(t *testing.T) {
+	// R3：base_url 为各厂商版本根（与 connector registry R9 默认值同源）；
+	// R1 直拼后线上路径 = 版本根 + 去版本前缀操作路径，wantPath 与旧断言
+	// 数值一致，但达成方式从「运行时补根」改为「base 携带根」。
 	cases := []struct {
 		name     string
 		profile  string
@@ -763,13 +775,13 @@ func TestBuildProbeRequestProviderBasePathsRemainAligned(t *testing.T) {
 		base     string
 		wantPath string
 	}{
-		{name: "OpenAI service root", profile: "profile_openai_openai_v1", provider: "openai", mode: "chat_json", base: "https://api.openai.com", wantPath: "/v1/chat/completions"},
+		{name: "OpenAI service root", profile: "profile_openai_openai_v1", provider: "openai", mode: "chat_json", base: "https://api.openai.com/v1", wantPath: "/v1/chat/completions"},
 		{name: "xAI version root", profile: "profile_xai_openai_v1", provider: "xai", mode: "chat_json", base: "https://api.x.ai/v1", wantPath: "/v1/chat/completions"},
-		{name: "DeepSeek OpenAI root", profile: "profile_deepseek_openai_v1", provider: "deepseek", mode: "chat_json", base: "https://api.deepseek.com", wantPath: "/v1/chat/completions"},
-		{name: "DeepSeek Anthropic root", profile: "profile_deepseek_anthropic_v1", provider: "deepseek", mode: "messages_json", base: "https://api.deepseek.com/anthropic", wantPath: "/anthropic/v1/messages"},
-		{name: "GLM Anthropic root", profile: "profile_glm_coding_anthropic_v1", provider: "glm", mode: "messages_json", base: "https://open.bigmodel.cn/api/anthropic", wantPath: "/api/anthropic/v1/messages"},
-		{name: "Anthropic root", profile: "profile_anthropic_anthropic_v1", provider: "anthropic", mode: "messages_json", base: "https://api.anthropic.com", wantPath: "/v1/messages"},
-		{name: "Gemini native root", profile: "profile_gemini_native_v1beta", provider: "gemini", mode: "generate_content_json", base: "https://generativelanguage.googleapis.com", wantPath: "/v1beta/models/gemini-test:generateContent"},
+		{name: "DeepSeek OpenAI root", profile: "profile_deepseek_openai_v1", provider: "deepseek", mode: "chat_json", base: "https://api.deepseek.com/v1", wantPath: "/v1/chat/completions"},
+		{name: "DeepSeek Anthropic root", profile: "profile_deepseek_anthropic_v1", provider: "deepseek", mode: "messages_json", base: "https://api.deepseek.com/anthropic/v1", wantPath: "/anthropic/v1/messages"},
+		{name: "GLM Anthropic root", profile: "profile_glm_coding_anthropic_v1", provider: "glm", mode: "messages_json", base: "https://open.bigmodel.cn/api/anthropic/v1", wantPath: "/api/anthropic/v1/messages"},
+		{name: "Anthropic root", profile: "profile_anthropic_anthropic_v1", provider: "anthropic", mode: "messages_json", base: "https://api.anthropic.com/v1", wantPath: "/v1/messages"},
+		{name: "Gemini native root", profile: "profile_gemini_native_v1beta", provider: "gemini", mode: "generate_content_json", base: "https://generativelanguage.googleapis.com/v1beta", wantPath: "/v1beta/models/gemini-test:generateContent"},
 		{name: "Gemini OpenAI root", profile: "profile_gemini_openai_chat_v1beta", provider: "gemini", mode: "chat_json", base: "https://generativelanguage.googleapis.com/v1beta/openai", wantPath: "/v1beta/openai/chat/completions"},
 	}
 	for _, tc := range cases {

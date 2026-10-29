@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
 
 // Upstream Base URL security policy: the write-side port of
@@ -91,10 +93,17 @@ func upstreamURLInvalid(message string) error {
 	return &upstreamBaseURLValidationError{message: message}
 }
 
-// validateOpenAICompatibleBaseURLPath mirrors
-// validateOpenAICompatibleBaseUrlPath: a /v1 root or the service root only —
-// concrete endpoint paths are rejected.
-func validateOpenAICompatibleBaseURLPath(path string) string {
+// upstreamBasePathViolationMessage 是凭据域的 R8 统一违规文案（连接域同形
+// 文案带"连接 Base URL"前缀，见 connection_base_url.go）。
+const upstreamBasePathViolationMessage = "上游 Base URL 不能填写具体接口路径，请填写包含版本前缀的根地址，例如 /v1、/api/v3"
+
+// validateUpstreamBaseURLPath 实现凭据域路径校验（上游 Base URL 版本根语义
+// v2 R8 统一规则）：base 路径按段切分（每段 strict percent-decode，保持字面
+// 大小写与模板语义一致）后取任意连续后缀，命中登记的操作模板（contracts
+// 三个公共协议面已去版本前缀的并集，BasePathValidationTemplates）的完整路径
+// 或其按段前缀 → 拒绝；版本根（/v1、/api/v3、/api/paas/v4 等）、`/api/plan
+// /v3` 类服务前缀与空路径放行。
+func validateUpstreamBaseURLPath(path string) string {
 	segments := []string{}
 	for _, segment := range strings.Split(path, "/") {
 		if segment == "" {
@@ -104,55 +113,12 @@ func validateOpenAICompatibleBaseURLPath(path string) string {
 		if err != nil {
 			return "上游 Base URL 路径编码无效"
 		}
-		segments = append(segments, strings.ToLower(decoded))
+		segments = append(segments, decoded)
 	}
-	if len(segments) == 0 {
-		return ""
-	}
-	finalV1Index := -1
-	for index, segment := range segments {
-		if segment == "v1" {
-			finalV1Index = index
-		}
-	}
-	if finalV1Index >= 0 && finalV1Index < len(segments)-1 {
-		suffix := segments[finalV1Index+1:]
-		if matchesOpenAIEndpointPath(suffix) {
-			return "上游 Base URL 不能包含 /v1 后的具体接口路径"
-		}
-	}
-	for index := range segments {
-		if matchesOpenAIEndpointPath(segments[index:]) {
-			return "上游 Base URL 不能填写具体接口路径，请填写服务根地址或 /v1 版本根地址"
-		}
+	if basePathHitsOperationPath(contracts.BasePathValidationTemplates(), segments) {
+		return upstreamBasePathViolationMessage
 	}
 	return ""
-}
-
-var openAIEndpointPathPrefixes = [][]string{
-	{"models"}, {"responses"}, {"chat", "completions"}, {"images", "generations"},
-	{"images", "edits"}, {"images", "variations"}, {"embeddings"},
-	{"audio", "transcriptions"}, {"audio", "translations"}, {"audio", "speech"},
-	{"files"}, {"batches"}, {"fine_tuning", "jobs"}, {"moderations"}, {"vector_stores"},
-}
-
-func matchesOpenAIEndpointPath(segments []string) bool {
-	for _, prefix := range openAIEndpointPathPrefixes {
-		if len(segments) < len(prefix) {
-			continue
-		}
-		matched := true
-		for index, part := range prefix {
-			if segments[index] != part {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
 }
 
 // validateOpenAICompatibleBaseURL mirrors parseAndValidateUpstreamUrl under
@@ -204,7 +170,7 @@ func validateOpenAICompatibleBaseURL(value string) (*url.URL, error) {
 	if parsed.Fragment != "" || parsed.ForceQuery {
 		return nil, upstreamURLInvalid("上游 Base URL 不能包含片段标识")
 	}
-	if message := validateOpenAICompatibleBaseURLPath(parts.path); message != "" {
+	if message := validateUpstreamBaseURLPath(parts.path); message != "" {
 		return nil, upstreamURLInvalid(message)
 	}
 	return parsed, nil

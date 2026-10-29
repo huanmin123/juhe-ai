@@ -104,16 +104,16 @@ var presetSurfaces = map[string]string{
 var presetDefaultBaseURL = map[string]string{
 	"gpt_openai_v1":             "https://api.openai.com/v1",
 	"xai_openai_v1":             "https://api.x.ai/v1",
-	"deepseek_openai_v1":        "https://api.deepseek.com",
-	"deepseek_anthropic_v1":     "https://api.deepseek.com/anthropic",
+	"deepseek_openai_v1":        "https://api.deepseek.com/v1",
+	"deepseek_anthropic_v1":     "https://api.deepseek.com/anthropic/v1",
 	"anthropic_v1":              "https://api.anthropic.com/v1",
 	"gemini_openai_chat_v1beta": "https://generativelanguage.googleapis.com/v1beta/openai",
-	"gemini_native_v1beta":      "https://generativelanguage.googleapis.com",
-	"glm_general_openai_v1":     "https://open.bigmodel.cn/api/paas/v4/",
+	"gemini_native_v1beta":      "https://generativelanguage.googleapis.com/v1beta",
+	"glm_general_openai_v1":     "https://open.bigmodel.cn/api/paas/v4",
 	"glm_coding_openai_v1":      "https://open.bigmodel.cn/api/coding/paas/v4",
-	"glm_coding_anthropic_v1":   "https://open.bigmodel.cn/api/anthropic",
-	"minimax_media":             "https://api.minimax.chat",
-	"volcengine_ark":            "https://ark.cn-beijing.volces.com",
+	"glm_coding_anthropic_v1":   "https://open.bigmodel.cn/api/anthropic/v1",
+	"minimax_media":             "https://api.minimax.chat/v1",
+	"volcengine_ark":            "https://ark.cn-beijing.volces.com/api/v3",
 	"qwen_dashscope":            "https://dashscope.aliyuncs.com",
 	// generic_* 没有官方地址：账户必须自带 base_url（旧库在加密凭据内保存）。
 	// 留空即"必须由凭据提供"，迁移侧对缺失值 fail-closed，不生成占位 host。

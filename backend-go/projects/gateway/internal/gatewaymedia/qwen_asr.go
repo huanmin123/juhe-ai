@@ -12,9 +12,10 @@
 // output.task_id；轮询 GET /api/v1/tasks/{task_id}（与万相同一 DashScope
 // 任务接口），SUCCEEDED → output.results[].transcription_url（**转写结果
 // JSON 文件**的下载链接，产物为 JSON 非 audio），FAILED → output.message，
-// usage（JSON 字符串，时长计量）。出站路径自带 /api/v1 服务根，URL 由链
-// 上层经 chainQwenVideoUpstreamURL 归一（/api/v1 去重，契约 §10.1 先例，
-// 该函数同时服务 §10.2 长转写面）。纯逻辑层，不触 chain/HTTP 执行。
+// usage（JSON 字符串，时长计量）。出站 opPath 自带 /api/v1 全路径（qwen
+// 双根特例 base=origin，契约 §10.1 先例同规覆盖 §10.2 长转写面），URL 由
+// 链上层经共享 upstreamenvelope.JoinUpstreamURL 直拼。纯逻辑层，不触
+// chain/HTTP 执行。
 package gatewaymedia
 
 import (

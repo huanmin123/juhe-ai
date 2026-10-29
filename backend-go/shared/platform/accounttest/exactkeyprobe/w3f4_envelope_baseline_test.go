@@ -64,10 +64,12 @@ func w3BaselineBody(t *testing.T, body []byte) map[string]any {
 }
 
 // TestW3F4BaselinePlainAPIKeyArms 钉 C 形态（普通 API Key）出站形状：
-// URL/Accept/认证头/预算字段/body 语义。迁移前后不变式。
+// URL/Accept/认证头/预算字段/body 语义。迁移前后不变式。R1/R3 起 base_url
+// 必须携带版本根（/v1、/v1beta），URL 断言的 base 随之改带版本根，want 保持
+// 「版本根 + 去版本前缀操作路径」形态不变。
 func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 	t.Run("chat_json", func(t *testing.T) {
-		request, body := w3BaselineRequest(t, "https://w3-up.test", nil)
+		request, body := w3BaselineRequest(t, "https://w3-up.test/v1", nil)
 		if request.URL.String() != "https://w3-up.test/v1/chat/completions" || request.Method != "POST" {
 			t.Fatalf("URL=%s method=%s", request.URL, request.Method)
 		}
@@ -83,7 +85,7 @@ func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 		}
 	})
 	t.Run("responses_json", func(t *testing.T) {
-		request, body := w3BaselineRequest(t, "https://w3-up.test", func(input *Input) {
+		request, body := w3BaselineRequest(t, "https://w3-up.test/v1", func(input *Input) {
 			input.ProtocolProfileID = "profile_openai_openai_v1"
 			input.EndpointMode = "responses_json"
 		})
@@ -117,7 +119,7 @@ func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 		}
 	})
 	t.Run("images_json 无预算字段", func(t *testing.T) {
-		request, body := w3BaselineRequest(t, "https://w3-up.test", func(input *Input) {
+		request, body := w3BaselineRequest(t, "https://w3-up.test/v1", func(input *Input) {
 			input.EndpointMode = "images_json"
 		})
 		if request.URL.String() != "https://w3-up.test/v1/images/generations" {
@@ -131,7 +133,7 @@ func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 		}
 	})
 	t.Run("messages_json anthropic", func(t *testing.T) {
-		request, body := w3BaselineRequest(t, "https://w3-up.test", func(input *Input) {
+		request, body := w3BaselineRequest(t, "https://w3-up.test/v1", func(input *Input) {
 			input.Provider = "anthropic"
 			input.ProtocolProfileID = "profile_anthropic_anthropic_v1"
 			input.ProtocolCode = "anthropic"
@@ -156,7 +158,7 @@ func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 		// 按 AuthOAuth 解析——认证头 Bearer + 配额项目不变；SSE Accept 从
 		// api-key 双 accept 收敛为纯流式（W3 曾按 AuthBearer 留双 accept），
 		// 见同文件 google_oauth sse 纯流式臂。
-		request, body := w3BaselineRequest(t, "https://w3-up.test", func(input *Input) {
+		request, body := w3BaselineRequest(t, "https://w3-up.test/v1beta", func(input *Input) {
 			input.Provider = "gemini"
 			input.ProtocolProfileID = "profile_gemini_native_v1beta"
 			input.ProtocolCode = "gemini"
@@ -235,7 +237,8 @@ func TestW3F4BaselinePlainAPIKeyArms(t *testing.T) {
 
 // TestW3F4BaselineCodexCompatibilityShape 钉 B 形态（codex_responses 兼容画像）
 // 出站形状：身份头/身份 body 单源派生、Lite 头 §9.5 模型条件、预算保留、
-// Accept 双 accept、不写 OpenAI-Beta。迁移前后不变式。
+// Accept 双 accept、不写 OpenAI-Beta。迁移前后不变式。base 改带 /v1 版本根
+//（R1/R3：不再自动补 /v1），want URL 不变。
 func TestW3F4BaselineCodexCompatibilityShape(t *testing.T) {
 	for _, tc := range []struct {
 		model    string
@@ -247,7 +250,7 @@ func TestW3F4BaselineCodexCompatibilityShape(t *testing.T) {
 		{model: "w3-plain-model", wantLite: false},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
-			request, body := w3BaselineRequest(t, "https://w3-up.test", func(input *Input) {
+			request, body := w3BaselineRequest(t, "https://w3-up.test/v1", func(input *Input) {
 				input.EndpointMode = "responses_sse"
 				input.ClientCompatibility = "codex_responses"
 				input.HealthModel = tc.model
@@ -336,7 +339,7 @@ func TestW3F4BaselineCodexCompatibilityShape(t *testing.T) {
 // （W3 复审补强）：B 形态不强制 SSE——json 模式 Accept 单 application/json、
 // body 不置 stream:true；身份单源/注入/预算与 sse 臂同规（§9.1-B）。
 func TestW3F4BaselineCodexCompatibilityJSONMode(t *testing.T) {
-	request, body := w3BaselineRequest(t, "https://w3-up.test", func(input *Input) {
+	request, body := w3BaselineRequest(t, "https://w3-up.test/v1", func(input *Input) {
 		input.EndpointMode = "responses_json"
 		input.ClientCompatibility = "codex_responses"
 		input.HealthModel = "gpt-5.6-sol"

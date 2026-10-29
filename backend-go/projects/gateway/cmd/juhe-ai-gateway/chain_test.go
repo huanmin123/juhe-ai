@@ -693,9 +693,11 @@ func TestChainProviderDriverBuildsUpstreamRequests(t *testing.T) {
 		ID:           "acc_1",
 		VendorCode:   "openai",
 		ProtocolCode: "openai",
-		BaseURL:      "https://upstream.example",
-		APIKey:       "sk-upstream",
-		Type:         "api_key",
+		// 动机（v2 直拼契约）：openai 族 base_url 即版本根（/v1 结尾），不再
+		// 依赖归一补 /v1。
+		BaseURL: "https://upstream.example/v1",
+		APIKey:  "sk-upstream",
+		Type:    "api_key",
 	}
 	urls, err := driver.BuildGatewayUpstreamURLsForAccount(context.Background(), account, req)
 	if err != nil {

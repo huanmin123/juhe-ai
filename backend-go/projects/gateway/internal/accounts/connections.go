@@ -143,11 +143,11 @@ func resolveConnectionSet(domain, driver, accountType, oauthType string, connect
 			modes = append(modes, mode)
 		}
 		baseURL := strings.TrimSpace(connection.BaseURL)
-		suffixes, templates, ok := connectionURLContract(driver, accountType, oauthType, preset, domain)
+		templates, ok := connectionURLContract(driver, accountType, oauthType, preset, domain)
 		if !ok {
 			return nil, &ValidationError{Message: "connection_capability_unsupported: 连接预设 " + preset + " 缺少 registry URL 契约"}
 		}
-		if err := validateConnectionBaseURL(suffixes, templates, baseURL); err != nil {
+		if err := validateConnectionBaseURL(templates, baseURL); err != nil {
 			return nil, err
 		}
 		resolved = append(resolved, resolvedConnection{

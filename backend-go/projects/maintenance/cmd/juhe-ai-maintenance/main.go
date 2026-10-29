@@ -86,17 +86,20 @@ func runMaintenance(argv []string) int {
 	migrateSchedulingPreferences := fs.Bool("migrate-scheduling-preferences", false, "scheduling-preferences one-shot migration (PLAN-20261012T033000000Z P2): requires --node-stopped --go-stopped --backup-confirmed; storage via --dsn; resumable (rerun continues, NULL judgment is idempotent)")
 	verifySchedulingPreferences := fs.Bool("verify-scheduling-preferences", false, "read-only scheduling-preferences verification: requires --scheduling-preferences-check=preflight (pre-migration report, exit 0) or postflight (completed-state check)")
 	schedulingPreferencesCheck := fs.String("scheduling-preferences-check", "", "verification mode for --verify-scheduling-preferences: preflight or postflight")
+	migrateUpstreamBaseURLVersionRoot := fs.Bool("migrate-upstream-base-url-version-root", false, "upstream base URL version-root backfill (上游 Base URL 版本根语义 v2): with --dry-run scans juhe_business account_connections.base_url and accounts.credentials_encrypted read-only and writes the reviewable manifest to --manifest-out (the only dry-run write; non-conforming values land in the review bucket untouched); without --dry-run requires --node-stopped --go-stopped --backup-confirmed and applies the planned rewrites in one business transaction (--dsn; conditional on the old value, idempotent rerun)")
+	verifyUpstreamBaseURLVersionRoot := fs.Bool("verify-upstream-base-url-version-root", false, "read-only upstream base URL verification: requires --upstream-base-url-check=preflight (pre-migration classification report, exit 0) or postflight (migrated-state check; residual rewrite/fill rows fail readiness with exit 3)")
+	upstreamBaseURLCheck := fs.String("upstream-base-url-check", "", "verification mode for --verify-upstream-base-url-version-root: preflight or postflight")
 	if err := fs.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	if *applyStudioRetirement && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *dropRetiredMonitoringTables) {
+	if *applyStudioRetirement && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot) {
 		fmt.Fprintln(os.Stderr, "studio retirement is mutually exclusive with other maintenance commands")
 		return 2
 	}
-	if *dropRetiredMonitoringTables && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *applyStudioRetirement) {
+	if *dropRetiredMonitoringTables && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *applyStudioRetirement || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot) {
 		fmt.Fprintln(os.Stderr, "drop-retired-monitoring-tables is mutually exclusive with other maintenance commands")
 		return 2
 	}
@@ -105,7 +108,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "capability-domain migrate and verify flags are mutually exclusive")
 			return 2
 		}
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "capability domain migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -119,7 +122,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "scheduling-preferences migrate and verify flags are mutually exclusive")
 			return 2
 		}
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "scheduling preferences migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -128,43 +131,57 @@ func runMaintenance(argv []string) int {
 		}
 		return schedulingPreferencesVerifyResult(*bootstrapDSN, *schedulingPreferencesCheck)
 	}
+	if *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
+		if *migrateUpstreamBaseURLVersionRoot && *verifyUpstreamBaseURLVersionRoot {
+			fmt.Fprintln(os.Stderr, "upstream base URL migrate and verify flags are mutually exclusive")
+			return 2
+		}
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *migrateMergeSuperGroups || *importLegacyBusiness || *migrateProviderConnectionModel {
+			fmt.Fprintln(os.Stderr, "upstream base URL migration flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		if *migrateUpstreamBaseURLVersionRoot {
+			return upstreamBaseURLMigrationResult(*backfillDryRun, *bootstrapDSN, *manifestOut, *seedSecret, *nodeStopped, *goStopped, *backupConfirmed)
+		}
+		return upstreamBaseURLVerifyResult(*bootstrapDSN, *upstreamBaseURLCheck)
+	}
 	if *migrateMergeSuperGroups {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "merge→super migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return mergeSuperGroupsMigrationResult(*backfillDryRun, *bootstrapDSN, *manifestOut, *migrationBatchID, *nodeStopped, *goStopped, *backupConfirmed)
 	}
 	if *importLegacyBusiness {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel || *migrateMergeSuperGroups {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel || *migrateMergeSuperGroups || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "legacy business import flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return legacyBusinessImportResult(*backfillDryRun, *legacyDSN, *bootstrapDSN, *seedSecret)
 	}
 	if *migrateProviderConnectionModel {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "provider connection model migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return providerConnectionMigrationResult(*backfillDryRun, *bootstrapDSN, *manifestOut)
 	}
 	if *migrateChatBinding {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "chat account-only binding migration flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return chatAccountOnlyBindingMigrationResult(*bootstrapDSN)
 	}
 	if *postgresSchemaSnapshot {
-		if *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return postgresSchemaSnapshotResult()
 	}
 	if *ensureSchema || *seedDefaults {
-		if *postgresSchemaSnapshot || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *postgresSchemaSnapshot || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -175,7 +192,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "mockdata seeding and mockdata coverage verification flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "mockdata flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -189,14 +206,14 @@ func runMaintenance(argv []string) int {
 		})
 	}
 	if *rebuildUsageStats {
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "rebuild-usage-stats flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return rebuildUsageStatsResult(*bootstrapDSN, *rebuildBatchSize, *rebuildMaxBatches, *confirmOffline)
 	}
 	if *applySuccessCostBackfill {
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *dropRetiredMonitoringTables {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot {
 			fmt.Fprintln(os.Stderr, "apply-success-cost-backfill flag is mutually exclusive with other maintenance commands")
 			return 2
 		}

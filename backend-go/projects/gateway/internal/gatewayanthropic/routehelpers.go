@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 // 协议标识（对齐 domain/provider-protocol.ts）。
@@ -151,15 +153,12 @@ func anthropicEndpointFamilyFromPath(value string) EndpointFamily {
 	}
 }
 
-// BuildUpstreamURL 对齐 buildAnthropicUpstreamUrl：base 规范化补 /v1，
-// 请求路径去 /v1 前缀后拼接并保留原 query。
+// BuildUpstreamURL 按 v2 直拼契约构造：base_url 即版本根（如 deepseek
+// https://api.deepseek.com/anthropic/v1），直拼 opPath（入站路径剥 /v1 前缀
+// 的剩余路径 + query）；非空校验与 TrimRight 去尾斜杠直拼统一由共享
+// upstreamenvelope.JoinUpstreamURL 承担（R1/R3），不再对 base 补 /v1。
 func BuildUpstreamURL(baseURL, pathAndQuery string) (string, error) {
-	normalizedBase, err := normalizeAnthropicBaseURL(baseURL)
-	if err != nil {
-		return "", err
-	}
-	suffix := anthropicPathSuffix(pathAndQuery)
-	return normalizedBase + suffix, nil
+	return upstreamenvelope.JoinUpstreamURL(baseURL, anthropicPathSuffix(pathAndQuery))
 }
 
 // BuildUpstreamURLsForAccount 对齐 buildAnthropicUpstreamUrlsForAccount。
@@ -177,17 +176,6 @@ func BuildUpstreamURLsForAccount(account UpstreamAccount, r *http.Request) []str
 		return nil
 	}
 	return []string{built}
-}
-
-func normalizeAnthropicBaseURL(baseURL string) (string, error) {
-	normalizedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if normalizedBase == "" {
-		return "", fmt.Errorf("Anthropic 上游 baseUrl 不能为空")
-	}
-	if !strings.HasSuffix(normalizedBase, "/v1") {
-		normalizedBase += "/v1"
-	}
-	return normalizedBase, nil
 }
 
 func anthropicPathSuffix(pathAndQuery string) string {

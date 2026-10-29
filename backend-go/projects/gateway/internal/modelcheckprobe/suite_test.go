@@ -495,7 +495,9 @@ type mappedEndpointTransport struct {
 
 func (t *mappedEndpointTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	t.requests++
-	if request.URL.Path != "/v1/chat/completions" {
+	// v2 直拼：Suite Endpoint=https://example.test 无版本根，出站路径为
+	// catalog 模板原样（旧行为自动补 /v1 已随版本根契约删除）。
+	if request.URL.Path != "/chat/completions" {
 		t.wrongPath++
 	}
 	body, err := io.ReadAll(request.Body)

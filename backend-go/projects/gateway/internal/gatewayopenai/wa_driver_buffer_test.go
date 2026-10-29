@@ -85,7 +85,8 @@ func TestWAOpenAIDriverBuildUpstreamRequest(t *testing.T) {
 		if result.Method != http.MethodPost {
 			t.Fatalf("缺省方法 = %q", result.Method)
 		}
-		if result.URL != "https://up.example/v1/chat/completions?k=1" {
+		// 动机（v2 直拼契约）：裸域 base 不再自动补 /v1，直拼 opPath。
+		if result.URL != "https://up.example/chat/completions?k=1" {
 			t.Fatalf("URL = %q", result.URL)
 		}
 		if result.Stream != true || result.EndpointMode != gatewayproto.EndpointModeChatSSE {
@@ -252,6 +253,9 @@ func TestWABuildModelMappedJSONBody(t *testing.T) {
 	// ParsedBody 未提供时从 Body 解析。
 	driver := NewDriver()
 	input := gatewayproto.BuildUpstreamRequestInput{
+		// 出站 URL 构造（JoinUpstreamURL）要求非空 base；本用例断言的是
+		// body 模型提取，base 给合法占位值。
+		UpstreamBaseURL:    "https://up.example/v1",
 		ClientPathAndQuery: "/v1/chat/completions",
 		Body:               []byte(`{"model":"m"}`),
 	}

@@ -174,44 +174,48 @@ var capabilityDomainLanes = map[string][]string{
 // ---------------------------------------------------------------------------
 
 // 模板格式固定为 METHOD + 一个 ASCII 空格 + 以 / 开头的 path；
-// {id}/{model} 是单段占位符。本地列表入口（GET /v1/videos、GET /v1/audio/jobs）
+// {id}/{model} 是单段占位符。本地列表入口（GET /videos、GET /audio/jobs）
 // 不进入 operation template，也不选择上游（设计 §1 :95）。
+// 模板不含版本前缀（上游 Base URL 版本根语义 v2 R2）：版本段（/v1、
+// /v1beta、/api/v3 等）属于 base_url 版本根（R3）；唯一例外是 qwen_dashscope
+// ——其 base_url 语义是 origin（默认 https://dashscope.aliyuncs.com），服务
+// 路径 /compatible-mode/v1、/api/v1 属于操作路径，保持全路径（R6）。
 var (
 	// openAIOperationTemplates 是 openai_v1 公共清单（15 条）。
 	openAIOperationTemplates = []string{
-		"POST /v1/chat/completions",
-		"POST /v1/responses",
-		"POST /v1/images/generations",
-		"POST /v1/audio/speech",
-		"POST /v1/audio/transcriptions",
-		"POST /v1/audio/translations",
-		"POST /v1/audio/jobs",
-		"GET /v1/audio/jobs/{id}",
-		"GET /v1/audio/jobs/{id}/content",
-		"DELETE /v1/audio/jobs/{id}",
-		"POST /v1/videos",
-		"GET /v1/videos/{id}",
-		"GET /v1/videos/{id}/content",
-		"DELETE /v1/videos/{id}",
-		"GET /v1/realtime",
+		"POST /chat/completions",
+		"POST /responses",
+		"POST /images/generations",
+		"POST /audio/speech",
+		"POST /audio/transcriptions",
+		"POST /audio/translations",
+		"POST /audio/jobs",
+		"GET /audio/jobs/{id}",
+		"GET /audio/jobs/{id}/content",
+		"DELETE /audio/jobs/{id}",
+		"POST /videos",
+		"GET /videos/{id}",
+		"GET /videos/{id}/content",
+		"DELETE /videos/{id}",
+		"GET /realtime",
 	}
 
 	// anthropicOperationTemplates 是 anthropic_v1 公共清单（2 条）。
 	anthropicOperationTemplates = []string{
-		"POST /v1/messages",
-		"POST /v1/messages/count_tokens",
+		"POST /messages",
+		"POST /messages/count_tokens",
 	}
 
 	// geminiNativeOperationTemplates 是 gemini_v1beta 公共清单（8 条）。
 	geminiNativeOperationTemplates = []string{
-		"POST /v1beta/models/{model}:generateContent",
-		"POST /v1beta/models/{model}:streamGenerateContent",
-		"POST /v1beta/models/{model}:countTokens",
-		"POST /v1beta/models/{model}:embedContent",
-		"POST /v1beta/interactions",
-		"GET /v1beta/interactions/{id}",
-		"DELETE /v1beta/interactions/{id}",
-		"POST /v1beta/interactions/{id}/cancel",
+		"POST /models/{model}:generateContent",
+		"POST /models/{model}:streamGenerateContent",
+		"POST /models/{model}:countTokens",
+		"POST /models/{model}:embedContent",
+		"POST /interactions",
+		"GET /interactions/{id}",
+		"DELETE /interactions/{id}",
+		"POST /interactions/{id}/cancel",
 	}
 )
 
@@ -219,28 +223,32 @@ var (
 // （设计 §1 :95：厂商媒体 preset 的 additional templates 必须由该 preset record
 // 明确列出）。下列模板逐条来自 docs/functions/媒体上游协议契约与Mock上游规格.md
 // 的现役上游端点，按章节注明来源；本地列表入口类端点与取消语义缺席的端点
-// 不注册（如 volcengine 长转写无取消端点）。
+// 不注册（如 volcengine 长转写无取消端点）。模板同样不含版本前缀：minimax
+// /v1、volcengine /api/v3 属于 base_url 版本根；qwen 例外保持全路径（见上）。
 var (
 	// minimax_media：§8.1 视频创建与轮询、§8.2 同步 TTS。
 	miniMaxMediaOperationTemplates = []string{
-		"POST /v1/video_generation",
-		"GET /v1/query/video_generation",
-		"POST /v1/t2a_v2",
+		"POST /video_generation",
+		"GET /query/video_generation",
+		"POST /t2a_v2",
 	}
 	// volcengine_ark：§9.1 seedance 视频任务创建与轮询。
 	volcengineArkOperationTemplates = []string{
-		"POST /api/v3/contents/generations/tasks",
-		"GET /api/v3/contents/generations/tasks/{id}",
+		"POST /contents/generations/tasks",
+		"GET /contents/generations/tasks/{id}",
 	}
 	// volcengine_openspeech：§9.2 豆包语音合成 + 长转写 submit/query 两段（无取消端点）。
 	volcengineOpenSpeechOperationTemplates = []string{
-		"POST /api/v3/tts/create",
-		"POST /api/v3/auc/bigmodel/submit",
-		"POST /api/v3/auc/bigmodel/query",
+		"POST /tts/create",
+		"POST /auc/bigmodel/submit",
+		"POST /auc/bigmodel/query",
 	}
 	// qwen_dashscope：§11 录音文件识别提交 + §10.1 万相视频创建 +
-	// §10.1/§11 两域共用的 DashScope 任务轮询。
+	// §10.1/§11 两域共用的 DashScope 任务轮询 + OpenAI 兼容模式 chat
+	//（/compatible-mode/v1/chat/completions，R6：qwen base_url 是 origin，
+	// 服务路径随操作路径登记，保持全路径）。
 	qwenDashScopeOperationTemplates = []string{
+		"POST /compatible-mode/v1/chat/completions",
 		"POST /api/v1/services/audio/asr/transcription",
 		"POST /api/v1/services/aigc/video-generation/video-synthesis",
 		"GET /api/v1/tasks/{task_id}",
@@ -408,12 +416,12 @@ var connectorPresetRecords = []connectorPresetRecord{
 		OperationPathTemplates:  openAIOperationTemplates,
 		Vocabulary:              openAIVocabulary},
 	{Code: PresetDeepSeekOpenAIV1, URLBuilderKey: PresetDeepSeekOpenAIV1, AuthStrategyKey: AuthStrategyDriverDefined, Surface: SurfaceOpenAIV1,
-		DefaultBaseURL:          "https://api.deepseek.com",
+		DefaultBaseURL:          "https://api.deepseek.com/v1",
 		AllowedBasePathSuffixes: []string{"", "/v1"},
 		OperationPathTemplates:  openAIOperationTemplates,
 		Vocabulary:              openAIVocabulary},
 	{Code: PresetDeepSeekAnthropicV1, URLBuilderKey: PresetDeepSeekAnthropicV1, AuthStrategyKey: AuthStrategyDriverDefined, Surface: SurfaceAnthropicV1,
-		DefaultBaseURL:          "https://api.deepseek.com/anthropic",
+		DefaultBaseURL:          "https://api.deepseek.com/anthropic/v1",
 		AllowedBasePathSuffixes: []string{"", "/v1"},
 		OperationPathTemplates:  anthropicOperationTemplates,
 		Vocabulary:              anthropicVocabulary},
@@ -425,10 +433,10 @@ var connectorPresetRecords = []connectorPresetRecord{
 	{Code: PresetGeminiOpenAIChatV1Beta, URLBuilderKey: PresetGeminiOpenAIChatV1Beta, AuthStrategyKey: AuthStrategyDriverDefined, Surface: SurfaceOpenAIV1,
 		DefaultBaseURL:          "https://generativelanguage.googleapis.com/v1beta/openai",
 		AllowedBasePathSuffixes: []string{"", "/v1beta/openai"},
-		OperationPathTemplates:  []string{"POST /v1/chat/completions"},
+		OperationPathTemplates:  []string{"POST /chat/completions"},
 		Vocabulary:              geminiOpenAIChatVocabulary},
 	{Code: PresetGeminiNativeV1Beta, URLBuilderKey: PresetGeminiNativeV1Beta, AuthStrategyKey: AuthStrategyDriverDefined, Surface: SurfaceGeminiV1Beta,
-		DefaultBaseURL:          "https://generativelanguage.googleapis.com",
+		DefaultBaseURL:          "https://generativelanguage.googleapis.com/v1beta",
 		AllowedBasePathSuffixes: []string{"", "/v1beta"},
 		OperationPathTemplates:  geminiNativeOperationTemplates,
 		Vocabulary:              geminiNativeVocabulary},
@@ -443,17 +451,17 @@ var connectorPresetRecords = []connectorPresetRecord{
 		OperationPathTemplates:  openAIOperationTemplates,
 		Vocabulary:              openAIVocabulary},
 	{Code: PresetGLMCodingAnthropicV1, URLBuilderKey: PresetGLMCodingAnthropicV1, AuthStrategyKey: AuthStrategyDriverDefined, Surface: SurfaceAnthropicV1,
-		DefaultBaseURL:          "https://open.bigmodel.cn/api/anthropic",
+		DefaultBaseURL:          "https://open.bigmodel.cn/api/anthropic/v1",
 		AllowedBasePathSuffixes: []string{"", "/v1"},
 		OperationPathTemplates:  anthropicOperationTemplates,
 		Vocabulary:              anthropicVocabulary},
 	{Code: PresetMiniMaxMedia, URLBuilderKey: PresetMiniMaxMedia, AuthStrategyKey: AuthStrategyDriverDefined, Surface: "",
-		DefaultBaseURL:          "https://api.minimax.chat",
+		DefaultBaseURL:          "https://api.minimax.chat/v1",
 		AllowedBasePathSuffixes: []string{""},
 		OperationPathTemplates:  miniMaxMediaOperationTemplates,
 		Vocabulary:              miniMaxMediaVocabulary},
 	{Code: PresetVolcengineArk, URLBuilderKey: PresetVolcengineArk, AuthStrategyKey: AuthStrategyDriverDefined, Surface: SurfaceOpenAIV1,
-		DefaultBaseURL:          "https://ark.cn-beijing.volces.com",
+		DefaultBaseURL:          "https://ark.cn-beijing.volces.com/api/v3",
 		AllowedBasePathSuffixes: []string{"", "/v1"},
 		OperationPathTemplates:  volcengineArkOperationTemplates,
 		Vocabulary:              volcengineArkVocabulary},
@@ -612,6 +620,20 @@ func PresetDefaultBaseURL(preset string) string {
 		return record.DefaultBaseURL
 	}
 	return ""
+}
+
+// BasePathValidationTemplates 返回凭据域 base_url 路径校验使用的操作模板
+// 并集副本（上游 Base URL 版本根语义 v2 R8）：三个公共协议面（openai_v1、
+// anthropic_v1、gemini_v1beta）已去版本前缀的 operation template 全集。
+// 凭据域校验无 preset 上下文，按协议面全集判定；连接域校验使用各 preset
+// 自己的 OperationPathTemplates（EndpointModeCombo 投影，qwen 保持全路径），
+// 不消费本并集。AllowedBasePathSuffixes 自 R8 起不再参与任何写面判定。
+func BasePathValidationTemplates() []string {
+	union := make([]string, 0, len(openAIOperationTemplates)+len(anthropicOperationTemplates)+len(geminiNativeOperationTemplates))
+	union = append(union, openAIOperationTemplates...)
+	union = append(union, anthropicOperationTemplates...)
+	union = append(union, geminiNativeOperationTemplates...)
+	return union
 }
 
 // connectorComboLess 按 driver、account type、oauth type、preset、domain 字典序比较。

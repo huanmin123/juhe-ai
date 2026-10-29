@@ -142,7 +142,8 @@ func TestProbeChatJSONSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	source := &fakeSource{view: probeView(server.URL)}
+	// R3：探针 base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
+	source := &fakeSource{view: probeView(server.URL + "/v1")}
 	service := newTestService(t, source)
 	observation, err := service.Probe(context.Background(), accountquality.ProbeRequest{
 		AccountID: "acc-1", GroupID: "group-1", SystemAccountID: "sys-1", TrafficSource: "runtime_recovery_probe", Full: true,
@@ -300,7 +301,8 @@ func TestProbeAnthropicMessages(t *testing.T) {
 	}))
 	defer server.Close()
 
-	view := probeView(server.URL)
+	// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
+	view := probeView(server.URL + "/v1")
 	view.ProtocolCode = "anthropic"
 	view.HealthCheckEndpointMode = string(ModeMessagesJSON)
 	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeMessagesJSON: true, ModeMessagesSSE: true}
@@ -333,7 +335,8 @@ func TestProbeGeminiGenerateContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	view := probeView(server.URL)
+	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
+	view := probeView(server.URL + "/v1beta")
 	view.ProtocolCode = "gemini"
 	view.HealthCheckEndpointMode = string(ModeGenerateContentJSON)
 	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeGenerateContentJSON: true, ModeGenerateContentSSE: true}
@@ -373,7 +376,8 @@ func TestProbeHybridMappingUsesAnthropicRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	view := probeView(server.URL)
+	// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），mock 断言路径不变。
+	view := probeView(server.URL + "/v1")
 	view.ProviderCode = "hybrid"
 	view.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
 	view.ProtocolCode = "openai"
@@ -414,7 +418,8 @@ func TestProbeHybridMappingUsesGeminiRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	view := probeView(server.URL)
+	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
+	view := probeView(server.URL + "/v1beta")
 	view.ProviderCode = "hybrid"
 	view.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
 	view.ProtocolCode = "openai"

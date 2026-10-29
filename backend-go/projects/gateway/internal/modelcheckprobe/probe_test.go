@@ -175,7 +175,9 @@ func TestBuildBasicWithTuningsAppliesProtocolOutputTokenFloors(t *testing.T) {
 
 func TestBuildAndExecuteOpenAIProbe(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != "Bearer secret" {
+		// v2 直拼：httptest server.URL 无版本根，信封 catalog 模板 /responses
+		// 直拼出站（旧行为自动补 /v1 已随上游 Base URL 版本根契约删除）。
+		if r.URL.Path != "/responses" || r.Header.Get("Authorization") != "Bearer secret" {
 			t.Fatalf("request path=%s auth=%s", r.URL.Path, r.Header.Get("Authorization"))
 		}
 		w.Header().Set("Content-Type", "application/json")

@@ -10,15 +10,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"net/url"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Adapter 是适配器选项位（§4.2：适配器只提供声明式端点、认证及能力描述，
-// 不得私有构造最终请求）。GLM / gemini-openai 的路径规约不是适配器，而是
-// 按 ProtocolProfileID 的 URL 拼接分支（见 buildUpstreamURL）。
+// 不得私有构造最终请求）。URL 寻址统一走 JoinUpstreamURL 的 R1 直拼（v2 契约
+// 删除了按 ProtocolProfileID 的 GLM / gemini-openai 路径规约分支）——协议
+// 档案差异只由 base_url 版本根（R3）与 catalog 操作路径（R2）表达。
 type Adapter string
 
 const (
@@ -34,9 +34,9 @@ const (
 	AdapterOpenAIOAuthCodex Adapter = "openai_oauth_codex"
 	// AdapterOpenAICodexCompatibility：codex_responses 兼容画像形态（B，
 	// API Key + ClientCompatibility，§9.1-B）。不设固定上游：URL 走账户
-	// BaseURL + buildUpstreamURL 档案路径规约（含 GLM 剥 /v1）；预算不覆盖
-	//（B 保留档案/探针族预算字段，不继承 A 的 BudgetNone 例外）；包装钩子
-	// wrapCodexCompatibilityProfile 注入 store/include/reasoning/
+	// BaseURL + JoinUpstreamURL 直拼（R1/R3，base_url 携带版本根）；预算不
+	// 覆盖（B 保留档案/探针族预算字段，不继承 A 的 BudgetNone 例外）；包装
+	// 钩子 wrapCodexCompatibilityProfile 注入 store/include/reasoning/
 	// parallel_tool_calls/prompt_cache_key/client_metadata（与身份头共用
 	// Spec.CodexIdentity 一份身份，§9.3 单源）。身份头由 Build 统一写入
 	//（集合与 A 相同），Accept 按 endpointMode 走现行 acceptHeader 口径，
@@ -79,8 +79,9 @@ var adapters = map[Adapter]adapterDef{
 
 func budgetPtr(value BudgetPolicy) *BudgetPolicy { return &value }
 
-// GLM 与 Gemini OpenAI 兼容档案（路径规约取证自 exactkeyprobe
-// buildProbeRequest / accountprobe buildUpstreamURL）。
+// GLM 与 Gemini OpenAI 兼容档案（档案 ID 词表取证自 exactkeyprobe
+// buildProbeRequest / accountprobe buildUpstreamURL；URL 行为自版本根语义
+// v2 起统一走 R1 直拼，不再按 GLM 档案分支）。
 const (
 	profileGLMGeneralOpenAI = "profile_glm_general_openai_v1"
 	profileGLMCodingOpenAI  = "profile_glm_coding_openai_v1"
@@ -136,11 +137,14 @@ type CodexIdentity struct {
 // 协议 profile、endpointMode、认证策略及凭据引用、探针语义 body 和预算
 // 类别；不得传入已拼好的 URL、认证头或完整 envelope 绕过共享入口）。
 type Spec struct {
-	// BaseURL 是已解析的上游 base；归一化规则见 buildUpstreamURL。
+	// BaseURL 是已解析的上游 base（版本根语义 R3：版本段只随 base 传入）；
+	// 拼接规则见 JoinUpstreamURL。
 	BaseURL string
 	// Protocol 为空时取 catalog 条目的协议；显式传入且与条目不一致时报错。
 	Protocol Protocol
-	// ProtocolProfileID 驱动 gemini-openai / GLM 路径规约变体（§1 变体表）。
+	// ProtocolProfileID 是协议档案标识（§1 变体表）。自版本根语义 v2（R7）
+	// 起不再驱动 URL 拼接分支，仅作为档案标识随 Spec 透传（调用方日志/评分
+	// 归档仍可用）；档案差异由 base_url 版本根表达。
 	ProtocolProfileID string
 	EndpointMode      EndpointMode
 	// Adapter 选择适配器变体；AdapterNone 表示无适配器。
@@ -485,83 +489,42 @@ func resolveEndpointPath(entry Endpoint, model string) (string, error) {
 	return strings.Replace(entry.PathTemplate, "{model}", geminiModelPath(model), 1), nil
 }
 
-// buildUpstreamURL 逐行为对齐 accountprobe buildUpstreamURL（probe.go :1423），
-// 并补充 exactkeyprobe 的 GLM OpenAI 路径规约：
-//   - OpenAI 系：base 归一化补 /v1，剥请求路径 /v1 前缀；
-//   - Anthropic：base 原样去尾斜杠保留全路径（不以 /v1 结尾时补 /v1）；
-//   - Gemini：base pathname 拼接（base 以 /v1beta 结尾时剥请求 /v1beta 前缀）；
-//   - profile_gemini_openai_chat_v1beta：base 以 /v1beta/openai 结尾时按
-//     gateway 与 J1 同规剥请求 /v1 前缀；
-//   - GLM OpenAI 档案：官方根路径自带版本化服务路径（/api/paas/v4 等）时
-//     剥请求 /v1 前缀，常规 /v1 根（或空路径）保留请求 /v1；
-//   - 适配器 fixedBaseURL（Codex）：固定上游 + 剥 /v1 的请求路径。
-func buildUpstreamURL(spec Spec, entry Endpoint, def adapterDef, pathAndQuery string) (string, error) {
-	base := strings.TrimSpace(spec.BaseURL)
+// JoinUpstreamURL 是上游最终 URL 的唯一构造规则（上游 Base URL 版本根语义
+// v2 R1/R7）：最终 URL = TrimRight(base_url, "/") + opPath；opPath 以 / 开头、
+// 可含 query。运行时不对 base 或 opPath 补插、剥离、去重任何版本段——版本
+// 段（/v1、/v1beta、/api/v3、/api/paas/v4、/anthropic/v1 等）只存在于
+// base_url 版本根（R3）。Build/buildUpstreamURL/UpstreamURL 与 upstreamcatalog
+// 的 URL 构造全部经本函数拼接。
+func JoinUpstreamURL(baseURL, opPathWithQuery string) (string, error) {
+	base := strings.TrimSpace(baseURL)
 	if base == "" {
 		return "", errors.New("upstreamenvelope: 缺少上游 base_url")
 	}
-	parsed, err := url.Parse(strings.TrimRight(base, "/"))
-	if err != nil {
-		return "", fmt.Errorf("upstreamenvelope: base_url 无效：%w", err)
+	opPath := strings.TrimSpace(opPathWithQuery)
+	if !strings.HasPrefix(opPath, "/") {
+		return "", fmt.Errorf("upstreamenvelope: 操作路径必须以 / 开头，收到 %q", opPathWithQuery)
 	}
-	if entry.Protocol == ProtocolGemini {
-		basePath := strings.TrimRight(parsed.EscapedPath(), "/")
-		suffixPath, suffixQuery := splitPathAndQuery(pathAndQuery)
-		if strings.HasSuffix(basePath, "/v1beta") {
-			suffixPath = stripV1BetaPrefix(suffixPath)
-		}
-		escapedPath := strings.ReplaceAll(basePath+stripTrailingSlashPath(suffixPath), "//", "/")
-		decodedPath, err := url.PathUnescape(escapedPath)
-		if err != nil {
-			return "", fmt.Errorf("upstreamenvelope: Gemini 路径无效：%w", err)
-		}
-		parsed.Path = decodedPath
-		parsed.RawPath = escapedPath
-		parsed.RawQuery = strings.TrimPrefix(suffixQuery, "?")
-		return parsed.String(), nil
-	}
-	if spec.ProtocolProfileID == profileGeminiOpenAIChat {
-		// Gemini OpenAI 兼容档案自带完整 /v1beta/openai 服务路径；仅在该
-		// canonical base 下剥请求 /v1 前缀（accountprobe 与 gateway/J1 同规）。
-		basePath := strings.TrimRight(parsed.Path, "/")
-		if strings.HasSuffix(strings.ToLower(basePath), "/v1beta/openai") {
-			suffixPath, suffixQuery := splitPathAndQuery(openAIPathSuffix(pathAndQuery))
-			parsed.Path = basePath + suffixPath
-			parsed.RawQuery = strings.TrimPrefix(suffixQuery, "?")
-			return parsed.String(), nil
-		}
-	}
+	return strings.TrimRight(base, "/") + opPath, nil
+}
+
+// buildUpstreamURL 按 R1 直拼生成最终 URL：catalog opPath 已不含版本前缀
+// （R2），版本段只随 base_url 版本根传入（R3），拼接规则见 JoinUpstreamURL。
+// 唯一分支是适配器 fixedBaseURL（Codex）：固定上游整体替换账户 base。运行时
+// 不对 base 或 opPath 补插、剥离、去重任何版本段（v2 契约删除了旧 Gemini
+// EscapedPath 重组、gemini-openai-chat 豁免、Anthropic/GLM/通用补 /v1 与剥
+// 前缀分支——{model} 展开值已由 geminiModelPath 按 encodeURIComponent 转义，
+// 直拼保持其转义形态，无需 url.URL 重组）。
+func buildUpstreamURL(spec Spec, entry Endpoint, def adapterDef, pathAndQuery string) (string, error) {
 	if def.fixedBaseURL != "" {
-		fixed, err := url.Parse(def.fixedBaseURL)
-		if err != nil {
-			return "", fmt.Errorf("upstreamenvelope: 适配器固定 base_url 无效：%w", err)
-		}
-		fixed.Path = strings.TrimRight(fixed.Path, "/") + openAIPathSuffix(pathAndQuery)
-		return fixed.String(), nil
+		return JoinUpstreamURL(def.fixedBaseURL, pathAndQuery)
 	}
-	if entry.Protocol == ProtocolAnthropic {
-		normalizedBase := strings.TrimRight(parsed.String(), "/")
-		if !strings.HasSuffix(strings.ToLower(strings.TrimRight(parsed.Path, "/")), "/v1") {
-			normalizedBase += "/v1"
-		}
-		return normalizedBase + openAIPathSuffix(pathAndQuery), nil
-	}
-	if isGLMOpenAIProfile(spec.ProtocolProfileID) && !glmOpenAIBaseOwnsV1Path(parsed) {
-		// GLM 官方根路径已含版本化服务路径（/api/paas/v4 等），剥请求 /v1
-		// 前缀；OpenAI 兼容代理的常规 /v1 根保留请求 /v1（exactkeyprobe
-		// buildProbeRequest 同规，避免 /v1/chat 被拼成 /chat）。
-		return parsed.String() + openAIPathSuffix(pathAndQuery), nil
-	}
-	normalizedBase := parsed.String()
-	if !strings.HasSuffix(normalizedBase, "/v1") {
-		normalizedBase += "/v1"
-	}
-	return normalizedBase + openAIPathSuffix(pathAndQuery), nil
+	return JoinUpstreamURL(spec.BaseURL, pathAndQuery)
 }
 
 // UpstreamURL 是 URL 归一化的导出入口（§4.1 L1）：供迁移中的调用方把私有
 // 拼接迁到共享规则——modelcheckprobe buildURL（M2）。寻址规则与 Build 完全
-// 一致；认证头与 body 编码仍由 Build 承担。
+// 一致（R1 直拼：base_url 携带版本根，pathAndQuery 为去版本前缀的操作路径，
+// 见 JoinUpstreamURL）；认证头与 body 编码仍由 Build 承担。
 func UpstreamURL(baseURL string, mode EndpointMode, protocolProfileID string, adapter Adapter, pathAndQuery string) (string, error) {
 	entry, err := Lookup(mode)
 	if err != nil {
@@ -588,59 +551,6 @@ func AcceptHeader(mode EndpointMode, strategy AuthStrategy) (string, error) {
 		return "", err
 	}
 	return acceptHeader(entry, strategy), nil
-}
-
-// openAIPathSuffix 等价 accountprobe openAIPathSuffix：确保前导斜杠并剥一次
-// /v1 前缀（Node replace(/^\/v1(?=\/|$)/, ”)），保留 query。
-func openAIPathSuffix(pathAndQuery string) string {
-	path, query := splitPathAndQuery(pathAndQuery)
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	if len(path) >= 3 && path[:3] == "/v1" && (len(path) == 3 || path[3] == '/') {
-		path = path[3:]
-	}
-	if path == "/" {
-		path = ""
-	}
-	return path + query
-}
-
-func splitPathAndQuery(pathAndQuery string) (path, query string) {
-	if index := strings.Index(pathAndQuery, "?"); index >= 0 {
-		return pathAndQuery[:index], pathAndQuery[index:]
-	}
-	return pathAndQuery, ""
-}
-
-// stripV1BetaPrefix 等价 accountprobe stripV1BetaPrefix：剥一次不区分大小写
-// 的 /v1beta/ 前缀（保留后续路径的前导斜杠）。
-func stripV1BetaPrefix(pathAndQuery string) string {
-	if len(pathAndQuery) >= 8 && strings.EqualFold(pathAndQuery[:8], "/v1beta/") {
-		return pathAndQuery[7:]
-	}
-	return pathAndQuery
-}
-
-func stripTrailingSlashPath(path string) string {
-	if index := strings.Index(path, "?"); index >= 0 {
-		return path[:index]
-	}
-	return path
-}
-
-// glmOpenAIBaseOwnsV1Path 等价 exactkeyprobe glmOpenAIBaseOwnsV1Path：空路径
-// 与以 /v1 结尾的 base 视为常规 OpenAI 服务根（保留请求 /v1 前缀）。
-func glmOpenAIBaseOwnsV1Path(base *url.URL) bool {
-	if base == nil {
-		return false
-	}
-	path := strings.TrimRight(base.Path, "/")
-	return path == "" || strings.HasSuffix(path, "/v1")
-}
-
-func isGLMOpenAIProfile(profileID string) bool {
-	return profileID == profileGLMGeneralOpenAI || profileID == profileGLMCodingOpenAI
 }
 
 // geminiModelPath 等价 accountprobe geminiModelPath：剥一次不区分大小写的

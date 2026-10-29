@@ -10,10 +10,10 @@
 // {"output":{"task_id","task_status":"PENDING"},"request_id"}——受理凭据 =
 // output.task_id；轮询 GET /api/v1/tasks/{task_id} →
 // {"output":{"task_status":"PENDING|RUNNING|SUCCEEDED|FAILED","video_url"},
-// "usage":"<JSON 字符串形态>","code","message"}。出站路径自带 /api/v1
-// 服务根，URL 由链上层经 chainQwenVideoUpstreamURL 归一（base 已含 /api/v1
-// 时去重，不走 openai /v1 强制补缀——同 glm /api/paas/v4、volcengine
-// /api/v3 先例）；纯逻辑层，不触 chain/HTTP 执行。
+// "usage":"<JSON 字符串形态>","code","message"}。出站 opPath 自带 /api/v1
+// 全路径（qwen 双根特例 base=origin，不走 openai /v1 强制补缀），URL 由链
+// 上层经共享 upstreamenvelope.JoinUpstreamURL 直拼；纯逻辑层，不触
+// chain/HTTP 执行。
 package gatewaymedia
 
 import (

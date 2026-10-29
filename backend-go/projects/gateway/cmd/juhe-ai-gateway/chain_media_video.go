@@ -51,6 +51,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 // ---------------------------------------------------------------------------
@@ -197,34 +198,30 @@ func chainIsMediaJobTaskPlaneRequest(req *gatewaypreauth.GatewayRequest) bool {
 //     形态（契约 §5.2），URL 前缀按账户 base_url + /v1beta。
 //   - glm 账户 → "glm"（M3：CogVideoX videos/generations 形态，契约 §7.1；
 //     账户 provider_code 恒为 glm，无子供应商代码）：api_key Bearer 认证
-//     （沿链上 openai 族认权分支），URL 按 chainGlmVideoUpstreamURL 归一
-//     （/api/paas/v4 服务根，不走 /v1 强制补缀的 openai 归一）。
+//     （沿链上 openai 族认权分支），URL 按 base_url 版本根直拼（v2 契约，
+//     /api/paas/v4 服务根由 base_url 承载，opPath 不含版本段）。
 //   - minimax 账户 → "minimax"（M3：Hailuo video_generation 形态，契约
-//     §8.1）：api_key Bearer 认证（沿链上 openai 族认权分支），出站路径
-//     为 /v1 前缀的 openai 族形态（video_generation / query/
-//     video_generation），URL 走 gatewayopenai.BuildUpstreamURL 归一
-//     （base 强制 /v1 结尾、path 剥 /v1 前缀去重——api.minimax.chat 与
-//     api.minimaxi.com 两种官方 host 均适用，无需专用归一函数）。
+//     §8.1）：api_key Bearer 认证（沿链上 openai 族认权分支），出站 opPath
+//     不含版本段（video_generation / query/video_generation），URL 按
+//     base_url 版本根直拼（v2 契约，/v1 由 base_url 承载——api.minimax.chat
+//     与 api.minimaxi.com 两种官方 host 均适用，无需专用归一函数）。
 //   - volcengine 账户 → "volcengine"（M3：Seedance contents/generations/
 //     tasks 形态，契约 §9.1）：api_key Bearer 认证（沿链上 openai 族认权
-//     分支），出站路径自带 /api/v3 服务根，URL 按
-//     chainVolcengineVideoUpstreamURL 归一（官方根 ark.cn-beijing.volces.com
-//     去重，不走 /v1 强制补缀的 openai 归一——同 glm /api/paas/v4 先例）。
+//     分支），URL 按 base_url 版本根直拼（v2 契约，/api/v3 服务根由
+//     base_url 承载，opPath 不含版本段）。
 //   - qwen 账户 → "qwen"（M3 第五批：万相 video-synthesis 形态，契约
-//     §10.1）：api_key Bearer 认证（沿链上 openai 族认权分支），出站路径
-//     自带 /api/v1 服务根（创建 /api/v1/services/aigc/video-generation/
-//     video-synthesis + 轮询 /api/v1/tasks/{id}），URL 按
-//     chainQwenVideoUpstreamURL 归一（官方根 dashscope.aliyuncs.com 去重，
-//     不走 /v1 强制补缀的 openai 归一——同 glm/volcengine 先例）；创建
+//     §10.1）：api_key Bearer 认证（沿链上 openai 族认权分支），出站 opPath
+//     自带 /api/v1 全路径（创建 /api/v1/services/aigc/video-generation/
+//     video-synthesis + 轮询 /api/v1/tasks/{id}；qwen 双根特例 base=origin），
+//     URL 直拼（v2 契约）；创建
 //     请求头带 X-DashScope-Async: enable（adapter ExtraHeaders，DashScope
 //     异步任务约定）。
 //   - xai 账户 → "xai"（M3 回填池：Grok Imagine Video 形态，契约 §6.1）：
 //     api_key Bearer 认证（沿链上 openai 族认权分支——xai 出站认权与
-//     openai 图像/文本同构），出站路径为 /v1 前缀的 openai 族形态（创建
-//     /v1/videos/generations + 轮询 /v1/videos/{request_id}），URL 走
-//     gatewayopenai.BuildUpstreamURL 归一（base 强制 /v1 结尾、path 剥
-//     /v1 前缀去重——api.x.ai 官方根 seed base_url 已是 https://api.x.ai/v1，
-//     同 minimax 先例，无需专用归一函数）。
+//     openai 图像/文本同构），出站 opPath 不含版本段（创建
+//     /videos/generations + 轮询 /videos/{request_id}），URL 按 base_url
+//     版本根直拼（v2 契约，/v1 由 base_url 承载——api.x.ai 官方根 seed
+//     base_url 已是 https://api.x.ai/v1，同 minimax 先例，无需专用归一函数）。
 //   - hybrid 账户 → "openai"（M4b 媒体设计 §9 hybrid 行）：hybrid 是真实聚合
 //     中转账户，媒体执行面 = 该中转的 OpenAI 形态媒体端点（/v1/videos、
 //     /v1/audio/speech）——URL 走 openai 归一（base 强制 /v1 结尾）直连中转
@@ -288,10 +285,10 @@ func chainVideoAdapterKeyForIdentity(vendorCode, protocolCode string) string {
 // chainAudioJobAdapterKeyOfProvider 把账户 provider_code 归一为长转写
 // （kind=audio_transcription）adapter 注册键。映射规则：
 //   - qwen 账户 → "qwen"（M3f：paraformer 录音文件识别形态，契约 §10.2；
-//     api_key Bearer 认证，出站路径自带 /api/v1 服务根——创建
+//     api_key Bearer 认证，出站 opPath 自带 /api/v1 全路径——创建
 //     /api/v1/services/audio/asr/transcription + 轮询 /api/v1/tasks/{id}
-//     （与万相同一任务接口），URL 按 chainQwenVideoUpstreamURL 归一
-//     （/api/v1 去重，两族共用该函数）；创建请求**不带** X-DashScope-Async
+//     （与万相同一任务接口；qwen 双根特例 base=origin），URL 直拼（v2
+//     契约）；创建请求**不带** X-DashScope-Async
 //     头（该服务天然异步，与万相 §10.1 的关键差异）。
 //   - volcengine：豆包录音文件识别 2.0 长转写（契约 §9.2 长转写臂，
 //     2026-10-17 承接批）——出站 host 恒 openspeech.bytedance.com 语音服务域
@@ -1661,123 +1658,13 @@ func (c *gatewayChain) serveMediaJobCancel(ctx context.Context, res *gatewayprea
 // 任务面上游直连（复用派发引擎同源传输面）
 // ---------------------------------------------------------------------------
 
-// glmVideoServiceRoot 是 glm 媒体出站路径自带的服务根（契约 §7.1：
-// open.bigmodel.cn 官方端点 /api/paas/v4/videos/generations 族）。
-const glmVideoServiceRoot = "/api/paas/v4"
-
-// chainGlmVideoUpstreamURL 归一 glm 媒体任务面的上游 URL：base + adapter
-// 出站路径做直拼，base 已含 /api/paas/v4 服务根时去重（镜像 gatewaygemini.
-// BuildUpstreamURL 的 /v1beta 去重先例）。不得走 gatewayopenai.
-// BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1（endpoint_test.go 钉
-// 住的 openai 族契约），会把官方根 https://open.bigmodel.cn/api/paas/v4 错
-// 拼 /api/paas/v4/v1/...（智谱GLM账号接入.md「网关把请求发往 base_url +
-// 路径」的既有裁决）。glm coding 根（/api/coding/paas/v4）不含通用服务根，
-// 不做去重直拼（coding 计划面向编码模型，视频能力以通用根为准）。
-func chainGlmVideoUpstreamURL(baseURL, path string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
-		return "", fmt.Errorf("glm 媒体账户 base_url 无效: %q", baseURL)
-	}
-	basePath := strings.TrimRight(parsed.Path, "/")
-	suffix := path
-	if !strings.HasPrefix(suffix, "/") {
-		suffix = "/" + suffix
-	}
-	if suffix != glmVideoServiceRoot && strings.HasSuffix(strings.ToLower(basePath), glmVideoServiceRoot) {
-		if trimmed, ok := strings.CutPrefix(suffix, glmVideoServiceRoot); ok && trimmed != "" {
-			suffix = trimmed
-		}
-	}
-	parsed.Path = basePath + suffix
-	return parsed.String(), nil
-}
-
-// volcengineVideoServiceRoot 是 volcengine 媒体出站路径自带的服务根（契约
-// §9.1：ark.cn-beijing.volces.com 官方端点 /api/v3/contents/generations/
-// tasks 族）；对话（/api/v3/chat/completions）与图像（/api/v3/images/
-// generations）OpenAI 兼容端点共用该服务根。
-const volcengineVideoServiceRoot = "/api/v3"
-
-// chainVolcengineVideoUpstreamURL 归一 volcengine 媒体任务面的上游 URL：base
-// + adapter 出站路径做直拼。base 路径判定（2026-10-17 Agent Plan 专属端点
-// 修复，仅 volcengine 归一路径；glm/qwen 共用的去重先例不变）：
-//   - base 为官方裸域名（路径为空）：adapter 出站路径自带 /api/v3 服务根，
-//     直拼不变；
-//   - base 以 /api/v3 结尾：去重——剥 adapter 出站路径的 /api/v3 前缀直拼
-//     （镜像 chainGlmVideoUpstreamURL 的 /api/paas/v4 去重先例）；
-//   - base 为其他非空路径：视为用户显式指定的完整服务根（如火山 Agent Plan
-//     专属端点 https://ark.cn-beijing.volces.com/api/plan/v3，实测
-//     /api/plan/v3/contents/generations/tasks 可用）——同样剥 adapter 出站
-//     路径的 /api/v3 前缀后直拼（/api/plan/v3 + /contents/generations/tasks），
-//     不再插入第二个服务根（旧行为会把 /api/plan/v3 错拼成
-//     /api/plan/v3/api/v3/... 404）。
-//
-// 合规提示：Agent Plan 专属端点官方条款为文本模型不可用于通用 API 调用，仅
-// 图像/视频/语音面开放 API（docs/functions/火山方舟账号接入.md 将同步）。
-// 不得走 gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1
-// （endpoint_test.go 钉住的 openai 族契约），会把官方根
-// https://ark.cn-beijing.volces.com 错拼 /v1/api/v3/...。
-func chainVolcengineVideoUpstreamURL(baseURL, path string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
-		return "", fmt.Errorf("volcengine 媒体账户 base_url 无效: %q", baseURL)
-	}
-	basePath := strings.TrimRight(parsed.Path, "/")
-	suffix := path
-	if !strings.HasPrefix(suffix, "/") {
-		suffix = "/" + suffix
-	}
-	// base 路径非空（/api/v3 结尾或其他显式服务根）→ 剥 adapter 出站路径的
-	// /api/v3 前缀直拼；base 为官方裸域名（路径为空）→ 自带服务根原样直拼。
-	// suffix 恰为服务根本身的守卫沿旧实现保留（CutPrefix 空串不裁剪）。
-	if suffix != volcengineVideoServiceRoot && basePath != "" {
-		if trimmed, ok := strings.CutPrefix(suffix, volcengineVideoServiceRoot); ok && trimmed != "" {
-			suffix = trimmed
-		}
-	}
-	parsed.Path = basePath + suffix
-	return parsed.String(), nil
-}
-
-// qwenVideoServiceRoot 是 qwen 媒体出站路径自带的服务根（契约 §10.1：
-// dashscope.aliyuncs.com 官方端点 /api/v1/services/aigc/video-generation/
-// video-synthesis 创建与 /api/v1/tasks/{task_id} 轮询族；§10.2 长转写
-// /api/v1/services/audio/asr/transcription 创建与同一 /api/v1/tasks/{task_id}
-// 轮询族共用该服务根）。
-const qwenVideoServiceRoot = "/api/v1"
-
-// chainQwenVideoUpstreamURL 归一 qwen 媒体任务面（万相视频 §10.1 与 paraformer
-// 长转写 §10.2）的上游 URL：base + adapter 出站路径做直拼，base 已含 /api/v1
-// 服务根时去重（镜像 chainGlmVideoUpstreamURL 的 /api/paas/v4 与
-// chainVolcengineVideoUpstreamURL 的 /api/v3 去重先例）。不得走
-// gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1
-// （endpoint_test.go 钉住的 openai 族契约），会把官方根
-// https://dashscope.aliyuncs.com 错拼 /v1/api/v1/...。任务面（创建/轮询）
-// 只走本归一；产物下载直连轮询冻结的 output.video_url / transcription_url
-// 绝对 URL，不经本函数。
-func chainQwenVideoUpstreamURL(baseURL, path string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
-		return "", fmt.Errorf("qwen 媒体账户 base_url 无效: %q", baseURL)
-	}
-	basePath := strings.TrimRight(parsed.Path, "/")
-	suffix := path
-	if !strings.HasPrefix(suffix, "/") {
-		suffix = "/" + suffix
-	}
-	if suffix != qwenVideoServiceRoot && strings.HasSuffix(strings.ToLower(basePath), qwenVideoServiceRoot) {
-		if trimmed, ok := strings.CutPrefix(suffix, qwenVideoServiceRoot); ok && trimmed != "" {
-			suffix = trimmed
-		}
-	}
-	parsed.Path = basePath + suffix
-	return parsed.String(), nil
-}
-
-// chainQwenChatServiceRoot 是 qwen 对话出站的官方 OpenAI 兼容模式服务根
-// （契约 §10：dashscope.aliyuncs.com/compatible-mode/v1/chat/completions）
-// ——与媒体任务面的 /api/v1 服务根（qwenVideoServiceRoot）不同域，不可混用。
-const chainQwenChatServiceRoot = "/compatible-mode/v1"
+// chainQwenChatPathPrefix 是 qwen 对话出站的厂商路径前缀：DashScope 官方
+// OpenAI 兼容模式服务根 /compatible-mode/v1（契约 §10；与连接器 registry
+// preset qwen_dashscope 的 AllowedBasePathSuffixes 声明同源，见
+// shared/contracts/connector_registry.go——registry 未提供运行时读取器，
+// 以带注释常量实现）。与媒体任务面的 /api/v1 全路径 opPath 不同域，不可
+// 混用：该前缀只拼在 chat 通用 opPath 之前（R6）。
+const chainQwenChatPathPrefix = "/compatible-mode/v1"
 
 // chainIsChatCompletionsPathAndQuery 报告路径是否 chat completions 面（与
 // requestMappingSourceFamilyOf 的 /chat/completions 判定同词表；query 剥离
@@ -1787,128 +1674,37 @@ func chainIsChatCompletionsPathAndQuery(pathAndQuery string) bool {
 	return strings.Contains(strings.ToLower(path), "/chat/completions")
 }
 
-// chainIsImagesGenerationsPathAndQuery 报告路径是否图像生成面
-// （POST /v1/images/generations 统一面；query 剥离后大小写不敏感匹配）。
-func chainIsImagesGenerationsPathAndQuery(pathAndQuery string) bool {
-	path, _ := gatewayopenai.SplitPathAndQuery(pathAndQuery)
-	return strings.Contains(strings.ToLower(path), "/images/generations")
-}
-
-// chainIsEmbeddingsPathAndQuery 报告路径是否向量面（POST /v1/embeddings 统一
-// 面；query 剥离后大小写不敏感匹配——精确归一后路径即 /embeddings，沿
-// chainIsChatCompletionsPathAndQuery 的包含匹配词表风格）。
-func chainIsEmbeddingsPathAndQuery(pathAndQuery string) bool {
-	path, _ := gatewayopenai.SplitPathAndQuery(pathAndQuery)
-	return strings.Contains(strings.ToLower(path), "/embeddings")
-}
-
-// chainVolcengineChatUpstreamURL 归一 volcengine 对话（chat completions）的
-// 上游 URL：官方 OpenAI 兼容端点 /api/v3/chat/completions 与媒体任务面、图像
-// 面共用 /api/v3 服务根（volcengineVideoServiceRoot），base + 客户端版本剥离
-// 后的 chat 路径直拼；服务根判定走显式路径模式（chainChatServiceRootExplicit
-// Path，见 chainChatServiceRootUpstreamURL 三形态注释）。不得走
-// gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1
-// （endpoint_test.go 钉住的 openai 族契约），会把官方根
-// https://ark.cn-beijing.volces.com 错拼 /v1/chat/completions。
-func chainVolcengineChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
-	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, volcengineVideoServiceRoot, "volcengine", chainChatServiceRootExplicitPath)
-}
-
-// chainVolcengineImagesUpstreamURL 归一 volcengine 图像（images generations）
-// 的上游 URL：ark 官方 OpenAI 兼容图像端点 /api/v3/images/generations 与
-// chat/媒体任务面共用 /api/v3 服务根（volcengineVideoServiceRoot），base +
-// 客户端版本剥离后的图像路径直拼；服务根三形态与 chainVolcengineChatUpstream
-// URL 同构（官方裸域名插 /api/v3；base 已含 /api/v3 去重；其他非空路径视为
-// 用户显式指定的完整服务根直拼——如火山 Agent Plan 专属端点
-// https://ark.cn-beijing.volces.com/api/plan/v3，实测
-// /api/plan/v3/images/generations 出图可用；官方条款 Agent Plan 文本模型不可
-// 用于通用 API 调用，仅图像/视频/语音面开放 API，docs/functions/火山方舟账号
-// 接入.md 将同步）。不得走 gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾
-// 的 base 强制补 /v1（endpoint_test.go 钉住的 openai 族契约），会把官方根
-// https://ark.cn-beijing.volces.com 错拼 /v1/images/generations。调用方按
-// /images/generations 图像路径判定进本归一（客户端路径 /v1/images/generations
-// 剥 /v1 后为 /images/generations；与 chain_driver.go chat 分支的接入先例同构，
-// 由链上图像分支接线调用）。
-func chainVolcengineImagesUpstreamURL(baseURL, pathAndQuery string) (string, error) {
-	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, volcengineVideoServiceRoot, "volcengine", chainChatServiceRootExplicitPath)
-}
-
 // chainQwenChatUpstreamURL 归一 qwen 对话（chat completions）的上游 URL：
-// 官方 OpenAI 兼容模式端点 /compatible-mode/v1/chat/completions（服务根
-// chainQwenChatServiceRoot），base + 客户端版本剥离后的 chat 路径直拼，base
-// 已含 /compatible-mode/v1 服务根时去重（镜像 chainQwenVideoUpstreamURL 的
-// /api/v1 去重先例，服务根不同；严格后缀判定模式不放宽——DashScope 无
-// Agent Plan 式替代服务根形态，qwen 归一行为维持不变）。不得走
-// gatewayopenai.BuildUpstreamURL——它会把官方根
-// https://dashscope.aliyuncs.com 错拼 /v1/chat/completions。
+// 客户端版本剥离后的 chat opPath 恒定拼 chainQwenChatPathPrefix 前缀
+//（R6，服务根由前缀常量承载）后与 base_url 直拼——官方 origin 形态
+// base（https://dashscope.aliyuncs.com）+ /compatible-mode/v1/chat/
+// completions。不再有 base 侧 strict 插根/去重分支（v2 契约：版本段只在
+// opPath 一侧，base_url 不参与版本判定）。
 func chainQwenChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
-	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, chainQwenChatServiceRoot, "qwen", chainChatServiceRootStrictSuffix)
-}
-
-// chainChatServiceRootPathMode 区分服务根「base 已携带服务根」判定的两种模式
-// （2026-10-17 火山 Agent Plan 专属端点修复引入，仅 volcengine 归一路径放宽，
-// qwen 共用主体保持历史行为）：
-//   - chainChatServiceRootStrictSuffix（qwen 沿用）：仅当 base 路径以服务根
-//     结尾才去重，其余一律插入服务根（DashScope 兼容模式历史契约）。
-//   - chainChatServiceRootExplicitPath（volcengine）：base 路径为空（官方裸
-//     域名）插服务根；以 /api/v3 结尾去重；其他非空路径是用户显式指定的完整
-//     服务根（如 /api/plan/v3），直拼不改写。
-type chainChatServiceRootPathMode int
-
-const (
-	chainChatServiceRootStrictSuffix chainChatServiceRootPathMode = iota
-	chainChatServiceRootExplicitPath
-)
-
-// chainChatServiceRootUpstreamURL 是 volcengine/qwen（及 volcengine 图像面）
-// 对话出站的服务根归一主体：解析并校验 base_url，剥离客户端 /v1 版本前缀，
-// base 未携带服务根时插入服务根、已携带时去重，最后拼回 query（镜像
-// chainVolcengineVideoUpstreamURL 的解析与去重结构）。base 路径三形态×模式：
-//   - 路径为空（官方裸域名）：插入服务根（chat 由本函数插 /api/v3；两种模式
-//     一致）；
-//   - 路径以服务根结尾：去重直拼（两种模式一致）；
-//   - 路径为其他非空路径：strict 模式（qwen）插入服务根（历史行为，
-//     https://dashscope.aliyuncs.com/api/v1 → /api/v1/compatible-mode/v1/...）；
-//     explicit 模式（volcengine）视为显式完整服务根直拼（
-//     https://ark.cn-beijing.volces.com/api/plan/v3 → /api/plan/v3/chat/
-//     completions，不再插入第二个服务根——旧行为会拼出 /api/plan/v3/api/v3/
-//     ... 404）。
-//
-// 合规提示：Agent Plan 专属端点官方条款为文本模型不可用于通用 API 调用，仅
-// 图像/视频/语音面开放 API（docs/functions/火山方舟账号接入.md 将同步）。
-func chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, serviceRoot, label string, mode chainChatServiceRootPathMode) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
-		return "", fmt.Errorf("%s 账户 base_url 无效: %q", label, baseURL)
+		return "", fmt.Errorf("qwen 账户 base_url 无效: %q", baseURL)
 	}
-	basePath := strings.TrimRight(parsed.Path, "/")
 	path, query := gatewayopenai.SplitPathAndQuery(pathAndQuery)
 	suffix := chainStripGatewayVersionPrefix(path)
 	if !strings.HasPrefix(suffix, "/") {
 		suffix = "/" + suffix
 	}
-	if suffix != serviceRoot && !strings.HasSuffix(strings.ToLower(basePath), strings.ToLower(serviceRoot)) {
-		if mode == chainChatServiceRootStrictSuffix || basePath == "" {
-			suffix = serviceRoot + suffix
-		}
-	}
-	parsed.Path = basePath + suffix
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + chainQwenChatPathPrefix + suffix
 	return parsed.String() + query, nil
 }
 
 // mediaJobRequestUpstream 账户亲和直连上游（不走派发循环；kind 区分任务族
-// 的 adapter 注册表——M3f 起 video/audio_transcription 两族各自解析注册键，
-// qwen 两族共用 chainQwenVideoUpstreamURL 的 /api/v1 去重）：URL 由账户
-// base_url + adapter 出站路径归一——gemini 协议走 gatewaygemini.
-// BuildUpstreamURL（/v1beta 前缀与 base 去重，M1 speech 创建链同先例），
-// glm 媒体路径走 chainGlmVideoUpstreamURL（/api/paas/v4 服务根去重，M3
-// glm cogvideo adapter），volcengine 媒体路径走 chainVolcengineVideoUpstreamURL
-// （/api/v3 服务根去重，M3 seedance adapter，契约 §9.1），qwen 媒体路径走
-// chainQwenVideoUpstreamURL（/api/v1 服务根去重，M3 万相 adapter 契约 §10.1
-// 与 M3f paraformer 长转写契约 §10.2），其余（openai/xai/minimax 族——出站
-// 路径均为 /v1 前缀形态）走 gatewayopenai.
-// BuildUpstreamURL（/v1 后缀形态；xai 契约 §6.1 同 minimax 先例，无需专用
-// 归一函数）；认证头按协议构造：gemini 沿
+// 的 adapter 注册表——M3f 起 video/audio_transcription 两族各自解析注册键）：
+// URL 由账户 base_url + adapter 出站 opPath 直拼——gemini 协议走 gatewaygemini.
+// BuildUpstreamURL（入站剥 /v1beta 后直拼，版本根由 base_url 承载，M1 speech
+// 创建链同先例），火山长转写 host 恒 openspeech 语音服务域（chainVolcengine
+// ASRUpstreamURL 特例，同 TTS 先例），其余全部走共享 upstreamenvelope.
+// JoinUpstreamURL 的 v2 直拼（R1：base_url 即版本根，opPath 不含版本段——
+// glm /api/paas/v4 与
+// volcengine /api/v3 由 base_url 版本根承载，qwen /api/v1 域 opPath 自带
+// 全路径双根特例；openai/xai/minimax 族的 openai 归一同样直拼）；认证头按
+// 协议构造：gemini 沿
 // applyGeminiUpstreamAuthHeaders（api_key → X-Goog-Api-Key、google_oauth →
 // Bearer + 可选 x-goog-user-project，与主链认权分支同一实现，不重复实现），
 // 其余维持最小 Bearer 集（任务面身份=网关，不透传客户端头——沿
@@ -1941,26 +1737,15 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 		// 火山长转写（契约 §9.2）：host 恒 openspeech.bytedance.com 语音服务域
 		// （与账户 ark base_url 无关的 URL 构造特例，同 TTS 先例）。
 		upstreamURL = chainVolcengineASRUpstreamURL(path)
-	} else if adapterKey == "glm" {
-		built, err := chainGlmVideoUpstreamURL(account.BaseURL, path)
-		if err != nil {
-			return nil, err
-		}
-		upstreamURL = built
-	} else if adapterKey == "volcengine" {
-		built, err := chainVolcengineVideoUpstreamURL(account.BaseURL, path)
-		if err != nil {
-			return nil, err
-		}
-		upstreamURL = built
-	} else if adapterKey == "qwen" {
-		built, err := chainQwenVideoUpstreamURL(account.BaseURL, path)
-		if err != nil {
-			return nil, err
-		}
-		upstreamURL = built
 	} else {
-		upstreamURL = gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
+		// v2 直拼：adapter opPath 不含版本段（qwen /api/v1 域自带全路径），
+		// glm/volcengine 服务根由 base_url 版本根承载；不再有厂商服务根去重
+		// 归一分支。
+		built, err := upstreamenvelope.JoinUpstreamURL(account.BaseURL, path)
+		if err != nil {
+			return nil, err
+		}
+		upstreamURL = built
 	}
 	headers := http.Header{}
 	if chainIsGeminiProtocolProfile(account.ProtocolCode, account.ProtocolVersion) {

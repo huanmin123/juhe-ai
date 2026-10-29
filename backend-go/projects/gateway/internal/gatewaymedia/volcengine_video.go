@@ -8,10 +8,9 @@
 // resolution?,ratio?,duration?,seed?}，响应 {id,status}——受理凭据 = id；
 // 轮询 GET /api/v3/contents/generations/tasks/{id} → status ∈
 // queued|running|succeeded|failed，succeeded 携带 content.video_url（产物
-// 下载定位），failed 携带 error{code,message}。出站路径自带 /api/v3 服务根，
-// URL 由链上层经 chainVolcengineVideoUpstreamURL 归一（base 已含 /api/v3
-// 时去重，不走 openai /v1 强制补缀——同 glm /api/paas/v4 先例）；纯逻辑
-// 层，不触 chain/HTTP 执行。
+// 下载定位），failed 携带 error{code,message}。出站 opPath 不含版本段，
+// /api/v3 版本根由账户 base_url 承载，URL 由链上层经共享
+// upstreamenvelope.JoinUpstreamURL 版本根直拼；纯逻辑层，不触 chain/HTTP 执行。
 package gatewaymedia
 
 import (
@@ -125,7 +124,8 @@ func volcengineSizeToResolutionRatio(size string) (resolution, ratio string, err
 	return volcengineResolutionOf(width, height), ratio, nil
 }
 
-// Create 构造契约 §9.1 创建报文：POST /api/v3/contents/generations/tasks，
+// Create 构造契约 §9.1 创建报文：POST {base}/contents/generations/tasks
+//（opPath 按 v2 契约不含版本段；/api/v3 服务根由账户 base_url 版本根承载），
 // body 为 {model,content,resolution?,ratio?,duration?,seed?}。映射与透传
 // 规则（官方 API 参考 2026-10-04 核实，契约 §2.7 volcengine 列）：
 //   - prompt → content[0] = {"type":"text","text":...}（content 数组原生形态）；
@@ -185,15 +185,16 @@ func (a volcengineVideoAdapter) Create(_ context.Context, in VideoCreateInput) (
 	}
 	return VideoCreateOutput{
 		Method: http.MethodPost,
-		Path:   "/api/v3/contents/generations/tasks",
+		Path:   "/contents/generations/tasks",
 		Body:   encoded,
 	}, nil
 }
 
-// BuildPollRequest 构造轮询请求：GET /api/v3/contents/generations/tasks/{id}
-// （契约 §9.1；id 即创建响应的受理凭据，官方 id 为 URL 安全串直拼）。
+// BuildPollRequest 构造轮询请求：GET {base}/contents/generations/tasks/{id}
+//（契约 §9.1；id 即创建响应的受理凭据，官方 id 为 URL 安全串直拼；opPath
+// 不含版本段，/api/v3 由 base_url 版本根承载）。
 func (volcengineVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
-	return http.MethodGet, "/api/v3/contents/generations/tasks/" + upstreamJobID, nil
+	return http.MethodGet, "/contents/generations/tasks/" + upstreamJobID, nil
 }
 
 // ContentFromArtifact 声明 volcengine 形态的产物下载定位：completed 的下载

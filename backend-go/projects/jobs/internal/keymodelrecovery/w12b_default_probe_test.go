@@ -75,7 +75,10 @@ func w12bAPIKeyInput(t *testing.T, fingerprint string) exactkeyprobe.Input {
 func TestW12bDefaultProbeSuccess(t *testing.T) {
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", w12bProbeSecret)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/chat/completions" {
+		// v2 直拼：BaseURL=httptest server.URL 无版本根，探针出站路径为
+		// upstreamenvelope catalog 模板原样 /chat/completions（旧自动补 /v1
+		// 行为随上游 Base URL 版本根契约删除，探针请求由信封统一构造）。
+		if request.URL.Path != "/chat/completions" {
 			t.Errorf("意外探针路径: %s", request.URL.Path)
 		}
 		if got := request.Header.Get("Authorization"); got != "Bearer sk-w12b-key" {

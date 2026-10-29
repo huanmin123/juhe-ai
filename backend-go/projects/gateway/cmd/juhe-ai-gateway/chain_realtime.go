@@ -461,7 +461,10 @@ func (c *gatewayChain) dialRealtimeAccount(ctx context.Context, account gatewayd
 		HandshakeTimeout: realtimeUpstreamHandshakeTimeout,
 		Proxy:            chainRealtimeProxyFunc(derefString(account.ProxyURL)),
 	}
-	target := chainRealtimeUpstreamURL(account.BaseURL, query)
+	target, urlErr := chainRealtimeUpstreamURL(account.BaseURL, query)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+strings.TrimSpace(account.APIKey))
 	conn, response, err := dialer.DialContext(ctx, target, header)
@@ -489,22 +492,27 @@ func chainRealtimeProxyFunc(proxyURL string) func(*http.Request) (*url.URL, erro
 	return http.ProxyURL(parsed)
 }
 
-// chainRealtimeUpstreamURL 构造上游 WS URL：沿 gatewayopenai.BuildUpstreamURL
-// 的 /v1 归一（openai 基址补缀），再把 scheme 换成 ws 族。
-func chainRealtimeUpstreamURL(baseURL string, query url.Values) string {
+// chainRealtimeUpstreamURL 构造上游 WS URL：/realtime opPath 与 base_url 按
+// v2 契约直拼（R1：版本根由 base_url 自带，如 openai 族 https://host/v1；
+// 拼接走 gatewayopenai.BuildUpstreamURL → 共享 upstreamenvelope.JoinUpstreamURL，
+// 原依赖 openai 归一补 /v1 的行为随 v2 删除），再把 scheme 换成 ws 族。
+func chainRealtimeUpstreamURL(baseURL string, query url.Values) (string, error) {
 	suffix := "/realtime"
 	if encoded := query.Encode(); encoded != "" {
 		suffix += "?" + encoded
 	}
-	httpURL := gatewayopenai.BuildUpstreamURL(baseURL, suffix)
+	httpURL, err := gatewayopenai.BuildUpstreamURL(baseURL, suffix)
+	if err != nil {
+		return "", err
+	}
 	switch {
 	case strings.HasPrefix(httpURL, "https://"):
-		return "wss://" + strings.TrimPrefix(httpURL, "https://")
+		return "wss://" + strings.TrimPrefix(httpURL, "https://"), nil
 	case strings.HasPrefix(httpURL, "http://"):
-		return "ws://" + strings.TrimPrefix(httpURL, "http://")
+		return "ws://" + strings.TrimPrefix(httpURL, "http://"), nil
 	default:
 		// 基址未带 scheme（测试直连形态）按 ws 处理。
-		return "ws://" + strings.TrimPrefix(httpURL, "//")
+		return "ws://" + strings.TrimPrefix(httpURL, "//"), nil
 	}
 }
 

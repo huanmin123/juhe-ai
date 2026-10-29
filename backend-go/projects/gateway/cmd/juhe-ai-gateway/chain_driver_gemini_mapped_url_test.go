@@ -36,8 +36,10 @@ func TestChainDriverGeminiModelMappedUpstreamURL(t *testing.T) {
 		VendorCode:   "hybrid",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
-		BaseURL:      "https://gem.example",
-		APIKey:       "gk-1",
+		// 动机（v2 直拼契约）：gemini native lane 的 base_url 即版本根，自带
+		// /v1beta；mapped 路径入站剥 /v1beta 后直拼，最终 URL 形态不变。
+		BaseURL: "https://gem.example/v1beta",
+		APIKey:  "gk-1",
 		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
 			SourceModel:            "gpt-x",
 			SourceEndpointFamily:   gatewayrouting.EndpointFamilyResponses,
@@ -85,8 +87,9 @@ func TestChainDriverGeminiModelMappedUpstreamURL(t *testing.T) {
 func TestChainDriverGeminiNativePathUnmappedKeepsRouteHelper(t *testing.T) {
 	driver := newChainProviderDriver()
 	account := gatewaydispatch.AccountCandidate{
+		// 动机（v2 直拼契约）：base_url 即版本根（自带 /v1beta）。
 		ID: "acc_gem_native", VendorCode: "google", ProtocolCode: "gemini",
-		Type: "api_key", BaseURL: "https://gem.example", APIKey: "gk-1",
+		Type: "api_key", BaseURL: "https://gem.example/v1beta", APIKey: "gk-1",
 	}
 	request := httptest.NewRequest(http.MethodPost, "/v1beta/models/gem-1:generateContent",
 		strings.NewReader(`{"contents":[{"parts":[{"text":"hi"}]}]}`))

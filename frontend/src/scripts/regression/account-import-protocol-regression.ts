@@ -68,8 +68,8 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   },
   {
     name: 'Gemini Google OAuth 模式与 GenerateContent 约束',
-    exportedPattern: /Gemini `google_oauth` 必须使用 `profile_gemini_native_v1beta` 并显式填写 `oauth_type`。`ai_studio` 使用 `https:\/\/generativelanguage\.googleapis\.com`；`code_assist`、`google_one` 必须有 `project_id`，使用 `https:\/\/cloudcode-pa\.googleapis\.com`，并且只能启用 `generate_content_json`、`generate_content_sse`，不能借 endpoint modes 放开 Interactions、Count Tokens 或 Embedding/,
-    formalPattern: /`oauth_type = code_assist\|google_one` 时 `credentials\.base_url` 使用 `https:\/\/cloudcode-pa\.googleapis\.com`、必须有 `project_id`，endpoint modes 只能是 `generate_content_json\/generate_content_sse`；`code_assist` 默认 `tier_id=gcp_standard`，`google_one` 默认 `tier_id=google_one_free`。`oauth_type = ai_studio` 时使用 `https:\/\/generativelanguage\.googleapis\.com`、自定义 Google OAuth client 和 native 档案 endpoint modes，默认 `tier_id=aistudio_free`/
+    exportedPattern: /Gemini `google_oauth` 必须使用 `profile_gemini_native_v1beta` 并显式填写 `oauth_type`。`ai_studio` 使用 `https:\/\/generativelanguage\.googleapis\.com\/v1beta`；`code_assist`、`google_one` 必须有 `project_id`，使用 `https:\/\/cloudcode-pa\.googleapis\.com`，并且只能启用 `generate_content_json`、`generate_content_sse`，不能借 endpoint modes 放开 Interactions、Count Tokens 或 Embedding/,
+    formalPattern: /`oauth_type = code_assist\|google_one` 时 `credentials\.base_url` 使用 `https:\/\/cloudcode-pa\.googleapis\.com`、必须有 `project_id`，endpoint modes 只能是 `generate_content_json\/generate_content_sse`；`code_assist` 默认 `tier_id=gcp_standard`，`google_one` 默认 `tier_id=google_one_free`。`oauth_type = ai_studio` 时使用 `https:\/\/generativelanguage\.googleapis\.com\/v1beta`（Gemini 原生版本根）、自定义 Google OAuth client 和 native 档案 endpoint modes，默认 `tier_id=aistudio_free`/
   },
   {
     name: '服务等级与思考级别覆盖边界',
@@ -132,12 +132,12 @@ assertEqual(typeof oauthAccount.credentials?.refresh_token, 'string', 'OAuth 示
 assertTrue(Array.isArray(oauthAccount.credentials?.supported_endpoint_modes), 'OAuth 示例应包含 supported_endpoint_modes')
 assertEqual(typeof deepSeekOpenAIAccount.credentials?.api_key, 'string', 'DeepSeek OpenAI-compatible 示例必须保留 credentials.api_key')
 assertEqual(deepSeekOpenAIAccount.providerProtocolProfileId, DEEPSEEK_OPENAI_V1_PROFILE_ID, 'DeepSeek OpenAI-compatible 示例应显式填写 OpenAI v1 profile')
-assertEqual(deepSeekOpenAIAccount.credentials?.base_url, 'https://api.deepseek.com', 'DeepSeek OpenAI-compatible 示例应使用官方 base URL')
+assertEqual(deepSeekOpenAIAccount.credentials?.base_url, 'https://api.deepseek.com/v1', 'DeepSeek OpenAI-compatible 示例应使用官方 base URL（URL v2 版本根）')
 assertEqual(JSON.stringify(deepSeekOpenAIAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse', 'responses_json', 'responses_sse']), 'DeepSeek OpenAI-compatible 示例应启用 Chat Completions 与原生 Responses JSON/Streaming')
 assertFalse(Object.prototype.hasOwnProperty.call(deepSeekOpenAIAccount, 'clientCompatibility'), 'DeepSeek OpenAI-compatible 普通示例不应默认暴露客户端兼容字段')
 assertEqual(deepSeekClaudeCodeAccount.providerProtocolProfileId, DEEPSEEK_ANTHROPIC_V1_PROFILE_ID, 'DeepSeek Claude Code 示例应显式填写 Anthropic v1 profile')
 assertFalse(Object.prototype.hasOwnProperty.call(deepSeekClaudeCodeAccount, 'clientCompatibility'), 'DeepSeek Claude Code 示例不应暴露客户端兼容字段')
-assertEqual(deepSeekClaudeCodeAccount.credentials?.base_url, 'https://api.deepseek.com/anthropic', 'DeepSeek Claude Code 示例应使用 Anthropic-compatible base URL')
+assertEqual(deepSeekClaudeCodeAccount.credentials?.base_url, 'https://api.deepseek.com/anthropic/v1', 'DeepSeek Claude Code 示例应使用 Anthropic-compatible base URL（URL v2 版本根）')
 assertEqual(JSON.stringify(deepSeekClaudeCodeAccount.credentials?.supported_endpoint_modes), JSON.stringify(['messages_json', 'messages_sse']), 'DeepSeek Claude Code 示例应只启用 Messages JSON/Streaming')
 assertFalse(Object.prototype.hasOwnProperty.call(glmGeneralAccount, 'clientCompatibility'), 'GLM 通用示例不应暴露客户端兼容字段')
 assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAccount, 'clientCompatibility'), 'GLM Coding 示例不应暴露客户端兼容字段')
@@ -147,7 +147,7 @@ assertEqual(JSON.stringify(glmGeneralAccount.credentials?.supported_endpoint_mod
 assertEqual(JSON.stringify(glmCodingAccount.credentials?.supported_endpoint_modes), JSON.stringify(['chat_json', 'chat_sse']), 'GLM Coding 示例应只启用 Chat Completions JSON/Streaming')
 assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAnthropicAccount, 'clientCompatibility'), 'GLM Coding Anthropic 示例不应暴露客户端兼容字段')
 assertFalse(Object.prototype.hasOwnProperty.call(glmCodingAnthropicAccount, deprecatedGlmProfileField), 'GLM Coding Anthropic 示例不应暴露已废弃的接入类型字段')
-assertEqual(glmCodingAnthropicAccount.credentials?.base_url, 'https://open.bigmodel.cn/api/anthropic', 'GLM Coding Anthropic 示例应使用 Anthropic-compatible base URL')
+assertEqual(glmCodingAnthropicAccount.credentials?.base_url, 'https://open.bigmodel.cn/api/anthropic/v1', 'GLM Coding Anthropic 示例应使用 Anthropic-compatible base URL（URL v2 版本根）')
 assertEqual(JSON.stringify(glmCodingAnthropicAccount.credentials?.supported_endpoint_modes), JSON.stringify(['messages_json', 'messages_sse']), 'GLM Coding Anthropic 示例应只启用 Messages JSON/Streaming')
 assertEqual(typeof anthropicAccount.credentials?.api_key, 'string', 'Anthropic 示例必须保留 credentials.api_key')
 assertEqual(anthropicAccount.providerProtocolProfileId, ANTHROPIC_ANTHROPIC_V1_PROFILE_ID, 'Anthropic 示例应显式填写 Anthropic v1 profile')

@@ -347,20 +347,28 @@ func TestW2UpstreamBaseURLValidation(t *testing.T) {
 			t.Fatalf("拆分不一致：%+v", parts)
 		}
 	})
+	// R8：凭据域路径校验统一为 validateUpstreamBaseURLPath（registry 公共模板
+	// 后缀命中规则），版本根放行、具体接口路径拒绝。
 	t.Run("openai 路径策略", func(t *testing.T) {
-		if message := validateOpenAICompatibleBaseURLPath(""); message != "" {
+		if message := validateUpstreamBaseURLPath(""); message != "" {
 			t.Fatalf("空路径应通过：%q", message)
 		}
-		if message := validateOpenAICompatibleBaseURLPath("/v1"); message != "" {
+		if message := validateUpstreamBaseURLPath("/v1"); message != "" {
 			t.Fatalf("v1 根地址应通过：%q", message)
 		}
-		if message := validateOpenAICompatibleBaseURLPath("/v1/chat/completions"); message == "" {
+		if message := validateUpstreamBaseURLPath("/api/v3"); message != "" {
+			t.Fatalf("api/v3 版本根应通过：%q", message)
+		}
+		if message := validateUpstreamBaseURLPath("/v1/chat/completions"); message == "" {
 			t.Fatal("v1 后接口路径应拒绝")
 		}
-		if message := validateOpenAICompatibleBaseURLPath("/chat/completions"); message == "" {
+		if message := validateUpstreamBaseURLPath("/v1/chat"); message == "" {
+			t.Fatal("接口路径按段前缀应拒绝")
+		}
+		if message := validateUpstreamBaseURLPath("/chat/completions"); message == "" {
 			t.Fatal("具体接口路径应拒绝")
 		}
-		if message := validateOpenAICompatibleBaseURLPath("/%zz"); message == "" {
+		if message := validateUpstreamBaseURLPath("/%zz"); message == "" {
 			t.Fatal("非法编码应拒绝")
 		}
 	})

@@ -435,22 +435,27 @@ func TestAllowedModesIntersections(t *testing.T) {
 // canonical JSON 中 17 个 preset 的 defaultBaseUrl 逐值精确匹配且 generic 三 preset
 // 序列化为 JSON null（标量按 canonical bytes 原样写入，不参与排序）。
 func TestPresetDefaultBaseURLs(t *testing.T) {
+	// 2026-10 上游 Base URL 版本根语义 v2（R9）：default_base_url 一律是
+	// 版本根形态——deepseek_openai_v1（/v1）、deepseek_anthropic_v1
+	//（/anthropic/v1）、glm_coding_anthropic_v1（/api/anthropic/v1）、
+	// volcengine_ark（/api/v3）、gemini_native_v1beta（/v1beta）、
+	// minimax_media（/v1）六处由服务根改写为版本根。
 	expected := map[string]string{
 		PresetGenericOpenAIV1:        "",
 		PresetGenericAnthropicV1:     "",
 		PresetGenericGeminiV1Beta:    "",
 		PresetGPTOpenAIV1:            "https://api.openai.com/v1",
 		PresetXAIOpenAIV1:            "https://api.x.ai/v1",
-		PresetDeepSeekOpenAIV1:       "https://api.deepseek.com",
-		PresetDeepSeekAnthropicV1:    "https://api.deepseek.com/anthropic",
+		PresetDeepSeekOpenAIV1:       "https://api.deepseek.com/v1",
+		PresetDeepSeekAnthropicV1:    "https://api.deepseek.com/anthropic/v1",
 		PresetAnthropicV1:            "https://api.anthropic.com/v1",
 		PresetGeminiOpenAIChatV1Beta: "https://generativelanguage.googleapis.com/v1beta/openai",
-		PresetGeminiNativeV1Beta:     "https://generativelanguage.googleapis.com",
+		PresetGeminiNativeV1Beta:     "https://generativelanguage.googleapis.com/v1beta",
 		PresetGLMGeneralOpenAIV1:     "https://open.bigmodel.cn/api/paas/v4",
 		PresetGLMCodingOpenAIV1:      "https://open.bigmodel.cn/api/coding/paas/v4",
-		PresetGLMCodingAnthropicV1:   "https://open.bigmodel.cn/api/anthropic",
-		PresetMiniMaxMedia:           "https://api.minimax.chat",
-		PresetVolcengineArk:          "https://ark.cn-beijing.volces.com",
+		PresetGLMCodingAnthropicV1:   "https://open.bigmodel.cn/api/anthropic/v1",
+		PresetMiniMaxMedia:           "https://api.minimax.chat/v1",
+		PresetVolcengineArk:          "https://ark.cn-beijing.volces.com/api/v3",
 		PresetVolcengineOpenSpeech:   "https://openspeech.bytedance.com",
 		PresetQwenDashScope:          "https://dashscope.aliyuncs.com",
 	}
@@ -743,7 +748,11 @@ func TestRegistryInternalConsistency(t *testing.T) {
 	}
 
 	// 公共协议面模板家族：文本 preset 精确使用公共清单；媒体 preset 精确使用
-	// 媒体协议契约清单（逐条章节来源见下方断言注释）。
+	// 媒体协议契约清单（逐条章节来源见下方断言注释）。模板自上游 Base URL
+	// 版本根语义 v2（R2）起不含版本前缀——版本段（/v1、/v1beta、/api/v3）
+	// 属于 base_url 版本根；唯一例外是 qwen_dashscope（base_url 语义是
+	// origin，服务路径随操作路径登记，R6 保持全路径，并补登记 OpenAI 兼容
+	// 模式 chat 模板）。
 	openAITemplateSet := toSet(openAIOperationTemplates)
 	for _, preset := range []string{
 		PresetGenericOpenAIV1, PresetGPTOpenAIV1, PresetXAIOpenAIV1,
@@ -767,29 +776,31 @@ func TestRegistryInternalConsistency(t *testing.T) {
 			t.Errorf("preset %q 必须精确使用 Gemini native 公共 8 条模板", preset)
 		}
 	}
-	if !setsEqual(toSet(connectorPresetRecordIndex[PresetGeminiOpenAIChatV1Beta].OperationPathTemplates), toSet([]string{"POST /v1/chat/completions"})) {
+	if !setsEqual(toSet(connectorPresetRecordIndex[PresetGeminiOpenAIChatV1Beta].OperationPathTemplates), toSet([]string{"POST /chat/completions"})) {
 		t.Errorf("preset %q 只应注册 chat completions 模板", PresetGeminiOpenAIChatV1Beta)
 	}
 	// 媒体 preset 模板精确清单（docs/functions/媒体上游协议契约与Mock上游规格.md
-	// 章节逐条注明）：minimax §8.1 视频 + §8.2 TTS；ark §9.1 视频创建与轮询；
-	// openspeech §9.2 TTS + 长转写 submit/query（无取消端点）；qwen §10.1 万相
-	// 视频 + §11 录音识别 + 两域共用 DashScope 轮询。
+	// 章节逐条注明，版本前缀随 R2 归属 base_url 版本根）：minimax §8.1 视频 +
+	// §8.2 TTS；ark §9.1 视频创建与轮询；openspeech §9.2 TTS + 长转写
+	// submit/query（无取消端点）；qwen §11 录音识别 + §10.1 万相视频 + 两域
+	// 共用 DashScope 轮询 + OpenAI 兼容模式 chat（全路径，R6）。
 	mediaTemplateSets := map[string][]string{
 		PresetMiniMaxMedia: {
-			"POST /v1/video_generation",
-			"GET /v1/query/video_generation",
-			"POST /v1/t2a_v2",
+			"POST /video_generation",
+			"GET /query/video_generation",
+			"POST /t2a_v2",
 		},
 		PresetVolcengineArk: {
-			"POST /api/v3/contents/generations/tasks",
-			"GET /api/v3/contents/generations/tasks/{id}",
+			"POST /contents/generations/tasks",
+			"GET /contents/generations/tasks/{id}",
 		},
 		PresetVolcengineOpenSpeech: {
-			"POST /api/v3/tts/create",
-			"POST /api/v3/auc/bigmodel/submit",
-			"POST /api/v3/auc/bigmodel/query",
+			"POST /tts/create",
+			"POST /auc/bigmodel/submit",
+			"POST /auc/bigmodel/query",
 		},
 		PresetQwenDashScope: {
+			"POST /compatible-mode/v1/chat/completions",
 			"POST /api/v1/services/audio/asr/transcription",
 			"POST /api/v1/services/aigc/video-generation/video-synthesis",
 			"GET /api/v1/tasks/{task_id}",
@@ -801,5 +812,26 @@ func TestRegistryInternalConsistency(t *testing.T) {
 		if !setsEqual(toSet(got), toSet(want)) || len(got) != len(want) {
 			t.Errorf("媒体 preset %q 模板 = %v, want 契约精确清单 %v", preset, got, want)
 		}
+	}
+}
+
+// TestBasePathValidationTemplates 断言凭据域路径校验数据源（R8）：三个公共
+// 协议面已去版本前缀模板的并集副本，共 15+2+8=25 条，不包含 qwen 媒体模板。
+func TestBasePathValidationTemplates(t *testing.T) {
+	union := BasePathValidationTemplates()
+	if len(union) != 25 {
+		t.Fatalf("BasePathValidationTemplates() = %d 条, want 25", len(union))
+	}
+	want := toSet(append(append(append([]string{}, openAIOperationTemplates...), anthropicOperationTemplates...), geminiNativeOperationTemplates...))
+	if !setsEqual(toSet(union), want) {
+		t.Fatalf("BasePathValidationTemplates() 与三协议面并集不一致")
+	}
+	if !stringSliceContains(union, "POST /chat/completions") || !stringSliceContains(union, "POST /messages") || !stringSliceContains(union, "POST /models/{model}:generateContent") {
+		t.Fatalf("并集应包含三个协议面去版本前缀后的代表模板")
+	}
+	// 返回副本：修改返回值不得影响 registry 内部数据。
+	union[0] = "MUTATED"
+	if !setsEqual(toSet(BasePathValidationTemplates()), want) {
+		t.Fatalf("BasePathValidationTemplates() 必须返回副本，内部数据被修改")
 	}
 }

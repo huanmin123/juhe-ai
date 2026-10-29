@@ -92,8 +92,9 @@ func TestXaiVideoAdapterCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if output.Method != http.MethodPost || output.Path != "/v1/videos/generations" {
-		t.Fatalf("create 出站形态 = %s %s, want POST /v1/videos/generations", output.Method, output.Path)
+	// 动机（v2 直拼契约）：opPath 不含版本段，/v1 由 base_url 版本根承载。
+	if output.Method != http.MethodPost || output.Path != "/videos/generations" {
+		t.Fatalf("create 出站形态 = %s %s, want POST /videos/generations", output.Method, output.Path)
 	}
 	var body struct {
 		Model         string          `json:"model"`
@@ -244,7 +245,8 @@ func TestXaiVideoAspectRatioVocabulary(t *testing.T) {
 
 func TestXaiVideoAdapterPollRequest(t *testing.T) {
 	method, path, body := VideoAdapterForProvider("xai").BuildPollRequest("0b9f4d3a-7c2e-4f61-9a88-2c5d1e6b0f74")
-	if method != http.MethodGet || path != "/v1/videos/0b9f4d3a-7c2e-4f61-9a88-2c5d1e6b0f74" {
+	// 动机（v2 直拼契约）：opPath 不含版本段，/v1 由 base_url 版本根承载。
+	if method != http.MethodGet || path != "/videos/0b9f4d3a-7c2e-4f61-9a88-2c5d1e6b0f74" {
 		t.Fatalf("poll 出站形态 = %s %s", method, path)
 	}
 	if body != nil {

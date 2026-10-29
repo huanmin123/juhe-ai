@@ -6,8 +6,9 @@
 // with_audio?}，响应 {id,request_id,task_status}——受理凭据 = id；轮询 GET
 // /api/paas/v4/async-result/{id} → task_status ∈ PROCESSING|SUCCESS|FAIL，
 // SUCCESS 携带 video_result{url,cover_image_url}（url 即产物下载定位）。
-// 出站路径自带 /api/paas/v4 服务根（glm 官方根形态，账户 base_url 已含该根
-// 时由链上层去重，chainGlmVideoUpstreamURL）；纯逻辑层，不触 chain/HTTP 执行。
+// 出站 opPath 不含版本段（/videos/generations + /async-result/{id}），
+// /api/paas/v4 版本根由账户 base_url 承载，URL 由链上层经共享
+// upstreamenvelope.JoinUpstreamURL 版本根直拼；纯逻辑层，不触 chain/HTTP 执行。
 package gatewaymedia
 
 import (
@@ -68,7 +69,8 @@ func absFloat64(value float64) float64 {
 	return value
 }
 
-// Create 构造契约 §7.1 创建报文：POST /api/paas/v4/videos/generations，body
+// Create 构造契约 §7.1 创建报文：POST {base}/videos/generations（opPath 按
+// v2 契约不含版本段；/api/paas/v4 服务根由账户 base_url 版本根承载），body
 // 为 {model,prompt,negative_prompt?,image_url?,size?,duration?,with_audio?}。
 // 换算与透传规则：
 //   - size：glm 的 size 即 WxH 像素串形态（如 1440x720/1080x1920），与公共
@@ -115,15 +117,15 @@ func (a glmVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	}
 	return VideoCreateOutput{
 		Method: http.MethodPost,
-		Path:   "/api/paas/v4/videos/generations",
+		Path:   "/videos/generations",
 		Body:   encoded,
 	}, nil
 }
 
-// BuildPollRequest 构造轮询请求：GET /api/paas/v4/async-result/{id}（契约
-// §7.1；id 即创建响应的受理凭据）。
+// BuildPollRequest 构造轮询请求：GET {base}/async-result/{id}（契约 §7.1；
+// id 即创建响应的受理凭据；opPath 不含版本段，/api/paas/v4 由 base_url 承载）。
 func (glmVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
-	return http.MethodGet, "/api/paas/v4/async-result/" + upstreamJobID, nil
+	return http.MethodGet, "/async-result/" + upstreamJobID, nil
 }
 
 // ContentFromArtifact 声明 glm 形态的产物下载定位：completed 的下载地址是

@@ -141,7 +141,9 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 	})
 
 	t.Run("images success and failure", func(t *testing.T) {
-		view := probeView(server.URL)
+		// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），共享 mock 的
+		// /v1/images/generations 路由才能命中 images 形态响应。
+		view := probeView(server.URL + "/v1")
 		view.HealthCheckModel = "img-1"
 		view.HealthCheckEndpointMode = string(ModeImagesJSON)
 		view.SupportedModels = []string{"img-1"}
@@ -153,7 +155,7 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 		}
 		// Upstream error envelope → images error message with code suffix.
 		h := openImageServer(t, `{"error":{"code":"content_policy_violation","message":"blocked"}}`)
-		view2 := probeView(h.URL)
+		view2 := probeView(h.URL + "/v1")
 		view2.HealthCheckModel = "img-1"
 		view2.HealthCheckEndpointMode = string(ModeImagesJSON)
 		view2.SupportedModels = []string{"img-1"}
@@ -290,15 +292,15 @@ func TestW7CUpstreamURLBranchArms(t *testing.T) {
 		t.Fatalf("gemini openai profile: %q", request.URL)
 	}
 
-	// Anthropic bases gain a /v1 suffix only when missing.
+	// R3/R1：anthropic base_url 必须自带版本根，R1 直拼不再自动补 /v1（旧
+	// 「missing 补 /v1」行为已删除）；无版本根 base 原样拼接（负例钉住）。
 	for _, tc := range []struct{ base, want string }{
-		{"https://claude.example.com", "https://claude.example.com/v1/messages"},
 		{"https://claude.example.com/v1", "https://claude.example.com/v1/messages"},
-		// 供应商根路径稳定性（原 TestBuildUpstreamURLAnthropicProviderRoots）。
-		{"https://api.anthropic.com", "https://api.anthropic.com/v1/messages"},
-		{"https://api.deepseek.com/anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
-		{"https://open.bigmodel.cn/api/anthropic", "https://open.bigmodel.cn/api/anthropic/v1/messages"},
+		// 供应商版本根（R9 默认值同源）直拼。
+		{"https://api.anthropic.com/v1", "https://api.anthropic.com/v1/messages"},
+		{"https://api.deepseek.com/anthropic/v1", "https://api.deepseek.com/anthropic/v1/messages"},
 		{"https://open.bigmodel.cn/api/anthropic/v1", "https://open.bigmodel.cn/api/anthropic/v1/messages"},
+		{"https://open.bigmodel.cn/api/anthropic", "https://open.bigmodel.cn/api/anthropic/messages"},
 	} {
 		anthropic := probeView(tc.base)
 		anthropic.ProtocolCode = "anthropic"

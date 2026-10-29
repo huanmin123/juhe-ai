@@ -50,10 +50,6 @@ func TestFetchOpenAIModelsPathAndBearerHeader(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"},{"id":"gpt-4o"}]}`))
 	}))
 	defer server.Close()
-	doer := &stubDoer{handler: func(r *http.Request) (*http.Response, error) {
-		return newServerAwareDoer(server.URL)(r)
-	}}
-	_ = doer
 	ids, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
 		BaseURL:        server.URL + "/v1",
 		ProtocolCode:   "openai",
@@ -64,6 +60,8 @@ func TestFetchOpenAIModelsPathAndBearerHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// R1/R3：base 携带 /v1 版本根，models 操作路径去版本前缀（R2），线上
+	// 完整路径 = base 版本根 /v1 + 操作路径 /models。
 	if gotPath != "/v1/models" {
 		t.Fatalf("path = %s, want /v1/models", gotPath)
 	}
@@ -83,18 +81,6 @@ func TestFetchOpenAIModelsPathAndBearerHeader(t *testing.T) {
 	}
 }
 
-// newServerAwareDoer keeps using the test server transport through a plain
-// http.Client while letting the handler above record request fields.
-func newServerAwareDoer(serverURL string) func(*http.Request) (*http.Response, error) {
-	transport := http.DefaultTransport
-	return func(r *http.Request) (*http.Response, error) {
-		if !strings.HasPrefix(r.URL.String(), serverURL) {
-			return jsonResponse(http.StatusBadRequest, `{"error":"unexpected target"}`)
-		}
-		return transport.RoundTrip(r)
-	}
-}
-
 func TestFetchAnthropicModelsUsesXAPIKeyHeader(t *testing.T) {
 	var gotPath, gotAPIKey, gotVersion, gotUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,8 +91,9 @@ func TestFetchAnthropicModelsUsesXAPIKeyHeader(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-4"}]}`))
 	}))
 	defer server.Close()
+	// R3：base 必须携带版本根（旧行为无根自动补 /v1 已随 R1 删除）。
 	ids, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
-		BaseURL:        server.URL,
+		BaseURL:        server.URL + "/v1",
 		ProtocolCode:   "anthropic",
 		Credential:     "ak-key",
 		CredentialType: "api_key",
@@ -115,6 +102,8 @@ func TestFetchAnthropicModelsUsesXAPIKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// R3：base 携带 /v1 版本根（旧行为无根自动补 /v1 已随 R1 删除），线上
+	// 完整路径 = /v1 + /models。
 	if gotPath != "/v1/models" {
 		t.Fatalf("path = %s, want /v1/models", gotPath)
 	}
@@ -139,9 +128,9 @@ func TestFetchGeminiModelsUsesV1BetaAndGoogKeyHeader(t *testing.T) {
 		_, _ = w.Write([]byte(`{"models":[{"name":"models/gemini-2.0-flash"},{"name":"models/gemini-1.5-flash"}]}`))
 	}))
 	defer server.Close()
-	// Host-only base: the /v1beta root must be appended.
+	// R3：base 必须携带 /v1beta 版本根（旧行为无根自动补根已随 R1 删除）。
 	ids, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
-		BaseURL:        server.URL,
+		BaseURL:        server.URL + "/v1beta",
 		ProtocolCode:   "gemini",
 		Credential:     "g-key",
 		CredentialType: "api_key",
@@ -150,6 +139,8 @@ func TestFetchGeminiModelsUsesV1BetaAndGoogKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// R3：base 携带 /v1beta 版本根（旧行为无根自动补根已随 R1 删除），线上
+	// 完整路径 = /v1beta + /models。
 	if gotPath != "/v1beta/models" {
 		t.Fatalf("path = %s, want /v1beta/models", gotPath)
 	}
@@ -184,6 +175,41 @@ func TestFetchGeminiBaseWithVersionRootKeepsSingleRoot(t *testing.T) {
 		t.Fatalf("path = %s, want /v1beta/models", gotPath)
 	}
 }
+
+// TestUpstreamModelsURLVersionRootGolden 钉住 R1/R3 的 models 目录直拼：
+// 版本根 base（openai/anthropic /v1、gemini /v1beta）+ 去版本前缀 /models，
+// 尾斜杠 base 去尾后直拼。请求经 stub Doer 拦截断言最终 URL（Mock 优先），
+// 不触达真实上游网络。
+func TestUpstreamModelsURLVersionRootGolden(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		wantURL string
+	}{
+		{name: "openai /v1 版本根", baseURL: "https://api.deepseek.com/v1", wantURL: "https://api.deepseek.com/v1/models"},
+		{name: "anthropic /v1 版本根", baseURL: "https://api.anthropic.com/v1", wantURL: "https://api.anthropic.com/v1/models"},
+		{name: "gemini /v1beta 版本根", baseURL: "https://generativelanguage.googleapis.com/v1beta", wantURL: "https://generativelanguage.googleapis.com/v1beta/models"},
+		{name: "尾斜杠 base", baseURL: "https://up.example.com/v1/", wantURL: "https://up.example.com/v1/models"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotURL string
+			doer := &stubDoer{handler: func(r *http.Request) (*http.Response, error) {
+				gotURL = r.URL.String()
+				return jsonResponse(http.StatusOK, `{"data":[]}`)
+			}}
+			if _, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
+				BaseURL: tc.baseURL, ProtocolCode: "openai", Credential: "k", Doer: doer,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if gotURL != tc.wantURL {
+				t.Fatalf("url = %s, want %s", gotURL, tc.wantURL)
+			}
+		})
+	}
+}
+
 
 func TestFetchGLMCodingModelsUsesProfileAuthAndZCodeIdentity(t *testing.T) {
 	cases := []struct {
@@ -258,7 +284,8 @@ func TestFetchErrorClassification(t *testing.T) {
 	}
 	if _, err := FetchUpstreamModelIDs(context.Background(), FetchOptions{
 		BaseURL: " ", ProtocolCode: "openai", Credential: "sk",
-	}); err == nil || !strings.Contains(err.Error(), "缺少 base_url") {
+	// R7：缺 base_url 的错误由 JoinUpstreamURL 统一产生（文案随共享规则）。
+	}); err == nil || !strings.Contains(err.Error(), "缺少上游 base_url") {
 		t.Fatalf("want missing base_url error, got %v", err)
 	}
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

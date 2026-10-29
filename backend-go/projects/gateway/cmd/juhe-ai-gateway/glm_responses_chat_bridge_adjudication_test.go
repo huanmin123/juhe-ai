@@ -132,9 +132,12 @@ func TestAdjudicateGLMResponsesToChatBridgeUpstreamURL(t *testing.T) {
 	if len(urls) != 1 {
 		t.Fatalf("urls = %#v", urls)
 	}
-	want := "https://open.bigmodel.cn/api/coding/paas/v4/v1/chat/completions"
-	// 与全部既有 GLM chat 流量同一 BuildUpstreamURL 契约：base 无 /v1 结尾时
-	// 补 /v1（endpoint_test.go 期望表钉住的行为），改写仅替换版本后的路径段。
+	// 动机（v2 直拼契约）：glm coding 版本根 base（/api/coding/paas/v4）+
+	// 入站剥 /v1 后的 /chat/completions 直拼——旧行为对非 /v1 结尾 base 多拼
+	// 一层 /v1（/api/coding/paas/v4/v1/chat/completions），v2 删除补缀后为
+	// 正确官方端点；映射路径改写语义不变（打到 /chat/completions 而非原生
+	// /responses）。
+	want := "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 	if urls[0] != want {
 		t.Fatalf("上游 URL = %q，期望 %q（映射路径改写未生效）", urls[0], want)
 	}

@@ -162,11 +162,13 @@ func TestWABuildUpstreamURLGemini(t *testing.T) {
 		wantErr          bool
 	}{
 		{"默认 base", "", "/v1beta/models/m:generatecontent", false, "https://generativelanguage.googleapis.com/v1beta/models/m:generatecontent", false},
-		{"query 合并并删 key", "https://proxy.example", "/v1beta/models/m:generatecontent?key=secret&foo=bar", false, "https://proxy.example/v1beta/models/m:generatecontent?foo=bar", false},
-		{"stream 补 alt=sse", "https://proxy.example", "/v1beta/models/m:streamgeneratecontent", true, "https://proxy.example/v1beta/models/m:streamgeneratecontent?alt=sse", false},
-		{"base 已含 /v1beta 去重", "https://proxy.example/v1beta/", "/v1beta/models", false, "https://proxy.example/v1beta/models", false},
-		{"interactions 删除 alt", "https://proxy.example", "/v1beta/interactions?alt=sse&x=1", false, "https://proxy.example/v1beta/interactions?x=1", false},
-		{"interactions stream 保留 alt=sse", "https://proxy.example", "/v1beta/interactions", true, "https://proxy.example/v1beta/interactions?alt=sse", false},
+		// 以下四条动机（v2 直拼契约）：base_url 即版本根，不再对裸域 base 强制
+		// 插 /v1beta——期望值改为直拼形态（版本根由 base_url 承载）。
+		{"query 合并并删 key", "https://proxy.example", "/v1beta/models/m:generatecontent?key=secret&foo=bar", false, "https://proxy.example/models/m:generatecontent?foo=bar", false},
+		{"stream 补 alt=sse", "https://proxy.example", "/v1beta/models/m:streamgeneratecontent", true, "https://proxy.example/models/m:streamgeneratecontent?alt=sse", false},
+		{"base 已含 /v1beta 直拼（不再有去重分支）", "https://proxy.example/v1beta/", "/v1beta/models", false, "https://proxy.example/v1beta/models", false},
+		{"interactions 删除 alt", "https://proxy.example", "/v1beta/interactions?alt=sse&x=1", false, "https://proxy.example/interactions?x=1", false},
+		{"interactions stream 保留 alt=sse", "https://proxy.example", "/v1beta/interactions", true, "https://proxy.example/interactions?alt=sse", false},
 		{"非法 base 报错", "://bad", "/v1beta/models", false, "", true},
 	}
 	for _, tc := range cases {
@@ -191,8 +193,9 @@ func TestWABuildUpstreamURLGemini(t *testing.T) {
 func TestWABuildUpstreamURLsForAccountGemini(t *testing.T) {
 	generate := httptest.NewRequest("POST", "/v1beta/models/gemini-2:generatecontent", nil)
 	t.Run("api_key 账户", func(t *testing.T) {
+		// 动机（v2 直拼契约）：裸域 base 不再插 /v1beta，直拼 opPath。
 		urls := BuildUpstreamURLsForAccount(UpstreamAccount{Type: "api_key", BaseURL: "https://proxy.example"}, generate, false)
-		if len(urls) != 1 || !strings.HasPrefix(urls[0], "https://proxy.example/v1beta/models/gemini-2:generatecontent") {
+		if len(urls) != 1 || !strings.HasPrefix(urls[0], "https://proxy.example/models/gemini-2:generatecontent") {
 			t.Fatalf("api_key = %v", urls)
 		}
 	})
@@ -219,7 +222,8 @@ func TestWABuildUpstreamURLsForAccountGemini(t *testing.T) {
 			t.Fatalf("非探测 models 应 nil: %v", urls)
 		}
 		urls := BuildUpstreamURLsForAccount(UpstreamAccount{Type: "api_key", BaseURL: "https://p.example"}, models, true)
-		if len(urls) != 1 || urls[0] != "https://p.example/v1beta/models" {
+		// 动机（v2 直拼契约）：裸域 base 不再插 /v1beta，直拼 opPath。
+		if len(urls) != 1 || urls[0] != "https://p.example/models" {
 			t.Fatalf("探测 models = %v", urls)
 		}
 	})

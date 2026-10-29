@@ -250,7 +250,9 @@ func TestExecutorDraftHybridMappingUsesMappedProtocol(t *testing.T) {
 		ProviderCode: "hybrid", ProviderProtocolProfileID: "profile_hybrid_openai_chat_v1",
 		ProtocolCode: "openai", ProtocolVersion: "v1", Name: "Hybrid 草稿", Type: "api_key",
 		Credentials: map[string]any{
-			"api_key": "sk-test-123456", "base_url": server.URL,
+			// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），hybrid 映射到
+			// anthropic messages 后线上路径 = 根 + 去前缀操作路径，断言不变。
+			"api_key": "sk-test-123456", "base_url": server.URL + "/v1",
 			"supported_endpoint_modes": []any{"chat_json"},
 		},
 		ClientCompatibility: "openai_standard", SupportedModels: []string{"client-model"},

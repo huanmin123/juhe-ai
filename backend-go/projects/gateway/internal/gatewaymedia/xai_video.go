@@ -176,15 +176,17 @@ func (a xaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCr
 	}
 	return VideoCreateOutput{
 		Method: http.MethodPost,
-		Path:   "/v1/videos/generations",
-		Body:   encoded,
+		// opPath 按 v2 契约不含版本段（/v1 由账户 base_url 版本根承载）。
+		Path: "/videos/generations",
+		Body: encoded,
 	}, nil
 }
 
-// BuildPollRequest 构造轮询请求：GET /v1/videos/{request_id}（契约 §6.1；
-// request_id 即创建响应的受理凭据，官方为 uuid 形态 URL 安全串直拼）。
+// BuildPollRequest 构造轮询请求：GET {base}/videos/{request_id}（契约 §6.1；
+// request_id 即创建响应的受理凭据，官方为 uuid 形态 URL 安全串直拼；opPath
+// 不含版本段，/v1 由 base_url 版本根承载）。
 func (xaiVideoAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
-	return http.MethodGet, "/v1/videos/" + upstreamJobID, nil
+	return http.MethodGet, "/videos/" + upstreamJobID, nil
 }
 
 // ContentFromArtifact 声明 xai 形态的产物下载定位：completed 的下载地址是

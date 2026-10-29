@@ -61,20 +61,16 @@ func TestWAEstimateRequestInputTokensShortRaw(t *testing.T) {
 	}
 }
 
-// 上游 URL 拼接：base 带斜杠尾巴与路径斜杠折叠；stripV1BetaPrefixExact 空串。
+// 上游 URL 拼接：base 带斜杠尾巴与路径斜杠折叠（动机 v2 直拼契约：opPath
+// 不再强制挂 /v1beta，入站剥 /v1beta 后直拼；stripV1BetaPrefixExact 随
+// 去重分支删除）。
 func TestWABuildUpstreamURLSlashCollapse(t *testing.T) {
 	got, err := BuildUpstreamURL("https://proxy.example//", "v1beta//models", false)
 	if err != nil {
 		t.Fatalf("BuildUpstreamURL error: %v", err)
 	}
-	if got != "https://proxy.example/v1beta/models" {
+	if got != "https://proxy.example/models" {
 		t.Fatalf("斜杠折叠 = %q", got)
-	}
-	if stripV1BetaPrefixExact("/v1beta") != "" {
-		t.Fatal("stripV1BetaPrefixExact(/v1beta) 应为空串")
-	}
-	if stripV1BetaPrefixExact("/v1betax") != "/v1betax" {
-		t.Fatal("非版本前缀应保留")
 	}
 }
 

@@ -131,18 +131,26 @@ function validateOpenAICompatiblePath(path: string): string | undefined {
     .filter(Boolean)
     .map((segment) => decodeURIComponent(segment).toLowerCase())
   if (segments.length === 0) return undefined
-  const finalV1Index = segments.lastIndexOf('v1')
-  if (finalV1Index >= 0 && finalV1Index < segments.length - 1 && matchesOpenAIEndpointPath(segments.slice(finalV1Index + 1))) {
-    return 'Base URL 不能包含 /v1 后的具体接口路径'
-  }
-  if (containsOpenAIEndpointPath(segments)) {
-    return 'Base URL 不能填写具体接口路径，请填写服务根地址或 /v1 版本根地址'
+  // 上游 Base URL 版本根语义 v2：最终上游 URL = TrimRight(base_url, '/') +
+  // 操作路径（不含版本前缀）。路径任意后缀只要命中操作路径清单、或是其中
+  // 某条操作路径的按段前缀（如 /v1/chat、/api/v3/audio 这类以半个操作路径
+  // 结尾的值），拼接后都会产出错误上游地址，一律拒绝。
+  for (let start = 0; start < segments.length; start += 1) {
+    const suffix = segments.slice(start)
+    if (matchesOpenAIEndpointPath(suffix) || isEndpointPathSegmentPrefix(suffix)) {
+      return 'Base URL 不能填写具体接口路径，请填写包含版本前缀的根地址（如 /v1、/api/v3）'
+    }
   }
   return undefined
 }
 
-function containsOpenAIEndpointPath(segments: string[]): boolean {
-  return segments.some((_segment, index) => matchesOpenAIEndpointPath(segments.slice(index)))
+// isEndpointPathSegmentPrefix 判定后缀是否恰为某条操作路径清单项的按段前缀
+//（长度严格小于清单项，且逐段相等）。
+function isEndpointPathSegmentPrefix(suffix: string[]): boolean {
+  return openAIEndpointPathPrefixes.some((prefix) => {
+    if (suffix.length >= prefix.length) return false
+    return prefix.every((part, index) => suffix[index] === part)
+  })
 }
 
 function matchesOpenAIEndpointPath(segments: string[]): boolean {

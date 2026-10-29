@@ -96,8 +96,9 @@ func TestMinimaxVideoAdapterCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if output.Method != http.MethodPost || output.Path != "/v1/video_generation" {
-		t.Fatalf("create 出站形态 = %s %s, want POST /v1/video_generation", output.Method, output.Path)
+	// 动机（v2 直拼契约）：opPath 不含版本段，/v1 由 base_url 版本根承载。
+	if output.Method != http.MethodPost || output.Path != "/video_generation" {
+		t.Fatalf("create 出站形态 = %s %s, want POST /video_generation", output.Method, output.Path)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(output.Body, &body); err != nil {
@@ -137,7 +138,8 @@ func TestMinimaxVideoAdapterCreateInputReferenceURLRejected(t *testing.T) {
 
 func TestMinimaxVideoAdapterPollRequest(t *testing.T) {
 	method, path, body := VideoAdapterForProvider("minimax").BuildPollRequest("0123456789abcdef")
-	if method != http.MethodGet || path != "/v1/query/video_generation?task_id=0123456789abcdef" {
+	// 动机（v2 直拼契约）：opPath 不含版本段，/v1 由 base_url 版本根承载。
+	if method != http.MethodGet || path != "/query/video_generation?task_id=0123456789abcdef" {
 		t.Fatalf("poll 出站形态 = %s %s", method, path)
 	}
 	if body != nil {
@@ -254,8 +256,9 @@ func TestMinimaxSpeechAdapterBuildRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	if path != "/v1/t2a_v2" {
-		t.Fatalf("path = %q, want /v1/t2a_v2", path)
+	// 动机（v2 直拼契约）：opPath 不含版本段，/v1 由 base_url 版本根承载。
+	if path != "/t2a_v2" {
+		t.Fatalf("path = %q, want /t2a_v2", path)
 	}
 	var parsed struct {
 		Model  string `json:"model"`
