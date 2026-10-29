@@ -423,6 +423,8 @@ func (s *AccountStore) ListPage(ctx context.Context, keyword string, page, pageS
 		return nil, 0, false, err
 	}
 	defer rows.Close()
+	// nil 切片会序列化成 null，而前端分页列表直接读 items.length；空结果必须是 []。
+	items = []AccountListItem{}
 	for rows.Next() {
 		summary, scanErr := s.scanSummary(rows)
 		if scanErr != nil {

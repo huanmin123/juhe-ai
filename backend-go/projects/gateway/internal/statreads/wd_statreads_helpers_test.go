@@ -858,17 +858,6 @@ func TestWdIsValidCalendarStatHourAndAccountIDTooLong(t *testing.T) {
 	}
 }
 
-func TestWdZonedHourRange(t *testing.T) {
-	start, end := zonedHourRange("2026-09-04T10", time.UTC)
-	if start != "2026-09-04T10:00:00.000Z" || end != "2026-09-04T11:00:00.000Z" {
-		t.Fatalf("UTC 小时窗错误: %q %q", start, end)
-	}
-	start, end = zonedHourRange("bad", time.UTC)
-	if start != "" || end != "" {
-		t.Fatalf("非法小时应返回空窗: %q %q", start, end)
-	}
-}
-
 func TestWdTimestampValue(t *testing.T) {
 	if timestampValue("") != -1<<62 {
 		t.Fatalf("空时间戳应得极小值")

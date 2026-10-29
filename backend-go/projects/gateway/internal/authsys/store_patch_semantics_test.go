@@ -138,7 +138,11 @@ func TestListPageKeywordIsExactOrPrefix(t *testing.T) {
 		t.Helper()
 		_, payload := getJSON(t, server, "/__aisys__/api/system-accounts?page=1&pageSize=50&keyword="+keyword, adminCookie)
 		data, _ := payload["data"].(map[string]any)
-		items, _ := data["items"].([]any)
+		// 空结果必须是 []，不能是 null：前端分页列表直接读 items.length。
+		items, ok := data["items"].([]any)
+		if !ok {
+			t.Fatalf("keyword %q items = %#v, want a JSON array", keyword, data["items"])
+		}
 		return len(items)
 	}
 

@@ -33,6 +33,13 @@ const (
 	// missingDefaultGroupError mirrors the Node ensureDefaultRouteStrategies
 	// failure message.
 	missingDefaultGroupError = "创建默认策略路由前必须先创建默认分组"
+	// builtinSchedulingPreferenceID 与 apikeys.BuiltinSchedulingPreferenceID、
+	// maintenance schema.BuiltinSchedulingPreferenceID 与 maintenance
+	// accountdefaultresources 同源锚点，改动即四处同改：调度偏好 P1 契约
+	// 「缺省 → 内置固定 ID」，默认 Key 与 Store.Create 同形显式落内置行
+	// （本文件初版早于 P1，曾漏列导致默认 Key 绑定落 NULL，随存量补齐命令
+	// accountdefaultresources 同批回正）。
+	builtinSchedulingPreferenceID = "schpref-builtin-chat-cost-first"
 )
 
 // SQLDefaultResources implements DefaultResourceEnsurer with the same
@@ -239,8 +246,8 @@ func (e *SQLDefaultResources) insertAPIKey(ctx context.Context, tx *sql.Tx, acco
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, e.store.bind(`INSERT INTO `+e.store.table("api_keys")+` (id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json, availability_schedule_json, availability_schedule_next_check_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL, ?, ?)`),
-		id, accountID, routeID, name, description, hex.EncodeToString(sum[:]), secret[:8], secret[len(secret)-8:], sealed, isDefault, purpose, nowText, nowText)
+	_, err = tx.ExecContext(ctx, e.store.bind(`INSERT INTO `+e.store.table("api_keys")+` (id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, is_default, purpose, scheduling_preference_id, expires_at, quota_limits_json, availability_schedule_json, availability_schedule_next_check_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`),
+		id, accountID, routeID, name, description, hex.EncodeToString(sum[:]), secret[:8], secret[len(secret)-8:], sealed, isDefault, purpose, builtinSchedulingPreferenceID, nowText, nowText)
 	return err
 }
 

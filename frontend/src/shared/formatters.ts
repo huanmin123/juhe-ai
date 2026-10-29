@@ -21,6 +21,13 @@ export function formatDateTime(value?: string): string {
   return formatLocalDateTime(date)
 }
 
+export function formatDateTimeToSeconds(value?: string): string {
+  if (!value) return '-'
+  const date = parseStrictServerDateTime(value)
+  if (!date) return '时间格式异常'
+  return formatLocalDateTime(date, false)
+}
+
 export function serverDateTimeTimestamp(value?: string): number | undefined {
   if (!value) return undefined
   return parseStrictServerDateTime(value)?.getTime()
@@ -124,13 +131,14 @@ export function parseStrictServerDateTime(value?: string): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date
 }
 
-function formatLocalDateTime(value: Date): string {
+function formatLocalDateTime(value: Date, includeMilliseconds = true): string {
   // 未指定 timeZone 时由浏览器运行时使用用户本地时区；每次创建 formatter 也能响应运行时 TZ 变化。
   const formatter = new Intl.DateTimeFormat('en-CA', localDateTimeFormatterOptions)
   const parts = Object.fromEntries(formatter.formatToParts(value)
     .filter((part) => part.type !== 'literal')
     .map((part) => [part.type, part.value]))
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}.${String(value.getMilliseconds()).padStart(3, '0')}`
+  const text = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
+  return includeMilliseconds ? `${text}.${String(value.getMilliseconds()).padStart(3, '0')}` : text
 }
 
 export function formatLocalTime(value?: string): string {

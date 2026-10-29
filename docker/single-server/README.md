@@ -282,6 +282,15 @@ docker compose run --rm maintenance --drop-retired-monitoring-tables --node-stop
 docker compose start gateway jobs
 ```
 
+**存量账户默认资源补齐维护窗口（2026-10-29 起，一次性命令）**：2026-10-07 默认资源收口之前创建的系统账户只有早期链路建出的默认分组，缺默认路由策略（+分组绑定）与默认 API Key，由一次性显式命令 `--ensure-account-default-resources` 幂等补齐——对全部系统账户执行与建户链 `EnsureDefaultResources`（`gateway/internal/authsys/default_resources.go`）同款语义：缺默认分组/默认策略+绑定/默认 Key 补什么建什么，已齐账户零写入；纯加法 INSERT、不动存量行，重跑零写入即幂等自证（`maintenance/internal/accountdefaultresources` 同源镜像，改动即两处同改）。**在线可执行、无需停写**（不触碰存量行，新建默认 Key 无流量），但必须 `--backup-confirmed`（执行前完成可恢复备份确认）并显式提供 `--secret` 或 `JUHE_AI_SECRET`（默认 API Key 的 AES-GCM 密封密钥，**不回落开发默认密钥**——信封密钥与网关运行密钥不一致会导致「复制完整密钥」解密失败）；内置调度偏好行缺失时拒绝执行（先 `--ensure-schema --seed` 预置）。usage 错误 exit 2、运行失败 exit 1，stdout JSON 报告逐账户明细。注意：对"已有普通 Key 但无默认策略"的账户新建的是规范默认链（新默认分组→默认路由→默认 Key，空组待用户自行绑定 AI 账户）；若此前把存量普通 Key 手工升级过 `is_default=1`，须先回滚升级再跑本命令，否则每户出现两条默认 Key。随批行为回正：建户链默认 Key 的 INSERT 显式落 `scheduling_preference_id = 'schpref-builtin-chat-cost-first'`（初版漏列落 NULL，与调度偏好「缺省 → 内置 ID」矩阵对齐）。
+
+```sh
+cd /opt/juhe-ai
+# 在线执行（无需停写；--backup-confirmed 的前提是已完成当日可恢复备份确认）
+docker compose run --rm maintenance --ensure-account-default-resources --backup-confirmed --secret "$JUHE_AI_SECRET" --dsn "$JUHE_AI_POSTGRES_URL"
+# 幂等自证：同命令重跑应得全零报告
+```
+
 
 ## .env 契约（当前实例全集见服务器 /opt/juhe-ai/.env）
 

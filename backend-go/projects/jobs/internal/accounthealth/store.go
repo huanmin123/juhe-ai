@@ -860,6 +860,8 @@ ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cool
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_source_config_revision BIGINT;
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC);
-CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed_non_stale ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC) INCLUDE (payload) WHERE outcome <> 'stale';
+-- 胖索引（INCLUDE payload 的带 WHERE 部分索引）曾服务 gateway 旧逐小时 LATERAL 探测读面，
+-- 2026-10-29 读面改为单次窄投影范围读取后退役，统一走上一行的普通范围索引。
+DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed_non_stale;
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_observed ON juhe_jobs.account_health_outcomes(observed_at DESC, outcome_id DESC);
 `

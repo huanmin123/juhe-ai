@@ -16,12 +16,24 @@ func TestPostgresSchemaDoesNotCreateDatabaseSchema(t *testing.T) {
 	}
 }
 
-func TestPostgresSchemaProvidesAiHealthOutcomeRangeIndex(t *testing.T) {
-	if !strings.Contains(postgresSchema, "idx_account_health_outcomes_account_observed_non_stale") {
-		t.Fatal("PostgreSQL J1 jobs schema must create the non-stale account/time range index for AI health reads")
+func TestPostgresSchemaDropsAiHealthOutcomeFatPayloadIndex(t *testing.T) {
+	// The fat INCLUDE (payload) partial index served the gateway's legacy
+	// per-hour LATERAL probe read path; since 2026-10-29 the gateway reads
+	// entity columns through one narrow ranged SELECT, so the schema must
+	// drop the fat index on existing deployments and keep the plain range
+	// index that serves the new read.
+	if strings.Contains(postgresSchema, "idx_account_health_outcomes_account_observed_non_stale") &&
+		!strings.Contains(postgresSchema, "DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed_non_stale") {
+		t.Fatal("fat payload index must not be created anymore; it may only be dropped for existing deployments")
 	}
-	if !strings.Contains(postgresSchema, "INCLUDE (payload) WHERE outcome <> 'stale'") {
-		t.Fatal("AI health outcome range index must cover payload and exclude stale outcomes")
+	if strings.Contains(postgresSchema, "INCLUDE (payload)") {
+		t.Fatal("fat payload index must be dropped: it duplicated payload into the index for a retired read path")
+	}
+	if !strings.Contains(postgresSchema, "DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed_non_stale") {
+		t.Fatal("PostgreSQL J1 jobs schema must actively drop the retired fat index on existing deployments")
+	}
+	if !strings.Contains(postgresSchema, "CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC)") {
+		t.Fatal("plain account/time range index must remain for the ranged AI health read")
 	}
 }
 

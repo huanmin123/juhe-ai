@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/accountdefaultresources"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/chatbindingmigration"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
@@ -53,6 +54,7 @@ func runMaintenance(argv []string) int {
 	accountBalanceApply := fs.Bool("apply-account-balance-postgres", false, "add missing J2 account-balance PostgreSQL juhe_jobs tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL)")
 	applyStudioRetirement := fs.Bool("apply-studio-retirement", false, "explicit cleanup of legacy media-studio artifacts after stop and backup confirmations; refuses before writes while studio API Keys still own OpenAI-compatible files/vector resources; storage via --dsn")
 	dropRetiredMonitoringTables := fs.Bool("drop-retired-monitoring-tables", false, "one-shot idempotent DROP of the 12 retired monitoring tables (9 stats tables + 3 table-monitor tables) after stop and backup confirmations; storage via --dsn")
+	ensureAccountDefaults := fs.Bool("ensure-account-default-resources", false, "idempotent additive backfill of the default group/route-strategy/API-key family for existing system accounts created before the 2026-10-07 default-resources cutover (only INSERTs what is missing; rerun writes nothing; requires --dsn, --secret and --backup-confirmed)")
 	nodeStopped := fs.Bool("node-stopped", false, "confirm Node writers are stopped for an offline migration")
 	goStopped := fs.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
 	backupConfirmed := fs.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
@@ -95,11 +97,11 @@ func runMaintenance(argv []string) int {
 		}
 		return 2
 	}
-	if *applyStudioRetirement && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot) {
+	if *applyStudioRetirement && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot || *ensureAccountDefaults) {
 		fmt.Fprintln(os.Stderr, "studio retirement is mutually exclusive with other maintenance commands")
 		return 2
 	}
-	if *dropRetiredMonitoringTables && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *applyStudioRetirement || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot) {
+	if *dropRetiredMonitoringTables && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *accountBalanceApply || *applyStudioRetirement || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot || *ensureAccountDefaults) {
 		fmt.Fprintln(os.Stderr, "drop-retired-monitoring-tables is mutually exclusive with other maintenance commands")
 		return 2
 	}
@@ -246,6 +248,13 @@ func runMaintenance(argv []string) int {
 	}
 	if *dropRetiredMonitoringTables {
 		return dropRetiredMonitoringTablesResult(*bootstrapDSN, *nodeStopped, *goStopped, *backupConfirmed)
+	}
+	if *ensureAccountDefaults {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *applyStudioRetirement || *j3Apply || *j3bApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables || *migrateUpstreamBaseURLVersionRoot || *verifyUpstreamBaseURLVersionRoot || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *migrateMergeSuperGroups || *importLegacyBusiness || *migrateProviderConnectionModel {
+			fmt.Fprintln(os.Stderr, "account default resources flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return accountDefaultResourcesResult(*bootstrapDSN, *seedSecret, *backupConfirmed)
 	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	return 2
@@ -407,6 +416,47 @@ func accountBalanceBootstrapOutcomeExitCode(report accountbalance.BootstrapRepor
 	}
 	if !report.Ready() {
 		return 3
+	}
+	return 0
+}
+
+// accountDefaultResourcesResult returns the CLI exit code; runMaintenance
+// dispatches it and tests call it in-process. Usage errors (missing --dsn,
+// secret, or --backup-confirmed) exit 2, runtime failures exit 1. The secret
+// never falls back to the Node dev default: an envelope sealed with the wrong
+// secret would be unreadable by the production gateway, so an explicit
+// --secret or JUHE_AI_SECRET is mandatory.
+func accountDefaultResourcesResult(dsn, secret string, backupConfirmed bool) int {
+	if strings.TrimSpace(dsn) == "" {
+		fmt.Fprintf(os.Stderr, "--ensure-account-default-resources 需要 --dsn 指向显式的 PostgreSQL URL\n")
+		return 2
+	}
+	if !backupConfirmed {
+		fmt.Fprintf(os.Stderr, "--ensure-account-default-resources 需要 --backup-confirmed（执行前先完成可恢复备份确认）\n")
+		return 2
+	}
+	resolvedSecret := strings.TrimSpace(secret)
+	if resolvedSecret == "" {
+		resolvedSecret = strings.TrimSpace(os.Getenv("JUHE_AI_SECRET"))
+	}
+	if resolvedSecret == "" {
+		fmt.Fprintf(os.Stderr, "--ensure-account-default-resources 需要 --secret（或 JUHE_AI_SECRET 环境变量）以密封默认 API Key；不回落开发默认密钥\n")
+		return 2
+	}
+	db, err := accountdefaultresources.Open(dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open account default resources connection: %v\n", err)
+		return 2
+	}
+	defer db.Close()
+	report, runErr := accountdefaultresources.Run(context.Background(), db, accountdefaultresources.Options{Secret: resolvedSecret})
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "account default resources backfill failed: %v\n", runErr)
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode account default resources report: %v\n", err)
+		return 1
 	}
 	return 0
 }

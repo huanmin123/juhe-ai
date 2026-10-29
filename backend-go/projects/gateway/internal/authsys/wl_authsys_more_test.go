@@ -233,22 +233,6 @@ func TestWlSmallHelpersExtraBranches(t *testing.T) {
 			t.Fatal("未知模式必须拒绝")
 		}
 	})
-	t.Run("Postgres 模式锁在 SQLite 上报错", func(t *testing.T) {
-		db := newContractTestDB(t)
-		pgStore, err := NewAccountStore(db, modelcheckauth.Postgres, time.Now)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tx, err := db.BeginTx(context.Background(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		// PG 方言锁语句在 SQLite 无法执行：必须返回错误而不是 panic。
-		if err := pgStore.lockSuperAdminInvariant(context.Background(), tx); err == nil {
-			t.Fatal("PG 锁语句在 SQLite 必须报错")
-		}
-	})
 	t.Run("EnsureDefaultResources 缺 store", func(t *testing.T) {
 		ensurer := NewSQLDefaultResources(nil, wlStringSealer{})
 		tx, err := newContractTestDB(t).BeginTx(context.Background(), nil)

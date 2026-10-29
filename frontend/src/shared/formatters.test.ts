@@ -5,6 +5,7 @@ import {
   compareServerDateTime,
   formatCompactUsageAmount,
   formatDateTime,
+  formatDateTimeToSeconds,
   formatInteger,
   formatLocalTime,
   formatMillisecondsAsSeconds,
@@ -27,6 +28,11 @@ function pad(value: number, width = 2): string {
 function localDateTimeText(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`
+}
+
+function localDateTimeSecondText(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 afterEach(() => {
@@ -83,6 +89,22 @@ describe('formatDateTime', () => {
   it('按本地时区输出 YYYY-MM-DD HH:mm:ss.SSS', () => {
     const input = '2026-01-02T03:04:05.123+08:00'
     expect(formatDateTime(input)).toBe(localDateTimeText(new Date(input)))
+  })
+})
+
+describe('formatDateTimeToSeconds', () => {
+  it('空值显示占位符', () => {
+    expect(formatDateTimeToSeconds(undefined)).toBe('-')
+    expect(formatDateTimeToSeconds('')).toBe('-')
+  })
+
+  it('非法格式显示异常文案', () => {
+    expect(formatDateTimeToSeconds('not-a-date')).toBe('时间格式异常')
+  })
+
+  it('按本地时区输出 YYYY-MM-DD HH:mm:ss，不带毫秒', () => {
+    const input = '2026-01-02T03:04:05.123+08:00'
+    expect(formatDateTimeToSeconds(input)).toBe(localDateTimeSecondText(new Date(input)))
   })
 })
 

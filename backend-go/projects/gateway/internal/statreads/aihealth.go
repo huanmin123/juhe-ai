@@ -3,7 +3,6 @@ package statreads
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -15,15 +14,16 @@ import (
 
 // AI-health read family (Node account-health-monitor.repository.ts): the
 // hourly status strip per account from account_health_hourly, optionally
-// merged with the J1 jobs outcome store (account_health_outcomes).
+// merged with the J1 jobs outcome store (account_health_outcomes). The J1
+// outcome read is a single ranged SELECT of entity columns; the per-hour
+// latest-wins merge lives in j1OutcomeHealthRows / newestJ1OutcomeHourRow.
 
 var statHourPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3])$`)
 
 // HealthOutcomeSource mirrors accountHealthJobsOutcomeStoreSource: the
 // jobs-owned outcome store the gateway only reads. It points at the jobs
 // database URL (outcomePostgresUrl) and reads juhe_jobs.account_health_outcomes
-// through the same per-slice reader the Node async path uses
-// (listAccountHealthJobsOutcomesForAccountsAsync). The merge semantics
+// with a single ranged SELECT over entity columns. The merge semantics
 // (j1OutcomeHealthRows / newestJ1OutcomeHourRow) are source-independent. An
 // absent/unconfigured source keeps the merge absent exactly like Node.
 type HealthOutcomeSource struct {
@@ -182,7 +182,7 @@ func (d *Deps) aiHealthList(r *http.Request, scope AccessScope, options aiHealth
 	if err != nil {
 		return nil, err
 	}
-	j1Outcomes, err := d.j1OutcomesForAccounts(r.Context(), accountIds, now, options.Hours, location, hourBuckets)
+	j1Outcomes, err := d.j1OutcomesForAccounts(r.Context(), accountIds, now, options.Hours, hourBuckets)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +215,7 @@ func (d *Deps) aiHealthHourDetail(r *http.Request, scope AccessScope, accountID,
 	}
 	// J1 outcome merge for the same hour (Node j1OutcomeHealthHourDetail):
 	// the latest non-stale outcome whose local hour equals statHour.
-	outcomes, err := d.j1OutcomesForAccounts(r.Context(), []string{accountID}, d.Now(), 31*24, location, []string{statHour})
+	outcomes, err := d.j1OutcomesForAccounts(r.Context(), []string{accountID}, d.Now(), 31*24, []string{statHour})
 	if err != nil {
 		return nil, false, err
 	}
@@ -432,7 +432,8 @@ func (d *Deps) aiHealthAccountNameContainsFilter(keyword, scopedAccountID string
 }
 
 // ---------------------------------------------------------------------------
-// J1 outcome merge (SQLite outcome store only).
+// J1 outcome merge (source-independent; the only configured source is the
+// jobs-owned PostgreSQL outcome store).
 // ---------------------------------------------------------------------------
 
 type j1Outcome struct {
@@ -447,28 +448,19 @@ type j1Outcome struct {
 	NextDueAt    *string `json:"nextDueAt"`
 }
 
-func (d *Deps) j1OutcomesForAccounts(ctx context.Context, accountIds []string, now time.Time, hours int, location *time.Location, hourBuckets []string) ([]j1Outcome, error) {
+func (d *Deps) j1OutcomesForAccounts(ctx context.Context, accountIds []string, now time.Time, hours int, hourBuckets []string) ([]j1Outcome, error) {
 	// 空 URL 与 nil 同义：未配置的源保持合并缺席（Node absent-source 语义），
 	// 不得下探 sql.Open("")——那会拨驱动默认地址并把整个读面打成 500（B5）。
 	if d.HealthOutcomes == nil || d.HealthOutcomes.PostgresURL == "" || len(accountIds) == 0 || len(hourBuckets) == 0 {
 		return nil, nil
 	}
 	observedAfter := time.UnixMilli(now.UnixMilli() - int64(hours+2)*int64(time.Hour/time.Millisecond)).UTC().Format("2006-01-02T15:04:05.000Z")
-	return d.j1PostgresOutcomesForAccounts(ctx, accountIds, observedAfter, location, hourBuckets)
-}
-
-// zonedHourRange returns the [start, end) UTC instants of the local hour.
-func zonedHourRange(statHour string, location *time.Location) (string, string) {
-	base, err := time.ParseInLocation("2006-01-02T15", statHour, location)
-	if err != nil {
-		return "", ""
-	}
-	return base.UTC().Format("2006-01-02T15:04:05.000Z"), base.Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+	return d.j1PostgresOutcomesForAccounts(ctx, accountIds, observedAfter)
 }
 
 // ---------------------------------------------------------------------------
-// PostgreSQL outcome reader (readPostgresOutcomesForAccounts, the
-// timezone + hourBuckets slice the management pages always request).
+// PostgreSQL outcome reader: one ranged SELECT per management-page account
+// slice; the per-hour latest-wins merge stays in the Go merge layer.
 // ---------------------------------------------------------------------------
 
 // j1PostgresOutcomeBudget mirrors the Node reader's 5s statement_timeout /
@@ -476,11 +468,10 @@ func zonedHourRange(statHour string, location *time.Location) (string, string) {
 const j1PostgresOutcomeBudget = 5 * time.Second
 
 // j1PostgresOutcomesForAccounts reads one management-page account slice from
-// juhe_jobs.account_health_outcomes: per account/hour the latest non-stale
-// outcome inside the zoned hour (BEGIN READ ONLY semantics degrade to the
-// statement budget — the gateway connection stays read-only by contract).
-func (d *Deps) j1PostgresOutcomesForAccounts(ctx context.Context, accountIds []string, observedAfter string, location *time.Location, hourBuckets []string) ([]j1Outcome, error) {
-	query, args, err := j1PostgresOutcomeQuery(accountIds, hourBuckets, observedAfter, location.String())
+// juhe_jobs.account_health_outcomes as a single ranged SELECT over entity
+// columns (read-only connection by contract).
+func (d *Deps) j1PostgresOutcomesForAccounts(ctx context.Context, accountIds []string, observedAfter string) ([]j1Outcome, error) {
+	query, args, err := j1PostgresOutcomeQuery(accountIds, observedAfter)
 	if err != nil {
 		return nil, err
 	}
@@ -496,58 +487,57 @@ func (d *Deps) j1PostgresOutcomesForAccounts(ctx context.Context, accountIds []s
 	if err != nil {
 		return nil, err
 	}
-	return decodeJ1OutcomeRows(rows)
+	return buildJ1OutcomeRows(rows), nil
 }
 
-// j1PostgresOutcomeQuery mirrors the timezone+hourBuckets branch of
-// readPostgresOutcomesForAccounts: unnest the account/hour arrays and pick the
-// newest non-stale outcome per zoned hour through a LATERAL join.
-func j1PostgresOutcomeQuery(accountIds, hourBuckets []string, observedAfter, timezoneName string) (string, []any, error) {
+// 单次范围读取替代旧 LATERAL 逐小时探测：「每账户每小时取最新非 stale」的
+// 语义由 Go 合并层（j1OutcomeHealthRows / newestJ1OutcomeHourRow）本就实现的
+// latest-wins 承担；SQL 只需按窗口取回全部候选行。投影读实体列，仅
+// next_due_at 无实体列、从 payload 取单键——旧实现整份回传 payload，且
+// payload 键形（snake_case）与旧解码结构体 tag（camelCase）不匹配，生产行
+// 在合并层被静默丢弃。ORDER BY ASC + 合并层 >= last-wins 精确复刻旧的
+// 「observed_at DESC, outcome_id DESC LIMIT 1」胜者（同 observed_at 取更大
+// outcome_id）。status_code 是 INTEGER 列：pgx stdlib 扫描本就把 int4 转
+// int64（nullNumber 的 int64 分支恒可命中），::bigint cast 把这一依赖显式
+// 固化在 SQL 侧，防驱动行为变化。storage_observed_at 投影用 timezone('UTC', observed_at)，
+// 与旧写法 observed_at AT TIME ZONE 'UTC' 是同一函数调用（timestamptz →
+// UTC 墙钟），行为零变化。
+func j1PostgresOutcomeQuery(accountIds []string, observedAfter string) (string, []any, error) {
 	if len(accountIds) > 50 {
 		return "", nil, errors.New("J1 outcome 账户查询最多允许 50 个账户")
 	}
-	buckets := dedupeStrings(hourBuckets)
-	if len(buckets) > 31*24 {
-		return "", nil, errors.New("AI 健康 J1 outcome 查询小时桶超出允许范围")
-	}
-	for _, bucket := range buckets {
-		if !statHourPattern.MatchString(bucket) {
-			return "", nil, errors.New("AI 健康 J1 outcome 查询小时桶无效")
-		}
-	}
 	query := `
-		SELECT selected.payload,
-			to_char(selected.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at
-		FROM unnest($1::text[]) AS accounts(account_id)
-		CROSS JOIN unnest($2::text[]) AS hours(stat_hour)
-		CROSS JOIN LATERAL (
-			SELECT payload, observed_at
-			FROM juhe_jobs.account_health_outcomes
-			WHERE account_id = accounts.account_id
-				AND observed_at >= $3::timestamptz
-				AND observed_at >= (hours.stat_hour || ':00:00')::timestamp AT TIME ZONE $4
-				AND observed_at < ((hours.stat_hour || ':00:00')::timestamp + INTERVAL '1 hour') AT TIME ZONE $4
-				AND outcome <> 'stale'
-			ORDER BY observed_at DESC, outcome_id DESC
-			LIMIT 1
-		) AS selected`
-	// normalizeAccountOutcomeQuery dedupes the account ids in first-seen order.
-	return query, []any{dedupeStrings(accountIds), buckets, observedAfter, timezoneName}, nil
+		SELECT outcome_id, request_id, account_id, outcome,
+			to_char(timezone('UTC', observed_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at,
+			status_code::bigint AS status_code, error_code, error_message,
+			payload->>'next_due_at' AS next_due_at
+		FROM juhe_jobs.account_health_outcomes
+		WHERE account_id = ANY($1::text[])
+			AND observed_at >= $2::timestamptz
+			AND outcome <> 'stale'
+		ORDER BY observed_at ASC, outcome_id ASC`
+	return query, []any{dedupeStrings(accountIds), observedAfter}, nil
 }
 
-// decodeJ1OutcomeRows decodes the payload column of the outcome rows; a
-// malformed payload row is skipped exactly like the Go SQLite branch (the
-// management merge treats undecodable outcomes as absent).
-func decodeJ1OutcomeRows(rows []Row) ([]j1Outcome, error) {
+// buildJ1OutcomeRows 从范围读取的实体列构造合并层输入；可空列（status_code、
+// error_code、error_message、next_due_at）为 NULL 时保持 nil。不再有「坏
+// payload 跳过」分支：字段全部来自有类型的实体列，无解码失败路径。
+func buildJ1OutcomeRows(rows []Row) []j1Outcome {
 	outcomes := make([]j1Outcome, 0, len(rows))
 	for _, row := range rows {
-		var outcome j1Outcome
-		if err := json.Unmarshal([]byte(row.text("payload")), &outcome); err != nil {
-			continue
-		}
-		outcomes = append(outcomes, outcome)
+		outcomes = append(outcomes, j1Outcome{
+			OutcomeID:    row.text("outcome_id"),
+			RequestID:    row.text("request_id"),
+			AccountID:    row.text("account_id"),
+			Outcome:      row.text("outcome"),
+			ObservedAt:   row.text("storage_observed_at"),
+			StatusCode:   row.nullNumber("status_code"),
+			ErrorCode:    row.nullText("error_code"),
+			ErrorMessage: row.nullText("error_message"),
+			NextDueAt:    row.nullText("next_due_at"),
+		})
 	}
-	return outcomes, nil
+	return outcomes
 }
 
 // dedupeStrings keeps the first occurrence order.

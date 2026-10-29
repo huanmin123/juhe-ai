@@ -21,7 +21,7 @@
           <a-tag :color="record.mustChangePassword ? 'gold' : 'green'">{{ record.mustChangePassword ? '提醒' : '不提醒' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'lastLoginAt'">
-          <span class="muted-cell">{{ formatDateTime(record.lastLoginAt) }}</span>
+          <span class="muted-cell">{{ formatDateTimeToSeconds(record.lastLoginAt) }}</span>
         </template>
         <template v-else-if="column.key === 'description'">
           <span>{{ record.description || '-' }}</span>
@@ -48,7 +48,7 @@
             </div>
             <div class="mobile-list-meta-item">
               <span>最后登录</span>
-              <strong>{{ formatDateTime(record.lastLoginAt) }}</strong>
+              <strong>{{ formatDateTimeToSeconds(record.lastLoginAt) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>说明</span>
@@ -147,7 +147,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { formatDateTimeToSeconds, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus, UserRequestLimits } from '@/types/domain'
