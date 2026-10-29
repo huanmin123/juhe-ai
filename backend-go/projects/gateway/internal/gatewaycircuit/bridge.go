@@ -1149,6 +1149,18 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 			return nil
 		}
 		if persisted.Status == CASConflict {
+			if persisted.Incident == nil {
+				// W39（2026-10-29 生产取证）：本地 ledgerRevisions 命中但 store
+				// 已无该行（jobs 对 CLOSED 墓碑的 retained_until 过期清理会物理
+				// 删除行）。原实现只对 Incident 非 nil 的形态做对账/回填，缓存
+				// 残留使后续每轮都以「期望已存在」的 revision 发起 CAS，恒
+				// cas_conflict 直至重试耗尽（当日 62 条 persist_failed 全部此
+				// 形态，集中于反复失败-恢复的 deepseek-v4.1-flash scope）。清除
+				// 缓存后下一轮按 store 契约以 nil 期望走新行插入围栏。
+				b.mu.Lock()
+				delete(b.ledgerRevisions, desiredState.ScopeKey)
+				b.mu.Unlock()
+			}
 			if persisted.Incident != nil {
 				runtimeState, err := b.refreshDesiredState(ctx, scope, desiredState)
 				if err != nil {
