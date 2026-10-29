@@ -230,8 +230,15 @@ func (p *Producer) Retract(auditLogID string) {
 		return
 	}
 	p.start.Do(p.startWorkers)
-	if p.tryEnqueueRetract(auditLogID) {
-		return
+	// W13（2026-10-29）：队列满的撤回命令原为单次非阻塞尝试即丢；Cancel 路径
+	// 跑在请求协程上不能内联执行，改为最多 3 次入队尝试（间隔 100/200ms）。
+	for attempt := 1; attempt <= 3; attempt++ {
+		if p.tryEnqueueRetract(auditLogID) {
+			return
+		}
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
 	}
 	p.warn("F3 审计采集队列已满，丢弃信封撤回命令", "auditLogID", auditLogID)
 }
@@ -278,28 +285,53 @@ func (p *Producer) workerLoop() {
 // retractOne runs the lease-renewed delete of one in_progress envelope. The
 // lifecycle guard in the DELETE makes this a no-op for finalized or unknown
 // ids, so a retract racing a finalize cannot destroy the terminal row.
+//
+// W13（2026-10-29 生产取证）：存储抖动窗口里「续租失败 / 删除超时」会让单次
+// 撤回直接放弃，信封永留——空壳与 PG 慢语句峰同窗即此形态。改为有界重试：
+// 最多 3 次（续租+删除为一个尝试单元），总预算 15s，退避 100/200ms；正常
+// 存储下单次即成功，不影响稳态路径。
 func (p *Producer) retractOne(auditLogID string) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			p.warn("F3 审计信封撤回 panic 已隔离", "panic", recovered, "auditLogID", auditLogID)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	lease := p.lease.Lease()
-	if p.cfg.OwnerLease > 0 {
-		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer renewCancel()
-		if _, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease); err != nil {
-			p.warn("F3 信封撤回租约续期失败", "error", err, "auditLogID", auditLogID)
+	const attempts = 3
+	deadline := time.Now().Add(15 * time.Second)
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt-1) * 100 * time.Millisecond)
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		attemptBudget := 10 * time.Second
+		if remaining < attemptBudget {
+			attemptBudget = remaining
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), attemptBudget)
+		lease := p.lease.Lease()
+		if p.cfg.OwnerLease > 0 {
+			renewCtx, renewCancel := context.WithTimeout(ctx, attemptBudget)
+			_, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease)
+			renewCancel()
+			if err != nil {
+				cancel()
+				lastErr = err
+				continue
+			}
+		}
+		retracted, err := p.store.RetractInProgress(ctx, lease, auditLogID)
+		cancel()
+		if err == nil {
+			_ = retracted
 			return
 		}
+		lastErr = err
 	}
-	retracted, err := p.store.RetractInProgress(ctx, lease, auditLogID)
-	if err != nil {
-		p.warn("F3 审计信封撤回失败", "error", err, "auditLogID", auditLogID)
-	}
-	_ = retracted
+	p.warn("F3 审计信封撤回重试耗尽", "error", lastErr, "auditLogID", auditLogID, "attempts", attempts)
 }
 
 // persistOne keeps the retired write sequence (renew → persist → hot search)

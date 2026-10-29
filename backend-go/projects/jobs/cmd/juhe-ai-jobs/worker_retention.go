@@ -175,6 +175,8 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	dataRetentionJob.DB = dbService
 	dataRetentionJob.Enqueuer = &queueEnqueuer{queue: queue}
 	dataRetentionJob.CodexStorage = &codexStorageProcessor{db: dbService, store: codexStore, segmentRoot: a.config.CodexContextRoot, logger: a.logger}
+	// W13 兜底（2026-10-29）：陈旧 in_progress 元数据空壳清扫，复用 dataset 句柄。
+	dataRetentionJob.AuditShells = &cleanuprepo.AuditShellStore{DB: dataset}
 
 	a.scheduleWiredJob("data-retention-cleanup", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		// 缺陷1修复：先执行 jobs 运行历史/租约保留清理，再跑既有数据保留任务；

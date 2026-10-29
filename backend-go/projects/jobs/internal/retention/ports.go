@@ -41,6 +41,16 @@ type PublicApiLogsCleaner interface {
 	CleanupBefore(ctx context.Context, cutoffCreatedAt string, limit int) (int64, error)
 }
 
+// AuditShellReaper 清理陈旧 in_progress 元数据空壳（W13 兜底，2026-10-29）。
+// 信封写入成功但终态写入与撤回都失败的请求会留下 lifecycle_status=
+// 'in_progress' AND capture_status='metadata_only' 的死行；此类行无载荷、
+// 无尝试记录，业务结果在 usage_records 完整可查。删除条件必须同时包含
+// 两个状态位与 cutoff（cutoff 之前），oldest-first、最多 limit 行，返回删除
+// 行数——与 PublicApiLogsCleaner 同形，组合根注入。
+type AuditShellReaper interface {
+	ReapStaleInProgress(ctx context.Context, cutoff time.Time, limit int) (int64, error)
+}
+
 // UsageRecordsBatch mirrors ProcessedUsageRecordsCleanupBatchResult.
 type UsageRecordsBatch struct {
 	CutoffCreatedAt       string

@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// auditShellRetention 是 in_progress 元数据空壳的兜底保留窗（W13）：超过该
+// 时长的 metadata_only in_progress 行必然是终态/撤回双失败的残留。
+const auditShellRetention = 2 * time.Hour
+
 // DataRetentionJob mirrors runDataRetentionCleanup and its two halves:
 // cleanupExpiredRetainedData (single-node sqlite chain) and
 // enqueuePostgresDataRetentionMaintenanceJobs (high-performance dispatch).
@@ -32,6 +36,9 @@ type DataRetentionJob struct {
 	DB            DbService
 	Enqueuer      RecordMaintenanceEnqueuer
 	CodexStorage  CodexContextStorageBatchProcessor
+	// AuditShells 可选：陈旧 in_progress 元数据空壳兜底清扫（W13）。未注入时
+	// 该阶段跳过（测试与降级装配保持零依赖）；生产组合根必须注入。
+	AuditShells AuditShellReaper
 
 	postgresRunning bool
 	runningMutex    sync.Mutex
@@ -347,6 +354,26 @@ func (j *DataRetentionJob) runPostgresStages(ctx context.Context) (CleanupResult
 		return result, err
 	}
 	result.PublicApiLogs = publicApiLogs
+
+	// W13 兜底（2026-10-29）：陈旧 in_progress 元数据空壳清扫。信封写入成功后
+	// 终态写入与撤回双双失败的请求会留下无载荷死行（当日与 PG 慢语句峰同窗，
+	// 峰值 20 条/小时）；2h 阈值 = 流式请求最长生命周期 4 倍余量，超窗仍为
+	// in_progress 的 metadata_only 行必然是死行，业务结果在 usage_records
+	// 完整可查。分批 oldest-first，单轮上限 maxBatches×batchSize。
+	if j.AuditShells != nil {
+		shellCutoff := j.clock().Add(-auditShellRetention)
+		reaped, err := cleanupCountedRetentionBatches(ctx, maxBatches, batchSize, func(ctx context.Context) (int64, error) {
+			return j.AuditShells.ReapStaleInProgress(ctx, shellCutoff, batchSize)
+		}, j.sleep)
+		if err != nil {
+			return result, err
+		}
+		if reaped > 0 {
+			j.logger().Info("F3 审计陈旧空壳已清扫",
+				"event", "audit_log_stale_shell_reaped",
+				"count", reaped, "cutoff", shellCutoff.UTC().Format(time.RFC3339))
+		}
+	}
 
 	statsLocation, err := LoadUsageStatsTimezone(timezone)
 	if err != nil {

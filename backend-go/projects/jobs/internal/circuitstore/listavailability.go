@@ -297,7 +297,13 @@ func (r *ListAvailabilityRepo) enqueueSubTransactions(ctx context.Context, limit
 			return enqueued, err
 		}
 		if len(accountIDs) == 0 {
-			_ = tx.Rollback()
+			// W20（2026-10-29 裁决，选项①）：候选扫描空转的结束语从 Rollback 改
+			// Commit——本事务无任何写入，commit/rollback 语义等价（advisory xact
+			// 锁两种结束方式均释放），但空转 Rollback 每轮计入
+			// pg_stat_database.xact_rollback，是 PostgresRollbacksHigh 长期
+			// firing 的设计内假回滚来源（实测 ~9.3 次/秒）。改 commit 后计数器
+			// 回到真实回滚水平，告警按真实基线判断。
+			_ = tx.Commit()
 			break
 		}
 		for _, accountID := range accountIDs {
