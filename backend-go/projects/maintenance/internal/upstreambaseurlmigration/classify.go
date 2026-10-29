@@ -3,7 +3,8 @@
 //
 //	v2 契约：最终上游 URL = TrimRight(base_url, "/") + 操作路径；操作路径不含
 //	版本前缀（qwen 例外为全路径）。因此 Base URL 必须自带版本根
-//	（/v1、/api/v3、/api/paas/v4、/anthropic/v1、/v1beta、/v1beta/openai），
+//	（/v1、/api/v3、/api/plan/v3、/api/coding/v3、/api/paas/v4、/anthropic/v1、
+//	/v1beta、/v1beta/openai），
 //	唯一例外是 qwen_dashscope——其 base_url 语义是 origin（裸根）。
 //
 // 本文件承载分类与回填规则的纯函数实现（零 I/O，表驱动可测）：
@@ -160,7 +161,9 @@ func familyKeepSuffixes(family Family) []string {
 	case FamilyGemini:
 		return []string{"/v1beta"}
 	case FamilyArk:
-		return []string{"/api/v3"}
+		// 经典按量根之外，方舟 Agent Plan（/api/plan/v3）与 Coding Plan
+		//（/api/coding/v3）套餐是官方并行的版本根形态，已合规不进复核桶。
+		return []string{"/api/v3", "/api/plan/v3", "/api/coding/v3"}
 	default:
 		return nil
 	}
