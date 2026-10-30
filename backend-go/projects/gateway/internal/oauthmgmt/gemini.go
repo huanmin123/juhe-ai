@@ -891,20 +891,23 @@ type geminiCredentialFallback struct {
 	Scope          string
 }
 
-// geminiRotationAccountOAuthType 判定列优先、凭据键回落（#B4 ⑨）：refresh/
-// reauthorize 读面使用 accounts.oauth_type 物理列；迁移窗口存量行的列值为空
-// 时按凭据推断，保证既有账户刷新不失败。
-func geminiRotationAccountOAuthType(current *rotationAccount, credentials map[string]any) string {
+// geminiRotationAccountOAuthType 只读判定列（#B4 ⑨，B01 收口）：refresh/
+// reauthorize 读面使用 accounts.oauth_type 物理列；缺列即数据不完整，返回空串
+// 交给调用方既有路径处理（refreshGeminiToken 按 normalizeGeminiOAuthType 把空
+// 值归一为 code_assist 默认），不再按凭据推断。第二参数已退役，保留占位避免
+// 调整调用方。
+func geminiRotationAccountOAuthType(current *rotationAccount, _ map[string]any) string {
 	if current != nil {
 		if value := normalizeText(current.OAuthType); value != "" {
 			return normalizeGeminiOAuthType(value)
 		}
 	}
-	return geminiAccountOAuthType(credentials)
+	return ""
 }
 
 // geminiAccountOAuthType mirrors accountOAuthType: infer the stored account's
-// oauth type from its credentials.
+// oauth type from its credentials. B01 收口后不再出现在 rotation 读面
+// （geminiRotationAccountOAuthType 只读判定列），仅保留独立启发式矩阵测试。
 func geminiAccountOAuthType(credentials map[string]any) string {
 	if value := normalizeText(credentials["oauth_type"]); value != "" {
 		return normalizeGeminiOAuthType(value)

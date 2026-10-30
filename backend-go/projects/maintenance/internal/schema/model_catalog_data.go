@@ -295,9 +295,9 @@ func modelSeedEndpointModesJSON(row modelCatalogSeedRow) (string, error) {
 	return seedStringify(modes), nil
 }
 
-// modelSeedRowStatus 沿用内置过期模型判定（原 activeModelCatalogSeedRows 的
-// shutdown 过滤方向）：shutdown_date 已过（<= 当前 UTC 日期）写 'disabled'，
-// 否则 'active'。asOfUTCDate 形态为 YYYY-MM-DD。
+// modelSeedRowStatus 沿用内置过期模型判定（原迁移窗口的 shutdown 过滤方向）：
+// shutdown_date 已过（<= 当前 UTC 日期）写 'disabled'，否则 'active'。
+// asOfUTCDate 形态为 YYYY-MM-DD。
 func modelSeedRowStatus(row modelCatalogSeedRow, asOfUTCDate string) string {
 	if row.ShutdownDate != nil && *row.ShutdownDate <= asOfUTCDate {
 		return modelSeedStatusDisabled

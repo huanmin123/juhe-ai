@@ -11,7 +11,7 @@ import (
 
 // runtimelog_pgkit_test.go 是本包真实建库测试迁 PG 的共享基建
 // （PLAN-20261024T051925945Z B6 测试迁移半场）：
-//   - postgresStore 经生产 OpenStore(ModePostgres) 装配到 pgtestkit 隔离测试库，
+//   - postgresStore 经生产 OpenStore 装配到 pgtestkit 隔离测试库，
 //     runtime-log F1 表由生产 EnsureSchema bootstrap DDL 自建，测试不复刻 DDL；
 //   - 仅 juhe_business.system_settings（业务域表，其生产 bootstrap 属
 //     maintenance 跨模块）按 RuntimeRetentionDays 生产查询消费的最小列形状镜像；
@@ -25,8 +25,8 @@ VALUES ('sys_admin', 'runtimeLogIndexRetentionDays', '14', '2026-08-08T00:00:00.
 
 // openKitPostgresStore 打开 pgtestkit 隔离 PG 测试库并经生产 OpenStore 装配
 // postgresStore（EnsureSchema 走生产 bootstrap）。Config 字段与
-// openTestSQLiteStore 逐项对齐（BatchSize/保留期/日志目录），仅存储臂换成
-// ModePostgres。测试结束自动关闭 store 并删库。
+// openTestSQLiteStore 逐项对齐（BatchSize/保留期/日志目录）；存储臂恒
+// postgres。测试结束自动关闭 store 并删库。
 func openKitPostgresStore(t *testing.T) (*postgresStore, Config) {
 	t.Helper()
 	testDB := pgtestkit.NewTestDatabase(t, func(ctx context.Context, db *sql.DB) error {
@@ -45,11 +45,9 @@ CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
 		return err
 	})
 	config := Config{
-		Mode:              ModePostgres,
 		PostgresURL:       testDB.DSN,
 		PostgresMaxConns:  4,
 		LogDirectory:      t.TempDir(),
-		FileEnabled:       true,
 		PollInterval:      time.Second,
 		RetentionInterval: time.Hour,
 		RetentionDays:     1,
@@ -66,7 +64,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
 	store, ok := opened.(*postgresStore)
 	if !ok {
 		_ = opened.Close()
-		t.Fatalf("OpenStore(ModePostgres) 返回 %T，期望 *postgresStore", opened)
+		t.Fatalf("OpenStore 返回 %T，期望 *postgresStore", opened)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	if err := EnsureSchema(ctx, store); err != nil {

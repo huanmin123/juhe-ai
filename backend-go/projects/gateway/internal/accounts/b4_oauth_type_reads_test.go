@@ -1,9 +1,9 @@
 package accounts
 
-// #B4 ⑪ oauth_type 读面切列同步约束测试：判定列（accounts.oauth_type）三值
-// 优先、credentials["oauth_type"] 三值回落。回落服务迁移窗口存量行（B1 前创建
-// 的行列 NULL）与「refresh 删键」切片落地后的封套缺键形态；覆盖克隆预填
-// （列有值/列空回落两形态）、重授权上下文判定与 legacy 全量提交合并的保列。
+// #B4 ⑪ oauth_type 读面切列同步约束测试（B01 收口）：判定值只读
+// accounts.oauth_type 列，不回落 credentials["oauth_type"] 封套键。覆盖克隆预填
+// （列有值、封套缺键按列取值、列空不回落）、重授权上下文判定（列优先、缺列走
+// 启发式）与 legacy 全量提交合并不按列回填封套键。
 
 import (
 	"context"
@@ -62,14 +62,15 @@ func TestB4ClonePrefersOAuthTypeColumn(t *testing.T) {
 		t.Fatalf("封套缺键应按列回填 google_one：%v", clone.CredentialOptions.OAuthType)
 	}
 
-	// 形态二（列空回落）：迁移窗口存量行——列 NULL、封套带键，回落键值。
+	// 形态二（列空不回落）：列 NULL、封套带键时封套键被忽略（B01 收口），
+	// 预填不注入 oauth_type，克隆体走表单显式选择或组合门拒绝。
 	b4SeedGoogleOAuthAccount(t, env, "acc-b4-clone-legacy", adminID, "code_assist", "")
 	clone, err = env.store.FindCloneContext(context.Background(), "acc-b4-clone-legacy", access)
 	if err != nil || clone == nil {
 		t.Fatalf("列空克隆上下文：%v %v", clone, err)
 	}
-	if clone.CredentialOptions.OAuthType == nil || *clone.CredentialOptions.OAuthType != "code_assist" {
-		t.Fatalf("列空应回落凭据键 code_assist：%v", clone.CredentialOptions.OAuthType)
+	if clone.CredentialOptions.OAuthType != nil {
+		t.Fatalf("列空不得回落凭据键：%v", *clone.CredentialOptions.OAuthType)
 	}
 }
 
@@ -77,44 +78,46 @@ func TestB4GeminiOAuthContextTypeColumnFirst(t *testing.T) {
 	if got := geminiOAuthContextType("google_one", Credentials{}); got != "google_one" {
 		t.Fatalf("列三值应优先：%s", got)
 	}
-	if got := geminiOAuthContextType("", Credentials{"oauth_type": "ai_studio"}); got != "ai_studio" {
-		t.Fatalf("列空应回落凭据键：%s", got)
+	// B01 收口：列空/词表外列值都不回落凭据键，封套 oauth_type 键被忽略，
+	// 直接走启发式（仅带 oauth_type 键时无 base_url/project_id/client_id →
+	// 默认 code_assist）。
+	if got := geminiOAuthContextType("", Credentials{"oauth_type": "ai_studio"}); got != "code_assist" {
+		t.Fatalf("列空不得回落凭据键：%s", got)
 	}
-	// 词表外列值不生效，回落凭据键（迁移窗口双源形态取键）。
-	if got := geminiOAuthContextType("bogus", Credentials{"oauth_type": "ai_studio"}); got != "ai_studio" {
-		t.Fatalf("词表外列应回落凭据键：%s", got)
+	if got := geminiOAuthContextType("bogus", Credentials{"oauth_type": "ai_studio"}); got != "code_assist" {
+		t.Fatalf("词表外列不得回落凭据键：%s", got)
 	}
-	// 双源皆无三值 → 原启发式不变（默认 code_assist）。
+	// 列无三值 → 原启发式不变（默认 code_assist）。
 	if got := geminiOAuthContextType("", Credentials{}); got != "code_assist" {
 		t.Fatalf("双源空应保持启发式默认：%s", got)
 	}
 }
 
-func TestB4MergeRestoresOAuthTypeFromColumn(t *testing.T) {
-	// 封套键缺失 + 列有值：legacy 全量提交合并按列回填，重封链按同列重算
-	// oauth_type 列，两侧不漂移。
+func TestB4MergeDoesNotBackfillOAuthTypeFromColumn(t *testing.T) {
+	// B01 收口：封套键缺失 + 列有值时不再按列回填 oauth_type；判定只读
+	// accounts.oauth_type 列，重封链（patch.go）按同列重算，两侧不漂移。
 	merged := mergeAccountCredentialsForUpdate("google_oauth", "google_one",
 		Credentials{"refresh_token": "rt"}, Credentials{})
-	if merged["oauth_type"] != "google_one" {
-		t.Fatalf("列回填：%v", merged["oauth_type"])
+	if _, exists := merged["oauth_type"]; exists {
+		t.Fatalf("列有值不得回填封套键：%v", merged["oauth_type"])
 	}
-	// requested 显式值优先于列（正常替换语义不变）。
+	// requested 显式值仍优先（正常替换语义不变）。
 	merged = mergeAccountCredentialsForUpdate("google_oauth", "google_one",
 		Credentials{}, Credentials{"oauth_type": "ai_studio"})
 	if merged["oauth_type"] != "ai_studio" {
 		t.Fatalf("requested 优先：%v", merged["oauth_type"])
 	}
-	// 现值封套键优先于列（列与键一致的正常形态，行为不变）。
+	// 现值封套键随 preserve 列表保留（行为不变）。
 	merged = mergeAccountCredentialsForUpdate("google_oauth", "code_assist",
 		Credentials{"oauth_type": "code_assist"}, Credentials{})
 	if merged["oauth_type"] != "code_assist" {
 		t.Fatalf("现值封套键保留：%v", merged["oauth_type"])
 	}
-	// 列空 + 封套缺键（无法判定）：不回填，行为与现状一致。
+	// 列空 + 封套缺键：不注入，行为与收口后语义一致。
 	merged = mergeAccountCredentialsForUpdate("google_oauth", "",
 		Credentials{"refresh_token": "rt"}, Credentials{})
 	if _, exists := merged["oauth_type"]; exists {
-		t.Fatalf("双源空不应回填：%v", merged["oauth_type"])
+		t.Fatalf("双源空不应注入：%v", merged["oauth_type"])
 	}
 	// 非 google_oauth 类型不受列影响（oauth 类型无该键保列语义）。
 	merged = mergeAccountCredentialsForUpdate("oauth", "google_one",

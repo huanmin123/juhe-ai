@@ -367,7 +367,9 @@ type groupUpdateBody struct {
 	HasGroupType   bool
 }
 
-var groupUpdateMutableFields = []string{"name", "providerCode", "description", "enabled", "groupType"}
+// providerCode 仍在 strictObjectKeys 允许集内：作为历史兼容入参接受但不计入
+// 变更；只带该字段时按"至少一个字段"门禁 400 拒绝。
+var groupUpdateMutableFields = []string{"name", "description", "enabled", "groupType"}
 
 func parseGroupUpdateBody(body map[string]any) (*groupUpdateBody, string) {
 	unknown := strictObjectKeys(body, "targetUsername", "groupId", "name", "providerCode", "description", "enabled", "groupType")

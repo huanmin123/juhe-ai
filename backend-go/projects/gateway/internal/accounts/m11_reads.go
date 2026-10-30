@@ -515,9 +515,9 @@ var geminiOAuthMetadataKeys = []string{
 	"project_id", "tier_id", "base_url",
 }
 
-// geminiOAuthContextType mirrors geminiOAuthContextType. oauth_type 判定读列
-// 优先（#B4 ⑪，judgmentGoogleOAuthType）：凭据键回落兼容迁移窗口存量行；
-// 列与键都无三值判定值时保留原 base_url/project_id/client_id 启发式。
+// geminiOAuthContextType mirrors geminiOAuthContextType. oauth_type 判定只读
+// accounts.oauth_type 列（#B4 ⑪，judgmentGoogleOAuthType，B01 收口不回落凭据
+// 键）：列无三值判定值时直接走原 base_url/project_id/client_id 启发式。
 func geminiOAuthContextType(oauthTypeColumn string, credentials Credentials) string {
 	if judgment := judgmentGoogleOAuthType(oauthTypeColumn, credentials); judgment != "" {
 		return judgment

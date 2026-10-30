@@ -33,7 +33,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schemagate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
 func main() {
@@ -50,7 +52,7 @@ var hooksSignalNotifyContext = signal.NotifyContext
 // 文案与输出流逐字节不变。args 为 flag 解析输入（不含程序名）。
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	version := flags.Bool("version", false, "print the jobs project contract version")
+	printVersion := flags.Bool("version", false, "print the jobs build version, commit and schema revision")
 	check := flags.Bool("check-boundary", false, "verify the scaffold boundary")
 	runJobsOnce := flags.String("run-jobs-once", "", "run wired worker jobs once (comma-separated task names), print a JSON result array and exit")
 	// W33 一次性运维入口：从 runtime_logs 全量重建 F1 facet 三表并退出，
@@ -63,8 +65,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if *version {
-		fmt.Fprintf(stdout, "juhe-ai-jobs project=%s contract=%s\n", contracts.ProjectJobs, contracts.ArchitectureVersion)
+	if *printVersion {
+		fmt.Fprintf(stdout, "juhe-ai-jobs version=%s commit=%s buildTime=%s schemaRevision=%d\n", version.Version, version.Commit, version.BuildTime, contracts.SchemaRevision)
 		return 0
 	}
 	if *check {
@@ -115,6 +117,26 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if !ownerMode.OwnsWork() {
 		return runPassiveJobs(*healthAddress, ownerMode, logger, stdout, stderr)
+	}
+	// 构建身份首行（升级兼容与迁移账本设计 §6.3）：常驻主路径一次性输出；
+	// passive 与 --run-jobs-once 的 stdout 契约不经过此行。
+	logger.Info("juhe-ai-jobs starting",
+		"version", version.Version,
+		"commit", version.Commit,
+		"schemaRevision", contracts.SchemaRevision)
+	// 升级启动门禁（升级兼容与迁移账本设计 §11.1）：库未被本二进制的
+	// upgrade 收敛时 fail-fast；只读检查，绝不自动迁移（§2.2-5）。
+	// env 缺失时不拦——交给下方既有配置装载链按原报错顺序 fail-fast
+	// （w16h 空环境臂钉死了该顺序），门禁只在主库连接串可用时生效。
+	if gateDSN := strings.TrimSpace(os.Getenv("JUHE_AI_POSTGRES_URL")); gateDSN != "" {
+		gateDB, gateOpenErr := sql.Open("pgx", gateDSN)
+		if gateOpenErr == nil {
+			gate := schemagate.Check(context.Background(), gateDB)
+			gateDB.Close()
+			if !gate.OK {
+				return failWith(stderr, errors.New(gate.Message))
+			}
+		}
 	}
 	postgresPools := pgpool.NewRegistry()
 	defer postgresPools.Close()
@@ -779,8 +801,8 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 // go-runtime-metrics 采样器下线时消除：readiness 载荷的每个开关/探针都是
 // 具名字段，不存在对象漂移进 readiness 参数的通道（X05 缺陷根因）。
 type jobsHTTPDeps struct {
-	OwnerMode                  ownermode.Mode
-	RuntimeRunning             *atomic.Bool
+	OwnerMode      ownermode.Mode
+	RuntimeRunning *atomic.Bool
 	// MetricsHandler 是 /__aisys__/metrics 的暴露 handler（prommetrics）。
 	MetricsHandler             http.Handler
 	AccountHealthEnabled       bool
@@ -988,9 +1010,13 @@ func healthHandler(deps healthDeps) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		ready := runtimeLogOwnerHeld && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && workerIsReady
 		payload := map[string]any{
-			"ready":                         ready,
-			"ownerReady":                    ready,
-			"ownerMode":                     deps.OwnerMode,
+			"ready":      ready,
+			"ownerReady": ready,
+			"ownerMode":  deps.OwnerMode,
+			// 构建身份（升级兼容与迁移账本设计 §6.3）：纯加法键，编排探测只读 ready。
+			"version":                       version.Version,
+			"commit":                        version.Commit,
+			"schemaRevision":                contracts.SchemaRevision,
 			"runtimeLogOwnerHeld":           runtimeLogOwnerHeld,
 			"accountHealthEnabled":          deps.AccountHealthEnabled,
 			"accountHealthReady":            accountHealthIsReady,

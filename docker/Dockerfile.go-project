@@ -2,10 +2,18 @@ ARG GO_IMAGE
 ARG RUNTIME_IMAGE
 ARG GO_PROXY=https://proxy.golang.org,direct
 ARG GO_PROJECT
+# 构建身份（升级兼容与迁移账本设计 §6.2）：由构建方（compose build args / CI）
+# 传入；缺省为未版本化构建，二进制 --version 自报 dev。
+ARG JUHE_AI_BUILD_VERSION=dev
+ARG JUHE_AI_BUILD_COMMIT=none
+ARG JUHE_AI_BUILD_TIME=unknown
 
 FROM ${GO_IMAGE} AS build
 ARG GO_PROXY
 ARG GO_PROJECT
+ARG JUHE_AI_BUILD_VERSION
+ARG JUHE_AI_BUILD_COMMIT
+ARG JUHE_AI_BUILD_TIME
 ENV GOPROXY=${GO_PROXY}
 WORKDIR /source
 
@@ -15,7 +23,7 @@ RUN --mount=type=cache,id=juhe-ai-go-mod,target=/go/pkg/mod \
   --mount=type=cache,id=juhe-ai-go-build,target=/root/.cache/go-build \
   test -n "$GO_PROJECT" \
   && test -f "/source/backend-go/projects/$GO_PROJECT/go.mod" \
-  && CGO_ENABLED=0 GOOS=linux go build -C "/source/backend-go/projects/$GO_PROJECT" -trimpath -ldflags="-s -w" -o "/out/juhe-ai-go-$GO_PROJECT" "./cmd/juhe-ai-$GO_PROJECT" \
+  && CGO_ENABLED=0 GOOS=linux go build -C "/source/backend-go/projects/$GO_PROJECT" -trimpath \  -ldflags="-s -w -X github.com/huanminabc/juhe-ai/backend-go-platform/version.Version=$JUHE_AI_BUILD_VERSION -X github.com/huanminabc/juhe-ai/backend-go-platform/version.Commit=$JUHE_AI_BUILD_COMMIT -X github.com/huanminabc/juhe-ai/backend-go-platform/version.BuildTime=$JUHE_AI_BUILD_TIME" \  -o "/out/juhe-ai-go-$GO_PROJECT" "./cmd/juhe-ai-$GO_PROJECT" \
   && printf '%s\n' \
     'package main' \
     'import ("net"; "net/http"; "os"; "time")' \

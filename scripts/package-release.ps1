@@ -278,6 +278,29 @@ if (-not $goCommand) {
 }
 $goPath = $goCommand.Source
 $goProjectsRoot = Join-Path $repoRoot 'backend-go/projects'
+
+# Build identity (design §6.2): tag + clean tree injects the tag version; a dirty
+# tree refuses tag injection unless ALLOW_DIRTY_BUILD=1 (then -dirty is appended).
+$buildCommit = (git -C $repoRoot rev-parse --short HEAD).Trim()
+$buildTime = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+$buildDirty = (git -C $repoRoot status --porcelain)
+$releaseTag = (git -C $repoRoot describe --tags --exact-match 2>$null)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseTag)) { $releaseTag = $null }
+if ($releaseTag) {
+  if ($buildDirty) {
+    if ($env:ALLOW_DIRTY_BUILD -ne '1') {
+      throw "Working tree is dirty and HEAD matches tag $releaseTag: refusing to inject a release version (commit/clean first, or ALLOW_DIRTY_BUILD=1 to append -dirty)."
+    }
+    $buildVersion = "$releaseTag-dirty"
+  } else {
+    $buildVersion = $releaseTag
+  }
+} else {
+  if ($buildDirty) { $buildVersion = "dev-$buildCommit-dirty" } else { $buildVersion = "dev-$buildCommit" }
+}
+$versionPackage = 'github.com/huanminabc/juhe-ai/backend-go-platform/version'
+$goLdFlags = "-s -w -X $versionPackage.Version=$buildVersion -X $versionPackage.Commit=$buildCommit -X $versionPackage.BuildTime=$buildTime"
+Write-Host "==> Build identity version=$buildVersion commit=$buildCommit"
 foreach ($project in @('gateway', 'jobs', 'maintenance')) {
   $goModuleRoot = Join-Path $goProjectsRoot $project
   $binaryPath = Join-Path $packageRoot "backend-go/juhe-ai-$project.exe"
@@ -290,6 +313,7 @@ foreach ($project in @('gateway', 'jobs', 'maintenance')) {
     '-C', $goModuleRoot,
     '-trimpath',
     '-buildvcs=false',
+    '-ldflags', $goLdFlags,
     '-o', $binaryPath,
     "./cmd/juhe-ai-$project"
   )

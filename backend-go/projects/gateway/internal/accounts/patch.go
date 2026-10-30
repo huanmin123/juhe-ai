@@ -300,9 +300,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			COALESCE((SELECT account_connections.connection_preset_code
 				FROM `+s.table("account_connections")+` account_connections
 				WHERE account_connections.id = accounts.health_check_connection_id), '') AS current_health_check_preset,
-			-- B4 W2 行为键过渡投影：provider_code 已停写（设计 §8 行为键按
-			-- vendor），patch 行为键控读 COALESCE(vendor, provider)——vendor 值域
-			-- 与 providerCode 同名，legacy 行回落旧列，新行取 vendor。
+			-- B4 W2 行为键投影：行为键只读 vendor_code；provider_code 已退役，
+			-- 不存在旧列回落（vendor 值域与旧 providerCode 同名，NULL 归一空串）。
 			COALESCE(accounts.vendor_code, '') AS provider_code,
 			COALESCE(accounts.connection_driver_code, '') AS connection_driver_code,
 			accounts.protocol_code,

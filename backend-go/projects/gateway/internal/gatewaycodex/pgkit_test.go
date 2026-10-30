@@ -28,7 +28,7 @@ import (
 )
 
 // codexContextPostgresSchema 与 maintenance postgresSchemaCodexContext 的语句
-// 序列逐条一致（建表 → 索引 → provider_code 退役幂等 DROP → 队列索引）。
+// 序列一致（建表 → 索引 → 队列索引；B08 后无 provider_code 退役 DROP）。
 const codexContextPostgresSchema = `
 CREATE SCHEMA IF NOT EXISTS juhe_codex_context;
 CREATE TABLE IF NOT EXISTS juhe_codex_context.codex_context_sessions (
@@ -105,9 +105,6 @@ CREATE INDEX IF NOT EXISTS idx_codex_context_responses_expires ON juhe_codex_con
 CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_session ON juhe_codex_context.codex_context_compacts(session_id, created_at ASC, compact_id);
 CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_source_response ON juhe_codex_context.codex_context_compacts(source_response_id);
 CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_expires ON juhe_codex_context.codex_context_compacts(expires_at ASC, compact_id);
-ALTER TABLE juhe_codex_context.codex_context_sessions DROP COLUMN IF EXISTS provider_code;
-ALTER TABLE juhe_codex_context.codex_context_responses DROP COLUMN IF EXISTS provider_code;
-ALTER TABLE juhe_codex_context.codex_context_compacts DROP COLUMN IF EXISTS provider_code;
 CREATE INDEX IF NOT EXISTS idx_codex_context_storage_cleanup_due ON juhe_codex_context.codex_context_storage_cleanup_queue(next_attempt_at ASC, enqueued_at ASC, storage_key ASC)`
 
 // newPostgresContextStateStore 在 pgtestkit 隔离 PG 测试库上构建生产

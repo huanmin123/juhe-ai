@@ -23,14 +23,14 @@ func TestPostgresRuntimeLogAdapterSmoke(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	opened, err := OpenStore(ctx, Config{Mode: ModePostgres, PostgresURL: url})
+	opened, err := OpenStore(ctx, Config{PostgresURL: url})
 	if err != nil {
 		t.Fatalf("连接 PostgreSQL smoke 数据库失败: %s", redactPostgresSmokeError(err, url))
 	}
 	store, ok := opened.(*postgresStore)
 	if !ok {
 		_ = opened.Close()
-		t.Fatalf("OpenStore(ModePostgres) 返回 %T，期望 *postgresStore", opened)
+		t.Fatalf("OpenStore 返回 %T，期望 *postgresStore", opened)
 	}
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {

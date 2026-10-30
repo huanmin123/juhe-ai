@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
 // w16hApplyEnv 把 env 逐键 t.Setenv（测试结束自动恢复）。
@@ -181,7 +182,7 @@ func TestW16HRunPassiveGracefulShutdown(t *testing.T) {
 func TestW16HRunFlagOutputs(t *testing.T) {
 	t.Run("--version", func(t *testing.T) {
 		stdout, _ := w16hRunArms(t, []string{"--version"}, 0, "")
-		want := "juhe-ai-jobs project=" + string(contracts.ProjectJobs) + " contract=" + contracts.ArchitectureVersion + "\n"
+		want := "juhe-ai-jobs version=" + version.Version + " commit=" + version.Commit + " buildTime=" + version.BuildTime + " schemaRevision=" + strconv.FormatInt(contracts.SchemaRevision, 10) + "\n"
 		if stdout != want {
 			t.Fatalf("--version stdout 逐字节断言失败：want %q got %q", want, stdout)
 		}

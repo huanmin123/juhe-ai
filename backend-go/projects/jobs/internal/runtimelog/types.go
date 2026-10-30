@@ -5,21 +5,13 @@ import (
 	"time"
 )
 
-type Mode string
-
-const (
-	ModePostgres Mode = "postgres"
-)
-
 type Config struct {
 	OwnerID           string
 	OwnerLease        time.Duration
-	Mode              Mode
 	PostgresURL       string
 	PostgresMaxConns  int
 	PostgresMinConns  int
 	LogDirectory      string
-	FileEnabled       bool
 	Once              bool
 	PollInterval      time.Duration
 	RetentionInterval time.Duration

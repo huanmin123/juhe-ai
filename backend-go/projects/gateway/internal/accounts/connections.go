@@ -37,9 +37,9 @@ type resolvedConnection struct {
 
 // accountOAuthTypeForRegistry 按 §1.1 提取 registry 判定所需的 oauth_type：
 // 仅 google_oauth 账户携带（∈ {code_assist, google_one, ai_studio}），其余账户
-// registry 行固定 SQL NULL（空串）。读列优先（accounts.oauth_type 物理列，设
-// 计 §2.1 的运行时唯一来源）、credentials 回落（兼容列值未回填的存量行——
-// 创建链无行可读，恒走 credentials）。
+// registry 行固定 SQL NULL（空串）。已有行读 accounts.oauth_type 物理列（设计
+// §2.1 的运行时唯一来源）；创建链无行可读，从请求 credentials 取 oauth_type
+// 用于 registry 判定并随创建事务写入列。
 func accountOAuthTypeForRegistry(accountType, oauthTypeColumn string, credentials Credentials) string {
 	if accountType != contracts.AccountTypeGoogleOAuth {
 		return ""
@@ -61,19 +61,13 @@ var googleOAuthTypeValues = map[string]bool{
 	contracts.OAuthTypeAIStudio:   true,
 }
 
-// judgmentGoogleOAuthType 提取 google_oauth 判定值（#B4 ⑪ 读面切列）：判定列
-// 三值优先、credentials["oauth_type"] 三值回落。回落只服务两类形态——迁移
-// 窗口存量行（B1 前创建的行列 NULL，回填归迁移命令正式执行）与「refresh
-// 删键」切片落地后的凭据键缺省形态；收口前提 = 存量回填迁移执行 + 各读面
-// 切列完成，届时可删回落。两源皆无三值时返回空串，由调用方按各自启发式兜底。
-func judgmentGoogleOAuthType(oauthTypeColumn string, credentials Credentials) string {
+// judgmentGoogleOAuthType 提取 google_oauth 判定值（#B4 ⑪ 读面切列，B01 收口）：
+// 只读 accounts.oauth_type 判定列，它是唯一来源；空值或词表外值返回空串，由
+// 调用方按各自启发式兜底。不再回落 credentials["oauth_type"] 封套键，也不服务
+// 迁移窗口存量行（缺列即数据不完整）。第二参数已退役，保留占位避免调整调用方。
+func judgmentGoogleOAuthType(oauthTypeColumn string, _ Credentials) string {
 	if text := strings.TrimSpace(oauthTypeColumn); googleOAuthTypeValues[text] {
 		return text
-	}
-	if text, ok := credentials["oauth_type"].(string); ok {
-		if text = strings.TrimSpace(text); googleOAuthTypeValues[text] {
-			return text
-		}
 	}
 	return ""
 }

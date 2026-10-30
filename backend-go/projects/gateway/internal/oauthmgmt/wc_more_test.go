@@ -95,19 +95,19 @@ func TestWCGeminiAccountOAuthType(t *testing.T) {
 	}
 }
 
-// TestB4GeminiRotationAccountOAuthTypeColumnFirst：判定列优先、凭据键回落
-// （#B4 ⑨：refresh/reauthorize 读面切 accounts.oauth_type）。
+// TestB4GeminiRotationAccountOAuthTypeColumnFirst：只读判定列（#B4 ⑨，B01
+// 收口：缺列即数据不完整，返回空串，不再按凭据推断）。
 func TestB4GeminiRotationAccountOAuthTypeColumnFirst(t *testing.T) {
 	current := &rotationAccount{OAuthType: "ai_studio"}
 	credentials := map[string]any{"oauth_type": "code_assist"}
 	if got := geminiRotationAccountOAuthType(current, credentials); got != "ai_studio" {
 		t.Fatalf("判定列优先: got %q, want ai_studio", got)
 	}
-	if got := geminiRotationAccountOAuthType(&rotationAccount{}, credentials); got != "code_assist" {
-		t.Fatalf("列空回落凭据: got %q, want code_assist", got)
+	if got := geminiRotationAccountOAuthType(&rotationAccount{}, credentials); got != "" {
+		t.Fatalf("列空应返回空串: got %q", got)
 	}
-	if got := geminiRotationAccountOAuthType(nil, map[string]any{"base_url": "https://generativelanguage.googleapis.com"}); got != "ai_studio" {
-		t.Fatalf("nil 行按凭据推断: got %q, want ai_studio", got)
+	if got := geminiRotationAccountOAuthType(nil, map[string]any{"base_url": "https://generativelanguage.googleapis.com"}); got != "" {
+		t.Fatalf("nil 行应返回空串: got %q", got)
 	}
 }
 

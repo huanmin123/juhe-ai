@@ -519,7 +519,7 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		// 调度内核通用化批次 3b：适配器历史清理选项改由通用 HistoryPrepPolicy
 		// 承载（单一来源为 gatewaydispatch.HistoryPrepPolicyForRequest 纯函数，
 		// 此处按链面已有信息重算）。isCodexOAuthAccount 分支的账户均为 oauth
-		// + eligible vendor（gpt/迁移期空值）形态，策略 Adapter 恒为 sanitize，
+		// + eligible vendor（gpt）形态，策略 Adapter 恒为 sanitize，
 		// 选项取值与改造前常量 true 逐点一致（OAuth adapter 的已处理标记写入
 		// 不变）；非 gpt 供应商 oauth 账户在分支外走 preserve 口径。
 		historyPrepPolicy := gatewaydispatch.HistoryPrepPolicyForRequest(account, requestClientCompatibility, gatewaydispatch.GatewayRequestEndpointFamily(req))
@@ -942,8 +942,8 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 	// D-99 eliminated 裁决（Node gpt/driver.ts accountSupportsRequest）：
 	// GPT/Codex 管理式 OAuth 只服务 codex_responses 客户端形态，其他客户端
 	// 兼容类直接淘汰。供应商边界：本门按
-	// gatewaydispatch.CodexOAuthVendorEligible 收窄到 gpt/迁移期空 vendor 的
-	// oauth 账户（与 isCodexOAuthAccount 同判据）；xAI（Grok）OAuth 等已知
+	// gatewaydispatch.CodexOAuthVendorEligible 收窄到 gpt 的 oauth 账户
+	// （与 isCodexOAuthAccount 同判据）；xAI（Grok）OAuth 等已知
 	// 非 gpt 供应商的 oauth 账户不再被本门淘汰——普通 openai_standard 客户端
 	// 的 /v1/responses 由其承接（docs/functions/xAI账号接入.md 协议边界），
 	// /chat/completions 仍由账户 responses-only endpoint modes 阻断

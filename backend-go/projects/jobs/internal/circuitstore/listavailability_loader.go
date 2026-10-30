@@ -82,9 +82,6 @@ type ProjectionLoadConfig struct {
 	Business *sql.DB
 	// Stats 是统计库双模句柄（usage 汇总 + quota 成本 + 余额快照）。
 	Stats *sql.DB
-	// Postgres / StatsPostgres 标记两个库的方言（Node databaseDriver 双模）。
-	Postgres      bool
-	StatsPostgres bool
 	// Secret 是凭据指纹 HMAC 密钥（runtimeConfig.secret 同源）。
 	Secret string
 	// Credentials 缺省时 apiKeyRuntime 汇总不可读（fail closed）。
@@ -106,10 +103,10 @@ type ProjectionItemLoader struct {
 	statsDB     *sql.DB
 	secret      string
 	credentials CredentialCodec
-	concurrency   ConcurrencySource
-	runtime       RuntimeAvailabilitySource
-	timezone      TimezoneSource
-	now           func() time.Time
+	concurrency ConcurrencySource
+	runtime     RuntimeAvailabilitySource
+	timezone    TimezoneSource
+	now         func() time.Time
 }
 
 // NewProjectionItemLoader 构建载荷组装器；依赖缺失即 fail closed。
@@ -137,11 +134,11 @@ func NewProjectionItemLoader(config ProjectionLoadConfig) (*ProjectionItemLoader
 		db:          config.Business,
 		statsDB:     config.Stats,
 		secret:      config.Secret,
-		credentials:   config.Credentials,
-		concurrency:   config.Concurrency,
-		runtime:       config.RuntimeAvailability,
-		timezone:      config.Timezone,
-		now:           now,
+		credentials: config.Credentials,
+		concurrency: config.Concurrency,
+		runtime:     config.RuntimeAvailability,
+		timezone:    config.Timezone,
+		now:         now,
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package upstreamidentity
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -38,14 +39,14 @@ func TestApplySystemClientHeadersSelectsZCodeForWholeGLMFamily(t *testing.T) {
 		if headers.Get("User-Agent") != "ZCode/"+ZCodeVersion || headers.Get("HTTP-Referer") != "https://zcode.z.ai" || headers.Get("X-ZCode-App-Version") != ZCodeVersion || headers.Get("X-Title") != "Z Code@electron" {
 			t.Fatalf("GLM family must use the full ZCode identity: input=%+v headers=%v", input, headers)
 		}
-		if headers.Get("anthropic-beta") != "" || headers.Get("User-Agent") == OpenCodeUserAgent {
+		if headers.Get("anthropic-beta") != "" || strings.HasPrefix(headers.Get("User-Agent"), "opencode/") {
 			t.Fatalf("GLM family identity must not leak OpenCode or Anthropic OAuth headers: input=%+v headers=%v", input, headers)
 		}
 	}
 }
 
 // BUG-0201：GPT/Codex 家族的 API Key 系统请求仅注入 Codex exec 静态 UA
-//（源码锚定 exec surface，客户端版本自动跟版设计 §8.1）；
+// （源码锚定 exec surface，客户端版本自动跟版设计 §8.1）；
 // originator/session-id 等每请求动态头由调用方生成。
 func TestApplySystemClientHeadersUsesCodexExecUAForGPTFamilyAPIKeys(t *testing.T) {
 	for _, input := range []Input{
@@ -150,7 +151,7 @@ func TestApplySystemClientHeadersKeepsKnownClientBoundIdentities(t *testing.T) {
 	}
 
 	for name, headers := range map[string]http.Header{"claude": claude, "gemini": gemini, "grok": grok} {
-		if headers.Get("User-Agent") == OpenCodeUserAgent || headers.Get("X-Opencode-Session") != "" || headers.Get("X-Opencode-Project") != "" {
+		if strings.HasPrefix(headers.Get("User-Agent"), "opencode/") || headers.Get("X-Opencode-Session") != "" || headers.Get("X-Opencode-Project") != "" {
 			t.Fatalf("exact %s identity must not be replaced or supplemented with OpenCode session headers: %v", name, headers)
 		}
 	}

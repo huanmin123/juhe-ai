@@ -34,16 +34,12 @@ type HistoryPrepPolicy struct {
 }
 
 // CodexOAuthVendorEligible 判定 openai 协议 OAuth 账户是否套用 GPT/Codex
-// 归一化（GPT/Codex 归一化、Codex 头装配与 sanitize 历史清理只属于 gpt
-// 供应商账户；xAI（Grok）OAuth 等已知非 gpt 厂商一律排除，走「原样透传」
-// 口径，docs/functions/xAI账号接入.md）。
-//
-// 迁移期兼容语义：存量账户 vendor_code 回填迁移尚未正式执行（待办 B1），
-// 空值代表「未知/未回填」，必须维持既有 Codex 归一化行为以免误伤存量
-// OpenAI OAuth 账户；回填迁移完成后收口为只保留 "gpt"（空值随迁移清零，
-// 不再表达合法形态）。
+// 归一化：只有真实 gpt 供应商的 OAuth 账户套用 GPT/Codex 归一化（Codex 头
+// 装配与 sanitize 历史清理同理）；空 vendor 不是合法形态，不按 gpt 处理。
+// xAI（Grok）OAuth 等已知非 gpt 厂商一律排除，走「原样透传」口径，
+// docs/functions/xAI账号接入.md。
 func CodexOAuthVendorEligible(vendorCode string) bool {
-	return vendorCode == "gpt" || vendorCode == ""
+	return vendorCode == "gpt"
 }
 
 // HistoryPrepPolicyForRequest 由账户协议形态与请求 compat/endpoint family
@@ -58,13 +54,13 @@ func CodexOAuthVendorEligible(vendorCode string) bool {
 //  2. Codex→API Key（compat=codex_responses + responses 族 + 非 oauth）：
 //     Front=sanitize_inline，Adapter=preserve，Post=sanitize，
 //     SkipIfProcessed=true；
-//  3. Codex→OAuth（defer 条件命中，vendor gpt/空）：Front=preserve，
+//  3. Codex→OAuth（defer 条件命中，vendor gpt）：Front=preserve，
 //     Adapter=sanitize，Post=preserve，SkipIfProcessed=true；
 //  4. OAuth 能力门拒绝组合（compat 非空非 codex_responses + gpt 形态
 //     oauth）：生产被 chain_driver OAuth 能力门淘汰、静态不可达，防御性
 //     归入第 3 行同值。
 //
-// oauth 分支按 account.Type + CodexOAuthVendorEligible 收敛：gpt/空 vendor
+// oauth 分支按 account.Type + CodexOAuthVendorEligible 收敛：gpt vendor
 // 的 oauth 账户走第 3/4 行（第 3 行 defer 判定的 vendor/profile 要素在
 // 生产 OpenAI OAuth 账户上全部满足）；已知非 gpt 供应商的 oauth 账户
 // （如 xAI Grok OAuth，本批起为真实生产形态）不再走 OAuth 特化行，落入

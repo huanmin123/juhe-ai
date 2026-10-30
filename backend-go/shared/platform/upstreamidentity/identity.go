@@ -30,12 +30,9 @@ const (
 	//（键 upstreamClientVersionAutoOverrides，jobs 跟版任务写入）> 本常量；
 	// BuiltInClientVersion 导出本层供任务侧单调检查。常量本身保留为内置默认
 	// 与文档锚点。
-	builtInCodexVersion = "0.162.0"
-	builtInClaudeCodeVersion   = "2.1.295"
-	builtInGeminiCLIVersion    = "0.63.0"
-	// OpenCodeUserAgent is the static identity observed in OpenCode 1.18.5.
-	// BUG-0201 之后本包不再把它注入任何系统请求；常量仅为兼容既有引用保留。
-	OpenCodeUserAgent = "opencode/1.18.5"
+	builtInCodexVersion      = "0.162.0"
+	builtInClaudeCodeVersion = "2.1.295"
+	builtInGeminiCLIVersion  = "0.63.0"
 	// CodexExecUserAgent is the static Codex exec surface identity（源码锚定，
 	// 客户端版本自动跟版设计 §8.1）：UA 模板与 openai/codex 源码
 	// codex-rs/login/src/auth/default_client.rs get_codex_user_agent() 的

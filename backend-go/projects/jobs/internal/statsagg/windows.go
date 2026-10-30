@@ -27,10 +27,6 @@ const (
 	StageUsageOverviewWindows                 WindowStageName = "usage_overview_windows"
 	StageAiPerformanceSummaryWindows          WindowStageName = "ai_performance_summary_windows"
 	StageUsageScopeRangeWindows               WindowStageName = "usage_scope_range_windows"
-	// StageAuthorizationUsageRangeWindows 已随授权消耗明细改为日摘要表现场
-	// 聚合而停用：不再注册进刷新编排（selectStages/runStage 均不认领），组合
-	// 根装配已移除；常量仅由停用语义断言测试（w10c“未知阶段应报错”）引用。
-	StageAuthorizationUsageRangeWindows WindowStageName = "authorization_usage_range_windows"
 )
 
 // hotUsageWindowStageNames mirrors hotUsageWindowStageNames。
@@ -384,9 +380,8 @@ func (w *WindowRefresher) sourceState(ctx context.Context, stages []WindowStageN
 }
 
 type rankRefreshJobState struct {
-	cursorCreatedAt            *string
-	cursorID                   *string
-	legacyEmptySourceWatermark bool
+	cursorCreatedAt *string
+	cursorID        *string
 }
 
 // rankRefreshJobState mirrors usageRankSnapshotRefreshJobState。
@@ -404,15 +399,10 @@ func (w *WindowRefresher) rankRefreshJobState(ctx context.Context, jobName strin
 	state := &rankRefreshJobState{}
 	if cursorCreatedAt.Valid && cursorCreatedAt.String != "" {
 		value := cursorCreatedAt.String
-		if value == LegacyEmptySourceWatermark {
-			state.legacyEmptySourceWatermark = true
-			state.cursorCreatedAt = &value
-		} else {
-			if _, ok := CanonicalizeRFC3339Instant(value); !ok {
-				return nil, errors.New("用量排行快照 sourceWatermark必须是带 Z 或数值 offset 的 RFC3339 时间")
-			}
-			state.cursorCreatedAt = &value
+		if _, ok := CanonicalizeRFC3339Instant(value); !ok {
+			return nil, errors.New("用量排行快照 sourceWatermark必须是带 Z 或数值 offset 的 RFC3339 时间")
 		}
+		state.cursorCreatedAt = &value
 	}
 	if cursorID.Valid {
 		state.cursorID = &cursorID.String
@@ -423,9 +413,6 @@ func (w *WindowRefresher) rankRefreshJobState(ctx context.Context, jobName strin
 // rankSnapshotSourceUnchanged mirrors usageRankSnapshotSourceUnchanged。
 func rankSnapshotSourceUnchanged(previousState *rankRefreshJobState, sourceState *rankSnapshotSourceState, refreshDate string) bool {
 	if previousState == nil || sourceState == nil {
-		return false
-	}
-	if previousState.legacyEmptySourceWatermark {
 		return false
 	}
 	if previousState.cursorCreatedAt == nil || *previousState.cursorCreatedAt != sourceState.sourceWatermark {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/upgradepipeline"
 )
 
 // storageBootstrapReport is the JSON result printed by both commands.
@@ -65,6 +66,15 @@ func runStorageBootstrap(ensure, seed bool, dsn, secret string) int {
 		return 2
 	}
 	defer db.Close()
+	// 升级编排互斥锁（升级兼容与迁移账本设计 §9.5）：与 maintenance upgrade
+	// 共用 advisorylock.UpgradeOrchestration，防止结构收敛与升级编排并发；
+	// 2s 快失败（BUG-0313 同口径），拿不到即退出由操作者重试。
+	unlock, lockErr := upgradepipeline.AcquireOrchestrationLock(context.Background(), db)
+	if lockErr != nil {
+		fmt.Fprintf(os.Stderr, "ensure-schema/seed 取升级编排锁失败: %v\n", lockErr)
+		return 1
+	}
+	defer unlock()
 	report := storageBootstrapReport{Driver: "postgres", EnsureRan: ensure, SeedRan: seed}
 	report.Postgres = &storageBootstrapPostgres{}
 	if ensure {

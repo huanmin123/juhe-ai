@@ -34,6 +34,7 @@
 #
 # 用法：
 #   ./deploy.sh all        发布 gateway + jobs（默认）
+#   ./deploy.sh upgrade    停写窗口升级：build → stop → 备份确认 → upgrade → start
 #   ./deploy.sh gateway    只发布 gateway
 #   ./deploy.sh jobs       只发布 jobs
 #   ./deploy.sh maintenance 只发布 maintenance（不 up，等下次 compose run 生效）
@@ -58,14 +59,17 @@ SSH="ssh -i $REPO_ROOT/.local/project-resources/prod/assets/ssh/juhe_ai_cn103_ed
 HEALTH_URL=https://aijh.huanmin.top/__aisys__/health
 
 TARGET="${1:-all}"
+# upgrade 模式（升级兼容与迁移账本设计 §11.3）：build → 停写 → 备份确认 →
+# maintenance upgrade → 拉起；区别于 all 的「build 后直接滚动更新」。
 case "$TARGET" in
   # all 含 maintenance：一次性 CLI 的 schema/seed 变更必须随发版落地，否则
   # 发布后 ensure-schema 用旧清单"幂等成功"却漏建新表（2026-10-02/03 两次
   # 同款事故：623/624 语句一致掩盖 chat/j3b 迁移未落地）。maintenance 分支
   # 只编译+上传+重建镜像，不 up（一次性容器 up -d 会等入口退出而挂起）。
   all) TARGETS=(gateway jobs maintenance) ;;
+  upgrade) TARGETS=(gateway jobs maintenance); UPGRADE_MODE=1 ;;
   gateway|jobs|maintenance) TARGETS=("$TARGET") ;;
-  *) echo "用法: $0 [all|gateway|jobs|maintenance]" >&2; exit 1 ;;
+  *) echo "用法: $0 [all|upgrade|gateway|jobs|maintenance]" >&2; exit 1 ;;
 esac
 
 cd "$REPO_ROOT"
@@ -173,12 +177,34 @@ if [[ " ${TARGETS[*]} " == *" gateway "* ]]; then
 fi
 
 echo "== [1/6] 全量重编译（linux/amd64，不信任既有产物）=="
+# 构建身份（升级兼容与迁移账本设计 §6.2）：tag 干净树注入 tag 版本；脏树拒绝
+# tag 注入（ALLOW_DIRTY_BUILD=1 显式豁免并追加 -dirty 后缀），防「二进制自报
+# 版本与 tag 不一致」。与前端 buildId==HEAD 门禁同型。
+COMMIT=$(git rev-parse --short HEAD)
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+XP=github.com/huanminabc/juhe-ai/backend-go-platform/version
+RELEASE_TAG=$(git describe --tags --exact-match 2>/dev/null || true)
+if [ -n "$RELEASE_TAG" ]; then
+  if [ -n "$(git status --porcelain)" ]; then
+    if [ "${ALLOW_DIRTY_BUILD:-0}" != "1" ]; then
+      echo "[FAIL] 工作树有未提交改动且 HEAD 命中 tag $RELEASE_TAG：拒绝以发布版本号注入（提交或清理后重试；确需脏树构建请 ALLOW_DIRTY_BUILD=1，版本将追加 -dirty 后缀）。" >&2
+      exit 1
+    fi
+    BUILD_VERSION="$RELEASE_TAG-dirty"
+  else
+    BUILD_VERSION="$RELEASE_TAG"
+  fi
+else
+  if [ -n "$(git status --porcelain)" ]; then BUILD_VERSION="dev-${COMMIT}-dirty"; else BUILD_VERSION="dev-${COMMIT}"; fi
+fi
+GO_LDFLAGS="-s -w -X ${XP}.Version=$BUILD_VERSION -X ${XP}.Commit=$COMMIT -X ${XP}.BuildTime=$BUILD_TIME"
+echo "  构建身份 version=$BUILD_VERSION commit=$COMMIT"
 BUILD_BIN=docker/single-server/build/bin
 mkdir -p "$BUILD_BIN"
 declare -A LOCAL_MD5
 for p in "${TARGETS[@]}"; do
   (cd "backend-go/projects/$p" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags "-s -w" -o "../../../$BUILD_BIN/juhe-ai-$p" "./cmd/juhe-ai-$p")
+    go build -trimpath -ldflags "$GO_LDFLAGS" -o "../../../$BUILD_BIN/juhe-ai-$p" "./cmd/juhe-ai-$p")
   LOCAL_MD5[$p]=$(md5sum "$BUILD_BIN/juhe-ai-$p" | awk '{print $1}')
   echo "  juhe-ai-$p  ${LOCAL_MD5[$p]}"
 done
@@ -246,17 +272,19 @@ fi
 # （README「更新发布」节），此时门禁未就绪属预期，前置核验会让窗口流程死锁。
 # ---------------------------------------------------------------------------
 if [ "$TARGET" != "maintenance" ]; then
-  echo "== 迁移前置核验（只读；未就绪先完成维护窗口再发布）=="
-  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-account-capability-domain --account-capability-domain-stage=m2-cutover --account-capability-domain-check=postflight --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
-    echo "[FAIL] 账户能力域迁移未就绪（要求 global_settings 阶段记录已封存 m2_finalized），新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
-    echo "       先按 docker/single-server/README.md「账户能力域迁移维护窗口」完成停写窗口迁移并以 postflight 核验通过，再重新发布。" >&2
+  echo "== 迁移前置核验（新版 maintenance 镜像 upgrade --dry-run，只读零写入）=="
+  # 2026-10-30 起以 upgrade --dry-run 取代两条写死的 verify 判断（设计 §11.3）：
+  # 门禁未就绪（库落后于本二进制 / 有中断在途 / 需要手工步骤）一律 blocked/3，
+  # 按失败处理并指引 deploy.sh upgrade。必须用新版 maintenance 镜像（先 build），
+  # 旧镜像看不见新 revision 步骤。
+  BUILD_FIRST="docker compose --profile tool build maintenance 2>&1 | tail -1"
+  DRY_RUN="docker compose --profile tool run --rm --no-deps maintenance upgrade --dry-run --dsn \"\$JUHE_AI_POSTGRES_URL\""
+  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && bash -c 'set -o pipefail; $BUILD_FIRST && $DRY_RUN'"; then
+    echo "[FAIL] upgrade --dry-run 未就绪（blocked）：库落后于本次发布或上次升级中断，新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
+    echo "       先执行 ./deploy.sh upgrade 完成停写窗口升级（备份确认内置），或按报告提示处理后再重新发布。" >&2
     exit 1
   fi
-  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-scheduling-preferences --scheduling-preferences-check=postflight --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
-    echo "[FAIL] 调度偏好迁移未完成（scheduling_preferences_migration stage != completed），新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
-    echo "       先按 docker/single-server/README.md「调度偏好迁移维护窗口」完成停写窗口迁移并以 postflight 核验通过，再重新发布。" >&2
-    exit 1
-  fi
+  echo "  前置核验通过（dry-run planned/up-to-date）"
 fi
 
 echo "== [4/6] 服务器组装镜像并滚动更新 =="
@@ -271,13 +299,49 @@ done
 # 失败仍返回 0 且 && 会继续用旧镜像 up 滚动重启生产容器（假成功）。显式 bash -c
 # + pipefail 让真实退出码经 ssh 返回本地，tail 摘要输出体验不变。
 REMOTE_CMD="set -o pipefail; cd $SERVER_DIR && docker compose build ${TARGETS[*]} 2>&1 | tail -1"
-if [ ${#UP_TARGETS[@]} -gt 0 ]; then
-  REMOTE_CMD="$REMOTE_CMD && docker compose up -d ${UP_TARGETS[*]} 2>&1 | tail -2"
-fi
-if ! $SSH "$SERVER" "bash -c '$REMOTE_CMD'"; then
-  echo "[FAIL] 服务器侧 docker compose build/up 失败（上方为 tail 摘要），发布已中止，未继续后续步骤。" >&2
-  echo "       完整错误：ssh 到服务器 cd $SERVER_DIR 后手动执行对应 compose 命令查看。" >&2
-  exit 1
+
+if [ "${UPGRADE_MODE:-0}" = "1" ]; then
+  # ---- upgrade 模式（§11.3）：build → 停写 → 备份确认 → upgrade → 拉起 ----
+  REMOTE_CMD="$REMOTE_CMD && docker compose stop gateway jobs 2>&1 | tail -1"
+  if ! $SSH "$SERVER" "bash -c '$REMOTE_CMD'"; then
+    echo "[FAIL] 服务器侧 compose build/停写失败，发布中止（未执行升级，服务状态未变）。" >&2
+    exit 1
+  fi
+
+  echo "== 停写窗口备份确认 =="
+  echo "  升级备份维度（§20.5）：business/chat/codex_context 必备；建议命令："
+  echo "    ssh $SERVER 'docker exec juhe-ai-postgres pg_dump -U juhe_ai -Fc juhe_ai > /opt/juhe-ai/backup/juhe_ai-pre-upgrade-\$(date +%Y%m%d-%H%M).dump'"
+  printf "  已完成并验证可恢复备份？输入 YES 继续（其他输入中止，gateway/jobs 保持停止）："
+  read -r ANSWER || ANSWER=""
+  if [ "$ANSWER" != "YES" ]; then
+    echo "[FAIL] 未确认备份，升级中止；gateway/jobs 保持停止，可手动 docker compose start gateway jobs 恢复。" >&2
+    exit 1
+  fi
+
+  echo "== 执行 maintenance upgrade（账本编排；失败即中止且不拉起）=="
+  UPGRADE_CMD="set -a && . ./.env && set +a && docker compose --profile tool run --rm maintenance upgrade --dsn \"\$JUHE_AI_POSTGRES_URL\" --secret \"\$JUHE_AI_SECRET\" --stop-write-confirmed --backup-confirmed"
+  if ! $SSH "$SERVER" "bash -c '$UPGRADE_CMD'"; then
+    echo "[FAIL] upgrade 失败：gateway/jobs 保持停止。二选一：" >&2
+    echo "       ① 重跑本命令前向续跑（账本断点，推荐）：./deploy.sh upgrade" >&2
+    echo "       ② 恢复升级前备份后重试。" >&2
+    exit 1
+  fi
+
+  RESUME_CMD="docker compose up -d gateway jobs 2>&1 | tail -1"
+  if ! $SSH "$SERVER" "bash -c 'cd $SERVER_DIR && set -o pipefail; $RESUME_CMD'"; then
+    echo "[FAIL] 升级完成但拉起失败：ssh 到服务器 cd $SERVER_DIR 手动 docker compose up -d gateway jobs。" >&2
+    exit 1
+  fi
+  echo "== [4/6] 停写窗口升级完成，gateway/jobs 已拉起 =="
+else
+  if [ ${#UP_TARGETS[@]} -gt 0 ]; then
+    REMOTE_CMD="$REMOTE_CMD && docker compose up -d ${UP_TARGETS[*]} 2>&1 | tail -2"
+  fi
+  if ! $SSH "$SERVER" "bash -c '$REMOTE_CMD'"; then
+    echo "[FAIL] 服务器侧 docker compose build/up 失败（上方为 tail 摘要），发布已中止，未继续后续步骤。" >&2
+    echo "       完整错误：ssh 到服务器 cd $SERVER_DIR 后手动执行对应 compose 命令查看。" >&2
+    exit 1
+  fi
 fi
 
 if [ "$TARGET" = "maintenance" ]; then

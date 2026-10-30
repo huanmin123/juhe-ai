@@ -40,11 +40,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// STORE 恒 postgres（sqlite store 形态已随存储形态收口物理删除；
-	// JUHE_AI_RUNTIME_LOG_STORE env 退役）。PG 连接串无法凭空默认。
-	mode := ModePostgres
-	// 2026-09-21 起文件日志为常驻能力，JUHE_AI_LOG_FILE_ENABLED 开关移除。
-	fileEnabled := true
 	once, err := parseBool("JUHE_AI_RUNTIME_LOG_ONCE", getenv("JUHE_AI_RUNTIME_LOG_ONCE"), false)
 	if err != nil {
 		return Config{}, err
@@ -85,15 +80,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("JUHE_AI_RUNTIME_LOG_POSTGRES_MIN_CONNS 不得大于 %d", sqlpool.MaxIdleConns)
 	}
 	config := Config{
-		OwnerID:    fmt.Sprintf("%s:%d", ownerInstance, os.Getpid()),
-		OwnerLease: ownerLease,
-		Mode:       mode,
-		PostgresURL:      strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL")),
-		PostgresMaxConns: postgresMaxConns,
-		PostgresMinConns: postgresMinConns,
-		LogDirectory:     strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
-		FileEnabled:      fileEnabled,
-		Once:             once,
+		OwnerID:           fmt.Sprintf("%s:%d", ownerInstance, os.Getpid()),
+		OwnerLease:        ownerLease,
+		PostgresURL:       strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL")),
+		PostgresMaxConns:  postgresMaxConns,
+		PostgresMinConns:  postgresMinConns,
+		LogDirectory:      strings.TrimSpace(getenv("JUHE_AI_LOG_DIR")),
+		Once:              once,
 		PollInterval:      pollInterval,
 		RetentionInterval: retentionInterval,
 		RetentionDays:     retentionDays,
@@ -109,8 +102,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("创建运行日志目录 %s 失败: %w", config.LogDirectory, err)
 		}
 	}
-	// 2026-09-21 起文件日志恒开（JUHE_AI_LOG_FILE_ENABLED 开关移除），
-	// FileEnabled 恒为 true，原「索引进程要求开关为 true」守卫不可达已删除。
+	// PG 连接串无法凭空默认（原 JUHE_AI_RUNTIME_LOG_STORE env 已随 sqlite
+	// 形态退役，存储恒 postgres）。
 	if config.PostgresURL == "" {
 		return Config{}, fmt.Errorf("postgres 模式缺少 JUHE_AI_RUNTIME_LOG_POSTGRES_URL")
 	}

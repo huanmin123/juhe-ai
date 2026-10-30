@@ -712,11 +712,10 @@ func TestW10CRankJobStateLifecycle(t *testing.T) {
 		t.Fatalf("非法水位应报错")
 	}
 
-	// legacy 空水位。
-	w10cSeedJobState(t, env, "w10c-legacy-empty", LegacyEmptySourceWatermark, "")
-	state, err = refresher.rankRefreshJobState(ctx, "w10c-legacy-empty")
-	if err != nil || state == nil || !state.legacyEmptySourceWatermark {
-		t.Fatalf("legacy 空水位解析错误: %+v err=%v", state, err)
+	// 旧 Node 空水位哨兵（0000-00-00）不再兼容，按非法 RFC3339 拒绝。
+	w10cSeedJobState(t, env, "w10c-legacy-empty", "0000-00-00T00:00:00.000Z", "")
+	if _, err := refresher.rankRefreshJobState(ctx, "w10c-legacy-empty"); err == nil {
+		t.Fatalf("旧空水位哨兵应报错")
 	}
 
 	// rankSnapshotSourceUnchanged 全臂。
@@ -726,9 +725,6 @@ func TestW10CRankJobStateLifecycle(t *testing.T) {
 	}
 	if rankSnapshotSourceUnchanged(&rankRefreshJobState{}, nil, "2026-04-18") {
 		t.Fatalf("sourceState 缺失应视为变化")
-	}
-	if rankSnapshotSourceUnchanged(&rankRefreshJobState{legacyEmptySourceWatermark: true, cursorCreatedAt: strPtr(sourceState.sourceWatermark), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18") {
-		t.Fatalf("legacy 空水位应视为变化")
 	}
 	if rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr("other"), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18") {
 		t.Fatalf("水位不一致应视为变化")
@@ -816,7 +812,7 @@ func TestW10CRunStagesOrchestration(t *testing.T) {
 	if err != nil || len(selected) != 8 {
 		t.Fatalf("nil 阶段应选全部: %d err=%v", len(selected), err)
 	}
-	if _, err := refresher.selectStages([]WindowStageName{StageAuthorizationUsageRangeWindows}); err == nil {
+	if _, err := refresher.selectStages([]WindowStageName{"retired_authorization_range_windows"}); err == nil {
 		t.Fatalf("已停用的授权范围窗口 stage 应报未知阶段")
 	}
 

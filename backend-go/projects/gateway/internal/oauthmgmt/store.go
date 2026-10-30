@@ -760,8 +760,8 @@ type rotationAccount struct {
 	ProtocolCode    string
 	ProtocolVersion string
 	// OAuthType 是目标 schema 的 accounts.oauth_type 判定列（§2.1；仅
-	// google_oauth 资源账户非空）。判定列优先、凭据键回落服务迁移窗口存量行
-	//（#B4 ⑨：refresh 删键前必须完成本读面切换）。
+	// google_oauth 资源账户非空）。只读判定列（B01 收口）：缺列即数据不完整，
+	// 不回落凭据键。
 	OAuthType             string
 	Name                  string
 	Type                  string

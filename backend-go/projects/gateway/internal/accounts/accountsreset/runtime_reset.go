@@ -125,14 +125,10 @@ type ResetSummary struct {
 	Status           string
 	Schedulable      bool
 	// ProviderCode 承载 accounts.vendor_code（供应商解耦设计 §2.1：vendor 值域
-	// 与旧 providerCode 同名，NULL 归一空串）；ProviderProtocolProfileID /
-	// ClientCompatibility 词汇已随供应商解耦退役，投影恒空串。包内无消费方，
-	// 字段仅为 scan 形状保留。
+	// 与旧 providerCode 同名，NULL 归一空串）。
 	ProviderCode                       string
-	ProviderProtocolProfileID          string
 	ProtocolCode                       string
 	ProtocolVersion                    string
-	ClientCompatibility                string
 	SystemAccountID                    string
 	AccessType                         string // 'owner' | 'authorized'
 	AccountExpiresAt                   sql.NullString
@@ -1522,8 +1518,8 @@ func (s *Service) findOwnerResetSummary(ctx context.Context, id, scoped string) 
 	var credentialsEncrypted sql.NullString
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.config_revision, accounts.dispatch_revision,
 			accounts.name, accounts.type, accounts.status, accounts.schedulable,
-			COALESCE(accounts.vendor_code, ''), '', accounts.protocol_code,
-			accounts.protocol_version, '', accounts.system_account_id,
+			COALESCE(accounts.vendor_code, ''), accounts.protocol_code,
+			accounts.protocol_version, accounts.system_account_id,
 			accounts.credentials_encrypted, accounts.account_expires_at, accounts.cooldown_until,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
 			accounts.last_health_check_at, accounts.last_health_check_error_code,
@@ -1541,8 +1537,8 @@ func (s *Service) findOwnerResetSummary(ctx context.Context, id, scoped string) 
 		LIMIT 1`), args...).Scan(
 		&row.ID, &row.ConfigRevision, &row.DispatchRevision,
 		&row.Name, &row.AccountType, &row.Status, &schedulable,
-		&row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode,
-		&row.ProtocolVersion, &row.ClientCompatibility, &row.SystemAccountID,
+		&row.ProviderCode, &row.ProtocolCode,
+		&row.ProtocolVersion, &row.SystemAccountID,
 		&credentialsEncrypted, &row.AccountExpiresAt, &row.CooldownUntil,
 		&row.LastErrorCode, &row.LastErrorMessage, &row.LastErrorTraceID,
 		&row.LastHealthCheckAt, &row.LastHealthCheckErrorCode,
@@ -1582,8 +1578,8 @@ func (s *Service) findAuthorizedResetSummary(ctx context.Context, id, scoped str
 	var credentialsEncrypted sql.NullString
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.config_revision, accounts.dispatch_revision,
 			accounts.name, accounts.type, accounts.status, accounts.schedulable,
-			COALESCE(accounts.vendor_code, ''), '', accounts.protocol_code,
-			accounts.protocol_version, '', accounts.system_account_id,
+			COALESCE(accounts.vendor_code, ''), accounts.protocol_code,
+			accounts.protocol_version, accounts.system_account_id,
 			accounts.credentials_encrypted, accounts.account_expires_at, accounts.cooldown_until,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
 			accounts.last_health_check_at, accounts.last_health_check_error_code,
@@ -1625,8 +1621,8 @@ func (s *Service) findAuthorizedResetSummary(ctx context.Context, id, scoped str
 		LIMIT 1`), args...).Scan(
 		&row.ID, &row.ConfigRevision, &row.DispatchRevision,
 		&row.Name, &row.AccountType, &row.Status, &schedulable,
-		&row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode,
-		&row.ProtocolVersion, &row.ClientCompatibility, &row.SystemAccountID,
+		&row.ProviderCode, &row.ProtocolCode,
+		&row.ProtocolVersion, &row.SystemAccountID,
 		&credentialsEncrypted, &row.AccountExpiresAt, &row.CooldownUntil,
 		&row.LastErrorCode, &row.LastErrorMessage, &row.LastErrorTraceID,
 		&row.LastHealthCheckAt, &row.LastHealthCheckErrorCode,

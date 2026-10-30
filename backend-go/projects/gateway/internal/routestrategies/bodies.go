@@ -58,8 +58,11 @@ func DetectRetiredSchedulingConfigPayload(normalConfig any) bool {
 	return false
 }
 
+// speedFirstConfigKeys 是 speedFirstConfig 内层严格键集：内层只允许新字段。
+// 旧别名 firstByteThresholdMs 不在其中、不再作为允许键——payload 携带旧调度
+// 字段由 retiredSchedulingConfigPayloadKeys 显式 400（speedFirstConfig 整键
+// 即先行命中），运行时也不读取该别名。
 var speedFirstConfigKeys = map[string]bool{
-	"firstByteThresholdMs":               true,
 	"slowTriggerCount":                   true,
 	"slowWindowSeconds":                  true,
 	"recoverySuccessCount":               true,

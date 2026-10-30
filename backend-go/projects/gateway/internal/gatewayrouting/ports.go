@@ -90,12 +90,11 @@ type ProviderModelRouteInput struct {
 }
 
 // Provider model route outcomes (runtime-cache.service.ts
-// ProviderModelRouteResolution). ambiguous 在 models 单表语义下不再产生，
-// 常量过渡保留。
+// ProviderModelRouteResolution). models 单表目录语义下只有 matched/missing
+// 二值，ambiguous 不再产生。
 const (
-	ProviderModelRouteMatched   = "matched"
-	ProviderModelRouteMissing   = "missing"
-	ProviderModelRouteAmbiguous = "ambiguous"
+	ProviderModelRouteMatched = "matched"
+	ProviderModelRouteMissing = "missing"
 )
 
 // ProviderModelRouteResolution mirrors ProviderModelRouteResolution. 供应商解

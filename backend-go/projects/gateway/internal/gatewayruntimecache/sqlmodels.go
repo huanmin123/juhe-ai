@@ -342,7 +342,7 @@ func projectGatewaySettings(raw map[string]any) (GatewaySettings, error) {
 // owner short-circuit, active group authorization, local authorization
 // settings override. groups.provider_code 已随供应商解耦退役（供应商与上游协
 // 议面重构设计 §8）：查询不再读取该列，owner/授权维度的既有事实即访问判定，
-// ProviderCode 过渡字段恒为空串。
+// GroupUsageAccessMetadata 不含任何 provider 过渡字段。
 func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, groupID, systemAccountID string) (*GroupUsageAccessMetadata, error) {
 	ctx = ensureModelCtx(ctx)
 	var ownerID string

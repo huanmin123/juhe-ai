@@ -370,6 +370,28 @@ copy_required_item "$REPO_ROOT/deploy/README.md" "$PACKAGE_ROOT/README.md"
 copy_required_item "$REPO_ROOT/docs/deploy" "$PACKAGE_ROOT/docs/deploy"
 
 GO_PROJECTS_SOURCE_DIR="$REPO_ROOT/backend-go/projects"
+
+# 构建身份（升级兼容与迁移账本设计 §6.2）：tag 干净树注入 tag 版本；脏树拒绝
+# tag 注入（ALLOW_DIRTY_BUILD=1 显式豁免并追加 -dirty 后缀）。
+COMMIT=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+RELEASE_TAG=$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || true)
+if [ -n "$RELEASE_TAG" ]; then
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+    if [ "${ALLOW_DIRTY_BUILD:-0}" != "1" ]; then
+      echo "Working tree is dirty and HEAD matches tag $RELEASE_TAG: refusing to inject a release version (commit/clean first, or ALLOW_DIRTY_BUILD=1 to append -dirty)." >&2
+      exit 1
+    fi
+    BUILD_VERSION="$RELEASE_TAG-dirty"
+  else
+    BUILD_VERSION="$RELEASE_TAG"
+  fi
+else
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then BUILD_VERSION="dev-${COMMIT}-dirty"; else BUILD_VERSION="dev-${COMMIT}"; fi
+fi
+GO_LDFLAGS="-s -w -X ${XP}.Version=$BUILD_VERSION -X ${XP}.Commit=$COMMIT -X ${XP}.BuildTime=$BUILD_TIME"
+echo "==> Build identity version=$BUILD_VERSION commit=$COMMIT"
+
 for go_project in gateway jobs maintenance; do
   GO_PROJECT_SOURCE_DIR="$GO_PROJECTS_SOURCE_DIR/$go_project"
   GO_PROJECT_BINARY_PATH="$PACKAGE_ROOT/backend-go/juhe-ai-$go_project"
@@ -380,7 +402,7 @@ for go_project in gateway jobs maintenance; do
   echo "==> Building Go $go_project project for $TARGET_GOOS/$TARGET_GOARCH"
   (
     cd "$GO_PROJECT_SOURCE_DIR"
-    CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -buildvcs=false -ldflags="-s -w" -o "$GO_PROJECT_BINARY_PATH" "./cmd/juhe-ai-$go_project"
+    CGO_ENABLED=0 GOOS="$TARGET_GOOS" GOARCH="$TARGET_GOARCH" go build -mod=readonly -trimpath -buildvcs=false -ldflags="$GO_LDFLAGS" -o "$GO_PROJECT_BINARY_PATH" "./cmd/juhe-ai-$go_project"
   )
   if [ ! -f "$GO_PROJECT_BINARY_PATH" ] || [ -L "$GO_PROJECT_BINARY_PATH" ]; then
     echo "Go $go_project build did not produce a regular file: $GO_PROJECT_BINARY_PATH" >&2

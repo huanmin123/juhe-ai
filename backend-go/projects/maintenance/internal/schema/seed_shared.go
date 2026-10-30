@@ -248,23 +248,6 @@ func providerModelCatalogID(providerCode, model string) string {
 	return "provider_model_" + trimmed + "_" + hex.EncodeToString(sum[:])[:12]
 }
 
-// activeModelCatalogSeedRows / ActiveModelCatalogSeedRowCount 曾随 models 表
-// 收敛退役：seed 现在全量写入目录快照行，ShutdownDate 已过的行直接以
-// status='disabled' 落库（判定收敛到 modelSeedRowStatus）。2026-10-18 修复批
-// 恢复 activeModelCatalogSeedRows（逐字取回 dbb2543e6^ 版本）：旧
-// provider_model_catalog 目录种子（迁移窗口并存）沿用写入前 shutdown 过滤；
-// ActiveModelCatalogSeedRowCount 不恢复（其钉值测试随旧表退役）。
-func activeModelCatalogSeedRows(asOfUTCDate string) []modelCatalogSeedRow {
-	active := make([]modelCatalogSeedRow, 0, len(modelCatalogSeedRows))
-	for _, row := range modelCatalogSeedRows {
-		if row.ShutdownDate != nil && *row.ShutdownDate <= asOfUTCDate {
-			continue
-		}
-		active = append(active, row)
-	}
-	return active
-}
-
 // defaultRouteStrategyIDForGroup mirrors defaultRouteStrategyIdForGroup.
 func defaultRouteStrategyIDForGroup(groupID string) string {
 	return seedReplacePrefix(groupID, "grp_", "route_strategy_")

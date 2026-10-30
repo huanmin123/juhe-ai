@@ -25,6 +25,15 @@ import (
 // 先取本键，详见 docs/bug/问题-0237。
 const AccountListDirty int64 = 7001001
 
+// UpgradeOrchestration 串行化升级编排结构变更：`maintenance upgrade` 全程持有
+// 会话级 pg_advisory_lock（非事务锁，跨多个迁移事务），并与 `--ensure-schema` /
+// `--seed`（runStorageBootstrap 开期为同一把锁）互斥，防止发布脚本与人工命令
+// 同时改结构或写账本（升级兼容与迁移账本设计 §9.5）。不覆盖 15 个旧 flag 迁移
+// 命令——与 upgrade 并行执行它们属操作纪律禁止项（升级指南披露）。
+// 键值一经发布不可变更；与 AccountListDirty 同段分配，避开 J3a/J3b 的
+// 732946110271044015/…016。
+const UpgradeOrchestration int64 = 7001002
+
 // ListDirtyLockWaitTimeout 是应用侧投影写事务取 AccountListDirty 锁的等待
 // 上限（经事务级 lock_timeout 生效）。BUG-0313：主机资源饱和时持锁事务可
 // 被饿死在事务中间不放手（生产曾观测单个事务持锁 24 分钟、37+ 事务排队），

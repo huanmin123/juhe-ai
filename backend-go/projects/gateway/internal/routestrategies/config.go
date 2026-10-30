@@ -215,18 +215,12 @@ func normalizeNormalRoutingConfig(value any) (*NormalRoutingConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	hasCommonDeadline := hasConfiguredValue(record["firstByteDeadlineMs"])
-	hasLegacyDeadline := speedFirstRecord != nil && hasConfiguredValue(speedFirstRecord["firstByteThresholdMs"])
-	if hasCommonDeadline && hasLegacyDeadline {
-		return nil, &ValidationError{Message: "首字截止时间不能同时配置 firstByteDeadlineMs 和旧 firstByteThresholdMs"}
-	}
-	deadlineSource := any(nil)
-	if hasCommonDeadline {
-		deadlineSource = record["firstByteDeadlineMs"]
-	} else if hasLegacyDeadline {
-		deadlineSource = speedFirstRecord["firstByteThresholdMs"]
-	}
-	deadline, err := normalizeIntegerRange(deadlineSource, defaultSpeedFirstDeadlineMs, 10_000, 60_000, "首字截止时间必须是 10000-60000 毫秒")
+	// 首字截止时间只读取 firstByteDeadlineMs：旧别名 speedFirstConfig.
+	// firstByteThresholdMs 已由 B03 数据迁移清除（生产旧键清零），运行时不再
+	// 读取，speedFirstConfig 内出现旧键不再作为截止时间来源（无新键时取默认
+	// 30000；写 payload 携带旧调度字段仍由 retiredSchedulingConfigPayloadKeys
+	// 显式 400 拒绝）。
+	deadline, err := normalizeIntegerRange(record["firstByteDeadlineMs"], defaultSpeedFirstDeadlineMs, 10_000, 60_000, "首字截止时间必须是 10000-60000 毫秒")
 	if err != nil {
 		return nil, err
 	}

@@ -136,8 +136,8 @@ func jsonValidString(value string) bool {
 }
 
 // TestModelSeedRowStatusShutdownSemantics 锁定内置过期模型的 status 判定
-// （原 activeModelCatalogSeedRows shutdown 过滤的方向语义）：shutdown_date 已
-// 过（<= 截止日）→ 'disabled'，否则 'active'；全量行都参与投影。
+// （原迁移窗口 shutdown 过滤的方向语义）：shutdown_date 已过（<= 截止日）→
+// 'disabled'，否则 'active'；全量行都参与投影。
 func TestModelSeedRowStatusShutdownSemantics(t *testing.T) {
 	var shutdownDate *string
 	for i := range modelCatalogSeedRows {

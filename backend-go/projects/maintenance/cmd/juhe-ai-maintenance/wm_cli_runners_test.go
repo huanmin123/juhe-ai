@@ -61,7 +61,7 @@ func wmCallRunMaintenance(t *testing.T, args []string) string {
 func TestWMMainVersionAndBoundaryBranches(t *testing.T) {
 	t.Run("version", func(t *testing.T) {
 		output := wmCallRunMaintenance(t, []string{"-version"})
-		if !strings.Contains(output, "juhe-ai-maintenance project=") || !strings.Contains(output, "contract=") {
+		if !strings.Contains(output, "juhe-ai-maintenance version=") || !strings.Contains(output, "schemaRevision=") {
 			t.Fatalf("--version 输出必须包含项目与契约版本: %q", output)
 		}
 	})

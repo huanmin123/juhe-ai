@@ -211,7 +211,8 @@ func TestW10ACloneCredentialProjection(t *testing.T) {
 		"response_inspection_rules": []any{map[string]any{"code": "5xx"}},
 		"quota_recovery_policy":     map[string]any{"enabled": true},
 	}
-	options := projectCloneCredentialOptions("", credentials)
+	// B01 收口：oauth_type 判定只读列，列与封套对齐传值（code_assist）。
+	options := projectCloneCredentialOptions("code_assist", credentials)
 	if options.APIKeyCount == nil || *options.APIKeyCount != 2 {
 		t.Fatalf("API Key 计数应跳过空白：%v", options.APIKeyCount)
 	}
@@ -238,9 +239,9 @@ func TestW10ACloneCredentialProjection(t *testing.T) {
 	if options.QuotaRecoveryPolicy == nil {
 		t.Fatal("额度恢复策略应保留")
 	}
-	// 未支持策略与未知 oauth_type 不投影。
-	minimal := projectCloneCredentialOptions("", Credentials{
-		"api_key_strategy": "bogus", "oauth_type": "bogus",
+	// 未支持策略不投影；词表外判定列不投影（B01 收口：封套键不参与判定）。
+	minimal := projectCloneCredentialOptions("bogus", Credentials{
+		"api_key_strategy": "bogus", "oauth_type": "ai_studio",
 	})
 	if minimal.APIKeyStrategy != nil || minimal.OAuthType != nil {
 		t.Fatalf("未知枚举不应投影：%v %v", minimal.APIKeyStrategy, minimal.OAuthType)

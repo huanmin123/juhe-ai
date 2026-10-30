@@ -19,11 +19,11 @@ import (
 // 故障臂仍由 wn_pgfake 脚本化臂覆盖（真实库上注入会破坏生产 DDL 形状）。
 
 func TestW14iOpenStorePostgresParameterArms(t *testing.T) {
-	if _, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: "w14i-not-a-url"}); err == nil {
+	if _, err := OpenStore(context.Background(), Config{PostgresURL: "w14i-not-a-url"}); err == nil {
 		t.Fatalf("非法 URL 应报错")
 	}
 	// MinConns>MaxConns 校验先于建池，合法但不可达的占位 DSN 不会被真正连接。
-	_, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: "postgres://127.0.0.1:1/w14i-param-arms?sslmode=disable", PostgresMaxConns: 2, PostgresMinConns: 4})
+	_, err := OpenStore(context.Background(), Config{PostgresURL: "postgres://127.0.0.1:1/w14i-param-arms?sslmode=disable", PostgresMaxConns: 2, PostgresMinConns: 4})
 	if err == nil || !strings.Contains(err.Error(), "min connections") {
 		t.Fatalf("MinConns>MaxConns 应报错: %v", err)
 	}

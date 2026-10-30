@@ -788,9 +788,8 @@ func projectBindingsForRuntime(projected []gatewayrouting.GroupBindingRow, origi
 // （B4②：secret.ProviderCode 冗余槽位已退役）——下游有多处按 VendorCode 判身
 // 份：切号冻结门（gatewaydispatch/switchtarget.go 门 2）在空 vendor 时与任何
 // 非空目标都不相等，同供应商约束会失效；而 CodexOAuthVendorEligible /
-// codexOAuthVendorBucketEligible 把空串当作「迁移期未回填」按 GPT 处理，会让
-// xAI 等非 gpt 的 OAuth 账户错误套用 Codex 归一化与 ChatGPT 桶键。缺 VendorCode
-// 会让回退路径上的账户同时踩这两个反向错误。
+// codexOAuthVendorBucketEligible 只认 gpt——空 vendor 不再按 GPT 处理；
+// 缺 VendorCode 会让回退路径账户失去供应商身份，必须在读面水合真实 vendor。
 func accountFromRoutingProjection(account gatewayrouting.UpstreamAccount) gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        account.ID,

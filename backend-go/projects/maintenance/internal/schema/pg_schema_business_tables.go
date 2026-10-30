@@ -1300,8 +1300,9 @@ var postgresSchemaBusinessTables = []PGStatement{
 		// scheduling_preferences DDL）。system_account_id 内置行恒 NULL（全局
 		// 只读例外）；不加 owner 外键——契约只要求 api_keys 侧引用声明，自定义
 		// 行 owner 非空由写入口事务内校验。enabled 已随 v2 第 4 条退役（创建即
-		// 启用，无停用态），存量库由下方幂等 DROP COLUMN 收敛。置于 api_keys
-		// 之前：下方 api_keys 存量库 ALTER 与新库语义均要求目标表先存在。
+		// 启用，无停用态），存量库收列语句已随 2026-10-30 B08 撤除（生产只读
+		// 预检确认目标旧列不存在，退役完成）。置于 api_keys 之前：下方
+		// api_keys 存量库 ALTER 与新库语义均要求目标表先存在。
 		// CREATE TABLE IF NOT EXISTS 幂等。
 		SchemaName: "juhe_business",
 		Source:     "scheduling-preferences-table",
@@ -1315,15 +1316,6 @@ var postgresSchemaBusinessTables = []PGStatement{
       created_at text NOT NULL,
       updated_at text NOT NULL
     )`,
-	},
-	{
-		// enabled 列退役（v2 用户裁决修订第 4 条）：存量库幂等删列（列级 CHECK
-		// 随列删除，无索引引用）。P1 迁移未在任何库执行过停用语义，列值恒为
-		// 种子 DEFAULT 1，删列无数据损失。维护链一次性执行（BUG-0307 纪律：
-		// schema 保证收敛到 maintenance，ACCESS EXCLUSIVE 不进热路径）。
-		SchemaName: "juhe_business",
-		Source:     "scheduling-preferences-enabled-retirement",
-		SQL:        `ALTER TABLE juhe_business.scheduling_preferences DROP COLUMN IF EXISTS enabled`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -2309,54 +2301,6 @@ DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy
       FROM juhe_business.api_keys ak
       WHERE mj.api_key_id = ak.id
         AND mj.owner_system_account_id = ''`,
-	},
-	{
-		// provider 维度持久列退役（B4① 存储迁移批，幂等存量库收列）：写入面
-		// 停写同批交付（jobs circuitstore upsert、gateway accountstest /
-		// media_jobs INSERT），fresh 库建表 DDL 已无这些列，DROP 仅对存量库
-		// 生效。维护链一次性执行（BUG-0307 纪律：schema 保证收敛到
-		// maintenance，ACCESS EXCLUSIVE 不进热路径）；发版顺序与回滚口径见
-		// docker/single-server/README.md。account_test_tasks / media_jobs 的
-		// provider_protocol_profile_id 两列随 B4 两表退役批追加（写入面同批
-		// 停写，读面分别经 accounts.vendor_code 水合 / 草稿快照承载协议上下文）。
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.account_list_availability_projections DROP COLUMN IF EXISTS provider_code`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.account_list_availability_projections DROP COLUMN IF EXISTS provider_protocol_profile_id`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.account_list_availability_projection_index DROP COLUMN IF EXISTS provider_code`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.account_list_availability_projection_index DROP COLUMN IF EXISTS provider_protocol_profile_id`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.account_test_tasks DROP COLUMN IF EXISTS provider_code`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.account_test_tasks DROP COLUMN IF EXISTS provider_protocol_profile_id`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.media_jobs DROP COLUMN IF EXISTS provider_code`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business-provider-dimension-retirement",
-		SQL:        `ALTER TABLE juhe_business.media_jobs DROP COLUMN IF EXISTS provider_protocol_profile_id`,
 	},
 	{
 		SchemaName: "juhe_business",

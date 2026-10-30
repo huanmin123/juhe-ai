@@ -92,23 +92,28 @@ func TestWlNormalizeNormalRoutingConfig(t *testing.T) {
 			t.Fatalf("speedFirst=%+v", config.SpeedFirstConfig)
 		}
 	})
-	t.Run("双截止字段冲突", func(t *testing.T) {
+	t.Run("旧别名不再参与规范化", func(t *testing.T) {
+		// 有新键时用新键：speedFirstConfig 内旧别名 firstByteThresholdMs 不再
+		// 触发双字段冲突，也不再作为截止时间来源。
 		payload := map[string]any{
 			"schedulingPreference": "speed_first",
 			"firstByteDeadlineMs":  20000,
 			"speedFirstConfig":     map[string]any{"firstByteThresholdMs": 30000},
 		}
-		if _, err := normalizeNormalRoutingConfig(payload); err == nil || !contains(err.Error(), "不能同时配置") {
-			t.Fatalf("err=%v", err)
+		config, err := normalizeNormalRoutingConfig(payload)
+		if err != nil || config.FirstByteDeadlineMs == nil || *config.FirstByteDeadlineMs != 20000 {
+			t.Fatalf("config=%+v err=%v", config, err)
 		}
 	})
-	t.Run("旧字段截止", func(t *testing.T) {
+	t.Run("旧别名不再读取", func(t *testing.T) {
+		// 无新键时取默认 30000：旧别名不再被读取（写 payload 携带旧调度字段
+		// 由 retiredSchedulingConfigPayloadKeys 显式 400，见 spc2 拒绝用例）。
 		payload := map[string]any{
 			"schedulingPreference": "speed_first",
 			"speedFirstConfig":     map[string]any{"firstByteThresholdMs": 20000},
 		}
 		config, err := normalizeNormalRoutingConfig(payload)
-		if err != nil || config.FirstByteDeadlineMs == nil || *config.FirstByteDeadlineMs != 20000 {
+		if err != nil || config.FirstByteDeadlineMs == nil || *config.FirstByteDeadlineMs != defaultSpeedFirstDeadlineMs {
 			t.Fatalf("config=%+v err=%v", config, err)
 		}
 	})

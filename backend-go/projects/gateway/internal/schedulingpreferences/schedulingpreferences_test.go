@@ -491,7 +491,9 @@ func TestSchedulingPreferenceCreateMatrix(t *testing.T) {
 			{"enabled_retired_rejected", "?systemAccountId=" + ownerID, `{"name":"v-enabled-retired","chatMode":"cost_first","enabled":false}`, "调度偏好参数无效"},
 			{"unknown_speed_key", "?systemAccountId=" + ownerID, `{"name":"v-unknown-speed","chatMode":"speed_first","chatSpeedFirstConfig":{"mystery":1}}`, "速度优先配置无效"},
 			{"speed_inner_unknown_key", "?systemAccountId=" + ownerID, `{"name":"v-unknown-inner","chatMode":"speed_first","chatSpeedFirstConfig":{"speedFirstConfig":{"mystery":1}}}`, "速度优先配置无效"},
-			{"dual_deadline_rejected", "?systemAccountId=" + ownerID, `{"name":"v-dual-deadline","chatMode":"speed_first","chatSpeedFirstConfig":{"firstByteDeadlineMs":30000,"speedFirstConfig":{"firstByteThresholdMs":30000}}}`, "首字截止时间不能同时配置 firstByteDeadlineMs 和旧 firstByteThresholdMs"},
+			// 旧别名内层键不再是允许键：由严格键校验拒绝（旧别名读取已随
+			// B03 数据迁移退役，运行时不再读取）。
+			{"legacy_alias_inner_rejected", "?systemAccountId=" + ownerID, `{"name":"v-legacy-alias","chatMode":"speed_first","chatSpeedFirstConfig":{"firstByteDeadlineMs":30000,"speedFirstConfig":{"firstByteThresholdMs":30000}}}`, "速度优先配置无效"},
 		}
 		for _, testCase := range cases {
 			t.Run(testCase.name, func(t *testing.T) {
@@ -690,16 +692,13 @@ func TestSchedulingPreferenceCreateMatrix(t *testing.T) {
 				t.Fatalf("firstByteDeadlineMs = %v want 45000", config["firstByteDeadlineMs"])
 			}
 		})
-		t.Run("legacy_alias_stored_canonical", func(t *testing.T) {
+		t.Run("legacy_alias_inner_rejected", func(t *testing.T) {
+			// 旧别名不再被规范化为存储值：携带 speedFirstConfig.firstByteThresholdMs
+			// 的写 payload 在写入口被严格键校验 400 拒绝。
 			code, payload := env.do(t, http.MethodPost, adminBase+"?systemAccountId="+ownerID,
 				`{"name":"bounds-alias","chatMode":"speed_first","chatSpeedFirstConfig":{"speedFirstConfig":{"firstByteThresholdMs":20000}}}`)
-			if code != http.StatusCreated {
-				t.Fatalf("create: %d %v", code, payload)
-			}
-			data, _ := payload["data"].(map[string]any)
-			stored := env.scalarText(t, `SELECT chat_speed_first_config_json FROM scheduling_preferences WHERE id = ?`, data["id"])
-			if !stored.Valid || !strings.Contains(stored.String, `"firstByteDeadlineMs":20000`) || strings.Contains(stored.String, "firstByteThresholdMs") {
-				t.Fatalf("stored JSON must be canonical: %v", stored)
+			if code != http.StatusBadRequest || message(t, payload) != "速度优先配置无效" {
+				t.Fatalf("旧别名内层键必须被写入口拒绝: %d %v", code, payload)
 			}
 		})
 	})

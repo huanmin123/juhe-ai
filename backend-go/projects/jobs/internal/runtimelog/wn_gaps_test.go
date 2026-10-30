@@ -139,24 +139,6 @@ func TestConfigValueParsers(t *testing.T) {
 	}
 }
 
-// TestLoadConfigModeConstantPostgres 锁定 STORE env 退役后的恒定语义：
-// LoadConfig 产出的 Mode 恒 ModePostgres（原 sqlite 缺省/跟随 driver 臂随
-// sqlite 形态退役删除）。
-func TestLoadConfigModeConstantPostgres(t *testing.T) {
-	config, err := LoadConfig(func(name string) string {
-		if name == "JUHE_AI_RUNTIME_LOG_POSTGRES_URL" {
-			return "postgres://unit-test.invalid/f1"
-		}
-		return ""
-	})
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if config.Mode != ModePostgres {
-		t.Fatalf("Mode 恒 postgres: %s", config.Mode)
-	}
-}
-
 func TestLoadConfigPostgresModeAndRejects(t *testing.T) {
 	base := map[string]string{
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":  "inst-1",
@@ -168,7 +150,7 @@ func TestLoadConfigPostgresModeAndRejects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postgres 模式合法配置必须通过: %v", err)
 	}
-	if config.Mode != ModePostgres || config.PostgresURL == "" || !config.FileEnabled || config.Once {
+	if config.PostgresURL == "" || config.Once {
 		t.Fatalf("postgres 配置解析不正确: %#v", config)
 	}
 	if config.OwnerID == "" || !strings.HasPrefix(config.OwnerID, "inst-1:") {
@@ -307,4 +289,3 @@ func TestRunWithOwnerLeaseReportsAcquireFailures(t *testing.T) {
 		t.Fatalf("释放 panic 必须转换为错误: %v", err)
 	}
 }
-

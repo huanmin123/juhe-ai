@@ -470,15 +470,12 @@ func TestPostgresFakeRuntimeRetentionDaysBranches(t *testing.T) {
 }
 
 func TestPostgresFakeOpenStoreRejectsInvalidConfigs(t *testing.T) {
-	if _, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: "not-a-postgres-url"}); err == nil {
+	if _, err := OpenStore(context.Background(), Config{PostgresURL: "not-a-postgres-url"}); err == nil {
 		t.Fatal("非法 PostgreSQL URL 必须拒绝启动")
 	}
 	server := newPGFakeServer(t)
-	if _, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: server.URL(), PostgresMaxConns: 1, PostgresMinConns: 2}); err == nil || !strings.Contains(err.Error(), "min connections") {
+	if _, err := OpenStore(context.Background(), Config{PostgresURL: server.URL(), PostgresMaxConns: 1, PostgresMinConns: 2}); err == nil || !strings.Contains(err.Error(), "min connections") {
 		t.Fatalf("min connections 大于 max connections 必须拒绝启动: %v", err)
-	}
-	if _, err := OpenStore(context.Background(), Config{Mode: Mode("bogus")}); err == nil || !strings.Contains(err.Error(), "不支持的运行日志 Store 模式") {
-		t.Fatalf("未知 Store 模式必须拒绝启动: %v", err)
 	}
 	// 连接已关闭的端口必须报错（覆盖 Ping 失败路径）。
 	closedListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -491,7 +488,7 @@ func TestPostgresFakeOpenStoreRejectsInvalidConfigs(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := OpenStore(ctx, Config{Mode: ModePostgres, PostgresURL: closedURL}); err == nil {
+	if _, err := OpenStore(ctx, Config{PostgresURL: closedURL}); err == nil {
 		t.Fatal("无法连接的 PostgreSQL 必须拒绝启动")
 	}
 }

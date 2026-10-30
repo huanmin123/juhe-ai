@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"sync/atomic"
 
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
 // gatewayOwnerHealth aggregates this process' resident owner readiness for
@@ -53,6 +55,10 @@ func (h *gatewayOwnerHealth) readiness() (int, map[string]any) {
 		"ready":                      ready,
 		"ownerReady":                 ready,
 		"ownerMode":                  h.ownerMode,
+		// 构建身份（升级兼容与迁移账本设计 §6.3）：纯加法键，编排探测只读 ready。
+		"version":                    version.Version,
+		"commit":                     version.Commit,
+		"schemaRevision":             contracts.SchemaRevision,
 		"auditLogReady":              h.auditRunning.Load(),
 		"operationLogReady":          h.operationRunning.Load(),
 		"j3bReady":                   h.j3bRunning.Load(),

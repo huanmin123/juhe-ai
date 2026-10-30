@@ -84,10 +84,10 @@ func parseStrategyConfigJSON(raw sql.NullString) (*NormalRoutingConfig, error) {
 	return normalizeNormalRoutingConfig(normalValue)
 }
 
-// normalizeNormalRoutingConfig 与 gateway 内部 normalize 逐字同语义（含「调度
-// 配置无效」「调度偏好无效」「首字截止时间不能同时配置 firstByteDeadlineMs
-// 和旧 firstByteThresholdMs」等原始文案）；旧 firstByteThresholdMs 读取别名按
-// 现行规则处理，双字段同时出现仍拒绝。
+// normalizeNormalRoutingConfig 是 D03 一次性迁移输入解析器，基本语义与 gateway
+// 现行 normalize 一致，但刻意保留旧 firstByteThresholdMs 读取别名（gateway
+// 运行时已不再读取该别名，生产旧键已清零）；别名仅服务存量行回填，随 D03
+// 退役删除。迁移期间双字段同时出现仍按原文案拒绝。
 func normalizeNormalRoutingConfig(value any) (*NormalRoutingConfig, error) {
 	if value == nil {
 		return &NormalRoutingConfig{SchedulingPreference: defaultNormalSchedulingPreference}, nil

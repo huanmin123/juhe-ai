@@ -4,8 +4,8 @@ package accounts
 // requireEnabledProviderProtocolProfile 从 provider_protocol_profiles 行读取
 // (protocol_code, protocol_version, profile id)——该表已随目标 schema 退役
 // （§9.3），写链不再查库取协议身份。语义替代：connection_preset_code 是 §1.1
-// 编译期 registry 注册值，与旧 profile ID 一一对应（maintenance
-// providerconnectionmigration legacyProfileTargets 同表），registry surface
+// 编译期 registry 注册值，与旧 profile ID 一一对应（与 `legacybusinessimport`
+// 的 legacyProfilePresets 同表），registry surface
 // 即 (protocol_code, protocol_version)。
 //
 //   - 创建链（携 connections 载荷）：deriveConnectionProtocolContext 取载荷序

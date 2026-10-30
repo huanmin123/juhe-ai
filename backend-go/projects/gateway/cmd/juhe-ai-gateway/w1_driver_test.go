@@ -82,13 +82,12 @@ func TestW1DriverPredicatesAndPrepare(t *testing.T) {
 	if newChainProviderDriverWithCache(nil, nil).openai == nil {
 		t.Fatal("openai 驱动必须装配")
 	}
-	// 谓词：codex OAuth = oauth + openai 协议 + 供应商资格。四形态
+	// 谓词：codex OAuth = oauth + openai 协议 + 供应商资格。形态判定
 	// （xAI 账号接入文档口径）：gpt → true；已知非 gpt 厂商（xai/anthropic）
-	// → false；空 vendor oauth → true（迁移期兼容，vendor_code 回填迁移
-	// 尚未执行，空值不得误伤存量 OpenAI OAuth 账户，收口方向见
-	// gatewaydispatch.CodexOAuthVendorEligible）。
-	if !isCodexOAuthAccount(gatewaydispatch.AccountCandidate{Type: "oauth", ProtocolCode: "OpenAI"}) {
-		t.Fatal("oauth+openai 必须 codex")
+	// → false；空 vendor oauth → false（空 vendor 不再是合法 Codex 形态，
+	// 见 gatewaydispatch.CodexOAuthVendorEligible）。
+	if isCodexOAuthAccount(gatewaydispatch.AccountCandidate{Type: "oauth", ProtocolCode: "OpenAI"}) {
+		t.Fatal("oauth+openai+空 vendor 不得 codex（空 vendor 不再是合法 Codex 形态）")
 	}
 	if !isCodexOAuthAccount(gatewaydispatch.AccountCandidate{Type: "oauth", ProtocolCode: "OpenAI", VendorCode: "gpt"}) {
 		t.Fatal("oauth+openai+gpt 必须 codex")
@@ -99,8 +98,8 @@ func TestW1DriverPredicatesAndPrepare(t *testing.T) {
 	if isCodexOAuthAccount(gatewaydispatch.AccountCandidate{Type: "oauth", ProtocolCode: "openai", VendorCode: "anthropic"}) {
 		t.Fatal("oauth+openai+anthropic 不得 codex")
 	}
-	if !isCodexOAuthAccount(gatewaydispatch.AccountCandidate{Type: "oauth", ProtocolCode: "openai", VendorCode: ""}) {
-		t.Fatal("oauth+openai+空 vendor 必须 codex（迁移期兼容）")
+	if isCodexOAuthAccount(gatewaydispatch.AccountCandidate{Type: "oauth", ProtocolCode: "openai", VendorCode: ""}) {
+		t.Fatal("oauth+openai+空 vendor 不得 codex（空 vendor 不再是合法 Codex 形态）")
 	}
 	if isCodexOAuthAccount(gatewaydispatch.AccountCandidate{Type: "api_key"}) {
 		t.Fatal("api_key 不得 codex")

@@ -738,9 +738,9 @@ type RouteStrategyGroupOption struct {
 }
 
 // routeStrategyOptions mirrors GET /route-strategy-options
-// (groups.routes.ts:93): ids/keyword/providerCode/limit over the
-// authorization-aware group rows with {id,name,providerCode,enabled}（
-// providerCode 恒空串，见 RouteStrategyGroupOption）。
+// (groups.routes.ts:93): ids/keyword/groupKind/limit over the
+// authorization-aware group rows with {id,name,groupKind,enabled}
+// （见 RouteStrategyGroupOption；providerCode 查询参数已退役，出现即 400）。
 func (d *Deps) routeStrategyOptions(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	query, ok := parseGroupOptionQuery(w, r)
 	if !ok {

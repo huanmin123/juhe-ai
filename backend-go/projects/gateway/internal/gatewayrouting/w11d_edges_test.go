@@ -65,29 +65,6 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 		t.Fatal("账户装载失败必须上抛")
 	}
 
-	// 目录 legacy ambiguous outcome → failed（models 语义下按目录可见处理，
-	// 503 model_target_group_unavailable，绝不发出 model_route_ambiguous）。
-	cacheAmbiguous := newFakeRuntimeCache()
-	cacheAmbiguous.groupAccess["g1"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
-	cacheAmbiguous.groupAccess["g2"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
-	cacheAmbiguous.accounts["g1"] = []UpstreamAccount{{ID: "a1", ProviderCode: "gpt"}}
-	cacheAmbiguous.providerRoute = func(in ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-		return ProviderModelRouteResolution{
-			Outcome: ProviderModelRouteAmbiguous, ModelKey: in.Model,
-		}, nil
-	}
-	serviceAmbiguous := NewNormalModelRouteService(cacheAmbiguous, PassthroughCapabilityFilter{})
-	result, err := serviceAmbiguous.ResolveNormalGatewayModelRoute(context.Background(), multiInput)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Outcome != NormalRouteOutcomeFailed {
-		t.Fatalf("ambiguous outcome = %+v", result)
-	}
-	if result.Code != FailCodeModelTargetGroupUnavailable {
-		t.Fatalf("legacy ambiguous 分类 = %q, want %s", result.Code, FailCodeModelTargetGroupUnavailable)
-	}
-
 	// 候选绑定为空 → failed（217 臂）：唯一绑定分组禁用。
 	disabled := binding
 	disabled.GroupEnabled = 0
@@ -101,7 +78,7 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	serviceEmpty := NewNormalModelRouteService(cacheEmpty, PassthroughCapabilityFilter{})
 	emptyInput := input
 	emptyInput.APIKeyRecord = emptyKey
-	result, err = serviceEmpty.ResolveNormalGatewayModelRoute(context.Background(), emptyInput)
+	result, err := serviceEmpty.ResolveNormalGatewayModelRoute(context.Background(), emptyInput)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -105,8 +105,12 @@ import (
 // api_keys 归属回填 UPDATE 各一条）。691→693：B4 两表 provider 维度收尾批
 // ——juhe_business +2（account_test_tasks / media_jobs 各一条
 // provider_protocol_profile_id 幂等 DROP COLUMN，写入面同批停写）。
+// 693→681：2026-10-30 B08 撤除 12 条幂等收列语句（业务 9：scheduling_
+// preferences.enabled 1 条 + business-provider-dimension-retirement 组 8 条；
+// codex 3：codex-context-provider-code-retirement 组 3 条）——生产只读预检
+// 确认 12 条目标旧列全部不存在，收列退役完成；当前 schema 0 条 DROP COLUMN。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 693
+const goldenPostgresSchemaStatementCount = 681
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -123,16 +127,18 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// DROP COLUMN 退役语句）。322→324：media_jobs 归属改列批（AI 问答免 Key
 	// 直调计划 §3.3）+2（owner 列幂等 ALTER 与归属回填 UPDATE）。324→326：
 	// B4 两表 provider 维度收尾批 +2（account_test_tasks / media_jobs 各一条
-	// provider_protocol_profile_id 幂等 DROP COLUMN）。
-	"juhe_business": 326,
+	// provider_protocol_profile_id 幂等 DROP COLUMN）。326→317：2026-10-30
+	// B08 撤除 business 9 条幂等 DROP COLUMN（enabled 1 + provider 维度 8）。
+	"juhe_business": 317,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
 	"juhe_usage":    54,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
 	"juhe_stats": 238,
 	// 16→16：provider 维度持久列退役批（B4①）-3 CREATE INDEX（codex boundary）
-	// +3 DROP COLUMN。
-	"juhe_codex_context": 16,
+	// +3 DROP COLUMN。16→13：2026-10-30 B08 撤除 codex 三表 3 条 provider_code
+	// 幂等 DROP COLUMN（boundary 索引已随 B4① 撤除，无对应加法语句）。
+	"juhe_codex_context": 13,
 }
 
 // goldenPostgresSchemaNameOrder is the Node first-seen schema order, which is
@@ -201,8 +207,10 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			t.Fatalf("statement %d (%s) lacks IF EXISTS: %.80s", i, statement.Source, trimmed)
 		}
 		if strings.HasPrefix(upper, "ALTER TABLE") {
-			// 幂等守卫双形态：加列走 ADD COLUMN IF NOT EXISTS；删列（调度偏好
-			// enabled 退役，v2 用户裁决修订第 4 条）走 DROP COLUMN IF EXISTS。
+			// 幂等守卫双形态：加列走 ADD COLUMN IF NOT EXISTS；删列走
+			// DROP COLUMN IF EXISTS。2026-10-30 B08 撤除全部 12 条幂等收列
+			// 语句后当前无删列语句；保留本计数分支，使未来新增删列语句
+			// 必须同步更新下方 0 条断言（有意新增破坏性语句须走 golden 评审）。
 			switch {
 			case strings.Contains(upper, "ADD COLUMN IF NOT EXISTS"):
 				alterColumns++
@@ -244,16 +252,18 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 22→25 值），块数保持 6。100→101：用量记录压缩标记批
 	// （usage_records compaction_expected 幂等 ALTER）。101→102：media_jobs
 	// 归属改列批（owner_system_account_id 幂等 ALTER）。其余口径不变：
-	// 1→12 条 DROP COLUMN
-	// IF EXISTS（调度偏好 enabled 退役 1 条 + B4① provider 维度退役 9 条：
-	// codex 三表 + business 六列 + B4 两表收尾批 provider_protocol_profile_id
-	// 2 条）、1 条 CREATE EXTENSION、2 个含
+	// DROP COLUMN IF EXISTS 12→0 条（2026-10-30 B08 撤除 12 条幂等收列语句：
+	// 业务 9——调度偏好 enabled 1 条 + B4① provider 维度 6 条 + B4 两表收尾
+	// provider_protocol_profile_id 2 条；codex 3——三表 provider_code），
+	// 当前 schema 无删列语句）、1 条 CREATE EXTENSION、2 个含
 	// CREATE TRIGGER 的语句块。
 	if alterColumns != 102 {
 		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 102", alterColumns)
 	}
-	if droppedColumns != 12 {
-		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 12", droppedColumns)
+	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
+	// DROP COLUMN 绕过 golden 评审。
+	if droppedColumns != 0 {
+		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 0 (B08 removed all 12 idempotent DROP COLUMN statements on 2026-10-30)", droppedColumns)
 	}
 	if doBlocks != 6 {
 		t.Fatalf("DO block count = %d, want 6", doBlocks)

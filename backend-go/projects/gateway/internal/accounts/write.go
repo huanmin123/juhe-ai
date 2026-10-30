@@ -92,12 +92,12 @@ func NormalizeConnectionBody(object map[string]any) (ConnectionInput, bool) {
 var accountHealthCheckEndpointModes = accountscore.AccountHealthCheckEndpointModes
 
 // realVendorCodes 是供应商与上游协议面重构设计 §1.1 注册表的 9 个真实厂商值域
-// （与 maintenance providerconnectionmigration 的 realVendorCodes 同词表）。
+// （与历史 provider connection migration 的 realVendorCodes 同词表）。
 //
 // vendor_code / connection_driver_code 推导规则（写入面唯一来源，创建请求体
-// 当前不携带 vendor/driver 字段）：按 provider 既有语义推导，与迁移命令的
-// vendorOfProvider / driver 推导（providerconnectionmigration/rules.go:770、
-// :919）同口径，与 chain 面按 vendor_code 取身份的运行时语义一致——
+// 当前不携带 vendor/driver 字段）：按 provider 既有语义推导，与已退役的
+// 历史迁移规则中的 vendorOfProvider / driver 推导同口径，与 chain 面按
+// vendor_code 取身份的运行时语义一致——
 //   - provider_code 命中 9 厂商：vendor_code = provider_code，
 //     connection_driver_code = provider_code（§1.1 注册表 driver 名与 vendor
 //     同名；oauth 账户同规则，OpenAI OAuth 账户现以 provider gpt 创建，天然

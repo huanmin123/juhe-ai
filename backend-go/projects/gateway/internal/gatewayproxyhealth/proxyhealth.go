@@ -352,19 +352,18 @@ func GatewayUpstreamBucketKeys(account gatewayruntimecache.OpenAIAccountSecret, 
 
 // codexOAuthVendorBucketEligible 与调度内核供应商判据
 // gatewaydispatch.CodexOAuthVendorEligible（historypreppolicy.go）同一：
-// vendor=="gpt" 或迁移期空值（vendor_code 回填迁移未执行，空值=未知/未回填，
-// 不得误伤存量 OpenAI OAuth 账户）。本包被 gatewaydispatch 反向依赖
-// （capacity.go / circuitfacade.go / upstreamdispatch.go），直接 import 该判据
-// 会构成编译环，故在此镜像，并由外部测试包
+// 只认 gpt；空 vendor 不进入 ChatGPT Codex 常量桶。本包被 gatewaydispatch
+// 反向依赖（capacity.go / circuitfacade.go / upstreamdispatch.go），直接
+// import 该判据会构成编译环，故在此镜像，并由外部测试包
 // （proxyhealth_vendor_pin_test.go，package gatewayproxyhealth_test 可无环
 // import gatewaydispatch）逐值钉住两函数一致——判据漂移会在测试期失败；
-// 判据收口（回填迁移完成后空值不再合法）时同步更新该测试表。
+// 判据调整时同步更新该测试表。
 func codexOAuthVendorBucketEligible(vendorCode string) bool {
-	return vendorCode == "gpt" || vendorCode == ""
+	return vendorCode == "gpt"
 }
 
 // gatewayBaseURLKey 派生上游桶键。供应商边界：oauth + openai profile 的
-// ChatGPT Codex 常量桶只属于 gpt/迁移期空 vendor 的 GPT 管理式 OAuth
+// ChatGPT Codex 常量桶只属于 gpt vendor 的 GPT 管理式 OAuth
 // （codexOAuthVendorBucketEligible）；xAI（Grok）OAuth 等非 gpt 供应商的
 // oauth 账户改用与普通账户一致的真实 BaseURL 桶键（normalizeOpenAIBaseURLForBucket
 // 同口径，不新造推导）——其上游主机是 cli-chat-proxy.grok.com，失败信号不得

@@ -56,7 +56,7 @@ func w1CallMain(t *testing.T, arguments ...string) string {
 func TestW1MainEarlyExitBranches(t *testing.T) {
 	// --version：契约版本输出后正常 return。
 	version := w1CallMain(t, "--version")
-	if !strings.Contains(version, "juhe-ai-gateway project=") {
+	if !strings.Contains(version, "juhe-ai-gateway version=") {
 		t.Fatalf("version = %q", version)
 	}
 	// --check-boundary：边界自检输出。

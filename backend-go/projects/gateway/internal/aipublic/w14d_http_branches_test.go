@@ -132,6 +132,8 @@ func TestW14dMutationBodyValidationForks(t *testing.T) {
 		{"group add required", "/__aipublic__/group/add", `{"targetUsername":"w14duser"}`},
 		{"group add display name", "/__aipublic__/group/add", `{"targetUsername":"w14duser","targetDisplayName":" ","name":"g"}`},
 		{"group update no fields", "/__aipublic__/group/update", `{"groupId":"g"}`},
+		// providerCode 接受但不计入变更：只带该字段按"至少一个字段"400 拒绝。
+		{"group update only providerCode", "/__aipublic__/group/update", `{"groupId":"g","providerCode":"gpt"}`},
 		{"strategy add bindings", "/__aipublic__/route-strategy/add", `{"targetUsername":"w14duser","name":"s"}`},
 		{"strategy add bindings empty", "/__aipublic__/route-strategy/add", `{"targetUsername":"w14duser","name":"s","groupBindings":[]}`},
 		{"strategy update no fields", "/__aipublic__/route-strategy/update", `{"routeStrategyId":"s"}`},

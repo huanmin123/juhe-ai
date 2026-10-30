@@ -6,7 +6,7 @@ package gatewayproxyhealth_test
 // 谓词 codexOAuthVendorBucketEligible。本文件位于外部测试包，可无环 import
 // gatewaydispatch，把镜像谓词的可见行为（oauth 账户桶键是否固定 ChatGPT
 // Codex 常量）逐值钉到权威判据上——两侧任一方漂移都会在此失败。
-// 判据收口（vendor_code 回填迁移完成后空值不再合法）时同步扩展本表。
+// 判据已收口为只认 gpt（空 vendor 不再合法，2026-10-30 B06）。
 
 import (
 	"testing"
@@ -17,7 +17,7 @@ import (
 )
 
 func TestGatewayBaseURLBucketKeyPinnedToCodexOAuthVendorEligible(t *testing.T) {
-	// 覆盖合法值、迁移期空值、大小写/空白（权威判据为原样比较，不得归一化）
+	// 覆盖 gpt、空值负例、大小写/空白（权威判据为原样比较，不得归一化）
 	// 与已知非 gpt 厂商。
 	vendors := []string{"gpt", "", "xai", "GPT", " gpt", "anthropic", "gemini", "deepseek"}
 	for _, vendor := range vendors {

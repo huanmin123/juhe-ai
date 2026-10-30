@@ -263,6 +263,20 @@ func TestW16fDirectProfileAndBaseURLArms(t *testing.T) {
 	if profile, ok := ConnectionPresetProfileID("anthropic_v1"); !ok || profile != "profile_anthropic_anthropic_v1" {
 		t.Fatalf("anthropic_v1 必须字面映射 profile_anthropic_anthropic_v1，got %q %v", profile, ok)
 	}
+	// 双射护栏：正向与反向映射必须共用同一张表且逐对可往返。
+	for _, item := range connectionPresetProfiles {
+		profile, ok := ConnectionPresetProfileID(item.preset)
+		if !ok || profile != item.profile {
+			t.Fatalf("preset %q forward = %q/%v, want %q", item.preset, profile, ok, item.profile)
+		}
+		preset, ok := ConnectionPresetForProfileID(item.profile)
+		if !ok || preset != item.preset {
+			t.Fatalf("profile %q reverse = %q/%v, want %q", item.profile, preset, ok, item.preset)
+		}
+	}
+	if _, ok := ConnectionPresetForProfileID("profile_unregistered_v1"); ok {
+		t.Fatal("未注册 profile 的逆向查询必须失败")
+	}
 }
 
 // TestW16fDirectProxyEnvelopeEmptySecret 覆盖 directProxyEnvelope 的空

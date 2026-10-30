@@ -144,6 +144,14 @@ func TestW14dAccountGapSweep(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("profile filter: %d %v", status, payload)
 	}
+	// 协议档案筛选已实现真实匹配（健康检查连接 preset）：不得再因恒假条件返回空列表。
+	if data, ok := payload["data"].(map[string]any); ok {
+		if items, ok := data["items"].([]any); !ok || len(items) == 0 {
+			t.Fatalf("profile filter should return matching accounts: %v", payload)
+		}
+	} else {
+		t.Fatalf("profile filter envelope: %v", payload)
+	}
 	status, payload, _ = env.doAuth(http.MethodGet,
 		"/__aipublic__/account/list?targetUsername=w14downer&groupId="+groupA.(string), "", token)
 	if status != http.StatusOK {

@@ -93,7 +93,7 @@ services:
       args:
         BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
         TARGET_BINARY: juhe-ai-gateway
-    image: juhe-ai-single-server:gateway
+    image: juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-gateway
     container_name: juhe-ai-go-gateway
     # BUG-0313 内存治理：GOMEMLIMIT 软限（见 environment）让 GC 封顶堆增长（流量高峰 RSS 曾冲
     # 3.56GiB 挤爆整机页缓存引发僵死），mem_limit 为最后防线——超限只杀 gateway 自身，不拖整机。
@@ -187,7 +187,7 @@ services:
       args:
         BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
         TARGET_BINARY: juhe-ai-jobs
-    image: juhe-ai-single-server:jobs
+    image: juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-jobs
     container_name: juhe-ai-go-jobs
     # BUG-0313 内存治理：jobs 当前 RSS ~114MiB，硬限防异常扩散。
     mem_limit: "1g"
@@ -247,7 +247,7 @@ services:
       args:
         BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
         TARGET_BINARY: juhe-ai-maintenance
-    image: juhe-ai-single-server:maintenance
+    image: juhe-ai-single-server:${JUHE_AI_IMAGE_TAG:-latest}-maintenance
     container_name: juhe-ai-maintenance
     profiles: ["tool"]
     # 与 gateway/jobs 同理：datadir 相对路径按 cwd 解析，一次性容器同样锚定

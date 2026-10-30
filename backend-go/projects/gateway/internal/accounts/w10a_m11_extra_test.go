@@ -29,14 +29,16 @@ func TestW10AValueOrSource(t *testing.T) {
 
 func TestW10AGeminiOAuthContextType(t *testing.T) {
 	base := "https://api.example.com"
-	if got := geminiOAuthContextType("", Credentials{"oauth_type": "google_one"}); got != "google_one" {
-		t.Fatalf("枚举透传不一致：%s", got)
+	// B01 收口：列空不回落凭据键——封套 oauth_type 键被忽略，直接走启发式
+	//（仅带 oauth_type 键时无 base_url/project_id/client_id → 默认 code_assist）。
+	if got := geminiOAuthContextType("", Credentials{"oauth_type": "google_one"}); got != "code_assist" {
+		t.Fatalf("列空不得回落凭据键 google_one：%s", got)
 	}
-	if got := geminiOAuthContextType("", Credentials{"oauth_type": "ai_studio"}); got != "ai_studio" {
-		t.Fatalf("枚举透传不一致：%s", got)
+	if got := geminiOAuthContextType("", Credentials{"oauth_type": "ai_studio"}); got != "code_assist" {
+		t.Fatalf("列空不得回落凭据键 ai_studio：%s", got)
 	}
 	if got := geminiOAuthContextType("", Credentials{"oauth_type": "code_assist"}); got != "code_assist" {
-		t.Fatalf("枚举透传不一致：%s", got)
+		t.Fatalf("列空默认 code_assist：%s", got)
 	}
 	if got := geminiOAuthContextType("", Credentials{"base_url": "https://generativelanguage.googleapis.com/v1"}); got != "ai_studio" {
 		t.Fatalf("generativelanguage 应 ai_studio：%s", got)

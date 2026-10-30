@@ -7,6 +7,7 @@
 package apikeys
 
 import (
+	"database/sql"
 	"net/http"
 	"testing"
 	"time"
@@ -238,23 +239,8 @@ func TestSPC1PatchChatKeyRejectsPreferenceAndDefaultKeyAllowsIt(t *testing.T) {
 		t.Fatalf("chat key column must stay NULL after null rejection, got %q", got)
 	}
 
-	// 存量遗留 purpose='studio' Key 与 chat 同矩阵：非空 ID 与显式 null 一律
-	// 同型 400，绑定列保持 NULL，不推进 revision。
-	seedGuardKey(t, env, "key-studio", adminID, "工作室遗留", "studio", 0)
-	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-studio", patchPreferenceBody("2020-01-01T00:00:00.000Z", `"sp-chat-target"`))
-	if code != http.StatusBadRequest {
-		t.Fatalf("studio patch: %d %v", code, payload)
-	}
-	if message, _ := payload["message"].(string); message != SchedulingPreferenceUnavailableMessage {
-		t.Fatalf("studio patch message: %q", message)
-	}
-	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-studio", patchPreferenceBody("2020-01-01T00:00:00.000Z", `null`))
-	if code != http.StatusBadRequest {
-		t.Fatalf("studio patch null: %d %v", code, payload)
-	}
-	if got := env.queryCell(t, `SELECT scheduling_preference_id FROM api_keys WHERE id = 'key-studio'`); got != "" {
-		t.Fatalf("studio key column must stay NULL, got %q", got)
-	}
+	// 存量遗留 purpose='studio' 豁免已退役（B04a）：studio 不再与 chat 同矩阵，
+	// 豁免词表只剩 chat（纯函数断言见 TestSchedulingPreferenceExemptPurposeStudioRetired）。
 
 	// 两次拒绝都不推进 revision（无任何写入），同版本仍可用。
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/api-keys/key-chat", "")
@@ -280,5 +266,19 @@ func TestSPC1PatchChatKeyRejectsPreferenceAndDefaultKeyAllowsIt(t *testing.T) {
 		`{"expectedRevision":"`+dataMap(t, payload)["revision"].(string)+`","routeStrategyId":"rs-alternate"}`)
 	if code == http.StatusOK {
 		t.Fatalf("default-key strategy change must stay rejected")
+	}
+}
+
+// TestSchedulingPreferenceExemptPurposeStudioRetired 锁定 B04a 豁免词表收窄：
+// 只豁免 purpose='chat'；studio 已退役，不再识别/豁免（存量行由 D06 清理）。
+func TestSchedulingPreferenceExemptPurposeStudioRetired(t *testing.T) {
+	if schedulingPreferenceExemptPurpose(sql.NullString{String: "studio", Valid: true}) {
+		t.Fatalf("studio purpose must no longer be exempt from scheduling preference binding")
+	}
+	if !schedulingPreferenceExemptPurpose(sql.NullString{String: "chat", Valid: true}) {
+		t.Fatalf("chat purpose must stay exempt from scheduling preference binding")
+	}
+	if schedulingPreferenceExemptPurpose(sql.NullString{}) {
+		t.Fatalf("NULL purpose must not be exempt from scheduling preference binding")
 	}
 }

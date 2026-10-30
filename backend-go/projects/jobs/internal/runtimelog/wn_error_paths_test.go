@@ -334,7 +334,7 @@ func TestPostgresFakeCursorQueryFailure(t *testing.T) {
 
 func TestOpenStorePostgresRejectsInvalidMaxConns(t *testing.T) {
 	server := newPGFakeServer(t)
-	_, err := OpenStore(context.Background(), Config{Mode: ModePostgres, PostgresURL: server.URL(), PostgresMaxConns: -1})
+	_, err := OpenStore(context.Background(), Config{PostgresURL: server.URL(), PostgresMaxConns: -1})
 	if err == nil {
 		t.Fatal("非法连接数必须拒绝启动")
 	}

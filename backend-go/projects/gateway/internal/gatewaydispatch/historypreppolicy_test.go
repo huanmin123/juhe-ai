@@ -6,7 +6,7 @@ import (
 
 // HistoryPrepPolicyForRequest 取值表测试（调度内核通用化批次 3b，
 // docs/functions/调度内核通用化设计.md §5.4；xAI 供应商边界批按
-// CodexOAuthVendorEligible 口径补 xAI Grok OAuth 与迁移期空 vendor 形态）。
+// CodexOAuthVendorEligible 口径补 xAI Grok OAuth 形态）。
 // 原 TestDefersCodexResponsesHistorySanitization 的四个场景已并入本表：
 // defer 判定被策略计算取代，判定口径见 historypreppolicy.go 注释。
 func TestHistoryPrepPolicyForRequest(t *testing.T) {
@@ -18,8 +18,8 @@ func TestHistoryPrepPolicyForRequest(t *testing.T) {
 	oauthGPTShape.ProtocolCode = "openai"
 	oauthGPTShape.ProtocolVersion = "v1"
 	oauthGPTShape.ProviderProtocolProfileID = GPTOpenAIV1ProfileID
-	// 迁移期兼容形态：vendor_code 回填迁移尚未执行，空值视同 gpt 形态
-	// （维持既有 sanitize 行为，见 CodexOAuthVendorEligible）。
+	// B06 收口负例：空 vendor oauth 不再按 gpt，落到与非 oauth 一致的
+	// 判定路径（见 CodexOAuthVendorEligible）。
 	oauthEmptyVendorShape := oauthGPTShape
 	oauthEmptyVendorShape.ID = "prep-policy-o-empty"
 	oauthEmptyVendorShape.VendorCode = ""
@@ -78,9 +78,9 @@ func TestHistoryPrepPolicyForRequest(t *testing.T) {
 			want: HistoryPrepPolicy{Front: HistoryPrepStagePreserve, Adapter: HistoryPrepStageSanitize, Post: HistoryPrepStagePreserve, SkipIfProcessed: true},
 		},
 		{
-			name:    "迁移期兼容：空 vendor oauth 与 gpt 形态同归并（回填迁移未执行）",
+			name:    "空 vendor oauth 不再按 gpt，落到 Codex→API Key 行",
 			account: oauthEmptyVendorShape, compat: "codex_responses", family: "responses",
-			want: HistoryPrepPolicy{Front: HistoryPrepStagePreserve, Adapter: HistoryPrepStageSanitize, Post: HistoryPrepStagePreserve, SkipIfProcessed: true},
+			want: HistoryPrepPolicy{Front: HistoryPrepStageSanitizeInline, Adapter: HistoryPrepStagePreserve, Post: HistoryPrepStageSanitize, SkipIfProcessed: true},
 		},
 		{
 			name:    "xAI Grok OAuth：codex_responses + responses 族落到与非 oauth 一致的 Codex→API Key 行（hook 生产恒 nil 为 no-op）",

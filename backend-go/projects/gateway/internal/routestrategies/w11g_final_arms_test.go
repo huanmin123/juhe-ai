@@ -93,13 +93,14 @@ func TestW11GConfigNormalizeArms(t *testing.T) {
 	if _, err := normalizeSchedulingPreference(5); err == nil {
 		t.Fatal("non-string preference must fail")
 	}
-	// speed_first 速度优先配置：deadline 双填冲突。
-	if _, err := normalizeNormalRoutingConfig(map[string]any{
+	// speed_first 速度优先配置：旧别名不再读取，双填不再冲突，新字段生效。
+	dualConfig, dualErr := normalizeNormalRoutingConfig(map[string]any{
 		"schedulingPreference": "speed_first",
 		"firstByteDeadlineMs":  20000,
 		"speedFirstConfig":     map[string]any{"firstByteThresholdMs": 20000},
-	}); err == nil {
-		t.Fatal("dual deadline must fail")
+	})
+	if dualErr != nil || dualConfig.FirstByteDeadlineMs == nil || *dualConfig.FirstByteDeadlineMs != 20000 {
+		t.Fatalf("dual config=%+v err=%v", dualConfig, dualErr)
 	}
 	// speed_first 合法链路（deadline 走公共字段）。
 	config, err := normalizeNormalRoutingConfig(map[string]any{

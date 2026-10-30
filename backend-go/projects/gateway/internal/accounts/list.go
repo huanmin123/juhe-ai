@@ -640,11 +640,9 @@ func listItemColumns(alias string) []string {
 //
 // 供应商名 JOIN 切 vendors（B4 ⑨，设计 §439：providers 表已更名收敛为
 // vendors 且 fresh DDL 无 providers，旧 JOIN 在 fresh 库直接 no such table）。
-// JOIN 键与投影走 B4 W2 行为键 COALESCE(vendor, provider)——与 patch.go 行读
-// (:304) 和本文件过滤列 (:763) 同一口径：新行 provider_code 停写、行为键取
-// vendor_code；legacy 行 vendor_code 为空回落旧列。generic 语义账户
-// （vendor_code 为 NULL 且旧列不在 vendors 值域）JOIN 不中，provider_name 走
-// LEFT JOIN 的 NULL（响应层 omitempty）。
+// JOIN 键与投影走 B4 W2 行为键：行为键只读 vendor_code；provider_code 已退
+// 役，不存在旧列回落。generic 语义账户（vendor_code 为 NULL）JOIN 不中，
+// provider_name 走 LEFT JOIN 的 NULL（响应层 omitempty）。
 func (s *Store) listJoins() (cte, joins string) {
 	joins = ` LEFT JOIN LATERAL (
 			SELECT group_accounts.system_account_id, group_accounts.group_id,
@@ -760,9 +758,18 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 		*args = append(*args, options.ProviderCode)
 	}
 	if options.ProviderProtocolProfileID != "" && options.ProviderProtocolProfileID != "all" {
-		// 目标 schema 无该列：档案身份由 vendor 派生，筛选退化为 vendor 等价
-		clauses = append(clauses, "'' = ?")
-		*args = append(*args, options.ProviderProtocolProfileID)
+		// 协议档案读面恒由健康检查连接的 preset 反解（见 newListItem 的
+		// ConnectionPresetProfileID 投影）：筛选同源按 preset 命中，未知档案
+		// 不匹配任何行。
+		if preset, ok := exactkeyprobe.ConnectionPresetForProfileID(options.ProviderProtocolProfileID); ok {
+			clauses = append(clauses, `EXISTS (
+				SELECT 1 FROM `+s.table("account_connections")+` profile_connections
+				WHERE profile_connections.id = accounts.health_check_connection_id
+					AND profile_connections.connection_preset_code = ?)`)
+			*args = append(*args, preset)
+		} else {
+			clauses = append(clauses, "1 = 0")
+		}
 	}
 	if options.GroupID != "" {
 		clauses = append(clauses, "group_bindings.group_id = ?")
@@ -1403,9 +1410,16 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 		args = append(args, normalized.ProviderCode)
 	}
 	if normalized.ProviderProtocolProfileID != "" && normalized.ProviderProtocolProfileID != "all" {
-		// 目标 schema 无该列：档案身份由 vendor 派生，筛选退化为 vendor 等价
-		clauses = append(clauses, "'' = ?")
-		args = append(args, normalized.ProviderProtocolProfileID)
+		// 协议档案 = 健康检查连接 preset 的反解身份（与列表/详情投影同源）。
+		if preset, ok := exactkeyprobe.ConnectionPresetForProfileID(normalized.ProviderProtocolProfileID); ok {
+			clauses = append(clauses, `EXISTS (
+				SELECT 1 FROM `+s.table("account_connections")+` profile_connections
+				WHERE profile_connections.id = accounts.health_check_connection_id
+					AND profile_connections.connection_preset_code = ?)`)
+			args = append(args, preset)
+		} else {
+			clauses = append(clauses, "1 = 0")
+		}
 	}
 	if normalized.GroupID != "" {
 		clauses = append(clauses, `accounts.id IN (

@@ -192,12 +192,12 @@ func TestWCGroupUpdateDeleteBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// providerCode 作为历史兼容入参接受但忽略（分组目标已无供应商维度），
-	// 停用供应商不再阻断更新。
+	// providerCode 仍作为兼容入参接受但不计入变更字段；只带该字段时不再
+	// 静默 no-op，按"至少一个字段"门禁 400 拒绝（X02）。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/group/update",
 		`{"groupId":"`+groupID+`","providerCode":"anthropic"}`, wcLifeToken)
-	if status != http.StatusOK {
-		t.Fatalf("providerCode 兼容入参 update: %d %v", status, payload)
+	if status != http.StatusBadRequest {
+		t.Fatalf("providerCode 兼容入参 update 应 400: %d %v", status, payload)
 	}
 
 	// description 显式 null + enabled=false + groupType 更新。

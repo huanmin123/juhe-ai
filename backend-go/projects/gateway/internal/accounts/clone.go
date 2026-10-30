@@ -392,10 +392,10 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 }
 
 // projectCloneCredentialOptions mirrors projectCloneCredentialOptions: counts
-// and configuration survive, secret material does not. oauth_type 判定读列
-// 优先（#B4 ⑪，judgmentGoogleOAuthType）：凭据键回落兼容迁移窗口存量行；
-// 「refresh 删键」切片删掉封套键后克隆预填不再丢判定值（丢值会让克隆体
-// google_oauth 组合门五元组缺 oauth_type → 400）。
+// and configuration survive, secret material does not. oauth_type 判定只读
+// accounts.oauth_type 列（#B4 ⑪，judgmentGoogleOAuthType，B01 收口不回落凭据
+// 键，缺列即数据不完整）；「refresh 删键」切片删掉封套键后克隆预填仍按列取值
+// （丢值会让克隆体 google_oauth 组合门五元组缺 oauth_type → 400）。
 func projectCloneCredentialOptions(oauthTypeColumn string, credentials Credentials) CloneCredentialOptions {
 	out := CloneCredentialOptions{}
 	if count := cloneCredentialAPIKeyCount(credentials); count > 0 {

@@ -92,8 +92,9 @@ func TestGatewayUpstreamBucketKeys(t *testing.T) {
 // TestGatewayUpstreamBucketKeysVendorBoundary 钉住 oauth 账户上游桶键的供应
 // 商边界（docs/functions/xAI账号接入.md）：xAI（Grok）OAuth 的真实上游主机是
 // cli-chat-proxy.grok.com，失败信号必须按真实 BaseURL 入桶（与普通账户同推导），
-// 不得记入 GPT 管理式 OAuth 的 ChatGPT Codex 常量桶跨主机混算；gpt 与迁移期
-// 空 vendor 仍固定 chatgpt.com codex 桶（存量行为逐点不变）。
+// 不得记入 GPT 管理式 OAuth 的 ChatGPT Codex 常量桶跨主机混算；gpt 固定
+// chatgpt.com codex 桶；空 vendor 不再按 gpt 处理，改按真实 BaseURL 入桶
+//（2026-10-30 B06 收口）。
 func TestGatewayUpstreamBucketKeysVendorBoundary(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -137,14 +138,14 @@ func TestGatewayUpstreamBucketKeysVendorBoundary(t *testing.T) {
 			},
 		},
 		{
-			name: "empty vendor oauth keeps chatgpt codex constant bucket",
+			name: "empty vendor oauth no longer pinned to chatgpt codex bucket",
 			fixture: accountFixture{
 				id: "acc_e1", systemAccountID: "sys1",
 				protocolCode: "openai", protocolVersion: "v1",
 				baseURL: "https://api.openai.com", accountType: "oauth",
 			},
 			expected: []string{
-				"baseUrl:https://chatgpt.com/backend-api/codex:owner:sys1",
+				"baseUrl:https://api.openai.com/v1:owner:sys1",
 				"provider::owner:sys1",
 			},
 		},

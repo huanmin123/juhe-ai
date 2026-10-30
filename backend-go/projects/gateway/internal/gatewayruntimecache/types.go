@@ -540,8 +540,7 @@ func CloneResponseInspectionPolicies(policies []ResponseInspectionPolicySummary)
 // 解耦后（供应商与上游协议面重构设计 §2.1/§3/§6.1）该分辨率承载 models 单表目
 // 录语义：matched = 请求模型对请求 owner 资源账户可见（builtin/global 全可
 // 见、personal 仅属主可见）且 status='active'，missing = 无任何可见 active 行
-// （终态 404 model_not_found 数据面）。ambiguous 在单表语义下不再产生，常量
-// 仅为兼容保留。
+// （终态 404 model_not_found 数据面）。
 type ProviderModelRouteResolution struct {
 	Outcome  ProviderModelRouteOutcome `json:"outcome"`
 	ModelKey string                    `json:"modelKey"`
@@ -551,9 +550,8 @@ type ProviderModelRouteResolution struct {
 type ProviderModelRouteOutcome string
 
 const (
-	ProviderModelRouteMatched   ProviderModelRouteOutcome = "matched"
-	ProviderModelRouteMissing   ProviderModelRouteOutcome = "missing"
-	ProviderModelRouteAmbiguous ProviderModelRouteOutcome = "ambiguous"
+	ProviderModelRouteMatched ProviderModelRouteOutcome = "matched"
+	ProviderModelRouteMissing ProviderModelRouteOutcome = "missing"
 )
 
 // GatewayRuntime mirrors DbServiceGatewayRuntime

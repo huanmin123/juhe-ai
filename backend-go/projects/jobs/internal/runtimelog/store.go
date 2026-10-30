@@ -98,35 +98,30 @@ func ownerLeaseContext(ctx context.Context) (context.Context, context.CancelFunc
 }
 
 func OpenStore(ctx context.Context, config Config) (Store, error) {
-	switch config.Mode {
-	case ModePostgres:
-		poolConfig, err := pgxpool.ParseConfig(config.PostgresURL)
-		if err != nil {
-			return nil, err
-		}
-		maxConns := config.PostgresMaxConns
-		if maxConns == 0 {
-			maxConns = 1000
-		}
-		poolConfig.MaxConns = int32(maxConns)
-		poolConfig.MinConns = int32(config.PostgresMinConns)
-		poolConfig.MinIdleConns = int32(config.PostgresMinConns)
-		poolConfig.MaxConnIdleTime = sqlpool.MaxConnIdleTime
-		if poolConfig.MinConns > poolConfig.MaxConns {
-			return nil, fmt.Errorf("运行日志 PostgreSQL min connections 不得大于 max connections: %d > %d", poolConfig.MinConns, poolConfig.MaxConns)
-		}
-		pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-		if err != nil {
-			return nil, err
-		}
-		if err := pool.Ping(ctx); err != nil {
-			pool.Close()
-			return nil, err
-		}
-		return &postgresStore{pool: pool}, nil
-	default:
-		return nil, fmt.Errorf("不支持的运行日志 Store 模式 %q", config.Mode)
+	poolConfig, err := pgxpool.ParseConfig(config.PostgresURL)
+	if err != nil {
+		return nil, err
 	}
+	maxConns := config.PostgresMaxConns
+	if maxConns == 0 {
+		maxConns = 1000
+	}
+	poolConfig.MaxConns = int32(maxConns)
+	poolConfig.MinConns = int32(config.PostgresMinConns)
+	poolConfig.MinIdleConns = int32(config.PostgresMinConns)
+	poolConfig.MaxConnIdleTime = sqlpool.MaxConnIdleTime
+	if poolConfig.MinConns > poolConfig.MaxConns {
+		return nil, fmt.Errorf("运行日志 PostgreSQL min connections 不得大于 max connections: %d > %d", poolConfig.MinConns, poolConfig.MaxConns)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &postgresStore{pool: pool}, nil
 }
 
 func EnsureSchema(ctx context.Context, store Store) error {

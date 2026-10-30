@@ -799,7 +799,7 @@ type activationProjectionPlan struct {
 // 的分支真值表）。返回 RowsAffected==1。
 func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx, outcome Outcome, account *projectionAccountFence, plan activationProjectionPlan) (bool, error) {
 	projection := outcome.Projection
-	requiresOutputFence := projection.TransitionKind == "temporary_unavailable" || projection.TransitionKind == "cooldown_defer" || projection.TransitionKind == "cooldown_failure"
+	requiresOutputFence := projection.TransitionKind == "temporary_unavailable" || projection.TransitionKind == "cooldown_defer" || projection.TransitionKind == "cooldown_failure" || projection.TransitionKind == "cooldown_error"
 	if requiresOutputFence && projection.CooldownFence == nil {
 		// validateProjection 已拒绝该形态；到达此处属于实现缺陷。
 		return false, errors.New("J1 projection 缺少输出 cooldown fence")
@@ -926,13 +926,8 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 	case "cooldown_error":
 		set("status", "error")
 		set("schedulable", 0)
-		// 终态冷却停止调度但保留审计记录；无输出 fence 的 legacy 行清空冷却
-		// （归档滚动升级兼容分支）。
-		if projection.CooldownFence != nil {
-			setCooldown(projection.CooldownFence)
-		} else {
-			set("cooldown_until", nil)
-		}
+		// cooldown_error 必须带输出 fence；缺 fence 在 validateProjection 拒绝。
+		setCooldown(projection.CooldownFence)
 		setLastError()
 	default:
 		return false, fmt.Errorf("J1 未知 projection transition: %s", projection.TransitionKind)
@@ -1133,13 +1128,13 @@ func validateProjection(outcome Outcome) projectionValidation {
 	if requiresNextDue && outcome.NextDueAt == nil {
 		return terminalProjection(ProjectionRejected, "projection_next_due_missing")
 	}
-	if (transition == "temporary_unavailable" || transition == "cooldown_defer" || transition == "cooldown_failure") && projection.CooldownFence == nil {
+	if (transition == "temporary_unavailable" || transition == "cooldown_defer" || transition == "cooldown_failure" || transition == "cooldown_error") && projection.CooldownFence == nil {
 		return terminalProjection(ProjectionRejected, "projection_output_cooldown_fence_missing")
 	}
 	if strings.HasPrefix(transition, "cooldown_") && projection.ExpectedCooldownFence == nil {
 		return terminalProjection(ProjectionRejected, "projection_expected_cooldown_fence_missing")
 	}
-	if (transition == "cooldown_defer" || transition == "cooldown_failure" || (transition == "cooldown_error" && projection.CooldownFence != nil)) &&
+	if (transition == "cooldown_defer" || transition == "cooldown_failure" || transition == "cooldown_error") &&
 		!sameCooldownFence(projection.ExpectedCooldownFence, projection.CooldownFence) {
 		return terminalProjection(ProjectionRejected, "projection_cooldown_fence_mismatch")
 	}

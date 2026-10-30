@@ -287,23 +287,23 @@ func (d *Deps) loadAccountSupportedModels(ctx context.Context, ids []string) (ma
 
 // accountAddBody mirrors accountPushSchema (strict).
 type accountAddBody struct {
-	TargetUsername  string
-	TargetDisplayName *string
-	TargetGroupName string
-	ProviderCode    string
-	ProfileID       string
-	Name            string
-	AccountType     string
-	BaseURL         string
-	APIKey          string
-	SupportedModels *[]string
-	Status          string
-	HasStatus       bool
-	ConcurrencyLimit *int
-	Priority        *int
+	TargetUsername       string
+	TargetDisplayName    *string
+	TargetGroupName      string
+	ProviderCode         string
+	ProfileID            string
+	Name                 string
+	AccountType          string
+	BaseURL              string
+	APIKey               string
+	SupportedModels      *[]string
+	Status               string
+	HasStatus            bool
+	ConcurrencyLimit     *int
+	Priority             *int
 	AvailabilitySchedule any
-	HasSchedule     bool
-	Notes           *string
+	HasSchedule          bool
+	Notes                *string
 	// B1 断点批（设计 §8）：连接集合与健康检查三件套直通管理面创建写链
 	// （Store.Create 强校验，缺失由写链按 400 文案列明缺失字段）。
 	Connections                     []accounts.ConnectionInput

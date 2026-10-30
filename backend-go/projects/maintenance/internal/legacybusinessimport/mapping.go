@@ -1,9 +1,8 @@
 package legacybusinessimport
 
 // Legacy provider_profile_id → target connection preset. This is the fixed
-// table already pinned by the migration rules (rules.go legacyProfilePresets);
-// it is duplicated here so the rebuild path never depends on the dry-run
-// rule engine's internals.
+// table originally pinned by the retired dry-run migration rules; it is
+// duplicated here so the rebuild path never depends on that retired engine.
 var legacyProfilePresets = map[string]string{
 	"profile_gpt_openai_v1":             "gpt_openai_v1",
 	"profile_xai_openai_v1":             "xai_openai_v1",

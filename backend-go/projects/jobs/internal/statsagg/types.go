@@ -182,9 +182,6 @@ const UsageStatsCursorSafetyDelaySeconds = 15
 // EmptySourceWatermark mirrors USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK。
 const EmptySourceWatermark = "0001-01-01T00:00:00.000Z"
 
-// LegacyEmptySourceWatermark mirrors USAGE_RANK_SNAPSHOT_LEGACY_EMPTY_SOURCE_WATERMARK。
-const LegacyEmptySourceWatermark = "0000-00-00T00:00:00.000Z"
-
 // RankSnapshotJobStateScopeType/ID 对齐 usage-stats.repository.ts 的常量。
 const (
 	RankSnapshotJobStateScopeType = "global"

@@ -215,10 +215,12 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 	return err
 }
 
-// accountHealthTombstoneProviderCodes / Types mirror the health-capable
-// filter of logicallyDeleteAccounts (provider_code IN (...) AND type IN (...)).
+// accountHealthTombstoneProviderCodes / Types carry the health-capable vendor
+// vocabulary of logicallyDeleteAccounts：真实厂商行按 vendor_code IN 词表判定；
+// generic_http 驱动账户（vendor_code 为 NULL，≡ 旧 openai/hybrid 两 generic
+// 语义供应商族）恒健康能力，由 SQL 的独立 generic_http 分支命中，不进词表。
 var (
-	accountHealthTombstoneProviderCodes = []string{"gpt", "openai", "xai", "anthropic", "deepseek", "glm", "gemini", "hybrid"}
+	accountHealthTombstoneProviderCodes = []string{"gpt", "xai", "anthropic", "deepseek", "glm", "gemini"}
 	accountHealthTombstoneAccountTypes  = []string{"api_key", "oauth", "google_oauth"}
 )
 

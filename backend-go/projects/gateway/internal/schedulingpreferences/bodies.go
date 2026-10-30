@@ -29,10 +29,10 @@ var preferenceSpeedConfigKeys = map[string]bool{
 	"speedFirstConfig":    true,
 }
 
-// preferenceSpeedInnerKeys 是 speedFirstConfig 内层键（与策略路由一致，含旧
-// firstByteThresholdMs 别名——读取兼容、双字段同时出现由 normalize 拒绝）.
+// preferenceSpeedInnerKeys 是 speedFirstConfig 内层键：内层键只允许新字段，
+// 旧别名 firstByteThresholdMs 不再接受——携带者由严格键校验以「速度优先配置
+// 无效」拒绝（旧别名读取已随 B03 数据迁移退役）.
 var preferenceSpeedInnerKeys = map[string]bool{
-	"firstByteThresholdMs":               true,
 	"slowTriggerCount":                   true,
 	"slowWindowSeconds":                  true,
 	"recoverySuccessCount":               true,

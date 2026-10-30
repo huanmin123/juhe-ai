@@ -83,24 +83,51 @@ func TestW13AListFilterMatrixAndHydration(t *testing.T) {
 	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts?groupId=grp-default-"+adminID, ""); code != http.StatusOK {
 		t.Fatalf("groupId 过滤应 200：%d %v", code, payload)
 	}
-	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts?type=api_key&providerCode=gpt&providerProtocolProfileId=prof-gpt", ""); code != http.StatusOK {
+	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts?type=api_key&providerCode=gpt", ""); code != http.StatusOK {
 		t.Fatalf("组合过滤应 200：%d %v", code, payload)
+	}
+	// 协议档案筛选按健康检查连接的 preset 反解命中：仅显式挂档案连接的行返回。
+	env.seedAccount(t, "acc-w13a-profile", adminID, "w13a-profile", "active")
+	env.seedAccountConnection(t, "acc-w13a-profile", "gpt_openai_v1")
+	env.exec(t, `UPDATE accounts SET health_check_connection_id = 'conn-acc-w13a-profile-gpt_openai_v1' WHERE id = 'acc-w13a-profile'`)
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/accounts?providerProtocolProfileId=profile_gpt_openai_v1", "")
+	if code != http.StatusOK {
+		t.Fatalf("协议档案筛选应 200：%d %v", code, payload)
+	}
+	if matched := listItems(t, payload); len(matched) != 1 || matched["acc-w13a-profile"] == nil {
+		t.Fatalf("协议档案筛选应只命中挂该档案连接的账户：%v", matched)
+	}
+	// 未注册档案不匹配任何行（不再静默返回空集以外的行为）。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/accounts?providerProtocolProfileId=profile_unregistered_v1", "")
+	if code != http.StatusOK || len(listItems(t, payload)) != 0 {
+		t.Fatalf("未注册档案应返回空列表：%d %v", code, payload)
 	}
 	// 分页边界：pageSize=1 触发 hasMore。
 	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts?page=1&pageSize=1", ""); code != http.StatusOK {
 		t.Fatalf("分页应 200：%d %v", code, payload)
 	}
 
-	// 选项查询：过滤器矩阵 + limit。
+	// 选项查询：过滤器矩阵 + limit（含已实现真实筛选的协议档案参数）。
 	for _, query := range []string{
 		"?keyword=w13a", "?ids=acc-w13a-l1", "?groupId=" + "grp-default-" + adminID,
 		"?tagIds=acctag-w13a-l", "?type=api_key", "?providerCode=gpt",
-		"?providerProtocolProfileId=prof-gpt", "?status=active", "?schedulable=enabled",
+		"?providerProtocolProfileId=profile_gpt_openai_v1",
+		"?status=active", "?schedulable=enabled",
 		"?schedulable=disabled", "?limit=3",
 	} {
 		if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts/options"+query, ""); code != http.StatusOK {
 			t.Fatalf("options %s 应 200：%d %v", query, code, payload)
 		}
+	}
+	// options 的协议档案筛选同样必须是数据级命中，而不是仅 200。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/accounts/options?providerProtocolProfileId=profile_gpt_openai_v1", "")
+	optionData, _ := payload["data"].([]any)
+	if code != http.StatusOK || len(optionData) != 1 {
+		t.Fatalf("options 协议档案筛选应只命中 1 条：%d %v", code, payload)
+	}
+	optionRow, _ := optionData[0].(map[string]any)
+	if optionRow["id"] != "acc-w13a-profile" {
+		t.Fatalf("options 协议档案筛命中错误：%v", optionRow)
 	}
 }
 

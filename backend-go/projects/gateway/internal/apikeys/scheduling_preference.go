@@ -29,17 +29,17 @@ const BuiltinSchedulingPreferenceName = "默认调度偏好"
 const SchedulingPreferenceUnavailableMessage = "调度偏好不存在或不可用"
 
 // schedulingPreferenceExemptPurpose 报告 Key purpose 是否豁免调度偏好绑定
-// （契约「API Key 绑定契约」：purpose='chat' 内部用途 Key 与存量遗留
-// purpose='studio' Key 绑定列恒 NULL、不建立绑定，经普通 HTTP 写入口提交
-// schedulingPreferenceId（非空 ID 或显式 null）一律统一同型 400，不走普通
-// Key 的「显式 null 回默认内置 ID」矩阵。chat 裸 INSERT 载体（EnsureChatAPIKey）
-// 已随 AI 问答免 Key 直调退场（W-B），新写路径不再产生 chat Key，本豁免仅
-// 覆盖存量行；studio 已随媒体工作室退场收窄为 legacy 存量值，写路径拒绝新
-// 值，退场清理命令执行前仍可能存在。公开面 add 与内面 Create 的 purpose 恒
-// 'general' 不涉及本分支。词表锚点与 gatewayruntimecache 读取链旁路
-// （schedulingPurposeChat / schedulingPurposeStudio）同源，改动即两处同改）。
+// （契约「API Key 绑定契约」：只豁免 chat 内部用途 Key——purpose='chat' 的
+// 绑定列恒 NULL、不建立绑定，经普通 HTTP 写入口提交 schedulingPreferenceId
+// （非空 ID 或显式 null）一律统一同型 400，不走普通 Key 的「显式 null 回默认
+// 内置 ID」矩阵。chat 裸 INSERT 载体（EnsureChatAPIKey）已随 AI 问答免 Key
+// 直调退场（W-B），新写路径不再产生 chat Key，本豁免仅覆盖存量行；studio 已
+// 退役，不再识别/豁免，存量 studio 行由 maintenance
+// `--apply-studio-retirement` 清理（D06）。公开面 add 与内面 Create 的
+// purpose 恒 'general' 不涉及本分支。词表锚点与 gatewayruntimecache 读取链
+// 旁路（schedulingPurposeChat）同源，改动即两处同改）。
 func schedulingPreferenceExemptPurpose(purpose sql.NullString) bool {
-	return purpose.Valid && (purpose.String == "chat" || purpose.String == "studio")
+	return purpose.Valid && purpose.String == "chat"
 }
 
 // schedulingPreferenceBinding 是一次绑定校验通过后的权威值（id 落列，name/

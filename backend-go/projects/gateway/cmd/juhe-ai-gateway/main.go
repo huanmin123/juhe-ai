@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	httppprof "net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -37,9 +38,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/configregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schemagate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 )
 
 // corsSurfacePrefixes scopes the CORS middleware to the Node system-api app
@@ -49,8 +53,52 @@ import (
 // surface.
 var corsSurfacePrefixes = []string{"/__aisys__", "/__aipublic__"}
 
+// pprofMux registers the standard net/http/pprof endpoints once at package
+// initialization: /debug/pprof/ (Index dispatches heap/allocs/goroutine/
+// block/mutex/threadcreate by path suffix), cmdline, profile, symbol and
+// trace. It is a read-only diagnostics surface for production heap/goroutine
+// investigation — NOT a business feature and deliberately without a toggle.
+// It shares the health listener (loopback publishing contract: the listener
+// binds 127.0.0.1 by default and compose must only publish it as
+// 127.0.0.1:<port> on the host) so no extra port is opened; it must never be
+// routed through Caddy or any reverse proxy / public entrypoint.
+var pprofMux = func() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", httppprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", httppprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", httppprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", httppprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", httppprof.Trace)
+	return mux
+}()
+
+// newHealthServerHandler builds the health-listener handler chain: GET
+// /__aisys__/metrics renders the process metrics registry, GET
+// /debug/pprof/... serves the read-only pprof diagnostics endpoints, and
+// everything else falls through to the /health readiness handler unchanged.
+func newHealthServerHandler(healthHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/__aisys__/metrics" {
+			// D-190（BUG-0175）指标端点：promhttp HandlerFor 渲染进程
+			// Registry（标准 go_*/process_* 收集器 + HTTP/网关指标族），
+			// 挂健康监听；Node 兼容族已删除，无 Pushgateway。
+			gatewayusage.MetricsHandler().ServeHTTP(response, request)
+			return
+		}
+		if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/debug/pprof/") {
+			// pprof 只读诊断端点：与 metrics 同挂健康监听，依赖既有
+			// loopback 发布契约（默认绑 127.0.0.1；compose 仅按
+			// 127.0.0.1:<port> 发布到宿主），不得经 Caddy/反代或任何
+			// 公网入口暴露。仅 GET 进入；非 GET 落回 healthHandler。
+			pprofMux.ServeHTTP(response, request)
+			return
+		}
+		healthHandler.ServeHTTP(response, request)
+	})
+}
+
 func main() {
-	version := flag.Bool("version", false, "print the gateway project contract version")
+	printVersion := flag.Bool("version", false, "print the gateway build version, commit and schema revision")
 	check := flag.Bool("check-boundary", false, "verify the scaffold boundary")
 	operationLegacyPostgresMigration := flag.Bool("migrate-operation-log-legacy-postgres", false, "offline F4 legacy PostgreSQL schema migration")
 	initCircuitRuntimeIndex := flag.Bool("init-account-circuit-runtime-index", false, "one-shot backfill of the J3b account circuit Redis runtime index from the authoritative business dispatch revisions (performance-mode bootstrap; exits after completion)")
@@ -60,8 +108,8 @@ func main() {
 	healthAddress := flag.String("health-listen-address", envOrDefault("JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3306"), "loopback health listen address")
 	var operationMigration operationlog.LegacyMigrationOptions
 	flag.Parse()
-	if *version {
-		fmt.Printf("juhe-ai-gateway project=%s contract=%s\n", contracts.ProjectGateway, contracts.ArchitectureVersion)
+	if *printVersion {
+		fmt.Printf("juhe-ai-gateway version=%s commit=%s buildTime=%s schemaRevision=%d\n", version.Version, version.Commit, version.BuildTime, contracts.SchemaRevision)
 		return
 	}
 	if *check {
@@ -97,6 +145,17 @@ func main() {
 	// safego/inval 的兜底路径统一走 slog.Default()，这里把进程 JSON logger
 	// 设为默认。
 	slog.SetDefault(logger)
+	// 构建身份首行（升级兼容与迁移账本设计 §6.3）：每次启动一次性输出，供运维从日志直接辨识运行版本。
+	logger.Info("juhe-ai-gateway starting",
+		"version", version.Version,
+		"commit", version.Commit,
+		"schemaRevision", contracts.SchemaRevision)
+	// 配置注册表诊断（升级兼容与迁移账本设计 §12.2）：未登记的 JUHE_AI_*
+	// 变量单条 WARN 列出（不阻断启动；手工 shell 残留不应 fail）。
+	if unknownEnv := configregistry.UnknownFromEnviron(os.Environ()); len(unknownEnv) > 0 {
+		logger.Warn("存在未登记的 JUHE_AI_* 环境变量（请核对是否为已删除/改名变量的残留）",
+			"count", len(unknownEnv), "names", strings.Join(unknownEnv, ", "))
+	}
 	processlog.CatchPanic(logger)
 	processlog.KeepAliveOnBrokenOutputPipe()
 	ownerMode, err := ownermode.Load(os.Getenv)
@@ -192,6 +251,12 @@ func main() {
 			fail(fmt.Errorf("open J3b Business owner connection: %w", openErr))
 		}
 		defer businessConnection.Close()
+		// 升级启动门禁（升级兼容与迁移账本设计 §11.1）：库未被本二进制的
+		// upgrade 收敛时 fail-fast 并给出可执行提示；只读检查，绝不自动迁移
+		// （§2.2-5 不做自动升级）。
+		if gate := schemagate.Check(context.Background(), businessConnection.DB); !gate.OK {
+			fail(errors.New(gate.Message))
+		}
 		businessSource := businessConnection.Source
 		authenticator, authErr := modelcheckauth.New(businessConnection.DB, modelcheckauth.Postgres, time.Now)
 		if authErr != nil {
@@ -873,16 +938,7 @@ func main() {
 		_ = json.NewEncoder(response).Encode(payload)
 	})
 	healthServer := &http.Server{
-		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-			if request.Method == http.MethodGet && request.URL.Path == "/__aisys__/metrics" {
-				// D-190（BUG-0175）指标端点：promhttp HandlerFor 渲染进程
-				// Registry（标准 go_*/process_* 收集器 + HTTP/网关指标族），
-				// 挂健康监听；Node 兼容族已删除，无 Pushgateway。
-				gatewayusage.MetricsHandler().ServeHTTP(response, request)
-				return
-			}
-			healthHandler.ServeHTTP(response, request)
-		}),
+		Handler:           newHealthServerHandler(healthHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

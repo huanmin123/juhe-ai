@@ -66,6 +66,7 @@ import (
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/version"
 	"github.com/alicebob/miniredis/v2"
 	"golang.org/x/sys/windows"
 )
@@ -270,7 +271,8 @@ func TestW1BBootCoverQuickFlags(t *testing.T) {
 	coverageDir := w1bCoverageDir(t, "A-version")
 	stdout, _, code := w1bRunScenario(t, "A-version", w1bScenarioEnv(t, coverageDir), "-version")
 	w1bRequireExitCode(t, "A-version", code, 0)
-	w1bRequireContains(t, "A-version", stdout, fmt.Sprintf("juhe-ai-gateway project=%s contract=%s", contracts.ProjectGateway, contracts.ArchitectureVersion))
+	w1bRequireContains(t, "A-version", stdout, fmt.Sprintf("juhe-ai-gateway version=%s commit=%s", version.Version, version.Commit))
+	w1bRequireContains(t, "A-version-schema", stdout, fmt.Sprintf("schemaRevision=%d", contracts.SchemaRevision))
 
 	// B: -check-boundary → exit 0，stdout 含 boundary=ready。
 	coverageDir = w1bCoverageDir(t, "B-check-boundary")

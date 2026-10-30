@@ -4,8 +4,9 @@ package main
 //（docs/functions/xAI账号接入.md）。
 //
 //   - OAuth 客户端兼容门（oauth_account_client_compatibility_unsupported）按
-//     gatewaydispatch.CodexOAuthVendorEligible 收窄到 gpt/迁移期空 vendor：
-//     xAI OAuth 对普通 openai_standard 客户端的 /v1/responses 候选保留；
+//     gatewaydispatch.CodexOAuthVendorEligible 收窄到 gpt：
+//     xAI OAuth 与空 vendor oauth 对普通 openai_standard 客户端的
+//     /v1/responses 候选保留；
 //     /chat/completions 仍由账户 responses-only endpoint modes 阻断
 //    （endpoint_mode_unsupported），本门不承担端点面职责。
 //   - compat=codex_responses 的 Codex 客户端形态对 xAI OAuth 属「协议边界」
@@ -26,7 +27,7 @@ import (
 
 // xaiCompatOAuthAccount 构造带 responses-only 端点模式集的 oauth 账户候选
 // （Grok OAuth 固定 responses_json/responses_sse，与运行时 oauth 缺省投影
-// 一致）；vendorCode 参数化以覆盖 gpt/空值对照形态。
+// 一致）；vendorCode 参数化以覆盖 gpt 与空值负例形态。
 func xaiCompatOAuthAccount(vendorCode string) gatewaydispatch.AccountCandidate {
 	return gatewaydispatch.AccountCandidate{
 		ID: "acc_xc1", ProtocolCode: "openai", VendorCode: vendorCode, Type: "oauth",
@@ -40,8 +41,9 @@ func xaiCompatOAuthAccount(vendorCode string) gatewaydispatch.AccountCandidate {
 }
 
 // TestChainProviderDriverXaiOAuthClientCompatibilityGate 候选过滤级钉：兼容
-// 门收窄后 xai oauth + openai_standard 的 /v1/responses 候选保留，gpt/空
-// vendor 的 oauth + openai_standard 仍以原 reason 淘汰，xai oauth 的 chat 面
+// 门收窄后 xai oauth + openai_standard 的 /v1/responses 候选保留，空 vendor
+// oauth 不再按 gpt 淘汰（候选同保留），gpt 的 oauth + openai_standard 仍以
+// 原 reason 淘汰，xai oauth 的 chat 面
 // 仍被 endpoint modes 阻断（阻断机制从兼容门换为端点模式门，拒绝事实不变）。
 func TestChainProviderDriverXaiOAuthClientCompatibilityGate(t *testing.T) {
 	driver := newChainProviderDriver()
@@ -63,10 +65,10 @@ func TestChainProviderDriverXaiOAuthClientCompatibilityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("empty vendor oauth still eliminated for openai_standard", func(t *testing.T) {
+	t.Run("empty vendor oauth keeps openai_standard responses candidate", func(t *testing.T) {
 		req := newAuthMatrixRequest(t, http.MethodPost, "/v1/responses", `{"model":"gpt-5","input":"hi"}`, nil)
-		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(req, xaiCompatOAuthAccount(""), "openai_standard"); reason != "oauth_account_client_compatibility_unsupported" {
-			t.Fatalf("reason = %q, want oauth_account_client_compatibility_unsupported（迁移期空值同 gpt）", reason)
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(req, xaiCompatOAuthAccount(""), "openai_standard"); reason != "" {
+			t.Fatalf("reason = %q, want 空（空 vendor 不再按 gpt 淘汰，与 xai 分支一致）", reason)
 		}
 	})
 

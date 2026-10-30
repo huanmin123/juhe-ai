@@ -250,7 +250,7 @@ func unchangedOrNormalize(family Family, trimmed, normalized string) Classificat
 }
 
 // canonicalBaseURL 校验绝对 http/https URL（host 必填、无 userinfo/query/
-// fragment），与 providerconnectionmigration 的规则 12 口径一致。
+// fragment），沿用已退役的 provider connection migration 规则 12 口径。
 func canonicalBaseURL(raw string) (string, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||

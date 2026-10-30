@@ -60,9 +60,9 @@ type DirectAccount struct {
 	// ConnectionPresetProfileID 派生；OAuthType 是 accounts.oauth_type 列
 	// （OAuth 分流的唯一运行时来源，凭据 JSON 不再携带）；探针上游地址是
 	// 健康检查连接行的 base_url（凭据 JSON 不再携带 base_url）。
-	OAuthType           string
+	OAuthType            string
 	ConnectionPresetCode string
-	ConnectionBaseURL   string
+	ConnectionBaseURL    string
 }
 
 type DirectSource struct {
@@ -306,20 +306,20 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 // generic_* 三档对应新 generic_http 连接（旧 openai-compatible/hybrid 泛化
 // 身份）；profile_hybrid_* 为 Node 遗留形态，种子未含但保留兼容）。
 var directProfileProtocolMetadata = map[string][2]string{
-	"profile_openai_openai_v1":          {"openai", "v1"},
-	"profile_gpt_openai_v1":             {"openai", "v1"},
-	"profile_xai_openai_v1":             {"openai", "v1"},
-	"profile_deepseek_openai_v1":        {"openai", "v1"},
-	"profile_deepseek_anthropic_v1":     {"anthropic", "v1"},
-	"profile_anthropic_anthropic_v1":    {"anthropic", "v1"},
-	"profile_glm_general_openai_v1":     {"openai", "v1"},
-	"profile_glm_coding_openai_v1":      {"openai", "v1"},
-	"profile_glm_coding_anthropic_v1":   {"anthropic", "v1"},
-	"profile_gemini_openai_chat_v1beta": {"openai", "v1"},
-	"profile_gemini_native_v1beta":      {"gemini", "v1beta"},
-	"profile_generic_openai_v1":         {"openai", "v1"},
-	"profile_generic_anthropic_v1":      {"anthropic", "v1"},
-	"profile_generic_gemini_v1beta":     {"gemini", "v1beta"},
+	"profile_openai_openai_v1":             {"openai", "v1"},
+	"profile_gpt_openai_v1":                {"openai", "v1"},
+	"profile_xai_openai_v1":                {"openai", "v1"},
+	"profile_deepseek_openai_v1":           {"openai", "v1"},
+	"profile_deepseek_anthropic_v1":        {"anthropic", "v1"},
+	"profile_anthropic_anthropic_v1":       {"anthropic", "v1"},
+	"profile_glm_general_openai_v1":        {"openai", "v1"},
+	"profile_glm_coding_openai_v1":         {"openai", "v1"},
+	"profile_glm_coding_anthropic_v1":      {"anthropic", "v1"},
+	"profile_gemini_openai_chat_v1beta":    {"openai", "v1"},
+	"profile_gemini_native_v1beta":         {"gemini", "v1beta"},
+	"profile_generic_openai_v1":            {"openai", "v1"},
+	"profile_generic_anthropic_v1":         {"anthropic", "v1"},
+	"profile_generic_gemini_v1beta":        {"gemini", "v1beta"},
 	"profile_hybrid_openai_chat_v1":        {"openai", "v1"},
 	"profile_hybrid_anthropic_messages_v1": {"anthropic", "v1"},
 	"profile_hybrid_gemini_native_v1beta":  {"gemini", "v1beta"},
@@ -333,37 +333,48 @@ var directProfileProtocolMetadata = map[string][2]string{
 // 字面不同，按字面映射，不做字符串拼推导。不在表内的 preset（minimax_media、
 // volcengine_*、qwen_dashscope 等媒体/新增厂商）没有已注册的 J1 探针协议目录，
 // 返回 false 并由上层 fail closed。
+// connectionPresetProfiles 是 connection_preset_code ↔ 探针 profile ID 的唯一
+// 映射表（双向查询共用；改表即两侧同步）。
+var connectionPresetProfiles = []struct {
+	preset  string
+	profile string
+}{
+	{"gpt_openai_v1", "profile_gpt_openai_v1"},
+	{"xai_openai_v1", "profile_xai_openai_v1"},
+	{"deepseek_openai_v1", "profile_deepseek_openai_v1"},
+	{"deepseek_anthropic_v1", "profile_deepseek_anthropic_v1"},
+	{"anthropic_v1", "profile_anthropic_anthropic_v1"},
+	{"glm_general_openai_v1", "profile_glm_general_openai_v1"},
+	{"glm_coding_openai_v1", "profile_glm_coding_openai_v1"},
+	{"glm_coding_anthropic_v1", "profile_glm_coding_anthropic_v1"},
+	{"gemini_openai_chat_v1beta", "profile_gemini_openai_chat_v1beta"},
+	{"gemini_native_v1beta", "profile_gemini_native_v1beta"},
+	{"generic_openai_v1", "profile_generic_openai_v1"},
+	{"generic_anthropic_v1", "profile_generic_anthropic_v1"},
+	{"generic_gemini_v1beta", "profile_generic_gemini_v1beta"},
+}
+
 func ConnectionPresetProfileID(preset string) (string, bool) {
-	switch strings.TrimSpace(preset) {
-	case "gpt_openai_v1":
-		return "profile_gpt_openai_v1", true
-	case "xai_openai_v1":
-		return "profile_xai_openai_v1", true
-	case "deepseek_openai_v1":
-		return "profile_deepseek_openai_v1", true
-	case "deepseek_anthropic_v1":
-		return "profile_deepseek_anthropic_v1", true
-	case "anthropic_v1":
-		return "profile_anthropic_anthropic_v1", true
-	case "glm_general_openai_v1":
-		return "profile_glm_general_openai_v1", true
-	case "glm_coding_openai_v1":
-		return "profile_glm_coding_openai_v1", true
-	case "glm_coding_anthropic_v1":
-		return "profile_glm_coding_anthropic_v1", true
-	case "gemini_openai_chat_v1beta":
-		return "profile_gemini_openai_chat_v1beta", true
-	case "gemini_native_v1beta":
-		return "profile_gemini_native_v1beta", true
-	case "generic_openai_v1":
-		return "profile_generic_openai_v1", true
-	case "generic_anthropic_v1":
-		return "profile_generic_anthropic_v1", true
-	case "generic_gemini_v1beta":
-		return "profile_generic_gemini_v1beta", true
-	default:
-		return "", false
+	trimmed := strings.TrimSpace(preset)
+	for _, item := range connectionPresetProfiles {
+		if item.preset == trimmed {
+			return item.profile, true
+		}
 	}
+	return "", false
+}
+
+// ConnectionPresetForProfileID 是 ConnectionPresetProfileID 的逆向查询：把旧
+// profile ID 还原为账户健康检查连接 preset，供读面按“档案 = 健康检查连接
+// preset”做筛选。媒体/新增厂商 preset 无 J1 探针目录，不在表中，返回 false。
+func ConnectionPresetForProfileID(profileID string) (string, bool) {
+	trimmed := strings.TrimSpace(profileID)
+	for _, item := range connectionPresetProfiles {
+		if item.profile == trimmed {
+			return item.preset, true
+		}
+	}
+	return "", false
 }
 
 func validateDirectProtocolMetadata(profile, code, version string) error {

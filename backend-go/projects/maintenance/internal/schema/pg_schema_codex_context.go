@@ -133,25 +133,6 @@ var postgresSchemaCodexContext = []PGStatement{
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_expires ON codex_context_compacts(expires_at ASC, compact_id)`,
 	},
 	{
-		// provider_code 维度退役（B4① 存储迁移批）：写入面恒空串、boundary
-		// 比对恒真，列与三个 boundary 索引（PG 随列删除自动移除）一并退役。
-		// 建表 DDL 已无该列，本组幂等 DROP 语句只对存量库生效（fresh 库列
-		// 不存在即零操作）。
-		SchemaName: "juhe_codex_context",
-		Source:     "codex-context-provider-code-retirement",
-		SQL:        `ALTER TABLE juhe_codex_context.codex_context_sessions DROP COLUMN IF EXISTS provider_code`,
-	},
-	{
-		SchemaName: "juhe_codex_context",
-		Source:     "codex-context-provider-code-retirement",
-		SQL:        `ALTER TABLE juhe_codex_context.codex_context_responses DROP COLUMN IF EXISTS provider_code`,
-	},
-	{
-		SchemaName: "juhe_codex_context",
-		Source:     "codex-context-provider-code-retirement",
-		SQL:        `ALTER TABLE juhe_codex_context.codex_context_compacts DROP COLUMN IF EXISTS provider_code`,
-	},
-	{
 		SchemaName: "juhe_codex_context",
 		Source:     "codex-context",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_codex_context_storage_cleanup_due ON codex_context_storage_cleanup_queue(next_attempt_at ASC, enqueued_at ASC, storage_key ASC)`,

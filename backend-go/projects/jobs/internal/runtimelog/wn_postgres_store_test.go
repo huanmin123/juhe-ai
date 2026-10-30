@@ -80,14 +80,14 @@ func openFakePostgresStore(t *testing.T, server *pgFakeServer) *postgresStore {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	opened, err := OpenStore(ctx, Config{Mode: ModePostgres, PostgresURL: server.URL()})
+	opened, err := OpenStore(ctx, Config{PostgresURL: server.URL()})
 	if err != nil {
 		t.Fatalf("连接 PostgreSQL fake store 失败: %v", err)
 	}
 	store, ok := opened.(*postgresStore)
 	if !ok {
 		_ = opened.Close()
-		t.Fatalf("OpenStore(ModePostgres) 返回 %T，期望 *postgresStore", opened)
+		t.Fatalf("OpenStore 返回 %T，期望 *postgresStore", opened)
 	}
 	t.Cleanup(func() {
 		if closeErr := store.Close(); closeErr != nil {
