@@ -93,6 +93,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     proxyProfileId: advanced.proxyProfileId,
     accountExpiresAt,
     temporaryUnavailableContinuousProbeEnabled: advanced.temporaryUnavailableContinuousProbeEnabled !== false,
+    // 后台自动探测总开关（总开关设计 §2）：授权实例行回显来源值；缺省视作开启。
+    backgroundProbeEnabled: advanced.backgroundProbeEnabled !== false,
     lockDeathTimeoutSeconds: advanced.lockDeathTimeoutSeconds ?? 300,
     lockRetryIntervalSeconds: advanced.lockRetryIntervalSeconds ?? 5,
     ...accountGptRequestOverridesForForm(account.providerCode, credentials),
@@ -206,6 +208,8 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     supportedModels: [...(account.supportedModels ?? [])],
     healthCheckModel: account.healthCheckModel,
     temporaryUnavailableContinuousProbeEnabled: account.temporaryUnavailableContinuousProbeEnabled !== false,
+    // 克隆继承来源账户总开关（总开关设计 §8）；缺省视作开启。
+    backgroundProbeEnabled: account.backgroundProbeEnabled !== false,
     healthCheckEndpointMode: account.healthCheckEndpointMode,
     ...accountGptRequestOverridesForForm(account.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(account.modelMappings),

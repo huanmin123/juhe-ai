@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   cooldown_retest_generation text,
   cooldown_retest_last_at text,
   cooldown_retest_last_status_code integer,
+  background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
   temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
   expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
   capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),

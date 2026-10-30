@@ -110,6 +110,7 @@ const sourceAccountColumns = `COALESCE(vendor_code, '') AS vendor_code,
 		COALESCE(name, '') AS name,
 		COALESCE(type, '') AS type,
 		COALESCE(concurrency_limit, 0) AS concurrency_limit,
+		COALESCE(background_probe_enabled, 1) AS background_probe_enabled,
 		COALESCE(temporary_unavailable_continuous_probe_enabled, 0) AS temporary_unavailable_continuous_probe_enabled,
 		COALESCE(health_check_model, '') AS health_check_model,
 		COALESCE(health_check_endpoint_mode, '') AS health_check_endpoint_mode,
@@ -136,23 +137,24 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 	}
 
 	var source struct {
-		vendorCode                string
-		connectionDriverCode      string
-		protocolCode              string
-		protocolVersion           string
-		name                      string
-		accountType               string
-		concurrencyLimit          int
-		continuousProbeEnabled    int
-		healthCheckModel          string
-		healthCheckEndpointMode   string
-		capabilityDomain          string
+		vendorCode              string
+		connectionDriverCode    string
+		protocolCode            string
+		protocolVersion         string
+		name                    string
+		accountType             string
+		concurrencyLimit        int
+		backgroundProbeEnabled  int
+		continuousProbeEnabled  int
+		healthCheckModel        string
+		healthCheckEndpointMode string
+		capabilityDomain        string
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT `+sourceAccountColumns+` FROM `+s.table("accounts")+`
 		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), in.SourceAccountID).
 		Scan(&source.vendorCode, &source.connectionDriverCode, &source.protocolCode,
 			&source.protocolVersion, &source.name, &source.accountType, &source.concurrencyLimit,
-			&source.continuousProbeEnabled, &source.healthCheckModel, &source.healthCheckEndpointMode,
+			&source.backgroundProbeEnabled, &source.continuousProbeEnabled, &source.healthCheckModel, &source.healthCheckEndpointMode,
 			&source.capabilityDomain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -201,6 +203,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 				cooldown_retest_last_status_code = NULL,
 				stream_failure_count = 0,
 				stream_failure_window_started_at = NULL,
+				background_probe_enabled = ?,
 				temporary_unavailable_continuous_probe_enabled = ?,
 				health_check_model = ?,
 				health_check_endpoint_mode = ?,
@@ -213,7 +216,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 			WHERE id = ?`),
 			source.vendorCode, source.connectionDriverCode, source.protocolCode,
 			source.protocolVersion, restoredName, source.accountType,
-			source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
+			source.backgroundProbeEnabled, source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
 			source.capabilityDomain,
 			in.SourceAccountID, in.OwnerID, now, deletedID); err != nil {
 			return nil, err
@@ -241,16 +244,16 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		 priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message,
 		 cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
-		 temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
+		 background_probe_enabled, temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
 		 capability_domain,
 		 authorization_instance_source_account_id, authorization_instance_authorization_id,
 		 authorization_instance_owner_system_account_id,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, in.GranteeID, nullableVendorCode(source.vendorCode), source.connectionDriverCode, source.protocolCode,
 		source.protocolVersion, name, source.accountType, instanceEmptyCredentials, "",
 		source.concurrencyLimit, 0, 0, 0,
-		source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
+		source.backgroundProbeEnabled, source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
 		source.capabilityDomain,
 		in.SourceAccountID, in.RuntimeAuthorizationID, in.OwnerID, now, now); err != nil {
 		return nil, err

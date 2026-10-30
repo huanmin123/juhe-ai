@@ -1,9 +1,10 @@
 package main
 
-// 2026-09-28 静态能力兜底回归（真实数据链）：数据库内置目录行没有
-// supported_tools / input_modalities / output_modalities 列（fixture DDL 与
-// 生产/Node 同形），chat 面目录读取链必须在装载（缓存写入前）按静态定价快照
-// 补齐。管理面对照物是 providers.ApplyBuiltInStaticDerivedFields（同一解析器
+// 2026-09-28 静态能力兜底回归（真实数据链）：本文件种子行的 INSERT 不含
+// supported_tools / input_modalities / output_modalities 显式声明（2026-10-30
+// T82 前 fixture DDL 无这三列；列落地后种子行取默认空值 '{}'/'[]'），chat 面
+// 目录读取链必须在装载（缓存写入前）按静态定价快照补齐。管理面对照物是
+// providers.ApplyBuiltInStaticDerivedFields（同一解析器
 // ResolveBuiltInStaticDerivedCapabilities），本文件同时断言两面 parity。
 //
 // 2026-09-28 custom 目录行能力继承回归（BUG-0229）：custom（global/personal）
@@ -28,16 +29,17 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
 
-// seedBuiltinStaticDerivedRows 种入无工具列的内置目录行（gpt-5.6-terra /
-// gpt-5.6-sol）、一条 custom 全局行（custom-plain-model，无内置对应行）、一条
-// personal custom 行整行覆盖内置 gpt-5.6-sol（cpm_override）与一条 personal
-// 全新自定义模型行（cpm_new_personal）。
+// seedBuiltinStaticDerivedRows 种入不带能力声明列值的内置目录行（gpt-5.6-terra /
+// gpt-5.6-sol，三列走默认空值）、一条 custom 全局行（custom-plain-model，无内置
+// 对应行）、一条 personal custom 行整行覆盖内置 gpt-5.6-sol（cpm_override）与
+// 一条 personal 全新自定义模型行（cpm_new_personal）。
 //
 // 双面种子：chat 面目录读取链已收敛 models 单表（供应商与上游协议面重构设计
 // §3），行种 models（mode/协议由 supported_endpoint_modes_json 反推）；管理面
 // （internal/providers）仍读 provider_model_catalog / custom_provider_models
 // 旧表（迁移属后续切片），同内容行同步种旧表维持两面 parity 断言有效。两面
-// 目录表都没有 supported_tools / input_modalities / output_modalities 列。
+// 种子行都不带能力三列显式声明（models 三列走默认空值，显式声明见
+// chain_catalog_capability_declaration_test.go）。
 func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 	t.Helper()
 	now := "2026-09-04T00:00:00.000Z"

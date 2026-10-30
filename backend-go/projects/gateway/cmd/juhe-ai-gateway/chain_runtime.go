@@ -683,7 +683,15 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		services.Close()
 		return nil, fmt.Errorf("create normal route latency degradation runtime state: %w", storeErr)
 	}
-	services.LatencyDegradation = gatewayproxyhealth.NewLatencyDegradationService(latencyStore, nil, gatewayproxyhealth.LatencyDegradationOptions{})
+	// 手动模式开关位（后台自动探测总开关设计 §5）：手动账户降级不写
+	// nextProbeAt / probe-index。主键单列 SELECT 只在慢样本/达标样本落库时
+	// 触发；查询失败由服务侧 fail-open（与 flag=1 默认路径一致）。
+	latencyProbeDisabled := newChainBackgroundProbeDisabledLookup(composed.db)
+	services.LatencyDegradation = gatewayproxyhealth.NewLatencyDegradationService(latencyStore, nil, gatewayproxyhealth.LatencyDegradationOptions{
+		BackgroundProbeDisabled: func(ctx context.Context, account gatewayproxyhealth.SuppressibleGatewayAccount) (bool, error) {
+			return latencyProbeDisabled(ctx, account.ID)
+		},
+	})
 
 	// ---- account api-key failure guard (redis transient tombstones) ----
 	// gatewayaccounteffects module state: the Redis transient tombstones

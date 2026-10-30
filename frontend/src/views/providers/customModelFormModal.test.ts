@@ -72,6 +72,26 @@ describe('创建载荷构建（customProviderModelForm 纯函数域）', () => {
     const payload = buildCustomModelPayload(personalTextForm({ model: '   ' }), 'text')
     expect(payload).toBeUndefined()
   })
+
+  it('能力声明三键：基础段始终下发（不随 includeRequestCapabilities 门控），矩阵键过滤为协议子集并剔除空数组键', () => {
+    const form = personalTextForm({
+      supportedApiProtocols: ['responses', 'chat_completions'],
+      supportedToolsByProtocol: { responses: ['function_calling'], chat_completions: [], legacy_protocol: ['web_search'] },
+      inputModalities: ['text', 'image'],
+      outputModalities: ['text']
+    })
+    const payload = buildCustomModelPayload(form, 'text', { includeRequestCapabilities: true, includePrices: false })
+    expect(payload?.supportedToolsByProtocol).toEqual({ responses: ['function_calling'] })
+    expect(payload?.inputModalities).toEqual(['text', 'image'])
+    expect(payload?.outputModalities).toEqual(['text'])
+  })
+
+  it('能力声明默认值：未声明时随载荷下发空矩阵与空模态数组（PATCH 整值替换语义的基线形态）', () => {
+    const payload = buildCustomModelPayload(personalTextForm(), 'text')
+    expect(payload?.supportedToolsByProtocol).toEqual({})
+    expect(payload?.inputModalities).toEqual([])
+    expect(payload?.outputModalities).toEqual([])
+  })
 })
 
 describe('编辑差量 PATCH 载荷（customProviderModelForm 纯函数域）', () => {
@@ -105,6 +125,20 @@ describe('编辑差量 PATCH 载荷（customProviderModelForm 纯函数域）', 
       { includeRequestCapabilities: true, includePrices: true, includeDefaultReasoningEffort: true }
     )
     expect(payload?.defaultReasoningEffort).toBe('high')
+  })
+
+  it('能力声明 diff：三键在 editable keys 中，矩阵/模态变更进 PATCH，其余字段不误报', () => {
+    const baselinePayload = buildCustomModelPayload(personalTextForm(), 'text') as Partial<ProviderModelUpsertPayload>
+    const current: Partial<ProviderModelUpsertPayload> = {
+      ...baselinePayload,
+      supportedToolsByProtocol: { responses: ['function_calling'] },
+      outputModalities: ['text', 'image']
+    }
+    const patch = buildCustomModelMutationPatch(baselinePayload, current)
+    expect(Object.keys(patch).sort()).toEqual(['outputModalities', 'supportedToolsByProtocol'])
+    expect(patch.supportedToolsByProtocol).toEqual({ responses: ['function_calling'] })
+    expect(patch.outputModalities).toEqual(['text', 'image'])
+    expect(hasCustomModelMutationChanges(buildCustomModelMutationPatch(baselinePayload, { ...baselinePayload }))).toBe(false)
   })
 })
 
@@ -174,5 +208,27 @@ describe('CustomModelFormModal 组件契约（源码级锚点）', () => {
     expect(setupSource).toContain('Token 计费 · USD / 1M Token')
     expect(setupSource).toContain('图像计费 · USD')
     expect(setupSource).toContain('音频计费 · USD')
+  })
+
+  it('能力声明编辑区：仅 custom 路径显示，输入/输出模态下拉与逐协议工具矩阵接线', () => {
+    expect(templateSource).toContain('<template v-if="!editingBuiltInModel">')
+    expect(templateSource).toContain('label="输入模态"')
+    expect(templateSource).toContain('label="输出模态"')
+    expect(templateSource).toContain(':options="modelModalityOptions"')
+    expect(templateSource).toContain(':label="`工具矩阵 · ${formatApiProtocol(protocol)}`"')
+    expect(templateSource).toContain('v-model:value="customModelForm.supportedToolsByProtocol[protocol]"')
+    expect(templateSource).toContain(':options="modelToolOptions"')
+    expect(templateSource.match(/v-for="protocol in customModelForm\.supportedApiProtocols"/g)?.length).toBe(1)
+  })
+
+  it('能力声明矩阵清理与重置：协议变化清除越界矩阵键，reset 恢复三键默认，built_in 编辑剥离三键', () => {
+    expect(setupSource).toContain('watch(() => [...customModelForm.supportedApiProtocols]')
+    expect(setupSource).toContain('delete customModelForm.supportedToolsByProtocol[protocol]')
+    expect(setupSource).toContain('supportedToolsByProtocol: {},')
+    expect(setupSource).toContain('inputModalities: [...emptyCustomModelForm.inputModalities]')
+    expect(setupSource).toContain('outputModalities: [...emptyCustomModelForm.outputModalities]')
+    expect(setupSource).toContain('supportedToolsByProtocol: _supportedToolsByProtocol')
+    expect(setupSource).toContain('inputModalities: _inputModalities')
+    expect(setupSource).toContain('outputModalities: _outputModalities')
   })
 })

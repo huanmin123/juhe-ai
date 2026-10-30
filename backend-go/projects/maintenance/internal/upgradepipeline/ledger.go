@@ -124,8 +124,7 @@ INSERT INTO juhe_business.schema_migrations
   (revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, started_at, applied_at, duration_ms, app_version)
 VALUES ($1, $2, $3, $4, $5, 'applied', $6, $7, true, $8, $8, 0, $9)
 ON CONFLICT (revision) DO UPDATE SET
-  status = 'applied', adopted = true, impl_version = EXCLUDED.impl_version,
-  checksum = EXCLUDED.checksum, applied_at = EXCLUDED.applied_at, detail_json = NULL`,
+  status = 'applied', adopted = true, impl_version = EXCLUDED.impl_version`,
 		step.Revision, step.ID, step.Title, string(step.Target), step.Destructive,
 		step.Checksum(), step.ImplVersion, formatTime(adopted), appVersion)
 	if err != nil {

@@ -103,6 +103,21 @@ assert.match(
 assert.match(bindingDialogSource, /chatApi\.updateToolPreferences\(payload\)/, '一次保存必须是一个携带全部键的偏好 PATCH')
 assert.match(bindingDialogSource, /\(event: 'saved', payload: ChatToolPreferencesPatch\): void/, 'saved 事件必须携带偏好 payload（供 ChatView 同步当前会话）')
 assert.match(bindingDialogSource, /新会话自动继承，保存后当前会话立即同步。/, 'intro 必须说明新会话自动继承与当前会话立即同步')
+// --- 当前所选模型工具能力警示（能力声明契约，2026-10-30）：能力由 ChatView 传入，弹窗不新增数据源调用 ---
+
+assert.match(bindingDialogSource, /modelSupportsTools\?: boolean \| null/, '弹窗必须接收可选的当前模型函数调用能力声明（ChatView 计算，弹窗自身不发请求）')
+assert.match(bindingDialogSource, /v-if="modelSupportsTools === false"/, '仅在能力已加载且明确未声明 function_calling 时渲染警示（能力未加载/未选模型不得误报）')
+assert.match(
+  bindingDialogSource,
+  /当前所选模型未声明函数调用（function calling）能力，网页搜索等模型工具不会生效；可在「模型广场 → 自定义模型」为该模型声明工具能力。/,
+  '警示必须说明工具不生效后果与声明入口'
+)
+assert.match(chatViewSource, /:model-supports-tools="toolBindingDialogModelSupportsTools"/, 'ChatView 必须把当前模型函数调用能力传给统一绑定弹窗')
+assert.match(
+  chatViewSource,
+  /const toolBindingDialogModelSupportsTools = computed\(\(\) => chatModelSupportsTools\(selectedModelOption\.value\)\)/,
+  '能力传参必须由已加载的当前模型能力矩阵经纯函数计算（能力未加载为 undefined）'
+)
 assert.match(bindingDialogSource, /if \(!section\.bound\) return '未设置'/, '每区必须显示绑定状态：未设置')
 assert.match(bindingDialogSource, /section\.valid \? '已绑定' : '已失效'/, '每区必须显示绑定状态：已绑定/已失效')
 assert.match(bindingDialogSource, /selectedAccountId\(section\)/, '每个工具区必须为「账户 → 模型」两级选择（账户去重下拉、模型跟随账户过滤）')

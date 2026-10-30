@@ -311,6 +311,9 @@ type ListItem struct {
 	// 归属人都可见）。两字段恒输出，非 omitempty。
 	ExpeditedRecoveryEnabled bool `json:"expeditedRecoveryEnabled"`
 	ExpeditedOverLimit       bool `json:"expeditedOverLimit"`
+	// 后台自动探测总开关（总开关设计 §9）：前端「手动」标记依据；授权实例行
+	// 跟随来源账户值。恒输出。
+	BackgroundProbeEnabled bool `json:"backgroundProbeEnabled"`
 	LockStatePublic
 }
 
@@ -533,6 +536,10 @@ type listRow struct {
 	balanceQueryNextRefreshAt sql.NullString
 	// 特供快速恢复行值（设计 §8.2）：授权实例行同样取自身行值。
 	expeditedRecoveryEnabled int
+	// 后台自动探测总开关行值（总开关设计 §9「手动」标记）：授权实例行经
+	// source 投影读来源值（实例跟随来源账户）。
+	backgroundProbeEnabled       int
+	sourceBackgroundProbeEnabled sql.NullInt64
 }
 
 func listItemColumns(alias string) []string {
@@ -623,8 +630,12 @@ func listItemColumns(alias string) []string {
 		// 的 balance_query_enabled / balance_query_next_refresh_at 选取）。
 		alias + ".balance_query_enabled",
 		alias + ".balance_query_next_refresh_at",
+		// 后台自动探测总开关行值（总开关设计 §9）。
+		alias + ".background_probe_enabled",
 		// 特供快速恢复行值（设计 §8.2）。
 		alias + ".expedited_recovery_enabled",
+		// 授权实例行的来源开关值（实例跟随来源账户，总开关设计 §2）。
+		"source_accounts.background_probe_enabled AS source_background_probe_enabled",
 	}
 }
 
@@ -701,7 +712,9 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.boundGroupLocalPriority, &row.boundGroupLocalSuperPriorityEnabled,
 		&row.boundGroupLocalFallbackEnabled,
 		&row.balanceQueryEnabled, &row.balanceQueryNextRefreshAt,
+		&row.backgroundProbeEnabled,
 		&row.expeditedRecoveryEnabled,
+		&row.sourceBackgroundProbeEnabled,
 	)
 	return row, err
 }
@@ -1017,10 +1030,16 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		Permissions:               ownerPermissions(),
 		TodayUsage:                emptyTodayUsageSummary(),
 		Usage:                     emptyUsageSummary(),
+		BackgroundProbeEnabled:    row.backgroundProbeEnabled == 1,
 	}
 	if authorized {
 		item.AccessType = "authorized"
 		item.Permissions = authorizedPermissions(nullPtrString(row.authorizationEffectiveSourceType))
+		// 后台自动探测跟随来源账户（总开关设计 §2）：来源 join 未命中时保留
+		// 实例行自身值（传播链保持两者一致）。
+		if row.sourceBackgroundProbeEnabled.Valid {
+			item.BackgroundProbeEnabled = row.sourceBackgroundProbeEnabled.Int64 == 1
+		}
 		// Node account-management-list.repository.ts:501-523: the source
 		// account's live values replace the frozen instance snapshot, each
 		// field falling back to the instance value when the source join misses.
@@ -1547,6 +1566,9 @@ type EditBasicDetail struct {
 	HealthCheckEndpointMode string       `json:"healthCheckEndpointMode"`
 	BoundGroupID            *string      `json:"boundGroupId,omitempty"`
 	BoundGroupName          *string      `json:"boundGroupName,omitempty"`
+	// BackgroundProbeEnabled 回显后台自动探测总开关（总开关设计 §2 编辑表单
+	// 读取）。恒输出。
+	BackgroundProbeEnabled bool `json:"backgroundProbeEnabled"`
 }
 
 // Credentials mirrors AccountCredentials: an open record of credential fields.
@@ -1608,6 +1630,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		sourceAccountID          sql.NullString
 		boundGroupID             sql.NullString
 		boundGroupName           sql.NullString
+		backgroundProbeEnabled   int
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, COALESCE(accounts.vendor_code, '') AS provider_code,
@@ -1621,6 +1644,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 				FROM `+s.table("account_connections")+` account_connections
 				WHERE account_connections.id = accounts.health_check_connection_id), '') AS current_health_check_preset,
 			accounts.authorization_instance_authorization_id, accounts.authorization_instance_source_account_id,
+			accounts.background_probe_enabled,
 			(
 				SELECT group_accounts.group_id
 				FROM `+s.table("group_accounts")+` group_accounts
@@ -1652,6 +1676,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		&row.fallbackEnabled, &row.clientCompatibility, &row.healthCheckModel,
 		&row.healthCheckEndpointMode, &row.healthCheckConnectionID, &row.currentHealthCheckPreset,
 		&row.authorizationID, &row.sourceAccountID,
+		&row.backgroundProbeEnabled,
 		&row.boundGroupID, &row.boundGroupName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -1752,6 +1777,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		HealthCheckEndpointMode:   row.healthCheckEndpointMode,
 		BoundGroupID:              nullPtrString(row.boundGroupID),
 		BoundGroupName:            nullPtrString(row.boundGroupName),
+		BackgroundProbeEnabled:    row.backgroundProbeEnabled == 1,
 	}
 	if access.CanAccessAll() {
 		detail.SystemAccountID = &row.systemAccountID

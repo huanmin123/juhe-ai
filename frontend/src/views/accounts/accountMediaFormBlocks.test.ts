@@ -360,6 +360,7 @@ describe('buildAccountEditFormLoad 媒体编辑装载（七项落表单）', () 
       },
       accountExpiresAt: '2026-12-31T00:00:00Z',
       temporaryUnavailableContinuousProbeEnabled: true,
+      backgroundProbeEnabled: true,
       balanceQueryEnabled: true,
       balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 10 },
       effectiveErrorHandlingRules: [],

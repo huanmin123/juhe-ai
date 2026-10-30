@@ -38,9 +38,7 @@ var nonBusinessStatsCleanupTables = []statsTableRule{
 	{"usage_stats_weekly", "stat_week", "week"},
 	{"usage_stats_monthly", "stat_month", "month"},
 	{"authorization_team_usage_summary_daily", "stat_date", "date"},
-	{"authorization_team_usage_range_windows", "end_date", "date"},
 	{"authorization_user_usage_summary_daily", "stat_date", "date"},
-	{"authorization_user_usage_range_windows", "end_date", "date"},
 	{"usage_model_minute", "stat_minute", "minute"},
 	{"usage_model_hourly", "stat_hour", "hour"},
 	{"usage_model_daily", "stat_date", "date"},
@@ -120,9 +118,7 @@ var usageStatsRetentionSpecs = []usageStatsRetentionSpec{
 	{"usage_error_monthly", "stat_month", "Monthly", "stats"},
 	{"usage_latency_monthly", "stat_month", "Monthly", "stats"},
 	{"authorization_team_usage_summary_daily", "stat_date", "Daily", "stats"},
-	{"authorization_team_usage_range_windows", "end_date", "WindowDate", "stats"},
 	{"authorization_user_usage_summary_daily", "stat_date", "Daily", "stats"},
-	{"authorization_user_usage_range_windows", "end_date", "WindowDate", "stats"},
 	{"usage_rank_snapshots", "snapshot_at", "RankSnapshot", "stats"},
 	{"usage_overview_summary_windows", "end_date", "WindowDate", "stats"},
 	{"usage_overview_trend_windows", "end_date", "WindowDate", "stats"},
@@ -346,12 +342,8 @@ func statsCountField(counts *retention.UsageStatsRetentionCounts, tableName stri
 		return &counts.UsageLatencyMonthly
 	case "authorization_team_usage_summary_daily":
 		return &counts.AuthorizationTeamUsageSummaryDaily
-	case "authorization_team_usage_range_windows":
-		return &counts.AuthorizationTeamUsageRangeWindows
 	case "authorization_user_usage_summary_daily":
 		return &counts.AuthorizationUserUsageSummaryDaily
-	case "authorization_user_usage_range_windows":
-		return &counts.AuthorizationUserUsageRangeWindows
 	case "usage_rank_snapshots":
 		return &counts.UsageRankSnapshots
 	case "usage_overview_summary_windows":

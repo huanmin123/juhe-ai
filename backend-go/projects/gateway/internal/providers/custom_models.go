@@ -36,6 +36,9 @@ type customProviderModelRecord struct {
 	SupportedAPIProtocols       []string
 	SupportedServiceTiers       []string
 	SupportedReasoningEfforts   []string
+	SupportedToolsByProtocol    map[string][]string
+	InputModalities             []string
+	OutputModalities            []string
 	DefaultReasoningEffort      *string
 	ReleaseDate                 *string
 	ShutdownDate                *string
@@ -78,6 +81,9 @@ type customProviderModelUpsertInput struct {
 	SupportedAPIProtocols       []string
 	SupportedServiceTiers       []string
 	SupportedReasoningEfforts   []string
+	SupportedToolsByProtocol    map[string][]string
+	InputModalities             []string
+	OutputModalities            []string
 	DefaultReasoningEffort      *string
 	ReleaseDate                 *string
 	ShutdownDate                *string
@@ -127,7 +133,7 @@ type customModelPatchOutcome struct {
 // mode+protocols 物理来源）。
 const customProviderModelColumns = `id, COALESCE(vendor_code, '') AS provider_code, public_model AS model, scope, system_account_id, status, catalog_visible,
 	supported_endpoint_modes_json, supported_service_tiers_json,
-	supported_reasoning_efforts_json, default_reasoning_effort,
+	supported_reasoning_efforts_json, supported_tools_by_protocol_json, input_modalities_json, output_modalities_json, default_reasoning_effort,
 	release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
 	input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
 	image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
@@ -206,6 +212,9 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		endpointModes                 sql.NullString
 		releaseDate, shutdownDate     sql.NullString
 		tiers, efforts                sql.NullString
+		toolsByProtocol               sql.NullString
+		inputModalities               sql.NullString
+		outputModalities              sql.NullString
 		defaultEffort                 sql.NullString
 		contextWindow, maxInput       sql.NullInt64
 		maxOutput                     sql.NullInt64
@@ -221,7 +230,7 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		updatedBy                     sql.NullString
 	)
 	if err := scan(&record.ID, &record.ProviderCode, &record.Model, &record.Scope, &systemAccountID, &record.Status,
-		&catalogVisible, &endpointModes, &tiers, &efforts, &defaultEffort,
+		&catalogVisible, &endpointModes, &tiers, &efforts, &toolsByProtocol, &inputModalities, &outputModalities, &defaultEffort,
 		&releaseDate, &shutdownDate, &contextWindow, &maxInput, &maxOutput,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage, &tierPrices,
 		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage, &currency,
@@ -236,6 +245,10 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 	record.Mode, record.SupportedAPIProtocols = deriveCustomModelProjection(endpointModes)
 	record.SupportedServiceTiers = parseCapabilityTokenArray(tiers)
 	record.SupportedReasoningEfforts = parseCapabilityTokenArray(efforts)
+	// T82 能力声明三列 lenient 解析（口径与 scanCustomCatalogItem 同源）。
+	record.SupportedToolsByProtocol = parseCapabilityTokenMatrix(toolsByProtocol)
+	record.InputModalities = parseCapabilityModalityArray(inputModalities)
+	record.OutputModalities = parseCapabilityModalityArray(outputModalities)
 	record.DefaultReasoningEffort = capabilityTokenPtr(defaultEffort)
 	record.ReleaseDate = textPtr(releaseDate)
 	record.ShutdownDate = textPtr(shutdownDate)
@@ -429,6 +442,7 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		s.boolValue(input.CachedInputUsdPer1M != nil),
 		mustJSON(endpointModes),
 		mustJSON(capabilities.supportedServiceTiers), mustJSON(capabilities.supportedReasoningEfforts),
+		capabilityMatrixJSON(input.SupportedToolsByProtocol), capabilityTokenArrayJSON(input.InputModalities), capabilityTokenArrayJSON(input.OutputModalities),
 		nullableTextPtr(capabilities.defaultReasoningEffort),
 		nullableDatePtr(input.ReleaseDate), nullableDatePtr(input.ShutdownDate),
 		nullableInt64Ptr(input.ContextWindowTokens), nullableInt64Ptr(input.MaxInputTokens), nullableInt64Ptr(input.MaxOutputTokens),
@@ -446,14 +460,14 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("models")+` (
 		id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
 		supports_prompt_caching, supported_endpoint_modes_json, supported_service_tiers_json,
-		supported_reasoning_efforts_json, default_reasoning_effort,
+		supported_reasoning_efforts_json, supported_tools_by_protocol_json, input_modalities_json, output_modalities_json, default_reasoning_effort,
 		release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
 		input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
 		image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
 		output_usd_per_image, currency, pricing_notes, capability_notes, notes,
 		created_by, updated_by, created_at, updated_at
 	)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		vendor_code = excluded.vendor_code,
 		public_model = excluded.public_model,
@@ -466,6 +480,9 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		supported_endpoint_modes_json = excluded.supported_endpoint_modes_json,
 		supported_service_tiers_json = excluded.supported_service_tiers_json,
 		supported_reasoning_efforts_json = excluded.supported_reasoning_efforts_json,
+		supported_tools_by_protocol_json = excluded.supported_tools_by_protocol_json,
+		input_modalities_json = excluded.input_modalities_json,
+		output_modalities_json = excluded.output_modalities_json,
 		default_reasoning_effort = excluded.default_reasoning_effort,
 		release_date = excluded.release_date,
 		shutdown_date = excluded.shutdown_date,
@@ -823,6 +840,17 @@ func (s *Store) customProviderModelPatchAssignments(current *customProviderModel
 	add("supportedReasoningEfforts", "supported_reasoning_efforts_json",
 		mustJSON(capabilities.supportedReasoningEfforts), mustJSON(current.SupportedReasoningEfforts),
 		func() { merged.SupportedReasoningEfforts = capabilities.supportedReasoningEfforts })
+	// T82 显式能力声明三列：提交键整值替换（空 object/array = 清空 = 未声明），
+	// 缺键保持现值（沿 parsed.present 机制）；nil 归一空值满足列 CHECK。
+	add("supportedToolsByProtocol", "supported_tools_by_protocol_json",
+		capabilityMatrixJSON(next.SupportedToolsByProtocol), capabilityMatrixJSON(current.SupportedToolsByProtocol),
+		func() { merged.SupportedToolsByProtocol = next.SupportedToolsByProtocol })
+	add("inputModalities", "input_modalities_json",
+		capabilityTokenArrayJSON(next.InputModalities), capabilityTokenArrayJSON(current.InputModalities),
+		func() { merged.InputModalities = next.InputModalities })
+	add("outputModalities", "output_modalities_json",
+		capabilityTokenArrayJSON(next.OutputModalities), capabilityTokenArrayJSON(current.OutputModalities),
+		func() { merged.OutputModalities = next.OutputModalities })
 	add("defaultReasoningEffort", "default_reasoning_effort",
 		nullableTextPtr(capabilities.defaultReasoningEffort), nullableTextPtr(current.DefaultReasoningEffort),
 		func() { merged.DefaultReasoningEffort = capabilities.defaultReasoningEffort })
@@ -929,6 +957,38 @@ var customProviderModelProtocolSet = map[string]bool{
 }
 
 var customModelCapabilityTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// providerModelToolTokens 是 custom 模型显式工具能力声明（T82
+// supportedToolsByProtocol 值域）的固定工具词表：写侧唯一入口，读侧不做词表
+// 过滤。
+var providerModelToolTokens = map[string]bool{
+	"function_calling":        true,
+	"web_search":              true,
+	"google_search_grounding": true,
+	"google_maps_grounding":   true,
+	"file_search":             true,
+	"image_generation":        true,
+	"code_interpreter":        true,
+	"code_execution":          true,
+	"hosted_shell":            true,
+	"apply_patch":             true,
+	"skills":                  true,
+	"computer_use":            true,
+	"mcp":                     true,
+	"tool_search":             true,
+	"structured_outputs":      true,
+	"url_context":             true,
+}
+
+// providerModelModalityTokens 是 custom 模型显式模态声明（T82 input/output
+// modalities 值域）的固定词表：写侧唯一入口。
+var providerModelModalityTokens = map[string]bool{
+	"text":  true,
+	"image": true,
+	"audio": true,
+	"video": true,
+	"file":  true,
+}
 
 // normalizeCustomProtocols mirrors normalizeProtocols: trim, filter to the
 // known protocol set, dedupe, order preserved.
@@ -1046,6 +1106,63 @@ func normalizeCapabilityTokenArray(values []string, label string) ([]string, err
 // parseCapabilityTokenArray mirrors parseEnumArray (read side): invalid or
 // unknown entries are dropped silently.
 func parseCapabilityTokenArray(value sql.NullString) []string {
+	output := []string{}
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return output
+	}
+	var raw []any
+	if err := json.Unmarshal([]byte(value.String), &raw); err != nil {
+		return output
+	}
+	for _, item := range raw {
+		text, ok := item.(string)
+		if !ok || !customModelCapabilityTokenPattern.MatchString(text) {
+			continue
+		}
+		output = append(output, text)
+	}
+	return output
+}
+
+// parseCapabilityTokenMatrix 解析显式工具能力矩阵（T82 supported_tools_by_protocol_json
+// 读侧 lenient 口径）：JSON object，键=协议 token、值=token 数组；键或值 token 不匹配
+// customModelCapabilityTokenPattern 的静默丢弃，值非数组的键整键丢弃，解析失败或
+// 空 → 空矩阵（=未声明）。读侧不做词表白名单过滤（写侧是唯一入口）。
+func parseCapabilityTokenMatrix(value sql.NullString) map[string][]string {
+	output := map[string][]string{}
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return output
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(value.String), &raw); err != nil {
+		return output
+	}
+	for rawProtocol, rawTokens := range raw {
+		protocol := strings.TrimSpace(rawProtocol)
+		if !customModelCapabilityTokenPattern.MatchString(protocol) {
+			continue
+		}
+		var items []any
+		if err := json.Unmarshal(rawTokens, &items); err != nil {
+			continue
+		}
+		tokens := make([]string, 0, len(items))
+		for _, item := range items {
+			text, ok := item.(string)
+			if !ok || !customModelCapabilityTokenPattern.MatchString(text) {
+				continue
+			}
+			tokens = append(tokens, text)
+		}
+		output[protocol] = tokens
+	}
+	return output
+}
+
+// parseCapabilityModalityArray 解析显式模态声明（T82 input/output_modalities_json
+// 读侧 lenient 口径）：JSON array，token 不匹配 customModelCapabilityTokenPattern
+// 的静默丢弃，解析失败或空 → 空数组。读侧不做词表白名单过滤（写侧是唯一入口）。
+func parseCapabilityModalityArray(value sql.NullString) []string {
 	output := []string{}
 	if !value.Valid || strings.TrimSpace(value.String) == "" {
 		return output
@@ -1244,6 +1361,25 @@ func mustJSON(value any) string {
 		return "null"
 	}
 	return string(encoded)
+}
+
+// capabilityMatrixJSON 序列化显式工具能力矩阵（T82 写侧）：nil 归一为空
+// object，满足列 object CHECK（jsonb_typeof = 'object'）；键序由
+// json.Marshal 稳定排序，patch 等值比较确定。
+func capabilityMatrixJSON(value map[string][]string) string {
+	if value == nil {
+		value = map[string][]string{}
+	}
+	return mustJSON(value)
+}
+
+// capabilityTokenArrayJSON 序列化显式模态声明（T82 写侧）：nil 归一为空
+// array，满足列 array CHECK（jsonb_typeof = 'array'）。
+func capabilityTokenArrayJSON(value []string) string {
+	if value == nil {
+		value = []string{}
+	}
+	return mustJSON(value)
 }
 
 // patchValuesEqual mirrors patchValuesEqual: identity or JSON string

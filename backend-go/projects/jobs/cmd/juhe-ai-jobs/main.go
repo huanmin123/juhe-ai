@@ -265,6 +265,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return failWith(stderr, fmt.Errorf("ping model-recovery Redis store: %w", err))
 		}
 		modelRecoveryRunner = keymodelrecovery.NewRunner(modelRecoveryStore, accountHealthReader, logger)
+		// 手动模式扫描层开关（后台自动探测总开关设计 §3）：主键单列 SELECT
+		// 复用 J1 直读输入的业务库句柄；查询失败由 runner 侧 fail-open。
+		modelRecoveryRunner.SetBackgroundProbeDisabled(keymodelrecovery.BackgroundProbeSQLSwitch(accountHealthInputDB))
 	}
 	accountBalanceConfig, err := accountbalance.LoadRuntimeConfig(os.Getenv)
 	if err != nil {

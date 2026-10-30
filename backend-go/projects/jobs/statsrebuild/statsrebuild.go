@@ -17,7 +17,7 @@
 //  2. 从 usage_records 逐批重放聚合（AggregateUsageStatsBatch，批间各自
 //     提交，中断后重跑本编排即重新清空并从零重放）；
 //  3. 重放排干后运行 WindowRefresher.RunStages 全部八个窗口/排行阶段
-//     （授权范围窗口阶段已随日摘要直读退役，见下方清空表注释）
+//     （授权范围窗口阶段已随日摘要直读退役）
 //     （usage_rank_snapshots、overview/model/error rank windows、
 //     ai_performance_summary_windows、scope range windows、system metrics
 //     trend windows），使统计缓存面在一次离线执行内回到与在线收敛一致的
@@ -109,11 +109,6 @@ var rebuildClearedStatsTables = []string{
 	// 授权消耗日摘要（upsertAuthorizationUsageReportRows）
 	"authorization_team_usage_summary_daily",
 	"authorization_user_usage_summary_daily",
-	// 授权范围窗口退役表（已随授权消耗明细改为日摘要直读而停用：无写入方、
-	// 无读者，仅 retention 按 end_date 修边）。重建顺带清空，防止僵尸行永久
-	// 滞留误导排障（边界审计 2026-10-06）。
-	"authorization_team_usage_range_windows",
-	"authorization_user_usage_range_windows",
 	// 排行快照（stages_rank.go）
 	"usage_rank_snapshots",
 	// 派生窗口（stages_window_snapshots.go）

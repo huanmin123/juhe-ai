@@ -190,24 +190,27 @@ func quotaRecoveryScheduleForAccount(policy map[string]any, accountType string) 
 // AdvancedDetail mirrors AccountAdvancedDetail
 // (account-advanced-detail.repository.ts).
 type AdvancedDetail struct {
-	ID                                            string                              `json:"id"`
-	ConfigRevision                                int64                               `json:"configRevision"`
-	AccessType                                    string                              `json:"accessType"`
-	Credentials                                   Credentials                         `json:"credentials,omitempty"`
-	EffectiveQuotaRecoveryPolicy                  map[string]map[string]any           `json:"effectiveQuotaRecoveryPolicy"`
-	EffectiveErrorHandlingRules                   []EffectiveAccountErrorHandlingRule `json:"effectiveErrorHandlingRules"`
-	ModelMappings                                 []ModelMapping                      `json:"modelMappings"`
-	ProxyProfileID                                *string                             `json:"proxyProfileId,omitempty"`
-	AvailabilitySchedule                          *AvailabilitySchedule               `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt                              *string                             `json:"accountExpiresAt,omitempty"`
-	TemporaryUnavailableContinuousProbeEnabled    bool                                `json:"temporaryUnavailableContinuousProbeEnabled"`
-	BalanceQueryEnabled                           bool                                `json:"balanceQueryEnabled"`
-	BalanceQueryConfig                            map[string]any                      `json:"balanceQueryConfig,omitempty"`
-	AuthorizationInstanceSourceAccountStatus      *string                             `json:"authorizationInstanceSourceAccountStatus,omitempty"`
-	AuthorizationInstanceSourceAccountSchedulable *bool                               `json:"authorizationInstanceSourceAccountSchedulable,omitempty"`
-	LockState                                     string                              `json:"lockState"`
-	LockDeathTimeoutSeconds                       int                                 `json:"lockDeathTimeoutSeconds"`
-	LockRetryIntervalSeconds                      int                                 `json:"lockRetryIntervalSeconds"`
+	ID                           string                              `json:"id"`
+	ConfigRevision               int64                               `json:"configRevision"`
+	AccessType                   string                              `json:"accessType"`
+	Credentials                  Credentials                         `json:"credentials,omitempty"`
+	EffectiveQuotaRecoveryPolicy map[string]map[string]any           `json:"effectiveQuotaRecoveryPolicy"`
+	EffectiveErrorHandlingRules  []EffectiveAccountErrorHandlingRule `json:"effectiveErrorHandlingRules"`
+	ModelMappings                []ModelMapping                      `json:"modelMappings"`
+	ProxyProfileID               *string                             `json:"proxyProfileId,omitempty"`
+	AvailabilitySchedule         *AvailabilitySchedule               `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt             *string                             `json:"accountExpiresAt,omitempty"`
+	// BackgroundProbeEnabled 回显后台自动探测总开关（总开关设计 §2）：授权实例
+	// 行跟随来源账户值（与持续恢复探活同款 source 投影）。
+	BackgroundProbeEnabled                        bool           `json:"backgroundProbeEnabled"`
+	TemporaryUnavailableContinuousProbeEnabled    bool           `json:"temporaryUnavailableContinuousProbeEnabled"`
+	BalanceQueryEnabled                           bool           `json:"balanceQueryEnabled"`
+	BalanceQueryConfig                            map[string]any `json:"balanceQueryConfig,omitempty"`
+	AuthorizationInstanceSourceAccountStatus      *string        `json:"authorizationInstanceSourceAccountStatus,omitempty"`
+	AuthorizationInstanceSourceAccountSchedulable *bool          `json:"authorizationInstanceSourceAccountSchedulable,omitempty"`
+	LockState                                     string         `json:"lockState"`
+	LockDeathTimeoutSeconds                       int            `json:"lockDeathTimeoutSeconds"`
+	LockRetryIntervalSeconds                      int            `json:"lockRetryIntervalSeconds"`
 	// 特供快速恢复（AI账户特供快速恢复通道设计 §8.2）：行属性标记（授权实例
 	// 行取自身行值，来源特供不传染）+ 归属名下"已超限"展示位。恒输出。
 	ExpeditedRecoveryEnabled bool `json:"expeditedRecoveryEnabled"`
@@ -234,6 +237,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		proxyProfileID             sql.NullString
 		availabilityScheduleJSON   sql.NullString
 		accountExpiresAt           sql.NullString
+		backgroundProbeEnabled     int
 		probeEnabled               int
 		balanceQueryEnabled        int
 		balanceQueryConfigJSON     string
@@ -246,6 +250,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		sourceAvailabilityJSON     sql.NullString
 		sourceAccountExpiresAt     sql.NullString
 		sourceProbeEnabled         sql.NullInt64
+		sourceBackgroundProbe      sql.NullInt64
 		expeditedRecoveryEnabled   int
 	}
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
@@ -267,6 +272,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 			accounts.proxy_profile_id,
 			accounts.availability_schedule_json,
 			accounts.account_expires_at,
+			accounts.background_probe_enabled,
 			accounts.temporary_unavailable_continuous_probe_enabled,
 			accounts.balance_query_enabled,
 			accounts.balance_query_config_json,
@@ -278,6 +284,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 			source_accounts.proxy_profile_id AS source_proxy_profile_id,
 			source_accounts.availability_schedule_json AS source_availability_schedule_json,
 			source_accounts.account_expires_at AS source_account_expires_at,
+			source_accounts.background_probe_enabled AS source_background_probe_enabled,
 			source_accounts.temporary_unavailable_continuous_probe_enabled AS source_temporary_unavailable_continuous_probe_enabled,
 			accounts.expedited_recovery_enabled
 		FROM `+s.table("accounts")+` accounts
@@ -300,11 +307,11 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		&row.id, &row.configRevision, &row.systemAccountID,
 		&row.credentialsEncrypted, &row.sourceCredentialsEncrypted,
 		&row.proxyProfileID, &row.availabilityScheduleJSON, &row.accountExpiresAt,
-		&row.probeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
+		&row.backgroundProbeEnabled, &row.probeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
 		&row.authorizationID, &row.sourceAccountID, &row.activeAuthorizationID,
 		&row.sourceStatus, &row.sourceSchedulable,
 		&row.sourceProxyProfileID, &row.sourceAvailabilityJSON,
-		&row.sourceAccountExpiresAt, &row.sourceProbeEnabled,
+		&row.sourceAccountExpiresAt, &row.sourceBackgroundProbe, &row.sourceProbeEnabled,
 		&row.expeditedRecoveryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -398,6 +405,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		ModelMappings:                mappings,
 		ProxyProfileID:               nullPtrString(row.proxyProfileID),
 		AccountExpiresAt:             nullPtrString(row.accountExpiresAt),
+		BackgroundProbeEnabled:       row.backgroundProbeEnabled == 1,
 		TemporaryUnavailableContinuousProbeEnabled: row.probeEnabled == 1,
 		BalanceQueryEnabled:                        row.balanceQueryEnabled == 1,
 		LockState:                                  "UNLOCKED",
@@ -408,6 +416,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		detail.AccessType = "authorized"
 		detail.ProxyProfileID = nullPtrString(row.sourceProxyProfileID)
 		detail.AccountExpiresAt = nullPtrString(row.sourceAccountExpiresAt)
+		detail.BackgroundProbeEnabled = row.sourceBackgroundProbe.Valid && row.sourceBackgroundProbe.Int64 == 1
 		detail.TemporaryUnavailableContinuousProbeEnabled = row.sourceProbeEnabled.Valid && row.sourceProbeEnabled.Int64 == 1
 		detail.BalanceQueryEnabled = false
 		if row.sourceStatus.Valid && row.sourceStatus.String != "" {

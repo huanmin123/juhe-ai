@@ -8,6 +8,7 @@ import {
   buildCustomModelMutationPatch,
   buildCustomModelPayload,
   canManageModelPricesForView,
+  createCustomModelFormFromPricing,
   emptyCustomModelForm,
   availableCustomModelModeOptions
 } from '../../src/views/providers/customProviderModelForm'
@@ -102,6 +103,52 @@ assert.deepEqual(
   {},
   '编辑模型没有变化时必须生成空 PATCH'
 )
+// 能力声明三键（custom 目录行写契约）：挂在基础段、始终下发（不随能力/价格门控）；
+// 矩阵键过滤为 ⊆ supportedApiProtocols 并剔除空数组键（后端校验同款约束）。
+const capabilityForm = { ...emptyCustomModelForm, model: 'capability-model' }
+capabilityForm.supportedToolsByProtocol = { responses: ['function_calling'], chat_completions: [], legacy_protocol: ['web_search'] }
+capabilityForm.inputModalities = ['text', 'image']
+capabilityForm.outputModalities = ['text']
+const capabilityPayload = buildCustomModelPayload(capabilityForm, 'text', { includeRequestCapabilities: true, includePrices: false })
+assert.deepEqual(capabilityPayload?.supportedToolsByProtocol, { responses: ['function_calling'] }, '工具矩阵载荷键必须过滤为协议子集并剔除空数组键')
+assert.deepEqual(capabilityPayload?.inputModalities, ['text', 'image'], '输入模态必须按表单现值随基础段下发')
+assert.deepEqual(capabilityPayload?.outputModalities, ['text'], '输出模态必须按表单现值随基础段下发')
+const defaultCapabilityPayload = buildCustomModelPayload({ ...emptyCustomModelForm, model: 'default-capability-model' }, 'text')
+assert.deepEqual(defaultCapabilityPayload?.supportedToolsByProtocol, {}, '未声明工具矩阵时必须显式下发空对象（PATCH 整值替换语义的基线形态）')
+assert.deepEqual(defaultCapabilityPayload?.inputModalities, [], '未声明输入模态时必须显式下发空数组')
+assert.deepEqual(defaultCapabilityPayload?.outputModalities, [], '未声明输出模态时必须显式下发空数组')
+assert.deepEqual(
+  buildCustomModelMutationPatch(defaultCapabilityPayload ?? {}, { ...(defaultCapabilityPayload ?? {}), supportedToolsByProtocol: { responses: ['function_calling'] } }),
+  { supportedToolsByProtocol: { responses: ['function_calling'] } },
+  '工具矩阵变更必须进编辑 PATCH（三键在 editable keys 中）'
+)
+assert.deepEqual(
+  buildCustomModelMutationPatch(defaultCapabilityPayload ?? {}, { ...(defaultCapabilityPayload ?? {}), outputModalities: ['text', 'image'] }),
+  { outputModalities: ['text', 'image'] },
+  '输出模态变更必须进编辑 PATCH'
+)
+// 读侧回填：读侧三键可能 undefined → 规范为 {} / []；配置模板复制不携带三键（保留当前表单值）。
+const loadedCapabilityForm = createCustomModelFormFromPricing(providerModel({ id: 'capability-model', model: 'capability-model', scope: 'personal' }), [])
+assert.deepEqual(loadedCapabilityForm.supportedToolsByProtocol, {}, '读侧未声明工具矩阵时表单必须规范为空对象')
+assert.deepEqual(loadedCapabilityForm.inputModalities, [], '读侧未声明输入模态时表单必须规范为空数组')
+assert.deepEqual(loadedCapabilityForm.outputModalities, [], '读侧未声明输出模态时表单必须规范为空数组')
+const declaredCapabilityRecord = providerModel({
+  id: 'declared-capability-model',
+  model: 'declared-capability-model',
+  scope: 'personal',
+  supportedApiProtocols: ['responses'],
+  supportedToolsByProtocol: { responses: ['function_calling', 'web_search'] },
+  inputModalities: ['text', 'image'],
+  outputModalities: ['text']
+})
+const declaredCapabilityForm = { ...emptyCustomModelForm, model: 'template-target' }
+declaredCapabilityForm.supportedToolsByProtocol = { responses: ['function_calling'] }
+declaredCapabilityForm.inputModalities = ['text']
+declaredCapabilityForm.outputModalities = ['text']
+applyConfigurationTemplateToCustomModelForm(declaredCapabilityForm, [declaredCapabilityRecord], 'declared-capability-model')
+assert.deepEqual(declaredCapabilityForm.supportedToolsByProtocol, { responses: ['function_calling'] }, '配置模板复制不得改写当前表单的工具矩阵')
+assert.deepEqual(declaredCapabilityForm.inputModalities, ['text'], '配置模板复制不得改写当前表单的输入模态')
+assert.deepEqual(declaredCapabilityForm.outputModalities, ['text'], '配置模板复制不得改写当前表单的输出模态')
 // 模型广场页与供应商目录退役设计 §4.3：表单载荷构建已随 UI 抽到 CustomModelFormModal，锚点同步迁移
 const customFormModalSource = readFileSync(new URL('../../src/views/providers/CustomModelFormModal.vue', import.meta.url), 'utf8')
 assert.match(

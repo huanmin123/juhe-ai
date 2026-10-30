@@ -53,9 +53,10 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parsed, ok := parseCustomModelBody(body, customModelParseOptions{
-		allowNotes:               true,
-		requireExpectedUpdatedAt: true,
-		statusValues:             []string{"draft", "active", "disabled"},
+		allowNotes:                  true,
+		allowCapabilityDeclarations: true,
+		requireExpectedUpdatedAt:    true,
+		statusValues:                []string{"draft", "active", "disabled"},
 	})
 	if !ok {
 		kernel.WriteBadRequest(w, "自定义模型参数无效")
@@ -447,6 +448,9 @@ func mergedCustomModelUpsertInput(existing *customProviderModelRecord, parsed *c
 		SupportedAPIProtocols:       existing.SupportedAPIProtocols,
 		SupportedServiceTiers:       existing.SupportedServiceTiers,
 		SupportedReasoningEfforts:   existing.SupportedReasoningEfforts,
+		SupportedToolsByProtocol:    existing.SupportedToolsByProtocol,
+		InputModalities:             existing.InputModalities,
+		OutputModalities:            existing.OutputModalities,
 		DefaultReasoningEffort:      nil,
 		ReleaseDate:                 existing.ReleaseDate,
 		ShutdownDate:                existing.ShutdownDate,

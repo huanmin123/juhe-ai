@@ -312,8 +312,8 @@ func (s *Store) loadTeamRuntimeUsageRows(ctx context.Context, resourceType, reso
 // (:565-591) on the live daily summary table: the team's
 // authorization_team_usage_summary_daily rows aggregate over the requested
 // stat_date range with the same scope key (usage_scope: system_account_id =
-// owner, team/resource filters). The frozen
-// authorization_team_usage_range_windows rows are never consulted — a user
+// owner, team/resource filters). authorization_*_usage_range_windows 已退役
+// （B09），读取链只走日摘要表 — a user
 // selecting an old hot-window anchor range must read the same fresh aggregates
 // as the member rows. An absent (or retention-zeroed, HAVING-filtered)
 // aggregate keeps the nil → fallback contract.

@@ -457,7 +457,7 @@ func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string,
 	}
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, COALESCE(vendor_code, '') AS provider_code, public_model AS model, scope, system_account_id, status,
 			supported_endpoint_modes_json, release_date, shutdown_date, supported_service_tiers_json,
-			supported_reasoning_efforts_json, default_reasoning_effort,
+			supported_reasoning_efforts_json, supported_tools_by_protocol_json, input_modalities_json, output_modalities_json, default_reasoning_effort,
 			context_window_tokens, max_input_tokens, max_output_tokens,
 			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
 			cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
@@ -488,6 +488,9 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		endpointModes                 sql.NullString
 		releaseDate, shutdownDate     sql.NullString
 		tiers, efforts                sql.NullString
+		toolsByProtocol               sql.NullString
+		inputModalities               sql.NullString
+		outputModalities              sql.NullString
 		defaultEffort                 sql.NullString
 		contextWindow, maxInput       sql.NullInt64
 		maxOut                        sql.NullInt64
@@ -502,7 +505,7 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		promptCaching                 sql.NullBool
 	)
 	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Scope, &systemAccountID, &item.Status,
-		&endpointModes, &releaseDate, &shutdownDate, &tiers, &efforts, &defaultEffort,
+		&endpointModes, &releaseDate, &shutdownDate, &tiers, &efforts, &toolsByProtocol, &inputModalities, &outputModalities, &defaultEffort,
 		&contextWindow, &maxInput, &maxOut,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
 		&tierPrices,
@@ -518,6 +521,13 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.ShutdownDate = textPtr(shutdownDate)
 	item.SupportedServiceTiers = parseJSONArray(tiers)
 	item.SupportedReasoningEfforts = parseJSONArray(efforts)
+	// T82 能力声明三列（supported_tools_by_protocol_json / input_modalities_json /
+	// output_modalities_json）真实扫描：custom 行显式声明贯通读链，空矩阵=未声明
+	// （沿 inheritCustomCatalogCapabilities 仅填空语义，静态兜底不变）；lenient
+	// 解析（失败/越界 token 静默丢弃），读侧不做词表白名单过滤（写侧是唯一入口）。
+	item.SupportedToolsByProtocol = parseCapabilityTokenMatrix(toolsByProtocol)
+	item.InputModalities = parseCapabilityModalityArray(inputModalities)
+	item.OutputModalities = parseCapabilityModalityArray(outputModalities)
 	if defaultEffort.Valid && strings.TrimSpace(defaultEffort.String) != "" {
 		trimmed := strings.TrimSpace(defaultEffort.String)
 		item.DefaultReasoningEffort = &trimmed
@@ -540,13 +550,10 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.PricingNotes = textPtr(pricingNotes)
 	item.CapabilityNotes = textPtr(capabilityNotes)
 	item.Notes = textPtr(notes)
-	// toCustomCatalogItem: empty static capability shapes; prompt caching 直接
-	// 读 models.supports_prompt_caching（写入侧按 cached-input 价维护，与 chat
+	// toCustomCatalogItem 余下静态形状：prompt caching 直接读
+	// models.supports_prompt_caching（写入侧按 cached-input 价维护，与 chat
 	// 面 decorateCustomCatalogRow 同口径）；generation-parameter capabilities
 	// generate from provider+model。
-	item.InputModalities = []string{}
-	item.OutputModalities = []string{}
-	item.SupportedToolsByProtocol = map[string][]string{}
 	item.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
 		generationParameterCapabilitiesForModel(item.ProviderCode, item.Model, item.MaxOutputTokens))
 	item.CodexSupportedReasoningLevels = []string{}

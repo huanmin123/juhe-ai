@@ -50,6 +50,7 @@
         :auth-loading="authLoading"
         :auth-result="authResult"
         :authorized-editing="authorizedEditing"
+        @background-probe-toggle="handleBackgroundProbeToggle"
         :balance-query-can-run="balanceQueryCanRun"
         :balance-query-loading="balanceQueryLoading"
         :base-url-placeholder="baseUrlPlaceholder"
@@ -385,38 +386,60 @@
                   <div v-else class="advanced-section-stack">
                       <section class="form-section probe-toggle-row">
                         <div class="probe-toggle-label">
+                          <span>后台自动探测</span>
+                          <a-tooltip title="关闭后系统不再自动检查/恢复本账户；手动测试和真实请求不受影响。特供、锁死等依赖自动恢复的功能将不可用。">
+                            <QuestionCircleOutlined class="probe-toggle-help" />
+                          </a-tooltip>
+                        </div>
+                        <a-switch
+                          v-model:checked="form.backgroundProbeEnabled"
+                          :disabled="authorizedEditing"
+                          checked-children="开启"
+                          un-checked-children="关闭"
+                          @update:checked="handleBackgroundProbeToggle"
+                        />
+                      </section>
+
+                      <section class="form-section probe-toggle-row">
+                        <div class="probe-toggle-label">
                           <span>持续恢复探活</span>
-                          <a-tooltip title="仅影响账户进入临时不可调用后的后台恢复探测。关闭后仍在前 10 分钟按退避有限复测；最终复测仍失败才标记异常。周期健康检查、首次激活、人工测试和限流恢复不受影响。">
+                          <a-tooltip :title="continuousProbeTooltipText">
                             <QuestionCircleOutlined class="probe-toggle-help" />
                           </a-tooltip>
                         </div>
                         <a-switch
                           v-model:checked="form.temporaryUnavailableContinuousProbeEnabled"
-                          :disabled="authorizedEditing"
+                          :disabled="authorizedEditing || manualProbeMode"
                           checked-children="开启"
                           un-checked-children="关闭"
                         />
                       </section>
 
-                      <div v-if="expeditedRecoveryNote" class="expedited-recovery-note">
+                      <div v-if="expeditedRecoveryNote && !manualProbeMode" class="expedited-recovery-note">
                         <span>{{ expeditedRecoveryNote }}</span>
                         <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
                       </div>
 
                       <section class="form-section">
                         <div class="form-section-title">账户锁死</div>
-                        <div v-if="lockRuntimeStateText" class="lock-runtime-state">
-                          <span>当前状态：{{ lockRuntimeStateText }}</span>
-                          <small>锁死启停请在列表操作菜单执行。</small>
+                        <div v-if="manualProbeMode" class="lock-runtime-state">
+                          <span>手动模式不适用锁死</span>
+                          <small>锁死配置已停用；重新开启后台自动探测后恢复。</small>
                         </div>
-                        <div class="lock-config-fields">
-                          <a-form-item label="死期（秒）">
-                            <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
-                          </a-form-item>
-                          <a-form-item label="重试间隔（秒）">
-                            <a-input-number v-model:value="form.lockRetryIntervalSeconds" :min="5" :max="30" :precision="0" />
-                          </a-form-item>
-                        </div>
+                        <template v-else>
+                          <div v-if="lockRuntimeStateText" class="lock-runtime-state">
+                            <span>当前状态：{{ lockRuntimeStateText }}</span>
+                            <small>锁死启停请在列表操作菜单执行。</small>
+                          </div>
+                          <div class="lock-config-fields">
+                            <a-form-item label="死期（秒）">
+                              <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
+                            </a-form-item>
+                            <a-form-item label="重试间隔（秒）">
+                              <a-input-number v-model:value="form.lockRetryIntervalSeconds" :min="5" :max="30" :precision="0" />
+                            </a-form-item>
+                          </div>
+                        </template>
                       </section>
                     </div>
                 </AccountAdvancedCard>
@@ -567,38 +590,60 @@
                   <div class="advanced-section-stack">
                     <section class="form-section probe-toggle-row">
                       <div class="probe-toggle-label">
+                        <span>后台自动探测</span>
+                        <a-tooltip title="关闭后系统不再自动检查/恢复本账户；手动测试和真实请求不受影响。特供、锁死等依赖自动恢复的功能将不可用。">
+                          <QuestionCircleOutlined class="probe-toggle-help" />
+                        </a-tooltip>
+                      </div>
+                      <a-switch
+                        v-model:checked="form.backgroundProbeEnabled"
+                        :disabled="authorizedEditing"
+                        checked-children="开启"
+                        un-checked-children="关闭"
+                        @update:checked="handleBackgroundProbeToggle"
+                      />
+                    </section>
+
+                    <section class="form-section probe-toggle-row">
+                      <div class="probe-toggle-label">
                         <span>持续恢复探活</span>
-                        <a-tooltip title="仅影响账户进入临时不可调用后的后台恢复探测。关闭后仍在前 10 分钟按退避有限复测；最终复测仍失败才标记异常。周期健康检查、首次激活、人工测试和限流恢复不受影响。">
+                        <a-tooltip :title="continuousProbeTooltipText">
                           <QuestionCircleOutlined class="probe-toggle-help" />
                         </a-tooltip>
                       </div>
                       <a-switch
                         v-model:checked="form.temporaryUnavailableContinuousProbeEnabled"
-                        :disabled="authorizedEditing"
+                        :disabled="authorizedEditing || manualProbeMode"
                         checked-children="开启"
                         un-checked-children="关闭"
                       />
                     </section>
 
-                    <div v-if="expeditedRecoveryNote" class="expedited-recovery-note">
+                    <div v-if="expeditedRecoveryNote && !manualProbeMode" class="expedited-recovery-note">
                       <span>{{ expeditedRecoveryNote }}</span>
                       <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
                     </div>
 
                     <section class="form-section">
                       <div class="form-section-title">账户锁死</div>
-                      <div v-if="lockRuntimeStateText" class="lock-runtime-state">
-                        <span>当前状态：{{ lockRuntimeStateText }}</span>
-                        <small>锁死启停请在列表操作菜单执行。</small>
+                      <div v-if="manualProbeMode" class="lock-runtime-state">
+                        <span>手动模式不适用锁死</span>
+                        <small>锁死配置已停用；重新开启后台自动探测后恢复。</small>
                       </div>
-                      <div class="lock-config-fields">
-                        <a-form-item label="死期（秒）">
-                          <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
-                        </a-form-item>
-                        <a-form-item label="重试间隔（秒）">
-                          <a-input-number v-model:value="form.lockRetryIntervalSeconds" :min="5" :max="30" :precision="0" />
-                        </a-form-item>
-                      </div>
+                      <template v-else>
+                        <div v-if="lockRuntimeStateText" class="lock-runtime-state">
+                          <span>当前状态：{{ lockRuntimeStateText }}</span>
+                          <small>锁死启停请在列表操作菜单执行。</small>
+                        </div>
+                        <div class="lock-config-fields">
+                          <a-form-item label="死期（秒）">
+                            <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
+                          </a-form-item>
+                          <a-form-item label="重试间隔（秒）">
+                            <a-input-number v-model:value="form.lockRetryIntervalSeconds" :min="5" :max="30" :precision="0" />
+                          </a-form-item>
+                        </div>
+                      </template>
                     </section>
                   </div>
                 </AccountAdvancedCard>
@@ -695,6 +740,7 @@
 
 <script setup lang="ts">
 import { FlagOutlined, HeartOutlined, QuestionCircleOutlined, ScheduleOutlined, SlidersOutlined, SwapOutlined, WalletOutlined } from '@ant-design/icons-vue'
+import { Modal } from 'ant-design-vue'
 import { computed, ref, watch } from 'vue'
 
 import { message } from '@/lib/antd'
@@ -926,6 +972,45 @@ const expeditedRecoveryNote = computed(() => {
   return '特供恢复：中性封顶基准 1 分钟，实际 30–90 秒'
 })
 
+// ---- 后台自动探测总开关（总开关设计 §4/§7 手动模式）----
+
+// 手动模式：总开关关闭（image 域走 AccountMediaForm 分支并经
+// background-probe-toggle 事件复用本 handler；audio/video 媒体域不渲染开关）。
+const manualProbeMode = computed(() => props.form.backgroundProbeEnabled === false)
+
+const continuousProbeTooltipText = computed(() => manualProbeMode.value
+  ? '仅在后台自动探测开启时生效'
+  : '仅影响账户进入临时不可调用后的后台恢复探测。关闭后仍在前 10 分钟按退避有限复测；最终复测仍失败才标记异常。周期健康检查、首次激活、人工测试和限流恢复不受影响。')
+
+// 总开关切换确认（仅用户点击触发；程序化装载不经过 update:checked）：
+// 关闭需确认归一化后果，取消则回弹；重新开启提示即时健康检查（无确认框）。
+function handleBackgroundProbeToggle(checked: boolean | string | number): void {
+  if (checked !== false) {
+    message.info('重新开启后将安排一次即时健康检查')
+    return
+  }
+  Modal.confirm({
+    title: '确认关闭后台自动探测？',
+    content: '将清除待检查/冷却/限流状态；质量隔离转为异常；自动取消特供并释放名额；自动解除锁死。手动测试和真实请求不受影响。',
+    okText: '关闭探测',
+    cancelText: '取消',
+    onOk: () => {},
+    onCancel: () => {
+      props.form.backgroundProbeEnabled = true
+    }
+  })
+}
+
+// 创建向导切到手动模式时把默认「待检查」预选为「可调度」（总开关设计 §8：
+// 手动模式创建默认 active，跳过首次激活检查）；克隆继承来源二态状态，无需纠正。
+watch(() => props.form.backgroundProbeEnabled, (next) => {
+  if (next !== false || props.editing) return
+  if (props.form.status === 'pending_test') {
+    props.form.status = 'active'
+    props.form.statusSelectionExplicit = false
+  }
+})
+
 const sourceAccountStatusText = computed(() => {
   const detail = authorizedSourceAccountDetail()
   const status = detail?.authorizationInstanceSourceAccountStatus
@@ -968,11 +1053,25 @@ const advancedPending = computed(() => props.editing && !props.authorizedEditing
 
 // ---- 编辑态标题栏 ----
 
-const statusSegmentedOptions = [
-  { label: '可调度', value: 'active' },
-  { label: '待检查', value: 'pending_test' },
-  { label: '停用', value: 'disabled' }
-]
+const statusSegmentedOptions = computed<Array<{ label: string; value: string; disabled?: boolean }>>(() => {
+  if (!manualProbeMode.value) {
+    return [
+      { label: '可调度', value: 'active' },
+      { label: '待检查', value: 'pending_test' },
+      { label: '停用', value: 'disabled' }
+    ]
+  }
+  // 手动模式二态状态（总开关设计 §4/§9）：只提供正常/停用；「异常」只读不提供，
+  // 账户当前处于异常等过程态时以禁用项回显，不作为可提交选项。
+  const options: Array<{ label: string; value: string; disabled?: boolean }> = [
+    { label: '正常', value: 'active' },
+    { label: '停用', value: 'disabled' }
+  ]
+  if (props.form.status !== 'active' && props.form.status !== 'disabled') {
+    options.push({ label: statusText(props.accountDetail?.status ?? props.form.status), value: props.form.status, disabled: true })
+  }
+  return options
+})
 
 const accountTypeBadgeText = computed(() => {
   const providerName = props.selectedProvider?.name || props.form.providerCode || '未选择'
@@ -1014,14 +1113,19 @@ const strategyCardCount = computed(() => [
 ].filter(Boolean).length)
 
 const stabilityCardSummary = computed(() => {
+  // 手动模式前缀（总开关设计 §9 状态卡片折叠摘要）；锁死字段已停用，不再进摘要。
+  if (manualProbeMode.value) return `手动模式 · 探活${props.form.temporaryUnavailableContinuousProbeEnabled ? '开' : '关'}`
   const base = `探活${props.form.temporaryUnavailableContinuousProbeEnabled ? '开' : '关'} · 锁死 ${props.form.lockDeathTimeoutSeconds}s/${props.form.lockRetryIntervalSeconds}s`
   return lockRuntimeStateText.value ? `${base} · ${lockRuntimeStateText.value}` : base
 })
-const stabilityCardCount = computed(() => [
-  props.form.temporaryUnavailableContinuousProbeEnabled === false,
-  props.form.lockDeathTimeoutSeconds !== 300,
-  props.form.lockRetryIntervalSeconds !== 5
-].filter(Boolean).length)
+const stabilityCardCount = computed(() => {
+  if (manualProbeMode.value) return 1
+  return [
+    props.form.temporaryUnavailableContinuousProbeEnabled === false,
+    props.form.lockDeathTimeoutSeconds !== 300,
+    props.form.lockRetryIntervalSeconds !== 5
+  ].filter(Boolean).length
+})
 
 const balanceCardSummary = computed(() => {
   const expiresAt = props.form.accountExpiresAt

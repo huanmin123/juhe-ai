@@ -41,6 +41,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -81,6 +82,20 @@ const chainProbeRequestOutboxIndex = `CREATE INDEX IF NOT EXISTS idx_account_hea
 // 文本比较与稳定排序；time.RFC3339Nano 可直接解析。
 const chainProbeRequestOutboxTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
+// probeSkippedDisabledDecision 是后台自动探测开关关闭（设计 §3：请求失败
+// 二次确认属后台探测，关闭账户不投递）时的拒绝 decision code；与 jobs 消费
+// 端的 probe_skipped_disabled 终态码同形。读取失败不改变既有派发行为——
+// jobs 消费端的开关守卫是最终兜底。
+const probeSkippedDisabledDecision = "probe_skipped_disabled"
+
+// chainBackgroundProbeEnabledSQL 读账户生效的后台自动探测开关（授权实例取
+// 来源账户值）：与 jobs 候选 SQL / freshness 门 / outbox boundary 守卫的
+// CASE 投影逐字同形，四处共享同一生效语义。
+const chainBackgroundProbeEnabledSQL = `SELECT CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.background_probe_enabled ELSE COALESCE(source.background_probe_enabled, 1) END
+FROM juhe_business.accounts a
+LEFT JOIN juhe_business.accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
+WHERE a.id = ? AND a.deleted_at IS NULL`
+
 // chainRequestFailureReason mirrors AccountHealthCheckTriggerReason
 // 'request_failure' — the only reason this port dispatches.
 const chainRequestFailureReason = "request_failure"
@@ -109,6 +124,21 @@ func newChainProbeRequestOutboxWriter(db *sql.DB, probeDeadlineMS int64) *chainP
 
 func (w *chainProbeRequestOutboxWriter) table() string {
 	return "juhe_business." + chainProbeRequestOutboxTableName
+}
+
+// backgroundProbeDisabled 读账户生效的后台自动探测开关（设计 §3 投递端守卫
+// 的一次最小 SELECT）。账户行不存在或读取失败都不构成「已关闭」（返回 false
+// + err 语义分离），既有派发链与 jobs 消费端守卫承接。
+func (w *chainProbeRequestOutboxWriter) backgroundProbeDisabled(ctx context.Context, accountID string) (bool, error) {
+	var enabled sql.NullInt64
+	err := w.db.QueryRowContext(ctx, w.bind(chainBackgroundProbeEnabledSQL), accountID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !(enabled.Valid && enabled.Int64 == 1), nil
 }
 
 func (w *chainProbeRequestOutboxWriter) bind(query string) string {
@@ -181,6 +211,16 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequest(ctx context.Context,
 	if w == nil || w.db == nil || w.deadlineMS <= 0 {
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
 	}
+	// 后台自动探测开关守卫（设计 §3：请求失败二次确认不投递）：关闭账户按
+	// rejected 收敛且不写 outbox、不告警（真实请求失败路径，逐次打点只会
+	// 形成噪音）；读取失败保持既有派发行为，jobs 消费端守卫兜底。
+	disabled, err := w.backgroundProbeDisabled(ctx, normalizedID)
+	if err != nil {
+		slog.Warn("健康检查派发读取后台探测开关失败，保持既有派发行为",
+			"event", "account_health_check_dispatch_flag_read_failed", "accountId", normalizedID, "error", err)
+	} else if disabled {
+		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: probeSkippedDisabledDecision}
+	}
 	fenceJSON := ""
 	if sourceFence != nil {
 		encoded, err := json.Marshal(sourceFence)
@@ -198,7 +238,7 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequest(ctx context.Context,
 			"event", "account_health_check_dispatch_unavailable", "accountId", normalizedID, "error", err)
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
 	}
-	_, err := w.db.ExecContext(ctx, w.bind(`INSERT INTO `+w.table()+`
+	_, err = w.db.ExecContext(ctx, w.bind(`INSERT INTO `+w.table()+`
 		(request_id, account_id, reason, trace_id, source_fence, deadline_at, status, consumed_at, available_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`),
 		requestID, normalizedID, strings.TrimSpace(reason), strings.TrimSpace(traceID), fenceJSON,

@@ -33,6 +33,16 @@ package main
 // supportedApiProtocols 枚举，值=该协议下可用工具）；一维 supportedTools 作为
 // 二维并集的过渡投影保留（阶段 2 随 chat 面切换删除），chat 面现有
 // supportsWebSearch / function_calling 判定继续读一维并集，行为不变。
+//
+// 2026-10-30 T82 models 能力声明三列（supported_tools_by_protocol_json /
+// input_modalities_json / output_modalities_json，schema 批已落地）：chain 面
+// 列投影（chainCatalogColumns）把三列直接带出，custom（global/personal）行的
+// 显式能力声明自此进入 buildChatModelOptions 的 supportsTool("function_calling")
+// 与搜索候选判定；builtin 行新列为默认空值，静态兜底
+// （decorateBuiltinStaticDerivedCapabilities）无条件覆盖三键，行为与列投影
+// 加入前完全不变。空值语义=未声明：custom 行三键为默认空值时仍沿
+// chainInheritCustomCatalogCapabilities 仅填空继承（BUG-0229 契约不变，
+// chainInheritCustomCatalogCapabilities 未改）。
 
 import (
 	"context"
@@ -87,6 +97,13 @@ var chainCatalogColumns = [][2]string{
 	{"supported_endpoint_modes_json", "supportedEndpointModes"},
 	{"supported_service_tiers_json", "supportedServiceTiers"},
 	{"supported_reasoning_efforts_json", "supportedReasoningEfforts"},
+	// 2026-10-30 T82 能力声明三列（schema 批已落地）：custom 行显式能力声明经
+	// 本投影直接带出（normalizeCatalogValue 对 {/[ 开头文本自动 JSON 解码，整行
+	// 经 marshal/unmarshal 进 item 的同名 json tag）；builtin 行取默认空值，
+	// 静态兜底（decorateBuiltinStaticDerivedCapabilities）照常覆盖。
+	{"supported_tools_by_protocol_json", "supportedToolsByProtocol"},
+	{"input_modalities_json", "inputModalities"},
+	{"output_modalities_json", "outputModalities"},
 	{"default_reasoning_effort", "defaultReasoningEffort"},
 	{"codex_supported_reasoning_levels_json", "codexSupportedReasoningLevels"},
 	{"codex_default_reasoning_level", "codexDefaultReasoningLevel"},
@@ -747,7 +764,8 @@ func decorateBuiltinCatalogRow(row map[string]any) {
 // 删除）。custom（custom_provider_models）行不做静态表兜底（行装饰层无法
 // 判定内置对应行）；其能力按 BUG-0229 契约在合并后经
 // chainInheritCustomCatalogCapabilities 从被覆盖内置行继承（仅填空）。
-// 行自身对这三个能力键没有声明（列清单不含它们），空值一律按静态快照填充。
+// 2026-10-30 T82 起能力声明三列入列投影：builtin 行新列恒为默认空值，本装饰
+// 层无条件以静态快照覆盖三键，兜底行为与列投影加入前完全不变。
 func decorateBuiltinStaticDerivedCapabilities(row map[string]any) {
 	resolved := providers.ResolveBuiltInStaticDerivedCapabilities(
 		catalogRowString(row["providerCode"]),
@@ -815,8 +833,10 @@ func catalogRowInt64Ptr(value any) *int64 {
 // source custom-global/custom-personal（models.source 列对 custom 行为 NULL，
 // 沿旧 custom 表投影覆盖写）、legacy mode/protocols 反推与
 // supportsServiceTier（supportsPromptCaching 直接读 models 同名列）。
-// 能力三键不在此装饰：能力继承依赖合并键与内置扫描行，在合并后由
-// chainInheritCustomCatalogCapabilities 统一回填（BUG-0229 契约，仅填空；工具
+// 能力声明三键（supportedToolsByProtocol / inputModalities / outputModalities）
+// 自 2026-10-30 T82 起由列投影直接带出（models 三列，custom 行显式声明即权威
+// 值），本函数不装饰它们；默认空值（'{}'/'[]'）=未声明，合并后仍由
+// chainInheritCustomCatalogCapabilities 仅填空回填（BUG-0229 契约不变；工具
 // 键为二维矩阵）。
 func decorateCustomCatalogRow(row map[string]any) {
 	catalogDeriveLegacyModeAndProtocols(row)

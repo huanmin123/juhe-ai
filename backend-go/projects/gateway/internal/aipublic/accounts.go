@@ -310,13 +310,18 @@ type accountAddBody struct {
 	HealthCheckConnectionPresetCode *string
 	HealthCheckEndpointMode         *string
 	HealthCheckModel                *string
+	// BackgroundProbeEnabled 是公开 API 的后台自动探测总开关入参（总开关设计
+	// §2）：nil = 未提交（缺省开启）；手动模式状态派生（非 disabled 提交收敛
+	// active，不落 pending_test）由 accounts 写面统一承载。
+	BackgroundProbeEnabled *bool
 }
 
 func parseAccountAddBody(body map[string]any) (*accountAddBody, string) {
 	allowed := []string{"targetUsername", "targetDisplayName", "targetGroupName", "providerCode",
 		"providerProtocolProfileId", "name", "type", "baseUrl", "apiKey", "supportedModels",
 		"status", "concurrencyLimit", "priority", "availabilitySchedule", "notes",
-		"connections", "healthCheckConnectionPresetCode", "healthCheckEndpointMode", "healthCheckModel"}
+		"connections", "healthCheckConnectionPresetCode", "healthCheckEndpointMode", "healthCheckModel",
+		"backgroundProbeEnabled"}
 	unknown := strictObjectKeys(body, allowed...)
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
@@ -406,6 +411,15 @@ func parseAccountAddBody(body map[string]any) (*accountAddBody, string) {
 		return nil, issue
 	}
 	parsed.Status, parsed.HasStatus = status, hasStatus
+	// 后台自动探测总开关（总开关设计 §2）：严格布尔，类型门在此；状态派生在
+	// accounts 写面承载。
+	if bodyHas(body, "backgroundProbeEnabled") && body["backgroundProbeEnabled"] != nil {
+		enabled, ok := body["backgroundProbeEnabled"].(bool)
+		if !ok {
+			return nil, zodInvalidType("boolean", body["backgroundProbeEnabled"])
+		}
+		parsed.BackgroundProbeEnabled = &enabled
+	}
 	if bodyHas(body, "concurrencyLimit") && body["concurrencyLimit"] != nil {
 		limit, _, issue := bodyOptionalInt(body["concurrencyLimit"], true, 1, 100000)
 		if issue != "" {
@@ -593,12 +607,15 @@ func (d *Deps) addAccount(w http.ResponseWriter, r *http.Request) {
 		input.SupportedModels = normalizedStringList(*parsed.SupportedModels)
 	}
 	// Node payload: status = input.status === 'disabled' ? 'disabled' :
-	// 'pending_test', schedulable = false.
+	// 'pending_test', schedulable = false. 手动模式（backgroundProbeEnabled
+	// 显式关闭）由 accounts 写面把 pending_test 哨兵收敛为 active（总开关设计
+	// §8：无后台激活路径，真实流量即验收）。
 	if parsed.HasStatus && parsed.Status == "disabled" {
 		input.Status = accounts.CreationStatus{Status: "disabled", Schedulable: false}
 	} else {
 		input.Status = accounts.CreationStatus{Status: "pending_test", Schedulable: false}
 	}
+	input.BackgroundProbeEnabled = parsed.BackgroundProbeEnabled
 	input.ConcurrencyLimit = parsed.ConcurrencyLimit
 	input.Priority = parsed.Priority
 	if parsed.HasSchedule {
@@ -672,44 +689,49 @@ func (d *Deps) readAccountItem(r *http.Request, accountID, ownerID string) *acco
 
 // accountUpdateBody mirrors accountUpdateSchema (strict + refine).
 type accountUpdateBody struct {
-	AccountID            string
-	TargetUsername       string
-	HasTarget            bool
-	TargetGroupName      string
-	HasGroupName         bool
-	ProviderCode         string
-	HasProvider          bool
-	ProfileID            string
-	HasProfileID         bool
-	Name                 *string
-	HasName              bool
-	AccountType          string
-	HasType              bool
-	BaseURL              *string
-	HasBaseURL           bool
-	APIKey               *string
-	HasAPIKey            bool
-	SupportedModels      *[]string
-	HasSupportedModels   bool
-	Status               string
-	HasStatus            bool
-	ConcurrencyLimit     *int
-	HasConcurrencyLimit  bool
-	Priority             *int
-	HasPriority          bool
-	AvailabilitySchedule any
-	HasSchedule          bool
-	Notes                *string
-	HasNotes             bool
+	AccountID          string
+	TargetUsername     string
+	HasTarget          bool
+	TargetGroupName    string
+	HasGroupName       bool
+	ProviderCode       string
+	HasProvider        bool
+	ProfileID          string
+	HasProfileID       bool
+	Name               *string
+	HasName            bool
+	AccountType        string
+	HasType            bool
+	BaseURL            *string
+	HasBaseURL         bool
+	APIKey             *string
+	HasAPIKey          bool
+	SupportedModels    *[]string
+	HasSupportedModels bool
+	Status             string
+	HasStatus          bool
+	// BackgroundProbeEnabled 是公开 API 更新面的后台自动探测总开关入参（总开关
+	// 设计 §2）：经 accounts.PatchInput 走统一翻转语义（实例拒绝 / 媒体域忽略 /
+	// 状态归一化），与编辑面同链。
+	BackgroundProbeEnabled *bool
+	ConcurrencyLimit       *int
+	HasConcurrencyLimit    bool
+	Priority               *int
+	HasPriority            bool
+	AvailabilitySchedule   any
+	HasSchedule            bool
+	Notes                  *string
+	HasNotes               bool
 }
 
 var accountUpdateMutableFields = []string{"name", "baseUrl", "apiKey", "supportedModels", "status",
+	"backgroundProbeEnabled",
 	"concurrencyLimit", "priority", "availabilitySchedule", "notes"}
 
 func parseAccountUpdateBody(body map[string]any) (*accountUpdateBody, string) {
 	allowed := []string{"accountId", "targetUsername", "targetGroupName", "providerCode",
 		"providerProtocolProfileId", "name", "type", "baseUrl", "apiKey", "supportedModels",
-		"status", "concurrencyLimit", "priority", "availabilitySchedule", "notes"}
+		"status", "backgroundProbeEnabled", "concurrencyLimit", "priority", "availabilitySchedule", "notes"}
 	unknown := strictObjectKeys(body, allowed...)
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
@@ -815,6 +837,18 @@ func parseAccountUpdateBody(body map[string]any) (*accountUpdateBody, string) {
 			return nil, issue
 		}
 		parsed.Status, parsed.HasStatus = status, true
+	}
+	// 后台自动探测总开关（总开关设计 §2）：严格布尔，类型门在此；翻转语义在
+	// accounts.Patch 内统一承载。
+	if bodyHas(body, "backgroundProbeEnabled") {
+		if body["backgroundProbeEnabled"] == nil {
+			return nil, zodInvalidType("boolean", nil)
+		}
+		enabled, ok := body["backgroundProbeEnabled"].(bool)
+		if !ok {
+			return nil, zodInvalidType("boolean", body["backgroundProbeEnabled"])
+		}
+		parsed.BackgroundProbeEnabled = &enabled
 	}
 	if bodyHas(body, "concurrencyLimit") {
 		if body["concurrencyLimit"] == nil {
@@ -956,6 +990,9 @@ func (d *Deps) updateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		input.Status = &status
 		input.Schedulable = &schedulable
+	}
+	if parsed.BackgroundProbeEnabled != nil {
+		input.BackgroundProbeEnabled = parsed.BackgroundProbeEnabled
 	}
 	if parsed.HasConcurrencyLimit {
 		input.ConcurrencyLimit = parsed.ConcurrencyLimit

@@ -53,6 +53,8 @@ export interface AccountFormModel {
   healthCheckModel: string
   healthCheckEndpointMode: AccountHealthCheckEndpointMode
   temporaryUnavailableContinuousProbeEnabled: boolean
+  /** 后台自动探测总开关（总开关设计 §4）：关闭即手动模式；媒体域不适用，不渲染不提交。 */
+  backgroundProbeEnabled: boolean
   lockDeathTimeoutSeconds: number
   lockRetryIntervalSeconds: number
   serviceTierOverride: AccountGptServiceTierOverride

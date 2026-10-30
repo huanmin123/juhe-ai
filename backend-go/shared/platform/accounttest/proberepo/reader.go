@@ -48,6 +48,10 @@ type AccountForTestView struct {
 	HasEffectiveStatus          bool
 	// AvailabilityLimited 为 true 表示第 1/2 类不可用分支未参与派生。
 	AvailabilityLimited bool
+	// BackgroundProbeEnabled 是后台自动探测总开关（accounts.background_probe_enabled）；
+	// W1 起授权实例行跟随来源账户同步，读本行列即为生效值。nil 表示列异常
+	// 缺失（理论不可达，NOT NULL DEFAULT 1），消费端按开启处理。
+	BackgroundProbeEnabled *bool
 }
 
 // accountRowSQL 是账户主查询（owner + authorized instance 双路径合一）。
@@ -72,7 +76,8 @@ const accountRowSQL = `
         FROM %s ga
         WHERE ga.account_id = a.id AND ga.system_account_id = a.system_account_id AND ga.enabled = 1
         ORDER BY ga.updated_at DESC, ga.group_id ASC, ga.account_id ASC
-        LIMIT 1) AS bound_group_id
+        LIMIT 1) AS bound_group_id,
+      a.background_probe_enabled
     FROM %s a
     LEFT JOIN %s src ON src.id = a.authorization_instance_source_account_id AND src.deleted_at IS NULL
     LEFT JOIN %s auth ON auth.id = a.authorization_instance_authorization_id
@@ -122,6 +127,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		authorizationStatus, authzExpiresAt  sql.NullString
 		authzResourceOwner                   sql.NullString
 		boundGroupID                         sql.NullString
+		backgroundProbeEnabled               any
 	)
 	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &schedulable,
@@ -132,7 +138,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		&sourceStatus, &sourceSchedulable,
 		&sourceExpiresAt, &sourceCooldownUntil, &sourceErrorCode, &sourceErrorMessage,
 		&authorizationStatus, &authzExpiresAt, &authzResourceOwner,
-		&boundGroupID); err != nil {
+		&boundGroupID, &backgroundProbeEnabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -179,19 +185,27 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		// probe worker 进入崩溃循环），由调用方按候选缺失/读取失败处理。
 		return nil, deriveErr
 	}
+	// 手动模式开关位随账户行一次带出（W1 起授权实例行跟随来源同步，读本行
+	// 列即为生效值）；列驱动保证非 NULL，nil 防御只为扫描形状异常时不误伤。
+	var backgroundProbeEnabledPtr *bool
+	if backgroundProbeEnabled != nil {
+		enabled := truthy(backgroundProbeEnabled)
+		backgroundProbeEnabledPtr = &enabled
+	}
 	view.AccountForTest = accountquality.AccountForTest{
-		ID:                   id.String,
-		Name:                 name.String,
-		Type:                 accountType.String,
-		Status:               status.String,
-		Schedulable:          truthy(schedulable),
-		BoundGroupID:         boundGroupID.String,
-		OwnerSystemAccountID: systemID.String,
-		SystemAccountID:      systemID.String,
-		ProtocolCode:         protocolCode.String,
-		AccountExpiresAt:     expiresAt.String,
-		EffectiveAvailable:   available,
-		HasEffectiveAvail:    true,
+		ID:                     id.String,
+		Name:                   name.String,
+		Type:                   accountType.String,
+		Status:                 status.String,
+		Schedulable:            truthy(schedulable),
+		BoundGroupID:           boundGroupID.String,
+		OwnerSystemAccountID:   systemID.String,
+		SystemAccountID:        systemID.String,
+		ProtocolCode:           protocolCode.String,
+		AccountExpiresAt:       expiresAt.String,
+		EffectiveAvailable:     available,
+		HasEffectiveAvail:      true,
+		BackgroundProbeEnabled: backgroundProbeEnabledPtr,
 	}
 	view.ProviderCode = vendorCode.String
 	view.OAuthType = oauthType.String
@@ -204,6 +218,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 	view.EffectiveAvailabilityStatus = statusValue
 	view.HasEffectiveStatus = hasStatus
 	view.AvailabilityLimited = limited
+	view.BackgroundProbeEnabled = backgroundProbeEnabledPtr
 	return &view, nil
 }
 

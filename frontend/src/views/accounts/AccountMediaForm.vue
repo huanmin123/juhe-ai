@@ -310,6 +310,25 @@
           <a-button type="primary" @click="$emit('advanced-open')">加载高级配置</a-button>
         </div>
         <div v-else class="media-advanced-stack">
+          <!-- 后台自动探测总开关（总开关设计 §2，2026-10-30 二轮复审裁决）：image 域
+               适用（图像账户存在激活/冷却复测等后台探测，仅豁免 active 周期巡检），
+               开关在此展示并经 background-probe-toggle 事件走 modal 同款关闭确认；
+               audio/video 媒体域不适用、不渲染。 -->
+          <section v-if="capabilityDomain === 'image'" class="media-advanced-probe">
+            <div class="media-speech-label">
+              <span>后台自动探测</span>
+              <a-tooltip title="关闭后系统不再自动检查/恢复本账户；手动测试和真实请求不受影响。">
+                <QuestionCircleOutlined class="media-speech-help" />
+              </a-tooltip>
+            </div>
+            <a-switch
+              v-model:checked="form.backgroundProbeEnabled"
+              :disabled="authorizedEditing"
+              checked-children="开启"
+              un-checked-children="关闭"
+              @update:checked="$emit('background-probe-toggle', $event)"
+            />
+          </section>
           <AccountExtraInfoSection :form="form" :readonly="authorizedEditing" />
           <AccountBalanceQuerySection
             :can-query="balanceQueryCanRun"
@@ -460,6 +479,7 @@ function handlePickerExpandedChange(expanded: boolean): void {
 
 const emit = defineEmits<{
   (event: 'advanced-open'): void
+  (event: 'background-probe-toggle', checked: boolean | string | number): void
   (event: 'balance-query'): void
   (event: 'copy-auth-url', value: string): void
   (event: 'delete-tag', tagId: string): void
@@ -843,6 +863,15 @@ watch(
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+/* image 域「后台自动探测」开关行（audio/video 不渲染本区，总开关设计 §2）。 */
+.media-advanced-probe {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
 }
 
 .media-status-field :deep(.ant-radio-group) {

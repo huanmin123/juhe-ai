@@ -88,6 +88,11 @@ type AccountForTest struct {
 	EffectiveAvailable   bool
 	HasEffectiveAvail    bool
 	QuotaRecoveryPolicy  map[string]any
+	// BackgroundProbeEnabled 是后台自动探测总开关（accounts.background_probe_enabled，
+	// 总开关设计 §3）：nil = 读取面未带出（视为开启，默认路径不变）；false =
+	// 手动模式，后台探针家族消费端按此丢弃候选、不发起上游探测。手动测试/
+	// 手动刷新等显式操作不消费该字段，不受影响。
+	BackgroundProbeEnabled *bool
 }
 
 // AccountReader 是 find_account_for_test / find_openai_account_for_group 的

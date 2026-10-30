@@ -68,6 +68,7 @@ var ddl = []string{
 		cooldown_retest_observation_started_at TEXT,
 		cooldown_retest_last_at TEXT,
 		cooldown_retest_last_status_code INTEGER,
+		background_probe_enabled INTEGER NOT NULL DEFAULT 1,
 		stream_failure_count INTEGER NOT NULL DEFAULT 0,
 		stream_failure_window_started_at TEXT,
 		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,

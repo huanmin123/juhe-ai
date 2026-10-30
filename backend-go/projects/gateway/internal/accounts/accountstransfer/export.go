@@ -49,24 +49,28 @@ type ExportConnection struct {
 
 // ExportAccount mirrors AccountExportAccount.
 type ExportAccount struct {
-	Ref                                        string                             `json:"ref"`
-	Name                                       string                             `json:"name"`
-	ProviderCode                               string                             `json:"providerCode"`
-	ProviderProtocolProfileID                  *string                            `json:"providerProtocolProfileId,omitempty"`
-	Type                                       string                             `json:"type"`
-	Status                                     string                             `json:"status"`
-	GroupID                                    *string                            `json:"groupId,omitempty"`
-	GroupName                                  *string                            `json:"groupName,omitempty"`
-	ProxyRef                                   *string                            `json:"proxyRef,omitempty"`
-	ConcurrencyLimit                           *int                               `json:"concurrencyLimit,omitempty"`
-	Priority                                   *int                               `json:"priority,omitempty"`
-	SuperPriorityEnabled                       *bool                              `json:"superPriorityEnabled,omitempty"`
-	FallbackEnabled                            *bool                              `json:"fallbackEnabled,omitempty"`
-	SupportedModels                            []string                           `json:"supportedModels,omitempty"`
-	HealthCheckModel                           *string                            `json:"healthCheckModel,omitempty"`
-	HealthCheckEndpointMode                    string                             `json:"healthCheckEndpointMode"`
-	HealthCheckConnectionPresetCode            *string                            `json:"healthCheckConnectionPresetCode,omitempty"`
-	Connections                                []ExportConnection                 `json:"connections,omitempty"`
+	Ref                             string             `json:"ref"`
+	Name                            string             `json:"name"`
+	ProviderCode                    string             `json:"providerCode"`
+	ProviderProtocolProfileID       *string            `json:"providerProtocolProfileId,omitempty"`
+	Type                            string             `json:"type"`
+	Status                          string             `json:"status"`
+	GroupID                         *string            `json:"groupId,omitempty"`
+	GroupName                       *string            `json:"groupName,omitempty"`
+	ProxyRef                        *string            `json:"proxyRef,omitempty"`
+	ConcurrencyLimit                *int               `json:"concurrencyLimit,omitempty"`
+	Priority                        *int               `json:"priority,omitempty"`
+	SuperPriorityEnabled            *bool              `json:"superPriorityEnabled,omitempty"`
+	FallbackEnabled                 *bool              `json:"fallbackEnabled,omitempty"`
+	SupportedModels                 []string           `json:"supportedModels,omitempty"`
+	HealthCheckModel                *string            `json:"healthCheckModel,omitempty"`
+	HealthCheckEndpointMode         string             `json:"healthCheckEndpointMode"`
+	HealthCheckConnectionPresetCode *string            `json:"healthCheckConnectionPresetCode,omitempty"`
+	Connections                     []ExportConnection `json:"connections,omitempty"`
+	// BackgroundProbeEnabled 是后台自动探测总开关的 wire 字段（总开关设计 §2/
+	// §8）：仅显式关闭时导出（false），开启或缺省省略与旧版导入包兼容（旧版
+	// 未知字段拒绝，见发布说明）。
+	BackgroundProbeEnabled                     *bool                              `json:"backgroundProbeEnabled,omitempty"`
 	TemporaryUnavailableContinuousProbeEnabled *bool                              `json:"temporaryUnavailableContinuousProbeEnabled,omitempty"`
 	ModelMappings                              []accountscore.ModelMapping        `json:"modelMappings,omitempty"`
 	Tags                                       []string                           `json:"tags,omitempty"`
@@ -202,6 +206,7 @@ type ExportAccountRow struct {
 	priority                  int
 	superPriorityEnabled      bool
 	fallbackEnabled           bool
+	backgroundProbeEnabled    bool
 	continuousProbeEnabled    bool
 	boundGroupID              sql.NullString
 	boundGroupName            sql.NullString
@@ -229,6 +234,7 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 			accounts.health_check_model, accounts.health_check_endpoint_mode, accounts.proxy_profile_id,
 			accounts.availability_schedule_json, accounts.account_expires_at, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
+			accounts.background_probe_enabled,
 			accounts.temporary_unavailable_continuous_probe_enabled,
 			accounts.authorization_instance_authorization_id, accounts.authorization_instance_source_account_id,
 			group_bindings.group_id AS bound_group_id, bound_groups.name AS bound_group_name
@@ -248,13 +254,13 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 	out := []ExportAccountRow{}
 	for rows.Next() {
 		var row ExportAccountRow
-		var schedulable, superPriority, fallback, continuousProbe int64
+		var schedulable, superPriority, fallback, backgroundProbe, continuousProbe int64
 		var authorizationID, sourceAccountID sql.NullString
 		if err := rows.Scan(&row.id, &row.providerCode, &row.providerProtocolProfileID, &row.name,
 			&row.notes, &row.accountType, &row.Status, &schedulable, &row.credentialsEncrypted,
 			&row.healthCheckModel, &row.healthCheckEndpointMode, &row.proxyProfileID,
 			&row.availabilitySchedule, &row.accountExpiresAt, &row.concurrencyLimit,
-			&row.priority, &superPriority, &fallback, &continuousProbe,
+			&row.priority, &superPriority, &fallback, &backgroundProbe, &continuousProbe,
 			&authorizationID, &sourceAccountID, &row.boundGroupID, &row.boundGroupName); err != nil {
 			return nil, err
 		}
@@ -268,6 +274,7 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 		row.Schedulable = schedulable == 1
 		row.superPriorityEnabled = superPriority == 1
 		row.fallbackEnabled = fallback == 1
+		row.backgroundProbeEnabled = backgroundProbe == 1
 		row.continuousProbeEnabled = continuousProbe == 1
 		out = append(out, row)
 	}
@@ -358,6 +365,9 @@ func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow,
 	}
 	if trimmed := strings.TrimSpace(healthPreset); trimmed != "" {
 		exported.HealthCheckConnectionPresetCode = &trimmed
+	}
+	if !row.backgroundProbeEnabled {
+		exported.BackgroundProbeEnabled = BoolPtr(false)
 	}
 	if !row.continuousProbeEnabled {
 		exported.TemporaryUnavailableContinuousProbeEnabled = BoolPtr(false)

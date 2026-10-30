@@ -1,6 +1,6 @@
 # Changelog
 
-本文件自 v1.0.0 起维护（《升级兼容与迁移账本设计》§16 发布契约）。每个发布版本固定四节：`Breaking` / `Upgrade notes` / `Rollback` / `Pre-1.0 behavior notes`；无内容的节写「无」。
+本文件自首个版本 tag 起维护（《升级兼容与迁移账本设计》§16 发布契约；版本号 = CalVer `vYYYY.MM.DD`，由 `deploy.sh` 干净树部署时自动打，无需人工记忆）。每个发布版本固定四节：`Breaking` / `Upgrade notes` / `Rollback` / `Pre-1.0 behavior notes`；无内容的节写「无」。
 
 - `Upgrade notes` 必须回答：是否需要停写、是否需要备份、`maintenance upgrade` 会自动执行哪些步骤、是否有必须手工执行的独立命令。
 - `Rollback` 二值：`binary-only`（换回上一版二进制即可）或 `backup-required`（只能恢复升级前备份）。

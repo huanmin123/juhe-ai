@@ -44,6 +44,38 @@
             placeholder="不确定时可留空"
           />
         </a-form-item>
+        <template v-if="!editingBuiltInModel">
+          <a-form-item label="输入模态" class="custom-model-grid-wide" extra="声明模型可接收的输入类型；留空表示未声明。">
+            <a-select
+              v-model:value="customModelForm.inputModalities"
+              mode="multiple"
+              :options="modelModalityOptions"
+              placeholder="未声明时可留空"
+            />
+          </a-form-item>
+          <a-form-item label="输出模态" class="custom-model-grid-wide" extra="声明模型可产出的输出类型；留空表示未声明。">
+            <a-select
+              v-model:value="customModelForm.outputModalities"
+              mode="multiple"
+              :options="modelModalityOptions"
+              placeholder="未声明时可留空"
+            />
+          </a-form-item>
+          <a-form-item
+            v-for="protocol in customModelForm.supportedApiProtocols"
+            :key="protocol"
+            class="custom-model-grid-wide"
+            :label="`工具矩阵 · ${formatApiProtocol(protocol)}`"
+            extra="声明该接口协议下可用的模型工具（如函数调用、联网搜索）；留空表示未声明。"
+          >
+            <a-select
+              v-model:value="customModelForm.supportedToolsByProtocol[protocol]"
+              mode="multiple"
+              :options="modelToolOptions"
+              placeholder="未声明时可留空"
+            />
+          </a-form-item>
+        </template>
         <template v-if="showCustomModelRequestCapabilities">
           <a-form-item v-if="showCustomModelServiceTiers" label="服务等级" class="custom-model-grid-wide" extra="只选择供应商真实支持且已配置独立价格的请求档位；不同供应商的可选值不强行统一。">
             <a-select
@@ -241,8 +273,11 @@ import {
   customModelPriceFields,
   customModelTierPriceFields,
   defaultProtocolsForProviderModelCategory,
+  formatApiProtocol,
   formatModelServiceTier,
   getModelCategory,
+  modelModalityOptions,
+  modelToolOptions,
   type ModelCategoryKey
 } from './providerModelFormatters'
 import { buildConfigurationTemplateOptions } from './providerModelTableState'
@@ -285,6 +320,14 @@ watch(() => props.provider, (value) => {
 })
 watch(() => props.open, (open) => {
   if (!open) resetCustomModelForm()
+})
+// 能力声明矩阵键必须 ⊆ 当前接口协议（后端校验同款约束）：协议变化（含配置模板
+// 改写协议）时清除不在集合内的矩阵键；键内工具数组不随协议变化强改。
+watch(() => [...customModelForm.supportedApiProtocols], (protocols) => {
+  const allowed = new Set<string>(protocols)
+  for (const protocol of Object.keys(customModelForm.supportedToolsByProtocol)) {
+    if (!allowed.has(protocol)) delete customModelForm.supportedToolsByProtocol[protocol]
+  }
 })
 
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
@@ -479,6 +522,9 @@ function resetCustomModelForm() {
   Object.assign(customModelForm, {
     ...emptyCustomModelForm,
     supportedApiProtocols: [...emptyCustomModelForm.supportedApiProtocols],
+    supportedToolsByProtocol: {},
+    inputModalities: [...emptyCustomModelForm.inputModalities],
+    outputModalities: [...emptyCustomModelForm.outputModalities],
     supportedServiceTiers: [...emptyCustomModelForm.supportedServiceTiers],
     supportedReasoningEfforts: [...emptyCustomModelForm.supportedReasoningEfforts],
     serviceTierPrices: {}
@@ -509,10 +555,15 @@ function buildBuiltInModelPayload(): Partial<ProviderModelUpsertPayload> | undef
     includeDefaultReasoningEffort: true
   })
   if (!payload) return undefined
+  // built_in 行编辑不提交能力声明三键（契约仅 custom 行可写）；表单虽回填三键，
+  // 但能力声明编辑区对 built_in 隐藏，剥离后 diff 也不会携带这些键。
   const {
     model: _model,
     scope: _scope,
     configurationTemplateId: _configurationTemplateId,
+    supportedToolsByProtocol: _supportedToolsByProtocol,
+    inputModalities: _inputModalities,
+    outputModalities: _outputModalities,
     ...configuration
   } = payload
   return configuration

@@ -221,6 +221,12 @@ export interface ProviderModelUpsertPayload {
   catalogVisible?: boolean
   mode?: ProviderModelMode | null
   supportedApiProtocols?: ProviderModelApiProtocol[]
+  /** 「协议 × 工具」能力声明矩阵（仅 custom 行生效）：键 ⊆ supportedApiProtocols；PATCH 语义为提交键整值替换、缺键保持。 */
+  supportedToolsByProtocol?: Record<string, string[]>
+  /** 输入模态词表：text / image / audio / video / file（仅 custom 行生效）。 */
+  inputModalities?: string[]
+  /** 输出模态词表：text / image / audio / video / file（仅 custom 行生效）。 */
+  outputModalities?: string[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
   defaultReasoningEffort?: ProviderModelReasoningEffort | null

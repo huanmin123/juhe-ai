@@ -26,8 +26,10 @@ type CustomCatalogCapabilityKeys struct {
 
 // InheritBuiltinCatalogCapabilities 实现「仅填空」的二维矩阵继承：custom 行的
 // 空能力键以被覆盖内置行（经静态兜底后）的值填充，非空键不覆盖（矩阵整体为
-// 空才继承，键级合并语义与一维时代一致——custom 行没有能力列，实际只会整体
-// 继承或不继承）；内置无对应行（全新自定义模型）保持空。不得退回静态定价表的
+// 空才继承，键级合并语义与一维时代一致——矩阵按整键继承或不继承，不做键级
+// 合并）；内置无对应行（全新自定义模型）保持空。2026-10-30 T82 起 custom 行
+// 有能力声明三列（supported_tools_by_protocol_json / input_modalities_json /
+// output_modalities_json），显式非空值即胜出，空值=未声明仍走本继承。不得退回静态定价表的
 // 别名/前缀匹配回填（pricing.lookup 的日期后缀剥离与前缀别名会对
 // "gpt-5.5-my" 这类自有命名误配能力）。返回的矩阵可能直接引用 builtin 的底层
 // 数据：目录项下游是只读投影，不做变更。

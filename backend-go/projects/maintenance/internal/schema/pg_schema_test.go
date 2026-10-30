@@ -109,8 +109,15 @@ import (
 // preferences.enabled 1 条 + business-provider-dimension-retirement 组 8 条；
 // codex 3：codex-context-provider-code-retirement 组 3 条）——生产只读预检
 // 确认 12 条目标旧列全部不存在，收列退役完成；当前 schema 0 条 DROP COLUMN。
+// 675：2026-10-30 B09 退役 authorization_*_usage_range_windows 两表
+// （-2 TABLE -6 INDEX +2 DROP TABLE），juhe_stats 238→232。
+// 675→678：2026-10-30 models 能力声明三列批（T82 根治）——juhe_business +3
+// （models-capability-declaration-pg-columns 组三条幂等 ALTER；建表 DDL 原位
+// 加列不另计语句）。678→679：AI 账户后台自动探测总开关批（W1 存储列）——
+// juhe_business +1（account-background-probe-pg-column 幂等 ALTER；建表 DDL
+// 原位加列不另计语句）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 681
+const goldenPostgresSchemaStatementCount = 679
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -129,12 +136,16 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// B4 两表 provider 维度收尾批 +2（account_test_tasks / media_jobs 各一条
 	// provider_protocol_profile_id 幂等 DROP COLUMN）。326→317：2026-10-30
 	// B08 撤除 business 9 条幂等 DROP COLUMN（enabled 1 + provider 维度 8）。
-	"juhe_business": 317,
+	// 317→320：models 能力声明三列批（T82 根治）+3（三条幂等 ALTER）。
+	// 320→321：后台自动探测总开关批 +1（account-background-probe-pg-column）。
+	"juhe_business": 321,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
 	"juhe_usage":    54,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
-	"juhe_stats": 238,
+	// 238→232：2026-10-30 B09 退役 authorization_*_usage_range_windows 两表
+	//（-2 TABLE -6 INDEX +2 DROP TABLE）。
+	"juhe_stats": 232,
 	// 16→16：provider 维度持久列退役批（B4①）-3 CREATE INDEX（codex boundary）
 	// +3 DROP COLUMN。16→13：2026-10-30 B08 撤除 codex 三表 3 条 provider_code
 	// 幂等 DROP COLUMN（boundary 索引已随 B4① 撤除，无对应加法语句）。
@@ -251,14 +262,16 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// accounts-health-check-endpoint-mode-pg-check DO 块原位改写（词表
 	// 22→25 值），块数保持 6。100→101：用量记录压缩标记批
 	// （usage_records compaction_expected 幂等 ALTER）。101→102：media_jobs
-	// 归属改列批（owner_system_account_id 幂等 ALTER）。其余口径不变：
+	// 归属改列批（owner_system_account_id 幂等 ALTER）。102→105：models
+	// 能力声明三列批（T82 根治）+3。105→106：后台自动探测总开关批
+	// （account-background-probe-pg-column）+1。其余口径不变：
 	// DROP COLUMN IF EXISTS 12→0 条（2026-10-30 B08 撤除 12 条幂等收列语句：
 	// 业务 9——调度偏好 enabled 1 条 + B4① provider 维度 6 条 + B4 两表收尾
 	// provider_protocol_profile_id 2 条；codex 3——三表 provider_code），
 	// 当前 schema 无删列语句）、1 条 CREATE EXTENSION、2 个含
 	// CREATE TRIGGER 的语句块。
-	if alterColumns != 102 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 102", alterColumns)
+	if alterColumns != 106 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 106", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。

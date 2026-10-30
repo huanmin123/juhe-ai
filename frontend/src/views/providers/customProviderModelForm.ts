@@ -28,6 +28,10 @@ export interface CustomModelForm {
   status: ProviderModelStatus
   mode: ProviderModelMode
   supportedApiProtocols: ProviderModelApiProtocol[]
+  /** 「协议 × 工具」能力声明矩阵：键跟随 supportedApiProtocols（watch 清理越界键），空数组键在载荷构建时剔除。 */
+  supportedToolsByProtocol: Record<string, string[]>
+  inputModalities: string[]
+  outputModalities: string[]
   supportedServiceTiers: ProviderModelServiceTier[]
   supportedReasoningEfforts: ProviderModelReasoningEffort[]
   defaultReasoningEffort?: ProviderModelReasoningEffort
@@ -57,6 +61,9 @@ export const emptyCustomModelForm: CustomModelForm = {
   status: 'active',
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions'],
+  supportedToolsByProtocol: {},
+  inputModalities: [],
+  outputModalities: [],
   supportedServiceTiers: [],
   supportedReasoningEfforts: [],
   serviceTierPrices: {}
@@ -73,6 +80,9 @@ export function createCustomModelFormFromPricing(
     status: record.status ?? 'active',
     mode: categoryFromModeOrModel(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
+    supportedToolsByProtocol: cloneToolsByProtocol(record.supportedToolsByProtocol),
+    inputModalities: [...(record.inputModalities ?? [])],
+    outputModalities: [...(record.outputModalities ?? [])],
     supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
     supportedReasoningEfforts: normalizeReasoningEfforts(record.supportedReasoningEfforts),
     defaultReasoningEffort: record.defaultReasoningEffort ?? undefined,
@@ -113,6 +123,11 @@ export function buildCustomModelPayload(
     status: form.status,
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],
+    // 能力声明三键挂在基础段、始终下发（与 supportedApiProtocols 同层）；
+    // 矩阵键过滤为 ⊆ supportedApiProtocols 并剔除空数组键（后端校验同款约束）。
+    supportedToolsByProtocol: customModelToolsByProtocolPayload(form),
+    inputModalities: [...form.inputModalities],
+    outputModalities: [...form.outputModalities],
     releaseDate: trimToNull(form.releaseDate),
     shutdownDate: trimToNull(form.shutdownDate),
     contextWindowTokens: numberToNull(form.contextWindowTokens),
@@ -263,10 +278,26 @@ function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): 
   )
 }
 
+function cloneToolsByProtocol(value?: Record<string, string[]>): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(value ?? {}).map(([protocol, tools]) => [protocol, [...tools]]))
+}
+
+function customModelToolsByProtocolPayload(form: CustomModelForm): Record<string, string[]> {
+  const protocols = new Set<string>(form.supportedApiProtocols)
+  return Object.fromEntries(
+    Object.entries(form.supportedToolsByProtocol)
+      .filter(([protocol, tools]) => protocols.has(protocol) && tools.length > 0)
+      .map(([protocol, tools]) => [protocol, [...tools]])
+  )
+}
+
 const editableProviderModelPayloadKeys = [
   'status',
   'mode',
   'supportedApiProtocols',
+  'supportedToolsByProtocol',
+  'inputModalities',
+  'outputModalities',
   'supportedServiceTiers',
   'supportedReasoningEfforts',
   'defaultReasoningEffort',

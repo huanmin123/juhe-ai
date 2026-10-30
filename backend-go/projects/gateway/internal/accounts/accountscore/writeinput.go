@@ -30,6 +30,40 @@ func AccountCreationStatusInput(value any) CreationStatus {
 	}
 }
 
+// manualModeCreationStatuses 是手动模式账户允许的创建/编辑状态词表（设计 §4/§8）：
+// 关闭后台自动探测的账户只有「正常 / 异常」两态，disabled 是人工停用操作。
+var manualModeCreationStatuses = map[string]bool{
+	"active": true, "error": true, "disabled": true,
+}
+
+// ManualModeForbiddenStatuses 是手动模式账户禁止落库的过程态集合：创建/编辑
+// 提交这些状态按 400 拒绝（设计 §4 二态健康状态）。
+var ManualModeForbiddenStatuses = map[string]bool{
+	"pending_test": true, "temporary_unavailable": true, "rate_limited": true, "quality_isolated": true,
+}
+
+// IsManualModeAllowedCreationStatus 报告状态是否在手动模式词表内。
+func IsManualModeAllowedCreationStatus(status string) bool {
+	return manualModeCreationStatuses[status]
+}
+
+// ManualModeCreationStatus mirrors AccountCreationStatusInput for manual-mode
+// accounts (设计 §8 创建/导入语义): explicit active/error/disabled keep the
+// value, the pending_test sentinel default (or any non-wordlist remnant that
+// passed the caller's wordlist gate) derives active + schedulable and skips
+// the initial activation check — 手动模式一律不产生 pending_test，真实流量
+// 即验收。
+func ManualModeCreationStatus(status string) CreationStatus {
+	if !manualModeCreationStatuses[status] {
+		status = "active"
+	}
+	return CreationStatus{
+		Status:                 status,
+		SkipInitialHealthCheck: true,
+		Schedulable:            status == "active",
+	}
+}
+
 // ConnectionInput 是创建/PATCH/导入共享的连接行载荷（供应商与上游协议面重构
 // 设计 §8）：connectionPresetCode 是账户内自然键（连接 ID 永不由客户端提交，
 // 服务端确定性生成），baseUrl 走 §2.1 registry 数据驱动 validator，
@@ -112,6 +146,11 @@ type CreateInput struct {
 	ModelMappings []ModelMapping
 	Tags          []string
 	Status        CreationStatus
+	// RawCreationStatus 是哨兵归一化前的原始状态词（camelCase status 原文）：
+	// AccountCreationStatusInput 把未知值折叠成 pending_test，手动模式词表
+	// （active/error/disabled）需要显式值时读本字段；body 解析器填写，
+	// 程序化调用方留空时写面回落 Status.Status。
+	RawCreationStatus string
 	// PreservePendingTest keeps an import's explicit pending_test state. Normal
 	// media creation uses the domain default active; import is the deliberate
 	// exception because imported credentials have not been checked locally.
@@ -134,6 +173,12 @@ type CreateInput struct {
 	// normalizeOptionalBooleanInput tri-state: nil = not provided (defaults
 	// to enabled), false persists the explicit opt-out.
 	TemporaryUnavailableContinuousProbeEnabled *bool
+	// BackgroundProbeEnabled mirrors the 账户级后台自动探测总开关 tri-state
+	// (AI账户后台自动探测总开关设计 §2/§8): nil = not provided (defaults to
+	// enabled), false persists manual mode. Clone contexts inherit the source
+	// account's value when the payload omits the key; media-domain accounts
+	// reject an explicit false at the write surface (域不适用该开关).
+	BackgroundProbeEnabled *bool
 	// ExpeditedRecoveryEnabled mirrors the expedited-recovery tri-state:
 	// nil = not provided (persists 0), true persists 1 after the owner quota
 	// assertion (AI账户特供快速恢复通道设计 §8.1/§9). Clone contexts and the

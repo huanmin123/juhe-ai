@@ -131,7 +131,7 @@ func (rows *directInputRowsLifecycleRows) Next(dest []driver.Value) error {
 }
 
 func directInputLifecycleCandidateColumns() []string {
-	columns := make([]string, 54)
+	columns := make([]string, 56)
 	for index := range columns {
 		columns[index] = fmt.Sprintf("c%d", index)
 	}
@@ -143,16 +143,17 @@ func directInputLifecycleCandidateValues() []driver.Value {
 }
 
 // directInputLifecycleCandidateValuesFor 的列序与 directInputCandidatesSQL 的
-// SELECT 投影逐列对齐（供应商解耦形态）：身份 vendor_code/preset，连接面
-// preset/base_url 位于 13/14，expedited_recovery_enabled 位于 index 19，
-// cooldown fence 位于 20/21，binding 两列后接 proxy 七列（共 54 列）。
+// SELECT 投影逐列对齐（供应商解耦形态 + 后台探测开关两列）：身份
+// vendor_code/preset，连接面 preset/base_url 位于 13/14，expedited_recovery_enabled
+// 位于 index 19，cooldown fence 位于 20/21，a.background_probe_enabled 位于 23，
+// source_background_probe_enabled 位于 46，binding 两列后接 proxy 七列（共 56 列）。
 func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	secret := "direct-input-rows-lifecycle-secret"
 	credentials, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"]}`))
 	if err != nil {
 		panic(err)
 	}
-	values := make([]driver.Value, 54)
+	values := make([]driver.Value, 56)
 	values[0] = accountID
 	values[1] = int64(1)
 	values[2] = int64(2)
@@ -172,30 +173,32 @@ func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	values[18] = false
 	values[19] = int64(0)
 	values[22] = "system-account"
-	values[23] = "authorization-1"
-	values[24] = "active"
-	values[27] = `{}`
-	values[28] = "source-account"
-	values[29] = "owner-account"
-	values[30] = "source-account"
-	values[31] = int64(4)
-	values[32] = "gpt"
-	values[33] = nil
-	values[34] = "openai"
-	values[35] = "v1"
-	values[36] = "api_key"
-	values[37] = "gpt_openai_v1"
-	values[38] = "https://source.example.com"
-	values[39] = "active"
-	values[40] = int64(1)
-	values[44] = credentials
-	values[45] = "group-1"
-	values[46] = "authorization-1"
-	values[47] = "proxy-1"
-	values[48] = true
-	values[49] = "http"
-	values[50] = "127.0.0.1"
-	values[51] = int64(8080)
+	values[23] = int64(1) // a.background_probe_enabled
+	values[24] = "authorization-1"
+	values[25] = "active"
+	values[28] = `{}`
+	values[29] = "source-account"
+	values[30] = "owner-account"
+	values[31] = "source-account"
+	values[32] = int64(4)
+	values[33] = "gpt"
+	values[34] = nil
+	values[35] = "openai"
+	values[36] = "v1"
+	values[37] = "api_key"
+	values[38] = "gpt_openai_v1"
+	values[39] = "https://source.example.com"
+	values[40] = "active"
+	values[41] = int64(1)
+	values[45] = credentials
+	values[46] = int64(1) // source_background_probe_enabled（COALESCE 投影）
+	values[47] = "group-1"
+	values[48] = "authorization-1"
+	values[49] = "proxy-1"
+	values[50] = true
+	values[51] = "http"
+	values[52] = "127.0.0.1"
+	values[53] = int64(8080)
 	return values
 }
 

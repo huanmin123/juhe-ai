@@ -195,6 +195,13 @@ func (r circuitRecoveryTargetResolver) Resolve(ctx context.Context, state opsjob
 	if account == nil {
 		return opsjobs.CircuitRecoveryProbeTarget{}, false, nil
 	}
+	// 手动模式（后台自动探测总开关关闭）不解析恢复探针目标（总开关设计 §3
+	// account-circuit-recovery 双保险：gateway 侧已不建新 incident，此处拦住
+	// 关闭前残留 incident 的恢复路径）。目标缺失走既有 releaseUnknown 臂，
+	// 不写任何运行态。
+	if account.BackgroundProbeEnabled != nil && !*account.BackgroundProbeEnabled {
+		return opsjobs.CircuitRecoveryProbeTarget{}, false, nil
+	}
 	groupID := account.BoundGroupID
 	systemAccountID := account.SystemAccountID
 	if identity.Kind == "authorized" {

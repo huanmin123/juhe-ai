@@ -59,14 +59,19 @@ type RecoveryTargetResolver func(ctx context.Context, state State) (RecoveryProb
 
 // RecoveryServiceOptions 允许注入 clock/id 生成器；并发=0 时取
 // RecoveryDefaultConcurrency。OnMutation 与 ServiceOptions.OnMutation 同形状
-// （func(ctx, MutationEvent) error），nil 时静默。
+// （func(ctx, MutationEvent) error），nil 时静默。BackgroundProbeDisabled 是
+// 既有恢复入口的开关位（总开关设计 §3）：手动模式（background_probe_enabled=0）
+// 账户的到期状态不再执行恢复探针，按 skipped 计数；查询失败失败关闭（2026-10-30
+// 复审 Minor：读失败按手动模式跳过，下轮 sweep 重试）；nil 保持不设门（测试
+// 与未装配形态）。
 type RecoveryServiceOptions struct {
-	BatchSize       int
-	Concurrency     int
-	LeaseDurationMS int64
-	NowMS           func() int64
-	CreateID        func() string
-	OnMutation      func(ctx context.Context, input MutationEvent) error
+	BatchSize               int
+	Concurrency             int
+	LeaseDurationMS         int64
+	NowMS                   func() int64
+	CreateID                func() string
+	OnMutation              func(ctx context.Context, input MutationEvent) error
+	BackgroundProbeDisabled func(ctx context.Context, accountRuntimeKey string) (bool, error)
 }
 
 // RecoverySweepResult 计数字段与 jobs CircuitRecoverySweepResult（及 Node
@@ -97,14 +102,15 @@ const (
 
 // RecoveryService 是账户电路后台恢复扫描（契约源 CircuitRecoveryService）。
 type RecoveryService struct {
-	store           Store
-	resolveTarget   RecoveryTargetResolver
-	batchSize       int
-	concurrency     int
-	leaseDurationMS int64
-	nowMS           func() int64
-	createID        func() string
-	onMutation      func(ctx context.Context, input MutationEvent) error
+	store                   Store
+	resolveTarget           RecoveryTargetResolver
+	batchSize               int
+	concurrency             int
+	leaseDurationMS         int64
+	nowMS                   func() int64
+	createID                func() string
+	onMutation              func(ctx context.Context, input MutationEvent) error
+	backgroundProbeDisabled func(ctx context.Context, accountRuntimeKey string) (bool, error)
 }
 
 // NewRecoveryService 构造恢复服务；store/resolver 必填，数值参数校验对齐
@@ -146,14 +152,15 @@ func NewRecoveryService(store Store, resolveTarget RecoveryTargetResolver, optio
 		createID = NewRecoveryRandomID
 	}
 	return &RecoveryService{
-		store:           store,
-		resolveTarget:   resolveTarget,
-		batchSize:       batchSize,
-		concurrency:     concurrency,
-		leaseDurationMS: leaseDurationMS,
-		nowMS:           nowMS,
-		createID:        createID,
-		onMutation:      options.OnMutation,
+		store:                   store,
+		resolveTarget:           resolveTarget,
+		batchSize:               batchSize,
+		concurrency:             concurrency,
+		leaseDurationMS:         leaseDurationMS,
+		nowMS:                   nowMS,
+		createID:                createID,
+		onMutation:              options.OnMutation,
+		backgroundProbeDisabled: options.BackgroundProbeDisabled,
 	}, nil
 }
 
@@ -212,6 +219,16 @@ loop:
 func (s *RecoveryService) recover(ctx context.Context, dueState State) (recoveryItemOutcome, bool, error) {
 	if dueState.Phase != PhaseSuspect && dueState.Phase != PhaseOpen && dueState.Phase != PhaseRecovering {
 		return recoverySkipped, false, nil
+	}
+	// 手动模式账户不执行恢复探针（总开关设计 §3 恢复入口开关位）；读取失败
+	// 失败关闭（2026-10-30 复审 Minor：读失败按手动模式跳过探针）——恢复探
+	// 针是后台任务，DB 读错期间跳过、下轮 sweep 重试零成本；fail-open 会让
+	// 手动模式账户在开关读取失败的窗口里收到真实上游探测请求，破坏关闭契约。
+	if s.backgroundProbeDisabled != nil {
+		disabled, err := s.backgroundProbeDisabled(ctx, dueState.Scope.AccountRuntimeKey)
+		if err != nil || disabled {
+			return recoverySkipped, false, nil
+		}
 	}
 	nowMS := s.nowMS()
 	leaseID := s.createID()

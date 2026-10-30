@@ -1,4 +1,5 @@
 package authz
+
 // pgkit_test.go 是 authz 测试迁真实 PG 的共享基建
 // （PLAN-20261024T051925945Z SQLite 与内存模式彻底退役，测试尾巴批次）：
 // pgtestkit 每测试独立库 + 生产 PG 臂（NewStore(db, ...)，juhe_business
@@ -16,11 +17,12 @@ package authz
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"strconv"
 	"strings"
 	"testing"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
+
 // authzPGFixtureSchema 是 authz 面测试的 PG schema。
 const authzPGFixtureSchema = `
 	CREATE SCHEMA IF NOT EXISTS juhe_business;
@@ -171,6 +173,7 @@ const authzPGFixtureSchema = `
       cooldown_retest_generation text,
       cooldown_retest_last_at text,
       cooldown_retest_last_status_code integer,
+      background_probe_enabled integer DEFAULT 1,
       temporary_unavailable_continuous_probe_enabled integer DEFAULT 1,
       expedited_recovery_enabled integer DEFAULT 0,
       capability_domain text DEFAULT 'chat',
@@ -472,30 +475,8 @@ const authzPGFixtureSchema = `
       updated_at text DEFAULT '',
       PRIMARY KEY (system_account_id, scope_type, scope_id)
     );
-	CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_range_windows (
-      system_account_id text DEFAULT '',
-      start_date text DEFAULT '',
-      end_date text DEFAULT '',
-      team_filter_id text DEFAULT '',
-      resource_filter_type text DEFAULT 'all',
-      resource_filter_id text DEFAULT '',
-      request_count bigint DEFAULT 0,
-      input_tokens bigint DEFAULT 0,
-      output_tokens bigint DEFAULT 0,
-      cache_read_tokens bigint DEFAULT 0,
-      cache_read_cost_usd double precision DEFAULT 0,
-      cache_write_tokens bigint DEFAULT 0,
-      cache_write_1h_tokens bigint DEFAULT 0,
-      cache_write_cost_usd double precision DEFAULT 0,
-      thinking_tokens bigint DEFAULT 0,
-      input_image_tokens bigint DEFAULT 0,
-      output_image_tokens bigint DEFAULT 0,
-      total_cost_usd double precision DEFAULT 0,
-      last_used_at text,
-      updated_at text DEFAULT '',
-      PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)
-    );
 `
+
 // newAuthzPGDatabase 创建 pgtestkit 隔离 PG 测试库、注入夹具 schema，并返回带
 // juhe_business search_path 的连接池（夹具/测试手写 SQL 的裸表名由 search_path
 // 解析；生产 store 的 PG 臂本就 s.table 全限定）。
@@ -513,6 +494,7 @@ func newAuthzPGDatabase(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = pool.Close() })
 	return pool
 }
+
 // fixtureBind 把夹具/测试手写 SQL 的 ? 占位符按序改写为 $n（与生产 Store.bind
 // 同一惯例；夹具 SQL 的字符串字面量不含 ?，计数不受字面量干扰）。
 func fixtureBind(query string) string {

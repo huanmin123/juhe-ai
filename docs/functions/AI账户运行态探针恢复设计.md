@@ -41,6 +41,8 @@
 
 `failure_observed` 是内部观察态，不作为前端状态标签展示；`latency_degraded` 只表示当前普通路由速度优先偏好下近期首字慢，不表示账号不可用，也不能升级为持久账号状态。它是路由策略目标对账户偏好的短 TTL 覆盖层，不改写超级优先、账号优先级、备用层、会话亲和或质量排序；恢复清理后，后续请求必须重新回到账户配置排序。`latency_degraded` 必须在策略路由的速度状态中按策略和分组展示，不能混入 AI 账户列表的全局主状态；页面可以展示降级保留时间、下次探针和两类恢复进度，但没有稳定 `probeRunning` 契约时不得宣称“正在恢复中”。
 
+手动模式账户（账户级「后台自动探测」总开关关闭，见 [AI 账户后台自动探测总开关设计](AI账户后台自动探测总开关设计.md)）不投递 `recovery_wait`、不进入 `precheck_pending` / `runtime_degraded`，探针派生运行态不建立（`latency_degraded` 仍可按真实流量请求级建立，仅其后台恢复探针不运行）；已有运行态（含 circuit incident 及其子 scope、`latency_degraded`、探针派生 Key 运行态）在关闭总开关时通过运行时重置链路清理：禁用事务内推进 dispatch fence 并入队 `dispatch_revision_changed` 关闭事件（jobs 控制面投影按账户关闭全部非 CLOSED circuit 运行态），提交后经运行时重置链路端口清理 Redis 运行态 / latency 降级 / Key 运行态池。
+
 ## 失败采样规则
 
 失败样本按运行态键聚合：

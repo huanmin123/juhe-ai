@@ -45,30 +45,33 @@ type CloneContext struct {
 	ProtocolVersion           string `json:"protocolVersion"`
 	// CapabilityDomain 是源账户能力域（M2 克隆契约：正式克隆客户端按它锚定
 	// 目标 capabilityDomain；服务端在创建入口断言两者一致）。
-	CapabilityDomain                           string                 `json:"capabilityDomain"`
-	Name                                       string                 `json:"name"`
-	Notes                                      *string                `json:"notes,omitempty"`
-	Type                                       string                 `json:"type"`
-	Status                                     string                 `json:"status"`
-	CredentialOptions                          CloneCredentialOptions `json:"credentialOptions"`
-	ConcurrencyLimit                           int                    `json:"concurrencyLimit"`
-	Priority                                   int                    `json:"priority"`
-	SuperPriorityEnabled                       bool                   `json:"superPriorityEnabled"`
-	FallbackEnabled                            bool                   `json:"fallbackEnabled"`
-	ClientCompatibility                        string                 `json:"clientCompatibility"`
-	SupportedModels                            []string               `json:"supportedModels"`
-	Tags                                       []TagSummary           `json:"tags"`
-	HealthCheckModel                           string                 `json:"healthCheckModel"`
-	HealthCheckEndpointMode                    string                 `json:"healthCheckEndpointMode"`
-	BoundGroupID                               *string                `json:"boundGroupId,omitempty"`
-	BoundGroupName                             *string                `json:"boundGroupName,omitempty"`
-	ModelMappings                              []ModelMapping         `json:"modelMappings"`
-	ProxyProfileID                             *string                `json:"proxyProfileId,omitempty"`
-	AvailabilitySchedule                       *AvailabilitySchedule  `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt                           *string                `json:"accountExpiresAt,omitempty"`
-	TemporaryUnavailableContinuousProbeEnabled bool                   `json:"temporaryUnavailableContinuousProbeEnabled"`
-	BalanceQueryEnabled                        bool                   `json:"balanceQueryEnabled"`
-	BalanceQueryConfig                         map[string]any         `json:"balanceQueryConfig,omitempty"`
+	CapabilityDomain        string                 `json:"capabilityDomain"`
+	Name                    string                 `json:"name"`
+	Notes                   *string                `json:"notes,omitempty"`
+	Type                    string                 `json:"type"`
+	Status                  string                 `json:"status"`
+	CredentialOptions       CloneCredentialOptions `json:"credentialOptions"`
+	ConcurrencyLimit        int                    `json:"concurrencyLimit"`
+	Priority                int                    `json:"priority"`
+	SuperPriorityEnabled    bool                   `json:"superPriorityEnabled"`
+	FallbackEnabled         bool                   `json:"fallbackEnabled"`
+	ClientCompatibility     string                 `json:"clientCompatibility"`
+	SupportedModels         []string               `json:"supportedModels"`
+	Tags                    []TagSummary           `json:"tags"`
+	HealthCheckModel        string                 `json:"healthCheckModel"`
+	HealthCheckEndpointMode string                 `json:"healthCheckEndpointMode"`
+	BoundGroupID            *string                `json:"boundGroupId,omitempty"`
+	BoundGroupName          *string                `json:"boundGroupName,omitempty"`
+	ModelMappings           []ModelMapping         `json:"modelMappings"`
+	ProxyProfileID          *string                `json:"proxyProfileId,omitempty"`
+	AvailabilitySchedule    *AvailabilitySchedule  `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt        *string                `json:"accountExpiresAt,omitempty"`
+	// BackgroundProbeEnabled 回显源账户后台自动探测总开关（总开关设计 §8 克隆
+	// 语义）：克隆创建载荷缺省时由写面继承源账户值，克隆体与源账户同模式。
+	BackgroundProbeEnabled                     bool           `json:"backgroundProbeEnabled"`
+	TemporaryUnavailableContinuousProbeEnabled bool           `json:"temporaryUnavailableContinuousProbeEnabled"`
+	BalanceQueryEnabled                        bool           `json:"balanceQueryEnabled"`
+	BalanceQueryConfig                         map[string]any `json:"balanceQueryConfig,omitempty"`
 }
 
 // CloneInteractionForbiddenError mirrors AccountInteractionContextForbiddenError.
@@ -176,6 +179,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		proxyProfileID           sql.NullString
 		availabilitySchedule     sql.NullString
 		accountExpiresAt         sql.NullString
+		backgroundProbeEnabled   int64
 		continuousProbeEnabled   int64
 		balanceQueryEnabled      int64
 		balanceQueryConfigJSON   string
@@ -201,6 +205,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			'' AS client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.proxy_profile_id, accounts.availability_schedule_json, accounts.account_expires_at,
+			accounts.background_probe_enabled,
 			accounts.temporary_unavailable_continuous_probe_enabled, accounts.balance_query_enabled,
 			accounts.balance_query_config_json,
 			accounts.authorization_instance_authorization_id, accounts.authorization_instance_source_account_id,
@@ -220,7 +225,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		&row.oauthType, &row.concurrencyLimit, &row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
 		&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
 		&row.proxyProfileID, &row.availabilitySchedule, &row.accountExpiresAt,
-		&row.continuousProbeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
+		&row.backgroundProbeEnabled, &row.continuousProbeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
 		&row.authorizationID, &row.sourceAccountID, &row.boundGroupID, &row.boundGroupName,
 		&row.boundGroupBindingUpdAt, &row.boundGroupRecordUpdAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -381,6 +386,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		ModelMappings:             mappings,
 		ProxyProfileID:            nullPtrString(row.proxyProfileID),
 		AccountExpiresAt:          nullPtrString(row.accountExpiresAt),
+		BackgroundProbeEnabled:    row.backgroundProbeEnabled == 1,
 		TemporaryUnavailableContinuousProbeEnabled: row.continuousProbeEnabled == 1,
 		BalanceQueryEnabled:                        row.balanceQueryEnabled == 1,
 		BalanceQueryConfig:                         parseCloneBalanceConfig(row.balanceQueryConfigJSON),

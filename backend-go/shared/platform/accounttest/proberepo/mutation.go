@@ -199,6 +199,7 @@ func (s *Store) ListDueForProbe(ctx context.Context, limit int) ([]accountqualit
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('active', 'rate_limited', 'temporary_unavailable')
       AND accounts.schedulable = 1
+      AND accounts.background_probe_enabled = 1
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at::timestamptz > ?::timestamptz)
     ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
     LIMIT ?

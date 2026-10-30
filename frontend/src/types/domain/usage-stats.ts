@@ -136,6 +136,8 @@ export interface AiHealthAccountRow {
   name: string
   providerCode: ProviderCode
   status: AccountStatus
+  /** 后台自动探测总开关（总开关设计 §9 健康页）：缺省视作开启。 */
+  backgroundProbeEnabled?: boolean
   systemAccountName?: string
   lastHealthCheckAt?: string
   lastHealthSuccessAt?: string

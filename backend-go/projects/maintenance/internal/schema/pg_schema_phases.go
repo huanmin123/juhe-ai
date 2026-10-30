@@ -84,16 +84,22 @@ func DestructiveTargets() []DestructiveTarget {
 		upper := strings.ToUpper(statement.SQL)
 		if strings.Contains(upper, "DROP COLUMN") {
 			const marker = "DROP COLUMN IF EXISTS "
-			idx := strings.Index(upper, marker)
-			column := strings.TrimSpace(statement.SQL[idx+len(marker):])
+			column := ""
+			if idx := strings.Index(upper, marker); idx >= 0 {
+				column = strings.TrimSpace(statement.SQL[idx+len(marker):])
+			}
+			// marker 缺配（未来出现不带 IF EXISTS 的形态）不 panic：列名留空，
+			// 语句仍按破坏性归类与披露。
 			table := tableBetweenAlterAndDrop(statement.SQL)
 			targets = append(targets, DestructiveTarget{Schema: schemaOf(statement), Table: table, Column: column})
 			continue
 		}
 		if strings.Contains(upper, "DROP TABLE") {
 			const marker = "DROP TABLE IF EXISTS "
-			idx := strings.Index(upper, marker)
-			qualified := strings.TrimSpace(statement.SQL[idx+len(marker):])
+			qualified := ""
+			if idx := strings.Index(upper, marker); idx >= 0 {
+				qualified = strings.TrimSpace(statement.SQL[idx+len(marker):])
+			}
 			schemaName, table := splitQualified(qualified)
 			targets = append(targets, DestructiveTarget{Schema: schemaName, Table: table})
 		}

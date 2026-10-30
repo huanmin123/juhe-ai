@@ -29,9 +29,7 @@ type CleanupResult struct {
 	UsageErrorMonthly                  int64
 	UsageLatencyMonthly                int64
 	AuthorizationTeamUsageSummaryDaily int64
-	AuthorizationTeamUsageRangeWindows int64
 	AuthorizationUserUsageSummaryDaily int64
-	AuthorizationUserUsageRangeWindows int64
 	UsageRankSnapshots                 int64
 	UsageOverviewSummaryWindows        int64
 	UsageOverviewTrendWindows          int64
@@ -83,9 +81,7 @@ func (r *CleanupResult) Add(other CleanupResult) {
 	r.UsageErrorMonthly += other.UsageErrorMonthly
 	r.UsageLatencyMonthly += other.UsageLatencyMonthly
 	r.AuthorizationTeamUsageSummaryDaily += other.AuthorizationTeamUsageSummaryDaily
-	r.AuthorizationTeamUsageRangeWindows += other.AuthorizationTeamUsageRangeWindows
 	r.AuthorizationUserUsageSummaryDaily += other.AuthorizationUserUsageSummaryDaily
-	r.AuthorizationUserUsageRangeWindows += other.AuthorizationUserUsageRangeWindows
 	r.UsageRankSnapshots += other.UsageRankSnapshots
 	r.UsageOverviewSummaryWindows += other.UsageOverviewSummaryWindows
 	r.UsageOverviewTrendWindows += other.UsageOverviewTrendWindows
@@ -133,9 +129,7 @@ func (r *CleanupResult) AddUsageStats(counts UsageStatsRetentionCounts) {
 	r.UsageErrorMonthly += counts.UsageErrorMonthly
 	r.UsageLatencyMonthly += counts.UsageLatencyMonthly
 	r.AuthorizationTeamUsageSummaryDaily += counts.AuthorizationTeamUsageSummaryDaily
-	r.AuthorizationTeamUsageRangeWindows += counts.AuthorizationTeamUsageRangeWindows
 	r.AuthorizationUserUsageSummaryDaily += counts.AuthorizationUserUsageSummaryDaily
-	r.AuthorizationUserUsageRangeWindows += counts.AuthorizationUserUsageRangeWindows
 	r.UsageRankSnapshots += counts.UsageRankSnapshots
 	r.UsageOverviewSummaryWindows += counts.UsageOverviewSummaryWindows
 	r.UsageOverviewTrendWindows += counts.UsageOverviewTrendWindows
@@ -181,9 +175,7 @@ func (r CleanupResult) Sum() int64 {
 	sum += r.UsageErrorMonthly
 	sum += r.UsageLatencyMonthly
 	sum += r.AuthorizationTeamUsageSummaryDaily
-	sum += r.AuthorizationTeamUsageRangeWindows
 	sum += r.AuthorizationUserUsageSummaryDaily
-	sum += r.AuthorizationUserUsageRangeWindows
 	sum += r.UsageRankSnapshots
 	sum += r.UsageOverviewSummaryWindows
 	sum += r.UsageOverviewTrendWindows
@@ -235,9 +227,7 @@ func (r CleanupResult) Values() []any {
 		"usageErrorMonthly", r.UsageErrorMonthly,
 		"usageLatencyMonthly", r.UsageLatencyMonthly,
 		"authorizationTeamUsageSummaryDaily", r.AuthorizationTeamUsageSummaryDaily,
-		"authorizationTeamUsageRangeWindows", r.AuthorizationTeamUsageRangeWindows,
 		"authorizationUserUsageSummaryDaily", r.AuthorizationUserUsageSummaryDaily,
-		"authorizationUserUsageRangeWindows", r.AuthorizationUserUsageRangeWindows,
 		"usageRankSnapshots", r.UsageRankSnapshots,
 		"usageOverviewSummaryWindows", r.UsageOverviewSummaryWindows,
 		"usageOverviewTrendWindows", r.UsageOverviewTrendWindows,
@@ -297,9 +287,7 @@ type UsageStatsRetentionCounts struct {
 	UsageErrorMonthly                  int64
 	UsageLatencyMonthly                int64
 	AuthorizationTeamUsageSummaryDaily int64
-	AuthorizationTeamUsageRangeWindows int64
 	AuthorizationUserUsageSummaryDaily int64
-	AuthorizationUserUsageRangeWindows int64
 	UsageRankSnapshots                 int64
 	UsageOverviewSummaryWindows        int64
 	UsageOverviewTrendWindows          int64
@@ -343,9 +331,7 @@ func (c UsageStatsRetentionCounts) Sum() int64 {
 	sum += c.UsageErrorMonthly
 	sum += c.UsageLatencyMonthly
 	sum += c.AuthorizationTeamUsageSummaryDaily
-	sum += c.AuthorizationTeamUsageRangeWindows
 	sum += c.AuthorizationUserUsageSummaryDaily
-	sum += c.AuthorizationUserUsageRangeWindows
 	sum += c.UsageRankSnapshots
 	sum += c.UsageOverviewSummaryWindows
 	sum += c.UsageOverviewTrendWindows

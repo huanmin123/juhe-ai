@@ -305,6 +305,7 @@ var managedFields = []string{
 	"name", "groupId", "concurrencyLimit", "priority",
 	"status", "superPriorityEnabled", "fallbackEnabled", "supportedModels",
 	"healthCheckModel", "healthCheckEndpointMode", "temporaryUnavailableContinuousProbeEnabled",
+	"backgroundProbeEnabled",
 	"modelMappings", "tags", "proxyProfileId", "accountExpiresAt", "availabilitySchedule",
 	"credentialsPatch", "notes",
 	"capabilityDomain", "cloneSourceId",
@@ -391,6 +392,19 @@ func parseManagedFields(body map[string]any) (managedInput, bool) {
 		if _, ok := value.(bool); !ok {
 			return input, false
 		}
+	}
+	// 后台自动探测总开关（总开关设计 §2/§8）：严格布尔；显式关闭时不接受
+	// pending_test 状态（手动模式二态词表，管理面同款语义）。媒体域拒绝与
+	// 缺省派生在 accounts 写面统一承载。
+	if value, present := body["backgroundProbeEnabled"]; present && value != nil {
+		enabled, ok := value.(bool)
+		if !ok {
+			return input, false
+		}
+		if !enabled && input.Status == "pending_test" {
+			return input, false
+		}
+		input.BackgroundProbeEnabled = &enabled
 	}
 	if value, present := body["modelMappings"]; present && value != nil {
 		list, ok := value.([]any)
@@ -502,16 +516,19 @@ type managedInput struct {
 	SupportedModels         []string
 	HealthCheckModel        *string
 	HealthCheckEndpointMode *string
-	// CapabilityDomain / CloneSourceID 是 B5 托管建户新收键（capabilityDomain
+	// BackgroundProbeEnabled 是托管建户的后台自动探测总开关入参（总开关设计
+	// §2）：nil = 未提交（缺省开启）；显式关闭落手动模式，状态派生由 accounts
+	// 写面承载。CapabilityDomain / CloneSourceID 是 B5 托管建户新收键（capabilityDomain
 	// 缺省 chat、cloneSourceId 克隆源账户）；语义见 parseManagedFields。
-	CapabilityDomain     string
-	CloneSourceID        *string
-	ModelMappings        []accounts.ModelMapping
-	Tags                 []string
-	ProxyProfileID       *string
-	AccountExpiresAt     *string
-	AvailabilitySchedule any
-	Notes                *string
+	BackgroundProbeEnabled *bool
+	CapabilityDomain       string
+	CloneSourceID          *string
+	ModelMappings          []accounts.ModelMapping
+	Tags                   []string
+	ProxyProfileID         *string
+	AccountExpiresAt       *string
+	AvailabilitySchedule   any
+	Notes                  *string
 }
 
 // managedProfileID 渲染创建端点（create-from-*、sso-to-oauth）的 profile 入参：
@@ -677,6 +694,7 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		Credentials:               outcome.Credentials,
 		CapabilityDomain:          managed.CapabilityDomain,
 		CloneSourceID:             managed.CloneSourceID,
+		BackgroundProbeEnabled:    managed.BackgroundProbeEnabled,
 		Status:                    managed.Status,
 		ConcurrencyLimit:          managed.ConcurrencyLimit,
 		Priority:                  managed.Priority,
@@ -1081,6 +1099,7 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 				Credentials:               outcome.Credentials,
 				CapabilityDomain:          managed.CapabilityDomain,
 				CloneSourceID:             managed.CloneSourceID,
+				BackgroundProbeEnabled:    managed.BackgroundProbeEnabled,
 				Status:                    managed.Status,
 				ConcurrencyLimit:          managed.ConcurrencyLimit,
 				Priority:                  managed.Priority,

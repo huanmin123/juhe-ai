@@ -16,7 +16,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
@@ -253,10 +252,8 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 	}
 	defer unlock()
 
-	// 4. 读账本（表或行缺失按 0 处理）。
-	if err := EnsureLedger(ctx, db); err != nil {
-		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
-	}
+	// 4. 读账本（表或行缺失按 0 处理；账本 DDL 的创建延迟到确认门禁之后——
+	// §9.4-7 dry-run 与缺确认路径全程零写入）。
 	state, err := ReadSchemaState(ctx, db)
 	if err != nil {
 		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
@@ -313,6 +310,7 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 		pending = append(pending, stepWithRow{step: step})
 	}
 	needsApply := false
+	adopted := map[int64]bool{}
 	for _, item := range pending {
 		satisfied, err := item.step.Satisfied(ctx, env)
 		if err != nil {
@@ -320,12 +318,21 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 				fmt.Sprintf("步骤 %s Satisfied 求值失败: %v", item.step.ID, err), true)
 		}
 		if satisfied {
+			adopted[item.step.Revision] = true
 			report.Plan.Adopt = append(report.Plan.Adopt, adoptStep{
 				Revision: item.step.Revision, StepID: item.step.ID, Reason: "satisfied"})
 		} else {
 			needsApply = true
 		}
 	}
+	// §9.3：pending 与 adopt 互斥（pending 只列「将执行 Apply」的步骤）。
+	filtered := report.Plan.Pending[:0]
+	for _, item := range report.Plan.Pending {
+		if !adopted[item.Revision] {
+			filtered = append(filtered, item)
+		}
+	}
+	report.Plan.Pending = filtered
 	report.Estimate = estimateInfo{
 		ApplySteps:                  needsApplyCount(pending, report.Plan.Adopt),
 		ApplyUpperBoundMinutes:      needsApplyCount(pending, report.Plan.Adopt) * minutes(opts.StepTimeout),
@@ -355,7 +362,7 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 
 	// 9. 已最新短路：只读核验（全步骤 Check + 语句计数），不写任何表。
 	if !needsApply && dbRevision == int64(contracts.SchemaRevision) && stepMax <= int64(contracts.SchemaRevision) {
-		post := verifyAllSteps(ctx, env, steps)
+		post := verifyAllSteps(ctx, env, steps, opts.StepTimeout)
 		report.Postflight = &post
 		if !post.OK {
 			return fail(ResultFailed, ExitNeedsHuman, "up-to-date 核验未通过（见报告 postflight）", true)
@@ -366,7 +373,8 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 
 	// 10. 结构收敛·加法相（建表/补列/补种；P2 起分相——§7.3）。
 	// 加法相失败：破坏性 DDL 未执行，rollback 保持 binary-only（换回旧二进制即可）。
-	if _, err := schema.EnsurePostgresFiltered(ctx, db, schema.EnsureAdditive); err != nil {
+	additiveResult, err := schema.EnsurePostgresFiltered(ctx, db, schema.EnsureAdditive)
+	if err != nil {
 		return fail(ResultFailed, ExitRuntimeFailure, "ensure-schema 加法相失败: "+err.Error(), true)
 	}
 
@@ -376,9 +384,15 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 	}
 
 	// 12. 逐步骤（revision 升序）：Satisfied→adopt；否则 running→Apply→Verify→applied。
+	// 账本 DDL 在此创建（确认门禁已通过；§9.4-7 dry-run/缺确认路径零写入）。
+	if err := EnsureLedger(ctx, db); err != nil {
+		return fail(ResultFailed, ExitRuntimeFailure, err.Error(), true)
+	}
 	for _, item := range pending {
 		step := item.step
-		satisfied, err := step.Satisfied(ctx, env)
+		satisfiedCtx, satisfiedCancel := context.WithTimeout(ctx, opts.StepTimeout)
+		satisfied, err := step.Satisfied(satisfiedCtx, env)
+		satisfiedCancel()
 		if err != nil {
 			return fail(ResultFailed, ExitRuntimeFailure,
 				fmt.Sprintf("步骤 %s Satisfied 求值失败: %v", step.ID, err), true)
@@ -389,6 +403,12 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 			}
 			report.Executed = append(report.Executed, executedStep{Revision: step.Revision, Status: "adopted"})
 			continue
+		}
+		// 破坏性步骤即将产生不可逆写：rollback 口径先于执行翻转为
+		// backup-required（§9.3 破坏性步骤的写 → backup-required；否则后续
+		// 步骤失败时报告会误称「换回旧二进制即可」而旧二进制已无法启动）。
+		if step.Destructive {
+			report.Rollback = RollbackBackupRequired
 		}
 		started := now()
 		if err := MarkRunning(ctx, db, step, opts.AppVersion, started); err != nil {
@@ -403,15 +423,22 @@ func Run(ctx context.Context, opts Options, steps []Step) outcome {
 	// 13. 结构收敛·破坏相（删列/删表）：进入本相即 backup-required
 	//（语句级口径：部分执行亦然，§14）。
 	report.Rollback = RollbackBackupRequired
-	if _, err := schema.EnsurePostgresFiltered(ctx, db, schema.EnsureDestructive); err != nil {
+	destructiveResult, err := schema.EnsurePostgresFiltered(ctx, db, schema.EnsureDestructive)
+	if err != nil {
 		return fail(ResultFailed, ExitRuntimeFailure, "ensure-schema 破坏相失败: "+err.Error(), true)
 	}
 	// 14. postflight：全步骤 Check + 语句计数 + 账本一致性。
-	post := verifyAllSteps(ctx, env, steps)
+	post := verifyAllSteps(ctx, env, steps, opts.StepTimeout)
 	totalStatements, destructiveStatements := schema.PostgresStatementCounts()
 	if destructiveStatements != report.Plan.DestructiveDDLStatements || totalStatements <= 0 {
 		post.OK = false
 		post.Checks = append(post.Checks, postflightCheck{Name: "statement-counts", OK: false})
+	}
+	// 执行侧完整性：两相实际执行条数之和必须等于静态清单总数（防相间过滤
+	// 漏语句的 623/624 形态；设计 §9.4-14）。
+	if additiveResult.StatementCount+destructiveResult.StatementCount != totalStatements {
+		post.OK = false
+		post.Checks = append(post.Checks, postflightCheck{Name: "executed-statement-counts", OK: false})
 	}
 	afterRows, err := ReadMigrations(ctx, db)
 	if err != nil {
@@ -451,10 +478,13 @@ func needsApplyCount(pending []stepWithRow, adopted []adoptStep) int {
 }
 
 // verifyAllSteps 对全部步骤跑 Check（Satisfied 与 Verify 同源）。
-func verifyAllSteps(ctx context.Context, env Env, steps []Step) postflightInfo {
+func verifyAllSteps(ctx context.Context, env Env, steps []Step, stepTimeout time.Duration) postflightInfo {
 	post := postflightInfo{OK: true, Checks: []postflightCheck{}}
 	for _, step := range steps {
-		if err := step.Verify(ctx, env); err != nil {
+		verifyCtx, cancel := context.WithTimeout(ctx, stepTimeout)
+		err := step.Verify(verifyCtx, env)
+		cancel()
+		if err != nil {
 			post.OK = false
 			post.Checks = append(post.Checks, postflightCheck{Name: step.ID, OK: false})
 			continue
@@ -481,14 +511,18 @@ func executeStep(ctx context.Context, db *sql.DB, step Step, env Env, opts Optio
 		}
 		return fmt.Errorf("步骤 %s Apply 失败: %w", step.ID, applyErr)
 	}
-	if err := step.Verify(ctx, env); err != nil {
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, opts.StepTimeout)
+	defer verifyCancel()
+	if err := step.Verify(verifyCtx, env); err != nil {
 		verifyErr := fmt.Errorf("%w: 步骤 %s 未通过: %v", errVerifyFailed, step.ID, err)
 		recordErr := RecordStepFailure(ctx, db, step, detail, verifyErr)
 		report.Executed = append(report.Executed, executedStep{
 			Revision: step.Revision, Status: "failed", DurationMs: duration, Error: verifyErr.Error(),
 		})
 		if recordErr != nil {
-			return fmt.Errorf("%v；detail_json 写入亦失败: %w", verifyErr, recordErr)
+			// 双 %w 保留 errVerifyFailed 与 recordErr 两条包装链（Go 1.20+），
+			// 退出码分类不得因 detail_json 写入失败而退化（H4 复审修复）。
+			return fmt.Errorf("%w；detail_json 写入亦失败: %w", verifyErr, recordErr)
 		}
 		return verifyErr
 	}
@@ -503,7 +537,7 @@ func executeStep(ctx context.Context, db *sql.DB, step Step, env Env, opts Optio
 
 // exitCodeForStepError 区分 Apply 失败（exit 1）与 Verify 失败（exit 3）。
 func exitCodeForStepError(err error) int {
-	if errors.Is(err, errVerifyFailed) || strings.Contains(err.Error(), "Verify 未通过") {
+	if errors.Is(err, errVerifyFailed) {
 		return ExitNeedsHuman
 	}
 	return ExitRuntimeFailure

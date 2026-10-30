@@ -36,6 +36,10 @@ type KeyModelMemoryRecoveryRunnerOptions struct {
 	CreateID    func() string
 	Concurrency int
 	Logger      Logger
+	// BackgroundProbeDisabled 是探针触发的手动模式开关位（后台自动探测总开关
+	// 设计 §3）：返回 true 的候选不进入本轮选择，不触发任何恢复探针。nil 视为
+	// 全部开启（与 flag=1 默认路径一致）。
+	BackgroundProbeDisabled func(state KeyModelState) bool
 }
 
 // SweepResult mirrors the sweep() return value.
@@ -50,12 +54,13 @@ type SweepResult struct {
 // internal/keymodelrecovery). Both share the same pure state contract; this
 // one keeps no cross-process durability.
 type KeyModelMemoryRecoveryRunner struct {
-	store       InMemoryKeyModelRecoveryStore
-	probe       KeyModelRecoveryProbe
-	now         func() int64
-	createID    func() string
-	concurrency int
-	logger      Logger
+	store                   InMemoryKeyModelRecoveryStore
+	probe                   KeyModelRecoveryProbe
+	now                     func() int64
+	createID                func() string
+	concurrency             int
+	logger                  Logger
+	backgroundProbeDisabled func(state KeyModelState) bool
 
 	mu                         sync.Mutex
 	running                    map[string]struct{}
@@ -102,6 +107,7 @@ func NewKeyModelMemoryRecoveryRunner(options KeyModelMemoryRecoveryRunnerOptions
 		createID:                   createID,
 		concurrency:                concurrency,
 		logger:                     logger,
+		backgroundProbeDisabled:    options.BackgroundProbeDisabled,
 		running:                    map[string]struct{}{},
 		runningSources:             map[string]int{},
 		runningContinuationSources: map[string]int{},
@@ -143,6 +149,10 @@ func (r *KeyModelMemoryRecoveryRunner) Sweep(ctx context.Context) SweepResult {
 		}
 		{
 			state := due[index]
+			// 手动模式候选不进入选择（总开关设计 §3 探针触发开关位）。
+			if r.backgroundProbeDisabled != nil && r.backgroundProbeDisabled(state) {
+				continue
+			}
 			r.mu.Lock()
 			_, alreadyRunning := r.running[state.CapabilityHash]
 			runningSize := len(r.running)

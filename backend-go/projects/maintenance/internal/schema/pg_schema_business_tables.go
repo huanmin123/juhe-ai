@@ -85,15 +85,19 @@ var postgresSchemaBusinessTables = []PGStatement{
 	},
 	{
 		// models（供应商与上游协议面重构设计 §3）：provider_model_catalog 与
-		// custom_provider_models 合并为唯一物理表。非价格列 31 + 价格列 17，
-		// 列集以设计 :187 清单为准；旧 `model` 列不保留（迁移写 upstream_model
-		// + public_model），旧 `mode`/`supported_api_protocols_json` 由
-		// supported_endpoint_modes_json 取代。价格/倍率 13 列 nullable double
-		// precision，long_context_input_token_threshold 单独 nullable integer；
-		// 四个 capability JSON 列 array CHECK、service_tier_prices_json object
-		// CHECK；scope 三值且 personal↔system_account_id 联动 CHECK 沿用
-		// custom 表同形态。身份唯一走下方表达式唯一索引（COALESCE 空串归一）。
-		// 存量两旧表由后续迁移命令处理，ensure 不写 DROP。
+		// custom_provider_models 合并为唯一物理表。非价格列 34 + 价格列 17
+		//（含 2026-10-30 T82 能力声明三列 supported_tools_by_protocol_json /
+		// input_modalities_json / output_modalities_json，超出设计 :187 原清单
+		// 的加法式扩展），列集以设计 :187 清单 + T82 三列为准；旧 `model` 列
+		// 不保留（迁移写 upstream_model + public_model），旧
+		// `mode`/`supported_api_protocols_json` 由 supported_endpoint_modes_json
+		// 取代。价格/倍率 13 列 nullable double precision，
+		// long_context_input_token_threshold 单独 nullable integer；
+		// 六个 capability JSON 列 array CHECK、supported_tools_by_protocol_json
+		// 与 service_tier_prices_json object CHECK；scope 三值且
+		// personal↔system_account_id 联动 CHECK 沿用 custom 表同形态。身份唯一
+		// 走下方表达式唯一索引（COALESCE 空串归一）。存量两旧表由后续迁移命令
+		// 处理，ensure 不写 DROP。
 		SchemaName: "juhe_business",
 		Source:     "models-table",
 		SQL: `CREATE TABLE IF NOT EXISTS models (
@@ -111,6 +115,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       supported_endpoint_modes_json text NOT NULL DEFAULT '[]',
       supported_service_tiers_json text NOT NULL DEFAULT '[]',
       supported_reasoning_efforts_json text NOT NULL DEFAULT '[]',
+      supported_tools_by_protocol_json text NOT NULL DEFAULT '{}',
+      input_modalities_json text NOT NULL DEFAULT '[]',
+      output_modalities_json text NOT NULL DEFAULT '[]',
       default_reasoning_effort text,
       codex_supported_reasoning_levels_json text NOT NULL DEFAULT '[]',
       codex_default_reasoning_level text,
@@ -152,6 +159,9 @@ var postgresSchemaBusinessTables = []PGStatement{
       CHECK (jsonb_typeof(supported_endpoint_modes_json::jsonb) = 'array'),
       CHECK (jsonb_typeof(supported_service_tiers_json::jsonb) = 'array'),
       CHECK (jsonb_typeof(supported_reasoning_efforts_json::jsonb) = 'array'),
+      CHECK (jsonb_typeof(supported_tools_by_protocol_json::jsonb) = 'object'),
+      CHECK (jsonb_typeof(input_modalities_json::jsonb) = 'array'),
+      CHECK (jsonb_typeof(output_modalities_json::jsonb) = 'array'),
       CHECK (jsonb_typeof(codex_supported_reasoning_levels_json::jsonb) = 'array'),
       CHECK (jsonb_typeof(service_tier_prices_json::jsonb) = 'object'),
       CHECK (
@@ -616,6 +626,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       cooldown_retest_generation text,
       cooldown_retest_last_at text,
       cooldown_retest_last_status_code integer,
+      background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
       capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
@@ -1557,6 +1568,16 @@ $$`,
 		SchemaName: "juhe_business",
 		Source:     "account-capability-domain-pg-column",
 		SQL:        `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`,
+	},
+	{
+		// 账户级后台自动探测总开关（AI账户后台自动探测总开关设计 §2）：
+		// accounts background_probe_enabled 列的存量库守卫，模式与
+		// expedited_recovery_enabled 的 BUG-0305 守卫一致——CREATE TABLE 只救
+		// 新库，缺它时存量 PG 库新二进制启动契约校验缺列 fail-closed。存量行
+		// 默认 1（开启），行为零变化。
+		SchemaName: "juhe_business",
+		Source:     "account-background-probe-pg-column",
+		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1))`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -2532,5 +2553,28 @@ BEGIN
   END IF;
 END
 $$`,
+	},
+	{
+		// models 能力声明三列（T82 生产缺陷根治：personal custom 目录行的
+		// 能力矩阵恒空，AI 对话主模型不注入任何内部工具）：新库由建表 DDL
+		// 内联声明；存量库由本组三条幂等 ALTER 补列（media-stats-pg-columns
+		// 单 Source 多语句先例）。DEFAULT 与建表 DDL 同构（object '{}' /
+		// array '[]'），存量行取默认值恒满足 jsonb_typeof 列级 CHECK；
+		// builtin seed / legacy import / mockdata 不落这三列，默认值即
+		// 「未声明」语义。ADD COLUMN 携带 NOT NULL DEFAULT + CHECK，与
+		// expedited_recovery_enabled / group_kind 全列先例一致。
+		SchemaName: "juhe_business",
+		Source:     "models-capability-declaration-pg-columns",
+		SQL:        `ALTER TABLE models ADD COLUMN IF NOT EXISTS supported_tools_by_protocol_json text NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(supported_tools_by_protocol_json::jsonb) = 'object')`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "models-capability-declaration-pg-columns",
+		SQL:        `ALTER TABLE models ADD COLUMN IF NOT EXISTS input_modalities_json text NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(input_modalities_json::jsonb) = 'array')`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "models-capability-declaration-pg-columns",
+		SQL:        `ALTER TABLE models ADD COLUMN IF NOT EXISTS output_modalities_json text NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(output_modalities_json::jsonb) = 'array')`,
 	},
 }

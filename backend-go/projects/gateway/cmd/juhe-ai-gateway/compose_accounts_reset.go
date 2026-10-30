@@ -73,7 +73,7 @@ import (
 // fails fast on a missing business handle / runtime secret. healthDispatch is
 // the in-process probe-request outbox writer (an inert nil-DB writer keeps
 // the dispatch on its logged skip contract).
-func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string, healthDispatch *chainProbeRequestOutboxWriter) (accounts.RuntimeResetEffects, error) {
+func newAccountsRuntimeResetBridge(composed *composition, settingValue SettingValueFunc, services *chainRuntimeServices, secret string, healthDispatch *chainProbeRequestOutboxWriter) (*accountsRuntimeResetBridge, error) {
 	keyStates, err := accountkeystates.NewStore(accountkeystates.Config{
 		DB:     composed.db,
 		Secret: secret,
@@ -378,6 +378,32 @@ func (b *accountsRuntimeResetBridge) AuthorizationQuotaExceeded(ctx context.Cont
 // （部分可用），与 Node summaries 缺省投影一致。
 func (b *accountsRuntimeResetBridge) APIKeyPoolAllUnavailable(ctx context.Context, accountID string) (bool, error) {
 	return b.keyStates.AllUnavailable(ctx, accountID)
+}
+
+// ClearDisabledBackgroundProbeRuntime implements accounts.BackgroundProbeRuntimeCleanup
+// over the same runtime collaborators the reset endpoint uses（后台自动探测总
+// 开关禁用臂，复审 M1）：circuit 运行态由禁用事务内的 dispatch fence 事件经
+// jobs 控制面投影关闭（不在本端口），这里清理其余网关面——latency_degraded
+// 速度优先运行态、探针派生 Key 运行态池（按禁用后的新 config_revision 重验
+// 证）与网关运行时缓存投影失效。任一面失败即整体报错，由账户侧按 best-effort
+// 留痕（禁用已提交，清理可经运行时重置端点重放）。
+func (b *accountsRuntimeResetBridge) ClearDisabledBackgroundProbeRuntime(ctx context.Context, input accounts.BackgroundProbeRuntimeCleanupInput) (int64, error) {
+	cleared := int64(0)
+	count, err := b.ClearNormalRouteLatencyDegradation(ctx, input.SystemAccountID, input.AccountID)
+	if err != nil {
+		return cleared, err
+	}
+	cleared += count
+	if _, err := b.RevalidateAccountAPIKeyRuntimePool(ctx, input.AccountID, input.ExpectedConfigRevision); err != nil {
+		return cleared, err
+	}
+	if _, err := b.ClearAccountRuntimeAvailability(ctx, accounts.RuntimeAvailabilityClearInput{
+		AccountID:             input.AccountID,
+		IncludeBaseAccountKey: true,
+	}); err != nil {
+		return cleared, err
+	}
+	return cleared, nil
 }
 
 // ---- helpers ----

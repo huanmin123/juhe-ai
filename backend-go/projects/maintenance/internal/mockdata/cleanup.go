@@ -150,7 +150,6 @@ var cleanupAggregateResetTables = []string{
 	"usage_model_rank_windows", "usage_error_rank_windows",
 	"ai_performance_summary_windows",
 	"usage_quota_hourly_windows", "usage_scope_range_windows",
-	"authorization_team_usage_range_windows", "authorization_user_usage_range_windows",
 	"group_account_stats",
 	// 队列与账本：脏队列由域重写；扣减账指向的桶已被重置，残留会让 jobs
 	// 清理重试扣减新桶。

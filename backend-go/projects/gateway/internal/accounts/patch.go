@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountstransfer"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
@@ -48,6 +50,12 @@ type PatchResult struct {
 	// :744-761)：余额查询身份（开关/配置/Key 指纹/base URL/代理）发生变化，
 	// 提交后触发余额快照旧代次清理端口。
 	BalanceIdentityChanged bool `json:"-"`
+	// BackgroundProbeEvent 记录本次补丁的后台自动探测总开关翻转方向：
+	// "disabled"（1→0，含状态归一化与特供/锁死/J1 outbox 清理）、"enabled"
+	// （0→1）或 ""（未翻转）。路由层据此落专用审计事件，明细在
+	// BackgroundProbeDetails。
+	BackgroundProbeEvent   string        `json:"-"`
+	BackgroundProbeDetails []PatchChange `json:"-"`
 }
 
 // PatchInput is the validated basic-edit payload: the account-edit-basic
@@ -107,6 +115,11 @@ type PatchInput struct {
 	BalanceQueryConfigCanonical                *string
 	BalanceQueryConfigPresent                  bool
 	TemporaryUnavailableContinuousProbeEnabled *bool
+	// BackgroundProbeEnabled mirrors the 账户级后台自动探测总开关（总开关设计
+	// §2/§4）：nil = 未提交；翻转在补丁事务内做状态归一化（§4）、特供/锁死
+	// 自动清理、J1 pending outbox 删除与授权实例传播。授权实例行提交该字段
+	// 400（跟随来源账户），媒体域幂等忽略（域不适用）。
+	BackgroundProbeEnabled *bool
 	// ExpeditedRecoveryEnabled mirrors the expedited-recovery switch (设计
 	// §8.1/§9)：false→true 的翻转在补丁事务内做归属名额校验；置 false 与幂等
 	// true 不校验。特供消费方是 jobs 恢复道，不进 gatewayRuntimeFields。
@@ -177,6 +190,8 @@ func accountPatchChangeLabel(field string) string {
 		return "检查协议"
 	case "temporaryUnavailableContinuousProbeEnabled":
 		return "持续恢复探活"
+	case "backgroundProbeEnabled":
+		return "后台自动探测"
 	case "expeditedRecoveryEnabled":
 		return "特供恢复"
 	case "modelMappings":
@@ -282,6 +297,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		lastHealthTraceID         sql.NullString
 		authorizationID           sql.NullString
 		expeditedRecoveryEnabled  int
+		backgroundProbeEnabled    int
 		capabilityDomain          string
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
@@ -317,7 +333,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			accounts.last_health_check_status_code, accounts.last_health_check_error_code,
 			accounts.last_health_check_error_message, accounts.last_health_check_trace_id,
 			accounts.authorization_instance_authorization_id,
-			accounts.expedited_recovery_enabled, accounts.capability_domain
+			accounts.expedited_recovery_enabled, accounts.background_probe_enabled, accounts.capability_domain
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.id = ?
 			AND accounts.deleted_at IS NULL`+scopeClause+`
@@ -339,7 +355,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.lastHealthCheckAt, &row.lastHealthSuccessAt, &row.healthCheckFailureCount,
 		&row.healthCheckFailureStart, &row.lastHealthStatusCode, &row.lastHealthErrorCode,
 		&row.lastHealthErrorMessage, &row.lastHealthTraceID, &row.authorizationID,
-		&row.expeditedRecoveryEnabled, &row.capabilityDomain)
+		&row.expeditedRecoveryEnabled, &row.backgroundProbeEnabled, &row.capabilityDomain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -393,14 +409,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 人工恢复目标状态（BUG-0288）：clearFailureState 是显式人工确认——冷却态
 	// 直接恢复调度（与授权实例 patchAuthorizedDispatchTx 的 clearFailure→
 	// active+schedulable 同语义），error 进入待检查复检；目标仍受时间计划与
-	// 套餐到期约束，由既有状态机统一裁定。媒体域（audio/video）不参与对话
-	// 健康检查状态机（无后台探针复检），error 人工恢复直达 active——落
-	// pending_test 会因永远等不到探针而滞留。
+	// 套餐到期约束，由既有状态机统一裁定。两类账户 error 人工恢复直达 active
+	// （落 pending_test 会因永远等不到探针而滞留）：媒体域（audio/video）不参
+	// 与对话健康检查状态机（无后台探针复检）；手动模式（总开关设计 §7，二轮
+	// 复审 Major-1 补漏）异常恢复直接写 active，不经过 pending_test、不投递
+	// 后台检查。
 	clearFailureRestoreTarget := ""
 	if input.ClearFailureState {
 		switch row.status {
 		case "error":
-			if accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+			if accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) ||
+				row.backgroundProbeEnabled == 0 {
 				clearFailureRestoreTarget = "active"
 			} else {
 				clearFailureRestoreTarget = "pending_test"
@@ -421,6 +440,36 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	sets := []string{}
 	setArgs := []any{}
+
+	// 后台自动探测总开关翻转（AI账户后台自动探测总开关设计 §2/§4）：授权实例
+	// 行只读跟随来源账户，提交即 400（先于媒体域判定——实例只读是无条件契约）；
+	// 媒体域（audio/video）不适用该开关，PATCH 幂等忽略（设计 §2 统一裁决：
+	// 创建/编辑拒绝，PATCH 幂等忽略；image 域存在后台探测，适用该开关）。
+	// 翻转副作用（状态归一化、特供/锁死
+	// 清理、J1 outbox 删除、实例传播）在下方各写段按 backgroundProbeDisabling /
+	// backgroundProbeEnabling 分臂执行。
+	backgroundProbeNext := row.backgroundProbeEnabled
+	backgroundProbeDisabling := false
+	backgroundProbeEnabling := false
+	if input.BackgroundProbeEnabled != nil {
+		if row.authorizationID.Valid && row.authorizationID.String != "" {
+			return nil, &ValidationError{Message: "授权实例跟随来源账户", Code: "authorized_instance_background_probe_follows_source"}
+		}
+		if !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+			next := 0
+			if *input.BackgroundProbeEnabled {
+				next = 1
+			}
+			if next != row.backgroundProbeEnabled {
+				backgroundProbeNext = next
+				backgroundProbeDisabling = next == 0
+				backgroundProbeEnabling = next == 1
+				addChange("backgroundProbeEnabled", row.backgroundProbeEnabled == 1, *input.BackgroundProbeEnabled)
+				sets = append(sets, "background_probe_enabled = ?")
+				setArgs = append(setArgs, next)
+			}
+		}
+	}
 
 	// Health-relevant change tracking (Node account-management-patch.repository.ts
 	// :356-360, 575-582, 677-694): a connection change (proxy switch, base URL
@@ -522,6 +571,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		// 状态列写入在连接组装后的状态机分支统一处理。
 		if err := assertStatusMutationAllowed(row.status, *input.Status); err != nil {
 			return nil, err
+		}
+		// 手动模式二态校验（总开关设计 §4）：按本次请求翻转后的开关终值判定，
+		// 手动模式账户不接受过程态状态（开启翻转 0→1 与 pending_test 提交
+		// 同请求时按开启后的语义放行）。
+		if backgroundProbeNext == 0 && accountscore.ManualModeForbiddenStatuses[*input.Status] {
+			return nil, &ValidationError{Message: "手动模式账户只允许正常、异常或停用状态"}
 		}
 	}
 	// T62 深度排查（2026-10-24）：授权实例的调度字段（并发上限/优先级/超级
@@ -1194,10 +1249,31 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 连接变化降级臂按域守卫（媒体账户生命周期定案表）：audio/video 域不参
 	// 与对话健康检查状态机，凭据/代理编辑保持 scheduledStatus（active 保持
 	// active），不落 pending_test——否则同样因无探针复检而永久滞留。chat/
-	// image 域行为不变。
+	// image 域行为不变。手动模式（本次翻转后 background_probe_enabled=0）
+	// 同样跳过：连接变更不再落 pending_test，凭据/代理编辑保持原状态，由
+	// 真实流量验收（总开关设计 §4，对齐媒体域 SkipsConversationHealthState
+	// Machine 先例）。
 	if connectionChanged && scheduledStatus != "disabled" && !hasStatusInput &&
+		backgroundProbeNext != 0 &&
 		!accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
 		nextStatus = "pending_test"
+	}
+	// 手动模式状态归一化（总开关设计 §4，同事务二态收敛）：按行内现值状态
+	// 推导目标态并覆盖状态机终值——pending_test → active（不激活检查）；
+	// temporary_unavailable / rate_limited 一律 → error（2026-10-30 复审修订：
+	// 来源标记不可靠——显式策略 / 系统额度冷却与探针冷却共用同一
+	// cooldown_retest_generation fence（chain_error_policy_effects.go
+	// markCooldown 同写 "cooldown:" 代际），无法按 fence 区分来源，全部转异常
+	// 以不覆盖用户显式策略意图）；quality_isolated → error（保留质量处罚，
+	// 清理 enforcement 由 disable 清理臂执行）；error / disabled 保持。
+	// 同请求显式 status 输入优先：本请求已显式提交的状态是该次操作的意图，
+	// 不被行内现值推导的归一化覆盖（二态校验已拒绝过程态提交）。
+	manualModeStatusTarget := ""
+	if backgroundProbeDisabling {
+		manualModeStatusTarget = backgroundProbeNormalizedStatus(row.status)
+	}
+	if manualModeStatusTarget != "" && manualModeStatusTarget != nextStatus && !hasStatusInput {
+		nextStatus = manualModeStatusTarget
 	}
 	statusChanged := row.status != nextStatus
 	nextSchedulable := requestedSchedulable
@@ -1312,6 +1388,59 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
+	// 手动模式开启/关闭同步臂（总开关设计 §4/§7/§10）。禁用臂与既有 runtime
+	// 归一化同事务叠加：经 setRuntimeColumn 单赋值通道覆盖先写的同名列，并
+	// 补齐目标态未覆盖的列族（error 目标不自动清 retest 代际与健康失败计数）。
+	// 明细经 backgroundProbeCleanupNotes 进入 account_background_probe_disabled
+	// 审计事件（设计 §10）。
+	backgroundProbeCleanupNotes := []PatchChange{}
+	backgroundProbeEnableHealthCheck := false
+	if backgroundProbeDisabling {
+		setRuntimeColumn("cooldown_until", nil)
+		setRuntimeColumn("cooldown_retest_failure_count", 0)
+		setRuntimeColumn("cooldown_retest_observation_started_at", nil)
+		setRuntimeColumn("cooldown_retest_generation", nil)
+		setRuntimeColumn("cooldown_retest_last_at", nil)
+		setRuntimeColumn("cooldown_retest_last_status_code", nil)
+		setRuntimeColumn("next_health_check_at", nil)
+		setRuntimeColumn("health_check_failure_count", 0)
+		setRuntimeColumn("health_check_failure_started_at", nil)
+		// 归一化生效判定：同请求显式 status 输入优先（复审 Minor），此时归一化
+		// 目标不落状态，异常转写原因与审计明细也不得按未生效的目标落。
+		manualModeStatusApplied := manualModeStatusTarget != "" && !hasStatusInput
+		if manualModeStatusApplied && manualModeStatusTarget == "error" &&
+			(row.status == "temporary_unavailable" || row.status == "rate_limited") {
+			// 显式策略 / 系统额度派生冷却转异常：last_error_message 保留可读
+			// 人工恢复原因（质量隔离转异常保留既有质量处罚原因，不改写）。
+			setRuntimeColumn("last_error_message", "手动模式：原冷却/限流状态转为异常，需人工恢复")
+		}
+		if manualModeStatusApplied && manualModeStatusTarget != row.status {
+			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes, PatchChange{Field: "normalizedStatus", Before: row.status, After: manualModeStatusTarget})
+		}
+		// 特供恢复建立在后台恢复探针之上：进入手动模式自动取消并释放名额
+		// （名额为计数式，列清零即释放；显式提交 false 的翻转由下方特供块
+		// 处理，不重复落列）。
+		if row.expeditedRecoveryEnabled == 1 && input.ExpeditedRecoveryEnabled == nil {
+			addChange("expeditedRecoveryEnabled", true, false)
+			sets = append(sets, "expedited_recovery_enabled = 0")
+			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes, PatchChange{Field: "expeditedRecoveryEnabled", Before: true, After: false})
+		}
+	}
+	if backgroundProbeEnabling {
+		// 重新开启（总开关设计 §7）：重播种 J1 候选版本行（禁用臂删除了版本
+		// 行，J1 直读候选 join 依赖它）；active 账户安排一次即时健康检查，
+		// error / disabled 按人工路径恢复，不自动探测。
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_health_jobs_input_versions")+`
+			(account_id, current_version, reserved_at) VALUES (?, 1, ?)
+			ON CONFLICT (account_id) DO NOTHING`), row.id, nowISO); err != nil {
+			return nil, err
+		}
+		if row.status == "active" {
+			backgroundProbeEnableHealthCheck = true
+			sets = append(sets, "next_health_check_at = NULL")
+		}
+	}
+
 	// 特供快速恢复开关（AI账户特供快速恢复通道设计 §8.1/§9）：false→true 的
 	// 翻转在同一补丁事务内先锁归属行（FOR UPDATE）再
 	// 计数校验，超限整体回滚（ValidationError → 400）；置 false 与幂等 true
@@ -1322,6 +1451,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		next := 0
 		if *input.ExpeditedRecoveryEnabled {
 			next = 1
+		}
+		// 手动模式禁止设置特供（总开关设计 §7）：按翻转后的开关终值判定。
+		if next == 1 && backgroundProbeNext == 0 {
+			return nil, &ValidationError{Message: "手动模式账户不适用特供快速恢复"}
 		}
 		if next != row.expeditedRecoveryEnabled {
 			if next == 1 {
@@ -1513,8 +1646,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 
 	// Health state reset (Node :677-694): any health-relevant change clears
 	// the next scheduled check; a connection change also wipes the persisted
-	// health projection so the next probe starts clean.
-	healthCheckRequired := !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) &&
+	// health projection so the next probe starts clean. 手动模式账户不投递
+	// 配置变更复检（总开关设计 §4），last_health_* 保留为「关闭前」历史展示，
+	// 不清投影。
+	healthCheckRequired := backgroundProbeNext != 0 &&
+		!accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) &&
 		(connectionChanged || supportedModelsChanged || modelMappingsChanged ||
 			healthCheckModelChanged || healthCheckEndpointModeChanged || endpointModesChanged)
 	if healthCheckRequired {
@@ -1527,7 +1663,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if clearFailurePendingTest {
 		sets = append(sets, "next_health_check_at = NULL")
 	}
-	if connectionChanged && !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+	if connectionChanged && backgroundProbeNext != 0 && !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
 		sets = append(sets,
 			"last_health_check_at = NULL",
 			"last_health_success_at = NULL",
@@ -1575,6 +1711,86 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if affected, _ := exec.RowsAffected(); affected != 1 {
 		return nil, &RevisionConflictError{Message: RevisionConflictMessage}
 	}
+	// 禁用臂连带清理（总开关设计 §4/§7，同事务）：锁死自动解除（generation+1
+	// 使在途锁租约失效）、质量隔离 enforcement 活动行清理（质量处罚语义由
+	// error 状态保留，恢复探针不再运行）、J1 pending outbox 与候选版本行删除
+	// （J1 直读候选 join 依赖版本行，删除即从候选集消失）。
+	if backgroundProbeDisabling {
+		lockRelease, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_lock_states")+` SET
+			enabled = 0,
+			lock_state = 'UNLOCKED',
+			incident_id = NULL,
+			incident_started_at = NULL,
+			deadline_at = NULL,
+			original_status = NULL,
+			provenance = NULL,
+			next_retry_at_ms = NULL,
+			lease_id = NULL,
+			lease_until_ms = NULL,
+			generation = generation + 1,
+			updated_at = ?
+			WHERE account_id = ? AND enabled = 1`), nowISO, row.id)
+		if err != nil {
+			return nil, err
+		}
+		if released, _ := lockRelease.RowsAffected(); released > 0 {
+			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes,
+				PatchChange{Field: "lockState", Before: "已锁死", After: "已自动解除"})
+		}
+		enforcementClear, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_quality_enforcements")+` SET
+			state = 'cleared',
+			recovery_due_at = NULL,
+			recovery_lease_owner = NULL,
+			recovery_lease_until = NULL,
+			cleared_at = ?,
+			updated_at = ?
+			WHERE account_id = ? AND state = 'active'`), nowISO, nowISO, row.id)
+		if err != nil {
+			return nil, err
+		}
+		if cleared, _ := enforcementClear.RowsAffected(); cleared > 0 {
+			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes,
+				PatchChange{Field: "qualityEnforcement", Before: "active", After: "cleared"})
+		}
+		outboxDelete, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_health_jobs_input_outbox")+`
+			WHERE account_id = ? AND status = 'pending'`), row.id)
+		if err != nil {
+			return nil, err
+		}
+		if deleted, _ := outboxDelete.RowsAffected(); deleted > 0 {
+			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes,
+				PatchChange{Field: "pendingHealthOutbox", Before: deleted, After: 0})
+		}
+		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_health_jobs_input_versions")+`
+			WHERE account_id = ?`), row.id); err != nil {
+			return nil, err
+		}
+		// circuit incident 关闭（复审 M1）：同事务推进 dispatch fence 并入队
+		// dispatch_revision_changed 事件（既有运行时重置链路
+		// AdvanceBatchDispatchRevision 同款）；jobs 控制面投影消费事件时按账户
+		// 关闭全部非 CLOSED circuit 运行态（含 key / protocol_model 子 scope），
+		// 否则已有 incident 继续以 PrepareBlocked 挡真实流量且恢复探针已关。
+		// 事件幂等键为 transitionID（dedupe "dispatch:<id>"）。
+		if err := s.advanceBatchDispatchRevision(ctx, tx, row.id,
+			newRandomID("bgprobe-disable"), now.UnixMilli()); err != nil {
+			return nil, err
+		}
+		backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes,
+			PatchChange{Field: "circuitIncident", Before: "待关闭", After: "关闭事件已入队（dispatch fence 推进）"})
+	}
+	// 授权实例传播（总开关设计 §2/§4）：来源翻转 backgroundProbeEnabled 时，
+	// 实例行同事务跟进开关值并做实例侧二态状态归一化（复用
+	// temporaryUnavailableContinuousProbeEnabled 的传播链位置）。
+	if backgroundProbeDisabling || backgroundProbeEnabling {
+		instances, err := s.propagateBackgroundProbeSwitchToAuthorizationInstances(ctx, tx, row.id, backgroundProbeNext, now, nowISO)
+		if err != nil {
+			return nil, err
+		}
+		if len(instances) > 0 {
+			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes,
+				PatchChange{Field: "authorizationInstancesSynced", Before: int64(0), After: int64(len(instances))})
+		}
+	}
 	// 重命名臂（归档 account-management-patch.repository.ts:801-805）：名称
 	// 变更在同一事务内刷新来源账户的名称搜索词，并把每个授权实例的名称沿
 	// 唯一性阶梯跟进（:1670-1739）。归档侧还把变更实例 id 归入
@@ -1618,6 +1834,19 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if clearFailurePendingTest {
 		result.HealthCheckRequired = true
 		result.HealthCheckReason = "configuration"
+	}
+	if backgroundProbeEnableHealthCheck {
+		result.HealthCheckRequired = true
+		result.HealthCheckReason = "configuration"
+	}
+	// 总开关翻转审计事件（总开关设计 §10）：明细随事件落操作日志，由路由层
+	// 以专用 operationKey 记录。
+	if backgroundProbeDisabling {
+		result.BackgroundProbeEvent = "disabled"
+		result.BackgroundProbeDetails = backgroundProbeCleanupNotes
+	} else if backgroundProbeEnabling {
+		result.BackgroundProbeEvent = "enabled"
+		result.BackgroundProbeDetails = append([]PatchChange{{Field: "backgroundProbeEnabled", Before: false, After: true}}, backgroundProbeCleanupNotes...)
 	}
 	result.GroupChanged = groupChanged
 	result.DispatchBindingChanged = dispatchBindingChanged
@@ -1682,6 +1911,32 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Post-commit invalidation (T2 audit; Node
 	// account-management-patch.repository.ts:1877-1896): conditional lookup
 	// flush + gateway runtime invalidation, best-effort.
+	// 禁用臂运行态清理（总开关设计 §4，复审 M1）：latency 降级 / 探针派生
+	// Key 运行态池 / 网关运行时缓存投影在提交后经装配端口清理（circuit 运行
+	// 态由事务内 dispatch fence 事件经 jobs 控制面投影关闭）。端口缺席降级为
+	// 仅数据库侧清理；失败按 best-effort 留痕（禁用已提交，不回滚业务结果），
+	// 明细随 account_background_probe_disabled 审计事件落操作日志。
+	if backgroundProbeDisabling {
+		if cleanup := s.backgroundProbeRuntimeCleanup; cleanup != nil {
+			if _, err := cleanup.ClearDisabledBackgroundProbeRuntime(ctx, BackgroundProbeRuntimeCleanupInput{
+				AccountID:              result.ID,
+				SystemAccountID:        result.OwnerSystemAccountID,
+				ExpectedConfigRevision: result.ConfigRevision,
+			}); err != nil {
+				slog.Warn("后台自动探测已关闭，但网关运行态清理失败",
+					"event", "account_background_probe_disabled_runtime_cleanup_failed",
+					"accountId", result.ID, "error", err)
+				result.BackgroundProbeDetails = append(result.BackgroundProbeDetails,
+					PatchChange{Field: "runtimeCleanup", Before: "待清理", After: "清理失败（错误已留痕）"})
+			} else {
+				result.BackgroundProbeDetails = append(result.BackgroundProbeDetails,
+					PatchChange{Field: "runtimeCleanup", Before: "待清理", After: "已清理"})
+			}
+		} else {
+			result.BackgroundProbeDetails = append(result.BackgroundProbeDetails,
+				PatchChange{Field: "runtimeCleanup", Before: "待清理", After: "运行态清理端口未装配，仅完成数据库侧清理"})
+		}
+	}
 	s.finishPatchSideEffects(ctx, result)
 	return result, nil
 }
@@ -1757,6 +2012,172 @@ func (s *Store) propagateProbeSwitchToAuthorizationInstances(ctx context.Context
 		nowISO,
 		sourceAccountID)
 	return err
+}
+
+// backgroundProbeNormalizedStatus 推导手动模式二态收敛目标（总开关设计 §4）：
+// pending_test → active；temporary_unavailable / rate_limited 一律 → error
+// （2026-10-30 复审修订：显式策略 / 系统额度冷却与探针冷却共用同一
+// cooldown_retest_generation fence，来源标记不可靠，全部转异常保留人工恢复，
+// 不覆盖用户显式策略意图；last_error_message 由禁用清理臂写入）；quality_isolated
+// → error（质量处罚语义保留，enforcement 清理由调用方执行）；error / disabled /
+// active 返回空串表示无需归一化。
+func backgroundProbeNormalizedStatus(status string) string {
+	switch status {
+	case "pending_test":
+		return "active"
+	case "temporary_unavailable", "rate_limited", "quality_isolated":
+		return "error"
+	}
+	return ""
+}
+
+// propagateBackgroundProbeSwitchToAuthorizationInstances mirrors the Node
+// continuousProbeChanged arm's propagation position (归档
+// account-management-patch.repository.ts :805-843) for the background-probe
+// master switch: every live authorization instance follows the source value in
+// the same transaction, and each instance row additionally collapses to the
+// two-state manual-mode semantics (二态状态归一化 + 冷却/健康列族清理 + 锁死
+// 解除 + dispatch fence 推进入队 circuit 关闭事件 + pending J1 outbox 删除)。
+// 实例行数与来源账户授权数同量级，逐行 UPDATE 换取与来源臂一致的逐状态判定；
+// 行锁 FOR UPDATE 串行化并发实例写入。
+func (s *Store) propagateBackgroundProbeSwitchToAuthorizationInstances(ctx context.Context, tx *sql.Tx, sourceAccountID string, next int, now time.Time, nowISO string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, status, schedulable, expedited_recovery_enabled
+		FROM `+s.table("accounts")+`
+		WHERE authorization_instance_source_account_id = ?
+			AND deleted_at IS NULL
+		ORDER BY id ASC
+		FOR UPDATE`), sourceAccountID)
+	if err != nil {
+		return nil, err
+	}
+	type instanceRow struct {
+		id                       string
+		status                   string
+		schedulable              int
+		expeditedRecoveryEnabled int
+	}
+	instances := []instanceRow{}
+	for rows.Next() {
+		var row instanceRow
+		if err := rows.Scan(&row.id, &row.status, &row.schedulable, &row.expeditedRecoveryEnabled); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		instances = append(instances, row)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 实例 circuit 关闭事件的幂等基 id（复审 M1）：逐实例经
+	// BatchFamilyDispatchTransitionID 派生唯一 transitionID，dedupe 键
+	// "dispatch:<derived>" 不冲突。
+	instanceTransitionID := newRandomID("bgprobe-disable-instance")
+	for _, instance := range instances {
+		// 二态归一化仅在「关闭」方向生效（二轮复审 Minor-3）：重开方向状态保持
+		// ——手动模式期间被显式策略写成冷却/限流的实例在重新开启时静默转异常
+		// 会覆盖可人工处理的现状；与来源臂「归一化仅 backgroundProbeDisabling
+		// 时推导」对称。
+		target := ""
+		if next == 0 {
+			target = backgroundProbeNormalizedStatus(instance.status)
+		}
+		sets := []string{
+			"background_probe_enabled = ?",
+			"config_revision = config_revision + 1",
+			"updated_at = ?",
+		}
+		args := []any{next, nowISO}
+		if next == 0 {
+			// 实例侧与来源同款列族清理（§4 禁用同步）。
+			sets = append(sets,
+				"cooldown_until = NULL",
+				"cooldown_retest_failure_count = 0",
+				"cooldown_retest_observation_started_at = NULL",
+				"cooldown_retest_generation = NULL",
+				"cooldown_retest_last_at = NULL",
+				"cooldown_retest_last_status_code = NULL",
+				"next_health_check_at = NULL",
+				"health_check_failure_count = 0",
+				"health_check_failure_started_at = NULL")
+			if target == "error" && (instance.status == "temporary_unavailable" || instance.status == "rate_limited") {
+				sets = append(sets, "last_error_message = ?")
+				args = append(args, "手动模式：原冷却/限流状态转为异常，需人工恢复")
+			}
+			if instance.expeditedRecoveryEnabled == 1 {
+				sets = append(sets, "expedited_recovery_enabled = 0")
+			}
+		}
+		if target != "" && target != instance.status {
+			sets = append(sets, "status = ?", "schedulable = ?")
+			args = append(args, target, boolInt(target == "active"))
+		}
+		args = append(args, instance.id)
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+` SET
+			`+strings.Join(sets, ", ")+`
+			WHERE id = ?`), args...); err != nil {
+			return nil, err
+		}
+		if next == 0 {
+			// 实例锁死解除（复审 M1 补漏）：与来源臂同款 UPDATE——残留 enabled
+			// 行会让实例滞留 ENGAGED 且手动模式禁止重新锁死，generation+1 使
+			// 在途锁租约失效。
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_lock_states")+` SET
+				enabled = 0,
+				lock_state = 'UNLOCKED',
+				incident_id = NULL,
+				incident_started_at = NULL,
+				deadline_at = NULL,
+				original_status = NULL,
+				provenance = NULL,
+				next_retry_at_ms = NULL,
+				lease_id = NULL,
+				lease_until_ms = NULL,
+				generation = generation + 1,
+				updated_at = ?
+				WHERE account_id = ? AND enabled = 1`), nowISO, instance.id); err != nil {
+				return nil, err
+			}
+			// 实例 dispatch fence 推进（复审 M1）：jobs 控制面投影消费事件时
+			// 关闭实例名下 circuit 运行态（含 key / protocol_model 子 scope）。
+			if err := s.advanceBatchDispatchRevision(ctx, tx, instance.id,
+				accountstransfer.BatchFamilyDispatchTransitionID(instanceTransitionID, instance.id),
+				now.UnixMilli()); err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_health_jobs_input_outbox")+`
+				WHERE account_id = ? AND status = 'pending'`), instance.id); err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_health_jobs_input_versions")+`
+				WHERE account_id = ?`), instance.id); err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_quality_enforcements")+` SET
+				state = 'cleared',
+				recovery_due_at = NULL,
+				recovery_lease_owner = NULL,
+				recovery_lease_until = NULL,
+				cleared_at = ?,
+				updated_at = ?
+				WHERE account_id = ? AND state = 'active'`), nowISO, nowISO, instance.id); err != nil {
+				return nil, err
+			}
+		} else if instance.status == "active" && instance.schedulable == 1 {
+			// 实例重新开启：active 实例清排期由派发臂即时补检查（与来源臂
+			// 同款语义；无排期列写入则保持现状）。
+			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_health_jobs_input_versions")+`
+				(account_id, current_version, reserved_at) VALUES (?, 1, ?)
+				ON CONFLICT (account_id) DO NOTHING`), instance.id, nowISO); err != nil {
+				return nil, err
+			}
+		}
+	}
+	instanceIDs := make([]string, 0, len(instances))
+	for _, instance := range instances {
+		instanceIDs = append(instanceIDs, instance.id)
+	}
+	return instanceIDs, nil
 }
 
 // syncAuthorizationInstanceNames mirrors syncAuthorizationInstanceNamesInClient
@@ -2073,6 +2494,7 @@ func patchHasMixedEditField(input PatchInput) bool {
 		input.BalanceQueryEnabled != nil ||
 		input.BalanceQueryConfigPresent ||
 		input.TemporaryUnavailableContinuousProbeEnabled != nil ||
+		input.BackgroundProbeEnabled != nil ||
 		input.ExpeditedRecoveryEnabled != nil
 }
 

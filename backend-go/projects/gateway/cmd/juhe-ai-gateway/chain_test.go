@@ -310,6 +310,8 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 		// 供应商解耦新表（供应商与上游协议面重构设计 §3/§5.1，maintenance
 		// sqlite_schema_business.go 同构去 FK）：vendors/models 单表目录与
 		// account_entry_mappings 入口映射，供并集装载器与目录源真实读取。
+		// models 含 2026-10-30 T82 能力声明三列（与 maintenance schema 批
+		// pg_schema_business_tables.go 建 models 的同三列，含 jsonb_typeof CHECK）。
 		`CREATE TABLE vendors (
 			id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT,
 			enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]',
@@ -322,6 +324,9 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
 			supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
 			supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+			supported_tools_by_protocol_json TEXT NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(supported_tools_by_protocol_json::jsonb) = 'object'),
+			input_modalities_json TEXT NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(input_modalities_json::jsonb) = 'array'),
+			output_modalities_json TEXT NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(output_modalities_json::jsonb) = 'array'),
 			default_reasoning_effort TEXT,
 			codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
 			codex_default_reasoning_level TEXT, codex_multi_agent_version TEXT,
@@ -1424,7 +1429,7 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT, source_model TEXT, source_endpoint_family TEXT, target_connection_id TEXT, target_model_id TEXT, target_endpoint_family TEXT, enabled INTEGER, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE account_connections (id TEXT PRIMARY KEY, account_id TEXT, connection_preset_code TEXT, protocol_surface_code TEXT, base_url TEXT, enabled INTEGER, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE account_endpoint_modes (connection_id TEXT, endpoint_mode TEXT, PRIMARY KEY (connection_id, endpoint_mode))`,
-		`CREATE TABLE models (id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT, upstream_model TEXT, scope TEXT, system_account_id TEXT, status TEXT, supported_endpoint_modes_json TEXT)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT, upstream_model TEXT, scope TEXT, system_account_id TEXT, status TEXT, supported_endpoint_modes_json TEXT, supported_tools_by_protocol_json TEXT NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(supported_tools_by_protocol_json::jsonb) = 'object'), input_modalities_json TEXT NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(input_modalities_json::jsonb) = 'array'), output_modalities_json TEXT NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(output_modalities_json::jsonb) = 'array'))`,
 		`CREATE TABLE account_api_key_runtime_states (account_id TEXT, key_fingerprint TEXT, key_index INTEGER, status TEXT, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT)`,
 		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER, username TEXT, password_encrypted TEXT, enabled INTEGER)`,
 		`CREATE TABLE juhe_stats.account_quality_scores (account_id TEXT PRIMARY KEY, quality_score REAL, quality_state TEXT, ewma_first_token_ms REAL, last_sample_at TEXT)`,

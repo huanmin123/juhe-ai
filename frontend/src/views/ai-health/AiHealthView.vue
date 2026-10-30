@@ -32,7 +32,8 @@
               <div class="ai-health-account-title">
                 <strong>{{ account.name }}</strong>
                 <a-tag><ProviderIcon :provider-code="account.providerCode" :name="providerDisplayName(account.providerCode)" :size="14" /> {{ providerDisplayName(account.providerCode) }}</a-tag>
-                <a-tag :color="accountStatusColor(account.status)">{{ accountStatusLabel(account.status) }}</a-tag>
+                <a-tag :color="accountStatusColor(account)">{{ accountStatusLabel(account) }}</a-tag>
+                <a-tag v-if="probeDisabled(account)" color="default">手动</a-tag>
                 <a-tag :color="healthStatusColor(account.latestStatus)">{{ healthStatusLabel(account.latestStatus) }}</a-tag>
               </div>
               <div class="ai-health-account-rate">
@@ -43,9 +44,11 @@
 
             <div class="ai-health-account-meta">
               <span v-if="isManagementView && account.systemAccountName">所属用户：{{ account.systemAccountName }}</span>
-              <span>最近独立检查：{{ formatDateTime(account.lastHealthCheckAt) }}</span>
+              <span v-if="probeDisabled(account) && account.lastHealthCheckAt">最近独立检查（关闭前）：{{ formatDateTime(account.lastHealthCheckAt) }}</span>
+              <span v-else-if="!probeDisabled(account)">最近独立检查：{{ formatDateTime(account.lastHealthCheckAt) }}</span>
               <span v-if="account.lastHealthSuccessAt">最近健康成功信号：{{ formatDateTime(account.lastHealthSuccessAt) }}</span>
-              <span>下次独立检查：{{ formatDateTime(account.nextHealthCheckAt) }}</span>
+              <span v-if="probeDisabled(account)">主动探测：已关闭</span>
+              <span v-else>下次独立检查：{{ formatDateTime(account.nextHealthCheckAt) }}</span>
               <span class="success-text">可用 {{ account.successHours }}</span>
               <span class="failure-text">不可用 {{ account.failureHours }}</span>
               <span class="unknown-text">无记录 {{ account.unknownHours }}</span>
@@ -102,7 +105,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountStatus, AiHealthAccountRow, AiHealthHourDetail, AiHealthHourPoint, AiHealthHourStatus } from '@/types/domain'
+import type { AiHealthAccountRow, AiHealthHourDetail, AiHealthHourPoint, AiHealthHourStatus } from '@/types/domain'
 import { ACCOUNT_CAPABILITY_DOMAINS, ACCOUNT_CAPABILITY_DOMAIN_LABELS, type AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 import AiHealthStatusBar from './AiHealthStatusBar.vue'
 import { createAiHealthRequestCoordinator, isAiHealthCanceledRequest } from './aiHealthRequestCoordinator'
@@ -242,7 +245,19 @@ function healthStatusColor(status: AiHealthHourStatus): string {
   return 'default'
 }
 
-function accountStatusLabel(status: AccountStatus): string {
+// 后台自动探测总开关（总开关设计 §9 健康页）：缺省（旧数据未返回）按开启处理。
+function probeDisabled(account: AiHealthAccountRow): boolean {
+  return account.backgroundProbeEnabled === false
+}
+
+function accountStatusLabel(account: AiHealthAccountRow): string {
+  const status = account.status
+  // 手动模式二态健康状态（总开关设计 §4/§9）：只显示正常/异常/停用。
+  if (probeDisabled(account)) {
+    if (status === 'active') return '正常'
+    if (status === 'disabled') return '已停用'
+    return '异常'
+  }
   if (status === 'active') return '已启用'
   if (status === 'pending_test') return '待检查'
   if (status === 'disabled') return '已停用'
@@ -252,7 +267,13 @@ function accountStatusLabel(status: AccountStatus): string {
   return '临时不可用'
 }
 
-function accountStatusColor(status: AccountStatus): string {
+function accountStatusColor(account: AiHealthAccountRow): string {
+  const status = account.status
+  if (probeDisabled(account)) {
+    if (status === 'active') return 'green'
+    if (status === 'disabled') return 'default'
+    return 'red'
+  }
   if (status === 'active') return 'green'
   if (status === 'pending_test') return 'blue'
   if (status === 'disabled') return 'default'

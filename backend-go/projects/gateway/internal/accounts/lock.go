@@ -120,10 +120,11 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 	}
 	var rowID, systemAccountID string
 	var configRevision int64
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, config_revision
+	var backgroundProbeEnabled int
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, config_revision, background_probe_enabled
 		FROM `+s.table("accounts")+`
 		WHERE id = ? AND deleted_at IS NULL`+scopeClause), args...).
-		Scan(&rowID, &systemAccountID, &configRevision)
+		Scan(&rowID, &systemAccountID, &configRevision, &backgroundProbeEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -132,6 +133,11 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 	}
 	if !access.CanAccessAll() && systemAccountID != access.ViewerID {
 		return nil, nil
+	}
+	// 手动模式禁止锁死（总开关设计 §7）：锁死建立在后台探针自动恢复之上，
+	// 没有被动恢复就无法闭环；解锁（Enabled=false）与配置维护不受限。
+	if input.Enabled && backgroundProbeEnabled == 0 {
+		return nil, &ValidationError{Message: "手动模式账户不适用锁死"}
 	}
 	if input.ExpectedConfigRevision > 0 && configRevision != input.ExpectedConfigRevision {
 		return nil, &RevisionConflictError{Message: lockConfigConflictMessage}

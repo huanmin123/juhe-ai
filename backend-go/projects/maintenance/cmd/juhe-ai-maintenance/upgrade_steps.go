@@ -15,9 +15,10 @@ import (
 	"os"
 	"strings"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/upgradepipeline"
 )
 
@@ -144,7 +145,25 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 		return true, nil
 	}
 
+	// capabilityRecordSealed 是能力域步骤达成判据的**记录臂**：gateway 启动
+	// 门禁要求阶段记录 m2_finalized 存在（verify CLI 的 postflight 只校验域值
+	// 不校验记录——P2 演练实锤的假阳性根源），故记录检查必须独立成臂且与
+	// gateway 门禁同源。
+	capabilityRecordSealed := func(ctx context.Context) (bool, error) {
+		value, err := sqlScalar(ctx, primaryDSN,
+			`SELECT count(*) FROM juhe_business.global_settings
+			 WHERE key = 'account_capability_domain_migration'
+			   AND value_json::jsonb->>'stage' = 'm2_finalized'`)
+		if err != nil {
+			return false, err
+		}
+		return value > 0, nil
+	}
 	capabilityCheck := func(ctx context.Context) (bool, error) {
+		sealed, err := capabilityRecordSealed(ctx)
+		if err != nil || !sealed {
+			return sealed, err
+		}
 		code, _ := callResult(func() int {
 			return accountCapabilityDomainVerifyResult(primaryDSN, secret, "m2-cutover", "postflight")
 		})
@@ -281,6 +300,24 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 				})
 				if code != 0 {
 					return upgradepipeline.Detail{"stage": "m2-cutover", "output": output}, exitErr("能力域 m2-cutover", output, code)
+				}
+				// 全新空库（零账户）补走 ensure 同源的自动封存：upgrade 绕过
+				// runStorageBootstrap，SealFreshInstall 必须在此显式补位，否则
+				// gateway 能力域门禁会拦死全新安装（P2 演练实锤）。
+				sealed, sealErr := capabilityRecordSealed(ctx)
+				if sealErr != nil {
+					return upgradepipeline.Detail{"stage": "m2-cutover"}, sealErr
+				}
+				if !sealed {
+					db, openErr := openPG(primaryDSN)
+					if openErr != nil {
+						return upgradepipeline.Detail{"stage": "m2-cutover"}, openErr
+					}
+					if _, sealErr := capabilitydomain.SealFreshInstall(ctx, db); sealErr != nil {
+						db.Close()
+						return upgradepipeline.Detail{"stage": "m2-cutover"}, sealErr
+					}
+					db.Close()
 				}
 				return upgradepipeline.Detail{"stage": "m2-cutover", "output": output}, nil
 			},

@@ -75,6 +75,7 @@ export function defaultAccountForm(
     healthCheckModel: '',
     healthCheckEndpointMode: defaultAccountHealthCheckEndpointMode(resolvedProviderCode, profile?.id ?? '', supportedEndpointModes),
     temporaryUnavailableContinuousProbeEnabled: true,
+    backgroundProbeEnabled: true,
     lockDeathTimeoutSeconds: 300,
     lockRetryIntervalSeconds: 5,
     serviceTierOverride: '',

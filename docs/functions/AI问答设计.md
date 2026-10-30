@@ -299,6 +299,12 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 可见行为：目录读取链在合并（scope 优先级整行替换）之后，对胜出的 custom 行按与合并相同的键（hybrid 下 `provider+model`，其余裸 `model`）查找内置扫描行，空能力键 `supportedToolsByProtocol`（「协议 × 工具」二维矩阵）/ `inputModalities` / `outputModalities` 以内置行（经 8.5 节静态快照兜底后）的值填充；仅填空，不覆盖非空值。custom 表本无这些能力列，语义上即“覆盖内置行的 custom 行继承内置行能力”。管理面与 chat 面同源解析（同一回填实现，保持 BUG-0210 建立的两面 parity 原则）；一维 `supportedTools` 投影已退场，仅继承二维矩阵。
 - 边界：仅“覆盖内置行”的场景继承；全新自定义模型（内置无对应行）三键保持空，不得用静态定价表的别名/前缀匹配规则回填（日期后缀剥离与前缀别名会对 `gpt-5.5-my` 这类自有命名误配能力）。生成参数能力（`generationParameterCapabilities`）不在此继承范围，仍按 custom 行自身的 provider+model 生成。
 
+**custom 目录行显式能力声明**（2026-10-30，BUG-0229 生产缺陷根治）：
+
+- 目标：上一段「仅填空」继承只对空能力键生效，custom 目录行此前没有任何途径携带自己的能力值——同名覆盖但能力与内置行不一致、或内置行本身未声明 `function_calling` 时，AI 对话主模型 `resolveTools(modelOption.supportsTool("function_calling"))` 注入 0 个内部工具，`web_search` 绑定失效（生产 custom 行 `deepseek-v4.1-flash-1017` 即此形态）。根治裁决：`models` 表为 custom（`global` / `personal`）目录行新增能力三列 `supported_tools_by_protocol_json` / `input_modalities_json` / `output_modalities_json`（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §3），custom 行支持显式能力声明。
+- 可见行为：模型写链（模型广场表单的 POST/PATCH，见 [模型广场页与供应商目录退役设计](模型广场页与供应商目录退役设计.md) §4）新增键 `supportedToolsByProtocol`（object：键 = 该行 `supportedApiProtocols` 生效协议集、值 = 工具 token 数组，固定词表与校验见《AI 问答工具体系与主子模型设计》§6.4）与 `inputModalities` / `outputModalities`（数组，词表 `text` / `image` / `audio` / `video` / `file`）；矩阵键 ⊆ 该行生效协议集、工具 token ∈ 固定词表；built_in 行编辑不接受这些键；配置模板复制不携带能力三键；PATCH 语义 = 提交键整值替换、缺键保持。显式声明优先：custom 行矩阵非空时按显式值生效；上一段「仅填空」继承与内置行静态兜底只在矩阵为空时生效（空矩阵 = 未声明），`inputModalities` / `outputModalities` 同沿「仅填空」语义（空数组 = 未声明）。chat 面消费不变：主模型 `supportsTool("function_calling")` 门控与搜索候选 `responses ∋ web_search` 判定照旧读矩阵，不新增判定路径；前端在 AI 对话「工具模型绑定」弹窗对“当前所选模型未声明函数调用能力”显示警示（不改弹窗数据源契约）。
+- 边界：存量 custom 行不自动回填——已有行（如生产 `deepseek-v4.1-flash-1017`）需 owner 在模型广场编辑显式声明（如 `chat_completions` 下勾选 `function_calling`）后工具才注入；全新自定义模型（无同名内置行）未声明时能力仍为空，显式声明是唯一途径，不做别名/前缀猜测（沿上一段边界）。
+
 ### 8.7 消息信息层级
 
 - 用户和助手正文都使用同一安全 Markdown 渲染器；用户消息在右侧，助手消息在左侧。

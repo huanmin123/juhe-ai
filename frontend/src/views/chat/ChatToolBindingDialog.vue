@@ -14,6 +14,9 @@
     <a-spin v-if="loading" size="small" />
     <template v-else-if="sections.length">
       <p class="chat-tool-binding-intro">{{ introText }}</p>
+      <p v-if="modelSupportsTools === false" class="chat-tool-binding-warning">
+        当前所选模型未声明函数调用（function calling）能力，网页搜索等模型工具不会生效；可在「模型广场 → 自定义模型」为该模型声明工具能力。
+      </p>
       <section v-for="section in sections" :key="section.id" class="chat-tool-binding-section">
         <div class="chat-tool-binding-section-heading">
           <strong>{{ section.title }}</strong>
@@ -73,6 +76,10 @@ import type { ChatImageModel, ChatToolBindingCandidate, ChatToolPreferencesPatch
 // 全部键；当前会话的立即跟随由 ChatView 在 saved 回调中完成。
 const props = defineProps<{
   open: boolean
+  /** 当前所选模型的函数调用能力（ChatView 由已加载的模型能力矩阵计算）：仅在严格
+   * 等于 false（能力已加载且无任一协议声明 function_calling）时渲染工具失效警示；
+   * undefined / true 表示能力未加载或已声明，不警示。弹窗自身不发数据源调用。 */
+  modelSupportsTools?: boolean | null
 }>()
 const emit = defineEmits<{
   (event: 'close'): void

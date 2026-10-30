@@ -582,9 +582,17 @@ export function formatTokens(value?: number): string {
   return String(value)
 }
 
+const modelModalityLabels: Record<string, string> = { text: '文本', image: '图片', audio: '音频', video: '视频', file: '文件' }
+
+export const modelModalityOptions: Array<{ label: string; value: string }> = Object.entries(modelModalityLabels)
+  .map(([value, label]) => ({ value, label }))
+
+export function modelModalityLabel(value: string): string {
+  return modelModalityLabels[value] ?? value
+}
+
 export function formatModelModalities(values?: readonly string[]): string {
-  const labels: Record<string, string> = { text: '文本', image: '图片', audio: '音频', video: '视频', file: '文件' }
-  return values?.length ? values.map((value) => labels[value] ?? value).join(' / ') : '-'
+  return values?.length ? values.map(modelModalityLabel).join(' / ') : '-'
 }
 
 const modelToolLabels: Record<string, string> = {
@@ -609,6 +617,9 @@ const modelToolLabels: Record<string, string> = {
 export function modelToolLabel(value: string): string {
   return modelToolLabels[value] ?? value
 }
+
+export const modelToolOptions: Array<{ label: string; value: string }> = Object.entries(modelToolLabels)
+  .map(([value, label]) => ({ value, label }))
 
 export function formatModelTools(values?: readonly string[]): string {
   return values?.length ? values.map(modelToolLabel).join(' / ') : '-'

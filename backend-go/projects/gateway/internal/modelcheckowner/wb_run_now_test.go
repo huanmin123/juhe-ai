@@ -208,7 +208,7 @@ func TestBusinessSchedulerClaimsOnlyConcurrencyCapacity(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,background_probe_enabled INTEGER NOT NULL DEFAULT 1)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -268,7 +268,7 @@ func TestBusinessSchedulerCompletesIntervalOneSchedule(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,background_probe_enabled INTEGER NOT NULL DEFAULT 1)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled BOOLEAN NOT NULL DEFAULT FALSE,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {

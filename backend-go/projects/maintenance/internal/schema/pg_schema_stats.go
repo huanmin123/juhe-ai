@@ -382,33 +382,6 @@ var postgresSchemaStats = []PGStatement{
 	{
 		SchemaName: "juhe_stats",
 		Source:     "stats",
-		SQL: `CREATE TABLE IF NOT EXISTS authorization_team_usage_range_windows (
-          system_account_id text NOT NULL,
-          start_date text NOT NULL,
-          end_date text NOT NULL,
-          team_filter_id text NOT NULL DEFAULT '',
-          resource_filter_type text NOT NULL DEFAULT 'all',
-          resource_filter_id text NOT NULL DEFAULT '',
-          request_count bigint NOT NULL DEFAULT 0,
-          input_tokens bigint NOT NULL DEFAULT 0,
-          output_tokens bigint NOT NULL DEFAULT 0,
-          cache_read_tokens bigint NOT NULL DEFAULT 0,
-          cache_read_cost_usd double precision NOT NULL DEFAULT 0,
-          cache_write_tokens bigint NOT NULL DEFAULT 0,
-          cache_write_1h_tokens bigint NOT NULL DEFAULT 0,
-          cache_write_cost_usd double precision NOT NULL DEFAULT 0,
-          thinking_tokens bigint NOT NULL DEFAULT 0,
-          input_image_tokens bigint NOT NULL DEFAULT 0,
-          output_image_tokens bigint NOT NULL DEFAULT 0,
-          total_cost_usd double precision NOT NULL DEFAULT 0,
-          last_used_at text,
-          updated_at text NOT NULL,
-          PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)
-        )`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
 		SQL: `CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_daily (
           system_account_id text NOT NULL,
           stat_date text NOT NULL,
@@ -441,34 +414,6 @@ var postgresSchemaStats = []PGStatement{
           last_error_at text,
           updated_at text NOT NULL,
           PRIMARY KEY (system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
-        )`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
-		SQL: `CREATE TABLE IF NOT EXISTS authorization_user_usage_range_windows (
-          system_account_id text NOT NULL,
-          start_date text NOT NULL,
-          end_date text NOT NULL,
-          team_filter_id text NOT NULL DEFAULT '',
-          grantee_filter_system_account_id text NOT NULL DEFAULT '',
-          resource_filter_type text NOT NULL DEFAULT 'all',
-          resource_filter_id text NOT NULL DEFAULT '',
-          request_count bigint NOT NULL DEFAULT 0,
-          input_tokens bigint NOT NULL DEFAULT 0,
-          output_tokens bigint NOT NULL DEFAULT 0,
-          cache_read_tokens bigint NOT NULL DEFAULT 0,
-          cache_read_cost_usd double precision NOT NULL DEFAULT 0,
-          cache_write_tokens bigint NOT NULL DEFAULT 0,
-          cache_write_1h_tokens bigint NOT NULL DEFAULT 0,
-          cache_write_cost_usd double precision NOT NULL DEFAULT 0,
-          thinking_tokens bigint NOT NULL DEFAULT 0,
-          input_image_tokens bigint NOT NULL DEFAULT 0,
-          output_image_tokens bigint NOT NULL DEFAULT 0,
-          total_cost_usd double precision NOT NULL DEFAULT 0,
-          last_used_at text,
-          updated_at text NOT NULL,
-          PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
         )`,
 	},
 	{
@@ -1284,7 +1229,7 @@ var postgresSchemaStats = []PGStatement{
           PRIMARY KEY (usage_id, source_shard_key)
         )`,
 	},
-		{
+	{
 		SchemaName: "juhe_stats",
 		Source:     "account-list-projection-pg-quota-crossing-triggers",
 		SQL: `
@@ -1525,42 +1470,12 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 	{
 		SchemaName: "juhe_stats",
 		Source:     "stats",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_lookup ON authorization_team_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_sort ON authorization_team_usage_range_windows(system_account_id, start_date, end_date, total_cost_usd DESC, request_count DESC, last_used_at DESC, team_filter_id, resource_filter_type, resource_filter_id)`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_end ON authorization_team_usage_range_windows(end_date)`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_daily_lookup ON authorization_user_usage_summary_daily(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)`,
 	},
 	{
 		SchemaName: "juhe_stats",
 		Source:     "stats",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_daily_updated ON authorization_user_usage_summary_daily(updated_at)`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_lookup ON authorization_user_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_sort ON authorization_user_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, total_cost_usd DESC, request_count DESC, last_used_at DESC, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "stats",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_end ON authorization_user_usage_range_windows(end_date)`,
 	},
 	{
 		SchemaName: "juhe_stats",
@@ -1911,9 +1826,9 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 	{
 		SchemaName: "juhe_stats",
 		Source:     "stats",
-			SQL:        `CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_updated ON account_usage_snapshots(updated_at)`,
-		},
-		{
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_updated ON account_usage_snapshots(updated_at)`,
+	},
+	{
 		SchemaName: "juhe_stats",
 		Source:     "stats",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account
@@ -2282,5 +2197,20 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 		SchemaName: "juhe_stats",
 		Source:     "media-stats-pg-columns",
 		SQL:        `ALTER TABLE usage_scope_range_windows ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	// 授权消耗明细已全部走日摘要表（authorization_team_usage_summary_daily /
+	// authorization_user_usage_summary_daily）；两张范围窗口表
+	// authorization_team_usage_range_windows / authorization_user_usage_range_windows
+	// 0 行、无读无写，2026-10-30 B09 退役，破坏相 DROP 由 ensure-schema
+	// 破坏相执行。
+	{
+		SchemaName: "juhe_stats",
+		Source:     "authorization-usage-range-retirement",
+		SQL:        `DROP TABLE IF EXISTS juhe_stats.authorization_team_usage_range_windows`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "authorization-usage-range-retirement",
+		SQL:        `DROP TABLE IF EXISTS juhe_stats.authorization_user_usage_range_windows`,
 	},
 }

@@ -213,6 +213,12 @@ type LatencyDegradationOptions struct {
 	LockRetryDelay func(attempt int)
 	// Random overrides the passive-schedule jitter random source.
 	Random func() float64
+	// BackgroundProbeDisabled 判定账户是否处于手动模式（后台自动探测总开关
+	// background_probe_enabled=0，总开关设计 §5）：手动账户的降级仍可由真实
+	// 流量建立（排序保留、TTL 到期自然恢复），但不写 nextProbeAt / probe-index，
+	// 后台恢复探针因此无候选。nil 或查询失败视为开启（fail-open，与 flag=1
+	// 默认路径一致）。生产由组合根注入主键单列 SELECT。
+	BackgroundProbeDisabled func(ctx context.Context, account SuppressibleGatewayAccount) (bool, error)
 }
 
 const (
@@ -506,13 +512,15 @@ func (s *LatencyDegradationService) recordNormalRouteSlow(
 	if err != nil {
 		return nil, err
 	}
+	// 手动模式在锁外解析一次（总开关设计 §5）：降级可建立，探针调度面不写。
+	backgroundProbeDisabled := s.backgroundProbeDisabled(ctx, account)
 	generation, err := s.loadLatencyStateGeneration(ctx, latencyStateKeyspaceFor(resolvedScope))
 	if err != nil {
 		return nil, err
 	}
 	var result *LatencySlowResult
 	ok, err := s.withLatencyStateMutationLock(ctx, key, generation, func() (bool, error) {
-		value, err := s.recordNormalRouteSlowLocked(ctx, account, resolvedScope, *config, reason, key, generation, dimension)
+		value, err := s.recordNormalRouteSlowLocked(ctx, account, resolvedScope, *config, reason, key, generation, dimension, backgroundProbeDisabled)
 		if err != nil {
 			return false, err
 		}
@@ -528,6 +536,19 @@ func (s *LatencyDegradationService) recordNormalRouteSlow(
 	return result, nil
 }
 
+// backgroundProbeDisabled 解析手动模式开关位；nil 或查询失败 fail-open
+// （false = 允许探测调度写入，与 flag=1 默认路径逐字节一致）。
+func (s *LatencyDegradationService) backgroundProbeDisabled(ctx context.Context, account SuppressibleGatewayAccount) bool {
+	if s.opts.BackgroundProbeDisabled == nil {
+		return false
+	}
+	disabled, err := s.opts.BackgroundProbeDisabled(ctx, account)
+	if err != nil {
+		return false
+	}
+	return disabled
+}
+
 func (s *LatencyDegradationService) recordNormalRouteSlowLocked(
 	ctx context.Context,
 	account SuppressibleGatewayAccount,
@@ -537,6 +558,7 @@ func (s *LatencyDegradationService) recordNormalRouteSlowLocked(
 	key string,
 	generation string,
 	dimension string,
+	backgroundProbeDisabled bool,
 ) (*LatencySlowResult, error) {
 	now := s.nowMs()
 	current, err := s.loadLatencyState(ctx, key, generation)
@@ -588,10 +610,14 @@ func (s *LatencyDegradationService) recordNormalRouteSlowLocked(
 		}
 	}
 	var nextProbeAtMs *int64
-	if triggeredDegraded {
-		nextProbeAtMs = int64Ptr(now + s.nextRecoveryProbeDelayMs())
-	} else if current != nil {
-		nextProbeAtMs = current.NextProbeAtMs
+	// 手动模式不写探针调度（总开关设计 §5）：不新建 nextProbeAt，也不沿写
+	// 既有值；降级排序与 TTL 恢复语义不变。
+	if !backgroundProbeDisabled {
+		if triggeredDegraded {
+			nextProbeAtMs = int64Ptr(now + s.nextRecoveryProbeDelayMs())
+		} else if current != nil {
+			nextProbeAtMs = current.NextProbeAtMs
+		}
 	}
 	runtimeKey, err := GatewayAccountRuntimeKey(account)
 	if err != nil {
@@ -659,7 +685,9 @@ func (s *LatencyDegradationService) recordNormalRouteSlowLocked(
 		previousCopy := *current
 		previous = &previousCopy
 	}
-	if err := s.writeLatencyStateAndIndexesStrict(ctx, key, previous, state, ttlMs, degraded); err != nil {
+	// 手动模式不进 probe-index（恢复探针无候选）；all-index 仍维护，降级排序
+	// 读取按直键不受影响。
+	if err := s.writeLatencyStateAndIndexesStrict(ctx, key, previous, state, ttlMs, degraded && !backgroundProbeDisabled); err != nil {
 		return nil, err
 	}
 	return &LatencySlowResult{
@@ -719,13 +747,16 @@ func (s *LatencyDegradationService) recordNormalRouteSuccess(
 	if err != nil {
 		return nil, err
 	}
+	// 手动模式在锁外解析一次（总开关设计 §5）：真实流量达标恢复保留，
+	// 探针调度面（nextProbeAt）不写。
+	backgroundProbeDisabled := s.backgroundProbeDisabled(ctx, account)
 	generation, err := s.loadLatencyStateGeneration(ctx, latencyStateKeyspaceFor(*scope))
 	if err != nil {
 		return nil, err
 	}
 	var result *LatencySuccessResult
 	ok, err := s.withLatencyStateMutationLock(ctx, key, generation, func() (bool, error) {
-		value, err := s.recordNormalRouteSuccessLocked(ctx, account, *config, key, generation, dimension, clearOnSuccess, candidate)
+		value, err := s.recordNormalRouteSuccessLocked(ctx, account, *config, key, generation, dimension, clearOnSuccess, candidate, backgroundProbeDisabled)
 		if err != nil {
 			return false, err
 		}
@@ -762,7 +793,7 @@ func (s *LatencyDegradationService) RecordNormalRouteRecoveryProbeSuccess(
 	}
 	var result *LatencySuccessResult
 	ok, err := s.withLatencyStateMutationLock(ctx, candidate.StateKey, candidate.Generation, func() (bool, error) {
-		value, err := s.recordNormalRouteSuccessLocked(ctx, account, candidate.Config, candidate.StateKey, candidate.Generation, LatencyDimensionFirstByte, true, &candidate)
+		value, err := s.recordNormalRouteSuccessLocked(ctx, account, candidate.Config, candidate.StateKey, candidate.Generation, LatencyDimensionFirstByte, true, &candidate, false)
 		if err != nil {
 			return false, err
 		}
@@ -787,6 +818,7 @@ func (s *LatencyDegradationService) recordNormalRouteSuccessLocked(
 	dimension string,
 	clearOnSuccess bool,
 	candidate *LatencyProbeCandidate,
+	backgroundProbeDisabled bool,
 ) (*LatencySuccessResult, error) {
 	current, err := s.loadLatencyState(ctx, key, generation)
 	if err != nil {
@@ -886,7 +918,11 @@ func (s *LatencyDegradationService) recordNormalRouteSuccessLocked(
 		// A user request and a background health probe are separate recovery
 		// mechanisms. Only the latter contributes to this two-probe window.
 		next.SuccessCount = current.SuccessCount
-		next.NextProbeAtMs = int64Ptr(now + s.nextRecoveryProbeDelayMs())
+		// 手动模式不写探针调度（总开关设计 §5）；该臂为恢复探针驱动，手动账户
+		// 不会到达，守卫只为开关位语义完整。
+		if !backgroundProbeDisabled {
+			next.NextProbeAtMs = int64Ptr(now + s.nextRecoveryProbeDelayMs())
+		}
 		if err := s.store.SetJSON(ctx, key, next, latencyStateRemainingTTLMs(current.DegradedUntilMs, now)); err != nil {
 			return nil, err
 		}
@@ -910,11 +946,15 @@ func (s *LatencyDegradationService) recordNormalRouteSuccessLocked(
 			RequiredRecoverySuccessCount: requiredRecoverySuccessCount,
 		}, nil
 	}
+	// 真实流量达标推进恢复计数（总开关设计 §5：降级按 TTL 或真实流量恢复）；
+	// 手动模式只跳过探针调度写入，恢复语义不变。
 	var nextProbeAtMs *int64
-	if recoveryProbeRoundAttempts(*current) > 0 {
-		nextProbeAtMs = current.NextProbeAtMs
-	} else {
-		nextProbeAtMs = int64Ptr(now + s.nextProbeDelayMs(config))
+	if !backgroundProbeDisabled {
+		if recoveryProbeRoundAttempts(*current) > 0 {
+			nextProbeAtMs = current.NextProbeAtMs
+		} else {
+			nextProbeAtMs = int64Ptr(now + s.nextProbeDelayMs(config))
+		}
 	}
 	next := current.clone()
 	next.SuccessCount = successCount

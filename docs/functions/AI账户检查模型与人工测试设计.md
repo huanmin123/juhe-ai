@@ -57,7 +57,7 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 - 删除账户 `defaultTestModel / default_test_model`。
 - 删除供应商 `defaultTestModel / default_test_model` 命名。
 - 删除 `provider_default_test_models`。
-- 删除 `healthCheckEnabled / health_check_enabled`。系统检查是基础机制，不提供账户级关闭开关。账户高级配置中的“持续恢复探活”不是系统检查开关：它只决定 `temporary_unavailable` 在前 10 分钟有界最终确认后是否继续长期低频恢复，周期健康检查、首次激活、人工测试、`rate_limited` 和账户内 Key 复测始终不受影响。
+- 删除 `healthCheckEnabled / health_check_enabled`。账户级关闭入口收敛为唯一总开关 `backgroundProbeEnabled`（[AI 账户后台自动探测总开关设计](AI账户后台自动探测总开关设计.md)）：手动模式账户不排入任何后台检查；“持续恢复探活”降为其子开关，仅父开关开启时生效。账户高级配置中的“持续恢复探活”不是系统检查开关：它只决定 `temporary_unavailable` 在前 10 分钟有界最终确认后是否继续长期低频恢复，周期健康检查、首次激活、人工测试、`rate_limited` 和账户内 Key 复测始终不受影响。
 
 项目不在运行路径保留旧字段兼容、双读双写或自动迁移。**历史截面（SQLite 模式，已于 2026-10-25 退役）：** 曾有的唯一例外是 SQLite 初始化发现 `accounts.health_check_endpoint_mode` 的 CHECK 约束缺少 `images_json` 时，可在事务内重建该表、保留数据和关联对象并执行外键检查，任何失败必须回滚并中止启动；该自愈路径随 SQLite 退役删除，现行 PostgreSQL schema 由 `juhe-ai-maintenance --ensure-schema` 幂等承载，不含启动期表重建。
 
@@ -189,7 +189,7 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 ## 8. 后台系统检查
 
-后台系统检查始终启用，不提供用户关闭入口。不同检查场景共享底层最小请求执行器，但各自拥有明确的状态策略：
+后台系统检查默认启用；账户级「后台自动探测」总开关（[AI 账户后台自动探测总开关设计](AI账户后台自动探测总开关设计.md)）关闭的手动模式账户不排入任何后台检查。不同检查场景共享底层最小请求执行器，但各自拥有明确的状态策略：
 
 | 场景 | 模型来源 | 允许的状态副作用 |
 | --- | --- | --- |
@@ -199,6 +199,8 @@ GET /__aisys__/api/my-accounts/:id/test-options
 | 运行态恢复探针 | 账户检查模型 | 只推进对应运行态状态机 |
 | 账号级冷却复测 | 账户检查模型 | `complete_success` 只恢复匹配来源的自动状态；进入长期不可用后固定每 1 小时复测，只有连续独立 `transport_incomplete` 从观察起点满 7 天后仍失败才原子转为 `error` |
 | API Key 恢复探针 | 账户检查模型 | 只更新目标 Key 运行态 |
+
+手动模式（总开关关闭）账户不进入上表任何场景；关闭时已有过程态按总开关设计归一化。
 
 底层请求执行器只返回诊断结果，不自行决定状态。上层策略服务根据 `purpose` 应用允许的副作用，不再依赖通用 `disableAccountStateMutation` 布尔参数控制所有场景。
 
@@ -267,7 +269,7 @@ runApiKeyRecoveryProbe()
 
 ## 13. 状态边界
 
-后台检查机制始终存在，但按账户状态选择任务：
+后台检查机制始终存在，但按账户状态选择任务。手动模式账户（总开关关闭，见 [AI 账户后台自动探测总开关设计](AI账户后台自动探测总开关设计.md)）健康状态只有 `active` / `error` / `disabled`：无 `pending_test` 自动激活、无冷却复测，不排入下表后台检查：
 
 | 账户状态 | 系统行为 |
 | --- | --- |
@@ -304,7 +306,7 @@ runApiKeyRecoveryProbe()
 - 页面和后端均不存在账户批量测试入口。
 - 新账户保存后保持 `pending_test`，后台激活检查成功后自动进入 `active`。
 - 人工草稿测试成功不能直接激活新账户；它只会预选表单“可调度”，用户保存后才按该显式选择创建账户。
-- 定时健康检查不存在关闭开关，也不存在 `health_check_enabled` 候选条件；`temporaryUnavailableContinuousProbeEnabled` 只由冷却复测读取，不能作为定时健康检查候选条件。
+- 定时健康检查不存在独立健康检查开关，也不存在 `health_check_enabled` 候选条件；账户级「后台自动探测」总开关是唯一关闭入口（[AI 账户后台自动探测总开关设计](AI账户后台自动探测总开关设计.md)）。`temporaryUnavailableContinuousProbeEnabled` 只由冷却复测读取，不能作为定时健康检查候选条件。
 - 所有系统探针严格使用账户 `healthCheckModel`，缺失或非法时不回退其他模型。
 - 修改模型目录默认检查模型只影响后续新账户初始化，不改变已有账户。
 - 多 Key 人工测试不写 Key 状态，后台激活和 Key 恢复探针可以按职责写入 Key 状态。

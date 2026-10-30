@@ -527,7 +527,12 @@ type CreateAccountInput struct {
 	// 可选；非空时 CreateOAuthAccount 在创建事务前加载克隆上下文并断言目标域
 	// = 源账户域。不传入 accounts.CreateInput——托管 OAuth 连接一律注册表派生，
 	// 不触发写面的克隆连接事实拷贝。
-	CloneSourceID           *string
+	CloneSourceID *string
+	// BackgroundProbeEnabled 是托管建户的后台自动探测总开关入参（总开关设计
+	// §2，路由层 parseManagedFields 已做类型门）：nil = 未提交（缺省开启），
+	// 显式 false 落手动模式；状态派生与媒体域拒绝由 accounts 写面统一承载，
+	// 本层透传不重复校验。
+	BackgroundProbeEnabled  *bool
 	Status                  string
 	ConcurrencyLimit        *int
 	Priority                *int
@@ -665,6 +670,7 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 		ModelMappings:                   input.ModelMappings,
 		Tags:                            input.Tags,
 		Status:                          creationStatus,
+		BackgroundProbeEnabled:          input.BackgroundProbeEnabled,
 		ConcurrencyLimit:                input.ConcurrencyLimit,
 		Priority:                        input.Priority,
 		SuperPriorityEnabled:            input.SuperPriorityEnabled,

@@ -246,6 +246,25 @@ func (b healthProbeBoundary) CurrentProbeInput(ctx context.Context, accountID st
 	return currentConfig.Int64, currentDispatch.Int64, currentVersion.Int64, true, nil
 }
 
+// BackgroundProbeEnabled 实现 accounthealth.ProbeRequestFlagReader（outbox
+// 消费面的后台自动探测开关守卫）：生效值与候选 SQL 的 CASE 同形——实例行取
+// 来源账户列，来源缺失/软删时 COALESCE 归 1。账户行不存在 → found=false
+// （调用方按未关闭放行，boundary/input 链随后自然收敛）。
+func (b healthProbeBoundary) BackgroundProbeEnabled(ctx context.Context, accountID string) (bool, bool, error) {
+	var enabled sql.NullInt64
+	err := b.business.db.QueryRowContext(ctx, b.business.bind(`SELECT CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.background_probe_enabled ELSE COALESCE(source.background_probe_enabled, 1) END
+		FROM `+b.business.table("accounts")+` a
+		LEFT JOIN `+b.business.table("accounts")+` source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
+		WHERE a.id = ? AND a.deleted_at IS NULL`), accountID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return enabled.Valid && enabled.Int64 == 1, true, nil
+}
+
 // healthProbeOutboxFace 聚合 outbox 消费与清理装配产物：装配成功时 drain 与
 // pruner 均非 nil（J1 恒装配，drain 不再有 J1 门控缺席路径）。
 type healthProbeOutboxFace struct {

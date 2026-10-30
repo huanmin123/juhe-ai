@@ -244,6 +244,11 @@ func isPrecheckEligible(account *AccountForTest, now time.Time) bool {
 	if account == nil {
 		return false
 	}
+	// 手动模式（后台自动探测总开关关闭）不执行质量失败预检（总开关设计 §3）：
+	// 按既有失效丢弃臂处理——不发起探针、不写状态、按已确认记录。
+	if account.BackgroundProbeEnabled != nil && !*account.BackgroundProbeEnabled {
+		return false
+	}
 	if account.Status != AccountStatusActive || !account.Schedulable || account.BoundGroupID == "" {
 		return false
 	}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { validateAccountModelMappings, validateAccountSaveForm } from './accountSavePayload'
+import { buildAccountSavePayload, buildAccountUpdatePayload, validateAccountModelMappings, validateAccountSaveForm } from './accountSavePayload'
 import { defaultAccountForm } from './accountFormDefaults'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
@@ -69,6 +69,71 @@ describe('validateAccountSaveForm oauthDefaultsAllowed（access_token 直录无�
     managedForm.supportedModels = []
     expect(validateAccountSaveForm({
       form: managedForm,
+      hasAuthSession: false,
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      providers: FALLBACK_PROVIDERS
+    })).toBeUndefined()
+  })
+})
+
+describe('backgroundProbeEnabled 手动模式（AI账户后台自动探测总开关设计 §2/§4）', () => {
+  function manualModeForm(): AccountFormModel {
+    const form = defaultAccountForm('gpt', 'api_key')
+    form.name = '手动模式单测账户'
+    form.groupId = 'group-manual-probe'
+    form.apiKey = 'sk-manual-probe'
+    form.apiKeys = ['sk-manual-probe']
+    form.baseUrl = 'https://api.openai.com/v1'
+    form.supportedModels = ['gpt-5.4-mini']
+    form.healthCheckModel = 'gpt-5.4-mini'
+    form.backgroundProbeEnabled = false
+    return form
+  }
+
+  it('创建 payload 携带总开关关闭值，编辑 payload 构造保留该键供 PATCH delta 差量', () => {
+    const payload = buildAccountSavePayload({
+      accounts: [],
+      form: manualModeForm(),
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    expect(payload.backgroundProbeEnabled).toBe(false)
+    expect(buildAccountUpdatePayload(payload).backgroundProbeEnabled).toBe(false)
+  })
+
+  it('媒体域创建/编辑 payload 均不携带总开关键', () => {
+    const form = manualModeForm()
+    form.capabilityDomain = 'audio'
+    const payload = buildAccountSavePayload({
+      accounts: [],
+      form,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    expect(payload).not.toHaveProperty('backgroundProbeEnabled')
+    expect(buildAccountUpdatePayload(payload)).not.toHaveProperty('backgroundProbeEnabled')
+  })
+
+  it('手动模式显式选择待检查在提交前被拦截', () => {
+    const form = manualModeForm()
+    form.status = 'pending_test'
+    form.statusSelectionExplicit = true
+    expect(validateAccountSaveForm({
+      form,
+      hasAuthSession: false,
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      providers: FALLBACK_PROVIDERS
+    })).toBe('手动模式不适用待检查状态：请选择可调度或停用')
+  })
+
+  it('非显式选择的过程态账户（异常装载映射）放行，PATCH 不携带 status 行为零变化', () => {
+    const form = manualModeForm()
+    form.status = 'pending_test'
+    form.statusSelectionExplicit = false
+    expect(validateAccountSaveForm({
+      form,
       hasAuthSession: false,
       errorPolicyRules: [],
       responseInspectionRules: [],

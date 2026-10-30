@@ -312,7 +312,10 @@ func (d *Deps) loadAiHealthAccountPage(r *http.Request, scope AccessScope, optio
 			END AS status,
 			accounts.last_health_check_at,
 			accounts.last_health_success_at,
-			accounts.next_health_check_at
+			accounts.next_health_check_at,
+			-- 后台自动探测总开关（总开关设计 §9 健康监控「手动」标记）：实例行
+			-- 跟随来源账户值，来源缺失保留自身行值，存量 NULL 兜底 1。
+			COALESCE(source_accounts.background_probe_enabled, accounts.background_probe_enabled, 1) AS background_probe_enabled
 		FROM `+d.businessTable("accounts")+` accounts
 		LEFT JOIN `+d.businessTable("accounts")+` source_accounts
 			ON source_accounts.id = accounts.authorization_instance_source_account_id
@@ -339,14 +342,15 @@ func (d *Deps) loadAiHealthAccountPage(r *http.Request, scope AccessScope, optio
 	items := make([]aiHealthAccount, 0, len(pageRows))
 	for _, row := range pageRows {
 		items = append(items, aiHealthAccount{
-			ID:                  row.text("id"),
-			SystemAccountName:   row.nullText("system_account_name"),
-			ProviderCode:        row.text("provider_code"),
-			Name:                row.text("name"),
-			Status:              row.text("status"),
-			LastHealthCheckAt:   row.nullText("last_health_check_at"),
-			LastHealthSuccessAt: row.nullText("last_health_success_at"),
-			NextHealthCheckAt:   row.nullText("next_health_check_at"),
+			ID:                     row.text("id"),
+			SystemAccountName:      row.nullText("system_account_name"),
+			ProviderCode:           row.text("provider_code"),
+			Name:                   row.text("name"),
+			Status:                 row.text("status"),
+			LastHealthCheckAt:      row.nullText("last_health_check_at"),
+			LastHealthSuccessAt:    row.nullText("last_health_success_at"),
+			NextHealthCheckAt:      row.nullText("next_health_check_at"),
+			BackgroundProbeEnabled: row.text("background_probe_enabled") == "1",
 		})
 	}
 	return items, hasMore, nil
@@ -674,16 +678,17 @@ func mapAiHealthAccount(account aiHealthAccount, hourBuckets []string, rowsByAcc
 		}
 	}
 	row := aiHealthAccountRow{
-		ID:                account.ID,
-		Name:              account.Name,
-		ProviderCode:      account.ProviderCode,
-		Status:            account.Status,
-		SystemAccountName: account.SystemAccountName,
-		LatestStatus:      latestStatus,
-		SuccessHours:      successHours,
-		FailureHours:      failureHours,
-		UnknownHours:      len(hours) - checkedHours,
-		Hours:             hours,
+		ID:                     account.ID,
+		Name:                   account.Name,
+		ProviderCode:           account.ProviderCode,
+		Status:                 account.Status,
+		SystemAccountName:      account.SystemAccountName,
+		LatestStatus:           latestStatus,
+		SuccessHours:           successHours,
+		FailureHours:           failureHours,
+		UnknownHours:           len(hours) - checkedHours,
+		BackgroundProbeEnabled: account.BackgroundProbeEnabled,
+		Hours:                  hours,
 	}
 	if row.UnknownHours < 0 {
 		row.UnknownHours = 0
@@ -737,31 +742,35 @@ type aiHealthListResult struct {
 }
 
 type aiHealthAccount struct {
-	ID                  string  `json:"id"`
-	SystemAccountName   *string `json:"-"`
-	ProviderCode        string  `json:"-"`
-	Name                string  `json:"-"`
-	Status              string  `json:"-"`
-	LastHealthCheckAt   *string `json:"-"`
-	LastHealthSuccessAt *string `json:"-"`
-	NextHealthCheckAt   *string `json:"-"`
+	ID                     string  `json:"id"`
+	SystemAccountName      *string `json:"-"`
+	ProviderCode           string  `json:"-"`
+	Name                   string  `json:"-"`
+	Status                 string  `json:"-"`
+	LastHealthCheckAt      *string `json:"-"`
+	LastHealthSuccessAt    *string `json:"-"`
+	NextHealthCheckAt      *string `json:"-"`
+	BackgroundProbeEnabled bool    `json:"-"`
 }
 
 type aiHealthAccountRow struct {
-	ID                  string              `json:"id"`
-	Name                string              `json:"name"`
-	ProviderCode        string              `json:"providerCode"`
-	Status              string              `json:"status"`
-	SystemAccountName   *string             `json:"systemAccountName,omitempty"`
-	LastHealthCheckAt   *string             `json:"lastHealthCheckAt,omitempty"`
-	LastHealthSuccessAt *string             `json:"lastHealthSuccessAt,omitempty"`
-	NextHealthCheckAt   *string             `json:"nextHealthCheckAt,omitempty"`
-	LatestStatus        string              `json:"latestStatus"`
-	SuccessHours        int                 `json:"successHours"`
-	FailureHours        int                 `json:"failureHours"`
-	UnknownHours        int                 `json:"unknownHours"`
-	HealthRate          *float64            `json:"healthRate,omitempty"`
-	Hours               []aiHealthHourPoint `json:"hours"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	ProviderCode        string   `json:"providerCode"`
+	Status              string   `json:"status"`
+	SystemAccountName   *string  `json:"systemAccountName,omitempty"`
+	LastHealthCheckAt   *string  `json:"lastHealthCheckAt,omitempty"`
+	LastHealthSuccessAt *string  `json:"lastHealthSuccessAt,omitempty"`
+	NextHealthCheckAt   *string  `json:"nextHealthCheckAt,omitempty"`
+	LatestStatus        string   `json:"latestStatus"`
+	SuccessHours        int      `json:"successHours"`
+	FailureHours        int      `json:"failureHours"`
+	UnknownHours        int      `json:"unknownHours"`
+	HealthRate          *float64 `json:"healthRate,omitempty"`
+	// BackgroundProbeEnabled 回显后台自动探测总开关（总开关设计 §9）：健康页
+	// 「手动」标记依据。恒输出。
+	BackgroundProbeEnabled bool                `json:"backgroundProbeEnabled"`
+	Hours                  []aiHealthHourPoint `json:"hours"`
 }
 
 type aiHealthHourPoint struct {

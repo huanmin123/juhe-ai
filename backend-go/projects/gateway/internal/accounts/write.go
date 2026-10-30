@@ -457,6 +457,36 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, &ValidationError{Message: "能力域无效"}
 	}
 
+	// 后台自动探测总开关（AI账户后台自动探测总开关设计 §2/§8）：缺省开启；
+	// 媒体域（audio/video）不适用该开关，显式关闭按 400 拒绝（全创建入口统一
+	// 在本写面拒绝，含管理面/OAuth 托管/公开 API/导入；image 域存在后台探测，
+	// 适用该开关）。手动模式下特供恢复不可用（自动恢复功能没有闭环），显式
+	// 开启同样拒绝。
+	backgroundProbeEnabled := 1
+	if input.BackgroundProbeEnabled != nil && !*input.BackgroundProbeEnabled {
+		if accountscore.SkipsConversationHealthStateMachine(domain) {
+			return nil, &ValidationError{Message: "媒体域账户不适用后台自动探测开关"}
+		}
+		backgroundProbeEnabled = 0
+		if input.ExpeditedRecoveryEnabled != nil && *input.ExpeditedRecoveryEnabled {
+			return nil, &ValidationError{Message: "手动模式账户不适用特供快速恢复"}
+		}
+		// 手动模式创建禁止落入无法自动恢复的过程态（设计 §4 二态健康状态）：
+		// temporary_unavailable / rate_limited / quality_isolated 在此统一拒绝，
+		// 覆盖未经 body 词表门的程序化调用方；pending_test 仅在显式提交时拒绝
+		// （缺省哨兵值由下方手动模式状态派生收敛为 active，不落库）。原始状态
+		// 词优先（哨兵归一化会丢失显式过程态事实）。
+		manualSourceStatus := input.Status.Status
+		if strings.TrimSpace(input.RawCreationStatus) != "" {
+			manualSourceStatus = strings.TrimSpace(input.RawCreationStatus)
+		}
+		explicitStatusSubmitted := strings.TrimSpace(input.RawCreationStatus) != ""
+		if accountscore.ManualModeForbiddenStatuses[manualSourceStatus] &&
+			(manualSourceStatus != "pending_test" || explicitStatusSubmitted) {
+			return nil, &ValidationError{Message: "手动模式账户只允许正常、异常或停用状态"}
+		}
+	}
+
 	// 克隆综合（§2）：克隆载荷不携带连接/健康检查时由源账户连接行与 health
 	// 三字段反解综合（连接按 preset/Base URL/endpoint modes/enabled 原样重建，
 	// health 三字段按 preset 重新解析复制）；源无连接行按显式错误拒绝，不做
@@ -481,6 +511,18 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		}
 		if strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
 			return nil, &ValidationError{Message: "克隆源账户健康检查连接缺失，无法克隆：" + strings.TrimSpace(*input.CloneSourceID)}
+		}
+		// 后台自动探测总开关克隆继承（总开关设计 §8）：载荷缺省时继承源账户
+		// 值（载荷显式提交时客户端选择优先），克隆体与源账户同入手动模式或
+		// 探测模式，不出现克隆后静默翻转。
+		if input.BackgroundProbeEnabled == nil {
+			var sourceBackgroundProbe int
+			if err := tx.QueryRowContext(ctx, s.bind(`SELECT background_probe_enabled FROM `+s.table("accounts")+`
+				WHERE id = ?`), strings.TrimSpace(*input.CloneSourceID)).Scan(&sourceBackgroundProbe); err != nil {
+				return nil, err
+			}
+			enabled := sourceBackgroundProbe == 1
+			input.BackgroundProbeEnabled = &enabled
 		}
 	}
 	// 连接集合（§8）：非空必填 + registry 组合/mode 词表/base URL validator
@@ -613,8 +655,22 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// health_check_endpoint_mode 仅为记录值（DefaultHealthCheckEndpointModeFor
 	// Domain）。chat/image 域行为不变：仅 active+SkipInitialHealthCheck 才
 	// active，否则非 disabled 一律 pending_test 等待后台健康检查。
+	// 手动模式（background_probe_enabled=0，总开关设计 §8）先于域分流：显式
+	// active/error/disabled 保持，缺省哨兵收敛 active——不产生 pending_test、
+	// 不投递首次激活检查，真实流量即验收；schedulable 跟随派生状态。原始状态
+	// 词优先（哨兵归一化会把显式 error 折叠成 pending_test）。
+	manualCreationStatus := accountscore.CreationStatus{}
+	if backgroundProbeEnabled == 0 {
+		manualSourceStatus := input.Status.Status
+		if strings.TrimSpace(input.RawCreationStatus) != "" {
+			manualSourceStatus = strings.TrimSpace(input.RawCreationStatus)
+		}
+		manualCreationStatus = accountscore.ManualModeCreationStatus(manualSourceStatus)
+	}
 	initialStatus := input.Status.Status
-	if accountscore.SkipsConversationHealthStateMachine(domain) {
+	if backgroundProbeEnabled == 0 {
+		initialStatus = manualCreationStatus.Status
+	} else if accountscore.SkipsConversationHealthStateMachine(domain) {
 		if input.Status.Status != "disabled" && !(input.PreservePendingTest && input.Status.Status == "pending_test") {
 			initialStatus = "active"
 		}
@@ -635,9 +691,12 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 媒体域 schedulable 跟随派生状态：入参 status 缺省时 CreationStatus 的
 	// Schedulable 哨兵为 false（对应 chat 的 pending_test 暂停调度），媒体域
 	// 派生为 active 后必须可调度，否则产生「active 却禁调度」的滞留行；显式
-	// disabled 仍由哨兵落 false。套餐过期臂不变。
+	// disabled 仍由哨兵落 false。套餐过期臂不变。手动模式 schedulable 跟随
+	// 派生状态：active 可调度，error/disabled 停调度。
 	schedulable := input.Status.Schedulable
-	if accountscore.SkipsConversationHealthStateMachine(domain) && input.Status.Status != "disabled" &&
+	if backgroundProbeEnabled == 0 {
+		schedulable = manualCreationStatus.Schedulable
+	} else if accountscore.SkipsConversationHealthStateMachine(domain) && input.Status.Status != "disabled" &&
 		!(input.PreservePendingTest && input.Status.Status == "pending_test") {
 		schedulable = true
 	}
@@ -868,11 +927,12 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 priority, super_priority_enabled, fallback_enabled, schedulable,
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message,
-		 balance_query_enabled, balance_query_config_json, temporary_unavailable_continuous_probe_enabled,
+		 balance_query_enabled, balance_query_config_json, background_probe_enabled,
+		 temporary_unavailable_continuous_probe_enabled,
 		 expedited_recovery_enabled, capability_domain, vendor_code, connection_driver_code,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, protocol.protocolCode, protocol.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		nullStringForOAuthType(oauthType),
@@ -880,7 +940,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), boolInt(schedulable),
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage,
-		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,
+		balanceQueryEnabledInt, balanceQueryConfigJSON, backgroundProbeEnabled, temporaryProbeEnabled,
 		boolInt(expeditedRecoveryEnabled), domain, vendorCode, connectionDriverCode,
 		0, sql.NullString{}, balanceNextRefreshAt,
 		nowISO, nowISO); err != nil {
@@ -955,7 +1015,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// row, so their creation probe was silently dropped by the jobs outbox
 	// drain (CurrentProbeInput !ok) and the balance detection intent never
 	// appeared (T56 第二层根因，2026-10-24)。OAuth 仍维持 gpt/openai 原范围。
-	if !accountscore.SkipsConversationHealthStateMachine(domain) &&
+	// 手动模式（background_probe_enabled=0，总开关设计 §8）跳过首次激活检查
+	// 意图：不写 J1 input outbox，账户直接以 active 可调度参与真实流量。
+	if backgroundProbeEnabled != 0 && !accountscore.SkipsConversationHealthStateMachine(domain) &&
 		(accountType == "api_key" || ((providerCode == "gpt" || providerCode == "openai") && accountType == "oauth")) {
 		if err := s.reserveAndEnqueueAccountHealthSnapshot(ctx, tx, id, configRevision, dispatchRevision, nowISO); err != nil {
 			return nil, err
@@ -965,7 +1027,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// account-health-check-dispatch.service.ts): a pending_test account always
 	// probes once; a freshly saved active single-Key API Key account without
 	// balance query probes once so the balance detector can classify it.
-	initialHealthCheck := !accountscore.SkipsConversationHealthStateMachine(domain) && (nextStatus == "pending_test" ||
+	// 手动模式无后台探测：不投递任何创建期检查（含单 Key 余额探测臂）。
+	initialHealthCheck := backgroundProbeEnabled != 0 &&
+		!accountscore.SkipsConversationHealthStateMachine(domain) && (nextStatus == "pending_test" ||
 		(nextStatus == "active" && accountType == "api_key" &&
 			EffectiveAccountApiKeyCount(credentials) == 1 &&
 			balanceQueryEnabledInt != 1 &&

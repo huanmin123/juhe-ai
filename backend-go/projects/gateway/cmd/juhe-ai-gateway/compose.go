@@ -913,6 +913,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			return nil, fmt.Errorf("compose accounts runtime reset bridge: %w", resetBridgeErr)
 		}
 		accountStore.SetRuntimeResetEffects(resetBridge)
+		// 后台自动探测禁用臂运行态清理端口（总开关设计 §4，复审 M1）：复用
+		// 同一运行时重置桥清理 latency 降级 / Key 运行态池 / 运行时缓存投影；
+		// circuit 运行态走禁用事务内的 dispatch fence outbox 事件（jobs 投影）。
+		accountStore.SetBackgroundProbeRuntimeCleanup(resetBridge)
 		// M11 runtime handover assembly (F1-1): the traffic-migration route
 		// reaches the gateway session affinity through this bridge (Node
 		// migrateServerOpenAIAccountTrafficRuntime local branch). With the

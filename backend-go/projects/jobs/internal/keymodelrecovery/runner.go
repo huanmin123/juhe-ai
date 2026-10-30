@@ -3,9 +3,12 @@ package keymodelrecovery
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,6 +45,12 @@ type Runner struct {
 	probe  ProbeExecutor
 	logger *slog.Logger
 
+	// backgroundProbeDisabled 是扫描层的手动模式开关位（后台自动探测总开关
+	// 设计 §3）：返回 true 的账户候选本轮不选择、不领租约、不发探针。查询失败
+	// 失败关闭（2026-10-30 复审 Minor：读失败按手动模式跳过候选，下轮扫描重
+	// 入）；nil 表示未装配（不设门，测试形态）。
+	backgroundProbeDisabled func(ctx context.Context, credentialSourceAccountID string) (bool, error)
+
 	// scanDelay 计算扫描循环每轮等待时长，默认 schedulejitter.Delay（1s 扫描按
 	// <1min 档位窗口 = ±interval/2 = ±0.5s 抖动，不扩窗）；抽成字段供单测注入
 	// 桩，断言间隔来源每轮重新求值（客户端版本自动跟版设计 §9 抖动缺口修复）。
@@ -70,6 +79,36 @@ func NewRunner(store Store, loader InputLoader, logger *slog.Logger) *Runner {
 		logger = slog.Default()
 	}
 	return &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, scanDelay: schedulejitter.Delay, running: map[string]Running{}, inputLoadWarnedAt: map[string]time.Time{}}
+}
+
+// SetBackgroundProbeDisabled 注入手动模式开关位（扫描层过滤）。
+func (r *Runner) SetBackgroundProbeDisabled(switchFn func(ctx context.Context, credentialSourceAccountID string) (bool, error)) {
+	r.backgroundProbeDisabled = switchFn
+}
+
+// BackgroundProbeSQLSwitch 构造 accounts.background_probe_enabled 主键单列
+// SELECT 开关（对齐 W1 freshness 门成本论证：每候选一次主键点查，仅在选择
+// 阶段触发）。行缺失视为开启（fail-open：软删/已消失账户交回既有调度语义，
+// 不是账户存在性判定）；查询错误上抛，由扫描层按失败关闭跳过本轮候选（二轮
+// 复审 Minor-1 同步：列 NOT NULL DEFAULT 1，NULL 不可能出现，`== 0` 判定对
+// 任何非 1 值天然按关闭处理）。
+func BackgroundProbeSQLSwitch(db *sql.DB) func(ctx context.Context, credentialSourceAccountID string) (bool, error) {
+	return func(ctx context.Context, credentialSourceAccountID string) (bool, error) {
+		if db == nil || strings.TrimSpace(credentialSourceAccountID) == "" {
+			return false, nil
+		}
+		var enabled sql.NullInt64
+		err := db.QueryRowContext(ctx,
+			`SELECT background_probe_enabled FROM juhe_business.accounts WHERE id = $1 AND deleted_at IS NULL`,
+			credentialSourceAccountID).Scan(&enabled)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		return enabled.Int64 == 0, nil
+	}
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -121,6 +160,21 @@ func (r *Runner) RunCycle(ctx context.Context) error {
 	due, err := r.store.ListDue(ctx, now, recoveryBatchLimit)
 	if err != nil {
 		return fmt.Errorf("读取 model-recovery due state: %w", err)
+	}
+	// 手动模式扫描层过滤（总开关设计 §3）：开关关闭的账户候选不进入选择，
+	// 不领租约、不发探针；开关读取失败失败关闭（2026-10-30 复审 Minor：读
+	// 失败按手动模式跳过候选）——扫描按周期重跑，跳过的候选下轮自然重入；
+	// fail-open 会让手动模式账户在读取失败窗口里收到真实上游探测请求。
+	if r.backgroundProbeDisabled != nil {
+		enabled := make([]State, 0, len(due))
+		for _, state := range due {
+			disabled, err := r.backgroundProbeDisabled(ctx, state.CredentialSourceAccountID)
+			if err != nil || disabled {
+				continue
+			}
+			enabled = append(enabled, state)
+		}
+		due = enabled
 	}
 	continuationWaiting := false
 	continuationSources := map[string]bool{}

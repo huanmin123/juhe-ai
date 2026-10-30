@@ -139,8 +139,14 @@ func openPostgresBootstrap(rawURL string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres bootstrap connection: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// 池上限 2 = 编排锁专用连接 1 + 语句执行 1：acquireUpgradeLock 以
+	// db.Conn 持会话级 advisory 锁直到进程结束（storage_bootstrap 的 unlock
+	// 随 defer 才归还），上限为 1 时锁占满池，EnsurePostgres/seed 的每条
+	// ExecContext 将无连接可用且 ctx 无超时，直接 runtime 死锁（P2 端到端
+	// 演练实锤，生产 --ensure-schema 每次必死）。语句执行仍串行，DDL 安全
+	// 口径不变；legacy_business_import 的 2 连接池为同口径先例。
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
 	return db, nil
 }
 

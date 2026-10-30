@@ -183,6 +183,7 @@ const accountsPGFixtureSchema = `
       cooldown_retest_generation text,
       cooldown_retest_last_at text,
       cooldown_retest_last_status_code integer,
+      background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
       capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
@@ -419,6 +420,18 @@ const accountsPGFixtureSchema = `
       created_at text NOT NULL,
       updated_at text NOT NULL,
       UNIQUE (account_id, input_version)
+    );
+	CREATE TABLE IF NOT EXISTS juhe_business.account_quality_enforcements (
+      account_id text PRIMARY KEY,
+      system_account_id text NOT NULL,
+      enforcement_id text NOT NULL,
+      generation bigint NOT NULL DEFAULT 0,
+      state text NOT NULL CHECK (state IN ('active', 'cleared')),
+      updated_at text NOT NULL,
+      recovery_due_at text,
+      recovery_lease_owner text,
+      recovery_lease_until text,
+      cleared_at text
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.group_account_stats_dirty (
       group_id text PRIMARY KEY,

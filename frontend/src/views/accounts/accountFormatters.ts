@@ -13,7 +13,20 @@ import {
   splitAccountDiagnosticMessage,
   type AccountDiagnosticMessageParts
 } from './accountDiagnosticMessages'
-import { accountStatusTooltipLines as accountStatusPresentationTooltipLines } from './accountStatusPresentation'
+import {
+  accountBackgroundProbeDisabled,
+  accountManualModeStatusColor,
+  accountManualModeStatusText,
+  accountStatusTooltipLines as accountStatusPresentationTooltipLines
+} from './accountStatusPresentation'
+
+export {
+  accountBackgroundProbeDisabled,
+  accountManualModeStatusColor,
+  accountManualModeStatusText,
+  accountManualModeTag,
+  accountManualModeTooltipText
+} from './accountStatusPresentation'
 
 export {
   accountClientCompatibilityText,
@@ -92,6 +105,15 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountListItem) {
+  // 手动模式（总开关设计 §9）：二态健康状态映射，正交状态（授权/到期/额度）保持现有展示，
+  // 过程态（熔断/运行态/可用性投影）标签全部抑制。
+  if (accountBackgroundProbeDisabled(account)) {
+    if (isAuthorizationPaused(account)) return 'orange'
+    if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
+    if (isAccountPackageExpiredStatus(account)) return 'red'
+    if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
+    return accountManualModeStatusColor(account.status)
+  }
   if (shouldDisplayEffectiveAvailabilityAsStatus(account)) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
@@ -113,6 +135,16 @@ export function accountStatusColor(account: AccountListItem) {
 }
 
 export function accountStatusText(account: AccountListItem) {
+  // 手动模式（总开关设计 §9）：二态健康状态映射，正交状态保持现有展示；
+  // 待探针确认/调度降级/恢复中等过程态标签隐藏。
+  if (accountBackgroundProbeDisabled(account)) {
+    if (isAuthorizationPaused(account)) return '授权暂停'
+    if (isAuthorizationExpired(account)) return '授权到期'
+    if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
+    if (isAccountPackageExpiredStatus(account)) return '账户到期'
+    if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
+    return accountManualModeStatusText(account.status)
+  }
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
     return directAccountStatusText(account)
   }

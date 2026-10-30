@@ -98,6 +98,10 @@ type managementRow struct {
 	proxyProfileEnabled                 any
 	// group_bindings 列在 status seed 面复用（Node 同行双读）。
 	seedBindingSystemAccountID sql.NullString
+	// background_probe_enabled 是后台自动探测总开关（accounts 列，总开关设计
+	// §9）：前端「手动」标签与状态抑制依据。两列恒 NOT NULL（契约 v20）。
+	backgroundProbeEnabled        any
+	sourceBackgroundProbeEnabled  any
 }
 
 type managementPage struct {
@@ -193,7 +197,9 @@ const managementRowColumns = `
       proxy_profiles.id AS resolved_proxy_profile_id,
       proxy_profiles.name AS proxy_profile_name,
       proxy_profiles.type AS proxy_profile_type,
-      proxy_profiles.enabled AS proxy_profile_enabled
+      proxy_profiles.enabled AS proxy_profile_enabled,
+      account_rows.background_probe_enabled,
+      account_rows.source_background_probe_enabled
 `
 
 // managementAccountRowsCTE 对齐 Node account_rows CTE。
@@ -276,7 +282,9 @@ func managementAccountRowsCTE(table func(string) string) string {
         source_accounts.last_health_check_error_message AS source_last_health_check_error_message,
         source_accounts.last_health_check_trace_id AS source_last_health_check_trace_id,
         source_accounts.proxy_profile_id AS source_proxy_profile_id,
-        source_accounts.concurrency_limit AS source_concurrency_limit
+        source_accounts.concurrency_limit AS source_concurrency_limit,
+        accounts.background_probe_enabled,
+        source_accounts.background_probe_enabled AS source_background_probe_enabled
       FROM ` + table("accounts") + ` accounts
       LEFT JOIN ` + table("resource_authorizations") + ` authorizations
         ON authorizations.id = accounts.authorization_instance_authorization_id
@@ -451,6 +459,8 @@ func scanManagementRow(rows *sql.Rows) (managementRow, error) {
 		&row.proxyProfileName,
 		&row.proxyProfileType,
 		&row.proxyProfileEnabled,
+		&row.backgroundProbeEnabled,
+		&row.sourceBackgroundProbeEnabled,
 	)
 	return row, err
 }
@@ -589,6 +599,14 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 			payload["lockRetryIntervalSeconds"] = *lock.lockRetryIntervalSeconds
 		}
 	}
+	// backgroundProbeEnabled：手动模式标记的数据源（总开关设计 §9）。实例行
+	// 取来源账户值（授权行展示跟随来源语义，两列本就由 W1 同步，此处投影
+	// 仍按行型取数以保证来源直改时的瞬时一致）。
+	backgroundProbeEnabled := row.backgroundProbeEnabled
+	if authorized && row.sourceBackgroundProbeEnabled != nil {
+		backgroundProbeEnabled = row.sourceBackgroundProbeEnabled
+	}
+	payload["backgroundProbeEnabled"] = booleanValue(backgroundProbeEnabled)
 	return payload
 }
 

@@ -56,8 +56,6 @@ type CoverageReport struct {
 //
 // 白名单必须给出理由，否则就是在给覆盖要求开后门。
 var coverageAllowEmptyExactTables = map[string]string{
-	"authorization_team_usage_range_windows": "派生聚合族：写入任务已消灭，聚合器不再产出",
-	"authorization_user_usage_range_windows": "派生聚合族：写入任务已消灭，聚合器不再产出",
 	// stats 派生聚合族（cleanupAggregateResetTables 同源）：由常驻 jobs 从使用
 	// 明细重建，造数重置后、重建完成前为空是正确状态。
 	"usage_stats_totals":                                "派生聚合族：由常驻 jobs 从使用明细重建，造数重置后重建完成前为空是正确状态",

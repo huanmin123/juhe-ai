@@ -122,6 +122,17 @@ type ServiceOptions struct {
 	EscalationWindowMs               *int64
 	Settings                         Settings
 	Random                           func() float64
+	// BackgroundProbeDisabled 判定账户是否处于手动模式（后台自动探测总开关
+	// background_probe_enabled=0，总开关设计 §3）：真实流量的 escalation/
+	// incident 建立入口（SUSPECT 建立）对该类账户跳过——账户级不建 incident，
+	// 请求级排除与既有 incident 的 PrepareAttempt 参与不受影响。查询失败失败
+	// 关闭（2026-10-30 复审 Minor：读失败按手动模式跳过建立，避免给手动账户
+	// 建出无恢复探针的滞留 incident）；该门只在 transport 失败结算时触发，
+	// 一次读失败的代价是本轮 escalation 缺席（后续失败重试），不影响请求链路
+	// 其余部分。行缺失/列 NULL 仍视为开启（查询实现侧语义，不属读取失败）。
+	// nil 表示未装配（不设门，测试形态）。生产由组合根注入主键单列 SELECT
+	// （对齐 W1 freshness 门成本论证）。
+	BackgroundProbeDisabled func(ctx context.Context, accountRuntimeKey string) (bool, error)
 	// Logger 用于非请求关键路径的留痕（如确认槽位释放补结算失败）；
 	// nil 默认 NopLogger，保持静默行为。生产由组合根注入。
 	Logger Logger
@@ -437,6 +448,7 @@ type CircuitService struct {
 	onMutation                       func(ctx context.Context, input MutationEvent) error
 	isRuntimeStateReady              func(accountRuntimeKey string) bool
 	ensureRuntimeStateReady          func(ctx context.Context, accountRuntimeKey string) (bool, error)
+	backgroundProbeDisabled          func(ctx context.Context, accountRuntimeKey string) (bool, error)
 	escalationDistinctScopeThreshold int64
 	escalationWindowMs               int64
 	settings                         Settings
@@ -486,6 +498,7 @@ func NewCircuitService(store Store, options ServiceOptions) (*CircuitService, er
 		onMutation:                       options.OnMutation,
 		isRuntimeStateReady:              isReady,
 		ensureRuntimeStateReady:          options.EnsureRuntimeStateReady,
+		backgroundProbeDisabled:          options.BackgroundProbeDisabled,
 		escalationDistinctScopeThreshold: threshold,
 		escalationWindowMs:               windowMs,
 		settings:                         settings,
@@ -810,6 +823,19 @@ type suspectForegroundInput struct {
 
 // SuspectForegroundFailure mirrors suspectForegroundFailure.
 func (s *CircuitService) SuspectForegroundFailure(ctx context.Context, input suspectForegroundInput) (FailureDecision, error) {
+	// 手动模式（后台自动探测总开关关闭）账户不在 escalation/incident 建立面
+	// 建立 SUSPECT（总开关设计 §3：账户级不建 incident）；真实请求级排除与
+	// 抑制逻辑不在此列。开关读取失败失败关闭（2026-10-30 复审 Minor：读失败
+	// 按手动模式跳过建立）——该门只在 transport 失败结算时触发，一次 DB 读错
+	// 期间跳过建立只损失本轮 escalation（后续失败重试），而 fail-open 会给
+	// 手动模式账户建出无恢复探针的 incident 并滞留挡流量。行缺失/列 NULL 仍
+	// 视为开启（查询实现侧语义，不属读取失败）。
+	if s.backgroundProbeDisabled != nil {
+		disabled, err := s.backgroundProbeDisabled(ctx, input.scope.AccountRuntimeKey)
+		if err != nil || disabled {
+			return FailureDecision{Outcome: DecisionObserverNeutral}, nil
+		}
+	}
 	nowMs := s.now()
 	suspectTransitionID := s.createID()
 	dispatchRevision, err := requiredText(input.dispatchRevision, "dispatchRevision")

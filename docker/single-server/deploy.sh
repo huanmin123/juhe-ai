@@ -195,6 +195,22 @@ if [ -n "$RELEASE_TAG" ]; then
     BUILD_VERSION="$RELEASE_TAG"
   fi
 else
+  if [ -z "$(git status --porcelain)" ] && [ "${JUHE_AI_DISABLE_AUTO_TAG:-0}" != "1" ]; then
+    # 发布即版本（CalVer，升级兼容与迁移账本设计 §6.1 v2）：干净树的生产部署
+    # 自动打日历 tag，维护者零记忆负担；不 push 仅本地留存。脏树永不打 tag
+    # （自改用户恒为 dev-<sha>-dirty，§9.6 口径）。JUHE_AI_DISABLE_AUTO_TAG=1
+    # 可显式关闭。
+    AUTO_TAG="v$(date +%Y.%m.%d)"
+    AUTO_N=1
+    while git rev-parse -q --verify "refs/tags/$AUTO_TAG" >/dev/null 2>&1; do
+      AUTO_N=$((AUTO_N + 1))
+      AUTO_TAG="v$(date +%Y.%m.%d)-$AUTO_N"
+    done
+    if git tag "$AUTO_TAG" HEAD 2>/dev/null; then
+      RELEASE_TAG="$AUTO_TAG"
+      echo "  自动打版本 tag：$AUTO_TAG（发布即版本；不再需要人工记忆打 tag）"
+    fi
+  fi
   if [ -n "$(git status --porcelain)" ]; then BUILD_VERSION="dev-${COMMIT}-dirty"; else BUILD_VERSION="dev-${COMMIT}"; fi
 fi
 GO_LDFLAGS="-s -w -X ${XP}.Version=$BUILD_VERSION -X ${XP}.Commit=$COMMIT -X ${XP}.BuildTime=$BUILD_TIME"
@@ -270,8 +286,16 @@ fi
 # README「拓扑」节一次性命令同源；deploy.sh 本地变量用 $SERVER_DIR 前缀区分）。
 # maintenance 单独发布不核验：维护窗口的既定顺序是先更 CLI 镜像、后跑迁移
 # （README「更新发布」节），此时门禁未就绪属预期，前置核验会让窗口流程死锁。
+# upgrade 模式同样不核验（2026-10-30 复审实锤）：其唯一工作场景就是「库落后/
+# 升级中断」，dry-run 必然 blocked/3，硬性核验会让 `./deploy.sh upgrade` 在
+# 入口处自我死锁（提示去执行的正是当前命令）；upgrade 窗口内的真实升级由
+# 下方 UPGRADE_CMD 承担，其失败自有二选一指引。2026-10-30 起核验判断以
+# `upgrade --dry-run` 取代两条写死 verify（设计 §11.3）：门禁未就绪（库落后
+# 于本二进制 / 有中断在途 / 需要手工步骤）一律 blocked/3，按失败处理并指引
+# deploy.sh upgrade。必须用新版 maintenance 镜像（先 build），旧镜像看不见
+# 新 revision 步骤。
 # ---------------------------------------------------------------------------
-if [ "$TARGET" != "maintenance" ]; then
+if [ "$TARGET" != "maintenance" ] && [ "${UPGRADE_MODE:-0}" != "1" ]; then
   echo "== 迁移前置核验（新版 maintenance 镜像 upgrade --dry-run，只读零写入）=="
   # 2026-10-30 起以 upgrade --dry-run 取代两条写死的 verify 判断（设计 §11.3）：
   # 门禁未就绪（库落后于本二进制 / 有中断在途 / 需要手工步骤）一律 blocked/3，
@@ -374,7 +398,7 @@ for p in "${TARGETS[@]}"; do
   done
   if [ -z "$ok" ]; then
     echo "  [FAIL] $p 5 分钟内未 healthy，回滚请用 build/bin/*.bak-* 产物重新发布" >&2
-    echo "         若为启动门禁失败（capability domain 未封存 m2_finalized / 调度偏好迁移未完成），先按 docker/single-server/README.md「更新发布」节维护窗口完成迁移再重试。" >&2
+    echo "         若为升级启动门禁拦截（文案含「尚未升级/上次升级未完成」等），先执行 ./deploy.sh upgrade 完成停写窗口升级再重试；其余按 docker/single-server/README.md「更新发布」节排障。" >&2
     exit 1
   fi
   CONTAINER_MD5=$($SSH "$SERVER" "docker exec juhe-ai-go-$p md5sum /usr/local/bin/juhe-ai-go-project" | awk '{print $1}')

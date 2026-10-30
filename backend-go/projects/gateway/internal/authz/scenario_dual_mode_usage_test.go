@@ -221,8 +221,8 @@ func TestDualListDirectionScopes(t *testing.T) {
 	})
 }
 
-// B10 usage 读矩阵（重点）：3 个连续 stat_date × {teamA/teamB/teamless('')} ×
-// 资源三档（all / account / account+id），全零行被 HAVING 排除，'' 合计键显式
+// B10 usage 读矩阵（重点）：3 个连续 stat_date × {teamA/teamB/teamless(”)} ×
+// 资源三档（all / account / account+id），全零行被 HAVING 排除，” 合计键显式
 // 造行（读侧不汇总），admin-filter/self 命中 owner 键、global 键命中（仅 SQLite
 // 臂，避免向共享库种 system_account_id='global' 行），分页上界语义、超页钳制与
 // 超 31 天入参钳制。
@@ -498,11 +498,10 @@ func TestDualUsageReadMatrix(t *testing.T) {
 	})
 }
 
-// B11 {id}/usage 冻结表免疫：日摘要行（真值）与 authorization_team_usage_range_windows
-// 旧冻结行（诱饵值，键为热窗口锚点区间）并存时，UsageDetail 团队总量必须等于日摘要
-// 聚合值。双臂都跑（PG 臂直接对真实 juhe_stats.authorization_team_usage_range_windows
-// 造带前缀键的诱饵行）。
-func TestDualFrozenRangeWindowImmunity(t *testing.T) {
+// B11 {id}/usage 日摘要聚合正确：团队授权的 UsageDetail 团队总量必须等于
+// authorization_team_usage_summary_daily 按请求范围的逐日聚合值。
+// authorization_*_usage_range_windows 已退役（B09），读取链只走日摘要表。
+func TestDualTeamUsageDailySummaryAggregation(t *testing.T) {
 	runDual(t, func(e *dualEnv) {
 		ctx := context.Background()
 		owner := e.p + "owner"
@@ -510,9 +509,9 @@ func TestDualFrozenRangeWindowImmunity(t *testing.T) {
 		teamA := e.p + "teamA"
 		e.seedSystemAccount(owner, "active")
 		e.seedSystemAccount(m1, "active")
-		e.seedTeamWithMembers(teamA, "冻结表团队", m1, owner)
-		grp := e.p + "grp-frozen"
-		e.seedGroup(grp, owner, "冻结表分组", e.seedProviderChain(), false)
+		e.seedTeamWithMembers(teamA, "日摘要团队", m1, owner)
+		grp := e.p + "grp-daily"
+		e.seedGroup(grp, owner, "日摘要分组", e.seedProviderChain(), false)
 
 		created, err := e.store.Create(ctx, CreateInput{
 			ResourceType: "group", ResourceID: grp,
@@ -531,12 +530,6 @@ func TestDualFrozenRangeWindowImmunity(t *testing.T) {
 				VALUES (?, ?, ?, 'group', ?, ?, 100, 50, 1.5, ?, '2026-10-01T00:00:00.000Z')`,
 				owner, date, teamA, grp, 2+idx, "2026-10-01T09:00:00.000Z")
 		}
-		// 冻结表诱饵行：同键（owner, 3 日窗, teamA, group, grp），值 999。
-		e.exec(`INSERT INTO `+e.stbl("authorization_team_usage_range_windows")+`
-			(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-			 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-			VALUES (?, ?, ?, ?, 'group', ?, 999, 999, 999, 99.9, '2026-10-01T08:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
-			owner, dates[0], dates[2], teamA, grp)
 
 		rng := UsageStatsRange{StartDate: dates[0], EndDate: dates[2], Days: 3, MaxDays: 31}
 		detail, err := e.store.usageDetailSummary(ctx, created.Item.ID, accessInfo{IsAdmin: true}, rng, 1, 200)
@@ -544,8 +537,7 @@ func TestDualFrozenRangeWindowImmunity(t *testing.T) {
 			e.t.Fatalf("usage detail 读取失败: detail=%v err=%v", detail, err)
 		}
 		if detail.Usage.RequestCount != float64(requests) {
-			e.t.Fatalf("团队总量 = %.0f，want 日摘要聚合值 %d（冻结诱饵 999 不得被读取）",
-				detail.Usage.RequestCount, requests)
+			e.t.Fatalf("团队总量 = %.0f，want 日摘要聚合值 %d", detail.Usage.RequestCount, requests)
 		}
 		if !dualNearlyEqual(detail.Usage.TotalCost, 4.5) {
 			e.t.Fatalf("团队成本 = %.2f，want 4.5（3 天 × 1.5）", detail.Usage.TotalCost)

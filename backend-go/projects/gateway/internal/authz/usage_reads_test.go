@@ -13,32 +13,6 @@ import (
 )
 
 const usageFixtureDDL = `
-	-- authorization_team_usage_range_windows 的 DDL 仅为冻结表回归保留
-	--（wd_authz_usage_detail_test.go 的锚点区间断言需要种一行冻结数据）；
-	-- 授权消耗明细读链已全部走日摘要表，不再读写两张范围窗口表。
-	CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_range_windows (
-		system_account_id TEXT NOT NULL,
-		start_date TEXT NOT NULL,
-		end_date TEXT NOT NULL,
-		team_filter_id TEXT NOT NULL DEFAULT '',
-		resource_filter_type TEXT NOT NULL DEFAULT 'all',
-		resource_filter_id TEXT NOT NULL DEFAULT '',
-		request_count INTEGER NOT NULL DEFAULT 0,
-		input_tokens INTEGER NOT NULL DEFAULT 0,
-		output_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_cost_usd double precision NOT NULL DEFAULT 0,
-		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_cost_usd double precision NOT NULL DEFAULT 0,
-		thinking_tokens INTEGER NOT NULL DEFAULT 0,
-		input_image_tokens INTEGER NOT NULL DEFAULT 0,
-		output_image_tokens INTEGER NOT NULL DEFAULT 0,
-		total_cost_usd double precision NOT NULL DEFAULT 0,
-		last_used_at TEXT,
-		updated_at TEXT NOT NULL,
-		PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)
-	);
 	CREATE TABLE IF NOT EXISTS juhe_stats.authorization_team_usage_summary_daily (
 		system_account_id TEXT NOT NULL,
 		stat_date TEXT NOT NULL,
@@ -441,7 +415,7 @@ func TestUsageUserReadsReplay(t *testing.T) {
 // an arbitrary custom range inside the 31-day clamp folds the per-day rows
 // (SUM for counters and cost, MAX for last_used_at) — the shape that returned
 // empty on the materialized-window path — while the no-team summary keeps
-// reading the team_filter_id='' cross-team rows, the details keep excluding
+// reading the team_filter_id=” cross-team rows, the details keep excluding
 // them, and the three resource filter tiers keep their semantics.
 func TestUsageDailyRangeAggregation(t *testing.T) {
 	f := newUsageFixture(t)

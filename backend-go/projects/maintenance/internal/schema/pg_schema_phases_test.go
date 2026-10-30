@@ -9,7 +9,8 @@ import (
 // 与 Node 单遍序不再一致，合法性钉在「破坏性删除对象不被任何加法语句再次
 // 触碰」上——否则加法相先行会重建破坏相将要删除的对象（All 单遍序下二者
 // 顺序执行结果不同）。新增破坏性语句或触碰同对象的加法语句都会被本测试拦截。
-// 2026-10-30 B08 撤除 12 条幂等收列语句后，当前无破坏性目标，本测试空转保留。
+// 2026-10-30 B09 退役 authorization_*_usage_range_windows 两表后，当前
+// 破坏性目标为 2 条 DROP TABLE（juhe_stats），加法清单不得再触碰同表。
 func TestPhaseOrderSafety(t *testing.T) {
 	for _, target := range DestructiveTargets() {
 		if target.Table == "" {
@@ -43,10 +44,11 @@ func TestPhasePartition(t *testing.T) {
 			additive++
 		}
 	}
-	// 2026-10-30 B08 撤除 12 条幂等收列语句（业务 9 + codex 3）后，当前无
-	// 破坏性语句。
-	if destructive != 0 {
-		t.Fatalf("破坏性语句数 = %d, want 0", destructive)
+	// 2026-10-30 B08 撤除 12 条幂等收列语句（业务 9 + codex 3）后破坏相一度
+	// 清零；2026-10-30 B09 退役 authorization_*_usage_range_windows 两表，
+	// 当前破坏性语句为 2 条 DROP TABLE。
+	if destructive != 2 {
+		t.Fatalf("破坏性语句数 = %d, want 2", destructive)
 	}
 	if additive+destructive != len(postgresSchemaStatements) {
 		t.Fatalf("分相划分不完整：additive %d + destructive %d != total %d",
@@ -54,19 +56,24 @@ func TestPhasePartition(t *testing.T) {
 	}
 }
 
-// 目标解析抽核：2026-10-30 B08 撤除 12 条 ALTER TABLE ... DROP COLUMN IF
-// EXISTS 形态的幂等收列语句后，当前无破坏性目标；循环体保留（空循环），
-// 新增破坏性语句时按统一形态解析校验。
+// 目标解析抽核：2026-10-30 B09 退役 authorization_*_usage_range_windows 两表
+// 后，当前 2 条破坏性目标均为 DROP TABLE（juhe_stats，列名为空属该形态预期，
+// 见 DestructiveTarget）；循环体保留，新增破坏性语句时按统一形态解析校验。
 func TestDestructiveTargetsParse(t *testing.T) {
 	targets := DestructiveTargets()
-	if len(targets) != 0 {
-		t.Fatalf("解析目标数 = %d, want 0", len(targets))
+	if len(targets) != 2 {
+		t.Fatalf("解析目标数 = %d, want 2", len(targets))
 	}
 	for _, target := range targets {
-		if target.Column == "" {
-			t.Fatalf("目标缺列名: %+v", target)
+		if target.Table == "" {
+			t.Fatalf("目标缺表名: %+v", target)
 		}
-		if target.Schema != "juhe_business" && target.Schema != "juhe_codex_context" {
+		// 当前目标全部为 DROP TABLE 形态：列名为空属预期；引入 DROP COLUMN
+		// 形态时改为要求列名非空。
+		if target.Column != "" {
+			t.Fatalf("DROP TABLE 目标不应带列名: %+v", target)
+		}
+		if target.Schema != "juhe_business" && target.Schema != "juhe_codex_context" && target.Schema != "juhe_stats" {
 			t.Fatalf("目标 schema 越界: %+v", target)
 		}
 	}

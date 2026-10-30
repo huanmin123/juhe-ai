@@ -433,6 +433,8 @@ export interface AccountSummary {
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
   temporaryUnavailableContinuousProbeEnabled?: boolean
+  /** 后台自动探测总开关（总开关设计 §2）：授权实例行回显来源账户值，只读；缺省视作开启。 */
+  backgroundProbeEnabled?: boolean
   lastHealthCheckAt?: string
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
@@ -564,6 +566,8 @@ export interface AccountListItem {
   lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
   lockDeathTimeoutSeconds?: number
   lockRetryIntervalSeconds?: number
+  /** 后台自动探测总开关（总开关设计 §2）：授权实例行回显来源账户值，只读；缺省视作开启。 */
+  backgroundProbeEnabled?: boolean
   /** 特供快速恢复（恢复道加速档）：行属性标记；列表投影恒输出（合成行可能缺省）。 */
   expeditedRecoveryEnabled?: boolean
   /** 归属系统账户特供名额超限展示位：归属超限时名下所有行（含未特供行）都为 true。 */
@@ -616,6 +620,8 @@ export interface AccountAdvancedDetail {
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   temporaryUnavailableContinuousProbeEnabled: boolean
+  /** 后台自动探测总开关（总开关设计 §2）：授权实例返回来源账户值，只读。 */
+  backgroundProbeEnabled: boolean
   balanceQueryEnabled: boolean
   balanceQueryConfig?: AccountBalanceQueryConfig
   /**
@@ -696,6 +702,8 @@ export interface AccountCloneContext {
   availabilitySchedule?: AccountAvailabilitySchedule
   accountExpiresAt?: string
   temporaryUnavailableContinuousProbeEnabled: boolean
+  /** 后台自动探测总开关（总开关设计 §8 克隆）：继承来源账户值。 */
+  backgroundProbeEnabled: boolean
   balanceQueryEnabled: boolean
   balanceQueryConfig?: AccountBalanceQueryConfig
 }

@@ -21,15 +21,21 @@
       </template>
       <span class="status-tag-group">
         <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
+        <a-tooltip v-if="manualModeTag" :title="manualModeTooltip">
+          <StatusTag class="status-tag priority-tag" :color="manualModeTag.color" :label="manualModeTag.label" />
+        </a-tooltip>
         <StatusTag v-if="lockTag" class="status-tag priority-tag" :color="lockTag.color" :label="lockTag.label" />
         <StatusTag v-if="account.superPriorityEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
         <StatusTag v-if="account.fallbackEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
-        <StatusTag v-if="account.expeditedRecoveryEnabled" class="status-tag priority-tag" color="cyan" label="特供" />
+        <StatusTag v-if="account.expeditedRecoveryEnabled && !manualModeTag" class="status-tag priority-tag" color="cyan" label="特供" />
         <StatusTag v-if="account.expeditedOverLimit" class="status-tag priority-tag" color="volcano" label="已超限" />
       </span>
     </a-tooltip>
     <span v-else class="status-tag-group">
       <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
+      <a-tooltip v-if="manualModeTag" :title="manualModeTooltip">
+        <StatusTag class="status-tag priority-tag" :color="manualModeTag.color" :label="manualModeTag.label" />
+      </a-tooltip>
       <a-tooltip v-if="lockTag" :title="lockTooltip">
         <StatusTag class="status-tag priority-tag" :color="lockTag.color" :label="lockTag.label" />
       </a-tooltip>
@@ -39,7 +45,7 @@
       <a-tooltip v-if="account.fallbackEnabled" :title="fallbackTooltip">
         <StatusTag class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
       </a-tooltip>
-      <a-tooltip v-if="account.expeditedRecoveryEnabled" :title="expeditedRecoveryTooltip">
+      <a-tooltip v-if="account.expeditedRecoveryEnabled && !manualModeTag" :title="expeditedRecoveryTooltip">
         <StatusTag class="status-tag priority-tag" color="cyan" label="特供" />
       </a-tooltip>
       <a-tooltip v-if="account.expeditedOverLimit" :title="expeditedOverLimitTooltip">
@@ -56,12 +62,16 @@ import { CopyOutlined } from '@ant-design/icons-vue'
 
 import StatusTag from '@/components/StatusTag.vue'
 import type { AccountListItem } from '@/types/domain'
-import { accountLockTag, accountLockTooltipLines, accountStatusColor, accountStatusText, accountStatusTooltipLines } from './accountFormatters'
+import { accountLockTag, accountLockTooltipLines, accountManualModeTag, accountManualModeTooltipText, accountStatusColor, accountStatusText, accountStatusTooltipLines } from './accountFormatters'
 import { accountStatusTooltipTraceId } from './accountStatusPresentation'
 
 const props = defineProps<{
   account: AccountListItem
 }>()
+
+// 手动模式「手动」标签（总开关设计 §9）：灰色 default；手动模式隐藏特供徽章。
+const manualModeTag = computed(() => accountManualModeTag(props.account))
+const manualModeTooltip = computed(() => accountManualModeTooltipText(props.account))
 
 const dispatchFlagActive = computed(() => props.account.effectiveAvailability?.available ?? (props.account.status === 'active' && props.account.schedulable))
 const superPriorityTooltip = computed(() => dispatchFlagActive.value

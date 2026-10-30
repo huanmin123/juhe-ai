@@ -50,9 +50,11 @@ type Runner struct {
 	inputFreshness inputFreshnessReader
 	// freshnessMu/freshnessWarnedAt 保护 input_freshness_unavailable 诊断的
 	// 每账户限频（发布方修复前该形态会逐轮复现，10 分钟窗口内不重复告警，
-	// 与 backlogWarnedAt 同款模式）。
+	// 与 backlogWarnedAt 同款模式）；disabledProbeWarnedAt 同锁承载开关守卫
+	// 拒绝（probe_skipped_disabled）的每账户限频。
 	freshnessMu       sync.Mutex
 	freshnessWarnedAt map[string]time.Time
+	disabledWarnedAt  map[string]time.Time
 
 	mu     sync.RWMutex
 	status RunnerStatus
@@ -544,7 +546,8 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 	// 但不得写回账户健康状态或失败计数（OutcomeStale 与无 due 的 task_failed
 	// 在 store 侧均为 audit-only，current_state 零写入）。
 	if verdict, current := r.checkInputFreshness(ctx, input); verdict != freshnessProceed {
-		if verdict == freshnessStale {
+		switch verdict {
+		case freshnessStale:
 			r.logger.Warn("显式探活请求输入的账户配置已变更，拒绝发起上游调用",
 				"event", inputStaleBeforeDispatchEvent,
 				"accountId", input.AccountID,
@@ -552,8 +555,14 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 				"currentConfigRevision", current,
 				"expedited", input.Eligibility.ExpeditedRecovery)
 			return r.persistExplicitTerminal(ctx, lease, request, OutcomeStale, now, "input_stale_before_dispatch", "request 对应的账户配置已变更，input 在派发前失效")
+		case freshnessDisabled:
+			// 显式请求臂同款账户限频诊断（复审 Minor）：关闭是配置事实而非
+			// 故障，终态结算不重试，逐请求打点只会形成日志噪音。
+			r.warnProbeSkippedDisabled(input)
+			return r.persistExplicitTerminal(ctx, lease, request, OutcomeStale, now, probeSkippedDisabledCode, "账户后台自动探测已关闭，跳过上游探针并按终态消费请求")
+		default:
+			return r.persistExplicitTerminal(ctx, lease, request, exactkeyprobe.OutcomeTaskFailed, now, "input_freshness_unavailable", "账户配置新鲜度判定不可用，按失败关闭拒绝上游调用")
 		}
-		return r.persistExplicitTerminal(ctx, lease, request, exactkeyprobe.OutcomeTaskFailed, now, "input_freshness_unavailable", "账户配置新鲜度判定不可用，按失败关闭拒绝上游调用")
 	}
 	initialState, initialFound, err := r.store.LoadCurrentState(ctx, input.AccountID)
 	if err != nil {
@@ -668,14 +677,22 @@ func sourceFenceHealthMutationAllowed(input exactkeyprobe.Input, prior CurrentSt
 	return prior.AccountStatus == "active" || prior.AccountStatus == "pending_test"
 }
 
-// inputFreshnessReader 是执行前新鲜度门（设计 §6.3）的最小业务读面：按账户
-// 主键单列重读业务库 accounts.config_revision。found=false 表示业务账户行
-// 不存在（软删或已消失）；读取错误原样上抛。两者都由调用方按失败关闭处理。
-type inputFreshnessReader interface {
-	LoadAccountConfigRevision(ctx context.Context, accountID string) (int64, bool, error)
+// accountFreshnessFacts 是执行前新鲜度门单行重读的冻结事实：当前
+// config_revision 与生效的后台自动探测开关（授权实例取来源账户值）。
+type accountFreshnessFacts struct {
+	ConfigRevision         int64
+	BackgroundProbeEnabled bool
 }
 
-// inputFreshnessVerdict 是新鲜度门的三态结论。
+// inputFreshnessReader 是执行前新鲜度门（设计 §6.3）的最小业务读面：按账户
+// 主键重读业务库 accounts.config_revision 与生效的 background_probe_enabled。
+// found=false 表示业务账户行不存在（软删或已消失）；读取错误原样上抛。两者
+// 都由调用方按失败关闭处理。
+type inputFreshnessReader interface {
+	LoadAccountConfigRevision(ctx context.Context, accountID string) (accountFreshnessFacts, bool, error)
+}
+
+// inputFreshnessVerdict 是新鲜度门的四态结论。
 type inputFreshnessVerdict int
 
 const (
@@ -683,6 +700,9 @@ const (
 	freshnessProceed inputFreshnessVerdict = iota
 	// freshnessStale：业务行 config_revision 与输入不一致，拒绝上游调用。
 	freshnessStale
+	// freshnessDisabled：生效的后台自动探测开关为 0，按 probe_skipped_disabled
+	// 拒绝上游调用（零健康事实、零失败计数、零退避重排）。
+	freshnessDisabled
 	// freshnessUnavailable：读取失败或账户不存在，按失败关闭拒绝上游调用。
 	freshnessUnavailable
 )
@@ -690,25 +710,33 @@ const (
 const (
 	inputStaleBeforeDispatchEvent  = "account_health_input_stale_before_dispatch"
 	inputFreshnessUnavailableEvent = "account_health_input_freshness_unavailable"
+	// probeSkippedDisabledEvent/Code 是开关守卫（设计 §3 派发前守卫）拒绝的
+	// 诊断事件与显式请求终态码：不发上游、不写健康事实、不推进状态。
+	probeSkippedDisabledEvent = "account_health_probe_skipped_disabled"
+	probeSkippedDisabledCode  = "probe_skipped_disabled"
 	// inputFreshnessDiagnosticWindow 与 backlogWarnedAt 告警窗口同款。
 	inputFreshnessDiagnosticWindow = 10 * time.Minute
 )
 
-// checkInputFreshness 在 ExecuteInputProbe 之前复核 accounts.config_revision。
-// 线性化点（设计 §6.3）：freshness SELECT 成功返回之后、构造上游请求之前；
-// 补丁在该点之前提交必须拒绝，在该点之后提交允许请求竞态（写回由既有
-// fence 拒绝，属现状行为）。门未装配（files 后备通道无业务读连接）时
-// 结构性跳过。
+// checkInputFreshness 在 ExecuteInputProbe 之前复核 accounts.config_revision
+// 与生效的后台自动探测开关。线性化点（设计 §6.3）：freshness SELECT 成功返回
+// 之后、构造上游请求之前；补丁在该点之前提交必须拒绝，在该点之后提交允许
+// 请求竞态（写回由既有 fence 拒绝，属现状行为）。门未装配（files 后备通道
+// 无业务读连接）时结构性跳过。
 func (r *Runner) checkInputFreshness(ctx context.Context, input exactkeyprobe.Input) (inputFreshnessVerdict, int64) {
 	if r.inputFreshness == nil {
 		return freshnessProceed, 0
 	}
-	revision, found, err := r.inputFreshness.LoadAccountConfigRevision(ctx, input.AccountID)
+	facts, found, err := r.inputFreshness.LoadAccountConfigRevision(ctx, input.AccountID)
 	if err == nil && found {
-		if revision == input.ConfigRevision {
-			return freshnessProceed, revision
+		// 开关优先于 revision 判定：手动模式账户无论 input 新旧都不发上游。
+		if !facts.BackgroundProbeEnabled {
+			return freshnessDisabled, facts.ConfigRevision
 		}
-		return freshnessStale, revision
+		if facts.ConfigRevision == input.ConfigRevision {
+			return freshnessProceed, facts.ConfigRevision
+		}
+		return freshnessStale, facts.ConfigRevision
 	}
 	// 失败关闭：DB 读错或账户不存在一律视为不新鲜，不发出上游请求。
 	reason := "业务账户行不存在"
@@ -743,6 +771,44 @@ func (r *Runner) warnInputFreshnessUnavailable(input exactkeyprobe.Input, reason
 		"expedited", input.Eligibility.ExpeditedRecovery)
 }
 
+// warnProbeSkippedDisabled 记录后台自动探测开关守卫的拒绝诊断并按账户限频
+// （对齐 input_freshness_unavailable 的 10 分钟窗口）：关闭是配置事实而非
+// 故障，逐轮打点只会形成日志噪音。
+func (r *Runner) warnProbeSkippedDisabled(input exactkeyprobe.Input) {
+	r.warnProbeSkippedDisabledAccount(input.AccountID, input.Eligibility.ExpeditedRecovery,
+		"账户后台自动探测已关闭，拒绝本次探针派发")
+}
+
+// warnProbeSkippedDisabledAccount 是调度臂与 outbox 消费臂共用的账户级限频
+// 诊断（同用 disabledWarnedAt 映射与 10 分钟窗口；复审 Minor 对齐）。expedited
+// 未知（outbox 行未携带）时省略该属性，不虚构事实；message 与 extra 由调用
+// 臂给定（两臂的诊断语义不同）。
+func (r *Runner) warnProbeSkippedDisabledAccount(accountID string, expedited bool, message string, extra ...any) {
+	now := time.Now().UTC()
+	if r.cfg.Now != nil {
+		now = r.cfg.Now().UTC()
+	}
+	r.freshnessMu.Lock()
+	if r.disabledWarnedAt == nil {
+		r.disabledWarnedAt = make(map[string]time.Time)
+	}
+	if last, ok := r.disabledWarnedAt[accountID]; ok && now.Sub(last) < inputFreshnessDiagnosticWindow {
+		r.freshnessMu.Unlock()
+		return
+	}
+	r.disabledWarnedAt[accountID] = now
+	r.freshnessMu.Unlock()
+	attrs := []any{
+		"event", probeSkippedDisabledEvent,
+		"accountId", accountID,
+	}
+	if expedited {
+		attrs = append(attrs, "expedited", true)
+	}
+	attrs = append(attrs, extra...)
+	r.logger.Warn(message, attrs...)
+}
+
 func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, input exactkeyprobe.Input, now time.Time) (scheduledDBTask, error) {
 	var task scheduledDBTask
 	// A signed revoke/disable snapshot deliberately carries no credential or
@@ -756,15 +822,19 @@ func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, in
 	}
 	// 执行前新鲜度门（设计 §6.3）：拒绝时不写回 account_health_current_state、
 	// 不改失败计数、不推进退避；当前输入结束，下一轮 reader 重新装配。该结论
-	// 是已处理的 skip，不得作为错误阻断本轮其余账户。
+	// 是已处理的 skip，不得作为错误阻断本轮其余账户。开关关闭（候选 SQL 已
+	// 过滤，此处是翻转竞态兜底）按账户限频记 Warn 后静默跳过。
 	if verdict, current := r.checkInputFreshness(ctx, input); verdict != freshnessProceed {
-		if verdict == freshnessStale {
+		switch verdict {
+		case freshnessStale:
 			r.logger.Warn("定时探针输入的账户配置已变更，拒绝发起上游调用",
 				"event", inputStaleBeforeDispatchEvent,
 				"accountId", input.AccountID,
 				"inputConfigRevision", input.ConfigRevision,
 				"currentConfigRevision", current,
 				"expedited", input.Eligibility.ExpeditedRecovery)
+		case freshnessDisabled:
+			r.warnProbeSkippedDisabled(input)
 		}
 		return task, nil
 	}

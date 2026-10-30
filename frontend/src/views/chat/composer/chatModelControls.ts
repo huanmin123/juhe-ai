@@ -31,6 +31,14 @@ export function reasoningEffortLabel(value: ChatReasoningEffort): string {
   return ({ minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高' })[value]
 }
 
+/** 工具模型绑定弹窗的函数调用能力判定（「协议 × 工具」能力声明契约）：任一协议的
+ * 工具数组声明 function_calling 即视为支持；能力未加载/未选模型传 undefined，
+ * 返回 undefined（弹窗不渲染警示，避免误报）；已加载且无任一协议声明才返回 false。 */
+export function chatModelSupportsTools(model?: ChatModelCapabilities): boolean | undefined {
+  if (!model) return undefined
+  return Object.values(model.supportedToolsByProtocol).some((tools) => tools.includes('function_calling'))
+}
+
 export function normalizeChatGenerationParameters(input: {
   model?: ChatModelCapabilities
   values: ChatGenerationParameters

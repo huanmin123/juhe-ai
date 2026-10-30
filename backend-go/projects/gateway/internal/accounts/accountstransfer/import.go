@@ -361,6 +361,10 @@ type NormalizedImportAccount struct {
 	connections                     []accountscore.ConnectionInput
 	healthCheckConnectionPresetCode string
 
+	// backgroundProbeEnabled 是导入包的后台自动探测总开关（总开关设计 §8）：
+	// nil = 未提交（缺省开启，行为零变化）；显式关闭落手动模式导入语义。
+	backgroundProbeEnabled *bool
+
 	// Messages aliases the plan item's message list (Node aliases
 	// item.messages into the normalized source).
 	Messages *[]string
@@ -1073,7 +1077,8 @@ var importAccountKeys = map[string]bool{
 	"proxyRef": true, "proxyProfileId": true, "concurrencyLimit": true, "priority": true,
 	"superPriorityEnabled": true, "fallbackEnabled": true, "supportedModels": true,
 	"healthCheckModel": true, "healthCheckEndpointMode": true,
-	"temporaryUnavailableContinuousProbeEnabled": true, "modelMappings": true, "tags": true,
+	"temporaryUnavailableContinuousProbeEnabled": true, "backgroundProbeEnabled": true,
+	"modelMappings": true, "tags": true,
 	"accountExpiresAt": true, "availabilitySchedule": true, "notes": true,
 	// B1 断点批（设计 §8 wire schema）：连接集合与健康检查三件套的连接维度入参。
 	"connections": true, "healthCheckConnectionPresetCode": true,
@@ -1119,6 +1124,12 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 		} else {
 			source.Push("账户状态不支持：" + rawStatus)
 		}
+	} else if source.backgroundProbeEnabled != nil && !*source.backgroundProbeEnabled {
+		// 手动模式导入缺省状态（总开关设计 §8，2026-10-30 决策）：默认停用
+		// 保留「凭据未验证」安全门，预览消息提示手动启用；普通导入仍要求
+		// 显式 status（行为零变化）。
+		source.status = "disabled"
+		source.Push("后台自动探测已关闭：账户将导入为停用，凭据验证后请手动启用")
 	} else {
 		source.Push("账户 status 不能为空")
 	}
@@ -1136,6 +1147,10 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	// Parsed for validation parity only; the column default owns the effective
 	// value in this slice.
 	ImportOptionalBooleanField(record, "temporaryUnavailableContinuousProbeEnabled", "账户 temporaryUnavailableContinuousProbeEnabled", messages)
+	// 后台自动探测总开关（总开关设计 §8 导入语义）：显式关闭落手动模式——
+	// 缺省状态改停用（保留「凭据未验证」安全门，预览消息提示手动启用），显式
+	// 状态仅允许 active / error / disabled，不产生 pending_test。
+	source.backgroundProbeEnabled = ImportOptionalBooleanField(record, "backgroundProbeEnabled", "账户 backgroundProbeEnabled", messages)
 	source.modelMappings = ImportModelMappingsField(record, "modelMappings", "账户 modelMappings", messages)
 	// B1 断点批（设计 §8）：connections 元素契约与管理面同款（共享
 	// accountscore.ParseConnectionInput）；健康检查三件套缺失的显式失败在
@@ -1404,6 +1419,11 @@ func validateImportProviderAndBasics(source *NormalizedImportAccount, providers 
 	}
 	if source.status != "active" && source.status != "pending_test" && source.status != "disabled" {
 		source.Push("账户状态仅支持 active、pending_test 或 disabled")
+	}
+	// 手动模式导入不产生 pending_test（总开关设计 §8 二态健康状态）：显式
+	// 关闭与显式 pending_test 的组合按 per-account message 失败。
+	if source.backgroundProbeEnabled != nil && !*source.backgroundProbeEnabled && source.status == "pending_test" {
+		source.Push("手动模式账户状态仅支持 active 或 disabled")
 	}
 	if source.concurrencyLimit != 0 && source.concurrencyLimit < 1 {
 		source.Push("concurrencyLimit 必须大于 0")
@@ -2023,12 +2043,28 @@ func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID 
 	// M2 导入严格校验：包内推导域随创建负载落列，执行链经 Store.Create 对
 	// ⊆ allowed 重验（不信任预览结果）。
 	input.CapabilityDomain = source.capabilityDomain
-	status := source.status
-	if status == "active" {
-		status = "pending_test"
+	if source.backgroundProbeEnabled != nil && !*source.backgroundProbeEnabled {
+		// 手动模式导入（总开关设计 §8）：开关随负载落列；状态不 remap——
+		// active 保持 active（显式提交即账户所有者选择，凭据安全门已由缺省
+		// 停用承载），pending_test 已在计划层拒绝，error 兼容程序化适配器，
+		// 其余落停用。
+		input.BackgroundProbeEnabled = source.backgroundProbeEnabled
+		switch source.status {
+		case "active":
+			input.Status = accountscore.CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true}
+		case "error":
+			input.Status = accountscore.CreationStatus{Status: "error", Schedulable: false}
+		default:
+			input.Status = accountscore.CreationStatus{Status: "disabled", Schedulable: false}
+		}
+	} else {
+		status := source.status
+		if status == "active" {
+			status = "pending_test"
+		}
+		input.Status = accountscore.AccountCreationStatusInput(status)
+		input.PreservePendingTest = input.Status.Status == "pending_test"
 	}
-	input.Status = accountscore.AccountCreationStatusInput(status)
-	input.PreservePendingTest = input.Status.Status == "pending_test"
 	if source.concurrencyLimit > 0 {
 		limit := source.concurrencyLimit
 		input.ConcurrencyLimit = &limit

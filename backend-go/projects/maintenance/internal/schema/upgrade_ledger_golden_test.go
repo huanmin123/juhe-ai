@@ -62,10 +62,12 @@ func TestPostgresDestructiveStatementCountGolden(t *testing.T) {
 	if total <= 0 {
 		t.Fatalf("全量 DDL 语句总数异常: %d", total)
 	}
-	// 当前 schema 无破坏性语句（B08 于 2026-10-30 撤除原 12 条 DROP COLUMN：
-	// juhe_business 9 条 + juhe_codex_context 3 条）；如为有意新增破坏性语句，
-	// 更新本 golden 并递增 contracts.SchemaRevision。
-	if destructive != 0 {
-		t.Fatalf("破坏性语句数 = %d, want 0——当前 schema 无破坏性语句（B08 于 2026-10-30 撤除 12 条 DROP COLUMN）；如为有意新增破坏性语句，更新本 golden 并递增 contracts.SchemaRevision", destructive)
+	// 2026-10-30 B08 撤除原 12 条 DROP COLUMN（juhe_business 9 条 +
+	// juhe_codex_context 3 条）后破坏相一度清零；2026-10-30 B09 退役
+	// authorization_*_usage_range_windows 两表，当前为 2 条 DROP TABLE
+	//（B09 授权范围窗口退役）；如为有意新增破坏性语句，更新本 golden 并
+	// 递增 contracts.SchemaRevision。
+	if destructive != 2 {
+		t.Fatalf("破坏性语句数 = %d, want 2——当前 schema 为 2 条 DROP TABLE（B09 授权范围窗口退役）；如为有意新增破坏性语句，更新本 golden 并递增 contracts.SchemaRevision", destructive)
 	}
 }

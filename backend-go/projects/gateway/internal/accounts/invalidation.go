@@ -57,7 +57,8 @@ var accountPatchGatewayRuntimeFields = map[string]bool{
 	"availabilitySchedule":    true,
 	"accountExpiresAt":        true,
 	"temporaryUnavailableContinuousProbeEnabled": true,
-	"runtimeState": true,
+	"backgroundProbeEnabled":                     true,
+	"runtimeState":                               true,
 	// credentialsChanged (line 898) and the clearFailureState outcome
 	// (gatewayRuntimeAffected: true at line 1215).
 	"credentials":       true,
@@ -107,8 +108,9 @@ func (s *Store) finishPatchSideEffects(ctx context.Context, result *PatchResult)
 	// groupChanged || dispatchBindingChanged 臂）：提交后按账户 id 落分组统计
 	// 脏标记（refreshGroupAccountStatsAfterWriteAsync 的 accountIds 臂）。统计
 	// 通道独立于 CacheInvalidator（同批量路径 FinishBatchUpdateSideEffects），
-	// 先于 invalidator 判空执行。
-	if result.GroupChanged || result.DispatchBindingChanged {
+	// 先于 invalidator 判空执行。后台自动探测关闭臂的状态/schedulable 归一化
+	// 改变分组调度构成，同批落脏标（总开关设计 §4 分组统计脏标）。
+	if result.GroupChanged || result.DispatchBindingChanged || result.BackgroundProbeEvent == "disabled" {
 		if err := s.markBatchGroupStatsDirty(ctx, []string{result.ID}, accountPatchRuntimeInvalidationReason); err != nil {
 			slog.Warn("账户编辑已提交，但分组账户统计脏标记失败",
 				"event", "account_management_patch_stats_refresh_failed",

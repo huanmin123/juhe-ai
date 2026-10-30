@@ -133,6 +133,7 @@
     </a-modal>
     <ChatToolBindingDialog
       :open="toolBindingDialogOpen"
+      :model-supports-tools="toolBindingDialogModelSupportsTools"
       @close="toolBindingDialogOpen = false"
       @saved="handleToolBindingSaved"
     />
@@ -176,7 +177,7 @@ import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
 import ChatToolBindingDialog from './ChatToolBindingDialog.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
-import { defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls } from './composer/chatModelControls'
+import { chatModelSupportsTools, defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls } from './composer/chatModelControls'
 import type { JSONContent } from '@tiptap/core'
 import { clampChatFloatingMenuPosition, resolveChatVisualViewportBounds } from './chatViewport'
 import { chatGenerationRuntime, type RunningTurn } from './chatGenerationRuntime'
@@ -353,6 +354,9 @@ const accountUnbound = computed(() => Boolean(selectedConversation.value && !sel
 const turnLimitReached = computed(() => Boolean(selectedConversation.value && isChatTurnLimitReached(selectedConversation.value.userTurnCount, selectedConversation.value.userTurnLimit)))
 const turnLimitMessage = computed(() => chatTurnLimitMessage(selectedConversation.value?.userTurnLimit ?? 0))
 const selectedModelOption = computed(() => selectedModelCapabilities.value?.id === selectedModel.value ? selectedModelCapabilities.value : undefined)
+// 工具模型绑定弹窗的函数调用能力声明：由已加载的当前模型能力矩阵计算；能力未
+// 加载/未选模型时为 undefined，弹窗不渲染工具失效警示（见 chatModelSupportsTools）。
+const toolBindingDialogModelSupportsTools = computed(() => chatModelSupportsTools(selectedModelOption.value))
 const editableUserMessageId = computed(() => {
   const candidate = messages.value[messages.value.length - 2]
   return candidate && beginLatestTurnEdit(messages.value, candidate.id)?.userMessageId

@@ -61,6 +61,10 @@ func runCheckConfigCommand(argv []string) int {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
+			// shell env 文件惯用的 `export KEY=V` 前缀必须剥掉后参与匹配，
+			// 否则该行被静默当成非 KEY=VALUE 形态（必填误报缺失、未知变量
+			// 逃过清点，构成检查假通过面）。
+			line = strings.TrimPrefix(line, "export ")
 			eq := strings.IndexByte(line, '=')
 			if eq <= 0 {
 				fmt.Fprintf(os.Stderr, "--env-file 第 %d 行不是 KEY=VALUE 形态: %q\n", lineNo, line)
@@ -68,7 +72,19 @@ func runCheckConfigCommand(argv []string) int {
 			}
 			key := strings.TrimSpace(line[:eq])
 			value := strings.TrimSpace(line[eq+1:])
-			values[key] = strings.Trim(value, `"'`)
+			// 引号值取首个成对引号内文；非引号值剥「 #」行内注释——否则
+			// 注释尾巴留在值里，Kind 校验与 shell source 后的实值不一致。
+			if len(value) > 0 && (value[0] == '"' || value[0] == '\'') {
+				quote := value[0]
+				if end := strings.IndexByte(value[1:], quote); end >= 0 {
+					value = value[1 : 1+end]
+				} else {
+					value = strings.Trim(value, string(quote))
+				}
+			} else if idx := strings.Index(value, " #"); idx >= 0 {
+				value = strings.TrimSpace(value[:idx])
+			}
+			values[key] = value
 		}
 		if err := scanner.Err(); err != nil {
 			fmt.Fprintf(os.Stderr, "读取 --env-file 失败: %v\n", err)
@@ -121,8 +137,7 @@ func runCheckConfigCommand(argv []string) int {
 		if entry.Sensitive && display != "" {
 			display = "<redacted>"
 		}
-		fmt.Printf("%-60s source=%-7s valid=%-5v %s\n", name, source, valid, message)
-		_ = display
+		fmt.Printf("%-60s source=%-7s valid=%-5v value=%s %s\n", name, source, valid, display, message)
 	}
 	if len(unknown) > 0 {
 		failed = true

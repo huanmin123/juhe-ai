@@ -204,6 +204,19 @@ assert.match(customFormModalSource, /label="思考能力"[\s\S]*:mode="customMod
 assert.match(customFormModalSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
 assert.doesNotMatch(customFormModalSource, /:disabled="editingBuiltInModel"/, '管理员编辑内置模型时状态、用途、协议、服务等级、思考和 token 上限不能被锁死')
 assert.doesNotMatch(customFormModalSource, /编辑模型价格/, '内置模型编辑已不是仅价格编辑')
+// 能力声明编辑区（custom 目录行写契约）：模态下拉与逐协议工具矩阵接线。
+// 注：下方「工具矩阵不得渲染」禁令只针对 plazaViewSource（抽屉不渲染内部机制
+// 数据）；CustomModelFormModal 是编辑入口，属该契约的合法编辑面。
+assert.match(formatterSource, /export const modelToolOptions/, '工具 token 词表选项必须从 modelToolLabels 单一来源导出')
+assert.match(formatterSource, /export const modelModalityOptions/, '模态词表选项必须单一来源导出')
+assert.match(formatterSource, /export function modelModalityLabel/, '模态中文标签必须提供单一来源导出')
+assert.match(customFormModalSource, /<template v-if="!editingBuiltInModel">[\s\S]{0,400}label="输入模态"/, '能力声明编辑区必须仅 custom 路径显示且紧随接口协议')
+assert.match(customFormModalSource, /label="输出模态"/, '输出模态编辑必须保留')
+assert.match(customFormModalSource, /:options="modelModalityOptions"/, '模态下拉必须复用词表选项单一来源')
+assert.match(customFormModalSource, /v-model:value="customModelForm\.supportedToolsByProtocol\[protocol\]"/, '工具矩阵必须逐协议接线到表单矩阵')
+assert.match(customFormModalSource, /:options="modelToolOptions"/, '工具矩阵选项必须复用工具词表单一来源')
+assert.match(customFormModalSource, /watch\(\(\) => \[\.\.\.customModelForm\.supportedApiProtocols\]/, '协议变化必须触发矩阵越界键清理')
+assert.match(customFormModalSource, /supportedToolsByProtocol: _supportedToolsByProtocol/, '内置模型编辑载荷必须剥离能力声明三键（契约仅 custom 行可写）')
 assert.match(plazaViewSource, /repeat\(auto-fill, minmax\(280px, 1fr\)\)/, '模型目录必须使用 auto-fill 卡片网格承载模型列表')
 assert.match(plazaViewSource, /modelPriceSlots\(/, '模型目录卡片必须按候选序列接线价格槽位')
 // 抽屉「计费价格」一张表 + 「基础信息」网格（§6.2/§6.3，对齐 portal 形态）：

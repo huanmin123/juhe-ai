@@ -17,6 +17,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
@@ -46,19 +47,26 @@ var providerModelValidationFields = map[string]bool{
 	"imageInputUsdPer1M": true, "imageOutputUsdPer1M": true,
 	"audioInputUsdPer1M": true, "audioOutputUsdPer1M": true,
 	"outputUsdPerImage": true,
+	// T82 显式能力声明三键：提交任一即触发能力校验（矩阵键 ⊆ 生效协议集）。
+	"supportedToolsByProtocol": true, "inputModalities": true, "outputModalities": true,
 }
 
 // customModelParseOptions selects the schema variant: POST (full object),
 // custom PATCH (no model/scope/template, expectedUpdatedAt required) and
 // built-in PATCH (no notes trio, catalogVisible, active|disabled status).
 type customModelParseOptions struct {
-	requireModel             bool
-	allowTemplateID          bool
-	allowScope               bool
-	allowNotes               bool
-	allowCatalogVisible      bool
-	requireExpectedUpdatedAt bool
-	statusValues             []string
+	requireModel        bool
+	allowTemplateID     bool
+	allowScope          bool
+	allowNotes          bool
+	allowCatalogVisible bool
+	// allowCapabilityDeclarations 放行 T82 显式能力声明三键
+	//（supportedToolsByProtocol / inputModalities / outputModalities）：仅
+	// custom POST/PATCH 开启；built_in PATCH fork 不感知，新键走既有 default
+	// fail（fork 必须继续拒绝这些键）。
+	allowCapabilityDeclarations bool
+	requireExpectedUpdatedAt    bool
+	statusValues                []string
 }
 
 // customModelParsedInput is the parsed request body: the typed values for
@@ -233,6 +241,61 @@ func parseCustomModelBody(body map[string]json.RawMessage, options customModelPa
 		}
 		return output, true
 	}
+	// capabilityMatrix 解析 T82 supportedToolsByProtocol：必须是 JSON object
+	//（null 拒绝）；键为匹配 customModelCapabilityTokenPattern 的非空协议
+	// token；值为字符串数组，每个 token 匹配 pattern 且 ∈ providerModelToolTokens
+	// 固定词表；空 object 合法（=未声明/清空）。
+	capabilityMatrix := func(raw json.RawMessage) (map[string][]string, bool) {
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return nil, false
+		}
+		object, ok := decoded.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		output := make(map[string][]string, len(object))
+		for rawProtocol, rawValue := range object {
+			if !customModelCapabilityTokenPattern.MatchString(rawProtocol) {
+				return nil, false
+			}
+			items, ok := rawValue.([]any)
+			if !ok {
+				return nil, false
+			}
+			tokens := make([]string, 0, len(items))
+			for _, item := range items {
+				text, ok := item.(string)
+				if !ok || !customModelCapabilityTokenPattern.MatchString(text) || !providerModelToolTokens[text] {
+					return nil, false
+				}
+				tokens = append(tokens, text)
+			}
+			output[rawProtocol] = tokens
+		}
+		return output, true
+	}
+	// modalityArray 解析 T82 input/outputModalities：字符串数组，token ∈
+	// providerModelModalityTokens 固定词表；空数组合法；null 拒绝。
+	modalityArray := func(raw json.RawMessage) ([]string, bool) {
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return nil, false
+		}
+		items, ok := decoded.([]any)
+		if !ok {
+			return nil, false
+		}
+		output := make([]string, 0, len(items))
+		for _, item := range items {
+			text, ok := item.(string)
+			if !ok || !providerModelModalityTokens[text] {
+				return nil, false
+			}
+			output = append(output, text)
+		}
+		return output, true
+	}
 
 	for _, key := range jsonOrderedKeys(body) {
 		raw := body[key]
@@ -312,6 +375,36 @@ func parseCustomModelBody(body map[string]json.RawMessage, options customModelPa
 			}
 			parsed.present[key] = true
 			parsed.values.SupportedReasoningEfforts = value
+		case "supportedToolsByProtocol":
+			if !options.allowCapabilityDeclarations {
+				return fail()
+			}
+			value, ok := capabilityMatrix(raw)
+			if !ok {
+				return fail()
+			}
+			parsed.present[key] = true
+			parsed.values.SupportedToolsByProtocol = value
+		case "inputModalities":
+			if !options.allowCapabilityDeclarations {
+				return fail()
+			}
+			value, ok := modalityArray(raw)
+			if !ok {
+				return fail()
+			}
+			parsed.present[key] = true
+			parsed.values.InputModalities = value
+		case "outputModalities":
+			if !options.allowCapabilityDeclarations {
+				return fail()
+			}
+			value, ok := modalityArray(raw)
+			if !ok {
+				return fail()
+			}
+			parsed.present[key] = true
+			parsed.values.OutputModalities = value
 		case "defaultReasoningEffort":
 			value, ok := nullableTrimmedString(raw)
 			if !ok {
@@ -596,7 +689,8 @@ func (d *Deps) createModel(w http.ResponseWriter, r *http.Request) {
 	}
 	parsed, ok := parseCustomModelBody(body, customModelParseOptions{
 		requireModel: true, allowTemplateID: true, allowScope: true, allowNotes: true,
-		statusValues: []string{"draft", "active", "disabled"},
+		allowCapabilityDeclarations: true,
+		statusValues:                []string{"draft", "active", "disabled"},
 	})
 	if !ok || parsed.model == "" {
 		kernel.WriteBadRequest(w, "自定义模型参数无效")
@@ -684,6 +778,12 @@ func applyParsedCustomModelFields(target *customProviderModelUpsertInput, parsed
 			target.SupportedServiceTiers = parsed.values.SupportedServiceTiers
 		case "supportedReasoningEfforts":
 			target.SupportedReasoningEfforts = parsed.values.SupportedReasoningEfforts
+		case "supportedToolsByProtocol":
+			target.SupportedToolsByProtocol = parsed.values.SupportedToolsByProtocol
+		case "inputModalities":
+			target.InputModalities = parsed.values.InputModalities
+		case "outputModalities":
+			target.OutputModalities = parsed.values.OutputModalities
 		case "defaultReasoningEffort":
 			target.DefaultReasoningEffort = parsed.values.DefaultReasoningEffort
 		case "releaseDate":
@@ -816,6 +916,18 @@ func validateCustomModelCapabilities(providerCode string, input customProviderMo
 	isTextModel := input.Mode == nil || *input.Mode == "text"
 	if message := validateServiceTierPriceKeys(input.Mode, serviceTiers, input.ServiceTierPrices); message != "" {
 		return message
+	}
+	// T82 显式工具能力矩阵：键必须是该 input 的生效 supportedApiProtocols
+	//（payload 协议集归一化后）的子集；工具/模态 token 已在解析层按固定词表
+	// 拒绝，此处不重复。错误文案沿「自定义模型参数无效」面。
+	protocolSet := map[string]bool{}
+	for _, protocol := range normalizeCustomProtocols(input.SupportedAPIProtocols) {
+		protocolSet[protocol] = true
+	}
+	for protocol := range input.SupportedToolsByProtocol {
+		if !protocolSet[protocol] {
+			return "自定义模型参数无效"
+		}
 	}
 	if !isTextModel && (len(serviceTiers) > 0 || len(reasoningEfforts) > 0 || defaultReasoningEffort != "") {
 		return "只有文本自定义模型支持服务等级和思考能力配置"
@@ -1052,8 +1164,10 @@ func customCatalogItemFromRecord(record *customProviderModelRecord) ModelCatalog
 		ReleaseDate:           record.ReleaseDate,
 		ShutdownDate:          record.ShutdownDate,
 		SupportedAPIProtocols: copyStringSlice(record.SupportedAPIProtocols),
-		InputModalities:       []string{},
-		OutputModalities:      []string{},
+		// T82 显式能力声明随 record 读侧 lenient 解析值透传（不再硬编码空值）。
+		InputModalities:          copyStringSlice(record.InputModalities),
+		OutputModalities:         copyStringSlice(record.OutputModalities),
+		SupportedToolsByProtocol: pricing.CopyToolsByProtocol(record.SupportedToolsByProtocol),
 		GenerationParameterCapabilities: generationParameterCapabilitiesToAny(
 			generationParameterCapabilitiesForModel(record.ProviderCode, record.Model, record.MaxOutputTokens)),
 		InputUsdPer1M:                 record.InputUsdPer1M,

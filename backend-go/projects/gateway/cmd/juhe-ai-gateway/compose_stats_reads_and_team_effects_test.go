@@ -107,8 +107,8 @@ func usageWindowDateKeys() (string, string) {
 // so a seeded authorization_team_usage_summary_daily row in the stats file
 // renders through GET /authorizations/usage/team-details. A missing injection
 // would fall back to the business handle where the stats table does not exist
-// (500). 种子表随授权消耗明细读端改为日摘要直读同步更新（原
-// authorization_team_usage_range_windows 已退役，无读者）。
+// (500). 授权消耗明细读端直读日摘要聚合（authorization_*_usage_range_windows
+// 已退役，B09）。
 func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 	fixture := newComposeStatsWiringFixture(t)
 	composed := fixture.composed

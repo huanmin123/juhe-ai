@@ -258,7 +258,9 @@ func w1qNewResetFixture(t *testing.T) *w1qResetFixture {
 	if err != nil {
 		t.Fatalf("构造 reset bridge: %v", err)
 	}
-	concrete := bridge.(*accountsRuntimeResetBridge)
+	// newAccountsRuntimeResetBridge 直接返回具体桥类型（同时满足
+	// RuntimeResetEffects 与 BackgroundProbeRuntimeCleanup 两个端口）。
+	concrete := bridge
 	concrete.now = func() time.Time { return now }
 	return &w1qResetFixture{db: db, bus: bus, bridge: concrete, now: now}
 }

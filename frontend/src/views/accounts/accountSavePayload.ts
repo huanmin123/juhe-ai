@@ -1,5 +1,5 @@
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
-import { capabilityDomainIsMedia } from './accountCapabilityDomains'
+import { capabilityDomainIsMedia, capabilityDomainWithoutBackgroundProbe } from './accountCapabilityDomains'
 import type {
   AccountEditBasicDetail,
   AccountListItem,
@@ -79,6 +79,11 @@ export type AccountSavePayload = {
   healthCheckModel?: string
   healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   temporaryUnavailableContinuousProbeEnabled: boolean
+  /**
+   * 后台自动探测总开关（总开关设计 §2）：仅在创建或值变化时由 PATCH delta 携带；
+   * 媒体域（audio/video/image）不适用，载荷不携带该键。
+   */
+  backgroundProbeEnabled?: boolean
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string | null
@@ -118,6 +123,8 @@ export type AccountOAuthCreateCommonPayload = {
   healthCheckModel?: string
   healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   temporaryUnavailableContinuousProbeEnabled: boolean
+  /** 后台自动探测总开关（总开关设计 §2/§2 媒体域豁免）：媒体域创建不携带该键。 */
+  backgroundProbeEnabled?: boolean
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string
@@ -170,6 +177,18 @@ export function validateAccountSaveForm(input: {
   if (!form.providerCode) return '请先选择供应商'
   if (!form.providerProtocolProfileId) return '当前供应商配置不完整，请刷新后重试'
   if (!form.type) return '请先选择账户类型'
+  // 手动模式二态状态门禁（总开关设计 §4）：后台探测关闭的对话域账户不允许提交
+  // 待检查等过程态。仅拦截显式选择：temporary_unavailable/rate_limited/quality_isolated
+  // 不在表单状态模型内（装载时归并 pending_test），异常账户未显式改状态时 PATCH
+  // 不携带 status，必须放行；新建表单切手动模式由表单预选可调度兜底。
+  if (
+    !capabilityDomainWithoutBackgroundProbe(form.capabilityDomain)
+    && form.backgroundProbeEnabled === false
+    && form.statusSelectionExplicit
+    && form.status === 'pending_test'
+  ) {
+    return '手动模式不适用待检查状态：请选择可调度或停用'
+  }
   if ((editingId || form.type === 'api_key') && !form.name.trim()) return '请填写账户名称'
   if (!form.groupId) return '请选择加入分组'
   const apiKeyCount = normalizedAccountApiKeys(form).length
@@ -346,6 +365,11 @@ export function buildAccountSavePayload(input: {
     ...(input.form.healthCheckModel.trim() ? { healthCheckModel: input.form.healthCheckModel.trim() } : {}),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
+    // 后台自动探测总开关（总开关设计 §2）：创建携带；audio/video 媒体域不适用
+    // 不携带该键（image 域适用，二轮复审裁决——图像账户存在后台探测）。
+    ...(capabilityDomainWithoutBackgroundProbe(input.form.capabilityDomain)
+      ? {}
+      : { backgroundProbeEnabled: input.form.backgroundProbeEnabled }),
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
@@ -376,6 +400,11 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, statusSel
       : {}),
     healthCheckEndpointMode: payload.healthCheckEndpointMode,
     temporaryUnavailableContinuousProbeEnabled: payload.temporaryUnavailableContinuousProbeEnabled,
+    // 总开关仅在值变化时进入 PATCH delta（accountEditPatch 按基线差量）；媒体域载荷
+    // 不携带该键（buildAccountSavePayload 已排除），这里按缺省透传。
+    ...(payload.backgroundProbeEnabled !== undefined
+      ? { backgroundProbeEnabled: payload.backgroundProbeEnabled }
+      : {}),
     modelMappings: payload.modelMappings,
     tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,
@@ -415,6 +444,12 @@ export function buildOAuthCreateCommonPayload(input: {
     ...(input.form.healthCheckModel.trim() ? { healthCheckModel: input.form.healthCheckModel.trim() } : {}),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
+    // 后台自动探测总开关（总开关设计 §2）：OAuth 创建同样携带；audio/video 媒体
+    // 域（gemini 媒体 google_oauth 走此通道）不适用，不携带该键（image 域适用，
+    // 二轮复审裁决）。
+    ...(capabilityDomainWithoutBackgroundProbe(input.form.capabilityDomain)
+      ? {}
+      : { backgroundProbeEnabled: input.form.backgroundProbeEnabled }),
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,

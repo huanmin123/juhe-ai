@@ -79,7 +79,6 @@ var dualProbeTables = []string{
 	"juhe_business.provider_protocol_profiles",
 	"juhe_stats.authorization_team_usage_summary_daily",
 	"juhe_stats.authorization_user_usage_summary_daily",
-	"juhe_stats.authorization_team_usage_range_windows",
 	"juhe_stats.usage_scope_range_windows",
 	"juhe_stats.usage_quota_hourly_window_dirty_scopes",
 }
@@ -227,7 +226,6 @@ func (e *dualEnv) dualCleanupSteps() []struct {
 	}{
 		{e.stbl("authorization_team_usage_summary_daily"), `system_account_id LIKE ?`, likeP(1)},
 		{e.stbl("authorization_user_usage_summary_daily"), `system_account_id LIKE ? OR grantee_filter_system_account_id LIKE ?`, likeP(2)},
-		{e.stbl("authorization_team_usage_range_windows"), `system_account_id LIKE ?`, likeP(1)},
 		{e.stbl("usage_scope_range_windows"), `system_account_id LIKE ?`, likeP(1)},
 		{e.stbl("usage_quota_hourly_window_dirty_scopes"), `system_account_id LIKE ?`, likeP(1)},
 		// 绑定行：本 env 的 system_account/scope 前缀，加 source_id 关系子查询
@@ -290,9 +288,18 @@ func (e *dualEnv) dualCleanupSteps() []struct {
 	}
 	steps = append(steps[:insertAt], append(triggerSteps, steps[insertAt:]...)...)
 	steps = append(steps,
-		struct{ table, where string; args []any }{e.tbl("provider_protocol_profiles"), `id LIKE ?`, likeP(1)},
-		struct{ table, where string; args []any }{e.tbl("protocols"), `code LIKE ? OR id LIKE ?`, likeP(2)},
-		struct{ table, where string; args []any }{e.tbl("providers"), `code LIKE ? OR id LIKE ?`, likeP(2)},
+		struct {
+			table, where string
+			args         []any
+		}{e.tbl("provider_protocol_profiles"), `id LIKE ?`, likeP(1)},
+		struct {
+			table, where string
+			args         []any
+		}{e.tbl("protocols"), `code LIKE ? OR id LIKE ?`, likeP(2)},
+		struct {
+			table, where string
+			args         []any
+		}{e.tbl("providers"), `code LIKE ? OR id LIKE ?`, likeP(2)},
 	)
 	return steps
 }

@@ -611,6 +611,7 @@ type PatchFailureStateRow struct {
 	StreamFailureCount                   sql.NullInt64
 	StreamFailureWindowStartedAt         sql.NullString
 	AuthorizationInstanceAuthorizationID sql.NullString
+	BackgroundProbeEnabled               int
 }
 
 // PatchAccountFailureStateForReset mirrors
@@ -642,7 +643,8 @@ func (s *Service) PatchAccountFailureStateForReset(ctx context.Context, in Patch
 			accounts.cooldown_retest_failure_count, accounts.cooldown_retest_observation_started_at,
 			accounts.cooldown_retest_generation, accounts.cooldown_retest_last_at,
 			accounts.cooldown_retest_last_status_code, accounts.stream_failure_count,
-			accounts.stream_failure_window_started_at, accounts.authorization_instance_authorization_id
+			accounts.stream_failure_window_started_at, accounts.authorization_instance_authorization_id,
+			accounts.background_probe_enabled
 		FROM `+s.store.Table("accounts")+` accounts
 		WHERE accounts.id = ?
 			AND accounts.deleted_at IS NULL`+scopeClause+`
@@ -657,7 +659,8 @@ func (s *Service) PatchAccountFailureStateForReset(ctx context.Context, in Patch
 		&row.CooldownRetestFailureCount, &row.CooldownRetestObservationStartedAt,
 		&row.CooldownRetestGeneration, &row.CooldownRetestLastAt,
 		&row.cooldownRetestLastStatusCode, &row.StreamFailureCount,
-		&row.StreamFailureWindowStartedAt, &row.AuthorizationInstanceAuthorizationID)
+		&row.StreamFailureWindowStartedAt, &row.AuthorizationInstanceAuthorizationID,
+		&row.BackgroundProbeEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -690,6 +693,11 @@ func (s *Service) PatchAccountFailureStateForReset(ctx context.Context, in Patch
 	nextStatus := "active"
 	if expiredByPackage {
 		nextStatus = "disabled"
+	} else if row.BackgroundProbeEnabled == 0 {
+		// 手动模式异常恢复直达 active（总开关设计 §4）：不经过 pending_test、
+		// 不投递后台检查（HealthCheckRequired 由 nextStatus == pending_test
+		// 判定，此处恒 false），恢复后由真实流量验收。
+		nextStatus = "active"
 	} else if row.Status == "pending_test" || row.Status == "error" {
 		nextStatus = "pending_test"
 	}
@@ -775,6 +783,20 @@ func (s *Service) PatchAccountFailureStateForReset(ctx context.Context, in Patch
 		}
 		if row.LastHealthCheckTraceID.Valid {
 			sets["last_health_check_trace_id"] = nil
+		}
+	}
+	if row.BackgroundProbeEnabled == 0 && nextStatus == "active" {
+		// 手动模式恢复的列族卫生（总开关设计 §4）：清健康失败计数与排期；
+		// last_health_check_* / last_health_success_at 保留为「关闭前」历史
+		// 展示，不因人工恢复抹除。
+		if row.NextHealthCheckAt.Valid {
+			sets["next_health_check_at"] = nil
+		}
+		if row.HealthCheckFailureCount.Int64 != 0 {
+			sets["health_check_failure_count"] = 0
+		}
+		if row.HealthCheckFailureStartedAt.Valid {
+			sets["health_check_failure_started_at"] = nil
 		}
 	}
 	if len(sets) == 0 {

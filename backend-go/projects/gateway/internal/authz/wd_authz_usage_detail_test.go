@@ -161,10 +161,10 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 	}
 }
 
-// TestWdUsageDetailTeamDailyRangeAggregation 回归（窗口表冻结收尾）：团队总
-// 用量改从 authorization_team_usage_summary_daily 按日范围聚合——自定义非锚
-// 点区间（3 天窗）正确折叠逐日行；旧热窗口锚点区间的冻结行
-// （authorization_team_usage_range_windows，jobs 已停刷）不再被读取。
+// TestWdUsageDetailTeamDailyRangeAggregation 回归（B09 窗口表退役收尾）：团队总
+// 用量从 authorization_team_usage_summary_daily 按日范围聚合——自定义非锚
+// 点区间（3 天窗）正确折叠逐日行；旧热窗口锚点区间同样只走日摘要聚合，
+// authorization_*_usage_range_windows 已退役（B09），读取链不存在冻结行可命中。
 func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	f := newUsageFixture(t)
 	f.seedAccount(t, "owner", "active")
@@ -182,14 +182,6 @@ func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	insertTeamDailyRow(t, f, "owner", "2026-09-02", "team_w", "group", "grp_w", 2, 20, 10, 0.25, "2026-09-02T01:00:00.000Z")
 	insertTeamDailyRow(t, f, "owner", "2026-09-04", "team_w", "group", "grp_w", 3, 30, 15, 0.5, "2026-09-04T05:00:00.000Z")
 	insertTeamDailyRow(t, f, "owner", "2026-09-05", "team_w", "group", "grp_w", 99, 990, 495, 9.0, "2026-09-05T05:00:00.000Z")
-	// 冻结的旧锚点窗口行：值与日摘要聚合不同，若命中说明仍在读冻结表。
-	if _, err := f.db.Exec(`INSERT INTO juhe_stats.authorization_team_usage_range_windows
-		(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-		 request_count, total_cost_usd, last_used_at, updated_at)
-		VALUES ('owner', '2026-08-08', '2026-09-06', 'team_w', 'group', 'grp_w',
-			777, 7.77, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z')`); err != nil {
-		t.Fatal(err)
-	}
 
 	admin := accessInfo{ViewerID: "admin", IsAdmin: true}
 	// 自定义非锚点 3 天区间：仅折叠 09-02 与 09-04 两行。
@@ -204,7 +196,7 @@ func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	if detail.Usage.LastUsedAt == nil || *detail.Usage.LastUsedAt != "2026-09-04T05:00:00.000Z" {
 		t.Fatalf("自定义 3 天窗 lastUsedAt 错误: %v", detail.Usage.LastUsedAt)
 	}
-	// 旧锚点区间同样只读日摘要聚合；冻结行（777/7.77）不得出现。
+	// 旧锚点区间同样只读日摘要聚合，读取链不回落到已退役的窗口表。
 	anchor := UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06", Days: 31, MaxDays: 31}
 	anchorDetail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, anchor, 1, 0)
 	if err != nil || anchorDetail == nil {

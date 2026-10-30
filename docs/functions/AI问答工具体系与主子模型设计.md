@@ -103,6 +103,14 @@ AI 对话（chat 包 + 对话前端）
 - **管理面展示**：模型目录详情按矩阵呈现（每协议一行、该协议下工具一列），与静态兜底/继承后的值同源。
 - **范围界定**：本细化只动目录数据层（静态快照、读取链、管理面展示），不动 `/v1` 请求链路、调度与协议转换——目录数据链是 AI 对话依赖的数据层，非网关行为（BUG-0210/0229 同款边界）。
 
+**custom 行显式声明**（2026-10-30 起，BUG-0229 生产缺陷根治）：
+
+- **数据落点修订**：`models` 表为 custom（`global` / `personal`）目录行新增 `supported_tools_by_protocol_json`（二维「协议 × 工具」矩阵，text NOT NULL DEFAULT '{}'，PG `jsonb_typeof` object CHECK）与 `input_modalities_json` / `output_modalities_json`（模态数组，词表 `text` / `image` / `audio` / `video` / `file`，text NOT NULL DEFAULT '[]'，JSON array CHECK）；custom 行矩阵改由 DB 列承载显式声明，上条「不加 DB 列」的落点边界自本批起收窄为 builtin 行——builtin 行不落值，仍按静态快照读取链派生，发布刷新语义不变。
+- **固定工具词表**（矩阵值内工具 token 的全集）：`function_calling`、`web_search`、`google_search_grounding`、`google_maps_grounding`、`file_search`、`image_generation`、`code_interpreter`、`code_execution`、`hosted_shell`、`apply_patch`、`skills`、`computer_use`、`mcp`、`tool_search`、`structured_outputs`、`url_context`。
+- **写链校验**：custom 模型 POST/PATCH 新增键 `supportedToolsByProtocol`（object：键 = 该行 `supportedApiProtocols` 生效协议集、值 = 词表内工具 token 数组）、`inputModalities` / `outputModalities`；矩阵键 ⊆ 该行生效协议集、工具 token ∈ 固定词表；built_in 行编辑不接受这些键；配置模板复制不携带能力三键；PATCH 语义 = 提交键整值替换、缺键保持。
+- **优先级与继承关系**：显式声明优先——custom 行矩阵非空时按显式值生效；同名内置行的「仅填空」继承（BUG-0229）与内置行静态兜底只在矩阵为空时生效（空矩阵 = 未声明），两模态列同沿「仅填空」语义（空数组 = 未声明）；全新自定义模型（无同名内置行、未声明）矩阵恒空、候选过滤判为不具备该协议工具，显式声明是唯一途径，不做别名/前缀猜测（既有边界不变）。
+- **消费方判定不变**：chat 面 `supportsTool("function_calling")` 门控与搜索候选 `responses ∋ web_search` 判定照旧读矩阵（经静态兜底 / 继承 / 显式声明解析后的最终值），本批不改任何消费方判定语义；schema 落地与契约版本见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §3。
+
 ### 6.5 generate_video（视频生成子代理，M7 2026-10-04）
 
 - 工具定义：`generate_video`，`kind=model`，schema `{ prompt: string, seconds?: number(1..120), size?: "WIDTHxHEIGHT", model?: string }`；常驻注册（媒体域无全局开关，不受 `imageGenerationEnabled` 门控）。注册落点 `internal/chat/generation_tools.go`（`newGenerateVideoTool`）。

@@ -484,6 +484,42 @@ func (d *Deps) runPatch(w http.ResponseWriter, r *http.Request, auth *authsys.Au
 			}, r)
 		}
 	}
+	// 后台自动探测总开关审计事件（总开关设计 §10）：翻转沿专用 operationKey
+	// 落操作日志，明细含状态归一化、特供取消、锁死解除与 pending outbox 清理
+	// 计数（backgroundProbeCleanupNotes 经 PatchResult.BackgroundProbeDetails
+	// 透出）。
+	if d.Sink != nil && result.BackgroundProbeEvent != "" {
+		access := requestScope(r)
+		auditChanges := make([]authsys.OperationLogChange, 0, len(result.BackgroundProbeDetails))
+		for _, detail := range result.BackgroundProbeDetails {
+			auditChanges = append(auditChanges, safeChange(detail.Field, accountPatchChangeLabel(detail.Field), detail.Before, detail.After))
+		}
+		action := "account_background_probe_disabled"
+		summary := "关闭 AI 账户后台自动探测：" + result.Name
+		if result.BackgroundProbeEvent == "enabled" {
+			action = "account_background_probe_enabled"
+			summary = "开启 AI 账户后台自动探测：" + result.Name
+		}
+		d.Sink.Record(authsys.OperationLogEntry{
+			ActorSystemAccountID:          auth.SystemAccountID,
+			ActorUsername:                 auth.Username,
+			ActorDisplayName:              auth.DisplayName,
+			ActorRole:                     auth.Role,
+			OperationScopeSystemAccountID: result.OwnerSystemAccountID,
+			Mode:                          operationMode(access),
+			Module:                        "accounts",
+			Action:                        action,
+			OperationKey:                  "accounts." + action,
+			ResourceType:                  "account",
+			ResourceID:                    result.ID,
+			ResourceName:                  result.Name,
+			Summary:                       summary,
+			Changes:                       auditChanges,
+			Viewers: []authsys.OperationLogViewer{
+				{SystemAccountID: result.OwnerSystemAccountID, Reason: "resource_owner"},
+			},
+		}, r)
+	}
 	// Node PATCH route tail (accounts.routes.ts:367-369): a health-relevant
 	// change dispatches the post-commit configuration probe. The
 	// tags-only surface never carries those fields, so the check is harmless
@@ -954,6 +990,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId", "schedulable",
 			"groupId", "accountExpiresAt", "availabilitySchedule", "balanceQueryEnabled",
 			"balanceQueryConfig", "temporaryUnavailableContinuousProbeEnabled",
+			"backgroundProbeEnabled",
 			"expeditedRecoveryEnabled", "notes",
 			// M2 能力域契约：capabilityDomain（缺省 chat，创建后不可更改）
 			// 与 cloneSourceId（可选克隆源账户）。
@@ -1074,6 +1111,11 @@ func createBody(body map[string]any) (CreateInput, string) {
 		}
 	}
 	input.Status = AccountCreationStatusInput(body["status"])
+	// 原始状态词直传（手动模式词表在写面按显式值判定，见 backgroundProbeEnabled
+	// 解析块与 createInTx 的手动模式状态派生）。
+	if raw, ok := body["status"].(string); ok {
+		input.RawCreationStatus = strings.TrimSpace(raw)
+	}
 	if value, exists := body["concurrencyLimit"]; exists && value != nil {
 		number, ok := value.(float64)
 		if !ok || number != float64(int(number)) {
@@ -1178,6 +1220,22 @@ func createBody(body map[string]any) (CreateInput, string) {
 		}
 		input.TemporaryUnavailableContinuousProbeEnabled = &enabled
 	}
+	// 后台自动探测总开关（总开关设计 §2/§4）：严格布尔；显式关闭时原始状态词
+	// 必须在手动模式词表内（active/error/disabled），显式提交过程态按 400 拒绝
+	// ——在哨兵归一化（AccountCreationStatusInput 把未知值折叠成 pending_test）
+	// 之前用原始值判定。媒体域拒绝与程序化调用方兜底在写面 createInTx 统一承载。
+	if value, exists := body["backgroundProbeEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return CreateInput{}, "账户参数无效"
+		}
+		if !enabled {
+			if raw, ok := body["status"].(string); ok && accountscore.ManualModeForbiddenStatuses[strings.TrimSpace(raw)] {
+				return CreateInput{}, "手动模式账户只允许正常、异常或停用状态"
+			}
+		}
+		input.BackgroundProbeEnabled = &enabled
+	}
 	// 特供快速恢复（设计 §8.1）：严格布尔；true 由创建事务内的名额校验把关，
 	// clone-context 派生的创建体不含该键，克隆副本恒为未标记。
 	if value, exists := body["expeditedRecoveryEnabled"]; exists {
@@ -1209,7 +1267,7 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			"healthCheckEndpointMode", "modelMappings", "tags", "accountExpiresAt",
 			"availabilitySchedule", "clearFailureState", "proxyProfileId", "groupId",
 			"balanceQueryEnabled", "balanceQueryConfig",
-			"temporaryUnavailableContinuousProbeEnabled", "expeditedRecoveryEnabled",
+			"temporaryUnavailableContinuousProbeEnabled", "backgroundProbeEnabled", "expeditedRecoveryEnabled",
 			// M2 域不可变校验入参（携带即校验，≠ 行现值拒绝）。
 			"capabilityDomain",
 			// B1 断点批（设计 §8）：连接集合整替换与健康检查连接预设。
@@ -1453,6 +1511,16 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			return PatchInput{}, "账户更新参数无效"
 		}
 		input.TemporaryUnavailableContinuousProbeEnabled = &enabled
+	}
+	// 后台自动探测总开关（总开关设计 §2）：严格布尔；实例跟随来源、媒体域
+	// 幂等忽略、翻转状态归一化在写面 Patch 内统一承载（行内现值参与判定），
+	// 路由层只做类型门。
+	if value, exists := body["backgroundProbeEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.BackgroundProbeEnabled = &enabled
 	}
 	// 特供快速恢复（设计 §8.1）：严格布尔；false→true 的翻转在补丁事务内做
 	// 名额校验（§9），置 false 与幂等 true 不校验。

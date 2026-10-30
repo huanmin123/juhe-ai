@@ -25,6 +25,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -377,7 +378,41 @@ func newChainAccountCircuitServiceOptions(store gatewaycircuit.Store, persist ch
 	// 正常账户，一次 ListByRuntimeKeys 后标记 ready 并进程内缓存，后续请求
 	// 不再查询业务库。
 	options.EnsureRuntimeStateReady = bridge.EnsureAccountReady
+	// 手动模式开关位（后台自动探测总开关设计 §3）：真实流量 escalation/incident
+	// 建立入口跳过手动账户。主键单列 SELECT 只在 transport 失败结算时触发
+	// （对齐 W1 freshness 门成本论证）；查询失败由服务侧失败关闭（2026-10-30
+	// 复审修订：读失败按手动模式跳过建立），此处不吞错误语义。
+	if persist.DB != nil {
+		options.BackgroundProbeDisabled = newChainBackgroundProbeDisabledLookup(persist.DB)
+	}
 	return options, closePersist, nil
+}
+
+// newChainBackgroundProbeDisabledLookup 构造账户「后台自动探测」开关查询
+// （accounts.background_probe_enabled，W1 契约 v20）：id 取运行态键首段
+// （与 gatewayproxyhealth.RuntimeAccountIDFromKey 同源拆分，owner 键即
+// accountID，授权键为 "id:authorized:..."）。行缺失视为开启（fail-open：
+// 软删/已消失账户交回既有调度语义，不是账户存在性判定）；列 NOT NULL
+// DEFAULT 1，NULL 不可达，`== 0` 判定天然失败关闭（对齐 keymodelrecovery
+// BackgroundProbeSQLSwitch 注释口径）。
+func newChainBackgroundProbeDisabledLookup(db *sql.DB) func(context.Context, string) (bool, error) {
+	return func(ctx context.Context, accountRuntimeKey string) (bool, error) {
+		accountID := strings.SplitN(accountRuntimeKey, ":", 2)[0]
+		if accountID == "" {
+			return false, nil
+		}
+		var enabled sql.NullInt64
+		err := db.QueryRowContext(ctx,
+			`SELECT background_probe_enabled FROM juhe_business.accounts WHERE id = $1 AND deleted_at IS NULL`,
+			accountID).Scan(&enabled)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return false, nil
+			}
+			return false, err
+		}
+		return enabled.Int64 == 0, nil
+	}
 }
 
 // ---------------------------------------------------------------------------

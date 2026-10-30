@@ -60,6 +60,16 @@ type ProbeRequestBoundary interface {
 	CurrentProbeInput(ctx context.Context, accountID string) (configRevision, dispatchRevision, inputVersion int64, ok bool, err error)
 }
 
+// ProbeRequestFlagReader 是 outbox 消费面的可选开关读能力（设计 §3 派发前
+// 守卫）：按账户读生效的后台自动探测开关（授权实例取来源账户值）。可选
+// 能力——既有 boundary/stub 不必实现；缺席时跳过本守卫，由 runExplicitRequest
+// 的执行前 freshness 门兜底（warnProbeOutboxBacklog 的可选计数同款断言模式）。
+type ProbeRequestFlagReader interface {
+	// BackgroundProbeEnabled 返回账户生效开关；found=false 表示账户行不存在
+	//（软删或已消失），读取错误原样上抛（调用方按瞬态失败保留 pending）。
+	BackgroundProbeEnabled(ctx context.Context, accountID string) (enabled bool, found bool, err error)
+}
+
 // ProbeSourceFenceSettler 结算 source fence（Redis 电路运行态；
 // state 取 "unknown"）。
 type ProbeSourceFenceSettler func(ctx context.Context, fence SourceFence, state string) error
@@ -300,6 +310,43 @@ func (r *Runner) consumeProbeOutboxRow(ctx context.Context, lease OwnerLease, ro
 			"event", "account_health_probe_outbox_row_invalid",
 			"requestId", row.RequestID, "accountId", row.AccountID)
 		return nil
+	}
+	// 后台自动探测开关守卫（设计 §3 派发前守卫，gateway 投递端之外的最终
+	// 兜底）：关闭账户的显式请求不发上游、不写健康事实、不计失败，按既有
+	// 显式请求终态形状落 probe_skipped_disabled；source fence 结算 unknown
+	// （探针永不派发，网关侧运行态不悬挂）。读取失败属瞬态：返回 err 保持
+	// pending 下周期重试，不做失败关闭收敛。
+	if flagReader, ok := r.probeDrain.Boundary.(ProbeRequestFlagReader); ok {
+		enabled, found, flagErr := flagReader.BackgroundProbeEnabled(ctx, row.AccountID)
+		if flagErr != nil {
+			return flagErr
+		}
+		if found && !enabled {
+			// 账户级限频诊断（复审 Minor，对齐 scheduler.go warnProbeSkipped
+			// Disabled 模式）：关闭账户的积压行会逐周期重复进入本臂，逐行打点
+			// 只会形成日志噪音；限频窗口内的行仍按终态结算出队，语义不变。
+			// expedited 事实 outbox 行不携带，诊断省略该属性。
+			r.warnProbeSkippedDisabledAccount(row.AccountID, false,
+				"probe_request 账户后台自动探测已关闭，按终态消费出队",
+				"requestId", row.RequestID)
+			if row.SourceFence != nil && r.probeDrain.SettleFence != nil {
+				if err := r.probeDrain.SettleFence(ctx, *row.SourceFence, "unknown"); err != nil {
+					return err
+				}
+			}
+			request := ProbeRequest{
+				RequestID:        row.RequestID,
+				AccountID:        row.AccountID,
+				Reason:           row.Reason,
+				InputVersion:     inputVersion,
+				ConfigRevision:   configRevision,
+				DispatchRevision: dispatchRevision,
+				Deadline:         row.Deadline,
+				MutateAccount:    row.SourceFence == nil,
+				SourceFence:      row.SourceFence,
+			}
+			return r.persistExplicitTerminal(ctx, lease, request, OutcomeStale, now, probeSkippedDisabledCode, "账户后台自动探测已关闭，跳过上游探针并按终态消费请求")
+		}
 	}
 	var input exactkeyprobe.Input
 	if r.directInputReader != nil {

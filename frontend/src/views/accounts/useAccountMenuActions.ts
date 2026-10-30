@@ -3,7 +3,7 @@ import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountListItem, AccountMutationResult } from '@/types/domain'
-import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
+import { accountBackgroundProbeDisabled, hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { mergeAuthorizedDispatchMutation } from './accountListMutations'
 import {
@@ -90,6 +90,11 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
   }
 
   async function updateAccountLock(account: AccountListItem, enabled: boolean): Promise<void> {
+    // 手动模式不适用锁死（总开关设计 §7）：锁死启用被拒绝，解除作为纠正操作保留。
+    if (enabled && accountBackgroundProbeDisabled(account)) {
+      message.warning('手动模式不适用锁死')
+      return
+    }
     if (account.permissions?.canLock === false) {
       message.warning('当前账户不能修改锁死状态')
       return
@@ -122,6 +127,12 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
   // 字段，授权实例行同样经 my-accounts PATCH 提交，照授权账户编辑保存流先例）。
   // 超限错误按行操作既有模式直接展示后端返回的 message。
   async function updateAccountExpeditedRecovery(account: AccountListItem, enabled: boolean): Promise<void> {
+    // 手动模式不适用特供（总开关设计 §7）：设置被拒绝（进入手动模式时已自动取消），
+    // 取消作为纠正操作保留。
+    if (enabled && accountBackgroundProbeDisabled(account)) {
+      message.warning('手动模式不适用特供恢复')
+      return
+    }
     if (!canEditAccount(account)) {
       message.warning('当前账户不能设置特供恢复')
       return
@@ -305,7 +316,8 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'recheck-health') {
-      if (isAuthorizedAccount(account) || !isPendingHealthCheckFailed(account)) {
+      // 手动模式无后台检查可重新触发（总开关设计 §9「重新检查」入口不可用）。
+      if (accountBackgroundProbeDisabled(account) || isAuthorizedAccount(account) || !isPendingHealthCheckFailed(account)) {
         message.warning('当前账户没有可重新检查的失败记录')
         return
       }

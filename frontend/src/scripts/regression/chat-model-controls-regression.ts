@@ -1,11 +1,22 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { chatGenerationParameterDescription, defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls, reasoningEffortLabel, selectableChatReasoningEfforts } from '../../views/chat/composer/chatModelControls'
+import { chatGenerationParameterDescription, chatModelSupportsTools, defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls, reasoningEffortLabel, selectableChatReasoningEfforts } from '../../views/chat/composer/chatModelControls'
 
 const composerSource = readFileSync(new URL('../../views/chat/composer/AIComposer.vue', import.meta.url), 'utf8')
 const capabilityBase = { supportedApiProtocols: ['responses'], inputModalities: ['text'], outputModalities: ['text'], supportedToolsByProtocol: {}, generationParameters: [] }
 
 assert.equal(reasoningEffortLabel('medium'), '中')
+assert.equal(chatModelSupportsTools(undefined), undefined, '能力未加载/未选模型时必须返回 undefined（绑定弹窗不得误报工具失效）')
+assert.equal(
+  chatModelSupportsTools({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: [], supportedToolsByProtocol: { responses: ['function_calling'] } }),
+  true,
+  '任一协议的工具数组声明 function_calling 即视为支持'
+)
+assert.equal(
+  chatModelSupportsTools({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: [], supportedToolsByProtocol: {} }),
+  false,
+  '能力已加载且无任一协议声明 function_calling 时必须返回 false'
+)
 assert.match(chatGenerationParameterDescription('temperature'), /随机性/, '温度必须有可理解的参数说明')
 assert.match(chatGenerationParameterDescription('maxOutputTokens'), /最长内容/, '最大 Tokens 必须解释为单次输出限制')
 assert.match(chatGenerationParameterDescription('seed'), /复现/, '随机种子必须说明兼容模型下的复现边界')

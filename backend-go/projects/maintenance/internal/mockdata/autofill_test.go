@@ -37,7 +37,6 @@ func TestAutofillSkipReason(t *testing.T) {
 		{table: "usage_stats_totals", contains: "usage_stats_"},
 		{table: "account_quality_dirty_accounts", contains: "account_quality_"},
 		{table: "usage_quota_hourly_windows", contains: "usage_quota_hourly_"},
-		{table: "authorization_team_usage_range_windows", contains: "_windows"},
 		{table: "account_balance_projection_cursors", contains: "_projection_cursors"},
 		{table: "mockdata_autofill_parent_owner_leases", contains: "_owner_leases"},
 		{table: "groups", contains: "seedBusiness"},

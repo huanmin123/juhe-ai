@@ -269,8 +269,8 @@ var accountScopeStatsTables = []string{
 }
 
 var accountAuthorizationReportTables = []string{
-	"authorization_team_usage_summary_daily", "authorization_team_usage_range_windows",
-	"authorization_user_usage_summary_daily", "authorization_user_usage_range_windows",
+	"authorization_team_usage_summary_daily",
+	"authorization_user_usage_summary_daily",
 }
 
 func escapeLikePrefix(value string) string {

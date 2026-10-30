@@ -5,8 +5,8 @@
 // `maintenance upgrade` 触发（§2.2-5 不做自动升级）。
 //
 // 判定输入：dbRevision = schema_state.schema_revision（缺失视为 0）、
-// stepMax = max(schema_migrations.revision)（缺失视为 0）、
-// binary = contracts.SchemaRevision。账本表缺失时由读取方按 0 处理。
+// stepMax = max(schema_migrations.revision)（表缺失或为空视为 0）、
+// binary = contracts.SchemaRevision。
 package schemagate
 
 import (
@@ -34,22 +34,29 @@ func Check(ctx context.Context, db *sql.DB) Decision {
 		return Decision{Message: fmt.Sprintf(
 			"升级启动门禁读取 schema_state 失败: %v。请运行 juhe-ai-maintenance upgrade --dry-run 核对升级状态", err)}
 	}
-	stepMax, ledgerReady, err := readLedgerMaxRevision(ctx, db)
+	stepMax, err := readLedgerMaxRevision(ctx, db)
 	if err != nil {
 		return Decision{Message: fmt.Sprintf(
 			"升级启动门禁读取 schema_migrations 失败: %v。请运行 juhe-ai-maintenance upgrade --dry-run 核对升级状态", err)}
 	}
-	return Evaluate(dbRevision, stepMax, ledgerReady)
+	return Evaluate(dbRevision, stepMax)
 }
 
 // Evaluate 是五行求值顺序表的纯函数（可单测）：
 //
 //	顺序 1  stepMax > dbRevision                          → 升级中断在途
 //	顺序 2  dbRevision > binary                           → 二进制过旧
-//	顺序 3  dbRevision < binary                           → 库待升级
-//	顺序 4  dbRevision > 0 且账本不存在/为空               → 账本反向不一致
+//	顺序 3  dbRevision < binary                           → 库待升级（stepMax==0 且
+//	                                                        dbRevision>0 为空号中断形态，
+//	                                                        文案改为直接续跑）
+//	顺序 4  dbRevision > 0 且 stepMax == 0                → 账本缺失/被清空（反向不一致；
+//	                                                        按行数而非表存在性判定，
+//	                                                        TRUNCATE 同样命中）
 //	顺序 5  其余（dbRevision == binary 且 stepMax <= db）  → 通过
-func Evaluate(dbRevision, stepMax int64, ledgerReady bool) Decision {
+//
+// 顺序 3 先于顺序 4：dbRevision < binary 且 stepMax == 0 的空号中断按顺序 3 的
+// 续跑文案处理；顺序 4 只承接「state 声称已完成但账本为空」的完成态不一致。
+func Evaluate(dbRevision, stepMax int64) Decision {
 	binary := int64(contracts.SchemaRevision)
 	missing := schema_stateMissingText()
 	switch {
@@ -62,10 +69,15 @@ func Evaluate(dbRevision, stepMax int64, ledgerReady bool) Decision {
 			"二进制版本低于数据库结构（库 revision=%d > 二进制 schemaRevision=%d）：请升级二进制后启动",
 			dbRevision, binary)}
 	case dbRevision < binary:
+		if stepMax == 0 && dbRevision > 0 {
+			return Decision{Message: fmt.Sprintf(
+				"结构未收敛完成（库 revision=%d，账本为空，属升级中断形态）：请直接重跑 `juhe-ai-maintenance upgrade --dsn <主库URL>` 续跑",
+				dbRevision)}
+		}
 		return Decision{Message: fmt.Sprintf(
 			"数据库尚未升级到本版本（库 revision=%d < 二进制 schemaRevision=%d）：请先停止 gateway/jobs、完成备份，然后运行 `juhe-ai-maintenance upgrade --dry-run --dsn <主库URL>` 预演并按提示执行 upgrade。待执行步骤见 upgrade 计划输出%s",
 			dbRevision, binary, missing)}
-	case dbRevision > 0 && !ledgerReady:
+	case dbRevision > 0 && stepMax == 0:
 		return Decision{Message: fmt.Sprintf(
 			"升级账本缺失或被清空（state revision=%d 但无账本行）：请恢复备份，或重跑 `juhe-ai-maintenance upgrade --dsn <主库URL>` 重建账本并重新求值全部步骤",
 			dbRevision)}
@@ -98,19 +110,22 @@ func readStateRevision(ctx context.Context, db *sql.DB) (int64, error) {
 	return revision, nil
 }
 
-// readLedgerMaxRevision 读账本最高 revision 与表就绪标记；表缺失返回 (0, false)。
-func readLedgerMaxRevision(ctx context.Context, db *sql.DB) (int64, bool, error) {
+// readLedgerMaxRevision 读账本最高 revision；表缺失或无行返回 0。
+func readLedgerMaxRevision(ctx context.Context, db *sql.DB) (int64, error) {
 	ready, err := tableReady(ctx, db, "schema_migrations")
-	if err != nil || !ready {
-		return 0, false, err
+	if err != nil {
+		return 0, err
+	}
+	if !ready {
+		return 0, nil
 	}
 	var stepMax sql.NullInt64
 	err = db.QueryRowContext(ctx,
 		`SELECT max(revision) FROM juhe_business.schema_migrations`).Scan(&stepMax)
 	if err != nil {
-		return 0, true, err
+		return 0, err
 	}
-	return stepMax.Int64, true, nil
+	return stepMax.Int64, nil
 }
 
 func tableReady(ctx context.Context, db *sql.DB, table string) (bool, error) {

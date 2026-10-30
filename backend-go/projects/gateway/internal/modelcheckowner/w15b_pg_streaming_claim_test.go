@@ -124,6 +124,7 @@ func w15bCoverPostgresDB(t *testing.T) *sql.DB {
 			super_priority_enabled int,
 			last_error_code text,
 			last_error_message text,
+			background_probe_enabled int NOT NULL DEFAULT 1,
 			updated_at text)`,
 		`CREATE TABLE juhe_business.model_quality_schedules (
 			id text PRIMARY KEY,

@@ -203,18 +203,24 @@ func (r *PostgresDirectInputReader) LoadAccountWithFailures(ctx context.Context,
 }
 
 // LoadAccountConfigRevision 实现执行前新鲜度门的最小业务读面（设计 §6.3）：
-// 按账户主键单列重读 config_revision；软删行视为不存在。只读连接上的主键
+// 按账户主键重读 config_revision 与生效的后台自动探测开关（授权实例取来源
+// 账户值，与候选 SQL 的 CASE 同形）；软删行视为不存在。只读连接上的主键
 // SELECT，成本相对一次真实上游探针可忽略。
-func (r *PostgresDirectInputReader) LoadAccountConfigRevision(ctx context.Context, accountID string) (int64, bool, error) {
-	var revision int64
-	err := r.db.QueryRowContext(ctx, `SELECT config_revision FROM juhe_business.accounts WHERE id=$1 AND deleted_at IS NULL`, accountID).Scan(&revision)
+func (r *PostgresDirectInputReader) LoadAccountConfigRevision(ctx context.Context, accountID string) (accountFreshnessFacts, bool, error) {
+	var facts accountFreshnessFacts
+	var enabled sql.NullInt64
+	err := r.db.QueryRowContext(ctx, `SELECT a.config_revision, CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.background_probe_enabled ELSE COALESCE(source.background_probe_enabled, 1) END
+FROM juhe_business.accounts a
+LEFT JOIN juhe_business.accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
+WHERE a.id=$1 AND a.deleted_at IS NULL`, accountID).Scan(&facts.ConfigRevision, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
+		return accountFreshnessFacts{}, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("读取 PG direct input 账户 config_revision 失败: %w", err)
+		return accountFreshnessFacts{}, false, fmt.Errorf("读取 PG direct input 账户 config_revision 失败: %w", err)
 	}
-	return revision, true, nil
+	facts.BackgroundProbeEnabled = enabled.Valid && enabled.Int64 == 1
+	return facts, true, nil
 }
 
 func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreSchedule bool, accountID string) (DirectInputLoadResult, error) {
@@ -357,6 +363,11 @@ type directCandidate struct {
 	authorizationResourceID string
 	authorizationOwner      string
 	authorizationTeam       string
+	// backgroundProbeEnabled / sourceBackgroundProbeEnabled 是后台自动探测
+	// 总开关的候选行事实（实例行恒随来源，WHERE 已按生效值过滤；scan 仅承载
+	// 该事实供测试断言，不参与构造）。
+	backgroundProbeEnabled       bool
+	sourceBackgroundProbeEnabled bool
 }
 
 // directInputCandidatesQuery keeps the frozen SQL unchanged when there is no
@@ -463,12 +474,13 @@ SELECT
   hc.connection_preset_code, hc.base_url,
   a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
-  a.system_account_id,
+  a.system_account_id, a.background_probe_enabled,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
   source.id, source.config_revision, source.vendor_code, source.oauth_type, source.protocol_code, source.protocol_version, source.type,
   source_hc.connection_preset_code, source_hc.base_url,
   source.status, source.schedulable,
   source.account_expires_at, source.cooldown_until, source.last_error_code, source.credentials_encrypted,
+  COALESCE(source.background_probe_enabled, 1) AS source_background_probe_enabled,
   binding.group_id, binding.account_authorization_id,
   proxy.id, proxy.enabled, proxy.type, proxy.host, proxy.port, proxy.username, proxy.password_encrypted
 FROM juhe_business.accounts a
@@ -502,6 +514,9 @@ WHERE a.deleted_at IS NULL
   AND a.type IN ('api_key', 'oauth', 'google_oauth')
   AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
+  -- Background auto-probe master switch (设计 §3 候选筛选): instance rows take
+  -- the source account's value, so flipping the source hides both rows.
+  AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.background_probe_enabled ELSE COALESCE(source.background_probe_enabled, 1) END) = 1
   -- Cooldown recovery is the path that restores a temporarily unavailable
   -- account. Legacy rows can retain schedulable=0, so do not let that stale
   -- scheduling bit permanently hide an otherwise due recovery candidate.
@@ -563,6 +578,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var sourceID, sourceVendor, sourceOAuthType, sourceProtocol, sourceProtocolVersion, sourceType, sourceStatus, sourceExpires, sourceCooldown, sourceError, sourceCredentials sql.NullString
 	var sourcePreset, sourceBaseURL sql.NullString
 	var sourceRevision sql.NullInt64
+	var accountBackgroundProbe, sourceBackgroundProbe sql.NullInt64
 	var groupID, bindingAuthorizationID sql.NullString
 	var proxyID, proxyType, proxyHost, proxyUsername, proxyPassword sql.NullString
 	var proxyEnabled sql.NullBool
@@ -574,11 +590,12 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		&accountEndpointMode, &accountHealthModel,
 		&accountPreset, &accountBaseURL,
 		&result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe, &expeditedRecovery,
-		&observationStarted, &cooldownGeneration, &result.systemAccount,
+		&observationStarted, &cooldownGeneration, &result.systemAccount, &accountBackgroundProbe,
 		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationLimits, &authorizationResourceID, &authorizationOwner, &authorizationTeam,
 		&sourceID, &sourceRevision, &sourceVendor, &sourceOAuthType, &sourceProtocol, &sourceProtocolVersion, &sourceType,
 		&sourcePreset, &sourceBaseURL,
 		&sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
+		&sourceBackgroundProbe,
 		&groupID, &bindingAuthorizationID,
 		&proxyID, &proxyEnabled, &proxyType, &proxyHost, &proxyPort, &proxyUsername, &proxyPassword,
 	); err != nil {
@@ -602,6 +619,11 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	// expedited_recovery_enabled 与 schedulable 同构（integer 0/1，NOT NULL
 	// DEFAULT 0）；窄表兜底补出的可空列 NULL 视为未标记，装配普通档位。
 	result.expeditedRecovery = expeditedRecovery.Valid && expeditedRecovery.Int64 == 1
+	// background_probe_enabled 与 expedited_recovery_enabled 同构（integer
+	// 0/1，NOT NULL DEFAULT 1）；实例来源列为 COALESCE(source 列, 1)，不因
+	// 来源行缺失而误判为关闭。
+	result.backgroundProbeEnabled = accountBackgroundProbe.Valid && accountBackgroundProbe.Int64 == 1
+	result.sourceBackgroundProbeEnabled = sourceBackgroundProbe.Valid && sourceBackgroundProbe.Int64 == 1
 	var err error
 	if result.account.AccountExpiresAt, err = parseNullableDirectTime(accountExpires); err != nil {
 		return result, err

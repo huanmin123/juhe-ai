@@ -361,6 +361,17 @@ export function capabilityDomainIsMedia(capabilityDomain: AccountCapabilityDomai
 }
 
 /**
+ * 域是否不适用「后台自动探测」总开关（总开关设计 §2，2026-10-30 二轮复审裁决）：
+ * 仅 video/audio——不参与对话健康检查状态机、无后台探测闭环；image 域存在激活
+ * 检查、冷却恢复、电路/质量预检等真实后台探测（仅豁免 active 周期巡检），开关
+ * 适用并显示「手动」标签。注意与 capabilityDomainIsMedia（媒体三段式表单布局
+ * 语义，含 image）区分，二者不可互替。
+ */
+export function capabilityDomainWithoutBackgroundProbe(capabilityDomain: AccountCapabilityDomain | undefined): boolean {
+  return capabilityDomain === 'video' || capabilityDomain === 'audio'
+}
+
+/**
  * 媒体域支持模型选项的目录协议 token（模型目录 `supported_api_protocols` 词表，
  * 与 model_catalog_data_gen.go 种子数据同源）：video→`video`；audio→`audio_speech`
  * （TTS）∪ `audio_transcription`（长转写任务）∪ `realtime`（实时语音会话，v8 起

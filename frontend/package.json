@@ -93,6 +93,7 @@
     "test:account-api-key-runtime-revalidate": "tsx --tsconfig tsconfig.json src/scripts/regression/account-api-key-runtime-revalidate-regression.ts",
     "test:account-default-group-selection": "tsx --tsconfig tsconfig.json src/scripts/regression/account-default-group-selection-regression.ts",
     "test:temporary-unavailable-probe-toggle": "tsx --tsconfig tsconfig.json src/scripts/regression/temporary-unavailable-probe-toggle-regression.ts",
+    "test:account-background-probe-toggle": "tsx --tsconfig tsconfig.json src/scripts/regression/account-background-probe-toggle-regression.ts",
     "test:app-brand-singleflight": "tsx --tsconfig tsconfig.json src/scripts/regression/app-brand-singleflight-regression.ts",
     "test:stats-overview-progressive-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/stats-overview-progressive-loading-regression.ts",
     "test:ai-performance-progressive-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/ai-performance-progressive-loading-regression.ts",

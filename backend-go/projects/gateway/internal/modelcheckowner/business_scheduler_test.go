@@ -12,7 +12,9 @@ import (
 
 func businessSchedulerAccountsDDL() []string {
 	return []string{
-		`CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT)`,
+		// background_probe_enabled：J3b 两条候选 SQL 的手动模式过滤列（总开关
+		// 设计 §3）；NOT NULL DEFAULT 1 对齐生产列型（maintenance 契约 v20）。
+		`CREATE TABLE juhe_business.accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,background_probe_enabled INTEGER NOT NULL DEFAULT 1)`,
 		`ALTER TABLE juhe_business.accounts ADD COLUMN dispatch_revision INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE juhe_business.accounts ADD COLUMN authorization_instance_source_account_id TEXT`,
 	}

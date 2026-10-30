@@ -94,6 +94,10 @@ type SpeedFirstAccountSummary struct {
 	AccountExpiresAt   string // RFC3339（必须带 Z 或数值 offset）
 	ExpiresAtMS        *int64 // 由调用方解析后注入；nil 表示未提供
 	EffectiveAvailable *bool
+	// BackgroundProbeEnabled 是后台自动探测总开关（accounts.background_probe_enabled，
+	// 总开关设计 §5）：nil = 读取面未带出（视为开启，默认路径不变）；false =
+	// 手动模式，恢复探针不运行，降级状态保留（TTL/真实流量自然恢复）。
+	BackgroundProbeEnabled *bool
 }
 
 // SpeedFirstCandidateSource 提供账户与候选凭据解析。
@@ -253,6 +257,18 @@ func (r *SpeedFirstProbeRunner) Run(ctx context.Context, candidate ProbeCandidat
 	account, err := r.source.FindAccountForTest(ctx, candidate.AccountID, candidate.Scope.SystemAccountID)
 	if err != nil {
 		return false, err
+	}
+	// 手动模式（后台自动探测总开关关闭，总开关设计 §5）：恢复探针不运行，
+	// 也不得按 ineligible-Discard 清理真实流量建立的降级状态——中性顺延
+	// （Defer）保持降级排序与 TTL 语义，仅推后下次探针。
+	if account != nil && account.BackgroundProbeEnabled != nil && !*account.BackgroundProbeEnabled {
+		if !ensureClaim("before_defer_manual_mode") {
+			return true, nil
+		}
+		if _, err := r.store.Defer(ctx, candidate); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	eligible, err := SpeedFirstProbeAccountEligible(account, r.nowMS())
 	if err != nil {

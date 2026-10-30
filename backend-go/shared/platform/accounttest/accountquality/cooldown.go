@@ -350,6 +350,19 @@ func (r *CooldownRetestRunner) runQueueItem(ctx context.Context, runCtx QueueRun
 	if err != nil {
 		return false, err
 	}
+	// 手动模式（后台自动探测总开关关闭）不执行 Key 冷却复测（总开关设计 §3
+	// 消费端双保险：候选 SQL 已过滤，此处拦住已入队后翻转开关的残留项）。
+	if account != nil && account.BackgroundProbeEnabled != nil && !*account.BackgroundProbeEnabled {
+		r.logger.Debug("background_account_api_key_cooldown_retest_discarded", map[string]any{
+			"accountId":      candidate.AccountID,
+			"accountName":    candidate.AccountName,
+			"keyFingerprint": candidate.KeyFingerprint,
+			"attemptIndex":   runCtx.AttemptIndex,
+			"accountStatus":  accountStatusOrEmpty(account),
+			"boundGroupId":   accountBoundGroupOrEmpty(account),
+		}, "账户处于手动模式，账户内 API Key 复测任务跳过队列项")
+		return true, nil
+	}
 	if account == nil || account.Type != "api_key" || !isAccountStatusEligibleForRecoveryProbe(account.Status) || !account.Schedulable || account.BoundGroupID == "" {
 		r.logger.Debug("background_account_api_key_cooldown_retest_discarded", map[string]any{
 			"accountId":      candidate.AccountID,

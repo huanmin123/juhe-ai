@@ -162,6 +162,7 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 			"last_used_at", "cooldown_until", "last_error_code", "last_error_message", "last_error_trace_id",
 			"cooldown_retest_failure_count", "cooldown_retest_observation_started_at", "cooldown_retest_generation",
 			"cooldown_retest_last_at", "cooldown_retest_last_status_code",
+			"background_probe_enabled",
 			"temporary_unavailable_continuous_probe_enabled", "expedited_recovery_enabled", "capability_domain",
 			"health_check_connection_id", "health_check_model", "health_check_endpoint_mode", "last_health_check_at",
 			"next_health_check_at", "last_health_success_at", "health_check_failure_count",
@@ -171,6 +172,9 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 			"balance_query_next_refresh_at", "created_at", "updated_at",
 		}
 		values := []any{
+			// background_probe_enabled 恒写默认 1：legacy 源库没有手动模式概念
+			//（源 SELECT 不读该列——2026-10-30 复审 M2，旧库无此列会直接报错）；
+			// 「手动导入默认停用」语义只属于现行导入协议 accountstransfer。
 			row.ID, maxInt(row.ConfigRevision, 1), maxInt(row.DispatchRevision, 1), row.CircuitRevision, row.Owner,
 			row.Vendor, row.Driver, nil, row.ProtocolCode, row.ProtocolVersion,
 			row.Name, row.AccountType, row.Status, row.Credential, credentialFingerprint(row.Credential), row.CredentialMask,
@@ -180,7 +184,7 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 			row.LastUsed, row.CooldownUntil, row.LastErrorCode, row.LastErrorMessage, row.LastErrorTrace,
 			row.CooldownRetest, row.CooldownStarted, row.CooldownGen,
 			row.CooldownLastAt, row.CooldownLastCode,
-			row.TempProbe, row.Expedited, row.Domain,
+			1, row.TempProbe, row.Expedited, row.Domain,
 			nil, row.HealthModel, row.HealthMode, row.LastHealthAt,
 			row.NextHealthAt, row.LastSuccessAt, row.HealthFailures,
 			row.HealthFailStart, row.LastHealthCode, row.LastHealthErr,
