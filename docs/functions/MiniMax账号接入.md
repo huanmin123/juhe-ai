@@ -17,8 +17,8 @@
 
 - 账户类型只有 `api_key`（MiniMax 无 OAuth 面向 API 接入，媒体设计 §9）。
 - 凭据字段：`api_key`（必填）、`base_url`（可选覆盖）。
-- 默认 `base_url` 为 `https://api.minimax.chat`（国内官方根，seed 档案值）；海外账户显式覆盖为 `https://api.minimaxi.com`。
-- 出站 URL 归一：minimax 出站路径（`/v1/video_generation`、`/v1/t2a_v2`、`/v1/query/video_generation`）是 `/v1` 前缀的 openai 族形态，走 `gatewayopenai.BuildUpstreamURL`（base 强制 `/v1` 结尾、path 剥 `/v1` 前缀去重）——`https://api.minimax.chat` 与 `https://api.minimaxi.com`、以及账户带或不带 `/v1` 尾缀的 base_url 均归一到同一 URL，无需专用归一函数（对比 glm 的 `/api/paas/v4` 服务根专用归一 `chainGlmVideoUpstreamURL`）。
+- 默认 `base_url` 为 `https://api.minimax.chat/v1`（国内官方根 + 版本根，seed 档案值；v2 迁移后版本段由 base_url 承载）；海外账户显式覆盖为 `https://api.minimaxi.com/v1`。
+- 出站 URL 构造：minimax 出站路径（`/video_generation`、`/t2a_v2`、`/query/video_generation` 等 openai 族路径，版本段已并入 base_url 版本根）走 `gatewayopenai.BuildUpstreamURL` 版本根直拼（`upstreamenvelope.JoinUpstreamURL`：出站 URL = 版本根 + 路径，运行时不补插、剥离、去重任何版本段）——base_url 必须填到版本根（含 `/v1`），无专用归一函数（glm 的 `/api/paas/v4` 服务根同样由 base_url 承载，历史专用归一 `chainGlmVideoUpstreamURL` 已随 v2 退役）。
 
 ## 供应商与协议档案
 

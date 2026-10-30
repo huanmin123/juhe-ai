@@ -1923,7 +1923,8 @@ const chainVolcengineSpeechUpstreamEnv = "JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE
 // chainVolcengineSpeechUpstreamURL 拼接火山 TTS 出站 URL：固定语音服务域根
 // + adapter 出站路径（2026-10-17 迁移批起为 /api/v3/tts/create；旧
 // /api/v3/tts 已 404 下线）。不经账户 base_url（ark 域与语音域是
-// 两个服务面），也不走 gatewayopenai.BuildUpstreamURL（/v1 强制补缀契约）。
+// 两个服务面），也不走 gatewayopenai.BuildUpstreamURL（语音域版本段
+// /api/v3 属固定服务根，非 openai 族版本根直拼面）。
 func chainVolcengineSpeechUpstreamURL(path string) string {
 	base := strings.TrimSpace(os.Getenv(chainVolcengineSpeechUpstreamEnv))
 	if base == "" {

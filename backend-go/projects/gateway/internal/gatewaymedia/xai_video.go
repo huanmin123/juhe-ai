@@ -7,10 +7,10 @@
 // 凭据 = request_id；轮询 GET /v1/videos/{request_id} → status ∈
 // pending|done|expired|failed，done 携带 video{url,duration}（url 为临时
 // 直连 URL 无凭据、duration 是时长计量基源），failed 携带
-// error{code,message}。出站路径为 /v1 前缀的 openai 族形态（api.x.ai 官方
-// 根自带 /v1），URL 由链上层经 gatewayopenai.BuildUpstreamURL 归一（base
-// 强制 /v1 结尾去重，同 minimax 先例，无需专用归一函数）；纯逻辑层，
-// 不触 chain/HTTP 执行。
+// error{code,message}。出站路径为 openai 族操作路径（版本段 /v1 由
+// base_url 版本根承载，api.x.ai 官方根 + /v1），URL 由链上层经
+// gatewayopenai.BuildUpstreamURL 版本根直拼（同 minimax 先例，无补插/去重、
+// 无需专用归一函数）；纯逻辑层，不触 chain/HTTP 执行。
 package gatewaymedia
 
 import (
