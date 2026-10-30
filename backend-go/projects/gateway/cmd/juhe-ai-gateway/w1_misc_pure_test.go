@@ -690,45 +690,38 @@ func w1uSlogText(buf *bytes.Buffer) *slog.Logger {
 }
 
 // ---------------------------------------------------------------------------
-// chain_request_failure_health.go：chainRequestDispatchMarks / EnqueueProbeRequest fence
+// chain_request_failure_health.go：per-request 派发标记 / EnqueueProbeRequest fence
 // ---------------------------------------------------------------------------
 
 func TestW1UChainRequestDispatchMarks(t *testing.T) {
 	req1 := &gatewaypreauth.GatewayRequest{}
 	req2 := &gatewaypreauth.GatewayRequest{}
-	req3 := &gatewaypreauth.GatewayRequest{}
-	req4 := &gatewaypreauth.GatewayRequest{}
 
 	// nil 请求安全。
-	m := newChainRequestDispatchMarks(2)
-	if m.marked(nil) {
-		t.Error("marked(nil) 必须为 false")
+	var nilRequest *gatewaypreauth.GatewayRequest
+	if nilRequest.RequestFailureHealthCheckDispatched() {
+		t.Error("nil 请求 RequestFailureHealthCheckDispatched 必须为 false")
 	}
-	m.mark(nil) // 不 panic。
+	nilRequest.MarkRequestFailureHealthCheckDispatched() // 不 panic。
 
-	// 容量 2：mark(a) 重复标记不改变 FIFO 位置，随后 b、c 入队应逐出 a。
-	m.mark(req1)
-	if !m.marked(req1) {
-		t.Fatal("mark 后必须 marked")
+	// per-request 标记：请求间互不影响，标记幂等且不淘汰（BUG-0339）。
+	if req1.RequestFailureHealthCheckDispatched() || req2.RequestFailureHealthCheckDispatched() {
+		t.Error("初始状态必须未标记")
 	}
-	m.mark(req1) // 重复标记。
-	m.mark(req2)
-	if !m.marked(req2) {
-		t.Fatal("mark(req2) 后必须 marked")
+	req1.MarkRequestFailureHealthCheckDispatched()
+	if !req1.RequestFailureHealthCheckDispatched() {
+		t.Fatal("mark 后 req1 必须 marked")
 	}
-	m.mark(req3) // 触发逐出最老的 req1（重复标记不得刷新位置）。
-	if m.marked(req1) {
-		t.Error("容量逐出后 req1 必须 unmarked（重复 mark 不得刷新 FIFO 位置）")
+	req1.MarkRequestFailureHealthCheckDispatched()
+	if !req1.RequestFailureHealthCheckDispatched() {
+		t.Error("重复标记后 req1 必须保持 marked")
 	}
-	if !m.marked(req2) || !m.marked(req3) {
-		t.Error("req2/req3 必须保持 marked")
+	if req2.RequestFailureHealthCheckDispatched() {
+		t.Error("req2 不得共享 req1 的标记")
 	}
-	m.mark(req4) // 逐出 req2。
-	if m.marked(req2) {
-		t.Error("req2 被逐出后必须 unmarked")
-	}
-	if !m.marked(req3) || !m.marked(req4) {
-		t.Error("req3/req4 必须保持 marked")
+	req2.MarkRequestFailureHealthCheckDispatched()
+	if !req2.RequestFailureHealthCheckDispatched() || !req1.RequestFailureHealthCheckDispatched() {
+		t.Error("req1/req2 必须各自保持 marked")
 	}
 }
 

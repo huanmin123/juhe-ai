@@ -9,6 +9,10 @@ package main
 //   - one dispatched health check per request (the dispatched Symbol on the
 //     express request throttles the candidate-failover loop and keeps the
 //     failed-response and transport-failure branches from double firing);
+//     the Go side keeps the mark per-request on GatewayRequest
+//     (failureHealthCheckMark), so it is reclaimed with the request object
+//     exactly like the Node WeakMap entry (BUG-0339: a process-global map
+//     keyed by request pointers pinned Body.RawBody and grew the live heap);
 //   - dispatchAccountHealthCheck(accountId, 'request_failure') publishes the
 //     J1 probe request fact (internal-api service, fire-and-forget).
 //
@@ -34,7 +38,6 @@ package main
 //     second read of the env.
 
 import (
-	"container/list"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -209,62 +212,14 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequest(ctx context.Context,
 	return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchQueued, DecisionCode: "queued", TargetRole: "go-jobs"}
 }
 
-// chainRequestDispatchMarks approximates the Node per-request dispatched
-// Symbol (a WeakMap entry dying with the request object): Go has no weak map,
-// so the marks live in a bounded FIFO keyed by the request view pointer. The
-// bound (4096) far exceeds the live request window of one process; a mark
-// evicted only after thousands of later requests can at worst admit one
-// duplicate health-check dispatch, which the jobs side dedupes idempotently.
-type chainRequestDispatchMarks struct {
-	mu    sync.Mutex
-	cap   int
-	keys  map[*gatewaypreauth.GatewayRequest]*list.Element
-	order *list.List
-}
-
-func newChainRequestDispatchMarks(capacity int) *chainRequestDispatchMarks {
-	if capacity <= 0 {
-		capacity = 4096
-	}
-	return &chainRequestDispatchMarks{cap: capacity, keys: map[*gatewaypreauth.GatewayRequest]*list.Element{}, order: list.New()}
-}
-
-// marked reports whether the request already dispatched its health check.
-func (m *chainRequestDispatchMarks) marked(req *gatewaypreauth.GatewayRequest) bool {
-	if req == nil {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, ok := m.keys[req]
-	return ok
-}
-
-// mark records the request; the oldest entries fall out at the capacity.
-func (m *chainRequestDispatchMarks) mark(req *gatewaypreauth.GatewayRequest) {
-	if req == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.keys[req]; ok {
-		return
-	}
-	m.keys[req] = m.order.PushBack(req)
-	for len(m.keys) > m.cap {
-		// keys 与 order 在同一把锁内严格同步增删，len(keys) > cap >= 1
-		// 蕴含 order 非空，Front() 不会返回 nil。
-		oldest := m.order.Front()
-		delete(m.keys, m.order.Remove(oldest).(*gatewaypreauth.GatewayRequest))
-	}
-}
-
 // chainRequestFailureHealthDispatcher is the port of
 // dispatchRequestFailureAccountHealthCheck: the gateway-traffic gate, the
-// per-request throttle and the outbox publish in the Node order.
+// per-request throttle and the outbox publish in the Node order. The
+// per-request throttle lives on GatewayRequest.failureHealthCheckMark (the
+// per-request port of the Node dispatched Symbol); this dispatcher itself is
+// stateless besides the outbox writer.
 type chainRequestFailureHealthDispatcher struct {
 	outbox *chainProbeRequestOutboxWriter
-	marks  *chainRequestDispatchMarks
 }
 
 // newChainRequestFailureHealthDispatcher assembles the dispatcher over the
@@ -274,14 +229,14 @@ type chainRequestFailureHealthDispatcher struct {
 func newChainRequestFailureHealthDispatcher(outbox *chainProbeRequestOutboxWriter) *chainRequestFailureHealthDispatcher {
 	return &chainRequestFailureHealthDispatcher{
 		outbox: outbox,
-		marks:  newChainRequestDispatchMarks(4096),
 	}
 }
 
 // DispatchRequestFailureAccountHealthCheck mirrors
 // dispatchRequestFailureAccountHealthCheck(req, trafficSource, accountId):
 // non-gateway traffic and an already-dispatched request both return false
-// without touching the writer; a queued dispatch marks the request.
+// without touching the writer; a queued dispatch marks the request (the mark
+// dies with the request object — see GatewayRequest.failureHealthCheckMark).
 func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealthCheck(req *gatewaypreauth.GatewayRequest, trafficSource, accountID string) bool {
 	if d == nil {
 		return false
@@ -289,14 +244,14 @@ func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealt
 	if trafficSource != gatewayTrafficSource {
 		return false
 	}
-	if d.marks.marked(req) {
+	if req.RequestFailureHealthCheckDispatched() {
 		return false
 	}
 	outcome := d.dispatch(accountID, chainRequestFailureReason, "", nil)
 	if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
 		return false
 	}
-	d.marks.mark(req)
+	req.MarkRequestFailureHealthCheckDispatched()
 	return true
 }
 

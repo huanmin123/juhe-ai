@@ -238,6 +238,24 @@ func TestChainRequestFailureHealthDispatcherThrottle(t *testing.T) {
 	if rows := fixture.count(t); rows != 2 {
 		t.Fatalf("rows = %d want 2", rows)
 	}
+
+	// rejected 不消耗标记（BUG-0339 语义保持）：先用 rejecting writer（nil db，
+	// input_unavailable）派发同一请求得 false 且不得置位标记，换健康派发器后
+	// 同一请求仍可成功派发。
+	rejecting := newChainRequestFailureHealthDispatcher(newChainProbeRequestOutboxWriter(nil, 65_000))
+	fresh := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil))
+	if rejecting.DispatchRequestFailureAccountHealthCheck(fresh, gatewayTrafficSource, "acc_1") {
+		t.Fatal("rejected dispatch must return false")
+	}
+	if fresh.RequestFailureHealthCheckDispatched() {
+		t.Fatal("rejected dispatch must not mark the request")
+	}
+	if !dispatcher.DispatchRequestFailureAccountHealthCheck(fresh, gatewayTrafficSource, "acc_1") {
+		t.Fatal("same request must still dispatch after a rejected attempt")
+	}
+	if rows := fixture.count(t); rows != 3 {
+		t.Fatalf("rows = %d want 3", rows)
+	}
 }
 
 // TestChainFailureDispatcherDispatchesRequestFailureHealthCheck：failure-dispatch.ts

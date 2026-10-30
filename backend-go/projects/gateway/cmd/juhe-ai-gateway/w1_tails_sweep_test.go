@@ -1184,24 +1184,21 @@ func TestW1TProbeOutboxTails(t *testing.T) {
 		}
 	})
 
-	t.Run("派发标记容量与淘汰", func(t *testing.T) {
-		marks := newChainRequestDispatchMarks(0)
-		if marks.cap != 4096 {
-			t.Fatalf("默认容量 = %d, want 4096", marks.cap)
-		}
-		small := newChainRequestDispatchMarks(1)
+	t.Run("派发标记随请求对象存放", func(t *testing.T) {
+		// BUG-0339：标记是 GatewayRequest 上的 per-request 指针（Node
+		// Symbol/WeakMap 语义），不再有进程级容量表；不同请求互不影响。
 		first := &gatewaypreauth.GatewayRequest{}
 		second := &gatewaypreauth.GatewayRequest{}
-		small.mark(first)
-		small.mark(second)
-		if small.marked(first) {
-			t.Fatal("容量淘汰后 first 不应再命中")
+		first.MarkRequestFailureHealthCheckDispatched()
+		if !first.RequestFailureHealthCheckDispatched() {
+			t.Fatal("标记后 first 应命中")
 		}
-		if !small.marked(second) {
-			t.Fatal("second 应保持命中")
+		if second.RequestFailureHealthCheckDispatched() {
+			t.Fatal("second 不得共享 first 的标记")
 		}
-		small.mark(nil)
-		if small.marked(nil) {
+		var nilRequest *gatewaypreauth.GatewayRequest
+		nilRequest.MarkRequestFailureHealthCheckDispatched()
+		if nilRequest.RequestFailureHealthCheckDispatched() {
 			t.Fatal("nil 请求不应命中")
 		}
 	})

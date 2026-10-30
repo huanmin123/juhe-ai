@@ -62,7 +62,29 @@ type GatewayRequest struct {
 	// 原请求共享同一份记忆化（同一逻辑请求）。只能经 ContentFingerprintMemoFor
 	// 读写，构造方零值即可。
 	contentFingerprintMemos *contentFingerprintMemoStore
+
+	// failureHealthCheckMark 移植 Node 的 per-request dispatched
+	// Symbol/WeakMap 语义（失败健康检查「本请求已派发」标记）：标记必须随
+	// 请求对象一起被 GC 回收。禁止改回进程级以请求指针为键的全局 map——
+	// 强键会把整个 GatewayRequest（含 Body.RawBody 完整请求体）钉在堆里
+	// 直至淘汰，生产实测造成 ~1GB 活堆增长（BUG-0339）。指针字段使浅复制
+	// （gatewaydispatch gatewayRequestWithModelOverride 的 clone := *req）
+	// 与原请求共享同一标记，保持「同一逻辑请求只派发一次」。只能经
+	// RequestFailureHealthCheckDispatched / MarkRequestFailureHealthCheckDispatched
+	// 读写，NewGatewayRequest 构造即初始化；零值请求由 Mark 方法惰性补齐。
+	failureHealthCheckMark *requestFailureHealthCheckMark
 }
+
+// requestFailureHealthCheckMark 是单请求的失败健康检查派发标记；互斥锁保护
+// 并发失败分支（流式/非流式、failed-response 与 transport-failure）下的置位。
+type requestFailureHealthCheckMark struct {
+	mu         sync.Mutex
+	dispatched bool
+}
+
+// requestFailureHealthCheckMarkInitMu 只保护零值请求（未经 NewGatewayRequest
+// 构造）的 failureHealthCheckMark 惰性初始化；生产请求构造即非 nil，不走此锁。
+var requestFailureHealthCheckMarkInitMu sync.Mutex
 
 // contentFingerprintMemoStore 是单请求的内容指纹记忆化存储。
 type contentFingerprintMemoStore struct {
@@ -74,11 +96,41 @@ type contentFingerprintMemoStore struct {
 // to HTTP.RemoteAddr-based extraction only through ExtractClientIP (metadata
 // contract); the struct fields stay verbatim inputs.
 func NewGatewayRequest(r *http.Request) *GatewayRequest {
-	req := &GatewayRequest{HTTP: r}
+	req := &GatewayRequest{HTTP: r, failureHealthCheckMark: &requestFailureHealthCheckMark{}}
 	if r != nil {
 		req.RemoteAddr = r.RemoteAddr
 	}
 	return req
+}
+
+// RequestFailureHealthCheckDispatched 报告本请求是否已派发过失败健康检查
+// （Node dispatched Symbol 的读取臂）。nil 接收者与未初始化标记返回 false。
+func (req *GatewayRequest) RequestFailureHealthCheckDispatched() bool {
+	if req == nil || req.failureHealthCheckMark == nil {
+		return false
+	}
+	req.failureHealthCheckMark.mu.Lock()
+	defer req.failureHealthCheckMark.mu.Unlock()
+	return req.failureHealthCheckMark.dispatched
+}
+
+// MarkRequestFailureHealthCheckDispatched 置位本请求的失败健康检查派发标记
+// （Node dispatched Symbol 的写入臂）。nil 接收者是 no-op；零值请求经包级
+// requestFailureHealthCheckMarkInitMu 惰性补建标记，与并发置位互斥。
+func (req *GatewayRequest) MarkRequestFailureHealthCheckDispatched() {
+	if req == nil {
+		return
+	}
+	if req.failureHealthCheckMark == nil {
+		requestFailureHealthCheckMarkInitMu.Lock()
+		if req.failureHealthCheckMark == nil {
+			req.failureHealthCheckMark = &requestFailureHealthCheckMark{}
+		}
+		requestFailureHealthCheckMarkInitMu.Unlock()
+	}
+	req.failureHealthCheckMark.mu.Lock()
+	req.failureHealthCheckMark.dispatched = true
+	req.failureHealthCheckMark.mu.Unlock()
 }
 
 // PathAndQuery mirrors `req.originalUrl || req.path`: the escaped request

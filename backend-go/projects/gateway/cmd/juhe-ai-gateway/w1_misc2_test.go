@@ -194,36 +194,31 @@ func TestW1LockObservationRowFence(t *testing.T) {
 	}
 }
 
-func TestW1RequestDispatchMarksLRU(t *testing.T) {
-	// 容量默认：<=0 → 4096。
-	marks := newChainRequestDispatchMarks(0)
+func TestW1RequestDispatchMarksPerRequest(t *testing.T) {
+	// 失败健康检查派发标记随请求对象存放（Node per-request Symbol 语义，
+	// BUG-0339）：不再有进程级 FIFO 表，也没有容量淘汰。
 	request := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/x", nil))
-	if marks.marked(request) {
+	if request.RequestFailureHealthCheckDispatched() {
 		t.Fatal("未标记必须 false")
 	}
-	if marks.marked(nil) {
+	var nilRequest *gatewaypreauth.GatewayRequest
+	if nilRequest.RequestFailureHealthCheckDispatched() {
 		t.Fatal("nil 请求必须 false")
 	}
-	marks.mark(nil)
+	nilRequest.MarkRequestFailureHealthCheckDispatched() // 不 panic。
 	// 标记后命中；重复标记幂等。
-	marks.mark(request)
-	if !marks.marked(request) {
+	request.MarkRequestFailureHealthCheckDispatched()
+	if !request.RequestFailureHealthCheckDispatched() {
 		t.Fatal("标记后必须命中")
 	}
-	marks.mark(request)
-	// 容量淘汰：超出容量后最早的条目被逐出。
-	small := newChainRequestDispatchMarks(2)
-	first := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/1", nil))
-	second := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/2", nil))
-	third := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/3", nil))
-	small.mark(first)
-	small.mark(second)
-	small.mark(third)
-	if small.marked(first) {
-		t.Fatal("最早条目必须被逐出")
+	request.MarkRequestFailureHealthCheckDispatched()
+	if !request.RequestFailureHealthCheckDispatched() {
+		t.Fatal("重复标记后仍必须命中")
 	}
-	if !small.marked(second) || !small.marked(third) {
-		t.Fatal("容量内条目必须保留")
+	// 不同请求互不影响：标记不再按进程容量逐出。
+	other := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/1", nil))
+	if other.RequestFailureHealthCheckDispatched() {
+		t.Fatal("其他请求不得共享标记")
 	}
 }
 
