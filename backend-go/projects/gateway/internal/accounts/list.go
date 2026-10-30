@@ -1451,10 +1451,13 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 			}
 			return ""
 		}()+`)`)
+		// 占位符顺序 = SQL 中 group_id 在前、system_account_id 在后（T79：
+		// 参数 append 顺序必须与占位符一致，交叉绑定会使 owner 作用域
+		// options?groupId= 恒空集）。
+		args = append(args, normalized.GroupID)
 		if scoped != "" {
 			args = append(args, scoped)
 		}
-		args = append(args, normalized.GroupID)
 	}
 	if len(normalized.TagIDs) > 0 {
 		clauses = append(clauses, `EXISTS (

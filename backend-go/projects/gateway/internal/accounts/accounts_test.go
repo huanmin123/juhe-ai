@@ -1044,6 +1044,36 @@ func TestAccountOptionsEndpoint(t *testing.T) {
 	}
 }
 
+// T79（BUG 复审）：owner 作用域 options?groupId= 的占位符顺序曾交叉绑定
+// （group_id 占位符被塞入 scoped、system_account_id 占位符被塞入 groupId），
+// 任何 owner 作用域分组过滤恒空集。本用例要求数据级命中，杜绝回归。
+func TestAccountOptionsOwnerScopeGroupIdFilter(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	aliceID := env.login(t, "alice", "alice-pass", "user")
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-alice-t79', ?, '默认分组', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID)
+	code, created := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts", createPayload("alice-t79"))
+	if code != http.StatusCreated {
+		t.Fatalf("alice create: %d %v", code, created)
+	}
+	code, hit := env.do(t, http.MethodGet, "/__aisys__/api/my-accounts/options?groupId=grp-alice-t79", "")
+	if items := dataArray(t, hit); code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("owner groupId hit: %d %v", code, hit)
+	}
+	code, miss := env.do(t, http.MethodGet, "/__aisys__/api/my-accounts/options?groupId=grp-other", "")
+	if items := dataArray(t, miss); code != http.StatusOK || len(items) != 0 {
+		t.Fatalf("owner groupId miss: %d %v", code, miss)
+	}
+	// 管理视图断言前切回管理员会话（env.do 复用最近一次登录的 cookie）。
+	env.login(t, "root", "root-pass", "super_admin")
+	code, adminView := env.do(t, http.MethodGet, "/__aisys__/api/accounts/options?groupId=grp-alice-t79", "")
+	if items := dataArray(t, adminView); code != http.StatusOK || len(items) != 1 {
+		t.Fatalf("admin groupId: %d %v", code, adminView)
+	}
+}
+
 func TestAccountDeleteSoftCleanup(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
