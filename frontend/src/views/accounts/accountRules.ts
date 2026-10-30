@@ -421,13 +421,15 @@ function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountListIte
   // 调度后自动生效；降级备用仍按调度可用面放开（核心功能设计 超级优先节）。
   const canEnableSuperPriority = canEnableDispatchFlag
     || (!isAuthorizedAccount(account) && account.status === 'temporary_unavailable')
-  if (canEnableSuperPriority || account.superPriorityEnabled) {
+  // 两个标记互斥（核心功能设计：降级备用和超级优先不能同时开启）：新设入口
+  // 只在另一标记未开启时显示；已开标记保留取消入口，历史双开数据可经此自愈。
+  if ((canEnableSuperPriority && !account.fallbackEnabled) || account.superPriorityEnabled) {
     items.push({
       key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
       label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
     })
   }
-  if (canEnableDispatchFlag || account.fallbackEnabled) {
+  if ((canEnableDispatchFlag && !account.superPriorityEnabled) || account.fallbackEnabled) {
     items.push({
       key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
       label: account.fallbackEnabled ? '取消降级备用' : '降级备用'

@@ -90,7 +90,8 @@ func TestW13APatchValidationArms(t *testing.T) {
 		`{"expectedConfigRevision":1,"superPriorityEnabled":true,"fallbackEnabled":true}`); code != http.StatusBadRequest {
 		t.Fatalf("超级优先+降级应 400：%d %v", code, payload)
 	}
-	// 单开超级优先成功（416-424），随后反向互斥（430-432），单开降级成功（427-435）。
+	// 单开超级优先成功（416-424），随后反向互斥（430-432）；行内已开超级
+	// 优先时单开降级按终值互斥拒绝（BUG-0340：双开不得经单字段 PATCH 落库）。
 	if code, payload := env.do(t, http.MethodPatch, path,
 		`{"expectedConfigRevision":1,"superPriorityEnabled":true}`); code != http.StatusOK {
 		t.Fatalf("单开超级优先应 200：%d %v", code, payload)
@@ -100,45 +101,45 @@ func TestW13APatchValidationArms(t *testing.T) {
 		t.Fatalf("降级+超级优先应 400：%d %v", code, payload)
 	}
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":2,"fallbackEnabled":true}`); code != http.StatusOK {
-		t.Fatalf("单开降级应 200：%d %v", code, payload)
+		`{"expectedConfigRevision":2,"fallbackEnabled":true}`); code != http.StatusBadRequest {
+		t.Fatalf("超级优先已开时单开降级应 400：%d %v", code, payload)
 	}
-	if env.count(t, `SELECT super_priority_enabled + fallback_enabled FROM accounts WHERE id = 'acc-w13a-a'`) != 2 {
-		t.Fatal("两个开关都应落库")
+	if env.count(t, `SELECT super_priority_enabled + fallback_enabled FROM accounts WHERE id = 'acc-w13a-a'`) != 1 {
+		t.Fatal("互斥拒绝后应只保留超级优先")
 	}
 	// 非法过期时间（450-452）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"accountExpiresAt":"not-a-time"}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":2,"accountExpiresAt":"not-a-time"}`); code != http.StatusBadRequest {
 		t.Fatalf("非法过期时间应 400：%d %v", code, payload)
 	}
 	// 非法时间计划（465-467 NormalizeSchedule 错误）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"availabilitySchedule":"x"}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":2,"availabilitySchedule":"x"}`); code != http.StatusBadRequest {
 		t.Fatalf("非法时间计划应 400：%d %v", code, payload)
 	}
 	// 代理三态：空白（488-490）与不存在的代理（500-502）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"proxyProfileId":"   "}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":2,"proxyProfileId":"   "}`); code != http.StatusBadRequest {
 		t.Fatalf("空白代理应 400：%d %v", code, payload)
 	}
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"proxyProfileId":"pp-w13a-missing"}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":2,"proxyProfileId":"pp-w13a-missing"}`); code != http.StatusBadRequest {
 		t.Fatalf("缺失代理应 400：%d %v", code, payload)
 	}
 	// 检查模型不在支持模型集合（567-569）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"healthCheckModel":"gpt-x"}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":2,"healthCheckModel":"gpt-x"}`); code != http.StatusBadRequest {
 		t.Fatalf("检查模型越界应 400：%d %v", code, payload)
 	}
 	// 检查协议非法（577-580）：词表外值 400（§8 三件套同现同省契约先行 400，
 	// 单字段词表臂不再单独可达，状态码语义不变）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"healthCheckEndpointMode":"bogus"}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":2,"healthCheckEndpointMode":"bogus"}`); code != http.StatusBadRequest {
 		t.Fatalf("非法检查协议应 400：%d %v", code, payload)
 	}
 	// 三件套同现同省（设计 §8）：单字段提交 400。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"healthCheckEndpointMode":"responses_json"}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":2,"healthCheckEndpointMode":"responses_json"}`); code != http.StatusBadRequest {
 		t.Fatalf("三件套单字段提交应 400：%d %v", code, payload)
 	}
 	// 合法三件套改选（581-586）：连接行 + 支持模型前置事实落库后，三字段同时
@@ -146,7 +147,7 @@ func TestW13APatchValidationArms(t *testing.T) {
 	// 支持模型且声明该 mode）。
 	env.seedAccountConnection(t, "acc-w13a-a", "gpt_openai_v1", "gpt-4o-mini")
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_sse","healthCheckModel":"gpt-4o-mini"}`); code != http.StatusOK {
+		`{"expectedConfigRevision":2,"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_sse","healthCheckModel":"gpt-4o-mini"}`); code != http.StatusOK {
 		t.Fatalf("合法三件套应 200：%d %v", code, payload)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = 'acc-w13a-a' AND
@@ -156,7 +157,7 @@ func TestW13APatchValidationArms(t *testing.T) {
 	}
 	// 支持模型变化成功路径（变化臂 + 最终凭据断言入口）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":4,"supportedModels":["gpt-4o","gpt-4.1"]}`); code != http.StatusOK {
+		`{"expectedConfigRevision":3,"supportedModels":["gpt-4o","gpt-4.1"]}`); code != http.StatusOK {
 		t.Fatalf("支持模型更新应 200：%d %v", code, payload)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = 'acc-w13a-a'`) != 2 {
@@ -164,21 +165,21 @@ func TestW13APatchValidationArms(t *testing.T) {
 	}
 	// 分组绑定：空白（1086-1088）与未知分组（assertGroupCanBind ErrNoRows）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":5,"groupId":"   "}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":4,"groupId":"   "}`); code != http.StatusBadRequest {
 		t.Fatalf("空白分组应 400：%d %v", code, payload)
 	}
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":5,"groupId":"grp-w13a-missing"}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":4,"groupId":"grp-w13a-missing"}`); code != http.StatusBadRequest {
 		t.Fatalf("缺失分组应 400：%d %v", code, payload)
 	}
 	// 标签超长（1044-1046）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":5,"tags":["`+strings.Repeat("签", 41)+`"]}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":4,"tags":["`+strings.Repeat("签", 41)+`"]}`); code != http.StatusBadRequest {
 		t.Fatalf("超长标签应 400：%d %v", code, payload)
 	}
 	// credentialsPatch null 删键后凭据归一化拒绝（644-646）。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":5,"credentialsPatch":{"api_key":null}}`); code != http.StatusBadRequest {
+		`{"expectedConfigRevision":4,"credentialsPatch":{"api_key":null}}`); code != http.StatusBadRequest {
 		t.Fatalf("删空 api_key 应 400：%d %v", code, payload)
 	}
 }

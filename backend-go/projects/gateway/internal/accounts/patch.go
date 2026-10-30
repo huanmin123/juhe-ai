@@ -609,12 +609,24 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			setArgs = append(setArgs, *input.Priority)
 		}
 	}
+	// 互斥终值校验（核心功能设计：降级备用和超级优先不能同时开启）：请求未
+	// 携带的字段并入行内现值后再判，与 m11_authorized_dispatch 同款语义——
+	// 只比双输入会漏掉"行内已开 A、请求单开 B"的组合（列表菜单单字段 PATCH
+	// 正是只带一个布尔字段的通道）。
+	nextSuperPriorityOn := row.superPriorityEnabled == 1
+	if input.SuperPriorityEnabled != nil {
+		nextSuperPriorityOn = *input.SuperPriorityEnabled
+	}
+	nextFallbackOn := row.fallbackEnabled == 1
+	if input.FallbackEnabled != nil {
+		nextFallbackOn = *input.FallbackEnabled
+	}
+	if nextSuperPriorityOn && nextFallbackOn {
+		return nil, &ValidationError{Message: "超级优先和降级备用不能同时开启"}
+	}
 	if input.SuperPriorityEnabled != nil {
 		next := boolInt(*input.SuperPriorityEnabled)
 		if next != row.superPriorityEnabled {
-			if next == 1 && boolInt(input.FallbackEnabled != nil && *input.FallbackEnabled) == 1 {
-				return nil, &ValidationError{Message: "超级优先和降级备用不能同时开启"}
-			}
 			addChange("superPriorityEnabled", row.superPriorityEnabled == 1, *input.SuperPriorityEnabled)
 			sets = append(sets, "super_priority_enabled = ?")
 			setArgs = append(setArgs, next)
@@ -623,9 +635,6 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if input.FallbackEnabled != nil {
 		next := boolInt(*input.FallbackEnabled)
 		if next != row.fallbackEnabled {
-			if next == 1 && boolInt(input.SuperPriorityEnabled != nil && *input.SuperPriorityEnabled) == 1 {
-				return nil, &ValidationError{Message: "超级优先和降级备用不能同时开启"}
-			}
 			addChange("fallbackEnabled", row.fallbackEnabled == 1, *input.FallbackEnabled)
 			sets = append(sets, "fallback_enabled = ?")
 			setArgs = append(setArgs, next)
@@ -633,7 +642,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	// 调度绑定终值派生（归档 account-management-patch.repository.ts:494-516）：
 	// 三个终值取输入或行内现值（Go 编辑面无 Node 的互斥自动让位归一化，
-	// 双输入同真已由上方校验拒绝），任一偏离现值即 dispatchBindingChanged；
+	// 双真已由上方互斥终值校验拒绝），任一偏离现值即 dispatchBindingChanged；
 	// 未换组时驱动下方 group_accounts 绑定列同步（else 分支），换组时作为
 	// replaceGroupBinding 的入参（归档 :830-834 传 next 值）。
 	nextPriority := row.priority
