@@ -47,6 +47,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, watch } from 'vue'
 
 import type { AccountFormModel } from './accountFormTypes'
+import { capabilityDomainIsMedia } from './accountCapabilityDomains'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import { accountTestEndpointModesForModel } from './accountEndpointModes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
@@ -61,8 +62,12 @@ const props = defineProps<{
 }>()
 
 const checkModelTooltip = '推荐由上游目录自动选择；可手动调整。后台激活检查、周期健康检查和恢复探测使用该模型。'
+// T64：媒体域（audio/video/image）创建态必填——媒体域不在载荷侧 oauthDefaultsAllowed
+// 放行面（accountSavePayload），后端三件套缺失同样硬拒；缺本子句会让「可留空」注记
+// 与保存校验相悖（与 AccountOAuthSection 同名谓词同构）。
 const managedOAuthDefaultsAllowed = computed(() => (
-  ['oauth', 'google_oauth'].includes(props.form.type)
+  !capabilityDomainIsMedia(props.form.capabilityDomain)
+  && ['oauth', 'google_oauth'].includes(props.form.type)
   && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode)
 ))
 const checkModelRequired = computed(() => (

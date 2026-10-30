@@ -469,8 +469,12 @@ describe('AccountMediaForm.vue v8-B 渲染契约（源码级）', () => {
     expect(templateSource).not.toContain('AccountResponseInspectionPolicyCard')
     expect(templateSource).not.toContain('temporaryUnavailableContinuousProbeEnabled')
     expect(templateSource).not.toContain('lockDeathTimeoutSeconds')
-    // chat 稳定性卡的功能标记类名（探活开关行/锁死配置块）不得出现在媒体表单
-    expect(templateSource).not.toContain('probe-toggle')
+    // chat 稳定性卡的功能标记类名（探活开关行/锁死配置块）不得出现在媒体表单；
+    // image 域「后台自动探测」总开关用独立命名 media-advanced-probe /
+    // background-probe-toggle（总开关设计 §2，audio/video 不渲染），不算 chat 泄漏。
+    expect(templateSource).not.toContain('probe-toggle-row')
+    expect(templateSource).not.toContain('probe-toggle-label')
+    expect(templateSource).not.toContain('probe-toggle-help')
     expect(templateSource).not.toContain('lock-config-fields')
   })
 
