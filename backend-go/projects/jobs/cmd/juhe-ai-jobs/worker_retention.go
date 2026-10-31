@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/cleanuprepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
@@ -66,6 +67,12 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// W40：account_health_outcomes 保留清理句柄（juhe_jobs schema，同池）；
+	// 清理 SQL 在 accounthealth 包内实现（表归属不动）。
+	accountHealthOutcomesDB, err := openCleanupDB("retention-account-health-outcomes")
+	if err != nil {
+		return err
+	}
 
 	// usage-shards 清理消费面已随 sqlite 分片形态删除（D14 验证：PG 写侧落
 	// juhe_usage 分区，分片文件只在 sqlite 形态存在，ShardStore 在 PG 装配
@@ -84,6 +91,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 
 	family.retentionStatsStore = statsRetention
 	family.taskRunsRetention = &cleanuprepo.TaskRunsRetentionStore{DB: taskRunsRetentionDB}
+	family.accountHealthOutcomesDB = accountHealthOutcomesDB
 	recordCleanup := &cleanuprepo.RecordCleanupStore{
 		Dataset:      dataset,
 		Stats:        stats,
@@ -183,6 +191,10 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		// 两半共用同一调度节拍（fixedDelay 10min、storage-maintenance lane、
 		// 5min 超时与失败退避）。
 		if err := family.cleanupTaskRunsRetention(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		// W40：account_health_outcomes 滚动保留清理，同节拍同失败语义。
+		if err := family.cleanupAccountHealthOutcomes(taskCtx); err != nil {
 			return jobsched.TaskResult{}, err
 		}
 		if _, err := dataRetentionJob.Run(taskCtx); err != nil {
@@ -287,6 +299,9 @@ type retentionFamily struct {
 	// taskRunsRetention 是 background_task_runs / background_job_leases 的
 	// 保留清理仓储（缺陷1修复；随 data-retention-cleanup 节拍执行）。
 	taskRunsRetention *cleanuprepo.TaskRunsRetentionStore
+	// accountHealthOutcomesDB 是 account_health_outcomes 保留清理的 juhe_jobs
+	// 句柄（W40；清理 SQL 在 accounthealth 包，随同一节拍执行）。
+	accountHealthOutcomesDB *cleanuprepo.DB
 
 	recordCleanup *cleanuprepo.RecordCleanupStore
 	codex         *cleanuprepo.CodexContextStore
@@ -385,6 +400,48 @@ func (f *retentionFamily) cleanupTaskRunsRetention(ctx context.Context) error {
 			"deletedLeases", deletedLeases,
 			"retentionDays", taskRunsRetentionDays,
 			"cutoff", cutoff)
+	}
+	return nil
+}
+
+// accountHealthOutcomesRetentionDays / BatchSize / MaxPasses 是
+// account_health_outcomes 的保留窗口与批次上限（W40，2026-10-31 用户裁决
+// 35 天）：读面最大窗 31 天 + 4 天排查余量；稳态写入 ≈7000 行/天，每批
+// 5000 行、最多 200 批远超收敛所需，受任务 5min 超时与 ctx 取消约束。
+const (
+	accountHealthOutcomesRetentionDays      = 35
+	accountHealthOutcomesRetentionBatchSize = 5000
+	accountHealthOutcomesRetentionMaxPasses = 200
+)
+
+// cleanupAccountHealthOutcomes 执行一轮 account_health_outcomes 保留清理
+// （W40）：按 observed_at 滚动 35 天窗口最旧优先批删，清理 SQL 在
+// accounthealth 包。失败让本轮任务以错误收场（走既有失败退避），不静默降级。
+func (f *retentionFamily) cleanupAccountHealthOutcomes(ctx context.Context) error {
+	if f.accountHealthOutcomesDB == nil {
+		return nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -accountHealthOutcomesRetentionDays)
+	var deleted int64
+	for pass := 0; pass < accountHealthOutcomesRetentionMaxPasses; pass++ {
+		if ctx.Err() != nil {
+			break
+		}
+		batch, err := accounthealth.CleanupOutcomesBefore(ctx, f.accountHealthOutcomesDB.DB, cutoff, accountHealthOutcomesRetentionBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 account_health_outcomes 失败: %w", err)
+		}
+		deleted += batch
+		if batch < accountHealthOutcomesRetentionBatchSize {
+			break
+		}
+	}
+	if deleted > 0 {
+		f.assembly.logger.Info("J1 outcome 保留清理完成",
+			"event", "account_health_outcomes_retention_cleanup",
+			"deleted", deleted,
+			"retentionDays", accountHealthOutcomesRetentionDays,
+			"cutoff", cutoff.Format(time.RFC3339))
 	}
 	return nil
 }
