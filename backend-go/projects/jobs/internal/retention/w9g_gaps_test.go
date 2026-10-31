@@ -178,9 +178,6 @@ func TestW9GMissingPortsFailClosed(t *testing.T) {
 	if _, err := job.usageRecords().CleanupProcessedBefore(ctx, "c", 1); err == nil {
 		t.Fatal("missingUsageRecords.CleanupProcessedBefore 必须 fail-closed")
 	}
-	if _, err := job.db().CleanupChatRetention(ctx, ChatRetentionInput{}); err == nil {
-		t.Fatal("missingDbService.CleanupChatRetention 必须 fail-closed")
-	}
 	if _, err := job.db().CleanupExpiredSystemSessions(ctx, "c", 1); err == nil {
 		t.Fatal("missingDbService.CleanupExpiredSystemSessions 必须 fail-closed")
 	}
@@ -527,35 +524,6 @@ func TestW9GCutoffHelpers(t *testing.T) {
 
 // ---------- chat / expired account 守卫 ----------
 
-func TestW9GChatRetentionGuards(t *testing.T) {
-	ctx := context.Background()
-	var nilJob *ChatRetentionJob
-	if err := nilJob.Run(ctx); err == nil || !strings.Contains(err.Error(), "db service 未初始化") {
-		t.Fatalf("nil receiver err = %v", err)
-	}
-	if err := (&ChatRetentionJob{}).Run(ctx); err == nil || !strings.Contains(err.Error(), "db service 未初始化") {
-		t.Fatalf("nil DB err = %v", err)
-	}
-
-	cancelled, cancel := context.WithCancel(ctx)
-	cancel()
-	job := &ChatRetentionJob{DB: &fakeDbService{}}
-	if err := job.Run(cancelled); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled err = %v", err)
-	}
-
-	// nil Clock/Logger 走默认值；DB 返回结果时正常完成。
-	db := &fakeDbService{chatResult: &ChatRetentionResult{DeletedMessages: 2}}
-	ok := &ChatRetentionJob{DB: db, RetentionDays: 3, Timeout: time.Second}
-	if err := ok.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// DB 错误上抛。
-	if err := (&ChatRetentionJob{DB: &fakeDbService{chatErr: errors.New("chat down")}, Timeout: time.Second}).Run(ctx); err == nil {
-		t.Fatal("chat db 错误必须上抛")
-	}
-}
 
 func TestW9GExpiredAccountGuards(t *testing.T) {
 	ctx := context.Background()

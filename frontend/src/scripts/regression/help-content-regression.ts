@@ -32,7 +32,7 @@ const userShell = readRepoFile('frontend', 'public', 'help', 'user', 'index.html
 const adminShell = readRepoFile('frontend', 'public', 'help', 'admin', 'index.html')
 
 const userRoutes = [
-  '/my-chat', '/my-stats', '/my-accounts', '/my-groups', '/my-api-keys', '/my-route-strategies',
+  '/my-stats', '/my-accounts', '/my-groups', '/my-api-keys', '/my-route-strategies',
   '/my-model-checks', '/my-models', '/my-authorizations', '/my-authorization-team-usage',
   '/my-authorization-user-usage', '/my-teams', '/my-usage-stats', '/my-ai-performance',
   '/my-ai-health', '/my-usage-records', '/my-operation-logs'
@@ -47,7 +47,7 @@ const adminRoutes = [
   '/announcements', '/system-accounts', '/settings'
 ] as const
 
-assertEqual(userRoutes.length, 17, '用户帮助路由清单必须维护 17 项')
+assertEqual(userRoutes.length, 16, '用户帮助路由清单必须维护 16 项')
 assertEqual(adminRoutes.length, 26, '管理员帮助路由清单必须维护 26 项')
 for (const route of [...userRoutes, ...adminRoutes]) {
   assertMatch(routerSource, new RegExp(`path:\\s*['"]${escapeRegExp(route)}['"]`), `路由源必须保留 ${route}`)
@@ -92,7 +92,7 @@ for (const section of manifest.sections) {
   }
 }
 
-// 深链资产：旧手册 17 条用户页与 26 条管理页深链必须全部出现在新篇目中
+// 深链资产：旧手册 16 条用户页与 26 条管理页深链必须全部出现在新篇目中
 const userBundle = userMdBundle.join('\n')
 const adminBundle = adminMdBundle.join('\n')
 for (const route of userRoutes) {
@@ -104,8 +104,7 @@ for (const route of adminRoutes) {
   assertContains(adminBundle, `](/__aisys__${route})`, `管理员篇目必须保留 ${route} 管理页深链`)
 }
 // 语义资产：跨协议口径与高危语义必须随篇目保留
-assertContains(userBundle, '专属对话 Key', '用户篇目必须说明 AI 问答使用专属对话 Key')
-assertContains(userBundle, '不能替代客户端 Key 的接入验证', '用户篇目不得把 AI 问答当作客户端 Key 验证入口')
+assertContains(userBundle, '不能替代客户端 Key 的接入验证', '用户篇目不得把演练场试玩当作客户端 Key 验证入口')
 assertContains(userBundle, '`active`（检查通过且启用）是进入候选的必要条件，不保证当前一定可调度', '用户篇目不得把 active 写成充分条件')
 assertContains(adminBundle, 'juhe-ai-account-import v1', '管理员篇目必须说明代用户导入协议')
 assertContains(adminBundle, 'pending_test', '管理员篇目必须保留 pending_test 语义')

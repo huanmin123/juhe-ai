@@ -15,9 +15,6 @@ type woSettleDB struct {
 	err        error
 }
 
-func (d *woSettleDB) CleanupChatRetention(context.Context, ChatRetentionInput) (*ChatRetentionResult, error) {
-	return nil, errors.New("not implemented")
-}
 func (d *woSettleDB) CleanupExpiredSystemSessions(context.Context, string, int) (int64, error) {
 	return 0, errors.New("not implemented")
 }

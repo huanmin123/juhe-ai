@@ -124,3 +124,60 @@ func TestApplyGptAccountRequestOverridesWireInertWithoutCapability(t *testing.T)
 		t.Fatalf("compact request should skip effort: %v", out)
 	}
 }
+
+// DD-F2 修复钉子：service_tier 写面按最终 endpoint family 分支。
+// anthropic_messages 族 wire 无 service_tier 字段（requestoverride
+// serviceTiersByFamily 对 anthropic 族为空集），即使目录声明支持也不写入、
+// default 也不删除；gemini 族词表非空（default|priority|flex），维持能力门
+// 写入不变。
+func TestApplyGptAccountRequestOverrideServiceTierSkipsAnthropicFamily(t *testing.T) {
+	// priority + 目录声明支持：anthropic_messages 族不写 service_tier。
+	out, err := ApplyGptAccountRequestOverridesBody(
+		map[string]any{"model": "m", "max_tokens": 64, "messages": []any{}},
+		GptAccountOverrideInput{
+			Credentials:    map[string]any{"service_tier_override": "priority"},
+			EndpointFamily: "anthropic_messages",
+			ModelCapabilities: &GptRequestOverrideModelCapabilities{
+				SupportedServiceTiers: []string{"priority"},
+			},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, has := out["service_tier"]; has {
+		t.Fatalf("anthropic_messages 族不得写入 service_tier: %v", out)
+	}
+
+	// default 强制标准档在 anthropic_messages 族同样无可作用对象：不删除、
+	// 不报错（该族 body 本无该字段）。
+	out, err = ApplyGptAccountRequestOverridesBody(
+		map[string]any{"model": "m", "max_tokens": 64},
+		GptAccountOverrideInput{
+			Credentials:       map[string]any{"service_tier_override": "default"},
+			EndpointFamily:    "anthropic_messages",
+			ModelCapabilities: nil,
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, has := out["service_tier"]; has {
+		t.Fatalf("anthropic_messages 族 default 不得写入 service_tier: %v", out)
+	}
+
+	// gemini 族词表非空：能力门命中时维持写入（既有行为）。
+	out, err = ApplyGptAccountRequestOverridesBody(
+		map[string]any{"model": "m", "contents": []any{}},
+		GptAccountOverrideInput{
+			Credentials:    map[string]any{"service_tier_override": "priority"},
+			EndpointFamily: "gemini_generate_content",
+			ModelCapabilities: &GptRequestOverrideModelCapabilities{
+				SupportedServiceTiers: []string{"priority"},
+			},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out["service_tier"] != "priority" {
+		t.Fatalf("gemini 族 service_tier = %v, want priority", out["service_tier"])
+	}
+}

@@ -1,62 +1,41 @@
 package main
 
-// G20 phase-2 composition-root chat generation-wave ports (the
-// /__aisys__/api/my-chat family dispatches model/image/compaction work into
-// the internal gateway chain).
+// 演练场派发执行器与目录/传输投影（docs/functions/演练场设计.md §3.1）：
+// chatGatewayExecutor 把演练场固定派发端口直驱到进程内 /v1 链 handler（io.Pipe
+// 保活 SSE 流式），chatModelCatalog 把 runtime cache 的 pinned 账户快照与模型
+// 目录投影为传输小结构。原 my-chat 会话面专属的资产对象存储与 token 计数
+// 适配随会话面退役删除（§8）。
 //
-// Node authority:
-//   - modules/chat/chat-gateway-dispatch.ts dispatchChatGatewayRequest: an
-//     HTTP fetch against `http://127.0.0.1:${runtimeConfig.port}` (the same
-//     process' /v1 entry) with header/body passthrough and a streaming
-//     response. The Go executor below keeps the equivalence but drops the
-//     loopback hop: it drives the assembled /v1 chain handler in-process with
-//     an io.Pipe body so SSE streaming stays live.
-//   - runtime/listCachedOpenAIAccountsForGroupAsync +
-//     listCachedProviderModelCatalogAsync: the model catalog port over the
-//     runtime cache.
-//   - storage/gateway-api-key.repository.ts validateGatewayApiKeyAsync: the
-//     gateway key validation port over the runtime cache read.
-//   - storage/chat-asset-storage.ts: the local object store (one file per
-//     storage key under JUHE_AI_CHAT_ASSETS_ROOT).
-//   - gpt-tokenizer: token counting via the o200k tokenizer.
-//
-// G20 phase-3 mounts these ports together (chain_chat_identity.go 内部身份
-// 通道, chain_chat_images.go ImageProcessor, chain_chat_observation.go
-// ImageObservations, chain_chat_mount.go the chat database owner + Deps
-// assembly at ${systemApiPrefix}/my-chat).
+// 调度覆盖与内部身份两通道（chain_chat_dispatch.go / chain_chat_identity.go）
+// 的注入点在本文件 Dispatch：绑定账户目标非空时注入进程内 context，/v1 链
+// preauth 收敛候选窗口并跳过 Key 鉴权；外部请求两条通道都无法伪造。
 
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
-// chatGatewayExecutor implements chat.GenerationExecutor by serving the
+// chatGatewayExecutor implements GenerationExecutor by serving the
 // request through the in-process /v1 chain handler (dispatchChatGatewayRequest
 // equivalence: same path/header/body contract, streaming response body, the
 // origin hop replaced by a direct handler call).
 type chatGatewayExecutor struct {
 	// chain is the assembled /v1 gateway chain handler.
 	chain http.Handler
-	// dispatchTarget 是 AI 问答会话绑定账户的调度覆盖目标：绑定账户非空时
+	// dispatchTarget 是 AI 账户绑定派发的调度覆盖目标：绑定账户非空时
 	// Dispatch 注入进程内 context；零值（外部请求）调度行为与现状一致。
 	dispatchTarget chatDispatchTarget
-	// internalIdentity 是会话归属系统账户的内部身份（chatInternalIdentity，
+	// internalIdentity 是派发归属系统账户的内部身份（chatInternalIdentity，
 	// chain_chat_identity.go）：非零时 Dispatch 注入内部身份 context，/v1 链
 	// preauth 跳过 API Key 鉴权并抑制使用日志（W-A 批契约）；零值表示不走
 	// 内部通道（外部请求恒零值，两条通道都无法伪造）。
@@ -67,11 +46,10 @@ func newChatGatewayExecutor(chain http.Handler) *chatGatewayExecutor {
 	return &chatGatewayExecutor{chain: chain}
 }
 
-// WithChatDispatchAccount 实现聊天侧的调度覆盖端口
-// （chat.chatDispatchTargetAware 同形）：绑定账户非空返回目标的执行器视图，
-// 同时携带 ownerID 作为内部身份（免 Key 直调后派发鉴权走内部身份通道）；
-// 空账户返回原执行器实例，不产生任何包装或行为差异。
-func (e *chatGatewayExecutor) WithChatDispatchAccount(accountID, ownerID string) chat.GenerationExecutor {
+// WithChatDispatchAccount 实现聊天侧的调度覆盖端口：绑定账户非空返回目标的
+// 执行器视图，同时携带 ownerID 作为内部身份（免 Key 直调后派发鉴权走内部身
+// 份通道）；空账户返回原执行器实例，不产生任何包装或行为差异。
+func (e *chatGatewayExecutor) WithChatDispatchAccount(accountID, ownerID string) GenerationExecutor {
 	target := chatDispatchTarget{AccountID: accountID}
 	if !target.pinned() {
 		return e
@@ -117,10 +95,9 @@ func (w *chatPipeWriter) finish() {
 	w.closeOnce.Do(func() { _ = w.body.Close() })
 }
 
-// Dispatch mirrors dispatchChatGatewayRequest: build the RequestInit-shaped
-// request, run the chain, and resolve as soon as the response headers commit
-// (the body keeps streaming through the returned reader).
-func (e *chatGatewayExecutor) Dispatch(ctx context.Context, req chat.GenerationDispatchRequest) (*chat.GenerationDispatchResponse, error) {
+// Dispatch 镜像原 dispatchChatGatewayRequest 语义：构造 RequestInit 形状请求、
+// 驱动链 handler，响应头一提交即返回（响应体继续经返回的 reader 流式泵出）。
+func (e *chatGatewayExecutor) Dispatch(ctx context.Context, req GenerationDispatchRequest) (*GenerationDispatchResponse, error) {
 	if e == nil || e.chain == nil {
 		return nil, errors.New("chat gateway executor 未接线")
 	}
@@ -162,8 +139,7 @@ func (e *chatGatewayExecutor) Dispatch(ctx context.Context, req chat.GenerationD
 		defer target.finish()
 		e.chain.ServeHTTP(target, httpReq)
 	}()
-	// Node fetch resolves when the response headers arrive; the goroutine
-	// keeps pumping the body into the pipe until the handler returns.
+	// 响应头到达即解析完成；goroutine 继续把响应体泵入管道直到 handler 返回。
 	select {
 	case <-target.headerCh:
 	case <-done:
@@ -176,38 +152,24 @@ func (e *chatGatewayExecutor) Dispatch(ctx context.Context, req chat.GenerationD
 	if status == 0 {
 		status = http.StatusOK
 	}
-	return &chat.GenerationDispatchResponse{
+	return &GenerationDispatchResponse{
 		Status: status,
 		Header: target.Header(),
 		Body:   reader,
 	}, nil
 }
 
-// chatModelCatalog implements chat.ModelCatalog over the runtime cache
-// (Node listCachedOpenAIAccountsForGroupAsync + listCachedProviderModelCatalogAsync).
+// chatModelCatalog 把 runtime cache 的账户快照与模型目录投影为传输小结构
+// （演练场传输账户/供应商目录/账户目录端口的生产实现）。
 type chatModelCatalog struct {
 	cache *gatewayruntimecache.Service
 }
 
-func (c chatModelCatalog) ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily string) []chat.ChatTransportAccount {
-	if c.cache == nil {
-		return nil
-	}
-	accounts, err := c.cache.ListCachedOpenAIAccountsForGroupAsync(context.Background(), groupID, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
-		RequestedModel:          requestedModel,
-		RequestedEndpointFamily: endpointFamily,
-	})
-	if err != nil {
-		return nil
-	}
-	return chatTransportAccountsFromSecrets(accounts)
-}
-
-// ListChatPinnedAccountsForGroup 实现会话绑定作用域的 pinned 直取视图（AI 问答
-// 设计 §5.2 2026-10-10 修订）：按（分组, 账户 ID）经 runtime cache 专用路径
-// 直取运行时快照，含非 active/冷却/过期/禁调度账户；账户不在该分组或分组
-// 禁用/不存在时返回空切片。
-func (c chatModelCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []chat.ChatTransportAccount {
+// ListChatPinnedAccountsForGroup 实现绑定作用域的 pinned 直取视图（AI 问答
+// 设计 §5.2 2026-10-10 修订，演练场沿用）：按（分组, 账户 ID）经 runtime
+// cache 专用路径直取运行时快照，含非 active/冷却/过期/禁调度账户；账户不在
+// 该分组或分组禁用/不存在时返回空切片。
+func (c chatModelCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
 	if c.cache == nil {
 		return nil
 	}
@@ -218,15 +180,15 @@ func (c chatModelCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountI
 	return chatTransportAccountsFromSecrets(accounts)
 }
 
-// chatTransportAccountsFromSecrets 是 runtime cache 账户快照到 chat 传输视图
-// 的类型投影（ListAccountsForGroup 与 ListChatPinnedAccountsForGroup 共用）。
-func chatTransportAccountsFromSecrets(accounts []gatewayruntimecache.OpenAIAccountSecret) []chat.ChatTransportAccount {
-	out := make([]chat.ChatTransportAccount, 0, len(accounts))
+// chatTransportAccountsFromSecrets 是 runtime cache 账户快照到传输视图的类
+// 型投影（ListChatPinnedAccountsForGroup 消费）。
+func chatTransportAccountsFromSecrets(accounts []gatewayruntimecache.OpenAIAccountSecret) []ChatTransportAccount {
+	out := make([]ChatTransportAccount, 0, len(accounts))
 	for _, account := range accounts {
-		mappings := make([]chat.ChatTransportModelMapping, 0, len(account.ModelMappings))
+		mappings := make([]ChatTransportModelMapping, 0, len(account.ModelMappings))
 		for _, mapping := range account.ModelMappings {
 			enabled := mapping.Enabled
-			mappings = append(mappings, chat.ChatTransportModelMapping{
+			mappings = append(mappings, ChatTransportModelMapping{
 				Enabled:                &enabled,
 				SourceModel:            mapping.SourceModel,
 				UpstreamModel:          mapping.UpstreamModel,
@@ -234,7 +196,7 @@ func chatTransportAccountsFromSecrets(accounts []gatewayruntimecache.OpenAIAccou
 				UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
 			})
 		}
-		out = append(out, chat.ChatTransportAccount{
+		out = append(out, ChatTransportAccount{
 			ID:                     account.ID,
 			Type:                   account.Type,
 			ProviderCode:           account.VendorCode,
@@ -246,14 +208,14 @@ func chatTransportAccountsFromSecrets(accounts []gatewayruntimecache.OpenAIAccou
 	return out
 }
 
-func (c chatModelCatalog) ListProviderCatalog(providerCode, systemAccountID string) []chat.ProviderModelCatalogItem {
+func (c chatModelCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	if c.cache == nil {
 		return nil
 	}
 	items, err := c.cache.ListCachedProviderModelCatalogAsync(context.Background(), gatewayruntimecache.ModelCatalogListOptions{
 		ProviderCode: providerCode,
-		// chat 面与计费解耦：未定价模型照常出现在 chat 模型列表/能力/默认推举
-		// （对齐 Node includeUnpriced:true；无价行仅在计费口径被目录源剔除）。
+		// 目录与计费解耦：未定价模型照常出现在模型列表/能力/默认推举（对齐
+		// Node includeUnpriced:true；无价行仅在计费口径被目录源剔除）。
 		IncludeUnpriced: true,
 		SystemAccountID: systemAccountID,
 	})
@@ -263,9 +225,9 @@ func (c chatModelCatalog) ListProviderCatalog(providerCode, systemAccountID stri
 	return chatCatalogItemsFromRuntime(items)
 }
 
-// ListAccountSupportedModels 实现 chat.AccountModelCatalog：generic_http 账户
-// 按 account_supported_models.model_id 取真实 models 行（完整元数据）。
-func (c chatModelCatalog) ListAccountSupportedModels(accountID, systemAccountID string) []chat.ProviderModelCatalogItem {
+// ListAccountSupportedModels：generic_http 账户按 account_supported_models.
+// model_id 取真实 models 行（完整元数据）。
+func (c chatModelCatalog) ListAccountSupportedModels(accountID, systemAccountID string) []ProviderModelCatalogItem {
 	if c.cache == nil {
 		return nil
 	}
@@ -276,106 +238,11 @@ func (c chatModelCatalog) ListAccountSupportedModels(accountID, systemAccountID 
 	return chatCatalogItemsFromRuntime(items)
 }
 
-// chatCatalogItemsFromRuntime 是 runtimecache 大结构到 chat 传输小结构的类型
-// 投影：两侧均为纯 JSON 数据（字段 tag 同形），往返恒成功（w2 登记）。
-func chatCatalogItemsFromRuntime(items []gatewayruntimecache.ProviderModelCatalogItem) []chat.ProviderModelCatalogItem {
+// chatCatalogItemsFromRuntime 是 runtimecache 大结构到传输小结构的类型投影：
+// 两侧均为纯 JSON 数据（字段 tag 同形），往返恒成功（w2 登记）。
+func chatCatalogItemsFromRuntime(items []gatewayruntimecache.ProviderModelCatalogItem) []ProviderModelCatalogItem {
 	encoded, _ := json.Marshal(items)
-	var out []chat.ProviderModelCatalogItem
+	var out []ProviderModelCatalogItem
 	_ = json.Unmarshal(encoded, &out)
 	return out
-}
-
-// chatAssetObjectStore implements chat.ObjectStore over the chat assets root
-// (Node chat-asset-storage.ts: one blob per storage key, write-guarded by the
-// expected SHA-256 and the size cap).
-type chatAssetObjectStore struct {
-	root string
-}
-
-func newChatAssetObjectStore(root string) (*chatAssetObjectStore, error) {
-	if strings.TrimSpace(root) == "" {
-		return nil, errors.New("chat 资产根目录未配置（JUHE_AI_CHAT_ASSETS_ROOT）")
-	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return nil, fmt.Errorf("创建 chat 资产根目录失败: %w", err)
-	}
-	return &chatAssetObjectStore{root: root}, nil
-}
-
-func (s *chatAssetObjectStore) path(storageKey string) (string, error) {
-	clean := filepath.Clean("/" + storageKey)
-	if strings.Contains(clean, "..") {
-		return "", fmt.Errorf("chat 资产存储键不合法: %q", storageKey)
-	}
-	return filepath.Join(s.root, filepath.FromSlash(clean[1:])), nil
-}
-
-func (s *chatAssetObjectStore) Write(storageKey string, data []byte, maxBytes int64, expectedSHA256 string) error {
-	if int64(len(data)) > maxBytes {
-		return fmt.Errorf("chat 资产超过大小上限 %d", maxBytes)
-	}
-	sum := sha256.Sum256(data)
-	if expectedSHA256 != "" && !strings.EqualFold(hex.EncodeToString(sum[:]), expectedSHA256) {
-		return errors.New("chat 资产内容校验失败")
-	}
-	target, err := s.path(storageKey)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(target, data, 0o644)
-}
-
-func (s *chatAssetObjectStore) Open(storageKey string, maxBytes int64) ([]byte, int64, error) {
-	target, err := s.path(storageKey)
-	if err != nil {
-		return nil, 0, err
-	}
-	data, err := os.ReadFile(target)
-	if err != nil {
-		return nil, 0, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, 0, fmt.Errorf("chat 资产超过大小上限 %d", maxBytes)
-	}
-	return data, int64(len(data)), nil
-}
-
-func (s *chatAssetObjectStore) Delete(storageKeys []string) error {
-	var firstErr error
-	for _, storageKey := range storageKeys {
-		if strings.TrimSpace(storageKey) == "" {
-			continue
-		}
-		target, err := s.path(storageKey)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		if err := os.Remove(target); err != nil && !os.IsNotExist(err) && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-// chatTokenCount adapts the o200k tokenizer onto chat.TokenCountFunc; a
-// tokenizer construction failure degrades to the bytes/4 estimate the Node
-// pipeline uses as the last resort.
-func newChatTokenCount() (chat.TokenCountFunc, error) {
-	tokenizer, err := modelcheckprobe.NewO200kTokenizer()
-	if err != nil {
-		return nil, fmt.Errorf("创建 chat tokenizer 失败: %w", err)
-	}
-	return func(text string) int {
-		count, countErr := tokenizer.Count(text)
-		if countErr != nil {
-			return (len(text) + 3) / 4
-		}
-		return count
-	}, nil
 }

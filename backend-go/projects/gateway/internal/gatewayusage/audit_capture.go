@@ -19,8 +19,10 @@ import (
 const OpenAIProtocolCode = "openai"
 
 // AuditInlineSha256MaxBytes mirrors auditInlineSha256MaxBytes：审计内联
-// SHA-256 摘要的原始 body 字节上限（1MB）。请求级提前耗尽的 L2 负面缓存
-// 以同一上限判定 body 是否参与缓存（请求级提前耗尽与负面缓存设计 §5）。
+// SHA-256 摘要的原始 body 字节上限（1MB）。捕获路径（StartAttempt 上游请求
+// 体、客户端请求体）与 OmitPayloadBodies 同按此门跳过内联摘要（Node
+// sha256BufferIfSmall 语义）；请求级提前耗尽的 L2 负面缓存以同一上限判定
+// body 是否参与缓存（请求级提前耗尽与负面缓存设计 §5）。
 const AuditInlineSha256MaxBytes = 1024 * 1024
 
 // CaptureModeMetadataOnly mirrors captureMode: 'metadata_only'.
@@ -725,7 +727,15 @@ func (c *AuditCaptureContext) StartAttempt(input StartAttemptInput) string {
 		ContentEncoding: headerMapValue(input.Headers, "content-encoding"),
 	}
 	if input.HasBody && len(input.Body) > 0 {
-		requestPayload.BodySha256 = sha256Hex(input.Body)
+		// DD-D5（2026-10-31）：内联 SHA-256 按 auditInlineSha256MaxBytes（1MB）
+		// 设门（Node sha256BufferIfSmall，capture.service.ts:820-821）——超限
+		// body 不在请求路径内联计算摘要，BodySha256 留空：保留到落库的 body
+		// 由 blob 持久化侧补算同一摘要，被省略的 body 与 OmitPayloadBodies 的
+		// 同款 1MB 门对齐。≤1MB 照旧内联，L2 负面缓存的 bodySha256 取值点
+		// （ClientRequestBodySha256 / 请求级提前耗尽设计 §5）不受影响。
+		if len(input.Body) <= AuditInlineSha256MaxBytes {
+			requestPayload.BodySha256 = sha256Hex(input.Body)
+		}
 		size := len(input.Body)
 		requestPayload.RawBodySizeBytes = &size
 	}
@@ -1333,7 +1343,12 @@ func (c *AuditCaptureContext) addClientRequestPayloadLocked() {
 		ContentEncoding: contentEncoding,
 	}
 	if len(rawBody) > 0 {
-		payload.BodySha256 = sha256Hex(rawBody)
+		// DD-D5（2026-10-31）：同 StartAttempt——内联 SHA-256 按 1MB 门跳过
+		// 超限 body（Node sha256BufferIfSmall 语义）；ClientRequestBodySha256
+		// 注释的「体超上限返回空串」由此成立。
+		if len(rawBody) <= AuditInlineSha256MaxBytes {
+			payload.BodySha256 = sha256Hex(rawBody)
+		}
 		size := len(rawBody)
 		payload.RawBodySizeBytes = &size
 	}

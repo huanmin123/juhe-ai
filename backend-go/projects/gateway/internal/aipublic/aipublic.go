@@ -59,6 +59,30 @@ import (
 // Prefix is the mounted route prefix (Node publicApiPrefix default).
 const Prefix = "/__aipublic__"
 
+// DD-A4：/__aipublic__ 请求体上限。aipublic 的 payload 都是小 JSON，取管理
+// 面同款契约（kernel Options.JSONBodyLimitBytes 默认 256 KiB，即
+// systemApiJsonBodyLimit 的值）；超限响应与管理面一致走 DecodeJSON 的
+// 413 {"message":"请求体过大"}（guard 内以 http.MaxBytesReader 包裹 body，
+// DecodeJSON 的 readAll 收到 *http.MaxBytesError 后渲染同款 413）。
+const publicJSONBodyLimitBytes = 256 * 1024
+
+// DD-A3①：无效 token 认证失败的逐来源 IP 惩罚窗规则。数值对齐 preauth
+// invalid-token 熔断的量级（60s 窗，gatewayclientip preAuthInvalidToken-
+// Threshold=8 为单 token 指纹口径，per-IP 聚合多 token 指纹故放宽到 10）：
+// 单次失败不误伤（失败 10 次内照常 401），连续无效 token 达阈值打开惩罚窗
+// （429 + Retry-After），惩罚时长按既有 penalty-window 指数倍增至
+// rateLimitMaxPenaltyMs。复用 consumeRateLimit 的既有惩罚窗机制（Redis 驱动
+// 与 memory 模型同款），scopeKey 前缀与合法 token 的
+// "SourceRefID:TokenID:TokenPrefix" 键空间隔离。
+const (
+	invalidTokenPenaltyWindowSeconds = 60
+	invalidTokenPenaltyMaxRequests   = 10
+)
+
+// invalidTokenPenaltyScopePrefix 是失败惩罚窗的 scopeKey 前缀（防与合法
+// token 键碰撞）。
+const invalidTokenPenaltyScopePrefix = "invalid-token:"
+
 // Scope constants mirror storage/external-integration-source-constants.ts.
 const (
 	scopeGroupListRead                = "juhe_ai_public:group_list:read"
@@ -175,11 +199,21 @@ func bearerToken(r *http.Request) string {
 // validation, rate limiting and the typed 401/403/429 bodies. The capture
 // lifecycle wraps the whole guard (Node mounts capturePublicApiLog ahead of
 // the auth middleware), so 401/429 responses record with a nil source too.
+//
+// DD-A4：guard 开头以 http.MaxBytesReader 包裹请求体（publicJSONBodyLimit-
+// Bytes），body 经 DecodeJSON 读入时超限渲染与管理面一致的 413。
+// DD-A3①：token 校验失败（缺 token 与 typed 401）消费逐来源 IP 惩罚窗——
+// 401 认证失败计数、403 授权失败（来源禁用/过期/scope 不足）与基础设施
+// 500 不计数；命中惩罚窗渲染同款 429 external_source_rate_limited。
 func (d *Deps) guard(scope string, handler http.HandlerFunc) http.Handler {
 	return d.withCapture(func(w http.ResponseWriter, r *http.Request, source *captureSourceHolder) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, publicJSONBodyLimitBytes)
+		}
+		clientIP := kernel.Context(r).ClientIP
 		token := bearerToken(r)
 		if token == "" {
-			writeCodeError(w, http.StatusUnauthorized, "external_source_token_missing", "缺少来源系统 token")
+			d.rejectAuthFailureWithPenalty(w, r, clientIP, http.StatusUnauthorized, "external_source_token_missing", "缺少来源系统 token")
 			return
 		}
 		context, authErr := d.ValidateToken(r.Context(), token, scope)
@@ -188,6 +222,10 @@ func (d *Deps) guard(scope string, handler http.HandlerFunc) http.Handler {
 			// contract); typed auth failures render {message, code}.
 			if authErr.Code == "" {
 				kernel.WriteError(w, authErr.StatusCode, authErr.Message)
+				return
+			}
+			if authErr.StatusCode == http.StatusUnauthorized {
+				d.rejectAuthFailureWithPenalty(w, r, clientIP, authErr.StatusCode, authErr.Code, authErr.Message)
 				return
 			}
 			writeCodeError(w, authErr.StatusCode, authErr.Code, authErr.Message)
@@ -206,6 +244,28 @@ func (d *Deps) guard(scope string, handler http.HandlerFunc) http.Handler {
 		}
 		handler(w, r.WithContext(withAuthContext(r.Context(), context)))
 	})
+}
+
+// rejectAuthFailureWithPenalty 消费一次逐来源 IP 无效认证惩罚窗（DD-A3①）：
+// 命中惩罚窗渲染 429 external_source_rate_limited（与合法 token 限流响应同
+// 形态），否则渲染原 401 typed 失败。clientIP 不可解析（kernel 请求上下文缺
+// 失或归空）时跳过惩罚计数，避免未知来源共享惩罚桶互相误伤。
+func (d *Deps) rejectAuthFailureWithPenalty(w http.ResponseWriter, r *http.Request, clientIP string, status int, code, message string) {
+	if clientIP != "" {
+		decision := d.consumeRateLimit(r.Context(), invalidTokenPenaltyScopePrefix+clientIP, []RateLimitRule{
+			{WindowSeconds: invalidTokenPenaltyWindowSeconds, MaxRequests: invalidTokenPenaltyMaxRequests},
+		})
+		if !decision.Allowed {
+			w.Header().Set("Retry-After", itoa(decision.RetryAfterSeconds))
+			writeCodeErrorDetails(w, http.StatusTooManyRequests, "external_source_rate_limited", "来源系统调用过于频繁，请稍后重试", map[string]any{
+				"windowSeconds":     decision.Rule.WindowSeconds,
+				"maxRequests":       decision.Rule.MaxRequests,
+				"retryAfterSeconds": decision.RetryAfterSeconds,
+			})
+			return
+		}
+	}
+	writeCodeError(w, status, code, message)
 }
 
 // writeCodeError mirrors the middleware error body {message, code}.

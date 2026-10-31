@@ -16,7 +16,6 @@ declare module 'vue-router' {
     description: string
     keepAlive?: boolean
     heavy?: boolean
-    immersive?: boolean
     menuGroup?: string
     menuGroupTitle?: string
     public?: boolean
@@ -44,18 +43,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/my-chat',
-    component: () => import('@/views/chat/ChatView.vue'),
-    meta: {
-      title: 'AI 问答',
-      description: '使用自己的 API Key 与可用模型进行对话。',
-      viewScope: 'self',
-      keepAlive: true,
-      heavy: true,
-      immersive: true
-    }
-  },
-        {
     path: '/my-accounts/chat',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
@@ -673,6 +660,60 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '系统运维',
       viewScope: 'admin',
       roles: managementRoles
+    }
+  },
+  // 演练场（docs/functions/演练场设计.md §2）：模型能力试玩台一级菜单，
+  // 四页均为一次性试玩——消息与产物只存页面内存，keepAlive 保证导航间保留页内状态。
+  {
+    path: '/playground/chat',
+    component: () => import('@/views/playground/PlaygroundChatView.vue'),
+    meta: {
+      title: '对话试玩',
+      description: '选择 AI 账户与模型做一次性流式对话试玩，消息只保存在页面内存中。',
+      viewScope: 'self',
+      menuGroup: 'playground',
+      menuGroupTitle: '演练场',
+      keepAlive: true,
+      heavy: false
+    }
+  },
+  {
+    path: '/playground/images',
+    component: () => import('@/views/playground/PlaygroundImageView.vue'),
+    meta: {
+      title: '图片生成',
+      description: '选择账户与生图模型，按提示词同步生成图片并直接下载。',
+      viewScope: 'self',
+      menuGroup: 'playground',
+      menuGroupTitle: '演练场',
+      keepAlive: true,
+      heavy: false
+    }
+  },
+  {
+    path: '/playground/videos',
+    component: () => import('@/views/playground/PlaygroundVideoView.vue'),
+    meta: {
+      title: '视频生成',
+      description: '创建异步视频生成任务并轮询进度，完成后内联播放与下载。',
+      viewScope: 'self',
+      menuGroup: 'playground',
+      menuGroupTitle: '演练场',
+      keepAlive: true,
+      heavy: false
+    }
+  },
+  {
+    path: '/playground/speech',
+    component: () => import('@/views/playground/PlaygroundSpeechView.vue'),
+    meta: {
+      title: '语音合成',
+      description: '选择账户与语音模型，把文本合成为语音并播放下载。',
+      viewScope: 'self',
+      menuGroup: 'playground',
+      menuGroupTitle: '演练场',
+      keepAlive: true,
+      heavy: false
     }
   }
 ]

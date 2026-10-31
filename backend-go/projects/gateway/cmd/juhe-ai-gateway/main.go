@@ -225,9 +225,12 @@ func main() {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))
 	}
 	// 2026-10-24 存储形态收口：零配置 sqlite seed preflight 块（业务库文件
-	// ensure+seed 自举）随 sqlite 存储形态删除——PG schema/seed 由外部
-	// juhe-ai-maintenance --ensure-schema --seed 流程预置，组合根只做只读
-	// 契约校验，不再有任何启动期 DDL。
+	// ensure+seed 自举）随 sqlite 存储形态删除——业务 schema/seed 预置由外部
+	// juhe-ai-maintenance --ensure-schema --seed 流程承担，组合根启动期不做
+	// 业务 schema 预置 DDL，只做只读契约校验。F3/F4 owner 与 juhe_business
+	// outbox 各自的加法幂等 ensure（下方 auditStore/operationStore 的
+	// EnsureSchema 与 outbox 懒 DDL，见 Go去跨进程战役报告-20260907「双侧
+	// 幂等 ensure」）属各组件自身职责，不在"不做启动期 DDL"之列。
 	var j3bHostComponent supervisor.Component
 	var j3bManagementServer *http.Server
 	var j3bManagementListener net.Listener
@@ -690,6 +693,11 @@ func main() {
 			fail(errors.New("F4 operation log owner lease held by another owner process"))
 		}
 		operationLease = keeper
+		// DD-RC-A2：运行期失败出口 failRuntime 经 os.Exit 跳过下方 defer（含
+		// lease 释放），继任进程需等 lease TTL 才能接管；把 Close 注入为排空
+		// 后的尽力释放钩子。Close 幂等（closed 守卫 + closeOnce），与正常停机
+		// 路径（F4 组件 Close 与本 defer）重复调用安全。
+		runtimeLeaseRelease = operationLease.Close
 		// Registered ahead of composed.Shutdown so the LIFO defer order
 		// drains the producer first and releases the lease last.
 		defer operationLease.Close()
@@ -816,6 +824,14 @@ func main() {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}
 		defer composed.Shutdown()
+		// DD-G2：运行期失败出口（failRuntime）经 runtimeDrain 复用同一排空
+		// 链，并在排空后尽力释放 F4 operation lease（runtimeLeaseRelease，见
+		// 上方 F4 组合块）再 exit——错误路径不经过 main 的 defer 链，F3/F4
+		// store 不显式关闭（连接池随进程退出释放，跨进程接管语义只由租约承
+		// 载）；正常路径由 defer 链逆序执行全部释放（composed.Shutdown → F4
+		// lease/store → F3 store）。两条路径在单进程生命周期内互斥，排空与
+		// 释放都不会重复执行。
+		runtimeDrain = composed.Shutdown
 		// 2026-10-02 日志与审计设置：审计日志手动清理 API 挂到系统 API kernel
 		// （POST /__aisys__/api/audit-logs/cleanup，仅管理员 + 防重放 + 操作
 		// 日志）。与后台 retention 共用同一 store、共享 keeper lease 与生效值
@@ -946,46 +962,100 @@ func main() {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
 	logger.Info("juhe-ai-gateway started", "healthAddress", listener.Addr().String(), "f4Enabled", operationConfig.Enabled)
+	// DD-G1 停机顺序：supervisor 在全部组件 Run 退出后按注册逆序执行 Close。
+	// 把 HTTP 排空注册为最后一个组件，其 Close 最先执行——mainServer /
+	// j3bManagement / health 三个监听先完成有界排空（在途请求在此窗口内正常
+	// 写审计与操作日志），之后 F4 operationLease/operationStore 与 F3
+	// auditStore 才在后续逆序 Close 中释放，共享 "gateway-store" 池在排空
+	// 窗口内保持打开（架构总览「正常退出先有限排空活动捕获和审计投递」）。
+	components = appendHTTPDrainLast(components, func() error {
+		if err := shutdownGatewayHTTPServers(gatewayHTTPServers{
+			mainServer:            mainServer,
+			mainServeErr:          mainServeErr,
+			j3bManagementServer:   j3bManagementServer,
+			j3bManagementServeErr: j3bManagementServeErr,
+			healthServer:          healthServer,
+			healthServeErr:        serveErr,
+		}); err != nil {
+			// 运行期失败（HTTP Shutdown 超时 / Serve 异常退出）走 failRuntime：
+			// 先有界排空 composed（recorder/spool）、随后尽力
+			// 释放 F4 operation lease，再 exit(1)（DD-RC-A2）。
+			failRuntime(err)
+		}
+		return nil
+	})
 	// supervisor.Run 的错误出口仅剩空组件表与"组件定义不完整"预检（组件运行
 	// 错误只重试不回传）；main 的全部组件静态完整（j3b/retention/circuit 均在
 	// 启用分支内追加且 Run 非 nil），F3 组件无条件追加，runErr 恒 nil（w2 登记）。
 	_ = supervisor.Run(ctx, components, logger)
-	// Graceful stop mirrors the Node order (db-service.ts shutdownDbService):
-	// stop accepting HTTP first, then drain in-process workers (composed
-	// shutdown via defer: F4 producer lease + business handle), then the
-	// supervisor-owned owners, then the shared pools (deferred).
-	if mainServer != nil {
+}
+
+// gatewayHTTPServers 聚合 main 持有的三个 HTTP 监听与其 Serve 错误通道，
+// 供停机排空一次性接管。nil 的 server（未启用的装配面）在排空时跳过。
+type gatewayHTTPServers struct {
+	mainServer            *http.Server
+	mainServeErr          chan error
+	j3bManagementServer   *http.Server
+	j3bManagementServeErr chan error
+	healthServer          *http.Server
+	healthServeErr        chan error
+}
+
+// shutdownGatewayHTTPServers 按既定预算有界排空三个 HTTP 监听：主
+// system-api 端口 10s（等待在途请求完成；Hijacked 连接不被 Shutdown 等待
+// 属 Go 语义，realtime 场景已另行登记）、J3b 管理别名 5s（沿用既有行为，
+// Shutdown 错误忽略）、回环 health 5s；随后回收各 Serve goroutine 的错误
+// 值。任何致命错误以可鉴别消息返回，由调用方决定终止路径（drain Close →
+// failRuntime）。
+func shutdownGatewayHTTPServers(servers gatewayHTTPServers) error {
+	if servers.mainServer != nil {
 		mainShutdownCtx, mainShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		mainShutdownErr := mainServer.Shutdown(mainShutdownCtx)
+		mainShutdownErr := servers.mainServer.Shutdown(mainShutdownCtx)
 		mainShutdownCancel()
 		if mainShutdownErr != nil {
-			fail(fmt.Errorf("shutdown gateway system api endpoint: %w", mainShutdownErr))
+			return fmt.Errorf("shutdown gateway system api endpoint: %w", mainShutdownErr)
 		}
-		if mainServeResult := <-mainServeErr; mainServeResult != nil && !errors.Is(mainServeResult, http.ErrServerClosed) {
-			fail(fmt.Errorf("gateway system api endpoint stopped: %w", mainServeResult))
+		if mainServeResult := <-servers.mainServeErr; mainServeResult != nil && !errors.Is(mainServeResult, http.ErrServerClosed) {
+			return fmt.Errorf("gateway system api endpoint stopped: %w", mainServeResult)
 		}
 	}
-	if j3bManagementServer != nil {
+	if servers.j3bManagementServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = j3bManagementServer.Shutdown(shutdownCtx)
+		_ = servers.j3bManagementServer.Shutdown(shutdownCtx)
 		shutdownCancel()
-		if j3bManagementServeErr != nil {
-			serveErrValue := <-j3bManagementServeErr
+		if servers.j3bManagementServeErr != nil {
+			serveErrValue := <-servers.j3bManagementServeErr
 			if serveErrValue != nil && !errors.Is(serveErrValue, http.ErrServerClosed) {
-				fail(fmt.Errorf("J3b management endpoint stopped: %w", serveErrValue))
+				return fmt.Errorf("J3b management endpoint stopped: %w", serveErrValue)
 			}
 		}
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	shutdownErr := healthServer.Shutdown(shutdownCtx)
+	shutdownErr := servers.healthServer.Shutdown(shutdownCtx)
 	shutdownCancel()
-	serveResult := <-serveErr
+	serveResult := <-servers.healthServeErr
 	if shutdownErr != nil {
-		fail(fmt.Errorf("shutdown gateway health endpoint: %w", shutdownErr))
+		return fmt.Errorf("shutdown gateway health endpoint: %w", shutdownErr)
 	}
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
-		fail(fmt.Errorf("gateway health endpoint stopped: %w", serveResult))
+		return fmt.Errorf("gateway health endpoint stopped: %w", serveResult)
 	}
+	return nil
+}
+
+// appendHTTPDrainLast 把 HTTP 排空登记为最后一个 supervisor 组件。supervisor
+// 在全部组件 Run 退出后按注册逆序执行 Close，最后注册的 Close 最先执行，
+// 从而保证三个 HTTP 监听的有界排空先于 F4/F3 owner 组件的租约释放与 store
+// 关闭。组件 Run 只等 ctx 取消，与其余组件同批退出，不引入额外停机延迟。
+func appendHTTPDrainLast(components []supervisor.Component, drain func() error) []supervisor.Component {
+	return append(components, supervisor.Component{
+		Name: "Main HTTP drain",
+		Run: func(runCtx context.Context) error {
+			<-runCtx.Done()
+			return runCtx.Err()
+		},
+		Close: drain,
+	})
 }
 
 // runPassiveGateway never initializes F3/F4 stores or input servers. It is a
@@ -1229,4 +1299,65 @@ func fail(err error) {
 	slog.Default().Error("gateway startup failed", "error", err.Error())
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
+}
+
+// runtimeDrain 是运行期失败退出前的进程内排空钩子；组合根在 composed 构建
+// 成功后注入 composed.Shutdown（recorder/spool、空闲
+// 连接释放）。启动早期失败保持 nil：此时无在途请求，fail 直接退出不做
+// 排空（DD-G2 允许的启动期快速 no-op）。
+var runtimeDrain func()
+
+// runtimeLeaseRelease 是运行期失败退出前的 F4 owner lease 尽力释放钩子
+// （DD-RC-A2）；组合根在 operationLease 获取成功后注入 operationLease.Close
+// （幂等，正常停机路径的 defer 重复调用安全）。nil（未启用 system-api/F4
+// 或启动早期）为 no-op。F3/F4 store 不在此释放：连接池随进程退出释放，
+// 跨进程接管语义只由租约承载。
+var runtimeLeaseRelease func()
+
+// runtimeDrainBudget 约束运行期失败路径的排空预算：排空链卡死时到点强制
+// 退出，不把错误退出变成无限挂起。
+const runtimeDrainBudget = 10 * time.Second
+
+// failRuntime 是运行期（HTTP Serve 已启动后）的失败出口：与启动期 fail
+// 一样记录原始错误并保留退出码 1，但先执行一次有界进程内排空 + F4 租约
+// 释放——否则 os.Exit 会跳过 main 的全部 defer（含 composed.Shutdown 的
+// recorder/spool 排空与 F4 operationLease 释放），长流
+// 式请求使 HTTP Shutdown 超时即落到本路径。仅 main 尾部的停机排空组件
+// 调用本函数。
+func failRuntime(err error) {
+	slog.Default().Error("gateway runtime failure", "error", err.Error())
+	fmt.Fprintln(os.Stderr, err)
+	runtimeFailureCleanup(runtimeDrain, runtimeLeaseRelease)
+	os.Exit(1)
+}
+
+// runtimeFailureCleanup 是运行期失败退出前的清理序列（DD-RC-A2）：先有界
+// 排空（超时到点强制返回），随后尽力释放 F4 owner lease——lease 是错误
+// 退出路径上唯一的跨进程语义（继任进程不必等 TTL 接管），store 连接池随
+// 进程退出释放。单独成函数供白盒测试钉住「排空 → 释放」顺序与 nil 钩子
+// 的惰性。
+func runtimeFailureCleanup(drain func(), releaseLease func()) {
+	drainRuntimeBeforeExit(drain, runtimeDrainBudget)
+	if releaseLease != nil {
+		releaseLease()
+	}
+}
+
+// drainRuntimeBeforeExit 以硬预算执行一次排空钩子：钩子为 nil 时直接返回；
+// 超时后不再等待（排空 goroutine 随 os.Exit 终止），保证错误退出路径有界。
+func drainRuntimeBeforeExit(drain func(), budget time.Duration) {
+	if drain == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		drain()
+	}()
+	select {
+	case <-done:
+	case <-time.After(budget):
+		slog.Default().Warn("运行期排空预算超时，强制退出",
+			"event", "runtime_drain_budget_exceeded", "budget", budget.String())
+	}
 }

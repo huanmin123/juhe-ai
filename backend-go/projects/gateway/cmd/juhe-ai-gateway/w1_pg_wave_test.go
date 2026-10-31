@@ -20,7 +20,7 @@ package main
 //       composeSystemAPI 的 DatabaseDriver=postgres 成功臂：业务/chat/stats/
 //       usage-catalog/三个数据集读面全部走隔离测试库共享池，链条
 //       开启（performance + dev Redis cache/state，namespace=w1g2TestNamespace
-//       每测试唯一值），my-chat 家族挂载；openChatDatabase PG 分支返回共享池句柄
+//       每测试唯一值），演练场家族挂载；共享池句柄别名进组合根（my-chat 家族随 §8 退役）
 //       且可真实 Query（场景 E 并入此处）；/health 与 auth 面 HTTP 契约；
 //       Shutdown 干净。
 //       【已证实缺陷门禁】当前 PG 组合根在 wireInProcessBalanceAndCatalogRefresh
@@ -281,7 +281,7 @@ func w1g2EnsureJ3bSchema(t *testing.T, db *sql.DB) {
 }
 
 // ---------------------------------------------------------------------------
-// A+E：composeSystemAPI PG 成功臂（含 openChatDatabase PG 真实句柄）
+// A+E：composeSystemAPI PG 成功臂（含共享池真实句柄）
 // ---------------------------------------------------------------------------
 
 func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
@@ -412,13 +412,7 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 	if composed.chain == nil || composed.chainServices == nil || composed.chainServices.Identity == nil {
 		t.Fatalf("链条开启时 chain/chainServices/Identity 必须装配: chain=%v services=%v", composed.chain != nil, composed.chainServices != nil)
 	}
-	if composed.chatDB == nil {
-		t.Fatalf("PG 模式 openChatDatabase 必须返回共享池句柄（场景 E）")
-	}
 	var one int
-	if err := composed.chatDB.QueryRow("SELECT 1").Scan(&one); err != nil || one != 1 {
-		t.Fatalf("openChatDatabase PG 句柄 Query(SELECT 1) 失败: one=%d err=%v", one, err)
-	}
 	if err := composed.DB.QueryRow("SELECT 1").Scan(&one); err != nil || one != 1 {
 		t.Fatalf("业务 PG 句柄 Query(SELECT 1) 失败: one=%d err=%v", one, err)
 	}

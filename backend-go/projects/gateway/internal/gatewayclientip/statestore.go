@@ -34,6 +34,18 @@ type RuntimeStateStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// runtimeStateLuaStore 是支持 Lua 原子计算的存储扩展（DD-A1：熔断计数路径
+// 的读改写必须原子，否则并发打点丢更新使熔断灵敏度退化）。可选接口：只由
+// Redis 驱动实现（高频同 key 计数下沉 Redis 单线程，与 ratelimit/
+// penalty-window 的原子计数惯例同款；WATCH 乐观锁在热点 key 高并发下冲突
+// 重试雪崩，不适用）；未实现该接口的存储（测试 fake）按"驱动不支持"错误
+// 透传，与连接失败同语义。
+type runtimeStateLuaStore interface {
+	// EvalLua 在存储侧原子执行一段 Lua 脚本。keys 传未加前缀的存储内 key，
+	// 与 GetJSON/SetJSON/Delete 同规则统一拼接命名空间前缀。
+	EvalLua(ctx context.Context, script string, keys []string, args ...any) (any, error)
+}
+
 // NewMemoryRuntimeStateStore mirrors MemoryRuntimeStateStore. clock injects
 // time for expiry checks.
 func NewMemoryRuntimeStateStore(clock Clock) RuntimeStateStore {
@@ -197,6 +209,24 @@ func (s *redisRuntimeStateStore) Delete(ctx context.Context, key string) error {
 	return s.run(ctx, func(runCtx context.Context) error {
 		return s.client.Del(runCtx, s.redisKey(key)).Err()
 	})
+}
+
+// EvalLua 实现 runtimeStateLuaStore：Redis 驱动的原子脚本执行
+//（stateOperationTimeout 预算内）。keys 传未加前缀的存储内 key，与
+// GetJSON/SetJSON/Delete 同规则统一拼接命名空间前缀（脚本内 KEYS[n] 看到
+// 的是完整 redis key）。
+func (s *redisRuntimeStateStore) EvalLua(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	prefixedKeys := make([]string, len(keys))
+	for i, key := range keys {
+		prefixedKeys[i] = s.redisKey(key)
+	}
+	var result any
+	err := s.run(ctx, func(runCtx context.Context) error {
+		var evalErr error
+		result, evalErr = s.client.Eval(runCtx, script, prefixedKeys, args...).Result()
+		return evalErr
+	})
+	return result, err
 }
 
 // normalizeTtlMsDuration mirrors normalizeTtlMs (min 1ms).

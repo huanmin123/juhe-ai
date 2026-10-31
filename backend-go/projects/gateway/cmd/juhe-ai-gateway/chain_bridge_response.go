@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
@@ -54,6 +57,11 @@ func (t *chainBridgeResponseTransformer) TransformUpstreamResponseForAccount(
 	if req == nil || response == nil || !response.OK() || response.Body == nil {
 		return response, nil
 	}
+	// DD-C6：每个 attempt 进入响应转换面即换入本次的桥接 usage 快照槽——上一
+	// attempt（可能桥接）的槽就此失效，本次非桥接（含透传 / Code Assist unwrap）
+	// 时不给 finalization 留任何残留供给（重试换号场景的隔离）。
+	bridgeSlot := &chainBridgeUsageSlot{}
+	chainBridgeUsageCarrierOf(req.HTTP).replaceSlot(bridgeSlot)
 	mapping := chainBridgeResponseMappingOf(req, input.Account)
 	if mapping == nil {
 		// Native Code Assist requests carry no cross-protocol model mapping,
@@ -95,7 +103,7 @@ func (t *chainBridgeResponseTransformer) TransformUpstreamResponseForAccount(
 	// 以管道错误传播。非流式保持 buffer 语义（无流式问题，ReadAll 合法）；
 	// 无增量变体的组合退回 buffer 路径（pump 覆盖面与既有流式分支一致）。
 	if stream {
-		if pump := t.bridgeStreamPump(input, mapping, sourceFamily, upstreamFamily, model); pump != nil {
+		if pump := t.bridgeStreamPump(input, mapping, sourceFamily, upstreamFamily, model, bridgeSlot); pump != nil {
 			headers.Set("Content-Type", "text/event-stream; charset=utf-8")
 			headers.Del("Content-Length")
 			return bridgeStreamPipedResponse(response, headers, pump), nil
@@ -158,16 +166,59 @@ func bridgeStreamPipedResponse(
 	return gatewaydispatch.NewGatewayUpstreamResponseForTransform(response.Status(), headers, reader)
 }
 
+// chainBridgePumpWithUsageSnapshot 包装桥泵（DD-C6 / DD-RC-C1）：pump 正常
+// 返回（上游 EOF、finish 臂已终值化桥状态）后把桥内计算 usage 快照写入本次
+// attempt 槽，经 HandleUpstreamResponseInput.BridgeUsage 供给 finalization。
+// usage 或 slot 缺席（未钉住方向 / 无载体）返回裸泵，行为与既有完全一致。
+// 流中断（err != nil）不写：pipe 错误路径（chain finalize 的 pipeErr 臂）不
+// 消费快照。
+// DD-RC-C1：usage() 的 ok=false 表示上游确实没发 usage（桥状态 Usage 为
+// nil map）——此时不写快照，supplier 对本次 attempt 返回 ok=false，finalize
+// 保持既有估算兜底（estimatedOutputTokens），不得把 nil 桥状态转成零值快照
+// 否决估算（那会把「上游没发 usage」计费成 0）。ok=true（含上游发了全 0
+// usage 的合法形态）照常写入，计 0 是上游事实。
+func chainBridgePumpWithUsageSnapshot(
+	pump func(src io.Reader, dst io.Writer) error,
+	usage func() (gatewayproto.ParsedUsage, bool),
+	slot *chainBridgeUsageSlot,
+) func(src io.Reader, dst io.Writer) error {
+	if usage == nil || slot == nil {
+		return pump
+	}
+	return func(src io.Reader, dst io.Writer) error {
+		err := pump(src, dst)
+		if err == nil {
+			if snapshot, ok := usage(); ok {
+				slot.storeUsage(snapshot)
+			}
+		}
+		return err
+	}
+}
+
 // bridgeStreamPump builds the incremental per-event pump of one streaming
 // bridge direction; nil = the direction has no streaming variant and keeps the
 // buffered transform. The per-event state machines and finish semantics mirror
 // the buffered branches in transformToChatClient / transformToAnthropicClient /
 // transformToGeminiNativeClient verbatim.
+//
+// usageSlot（DD-C6，变参保持既有调用形态）：传入本次 attempt 的桥接 usage 快
+// 照槽时，钉住方向（anthropic messages 上游 → chat 客户端、chat completions
+// 上游 → gemini 客户端）的 pump 在正常返回后把桥状态终值 usage 写入槽位，经
+// finalization 的 BridgeUsage 供给结算；其余方向无桥内 usage 供给（T9b
+// chat→anthropic 方向的 inspector 双口径照常生效，行为不变）。DD-RC-C1：桥
+// 状态 Usage 为 nil（上游未发 usage）时不写快照，finalization 回落既有估算
+// 兜底；非 nil（含全 0）才写入。
 func (t *chainBridgeResponseTransformer) bridgeStreamPump(
 	input gatewaydispatch.UpstreamResponseTransformInput,
 	mapping *gatewayproto.ResolvedModelMapping,
 	sourceFamily, upstreamFamily, model string,
+	usageSlot ...*chainBridgeUsageSlot,
 ) func(src io.Reader, dst io.Writer) error {
+	var slot *chainBridgeUsageSlot
+	if len(usageSlot) > 0 {
+		slot = usageSlot[0]
+	}
 	switch upstreamFamily {
 	case openaicompatbridge.FamilyChatCompletions:
 		switch sourceFamily {
@@ -189,8 +240,14 @@ func (t *chainBridgeResponseTransformer) bridgeStreamPump(
 			}
 		case openaicompatbridge.FamilyGeminiGenerateContent, openaicompatbridge.FamilyGeminiStreamGenerate:
 			// transformGeminiGenerateContentChatBridgeUpstreamResponse（流式）。
+			// DD-C6：桥状态终值 usage（usageMetadata 形）供结算链，inspector 按
+			// 上游账户 openai 协议解析桥接后字节取不到 usage。
+			// DD-RC-C1：state.Usage 只在桥内确实取到上游 usage 对象时被赋值
+			// （ProcessChatCompletionsSseEventAsGemini 的 usage != nil 守卫），
+			// nil = 上游未发 usage → 不写快照回落估算兜底；非 nil（含全 0）=
+			// 上游事实，照常快照计 0。
 			state := openaicompatbridge.NewGeminiChatStreamState(model)
-			return func(src io.Reader, dst io.Writer) error {
+			pump := func(src io.Reader, dst io.Writer) error {
 				return openaicompatbridge.PumpBridgeSseTransform(src, dst, func(event string) []string {
 					return openaicompatbridge.ProcessChatCompletionsSseEventAsGemini(state, event)
 				}, func() []string {
@@ -200,6 +257,12 @@ func (t *chainBridgeResponseTransformer) bridgeStreamPump(
 					return nil
 				})
 			}
+			return chainBridgePumpWithUsageSnapshot(pump, func() (gatewayproto.ParsedUsage, bool) {
+				if state.Usage == nil {
+					return gatewayproto.EmptyUsage(), false
+				}
+				return chainBridgeGeminiUsageMapToParsedUsage(state.Usage), true
+			}, slot)
 		case openaicompatbridge.FamilyResponses:
 			// transformCodexResponsesChatBridgeUpstreamResponse（chat SSE ->
 			// Responses SSE 回转）。
@@ -246,7 +309,15 @@ func (t *chainBridgeResponseTransformer) bridgeStreamPump(
 				}
 			}
 			state := openaicompatbridge.NewAnthropicChatStreamState(model)
-			return func(src io.Reader, dst io.Writer) error {
+			// DD-C6：桥状态终值 usage（chat 形，anthropicUsageToChatUsage 已把
+			// 上游 input_tokens/output_tokens/cache_* 重渲染）供结算链——inspector
+			// 按 anthropic 协议解析桥接后的 chat 字节取不到 usage。
+			// DD-RC-C1：state.Usage 只在上游 message_start/message_delta 确实
+			// 携带 usage 对象时被赋值（ProcessAnthropicEventAsChat 的 usage !=
+			// nil 守卫），nil = 上游未发 usage → 不写快照回落估算兜底；非 nil
+			// （含 anthropicUsageToChatUsage 渲染出的全 0 键形）= 上游事实，
+			// 照常快照计 0。
+			pump := func(src io.Reader, dst io.Writer) error {
 				return openaicompatbridge.PumpBridgeSseTransform(src, dst, func(event string) []string {
 					return openaicompatbridge.ProcessAnthropicEventAsChat(state, event)
 				}, func() []string {
@@ -256,6 +327,12 @@ func (t *chainBridgeResponseTransformer) bridgeStreamPump(
 					return nil
 				})
 			}
+			return chainBridgePumpWithUsageSnapshot(pump, func() (gatewayproto.ParsedUsage, bool) {
+				if state.Usage == nil {
+					return gatewayproto.EmptyUsage(), false
+				}
+				return chainBridgeChatUsageMapToParsedUsage(state.Usage), true
+			}, slot)
 		}
 	case openaicompatbridge.FamilyGeminiGenerateContent, openaicompatbridge.FamilyGeminiStreamGenerate:
 		// transformGeminiNativeTargetBridgeUpstreamResponse（流式）。
@@ -613,3 +690,134 @@ func bridgeChatUpstreamInvalidJSONErrorBody(model, text string) string {
 // attached to the dispatch engine (chatbridgestate completion handler). The
 // transform options therefore never carry OnCompleted here — the Node parity
 // note is registered in the audit report.
+
+// ---------------------------------------------------------------------------
+// 桥接流 usage 结算传递（DD-C6）
+// ---------------------------------------------------------------------------
+
+// chainBridgeUsageSlot 是单次 attempt 的桥接 usage 快照槽：桥泵 goroutine 在
+// 关闭响应管道前写入（store 先于 writer.Close 的程序序 + atomic 语义，下游
+// 读到 EOF 时快照必然可见），finalization 在管道消费结束后经 supplier 读取。
+// 槽指针随 attempt 更换，旧 attempt 迟到的写入落在旧槽上，不污染新 attempt。
+type chainBridgeUsageSlot struct {
+	value atomic.Pointer[gatewayproto.ParsedUsage]
+}
+
+func (s *chainBridgeUsageSlot) storeUsage(usage gatewayproto.ParsedUsage) {
+	if s == nil {
+		return
+	}
+	value := usage
+	s.value.Store(&value)
+}
+
+func (s *chainBridgeUsageSlot) loadUsage() (gatewayproto.ParsedUsage, bool) {
+	if s == nil {
+		return gatewayproto.ParsedUsage{}, false
+	}
+	if value := s.value.Load(); value != nil {
+		return *value, true
+	}
+	return gatewayproto.ParsedUsage{}, false
+}
+
+// chainBridgeUsageCarrier 是请求级载体（安装进 req.HTTP context，对象不可变
+// 而 carrier 指针可变）：桥转换面每个 attempt 换入当前槽，finalization input
+// 构造点取 supplier。非桥接 attempt 换入 nil 槽，不给 finalization 留残留供给。
+type chainBridgeUsageCarrier struct {
+	mu   sync.Mutex
+	slot *chainBridgeUsageSlot
+}
+
+type chainBridgeUsageCarrierKey struct{}
+
+// chainBridgeUsageCarrierInstall 在请求 context 上安装请求级载体（chain_v1
+// 请求入口调用一次）。
+func chainBridgeUsageCarrierInstall(r *http.Request) *http.Request {
+	if r == nil {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), chainBridgeUsageCarrierKey{}, &chainBridgeUsageCarrier{}))
+}
+
+// chainBridgeUsageCarrierOf 读取请求载体；未安装（非 /v1 链入口的构造路径）
+// 返回 nil，supplier 为 nil 时结算链保持既有 inspector/估算兜底路径。
+func chainBridgeUsageCarrierOf(r *http.Request) *chainBridgeUsageCarrier {
+	if r == nil {
+		return nil
+	}
+	carrier, _ := r.Context().Value(chainBridgeUsageCarrierKey{}).(*chainBridgeUsageCarrier)
+	return carrier
+}
+
+func (c *chainBridgeUsageCarrier) replaceSlot(slot *chainBridgeUsageSlot) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.slot = slot
+}
+
+// supplier 是 finalization 消费面（HandleUpstreamResponseInput.BridgeUsage）：
+// 返回当前 attempt 槽上的桥接快照。
+func (c *chainBridgeUsageCarrier) supplier() func() (gatewayproto.ParsedUsage, bool) {
+	if c == nil {
+		return nil
+	}
+	return func() (gatewayproto.ParsedUsage, bool) {
+		c.mu.Lock()
+		slot := c.slot
+		c.mu.Unlock()
+		return slot.loadUsage()
+	}
+}
+
+// chainBridgeChatUsageMapToParsedUsage 把桥内 chat 形 usage（anthropicUsageToChatUsage
+// 的输出键形，anthropic messages 上游 → chat 客户端方向的桥状态终值）解析为
+// 结算 usage。解析复用 gatewayopenai.ExtractUsage（chat 口径与直连 chat 流的
+// inspector 同源：prompt_tokens / completion_tokens / prompt_tokens_details）。
+// nil usage = 上游未发 usage（UsageMissing 语义）：调用方（DD-RC-C1 的快照
+// 闭包）先以 map 是否为 nil 判定，nil 时不调本函数、不写快照。
+func chainBridgeChatUsageMapToParsedUsage(usage map[string]any) gatewayproto.ParsedUsage {
+	if usage == nil {
+		return gatewayproto.EmptyUsage()
+	}
+	return gatewayopenai.ExtractUsage(usage, "")
+}
+
+// chainBridgeGeminiUsageMapToParsedUsage 把桥内 gemini usageMetadata 形 usage
+// （chatUsageToGeminiUsage 的输出键形，chat completions 上游 → gemini 客户端
+// 方向的桥状态终值）解析为结算 usage。字段与口径同 gatewaygemini.ExtractUsage
+// （InputTokens=promptTokenCount；OutputTokens=candidatesTokenCount+thoughtsTokenCount
+// 的 defined 求和；CacheRead=cachedContentTokenCount；Thinking=thoughtsTokenCount）。
+func chainBridgeGeminiUsageMapToParsedUsage(usage map[string]any) gatewayproto.ParsedUsage {
+	if usage == nil {
+		return gatewayproto.EmptyUsage()
+	}
+	intOf := func(key string) *int {
+		if number, ok := usage[key].(float64); ok {
+			converted := int(number)
+			return &converted
+		}
+		return nil
+	}
+	candidateTokens := intOf("candidatesTokenCount")
+	thinkingTokens := intOf("thoughtsTokenCount")
+	var outputTokens *int
+	switch {
+	case candidateTokens != nil && thinkingTokens != nil:
+		combined := *candidateTokens + *thinkingTokens
+		outputTokens = &combined
+	case candidateTokens != nil:
+		outputTokens = candidateTokens
+	case thinkingTokens != nil:
+		outputTokens = thinkingTokens
+	}
+	return gatewayproto.ParsedUsage{
+		InputTokens:     intOf("promptTokenCount"),
+		OutputTokens:    outputTokens,
+		CacheReadTokens: intOf("cachedContentTokenCount"),
+		ThinkingTokens:  thinkingTokens,
+	}
+}

@@ -14,7 +14,15 @@ package main
 //     exactly like the Node WeakMap entry (BUG-0339: a process-global map
 //     keyed by request pointers pinned Body.RawBody and grew the live heap);
 //   - dispatchAccountHealthCheck(accountId, 'request_failure') publishes the
-//     J1 probe request fact (internal-api service, fire-and-forget).
+//     J1 probe request fact (internal-api service, fire-and-forget);
+//   - rejected dispatches do not consume the mark, so consecutive failed
+//     candidates would each re-read the effective background-probe switch;
+//     the Go side memoizes that read-only projection per request
+//     (chainProbeSwitchMemo, DD-B7): one SELECT per (request, account), read
+//     errors not cached. The memo lives in a weak-keyed registry so entries
+//     are reclaimed with the request object exactly like the mark (the
+//     BUG-0339 shape — a process-global strong-keyed request map — stays
+//     forbidden).
 //
 // Go two-process topology (去跨进程战役第二刀)：the gateway process cannot
 // import the jobs internal-api package (module boundary), and Go processes
@@ -47,6 +55,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -96,6 +105,75 @@ FROM juhe_business.accounts a
 LEFT JOIN juhe_business.accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
 WHERE a.id = ? AND a.deleted_at IS NULL`
 
+// chainProbeSwitchMemo 是单请求的生效后台探测开关投影 memo（DD-B7）：rejected
+// 派发不消耗请求级标记，同一请求的每个失败候选都会走到开关守卫，memo 使同
+// 请求内同一账户的开关 SELECT 只执行一次。键是归一化账户 id——开关守卫的判
+// 定输入只有账户 id，动态状态（授权实例跟随来源账户的生效值）在同一 SELECT
+// 投影内解析，同请求同 id 投影等价。只缓存只读投影结果；读取失败不缓存
+// （保守：下一候选失败重查，不把一次读取错误固化为开关结论）。并发失败分
+// 支下的 memo 命中竞争可能各查一次，结果等价（与既有逐次查询行为一致）。
+type chainProbeSwitchMemo struct {
+	mu         sync.Mutex
+	disabledBy map[string]bool // 归一化 accountID → 生效开关已关闭
+}
+
+func (m *chainProbeSwitchMemo) lookup(accountID string) (disabled, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	disabled, ok = m.disabledBy[accountID]
+	return disabled, ok
+}
+
+func (m *chainProbeSwitchMemo) store(accountID string, disabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.disabledBy == nil {
+		m.disabledBy = make(map[string]bool)
+	}
+	m.disabledBy[accountID] = disabled
+}
+
+// chainProbeSwitchMemoSweepThreshold 是 memo 注册表的惰性清扫阈值：条目以
+// weak.Pointer 持有请求身份，请求被 GC 后条目失效；达到阈值时先清扫 dead
+// 条目再插入，进程内存有界（未清扫的残留也只占弱指针 + 空 memo 的小空间）。
+const chainProbeSwitchMemoSweepThreshold = 1024
+
+// chainProbeSwitchMemoRegistry 以 weak.Pointer 为键保存请求级开关 memo
+// （Node WeakMap 的 Go 形态）：条目随请求对象一起被 GC 回收，绝不强引用
+// GatewayRequest——进程级强键请求 map 会把请求（含 Body.RawBody）钉在堆里
+// 直至淘汰，生产实测 ~1GB 活堆增长（BUG-0339），禁止回归该形态。
+type chainProbeSwitchMemoRegistry struct {
+	mu      sync.Mutex
+	entries map[weak.Pointer[gatewaypreauth.GatewayRequest]]*chainProbeSwitchMemo
+}
+
+// memoFor 返回请求的 memo（nil req 返回 nil——无请求身份的派发路径不
+// memo 化，保持既有逐次查询）。首见请求建 memo；容量越界先清扫 dead 条目。
+func (r *chainProbeSwitchMemoRegistry) memoFor(req *gatewaypreauth.GatewayRequest) *chainProbeSwitchMemo {
+	if req == nil {
+		return nil
+	}
+	key := weak.Make(req)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if memo, ok := r.entries[key]; ok {
+		return memo
+	}
+	if len(r.entries) >= chainProbeSwitchMemoSweepThreshold {
+		for stale := range r.entries {
+			if stale.Value() == nil {
+				delete(r.entries, stale)
+			}
+		}
+	}
+	if r.entries == nil {
+		r.entries = make(map[weak.Pointer[gatewaypreauth.GatewayRequest]]*chainProbeSwitchMemo)
+	}
+	memo := &chainProbeSwitchMemo{}
+	r.entries[key] = memo
+	return memo
+}
+
 // chainRequestFailureReason mirrors AccountHealthCheckTriggerReason
 // 'request_failure' — the only reason this port dispatches.
 const chainRequestFailureReason = "request_failure"
@@ -109,6 +187,11 @@ type chainProbeRequestOutboxWriter struct {
 	db         *sql.DB
 	deadlineMS int64
 	now        func() time.Time
+	// readBackgroundProbeSwitch 是生效开关读取的注入缝（与 now 同款的
+	// hand-assembled 测试契约）：nil 回退真 SQL 读取（FromDB 后缀方法是唯一
+	// SELECT 落点，默认路径无旁路）；测试以计数桩替换，验证请求级 memo 的
+	// 只查一次 / 失败不缓存契约。
+	readBackgroundProbeSwitch func(ctx context.Context, accountID string) (disabled bool, err error)
 
 	mu        sync.Mutex
 	ensured   bool
@@ -127,9 +210,33 @@ func (w *chainProbeRequestOutboxWriter) table() string {
 }
 
 // backgroundProbeDisabled 读账户生效的后台自动探测开关（设计 §3 投递端守卫
-// 的一次最小 SELECT）。账户行不存在或读取失败都不构成「已关闭」（返回 false
-// + err 语义分离），既有派发链与 jobs 消费端守卫承接。
-func (w *chainProbeRequestOutboxWriter) backgroundProbeDisabled(ctx context.Context, accountID string) (bool, error) {
+// 的一次最小 SELECT），memo 非空时按请求级 memo 命中（DD-B7：同请求内同一
+// 账户只查一次 DB）。账户行不存在或读取失败都不构成「已关闭」（返回 false
+// + err 语义分离），既有派发链与 jobs 消费端守卫承接；读取失败不写 memo
+// （保守：下一候选失败重查，不把读取错误固化为开关结论）。
+func (w *chainProbeRequestOutboxWriter) backgroundProbeDisabled(ctx context.Context, memo *chainProbeSwitchMemo, accountID string) (bool, error) {
+	if memo != nil {
+		if disabled, ok := memo.lookup(accountID); ok {
+			return disabled, nil
+		}
+	}
+	read := w.readBackgroundProbeSwitchFromDB
+	if w.readBackgroundProbeSwitch != nil {
+		read = w.readBackgroundProbeSwitch
+	}
+	disabled, err := read(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	if memo != nil {
+		memo.store(accountID, disabled)
+	}
+	return disabled, nil
+}
+
+// readBackgroundProbeSwitchFromDB 是生效开关 SELECT 的唯一落点（与 jobs 候选
+// SQL / freshness 门 / outbox boundary 守卫的 CASE 投影逐字同形）。
+func (w *chainProbeRequestOutboxWriter) readBackgroundProbeSwitchFromDB(ctx context.Context, accountID string) (bool, error) {
 	var enabled sql.NullInt64
 	err := w.db.QueryRowContext(ctx, w.bind(chainBackgroundProbeEnabledSQL), accountID).Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -204,6 +311,14 @@ type chainHealthDispatchSourceFence struct {
 // drain absorbs delivery, and an insert failure degrades to the same
 // rejected + warn contract the non-202 bridge responses produced.
 func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequest(ctx context.Context, accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
+	return w.EnqueueProbeRequestWithMemo(ctx, nil, accountID, reason, traceID, sourceFence)
+}
+
+// EnqueueProbeRequestWithMemo 是 EnqueueProbeRequest 的请求级 memo 形态
+// （DD-B7）：memo 携带本请求的生效开关投影（nil = 无请求身份的派发路径，
+// 保持既有逐次查询）。memo 只影响开关 SELECT 的重复执行，不改变任何状态
+// 写入——outbox INSERT 每次照常执行。
+func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequestWithMemo(ctx context.Context, memo *chainProbeSwitchMemo, accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
 	normalizedID := strings.TrimSpace(accountID)
 	if normalizedID == "" {
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "dispatch_rejected"}
@@ -212,9 +327,10 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequest(ctx context.Context,
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
 	}
 	// 后台自动探测开关守卫（设计 §3：请求失败二次确认不投递）：关闭账户按
-	// rejected 收敛且不写 outbox、不告警（真实请求失败路径，逐次打点只会
-	// 形成噪音）；读取失败保持既有派发行为，jobs 消费端守卫兜底。
-	disabled, err := w.backgroundProbeDisabled(ctx, normalizedID)
+	// rejected 收敛且不写 outbox、不告警（真实请求失败路径）；同请求失败
+	// 候选的开关读取按请求级 memo 去重（DD-B7），读取失败保持既有派发行为，
+	// jobs 消费端守卫兜底。
+	disabled, err := w.backgroundProbeDisabled(ctx, memo, normalizedID)
 	if err != nil {
 		slog.Warn("健康检查派发读取后台探测开关失败，保持既有派发行为",
 			"event", "account_health_check_dispatch_flag_read_failed", "accountId", normalizedID, "error", err)
@@ -256,10 +372,13 @@ func (w *chainProbeRequestOutboxWriter) EnqueueProbeRequest(ctx context.Context,
 // dispatchRequestFailureAccountHealthCheck: the gateway-traffic gate, the
 // per-request throttle and the outbox publish in the Node order. The
 // per-request throttle lives on GatewayRequest.failureHealthCheckMark (the
-// per-request port of the Node dispatched Symbol); this dispatcher itself is
-// stateless besides the outbox writer.
+// per-request port of the Node dispatched Symbol); the switch-projection
+// memo registry holds only weak references to requests (entries die with the
+// request object — the BUG-0339 strong-keyed shape stays forbidden);
+// otherwise this dispatcher is stateless besides the outbox writer.
 type chainRequestFailureHealthDispatcher struct {
 	outbox *chainProbeRequestOutboxWriter
+	memos  chainProbeSwitchMemoRegistry
 }
 
 // newChainRequestFailureHealthDispatcher assembles the dispatcher over the
@@ -287,7 +406,7 @@ func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealt
 	if req.RequestFailureHealthCheckDispatched() {
 		return false
 	}
-	outcome := d.dispatch(accountID, chainRequestFailureReason, "", nil)
+	outcome := d.dispatchWithMemo(d.memos.memoFor(req), accountID, chainRequestFailureReason, "", nil)
 	if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
 		return false
 	}
@@ -297,12 +416,19 @@ func (d *chainRequestFailureHealthDispatcher) DispatchRequestFailureAccountHealt
 
 // dispatch publishes one probe request through the outbox writer. The publish
 // is fire-and-forget (Node dispatchAccountHealthCheck)：the request context
-// dies with the response, the outbox insert must not.
+// dies with the response, the outbox insert must not. This path carries no
+// request identity (TurnAvoidanceProbeService 默认派发，进程作用域) → no
+// memo, the switch read stays per-call.
 func (d *chainRequestFailureHealthDispatcher) dispatch(accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
+	return d.dispatchWithMemo(nil, accountID, reason, traceID, sourceFence)
+}
+
+// dispatchWithMemo 同 dispatch，携带请求级开关 memo（nil = 逐次查询）。
+func (d *chainRequestFailureHealthDispatcher) dispatchWithMemo(memo *chainProbeSwitchMemo, accountID, reason, traceID string, sourceFence *chainHealthDispatchSourceFence) gatewaycodex.HealthCheckDispatchOutcome {
 	if d == nil {
 		return gatewaycodex.HealthCheckDispatchOutcome{Outcome: gatewaycodex.HealthDispatchRejected, DecisionCode: "input_unavailable"}
 	}
-	return d.outbox.EnqueueProbeRequest(context.Background(), accountID, reason, traceID, sourceFence)
+	return d.outbox.EnqueueProbeRequestWithMemo(context.Background(), memo, accountID, reason, traceID, sourceFence)
 }
 
 // dispatchWithOutcome adapts the dispatcher onto the

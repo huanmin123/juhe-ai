@@ -1,5 +1,5 @@
 <template>
-  <a-layout class="app-shell" :class="{ 'app-shell-mobile': isMobile, 'app-shell-immersive': immersiveLayout }">
+  <a-layout class="app-shell" :class="{ 'app-shell-mobile': isMobile }">
     <AppSidebar
       v-model:open="sidebarOpen"
       v-model:collapsed="sidebarCollapsed"
@@ -13,26 +13,7 @@
       @open-change="handleMenuOpenChange"
     />
     <a-layout class="main-shell">
-      <div v-if="immersiveLayout" id="immersive-mobile-tools" class="immersive-mobile-tool-stack" aria-label="页面工具">
-        <a-dropdown v-if="isMobile" :trigger="['click']" placement="bottomLeft">
-          <button class="immersive-mobile-tool immersive-mobile-menu-trigger" type="button" aria-label="打开系统菜单">
-            <MenuOutlined />
-          </button>
-          <template #overlay>
-            <a-menu @click="handleImmersiveMenuClick">
-              <a-menu-item key="navigation">打开导航</a-menu-item>
-              <a-menu-divider />
-              <a-menu-item key="profile">个人信息</a-menu-item>
-              <a-menu-divider />
-              <a-menu-item v-if="canSwitchMenuMode" key="switch-mode">{{ switchMenuModeLabel }}</a-menu-item>
-              <a-menu-divider v-if="canSwitchMenuMode" />
-              <a-menu-item key="logout" danger>退出登录</a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
-      </div>
       <AppHeader
-        v-if="!immersiveLayout"
         :announcement-bell-shaking="hasNewAnnouncements"
         :can-switch-menu-mode="canSwitchMenuMode"
         :description="currentPageDescription"
@@ -48,7 +29,7 @@
         @open-sidebar="sidebarOpen = true"
         @user-menu-click="handleUserMenuClick"
       />
-      <a-layout-content class="content" :class="{ 'content-immersive': immersiveLayout }">
+      <a-layout-content class="content">
         <div v-if="routeSwitching" class="route-switch-indicator" role="status" aria-live="polite">
           <a-spin size="small" />
           <span>正在打开页面</span>
@@ -102,6 +83,7 @@ import {
   ApartmentOutlined,
   ApiOutlined,
   AppstoreOutlined,
+  AudioOutlined,
   BellOutlined,
   GlobalOutlined,
   BarChartOutlined,
@@ -114,7 +96,6 @@ import {
   HistoryOutlined,
   LinkOutlined,
   MessageOutlined,
-  MenuOutlined,
   PictureOutlined,
   SearchOutlined,
   FileSearchOutlined,
@@ -150,7 +131,6 @@ import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { PublishedAnnouncementListItem } from '@/types/domain'
-import { resolveChatViewportHeight } from '@/views/chat/chatViewport'
 import { PROFILE_PATH, requiredPasswordProfileLocation } from '@/views/profile/profileNavigation'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
@@ -194,7 +174,6 @@ const routeSwitching = computed(() => Boolean(pendingRoutePath.value && pendingR
 const pendingMenuRoute = computed(() => pendingRoutePath.value ? menuRoutes.find((item) => item.path === pendingRoutePath.value) : undefined)
 const currentUser = authState.currentUser
 const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
-const immersiveLayout = computed(() => !mustChangePassword.value && route.meta.immersive === true)
 const currentPageTitle = computed(() => pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key')
 const canSwitchMenuMode = computed(() => isAdminRole(currentUser.value?.role))
@@ -243,7 +222,11 @@ const ApiKeyMenuIcon = () =>
   ])
 
 const menuIconMap = {
-  '/my-chat': MessageOutlined,
+  // 演练场四页（演练场设计 §2）：模型能力试玩台，对话/图片/视频/语音同组区分图标。
+  '/playground/chat': ExperimentOutlined,
+  '/playground/images': PictureOutlined,
+  '/playground/videos': VideoCameraOutlined,
+  '/playground/speech': AudioOutlined,
   '/my-models': AppstoreOutlined,
   // 模型广场（模型广场页与供应商目录退役设计 §4）：双路由同组件，沿用同款网格图标。
   '/models': AppstoreOutlined,
@@ -311,6 +294,8 @@ const menuGroupIconMap = {
   'log-management': ProfileOutlined,
   // 用户面「AI 账户」分组沿用原 /my-accounts 的 UserSwitchOutlined。
   'my-accounts': UserSwitchOutlined,
+  // 演练场分组（docs/functions/演练场设计.md §2）。
+  playground: ExperimentOutlined,
   // 媒体工作室分组图标（规划 F1 三处接线）。
   'my-authorization': SafetyCertificateOutlined,
   'system-operations': SettingOutlined
@@ -460,14 +445,6 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
       message.error(extractApiErrorMessage(error, '退出登录失败，请稍后重试'))
     }
   }
-}
-
-async function handleImmersiveMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
-  if (event.key === 'navigation') {
-    sidebarOpen.value = true
-    return
-  }
-  await handleUserMenuClick(event)
 }
 
 async function openAnnouncements() {
@@ -661,40 +638,19 @@ function updateViewport() {
 
 function handleResize() {
   updateViewport()
-  syncVisualViewportHeight()
-}
-
-function syncVisualViewportHeight(): void {
-  const height = resolveChatViewportHeight({
-    visualViewportHeight: window.visualViewport?.height,
-    innerHeight: window.innerHeight
-  })
-  if (height) document.documentElement.style.setProperty('--app-visual-viewport-height', `${height}px`)
-}
-
-function syncImmersiveBodyLock(active: boolean): void {
-  document.body.classList.toggle('immersive-layout-active', active)
 }
 
 onMounted(() => {
   updateViewport()
-  syncVisualViewportHeight()
   loadAppBrandSettings().catch((error) => {
     console.error(error)
   })
   window.addEventListener('resize', handleResize, { passive: true })
-  window.visualViewport?.addEventListener('resize', syncVisualViewportHeight, { passive: true })
-  window.visualViewport?.addEventListener('scroll', syncVisualViewportHeight, { passive: true })
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
-  window.visualViewport?.removeEventListener('resize', syncVisualViewportHeight)
-  window.visualViewport?.removeEventListener('scroll', syncVisualViewportHeight)
-  document.body.classList.remove('immersive-layout-active')
 })
-
-watch(immersiveLayout, syncImmersiveBodyLock, { immediate: true })
 
 watch(announcementModalOpen, (open) => {
   if (!open) resetAnnouncementContentSession()
@@ -755,19 +711,6 @@ watch(
   background: var(--juhe-bg);
 }
 
-.app-shell-immersive {
-  height: var(--app-visual-viewport-height, 100dvh);
-  min-height: 0;
-  overflow: hidden;
-}
-
-.app-shell-immersive .main-shell,
-.app-shell-immersive .content-immersive {
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-}
-
 .main-shell {
   min-width: 0;
   background: var(--juhe-bg);
@@ -779,50 +722,6 @@ watch(
   background:
     radial-gradient(46% 40% at 88% 0%, rgba(210, 220, 216, 0.35), transparent 55%),
     var(--juhe-bg);
-}
-
-.content-immersive {
-  padding: 0;
-  background: var(--juhe-surface);
-}
-
-.immersive-mobile-menu-trigger {
-  width: 36px;
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--juhe-fg-soft);
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid var(--juhe-border-strong);
-  border-radius: 50%;
-  box-shadow: 0 4px 14px rgba(34, 40, 43, 0.12);
-  cursor: pointer;
-}
-
-.immersive-mobile-tool-stack {
-  position: fixed;
-  top: calc(10px + env(safe-area-inset-top));
-  left: calc(10px + env(safe-area-inset-left));
-  z-index: 8;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-:deep(.immersive-mobile-tool) {
-  width: 36px;
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  color: var(--juhe-fg-soft);
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid var(--juhe-border-strong);
-  border-radius: 50%;
-  box-shadow: 0 4px 14px rgba(34, 40, 43, 0.12);
-  cursor: pointer;
 }
 
 .route-switch-indicator {
@@ -973,10 +872,6 @@ watch(
     padding: 16px;
   }
 
-  .content-immersive {
-    padding: 0;
-  }
-
   .route-switch-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -990,10 +885,5 @@ watch(
 
 .route-view-host-hidden {
   display: none;
-}
-
-@media (pointer: coarse) {
-  .immersive-mobile-menu-trigger { width: 44px; height: 44px; }
-  :deep(.immersive-mobile-tool) { width: 44px; height: 44px; }
 }
 </style>

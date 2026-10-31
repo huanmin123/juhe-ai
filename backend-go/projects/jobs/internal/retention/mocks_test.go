@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// fixedNow 是测试族共用的固定钟（原定义于 chat_test.go，随 chat-retention
+// 退役迁至本文件；auditshells 等存活测试仍消费）。
+func fixedNow() time.Time {
+	return time.Date(2026, 9, 4, 20, 30, 0, 0, time.UTC)
+}
+
 // Shared mock ports for the retention test suite. Every store records the
 // cutoffs and limits it was called with so tests can assert the Node batch
 // rhythm and deletion conditions end to end.
@@ -125,8 +131,6 @@ type fakeDbService struct {
 	codexCalls   int
 	codexErr     error
 
-	chatResult *ChatRetentionResult
-	chatInputs []ChatRetentionInput
 	chatErr    error
 
 	expiredSummary *ExpiredDeletedAccountSummary
@@ -134,15 +138,6 @@ type fakeDbService struct {
 	expiredCalls   int
 }
 
-func (f *fakeDbService) CleanupChatRetention(_ context.Context, input ChatRetentionInput) (*ChatRetentionResult, error) {
-	f.mutex.Lock()
-	defer f.mutex.Unlock()
-	f.chatInputs = append(f.chatInputs, input)
-	if f.chatErr != nil {
-		return nil, f.chatErr
-	}
-	return f.chatResult, nil
-}
 
 func (f *fakeDbService) CleanupExpiredSystemSessions(_ context.Context, expiredBefore string, _ int) (int64, error) {
 	f.mutex.Lock()

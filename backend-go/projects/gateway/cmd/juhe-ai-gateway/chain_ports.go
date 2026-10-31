@@ -1914,7 +1914,11 @@ func (a clientStrategyAdapter) Resolve(req *gatewaypreauth.GatewayRequest, input
 		ClientProfile:              resolved.ClientProfile,
 		DownstreamProtocol:         resolved.DownstreamProtocol,
 		RequestClientCompatibility: resolved.RequestClientCompatibility,
-		Opaque:                     resolved,
+		// 预算豁免身份门投影（DD-F3）：与 keepalive 的 CodexCompactionExpected
+		// 同一 codexTurn 判定源（strategy.go CodexCompactionExpected = codexTurn
+		// != nil && compactionExpected）。
+		CodexTurnPresent: resolved.CodexTurn != nil,
+		Opaque:           resolved,
 	}
 }
 
@@ -2556,12 +2560,62 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 	if d.producer == nil {
 		return
 	}
-	// 纯 JSON 数据结构体的 Marshal→Unmarshal 往返恒成功（w2 登记）；往返本身
-	// 是保留 wire contract 等价的类型桥（含 durationMs int → *int64 强转）。
-	encoded, _ := json.Marshal(input)
+	// DD-D4（2026-10-31）：Marshal→Unmarshal 类型桥移入 producer worker 协程
+	// （架构总览「大审计的哈希、正文降级、base64 和 JSON 编码由有界后台
+	// goroutine 完成，请求处理路径只做小记录内联编码」）——请求/完成信号路径
+	// 不再对全量输入（含 body base64）做整段 json.Marshal。往返本身是保留
+	// wire contract 等价的类型桥（含 durationMs int → *int64 强转）；纯 JSON
+	// 数据结构体的 Marshal→Unmarshal 恒成功（w2 登记），worker 侧失败不再
+	// 静默吞，记诊断日志后丢弃本条采集。in_progress 信封（DD-D1）经
+	// EnvelopeID 参与在途集合，撤回命令在信封 settle 前延迟生效。
+	envelopeID := ""
+	if input.LifecycleStatus == gatewayusage.AuditLifecycleInProgress {
+		envelopeID = input.ID
+	}
+	d.producer.CaptureDeferred(auditlog.DeferredCapture{
+		Estimate:   auditlog.EstimateDeferredAuditBytes(deferredAuditEstimateOf(input)),
+		EnvelopeID: envelopeID,
+		TraceID:    input.TraceID,
+		AuditLogID: input.ID,
+		Decode: func() (auditlog.AuditLogInput, error) {
+			return decodeAuditWireInput(input)
+		},
+	})
+}
+
+// decodeAuditWireInput 执行与退役 wire hop 相同的 Marshal→Unmarshal 类型桥
+// （w2 登记为恒成功的纯 JSON 往返），错误臂由调用方记诊断日志。
+func decodeAuditWireInput(input gatewayusage.AuditLogInput) (auditlog.AuditLogInput, error) {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return auditlog.AuditLogInput{}, err
+	}
 	var decoded auditlog.AuditLogInput
-	_ = json.Unmarshal(encoded, &decoded)
-	d.producer.Capture(decoded)
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return auditlog.AuditLogInput{}, err
+	}
+	return decoded, nil
+}
+
+// deferredAuditEstimateOf 投影采集侧输入的原始尺寸给
+// auditlog.EstimateDeferredAuditBytes（DD-D4 队列记账口径）：文本字段精确
+// 字节，body 按原始字节合计（估算侧统一按 base64 wire 上界 ×4/3 放大）。
+// 字段构成与 auditlog.estimateAuditInputBytes 的解码侧口径一一对应。
+func deferredAuditEstimateOf(input gatewayusage.AuditLogInput) auditlog.DeferredAuditEstimate {
+	estimate := auditlog.DeferredAuditEstimate{
+		ErrorTextBytes: len(input.ErrorMessage) + len(input.ErrorCode) + len(input.ErrorPhase) +
+			len(input.TraceID) + len(input.UserAgent) + len(input.Path) + len(input.QueryString),
+		AttemptCount: len(input.Attempts),
+		PayloadCount: len(input.Payloads),
+	}
+	for index := range input.Attempts {
+		attempt := &input.Attempts[index]
+		estimate.AttemptTextBytes += len(attempt.ErrorMessage) + len(attempt.ErrorCode) + len(attempt.UpstreamURL) + len(attempt.UpstreamModel)
+	}
+	for index := range input.Payloads {
+		estimate.BodyBytes += len(input.Payloads[index].Body)
+	}
+	return estimate
 }
 
 // DispatchAuditLogRetraction implements gatewayusage.AuditLogRetractor (W13):

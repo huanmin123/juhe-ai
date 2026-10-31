@@ -4,10 +4,6 @@ import axios from 'axios'
 import { api } from '@/api/client'
 import { isAdminRole, isSuperAdminRole } from '@/shared/systemAccountRoles'
 import type { CaptchaChallengeSummary, CurrentUserSummary } from '@/types/domain'
-import { chatGenerationRuntime } from '@/views/chat/chatGenerationRuntime'
-import { getDefaultChatLocalCache } from '@/views/chat/chatLocalCache'
-import { clearChatPendingSubmission } from '@/views/chat/chatPendingSubmissionStorage'
-import { drainChatConversationSyncAccount, invalidateChatConversationSyncAccount } from '@/views/chat/chatConversationSync'
 
 const currentUser = ref<CurrentUserSummary>()
 const authChecked = ref(false)
@@ -62,18 +58,8 @@ export async function login(payload: { username: string; password: string; captc
 }
 
 export async function logout(): Promise<void> {
-  const systemAccountId = currentUser.value?.id
   const operationVersion = advanceAuthStateVersion()
   await api.auth.logout()
-  if (operationVersion !== authStateVersion) return
-  // 服务端注销已成功，本地认证态必须完成注销（BUG-0303）：聊天清理失败
-  // （如浏览器禁用存储时 sessionStorage getter 抛 SecurityError）不得阻断
-  // clearAuthState；console.error 保留可观察性，不静默吞掉。
-  try {
-    await clearCurrentAccountChatState(systemAccountId)
-  } catch (error: unknown) {
-    console.error('注销时清理账户聊天状态失败，继续完成本地注销。', error)
-  }
   // 版本守卫保护清理期间新登录的身份，不被本次旧注销清空。
   if (operationVersion !== authStateVersion) return
   clearAuthState()
@@ -81,15 +67,6 @@ export async function logout(): Promise<void> {
 
 function isExplicitUnauthorized(error: unknown): boolean {
   return axios.isAxiosError(error) && error.response?.status === 401
-}
-
-export async function clearCurrentAccountChatState(systemAccountId = currentUser.value?.id): Promise<void> {
-  if (!systemAccountId) return
-  invalidateChatConversationSyncAccount(systemAccountId)
-  chatGenerationRuntime.close(systemAccountId)
-  if (typeof window !== 'undefined') clearChatPendingSubmission(window.sessionStorage, systemAccountId)
-  await drainChatConversationSyncAccount(systemAccountId)
-  await getDefaultChatLocalCache().clearAccount(systemAccountId)
 }
 
 export async function changePassword(payload: { oldPassword?: string; newPassword: string }): Promise<CurrentUserSummary> {

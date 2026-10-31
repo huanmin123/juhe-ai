@@ -8,21 +8,13 @@ package main
 //     handleOpenAIGatewayRequest 各早退臂、preflight 意外错误、
 //     resolveRouteAction 回退错误调用点、speed-first body admission 三臂、
 //     handleUpstreamResponse 中止出口、run() 收窄窗口、settle* 各回退臂、
-//     决策闭包成功返回、协议成功结算、Retry-After 下限、FinalizeLazy 转换、
-//     chatAttachStreamHandler 写失败/marshal 失败/订阅者溢出关闭臂。
+//     决策闭包成功返回、协议成功结算、Retry-After 下限、FinalizeLazy 转换。
 //  2. 真实 httptest 上游的全链路 SSE 场景（composeGatewayChain + 真实
 //     dispatch + inspection 策略）——覆盖 run() 的 RetryUpstream 续环（593）
 //     与剩余候选为空后的跨组回退切换（700）。
 //
 // 跳过并登记理由（恒不可达守卫 / 当前实现不存在该出口 / 他人范围）：
 //
-//   - chain_chat_mount.go 39（hub.now 在 chat 包内已无调用点，闭包体为死代码）、
-//     41（chat.NewStore 仅 db==nil 报错，上游 30-32 已守卫）、
-//     47（newChatTokenCount 仅内嵌 tokenizer 加载失败报错，进程内恒成功）、
-//     117/120（writeEvent 的 ended 守卫与 data==nil 兜底：事件循环单线程，
-//     每次 end() 后立即 return，闭包不外露）、
-//     168（心跳 !active：ended=true 时循环必已退出）、
-//     213-219（openChatDatabase 的 pgDialect=true 臂：按任务约定属他人范围）。
 //   - chain_v1.go 162-163（HandleParserRejection 对非 nil perr 且头未发送恒
 //     返回 true，false 臂不可达）、166-169（Capture 当前实现全部失败路径返回
 //     (nil,nil)，不再产生 error）、228-231（newRequestBudgets 失败需空
@@ -40,7 +32,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +42,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -211,61 +201,6 @@ type w1vErrReader struct {
 }
 
 func (r *w1vErrReader) Read([]byte) (int, error) { return 0, r.err }
-
-// w1vWriteErrorWriter 是首次 Write 即报错并放行一次同步信号的
-// ResponseWriter+Flusher（驱动 chatAttachStreamHandler writeEvent 写失败臂）。
-type w1vWriteErrorWriter struct {
-	header http.Header
-	code   int
-	first  chan struct{}
-	once   bool
-}
-
-func (w *w1vWriteErrorWriter) Header() http.Header {
-	if w.header == nil {
-		w.header = http.Header{}
-	}
-	return w.header
-}
-
-func (w *w1vWriteErrorWriter) WriteHeader(code int) { w.code = code }
-
-func (w *w1vWriteErrorWriter) Write(p []byte) (int, error) {
-	if !w.once {
-		w.once = true
-		close(w.first)
-	}
-	return 0, errors.New("w1v: 下游写入失败")
-}
-
-func (w *w1vWriteErrorWriter) Flush() {}
-
-// w1vSignalWriter 首次 Write 成功落盘并放行同步信号，其后写入交给 recorder
-// （驱动 marshal 失败臂：先让订阅快照落地，再注入不可编码数据）。
-type w1vSignalWriter struct {
-	inner http.ResponseWriter
-	first chan struct{}
-	once  bool
-}
-
-func (w *w1vSignalWriter) Header() http.Header { return w.inner.Header() }
-
-func (w *w1vSignalWriter) WriteHeader(code int) { w.inner.WriteHeader(code) }
-
-func (w *w1vSignalWriter) Write(p []byte) (int, error) {
-	n, err := w.inner.Write(p)
-	if !w.once {
-		w.once = true
-		close(w.first)
-	}
-	return n, err
-}
-
-func (w *w1vSignalWriter) Flush() {
-	if flusher, ok := w.inner.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
 
 // w1vEncrypt 用 fixture 同款密钥加密账户凭据。
 func w1vEncrypt(t *testing.T, credentials map[string]any) string {
@@ -1418,101 +1353,4 @@ func TestW1VResponseAuditCaptureFinalizeLazyEnabled(t *testing.T) {
 			ErrorMessage:     "上游失败",
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// chatAttachStreamHandler：写失败（129 + 157）、marshal 失败（124 + 157）、
-// 订阅者溢出关闭（148）
-// ---------------------------------------------------------------------------
-
-func TestW1VChatAttachStreamWriteAndMarshalFailures(t *testing.T) {
-	t.Run("downstream_write_error", func(t *testing.T) {
-		// 订阅快照的首次 Write 即失败 → writeEvent 写失败臂（129）→
-		// 事件循环收束（157）。
-		hub := chat.NewGenerationHub(func() string { return w1hNow })
-		identity := chat.GenerationIdentity{OwnerID: "owner-w1v", ConversationID: "conv-w1v-werr", TurnID: "turn-w1v-werr"}
-		runner, _, release := w1hLaunchBlockedRunner(t, hub, identity)
-		writer := &w1vWriteErrorWriter{first: make(chan struct{})}
-		done := make(chan bool, 1)
-		go func() {
-			done <- chatAttachStreamHandler(hub)(writer, httptest.NewRequest(http.MethodGet, "/attach", nil), identity)
-		}()
-		<-writer.first
-		select {
-		case ok := <-done:
-			if !ok {
-				t.Fatal("handler = false, want true")
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("写失败后 handler 未收束")
-		}
-		close(release)
-		<-runner.Completion()
-	})
-
-	t.Run("marshal_error", func(t *testing.T) {
-		// 快照落地后注入 NaN（不可 JSON 编码）→ writeEvent marshal 失败
-		//（124）→ 事件循环收束（157）。
-		hub := chat.NewGenerationHub(func() string { return w1hNow })
-		identity := chat.GenerationIdentity{OwnerID: "owner-w1v", ConversationID: "conv-w1v-marshal", TurnID: "turn-w1v-marshal"}
-		runner, execCh, release := w1hLaunchBlockedRunner(t, hub, identity)
-		recorder := httptest.NewRecorder()
-		writer := &w1vSignalWriter{inner: recorder, first: make(chan struct{})}
-		done := make(chan bool, 1)
-		go func() {
-			done <- chatAttachStreamHandler(hub)(writer, httptest.NewRequest(http.MethodGet, "/attach", nil), identity)
-		}()
-		exec := <-execCh
-		<-writer.first // 订阅快照已写出，handler 阻塞在事件循环
-		if !exec.Publish("message.delta", map[string]any{"delta": math.NaN()}, chat.ChatGenerationProjectionUpdate{}) {
-			t.Fatal("publish NaN 事件失败")
-		}
-		select {
-		case ok := <-done:
-			if !ok {
-				t.Fatal("handler = false, want true")
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("marshal 失败后 handler 未收束")
-		}
-		close(release)
-		<-runner.Completion()
-	})
-}
-
-func TestW1VChatAttachStreamDroppedSubscriberClosesEvents(t *testing.T) {
-	// 首次写入阻塞期间灌 300 条非终结事件：缓冲 256 塞满 → TrySend 丢弃并
-	// 关闭 events → 释放写入后 handler 处理完缓冲读到关闭态（148）→ 收束。
-	hub := chat.NewGenerationHub(func() string { return w1hNow })
-	identity := chat.GenerationIdentity{OwnerID: "owner-w1v", ConversationID: "conv-w1v-drop", TurnID: "turn-w1v-drop"}
-	runner, execCh, release := w1hLaunchBlockedRunner(t, hub, identity)
-	writer := &w1hBlockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
-	done := make(chan bool, 1)
-	go func() {
-		done <- chatAttachStreamHandler(hub)(writer, httptest.NewRequest(http.MethodGet, "/attach", nil), identity)
-	}()
-	exec := <-execCh
-	<-writer.entered
-	for index := 0; index < 300; index++ {
-		exec.Publish("message.delta", map[string]any{"index": index}, chat.ChatGenerationProjectionUpdate{})
-	}
-	close(writer.release)
-	select {
-	case ok := <-done:
-		if !ok {
-			t.Fatal("handler = false, want true（通道关闭收束）")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("通道关闭后 handler 未收束")
-	}
-	body := writer.body()
-	if !strings.Contains(body, "event: message.snapshot") {
-		truncated := body
-		if len(truncated) > 200 {
-			truncated = truncated[:200]
-		}
-		t.Fatalf("快照事件应已写出: %q", truncated)
-	}
-	close(release)
-	<-runner.Completion()
 }

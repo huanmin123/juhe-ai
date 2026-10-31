@@ -148,11 +148,6 @@ func schedules() map[string]Schedule {
 		},
 
 		// ops-worker（可用性/授权/保留）
-		"chat-retention-cleanup": {
-			Interval: 10 * minute, InitialDelay: 270 * second, StablePhaseWindow: 30 * second,
-			PassiveJitter: true, ScheduleMode: "fixedDelay", Lane: "storage-maintenance", Timeout: 2 * minute,
-			BackoffBase: 30 * second, BackoffMax: 10 * minute, LeaseTTL: 5 * minute,
-		},
 		"api-key-availability-schedule-status-sync": {
 			Interval: 10 * second, InitialDelay: second, PassiveJitter: true, LeaseTTL: 30 * second,
 		},
@@ -168,8 +163,9 @@ func schedules() map[string]Schedule {
 		// media-jobs-retention：Go 新增任务（媒体设计 §8.2，M2；归档无对应
 		// scheduled job 可对照）。TTL 7 天的任务行清理量级小，interval=1h
 		// 足够收敛；fixedDelay + storage-maintenance lane 对齐 retention 邻居
-		//（data/chat-retention 10min/450s/270s），initial delay 9min 与两者
-		// 错峰；timeout 2min/LeaseTTL 5min 对齐 chat-retention-cleanup。
+		//（data-retention 10min/450s），initial delay 9min 错峰；timeout
+		// 2min/LeaseTTL 5min 对齐同 lane 邻居（chat-retention-cleanup 已随
+		// chat_* 表退役移除，演练场设计 §8）。
 		"media-jobs-retention": {
 			Interval: hour, InitialDelay: 9 * minute, StablePhaseWindow: 30 * second,
 			PassiveJitter: true, ScheduleMode: "fixedDelay", Lane: "storage-maintenance", Timeout: 2 * minute,

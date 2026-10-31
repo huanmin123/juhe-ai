@@ -26,7 +26,6 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -976,7 +975,7 @@ func TestChatGatewayExecutorStreamsThroughHandler(t *testing.T) {
 	executor := newChatGatewayExecutor(handler)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	response, err := executor.Dispatch(ctx, chat.GenerationDispatchRequest{
+	response, err := executor.Dispatch(ctx, GenerationDispatchRequest{
 		Path:    "v1/chat/completions",
 		Method:  http.MethodPost,
 		Headers: map[string]string{"X-Trace-Id": "trace_chat"},

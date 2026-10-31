@@ -172,6 +172,7 @@ chunk 字段至少包含：
 - Vector Store 绑定同一授权边界，`file_search.vector_store_ids` 不能跨 API Key 或跨分组读取。
 - 文件名、MIME、大小、hash 可入审计；文件正文默认不入普通操作日志。
 - 原始审计如捕获文件相关请求，只记录 file id、filename、bytes、purpose、vector store id 和 chunk 引用，不记录完整文件内容。
+- 三族路由在 `/v1` 协议门前前置（可达性安排），但不豁免入口保护：进入 compat 分发前与 preauth 管道同源执行缓存态客户端 IP 黑名单（403，`client_ip_blacklisted` 口径）与认证前熔断（429，`client_ip_pre_auth_circuit_open` 口径 + Retry-After）两项检查（2026-10-31 DD-A2 修复，`chain_v1.go` 的 `rejectCompatEntryBySourceGuards`）；正常 Bearer 请求不增加额外成本，路由可达性与排序意图不变。
 
 ## 8. Bridge 集成
 

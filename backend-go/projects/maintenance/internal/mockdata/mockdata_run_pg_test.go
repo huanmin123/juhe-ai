@@ -18,11 +18,9 @@ import (
 )
 
 // runMockdataForTest 在独立测试库上执行一次完整造数（固定时钟保证可复现）。
-// chat 资产文件根固定到临时目录：造数域按 JUHE_AI_CHAT_ASSETS_ROOT 落盘，
-// 测试不得把资产文件写到仓库工作目录。
+// （chat 资产根 Setenv 已随 my-chat 会话面退役移除——演练场设计 §8。）
 func runMockdataForTest(t *testing.T, dsn string, now time.Time, summaryFile string) Report {
 	t.Helper()
-	t.Setenv("JUHE_AI_CHAT_ASSETS_ROOT", filepath.Join(t.TempDir(), "chat-assets"))
 	report, err := Run(context.Background(), Options{
 		DSN:           dsn,
 		Days:          DefaultDays,
@@ -100,11 +98,10 @@ func TestMockdataRunSeedsBusinessOnFreshDatabase(t *testing.T) {
 		}
 	}
 	for _, table := range []string{
-		"chat_conversations", "chat_messages", "chat_assets", "chat_asset_references",
 		"codex_context_sessions", "codex_context_responses", "codex_context_compacts",
 	} {
 		if chatCounts[table] == 0 {
-			t.Fatalf("chat 域计数缺少 %s: %v", table, chatCounts)
+			t.Fatalf("codex 域计数缺少 %s: %v", table, chatCounts)
 		}
 	}
 	// 全新库无 juhe_j3b schema / juhe_jobs：j3b 与账户健康段按属主缺失跳过。

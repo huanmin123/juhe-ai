@@ -1,16 +1,14 @@
 package mockdata
 
-// chat_codex_model_check 域的 PG 集成测试（pgtestkit 每测试独立库）：chat 日
-// 分区与消息、资产文件与引用完整性、codex 三表、J3b 模型检测样本（prepare 先
-// 建 juhe_j3b schema，Run 内完成受控 bootstrap）、background_task_runs、
-// juhe_jobs 属主缺失 skip 路径、重复执行幂等与属主行自清、清理收敛。
-// chat 资产文件根由 runMockdataForTest 固定到测试临时目录（JUHE_AI_CHAT_ASSETS_ROOT）。
+// chat_codex_model_check 域的 PG 集成测试（pgtestkit 每测试独立库）：codex 三
+// 表、J3b 模型检测样本（prepare 先建 juhe_j3b schema，Run 内完成受控
+// bootstrap）、background_task_runs、juhe_jobs 属主缺失 skip 路径、重复执行幂
+// 等与属主行自清、清理收敛。（chat 日分区 / 消息 / 资产断言已随 my-chat 会话
+// 面退役移除——演练场设计 §8。）
 
 import (
 	"context"
 	"database/sql"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,14 +37,9 @@ func TestChatCodexModelCheckDomainContent(t *testing.T) {
 	report := runMockdataForTest(t, dsn, now, "")
 	counts := chatDomainCounts(t, report)
 
-	// 计数：4 会话 / 20 消息（12 常规 + 8 媒体）/ 5 资产（3 图 + 2 媒体）/
-	// 5 引用 / 2 图片生成 / 2 存储窗口桶 / 1 幂等键 / 1 检查点 + 3 条目 /
-	// codex 2 会话 3 响应 2 摘要。background_task_runs 归 stats 域，不在本域计数。
+	// 计数：codex 2 会话 3 响应 2 摘要（chat 会话 / 消息 / 资产计数已随会话面
+	// 退役移除）。background_task_runs 归 stats 域，不在本域计数。
 	wantCounts := map[string]int{
-		"chat_conversations": 4, "chat_messages": 20, "chat_assets": 5,
-		"chat_asset_references": 5, "chat_image_generations": 2,
-		"chat_user_storage_windows": 2, "chat_message_idempotency": 1,
-		"chat_context_checkpoints": 1, "chat_context_entries": 3, "chat_user_asset_usage": 1,
 		"codex_context_sessions": 2, "codex_context_responses": 3, "codex_context_compacts": 2,
 	}
 	for table, want := range wantCounts {
@@ -79,84 +72,6 @@ func TestChatCodexModelCheckDomainContent(t *testing.T) {
 			t.Fatal(err)
 		}
 		return n
-	}
-
-	// 分区：消息时间落在 2026-10-24 / 10-25 两天，ensure 预建当日 + 次日，
-	// 因此 20261024/25/26 三个分区必须存在（10-23 无消息、不应存在）。
-	partitionExists := func(dateKey string) bool {
-		t.Helper()
-		var regclass *string
-		if err := env.db.QueryRowContext(ctx, "SELECT to_regclass($1)::text",
-			SchemaChat+"."+chatMessagePartitionPrefix+dateKey).Scan(&regclass); err != nil {
-			t.Fatal(err)
-		}
-		return regclass != nil
-	}
-	for _, dateKey := range []string{"20261024", "20261025", "20261026"} {
-		if !partitionExists(dateKey) {
-			t.Fatalf("chat_messages 分区 %s 未创建", dateKey)
-		}
-	}
-	if partitionExists("20261023") {
-		t.Fatal("无消息的日期不应预建分区 20261023")
-	}
-	// 消息写入的分区路由正确：按 created_at 前缀逐日计数与总数一致。
-	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaChat, "chat_messages")); n != 20 {
-		t.Fatalf("chat_messages 总数 %d != 20", n)
-	}
-
-	// 资产文件：ready 资产的 storage_key 与 preview_storage_key 必须真实落在
-	// JUHE_AI_CHAT_ASSETS_ROOT 下（只有库行没有文件就是页面 404）。
-	assetsRoot := os.Getenv("JUHE_AI_CHAT_ASSETS_ROOT")
-	if assetsRoot == "" {
-		t.Fatal("测试未设置 JUHE_AI_CHAT_ASSETS_ROOT")
-	}
-	rows, err := env.db.QueryContext(ctx, "SELECT id, storage_key, preview_storage_key FROM "+qualified(SchemaChat, "chat_assets")+
-		" WHERE processing_status = 'ready'")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assetCount := 0
-	for rows.Next() {
-		var id, storageKey string
-		var previewKey *string
-		if err := rows.Scan(&id, &storageKey, &previewKey); err != nil {
-			rows.Close()
-			t.Fatal(err)
-		}
-		assetCount++
-		if _, err := os.Stat(filepath.Join(assetsRoot, filepath.FromSlash(storageKey))); err != nil {
-			t.Fatalf("资产 %s 的文件缺失: %v", id, err)
-		}
-		if previewKey != nil {
-			if _, err := os.Stat(filepath.Join(assetsRoot, filepath.FromSlash(*previewKey))); err != nil {
-				t.Fatalf("资产 %s 的预览文件缺失: %v", id, err)
-			}
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if assetCount != 5 {
-		t.Fatalf("ready 资产数 %d != 5", assetCount)
-	}
-
-	// 引用完整性：每条引用都能解析到资产（双外键）与消息；媒体资产无宽高、
-	// 无预览；assistant_generated 图片有预览键。
-	if n := count(`SELECT COUNT(*) FROM ` + qualified(SchemaChat, "chat_asset_references") + ` r
-		LEFT JOIN ` + qualified(SchemaChat, "chat_assets") + ` a ON a.id = r.asset_id AND a.conversation_id = r.conversation_id
-		LEFT JOIN ` + qualified(SchemaChat, "chat_messages") + ` m ON m.id = r.message_id
-		WHERE a.id IS NULL OR m.id IS NULL`); n != 0 {
-		t.Fatalf("存在悬挂引用: %d", n)
-	}
-	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaChat, "chat_assets") +
-		" WHERE processed_mime_type IN ('audio/wav','video/mp4') AND (original_width IS NOT NULL OR preview_storage_key IS NOT NULL)"); n != 0 {
-		t.Fatalf("媒体资产不应有宽高或预览: %d", n)
-	}
-	if n := count("SELECT COUNT(*) FROM " + qualified(SchemaChat, "chat_assets") +
-		" WHERE source_kind = 'assistant_generated' AND processed_mime_type LIKE 'image/%' AND preview_storage_key IS NULL"); n != 0 {
-		t.Fatalf("assistant_generated 图片缺预览: %d", n)
 	}
 
 	// codex 三表闭环：会话 latest 指针与响应/摘要行一致，响应 previous 链完整。
@@ -315,20 +230,18 @@ func TestChatCodexModelCheckIdempotent(t *testing.T) {
 	// 物理行数与计数一致（无历史残留行）。background_task_runs 归 stats 域，
 	// 不在本域计数与检查范围。
 	for table, want := range first {
-		schema := SchemaChat
-		query := "SELECT COUNT(*) FROM " + qualified(schema, table)
+		var query string
 		switch {
 		case strings.HasPrefix(table, "codex_context"):
-			schema = SchemaCodexContext
-			query = "SELECT COUNT(*) FROM " + qualified(schema, table)
+			query = "SELECT COUNT(*) FROM " + qualified(SchemaCodexContext, table)
 		case table == "account_health_outcomes":
-			schema = SchemaJobs
-			query = "SELECT COUNT(*) FROM " + qualified(schema, table)
+			query = "SELECT COUNT(*) FROM " + qualified(SchemaJobs, table)
 		case strings.HasPrefix(table, "model_check") || strings.HasPrefix(table, "account_quality") ||
 			strings.HasPrefix(table, "model_trust") || strings.HasPrefix(table, "model_token") ||
 			strings.HasPrefix(table, "model_account"):
-			schema = SchemaJ3B
-			query = "SELECT COUNT(*) FROM " + qualified(schema, table)
+			query = "SELECT COUNT(*) FROM " + qualified(SchemaJ3B, table)
+		default:
+			t.Fatalf("未登记 schema 归属的计数表 %s（chat 表已退役）", table)
 		}
 		if n := count(query); n != want {
 			t.Fatalf("表 %s 物理行数 %d != 计数 %d", table, n, want)
@@ -350,11 +263,6 @@ func TestChatCodexModelCheckCleanupSweeps(t *testing.T) {
 	deleted, _, err := cleanupAll(ctx, env, nil)
 	if err != nil {
 		t.Fatalf("cleanupAll: %v", err)
-	}
-	for _, table := range []string{"chat_conversations", "chat_messages", "chat_assets", "chat_asset_references"} {
-		if deleted[qualified(SchemaChat, table)] == 0 {
-			t.Fatalf("清理未命中 %s: %v", table, deleted)
-		}
 	}
 	for _, schemaTable := range []string{
 		qualified(SchemaCodexContext, "codex_context_sessions"),

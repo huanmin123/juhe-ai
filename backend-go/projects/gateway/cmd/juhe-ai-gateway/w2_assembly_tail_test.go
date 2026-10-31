@@ -216,7 +216,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"image"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -226,7 +225,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -376,52 +374,6 @@ func w2cNewMockDB(t *testing.T, steps []w2cMockStep) *sql.DB {
 	return db
 }
 
-// w2cAccountLookup 解析会话绑定账户（矩阵用固定账户 w2c-acc，启用分组 grp）。
-type w2cAccountLookup struct {
-	ref *chat.ChatAccountRef
-	err error
-}
-
-func (f w2cAccountLookup) FindChatAccount(chat.ChatBindScope, string) (*chat.ChatAccountRef, error) {
-	return f.ref, f.err
-}
-
-type w2cModelCatalogFake struct {
-	accounts map[string][]chat.ChatTransportAccount
-	catalog  []chat.ProviderModelCatalogItem
-}
-
-func (f w2cModelCatalogFake) ListAccountsForGroup(groupID, _, requestedModel, endpointFamily string) []chat.ChatTransportAccount {
-	key := groupID + "|" + requestedModel + "|" + endpointFamily
-	return f.accounts[key]
-}
-func (f w2cModelCatalogFake) ListProviderCatalog(string, string) []chat.ProviderModelCatalogItem {
-	return f.catalog
-}
-
-func w2cBoolPtr(value bool) *bool { return &value }
-func w2cStrPtr(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
-// w2cResponsesAccount 构造一个 responses 协议可用的账户（支持模型 gpt-test）。
-func w2cResponsesAccount() chat.ChatTransportAccount {
-	return chat.ChatTransportAccount{
-		ID:                     "w2c-acc",
-		Type:                   "api_key",
-		ProviderCode:           "openai",
-		SupportedEndpointModes: []string{"responses_sse", "chat_sse"},
-		SupportedModels:        []string{"gpt-test"},
-		ModelMappings: []chat.ChatTransportModelMapping{{
-			Enabled:     w2cBoolPtr(true),
-			SourceModel: "gpt-test",
-		}},
-	}
-}
-
 // w2cToolPayloadOf 从 payload 提取工具条目，便于断言。
 func w2cToolEntryOf(t *testing.T, payload any, id string) map[string]any {
 	t.Helper()
@@ -442,10 +394,9 @@ func w2cToolEntryOf(t *testing.T, payload any, id string) map[string]any {
 	return nil
 }
 
-// TestW2CChatToolCapabilitiesResolverMatrix 已随账户唯一绑定与工具体系改造退场：
-// toolCapabilities 不再是 cmd 侧 resolver 的可用性矩阵，而是 chat 包
-// routes.go toolCapabilities 的绑定状态聚合（契约 AI问答工具体系设计 §8），
-// 断言由 internal/chat 的 tool-bindings 路由测试承载。
+// TestW2CChatToolCapabilitiesResolverMatrix 已随账户唯一绑定与工具体系改造
+// 退场；my-chat 会话面（原 chat 包 routes.go 与 tool-bindings 路由测试）已随
+// 演练场设计 §8 整体退役，toolCapabilities 矩阵随之消灭。
 
 // ---------------------------------------------------------------------------
 // chain_chat.go 派发原语（79/91/110/124/138）
@@ -484,7 +435,7 @@ func TestW2CChatDispatchPrimitives(t *testing.T) {
 			_, _ = w.Write([]byte("ok"))
 		})
 		executor := newChatGatewayExecutor(handler)
-		response, err := executor.Dispatch(context.Background(), chat.GenerationDispatchRequest{
+		response, err := executor.Dispatch(context.Background(), GenerationDispatchRequest{
 			Path:    "v1/chat/completions",
 			Method:  "POST",
 			Headers: map[string]string{"X-W2C-Marker": "w2c-value"},
@@ -520,133 +471,12 @@ func TestW2CChatDispatchPrimitives(t *testing.T) {
 			time.Sleep(80 * time.Millisecond)
 			cancel()
 		}()
-		_, err := executor.Dispatch(ctx, chat.GenerationDispatchRequest{Body: []byte("{}")})
+		_, err := executor.Dispatch(ctx, GenerationDispatchRequest{Body: []byte("{}")})
 		close(block)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v, want context.Canceled", err)
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// chain_chat_images.go 几何臂（241/290）
-// ---------------------------------------------------------------------------
-
-func TestW2CChatImageGeometryArms(t *testing.T) {
-	// 241：面积上限臂（1024×3000 面积超过 2500 patch 预算 → areaScale 收缩）。
-	target := boundedChatImageDimensions(1024, 3000)
-	if target.width <= 0 || target.height <= 0 {
-		t.Fatalf("收缩结果非法: %+v", target)
-	}
-	if target.height >= 3000 {
-		t.Fatalf("面积上限未生效: %+v", target)
-	}
-	if chatImagePatchCount(target.width, target.height) > chatMaxModelImagePatch {
-		t.Fatalf("patch 数仍超预算: %+v", target)
-	}
-	// 290：等尺寸 resize 走 toNRGBA 快路。
-	src := image.NewNRGBA(image.Rect(0, 0, 3, 2))
-	for index := range src.Pix {
-		src.Pix[index] = 128
-	}
-	resized := resizeChatImage(src, 3, 2)
-	bounds := resized.Bounds()
-	if bounds.Dx() != 3 || bounds.Dy() != 2 {
-		t.Fatalf("等尺寸 resize 尺寸变化: %+v", bounds)
-	}
-	if _, isNRGBA := resized.(*image.NRGBA); !isNRGBA {
-		t.Fatalf("等尺寸 resize 应返回 NRGBA: %T", resized)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// chain_chat_observation.go 观察臂（221/249/313）
-// ---------------------------------------------------------------------------
-
-type w2cObservationExecutor struct {
-	status int
-	body   string
-	err    error
-}
-
-func (e *w2cObservationExecutor) Dispatch(context.Context, chat.GenerationDispatchRequest) (*chat.GenerationDispatchResponse, error) {
-	if e.err != nil {
-		return nil, e.err
-	}
-	return &chat.GenerationDispatchResponse{
-		Status: e.status,
-		Header: http.Header{},
-		Body:   io.NopCloser(strings.NewReader(e.body)),
-	}, nil
-}
-
-func w2cNewObservationStore(t *testing.T, steps []w2cMockStep, objects chat.ObjectStore, executor chat.GenerationExecutor) *chatImageObservations {
-	t.Helper()
-	db := w2cNewMockDB(t, steps)
-	return newChatImageObservations(db, objects, executor)
-}
-
-func TestW2CChatObservationArms(t *testing.T) {
-	root := t.TempDir()
-
-	t.Run("资产数据URL缺失249", func(t *testing.T) {
-		store := w2cNewObservationStore(t, []w2cMockStep{
-			{include: "RETURNING observation_revision", columns: []string{"observation_revision", "observation_claim_id"}, values: [][]driver.Value{{int64(1), "w2c-claim-1"}}},
-			{include: "SELECT storage_key", columns: []string{"storage_key"}, values: nil},
-		}, nil, &w2cObservationExecutor{})
-		err := store.runObservation(context.Background(), chat.ScheduleObservationInput{
-			ConversationID: "conv", SystemAccountID: ownerIDAware(), Model: "gpt-test",
-		}, chat.ObservationTarget{AssetID: "asset-1", ExpectedTurnID: "turn", ExpectedMessageID: "msg"})
-		if err == nil || !strings.Contains(err.Error(), "chat_image_observation_asset_missing") {
-			t.Fatalf("err = %v, want asset_missing", err)
-		}
-	})
-
-	t.Run("setObservation行数错误221", func(t *testing.T) {
-		store := w2cNewObservationStore(t, []w2cMockStep{
-			{include: "observation_claimed_at = NULL", result: w2cMockResult{rowsAffectedErr: errors.New("w2c: rows affected 失败")}},
-		}, nil, &w2cObservationExecutor{})
-		_, err := store.setObservation(context.Background(), "asset", "conv", "sys", "ready", map[string]any{"summary": "ok"}, 1, "claim", "2026-09-14T00:00:00.000Z")
-		if err == nil || !strings.Contains(err.Error(), "rows affected 失败") {
-			t.Fatalf("err = %v, want rows affected 失败", err)
-		}
-	})
-
-	t.Run("完成结算写错误313", func(t *testing.T) {
-		// 资产对象文件：4 字节，与 SELECT 返回的 processed_bytes/sha 一致。
-		data := []byte("w2c!")
-		objects := newChatAssetObjectStoreForTest(t, root, map[string][]byte{"asset-key": data})
-		sum := chatAssetSHA256Hex(data)
-		store := w2cNewObservationStore(t, []w2cMockStep{
-			{include: "RETURNING observation_revision", columns: []string{"observation_revision", "observation_claim_id"}, values: [][]driver.Value{{int64(3), "w2c-claim-2"}}},
-			{include: "SELECT storage_key", columns: []string{"storage_key", "processed_mime_type", "processed_bytes", "processed_sha256", "source_kind"},
-				values: [][]driver.Value{{"asset-key", "image/png", int64(len(data)), sum, "user_upload"}}},
-			{include: "observation_claimed_at = NULL", execErr: errors.New("w2c: 结算写失败")},
-		}, objects, &w2cObservationExecutor{status: 200, body: `{"output_text":"{\"summary\":\"w2c 总结\"}"}`})
-		err := store.runObservation(context.Background(), chat.ScheduleObservationInput{
-			ConversationID: "conv", SystemAccountID: "sys", Model: "gpt-test",
-		}, chat.ObservationTarget{AssetID: "asset-1", ExpectedTurnID: "turn", ExpectedMessageID: "msg"})
-		if err == nil || !strings.Contains(err.Error(), "结算写失败") {
-			t.Fatalf("err = %v, want 结算写失败", err)
-		}
-	})
-}
-
-func ownerIDAware() string { return "w2c-sys" }
-
-// newChatAssetObjectStoreForTest 直接落一个 chat 资产对象存储并写入测试文件。
-func newChatAssetObjectStoreForTest(t *testing.T, root string, files map[string][]byte) *chatAssetObjectStore {
-	t.Helper()
-	store, err := newChatAssetObjectStore(root)
-	if err != nil {
-		t.Fatalf("create object store: %v", err)
-	}
-	for name, data := range files {
-		if err := store.Write(name, data, int64(len(data))+16, ""); err != nil {
-			t.Fatalf("write asset %s: %v", name, err)
-		}
-	}
-	return store
 }
 
 // ---------------------------------------------------------------------------

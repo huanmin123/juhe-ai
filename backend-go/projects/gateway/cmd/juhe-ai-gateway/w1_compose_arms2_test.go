@@ -50,8 +50,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -63,37 +61,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
-
-// ---------------------------------------------------------------------------
-// B1. compose.go：链条开启后 my-chat 家族的 chat 资产根目录失败臂
-// ---------------------------------------------------------------------------
-
-func TestW1MComposeChatFamilyChatAssetsFailureArm(t *testing.T) {
-	stack := w1oNewComposeStack(t)
-	w1oRedirectChatAssetsRoot(t, stack)
-	stack.cfg.ChainEnabled = true
-	// ChatAssetsRoot 指向一个已存在的文件：newChatAssetObjectStore 的
-	// os.MkdirAll 必然失败，composeChatFamily 错误沿
-	// "compose my-chat family" 包装层返回。
-	assetsBlocker := filepath.Join(t.TempDir(), "w1m-assets-blocker")
-	if err := os.WriteFile(assetsBlocker, []byte("not-a-dir"), 0o644); err != nil {
-		t.Fatalf("写入 chat 资产根目录占位文件失败: %v", err)
-	}
-	stack.cfg.ChatAssetsRoot = assetsBlocker
-	composed, err := stack.compose(t)
-	if err == nil {
-		if composed != nil {
-			composed.Shutdown()
-		}
-		t.Fatal("chat 资产根目录指向文件时必须 fail-fast，实际组装成功")
-	}
-	if composed != nil {
-		t.Fatalf("失败臂不得返回组合根，实际 %#v", composed)
-	}
-	if !strings.Contains(err.Error(), "compose my-chat family") {
-		t.Fatalf("错误 = %v，want 包含 compose my-chat family", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // B2. compose.go：空白 JUHE_AI_SECRET 命中 apikeys.NewStore 校验失败臂

@@ -323,13 +323,6 @@ func ScheduledEntries() []Entry {
 			GoBinding: "DataRetentionJob + cleanuprepo（public_api_logs/usage records 分区裁剪/stats+metrics 保留/system_sessions/codex-context 清理结算/非业务数据硬清理）PG 接线（原分片清理与 SQLite settings 读模型回退随 sqlite 形态退役删除）",
 		},
 		{
-			JobName: "chat-retention-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
-			SingleOwner: true, LeaseRequired: true,
-			Writes:   []string{"chat:*"},
-			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
-			GoBinding: "ChatRetentionJob + cleanuprepo.ChatStore（cleanupChatRetention 全链：每日分区/轮次/幂等键/容量窗口/标题/压缩恢复/检查点/资产认领删除）PG 接线；isActiveTurn 钩子跨进程不可见保持 nil",
-		},
-		{
 			JobName: "expired-deleted-account-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{"business:accounts", "business:resource_authorizations"},

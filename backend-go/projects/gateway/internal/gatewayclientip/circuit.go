@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -295,29 +297,95 @@ func (c *ErrorCircuit) recordPreAuthEntry(key string, reason string, threshold i
 	return c.entryDecisionPreAuth(&entry, true)
 }
 
-// recordPreAuthEntryAsync mirrors recordPreAuthEntryAsync (redis).
+// recordPreAuthEntryLua 是 preauth 计数条目的原子读改写脚本（DD-A1）：高频
+// 同 key 打点的 GET→修改→SET 下沉 Redis 单线程执行，镜像 memory 臂
+// recordPreAuthEntry 的逐字段语义——毒键视同未命中（覆盖写回）、blocked 早退
+// 不写、appendSample（prune+append+按阈值截断）、活跃块跳过 + 指数退避
+// openBlock、TTL 与键结构不变。返回 {blocked, failureCount, blockedUntilMs,
+// retryAfterSeconds, lastReason}。
+//
+// WATCH 乐观锁不适用：热点 key（攻击者单 IP 连发）高并发下 EXEC 冲突重试
+// 雪崩；Lua 与 ratelimit/penalty-window 的原子计数惯例同款。
+const recordPreAuthEntryLua = `
+local function entryDecision(entry, now, samplesLen)
+	local blockedUntilMs = entry['blockedUntilMs']
+	if blockedUntilMs == nil or tonumber(blockedUntilMs) <= now then
+		return {0, samplesLen, 0, 0, entry['lastReason'] or ''}
+	end
+	local retryAfter = math.ceil((tonumber(blockedUntilMs) - now) / 1000)
+	if retryAfter < 1 then retryAfter = 1 end
+	return {1, samplesLen, tonumber(blockedUntilMs), retryAfter, entry['lastReason'] or ''}
+end
+local raw = redis.call('GET', KEYS[1])
+local entry = nil
+if raw then
+	local ok, decoded = pcall(cjson.decode, raw)
+	if ok and type(decoded) == 'table' then entry = decoded end
+end
+local now = tonumber(ARGV[1])
+local windowMs = tonumber(ARGV[2])
+local threshold = tonumber(ARGV[3])
+local initialBlockMs = tonumber(ARGV[4])
+local maxBlockMs = tonumber(ARGV[5])
+local reason = ARGV[6]
+local entryKey = ARGV[7]
+local ttlMs = tonumber(ARGV[8])
+if entry == nil then entry = {} end
+local currentDecision = entryDecision(entry, now, #(entry['samples'] or {}))
+if currentDecision[1] == 1 then
+	return currentDecision
+end
+local samples = entry['samples']
+if samples == nil then samples = {} end
+local kept = {}
+for i = 1, #samples do
+	if now - tonumber(samples[i]) <= windowMs then kept[#kept + 1] = tonumber(samples[i]) end
+end
+kept[#kept + 1] = now
+if #kept > threshold then
+	local trimmed = {}
+	for i = #kept - threshold + 1, #kept do trimmed[#trimmed + 1] = kept[i] end
+	kept = trimmed
+end
+entry['samples'] = kept
+entry['lastReason'] = reason
+if #kept >= threshold then
+	local blockCount = tonumber(entry['blockCount'] or 0)
+	local exponent = blockCount
+	if exponent > 4 then exponent = 4 end
+	local blockMs = initialBlockMs
+	for i = 1, exponent do blockMs = blockMs * 2 end
+	if blockMs > maxBlockMs then blockMs = maxBlockMs end
+	entry['blockCount'] = blockCount + 1
+	entry['blockedUntilMs'] = now + blockMs
+end
+if entry['key'] == nil then entry['key'] = entryKey end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttlMs)
+return entryDecision(entry, now, #kept)
+`
+
+// evalLua 是熔断 Lua 计数路径的统一入口：经 runtimeStateLuaStore 可选断言
+// 下发脚本（keys 由调用方传未加前缀的 entry key），不支持的驱动按明确错误
+// 透传（与连接失败同语义）。
+func (c *ErrorCircuit) evalLua(ctx context.Context, script, entryKey string, args ...any) (any, error) {
+	luaStore, ok := c.store.(runtimeStateLuaStore)
+	if !ok {
+		return nil, errors.New("当前运行态存储驱动不支持 Lua 原子计数")
+	}
+	return luaStore.EvalLua(ctx, script, []string{runtimeEntryKey(entryKey)}, args...)
+}
+
+// recordPreAuthEntryAsync mirrors recordPreAuthEntryAsync (redis). DD-A1：
+// 读改写经 recordPreAuthEntryLua 在 Redis 侧原子完成——普通 GET/SET 在并发
+// 打点下会丢更新，熔断计数偏慢。键、TTL、阈值语义与样本结构不变。
 func (c *ErrorCircuit) recordPreAuthEntryAsync(ctx context.Context, key string, reason string, threshold int64, now int64) (gatewaypreauth.CircuitDecision, error) {
-	entry, found, err := getRuntimeEntry[preAuthEntry](ctx, c.store, key)
+	result, err := c.evalLua(ctx, recordPreAuthEntryLua, key,
+		now, preAuthWindowMs, threshold, preAuthInitialBlockMs, preAuthMaxBlockMs, reason, key,
+		preAuthMaxBlockMs+preAuthWindowMs)
 	if err != nil {
 		return gatewaypreauth.CircuitDecision{}, err
 	}
-	if !found {
-		entry = preAuthEntry{Key: key, Samples: []int64{}}
-	}
-	activeDecision := c.entryDecisionPreAuth(&entry, true)
-	if activeDecision.Blocked {
-		return activeDecision, nil
-	}
-	entry.Samples = appendSample(entry.Samples, now, preAuthWindowMs, threshold)
-	lastReason := reason
-	entry.LastReason = &lastReason
-	if int64(len(entry.Samples)) >= threshold {
-		openBlockEntry(&entry.BlockCount, &entry.BlockedUntilMs, now, preAuthInitialBlockMs, preAuthMaxBlockMs)
-	}
-	if err := setRuntimeEntry(ctx, c.store, key, entry, preAuthMaxBlockMs+preAuthWindowMs); err != nil {
-		return gatewaypreauth.CircuitDecision{}, err
-	}
-	return c.entryDecisionPreAuth(&entry, true), nil
+	return circuitDecisionFromLua(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -382,8 +450,123 @@ func (c *ErrorCircuit) RecordClientIPErrorCircuitSampleSync(input gatewaypreauth
 	return c.entryDecisionClientIPError(&entry, true)
 }
 
+// recordClientIPErrorSampleLua 是 client-IP error 计数条目的原子读改写脚本
+//（DD-A1，与 recordPreAuthEntryLua 同款单线程原子化）：镜像 memory 臂
+// RecordClientIPErrorCircuitSampleSync 的逐字段语义——总样本 prune/append/
+// 截断、signature 元组（Node 形态 ["sig",[ms...]]）逐一 prune 后按签名
+// upsert、超 max 裁剪最旧、签名阈值或总样本阈值任一触发即指数退避 openBlock。
+// 返回与 recordPreAuthEntryLua 相同的 5 元组决策。
+const recordClientIPErrorSampleLua = `
+local function entryDecision(entry, now, samplesLen)
+	local blockedUntilMs = entry['blockedUntilMs']
+	if blockedUntilMs == nil or tonumber(blockedUntilMs) <= now then
+		return {0, samplesLen, 0, 0, entry['lastReason'] or ''}
+	end
+	local retryAfter = math.ceil((tonumber(blockedUntilMs) - now) / 1000)
+	if retryAfter < 1 then retryAfter = 1 end
+	return {1, samplesLen, tonumber(blockedUntilMs), retryAfter, entry['lastReason'] or ''}
+end
+local raw = redis.call('GET', KEYS[1])
+local entry = nil
+if raw then
+	local ok, decoded = pcall(cjson.decode, raw)
+	if ok and type(decoded) == 'table' then entry = decoded end
+end
+local now = tonumber(ARGV[1])
+local totalWindowMs = tonumber(ARGV[2])
+local totalThreshold = tonumber(ARGV[3])
+local signatureWindowMs = tonumber(ARGV[4])
+local signatureThreshold = tonumber(ARGV[5])
+local maxSignatures = tonumber(ARGV[6])
+local initialBlockMs = tonumber(ARGV[7])
+local maxBlockMs = tonumber(ARGV[8])
+local reason = ARGV[9]
+local signature = ARGV[10]
+local entryKey = ARGV[11]
+local ttlMs = tonumber(ARGV[12])
+if entry == nil then entry = {} end
+local currentDecision = entryDecision(entry, now, #(entry['samples'] or {}))
+if currentDecision[1] == 1 then
+	return currentDecision
+end
+local samples = entry['samples']
+if samples == nil then samples = {} end
+local kept = {}
+for i = 1, #samples do
+	if now - tonumber(samples[i]) <= totalWindowMs then kept[#kept + 1] = tonumber(samples[i]) end
+end
+kept[#kept + 1] = now
+if #kept > totalThreshold then
+	local trimmed = {}
+	for i = #kept - totalThreshold + 1, #kept do trimmed[#trimmed + 1] = kept[i] end
+	kept = trimmed
+end
+entry['samples'] = kept
+local signatures = entry['signatures']
+if signatures == nil then signatures = {} end
+local pruned = {}
+for i = 1, #signatures do
+	local tuple = signatures[i]
+	local signatureSamples = tuple[2]
+	if signatureSamples == nil then signatureSamples = {} end
+	local keptSignatureSamples = {}
+	for j = 1, #signatureSamples do
+		if now - tonumber(signatureSamples[j]) <= signatureWindowMs then
+			keptSignatureSamples[#keptSignatureSamples + 1] = tonumber(signatureSamples[j])
+		end
+	end
+	if #keptSignatureSamples > 0 then
+		pruned[#pruned + 1] = {tuple[1], keptSignatureSamples}
+	end
+end
+signatures = pruned
+local signatureCount = 1
+local matched = false
+for i = 1, #signatures do
+	if signatures[i][1] == signature then
+		local matchedSamples = signatures[i][2]
+		matchedSamples[#matchedSamples + 1] = now
+		if #matchedSamples > signatureThreshold then
+			local trimmed = {}
+			for j = #matchedSamples - signatureThreshold + 1, #matchedSamples do
+				trimmed[#trimmed + 1] = matchedSamples[j]
+			end
+			matchedSamples = trimmed
+		end
+		signatures[i][2] = matchedSamples
+		signatureCount = #matchedSamples
+		matched = true
+		break
+	end
+end
+if not matched then
+	signatures[#signatures + 1] = {signature, {now}}
+	if #signatures > maxSignatures then
+		local trimmed = {}
+		for i = #signatures - maxSignatures + 1, #signatures do trimmed[#trimmed + 1] = signatures[i] end
+		signatures = trimmed
+	end
+end
+entry['signatures'] = signatures
+entry['lastReason'] = reason
+if signatureCount >= signatureThreshold or #kept >= totalThreshold then
+	local blockCount = tonumber(entry['blockCount'] or 0)
+	local exponent = blockCount
+	if exponent > 4 then exponent = 4 end
+	local blockMs = initialBlockMs
+	for i = 1, exponent do blockMs = blockMs * 2 end
+	if blockMs > maxBlockMs then blockMs = maxBlockMs end
+	entry['blockCount'] = blockCount + 1
+	entry['blockedUntilMs'] = now + blockMs
+end
+if entry['key'] == nil then entry['key'] = entryKey end
+redis.call('SET', KEYS[1], cjson.encode(entry), 'PX', ttlMs)
+return entryDecision(entry, now, #kept)
+`
+
 // RecordClientIPErrorCircuitSample mirrors recordClientIpErrorCircuitSampleAsync
-// and is the G05 port method.
+// and is the G05 port method. DD-A1：读改写经 recordClientIPErrorSampleLua 在
+// Redis 侧原子完成，键、TTL、阈值语义与样本结构不变。
 func (c *ErrorCircuit) RecordClientIPErrorCircuitSample(ctx context.Context, input gatewaypreauth.ClientIPErrorCircuitSampleInput) (gatewaypreauth.CircuitDecision, error) {
 	if !c.useRedis {
 		return c.RecordClientIPErrorCircuitSampleSync(input), nil
@@ -392,32 +575,18 @@ func (c *ErrorCircuit) RecordClientIPErrorCircuitSample(ctx context.Context, inp
 	if !ok {
 		return c.circuitDecisionNotBlocked(nil), nil
 	}
-	entry, found, err := getRuntimeEntry[clientIPErrorEntry](ctx, c.store, key)
+	now := c.clock.Now().UnixMilli()
+	signature := sampleSignature(input)
+	result, err := c.evalLua(ctx, recordClientIPErrorSampleLua, key,
+		now, clientIPTotalWindowMs, clientIPTotalThreshold,
+		clientIPSignatureWindowMs, clientIPSignatureThreshold, maxSignaturesPerScope,
+		clientIPInitialBlockMs, clientIPMaxBlockMs,
+		string(input.Reason), signature, key,
+		clientIPMaxBlockMs+clientIPTotalWindowMs)
 	if err != nil {
 		return gatewaypreauth.CircuitDecision{}, err
 	}
-	if !found {
-		entry = clientIPErrorEntry{Key: key, Samples: []int64{}, Signatures: []signatureSample{}}
-	}
-	activeDecision := c.entryDecisionClientIPError(&entry, true)
-	if activeDecision.Blocked {
-		return activeDecision, nil
-	}
-	now := c.clock.Now().UnixMilli()
-	entry.Samples = appendSample(entry.Samples, now, clientIPTotalWindowMs, clientIPTotalThreshold)
-	signature := sampleSignature(input)
-	signatureCount := upsertSignatureSample(&entry, signature, now)
-	lastReason := string(input.Reason)
-	entry.LastReason = &lastReason
-
-	shouldBlock := signatureCount >= clientIPSignatureThreshold || int64(len(entry.Samples)) >= clientIPTotalThreshold
-	if shouldBlock {
-		openBlockEntry(&entry.BlockCount, &entry.BlockedUntilMs, now, clientIPInitialBlockMs, clientIPMaxBlockMs)
-	}
-	if err := setRuntimeEntry(ctx, c.store, key, entry, clientIPMaxBlockMs+clientIPTotalWindowMs); err != nil {
-		return gatewaypreauth.CircuitDecision{}, err
-	}
-	return c.entryDecisionClientIPError(&entry, true), nil
+	return circuitDecisionFromLua(result)
 }
 
 // RecordClientIPErrorCircuitSuccessSync mirrors recordClientIpErrorCircuitSuccess
@@ -788,8 +957,29 @@ func getRuntimeEntry[T any](ctx context.Context, store RuntimeStateStore, key st
 	return entry, true, nil
 }
 
-func setRuntimeEntry[T any](ctx context.Context, store RuntimeStateStore, key string, entry T, ttlMs int64) error {
-	return store.SetJSON(ctx, runtimeEntryKey(key), entry, ttlMs)
+// circuitDecisionFromLua 把 Lua 原子记录脚本的 5 元组结果
+// {blocked, failureCount, blockedUntilMs, retryAfterSeconds, lastReason}
+// 组装为 CircuitDecision（与 entryDecision/blockedCircuitDecision 同款语义）。
+func circuitDecisionFromLua(result any) (gatewaypreauth.CircuitDecision, error) {
+	rows, ok := result.([]interface{})
+	if !ok || len(rows) < 5 {
+		return gatewaypreauth.CircuitDecision{}, fmt.Errorf("Lua 计数脚本返回形态异常: %v", result)
+	}
+	blocked, _ := rows[0].(int64)
+	failureCount, _ := rows[1].(int64)
+	if blocked != 1 {
+		return gatewaypreauth.CircuitDecision{FailureCount: &failureCount}, nil
+	}
+	blockedUntilMs, _ := rows[2].(int64)
+	retryAfterSeconds, _ := rows[3].(int64)
+	reason, _ := rows[4].(string)
+	return gatewaypreauth.CircuitDecision{
+		Blocked:           true,
+		Reason:            reason,
+		RetryAfterSeconds: &retryAfterSeconds,
+		BlockedUntilMs:    &blockedUntilMs,
+		FailureCount:      &failureCount,
+	}, nil
 }
 
 // Compile-time G05 port assertion for G20 assembly.

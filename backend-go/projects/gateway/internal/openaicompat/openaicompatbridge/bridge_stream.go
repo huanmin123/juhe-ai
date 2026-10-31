@@ -10,11 +10,19 @@ import (
 // `for await (const chunk of upstreamBody) { takeCompleteSseEvents(...); for
 // (const output of process(event)) yield ... }` generators).
 
-// IndexBridgeSseBoundary finds the first `\r?\n\r?\n` boundary and returns the
-// index of the first byte of the empty-line pair together with the full
-// boundary length.
+// IndexBridgeSseBoundary finds the first SSE empty-line boundary and returns
+// the index of the boundary's leading byte together with the full boundary
+// length. 词表：\n\n、\n\r\n、\r\n\r\n（经 \n\r\n 后缀命中，index 指向前一
+// 终止符的 \n）与 \r\r（DD-C1 补齐，此前纯 CR 空行不识别、整流粘连到 EOF）；
+// 边界判定只认空行序列，事件内容行尾 \r\n 不触发。
 func IndexBridgeSseBoundary(value string) (int, int) {
 	for i := 0; i < len(value); i++ {
+		if value[i] == '\r' {
+			if i+1 < len(value) && value[i+1] == '\r' {
+				return i, 2
+			}
+			continue
+		}
 		if value[i] != '\n' {
 			continue
 		}

@@ -280,8 +280,9 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		TrafficSource:   trafficSource,
 	})
 
-	// 压缩期望单点判定（用量记录压缩标记设计 §压缩请求识别）：与下方超时豁
-	// 免同一谓词，这里提前求值冻结进请求级用量上下文（完成/失败记录同源）。
+	// 压缩期望单点判定（用量记录压缩标记设计 §压缩请求识别）：识别面（本谓
+	// 词）与预算面（下方超时豁免，另加 codexTurn 身份门）拆分；这里提前求值
+	// 冻结进请求级用量上下文（完成/失败记录同源，且早于 strategy 解析）。
 	compactionExpectedForUsage := s.Codex.CompactionExpectedForRequest(req)
 	baseUsageContext := s.BuildGatewayUsageContext(usageContextInput{
 		traceID: input.TraceID, clientIP: input.ClientIP, identity: *identity,
@@ -303,7 +304,23 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	if err != nil {
 		return PreflightResult{}, err
 	}
-	compactionTimeoutsDisabled := compactionExpectedForUsage
+	// 初始客户端画像解析上移（DD-F3 预算豁免身份门）：识别谓词（上方）必须早
+	// 于 strategy 解析冻结（用量记录压缩标记设计两口径），而预算豁免判定（下
+	// 方）需要 codexTurn 身份，故 initial 解析插在两者之间。解析是纯读
+	//（header / body / 源身份推导），提前求值不改变任何失败路径行为；原位置
+	// 只保留审计绑定时序。profile / codexTurn / 会话身份的派生输入不含
+	// groupID，interaction 亲和改写 groupID 不影响本解析取值。
+	initialClientStrategy := s.ClientStrategy.Resolve(req, ClientStrategyInput{
+		SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
+		Endpoint: input.Endpoint, ClientIP: gatewayClientIP,
+	})
+	sessionIdentity := resolveSessionIdentityFromStrategy(s, req, initialClientStrategy, systemAccountID, apiKeyID)
+	// 预算豁免身份门（DD-F3）：识别谓词与 codexTurn 身份同时命中才解除墙钟 /
+	// attempt 预算（与 keepalive 同一判定源——G18 strategy 值带 codexTurn）；
+	// 非 codex 客户端的 compact 请求按常规预算（可能被既有超时截断，压缩用量
+	// 标记不受影响）。CodexTurnPresent 是 G18 strategy CodexTurn != nil 的端口
+	// 投影。
+	compactionTimeoutsDisabled := compactionExpectedForUsage && initialClientStrategy.CodexTurnPresent
 	requestLane := options.RequestLane
 	if requestLane == "" {
 		requestLane = gatewayproto.LaneText
@@ -526,11 +543,8 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		interactionResourceAffinity = &affinity
 	}
 
-	initialClientStrategy := s.ClientStrategy.Resolve(req, ClientStrategyInput{
-		SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
-		Endpoint: input.Endpoint, ClientIP: gatewayClientIP,
-	})
-	sessionIdentity := resolveSessionIdentityFromStrategy(s, req, initialClientStrategy, systemAccountID, apiKeyID)
+	// 初始画像解析已上移至预算豁免判定点（DD-F3 身份门），此处保留审计绑定
+	// 的原有时序。
 	bindAuditSessionIdentity(auditCapture, sessionIdentity, initialClientStrategy.ClientProfile)
 
 	// 组级会话亲和三阶段第 2→3 步（策略路由分组会话亲和设计 §4）：中间件静态

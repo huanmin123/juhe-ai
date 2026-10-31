@@ -18,6 +18,15 @@ const (
 // Clock injects the wall clock (Node Date.now()).
 type Clock func() time.Time
 
+// clockNow 取注入时钟；nil 时回落系统时间（原与 chat job 同文件定义，随
+// chat-retention-cleanup 退役迁至本文件——存活任务族仍消费该助手）。
+func clockNow(clock Clock) time.Time {
+	if clock != nil {
+		return clock()
+	}
+	return time.Now()
+}
+
 // Sleeper pauses between full batches (pauseBetweenCleanupBatches). The real
 // implementation sleeps CleanupBatchPause and returns ctx.Err() when the
 // caller was aborted while waiting.
@@ -111,42 +120,6 @@ type ScheduledLeaseFence struct {
 	FencingToken int64
 }
 
-// ChatRetentionInput mirrors the cleanup_chat_retention DB service payload.
-type ChatRetentionInput struct {
-	Now               string
-	InterruptedBefore string
-	Limit             int
-	RetentionDays     int
-	ScheduledLease    *ScheduledLeaseFence
-	// Priority mirrors the low-priority IPC lane; the port transport decides
-	// how to honor it.
-	Priority string
-}
-
-// ChatRetentionResult mirrors ChatRetentionCleanupResult.
-type ChatRetentionResult struct {
-	DroppedPartitions    int64
-	DeletedMessages      int64
-	DeletedConversations int64
-	RecoveredTurns       int64
-	RecoveredCompactions int64
-	ClaimedAssets        int64
-	DeletedAssets        int64
-	FailedAssets         int64
-	HasMoreAssets        bool
-	DeletedCheckpoints   int64
-	HasMoreCheckpoints   bool
-	HasMore              bool
-}
-
-// ShouldLogChatRetention mirrors the Node condition that decides whether the
-// completion info log is emitted.
-func (r ChatRetentionResult) ShouldLog() bool {
-	return r.DroppedPartitions > 0 || r.DeletedMessages > 0 || r.DeletedConversations > 0 ||
-		r.RecoveredTurns > 0 || r.RecoveredCompactions > 0 || r.DeletedCheckpoints > 0 ||
-		r.ClaimedAssets > 0 || r.FailedAssets > 0
-}
-
 // CodexContextExpiredCleanup mirrors CodexContextExpiredStateCleanupResult.
 type CodexContextExpiredCleanup struct {
 	DeletedSessions  int64
@@ -206,7 +179,6 @@ type ExpiredDeletedAccountSummary struct {
 // result" path: a nil result without error is a transport-level miss and
 // keeps its dedicated error messages at the call sites.
 type DbService interface {
-	CleanupChatRetention(ctx context.Context, input ChatRetentionInput) (*ChatRetentionResult, error)
 	CleanupExpiredSystemSessions(ctx context.Context, expiredBefore string, limit int) (int64, error)
 	CleanupExpiredCodexContextStates(ctx context.Context, expiredBefore string, limit int) (*CodexContextExpiredCleanup, error)
 	SettleCodexContextStorageCleanup(ctx context.Context, settlement CodexContextSettlement) (CodexContextSettlementResult, error)

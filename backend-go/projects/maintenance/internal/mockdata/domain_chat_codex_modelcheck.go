@@ -1,20 +1,16 @@
 package mockdata
 
-// seedChatCodexModelCheck 是 chat / codex context / J3b 模型检测域（PG 形态，
-// T66 第二波）：chat 会话与消息（created_at 日分区）、图片与媒体资产（文件落
-// JUHE_AI_CHAT_ASSETS_ROOT 同源派生根）、codex context 三表，以及 J3b 模型检
-// 测专库（runs/items/observations/可信度投影/基线/调度/小时健康/持久化输入闭
-// 环）、juhe_stats.background_task_runs 与 juhe_jobs.account_health_outcomes。
+// seedChatCodexModelCheck 是 codex context / J3b 模型检测域（PG 形态，T66
+// 第二波）：codex context 三表、J3b 模型检测专库（runs/items/observations/
+// 可信度投影/基线/调度/小时健康/持久化输入闭环）、juhe_stats.background_task_
+// runs 与 juhe_jobs.account_health_outcomes。（chat 会话与消息、图片与媒体资
+// 产段已随 my-chat 会话面退役整体移除——演练场设计 §8。）
 //
 // 样本形状、数量与状态矩阵沿 2026-10-24 sqlite 造数链删除前的实现
 // （git 4645eb259^ 的 domain_chat_codex_modelcheck.go）取证复刻，落库按 PG
 // 单库多 schema 重写；分片对齐组随 codex context 单 schema 化退役。
 //
 // 覆盖点（docs/functions/Mockdata造数设计.md「验证点」）：
-//   - chat：置顶会话（带 active 检查点与上下文条目）、普通交替会话、达轮次
-//     上限会话（含 failed 消息）、媒体工具演示会话（output_media_task 三状态
-//     与 output_audio 播放块）；图片上传 / 生成 / 编辑资产与 MP4/WAV 媒体资产，
-//     资产文件真实落盘（前端 <img>/<audio>/<video> 按 storage_key 取文件）；
 //   - codex context：自然分布的会话 / 响应 / 压缩摘要三表闭环（latest 链与
 //     previous 链自洽，sha256 / 压缩字节按真实写入语义计算）；
 //   - 模型检测：快速 / 深度 × 运行中 / 已完成 / 失败 / 已取消矩阵，受控
@@ -31,16 +27,10 @@ package mockdata
 //     pg_schema_codex_context.go、pg_schema_stats.go 与 j3bmodelcheck
 //     bootstrap 的 postgresSchema）：timestamptz 列写 time.Time，JSONB 列写
 //     JSON 字符串，BOOLEAN 写 Go bool，时间文本列沿用 isoMillisLayout。
-//   - chat_messages 是 created_at 日 range 分区（text 列），插入前必须
-//     ensureChatMessagePartitions（当日 + 次日，与 gateway 写入路径一致）。
 //   - juhe_j3b 与 juhe_jobs 是属主 schema：表由 J3b 受控 bootstrap 与 jobs
 //     运行时创建，本域只插入、绝不建表；属主缺失时域内 skip（Run 已按
 //     OwnerStoresPending 如实登记），不复制 DDL。属主 schema 不在 maintenance
 //     清理拓扑内，因此本域在每次 seed 前按清理标识自清上一批行（幂等收敛）。
-//   - chat 资产文件按「资产 ID + 内容摘要」确定性派生存储键：重跑时同名覆写，
-//     先写文件后写行（事务失败只留无引用文件，不留 404 行）；juhe_chat 属于
-//     maintenance 清理拓扑，行的删除由 cleanupAll 外键拓扑序完成（引用行先于
-//     资产行），文件无需删除序规则。
 //   - 已知缺口（沿删除前实现如实登记，不在本文件权限内闭合）：codex context
 //     的 payload 段文件（storage_key 指向 <JUHE_AI_CODEX_CONTEXT_ROOT>/sessions/
 //     <session>/segments/<hour>.json.gz）不落盘——sha256 / 压缩与原始字节数按
@@ -67,9 +57,6 @@ import (
 // 词汇表：与 gateway / 前端 model-checks 的取值域逐字对齐（改这里必须同步
 // frontend/src/types/domain/model-checks.ts 与 gateway modelcheckowner 的校验）。
 const (
-	chatCodexImageModelGPT     = "gpt-image-2"
-	chatCodexImageSize         = "1024x1024"
-	chatCodexImageQuality      = "high"
 	chatCodexQuickProbeSet     = "multi-provider-model-check-quick-v2-light-suite"
 	chatCodexFullProbeSet      = "multi-provider-model-check-v4-gpt56-preview"
 	chatCodexTokenizerVersion  = "js-tiktoken@1.0.21:o200k_base"
@@ -81,49 +68,19 @@ const (
 	// chatCodexQuizQuestionLimit 是一次运行绑定的题目上限：检查项、resultSummary
 	// 的 customQuiz 与 policy_snapshot.customQuestionIds 都用它，保证三处一致。
 	chatCodexQuizQuestionLimit   = 3
-	chatCodexFallbackProvider    = "gpt"
+	// chatCodexFallbackModel 是 codex 会话/模型检测样本的 model 列兜底展示值
+	// （原与 chat 媒体常量同源 "sora-2"；媒体块渲染已随 my-chat 会话面退役，
+	// 此处只要求非空展示值，不参与路由）。
+	chatCodexFallbackModel    = "sora-2"
+	chatCodexFallbackProvider = "gpt"
 	chatCodexFallbackProfile     = "gpt_openai_v1"
 	chatCodexEndpointFamily      = "openai_responses"
 	chatCodexTurnLimit           = 50
 	chatCodexRetentionDays       = 30
-	chatCodexCodexContextTTLDays = 7
-	// chatCodexAssetRetentionDays 与 gateway chat 资产保留期同量级：只要让
-	// 样本在本地长期可读，过期时间不参与任何断言。
-	chatCodexAssetRetentionDays = 30
-)
+	chatCodexCodexContextTTLDays = 7)
 
-// chatCodexAssetsEnvRoot / chatCodexDataDirEnv / chatCodexAssetsDirName 与
-// gateway internal/datadir + runtime.go 的 chat 资产根派生规则一致（跨项目不
-// 得 import 对方内部包，此处为同语义副本）：JUHE_AI_CHAT_ASSETS_ROOT 显式
-// 配置优先，未配置时派生 <JUHE_AI_DATA_DIR|./data>/chat-assets。
-const (
-	chatCodexAssetsEnvRoot = "JUHE_AI_CHAT_ASSETS_ROOT"
-	chatCodexDataDirEnv    = "JUHE_AI_DATA_DIR"
-	chatCodexAssetsDirName = "chat-assets"
-)
-
-// chatCodexGetenv 是环境变量读取的注入点（测试用它固定资产根）。
-var chatCodexGetenv = os.Getenv
-
-// chatCodexAssetsRoot 解析 chat 资产文件根目录（与 gateway 进程同规则派生，
-// 同机同 env 时两边落同一个目录）。
-func chatCodexAssetsRoot(getenv func(string) string) string {
-	if getenv != nil {
-		if value := strings.TrimSpace(getenv(chatCodexAssetsEnvRoot)); value != "" {
-			return value
-		}
-	}
-	dataDir := "data"
-	if getenv != nil {
-		if value := strings.TrimSpace(getenv(chatCodexDataDirEnv)); value != "" {
-			dataDir = value
-		}
-	}
-	return filepath.Join(dataDir, chatCodexAssetsDirName)
-}
-
-// seedChatCodexModelCheck 是域入口：资源解析 → chat → codex context → J3b →
-// background_task_runs → account health。
+// seedChatCodexModelCheck 是域入口：资源解析 → codex context → J3b →
+// background_task_runs → account health（chat 段已随会话面退役）。
 //
 // 各段独立判存、独立跳过：某段的属主存储或前置资源缺失只让该段留空并记日志，
 // 不影响其他段；全部段都跳过时 Counts 为空，覆盖报告据此把本域断言判成
@@ -134,7 +91,7 @@ func seedChatCodexModelCheck(ctx context.Context, e *env) (DomainResult, error) 
 		return DomainResult{}, err
 	}
 	if resources.skip != "" {
-		e.logger.Info("mockdata chat/codex/模型检测域跳过", "reason", resources.skip)
+		e.logger.Info("mockdata codex/模型检测域跳过", "reason", resources.skip)
 		return DomainResult{Name: DomainChatCodexModelCheck}, nil
 	}
 	counts := map[string]int{}
@@ -143,7 +100,6 @@ func seedChatCodexModelCheck(ctx context.Context, e *env) (DomainResult, error) 
 		name string
 		run  func(*chatCodexWriter, chatCodexResources) error
 	}{
-		{"chat 会话与消息", seedChatSection},
 		{"codex context", seedCodexContextSection},
 		{"J3b 模型检测", seedModelCheckSection},
 		{"账户健康", seedAccountHealthSection},
@@ -205,9 +161,6 @@ type chatCodexResources struct {
 	questions []chatCodexQuestion
 }
 
-// loadChatCodexResources 只读解析 juhe_business 的 mock 资源。缺表 / 缺 mock
-// 行时返回 skip 原因而不是错误：造数必须能在仅完成 ensure+seed 的库上跑完
-// （business 域自身 skip 时本域随之留空）。
 func loadChatCodexResources(ctx context.Context, e *env) (chatCodexResources, error) {
 	resources := chatCodexResources{}
 	for _, table := range []string{"system_accounts", "api_keys", "accounts", "account_connections", "groups", "models", "model_check_question_bank"} {
@@ -546,588 +499,8 @@ func chatCodexNullable(value string) any {
 	return value
 }
 
-// ---------------------------------------------------------------------------
-// chat 段
-// ---------------------------------------------------------------------------
-
-// chatCodexConversationSeed 是一条会话样本。
-type chatCodexConversationSeed struct {
-	id            string
-	title         string
-	pinned        int
-	nextSequence  int
-	userTurns     int
-	messageRev    int
-	checkpointID  string
-	compacted     int
-	contextRev    int
-	activeTokens  any
-	limitTokens   any
-	usageEstimate int
-	createdAt     time.Time
-	lastMessageAt time.Time
-	activeCheckpt bool
-}
-
-// chatCodexImageAsset 包装共享资产值对象，补上仅图片样本使用的形状字段
-// （domain_chat_media_sample.go 的 chatCodexAsset 是媒体兼容的精简字段集：
-// 无宽高 / 预览字段，媒体行的宽高写 NULL、无预览变体）。
-type chatCodexImageAsset struct {
-	asset        chatCodexAsset
-	width        int
-	height       int
-	previewBytes []byte // 非空 = 携带 image/webp 预览变体（assistant_generated 图片）
-}
-
-func seedChatSection(w *chatCodexWriter, resources chatCodexResources) error {
-	user := resources.userAt(0)
-	key, hasKey := resources.keyForOwner(user.ID)
-	if !hasKey {
-		key = resources.apiKeys[0]
-	}
-	model := catalogModelOrFallback(resources, 0)
-	now := w.now
-
-	// —— 会话样本：置顶（带检查点）、普通交替、达轮次上限、媒体工具演示。
-	conversations := []chatCodexConversationSeed{
-		{
-			id: "mockdata_chat_conversation_pinned", title: CleanupNamePrefix + "置顶图片会话", pinned: 1,
-			nextSequence: 7, userTurns: 3, messageRev: 3, checkpointID: "mockdata_chat_checkpoint_pinned",
-			compacted: 4, contextRev: 1, activeTokens: 1536, limitTokens: 400000, usageEstimate: 0,
-			createdAt: now.Add(-72 * time.Hour), lastMessageAt: now.Add(-2 * time.Hour), activeCheckpt: true,
-		},
-		{
-			id: "mockdata_chat_conversation_default", title: CleanupNamePrefix + "默认会话", pinned: 0,
-			nextSequence: 3, userTurns: 1, messageRev: 1,
-			createdAt: now.Add(-6 * time.Hour), lastMessageAt: now.Add(-5 * time.Hour),
-		},
-		{
-			// 达轮次上限：gateway 默认 ChatMaxTurnsPerConversation=50，这里写到
-			// 第 50 轮（next_sequence_no=101，最后一轮消息在 99/100），页面应能
-			// 展示「已达轮次上限」的阻断态。
-			id: "mockdata_chat_conversation_turn_limit", title: CleanupNamePrefix + "达轮次上限会话", pinned: 0,
-			nextSequence: 101, userTurns: chatCodexTurnLimit, messageRev: chatCodexTurnLimit,
-			createdAt: now.Add(-30 * time.Hour), lastMessageAt: now.Add(-27 * time.Hour),
-		},
-		{
-			// 媒体工具演示会话（M7 问答音视频工具）：八轮消息承载 output_media_task
-			// 三状态与 output_audio 播放块，样本值在 domain_chat_media_sample.go。
-			id: chatMediaConversationID, title: CleanupNamePrefix + "媒体工具演示", pinned: 0,
-			nextSequence: 9, userTurns: 4, messageRev: 4,
-			createdAt: now.Add(-4 * time.Hour), lastMessageAt: now.Add(-29 * time.Minute),
-		},
-	}
-
-	// —— 消息样本：置顶会话含 reasoning / 工具调用 / 图片输出，普通会话一对
-	// 交替消息，上限会话含失败轮次。
-	toolCall := map[string]any{
-		"type": "tool_call", "blockId": "mockdata_chat_block_tool_1", "order": 2,
-		"callId": "mockdata_chat_call_1", "toolType": "web_search", "status": "completed",
-		"item": map[string]any{"type": "web_search_call", "status": "completed", "query": "造数-本地联调"},
-	}
-	assistantBlocks := func(text, reasoning string, outputAssetID string) []map[string]any {
-		blocks := []map[string]any{}
-		if reasoning != "" {
-			blocks = append(blocks, map[string]any{
-				"type": "reasoning", "blockId": "mockdata_chat_block_reasoning", "order": 1,
-				"text": reasoning, "status": "completed",
-			})
-		}
-		blocks = append(blocks, toolCall)
-		blocks = append(blocks, map[string]any{
-			"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 3, "text": text, "status": "completed",
-		})
-		if outputAssetID != "" {
-			blocks = append(blocks, map[string]any{
-				"type": "output_image", "blockId": "mockdata_chat_block_image", "order": 4,
-				"assetId": outputAssetID, "mimeType": "image/png", "status": "completed",
-				"width": 1, "height": 1, "revisedPrompt": CleanupNamePrefix + "图像输出样本",
-			})
-		}
-		return blocks
-	}
-	userBlocks := func(text, assetID string) []map[string]any {
-		blocks := []map[string]any{}
-		if assetID != "" {
-			blocks = append(blocks, map[string]any{
-				"type": "input_image", "blockId": "mockdata_chat_block_input_image", "order": 0, "assetId": assetID,
-			})
-		}
-		blocks = append(blocks, map[string]any{
-			"type": "input_text", "blockId": "mockdata_chat_block_user_text", "order": 1, "text": text,
-		})
-		return blocks
-	}
-
-	const (
-		assetUploadID   = "mockdata_chat_asset_upload"
-		assetGenerateID = "mockdata_chat_asset_generated"
-		assetEditID     = "mockdata_chat_asset_edited"
-	)
-	pinnedConv := conversations[0].id
-	defaultConv := conversations[1].id
-	limitConv := conversations[2].id
-	mediaConv := conversations[3].id
-	messages := []chatCodexMessage{
-		{
-			ID: "mockdata_chat_message_pinned_1", Sequence: 1, Role: "user", Status: "completed",
-			Text:   CleanupNamePrefix + "帮我看这张图并生成一张同风格的新图",
-			Blocks: userBlocks("帮我看这张图并生成一张同风格的新图", assetUploadID),
-			Model:  model, TurnID: "mockdata_chat_turn_pinned_1", ClientMessageID: "mockdata_chat_client_pinned_1",
-			CreatedAt: now.Add(-26 * time.Hour), CompletedAt: now.Add(-26 * time.Hour),
-		},
-		{
-			ID: "mockdata_chat_message_pinned_2", Sequence: 2, Role: "assistant", Status: "completed",
-			Text:   CleanupNamePrefix + "已生成图片并整理要点",
-			Blocks: assistantBlocks("已生成图片并整理要点", CleanupNamePrefix+"先拆解图片构图，再生成同风格新图", assetGenerateID),
-			Model:  model, TurnID: "mockdata_chat_turn_pinned_1", Trace: CleanupTracePrefix + "chat-pinned-1",
-			FinishReason: "stop", CreatedAt: now.Add(-26*time.Hour + time.Minute), CompletedAt: now.Add(-25*time.Hour + 58*time.Minute),
-		},
-		{
-			ID: "mockdata_chat_message_pinned_3", Sequence: 3, Role: "user", Status: "completed",
-			Text:   CleanupNamePrefix + "把背景换成纯白，尺寸不变",
-			Blocks: userBlocks("把背景换成纯白，尺寸不变", ""),
-			Model:  model, TurnID: "mockdata_chat_turn_pinned_2", ClientMessageID: "mockdata_chat_client_pinned_2",
-			CreatedAt: now.Add(-24 * time.Hour), CompletedAt: now.Add(-24 * time.Hour),
-		},
-		{
-			ID: "mockdata_chat_message_pinned_4", Sequence: 4, Role: "assistant", Status: "completed",
-			Text:   CleanupNamePrefix + "已按原图改成纯白背景",
-			Blocks: assistantBlocks("已按原图改成纯白背景", CleanupNamePrefix+"先读取原图，再按尺寸约束重绘背景", assetEditID),
-			Model:  model, TurnID: "mockdata_chat_turn_pinned_2", Trace: CleanupTracePrefix + "chat-pinned-2",
-			FinishReason: "stop", CreatedAt: now.Add(-24*time.Hour + time.Minute), CompletedAt: now.Add(-23*time.Hour + 59*time.Minute),
-		},
-		{
-			ID: "mockdata_chat_message_pinned_5", Sequence: 5, Role: "user", Status: "completed",
-			Text:   CleanupNamePrefix + "再补充一版配色说明",
-			Blocks: userBlocks("再补充一版配色说明", ""),
-			Model:  model, TurnID: "mockdata_chat_turn_pinned_3", ClientMessageID: "mockdata_chat_client_pinned_3",
-			CreatedAt: now.Add(-3 * time.Hour), CompletedAt: now.Add(-3 * time.Hour),
-		},
-		{
-			ID: "mockdata_chat_message_pinned_6", Sequence: 6, Role: "assistant", Status: "completed",
-			Text: CleanupNamePrefix + "配色说明：主色 #1F6FEB，辅助色 #F2F4F7",
-			Blocks: []map[string]any{{"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 1,
-				"text": CleanupNamePrefix + "配色说明：主色 #1F6FEB，辅助色 #F2F4F7", "status": "completed"}},
-			Model: model, TurnID: "mockdata_chat_turn_pinned_3", Trace: CleanupTracePrefix + "chat-pinned-3",
-			FinishReason: "stop", CreatedAt: now.Add(-2 * time.Hour), CompletedAt: now.Add(-2*time.Hour + time.Minute),
-		},
-		{
-			ID: "mockdata_chat_message_default_1", Sequence: 1, Role: "user", Status: "completed",
-			Text:   CleanupNamePrefix + "帮我写一段本地联调说明",
-			Blocks: userBlocks("帮我写一段本地联调说明", ""),
-			Model:  model, TurnID: "mockdata_chat_turn_default_1", ClientMessageID: "mockdata_chat_client_default_1",
-			CreatedAt: now.Add(-6 * time.Hour), CompletedAt: now.Add(-6 * time.Hour),
-		},
-		{
-			ID: "mockdata_chat_message_default_2", Sequence: 2, Role: "assistant", Status: "completed",
-			Text: CleanupNamePrefix + "本地联调说明：先跑 ensure-schema 再跑 mockdata",
-			Blocks: []map[string]any{{"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 1,
-				"text": CleanupNamePrefix + "本地联调说明：先跑 ensure-schema 再跑 mockdata", "status": "completed"}},
-			Model: model, TurnID: "mockdata_chat_turn_default_1", Trace: CleanupTracePrefix + "chat-default-1",
-			FinishReason: "stop", CreatedAt: now.Add(-6*time.Hour + time.Minute), CompletedAt: now.Add(-5*time.Hour + 58*time.Minute),
-		},
-		{
-			ID: "mockdata_chat_message_limit_97", Sequence: 97, Role: "user", Status: "completed",
-			Text:   CleanupNamePrefix + "第 49 轮：再核对一次缓存命中率",
-			Blocks: userBlocks("第 49 轮：再核对一次缓存命中率", ""),
-			Model:  model, TurnID: "mockdata_chat_turn_limit_49", ClientMessageID: "mockdata_chat_client_limit_49",
-			CreatedAt: now.Add(-28 * time.Hour), CompletedAt: now.Add(-28 * time.Hour),
-		},
-		{
-			// failed 消息样本：assistant 角色、无文本、error 双列留档（页面据此
-			// 展示失败轮次；错误码/文案在写入步骤按消息 ID 特判落列）。
-			ID: "mockdata_chat_message_limit_98", Sequence: 98, Role: "assistant", Status: "failed",
-			Text: "", Blocks: []map[string]any{},
-			Model: model, TurnID: "mockdata_chat_turn_limit_49", Trace: CleanupTracePrefix + "chat-limit-49",
-			CreatedAt: now.Add(-28*time.Hour + time.Minute), CompletedAt: now.Add(-28*time.Hour + 2*time.Minute),
-		},
-		{
-			ID: "mockdata_chat_message_limit_99", Sequence: 99, Role: "user", Status: "completed",
-			Text:   CleanupNamePrefix + "第 50 轮：给出最终结论",
-			Blocks: userBlocks("第 50 轮：给出最终结论", ""),
-			Model:  model, TurnID: "mockdata_chat_turn_limit_50", ClientMessageID: "mockdata_chat_client_limit_50",
-			CreatedAt: now.Add(-27 * time.Hour), CompletedAt: now.Add(-27 * time.Hour),
-		},
-		{
-			ID: "mockdata_chat_message_limit_100", Sequence: 100, Role: "assistant", Status: "completed",
-			Text: CleanupNamePrefix + "最终结论：缓存命中率 92%，无需调整",
-			Blocks: []map[string]any{{"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 1,
-				"text": CleanupNamePrefix + "最终结论：缓存命中率 92%，无需调整", "status": "completed"}},
-			Model: model, TurnID: "mockdata_chat_turn_limit_50", Trace: CleanupTracePrefix + "chat-limit-50",
-			FinishReason: "stop", CreatedAt: now.Add(-27*time.Hour + time.Minute), CompletedAt: now.Add(-26*time.Hour - 50*time.Minute),
-		},
-	}
-	// 媒体工具演示会话的消息（M7）：随主循环一起写，存储窗口按真实创建日期
-	// 自动分桶累计。
-	mediaMessages := chatMediaMessages(now)
-	messages = append(messages, mediaMessages...)
-	conversationOf := map[string]string{
-		"mockdata_chat_message_pinned_1":  pinnedConv,
-		"mockdata_chat_message_pinned_2":  pinnedConv,
-		"mockdata_chat_message_pinned_3":  pinnedConv,
-		"mockdata_chat_message_pinned_4":  pinnedConv,
-		"mockdata_chat_message_pinned_5":  pinnedConv,
-		"mockdata_chat_message_pinned_6":  pinnedConv,
-		"mockdata_chat_message_default_1": defaultConv,
-		"mockdata_chat_message_default_2": defaultConv,
-		"mockdata_chat_message_limit_97":  limitConv,
-		"mockdata_chat_message_limit_98":  limitConv,
-		"mockdata_chat_message_limit_99":  limitConv,
-		"mockdata_chat_message_limit_100": limitConv,
-	}
-	for _, message := range mediaMessages {
-		conversationOf[message.ID] = mediaConv
-	}
-
-	// —— 资产样本：图片三个（上传 / 生成 / 编辑）+ 媒体两个（MP4 / WAV）。
-	uploadPNG := chatCodexPNG(1, 1)
-	generatedPNG := chatCodexPNG(1, 1)
-	editedJPEG := chatCodexJPEG(1, 1)
-	previewWebP := chatCodexWebP()
-	imageAssets := []chatCodexImageAsset{
-		{
-			asset: chatCodexAsset{
-				ID: assetUploadID, SourceKind: "user_upload", Filename: CleanupNamePrefix + "输入图.png",
-				Conversation: pinnedConv, Owner: user.ID, TurnID: "mockdata_chat_turn_pinned_1",
-				MessageID: "mockdata_chat_message_pinned_1", Bytes: uploadPNG, MimeType: "image/png",
-				QuotaBytes:  len(uploadPNG),
-				CommittedAt: now.Add(-26 * time.Hour), CreatedAt: now.Add(-26 * time.Hour),
-			},
-			width: 1, height: 1,
-		},
-		{
-			asset: chatCodexAsset{
-				ID: assetGenerateID, SourceKind: "assistant_generated", Filename: CleanupNamePrefix + "生成图.png",
-				Conversation: pinnedConv, Owner: user.ID, TurnID: "mockdata_chat_turn_pinned_1",
-				MessageID: "mockdata_chat_message_pinned_2", Bytes: generatedPNG, MimeType: "image/png",
-				QuotaBytes:  len(generatedPNG),
-				CommittedAt: now.Add(-25*time.Hour - 58*time.Minute), CreatedAt: now.Add(-26 * time.Hour),
-			},
-			width: 1, height: 1, previewBytes: previewWebP,
-		},
-		{
-			asset: chatCodexAsset{
-				ID: assetEditID, SourceKind: "assistant_generated", Filename: CleanupNamePrefix + "编辑图.jpg",
-				Conversation: pinnedConv, Owner: user.ID, TurnID: "mockdata_chat_turn_pinned_2",
-				MessageID: "mockdata_chat_message_pinned_4", Bytes: editedJPEG, MimeType: "image/jpeg",
-				QuotaBytes:  len(editedJPEG),
-				CommittedAt: now.Add(-23*time.Hour - 59*time.Minute), CreatedAt: now.Add(-24 * time.Hour),
-			},
-			width: 1, height: 1, previewBytes: previewWebP,
-		},
-	}
-	// 媒体工具演示会话的资产（M7）：MP4 视频与 WAV 音频各一个，形状与
-	// CommitChatGeneratedMediaAsset 一致（无宽高、无预览、original 变体键）。
-	mediaAssetSamples := chatMediaAssets(mediaConv, user.ID, now)
-	assets := make([]chatCodexImageAsset, 0, len(imageAssets)+len(mediaAssetSamples))
-	assets = append(assets, imageAssets...)
-	for _, media := range mediaAssetSamples {
-		assets = append(assets, chatCodexImageAsset{asset: media})
-	}
-
-	// 分区确保在事务外（DDL 与 gateway 写入路径同语义）：先算全部消息时间，
-	// 逐条 ensure「当日 + 次日」，备忘把同一日期键收敛为一次 DDL。
-	partitions := &partitionMemo{}
-	for _, message := range messages {
-		if err := ensureChatMessagePartitions(w.ctx, w.e.db, partitions, chatCodexStamp(message.CreatedAt)); err != nil {
-			return err
-		}
-	}
-
-	// —— 资产文件先落盘（键 = 资产 ID + 内容摘要，确定性；行写入失败只留无
-	// 引用文件，不留 404 行）。
-	assetStorageKeys := map[string]string{}
-	assetPreviewKeys := map[string]string{}
-	assetsRoot := chatCodexAssetsRoot(chatCodexGetenv)
-	for _, item := range assets {
-		asset := item.asset
-		digest := chatCodexDigest(asset.Bytes)
-		storageKey := chatCodexStorageKey(asset.ID, digest, asset.MimeType, asset.StorageVariant)
-		if err := chatCodexWriteAssetFile(assetsRoot, storageKey, asset.Bytes); err != nil {
-			return err
-		}
-		assetStorageKeys[asset.ID] = storageKey
-		if len(item.previewBytes) > 0 {
-			previewDigest := chatCodexDigest(item.previewBytes)
-			previewKey := chatCodexStorageKey(asset.ID, previewDigest, "image/webp", "preview")
-			if err := chatCodexWriteAssetFile(assetsRoot, previewKey, item.previewBytes); err != nil {
-				return err
-			}
-			assetPreviewKeys[asset.ID] = previewKey
-		}
-	}
-
-	stamp := chatCodexStamp
-	return w.e.tx(w.ctx, func(tx *sql.Tx) error {
-		// 会话：active 检查点把 compacted_through_sequence 推到 4 并挂上
-		// checkpoint（DDL 的 CHECK 组合）；其余会话两字段同时为零。
-		for _, conversation := range conversations {
-			columns := map[string]any{
-				"id": conversation.id, "system_account_id": user.ID,
-				"api_key_id":            key.ID,
-				"api_key_name_snapshot": key.Name, "title": conversation.title,
-				"title_source_message_id": nil, "is_pinned": conversation.pinned, "last_model": model,
-				"default_image_model": chatCodexImageModelGPT, "next_sequence_no": conversation.nextSequence,
-				"user_turn_count": conversation.userTurns, "message_revision": conversation.messageRev,
-				"active_turn_id": nil, "active_started_at": nil, "context_revision": conversation.contextRev,
-				"active_checkpoint_id": nil, "compacted_through_sequence": 0, "context_state": "ready",
-				"active_context_tokens": nil, "effective_context_limit_tokens": nil,
-				"context_usage_estimated": 1, "context_claim_id": nil, "context_claim_revision": nil,
-				"context_claim_through_sequence": nil, "context_claimed_at": nil, "context_retry_at": nil,
-				"context_attempt_count": 0, "context_error_code": nil, "context_progress_sequence": 0,
-				"context_progress_earliest_expires_at": nil, "last_message_at": stamp(conversation.lastMessageAt),
-				"created_at": stamp(conversation.createdAt), "updated_at": stamp(conversation.lastMessageAt),
-			}
-			if conversation.activeCheckpt {
-				columns["active_checkpoint_id"] = conversation.checkpointID
-				columns["compacted_through_sequence"] = conversation.compacted
-				columns["active_context_tokens"] = conversation.activeTokens
-				columns["effective_context_limit_tokens"] = conversation.limitTokens
-				columns["context_usage_estimated"] = conversation.usageEstimate
-				columns["context_attempt_count"] = 1
-			}
-			if err := w.putTx(tx, qualified(SchemaChat, "chat_conversations"), columns); err != nil {
-				return err
-			}
-		}
-
-		// 消息：存储窗口按消息的真实创建日期分桶（窗口行与消息字节数自洽，
-		// 否则「用户存储用量」页面会与消息列表矛盾）。
-		windowBytes := map[string]int{}
-		for _, message := range messages {
-			conversationID := conversationOf[message.ID]
-			blocks, err := json.Marshal(message.Blocks)
-			if err != nil {
-				return err
-			}
-			contentBytes := len(message.Text) + len(blocks)
-			completedAt := any(nil)
-			if !message.CompletedAt.IsZero() {
-				completedAt = stamp(message.CompletedAt)
-			}
-			columns := map[string]any{
-				"id": message.ID, "conversation_id": conversationID, "system_account_id": user.ID,
-				"turn_id": message.TurnID, "sequence_no": message.Sequence, "client_message_id": nil,
-				"role": message.Role, "status": message.Status, "content_text": message.Text,
-				"content_blocks_json": string(blocks), "content_bytes": contentBytes, "storage_reserved_bytes": 0,
-				"model": message.Model, "trace_id": nil, "finish_reason": nil, "error_code": nil, "error_message": nil,
-				"created_at": stamp(message.CreatedAt), "completed_at": completedAt,
-				"expires_at": stamp(message.CreatedAt.Add(chatCodexRetentionDays * 24 * time.Hour)),
-			}
-			if message.ClientMessageID != "" {
-				columns["client_message_id"] = message.ClientMessageID
-			}
-			if message.Trace != "" {
-				columns["trace_id"] = message.Trace
-			}
-			if message.FinishReason != "" {
-				columns["finish_reason"] = message.FinishReason
-			}
-			if message.ID == "mockdata_chat_message_limit_98" {
-				columns["error_code"] = "upstream_error"
-				columns["error_message"] = CleanupNamePrefix + "上游返回 429，本轮失败留档"
-			}
-			if err := w.putTx(tx, qualified(SchemaChat, "chat_messages"), columns); err != nil {
-				return err
-			}
-			windowBytes[message.CreatedAt.UTC().Format("2006-01-02")] += contentBytes
-		}
-		for _, bucket := range sortedWindowBuckets(windowBytes) {
-			if err := w.putTx(tx, qualified(SchemaChat, "chat_user_storage_windows"), map[string]any{
-				"system_account_id": user.ID, "bucket_date": bucket, "content_bytes": windowBytes[bucket],
-				"reserved_bytes": 0, "updated_at": stamp(now),
-			}); err != nil {
-				return err
-			}
-		}
-
-		// 幂等键：与 default 会话第 1 轮的 user/assistant 消息一一对应
-		//（替换轮次的读路径要求 (conversation, turn) 恰好一行且 id 一致）。
-		if err := w.putTx(tx, qualified(SchemaChat, "chat_message_idempotency"), map[string]any{
-			"conversation_id": defaultConv, "client_message_id": "mockdata_chat_client_default_1",
-			"system_account_id": user.ID, "turn_id": "mockdata_chat_turn_default_1",
-			"user_message_id": "mockdata_chat_message_default_1", "assistant_message_id": "mockdata_chat_message_default_2",
-			"created_at": stamp(now.Add(-6 * time.Hour)),
-			"expires_at": stamp(now.Add(-6*time.Hour + 24*time.Hour)),
-		}); err != nil {
-			return err
-		}
-
-		// 上下文检查点与条目：只服务置顶会话（active 检查点每个会话唯一）。
-		// provider 投影在无 mock AI 账户时写 NULL（checkpoint 两列可空）。
-		payloadDigest := chatCodexDigest([]byte("mockdata-chat-checkpoint-payload"))
-		checkpointID := conversations[0].checkpointID
-		var providerCode, providerProfile any
-		if account, hasAccount := resources.accountAt(0); hasAccount {
-			providerCode, providerProfile = account.Provider, account.Profile
-		}
-		if err := w.putTx(tx, qualified(SchemaChat, "chat_context_checkpoints"), map[string]any{
-			"id": checkpointID, "conversation_id": pinnedConv, "system_account_id": user.ID,
-			"version": 1, "source_revision": 1, "source_from_sequence": 1, "source_through_sequence": 4,
-			"recent_tail_from_sequence": 5, "entry_from_sequence": 1, "entry_through_sequence": 3,
-			"payload_digest": payloadDigest, "estimated_input_tokens": 1536, "upstream_input_tokens": 1500,
-			"request_body_bytes": 8192, "model_id": model, "provider_code": providerCode,
-			"provider_profile_id": providerProfile, "endpoint_family": chatCodexEndpointFamily,
-			"compact_compatibility_hash": payloadDigest, "prompt_version": "chat-context-v1",
-			"status": "active", "quality_status": "passed",
-			"created_at": stamp(now.Add(-2 * time.Hour)), "expires_at": stamp(now.Add(20 * 24 * time.Hour)),
-		}); err != nil {
-			return err
-		}
-		entries := []struct {
-			sequence int
-			sourceID string
-			kind     string
-			content  string
-			bytes    int
-			source   string
-			trust    string
-			tokens   int
-		}{
-			{1, "mockdata_chat_message_pinned_1", "verbatim", `{"role":"user","text":"帮我看这张图并生成一张同风格的新图"}`, 60, "user", "untrusted", 28},
-			{2, "mockdata_chat_message_pinned_2", "task_state", `{"task":"生成同风格新图","state":"done"}`, 44, "assistant", "assistant_derived", 18},
-			{3, "mockdata_chat_message_pinned_3", "tool_result", `{"tool":"web_search","resultCount":3}`, 40, "tool", "untrusted", 15},
-		}
-		for _, entry := range entries {
-			if err := w.putTx(tx, qualified(SchemaChat, "chat_context_entries"), map[string]any{
-				"conversation_id": pinnedConv, "checkpoint_id": checkpointID, "sequence": entry.sequence,
-				"source_message_id": entry.sourceID, "kind": entry.kind, "content_json": entry.content,
-				"content_bytes": entry.bytes, "provenance": entry.source, "trust_level": entry.trust,
-				"token_count": entry.tokens, "created_at": stamp(now.Add(-2 * time.Hour)),
-				"expires_at": stamp(now.Add(20 * 24 * time.Hour)),
-			}); err != nil {
-				return err
-			}
-		}
-
-		// 资产行：媒体行宽高写 NULL（DDL 允许，ready 宽高 CHECK 对媒体 MIME
-		// 豁免）；assistant_generated 图片必须有 preview_storage_key（DDL CHECK），
-		// 预览组字段要么全空要么全非空。
-		assetBytesTotal := 0
-		for _, item := range assets {
-			asset := item.asset
-			digest := chatCodexDigest(asset.Bytes)
-			storageKey := assetStorageKeys[asset.ID]
-			originalWidth := any(item.width)
-			originalHeight := any(item.height)
-			if asset.NoDimensions {
-				originalWidth, originalHeight = nil, nil
-			}
-			columns := map[string]any{
-				"id": asset.ID, "system_account_id": asset.Owner, "conversation_id": asset.Conversation,
-				"source_kind": asset.SourceKind, "original_filename": asset.Filename,
-				"original_mime_type": asset.MimeType, "original_width": originalWidth, "original_height": originalHeight,
-				"original_bytes": len(asset.Bytes), "original_sha256": digest,
-				"processed_mime_type": asset.MimeType, "processed_width": originalWidth, "processed_height": originalHeight,
-				"processed_bytes": len(asset.Bytes), "processed_sha256": digest, "storage_key": storageKey,
-				"preview_mime_type": nil, "preview_width": nil, "preview_height": nil, "preview_bytes": nil,
-				"preview_sha256": nil, "preview_storage_key": nil,
-				"processing_status": "ready", "processing_error_code": nil,
-				"observation_status": "not_requested", "observation_json": nil, "observation_revision": 0,
-				"observation_claim_id": nil, "observation_claimed_at": nil, "quota_bytes": asset.QuotaBytes,
-				"turn_id": asset.TurnID, "message_id": asset.MessageID, "committed_at": stamp(asset.CommittedAt),
-				"cleanup_status": "active", "cleanup_claim_id": nil, "cleanup_attempt_count": 0,
-				"cleanup_claimed_at": nil, "cleanup_retry_at": nil, "cleanup_error_code": nil,
-				"created_at": stamp(asset.CreatedAt), "updated_at": stamp(asset.CommittedAt),
-				"expires_at": stamp(asset.CreatedAt.Add(chatCodexAssetRetentionDays * 24 * time.Hour)),
-			}
-			if previewKey, ok := assetPreviewKeys[asset.ID]; ok {
-				previewDigest := chatCodexDigest(item.previewBytes)
-				columns["preview_mime_type"] = "image/webp"
-				columns["preview_width"] = item.width
-				columns["preview_height"] = item.height
-				columns["preview_bytes"] = len(item.previewBytes)
-				columns["preview_sha256"] = previewDigest
-				columns["preview_storage_key"] = previewKey
-			}
-			if err := w.putTx(tx, qualified(SchemaChat, "chat_assets"), columns); err != nil {
-				return err
-			}
-			assetBytesTotal += asset.QuotaBytes
-		}
-		if err := w.putTx(tx, qualified(SchemaChat, "chat_user_asset_usage"), map[string]any{
-			"system_account_id": user.ID, "asset_bytes": assetBytesTotal, "asset_count": len(assets),
-			"updated_at": stamp(now),
-		}); err != nil {
-			return err
-		}
-
-		// 资产引用（双外键：(asset_id, conversation_id) → chat_assets 唯一键、
-		// conversation_id → chat_conversations）。
-		references := []struct {
-			assetID      string
-			conversation string
-			turnID       string
-			messageID    string
-			kind         string
-			order        int
-			createdAt    time.Time
-		}{
-			{assetUploadID, pinnedConv, "mockdata_chat_turn_pinned_1", "mockdata_chat_message_pinned_1", "user_input", 0, now.Add(-26 * time.Hour)},
-			{assetGenerateID, pinnedConv, "mockdata_chat_turn_pinned_1", "mockdata_chat_message_pinned_2", "assistant_output", 0, now.Add(-26 * time.Hour)},
-			{assetEditID, pinnedConv, "mockdata_chat_turn_pinned_2", "mockdata_chat_message_pinned_4", "assistant_output", 0, now.Add(-24 * time.Hour)},
-			{chatMediaAssetVideoID, mediaConv, "mockdata_chat_turn_media_2", "mockdata_chat_message_media_4", "assistant_output", 2, now.Add(-3 * time.Hour)},
-			{chatMediaAssetAudioID, mediaConv, "mockdata_chat_turn_media_4", "mockdata_chat_message_media_8", "assistant_output", 2, now.Add(-30 * time.Minute)},
-		}
-		for _, reference := range references {
-			if err := w.putTx(tx, qualified(SchemaChat, "chat_asset_references"), map[string]any{
-				"asset_id": reference.assetID, "conversation_id": reference.conversation,
-				"turn_id": reference.turnID, "message_id": reference.messageID,
-				"reference_kind": reference.kind, "content_order": reference.order,
-				"created_at": stamp(reference.createdAt),
-				"expires_at": stamp(reference.createdAt.Add(chatCodexAssetRetentionDays * 24 * time.Hour)),
-			}); err != nil {
-				return err
-			}
-		}
-
-		// 图片生成 / 编辑记录：source 链与 root 资产自洽（编辑的 root 是上传图）。
-		generations := []struct {
-			assetID     string
-			operation   string
-			prompt      string
-			sourceIDs   string
-			rootAssetID string
-			outputFmt   string
-			createdAt   time.Time
-		}{
-			{
-				assetID: assetGenerateID, operation: "generate",
-				prompt: CleanupNamePrefix + "生成一张同风格极小图", sourceIDs: "[]", rootAssetID: assetGenerateID,
-				outputFmt: "png", createdAt: now.Add(-26 * time.Hour),
-			},
-			{
-				assetID: assetEditID, operation: "edit",
-				prompt: CleanupNamePrefix + "把背景换成纯白，尺寸不变", sourceIDs: `["` + assetUploadID + `"]`,
-				rootAssetID: assetUploadID, outputFmt: "jpeg", createdAt: now.Add(-24 * time.Hour),
-			},
-		}
-		for _, generation := range generations {
-			if err := w.putTx(tx, qualified(SchemaChat, "chat_image_generations"), map[string]any{
-				"asset_id": generation.assetID, "conversation_id": pinnedConv, "system_account_id": user.ID,
-				"operation": generation.operation, "model": chatCodexImageModelGPT, "prompt": generation.prompt,
-				"source_asset_ids_json": generation.sourceIDs, "root_asset_id": generation.rootAssetID,
-				"size": chatCodexImageSize, "quality": chatCodexImageQuality, "output_format": generation.outputFmt,
-				"created_at": stamp(generation.createdAt),
-				"expires_at": stamp(generation.createdAt.Add(chatCodexAssetRetentionDays * 24 * time.Hour)),
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// sortedWindowBuckets 返回按日期排序的存储窗口桶（确定性行序）。
-func sortedWindowBuckets(buckets map[string]int) []string {
-	ordered := make([]string, 0, len(buckets))
-	for bucket := range buckets {
-		ordered = append(ordered, bucket)
-	}
-	sortStrings(ordered)
-	return ordered
-}
+// （chat 会话与消息样本段已随 my-chat 会话面退役整体移除——演练场设计 §8；
+// chat_* 表不再进 mockdata 写面。）
 
 // ---------------------------------------------------------------------------
 // codex context 段

@@ -8,8 +8,6 @@ import { submitLockDirective } from './directives/submitLock'
 import { router } from './router'
 import { authState } from './composables/useAuth'
 import { prewarmSelfUserReferenceData, syncUserReferenceDataAuthState } from './composables/useUserReferenceData'
-import { chatGenerationRuntime } from './views/chat/chatGenerationRuntime'
-import { activateChatConversationSyncAccount } from './views/chat/chatConversationSync'
 
 const app = createApp(App)
 let lastPrewarmedAuthSessionKey: string | undefined
@@ -40,15 +38,6 @@ watch(
     })
   },
   { immediate: true, flush: 'sync' }
-)
-
-watch(
-  () => authState.currentUser.value?.id,
-  (systemAccountId) => {
-    activateChatConversationSyncAccount(systemAccountId)
-    chatGenerationRuntime.activateAccount(systemAccountId)
-  },
-  { immediate: true }
 )
 
 app.directive('submit-lock', submitLockDirective)

@@ -14,7 +14,6 @@ const (
 	SchemaUsage        = "juhe_usage"
 	SchemaStats        = "juhe_stats"
 	SchemaDataset      = "juhe_dataset"
-	SchemaChat         = "juhe_chat"
 	SchemaCodexContext = "juhe_codex_context"
 	// SchemaJ3B 是 J3b 模型检测专库：由 j3bmodelcheck 的受控 bootstrap 建表，
 	// schema 本体缺失时记 OwnerStoresPending 而不是失败。
@@ -41,7 +40,6 @@ func quoteQualified(schemaTable string) string {
 // 清单（不含属主 schema）。顺序即覆盖报告的枚举顺序。
 var maintenanceSchemas = []string{
 	SchemaBusiness,
-	SchemaChat,
 	SchemaDataset,
 	SchemaUsage,
 	SchemaStats,
@@ -59,7 +57,7 @@ func schemaDomain(schema string) string {
 		return DomainStats
 	case SchemaDataset:
 		return DomainObservability
-	case SchemaChat, SchemaCodexContext:
+	case SchemaCodexContext:
 		return DomainChatCodexModelCheck
 	default:
 		return ""
@@ -132,7 +130,8 @@ func tableExists(ctx context.Context, db queryer, schema, table string) (bool, e
 }
 
 // schemaTables 枚举一个 schema 下造数可评估的用户表：排除分区子表
-// （usage_records_YYYYMMDD / chat_messages_YYYYMMDD 由父表代答）、内部对象与
+// （usage_records_YYYYMMDD 由父表代答；chat_messages_* 分区已随会话面退役）、
+// 内部对象与
 // 登记为属主表的哨兵表。按名字排序保证报告稳定。
 func schemaTables(ctx context.Context, db queryer, schema string) ([]string, error) {
 	rows, err := db.QueryContext(ctx, `

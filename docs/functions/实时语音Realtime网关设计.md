@@ -51,6 +51,7 @@
 - Redis：key `realtime_token:<random>`，TTL **120 秒**，value `{api_key_id, model, created_at}`；签发经 `POST /v1/realtime/client_secrets`（限流沿 API Key 用户请求限制体系）。
 - 使用：`?token=` 查询参数；**TTL 内允许多次连接**（浏览器重连场景），过期即失效；token 与 API Key 双重校验（token 有效且模型一致）。
 - 不记名复用防护：token 只能连接其签发时指定的 `model`（防枚举他人会话）。
+- **无效 token 计入认证前熔断**：`?token=` 缺失按 `missing_bearer_token`、无效/过期 token 按 `invalid_api_key`（specific 键合成 `Bearer <token>` 沿 token 指纹 + spray 键按来源 IP 聚合）计入既有 preauth 认证前熔断（阈值/封禁语义与 Bearer 面同款常量，不另设黑名单）；熔断打开后升级请求按 429 + `Retry-After`（code `client_ip_pre_auth_circuit_open`）拒绝。`ErrModelMismatch`（token 签名有效）与基础设施错误不计数。
 
 ## 5. usage / 计费
 

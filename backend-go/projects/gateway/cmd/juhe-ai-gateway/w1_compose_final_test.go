@@ -274,8 +274,8 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 		if composed.Kernel == nil || composed.Bus == nil || composed.DB == nil {
 			t.Fatalf("PG 组合根关键字段缺失: Kernel=%v Bus=%v DB=%v", composed.Kernel != nil, composed.Bus != nil, composed.DB != nil)
 		}
-		if composed.chain == nil || composed.chainServices == nil || composed.chatDB == nil {
-			t.Fatalf("链条开启时 chain/chainServices/chatDB 必须装配: chain=%v services=%v chat=%v", composed.chain != nil, composed.chainServices != nil, composed.chatDB != nil)
+		if composed.chain == nil || composed.chainServices == nil {
+			t.Fatalf("链条开启时 chain/chainServices 必须装配: chain=%v services=%v", composed.chain != nil, composed.chainServices != nil)
 		}
 		if composed.statsDB != composed.db {
 			t.Fatal("PG 模式 statsDB 必须别名共享业务池句柄")

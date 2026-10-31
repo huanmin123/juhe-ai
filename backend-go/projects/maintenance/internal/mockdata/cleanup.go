@@ -43,13 +43,13 @@ type cleanupRule struct {
 // cleanupRules 显式清理规则（键是全限定表名；执行顺序由 cleanupOrder 的外键
 // 拓扑决定，同表的多条规则按切片序执行）。
 //
-// chat / codex / 模型检测域（chat_codex_model_check）的 maintenance schema 表
-// 不需要显式规则：chat 家族的子表（chat_asset_references / chat_image_generations
-// 对 chat_assets 的复合外键、chat_messages / chat_context_* 对会话的外键）全部
-// 在 information_schema 的外键图里，拓扑序保证引用行先于资产行删除；资产文件按
-// 「资产 ID + 内容摘要」确定性派生存储键，重跑时同名覆写、无删除序问题。属主
-// schema（juhe_j3b / juhe_jobs）不参与本拓扑——它们连通用扫描都不经过，由域在
-// 每次 seed 事务里按清理标识自清（domain_chat_codex_modelcheck.go）。
+// codex / 模型检测域（chat_codex_model_check）的 maintenance schema 表不需要
+// 显式规则：codex_context_* 的外键全部在 information_schema 的外键图里，拓扑
+// 序保证引用行先于主体行删除；codex segment 文件按会话确定性派生存储键，重跑
+// 时同名覆写、无删除序问题（chat 家族子表规则已随 my-chat 会话面退役移除——
+// 演练场设计 §8）。属主 schema（juhe_j3b / juhe_jobs）不参与本拓扑——它们连
+// 通用扫描都不经过，由域在每次 seed 事务里按清理标识自清
+// （domain_chat_codex_modelcheck.go）。
 func cleanupRules() map[string][]cleanupRule {
 	id := CleanupIDPrefix + "%"
 	name := CleanupNamePrefix + "%"

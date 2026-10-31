@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -90,12 +92,14 @@ func (f *w13dSharedFactory) byName(name string) *w13dSharedCache {
 	return f.Cache(name).(*w13dSharedCache)
 }
 
-// w13dScriptedStore 在内存 store 之上按调用序注入错误。
+// w13dScriptedStore 在内存 store 之上按调用序注入错误。evalSeq 是 Lua 原子
+// 计数路径（DD-A1）的注入序；无注入时转发底层 store。
 type w13dScriptedStore struct {
 	RuntimeStateStore
-	setSeq []error
-	getSeq []error
-	delErr error
+	setSeq  []error
+	getSeq  []error
+	evalSeq []error
+	delErr  error
 }
 
 func (s *w13dScriptedStore) SetJSON(ctx context.Context, key string, value any, ttlMs int64) error {
@@ -125,6 +129,21 @@ func (s *w13dScriptedStore) Delete(ctx context.Context, key string) error {
 		return s.delErr
 	}
 	return s.RuntimeStateStore.Delete(ctx, key)
+}
+
+func (s *w13dScriptedStore) EvalLua(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	if len(s.evalSeq) > 0 {
+		err := s.evalSeq[0]
+		s.evalSeq = s.evalSeq[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	luaStore, ok := s.RuntimeStateStore.(runtimeStateLuaStore)
+	if !ok {
+		return nil, errors.New("底层 store 不支持 Lua")
+	}
+	return luaStore.EvalLua(ctx, script, keys, args...)
 }
 
 func w13dBlacklistPolicy(id, ipHash string, expiresAt *string) ActiveClientIPPolicy {
@@ -635,7 +654,15 @@ func TestW13DCircuitPreAuthBlockCap(t *testing.T) {
 }
 
 func TestW13DCircuitRedisPaths(t *testing.T) {
-	base := NewMemoryRuntimeStateStore(newManualClock(time.UnixMilli(1_000_000)))
+	// DD-A1 后 redis 记录路径走 EvalLua（Lua 原子计数），base 用 miniredis
+	// 真跑脚本；scripted store 在其上注入错误（inspect/spray 前置读仍走
+	// GetJSON，注入 getSeq）。
+	server := miniredis.RunT(t)
+	base, closeBase, err := NewRedisRuntimeStateStore("redis://"+server.Addr(), "dev", circuitStateStoreName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeBase)
 	store := &w13dScriptedStore{RuntimeStateStore: base}
 	circuit, err := NewErrorCircuit(ErrorCircuitOptions{
 		Clock:              newManualClock(time.UnixMilli(1_000_000)),
@@ -676,12 +703,12 @@ func TestW13DCircuitRedisPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// store 错误透传：record / spray get / spray record / set。
-	store.setSeq = []error{errors.New("写入失败")}
+	// store 错误透传：record Lua / spray get / spray Lua / 采样 Lua。
+	store.evalSeq = []error{errors.New("写入失败")}
 	if _, err := circuit.RecordPreAuthFailure(ctx, input); err == nil {
 		t.Fatal("record 写入错误必须透传")
 	}
-	store.setSeq = nil
+	store.evalSeq = nil
 	store.getSeq = []error{errors.New("读取失败")}
 	if _, err := circuit.RecordPreAuthFailure(ctx, gatewaypreauth.PreAuthFailureInput{
 		ClientIP: "10.0.0.2", Reason: gatewaypreauth.PreAuthFailureInvalidAPIKey,
@@ -689,18 +716,18 @@ func TestW13DCircuitRedisPaths(t *testing.T) {
 		t.Fatal("spray 读取错误必须透传")
 	}
 	store.getSeq = nil
-	store.setSeq = []error{nil, errors.New("spray 写入失败")}
+	store.evalSeq = []error{nil, errors.New("spray 写入失败")}
 	if _, err := circuit.RecordPreAuthFailure(ctx, gatewaypreauth.PreAuthFailureInput{
 		ClientIP: "10.0.0.2", Reason: gatewaypreauth.PreAuthFailureInvalidAPIKey,
 	}); err == nil {
 		t.Fatal("spray 写入错误必须透传")
 	}
-	store.setSeq = nil
-	store.getSeq = []error{errors.New("采样读取失败")}
+	store.evalSeq = nil
+	store.evalSeq = []error{errors.New("采样读取失败")}
 	if _, err := circuit.RecordClientIPErrorCircuitSample(ctx, sampleInput); err == nil {
 		t.Fatal("采样读取错误必须透传")
 	}
-	store.getSeq = nil
+	store.evalSeq = nil
 
 	// 预置 blocked 条目 → specific / spray 直接短路。
 	blockedUntil := int64(2_000_000)

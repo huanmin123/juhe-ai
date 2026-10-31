@@ -263,7 +263,6 @@ var autofillSkipExactTables = map[string]string{
 	"codex_context_storage_cleanup_queue": "瞬时清理队列：由 storage 清理任务消费",
 	"backfill_progress":                   "一次性回填完成标记：由显式运维动作 --apply-success-cost-backfill 写入，造数不伪造",
 	"model_check_question_tests":          "运行时诊断记录：题库提交门禁测试由 gateway 运行时写入",
-	"chat_user_tool_preferences":          "用户级工具默认绑定：列均可空（空 = 未设默认），用户未配置时为空是正确状态",
 	// —— 域显式写入的业务表（business 库）。
 	"system_accounts":                            "域业务表：seedBusiness 写入配套用户与 admin",
 	"system_sessions":                            "域业务表：seedBusiness 写入会话样本",
@@ -315,7 +314,8 @@ var autofillSkipExactTables = map[string]string{
 	"account_name_search_documents":              "域业务表：seedBusiness 写入账户名搜索索引文档",
 	"account_name_search_terms":                  "域业务表：seedBusiness 写入账户名搜索词条",
 	"account_list_availability_projection_dependency_health": "域业务表：seedBusiness 写入依赖健康行（CHECK 锁定 dependency_name='runtime_state'，占位值必违约）",
-	// —— 域显式写入的业务表（usage / stats / observability / chat-codex-model-check）。
+	// —— 域显式写入的业务表（usage / stats / observability / codex-model-check；
+// chat_* 行随 my-chat 会话面退役移除——演练场设计 §8）。
 	"usage_records":               "域业务表：seedUsage 写入使用记录（经日分区）",
 	"usage_record_shards":         "域业务表：seedUsage 写入分片登记",
 	"usage_record_shard_entries":  "域业务表：seedUsage 写入分片条目",
@@ -349,16 +349,6 @@ var autofillSkipExactTables = map[string]string{
 	"record_maintenance_jobs":            "运行时队列：记录维护任务由 jobs 消费后为空，造数不伪造",
 	"account_record_cleanup_targets":     "域业务表：seedObservability 写入账户清理目标",
 	"api_key_record_cleanup_targets":     "域业务表：seedObservability 写入 Key 清理目标",
-	"chat_conversations":                 "域业务表：seedChatCodexModelCheck 写入会话",
-	"chat_messages":                      "域业务表：seedChatCodexModelCheck 写入消息（经日分区）",
-	"chat_context_checkpoints":           "域业务表：seedChatCodexModelCheck 写入上下文检查点",
-	"chat_context_entries":               "域业务表：seedChatCodexModelCheck 写入上下文条目",
-	"chat_message_idempotency":           "域业务表：seedChatCodexModelCheck 写入幂等键",
-	"chat_asset_references":              "域业务表：seedChatCodexModelCheck 写入资产引用",
-	"chat_assets":                        "域业务表：seedChatCodexModelCheck 写入聊天资产",
-	"chat_image_generations":             "域业务表：媒体样本写入图像生成任务",
-	"chat_user_asset_usage":              "域业务表：seedChatCodexModelCheck 写入用户资产用量汇总",
-	"chat_user_storage_windows":          "域业务表：seedChatCodexModelCheck 写入用户存储窗口",
 	"codex_context_sessions":             "域业务表：seedChatCodexModelCheck 写入 codex 会话",
 	"codex_context_responses":            "域业务表：seedChatCodexModelCheck 写入 codex 响应状态",
 	"codex_context_compacts":             "域业务表：seedChatCodexModelCheck 写入 codex 摘要",

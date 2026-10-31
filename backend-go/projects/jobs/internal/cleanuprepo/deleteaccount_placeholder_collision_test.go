@@ -1,9 +1,26 @@
 package cleanuprepo
 
+
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
+
+// placeholderCounts 占位符计数辅助（原定义于 chat_asset_claim_placeholders_
+// test.go，随 chat 清理链退役迁至本文件；deleteaccount 占位符碰撞测试仍消
+// 费）：返回渲染后 SQL 的最大 $n 序号与残留 `?` 数量。pgx 对含 $n 的 SQL 以
+// 最大序号为参数总数，与传参数量不符即报 "mismatched param and argument
+// count"。
+func placeholderCounts(rendered string) (maxOrdinal, leftoverMarks int) {
+	for i := 1; i <= 64; i++ {
+		if strings.Contains(rendered, fmt.Sprintf("$%d", i)) {
+			maxOrdinal = i
+		}
+	}
+	leftoverMarks = strings.Count(rendered, "?")
+	return maxOrdinal, leftoverMarks
+}
 
 // 渲染辅助：以 logicallyDeleteAccountsTx（BUG-0239 修复处）相同输入复现三条
 // 语句的占位符渲染；listFn 注入生产 placeholderList（修复版）或 BindIn（旧写法），

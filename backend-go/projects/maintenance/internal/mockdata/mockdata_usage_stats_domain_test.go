@@ -8,7 +8,6 @@ package mockdata
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +22,6 @@ var usageStatsTestNow = time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 // 把资产文件写到仓库工作目录。
 func runUsageStatsForTest(t *testing.T, dsn string, now time.Time, summaryFile string) Report {
 	t.Helper()
-	t.Setenv("JUHE_AI_CHAT_ASSETS_ROOT", filepath.Join(t.TempDir(), "chat-assets"))
 	report, err := Run(context.Background(), Options{
 		DSN:           dsn,
 		Days:          2,

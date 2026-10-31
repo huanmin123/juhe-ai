@@ -111,11 +111,10 @@ const (
 //     through logreads.ReadsDeps (X04 404 项补齐); the F1 runtime-log dataset
 //     stays jobs-owned (the gateway only opens a read-only handle, the F1
 //     indexer keeps the schema).
-//   - /__aisys__/api/my-chat: mounted with the chain (G20 phase-3,
-//     composeChatFamily): the chat database owner + the generation-wave ports
-//     (Executor/ModelCatalog/SystemAccountFlags/ObjectStore/ImageProcessor/
-//     ImageObservations/Compactions/TokenCount) dispatch into the internal
-//     gateway chain.
+//   - /__aisys__/api/playground: mounted with the chain (演练场设计 §3.1,
+//     composePlaygroundFamily): the dispatch executor + the runtime cache
+//     catalog loaders + the accounts.Store lookups, adapted onto the
+//     playground ports.
 //   - /__aipublic__ external-integrations legacy family -> aipublic.Deps.Mount
 //     (X04: bearer-token auth + per-source penalty-window rate limiting +
 //     scope checks; the admin management family stays in policyreads).
@@ -153,11 +152,8 @@ type composition struct {
 	// schema); it aliases the shared pool handle (schema qualification) and
 	// closes nothing here.
 	statsDB *sql.DB
-	// chatDB backs the my-chat family (chat_* tables in the juhe_chat schema).
-	// Same shared-pool alias as statsDB.
-	chatDB *sql.DB
 
-	// kernel + authDeps are retained so later families (my-chat) can mount
+	// kernel + authDeps are retained so later families can mount
 	// with the session middleware.
 	kernel   *kernel.Kernel
 	authDeps *authsys.Deps
@@ -166,7 +162,7 @@ type composition struct {
 	// through the same instance so a PATCH is immediately visible (Node
 	// clears the one systemSettingsCache on write).
 	settingsStore *settings.Store
-	// chainServices retains the concrete chain runtime services (the chat
+	// chainServices retains the concrete chain runtime services (the playground
 	// family reads the runtime cache through them).
 	chainServices *chainRuntimeServices
 
@@ -186,10 +182,13 @@ type composition struct {
 	shutdowns []func()
 }
 
-// Shutdown mirrors the Node db-service shutdown order (db-service.ts
-// shutdownDbService): background workers drain first (chat generation hub,
-// usage/audit dispatchers land with the chain slice), then the F4 producer.
-// The HTTP servers and the shared pools are closed by main around this.
+// Shutdown runs the in-process worker drains registered during assembly
+// (recorder/spool, capture pipeline, redis clients) in
+// reverse registration order. It does not drain the F3/F4 producer queues —
+// the producers expose no drain interface and records still queued at
+// process exit are dropped (accepted bounded-loss boundary). The HTTP
+// listeners are drained by main's supervisor HTTP-drain component before the
+// owner stores close; the shared pools close last via main's defers.
 func (c *composition) Shutdown() {
 	for i := len(c.shutdowns) - 1; i >= 0; i-- {
 		c.shutdowns[i]()
@@ -1121,22 +1120,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if chainErr := mountChainOpenAICompatFamilies(composed, chain, cfg, chainServices); chainErr != nil {
 			return nil, fmt.Errorf("mount openai-compatible families: %w", chainErr)
 		}
-		// G20 phase-3 my-chat family: the chat database owner + the
-		// generation-wave ports mount together (the family dispatches into
-		// the in-process chain).
-		chatDB, chatOpenErr := openChatDatabase(cfg, postgresPools)
-		if chatOpenErr != nil {
-			return nil, chatOpenErr
-		}
-		composed.chatDB = chatDB
-		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, accountStore, accountStore); chatErr != nil {
-			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
+		// 演练场（docs/functions/演练场设计.md §3.1）：复用派发执行器、
+		// runtime cache 目录 loader 与 accounts.Store 账户查询（cmd 适配层包装
+		// 见 chain_playground_mount.go），挂载 /__aisys__/api/playground 路由族。
+		if playgroundErr := composePlaygroundFamily(composed, chainServices, chain, accountStore); playgroundErr != nil {
+			return nil, fmt.Errorf("compose playground family: %w", playgroundErr)
 		}
 		// The fixed-window redis store backs the system-api limiter
 		// (task item 9); the chain services always own it since the
 		// 2026-10-24 storage-shape retirement.
 		limiter.Store = chainServices.RateLimitStore
-		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditUsageDispatch", auditProducer != nil, "chatFamily", "mounted")
+		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditUsageDispatch", auditProducer != nil)
 	}
 
 	// M06 speed-first 运行态接线：facade 读取链条的时延降级服务（Node
@@ -1235,11 +1229,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// Node origin is archived, so every prefix without a registered route
 	// resolves to the kernel 404 JSON contract (405 converts to the same
 	// 404 JSON, mirroring Express).
-	// Composition shutdown order (Node shutdownDbService mirror): the F4
-	// producer is drained by the composed shutdown before main closes the
-	// shared LeaseKeeper, which then releases the F4 persistence lease so a
-	// successor process can take over immediately. The HTTP servers and
-	// shared pools are closed by main around this call.
+	// Composition shutdown order: on SIGTERM main drains the three HTTP
+	// listeners first (the HTTP drain is the last registered supervisor
+	// component, so reverse-order Close runs it before the F4/F3 owner
+	// components), and in-flight requests persist audit/operation records
+	// through the producers while the stores, leases and the shared pool are
+	// still open. The F3/F4 producers expose no drain/close interface:
+	// records still queued when the process exits are dropped (bounded
+	// queue) — an accepted boundary (架构总览「进程重启导致进程内队列中的
+	// 统计数据集域事实丢失或维护延迟是可接受边界」). The F4 lease is released
+	// by the F4 owner component Close (lease before store) so a successor
+	// process can take over immediately.
 	composed.Kernel = kern.Handler()
 	composed.DB = composed.db
 	return composed, nil

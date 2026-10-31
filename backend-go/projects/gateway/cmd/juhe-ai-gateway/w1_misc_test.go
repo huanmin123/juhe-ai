@@ -227,15 +227,6 @@ func TestW1ComposeSmallHelpers(t *testing.T) {
 	if got := pathWithoutQueryOf(emptyRequest); got != "/" {
 		t.Fatalf("空 path 回落 = %q", got)
 	}
-	if got := minOf(3, 7); got != 3 {
-		t.Fatalf("minOf(3,7) = %d", got)
-	}
-	if got := chatOriginalMimeType("png"); got != "image/png" {
-		t.Fatalf("png mime = %q", got)
-	}
-	if got := chatOriginalMimeType("unknown"); got != "" {
-		t.Fatalf("未知格式 = %q", got)
-	}
 }
 
 func TestW1TrafficMigrationScope(t *testing.T) {

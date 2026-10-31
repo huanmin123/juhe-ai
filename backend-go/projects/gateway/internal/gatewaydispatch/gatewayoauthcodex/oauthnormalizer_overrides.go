@@ -197,6 +197,16 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 	return body, nil
 }
 
+// gptOverrideFamilySupportsServiceTierWire 报告最终 endpoint family 的原生
+// wire 是否承载 service_tier 字段（覆盖解析与 wire 写面共用的单一判定源）：
+// 仅 anthropic_messages 族不承载——requestoverride.serviceTiersByFamily 对
+// anthropic 族为空集，Anthropic Messages 原生 body 无 service_tier 字段；
+// gemini 两族词表非空（default|priority|flex），与 openai 两族同样按能力门
+// 写。判定只用最终 family（规范族名），与账户 vendor 无关。
+func gptOverrideFamilySupportsServiceTierWire(endpointFamily string) bool {
+	return endpointFamily != "anthropic_messages"
+}
+
 // applyGptAccountRequestOverrideWireFields 把 effective 覆盖值就地写入 body
 // （共享实现：OAuth hook 路径 ApplyGptAccountRequestOverridesBody 与 api_key
 // 合并路径 ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody
@@ -204,15 +214,21 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 // endpoint family 只保留规范族名（生产调用方只传规范名：OAuth 路径在
 // ApplyOpenAIOAuthCodexAccountRequestOverrides 硬编码 responses；api_key
 // 路径经组合根 gptRequestOverrideEndpointFamily 白名单归一）。
+// service_tier 写面按最终 endpoint family 分支（与下方 reasoning 分支同款
+// 结构）：anthropic_messages 族不写也不删（该族 wire 无 service_tier 字段，
+// 跨协议映射目标为 anthropic_messages 时覆盖不得把 priority 写进 body——
+// 上游 400）；其余族维持能力门写。
 // Node wire 分支（provider-request-overrides.ts:62-84）：anthropic_messages
 // 写 output_config.effort；gemini 两族写
 // generationConfig.thinkingConfig.thinkingLevel（audit deviation note，
 // 本任务 B-6 补齐）。
 func applyGptAccountRequestOverrideWireFields(body map[string]any, effective GptAccountRequestOverrides, endpointFamily string, compact bool) {
-	if effective.ServiceTier == "default" {
-		delete(body, "service_tier")
-	} else if effective.ServiceTier != "" {
-		body["service_tier"] = effective.ServiceTier
+	if gptOverrideFamilySupportsServiceTierWire(endpointFamily) {
+		if effective.ServiceTier == "default" {
+			delete(body, "service_tier")
+		} else if effective.ServiceTier != "" {
+			body["service_tier"] = effective.ServiceTier
+		}
 	}
 	if compact || effective.ReasoningEffort == "" {
 		return
@@ -467,6 +483,12 @@ func ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
 			return nil, err
 		}
 		effective = ResolveEffectiveOverrides(resolved.overrides, capabilities)
+		if !gptOverrideFamilySupportsServiceTierWire(endpointFamily) {
+			// anthropic_messages 族 wire 无 service_tier 字段：有效值在此置空
+			// （default 强制标准档在该族同样无可作用对象），仅服务等级配置时
+			// 与无动作路径同归「逐字节返回原始 body」，不白走 parse→serialize。
+			effective.ServiceTier = ""
+		}
 		if !HasApplicableGptAccountRequestOverrides(effective, endpointFamily, compact) {
 			effective = GptAccountRequestOverrides{}
 		}

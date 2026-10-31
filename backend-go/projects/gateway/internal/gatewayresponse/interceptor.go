@@ -19,14 +19,25 @@ type OpenAIStreamInterceptor struct {
 	clientRetry        bool
 	endpointFamily     gatewayproto.ResponseEndpointFamily
 	compactionExpected bool
+	// logger 是越限观测面（DD-C2）：管道装配时传 options.Logger（nil 时
+	// nopStreamLogger），仅用于 pending 越限 warn，不参与拦截行为。
+	logger StreamLogger
 
 	// pending 是未分帧完的 SSE 字节缓冲：append 追加 + consume 原地前移压缩，
-	// 容量跨 chunk/事件复用（原 bytes.Buffer 每事件一次 make+copy）。
+	// 容量跨 chunk/事件复用（原 bytes.Buffer 每事件一次 make+copy）。持有越过
+	// openAIStreamInterceptorMaxPendingBytes 时整段放行并重置（DD-C2）。
 	pending           []byte
+	pendingOverflow   int64
 	downstreamWritten bool
 	observations      []ResponseInspectionDecision
 	seenData          bool
 }
+
+// openAIStreamInterceptorMaxPendingBytes 是拦截器未分帧字节缓冲的持有上限
+// （DD-C2）：与 ParseError 事件隔离器同量级（parseErrorEventIsolatorMaxHoldBytes
+// = StreamPreCommitBufferMaxBytes）。上游不产空行边界的无边界字节流会随读无界
+// 增长，越过即整段放行并重置；越限计数经 PendingOverflowCount 暴露并采样 warn。
+const openAIStreamInterceptorMaxPendingBytes = StreamPreCommitBufferMaxBytes
 
 // OpenAIStreamInterceptorOptions 是 NewOpenAIStreamInterceptor 的入参。
 type OpenAIStreamInterceptorOptions struct {
@@ -36,22 +47,50 @@ type OpenAIStreamInterceptorOptions struct {
 	Context            *ResponseInspectionRuntimeContext
 	// CompactionExpected 启用 Codex compaction 契约帧检查（G18 桥的契约面）。
 	CompactionExpected bool
+	// Logger 是 pending 越限的观测面（DD-C2）；nil 静默。
+	Logger StreamLogger
 }
 
 // NewOpenAIStreamInterceptor 构造拦截器。
 func NewOpenAIStreamInterceptor(options OpenAIStreamInterceptorOptions) *OpenAIStreamInterceptor {
+	logger := options.Logger
+	if logger == nil {
+		logger = nopStreamLogger{}
+	}
 	return &OpenAIStreamInterceptor{
 		policies:           options.Policies,
 		context:            options.Context,
 		clientRetry:        options.ClientRetryEnabled,
 		endpointFamily:     options.EndpointFamily,
 		compactionExpected: options.CompactionExpected,
+		logger:             logger,
 	}
+}
+
+// PendingOverflowCount 返回 pending 越限放行的累计次数（DD-C2 可观测面）。
+func (i *OpenAIStreamInterceptor) PendingOverflowCount() int64 {
+	return i.pendingOverflow
 }
 
 // PushChunk 对齐 pushChunk：逐事件提取语义帧并运行策略；未命中则原样透传。
 func (i *OpenAIStreamInterceptor) PushChunk(chunk []byte) StreamInterceptorSseResult {
 	i.pending = append(i.pending, chunk...)
+	if len(i.pending) > openAIStreamInterceptorMaxPendingBytes {
+		// DD-C2：无边界字节流（上游不产空行边界）会随读无界增长。越过持有上
+		// 限时整段放行并重置——放弃对当前未完成事件的拦截（未完成事件本就不
+		// 可解析，透传语义不变，同 ParseError 事件隔离器的越限语义），内存恢
+		// 复有界；越限计数累计并按首次 + 每 100 次采样 warn。
+		held := i.pending
+		i.pending = nil
+		i.pendingOverflow++
+		if i.pendingOverflow == 1 || i.pendingOverflow%100 == 0 {
+			i.logger.Warn("gateway_stream_interceptor_pending_overflow", map[string]any{
+				"bytes": len(held),
+				"count": i.pendingOverflow,
+			}, "网关流式拦截器未分帧字节越过持有上限，整段放行并继续透传")
+		}
+		return StreamInterceptorSseResult{Chunks: [][]byte{held}}
+	}
 	var result StreamInterceptorSseResult
 	for {
 		rawEvent := i.shiftEvent()
@@ -165,6 +204,7 @@ func mountResponseInspectionInterceptor(options StreamPipeOptions, driver Stream
 		EndpointFamily:     driver.ResponseInspectionEndpointFamily(options.EndpointFamily),
 		Context:            context,
 		CompactionExpected: context != nil && context.CodexCompactionExpected,
+		Logger:             options.Logger,
 	})
 }
 
@@ -176,13 +216,16 @@ func (i *OpenAIStreamInterceptor) shiftEvent() []byte {
 }
 
 // shiftSseEvent 是 SSE 事件分帧的共享实现（OpenAIStreamInterceptor 与
-// ParseError 事件隔离器同源）：事件边界 \n\n、\r\n\r\n、\r\r。
+// ParseError 事件隔离器同源）：事件边界 \n\n、\r\n\r\n、\r\r。CRLF 空行判定
+// 与 streamusageinject.sseEventEnd 同构（DD-C1：此前实现只认 \n\n 与 \r\r，
+// SSE 规范合法的 \r\n\r\n 上游整流粘连到 EOF）。
 func shiftSseEvent(pending *[]byte) []byte {
 	data := *pending
 	if len(data) == 0 {
 		return nil
 	}
-	// 事件边界：\n\n、\r\n\r\n、\r\r。
+	// 事件边界：\n\n、\r\n\r\n、\r\r（\r 分支先判 \r\r 再判 \r\n\r\n，与
+	// sseEventEnd 同序）。
 	for index := 0; index < len(data); index++ {
 		b := data[index]
 		if b != '\n' && b != '\r' {
@@ -199,6 +242,11 @@ func shiftSseEvent(pending *[]byte) []byte {
 		// '\r'
 		if index+1 < len(data) && data[index+1] == '\r' {
 			event := append([]byte(nil), data[:index+2]...)
+			consumeSseEvent(pending, len(event))
+			return event
+		}
+		if index+3 < len(data) && data[index+1] == '\n' && data[index+2] == '\r' && data[index+3] == '\n' {
+			event := append([]byte(nil), data[:index+4]...)
 			consumeSseEvent(pending, len(event))
 			return event
 		}

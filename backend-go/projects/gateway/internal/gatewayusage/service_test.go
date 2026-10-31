@@ -608,7 +608,7 @@ func TestFinalizationQueueCapacityWaitAndRuntime(t *testing.T) {
 		t.Fatal("queue must go idle")
 	}
 	runtime = queue.Runtime()
-	if runtime.MaxItems != 2 || runtime.MaxConcurrency != 1 || runtime.DroppedCount != 0 {
+	if runtime.MaxItems != 2 || runtime.MaxConcurrency != 1 {
 		t.Fatalf("runtime = %+v", runtime)
 	}
 }

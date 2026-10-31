@@ -19,9 +19,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
-// wireRetentionFamily 把 retention/cleanup 家族的四个任务翻转为 GoWired：
-// data-retention-cleanup、chat-retention-cleanup、expired-deleted-account-cleanup、
-// api-key/account-record-cleanup-retry。仓储实现在 internal/cleanuprepo
+// wireRetentionFamily 把 retention/cleanup 家族的任务翻转为 GoWired：
+// data-retention-cleanup、expired-deleted-account-cleanup、
+// api-key/account-record-cleanup-retry。（chat-retention-cleanup 随 chat_* 表
+// 退役移除，演练场设计 §8。）仓储实现在 internal/cleanuprepo
 // （Node backend/src/storage 清理侧的移植），组合根只做句柄打开与 port 适配。
 
 const retentionFamilyBatchSize = retention.CleanupBatchSize
@@ -29,9 +30,10 @@ const retentionFamilyBatchSize = retention.CleanupBatchSize
 func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family := &retentionFamily{assembly: a}
 
-	// PostgreSQL 唯一形态：六句柄（business/stats/dataset/chat/usage-catalog/
+	// PostgreSQL 唯一形态：五句柄（business/stats/dataset/usage-catalog/
 	// task-runs 保留清理）全部来自共享 URL 池，schema 限定由 cleanuprepo.DB
-	// 的 Postgres 语义承担。原 sqlite 六库文件臂与 openDual 双模分派已随
+	// 的 Postgres 语义承担。（retention-chat 句柄随 chat-retention-cleanup
+	// 任务族退役移除，chat_* 表已删除——演练场设计 §8。）原 sqlite 六库文件臂与 openDual 双模分派已随
 	// sqlite 形态退役删除。
 	openCleanupDB := func(label string) (*cleanuprepo.DB, error) {
 		handle, err := a.acquirePool(a.config.PostgresURL, label)
@@ -50,10 +52,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		return err
 	}
 	dataset, err := openCleanupDB("retention-dataset")
-	if err != nil {
-		return err
-	}
-	chat, err := openCleanupDB("retention-chat")
 	if err != nil {
 		return err
 	}
@@ -129,8 +127,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		UsageRecords: usageRecords,
 		Timezone:     retentionSettings.location,
 	}
-	chatStore := &cleanuprepo.ChatStore{DB: chat, AssetsRoot: a.config.ChatAssetsRoot, Now: family.now}
-
 	// 本地 record maintenance 队列（Node worker 本地队列 + flush 循环等价；
 	// Redis Stream / IPC 分派按 Go 总设计消灭）。
 	queue := newRecordMaintenanceQueue(queueLimits{
@@ -163,7 +159,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	// DB service 端口适配（Node db-service 的 Go 单进程直连等价）。
 	dbService := &familyDbService{
 		family:         family,
-		chat:           chatStore,
 		systemSessions: systemSessions,
 		codex:          codexStore,
 		deleted:        deletedAccounts,
@@ -198,19 +193,6 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 			return jobsched.TaskResult{}, err
 		}
 		if _, err := dataRetentionJob.Run(taskCtx); err != nil {
-			return jobsched.TaskResult{}, err
-		}
-		return jobsched.TaskResult{}, nil
-	})
-
-	chatRetentionJob := &retention.ChatRetentionJob{
-		DB:            dbService,
-		Clock:         func() time.Time { return family.now() },
-		Logger:        a.logger,
-		RetentionDays: a.config.ChatRetentionDays,
-	}
-	a.scheduleWiredJob("chat-retention-cleanup", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		if err := chatRetentionJob.Run(taskCtx); err != nil {
 			return jobsched.TaskResult{}, err
 		}
 		return jobsched.TaskResult{}, nil
@@ -691,15 +673,10 @@ func (w *familyStatsWriter) UpsertAccountUsageSnapshots(ctx context.Context, inp
 // familyDbService 适配 retention.DbService。
 type familyDbService struct {
 	family         *retentionFamily
-	chat           *cleanuprepo.ChatStore
 	systemSessions *cleanuprepo.SystemSessionsStore
 	codex          *cleanuprepo.CodexContextStore
 	deleted        *cleanuprepo.DeletedAccountStore
 	logger         interface{ Warn(msg string, args ...any) }
-}
-
-func (d *familyDbService) CleanupChatRetention(ctx context.Context, input retention.ChatRetentionInput) (*retention.ChatRetentionResult, error) {
-	return d.chat.CleanupRetention(ctx, input)
 }
 
 func (d *familyDbService) CleanupExpiredSystemSessions(ctx context.Context, expiredBefore string, limit int) (int64, error) {

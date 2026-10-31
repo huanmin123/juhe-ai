@@ -1,8 +1,8 @@
 package main
 
-// w1: chain_chat_mount.go 与 compose_accounts_reset.go 收割——chat 组合守卫、
-// SSE 附着订阅者的背压丢弃契约、chat 数据库打开、运行态复位桥的纯内存面
-// 与探活 outbox 写入。
+// w1: compose_accounts_reset.go 收割——运行态复位桥的纯内存面与探活 outbox
+// 写入。（chat 组合守卫、SSE 附着订阅者与 chat 数据库打开的覆盖随 my-chat
+// 会话面退役移除，设计 §8。）
 
 import (
 	"context"
@@ -14,67 +14,9 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
-
-func TestW1ComposeChatFamilyGuards(t *testing.T) {
-	if _, err := composeChatFamily(nil, runtimeConfig{}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "composition") {
-		t.Fatalf("nil composed = %v", err)
-	}
-	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "聊天数据库") {
-		t.Fatalf("nil chatDB = %v", err)
-	}
-	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, &sql.DB{}, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "runtime cache") {
-		t.Fatalf("nil services = %v", err)
-	}
-	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, &sql.DB{}, &chainRuntimeServices{}, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "网关链") {
-		t.Fatalf("nil chain = %v", err)
-	}
-}
-
-func TestW1ChatAttachSubscriberBackpressure(t *testing.T) {
-	subscriber := &chatAttachSubscriber{events: make(chan chat.ChatGenerationEvent, 2)}
-	// 缓冲未满：投递成功。
-	if !subscriber.TrySend(chat.ChatGenerationEvent{Type: "delta"}) {
-		t.Fatal("缓冲内必须投递成功")
-	}
-	if !subscriber.TrySend(chat.ChatGenerationEvent{Type: "delta"}) {
-		t.Fatal("第二投递必须成功")
-	}
-	// 缓冲满：丢弃订阅者（Node destroy-on-backpressure 契约）。
-	if subscriber.TrySend(chat.ChatGenerationEvent{Type: "delta"}) {
-		t.Fatal("缓冲满必须返回 false")
-	}
-	if subscriber.TrySend(chat.ChatGenerationEvent{Type: "delta"}) {
-		t.Fatal("丢弃后必须持续 false")
-	}
-	// 通道已关闭：读取端先排空缓冲内的既有事件，再读到关闭信号。
-	for i := 0; i < 2; i++ {
-		event := <-subscriber.events
-		if event.Type != "delta" {
-			t.Fatalf("event %d = %v", i, event.Type)
-		}
-	}
-	if _, open := <-subscriber.events; open {
-		t.Fatal("缓冲排空后必须读到关闭")
-	}
-}
-
-func TestW1ChatAttachStreamHandlerNotAttached(t *testing.T) {
-	// 未注册的 generation：订阅失败 → false，不写响应。
-	handler := chatAttachStreamHandler(chat.NewGenerationHub(func() string { return "2026-01-01T00:00:00Z" }))
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/attach", nil)
-	if handler(recorder, request, chat.GenerationIdentity{ConversationID: "conv_missing"}) {
-		t.Fatal("未附着必须 false")
-	}
-	if recorder.Code != http.StatusOK || recorder.Body.Len() != 0 {
-		t.Fatalf("不得写响应 = %d, %q", recorder.Code, recorder.Body.String())
-	}
-}
 
 func TestW1ResetBridgePureMemoryFace(t *testing.T) {
 	bridge := &accountsRuntimeResetBridge{now: time.Now}

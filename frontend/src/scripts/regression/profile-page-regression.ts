@@ -23,7 +23,6 @@ assert.match(identitySource, /effectiveRequestLimits: EffectiveUserRequestLimits
 
 assert.match(headerSource, /key="profile">个人信息/, '头像菜单必须提供个人信息入口')
 assert.doesNotMatch(headerSource, /key="display-name"|key="password"/, '头像菜单不得保留名称 / 密码双弹窗入口')
-assert.match(layoutSource, /key="profile">个人信息/, '沉浸式移动菜单必须提供个人信息入口')
 assert.doesNotMatch(layoutSource, /DisplayNameModal|ChangePasswordModal|openPasswordModal/, '应用壳不得继续挂载资料或密码弹窗')
 
 assert.match(routerSource, /path: PROFILE_PATH[\s\S]*ProfileView\.vue/, '路由必须注册独立 /profile 页面')
@@ -55,9 +54,9 @@ assert.equal(normalizeProfileRedirectPath('//example.com/path'), undefined)
 assert.equal(normalizeProfileRedirectPath('/\\example.com/path'), undefined)
 assert.equal(normalizeProfileRedirectPath('/profile'), undefined)
 assert.equal(normalizeProfileRedirectPath('/login'), undefined)
-assert.deepEqual(requiredPasswordProfileLocation('/my-chat'), {
+assert.deepEqual(requiredPasswordProfileLocation('/my-stats'), {
   path: '/profile',
-  query: { section: 'security', required: '1', redirect: '/my-chat' }
+  query: { section: 'security', required: '1', redirect: '/my-stats' }
 })
 
 console.log('PROFILE_PAGE_REGRESSION_OK')

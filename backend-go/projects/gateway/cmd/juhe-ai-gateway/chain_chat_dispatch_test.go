@@ -18,8 +18,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
 
@@ -150,38 +148,6 @@ func waitForSpoolRecords(t *testing.T, spoolDir string) []map[string]any {
 	return nil
 }
 
-// TestChatConversationDispatchTargetReadsBindColumn：观察适配器的会话绑定
-// 账户只读查询（chat_conversations.bind_account_id 同表同列）。
-func TestChatConversationDispatchTargetReadsBindColumn(t *testing.T) {
-	db := newChainFixturePGDatabase(t)
-	if _, err := db.Exec(`CREATE TABLE chat_conversations (
-		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, bind_account_id TEXT)`); err != nil {
-		t.Fatalf("create table: %v", err)
-	}
-	bind := func(query string) string { return query }
-	insert := func(id string, accountID any) {
-		t.Helper()
-		if _, err := db.Exec(fixtureBind(`INSERT INTO chat_conversations (id, system_account_id, bind_account_id)
-			VALUES (?, 'sys_owner', ?)`), id, accountID); err != nil {
-			t.Fatalf("insert conversation: %v", err)
-		}
-	}
-	insert("conv_account", "acc_pin")
-	insert("conv_unbound", nil)
-
-	target, found, err := chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_account", "sys_owner")
-	if err != nil || !found || !target.pinned() || target.AccountID != "acc_pin" {
-		t.Fatalf("account target = %+v found=%v err=%v", target, found, err)
-	}
-	target, found, err = chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_unbound", "sys_owner")
-	if err != nil || !found || target.pinned() {
-		t.Fatalf("unbound target = %+v found=%v err=%v", target, found, err)
-	}
-	if _, found, err := chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_missing", "sys_owner"); err == nil || found {
-		t.Fatalf("missing conversation = found=%v err=%v", found, err)
-	}
-}
-
 const chatDispatchSmokeBody = `{"id":"chatcmpl-pin","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"CONTENT"},"finish_reason":"stop"}]}`
 
 // TestChatGatewayExecutorInjectsDispatchTargetContext：绑定账户目标的执行器
@@ -234,8 +200,8 @@ func TestChatGatewayExecutorInjectsDispatchTargetContext(t *testing.T) {
 	}
 }
 
-func chatGenerationDispatchSmoke() chat.GenerationDispatchRequest {
-	return chat.GenerationDispatchRequest{Path: "/v1/chat/completions", Method: http.MethodPost}
+func chatGenerationDispatchSmoke() GenerationDispatchRequest {
+	return GenerationDispatchRequest{Path: "/v1/chat/completions", Method: http.MethodPost}
 }
 
 // TestChatDispatchTargetFromContextRejectsExternal：外部请求 context 不可能
@@ -256,7 +222,7 @@ func TestChatDispatchTargetFromContextRejectsExternal(t *testing.T) {
 }
 
 // withChatDispatchAccountGroups 置位绑定账户承载分组解析端口（生产由
-// composeChatFamily 按 EnabledGroupIDs 口径装配），测试结束还原。
+// composePlaygroundFamily 按 EnabledGroupIDs 口径装配），测试结束还原。
 func withChatDispatchAccountGroups(t *testing.T, groups ...string) {
 	t.Helper()
 	resolved := append([]string{}, groups...)
@@ -270,7 +236,7 @@ func withChatDispatchAccountGroups(t *testing.T, groups ...string) {
 }
 
 // withChatDispatchPinnedFetch 置位 chat-pinned 直取端口（生产由
-// composeChatFamily 装配为 runtime cache 的 ListFreshOpenAIAccountsForChatPinnedAsync；
+// composePlaygroundFamily 装配为 runtime cache 的 ListFreshOpenAIAccountsForChatPinnedAsync；
 // full-chain 测试不走 chat mount 装配，需显式置位），测试结束还原。
 func withChatDispatchPinnedFetch(t *testing.T, fixture *chainFixture) {
 	t.Helper()

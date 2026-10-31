@@ -511,3 +511,56 @@ func TestMergedOverridesEmptyEndpointFamilySkipsCredentialRead(t *testing.T) {
 		t.Fatal("五族路径必须保留非法 token 错误")
 	}
 }
+
+// TestMergedOverridesServiceTierInertOnAnthropicFamily 钉住 DD-F2 merged
+// 入口行为：anthropic_messages 族 wire 无 service_tier 字段——仅服务等级
+// 配置时有效值在解析面置空，逐字节返回原始 body（零动作路径，不白走
+// parse→serialize）；服务等级与 reasoning 并存时 output_config.effort 仍
+// 按 reasoning 分支写入、service_tier 仍不写。
+func TestMergedOverridesServiceTierInertOnAnthropicFamily(t *testing.T) {
+	catalog := &countingOverrideCatalog{mock: mockGptOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{{
+		Model:                     "claude-target",
+		SupportedServiceTiers:     []string{"priority"},
+		SupportedReasoningEfforts: []string{"high"},
+	}}}}
+	runtime := GptRequestOverrideRuntime{Catalog: catalog}
+	body := []byte(`{"max_tokens":64,"messages":[{"role":"user","content":"hi"}],"model":"claude-target"}`)
+
+	// 仅 service_tier_override=priority + 目录声明支持：anthropic_messages
+	// 族不写，body 逐字节原样返回。
+	tierOnly := mergedOverrideAccount(map[string]any{"service_tier_override": "priority"})
+	out, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), body, nil, tierOnly, "anthropic_messages", false, "claude-target", "", runtime)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if string(out) != string(body) {
+		t.Fatalf("仅服务等级 + anthropic 族必须逐字节返回原字节:\n got  %s\n want %s", out, body)
+	}
+	if catalog.calls != 1 {
+		t.Fatalf("目录仍按最终模型行查询一次，实际 %d 次", catalog.calls)
+	}
+
+	// service_tier 与 reasoning 并存：output_config.effort 写入，
+	// service_tier 不写。
+	both := mergedOverrideAccount(map[string]any{
+		"service_tier_override":     "priority",
+		"reasoning_effort_override": "high",
+	})
+	out, err = ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), body, nil, both, "anthropic_messages", false, "claude-target", "", runtime)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("decode: %v body=%s", err, out)
+	}
+	if _, has := parsed["service_tier"]; has {
+		t.Fatalf("anthropic_messages 族不得写入 service_tier: %s", out)
+	}
+	outputConfig, ok := parsed["output_config"].(map[string]any)
+	if !ok || outputConfig["effort"] != "high" {
+		t.Fatalf("output_config = %v, want effort=high", parsed["output_config"])
+	}
+}

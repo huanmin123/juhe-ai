@@ -103,14 +103,3 @@ func TestW14aPrewarmFailureWarnArm(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
-
-// TestW14aChatImageDecodeErrorArm 收割 chat 图片解码失败归一臂。
-// 同文件 70-72（isChatSupportedFormat 否定臂）不可达：进程内注册的解码器
-// （jpeg/png/gif/webp）与白名单一一对应，可解码即受支持。
-func TestW14aChatImageDecodeErrorArm(t *testing.T) {
-	processor := newChatImageProcessor()
-	_, err := processor.ProcessUpload([]byte("w14a: not an image at all"), "")
-	if err == nil {
-		t.Fatal("垃圾字节必须被拒绝")
-	}
-}

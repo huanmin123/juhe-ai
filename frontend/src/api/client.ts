@@ -13,6 +13,7 @@ import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi, r
 import { modelChecksApi, myModelChecksApi } from './domains/modelChecks'
 import { anthropicOAuthApi, myAnthropicOAuthApi } from './domains/anthropicOAuth'
 import { myOpenaiOAuthApi, openaiOAuthApi } from './domains/openaiOAuth'
+import { playgroundApi } from './domains/playground'
 import { providersApi } from './domains/providers'
 import { proxiesApi } from './domains/proxies'
 import { responseInspectionPoliciesApi } from './domains/responseInspectionPolicies'
@@ -21,7 +22,6 @@ import { settingsApi } from './domains/settings'
 import { myStatsApi, statsApi } from './domains/stats'
 import { systemAccountsApi } from './domains/systemAccounts'
 import { myTeamsApi, systemTeamsApi } from './domains/systemTeams'
-import { chatApi } from './domains/chat'
 import { myUsageRecordsApi, usageRecordsApi } from './domains/usageRecords'
 import { mediaJobsApi } from './domains/mediaJobs'
 import { myUiBootstrapApi, uiBootstrapApi } from './domains/userReferenceData'
@@ -57,6 +57,7 @@ export const api = {
   myGrokOAuth: myGrokOAuthApi,
   openaiOAuth: openaiOAuthApi,
   myOpenaiOAuth: myOpenaiOAuthApi,
+  playground: playgroundApi,
   proxies: proxiesApi,
   usageRecords: usageRecordsApi,
   myUsageRecords: myUsageRecordsApi,
@@ -75,5 +76,4 @@ export const api = {
   myModelChecks: myModelChecksApi,
   myStats: myStatsApi,
   settings: settingsApi,
-  chat: chatApi,
 }

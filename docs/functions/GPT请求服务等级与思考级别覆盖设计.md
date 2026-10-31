@@ -424,6 +424,8 @@ Chat Completions：
 - `priority`：设置 `service_tier="priority"`，仅在最终模型声明支持时写入。
 - `flex`：设置 `service_tier="flex"`，仅在最终模型声明支持时写入。
 - 最终模型未声明支持所选档位时不写入，保留客户端原值。
+- 写面按最终 endpoint family 分支：跨协议映射目标为 `anthropic_messages` 时该族原生 wire 无 `service_tier` 字段（requestoverride 中 anthropic 族服务等级值域为空集），覆盖不写也不删；`gemini_*` 族词表非空（`default|priority|flex`），与 OpenAI 两族同样按能力门写入。判定只用最终 family，与账户 vendor 无关。
+- 能力解析的模型判定与 endpoint family 同口径：命中模型映射时按映射右侧 `UpstreamModel` 的目录行解析（真实上游模型），未命中映射时按请求模型（账户 canonical 拼写优先）；无映射账户行为不变。
 
 ### 8.4 OAuth Codex
 

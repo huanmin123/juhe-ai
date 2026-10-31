@@ -11,24 +11,19 @@ import (
 	"time"
 )
 
-// usage_records 与 chat_messages 的日分区确保链（PG 存储契约）：
+// usage_records 的日分区确保链（PG 存储契约；chat_messages 分区链已随
+// my-chat 会话面退役移除——演练场设计 §8）：
 //
 //   - juhe_usage.usage_records 按 created_at（text）RANGE 分区，语句文本与
 //     jobs/internal/usagewriter/partitions.go 逐字对齐：
 //     CREATE TABLE IF NOT EXISTS juhe_usage."usage_records_YYYYMMDD"
 //     PARTITION OF juhe_usage.usage_records FOR VALUES FROM ('S') TO ('E')。
-//   - juhe_chat.chat_messages 同构，语句文本与
-//     gateway/internal/chat/postgres_partitions.go 对齐，且与 gateway 一样
-//     预建「当日 + 次日」两个分区（消息轮跨日时下一轮写入不再撞缺分区）。
 //
 // 跨进程幂等依赖 IF NOT EXISTS；进程内由备忘把同一日期键的 DDL 收敛为一次，
 // 失败不进备忘，下一次调用自动重试。分区清理（DETACH/DROP）归 jobs
 // dataretention，本文件只补创建方向。
 
-const (
-	usageRecordPartitionPrefix = "usage_records_"
-	chatMessagePartitionPrefix = "chat_messages_"
-)
+const usageRecordPartitionPrefix = "usage_records_"
 
 // partitionDateKeyPattern 匹配 created_at 文本前缀的 YYYY-MM-DD 日期部分
 // （created_at 是 text 列，分区键是它的文本前缀语义，不做时区换算）。
@@ -158,53 +153,4 @@ func usageRecordPartitionDDL(dateKey string) (string, error) {
       PARTITION OF juhe_usage.usage_records
       FOR VALUES FROM ('%s') TO ('%s')
     `, quotePGIdentifier(usageRecordPartitionPrefix+normalized), startDate, endDate), nil
-}
-
-// ensureChatMessagePartitions 为一条消息的 created_at 建「当日 + 次日」分区
-// （与 gateway chat 写入路径一致：轮次跨日时下一个分区已就位）。
-func ensureChatMessagePartitions(ctx context.Context, db partitionDDLExecutor, memo *partitionMemo, createdAt string) error {
-	current, ok := partitionDateKeyFromISO(createdAt)
-	if !ok {
-		return fmt.Errorf("AI 问答消息时间无效：%s", createdAt)
-	}
-	startDate, _, err := partitionBounds(current)
-	if err != nil {
-		return err
-	}
-	parsed, parseErr := time.Parse("2006-01-02", startDate)
-	if parseErr != nil {
-		return fmt.Errorf("AI 问答消息时间无效：%s", createdAt)
-	}
-	next := parsed.UTC().AddDate(0, 0, 1).Format("20060102")
-	for _, dateKey := range []string{current, next} {
-		statement, err := chatMessagePartitionDDL(dateKey)
-		if err != nil {
-			return err
-		}
-		if err := memo.ensure(dateKey, func() error {
-			_, execErr := db.ExecContext(ctx, statement)
-			return execErr
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// chatMessagePartitionDDL 生成单日分区语句（与 gateway postgres_partitions.go
-// 逐字对齐）。
-func chatMessagePartitionDDL(dateKey string) (string, error) {
-	normalized, ok := normalizePartitionDateKey(dateKey)
-	if !ok {
-		return "", fmt.Errorf("AI 问答消息分区日期无效：%s", dateKey)
-	}
-	startDate, endDate, err := partitionBounds(normalized)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf(`
-      CREATE TABLE IF NOT EXISTS juhe_chat.%s
-      PARTITION OF juhe_chat.chat_messages
-      FOR VALUES FROM ('%s') TO ('%s')
-    `, quotePGIdentifier(chatMessagePartitionPrefix+normalized), startDate, endDate), nil
 }

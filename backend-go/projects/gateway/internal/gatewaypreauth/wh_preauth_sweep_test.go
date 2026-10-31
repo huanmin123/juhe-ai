@@ -136,34 +136,79 @@ func TestWhPreflightCoordinatorFailureProducesRouteAction(t *testing.T) {
 	}
 }
 
-// codex compaction 请求：超时预算解除限制并记录审计元数据。
+// codex compaction 预算豁免身份门（DD-F3）：识别谓词与 codexTurn 身份同时
+// 命中才豁免墙钟/attempt 预算（审计元数据 + wall budget Unbounded）；非
+// codex 客户端的 compact 请求保持常规预算；codexTurn 身份的非压缩请求同样不
+// 豁免。识别面（T49 用量标记）只随识别谓词，不随身份门——非 codex compact
+// 请求的用量压缩标记照常为 true。
 func TestWhPreflightCompactionTimeoutsDisabled(t *testing.T) {
 	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_1", VendorCode: "openai"}
-	service, _, _ := newTestService(t, func(s *Service) {
-		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
-		s.Candidates = whSuccessfulCandidates(account)
-		s.Codex = &fakeCodex{
-			compactionExpected: true,
-			compactResult:      CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}},
-		}
-	})
-	audit := &fakeAuditCapture{}
-	req, _, writer := whAuthorizedChatRequest()
-	result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Req: req, Res: writer, AuditCapture: audit, Options: &PreflightOptions{},
-		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
-	})
-	if err != nil || result.DispatchContext == nil {
-		t.Fatalf("result = %+v err=%v", result, err)
+	tests := []struct {
+		name                 string
+		compactionExpected   bool
+		strategy             ClientStrategyContext
+		wantTimeoutsDisabled bool
+		wantCompactionMark   bool
+	}{
+		{
+			name:                 "codexTurn 身份压缩请求豁免保持",
+			compactionExpected:   true,
+			strategy:             ClientStrategyContext{ClientProfile: "codex", CodexTurnPresent: true},
+			wantTimeoutsDisabled: true,
+			wantCompactionMark:   true,
+		},
+		{
+			name:                 "非 codex 客户端 compact 请求常规预算",
+			compactionExpected:   true,
+			strategy:             ClientStrategyContext{ClientProfile: "generic_openai"},
+			wantTimeoutsDisabled: false,
+			wantCompactionMark:   true,
+		},
+		{
+			name:                 "codexTurn 身份非压缩请求不豁免",
+			compactionExpected:   false,
+			strategy:             ClientStrategyContext{ClientProfile: "codex", CodexTurnPresent: true},
+			wantTimeoutsDisabled: false,
+			wantCompactionMark:   false,
+		},
 	}
-	found := false
-	for _, call := range audit.metadata {
-		if call.label == "codex_compaction_timeouts_disabled" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("缺少 compaction 超时禁用审计元数据")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, _, _ := newTestService(t, func(s *Service) {
+				s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
+				s.Candidates = whSuccessfulCandidates(account)
+				s.ClientStrategy = &fakeClientStrategy{strategy: tt.strategy}
+				s.Codex = &fakeCodex{
+					compactionExpected: tt.compactionExpected,
+					compactResult:      CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}},
+				}
+			})
+			audit := &fakeAuditCapture{}
+			req, _, writer := whAuthorizedChatRequest()
+			result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
+				Req: req, Res: writer, AuditCapture: audit, Options: &PreflightOptions{},
+				StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
+			})
+			if err != nil || result.DispatchContext == nil {
+				t.Fatalf("result = %+v err=%v", result, err)
+			}
+			found := false
+			for _, call := range audit.metadata {
+				if call.label == "codex_compaction_timeouts_disabled" {
+					found = true
+				}
+			}
+			if found != tt.wantTimeoutsDisabled {
+				t.Fatalf("codex_compaction_timeouts_disabled 审计 = %v, want %v", found, tt.wantTimeoutsDisabled)
+			}
+			if got := result.DispatchContext.GatewayRequestWallBudget.Unbounded; got != tt.wantTimeoutsDisabled {
+				t.Fatalf("wall budget Unbounded = %v, want %v", got, tt.wantTimeoutsDisabled)
+			}
+			// 识别面回归（T49）：用量压缩标记不随预算身份门收窄。
+			if got := result.DispatchContext.UsageContext.CompactionExpected; got != tt.wantCompactionMark {
+				t.Fatalf("UsageContext.CompactionExpected = %v, want %v", got, tt.wantCompactionMark)
+			}
+		})
 	}
 }
 

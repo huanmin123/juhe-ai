@@ -39,7 +39,6 @@ func TestCleanupOrderPlacesChildrenBeforeParents(t *testing.T) {
 		{qualified(SchemaBusiness, "account_endpoint_modes"), qualified(SchemaBusiness, "account_connections")},
 		{qualified(SchemaBusiness, "api_keys"), qualified(SchemaBusiness, "route_strategies")},
 		{qualified(SchemaUsage, "usage_record_shard_entries"), qualified(SchemaUsage, "usage_record_shards")},
-		{qualified(SchemaChat, "chat_messages"), qualified(SchemaChat, "chat_conversations")},
 	}
 	for _, pair := range requireBefore {
 		child, parent := pair[0], pair[1]
@@ -136,8 +135,9 @@ func TestCleanupAllSweepsMarkersOnSeededDatabase(t *testing.T) {
 	// 缺表场景：cleanupTable 把「表不存在」记入 skipped 而不是失败（降级库上
 	// 清理仍是安全 no-op）；cleanupAll 的拓扑序由现存表推导，整表被 drop 的
 	// 对象自然不参与清理。
-	// 缺表对象选一个 ensure 不建的迁移遗留表（fresh 库真实不存在）。
-	missingTable := qualified(SchemaChat, "chat_conversations_bind_legacy_backup")
+	// 缺表对象选一个 ensure 不建的迁移遗留表（fresh 库真实不存在；原 chat
+	// 遗留表样例已随会话面退役，改用 juhe_dataset 迁移遗留名）。
+	missingTable := qualified(SchemaDataset, "usage_shards_legacy_backup")
 	skippedMissing := []string{}
 	if _, err := cleanupTable(ctx, env, missingTable, nil, map[string]int{}, &skippedMissing); err != nil {
 		t.Fatalf("缺表 cleanupTable: %v", err)
@@ -181,8 +181,8 @@ func TestVerifyCoverageSemantics(t *testing.T) {
 	if !assertionEvaluated("accounts.status.active") {
 		t.Fatalf("business 断言被标 NotCovered: %v", report.NotCovered)
 	}
-	if !assertionEvaluated("chat_conversations") {
-		t.Fatalf("chat 断言被标 NotCovered: %v", report.NotCovered)
+	if !assertionEvaluated("codex_context_sessions") {
+		t.Fatalf("codex 断言被标 NotCovered: %v", report.NotCovered)
 	}
 	// 断言评估状态按「摘要接线快照 + 属主 pending」同源推导（跨波次稳定）：
 	// 已接线域的非属主断言必须已评估；已接线域的属主断言在本库（无属主表）
@@ -259,7 +259,7 @@ func TestVerifyCoverageSemantics(t *testing.T) {
 		if wiredNames[schemaDomain(schemaName)] {
 			t.Fatalf("已接线域 %s 不应留空表: %v", schemaName, item)
 		}
-		if strings.HasPrefix(item, SchemaBusiness+".") || strings.HasPrefix(item, SchemaChat+".") ||
+		if strings.HasPrefix(item, SchemaBusiness+".") ||
 			strings.HasPrefix(item, SchemaCodexContext+".") || strings.HasPrefix(item, SchemaUsage+".") ||
 			strings.HasPrefix(item, SchemaStats+".") || strings.HasPrefix(item, SchemaDataset+".") {
 			if allWired {

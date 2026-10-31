@@ -176,7 +176,7 @@
   }&#39;
 </code></pre>
 <p>能正常返回 <code>choices</code> 就是通的；报错则按《错误码与排障》对号。</p>
-<p><strong>方法二：不写代码。</strong> 打开管理台的 <a href="/__aisys__/my-chat">在线聊天</a> 页面，选好模型直接聊一句，现象和 API 调用一致，最适合快速肉眼验证。注意：在线聊天走的是系统维护的<strong>专属对话 Key</strong>（自动创建，见 <a href="/__aisys__/my-api-keys">API Keys</a> 页面），与你的客户端 API Key 相互独立——它验证的是模型本身可用性，<strong>不能替代客户端 Key 的接入验证</strong>；客户端接入是否正常，以真实客户端调用与《用量与统计》里的使用记录为准。</p>
+<p><strong>方法二：不写代码。</strong> 打开管理台的 <a href="/__aisys__/playground/chat">演练场</a> 页面，选好账户与模型直接聊一句，现象和 API 调用一致，最适合快速肉眼验证。注意：演练场验证的是模型本身可用性，<strong>不能替代客户端 Key 的接入验证</strong>；客户端接入是否正常，以真实客户端调用与《用量与统计》里的使用记录为准。</p>
 <p>上游和账户层的可用性由管理员侧持续盯守——模型可用性探测在 <a href="/__aisys__/my-model-checks">模型探活</a>，上游健康在 <a href="/__aisys__/my-ai-health">AI 健康</a>。你只管按列表调用；调用中遇到报错，按《错误码与排障》处理。</p>
 <h2>接下来</h2>
 <ul>

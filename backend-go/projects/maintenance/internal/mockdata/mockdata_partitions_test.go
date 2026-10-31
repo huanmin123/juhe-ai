@@ -1,8 +1,9 @@
 package mockdata
 
-// 分区确保链的 PG 集成测试：usage_records / chat_messages 日分区的日期键校验、
-// 语句文本、真实建分区与幂等。语句契约与 jobs usagewriter / gateway chat
-// partitions 对齐；测试库由 pgtestkit 提供，父表由 EnsurePostgres 建立。
+// 分区确保链的 PG 集成测试：usage_records 日分区的日期键校验、语句文本、
+// 真实建分区与幂等。语句契约与 jobs usagewriter 对齐；测试库由 pgtestkit
+// 提供，父表由 EnsurePostgres 建立。（chat_messages 分区链已随 my-chat 会话
+// 面退役移除——演练场设计 §8。）
 
 import (
 	"context"
@@ -55,23 +56,13 @@ func TestPartitionDDLText(t *testing.T) {
 	if usage != wantUsage {
 		t.Fatalf("usage DDL = %q, want %q", usage, wantUsage)
 	}
-	chat, err := chatMessagePartitionDDL("20261025")
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantChat := "\n      CREATE TABLE IF NOT EXISTS juhe_chat.\"chat_messages_20261025\"\n" +
-		"      PARTITION OF juhe_chat.chat_messages\n" +
-		"      FOR VALUES FROM ('2026-10-25') TO ('2026-10-26')\n    "
-	if chat != wantChat {
-		t.Fatalf("chat DDL = %q, want %q", chat, wantChat)
-	}
 	if _, err := usageRecordPartitionDDL("bad"); err == nil {
 		t.Fatal("非法日期键应报错")
 	}
 }
 
 // TestEnsurePartitionsCreatesDailyPartitions 在真实 PG 上验证：批内 created_at
-// 生成对应日分区；同键重复执行幂等；chat 侧预建「当日 + 次日」；分区以
+// 生成对应日分区；同键重复执行幂等；分区以
 // relispartition=true 出现在 pg_class（覆盖枚举会排除它们）。
 func TestEnsurePartitionsCreatesDailyPartitions(t *testing.T) {
 	ctx := context.Background()
@@ -89,28 +80,20 @@ func TestEnsurePartitionsCreatesDailyPartitions(t *testing.T) {
 	if err := ensureUsageRecordPartitions(ctx, db, memo, createdAts); err != nil {
 		t.Fatalf("ensureUsageRecordPartitions: %v", err)
 	}
-	if err := ensureChatMessagePartitions(ctx, db, memo, "2026-10-24T08:00:00.000Z"); err != nil {
-		t.Fatalf("ensureChatMessagePartitions: %v", err)
-	}
-	// 重复执行（新备忘与旧备忘两种路径）必须幂等。
+	// 重复执行（备忘命中）必须幂等。
 	if err := ensureUsageRecordPartitions(ctx, db, memo, createdAts); err != nil {
 		t.Fatalf("重复 ensureUsageRecordPartitions: %v", err)
-	}
-	if err := ensureChatMessagePartitions(ctx, db, &partitionMemo{}, "2026-10-24T08:00:00.000Z"); err != nil {
-		t.Fatalf("重复 ensureChatMessagePartitions: %v", err)
 	}
 
 	wantPartitions := map[string]bool{
 		"usage_records_20261023": false,
 		"usage_records_20261024": false,
-		"chat_messages_20261024": false,
-		"chat_messages_20261025": false, // chat 预建次日。
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT c.relname
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname IN ('juhe_usage', 'juhe_chat')
+		WHERE n.nspname = 'juhe_usage'
 		  AND c.relispartition = true AND c.relkind = 'r'`)
 	if err != nil {
 		t.Fatal(err)
@@ -155,9 +138,5 @@ func TestEnsurePartitionsCreatesDailyPartitions(t *testing.T) {
 	// 无效 created_at 静默跳过（沿 jobs 写入路径语义），不 panic 不建分区。
 	if err := ensureUsageRecordPartitions(ctx, db, &partitionMemo{}, []string{"garbage"}); err != nil {
 		t.Fatalf("无效 created_at 应被跳过: %v", err)
-	}
-	// chat 侧无效时间显式报错（gateway 同语义）。
-	if err := ensureChatMessagePartitions(ctx, db, &partitionMemo{}, "garbage"); err == nil {
-		t.Fatal("无效 chat 时间应报错")
 	}
 }

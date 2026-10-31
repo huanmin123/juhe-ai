@@ -85,6 +85,12 @@ type HandleUpstreamResponseInput struct {
 	Account          AccountView
 	UpstreamResponse *GatewayUpstreamResponse
 	UpstreamURL      string
+	// BridgeUsage 是跨协议桥接流（DD-C6）的 usage 快照供给：桥泵把上游协议
+	// usage 重渲染为客户端形态后写下游字节，inspector 按账户协议解析桥接后
+	// 字节取不到 usage，桥内计算的 usage 经本口交给结算链（流式正常完成与
+	// 正文中断共用）。nil（未接线）或返回 false（本次 attempt 非桥接 / 上游
+	// 未发 usage）时保持既有 inspector/估算兜底路径。
+	BridgeUsage func() (gatewayproto.ParsedUsage, bool)
 	AuditAttemptID   string
 	AuditCapture     AttemptAuditCapture
 	Settings         gatewayruntimecache.GatewaySettings
@@ -391,7 +397,17 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 
 	// ---- usage fallback ----
 	usage := pipeResult.Usage
-	if input.Deps != nil && input.Deps.UsageFallback != nil {
+	// DD-C6：跨协议桥接流的 usage 由桥内转换状态机计算（上游协议 usage 已在
+	// 桥转换中重渲染为客户端形态，inspector 按账户协议解析桥接后字节取不到
+	// usage），桥接快照是本次 attempt 的权威值——优先于估算兜底消费。
+	bridgedUsage := false
+	if input.BridgeUsage != nil {
+		if snapshot, ok := input.BridgeUsage(); ok {
+			usage = usageWithObservedModel(snapshot, input.UpstreamResponse.UpstreamResponseModel)
+			bridgedUsage = true
+		}
+	}
+	if !bridgedUsage && input.Deps != nil && input.Deps.UsageFallback != nil {
 		fallbackUsage, estimated, _, _ := input.Deps.UsageFallback(driver, pipeResult.Usage, UsageFallbackInput{
 			Completed:             pipeResult.Completed,
 			OutputReceived:        pipeResult.OutputReceived,
@@ -747,8 +763,15 @@ func prepareUpstreamResponseForDownstream(downstream StreamDownstream, upstreamR
 	}
 	header := downstream.Res.Header()
 	if upstreamResponse.Header != nil {
+		// DD-F6：同名多值头（如跨域多 Set-Cookie 之外的重复自定义头）此前被
+		// Set 覆盖只余末值；改为「尚不存在则 Set（单值头行为逐字节不变）、已
+		// 存在则 Add（多值保留）」。
 		gatewaydispatch.CopyResponseHeaders(&gatewaydispatch.GatewayUpstreamResponse{Header: upstreamResponse.Header}, func(name, value string) {
-			header.Set(name, value)
+			if header.Get(name) == "" {
+				header.Set(name, value)
+				return
+			}
+			header.Add(name, value)
 		})
 	}
 	if shouldHandleAsStream && header.Get("content-type") == "" {

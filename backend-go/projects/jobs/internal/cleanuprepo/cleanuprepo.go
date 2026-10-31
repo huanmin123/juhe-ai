@@ -12,7 +12,8 @@
 //
 // 双模方言差异照 Node 两侧实现：SQLite 走 node:sqlite 同构的 rowid/LIMIT
 // 语句，PostgreSQL 走 schema 限定（juhe_business/juhe_dataset/juhe_stats/
-// juhe_usage/juhe_chat/juhe_codex_context）与 ctid/LIMIT 语句。删除条件的
+// juhe_usage/juhe_codex_context；juhe_chat 随 chat_* 清理链退役）与 ctid/LIMIT
+// 语句。删除条件的
 // 时间边界（含否）与 Node 逐字节一致。
 package cleanuprepo
 

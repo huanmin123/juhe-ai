@@ -91,32 +91,51 @@ var realtimeClientUpgrader = websocket.Upgrader{
 // （设计 §3：realtimeMaxConnectionsPerApiKey）。多实例部署下各进程独立计
 // 数——设置键语义是网关进程级限流，与账户并发槽（进程内 tracker + Redis
 // 读模型）同层不共享。
+//
+// DD-G9：计数与键生命周期整段互斥（sync.Mutex + map）。原先 sync.Map +
+// atomic 的「release 只减不删」让出现过的 apiKeyID 条目在进程生命期内无界
+// 累积；而直接在 release 里删键会与 acquire 的 LoadOrStore 交错出孤儿计数
+// （release 删键瞬间 acquire 拿到旧 counter Add(1)，下一个 acquire 新建
+// counter，两个活跃连接分属两个计数器——限额被绕过）。锁内「减到 0 即删」
+// 天然排除该竞态：acquire/release/count 对同一 key 的读改删全串行化，WS
+// 连接建立/断开的频率下无热点。
 type chainRealtimeConnectionLimiter struct {
-	counts sync.Map // api key id -> *atomic.Int64
+	mutex  sync.Mutex
+	counts map[string]int64 // api key id -> 活跃连接数（0/缺键=无活跃连接）
 }
 
-// acquire 原子占一个连接位；超出 limit 回退并返回 false（Add 的瞬时过冲不
-// 持久——超限连接立即回退，计数不泄漏）。
+// acquire 原子占一个连接位；超出 limit 回退并返回 false。
 func (l *chainRealtimeConnectionLimiter) acquire(apiKeyID string, limit int64) bool {
 	if l == nil || apiKeyID == "" || limit <= 0 {
 		return true
 	}
-	raw, _ := l.counts.LoadOrStore(apiKeyID, &atomic.Int64{})
-	counter := raw.(*atomic.Int64)
-	if counter.Add(1) > limit {
-		counter.Add(-1)
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	if l.counts == nil {
+		l.counts = map[string]int64{}
+	}
+	current := l.counts[apiKeyID]
+	if current+1 > limit {
 		return false
 	}
+	l.counts[apiKeyID] = current + 1
 	return true
 }
 
-// release 释放一个连接位。
+// release 释放一个连接位；减到 0 即删除键（DD-G9：键集合只反映有活跃连接
+// 的 apiKeyID，不再无界累积）。
 func (l *chainRealtimeConnectionLimiter) release(apiKeyID string) {
 	if l == nil || apiKeyID == "" {
 		return
 	}
-	if raw, ok := l.counts.Load(apiKeyID); ok {
-		raw.(*atomic.Int64).Add(-1)
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	if current, ok := l.counts[apiKeyID]; ok {
+		if current <= 1 {
+			delete(l.counts, apiKeyID)
+			return
+		}
+		l.counts[apiKeyID] = current - 1
 	}
 }
 
@@ -125,10 +144,9 @@ func (l *chainRealtimeConnectionLimiter) count(apiKeyID string) int64 {
 	if l == nil {
 		return 0
 	}
-	if raw, ok := l.counts.Load(apiKeyID); ok {
-		return raw.(*atomic.Int64).Load()
-	}
-	return 0
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	return l.counts[apiKeyID]
 }
 
 // chainIsRealtimePath 报告请求路径是否 realtime WS 升级面（/v1/realtime 精确
@@ -750,11 +768,23 @@ func (c *gatewayChain) resolveRealtimeIdentity(ctx context.Context, req *gateway
 	}
 	token := chainRealtimeQueryParam(req, realtimeTokenQueryParam)
 	if token == "" {
+		// DD-A3：缺 token 与 Bearer 缺失同型，计入 preauth 认证前熔断。
+		if blocked, failure := c.recordRealtimeTokenPreAuthFailure(ctx, req, res, "", gatewaypreauth.PreAuthFailureMissingBearerToken); blocked || failure != nil {
+			return nil, "", failure
+		}
 		c.renderRealtimeError(res, http.StatusUnauthorized, "缺少访问令牌", "invalid_request_error", "invalid_api_key")
 		return nil, "", &realtimePrepareFailure{status: http.StatusUnauthorized}
 	}
 	verify, err := c.realtimeTokens.Verify(ctx, token, model)
 	if err != nil {
+		// DD-A3：无效/过期 token 与 Bearer 无效 API Key 同型（invalid_api_key，
+		// specific 键沿 token 指纹 + spray 键沿来源 IP），计入 preauth 认证前
+		// 熔断；ErrModelMismatch（token 签名有效）与基础设施错误不计。
+		if errors.Is(err, realtimetoken.ErrInvalidToken) {
+			if blocked, failure := c.recordRealtimeTokenPreAuthFailure(ctx, req, res, token, gatewaypreauth.PreAuthFailureInvalidAPIKey); blocked || failure != nil {
+				return nil, "", failure
+			}
+		}
 		switch {
 		case errors.Is(err, realtimetoken.ErrInvalidToken):
 			c.renderRealtimeError(res, http.StatusUnauthorized, "realtime token 无效或已过期", "invalid_request_error", "invalid_realtime_token")
@@ -789,6 +819,39 @@ func (c *gatewayChain) resolveRealtimeIdentity(ctx context.Context, req *gateway
 		return nil, "", &realtimePrepareFailure{status: res.StatusCode()}
 	}
 	return reqRuntimeOf(req), "token", nil
+}
+
+// recordRealtimeTokenPreAuthFailure 把 ?token= 认证失败计入 preauth 认证前熔
+// 断（DD-A3）：复用 gatewayclientip 失败计数 API（preauth.Circuits），reason
+// 与 Bearer 面同款口径——缺 token 记 missing_bearer_token（进 :missing 臂），
+// 无效 token 记 invalid_api_key 并合成 "Bearer <token>" 使 specific 键沿
+// token 指纹、spray 键沿来源 IP 聚合；阈值与封禁语义沿用现有 specific/spray
+// 常量，不新造黑名单。blocked 时渲染 realtime 面 429（熔断文案/Retry-After
+// 与 preauth sendPreAuthCircuitResponse 同口径）并返回 true；记录故障按
+// preauth 管道同款语义经 handleOrchestratorError 向上传播。
+func (c *gatewayChain) recordRealtimeTokenPreAuthFailure(ctx context.Context, req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter, token string, reason gatewaypreauth.PreAuthFailureReason) (bool, *realtimePrepareFailure) {
+	clientIP, _ := gatewaypreauth.ExtractClientIP(req)
+	authorization := ""
+	if token != "" {
+		authorization = "Bearer " + token
+	}
+	decision, err := c.preauth.Circuits.RecordPreAuthFailure(ctx, gatewaypreauth.PreAuthFailureInput{
+		ClientIP:      clientIP,
+		Authorization: authorization,
+		Reason:        reason,
+	})
+	if err != nil {
+		c.handleOrchestratorError(err, req, res, c.preauth.NowMs(), "GET /v1/realtime")
+		return false, &realtimePrepareFailure{status: http.StatusInternalServerError}
+	}
+	if decision.Blocked {
+		if decision.RetryAfterSeconds != nil && !res.HeadersSent() {
+			res.Header().Set("Retry-After", fmt.Sprintf("%d", *decision.RetryAfterSeconds))
+		}
+		c.renderRealtimeError(res, http.StatusTooManyRequests, "当前来源短时间认证失败过多，请稍后重试", "rate_limit_exceeded", "client_ip_pre_auth_circuit_open")
+		return true, &realtimePrepareFailure{status: http.StatusTooManyRequests}
+	}
+	return false, nil
 }
 
 // reqRuntimeOf 投影 preauth 解析出的运行时（nil 安全的快照拷贝）。

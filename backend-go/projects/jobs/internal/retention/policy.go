@@ -1,5 +1,5 @@
 // Package retention ports the J6 Node data-retention task family into the Go
-// jobs project: data-retention-cleanup, chat-retention-cleanup,
+// jobs project: data-retention-cleanup,
 // expired-deleted-account-cleanup, codex-context storage cleanup,
 // record-maintenance job execution plus the api-key/account record cleanup
 // retries.

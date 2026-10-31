@@ -28,7 +28,6 @@ package main
 // 数据库与 Redis 实例；不改变任何全局状态（os.Args/env 用 t.Setenv）。
 
 import (
-	"image"
 	"log/slog"
 	"strings"
 	"testing"
@@ -126,36 +125,6 @@ func TestW16BDriverUnknownUpstreamFamilyArms(t *testing.T) {
 	}
 	if mapping := driver.resolveAccountModelMapping(account, chatReq, ""); mapping != nil {
 		t.Fatalf("未知上游族必须被 resolver 过滤, got %+v", mapping)
-	}
-}
-
-func TestW16BChatImageEncodeErrorArms(t *testing.T) {
-	dimensions := chatImageDimensions{}
-
-	// 零尺寸源图与零尺寸目标：直接命中 chainVP8LEncode 的宽度守卫（151-155）。
-	empty := image.NewNRGBA(image.Rect(0, 0, 0, 0))
-	if output, err := encodeChatModelImage(empty, 0, 0, dimensions); err == nil {
-		t.Fatalf("零尺寸源图必须编码失败, got %+v", output)
-	} else if !strings.Contains(err.Error(), "WebP") {
-		t.Fatalf("编码错误文案不符: %v", err)
-	}
-
-	// 非零源图 + 零尺寸目标：resize 后再编码失败（158-162 臂）。
-	small := image.NewNRGBA(image.Rect(0, 0, 4, 4))
-	if output, err := encodeChatModelImage(small, 0, 0, dimensions); err == nil {
-		t.Fatalf("零尺寸目标必须编码失败, got %+v", output)
-	}
-
-	// sqrtOf 64 轮牛顿迭代不收敛：超大值直达循环后兜底返回（基线 280）。
-	estimate := sqrtOf(1e308)
-	if estimate <= 0 || estimate >= 1e308 {
-		t.Fatalf("sqrtOf(1e308) = %v, want 有限收敛中间值", estimate)
-	}
-	if got := sqrtOf(0); got != 0 {
-		t.Fatalf("sqrtOf(0) = %v", got)
-	}
-	if got := sqrtOf(16); got < 4-1e-9 || got > 4+1e-9 {
-		t.Fatalf("sqrtOf(16) = %v, want 4", got)
 	}
 }
 

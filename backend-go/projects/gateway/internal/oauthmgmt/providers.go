@@ -149,7 +149,11 @@ func isOpenAIBlockedErrorAccount(account *rotationAccount) bool {
 
 // policyPatchKeys are the free-form policy fields accepted but not validated by
 // this slice (the policy validators belong to the accounts companion slice).
-var policyPatchKeys = []string{"error_handling_rules", "response_inspection_rules", "quota_recovery_policy"}
+// error_handling_rule_overrides 与 accounts 写入面同语义（写入面
+// normalizeAccountCredentialPolicies 校验归一化；B5 同族 strict-body 缺口修复：
+// 前端创建向导错误与响应规则卡对 oauth/google_oauth 提交该键，patch 门禁与
+// 写入面必须一致）。
+var policyPatchKeys = []string{"error_handling_rules", "error_handling_rule_overrides", "response_inspection_rules", "quota_recovery_policy"}
 
 // endpointModes parses the patch array and keeps the decoded-JSON list shape
 // the accounts credentials write path consumes ([]any of strings; a Go-native
@@ -192,7 +196,7 @@ func parseOpenAICredentialsPatch(patch map[string]any) (map[string]any, bool) {
 				return nil, false
 			}
 			output[key] = strings.TrimSpace(text)
-		case "error_handling_rules", "response_inspection_rules", "quota_recovery_policy":
+		case "error_handling_rules", "error_handling_rule_overrides", "response_inspection_rules", "quota_recovery_policy":
 			output[key] = value
 		default:
 			return nil, false
@@ -218,7 +222,7 @@ func parseAnthropicCredentialsPatch(patch map[string]any) (map[string]any, bool)
 				return nil, false
 			}
 			output[key] = modes
-		case policyPatchKeys[0], policyPatchKeys[1], policyPatchKeys[2]:
+		case policyPatchKeys[0], policyPatchKeys[1], policyPatchKeys[2], policyPatchKeys[3]:
 			output[key] = value
 		default:
 			return nil, false
@@ -251,7 +255,7 @@ func parseGeminiCredentialsPatch(patch map[string]any) (map[string]any, bool) {
 				return nil, false
 			}
 			output[key] = modes
-		case policyPatchKeys[0], policyPatchKeys[1], policyPatchKeys[2]:
+		case policyPatchKeys[0], policyPatchKeys[1], policyPatchKeys[2], policyPatchKeys[3]:
 			output[key] = value
 		default:
 			return nil, false
@@ -281,7 +285,7 @@ func parseGrokCredentialsPatch(patch map[string]any) (map[string]any, bool) {
 				return nil, false
 			}
 			output[key] = modes
-		case policyPatchKeys[0], policyPatchKeys[1], policyPatchKeys[2]:
+		case policyPatchKeys[0], policyPatchKeys[1], policyPatchKeys[2], policyPatchKeys[3]:
 			output[key] = value
 		default:
 			return nil, false

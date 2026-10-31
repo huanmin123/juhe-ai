@@ -163,12 +163,13 @@ func (d *FinalizationDispatch) Runtime() GatewayUsageFinalizationRuntime {
 }
 
 // GatewayUsageFinalizationRuntime mirrors GatewayUsageFinalizationRuntime.
+// 无 DroppedCount：队列不存在丢弃路径（满队走 overflow spool、超限走错误返回，
+// 分别由 OverflowSpoolCount 与 Dispatch 错误承载）。
 type GatewayUsageFinalizationRuntime struct {
 	PendingCount       int
 	QueuedCount        int
 	QueuedBytes        int
 	ActiveCount        int
-	DroppedCount       int
 	AdmissionWaitCount int
 	OverflowSpoolCount int
 	MaxItems           int
@@ -363,7 +364,6 @@ func (q *GatewayUsageFinalizationQueue) Runtime() GatewayUsageFinalizationRuntim
 		QueuedCount:        len(q.queued),
 		QueuedBytes:        q.queuedBytes,
 		ActiveCount:        q.active,
-		DroppedCount:       0,
 		AdmissionWaitCount: q.admissionWaitCount,
 		OverflowSpoolCount: q.overflowSpoolCount,
 		MaxItems:           q.maxItems,

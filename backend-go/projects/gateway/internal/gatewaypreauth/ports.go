@@ -83,6 +83,12 @@ type ClientStrategyContext struct {
 	// ClientSource carries the explicit client source (header-derived); nil
 	// when absent.
 	ClientSource *ClientSource
+	// CodexTurnPresent 投影 G18 strategy 的 CodexTurn != nil（真实 Codex 会话
+	// 身份：x-codex-turn-metadata 头 + codex 画像资格）。预算豁免身份门
+	// （DD-F3）与 keepalive 判定同源消费该投影：压缩请求只有带 codexTurn 身份
+	// 才领无界墙钟/attempt 预算。preauth 核心层不解释 G18 Opaque（any），
+	// 适配器侧负责填写。
+	CodexTurnPresent bool
 	// Opaque carries the full G18 context for downstream slices.
 	Opaque any
 }

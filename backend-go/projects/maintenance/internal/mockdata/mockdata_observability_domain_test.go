@@ -183,7 +183,6 @@ func observabilityPrepare(t *testing.T, segments ...string) func(ctx context.Con
 // 一样把 chat 资产根固定到测试临时目录。
 func observabilityRunForTest(t *testing.T, dsn string, now time.Time, summaryFile string) Report {
 	t.Helper()
-	t.Setenv("JUHE_AI_CHAT_ASSETS_ROOT", filepath.Join(t.TempDir(), "chat-assets"))
 	report, err := Run(context.Background(), Options{
 		DSN:           dsn,
 		Days:          3,

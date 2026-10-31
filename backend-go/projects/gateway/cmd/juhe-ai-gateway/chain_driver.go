@@ -613,12 +613,23 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	if compatibilityBody == nil && modelMapping == nil {
 		overridesParsedBody = d.materializedParsedJSONObjectBody(req)
 	}
+	// 覆盖能力解析的模型判定目标与上方 endpoint family 同一口径（映射命中取
+	// 映射右侧）：命中映射时以 UpstreamModel 确定真实上游模型（AI账户上游接
+	// 口能力设计 §3），目录能力必须按最终模型行解析——映射命中后出站 body 的
+	// model 已被改写为 UpstreamModel，按请求模型判定会在源/目标目录行能力不
+	// 一致时给最终模型写出超档值或过度降级。未命中映射时维持 RequestModel /
+	// canonicalAccountModel 现状（canonical 拼写归一只对无映射场景有意义，
+	// UpstreamModel 本身即精确目标；无映射账户行为逐字节不变）。
 	upstreamModel := ""
-	if requested, ok := gatewaypreauth.RequestModel(req); ok {
-		upstreamModel = requested
-	}
-	if canonical := canonicalAccountModel(req, account); canonical != "" {
-		upstreamModel = canonical
+	if modelMapping != nil {
+		upstreamModel = modelMapping.UpstreamModel
+	} else {
+		if requested, ok := gatewaypreauth.RequestModel(req); ok {
+			upstreamModel = requested
+		}
+		if canonical := canonicalAccountModel(req, account); canonical != "" {
+			upstreamModel = canonical
+		}
 	}
 	overridesBody, err := gatewaydispatch.ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
 		ctx,

@@ -321,7 +321,7 @@ func runMaintenanceEnsureSeed(t *testing.T, dsn string, secret string) map[strin
 // ---------------------------------------------------------------------------
 
 type gatewayEnvOptions struct {
-	// ChainEnabled 打开 /v1 网关链 + my-chat 家族。
+	// ChainEnabled 打开 /v1 网关链（含演练场家族挂载）。
 	ChainEnabled bool
 	// PGDSN 非空时使用该连接串；为空时夹具经 pgtestkit 自建每测试隔离库
 	//（fresh DDL + seed）。

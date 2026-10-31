@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -306,6 +307,49 @@ func TestResolveOpenAIGatewayClientStrategyCodexTurn(t *testing.T) {
 				t.Errorf("adapter = %q", strategy.UpstreamAdapter)
 			}
 		})
+	}
+}
+
+// DD-F3 预算豁免身份门同口径（body trigger 形态）：`/responses` + body 内嵌
+// compaction_trigger 与 `/responses/compact` 路径形态在豁免口径
+//（strategy.CodexCompactionExpected = codexTurn != nil && compactionExpected）
+// 下同判——有 codexTurn 身份才为真；无身份（generic profile）时识别谓词仍为
+// true（用量标记口径不受影响），豁免口径恒 false。
+func TestCodexCompactionExemptionGateBodyTriggerSameSemantics(t *testing.T) {
+	deps := newStrategyDeps()
+	build := func(t *testing.T, headers map[string]string) *gatewaypreauth.GatewayRequest {
+		t.Helper()
+		req := newTestRequest(t, "POST", "/v1/responses", nil, headers)
+		body := []byte(`{"input":[{"type":"compaction_trigger"}]}`)
+		var parsed map[string]any
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatal(err)
+		}
+		req.Body = &gatewaybody.Request{RawBody: body, Body: parsed}
+		return req
+	}
+	identity := ClientStrategyIdentity{SystemAccountID: "sys", APIKeyID: "key", Endpoint: "POST /v1/responses", ClientIP: "10.0.0.9"}
+
+	withTurn := build(t, map[string]string{
+		"Accept":                "text/event-stream",
+		"X-Codex-Turn-Metadata": `{"turn_id":"turn-bt-1"}`,
+	})
+	if !CodexCompactionExpectedForRequest(withTurn) {
+		t.Fatal("识别谓词（body trigger）= false, want true")
+	}
+	strategy := deps.ResolveOpenAIGatewayClientStrategy(withTurn, identity)
+	if strategy.CodexTurn == nil || !strategy.CodexCompactionExpected {
+		t.Fatalf("codexTurn=%v compactionExpected=%v, want true/true（豁免保持）", strategy.CodexTurn != nil, strategy.CodexCompactionExpected)
+	}
+
+	noTurn := build(t, map[string]string{"Accept": "text/event-stream"})
+	if !CodexCompactionExpectedForRequest(noTurn) {
+		t.Fatal("识别谓词（body trigger，无身份）= false, want true（用量标记不变）")
+	}
+	strategyNoTurn := deps.ResolveOpenAIGatewayClientStrategy(noTurn, identity)
+	if strategyNoTurn.CodexTurn != nil || strategyNoTurn.CodexCompactionExpected {
+		t.Fatalf("无身份豁免口径 codexTurn=%v compactionExpected=%v, want false/false（身份门收窄）",
+			strategyNoTurn.CodexTurn != nil, strategyNoTurn.CodexCompactionExpected)
 	}
 }
 

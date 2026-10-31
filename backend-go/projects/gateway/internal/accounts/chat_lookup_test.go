@@ -1,19 +1,17 @@
 package accounts
 
-// ListChatAccountOptions / FindChatAccount（会话账户绑定侧）的存储级覆盖：
+// ListChatAccountOptions / FindChatAccount（演练场账户端口侧）的存储级覆盖：
 // 2026-10-10 修订后列表 = 数据范围内全部未删除账户（status 非 active、
 // schedulable 禁用等全部状态均可见，status 投影为生效状态原值）；仅
 // deleted_at 非空与 authorization_instance_authorization_id 非空仍排除，排序
-// name ASC, id ASC（同名跨 owner 按 id 决胜）；数据范围按 ChatBindScope 收
+// name ASC, id ASC（同名跨 owner 按 id 决胜）；数据范围按 AccountScope 收
 // 敛——admin/super_admin 读全量号池，普通用户仅自己名下（他人行、已删行、
-// 实例戳行仍排除）。选项投影含 providerCode/status（/my-chat/accounts 形状）；
+// 实例戳行仍排除）。选项投影含 providerCode/status（演练场账户下拉形状）；
 // 供应商解耦后 providerCode 取 vendor_code，generic_http 账户为空串。
 
 import (
 	"context"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 )
 
 func TestListChatAccountOptionsAdminSeesAllUndeleted(t *testing.T) {
@@ -45,11 +43,11 @@ func TestListChatAccountOptionsAdminSeesAllUndeleted(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	options, err := env.store.ListChatAccountOptions(context.Background(), chat.ChatBindScope{IsAdmin: true})
+	options, err := env.store.ListChatAccountOptions(context.Background(), AccountScope{IsAdmin: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []chat.ChatAccountOption{
+	want := []AccountOption{
 		// status 投影为生效状态原值：status=disabled 原样；schedulable=0 合成
 		// disabled（ownerEffectiveStatusSQL）。name 排序为字节序（停 < 可 < 禁）。
 		{ID: "acc_inactive", Name: "停用账户", ProviderCode: "", Status: "disabled"},
@@ -67,9 +65,9 @@ func TestListChatAccountOptionsAdminSeesAllUndeleted(t *testing.T) {
 	}
 }
 
-// sameChatAccountRef 逐字段比较 ChatAccountRef（含 EnabledGroupIDs 切片，
+// sameChatAccountRef 逐字段比较 AccountRef（含 EnabledGroupIDs 切片，
 // 结构体整体不可 == 比较）。
-func sameChatAccountRef(got, want *chat.ChatAccountRef) bool {
+func sameChatAccountRef(got, want *AccountRef) bool {
 	if got.ID != want.ID || got.Name != want.Name || got.ProviderCode != want.ProviderCode || got.Enabled != want.Enabled {
 		return false
 	}
@@ -117,11 +115,11 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 	}
 
 	t.Run("非 admin 下拉见自己名下全部未删行", func(t *testing.T) {
-		options, err := env.store.ListChatAccountOptions(context.Background(), chat.ChatBindScope{ViewerID: viewer})
+		options, err := env.store.ListChatAccountOptions(context.Background(), AccountScope{ViewerID: viewer})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []chat.ChatAccountOption{
+		want := []AccountOption{
 			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "", Status: "active"},
 			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "", Status: "disabled"},
 		}
@@ -136,14 +134,14 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 	})
 
 	t.Run("非 admin FindChatAccount 同口径", func(t *testing.T) {
-		scope := chat.ChatBindScope{ViewerID: viewer}
+		scope := AccountScope{ViewerID: viewer}
 		refs := []struct {
 			name    string
 			id      string
-			wantRef *chat.ChatAccountRef
+			wantRef *AccountRef
 		}{
-			{name: "自有 active 行", id: "acc_own_active", wantRef: &chat.ChatAccountRef{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "", Enabled: true}},
-			{name: "自有停用行可见但 Enabled=false", id: "acc_own_disabled", wantRef: &chat.ChatAccountRef{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "", Enabled: false}},
+			{name: "自有 active 行", id: "acc_own_active", wantRef: &AccountRef{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "", Enabled: true}},
+			{name: "自有停用行可见但 Enabled=false", id: "acc_own_disabled", wantRef: &AccountRef{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "", Enabled: false}},
 			{name: "他人行不可见", id: "acc_other_active", wantRef: nil},
 			{name: "已删行不可见", id: "acc_own_deleted", wantRef: nil},
 			{name: "实例戳行不可见", id: "acc_own_stamped", wantRef: nil},
@@ -164,11 +162,11 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 	})
 
 	t.Run("admin 下拉与 FindChatAccount 读全量号池", func(t *testing.T) {
-		options, err := env.store.ListChatAccountOptions(context.Background(), chat.ChatBindScope{ViewerID: viewer, IsAdmin: true})
+		options, err := env.store.ListChatAccountOptions(context.Background(), AccountScope{ViewerID: viewer, IsAdmin: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []chat.ChatAccountOption{
+		want := []AccountOption{
 			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "", Status: "active"},
 			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "", Status: "disabled"},
 			{ID: "acc_other_active", Name: "c 他人可用", ProviderCode: "", Status: "active"},
@@ -181,7 +179,7 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 				t.Fatalf("admin options[%d] = %v, want %v", index, option, want[index])
 			}
 		}
-		ref, err := env.store.FindChatAccount(chat.ChatBindScope{ViewerID: viewer, IsAdmin: true}, "acc_other_active")
+		ref, err := env.store.FindChatAccount(AccountScope{ViewerID: viewer, IsAdmin: true}, "acc_other_active")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -19,10 +19,19 @@ import (
 // usage records when the Redis Stream enqueue fails, replaying them through
 // the enqueue port once it recovers.
 
-// Spool capacity and retention constants (usage-record-spool.ts).
+// Spool capacity and retention constants (usage-record-spool.ts). 两个镜像
+// 常量必须显式 time.Duration：无类型整数与 time.Duration 比较时按纳秒解释
+// （2026-10-31 深挖发现「30s 缓存实际 30µs、.tmp 1h 实际 3.6ms」的单位错位）。
 const (
-	spoolCapacityRefreshIntervalMs = 30_000
-	spoolTemporaryFileRetentionMs  = 60 * 60_000
+	spoolCapacityRefreshInterval = 30 * time.Second
+	spoolTemporaryFileRetention  = time.Hour
+	// spoolCorruptFileRetention 是损坏隔离文件（<原名>.corrupt，gateway/
+	// jobs drain 侧改名隔离产生）的排障现场保留期：到期由 scanCapacity 在
+	// 同一清理周期顺带删除。此前 .corrupt 全仓无回收路径且计入容量配额，
+	// 长期运行会慢性侵占 MaxItems/MaxBytes 直至 Persist 报容量上限、溢出
+	// 补偿失败丢 usage（DD-D7）。显式 time.Duration（7 天），避免无类型
+	// 整数在与 time.Duration 比较时按纳秒解释。
+	spoolCorruptFileRetention = 7 * 24 * time.Hour
 )
 
 // UsageRecordSpoolRuntime mirrors UsageRecordSpoolRuntime.
@@ -176,7 +185,7 @@ func (s *UsageRecordSpool) recordPersistFailure(err error) error {
 
 // currentCapacityLocked mirrors currentCapacity with the 30s cache.
 func (s *UsageRecordSpool) currentCapacityLocked(force bool) (*spoolCapacity, error) {
-	if !force && s.capacity != nil && time.Since(s.capacity.refreshedAt) < spoolCapacityRefreshIntervalMs {
+	if !force && s.capacity != nil && time.Since(s.capacity.refreshedAt) < spoolCapacityRefreshInterval {
 		return s.capacity, nil
 	}
 	scan, err := s.scanCapacity()
@@ -190,7 +199,8 @@ func (s *UsageRecordSpool) currentCapacityLocked(force bool) (*spoolCapacity, er
 }
 
 // scanCapacity mirrors scanSpoolCapacity: count every .json/.tmp/.corrupt
-// file under the instance directories, pruning stale .tmp files.
+// file under the instance directories, pruning stale .tmp files and .corrupt
+// files past their retention period.
 func (s *UsageRecordSpool) scanCapacity() (spoolCapacity, error) {
 	items := 0
 	bytes := 0
@@ -220,11 +230,29 @@ func (s *UsageRecordSpool) scanCapacity() (spoolCapacity, error) {
 			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
-			if strings.HasSuffix(name, ".tmp") && now.Sub(info.ModTime()) >= spoolTemporaryFileRetentionMs {
+			if strings.HasSuffix(name, ".tmp") && now.Sub(info.ModTime()) >= spoolTemporaryFileRetention {
 				if err := os.Remove(fullPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 					return spoolCapacity{}, err
 				}
 				continue
+			}
+			if strings.HasSuffix(name, ".corrupt") && now.Sub(info.ModTime()) >= spoolCorruptFileRetention {
+				removeErr := os.Remove(fullPath)
+				if removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+					// 已删除（或已被并发清理）：过期损坏文件不再计入配额。
+					continue
+				}
+				// 清理失败只诊断不阻断 scan：保留现场排障，文件仍在磁盘
+				// 上，照常计入容量配额（配额计量以磁盘事实为准；区别于
+				// 过期 .tmp 清理失败的中止语义）。removeErr 独立命名承接，
+				// 不回落到外层 Info 的 err（作用域陷阱）。
+				if s.logger != nil {
+					s.logger.Warn("usage spool 过期损坏隔离文件清理失败，已保留现场", map[string]any{
+						"event": "usage_record_spool_corrupt_cleanup_failed",
+						"file":  fullPath,
+						"error": removeErr,
+					})
+				}
 			}
 			items++
 			bytes += int(info.Size())

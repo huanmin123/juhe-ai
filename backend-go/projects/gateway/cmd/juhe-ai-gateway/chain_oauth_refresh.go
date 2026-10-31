@@ -19,8 +19,11 @@ package main
 //     永不终态原则不变。
 //   - 重新水合：轮换提交后既有 finishRotationSideEffects 已同步清 runtime
 //     cache（oauthmgmt invalidation.go → inval.Bus → ClearGatewayRuntimeCache），
-//     这里按请求的 group 读回组级列表并按账户 ID 取回含新凭据的候选，交引擎
-//     同账户重试一次。水合失败 / 列表缺席返回 nil，调用方落回现状 SkipAccount。
+//     这里按账户的实际绑定组读回组级列表并按账户 ID 取回含新凭据的候选，交
+//     引擎同账户重试一次。超级分组路由下窗口组是超级分组本身而账户绑定行落
+//     在成员分组（routing 层组标 BoundGroupID），按账户自带 BoundGroupID 直读
+//     成员分组；普通分组路径该值为空或与窗口组同值，读取参数不变。水合失败 /
+//     列表缺席返回 nil，调用方落回现状 SkipAccount。
 //
 // 令牌值绝不落日志：日志只含 account id、vendor、revision 与错误摘要。
 
@@ -165,15 +168,25 @@ func (c *chainOAuthRefreshCoordinator) rotateAndRehydrate(ctx context.Context, i
 			"event", "gateway_oauth_token_auto_refresh_rehydrate_missed",
 			"accountId", account.ID,
 			"vendor", account.VendorCode,
-			"groupId", input.UsageContext.GroupID)
+			"groupId", input.UsageContext.GroupID,
+			"boundGroupId", derefStringPtr(input.Account.BoundGroupID))
 	}
 	return hydrated
 }
 
-// rehydrateAccount 轮换提交后按组重读候选：runtime cache 已被轮换副作用同步
-// 清空，此处读取即 DB 现读投影（新凭据）。取不到（组缺席 / 账户离组）返回 nil。
+// rehydrateAccount 轮换提交后按账户的实际绑定组重读候选：runtime cache 已被
+// 轮换副作用同步清空，此处读取即 DB 现读投影（新凭据）。读取组取账户自带
+// BoundGroupID（routing 层组标：超级分组路由下是成员分组，普通分组路径为空
+// 或与窗口组同值），为空回落请求级窗口组——候选绑定行按组直查，账户离组 /
+// 组缺席返回 nil。超级分组路由（读取组 ≠ 窗口组）命中时补齐候选组标，使重试
+// 尝试的 usage 组作用域与初次尝试（usageContextForAccount）同口径；读取组等
+// 于窗口组时不触碰候选，普通分组路径行为不变。
 func (c *chainOAuthRefreshCoordinator) rehydrateAccount(ctx context.Context, input gatewaydispatch.FailedUpstreamResponseInput) *gatewaydispatch.AccountCandidate {
-	groupID := strings.TrimSpace(input.UsageContext.GroupID)
+	windowGroupID := strings.TrimSpace(input.UsageContext.GroupID)
+	groupID := windowGroupID
+	if bound := strings.TrimSpace(derefStringPtr(input.Account.BoundGroupID)); bound != "" {
+		groupID = bound
+	}
 	if groupID == "" {
 		return nil
 	}
@@ -182,9 +195,14 @@ func (c *chainOAuthRefreshCoordinator) rehydrateAccount(ctx context.Context, inp
 		return nil
 	}
 	for index := range accounts {
-		if accounts[index].ID == input.Account.ID {
-			return &accounts[index]
+		if accounts[index].ID != input.Account.ID {
+			continue
 		}
+		if groupID != windowGroupID && accounts[index].BoundGroupID == nil {
+			bound := groupID
+			accounts[index].BoundGroupID = &bound
+		}
+		return &accounts[index]
 	}
 	return nil
 }

@@ -3,7 +3,8 @@ package main
 // AI 问答会话账户唯一绑定的进程内调度覆盖通道（AI 问答会话账户唯一绑定设计
 // §5/§7；原三种绑定模式的调度通道随 group/api_key 模式退场收敛为单一路径）。
 //
-// 通道形态：chat.GenerationExecutor 的生产实现 chatGatewayExecutor 在会话绑定
+// 通道形态：GenerationExecutor（chain_chat_dispatch_types.go 本地端口）的生产
+// 实现 chatGatewayExecutor 在会话绑定
 // 账户后经 WithChatDispatchAccount 携带目标，Dispatch 时把目标注入请求
 // context（key 为本包未导出结构体类型）。外部 HTTP 请求的 context 由
 // net/http 服务端构造，不可能携带该未导出 key，因此不存在伪造通道；目标也
@@ -23,17 +24,14 @@ package main
 //  3. 派发循环（v1DispatchLoop）：携带目标时禁用 API Key 分组回退切换，耗尽
 //     走既有"无可用账户"终态，绑定会话永不逃逸出绑定作用域。
 //
-// target 为空（外部请求）时三条路径全部短路，调度行为与现状一致。未绑定/
-// 归档会话在 internal/chat 发送预检拦截，不会进入生成链。
+// target 为空（外部请求）时三条路径全部短路，调度行为与现状一致。
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -82,7 +80,7 @@ func chatDispatchTargetFromContext(ctx context.Context) (chatDispatchTarget, boo
 // 确定性排序）。第二返回值 false = 账户未解析（不存在/已删除/查询失败），
 // 调用方按空启用分组处理（空候选 → 既有"无可用账户"语义）。
 //
-// 组合根（composeChatFamily）在装配期置位一次，此后只读；与
+// 组合根（composePlaygroundFamily）在装配期置位一次，此后只读；与
 // chain_obs_wiring.go 的进程级观察槽同样遵守"装配期置位、运行期只读"纪律
 // （观察槽用 atomic.Pointer，本槽因回调需测试还原用 RWMutex）。nil = 未装配
 // （空候选）。
@@ -113,7 +111,7 @@ func chainChatDispatchAccountGroupsOf(accountID string) ([]string, bool) {
 // chainChatDispatchPinnedFetch 是 chat-pinned 直取的运行时快照读取端口（AI 问答
 // 设计 §5.2 2026-10-10 修订）：按（分组, 账户 ID）经 runtime cache 专用路径
 // 直取该账户快照（含禁用/冷却/过期/禁调度账户，绕过共享候选窗可用性窗口）。
-// 组合根（composeChatFamily）在装配期置位一次，此后只读（与
+// 组合根（composePlaygroundFamily）在装配期置位一次，此后只读（与
 // chainChatDispatchAccountGroups 同一进程级槽纪律）；nil = 未装配（空候选，
 // 走既有"无可用账户"语义）。
 var (
@@ -137,23 +135,9 @@ func chainChatDispatchPinnedFetchOf() func(ctx context.Context, groupID, systemA
 }
 
 // chatDispatchTargetAwareExecutor 是 cmd 侧执行器覆盖端口的最小断言面
-// （与 internal/chat 的 chatDispatchTargetAware 同形：accountID + ownerID
-// 同源注入），观察适配器据此在派发前绑定目标。
+// （accountID + ownerID 同源注入），观察/演练场适配器据此在派发前绑定目标。
 type chatDispatchTargetAwareExecutor interface {
-	WithChatDispatchAccount(accountID, ownerID string) chat.GenerationExecutor
-}
-
-// chatConversationDispatchTarget 读会话绑定账户（chat 观察适配器的只读查询：
-// 压缩服务在 internal/chat 内经 Store 解析，观察适配器在 cmd 侧无 Store
-// 端口，直接读同库同表）。返回会话是否存在。
-func chatConversationDispatchTarget(db *sql.DB, table string, bind func(string) string, conversationID, systemAccountID string) (chatDispatchTarget, bool, error) {
-	query := bind(`SELECT COALESCE(bind_account_id, '')
-		FROM ` + table + ` WHERE id = ? AND system_account_id = ? LIMIT 1`)
-	var accountID string
-	if err := db.QueryRow(query, conversationID, systemAccountID).Scan(&accountID); err != nil {
-		return chatDispatchTarget{}, false, err
-	}
-	return chatDispatchTarget{AccountID: accountID}, true, nil
+	WithChatDispatchAccount(accountID, ownerID string) GenerationExecutor
 }
 
 // chatDispatchTargetScope 是调度目标在派发候选装配前的解析结果：accounts 是

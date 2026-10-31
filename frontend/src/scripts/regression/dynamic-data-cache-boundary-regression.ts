@@ -56,7 +56,4 @@ const appLayoutSource = source('../../layouts/AppLayout.vue')
 assert.match(appLayoutSource, /viewRoute\.meta\.keepAlive === true/, '动态页面组件缓存必须显式 opt-in')
 assert.match(appLayoutSource, /routePrefetches/, '路由组件代码预加载可以保留')
 
-const chatPerformanceSource = source('../../views/chat/chatConversationPerformance.ts')
-assert.doesNotMatch(chatPerformanceSource, /cacheTtlMilliseconds|this\.cache\.set/, '聊天模型列表和能力不得保留 TTL 结果缓存')
-
 console.log('动态页面缓存边界回归通过：业务结果始终重读，只保留页面状态、代码预加载和在途请求合并')

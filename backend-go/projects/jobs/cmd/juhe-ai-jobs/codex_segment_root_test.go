@@ -27,9 +27,6 @@ type codexSegmentRootFakeDb struct {
 	settlement retention.CodexContextSettlement
 }
 
-func (f *codexSegmentRootFakeDb) CleanupChatRetention(context.Context, retention.ChatRetentionInput) (*retention.ChatRetentionResult, error) {
-	return &retention.ChatRetentionResult{}, nil
-}
 
 func (f *codexSegmentRootFakeDb) CleanupExpiredSystemSessions(context.Context, string, int) (int64, error) {
 	return 0, nil

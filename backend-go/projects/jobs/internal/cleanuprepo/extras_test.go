@@ -11,9 +11,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 )
 
-// 剩余缺口的收尾测试：recordcleanuppostgres 错误路径（注入失败）、chat 的
-// PG 租约/压缩恢复与缺省时钟、codex HasMore 与错误传播、usage catalog 错误
-// 传播、stats 保留 PG schema。
+// 剩余缺口的收尾测试：recordcleanuppostgres 错误路径（注入失败）、缺省时钟、
+// codex HasMore 与错误传播、usage catalog 错误传播、stats 保留 PG schema。
+//（chat 的 PG 租约/压缩恢复覆盖已随 chat_* 清理链退役移除。）
 
 func newKitPGRecordStore(rec *pgRecorder) *RecordCleanupStore {
 	return &RecordCleanupStore{
@@ -127,71 +127,8 @@ func TestPostgresExistenceHelpers(t *testing.T) {
 	}
 }
 
-// TestPinScheduledLeasePostgres：PG 租约校验链。
-func TestPinScheduledLeasePostgres(t *testing.T) {
-	rec := newPGRecorder()
-	db := openRecorderPG(rec)
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("BeginTx: %v", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	lease := &retention.ScheduledLeaseFence{LeaseKey: " ", OwnerID: "o", FencingToken: 1}
-	if err := pinScheduledLease(context.Background(), db, tx, lease); err == nil || !strings.Contains(err.Error(), "leaseKey") {
-		t.Fatalf("空 leaseKey 应报错：%v", err)
-	}
-	lease = &retention.ScheduledLeaseFence{LeaseKey: "k", OwnerID: " ", FencingToken: 1}
-	if err := pinScheduledLease(context.Background(), db, tx, lease); err == nil || !strings.Contains(err.Error(), "ownerId") {
-		t.Fatalf("空 ownerId 应报错：%v", err)
-	}
-	lease = &retention.ScheduledLeaseFence{LeaseKey: "k", OwnerID: "o", FencingToken: 7}
-	// 无租约行 → 已失效。
-	if err := pinScheduledLease(context.Background(), db, tx, lease); err == nil ||
-		!strings.Contains(err.Error(), "租约已失效") {
-		t.Fatalf("无租约应报错：%v", err)
-	}
-	// 命中租约行 → nil。
-	rec.script("FROM juhe_stats.background_job_leases", []string{"lease_key"}, [][]driver.Value{{"k"}})
-	if err := pinScheduledLease(context.Background(), db, tx, lease); err != nil {
-		t.Fatalf("有效租约不应报错：%v", err)
-	}
-}
-
-// TestChatRecoverStaleCompactionsPostgres：PG 行锁后缀与恢复语句。
-func TestChatRecoverStaleCompactionsPostgres(t *testing.T) {
-	rec := newPGRecorder()
-	store := &ChatStore{DB: openRecorderPG(rec), Now: kitNow}
-	rec.script("FROM juhe_chat.chat_conversations", []string{"id", "system_account_id"},
-		[][]driver.Value{{"conv-1", "sys-1"}})
-	recovered, err := store.recoverStaleCompactions(context.Background(), kitUpdatedAt, "2026-09-10T00:00:00.000Z", 500)
-	if err != nil {
-		t.Fatalf("recoverStaleCompactions: %v", err)
-	}
-	if recovered != 1 {
-		t.Fatalf("recovered = %d", recovered)
-	}
-	statements := rec.all()
-	if !strings.Contains(statements[0].query, "FOR UPDATE SKIP LOCKED") {
-		t.Fatalf("PG 应带行锁后缀：%s", statements[0].query)
-	}
-	if !strings.Contains(statements[1].query, "context_state = 'compact_failed'") {
-		t.Fatalf("缺少恢复 UPDATE")
-	}
-}
-
-// TestChatNowDefaults：未注入时钟时的缺省路径。
-func TestChatNowDefaults(t *testing.T) {
-	store := &ChatStore{}
-	if store.now().IsZero() {
-		t.Fatalf("缺省时钟不应为零值")
-	}
-	if !okInstant(store.nowIso()) {
-		t.Fatalf("nowIso 应产出可解析时间：%q", store.nowIso())
-	}
-	chatStore := &ChatStore{}
-	if chatStore.now().IsZero() {
-		t.Fatalf("chat 缺省时钟不应为零值")
-	}
+// TestCodexNowDefaults：未注入时钟时的缺省路径（chat 清理链已随 chat_* 表退役）。
+func TestCodexNowDefaults(t *testing.T) {
 	codex := &CodexContextStore{}
 	if codex.now().IsZero() {
 		t.Fatalf("codex 缺省时钟不应为零值")

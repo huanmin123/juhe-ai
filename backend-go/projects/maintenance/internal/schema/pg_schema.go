@@ -72,15 +72,15 @@ type PGStatement struct {
 // postgresSchemaStatements holds every DDL statement of
 // collectPostgresSchemaStatements() in execution order (per-schema table
 // dependency order, then ALTER/DO phase, then CREATE FUNCTION blocks, then
-// indexes; schema groups in Node first-seen order: juhe_business, juhe_chat,
-// juhe_dataset, juhe_usage, juhe_stats, juhe_codex_context). The group
-// slices live in the pg_schema_<group>.go data files and are concatenated
-// below in that same Node first-seen order; the concatenation order is the
-// execution order and the only aggregation point.
+// indexes; schema groups in Node first-seen order: juhe_business,
+// juhe_dataset, juhe_usage, juhe_stats, juhe_codex_context。原 juhe_chat 组
+// 随 my-chat 会话面退役整体移除——11 张 chat_* 表不再进当前 schema，演练场
+// 设计 §8). The group slices live in the pg_schema_<group>.go data files and
+// are concatenated below in that same Node first-seen order; the
+// concatenation order is the execution order and the only aggregation point.
 var postgresSchemaStatements = slices.Concat(
 	postgresSchemaBusinessTables,
 	postgresSchemaBusinessIndexes,
-	postgresSchemaChat,
 	postgresSchemaDataset,
 	postgresSchemaUsage,
 	postgresSchemaStats,

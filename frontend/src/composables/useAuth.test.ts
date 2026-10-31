@@ -1,9 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/api/client'
-import { chatGenerationRuntime } from '@/views/chat/chatGenerationRuntime'
-import { clearChatPendingSubmission } from '@/views/chat/chatPendingSubmissionStorage'
-import { drainChatConversationSyncAccount, invalidateChatConversationSyncAccount } from '@/views/chat/chatConversationSync'
 import type { CurrentUserSummary } from '@/types/domain'
 import {
   authState,
@@ -27,23 +24,6 @@ vi.mock('@/api/client', () => ({
       updateProfile: vi.fn()
     }
   }
-}))
-
-vi.mock('@/views/chat/chatGenerationRuntime', () => ({
-  chatGenerationRuntime: { close: vi.fn() }
-}))
-
-vi.mock('@/views/chat/chatLocalCache', () => ({
-  getDefaultChatLocalCache: vi.fn(() => ({ clearAccount: vi.fn() }))
-}))
-
-vi.mock('@/views/chat/chatPendingSubmissionStorage', () => ({
-  clearChatPendingSubmission: vi.fn()
-}))
-
-vi.mock('@/views/chat/chatConversationSync', () => ({
-  invalidateChatConversationSyncAccount: vi.fn(),
-  drainChatConversationSyncAccount: vi.fn().mockResolvedValue(undefined)
 }))
 
 function user(partial: Partial<CurrentUserSummary> = {}): CurrentUserSummary {
@@ -135,51 +115,14 @@ describe('login / logout', () => {
     expect(api.auth.login).toHaveBeenCalledWith({ username: 'alice', password: 'pw' })
   })
 
-  it('logout 清理聊天状态并清空登录', async () => {
+  it('logout 成功后清空登录', async () => {
     const alice = user({ id: 'acc-1' })
     authState.currentUser.value = alice
     vi.mocked(api.auth.logout).mockResolvedValue({ loggedOut: true })
     await logout()
     expect(api.auth.logout).toHaveBeenCalledTimes(1)
-    expect(invalidateChatConversationSyncAccount).toHaveBeenCalledWith('acc-1')
-    expect(chatGenerationRuntime.close).toHaveBeenCalledWith('acc-1')
-    expect(clearChatPendingSubmission).toHaveBeenCalledWith(window.sessionStorage, 'acc-1')
-    expect(drainChatConversationSyncAccount).toHaveBeenCalledWith('acc-1')
     expect(authState.currentUser.value).toBeUndefined()
     expect(authState.authChecked.value).toBe(true)
-  })
-
-  it('sessionStorage 被禁用时 logout 仍完成本地注销并记录清理失败', async () => {
-    // BUG-0303：浏览器禁用存储策略时 sessionStorage getter 抛 SecurityError，
-    // 聊天清理失败不得阻断服务端注销成功后的本地注销。
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const securityError = new DOMException('session storage disabled', 'SecurityError')
-    const alice = user({ id: 'acc-1' })
-    authState.currentUser.value = alice
-    vi.mocked(api.auth.logout).mockResolvedValue({ loggedOut: true })
-    const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'sessionStorage')
-    Object.defineProperty(window, 'sessionStorage', {
-      configurable: true,
-      get() {
-        throw securityError
-      }
-    })
-    try {
-      await expect(logout()).resolves.toBeUndefined()
-    } finally {
-      if (originalDescriptor) {
-        Object.defineProperty(window, 'sessionStorage', originalDescriptor)
-      } else {
-        Reflect.deleteProperty(window, 'sessionStorage')
-      }
-    }
-    expect(api.auth.logout).toHaveBeenCalledTimes(1)
-    expect(authState.currentUser.value).toBeUndefined()
-    expect(authState.isLoggedIn.value).toBe(false)
-    expect(consoleError).toHaveBeenCalledTimes(1)
-    const [message, logged] = consoleError.mock.calls[0]
-    expect(typeof message).toBe('string')
-    expect(logged).toBe(securityError)
   })
 
   it('服务端注销失败时保留当前登录用户', async () => {
@@ -205,10 +148,8 @@ describe('login / logout', () => {
     expect(authState.currentUser.value).toEqual(replacement)
     releaseLogout({ loggedOut: true })
     await expect(staleLogout).resolves.toBeUndefined()
-    // 版本守卫生效：旧 logout 提前 return，新登录身份保留且聊天清理未执行。
+    // 版本守卫生效：旧 logout 提前 return，新登录身份保留。
     expect(authState.currentUser.value).toEqual(replacement)
-    expect(invalidateChatConversationSyncAccount).not.toHaveBeenCalled()
-    expect(chatGenerationRuntime.close).not.toHaveBeenCalled()
   })
 })
 

@@ -12,17 +12,21 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+	"weak"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -285,13 +289,16 @@ func TestChainFailureDispatcherDispatchesRequestFailureHealthCheck(t *testing.T)
 		t.Fatalf("per-request throttle failed: rows = %d", rows)
 	}
 
-	// failed-response 分支：无显式决策（500 普通失败）→ 派发。
+	// failed-response 分支：无显式决策（500 普通失败）→ 派发。用独立请求
+	// （不同逻辑请求）：同请求的该分支被请求级节流吸收——文件头契约（Node
+	// dispatched Symbol 使 transport 与 failed-response 分支不重复派发），
+	// 独立请求才能验证本分支自身的可派发性。
 	failedFixture := newHealthOutboxFixture(t, 65_000)
 	failedDispatcher := &chainFailureDispatcher{healthDispatch: failedFixture.dispatcher()}
 	opaque := gatewayFailedResponseInput(
 		failureDispatchUpstreamResponse(t, http.StatusInternalServerError, "application/json", `{"error":{"message":"boom"}}`),
 		&failureDispatchAuditSink{}, "gateway")
-	opaque.Req = input.Req
+	opaque.Req = gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil))
 	if _, err := failedDispatcher.HandleFailedUpstreamResponse(context.Background(), opaque); err != nil {
 		t.Fatalf("opaque failure: %v", err)
 	}
@@ -300,7 +307,8 @@ func TestChainFailureDispatcherDispatchesRequestFailureHealthCheck(t *testing.T)
 	}
 
 	// system quota 决策（402 + insufficient_quota）→ 不派发：探活不得与
-	// 显式错误状态竞争（failure-dispatch.ts:396-404 注释）。
+	// 显式错误状态竞争（failure-dispatch.ts:396-404 注释）。独立请求验证：
+	// 阻断必须来自 system 规则本身，不得被请求级节流抢答。
 	systemFixture := newHealthOutboxFixture(t, 65_000)
 	if err := systemFixture.writer.ensureSchema(context.Background()); err != nil {
 		t.Fatalf("ensure system fixture schema: %v", err)
@@ -310,13 +318,181 @@ func TestChainFailureDispatcherDispatchesRequestFailureHealthCheck(t *testing.T)
 		failureDispatchUpstreamResponse(t, http.StatusPaymentRequired, "application/json",
 			`{"error":{"code":"insufficient_quota","message":"insufficient quota"}}`),
 		&failureDispatchAuditSink{}, "gateway")
-	systemInput.Req = input.Req
+	systemInput.Req = gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil))
 	systemInput.Settings = gatewayruntimecache.GatewaySettings{DefaultTemporaryUnschedulableMinutes: 30}
 	if _, err := systemDispatcher.HandleFailedUpstreamResponse(context.Background(), systemInput); err != nil {
 		t.Fatalf("system quota failure: %v", err)
 	}
 	if rows := systemFixture.count(t); rows != 0 {
 		t.Fatalf("system-quota decision must not dispatch, rows = %d", rows)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 请求级生效开关 memo（DD-B7）：rejected 派发不消耗标记，同请求每个失败候选
+// 都会走到开关守卫——开关 SELECT 按请求级 memo 去重（同请求同账户只查一次）；
+// 读取失败不缓存；weak 注册表随请求 GC（BUG-0339 强键形态禁止回归）。
+// ---------------------------------------------------------------------------
+
+// TestChainRequestFailureProbeSwitchMemoPerRequest：同请求两个失败候选同一
+// 关闭账户 → 生效开关 SELECT 只执行一次（注入计数桩），两次均按
+// probe_skipped_disabled 拒绝且不消耗标记；不同账户是不同 memo 键（同开关
+// 状态也各读一次）；跨请求不命中（无跨请求缓存、无 TTL）。
+func TestChainRequestFailureProbeSwitchMemoPerRequest(t *testing.T) {
+	fixture := newBackgroundProbeGateFixture(t, 65_000)
+	reads := 0
+	fixture.writer.readBackgroundProbeSwitch = func(_ context.Context, _ string) (bool, error) {
+		reads++
+		return true, nil // 生效开关已关闭 → 每个失败候选按 probe_skipped_disabled 拒绝
+	}
+	dispatcher := fixture.dispatcher()
+	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil))
+
+	if dispatcher.DispatchRequestFailureAccountHealthCheck(req, gatewayTrafficSource, "acc_off") {
+		t.Fatal("disabled account must not dispatch")
+	}
+	if dispatcher.DispatchRequestFailureAccountHealthCheck(req, gatewayTrafficSource, "acc_off") {
+		t.Fatal("second disabled candidate must not dispatch either")
+	}
+	if req.RequestFailureHealthCheckDispatched() {
+		t.Fatal("rejected dispatches must not mark the request")
+	}
+	if reads != 1 {
+		t.Fatalf("switch SELECTs = %d want 1 (per-request memo dedupes failed candidates)", reads)
+	}
+	if rows := fixture.count(t); rows != 0 {
+		t.Fatalf("rejected candidates must not write rows, rows=%d", rows)
+	}
+
+	// 不同账户是不同 memo 键：开关状态相同也各自读一次。
+	if dispatcher.DispatchRequestFailureAccountHealthCheck(req, gatewayTrafficSource, "acc_off_2") {
+		t.Fatal("second disabled account must not dispatch")
+	}
+	if reads != 2 {
+		t.Fatalf("switch SELECTs after a different account = %d want 2 (memo keyed by account id)", reads)
+	}
+
+	// 跨请求不命中：新请求的首次失败候选重新读开关。
+	other := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil))
+	if dispatcher.DispatchRequestFailureAccountHealthCheck(other, gatewayTrafficSource, "acc_off") {
+		t.Fatal("disabled account must not dispatch on the other request")
+	}
+	if reads != 3 {
+		t.Fatalf("switch SELECTs on a new request = %d want 3 (no cross-request cache)", reads)
+	}
+}
+
+// TestChainProbeRequestOutboxMemoErrorNotCached：读取失败不写 memo（保守：
+// 同一 memo 下次重查）；memo 命中不改任何状态写入（outbox INSERT 每次照常
+// 落行）；键为归一化账户 id（前后空白同账户命中同一 memo）。
+func TestChainProbeRequestOutboxMemoErrorNotCached(t *testing.T) {
+	fixture := newBackgroundProbeGateFixture(t, 65_000)
+	ctx := context.Background()
+	reads := 0
+	fail := true
+	fixture.writer.readBackgroundProbeSwitch = func(_ context.Context, _ string) (bool, error) {
+		reads++
+		if fail {
+			return false, errors.New("probe switch read failed")
+		}
+		return false, nil // 生效开关开启 → 照常投递
+	}
+	memo := &chainProbeSwitchMemo{}
+
+	// 第一次：读取失败 → fail-open 照常投递（既有契约），错误不写 memo。
+	if got := fixture.writer.EnqueueProbeRequestWithMemo(ctx, memo, "acc_m", chainRequestFailureReason, "", nil); got.Outcome != gatewaycodex.HealthDispatchQueued {
+		t.Fatalf("fail-open dispatch outcome = %#v", got)
+	}
+	if reads != 1 {
+		t.Fatalf("reads after the failed read = %d want 1", reads)
+	}
+
+	// 第二次：同一 memo → 再次读开关（失败未缓存），成功后写入 memo；第二
+	// 次 INSERT 照常落行。
+	fail = false
+	if got := fixture.writer.EnqueueProbeRequestWithMemo(ctx, memo, "acc_m", chainRequestFailureReason, "", nil); got.Outcome != gatewaycodex.HealthDispatchQueued {
+		t.Fatalf("second dispatch outcome = %#v", got)
+	}
+	if reads != 2 {
+		t.Fatalf("reads = %d want 2 (a failed read must not be cached)", reads)
+	}
+
+	// 第三次：同 memo 同账户 → memo 命中不读开关；INSERT 照常（memo 只缓存
+	// 只读投影，不改任何状态写入）。
+	if got := fixture.writer.EnqueueProbeRequestWithMemo(ctx, memo, "acc_m", chainRequestFailureReason, "", nil); got.Outcome != gatewaycodex.HealthDispatchQueued {
+		t.Fatalf("memo-hit dispatch outcome = %#v", got)
+	}
+	if reads != 2 {
+		t.Fatalf("reads after memo hit = %d want 2", reads)
+	}
+	if rows := fixture.count(t); rows != 3 {
+		t.Fatalf("rows = %d want 3 (memo must not dedupe outbox inserts)", rows)
+	}
+
+	// 归一化键：前后空白同账户命中同一 memo。
+	if got := fixture.writer.EnqueueProbeRequestWithMemo(ctx, memo, "  acc_m  ", chainRequestFailureReason, "", nil); got.Outcome != gatewaycodex.HealthDispatchQueued {
+		t.Fatalf("normalized memo dispatch outcome = %#v", got)
+	}
+	if reads != 2 {
+		t.Fatalf("reads after normalized id = %d want 2 (memo keyed by normalized account id)", reads)
+	}
+	if rows := fixture.count(t); rows != 4 {
+		t.Fatalf("rows = %d want 4", rows)
+	}
+}
+
+// TestChainProbeSwitchMemoRegistryWeakLifecycle：memo 注册表的 BUG-0339 防
+// 复发——weak 键不钉请求（2MB RawBody 放大，与 retention 回归同款），请求
+// 被 GC 后条目失效；注册表越过阈值时的惰性清扫回收 dead 条目，进程内存有界。
+func TestChainProbeSwitchMemoRegistryWeakLifecycle(t *testing.T) {
+	fixture := newBackgroundProbeGateFixture(t, 65_000)
+	fixture.writer.readBackgroundProbeSwitch = func(_ context.Context, _ string) (bool, error) {
+		return true, nil
+	}
+	dispatcher := fixture.dispatcher()
+	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil))
+	req.Body = &gatewaybody.Request{RawBody: make([]byte, 2<<20)}
+
+	if dispatcher.DispatchRequestFailureAccountHealthCheck(req, gatewayTrafficSource, "acc_off") {
+		t.Fatal("disabled account must not dispatch")
+	}
+	memo := dispatcher.memos.memoFor(req)
+	if memo == nil {
+		t.Fatal("request memo must exist after a dispatch")
+	}
+	if memo != dispatcher.memos.memoFor(req) {
+		t.Fatal("the same request must resolve to one memo")
+	}
+	key := weak.Make(req)
+	if _, ok := dispatcher.memos.entries[key]; !ok {
+		t.Fatal("memo entry missing from the registry")
+	}
+
+	// 释放请求：weak 键不得钉住请求（BUG-0339 复发即 Value 永不为 nil）。
+	req = nil
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		if key.Value() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if key.Value() != nil {
+		t.Fatal("weak-keyed memo entry pins the request (BUG-0339 regression)")
+	}
+
+	// 阈值惰性清扫：填满注册表触发 sweep，dead 条目被回收、内存有界。
+	for i := 0; i < chainProbeSwitchMemoSweepThreshold+1; i++ {
+		dispatcher.memos.memoFor(gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil)))
+	}
+	runtime.GC()
+	fresh := dispatcher.memos.memoFor(gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil)))
+	if fresh == nil {
+		t.Fatal("fresh memo must be created")
+	}
+	if _, ok := dispatcher.memos.entries[key]; ok {
+		t.Fatal("dead memo entry must be swept once the registry crosses the threshold")
 	}
 }
 

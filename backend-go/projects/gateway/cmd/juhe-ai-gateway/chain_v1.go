@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,8 +135,20 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// E2E-FINDING #6：门面是三协议并集（Node isGatewayProtocolRequest），
 	// anthropic / gemini native 面放行进同一条分发链。
 	req := gatewaypreauth.NewGatewayRequest(r)
+	// DD-C6：桥接流 usage 结算载体安装（WithContext 重建请求对象，context 值
+	// 链式保留；与下方 req.HTTP = r 先例同型）。桥转换面（chain_bridge_response.go）
+	// 每 attempt 换入本次快照槽，handleUpstreamResponse 经 supplier 交
+	// finalization 消费。
+	r = chainBridgeUsageCarrierInstall(r)
+	req.HTTP = r
 	if !gatewayIsProtocolRequest(req) {
 		if c.compat != nil {
+			// DD-A2：三族路由的协议门前置是可达性意图（见 gatewayChain.compat
+			// 注释），不豁免入口保护——进入 compat 前与 preauth 管道同源执行
+			// 缓存态客户端 IP 黑名单与认证前熔断两项检查。
+			if c.rejectCompatEntryBySourceGuards(w, req) {
+				return
+			}
 			c.compat.ServeHTTP(w, r)
 			return
 		}
@@ -679,6 +692,10 @@ func (c *gatewayChain) handleUpstreamResponse(
 		Account:          gatewayresponse.OpenAIAccountView{Account: dispatched.Account},
 		UpstreamResponse: responseSnapshot,
 		UpstreamURL:      dispatched.UpstreamURL,
+		// DD-C6：桥接流 usage 快照供给（桥泵完成时写入当前 attempt 槽）。nil
+		// supplier（未装载体）与无快照（本次 attempt 非桥接 / 上游未发 usage）
+		// 时结算链保持 inspector/估算兜底既有路径。
+		BridgeUsage: chainBridgeUsageCarrierOf(req.HTTP).supplier(),
 		// BUG-0289：带出本次 attempt 实际发送的请求体（引擎
 		// UpstreamDispatchResult.RequestBody，attemptoutcomes.go:63/:201 由
 		// c.loop.body 填充）。该 body 在 dispatchsingle.go:397 取自
@@ -1086,6 +1103,138 @@ func requestClientIP(req *gatewaypreauth.GatewayRequest) string {
 		return ip
 	}
 	return ""
+}
+
+// rejectCompatEntryBySourceGuards 是 openai-compatible 三族（files /
+// containers / vector_stores）协议门前置入口（DD-A2）的来源保护：这些族为
+// 可达性有意排在协议门之前（见 gatewayChain.compat 注释），但排序意图不豁
+// 免入口保护——这里与 preauth 管道同源执行两项检查，判定复用 preauth 服务
+// 端口本体（IPPolicy.InspectClientIPPolicy cacheOnly=true 与
+// Circuits.InspectPreAuthCircuit，检查顺序对齐 ResolveGatewayRuntimeAsync：
+// 黑名单在前、熔断在后），IP 来源与主链同源（requestClientIP：kernel XFF
+// 解析优先）；响应契约（Connection: close、Retry-After、状态码、文案与
+// Extra 字段）逐字段对齐 preauth.go 的 sendClientIPBlacklistResponse /
+// sendPreAuthCircuitResponse。审计失败文案照 preauth setGatewayAuthFailureAudit
+// 写回 GatewayRequest 字段。黑名单检查服务错误静默放行（与主链
+// rejectCachedClientIPBlacklist 同口径）；熔断检查服务错误 fail-closed（与主
+// 链 ResolveGatewayRuntimeAsync 的上抛 + handleOrchestratorError 渲染同口径，
+// DD-RC-C3）。返回 true 表示已写响应并短路。
+func (c *gatewayChain) rejectCompatEntryBySourceGuards(w http.ResponseWriter, req *gatewaypreauth.GatewayRequest) bool {
+	if c == nil || c.preauth == nil || req == nil {
+		return false
+	}
+	res := gatewaypreauth.NewTrackingWriter(w)
+	req.ClientIP = requestClientIP(req)
+	clientIP := req.ClientIP
+	ctx := context.Background()
+	if req.HTTP != nil {
+		ctx = req.HTTP.Context()
+	}
+	endpoint := gatewaypreauth.RequestEndpoint(req)
+	// ---- 客户端 IP 黑名单（同 rejectCachedClientIPBlacklist，cacheOnly=true）----
+	ipPolicyDecision, err := c.preauth.IPPolicy.InspectClientIPPolicy(ctx, clientIP, true)
+	if err == nil && ipPolicyDecision.Blocked && ipPolicyDecision.BlacklistPolicy != nil {
+		blacklistPolicy := *ipPolicyDecision.BlacklistPolicy
+		c.preauth.Observability.Logger().Warn("gateway_client_ip_blacklist_blocked", map[string]any{
+			"policyId": blacklistPolicy.ID,
+			"ipHash":   blacklistPolicy.IPHash,
+			"endpoint": endpoint,
+		}, "网关来源 IP 命中管理员封禁")
+		c.preauth.IPPolicy.RecordClientIPPolicyHit(blacklistPolicy)
+		if !res.HeadersSent() {
+			res.Header().Set("Connection", "close")
+		}
+		clientIPText := ""
+		aggregateIPKey := ""
+		if ipPolicyDecision.NormalizedIP != nil {
+			clientIPText = ipPolicyDecision.NormalizedIP.ClientIP
+			aggregateIPKey = ipPolicyDecision.NormalizedIP.AggregateIPKey
+		}
+		if clientIPText == "" {
+			clientIPText = blacklistPolicy.ClientIP
+		}
+		if aggregateIPKey == "" {
+			aggregateIPKey = blacklistPolicy.AggregateIPKey
+		}
+		ipText := chainCompatBlacklistIPMessage(clientIPText, aggregateIPKey)
+		message := ""
+		if blacklistPolicy.Reason != "" {
+			message = "当前来源" + ipText + "已被管理员封禁：" + blacklistPolicy.Reason
+		} else {
+			message = "当前来源" + ipText + "已被管理员封禁"
+		}
+		req.AuthFailureErrorMessage = message
+		req.AuthFailureErrorCode = "client_ip_blacklisted"
+		payload := gatewaypreauth.GatewayErrorPayloadOf(message, "forbidden", "client_ip_blacklisted")
+		if clientIPText != "" {
+			if payload.Error.Extra == nil {
+				payload.Error.Extra = map[string]any{}
+			}
+			payload.Error.Extra["client_ip"] = clientIPText
+		}
+		if aggregateIPKey != "" && aggregateIPKey != clientIPText {
+			if payload.Error.Extra == nil {
+				payload.Error.Extra = map[string]any{}
+			}
+			payload.Error.Extra["aggregate_ip_key"] = aggregateIPKey
+		}
+		gatewaypreauth.SendGatewayJSONError(res, http.StatusForbidden, payload, gatewaypreauth.SendGatewayErrorOptions{})
+		return true
+	}
+	// ---- 认证前熔断（同 ResolveGatewayRuntimeAsync 的 InspectPreAuthCircuit）----
+	authorization := req.Header("authorization")
+	preAuthDecision, err := c.preauth.Circuits.InspectPreAuthCircuit(ctx, gatewaypreauth.PreAuthCircuitInput{
+		ClientIP:      clientIP,
+		Authorization: c.preauth.GatewayPreAuthSource(req, authorization),
+	})
+	// DD-RC-C3：熔断服务 err（存储不可用窗口）与主链同口径 fail-closed——
+	// ResolveGatewayRuntimeAsync 对同一 err 原样上抛（preauth.go 的
+	// InspectPreAuthCircuit 臂），主链经 handleOrchestratorError 渲染（db 不可
+	// 用 503 / 其余 500 + 根因日志与 failureReason）。compat 入口复用同一渲染
+	// 出口，不新造错误契约；此前 err 静默放行使 /v1/files 三族在熔断存储故障
+	// 窗口内失去来源保护。黑名单 err 保持放行（上方 err == nil 守卫，与主链
+	// rejectCachedClientIPBlacklist 同口径）。
+	if err != nil {
+		c.handleOrchestratorError(err, req, res, nowMillis(), endpoint)
+		return true
+	}
+	if !preAuthDecision.Blocked {
+		return false
+	}
+	c.preauth.Observability.Logger().Warn("gateway_pre_auth_error_circuit_blocked", map[string]any{
+		"reason":            preAuthDecision.Reason,
+		"retryAfterSeconds": preAuthDecision.RetryAfterSeconds,
+		"failureCount":      preAuthDecision.FailureCount,
+		"endpoint":          endpoint,
+	}, "网关认证前来源保护已短路请求")
+	if preAuthDecision.RetryAfterSeconds != nil && !res.HeadersSent() {
+		res.Header().Set("Retry-After", strconv.FormatInt(*preAuthDecision.RetryAfterSeconds, 10))
+	}
+	message := "当前来源短时间认证失败过多，请稍后重试"
+	req.AuthFailureErrorMessage = message
+	req.AuthFailureErrorCode = "client_ip_pre_auth_circuit_open"
+	gatewaypreauth.SendGatewayJSONError(res, http.StatusTooManyRequests,
+		gatewaypreauth.GatewayErrorPayloadOf(message, "rate_limit_exceeded", "client_ip_pre_auth_circuit_open"),
+		gatewaypreauth.SendGatewayErrorOptions{})
+	return true
+}
+
+// chainCompatBlacklistIPMessage mirrors gatewaypreauth 的 blacklistIPMessage
+// 拼装（私有，main 包按字面复刻以保持文案契约一致）。
+func chainCompatBlacklistIPMessage(clientIP, aggregateIPKey string) string {
+	displayIP := strings.TrimSpace(clientIP)
+	displayRange := strings.TrimSpace(aggregateIPKey)
+	if displayIP == "" && displayRange == "" {
+		return ""
+	}
+	if displayIP != "" && displayRange != "" && displayIP != displayRange {
+		return " IP " + displayIP + "（封禁范围：" + displayRange + "）"
+	}
+	value := displayIP
+	if value == "" {
+		value = displayRange
+	}
+	return " IP " + value
 }
 
 // usageRequestSnapshotOf mirrors buildUsageRequestSnapshot.

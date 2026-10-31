@@ -39,7 +39,6 @@ var nodeScheduledJobNames = []string{
 	"account-circuit-recovery",
 	"key-model-memory-recovery",
 	"data-retention-cleanup",
-	"chat-retention-cleanup",
 	"expired-deleted-account-cleanup",
 }
 

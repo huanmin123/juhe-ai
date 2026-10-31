@@ -115,9 +115,11 @@ import (
 // （models-capability-declaration-pg-columns 组三条幂等 ALTER；建表 DDL 原位
 // 加列不另计语句）。678→679：AI 账户后台自动探测总开关批（W1 存储列）——
 // juhe_business +1（account-background-probe-pg-column 幂等 ALTER；建表 DDL
-// 原位加列不另计语句）。
+// 原位加列不另计语句）。679→627：my-chat 会话面退役批（演练场设计 §8）——
+// juhe_chat 组 52 条 DDL 整组移除（pg_schema_chat.go 删除；chat_* 11 表不再
+// 进当前 schema，dev 清库/生产备份后 drop 由维护窗口另行授权）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 679
+const goldenPostgresSchemaStatementCount = 627
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -139,7 +141,8 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 317→320：models 能力声明三列批（T82 根治）+3（三条幂等 ALTER）。
 	// 320→321：后台自动探测总开关批 +1（account-background-probe-pg-column）。
 	"juhe_business": 321,
-	"juhe_chat":     52,
+	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
+	// 移除，schema 不再保留。
 	"juhe_dataset":  7,
 	"juhe_usage":    54,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
@@ -156,7 +159,6 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 // also the CREATE SCHEMA execution order.
 var goldenPostgresSchemaNameOrder = []string{
 	"juhe_business",
-	"juhe_chat",
 	"juhe_dataset",
 	"juhe_usage",
 	"juhe_stats",
@@ -269,17 +271,20 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 业务 9——调度偏好 enabled 1 条 + B4① provider 维度 6 条 + B4 两表收尾
 	// provider_protocol_profile_id 2 条；codex 3——三表 provider_code），
 	// 当前 schema 无删列语句）、1 条 CREATE EXTENSION、2 个含
-	// CREATE TRIGGER 的语句块。
-	if alterColumns != 106 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 106", alterColumns)
+	// CREATE TRIGGER 的语句块。106→92：my-chat 会话面退役批（演练场设计 §8）
+	// 移除 juhe_chat 组 14 条 ALTER TABLE ADD COLUMN（chat_conversations 绑定
+	// 列 8 + 语义列 2、chat_user_tool_preferences 4）。
+	if alterColumns != 92 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 92", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。
 	if droppedColumns != 0 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 0 (B08 removed all 12 idempotent DROP COLUMN statements on 2026-10-30)", droppedColumns)
 	}
-	if doBlocks != 6 {
-		t.Fatalf("DO block count = %d, want 6", doBlocks)
+	// 6→5：juhe_chat 组的 DO 块随 my-chat 会话面退役（演练场设计 §8）。
+	if doBlocks != 5 {
+		t.Fatalf("DO block count = %d, want 5", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)
@@ -698,6 +703,6 @@ func ctxWithTimeout(t *testing.T) context.Context {
 
 func countPGSmokeTables(ctx context.Context, db *sql.DB) (int, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema IN ('juhe_business', 'juhe_chat', 'juhe_dataset', 'juhe_usage', 'juhe_stats', 'juhe_codex_context')`).Scan(&count)
+	err := db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema IN ('juhe_business', 'juhe_dataset', 'juhe_usage', 'juhe_stats', 'juhe_codex_context')`).Scan(&count)
 	return count, err
 }

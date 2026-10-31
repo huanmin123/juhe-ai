@@ -1,7 +1,6 @@
 package cleanuprepo
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -20,22 +19,14 @@ func TestW12EPostgresMultiRowPlaceholders(t *testing.T) {
 	}
 }
 
-// TestW12EChatPartitionHelpers：分区名解析与随机回退臂。
-func TestW12EChatPartitionHelpers(t *testing.T) {
-	// newRandomHex32 已由 w10e 覆盖主路径；此处覆盖 chat.go 的
-	// parseInstantMust（非法输入回落零值）。
-	if !parseInstantMust(kitUpdatedAt).IsZero() {
-		if got := parseInstantMust(kitUpdatedAt).Unix(); got != kitNow().Unix() {
-			t.Fatalf("parseInstantMust = %v", got)
-		}
-	}
+// TestW12EParseInstantMust：非法输入回落零值臂。（分区名解析已随 chat_* 表
+// 退役移除，演练场设计 §8；parseInstantMust 现居 rowscan.go。）
+func TestW12EParseInstantMust(t *testing.T) {
 	if !parseInstantMust("bad").IsZero() {
 		t.Fatalf("非法时间应回落零值")
 	}
-	if chatPartitionNamePattern.MatchString("nope") {
-		t.Fatalf("非法分区名不应匹配")
-	}
-	if !strings.Contains("chat_messages_20260101", "chat_messages_") {
-		t.Fatalf("前缀断言失败")
+	parsed := parseInstantMust(kitUpdatedAt)
+	if parsed.IsZero() {
+		t.Fatalf("合法时间不应为零值")
 	}
 }

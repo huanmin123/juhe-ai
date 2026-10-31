@@ -551,7 +551,7 @@ function handleFormSaved(payload: ProviderModelFormSavedPayload): void {
 }
 
 /** 接入事实存在性（基础信息 section 门控的第二支）：无 catalogDisplay 非价格
- * 分组但有协议/模态事实的行仍显示基础信息网格。工具矩阵属 AI 问答搜索绑定的
+ * 分组但有协议/模态事实的行仍显示基础信息网格。工具矩阵属网关工具注入的
  * 内部机制数据，不在抽屉展示。 */
 function hasModelAccessInfo(record: ProviderModelPricing): boolean {
   return Boolean(

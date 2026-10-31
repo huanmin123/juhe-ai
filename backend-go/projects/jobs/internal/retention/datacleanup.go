@@ -198,10 +198,6 @@ func (missingStatsWriter) UpsertAccountUsageSnapshots(context.Context, []Account
 
 type missingDbService struct{}
 
-func (missingDbService) CleanupChatRetention(context.Context, ChatRetentionInput) (*ChatRetentionResult, error) {
-	return nil, errors.New("retention db service 未初始化")
-}
-
 func (missingDbService) CleanupExpiredSystemSessions(context.Context, string, int) (int64, error) {
 	return 0, errors.New("retention db service 未初始化")
 }

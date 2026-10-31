@@ -133,12 +133,11 @@ func startChainFixtureWithUpstream(t *testing.T, upstreamHandler http.HandlerFun
 	}
 
 	// 2026-10-07 默认资源收口：seed 只保留 GPT 分组 + GPT 默认路由 + GPT
-	// 默认 Key；chat key 不再随 seed 预置。免 Key 直调（W-B）后 AI 问答会话
-	// 创建链也不再补建任何 API Key——此处走 my-chat provision 端点验证创建
-	// 正常后再读取 seed 默认 key。
+	// 默认 Key；chat key 不再随 seed 预置。my-chat 会话面已随演练场设计 §8
+	// 整体退役——端点必须 404，且任何路径都不再补建 purpose='chat' Key。
 	admin.do(http.MethodPost, "/__aisys__/api/my-chat/conversations",
 		map[string]any{"bindMode": "group", "groupId": "grp_default_gpt_sys_admin"},
-		wantStatus(http.StatusCreated))
+		wantStatus(http.StatusNotFound))
 	// seed 默认 key（maintenance seed 的 is_default key，绑定 seed 默认
 	// 策略 route_strategy_default_gpt_sys_admin）；chat key 已随免 Key 直调
 	// 退场，不再出现。
@@ -164,10 +163,9 @@ func startChainFixtureWithUpstream(t *testing.T, upstreamHandler http.HandlerFun
 	if defaultKeyID == "" {
 		t.Fatalf("seed default key missing: %#v", listPayload)
 	}
-	// 免 Key 直调契约（AI 问答免 Key 直调内部通道 §3.2）：AI 问答不再创建任何
-	// purpose='chat' 的 Key，API Key 列表不得出现该行；上面 my-chat 会话创建
-	// 已走过生产 provision 路径，这一断言同时覆盖「会话创建会自愈补建 Key」的
-	// 历史行为已删除。
+	// 免 Key 直调契约（AI 问答免 Key 直调内部通道 §3.2）：任何路径都不再创建
+	// purpose='chat' 的 Key，API Key 列表不得出现该行（历史「会话创建自愈补建
+	// Key」行为已随 my-chat 会话面退役消灭）。
 	if chatKeyID != "" {
 		t.Fatalf("purpose=chat api key must not exist after de-Key migration: %#v", listPayload)
 	}
