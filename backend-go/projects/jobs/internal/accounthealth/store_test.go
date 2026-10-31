@@ -19,9 +19,8 @@ func TestPostgresSchemaDoesNotCreateDatabaseSchema(t *testing.T) {
 func TestPostgresSchemaDropsAiHealthOutcomeFatPayloadIndex(t *testing.T) {
 	// The fat INCLUDE (payload) partial index served the gateway's legacy
 	// per-hour LATERAL probe read path; since 2026-10-29 the gateway reads
-	// entity columns through one narrow ranged SELECT, so the schema must
-	// drop the fat index on existing deployments and keep the plain range
-	// index that serves the new read.
+	// entity columns through one narrow ranged SELECT. Both retired indexes
+	// must only ever be dropped for existing deployments, never recreated.
 	if strings.Contains(postgresSchema, "idx_account_health_outcomes_account_observed_non_stale") &&
 		!strings.Contains(postgresSchema, "DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed_non_stale") {
 		t.Fatal("fat payload index must not be created anymore; it may only be dropped for existing deployments")
@@ -32,8 +31,48 @@ func TestPostgresSchemaDropsAiHealthOutcomeFatPayloadIndex(t *testing.T) {
 	if !strings.Contains(postgresSchema, "DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed_non_stale") {
 		t.Fatal("PostgreSQL J1 jobs schema must actively drop the retired fat index on existing deployments")
 	}
-	if !strings.Contains(postgresSchema, "CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC)") {
-		t.Fatal("plain account/time range index must remain for the ranged AI health read")
+}
+
+func TestPostgresSchemaServesAiHealthReadWithIndexOnlyCoveringIndex(t *testing.T) {
+	// The ranged ai-health read projects every entity column including
+	// next_due_at, so a plain (account_id, observed_at) index forces per-row
+	// heap fetches — on the production host's slow disk a cold-cache first
+	// page open exceeded the 5s read budget twice (2026-10-31). The covering
+	// index carries the whole projection as plain columns so the planner can
+	// serve the read via an index-only scan. next_due_at must be a real
+	// column: PostgreSQL cannot produce an index-only scan that outputs an
+	// indexed expression ((payload->>'next_due_at') as an index key was
+	// tried and empirically fell back to per-row heap scans on the live
+	// system), so the schema adds the column, the writer dual-writes it, and
+	// legacy NULL rows self-heal through the merge layer's existing fallback.
+	// All retired indexes are only ever dropped for existing deployments.
+	if !strings.Contains(postgresSchema, "ALTER TABLE juhe_jobs.account_health_outcomes ADD COLUMN IF NOT EXISTS next_due_at TIMESTAMPTZ;") {
+		t.Fatal("next_due_at must exist as a real column: index-only scans cannot output indexed expressions")
+	}
+	want := "CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_read_cover ON juhe_jobs.account_health_outcomes(account_id, observed_at) INCLUDE (outcome_id, request_id, outcome, status_code, error_code, error_message, next_due_at)"
+	if !strings.Contains(postgresSchema, want) {
+		t.Fatal("PostgreSQL schema must carry the index-only covering index for the ranged ai-health read")
+	}
+	// Trailing semicolons pin exact statements: retired-name drops are prefix
+	// substrings of one another (account_observed_non_stale contains
+	// account_observed).
+	for _, dropped := range []string{
+		"DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_read;",
+		"DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed;",
+		"DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed_non_stale;",
+	} {
+		if !strings.Contains(postgresSchema, dropped) {
+			t.Fatalf("retired index must be dropped on existing deployments: %s", dropped)
+		}
+	}
+	for _, banned := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_read ON",
+		"CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON",
+		"(payload->>'next_due_at')",
+	} {
+		if strings.Contains(postgresSchema, banned) {
+			t.Fatalf("retired index shape must not be recreated (%q)", banned)
+		}
 	}
 }
 

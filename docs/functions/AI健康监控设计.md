@@ -141,7 +141,8 @@ GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 - 查询只读取当前页账户，不加载全部账户后前端分页。
 - 小时结果通过账户 ID 分块批量查询，禁止逐账户查询。
 - 列表小时查询只投影 `account_id / stat_hour / status / last_observed_at / source_order`；状态码和错误正文只允许单点详情查询读取。
-- PostgreSQL J1 列表结果按账户与时间窗做单次范围读取，只投影实体列（`next_due_at` 无实体列，从 payload 取单键），不回传探针 payload 正文；「同一小时取最新非 `stale` outcome」由合并层的 latest-wins 语义承担（同 `observed_at` 时取 `outcome_id` 较大者）。详情读取保留单个小时语义。
+- PostgreSQL J1 列表结果按账户与时间窗做单次范围读取，只投影实体列，不回传探针 payload 正文；「同一小时取最新非 `stale` outcome」由合并层的 latest-wins 语义承担（同 `observed_at` 时取 `outcome_id` 较大者）。详情读取保留单个小时语义。
+- 读面载体（2026-10-31）：jobs 写侧把 `next_due_at` 与 payload 单键**双写**（payload 键保留供旧版 gateway 滚动窗口读取），`juhe_jobs.account_health_outcomes.next_due_at` 成为实体列；覆盖索引 `idx_account_health_outcomes_read_cover (account_id, observed_at) INCLUDE (全部读面投影列)` 使该读面走 Index Only Scan——此前 payload 单键投影迫使逐行回表，慢盘冷缓存首开曾 2×5s 读预算超时。PG 无法对表达式索引列做 IOS 输出（生产 EXPLAIN 实证），实体列是唯一可行形态。存量行该列为 NULL，读面由合并层既有 fallback 回退 `accounts.next_health_check_at`，探针每小时重写自愈，不做回填。旧普通范围索引与表达式键试验索引由 jobs schema 幂等退役。
 - 状态条使用 Canvas；页面不为小时点创建大量组件或监听器。
 - 原始使用记录继续由 stats worker 增量聚合，接口请求不做临时统计。
 

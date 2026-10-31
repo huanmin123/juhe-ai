@@ -496,16 +496,21 @@ func (d *Deps) j1PostgresOutcomesForAccounts(ctx context.Context, accountIds []s
 
 // 单次范围读取替代旧 LATERAL 逐小时探测：「每账户每小时取最新非 stale」的
 // 语义由 Go 合并层（j1OutcomeHealthRows / newestJ1OutcomeHourRow）本就实现的
-// latest-wins 承担；SQL 只需按窗口取回全部候选行。投影读实体列，仅
-// next_due_at 无实体列、从 payload 取单键——旧实现整份回传 payload，且
-// payload 键形（snake_case）与旧解码结构体 tag（camelCase）不匹配，生产行
-// 在合并层被静默丢弃。ORDER BY ASC + 合并层 >= last-wins 精确复刻旧的
-// 「observed_at DESC, outcome_id DESC LIMIT 1」胜者（同 observed_at 取更大
-// outcome_id）。status_code 是 INTEGER 列：pgx stdlib 扫描本就把 int4 转
-// int64（nullNumber 的 int64 分支恒可命中），::bigint cast 把这一依赖显式
-// 固化在 SQL 侧，防驱动行为变化。storage_observed_at 投影用 timezone('UTC', observed_at)，
-// 与旧写法 observed_at AT TIME ZONE 'UTC' 是同一函数调用（timestamptz →
-// UTC 墙钟），行为零变化。
+// latest-wins 承担；SQL 只需按窗口取回全部候选行。投影读实体列。next_due_at
+// 2026-10-31 起是 jobs 落列的实体列（写侧与 payload 单键双写，读侧只取列），
+// 不再从 payload 提取：PG 无法对表达式索引列做 Index Only Scan 输出，payload
+// 单键投影使该读面在覆盖索引下仍逐行回表，慢盘冷缓存首开曾 2×5s 读预算超时；
+// 改列后全部投影都在覆盖索引 idx_account_health_outcomes_read_cover 内，读面
+// 走 Index Only Scan。存量行该列为 NULL，合并层按既有 fallback 回退
+// accounts.next_health_check_at（探针每小时重写，窗口自愈），无需回填。
+// 历史注记：旧实现整份回传 payload，且 payload 键形（snake_case）与旧解码
+// 结构体 tag（camelCase）不匹配，生产行曾在合并层被静默丢弃。ORDER BY ASC +
+// 合并层 >= last-wins 精确复刻旧的「observed_at DESC, outcome_id DESC LIMIT 1」
+// 胜者（同 observed_at 取更大 outcome_id）。status_code 是 INTEGER 列：pgx
+// stdlib 扫描本就把 int4 转 int64（nullNumber 的 int64 分支恒可命中），::bigint
+// cast 把这一依赖显式固化在 SQL 侧，防驱动行为变化。timezone('UTC', …) 与旧
+// 写法 AT TIME ZONE 'UTC' 是同一函数调用（timestamptz → UTC 墙钟），行为零
+// 变化。
 func j1PostgresOutcomeQuery(accountIds []string, observedAfter string) (string, []any, error) {
 	if len(accountIds) > 50 {
 		return "", nil, errors.New("J1 outcome 账户查询最多允许 50 个账户")
@@ -514,7 +519,7 @@ func j1PostgresOutcomeQuery(accountIds []string, observedAfter string) (string, 
 		SELECT outcome_id, request_id, account_id, outcome,
 			to_char(timezone('UTC', observed_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS storage_observed_at,
 			status_code::bigint AS status_code, error_code, error_message,
-			payload->>'next_due_at' AS next_due_at
+			to_char(timezone('UTC', next_due_at), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS next_due_at
 		FROM juhe_jobs.account_health_outcomes
 		WHERE account_id = ANY($1::text[])
 			AND observed_at >= $2::timestamptz

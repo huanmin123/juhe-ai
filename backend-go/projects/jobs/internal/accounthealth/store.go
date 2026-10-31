@@ -276,9 +276,13 @@ func (s *Store) AppendOutcome(ctx context.Context, lease OwnerLease, outcome Out
 	}
 	var inserted bool
 	var id string
-	err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_health_outcomes (outcome_id, request_id, account_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, payload)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-ON CONFLICT (request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.Outcome, outcome.ObservedAt.UTC(), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), string(payload)).Scan(&id)
+	// next_due_at 与 payload 内的单键双写（2026-10-31 起）：gateway ai-health
+	// 读面走覆盖索引的 Index Only Scan，PG 无法对表达式索引列做 IOS 输出，
+	// next_due_at 必须是实体列才进得了索引元组；payload 单键保留供旧版
+	// gateway 滚动窗口与投影链读取。
+	err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_health_outcomes (outcome_id, request_id, account_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, next_due_at, payload)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ON CONFLICT (request_id) DO NOTHING RETURNING outcome_id`, outcome.OutcomeID, outcome.RequestID, outcome.AccountID, outcome.Outcome, outcome.ObservedAt.UTC(), outcome.InputVersion, outcome.ConfigRevision, outcome.DispatchRevision, nullableStatus(outcome.StatusCode), nullableText(outcome.ErrorCode), nullableText(outcome.ErrorMessage), nullableTime(outcome.NextDueAt), string(payload)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		matches, matchErr := s.duplicateDirectInputOutcomeMatchesTx(ctx, tx, outcome)
 		if matchErr != nil {
@@ -859,9 +863,22 @@ ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cool
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_generation TEXT;
 ALTER TABLE juhe_jobs.account_health_current_state ADD COLUMN IF NOT EXISTS cooldown_source_config_revision BIGINT;
 CREATE TABLE IF NOT EXISTS juhe_jobs.account_health_key_cursors (account_id TEXT NOT NULL, purpose TEXT NOT NULL, key_set_fingerprint TEXT NOT NULL, next_index BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (account_id, purpose, key_set_fingerprint));
-CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_account_observed ON juhe_jobs.account_health_outcomes(account_id, observed_at DESC, outcome_id DESC);
--- 胖索引（INCLUDE payload 的带 WHERE 部分索引）曾服务 gateway 旧逐小时 LATERAL 探测读面，
--- 2026-10-29 读面改为单次窄投影范围读取后退役，统一走上一行的普通范围索引。
+ALTER TABLE juhe_jobs.account_health_outcomes ADD COLUMN IF NOT EXISTS next_due_at TIMESTAMPTZ;
+-- 读面覆盖索引（2026-10-31）：gateway ai-health 单次范围读取的全部投影——含
+-- 上一行 ALTER 落列的 next_due_at 实体列——都在索引元组内，读面走 Index Only
+-- Scan，冷缓存不再逐行回表拖慢盘随机读（当日生产实测冷缓存首开 2×5s 读预算
+-- 超时）。next_due_at 必须实体列、不能以 payload 单键表达式键入索引：PG 无法
+-- 对表达式索引列做 IOS 输出（当日生产 EXPLAIN 实证）。存量行该列为 NULL，
+-- gateway 读面由合并层既有 fallback 回退 accounts.next_health_check_at，探针
+-- 每小时重写自愈，不做回填。
+CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_read_cover ON juhe_jobs.account_health_outcomes(account_id, observed_at) INCLUDE (outcome_id, request_id, outcome, status_code, error_code, error_message, next_due_at);
+-- 幂等退役三个被覆盖/被淘汰的旧索引：(account_id, observed_at DESC, outcome_id DESC)
+-- 普通范围索引被上一行同前缀覆盖；payload 单键表达式键覆盖索引（同名
+-- idx_account_health_outcomes_account_read）是本批一度试验的形态、IOS 不可行，
+-- 仅个别部署短暂存在；带 INCLUDE payload 的胖索引曾服务旧逐小时 LATERAL 读面，
+-- 2026-10-29 随窄投影范围读取退役。
+DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_read;
+DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed;
 DROP INDEX IF EXISTS juhe_jobs.idx_account_health_outcomes_account_observed_non_stale;
 CREATE INDEX IF NOT EXISTS idx_account_health_outcomes_observed ON juhe_jobs.account_health_outcomes(observed_at DESC, outcome_id DESC);
 `

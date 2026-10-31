@@ -11,9 +11,11 @@ import (
 
 // TestJ1PostgresOutcomeQueryContract locks the ranged query: accounts travel
 // as a single text array, the observed-after instant bounds the window, stale
-// outcomes are excluded in SQL, the projection reads entity columns (only
-// next_due_at comes from the payload as a single key), and the ASC ordering
-// makes the merge layer's >= last-wins reproduce the old
+// outcomes are excluded in SQL, the projection reads entity columns only
+// (next_due_at is the jobs-owned entity column rendered via to_char, never the
+// payload single-key extraction — payload projection would force per-row heap
+// fetches and defeat the covering index's index-only scan), and the ASC
+// ordering makes the merge layer's >= last-wins reproduce the old
 // "observed_at DESC, outcome_id DESC LIMIT 1" winner.
 func TestJ1PostgresOutcomeQueryContract(t *testing.T) {
 	query, args, err := j1PostgresOutcomeQuery(
@@ -27,7 +29,7 @@ func TestJ1PostgresOutcomeQueryContract(t *testing.T) {
 		"account_id = ANY($1::text[])",
 		"observed_at >= $2::timestamptz",
 		"outcome <> 'stale'",
-		"payload->>'next_due_at'",
+		"to_char(timezone('UTC', next_due_at), 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS next_due_at",
 		"ORDER BY observed_at ASC, outcome_id ASC",
 		"status_code::bigint",
 	} {
@@ -41,6 +43,7 @@ func TestJ1PostgresOutcomeQueryContract(t *testing.T) {
 		"AT TIME ZONE",
 		"INCLUDE",
 		"LIMIT 1",
+		"payload->>",
 	} {
 		if containsText(query, banned) {
 			t.Fatalf("query must not carry the legacy per-hour probe (%q): %s", banned, query)
