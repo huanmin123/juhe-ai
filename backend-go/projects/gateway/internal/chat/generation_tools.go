@@ -144,8 +144,6 @@ var publicToolErrorMessages = map[string]string{
 	"tool_arguments_invalid":             "工具参数不符合要求",
 	"tool_timeout":                       "工具执行超时",
 	"tool_result_too_large":              "工具结果超过允许上限",
-	"tool_call_limit_exceeded":           "本轮工具调用次数已达到上限",
-	"image_tool_call_limit_exceeded":     "本轮图片生成次数已达到上限",
 	"image_generation_not_enabled":       "可用上游分组未开通图片生成功能",
 	"image_generation_permission_denied": "上游拒绝了图片生成权限",
 	"image_generation_rate_limited":      "上游图片生成请求过于频繁，请稍后重试",
@@ -701,53 +699,51 @@ type chatInternalToolOrchestrator struct {
 	registry            *chatInternalToolRegistry
 	tools               []*toolDefinition
 	context             *chatToolExecutionContext
-	maxModelRounds      int
-	maxToolCalls        int
-	maxImageCalls       int
 	publish             func(event ChatToolExecutionEvent)
 	seenResults         map[string]ChatToolExecutionOutput
 	totalToolCalls      int
-	imageCalls          int
 	correctableFailures int
+	// 编排软护栏状态（工具体系设计 §9.1）：检测失控形态、下一轮注入提醒，
+	// 只引导不终止、不计失败。
+	repeatRoundSignature string
+	repeatRoundCount     int
+	silentRounds         int
 }
 
-// ChatOrchestratorLimits mirrors the Node limits object.
-type ChatOrchestratorLimits struct {
-	MaxModelRounds int
-	MaxToolCalls   int
-	MaxImageCalls  int
-}
+// 软护栏阈值：整轮调用序列连续重复、或连续无正文工具轮达到该值时注入提醒。
+const (
+	chatOrchestratorRepeatRoundThreshold = 3
+	chatOrchestratorSilentRoundThreshold = 3
+)
+
+const chatOrchestratorRepeatReminder = "系统提示：你已连续多轮发出完全相同的工具调用。不要重复相同的调用；请基于已有结果直接回答用户，或改用一个明确的子任务继续。"
+const chatOrchestratorSilenceReminder = "系统提示：你已连续多轮调用工具但尚未输出任何回答。请基于已获得的信息直接给出面向用户的回答；除非确有明确的增量信息需求，不要继续调用工具。"
 
 func newChatInternalToolOrchestrator(
 	registry *chatInternalToolRegistry,
 	tools []*toolDefinition,
 	context *chatToolExecutionContext,
-	limits ChatOrchestratorLimits,
 	publish func(event ChatToolExecutionEvent),
 ) *chatInternalToolOrchestrator {
 	return &chatInternalToolOrchestrator{
-		registry:       registry,
-		tools:          tools,
-		context:        context,
-		maxModelRounds: limits.MaxModelRounds,
-		maxToolCalls:   limits.MaxToolCalls,
-		maxImageCalls:  limits.MaxImageCalls,
-		publish:        publish,
-		seenResults:    map[string]ChatToolExecutionOutput{},
+		registry:    registry,
+		tools:       tools,
+		context:     context,
+		publish:     publish,
+		seenResults: map[string]ChatToolExecutionOutput{},
 	}
 }
 
 // Run mirrors ChatInternalToolOrchestrator.run（主对话恒 chat_completions，
-// 续答形状不再随协议分叉）。
+// 续答形状不再随协议分叉）。编排不设轮次/次数硬预算（工具体系设计 §9.1，
+// 2026-10-31 用户裁决）：唯一正常退出是模型一轮输出不含工具调用；失控形态
+// 由软护栏提醒纠偏，不终止轮次。
 func (o *chatInternalToolOrchestrator) Run(invokeModel func(round int, continuation []any) (ChatToolModelTurn, error)) (ChatToolOrchestratorResult, error) {
 	continuation := []any{}
 	var inputTokens, outputTokens *int64
 	for round := 1; ; round++ {
 		if o.context.Aborted != nil && o.context.Aborted() {
 			return ChatToolOrchestratorResult{}, errors.New("工具执行已取消")
-		}
-		if round > o.maxModelRounds {
-			return ChatToolOrchestratorResult{}, fmt.Errorf("模型请求轮次超过 %d", o.maxModelRounds)
 		}
 		turn, err := invokeModel(round, continuation)
 		if err != nil {
@@ -769,15 +765,53 @@ func (o *chatInternalToolOrchestrator) Run(invokeModel func(round int, continuat
 				OutputTokens: outputTokens,
 			}, nil
 		}
-		if round >= o.maxModelRounds {
-			return ChatToolOrchestratorResult{}, fmt.Errorf("工具循环达到模型请求轮次上限 %d", o.maxModelRounds)
-		}
 		outputs, err := o.executeCalls(turn.ToolCalls)
 		if err != nil {
 			return ChatToolOrchestratorResult{}, err
 		}
 		continuation = buildChatToolContinuation(turn.ContinuationItems, outputs)
+		if reminder := o.consumeLoopGuardReminder(turn); reminder != "" {
+			continuation = append(continuation, map[string]any{"role": "user", "content": reminder})
+		}
 	}
+}
+
+// consumeLoopGuardReminder 检测失控形态并返回下一轮注入的提醒文案（工具体系
+// 设计 §9.1）：整轮调用序列连续相同达阈值、或连续多轮只调工具未输出正文时
+// 命中；提醒只进模型 payload（不产生 SSE 事件、不落库），注入后对应计数重置。
+func (o *chatInternalToolOrchestrator) consumeLoopGuardReminder(turn ChatToolModelTurn) string {
+	signature := chatToolRoundSignature(turn.ToolCalls)
+	if signature == o.repeatRoundSignature {
+		o.repeatRoundCount++
+	} else {
+		o.repeatRoundSignature = signature
+		o.repeatRoundCount = 1
+	}
+	if strings.TrimSpace(turn.Content) == "" {
+		o.silentRounds++
+	} else {
+		o.silentRounds = 0
+	}
+	if o.repeatRoundCount >= chatOrchestratorRepeatRoundThreshold {
+		o.repeatRoundCount = 0
+		o.repeatRoundSignature = ""
+		return chatOrchestratorRepeatReminder
+	}
+	if o.silentRounds >= chatOrchestratorSilentRoundThreshold {
+		o.silentRounds = 0
+		return chatOrchestratorSilenceReminder
+	}
+	return ""
+}
+
+// chatToolRoundSignature 生成整轮调用序列的重复比对签名：按模型输出顺序拼接
+// 工具名与参数 JSON（同参重复已由 reuse_exact 缓存兜底，签名只服务软提醒）。
+func chatToolRoundSignature(calls []ChatToolCall) string {
+	parts := make([]string, 0, len(calls))
+	for _, call := range calls {
+		parts = append(parts, call.ToolName+":"+call.ArgumentsJSON)
+	}
+	return strings.Join(parts, "|")
 }
 
 func (o *chatInternalToolOrchestrator) executeCalls(calls []ChatToolCall) ([]ChatToolExecutionOutput, error) {
@@ -852,15 +886,6 @@ func canceledTerm(canceled bool) string {
 
 func (o *chatInternalToolOrchestrator) executeCall(call ChatToolCall) (ChatToolExecutionOutput, bool, error) {
 	o.totalToolCalls++
-	if o.totalToolCalls > o.maxToolCalls {
-		return ChatToolExecutionOutput{}, false, &chatInternalToolError{Code: "tool_call_limit_exceeded", Message: fmt.Sprintf("工具调用次数超过 %d", o.maxToolCalls)}
-	}
-	if call.ToolName == "generate_image" {
-		o.imageCalls++
-		if o.imageCalls > o.maxImageCalls {
-			return ChatToolExecutionOutput{}, false, &chatInternalToolError{Code: "image_tool_call_limit_exceeded", Message: fmt.Sprintf("单轮图片生成调用次数超过 %d", o.maxImageCalls)}
-		}
-	}
 	definition, err := o.registry.definition(call.ToolName)
 	if err != nil {
 		return ChatToolExecutionOutput{}, false, err

@@ -332,6 +332,10 @@ const richOutput = "用户未指定冲突格式且图形确实提升理解时，
 const imagePreference = "用户要求生成位图且当前提供真实图像工具时优先调用该工具，不用 ASCII 文本画图代替；普通解释请求不强制生成图片。"
 const imageGenerationPreference = "调用图片生成工具时，如果用户没有明确指定宽高或分辨率，应根据图片用途、内容和构图需要自行选择合适的常规尺寸与宽高比例，不得自行选择 2K、4K 或其他超大尺寸。用户明确指定宽高、分辨率、画面比例或输出格式时应优先遵循；“高清、精致、细节丰富”等质量描述不等于要求更大的图片尺寸。用户要求基于既有图片进行二次编辑时，必须从当前输入图片标记或会话图像谱系索引中选择明确的 assetId，并用 reference_asset_ids 调用图片工具；如果存在多张候选图且无法唯一判断，先询问用户，不得猜测目标图片。"
 const toolDiscipline = "避免重复调用名称相同且参数等价的工具；前次调用失败、结果可能过期或用户明确要求刷新时允许再次调用。"
+// toolLoopClosure 是编排收敛指导（工具体系设计 §9.1，2026-10-31）：编排不设
+// 轮次硬预算后，模型收敛靠本块约束——落点直指生产事故根因（模型因工具结果
+// 缺来源而反复换词重新搜索、始终不交卷）。
+const toolLoopClosure = "收到工具结果后立即推进任务：要么带着明确的新信息增量调用下一个工具，要么直接给出面向用户的最终回答，不要无目的地继续调用工具。已获得回答所需的充分信息时立即整理作答，不要为求证细节或补充非必需信息反复调用工具；工具结果未附来源不代表结果不可用，不得仅因来源缺失而重新执行相同或近似的检索。"
 
 // buildChatSystemInstructions mirrors buildChatSystemInstructions.
 func buildChatSystemInstructions(internalToolNames []string) (version, text, hash string) {
@@ -347,7 +351,7 @@ func buildChatSystemInstructions(internalToolNames []string) (version, text, has
 		blocks = append(blocks, imageGenerationPreference)
 	}
 	if len(internalNames) > 0 {
-		blocks = append(blocks, toolDiscipline)
+		blocks = append(blocks, toolDiscipline, toolLoopClosure)
 	}
 	text = strings.Join(blocks, "\n\n")
 	digest := sha256.Sum256([]byte(text))

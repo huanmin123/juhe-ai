@@ -255,7 +255,7 @@ func TestChatMediaToolOrchestratorStages(t *testing.T) {
 		},
 	}
 	var events []ChatToolExecutionEvent
-	orchestrator := newChatInternalToolOrchestrator(registry, tools, context, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 8, MaxImageCalls: 2}, func(event ChatToolExecutionEvent) {
+	orchestrator := newChatInternalToolOrchestrator(registry, tools, context, func(event ChatToolExecutionEvent) {
 		events = append(events, event)
 	})
 	_, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
@@ -329,7 +329,7 @@ func TestChatAudioToolExecutionAndSink(t *testing.T) {
 	}
 	tools := []*toolDefinition{newGenerateAudioTool()}
 	var toolEvents []ChatToolExecutionEvent
-	orchestrator := newChatInternalToolOrchestrator(newChatInternalToolRegistry("test", true, true), tools, context, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 8}, func(event ChatToolExecutionEvent) {
+	orchestrator := newChatInternalToolOrchestrator(newChatInternalToolRegistry("test", true, true), tools, context, func(event ChatToolExecutionEvent) {
 		toolEvents = append(toolEvents, event)
 	})
 	result, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {

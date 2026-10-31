@@ -27,6 +27,16 @@ const (
 
 const maxPublicDiagnosticMessageLength = 1200
 
+// ChatUpstreamHTTPError 表示工具编排的模型调用收到非 2xx 上游响应：错误分类
+// 按错误本身判定（stream_execute.go classifyGenerationError），不再依赖阶段
+// 残留标签——预算移除后任何编排内错误都必须自证分类。
+type ChatUpstreamHTTPError struct {
+	Status  int
+	Message string
+}
+
+func (e *ChatUpstreamHTTPError) Error() string { return e.Message }
+
 var publicChatGenerationMessages = map[PublicChatGenerationErrorCode]string{
 	GenErrUpstreamHTTP:          "模型服务请求失败，请稍后重试",
 	GenErrUpstreamStream:        "模型响应中断，请重新发送",

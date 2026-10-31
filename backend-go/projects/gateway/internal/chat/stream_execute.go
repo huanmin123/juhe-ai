@@ -90,7 +90,6 @@ type generationExecuteInput struct {
 func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, identity ChatGenerationIdentity) func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
 	return func(runCtx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
 		var partialContent strings.Builder
-		failureCode := GenErrInternal
 		messageID := identity.AssistantMessageID
 		turnID := identity.TurnID
 
@@ -102,7 +101,6 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			if len(payload) > maxInternalChatRequestBytes {
 				return ChatToolModelTurn{}, &RequestError{Code: RequestBodyTooLarge, Message: "工具续答请求体超过安全上限，请减少上下文后重试"}
 			}
-			failureCode = GenErrUpstreamHTTP
 			// 鉴权经内部身份通道（执行器视图注入进程内 context，preauth 跳过
 			// API Key 鉴权），请求头只保留内容协商与追踪。
 			headers := map[string]string{
@@ -131,9 +129,8 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 						payloadText = string(raw)
 					}
 				}
-				return ChatToolModelTurn{}, errors.New(upstreamMessagePayload(payloadText, "模型请求失败（HTTP "+itoa(statusOrZero(upstream))+")"))
+				return ChatToolModelTurn{}, &ChatUpstreamHTTPError{Status: statusOrZero(upstream), Message: upstreamMessagePayload(payloadText, "模型请求失败（HTTP "+itoa(statusOrZero(upstream))+")")}
 			}
-			failureCode = GenErrUpstreamStream
 			// BUG-0223 防御收口：Body.Close 移入 defer——Collect 内部 panic
 			// （由上层 safego 恢复）时本 defer 仍执行，保证上游连接释放；
 			// 正常路径的 Close 错误依旧忽略（读取已完成后关闭失败无补救动作）。
@@ -237,7 +234,6 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if bindings == nil || bindings.ImageAccountID == "" {
 					return ChatImageGenerationToolResult{}, &chatToolBindingRequiredError{ToolName: "generate_image", UserHint: chatImageBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "generate_image")}
 				}
-				failureCode = GenErrImageFailed
 				var ctx context.Context = context.Background()
 				if runCtx.Context != nil {
 					ctx = runCtx.Context
@@ -291,8 +287,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				nextContentOrder:   func() int64 { return int64(len(runCtx.SnapshotBlocks())) },
 			}
 		}
-		orchestrator := newChatInternalToolOrchestrator(input.internalToolRegistry, input.internalTools, toolContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 8, MaxImageCalls: 2}, publishTool)
-		failureCode = GenErrInternal
+		orchestrator := newChatInternalToolOrchestrator(input.internalToolRegistry, input.internalTools, toolContext, publishTool)
 		result, execErr := func() (result ChatToolOrchestratorResult, err error) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -302,7 +297,6 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			return orchestrator.Run(invokeModel)
 		}()
 		if execErr == nil {
-			failureCode = GenErrInternal
 			finishReason := result.FinishReason
 			if finishReason == "" {
 				finishReason = "stop"
@@ -337,7 +331,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				case "canceled":
 					return ChatGenerationTerminalResult{Status: "canceled", Data: map[string]any{"messageId": messageID}}, nil
 				default:
-					publicError := classifyGenerationError(err, GenErrInternal)
+					publicError := classifyGenerationError(err)
 					failureMessage := publicError.Message
 					if assistantContent != "" {
 						failureMessage = ChatGenerationContinuationMessage(publicError.Code)
@@ -404,7 +398,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 
 		// Failure path (mirrors the execute catch block).
 		canceled := runCtx.Aborted() || isPreparationCanceled(execErr)
-		publicError := classifyGenerationError(execErr, failureCode)
+		publicError := classifyGenerationError(execErr)
 		// 失败文案按该轮是否已流出半截内容动态选择（AI问答设计 §11.1/§13.1）：
 		// 非取消失败且错误码存在续写引导变体时改用变体（§14.1 续写可用），
 		// 否则保持原始重试引导；落库 ErrorMessage 与下发 data["message"] 使用
@@ -602,17 +596,23 @@ func upstreamMessagePayload(payload, fallback string) string {
 	return fallback
 }
 
-// classifyGenerationError mirrors classifyChatGenerationError(error, failureCode).
-func classifyGenerationError(err error, failureCode PublicChatGenerationErrorCode) PublicChatGenerationError {
+// classifyGenerationError 只按错误本身分类（不再依赖阶段残留标签）：生图请求
+// 错误用其自带公开码；上游非 2xx 用类型化 ChatUpstreamHTTPError 归为
+// upstream_http_error（携带脱敏详情）；其余经网络 sentinel 与内部兜底分类。
+func classifyGenerationError(err error) PublicChatGenerationError {
 	var imageErr *ChatImageGenerationRequestError
 	if errors.As(err, &imageErr) {
 		return PublicChatGenerationError{Code: imageErr.Code, Message: ChatGenerationErrorMessage(imageErr.Code)}
 	}
-	unknown := ClassifyUnknownChatGenerationError(err)
-	if failureCode != GenErrInternal && unknown.Code == GenErrInternal {
-		return PublicChatGenerationError{Code: failureCode, Message: ChatGenerationErrorMessage(failureCode)}
+	var httpErr *ChatUpstreamHTTPError
+	if errors.As(err, &httpErr) {
+		message := ChatGenerationErrorMessage(GenErrUpstreamHTTP)
+		if detail := sanitizeChatDiagnosticMessage(httpErr.Message); detail != "" && detail != message {
+			message += "；详情：" + detail
+		}
+		return PublicChatGenerationError{Code: GenErrUpstreamHTTP, Message: message}
 	}
-	return unknown
+	return ClassifyUnknownChatGenerationError(err)
 }
 
 // recoverChatTurnFinalization mirrors recoverChatTurnFinalization. partialContent

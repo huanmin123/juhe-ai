@@ -130,7 +130,7 @@ interface ChatInternalToolDefinition {
 - 只接收一个有界字符串，返回确定性的结构化回显。
 - 不访问网络、文件、数据库、环境变量或外部服务。
 - 真实浏览器提示必须要求模型调用 Demo，页面依次出现工具过程和工具之后的最终回答。
-- Demo 测试覆盖 Responses 与 Chat Completions 两种协议、参数分块、结果回灌、超时、取消、重复调用和循环上限。
+- Demo 测试覆盖 Responses 与 Chat Completions 两种协议、参数分块、结果回灌、超时、取消、重复调用和编排收敛提醒（2026-10-31 起编排不设循环上限，见 AI问答工具体系与主子模型设计 §9.1）。
 
 ## 8. 图片生成工具
 
@@ -259,7 +259,7 @@ GET /my-chat/conversations/{conversationId}/assets/{assetId}/content?variant=ori
 - Resolver：模型无 function calling、权限禁用、图像路由不可达、开发开关、上游/站内 owner 分离。
 - Responses：分块参数、多调用、reasoning item、function_call_output、续答和流终态。
 - Chat Completions：分块 tool_calls、assistant/tool 消息回灌、续答和 usage。
-- Orchestrator：顺序、精确去重、参数错误、未知工具、超时、取消、模型轮次/调用上限、工具后正文位置。
+- Orchestrator：顺序、精确去重、参数错误、未知工具、超时、取消、编排收敛软提醒（重复签名/不收敛，只引导不终止）、工具后正文位置。
 - Demo：两种协议真实 Mock 工具循环且无外部副作用。
 - 图片：WebP 默认、用户格式优先、常规尺寸选择、无依据大图缩小、显式大尺寸校验、reader cancel。
 - 资产：原图/预览双对象、Sharp 预览、512 KiB 上限、原子提交、双对象清理、容量总和、续答失败保留。

@@ -511,13 +511,13 @@ func TestStreamExecuteHelpersW3(t *testing.T) {
 	if got := upstreamMessagePayload("not-json", "兜底"); got != "兜底" {
 		t.Fatalf("非 JSON 应回兜底: %q", got)
 	}
-	classified := classifyGenerationError(&ChatImageGenerationRequestError{Code: GenErrImageRateLimited, Message: "限流"}, GenErrInternal)
+	classified := classifyGenerationError(&ChatImageGenerationRequestError{Code: GenErrImageRateLimited, Message: "限流"})
 	if classified.Code != GenErrImageRateLimited {
 		t.Fatalf("图片错误应按专用分类: %+v", classified)
 	}
-	fallback := classifyGenerationError(errors.New("boom"), GenErrUpstreamHTTP)
-	if fallback.Code != GenErrUpstreamHTTP {
-		t.Fatalf("非 internal 失败码应保留: %+v", fallback)
+	fallback := classifyGenerationError(errors.New("boom"))
+	if fallback.Code != GenErrInternal {
+		t.Fatalf("未知错误应按错误本身分类为 internal: %+v", fallback)
 	}
 }
 

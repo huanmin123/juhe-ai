@@ -116,7 +116,7 @@ AI 对话（chat 包 + 对话前端）
 - 工具定义：`generate_video`，`kind=model`，schema `{ prompt: string, seconds?: number(1..120), size?: "WIDTHxHEIGHT", model?: string }`；常驻注册（媒体域无全局开关，不受 `imageGenerationEnabled` 门控）。注册落点 `internal/chat/generation_tools.go`（`newGenerateVideoTool`）。
 - 绑定：会话/用户级「视频账户 + 默认视频模型」二元组（`video_account_id` + `default_video_model`，§7）；未绑定时触发 `tool.binding_required` 引导（`chatVideoBindingHint` 回喂主模型），与 web_search/generate_image 同构。
 - 执行（`internal/chat/generation_media.go` `CreateChatVideo`）：经进程内 `POST /v1/videos` 固定派发绑定账户，2xx + jobId 即受理确立（`/v1` 链落 `media_jobs`，归属 chat API Key）后**立即完成工具调用**——工具结果 = `{jobId, status, kind: "video", model, promptSummary}`，主模型据此告知用户生成中。`seconds/size` 参数边界由 `/v1` 视频链的参数归一层裁定。
-- 编排器阶段：`started` 事件携带 `progress {stage: "submitting"}`（§10.3 同款通道）；预算在 `MaxToolCalls`（8）内，无独立计数器。
+- 编排器阶段：`started` 事件携带 `progress {stage: "submitting"}`（§10.3 同款通道）；编排不设次数预算（§9.1），重复调用防护靠 `reuse_exact`/`allow_repeat` 策略与编排软提醒。
 - 异步结算（无后台常驻任务）：消息落 `output_media_task` 内容块（完成事件投影，块形见《问答音视频工具设计》§3）；前端对未终态块每 5s 轮询 `GET /my-chat/conversations/{cid}/media-tasks/{jobId}`（§8.7），后端实时查 `media_jobs`（经组合根注入的 `ChatMediaJobsLookup` 只读端口——internal/chat 不直接依赖 gatewaymedia）→ 未终态经进程内 `GET /v1/videos/{jobId}` 任务面 poll（亲和）→ 终态幂等结算：completed → `GET content` 下载（64MB 限额 + 字节嗅探 MIME）落 `chat_assets` + 消息块定点补丁（status=completed + assetId）；failed/cancelled/expired → 块置终态错误。幂等三道闸：`media_jobs` 终态唯一性、分条互斥（同 job 并发请求串行化）、资产 digest 查重。
 - 消息块持久化裁决（M7b）：轮次 finalize 后消息行不可变（`finalizeTurn` 仅写 streaming 行），新增最小定点更新 `PatchChatMediaTaskBlock` 只改任务块的 `status/assetId/error/progress` 字段，不迁移块类型（不把任务块改写为 `output_video`）、不动 content_text 与其他块、不 bump message_revision——前端按块内 `assetId` 渲染播放器（`ChatMediaTask.vue` → 完成后被播放器替换，M7c 前端范围）。
 
@@ -165,6 +165,19 @@ AI 对话（chat 包 + 对话前端）
 ```
 
 并发与重入：子代理调用计入主轮次的总超时；用户停止轮次时子调用同步取消（复用现有停止链路）。
+
+### 9.1 编排收敛与失控防护（2026-10-31 用户裁决：移除轮次/次数硬预算）
+
+编排循环**不设任何轮次或调用次数硬预算**（原 `MaxModelRounds=4` / `MaxToolCalls=8` / `MaxImageCalls=2` 已移除）。裁决依据：主循环硬预算会把「模型多干几轮」误判为整轮失败并丢弃全部已获得成果（生产事故 2026-10-31 `chat_conv_d2135568f863b089c824efbf9c0130ce`：3 次搜索全部成功、答案已在手，第 4 轮继续搜索触发 4 轮上限即整轮报「模型响应中断」）；主流 coding agent（ZCode、Codex、opencode、agent-forge、gemini-cli 默认值）主循环均无轮次预算，退出条件一致为「模型不再发起工具调用」。无限调度的根治责任在系统指令收敛指导与工具结果质量，不在程序硬终止。
+
+- **退出条件**：编排循环唯一正常退出是模型一轮输出不含工具调用；异常退出仅保留取消（用户停止）、上游故障与单次工具边界（参数/结果字节上限、单次调用超时）——三者都是真实故障或用户意志，不是行为预算。
+- **收敛指导（系统指令层，第一道防线）**：系统指令新增收敛块（`buildChatSystemInstructions`，`internal/chat/transport.go`）：收到工具结果后必须立即推进——要么带着明确的新信息增量调用下一个工具，要么直接给出面向用户的最终回答；已获得回答所需的充分信息时立即整理作答；工具结果未附来源不代表结果不可用，不得仅因来源缺失或细节求证反复重新调用工具。落点直指生产事故根因（模型因「来源是空的」连续换词重新搜索、始终不交卷）。
+- **编排软提醒（第二道防线，只引导不终止）**：编排器在工具轮间运行两个检测，命中即在下一轮工具续答 messages 末尾追加一条 user 角色「系统提示」消息（只进模型 payload，不产生 SSE 事件、不落库、不计失败）：
+  - **整轮重复签名**：模型连续 3 轮发出完全相同的工具调用序列（工具名 + 参数 JSON 拼接比对）；`reuse_exact` 工具同参重复本就零成本返回缓存结果，提醒用于 `allow_repeat` 工具（generate_video/generate_audio）与跨轮语义纠偏。
+  - **不收敛**：模型连续 3 轮只调工具、未输出任何正文（连续工具轮 `turn.Content` 为空）。
+  - 提醒文案明确要求模型基于已有结果直接作答或换明确子任务；注入后计数重置，不累积刷屏。提醒通道自身不是预算：永不终止轮次、永不把轮次置为失败。
+- **自然边界**：无预算后失控调用的物理边界是模型上下文窗口（工具结果回灌逐轮增长，最终触发既有上下文预算/压缩链路）、单次工具的 `TimeoutMs`/字节上限（工具级，保留）与用户随时停止；付费类工具（生图/音视频）的滥用面由收敛指导与 `reuse_exact` 去重压制，接受残余风险（用户裁决 2026-10-31）。
+- **错误分类修复（随本裁决同批）**：`stream_execute.go` 的阶段残留 `failureCode` 变量删除——编排内任何错误按错误本身分类（新增类型化 `ChatUpstreamHTTPError` → `upstream_http_error`；网络 sentinel → `upstream_stream_failed`；其余 → `internal_generation_failed` 带脱敏详情），不再出现「预算耗尽错误被上一阶段标签掩盖成模型响应中断」的误导分类。
 
 ## 10. 交互设计
 

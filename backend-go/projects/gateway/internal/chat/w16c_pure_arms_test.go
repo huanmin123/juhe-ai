@@ -267,39 +267,27 @@ func (s *w16cFailingSink) CommitGeneratedImage(input GeneratedImageCommitInput) 
 	return GeneratedImageCommitResult{}, errors.New("提交失败")
 }
 
-// TestW16COrchestratorAbortAndLimits 覆盖编排器取消与调用次数上限臂。
-func TestW16COrchestratorAbortAndLimits(t *testing.T) {
+// TestW16COrchestratorAbortAndGuards 覆盖编排器取消与未知工具/非法参数臂
+// （编排不设轮次/次数预算，工具体系设计 §9.1）。
+func TestW16COrchestratorAbortAndGuards(t *testing.T) {
 	registry := newChatInternalToolRegistry("development", true, true)
 	publish := func(ChatToolExecutionEvent) {}
 	aborted := &chatToolExecutionContext{Aborted: func() bool { return true }}
-	orchestrator := newChatInternalToolOrchestrator(registry, nil, aborted, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 2, MaxImageCalls: 2}, publish)
+	orchestrator := newChatInternalToolOrchestrator(registry, nil, aborted, publish)
 	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		t.Fatal("取消后不应发起模型调用")
 		return ChatToolModelTurn{}, nil
 	}); err == nil {
 		t.Fatal("取消应失败")
 	}
-	// 工具调用次数上限。
-	limitContext := &chatToolExecutionContext{Aborted: func() bool { return false }}
-	limited := newChatInternalToolOrchestrator(registry, nil, limitContext, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 0, MaxImageCalls: 2}, publish)
-	if _, _, err := limited.executeCall(ChatToolCall{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: "{}"}); err == nil {
-		t.Fatal("工具调用超限应失败")
-	}
-	// 图片调用次数上限。
-	imageLimited := newChatInternalToolOrchestrator(registry, nil, limitContext, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 4, MaxImageCalls: 0}, publish)
-	if _, _, err := imageLimited.executeCall(ChatToolCall{CallID: "c2", ToolName: "generate_image", ArgumentsJSON: `{"prompt":"p"}`}); err == nil {
-		t.Fatal("图片调用超限应失败")
-	}
-	// 模型轮次超限（未取消、轮次上限为 0）。
-	roundLimited := newChatInternalToolOrchestrator(registry, nil, limitContext, ChatOrchestratorLimits{MaxModelRounds: 0, MaxToolCalls: 2, MaxImageCalls: 2}, publish)
-	if _, err := roundLimited.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		t.Fatal("轮次超限后不应发起模型调用")
-		return ChatToolModelTurn{}, nil
-	}); err == nil {
-		t.Fatal("轮次超限应失败")
+	guardContext := &chatToolExecutionContext{Aborted: func() bool { return false }}
+	// 未知工具名。
+	unknown := newChatInternalToolOrchestrator(registry, nil, guardContext, publish)
+	if _, _, err := unknown.executeCall(ChatToolCall{CallID: "c1", ToolName: "missing_tool", ArgumentsJSON: "{}"}); err == nil {
+		t.Fatal("未知工具应失败")
 	}
 	// 参数 JSON 非法。
-	badArgs := newChatInternalToolOrchestrator(registry, nil, limitContext, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 4, MaxImageCalls: 2}, publish)
+	badArgs := newChatInternalToolOrchestrator(registry, nil, guardContext, publish)
 	if _, _, err := badArgs.executeCall(ChatToolCall{CallID: "c3", ToolName: "diagnostic_echo", ArgumentsJSON: "{broken}"}); err == nil {
 		t.Fatal("非法参数应失败")
 	}

@@ -1121,14 +1121,15 @@ func TestW13BUpstreamMessagePayload(t *testing.T) {
 	if msg := upstreamMessagePayload("not json", "fallback"); msg != "fallback" {
 		t.Fatalf("非法载荷应回退")
 	}
-	if code := classifyGenerationError(&ChatImageGenerationRequestError{Code: GenErrImageFailed}, GenErrInternal).Code; code != GenErrImageFailed {
+	if code := classifyGenerationError(&ChatImageGenerationRequestError{Code: GenErrImageFailed}).Code; code != GenErrImageFailed {
 		t.Fatalf("图片错误分类失败")
 	}
-	if code := classifyGenerationError(errors.New("x"), GenErrUpstreamHTTP).Code; code != GenErrUpstreamHTTP {
-		t.Fatalf("失败码透传失败: %s", code)
+	upstreamHTTP := classifyGenerationError(&ChatUpstreamHTTPError{Status: 502, Message: "上游错误"})
+	if upstreamHTTP.Code != GenErrUpstreamHTTP || !strings.Contains(upstreamHTTP.Message, "上游错误") {
+		t.Fatalf("上游 HTTP 错误应类型化分类并携带详情: %+v", upstreamHTTP)
 	}
-	if code := classifyGenerationError(errors.New("x"), GenErrInternal).Code; code != GenErrInternal {
-		t.Fatalf("未知错误分类失败")
+	if code := classifyGenerationError(errors.New("x")).Code; code != GenErrInternal {
+		t.Fatalf("未知错误分类失败: %s", code)
 	}
 	if headRevision(&chatRoutes{deps: &Deps{Store: newChatFixture(t).store}}, "w13b-missing", "o") != 0 {
 		t.Fatalf("无 head 应返回 0")
@@ -1679,12 +1680,12 @@ func sha256SumW13B(data []byte) []byte {
 	return digest[:]
 }
 
-func TestW13BOrchestratorRunLimits(t *testing.T) {
+func TestW13BOrchestratorRunLoopGuards(t *testing.T) {
 	registry := newChatInternalToolRegistry("development", true, false)
 	tools := registry.resolveTools(true)
 	contextValue := &chatToolExecutionContext{OwnerID: "o"}
 	published := []ChatToolExecutionEvent{}
-	orchestrator := newChatInternalToolOrchestrator(registry, tools, contextValue, ChatOrchestratorLimits{MaxModelRounds: 1, MaxToolCalls: 1, MaxImageCalls: 0}, func(event ChatToolExecutionEvent) {
+	orchestrator := newChatInternalToolOrchestrator(registry, tools, contextValue, func(event ChatToolExecutionEvent) {
 		published = append(published, event)
 	})
 	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
@@ -1692,13 +1693,42 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("模型失败应上抛")
 	}
-	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"hi"}`}}}, nil
-	}); err == nil {
-		t.Fatalf("超过模型轮次上限应报错")
+	// 无轮次预算（工具体系设计 §9.1）：连续多轮只调工具不终止，第 4 轮收到
+	// 不收敛软提醒后交卷成功。
+	silentOrchestrator := newChatInternalToolOrchestrator(registry, tools, contextValue, nil)
+	silentResult, err := silentOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
+		if round <= 3 {
+			assertNoLoopGuardReminderW13B(t, round, continuation)
+			// 每轮参数不同，排除重复签名提醒路径，专测不收敛提醒。
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"q` + string(rune('0'+round)) + `"}`}}}, nil
+		}
+		reminder := assertLoopGuardReminderW13B(t, round, continuation)
+		if !strings.Contains(reminder, "直接给出面向用户的回答") {
+			t.Fatalf("应注入不收敛软提醒: %q", reminder)
+		}
+		return ChatToolModelTurn{Content: "done", FinishReason: "stop"}, nil
+	})
+	if err != nil || silentResult.Content != "done" || silentResult.ModelRounds != 4 {
+		t.Fatalf("不收敛软护栏轮失败: %+v %v", silentResult, err)
+	}
+	// 整轮调用序列连续相同达阈值：第 4 轮收到重复签名软提醒。
+	repeatOrchestrator := newChatInternalToolOrchestrator(registry, tools, contextValue, nil)
+	repeatResult, err := repeatOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
+		if round <= 3 {
+			assertNoLoopGuardReminderW13B(t, round, continuation)
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"same"}`}}}, nil
+		}
+		reminder := assertLoopGuardReminderW13B(t, round, continuation)
+		if !strings.Contains(reminder, "不要重复相同的调用") {
+			t.Fatalf("应注入重复签名软提醒: %q", reminder)
+		}
+		return ChatToolModelTurn{Content: "ok", FinishReason: "stop"}, nil
+	})
+	if err != nil || repeatResult.Content != "ok" || repeatResult.ModelRounds != 4 {
+		t.Fatalf("重复签名软护栏轮失败: %+v %v", repeatResult, err)
 	}
 	abortContext := &chatToolExecutionContext{OwnerID: "o", Aborted: func() bool { return true }}
-	abortOrchestrator := newChatInternalToolOrchestrator(registry, tools, abortContext, ChatOrchestratorLimits{MaxModelRounds: 2, MaxToolCalls: 2, MaxImageCalls: 0}, nil)
+	abortOrchestrator := newChatInternalToolOrchestrator(registry, tools, abortContext, nil)
 	if _, err := abortOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		return ChatToolModelTurn{}, nil
 	}); err == nil || !strings.Contains(err.Error(), "取消") {
@@ -1707,7 +1737,7 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	// 工具调用失败一次可纠偏后成功。
 	allowContext := &chatToolExecutionContext{OwnerID: "o"}
 	count := 0
-	failureOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 5, MaxImageCalls: 0}, nil)
+	failureOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, nil)
 	result, err := failureOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		count++
 		if count == 1 {
@@ -1721,8 +1751,8 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	if len(published) != 0 {
 		t.Fatalf("不应有事件")
 	}
-	// 复用缓存 + 次数上限。
-	cacheOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 8, MaxImageCalls: 0}, nil)
+	// reuse_exact 同参重复调用返回缓存结果，不重复执行。
+	cacheOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, nil)
 	cacheCount := 0
 	cacheResult, err := cacheOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		cacheCount++
@@ -1737,16 +1767,30 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	if err != nil || cacheResult.ToolCalls != 2 {
 		t.Fatalf("复用缓存失败: %+v %v", cacheResult, err)
 	}
-	// 超过工具调用上限。
-	limitOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 1, MaxImageCalls: 0}, nil)
-	if _, err := limitOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		return ChatToolModelTurn{ToolCalls: []ChatToolCall{
-			{CallID: "a", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"1"}`, SourceOrder: 1},
-			{CallID: "b", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"2"}`, SourceOrder: 0},
-		}}, nil
-	}); err == nil {
-		t.Fatalf("超过调用上限应报错")
+}
+
+// assertNoLoopGuardReminderW13B 断言 continuation 中尚无软护栏提醒消息。
+func assertNoLoopGuardReminderW13B(t *testing.T, round int, continuation []any) {
+	t.Helper()
+	for _, item := range continuation {
+		if itemMap, ok := item.(map[string]any); ok && itemMap["role"] == "user" {
+			t.Fatalf("第 %d 轮不应提前收到软护栏提醒: %v", round, item)
+		}
 	}
+}
+
+// assertLoopGuardReminderW13B 断言 continuation 末尾带软护栏提醒并返回其文案。
+func assertLoopGuardReminderW13B(t *testing.T, round int, continuation []any) string {
+	t.Helper()
+	if len(continuation) == 0 {
+		t.Fatalf("第 %d 轮 continuation 不应为空", round)
+	}
+	last, ok := continuation[len(continuation)-1].(map[string]any)
+	if !ok || last["role"] != "user" {
+		t.Fatalf("第 %d 轮末尾应是提醒消息: %v", round, continuation[len(continuation)-1])
+	}
+	content, _ := last["content"].(string)
+	return content
 }
 
 func TestW13BStoreGeneratedImageSinkGuards(t *testing.T) {
