@@ -420,8 +420,10 @@
                         <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
                       </div>
 
-                      <section class="form-section">
-                        <div class="form-section-title">账户锁死</div>
+                      <section class="form-section lock-config-row">
+                        <div class="probe-toggle-label">
+                          <span>账户锁死</span>
+                        </div>
                         <div v-if="manualProbeMode" class="lock-runtime-state">
                           <span>手动模式不适用锁死</span>
                           <small>锁死配置已停用；重新开启后台自动探测后恢复。</small>
@@ -432,12 +434,14 @@
                             <small>锁死启停请在列表操作菜单执行。</small>
                           </div>
                           <div class="lock-config-fields">
-                            <a-form-item label="死期（秒）">
+                            <span class="lock-config-field">
+                              <span class="lock-config-field-name">死期（秒）</span>
                               <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
-                            </a-form-item>
-                            <a-form-item label="重试间隔（秒）">
+                            </span>
+                            <span class="lock-config-field">
+                              <span class="lock-config-field-name">重试间隔（秒）</span>
                               <a-input-number v-model:value="form.lockRetryIntervalSeconds" :min="5" :max="30" :precision="0" />
-                            </a-form-item>
+                            </span>
                           </div>
                         </template>
                       </section>
@@ -624,8 +628,10 @@
                       <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
                     </div>
 
-                    <section class="form-section">
-                      <div class="form-section-title">账户锁死</div>
+                    <section class="form-section lock-config-row">
+                      <div class="probe-toggle-label">
+                        <span>账户锁死</span>
+                      </div>
                       <div v-if="manualProbeMode" class="lock-runtime-state">
                         <span>手动模式不适用锁死</span>
                         <small>锁死配置已停用；重新开启后台自动探测后恢复。</small>
@@ -636,12 +642,14 @@
                           <small>锁死启停请在列表操作菜单执行。</small>
                         </div>
                         <div class="lock-config-fields">
-                          <a-form-item label="死期（秒）">
+                          <span class="lock-config-field">
+                            <span class="lock-config-field-name">死期（秒）</span>
                             <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
-                          </a-form-item>
-                          <a-form-item label="重试间隔（秒）">
+                          </span>
+                          <span class="lock-config-field">
+                            <span class="lock-config-field-name">重试间隔（秒）</span>
                             <a-input-number v-model:value="form.lockRetryIntervalSeconds" :min="5" :max="30" :precision="0" />
-                          </a-form-item>
+                          </span>
                         </div>
                       </template>
                     </section>
@@ -1563,16 +1571,34 @@ const emit = defineEmits<{
   font-size: 12px;
 }
 
-.lock-config-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+/* 锁死配置单行布局：标签居左、死期/重试间隔行内输入居右，与上方探活
+   开关行同款节奏；窄屏折行。 */
+.lock-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  min-height: 32px;
 }
 
-@media (max-width: 640px) {
-  .lock-config-fields {
-    grid-template-columns: 1fr;
-  }
+.lock-config-fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.lock-config-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--juhe-fg-soft);
+  font-size: 12px;
+}
+
+.lock-config-field :deep(.ant-input-number) {
+  width: 84px;
 }
 
 .advanced-section-stack :deep(.form-section:last-child) {
