@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Store is the persistence for the openai-compatible file and vector-store
@@ -46,6 +49,17 @@ func NewStore(db *sql.DB, options ...StoreOption) (*Store, error) {
 	for _, option := range options {
 		option(store)
 	}
+	// DD6-S8：启动期一次性收尾遗留 in_progress 索引绑定（进程重启后闭包
+	// 丢失的绑定永远等不到回调）。后台执行、失败不阻断构造——NewStore 的
+	// 存量契约是不触库（TestCreateFileSurfacesDBErrors 对已关闭连接池构造
+	// 成功），且回收是尽力而为性质，下一次启动会再次尝试；清扫条件限定
+	// updated_at 早于阈值，与启动后的正常写入天然不相交。
+	safego.Go("openaicompatstorage.vectorstores.stale_indexing_sweep", func() {
+		if _, err := store.sweepStaleVectorStoreFileIndexing(context.Background()); err != nil {
+			slog.Warn("openai compatible vector store 遗留 in_progress 索引绑定清扫失败",
+				"error", err)
+		}
+	})
 	return store, nil
 }
 

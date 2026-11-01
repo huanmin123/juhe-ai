@@ -7,6 +7,8 @@ package main
 // 非空无效 → invalid_api_key）、Authorization 经 GatewayPreAuthSource 同源合
 // 成；计数失败不阻断已写出的 401（fire-and-forget）；达阈值后下一请求由入口
 // 守卫 InspectPreAuthCircuit 短路 429。
+// DD6-S5（2026-11-01）适配：计数改有界 fire-and-forget 后台面，ServeHTTP 返
+// 回不等价于已入账——断言统一经 waitForCompatRecords 轮询（钉住语义不变）。
 
 import (
 	"context"
@@ -17,9 +19,29 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
+
+// waitForCompatRecords 轮询等待异步计数落账并返回快照（DD6-S5：compat 401
+// 计数在后台 worker 执行，ServeHTTP 返回不等于已入账）。
+func waitForCompatRecords(t *testing.T, circuits *ddC1RecordingCircuits, want int) []gatewaypreauth.PreAuthFailureInput {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		circuits.mu.Lock()
+		records := append([]gatewaypreauth.PreAuthFailureInput(nil), circuits.records...)
+		circuits.mu.Unlock()
+		if len(records) >= want {
+			return records
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("异步计数落账超时：want >= %d, got %d", want, len(records))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 // ddC1RecordingCircuits 记录 RecordPreAuthFailure 调用并按累计失败数模拟熔断
 // 阈值（failThreshold 次后 Inspect 返回 Blocked）。
@@ -98,10 +120,8 @@ func TestDDC1CompatUnauthorized401RecordsPreAuthFailure(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("状态码 = %d, want 401（计数不得阻断/改写 401 响应）", recorder.Code)
 	}
-	if len(circuits.records) != 1 {
-		t.Fatalf("RecordPreAuthFailure 调用次数 = %d, want 1（compat 401 必须计入熔断）", len(circuits.records))
-	}
-	record := circuits.records[0]
+	records := waitForCompatRecords(t, circuits, 1)
+	record := records[0]
 	if record.Reason != gatewaypreauth.PreAuthFailureInvalidAPIKey {
 		t.Fatalf("reason = %q, want invalid_api_key", record.Reason)
 	}
@@ -123,11 +143,9 @@ func TestDDC1CompatMissingBearerRecordsMissingReason(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("状态码 = %d, want 401", recorder.Code)
 	}
-	if len(circuits.records) != 1 {
-		t.Fatalf("RecordPreAuthFailure 调用次数 = %d, want 1", len(circuits.records))
-	}
-	if circuits.records[0].Reason != gatewaypreauth.PreAuthFailureMissingBearerToken {
-		t.Fatalf("reason = %q, want missing_bearer_token", circuits.records[0].Reason)
+	records := waitForCompatRecords(t, circuits, 1)
+	if records[0].Reason != gatewaypreauth.PreAuthFailureMissingBearerToken {
+		t.Fatalf("reason = %q, want missing_bearer_token", records[0].Reason)
 	}
 }
 
@@ -164,8 +182,9 @@ func TestDDC1CompatCircuitOpensAfterThreshold(t *testing.T) {
 			t.Fatalf("第 %d 次请求状态码 = %d, want 401（未达阈值）", i+1, recorder.Code)
 		}
 	}
-	if len(circuits.records) != 3 {
-		t.Fatalf("累计计数 = %d, want 3", len(circuits.records))
+	// DD6-S5：计数异步落账，入口守卫短路前先等三次计数到齐。
+	if records := waitForCompatRecords(t, circuits, 3); len(records) != 3 {
+		t.Fatalf("累计计数 = %d, want 3", len(records))
 	}
 	blocked := httptest.NewRecorder()
 	chain.ServeHTTP(blocked, withBearer("bad-key"))
@@ -175,6 +194,7 @@ func TestDDC1CompatCircuitOpensAfterThreshold(t *testing.T) {
 	if body := blocked.Body.String(); !strings.Contains(body, "client_ip_pre_auth_circuit_open") {
 		t.Fatalf("响应缺熔断错误码: %s", body)
 	}
+	// 429 短路请求不进 mux、不入队计数，落账数保持确定性不变。
 	if len(circuits.records) != 3 {
 		t.Fatalf("熔断短路请求不得再计数，records = %d", len(circuits.records))
 	}

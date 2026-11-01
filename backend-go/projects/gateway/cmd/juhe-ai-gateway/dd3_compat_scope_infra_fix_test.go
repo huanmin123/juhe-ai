@@ -148,7 +148,8 @@ func TestDD3D1CompatScopeInfraErrorRenders500WithoutCounting(t *testing.T) {
 }
 
 // TestDD3D1CompatInvalidKeyStill401AndCounts 钉住：key 确实无效（读成功但
-// APIKey 为 nil）仍落 openaicompat 401 契约并计入认证前熔断（DD2-C1 保持）。
+// APIKey 为 nil）仍落 openaicompat 401 契约并计入认证前熔断（DD2-C1 保持；
+// DD6-S5 起计数异步落账，轮询等待）。
 func TestDD3D1CompatInvalidKeyStill401AndCounts(t *testing.T) {
 	models := &ddD1ScopeReadModels{}
 	circuits := &ddC1RecordingCircuits{}
@@ -158,11 +159,9 @@ func TestDD3D1CompatInvalidKeyStill401AndCounts(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("状态码 = %d, want 401（key 无效保持 openaicompat 契约）, body=%s", recorder.Code, recorder.Body.String())
 	}
-	if len(circuits.records) != 1 {
-		t.Fatalf("key 无效必须计入认证前熔断，records = %d", len(circuits.records))
-	}
-	if circuits.records[0].Reason != gatewaypreauth.PreAuthFailureInvalidAPIKey {
-		t.Fatalf("reason = %q, want invalid_api_key", circuits.records[0].Reason)
+	records := waitForCompatRecords(t, circuits, 1)
+	if records[0].Reason != gatewaypreauth.PreAuthFailureInvalidAPIKey {
+		t.Fatalf("reason = %q, want invalid_api_key", records[0].Reason)
 	}
 }
 
@@ -274,6 +273,8 @@ func TestDD3D3CompatCircuitBlocked429CarriesConnectionClose(t *testing.T) {
 	if first.Code != http.StatusUnauthorized {
 		t.Fatalf("首次请求状态码 = %d, want 401（未达短路）", first.Code)
 	}
+	// DD6-S5：计数异步落账，入口守卫短路前先等首次 401 计数到账。
+	waitForCompatRecords(t, circuits, 1)
 	blocked := httptest.NewRecorder()
 	chain.ServeHTTP(blocked, withBearer("bad-key"))
 	if blocked.Code != http.StatusTooManyRequests {

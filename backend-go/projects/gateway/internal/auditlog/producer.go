@@ -71,9 +71,22 @@
 // blocking the caller」承诺。丢弃臂撤回（retractDroppedEntry）因此只做非阻
 // 塞入队；槽满时登记队列外挂起的撤回意图（与在途集合同锁面），worker 每消
 // 费一条队列条目后把意图转储为撤回命令补派——丢弃臂返回时间与入队成功臂等
-// 价（瞬时），撤回补偿语义仍最终送达。挂起前提是队列槽满：worker 池的消费
-// 循环必然在场，意图不会被遗忘；retractBestEffort 的内联臂自此仅限 worker
-// 协程调用（persistOne 失败/panic/settle 臂）。
+// 价（瞬时），撤回补偿语义仍最终送达。挂起前提是撤回队列槽满：撤回 worker
+// 的消费循环必然在场（数据 worker 在消费间隙同样转储），意图不会被遗忘；
+// retractBestEffort 的内联臂自此仅限 worker 协程调用（persistOne 失败/
+// panic/settle 臂）。
+//
+// 撤回命令与数据条目队列/worker 隔离（DD6-S1, 2026-11-01）：撤回命令免预算
+// （bytes=0）且每条在慢存储上最长占用 worker retractWaitBudget（15s，settle
+// 等待 + 3 次续租删除）——此前撤回与数据条目共用同一队列与 worker 池，
+// 饱和窗内「丢弃 → 派生撤回命令 → worker 全被撤回占满 → 数据条目被排挤 →
+// queueBytes 不释放 → 字节预算持续满 → 更多丢弃」构成仅能靠存储恢复打破的
+// 正反馈（DD5-E1 只移除了调用方内联阻塞，撤回命令仍占数据 worker）。撤回
+// 命令自此走专用有界队列（retractQueue，retractWorkers 个专用 worker 消费）：
+// 数据 worker 只消费采集条目，撤回占用只作用于撤回面——数据消费与字节预算
+// 释放不再被排挤，正反馈被打断；撤回侧饱和只延迟撤回送达（retractQueue 槽满
+// 时丢弃臂登记挂起意图，两类 worker 消费间隙转储补派），retractBestEffort
+// 的 worker 内联臂（w13h）语义不变。
 package auditlog
 
 import (
@@ -91,6 +104,18 @@ const (
 	// producerWorkers caps concurrent store writers; renewal + persist +
 	// hot-search run sequentially per record inside one worker.
 	producerWorkers = 4
+
+	// retractQueueCapacity bounds the pending retraction commands (DD6-S1,
+	// 2026-11-01). 撤回命令免预算（bytes=0）、单条最长占用 worker
+	// retractWaitBudget，容量给足常态余量（撤回派生源：Cancel、persistOne
+	// 失败/panic 臂与丢弃臂补偿，稳态为个位数/小时量级）；饱和只延迟撤回送达
+	// （丢弃臂转登记挂起意图，消费间隙补派），不反压采集面。
+	retractQueueCapacity = 256
+	// retractWorkers 是撤回命令的专用 worker 数（DD6-S1）：与数据 worker 完全
+	// 分离的池——慢存储窗内单条撤回的 retractWaitBudget 级占用不再排挤数据
+	// 条目消费（正反馈被打断的关键），2 个 worker 为撤回积压提供双倍清空速率，
+	// 对池化 PG 的额外压力可忽略（lifecycle 守卫 DELETE 是廉价语句）。
+	retractWorkers = 2
 
 	// Estimation bases: small fields (ids, statuses, timestamps, small strings)
 	// roll into fixed per-record/per-attempt envelopes; the dominant payload
@@ -110,19 +135,24 @@ var producerQueueMaxBytes = int64(256) * 1024 * 1024
 // retractWaitBudget bounds one retract command's total settle-wait + retry
 // occupancy of a worker (W13, default 15s with 100/200ms backoff). Var only
 // so package tests can pin a small budget for the DD2-G1 settle-edge timing;
-// production must keep the default.
-var retractWaitBudget = 15 * time.Second
+// production must keep the default. atomic 读写（DD6-S1 测试缝收口，2026-11-01）：
+// worker 池（含测试结束后仍在收尾的 worker）与测试写入并发访问该变量，普通
+// var 在 -race 下构成跨 goroutine 数据竞争。
+var retractWaitBudget atomic.Int64
+
+func init() {
+	retractWaitBudget.Store(int64(15 * time.Second))
+}
 
 // queuedAudit pairs the input with its estimated byte size so the worker can
-// release the budget exactly at dequeue time. retractionID 非空表示这是一条
-// in_progress 信封撤回命令（W13）：不占字节预算，直接删除幽灵信封行。
-// deferred 非空表示这是一条未解码采集（DD-D4）：worker 协程内执行 JSON 类型
-// 桥后再持久化，三个字段互斥（deferred 优先于 input 判定）。
+// release the budget exactly at dequeue time. deferred 非空表示这是一条未解码
+// 采集（DD-D4）：worker 协程内执行 JSON 类型桥后再持久化（deferred 优先于
+// input 判定）。撤回命令不走本结构（DD6-S1：撤回与数据条目队列/worker 隔离，
+// 见 retractQueue / retractWorkerLoop）。
 type queuedAudit struct {
-	input        AuditLogInput
-	bytes        int
-	retractionID string
-	deferred     *deferredCapture
+	input    AuditLogInput
+	bytes    int
+	deferred *deferredCapture
 }
 
 // deferredCapture 描述一条在 worker 协程内才解码的审计采集：Decode 在有界
@@ -159,9 +189,16 @@ type Producer struct {
 	log   producerLogger
 
 	queue      chan queuedAudit
-	start      sync.Once
-	dropped    atomic.Int64
-	queueBytes atomic.Int64
+	// retractQueue 是撤回命令的专用有界队列（DD6-S1, 2026-11-01）。修复前撤回
+	// 命令免预算（bytes=0）并入采集队列、由同一 worker 池分发：存储慢窗内每条
+	// 被丢 finalize 派生的撤回最长占 worker retractWaitBudget（15s），4 个数据
+	// worker 可全被撤回占满 → 数据条目被排挤 → queueBytes 不释放 → 字节预算
+	// 持续满 → 更多丢弃（仅能靠存储恢复打破的正反馈）。专用化后撤回占用只作
+	// 用于撤回面（retractWorkerLoop），数据消费与字节释放不再被排挤。
+	retractQueue chan string
+	start        sync.Once
+	dropped      atomic.Int64
+	queueBytes   atomic.Int64
 	// persistDuration is the optional push hook for the per-record
 	// persistence latency histogram (result "ok" | "error"); nil keeps the
 	// producer silent.
@@ -177,12 +214,13 @@ type Producer struct {
 	envelopeMu        sync.Mutex
 	inFlightEnvelopes map[string]bool
 
-	// droppedRetractIntents 挂起丢弃臂因队列槽满无法入队的撤回命令（DD5-E1）：
-	// 请求准入协程不得内联执行撤回（retractWaitBudget 级阻塞沿准入面放大），
-	// worker 每消费一条队列条目后把意图转储为撤回命令补派（见
+	// droppedRetractIntents 挂起丢弃臂因撤回队列槽满无法入队的撤回命令
+	// （DD5-E1）：请求准入协程不得内联执行撤回（retractWaitBudget 级阻塞沿准
+	// 入面放大），worker 每消费一条队列条目后把意图转储为撤回命令补派（见
 	// drainDroppedRetractIntents）。与在途集合共用 envelopeMu；登记的前提是
-	// 队列槽满——worker 消费循环必然在场，意图只会被转储、不会被遗忘；同 id
-	// 重复登记幂等，集合以丢弃事件数为上界，无泄漏面。
+	// 撤回队列槽满——retractWorkerLoop 消费循环必然在场（数据 worker 消费间隙
+	// 同样转储），意图只会被转储、不会被遗忘；同 id 重复登记幂等，集合以丢弃
+	// 事件数为上界，无泄漏面。
 	droppedRetractIntents map[string]struct{}
 }
 
@@ -230,6 +268,7 @@ func NewProducer(store Store, lease LeaseSource, cfg Config, log producerLogger)
 		cfg:                   cfg,
 		log:                   log,
 		queue:                 make(chan queuedAudit, producerQueueCapacity),
+		retractQueue:          make(chan string, retractQueueCapacity),
 		inFlightEnvelopes:     map[string]bool{},
 		droppedRetractIntents: map[string]struct{}{},
 	}
@@ -489,16 +528,16 @@ func (p *Producer) CaptureDeferred(capture DeferredCapture) {
 }
 
 // retractDroppedEntry 对被丢弃条目的信封 id 补派撤回（DD3-C2，与 persistOne
-// 失败臂 needsRetract 同口径）。空 id 跳过：无 id 即无信封面，且空
-// retractionID 一旦入队会被 worker 当作普通采集持久化零值输入。
+// 失败臂 needsRetract 同口径）。空 id 跳过：无 id 即无信封面，撤回无从谈起。
 //
 // DD5-E1（2026-11-01）：本入口跑在请求准入协程上（DispatchAuditLog 同步直调
 // CaptureDeferred），不得内联执行撤回——retractBestEffort 的饱和内联臂最长
 // 占用 retractWaitBudget（15s），会沿准入面放大 F3 存储慢/队列饱和窗内的请
-// 求延迟。撤回因此只做非阻塞入队；槽满时登记挂起意图并瞬时返回，由 worker
-// 在队列消费间隙转储为撤回命令补派（drainDroppedRetractIntents）——丢弃臂
-// 返回时间与入队成功臂等价（瞬时），撤回补偿语义仍最终送达。挂起前提是队
-// 列槽满，worker 消费循环必然在场，意图不会被遗忘。
+// 求延迟。撤回因此只做非阻塞入队（DD6-S1：入专用撤回队列）；撤回队列槽满时
+// 登记挂起意图并瞬时返回，由数据 worker 与撤回 worker 在各自队列消费间隙转
+// 储为撤回命令补派（drainDroppedRetractIntents）——丢弃臂返回时间与入队成功
+// 臂等价（瞬时），撤回补偿语义仍最终送达。挂起前提是撤回队列槽满，
+// retractWorkerLoop 消费循环必然在场，意图不会被遗忘。
 func (p *Producer) retractDroppedEntry(auditLogID string) {
 	if auditLogID == "" {
 		return
@@ -513,6 +552,10 @@ func (p *Producer) retractDroppedEntry(auditLogID string) {
 func (p *Producer) startWorkers() {
 	for i := 0; i < producerWorkers; i++ {
 		go p.workerLoop()
+	}
+	// DD6-S1：撤回命令由独立 worker 池消费，与数据 worker 无共享队列。
+	for i := 0; i < retractWorkers; i++ {
+		go p.retractWorkerLoop()
 	}
 }
 
@@ -575,11 +618,12 @@ func (p *Producer) Retract(auditLogID string) {
 	p.warn("F3 审计采集队列已满，丢弃信封撤回命令", "auditLogID", auditLogID)
 }
 
-// tryEnqueueRetract 以非阻塞方式把撤回命令并入采集队列（免预算：撤回项
-// bytes=0，不占 W14 字节预算），返回是否入队成功。
+// tryEnqueueRetract 以非阻塞方式把撤回命令并入专用撤回队列（DD6-S1：与数据
+// 条目队列隔离，免预算：撤回命令不占 W14 字节预算，队列自身有界
+// retractQueueCapacity），返回是否入队成功。
 func (p *Producer) tryEnqueueRetract(auditLogID string) bool {
 	select {
-	case p.queue <- queuedAudit{retractionID: auditLogID}:
+	case p.retractQueue <- auditLogID:
 		return true
 	default:
 		return false
@@ -587,11 +631,11 @@ func (p *Producer) tryEnqueueRetract(auditLogID string) bool {
 }
 
 // retractBestEffort 是 persistOne 失败分支的撤回入口（W13 残留②收口，
-// 2026-10-28）：优先免预算入队；队列饱和时（饱和与存储故障同窗，正是该
-// 路径丢命令的触发形态）在当前 worker 协程上内联执行撤回——lifecycle 守卫
-// 对无行/终态行均为无害 no-op，最坏为本次结算增加一次有界（retractWaitBudget
-// 15s：settle 等待 + 重试 DELETE 共享的总预算）撤回占用，确定性消除「失败
-// 分支派发的撤回命令被同一饱和队列丢弃」的空壳残留。
+// 2026-10-28）：优先免预算入队；撤回队列饱和时（DD6-S1 隔离后撤回队列有界
+// 256，饱和即撤回派生远超清空速率的极端窗）在当前 worker 协程上内联执行撤回
+// ——lifecycle 守卫对无行/终态行均为无害 no-op，最坏为本次结算增加一次有界
+// （retractWaitBudget 15s：settle 等待 + 重试 DELETE 共享的总预算）撤回占用，
+// 确定性消除「失败分支派发的撤回命令被饱和队列丢弃」的空壳残留。
 //
 // 调用面约束（DD5-E1, 2026-11-01）：本函数只允许在 worker 协程上调用
 // （persistOne 失败/panic 臂、settle 补派臂）；请求准入面的丢弃臂撤回走
@@ -604,11 +648,13 @@ func (p *Producer) retractBestEffort(auditLogID string) {
 	p.retractOne(auditLogID)
 }
 
+// workerLoop 是数据条目（同步采集 + 延迟采集）的专用消费循环：只消费
+// p.queue，不执行任何撤回命令（DD6-S1）——慢存储窗内撤回的 retractWaitBudget
+// 级占用不能再排挤数据消费与字节预算释放；唯一与撤回面的交点是消费间隙的
+// 挂起意图转储（有槽位即转、无槽位即停，不阻塞）。
 func (p *Producer) workerLoop() {
 	for item := range p.queue {
 		switch {
-		case item.retractionID != "":
-			p.retractOne(item.retractionID)
 		case item.deferred != nil:
 			p.persistDeferred(item.deferred)
 			// Release the byte budget only after decode + persistence
@@ -625,13 +671,25 @@ func (p *Producer) workerLoop() {
 	}
 }
 
-// drainDroppedRetractIntents 把挂起的丢弃臂撤回意图转储为队列撤回命令
-// （DD5-E1 worker 侧补派）：worker 每消费一条队列条目后调用一次，队列有槽
-// 位即连续转储至意图排空或队列再次饱和（失败即停并放回，不阻塞、不忙等）。
-// 登记意图的前提是队列槽满——此刻 worker 消费循环必然在场，本转储点保证了
-// 挂起意图最终成为 retraction 命令被执行（retractOne 含 DD-D1 settle 等待与
-// DD2-G1 超时登记，补偿语义与入队路径一致）。转储出的命令与其他撤回命令同
-// 队列排队，幂等（lifecycle 守卫 DELETE）。
+// retractWorkerLoop 是撤回命令的专用消费循环（DD6-S1）：只消费 retractQueue，
+// 与数据 worker 完全隔离。单条撤回在慢存储上最长占用 retractWaitBudget
+// （15s：DD-D1 settle 等待 + 3 次续租删除），该占用自此类隔离起只作用于撤回
+// 面；撤回队列饱和只延迟撤回送达（丢弃臂转登记挂起意图），不反压采集面。
+func (p *Producer) retractWorkerLoop() {
+	for auditLogID := range p.retractQueue {
+		p.retractOne(auditLogID)
+		p.drainDroppedRetractIntents()
+	}
+}
+
+// drainDroppedRetractIntents 把挂起的丢弃臂撤回意图转储为撤回队列命令
+// （DD5-E1 worker 侧补派）：数据 worker 与撤回 worker 每消费一条各自队列条目
+// 后调用一次，撤回队列有槽位即连续转储至意图排空或队列再次饱和（失败即停并
+// 放回，不阻塞、不忙等）。登记意图的前提是撤回队列槽满——此刻
+// retractWorkerLoop 消费循环必然在场，本转储点保证挂起意图最终成为撤回命令
+// 被执行（retractOne 含 DD-D1 settle 等待与 DD2-G1 超时登记，补偿语义与入队
+// 路径一致）。转储出的命令与其他撤回命令同队列排队，幂等（lifecycle 守卫
+// DELETE）。
 func (p *Producer) drainDroppedRetractIntents() {
 	for {
 		auditLogID, ok := p.takeDroppedRetractIntent()
@@ -692,7 +750,7 @@ func (p *Producer) retractOne(auditLogID string) {
 		}
 	}()
 	const attempts = 3
-	deadline := time.Now().Add(retractWaitBudget)
+	deadline := time.Now().Add(time.Duration(retractWaitBudget.Load()))
 	p.waitForEnvelopeSettle(auditLogID, deadline)
 	if p.registerAbandonedRetract(auditLogID) {
 		p.warn("F3 审计信封撤回等待 settle 超时，放弃本次撤回（已登记撤回意图，settle 后补派）", "auditLogID", auditLogID)

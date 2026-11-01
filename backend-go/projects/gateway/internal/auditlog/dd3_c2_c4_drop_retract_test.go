@@ -222,8 +222,9 @@ func TestDD3C2OversizeEnvelopeDropRetractsNoOpHarmless(t *testing.T) {
 }
 
 // TestDD3C4RetractEnqueueExhaustedRegistersIntent 锁定 C4：撤回命令三次入队
-// 全失败 × 信封在途 → 放弃臂登记撤回意图（诊断日志为确定性证据）→ 信封
-// persist 成功 settle → 成功臂读到意图补派一次幂等撤回。
+// 全失败（DD6-S1 起针对专用撤回队列：撤回 worker 停驻后确定性填满）× 信封
+// 在途 → 放弃臂登记撤回意图（诊断日志为确定性证据）→ 信封 persist 成功
+// settle → 成功臂读到意图补派一次幂等撤回。
 func TestDD3C4RetractEnqueueExhaustedRegistersIntent(t *testing.T) {
 	logger := &fakeProducerLogger{warns: &[]string{}}
 	gate := make(chan struct{})
@@ -231,8 +232,8 @@ func TestDD3C4RetractEnqueueExhaustedRegistersIntent(t *testing.T) {
 	producer := NewProducer(store, StaticLease(OwnerLease{OwnerID: "dd3c4-owner", FenceToken: 7}), Config{OwnerLease: 30 * time.Second}, logger)
 
 	const envID = "dd3c4-env"
-	// 信封采集入队（入队即登记在途）+ 3 条垫底采集把 4 个 worker 全部停进
-	// 续租门，队列随后可确定性塞满。
+	// 信封采集入队（入队即登记在途）+ 3 条垫底采集把 4 个数据 worker 全部停
+	// 进续租门，数据队列随后可确定性塞满。
 	producer.Capture(dd1Envelope(envID))
 	for index := 0; index < producerWorkers-1; index++ {
 		producer.Capture(producerTestInput(fmt.Sprintf("dd3c4-park-%d", index)))
@@ -248,6 +249,10 @@ func TestDD3C4RetractEnqueueExhaustedRegistersIntent(t *testing.T) {
 		t.Fatal("信封必须在途（撤回意图登记的前置条件）")
 	}
 
+	// DD6-S1：撤回 worker 停驻后把撤回队列确定性填满——Retract 的三次入队
+	// 尝试必然全部失败（耗尽臂前置）。
+	dd6ParkRetractWorkers(t, store, producer, "dd3c4-retract", producerWorkers)
+	dd6FillRetractQueue(t, producer, "dd3c4-retract-fill")
 	for i := 0; i < producerQueueCapacity; i++ {
 		select {
 		case producer.queue <- queuedAudit{}:
@@ -269,19 +274,18 @@ func TestDD3C4RetractEnqueueExhaustedRegistersIntent(t *testing.T) {
 		t.Fatalf("settle 前不得执行删除: %v", got)
 	}
 
-	// settle：信封 persist 成功 → 成功臂读到意图 → 补派一次幂等撤回。
+	// settle：信封 persist 成功 → 成功臂读到意图 → 补派一次幂等撤回。停驻
+	// 垫底撤回（retract-park id）与撤回队列填充项同时落账，按 envID 出现次数
+	// 收敛断言、不依赖命令到达顺序。
 	close(gate)
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(10 * time.Second)
 	for {
 		got := store.retractions()
-		if len(got) == 1 {
-			if got[0] != envID {
-				t.Fatalf("补派撤回 id = %v, want [%s]", got, envID)
+		if count := dd6CountRetractions(got, envID); count >= 1 {
+			if count != 1 {
+				t.Fatalf("补派必须收敛为单次撤回: %v", got)
 			}
 			return
-		}
-		if len(got) > 1 {
-			t.Fatalf("补派必须收敛为单次撤回: %v", got)
 		}
 		if !time.Now().Before(deadline) {
 			t.Fatalf("settle 后必须补派撤回，实际 retractions=%v", got)

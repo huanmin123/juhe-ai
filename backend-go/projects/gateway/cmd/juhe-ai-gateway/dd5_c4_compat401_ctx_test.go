@@ -6,7 +6,9 @@ package main
 // 请求 ctx，Redis evalLua IO 随取消失败、计数仅 Warn，无效凭据得以系统性
 // 规避 preauth 熔断计数（主链/realtime 均早于写出计数，无此暴露）。修复：
 // 计数 ctx 改 context.WithoutCancel（与 token 刷新链先例同口径：保留值链、
-// 剥离取消传播）+ 3s 短超时；计数失败仍 Warn 不阻断已写出的 401。
+// 剥离取消传播）+ 短超时兜底；计数失败仍 Warn 不阻断已写出的 401。
+// DD6-S5（2026-11-01）适配：计数移入有界后台面异步执行——断连取消发生在
+// ServeHTTP 返回之后、worker 执行之前，WithoutCancel 语义在更强的时序下钉住。
 
 import (
 	"context"
@@ -47,10 +49,10 @@ func TestDD5C4CompatUnauthorizedCountsAfterRequestContextCanceled(t *testing.T) 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("状态码 = %d, want 401（计数不得阻断/改写已写出的 401）", recorder.Code)
 	}
-	if len(circuits.records) != 1 {
-		t.Fatalf("请求 ctx 取消后 RecordPreAuthFailure 入账次数 = %d, want 1（计数不随断连取消丢失）", len(circuits.records))
-	}
-	if circuits.records[0].Reason != gatewaypreauth.PreAuthFailureInvalidAPIKey {
-		t.Fatalf("reason = %q, want invalid_api_key", circuits.records[0].Reason)
+	// DD6-S5：计数由后台 worker 异步执行（此时请求 ctx 已取消、handler 已返
+	// 回），WithoutCancel 必须保证计数不随断连取消丢失。
+	records := waitForCompatRecords(t, &circuits.ddC1RecordingCircuits, 1)
+	if records[0].Reason != gatewaypreauth.PreAuthFailureInvalidAPIKey {
+		t.Fatalf("reason = %q, want invalid_api_key", records[0].Reason)
 	}
 }

@@ -87,6 +87,13 @@ OpenAI 到 Anthropic Messages 桥接已经覆盖 Chat / Responses 四类入口�
 
 首批只支持可安全转文本的文本类文件，包括 `text/*`、`application/json`、`application/typescript` 和 `application/x-sh`。文本索引单文件读取上限为 2 MB，chunk 数量受控。文件加入 vector store 时先返回 `in_progress`，随后异步索引；成功后更新为 `completed`，不支持 MIME、文本过大、空文件或 chunk 超限时更新为 `failed` 并写入 `last_error`。索引在途删除绑定后到达的索引完成 / 失败回调不复活已删行（不写状态、不重插 chunks、不刷新聚合字节）；重新添加同一文件照常复活绑定。PDF / Office / PPTX 深度解析作为 extractor 插件后续补齐；未配置 extractor 时，加入 vector store 会稳定进入失败状态，不在请求链路临时整文件解析。
 
+在途索引绑定的终态由两条机制兜住：
+
+- **代次守卫（S7）**：索引回调 upsert 以绑定行 `updated_at` 为代次快照——任务闭包捕获绑定落定时的 `updated_at` 而非回调时重读。绑定在索引任务启动后被删→重加（用户 add upsert 重写同键行并推进 `updated_at`；任何推进 `updated_at` 的绑定写点同效）时，行内 `updated_at` 已变化，旧任务回调整事务放弃并以 `ErrVectorStoreFileBindingSuperseded` 拒绝：不写 `failed`、不记 `last_error`、不刷聚合字节，仅路由层 warn 留痕，不以旧 attributes / chunking 与按旧 chunking 生成的 chunks 覆盖新绑定。
+- **启动清扫（S8）**：gateway 启动构造期（`openaicompatstorage.NewStore`）一次性把超龄 10 分钟仍 `in_progress` 的未删绑定标 `failed` 并推进 `updated_at`（后台尽力执行，失败仅 warn 不阻断构造），收尾进程重启后索引闭包永久丢失、无任何进程内写点能收尾的孤儿绑定。
+
+已知边界：清扫仅构造期执行一次，重启时龄不足 10 分钟的孤儿行待下次重启或用户重加（S7 代次守卫保证旧回调不覆盖新绑定）。落点：`openaicompatstorage/vectorstoresstore.go`（回调 upsert 的 `ExpectedUpdatedAt` / `WHERE updated_at = ?` 代次守卫）、`vectorstoresroutes.go`（闭包携带启动时代次快照、拒绝臂仅 warn）、`vectorstoresstalesweep.go`（10 分钟阈值与启动清扫）。
+
 ## 6. 存储设计
 
 ### 6.1 文件元数据

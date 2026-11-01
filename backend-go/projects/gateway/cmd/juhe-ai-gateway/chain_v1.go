@@ -30,6 +30,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
@@ -116,6 +118,12 @@ type gatewayChain struct {
 	// mounts the family ahead of the protocol check on purpose. Nil keeps the
 	// pure protocol chain (compose tests).
 	compat *chainCompatDispatcher
+	// compatPreAuthFailureQueue 是 compat 401 认证前熔断计数的有界后台面
+	// （DD6-S5，2026-11-01）：401 写出后的计数不得同步占请求协程（Redis 黑洞
+	// 窗内协程数 ≈ RPS×3s），改单 worker + 有界 channel，超容量丢弃计数并告
+	// 警。zero value 可用（channel 首次 dispatch 惰性初始化），组合测试直接
+	// 构造 gatewayChain 字面量时无需装配。
+	compatPreAuthFailureQueue chainCompatPreAuthFailureQueue
 }
 
 // ServeHTTP implements http.Handler over the /v1 prefix.
@@ -1230,6 +1238,107 @@ func (c *gatewayChain) rejectCompatEntryBySourceGuards(w http.ResponseWriter, re
 	return true
 }
 
+// compat 认证前熔断计数有界后台面（DD6-S5）的队列容量与单条计数 IO 兜底超
+// 时：容量吸收 401 风暴突发，超出即丢弃计数并告警（fire-and-forget 不放大进
+// 程内存、不积压请求协程）；超时自后台 worker 开始执行时计（队列等待不计入）。
+const (
+	compatPreAuthFailureQueueCapacity = 256
+	compatPreAuthFailureCountTimeout  = 3 * time.Second
+)
+
+// chainCompatFailureItem 是一条待后台执行的 compat 401 认证前熔断计数。请求
+// 派生字段（reason/clientIP/authorization/endpoint）在 handler 协程内同步提
+// 取（请求对象在 handler 返回后不可复用）；circuits 与 logger 是进程级长生
+// 命周期依赖；ctx 是 WithoutCancel 后的请求 ctx（DD5-C4：保留值链、剥离取消
+// 传播，断连不丢计数）。
+type chainCompatFailureItem struct {
+	ctx           context.Context
+	circuits      gatewaypreauth.PreAuthCircuits
+	logger        gatewaypreauth.Logger
+	clientIP      string
+	authorization string
+	reason        gatewaypreauth.PreAuthFailureReason
+	endpoint      string
+}
+
+// chainCompatPreAuthFailureQueue 是 compat 401 计数的有界后台面（DD6-S5）：
+// 单 worker 消费有界 channel，401 响应不等待计数。zero value 可用，channel
+// 在首次 dispatch 时经 sync.Once 惰性初始化。worker 与进程（网关生命周期）
+// 等长常驻；execute 的 panic 隔离保护消费循环——计数面故障若杀死 worker，
+// 队列自此只进不出、持续丢弃，是必须避免的故障形态（与 auditlog worker 池
+// 的 panic 隔离契约同型）。
+type chainCompatPreAuthFailureQueue struct {
+	once    sync.Once
+	queue   chan chainCompatFailureItem
+	dropped atomic.Int64
+}
+
+// dispatch 非阻塞入队一条计数；队列满即丢弃本次计数并计数告警（与 auditlog
+// Producer 的饱和丢弃同型：fire-and-forget 永不反压请求协程）。
+func (q *chainCompatPreAuthFailureQueue) dispatch(item chainCompatFailureItem) {
+	if item.circuits == nil {
+		return
+	}
+	q.once.Do(func() {
+		q.queue = make(chan chainCompatFailureItem, compatPreAuthFailureQueueCapacity)
+		go q.workerLoop()
+	})
+	select {
+	case q.queue <- item:
+	default:
+		dropped := q.dropped.Add(1)
+		item.logger.Warn("gateway_pre_auth_failure_count_queue_full", map[string]any{
+			"endpoint":     item.endpoint,
+			"reason":       string(item.reason),
+			"droppedTotal": dropped,
+		}, "compat 路由 401 的认证前熔断计数队列已满，丢弃本次计数（不影响已写出的 401 响应）")
+	}
+}
+
+func (q *chainCompatPreAuthFailureQueue) workerLoop() {
+	for item := range q.queue {
+		q.execute(item)
+	}
+}
+
+// execute 在后台 worker 协程执行单条计数：3s 兜底超时自此开始计（队列等待
+// 不计入）；计数失败与熔断开启都只记日志，不改写已写出的 401——后续请求由
+// rejectCompatEntryBySourceGuards 的 InspectPreAuthCircuit 短路 429（同主链
+// InspectPreAuthCircuit 口径）。
+func (q *chainCompatPreAuthFailureQueue) execute(item chainCompatFailureItem) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			item.logger.Warn("gateway_pre_auth_failure_count_panic", map[string]any{
+				"endpoint": item.endpoint,
+				"panic":    recovered,
+			}, "compat 路由 401 的认证前熔断计数 panic 已隔离")
+		}
+	}()
+	countCtx, cancel := context.WithTimeout(item.ctx, compatPreAuthFailureCountTimeout)
+	defer cancel()
+	decision, err := item.circuits.RecordPreAuthFailure(countCtx, gatewaypreauth.PreAuthFailureInput{
+		ClientIP:      item.clientIP,
+		Authorization: item.authorization,
+		Reason:        item.reason,
+	})
+	if err != nil {
+		item.logger.Warn("gateway_pre_auth_failure_record_failed", map[string]any{
+			"endpoint": item.endpoint,
+			"reason":   string(item.reason),
+			"error":    err.Error(),
+		}, "compat 路由 401 的认证前熔断计数失败（不影响已写出的 401 响应）")
+		return
+	}
+	if decision.Blocked {
+		item.logger.Warn("gateway_pre_auth_error_circuit_opened", map[string]any{
+			"reason":            decision.Reason,
+			"retryAfterSeconds": decision.RetryAfterSeconds,
+			"failureCount":      decision.FailureCount,
+			"endpoint":          item.endpoint,
+		}, "网关认证前来源保护已进入短期熔断（compat 路由 401 计入）")
+	}
+}
+
 // recordCompatPreAuthFailure 把 compat 三族（files / containers /
 // vector_stores）路由内的 401 认证失败计入认证前熔断（DD2-C1）：该族 401 出
 // 口在 openaicompat 路由内部（scope resolver 解析失败 →
@@ -1239,15 +1348,22 @@ func (c *gatewayChain) rejectCompatEntryBySourceGuards(w http.ResponseWriter, re
 // invalid_api_key），Authorization 经 GatewayPreAuthSource 同源合成，来源 IP
 // 与入口守卫同源（requestClientIP：kernel XFF 解析优先）。fire-and-forget：
 // 401 已由路由写出，计数失败只记日志不阻断响应；当次记录触发熔断
-// （Blocked）也不改写已写出的 401——后续请求由
-// rejectCompatEntryBySourceGuards 的 InspectPreAuthCircuit 短路 429（同主链
-// InspectPreAuthCircuit 口径）。
+// （Blocked）也不改写已写出的 401。
 //
 // DD5-C4（2026-11-01）：计数发生在响应写出之后，不能沿用请求 ctx——客户端
 // 读到 401 立即断连会取消请求 ctx，Redis evalLua IO 随取消失败、计数仅
 // Warn，无效凭据得以系统性规避 preauth 熔断计数（主链/realtime 均在写出前
 // 计数，无此暴露）。与 token 刷新链 context.WithoutCancel 先例同口径：保留
-// ctx 值链、剥离取消传播，另加 3s 短超时兜底计数 IO；计数失败仍 Warn 不阻断。
+// ctx 值链、剥离取消传播，另加短超时兜底计数 IO；计数失败仍 Warn 不阻断。
+//
+// DD6-S5（2026-11-01）：计数不得同步占请求协程——401 写出后响应已落定（无
+// 背压），Redis 黑洞时同步计数会把每个无效凭据请求的协程占用至
+// compatPreAuthFailureCountTimeout（goroutine ≈ RPS×3s）。与主链/realtime 的
+// 语义差异（记录在案）：主链与 realtime 面在响应写出之前同步计数（计数延迟
+// 计入 4xx 响应时延、ctx 必然存活），compat 面计数发生在写出之后，改为有界
+// fire-and-forget 后台面（chainCompatPreAuthFailureQueue：单 worker + 有界
+// channel，超容量直接丢弃计数并告警），401 响应不等待计数；请求派生字段仍
+// 在 handler 协程内同步提取，只有计数 IO 移入后台。
 func (c *gatewayChain) recordCompatPreAuthFailure(req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter) {
 	if c == nil || c.preauth == nil || c.preauth.Circuits == nil || req == nil || res == nil {
 		return
@@ -1255,12 +1371,6 @@ func (c *gatewayChain) recordCompatPreAuthFailure(req *gatewaypreauth.GatewayReq
 	if !res.HeadersSent() || res.StatusCode() != http.StatusUnauthorized {
 		return
 	}
-	ctx := context.Background()
-	if req.HTTP != nil {
-		ctx = context.WithoutCancel(req.HTTP.Context())
-	}
-	countCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
 	reason := gatewaypreauth.PreAuthFailureInvalidAPIKey
 	if bearerTokenOf(req.HTTP) == "" {
 		reason = gatewaypreauth.PreAuthFailureMissingBearerToken
@@ -1269,27 +1379,19 @@ func (c *gatewayChain) recordCompatPreAuthFailure(req *gatewaypreauth.GatewayReq
 	if clientIP == "" {
 		clientIP = requestClientIP(req)
 	}
-	decision, err := c.preauth.Circuits.RecordPreAuthFailure(countCtx, gatewaypreauth.PreAuthFailureInput{
-		ClientIP:      clientIP,
-		Authorization: c.preauth.GatewayPreAuthSource(req, req.Header("authorization")),
-		Reason:        reason,
+	reqCtx := context.Background()
+	if req.HTTP != nil {
+		reqCtx = req.HTTP.Context()
+	}
+	c.compatPreAuthFailureQueue.dispatch(chainCompatFailureItem{
+		ctx:           context.WithoutCancel(reqCtx),
+		circuits:      c.preauth.Circuits,
+		logger:        c.preauth.Observability.Logger(),
+		clientIP:      clientIP,
+		authorization: c.preauth.GatewayPreAuthSource(req, req.Header("authorization")),
+		reason:        reason,
+		endpoint:      gatewaypreauth.RequestEndpoint(req),
 	})
-	if err != nil {
-		c.preauth.Observability.Logger().Warn("gateway_pre_auth_failure_record_failed", map[string]any{
-			"endpoint": gatewaypreauth.RequestEndpoint(req),
-			"reason":   string(reason),
-			"error":    err.Error(),
-		}, "compat 路由 401 的认证前熔断计数失败（不影响已写出的 401 响应）")
-		return
-	}
-	if decision.Blocked {
-		c.preauth.Observability.Logger().Warn("gateway_pre_auth_error_circuit_opened", map[string]any{
-			"reason":            decision.Reason,
-			"retryAfterSeconds": decision.RetryAfterSeconds,
-			"failureCount":      decision.FailureCount,
-			"endpoint":          gatewaypreauth.RequestEndpoint(req),
-		}, "网关认证前来源保护已进入短期熔断（compat 路由 401 计入）")
-	}
 }
 
 // chainCompatBlacklistIPMessage mirrors gatewaypreauth 的 blacklistIPMessage

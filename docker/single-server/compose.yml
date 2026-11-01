@@ -1,8 +1,8 @@
 # 单机 Docker 部署拓扑（国内单服务器，2026-09 起，替代 K3s 混合形态的 go-only 目标形态）。
 #
 # 与 docker/compose.yml（Harbor/K3s 用）的差异：
-# - Postgres/Redis 直接作为 Compose 服务，单库 juhe_ai + 8 schema：6 个由 maintenance
-#   --ensure-schema 建（business/usage/stats/chat/dataset/codex_context），juhe_jobs、juhe_j3b
+# - Postgres/Redis 直接作为 Compose 服务，单库 juhe_ai + 7 schema：5 个由 maintenance
+#   --ensure-schema 建（business/dataset/usage/stats/codex_context），juhe_jobs、juhe_j3b
 #   需手工 CREATE SCHEMA 后由 maintenance --apply-* 建表（完整序列见同目录 README.md）。
 # - gateway 以本机 80 端口经 Caddy 对外，管理 SPA 挂 /__aisys__/，/v1 为 OpenAI 兼容入口。
 # - gateway(3306)/jobs(3305) 健康监听经宿主回环端口映射发布，仅 127.0.0.1 可达，

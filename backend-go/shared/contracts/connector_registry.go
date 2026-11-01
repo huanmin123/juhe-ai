@@ -2,11 +2,11 @@
 // capability domain 与 endpoint mode 的编译期唯一事实源。
 //
 // 数据与计数契约来自 docs/functions/供应商与上游协议面重构设计.md：
-//   - §1.1（:29-50 的 20 行注册表）展开恰有 49 个允许连接组合与 162 个单 mode 组合；
+//   - §1.1（:29-50 的 20 行注册表）展开恰有 50 个允许连接组合与 163 个单 mode 组合；
 //   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 15 条、Anthropic 2 条、Gemini native 8 条）；
 //   - §2.2 的域 lane（chat 13、video 4、audio 7、image 1）、preset 词表（8 行）与 driver 收窄规则。
 //
-// 49 与 162 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
+// 50 与 163 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
 // 禁止另建第二份手写清单互相对账（设计 §1.1「计数来源和阻断规则」）。
 
 package contracts
@@ -538,7 +538,7 @@ var connectorComboRows = []connectorComboRow{
 }
 
 // ---------------------------------------------------------------------------
-// 派生数据（49 连接组合与 162 单 mode 组合的唯一来源）
+// 派生数据（50 连接组合与 163 单 mode 组合的唯一来源）
 // ---------------------------------------------------------------------------
 
 // ConnectorCombo 是一个允许的连接组合（设计 §1.1 五元组 + driver/preset 投影字段）。
@@ -561,7 +561,7 @@ type ConnectorCombo struct {
 }
 
 // EndpointModeCombo 是 ConnectorCombo 的单 mode 展开：一个连接组合允许的每个
-// endpoint mode 各一条（设计 §1.1 :54 的 162 条清单）。
+// endpoint mode 各一条（设计 §1.1 :54 的 163 条清单）。
 type EndpointModeCombo struct {
 	// Driver/Vendor/AccountType/OAuthType/Preset/Surface/Domain 语义与 ConnectorCombo 相同。
 	Driver      string
@@ -587,7 +587,7 @@ var (
 var (
 	// connectorCombos 是 49 条允许连接组合的排序稳定清单。
 	connectorCombos = buildConnectorCombos()
-	// endpointModeCombos 是 162 条单 mode 组合的排序稳定清单。
+	// endpointModeCombos 是 163 条单 mode 组合的排序稳定清单。
 	endpointModeCombos = buildEndpointModeCombos()
 	// connectorComboIndex 是五元组判定索引。
 	connectorComboIndex = buildConnectorComboIndex(connectorCombos)
@@ -798,14 +798,14 @@ func AllowedModes(domain, preset, accountType, oauthType string) []string {
 // 公开 API（设计 §1.1：三个项目绑定同一 tuple，不得复制允许集合）
 // ---------------------------------------------------------------------------
 
-// AllowedConnectorCombos 返回全部 49 个允许连接组合，
+// AllowedConnectorCombos 返回全部 50 个允许连接组合，
 // 按 driver、account type、oauth type、preset、domain 的字典序稳定排序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedConnectorCombos() []ConnectorCombo {
 	return connectorCombos
 }
 
-// AllowedEndpointModeCombos 返回全部 162 个单 mode 组合，
+// AllowedEndpointModeCombos 返回全部 163 个单 mode 组合，
 // 按 connectorCombos 同一排序规则追加 mode 字典序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedEndpointModeCombos() []EndpointModeCombo {
@@ -835,7 +835,7 @@ func ComboDriverCounts() map[string]int {
 	return counts
 }
 
-// ModeComboDriverCounts 返回 162 条单 mode 组合按 driver 的计数。
+// ModeComboDriverCounts 返回 163 条单 mode 组合按 driver 的计数。
 func ModeComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(endpointModeCombos))
 	for _, combo := range endpointModeCombos {
@@ -845,7 +845,7 @@ func ModeComboDriverCounts() map[string]int {
 }
 
 // RegistryFingerprint 返回 registry 的 SHA-256 指纹（64 位小写 hex）。
-// 计算方式（设计 §1.1 :56）：对 162 条单 mode 元素组成的 UTF-8 compact JSON 数组的
+// 计算方式（设计 §1.1 :56）：对 163 条单 mode 元素组成的 UTF-8 compact JSON 数组的
 // 原始 bytes 计算 SHA-256；数组元素按 ASCII 字典序排序；每个元素字段顺序固定为
 // driver、vendor、accountType、oauthType、preset、surface、domain、mode、
 // allowedBaseSuffixes、operationTemplates、defaultBaseUrl；vendor/oauthType/surface

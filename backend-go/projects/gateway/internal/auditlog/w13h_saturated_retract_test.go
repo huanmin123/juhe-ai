@@ -16,20 +16,21 @@ import (
 // ② 失败分支在队列饱和时必须在 worker 协程上内联执行撤回，不再依赖可能
 //    被丢弃的入队路径。
 
-// TestW13HQueueFullFailureBranchRetractsInline：队列塞满后同步调用
-// persistOne（复现「终态写入失败 + 撤回命令无法入队」的生产饱和形态），
+// TestW13HQueueFullFailureBranchRetractsInline：撤回队列塞满后同步调用
+// persistOne（复现「终态写入失败 + 撤回命令无法入队」的饱和形态；DD6-S1 起
+// 撤回命令走专用撤回队列，retractBestEffort 的入队臂针对该队列），
 // 撤回必须内联执行，不得丢弃。
 func TestW13HQueueFullFailureBranchRetractsInline(t *testing.T) {
 	fake := &fakeStore{renewOK: true, persistErr: errors.New("获取 F3 blob 生命周期锁失败: context deadline exceeded")}
 	producer := NewProducer(fake, StaticLease(OwnerLease{OwnerID: "w13h-owner", FenceToken: 7}), Config{OwnerLease: 30 * time.Second}, nil)
 
 	// NewProducer 不启动 worker（start.Do 在首次 Capture/Retract 才触发），
-	// 直接把采集队列塞满即可获得确定性的饱和现场。
-	for i := 0; i < producerQueueCapacity; i++ {
+	// 直接把撤回队列塞满即可获得确定性的饱和现场（无消费循环在场）。
+	for i := 0; i < retractQueueCapacity; i++ {
 		select {
-		case producer.queue <- queuedAudit{}:
+		case producer.retractQueue <- "w13h-saturated-fill":
 		default:
-			t.Fatalf("队列容量守恒被破坏：第 %d 条即满（capacity=%d）", i, producerQueueCapacity)
+			t.Fatalf("撤回队列容量守恒被破坏：第 %d 条即满（capacity=%d）", i, retractQueueCapacity)
 		}
 	}
 
@@ -62,7 +63,8 @@ func TestW13HPersistPanicRetractsEnvelope(t *testing.T) {
 
 	producer.persistOne(producerTestInput("w13h-panic"))
 
-	// 撤回已入队；kick 一次正常采集启动 worker 池，等撤回被消费落账。
+	// 撤回已入专用撤回队列；kick 一次正常采集启动 worker 池（含撤回 worker），
+	// 等撤回被消费落账。
 	producer.Capture(producerTestInput("w13h-kick"))
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

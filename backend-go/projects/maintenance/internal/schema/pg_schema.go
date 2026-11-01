@@ -105,8 +105,8 @@ type PGResult struct {
 	StatementCount int
 }
 
-// EnsurePostgres applies the full PostgreSQL schema (business, chat, dataset,
-// usage, stats and codex context) to db, executing CREATE SCHEMA once per
+// EnsurePostgres applies the full PostgreSQL schema (business, dataset,
+// usage, stats, codex_context) to db, executing CREATE SCHEMA once per
 // schema group and every DDL statement in the Node applyPostgresSchema order.
 // All statements are idempotent, so repeated calls are no-ops. Transient lock
 // conflicts (deadlock_detected 40P01 / lock_not_available 55P03 / statement

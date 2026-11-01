@@ -27,8 +27,8 @@
   - B5 托管 OAuth 建号 400（strict-body 未知键拒绝）；BUG-0333/0332 克隆/编辑协议身份占位；BUG-0334/0335/0336 列退役与写序外键族。
   - W45 chat 面目录读链畸形能力矩阵硬失败 vs 管理面 lenient（已登记观察，不扩大）。
   - T85 chat 工具编排触顶错误掩盖（待用户裁决，属 chat 域在办项，本环不重复登记）。
-- 当前阶段 / 当前轮次：R1–R5 闭环；**R6 进行中**——运维与部署面视角（必填配置矩阵与静默降级、健康检查语义、发布/回滚/迁移/启动顺序、观测与日志、容量弹性、共享资源竞争）+ 操作序列×降级组合视角（长操作序列第 N 步状态残留、依赖降级组合矩阵、重复/回退/重放序列）。
-- 收敛计数：0 / 3（R1–R5 均有确认与修复，不计干净轮；R6 起点重算）。
+- 当前阶段 / 当前轮次：R1–R6 闭环；**终态复核轮进行中**（收敛判定前强制轮）——四面：①已修行为组合终态（70 处修复叠加后的高风险交叉逐对核）②文档-实现终态一致（历轮改过的文档声明逐句对照当前代码）③测试与门禁盘点（新增测试钉的是修复后行为吗/不稳定断言/门禁覆盖新包）④部署/升级场景活性（迁移重跑幂等、旧数据+新代码、回滚路径）。
+- 收敛计数：0 / 3（R1–R6 均有确认与修复，不计干净轮；终态复核轮结论将决定收敛口径）。
 
 ## 扩散记录（续）
 
@@ -232,6 +232,24 @@ R1 攻击轮核验性结论（不改行为、直接入覆盖矩阵）：DD-C10~C
 
 | R4-批8（2026-11-01，C 类裁决落地 DD2-A1） | compact 预算豁免锚改服务端账户：chain_v1_loop 装配点闸（applyCompactionExemptionAccountGate），判定=Type==oauth && CodexOAuthVendorEligible(vendor)（复用既有 gpt vendor 口径）；触发条件=wall.Unbounded 且窗口含非 codex OAuth 账户→覆盖常规 270s+TimeoutsDisabled=false；TotalTimeLane/l.budgets.wall/preflight/T49 刻意不动（注释写明）；9 测试钉住 ①-⑥ + OAuth 重放轮混窗；文档 3 处口径收窄 | preauth/gatewaycodex/cmd 全包绿（cmd 21.9s）；vet 干净 | 落点由写码档自证+①-⑥ 验收面逐项测试；随下轮复核 |
 
+### R6（运维与部署面 + 操作序列×降级组合，2026-11-01）
+
+**R6-O 运维与部署面**：8 条（配置矩阵核查：本环 64 修复零新增 env，硬编码常量符合「功能不设开关」；健康语义未变；无新增 DDL）。要点：DD6-O1（中·**初始化文档失真**：本环把 juhe_chat 组从 ensure-schema 移除（现 5 组）但部署文档仍写 6 组/8 schema——README:9/:29/:31 与 compose.yml:4-5）；DD6-O2（低·**派生目录契约残留**：chat-assets 已无写侧/清理方，文档仍列为现行派生目录——README:360、部署指南:173）；DD6-O3（中·**env 退役承诺与 jobs 行为不符**：文档称退役 CHAT 变量会得未知变量 WARN，但 configregistry 仅 gateway 接入、jobs 零信号）；DD6-O4（低·回滚面：rev7 删步+chatbindingmigration 物理删除+唯一 rollbackSql 记载删除，实际回滚目标已晚于 rev7 风险低）；DD6-O5（低中·**droppedRetractIntents 无硬上界无 gauge**，长故障窗按请求率线性增长 20-30MB 量级）；DD6-O6（低中·新计数无抓取：PendingOverflowCount 零消费、意图表/在途集合无 gauge，与 DD3-C7 同族）；DD6-O7（低·发布窗 /health 503 尖峰与告警窗需核对）；DD6-O8（已登记 DD3-F4 终态确认）。
+
+**R6-S 操作序列×降级组合**：15 条（H6/H9/H10/H11/H12 闭合核对通过；H2 设计接受；H13/H14/H15 待核实/未知）。要点：DD6-S1（中·**审计饱和自延长**：字节预算饱和窗内每个被丢 finalize 生成免预算撤回命令（bytes=0 绕过预算），慢 PG 上每条撤回占 worker 至 15s→4 worker 全被撤回占满→数据条目停消费→queueBytes 不释放→预算持续满→更多丢弃，与 PG 恢复后自愈）；DD6-S3（低猜测·同 tid 迟到重放×retention 清理窗→已关闭 incident 复活；触发方未定位）；DD6-S4（低·**Cleanup 注释与 SQL 矛盾**：outbox 删除无 event_type 过滤（dispatched+acked 行同删）而注释宣称「dispatched 行永生」，行为由 dispatch_revision CAS stale 臂兜住但注释会误导后人）；DD6-S5（中·compat 计数 WithoutCancel+3s 在 Redis 黑洞时每请求驻留 3s、401 已写出无背压→goroutine≈RPS×3s 放大）；DD6-S7（中·**vectorstores 删→重加×旧索引任务在途**：IndexCallback=true 命中新行以旧 attributes/chunking 覆盖，last-writer-wins 无代次守卫）；DD6-S8（中·**vectorstores 索引任务×进程重启→绑定永久 in_progress 无清扫无超时回收**，DD2-C7 只拦已删行复活不解决任务消失）。
+
+**R6 验证轮**：7 条送验 → **6 confirmed / 1 refuted**（DD6-O3 证伪：compose 三服务共享同一 env_file，残留 CHAT 变量 gateway 启动即打 WARN，文档承诺在部署层面兑现）。
+
+| R6-批10（2026-11-01，6 confirmed，3 写码档） | 内容 |
+| --- | --- |
+| DD6-O1+O2（B/C·部署文档失真） | 8 处同步：README:9/:29/:31/:327（8→7 schema、6→5 组、chat 库加表条改写为退役标注）、compose.yml:4-5 头注释、部署指南:59/:173、README:360 chat-assets 移除+退役括注。**代码事实修正**：juhe_jobs/juhe_j3b 非「bootstrap 建 schema」而是手工 CREATE SCHEMA 预置后 --apply-* 建表（已按代码改）；deploy/README.md:51 落点不存在（已核实） |
+| DD6-S7（中·数据正确性） | vectorstores 索引代次守卫：回调 upsert WHERE 追加 `updated_at = ?`（方案①，`updated_at` 是每次绑定写点都推进的单调列；`created_at` 在重加 upsert 不更新无区分度），superseded 分类不写 failed；与仓内 authsys/authz 乐观锁惯例同型。已知局限：毫秒精度同毫秒碰撞窗口，无 DDL 无法根除 |
+| DD6-S8（中低） | vectorstores 启动清扫：`sweepStaleVectorStoreFileIndexing` 后台一次性，超龄 10min in_progress 标 failed；**偏离任务原文**：条件用 `updated_at` 而非 `created_at`（重加不推进 created_at 会误判合法在途行），且不能同步触库（既有 `TestCreateFileSurfacesDBErrors` 钉住 NewStore 不触库契约）→ 改 `safego.Go` 后台执行；两修复互洽（清扫推进 updated_at 后旧代次回调必被 S7 守卫拒绝） |
+| DD6-S1（中·饱和自延长） | 审计撤回结构隔离：新增专用有界撤回队列（256）+ 2 撤回 worker，数据 worker 不再消费撤回命令→正反馈打断（数据条目持续消费、queueBytes 释放）；`retractWaitBudget` 测试缝 atomic 化消除 -race 竞争；w13h 内联臂语义保持 |
+| DD6-S5（中低） | compat 计数改有界异步：单 worker+有界 channel（256），超容量丢弃计数并 Warn（`gateway_pre_auth_failure_count_queue_full`）；请求对象字段在 handler 返回前提取，仅计数 IO 入后台；WithoutCancel 语义保留；注释记录与主链/realtime 写出前计数的语义差异 |
+
+验证：auditlog 23.5s/cmd 35.6s 全绿（含 -race 两轮）、openaicompatstorage 全绿+DD2-C7 三例回归、部署文档 rg 失真模式零命中；新增钉住测试 6 条（DD6-S1×2、DD6-S5×2、DD6-S7×2+DD6-S8×2）。
+
 ### R5（数据演化×边界态 + 消费者契约×外部视角 + 批7/8 落点复核，2026-11-01）
 
 **落点复核（批7-1 E8/E9、批7-2 T87、批8 A1）**：**3/3 组确认正确、0 问题**（守卫同源/mustChange 短路/日志脱敏/fail-closed；T87 两臂传参/identity 守卫 IS NOT DISTINCT FROM/重置列完整性/schema 三方一致；A1 授予点唯一/空值保守/传导链/不动面/重放轮）。回归攻击 10 个场景全通过（含 E8 第 10/11 次边界、成功后清零、并发 INCR、mustChange 非爆破面；T87 同 tid 并发双写、identity 不匹配显式错误；A1 混合窗口每轮独立无跨轮污染）。
@@ -402,4 +420,28 @@ R1 攻击轮核验性结论（不改行为、直接入覆盖矩阵）：DD-C10~C
 - 未提交改动：本环修复批 36 文件（backend-go 32 + docs 6，与并行会话 chat 域在制品混存工作区，未 commit）；台账与 T86 为过程记录。
 - 收敛状态：收敛协议未走满——R2（场景制）、R3（交互制）未执行；R1 存在 B 类确认与修复回归，不计干净轮。出口待用户裁决：继续 R2 / 用户裁决提前收口（出口②）。
 
-## 终报（收口时写）
+### 终态复核轮（2026-11-01，3 审核档并行，收敛判定前强制轮）
+
+**①已修行为组合终态（6 组全核）**：审计 producer（数据 worker 4/撤回 worker 2/意图表/在途集合/预算记账/三丢弃臂/panic 臂全交互闭合，三满叠加无「满」态，正反馈已打断）、流式管道（四处词表对齐+优先序逐形态推演一致、A5 越限在清点后、B1/B2 Completed 门+RC-C1 双重守卫）、停机链（正常/错误/启动失败三路径 × F3/F4 lease/store 释放保证全闭合）、入口保护（四面计数与封锁语义一致）、配置/校验（写读契约+守卫一致）、jobs（读序/dedupe/T87 同构）。**新发现仅 2 条低危台账级（DD7-RC1 注释与 Cleanup SQL 矛盾、DD7-RC2 DD3-RC1 登记未落地），无跨修复组行为回归。**
+
+**②文档-实现终态一致（27 条逐句核）**：一致 24，失同步 3（DD7-DC1 Files 缺 S7/S8、DD7-DC2 用量口径缺 Completed 门、DD7-DC3 策略路由缺 DD2-A1 收窄句）→ **已全部修正**；另修正 2 处代码注释瑕疵（pg_schema EnsurePostgres 组清单、connector_registry_test 162→163）与主代理直修的 connector_registry.go/test 9 处旧值注释（49→50、162→163，契约测试绿）。**代码本身未见与文档相悖的错误实现。**
+
+**③测试与门禁盘点（11 项全通过）**：钉住测试均钉修复后行为（异步语义改轮询到账断言，无钉旧行为残留）；时间断言仅 1 处 200ms 门余量约 200 倍属低风险；无并行在制品依赖；**变异抽检 5/5 还原必红**（DD-D1/DD6-S1/DD2-A1/DD6-S7/DD3-B1）；新包已入日常链路（circuit_control_plane/openaicompatstorage/circuitstore/ingestgate 均不在 exclude 表）；全量抽查 9 包+2 jobs 包全绿（auditlog 29s、accounts、authsys、gatewayclientip、runtimecache、circuit_control_plane 等）。
+
+**④部署/升级活性（8 项全通过）**：SchemaRevision 恒 12、本环零 DDL（S7 用既有 updated_at、S8 是运行时 UPDATE）→ upgrade 重跑收敛 no-op；旧数据 5 类（.corrupt/.tmp、dispatched outbox、in_progress vectorstore、>1MB 审计 body、越界 overrides）升级后行为逐类确认；回滚双向可跑（无结构变更，compose diff 仅头注释）；启动顺序（schemagate/ACQUIRE_WAIT 45s/F3-F4 租约释放）通过。
+
+**建议（未执行，需授权窗口）**：交付前补跑一次 openaicompatstorage/circuit_control_plane/circuitstore 的 `JUHE_AI_TEST_EXTERNAL=1` PG 臂与 maintenance upgrade 重跑，作为 S7/S8/T87 的活性实证。
+
+## 终报
+
+- **终止原因**：用户裁决提前收口（出口②）——用户要求「转入终态复核轮」，终态复核已执行（①6 组全核 ②27 条文档逐句 ③11 项测试门禁 ④8 项部署活性），**但收敛协议的「连续 3 轮零 B 类确认」未走满**：R1–R6 每轮均有新确认与修复（R1 30、R2 14、R3 6、R4 2+jobs2、R5 7、R6 6），收敛计数 0/3。终态复核轮结论为「零行为回归、零 B 类新确认、零 A 类未被处置项」，据此收口并如实标注协议未走满。
+- **扫描范围与轮次**：锚定 `backend-go/projects/gateway`（cmd 4.07 万行 + internal 20 万行，含 jobs 扩散 2 处）。R1 维度制（7 攻击面/84 假设→30 confirmed）｜R2 场景制（7 入口组/~70 假设→14 confirmed）｜R3 交互制（6 模块对/~80 假设→6 confirmed，修复间 36 对一致 35/冲突 0）｜R4 扩展+落点复核（批4 13 条 + 批5 9 条全复核通过；jobs 扩散 2 confirmed）｜R5 数据演化+消费者契约（9 送验→7 confirmed；批7/8 落点 3/3 确认）｜R6 运维部署+序列降级（7 送验→6 confirmed）。
+- **处置统计**：**A 类即修 76 条**（R1 22 + 修复回归 5 + B 类批复 3 + R2 13 + R3 9 + R4 3 + R5 6 + R6 6 + 终态 5 + 注释 9 处合并计）；**B 类 3 组**（DD-F3/DD-D7 已批复修复；DD2-E8 按常设指令修复；DD2-A1 经用户三选裁决后按①实施）；**C 类裁决清单**：DD2-A1 已裁决实施、其余为观察/已裁决接受；**证伪 50+ 条**保留于各轮记录。
+- **修复与验证证据**：68 个钉住测试新增/适配（含变异验证 5/5、负向验证 2 处、真实 PG 门控 10+ 例、-race 多轮）；全量回归 9 包+2 jobs 包绿；契约测试绿；前端 typecheck/lint 绿。
+- **移交清单**：
+  - 功能补齐/产品取舍类：**T86**（桥接 usage 剩余方向）、**T87r**（dispatched outbox 清理接线）、DD2-A1 混合窗口逐 attempt 精确化（需改 gatewaydispatch）、S8 清扫周期化（需文档裁决）。
+  - 运维与部署义务：交付前在授权窗口补跑 S7/S8/T87 的 PG 臂与 upgrade 重跑；`AI问答设计.md:729` 仍描述已退役的 8s 生成排空（chat 域并行会话负责）。
+  - 测试缺口登记：auditlog（>10s）与 cmd 钉住测试按分层规则不入日常链路（文档化预算取舍）。
+  - 观察项：DD3-RC1 decode panic 理论缺口、DD7-RC1 注释与 Cleanup SQL 矛盾、DD5-E4 锁定文案粒度、DD5-C6 实例 credentials 500/400 不对称、DD6-S8 重启间断清扫、HEAD 既有 `TestOAuthManagedDefaultsCreateWritesConnectionRows/gemini_google_oauth` 失败（e38c6e9f2 引入，独立问题）、dev PG 并行争用。
+- **提交与未提交分界（收口时核实）**：本环所有角色遵守「禁止 git commit」约束、均未主动提交。**用户已自行分批入库 R1–R5 主体修复**（`e0d313642` 与 `d56bc2829`「fix(gateway): 修复认证前熔断与停机启动顺序」，2026-11-01 10:26，含 chain_v1_loop 账户闸、chain_v1/chain_openaicompat/chain_realtime/compose/main/runtime、dd2_a1/dd5_c4/dd2_c1/dd3_compat/dd_g1_g2 等钉住测试与 accounts options_service 等）。**当前未提交 27 项 = R6 批10（auditlog 撤回队列隔离+compat 异步计数+vectorstores 代次守卫/启动清扫+部署文档 3 处）+ 终态复核批（模板文档 3 处+注释 2 处+connector_registry 注释 9 处）+ 台账 + 待办**：`internal/auditlog/{producer.go,+3 测试}`、`cmd/juhe-ai-gateway/{chain_v1.go,+3 测试,+dd6_s5}`、`internal/openaicompat/openaicompatstorage/{store.go,vectorstoresroutes.go,vectorstoresstore.go,vectorstoresstalesweep.go(新),+1 测试}`、`maintenance/internal/schema/pg_schema.go`（注释）、`shared/contracts/{connector_registry.go,connector_registry_test.go}`（注释）、`docker/single-server/{README.md,compose.yml}`、`docs/deploy/部署指南.md`、`docs/functions/{OpenAI兼容Files...,模型价格与用量统计口径,策略路由设计}.md`、`docs/plans/deep-dive-review-网关-20261031.md`、`docs/待办与阻塞事项.md`。
+- **与并行会话的混合署名**：`internal/chat/**` 与 `docs/functions/AI问答*.md` 的改动属并行会话在制品（T85/my-chat 退役），本环全程未触碰；`docs/待办与阻塞事项.md` 为本环与并行会话共同修改（本环新增 T86/T87r，T87 已按「解决即删」移除）。

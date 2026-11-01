@@ -308,9 +308,9 @@ func TestDD2G1AbandonedRetractRedispatchedOnSuccessSettle(t *testing.T) {
 	store := &dd1GatedPersistStore{fakeStore: fakeStore{renewOK: true}, gate: make(chan struct{})}
 	producer := NewProducer(store, StaticLease(OwnerLease{OwnerID: "dd2g1-owner", FenceToken: 7}), Config{OwnerLease: 30 * time.Second}, logger)
 
-	savedBudget := retractWaitBudget
-	retractWaitBudget = 100 * time.Millisecond
-	defer func() { retractWaitBudget = savedBudget }()
+	savedBudget := retractWaitBudget.Load()
+	retractWaitBudget.Store(int64(100 * time.Millisecond))
+	defer func() { retractWaitBudget.Store(savedBudget) }()
 
 	producer.Capture(dd1Envelope("dd2g1-band-env"))
 	deadline := time.Now().Add(5 * time.Second)

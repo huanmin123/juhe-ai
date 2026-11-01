@@ -2,6 +2,7 @@ package openaicompatstorage
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -382,7 +383,7 @@ func (d *Deps) createVectorStoreFile(w http.ResponseWriter, r *http.Request) err
 	if created == nil {
 		return notFound("向量存储或文件不存在", "vector_store_file_not_found")
 	}
-	d.queueVectorStoreFileIndexing(vectorStoreID, *file, *scope, objectValue(body["attributes"]), objectValue(body["chunking_strategy"]))
+	d.queueVectorStoreFileIndexing(vectorStoreID, *file, *scope, created.UpdatedAt, objectValue(body["attributes"]), objectValue(body["chunking_strategy"]))
 	object, err := newVectorStoreFileObject(*created)
 	if err != nil {
 		return err
@@ -392,8 +393,11 @@ func (d *Deps) createVectorStoreFile(w http.ResponseWriter, r *http.Request) err
 }
 
 // queueVectorStoreFileIndexing mirrors queueOpenAICompatibleVectorStoreFileIndexing.
-func (d *Deps) queueVectorStoreFileIndexing(vectorStoreID string, file FileRecord, scope GatewayScope, attributes, chunkingStrategy map[string]any) {
-	task := func() { d.indexVectorStoreFile(vectorStoreID, file, scope, attributes, chunkingStrategy) }
+// bindingUpdatedAt 是绑定行在本代写点（添加/重加 upsert）落下的 updated_at
+// （DD6-S7 代次快照）：闭包捕获它而非回调时重读，使旧任务无法把自己伪装成
+// 新代次。
+func (d *Deps) queueVectorStoreFileIndexing(vectorStoreID string, file FileRecord, scope GatewayScope, bindingUpdatedAt string, attributes, chunkingStrategy map[string]any) {
+	task := func() { d.indexVectorStoreFile(vectorStoreID, file, scope, bindingUpdatedAt, attributes, chunkingStrategy) }
 	if d.IndexAsync != nil {
 		d.IndexAsync(task)
 		return
@@ -407,7 +411,7 @@ func (d *Deps) queueVectorStoreFileIndexing(vectorStoreID string, file FileRecor
 // indexVectorStoreFile mirrors indexOpenAICompatibleVectorStoreFile: build
 // chunks from the physical file, then upsert the completed state; failures
 // persist the failed status with a last_error payload.
-func (d *Deps) indexVectorStoreFile(vectorStoreID string, file FileRecord, scope GatewayScope, attributes, chunkingStrategy map[string]any) {
+func (d *Deps) indexVectorStoreFile(vectorStoreID string, file FileRecord, scope GatewayScope, bindingUpdatedAt string, attributes, chunkingStrategy map[string]any) {
 	input := VectorStoreFileCreateInput{
 		VectorStoreID:    vectorStoreID,
 		FileID:           file.ID,
@@ -418,12 +422,24 @@ func (d *Deps) indexVectorStoreFile(vectorStoreID string, file FileRecord, scope
 		// DD2-C7：索引回调写面——完成与失败两臂共用守卫，索引在途时用户删除
 		// 的绑定不被回调复活。
 		IndexCallback: true,
+		// DD6-S7：代次守卫快照——绑定在任务启动后被删→重加时行内 updated_at
+		// 已推进，回调整事务放弃，不以旧值覆盖新绑定。
+		ExpectedUpdatedAt: bindingUpdatedAt,
 	}
 	chunks, err := BuildVectorStoreChunks(d.filesRoot(), file)
 	if err == nil {
 		input.Status = VectorStoreFileStatusCompleted
 		input.Chunks = chunks
 		_, err = d.Store.CreateVectorStoreFile(context.Background(), input)
+	}
+	if errors.Is(err, ErrVectorStoreFileBindingSuperseded) {
+		// DD6-S7：绑定已由重加写点接管（或被其他写点推进），旧任务回调按
+		// 代次守卫放弃覆盖——不写 failed、不记 last_error、不刷聚合，仅
+		// warn 留痕。
+		if d.Warn != nil {
+			d.Warn(err, map[string]any{"vectorStoreId": vectorStoreID, "fileId": file.ID})
+		}
+		return
 	}
 	if err != nil {
 		// Node catch: persist the failed state; a persist failure surfaces

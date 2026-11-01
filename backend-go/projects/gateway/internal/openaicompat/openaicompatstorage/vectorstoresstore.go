@@ -119,7 +119,21 @@ type VectorStoreFileCreateInput struct {
 	// 聚合字节（整事务回滚，返回 nil, nil）。用户添加文件的用户面不带此标记，
 	// 保持原 upsert 语义：删除后重新添加同一文件仍可复活绑定（Node 契约）。
 	IndexCallback bool
+	// ExpectedUpdatedAt 是索引回调的代次守卫快照（DD6-S7，仅 IndexCallback
+	// 写面消费）：任务闭包携带启动时绑定行的 updated_at，回调 upsert 追加
+	// AND updated_at = ? 守卫。绑定在任务启动后被删→重加（或被任何写点推进）
+	// 时行内 updated_at 已变化，回调整事务放弃并返回
+	// ErrVectorStoreFileBindingSuperseded，不以旧 attributes/chunking 与旧
+	// chunks 覆盖新绑定。空值表示不启用代次守卫（DD2-C7 行为不变）。
+	ExpectedUpdatedAt string
 }
+
+// ErrVectorStoreFileBindingSuperseded 是索引回调代次守卫（DD6-S7）的拒绝
+// 信号：绑定行在索引任务启动后被删→重加，行内 updated_at 已被新绑定写点
+// 推进，回调携带的启动时 attributes/chunking 快照已过期，本次写入整事务
+// 回滚放弃（不写状态、不插 chunks、不刷聚合字节）。路由层捕获后记 warn，
+// 不进入失败臂。已删行/不存在的拒绝仍返回 (nil, nil)（DD2-C7 契约）。
+var ErrVectorStoreFileBindingSuperseded = errors.New("openai compatible vector store file binding superseded by a newer binding")
 
 // VectorStoreFileListOptions mirrors OpenAICompatibleVectorStoreFileListOptions.
 type VectorStoreFileListOptions struct {
@@ -541,11 +555,26 @@ func (s *Store) CreateVectorStoreFile(ctx context.Context, input VectorStoreFile
 		// DD2-C7：回调写面对已删行守卫——WHERE 不满足时 upsert 不落任何行
 		// （RETURNING 空即目标绑定已被用户删除），整事务回滚：状态不写、
 		// chunks 不重插、聚合字节不刷新，绑定保持删除形态。
-		upsert += ` WHERE ` + s.table("openai_compatible_vector_store_files") + `.deleted_at IS NULL
+		// DD6-S7：携带 ExpectedUpdatedAt 时追加代次守卫——绑定行在任务启动
+		// 后被删→重加（或被任何写点推进 updated_at）即判定过期，旧任务回调
+		// 不得以旧 attributes/chunking 与按旧 chunking 生成的 chunks 覆盖新
+		// 绑定。updated_at 是唯一在每次绑定写点都推进的单调列（created_at
+		// 在重加 upsert 中不更新）。
+		upsert += ` WHERE ` + s.table("openai_compatible_vector_store_files") + `.deleted_at IS NULL`
+		if input.ExpectedUpdatedAt != "" {
+			upsert += ` AND ` + s.table("openai_compatible_vector_store_files") + `.updated_at = ?`
+			upsertArgs = append(upsertArgs, input.ExpectedUpdatedAt)
+		}
+		upsert += `
 		RETURNING vector_store_id`
 		var returnedID string
 		scanErr := tx.QueryRowContext(ctx, s.bind(upsert), upsertArgs...).Scan(&returnedID)
 		if errors.Is(scanErr, sql.ErrNoRows) {
+			if superseded, classErr := s.classifyRejectedIndexCallback(ctx, tx, input); classErr != nil {
+				return nil, classErr
+			} else if superseded {
+				return nil, ErrVectorStoreFileBindingSuperseded
+			}
 			return nil, nil
 		}
 		if scanErr != nil {
@@ -576,6 +605,30 @@ func (s *Store) CreateVectorStoreFile(ctx context.Context, input VectorStoreFile
 		return nil, err
 	}
 	return s.FindVectorStoreFile(ctx, input.VectorStoreID, input.FileID, input.SystemAccountID, input.APIKeyID)
+}
+
+// classifyRejectedIndexCallback 区分回调 upsert 被守卫拒绝（RETURNING 空）
+// 的两种情形（仅在启用代次守卫时调用）：行不存在或已删 → (false, nil)，保
+// 持 DD2-C7 的 (nil, nil) 契约；行在且未删但代次不匹配 → (true, nil)，即
+// DD6-S7 的过期回调。分类查询失败 → (false, err) 随事务回滚上抛。
+func (s *Store) classifyRejectedIndexCallback(ctx context.Context, tx *sql.Tx, input VectorStoreFileCreateInput) (bool, error) {
+	if input.ExpectedUpdatedAt == "" {
+		return false, nil
+	}
+	var deletedAt sql.NullString
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT deleted_at FROM `+s.table("openai_compatible_vector_store_files")+`
+		WHERE vector_store_id = ?
+			AND file_id = ?
+			AND system_account_id = ?
+			AND api_key_id = ?
+		LIMIT 1`), input.VectorStoreID, input.FileID, input.SystemAccountID, input.APIKeyID).Scan(&deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !deletedAt.Valid, nil
 }
 
 func orEmptyObject(value map[string]any) map[string]any {

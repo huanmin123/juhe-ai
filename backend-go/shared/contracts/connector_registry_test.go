@@ -94,7 +94,7 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 	}
 }
 
-// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 162 条与按 driver 计数，
+// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 163 条与按 driver 计数，
 // 并复核每条 mode combo 都来自同一份 AllowedModes 推导。
 func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	modeCombos := AllowedEndpointModeCombos()
@@ -122,7 +122,7 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 			t.Errorf("driver %q 单 mode 组合数 = %d, want %d", driver, counts[driver], want)
 		}
 	}
-	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 162。
+	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 163。
 	sum := 0
 	for _, combo := range AllowedConnectorCombos() {
 		sum += len(AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType))
@@ -526,7 +526,7 @@ func TestPresetDefaultBaseURLAccessor(t *testing.T) {
 }
 
 // TestRegistryFingerprint 断言 fingerprint 稳定、64 位小写 hex，
-// 且 canonical JSON 为 162 元素紧凑数组、nullable 字段输出 JSON null。
+// 且 canonical JSON 为 163 元素紧凑数组、nullable 字段输出 JSON null。
 func TestRegistryFingerprint(t *testing.T) {
 	first := RegistryFingerprint()
 	second := RegistryFingerprint()
