@@ -9,6 +9,7 @@ import { FALLBACK_PROVIDERS } from '../../src/views/accounts/accountOptions'
 import { systemInheritedErrorPolicyRulesPreview } from '../../src/views/accounts/accountErrorPolicyTypes'
 import {
   buildAccountSavePayload,
+  buildAccountUpdatePayload,
   validateAccountLockConfigForm,
   validateAccountSaveForm
 } from '../../src/views/accounts/accountSavePayload'
@@ -530,6 +531,11 @@ assert.deepEqual(
   '创建载荷必须显式提交 connections：协议档案映射到连接预设，Base URL 与接口能力取当前表单'
 )
 assert.equal(savePayload.healthCheckConnectionPresetCode, 'gpt_openai_v1', '创建载荷必须显式提交健康检查连接 preset')
+assert.deepEqual(
+  buildAccountUpdatePayload(savePayload).connections,
+  savePayload.connections,
+  '编辑链构造必须与创建链同构携带连接集合（T94：否则网关拨号的连接域只在创建时写入，编辑 Base URL 永不生效）'
+)
 
 const basicBaseline = buildAccountBasicEditSnapshot(form, {
   api_key: form.apiKey,
@@ -574,6 +580,22 @@ assert.deepEqual(
   },
   '删除基础凭据字段必须显式发送 null，不能全量覆盖凭据对象'
 )
+const changedBasicConnection = structuredClone(basicBaseline)
+changedBasicConnection.credentials.base_url = 'https://switched.example.com/v1'
+changedBasicConnection.values.connections = [
+  { connectionPresetCode: 'gpt_openai_v1', baseUrl: 'https://switched.example.com/v1', endpointModes: [...form.supportedEndpointModes], enabled: true }
+]
+const changedBasicConnectionDelta = buildAccountBasicUpdatePatch(changedBasicConnection, basicBaseline, 7)
+assert.deepEqual(
+  changedBasicConnectionDelta?.connections,
+  changedBasicConnection.values.connections,
+  '基础编辑改 Base URL 必须同步提交连接集合：连接域是网关拨号事实源（T94）'
+)
+assert.equal(
+  changedBasicConnectionDelta?.credentialsPatch?.base_url,
+  'https://switched.example.com/v1',
+  '基础编辑改 Base URL 时凭据域与连接域必须同源同值'
+)
 assert.throws(
   () => buildAccountBasicUpdatePatch(renamedBasic, basicBaseline, 0),
   /账户配置版本无效/,
@@ -599,6 +621,32 @@ assert.deepEqual(
   buildAccountAdvancedUpdatePatch(advancedHealthModelCleared, advancedBaseline, 11),
   { healthCheckModel: null, expectedConfigRevision: 11 },
   '清空高级字段必须发送 null，不能回传整份账户配置'
+)
+const advancedConnectionChanged = structuredClone(advancedBaseline)
+advancedConnectionChanged.connections = [
+  { ...advancedBaseline.connections![0], baseUrl: 'https://switched.example.com/v1' }
+]
+assert.deepEqual(
+  buildAccountAdvancedUpdatePatch(advancedConnectionChanged, advancedBaseline, 11),
+  {
+    connections: advancedConnectionChanged.connections,
+    expectedConfigRevision: 11
+  },
+  '高级编辑改 Base URL 必须整集合提交 connections（T94：连接域随编辑同步，健康检查三件套未变不误发）'
+)
+const advancedConnectionsRemoved = structuredClone(advancedBaseline)
+delete advancedConnectionsRemoved.connections
+advancedConnectionsRemoved.priority += 1
+const advancedRemovedDelta = buildAccountAdvancedUpdatePatch(advancedConnectionsRemoved, advancedBaseline, 11)
+assert.equal(
+  'connections' in advancedRemovedDelta,
+  false,
+  'current 无连接集合时不得回发 connections null：后端整集合替换不接受空集合'
+)
+assert.equal(
+  advancedRemovedDelta?.priority,
+  advancedConnectionsRemoved.priority,
+  'connections 缺席不得影响其余字段正常进差量'
 )
 assert.throws(
   () => buildAccountAdvancedUpdatePatch(advancedPriorityChanged, advancedBaseline, Number.NaN),

@@ -1162,7 +1162,13 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 	if err != nil {
 		t.Fatalf("create authz quota: %v", err)
 	}
-	inflightQuota, err := gatewayquota.NewInflightQuotaService(gatewayquota.InflightQuotaConfig{APIKeys: apiKeyQuota})
+	// T93-1：与生产装配同源（目录估算器 + 精确成本兜底），链级额度用例才能按
+	// 真实请求成本预留；Estimator 缺席会让在途预留恒 no-op。
+	inflightQuota, err := gatewayquota.NewInflightQuotaService(gatewayquota.InflightQuotaConfig{
+		APIKeys:   apiKeyQuota,
+		Estimator: newChainCostEstimator(fixture.cache),
+		DBService: newChainQuotaDBService(apiKeyQuota, authzQuota),
+	})
 	if err != nil {
 		t.Fatalf("create inflight quota: %v", err)
 	}

@@ -38,9 +38,11 @@ var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 func (d *Deps) usageRecordsListHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		// T93-8 / C1-C18：非管理员空作用域 fail-closed（不再省略
+		// ur.system_account_id 条件退化成全租户读）。
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		values := r.URL.Query()
 		if scope.canAccessAll() && scope.scopedID() == "" && hasAllSystemAccountUnsupportedFilters(values) {
@@ -272,6 +274,10 @@ func (d *Deps) usageRecordFilters(r *http.Request, scope AccessScope, options us
 	if scopedID := scope.scopedID(); scopedID != "" {
 		clauses = append(clauses, "ur.system_account_id = ?")
 		params = append(params, scopedID)
+	} else if !scope.canAccessAll() {
+		// T93-8 / C1-C18 第二道保险：SQL 组装层不允许「非管理员 + 空作用域」
+		// 省略租户条件（handler 已 403，这里保证任何新调用方都读不到跨租户行）。
+		clauses = append(clauses, "1 = 0")
 	}
 	pushPrefixFilter := func(column, text string) {
 		if text == "" {

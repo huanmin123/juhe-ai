@@ -265,20 +265,6 @@ func (q *fakeAuthorizationQuota) CheckAuthorizationQuotaAsync(_ context.Context,
 	return q.decision, nil
 }
 
-type fakeInflight struct {
-	decision gatewayquota.InflightDecision
-	err      error
-	inputs   []gatewayquota.GatewayReserveInput
-}
-
-func (q *fakeInflight) ReserveGatewayCost(_ context.Context, input gatewayquota.GatewayReserveInput) (gatewayquota.InflightDecision, error) {
-	q.inputs = append(q.inputs, input)
-	if q.err != nil {
-		return gatewayquota.InflightDecision{}, q.err
-	}
-	return q.decision, nil
-}
-
 // fakeResponseSink records failure responses and model sends.
 type fakeResponseSink struct {
 	mu            sync.Mutex
@@ -499,7 +485,6 @@ func newTestService(t *testing.T, mutate func(*Service)) (*Service, *fakeObserva
 		APIKeyValidator:    &fakeAPIKeyValidator{row: validRuntimeRow()},
 		APIKeyQuota:        &fakeAPIKeyQuota{decision: gatewayquota.AllowedDecision()},
 		AuthorizationQuota: &fakeAuthorizationQuota{decision: gatewayquota.AllowedDecision()},
-		InflightQuota:      &fakeInflight{decision: gatewayquota.InflightDecision{Allowed: true}},
 		Circuits:           &fakeCircuits{},
 		IPPolicy:           &fakeIPPolicy{},
 		UserLimits:         &fakeUserLimits{decision: UserRequestLimitDecision{Allowed: true}},

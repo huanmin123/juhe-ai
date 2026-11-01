@@ -25,7 +25,8 @@ func TestW13ARuntimeResetSkipArms(t *testing.T) {
 		want   string
 	}{
 		{"停用", `UPDATE accounts SET status = 'disabled' WHERE id = ?`, nil, "disabled"},
-		{"质量隔离", `UPDATE accounts SET status = 'quality_isolated' WHERE id = ?`, nil, "quality_isolated"},
+		// 质量隔离自 T91-2（B1-7）起不再跳过：重置即恢复 active + 可调度并结束
+		// account_quality_enforcements 活动行（见 t91_runtime_reset_quality_test.go）。
 		{"套餐过期", `UPDATE accounts SET account_expires_at = '2026-01-01T00:00:00Z' WHERE id = ?`, nil, "expired"},
 		{"人工关闭调度", `UPDATE accounts SET schedulable = 0 WHERE id = ?`, nil, "manual_unschedulable"},
 		{"显式错误策略冷却", `UPDATE accounts SET last_error_code = 'explicit_account_error_policy_cooldown' WHERE id = ?`, nil, "explicit_policy_cooldown"},

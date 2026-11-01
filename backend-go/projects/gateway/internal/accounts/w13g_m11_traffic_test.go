@@ -383,7 +383,9 @@ func TestW13gTrafficMigrationRevisionInvalidationAndCAS(t *testing.T) {
 	}
 
 	// temporary_unavailable 分支同样递增 revision。
-	env.exec(t, `UPDATE accounts SET status = 'active', cooldown_until = NULL WHERE id = 'acc-b11a-s'`)
+	// T91-1 起源账户门要求 active + 可调度：上一臂把 schedulable 写成 0，夹具
+	// 一并恢复（派生口径 active ⇒ schedulable=1）。
+	env.exec(t, `UPDATE accounts SET status = 'active', schedulable = 1, cooldown_until = NULL WHERE id = 'acc-b11a-s'`)
 	if _, err := env.store.MigrateTraffic(context.Background(), "acc-b11a-s",
 		TrafficMigrationInput{TargetAccountID: "acc-b11a-t"}, scope); err != nil {
 		t.Fatalf("临时不可用迁移：%v", err)
@@ -394,7 +396,9 @@ func TestW13gTrafficMigrationRevisionInvalidationAndCAS(t *testing.T) {
 
 	// 失效失败不回滚：迁移仍成功、revision 仍递增，错误只走 Warn。
 	invalidator.runtimeErr = errors.New("bus down")
-	env.exec(t, `UPDATE accounts SET status = 'active', cooldown_until = NULL WHERE id = 'acc-b11a-s'`)
+	// T91-1 起源账户门要求 active + 可调度：上一臂把 schedulable 写成 0，夹具
+	// 一并恢复（派生口径 active ⇒ schedulable=1）。
+	env.exec(t, `UPDATE accounts SET status = 'active', schedulable = 1, cooldown_until = NULL WHERE id = 'acc-b11a-s'`)
 	if _, err := env.store.MigrateTraffic(context.Background(), "acc-b11a-s",
 		TrafficMigrationInput{TargetAccountID: "acc-b11a-t", SourceStatus: trafficSourceDisabled}, scope); err != nil {
 		t.Fatalf("失效通道故障不得回滚迁移：%v", err)

@@ -245,6 +245,16 @@ func (s *Store) migrateOwnerTraffic(ctx context.Context, sourceAccountID string,
 	if sourceStatus == "" {
 		sourceStatus = trafficSourceTemporaryUnavailable
 	}
+	// 源账户门（T91-1 / B1-1b）：迁移会改写源账户状态，只有正常可调度且未锁死
+	// 的账户才允许被改写成 disabled / temporary_unavailable——error /
+	// pending_test / quality_isolated 或锁死账户必须先人工恢复，否则一次迁移
+	// 会把异常状态静默压成用户未预期的终态。unchanged 不改写源账户（只读预览），
+	// 在该门之前返回，不受约束。
+	if message, err := s.trafficSourceBlockedMessage(ctx, sourceRow.id, sourceRow.status, sourceRow.schedulable == 1); err != nil {
+		return nil, err
+	} else if message != "" {
+		return nil, &trafficMigrationFailure{message: message}
+	}
 	nowMS := now.UnixMilli()
 	nowISO := isoMillis(now)
 	sourceCooldownUntil := ""
@@ -384,6 +394,13 @@ func (s *Store) migrateAuthorizedBindingTraffic(ctx context.Context, sourceAccou
 	if sourceStatus == "" {
 		sourceStatus = trafficSourceTemporaryUnavailable
 	}
+	// 源账户门（T91-1 / B1-1b）：授权实例与自有账户同一口径——实例行本身必须
+	// 正常可调度且无未结束锁死；unchanged 不改写实例行，保持只读预览语义。
+	if message, err := s.trafficSourceBlockedMessage(ctx, sourceSummary.ID, sourceSummary.Status, sourceSummary.Schedulable); err != nil {
+		return nil, err
+	} else if message != "" {
+		return nil, &trafficMigrationFailure{message: message}
+	}
 	now := s.now()
 	nowISO := isoMillis(now)
 	sourceCooldownUntil := ""
@@ -472,6 +489,37 @@ func trafficTargetUnavailableMessage(target *ListItem) string {
 		return "目标账户当前不可调度，请选择正常可用的账户"
 	}
 	return ""
+}
+
+// 流量迁移源账户门文案（T91-1 / B1-1b）：迁移会把源账户改写成 disabled 或
+// temporary_unavailable，异常态与锁死态必须先人工恢复，否则一次迁移就把
+// 「需要人处理的异常」压成用户以为的终态，且 temporary_unavailable 分支
+// 继承旧 schedulable，异常组合会被固化。
+const (
+	trafficSourceNotActiveMessage     = "源账户当前不是正常可用状态，请先恢复账户后再迁移流量"
+	trafficSourceUnschedulableMessage = "源账户当前未参与调度，请先恢复账户后再迁移流量"
+	trafficSourceLockedMessage        = "源账户当前处于锁死状态，请先恢复账户后再迁移流量"
+)
+
+// trafficSourceBlockedMessage 判定源账户能否被迁移改写：status 必须是 active、
+// schedulable 必须打开、且 account_lock_states 无未结束锁死（ENGAGED /
+// DEAD_CONFIRMED，与 runtime-reset 的 lockBlocksPersistentReset 同一判据）。
+// 返回空串表示放行，非空串是 400 文案。
+func (s *Store) trafficSourceBlockedMessage(ctx context.Context, accountID, status string, schedulable bool) (string, error) {
+	if status != "active" {
+		return trafficSourceNotActiveMessage, nil
+	}
+	if !schedulable {
+		return trafficSourceUnschedulableMessage, nil
+	}
+	lock, err := s.findAccountLockState(ctx, s.db, accountID)
+	if err != nil {
+		return "", err
+	}
+	if lock != nil && lock.enabled == 1 && (lock.lockState == "ENGAGED" || lock.lockState == "DEAD_CONFIRMED") {
+		return trafficSourceLockedMessage, nil
+	}
+	return "", nil
 }
 
 // trafficManagedRow is the accountRowForManage projection for the owner

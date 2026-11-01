@@ -212,8 +212,9 @@ func TestW2PatchScheduleStatusAndFailureClear(t *testing.T) {
 		t.Fatalf("失败痕迹未清理：%s", row)
 	}
 
-	// status + schedulable 显式更新。
-	code, payload = w2PatchBody(t, env, id, `"status":"disabled","schedulable":false`)
+	// status 更新：schedulable 自 T91-3 起由状态派生（disabled ⇒ 0），不再随
+	// 请求体提交。
+	code, payload = w2PatchBody(t, env, id, `"status":"disabled"`)
 	if code != http.StatusOK {
 		t.Fatalf("状态补丁: %d %v", code, payload)
 	}

@@ -982,14 +982,13 @@ func (d *Deps) updateAccount(w http.ResponseWriter, r *http.Request) {
 		input.SupportedModelsPresent = true
 	}
 	if parsed.HasStatus {
+		// T91-3（B1-10）：schedulable 由状态派生（active→可调度、disabled→关闭），
+		// 公开面不再显式传该入参。
 		status := "active"
-		schedulable := true
 		if parsed.Status == "disabled" {
 			status = "disabled"
-			schedulable = false
 		}
 		input.Status = &status
-		input.Schedulable = &schedulable
 	}
 	if parsed.BackgroundProbeEnabled != nil {
 		input.BackgroundProbeEnabled = parsed.BackgroundProbeEnabled

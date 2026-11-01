@@ -62,6 +62,12 @@ const (
 	maxScheduleExceptions    = 128
 	scheduleNextCheckHorizon = 14 // days of boundary candidates
 	scheduleNextCheckFollow  = 7  // days fallback when no boundary exists
+	// scheduleCatchUpLookbackDays 是补偿扫描的回看窗口（T91-7）：普通窗口
+	// 最多 7 天重复一次（daysOfWeek 单日），跨午夜窗口再多一天；取 32 天以
+	// 吸收月度级的长停机，只有停摆超过一个月且计划 dateRange 已结束的极端
+	// 情形才会失去「上一轮应执行的边界」定位（此时没有下一个边界可接管，
+	// 与既有「人工状态保持到下一边界」语义一致）。
+	scheduleCatchUpLookbackDays = 32
 )
 
 var (
@@ -150,6 +156,76 @@ func NextScheduleCheckAt(schedule *AvailabilitySchedule, now time.Time) (string,
 		next = now.UnixMilli() + int64(scheduleNextCheckFollow)*24*60*60*1000
 	}
 	return isoMillis(time.UnixMilli(next)), true
+}
+
+// CatchUpScheduleEvent returns the boundary event that should already have
+// taken effect at or before now (T91-7). It is the same event the sync would
+// have produced had it run exactly on the latest window boundary: same action,
+// same status and — critically — the same dedupe key
+// (dateKey:minute:action:windows). Reusing the canonical key is what keeps
+// catch-up compatible with the manual-intervention contract (BUG-0025): a
+// boundary that already executed leaves its event row behind, so the sync
+// cannot re-apply it and therefore cannot overwrite a manual enable/disable
+// made after that boundary; only a boundary that was actually missed (no event
+// row yet) is compensated.
+func CatchUpScheduleEvent(schedule *AvailabilitySchedule, now time.Time) (ScheduleDueEvent, bool) {
+	if schedule == nil || !schedule.Enabled {
+		return ScheduleDueEvent{}, false
+	}
+	latest, ok := latestScheduleBoundaryUTC(schedule, now)
+	if !ok {
+		return ScheduleDueEvent{}, false
+	}
+	// 直接复用边界分钟的事件求值：action / status / 去重键与当轮正常执行
+	// 逐字段一致（不复制键格式，避免两处漂移）。DST 反解异常时返回 false，
+	// 本轮不补偿。
+	return DueScheduleEvent(schedule, time.UnixMilli(latest))
+}
+
+// latestScheduleBoundaryUTC 返回 <= now 的最近一个窗口边界（UTC 毫秒）：
+// 从当前日期回看 scheduleCatchUpLookbackDays 天枚举全部边界，取不晚于 now
+// 的最大值。按 zonedLocalMinuteToUTC 反解 DST，与 next-check 枚举同源。
+func latestScheduleBoundaryUTC(schedule *AvailabilitySchedule, now time.Time) (int64, bool) {
+	current := scheduleZonedParts(now, schedule.Timezone)
+	startDateKey := dateKeyTime(current.dateKey).AddDate(0, 0, -scheduleCatchUpLookbackDays).Format("2006-01-02")
+	latest := int64(-1)
+	forEachScheduleBoundary(schedule, startDateKey, scheduleCatchUpLookbackDays+1, func(dateKey string, minute int) {
+		if value, ok := zonedLocalMinuteToUTC(dateKey, minute, schedule.Timezone); ok && value <= now.UnixMilli() && value > latest {
+			latest = value
+		}
+	})
+	return latest, latest >= 0
+}
+
+// forEachScheduleBoundary 枚举 [startDateKey, startDateKey+days) 内每个计划
+// 日期启动的窗口边界（开始与结束，跨午夜窗口的结束落到次日）；dateRange /
+// deny 例外 / allow 例外规则与 scheduleBoundaryUTCTimes 完全一致。
+func forEachScheduleBoundary(schedule *AvailabilitySchedule, startDateKey string, days int, visit func(dateKey string, minute int)) {
+	start := dateKeyTime(startDateKey)
+	for offset := 0; offset < days; offset++ {
+		dateKey := start.AddDate(0, 0, offset).Format("2006-01-02")
+		if !dateInScheduleRange(dateKey, schedule) {
+			continue
+		}
+		exception := findScheduleException(schedule, dateKey)
+		switch {
+		case exception != nil && exception.Action == scheduleExceptionAllow:
+			for _, window := range exception.Windows {
+				visit(dateKey, minuteOfDay(window.Start))
+				visit(windowEndDateKey(dateKey, window.Start, window.End), minuteOfDay(window.End))
+			}
+		case exception != nil && exception.Action == scheduleExceptionDeny:
+			// The whole date is denied: no boundaries.
+		default:
+			for _, window := range schedule.Windows {
+				if !containsDay(window.DaysOfWeek, dayOfWeekForDateKey(dateKey)) {
+					continue
+				}
+				visit(dateKey, minuteOfDay(window.Start))
+				visit(windowEndDateKey(dateKey, window.Start, window.End), minuteOfDay(window.End))
+			}
+		}
+	}
 }
 
 func normalizeSchedule(input any) (*AvailabilitySchedule, error) {
@@ -640,30 +716,7 @@ func scheduleBoundaryUTCTimes(schedule *AvailabilitySchedule, now time.Time) []i
 			times = append(times, value)
 		}
 	}
-	for offset := 0; offset <= scheduleNextCheckHorizon+2; offset++ {
-		dateKey := start.AddDate(0, 0, offset).Format("2006-01-02")
-		if !dateInScheduleRange(dateKey, schedule) {
-			continue
-		}
-		exception := findScheduleException(schedule, dateKey)
-		switch {
-		case exception != nil && exception.Action == scheduleExceptionAllow:
-			for _, window := range exception.Windows {
-				add(dateKey, minuteOfDay(window.Start))
-				add(windowEndDateKey(dateKey, window.Start, window.End), minuteOfDay(window.End))
-			}
-		case exception != nil && exception.Action == scheduleExceptionDeny:
-			// The whole date is denied: no boundaries.
-		default:
-			for _, window := range schedule.Windows {
-				if !containsDay(window.DaysOfWeek, dayOfWeekForDateKey(dateKey)) {
-					continue
-				}
-				add(dateKey, minuteOfDay(window.Start))
-				add(windowEndDateKey(dateKey, window.Start, window.End), minuteOfDay(window.End))
-			}
-		}
-	}
+	forEachScheduleBoundary(schedule, start.Format("2006-01-02"), scheduleNextCheckHorizon+3, add)
 	sort.Slice(times, func(left, right int) bool { return times[left] < times[right] })
 	return times
 }

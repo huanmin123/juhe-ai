@@ -425,6 +425,15 @@ rotationLoop:
 		usageContext.EffectiveServiceTier = effectiveServiceTier
 		usageContext.EffectiveReasoningEffort = requestParts.EffectiveReasoningEffort
 
+		// T93-1 / T93-4：在选定账户、拿到 vendor 与上游映射模型、最终上游
+		// 请求体已定稿之后、真正发上游请求之前做请求级在途额度预占
+		// （API Key + 授权/团队 scope，一次请求一次）。拒绝是整请求终态，
+		// 不换账户重试。
+		if reserveErr := e.reserveUpstreamInflightQuota(ctx, in.args.Req, *usageContext, account, body, effectiveServiceTier); reserveErr != nil {
+			releaseTransientState()
+			return dispatchResultContinue, nil, reserveErr
+		}
+
 		kind, stop, loopErr := e.runUpstreamAttemptLoop(ctx, upstreamAttemptLoopContext{
 			in:                                   &in,
 			account:                              account,

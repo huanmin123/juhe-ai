@@ -141,3 +141,58 @@ describe('backgroundProbeEnabled 手动模式（AI账户后台自动探测总开
     })).toBeUndefined()
   })
 })
+
+describe('connections 编辑链透传（T94：编辑 Base URL 必须同步连接域）', () => {
+  function apiKeyForm(): AccountFormModel {
+    const form = defaultAccountForm('gpt', 'api_key')
+    form.name = '连接域同步单测账户'
+    form.groupId = 'group-conn-sync'
+    form.apiKey = 'sk-conn-sync'
+    form.apiKeys = ['sk-conn-sync']
+    form.baseUrl = 'https://old.example.com/v1'
+    form.supportedModels = ['gpt-5.4-mini']
+    form.healthCheckModel = 'gpt-5.4-mini'
+    return form
+  }
+
+  it('编辑 payload 构造与创建链同构携带连接集合', () => {
+    const payload = buildAccountSavePayload({
+      accounts: [],
+      form: apiKeyForm(),
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    expect(payload.connections).toHaveLength(1)
+    expect(buildAccountUpdatePayload(payload).connections).toEqual(payload.connections)
+  })
+
+  it('修改 Base URL 后编辑 payload 的连接集合携带新地址（网关拨号事实源随之更新）', () => {
+    const form = apiKeyForm()
+    form.baseUrl = 'https://new.example.com/v1'
+    const payload = buildAccountSavePayload({
+      accounts: [],
+      form,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    expect(buildAccountUpdatePayload(payload).connections?.[0]?.baseUrl).toBe('https://new.example.com/v1')
+  })
+
+  it('OAuth 清空 Base URL 时编辑 payload 不携带连接集合（不触发空集合整替换）', () => {
+    const form = defaultAccountForm('gpt', 'oauth')
+    form.name = 'OAuth 无连接单测'
+    form.groupId = 'group-oauth-conn'
+    form.baseUrl = ''
+    form.accessToken = 'at-conn-sync'
+    form.supportedModels = ['gpt-5.4-mini']
+    form.healthCheckModel = 'gpt-5.4-mini'
+    const payload = buildAccountSavePayload({
+      accounts: [],
+      form,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    expect(payload.connections).toBeUndefined()
+    expect(buildAccountUpdatePayload(payload)).not.toHaveProperty('connections')
+  })
+})

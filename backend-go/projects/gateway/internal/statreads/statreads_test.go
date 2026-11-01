@@ -67,6 +67,22 @@ const pgTestSchema = `
 		duration_ms_sum BIGINT DEFAULT 0, duration_ms_count BIGINT DEFAULT 0, duration_ms_max BIGINT,
 		first_token_ms_sum BIGINT DEFAULT 0, first_token_ms_count BIGINT DEFAULT 0, first_token_ms_max BIGINT,
 		last_used_at TEXT, last_error_at TEXT, updated_at TEXT);
+	CREATE TABLE juhe_stats.usage_model_daily (
+		system_account_id TEXT, stat_date TEXT, provider_code TEXT, model TEXT,
+		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,
+		input_tokens BIGINT DEFAULT 0, output_tokens BIGINT DEFAULT 0, cache_read_tokens BIGINT DEFAULT 0,
+		cache_read_cost_usd DOUBLE PRECISION DEFAULT 0, cache_write_tokens BIGINT DEFAULT 0,
+		cache_write_1h_tokens BIGINT DEFAULT 0, cache_write_cost_usd DOUBLE PRECISION DEFAULT 0,
+		thinking_tokens BIGINT DEFAULT 0, input_image_tokens BIGINT DEFAULT 0,
+		output_image_tokens BIGINT DEFAULT 0,
+		input_audio_tokens BIGINT DEFAULT 0, output_audio_tokens BIGINT DEFAULT 0,
+		tts_input_chars BIGINT DEFAULT 0, audio_input_seconds DOUBLE PRECISION DEFAULT 0,
+		output_video_seconds DOUBLE PRECISION DEFAULT 0,
+		total_cost_usd DOUBLE PRECISION DEFAULT 0, updated_at TEXT);
+	CREATE TABLE juhe_stats.usage_error_daily (
+		system_account_id TEXT, stat_date TEXT, error_group TEXT, provider_code TEXT, error_code TEXT,
+		status_code INTEGER DEFAULT 0, error_message TEXT, request_count BIGINT DEFAULT 0,
+		error_count BIGINT DEFAULT 0, updated_at TEXT);
 	CREATE TABLE juhe_stats.usage_scope_range_windows (
 		system_account_id TEXT, scope_type TEXT, scope_id TEXT, start_date TEXT, end_date TEXT,
 		request_count BIGINT DEFAULT 0, success_count BIGINT DEFAULT 0, error_count BIGINT DEFAULT 0,

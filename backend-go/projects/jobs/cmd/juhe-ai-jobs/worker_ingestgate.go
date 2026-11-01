@@ -15,8 +15,9 @@ package main
 // 回退游标。多源读取顺序本身是游标安全约束：必须先读 spool 水位、后读
 // writer runtime（DD3-B1，论证见 assembleIngestDrainStatus），反序在 drain
 // 末批交错下存在两源双漏窗口、游标永久越过积压记录。gateway 进程内 buffer
-// （spool 落盘之前的一段）在本进程边界之外、无法观测，与 Node IPC 边界
-// 同款，为已登记的残余窗口。
+// （spool 落盘之前的一段）在本进程边界之外、无法观测；T93-6 起按
+// ingestgate.DefaultGatewayBufferMaxAge（5min）作为保守下界压住安全水位
+// （ingestDrainSafety 的注入点），迟到入表的记录不再被游标越过。
 
 import (
 	"context"
@@ -145,7 +146,11 @@ func (a *workerAssembly) ingestDrainGate() func(ctx context.Context) error {
 
 // ingestDrainSafety 执行门控并返回游标安全截止时间
 // （usage-stats-aggregation 专用：Node 把 safety.safeCreatedBefore 传给
-// aggregate_usage_stats）。
+// aggregate_usage_stats）。T93-6 的 gateway buffer 滞留估计在此显式注入：
+// 默认取 ingestgate.DefaultGatewayBufferMaxAge（5min），需要调整保守下界时
+// 只改这一处传入值。
 func (a *workerAssembly) ingestDrainSafety(ctx context.Context) (ingestgate.Safety, error) {
-	return ingestgate.Check(ctx, a.ingestDrainProbe(), time.Now())
+	return ingestgate.CheckWithOptions(ctx, a.ingestDrainProbe(), time.Now(), ingestgate.Options{
+		GatewayBufferMaxAge: ingestgate.DefaultGatewayBufferMaxAge,
+	})
 }

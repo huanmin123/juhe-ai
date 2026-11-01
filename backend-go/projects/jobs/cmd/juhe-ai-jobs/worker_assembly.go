@@ -501,7 +501,14 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 		if _, err := store.RunUsageStatsConsistencyCheck(taskCtx, time.Now(), a.logger); err != nil {
 			return jobsched.TaskResult{}, err
 		}
-		return jobsched.TaskResult{}, nil
+		// T93-6 / C2-H1：按 usage_records 重算最近窗口并与 usage_stats_hourly
+		// 对账（只检测上报，不修复）。差异以 Warn + 任务 Warning 双通道暴露
+		// （scheduler 把 Warning 记入 lastWarning，运行状态可见）。
+		reconciliation, err := store.RunUsageStatsReconciliation(taskCtx, time.Now(), statsverify.DefaultUsageStatsReconciliationWindow, a.aggregator.CacheReadCostEstimator, a.logger)
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		return usageStatsReconciliationTaskResult(reconciliation), nil
 	})
 
 	windowTask := func(jobName string, stages []statsagg.WindowStageName) jobsched.Task {

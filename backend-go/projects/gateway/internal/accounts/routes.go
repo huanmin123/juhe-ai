@@ -960,11 +960,20 @@ func textString(value any) string {
 	return ""
 }
 
+// schedulableReadOnlyMessage 是 T91-3（B1-10 裁决）的显式 400 文案：
+// schedulable 改为账户状态派生，创建/编辑请求体不再接受该键——显式拒绝而不是
+// 静默忽略，避免调用方以为手动设置生效。
+const schedulableReadOnlyMessage = "schedulable 由账户状态派生，不支持手动设置"
+
 // createBody mirrors accountCreateSchema.strict(): the allowed key set plus
 // per-field type contracts. Returns (input, message); a non-empty message
 // rejects the payload with 400.
 func createBody(body map[string]any) (CreateInput, string) {
 	input := CreateInput{}
+	// T91-3（B1-10）：schedulable 只读派生列，任何显式传入（含 null）都拒绝。
+	if _, exists := body["schedulable"]; exists {
+		return CreateInput{}, schedulableReadOnlyMessage
+	}
 	providerCode := strings.TrimSpace(textString(body["providerCode"]))
 	if providerCode == "" {
 		return CreateInput{}, "账户参数无效"
@@ -987,7 +996,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 		case "providerCode", "providerProtocolProfileId", "name", "type", "credentials",
 			"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings",
 			"tags", "status", "skipInitialHealthCheck", "concurrencyLimit", "priority",
-			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId", "schedulable",
+			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId",
 			"groupId", "accountExpiresAt", "availabilitySchedule", "balanceQueryEnabled",
 			"balanceQueryConfig", "temporaryUnavailableContinuousProbeEnabled",
 			"backgroundProbeEnabled",
@@ -1259,10 +1268,14 @@ func createBody(body map[string]any) (CreateInput, string) {
 // set. expectedConfigRevision is required (integer >= 1).
 func patchBody(body map[string]any) (PatchInput, string) {
 	input := PatchInput{}
+	// T91-3（B1-10）：schedulable 由账户状态派生，编辑请求体不再接受该键。
+	if _, exists := body["schedulable"]; exists {
+		return PatchInput{}, schedulableReadOnlyMessage
+	}
 	for key := range body {
 		switch key {
 		case "expectedConfigRevision", "name", "notes", "status", "concurrencyLimit",
-			"priority", "superPriorityEnabled", "fallbackEnabled", "schedulable",
+			"priority", "superPriorityEnabled", "fallbackEnabled",
 			"credentials", "credentialsPatch", "supportedModels", "healthCheckModel",
 			"healthCheckEndpointMode", "modelMappings", "tags", "accountExpiresAt",
 			"availabilitySchedule", "clearFailureState", "proxyProfileId", "groupId",
@@ -1331,13 +1344,6 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			return PatchInput{}, "账户更新参数无效"
 		}
 		input.FallbackEnabled = &enabled
-	}
-	if value, exists := body["schedulable"]; exists && value != nil {
-		enabled, ok := value.(bool)
-		if !ok {
-			return PatchInput{}, "账户更新参数无效"
-		}
-		input.Schedulable = &enabled
 	}
 	if value, exists := body["credentials"]; exists && value != nil {
 		credentials, ok := value.(map[string]any)

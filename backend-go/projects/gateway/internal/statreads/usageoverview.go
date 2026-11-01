@@ -96,9 +96,9 @@ func (d *Deps) normalizeStatsDateRange(ctx context.Context, startDate, endDate s
 // request path suffix (one Node handler family, one Go registration helper).
 func (d *Deps) overviewSectionHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		section := sectionFromPath(r.URL.Path)
 		startDate, endDate, badRequest := parseUsageOverviewQuery(r.URL.Query())

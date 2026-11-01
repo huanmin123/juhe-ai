@@ -156,7 +156,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{},
 			GoStatus: GoWired, GoPackage: "statsverify",
-			GoBinding: "Store.RunUsageStatsConsistencyCheck（只检测上报，不修复）",
+			GoBinding: "Store.RunUsageStatsConsistencyCheck + Store.RunUsageStatsReconciliation（桶间抽样校验与 usage_records 重算对账；只检测上报，不修复）",
 		},
 		{
 			JobName: "background-task-run-reconcile", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "stats-worker",

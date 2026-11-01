@@ -787,6 +787,80 @@ func (s *CircuitService) PrepareAttempt(ctx context.Context, input PrepareAttemp
 	return PrepareResult{Outcome: PrepareBlocked, State: &state}, nil
 }
 
+// CheckDispatchAdmission 是 PrepareAttempt 的只读准入判定（T91-6 / B2-M5）：
+// 同账户安全重试（coordination.SameAccountRetry 钉住单账户）在真正发送前必须
+// 经过与常规候选相同的电路阻断判定，但不产生 Attempt——不申请/完成
+// confirmation、不写失败计数，因此不会重复计数或重复写 confirmation。
+//
+// 阻断口径与 PrepareAttempt 的准入段一致：运行态未就绪 → 阻断（fail-closed，
+// 与 prepare 的 retirement 判定同源）；账户 scope 或协议模型 scope 处于非
+// CLOSED 相位（OPEN/SUSPECT/HALF_OPEN/…) 且 dispatchRevision 与本次派发一致 →
+// 阻断。dispatchRevision 不匹配（或空）的旧状态属于新配置代：常规
+// PrepareAttempt 会先 ReplaceDispatchRevision 得到全新 CLOSED 状态再放行，
+// 只读判定等值放行且不写状态。
+func (s *CircuitService) CheckDispatchAdmission(ctx context.Context, input PrepareAttemptInput) (PrepareResult, error) {
+	scope, err := GatewayAccountProtocolModelScope(input.Account, input.RequestLane, input.Model)
+	if err != nil {
+		return PrepareResult{}, err
+	}
+	dispatchRevision, err := AccountCircuitDispatchRevision(input.Account)
+	if err != nil {
+		return PrepareResult{}, err
+	}
+	runtimeStateReady := s.isRuntimeStateReady(scope.AccountRuntimeKey)
+	if !runtimeStateReady && s.ensureRuntimeStateReady != nil {
+		ready, err := s.ensureRuntimeStateReady(ctx, scope.AccountRuntimeKey)
+		if err != nil {
+			return PrepareResult{}, err
+		}
+		runtimeStateReady = ready
+	}
+	if !runtimeStateReady {
+		s.observe(RoutingObservabilityEvent{
+			Kind:              "circuit_dispatch",
+			Outcome:           "rebuild_blocked",
+			Phase:             PhaseSuspect,
+			AccountRuntimeKey: scope.AccountRuntimeKey,
+		})
+		blocked := ClosedState(scope, dispatchRevision, 0, "runtime-state-rebuilding", s.now())
+		blocked.Phase = PhaseSuspect
+		blocked.FailureReason = strPtr("runtime_state_rebuilding")
+		return PrepareResult{Outcome: PrepareBlocked, State: &blocked}, nil
+	}
+
+	accountScope := Scope{Kind: ScopeKindAccount, AccountRuntimeKey: scope.AccountRuntimeKey}
+	accountState, err := s.store.Get(ctx, accountScope, s.nowPtr())
+	if err != nil {
+		return PrepareResult{}, err
+	}
+	if blocked, state := circuitAdmissionBlocked(accountState, dispatchRevision); blocked {
+		s.observeBlockedDispatch(state)
+		return PrepareResult{Outcome: PrepareBlocked, State: &state}, nil
+	}
+	state, err := s.store.Get(ctx, scope, s.nowPtr())
+	if err != nil {
+		return PrepareResult{}, err
+	}
+	if blocked, blockedState := circuitAdmissionBlocked(state, dispatchRevision); blocked {
+		s.observeBlockedDispatch(blockedState)
+		return PrepareResult{Outcome: PrepareBlocked, State: &blockedState}, nil
+	}
+	return PrepareResult{Outcome: PrepareDispatchable}, nil
+}
+
+// circuitAdmissionBlocked 报告当前配置代的非 CLOSED 电路状态：只有
+// dispatchRevision 与本次派发一致且 phase != CLOSED 才阻断；空 revision（尚无
+// 状态）或 revision 漂移（旧配置代）等价于全新 CLOSED，不阻断。
+func circuitAdmissionBlocked(state State, dispatchRevision string) (bool, State) {
+	if state.DispatchRevision == "" || state.DispatchRevision != dispatchRevision {
+		return false, state
+	}
+	if state.Phase == PhaseClosed {
+		return false, state
+	}
+	return true, state
+}
+
 // releaseAcquiredConfirmation mirrors releaseAcquiredConfirmation: complete
 // as unknown; on failure replay the exact same completion once.
 func (s *CircuitService) releaseAcquiredConfirmation(ctx context.Context, confirmation *Confirmation) {

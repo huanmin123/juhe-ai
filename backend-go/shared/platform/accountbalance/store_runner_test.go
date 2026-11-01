@@ -43,22 +43,22 @@ func (c *balanceTestHTTP) Do(request *http.Request) (*http.Response, error) {
 func TestStoreLeaseFenceAndSnapshotCAS(t *testing.T) {
 	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	owner, acquired, err := store.AcquireOwnerLease(ctx, "owner-a", time.Minute)
+	owner, acquired, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, "owner-a", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquire owner: %v %t", err, acquired)
 	}
-	if _, acquired, err := store.AcquireOwnerLease(ctx, "owner-b", time.Minute); err != nil || acquired {
+	if _, acquired, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, "owner-b", time.Minute); err != nil || acquired {
 		t.Fatalf("active owner lease must fence second owner: %v %t", err, acquired)
 	}
-	account, acquired, err := store.AcquireAccountLease(ctx, owner, "acct-1", time.Minute)
+	account, acquired, err := store.AcquireAccountLease(ctx, OwnerLeaseKeyPeriodic, owner, "acct-1", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquire account: %v %t", err, acquired)
 	}
-	if _, acquired, err := store.AcquireAccountLease(ctx, owner, "acct-1", time.Minute); !errors.Is(err, ErrAccountLeaseHeld) || acquired {
+	if _, acquired, err := store.AcquireAccountLease(ctx, OwnerLeaseKeyPeriodic, owner, "acct-1", time.Minute); !errors.Is(err, ErrAccountLeaseHeld) || acquired {
 		t.Fatalf("active account lease must not be reacquired by same owner: %v %t", err, acquired)
 	}
 	otherOwner := OwnerLease{OwnerID: "owner-b", FenceToken: owner.FenceToken}
-	if _, acquired, err := store.AcquireAccountLease(ctx, otherOwner, "acct-1", time.Minute); err == nil || acquired {
+	if _, acquired, err := store.AcquireAccountLease(ctx, OwnerLeaseKeyPeriodic, otherOwner, "acct-1", time.Minute); err == nil || acquired {
 		t.Fatalf("active account lease must not be stolen by another owner: %v %t", err, acquired)
 	}
 	secret := "store-test-secret"
@@ -69,24 +69,24 @@ func TestStoreLeaseFenceAndSnapshotCAS(t *testing.T) {
 	now := time.Now().UTC()
 	input := Input{AccountID: "acct-1", SystemAccountID: "sys-1", InputVersion: 1, ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, BaseURL: "https://example.test", Config: QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}, APIKey: credential, Trigger: TriggerPeriodic, IssuedAt: now, ExpiresAt: now.Add(time.Minute)}
 	snapshot := Snapshot{Status: StatusFresh, RemainingUSD: "1.25", LastSuccessAt: now.Format(time.RFC3339Nano)}
-	inserted, err := store.AppendOutcome(ctx, owner, account, Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: snapshot})
+	inserted, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: snapshot})
 	if err != nil || !inserted {
 		t.Fatalf("append outcome: %v %t", err, inserted)
 	}
-	duplicate, err := store.AppendOutcome(ctx, owner, account, Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now.Add(time.Second), Snapshot: Snapshot{Status: StatusFailed}})
+	duplicate, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now.Add(time.Second), Snapshot: Snapshot{Status: StatusFailed}})
 	if err != nil || duplicate {
 		t.Fatalf("duplicate outcome must be idempotent: %v %t", err, duplicate)
 	}
-	if _, err := store.AppendOutcome(ctx, owner, account, Outcome{OutcomeID: "outcome-conflict", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: Snapshot{Status: StatusFailed}}); !errors.Is(err, ErrOutcomeStale) {
+	if _, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, Outcome{OutcomeID: "outcome-conflict", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: Snapshot{Status: StatusFailed}}); !errors.Is(err, ErrOutcomeStale) {
 		t.Fatalf("request ID collision with a different outcome must be stale: %v", err)
 	}
 	// A later refresh advances the mutable snapshot, but retrying the original
 	// request must still resolve through its immutable outcome row.
 	later := now.Add(2 * time.Minute)
-	if _, err := store.AppendOutcome(ctx, owner, account, Outcome{OutcomeID: "outcome-later", RequestID: "request-later", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: later, Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "2.50"}, NextRefreshAt: &later}); err != nil {
+	if _, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, Outcome{OutcomeID: "outcome-later", RequestID: "request-later", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: later, Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "2.50"}, NextRefreshAt: &later}); err != nil {
 		t.Fatalf("later outcome: %v", err)
 	}
-	if duplicate, err := store.AppendOutcome(ctx, owner, account, Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: snapshot}); err != nil || duplicate {
+	if duplicate, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: snapshot}); err != nil || duplicate {
 		t.Fatalf("original request replay after later refresh must remain idempotent: %v %t", err, duplicate)
 	}
 	record, found, err := store.LoadSnapshot(ctx, "acct-1")
@@ -99,29 +99,38 @@ func TestStoreLeaseFenceAndSnapshotCAS(t *testing.T) {
 	}
 	stale := input
 	stale.ConfigRevision = 0
-	if _, err := store.WriteSnapshotCAS(ctx, owner, account, SnapshotMutation{Input: stale, Snapshot: Snapshot{Status: StatusFailed}}); err == nil {
+	if _, err := store.WriteSnapshotCAS(ctx, OwnerLeaseKeyPeriodic, owner, account, SnapshotMutation{Input: stale, Snapshot: Snapshot{Status: StatusFailed}}); err == nil {
 		t.Fatal("invalid stale input must fail closed")
 	}
 	wrongExpected := now.Add(-time.Minute)
 	nextRefresh := now.Add(time.Minute)
 	staleOutcome := Outcome{OutcomeID: "outcome-stale", RequestID: "request-stale", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerManual, ObservedAt: now, Snapshot: Snapshot{Status: StatusFailed}, NextRefreshAt: &nextRefresh, ExpectedSnapshotNextRefreshAt: &wrongExpected}
-	if _, err := store.AppendOutcome(ctx, owner, account, staleOutcome); !errors.Is(err, ErrOutcomeStale) {
+	if _, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, staleOutcome); !errors.Is(err, ErrOutcomeStale) {
 		t.Fatalf("first stale outcome must be marked stale: %v", err)
 	}
-	if _, err := store.AppendOutcome(ctx, owner, account, staleOutcome); !errors.Is(err, ErrOutcomeStale) {
+	if _, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, staleOutcome); !errors.Is(err, ErrOutcomeStale) {
 		t.Fatalf("duplicate stale outcome must remain stale: %v", err)
 	}
-	if err := store.ReleaseOwnerLease(ctx, owner); err != nil {
+	// 接管语义放宽后（2026-11-01，设计 §5）：账户租约 lease_until 过期即接管，
+	// 不再因原持有者 owner lease 失效而提前接管未过期的账户租约。先在 owner
+	// lease 存活时把账户租约续约到短 TTL，释放 owner lease 并等账户租约过期
+	// （时间全由 Go 侧参数驱动，无跨时钟偏差），走泄漏租约到期的接管路径断言
+	// fence+1。
+	if ok, err := store.RenewAccountLease(ctx, OwnerLeaseKeyPeriodic, owner, account, 80*time.Millisecond); err != nil || !ok {
+		t.Fatalf("renew account lease to short ttl: %t %v", ok, err)
+	}
+	if err := store.ReleaseOwnerLease(ctx, OwnerLeaseKeyPeriodic, owner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendOutcome(ctx, owner, account, Outcome{OutcomeID: "outcome-3", RequestID: "request-3", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: snapshot}); !errors.Is(err, ErrOwnerLeaseLost) {
+	if _, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, Outcome{OutcomeID: "outcome-3", RequestID: "request-3", AccountID: "acct-1", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: snapshot}); !errors.Is(err, ErrOwnerLeaseLost) {
 		t.Fatalf("stale owner must be fenced, got %v", err)
 	}
-	ownerB, acquired, err := store.AcquireOwnerLease(ctx, "owner-b", time.Minute)
+	time.Sleep(150 * time.Millisecond)
+	ownerB, acquired, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, "owner-b", time.Minute)
 	if err != nil || !acquired || ownerB.FenceToken <= owner.FenceToken {
 		t.Fatalf("takeover owner lease: %#v %t %v", ownerB, acquired, err)
 	}
-	accountB, acquired, err := store.AcquireAccountLease(ctx, ownerB, "acct-1", time.Minute)
+	accountB, acquired, err := store.AcquireAccountLease(ctx, OwnerLeaseKeyPeriodic, ownerB, "acct-1", time.Minute)
 	if err != nil || !acquired || accountB.FenceToken <= account.FenceToken {
 		t.Fatalf("takeover account lease: %#v %t %v", accountB, acquired, err)
 	}
@@ -284,16 +293,16 @@ func TestPrepareInputSkipsHeldLeaseWithoutError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, acquired, err := store.AcquireOwnerLease(context.Background(), "runner", time.Minute)
+	owner, acquired, err := store.AcquireOwnerLease(context.Background(), OwnerLeaseKeyPeriodic, "runner", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquire owner lease: acquired=%t err=%v", acquired, err)
 	}
-	if _, acquired, err := store.AcquireAccountLease(context.Background(), owner, "acct-held", time.Minute); err != nil || !acquired {
+	if _, acquired, err := store.AcquireAccountLease(context.Background(), OwnerLeaseKeyPeriodic, owner, "acct-held", time.Minute); err != nil || !acquired {
 		t.Fatalf("pre-hold account lease: acquired=%t err=%v", acquired, err)
 	}
 	now := time.Now().UTC()
 	input := Input{AccountID: "acct-held", SystemAccountID: "sys-held", InputVersion: 1, ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, BaseURL: "https://example.test", Config: QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}, APIKey: credential, Trigger: TriggerManual, IssuedAt: now, ExpiresAt: now.Add(time.Minute)}
-	state, _, query, itemErr := runner.prepareInput(context.Background(), owner, input)
+	state, _, query, itemErr := runner.prepareInput(context.Background(), OwnerLeaseKeyPeriodic, owner, input)
 	if state != runStateSkipped || query != nil || itemErr != nil {
 		t.Fatalf("held lease must return (skipped, nil query, nil error), got state=%v queryNil=%t err=%v", state, query == nil, itemErr)
 	}
@@ -353,14 +362,14 @@ func TestRunInputsAllHeldLeasesDrainWithoutWorkerLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, acquired, err := store.AcquireOwnerLease(context.Background(), "runner", time.Minute)
+	owner, acquired, err := store.AcquireOwnerLease(context.Background(), OwnerLeaseKeyPeriodic, "runner", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquire owner lease: acquired=%t err=%v", acquired, err)
 	}
 	now := time.Now().UTC()
 	var inputs []Input
 	for _, id := range []string{"acct-h0", "acct-h1", "acct-h2", "acct-h3"} {
-		if _, acquired, err := store.AcquireAccountLease(context.Background(), owner, id, time.Minute); err != nil || !acquired {
+		if _, acquired, err := store.AcquireAccountLease(context.Background(), OwnerLeaseKeyPeriodic, owner, id, time.Minute); err != nil || !acquired {
 			t.Fatalf("pre-hold %s: acquired=%t err=%v", id, acquired, err)
 		}
 		inputs = append(inputs, Input{AccountID: id, SystemAccountID: "sys-held", InputVersion: 1, ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, BaseURL: "https://example.test", Config: QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}, APIKey: credential, Trigger: TriggerManual, IssuedAt: now, ExpiresAt: now.Add(time.Minute)})

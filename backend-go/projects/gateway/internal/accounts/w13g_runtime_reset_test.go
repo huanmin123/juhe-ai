@@ -257,7 +257,6 @@ func TestW13GRuntimeResetAuthorizedSkipMatrix(t *testing.T) {
 	}{
 		{"errst", "error", ``, nil, "health_check_gate"},
 		{"disbld", "disabled", ``, nil, "disabled"},
-		{"qual", "quality_isolated", ``, nil, "quality_isolated"},
 		{"expd", "active", `UPDATE accounts SET account_expires_at = ? WHERE id = ?`, []any{"2020-01-01T00:00:00Z"}, "expired"},
 		{"manual", "active", `UPDATE accounts SET schedulable = 0 WHERE id = ?`, nil, "manual_unschedulable"},
 		{"expl", "active", `UPDATE accounts SET last_error_code = ? WHERE id = ?`, []any{"explicit_account_error_policy_cooldown"}, "explicit_policy_cooldown"},
@@ -281,6 +280,30 @@ func TestW13GRuntimeResetAuthorizedSkipMatrix(t *testing.T) {
 		if !strings.Contains(strings.Join(outcome.Result.Skipped, "|"), c.want) {
 			t.Fatalf("%s：应跳过 %q，实际 %v", c.suffix, c.want, outcome.Result.Skipped)
 		}
+	}
+
+	// 质量隔离（T91-2 / B1-7）：不再是跳过项——实例恢复 active + 可调度，并在
+	// 同一事务结束质量处罚活动行（cleared + cleared_at）。
+	qualID, _, _, _ := w13gSeedAuthInstance(t, env, root, alice, "qual", "active", "quality_isolated", true)
+	env.exec(t, `INSERT INTO account_quality_enforcements (account_id, system_account_id, enforcement_id,
+			generation, state, updated_at, recovery_due_at)
+		VALUES (?, ?, 'enf-w13g-qual', 1, 'active', ?, ?)`,
+		qualID, alice, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	qualOutcome, qualErr := env.store.ResetAccountRuntimeState(context.Background(), qualID, 1,
+		AccessScope{ViewerID: alice})
+	if qualErr != nil || qualOutcome == nil {
+		t.Fatalf("qual 重置失败：%v", qualErr)
+	}
+	if qualOutcome.Result.Status != "active" || !qualOutcome.Result.Schedulable {
+		t.Fatalf("qual 应恢复 active + 可调度：%+v", qualOutcome.Result)
+	}
+	if strings.Contains(strings.Join(qualOutcome.Result.Skipped, "|"), "quality_isolated") {
+		t.Fatalf("qual 不应再跳过：%v", qualOutcome.Result.Skipped)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_quality_enforcements
+		WHERE account_id = ? AND state = 'cleared' AND cleared_at IS NOT NULL AND recovery_due_at IS NULL`,
+		qualID) != 1 {
+		t.Fatal("qual 重置必须结束质量处罚行")
 	}
 
 	// 授权额度超额 → skipped 含 authorization_quota。

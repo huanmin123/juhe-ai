@@ -23,6 +23,9 @@ func (d *Deps) writeReadError(w http.ResponseWriter, err error) {
 
 // usageOverviewSummary mirrors getUsageStatsOverviewSummary: today reads
 // usage_stats_daily, historical ranges read usage_overview_summary_windows.
+// When the historical window row is missing (refresh lag or a scope that has
+// not reached the window tables yet) the range is aggregated from
+// usage_stats_daily in real time (T93-5 / C1-C2) and marked dataSource=realtime.
 func (d *Deps) usageOverviewSummary(r *http.Request, scope AccessScope, rng Range) (any, error) {
 	systemAccountID, scopeID := usageOverviewStatsScope(scope)
 	current, err := d.isCurrentUsageStatsDay(r, rng)
@@ -31,8 +34,6 @@ func (d *Deps) usageOverviewSummary(r *http.Request, scope AccessScope, rng Rang
 	}
 	statsTable := d.statsTable("usage_stats_daily")
 	windowTable := d.statsTable("usage_overview_summary_windows")
-	var row Row
-	var found bool
 	if current {
 		rows, queryErr := d.queryStats(r, `
 			SELECT request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
@@ -43,20 +44,49 @@ func (d *Deps) usageOverviewSummary(r *http.Request, scope AccessScope, rng Rang
 				AND scope_id = ?
 				AND stat_date = ?
 		`, systemAccountID, scopeID, rng.StartDate)
-		row, found, err = firstRow(rows, queryErr)
-	} else {
-		rows, queryErr := d.queryStats(r, `
-			SELECT request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-				total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count
-			FROM `+windowTable+`
-			WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
-		`, systemAccountID, rangeWindowKey(rng), rng.StartDate, rng.EndDate)
-		row, found, err = firstRow(rows, queryErr)
+		row, found, queryErr := firstRow(rows, queryErr)
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		if !found {
+			return usageStatsOverviewResult{
+				Range:      rng,
+				DataSource: usageOverviewDataSourceRealtime,
+				Summary:    emptyUsageOverviewSummary(),
+			}, nil
+		}
+		return usageStatsOverviewResult{
+			Range:      rng,
+			DataSource: usageOverviewDataSourceRealtime,
+			Summary:    mapUsageOverviewSummary(row),
+		}, nil
 	}
-	if err != nil || !found {
-		return usageStatsOverviewResult{Range: rng, Summary: emptyUsageOverviewSummary()}, err
+	rows, queryErr := d.queryStats(r, `
+		SELECT request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+			total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count
+		FROM `+windowTable+`
+		WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+	`, systemAccountID, rangeWindowKey(rng), rng.StartDate, rng.EndDate)
+	row, found, queryErr := firstRow(rows, queryErr)
+	if queryErr != nil {
+		return nil, queryErr
 	}
-	return usageStatsOverviewResult{Range: rng, Summary: mapUsageOverviewSummary(row)}, nil
+	if found {
+		return usageStatsOverviewResult{
+			Range:      rng,
+			DataSource: usageOverviewDataSourceWindow,
+			Summary:    mapUsageOverviewSummary(row),
+		}, nil
+	}
+	summary, err := d.usageOverviewSummaryRealtime(r, rng, systemAccountID, scopeID)
+	if err != nil {
+		return nil, err
+	}
+	return usageStatsOverviewResult{
+		Range:      rng,
+		DataSource: usageOverviewDataSourceRealtime,
+		Summary:    summary,
+	}, nil
 }
 
 // usageOverviewDailyTrend mirrors getUsageStatsOverviewDailyTrend.
@@ -79,11 +109,14 @@ func (d *Deps) usageOverviewDailyTrend(r *http.Request, scope AccessScope, rng R
 	return usageStatsDailyTrendResult{Range: rng, DailyTrend: trend}, nil
 }
 
-// usageOverviewHourlyTrend mirrors getUsageStatsOverviewHourlyTrend.
+// usageOverviewHourlyTrend mirrors getUsageStatsOverviewHourlyTrend. A missing
+// window range falls back to a real-time aggregation of usage_stats_hourly
+// (same scope, same trend bucket mapping as statsagg) and marks
+// dataSource=realtime.
 func (d *Deps) usageOverviewHourlyTrend(r *http.Request, scope AccessScope, rng Range) (any, error) {
 	// The trend/model/error window tables are system-account keyed only
 	// (Node queries bind systemAccountId + window_key + start/end only).
-	systemAccountID, _ := usageOverviewStatsScope(scope)
+	systemAccountID, scopeID := usageOverviewStatsScope(scope)
 	rows, err := d.queryStats(r, `
 		SELECT bucket_key AS stat_hour, request_count, error_count, duration_ms_sum, duration_ms_count
 		FROM `+d.statsTable("usage_overview_trend_windows")+`
@@ -92,6 +125,17 @@ func (d *Deps) usageOverviewHourlyTrend(r *http.Request, scope AccessScope, rng 
 	`, systemAccountID, rangeWindowKey(rng), rng.StartDate, rng.EndDate)
 	if err != nil {
 		return nil, err
+	}
+	if len(rows) == 0 {
+		hourly, err := d.usageOverviewHourlyTrendRealtime(r, rng, systemAccountID, scopeID)
+		if err != nil {
+			return nil, err
+		}
+		return usageStatsHourlyTrendResult{
+			Range:       rng,
+			DataSource:  usageOverviewDataSourceRealtime,
+			HourlyTrend: hourly,
+		}, nil
 	}
 	hourly := make([]usageHourlyPoint, 0, len(rows))
 	for _, row := range rows {
@@ -102,10 +146,15 @@ func (d *Deps) usageOverviewHourlyTrend(r *http.Request, scope AccessScope, rng 
 			ErrorCount:        row.number("error_count"),
 		})
 	}
-	return usageStatsHourlyTrendResult{Range: rng, HourlyTrend: hourly}, nil
+	return usageStatsHourlyTrendResult{
+		Range:       rng,
+		DataSource:  usageOverviewDataSourceWindow,
+		HourlyTrend: hourly,
+	}, nil
 }
 
 // usageOverviewModelDistribution mirrors getUsageStatsOverviewModelDistribution.
+// A missing window range falls back to a real-time Top 10 over usage_model_daily.
 func (d *Deps) usageOverviewModelDistribution(r *http.Request, scope AccessScope, rng Range) (any, error) {
 	systemAccountID, _ := usageOverviewStatsScope(scope)
 	rows, err := d.queryStats(r, `
@@ -117,6 +166,17 @@ func (d *Deps) usageOverviewModelDistribution(r *http.Request, scope AccessScope
 	if err != nil {
 		return nil, err
 	}
+	if len(rows) == 0 {
+		distribution, err := d.usageOverviewModelDistributionRealtime(r, rng, systemAccountID)
+		if err != nil {
+			return nil, err
+		}
+		return usageStatsModelDistributionResult{
+			Range:             rng,
+			DataSource:        usageOverviewDataSourceRealtime,
+			ModelDistribution: distribution,
+		}, nil
+	}
 	distribution := make([]usageModelPoint, 0, len(rows))
 	for _, row := range rows {
 		distribution = append(distribution, usageModelPoint{
@@ -127,10 +187,15 @@ func (d *Deps) usageOverviewModelDistribution(r *http.Request, scope AccessScope
 			TotalCost:    row.number("total_cost"),
 		})
 	}
-	return usageStatsModelDistributionResult{Range: rng, ModelDistribution: distribution}, nil
+	return usageStatsModelDistributionResult{
+		Range:             rng,
+		DataSource:        usageOverviewDataSourceWindow,
+		ModelDistribution: distribution,
+	}, nil
 }
 
-// usageOverviewErrors mirrors getUsageStatsOverviewErrors.
+// usageOverviewErrors mirrors getUsageStatsOverviewErrors. A missing window
+// range falls back to a real-time Top 10 over usage_error_daily.
 func (d *Deps) usageOverviewErrors(r *http.Request, scope AccessScope, rng Range) (any, error) {
 	systemAccountID, _ := usageOverviewStatsScope(scope)
 	rows, err := d.queryStats(r, `
@@ -141,6 +206,17 @@ func (d *Deps) usageOverviewErrors(r *http.Request, scope AccessScope, rng Range
 	`, systemAccountID, rangeWindowKey(rng), rng.StartDate, rng.EndDate)
 	if err != nil {
 		return nil, err
+	}
+	if len(rows) == 0 {
+		errorsList, err := d.usageOverviewErrorsRealtime(r, rng, systemAccountID)
+		if err != nil {
+			return nil, err
+		}
+		return usageStatsErrorsResult{
+			Range:      rng,
+			DataSource: usageOverviewDataSourceRealtime,
+			Errors:     errorsList,
+		}, nil
 	}
 	errorsList := make([]usageErrorPoint, 0, len(rows))
 	for _, row := range rows {
@@ -155,7 +231,11 @@ func (d *Deps) usageOverviewErrors(r *http.Request, scope AccessScope, rng Range
 			ErrorCount:   row.number("error_count"),
 		})
 	}
-	return usageStatsErrorsResult{Range: rng, Errors: errorsList}, nil
+	return usageStatsErrorsResult{
+		Range:      rng,
+		DataSource: usageOverviewDataSourceWindow,
+		Errors:     errorsList,
+	}, nil
 }
 
 // isCurrentUsageStatsDay mirrors isCurrentUsageStatsDay.
@@ -232,10 +312,13 @@ func mapUsageDailyTrendRows(rows []Row, rng Range) []usageDailyPoint {
 	return trend
 }
 
-// JSON payloads mirror the Node response shapes field by field.
+// JSON payloads mirror the Node response shapes field by field. DataSource is
+// an additive read-only marker: window = usage_overview_* snapshot,
+// realtime = on-request aggregation over the stats fact tables.
 type usageStatsOverviewResult struct {
-	Range   Range                `json:"range"`
-	Summary usageSummaryOverview `json:"summary"`
+	Range      Range                `json:"range"`
+	DataSource string               `json:"dataSource"`
+	Summary    usageSummaryOverview `json:"summary"`
 }
 
 type usageStatsDailyTrendResult struct {
@@ -245,17 +328,20 @@ type usageStatsDailyTrendResult struct {
 
 type usageStatsHourlyTrendResult struct {
 	Range       Range              `json:"range"`
+	DataSource  string             `json:"dataSource"`
 	HourlyTrend []usageHourlyPoint `json:"hourlyTrend"`
 }
 
 type usageStatsModelDistributionResult struct {
 	Range             Range             `json:"range"`
+	DataSource        string            `json:"dataSource"`
 	ModelDistribution []usageModelPoint `json:"modelDistribution"`
 }
 
 type usageStatsErrorsResult struct {
-	Range  Range             `json:"range"`
-	Errors []usageErrorPoint `json:"errors"`
+	Range      Range             `json:"range"`
+	DataSource string            `json:"dataSource"`
+	Errors     []usageErrorPoint `json:"errors"`
 }
 
 type usageSummaryOverview struct {

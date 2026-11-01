@@ -123,6 +123,8 @@ CapabilityKey =
 
 `key_model` 实际禁止使用 `SUSPECT`：如果底层共享 store 读到 `SUSPECT`，Node 按过滤处理，model-recovery 先将它按原 generation 收敛为 `OPEN` 或 `CLOSED`，不能把它作为新的账户确认阶段。
 
+**连续 unknown 终结（T91-8 / B3-H24）**：model-recovery 探针输入（账户 / `dispatchRevision` 对应的精确 Key-模型）持续取不到匹配候选时只会得到 `unknown`，旧行为以 10s 节奏无限重试并常驻 due 集合。当前规则：状态 JSON 增加 `consecutiveUnknownCount`（`unknown` 累加、其它结论清零），连续 12 次（约 2 分钟）仍无结论即转 `CLOSED` 并写 `closedReason=capability_not_found`，同时从 due 集合移除（进入 `closed` 保留账本，由既有清理任务回收）。该终结不是「上游恢复」：后续同一 capability 的真实失败由网关写侧按现有状态机以新 generation 重建 `OPEN` 记录重新评估，恢复 runner 的 `Acquire` 不接受 `CLOSED`。旧 state JSON 缺 `consecutiveUnknownCount` / `closedReason` 时按 0 / 空串解码。
+
 ### 4.5 规范化与时间基准
 
 - `clientModel` 和 `finalUpstreamModel` 保留供应商原始大小写，只去除首尾空白；不得自行转小写或别名化。

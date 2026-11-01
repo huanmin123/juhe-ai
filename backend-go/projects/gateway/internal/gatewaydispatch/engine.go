@@ -110,7 +110,10 @@ type Engine struct {
 	HighConcurrencyQueue HighConcurrencyWaiter
 	ClientIPConcurrency  ClientIPConcurrencyAcquirer
 	Quota                AuthorizationQuotaChecker
-	Concurrency          AccountConcurrencyStore
+	// InflightQuota 是请求级在途额度预占端口（T93-1/T93-4）：nil = 未装配，
+	// 只保留 preflight 的已结算额度拒绝，不做在途预留。
+	InflightQuota InflightQuotaPort
+	Concurrency   AccountConcurrencyStore
 	Cache                RuntimeCachePort
 	Locks                AccountLocks
 	RecoverableWait      RecoverableSuppressionWaiter

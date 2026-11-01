@@ -18,16 +18,16 @@ import (
 func TestPostgresJobsStoreSmoke(t *testing.T) {
 	store := openKitPostgresStore(t)
 	ctx := context.Background()
-	owner, acquired, err := store.AcquireOwnerLease(ctx, "j2-smoke", time.Minute)
+	owner, acquired, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, "j2-smoke", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("owner lease: %v %t", err, acquired)
 	}
-	account, acquired, err := store.AcquireAccountLease(ctx, owner, "j2-smoke-account", time.Minute)
+	account, acquired, err := store.AcquireAccountLease(ctx, OwnerLeaseKeyPeriodic, owner, "j2-smoke-account", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("account lease: %v %t", err, acquired)
 	}
 	now := time.Now().UTC()
-	inserted, err := store.AppendOutcome(ctx, owner, account, Outcome{OutcomeID: "j2-smoke-outcome", RequestID: "j2-smoke-request", AccountID: "j2-smoke-account", SystemAccountID: "j2-smoke-system", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "1.25"}})
+	inserted, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner, account, Outcome{OutcomeID: "j2-smoke-outcome", RequestID: "j2-smoke-request", AccountID: "j2-smoke-account", SystemAccountID: "j2-smoke-system", InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now, Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "1.25"}})
 	if err != nil || !inserted {
 		t.Fatalf("outcome: %v %t", err, inserted)
 	}

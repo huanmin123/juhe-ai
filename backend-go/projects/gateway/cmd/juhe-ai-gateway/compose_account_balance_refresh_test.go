@@ -73,6 +73,12 @@ func TestComposeSystemAPIWiresBalanceAndCatalogRefresh(t *testing.T) {
 			t.Fatalf("balance/catalog wiring file must hand over %s", handover)
 		}
 	}
+	// 手动刷新互斥粒度下沉账户级（2026-11-01，设计 §5/§6）：生产装配必须
+	// 携带 manual owner lease key prefix，否则手动刷新回退全局 key、重新被
+	// 周期批次整批拖住 409。
+	if !strings.Contains(string(wiring), "ManualOwnerLeaseKeyPrefix: accountbalance.ManualOwnerLeaseKeyPrefix") {
+		t.Fatalf("balance wiring must assemble the runner with the per-account manual owner lease key prefix")
+	}
 }
 
 // TestInProcessRefreshPortsPGFixture pins the PG assembly contract
@@ -140,11 +146,22 @@ func TestInProcessRefreshPGManualRefreshEndToEnd(t *testing.T) {
 		t.Fatalf("committed outcomes = %d, want 1", committedOutcomes)
 	}
 	var leaseRows int
-	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.account_balance_owner_leases WHERE lease_key = 'account-balance-owner'`).Scan(&leaseRows); err != nil {
+	// manual 刷新经生产装配使用按账户独立 owner lease 行
+	// （account-balance-owner-manual:<accountId>，2026-11-01 互斥粒度下沉，
+	// 设计 §5/§6）：行存在即证明 runner 装配携带 manual prefix。
+	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.account_balance_owner_leases WHERE lease_key = $1`,
+		platformaccountbalance.ManualOwnerLeaseKeyPrefix+candidate.ID).Scan(&leaseRows); err != nil {
 		t.Fatal(err)
 	}
 	if leaseRows != 1 {
-		t.Fatalf("owner lease rows = %d, want 1", leaseRows)
+		t.Fatalf("manual owner lease rows = %d, want 1", leaseRows)
+	}
+	// gateway 进程内只有 manual 活动：全局周期 key 行不得被手动刷新触碰。
+	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.account_balance_owner_leases WHERE lease_key = 'account-balance-owner'`).Scan(&leaseRows); err != nil {
+		t.Fatal(err)
+	}
+	if leaseRows != 0 {
+		t.Fatalf("global periodic owner lease rows = %d, want 0 (manual must not touch it)", leaseRows)
 	}
 	if err := tdb.DB.QueryRow(`SELECT COUNT(*) FROM juhe_jobs.account_balance_account_leases WHERE account_id = $1`,
 		candidate.ID).Scan(&leaseRows); err != nil {
@@ -389,11 +406,13 @@ func newAdapterBalanceRefresher(t *testing.T, ownerID, upstreamBody string, hold
 		t.Fatal(err)
 	}
 	if holdOwnerLease {
-		lease, acquired, err := store.AcquireOwnerLease(context.Background(), "periodic-owner", time.Minute)
+		lease, acquired, err := store.AcquireOwnerLease(context.Background(), platformaccountbalance.OwnerLeaseKeyPeriodic, "periodic-owner", time.Minute)
 		if err != nil || !acquired {
 			t.Fatalf("hold owner lease: %v %t", err, acquired)
 		}
-		t.Cleanup(func() { _ = store.ReleaseOwnerLease(context.Background(), lease) })
+		t.Cleanup(func() {
+			_ = store.ReleaseOwnerLease(context.Background(), platformaccountbalance.OwnerLeaseKeyPeriodic, lease)
+		})
 	}
 	runner, err := platformaccountbalance.NewRunner(platformaccountbalance.RunnerConfig{
 		Store:            store,
@@ -754,18 +773,20 @@ func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
 func seedNewerAdapterSnapshot(t *testing.T, refresher *gatewayManualBalanceRefresher, store *platformaccountbalance.Store) error {
 	t.Helper()
 	ctx := context.Background()
-	owner, acquired, err := store.AcquireOwnerLease(ctx, "snapshot-seeder", time.Minute)
+	owner, acquired, err := store.AcquireOwnerLease(ctx, platformaccountbalance.OwnerLeaseKeyPeriodic, "snapshot-seeder", time.Minute)
 	if err != nil || !acquired {
 		return fmt.Errorf("seeder owner lease: %v %t", err, acquired)
 	}
-	defer func() { _ = store.ReleaseOwnerLease(context.Background(), owner) }()
-	account, acquired, err := store.AcquireAccountLease(ctx, owner, "acct-adapter", time.Minute)
+	defer func() {
+		_ = store.ReleaseOwnerLease(context.Background(), platformaccountbalance.OwnerLeaseKeyPeriodic, owner)
+	}()
+	account, acquired, err := store.AcquireAccountLease(ctx, platformaccountbalance.OwnerLeaseKeyPeriodic, owner, "acct-adapter", time.Minute)
 	if err != nil || !acquired {
 		return fmt.Errorf("seeder account lease: %v %t", err, acquired)
 	}
 	defer func() { _ = store.ReleaseAccountLease(context.Background(), owner, account) }()
 	now := time.Now().UTC()
-	inserted, err := store.AppendOutcome(ctx, owner, account, platformaccountbalance.Outcome{
+	inserted, err := store.AppendOutcome(ctx, platformaccountbalance.OwnerLeaseKeyPeriodic, owner, account, platformaccountbalance.Outcome{
 		OutcomeID: "seed-outcome", RequestID: "seed-request", AccountID: "acct-adapter",
 		SystemAccountID: "sys-adapter", InputVersion: 2, ConfigRevision: 1,
 		Trigger: platformaccountbalance.TriggerPeriodic, ObservedAt: now,

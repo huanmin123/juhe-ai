@@ -42,7 +42,6 @@ func TestPatchClearFailureStateRejectsMixedFieldEdits(t *testing.T) {
 		`{"expectedConfigRevision":1,"clearFailureState":true,"name":"renamed"}`,
 		`{"expectedConfigRevision":1,"clearFailureState":true,"notes":"note"}`,
 		`{"expectedConfigRevision":1,"clearFailureState":true,"status":"active"}`,
-		`{"expectedConfigRevision":1,"clearFailureState":true,"schedulable":true}`,
 		`{"expectedConfigRevision":1,"clearFailureState":true,"temporaryUnavailableContinuousProbeEnabled":false}`,
 	}
 	for _, body := range mixedBodies {

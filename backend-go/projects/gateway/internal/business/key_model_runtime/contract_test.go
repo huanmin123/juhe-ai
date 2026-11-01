@@ -40,24 +40,29 @@ func TestMemoryForegroundAdmissionIsAtomic(t *testing.T) {
 	store := NewMemoryStore()
 	capability := testCapability()
 	now := time.UnixMilli(1000).UTC()
-	decisions := make(chan ForegroundDecision, 3)
-	for i := 0; i < 3; i++ {
+	const attempts = 3
+	decisions := make(chan ForegroundDecision, attempts)
+	for i := 0; i < attempts; i++ {
 		go func(index int) {
 			decision, _, _, err := store.AdmitForeground(capability, string(rune('a'+index)), now)
 			if err != nil {
 				t.Errorf("admit: %v", err)
-				return
 			}
 			decisions <- decision
 		}(i)
 	}
-	count := 0
-	for i := 0; i < 3; i++ {
-		if <-decisions == ForegroundAdmitted {
-			count++
+	admitted, busy := 0, 0
+	for i := 0; i < attempts; i++ {
+		switch <-decisions {
+		case ForegroundAdmitted:
+			admitted++
+		case ForegroundBusy:
+			busy++
 		}
 	}
-	if count != 3 {
-		t.Fatalf("admitted=%d want all attempts admitted", count)
+	// T91-9：前台准入固定契约 = 同一 CapabilityKey 最多 ForegroundLimit(2) 个
+	// 未提交请求；3 个并发准入必须恰好 2 admitted + 1 busy，不能超发。
+	if admitted != ForegroundLimit || busy != attempts-ForegroundLimit {
+		t.Fatalf("admitted=%d busy=%d, want %d/%d", admitted, busy, ForegroundLimit, attempts-ForegroundLimit)
 	}
 }

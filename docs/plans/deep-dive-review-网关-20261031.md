@@ -770,3 +770,42 @@ R1 攻击轮核验性结论（不改行为、直接入覆盖矩阵）：DD-C10~C
 - **未达成「连续三轮无 B 类确认」收敛协议**：R7 三个域各自单轮完成攻击→验证→修复→落点（R7-A 有独立落点复核），没有对每个域再追加第二轮攻击。继续深挖仍可能产出新确认项；本轮以「覆盖未审查功能域」为优先目标收敛。
 - 遗留裁决面集中且已登记：T88（探针 usage 口径）、T91（R7-B 9 条）、T93（R7-C 8 条）、T89/T90（jobs 夹具债/存量回填）。全部待用户逐条「修 / 不修 / 改文档」。
 - 未提交改动：R7 全部修复 + R1–R6 尾批仍混存工作区（含并行会话 chat 域在制品），未 commit（遵守无授权不提交）。
+
+## R7-B/R7-C B 类裁决结果（2026-11-01，用户逐条确认）
+
+| 编号 | 裁决 | 实施要点 |
+| --- | --- | --- |
+| T91-1 / B1-1b | 修 | 流量迁移只允许 `status=active` 且未锁死的源账户；特殊状态走人工恢复 |
+| T91-2 / B1-7 | 修 | runtime-reset 对 quality_isolated 一并清 `account_quality_enforcements` |
+| T91-3 / B1-10 | 修 | `schedulable` 改为状态派生：Create/PATCH 不再接受用户入参（传入 400）；active=可调度、其余不可调度（系统写面除外）；升级归一存量 active+schedulable=0 |
+| T91-4 / B2-H3 | 修 | 运行缓存 last-good retain 从 10min 缩到 2min；网关写面同步失效不变 |
+| T91-5 / B2-M1 | 修（文档） | 明确「人工临时状态 TTL 到期后由冷却复测恢复」为设计内行为，统一两份文档并校验 generation |
+| T91-6 / B2-M5 | 修 | 同账户安全重试前也调用电路 PrepareAttempt |
+| T91-7 / B3-H12 | 修 | 计划同步每轮按「当前是否在窗口内」纠偏，不再只依赖边界分钟 |
+| T91-8 / B3-H24 | 修 | keymodelrecovery Unknown 连续 12 次后转 CLOSED（capability_not_found）并移出 due |
+| T91-9 / B3-H31 | 修 | J3b `business/key_model_runtime` ForegroundLimit 100000 → 2，与主链固定契约一致 |
+| T93-1 / C3-H1 | 修 | 在途预占后移到选定账户、拿到 provider/映射模型之后，按真实成本预留 |
+| T93-2 / C3-H2 | 修 | 自定义模型保存按能力域校验价格完整性，缺维度 400，不允许 active 半价模型 |
+| T93-3 / C3-H4 | 修 | 未知/无价 service_tier 回退 standard 计价，不再整单 NULL |
+| T93-4 / C3-H8 | 修 | 授权/团队额度纳入同一在途预留机制 |
+| T93-5 / C1-C2 | 修 | 概览窗口缺行回退事实表实时聚合（≤31 天），响应标记来源/实时性 |
+| T93-6 / C2-H1 | 修 | 安全水位纳入 gateway 内存 buffer 最大滞留；statsverify 增加按 usage_records 重算抽样对账 |
+| T93-7 / C1-C9 | 修 | 由 T93-1/T93-4 在途预占覆盖并发窗口；文档明示「已结算投影 + 在途」口径 |
+| T93-8 / C1-C18 | 修 | 统计读面非管理员空 scopedID fail-closed |
+
+实施分四批（批13–批16）并行：账户/读面、运行态/电路/J3b、额度/定价、jobs 计划与恢复/对账。完成后统一回归并删除 T91/T93 条目。
+
+## R7-B/R7-C B 类修复交付（批13–批17，2026-11-01）
+
+用户逐条裁决 17 条全部「修」，四批并行实施 + 1 个补派，全部落地并验证；T91/T93 待办条目已按「解决即删」移除。
+
+| 批 | 条目 | 落点与效果 | 钉住测试 |
+| --- | --- | --- | --- |
+| 批13 账户/读面 | T91-1 迁移源门、T91-2 重置清处罚、T91-3 schedulable 状态派生、T93-8 fail-closed | 迁移只允许 active+schedulable=1 且无 ENGAGED/DEAD_CONFIRMED；runtime-reset 同事务清 quality enforcement；Create/PATCH 拒绝 schedulable（400），用户状态写入按 active→1/其余→0 派生，升级链 revision 13 幂等归一存量 active+schedulable=0；统计读面非管理员空租户 403 | `TestT91TrafficMigrationSourceGateOwner/Authorized`、`TestT91RuntimeResetClearsQualityEnforcement`、`TestT91SchedulableRejectedOnCreateAndPatch`、`TestT91SchedulableDerivedFromStatusWrites`、`TestT91AccountSchedulableNormalizationStep`、`TestT93StatReadsFailClosedWithoutTenantScope`（均真 PG） |
+| 批14 运行态/电路 | T91-4 retain 2min、T91-6 重试过电路、T91-9 J3b 并发 2 | 四族 retain 10min→2min（60s revalidate 不变）；新增 `CircuitService.CheckDispatchAdmission` 只读准入，同账户重试臂 OPEN/SUSPECT 阻断且不写状态；`business/key_model_runtime.ForegroundLimit` 100000→2 | `t91_4_retain_ttl_test.go`、`t91_6_sameaccount_circuit_test.go`、`t91_9_foreground_limit_test.go`、`TestT91J3bDispatchPathEnforcesForegroundLimitTwo` |
+| 批15 额度/定价 | T93-1 预占后移、T93-4 授权预占、T93-2 价格完整性、T93-3 tier 回退 | 新增 `RequestInflightReserver` + `chain_inflightquota.go`，在选定账户/vendor/上游映射模型/请求体定稿后原子预留 API Key+授权+团队 scope（任一超限整体拒绝）；自定义模型按能力域校验价格完整性；未知/无价 service_tier 回退 standard 计价 | `TestT93RequestInflightReservesAPIKeyScope`、`...DeniesNthConcurrentRequest`、`...AuthorizationScopes`（真 PG）、`TestT93ReserveUsesUpstreamModelAndVendor`、`t93_price_completeness_test.go`、pricing golden 更新 |
+| 批16 jobs 计划/恢复/对账 | T91-7 窗口纠偏、T91-8 Unknown 终结、T93-6 水位+对账 | 计划同步每轮按当前窗口补偿错过边界（人工启停仍到下一边界接管）；keymodelrecovery 连续 12 次 Unknown 转 CLOSED(capability_not_found) 并移出 due；ingestgate 安全水位纳入 gateway buffer 5min 保守下界，statsverify 增加按 usage_records 重算最近 1h 对账（差异→partial+Warning） | `TestT917*` 11 例、`TestT918*` 5 例、`TestT936*` 6 例 + worker 任务结果测试 |
+| 批17 概览回退 | T93-5 窗口缺行回退 | `usageoverview_realtime.go`：summary/hourly-trend/model-distribution/errors 四节在窗口缺失时实时聚合事实表（≤31 天），窗口命中仍读快照；响应新增 `dataSource=window/realtime` | `TestT93UsageOverviewSummaryFallsBackToRealtime` 等 7 例（真 PG） |
+| 文档 | T91-5、T93-7 | 明确人工临时状态 TTL 到期由冷却复测恢复（匹配 generation）；额度口径统一为「已结算投影 + 在途预留」 | 两处文档已更新 |
+
+验证汇总：gateway `accounts/authz/accountkeystates/statreads/gatewayquota/pricing/providers/gatewaydispatch/gatewayruntimecache/business/key_model_runtime/cmd` 全绿（cmd 39.0s）；jobs `oauthrefresh 91.9s / keymodelrecovery 12.3s / ingestgate 0.2s / statsverify 11.5s / statsagg 60.4s` 全绿（真 PG）；maintenance 升级链 revision 13 + 归一测试真 PG PASS、cmd 整包 175s 绿；三模块 `go build ./...` 通过。已知既有失败（与本批无关）：`TestOAuthManagedDefaultsCreateWritesConnectionRows/gemini_google_oauth`（URL v2 遗留）、aipublic 夹具列缺失、jobs cmd 18 个夹具缺口（T89）。

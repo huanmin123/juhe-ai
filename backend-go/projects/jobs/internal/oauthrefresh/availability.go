@@ -17,6 +17,14 @@ import (
 // evaluated for window boundary events, applied exactly once through the
 // *_schedule_status_events dedupe tables, and the derived next-check column is
 // advanced for every scanned row.
+//
+// T91-7 deviation (api_keys only): the boundary branch alone never fires when
+// the exact boundary minute is missed (process restart / failed round), so the
+// api-key sync additionally recomputes the target status from "is now inside
+// an allowed window" on every due row and compensates a missed boundary with
+// the canonical boundary event key (see catchUpScheduleEvent). The dedupe key
+// keeps the BUG-0025 contract intact: manual enable/disable between two
+// boundaries is not continuously overridden.
 
 // DefaultScheduleSyncBatchLimit mirrors
 // runtimeConfig.background.{apiKeyScheduleSyncBatchLimit,
@@ -173,6 +181,11 @@ func (s *Store) evaluateScheduleRows(rows []scheduleRow, now time.Time, accountM
 		}
 		nextCheckAt, _ := NextScheduleCheckAt(schedule, now)
 		event, hasEvent := DueScheduleEvent(schedule, now)
+		// T91-7 补偿只落在 API Key 同步：账户同步还叠加质量处罚 / 可调度状态
+		// 等保护语义，本轮裁决范围不含账户计划。
+		if !hasEvent && !accountMode {
+			event, hasEvent = catchUpScheduleEvent(schedule, row, now)
+		}
 		if !hasEvent {
 			updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: nextCheckAt})
 			result.Unchanged++
@@ -205,6 +218,37 @@ func (s *Store) evaluateScheduleRows(rows []scheduleRow, now time.Time, accountM
 		})
 	}
 	return updates, result, nil
+}
+
+// catchUpScheduleEvent 是 T91-7 的补偿判定（仅 API Key 同步）：窗口边界只在
+// 精确分钟产出事件，进程重启 / 任务失败错过该分钟后状态一整天不纠正。这里
+// 每轮按「当前时刻是否在允许窗口内」重算目标状态，只有目标状态与当前落库
+// 状态不同、且能定位到「最近一个本应执行但尚未执行」的边界事件时才补偿。
+//
+// 三条与既有契约的对齐点：
+//   - 事件键沿用被错过边界的标准键（CatchUpScheduleEvent），已执行过的边界
+//     在事件表里天然去重，因此人工启用 / 停用在两个边界之间不被持续覆盖
+//     （BUG-0025 契约：下一次计划边界才接管）。
+//   - next_check_at 为空的行只推进下次检查、不补偿：该形态来自导入/存量行，
+//     没有「已错过边界」的事实，按既有「人工状态不被持续纠偏」处理。
+//   - 补偿事件的 Status 必须与当前时刻的目标状态一致，否则放弃本轮（多窗口
+//     重叠等边界语义变化时宁可不写，也不写错状态）。
+func catchUpScheduleEvent(schedule *AvailabilitySchedule, row scheduleRow, now time.Time) (ScheduleDueEvent, bool) {
+	if schedule == nil || !schedule.Enabled {
+		return ScheduleDueEvent{}, false
+	}
+	if !row.nextCheckAt.Valid || row.nextCheckAt.String == "" {
+		return ScheduleDueEvent{}, false
+	}
+	target, ok := ScheduleStatus(schedule, now)
+	if !ok || target == row.status {
+		return ScheduleDueEvent{}, false
+	}
+	event, ok := CatchUpScheduleEvent(schedule, now)
+	if !ok || event.Status != target {
+		return ScheduleDueEvent{}, false
+	}
+	return event, true
 }
 
 type scheduleRow struct {

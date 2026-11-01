@@ -10,8 +10,9 @@ import (
 // fixedNow 钉住门控的"当前时间"（时间注入硬门禁）。
 func fixedNow() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) }
 
-// wantDefault = 2026-09-04T11:59:45.000Z（now - 15s）。
-const wantDefault = "2026-09-04T11:59:45.000Z"
+// wantDefault = 2026-09-04T11:55:00.000Z（now - 5min：T93-6 起默认安全截止
+// 取 now-15s 与 now-GatewayBufferMaxAge 的较早者）。
+const wantDefault = "2026-09-04T11:55:00.000Z"
 
 func TestCheckUnavailableSnapshot(t *testing.T) {
 	cases := map[string]struct {

@@ -164,3 +164,54 @@ func TestWeProvidersCreateVideoModeModel(t *testing.T) {
 		t.Fatalf("video active create: %d %v", code, payload)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// T93-2（C3-H2）：启用态价格完整性按能力域校验——text 必须 input+output，
+// image 必须有按张价；缺必填维度 400，draft 放行。
+// ---------------------------------------------------------------------------
+
+func TestT93PricingCompletenessHTTP(t *testing.T) {
+	env := newTestEnv(t)
+	env.seedCatalog(t)
+	env.login(t, "root", "root-pass", "super_admin")
+
+	// 文本只填 input：400。
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"t93-text-half","scope":"global","supportedApiProtocols":["chat_completions"],`+
+			`"releaseDate":"2026-01-01","inputUsdPer1M":1}`)
+	if code != http.StatusBadRequest || payload["message"] != "启用的自定义模型必须配置完整当前价格" {
+		t.Fatalf("text input-only: %d %v", code, payload)
+	}
+
+	// 文本 input+output：201。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"t93-text-full","scope":"global","supportedApiProtocols":["chat_completions"],`+
+			`"releaseDate":"2026-01-01","inputUsdPer1M":1,"outputUsdPer1M":2}`)
+	if code != http.StatusCreated {
+		t.Fatalf("text full price: %d %v", code, payload)
+	}
+
+	// 文本草稿只填 input：201（未启用不校验）。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"t93-text-draft","scope":"global","status":"draft","supportedApiProtocols":["chat_completions"],`+
+			`"releaseDate":"2026-01-01","inputUsdPer1M":1}`)
+	if code != http.StatusCreated {
+		t.Fatalf("text draft input-only: %d %v", code, payload)
+	}
+
+	// 图片只有图片 token 价、无按张价：400。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"t93-image-half","scope":"global","mode":"image","supportedApiProtocols":["images"],`+
+			`"releaseDate":"2026-01-01","imageInputUsdPer1M":1}`)
+	if code != http.StatusBadRequest || payload["message"] != "启用的自定义模型必须配置完整当前价格" {
+		t.Fatalf("image token-only: %d %v", code, payload)
+	}
+
+	// 图片带按张价：201。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"t93-image-full","scope":"global","mode":"image","supportedApiProtocols":["images"],`+
+			`"releaseDate":"2026-01-01","outputUsdPerImage":0.04}`)
+	if code != http.StatusCreated {
+		t.Fatalf("image per-image price: %d %v", code, payload)
+	}
+}

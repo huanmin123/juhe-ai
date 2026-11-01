@@ -19,7 +19,7 @@ import (
 // refresh runs — the same stale-while-revalidate contract as the runtime,
 // group-access and inspection reads — so a jobs-side token rotation that only
 // lands in the DB is picked up within the 60 s revalidate window instead of
-// the full 10 min retain TTL.
+// the full 2 min retain TTL (T91-4: retain tightened from the Node 10 min).
 func (s *Service) ListCachedOpenAIAccountsForGroup(ctx context.Context, groupID, systemAccountID string, opts CachedOpenAIAccountsForGroupOptions) ([]OpenAIAccountSecret, error) {
 	cacheKey := gatewayOpenAIAccountsCacheKey(groupID, systemAccountID, opts.RequestedModel, opts.RequestedEndpointFamily)
 	if cached, ok := s.accountsCache.get(cacheKey); ok {

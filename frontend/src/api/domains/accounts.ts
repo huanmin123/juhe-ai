@@ -114,6 +114,14 @@ function attachAccountTestOptionsMeta(list: AccountTestOptions, payload: Account
 
 export interface AccountUpdatePayload extends Record<string, unknown> {
   expectedConfigRevision: number
+  // T94：编辑链显式提供时整集合替换连接域（网关拨号事实源）；与创建链
+  // AccountConnectionPayload 同构，类型内联避免 api 层反向依赖 views 层。
+  connections?: Array<{
+    connectionPresetCode: string
+    baseUrl: string
+    endpointModes: string[]
+    enabled: boolean
+  }>
 }
 
 interface AccountImportRequestPayload {

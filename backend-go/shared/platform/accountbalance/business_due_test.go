@@ -188,11 +188,11 @@ func TestBusinessDueIdempotentReplayAdvancesOnce(t *testing.T) {
 	input.IssuedAt = fixed
 	input.ExpiresAt = fixed.Add(time.Minute)
 
-	if _, err := runner.persistInput(context.Background(), owner, input, lease, QueryResult{Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "1.25"}, Adapter: Adapter("builtin")}); err != nil {
+	if _, err := runner.persistInput(context.Background(), OwnerLeaseKeyPeriodic, owner, input, lease, QueryResult{Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "1.25"}, Adapter: Adapter("builtin")}); err != nil {
 		t.Fatalf("first persist: %v", err)
 	}
 	// Same input identity replays the committed outcome and must not advance again.
-	state, err := runner.persistInput(context.Background(), owner, input, lease, QueryResult{Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "9.99"}, Adapter: Adapter("builtin")})
+	state, err := runner.persistInput(context.Background(), OwnerLeaseKeyPeriodic, owner, input, lease, QueryResult{Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "9.99"}, Adapter: Adapter("builtin")})
 	if err != nil || state != runStateExecuted {
 		t.Fatalf("replay persist: %v %v", state, err)
 	}

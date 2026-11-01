@@ -63,9 +63,9 @@ func (d *Deps) aiHealthListHandler(selfOnly bool) http.HandlerFunc {
 			kernel.WriteBadRequest(w, "AI 健康监控参数不合法")
 			return
 		}
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		payload, readErr := d.aiHealthList(r, scope, aiHealthOptions{
 			Hours: hours, Page: page, PageSize: pageSize, Keyword: keyword,
@@ -88,9 +88,9 @@ func (d *Deps) aiHealthHourDetailHandler(selfOnly bool) http.HandlerFunc {
 			kernel.WriteBadRequest(w, "AI 健康详情参数不合法")
 			return
 		}
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		detail, found, err := d.aiHealthHourDetail(r, scope, accountID, statHour)
 		if err != nil {

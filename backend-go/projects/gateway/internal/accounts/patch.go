@@ -66,14 +66,15 @@ type PatchInput struct {
 	ExpectedConfigRevision int64
 	Name                   *string
 	Notes                  *string
-	Status                 *string
-	ConcurrencyLimit       *int
-	Priority               *int
-	SuperPriorityEnabled   *bool
-	FallbackEnabled        *bool
-	Schedulable            *bool
-	Credentials            Credentials
-	CredentialsPresent     bool
+	// Status 是用户状态写入：schedulable 由它派生（T91-3 / B1-10），请求体不再
+	// 携带 schedulable 入参。
+	Status               *string
+	ConcurrencyLimit     *int
+	Priority             *int
+	SuperPriorityEnabled *bool
+	FallbackEnabled      *bool
+	Credentials          Credentials
+	CredentialsPresent   bool
 	// CredentialsPatch marks the credentialsPatch input (BUG-0175 D-164):
 	// null patch keys delete fields from the current record, while the legacy
 	// credentials input pre-merges through mergeAccountCredentialsForUpdate
@@ -1235,8 +1236,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		requestedStatus = clearFailureRestoreTarget
 	}
 	requestedSchedulable := row.schedulable == 1
-	if input.Schedulable != nil {
-		requestedSchedulable = *input.Schedulable
+	if hasStatusInput {
+		// T91-3（B1-10 裁决）：schedulable 由用户状态写入派生，不再是独立入参
+		// ——active 参与调度，其余状态一律关闭；系统写面（错误策略、冷却复测、
+		// 迁移、锁死、到期）保持各自既有的 schedulable 语义。
+		requestedSchedulable = derivedSchedulableForStatus(requestedStatus)
 	}
 	expiredByPackage := expiresAtChanged && isAccountExpired(nextExpiresAt.String, now)
 	scheduledStatus := requestedStatus
@@ -1288,14 +1292,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	nextSchedulable := requestedSchedulable
 	if expiredByPackage || (statusChanged && accountStatusForcesSchedulableOff(nextStatus)) {
 		nextSchedulable = false
-	} else if statusChanged && nextStatus != "disabled" {
-		nextSchedulable = true
+	} else if statusChanged {
+		// T91-3（B1-10）：状态变化的终值按派生落 schedulable（active=1，其余=0），
+		// 覆盖「显式 active 被时间计划改成 disabled」等状态机二次改写，避免
+		// disabled + schedulable=1 之类异常组合留存。
+		nextSchedulable = derivedSchedulableForStatus(nextStatus)
 	}
 	explicitActivationRequested := hasStatusInput && requestedStatus == "active" &&
 		(row.status != "active" || row.schedulable != 1)
-	explicitSchedulingEnableRequested := input.Schedulable != nil && requestedSchedulable &&
-		row.schedulable != 1
-	enablesAccount := explicitActivationRequested || explicitSchedulingEnableRequested ||
+	enablesAccount := explicitActivationRequested ||
 		(row.status != "active" && nextStatus == "active") ||
 		(row.schedulable != 1 && nextSchedulable)
 	if enablesAccount && isAccountExpired(nextExpiresAt.String, now) {
@@ -2516,7 +2521,6 @@ func patchHasMixedEditField(input PatchInput) bool {
 		input.Priority != nil ||
 		input.SuperPriorityEnabled != nil ||
 		input.FallbackEnabled != nil ||
-		input.Schedulable != nil ||
 		input.CredentialsPresent ||
 		input.SupportedModelsPresent ||
 		input.HealthCheckConnectionPresetCode != nil ||

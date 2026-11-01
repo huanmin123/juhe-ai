@@ -45,6 +45,14 @@ func (a AccessScope) scopedID() string {
 // canAccessAll mirrors canAccessAll.
 func (a AccessScope) canAccessAll() bool { return a.IsAdmin }
 
+// incompleteScope 报告作用域缺少租户标识：非管理员且 scopedID 为空（认证上下文
+// 没有 SystemAccountID）。这类请求绝不能因为 WHERE 条件为空而退化成跨租户全量
+// 读——读面一律 fail-closed（T93-8 / C1-C18 防御加固）。管理员空过滤 = 全站
+// 视图，属合法作用域，不受影响。
+func (a AccessScope) incompleteScope() bool {
+	return !a.canAccessAll() && a.scopedID() == ""
+}
+
 // currentID mirrors currentSystemAccountId (never empty once authenticated).
 func (a AccessScope) currentID() string {
 	if id := strings.TrimSpace(a.ViewerID); id != "" {

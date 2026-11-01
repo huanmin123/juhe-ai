@@ -57,11 +57,9 @@ type AuthorizationQuotaChecker interface {
 	CheckAuthorizationQuotaAsync(ctx context.Context, groupAccess gatewayquota.GroupAccessMetadata, account *gatewayquota.AccountAuthorizationSummary) (gatewayquota.Decision, error)
 }
 
-// InflightReserver mirrors reserveGatewayApiKeyInflightCost. The concrete
-// *gatewayquota.InflightQuotaService implements it.
-type InflightReserver interface {
-	ReserveGatewayCost(ctx context.Context, input gatewayquota.GatewayReserveInput) (gatewayquota.InflightDecision, error)
-}
+// InflightReserver 已随 T93-1（C3-H1）退役：在途成本预占后移到派发层
+// （gatewaydispatch.Engine.reserveUpstreamInflightQuota），preflight 只保留
+// 已结算额度拒绝。
 
 // GeminiInteractionAffinity removed: the preflight uses the concrete
 // *gatewaygemini.InteractionAffinity (G04) which is fully injectable through
@@ -84,7 +82,6 @@ type Service struct {
 	RuntimeCache       RuntimeCacheReader
 	APIKeyQuota        APIKeyQuotaChecker
 	AuthorizationQuota AuthorizationQuotaChecker
-	InflightQuota      InflightReserver
 	Affinity           *gatewaygemini.InteractionAffinity
 	APIKeyValidator    GatewayAPIKeyValidator
 	RouteResolver      RouteResolver

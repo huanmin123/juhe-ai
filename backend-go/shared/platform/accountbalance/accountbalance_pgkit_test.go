@@ -55,7 +55,7 @@ func openKitPostgresStore(t *testing.T) *Store {
 // kitOwner 是迁移测试的 owner 租约 fixture。
 func kitOwner(t *testing.T, store *Store, id string) OwnerLease {
 	t.Helper()
-	lease, acquired, err := store.AcquireOwnerLease(context.Background(), id, time.Minute)
+	lease, acquired, err := store.AcquireOwnerLease(context.Background(), OwnerLeaseKeyPeriodic, id, time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquire owner %s: %v %t", id, err, acquired)
 	}
@@ -65,7 +65,7 @@ func kitOwner(t *testing.T, store *Store, id string) OwnerLease {
 // kitAccount 是迁移测试的 account 租约 fixture。
 func kitAccount(t *testing.T, store *Store, owner OwnerLease, id string) AccountLease {
 	t.Helper()
-	lease, acquired, err := store.AcquireAccountLease(context.Background(), owner, id, time.Minute)
+	lease, acquired, err := store.AcquireAccountLease(context.Background(), OwnerLeaseKeyPeriodic, owner, id, time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquire account %s: %v %t", id, err, acquired)
 	}

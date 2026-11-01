@@ -66,7 +66,10 @@ func parseSeriesAccountIds(values url.Values) ([]string, string) {
 
 func (d *Deps) aiPerformanceBaseHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, domainBadRequest := d.perfScopeWithDomainFilter(r, selfOnly)
+		scope, domainBadRequest, ok := d.perfScopeWithDomainFilter(w, r, selfOnly)
+		if !ok {
+			return
+		}
 		if domainBadRequest != "" {
 			kernel.WriteBadRequest(w, domainBadRequest)
 			return
@@ -88,7 +91,10 @@ func (d *Deps) aiPerformanceBaseHandler(selfOnly bool) http.HandlerFunc {
 
 func (d *Deps) aiPerformanceSeriesHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, badRequest := d.perfScopeWithDomainFilter(r, selfOnly)
+		scope, badRequest, ok := d.perfScopeWithDomainFilter(w, r, selfOnly)
+		if !ok {
+			return
+		}
 		if badRequest != "" {
 			kernel.WriteBadRequest(w, badRequest)
 			return
@@ -115,7 +121,10 @@ func (d *Deps) aiPerformanceSeriesHandler(selfOnly bool) http.HandlerFunc {
 
 func (d *Deps) aiPerformanceAccountsHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope, badRequest := d.perfScopeWithDomainFilter(r, selfOnly)
+		scope, badRequest, ok := d.perfScopeWithDomainFilter(w, r, selfOnly)
+		if !ok {
+			return
+		}
 		if badRequest != "" {
 			kernel.WriteBadRequest(w, badRequest)
 			return
@@ -139,6 +148,11 @@ func (d *Deps) perfScope(r *http.Request, selfOnly bool) perfScopeState {
 	if selfOnly {
 		access = selfScope(r)
 	}
+	return perfScopeForAccess(access)
+}
+
+// perfScopeForAccess 是作用域到 perfScopeState 的纯映射。
+func perfScopeForAccess(access AccessScope) perfScopeState {
 	includeSystemAccountName := access.canAccessAll()
 	if scopedID := access.scopedID(); scopedID != "" {
 		return perfScopeState{SystemAccountID: scopedID, ScopeType: "caller_account", IncludeSystemAccountName: includeSystemAccountName}
@@ -152,14 +166,23 @@ func (d *Deps) perfScope(r *http.Request, selfOnly bool) perfScopeState {
 // perfScopeWithDomainFilter 是 perfScope + 可选 domain 查询筛选（M3）：
 // domain 缺省/"all" = 不过滤；非四枚举值返回非空 badRequest 文案（调用方
 // 回 400）。
-func (d *Deps) perfScopeWithDomainFilter(r *http.Request, selfOnly bool) (perfScopeState, string) {
-	scope := d.perfScope(r, selfOnly)
+func (d *Deps) perfScopeWithDomainFilter(w http.ResponseWriter, r *http.Request, selfOnly bool) (perfScopeState, string, bool) {
+	access := requestScope(r)
+	if selfOnly {
+		access = selfScope(r)
+	}
+	// T93-8 / C1-C18：非管理员空作用域 fail-closed（403），不退化成全租户读。
+	if access.incompleteScope() {
+		kernel.WriteError(w, http.StatusForbidden, statReadsMissingIdentityMessage)
+		return perfScopeState{}, "", false
+	}
+	scope := perfScopeForAccess(access)
 	capabilityDomain, ok := optionalCapabilityDomainFilter(r.URL.Query().Get(capabilityDomainFilterParam))
 	if !ok {
-		return scope, "AI账户筛选参数不合法"
+		return scope, "AI账户筛选参数不合法", true
 	}
 	scope.Domain = capabilityDomain
-	return scope, ""
+	return scope, "", true
 }
 
 type perfScopeState struct {

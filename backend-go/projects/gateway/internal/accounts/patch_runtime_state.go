@@ -87,6 +87,16 @@ func isCoolingAccountStatus(status string) bool {
 	return status == "rate_limited" || status == "temporary_unavailable"
 }
 
+// derivedSchedulableForStatus 是用户状态写入的 schedulable 派生（T91-3 /
+// B1-10 裁决）：只有 active 参与调度，disabled / pending_test /
+// temporary_unavailable / error / quality_isolated 一律关闭。创建面由
+// AccountCreationStatusInput / ManualModeCreationStatus 同源派生；系统写面
+// （错误策略、冷却复测、流量迁移、锁死、到期）各有既有 schedulable 语义，
+// 不经此函数。
+func derivedSchedulableForStatus(status string) bool {
+	return status == "active"
+}
+
 // patchRuntimeStateBefore carries the row's persisted runtime-state columns
 // into the normalization.
 type patchRuntimeStateBefore struct {

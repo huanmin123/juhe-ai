@@ -82,10 +82,13 @@ func EstimateGatewayRequestCostUsd(ctx context.Context, estimator CostEstimator,
 // InflightDecision mirrors ApiKeyInflightQuotaDecision:
 // {allowed:true, estimatedCostUsd?, reservation?} | {allowed:false,
 // estimatedCostUsd}. HasEstimatedCostUsd distinguishes the absent estimate.
+// DeniedScopeKey 标记被拒的是哪条 scope 状态键（API Key 或授权/团队 scope），
+// 调用方据此选择对外文案（T93-4）。
 type InflightDecision struct {
 	Allowed             bool
 	EstimatedCostUsd    float64
 	HasEstimatedCostUsd bool
+	DeniedScopeKey      string
 	Reservation         *InflightReservation
 }
 
@@ -200,13 +203,26 @@ func isProjectedRequestQuotaExceeded(limits RequestQuotaLimits, costs RequestQuo
 }
 
 // ReserveInput mirrors reserveApiKeyInflightCost's input.
+//
+// ScopeKey 是 T93-4（C3-H8）扩展的 scope 维度：空值保持 API Key 口径（用
+// APIKeyID 作进程内状态键），非空时按给定稳定身份累加（授权/团队 scope 用
+// authorizationScopeStateKey 构造）。同一进程内状态表同时承载两类 scope，
+// 释放生命周期（30 分钟泄漏兜底 + Complete 后延迟释放）完全一致。
 type ReserveInput struct {
 	APIKeyID         string
+	ScopeKey         string
 	Limits           RequestQuotaLimits
 	CurrentCosts     RequestQuotaCosts
 	EstimatedCostUsd float64
 	// ReleaseDelayMs overrides DefaultReleaseDelayMs when non-nil.
 	ReleaseDelayMs *int
+}
+
+func reserveStateKey(input ReserveInput) string {
+	if input.ScopeKey != "" {
+		return input.ScopeKey
+	}
+	return input.APIKeyID
 }
 
 // Reserve mirrors reserveApiKeyInflightCost: project current + reserved +
@@ -218,18 +234,19 @@ func (s *InflightQuotaService) Reserve(input ReserveInput) InflightDecision {
 	if estimatedCostUsd <= 0 {
 		return InflightDecision{Allowed: true}
 	}
+	stateKey := reserveStateKey(input)
 	s.mu.Lock()
-	state, ok := s.states[input.APIKeyID]
+	state, ok := s.states[stateKey]
 	if !ok {
 		state = &inflightState{reservedCostUsd: 0}
 	}
 	projected := addCostToAllWindows(input.CurrentCosts, state.reservedCostUsd+estimatedCostUsd)
 	if isProjectedRequestQuotaExceeded(input.Limits, projected) {
 		s.mu.Unlock()
-		return InflightDecision{Allowed: false, EstimatedCostUsd: estimatedCostUsd, HasEstimatedCostUsd: true}
+		return InflightDecision{Allowed: false, EstimatedCostUsd: estimatedCostUsd, HasEstimatedCostUsd: true, DeniedScopeKey: stateKey}
 	}
 	state.reservedCostUsd = normalizedCost(state.reservedCostUsd + estimatedCostUsd)
-	s.states[input.APIKeyID] = state
+	s.states[stateKey] = state
 	s.mu.Unlock()
 	releaseDelay := DefaultReleaseDelayMs
 	if input.ReleaseDelayMs != nil {
@@ -239,7 +256,79 @@ func (s *InflightQuotaService) Reserve(input ReserveInput) InflightDecision {
 		Allowed:             true,
 		EstimatedCostUsd:    estimatedCostUsd,
 		HasEstimatedCostUsd: true,
-		Reservation:         s.createReservation(input.APIKeyID, estimatedCostUsd, releaseDelay),
+		Reservation:         s.createReservation([]inflightRelease{{stateKey: stateKey, costUsd: estimatedCostUsd}}, releaseDelay),
+	}
+}
+
+// InflightScope 是一条额度 scope 的在途预留描述：稳定身份（进程内状态键）、
+// 该 scope 的启用量额窗口与已结算成本快照。
+type InflightScope struct {
+	ScopeKey     string
+	Limits       RequestQuotaLimits
+	CurrentCosts RequestQuotaCosts
+}
+
+// ScopeReserveInput 是一组 scope 的原子在途预留输入。
+type ScopeReserveInput struct {
+	Scopes           []InflightScope
+	EstimatedCostUsd float64
+	// ReleaseDelayMs overrides DefaultReleaseDelayMs when non-nil.
+	ReleaseDelayMs *int
+}
+
+// ReserveScopes 对一组 scope 做原子在途预留（T93-4 / C3-H8）：先统一校验
+// 所有 scope 的投影（已结算 + 已在途 + 本次估算）是否超限，任一超限即整体
+// 拒绝且不写入任何状态；全部通过后统一累加并返回一次性释放全部 scope 的
+// 预留句柄。检查与写入同处一个临界区，保证并发预留互相可见。
+func (s *InflightQuotaService) ReserveScopes(input ScopeReserveInput) InflightDecision {
+	estimatedCostUsd := normalizedCost(input.EstimatedCostUsd)
+	scopes := make([]InflightScope, 0, len(input.Scopes))
+	for _, scope := range input.Scopes {
+		if scope.ScopeKey == "" {
+			continue
+		}
+		scopes = append(scopes, scope)
+	}
+	if estimatedCostUsd <= 0 || len(scopes) == 0 {
+		return InflightDecision{Allowed: true}
+	}
+	s.mu.Lock()
+	for _, scope := range scopes {
+		reserved := 0.0
+		if state, ok := s.states[scope.ScopeKey]; ok {
+			reserved = state.reservedCostUsd
+		}
+		projected := addCostToAllWindows(scope.CurrentCosts, reserved+estimatedCostUsd)
+		if isProjectedRequestQuotaExceeded(scope.Limits, projected) {
+			s.mu.Unlock()
+			return InflightDecision{
+				Allowed:             false,
+				EstimatedCostUsd:    estimatedCostUsd,
+				HasEstimatedCostUsd: true,
+				DeniedScopeKey:      scope.ScopeKey,
+			}
+		}
+	}
+	releases := make([]inflightRelease, 0, len(scopes))
+	for _, scope := range scopes {
+		state, ok := s.states[scope.ScopeKey]
+		if !ok {
+			state = &inflightState{reservedCostUsd: 0}
+		}
+		state.reservedCostUsd = normalizedCost(state.reservedCostUsd + estimatedCostUsd)
+		s.states[scope.ScopeKey] = state
+		releases = append(releases, inflightRelease{stateKey: scope.ScopeKey, costUsd: estimatedCostUsd})
+	}
+	s.mu.Unlock()
+	releaseDelay := DefaultReleaseDelayMs
+	if input.ReleaseDelayMs != nil {
+		releaseDelay = *input.ReleaseDelayMs
+	}
+	return InflightDecision{
+		Allowed:             true,
+		EstimatedCostUsd:    estimatedCostUsd,
+		HasEstimatedCostUsd: true,
+		Reservation:         s.createReservation(releases, releaseDelay),
 	}
 }
 
@@ -298,14 +387,22 @@ func (s *InflightQuotaService) ReserveGatewayCost(ctx context.Context, input Gat
 	}), nil
 }
 
+// inflightRelease 是一条待释放在途预留（状态键 + 本次预留成本）。
+type inflightRelease struct {
+	stateKey string
+	costUsd  float64
+}
+
 // createReservation mirrors createReservation: immediate release via the
-// 30-minute leak timer, rescheduled by Complete() to the release delay.
-func (s *InflightQuotaService) createReservation(apiKeyID string, costUsd float64, releaseDelayMs int) *InflightReservation {
+// 30-minute leak timer, rescheduled by Complete() to the release delay. T93-4
+// 起一次预留可覆盖多条 scope（API Key + 授权/团队），泄漏兜底与延迟释放
+// 语义对每条 scope 一致，不新造第二套生命周期。
+func (s *InflightQuotaService) createReservation(releases []inflightRelease, releaseDelayMs int) *InflightReservation {
 	var releaseOnce sync.Once
 	var completeOnce sync.Once
 	release := func() {
 		releaseOnce.Do(func() {
-			s.release(apiKeyID, costUsd)
+			s.release(releases)
 		})
 	}
 	stopLeak := s.timer(reservationLeakTTL, release)
@@ -321,16 +418,18 @@ func (s *InflightQuotaService) createReservation(apiKeyID string, costUsd float6
 	}}
 }
 
-func (s *InflightQuotaService) release(apiKeyID string, costUsd float64) {
+func (s *InflightQuotaService) release(releases []inflightRelease) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, ok := s.states[apiKeyID]
-	if !ok {
-		return
-	}
-	state.reservedCostUsd = normalizedCost(math.Max(0, state.reservedCostUsd-costUsd))
-	if state.reservedCostUsd == 0 {
-		delete(s.states, apiKeyID)
+	for _, entry := range releases {
+		state, ok := s.states[entry.stateKey]
+		if !ok {
+			continue
+		}
+		state.reservedCostUsd = normalizedCost(math.Max(0, state.reservedCostUsd-entry.costUsd))
+		if state.reservedCostUsd == 0 {
+			delete(s.states, entry.stateKey)
+		}
 	}
 }
 
@@ -340,15 +439,39 @@ type APIKeyInflightQuotaState struct {
 	ReservedCostUsd float64
 }
 
-// Snapshot mirrors apiKeyInflightQuotaSnapshot.
+// Snapshot mirrors apiKeyInflightQuotaSnapshot: 只返回 API Key scope 的在途
+// 状态（授权/团队 scope 走 ScopeSnapshot，保持既有快照契约不变）。
 func (s *InflightQuotaService) Snapshot() []APIKeyInflightQuotaState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]APIKeyInflightQuotaState, 0, len(s.states))
-	for apiKeyID, state := range s.states {
-		out = append(out, APIKeyInflightQuotaState{APIKeyID: apiKeyID, ReservedCostUsd: state.reservedCostUsd})
+	for stateKey, state := range s.states {
+		if isAuthorizationInflightScopeKey(stateKey) {
+			continue
+		}
+		out = append(out, APIKeyInflightQuotaState{APIKeyID: stateKey, ReservedCostUsd: state.reservedCostUsd})
 	}
 	return out
+}
+
+// ScopeSnapshot 返回授权/团队 scope 的在途状态（T93-4）。
+func (s *InflightQuotaService) ScopeSnapshot() []InflightScopeState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]InflightScopeState, 0, len(s.states))
+	for stateKey, state := range s.states {
+		if !isAuthorizationInflightScopeKey(stateKey) {
+			continue
+		}
+		out = append(out, InflightScopeState{ScopeKey: stateKey, ReservedCostUsd: state.reservedCostUsd})
+	}
+	return out
+}
+
+// InflightScopeState 是一条授权/团队 scope 的在途状态。
+type InflightScopeState struct {
+	ScopeKey        string
+	ReservedCostUsd float64
 }
 
 // ClearForTest mirrors clearApiKeyInflightQuotaReservationsForTest.

@@ -1,12 +1,14 @@
-// `maintenance upgrade` 的 11 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 12 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
 //
-// revision 1..12 的分配即设计 §10 表序（revision 7 chat-account-only-binding
+// revision 1..13 的分配即设计 §10 表序（revision 7 chat-account-only-binding
 // 已随 AI 问答退役删除，序列 6 后直接 8；已执行库的账本行只记历史事实，
-// 不受注册表删步影响）； golden 测试钉死
+// 不受注册表删步影响）；golden 测试钉死
 // (revision, step_id, implVersion) 有序对。低序步骤不得依赖高序产物（§8.4-3）。
+// revision 13（account-schedulable-normalization，T91-3 / B1-10）是纯数据
+// 归一：active 账户的派生 schedulable 收敛为 1。
 package main
 
 import (
@@ -97,6 +99,41 @@ func sqlScalar(ctx context.Context, dsn, query string, args ...any) (int, error)
 	return value, nil
 }
 
+// sqlExecCount 执行幂等写语句并返回受影响行数（42P01 关系不存在按 0 行，
+// 与 sqlScalar 的 fresh 库语义一致）。
+func sqlExecCount(ctx context.Context, dsn, statement string) (int, error) {
+	db, err := openPG(dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	result, err := db.ExecContext(ctx, statement)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return 0, nil
+		}
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
+}
+
+// T91-3（R7-B B1-10 裁决）存量归一：schedulable 改为账户状态派生后，
+// status='active' 的行必须可调度。只命中「active 且 schedulable=0」这一组合
+// （历史手工关闭调度 / 旧版本 PATCH 传 false 的残留），不写 config_revision
+// 与 updated_at——这不是用户配置变更，只是把存量收敛到派生值；语句幂等，
+// 完成态零写入。
+const (
+	schedulableNormalizationPendingSQL = `SELECT count(*) FROM juhe_business.accounts
+		WHERE status = 'active' AND schedulable = 0`
+	schedulableNormalizationUpdateSQL = `UPDATE juhe_business.accounts SET schedulable = 1
+		WHERE status = 'active' AND schedulable = 0`
+)
+
 // tableExists / columnExists 是 Check 谓词的结构探测原语。
 func tableExists(ctx context.Context, dsn, schemaName, table string) (bool, error) {
 	value, err := sqlScalar(ctx, dsn,
@@ -112,7 +149,7 @@ func columnExists(ctx context.Context, dsn, schemaName, table, column string) (b
 	return value > 0, err
 }
 
-// upgradeSteps 返回 12 步骤注册表（revision 升序；引擎再做一次排序校验）。
+// upgradeSteps 返回 13 步骤注册表（revision 升序；引擎再做一次排序校验）。
 // secret 为空时，凭据类 Check 不允许调用（第 8 步门禁保证到 Apply 阶段必有；
 // dry-run 阶段 Check 若需要 secret 会以错误呈现——预检语义可接受）。
 func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
@@ -540,6 +577,40 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
 				// P1 简化：Apply 退出码 0 即通过（命令内部含逐账户报告与
 				// 幂等保证）；独立完成态谓词随 P2 补强。
+				return nil
+			},
+		},
+		{
+			Revision: 13, ID: "account-schedulable-normalization",
+			Title: "active 账户 schedulable 存量归一（状态派生收敛）", Target: upgradepipeline.TargetPrimary,
+			ImplVersion: 1,
+			// T91-3：schedulable 改为状态派生后，历史「active + 不可调度」行
+			// 收敛为可调度。Satisfied 与 Verify 同源（同一完成态谓词）。
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				value, err := sqlScalar(ctx, primaryDSN, schedulableNormalizationPendingSQL)
+				if err != nil {
+					return false, err
+				}
+				return value == 0, nil
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				affected, err := sqlExecCount(ctx, primaryDSN, schedulableNormalizationUpdateSQL)
+				if err != nil {
+					return nil, err
+				}
+				// 受影响行数同时进 detail_json（账本记录）与 stderr（运维可见；
+				// stdout 留给单行 JSON 报告）。
+				fmt.Fprintf(os.Stderr, "active 账户 schedulable 归一：%d 行\n", affected)
+				return upgradepipeline.Detail{"updatedRows": affected}, nil
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				pending, err := sqlScalar(ctx, primaryDSN, schedulableNormalizationPendingSQL)
+				if err != nil {
+					return err
+				}
+				if pending > 0 {
+					return fmt.Errorf("仍有 %d 个 active 账户 schedulable=0 未归一", pending)
+				}
 				return nil
 			},
 		},

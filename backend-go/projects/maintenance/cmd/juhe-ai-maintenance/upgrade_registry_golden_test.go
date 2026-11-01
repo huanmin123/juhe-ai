@@ -9,7 +9,18 @@ import (
 // 升级步骤注册表 golden（升级兼容与迁移账本设计 §7.4/§8）：钉死
 // (revision, step_id, implVersion) 有序对。任何变化（增删步骤、改 ID、提
 // ImplVersion）都必须显式更新本文件并在同批递增 contracts.SchemaRevision。
+// pinUpgradeTargetEnv 把三个 target 连接串 env 显式占位并在用例结束自动还原：
+// upgradeSteps 的 upgradeTargets 会把缺失值写回进程环境，泄漏会污染后续用例
+// （rehearsal 的子进程继承 env 后拿 placeholder DSN 连库）。
+func pinUpgradeTargetEnv(t *testing.T, dsn string) {
+	t.Helper()
+	t.Setenv(envJ3AURL, dsn)
+	t.Setenv(envJ3BURL, dsn)
+	t.Setenv(envBalanceURL, dsn)
+}
+
 func TestUpgradeStepsRegistryGolden(t *testing.T) {
+	pinUpgradeTargetEnv(t, "postgres://placeholder")
 	steps := upgradeSteps("postgres://placeholder", "placeholder-secret")
 	want := []struct {
 		revision    int64
@@ -27,6 +38,7 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 		{10, "studio-retirement", 1},
 		{11, "drop-retired-monitoring-tables", 1},
 		{12, "account-default-resources", 1},
+		{13, "account-schedulable-normalization", 1},
 	}
 	if len(steps) != len(want) {
 		t.Fatalf("注册表步骤数 = %d, want %d", len(steps), len(want))
@@ -58,6 +70,7 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 }
 
 func TestUpgradeStepsChecksumStable(t *testing.T) {
+	pinUpgradeTargetEnv(t, "postgres://placeholder")
 	steps := upgradeSteps("postgres://placeholder", "placeholder-secret")
 	first := steps[3].Checksum()
 	second := steps[3].Checksum()

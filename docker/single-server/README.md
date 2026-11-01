@@ -81,6 +81,7 @@ docker/single-server/
 - **升级入口**：`./deploy.sh upgrade`（本机执行）＝ build 新镜像 → 停写 → 备份交互确认 → 容器内 `maintenance upgrade`（账本编排，断点可重跑）→ 拉起 → 发布后验证。跨版本升级同一条命令，`--dry-run` 可预演。
 - **存量库首次升级门禁迁移顺序**：账本引入后的第一个发布起，未 upgrade 的库会被门禁拦下——发布顺序固定为 停写 → 备份 → `deploy.sh upgrade` → 启动。开发环境同理：dev 库首次以含门禁的代码启动前，先对 dev 库跑一次 `upgrade --dry-run` + `upgrade`。
 - 常规发布（all）的前置核验已换成新版 maintenance 镜像的 `upgrade --dry-run`，blocked 即中止发布并指引 `deploy.sh upgrade`。
+- **revision 13（2026-11-01，T91-3）**：升级链新增 `account-schedulable-normalization` 步骤——`status='active' AND schedulable=0` 的存量账户归一为 `schedulable=1`（`schedulable` 自本版起由账户状态派生，创建/编辑接口不再接受该字段）。语句幂等、只命中该组合、不写 `config_revision`/`updated_at`；完成态 `Satisfied` 即 adopt，重跑零写入。升级后 `schema_state.schema_revision = 13`；该步只由 `upgrade` 执行，`--ensure-schema`/`--seed` 不触发。
 - 配置自检：`docker compose --profile tool run --rm maintenance check-config --env-file .env --process all`（升级前核对 env 是否还合法；未登记变量/别名弃用会列出）。启动期对未登记的 `JUHE_AI_*` 变量打 WARN（不阻断）。
 
 ## 运行时数据目录契约（working_dir 必须锚定 /app/backend）

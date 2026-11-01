@@ -77,11 +77,26 @@ func TestDD3B1DrainFinishInterleaveStillHoldsCursorBack(t *testing.T) {
 	}
 
 	safety := dd3b1CheckThroughProbe(t, status, fixedNow)
-	// 上界回退到最旧积压记录前 1ms（ingestgate.safeCreatedBeforeForPendingBacklog），
-	// 而不是默认 now-15s=11:59:45.000Z——游标不越过 11:59:40 的记录。
-	const wantSafeCreatedBefore = "2026-10-31T11:59:39.999Z"
+	// T93-6 后默认上界是 now-5min=11:55:00（gateway 进程内 buffer 保守下界），
+	// 已早于 20s 滞留记录，safeCreatedBeforeForPendingBacklog 取默认值；不变式
+	// 仍是「上界早于滞留记录」——游标不越过 11:59:40 的记录。
+	const wantSafeCreatedBefore = "2026-10-31T11:55:00.000Z"
 	if safety.SafeCreatedBefore != wantSafeCreatedBefore {
-		t.Fatalf("交错下上界必须被 T1 水位压住: got %q, want %q", safety.SafeCreatedBefore, wantSafeCreatedBefore)
+		t.Fatalf("交错下上界必须被安全水位压住: got %q, want %q", safety.SafeCreatedBefore, wantSafeCreatedBefore)
+	}
+	if !(safety.SafeCreatedBefore < staleCreatedAt) {
+		t.Fatalf("上界 %q 越过了滞留记录 %q", safety.SafeCreatedBefore, staleCreatedAt)
+	}
+
+	// 滞留超过 buffer 界的积压仍必须压住上界（回退 oldest-1ms）。
+	const oldStaleCreatedAt = "2026-10-31T11:40:00.000Z"
+	oldStatus := assembleIngestDrainStatus(
+		func() string { return oldStaleCreatedAt },
+		func() usagewriter.Runtime { return usagewriter.Runtime{} },
+	)
+	oldSafety := dd3b1CheckThroughProbe(t, oldStatus, fixedNow)
+	if want := "2026-10-31T11:39:59.999Z"; oldSafety.SafeCreatedBefore != want {
+		t.Fatalf("早于 buffer 界的积压必须回退到 oldest-1ms: got %q want %q", oldSafety.SafeCreatedBefore, want)
 	}
 }
 
@@ -102,24 +117,26 @@ func TestDD3B1QueueDrainedBetweenReadsStillObserved(t *testing.T) {
 	}
 
 	safety := dd3b1CheckThroughProbe(t, assembleIngestDrainStatus(readSpool, readRuntime), fixedNow)
-	// 积压（11:59:50）晚于默认上界（11:59:45）→ safeCreatedBeforeForPendingBacklog
-	// 取默认 now-15s：游标不越过积压记录（记录入表后由下轮覆盖）。
-	const wantSafeCreatedBefore = "2026-10-31T11:59:45.000Z"
+	// 积压（11:59:50）晚于默认上界（T93-6 后为 now-5min=11:55:00）→
+	// safeCreatedBeforeForPendingBacklog 取默认值：游标不越过积压记录（记录
+	// 入表后由下轮覆盖）。
+	const wantSafeCreatedBefore = "2026-10-31T11:55:00.000Z"
 	if safety.SafeCreatedBefore != wantSafeCreatedBefore {
 		t.Fatalf("队列段积压必须参与上界回退: got %q, want %q", safety.SafeCreatedBefore, wantSafeCreatedBefore)
 	}
 }
 
-// TestDD3B1NoBacklogKeepsDefaultSafety 锁定正常路径不变：两源皆空时上界
-// 保持默认 now-15s，读序调换不改变无积压行为。
+// TestDD3B1NoBacklogKeepsDefaultSafety 锁定正常路径：两源皆空时上界保持默认
+// 安全水位（now-5min，T93-6 后由 gateway 进程内 buffer 滞留下界决定），读序
+// 调换不改变无积压行为。
 func TestDD3B1NoBacklogKeepsDefaultSafety(t *testing.T) {
 	fixedNow := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 	safety := dd3b1CheckThroughProbe(t, assembleIngestDrainStatus(
 		func() string { return "" },
 		func() usagewriter.Runtime { return usagewriter.Runtime{} },
 	), fixedNow)
-	const wantSafeCreatedBefore = "2026-10-31T11:59:45.000Z"
+	const wantSafeCreatedBefore = "2026-10-31T11:55:00.000Z"
 	if safety.SafeCreatedBefore != wantSafeCreatedBefore {
-		t.Fatalf("无积压时上界必须保持默认 now-15s: got %q, want %q", safety.SafeCreatedBefore, wantSafeCreatedBefore)
+		t.Fatalf("无积压时上界必须保持默认安全水位 now-5min: got %q, want %q", safety.SafeCreatedBefore, wantSafeCreatedBefore)
 	}
 }

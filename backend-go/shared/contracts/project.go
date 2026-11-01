@@ -9,8 +9,9 @@ const ArchitectureVersion = "go-projects-v1"
 // DDL 语句清单或步骤注册表的任何变化（含修改既有语句文本）都必须在本次交付
 // 内分配新 revision 并把本常量提到本次最高值；golden 测试同时钉住 DDL 清单
 // digest 与 (revision, step_id, implVersion) 有序对。P1 已交付账本与首批 12
-// 个步骤（revision 1..12），当前值 12。
-const SchemaRevision int64 = 12
+// 个步骤（revision 1..12）；T91-3 追加 revision 13
+// （account-schedulable-normalization），当前值 13。
+const SchemaRevision int64 = 13
 
 type ProjectID string
 

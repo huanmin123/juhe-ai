@@ -996,7 +996,7 @@ wholePoolRound:
 						}
 					}
 					var accountCircuitAttempt *gatewaycircuitAttemptFacade
-					if e.Circuits != nil && coordination.SameAccountRetry == nil {
+					if e.Circuits != nil {
 						model := requestModelOrEmpty(args.Req)
 						confirmationEligible := !timeoutsDisabled
 						var confirmationFailuresRequired *int64
@@ -1005,7 +1005,7 @@ wholePoolRound:
 						} else {
 							confirmationFailuresRequired = ptrInt64(settings.AccountCircuitConfirmationFailuresRequired)
 						}
-						preparation, err := e.Circuits.PrepareAttempt(ctx, gatewaycircuit.PrepareAttemptInput{
+						circuitInput := gatewaycircuit.PrepareAttemptInput{
 							Account:                      originalAccount,
 							RequestLane:                  requestLane,
 							Model:                        stringPtrOrNil(model),
@@ -1014,9 +1014,20 @@ wholePoolRound:
 							ConfirmationFailuresRequired: confirmationFailuresRequired,
 							Confirmation:                 args.AccountCircuitConfirmation,
 							FailureEvidenceKey:           ptrString(accountCircuitFailureEvidenceKey),
-						})
-						if err != nil {
-							return UpstreamDispatchResult{}, err
+						}
+						// T91-6 / B2-M5：同账户安全重试臂也过电路门，但只做准入
+						// 判定（CheckDispatchAdmission 不返回 Attempt）：不重复
+						// 结算失败、不重复写 confirmation；重试预算、总墙钟与审计
+						// 维持既有语义。常规候选仍走完整 PrepareAttempt。
+						var preparation gatewaycircuit.PrepareResult
+						var preparationErr error
+						if coordination.SameAccountRetry != nil {
+							preparation, preparationErr = e.Circuits.CheckDispatchAdmission(ctx, circuitInput)
+						} else {
+							preparation, preparationErr = e.Circuits.PrepareAttempt(ctx, circuitInput)
+						}
+						if preparationErr != nil {
+							return UpstreamDispatchResult{}, preparationErr
 						}
 						if preparation.Outcome == gatewaycircuit.PrepareBlocked {
 							// 熔断拦截是候选跳过的独立原因（区别于请求失败路径的

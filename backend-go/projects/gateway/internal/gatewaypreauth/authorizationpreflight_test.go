@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -107,54 +105,6 @@ func TestRejectGatewayAPIKeyQuotaIfExceeded(t *testing.T) {
 		}
 		if input.Audit.ErrorPhase != "quota" || input.Audit.ErrorCode != "rate_limit_exceeded" {
 			t.Fatalf("audit = %+v", input.Audit)
-		}
-	})
-	t.Run("在途额度超限 429", func(t *testing.T) {
-		inflight := &fakeInflight{decision: gatewayquota.InflightDecision{Allowed: false, EstimatedCostUsd: 0.5, HasEstimatedCostUsd: true}}
-		service, _, sink := newTestService(t, func(s *Service) { s.InflightQuota = inflight })
-		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
-		rejected, err := service.RejectGatewayAPIKeyQuotaIfExceeded(context.Background(), APIKeyQuotaInput{
-			Req: req, Res: writer, AuditCapture: &fakeAuditCapture{},
-			StartedAt: 1, APIKeyRecord: validRuntimeRow(),
-			UsageContext: GatewayFailureUsageContext{ProviderCode: "openai"},
-		})
-		if err != nil || !rejected {
-			t.Fatalf("rejected = %v err = %v", rejected, err)
-		}
-		input, _ := sink.lastFailure()
-		if input.Audit.ErrorCode != "api_key_inflight_quota_exceeded" {
-			t.Fatalf("errorCode = %q", input.Audit.ErrorCode)
-		}
-		if input.ResponsePayload.Error.Message != APIKeyQuotaExceededMessage {
-			t.Fatalf("message = %v", input.ResponsePayload.Error.Message)
-		}
-	})
-	t.Run("预留成功并登记完成回调", func(t *testing.T) {
-		reservation := &gatewayquota.InflightReservation{}
-		inflight := &fakeInflight{decision: gatewayquota.InflightDecision{Allowed: true, Reservation: reservation}}
-		service, _, sink := newTestService(t, func(s *Service) { s.InflightQuota = inflight })
-		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
-		rejected, err := service.RejectGatewayAPIKeyQuotaIfExceeded(context.Background(), APIKeyQuotaInput{
-			Req: req, Res: writer, AuditCapture: &fakeAuditCapture{},
-			StartedAt: 1, APIKeyRecord: validRuntimeRow(),
-			UsageContext: GatewayFailureUsageContext{ProviderCode: "openai"},
-		})
-		if err != nil || rejected {
-			t.Fatalf("rejected = %v err = %v", rejected, err)
-		}
-		if !req.InflightQuotaReserved {
-			t.Fatal("应标记已预留")
-		}
-		if len(sink.failureInputs) != 0 {
-			t.Fatal("不应有失败响应")
-		}
-		// 二次调用幂等（WeakSet 语义）。
-		rejected, err = service.RejectGatewayAPIKeyQuotaIfExceeded(context.Background(), APIKeyQuotaInput{
-			Req: req, Res: writer, AuditCapture: &fakeAuditCapture{},
-			StartedAt: 2, APIKeyRecord: validRuntimeRow(),
-		})
-		if err != nil || rejected {
-			t.Fatalf("二次调用 rejected = %v err = %v", rejected, err)
 		}
 	})
 	t.Run("无 apiKeyRecord 时跳过", func(t *testing.T) {
@@ -258,42 +208,3 @@ func strPtr(value string) *string { return &value }
 
 func boolRef(value bool) *bool { return &value }
 
-// D-129（BUG-0175）：在途预留必须携带请求侧估算事实；零值 Model/
-// rawBodyBytes/maxOutputTokens 会让估算器按「无估算」短路（不预留也不 429）。
-func TestGatewayInflightEstimateRequestInputCarriesRequestFacts(t *testing.T) {
-	request := NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
-	model := "gpt-4o"
-	maxOutputTokens := 256
-	request.Body = &gatewaybody.Request{
-		State: &gatewaybody.BodyState{
-			RawBodyBytes:    512,
-			ServiceTier:     "default",
-			Model:           &model,
-			MaxOutputTokens: &maxOutputTokens,
-		},
-	}
-	input := APIKeyQuotaInput{
-		Req:          request,
-		APIKeyRecord: &gatewayruntimecache.GatewayAPIKeyRow{SystemAccountID: "sys"},
-		UsageContext: GatewayFailureUsageContext{ProviderCode: "openai"},
-	}
-	estimate := gatewayInflightEstimateRequestInput(input)
-	if estimate.Model != "gpt-4o" ||
-		estimate.RawBodyBytes != 512 ||
-		estimate.ServiceTier != "default" ||
-		!estimate.HasMaxOutputTokens ||
-		estimate.MaxOutputTokens != 256 ||
-		estimate.ProviderCode != "openai" ||
-		estimate.SystemAccountID != "sys" {
-		t.Fatalf("estimate = %+v, want the request facts carried through", estimate)
-	}
-
-	// A request without a captured body state keeps the zero-value facts and
-	// lets gatewayquota apply the archive fallbacks (default 4096 output
-	// tokens, at-least-one input token).
-	input.Req.Body = nil
-	empty := gatewayInflightEstimateRequestInput(input)
-	if empty.RawBodyBytes != 0 || empty.HasMaxOutputTokens || empty.ServiceTier != "" {
-		t.Fatalf("empty-state estimate = %+v, want the zero-value defaults", empty)
-	}
-}

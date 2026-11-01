@@ -381,22 +381,96 @@ func TestW9EEstimateProviderCacheCosts(t *testing.T) {
 	}
 }
 
-func TestW9EHasUnsupportedServiceTier(t *testing.T) {
+// TestW9EUnknownTierFallsBackToStandardRates 钉住 T93-3（C3-H4）：
+// 未声明/未定价档位不再返回空价集，而是回退标准档单价并保留 unknown 来源。
+func TestW9EUnknownTierFallsBackToStandardRates(t *testing.T) {
 	pricing := FindProviderModelPricing("openai", "gpt-5.5")
 	if pricing == nil {
 		t.Fatal("gpt-5.5 pricing missing")
 	}
-	if hasUnsupportedServiceTier(pricing, CostInput{ServiceTier: ""}) {
-		t.Fatal("empty tier should never be unsupported")
+	standard := standardRates(pricing)
+	for _, tier := range []string{"batch", "mystery", " priority "} {
+		got := serviceTierRates(pricing, CostInput{ServiceTier: tier})
+		label := tier
+		if tier == " priority " {
+			// normalized tier must resolve to the declared tier price, not fallback
+			if got.serviceTierPricingSource == TierSourceUnknown {
+				t.Fatalf("normalized supported tier %q must resolve to tier rates", label)
+			}
+			continue
+		}
+		if got.serviceTierPricingSource != TierSourceUnknown {
+			t.Fatalf("unknown tier %q source = %v, want unknown", label, got.serviceTierPricingSource)
+		}
+		if got.InputUsdPer1M == nil || got.OutputUsdPer1M == nil {
+			t.Fatalf("unknown tier %q must carry standard token rates", label)
+		}
+		if *got.InputUsdPer1M != *standard.InputUsdPer1M || *got.OutputUsdPer1M != *standard.OutputUsdPer1M {
+			t.Fatalf("unknown tier %q rates = %v/%v, want standard %v/%v", label,
+				*got.InputUsdPer1M, *got.OutputUsdPer1M, *standard.InputUsdPer1M, *standard.OutputUsdPer1M)
+		}
 	}
-	if hasUnsupportedServiceTier(pricing, CostInput{ServiceTier: "priority"}) {
-		t.Fatal("supported tier should not be flagged")
+}
+
+// TestW9EUnknownTierBillingMatrix 是 T93-3（C3-H4）的端到端口径矩阵：
+//   - 未知档位 + token 用量 → 非 NULL，且与标准档计价一致；
+//   - 已知档位价保持不变（仍用档位单价）；
+//   - 行上没有任何价格维度 → 仍为 NULL（不虚计）。
+func TestW9EUnknownTierBillingMatrix(t *testing.T) {
+	standardOnly := &Pricing{
+		ProviderCode: "openai",
+		Model:        "tier-fallback-synthetic",
+		PriceSet: PriceSet{
+			InputUsdPer1M:  fptr(4),
+			OutputUsdPer1M: fptr(8),
+		},
+		SupportedServiceTiers: []string{"priority"},
+		ServiceTierPrices: map[string]PriceSet{
+			"priority": {InputUsdPer1M: fptr(1), OutputUsdPer1M: fptr(2)},
+		},
+	} //nolint:exhaustruct // 只声明本测试用到的字段
+
+	standardCost := BuildCostBreakdown(standardOnly, CostInput{
+		InputTokens:  fptr(1_000_000), OutputTokens: fptr(1_000_000),
+	})
+	if standardCost == nil || standardCost.AccountChargeUsd == nil || *standardCost.AccountChargeUsd != 12 {
+		t.Fatalf("standard baseline = %+v, want 12", standardCost)
 	}
-	if !hasUnsupportedServiceTier(pricing, CostInput{ServiceTier: "batch"}) {
-		t.Fatal("unsupported tier should be flagged")
+	for _, tier := range []string{"flex", "batch", "mystery"} {
+		got := BuildCostBreakdown(standardOnly, CostInput{
+			ServiceTier: tier, InputTokens: fptr(1_000_000), OutputTokens: fptr(1_000_000),
+		})
+		if got == nil || got.AccountChargeUsd == nil {
+			t.Fatalf("unknown tier %q must be priced (T93-3), got %+v", tier, got)
+		}
+		if *got.AccountChargeUsd != *standardCost.AccountChargeUsd {
+			t.Fatalf("unknown tier %q cost = %v, want standard %v", tier, *got.AccountChargeUsd, *standardCost.AccountChargeUsd)
+		}
+		if got.ServiceTierPricingSource != TierSourceUnknown {
+			t.Fatalf("unknown tier %q source = %q, want unknown", tier, got.ServiceTierPricingSource)
+		}
 	}
-	if hasUnsupportedServiceTier(pricing, CostInput{ServiceTier: " priority "}) {
-		t.Fatal("normalized tier should match")
+
+	tiered := BuildCostBreakdown(standardOnly, CostInput{
+		ServiceTier: "priority", InputTokens: fptr(1_000_000), OutputTokens: fptr(1_000_000),
+	})
+	if tiered == nil || tiered.AccountChargeUsd == nil || *tiered.AccountChargeUsd != 3 {
+		t.Fatalf("declared tier cost = %+v, want 3 (tier prices win)", tiered)
+	}
+	if tiered.ServiceTierPricingSource != TierSourceTierSpecific {
+		t.Fatalf("declared tier source = %q, want tier_specific", tiered.ServiceTierPricingSource)
+	}
+
+	// 行上没有任何价格槽位：即使档位未知也不产生成本（保持 NULL）。
+	unpriced := &Pricing{
+		ProviderCode:          "openai",
+		Model:                 "tier-fallback-unpriced",
+		SupportedServiceTiers: []string{"priority"},
+	} //nolint:exhaustruct // 空价格行
+	if got := BuildCostBreakdown(unpriced, CostInput{
+		ServiceTier: "mystery", InputTokens: fptr(1_000_000), OutputTokens: fptr(1_000_000),
+	}); got != nil {
+		t.Fatalf("unpriced row must stay NULL, got %+v", got)
 	}
 }
 
@@ -434,10 +508,13 @@ func TestW9EServiceTierRatesBranches(t *testing.T) {
 	if standard.serviceTierPricingSource != TierSourceDefault {
 		t.Fatalf("empty tier source = %v, want default", standard.serviceTierPricingSource)
 	}
-	// unsupported tier -> unknown
+	// unsupported tier -> standard rates with the unknown source marker
 	unknown := serviceTierRates(pricing, CostInput{ServiceTier: "nope"})
 	if unknown.serviceTierPricingSource != TierSourceUnknown {
 		t.Fatalf("unsupported tier source = %v, want unknown", unknown.serviceTierPricingSource)
+	}
+	if unknown.InputUsdPer1M == nil || unknown.OutputUsdPer1M == nil {
+		t.Fatal("unsupported tier must fall back to standard token rates")
 	}
 	// supported tier -> tier rates
 	tiered := serviceTierRates(pricing, CostInput{ServiceTier: "priority"})

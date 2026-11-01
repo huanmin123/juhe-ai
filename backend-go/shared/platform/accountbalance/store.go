@@ -20,6 +20,17 @@ const (
 	StorePostgres StoreMode = "postgres"
 )
 
+// owner lease 的两个 key 空间（docs/functions/AI账户上游余额查询设计.md §5
+// 租约互斥模型）。周期/首探批次共用全局单行：一轮只允许一个执行端持锁扫描，
+// fence 世代防止旧批次写回。手动刷新按账户领取独立行（前缀+accountID）：
+// 全局行会被周期批次几乎连续持有，手动刷新若争抢同一行会在互斥粒度上被整批
+// 拖住（生产 104 账户场景高概率秒拒 409），下沉账户级后不同账户完全并行，
+// 同账户互斥由 account_balance_account_leases 承担。
+const (
+	OwnerLeaseKeyPeriodic     = "account-balance-owner"
+	ManualOwnerLeaseKeyPrefix = "account-balance-owner-manual:"
+)
+
 // PoolHandle is the minimal pool lifecycle seam shared by this package and
 // its hosts. Both the gateway and jobs pgpool handles satisfy it (they alias
 // *sqlpool.Handle); a nil pool makes OpenStore open a direct pgx connection
@@ -312,8 +323,8 @@ func ensureBalancePGSchema(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
-	if strings.TrimSpace(ownerID) == "" || duration <= 0 {
+func (s *Store) AcquireOwnerLease(ctx context.Context, leaseKey, ownerID string, duration time.Duration) (OwnerLease, bool, error) {
+	if strings.TrimSpace(leaseKey) == "" || strings.TrimSpace(ownerID) == "" || duration <= 0 {
 		return OwnerLease{}, false, errors.New("owner lease 参数无效")
 	}
 	if err := s.ensureRuntimeSchema(ctx); err != nil {
@@ -324,10 +335,10 @@ func (s *Store) AcquireOwnerLease(ctx context.Context, ownerID string, duration 
 	now := time.Now().UTC()
 	var token int64
 	err := s.db.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
-VALUES ('account-balance-owner',$1,1,$2,$3)
+VALUES ($1,$2,1,$3,$4)
 ON CONFLICT (lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id, fence_token=juhe_jobs.account_balance_owner_leases.fence_token+1, lease_until=EXCLUDED.lease_until, updated_at=EXCLUDED.updated_at
-WHERE juhe_jobs.account_balance_owner_leases.lease_until <= $3
-RETURNING fence_token`, ownerID, now.Add(duration), now).Scan(&token)
+WHERE juhe_jobs.account_balance_owner_leases.lease_until <= $4
+RETURNING fence_token`, leaseKey, ownerID, now.Add(duration), now).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OwnerLease{}, false, nil
 	}
@@ -337,14 +348,14 @@ RETURNING fence_token`, ownerID, now.Add(duration), now).Scan(&token)
 	return OwnerLease{OwnerID: ownerID, FenceToken: token}, true, nil
 }
 
-func (s *Store) RenewOwnerLease(ctx context.Context, lease OwnerLease, duration time.Duration) (bool, error) {
-	if lease.FenceToken < 1 || strings.TrimSpace(lease.OwnerID) == "" || duration <= 0 {
+func (s *Store) RenewOwnerLease(ctx context.Context, leaseKey string, lease OwnerLease, duration time.Duration) (bool, error) {
+	if strings.TrimSpace(leaseKey) == "" || lease.FenceToken < 1 || strings.TrimSpace(lease.OwnerID) == "" || duration <= 0 {
 		return false, errors.New("owner lease 续约参数无效")
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$2 WHERE lease_key='account-balance-owner' AND owner_id=$3 AND fence_token=$4 AND lease_until>$2`, now.Add(duration), now, lease.OwnerID, lease.FenceToken)
+	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$2 WHERE lease_key=$3 AND owner_id=$4 AND fence_token=$5 AND lease_until>$2`, now.Add(duration), now, leaseKey, lease.OwnerID, lease.FenceToken)
 	if err != nil {
 		return false, err
 	}
@@ -352,19 +363,19 @@ func (s *Store) RenewOwnerLease(ctx context.Context, lease OwnerLease, duration 
 	return count == 1, err
 }
 
-func (s *Store) ReleaseOwnerLease(ctx context.Context, lease OwnerLease) error {
-	if lease.FenceToken < 1 || strings.TrimSpace(lease.OwnerID) == "" {
+func (s *Store) ReleaseOwnerLease(ctx context.Context, leaseKey string, lease OwnerLease) error {
+	if strings.TrimSpace(leaseKey) == "" || lease.FenceToken < 1 || strings.TrimSpace(lease.OwnerID) == "" {
 		return errors.New("owner lease 释放参数无效")
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$1 WHERE lease_key='account-balance-owner' AND owner_id=$2 AND fence_token=$3`, now, lease.OwnerID, lease.FenceToken)
+	_, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_owner_leases SET lease_until=$1,updated_at=$1 WHERE lease_key=$2 AND owner_id=$3 AND fence_token=$4`, now, leaseKey, lease.OwnerID, lease.FenceToken)
 	return err
 }
 
-func (s *Store) AcquireAccountLease(ctx context.Context, owner OwnerLease, accountID string, duration time.Duration) (AccountLease, bool, error) {
-	if owner.FenceToken < 1 || strings.TrimSpace(owner.OwnerID) == "" || strings.TrimSpace(accountID) == "" || duration <= 0 {
+func (s *Store) AcquireAccountLease(ctx context.Context, leaseKey string, owner OwnerLease, accountID string, duration time.Duration) (AccountLease, bool, error) {
+	if strings.TrimSpace(leaseKey) == "" || owner.FenceToken < 1 || strings.TrimSpace(owner.OwnerID) == "" || strings.TrimSpace(accountID) == "" || duration <= 0 {
 		return AccountLease{}, false, errors.New("account lease 参数无效")
 	}
 	s.writeMu.Lock()
@@ -374,20 +385,28 @@ func (s *Store) AcquireAccountLease(ctx context.Context, owner OwnerLease, accou
 		return AccountLease{}, false, err
 	}
 	defer tx.Rollback()
-	if err := verifyOwnerTx(ctx, tx, owner, time.Now().UTC()); err != nil {
+	// verifyOwnerTx 校验的是当前调用者自己在 leaseKey 空间的 owner lease 有效性，
+	// 与下方接管条件无关：跨 key 空间（周期持全局行、manual 按账户行）也能公平
+	// 竞争账户租约。
+	if err := verifyOwnerTx(ctx, tx, leaseKey, owner, time.Now().UTC()); err != nil {
 		return AccountLease{}, false, err
 	}
 	now := time.Now().UTC()
 	var token int64
+	// 接管只看 lease_until 过期（fence+1 后旧持有者携旧 fence 的写入在
+	// verifyLeasesTx 必被拒——fence 世代是唯一拦截机制，返回
+	// ErrAccountLeaseLost；ErrOutcomeStale 是 outcome request_id 冲突语义，
+	// 与 fence 无关）。旧「或原持有者 owner lease 失效即接管」分支必须删除：
+	// 它按硬编码全局 key 查原持有者的 owner 行，manual 持有者的 owner 行在
+	// manual:<accountID> key 空间、在该全局行中恒不存在，分支会放行任何调用
+	// 者在其最长 15s 上游探测中途立即抢锁，跨 key 空间互斥失效；删除后接管
+	// 时点恒为账户租约自身 lease_until（与旧条件的 OR 左臂一致），也不再抢
+	// 「owner 行已过期/不存在但账户租约仍存活」的合法持有者（2026-11-01
+	// 手动刷新互斥粒度下沉，设计 docs/functions/AI账户上游余额查询设计.md §5）。
 	err = tx.QueryRowContext(ctx, `INSERT INTO juhe_jobs.account_balance_account_leases(account_id,owner_id,fence_token,lease_until,updated_at)
 VALUES($1,$2,1,$3,$4)
 ON CONFLICT(account_id) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_jobs.account_balance_account_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=EXCLUDED.updated_at
-WHERE juhe_jobs.account_balance_account_leases.lease_until <= $4 OR NOT EXISTS (
-  SELECT 1 FROM juhe_jobs.account_balance_owner_leases owner_lease
-  WHERE owner_lease.lease_key='account-balance-owner'
-    AND owner_lease.owner_id=juhe_jobs.account_balance_account_leases.owner_id
-    AND owner_lease.lease_until>$4
-)
+WHERE juhe_jobs.account_balance_account_leases.lease_until <= $4
 RETURNING fence_token`, accountID, owner.OwnerID, now.Add(duration), now).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = tx.Commit()
@@ -402,14 +421,14 @@ RETURNING fence_token`, accountID, owner.OwnerID, now.Add(duration), now).Scan(&
 	return AccountLease{AccountID: accountID, OwnerID: owner.OwnerID, FenceToken: token}, true, nil
 }
 
-func (s *Store) RenewAccountLease(ctx context.Context, owner OwnerLease, lease AccountLease, duration time.Duration) (bool, error) {
-	if lease.FenceToken < 1 || lease.OwnerID != owner.OwnerID || lease.AccountID == "" || duration <= 0 {
+func (s *Store) RenewAccountLease(ctx context.Context, leaseKey string, owner OwnerLease, lease AccountLease, duration time.Duration) (bool, error) {
+	if strings.TrimSpace(leaseKey) == "" || lease.FenceToken < 1 || lease.OwnerID != owner.OwnerID || lease.AccountID == "" || duration <= 0 {
 		return false, errors.New("account lease 续约参数无效")
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	now := time.Now().UTC()
-	if err := verifyOwner(ctx, s.db, owner, now); err != nil {
+	if err := verifyOwner(ctx, s.db, leaseKey, owner, now); err != nil {
 		return false, err
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE juhe_jobs.account_balance_account_leases SET lease_until=$1,updated_at=$2 WHERE account_id=$3 AND owner_id=$4 AND fence_token=$5 AND lease_until>$2`, now.Add(duration), now, lease.AccountID, lease.OwnerID, lease.FenceToken)
@@ -498,7 +517,7 @@ func (s *Store) LoadOutcome(ctx context.Context, outcomeID string) (Outcome, boo
 	return outcome, true, nil
 }
 
-func (s *Store) WriteSnapshotCAS(ctx context.Context, owner OwnerLease, account AccountLease, mutation SnapshotMutation) (bool, error) {
+func (s *Store) WriteSnapshotCAS(ctx context.Context, leaseKey string, owner OwnerLease, account AccountLease, mutation SnapshotMutation) (bool, error) {
 	if err := mutation.Input.Validate(time.Now().UTC()); err != nil {
 		return false, err
 	}
@@ -512,7 +531,7 @@ func (s *Store) WriteSnapshotCAS(ctx context.Context, owner OwnerLease, account 
 		return false, err
 	}
 	defer tx.Rollback()
-	if err := verifyLeasesTx(ctx, tx, owner, account, time.Now().UTC()); err != nil {
+	if err := verifyLeasesTx(ctx, tx, leaseKey, owner, account, time.Now().UTC()); err != nil {
 		return false, err
 	}
 	accepted, err := writeSnapshotTx(ctx, tx, mutation.Input.AccountID, mutation.Input.InputVersion, mutation.Input.ConfigRevision, mutation.Input.Trigger, mutation.Snapshot, mutation.NextRefreshAt, mutation.ExpectedInput, mutation.ExpectedConfig, mutation.Input.NextRefreshAt)
@@ -527,11 +546,11 @@ func (s *Store) WriteSnapshotCAS(ctx context.Context, owner OwnerLease, account 
 
 // CASSnapshot is a concise alias used by callers that model the operation as
 // a compare-and-swap rather than a write helper.
-func (s *Store) CASSnapshot(ctx context.Context, owner OwnerLease, account AccountLease, mutation SnapshotMutation) (bool, error) {
-	return s.WriteSnapshotCAS(ctx, owner, account, mutation)
+func (s *Store) CASSnapshot(ctx context.Context, leaseKey string, owner OwnerLease, account AccountLease, mutation SnapshotMutation) (bool, error) {
+	return s.WriteSnapshotCAS(ctx, leaseKey, owner, account, mutation)
 }
 
-func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, account AccountLease, outcome Outcome) (bool, error) {
+func (s *Store) AppendOutcome(ctx context.Context, leaseKey string, owner OwnerLease, account AccountLease, outcome Outcome) (bool, error) {
 	if strings.TrimSpace(outcome.OutcomeID) == "" || strings.TrimSpace(outcome.RequestID) == "" || strings.TrimSpace(outcome.AccountID) == "" || outcome.InputVersion < 1 || outcome.ConfigRevision < 1 || outcome.ObservedAt.IsZero() {
 		return false, errors.New("account-balance outcome 缺少幂等或 fence 字段")
 	}
@@ -549,7 +568,7 @@ func (s *Store) AppendOutcome(ctx context.Context, owner OwnerLease, account Acc
 		return false, err
 	}
 	defer tx.Rollback()
-	if err := verifyLeasesTx(ctx, tx, owner, account, time.Now().UTC()); err != nil {
+	if err := verifyLeasesTx(ctx, tx, leaseKey, owner, account, time.Now().UTC()); err != nil {
 		return false, err
 	}
 	inserted, err := insertBalanceOutcome(ctx, tx, outcome, string(payload))
@@ -624,8 +643,8 @@ func markOutcomeCommittedTx(ctx context.Context, tx *sql.Tx, outcomeID string) e
 
 // CASOutcome preserves the explicit CAS terminology for integrations that do
 // not use the idempotent AppendOutcome name.
-func (s *Store) CASOutcome(ctx context.Context, owner OwnerLease, account AccountLease, outcome Outcome) (bool, error) {
-	return s.AppendOutcome(ctx, owner, account, outcome)
+func (s *Store) CASOutcome(ctx context.Context, leaseKey string, owner OwnerLease, account AccountLease, outcome Outcome) (bool, error) {
+	return s.AppendOutcome(ctx, leaseKey, owner, account, outcome)
 }
 
 func writeSnapshotTx(ctx context.Context, tx *sql.Tx, accountID string, inputVersion, configRevision int64, trigger Trigger, snapshot Snapshot, nextRefresh *time.Time, expectedInput, expectedConfig int64, expectedNextRefresh *time.Time) (bool, error) {
@@ -683,11 +702,11 @@ func insertBalanceOutcome(ctx context.Context, tx *sql.Tx, outcome Outcome, payl
 	return err == nil, err
 }
 
-func verifyOwnerTx(ctx context.Context, tx *sql.Tx, lease OwnerLease, now time.Time) error {
+func verifyOwnerTx(ctx context.Context, tx *sql.Tx, leaseKey string, lease OwnerLease, now time.Time) error {
 	var owner string
 	var token int64
 	var until any
-	if err := tx.QueryRowContext(ctx, `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1 FOR UPDATE`, "account-balance-owner").Scan(&owner, &token, &until); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1 FOR UPDATE`, leaseKey).Scan(&owner, &token, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOwnerLeaseLost
 		}
@@ -700,8 +719,8 @@ func verifyOwnerTx(ctx context.Context, tx *sql.Tx, lease OwnerLease, now time.T
 	return nil
 }
 
-func verifyLeasesTx(ctx context.Context, tx *sql.Tx, owner OwnerLease, account AccountLease, now time.Time) error {
-	if err := verifyOwnerTx(ctx, tx, owner, now); err != nil {
+func verifyLeasesTx(ctx context.Context, tx *sql.Tx, leaseKey string, owner OwnerLease, account AccountLease, now time.Time) error {
+	if err := verifyOwnerTx(ctx, tx, leaseKey, owner, now); err != nil {
 		return err
 	}
 	var ownerID string
@@ -720,11 +739,11 @@ func verifyLeasesTx(ctx context.Context, tx *sql.Tx, owner OwnerLease, account A
 	return nil
 }
 
-func verifyOwner(ctx context.Context, db *sql.DB, lease OwnerLease, now time.Time) error {
+func verifyOwner(ctx context.Context, db *sql.DB, leaseKey string, lease OwnerLease, now time.Time) error {
 	var owner string
 	var token int64
 	var until any
-	if err := db.QueryRowContext(ctx, `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1`, "account-balance-owner").Scan(&owner, &token, &until); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT owner_id,fence_token,lease_until FROM juhe_jobs.account_balance_owner_leases WHERE lease_key=$1`, leaseKey).Scan(&owner, &token, &until); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrOwnerLeaseLost
 		}

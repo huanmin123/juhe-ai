@@ -239,7 +239,6 @@ func (s *Service) ResetAccountRuntimeState(ctx context.Context, accountID string
 			before.SourceLastErrorCode.String == "account_expired" ||
 			accountscore.IsAccountExpired(before.AccountExpiresAt.String, now) ||
 			before.LastErrorCode.String == "account_expired" ||
-			before.Status == "quality_isolated" ||
 			sourceExplicitPolicyCooldown ||
 			IsFutureTimestamp(before.SourceCooldownUntil.String, now) ||
 			before.AuthorizationQuotaExceeded ||
@@ -254,9 +253,6 @@ func (s *Service) ResetAccountRuntimeState(ctx context.Context, accountID string
 		}
 		if before.Status == "disabled" {
 			addSkipped("disabled")
-		}
-		if before.Status == "quality_isolated" {
-			addSkipped("quality_isolated")
 		}
 		if accountscore.IsAccountExpired(before.AccountExpiresAt.String, now) || before.LastErrorCode.String == "account_expired" {
 			addSkipped("expired")
@@ -317,12 +313,14 @@ func (s *Service) ResetAccountRuntimeState(ctx context.Context, accountID string
 		manualUnschedulable := before.Status == "active" && !before.Schedulable
 		pendingHealthCheckWithoutFailure := before.Status == "pending_test" &&
 			!(before.LastHealthCheckAt.Valid && (before.LastHealthCheckErrorCode.Valid || before.LastHealthCheckErrorMessage.Valid))
+		// T91-2（B1-7）：quality_isolated 不再是「无持久失败状态」的跳过项——
+		// 重置即人工治理质量隔离：同事务结束处罚行（状态在
+		// PatchAccountFailureStateForReset 内落 active + 可调度）。
 		skipPersistentClear := pendingHealthCheckWithoutFailure ||
 			before.Status == "disabled" ||
 			manualUnschedulable ||
 			before.LastErrorCode.String == "account_expired" ||
 			accountscore.IsAccountExpired(before.AccountExpiresAt.String, now) ||
-			before.Status == "quality_isolated" ||
 			!ResetHasPersistentFailureState(before) ||
 			IsExplicitAccountErrorPolicyCooldown(before.LastErrorCode.String, before.LastErrorMessage.String) ||
 			lockBlocksPersistentReset
@@ -331,9 +329,6 @@ func (s *Service) ResetAccountRuntimeState(ctx context.Context, accountID string
 		}
 		if before.Status == "disabled" {
 			addSkipped("disabled")
-		}
-		if before.Status == "quality_isolated" {
-			addSkipped("quality_isolated")
 		}
 		if before.LastErrorCode.String == "account_expired" || accountscore.IsAccountExpired(before.AccountExpiresAt.String, now) {
 			addSkipped("expired")
@@ -560,6 +555,27 @@ func sortedKeySet(values map[string]bool) []string {
 
 // ---- persistent failure-state patch (owner branch) ----
 
+// clearQualityEnforcementInTx 在调用方事务内结束账户的质量处罚活动行
+// （T91-2 / B1-7）：SQL 形状与 accounts/patch.go
+// releaseAccountLockAndQualityEnforcement 的 enforcement 片段一致——state 落
+// cleared、清恢复排期与租约、写 cleared_at；非 active 行不受影响，重复执行
+// 幂等（仅首次命中 active 行）。返回是否确有行被结束。
+func (s *Service) clearQualityEnforcementInTx(ctx context.Context, tx *sql.Tx, accountID, nowISO string) (bool, error) {
+	exec, err := tx.ExecContext(ctx, s.store.Bind(`UPDATE `+s.store.Table("account_quality_enforcements")+` SET
+		state = 'cleared',
+		recovery_due_at = NULL,
+		recovery_lease_owner = NULL,
+		recovery_lease_until = NULL,
+		cleared_at = ?,
+		updated_at = ?
+		WHERE account_id = ? AND state = 'active'`), nowISO, nowISO, accountID)
+	if err != nil {
+		return false, err
+	}
+	affected, _ := exec.RowsAffected()
+	return affected > 0, nil
+}
+
 type PatchFailureStateInput struct {
 	AccountID              string
 	ExpectedConfigRevision int64
@@ -687,6 +703,14 @@ func (s *Service) PatchAccountFailureStateForReset(ctx context.Context, in Patch
 	expiredByPackage := accountscore.IsAccountExpired(row.AccountExpiresAt.String, in.Now)
 	if row.Status == "disabled" && !expiredByPackage {
 		return s.UnchangedFailureStateResult(tx, row)
+	}
+	// T91-2（B1-7）：质量隔离的人工重置在同一事务结束处罚行——账户恢复
+	// active + 可调度时不能让 account_quality_enforcements 仍为 active（否则
+	// jobs 恢复道会按残留处罚继续判读，账户状态与处罚事实互相矛盾）。
+	if row.Status == "quality_isolated" {
+		if _, err := s.clearQualityEnforcementInTx(ctx, tx, row.ID, accountscore.IsoMillis(in.Now)); err != nil {
+			return nil, err
+		}
 	}
 
 	sets := map[string]any{}
@@ -1071,6 +1095,13 @@ func (s *Service) UpdateAuthorizedBindingDispatchForReset(ctx context.Context, i
 		return UnchangedAuthorizedResetResult(row, binding), nil
 	}
 	nowISO := accountscore.IsoMillis(s.store.Now())
+	// T91-2（B1-7）：实例行的质量隔离同样在恢复事务内结束处罚行（与 owner 臂
+	// 同款 SQL，patch.go releaseAccountLockAndQualityEnforcement 语义）。
+	if row.Status == "quality_isolated" {
+		if _, err := s.clearQualityEnforcementInTx(ctx, tx, row.ID, nowISO); err != nil {
+			return nil, err
+		}
+	}
 	assignments := []string{}
 	setArgs := []any{}
 	for column, value := range sets {
@@ -1815,9 +1846,13 @@ func startsWith(value, prefix string) bool {
 	return len(value) >= len(prefix) && value[:len(prefix)] == prefix
 }
 
-// ResetHasPersistentFailureState mirrors hasPersistentFailureState.
+// ResetHasPersistentFailureState mirrors hasPersistentFailureState. 质量隔离是
+// 持久处罚态（T91-2 / B1-7）：处罚事实同时落在 accounts.status 与
+// account_quality_enforcements 活动行上，缺失败列时同样是「有需要治理的持久
+// 状态」，不能被判成无失败状态而跳过重置。
 func ResetHasPersistentFailureState(account *ResetSummary) bool {
-	return account.Status == "error" ||
+	return account.Status == "quality_isolated" ||
+		account.Status == "error" ||
 		account.Status == "rate_limited" ||
 		account.Status == "temporary_unavailable" ||
 		account.CooldownUntil.Valid ||

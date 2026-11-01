@@ -44,7 +44,7 @@ func TestW9HCheckArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recovered err=%v", err)
 	}
-	if safety.SafeCreatedBefore != "2026-09-06T11:59:45.000Z" {
+	if safety.SafeCreatedBefore != "2026-09-06T11:55:00.000Z" {
 		t.Fatalf("default safe=%q", safety.SafeCreatedBefore)
 	}
 	// 积压早于默认 → 回退到最旧记录前 1ms。
@@ -60,7 +60,7 @@ func TestW9HCheckArms(t *testing.T) {
 		return &DrainStatus{Ready: true, SnapshotUsageRecordQueueOldestCreatedAt: "2026-09-06T11:59:50.000Z"}, nil
 	})
 	safety, err = Check(context.Background(), fresh, now)
-	if err != nil || safety.SafeCreatedBefore != "2026-09-06T11:59:45.000Z" {
+	if err != nil || safety.SafeCreatedBefore != "2026-09-06T11:55:00.000Z" {
 		t.Fatalf("fresh backlog safe=%q err=%v", safety.SafeCreatedBefore, err)
 	}
 	// 非法时间戳 → 报错。

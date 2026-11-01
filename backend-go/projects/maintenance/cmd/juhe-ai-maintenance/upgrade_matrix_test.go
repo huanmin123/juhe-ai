@@ -68,6 +68,14 @@ func runMatrixForRef(t *testing.T, ref, matrixSecret string, mockdata bool) {
 	oldBinary := buildArchivedMaintenance(t, ref, workDir)
 
 	td := pgtestkit.NewTestDatabase(t)
+	// 防跨用例污染：upgradeSteps 的 upgradeTargets 会把缺失的 J3a/J3b/balance
+	// 连接串写回进程环境（生产语义：缺省回落 primary）。临时库在本用例结束时
+	// 被删除，泄漏的 DSN 会让同包后续用例（如 TestW1J2BootstrapMutualExclusion
+	// 的互斥负臂）拿到已删除库、在互斥门之前就以运行时失败 exit 1 收场。
+	// t.Setenv 显式占位并在用例结束自动还原。
+	t.Setenv(envJ3AURL, td.DSN)
+	t.Setenv(envJ3BURL, td.DSN)
+	t.Setenv(envBalanceURL, td.DSN)
 	runOldMaintenance(t, oldBinary, "--ensure-schema", "--dsn", td.DSN)
 	runOldMaintenance(t, oldBinary, "--seed", "--dsn", td.DSN, "--secret", matrixSecret)
 	if mockdata {
@@ -110,8 +118,10 @@ func runMatrixForRef(t *testing.T, ref, matrixSecret string, mockdata bool) {
 		`SELECT schema_revision FROM juhe_business.schema_state WHERE id = 1`).Scan(&stateRevision); err != nil {
 		t.Fatalf("[%s] 读 schema_state 失败: %v", ref, err)
 	}
+	// applied 是「注册表步骤数」而非 SchemaRevision：revision 序列有断号
+	//（rev7 已随退役删除），当前 12 步；schema_state 才按最高 revision 落值。
 	if applied != 12 || stateRevision != contracts.SchemaRevision {
-		t.Fatalf("[%s] 账本 applied=%d（want 12）/ state revision=%d（want %d）",
+		t.Fatalf("[%s] 账本 applied=%d（want 12 步）/ state revision=%d（want %d）",
 			ref, applied, stateRevision, contracts.SchemaRevision)
 	}
 

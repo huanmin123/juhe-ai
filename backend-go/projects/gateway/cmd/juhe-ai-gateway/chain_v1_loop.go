@@ -972,6 +972,36 @@ func recoveryMetadataOrZero(metadata *gatewaycodex.CodexEncryptedContentRecovery
 // terminal exit rendered) and false when the loop should continue on the
 // switched fallback group.
 func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr error) bool {
+	// T93-1（C3-H1）+ T93-4（C3-H8）：派发期在途额度拒绝（选定账户、拿到
+	// vendor 与上游映射模型之后按真实请求规模预占）。整请求终态、不切号；
+	// 429 文案与错误码沿用 preflight 已结算额度拒绝的同源口径，用户可感知
+	// 契约不变（拒绝点仍在上游请求之前）。
+	var inflightQuota *gatewaydispatch.GatewayInflightQuotaExceededError
+	if errors.As(dispatchErr, &inflightQuota) {
+		status, errorType, errorCode, message := inflightQuota.GatewayQuotaRejection()
+		if inflightQuota.HasEstimate {
+			l.auditCapture.AddGatewayMetadata("inflight_quota_estimate_usd", map[string]any{
+				"deniedKind":  inflightQuota.DeniedKind,
+				"estimateUsd": inflightQuota.EstimateUSD,
+			})
+		}
+		l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+			Req:             l.req,
+			Res:             l.res,
+			AuditCapture:    l.auditCapture,
+			UsageContext:    l.current.UsageContext,
+			StartedAt:       l.startedAt,
+			StatusCode:      status,
+			ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, errorType),
+			Audit: gatewaypreauth.FailureAudit{
+				Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
+				ErrorPhase:   "quota",
+				ErrorCode:    errorCode,
+				ErrorMessage: message,
+			},
+		})
+		return true
+	}
 	// 总时间兜底截止切号（设计 6.6）：transport 总时间 timer 到点决策确认切
 	// 号后销毁请求，NormalRouteTotalTimeTimeoutError 沿引擎错误通路原样上抛
 	// （引擎错误分类不识别该类型，unproven rethrow 透传），此处凭决策闭包写

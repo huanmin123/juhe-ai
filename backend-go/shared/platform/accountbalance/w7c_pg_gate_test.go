@@ -158,34 +158,34 @@ func TestW7CBalancePostgresStoreContract(t *testing.T) {
 		t.Fatalf("CheckSchema 只读契约: %v", err)
 	}
 
-	owner, acquired, err := store.AcquireOwnerLease(ctx, w7cOwnerID, time.Minute)
+	owner, acquired, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, w7cOwnerID, time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("owner lease: %v %t", err, acquired)
 	}
-	if _, acquiredAgain, err := store.AcquireOwnerLease(ctx, "w7c-pg-other", time.Minute); err != nil || acquiredAgain {
+	if _, acquiredAgain, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, "w7c-pg-other", time.Minute); err != nil || acquiredAgain {
 		t.Fatalf("active owner must fence second owner: %v %t", err, acquiredAgain)
 	}
-	if ok, err := store.RenewOwnerLease(ctx, owner, time.Minute); err != nil || !ok {
+	if ok, err := store.RenewOwnerLease(ctx, OwnerLeaseKeyPeriodic, owner, time.Minute); err != nil || !ok {
 		t.Fatalf("renew owner (pg arm): %t %v", ok, err)
 	}
-	if err := store.ReleaseOwnerLease(ctx, owner); err != nil {
+	if err := store.ReleaseOwnerLease(ctx, OwnerLeaseKeyPeriodic, owner); err != nil {
 		t.Fatalf("release owner: %v", err)
 	}
 
-	owner2, acquired, err := store.AcquireOwnerLease(ctx, w7cOwnerID, time.Minute)
+	owner2, acquired, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, w7cOwnerID, time.Minute)
 	if err != nil || !acquired || owner2.FenceToken <= owner.FenceToken {
 		t.Fatalf("takeover bumps fence: %#v %t %v", owner2, acquired, err)
 	}
-	account, acquired, err := store.AcquireAccountLease(ctx, owner2, "w7c-pg-acct", time.Minute)
+	account, acquired, err := store.AcquireAccountLease(ctx, OwnerLeaseKeyPeriodic, owner2, "w7c-pg-acct", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("account lease: %v %t", err, acquired)
 	}
-	if ok, err := store.RenewAccountLease(ctx, owner2, account, time.Minute); err != nil || !ok {
+	if ok, err := store.RenewAccountLease(ctx, OwnerLeaseKeyPeriodic, owner2, account, time.Minute); err != nil || !ok {
 		t.Fatalf("renew account (pg arm): %t %v", ok, err)
 	}
 
 	now := time.Now().UTC()
-	inserted, err := store.AppendOutcome(ctx, owner2, account, Outcome{
+	inserted, err := store.AppendOutcome(ctx, OwnerLeaseKeyPeriodic, owner2, account, Outcome{
 		OutcomeID: "w7c-pg-outcome", RequestID: "w7c-pg-request", AccountID: account.AccountID,
 		InputVersion: 1, ConfigRevision: 1, Trigger: TriggerPeriodic, ObservedAt: now,
 		Snapshot: Snapshot{Status: StatusFresh, RemainingUSD: "1.25"},
@@ -477,11 +477,11 @@ func TestW7CServiceComposeAndManualBridgeOnPostgres(t *testing.T) {
 	}
 
 	// A held account lease skips the run and reports ErrAccountLeaseHeld.
-	owner, acquired, err := service.store.AcquireOwnerLease(ctx, w7cOwnerID+"-manual", time.Minute)
+	owner, acquired, err := service.store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, w7cOwnerID+"-manual", time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("manual owner: %v %t", err, acquired)
 	}
-	if _, acquired, err := service.store.AcquireAccountLease(ctx, owner, "w7c-svc-manual", time.Minute); err != nil || !acquired {
+	if _, acquired, err := service.store.AcquireAccountLease(ctx, OwnerLeaseKeyPeriodic, owner, "w7c-svc-manual", time.Minute); err != nil || !acquired {
 		t.Fatalf("manual account lease: %v %t", err, acquired)
 	}
 	if _, _, err := service.RunManual(ctx, advancedInput); !errors.Is(err, ErrAccountLeaseHeld) {
@@ -632,17 +632,17 @@ func TestW7CBalancePostgresLeaseContextArms(t *testing.T) {
 	defer store.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), w7cScanLimitBudget)
 	defer cancel()
-	ownerLease, _, err := store.AcquireOwnerLease(ctx, w7cOwnerID, time.Minute)
+	ownerLease, _, err := store.AcquireOwnerLease(ctx, OwnerLeaseKeyPeriodic, w7cOwnerID, time.Minute)
 	if err != nil {
 		t.Fatalf("warm owner lease: %v", err)
 	}
 
 	canceled, cancelLease := context.WithCancel(context.Background())
 	cancelLease()
-	if _, _, err := store.AcquireOwnerLease(canceled, "w7c-pg-canceled", time.Minute); err == nil {
+	if _, _, err := store.AcquireOwnerLease(canceled, OwnerLeaseKeyPeriodic, "w7c-pg-canceled", time.Minute); err == nil {
 		t.Fatal("canceled owner lease must fail")
 	}
-	if _, err := store.RenewOwnerLease(canceled, OwnerLease{OwnerID: w7cOwnerID, FenceToken: 1}, time.Minute); err == nil {
+	if _, err := store.RenewOwnerLease(canceled, OwnerLeaseKeyPeriodic, OwnerLease{OwnerID: w7cOwnerID, FenceToken: 1}, time.Minute); err == nil {
 		t.Fatal("canceled renew must fail")
 	}
 
@@ -652,7 +652,7 @@ func TestW7CBalancePostgresLeaseContextArms(t *testing.T) {
 	// （2026-10-25 sqlite 臂退役：committed 列坏类型解码臂为 SQLite 动态类型
 	// 专属语义，无 PG 等价断言（D9 裁决）随生产臂删除；first-probe 派发断言
 	// 与生产行为无关，改挂本测试既有的 PG cover store，断言逐字节保持。）
-	if err := store.ReleaseOwnerLease(ctx, ownerLease); err != nil {
+	if err := store.ReleaseOwnerLease(ctx, OwnerLeaseKeyPeriodic, ownerLease); err != nil {
 		t.Fatal(err)
 	}
 	runner := w7cNewRunner(t, store, &w7cScriptedHTTP{behavior: w7cFreshBehavior}, func(c *RunnerConfig) {

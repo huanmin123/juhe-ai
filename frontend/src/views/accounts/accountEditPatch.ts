@@ -37,6 +37,17 @@ export function buildAccountBasicEditSnapshot(
         healthCheckConnectionPresetCode
       }
     : {}
+  // T94：基础编辑与创建链同构携带连接集合，改 Base URL / 请求形态时连接域
+  // （account_connections，网关实际拨号事实源）随 credentialsPatch 一并同步。
+  // 连接 preset 独立于健康检查三件套求值：三件套可整体省略，连接始终存在。
+  const connections = connectionPresetCodeForProfile(form.providerProtocolProfileId) && form.baseUrl.trim()
+    ? [{
+        connectionPresetCode: connectionPresetCodeForProfile(form.providerProtocolProfileId)!,
+        baseUrl: form.baseUrl.trim(),
+        endpointModes: [...form.supportedEndpointModes],
+        enabled: true
+      }]
+    : undefined
   const values = compactRecord({
     name: form.name.trim(),
     concurrencyLimit: Math.trunc(Number(form.concurrencyLimit)),
@@ -47,7 +58,8 @@ export function buildAccountBasicEditSnapshot(
     groupId: form.groupId,
     tags: normalizeFormTagNames(form.tags).sort(),
     supportedModels: normalizedTextList(form.supportedModels).sort(),
-    ...healthCheckTrio
+    ...healthCheckTrio,
+    ...(connections ? { connections } : {})
   })
   values.notes = form.notes
   return {
@@ -110,6 +122,9 @@ function buildAccountUpdateDelta(
     const baselineValue = baselineHasKey ? baseline[key] : undefined
     if (sameValue(currentValue, baselineValue)) continue
     if (key === 'balanceQueryConfig' && !currentHasKey) continue
+    // 连接集合只在编辑明确提供时提交：current 缺席（如 OAuth 清空 Base URL）
+    // 不得回发 null——后端 connections 全集合替换不接受空集合，会 400。
+    if (key === 'connections' && !currentHasKey) continue
     delta[key] = currentHasKey ? currentValue : null
   }
 

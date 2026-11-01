@@ -6,7 +6,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Port of request/authorization-preflight.ts: the API key availability,
@@ -86,9 +85,15 @@ type MissingGroupAccessInput struct {
 }
 
 // RejectGatewayAPIKeyQuotaIfExceeded mirrors
-// rejectGatewayApiKeyQuotaIfExceeded: the consumed quota check followed by
-// the in-flight cost reservation. rejected=true means the 429 response has
-// been sent. A check error mirrors the Node throw and is returned.
+// rejectGatewayApiKeyQuotaIfExceeded for the consumed-quota half: rejected=true
+// means the 429 response has been sent. A check error mirrors the Node throw
+// and is returned.
+//
+// T93-1（C3-H1）：在途成本预占已后移到派发层（选定账户、拿到 vendor 与上游
+// 映射模型之后，见 gatewaydispatch.Engine.reserveUpstreamInflightQuota）——
+// preflight 阶段 provider 恒空、模型未映射，估算必然目录 miss，原预占是
+// no-op。此处只保留已结算额度拒绝，用户可感知的 429 契约不变（拒绝点在
+// 上游请求前，仍在产生上游消耗之前）。
 func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input APIKeyQuotaInput) (bool, error) {
 	if input.APIKeyRecord != nil {
 		decision, err := s.APIKeyQuota.CheckAPIKeyQuotaAsync(ctx, gatewayquota.APIKeyRow{
@@ -104,44 +109,6 @@ func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input 
 			return true, nil
 		}
 	}
-	if input.APIKeyRecord == nil || input.Req.InflightQuotaReserved {
-		return false, nil
-	}
-	// D-129（BUG-0175）：在途预留必须携带请求侧估算事实（归档
-	// reserveGatewayApiKeyInflightCost 内部从 req/apiKey 构造 estimate；
-	// Go 拆分后由调用方构造 EstimateRequestInput）。Model/rawBodyBytes/
-	// maxOutputTokens 全零值会让估算器按「无估算」短路——既不预留也不 429。
-	inflightDecision, err := s.InflightQuota.ReserveGatewayCost(ctx, gatewayquota.GatewayReserveInput{
-		APIKey: gatewayquota.APIKeyRow{
-			ID:              input.APIKeyRecord.ID,
-			SystemAccountID: input.APIKeyRecord.SystemAccountID,
-			QuotaLimitsJSON: derefString(input.APIKeyRecord.QuotaLimitsJSON),
-		},
-		ProviderCode: input.UsageContext.ProviderCode,
-		Estimate:     gatewayInflightEstimateRequestInput(input),
-	})
-	if err != nil {
-		return false, err
-	}
-	if !inflightDecision.Allowed {
-		s.sendAPIKeyQuotaExceeded(input.common(), APIKeyQuotaExceededMessage, "api_key_inflight_quota_exceeded")
-		return true, nil
-	}
-	if inflightDecision.Reservation != nil {
-		input.Req.InflightQuotaReserved = true
-		reservation := inflightDecision.Reservation
-		if input.Req.HTTP != nil {
-			requestCtx := input.Req.HTTP.Context()
-			if requestCtx != nil {
-				// 请求退出时释放在途预留；自启 goroutine 走 safego 屏障，
-				// 防止单次 panic 打进程（与 gatewayruntimecache 等并发点同约定）。
-				safego.Go("gatewaypreauth.authorizationpreflight.inflight_reservation_release", func() {
-					<-requestCtx.Done()
-					reservation.Complete()
-				})
-			}
-		}
-	}
 	return false, nil
 }
 
@@ -149,29 +116,6 @@ func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input 
 // gatewayquota package constant.
 const APIKeyQuotaExceededMessage = gatewayquota.APIKeyQuotaExceededMessage
 
-// gatewayInflightEstimateRequestInput mirrors the estimate facts
-// reserveGatewayApiKeyInflightCost derives from the request (Node
-// estimateGatewayRequestCostUsd caller): the request model, the body state's
-// rawBodyBytes / serviceTier / maxOutputTokens (falls back to the caller
-// defaults inside gatewayquota when the body state is absent).
-func gatewayInflightEstimateRequestInput(input APIKeyQuotaInput) gatewayquota.EstimateRequestInput {
-	estimate := gatewayquota.EstimateRequestInput{
-		ProviderCode:    input.UsageContext.ProviderCode,
-		SystemAccountID: input.APIKeyRecord.SystemAccountID,
-	}
-	if model, ok := RequestModel(input.Req); ok {
-		estimate.Model = model
-	}
-	if state := input.Req.BodyState(); state != nil {
-		estimate.RawBodyBytes = int64(state.RawBodyBytes)
-		estimate.ServiceTier = state.ServiceTier
-		if state.MaxOutputTokens != nil {
-			estimate.HasMaxOutputTokens = true
-			estimate.MaxOutputTokens = int64(*state.MaxOutputTokens)
-		}
-	}
-	return estimate
-}
 
 // APIKeyQuotaInput mirrors the Node input.
 type APIKeyQuotaInput struct {

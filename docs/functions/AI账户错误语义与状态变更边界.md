@@ -184,3 +184,7 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 - `backend/src/modules/gateway/runtime/account-side-effects.service.ts`
 - `backend/src/modules/gateway/runtime/account-api-key-failure-guard.service.ts`
 - `backend/src/modules/background/account-circuit-recovery.service.ts`
+
+### 冷却复测与人工状态的边界（2026-11-01 T91-5 裁决）
+
+用户显式设置的 `temporary_unavailable` / `rate_limited` 会武装冷却窗口；窗口到期后由账号级冷却复测接管，复测必须携带匹配的 `cooldown_retest_generation` 才能改变状态。该路径属于上文「TTL 到期」授权面，不是普通成功或后台健康成功的提前清除。除此之外，任何没有匹配 provenance 的协议成功、健康成功或旧在途结果都不得清除人工状态。本口径与 [AI账户健康状态收敛设计](AI账户健康状态收敛设计.md) §5 的「冷却复测接管人工隔离」一致。

@@ -42,25 +42,32 @@ type RunnerConfig struct {
 	// DueAdvancer 在周期刷新已结算 outcome（成功、失败、unsupported）后推进
 	// 业务库 due 游标；nil 表示不推进（网关手动 bridge runner 与既有隔离测试）。
 	DueAdvancer BusinessDueAdvancer
+	// ManualOwnerLeaseKeyPrefix 把手动刷新（TriggerManual）的 owner lease key
+	// 从全局单行（OwnerLeaseKeyPeriodic）下沉到按账户独立行
+	// prefix+accountID：周期批次几乎连续持有全局行时，手动刷新不再被整批
+	// 拖住 409，不同账户完全并行，同账户互斥由账户级租约承担（设计 §5）。
+	// 零值空串维持既有全局 key 行为（jobs 侧 Service 与既有测试兼容）。
+	ManualOwnerLeaseKeyPrefix string
 }
 
 type Runner struct {
-	store            *Store
-	ownerID          string
-	ownerLeaseTTL    time.Duration
-	accountLeaseTTL  time.Duration
-	inputTTL         time.Duration
-	maxConcurrent    int
-	ioConcurrency    int
-	dbConcurrency    int
-	dbQueueSize      int
-	logger           *slog.Logger
-	credentialSecret string
-	httpClient       HTTPDoer
-	probeTimeout     time.Duration
-	maxResponseBytes int64
-	now              func() time.Time
-	dueAdvancer      BusinessDueAdvancer
+	store                     *Store
+	ownerID                   string
+	ownerLeaseTTL             time.Duration
+	accountLeaseTTL           time.Duration
+	inputTTL                  time.Duration
+	maxConcurrent             int
+	ioConcurrency             int
+	dbConcurrency             int
+	dbQueueSize               int
+	logger                    *slog.Logger
+	credentialSecret          string
+	httpClient                HTTPDoer
+	probeTimeout              time.Duration
+	maxResponseBytes          int64
+	now                       func() time.Time
+	dueAdvancer               BusinessDueAdvancer
+	manualOwnerLeaseKeyPrefix string
 }
 
 func NewRunner(config RunnerConfig) (*Runner, error) {
@@ -112,7 +119,7 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.IOConcurrency, ioConcurrency: config.IOConcurrency, dbConcurrency: config.DBConcurrency, dbQueueSize: config.DBQueueSize, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now, dueAdvancer: config.DueAdvancer, logger: config.Logger}, nil
+	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.IOConcurrency, ioConcurrency: config.IOConcurrency, dbConcurrency: config.DBConcurrency, dbQueueSize: config.DBQueueSize, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now, dueAdvancer: config.DueAdvancer, manualOwnerLeaseKeyPrefix: config.ManualOwnerLeaseKeyPrefix, logger: config.Logger}, nil
 }
 
 // RunPeriodic executes a bounded batch of already-frozen due candidates.
@@ -126,8 +133,12 @@ func (r *Runner) RunFirstProbe(ctx context.Context, candidates []Candidate) (Run
 	return r.runCandidates(ctx, TriggerFirstProbe, candidates)
 }
 
-// RunManual executes a single saved input.  It still uses the jobs owner and
-// account fences, but never increments the scheduled transient-failure count.
+// RunManual executes a single saved input.  It keeps the jobs account fence
+// and never increments the scheduled transient-failure count. When the runner
+// is assembled with ManualOwnerLeaseKeyPrefix, the per-run owner lease uses the
+// per-account key (prefix+accountID) so manual refreshes of different accounts
+// run fully in parallel; the same account stays mutually exclusive through the
+// account lease.
 func (r *Runner) RunManual(ctx context.Context, input Input) (RunReport, error) {
 	input.Trigger = TriggerManual
 	return r.runInputs(ctx, TriggerManual, []Input{input})
@@ -205,7 +216,17 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	owner, acquired, err := r.store.AcquireOwnerLease(ctx, r.ownerID, r.ownerLeaseTTL)
+	// owner lease key 在本轮开头推导一次向下传：Acquire/defer Release 与所有
+	// 经 prepareInput→AcquireAccountLease、persistInput→AppendOutcome→
+	// verifyOwnerTx 的校验同源同值，杜绝中途传错 key 空间。周期/首探恒用
+	// 全局 key（单批次 writer 语义不变）；manual 仅在恰单 input 且装配了
+	// prefix 时下沉账户级（RunManual 恒单 input；多 input 的 manual 只来自
+	// 测试 helper 直调 runInputs，保持全局 key 即维持轮级互斥语义）。
+	leaseKey := OwnerLeaseKeyPeriodic
+	if trigger == TriggerManual && r.manualOwnerLeaseKeyPrefix != "" && len(inputs) == 1 {
+		leaseKey = r.manualOwnerLeaseKeyPrefix + inputs[0].AccountID
+	}
+	owner, acquired, err := r.store.AcquireOwnerLease(ctx, leaseKey, r.ownerID, r.ownerLeaseTTL)
 	if err != nil {
 		return result, err
 	}
@@ -213,7 +234,7 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 		result.Skipped = len(inputs)
 		return result, nil
 	}
-	defer func() { _ = r.store.ReleaseOwnerLease(context.Background(), owner) }()
+	defer func() { _ = r.store.ReleaseOwnerLease(context.Background(), leaseKey, owner) }()
 
 	ioWorkers := r.ioConcurrency
 	if ioWorkers > len(inputs) {
@@ -253,7 +274,7 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 			defer dbWG.Done()
 			for task := range dbQueue {
 				started := time.Now()
-				state, itemErr := r.persistInput(ctx, owner, task.input, task.account, task.query)
+				state, itemErr := r.persistInput(ctx, leaseKey, owner, task.input, task.account, task.query)
 				releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, task.account)
 				if itemErr == nil && releaseErr != nil {
 					itemErr = releaseErr
@@ -277,7 +298,7 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 			defer safego.Recover("accountbalance.runner.ioWorker")
 			defer ioWG.Done()
 			for input := range ioJobs {
-				state, account, query, itemErr := r.prepareInput(ctx, owner, input)
+				state, account, query, itemErr := r.prepareInput(ctx, leaseKey, owner, input)
 				if query == nil && state == runStateExecuted {
 					executed.Add(1)
 				}
@@ -347,14 +368,14 @@ const (
 	runStateExecutedStale
 )
 
-func (r *Runner) prepareInput(ctx context.Context, owner OwnerLease, input Input) (runState, AccountLease, *QueryResult, error) {
+func (r *Runner) prepareInput(ctx context.Context, leaseKey string, owner OwnerLease, input Input) (runState, AccountLease, *QueryResult, error) {
 	if err := input.Validate(r.now().UTC()); err != nil {
 		return runStateSkipped, AccountLease{}, nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return runStateSkipped, AccountLease{}, nil, err
 	}
-	accountLease, acquired, err := r.store.AcquireAccountLease(ctx, owner, input.AccountID, r.accountLeaseTTL)
+	accountLease, acquired, err := r.store.AcquireAccountLease(ctx, leaseKey, owner, input.AccountID, r.accountLeaseTTL)
 	if err != nil {
 		if errors.Is(err, ErrAccountLeaseHeld) {
 			return runStateSkipped, AccountLease{}, nil, nil
@@ -381,7 +402,7 @@ func (r *Runner) prepareInput(ctx context.Context, owner OwnerLease, input Input
 	return runStateExecuted, accountLease, &query, nil
 }
 
-func (r *Runner) persistInput(ctx context.Context, owner OwnerLease, input Input, accountLease AccountLease, query QueryResult) (runState, error) {
+func (r *Runner) persistInput(ctx context.Context, leaseKey string, owner OwnerLease, input Input, accountLease AccountLease, query QueryResult) (runState, error) {
 	now := r.now().UTC()
 	if !now.Before(input.ExpiresAt.UTC()) {
 		return runStateExecuted, errors.New("account-balance input 在上游查询后已过期，拒绝写入")
@@ -409,7 +430,7 @@ func (r *Runner) persistInput(ctx context.Context, owner OwnerLease, input Input
 		outcome.ExpectedNextRefreshAt = cloneTime(input.NextRefreshAt)
 		outcome.ExpectedNextRefreshSet = true
 	}
-	accepted, err := r.store.AppendOutcome(ctx, owner, accountLease, outcome)
+	accepted, err := r.store.AppendOutcome(ctx, leaseKey, owner, accountLease, outcome)
 	if errors.Is(err, ErrOutcomeStale) {
 		return runStateExecutedStale, nil
 	}

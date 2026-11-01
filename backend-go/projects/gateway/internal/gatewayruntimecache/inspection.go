@@ -14,8 +14,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // ListCachedActiveResponseInspectionPoliciesAsync mirrors the async read with
-// the retain TTL (10 min) and the 60 s revalidate window; stale entries serve
-// as last-good while the background refresh runs.
+// the retain TTL (2 min, T91-4) and the 60 s revalidate window; stale entries
+// serve as last-good while the background refresh runs.
 func (s *Service) ListCachedActiveResponseInspectionPoliciesAsync(ctx context.Context, protocolCode string, providerCode string) ([]ResponseInspectionPolicySummary, error) {
 	s.syncInvalidationsBestEffort(ctx)
 	cacheKey := responseInspectionPolicyCacheKey(protocolCode, providerCode)

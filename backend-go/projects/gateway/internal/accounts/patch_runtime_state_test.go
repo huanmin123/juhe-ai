@@ -179,9 +179,9 @@ func TestPatchStatusMutationGuards(t *testing.T) {
 }
 
 // TestPatchDisabledStatusClearsRuntimeState mirrors the disabled arm
-// (:1781-1789): disabled clears the error identity and the retest window,
-// and keeps the requested schedulable (Node nextSchedulable keeps the current
-// value for disabled).
+// (:1781-1789): disabled clears the error identity and the retest window.
+// T91-3（B1-10）起 schedulable 由状态派生：disabled 一律关闭调度，因此本条
+// changedFields 除 status 外还带 schedulable，行值落 0。
 func TestPatchDisabledStatusClearsRuntimeState(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -199,11 +199,11 @@ func TestPatchDisabledStatusClearsRuntimeState(t *testing.T) {
 		t.Fatalf("patch: %d %v", code, patched)
 	}
 	changed := changedFieldSet(t, patched)
-	if !changed["status"] || changed["runtimeState"] || changed["schedulable"] {
-		t.Fatalf("disabled chain must surface status only: %v", changed)
+	if !changed["status"] || !changed["schedulable"] || changed["runtimeState"] {
+		t.Fatalf("disabled chain must surface status + derived schedulable: %v", changed)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ?
-		AND status = 'disabled' AND schedulable = 1
+		AND status = 'disabled' AND schedulable = 0
 		AND last_error_code IS NULL AND last_error_message IS NULL AND last_error_trace_id IS NULL
 		AND cooldown_until IS NULL AND cooldown_retest_failure_count = 0
 		AND cooldown_retest_generation IS NULL AND cooldown_retest_last_at IS NULL

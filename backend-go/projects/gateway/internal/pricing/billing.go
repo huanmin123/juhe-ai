@@ -83,7 +83,6 @@ type resolvedRates struct {
 type billingPolicy struct {
 	id                       string
 	applyLongContext         bool
-	rejectUnsupportedTier    bool
 	cacheReadIncludedInInput bool
 	cacheReadFallbackToInput bool
 	labels                   tokenBillingLabels
@@ -100,7 +99,6 @@ var billingPolicies = []*billingPolicy{
 	},
 	{
 		id:                    "anthropic",
-		rejectUnsupportedTier: true,
 		labels: tokenBillingLabels{
 			input:           "输入 Token",
 			output:          "输出 Token",
@@ -149,7 +147,6 @@ var billingPolicies = []*billingPolicy{
 	},
 	{
 		id:                       "deepseek",
-		rejectUnsupportedTier:    true,
 		cacheReadIncludedInInput: true,
 		labels: tokenBillingLabels{
 			input:           "输入 Token",
@@ -171,7 +168,6 @@ var billingPolicies = []*billingPolicy{
 	},
 	{
 		id:                       "glm",
-		rejectUnsupportedTier:    true,
 		cacheReadIncludedInInput: true,
 		labels: tokenBillingLabels{
 			input:           "输入 Token",
@@ -196,7 +192,6 @@ var billingPolicies = []*billingPolicy{
 		//（tts_input_chars / video_output_seconds，目录未落价——见
 		// data_minimax.go 计价落法注释），token 行项标签沿用默认集。
 		id:                       "minimax",
-		rejectUnsupportedTier:    true,
 		cacheReadIncludedInInput: true,
 		labels:                   defaultTokenBillingLabels,
 	},
@@ -206,7 +201,6 @@ var billingPolicies = []*billingPolicy{
 		// 已落值，1-0-pro 除外；seed-audio-1.0 音频秒行同批落值），token
 		// 行项标签沿用默认集。
 		id:                       "volcengine",
-		rejectUnsupportedTier:    true,
 		cacheReadIncludedInInput: true,
 		labels:                   defaultTokenBillingLabels,
 	},
@@ -215,7 +209,6 @@ var billingPolicies = []*billingPolicy{
 		//（video_output_seconds，目录未落价——见 data_qwen.go 计价落法注释，
 		// usage 秒计量照抽、成本不虚计），token 行项标签沿用默认集。
 		id:                       "qwen",
-		rejectUnsupportedTier:    true,
 		cacheReadIncludedInInput: true,
 		labels:                   defaultTokenBillingLabels,
 	},
@@ -261,10 +254,12 @@ func BuildCostBreakdown(pricing *Pricing, input CostInput) *CostBreakdown {
 
 // buildCostBreakdown mirrors the per-provider policy bodies in
 // provider-billing.policies.ts.
+//
+// T93-3（C3-H4）：原 `rejectUnsupportedTier` 前置门（anthropic/deepseek/glm/
+// minimax/volcengine/qwen）在客户端声明任意档位时直接返回 nil，使整单 cost
+// 落 NULL。该语义已废止——未知档位统一由 serviceTierRates 回退标准档单价，
+// 档位来源保留 unknown 标记；provider 策略不再因档位拒绝计价。
 func (p *billingPolicy) buildCostBreakdown(pricing *Pricing, input CostInput) *CostBreakdown {
-	if p.rejectUnsupportedTier && hasUnsupportedServiceTier(pricing, input) {
-		return nil
-	}
 	rates := serviceTierRates(pricing, input)
 	if p.applyLongContext {
 		rates = applyLongContextRates(pricing, input, rates)
@@ -362,25 +357,22 @@ func standardRates(pricing *Pricing) resolvedRates {
 	}
 }
 
-// hasUnsupportedServiceTier mirrors provider-billing.shared
-// hasUnsupportedServiceTier.
-func hasUnsupportedServiceTier(pricing *Pricing, input CostInput) bool {
-	tier := normalizedTier(input.ServiceTier)
-	if tier == "" {
-		return false
-	}
-	for _, supported := range pricing.SupportedServiceTiers {
-		if supported == tier {
-			return false
-		}
-	}
-	return true
+// standardTierFallback 是 T93-3（C3-H4）裁决的落点：未知档位（不在
+// SupportedServiceTiers）或声明了但目录无该档位价时，回退标准档单价继续按
+// 正常维度结算，档位来源保留 unknown 标记。返回空价集会让整单 cost 落
+// NULL（免费用量），客户端任意 service_tier token 不得触发该后果。
+func standardTierFallback(pricing *Pricing) resolvedRates {
+	rates := standardRates(pricing)
+	rates.serviceTierPricingSource = TierSourceUnknown
+	return rates
 }
 
 // serviceTierRates mirrors provider-billing.shared serviceTierRates: the
 // tier table owns the token rates (no standard-rate fallback for
 // input/output/cache), while image/audio/per-image rates fall back to the
 // standard modal rates.
+//
+// 未知/无价档位走 standardTierFallback（T93-3）；支持档位仍用档位价。
 func serviceTierRates(pricing *Pricing, input CostInput) resolvedRates {
 	tier := normalizedTier(input.ServiceTier)
 	if tier == "" {
@@ -394,11 +386,11 @@ func serviceTierRates(pricing *Pricing, input CostInput) resolvedRates {
 		}
 	}
 	if !supported {
-		return resolvedRates{serviceTierPricingSource: TierSourceUnknown}
+		return standardTierFallback(pricing)
 	}
 	tierRates, ok := pricing.ServiceTierPrices[tier]
 	if !ok {
-		return resolvedRates{serviceTierPricingSource: TierSourceUnknown}
+		return standardTierFallback(pricing)
 	}
 	resolved := directRates(tierRates)
 	if resolved.ImageInputUsdPer1M == nil {

@@ -125,7 +125,7 @@ func TestInflightReservationLifecycle(t *testing.T) {
 
 	// Over-release clamps at zero and drops the state entry.
 	decision = service.Reserve(ReserveInput{APIKeyID: "ak3", Limits: limits, EstimatedCostUsd: 5})
-	service.release("ak3", 9)
+	service.release([]inflightRelease{{stateKey: "ak3", costUsd: 9}})
 	if got := service.Snapshot(); len(got) != 0 {
 		t.Fatalf("over-release must drop the state: %+v", got)
 	}
@@ -178,7 +178,7 @@ func TestInflightConcurrentReserveRelease(t *testing.T) {
 	}
 
 	// Releasing everything drains the state.
-	service.release("ak", 15)
+	service.release([]inflightRelease{{stateKey: "ak", costUsd: 15}})
 	if state := service.Snapshot(); len(state) != 0 {
 		t.Fatalf("state must drain to empty: %+v", state)
 	}

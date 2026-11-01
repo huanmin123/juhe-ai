@@ -495,8 +495,10 @@ func TestBuildCostBreakdownServiceTierExactPrices(t *testing.T) {
 		t.Fatalf("flex source = %q, want tier_specific", flex.ServiceTierPricingSource)
 	}
 
-	// 'standard' and 'default' are no-tier markers; unknown tiers on the
-	// openai policy collapse through hasAnyRate == false to undefined.
+	// 'standard' and 'default' are no-tier markers priced at standard rates
+	// with the default source. T93-3（C3-H4）：未知/未定价档位（batch /
+	// mystery）同样回退标准档单价按正常维度结算，来源标记 unknown，不再
+	// 让整单落 NULL。
 	for _, tier := range []string{"standard", "default", "batch", "mystery"} {
 		got := billingBreakdown(t, "openai", "gpt-5.5", CostInput{
 			ProviderCode: "openai",
@@ -505,12 +507,16 @@ func TestBuildCostBreakdownServiceTierExactPrices(t *testing.T) {
 			InputTokens:  f64p(1_000_000),
 			OutputTokens: f64p(500_000),
 		})
-		if tier == "standard" || tier == "default" {
-			wantFloat(t, tier+" accountChargeUsd", got.AccountChargeUsd, 32.5)
-			continue
+		if got == nil {
+			t.Fatalf("tier %q must stay priced (T93-3 standard fallback), got nil", tier)
 		}
-		if got != nil {
-			t.Fatalf("tier %q must collapse the breakdown, got %v", tier, got.AccountChargeUsd)
+		wantFloat(t, tier+" accountChargeUsd", got.AccountChargeUsd, 32.5)
+		wantSource := TierSourceUnknown
+		if tier == "standard" || tier == "default" {
+			wantSource = TierSourceDefault
+		}
+		if got.ServiceTierPricingSource != wantSource {
+			t.Fatalf("tier %q source = %q, want %q", tier, got.ServiceTierPricingSource, wantSource)
 		}
 	}
 }
@@ -556,14 +562,20 @@ func TestBuildCostBreakdownAnthropicCacheSplit(t *testing.T) {
 		}
 	}
 
-	// Anthropic rejects unsupported tiers up front.
-	if got := billingBreakdown(t, "anthropic", "claude-sonnet-5", CostInput{
+	// T93-3（C3-H4）：anthropic 的未知档位不再整单拒绝——回退标准档单价
+	// （input 2 / 1M）继续结算，档位来源标记 unknown。
+	tiered := billingBreakdown(t, "anthropic", "claude-sonnet-5", CostInput{
 		ProviderCode: "anthropic",
 		Model:        "claude-sonnet-5",
 		ServiceTier:  "priority",
 		InputTokens:  f64p(1_000),
-	}); got != nil {
-		t.Fatal("anthropic must reject the unsupported priority tier")
+	})
+	if tiered == nil {
+		t.Fatal("anthropic unknown tier must fall back to standard rates (T93-3)")
+	}
+	wantFloat(t, "anthropic fallback accountChargeUsd", tiered.AccountChargeUsd, 0.002)
+	if tiered.ServiceTierPricingSource != TierSourceUnknown {
+		t.Fatalf("anthropic fallback source = %q, want unknown", tiered.ServiceTierPricingSource)
 	}
 }
 
@@ -653,14 +665,27 @@ func TestBuildCostBreakdownDeepSeekPolicy(t *testing.T) {
 	if got.BillingPolicy != "deepseek" {
 		t.Fatalf("billingPolicy = %q, want deepseek", got.BillingPolicy)
 	}
-	// deepseek/glm reject unsupported tiers up front.
-	if tiered := billingBreakdown(t, "deepseek", "deepseek-flash", CostInput{
+	// T93-3（C3-H4）：deepseek 的未知档位不再整单拒绝——回退标准档单价
+	// （input 2/7 per 1M）继续结算，档位来源标记 unknown。
+	deepseekTiered := billingBreakdown(t, "deepseek", "deepseek-flash", CostInput{
 		ProviderCode: "deepseek",
 		Model:        "deepseek-flash",
 		ServiceTier:  "priority",
 		InputTokens:  f64p(1_000),
-	}); tiered != nil {
-		t.Fatal("deepseek must reject the unsupported priority tier")
+	})
+	if deepseekTiered == nil {
+		t.Fatal("deepseek unknown tier must fall back to standard rates (T93-3)")
+	}
+	deepseekStandard := standardRates(FindProviderModelPricing("deepseek", "deepseek-flash"))
+	if *deepseekTiered.InputUsdPer1M != *deepseekStandard.InputUsdPer1M ||
+		*deepseekTiered.OutputUsdPer1M != *deepseekStandard.OutputUsdPer1M {
+		t.Fatalf("deepseek fallback rates = %v/%v, want standard %v/%v",
+			*deepseekTiered.InputUsdPer1M, *deepseekTiered.OutputUsdPer1M,
+			*deepseekStandard.InputUsdPer1M, *deepseekStandard.OutputUsdPer1M)
+	}
+	wantFloat(t, "deepseek fallback accountChargeUsd", deepseekTiered.AccountChargeUsd, 0.0002857143)
+	if deepseekTiered.ServiceTierPricingSource != TierSourceUnknown {
+		t.Fatalf("deepseek fallback source = %q, want unknown", deepseekTiered.ServiceTierPricingSource)
 	}
 }
 

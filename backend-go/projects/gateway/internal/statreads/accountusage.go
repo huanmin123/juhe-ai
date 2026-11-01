@@ -52,9 +52,9 @@ func (d *Deps) accountUsageHandler(selfOnly bool) http.HandlerFunc {
 		} else {
 			rng = fixedUsageStatsDefaultRange(todayKey)
 		}
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		page, hasPage := integerQueryValue(values, "page")
 		pageSize, hasPageSize := integerQueryValue(values, "pageSize")
@@ -106,9 +106,9 @@ func (d *Deps) accountUsageOptionsHandler(selfOnly bool) http.HandlerFunc {
 			kernel.WriteBadRequest(w, "账户候选参数不合法")
 			return
 		}
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		payload, err := d.accountUsageOptions(r, scope, keyword, limit, hasLimit, selectedIds, capabilityDomain)
 		d.writeSection(w, payload, err)
@@ -125,9 +125,9 @@ func (d *Deps) accountUsageSummaryHandler(selfOnly bool) http.HandlerFunc {
 		todayKey := dateKeyIn(d.Now(), location)
 		values := r.URL.Query()
 		rng := normalizeRange(optionalQueryText(values, "startDate"), optionalQueryText(values, "endDate"), todayKey)
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		summary, err := d.loadAccountUsageOverviewSummary(r, scope, rng)
 		if err != nil {
@@ -152,9 +152,9 @@ func (d *Deps) accountUsageTrendHandler(selfOnly bool) http.HandlerFunc {
 		if len(accountIds) > 10 {
 			accountIds = accountIds[:10]
 		}
-		scope := requestScope(r)
-		if selfOnly {
-			scope = selfScope(r)
+		scope, ok := d.requireReadScope(w, r, selfOnly)
+		if !ok {
+			return
 		}
 		payload, err := d.accountUsageTrend(r, scope, rng, accountIds)
 		d.writeSection(w, payload, err)

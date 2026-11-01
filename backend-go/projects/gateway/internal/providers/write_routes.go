@@ -890,16 +890,20 @@ func cloneServiceTierPrices(prices map[string]ModelPriceSet) map[string]ModelPri
 }
 
 // validateCustomModelPricing ports validateCustomModelPricing; "" = valid.
+//
+// T93-2（C3-H2）裁决：启用态（active）的价格完整性按能力域校验——只填任一
+// 价格即可 active 会让未定价维度在结算时把整单 cost 落 NULL（可构造免费用量）。
+// 缺必填维度返回 400 文案「必须配置完整当前价格」；draft/disabled 不受影响，
+// 已有历史行不在读取/运行期重校验（只在保存/启用时校验）。
 func validateCustomModelPricing(providerCode string, input customProviderModelUpsertInput) string {
 	status := input.Status
 	if status == "" {
 		status = "active"
 	}
-	hasDirectPrice := customInputHasDirectPrice(input)
 	if message := validateCustomModelCapabilities(providerCode, input); message != "" {
 		return message
 	}
-	if status == "active" && !hasDirectPrice {
+	if status == "active" && !customInputHasCompletePrice(input) {
 		return "启用的自定义模型必须配置完整当前价格"
 	}
 	return ""
@@ -1010,29 +1014,66 @@ func serviceTierPriceKeysWithPrices(prices map[string]ModelPriceSet) []string {
 	return filtered
 }
 
-// customInputHasDirectPrice ports customInputHasDirectPrice.
-func customInputHasDirectPrice(input customProviderModelUpsertInput) bool {
+// customInputHasCompletePrice 按能力域判定启用态价格是否完整（T93-2 /
+// C3-H2）。旧实现 customInputHasDirectPrice 只要求任一价格非空，未定价维度在
+// 结算时命中 hasUnpricedUsage → 整单 cost NULL（可构造免费用量）。
+//
+// 口径（2026-11-01 裁决 C：本轮只收紧 text + image，audio/video 维持现状）：
+//   - text：输入与输出 token 价必须同时配置；声明了服务档位的模型，每个档位
+//     价集也必须自带输入 + 输出价（档位可被请求选中，缺一维同样落 NULL）。
+//     缓存/图片/音频 token 价可选（请求可能用到时由标准价/档位价继承语义承接）。
+//     纯 embedding 协议行没有输出 token 维度，只要求输入价。
+//   - image：必须有按张价 outputUsdPerImage（图像结算的最终计价维度）。
+//   - audio：维持旧口径（音频输入或输出 token 价任一），per-second/per-char
+//     价只在静态定价层、管理面无写入通道。
+//   - video：维持旧口径（无管理面秒价/次价通道 → 无直接价）。
+func customInputHasCompletePrice(input customProviderModelUpsertInput) bool {
 	mode := "text"
 	if input.Mode != nil {
 		mode = *input.Mode
 	}
-	if mode == "image" {
-		return input.ImageInputUsdPer1M != nil || input.ImageOutputUsdPer1M != nil || input.OutputUsdPerImage != nil
-	}
-	if mode == "audio" {
+	switch mode {
+	case "image":
+		return input.OutputUsdPerImage != nil
+	case "audio":
 		return input.AudioInputUsdPer1M != nil || input.AudioOutputUsdPer1M != nil
+	case "video":
+		// M2 视频自定义模型无管理面价格通道（目录秒价 videoOutputUsdPerSecond
+		// 的编辑字段随 M3 计价完善交付），启用态按"无完整价"处理，
+		// draft/disabled 不受影响；不回落 token 价通道（视频按秒计费，token
+		// 价无意义，不猜测）。
+		return false
+	default:
+		if customInputIsEmbeddingOnly(input) {
+			return input.InputUsdPer1M != nil
+		}
+		if input.InputUsdPer1M == nil || input.OutputUsdPer1M == nil {
+			return false
+		}
+		for _, set := range input.ServiceTierPrices {
+			if set.InputUsdPer1M == nil || set.OutputUsdPer1M == nil {
+				return false
+			}
+		}
+		return true
 	}
-	// M2 视频自定义模型无管理面价格通道（目录秒价 videoOutputUsdPerSecond
-	// 的编辑字段随 M3 计价完善交付），启用态价格校验按"无直接价"处理，
-	// draft/disabled 不受影响；不回落 token 价通道（视频按秒计费，token 价
-	// 无意义，不猜测）。
-	if mode == "video" {
+}
+
+// customInputIsEmbeddingOnly 报告文本用途行是否只声明了 embedding 类协议
+// （message_token_counting / count_tokens / embed_content）：这类行不产生
+// 输出 token，价格完整性只要求输入价。空协议列表按普通文本行处理。
+func customInputIsEmbeddingOnly(input customProviderModelUpsertInput) bool {
+	if len(input.SupportedAPIProtocols) == 0 {
 		return false
 	}
-	return input.InputUsdPer1M != nil || input.OutputUsdPer1M != nil || input.CachedInputUsdPer1M != nil ||
-		input.CacheWriteUsdPer1M != nil || input.CacheWrite1hUsdPer1M != nil ||
-		input.CacheStorageUsdPer1MPerHour != nil ||
-		len(serviceTierPriceKeysWithPrices(input.ServiceTierPrices)) > 0
+	for _, protocol := range input.SupportedAPIProtocols {
+		switch protocol {
+		case "message_token_counting", "count_tokens", "embed_content":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // validateBuiltInModelCompleteness ports validateBuiltInModelCompleteness.

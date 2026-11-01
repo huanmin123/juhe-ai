@@ -7,7 +7,9 @@ package main
 //     第四刀删除桥后本端口无生产实现（路由恒 500 / draft 降级快照）。本文件在
 //     gateway 进程内装配共享 backend-go-platform/accountbalance 执行核心
 //     （owner lease + account lease + snapshot CAS 与 jobs 周期任务共用同一
-//     juhe_jobs.account_balance_* 四表和 lease_key，互斥语义零改动）。
+//     juhe_jobs.account_balance_* 四表；2026-11-01 起手动刷新 owner lease
+//     下沉按账户独立 key（ManualOwnerLeaseKeyPrefix），不同账户完全并行，
+//     同账户互斥由账户级租约承担，周期全局行保留给 jobs 单批次 writer）。
 //   - ModelCatalogRefresher：模型目录刷新在全仓 Go 侧原本无上游 /models 拉取
 //     实现（恒 400「获取上游模型目录失败」）。本文件经共享
 //     backend-go-platform/upstreamcatalog 直连上游（Node
@@ -101,13 +103,20 @@ func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeCon
 		return nil
 	}
 	runner, err := accountbalance.NewRunner(accountbalance.RunnerConfig{
-		Store:            store,
-		OwnerID:          newGatewayBalanceOwnerID(),
-		OwnerLeaseTTL:    time.Minute,
-		AccountLeaseTTL:  30 * time.Second,
-		CredentialSecret: cfg.Secret,
-		ProbeTimeout:     15 * time.Second,
-		Now:              time.Now,
+		Store:           store,
+		OwnerID:         newGatewayBalanceOwnerID(),
+		OwnerLeaseTTL:   time.Minute,
+		AccountLeaseTTL: 30 * time.Second,
+		// 手动刷新互斥粒度下沉账户级：owner lease 行按账户独立
+		// （prefix+accountID，TTL 即上方 OwnerLeaseTTL 1 分钟），不同账户/不同
+		// 用户的手动刷新完全并行；同账户并发（含与 jobs 周期批次同时查同一
+		// 账户）由 account_balance_account_leases 互斥，仅该账户 409。周期
+		// 全局 owner lease 行保留给 jobs 单批次 writer，手动不再争抢（设计
+		// docs/functions/AI账户上游余额查询设计.md §5/§6）。
+		ManualOwnerLeaseKeyPrefix: accountbalance.ManualOwnerLeaseKeyPrefix,
+		CredentialSecret:          cfg.Secret,
+		ProbeTimeout:              15 * time.Second,
+		Now:                       time.Now,
 	})
 	if err != nil {
 		return fmt.Errorf("create account-balance gateway runner: %w", err)

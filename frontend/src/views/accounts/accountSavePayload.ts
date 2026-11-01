@@ -55,7 +55,8 @@ export function validateAccountLockConfigForm(form: AccountFormModel): string | 
 }
 
 // 连接集合载荷（设计 §8/§9.3）：创建时以账户当前表单的档案、Base URL 与
-// 接口能力推导唯一连接行；PATCH 不发送该字段（更新链只在显式提供时整集合替换）。
+// 接口能力推导唯一连接行；PATCH 更新链在显式提供时整集合替换（T94：编辑链
+// 与创建链同构携带，差量比较后仅在 Base URL/请求形态实际变化时进入请求）。
 export type AccountConnectionPayload = {
   connectionPresetCode: string
   baseUrl: string
@@ -388,6 +389,10 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, statusSel
   return {
     name: payload.name,
     credentials: payload.credentials,
+    // T94：编辑链与创建链同构携带连接集合（差量比较后仅在 baseUrl/请求形态
+    // 实际变化时进入 PATCH），否则网关拨号的 account_connections.base_url 只
+    // 能在创建时写入，编辑 Base URL 永不生效。
+    ...(payload.connections ? { connections: payload.connections } : {}),
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
     ...(statusSelectionExplicit ? { status: payload.status } : {}),

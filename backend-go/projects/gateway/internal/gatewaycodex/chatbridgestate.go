@@ -1195,6 +1195,17 @@ type gatewayFailure struct {
 	_type      string
 	code       string
 	message    string
+	// phase 是审计 error_phase；空值按 "request_validation"（既有压缩失败
+	// 契约）。派发层额度拒绝（T93-1/T93-4）显式传 "quota"。
+	phase string
+}
+
+// GatewayQuotaExceededError 是派发层额度拒绝（网关在途额度）在压缩摘要面上的
+// 识别接口：实现方返回与 preflight 一致的 429 文案契约。gatewaycodex 不
+// import 派发包，用窄接口识别（T93-1/T93-4）。
+type GatewayQuotaExceededError interface {
+	error
+	GatewayQuotaRejection() (status int, errorType string, code string, message string)
 }
 
 func stateRestoreFailure(outcome string) gatewayFailure {

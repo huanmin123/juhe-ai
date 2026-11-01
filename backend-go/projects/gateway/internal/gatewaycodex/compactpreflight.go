@@ -3,6 +3,7 @@ package gatewaycodex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -242,6 +243,20 @@ func (s *CompactPreflightService) ApplyChatBridgeCompactPreflight(ctx context.Co
 			Source:       terminalSource(input.Signal, err),
 		})
 		s.releaseExchange(exchange)
+		// T93-1 / T93-4：派发层在途额度拒绝按 preflight 一致的 429 契约渲染
+		// （不是 502「上游摘要请求失败」）。
+		var quotaErr GatewayQuotaExceededError
+		if errors.As(err, &quotaErr) {
+			status, errorType, code, message := quotaErr.GatewayQuotaRejection()
+			s.sendCompactFailure(input, gatewayFailure{
+				statusCode: status,
+				_type:      errorType,
+				code:       code,
+				message:    message,
+				phase:      "quota",
+			})
+			return CompactPreflightResult{Completed: true}, nil
+		}
 		s.sendCompactFailure(input, gatewayFailure{
 			statusCode: 502,
 			_type:      "bad_gateway",
@@ -559,11 +574,19 @@ func (s *CompactPreflightService) sendCompactFailure(input CompactPreflightInput
 		ResponsePayload: responsePayload,
 		Audit: gatewaypreauth.FailureAudit{
 			Outcome:      gatewaypreauth.AuditOutcomeGatewayFailed,
-			ErrorPhase:   "request_validation",
+			ErrorPhase:   failurePhaseOrDefault(failure.phase),
 			ErrorCode:    failure.code,
 			ErrorMessage: failure.message,
 		},
 	})
+}
+
+// failurePhaseOrDefault 取审计 error_phase（空值沿用既有"request_validation"）。
+func failurePhaseOrDefault(phase string) string {
+	if phase == "" {
+		return "request_validation"
+	}
+	return phase
 }
 
 // writeJSONResponse mirrors res.status(status).json(payload).

@@ -124,6 +124,25 @@ func (d *Deps) timezoneLocation(ctx context.Context) (*time.Location, error) {
 	return time.LoadLocation(name)
 }
 
+// statReadsMissingIdentityMessage 是 fail-closed 门（T93-8 / C1-C18）的对外文案。
+const statReadsMissingIdentityMessage = "缺少系统账户身份，无法读取统计数据"
+
+// requireReadScope 解析读面作用域并执行 fail-closed 判定：非管理员且 scopedID
+// 为空（认证上下文没有 SystemAccountID）时直接 403，返回 ok=false 且已写响应。
+// 读面 SQL 的租户条件缺省会退化成全租户全量读，因此不得把「空作用域」当作
+// 「全站可见」——管理员空过滤由 canAccessAll 单独放行（全站视图语义不变）。
+func (d *Deps) requireReadScope(w http.ResponseWriter, r *http.Request, selfOnly bool) (AccessScope, bool) {
+	scope := requestScope(r)
+	if selfOnly {
+		scope = selfScope(r)
+	}
+	if scope.incompleteScope() {
+		kernel.WriteError(w, http.StatusForbidden, statReadsMissingIdentityMessage)
+		return AccessScope{}, false
+	}
+	return scope, true
+}
+
 func nullStringPtr(value sql.NullString) *string {
 	if !value.Valid {
 		return nil

@@ -128,10 +128,11 @@ const (
 	RecoverySuccessMaxGap    = 2 * time.Minute
 	RecoveryInterval         = 10 * time.Second
 	ProbeLeaseDuration       = 45 * time.Second
-	// Go owns the runtime and must not inherit Node's event-loop concurrency
-	// cap. Redis leases still provide per-attempt fencing; this is only a
-	// defensive upper bound for malformed callers.
-	ForegroundLimit = 100000
+	// ForegroundLimit 是同一精确 CapabilityKey 尚未达到协议 precommit 的业务
+	// 请求上限（AI账户主探测与Key模型短屏蔽修复设计 §2：foregroundInFlightLimit
+	// 固定为 2，与主链 gatewayaccounteffects.KeyModelForegroundLimit 同值）。
+	// 第 3 个并发准入返回 busy；这是恢复风暴保护，不是账户并发上限。
+	ForegroundLimit = 2
 )
 
 var backoff = [...]time.Duration{5 * time.Second, 15 * time.Second, time.Minute, 5 * time.Minute}

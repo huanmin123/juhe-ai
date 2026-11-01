@@ -14,18 +14,23 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
 
-// TTL / window constants mirror runtime-cache.service.ts exactly.
+// TTL / window constants mirror runtime-cache.service.ts except the last-good
+// retain window: every retain TTL is 2 minutes instead of the Node 10 minutes
+// (T91-4 / B2-H3). The 60 s revalidate window is unchanged — a cached entry
+// older than revalidate still serves as last-good while the background refresh
+// runs, but it is dropped entirely after 2 minutes so an account/jobs-side
+// status flip cannot be dispatched indefinitely from a stale snapshot.
 const (
 	gatewayRuntimeTTL                 = 60 * time.Second
-	gatewayRuntimeRetainTTL           = 10 * time.Minute
+	gatewayRuntimeRetainTTL           = 2 * time.Minute
 	invalidGatewayRuntimeTTL          = 10 * time.Second
 	gatewaySettingsTTL                = 60 * time.Second
 	groupUsageAccessTTL               = 60 * time.Second
-	groupUsageAccessRetainTTL         = 10 * time.Minute
+	groupUsageAccessRetainTTL         = 2 * time.Minute
 	openAIAccountsTTL                 = 60 * time.Second
-	openAIAccountsRetainTTL           = 10 * time.Minute
+	openAIAccountsRetainTTL           = 2 * time.Minute
 	providerModelCatalogTTL           = 24 * time.Hour
-	responseInspectionPolicyRetainTTL = 10 * time.Minute
+	responseInspectionPolicyRetainTTL = 2 * time.Minute
 
 	// GatewayRuntimeLoadTimeout mirrors gatewayRuntimeDbServiceTimeoutMs: the
 	// budget bound around the runtime loader call.

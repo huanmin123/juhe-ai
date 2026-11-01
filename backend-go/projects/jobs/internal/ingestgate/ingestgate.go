@@ -11,6 +11,12 @@
 //     usage-stats.repository.ts:146）；存在待处理积压时取
 //     min(默认, 最旧排队记录 - 1ms)。
 //
+// T93-6 扩展（本地裁决）：gateway 进程内 buffer（spool 落盘之前）在 jobs 边界
+// 之外不可观测，记录可能在该段滞留后迟到入表；默认安全截止时间因此再与
+// now-DefaultGatewayBufferMaxAge（5min）取较早者，使游标不越过任何可能仍在
+// buffer 的记录。代价是常规聚合延迟从 15s 放宽到 5min（保守下界），换来迟到
+// 记录不再永久漏聚合；statsverify 另按 usage_records 重算最近窗口做对账。
+//
 // Go 形态差异（登记，不静默）：Node 的 ingest-worker 是独立进程、状态经 IPC
 // 获取（background_worker_ingest_status_request，按 Go 总设计消灭）；Go 单进程
 // 内由宿主直接读 usagewriter.Runtime() 注入 Probe。pendingQueues envelope 与
@@ -29,6 +35,26 @@ import (
 // UsageStatsCursorSafetyDelaySeconds mirrors usageStatsCursorSafetyDelaySeconds
 // (usage-stats.repository.ts:146).
 const UsageStatsCursorSafetyDelaySeconds = 15
+
+// DefaultGatewayBufferMaxAge 是 gateway 进程内用量记录 buffer 的最长滞留估计
+// （T93-6 / C2-H1）：记录在 gateway → spool 文件 → writer 队列 → usage_records
+// 的单向迁移中，进程内 buffer 是 spool 落盘之前唯一不可观测的一段（jobs 与
+// gateway 分进程）。任何 created_at 晚于 now-DefaultGatewayBufferMaxAge 的记录
+// 都可能仍在 buffer 里，游标越过它就会在记录迟到入表后永久漏聚合；因此安全
+// 截止时间被压到 now-5min，而不是外部可观测积压水位。
+//
+// 5 分钟是保守下界（gateway 实际 flush 远快于此），对应网关侧 spool 写入失败
+// 重试与进程内批量刷盘的常见滞留上限。可经 Options.GatewayBufferMaxAge 覆盖
+// （组合根注入点，见 jobs cmd 的 ingestgate 装配）；未放进 system_settings 是
+// 因为它不是业务调参项，而是跨进程边界的保守安全余量，不应随运营改值放宽。
+const DefaultGatewayBufferMaxAge = 5 * time.Minute
+
+// Options 是可配置的安全水位参数（零值即默认）。
+type Options struct {
+	// GatewayBufferMaxAge 覆盖 gateway 进程内 buffer 的最大滞留估计；<=0 时
+	// 取 DefaultGatewayBufferMaxAge。
+	GatewayBufferMaxAge time.Duration
+}
 
 // DrainStatus 携带宿主探测到的 ingest 排干状态，字段对照
 // BackgroundWorkerIngestDrainStatus 中门控读取的子集。
@@ -77,8 +103,13 @@ type Safety struct {
 
 // Check mirrors usageStatsAggregationSafety（background-jobs.ts:630-661）：
 // 门控失败返回错误（调用方使本轮任务失败即 Node 的"跳过本轮统计聚合"），
-// 成功返回游标安全截止时间。
+// 成功返回游标安全截止时间。零值 Options 即生产默认（gateway buffer 5min）。
 func Check(ctx context.Context, probe Probe, now time.Time) (Safety, error) {
+	return CheckWithOptions(ctx, probe, now, Options{})
+}
+
+// CheckWithOptions 是 Check 的可配置形态（T93-6a）。
+func CheckWithOptions(ctx context.Context, probe Probe, now time.Time, options Options) (Safety, error) {
 	if probe == nil {
 		return Safety{}, fmt.Errorf("ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录")
 	}
@@ -87,7 +118,7 @@ func Check(ctx context.Context, probe Probe, now time.Time) (Safety, error) {
 		return Safety{}, fmt.Errorf("ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录")
 	}
 	flushFailureCount := status.SnapshotUsageRecordQueueFlushFailureCount
-	defaultSafeCreatedBefore := statsagg.FormatRFC3339Millis(now.Add(-UsageStatsCursorSafetyDelaySeconds * time.Second))
+	defaultSafeCreatedBefore := conservativeSafeCreatedBefore(now, options.GatewayBufferMaxAge)
 	oldestPendingCreatedAt, err := oldestPendingUsageRecordCreatedAt(status)
 	if err != nil {
 		return Safety{}, err
@@ -117,6 +148,21 @@ func Gate(probe Probe, now func() time.Time) func(ctx context.Context) error {
 		_, err := Check(ctx, probe, now())
 		return err
 	}
+}
+
+// conservativeSafeCreatedBefore 返回默认安全截止时间：Node 的 now-15s 与
+// gateway 进程内 buffer 的 now-GatewayBufferMaxAge 取较早者。缓冲段不可观测，
+// 只能按最大滞留做保守压后；两者都是规范 UTC 毫秒串，逐字节比较即时间比较。
+func conservativeSafeCreatedBefore(now time.Time, gatewayBufferMaxAge time.Duration) string {
+	if gatewayBufferMaxAge <= 0 {
+		gatewayBufferMaxAge = DefaultGatewayBufferMaxAge
+	}
+	defaultSafeCreatedBefore := statsagg.FormatRFC3339Millis(now.Add(-UsageStatsCursorSafetyDelaySeconds * time.Second))
+	bufferSafeCreatedBefore := statsagg.FormatRFC3339Millis(now.Add(-gatewayBufferMaxAge))
+	if bufferSafeCreatedBefore < defaultSafeCreatedBefore {
+		return bufferSafeCreatedBefore
+	}
+	return defaultSafeCreatedBefore
 }
 
 // oldestPendingUsageRecordCreatedAt mirrors oldestPendingUsageRecordCreatedAt +

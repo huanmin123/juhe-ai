@@ -785,8 +785,10 @@ func TestAccountPatchOptimisticLock(t *testing.T) {
 	id := dataMap(t, created)["id"].(string)
 
 	// Successful basic edit: revision increments, diff is reported.
+	// T91-3（B1-10）：schedulable 不再是编辑入参（由状态派生），此处不再提交；
+	// 账户保持 active 派生出的 schedulable=1。
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
-		`{"expectedConfigRevision":1,"name":"alpha-renamed","notes":"运营备注","priority":3,"concurrencyLimit":800,"schedulable":false}`)
+		`{"expectedConfigRevision":1,"name":"alpha-renamed","notes":"运营备注","priority":3,"concurrencyLimit":800}`)
 	if code != http.StatusOK {
 		t.Fatalf("patch: %d %v", code, patched)
 	}
@@ -798,13 +800,16 @@ func TestAccountPatchOptimisticLock(t *testing.T) {
 	for _, field := range patchData["changedFields"].([]any) {
 		changed[field.(string)] = true
 	}
-	for _, field := range []string{"name", "notes", "priority", "concurrencyLimit", "schedulable"} {
+	for _, field := range []string{"name", "notes", "priority", "concurrencyLimit"} {
 		if !changed[field] {
 			t.Fatalf("changed fields missing %s: %v", field, patchData["changedFields"])
 		}
 	}
+	if changed["schedulable"] {
+		t.Fatalf("schedulable 不应作为编辑结果出现：%v", patchData["changedFields"])
+	}
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND config_revision = 2 AND name = 'alpha-renamed'
-		AND priority = 3 AND concurrency_limit = 800 AND schedulable = 0`, id) != 1 {
+		AND priority = 3 AND concurrency_limit = 800 AND schedulable = 1`, id) != 1 {
 		t.Fatal("patch row contract violated")
 	}
 
