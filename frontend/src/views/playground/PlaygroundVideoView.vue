@@ -47,7 +47,7 @@
         >
           创建生成任务
         </a-button>
-        <div class="playground-field-hint">任务号只在当前页面内存中持有，刷新页面后将无法继续查询该任务。</div>
+        <div class="playground-field-hint">任务在 24 小时内可恢复,过期后需重新生成。</div>
         <div v-if="accountsLoadError" class="playground-form-error">{{ accountsLoadError }}</div>
       </a-form>
 
@@ -100,19 +100,23 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { PlaygroundVideoPollError, PlaygroundVideoStatus } from '@/types/domain/playground'
+import type { PlaygroundArtifactVideo, PlaygroundVideoPollError, PlaygroundVideoStatus } from '@/types/domain/playground'
 import { usePlaygroundCatalog } from './usePlaygroundCatalog'
 
 // 视频生成（演练场设计 §4.2）：创建异步任务后每 3 秒轮询，completed 后经
-// videosContent 取回视频字节（blob URL）内联播放；jobId 由前端持有，服务端不落库。
-// 页面在 KeepAlive 下导航离开时停轮询（onDeactivated），返回时对未完成任务续轮。
-// 轮询连续失败达阈值（pollMaxFailures）后熔断：停止轮询并置终态错误提示，由
-// 用户手动刷新重试，避免失败周期无限打点。
+// videosContent 取回视频字节（blob URL）内联播放；任务引用随服务端暂存区记录
+// （§3.5/§3.8），刷新后经 artifacts 恢复选择与轮询/内容。页面在 KeepAlive 下
+// 导航离开时停轮询（onDeactivated），返回时对未完成任务续轮。轮询连续失败达
+// 阈值（pollMaxFailures）后熔断：停止轮询并置终态错误提示，由用户手动刷新重试，
+// 避免失败周期无限打点。
 
 const pollIntervalMs = 3000
 const pollMaxFailures = 5
+/** 恢复窗口：在途任务引用距 createdAt 超过 60 分钟视为已死，不再续轮（§3.8 暂存仅为展示缓存）。 */
+const restoreMaxAgeMs = 60 * 60 * 1000
 
 const {
+  accounts,
   accountsLoading,
   accountsLoadError,
   accountId,
@@ -146,7 +150,7 @@ let pollFailureCount = 0
 const canCreate = computed(() => Boolean(prompt.value.trim() && accountId.value && modelId.value && !creating.value))
 
 onMounted(() => {
-  void loadCatalog()
+  void restoreOnLoad()
 })
 
 onActivated(() => {
@@ -161,6 +165,43 @@ onBeforeUnmount(() => {
   stopPolling()
   revokeVideoUrl()
 })
+
+/** 加载序：先账户目录（默认选中），再拉暂存清单恢复视频任务引用（暂存为展示缓存，恢复失败不阻断创建）。 */
+async function restoreOnLoad(): Promise<void> {
+  await loadCatalog()
+  try {
+    const artifacts = await api.playground.artifacts()
+    restoreVideoRef(artifacts.video)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+/**
+ * 恢复任务引用（设计 §3.8）：经目录匹配 accountId/modelId，匹配不到丢弃；
+ * completed → 恢复选择并取内容播放；在途且距 createdAt ≤60 分钟 → 恢复选择并续轮；
+ * 终态失败/取消或超龄在途引用不可恢复，保持空态（任务过期后需重新生成）。
+ */
+function restoreVideoRef(videoRef: PlaygroundArtifactVideo | null): void {
+  if (!videoRef) return
+  const account = accounts.value.find((candidate) =>
+    candidate.accountId === videoRef.accountId
+    && candidate.models.some((model) => model.kind === 'video'))
+  if (!account) return
+  if (!account.models.some((model) => model.kind === 'video' && model.modelId === videoRef.modelId)) return
+  accountId.value = videoRef.accountId
+  modelId.value = videoRef.modelId
+  if (videoRef.status === 'completed') {
+    job.value = { jobId: videoRef.jobId, accountId: videoRef.accountId, status: 'completed' }
+    void loadVideoContent(job.value)
+    return
+  }
+  if (isPendingStatus(videoRef.status) && Date.now() - videoRef.createdAt * 1000 <= restoreMaxAgeMs) {
+    job.value = { jobId: videoRef.jobId, accountId: videoRef.accountId, status: videoRef.status }
+    pollBroken.value = false
+    startPolling()
+  }
+}
 
 function isPendingStatus(status: PlaygroundVideoStatus): boolean {
   return status === 'queued' || status === 'running'
@@ -368,13 +409,16 @@ function revokeVideoUrl(): void {
 }
 
 .playground-video-shell {
-  max-width: 640px;
+  /* 与图片页同款:结果区自适应铺满,播放器吃可用高度。 */
+  width: 100%;
 }
 
 .playground-video {
   display: block;
   width: 100%;
-  margin-bottom: 8px;
+  max-height: min(62vh, 620px);
+  margin: 0 auto 8px;
+  object-fit: contain;
   border-radius: 8px;
   background: var(--juhe-surface-soft);
 }

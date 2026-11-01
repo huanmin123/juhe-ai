@@ -47,15 +47,16 @@ const (
 // 四开关与全部 sqlite 库路径 env 随之删除，三个连接串 env
 // （JUHE_AI_POSTGRES_URL / JUHE_AI_REDIS_CACHE_URL / JUHE_AI_REDIS_STATE_URL）
 // 无条件必填（缺失启动即失败）。普通文件目录派生保留：usage-record-spool、
-// codex-context segments、logs、chat-assets 等仍按 internal/datadir 固定名表
+// codex-context segments、logs 等仍按 internal/datadir 固定名表
 // 派生到 JUHE_AI_DATA_DIR（缺省 ./data）下；非生产未配置 JUHE_AI_SECRET 时
 // 回退内置开发密钥。
 type runtimeConfig struct {
-	PostgresURL    string
-	RedisCacheURL  string
-	RedisStateURL  string
-	RedisNamespace string
-	Secret         string
+	ChatToolEnvironment string
+	PostgresURL         string
+	RedisCacheURL       string
+	RedisStateURL       string
+	RedisNamespace      string
+	Secret              string
 
 	// CodexContextRoot is the codex-context segments root (Node
 	// runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_ROOT, default
@@ -66,12 +67,11 @@ type runtimeConfig struct {
 
 	OpenAICompatibleFilesRoot string
 
-	// Chat mount config (Node runtimeConfig.chat + chatAssetsRoot).
-	ChatAssetsRoot              string
-	ChatMaxTurnsPerConversation int64
-	ChatRetentionDays           int
-	ChatDiagnosticToolEnabled   bool
-	ChatToolEnvironment         string
+	// PlaygroundArtifactsRoot is the playground artifact staging root (演练场
+	// 设计 §3.8: fixed derivation <DATA_DIR>/playground-artifacts, no env
+	// override — the staging area is a display cache with 24h lazy expiry,
+	// not an asset store, so it intentionally has no explicit path config).
+	PlaygroundArtifactsRoot string
 
 	Host string
 	Port int
@@ -336,7 +336,7 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 
 	// 路径类 env 派生（普通文件目录面，PG+Redis 形态仍消费；internal/datadir
 	// 固定名表）：usage-record-spool（D1，gateway↔jobs 用量交接）、codex-context
-	// segments 根、chat-assets、logs 均落 <JUHE_AI_DATA_DIR=./data>/<固定名>。
+	// segments 根、logs 均落 <JUHE_AI_DATA_DIR=./data>/<固定名>。
 	// sqlite 专库文件族路径派生已随存储形态退役删除。
 	dataDir := datadir.Dir(getenv)
 	// Codex Context segments 根（JUHE_AI_CODEX_CONTEXT_ROOT，缺省
@@ -346,29 +346,9 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 
 	cfg.OpenAICompatibleFilesRoot = strings.TrimSpace(getenv("JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT"))
 
-	// Chat mount config (Node runtimeConfig.chat + chatAssetsRoot).
-	cfg.ChatAssetsRoot = strings.TrimSpace(getenv("JUHE_AI_CHAT_ASSETS_ROOT"))
-	if cfg.ChatAssetsRoot == "" {
-		cfg.ChatAssetsRoot = filepath.Join(dataDir, datadir.ChatAssetsDirectory)
-	}
-	cfg.ChatMaxTurnsPerConversation = 50
-	if raw := strings.TrimSpace(getenv("JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION")); raw != "" {
-		maxTurns, err := strconv.Atoi(raw)
-		if err != nil || maxTurns < 1 || maxTurns > 1000 {
-			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION 必须在 1 到 1000 之间: %q", raw)
-		}
-		cfg.ChatMaxTurnsPerConversation = int64(maxTurns)
-	}
-	cfg.ChatRetentionDays = 3
-	if raw := strings.TrimSpace(getenv("JUHE_AI_CHAT_RETENTION_DAYS")); raw != "" {
-		retentionDays, err := strconv.Atoi(raw)
-		if err != nil || retentionDays < 1 || retentionDays > 365 {
-			return runtimeConfig{}, fmt.Errorf("JUHE_AI_CHAT_RETENTION_DAYS 必须在 1 到 365 之间: %q", raw)
-		}
-		cfg.ChatRetentionDays = retentionDays
-	}
-	// 2026-09-21 起对话内诊断工具为常驻能力，JUHE_AI_CHAT_DIAGNOSTIC_TOOL_ENABLED 开关移除。
-	cfg.ChatDiagnosticToolEnabled = true
+	// 演练场产物暂存根（演练场设计 §3.8，零新 env：固定派生
+	// <DATA_DIR>/playground-artifacts，无显式覆盖入口）。
+	cfg.PlaygroundArtifactsRoot = filepath.Join(dataDir, datadir.PlaygroundArtifactsDirectory)
 	// ChatToolEnvironment was normalized at the top of this function
 	// (JUHE_AI_NODE_ENV with the NODE_ENV fallback); only the value validation
 	// stays here.

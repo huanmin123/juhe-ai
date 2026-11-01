@@ -49,7 +49,7 @@ OpenAI 到 Anthropic Messages 桥接已经覆盖 Chat / Responses 四类入口�
 
 - `POST /v1/files`
   - 接收 `multipart/form-data`。
-  - 必填字段：`file`、`purpose`。
+  - 必填字段：`file`、`purpose`；非 file 字段（`purpose`）读取上限 1 MiB（对齐 busboy 默认 `fieldSize`），超限返回 400 `field_too_large`。
   - 支持 `purpose=vision`、`assistants`、`user_data`、`batch`、`fine-tune` 的元数据保存；实际可用于 bridge 的首批只启用 `vision`、`assistants`、`user_data`。
   - 返回 OpenAI `file` 对象：`id`、`object=file`、`bytes`、`created_at`、`filename`、`purpose`。
 - `GET /v1/files`
@@ -85,7 +85,7 @@ OpenAI 到 Anthropic Messages 桥接已经覆盖 Chat / Responses 四类入口�
 
 首批搜索先做本地 keyword / BM25-like 检索和 chunk 引用，接口形态对齐 OpenAI 当前 Vector Stores / Retrieval 契约。后续再引入 embedding 索引，作为可配置增强，不阻塞基础 `file_search` 协议闭环。
 
-首批只支持可安全转文本的文本类文件，包括 `text/*`、`application/json`、`application/typescript` 和 `application/x-sh`。文本索引单文件读取上限为 2 MB，chunk 数量受控。文件加入 vector store 时先返回 `in_progress`，随后异步索引；成功后更新为 `completed`，不支持 MIME、文本过大、空文件或 chunk 超限时更新为 `failed` 并写入 `last_error`。PDF / Office / PPTX 深度解析作为 extractor 插件后续补齐；未配置 extractor 时，加入 vector store 会稳定进入失败状态，不在请求链路临时整文件解析。
+首批只支持可安全转文本的文本类文件，包括 `text/*`、`application/json`、`application/typescript` 和 `application/x-sh`。文本索引单文件读取上限为 2 MB，chunk 数量受控。文件加入 vector store 时先返回 `in_progress`，随后异步索引；成功后更新为 `completed`，不支持 MIME、文本过大、空文件或 chunk 超限时更新为 `failed` 并写入 `last_error`。索引在途删除绑定后到达的索引完成 / 失败回调不复活已删行（不写状态、不重插 chunks、不刷新聚合字节）；重新添加同一文件照常复活绑定。PDF / Office / PPTX 深度解析作为 extractor 插件后续补齐；未配置 extractor 时，加入 vector store 会稳定进入失败状态，不在请求链路临时整文件解析。
 
 ## 6. 存储设计
 
@@ -173,6 +173,8 @@ chunk 字段至少包含：
 - 文件名、MIME、大小、hash 可入审计；文件正文默认不入普通操作日志。
 - 原始审计如捕获文件相关请求，只记录 file id、filename、bytes、purpose、vector store id 和 chunk 引用，不记录完整文件内容。
 - 三族路由在 `/v1` 协议门前前置（可达性安排），但不豁免入口保护：进入 compat 分发前与 preauth 管道同源执行缓存态客户端 IP 黑名单（403，`client_ip_blacklisted` 口径）与认证前熔断（429，`client_ip_pre_auth_circuit_open` 口径 + Retry-After）两项检查（2026-10-31 DD-A2 修复，`chain_v1.go` 的 `rejectCompatEntryBySourceGuards`）；正常 Bearer 请求不增加额外成本，路由可达性与排序意图不变。
+
+- scope 解析区分错误来源（2026-10-31 DD3-D1 修复）：运行时缓存基础设施故障（Redis/PG 读失败）按主链同口径经 `handleOrchestratorError` 渲染 503/500 且不计入认证前熔断；仅「Key 确实无效/缺失」返回 401 并计入 preauth 熔断计数。熔断 429 响应携带 `Connection: close`（与主链 `prepareEarlyAuthFailureResponse` 逐字段对齐）。
 
 ## 8. Bridge 集成
 

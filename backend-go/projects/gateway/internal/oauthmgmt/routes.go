@@ -1049,6 +1049,15 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 			kernel.WriteBadRequest(w, "Grok SSO 导入参数无效")
 			return
 		}
+		// DD2-D1：strictBody 已收 credentialsPatch（managedFields 词表）但此前
+		// 不应用，前端恒发的策略补丁在 SSO 建户静默丢失。这里按 create-from-*/
+		// sso-to-oauth 共用 plan 的 parseCredentialsPatch 同款校验（无效即
+		// 400 credentialsPatch 无效，语义对齐 plans.go 各 exchange 臂）。
+		credentialPatch, patchOK := safePatch(plan, body)
+		if !patchOK {
+			kernel.WriteBadRequest(w, "credentialsPatch 无效")
+			return
+		}
 		if plan.requiresProxy && d.Store.proxyRequired && (managed.ProxyProfileID == nil || strings.TrimSpace(*managed.ProxyProfileID) == "") {
 			kernel.WriteBadRequest(w, "Grok SSO 导入必须绑定代理：请在表单中选择出海代理后再提交")
 			return
@@ -1096,7 +1105,11 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 				ProviderProtocolProfileID: profile.ID,
 				Name:                      name,
 				AccountType:               plan.accountType,
-				Credentials:               outcome.Credentials,
+				// DD2-D1：patch 后置合并（patch 优先），与 create-from-code/
+				// refresh 的 mergePatchLast(buildGrokOAuthCredentials(...), patch)
+				// 同方向同语义；Grok patch 键域为策略键（无 token 键），不影响
+				// 上方 grokSSOImportAccountName/AccountExpiresAt 对 outcome 的推导。
+				Credentials:               mergePatchLast(outcome.Credentials, credentialPatch),
 				CapabilityDomain:          managed.CapabilityDomain,
 				CloneSourceID:             managed.CloneSourceID,
 				BackgroundProbeEnabled:    managed.BackgroundProbeEnabled,

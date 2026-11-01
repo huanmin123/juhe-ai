@@ -420,8 +420,14 @@ func mediaTypePointer(file *uploadedFile) *string {
 	return &file.MediaType
 }
 
+// multipartFieldMaxBytes 对齐 busboy 默认 fieldSize 上限（1 MiB，Node
+// readOpenAICompatibleMultipartUpload 未显式配置该项即走默认值）：Node 侧
+// busboy 以流式截断承载超限字段，Go 侧字段读进内存，必须以硬上限防 OOM
+// （DD2-C4）；超限报 400，形态与既有字段校验一致。
+const multipartFieldMaxBytes = int64(1024 * 1024)
+
 // readMultipartUpload mirrors readOpenAICompatibleMultipartUpload with the
-// busboy limits files:1 / fields:8 / fileSize:maxBytes.
+// busboy limits files:1 / fields:8 / fieldSize:1MiB / fileSize:maxBytes.
 func (d *Deps) readMultipartUpload(r *http.Request) (string, *uploadedFile, error) {
 	maxBytes := d.maxFileBytes()
 	_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -447,10 +453,19 @@ func (d *Deps) readMultipartUpload(r *http.Request) (string, *uploadedFile, erro
 		if part.FileName() == "" {
 			fieldsSeen++
 			if fieldsSeen <= 8 && part.FormName() == "purpose" {
-				value, readErr := io.ReadAll(part)
+				// DD2-C4：字段读取以 busboy 默认 fieldSize（1 MiB）封顶，超限
+				// 400（孤儿文件清理语义与 missing_purpose 臂一致）。
+				value, readErr := io.ReadAll(io.LimitReader(part, multipartFieldMaxBytes+1))
 				if readErr != nil {
 					part.Close()
 					return "", nil, errUnhandled
+				}
+				if int64(len(value)) > multipartFieldMaxBytes {
+					part.Close()
+					if upload != nil {
+						_ = RemoveFileObject(d.filesRoot(), upload.StorageKey)
+					}
+					return "", nil, badRequest("multipart 字段过大", "field_too_large")
 				}
 				purpose = strings.TrimSpace(string(value))
 			}

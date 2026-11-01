@@ -1,12 +1,18 @@
 package main
 
-// 深挖复审修复批钉住测试（DD-G1 / DD-G2）：
+// 深挖复审修复批钉住测试（DD-G1 / DD-G2 / DD3-F1 / DD3-F3）：
 // - DD-G1 停机顺序：HTTP 排空以最后一个 supervisor 组件注册，逆序 Close
 //   时其 Close 最先执行——三个 HTTP 监听的有界排空必须先于 F4/F3 owner
 //   组件的租约释放与 store 关闭（main.go 组件注册顺序：F3 首位、F4 随后、
 //   registry 之后、HTTP drain 最后）。
 // - DD-G2 运行期失败排空：failRuntime 的排空钩子在 exit 前以硬预算执行，
 //   超时强制返回，nil 钩子（启动早期）快速跳过。
+// - DD3-F1（R3 回归修复）：F3 owner 组件 Close 必须先释放共享 F3 lease 再
+//   关 audit store——store.Close 释放共享 "gateway-store" 池引用，refs 归零
+//   即物理关池，之后租约释放必失败，继任进程只能等 TTL（f3OwnerClose）。
+// - DD3-F3（R3 回归修复）：启动期失败出口 fail 经 os.Exit 跳过 main 的全部
+//   defer，exit 前必须尽力释放已获取的 F3/F4 租约（startupFailureCleanup +
+//   startupLeaseRelease 钩子），否则继任进程在 TTL 内重启即 fail-fast。
 
 import (
 	"context"
@@ -15,6 +21,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +43,15 @@ func (r *ddCloseRecorder) record(name string) func() error {
 		defer r.mu.Unlock()
 		r.order = append(r.order, name)
 		return nil
+	}
+}
+
+// recordStep 记录无返回值的清理步骤（func() 形态的租约释放钩子用）。
+func (r *ddCloseRecorder) recordStep(name string) func() {
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.order = append(r.order, name)
 	}
 }
 
@@ -276,4 +293,129 @@ func TestDDG2_RuntimeFailureCleanupReleasesLease(t *testing.T) {
 
 	// nil 钩子惰性：启动早期（两钩子皆 nil）不 panic、不挂起。
 	runtimeFailureCleanup(nil, nil)
+}
+
+// ddCloseOnlyStore 是 f3OwnerClose 测试所需的最小 store 面：只实现 Close，
+// 可选记录调用并可注入关闭错误。
+type ddCloseOnlyStore struct {
+	closeErr error
+	onClose  func()
+}
+
+func (s *ddCloseOnlyStore) Close() error {
+	if s.onClose != nil {
+		s.onClose()
+	}
+	return s.closeErr
+}
+
+// ddAssertCloseOrder 断言 Close/释放步骤的实际顺序与期望完全一致。
+func ddAssertCloseOrder(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("close order length=%d want=%d order=%v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("close order[%d]=%q want=%q full order=%v", i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestDDG1_F3ComponentCloseReleasesLeaseBeforeStore 钉住 DD3-F1 停机序：F3
+// owner 组件经 f3OwnerClose 接线（main.go 同款装配），经 supervisor.Run 触发
+// 真实的逆序 Close，lease 释放必须先于 audit store 关闭；F3 注册在 HTTP
+// drain 之前，store 关闭仍是 owner 组件中最先执行的一个（先于 F4）。顺序颠
+// 倒时 store.Close 物理关掉共享 "gateway-store" 池，租约释放必失败。
+func TestDDG1_F3ComponentCloseReleasesLeaseBeforeStore(t *testing.T) {
+	recorder := &ddCloseRecorder{}
+	components := []supervisor.Component{
+		{
+			Name: "F3 audit-log-owner",
+			Run:  ddWaitContextDone,
+			Close: f3OwnerClose(
+				recorder.recordStep("f3-audit-lease-release"),
+				&ddCloseOnlyStore{onClose: recorder.recordStep("f3-audit-store-close")},
+			),
+		},
+	}
+	components = appendHTTPDrainLast(components, recorder.record("main-http-drain"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := supervisor.Run(ctx, components, discardLogger); err != nil {
+		t.Fatalf("supervisor.Run returned unexpected error: %v", err)
+	}
+
+	ddAssertCloseOrder(t, recorder.snapshot(), []string{
+		"main-http-drain",
+		"f3-audit-lease-release",
+		"f3-audit-store-close",
+	})
+}
+
+// TestDD3_F1_F3OwnerCloseContract 直接钉住 f3OwnerClose 的行为契约：lease
+// 释放严格先于 store 关闭、store 关闭错误原样透传、nil 释放钩子惰性跳过
+// （store 仍关闭）。
+func TestDD3_F1_F3OwnerCloseContract(t *testing.T) {
+	t.Run("release before store close and store error propagated", func(t *testing.T) {
+		recorder := &ddCloseRecorder{}
+		wantErr := errors.New("close store failed")
+		store := &ddCloseOnlyStore{closeErr: wantErr, onClose: recorder.recordStep("f3-audit-store-close")}
+		if err := f3OwnerClose(recorder.recordStep("f3-audit-lease-release"), store)(); !errors.Is(err, wantErr) {
+			t.Fatalf("f3OwnerClose 返回 %v, want %v", err, wantErr)
+		}
+		ddAssertCloseOrder(t, recorder.snapshot(), []string{"f3-audit-lease-release", "f3-audit-store-close"})
+	})
+
+	t.Run("nil lease hook is a no-op", func(t *testing.T) {
+		storeClosed := false
+		store := &ddCloseOnlyStore{onClose: func() { storeClosed = true }}
+		if err := f3OwnerClose(nil, store)(); err != nil {
+			t.Fatalf("nil 释放钩子下 f3OwnerClose 返回错误: %v", err)
+		}
+		if !storeClosed {
+			t.Fatal("nil 释放钩子下 store 未关闭")
+		}
+	})
+}
+
+// TestDD3_F3_StartupFailureCleanupReleasesLease 钉住 DD3-F3 启动期失败出口：
+// fail 在 exit 前调用启动期释放钩子（fake lease 断言释放被调），钩子为 nil
+// （租约未获取的启动早期失败）时 no-op、不 panic。
+func TestDD3_F3_StartupFailureCleanupReleasesLease(t *testing.T) {
+	var released atomic.Bool
+	startupFailureCleanup(func() { released.Store(true) })
+	if !released.Load() {
+		t.Fatal("启动期失败清理未释放已获取的租约")
+	}
+	// nil 钩子（租约未获取）：no-op。
+	startupFailureCleanup(nil)
+}
+
+// TestDD3_LeaseReleaseWiringGuard 把 DD3-F1/DD3-F3 的组合根接线固化为 main.go
+// 源码文本断言（与 composition_wiring_guard_test.go 同款闸门，本测试只盯
+// main.go）：防止 F3 组件 Close 退回 Close: auditStore.Close、或启动期释放
+// 钩子被拆线。接线的具体行为语义由上方行为级测试承担，二者互补。
+func TestDD3_LeaseReleaseWiringGuard(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	pool := string(source)
+	entries := []struct {
+		identifier string
+		purpose    string
+	}{
+		{"Close: f3OwnerClose(auditLease.Close, auditStore),", "F3 组件 Close 必须先释放共享 lease 再关 store（DD3-F1）"},
+		{"startupLeaseRelease = auditLease.Close", "F3 租约获取成功后必须注册启动期释放钩子（DD3-F3）"},
+		{"startupLeaseRelease = func() {", "F4 租约获取成功后必须并入启动期释放钩子（DD3-F3）"},
+		{"startupFailureCleanup(startupLeaseRelease)", "fail 必须在 exit 前调用启动期释放钩子（DD3-F3）"},
+	}
+	for _, entry := range entries {
+		if !strings.Contains(pool, entry.identifier) {
+			t.Fatalf("main.go 缺失接线 %q：%s", entry.identifier, entry.purpose)
+		}
+	}
 }

@@ -90,12 +90,15 @@ func effectiveAccountErrorHandlingRules(value any, overridesValue any) ([]Effect
 	if err != nil {
 		return nil, err
 	}
+	// DD2-D3：写面接受任意长度覆盖（normalizeAccountErrorPolicyOverrides 对每
+	// 条强制指向唯一系统规则），读面按写面排序语义逐条应用——后条覆盖前条，
+	// 末条决定最终形态。运行时消费（chain_error_policy.go Decide）只判存在性，
+	// 行为不变；这里消除「只取第一条」造成的展示丢条目。
 	var quotaOverride map[string]any
 	for _, overrideAny := range overrides {
 		if override, ok := overrideAny.(map[string]any); ok {
 			quotaOverride = override
 		}
-		break
 	}
 	replacedIndex := -1
 	if quotaOverride != nil && quotaOverride["action"] == "replace" {
@@ -391,8 +394,12 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		"oauth":        quotaRecoveryScheduleForAccount(policy, "oauth"),
 		"google_oauth": quotaRecoveryScheduleForAccount(policy, "google_oauth"),
 	}
+	// DD2-D2：错误处理规则与上方 quota 口径对齐，统一取 effectivePolicySource
+	// ——授权实例行的 stamped credentials_encrypted 恒为 NULL（解密只在
+	// !isAuthorized 臂），用 ownerCredentials 会让来源账户的错误处理规则在
+	// 授权实例读面不可见。
 	effectiveRules, err := effectiveAccountErrorHandlingRules(
-		ownerCredentials["error_handling_rules"], ownerCredentials["error_handling_rule_overrides"])
+		effectivePolicySource["error_handling_rules"], effectivePolicySource["error_handling_rule_overrides"])
 	if err != nil {
 		return nil, err
 	}

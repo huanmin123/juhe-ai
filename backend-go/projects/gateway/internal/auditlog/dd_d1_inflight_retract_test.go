@@ -285,3 +285,108 @@ func TestDD1PanicArmUnregistersBeforeRetract(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// dd2G1WarnPresent 在诊断日志快照中查找指定告警（worker 协程写入，须走
+// 互斥快照）。
+func dd2G1WarnPresent(logger *fakeProducerLogger, want string) bool {
+	for _, warn := range logger.snapshot() {
+		if warn == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDD2G1AbandonedRetractRedispatchedOnSuccessSettle 锁定 DD2-G1 settle
+// 边缘组合臂：撤回在途等待 → 预算耗尽放弃（信封仍在途、无 DELETE，撤回
+// 意图已登记）→ persist 成功 settle → 成功臂读到意图补派一次幂等撤回 →
+// 无残留。修复前：放弃即终止，成功臂不派生撤回（needsRetract 仅失败/panic
+// 臂），in_progress 壳行滞留至 retention。预算经 retractWaitBudget 测试缝
+// 钉小（生产默认 15s 不变），复现「settle 落在撤回预算耗尽之后」的带内时序。
+func TestDD2G1AbandonedRetractRedispatchedOnSuccessSettle(t *testing.T) {
+	logger := &fakeProducerLogger{warns: &[]string{}}
+	store := &dd1GatedPersistStore{fakeStore: fakeStore{renewOK: true}, gate: make(chan struct{})}
+	producer := NewProducer(store, StaticLease(OwnerLease{OwnerID: "dd2g1-owner", FenceToken: 7}), Config{OwnerLease: 30 * time.Second}, logger)
+
+	savedBudget := retractWaitBudget
+	retractWaitBudget = 100 * time.Millisecond
+	defer func() { retractWaitBudget = savedBudget }()
+
+	producer.Capture(dd1Envelope("dd2g1-band-env"))
+	deadline := time.Now().Add(5 * time.Second)
+	for store.entered.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if store.entered.Load() != 1 {
+		t.Fatalf("信封 persist 未进入在途窗口: entered=%d", store.entered.Load())
+	}
+
+	producer.Retract("dd2g1-band-env")
+	// 等待者预算（100ms）耗尽放弃：以放弃诊断日志为确定性证据——日志在
+	// 意图登记之后写出，出现即放弃臂已执行且意图已落位。
+	abandonDeadline := time.Now().Add(5 * time.Second)
+	for !dd2G1WarnPresent(logger, "F3 审计信封撤回等待 settle 超时，放弃本次撤回（已登记撤回意图，settle 后补派）") {
+		if !time.Now().Before(abandonDeadline) {
+			t.Fatalf("撤回等待者未在预算耗尽后放弃: %v", logger.snapshot())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := store.retractions(); len(got) != 0 {
+		t.Fatalf("预算耗尽放弃（settle 前）不得执行删除: %v", got)
+	}
+
+	// persist 成功 settle：成功臂读到撤回意图 → 补派撤回执行，壳行不残留。
+	close(store.gate)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		got := store.retractions()
+		if len(got) == 1 {
+			if got[0] != "dd2g1-band-env" {
+				t.Fatalf("补派撤回 id = %v, want [dd2g1-band-env]", got)
+			}
+			if producer.envelopeInFlight("dd2g1-band-env") {
+				t.Fatal("补派撤回执行后在途登记必须已注销")
+			}
+			return
+		}
+		if len(got) > 1 {
+			t.Fatalf("补派必须收敛为单次撤回: %v", got)
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("成功 settle 后必须补派撤回，实际 retractions=%v", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestDD2G1SuccessSettleWithoutRetractIntentDoesNotRetract 对照组：无撤回
+// 意图的成功 settle 不得派生撤回——补派严格以「settle 前登记的撤回意图」
+// 为门，正常成功落库的信封不受影响（成功信封不被误撤）。
+func TestDD2G1SuccessSettleWithoutRetractIntentDoesNotRetract(t *testing.T) {
+	store := &dd1GatedPersistStore{fakeStore: fakeStore{renewOK: true}, gate: make(chan struct{})}
+	producer := NewProducer(store, StaticLease(OwnerLease{OwnerID: "dd2g1-owner", FenceToken: 7}), Config{OwnerLease: 30 * time.Second}, nil)
+
+	producer.Capture(dd1Envelope("dd2g1-ctrl-env"))
+	deadline := time.Now().Add(5 * time.Second)
+	for store.entered.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if store.entered.Load() != 1 {
+		t.Fatalf("信封 persist 未进入在途窗口: entered=%d", store.entered.Load())
+	}
+
+	// 成功 settle，全程无撤回命令。
+	close(store.gate)
+	deadline = time.Now().Add(5 * time.Second)
+	for producer.envelopeInFlight("dd2g1-ctrl-env") {
+		if !time.Now().Before(deadline) {
+			t.Fatal("成功 settle 后在途登记必须注销")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	store.waitForCalls(t, 3)           // renew + persist + hot search（无第 4 个撤回调用）
+	time.Sleep(200 * time.Millisecond) // 留出潜在误派发的观察窗
+	if got := store.retractions(); len(got) != 0 {
+		t.Fatalf("无撤回意图的成功 settle 不得派生撤回: %v", got)
+	}
+}

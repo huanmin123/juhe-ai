@@ -504,7 +504,7 @@ var connectorComboRows = []connectorComboRow{
 	{Driver: DriverGPT, AccountTypes: []string{AccountTypeOAuth}, Preset: PresetGPTOpenAIV1,
 		Domains: []string{DomainChat}},
 	{Driver: DriverXAI, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetXAIOpenAIV1,
-		Domains: []string{DomainChat, DomainVideo}},
+		Domains: []string{DomainChat, DomainVideo, DomainImage}},
 	{Driver: DriverXAI, AccountTypes: []string{AccountTypeOAuth}, Preset: PresetXAIOpenAIV1,
 		Domains: []string{DomainChat}},
 	{Driver: DriverDeepSeek, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetDeepSeekOpenAIV1,

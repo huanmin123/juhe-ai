@@ -1,6 +1,7 @@
 /**
  * 演练场前端类型契约（docs/functions/演练场设计.md §3/§4）。
- * 演练场是模型能力试玩台：消息与产物只存在于浏览器内存，零落库零持久化。
+ * 演练场是模型能力试玩台：消息与产物不落库；图片/语音产物引用由服务端 24h 暂存
+ * （§3.8 展示缓存，覆盖式替换、过期即删），视频仅暂存任务引用；前端零持久化。
  */
 
 export type PlaygroundModelKind = 'chat' | 'image' | 'video' | 'audio'
@@ -62,18 +63,18 @@ export interface PlaygroundImageGenerationRequest {
   prompt: string
   size?: string
   /** 产物上限 n≤4。 */
-  n?: number
   /** 图生图参考图（纯 base64，无 data: 前缀），走 /v1/images/edits。 */
   inputImageBase64?: string
 }
 
-export interface PlaygroundImageData {
-  /** 内联 base64 dataUrl，零存储零新端点（设计 §3.4）。 */
-  dataUrl: string
+/** 服务端暂存的单张图片产物引用（设计 §3.4/§3.8）：url 为同域内容地址，<img> 展示与下载直接使用，同域自动带会话 Cookie。 */
+export interface PlaygroundImageArtifact {
+  id: string
+  url: string
 }
 
 export interface PlaygroundImageResult {
-  images: PlaygroundImageData[]
+  images: PlaygroundImageArtifact[]
   model: string
 }
 
@@ -113,6 +114,44 @@ export interface PlaygroundSpeechRequest {
   voice: string
   speed?: number
   format?: string
+}
+
+/** POST /playground/speech 响应：音频落服务端暂存（设计 §3.6/§3.8），响应为 JSON 引用而非字节流。 */
+export interface PlaygroundSpeechResult {
+  id: string
+  url: string
+  mimeType: string
+}
+
+/** GET /playground/artifacts 暂存清单中的图片行（设计 §3.8）；createdAt 为 unix 秒。 */
+export interface PlaygroundArtifactImage {
+  id: string
+  url: string
+  createdAt: number
+}
+
+/** GET /playground/artifacts 暂存清单中的语音行：最近一条合成，无则 null（设计 §3.8）；createdAt 为 unix 秒。 */
+export interface PlaygroundArtifactSpeech {
+  id: string
+  url: string
+  mimeType: string
+  createdAt: number
+}
+
+/** 视频任务引用（设计 §3.5/§3.8）：产物本体不落盘，凭 jobId 走既有轮询与内容代理；createdAt 为 unix 秒。 */
+export interface PlaygroundArtifactVideo {
+  jobId: string
+  accountId: string
+  modelId: string
+  status: PlaygroundVideoStatus
+  createdAt: number
+}
+
+/** GET /playground/artifacts 响应：当前登录用户暂存清单，刷新后凭此恢复三页展示与视频轮询（设计 §3.8）。 */
+export interface PlaygroundArtifacts {
+  images: PlaygroundArtifactImage[]
+  speech: PlaygroundArtifactSpeech | null
+  video: PlaygroundArtifactVideo | null
 }
 
 /** 演练场错误载荷:扁平 {"message","code"}(kernel messageCodePayload,与 chat 面同款),非嵌套形态。 */

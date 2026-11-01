@@ -35,6 +35,45 @@
 // observed against an in-flight id are deferred until settle — a slow-store
 // window can no longer turn「撤回 DELETE 无行 no-op → 信封随后提交」into a
 // permanent in_progress shell（W13 第四产生面）.
+//
+// Retract intent survives budget exhaustion (DD2-G1, 2026-10-31): the
+// retract wait shares the 15s budget while persistOne's renew+persist can
+// take up to ~20s, so a success settle landing in the 15~20s band finds the
+// waiter gone and — needsRetract being failure/panic-only — no retract at
+// all. The give-up path therefore records the retract intent on the in-flight
+// entry (same mutex as settle unregister: intent can never land after the
+// settle arm reads it), and the settle arm redispatches one idempotent
+// retract when an intent is present. Intent-less success settles are
+// unaffected.
+//
+// 丢弃臂撤回补偿（DD3-C2, 2026-10-31；DD4-RC1 收口单条超限臂）：延迟采集
+// 被丢即该请求审计的丢弃终态（无重投递）。流式请求的 in_progress 信封可能
+// 已 settle 成壳（outcome=gateway_succeeded 落 failure retention 窗），而正
+// 常结束路径不派撤回（撤回仅 Cancel 臂）——finalize 条目被丢后壳行滞留至
+// retention。三个丢弃臂（单条超限 / 队列预算满 / 入队失败）据此对被丢条目
+// 的撤回目标 id 补派 retractBestEffort（与 persistOne 失败臂 needsRetract
+// 同口径）：信封已落库成壳则撤回删除之，未落库则 lifecycle 守卫 no-op。
+// 撤回目标取信封 id（EnvelopeID）；finalize 类采集（EnvelopeID 空）与信封
+// 共用同一 auditLogID，回落取 AuditLogID——单条超限臂虽发生在在途登记之前，
+// 同请求壳行同样可能已落库，三个丢弃臂撤回口径一致（DD4-RC1, 2026-10-31）。
+//
+// 撤回意图在撤回命令被丢时存续（DD3-C4, 2026-10-31）：Retract 三次入队全
+// 耗尽即命令丢失，此前无任何 settle 臂可补派（DD2-G1 只接线了 retractOne
+// 等待超时臂）。放弃臂因此对在途信封登记撤回意图（与 DD2-G1 同一原语），
+// 信封随后 settle 时补派一次幂等撤回；信封不在途（已 settle 或从未登记）
+// 返回 false，按原样丢弃告警。
+//
+// 丢弃臂不得在请求协程内联撤回（DD5-E1, 2026-11-01）：CaptureDeferred 被请
+// 求准入路径同步直调（StartAttempt→enqueueInProgressAudit→CaptureDeferred），
+// 其丢弃臂此前经 retractBestEffort 在队列槽满时于调用方协程内联 retractOne
+// （最长 retractWaitBudget 15s）——F3 存储慢/队列饱和窗内每个新请求的准入
+// 面都被拉长，违反 Capture 面「never fails the business request / instead of
+// blocking the caller」承诺。丢弃臂撤回（retractDroppedEntry）因此只做非阻
+// 塞入队；槽满时登记队列外挂起的撤回意图（与在途集合同锁面），worker 每消
+// 费一条队列条目后把意图转储为撤回命令补派——丢弃臂返回时间与入队成功臂等
+// 价（瞬时），撤回补偿语义仍最终送达。挂起前提是队列槽满：worker 池的消费
+// 循环必然在场，意图不会被遗忘；retractBestEffort 的内联臂自此仅限 worker
+// 协程调用（persistOne 失败/panic/settle 臂）。
 package auditlog
 
 import (
@@ -68,6 +107,12 @@ const (
 // small budget; production must keep the default.
 var producerQueueMaxBytes = int64(256) * 1024 * 1024
 
+// retractWaitBudget bounds one retract command's total settle-wait + retry
+// occupancy of a worker (W13, default 15s with 100/200ms backoff). Var only
+// so package tests can pin a small budget for the DD2-G1 settle-edge timing;
+// production must keep the default.
+var retractWaitBudget = 15 * time.Second
+
 // queuedAudit pairs the input with its estimated byte size so the worker can
 // release the budget exactly at dequeue time. retractionID 非空表示这是一条
 // in_progress 信封撤回命令（W13）：不占字节预算，直接删除幽灵信封行。
@@ -96,7 +141,9 @@ type deferredCapture struct {
 // DeferredCapture is the caller-facing description of one deferred audit
 // capture (CaptureDeferred). EnvelopeID 非空表示这是 in_progress 信封采集
 // （DD-D1）：在途集合在入队前登记、persist settle 时注销，撤回命令在 settle
-// 前延迟生效。TraceID / AuditLogID 只用于诊断日志。
+// 前延迟生效。TraceID / AuditLogID 用于诊断日志与丢弃臂撤回目标（DD3-C2：
+// finalize 类采集 EnvelopeID 为空、与信封共用同一 auditLogID，丢弃臂撤回
+// 回落到 AuditLogID）。
 type DeferredCapture struct {
 	Estimate   int
 	EnvelopeID string
@@ -121,12 +168,22 @@ type Producer struct {
 	persistDuration func(result string, durationMS int64)
 
 	// inFlightEnvelopes tracks in_progress envelope ids from admission until
-	// their persist settles (DD-D1). 注册只发生在入队成功前、注销由 persistOne
-	// 的 settle defer（成功/失败/panic 三臂都到达）与 persistDeferred 的
-	// Decode 失败臂（DD-RC-A1：该臂在 persistOne 之前返回）保证，集合规模
-	// 始终以队列准入数为上界，不会泄漏。
+	// their persist settles (DD-D1). 值是该 id 在 settle 前是否登记了被放弃
+	// 的撤回意图（DD2-G1）：撤回等待者预算耗尽放弃时置位，settle 注销时同
+	// 锁读取，成功臂据此补派一次幂等撤回。注册只发生在入队成功前、注销由
+	// persistOne 的 settle defer（成功/失败/panic 三臂都到达）与 persistDeferred
+	// 的 Decode 失败臂（DD-RC-A1：该臂在 persistOne 之前返回）保证，集合规模
+	// 始终以队列准入数为上界，不会泄漏；意图标志随条目存亡，无独立泄漏面。
 	envelopeMu        sync.Mutex
-	inFlightEnvelopes map[string]struct{}
+	inFlightEnvelopes map[string]bool
+
+	// droppedRetractIntents 挂起丢弃臂因队列槽满无法入队的撤回命令（DD5-E1）：
+	// 请求准入协程不得内联执行撤回（retractWaitBudget 级阻塞沿准入面放大），
+	// worker 每消费一条队列条目后把意图转储为撤回命令补派（见
+	// drainDroppedRetractIntents）。与在途集合共用 envelopeMu；登记的前提是
+	// 队列槽满——worker 消费循环必然在场，意图只会被转储、不会被遗忘；同 id
+	// 重复登记幂等，集合以丢弃事件数为上界，无泄漏面。
+	droppedRetractIntents map[string]struct{}
 }
 
 type producerLogger interface {
@@ -168,12 +225,13 @@ func (p *Producer) warn(msg string, args ...any) {
 // operationlog.Producer contract.
 func NewProducer(store Store, lease LeaseSource, cfg Config, log producerLogger) *Producer {
 	return &Producer{
-		store:             store,
-		lease:             lease,
-		cfg:               cfg,
-		log:               log,
-		queue:             make(chan queuedAudit, producerQueueCapacity),
-		inFlightEnvelopes: map[string]struct{}{},
+		store:                 store,
+		lease:                 lease,
+		cfg:                   cfg,
+		log:                   log,
+		queue:                 make(chan queuedAudit, producerQueueCapacity),
+		inFlightEnvelopes:     map[string]bool{},
+		droppedRetractIntents: map[string]struct{}{},
 	}
 }
 
@@ -240,21 +298,43 @@ func (p *Producer) registerInFlightEnvelope(auditLogID string) {
 		return
 	}
 	p.envelopeMu.Lock()
-	p.inFlightEnvelopes[auditLogID] = struct{}{}
+	p.inFlightEnvelopes[auditLogID] = false
 	p.envelopeMu.Unlock()
 }
 
 // unregisterInFlightEnvelope 在采集 settle 后注销在途信封（DD-D1）。
 // persistOne 的 settle defer 在成功/失败/panic 三臂都会到达；延迟采集的
 // Decode 失败臂不经 persistOne，在返回前直接注销（DD-RC-A1）——settle
-// 路径保证注销、集合不泄漏；未登记的 id 删除是 no-op。
-func (p *Producer) unregisterInFlightEnvelope(auditLogID string) {
+// 路径保证注销、集合不泄漏；未登记的 id 删除是 no-op。返回值是该 id 在
+// settle 前是否登记了被放弃的撤回意图（DD2-G1）：读取与删除在同一临界区
+// 完成，意图不可能晚于注销落位，settle 臂据此决定是否补派撤回。
+func (p *Producer) unregisterInFlightEnvelope(auditLogID string) bool {
 	if auditLogID == "" {
-		return
+		return false
 	}
 	p.envelopeMu.Lock()
+	requested := p.inFlightEnvelopes[auditLogID]
 	delete(p.inFlightEnvelopes, auditLogID)
 	p.envelopeMu.Unlock()
+	return requested
+}
+
+// registerAbandonedRetract 在撤回等待者因预算耗尽放弃时登记撤回意图
+// （DD2-G1）：观察在途与置位在同一 envelopeMu 临界区内完成，persistOne 的
+// settle 注销不可能穿插其间——只要放弃时信封仍未 settle，意图就必然先于
+// settle 臂的读取落位。信封已 settle 时返回 false（等待者随后按原路径自行
+// 执行删除，不登记）。多个等待者重复置位幂等；settle 臂只消费一次。
+func (p *Producer) registerAbandonedRetract(auditLogID string) bool {
+	if auditLogID == "" {
+		return false
+	}
+	p.envelopeMu.Lock()
+	defer p.envelopeMu.Unlock()
+	if _, inFlight := p.inFlightEnvelopes[auditLogID]; !inFlight {
+		return false
+	}
+	p.inFlightEnvelopes[auditLogID] = true
+	return true
 }
 
 // envelopeInFlight 返回 id 的信封 persist 是否尚未 settle。
@@ -266,6 +346,35 @@ func (p *Producer) envelopeInFlight(auditLogID string) bool {
 	defer p.envelopeMu.Unlock()
 	_, inFlight := p.inFlightEnvelopes[auditLogID]
 	return inFlight
+}
+
+// registerDroppedRetractIntent 在丢弃臂无法把撤回命令入队时登记挂起意图
+// （DD5-E1）：与在途集合共用 envelopeMu 锁面；同 id 重复登记幂等。消费只
+// 经 takeDroppedRetractIntent（worker drain），登记不会与转储交错丢失。
+func (p *Producer) registerDroppedRetractIntent(auditLogID string) {
+	p.envelopeMu.Lock()
+	p.droppedRetractIntents[auditLogID] = struct{}{}
+	p.envelopeMu.Unlock()
+}
+
+// takeDroppedRetractIntent 原子取走一条挂起的撤回意图：取走即出集合，多
+// worker 并发 drain 不重不漏；取走后转储失败的放回经 restoreDroppedRetractIntent。
+func (p *Producer) takeDroppedRetractIntent() (string, bool) {
+	p.envelopeMu.Lock()
+	defer p.envelopeMu.Unlock()
+	for id := range p.droppedRetractIntents {
+		delete(p.droppedRetractIntents, id)
+		return id, true
+	}
+	return "", false
+}
+
+// restoreDroppedRetractIntent 把转储失败（队列仍饱和）的意图放回挂起集合，
+// 待 worker 下一次队列消费后重试；同 id 已重复登记时幂等。
+func (p *Producer) restoreDroppedRetractIntent(auditLogID string) {
+	p.envelopeMu.Lock()
+	p.droppedRetractIntents[auditLogID] = struct{}{}
+	p.envelopeMu.Unlock()
 }
 
 // Capture persists one audit entry asynchronously (fire-and-forget). A lost
@@ -318,15 +427,40 @@ func (p *Producer) Capture(input AuditLogInput) {
 // 入队时登记的信封 id（EnvelopeID）随本条 settle 注销（DD-RC-A1）——不派生
 // 撤回，Decode 失败即输入损坏、信封行无从定位。信封类采集（EnvelopeID 非空）
 // 与 Capture 同口径参与 DD-D1 在途集合。
+//
+// DD3-C2（2026-10-31）/ DD4-RC1（2026-10-31）：三个丢弃臂（单条超限 / 队列
+// 预算满 / 入队失败）对被丢条目的撤回目标 id 一致补派撤回——本条被丢即丢弃
+// 终态，同请求已落库的 in_progress 壳行无 settle 可等待、无 Cancel 可撤回，
+// 不补派即滞留至 failure retention。撤回目标取 EnvelopeID，finalize 类采集
+// （EnvelopeID 空）回落 AuditLogID（与信封同源）。单条超限臂虽发生在在途
+// 登记之前（registerInFlightEnvelope 位于该臂之后），本采集确实从未入队、
+// 从未经本采集 settle，但同请求壳行可能已由信封采集落库，撤回口径与另外
+// 两臂一致；撤回对未落库 id 是 lifecycle 守卫下的无害 no-op。
+//
+// DD5-E1（2026-11-01）：撤回补派走 retractDroppedEntry——本函数在请求准入
+// 路径被同步直调，撤回只做非阻塞入队，槽满时登记挂起意图由 worker 侧补派
+// （见 retractDroppedEntry / drainDroppedRetractIntents），丢弃臂不阻塞调用
+// 方。
 func (p *Producer) CaptureDeferred(capture DeferredCapture) {
 	if p == nil || p.store == nil || capture.Decode == nil {
 		return
 	}
 	p.start.Do(p.startWorkers)
 	bytes := capture.Estimate
+	// 撤回目标取信封 id：信封类采集为 EnvelopeID；finalize 类采集
+	// （EnvelopeID 空）与信封共用同一 auditLogID（gatewayusage 侧两条采集同
+	// 源 c.auditLogID），回落取 AuditLogID。
+	retractID := capture.EnvelopeID
+	if retractID == "" {
+		retractID = capture.AuditLogID
+	}
 	if bytes > int(producerQueueMaxBytes) {
 		dropped := p.dropped.Add(1)
 		p.warn("F3 审计采集单条超出队列字节预算，丢弃本条采集", "droppedTotal", dropped, "bytes", bytes, "traceID", capture.TraceID, "auditLogID", capture.AuditLogID)
+		// DD4-RC1：与队列预算满/入队失败两臂对齐——本条被丢即丢弃终态，同
+		// 请求已落库的 in_progress 壳行（finalize 类共用 auditLogID）无
+		// settle 可等待，撤回删除之；未落库则 lifecycle 守卫 no-op。
+		p.retractDroppedEntry(retractID)
 		return
 	}
 	p.registerInFlightEnvelope(capture.EnvelopeID)
@@ -334,6 +468,7 @@ func (p *Producer) CaptureDeferred(capture DeferredCapture) {
 		p.unregisterInFlightEnvelope(capture.EnvelopeID)
 		dropped := p.dropped.Add(1)
 		p.warn("F3 审计采集队列已满，丢弃本条采集", "droppedTotal", dropped, "queuedBytes", p.queueBytes.Load(), "bytes", bytes, "traceID", capture.TraceID, "auditLogID", capture.AuditLogID)
+		p.retractDroppedEntry(retractID)
 		return
 	}
 	item := &deferredCapture{
@@ -349,7 +484,30 @@ func (p *Producer) CaptureDeferred(capture DeferredCapture) {
 		p.unregisterInFlightEnvelope(capture.EnvelopeID)
 		dropped := p.dropped.Add(1)
 		p.warn("F3 审计采集队列已满，丢弃本条采集", "droppedTotal", dropped, "queuedBytes", p.queueBytes.Load(), "bytes", bytes, "traceID", capture.TraceID, "auditLogID", capture.AuditLogID)
+		p.retractDroppedEntry(retractID)
 	}
+}
+
+// retractDroppedEntry 对被丢弃条目的信封 id 补派撤回（DD3-C2，与 persistOne
+// 失败臂 needsRetract 同口径）。空 id 跳过：无 id 即无信封面，且空
+// retractionID 一旦入队会被 worker 当作普通采集持久化零值输入。
+//
+// DD5-E1（2026-11-01）：本入口跑在请求准入协程上（DispatchAuditLog 同步直调
+// CaptureDeferred），不得内联执行撤回——retractBestEffort 的饱和内联臂最长
+// 占用 retractWaitBudget（15s），会沿准入面放大 F3 存储慢/队列饱和窗内的请
+// 求延迟。撤回因此只做非阻塞入队；槽满时登记挂起意图并瞬时返回，由 worker
+// 在队列消费间隙转储为撤回命令补派（drainDroppedRetractIntents）——丢弃臂
+// 返回时间与入队成功臂等价（瞬时），撤回补偿语义仍最终送达。挂起前提是队
+// 列槽满，worker 消费循环必然在场，意图不会被遗忘。
+func (p *Producer) retractDroppedEntry(auditLogID string) {
+	if auditLogID == "" {
+		return
+	}
+	if p.tryEnqueueRetract(auditLogID) {
+		return
+	}
+	p.registerDroppedRetractIntent(auditLogID)
+	p.warn("F3 审计采集队列槽满，丢弃臂撤回登记挂起意图（worker 消费间隙补派）", "auditLogID", auditLogID)
 }
 
 func (p *Producer) startWorkers() {
@@ -404,6 +562,16 @@ func (p *Producer) Retract(auditLogID string) {
 			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
 		}
 	}
+	// DD3-C4（2026-10-31）：三次入队全耗尽即命令丢失——信封仍在途时其 settle
+	// 臂（尤其成功臂）无从得知撤回诉求，壳行照旧落库滞留（DD2-G1 只接线了
+	// retractOne 等待超时臂）。放弃前原子观察+置位撤回意图（与 settle 注销
+	// 同锁，意图必然先于 settle 读取落位），信封 settle 时补派一次幂等撤回；
+	// 信封不在途（已 settle 或从未登记）返回 false，无 settle 臂可补偿，按
+	// 原样丢弃告警。
+	if p.registerAbandonedRetract(auditLogID) {
+		p.warn("F3 审计采集队列已满，丢弃信封撤回命令（信封在途，已登记撤回意图，settle 后补派）", "auditLogID", auditLogID)
+		return
+	}
 	p.warn("F3 审计采集队列已满，丢弃信封撤回命令", "auditLogID", auditLogID)
 }
 
@@ -421,8 +589,13 @@ func (p *Producer) tryEnqueueRetract(auditLogID string) bool {
 // retractBestEffort 是 persistOne 失败分支的撤回入口（W13 残留②收口，
 // 2026-10-28）：优先免预算入队；队列饱和时（饱和与存储故障同窗，正是该
 // 路径丢命令的触发形态）在当前 worker 协程上内联执行撤回——lifecycle 守卫
-// 对无行/终态行均为无害 no-op，最坏为本次结算增加一次有界（10s）DELETE，
-// 确定性消除「失败分支派发的撤回命令被同一饱和队列丢弃」的空壳残留。
+// 对无行/终态行均为无害 no-op，最坏为本次结算增加一次有界（retractWaitBudget
+// 15s：settle 等待 + 重试 DELETE 共享的总预算）撤回占用，确定性消除「失败
+// 分支派发的撤回命令被同一饱和队列丢弃」的空壳残留。
+//
+// 调用面约束（DD5-E1, 2026-11-01）：本函数只允许在 worker 协程上调用
+// （persistOne 失败/panic 臂、settle 补派臂）；请求准入面的丢弃臂撤回走
+// retractDroppedEntry，其槽满臂登记挂起意图由 worker 补派，不经本函数内联。
 func (p *Producer) retractBestEffort(auditLogID string) {
 	if p.tryEnqueueRetract(auditLogID) {
 		return
@@ -448,6 +621,27 @@ func (p *Producer) workerLoop() {
 			p.persistOne(item.input)
 			p.queueBytes.Add(-int64(item.bytes))
 		}
+		p.drainDroppedRetractIntents()
+	}
+}
+
+// drainDroppedRetractIntents 把挂起的丢弃臂撤回意图转储为队列撤回命令
+// （DD5-E1 worker 侧补派）：worker 每消费一条队列条目后调用一次，队列有槽
+// 位即连续转储至意图排空或队列再次饱和（失败即停并放回，不阻塞、不忙等）。
+// 登记意图的前提是队列槽满——此刻 worker 消费循环必然在场，本转储点保证了
+// 挂起意图最终成为 retraction 命令被执行（retractOne 含 DD-D1 settle 等待与
+// DD2-G1 超时登记，补偿语义与入队路径一致）。转储出的命令与其他撤回命令同
+// 队列排队，幂等（lifecycle 守卫 DELETE）。
+func (p *Producer) drainDroppedRetractIntents() {
+	for {
+		auditLogID, ok := p.takeDroppedRetractIntent()
+		if !ok {
+			return
+		}
+		if !p.tryEnqueueRetract(auditLogID) {
+			p.restoreDroppedRetractIntent(auditLogID)
+			return
+		}
 	}
 }
 
@@ -460,6 +654,8 @@ func (p *Producer) workerLoop() {
 func (p *Producer) persistDeferred(item *deferredCapture) {
 	input, err := item.decode()
 	if err != nil {
+		// Decode 失败臂不派生撤回（输入损坏、信封行无从定位），故忽略注销
+		// 返回的撤回意图标志（DD2-G1）：该标志随条目删除，无泄漏。
 		p.unregisterInFlightEnvelope(item.envelopeID)
 		p.warn("F3 审计采集 JSON 编码失败，丢弃本条采集", "error", err, "traceID", item.traceID, "auditLogID", item.auditLogID)
 		return
@@ -479,9 +675,16 @@ func (p *Producer) persistDeferred(item *deferredCapture) {
 // DD-D1（2026-10-31，W13 第四产生面收口）：撤回命令可能先于同一 id 的信封
 // persist settle 到达（存储慢窗：信封 persist 卡在续租/持久化超时，Cancel
 // 派发的撤回被空闲 worker 立即执行 → DELETE 无行 no-op → 信封随后提交 →
-// 永久空壳）。撤回先等待在途信封 settle（等待共享 15s 总预算；预算耗尽仍
-// 在途则放弃本次撤回——此时 DELETE 必然 no-op，执行只会更差），settle 后
-// 才执行删除；入队路径与 retractBestEffort 内联路径（w13h）同经此处。
+// 永久空壳）。撤回先等待在途信封 settle（等待共享 retractWaitBudget 总
+// 预算；预算耗尽仍在途则放弃本次撤回——此时 DELETE 必然 no-op，执行只会
+// 更差），settle 后才执行删除；入队路径与 retractBestEffort 内联路径
+// （w13h）同经此处。
+//
+// DD2-G1（2026-10-31，D1 修复效力边界）：等待预算（15s）短于 persistOne
+// 的续租+持久化最坏耗时（≈20s），settle 落在 15~20s 带时放弃时信封仍在途，
+// 而成功 settle 臂不派生撤回（needsRetract 仅失败/panic 臂）→ 壳行滞留至
+// retention。放弃时在在途条目上登记撤回意图（与 settle 注销同锁面原子，
+// 见 registerAbandonedRetract），成功 settle 臂读到意图后补派一次幂等撤回。
 func (p *Producer) retractOne(auditLogID string) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -489,10 +692,10 @@ func (p *Producer) retractOne(auditLogID string) {
 		}
 	}()
 	const attempts = 3
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(retractWaitBudget)
 	p.waitForEnvelopeSettle(auditLogID, deadline)
-	if p.envelopeInFlight(auditLogID) {
-		p.warn("F3 审计信封撤回等待 settle 超时，放弃本次撤回", "auditLogID", auditLogID)
+	if p.registerAbandonedRetract(auditLogID) {
+		p.warn("F3 审计信封撤回等待 settle 超时，放弃本次撤回（已登记撤回意图，settle 后补派）", "auditLogID", auditLogID)
 		return
 	}
 	var lastErr error
@@ -557,7 +760,12 @@ func (p *Producer) persistOne(input AuditLogInput) {
 		// 于 recover 运行，panicked 事务随 ctx 取消回滚/丢弃），其后执行的
 		// 撤回与在途集合不再竞争同一信封；若先撤回后注销，同 worker 内联的
 		// 撤回会在在途检查处与 settle 互等，直到 15s 重试预算耗尽。
-		p.unregisterInFlightEnvelope(input.ID)
+		// DD2-G1（2026-10-31）：注销同锁读取撤回意图标志——撤回等待者因
+		// 15s 预算耗尽放弃时信封仍在途（persistOne 续租+持久化最坏 ≈20s），
+		// 此前成功臂不派生撤回（needsRetract 仅失败/panic 臂），壳行滞留至
+		// retention；现在意图存在即补派一次幂等撤回（lifecycle 守卫使无行/
+		// 终态行 no-op），无意图的成功 settle 行为不变。
+		retractRequested := p.unregisterInFlightEnvelope(input.ID)
 		if recovered := recover(); recovered != nil {
 			p.warn("F3 审计采集持久化 panic 已隔离", "panic", recovered, "traceID", input.TraceID, "auditLogID", input.ID)
 			// W13 残留①收口（2026-10-28）：panic 点可能已写入 in_progress
@@ -567,7 +775,7 @@ func (p *Producer) persistOne(input AuditLogInput) {
 			p.observePersistDuration("panic", startedAt)
 			return
 		}
-		if needsRetract {
+		if needsRetract || retractRequested {
 			p.retractBestEffort(input.ID)
 		}
 		p.observePersistDuration(outcome, startedAt)

@@ -121,7 +121,7 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 - 四个供应商都通过各自独立路由执行刷新和重新授权，不能互相复用 client identity 或 token endpoint。
 - Anthropic 托管 OAuth 支持项目内换码、Refresh Token 创建、手动刷新和重新授权；直接导入型 Bearer Token 继续走“直接验证 access token 是否可调用”的路径。
 - Gemini Code Assist / Google One 请求前使用保存的 client 刷新并调用 Cloud Code wrapper；AI Studio 继续调用 Developer API。
-- Grok SSO 批量转换最多 3 路并发、逐项返回成功 / 失败；成功后只使用标准 OAuth 凭据运行。
+- Grok SSO 批量转换最多 3 路并发、逐项返回成功 / 失败；`credentialsPatch` 与 create-from-* 臂同语义应用（patch 优先合并进 token 构造凭据，DD2-D1 补齐此前静默丢弃的缺口）；成功后只使用标准 OAuth 凭据运行。
 
 ## 前端设计
 

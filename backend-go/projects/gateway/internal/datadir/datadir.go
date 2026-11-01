@@ -36,7 +36,12 @@ const (
 	// JUHE_AI_USAGE_SPOOL_DIR 回落语义保留在组合根）。
 	UsageRecordSpoolDirectory = "usage-record-spool"
 	AuditBlobDirectory        = "audit-blob"
-	ChatAssetsDirectory       = "chat-assets"
+	// PlaygroundArtifactsDirectory is the playground artifact staging root
+	// (演练场设计 §3.8: images/speech bytes + the single video task reference
+	// per user; a display cache with 24h lazy expiry — not an asset store, so
+	// it deliberately has no path env override and always derives from the
+	// data root).
+	PlaygroundArtifactsDirectory = "playground-artifacts"
 	// RuntimeLogsDirectory is the 2026-09-28 default-on derivation for
 	// JUHE_AI_LOG_DIR: an unset env derives <DATA_DIR>/logs (symmetric with
 	// the jobs runtimelog config derivation); the gateway file sink and the

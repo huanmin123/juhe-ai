@@ -826,8 +826,9 @@ func (c *gatewayChain) resolveRealtimeIdentity(ctx context.Context, req *gateway
 // 与 Bearer 面同款口径——缺 token 记 missing_bearer_token（进 :missing 臂），
 // 无效 token 记 invalid_api_key 并合成 "Bearer <token>" 使 specific 键沿
 // token 指纹、spray 键沿来源 IP 聚合；阈值与封禁语义沿用现有 specific/spray
-// 常量，不新造黑名单。blocked 时渲染 realtime 面 429（熔断文案/Retry-After
-// 与 preauth sendPreAuthCircuitResponse 同口径）并返回 true；记录故障按
+// 常量，不新造黑名单。blocked 时渲染 realtime 面 429（熔断文案/
+// Retry-After/Connection: close 与 preauth sendPreAuthCircuitResponse 同
+// 口径，DD3-D3）并返回 true；记录故障按
 // preauth 管道同款语义经 handleOrchestratorError 向上传播。
 func (c *gatewayChain) recordRealtimeTokenPreAuthFailure(ctx context.Context, req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter, token string, reason gatewaypreauth.PreAuthFailureReason) (bool, *realtimePrepareFailure) {
 	clientIP, _ := gatewaypreauth.ExtractClientIP(req)
@@ -847,6 +848,12 @@ func (c *gatewayChain) recordRealtimeTokenPreAuthFailure(ctx context.Context, re
 	if decision.Blocked {
 		if decision.RetryAfterSeconds != nil && !res.HeadersSent() {
 			res.Header().Set("Retry-After", fmt.Sprintf("%d", *decision.RetryAfterSeconds))
+		}
+		// DD3-D3：429 熔断响应补 Connection: close——与主链
+		// sendPreAuthCircuitResponse 前的 prepareEarlyAuthFailureResponse
+		// （preauth.go:306-310）同型守卫。
+		if !res.HeadersSent() {
+			res.Header().Set("Connection", "close")
 		}
 		c.renderRealtimeError(res, http.StatusTooManyRequests, "当前来源短时间认证失败过多，请稍后重试", "rate_limit_exceeded", "client_ip_pre_auth_circuit_open")
 		return true, &realtimePrepareFailure{status: http.StatusTooManyRequests}

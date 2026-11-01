@@ -384,3 +384,27 @@ func normalizeAccountErrorPolicyOverrides(value any) ([]any, error) {
 	}
 	return output, nil
 }
+
+// normalizeAccountErrorPolicyOverridesForWrite 是写面入口（DD2-D4）：在通用
+// 归一化之上追加 replace 的 rule_index 上界校验。rule_index 指向同次提交的
+// 账户 error_handling_rules 下标（前端 materializeInheritedRule 把系统规则
+// 克隆追加进规则列表后取其下标）；越界时系统额度规则被无声抑制且无替换体，
+// replace 退化为 delete。读面（m11_reads.go）与运行时读取保持宽容——历史存
+// 量数据照常展示与消费，仅写面拒绝。
+func normalizeAccountErrorPolicyOverridesForWrite(value any, accountRuleCount int) ([]any, error) {
+	overrides, err := normalizeAccountErrorPolicyOverrides(value)
+	if err != nil {
+		return nil, err
+	}
+	for index, overrideAny := range overrides {
+		override, ok := overrideAny.(map[string]any)
+		if !ok || override["action"] != "replace" {
+			continue
+		}
+		ruleIndex, _ := override["rule_index"].(float64)
+		if int(ruleIndex) >= accountRuleCount {
+			return nil, &ValidationError{Message: fmt.Sprintf("第 %d 条错误处理策略覆盖规则索引超出账户规则范围", index+1)}
+		}
+	}
+	return overrides, nil
+}

@@ -65,17 +65,17 @@ func stringSliceContains(values []string, target string) bool {
 	return false
 }
 
-// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 的 49 条与按 driver 计数。
+// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 的 50 条与按 driver 计数。
 func TestConnectorRegistryComboCounts(t *testing.T) {
 	combos := AllowedConnectorCombos()
-	if len(combos) != 49 {
-		t.Fatalf("AllowedConnectorCombos() = %d 条, want 49", len(combos))
+	if len(combos) != 50 {
+		t.Fatalf("AllowedConnectorCombos() = %d 条, want 50", len(combos))
 	}
 	counts := ComboDriverCounts()
 	expected := map[string]int{
 		DriverGenericHTTP: 8,
 		DriverGPT:         5,
-		DriverXAI:         3,
+		DriverXAI:         4,
 		DriverDeepSeek:    2,
 		DriverAnthropic:   2,
 		DriverGemini:      13,
@@ -98,14 +98,14 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 // 并复核每条 mode combo 都来自同一份 AllowedModes 推导。
 func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	modeCombos := AllowedEndpointModeCombos()
-	if len(modeCombos) != 162 {
-		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 162", len(modeCombos))
+	if len(modeCombos) != 163 {
+		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 163", len(modeCombos))
 	}
 	counts := ModeComboDriverCounts()
 	expected := map[string]int{
 		DriverGenericHTTP: 30,
 		DriverGPT:         18,
-		DriverXAI:         10,
+		DriverXAI:         11,
 		DriverDeepSeek:    6,
 		DriverAnthropic:   6,
 		DriverGemini:      46,
@@ -127,8 +127,8 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	for _, combo := range AllowedConnectorCombos() {
 		sum += len(AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType))
 	}
-	if sum != 162 {
-		t.Fatalf("49 个组合的 AllowedModes 求和 = %d, want 162", sum)
+	if sum != 163 {
+		t.Fatalf("50 个组合的 AllowedModes 求和 = %d, want 163", sum)
 	}
 }
 
@@ -187,11 +187,11 @@ func TestConnectorRegistryCartesianProduct(t *testing.T) {
 			}
 		}
 	}
-	if allowed != 49 {
-		t.Fatalf("允许组合数 = %d, want 49", allowed)
+	if allowed != 50 {
+		t.Fatalf("允许组合数 = %d, want 50", allowed)
 	}
-	if rejected != 8111 {
-		t.Fatalf("拒绝组合数 = %d, want 8111", rejected)
+	if rejected != 8110 {
+		t.Fatalf("拒绝组合数 = %d, want 8110", rejected)
 	}
 }
 
@@ -478,8 +478,8 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 	if err := json.Unmarshal([]byte(registryCanonicalJSON), &elements); err != nil {
 		t.Fatalf("canonical JSON 反序列化失败: %v", err)
 	}
-	if len(elements) != 162 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 162", len(elements))
+	if len(elements) != 163 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 163", len(elements))
 	}
 	checked := make(map[string]int, 17)
 	for _, element := range elements {
@@ -549,8 +549,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	if strings.Contains(registryCanonicalJSON, ", ") || strings.Contains(registryCanonicalJSON, ": ") {
 		t.Fatalf("canonical JSON 的结构分隔符后含空格，违反紧凑分隔要求")
 	}
-	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 162 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 162", got)
+	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 163 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 163", got)
 	}
 	if !strings.Contains(registryCanonicalJSON, `"vendor":null`) {
 		t.Fatalf("canonical JSON 缺少 generic_http 的 vendor null")
@@ -564,8 +564,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	// defaultBaseUrl 是标量尾字段：每元素恰一次且其后不得再有任何字段（设计
 	// :56/:81；不能按 } 切分——模板值含 {id}/{model} 占位符，故用正则断言尾位；
 	// generic 三 preset 输出 null，逐值精确断言见 TestPresetDefaultBaseURLs）。
-	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 162 {
-		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 162", got)
+	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 163 {
+		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 163", got)
 	}
 	if trailingFieldPattern.MatchString(registryCanonicalJSON) {
 		t.Fatalf("canonical JSON 存在 defaultBaseUrl 之后仍有字段或元素未以 defaultBaseUrl 收尾")

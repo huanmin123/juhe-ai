@@ -1,5 +1,7 @@
 # AI 问答设计
 
+> **状态:已退役(2026-10-31)。** 会话式 AI 问答与工具模型绑定已由[演练场](演练场设计.md)替代(一次性对话、模型原生能力默认开启、`fetch_url` 函数工具;无会话持久化、无绑定、无候选)。本文保留为历史契约参考,不再描述现行行为;`/my-chat` 接口族与 `internal/chat` 实现已删除。
+
 > **历史截面提示。** 本文部分章节撰写于 Node 过渡期，涉及 DB service 承载 chat 存储 / 聊天库等拓扑的段落为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明），不构成当前实现或操作授权。
 > **历史截面（SQLite 模式，已于 2026-10-25 退役）。** 文中 standalone 模式、`juhe-ai-chat.sqlite3` 独立文件、DB service 维持 SQLite 单写者、"SQLite 不模拟分区/使用同一契约"等双方言分支均为历史截面；现行唯一存储形态为 PostgreSQL `juhe_chat` schema 日分区 + Redis（见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)），会话/消息/幂等/容量契约语义不变。
 

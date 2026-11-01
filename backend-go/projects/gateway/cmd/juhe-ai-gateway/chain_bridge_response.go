@@ -171,7 +171,9 @@ func bridgeStreamPipedResponse(
 // attempt 槽，经 HandleUpstreamResponseInput.BridgeUsage 供给 finalization。
 // usage 或 slot 缺席（未钉住方向 / 无载体）返回裸泵，行为与既有完全一致。
 // 流中断（err != nil）不写：pipe 错误路径（chain finalize 的 pipeErr 臂）不
-// 消费快照。
+// 消费快照。快照的消费端完成条件见 finalize.go（DD2-B1/B2）：仅完成流
+// （pipeResult.Completed）消费快照，截断/失败终态回落既有估算兜底——中途
+// usage 的半程快照不得把截断流计费成 0 输出。
 // DD-RC-C1：usage() 的 ok=false 表示上游确实没发 usage（桥状态 Usage 为
 // nil map）——此时不写快照，supplier 对本次 attempt 返回 ok=false，finalize
 // 保持既有估算兜底（estimatedOutputTokens），不得把 nil 桥状态转成零值快照

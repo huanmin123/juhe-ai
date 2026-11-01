@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // 视频限额（chat 面 chatMediaVideoMaxBytes 同口径 64MB；创建响应/轮询响应读
@@ -64,6 +65,12 @@ func (rt *playgroundRoutes) videosCreateHandler(w http.ResponseWriter, r *http.R
 		writeHTTPError(w, unauthorizedError(err))
 		return
 	}
+	// 任务引用落盘是 §3.8 暂存契约的一部分（前端刷新后凭 GET /artifacts 恢复
+	// 轮询），暂存面未接线时显式降级。
+	if !rt.artifacts.available() {
+		writeHTTPError(w, artifactsUnavailable())
+		return
+	}
 	body, err := readJSONBody(r, inputImageMaxBytes*2)
 	if err != nil {
 		writeHTTPError(w, invalidRequest("请求体读取失败或超过上限"))
@@ -97,7 +104,10 @@ func (rt *playgroundRoutes) videosCreateHandler(w http.ResponseWriter, r *http.R
 	writeOKPayload(w, payload)
 }
 
-// runVideosCreate 执行创建派发（测试断言请求构造经 Mock DispatchPort 回放）。
+// runVideosCreate 执行创建派发并把任务引用写入暂存（§3.8：视频产物本体不落盘
+// ——上游内容链接有效期 24h，凭 jobId 可持续获取；引用单条覆盖，前端刷新后凭
+// GET /artifacts 恢复轮询。测试断言请求构造经 Mock DispatchPort 回放 + 真实
+// 落盘验证）。
 func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, req *videosRequest) (*videosCreateResponse, *HTTPError) {
 	model := strings.TrimSpace(req.ModelID)
 	prompt := strings.TrimSpace(req.Prompt)
@@ -153,12 +163,32 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 		return nil, dispatchFailed(upstreamDispatchMessage("视频创建", response.Status, respBody))
 	}
 	var job struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(respBody, &job); err != nil || strings.TrimSpace(job.ID) == "" {
 		return nil, dispatchFailed("视频创建响应缺少任务凭据（job id）")
 	}
-	return &videosCreateResponse{JobID: strings.TrimSpace(job.ID)}, nil
+	// 任务引用随暂存记录（§3.8 单条覆盖）：上游有初始状态则归一记录，缺省
+	// queued；存储失败显式 500（jobId 未交付，用户重试即可）。
+	jobID := strings.TrimSpace(job.ID)
+	status := strings.TrimSpace(job.Status)
+	if status == "" {
+		status = "queued"
+	} else {
+		status = normalizeVideoStatus(status)
+	}
+	ref := videoTaskRef{
+		JobID:     jobID,
+		AccountID: strings.TrimSpace(req.AccountID),
+		ModelID:   model,
+		Status:    status,
+		CreatedAt: time.Now().Unix(),
+	}
+	if err := rt.artifacts.replaceVideoTask(scope.ViewerID, ref); err != nil {
+		return nil, artifactsError(err)
+	}
+	return &videosCreateResponse{JobID: jobID}, nil
 }
 
 // videosPollHandler 服务 GET /videos/{jobId}?accountId=（代理上游轮询）。

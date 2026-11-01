@@ -108,8 +108,12 @@ func filterGatewayInjectedUsageOnlySseFrames(chunk []byte) ([]byte, bool) {
 
 // sseEventEnd 返回从 start 开始的首个完整 SSE 事件边界（含边界空行字节）；
 // 未找到边界时返回分片末尾且 complete=false（尾部未完帧）。边界词表：
-// \n\n、\r\r、\r\n\r\n（分帧语义与 OpenAIStreamInterceptor.shiftEvent 同源，
-// 额外补齐 CRLF 空行形态）。
+// \n\n、\n\r\n、\r\r、\r\n\r\n（分帧语义与 OpenAIStreamInterceptor.shiftEvent
+// 同源、与 bridge_stream.IndexBridgeSseBoundary 词表取齐；DD-C1 补齐 CRLF 空
+// 行形态，DD2-A6 补齐数据行 LF 结尾 + 空行 CRLF 结尾形态）。优先序：
+// \r\n\r\n 由 \r 位置的 4 字节分支先命中——扫描按位置递进，永远到不了其后
+// \n 位置的 \n\r\n 分支，\r\n\r\n 不会被 \n\r\n 部分命中截断；\n\r\n 分支只
+// 对前一字节非 \r 的独立序列生效。
 func sseEventEnd(chunk []byte, start int) (end int, complete bool) {
 	data := chunk[start:]
 	for index := 0; index < len(data); index++ {
@@ -117,6 +121,9 @@ func sseEventEnd(chunk []byte, start int) (end int, complete bool) {
 		case '\n':
 			if index+1 < len(data) && data[index+1] == '\n' {
 				return start + index + 2, true
+			}
+			if index+2 < len(data) && data[index+1] == '\r' && data[index+2] == '\n' {
+				return start + index + 3, true
 			}
 		case '\r':
 			if index+1 < len(data) && data[index+1] == '\r' {

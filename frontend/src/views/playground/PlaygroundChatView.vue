@@ -15,13 +15,7 @@
               @change="handleAccountChange"
             />
           </a-form-item>
-          <a-form-item required>
-            <template #label>
-              <span class="playground-model-label">
-                模型
-                <a-tag v-if="currentModel?.functionCalling" class="playground-tool-tag" title="该模型声明 function_calling，后端默认注入 fetch_url 工具">工具:fetch_url</a-tag>
-              </span>
-            </template>
+          <a-form-item label="模型" required>
             <a-select
               v-model:value="modelId"
               :options="modelOptions"
@@ -30,6 +24,7 @@
               option-filter-prop="label"
               :placeholder="accountId ? '选择 chat 模型' : '先选择账户'"
             />
+            <div v-if="currentModel?.functionCalling" class="playground-model-hint">该模型声明 function_calling，后端默认注入 fetch_url 工具</div>
           </a-form-item>
           <a-form-item label="System 提示词（可选）">
             <a-textarea
@@ -51,10 +46,11 @@
           </a-form-item>
           <a-form-item>
             <div class="playground-inline-row">
-              <span>流式输出</span>
+              <a-tooltip title="演练场对话固定流式输出（后端仅支持 stream: true）">
+                <span class="playground-toggle-label">流式输出</span>
+              </a-tooltip>
               <a-switch v-model:checked="stream" disabled />
             </div>
-            <div class="playground-field-hint">演练场对话固定流式输出（后端仅支持 stream: true）</div>
           </a-form-item>
           <a-collapse ghost class="playground-advanced-collapse">
             <a-collapse-panel key="advanced" header="高级参数">
@@ -69,15 +65,6 @@
               </a-form-item>
             </a-collapse-panel>
           </a-collapse>
-          <a-popconfirm
-            title="清空当前对话？消息只存在本页内存中，清空后不可恢复。"
-            ok-text="清空"
-            :ok-button-props="{ danger: true }"
-            cancel-text="取消"
-            @confirm="clearConversation"
-          >
-            <a-button danger block :disabled="sending">清空对话</a-button>
-          </a-popconfirm>
         </a-form>
       </aside>
 
@@ -112,10 +99,6 @@
                 <PlaygroundMarkdown :content="item.content" />
               </div>
               <div v-if="item.streaming && !item.content" class="playground-streaming-hint">生成中…</div>
-              <div v-if="item.usage || item.rounds" class="playground-usage-row">
-                <span v-if="item.usage">输入 {{ item.usage.promptTokens }} · 输出 {{ item.usage.completionTokens }} · 共 {{ item.usage.totalTokens }} tokens</span>
-                <span v-if="item.rounds">{{ item.rounds }} 轮派发</span>
-              </div>
             </div>
           </template>
           <a-alert
@@ -128,15 +111,45 @@
           />
         </div>
         <div class="playground-composer">
-          <a-textarea
-            v-model:value="draft"
-            :rows="3"
-            placeholder="输入消息，Ctrl+Enter 发送，Enter 换行"
-            @keydown="handleComposerKeydown"
-          />
-          <div class="playground-composer-footer">
-            <span class="playground-field-hint">消息只保存在当前页面内存中，刷新或清空后即消失</span>
-            <a-button type="primary" :loading="sending" :disabled="!canSend" @click="send">发送</a-button>
+          <div class="playground-composer-box">
+            <a-textarea
+              v-model:value="draft"
+              class="playground-composer-input"
+              :rows="3"
+              :bordered="false"
+              placeholder="输入消息"
+              @keydown="handleComposerKeydown"
+            />
+            <div class="playground-composer-bar">
+              <div class="playground-composer-tools">
+                <a-popconfirm
+                  title="清空当前对话？消息只存在本页内存中，清空后不可恢复。"
+                  ok-text="清空"
+                  :ok-button-props="{ danger: true }"
+                  cancel-text="取消"
+                  @confirm="clearConversation"
+                >
+                  <a-tooltip title="清空对话">
+                    <button type="button" class="playground-composer-tool" :disabled="!messages.length || sending">
+                      <DeleteOutlined />
+                    </button>
+                  </a-tooltip>
+                </a-popconfirm>
+                <span class="playground-composer-hint">Enter 发送，Shift + Enter 换行</span>
+              </div>
+              <a-button
+                class="playground-composer-send"
+                type="primary"
+                shape="circle"
+                :loading="sending"
+                :disabled="!canSend"
+                @click="send"
+              >
+                <template #icon>
+                  <ArrowUpOutlined />
+                </template>
+              </a-button>
+            </div>
           </div>
         </div>
       </section>
@@ -146,6 +159,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { ArrowUpOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
@@ -212,10 +226,11 @@ onMounted(() => {
 })
 
 function handleComposerKeydown(event: KeyboardEvent): void {
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-    event.preventDefault()
-    void send()
-  }
+  // Enter 发送,Shift+Enter 换行(2026-11-01 用户裁决);Ctrl/Cmd+Enter 保留同义发送。
+  if (event.key !== 'Enter') return
+  if (event.shiftKey) return
+  event.preventDefault()
+  void send()
 }
 
 async function send(): Promise<void> {
@@ -338,38 +353,51 @@ function scrollToBottom(): void {
 </script>
 
 <style scoped>
+/* 卡片体（responsive-page-card）是固定视口高的 flex 容器：布局撑满剩余空间，
+   左栏与消息区各自内部滚动（对照参考站 playgroud 布局口径）。 */
 .playground-chat-layout {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 24px;
 }
 
 .playground-side {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
 }
 
-.playground-model-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+/* 左栏节奏：表单项间距与 label 间距沿用 antd vertical 默认（与参考站一致），
+   仅弱化最大生成长度数字输入的边框存在感。 */
+.playground-side :deep(.ant-input-number) {
+  border-color: var(--juhe-border);
+  background: var(--juhe-surface-soft);
 }
 
-.playground-tool-tag {
-  margin-inline-end: 0;
-  font-size: 11px;
-  line-height: 18px;
+.playground-side :deep(.ant-input-number:hover) {
+  border-color: var(--juhe-border-strong);
+}
+
+.playground-model-hint {
+  margin-top: 6px;
+  color: var(--juhe-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.playground-toggle-label {
+  cursor: help;
 }
 
 .playground-inline-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.playground-field-hint {
-  margin-top: 4px;
-  color: var(--juhe-faint);
-  font-size: 12px;
 }
 
 .playground-advanced-collapse {
@@ -380,15 +408,16 @@ function scrollToBottom(): void {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
+/* 消息区直接铺在卡片面上（无独立边框/底色），flex 撑满右栏，空态随之垂直居中 */
 .playground-messages {
-  height: 480px;
-  padding: 4px 2px 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 4px 4px 12px;
   overflow-y: auto;
-  border: 1px solid var(--juhe-border);
-  border-radius: 8px;
-  background: var(--juhe-rail);
+  overscroll-behavior: contain;
 }
 
 .playground-empty {
@@ -402,16 +431,16 @@ function scrollToBottom(): void {
 .playground-message-user {
   display: flex;
   justify-content: flex-end;
-  margin: 12px 12px 0;
+  margin: 0 4px 12px;
 }
 
 .playground-message-assistant {
-  margin: 12px 12px 0;
+  margin: 0 4px 12px;
 }
 
 .playground-bubble {
-  max-width: 84%;
-  padding: 9px 13px;
+  max-width: 76%;
+  padding: 8px 12px;
   border-radius: 10px;
   font-size: 14px;
   line-height: 1.7;
@@ -420,14 +449,15 @@ function scrollToBottom(): void {
 
 .playground-bubble-user {
   background: var(--juhe-accent-soft);
-  border: 1px solid var(--juhe-border);
   white-space: pre-wrap;
 }
 
 .playground-bubble-assistant {
   max-width: 100%;
-  background: var(--juhe-surface);
-  border: 1px solid var(--juhe-border);
+  /* AI 回复无背景（2026-11-01 用户裁决）：与页面同底色，去气泡底与圆角。 */
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
 }
 
 .playground-streaming-hint {
@@ -436,11 +466,12 @@ function scrollToBottom(): void {
   font-size: 12px;
 }
 
+/* 工具时间线：浅色小卡片，弱于正文气泡存在感 */
 .playground-tool-timeline {
-  max-width: 100%;
+  max-width: 76%;
   margin-bottom: 8px;
   padding: 8px 10px;
-  border: 1px dashed var(--juhe-border-strong);
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: var(--juhe-surface-soft);
 }
@@ -508,44 +539,118 @@ function scrollToBottom(): void {
   color: var(--juhe-muted);
 }
 
-.playground-usage-row {
-  display: flex;
-  gap: 12px;
-  margin-top: 6px;
-  color: var(--juhe-faint);
-  font-size: 12px;
-}
-
 .playground-error-bar {
-  margin: 12px 12px 0;
+  margin: 12px 4px 0;
 }
 
 .playground-composer {
   margin-top: 12px;
 }
 
-.playground-composer-footer {
+/* 一体化输入区：textarea 与工具行同处一个圆角容器，容器统一承担边框与聚焦态 */
+.playground-composer-box {
+  border: 1px solid var(--juhe-border);
+  border-radius: var(--juhe-radius);
+  background: var(--juhe-surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.playground-composer-box:focus-within {
+  border-color: var(--juhe-accent-mid);
+  box-shadow: 0 0 0 3px rgba(83, 105, 107, 0.08);
+}
+
+.playground-composer-box .playground-composer-input {
+  display: block;
+  width: 100%;
+  padding: 10px 12px 2px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: none;
+}
+
+.playground-composer-box .playground-composer-input:focus,
+.playground-composer-box .playground-composer-input.ant-input-focused {
+  border: none;
+  box-shadow: none;
+}
+
+.playground-composer-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
+  padding: 4px 8px 8px 12px;
 }
 
-.playground-composer-footer .playground-field-hint {
-  margin-top: 0;
+.playground-composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.playground-composer-tool {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--juhe-muted);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.playground-composer-tool:hover:not(:disabled) {
+  background: var(--juhe-accent-soft);
+  color: var(--juhe-fg);
+}
+
+.playground-composer-tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.playground-composer-hint {
+  font-size: 12px;
+  color: var(--juhe-faint);
+}
+
+/* 压缩 antd 默认 40px 圆形按钮到工具行尺度 */
+.playground-composer-send {
+  width: 34px !important;
+  height: 34px !important;
+  min-width: 34px !important;
+  padding: 0 !important;
+}
+
+.playground-composer-send :deep(.anticon) {
+  font-size: 16px;
 }
 
 @media (max-width: 992px) {
   .playground-chat-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
+    overflow-y: auto;
+  }
+
+  .playground-side {
+    overflow: visible;
   }
 
   .playground-messages {
+    flex: none;
     height: 380px;
   }
 
-  .playground-bubble {
+  .playground-bubble,
+  .playground-tool-timeline {
     max-width: 100%;
   }
 }

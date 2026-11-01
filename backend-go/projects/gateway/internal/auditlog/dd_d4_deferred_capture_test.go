@@ -100,8 +100,11 @@ func TestDD4DeferredAdmissionUsesEstimateAndReleases(t *testing.T) {
 	if got := producer.QueueBytes(); got != int64(3*estimate) {
 		t.Fatalf("驻留 gauge 必须钉在预算上界 %d，实际 %d", 3*estimate, got)
 	}
-	if producer.QueueDepth() > 3 {
-		t.Fatalf("队列深度不得超过准入数 3，实际 %d", producer.QueueDepth())
+	// DD3-C2（2026-10-31）：预算丢弃条目补派 bytes=0 的撤回命令（撤回不占
+	// 字节预算），深度上界相应放宽为 准入 3 条 + 丢弃 7 条的撤回命令；字节
+	// 驻留 gauge 上界不变。
+	if producer.QueueDepth() > total {
+		t.Fatalf("队列深度不得超过准入 3 + 撤回命令 %d = %d，实际 %d", total-3, total, producer.QueueDepth())
 	}
 
 	close(store.release)

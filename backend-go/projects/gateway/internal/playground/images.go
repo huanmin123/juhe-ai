@@ -1,12 +1,13 @@
 package playground
 
 // POST /images —— 同步生图（设计 §3.4）：固定派发 /v1/images/generations（文生
-// 图）或 /v1/images/edits（图生图，multipart），响应内联 base64 dataUrl——零
-// 存储零新端点（演示台产物不留档，规避对象存储与会话资产面）。请求构造与
+// 图）或 /v1/images/edits（图生图，multipart），产物字节落服务端暂存（§3.8，
+// 暂存是展示缓存非资产库，同批覆盖式替换），响应回 {images:[{id,url}],model}
+// ——不再内联 base64 dataUrl，前端 <img src=url> 展示、下载走 url。请求构造与
 // 响应解析是 internal/chat/generation_images.go GenerateChatImage 的同构精简
 // 版（该包有并行未提交改动且将整体退役，不 import；产物上限 n≤4、gpt-image-2
 // 需 response_format=b64_json 的家族差异保留）。grok 只回临时 URL 时按既定
-// 回退下载字节再转 dataUrl（下载客户端带 SSRF 守卫，沿 chat 包同口径）。
+// 回退下载字节（下载客户端带 SSRF 守卫，沿 chat 包同口径）。
 
 import (
 	"bytes"
@@ -37,13 +38,13 @@ type imagesRequest struct {
 	ModelID          string `json:"modelId"`
 	Prompt           string `json:"prompt"`
 	Size             string `json:"size"`
-	N                *int   `json:"n"`
 	InputImageBase64 string `json:"inputImageBase64"`
 }
 
-// imageResultEntry 是单张产物（内联 dataUrl）。
+// imageResultEntry 是单张产物（暂存 id + 取流 url，§3.4 契约形状）。
 type imageResultEntry struct {
-	DataURL string `json:"dataUrl"`
+	ID  string `json:"id"`
+	URL string `json:"url"`
 }
 
 // imagesResponse 是 POST /images 响应（设计 §3.4）。
@@ -57,6 +58,12 @@ func (rt *playgroundRoutes) imagesHandler(w http.ResponseWriter, r *http.Request
 	scope, err := rt.deps.ScopeResolver(r)
 	if err != nil {
 		writeHTTPError(w, unauthorizedError(err))
+		return
+	}
+	// 产物落盘是本端点响应契约的一部分（§3.4 响应即 {id,url}），暂存面未接线
+	// 时显式降级，不派发不静默改行为。
+	if !rt.artifacts.available() {
+		writeHTTPError(w, artifactsUnavailable())
 		return
 	}
 	body, err := readJSONBody(r, inputImageMaxBytes*2) // 参考图 base64 膨胀后留倍数余量
@@ -92,7 +99,8 @@ func (rt *playgroundRoutes) imagesHandler(w http.ResponseWriter, r *http.Request
 	writeOKPayload(w, payload)
 }
 
-// runImages 执行生图派发与响应归一（测试断言请求构造经 Mock DispatchPort 回放）。
+// runImages 执行生图派发、产物落盘（§3.8 覆盖式替换）与响应归一（测试断言请
+// 求构造与暂存行为经 Mock DispatchPort 回放 + 真实落盘验证）。
 func (rt *playgroundRoutes) runImages(ctx context.Context, scope Scope, req *imagesRequest) (*imagesResponse, *HTTPError) {
 	model := strings.TrimSpace(req.ModelID)
 	prompt := strings.TrimSpace(req.Prompt)
@@ -102,19 +110,14 @@ func (rt *playgroundRoutes) runImages(ctx context.Context, scope Scope, req *ima
 	if len(prompt) > imagesPromptMaxBytes {
 		return nil, invalidRequest("prompt 超过字节上限")
 	}
-	count := 1
-	if req.N != nil {
-		count = *req.N
-		if count < 1 || count > imagesMaxCount {
-			return nil, invalidRequest("n 必须为 1~4")
-		}
-	}
 	size := strings.TrimSpace(req.Size)
 	headers := map[string]string{
 		"accept":         "application/json",
 		purposeHeaderKey: playgroundPurposeImages,
 	}
-	var dispatch DispatchRequest
+	// 单次恒 1 张（2026-10-31 用户裁决：张数功能移除——上游 images 接口对 n
+	// 参数恒回 1 张，多张由用户自行多次生成）。
+	var editsBody []byte
 	if reference := strings.TrimSpace(req.InputImageBase64); reference != "" {
 		// 图生图走 /v1/images/edits：multipart（part 必须带真实 MIME——中转
 		// 上游按 part Content-Type 解析图，chat 面 BUG-0232 取证同口径）。
@@ -143,34 +146,39 @@ func (rt *playgroundRoutes) runImages(ctx context.Context, scope Scope, req *ima
 		if err := writer.Close(); err != nil {
 			return nil, invalidRequest("参考图 multipart 收尾失败")
 		}
-		dispatch = DispatchRequest{
-			AccountID: strings.TrimSpace(req.AccountID), OwnerID: scope.ViewerID,
-			Path: "/v1/images/edits", Method: http.MethodPost, Headers: headers, Body: form.Bytes(),
-		}
-		dispatch.Headers["content-type"] = writer.FormDataContentType()
+		editsBody = form.Bytes()
+		headers["content-type"] = writer.FormDataContentType()
 	} else {
-		payloadValues := map[string]any{"model": model, "prompt": prompt, "n": count}
+		headers["content-type"] = "application/json"
+	}
+	buildDispatch := func() DispatchRequest {
+		if editsBody != nil {
+			return DispatchRequest{
+				AccountID: strings.TrimSpace(req.AccountID), OwnerID: scope.ViewerID,
+				Path: "/v1/images/edits", Method: http.MethodPost, Headers: headers, Body: editsBody,
+			}
+		}
+		payloadValues := map[string]any{"model": model, "prompt": prompt}
 		if size != "" {
 			payloadValues["size"] = size
 		}
-		// b64_json 优先：演练场直接内联 dataUrl，无对象存储落档；grok 等上游
-		// 只回临时 URL 时由下方回退下载转码。
+		// b64_json 优先：演练场把产物字节落服务端暂存（§3.8）；grok 等上游
+		// 只回临时 URL 时由下方回退下载字节。
 		payloadValues["response_format"] = "b64_json"
 		payload, _ := json.Marshal(payloadValues)
-		dispatch = DispatchRequest{
+		return DispatchRequest{
 			AccountID: strings.TrimSpace(req.AccountID), OwnerID: scope.ViewerID,
 			Path: "/v1/images/generations", Method: http.MethodPost, Headers: headers, Body: payload,
 		}
-		dispatch.Headers["content-type"] = "application/json"
 	}
-	response, err := rt.deps.Dispatch.Dispatch(ctx, dispatch)
+	response, err := rt.deps.Dispatch.Dispatch(ctx, buildDispatch())
 	if err != nil {
 		return nil, dispatchFailed("生图派发失败: " + err.Error())
 	}
 	if response == nil {
 		return nil, dispatchFailed("生图派发失败")
 	}
-	respBody, readErr := io.ReadAll(io.LimitReader(response.Body, imageGeneratedMaxBytes*8+1024))
+	respBody, readErr := io.ReadAll(io.LimitReader(response.Body, imageGeneratedMaxBytes+1024))
 	_ = response.Body.Close()
 	if readErr != nil {
 		return nil, dispatchFailed("生图响应读取失败")
@@ -178,21 +186,23 @@ func (rt *playgroundRoutes) runImages(ctx context.Context, scope Scope, req *ima
 	if response.Status < 200 || response.Status >= 300 {
 		return nil, dispatchFailed(upstreamDispatchMessage("生图", response.Status, respBody))
 	}
-	dataURLs, err := imageDataURLsFromPayload(ctx, respBody, count)
-	if err != nil {
-		return nil, dispatchFailed("生图结果归一失败: " + err.Error())
+	decoded, parseErr := decodedImagesFromPayload(ctx, respBody, 1)
+	if parseErr != nil {
+		return nil, dispatchFailed("生图结果归一失败: " + parseErr.Error())
 	}
-	entries := make([]imageResultEntry, 0, len(dataURLs))
-	for _, dataURL := range dataURLs {
-		entries = append(entries, imageResultEntry{DataURL: dataURL})
+	// 产物落暂存（§3.8）：同 kind 覆盖式替换——删该用户旧图后写本批；落盘失败
+	// 显式 500（响应契约是 {id,url}，没有暂存就没有可交付形状）。
+	entries, storeErr := rt.artifacts.replaceImages(scope.ViewerID, decoded)
+	if storeErr != nil {
+		return nil, artifactsError(storeErr)
 	}
 	return &imagesResponse{Images: entries, Model: model}, nil
 }
 
-// imageDataURLsFromPayload 把生图响应 data[] 归一为内联 dataUrl 列表：b64_json
-// 直转；url 项经守卫客户端下载字节转码（grok 只回临时链接的既定回退，chat 面
-// downloadGeneratedImage 同口径）。
-func imageDataURLsFromPayload(ctx context.Context, body []byte, count int) ([]string, error) {
+// decodedImagesFromPayload 把生图响应 data[] 归一为已解码产物列表（字节 + 嗅
+// 探 MIME，供暂存落盘）：b64_json 直解码；url 项经守卫客户端下载字节（grok
+// 只回临时链接的既定回退，chat 面 downloadGeneratedImage 同口径）。
+func decodedImagesFromPayload(ctx context.Context, body []byte, count int) ([]decodedImage, error) {
 	var payload struct {
 		Data []struct {
 			B64JSON string `json:"b64_json"`
@@ -205,7 +215,7 @@ func imageDataURLsFromPayload(ctx context.Context, body []byte, count int) ([]st
 	if len(payload.Data) == 0 {
 		return nil, errors.New("响应缺少 data 数组")
 	}
-	urls := make([]string, 0, len(payload.Data))
+	images := make([]decodedImage, 0, len(payload.Data))
 	for _, item := range payload.Data {
 		if clean := strings.TrimSpace(item.B64JSON); clean != "" {
 			decoded, err := decodeBase64Image(clean)
@@ -216,7 +226,7 @@ func imageDataURLsFromPayload(ctx context.Context, body []byte, count int) ([]st
 			if mime == "" {
 				return nil, errors.New("生成图片缺少有效 MIME")
 			}
-			urls = append(urls, "data:"+mime+";base64,"+cleanBase64(clean))
+			images = append(images, decodedImage{Data: decoded, MIME: mime})
 			continue
 		}
 		if raw := strings.TrimSpace(item.URL); raw != "" {
@@ -228,15 +238,15 @@ func imageDataURLsFromPayload(ctx context.Context, body []byte, count int) ([]st
 			if mime == "" {
 				return nil, errors.New("生成图片缺少有效 MIME")
 			}
-			urls = append(urls, "data:"+mime+";base64,"+base64.StdEncoding.EncodeToString(decoded))
+			images = append(images, decodedImage{Data: decoded, MIME: mime})
 			continue
 		}
 		return nil, errors.New("生成图片条目缺少 b64_json 或 url")
 	}
-	if len(urls) > count {
-		urls = urls[:count]
+	if len(images) > count {
+		images = images[:count]
 	}
-	return urls, nil
+	return images, nil
 }
 
 // decodeInputImage 解码图生图参考图 base64（裸 base64 或 data URL 均接受），

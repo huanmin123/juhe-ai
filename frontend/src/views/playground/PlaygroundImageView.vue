@@ -40,9 +40,6 @@
               placeholder="默认（由上游决定）"
             />
           </a-form-item>
-          <a-form-item label="张数">
-            <a-input-number v-model:value="count" :min="1" :max="4" style="width: 100%" />
-          </a-form-item>
         </div>
         <a-form-item label="参考图（可选，走图生图）">
           <div v-if="referencePreview" class="playground-reference-row">
@@ -76,10 +73,17 @@
           description="选择账户与生图模型，输入提示词开始生成"
         />
         <template v-else>
-          <div class="playground-result-meta">模型 {{ resultModel }} · {{ results.length }} 张</div>
+          <div class="playground-result-meta">
+            <template v-if="resultModel">模型 {{ resultModel }}</template>
+          </div>
           <div class="playground-image-grid">
-            <div v-for="(image, index) in results" :key="index" class="playground-image-cell">
-              <img class="playground-image" :src="image.dataUrl" :alt="`生成结果 ${index + 1}`" />
+            <div v-for="(image, index) in results" :key="image.id" class="playground-image-cell">
+              <!-- a-image 自带点击大图预览（遮罩查看器），单张时网格自适应铺满结果区。 -->
+              <a-image
+                class="playground-image"
+                :src="image.url"
+                :alt="`生成结果 ${index + 1}`"
+              />
               <a-button block size="small" @click="downloadImage(image, index)">下载</a-button>
             </div>
           </div>
@@ -95,11 +99,11 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { PlaygroundImageData } from '@/types/domain/playground'
+import type { PlaygroundImageArtifact } from '@/types/domain/playground'
 import { usePlaygroundCatalog } from './usePlaygroundCatalog'
 
-// 图片生成（演练场设计 §4.2）：账户 × image 模型直连演示，产物内联 base64 直显，
-// 零存储——刷新即空，不做任何本地持久化。
+// 图片生成（演练场设计 §4.2）：账户 × image 模型直连演示，产物落服务端暂存
+// （§3.4/§3.8，同域 url 直显直下），前端零持久化；刷新后经 artifacts 恢复最近一批。
 
 const maxReferenceBytes = 10 * 1024 * 1024
 
@@ -122,19 +126,31 @@ const sizeOptions = [
 
 const prompt = ref('')
 const size = ref<string>()
-const count = ref(1)
 const referenceName = ref('')
 const referenceBase64 = ref('')
 const referencePreview = ref('')
 const generating = ref(false)
-const results = ref<PlaygroundImageData[]>([])
+const results = ref<PlaygroundImageArtifact[]>([])
 const resultModel = ref('')
 
 const canGenerate = computed(() => Boolean(prompt.value.trim() && accountId.value && modelId.value && !generating.value))
 
 onMounted(() => {
-  void loadCatalog()
+  void restoreOnLoad()
 })
+
+/** 加载序：先账户目录（默认选中），再拉暂存清单恢复最近一批图（暂存为展示缓存，恢复失败不阻断生成）。 */
+async function restoreOnLoad(): Promise<void> {
+  await loadCatalog()
+  try {
+    const artifacts = await api.playground.artifacts()
+    if (artifacts.images.length) {
+      results.value = artifacts.images
+    }
+  } catch (error) {
+    console.error(error)
+  }
+}
 
 /** a-upload beforeUpload：本地读取转 base64，返回 false 阻止自动上传。 */
 function handleReferenceUpload(file: File): boolean {
@@ -185,7 +201,6 @@ async function generate(): Promise<void> {
       modelId: modelId.value,
       prompt: content,
       size: size.value || undefined,
-      n: count.value,
       inputImageBase64: referenceBase64.value || undefined
     })
     results.value = result.images
@@ -198,16 +213,12 @@ async function generate(): Promise<void> {
   }
 }
 
-function downloadImage(image: PlaygroundImageData, index: number): void {
+/** 同域内容地址 + a[download]：浏览器自动带会话 Cookie 拉取；契约未给图片 MIME，文件名固定 png 后缀。 */
+function downloadImage(image: PlaygroundImageArtifact, index: number): void {
   const link = document.createElement('a')
-  link.href = image.dataUrl
-  link.download = `playground-image-${index + 1}.${dataUrlExtension(image.dataUrl)}`
+  link.href = image.url
+  link.download = `playground-image-${index + 1}.png`
   link.click()
-}
-
-function dataUrlExtension(dataUrl: string): string {
-  const mime = /^data:image\/([a-z0-9.+-]+);/i.exec(dataUrl)?.[1]?.toLowerCase() ?? 'png'
-  return mime === 'jpeg' ? 'jpg' : mime
 }
 </script>
 
@@ -269,7 +280,8 @@ function dataUrlExtension(dataUrl: string): string {
 
 .playground-image-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 单张铺满结果区、多张自适应分列（张数移除后常态为 1 张）。 */
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
 }
 
@@ -281,13 +293,18 @@ function dataUrlExtension(dataUrl: string): string {
   background: var(--juhe-surface-soft);
 }
 
-.playground-image {
+/* a-image 外层是包装 div:让图片占满单元格宽度并吃掉可用高度,预览点击落在 img 上。 */
+.playground-image :deep(img) {
   display: block;
   width: 100%;
-  max-height: 320px;
-  margin-bottom: 8px;
+  max-height: min(62vh, 620px);
   object-fit: contain;
   border-radius: 6px;
+  cursor: zoom-in;
+}
+
+.playground-image :deep(.ant-image-img) {
+  margin-bottom: 8px;
 }
 
 @media (max-width: 992px) {

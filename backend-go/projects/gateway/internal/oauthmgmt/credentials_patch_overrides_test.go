@@ -76,22 +76,28 @@ func TestOAuthCredentialsPatchUnknownKeyStillRejected(t *testing.T) {
 // error_handling_rule_overrides（加密前形状）。
 func TestOAuthPatchOverridesAlignedWithAccountsWriteFace(t *testing.T) {
 	overrides := oauthErrorPolicyOverrides()
+	// DD2-D4：replace 的 rule_index 以同批 rules 数量为上界，夹具携带一条账户
+	// 规则使 replace(0) 合法（无规则的 replace 是写入面拒绝的退化形态）。
+	patchRules := []any{map[string]any{
+		"enabled": true, "name": "r0", "priority": float64(1),
+		"action": "retry_next", "status_codes": []any{float64(500)},
+	}}
 	// 建户链 merge 语义样本：openai 是 {...patch, ...token}，其余三家是
 	// {...token, ...patch}——两个方向下覆盖键都保留（token 凭据不含该键）。
 	// base_url 为写入面必填键，按各构建器默认形态补齐。
 	openAICredentials := mergePatchOpenAI(
-		mustParsePatch(t, parseOpenAICredentialsPatch, map[string]any{"error_handling_rule_overrides": overrides}),
+		mustParsePatch(t, parseOpenAICredentialsPatch, map[string]any{"error_handling_rules": patchRules, "error_handling_rule_overrides": overrides}),
 		map[string]any{"access_token": "t", "refresh_token": "r", "base_url": "https://api.openai.com/v1"},
 	)
 	otherCredentials := mergePatchLast(
 		map[string]any{"access_token": "t", "refresh_token": "r", "base_url": "https://upstream.example"},
-		mustParsePatch(t, parseAnthropicCredentialsPatch, map[string]any{"error_handling_rule_overrides": overrides}),
+		mustParsePatch(t, parseAnthropicCredentialsPatch, map[string]any{"error_handling_rules": patchRules, "error_handling_rule_overrides": overrides}),
 	)
 	// google_oauth 形态：写入面要求 refresh token 配套 client_id + client_secret。
 	googleCredentials := mergePatchLast(
 		map[string]any{"access_token": "t", "refresh_token": "r", "base_url": "https://upstream.example",
 			"client_id": "cid", "client_secret": "csecret"},
-		mustParsePatch(t, parseGeminiCredentialsPatch, map[string]any{"error_handling_rule_overrides": overrides}),
+		mustParsePatch(t, parseGeminiCredentialsPatch, map[string]any{"error_handling_rules": patchRules, "error_handling_rule_overrides": overrides}),
 	)
 	for _, tc := range []struct {
 		name        string

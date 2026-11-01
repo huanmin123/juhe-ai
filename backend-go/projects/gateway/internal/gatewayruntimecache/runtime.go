@@ -125,7 +125,7 @@ func (s *Service) dispatchGatewayRuntimeForSend(ctx context.Context, runtime Gat
 // gatewayRuntimeLoadAttemptLimit attempts; a load whose generation was
 // invalidated mid-flight is retried, a settled one is returned.
 func (s *Service) loadGatewayRuntimeOnce(ctx context.Context, apiKey, cacheKey string) (GatewayRuntime, error) {
-	pending := s.ensureRuntimeLoad(ctx, apiKey, cacheKey)
+	pending := s.ensureRuntimeLoad(apiKey, cacheKey)
 	return s.awaitGatewayRuntimeLoad(ctx, apiKey, cacheKey, pending)
 }
 
@@ -133,7 +133,7 @@ func (s *Service) loadGatewayRuntimeOnce(ctx context.Context, apiKey, cacheKey s
 // registration is synchronous — exactly like the Node async function, whose
 // body runs up to the first await before returning — so a background refresh
 // that just started is observable to AwaitBackgroundWork.
-func (s *Service) ensureRuntimeLoad(ctx context.Context, apiKey, cacheKey string) *runtimeLoad {
+func (s *Service) ensureRuntimeLoad(apiKey, cacheKey string) *runtimeLoad {
 	s.mu.Lock()
 	if pending, ok := s.pendingRuntimeLoads[cacheKey]; ok {
 		s.mu.Unlock()
@@ -144,7 +144,7 @@ func (s *Service) ensureRuntimeLoad(ctx context.Context, apiKey, cacheKey string
 	s.pendingRuntimeLoads[cacheKey] = pending
 	s.mu.Unlock()
 	safego.Go("gatewayruntimecache.runtime.run_load", func() {
-		s.runGatewayRuntimeLoad(ctx, apiKey, cacheKey, generation, pending)
+		s.runGatewayRuntimeLoad(apiKey, cacheKey, generation, pending)
 	})
 	return pending
 }
@@ -160,15 +160,19 @@ func (s *Service) awaitGatewayRuntimeLoad(ctx context.Context, apiKey, cacheKey 
 		case <-ctx.Done():
 			return GatewayRuntime{}, ctx.Err()
 		}
-		pending = s.ensureRuntimeLoad(ctx, apiKey, cacheKey)
+		pending = s.ensureRuntimeLoad(apiKey, cacheKey)
 	}
 	return GatewayRuntime{}, errors.New("网关 API Key 运行时在连续失效后仍发生变化，请重试")
 }
 
 // runGatewayRuntimeLoad mirrors loadGatewayRuntimeAndPopulateCaches and the
-// pending cleanup.
-func (s *Service) runGatewayRuntimeLoad(ctx context.Context, apiKey, cacheKey string, generation int64, pending *runtimeLoad) {
-	loadCtx, cancel := context.WithTimeout(ctx, GatewayRuntimeLoadTimeout)
+// pending cleanup. DD3-A1：装载固定使用独立有界 context（对齐同包
+// runUnionLoad 先例，union.go:275 的「单个等待者取消不传播」）——pending
+// 结果由同 cacheKey 全体等待者共享，装载 ctx 捕获首发请求 ctx 时，首发断开
+// 会把 Canceled 写进 pending.err 并一次性打挂全体等待者；等待者取消由
+// awaitGatewayRuntimeLoad 的 ctx.Done 臂各自生效，不进装载。
+func (s *Service) runGatewayRuntimeLoad(apiKey, cacheKey string, generation int64, pending *runtimeLoad) {
+	loadCtx, cancel := context.WithTimeout(context.Background(), GatewayRuntimeLoadTimeout)
 	defer cancel()
 	runtime, err := s.models.ReadGatewayRuntime(loadCtx, apiKey)
 	if err == nil && s.isAPIKeyRuntimeGenerationCurrent(generation) {
@@ -289,7 +293,7 @@ func (s *Service) refreshGatewayRuntimeInBackground(apiKey, cacheKey string) {
 		defer safego.Recover("gatewayruntimecache.runtime.background_refresh")
 		ctx, cancel := context.WithTimeout(context.Background(), GatewayRuntimeLoadTimeout)
 		defer cancel()
-		s.runGatewayRuntimeLoad(ctx, apiKey, cacheKey, generation, pending)
+		s.runGatewayRuntimeLoad(apiKey, cacheKey, generation, pending)
 		if _, err := s.awaitGatewayRuntimeLoad(ctx, apiKey, cacheKey, pending); err != nil {
 			s.warnEvent("gateway_runtime_stale_refresh_failed", map[string]any{
 				"err": err.Error(),

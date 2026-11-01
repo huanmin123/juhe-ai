@@ -415,6 +415,9 @@ func (d *Deps) indexVectorStoreFile(vectorStoreID string, file FileRecord, scope
 		APIKeyID:         scope.APIKeyID,
 		Attributes:       attributes,
 		ChunkingStrategy: chunkingStrategy,
+		// DD2-C7：索引回调写面——完成与失败两臂共用守卫，索引在途时用户删除
+		// 的绑定不被回调复活。
+		IndexCallback: true,
 	}
 	chunks, err := BuildVectorStoreChunks(d.filesRoot(), file)
 	if err == nil {

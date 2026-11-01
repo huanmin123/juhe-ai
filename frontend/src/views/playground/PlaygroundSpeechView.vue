@@ -63,15 +63,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { usePlaygroundCatalog } from './usePlaygroundCatalog'
 
-// 语音合成（演练场设计 §4.2）：账户 × audio 模型同步合成，响应为音频字节，
-// 前端转 blob URL 播放；产物零存储，刷新即空。
+// 语音合成（演练场设计 §4.2）：账户 × audio 模型同步合成，音频落服务端暂存
+// （§3.6/§3.8），响应 JSON 引用 url 直播播放与下载；刷新后经 artifacts 恢复最近一条。
 
 const {
   accountsLoading,
@@ -93,12 +93,22 @@ const audioExtension = ref('mp3')
 const canSynthesize = computed(() => Boolean(inputText.value.trim() && voice.value.trim() && accountId.value && modelId.value && !synthesizing.value))
 
 onMounted(() => {
-  void loadCatalog()
+  void restoreOnLoad()
 })
 
-onBeforeUnmount(() => {
-  revokeAudioUrl()
-})
+/** 加载序：先账户目录（默认选中），再拉暂存清单恢复最近一条语音（暂存为展示缓存，恢复失败不阻断合成）。 */
+async function restoreOnLoad(): Promise<void> {
+  await loadCatalog()
+  try {
+    const artifacts = await api.playground.artifacts()
+    if (artifacts.speech) {
+      audioUrl.value = artifacts.speech.url
+      audioExtension.value = resolveAudioExtension(artifacts.speech.mimeType)
+    }
+  } catch (error) {
+    console.error(error)
+  }
+}
 
 async function synthesize(): Promise<void> {
   const content = inputText.value.trim()
@@ -116,16 +126,14 @@ async function synthesize(): Promise<void> {
   }
   synthesizing.value = true
   try {
-    const blob = await api.playground.speech({
+    const result = await api.playground.speech({
       accountId: accountId.value,
       modelId: modelId.value,
       input: content,
       voice: voice.value.trim()
     })
-    const extension = resolveAudioExtension(blob.type)
-    revokeAudioUrl()
-    audioUrl.value = URL.createObjectURL(blob)
-    audioExtension.value = extension
+    audioUrl.value = result.url
+    audioExtension.value = resolveAudioExtension(result.mimeType)
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '语音合成失败，请稍后重试'))
@@ -145,13 +153,6 @@ function resolveAudioExtension(mime: string): string {
   const subtype = /audio\/([a-z0-9.+-]+)/i.exec(mime)?.[1]?.toLowerCase()
   if (!subtype) return 'mp3'
   return ({ mpeg: 'mp3', 'x-wav': 'wav', mp4: 'm4a' })[subtype] ?? subtype.replace(/^x-/, '')
-}
-
-function revokeAudioUrl(): void {
-  if (audioUrl.value) {
-    URL.revokeObjectURL(audioUrl.value)
-    audioUrl.value = ''
-  }
 }
 </script>
 
@@ -185,8 +186,16 @@ function revokeAudioUrl(): void {
   min-height: 240px;
 }
 
+.playground-media-result {
+  /* 与图片/视频页同款:结果区撑满,产物垂直居中。 */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 .playground-audio-shell {
-  max-width: 560px;
+  width: 100%;
 }
 
 .playground-audio {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"math"
 	"sort"
 	"strings"
@@ -112,6 +113,12 @@ type VectorStoreFileCreateInput struct {
 	UsageBytes       *int64
 	LastError        map[string]any
 	Chunks           []ChunkInput
+	// IndexCallback 标记索引完成/失败回调写面（DD2-C7）：索引在途时用户删除
+	// 绑定后，回调不得复活已删行——upsert 追加 ON CONFLICT DO UPDATE ...
+	// WHERE deleted_at IS NULL 守卫，已删行不写状态、不重插 chunks、不刷新
+	// 聚合字节（整事务回滚，返回 nil, nil）。用户添加文件的用户面不带此标记，
+	// 保持原 upsert 语义：删除后重新添加同一文件仍可复活绑定（Node 契约）。
+	IndexCallback bool
 }
 
 // VectorStoreFileListOptions mirrors OpenAICompatibleVectorStoreFileListOptions.
@@ -516,7 +523,7 @@ func (s *Store) CreateVectorStoreFile(ctx context.Context, input VectorStoreFile
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("openai_compatible_vector_store_files")+` (
+	upsert := `INSERT INTO ` + s.table("openai_compatible_vector_store_files") + ` (
 		vector_store_id, file_id, system_account_id, api_key_id, attributes_json,
 		chunking_strategy_json, status, usage_bytes, last_error_json, created_at, updated_at, deleted_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
@@ -527,8 +534,24 @@ func (s *Store) CreateVectorStoreFile(ctx context.Context, input VectorStoreFile
 		usage_bytes = excluded.usage_bytes,
 		last_error_json = excluded.last_error_json,
 		updated_at = excluded.updated_at,
-		deleted_at = NULL`), input.VectorStoreID, input.FileID, input.SystemAccountID, input.APIKeyID,
-		string(attributesJSON), string(chunkingJSON), input.Status, usageBytes, lastErrorAny, now, now); err != nil {
+		deleted_at = NULL`
+	upsertArgs := []any{input.VectorStoreID, input.FileID, input.SystemAccountID, input.APIKeyID,
+		string(attributesJSON), string(chunkingJSON), input.Status, usageBytes, lastErrorAny, now, now}
+	if input.IndexCallback {
+		// DD2-C7：回调写面对已删行守卫——WHERE 不满足时 upsert 不落任何行
+		// （RETURNING 空即目标绑定已被用户删除），整事务回滚：状态不写、
+		// chunks 不重插、聚合字节不刷新，绑定保持删除形态。
+		upsert += ` WHERE ` + s.table("openai_compatible_vector_store_files") + `.deleted_at IS NULL
+		RETURNING vector_store_id`
+		var returnedID string
+		scanErr := tx.QueryRowContext(ctx, s.bind(upsert), upsertArgs...).Scan(&returnedID)
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if scanErr != nil {
+			return nil, scanErr
+		}
+	} else if _, err := tx.ExecContext(ctx, s.bind(upsert), upsertArgs...); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("openai_compatible_vector_store_chunks")+`

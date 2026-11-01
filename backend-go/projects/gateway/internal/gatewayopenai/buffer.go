@@ -552,7 +552,13 @@ type pendingSseEventBuffer struct {
 }
 
 var (
+	// SSE 事件边界词表：\r\n\r\n、\n\n、\n\r\n、\r\r，与 bridge_stream 的
+	// IndexBridgeSseBoundary 取齐（DD2-A6 补齐数据行 LF 结尾 + 空行 CRLF 结尾
+	// 的 \n\r\n 形态）。findSseEventBoundaryWithIndex 的最早位置 + 平局取最短
+	// token 比较保证 \r\n\r\n（命中 index=i）优先于 \n\r\n（命中 index=i+1），
+	// 完整 4 字节边界不被部分截断。
 	sseCrLfBoundary        = []byte("\r\n\r\n")
+	sseLfCrLfBoundary      = []byte("\n\r\n")
 	sseLfBoundary          = []byte("\n\n")
 	sseCrBoundary          = []byte("\r\r")
 	sseEventBoundarySuffix = []byte("\n\n")
@@ -691,6 +697,7 @@ func (p *pendingSseEventBuffer) tail(length int) []byte {
 func (p *pendingSseEventBuffer) endsWithBoundary() bool {
 	suffix := p.tail(4)
 	return bufferEndsWith(suffix, sseCrLfBoundary) ||
+		bufferEndsWith(suffix, sseLfCrLfBoundary) ||
 		bufferEndsWith(suffix, sseLfBoundary) ||
 		bufferEndsWith(suffix, sseCrBoundary)
 }
@@ -767,7 +774,7 @@ func findSseEventBoundary(buffer []byte) int {
 func findSseEventBoundaryWithIndex(buffer []byte) (int, int) {
 	bestIndex := -1
 	bestLength := 0
-	for _, token := range [][]byte{sseCrLfBoundary, sseLfBoundary, sseCrBoundary} {
+	for _, token := range [][]byte{sseCrLfBoundary, sseLfCrLfBoundary, sseLfBoundary, sseCrBoundary} {
 		index := bytes.Index(buffer, token)
 		if index < 0 {
 			continue

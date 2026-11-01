@@ -266,16 +266,32 @@ describe('playgroundApi 请求形状', () => {
     expect(requests).toEqual([{ method: 'GET', url: '/playground/accounts', params: undefined, data: undefined }])
   })
 
-  it('images POST /playground/images 并返回 images/model', async () => {
-    const result = { images: [{ dataUrl: 'data:image/png;base64,AAA' }], model: 'gpt-image-2' }
-    installCaptureAdapter(result)
-    await expect(playgroundApi.images({ accountId: 'acc_1', modelId: 'gpt-image-2', prompt: '一只猫', n: 2 })).resolves.toEqual(result)
+  it('images POST /playground/images 并返回暂存引用（url 归一为同域绝对地址）', async () => {
+    installCaptureAdapter({ images: [{ id: 'img_1', url: '/playground/artifacts/img_1/content' }], model: 'gpt-image-2' })
+    await expect(playgroundApi.images({ accountId: 'acc_1', modelId: 'gpt-image-2', prompt: '一只猫' })).resolves.toEqual({
+      images: [{ id: 'img_1', url: '/__aisys__/api/playground/artifacts/img_1/content' }],
+      model: 'gpt-image-2'
+    })
     expect(requests).toEqual([{
       method: 'POST',
       url: '/playground/images',
       params: undefined,
-      data: JSON.stringify({ accountId: 'acc_1', modelId: 'gpt-image-2', prompt: '一只猫', n: 2 })
+      data: JSON.stringify({ accountId: 'acc_1', modelId: 'gpt-image-2', prompt: '一只猫' })
     }])
+  })
+
+  it('artifacts GET /playground/artifacts 并返回暂存清单（url 归一，video 引用不动）', async () => {
+    installCaptureAdapter({
+      images: [{ id: 'img_1', url: '/playground/artifacts/img_1/content', createdAt: 1761840000 }],
+      speech: { id: 'aud_1', url: '/playground/artifacts/aud_1/content', mimeType: 'audio/mpeg', createdAt: 1761840000 },
+      video: { jobId: 'job_1', accountId: 'acc_1', modelId: 'video-1', status: 'running', createdAt: 1761840000 }
+    })
+    await expect(playgroundApi.artifacts()).resolves.toEqual({
+      images: [{ id: 'img_1', url: '/__aisys__/api/playground/artifacts/img_1/content', createdAt: 1761840000 }],
+      speech: { id: 'aud_1', url: '/__aisys__/api/playground/artifacts/aud_1/content', mimeType: 'audio/mpeg', createdAt: 1761840000 },
+      video: { jobId: 'job_1', accountId: 'acc_1', modelId: 'video-1', status: 'running', createdAt: 1761840000 }
+    })
+    expect(requests).toEqual([{ method: 'GET', url: '/playground/artifacts', params: undefined, data: undefined }])
   })
 
   it('videosCreate POST /playground/videos；videosPoll GET 带 accountId 查询参数', async () => {
@@ -308,25 +324,18 @@ describe('playgroundApi 请求形状', () => {
     expect(init.credentials).toBe('include')
   })
 
-  it('speech POST JSON 并返回音频 blob', async () => {
-    const blob = new Blob(['audio-bytes'], { type: 'audio/mpeg' })
-    fetchMock.mockResolvedValue({ ok: true, status: 200, blob: async () => blob } as unknown as Response)
-    await expect(playgroundApi.speech({ accountId: 'acc_1', modelId: 'speech-1', input: '你好', voice: 'alloy' })).resolves.toBe(blob)
-    const [requestUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(String(requestUrl)).toContain('/playground/speech')
-    expect(init.method).toBe('POST')
-    expect(init.credentials).toBe('include')
-    expect(init.headers).toEqual({ 'content-type': 'application/json' })
-    expect(JSON.parse(String(init.body))).toEqual({ accountId: 'acc_1', modelId: 'speech-1', input: '你好', voice: 'alloy' })
-  })
-
-  it('二进制端点 HTTP 非 2xx 抛响应体 message', async () => {
-    fetchMock.mockResolvedValue({
-      ok: false,
-      status: 400,
-      text: async () => JSON.stringify({ code: 'playground_invalid_request', message: '文本过长' })
-    } as unknown as Response)
-    await expect(playgroundApi.speech({ accountId: 'acc_1', modelId: 'speech-1', input: '你好', voice: 'alloy' }))
-      .rejects.toThrow('文本过长')
+  it('speech POST /playground/speech 并返回暂存引用（url 归一为同域绝对地址）', async () => {
+    installCaptureAdapter({ id: 'aud_1', url: '/playground/artifacts/aud_1/content', mimeType: 'audio/mpeg' })
+    await expect(playgroundApi.speech({ accountId: 'acc_1', modelId: 'speech-1', input: '你好', voice: 'alloy' })).resolves.toEqual({
+      id: 'aud_1',
+      url: '/__aisys__/api/playground/artifacts/aud_1/content',
+      mimeType: 'audio/mpeg'
+    })
+    expect(requests).toEqual([{
+      method: 'POST',
+      url: '/playground/speech',
+      params: undefined,
+      data: JSON.stringify({ accountId: 'acc_1', modelId: 'speech-1', input: '你好', voice: 'alloy' })
+    }])
   })
 })

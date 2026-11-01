@@ -120,8 +120,11 @@ const (
 // resolveCapabilityWriteContext 的行判定，导入/批量经同一对函数自动覆盖。
 // xai 行 audio 位待上游契约回填后随计划矩阵更新开通。
 var capabilityDomainMatrix = map[string]map[string]bool{
-	capabilityMatrixOpenAI:           {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
-	capabilityMatrixXai:              {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: false, CapabilityDomainImage: false},
+	capabilityMatrixOpenAI: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
+	// xai 行图像格 2026-10-31 开通（真实上游取证：用户经 api.shenwenai.com/v1
+	// 中转对 grok-imagine-image 以 OpenAI images 形态实测出图成功；演练场
+	// E2E 驱动，连接注册表 xai_openai_v1 同批补 DomainImage 组合）。
+	capabilityMatrixXai:              {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: false, CapabilityDomainImage: true},
 	capabilityMatrixDeepSeekOpenAI:   {CapabilityDomainChat: true, CapabilityDomainVideo: false, CapabilityDomainAudio: false, CapabilityDomainImage: false},
 	capabilityMatrixAnthropic:        {CapabilityDomainChat: true, CapabilityDomainVideo: false, CapabilityDomainAudio: false, CapabilityDomainImage: false},
 	capabilityMatrixGlmOpenAI:        {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},

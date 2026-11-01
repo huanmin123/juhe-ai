@@ -35,6 +35,11 @@ export function resolveModelsForKind(account: PlaygroundAccount | undefined, kin
   return account?.models.filter((model) => model.kind === kind) ?? []
 }
 
+/** 按页面能力域过滤账户（对话页只列能对话的账户、生图页只列能生图的——AI 账户域分类口径，2026-10-31 用户裁决）。 */
+export function resolveAccountsForKind(accounts: PlaygroundAccount[], kind: PlaygroundModelKind): PlaygroundAccount[] {
+  return accounts.filter((account) => account.models.some((model) => model.kind === kind))
+}
+
 /** 账户→模型两级联动：候选变化时默认落到第一个同类模型。 */
 export function firstModelIdOf(models: PlaygroundModelOption[]): string | undefined {
   return models[0]?.modelId
@@ -54,7 +59,9 @@ export function usePlaygroundCatalog(kind: PlaygroundModelKind) {
   const currentAccount = computed(() => accounts.value.find((account) => account.accountId === accountId.value))
   const models = computed(() => resolveModelsForKind(currentAccount.value, kind))
   const currentModel = computed(() => models.value.find((model) => model.modelId === modelId.value))
-  const accountOptions = computed(() => accounts.value.map((account) => ({
+  // 账户下拉只列本页面能力域的账户（有 ≥1 个同类模型；AI 账户已按域分类）。
+  const kindAccounts = computed(() => resolveAccountsForKind(accounts.value, kind))
+  const accountOptions = computed(() => kindAccounts.value.map((account) => ({
     value: account.accountId,
     label: `${account.accountName}（${account.providerCode}）`
   })))
@@ -72,9 +79,11 @@ export function usePlaygroundCatalog(kind: PlaygroundModelKind) {
     try {
       const result = await loadPlaygroundAccounts(options)
       accounts.value = result
-      if (!accountId.value || !result.some((account) => account.accountId === accountId.value)) {
-        accountId.value = result[0]?.accountId
-        modelId.value = firstModelIdOf(resolveModelsForKind(result[0], kind))
+      const candidates = kindAccounts.value
+      if (!accountId.value || !candidates.some((account) => account.accountId === accountId.value)) {
+        // 默认落第一个具备本页能力域的账户（无则不选，下拉空态承接）。
+        accountId.value = candidates[0]?.accountId
+        modelId.value = firstModelIdOf(resolveModelsForKind(candidates[0], kind))
         return
       }
       if (modelId.value && !models.value.some((model) => model.modelId === modelId.value)) {

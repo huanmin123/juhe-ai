@@ -53,7 +53,7 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 		{name: "deepseek openai+audio 矩阵拒绝", domain: "audio", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI, want: []string{}},
 		{name: "deepseek openai+image 矩阵拒绝", domain: "image", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI, want: []string{}},
 		{name: "xai+audio 矩阵拒绝", domain: "audio", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI, want: []string{}},
-		{name: "xai+image 矩阵拒绝", domain: "image", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI, want: []string{}},
+		{name: "xai+image 矩阵开通（2026-10-31 实测出图）", domain: "image", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI, want: []string{"images_json"}},
 		{name: "gemini openai-chat+video 矩阵拒绝", domain: "video", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
 		{name: "gemini openai-chat+audio 矩阵拒绝", domain: "audio", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},
 		{name: "gemini openai-chat+image 矩阵拒绝", domain: "image", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat, want: []string{}},

@@ -526,15 +526,20 @@ func normalizeGoogleOAuthAccountCredentials(input map[string]any, defaults Endpo
 
 // normalizeAccountCredentialPolicies mirrors normalizeAccountCredentialPolicies.
 func normalizeAccountCredentialPolicies(input map[string]any, credentials Credentials) error {
+	var accountRuleCount int
 	if raw, present := input["error_handling_rules"]; present {
 		rules, err := normalizeAccountErrorHandlingRules(raw)
 		if err != nil {
 			return err
 		}
 		credentials["error_handling_rules"] = rules
+		accountRuleCount = len(rules)
 	}
 	if raw, present := input["error_handling_rule_overrides"]; present {
-		overrides, err := normalizeAccountErrorPolicyOverrides(raw)
+		// DD2-D4：replace 的 rule_index 指向同次提交的账户规则下标，以本次写
+		// 入的 rules 数量为上界；越界即系统额度规则被无声抑制且无替换体（退化
+		// 为 delete），写面 400 拒绝。
+		overrides, err := normalizeAccountErrorPolicyOverridesForWrite(raw, accountRuleCount)
 		if err != nil {
 			return err
 		}

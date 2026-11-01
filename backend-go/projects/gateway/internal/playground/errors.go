@@ -15,12 +15,16 @@ import (
 
 // 演练场错误码（设计 §3.3；codeEndpointDegraded 是装配端口缺失时的显式降级
 // 码，设计 §1.1「功能不设开关」——未接线返回错误而非静默空行为）。
+// codeArtifactNotFound / codeArtifactStoreFailed 是产物暂存面（§3.8）的专码：
+// content 定位失败 404、暂存读写失败 500，错误载荷仍为扁平 {message, code}。
 const (
-	codeInvalidRequest    = "playground_invalid_request"
-	codeAccountNotFound   = "playground_account_not_found"
-	codeModelNotAvailable = "playground_model_not_available"
-	codeDispatchFailed    = "playground_dispatch_failed"
-	codeEndpointDegraded  = "playground_endpoint_unavailable"
+	codeInvalidRequest      = "playground_invalid_request"
+	codeAccountNotFound     = "playground_account_not_found"
+	codeModelNotAvailable   = "playground_model_not_available"
+	codeDispatchFailed      = "playground_dispatch_failed"
+	codeEndpointDegraded    = "playground_endpoint_unavailable"
+	codeArtifactNotFound    = "playground_artifact_not_found"
+	codeArtifactStoreFailed = "playground_artifact_store_failed"
 )
 
 // HTTPError 是演练场路由的带码 HTTP 错误（状态码 + code + 中文 message）。

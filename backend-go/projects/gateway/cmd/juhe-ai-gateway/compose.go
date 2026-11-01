@@ -1122,8 +1122,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		// 演练场（docs/functions/演练场设计.md §3.1）：复用派发执行器、
 		// runtime cache 目录 loader 与 accounts.Store 账户查询（cmd 适配层包装
-		// 见 chain_playground_mount.go），挂载 /__aisys__/api/playground 路由族。
-		if playgroundErr := composePlaygroundFamily(composed, chainServices, chain, accountStore); playgroundErr != nil {
+		// 见 chain_playground_mount.go），挂载 /__aisys__/api/playground 路由族；
+		// 产物暂存根按数据根派生传入（§3.8，runtime.go 固定派生，零新 env）。
+		if playgroundErr := composePlaygroundFamily(composed, chainServices, chain, accountStore, cfg.PlaygroundArtifactsRoot); playgroundErr != nil {
 			return nil, fmt.Errorf("compose playground family: %w", playgroundErr)
 		}
 		// The fixed-window redis store backs the system-api limiter

@@ -21,8 +21,10 @@ import (
 )
 
 // composePlaygroundFamily 装配演练场 Deps 并注册路由族。依赖与派发执行器同
-// 源（chain / runtime cache / accounts.Store），缺一 fail fast。
-func composePlaygroundFamily(composed *composition, services *chainRuntimeServices, chain *gatewayChain, accountStore *accounts.Store) error {
+// 源（chain / runtime cache / accounts.Store），缺一 fail fast；artifactsRoot
+// 是产物暂存根（§3.8，runtime 配置按数据根固定派生 <DATA_DIR>/playground-
+// artifacts 传入，零新 env）。
+func composePlaygroundFamily(composed *composition, services *chainRuntimeServices, chain *gatewayChain, accountStore *accounts.Store, artifactsRoot string) error {
 	if composed == nil {
 		return errors.New("演练场组合缺少 composition")
 	}
@@ -49,6 +51,8 @@ func composePlaygroundFamily(composed *composition, services *chainRuntimeServic
 		TransportAccounts: playgroundTransportAccountsAdapter{catalog: catalog},
 		ProviderCatalog:   playgroundProviderCatalogAdapter{catalog: catalog},
 		AccountCatalog:    playgroundAccountCatalogAdapter{catalog: catalog},
+		// 产物暂存根（§3.8）：图片/语音字节与视频任务引用的落盘目录约定。
+		ArtifactsRoot: artifactsRoot,
 	}
 	deps.Register(composed.kernel, systemAPIPrefix+"/playground")
 	// 演练场调度覆盖通道（设计 §3.7 固定派发）：account 模式承载分组解析端口，

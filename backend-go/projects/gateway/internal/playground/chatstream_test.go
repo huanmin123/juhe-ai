@@ -19,8 +19,10 @@ import (
 )
 
 // playgroundFixtureDeps 装配「一个 gpt 账户 + chat 目录行」的最小依赖（chat
-// 行带 function_calling 声明由参数控制）。
-func playgroundFixtureDeps(functionCalling bool) *Deps {
+// 行带 function_calling 声明由参数控制；ArtifactsRoot 指向每测试独立临时目录，
+// 暂存行为走真实磁盘）。
+func playgroundFixtureDeps(t *testing.T, functionCalling bool) *Deps {
+	t.Helper()
 	tools := map[string][]string{}
 	if functionCalling {
 		tools["chat_completions"] = []string{"function_calling"}
@@ -41,6 +43,7 @@ func playgroundFixtureDeps(functionCalling bool) *Deps {
 		FetchURL: func(context.Context, string) (FetchResult, error) {
 			return FetchResult{Text: "正文首行\n第二行"}, nil
 		},
+		ArtifactsRoot: t.TempDir(),
 	}
 }
 
@@ -89,7 +92,7 @@ func chatStreamBody(accountID, modelID string, stream *bool) []byte {
 // TestChatStreamHappyPath 单轮对话：delta 透传、usage 归一、done 收尾、出站
 // 请求体形状（system 首条、stream_options.include_usage、无工具注入）。
 func TestChatStreamHappyPath(t *testing.T) {
-	deps := playgroundFixtureDeps(false)
+	deps := playgroundFixtureDeps(t, false)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
 		Body: sseBody(
@@ -166,7 +169,7 @@ func TestChatStreamHappyPath(t *testing.T) {
 // 执行（tool_start/tool_end）→ 回喂 role:tool 重派发 → round2 出正文与 usage
 // → done.rounds=2；续传体含 assistant tool_calls 与 tool 结果（标注来源 URL）。
 func TestChatStreamToolLoopTwoRounds(t *testing.T) {
-	deps := playgroundFixtureDeps(true)
+	deps := playgroundFixtureDeps(t, true)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
 		{Body: sseBody(
@@ -244,7 +247,7 @@ func TestChatStreamToolLoopTwoRounds(t *testing.T) {
 // TestChatStreamFetchFailureFeedsBack fetch 失败不产生 HTTP 错误：「抓取失败:
 // <原因>」作为 tool 结果回喂，tool_end ok=false。
 func TestChatStreamFetchFailureFeedsBack(t *testing.T) {
-	deps := playgroundFixtureDeps(true)
+	deps := playgroundFixtureDeps(t, true)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
 		{Body: sseBody(
@@ -291,7 +294,7 @@ func TestChatStreamFetchFailureFeedsBack(t *testing.T) {
 // TestChatStreamToolBudgetExhausted 3 轮工具预算耗尽：第 3 轮返回 tool_calls
 // 后，第 4 次派发不再注入工具（强制收尾）。
 func TestChatStreamToolBudgetExhausted(t *testing.T) {
-	deps := playgroundFixtureDeps(true)
+	deps := playgroundFixtureDeps(t, true)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	toolRound := sseBody(
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","function":{"name":"fetch_url","arguments":"{\"url\":\"https://example.com/x\"}"}}]}}]}`,
@@ -328,7 +331,7 @@ func TestChatStreamToolBudgetExhausted(t *testing.T) {
 // 502 JSON（code=playground_dispatch_failed，message 带上游状态码与上游
 // message 摘要）。
 func TestChatStreamDispatchFailureMaps502(t *testing.T) {
-	deps := playgroundFixtureDeps(false)
+	deps := playgroundFixtureDeps(t, false)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
 		Status: http.StatusInternalServerError,
@@ -357,7 +360,7 @@ func TestChatStreamDispatchFailureMaps502(t *testing.T) {
 // TestChatStreamMidStreamErrorFrame SSE 中途失败：此前 delta 已透出，以 error
 // 帧收尾（不再发 done）。
 func TestChatStreamMidStreamErrorFrame(t *testing.T) {
-	deps := playgroundFixtureDeps(false)
+	deps := playgroundFixtureDeps(t, false)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{Body: sseBody(
 		`data: {"choices":[{"delta":{"content":"前半句"}}]}`,
@@ -399,7 +402,7 @@ func containsType(types []string, want string) bool {
 // playground_account_not_found）、stream=false（400）、messages 越界（400）、
 // role 越界含 tool（400——工具上下文由服务端循环内部持有）。
 func TestChatStreamValidationErrors(t *testing.T) {
-	deps := playgroundFixtureDeps(false)
+	deps := playgroundFixtureDeps(t, false)
 	mux, _ := newTestRoutes(deps)
 
 	cases := []struct {
@@ -462,7 +465,7 @@ func TestChatStreamValidationErrors(t *testing.T) {
 // TestChatStreamRoundBudgetEventShape 工具事件参数回显：tool_start.args 原样
 // 携带模型产出的 arguments JSON。
 func TestChatStreamRoundBudgetEventShape(t *testing.T) {
-	deps := playgroundFixtureDeps(true)
+	deps := playgroundFixtureDeps(t, true)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
 		Body: sseBody(
@@ -485,7 +488,7 @@ func TestChatStreamRoundBudgetEventShape(t *testing.T) {
 // TestChatStreamRequireSessionNotExposed：EnsureSession 缺位（组合测试直挂）
 // 时 ScopeResolver 仍被调用；此处仅回归 wrap 透传不吞请求。
 func TestChatStreamPassThroughWithoutRequireSession(t *testing.T) {
-	deps := playgroundFixtureDeps(false)
+	deps := playgroundFixtureDeps(t, false)
 	deps.RequireSession = nil
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{Body: sseBody(`data: [DONE]`)}}
@@ -507,7 +510,7 @@ func TestChatStreamHeartbeatPingFrames(t *testing.T) {
 	playgroundSSEHeartbeatInterval = 10 * time.Millisecond
 	t.Cleanup(func() { playgroundSSEHeartbeatInterval = previousInterval })
 
-	deps := playgroundFixtureDeps(false)
+	deps := playgroundFixtureDeps(t, false)
 	base := deps.Dispatch.(*mockDispatch)
 	base.script = []scriptedResponse{{Body: sseBody(
 		`data: {"choices":[{"delta":{"content":"前半"}}]}`,

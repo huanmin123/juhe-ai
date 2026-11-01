@@ -3,15 +3,17 @@ package playground
 // 演练场路由（docs/functions/演练场设计.md §3）：经 cmd/juhe-ai-gateway 组合
 // 根挂载 GET/POST /__aisys__/api/playground/...（kernel Register，与 my-chat
 // 同级，自动获得 kernel 的 body limit / IP rate limit / no-store 包裹）；每条
-// 路由套 RequireSession(true)。五组端点：
+// 路由套 RequireSession(true)。端点族：
 //
 //	GET  /accounts                账户与模型目录（四页共用）
 //	POST /chat/stream             一次性对话 SSE
-//	POST /images                  同步生图
-//	POST /videos                  异步视频创建
+//	POST /images                  同步生图（产物落暂存 §3.8）
+//	POST /videos                  异步视频创建（任务引用落暂存）
 //	GET  /videos/{jobId}          视频任务轮询
-//	GET  /videos/{jobId}/content  视频产物字节流
-//	POST /speech                  同步语音合成
+//	GET  /videos/{jobId}/content  视频产物字节流（jobId 代理，不落盘）
+//	POST /speech                  同步语音合成（产物落暂存 §3.8）
+//	GET  /artifacts               当前用户暂存清单（恢复端点 §3.8）
+//	GET  /artifacts/{id}/content  暂存产物字节流（视频不走此端点）
 
 import (
 	"context"
@@ -26,9 +28,11 @@ import (
 // chat 面 chatSystemAPIJSONBodyLimit 同模式）。
 const playgroundJSONBodyLimit = 64 * 1024 * 1024
 
-// playgroundRoutes 是演练场路由运行时（无状态：会话/任务零落库，设计 §1.2）。
+// playgroundRoutes 是演练场路由运行时（会话/任务零落库，设计 §1.2；artifacts
+// 是产物暂存区句柄，根目录来自 Deps.ArtifactsRoot）。
 type playgroundRoutes struct {
-	deps *Deps
+	deps      *Deps
+	artifacts *artifactStore
 }
 
 // Register 挂载演练场路由族到 kernel（pattern 键 "METHOD /prefix/path"，与
@@ -40,7 +44,7 @@ func (d *Deps) Register(k Registerer, prefix string) {
 	if d.FetchURL == nil {
 		d.FetchURL = defaultFetchURL
 	}
-	rt := &playgroundRoutes{deps: d}
+	rt := &playgroundRoutes{deps: d, artifacts: newArtifactStore(d.ArtifactsRoot)}
 	mount := func(method, pattern string, handler http.HandlerFunc) {
 		k.Register(method+" "+prefix+pattern, rt.wrap(handler))
 	}
@@ -51,6 +55,8 @@ func (d *Deps) Register(k Registerer, prefix string) {
 	mount("GET", "/videos/{jobId}", rt.videosPollHandler)
 	mount("GET", "/videos/{jobId}/content", rt.videosContentHandler)
 	mount("POST", "/speech", rt.speechHandler)
+	mount("GET", "/artifacts", rt.artifactsHandler)
+	mount("GET", "/artifacts/{id}/content", rt.artifactContentHandler)
 }
 
 // wrap 套登录态中间件（RequireSession(true)，chat 面同款；nil 时原样透传——

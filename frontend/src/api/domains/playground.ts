@@ -1,10 +1,12 @@
 import type {
   PlaygroundAccountsResult,
+  PlaygroundArtifacts,
   PlaygroundChatStreamRequest,
   PlaygroundErrorBody,
   PlaygroundImageGenerationRequest,
   PlaygroundImageResult,
   PlaygroundSpeechRequest,
+  PlaygroundSpeechResult,
   PlaygroundStreamEvent,
   PlaygroundVideoCreateRequest,
   PlaygroundVideoCreateResult,
@@ -23,10 +25,22 @@ export const playgroundApi = {
     const result = await unwrap<PlaygroundAccountsResult>(http.get('/playground/accounts'))
     return result.accounts
   },
-  /** 同步生图（内联 base64 dataUrl，零存储）。 */
-  images: (payload: PlaygroundImageGenerationRequest) => unwrap<PlaygroundImageResult>(http.post('/playground/images', payload)),
-  /** 创建异步视频任务；jobId 由前端持有，服务端不落库。 */
-  videosCreate: (payload: PlaygroundVideoCreateRequest) => unwrap<PlaygroundVideoCreateResult>(http.post('/playground/videos', payload)),
+  /** 当前登录用户暂存清单（设计 §3.8）：刷新后凭此恢复图片网格、语音播放器与视频任务轮询。 */
+  artifacts: async (): Promise<PlaygroundArtifacts> => {
+    const result = await unwrap<PlaygroundArtifacts>(http.get(`/playground/artifacts`))
+    return {
+      images: result.images.map(withContentUrl),
+      speech: result.speech ? withContentUrl(result.speech) : null,
+      video: result.video
+    }
+  },
+  /** 同步生图：产物落服务端暂存（设计 §3.4/§3.8），响应 {images:[{id,url}],model}；生成耗时 30s+，禁用 axios 默认 15s 超时。 */
+  images: async (payload: PlaygroundImageGenerationRequest): Promise<PlaygroundImageResult> => {
+    const result = await unwrap<PlaygroundImageResult>(http.post('/playground/images', payload, { timeout: 0 }))
+    return { ...result, images: result.images.map(withContentUrl) }
+  },
+  /** 创建异步视频任务；任务引用随暂存区记录（设计 §3.5/§3.8），jobId 由前端持有。 */
+  videosCreate: (payload: PlaygroundVideoCreateRequest) => unwrap<PlaygroundVideoCreateResult>(http.post('/playground/videos', payload, { timeout: 0 })),
   /** 代理上游轮询并归一状态；网关重启后凭前端持有的 jobId 仍可轮询。 */
   videosPoll: (jobId: string, accountId: string) => unwrap<PlaygroundVideoPollResult>(http.get(`/playground/videos/${encodeURIComponent(jobId)}`, { params: { accountId } })),
   /** 流式代理视频字节并转为 blob URL 供 <video> 播放；调用方负责 URL.revokeObjectURL。 */
@@ -34,18 +48,10 @@ export const playgroundApi = {
     const blob = await playgroundBlob(`/playground/videos/${encodeURIComponent(jobId)}/content?accountId=${encodeURIComponent(accountId)}`)
     return URL.createObjectURL(blob)
   },
-  /** 同步语音合成，响应为音频字节。POST 方法直写在 fetch 调用点（api-contract 检查器按包装器固定方法解析）。 */
-  speech: async (payload: PlaygroundSpeechRequest): Promise<Blob> => {
-    const response = await fetch(apiUrl(`/playground/speech`), {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
-    if (!response.ok) {
-      throw new Error(await readFetchErrorMessage(response, `/playground/speech`))
-    }
-    return response.blob()
+  /** 同步语音合成：音频落服务端暂存（设计 §3.6/§3.8），响应 JSON 引用 {id,url,mimeType}；合成耗时可能超默认 15s，禁用 axios 超时。 */
+  speech: async (payload: PlaygroundSpeechRequest): Promise<PlaygroundSpeechResult> => {
+    const result = await unwrap<PlaygroundSpeechResult>(http.post(`/playground/speech`, payload, { timeout: 0 }))
+    return withContentUrl(result)
   },
   /** 一次性对话（SSE）。事件经 onEvent 逐帧回调；error 事件同样以事件透出，由页面渲染错误条。 */
   chatStream: async (input: PlaygroundChatStreamRequest & {
@@ -74,7 +80,16 @@ export const playgroundApi = {
   }
 }
 
-/** 二进制端点共用：会话 Cookie 鉴权，错误响应按信封 JSON 解出 message 抛出。 */
+/**
+ * 暂存产物取流地址归一：后端契约字面量为相对 playground 基路径（`/playground/artifacts/{id}/content`），
+ * 在 api 域边界统一拼 http 实例 baseURL（与 apiUrl 同源；apiUrl 不接受动态实参——api-contract
+ * 检查器将独立 apiUrl 调用点按静态 GET 端点解析），视图 `<img>/<audio>/a[download]` 直接可用（同域自动带会话 Cookie）。
+ */
+function withContentUrl<T extends { url: string }>(entry: T): T {
+  return { ...entry, url: `${http.defaults.baseURL ?? '/__aisys__/api'}${entry.url}` }
+}
+
+/** 视频内容代理专用（图片/语音已改为服务端暂存 url 直引）：会话 Cookie 鉴权，错误响应按信封 JSON 解出 message 抛出。 */
 async function playgroundBlob(path: string, init?: RequestInit): Promise<Blob> {
   const response = await fetch(apiUrl(path), { credentials: 'include', ...init })
   if (!response.ok) {

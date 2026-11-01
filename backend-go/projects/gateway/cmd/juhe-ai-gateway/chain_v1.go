@@ -149,7 +149,12 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 			if c.rejectCompatEntryBySourceGuards(w, req) {
 				return
 			}
-			c.compat.ServeHTTP(w, r)
+			// DD2-C1：compat 族 401 出口在 openaicompat 路由内部（scope
+			// resolver 解析失败 → invalid_api_key 401），经状态码捕获 writer
+			// 在响应落定后补记认证前熔断（此前该族 401 枚举零成本）。
+			tracked := gatewaypreauth.NewTrackingWriter(w)
+			c.compat.ServeHTTP(tracked, r)
+			c.recordCompatPreAuthFailure(req, tracked)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -1210,6 +1215,12 @@ func (c *gatewayChain) rejectCompatEntryBySourceGuards(w http.ResponseWriter, re
 	if preAuthDecision.RetryAfterSeconds != nil && !res.HeadersSent() {
 		res.Header().Set("Retry-After", strconv.FormatInt(*preAuthDecision.RetryAfterSeconds, 10))
 	}
+	// DD3-D3：429 熔断响应补 Connection: close——与主链
+	// sendPreAuthCircuitResponse 前的 prepareEarlyAuthFailureResponse
+	// （preauth.go:306-310）同型守卫，本函数注释声称的逐字段对齐在此补齐。
+	if !res.HeadersSent() {
+		res.Header().Set("Connection", "close")
+	}
 	message := "当前来源短时间认证失败过多，请稍后重试"
 	req.AuthFailureErrorMessage = message
 	req.AuthFailureErrorCode = "client_ip_pre_auth_circuit_open"
@@ -1217,6 +1228,68 @@ func (c *gatewayChain) rejectCompatEntryBySourceGuards(w http.ResponseWriter, re
 		gatewaypreauth.GatewayErrorPayloadOf(message, "rate_limit_exceeded", "client_ip_pre_auth_circuit_open"),
 		gatewaypreauth.SendGatewayErrorOptions{})
 	return true
+}
+
+// recordCompatPreAuthFailure 把 compat 三族（files / containers /
+// vector_stores）路由内的 401 认证失败计入认证前熔断（DD2-C1）：该族 401 出
+// 口在 openaicompat 路由内部（scope resolver 解析失败 →
+// openaicompatstorage 的 invalid_api_key 401），此前不计数使 401 枚举零成
+// 本。在 mux 响应落定后按状态码补记，与主链 recordPreAuthFailure 同型：
+// reason 按凭据形态分类（bearer 缺失 → missing_bearer_token，非空无效 →
+// invalid_api_key），Authorization 经 GatewayPreAuthSource 同源合成，来源 IP
+// 与入口守卫同源（requestClientIP：kernel XFF 解析优先）。fire-and-forget：
+// 401 已由路由写出，计数失败只记日志不阻断响应；当次记录触发熔断
+// （Blocked）也不改写已写出的 401——后续请求由
+// rejectCompatEntryBySourceGuards 的 InspectPreAuthCircuit 短路 429（同主链
+// InspectPreAuthCircuit 口径）。
+//
+// DD5-C4（2026-11-01）：计数发生在响应写出之后，不能沿用请求 ctx——客户端
+// 读到 401 立即断连会取消请求 ctx，Redis evalLua IO 随取消失败、计数仅
+// Warn，无效凭据得以系统性规避 preauth 熔断计数（主链/realtime 均在写出前
+// 计数，无此暴露）。与 token 刷新链 context.WithoutCancel 先例同口径：保留
+// ctx 值链、剥离取消传播，另加 3s 短超时兜底计数 IO；计数失败仍 Warn 不阻断。
+func (c *gatewayChain) recordCompatPreAuthFailure(req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter) {
+	if c == nil || c.preauth == nil || c.preauth.Circuits == nil || req == nil || res == nil {
+		return
+	}
+	if !res.HeadersSent() || res.StatusCode() != http.StatusUnauthorized {
+		return
+	}
+	ctx := context.Background()
+	if req.HTTP != nil {
+		ctx = context.WithoutCancel(req.HTTP.Context())
+	}
+	countCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	reason := gatewaypreauth.PreAuthFailureInvalidAPIKey
+	if bearerTokenOf(req.HTTP) == "" {
+		reason = gatewaypreauth.PreAuthFailureMissingBearerToken
+	}
+	clientIP := req.ClientIP
+	if clientIP == "" {
+		clientIP = requestClientIP(req)
+	}
+	decision, err := c.preauth.Circuits.RecordPreAuthFailure(countCtx, gatewaypreauth.PreAuthFailureInput{
+		ClientIP:      clientIP,
+		Authorization: c.preauth.GatewayPreAuthSource(req, req.Header("authorization")),
+		Reason:        reason,
+	})
+	if err != nil {
+		c.preauth.Observability.Logger().Warn("gateway_pre_auth_failure_record_failed", map[string]any{
+			"endpoint": gatewaypreauth.RequestEndpoint(req),
+			"reason":   string(reason),
+			"error":    err.Error(),
+		}, "compat 路由 401 的认证前熔断计数失败（不影响已写出的 401 响应）")
+		return
+	}
+	if decision.Blocked {
+		c.preauth.Observability.Logger().Warn("gateway_pre_auth_error_circuit_opened", map[string]any{
+			"reason":            decision.Reason,
+			"retryAfterSeconds": decision.RetryAfterSeconds,
+			"failureCount":      decision.FailureCount,
+			"endpoint":          gatewaypreauth.RequestEndpoint(req),
+		}, "网关认证前来源保护已进入短期熔断（compat 路由 401 计入）")
+	}
 }
 
 // chainCompatBlacklistIPMessage mirrors gatewaypreauth 的 blacklistIPMessage

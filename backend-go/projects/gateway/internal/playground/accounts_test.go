@@ -20,8 +20,8 @@ import (
 func TestClassifyCatalogModels(t *testing.T) {
 	apiKeyView := TransportAccount{
 		ID: "acc_1", Type: "api_key", ProviderCode: "gpt",
-		SupportedEndpointModes: []string{"chat_sse", "video_create", "audio_speech"},
-		SupportedModels:        []string{"gpt-image-2", "grok-imagine-video-1.5", "speech-2.8-hd"},
+		SupportedEndpointModes: []string{"chat_sse", "video_create", "audio_speech", "images_json"},
+		SupportedModels:        []string{"m-chat", "m-claude", "m-gemini", "m-hybrid", "gpt-image-2", "grok-imagine-video-1.5", "speech-2.8-hd"},
 	}
 	oauthView := TransportAccount{
 		ID: "acc_2", Type: "oauth", ProviderCode: "xai",
@@ -107,14 +107,23 @@ func TestClassifyCatalogModels(t *testing.T) {
 			want: map[string]ModelKind{},
 		},
 		{
-			name:         "传输视图缺失仅产 chat 目录分类",
+			name:         "传输视图缺失四类均不产出（跑不通的组合不进候选）",
 			providerCode: "gpt",
 			catalog: []CatalogItem{
 				{Model: "chat-only", SupportedAPIProtocols: []string{"chat_completions"}},
 				{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}},
 			},
 			view: nil,
-			want: map[string]ModelKind{"chat-only": KindChat},
+			want: map[string]ModelKind{},
+		},
+		{
+			name:         "chat 无 chat lane 端点模式不产出（视频账户不列 chat 模型）",
+			providerCode: "gpt",
+			catalog: []CatalogItem{
+				{Model: "m-chat", SupportedAPIProtocols: []string{"chat_completions"}},
+			},
+			view: &TransportAccount{ID: "acc_v", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"video_create", "video_get"}, SupportedModels: []string{"m-chat"}},
+			want: map[string]ModelKind{},
 		},
 	}
 	for _, testCase := range cases {
@@ -182,7 +191,7 @@ func TestAccountsEndpoint(t *testing.T) {
 			"acc_3": {ID: "acc_3", Name: "无快照账户", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{"grp_missing"}},
 		}},
 		TransportAccounts: &staticTransport{views: map[string][]TransportAccount{
-			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"chat_sse"}}},
+			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"chat_sse", "images_json"}}},
 		}},
 		ProviderCatalog: &staticCatalog{byProvider: map[string][]CatalogItem{
 			"gpt": {
@@ -262,7 +271,7 @@ func TestAccountsEndpointEnvelopeContract(t *testing.T) {
 			"acc_1": {ID: "acc_1", Name: "神影-克隆", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{"grp_1"}},
 		}},
 		TransportAccounts: &staticTransport{views: map[string][]TransportAccount{
-			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"chat_sse"}}},
+			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"chat_sse", "images_json"}}},
 		}},
 		ProviderCatalog: &staticCatalog{byProvider: map[string][]CatalogItem{
 			"gpt": {{Model: "gpt-5.4", SupportedAPIProtocols: []string{"chat_completions"}}},

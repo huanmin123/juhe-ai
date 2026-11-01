@@ -400,8 +400,14 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 	// DD-C6：跨协议桥接流的 usage 由桥内转换状态机计算（上游协议 usage 已在
 	// 桥转换中重渲染为客户端形态，inspector 按账户协议解析桥接后字节取不到
 	// usage），桥接快照是本次 attempt 的权威值——优先于估算兜底消费。
+	// DD2-B1/B2：快照消费以完成流为条件（pipeResult.Completed——协议终止事
+	// 件到场 + 干净 EOF；截断/失败终态臂 finishStreamResult 不传 completed，
+	// 均为 false）。中途 usage 的截断流（missing_terminal 等失败结算）不消费
+	// 快照——半程 {N,0} 快照会把已产生的可见输出计费成 0——回落下方既有估算
+	// 兜底；正常完成流快照保持权威（含上游全 0 usage 的合法形态，计 0 是上
+	// 游事实）。
 	bridgedUsage := false
-	if input.BridgeUsage != nil {
+	if input.BridgeUsage != nil && pipeResult.Completed {
 		if snapshot, ok := input.BridgeUsage(); ok {
 			usage = usageWithObservedModel(snapshot, input.UpstreamResponse.UpstreamResponseModel)
 			bridgedUsage = true

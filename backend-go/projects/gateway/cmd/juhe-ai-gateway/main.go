@@ -644,6 +644,9 @@ func main() {
 	// Registered ahead of auditStore.Close so the LIFO defer order releases
 	// the lease first and closes the store handle last.
 	defer auditLease.Close()
+	// DD3-F3：启动期失败出口 fail 经 os.Exit 跳过本 defer 链；租约获取成功
+	// 即注册进启动期释放钩子，fail 在 exit 前尽力释放（幂等 Close）。
+	startupLeaseRelease = auditLease.Close
 	// The F3 producer is the process-wide chain audit sink; it shares the
 	// audit lease above and only extends it per record.
 	auditProducer := auditlog.NewProducer(auditStore, auditLease, auditConfig, producerLogger{})
@@ -698,6 +701,12 @@ func main() {
 		// 后的尽力释放钩子。Close 幂等（closed 守卫 + closeOnce），与正常停机
 		// 路径（F4 组件 Close 与本 defer）重复调用安全。
 		runtimeLeaseRelease = operationLease.Close
+		// DD3-F3：F4 租约并入启动期释放钩子（LIFO：先 F4 后 F3，与 defer 链
+		// 逆序一致）；两个 keeper 在此均已获取成功、非 nil。
+		startupLeaseRelease = func() {
+			operationLease.Close()
+			auditLease.Close()
+		}
 		// Registered ahead of composed.Shutdown so the LIFO defer order
 		// drains the producer first and releases the lease last.
 		defer operationLease.Close()
@@ -726,7 +735,11 @@ func main() {
 				defer auditRunning.Store(false)
 				return auditlog.RunOwner(runCtx, auditStore, auditLease, auditConfig, logger)
 			},
-			Close: auditStore.Close,
+			// DD3-F1：Close 必须先释放共享 F3 lease 再关 store（f3OwnerClose，
+			// 与 F4 组件 Close 内联实现同构）——store.Close 释放共享
+			// "gateway-store" 池引用，refs 归零即物理关池，之后租约释放必失败
+			// （仅 Warn），继任进程只能等 TTL 过期接管。
+			Close: f3OwnerClose(auditLease.Close, auditStore),
 		},
 	}
 	if j3bHostComponent.Run != nil {
@@ -1298,6 +1311,10 @@ func fail(err error) {
 	// 退出码保持不变。
 	slog.Default().Error("gateway startup failed", "error", err.Error())
 	fmt.Fprintln(os.Stderr, err)
+	// DD3-F3：os.Exit 跳过 main 的全部 defer，先尽力释放启动期已获取的
+	// F3/F4 owner 租约，继任进程不必等 TTL 接管；租约未获取时钩子为 nil
+	// （no-op）。store 连接池随进程退出释放，不在此关闭。
+	startupFailureCleanup(startupLeaseRelease)
 	os.Exit(1)
 }
 
@@ -1313,6 +1330,15 @@ var runtimeDrain func()
 // 或启动早期）为 no-op。F3/F4 store 不在此释放：连接池随进程退出释放，
 // 跨进程接管语义只由租约承载。
 var runtimeLeaseRelease func()
+
+// startupLeaseRelease 是启动期失败出口（fail）的 owner 租约尽力释放钩子
+// （DD3-F3）：fail 经 os.Exit 跳过 main 的全部 defer，已获取的 F3/F4 租约
+// 否则滞留到 TTL 过期，TTL 内重启（默认无 ACQUIRE_WAIT）即 fail-fast。组合
+// 根在 F3 租约获取成功后注册、F4 租约获取成功后并入（LIFO：先 F4 后 F3）。
+// nil（租约未获取的启动早期失败）为 no-op。与运行期钩子互斥：fail 只服务
+// 启动期（supervisor.Run 之前），运行期失败走 failRuntime /
+// runtimeFailureCleanup，两者在单进程生命周期内不会同时触发。
+var startupLeaseRelease func()
 
 // runtimeDrainBudget 约束运行期失败路径的排空预算：排空链卡死时到点强制
 // 退出，不把错误退出变成无限挂起。
@@ -1359,5 +1385,33 @@ func drainRuntimeBeforeExit(drain func(), budget time.Duration) {
 	case <-time.After(budget):
 		slog.Default().Warn("运行期排空预算超时，强制退出",
 			"event", "runtime_drain_budget_exceeded", "budget", budget.String())
+	}
+}
+
+// startupFailureCleanup 是启动期失败退出前的清理序列（DD3-F3）：尽力释放
+// 已获取的 F3/F4 owner 租约（lease 是错误退出路径上唯一的跨进程接管语义），
+// store 连接池随进程退出释放、不在此关闭。钩子为 nil（租约未获取）时
+// no-op。单独成函数供白盒测试钉住 nil 钩子的惰性（与 runtimeFailureCleanup
+// 同款收口）。
+func startupFailureCleanup(releaseLease func()) {
+	if releaseLease != nil {
+		releaseLease()
+	}
+}
+
+// f3OwnerClose 返回 F3 owner 组件的 Close：先释放共享 F3 lease——此时 store
+// 句柄仍打开，继任进程可立即接管——再关闭 store。store.Close 释放共享
+// "gateway-store" 池引用（refs 归零即物理关池），之后租约释放必失败，顺序
+// 不能颠倒（DD3-F1；与 F4 组件 Close 的内联实现同构）。releaseLease 由组合
+// 根以 auditLease.Close 方法值注入（注册点在租约获取成功之后，恒非 nil）；
+// nil 钩子惰性跳过仅为测试与未来装配面兜底。auditLease.Close 幂等（closed
+// 守卫 + closeOnce），与 main defer 重复调用安全；main 的 defer
+// auditLease.Close 保留作为启动失败路径兜底。
+func f3OwnerClose(releaseLease func(), store interface{ Close() error }) func() error {
+	return func() error {
+		if releaseLease != nil {
+			releaseLease()
+		}
+		return store.Close()
 	}
 }
