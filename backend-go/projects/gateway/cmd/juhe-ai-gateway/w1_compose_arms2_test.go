@@ -71,7 +71,6 @@ import (
 
 func TestW1MComposeApiKeyStoreBlankSecretArm(t *testing.T) {
 	stack := w1oNewComposeStack(t)
-	w1oRedirectChatAssetsRoot(t, stack)
 	stack.cfg.Secret = "   "
 	composed, err := stack.compose(t)
 	if err == nil {

@@ -107,10 +107,13 @@ const pickerExpanded = ref(true)
 // 弹窗打开时：新建复位为阶段一（独立的供应商卡片选择），克隆直接进入阶段二；配置区可见性由上层按本事件驱动。
 watch(() => props.open, (next) => {
   if (!next) return
-  pickerExpanded.value = !props.cloning
+  // 编辑与克隆同款：打开即阶段二（供应商已定，直接展示配置摘要）；只有新建进阶段一卡片墙。
+  // 2026-10-31 修复：编辑态漏判导致媒体域弹窗停在阶段一（卡片墙未加载时整弹窗空白）；
+  // immediate 必须带——首次打开时 MediaForm 挂载即带 open=true，无变化沿不触发 watch。
+  pickerExpanded.value = !props.cloning && !props.editing
   searchKeyword.value = ''
-  emit('picker-expanded-change', !props.cloning)
-})
+  emit('picker-expanded-change', pickerExpanded.value)
+}, { immediate: true })
 
 const enabledProviders = computed(() => props.providers.filter((provider) => provider.enabled))
 

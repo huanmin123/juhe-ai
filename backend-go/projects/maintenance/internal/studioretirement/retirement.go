@@ -17,8 +17,8 @@
 // a gateway preflight can never delete studio data as a side effect. Rollback
 // for everything this command deletes is restoring the business database from
 // the external backup verified by --backup-confirmed — the report says so
-// explicitly instead of carrying rollback SQL (unlike chatbindingmigration,
-// whose dropped columns live on in a backup table).
+// explicitly instead of carrying rollback SQL (deleted rows/columns are not
+// recoverable in place).
 //
 // Every step is idempotent: a second run finds nothing left and reports
 // alreadyRetired without writing; a run interrupted mid-way converges on
@@ -52,7 +52,7 @@ const (
 // 备份表可回填，唯一回滚路径是外部备份整体恢复。
 const rollbackNote = "回滚 = 用 --backup-confirmed 验证过的外部备份整体恢复业务库。" +
 	"本命令的 DELETE（purpose='studio' 行）、DROP TABLE / DROP INDEX / DROP COLUMN 不可原地撤销，" +
-	"报告因此不携带回滚 SQL（chatbindingmigration 的 RollbackSQL 先例依赖备份表回填，此处删除即销毁）。"
+	"报告因此不携带回滚 SQL（删除即销毁，无备份表可回填）。"
 
 const isoMillisLayout = "2006-01-02T15:04:05.000Z"
 

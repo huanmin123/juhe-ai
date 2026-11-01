@@ -13,8 +13,6 @@ maintenance：compose --profile tool 一次性容器（幂等 CLI）
 Prometheus（infra 机，经既有 SSH 隧道）──> 生产机宿主回环 127.0.0.1:3306（gateway GET /__aisys__/metrics）
                                      └──> 生产机宿主回环 127.0.0.1:3305（jobs 健康监听指标）
 
-一次性迁移命令（2026-09-28 AI 对话账户唯一绑定）：`juhe-ai-maintenance -migrate-chat-account-only-binding --dsn "$JUHE_AI_POSTGRES_URL"` —— 在 `--ensure-schema` 之后执行；幂等可重入（重复运行报 `alreadyMigrated: true`）；归档存量旧模式会话、备份并删除 `juhe_chat.chat_conversations` 的 `bind_mode`/`bind_group_id`/`bind_group_name_snapshot` 三列（PG 用 `DROP COLUMN IF EXISTS`）；stdout JSON 报告含 `rollbackSql`（回滚 = 先恢复旧版二进制，再执行报告中的恢复 SQL）。
-
 一次性回填命令（2026-10-12 成功成本历史回填）：`juhe-ai-maintenance --apply-success-cost-backfill [--dry-run] --dsn "$JUHE_AI_POSTGRES_URL"`—— 六表 success_cost_usd 历史回填的唯一执行者，先 `--ensure-schema` 建好 `juhe_stats.backfill_progress` 标记表再执行（表缺失时显式报错不建表；ensure 后目标 marker 缺失或非 done 时在结果摘要提示待回填表，不自动迁移）；幂等可重入（done 表零触碰、重复执行零批秒完），中断从持久化主键游标续跑；stdout 单行 JSON 报告六表批数/命中行数。仅限维护窗口（`docker compose stop jobs` 后）执行，完整窗口序列见下"更新发布"节。
 
 一次性迁移命令（AI 账户能力域拆分 M1，存量库赋域 + 声明裁剪）：`juhe-ai-maintenance --migrate-account-capability-domain --account-capability-domain-stage=m1 --node-stopped --go-stopped --backup-confirmed --dsn "$JUHE_AI_POSTGRES_URL"` —— `accounts.capability_domain` 赋域的唯一执行者；赋域同时把每行声明（`credentials_encrypted` 内 `supported_endpoint_modes`）裁剪至落域 lane 集（`declared ∩ 落域 lane 集`，仅混合声明行回写凭据密文，同批次事务执行），stdout 报告逐行列明被裁值及其建议归属域，操作者据报告为被裁能力同凭据另建归属域账户承接（未承接前该能力无候选账户）；加列本身随例行 `--ensure-schema` 幂等生效（只加列不赋域），赋域必须在停写窗口（`docker compose stop gateway jobs` + 已验证可恢复备份）执行，三确认门禁缺一拒绝；失败清单非空零写入 exit 3，不得上线。只读核验 `juhe-ai-maintenance --verify-account-capability-domain --account-capability-domain-stage=m1 --account-capability-domain-check=preflight|postflight ...`。顺序契约：先迁移并核验通过，后启动依赖该列的新版 gateway/jobs。完整窗口序列见下"更新发布"节。
@@ -89,7 +87,7 @@ docker/single-server/
 
 gateway/jobs 的全部"路径类"env 未配置时按 datadir 约定派生为 `<DATA_DIR>/<固定名>`，而 `JUHE_AI_DATA_DIR` 缺省是 `./data`——**相对进程 cwd**（gateway/jobs 的 `internal/datadir` 包注释即此约定）；文件日志等同族运行时路径同样相对 cwd。`Dockerfile.runtime` 只创建 `/app/backend/{data,logs}` 目录但**未设 `WORKDIR`**（Alpine 默认 cwd 为 `/`），因此：
 
-- **compose 必须为 gateway/jobs 保持 `working_dir: /app/backend`**（2026-09-26 起，BUG-0193）。丢了这一行，`data/`、`logs/` 会解析到容器私有可写层 `/data`、`/logs`：用量记录、文件日志、chat-assets、account-health-input 等全部写进临时层，容器重建即静默丢失。
+- **compose 必须为 gateway/jobs 保持 `working_dir: /app/backend`**（2026-09-26 起，BUG-0193）。丢了这一行，`data/`、`logs/` 会解析到容器私有可写层 `/data`、`/logs`：用量记录、文件日志、account-health-input 等全部写进临时层，容器重建即静默丢失。
 - **gateway↔jobs 同源要求**：用量记录经 `usage-record-spool` 文件目录交接（网关写 JSON 文件，jobs 的 usage spool drain 消费后写 PG `juhe_usage.usage_records`），两侧目录必须解析到**同一个宿主机路径**（当前形态 = `/app/backend/data/usage-record-spool`，挂载 `./data/app/data`）。任何一侧不一致，记录永不到库且无报错——统计全空。
 - 非 compose 部署（systemd/裸进程直跑）同理：必须让进程 cwd 锚定到含 `data/` 的工作目录，或显式配置绝对路径（`JUHE_AI_DATA_DIR`，必要时 `JUHE_AI_USAGE_SPOOL_DIRECTORY`，现行名；旧名 `JUHE_AI_USAGE_SPOOL_DIR` 兼容回落）。
 - 症状速查（BUG-0193）：统计页面全空但接口 200 → 先查 `SELECT count(*) FROM juhe_usage.usage_records;` 是否 0 行，再对比 gateway/jobs 两容器内 `data/usage-record-spool` 是否为同一挂载目录（`docker inspect` 挂载 + `docker exec ls` 实际内容）。
@@ -325,13 +323,7 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 - `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS`（BUG-0226，2026-09-28；**2026-10-14 起仅 jobs 使用**）：jobs 健康监听地址，compose 显式配 `0.0.0.0:3305`（代码默认 `127.0.0.1:3305`，容器形态必须显式覆盖为 0.0.0.0 才能经 ports 的宿主回环映射 `"127.0.0.1:3305:3305"` 对宿主可达）——现供 infra 机 Prometheus 经 SSH 隧道抓取（见 `monitoring/README.md`）；值非法（主机名/坏端口）会启动失败。原 gateway 侧同名变量（系统指标页 jobs 健康段抓取地址，曾配容器名视角 `juhe-ai-go-jobs:3305`）随「系统指标统计」子系统下线从 compose gateway 服务删除，`.env` 中若有该变量整行移除（见下"部署时需同步从 .env 移除的行"）。
 - `JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS`（2026-10-14 起 compose 显式配置）：gateway 健康监听地址，compose 配 `0.0.0.0:3306`（代码默认 `127.0.0.1:3306`；compose healthcheck 仍走容器内 `127.0.0.1:3306/health` 不受影响）。绑全接口只为让 ports 的宿主回环映射 `"127.0.0.1:3306:3306"` 可达，承载 `GET /__aisys__/metrics` 供 infra 机 Prometheus 抓取；端口仅发布到宿主回环，**部署层必须拒绝公网入口、只允许受限 Prometheus 抓取**（接入细节见 `monitoring/README.md`）。
 - `JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK`（2026-10-15 起 compose 显式配置 `"true"`）：健康监听 fail-closed 校验的放行开关。代码默认只允许 localhost/回环地址，`0.0.0.0:3306` 会启动失败（2026-10-15 发布实测重启循环）；设 `true` 放行私网（RFC1918）与未指定地址（`0.0.0.0`），**公网地址任何情况下仍拒绝**（见 gateway `main.go` `validateHealthListenHost`）。jobs 侧无该校验、无对应变量。
-- `JUHE_AI_CHAT_*`（AI 问答子系统，gateway/jobs 双进程，越界均启动失败）：
-  - `JUHE_AI_CHAT_RETENTION_DAYS`：默认 `3`，合法 `1..365`；gateway 读取保留窗口与 jobs retention 清理按它取值，**双进程必须同值**，否则清理窗口与读取保留不一致（消息先被读不到或超期残留）。
-  - `JUHE_AI_CHAT_ASSETS_ROOT`：chat 资产对象根目录，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/chat-assets`；gateway 资产写入与 jobs 资产清理**双进程必须同值**（同卷同目录）。
-  - `JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION`：单会话最大轮次，默认 `50`，合法 `1..1000`。
-  - `JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER`：单用户最大会话数，默认 `50`，合法 `1..1000`。
-  - `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS`：单轮上游 SSE 事件预算，默认 `65536`，合法 `2048..262144`（调高只为容纳合法长输出，不解除单事件/累计内容等 DoS 防护）。
-  - `JUHE_AI_CHAT_WEB_SEARCH_TIMEOUT_MS`（2026-10-14 起，gateway 单进程）：联网搜索子调用整体超时，默认 `120000`（120 秒），合法 `1000..600000`；非整数或越界启动失败。仅 gateway 消费，jobs 不读。
+- **[已退役 2026-10-31]** `JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER` / `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS` / `JUHE_AI_CHAT_WEB_SEARCH_TIMEOUT_MS`（原 AI 问答子系统，含已删的 RETENTION_DAYS/ASSETS_ROOT/MAX_TURNS）：随 AI 问答退役（演练场替代），解析与登记已删除——现配置这三个变量只会得到未知变量 WARN、无任何效果。
 - `JUHE_AI_CODEX_CONTEXT_ROOT`（Codex Responses↔Chat 桥 segments 根，gateway/jobs 双进程；2026-10-03 起 gateway 组合根装配该状态，gateway 现亦消费本 env）：可选，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/codex-context`。gateway 桥 segment 写入与 jobs retention segment 文件清理**双进程必须同值**（同卷同目录）——根不同源时清理按「文件不存在=成功」落账而文件永不删除（存储泄漏）。PG 模式另要求 `juhe_codex_context` schema（`juhe-ai-maintenance --ensure-schema` 预置六个 schema 之一）：缺失时 gateway 启动期 schema 探针 fail-fast（错误含 `codex context postgres schema 探针失败`），属部署错误，先补 schema 再启动，无静默降级。
 - `JUHE_AI_REDIS_STATE_URL`：Redis 运行态键空间连接串（cache/state/queue 三实例约定中的 state 实例）。**依赖门禁非开关**：未配置时 jobs 的账户恢复探针、速度优先运行态、电路控制面 reconcile 等族按 disabled 登记（`/health` 的 `workerWired`/`workerJobs` 与任务登记可见缺席），配置后自动启用；gateway 主链运行态也按它归一。生产 compose 三容器共享同值。
 - `JUHE_AI_J3B_CIRCUIT_REDIS_URL`：J3b 电路运行态专用 Redis。**必须显式且不得与 `JUHE_AI_REDIS_STATE_URL` 相同键空间**（gateway 启动强校验——主链 state URL 回退会让两套 Lua 状态机并发写同一 states hash，语义不兼容；现用同实例 DB2）。未配置/无 Redis 时 J3b 电路回退**进程内 memory 状态机（重启即失，跨进程不共享）**——功能性可用但持久性降级，生产应显式配置独立 Redis URL。
@@ -365,7 +357,7 @@ docker compose run --rm maintenance --ensure-account-default-resources --backup-
 - 分片族：`JUHE_AI_USAGE_SHARD_ROOT`、`JUHE_AI_USAGE_SHARD_COUNT`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`。
 - store 选择族：`JUHE_AI_AUDIT_LOG_STORE`、`JUHE_AI_OPERATION_LOG_STORE`、`JUHE_AI_RUNTIME_LOG_STORE`、`JUHE_AI_J3B_STORE`、`JUHE_AI_ACCOUNT_HEALTH_STORE`、`JUHE_AI_ACCOUNT_BALANCE_STORE`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE`（输入源恒 PG 直读）。
 
-同步退役的命令形态：maintenance 全部存储型命令收敛为 `--dsn` 单形态（`--driver` / `--paths` 旗标已删）；gateway `--migrate-audit-log-legacy-sqlite` / `--migrate-operation-log-legacy-sqlite`、jobs `--migrate-runtime-log-legacy-sqlite`、maintenance `--apply-j3b-model-check-sqlite` 等一次性 sqlite 命令已物理删除。`JUHE_AI_DATA_DIR` 及其派生（usage-record-spool、codex-context、logs、chat-assets、audit-blob）保留，仍是普通文件目录契约。
+同步退役的命令形态：maintenance 全部存储型命令收敛为 `--dsn` 单形态（`--driver` / `--paths` 旗标已删）；gateway `--migrate-audit-log-legacy-sqlite` / `--migrate-operation-log-legacy-sqlite`、jobs `--migrate-runtime-log-legacy-sqlite`、maintenance `--apply-j3b-model-check-sqlite` 等一次性 sqlite 命令已物理删除。`JUHE_AI_DATA_DIR` 及其派生（usage-record-spool、codex-context、logs、chat-assets、audit-blob、playground-artifacts）保留，仍是普通文件目录契约。`playground-artifacts`（`<DATA_DIR>/playground-artifacts`）为 gateway 演练场产物暂存缓存：固定派生、零新 env、仅 gateway 单进程消费，产物按 24h 惰性过期清理，无 jobs 交接。
 
 ## 系统设置键（DB `system_settings`，非 env；2026-10-04 M2 媒体批次新增）
 

@@ -140,9 +140,10 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 		}
 	})
 
-	t.Run("images success and failure", func(t *testing.T) {
-		// R3：base_url 携带 /v1 版本根（R1 删除运行时补根），共享 mock 的
-		// /v1/images/generations 路由才能命中 images 形态响应。
+	t.Run("images connectivity pass and fail（2026-11-01 连通性裁决）", func(t *testing.T) {
+		// 连通性语义：images_json 人工测试只发 {"model"} 空 prompt 体验密钥
+		// 连通，不真实生成图片。400/422 = 参数校验拒绝属预期（密钥有效）；
+		// 401/403 = 密钥无效（失败）。
 		view := probeView(server.URL + "/v1")
 		view.HealthCheckModel = "img-1"
 		view.HealthCheckEndpointMode = string(ModeImagesJSON)
@@ -151,21 +152,50 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 		service := newTestService(t, &fakeSource{view: view})
 		observation, err := service.Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true})
 		if err != nil || observation == nil || !observation.Result.Success {
-			t.Fatalf("images success: %+v %v", observation, err)
+			t.Fatalf("images 2xx connectivity: %+v %v", observation, err)
 		}
-		// Upstream error envelope → images error message with code suffix.
-		h := openImageServer(t, `{"error":{"code":"content_policy_violation","message":"blocked"}}`)
-		view2 := probeView(h.URL + "/v1")
+		if !strings.Contains(observation.Result.Message, "密钥连通性验证通过（上游 HTTP 200）") || !observation.Evidence.Connectivity {
+			t.Fatalf("images connectivity message/evidence: %+v %+v", observation.Result, observation.Evidence)
+		}
+		// 预期拒绝臂：上游对空 prompt 体回 400 = 密钥有效（原「生成并验图」
+		// 断言随连通性裁决删除）。
+		reject := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/images/generations" {
+				t.Errorf("images connectivity path = %q", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"content_policy_violation","message":"prompt required"}}`))
+		}))
+		defer reject.Close()
+		view2 := probeView(reject.URL + "/v1")
 		view2.HealthCheckModel = "img-1"
 		view2.HealthCheckEndpointMode = string(ModeImagesJSON)
 		view2.SupportedModels = []string{"img-1"}
 		view2.NormalizeEndpointModes = map[EndpointMode]bool{ModeImagesJSON: true}
 		observation, err = newTestService(t, &fakeSource{view: view2}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true})
-		if err != nil || observation == nil || observation.Result.Success {
-			t.Fatalf("images failure: %+v %v", observation, err)
+		if err != nil || observation == nil || !observation.Result.Success {
+			t.Fatalf("images 400 expected rejection must pass: %+v %v", observation, err)
 		}
-		if !strings.Contains(observation.Result.Message, "content_policy_violation") {
-			t.Fatalf("images failure message: %q", observation.Result.Message)
+		if !strings.Contains(observation.Result.Message, "密钥连通性验证通过（上游 HTTP 400）") {
+			t.Fatalf("images 400 message: %q", observation.Result.Message)
+		}
+		// 密钥无效臂：401 拒绝访问。
+		unauthorized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+		}))
+		defer unauthorized.Close()
+		view3 := probeView(unauthorized.URL + "/v1")
+		view3.HealthCheckModel = "img-1"
+		view3.HealthCheckEndpointMode = string(ModeImagesJSON)
+		view3.SupportedModels = []string{"img-1"}
+		view3.NormalizeEndpointModes = map[EndpointMode]bool{ModeImagesJSON: true}
+		observation, err = newTestService(t, &fakeSource{view: view3}).Probe(ctx, accountquality.ProbeRequest{AccountID: "acc-1", Full: true})
+		if err != nil || observation == nil || observation.Result.Success {
+			t.Fatalf("images 401 must fail: %+v %v", observation, err)
+		}
+		if !strings.Contains(observation.Result.Message, "上游拒绝访问（HTTP 401）") {
+			t.Fatalf("images 401 message: %q", observation.Result.Message)
 		}
 	})
 }
@@ -191,13 +221,6 @@ func (t *w7cCaptureTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     http.Header{},
 	}, nil
-}
-
-func openImageServer(t *testing.T, body string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(body))
-	}))
 }
 
 func TestW7CAttemptStagedAndReadArms(t *testing.T) {

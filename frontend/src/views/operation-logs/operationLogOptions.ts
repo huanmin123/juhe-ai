@@ -43,6 +43,7 @@ export const actionOptions = [
   { label: '重新授权（授权码）', value: 'reauthorize_from_code' },
   { label: '重新授权（Refresh Token）', value: 'reauthorize_from_refresh_token' },
   { label: '恢复', value: 'restore' },
+  { label: '修改登录密码', value: 'change_password' },
   { label: '重置密码', value: 'reset_password' },
   { label: '检测', value: 'test' },
   { label: '测试改状态', value: 'test_status_changed' },

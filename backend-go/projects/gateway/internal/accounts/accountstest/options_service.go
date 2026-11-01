@@ -1352,6 +1352,11 @@ func (s *Service) manualTestEndpointModesForTargetModel(ctx context.Context, sou
 	if testModelSupportsImagesProtocol(item, source) {
 		out = append(out, "images_json")
 	}
+	// 媒体域连通性测试形态（2026-11-01 用户裁决）：视频目录行经 video_create
+	// 密钥连通性探测进入人工测试候选（探针不真实生成视频任务）。
+	if testModelSupportsVideoProtocol(item, source) {
+		out = append(out, "video_create")
+	}
 	return out, nil
 }
 
@@ -1385,14 +1390,26 @@ func testModelSupportsImagesProtocol(item TestCatalogItem, source ManualTestMode
 		accountscore.ContainsString(item.SupportedAPIProtocols, "images")
 }
 
+// testModelSupportsVideoProtocol 是 2026-11-01 媒体域连通性裁决的视频分支
+// （镜像 images 门形状）：api_key + openai 族档案 + 目录行声明 video 协议的
+// 行经 video_create 连通性探测保持可测。gemini 原生 google_oauth 视频账户
+// 不在本裁决放开面（其上游视频任务寻址非 /contents/generations/tasks 形态）。
+func testModelSupportsVideoProtocol(item TestCatalogItem, source ManualTestModeSource) bool {
+	return source.AccountType == "api_key" &&
+		accountscore.IsOpenAIProtocolProfileOf(source.predicate()) &&
+		accountscore.ContainsString(item.SupportedAPIProtocols, "video")
+}
+
 // IsAccountManualTestModel mirrors the same-named helper
 // （原根包私有函数，根包测试经由转发访问）.
 func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource) bool {
 	// v8-C：目录行模式词表六值（chat/responses/embedding/audio/video/
-	// image_generation）。audio 行仍整体排除（既有契约）；image_generation/video
-	// 行只能经 images_json 测试面的图像分支（images 协议 + api_key 门）或启用
-	// 的模型映射进入候选，对话协议族（chat_completions/responses/messages/
-	// generate_content/interactions）与空协议默认放行不再接纳它们。
+	// image_generation）。audio 行仍整体排除（既有契约）；image_generation 行
+	// 只能经 images_json 测试面的图像分支（images 协议 + api_key 门）或启用
+	// 的模型映射进入候选；video 行自 2026-11-01 媒体域连通性裁决起经 video
+	// 协议 + api_key 门（video_create 连通性探测）进入候选——对话协议族
+	// （chat_completions/responses/messages/generate_content/interactions）与
+	// 空协议默认放行不接纳 image_generation/video 行。
 	itemMode := strings.ToLower(strings.TrimSpace(item.Mode))
 	if itemMode == "audio" {
 		return false
@@ -1413,7 +1430,7 @@ func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource)
 				if !itemModeBlocksChatFace {
 					return true
 				}
-			case "images":
+			case "images", "video":
 				if source.AccountType == "api_key" {
 					return true
 				}

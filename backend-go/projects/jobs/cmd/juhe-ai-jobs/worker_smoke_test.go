@@ -24,7 +24,6 @@ func workerSmokeTestEnv(t *testing.T) map[string]string {
 		"JUHE_AI_WORKER_ROLE":           "stats-worker",
 		"JUHE_AI_SECRET":                "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS": "5000",
-		"JUHE_AI_CHAT_ASSETS_ROOT":      filepath.Join(root, "chat-assets"),
 		"JUHE_AI_CODEX_CONTEXT_ROOT":    filepath.Join(root, "codex-context"),
 	}
 }

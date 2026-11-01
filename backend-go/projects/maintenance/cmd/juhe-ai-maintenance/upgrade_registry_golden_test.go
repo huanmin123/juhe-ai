@@ -22,7 +22,6 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 		{4, "capability-domain", 1},
 		{5, "scheduling-preferences", 1},
 		{6, "merge-super-groups", 1},
-		{7, "chat-account-only-binding", 1},
 		{8, "upstream-base-url-version-root", 1},
 		{9, "success-cost-backfill", 1},
 		{10, "studio-retirement", 1},
@@ -48,7 +47,7 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 	for _, step := range steps {
 		destructive[step.ID] = step.Destructive
 	}
-	for _, id := range []string{"chat-account-only-binding", "studio-retirement", "drop-retired-monitoring-tables"} {
+	for _, id := range []string{"studio-retirement", "drop-retired-monitoring-tables"} {
 		if !destructive[id] {
 			t.Fatalf("步骤 %s 应标记 destructive", id)
 		}

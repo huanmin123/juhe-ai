@@ -453,6 +453,13 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, errors.New("探针候选缺少可用凭据")
 	}
+	// 媒体域连通性探测分支（2026-11-01 用户裁决）：video_create / images_json /
+	// audio_speech 人工测试只验证密钥能否访问上游，不真实生成产物——视频避免
+	// 真实计费任务，图像/语音避免真实消耗。请求构造、发送与状态码分类见
+	// probe_connectivity.go；分级阶梯与 Key 池调度沿用既有链路。
+	if isConnectivityProbeMode(endpointMode) {
+		return s.executeConnectivityAttempt(ctx, routedView, endpointMode, model, apiKey, timeout, limited)
+	}
 	httpReq, buildErr := buildTestRequest(ctx, routedView, endpointMode, model, challenge, apiKey)
 	if buildErr != nil {
 		return nil, buildErr

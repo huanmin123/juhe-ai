@@ -128,6 +128,10 @@ type ProbeEvidence struct {
 	Canceled                   bool
 	TimedOut                   bool
 	DiagnosticTimeoutExhausted bool
+	// Connectivity 标记本次观测来自媒体域密钥连通性探测（2026-11-01 用户
+	// 裁决：video_create / images_json / audio_speech 人工测试只验证密钥
+	// 能否访问上游，不真实生成产物）。传输层失败观测同样带该标记。
+	Connectivity bool `json:"connectivity,omitempty"`
 }
 
 // ProbeResult 是探针诊断结果（等价 Node AccountTestResult 的被消费字段）。

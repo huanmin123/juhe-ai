@@ -1,9 +1,11 @@
-// `maintenance upgrade` 的 12 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 11 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
 //
-// revision 1..12 的分配即设计 §10 表序； golden 测试钉死
+// revision 1..12 的分配即设计 §10 表序（revision 7 chat-account-only-binding
+// 已随 AI 问答退役删除，序列 6 后直接 8；已执行库的账本行只记历史事实，
+// 不受注册表删步影响）； golden 测试钉死
 // (revision, step_id, implVersion) 有序对。低序步骤不得依赖高序产物（§8.4-3）。
 package main
 
@@ -388,44 +390,6 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 				}
 				if value != 0 {
 					return fmt.Errorf("仍存在 %d 条 mode='merge' 策略", value)
-				}
-				return nil
-			},
-		},
-		{
-			Revision: 7, ID: "chat-account-only-binding",
-			Title: "AI 问答会话账户唯一绑定收敛", Target: upgradepipeline.TargetPrimary,
-			Destructive: true,
-			ImplVersion: 1,
-			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
-				exists, err := columnExists(ctx, primaryDSN, "juhe_chat", "chat_conversations", "bind_mode")
-				if err != nil || exists {
-					return false, err
-				}
-				exists, err = columnExists(ctx, primaryDSN, "juhe_chat", "chat_conversations", "bind_group_id")
-				if err != nil || exists {
-					return false, err
-				}
-				exists, err = columnExists(ctx, primaryDSN, "juhe_chat", "chat_conversations", "bind_group_name_snapshot")
-				if err != nil || exists {
-					return false, err
-				}
-				return true, nil
-			},
-			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
-				code, output := callResult(func() int { return chatAccountOnlyBindingMigrationResult(primaryDSN) })
-				if code != 0 {
-					return upgradepipeline.Detail{"output": output}, exitErr("会话绑定收敛", output, code)
-				}
-				return upgradepipeline.Detail{"output": output}, nil
-			},
-			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
-				satisfied, err := columnExists(ctx, primaryDSN, "juhe_chat", "chat_conversations", "bind_mode")
-				if err != nil {
-					return err
-				}
-				if satisfied {
-					return errors.New("chat_conversations.bind_mode 仍存在")
 				}
 				return nil
 			},

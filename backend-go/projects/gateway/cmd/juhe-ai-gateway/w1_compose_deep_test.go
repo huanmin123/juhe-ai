@@ -21,9 +21,7 @@ package main
 //     与解析成功臂。
 //
 // 全部用例确定性可重放：redis 一律 miniredis 或立即解析失败的坏 URL；数据库
-// 一律 pgtestkit 隔离 PG 库；无并发等待、无网络依赖。失败臂统一走
-// w1oRedirectChatAssetsRoot 的手管目录（组合根失败路径不回收 PG 句柄，
-// Windows 上 t.TempDir 清理会因句柄锁失败）。
+// 一律 pgtestkit 隔离 PG 库；无并发等待、无网络依赖。
 
 import (
 	"bytes"
@@ -80,7 +78,6 @@ func TestW1QComposeSmallAdapterArms(t *testing.T) {
 // compose.go：composeSystemAPI 配置变体成功臂与命名错误臂
 //
 // 组合根依赖栈与手管目录清理策略直接复用 w1_compose_root_test.go 的
-// w1oNewComposeStack / w1oRedirectChatAssetsRoot，避免二次聚合造成漂移。
 // ---------------------------------------------------------------------------
 
 func TestW1QComposeSystemAPIStorageFailureArms(t *testing.T) {
@@ -116,7 +113,6 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 
 	t.Run("坏redis状态URL验证码服务失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		w1oRedirectChatAssetsRoot(t, stack)
 		stack.cfg.CaptchaDisabled = false
 		stack.cfg.RedisStateURL = "://w1q-bad-captcha-url"
 		composed, err := stack.compose(t)
@@ -133,7 +129,6 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 
 	t.Run("坏redis状态URL登录守卫失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		w1oRedirectChatAssetsRoot(t, stack)
 		stack.cfg.CaptchaDisabled = true
 		stack.cfg.RedisStateURL = "://w1q-bad-guard-url"
 		composed, err := stack.compose(t)
@@ -167,7 +162,6 @@ func TestW1QComposeSystemAPIMetricsAndHealthOutcomeArms(t *testing.T) {
 func TestW1QComposeSystemAPIChainRuntimeArms(t *testing.T) {
 	t.Run("坏缓存redisURL链条组装失败臂", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
-		w1oRedirectChatAssetsRoot(t, stack)
 		stack.cfg.ChainEnabled = true
 		stack.cfg.RedisCacheURL = "://w1q-bad-cache-url"
 		composed, err := stack.compose(t)
@@ -781,8 +775,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		extra map[string]string
 		want  string
 	}{
-		{"会话轮数下界", map[string]string{"JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION": "0"}, "JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION 必须在 1 到 1000 之间"},
-		{"会话保留天下界", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}, "JUHE_AI_CHAT_RETENTION_DAYS 必须在 1 到 365 之间"},
 		{"聊天工具环境非法", map[string]string{"JUHE_AI_NODE_ENV": "staging"}, "必须是 production、test 或 development"},
 		{"cookie同站非法", map[string]string{"JUHE_AI_COOKIE_SAME_SITE": "auto"}, "JUHE_AI_COOKIE_SAME_SITE 必须为 lax、strict 或 none"},
 		{"信任代理非法", map[string]string{"JUHE_AI_TRUST_PROXY": "maybe"}, "JUHE_AI_TRUST_PROXY 只能配置为 true/false 或 0-16"},
@@ -804,20 +796,12 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 
 	t.Run("解析成功臂", func(t *testing.T) {
 		cfg, err := loadRuntimeConfig(env(map[string]string{
-			"JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION":          "80",
-			"JUHE_AI_CHAT_RETENTION_DAYS":                      "30",
 			"JUHE_AI_AUDIT_LOG_ENABLED":                        "false",
 			"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "12345",
 			"JUHE_AI_LOG_FILE_ENABLED":                         "false",
 		}))
 		if err != nil {
 			t.Fatalf("合法覆盖必须通过: %v", err)
-		}
-		if cfg.ChatMaxTurnsPerConversation != 80 {
-			t.Fatalf("ChatMaxTurnsPerConversation = %d，want 80", cfg.ChatMaxTurnsPerConversation)
-		}
-		if cfg.ChatRetentionDays != 30 {
-			t.Fatalf("ChatRetentionDays = %d，want 30", cfg.ChatRetentionDays)
 		}
 		if !cfg.AuditLogEnabled {
 			t.Fatal("AuditLogEnabled = false，want true（2026-09-21 起开关移除恒开，残留 false 被忽略）")

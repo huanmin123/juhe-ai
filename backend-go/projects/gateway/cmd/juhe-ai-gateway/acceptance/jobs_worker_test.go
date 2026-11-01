@@ -43,7 +43,6 @@ func TestAcceptanceJobsWorkerSmoke(t *testing.T) {
 		"JUHE_AI_REDIS_STATE_URL":                   fixture.redisURL,
 		"JUHE_AI_REDIS_NAMESPACE":                   fixture.redisNamespace,
 		"JUHE_AI_DATA_DIR":                          filepath.Join(root, "storage"),
-		"JUHE_AI_CHAT_ASSETS_ROOT":                  filepath.Join(root, "storage", "chat-assets"),
 		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(root, "storage", "codex-context-root"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY":             fixture.spoolDir,
 		"JUHE_AI_INSTANCE_ID":                       "acceptance-jobs",

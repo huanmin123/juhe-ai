@@ -97,9 +97,6 @@ func TestW1iLoadRuntimeConfigDefaults(t *testing.T) {
 	if cfg.Port != 3000 {
 		t.Fatalf("port = %d", cfg.Port)
 	}
-	if cfg.ChatAssetsRoot != filepath.Join("data", "chat-assets") {
-		t.Fatalf("chat assets = %q", cfg.ChatAssetsRoot)
-	}
 	if cfg.UsageSpoolDirectory != filepath.Join("data", "usage-record-spool") {
 		t.Fatalf("usage spool = %q", cfg.UsageSpoolDirectory)
 	}

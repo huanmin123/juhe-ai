@@ -47,12 +47,31 @@ func TestV8CManualTestModelChatFaceExcludesImageVideoRows(t *testing.T) {
 		}
 	})
 
-	t.Run("视频行整体不可测", func(t *testing.T) {
-		if IsAccountManualTestModel(TestCatalogItem{Model: "sora-2", Mode: "video", SupportedAPIProtocols: []string{"video"}}, openAIAPIKey) {
-			t.Fatal("video 行不得进入对话测试候选")
+	t.Run("视频行经 video_create 连通性分支可测（2026-11-01 媒体域裁决）", func(t *testing.T) {
+		video := TestCatalogItem{Model: "sora-2", Mode: "video", SupportedAPIProtocols: []string{"video"}}
+		if !IsAccountManualTestModel(video, openAIAPIKey) {
+			t.Fatal("video 行必须经 video 协议 + api_key 门进入候选（video_create 连通性探测）")
 		}
+		modes, err := (&Service{}).manualTestEndpointModesForTargetModel(ctx, openAIAPIKey, video, "", cache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(modes) != 1 || modes[0] != "video_create" {
+			t.Fatalf("视频行测试形态应只余 video_create：%v", modes)
+		}
+		// 空协议 video 行不携带 video 协议证据，不得放行。
 		if IsAccountManualTestModel(TestCatalogItem{Model: "sora-2", Mode: "video"}, openAIAPIKey) {
 			t.Fatal("video 行空协议默认放行必须排除")
+		}
+		// 非开放组合保持排除：google_oauth 与 anthropic 无 video_create 连通性面。
+		googleOAuth := openAIAPIKey
+		googleOAuth.AccountType = "google_oauth"
+		if IsAccountManualTestModel(video, googleOAuth) {
+			t.Fatal("google_oauth 视频行不得进入人工测试候选")
+		}
+		anthropicSource := ManualTestModeSource{ProviderCode: "anthropic", ProtocolCode: accountscore.AnthropicProtocolCode, ProtocolVersion: "v1", AccountType: "api_key"}
+		if IsAccountManualTestModel(video, anthropicSource) {
+			t.Fatal("anthropic 视频行不得进入人工测试候选")
 		}
 	})
 

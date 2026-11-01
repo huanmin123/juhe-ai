@@ -48,6 +48,10 @@ const (
 	// multipart POST /v1/audio/transcriptions（2xx + JSON text 判活）。
 	ModeAudioSpeech            EndpointMode = "audio_speech"
 	ModeAudioTranscriptionJSON EndpointMode = "audio_transcription_json"
+	// M2 视频任务形态（媒体设计 §11.6）。2026-11-01 用户裁决起人工测试走
+	// 密钥连通性探测（绝不触碰创建端点，见 probe_connectivity.go），
+	// 不存在真实视频生成探针。
+	ModeVideoCreate EndpointMode = "video_create"
 )
 
 func (m EndpointMode) streaming() bool {

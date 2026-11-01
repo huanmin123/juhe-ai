@@ -555,6 +555,5 @@ func w1mSystemAPIEnvPairs(t *testing.T, root, businessPostgresURL string, mainPo
 		"JUHE_AI_SECRET=w1m-system-api-secret-0123456789abcdef",
 		"JUHE_AI_HOST=127.0.0.1",
 		fmt.Sprintf("JUHE_AI_PORT=%d", mainPort),
-		"JUHE_AI_CHAT_ASSETS_ROOT=" + filepath.Join(root, "chat-assets"),
 	}
 }

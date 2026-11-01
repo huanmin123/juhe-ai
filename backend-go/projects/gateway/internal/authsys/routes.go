@@ -316,15 +316,47 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 			kernel.WriteBadRequest(w, "请填写当前密码")
 			return
 		}
+		// DD2-E8 (2026-10-31): the non-mustChange face verifies the current
+		// password online, so it shares the login-face LoginGuard budget
+		// (Check -> VerifyCredentials -> Failed, same 10 failures / 10min
+		// window and 15min lock): without it a hijacked session could
+		// brute-force the current password unthrottled and persist a takeover
+		// via the change itself. Guard shapes mirror postLogin byte for byte;
+		// a guard store failure stays fail-closed (D8). The mustChange branch
+		// below never consults the guard (first-time change is not penalized).
+		clientIP := loginClientIP(r)
+		blocked, retryAfter, message, guardErr := d.LoginGuard.Check(clientIP, auth.Username)
+		if guardErr != nil {
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", guardErr)
+			return
+		}
+		if blocked {
+			setRetryAfter(w, retryAfter)
+			kernel.WriteError(w, http.StatusTooManyRequests, message)
+			return
+		}
 		verified, ok, err := d.Port.VerifyCredentials(r.Context(), auth.Username, *body.OldPassword)
 		if err != nil {
 			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if !ok || verified.SystemAccountID != auth.SystemAccountID {
+			blocked, retryAfter, message, guardErr := d.LoginGuard.Failed(clientIP, auth.Username)
+			if guardErr != nil {
+				// BUG-0248 镜像：VerifyCredentials 的 err 已提前 return，
+				// 此处 500 的根因必为守卫存储故障，必须携带 guardErr。
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", guardErr)
+				return
+			}
+			if blocked {
+				setRetryAfter(w, retryAfter)
+				kernel.WriteError(w, http.StatusTooManyRequests, message)
+				return
+			}
 			kernel.WriteBadRequest(w, "当前密码不正确")
 			return
 		}
+		d.LoginGuard.Success(clientIP, verified.Username)
 	}
 	updated, err := d.Accounts.UpdatePassword(r.Context(), auth.SystemAccountID, *body.NewPassword)
 	if err != nil {
@@ -336,6 +368,17 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "修改密码失败")
 		return
 	}
+	// DD2-E9 (2026-10-31): the self-service change now carries the same
+	// operation-log footprint as patchMe / 操作日志设计.md「必须记录」的
+	// change_password 动作：actor 由 recordOperationLog 从会话上下文回填，
+	// 摘要与变更不携带任何密码值（Sensitive 标记照抄管理员 reset 路径）。
+	d.recordOperationLog(r, OperationLogEntry{
+		OperationScopeSystemAccountID: auth.SystemAccountID, Mode: "self",
+		Module: "system_accounts", Action: "change_password", OperationKey: "auth.change_password",
+		ResourceType: "system_account", ResourceID: auth.SystemAccountID, ResourceName: updated.DisplayName,
+		Summary: "修改登录密码",
+		Changes: []OperationLogChange{{Field: "password", Label: "登录密码", Before: "已设置", After: "已变更", Sensitive: true}},
+	})
 	kernel.WriteOK(w, CurrentUserSummary{
 		ID: updated.ID, Username: auth.Username, DisplayName: auth.DisplayName,
 		Role: auth.Role, MustChangePassword: false,

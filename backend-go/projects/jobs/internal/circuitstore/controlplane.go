@@ -570,9 +570,16 @@ func (r *ControlPlaneRepo) CompareAndSetIncident(ctx context.Context, input opsj
 		replayRuntimeKey string
 		replayScopeKey   sql.NullString
 	)
+	// dedupe 幂等回放只认未 dispatched 的行（DD3-B5，2026-10-31）：dispatched
+	// 行是已完成的派发证据，不再作幂等回放依据。jobs Cleanup（本文件下方）
+	// 只删 outbox 全部 dispatched 的 incident 行、dispatched outbox 行永生，
+	// 若回放命中 dispatched 行，incident 行删除后同 transition_id 对账重试会
+	// 走进幂等臂、读不到 incident 行即 "deduplicated incident receipt has no
+	// incident" 硬错误恒败；排除 dispatched 后同 tid 重试落入新行 CAS 插入
+	// 臂。pending/processing 行的幂等臂不受影响。
 	err = tx.QueryRowContext(ctx,
 		"SELECT event_type, account_id, account_runtime_key, circuit_scope_key FROM "+
-			r.table("account_circuit_outbox")+" WHERE projection_key=? AND dedupe_key=?",
+			r.table("account_circuit_outbox")+" WHERE projection_key=? AND dedupe_key=? AND status<>'dispatched'",
 		ProjectionKey, dedupe).Scan(&replayEventType, &replayAccountID, &replayRuntimeKey, &replayScopeKey)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -726,21 +733,55 @@ func (r *ControlPlaneRepo) upsertIncidentCAS(ctx context.Context, tx *sql.Tx, v 
 
 // insertIncidentChangedOutbox 列集与 gateway insertOutbox 一致（claim 面
 // 列保持 NULL，由 claim 更新）。
+//
+// DD3-B5 配套（2026-10-31）：dedupe 幂等回放排除 dispatched 行之后，同
+// transition_id 重试（incident 行被 Cleanup 删除、dispatched outbox 行永生）
+// 会落到本插入臂，而永生 dispatched 行仍占据 (projection_key, dedupe_key)
+// 唯一键，纯 INSERT 必撞 23505 硬错误（真实 PG 复现）。冲突即重置复用该
+// dedupe 行：事件载荷按本次 CAS 刷新，status 回 pending、attempt_count 清
+// 零、claim 面与 acknowledged_at_ms 清空——重建的 incident 行（ledger
+// revision 重启）需要重新投影，重派事件是语义要求；identity 守卫（WHERE）
+// 防 transition_id 复用：事件类型/账户/runtime/scope 任一不一致则 0 行受
+// 影响，返回 ErrIdentityReplay。无冲突的首次插入行为不变。
 func (r *ControlPlaneRepo) insertIncidentChangedOutbox(ctx context.Context, tx *sql.Tx, v opsjobs.IncidentCASRow, dedupe string, nowMS int64) error {
 	scopeKey := v.CircuitScopeKey
 	incidentID := v.IncidentID
 	generation := v.Generation
 	ledgerRevision := v.LedgerRevision
-	query := "INSERT INTO " + r.table("account_circuit_outbox") +
+	outbox := r.table("account_circuit_outbox")
+	query := "INSERT INTO " + outbox +
 		" (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id," +
 		"transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms)" +
-		" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-	_, err := tx.ExecContext(ctx, query,
+		" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" +
+		" ON CONFLICT (projection_key, dedupe_key) DO UPDATE SET" +
+		" event_id=excluded.event_id,event_type=excluded.event_type,account_id=excluded.account_id," +
+		"account_runtime_key=excluded.account_runtime_key,circuit_scope_key=excluded.circuit_scope_key," +
+		"incident_id=excluded.incident_id,transition_id=excluded.transition_id," +
+		"dispatch_revision=excluded.dispatch_revision,generation=excluded.generation,ledger_revision=excluded.ledger_revision," +
+		"status='pending',available_at_ms=excluded.available_at_ms,attempt_count=0," +
+		"claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,last_error_class=NULL,acknowledged_at_ms=NULL," +
+		"updated_at_ms=excluded.updated_at_ms" +
+		" WHERE " + outbox + ".event_type=excluded.event_type" +
+		" AND " + outbox + ".account_id=excluded.account_id" +
+		" AND " + outbox + ".account_runtime_key=excluded.account_runtime_key" +
+		" AND " + outbox + ".circuit_scope_key IS NOT DISTINCT FROM excluded.circuit_scope_key"
+	result, err := tx.ExecContext(ctx, query,
 		newClaimToken(), ProjectionKey, dedupe, "incident_changed",
 		v.AccountID, v.AccountRuntimeKey, &scopeKey, &incidentID,
 		v.TransitionID, v.DispatchRevision, &generation, &ledgerRevision,
 		"pending", nowMS, 0, nowMS, nowMS)
-	return err
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		// 唯一键冲突且 identity 守卫未命中：transition_id 被另一身份复用。
+		return ErrIdentityReplay
+	}
+	return nil
 }
 
 // Cleanup 对齐 gateway Cleanup 的 incident 删除条件：CLOSED 且保留期到期、

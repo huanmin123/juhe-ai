@@ -12,14 +12,18 @@ package main
 // 记录可能滞留超过安全水位（默认 15s）才入表，游标一旦越过其 created_at
 // 即永久不聚合。probe 取三源最旧（min）注入 DrainStatus，由 ingestgate 的
 // oldestPendingUsageRecordCreatedAt / safeCreatedBeforeForPendingBacklog 统一
-// 回退游标。gateway 进程内 buffer（spool 落盘之前的一段）在本进程边界之外、
-// 无法观测，与 Node IPC 边界同款，为已登记的残余窗口。
+// 回退游标。多源读取顺序本身是游标安全约束：必须先读 spool 水位、后读
+// writer runtime（DD3-B1，论证见 assembleIngestDrainStatus），反序在 drain
+// 末批交错下存在两源双漏窗口、游标永久越过积压记录。gateway 进程内 buffer
+// （spool 落盘之前的一段）在本进程边界之外、无法观测，与 Node IPC 边界
+// 同款，为已登记的残余窗口。
 
 import (
 	"context"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/ingestgate"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
 )
 
 // gateFunc 将门控闭包适配为包侧 IngestDrainGate port（accountquality 与
@@ -43,19 +47,48 @@ func (a *workerAssembly) ingestDrainProbe() ingestgate.Probe {
 		if writer == nil {
 			return nil, nil
 		}
-		runtime := writer.Runtime()
-		return &ingestgate.DrainStatus{
-			// Node ready：ingest worker 就绪；Go 进程内 writer 存在即就绪。
-			Ready: true,
-			// Node snapshot.usageRecordQueue：writer 内存队列段。
-			SnapshotUsageRecordQueueOldestCreatedAt:   runtime.OldestCreatedAt,
-			SnapshotUsageRecordQueueFlushFailureCount: runtime.FlushFailureCount,
-			// Node pendingQueues.usageRecords envelope：Go 单进程承载为
-			// spool 文件段——gateway 交接 drain 与 writer 溢出回放 drain
-			// 各自仍持有（未确认删除）的队头记录 created_at，取最旧。
-			PendingUsageRecordsOldestCreatedAt: a.spoolPendingOldestCreatedAt(),
-			// Redis Stream 分支随 queueDriver=redis_stream 消灭（Go 直写分片）。
-		}, nil
+		return assembleIngestDrainStatus(
+			func() string { return a.spoolPendingOldestCreatedAt() },
+			func() usagewriter.Runtime { return writer.Runtime() },
+		), nil
+	}
+}
+
+// assembleIngestDrainStatus 把两段积压源读取装配为 DrainStatus。两段读取以
+// thunk 注入，读序即游标安全契约：**必须先读 spool 水位（T1）、后读 writer
+// runtime（T2）**（统计链路排查 B①/DD3-B1，2026-10-31）。
+//
+// 论证（记录单向迁移：spool 文件 → writer 内存队列 → usage_records 表，无
+// 逆向路径；drain goroutine 与本 probe 并发，两段读取之间存在任意交错）：
+// 门控的正确性要求"读取时点尚未入表的积压记录"必被至少一个读点观测到，
+// 否则 safeCreatedBefore 回退默认 now-15s、聚合游标越过其 created_at，记录
+// 随后入表即永久漏聚合。按水位居前、runtime 居后的读序，该不变式成立：
+//
+//   - T1 仍滞留在 spool 文件的记录必被水位覆盖（文件只能迁出，不会凭空
+//     消失）；T1 后经队列 flush 入表的记录，其 created_at 已把
+//     safeCreatedBefore 压到该记录之前（oldest-1ms），游标不越过——入表后
+//     由本轮（上界之内）或后续轮次聚合覆盖。
+//   - T1 时已在 writer 队列的记录：T2 时要么仍在队列（runtime 的
+//     OldestCreatedAt 观测到），要么已 flush 入表（聚合查询直接可见），
+//     不存在第三去向。
+//   - 反序（先 runtime 后水位）存在双漏窗口：T1 读 runtime 时记录仍在
+//     spool 文件（未观测）→ T1~T2 间 drain 完成末批（入队、删文件、水位
+//     清空）→ T2 读水位为空（未观测）→ 记录尚未入表而两源皆空，游标以
+//     默认 now-15s 推进越过其 created_at，入表后永久漏聚合。
+func assembleIngestDrainStatus(readSpoolOldest func() string, readRuntime func() usagewriter.Runtime) *ingestgate.DrainStatus {
+	spoolOldest := readSpoolOldest()
+	runtime := readRuntime()
+	return &ingestgate.DrainStatus{
+		// Node ready：ingest worker 就绪；Go 进程内 writer 存在即就绪。
+		Ready: true,
+		// Node snapshot.usageRecordQueue：writer 内存队列段。
+		SnapshotUsageRecordQueueOldestCreatedAt:   runtime.OldestCreatedAt,
+		SnapshotUsageRecordQueueFlushFailureCount: runtime.FlushFailureCount,
+		// Node pendingQueues.usageRecords envelope：Go 单进程承载为
+		// spool 文件段——gateway 交接 drain 与 writer 溢出回放 drain
+		// 各自仍持有（未确认删除）的队头记录 created_at，取最旧。
+		PendingUsageRecordsOldestCreatedAt: spoolOldest,
+		// Redis Stream 分支随 queueDriver=redis_stream 消灭（Go 直写分片）。
 	}
 }
 

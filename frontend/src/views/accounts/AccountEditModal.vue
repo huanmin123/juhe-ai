@@ -38,7 +38,12 @@
     </template>
     <a-form layout="vertical" class="account-form">
       <div v-if="loading" class="account-form-loading">
-        <a-spin tip="正在加载账户配置" />
+        <!-- tip 必须嵌套才渲染（自闭合 spin 在 antd 中不显示 tip,加载态曾是"空白弹窗"）。 -->
+        <a-spin>
+          <template #tip>
+            <div class="account-form-loading-text">正在加载账户配置…</div>
+          </template>
+        </a-spin>
       </div>
       <!-- 媒体域（video/audio/image）：精简三段式（D7 清单表驱动）；对话域维持现行双形态。 -->
       <AccountMediaForm
@@ -1515,6 +1520,11 @@ const emit = defineEmits<{
   display: grid;
   min-height: 260px;
   place-items: center;
+}
+
+.account-form-loading-text {
+  padding-top: 12px;
+  color: var(--juhe-text-secondary, #999);
 }
 
 .advanced-loading {

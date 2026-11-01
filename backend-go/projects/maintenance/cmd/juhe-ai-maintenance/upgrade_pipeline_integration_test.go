@@ -33,13 +33,14 @@ func TestUpgradeFreshDatabasePipeline(t *testing.T) {
 		return upgradeSteps(td.DSN, testSecret)
 	}
 
-	// 1) 落后库 dry-run：blocked/3，pending 应为全量 12 步。
+	// 1) 落后库 dry-run：blocked/3，pending 应为全量 11 步（revision 7
+	// chat-account-only-binding 已随 AI 问答退役删除，revision 序列 6 后直接 8）。
 	out := upgradepipeline.Run(context.Background(), newOpts(true, false, false), steps())
 	if out.ExitCode != upgradepipeline.ExitNeedsHuman || out.Report == nil || out.Report.Result != upgradepipeline.ResultBlocked {
 		t.Fatalf("dry-run 应 blocked/3，got code=%d result=%v", out.ExitCode, reportResult(out.Report))
 	}
-	if len(out.Report.Plan.Pending) != 12 {
-		t.Fatalf("fresh 库 pending 步骤数 = %d, want 12", len(out.Report.Plan.Pending))
+	if len(out.Report.Plan.Pending) != 11 {
+		t.Fatalf("fresh 库 pending 步骤数 = %d, want 11", len(out.Report.Plan.Pending))
 	}
 
 	// 2) 缺确认：exit 2。

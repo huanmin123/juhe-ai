@@ -23,8 +23,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -121,21 +119,6 @@ func TestW1OComposeSystemAPINilDependencyArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 // A2. composeSystemAPI：SQLite 命名路径失败臂
 // ---------------------------------------------------------------------------
-
-// w1oRedirectDatabasePaths 把六个 SQLite 库路径与 codex/chat 根重定向到独立
-// 手管目录：组合根在这些 fail-fast 失败路径上不回收已打开的 SQLite 句柄
-// （Windows 上句柄锁定文件会导致 t.TempDir 清理失败），因此改走尽力清理
-// （RemoveAll 错误不判失败），锁残留文件由进程退出后操作系统回收。
-func w1oRedirectChatAssetsRoot(t *testing.T, stack *w1oComposeStack) string {
-	t.Helper()
-	root := filepath.Join(os.TempDir(), "w1o-compose-failure-"+newCompositionID("id"))
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("create manual compose root: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	stack.cfg.ChatAssetsRoot = filepath.Join(root, "chat-assets")
-	return root
-}
 
 func TestW1OComposeSystemAPIPostgresFailureArms(t *testing.T) {
 	cases := []struct {

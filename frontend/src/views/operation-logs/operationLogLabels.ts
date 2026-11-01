@@ -51,6 +51,7 @@ const actionTextMap: Record<string, string> = {
   allowlist: '加入白名单',
   bind_group: '绑定分组',
   blacklist: '封禁',
+  change_password: '修改登录密码',
   cleanup_non_business_data: '清理非业务数据',
   cleanup_usage_records: '清理使用记录',
   create: '创建',

@@ -18,9 +18,8 @@ func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 		name  string
 		patch map[string]string
 	}{
-		{"chat-retention-zero", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}},
-		{"chat-retention-over", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "366"}},
-		// record-batch / list-projection 批量族错误臂已删除
+		// chat-retention 错误臂已随 AI 问答退役删除；record-batch /
+		// list-projection 批量族错误臂已删除
 		// （2026-09-30 C4 收编为常量，env 不再被读取）。
 		{"probe-concurrency-zero", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "0"}},
 		{"probe-concurrency-over", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "5097"}},

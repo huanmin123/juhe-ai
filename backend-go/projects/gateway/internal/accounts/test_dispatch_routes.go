@@ -30,6 +30,9 @@ var accountTestEndpointModeValues = []string{
 	"interactions_json", "interactions_sse",
 	// M1 同步音频探针形态。
 	"audio_speech", "audio_transcription_json",
+	// 媒体域连通性探测（2026-11-01 用户裁决）：视频域 video_create 进入人工
+	// 测试词表，探针按密钥连通性语义执行（不真实生成视频任务）。
+	"video_create",
 }
 
 // unsupportedGatewayProtocolTestMessage mirrors the route copy.

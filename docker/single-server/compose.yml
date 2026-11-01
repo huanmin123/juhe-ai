@@ -104,7 +104,7 @@ services:
     restart: unless-stopped
     # datadir/日志等相对路径约定以进程 cwd 为基准（缺省 ./data 相对 cwd）；
     # 镜像未设 WORKDIR，必须显式锚定到 /app/backend，相对 data/logs 才落在
-    # 下方挂载的宿主机持久目录（usage spool 交接、chat-assets、文件日志等）。
+    # 下方挂载的宿主机持久目录（usage spool 交接、文件日志等）。
     working_dir: /app/backend
     # 固定容器 IP：Caddy 直连 IP，不经 Docker DNS（偶发 lookup 失败会导致 502）；
     # 172.18.x 为 compose 内网段（下方 ipam），非公网实例事实，无需变量化

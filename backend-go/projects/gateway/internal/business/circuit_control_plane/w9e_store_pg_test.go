@@ -60,12 +60,18 @@ const w9eCPPIncidentsDDL = `CREATE TABLE IF NOT EXISTS ` + defaultBusinessSchema
  confirmation_failure_evidence_keys_json TEXT NOT NULL, recovering_successes BIGINT NOT NULL, last_failure_class TEXT,
  retained_until_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)`
 
+// w9eCPPOutboxDDL 与生产同构（T87 修正 2026-10-31）：outbox 唯一约束是复合
+// UNIQUE (projection_key, dedupe_key)（生产权威
+// maintenance/internal/schema/pg_schema_business_tables.go account_circuit_outbox），
+// 不是单列 dedupe_key UNIQUE——原单列形态使 insertIncidentChangedOutbox 的
+// ON CONFLICT (projection_key, dedupe_key) 落 42P10，与生产约束不符。
 const w9eCPPOutboxDDL = `CREATE TABLE IF NOT EXISTS ` + defaultBusinessSchema + `.account_circuit_outbox (
- event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
+ event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL, event_type TEXT NOT NULL,
  account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, circuit_scope_key TEXT, incident_id TEXT, transition_id TEXT NOT NULL,
  dispatch_revision BIGINT NOT NULL, generation BIGINT, ledger_revision BIGINT, status TEXT NOT NULL, available_at_ms BIGINT NOT NULL,
  claim_token TEXT, claimed_by TEXT, claim_until_ms BIGINT, attempt_count BIGINT NOT NULL, last_error_class TEXT,
- acknowledged_at_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)`
+ acknowledged_at_ms BIGINT, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL,
+ UNIQUE (projection_key, dedupe_key))`
 
 const w9eCPPCapabilityIndex = `CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON ` +
 	defaultBusinessSchema + `.account_circuit_incidents(scope_kind, capability_hash) ` +

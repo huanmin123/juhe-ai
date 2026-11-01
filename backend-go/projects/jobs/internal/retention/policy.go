@@ -31,18 +31,16 @@ import (
 
 // Constants mirror data-retention-cleanup.constants.ts byte for byte.
 const (
-	CleanupIntervalMinutes   = 10
-	CleanupBatchSize         = 1000
-	CleanupMaxBatchesPerRun  = 20
-	CleanupBatchPauseMillis  = 25
-	CleanupBatchPause        = CleanupBatchPauseMillis * time.Millisecond
-	retentionDayMillis       = int64(24 * 60 * 60 * 1000)
-	retentionHourMillis      = int64(60 * 60 * 1000)
-	retentionWeekMillis      = 7 * retentionDayMillis
-	retentionMinuteMillis    = int64(60 * 1000)
-	minimumUsageRecordAgeMs  = int64(24 * 60 * 60 * 1000)
-	chatRetentionMaxDays     = 365
-	chatRetentionDefaultDays = 3
+	CleanupIntervalMinutes  = 10
+	CleanupBatchSize        = 1000
+	CleanupMaxBatchesPerRun = 20
+	CleanupBatchPauseMillis = 25
+	CleanupBatchPause       = CleanupBatchPauseMillis * time.Millisecond
+	retentionDayMillis      = int64(24 * 60 * 60 * 1000)
+	retentionHourMillis     = int64(60 * 60 * 1000)
+	retentionWeekMillis     = 7 * retentionDayMillis
+	retentionMinuteMillis   = int64(60 * 1000)
+	minimumUsageRecordAgeMs = int64(24 * 60 * 60 * 1000)
 )
 
 // Retention upper bounds mirror the Node service constants.

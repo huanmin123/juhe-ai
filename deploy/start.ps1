@@ -45,7 +45,7 @@ function Import-DotEnvEnvironment {
     if ($trimmed.StartsWith('export ')) { $trimmed = $trimmed.Substring(7).Trim() }
     if ($trimmed -notmatch '^(JUHE_AI_[A-Za-z0-9_]+)=(.*)$') { continue }
     $name = $Matches[1]
-    if ($CapacityOnly -and $name -notmatch '^(JUHE_AI_CONCURRENCY_|JUHE_AI_ACCOUNT_|JUHE_AI_BACKGROUND_|JUHE_AI_GATEWAY_|JUHE_AI_DB_|JUHE_AI_CHAT_DB_SERVICE_|JUHE_AI_REDIS_STREAM_|JUHE_AI_USAGE_SPOOL_|JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT$|JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$)') { continue }
+    if ($CapacityOnly -and $name -notmatch '^(JUHE_AI_CONCURRENCY_|JUHE_AI_ACCOUNT_|JUHE_AI_BACKGROUND_|JUHE_AI_GATEWAY_|JUHE_AI_DB_|JUHE_AI_REDIS_STREAM_|JUHE_AI_USAGE_SPOOL_|JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT$|JUHE_AI_(GATEWAY|USAGE|LOG|STATS|OPS)_WORKER_REPLICAS$)') { continue }
     $value = $Matches[2].Trim()
     if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
       $value = $value.Substring(1, $value.Length - 2)

@@ -603,7 +603,6 @@ func w2cComposeChainStack(t *testing.T, upstream *httptest.Server) *composition 
 	t.Helper()
 	stack := w1oNewComposeStack(t)
 	stack.cfg.ChainEnabled = true
-	stack.cfg.ChatMaxTurnsPerConversation = 50
 	// httptest loopback 上游：与 chainSmokeDeps 同一约定（D-192/D-146 生产
 	// 默认不受影响）。
 	stack.cfg.UpstreamURLSecurity = sharedupstreamhttp.URLSecurityConfig{AllowPrivateBaseUrls: true}

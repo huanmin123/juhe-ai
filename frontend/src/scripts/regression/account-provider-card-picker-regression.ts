@@ -70,8 +70,8 @@ assert.doesNotMatch(editingBranchSource, /provider-card|ProviderIcon|provider-su
 // ---- 展开状态：弹窗每次打开复位为展开，「更换」重新展开 ----
 
 const expandResetSource = sourceBetween(selectorScript, 'watch(() => props.open', 'const enabledProviders')
-assert.match(expandResetSource, /if \(!next\) return[\s\S]*?pickerExpanded\.value = !props\.cloning/, '弹窗打开复位必须区分克隆：新建展开卡片墙，克隆保持收起直接进入阶段二')
-assert.match(expandResetSource, /emit\('picker-expanded-change', !props\.cloning\)/, '弹窗打开复位必须按「新建展开/克隆收起」语义通知上层')
+assert.match(expandResetSource, /if \(!next\) return[\s\S]*?pickerExpanded\.value = !props\.cloning && !props\.editing/, '弹窗打开复位必须区分新建与编辑/克隆：新建展开卡片墙，编辑与克隆保持收起直接进入阶段二')
+assert.match(expandResetSource, /emit\('picker-expanded-change', pickerExpanded\.value\)/, '弹窗打开复位必须按「新建展开/编辑与克隆收起」语义通知上层')
 assert.match(cardGridSource, /v-if="pickerExpanded"/, '卡片墙必须受展开状态控制')
 assert.match(cardGridSource, /@click="handlePickerExpand">更换/, '「更换」必须重新展开卡片墙')
 

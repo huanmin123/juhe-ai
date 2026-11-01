@@ -26,10 +26,8 @@ func TestW13G8LoadWorkerConfigRemainingArms(t *testing.T) {
 		patch    map[string]string
 		fragment string
 	}{
-		{"chat 保留天数非法", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}, "JUHE_AI_CHAT_RETENTION_DAYS"},
-		{"chat 保留天数越界", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "366"}, "JUHE_AI_CHAT_RETENTION_DAYS"},
-		{"chat 保留天数非整数", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "w13g8"}, "JUHE_AI_CHAT_RETENTION_DAYS"},
-		// 维护批量 / 队列 / 关停冲刷批与投影批量族错误臂已删除
+		// chat 保留天数错误臂已随 AI 问答退役删除；维护批量 / 队列 /
+		// 关停冲刷批与投影批量族错误臂已删除
 		// （2026-09-30 C4 收编为常量，env 不再被读取）。
 		{"探针并发越界", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "5097"}, "JUHE_AI_JOBS_PROBE_CONCURRENCY"},
 		{"投影间隔越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "999"}, "PROJECTION_INTERVAL_MS"},

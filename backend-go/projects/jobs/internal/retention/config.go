@@ -1,8 +1,6 @@
 package retention
 
 import (
-	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -19,9 +17,6 @@ type Config struct {
 	// WorkerRole mirrors JUHE_AI_WORKER_ROLE (Node default worker). The
 	// data-retention stages additionally require "ingest-worker".
 	WorkerRole string
-	// ChatRetentionDays mirrors JUHE_AI_CHAT_RETENTION_DAYS (default 3,
-	// range 1..365).
-	ChatRetentionDays int
 	// CodexContextRoot mirrors JUHE_AI_CODEX_CONTEXT_ROOT; required for the
 	// codex-context storage cleanup.
 	CodexContextRoot string
@@ -37,23 +32,15 @@ type Config struct {
 // effect anymore.
 func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		Mode:              ModePostgres,
-		ProcessRole:       "server",
-		WorkerRole:        "worker",
-		ChatRetentionDays: chatRetentionDefaultDays,
+		Mode:        ModePostgres,
+		ProcessRole: "server",
+		WorkerRole:  "worker",
 	}
 	if value := strings.TrimSpace(getenv("JUHE_AI_PROCESS_ROLE")); value != "" {
 		cfg.ProcessRole = value
 	}
 	if value := strings.TrimSpace(getenv("JUHE_AI_WORKER_ROLE")); value != "" {
 		cfg.WorkerRole = value
-	}
-	if value := strings.TrimSpace(getenv("JUHE_AI_CHAT_RETENTION_DAYS")); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 1 || parsed > chatRetentionMaxDays {
-			return Config{}, fmt.Errorf("JUHE_AI_CHAT_RETENTION_DAYS 必须在 1 到 %d 之间的整数", chatRetentionMaxDays)
-		}
-		cfg.ChatRetentionDays = parsed
 	}
 	cfg.CodexContextRoot = strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_ROOT"))
 	return cfg, nil

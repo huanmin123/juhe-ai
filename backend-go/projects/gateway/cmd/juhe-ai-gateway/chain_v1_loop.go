@@ -253,6 +253,73 @@ func (l *v1DispatchLoop) newRequestCoordination() *gatewaydispatch.RequestCoordi
 	return coordination
 }
 
+// isRealCodexOAuthAccount 判定候选账户是否「真实 codex OAuth 档案」（DD2-A1
+// 预算豁免服务端锚）：依据服务端账户事实——凭据类型 Type == "oauth" 且
+// vendor 为真实 gpt 供应商。vendor 判定复用
+// gatewaydispatch.CodexOAuthVendorEligible 既有口径（historypreppolicy.go：
+// 只有真实 gpt 供应商的 OAuth 账户套用 GPT/Codex 归一化；空 vendor 不是合法
+// 形态，不按 gpt 处理；xAI（Grok）OAuth 等已知非 gpt 厂商一律排除）。真
+// Codex Desktop 的压缩请求由该档案服务；客户端自述头（x-codex-turn-metadata
+// 等画像输入）只保留为豁免的辅助条件（preflight 识别谓词 + codexTurn 门不
+// 变），不再单独构成预算豁免锚。
+func isRealCodexOAuthAccount(account gatewaydispatch.AccountCandidate) bool {
+	return account.Type == "oauth" && gatewaydispatch.CodexOAuthVendorEligible(account.VendorCode)
+}
+
+// regularCompactionWallBudgetOf 把 Unbounded 墙钟预算实例值克隆为常规文本档
+// 墙钟预算（gatewayrouting.DefaultGatewayRequestWallBudgetMs，与 preflight
+// 未豁免文本请求 BudgetMs 缺省同源），从原请求起点起算（已流逝时间照常计入
+// 剩余预算）。Unbounded 是单向置位（gatewayrouting.WithoutLimit 无逆操作，
+// 预算实例无法在链面收回），恢复常规预算只能按 WithoutLimit 的同款值克隆反
+// 向构造；未导出的 now 时钟与观察器随值克隆保留。压缩请求恒为文本 lane，
+// 不涉及 image 档最小预算回填。
+func regularCompactionWallBudgetOf(unbounded *gatewayrouting.GatewayRequestWallBudget) *gatewayrouting.GatewayRequestWallBudget {
+	regular := *unbounded
+	regular.Unbounded = false
+	regular.BudgetMs = gatewayrouting.DefaultGatewayRequestWallBudgetMs
+	regular.DeadlineAtMs = unbounded.RequestAcceptedAtMs + regular.BudgetMs
+	return &regular
+}
+
+// applyCompactionExemptionAccountGate 是预算豁免的服务端账户锚闸（DD2-A1）：
+// 压缩豁免锚从「客户端自述 codexTurn 身份」收窄为「服务端认定的真实上游账
+// 户」。preflight 仍在识别谓词（gatewaycodex compactioncontract path+trigger）
+// 与 codexTurn 辅助条件下授予 Unbounded wall budget（全局唯一授予点，
+// preflight.go compactionTimeoutsDisabled 分支），本闸在 attempt 装配点（每轮
+// coordination 构造并完成候选窗口过滤后、引擎调用前）按本轮有效候选窗口复
+// 核：窗口存在非「真实 codex OAuth 档案」账户时，该 attempt 以常规预算覆盖
+// ——coordination 换常规 wall budget 实例（默认 270s，原请求起点起算）并复
+// 位 TimeoutsDisabled，引擎按常规超时档构造 attempt 预算（首响应/空闲/生命周期
+// 恢复计时）、响应层按 dispatched profile 恢复 read plan，到点掐断；引擎与
+// 链面对 wall budget 的耗尽/钳制判定同点恢复常规语义。
+//
+// 不触碰的面：①真 codex OAuth 账户窗口豁免原样保持（实例、TimeoutsDisabled
+// 与 TotalTimeLane 均不动）；②TotalTimeLane 保持豁免 granted 值——链面
+// speedFirstTotalTimeThresholdMsOf 与引擎共用同一档位判定（同一样本只用一把
+// 尺），总时间是速度优先软观察维度，不属墙钟/attempt 预算；③loop.budgets.wall
+// 保持 preflight 授予的 Unbounded 实例——speedFirstCompactionGateOf 首字压缩
+// 守卫与 keepalive 三重门（compactWaitKeepalive）按请求级豁免口径不变；
+// ④T49 用量压缩标记（preflight 冻结）不受影响。非 Unbounded（非压缩请求、
+// 媒体/桥接等一切常规面）零操作。BUG-0289 恢复重放轮的有效窗口是钉住账户
+// （引擎把候选窗塌缩为 SameAccountRetry.Account，upstreamdispatch.go），闸按
+// 钉住账户判定。空窗口不触发覆盖（引擎按无候选结算，预算无关）。
+func (l *v1DispatchLoop) applyCompactionExemptionAccountGate(coordination *gatewaydispatch.RequestCoordinationContext, dispatchAccounts []gatewaydispatch.AccountCandidate) {
+	if coordination == nil || l.budgets.wall == nil || !l.budgets.wall.Unbounded {
+		return
+	}
+	window := dispatchAccounts
+	if coordination.SameAccountRetry != nil && coordination.SameAccountRetry.Account.ID != "" {
+		window = []gatewaydispatch.AccountCandidate{coordination.SameAccountRetry.Account}
+	}
+	for _, account := range window {
+		if !isRealCodexOAuthAccount(account) {
+			coordination.GatewayRequestWallBudget = regularCompactionWallBudgetOf(l.budgets.wall)
+			coordination.TimeoutsDisabled = false
+			return
+		}
+	}
+}
+
 // engineSchedulingExclusionsOf 把 preauth 端口镜像的通用调度排除集投影为引擎
 // 入参形状（调度内核通用化设计 5.1；两包镜像类型逐字段复制）。nil 保持 nil。
 func engineSchedulingExclusionsOf(exclusions *gatewaypreauth.SchedulingExclusions) *gatewaydispatch.SchedulingExclusions {
@@ -476,6 +543,11 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		// 重派窗口（流式重试、速度优先切换、调度错误重派、分组回退）在推进前
 		// 按冻结目标后置过滤；首个候选选择（无冻结目标）不受影响。
 		dispatchAccounts = l.filterAccountsForFrozenSwitchTarget(ctx, dispatchAccounts)
+		// DD2-A1 预算豁免账户锚闸：豁免锚从客户端自述 codexTurn 身份收窄为
+		// 服务端认定的真实上游账户（见 applyCompactionExemptionAccountGate）。
+		// 在候选窗口全部过滤完成后、引擎调用前执行——coordination 的预算字段
+		// 在此定稿为本轮 attempt 的最终装配值。
+		l.applyCompactionExemptionAccountGate(coordination, dispatchAccounts)
 		// 本轮上游派发起点：引擎调用单点在循环体内，每轮刷新（含回退分组
 		// 切换后的下一轮），供耗尽埋点的阶段起点口径使用。
 		l.roundStartedAtMs = time.Now().UnixMilli()

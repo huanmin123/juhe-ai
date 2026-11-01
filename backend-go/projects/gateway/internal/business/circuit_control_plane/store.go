@@ -322,7 +322,8 @@ func (s *Store) AdvanceDispatchRevision(ctx context.Context, in DispatchRevision
 	}
 	defer tx.Rollback()
 	dedupe := "dispatch:" + in.TransitionID
-	if replay, found, err := s.outboxByDedupe(ctx, tx, dedupe); err != nil {
+	// dispatched 行保留为 dispatch 推进的幂等证据（见 outboxByDedupe 注释）。
+	if replay, found, err := s.outboxByDedupe(ctx, tx, dedupe, false); err != nil {
 		return DispatchResult{}, err
 	} else if found {
 		if replay.EventType != "dispatch_revision_changed" || replay.AccountID != in.AccountID || replay.AccountRuntimeKey != in.AccountRuntimeKey {
@@ -483,7 +484,9 @@ func (s *Store) CompareAndSetIncident(ctx context.Context, in IncidentMutation) 
 		return IncidentResult{Status: "stale_dispatch_revision", CurrentDispatchRevision: currentDispatch}, nil
 	}
 	dedupe := "incident:" + in.TransitionID
-	if replay, found, err := s.outboxByDedupe(ctx, tx, dedupe); err != nil {
+	// DD3-B5 同构（2026-10-31）：dedupe 幂等回放排除 dispatched 行，已完成的
+	// 派发不再作幂等证据；同 tid 重试在 incident 行被清理后落入下方插入臂。
+	if replay, found, err := s.outboxByDedupe(ctx, tx, dedupe, true); err != nil {
 		return IncidentResult{}, err
 	} else if found {
 		if replay.EventType != "incident_changed" || replay.AccountID != in.AccountID || replay.AccountRuntimeKey != in.AccountRuntimeKey || value(replay.CircuitScopeKey) != in.CircuitScopeKey {
@@ -540,7 +543,7 @@ func (s *Store) CompareAndSetIncident(ctx context.Context, in IncidentMutation) 
 	if err != nil {
 		return IncidentResult{}, err
 	}
-	if err = s.insertOutbox(ctx, tx, Outbox{EventID: eventID, ProjectionKey: ProjectionKey, DedupeKey: dedupe, EventType: "incident_changed", AccountID: in.AccountID, AccountRuntimeKey: in.AccountRuntimeKey, CircuitScopeKey: ptr(in.CircuitScopeKey), IncidentID: ptr(value(in.IncidentID)), TransitionID: in.TransitionID, DispatchRevision: in.DispatchRevision, Generation: ptr(in.Generation), LedgerRevision: ptr(in.LedgerRevision), Status: "pending", AvailableAtMS: now, CreatedAtMS: now, UpdatedAtMS: now}); err != nil {
+	if err = s.insertIncidentChangedOutbox(ctx, tx, Outbox{EventID: eventID, ProjectionKey: ProjectionKey, DedupeKey: dedupe, EventType: "incident_changed", AccountID: in.AccountID, AccountRuntimeKey: in.AccountRuntimeKey, CircuitScopeKey: ptr(in.CircuitScopeKey), IncidentID: ptr(value(in.IncidentID)), TransitionID: in.TransitionID, DispatchRevision: in.DispatchRevision, Generation: ptr(in.Generation), LedgerRevision: ptr(in.LedgerRevision), Status: "pending", AvailableAtMS: now, CreatedAtMS: now, UpdatedAtMS: now}); err != nil {
 		return IncidentResult{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -908,8 +911,25 @@ func (s *Store) incidentByScopeForUpdate(ctx context.Context, q queryer, scope s
 	}
 	return v, err == nil, err
 }
-func (s *Store) outboxByDedupe(ctx context.Context, q queryer, dedupe string) (Outbox, bool, error) {
-	row := q.QueryRowContext(ctx, s.bind("SELECT "+outboxColumns+" FROM "+s.table("account_circuit_outbox")+" WHERE projection_key=? AND dedupe_key=?"), ProjectionKey, dedupe)
+
+// outboxByDedupe 读取 dedupe 幂等回放行。excludeDispatched 仅 incident 臂
+// 启用（DD3-B5 同构，2026-10-31，契约模板见 jobs
+// internal/circuitstore/controlplane.go CompareAndSetIncident）：dispatched
+// 行是已完成的派发证据，不再作 incident 幂等回放依据——gateway Cleanup 与
+// jobs Cleanup 都只删 outbox 全部 dispatched 的 incident 行（dispatched
+// outbox 行永生），incident 行删除后同 transition_id 重试若命中 dispatched
+// 行会走进幂等臂、读不到 incident 行即 "deduplicated incident receipt has
+// no incident" 硬错误恒败；排除后同 tid 重试落入插入臂（配合
+// insertIncidentChangedOutbox 的冲突重置）。dispatch 推进臂必须保持
+// excludeDispatched=false：dispatch 的持久事实是 accounts.dispatch_revision
+// （不被任何清理删除），dispatched 行作幂等证据恰好正确；若排除，同 tid
+// 重试会再次推进 revision 并重派事件，破坏 dispatch dedupe 幂等契约。
+func (s *Store) outboxByDedupe(ctx context.Context, q queryer, dedupe string, excludeDispatched bool) (Outbox, bool, error) {
+	statusFilter := ""
+	if excludeDispatched {
+		statusFilter = " AND status<>'dispatched'"
+	}
+	row := q.QueryRowContext(ctx, s.bind("SELECT "+outboxColumns+" FROM "+s.table("account_circuit_outbox")+" WHERE projection_key=? AND dedupe_key=?"+statusFilter), ProjectionKey, dedupe)
 	v, err := scanOutbox(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Outbox{}, false, nil
@@ -942,10 +962,61 @@ func (s *Store) listIncidents(ctx context.Context, q string, args ...any) (Rebui
 	return out, nil
 }
 
+// insertOutbox 是 dispatch 推进臂（dispatch_revision_changed）的纯插入。
+// dispatched 行在该臂仍是幂等回放证据（见 outboxByDedupe），插入臂唯一键
+// 冲突只能来自同 tid 并发竞态——23505 报错回滚、调用方重试后命中幂等臂，
+// 维持纯 INSERT，不做冲突重置（重置会让同 tid 重试静默二次推进 revision）。
 func (s *Store) insertOutbox(ctx context.Context, tx *sql.Tx, v Outbox) error {
 	q := "INSERT INTO " + s.table("account_circuit_outbox") + " (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id,transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 	_, err := tx.ExecContext(ctx, s.bind(q), v.EventID, v.ProjectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
 	return err
+}
+
+// insertIncidentChangedOutbox 列集与 insertOutbox 一致（claim 面列保持 NULL，
+// 由 ClaimOutbox 更新），仅服务 incident_changed 事件。
+//
+// DD3-B5 同构（2026-10-31，契约模板 jobs
+// internal/circuitstore/controlplane.go insertIncidentChangedOutbox）：dedupe
+// 幂等回放排除 dispatched 行之后，同 transition_id 重试（incident 行被
+// Cleanup 删除、dispatched outbox 行永生）会落到本插入臂，而永生 dispatched
+// 行仍占据 (projection_key, dedupe_key) 唯一键，纯 INSERT 必撞 23505 硬错误
+// （jobs 侧真实 PG 复现）。冲突即重置复用该 dedupe 行：事件载荷按本次 CAS
+// 刷新，status 回 pending、attempt_count 清零、claim 面与 acknowledged_at_ms
+// 清空——重建的 incident 行（ledger revision 重启）需要重新投影，重派事件
+// 是语义要求。identity 守卫（WHERE）防 transition_id 复用：事件类型/账户/
+// runtime/scope 任一不一致则 0 行受影响，返回 ErrIdentityReplay（与上方
+// 幂等回放臂的 identity 校验同字段同语义）。无冲突的首次插入行为不变。
+func (s *Store) insertIncidentChangedOutbox(ctx context.Context, tx *sql.Tx, v Outbox) error {
+	outbox := s.table("account_circuit_outbox")
+	q := "INSERT INTO " + outbox +
+		" (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id," +
+		"transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms)" +
+		" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" +
+		" ON CONFLICT (projection_key, dedupe_key) DO UPDATE SET" +
+		" event_id=excluded.event_id,event_type=excluded.event_type,account_id=excluded.account_id," +
+		"account_runtime_key=excluded.account_runtime_key,circuit_scope_key=excluded.circuit_scope_key," +
+		"incident_id=excluded.incident_id,transition_id=excluded.transition_id," +
+		"dispatch_revision=excluded.dispatch_revision,generation=excluded.generation,ledger_revision=excluded.ledger_revision," +
+		"status='pending',available_at_ms=excluded.available_at_ms,attempt_count=0," +
+		"claim_token=NULL,claimed_by=NULL,claim_until_ms=NULL,last_error_class=NULL,acknowledged_at_ms=NULL," +
+		"updated_at_ms=excluded.updated_at_ms" +
+		" WHERE " + outbox + ".event_type=excluded.event_type" +
+		" AND " + outbox + ".account_id=excluded.account_id" +
+		" AND " + outbox + ".account_runtime_key=excluded.account_runtime_key" +
+		" AND " + outbox + ".circuit_scope_key IS NOT DISTINCT FROM excluded.circuit_scope_key"
+	res, err := tx.ExecContext(ctx, s.bind(q), v.EventID, v.ProjectionKey, v.DedupeKey, v.EventType, v.AccountID, v.AccountRuntimeKey, v.CircuitScopeKey, v.IncidentID, v.TransitionID, v.DispatchRevision, v.Generation, v.LedgerRevision, "pending", v.AvailableAtMS, 0, v.CreatedAtMS, v.UpdatedAtMS)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		// 唯一键冲突且 identity 守卫未命中：transition_id 被另一身份复用。
+		return ErrIdentityReplay
+	}
+	return nil
 }
 func (s *Store) upsertIncident(ctx context.Context, tx *sql.Tx, v Incident) error {
 	if v.ChildIncidentIDs == nil {

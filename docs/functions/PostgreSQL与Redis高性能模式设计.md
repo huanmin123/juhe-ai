@@ -45,7 +45,7 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 
 - 启动必填（缺失启动即失败，fail-fast 保留）：`JUHE_AI_POSTGRES_URL`、`JUHE_AI_REDIS_CACHE_URL`、`JUHE_AI_REDIS_STATE_URL`。
 - 已退役 env：`JUHE_AI_RUNTIME_MODE`、`JUHE_AI_DATABASE_DRIVER`、`JUHE_AI_CACHE_DRIVER`、`JUHE_AI_RUNTIME_STATE_DRIVER` 与全部 sqlite 路径 / 分片族（`*_DATABASE_PATH`、`JUHE_AI_USAGE_SHARD_ROOT` / `_COUNT`、`JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` / `_COUNT`）及 store 选择族（`JUHE_AI_AUDIT_LOG_STORE` / `JUHE_AI_OPERATION_LOG_STORE` / `JUHE_AI_RUNTIME_LOG_STORE` / `JUHE_AI_J3B_STORE` / `JUHE_AI_ACCOUNT_HEALTH_STORE` / `JUHE_AI_ACCOUNT_BALANCE_STORE`）——代码不再读取，部署面残留值无效，应从 `.env` 删除（清理清单见 `docker/single-server/README.md`）。
-- 普通文件目录派生（PG 模式仍消费）：`JUHE_AI_DATA_DIR` 缺省 `./data`（相对进程工作目录），下派生 `usage-record-spool`（gateway↔jobs 用量交接，可用 `JUHE_AI_USAGE_SPOOL_DIRECTORY` 显式覆盖）、`codex-context` segments 根（可用 `JUHE_AI_CODEX_CONTEXT_ROOT` 显式覆盖）、`logs`、`chat-assets`、`audit-blob`。gateway 与 jobs 双进程消费同一目录时必须解析到同一宿主机路径。
+- 普通文件目录派生（PG 模式仍消费）：`JUHE_AI_DATA_DIR` 缺省 `./data`（相对进程工作目录），下派生 `usage-record-spool`（gateway↔jobs 用量交接，可用 `JUHE_AI_USAGE_SPOOL_DIRECTORY` 显式覆盖）、`codex-context` segments 根（可用 `JUHE_AI_CODEX_CONTEXT_ROOT` 显式覆盖）、`logs`、`audit-blob`（chat-assets 已随 AI 问答退役删除，2026-10-31）。gateway 与 jobs 双进程消费同一目录时必须解析到同一宿主机路径。
 - `JUHE_AI_CACHE_DRIVER` 类语义不复存在：Redis cache 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走 Redis state（`JUHE_AI_REDIS_STATE_URL`）。
 - `JUHE_AI_REDIS_NAMESPACE` 是 Redis key 的部署隔离前缀，必填非空（现行生产配 `prod`）；压测、回归和多套环境共用 Redis 实例时必须使用不同 namespace。
 - 运行态与 J3b 电路运行态必须分离键空间：`JUHE_AI_J3B_CIRCUIT_REDIS_URL` 不得与 `JUHE_AI_REDIS_STATE_URL` 相同（gateway 启动强校验），现行生产以同实例不同 DB 承载。
@@ -80,7 +80,6 @@ PostgreSQL + Redis 形态最初为高用户量、高请求量部署引入，用�
 | `juhe_usage` | 使用记录域 | `usage_records`（日分区）与列表索引、账号 / API Key scope catalog |
 | `juhe_stats` | 统计结果域 | 用量桶、额度窗口、范围窗口、排行、账号质量、`stats_job_state` 等预聚合结果（逐表键与口径见 [统计指标与分层聚合设计](统计指标与分层聚合设计.md)） |
 | `juhe_codex_context` | Responses 桥接状态索引 | Responses session / response / compact 索引 |
-| `juhe_chat` | AI 问答正文 | 会话、消息（日分区）、幂等键、用户存储窗口（见文末补充） |
 | `juhe_jobs` / `juhe_j3b` | jobs 事实域 / J3b 模型检测 | 余额租约四表等 jobs 事实、`model_check_*` 专库表（需手工预置 schema 后由 maintenance `--apply-*` 建表） |
 
 schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/internal/schema/pg_schema*.go`），由 `juhe-ai-maintenance --ensure-schema` 幂等执行（Node 时代的 `postgres-schema.ts` / `postgres:init-schema` 已随迁移删除）。生产单库除上表 schema 外的预置序列（手工 `CREATE SCHEMA` 与 `--apply-*` 命令）以 `docker/single-server/README.md` 的拓扑节为准。
@@ -334,6 +333,7 @@ schema 初始化与默认 seed 由 `juhe-ai-maintenance --ensure-schema / --seed
 
 ## AI 问答聊天存储补充
 
+**[已退役 2026-10-31]** `juhe_chat` schema（AI 问答会话面，含日分区与 `JUHE_AI_CHAT_RETENTION_DAYS` 保留窗口机制）随 AI 问答退役：DDL 已从 `--ensure-schema` 移除，retention 配置解析已删；生产库现存 11 张表的清理待授权窗口执行（见待办 T88）。以下原文为历史设计记录。
 AI 问答高增长正文使用同一 PostgreSQL 集群内的独立 `juhe_chat` schema，不写入 `juhe_business`：
 
 - `chat_conversations`、`chat_message_idempotency`、`chat_user_storage_windows` 为普通表。

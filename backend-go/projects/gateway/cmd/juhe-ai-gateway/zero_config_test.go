@@ -62,10 +62,9 @@ func TestZeroConfigLoadRuntimeConfigDerivesPaths(t *testing.T) {
 	if cfg.Secret != defaultRuntimeSecret {
 		t.Fatalf("空 env Secret 必须回退开发密钥: %q", cfg.Secret)
 	}
-	// 普通文件目录面固定名派生（D1 spool / codex-context segments / chat-assets）。
+	// 普通文件目录面固定名派生（D1 spool / codex-context segments）。
 	derived := map[string]string{
 		cfg.UsageSpoolDirectory: filepath.Join(root, "usage-record-spool"),
-		cfg.ChatAssetsRoot:      filepath.Join(root, "chat-assets"),
 		cfg.CodexContextRoot:    filepath.Join(root, "codex-context"),
 	}
 	for got, want := range derived {

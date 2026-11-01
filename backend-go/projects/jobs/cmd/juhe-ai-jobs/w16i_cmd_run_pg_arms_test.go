@@ -58,7 +58,6 @@ func w16iBaseEnv(t *testing.T, pgURL string) map[string]string {
 		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":          pgURL,
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":           "w16i-run",
 		"JUHE_AI_LOG_DIR":                           t.TempDir(),
-		"JUHE_AI_CHAT_ASSETS_ROOT":                  filepath.Join(t.TempDir(), "chat-assets"),
 		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(t.TempDir(), "codex-context"),
 		"JUHE_AI_SECRET":                            "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":        "w16i-j1",

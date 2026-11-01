@@ -21,9 +21,6 @@ func TestLoadWorkerConfigDataDirAndSpoolDerivation(t *testing.T) {
 	if want := filepath.Join(dataDir, "usage-record-spool"); config.UsageSpoolDirectory != want {
 		t.Fatalf("UsageSpoolDirectory 必须派生为 %q，得到 %q", want, config.UsageSpoolDirectory)
 	}
-	if want := filepath.Join(dataDir, "chat-assets"); config.ChatAssetsRoot != want {
-		t.Fatalf("ChatAssetsRoot 必须派生为 %q，得到 %q", want, config.ChatAssetsRoot)
-	}
 	if want := filepath.Join(dataDir, "codex-context"); config.CodexContextRoot != want {
 		t.Fatalf("CodexContextRoot 必须派生为 %q，得到 %q", want, config.CodexContextRoot)
 	}
@@ -96,7 +93,8 @@ func TestLoadWorkerConfigDefaults(t *testing.T) {
 		t.Fatalf("env 指定的停机排空上限必须生效，得到 %v", config.DrainTimeout)
 	}
 	// usage 分片数 env 已删除：写计划 ID 路由基数收编为常量 16。
-	if config.ChatRetentionDays != 3 || config.RecordMaintenanceBatchSize != 10 || config.RecordMaintenanceShutdownFlushMaxBatches != 1 {
+	// chat 保留天数（JUHE_AI_CHAT_RETENTION_DAYS）已随 AI 问答退役删除。
+	if config.RecordMaintenanceBatchSize != 10 || config.RecordMaintenanceShutdownFlushMaxBatches != 1 {
 		t.Fatalf("retention/维护默认值漂移: %+v", config)
 	}
 	// spool 目录按 D1 从 DATA_DIR 派生。
@@ -131,9 +129,8 @@ func TestLoadWorkerConfigRejectsInvalidEnv(t *testing.T) {
 		contains string
 	}{
 		// replica / 维护批次 / 停机冲刷批 / 列表投影批量族错误臂已删除
-		// （2026-09-30 C4 收编为常量，env 不再被读取）。
-		{"chat 保留天下界", func(e map[string]string) { e["JUHE_AI_CHAT_RETENTION_DAYS"] = "0" }, "必须在 1 到 365"},
-		{"chat 保留天上界", func(e map[string]string) { e["JUHE_AI_CHAT_RETENTION_DAYS"] = "366" }, "必须在 1 到 365"},
+		// （2026-09-30 C4 收编为常量，env 不再被读取）；chat 保留天数错误臂
+		// 已随 AI 问答退役删除。
 		{"探针并发下界", func(e map[string]string) { e["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "0" }, "必须介于 1 和 5096"},
 		{"探针并发上界", func(e map[string]string) { e["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "5097" }, "必须介于 1 和 5096"},
 		{"列表投影间隔下界", func(e map[string]string) {

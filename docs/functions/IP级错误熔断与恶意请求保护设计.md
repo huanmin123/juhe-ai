@@ -238,6 +238,7 @@ flowchart TD
 
 - `Retry-After`: 熔断剩余秒数。
 - `x-trace-id`: 保持现有链路追踪。
+- `Connection: close`: 熔断 429 响应同时关闭连接，认证前熔断、主链 `/v1` 与 realtime 三面统一。
 
 记录规则：
 

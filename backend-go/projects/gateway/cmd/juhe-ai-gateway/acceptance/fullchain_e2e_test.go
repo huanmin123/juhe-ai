@@ -755,7 +755,6 @@ func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess 
 		"JUHE_AI_REDIS_STATE_URL":                   gw.redisURL,
 		"JUHE_AI_REDIS_NAMESPACE":                   gw.redisNamespace,
 		"JUHE_AI_DATA_DIR":                          filepath.Join(root, "storage"),
-		"JUHE_AI_CHAT_ASSETS_ROOT":                  filepath.Join(root, "storage", "chat-assets"),
 		"JUHE_AI_CODEX_CONTEXT_ROOT":                filepath.Join(root, "storage", "codex-context-root"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY":             gw.spoolDir,
 		"JUHE_AI_INSTANCE_ID":                       "fullchain-jobs",

@@ -43,7 +43,6 @@ func TestW1J2BootstrapMutualExclusion(t *testing.T) {
 	// "单独使用"负臂不会在存在本机 PG 的环境里真实执行 DDL。
 	t.Setenv(accountBalanceBootstrapEnv, w1J2UnreachableURL)
 	for _, argv := range [][]string{
-		{"--apply-account-balance-postgres", "--migrate-chat-account-only-binding"},
 		{"--apply-account-balance-postgres", "--postgres-schema-snapshot"},
 		{"--apply-account-balance-postgres", "--ensure-schema"},
 		{"--apply-account-balance-postgres", "--seed"},

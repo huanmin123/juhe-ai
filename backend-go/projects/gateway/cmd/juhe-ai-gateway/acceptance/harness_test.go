@@ -345,7 +345,6 @@ type gatewayFixture struct {
 	redisURL       string
 	redisNamespace string
 	spoolDir       string
-	assetsRoot     string
 	// storage 暴露共享目录面（logs / codex-context 根 / usage-shards；jobs
 	// 场景复用同一隔离目录布局）。数据库面统一走 dsn。
 	storage map[string]string
@@ -395,14 +394,12 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	usageShardRoot := filepath.Join(root, "storage", "usage-shards")
 	mustMkdirAll(t, codexRoot, usageShardRoot,
 		filepath.Join(root, "storage", "audit-blobs"),
-		filepath.Join(root, "chat-assets"),
 		filepath.Join(root, "openai-files"),
 		filepath.Join(root, "logs"),
 	)
 
 	spoolDir := filepath.Join(root, "storage", "usage-record-spool")
 	fixture.spoolDir = spoolDir
-	fixture.assetsRoot = filepath.Join(root, "chat-assets")
 
 	// PG 唯一形态下 gateway↔jobs 经 spool 目录与 PG 交接；Redis 键空间以
 	// 每测试唯一 namespace 隔离，避免并发验收互踩。
@@ -441,7 +438,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		// 「rate 与 retention days 同时为 0 或同时 > 0」联动校验）。
 		"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "1",
 		"JUHE_AI_OPERATION_LOG_INSTANCE_ID":     "acceptance-gateway",
-		"JUHE_AI_CHAT_ASSETS_ROOT":              fixture.assetsRoot,
 		"JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT":  filepath.Join(root, "openai-files"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY":         spoolDir,
 	}

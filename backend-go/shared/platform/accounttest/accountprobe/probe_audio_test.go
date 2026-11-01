@@ -273,30 +273,29 @@ func TestClassifyResponseGeminiAudioSpeech(t *testing.T) {
 	}
 }
 
-func TestProbeGeminiAudioSpeechAgainstMockUpstream(t *testing.T) {
-	var gotPath string
-	var gotBody map[string]any
+// audio_speech 人工测试自 2026-11-01 用户裁决起改为密钥连通性探测：只 POST
+// {base}/tts/create 空体验证密钥能否访问上游（volcengine_openspeech 模板形态），
+// 不再发起真实 TTS 生成（原 gemini generateContent「生成并验音频」端到端断言
+// 随裁决删除）。请求形状与连通性分类在此实测。
+func TestProbeAudioSpeechConnectivityAgainstMockUpstream(t *testing.T) {
+	var gotPath, gotMethod, gotBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		raw, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
-		if err := json.Unmarshal(raw, &gotBody); err != nil {
-			t.Errorf("body not json: %v", err)
-		}
+		gotMethod = r.Method
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.WriteHeader(http.StatusBadRequest)
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/L16;rate=24000","data":"cGNt"}}]}}]}`))
+		_, _ = w.Write([]byte(`{"error":{"message":"empty body"}}`))
 	}))
 	defer server.Close()
 
-	// R3：base_url 携带 /v1beta 版本根（R1 删除运行时补根），mock 断言路径不变。
+	// R3：base_url 携带版本根（R1 删除运行时补根），直拼语义下连通性路径为
+	// /v1beta/tts/create。
 	view := probeView(server.URL + "/v1beta")
-	view.ProviderCode = "gemini"
-	view.ProtocolCode = "gemini"
-	view.HealthCheckModel = "gemini-2.5-flash-preview-tts"
-	view.SupportedModels = []string{"gemini-2.5-flash-preview-tts"}
+	view.ProviderCode = "volcengine"
+	view.HealthCheckModel = "doubao-tts"
+	view.SupportedModels = []string{"doubao-tts"}
 	view.HealthCheckEndpointMode = string(ModeAudioSpeech)
 	view.NormalizeEndpointModes = map[EndpointMode]bool{ModeAudioSpeech: true}
 	service := newTestService(t, &fakeSource{view: view})
@@ -305,22 +304,18 @@ func TestProbeGeminiAudioSpeechAgainstMockUpstream(t *testing.T) {
 		t.Fatalf("probe err = %v", err)
 	}
 	if !observation.Result.Success {
-		t.Fatalf("gemini audio_speech probe failed: %+v", observation.Result)
+		t.Fatalf("audio_speech connectivity probe failed: %+v", observation.Result)
 	}
-	if gotPath != "/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" {
-		t.Fatalf("upstream path = %q", gotPath)
+	if gotMethod != http.MethodPost || gotPath != "/v1beta/tts/create" {
+		t.Fatalf("upstream request = %s %s", gotMethod, gotPath)
 	}
-	generationConfig, _ := gotBody["generationConfig"].(map[string]any)
-	if generationConfig == nil {
-		t.Fatalf("body missing generationConfig: %v", gotBody)
+	if gotBody != "" {
+		t.Fatalf("audio_speech 连通性探测应为空体：%q", gotBody)
 	}
-	modalities, _ := generationConfig["responseModalities"].([]any)
-	if len(modalities) != 1 || modalities[0] != "AUDIO" {
-		t.Fatalf("responseModalities = %v", generationConfig["responseModalities"])
+	if observation.Result.Message != "密钥连通性验证通过（上游 HTTP 400）" {
+		t.Fatalf("message = %q", observation.Result.Message)
 	}
-	speechConfig, _ := generationConfig["speechConfig"].(map[string]any)
-	prebuilt, _ := speechConfig["prebuiltVoiceConfig"].(map[string]any)
-	if prebuilt["voiceName"] != "Kore" {
-		t.Fatalf("voiceName = %v", prebuilt["voiceName"])
+	if !observation.Evidence.Connectivity {
+		t.Fatal("evidence 必须带 connectivity 标记")
 	}
 }
