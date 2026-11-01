@@ -449,9 +449,6 @@ func TestCircuitInputBoundsAndZeroTime(t *testing.T) {
 	if _, err := store.ListProjectionGaps(ctx, "", 0, "", largeOperationalBatch); err != nil {
 		t.Fatalf("large projection-gap batch was rejected: %v", err)
 	}
-	if _, err := store.Cleanup(ctx, 0, 0, largeOperationalBatch); err != nil {
-		t.Fatalf("large cleanup batch was rejected: %v", err)
-	}
 }
 
 func TestIncidentStateScopeLeaseAndRetentionBounds(t *testing.T) {

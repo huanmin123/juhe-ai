@@ -27,8 +27,8 @@
   - B5 托管 OAuth 建号 400（strict-body 未知键拒绝）；BUG-0333/0332 克隆/编辑协议身份占位；BUG-0334/0335/0336 列退役与写序外键族。
   - W45 chat 面目录读链畸形能力矩阵硬失败 vs 管理面 lenient（已登记观察，不扩大）。
   - T85 chat 工具编排触顶错误掩盖（待用户裁决，属 chat 域在办项，本环不重复登记）。
-- 当前阶段 / 当前轮次：R1–R6 闭环；**终态复核轮进行中**（收敛判定前强制轮）——四面：①已修行为组合终态（70 处修复叠加后的高风险交叉逐对核）②文档-实现终态一致（历轮改过的文档声明逐句对照当前代码）③测试与门禁盘点（新增测试钉的是修复后行为吗/不稳定断言/门禁覆盖新包）④部署/升级场景活性（迁移重跑幂等、旧数据+新代码、回滚路径）。
-- 收敛计数：0 / 3（R1–R6 均有确认与修复，不计干净轮；终态复核轮结论将决定收敛口径）。
+- 当前阶段 / 当前轮次：终态复核轮已完成并出终报；**未提交批最终落点复核已完成**（代码 26/26 核点正确，3 处修正已闭环：2 文档残留 + 1 测试强度）。本环全部轮次结束。
+- 当前工作区状态：R6 批10 已由用户提交为 `98b0e210b`（此前 R1–R5 主体已入 `e0d313642`/`d56bc2829` 等）；未提交仅剩台账 + 落点复核的 3 处修正（README.md:11、postgres-exporter yaml:23、dd6_s1 测试强度）。
 
 ## 扩散记录（续）
 
@@ -420,6 +420,34 @@ R1 攻击轮核验性结论（不改行为、直接入覆盖矩阵）：DD-C10~C
 - 未提交改动：本环修复批 36 文件（backend-go 32 + docs 6，与并行会话 chat 域在制品混存工作区，未 commit）；台账与 T86 为过程记录。
 - 收敛状态：收敛协议未走满——R2（场景制）、R3（交互制）未执行；R1 存在 B 类确认与修复回归，不计干净轮。出口待用户裁决：继续 R2 / 用户裁决提前收口（出口②）。
 
+### 遗留项收口（T86 / T87r / 活性验证，2026-11-01）
+
+**T86 跨协议桥接 usage 全方向收口（已完成，条目已删）**：流式五方向接线（gemini native→chat、anthropic→gemini、gemini native→responses/messages 回转、chat→responses codex 回转、anthropic→responses）+ 非流式缓冲臂（chain_bridge_response.go storeChainBridgeNonStreamUsageSnapshot + nonstream.go 消费入口）；桥核心修正一处（anthropic→responses message_start 的 usage 加 nil 守卫，防全 0 快照否决估算）。17 个新测试（5 方向快照值/5 nil-usage 回落/全 0 快照/非流式三族/回退形态/2 转换口径）+ 非流式结算 3 例；gatewayresponse 6.45s、openaicompatbridge 1.93s、cmd 全包 39.5s 全绿。文档：模型价格与用量统计口径 §2.8 方向清单全量。**已知口径观察**：gemini→chat 的 thinking 渲染进 prompt_tokens_details（Node parity），结算不读该键——§2.8 已如实记录。
+
+**T87r outbox 清理接线（已完成，条目已删，转 jobs 侧三臂 + gateway 死代码删除）**：判定结论——jobs 侧 Cleanup 只删 incident 行不删 dispatched outbox（注释自证「清理由 gateway 写侧维护」而 gateway Store.Cleanup 全仓无 caller=死代码）。方案：jobs `internal/circuitstore` Cleanup 追加第三臂（dispatched outbox，ack 超 24h 保留期、单批 500、同事务先于 incident 两臂）+ `CleanupResult` 三计数进任务日志；gateway 删除 Cleanup/CleanupResult/deleteLimited 死代码并回正「dispatched 行永生」注释为「ack 保留期内仍在」。真实 PG 7 例绿（超龄删/边界/未超龄留/pending+processing 留/两类 event_type 同删/幂等/incident 臂不干扰），circuitstore 15.1s、circuit_control_plane 31.2s 全绿。文档：AI账户短窗口热质量设计 :652 三臂契约。
+
+**活性验证（已执行）**：①PG 臂三包实测——openaicompatstorage 33.0s、circuit_control_plane 31.2s、circuitstore 15.1s 全绿（含 DD6-S7/S8、T87/T87r 真实 PG 用例）；②upgrade 活性——发现 **2 个测试文件 3 处过时期望**（rev7 chat-account-only-binding 退役后：pipeline 集成测试 pending「全量 11」实为 7（11 步 − rev8/10/11/12 四步空库 fresh-adopt，rev12 注释自证设计）、applied「12 行」实为 11；演练测试「步骤 12 个」实为 11）→ 已修正并按设计语义注释；`TestUpgradeFreshDatabasePipeline` 14.9s 绿、`TestUpgradeRehearsalEndToEnd` 32.4s 绿（fresh→dry-run blocked→缺确认 exit2→upgraded→postflight OK→能力域阶段记录探针→gateway/jobs health 门禁→负路径被拦全链路）。**该 3 处为既有测试期望滞后（非本环改动引入），修正后升级链活性实证成立。**
+
+### 未提交批最终落点复核（2026-11-01，2 审核档并行）
+
+**批次口径核实（重要）**：任务称「27 项未提交」，实际复核时用户已把 R6 批10 提交为 `98b0e210b`（工作区仅剩台账等 2 处未提交）。复核以提交内容 + 当前工作区为准。
+
+**结果：A/B 代码面 26/26 核点全正确、零产品缺陷；C 组 2 处文档残留 + 1 处测试强度问题（已修）。**
+
+| 组 | 结论 |
+| --- | --- |
+| 审计 producer 撤回队列隔离（7 核点） | 6 正确 + 1 测试强度问题。两池 worker/panic 隔离/退出保证、意图表 6 并发 drain 互斥不双取、撤回完全不进 queueBytes（比原 bytes=0 更彻底）、atomic retractWaitBudget 读写点全查（生产默认 15s 不变、包内无 t.Parallel）、**w13h 内联臂实际跑在数据 worker（撤回 worker 从不调 retractBestEffort）**、既有 DD-D1/G1/C2/C4/RC1/w13g/w13h 契约全回归绿（21.8s + -race 24.1s） |
+| compat 异步计数 + vectorstores（19 核点） | 17 正确 + 2 文档残留。队列有界/Once/panic 隔离/字段前置提取全对；DD2-C1 与 DD3-D1 门仍在同步路径（503/500 零计数为强断言）；vectorstores 三分类完备、timestamptz cast 方向正确（UTC Z 毫秒、`< cutoff`=更早即超龄）、NewStore 不触库契约保持（后台 safego.Go）、S7×S8 互洽、ExpectedUpdatedAt 空=不启用兼容。**真实 PG 全量实跑 40.7s 绿**（含 S7/S8 四例） |
+
+**修复（3 处，已全部落地）**：
+1. `docs/functions/README.md:11` 49→50 组合 / 162→163 mode（唯一实质文档残留）。
+2. `docker/single-server/monitoring/postgres-exporter-queries-additive.yaml:23` 8→7 schema（注释级）。
+3. **DD8-RC1 测试强度**：`dd6_s1_retract_isolation_test.go` 原仅派 2 条撤回（=撤回 worker 数），修复前共享池形态下仍剩 2 个数据 worker → 断言无法证伪隔离契约（假阴性）。改为撤回命令数取 `producerWorkers`（≥2），尾部断言同步为「全数落账」；全包 20.8s 绿。
+
+**观察项登记（2 条，不阻塞）**：O1 撤回队列满 256 × persistOne 失败叠加时数据 worker 仍可内联 15s（4 worker 理论可全占，前提比修复前窄约两个量级，注释已声明，无测试覆盖叠加态）；O2 DD6-O5 意图表登记前提从「数据队列满 4096」改为「撤回队列满 256」，触发门槛降约 16 倍，20-30MB 量级估计需按新阈值重估。
+
+**判定：本批可交付**（代码零缺陷、测试全绿、文档残留清零）。
+
 ### 终态复核轮（2026-11-01，3 审核档并行，收敛判定前强制轮）
 
 **①已修行为组合终态（6 组全核）**：审计 producer（数据 worker 4/撤回 worker 2/意图表/在途集合/预算记账/三丢弃臂/panic 臂全交互闭合，三满叠加无「满」态，正反馈已打断）、流式管道（四处词表对齐+优先序逐形态推演一致、A5 越限在清点后、B1/B2 Completed 门+RC-C1 双重守卫）、停机链（正常/错误/启动失败三路径 × F3/F4 lease/store 释放保证全闭合）、入口保护（四面计数与封锁语义一致）、配置/校验（写读契约+守卫一致）、jobs（读序/dedupe/T87 同构）。**新发现仅 2 条低危台账级（DD7-RC1 注释与 Cleanup SQL 矛盾、DD7-RC2 DD3-RC1 登记未落地），无跨修复组行为回归。**
@@ -445,3 +473,300 @@ R1 攻击轮核验性结论（不改行为、直接入覆盖矩阵）：DD-C10~C
   - 观察项：DD3-RC1 decode panic 理论缺口、DD7-RC1 注释与 Cleanup SQL 矛盾、DD5-E4 锁定文案粒度、DD5-C6 实例 credentials 500/400 不对称、DD6-S8 重启间断清扫、HEAD 既有 `TestOAuthManagedDefaultsCreateWritesConnectionRows/gemini_google_oauth` 失败（e38c6e9f2 引入，独立问题）、dev PG 并行争用。
 - **提交与未提交分界（收口时核实）**：本环所有角色遵守「禁止 git commit」约束、均未主动提交。**用户已自行分批入库 R1–R5 主体修复**（`e0d313642` 与 `d56bc2829`「fix(gateway): 修复认证前熔断与停机启动顺序」，2026-11-01 10:26，含 chain_v1_loop 账户闸、chain_v1/chain_openaicompat/chain_realtime/compose/main/runtime、dd2_a1/dd5_c4/dd2_c1/dd3_compat/dd_g1_g2 等钉住测试与 accounts options_service 等）。**当前未提交 27 项 = R6 批10（auditlog 撤回队列隔离+compat 异步计数+vectorstores 代次守卫/启动清扫+部署文档 3 处）+ 终态复核批（模板文档 3 处+注释 2 处+connector_registry 注释 9 处）+ 台账 + 待办**：`internal/auditlog/{producer.go,+3 测试}`、`cmd/juhe-ai-gateway/{chain_v1.go,+3 测试,+dd6_s5}`、`internal/openaicompat/openaicompatstorage/{store.go,vectorstoresroutes.go,vectorstoresstore.go,vectorstoresstalesweep.go(新),+1 测试}`、`maintenance/internal/schema/pg_schema.go`（注释）、`shared/contracts/{connector_registry.go,connector_registry_test.go}`（注释）、`docker/single-server/{README.md,compose.yml}`、`docs/deploy/部署指南.md`、`docs/functions/{OpenAI兼容Files...,模型价格与用量统计口径,策略路由设计}.md`、`docs/plans/deep-dive-review-网关-20261031.md`、`docs/待办与阻塞事项.md`。
 - **与并行会话的混合署名**：`internal/chat/**` 与 `docs/functions/AI问答*.md` 的改动属并行会话在制品（T85/my-chat 退役），本环全程未触碰；`docs/待办与阻塞事项.md` 为本环与并行会话共同修改（本环新增 T86/T87r，T87 已按「解决即删」移除）。
+
+---
+
+# R7 独立域深挖（新锚定：模型检测 / 状态流转 / 统计）
+
+定位：R1–R6 锚定 `/v1` 主链及周边；R7 起对**未覆盖的功能域**分别立轮（不混轮，防假干净）。各域单独写锚定范围与结论，共用本台账。
+
+## R7-A 模型检测域
+
+- 锚定范围：`backend-go/projects/gateway/internal/modelcheck*`（owner 12.4k + probe 6.3k + profile 0.2k + questionbank 1.9k + active 0.1k + auth 1.5k ≈ 22.5k 行非测试代码）——探针执行、检测调度与持久化、结论写回、题目库、J3b 认证面。
+- 关联契约：
+  - [模型检测设计](../functions/模型检测设计.md)、架构总览「模型检测」模块：快速检测 = 2 次单轮轻量探针、最高"较可信"、不写模型指纹/Token observation；深度检测 = 完整探针 + 分钟级失败重试 + 可选可信对比 + 隐藏分布相似度；报告只保存脱敏有界摘要；**指纹与 Token 差分只使用深度检测主动发起的受控探针，不读取普通用户请求正文**。
+  - 检测复用本地网关链路，产生的模型请求按既有使用记录/额度/审计规则处理。
+  - 人工测试隔离硬契约：人工测试只产诊断任务/使用记录/审计，**不改**账户、授权实例、API Key 状态、`schedulable`、冷却、运行态、健康事实或最近错误。
+  - 探针分级超时（BUG-0287：探针超时流中途截断不得晋级为可信）、W11（非流式空 choices 判定）、T65②（Gemini Code Assist 探测/onboarding 遗留）、W45（畸形能力矩阵 chat 面）。
+- 已排除：`internal/chat/**`、`internal/playground/`（并行会话在制品）；R1–R6 已登记项。
+- 状态：攻击两批完成（5 角色 ~86 条假设）；送验 16 条 → 15 confirmed / 1 refuted；A 类修复 14 条 + 夹具债 3 处已落，四包（含真 PG 门控）全绿。剩余假设登记见下，R7-A 尚余落点复核轮。
+
+### R7-A 攻击轮（第一批 3 角色：探针执行 / 调度持久化 / 结论写回）
+
+**角色1 探针执行（modelcheckprobe 16 文件 + profile）**：H1（高·**非 Responses 系 SSE 无完成证据校验**——chat_sse/messages_sse/generate_content_sse 的 [DONE]/message_stop/finishReason 均不校验，干净 EOF 截断与完整流不可区分→BUG-0287 家族复发面，probe.go:624-625/991-1063/1516-1522）；H2（高·reasoning_content/reasoning_summary delta 并入 Output 参与判分→「只推理晋级」probe.go:1447-1458/evaluation.go:75/155）；H3（高·responses 通用解析器不校验 status=incomplete，Codex 解析器有守卫 probe.go:1043-1050 对照 :1153-1166）；H4（**契约冲突需裁决**：探针是否应写 usage/额度——设计文档 §69/260/499 要求按真实调用方计入 vs §321「Diagnostic 探针不写 usage」现状，probe_adapter.go:56-66 无 usage 写入）；H5（quiz 两跳判分：作答跳非终态失败无门→空答案照送裁判，请求失败痕迹不可见 quiz.go:87-107/210-222）；H6（evidence["reason"] 原文无截断入 EvidenceSummary，500rune 脱敏仅覆盖 message/error quiz.go:218-221/runtime.go:440-442）；H7（long_context 窗口按「每单元≈4token」估算超调不上修→小窗模型实际超窗误判 longcontext.go:38-93）；H8（body>maxBytes 不置 Incomplete→按定论 200 不重试转计分失败，BUG-0292 家族 probe.go:559-563/retry.go:95）；H9（RunSuite timeout 参数是死参，无墙钟上限仅心跳续租 retry.go:39-53）；H10（可信对比 paired 探针绕过 familyRunner 终态门 suite.go:807-864）；H11（同账户跨 profile/actor 可并发无账户级互斥）；H12（quick token_integrity <6 样本一律 reported_usage_missing 归因失真）；H13（heartbeatCtx 无 defer cancel→panic 时永久续租，猜测）；H14（重试节奏固定 2s 与文档「随机 1–3s」漂移）。**已核清**：探针 prompt 全部来自受控池/题库，未发现读取普通用户正文路径。
+**角色2 调度持久化（owner 调度侧）**：H1（高·**错误路径绕过 finishFailure→run 永久 running**，唯一回收是启动期 sweep，运行期无周期清扫 runtime.go:566-575/stale_runs.go:36-41）；H2（schedule 完成写失败仅靠 6min 租约重认领无限重跑无帽 business_scheduler.go:109-147）；H3（跨触发源无互斥：manual/run-now 占槽但 scheduled/recovery 执行器不查注册表 http.go:913-927）；H4（ProjectTrust 游标推进跨过并发在途 run 更早 observation，DD3-B1 同构但当前无 cursor 消费者→前瞻）；H5（高·**ProjectTrust 失败→health 重试只认 'failed' 而 status 留空→健康事实永久静默丢失** runtime.go:584-587/scheduler_executor.go:228-236）；H6（高·**死信窗口饿死**：MaxAttempts=10 死信 run updated_at 冻结霸占 LIMIT=16 窗口，新健康失败永不进重试且每秒空插 store.go:507-511/health.go:115）；H7（run-now lease 读判与 claim 写非同事务 TOCTOU）；H8（启动 30min sweep 可误杀另一存活进程 >30min 合法长 run）；H9（探针成功但 ctx 恰在 finalize 前过期→结果丢弃记 failed）；H10（心跳失租后 CommitOutcome 必败→H1 僵尸+H10 双跑链）；H11（recovery Build 失败等租约周期，期间占住 lease 拒绝新请求）；H12（调度参数无 env 装配面，固定 DB 轮询底噪）；H13（健康重试每任务全窗扫 1000 行只为找自己 runID）；H14-H15（ListRuns 时间参数未校验/字节截断 UTF-8，低危）；H16（jobs 家族与检测域两套探针无协调，需产品裁决）；H17（RunNowBatch 无服务层上限，猜测）；H18（越权/围栏/幂等/query 无实时扫明细=核对通过）。
+**角色3 结论写回（结论/信任/处罚/恢复）**：H1（高·**对比账户自身 modelMismatch 未被排除出 suspicious 短路循环→把目标 run 整轮拉 suspicious 且可放大为处罚**——probe 层 summary.go:76-81 无前缀过滤，owner 层 trust.go:57-59 显式跳过，两层口径分裂）；H2（高·**超时处罚主场景被 Apply 输入校验拒绝→处罚永不生效**，health_test 用不做分数校验的 fake 掩盖，business_enforcement.go:36 vs health.go:162-171）；H3（trust latest-wins：identity/protocol/evidence 可被单次 formed run 反向洗白，仅 usage_integrity 有只升不降 trust_store.go:176-179）；H4（对比账户仅校验 vendor/protocol/profile 不校验 upstream_model 映射一致）；H5（model_limits 查询不按 system_account_id 过滤→可命中他租户同名自定义行 model_limits.go:40）；H6（manual 检测处罚属**文档化通道**非缺陷，但需文档口径守卫「人工测试≠手动检测」）；H7（quick 处罚免 formed 门，证据门槛低于 full，Node 兼容判断项）；H8（custom_quiz 失败全额扣分进处罚分母，设计使然）；H9-H11（恢复通道落 disabled 属既有语义/禁用绑定不同步/恢复 lease 竞争静默 no-op 延迟）；H12-H15（围栏/CAS/error 写入面/权益不入证/证据脱敏=核对通过）；H16（BUG-0287 单 choke point 各臂成立=核对通过）；H17（ListCommittedOutcomes 无租户过滤但无消费方，观察）；H18（熔断中性结算成立，诊断链是否零 usage 未逐行核实=待补）。
+- R7-A 尾批待发：input/http/query/quiz 面 + modelcheckauth 认证面。
+
+**R7-A 攻击第二批（输入契约 / J3b 认证）**：
+- 输入/HTTP/题库角色：I-H1（owner 面大量 500/400 直透 `err.Error()`（含 PG 错误与内部包装前缀），writeBuildError 把 DB 故障标 400）、I-H2（run-now 只占 target 槽不占 actor 槽→`/run/stop` 与 `/run/active` 查不到，10 分钟预算内不可取消且同账户手动检测被 409）、I-H3（`/question-bank/test` 不限频次、不占 active 槽、同步两跳上游）、I-H4（**题库写操作审计 sink 组合根装配为 nil→全链无审计留痕**，与包注释不符）、I-H5（相似度查重长度预过滤可被填充文本绕过）、I-H6（parsePage page 无上界→OFFSET 溢出）、I-H7（created_at 为 TEXT，startAt/endAt 不校验格式按字典序比较）、I-H8（J3B_CREDENTIAL_SECRET 无长度校验、IdentitySecret 无消费点）、I-H9（错误码按中文子串映射，脆弱）、I-H10（SSE 进度帧不经脱敏适配，含 upstreamModel/responsePreview）、I-H11（quizRequestFailurePhrase 保留上游错误原文进报告）、I-H12（Store.Review 层对 pending 允许任意 actor，靠 handler adminMode 兜底）、I-H13（dev 自动登录仅靠生产 fail-fast 阻断）、I-H14（定点模型选项需显式 limit=1 否则 400）、I-H15（admin all-scope 选项与全局历史集合不一致，猜测）。**已核清**：三挂载 scope 强制与角色矩阵无越权读、无实时扫明细、active registry 并发安全、business_schema fail-closed、profile 无注入面。
+- J3b 认证角色：A-H1（**J3b guard 与主面完全独立**：纯内存驱动、无 fail-closed 臂、重启清零——同一凭据获两份 10 次/10min 预算；任务描述的 Redis GETDEL 契约只在 authsys 面成立）、A-H2（j3bManagementMount 调两次各建一个 HTTPHandler/guard——别名端可达时多一份预算）、A-H3（**J3b 会话 cookie 无 Secure 属性**，HTTPS 部署下与主面带 Secure 的同名 cookie 分叉可被覆盖）、A-H4（跨面共享 system_sessions 与 cookie 名，会话互通但属性分叉）、A-H5（mustChange 两面分叉：主面 admin 豁免、J3b 不豁免）、A-H6（`/auth/` 族 500 直透 err.Error() 含 PG 细节）、A-H7（停用账户短路跳过 dummy hash→时序可枚举账户存在性）、A-H8（**临时令牌白名单基于 RemoteAddr，Caddy 反代后全网塌缩**；guard/captcha byIP 桶全员共享→一次爆破全员锁死）、A-H9（allowlist 双解析器漂移同 DD-G6 家族）、A-H10（guard 超容驱逐可洗掉受害者活跃锁/未消费验证码）、A-H11（临时令牌面无验证码）、A-H12（mustChange 分支跳过旧密码+≥4 位即可，与主面策略一致性未核）、A-H13（DD-G5 登记仍精确，无新增漏挂认证=核对）、A-H14（logout 不消费 Authorization，Bearer 持有者静默无效）、A-H15（用户名 lower()+LIMIT 1 无 ORDER BY）、A-H16（会话数无上限）、A-H17（非生产默认关 mustChange 门=已登记设计）、A-H18（captcha 内存一次性 vs Redis GETDEL，多实例前必须换 SharedCaptcha）。
+
+### R7-A 验证轮（完成）
+
+送验 16 条（3 审核档）：V1=探针核心 5（P-H1/H2/H3/H5/H4 契约冲突）；V2=调度写回 5（S-H1/S-H5/S-H6/W-H1/W-H2）；V3=输入认证 6（I-H1/I-H4/A-H1/A-H3/A-H5/A-H8）。
+
+- 结果：**15 confirmed / 1 refuted**。refuted=A-H5（mustChange 两面分叉）——核实为已登记 DD2-E11 的既有裁决面，非新缺陷，验证者按重复/已登记驳回。
+- P-H4 验证结论：**确认为文档间契约冲突**（模型检测设计 §321「Diagnostic 探针不写 usage」 vs 通用用量文档 §69/§260/§499「按真实调用方计入」），现状实现取 §321；不是代码缺陷，待用户裁决口径。
+
+### R7-A 修复批（A 类 14 条 + 夹具债 3 处，3 写码档并行，全绿）
+
+| 编号 | 修复内容 | 钉住测试 |
+| --- | --- | --- |
+| P-H1 | SSE 终止证据校验：chat `[DONE]`、messages `message_stop`（含纯 event 行形态）、gemini 任一 `finishReason`；干净 EOF 无终止事件 → `Incomplete=true` + `J3b probe upstream stream ended without terminal event`，不晋级可信（BUG-0287 家族收口） | `r7a_probe_fixes_test.go` 5 例；`w1_envelope_integration_test.go` 夹具补终止帧 |
+| P-H2 | `parseSSEEventOutput` chat 分支不再把 `reasoning_content` 并入 Output（防"只推理晋级"），refusal 保留 | 同上 |
+| P-H3 | `parseResponseDetailed` 增加 `status!="" && status!="completed"` 守卫（与 Codex 解析器口径取齐） | 同上 |
+| P-H5 | quiz 两跳门 `quizAnswerHopUsable = Success && !Incomplete && Output!=""`：作答跳非终态失败不再空答案送裁判，记请求失败证据且不扣分 | 同上 + `quizdiagnosis.go` 同步 |
+| W-H1 | summary 层 `modelMismatch` 短路循环跳过 `trusted_comparison.*`（与 owner trust 层口径取齐，防对比账户自身错配拉整轮 suspicious） | `r7a_probe_fixes_test.go`；`wl_probe_extra_test.go` 期望 `mrfd`→`mfd` |
+| S-H1 | 新增 `Store.MarkRunFailedTerminal`（仅 `status='running'` 可写 failed）：ClaimInput/CommitOutcome/ProjectOutcome 失败臂全部收口；ErrStaleFence 只记日志不强写；新增 `StaleRunSweeper`（默认 10min 扫描、30min 阈值）挂入 Scheduler.Run，运行期不再依赖启动期 sweep | `r7a_fixes_test.go`；`w1_envelope_source_test.go:522` 旧断言（钉住"commit 失败仍 running"缺陷态）改为期望 failed |
+| S-H5 | ProjectTrust 失败先 `MarkHealthSync(...,"failed")` 再返回，健康重试不再永久静默丢事实 | 同上 |
+| S-H6 | 健康窗口查询排除已达 `MaxAttempts` 死信任务（`NOT EXISTS` 子查询），`rotateSkipped` 11 个跳过分支推进 `updated_at`，防死信霸占 LIMIT 窗口饿死新失败 | 同上（夹具 DDL 补 `model_check_scheduler_tasks`） |
+| W-H2 | `QualityEnforcement.TimeoutPenalty` 传入处罚校验并豁免分数门，超时处罚主场景可达（原输入校验永久拒绝） | 同上；`health_test` fake 不再掩盖 |
+| I-H1 | 新增 `writeOwnerFailure`：RequestError 保 4xx，其余统一 500 + 固定文案「服务器内部错误」+ slog，约 15 处 `err.Error()` 直透收口（含 SSE 错误帧） | `w11e` 系列更新；`TestW11EStreamErrorPayloadHelpers` |
+| I-H4 | 题库写操作审计 sink 组合根注入（`SetAuditSink` nil 安全 + Warn once），main.go 在 composeSystemAPI 后接 `composed.authDeps.Sink` | `TestSetAuditSinkRecordsWriteOperations` |
+| A-H1 | 新增 `SharedLoginGuardDriver` 注入口，优先使用共享 Redis guard；驱动错误 fail-closed（500+slog）；`j3bAuthHandler` 单例供两个挂载点复用，消除双预算 | `TestJ3bSharedGuardInjectionAndSharedMountInstance` / `TestJ3bSharedGuardFailClosed` / `TestJ3bLoginGuardDriverSelection` |
+| A-H3 | J3b 会话 cookie 按注入配置补 `Secure`（登录/登出两臂） | `TestJ3bSessionCookieSecureFollowsInjection` |
+| A-H8 | `HTTPHandler.TrustProxyCount` + `clientIP` 走 `kernel.ExtractClientIP`，反代后临时令牌白名单/限流桶不再按 RemoteAddr 塌缩；4 处调用点收口 | `TestJ3bClientIPTrustProxyInjection` |
+| 夹具债（非本轮引入） | URL v2 版本根语义（e38c6e9f2，2026-10-29）迁移漏改：`runtime_test.go` `TestRuntimeExecutesAndPersistsBasicProbe`、`runtime_catalog_external_test.go` 两处 endpoint 裸 `server.URL` → `server.URL+"/v1"`（断言 `/v1/responses`、`/v1/chat/completions` 自 e793cf61b 2026-09-21 起未变） | 三测试真 PG 实跑 PASS；modelcheckowner 全包 244s 绿 |
+
+验证证据：`modelcheckprobe` 0.709s、`modelcheckowner` 244.475s（`JUHE_AI_TEST_EXTERNAL=1` 全包）、`modelcheckquestionbank` 21.195s、`modelcheckauth` 16.550s 全绿；`go build ./...` 网关模块通过。
+
+### R7-A 剩余假设登记（未送验，留待后续轮或观察）
+
+- 探针执行：P-H6（evidence reason 原文未截断）、P-H7（long_context 窗口 4token/单元估算超调）、P-H8（body 超 maxBytes 不置 Incomplete）、P-H9（RunSuite timeout 死参无墙钟上限）、P-H10（可信对比 paired 探针绕过终态门）、P-H11（同账户跨 profile 并发无互斥）、P-H12（quick token_integrity 样本不足归因失真）、P-H13（heartbeatCtx 无 defer cancel）、P-H14（重试节奏 2s 与文档 1–3s 漂移）。
+- 调度持久化：S-H2（schedule 完成写失败靠租约无限重跑）、S-H3（跨触发源无互斥）、S-H4（ProjectTrust 游标前瞻）、S-H7（run-now TOCTOU）、S-H8（启动 sweep 误杀长 run）、S-H9（finalize 前 ctx 过期丢结果）、S-H10（心跳失租双跑链）、S-H11（recovery Build 失败占租约）、S-H12（调度参数无 env 面）、S-H13（健康重试全窗扫描）、S-H14/S-H15（ListRuns 参数/UTF-8 截断）、S-H16（jobs 探针族协调需产品裁决）、S-H17（RunNowBatch 无上限）。
+- 结论写回：P-H4 之外 W-H3（trust latest-wins 洗白）、W-H4（对比账户不校验 upstream_model 映射）、W-H5（model_limits 未按 system_account_id 过滤）、W-H7（quick 处罚免 formed 门）、W-H18（诊断链零 usage 未逐行核实）。
+- 输入/认证：I-H2（run-now 不占 actor 槽不可取消）、I-H3（题库 test 不限频）、I-H5（相似度预过滤可绕）、I-H6（page 无上界）、I-H7（created_at TEXT 字典序）、I-H8（凭据 secret 无长度校验）、I-H9（错误码中文子串映射）、I-H10（SSE 进度帧不脱敏）、I-H11（quiz 失败原文进报告）、I-H12（Store.Review actor 门靠 handler）、I-H13（dev 自动登录仅生产 fail-fast）、I-H14（limit=1 隐含要求）、A-H2（双挂载双 handler 已随 A-H1 收口，待复核）、A-H4（跨面会话属性分叉）、A-H6（/auth/ 500 直透）、A-H7（停用账户时序枚举）、A-H9（allowlist 双解析器）、A-H10（guard 超容驱逐）、A-H11（临时令牌面无验证码）、A-H12（mustChange 旧密码策略）、A-H14（logout 不消费 Bearer）、A-H15（用户名 LIMIT 无 ORDER）、A-H16（会话数无上限）、A-H18（captcha 多实例）。
+- 移交裁决：P-H4 探针 usage/额度口径（建议以 §321 为准并回写通用用量文档，需用户确认）。
+
+### R7-A 落点复核（独立复核员，2026-11-01）与第二批修复（A 类 15 条）
+
+复核结论：需修 6 条（高 1、中 5），另有中风险裁决/加固 5 条、低风险观察 6 条。以上全部为**第一批修复本身或同族缺口**，非新域缺陷。
+
+| 编号 | 复核发现 | 处置 |
+| --- | --- | --- |
+| RC-A1（高） | 非 Codex 的 Responses SSE 无 `response.completed` 仍判成功（`sseStreamTerminalEventSeen` default 直接 true，`parseResponseDetailed` 无终态失败判定） | 已修：Responses 纳入终态校验，缺 `response.completed`/`response.done`/`status=completed` 置 Incomplete |
+| RC-A2（中） | 零事件 SSE（空 body/仅心跳/截断 JSON）直接 return true | 已修：仅完整可解析 JSON 豁免，SSE 零事件判不完整 |
+| RC-A3（中） | chat 只认 `[DONE]`，`finish_reason` 收尾被误判 Incomplete（与《响应语义检查管线设计》冲突） | 已修：接受非空 `choices[].finish_reason` 为终态证据 |
+| RC-A4（中） | read-error 臂不认 `[DONE]`/`message_stop`/`finishReason`，终态后尾部读错误覆盖语义成功（违反 §1.2） | 已修：`responseBodyIsSemanticallyComplete` 增加 protocol 参数并复用统一终态判定 |
+| RC-A5（中） | quiz 300 字空作答/200 错误信封被归请求失败（不扣分、不入分母），是全跳过仍达高分的逃逸面（与 §1.2「200 内容质量失败进正常评分」冲突） | **未改，B 类待批**：改判会改变扣分与处罚面；文档对「作答跳 200 空输出」无明文，需裁决 |
+| RC-A6（中） | recovery 写复用已过期 finalizeCtx，终态落盘仍失败 | 已修：统一后台 10s ctx |
+| RC-A7（中） | 周期 sweep 误杀 >30min 合法手动 full run（心跳只推进 claim 表） | 已修：心跳同步 `TouchRun` 推进 run.updated_at |
+| RC-A8（中） | 死信子查询 `(...->>'attempts')::int` 遇非数字 payload 整表扫描报错 | 已修：`jsonb_typeof='number'` + CASE + COALESCE 守卫 |
+| RC-A9（中） | builder 用户输入错误被 writeOwnerFailure 统一升 500 | 已修：3 处输入校验返回 `*RequestError{400}`，文案不变 |
+| RC-A10（中） | `errors.Join(cause, storageErr)` 让 errors.As 命中 RequestError，终态写失败被降级为 4xx/503 | 已修：终态写失败只暴露存储错误（cause 仅日志），HTTP 500 |
+| RC-A11（中） | 健康重试绕过 trust 回执门，ProjectTrust 失败后仍可能发布健康事实并处罚 | 已修：重试前从 result_summary_json 重放 ProjectTrust（幂等）；无可重放 report 时保持 failed |
+| RC-A12（低） | 非流式 Responses JSON `status=incomplete` 未校验 | 已修：直接 JSON 分支补 status 守卫 |
+| RC-A13（低） | Responses reasoning delta 仍并入 Output | 已修：仅 `response.output_text.*`/无 type 拼接，reasoning 返回空 |
+| RC-A14（低） | SetAuditSink 在 listener Serve 后写接口字段（data race + 启动窗无审计） | 已修：RWMutex 保护，注入窗口按 nil no-op 契约注释说明 |
+| RC-A15（低） | sweep 不写 finished_at；rotateSkipped 吞错误 | 已修：补 finished_at；轮转失败 slog.Warn |
+
+验证证据（合并三批改动后）：`modelcheckprobe` 0.725s、`modelcheckowner` 255.563s（`JUHE_AI_TEST_EXTERNAL=1`）、`modelcheckquestionbank` 23.504s、`modelcheckauth` 19.107s、`cmd/juhe-ai-gateway` 22.609s 全绿。新增测试：`r7a2_terminal_evidence_test.go`、`r7a2_owner_runtime_test.go`、`TestBusinessSourceInputValidationReturnsRequestError`、`TestHTTPHandlerRunInputValidationIsBadRequest`、`TestSetAuditSinkConcurrentWithWriteOperations`。
+
+剩余观察（不修）：baseline 激活未知存储错误 503→500（属存储错误，500 可接受）；健康重试全窗 1000 行扫描（S-H13 既有登记）。
+
+## R7-B 状态流转域
+
+- 锚定范围：账户状态机写入面（`internal/accounts`、`accountkeystates`、`gatewayaccounteffects`、`cmd/.../chain_error_policy_effects.go`）；运行态与调度消费面（`gatewayhotquality`、`gatewayruntimecache`、`gatewaydispatch`、`gatewayquota`、`jobs/accounthealth`）；授权实例与 API Key 生命周期（`internal/authz`、`apikeys`、`gatewaypreauth`、`jobs/keymodelrecovery`、`business/key_model_runtime`）。
+- 关联契约：AI账户错误语义与状态变更边界、AI账户健康状态收敛设计、AI账户运行态探针恢复设计、AI账户短窗口热质量与精准切号设计、系统团队与统一授权设计、核心功能设计（API Key 段）、AI账户主探测与Key模型短屏蔽修复设计。
+- 状态：攻击轮完成（3 角色，B1 18 条 / B2 19 条 / B3 32 条）；验证轮进行中。
+
+### R7-B 攻击轮要点
+
+**B1 账户状态写入（18 条）**：
+- B1-1（高·事实）流量迁移写面无前置状态/CAS/缓存失效：`accounts/m11_traffic_migration.go:243-260/262-280/370-395` 仅 `WHERE id=? AND system_account_id=?`，可把 disabled/error/pending_test/锁死账户改写为 temporary_unavailable/disabled；temp 分支不写 schedulable、不 bump config_revision、全文件无 invalidate。
+- B1-2（高）删除/人工停用不释放锁死与质量隔离：`accounts/delete.go:88-103` 只写 status/schedulable/deleted_at，`account_lock_states`/`account_quality_enforcements`/Key 运行态无清理；对比后台探测关闭臂 `patch.go:1727-1789` 有完整清理。
+- B1-3（中）自动禁用覆盖 error/pending_test/quality_isolated：`chain_error_policy_effects.go:617` 非绑定臂只短路 error/disabled，绑定臂 `:584-603` 仅 `status <> 'disabled'`。
+- B1-4（中）Key 级 `error` 终态被失败写降级为 rate_limited：`accountkeystates/probe.go:440/509/574` 无 `status NOT IN ('disabled','error')`；后续成功探针可恢复 active。
+- B1-5（中）同一 temporary_unavailable 三套 schedulable 语义（人工=0、错误策略=1、迁移=继承旧值）。
+- B1-7（中）运行时重置把 quality_isolated 恢复为 active 且 schedulable=1，不清 enforcement（`accountsreset/runtime_reset.go:701-712/751`）。
+- B1-8（中）DeferProbe 可把 next_probe_at 从数小时后回退到 +3s（`probe.go:723/729-740` 不与既有值取 max）。
+- B1-10（中）PATCH 激活强制 schedulable=true，覆盖显式 false（`patch.go:1288-1293`）。
+- 其余：B1-6/9/11-18（迁移无失效/自动状态无审计/毫秒栅栏/锁死可施加非 active/过去 cooldown 不递增退避/Key 错误文案未脱敏/提交后失效失败重复计数/批量状态集合漂移/删除保留旧文案/运行时重置不清 Key 状态）。
+
+**B2 运行态与调度消费（19 条）**：
+- B2-H1（高·事实）探针运行态 degraded/precheck_pending/half_open 生产零写入：`gatewaycircuit/suppression.go:186-190` 注释明示写面退场，`chain_runtime.go:607-614` 无 writer，`NewProbeCoordinator` 无 caller；文档所述软阻断链路未落地（C 类功能缺口候选）。
+- B2-H2（高）降级排序端口恒 disabled：`chain_compose.go:730-733` disabledDegradation，`compose.go:1060-1111` 未注入 Degradation；`runtime_degraded` 排序规则不生效（同 C 类）。
+- B2-H3（高）运行缓存 stale 窗口最长 10min 可继续调度已 error/disabled 账户：`gatewayruntimecache/service.go:19-20`、`runtime.go:31-43/282-302`；jobs 翻状态不发布 gateway 失效。
+- B2-M1（中·文档冲突）探针 cooldown_success 可清除用户显式 temporary_unavailable/rate_limited，无 provenance 区分（`patch_runtime_state.go:172-183`、`jobs/accounthealth/projection.go:912-916`）。
+- B2-M2（中）探针 owner lease 90s 小于冷却探针 10min 上限，终态补投影先写业务库后验租约（`jobs/accounthealth/config.go:20/165-171`、`scheduler.go:116`、`store.go:195-240`）。
+- B2-M3（中）热质量 key 容量 10000 耗尽后回落 protocol scope，跨账户污染分数（`gatewayhotquality/redis_store.go:843-875`）。
+- B2-M5（中）同账户重试绕过电路 PrepareAttempt（`gatewaydispatch/upstreamdispatch.go:999`）。
+- B2-M6（中）热质量共享 Redis 使用调用方 now_ms，多实例时钟偏移破坏窗口。
+- 其余 B2-L1-L6（precheck 清理依赖外部谓词、状态生命周期不对称、重试时间覆盖、死分支、整分钟桶边界、固定惩罚窗）。
+
+**B3 授权实例与 API Key（32 条）**：
+- B3-H1（高）团队停用可被普通授权 PATCH 绕过：`authz/mutations.go:423-457` Patch 不查团队状态，`sync.go:148-192` 仅按成员表展开，`systemteams/mutations.go:308-315` 停用只撤 sources。
+- B3-H11（高）计划激活的小时额度 Key 永久缺失小时窗口绑定：`apikeys/store.go:1175/1468-1495` 仅 active 时建绑定，`jobs/statsagg/stages_quota.go` 只按绑定表生成窗口。
+- B3-H12（中）计划边界整分钟错过则 Key 状态整天不纠正：`jobs/oauthrefresh/schedule.go:615-628`。
+- B3-H13（中）jobs 翻 Key 状态不发布 gateway 运行缓存失效（60s fresh / 10min stale 窗口）。
+- B3-H14（高）runtime 缓存 invalidation 与在途 load 竞态，旧快照可写回（`gatewayruntimecache/runtime.go:174-189`、`invalidate.go:86-119`）。
+- B3-H23（高）keymodelrecovery HALF_OPEN 租约无回收，永久卡死并饿死 due 窗口（`jobs/keymodelrecovery/state.go:208-224`、`redis_store.go:109-147`）。
+- B3-H24（中）LoadAccount 无匹配时永久 10s 重试，无终态迁移。
+- B3-H25（中）恢复探针使用人工 disabled 的 Key 发真实请求（`accounttest/exactkeyprobe/direct_input.go:213-227` 不读 Key 运行态）。
+- B3-H26（中）continuation 保留槽在权威 Lua 未落实（`redis_store.go:198-204`）。
+- B3-H27（中）单条脏 state 让整个 recovery 扫描失败（`redis_store.go:126-129`）。
+- B3-H31（中）`business/key_model_runtime` ForegroundLimit=100000 与主链 2 的固定契约漂移（`contract.go:131-134`）。
+- 其余 B3-H2-H10/H15-H22/H28-H30/H32（终态复活/成员上限/实例状态不归一/expired→paused 分叉/returned 回收/团队详情 404/过期 sweep TOCTOU/脏 schedule Key 500/过期 Key active/结构缺陷/chat Key 不可删/文档 last_used_at 无写方等）。
+
+### R7-B 验证轮（完成）
+
+送验 22 条（B1 8 / B2 7 / B3 11）→ **20 confirmed / 3 refuted / 2 重复**（重复项计在 confirmed 内：B3-H13、B3-H14 分别并入 DD-A11/DD-A9、DD3-A2）。
+
+| 编号 | 裁决 | 分类 | 处置 |
+| --- | --- | --- | --- |
+| B1-1 流量迁移无 CAS/失效/前置状态 | confirmed | A（revision+失效）+ B（可改写特殊状态） | A 部分即修；B 部分呈报 |
+| B1-2 删除/停用不释放锁死与质量隔离 | confirmed（删除残留仅数据卫生） | B（停用臂违反锁死契约） | A 类修停用臂清理；删除残留观察 |
+| B1-3 自动禁用覆盖 error/pending_test/quality_isolated | confirmed | B（状态机语义） | 按"error 为人工终态"修复 |
+| B1-4 Key error 被失败写降级 | confirmed（现役实现在 shared proberepo） | A | 即修 |
+| B1-5 temporary_unavailable schedulable 三套语义 | confirmed（后果降级） | C | 登记裁决 |
+| B1-7 运行时重置 quality_isolated→active 不清 enforcement | confirmed | B | 呈报 |
+| B1-8 DeferProbe 提前 next_probe_at | **refuted**（gateway DeferProbe 无生产调用方，现役 shared 实现带 fence） | C 死代码 | 观察 |
+| B1-10 PATCH 激活覆盖 schedulable=false | confirmed | B（API 语义） | 呈报 |
+| B2-H1 运行态软阻断零写入 | confirmed | C（功能缺口） | 登记裁决 |
+| B2-H2 降级排序端口恒 disabled | confirmed（H1 下游） | C | 并入 H1 |
+| B2-H3 运行缓存 10min stale 调度已 error 账户 | confirmed | B | 呈报（与 DD-A9 同族需合并裁决） |
+| B2-M1 cooldown_success 清用户显式状态 | confirmed（文档条款冲突） | B | 呈报 |
+| B2-M2 owner lease 90s vs 10min | **refuted**（续约独立 goroutine，双探针窗口不成立） | — | 不登记 |
+| B2-M3 热质量容量回落跨账户污染 | **refuted**（回落保留 AccountRuntimeKey，仅跨模型族） | — | 不登记（指标告警可选） |
+| B2-M5 同账户重试绕过电路 | confirmed | B | 呈报（与 W17 并列） |
+| B3-H1 团队停用可被授权 PATCH 绕过 | confirmed | A（授权面防御） | 即修 |
+| B3-H11 计划激活 Key 缺小时窗口绑定 | confirmed（静默 fail-open） | A | 即修 |
+| B3-H12 计划边界错过不纠正 | confirmed | B（DD-A11 延伸） | 呈报 |
+| B3-H13 jobs 翻 Key 状态不发布失效 | confirmed | 重复 DD-A11/DD-A9/B2-H3 | 不重复登记 |
+| B3-H14 runtime 缓存回填竞态 | confirmed（≤60s） | 重复 DD3-A2 | 不重复登记 |
+| B3-H23 HALF_OPEN 租约无回收 | confirmed（卡死+due 饥饿） | A | 即修 |
+| B3-H24 Unknown 永久重试 | confirmed | B（终态语义需定） | 呈报 |
+| B3-H25 恢复探针使用 disabled Key | confirmed | A（明确契约） | 即修 |
+| B3-H26 continuation 保留槽 | confirmed（软 SLO） | C | 登记裁决 |
+| B3-H27 单条脏 state 阻塞全扫描 | confirmed | A | 即修 |
+| B3-H31 ForegroundLimit=100000 契约漂移 | confirmed | B | 呈报 |
+
+**R7-B A 类修复批（批11，即修）**：B1-1a（迁移写 bump config_revision + 运行缓存失效）、B1-2a（停用臂结束锁死/质量隔离）、B1-3（自动禁用 hard-unavailable 集合）、B1-4（Key error 不被失败写降级）、B3-H1（PATCH 补团队 status 门）、B3-H11（计划激活补建小时窗口绑定）、B3-H23（HALF_OPEN 过期租约接管）、B3-H25（恢复探针跳过 disabled Key）、B3-H27（脏 state 逐项隔离）。
+
+### R7-B 批11 交付记录（状态写面 + key-model 恢复四件，写码档，2026-11-01）
+
+本小节只登记批11 中由本次写码交付的四条（B1-4 / B3-H23 / B3-H25 / B3-H27）；其余五条以各自交付记录为准。
+
+| 编号 | 修复内容（落点） | 钉住测试 |
+| --- | --- | --- |
+| B1-4 | Key 级 `error` 视为人工终态，被动失败写不得降级。shared `accounttest/proberepo/mutation.go`：`RecordKeyFailure` 入口新增 `Expected.Status=="error"` 早退 `manual_restore_required`、existing 行 `error` 早退同码、UPDATE 臂 `status <> 'disabled'` → `status NOT IN ('disabled','error')`、INSERT 臂补 `ON CONFLICT(account_id,key_fingerprint) DO UPDATE ... WHERE status NOT IN ('disabled','error')` 冲突守卫（identity/status/observed_at 围栏语义保留，恢复窗口写本次计算值）。gateway `accountkeystates/probe.go` 同型三处（`RecordFailure` 早退两处 + fenced UPDATE + 无 fence upsert 的 `current_state.status NOT IN ('disabled','error')`）。 | `proberepo/b1_4_error_terminal_test.go::TestB14RecordKeyFailurePreservesTerminalStatuses`、`accountkeystates/b1_4_error_terminal_test.go::TestB14RecordFailurePreservesKeyTerminalStates` / `TestB14RecordFailureSkipsWhenExpectedError`（error/disabled 均 no-op 且计数不变，rate_limited 正常 +1） |
+| B3-H23 | HALF_OPEN 过期租约回收。`keymodelrecovery/redis_store.go` acquire Lua：阶段门放行 `HALF_OPEN`，该分支以 `EXISTS leaseKey` 判定租约是否已随 45s TTL 消失（存在即 `not_due`），接管沿用脚本内 `SET NX PX` 原子领取；`state.go` 新增 `recoveryDue`（HALF_OPEN 仅租约过期/缺失算 due），`Acquire`/`PrioritizeDue`/`SelectDue` 与 `ListDue` 同源使用。generation/dispatchRevision 不变，旧 owner 由 lease ID/过期 fence 拒绝。 | `keymodelrecovery/b3_h23_half_open_takeover_test.go::TestB3H23HalfOpenExpiredLeaseTakeover`（真实 Lua + miniredis TTL 过期：未过期拒绝接管/不进 due，过期可接管、旧 worker Settle=Stale 且 Commit=stale）、`TestB3H23SelectDueAndPureAcquireTakeover` |
+| B3-H25 | 恢复/显式探针排除人工 disabled Key。`accounthealth/direct_input_reader.go` 在显式账户装载（`LoadAccount` 路径）内 join 业务库 `account_api_key_runtime_states` 读 `status='disabled'` 指纹注入 `exactkeyprobe.DirectInput.DisabledKeyFingerprints`；`exactkeyprobe/direct_input.go` `ToInput` 构建 Key 池时按指纹过滤，全部禁用返回可识别 `ErrNoAvailableAPIKey`（`errors.Is` 可判）；`LoadAccount` 将该 cause 原样透出。周期 J1 扫描面语义不变。 | `exactkeyprobe/b3_h25_disabled_key_test.go::TestB3H25DirectInputExcludesDisabledKeys`（disabled 指纹本地 `key_model_key_unavailable` 且上游 0 命中、active 对照 1 命中、全部 disabled 返回 ErrNoAvailableAPIKey）、`accounthealth/b3_h25_disabled_key_reader_test.go::TestB3H25LoadAccountExcludesDisabledKeys`（真实 PG：disabled+active → 只留 active；全部 disabled → 错误） |
+| B3-H27 | 单条脏 state 隔离。`keymodelrecovery/redis_store.go` `ListDue`：state 缺失 / JSON 解析失败 / capabilityHash 不匹配时对该 due 成员 `ZREM` 后继续，Warn 仅输出 `capabilityHashPrefix`（12 位）+ `reason`，不输出原文；只有 Redis 基础设施错误（ZRANGEBYSCORE/GET/ZREM 失败）才返回错误。`RedisStore` 增 `SetLogger`（`NewRunner` 自动接线组合根 logger）。 | `keymodelrecovery/b3_h27_due_isolation_test.go::TestB3H27ListDueIsolatesCorruptStates`（1 条损坏 + 1 条哈希不符 + 1 条缺失混入 → 其余 2 条正常返回且坏成员被 ZREM）、`b3_h27_warn_redaction_test.go::TestB3H27RejectedDueStateWarnIsRedacted` / `TestB3H27CapabilityHashLogPrefix` |
+
+验证：gateway `go test -count=1 ./internal/accountkeystates/`（含 `JUHE_AI_TEST_EXTERNAL=1` 全包 63.9s）、jobs `go test -count=1 ./internal/keymodelrecovery/ ./internal/accounthealth/`（含外部 PG 全包）、shared `go test -count=1 ./accounttest/...`（含外部 PG `proberepo` 全包）全绿；三模块 `go build ./...` 与目标包 `go vet` 通过。
+
+文档同步：[AI账户主探测与Key模型短屏蔽修复设计](../functions/AI账户主探测与Key模型短屏蔽修复设计.md) §8.3 补第 8-10 条（HALF_OPEN 接管/脏 state 隔离/disabled Key 排除）、§15 收窄 disabled 口径；[AI账户错误语义与状态变更边界](../functions/AI账户错误语义与状态变更边界.md) §2 补 Key 级 error/disabled 终态写入守卫契约。
+
+### R7-B 批11 交付记录（账户状态写面 + 授权 + 小时额度，写码档，2026-11-01）
+
+| 编号 | 修复内容（落点） | 钉住测试 |
+| --- | --- | --- |
+| B1-1a | 流量迁移写面补 `config_revision = COALESCE(config_revision,0)+1`（owner disabled/temp 两分支 + 授权实例分支），提交后经既有 `CacheInvalidator.InvalidateGatewayRuntime`（reason `account_traffic_migration`）失效；失效失败只 Warn 不回滚。未改可迁移源状态白名单（B 类呈报）。`accounts/m11_traffic_migration.go` | `TestW13gTrafficMigrationRevisionInvalidationAndCAS`（revision 递增、并发 PATCH CAS 冲突、失效端口被调用） |
+| B1-2a | 人工 PATCH `status=disabled` 与后台探测关闭臂共用 `releaseAccountLockAndQualityEnforcement`：结束锁死（UNLOCKED/终态列清零/generation+1）、清 `account_quality_enforcements` active 行；Key 运行态清理端口调用面扩到手动停用。`accounts/patch.go` | `TestPatchManualDisableReleasesLockAndQualityEnforcement`（ENGAGED 锁+quality active → 全部结束；active 无副作用） |
+| B1-3 | 自动禁用两臂统一 `isHardUnavailableAccountStatus` 短路（含 pending_test/quality_isolated/error）；绑定臂补预读 + `status=? AND config_revision=?` CAS，error→error 不再重写原因。`chain_error_policy_effects.go` | `TestW1EEffectsDisableHardUnavailableGuard`（三种特殊状态不覆盖、active 正常写 error） |
+| B3-H1 | 团队停用防御：`patchForOwner` 在 sync 前校验 team source 的 `system_teams.status='active'`，否则返回创建路径同文案「团队不存在或已停用」（400），任意字段 PATCH 均不可复活；`activeTeamMemberIDs` 展开 join 团队状态。`authz/mutations.go`、`sync.go` | `TestTeamDisabledBlocksGrantPatchAndActiveResync`（仅改 limits 被拒/不 provision/active 团队不变） |
+| B3-H11 | 计划激活重建小时额度绑定。新增 jobs `internal/quotahourly`（DELETE+upsert，列集与 gateway 写侧逐字段一致）+ `oauthrefresh.APIKeyScheduleActivationHook`，在翻 active 的同一事务内重建、提交后打脏；无小时额度/停用不写；坏额度文档逐项隔离不阻塞同批。gateway 零改动；`jobregistry` Writes 追加绑定/脏表。 | `TestSyncApiKeyScheduleActivationRebuildsHourlyWindowBinding`（8 字段断言+脏 generation=1）、`...BindingIdempotent`、`...DeactivationWritesNoBinding`、`...WithoutHourlyQuotaWritesNoBinding`、`...InvalidQuotaJSONSkipsRow`、`TestQuotaHourlyWindowFromScheduleActivationBinding`（statsagg 产出窗口）、`TestAPIKeyScheduleSyncNeverNilActivationHook` |
+
+验证（合并三批独立复跑）：gateway `accounts 4.111s`、`authz 0.323s`、`accountkeystates 0.263s`、`cmd 22.513s`、`apikeys 0.297s`、`gatewayquota 11.051s`；jobs `keymodelrecovery 12.115s`、`accounthealth 30.934s`、`oauthrefresh 58.951s`、`statsagg 59.893s`、`quotahourly 0.234s`、`jobregistry 0.228s`（均 `JUHE_AI_TEST_EXTERNAL=1`）；shared `accounttest/...` 全绿（proberepo 17.656s、manualtestrepo 15.684s 实跑）；三模块 `go build ./...` 通过。
+
+### R7-B B 类待裁决清单（需用户确认后实施）
+
+| 编号 | 一句话 | 建议 |
+| --- | --- | --- |
+| B1-1b | 流量迁移允许把 error/pending_test/quality_isolated/锁死账户直接改写为 disabled/temp，且 temp 臂继承旧 schedulable | 拒绝迁移非 active 源，或显式确认迁移=强制接管 |
+| B1-7 | 「清理运行状态」把 quality_isolated 恢复 active 但不清质量处罚 | 重置时一并清 enforcement（推荐）或禁对隔离账户重置 |
+| B1-10 | PATCH `{status:active, schedulable:false}` 静默改为可调度 | 尊重显式 false，或拒绝该组合并报错 |
+| B2-H3 | gateway 运行缓存 stale 最长 10min 仍调度已 error/disabled 账户 | 缩短 retain 或状态类失效强制回源（影响性能契约） |
+| B2-M1 | 冷却复测成功可清除用户显式 temporary_unavailable/rate_limited（无 provenance） | 补来源列/标记，人工状态仅人工恢复；同步修订两份文档冲突条款 |
+| B2-M5 | 同账户重试跳过电路 PrepareAttempt | 重试臂也过电路门（推荐）或文档明示豁免 |
+| B3-H12 | 计划边界整分钟错过则 Key 状态整天不纠正 | 增加窗口内纠偏（按当前时刻判 in-window） |
+| B3-H24 | keymodelrecovery Unknown 无终态，永久 10s 重试 | 定义放弃终态（如 N 次后 CLOSED/废弃）并清理 |
+| B3-H31 | J3b Key-模型 ForegroundLimit=100000，与设计固定 2 漂移 | 统一回 2（推荐，恢复风暴保护）或修订设计契约 |
+
+### R7-B C 类裁决清单（功能缺口/容量）
+
+| 编号 | 一句话 | 建议 |
+| --- | --- | --- |
+| B2-H1/H2 | 账户运行态软阻断（degraded/precheck_pending/half_open）与降级排序整体未落地：无 writer、无 half-open 执行器、端口恒 disabled | 立项实现或从文档移除该链路；当前文档与运行事实冲突 |
+| B1-5 | temporary_unavailable 的 schedulable 三套语义（人工 0/策略 1/迁移继承） | 统一语义并写轴契约 |
+| B3-H26 | continuation 保留槽仅在「全局+本来源」双标志时生效，与纯函数 SelectDue 口径不一致 | 对齐 Lua 与设计 §8.2 |
+| B1-8 | gateway `accountkeystates.DeferProbe` 无生产调用方（死代码） | 删除或标注退役 |
+
+## R7-C 统计口径域
+
+- 锚定范围：读面（`gateway/internal/statreads`、`ipstats`、`logreads`、`publicapilogs`）；写入与聚合（`jobs/internal/usagewriter`、`ingestgate`、`statsagg`、`statsverify`、`retention`）；定价/额度/结算交叉面（`gateway/internal/pricing`、`gatewayquota`、`gatewayusage`、`chain_pricing.go`、`chain_catalog.go`、`chain_usage.go`）。
+- 关联契约：模型价格与用量统计口径、统计指标与分层聚合设计、接口契约与权限矩阵、额度与计费相关设计。
+- 状态：攻击轮 3 视角 41 条 → 送验 20 条 → **18 confirmed / 2 refuted / 2 既有裁决重复**；A 类 8 条已修复并验证，其余 B/C 登记。
+
+### R7-C 验证与处置
+
+| 编号 | 裁决 | 分类 | 处置 |
+| --- | --- | --- | --- |
+| C1-H1 AI 健康页把非质量终态计失败 | confirmed | A（文档明文） | 已修：neutral 集合不计入健康率 |
+| C1-C2 概览今日走 daily、跨天走 5min 窗口且缺行静默全 0 | confirmed | B | 呈报 |
+| C1-C3/C5 非法日期静默丢过滤/回落今天 | confirmed | A | 已修：统一 400 |
+| C1-C6 授权账户在 options 不可见 | confirmed | A | 已修：复用可见性子句 |
+| C1-C7 缺 metadata 静默丢行但 total 不变 | confirmed | A | 已修：占位行 + total 自洽 |
+| C1-C18 空 SystemAccountID 跨租户 | **refuted**（HTTP 面不可达） | C 防御 | 观察 |
+| C2-H1 迟到记录永久不聚合 | confirmed | B | 呈报（gateway 内存 buffer 残余窗口） |
+| C2-M1 聚合期重定价 | **refuted**（生产未注入 estimator） | C 潜在 | 观察 |
+| C2-M6 单行缺 access_type 卡死全部聚合 | confirmed | A | 已修：行级隔离 + 游标推进 |
+| C2-H3 分区备忘过期 + 批级毒丸 | confirmed | A | 已修：存在性复核 + 23514 清备忘重试 |
+| C2-H2 死信对门控/对账不可见 | confirmed | A | 已修：DeadLetterCount 阻断聚合，DroppedCount 只观测 |
+| C3-H1 在途额度预占恒 no-op | confirmed | B（需设计选择） | 呈报 |
+| C3-H2 自定义模型部分价格→整单 NULL | confirmed | B（需产品口径） | 呈报 |
+| C3-H3 冻结快照空 billed tier 错价 | confirmed | A | 已修：serviceTierForWrite 回退链 |
+| C3-H4 客户端 service_tier 任意 token→NULL | confirmed | B | 呈报 |
+| C3-H5 个人模型价作用于被授权调用方 | confirmed | 重复（目标态差异） | 不重复登记 |
+| C3-H7 取消/断流规避额度 | confirmed | 重复（既有裁决） | 不重复登记 |
+| C3-H8 授权/团队额度无在途预留 | confirmed | B | 呈报 |
+| C1-C9 额度读投影欠计 | confirmed | B | 呈报（与 C3-H1 同链） |
+| C3-H13 字符串参数绑整数列 | **refuted**（pgx 文本参数推断） | — | 不登记 |
+
+### R7-C A 类修复（批12）
+
+| 编号 | 修复内容（落点） | 钉住测试 |
+| --- | --- | --- |
+| C1-H1 | `statreads/aihealth.go` 新增 `j1NonQualityOutcomes`（stale/framing_complete_neutral/opaque_upstream/gateway_capacity/gateway_policy/downstream_closed）返回空串不计入；真实账号失败仍 failure | `TestJ1OutcomeHealthStatusExcludesNonQualityOutcomes`、`TestJ1NeutralOutcomesStayOutOfHealthRate` |
+| C1-C3/C5 | `statreads/usagerecords.go` 新增 `strictDateQueryValue` + `statReadsBadRequest`（handler 400）；`usageoverview.go` 日历校验 400，不再回落 today | `TestUsageRecordsInvalidDatesRejectBadRequest`、`TestUsageOverviewInvalidCalendarRejectsBadRequest`、`TestUsageRecordDateRangeKeepsValidContract` |
+| C1-C6 | `accountusage.go` options/selectedIds 复用 `accountUsageCallerVisibilityClause` | `TestWdAccountUsageOptionsIncludesAccountAuthorizations`（真 PG） |
+| C1-C7 | `accountusage.go` metadata 缺失行用占位名保留，total 与实际行自洽 | `TestWdAccountUsageKeepsRowsForDeletedAccounts`（真 PG） |
+| C2-M6 | `statsagg/aggregate.go` 缺 access_type 行 Warn 后跳过，游标正常推进；skipped 计数留痕 | `TestC2M6BadAccessTypeRowIsolatedAndCursorAdvances`、`TestC2M6OnlyBadRowBatchStillAdvancesCursor`、`TestC2M6RowSkipReasonMatchesErrorArm` |
+| C2-H3 | `usagewriter/partitions.go` 备忘可失效（`forget`/`markEnsured`/存在性查询）+ `isBenignPartitionDDLConflict`；`store.go` 每批按 `pg_class.relispartition` 复核，INSERT 撞 23514 清批内日期键交上游重试 | `partitions_c2h3_test.go` 4 例 |
+| C2-H2 | `ingestgate` DeadLetterCount 阻断聚合（可观测降级，writer 恢复后解除）、DroppedCount 只观测；`usagewriter` 暴露计数并接入 DrainStatus | `TestC2H2DeadLetterBlocksAggregationGate`、`TestC2H2DeadLetterClearedReopensGate`、`TestC2H2DroppedCountIsVisibleButNotHardGate`、`TestC2H2DeadLetterTakesPrecedenceOverBacklog` |
+| C3-H3 | `usagewriter/freeze.go` 改用 `serviceTierForWrite(enriched)` 回退链，快照档位价与网关 cost_usd 同源 | `TestC3H3FreezeServiceTierFallbackChain`、`TestC3H3FreezeSnapshotUsesTierPricing` |
+
+验证（真实输出）：`statreads` 默认 0.290s、真 PG 全包 17.909s；jobs `usagewriter` 13.435s、`statsagg` 48.661s、`ingestgate` 0.238s（均 `JUHE_AI_TEST_EXTERNAL=1`）；gateway `go build ./...`、jobs 目标包 `go build` 通过。文档同步：模型价格与用量统计口径 §2.9、统计指标与分层聚合设计「分区与灌入守卫」、接口契约与权限矩阵「统计读面参数与可见性」。
+
+### R7-C B 类待裁决清单
+
+| 编号 | 一句话 | 建议 |
+| --- | --- | --- |
+| C3-H1 | API Key 在途成本预占因 provider 恒空而 no-op | 预检后移到账户选定或按模型跨 vendor 保守估价 |
+| C3-H2 | 自定义模型任一价格即可 active，未定价维度使整单 cost NULL | 文本模型强制 input+output 齐备；或禁止个人行定价（更彻底） |
+| C3-H4 | 客户端任意 service_tier 使成本 NULL | 未知档位回退 standard 计价或入口拒绝 |
+| C3-H8 | 授权/团队额度无在途预留 | 复用 API Key 预留机制或明确文档接受 |
+| C1-C2 | 概览双源（daily vs 5min 窗口）且缺行静默 0 | 统一走 daily 或窗口缺行时回退实时聚合/标记 partial |
+| C2-H1 | 迟到记录（gateway 内存 buffer 窗口）永久不聚合 | 登记为已知缺口并在 statsverify 增对账 |
+| C1-C9 | 额度读投影欠计（聚合延迟+5s 缓存） | 与 C3-H1 一并解决或文档明示 |
+| C1-C18 | 认证上下文空 SystemAccountID 时 usage-records 无租户条件 | 加 fail-closed 断言（防御加固，当前不可达） |
+
+# R7 终报（独立域深挖收口，2026-11-01）
+
+## 覆盖矩阵
+
+| 域 | 锚定 | 攻击 | 送验 | confirmed | A 类修复 | 剩余 |
+| --- | --- | --- | --- | --- | --- | --- |
+| R7-A 模型检测 | modelcheck* ~22.5k 行 | 5 角色 ~86 条 | 16 | 15（1 refuted=已登记 DD2-E11） | 14 + 夹具债 3 + 落点复核第二批 15 | 剩余假设 ~60 条登记；P-H4 契约冲突=T88 |
+| R7-B 状态流转 | accounts/accountkeystates/authz/apikeys/keymodelrecovery/gatewayquota 等 | 3 角色 69 条 | 22 | 20（3 refuted，2 与 DD-A11/DD-A9/DD3-A2 重复） | 9 | B 类 9 条=T91；C 类 4 条入清单；T89/T90 派生 |
+| R7-C 统计口径 | statreads/ipstats/logreads/usagewriter/statsagg/pricing/gatewayquota | 3 角色 41 条 | 20 | 18（2 refuted，2 既有裁决重复） | 8 | B 类 8 条=T93；低危登记 |
+
+合计：攻击 ~196 条假设 → 送验 58 → confirmed 53 → **A 类代码修复 46 条**（R7-A 14+15、R7-B 9、R7-C 8）+ 测试夹具债 3 处，全部带钉住测试，全部真 PG / 真环境实跑绿；三模块 `go build ./...` 通过。
+
+## 收敛状态（如实）
+
+- **未达成「连续三轮无 B 类确认」收敛协议**：R7 三个域各自单轮完成攻击→验证→修复→落点（R7-A 有独立落点复核），没有对每个域再追加第二轮攻击。继续深挖仍可能产出新确认项；本轮以「覆盖未审查功能域」为优先目标收敛。
+- 遗留裁决面集中且已登记：T88（探针 usage 口径）、T91（R7-B 9 条）、T93（R7-C 8 条）、T89/T90（jobs 夹具债/存量回填）。全部待用户逐条「修 / 不修 / 改文档」。
+- 未提交改动：R7 全部修复 + R1–R6 尾批仍混存工作区（含并行会话 chat 域在制品），未 commit（遵守无授权不提交）。

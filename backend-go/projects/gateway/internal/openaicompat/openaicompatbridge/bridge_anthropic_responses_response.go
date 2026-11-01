@@ -107,7 +107,14 @@ func (s *AnthropicResponsesStreamState) ProcessAnthropicEvent(rawEventText strin
 			if model := bridgeStringValue(message["model"]); model != "" {
 				s.Model = model
 			}
-			s.Usage = anthropicUsageToResponsesUsage(bridgeObjectValue(message["usage"]), s.Usage)
+			// T86：与同向 message_delta 守卫、anthropic→chat 方向（ProcessAnthropic-
+			// EventAsChat）对齐——message_start 未携带 usage 对象时不物化全 0 usage。
+			// 否则「上游未发 usage」在桥状态里伪装成非 nil 全 0 快照：客户端 completed
+			// 快照渲染全 0 而非桥内估算（anthropicResponsesEstimatedUsage），结算侧也
+			// 会把零值快照当上游事实否决估算兜底（DD-RC-C1 回归）。
+			if usage := bridgeObjectValue(message["usage"]); usage != nil {
+				s.Usage = anthropicUsageToResponsesUsage(usage, s.Usage)
+			}
 		}
 		output = append(output, s.EnsureResponsesStreamStarted()...)
 		return output
@@ -666,8 +673,19 @@ func TransformAnthropicMessagesSseBufferToResponsesSse(body []byte, model, previ
 // 边界增量消费 src，渲染事件立即写入 dst；事件处理与收尾语义与 buffer 版本
 // 逐行一致。
 func PumpAnthropicMessagesSseToResponsesSse(src io.Reader, dst io.Writer, model, previousResponseID string) error {
+	_, err := PumpAnthropicMessagesSseToResponsesSseWithState(src, dst, model, previousResponseID)
+	return err
+}
+
+// PumpAnthropicMessagesSseToResponsesSseWithState 是 PumpAnthropicMessagesSse-
+// ToResponsesSse 的状态外露变体（T86 桥接 usage 快照供给）：事件处理与收尾语
+// 义与原泵逐行一致，pump 返回后调用方可读取桥状态终值——Usage 为上游
+// message_start / message_delta 确实携带 usage 对象时经 anthropicUsageTo-
+// ResponsesUsage 重渲染的 responses 形（未携带时保持 nil，调用方不得把 nil
+// 转成零值供给）。
+func PumpAnthropicMessagesSseToResponsesSseWithState(src io.Reader, dst io.Writer, model, previousResponseID string) (*AnthropicResponsesStreamState, error) {
 	state := NewAnthropicResponsesStreamState(model, previousResponseID)
-	return PumpBridgeSseTransform(src, dst, func(eventText string) []string {
+	err := PumpBridgeSseTransform(src, dst, func(eventText string) []string {
 		rendered := state.ProcessAnthropicEvent(eventText)
 		state.NotifyResponsesCompletion()
 		return rendered
@@ -676,4 +694,5 @@ func PumpAnthropicMessagesSseToResponsesSse(src io.Reader, dst io.Writer, model,
 		state.NotifyResponsesCompletion()
 		return rendered
 	})
+	return state, err
 }

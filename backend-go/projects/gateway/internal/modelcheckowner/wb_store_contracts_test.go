@@ -389,8 +389,8 @@ func TestWBStoreListHealthSyncRetriesFilters(t *testing.T) {
 
 // EnsureHealthRetryTasks 契约：按失败发布物化幂等重试任务。
 func TestWBStoreEnsureHealthRetryTasksIdempotent(t *testing.T) {
-	j3b := wbOpenPGDB(t, append(wbHealthRuntimeDDL(t),
-		`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT,due_at TEXT,claim_owner TEXT,claim_until TEXT,fence_token INTEGER,state TEXT,last_error TEXT,completed_at TEXT,payload TEXT,updated_at TEXT)`))
+	// wbHealthRuntimeDDL（j3bRuntimeFixtureDDLs）自 S-H6 起已含生产同型任务表。
+	j3b := wbOpenPGDB(t, wbHealthRuntimeDDL(t))
 	store := &Store{schema: j3bTestSchema, db: j3b}
 	defer store.Close()
 	statHour, err := NewHealthStatHourFunc("UTC")

@@ -19,14 +19,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
-var w14mSchedulerDDL = []string{
-	`CREATE TABLE model_check_scheduler_tasks (id TEXT PRIMARY KEY,kind TEXT NOT NULL,due_at TEXT NOT NULL,claim_owner TEXT,claim_until TEXT,fence_token INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',last_error TEXT,completed_at TEXT,payload TEXT NOT NULL,updated_at TEXT NOT NULL)`,
-}
-
 func w14mSchedulerStore(t *testing.T) (*Store, *SQLSchedulerSource, *w14mFailpoint) {
 	t.Helper()
-	ddl := append(j3bRuntimeFixtureDDLs(), w14mSchedulerDDL...)
-	db, fp := w14mFailDB(t, ddl)
+	// j3bRuntimeFixtureDDLs 自 S-H6 起已含生产同型 model_check_scheduler_tasks
+	// （JSONB payload），不再追加 w14mSchedulerDDL 变体避免重复建表。
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
 	store := &Store{db: db, schema: j3bTestSchema}
 	source := &SQLSchedulerSource{Store: store, OwnerID: "w14m-gateway", Lease: time.Minute}
 	if _, err := db.Exec(`INSERT INTO model_check_scheduler_tasks(id,kind,due_at,payload,updated_at) VALUES ('task-1','scheduled','2026-08-27T10:00:00Z','{"targetId":"acct-1"}','2026-08-27T10:00:00Z')`); err != nil {
@@ -331,8 +328,8 @@ func TestW14MHTTPDetailArms(t *testing.T) {
 		}
 		recorder := httptest.NewRecorder()
 		local.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/run/stream", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
-		if recorder.Code != http.StatusBadRequest {
-			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "服务器内部错误") || strings.Contains(recorder.Body.String(), "w14m-build-boom") {
+			t.Fatalf("构建错误必须 500 统一文案且不透出原文（R7-A I-H1）: %d %s", recorder.Code, recorder.Body.String())
 		}
 	})
 }

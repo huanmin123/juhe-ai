@@ -579,7 +579,7 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 			semanticComplete = true
 		}
 	}
-	if readErr != nil && semanticComplete && responseBodyIsSemanticallyCompleteForAdapter(options.Adapter, body, parseErrorMessage) {
+	if readErr != nil && semanticComplete && responseBodyIsSemanticallyCompleteForAdapter(options.Adapter, request.Protocol, body, parseErrorMessage) {
 		// 已读内容已携带完整语义（完整 JSON 或流式终态事件）且无流内失败
 		// 信封：尾部传输错误不得覆盖语义成功，按完整响应正常判定。
 		readErr = nil
@@ -619,6 +619,17 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 		if result.ErrorMessage == "" {
 			result.ErrorMessage = "J3b OAuth Codex response stream incomplete"
 		}
+		return result, nil
+	}
+	// 模型检测设计 §1.2 读取完整性：干净 EOF 收尾的 SSE 流若从未出现协议终态
+	// 事件（chat [DONE] / anthropic message_stop / gemini finishReason 终帧），
+	// 截断流与完整流不可区分，半截输出不得冒充完整答案进入评分；未见终态与
+	// 上方传输错误臂同口径置 Incomplete，交由重试阶梯晋级。流内已带失败信封
+	// 时错误文案自身已是失败定论，不叠加传输不完整标记。
+	if parseErrorMessage == "" && !sseStreamTerminalEventSeen(request.Protocol, body) {
+		result.Incomplete = true
+		result.ObservedModel, result.Output, result.Usage, result.JSON = observedModel, output, usage, parsed
+		result.ErrorMessage = "J3b probe upstream stream ended without terminal event"
 		return result, nil
 	}
 	result.ObservedModel, result.Output, result.Usage, result.JSON, result.ErrorMessage = observedModel, output, usage, parsed, parseErrorMessage
@@ -669,34 +680,19 @@ func readResponseBody(body io.Reader, maxBytes int64, requestCtx context.Context
 // responseBodyIsSemanticallyComplete judges whether the already-read body
 // already carries a complete response despite the transport read ending in an
 // error: a fully parseable JSON document, or an SSE stream that has already
-// delivered its terminal event, in both cases without an in-stream failure
-// envelope. BUG-0292：终态已到但连接未干净关闭时按完整响应判定。
-func responseBodyIsSemanticallyComplete(body []byte, parseErrorMessage string) bool {
+// delivered its protocol terminal event, in both cases without an in-stream
+// failure envelope. BUG-0292：终态已到但连接未干净关闭时按完整响应判定。
+// 终态证据按协议统一判定（chat [DONE]/finish_reason、anthropic
+// message_stop、gemini finishReason、responses completed），避免
+// [DONE]/message_stop 后的尾部读错误被误判为截断。
+func responseBodyIsSemanticallyComplete(protocol modelcheckprofile.Protocol, body []byte, parseErrorMessage string) bool {
 	if parseErrorMessage != "" {
 		return false
 	}
-	trimmed := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
-	var directValue map[string]any
-	if json.Unmarshal(trimmed, &directValue) == nil && directValue != nil {
+	if responseBodyIsCompleteJSON(body) {
 		return true
 	}
-	for _, event := range parseSSEResponseEvents(trimmed) {
-		if event.payload == nil {
-			continue
-		}
-		candidate := event.payload
-		if nested, ok := event.payload["response"].(map[string]any); ok {
-			candidate = nested
-		}
-		typeName := strings.TrimSpace(asString(event.payload["type"]))
-		if typeName == "" {
-			typeName = event.event
-		}
-		if isResponseTerminalEvent(typeName, candidate) {
-			return true
-		}
-	}
-	return false
+	return sseStreamTerminalEventSeen(protocol, body)
 }
 
 // validateEndpointURL 端点安全校验保持在本包（SSRF 契约，wl_probe_extra_test
@@ -993,7 +989,16 @@ func parseResponseDetailed(protocol modelcheckprofile.Protocol, body []byte) (st
 	var directValue map[string]any
 	if json.Unmarshal(trimmed, &directValue) == nil && directValue != nil {
 		model, output, usage, parsed := parseJSONResponse(protocol, trimmed)
-		return model, output, usage, parsed, responseErrorMessage("", parsed)
+		errorMessage := responseErrorMessage("", parsed)
+		// Responses 非流式体同样用顶层 status 表达协议完成态：显式非
+		// completed（incomplete/failed）是失败定论，不能因 HTTP 200 与
+		// 文本非空冒充成功。
+		if errorMessage == "" && protocol == modelcheckprofile.ProtocolOpenAIResponses {
+			if status := asString(parsed["status"]); status != "" && status != "completed" {
+				errorMessage = "response.status " + status
+			}
+		}
+		return model, output, usage, parsed, errorMessage
 	}
 
 	events := parseSSEResponseEvents(trimmed)
@@ -1041,6 +1046,19 @@ func parseResponseDetailed(protocol modelcheckprofile.Protocol, body []byte) (st
 			typeName = event.event
 		}
 		if isResponseTerminalEvent(typeName, candidate) {
+			// 与 Codex 臂同口径：completed 事件携带非 completed status
+			// （incomplete/failed）不是成功终态，保留为协议级失败证据。
+			status := strings.TrimSpace(asString(candidate["status"]))
+			if status == "" {
+				status = strings.TrimSpace(asString(payload["status"]))
+			}
+			if status != "" && status != "completed" && errorMessage == "" {
+				if nestedMessage := responseErrorMessage(typeName, payload); nestedMessage != "" {
+					errorMessage = nestedMessage
+				} else {
+					errorMessage = "response.completed status " + status
+				}
+			}
 			if eventOutput != "" {
 				terminal = eventOutput
 			}
@@ -1324,17 +1342,21 @@ func responseRawErrorMessage(payload map[string]any) string {
 	return asString(payload["message"])
 }
 
-func responseBodyIsSemanticallyCompleteForAdapter(adapter string, body []byte, parseErrorMessage string) bool {
+func responseBodyIsSemanticallyCompleteForAdapter(adapter string, protocol modelcheckprofile.Protocol, body []byte, parseErrorMessage string) bool {
 	if adapter == AdapterOpenAIOAuthCodex {
 		_, _, _, _, _, terminal := parseOAuthCodexResponseDetailed(body)
 		return terminal && parseErrorMessage == ""
 	}
-	return responseBodyIsSemanticallyComplete(body, parseErrorMessage)
+	return responseBodyIsSemanticallyComplete(protocol, body, parseErrorMessage)
 }
 
 type sseResponseEvent struct {
 	event   string
 	payload map[string]any
+	// done 标记 data: [DONE] 哨兵行（OpenAI chat 流终态）。载荷保持 nil，
+	// 既有遍历者按 payload==nil 跳过，行为不变；终态判定据此识别 chat 流
+	// 是否完整收尾。
+	done bool
 }
 
 func parseSSEResponseEvents(body []byte) []sseResponseEvent {
@@ -1343,11 +1365,20 @@ func parseSSEResponseEvents(body []byte) []sseResponseEvent {
 	var dataLines []string
 	flush := func() {
 		if len(dataLines) == 0 {
+			// 纯 event 行（无 data）：保留事件名供终态判定（Anthropic
+			// message_stop 可能不带 data）。载荷为 nil，既有遍历者跳过。
+			if strings.TrimSpace(eventName) != "" {
+				events = append(events, sseResponseEvent{event: eventName})
+			}
 			eventName = ""
 			return
 		}
 		data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-		if data != "" && data != "[DONE]" {
+		switch {
+		case data == "[DONE]":
+			// OpenAI chat 流终态哨兵：保留终态标记后再丢弃，不进入载荷遍历。
+			events = append(events, sseResponseEvent{event: eventName, done: true})
+		case data != "":
 			var payload map[string]any
 			if json.Unmarshal([]byte(data), &payload) == nil && payload != nil {
 				events = append(events, sseResponseEvent{event: eventName, payload: payload})
@@ -1379,6 +1410,73 @@ func parseSSEResponseEvents(body []byte) []sseResponseEvent {
 	}
 	flush()
 	return events
+}
+
+// sseStreamTerminalEventSeen 判断流式响应是否已出现协议终态事件（模型检测
+// 设计 §1.2 读取完整性：流式响应已出现终态事件才算完整语义）。OpenAI chat
+// 流以 data: [DONE] 哨兵或非空 choices[].finish_reason 收尾（设计 §6 把
+// finish_reason 列为 completed 证据），Anthropic 流以 message_stop 事件收尾，
+// Gemini 流以候选 finishReason 非空的终帧收尾，Responses 流以
+// response.completed / response.done 或嵌套 response.status=completed 收尾。
+// 四条 SSE 臂（chat_sse / messages_sse / generate_content_sse /
+// responses_sse）统一校验；非 SSE 形态（完整 JSON）只在 body 是可解析 JSON
+// 对象时豁免，空体、仅注释或仅空 data: 行没有可解析载荷，不能据此视为完整。
+func sseStreamTerminalEventSeen(protocol modelcheckprofile.Protocol, body []byte) bool {
+	switch protocol {
+	case modelcheckprofile.ProtocolOpenAIChat, modelcheckprofile.ProtocolAnthropic, modelcheckprofile.ProtocolGeminiNative, modelcheckprofile.ProtocolOpenAIResponses:
+	default:
+		return true
+	}
+	events := parseSSEResponseEvents(body)
+	if len(events) == 0 {
+		return responseBodyIsCompleteJSON(body)
+	}
+	for _, event := range events {
+		switch protocol {
+		case modelcheckprofile.ProtocolOpenAIChat:
+			if event.done {
+				return true
+			}
+			for _, choice := range listValue(event.payload["choices"]) {
+				if asString(mapValue(choice)["finish_reason"]) != "" {
+					return true
+				}
+			}
+		case modelcheckprofile.ProtocolAnthropic:
+			if strings.TrimSpace(event.event) == "message_stop" {
+				return true
+			}
+			if asString(event.payload["type"]) == "message_stop" {
+				return true
+			}
+		case modelcheckprofile.ProtocolGeminiNative:
+			for _, candidate := range listValue(event.payload["candidates"]) {
+				if strings.TrimSpace(asString(mapValue(candidate)["finishReason"])) != "" {
+					return true
+				}
+			}
+		case modelcheckprofile.ProtocolOpenAIResponses:
+			typeName := strings.TrimSpace(asString(event.payload["type"]))
+			if typeName == "" {
+				typeName = event.event
+			}
+			// 与 parseResponseDetailed 同口径：终态事件名或嵌套
+			// response.status=completed 都是响应已完整收尾的证据。
+			if isResponseTerminalEvent(typeName, event.payload) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// responseBodyIsCompleteJSON 判定 body 是否是非 SSE 形态的完整 JSON 对象。
+// 流式端点收到空体、仅注释或仅空 data: 行时没有任何可解析载荷，不能以
+// "零事件" 冒充完整响应。
+func responseBodyIsCompleteJSON(body []byte) bool {
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
+	var value map[string]any
+	return json.Unmarshal(trimmed, &value) == nil && value != nil
 }
 
 func parseJSONResponse(protocol modelcheckprofile.Protocol, body []byte) (string, string, map[string]any, map[string]any) {
@@ -1447,14 +1545,27 @@ func parseJSONResponse(protocol modelcheckprofile.Protocol, body []byte) (string
 func parseSSEEventOutput(protocol modelcheckprofile.Protocol, payload map[string]any) string {
 	switch protocol {
 	case modelcheckprofile.ProtocolOpenAIResponses:
-		return asString(payload["delta"]) + asString(payload["text"])
+		// Responses 的 reasoning 增量（reasoning_summary_text.delta /
+		// reasoning_text.delta 等）是推理痕迹，不得并入判分 Output；只有
+		// 事件名承载类型（type 为空）或 response.output_text.* 的文本增量
+		// 才是可见答案。
+		typeName := asString(payload["type"])
+		if strings.Contains(typeName, "reasoning") {
+			return ""
+		}
+		if typeName == "" || strings.HasPrefix(typeName, "response.output_text.") {
+			return asString(payload["delta"]) + asString(payload["text"])
+		}
+		return ""
 	case modelcheckprofile.ProtocolOpenAIChat:
+		// reasoning_content 是推理痕迹，不并入判分 Output（refusal 保持并入
+		// 的既有口径）：思考模型的 delta 推理流不得参与判分。
 		var parts []string
 		for _, choice := range listValue(payload["choices"]) {
 			choiceRecord := mapValue(choice)
 			for _, field := range []string{"message", "delta"} {
 				container := mapValue(choiceRecord[field])
-				parts = append(parts, asString(container["content"]), asString(container["reasoning_content"]), asString(container["refusal"]))
+				parts = append(parts, asString(container["content"]), asString(container["refusal"]))
 			}
 		}
 		return strings.TrimSpace(strings.Join(parts, ""))

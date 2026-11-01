@@ -523,6 +523,113 @@ func TestUsageRecordsRejectsUnscopedAdminFilters(t *testing.T) {
 	}
 }
 
+// TestUsageRecordsInvalidDatesRejectBadRequest pins C1-C3: format- or
+// calendar-invalid dates answer 400 with the usage-overview wording instead of
+// silently dropping the time filter (which used to scan the whole history).
+func TestUsageRecordsInvalidDatesRejectBadRequest(t *testing.T) {
+	deps := &Deps{
+		Now:      func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
+		Timezone: func(context.Context) (string, error) { return "UTC", nil },
+	}
+	handler := deps.usageRecordsListHandler(false)
+	cases := []struct {
+		query   string
+		message string
+	}{
+		{"startDate=2026-2-3", "开始日期格式应为 YYYY-MM-DD"},
+		{"startDate=20260901", "开始日期格式应为 YYYY-MM-DD"},
+		{"startDate=2026-02-31", "开始日期格式应为 YYYY-MM-DD"},
+		{"startDate=2026-13-01", "开始日期格式应为 YYYY-MM-DD"},
+		{"endDate=2026-2-3", "结束日期格式应为 YYYY-MM-DD"},
+		{"endDate=20260901", "结束日期格式应为 YYYY-MM-DD"},
+		{"endDate=2026-02-31", "结束日期格式应为 YYYY-MM-DD"},
+		{"endDate=2026-13-01", "结束日期格式应为 YYYY-MM-DD"},
+	}
+	for _, tc := range cases {
+		recorder := invoke(t, handler, http.MethodGet, "/__aisys__/api/my-usage-records?"+tc.query, userAuth())
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s 应 400，实际 %d：%s", tc.query, recorder.Code, recorder.Body.String())
+		}
+		if got := decodeBody(t, recorder)["message"]; got != tc.message {
+			t.Fatalf("%s 错误文案错误: %#v", tc.query, got)
+		}
+	}
+}
+
+// TestUsageRecordDateRangeKeepsValidContract pins that the strict validation
+// above did not change legal-date behavior: same-day defaults, swapped bounds,
+// single-sided backfill, today default and timezone-aware half-open intervals.
+func TestUsageRecordDateRangeKeepsValidContract(t *testing.T) {
+	deps := &Deps{
+		Now:      func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
+		Timezone: func(context.Context) (string, error) { return "UTC", nil },
+	}
+	cases := []struct {
+		values     url.Values
+		start, end string
+	}{
+		{url.Values{"startDate": {"2026-09-04"}, "endDate": {"2026-09-04"}}, "2026-09-04T00:00:00.000Z", "2026-09-05T00:00:00.000Z"},
+		{url.Values{"startDate": {"2026-09-04"}, "endDate": {"2026-09-01"}}, "2026-09-01T00:00:00.000Z", "2026-09-05T00:00:00.000Z"},
+		{url.Values{"endDate": {"2026-09-02"}}, "2026-09-02T00:00:00.000Z", "2026-09-03T00:00:00.000Z"},
+		{url.Values{"startDate": {"2026-09-02"}}, "2026-09-02T00:00:00.000Z", "2026-09-03T00:00:00.000Z"},
+		{url.Values{}, "2026-09-04T00:00:00.000Z", "2026-09-05T00:00:00.000Z"},
+	}
+	for _, tc := range cases {
+		start, end, err := deps.usageRecordDateRange(context.Background(), tc.values)
+		if err != nil {
+			t.Fatalf("%v 合法日期不应报错: %v", tc.values, err)
+		}
+		if start != tc.start || end != tc.end {
+			t.Fatalf("%v 区间错误: %s..%s，期望 %s..%s", tc.values, start, end, tc.start, tc.end)
+		}
+	}
+	// 时区契约：日边界按统计时区解释，区间仍是 [start-of-day, next-day)。
+	shanghai := &Deps{
+		Now:      func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
+		Timezone: func(context.Context) (string, error) { return "Asia/Shanghai", nil },
+	}
+	start, end, err := shanghai.usageRecordDateRange(context.Background(), url.Values{"startDate": {"2026-09-04"}, "endDate": {"2026-09-04"}})
+	if err != nil || start != "2026-09-03T16:00:00.000Z" || end != "2026-09-04T16:00:00.000Z" {
+		t.Fatalf("时区日边界错误: %s..%s err=%v", start, end, err)
+	}
+}
+
+// TestUsageOverviewInvalidCalendarRejectsBadRequest pins C1-C5 for the
+// usage-overview / ai-performance date contract: a regex-valid but
+// calendar-invalid bound is a 400 instead of a silent fallback to today.
+func TestUsageOverviewInvalidCalendarRejectsBadRequest(t *testing.T) {
+	deps := &Deps{
+		Now:      func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) },
+		Timezone: func(context.Context) (string, error) { return "UTC", nil },
+	}
+	overview := deps.overviewSectionHandler(false)
+	cases := []struct {
+		query   string
+		message string
+	}{
+		{"startDate=2026-2-3", "开始日期格式应为 YYYY-MM-DD"},
+		{"startDate=20260901", "开始日期格式应为 YYYY-MM-DD"},
+		{"startDate=2026-02-31", "开始日期格式应为 YYYY-MM-DD"},
+		{"startDate=2026-13-01", "开始日期格式应为 YYYY-MM-DD"},
+		{"endDate=2026-02-31", "结束日期格式应为 YYYY-MM-DD"},
+		{"endDate=2026-13-01", "结束日期格式应为 YYYY-MM-DD"},
+	}
+	for _, tc := range cases {
+		recorder := invoke(t, overview, http.MethodGet, "/__aisys__/api/stats/usage-overview/summary?"+tc.query, adminAuth(""))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("usage-overview %s 应 400，实际 %d：%s", tc.query, recorder.Code, recorder.Body.String())
+		}
+		if got := decodeBody(t, recorder)["message"]; got != tc.message {
+			t.Fatalf("usage-overview %s 错误文案错误: %#v", tc.query, got)
+		}
+	}
+	// ai-performance 与 overview 共用同一 schema，非法日历日期同样 400。
+	recorder := invoke(t, deps.aiPerformanceBaseHandler(false), http.MethodGet, "/__aisys__/api/stats/ai-performance?startDate=2026-02-31", adminAuth(""))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("ai-performance 非法日历应 400，实际 %d", recorder.Code)
+	}
+}
+
 func TestAccountUsagePageAggregatesAndPaginates(t *testing.T) {
 	fixture := newFixture(t)
 	seed := []string{

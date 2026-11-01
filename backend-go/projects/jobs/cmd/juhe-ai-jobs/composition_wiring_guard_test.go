@@ -96,6 +96,12 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		Purpose:       "account-availability-schedule-status-sync 必须注入激活 hook（worker_oauth_activation.go），在激活翻转时推进 circuit dispatch revision 家族",
 		MissingImpact: "定时窗口启用的账号只翻状态、不解除网关 dispatch revision 门控，账号启用后请求持续被拒",
 	},
+	{
+		Identifier:    "newAPIKeyScheduleActivationHook(",
+		Name:          "API Key 排期激活小时额度绑定 hook",
+		Purpose:       "api-key-availability-schedule-status-sync 必须注入激活 hook（worker_oauth_activation.go），在激活翻转时重建 request_quota_hourly_window_scope_bindings 并提交后打脏",
+		MissingImpact: "计划启用的 API Key 永久缺失小时额度窗口绑定，statsagg 不生成 usage_quota_hourly_windows，小时额度静默失效（B3-H11）",
+	},
 }
 
 // jobsReadGoSourcePool 拼接目录 dir 下所有非 _test.go 的 .go 文件为源码池。

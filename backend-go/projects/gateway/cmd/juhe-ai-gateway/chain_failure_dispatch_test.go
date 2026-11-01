@@ -1129,6 +1129,8 @@ func TestChainErrorPolicySystemRuleMatrix(t *testing.T) {
 		{"403 稳定错误码", http.StatusForbidden, `{"error":{"code":"insufficient_quota","message":"You exceeded your quota"}}`, true},
 		{"403 非额度标识排除", http.StatusForbidden, `{"error":{"code":"content_policy_violation","message":"blocked"}}`, false},
 		{"429 不属于系统规则", http.StatusTooManyRequests, `{"error":{"code":"rate_limit_exceeded"}}`, false},
+		{"429 稳定额度码命中", http.StatusTooManyRequests, `{"error":{"code":"AccountQuotaExceeded","message":"You have exceeded the 5-hour usage quota. It will reset at 2026-11-01 19:13:27 +0800 CST."}}`, true},
+		{"429 余额耗尽码命中", http.StatusTooManyRequests, `{"error":{"code":"balance_exhausted","message":"密钥余额已用尽"}}`, true},
 		{"200 无决策", http.StatusOK, `{"error":{"code":"insufficient_quota"}}`, false},
 	}
 	for _, testCase := range cases {

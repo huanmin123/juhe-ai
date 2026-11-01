@@ -19,7 +19,9 @@ import (
 //   - account-circuit-control-plane-maintenance（opsjobs.ControlPlaneMaintenance：
 //     CircuitStore 由 circuitstore 的 Redis 同键实现提供，Ledger/Outbox 由
 //     circuitstore 的业务库双模适配器提供；RunMaintenance 之后追加孤儿 incident
-//     结清扫描（opsjobs.OrphanIncidentCloser）与 ledger Cleanup）；
+//     结清扫描（opsjobs.OrphanIncidentCloser）与 ledger / dispatched outbox
+//     Cleanup（circuitstore.ControlPlaneRepo.Cleanup 三臂，含 T87r 起的
+//     dispatched outbox ack 保留期回收））；
 //   - account-circuit-recovery（opsjobs.CircuitRecoveryService：同一 CircuitStore，
 //     恢复探针目标解析走 proberepo 账户域读取链 + accountprobe limited 诊断；
 //     mutation 经 opsjobs.CircuitIncidentProjector 投影回业务库 ledger——
@@ -116,12 +118,12 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 			return jobsched.TaskResult{Outcome: jobsched.OutcomePartial,
 				Warning: fmt.Sprintf("孤儿 incident 结清扫描失败: %v", err)}, nil
 		}
-		cleaned, err := controlPlaneRepo.Cleanup(taskCtx, time.Now().UnixMilli())
+		cleanup, err := controlPlaneRepo.Cleanup(taskCtx, time.Now().UnixMilli())
 		if err != nil {
 			return jobsched.TaskResult{Outcome: jobsched.OutcomePartial,
 				Warning: fmt.Sprintf("账户 circuit ledger 清理失败: %v", err)}, nil
 		}
-		if orphan.ClosedRetired > 0 || orphan.ConflictRetired > 0 || orphan.StaleSkipped > 0 || orphan.Errors > 0 || cleaned > 0 {
+		if orphan.ClosedRetired > 0 || orphan.ConflictRetired > 0 || orphan.StaleSkipped > 0 || orphan.Errors > 0 || cleanup.DeletedIncidents > 0 || cleanup.DeletedOutbox > 0 {
 			// BUG-0295 遗留项③：结清计数全部接入任务日志（skippedHandover /
 			// skippedReopened 此前缺位）。与 gracePending/runtimePresent 等
 			// 上下文计数同口径：只进字段、不进触发条件（纯跳过轮不刷日志）。
@@ -131,7 +133,9 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 				"gracePending", orphan.GracePending, "runtimePresent", orphan.RuntimePresent,
 				"runningLeased", orphan.RunningLeased, "invalidSkipped", orphan.InvalidSkipped,
 				"skippedHandover", orphan.SkippedHandover, "skippedReopened", orphan.SkippedReopened,
-				"errors", orphan.Errors, "cleanedIncidents", cleaned)
+				"errors", orphan.Errors,
+				"cleanedIncidents", cleanup.DeletedIncidents,
+				"cleanedDispatchedOutbox", cleanup.DeletedOutbox)
 		}
 		return jobsched.TaskResult{}, nil
 	})

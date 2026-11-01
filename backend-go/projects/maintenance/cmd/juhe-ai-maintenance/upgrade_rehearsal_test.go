@@ -107,8 +107,8 @@ func TestUpgradeRehearsalEndToEnd(t *testing.T) {
 			t.Fatalf("步骤 %s 在 pending/adopt 出现 %d 次（应恰好一次）", stepID, count)
 		}
 	}
-	if len(seen) != 12 {
-		t.Fatalf("步骤 ID 去重后 %d 个，want 12", len(seen))
+	if len(seen) != 11 {
+		t.Fatalf("步骤 ID 去重后 %d 个，want 11（rev7 已随 AI 问答退役删除）", len(seen))
 	}
 	for _, item := range dryReport.Plan.Pending {
 		t.Logf("pending rev=%d %s", item.Revision, item.StepID)

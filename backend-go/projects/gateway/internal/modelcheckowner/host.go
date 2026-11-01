@@ -122,7 +122,7 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 			return closeOnError(errors.New("J3b scheduler executor factory returned nil"))
 		}
 	}
-	scheduler := &Scheduler{Source: schedulerSource, Executor: executor}
+	scheduler := &Scheduler{Source: schedulerSource, Executor: executor, StaleRuns: store}
 	host := &Host{Store: store, Runtime: runtime, Projector: projector, Handler: handler, Scheduler: scheduler}
 	host.ready.Store(true)
 	return host, nil

@@ -205,15 +205,22 @@ func NewOpen(key CapabilityKey, observedAt time.Time) (State, error) {
 	return State{CapabilityKey: key, CapabilityHash: hash, Generation: 1, Phase: Open, BackoffAttempt: 1, RetryAt: observedAt.Add(Backoff(1)), LastObservedAt: observedAt, LastOutcome: UpstreamNotComplete}, nil
 }
 
+// Acquire 校验 generation/revision fence 并领取探测租约。除 OPEN/RECOVERING
+// 外，HALF_OPEN 的探测租约已过期（或租约缺失）时允许新 worker 接管：生成
+// 新 lease ID 作为新 fence（generation/dispatchRevision 不变），旧 owner 的
+// Settle/Commit 因 lease 不匹配而失效。
 func Acquire(state State, generation, revision int64, leaseID string, now time.Time) (State, MutationStatus) {
 	if state.Generation != generation || state.DispatchRevision != revision {
 		return state, Stale
 	}
-	if (state.Phase != Open && state.Phase != Recovering) || now.Before(state.RetryAt) {
-		return state, NotDue
-	}
-	if state.Lease != nil && !now.After(state.Lease.Until) {
-		return state, LeaseMismatch
+	halfOpenTakeover := state.Phase == HalfOpen && (state.Lease == nil || now.After(state.Lease.Until))
+	if !halfOpenTakeover {
+		if (state.Phase != Open && state.Phase != Recovering) || now.Before(state.RetryAt) {
+			return state, NotDue
+		}
+		if state.Lease != nil && !now.After(state.Lease.Until) {
+			return state, LeaseMismatch
+		}
 	}
 	if strings.TrimSpace(leaseID) == "" {
 		return state, LeaseMismatch
@@ -221,6 +228,18 @@ func Acquire(state State, generation, revision int64, leaseID string, now time.T
 	state.Phase = HalfOpen
 	state.Lease = &Lease{ID: leaseID, Until: now.Add(ProbeLease), PriorCount: state.RecoverySuccessCount}
 	return state, Applied
+}
+
+// recoveryDue 判断 state 在 now 是否应进入恢复扫描：OPEN/RECOVERING 按
+// retryAt 到期，HALF_OPEN 仅在探测租约已过期（或缺失）时视为 due。
+func recoveryDue(state State, now time.Time) bool {
+	if state.Phase == HalfOpen {
+		return state.Lease == nil || now.After(state.Lease.Until)
+	}
+	if now.Before(state.RetryAt) {
+		return false
+	}
+	return state.Phase == Open || state.Phase == Recovering
 }
 
 func Settle(state State, result RecoveryResult) (State, MutationStatus) {
@@ -280,7 +299,7 @@ type Running struct {
 func PrioritizeDue(items []Due, now time.Time) []Due {
 	ready := make([]Due, 0, len(items))
 	for _, item := range items {
-		if !now.Before(item.State.RetryAt) && (item.State.Phase == Open || item.State.Phase == Recovering) {
+		if recoveryDue(item.State, now) {
 			ready = append(ready, item)
 		}
 	}

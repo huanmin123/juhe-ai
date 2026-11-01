@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -73,6 +74,7 @@ func (k RedisKeys) SourceProbes(sourceID string) string {
 type RedisStore struct {
 	client *redis.Client
 	keys   RedisKeys
+	logger *slog.Logger
 }
 
 func OpenRedisStore(cfg RedisConfig) (*RedisStore, error) {
@@ -87,7 +89,7 @@ func OpenRedisStore(cfg RedisConfig) (*RedisStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RedisStore{client: redis.NewClient(options), keys: keys}, nil
+	return &RedisStore{client: redis.NewClient(options), keys: keys, logger: slog.Default()}, nil
 }
 
 func (s *RedisStore) Close() error {
@@ -95,6 +97,15 @@ func (s *RedisStore) Close() error {
 		return nil
 	}
 	return s.client.Close()
+}
+
+// SetLogger 注入组合根 logger，使 ListDue 的脏 state 隔离告警进入统一日志
+// 出口（NewRunner 装配时自动接线；nil 回落 slog.Default）。
+func (s *RedisStore) SetLogger(logger *slog.Logger) {
+	if s == nil || logger == nil {
+		return
+	}
+	s.logger = logger
 }
 func (s *RedisStore) Ping(ctx context.Context) error { return s.client.Ping(ctx).Err() }
 
@@ -118,14 +129,34 @@ func (s *RedisStore) ListDue(ctx context.Context, now time.Time, limit int64) ([
 	for _, hash := range hashes {
 		raw, readErr := s.client.Get(ctx, s.keys.State(hash)).Bytes()
 		if readErr == redis.Nil {
+			// 缺失 state 的 due 成员永远无法处理，若保留会在每轮扫描中占用
+			// 有界窗口；与坏 state 同口径从 due 集合移除后继续。
+			if err := s.client.ZRem(ctx, s.keys.Due(), hash).Err(); err != nil {
+				return nil, fmt.Errorf("清理 model-recovery 缺失 state 的 due 成员: %w", err)
+			}
+			s.warnRejectedDueState(hash, "missing_state")
 			continue
 		}
 		if readErr != nil {
 			return nil, readErr
 		}
 		var state State
-		if json.Unmarshal(raw, &state) != nil || state.CapabilityHash != hash {
-			return nil, errors.New("model-recovery Redis state 完整性校验失败")
+		if err := json.Unmarshal(raw, &state); err != nil || state.CapabilityHash != hash {
+			reason := "invalid_state"
+			if err == nil {
+				reason = "capability_hash_mismatch"
+			}
+			// 单条脏 state 不得阻塞整轮恢复扫描：移除该 due 成员并告警后继续。
+			if zerr := s.client.ZRem(ctx, s.keys.Due(), hash).Err(); zerr != nil {
+				return nil, fmt.Errorf("清理 model-recovery 损坏 due 成员: %w", zerr)
+			}
+			s.warnRejectedDueState(hash, reason)
+			continue
+		}
+		// HALF_OPEN 仅在探测租约过期（或缺失）时重新进入 due；租约仍有效的
+		// state 留给现有 owner，避免扫描层与 Redis acquire 产生无意义竞争。
+		if state.Phase == HalfOpen && !recoveryDue(state, now) {
+			continue
 		}
 		states = append(states, state)
 	}
@@ -136,6 +167,29 @@ func (s *RedisStore) ListDue(ctx context.Context, now time.Time, limit int64) ([
 		return states[i].RetryAt.Before(states[j].RetryAt)
 	})
 	return states, nil
+}
+
+const capabilityHashLogPrefixLength = 12
+
+// warnRejectedDueState 记录被隔离的 due 成员。只输出 capabilityHash 前缀与
+// 拒绝原因，不输出 state 原文或任何凭据内容。
+func (s *RedisStore) warnRejectedDueState(hash, reason string) {
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("model-recovery due state rejected",
+		"event", "model_recovery_due_state_rejected",
+		"capabilityHashPrefix", capabilityHashLogPrefix(hash),
+		"reason", reason)
+}
+
+func capabilityHashLogPrefix(hash string) string {
+	hash = strings.TrimSpace(hash)
+	if len(hash) > capabilityHashLogPrefixLength {
+		return hash[:capabilityHashLogPrefixLength]
+	}
+	return hash
 }
 
 func (s *RedisStore) CleanClosed(ctx context.Context, limit int64) (int64, error) {
@@ -190,8 +244,14 @@ local raw = redis.call('GET', KEYS[1])
 if not raw then return {'stale', ''} end
 local state = cjson.decode(raw)
 if tonumber(state.generation) ~= tonumber(ARGV[1]) or tonumber(state.dispatchRevision) ~= tonumber(ARGV[2]) then return {'stale', raw} end
-if state.phase ~= 'OPEN' and state.phase ~= 'RECOVERING' then return {'not_due', raw} end
-if tonumber(redis.call('ZSCORE', KEYS[3], state.capabilityHash) or '0') > now then return {'not_due', raw} end
+if state.phase ~= 'OPEN' and state.phase ~= 'RECOVERING' and state.phase ~= 'HALF_OPEN' then return {'not_due', raw} end
+if state.phase == 'HALF_OPEN' then
+  -- 过期租约接管（设计 §8.5）：旧 owner 的 lease 键已随 45s TTL 消失时才
+  -- 允许新 worker 接管；键仍存在说明 owner 活跃（或续租中），保持 not_due。
+  if redis.call('EXISTS', KEYS[2]) == 1 then return {'not_due', raw} end
+else
+  if tonumber(redis.call('ZSCORE', KEYS[3], state.capabilityHash) or '0') > now then return {'not_due', raw} end
+end
 if redis.call('SET', KEYS[2], ARGV[3], 'NX', 'PX', ARGV[4]) == false then return {'lease_mismatch', raw} end
 redis.call('ZREMRANGEBYSCORE', KEYS[4], '-inf', now)
 redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', now)

@@ -210,7 +210,9 @@ func TestApplyHealthFactUsesLatestWinsOrdering(t *testing.T) {
 }
 
 func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testing.T) {
-	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
+	// S-H6：扫描的 NOT EXISTS 死信排除引用任务表，夹具补入生产同型表（pgkit
+	// j3bSchedulerTasksProdDDL 注释同因）。
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bSchedulerTasksProdDDL())
 	defer db.Close()
 	finished := "2026-08-27T10:15:00Z"
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), "run-1", "completed", "acct-1", "sys-1", "openai", "gpt-5.6", "full", "failure", 12, nil, `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`, `{"evidenceFormed":true,"trustFormed":true}`, `{"configRevision":"3"}`, finished, "failed", finished); err != nil {
@@ -241,7 +243,9 @@ func TestListHealthSyncRetriesSkipsInvalidRowsAndPreservesFailureState(t *testin
 }
 
 func TestListHealthSyncRetriesKeepsHardQualityFailureAboveThreshold(t *testing.T) {
-	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
+	// S-H6：扫描的 NOT EXISTS 死信排除引用任务表，夹具补入生产同型表（pgkit
+	// j3bSchedulerTasksProdDDL 注释同因）。
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bSchedulerTasksProdDDL())
 	defer db.Close()
 	finished := "2026-08-27T10:15:00Z"
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
@@ -262,7 +266,9 @@ func TestListHealthSyncRetriesKeepsHardQualityFailureAboveThreshold(t *testing.T
 }
 
 func TestListHealthSyncRetriesAdmitsUnformedQuickQualityFailure(t *testing.T) {
-	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
+	// S-H6：扫描的 NOT EXISTS 死信排除引用任务表，夹具补入生产同型表（pgkit
+	// j3bSchedulerTasksProdDDL 注释同因）。
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bSchedulerTasksProdDDL())
 	defer db.Close()
 	finished := "2026-08-27T10:15:00Z"
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
@@ -290,7 +296,9 @@ func TestListHealthSyncRetriesAdmitsUnformedQuickQualityFailure(t *testing.T) {
 }
 
 func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T) {
-	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
+	// S-H6：扫描的 NOT EXISTS 死信排除引用任务表，夹具补入生产同型表（pgkit
+	// j3bSchedulerTasksProdDDL 注释同因）。
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bSchedulerTasksProdDDL())
 	defer db.Close()
 	finished := "2026-08-27T10:15:00Z"
 	validPolicy := `{"revision":"policy-1","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`
@@ -314,7 +322,9 @@ func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T
 // unavailable 结果的重试筛选与首发同规则：可用性事实不要求 formed/trusted，
 // 不得出现"能首发、进不了重试"的窄门（J3B 修复）。
 func TestListHealthSyncRetriesAdmitsUnavailableWithoutFormedEvidence(t *testing.T) {
-	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL())
+	// S-H6：扫描的 NOT EXISTS 死信排除引用任务表，夹具补入生产同型表（pgkit
+	// j3bSchedulerTasksProdDDL 注释同因）。
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bSchedulerTasksProdDDL())
 	defer db.Close()
 	finished := "2026-08-27T10:15:00Z"
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),

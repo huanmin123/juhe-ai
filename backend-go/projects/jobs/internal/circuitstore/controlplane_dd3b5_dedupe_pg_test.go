@@ -3,8 +3,10 @@ package circuitstore
 // DD3-B5 回归（2026-10-31，R4 confirmed A 类即修）：circuit dedupe 行永生毒化。
 //
 // 缺陷：CompareAndSetIncident 的 outbox dedupe 查询无 status 过滤——jobs
-// Cleanup 只删 outbox 全部 dispatched 的 incident 行（dispatched outbox 行
-// 永生、无生产清理 caller），incident 行删除后同 transition_id 对账重试仍
+// Cleanup 只删 outbox 全部 dispatched 的 incident 行（T87r 前 dispatched
+// outbox 行永生、无生产清理 caller；T87r 后由 jobs Cleanup 的 ack 保留期臂
+// 回收，见 controlplane_t87r_outbox_cleanup_pg_test.go），incident 行删除后
+// 同 transition_id 对账重试仍
 // dedupe 命中 dispatched 行 → 幂等臂读不到 incident 行 →
 // "deduplicated incident receipt has no incident" 硬错误恒败。
 //
@@ -135,10 +137,11 @@ func dd3b5FirstCAS(t *testing.T, repo *ControlPlaneRepo, scopeKey, accountID str
 }
 
 // TestDD3B5DispatchedOutboxMissingIncidentRetriesViaInsert 臂钉住毒化场景
-// 修复：incident 行被 Cleanup 删除（其 outbox 行已全部 dispatched、行永生）
+// 修复：incident 行被 Cleanup 删除（其 outbox 行已全部 dispatched、dedupe
+// 行仍在 ack 保留期内）
 // 后，同 transition_id 对账重试不再命中 dispatched 行作幂等回放证据（修复
 // 前此处恒返回 "deduplicated incident receipt has no incident" 硬错误），
-// 而是走新行 CAS 插入臂 applied；插入臂对永生 dispatched 行占据的
+// 而是走新行 CAS 插入臂 applied；插入臂对保留期内 dispatched 行占据的
 // (projection_key, dedupe_key) 唯一键冲突重置复用（status 回 pending 重新
 // 派发，供重建 incident 行投影；纯 INSERT 在此撞 23505，真实 PG 复现）。
 func TestDD3B5DispatchedOutboxMissingIncidentRetriesViaInsert(t *testing.T) {

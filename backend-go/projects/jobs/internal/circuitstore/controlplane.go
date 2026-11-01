@@ -395,8 +395,17 @@ var (
 // 同一张物理表；成对复制约定——修改任一侧必须同步另一侧并核对列序）。
 const incidentCASColumns = "circuit_scope_key,account_id,account_runtime_key,scope_kind,key_fingerprint,protocol_code,request_lane,model_family,client_model,capability_hash,credential_source_account_id,client_endpoint_family,final_upstream_model,upstream_endpoint_mode,incident_id,parent_incident_id,child_incident_ids_json,caused_by_terminal_outcome_id,state,failure_scope,generation,dispatch_revision,ledger_revision,projected_ledger_revision,transition_id,cooldown_observation_generation,open_until_ms,next_transition_at_ms,lease_id,lease_purpose,lease_owner_run_id,lease_until_ms,attempt_started_at_ms,attempt_hard_deadline_ms,upstream_attempt_observed,backoff_level,consecutive_failures,confirmation_failures_required,confirmation_failure_evidence_keys_json,recovering_successes,last_failure_class,retained_until_ms,created_at_ms,updated_at_ms"
 
-// circuitIncidentCleanupBatchLimit 限制 Cleanup 单批删除行数。
+// circuitIncidentCleanupBatchLimit 限制 Cleanup 单批删除行数（incident 与
+// dispatched outbox 两类删除共用同一批上限）。
 const circuitIncidentCleanupBatchLimit = 500
+
+// circuitDispatchedOutboxRetentionMS 是 dispatched outbox 行 ack 后的保留期
+// （T87r，2026-11-01 起 jobs Cleanup 负责回收，替代 gateway 写侧已删除的
+// Store.Cleanup）。dispatched 行对正确性已无害（incident 臂 dedupe 回放排除
+// dispatched、同 tid 重试由插入臂冲突重置吸收），保留期只服务投影问题排查
+// 取证；incident CLOSED 墓碑保留期仅 5 分钟（DefaultClosedRetentionMs），
+// 取 24 小时为排查窗口与无界累积之间的取舍。
+const circuitDispatchedOutboxRetentionMS = int64(24 * 60 * 60 * 1000)
 
 func casBoolInt(value bool) int {
 	if value {
@@ -784,31 +793,63 @@ func (r *ControlPlaneRepo) insertIncidentChangedOutbox(ctx context.Context, tx *
 	return nil
 }
 
-// Cleanup 对齐 gateway Cleanup 的 incident 删除条件：CLOSED 且保留期到期、
-// 投影水位已覆盖、无未 dispatched outbox。BUG-0295 遗留项②起追加 jobs 侧
-// 第二臂：账户行缺失（FK ON DELETE CASCADE 本应级联，防御软删期外的缺行）
-// 或 deleted_at 非空（软删）的行——CAS 写侧终态拒绝（account_not_found）、
-// rebuild/reconcile 读面已围栏不回放、孤儿结清扫描每轮命中终态空转——
-// 已不进任何读面也不会再有投影，跟随同一 outbox 守卫物理清理。gateway
-// 写侧 Cleanup 暂无此臂，成对维护差异以此注释为准。dispatched outbox 的
-// 清理由 gateway 写侧维护，本方法只删 incident 行。
-func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (int64, error) {
+// CleanupResult 汇总 Cleanup 单轮各臂的物理删除行数。
+type CleanupResult struct {
+	DeletedIncidents int64
+	DeletedOutbox    int64
+}
+
+// Cleanup 单事务执行三臂：
+//
+//   - incident CLOSED 臂：CLOSED 且保留期到期、投影水位已覆盖、无未
+//     dispatched outbox（承接原 gateway 写侧 Store.Cleanup 的 incident
+//     删除条件；T87r 后该无生产 caller 的死代码已删除，清理职责收归本
+//     方法）。
+//   - incident 孤儿臂（BUG-0295 遗留项②）：账户行缺失（FK ON DELETE
+//     CASCADE 本应级联，防御软删期外的缺行）或 deleted_at 非空（软删）的
+//     行——CAS 写侧终态拒绝（account_not_found）、rebuild/reconcile 读面
+//     已围栏不回放、孤儿结清扫描每轮命中终态空转——已不进任何读面也不会
+//     再有投影，跟随同一 outbox 守卫物理清理。软删/缺行臂不需要水位守卫：
+//     账户终态后不会再有任何写方或消费方，水位停摆的病态行若沿用
+//     projected>=ledger 条件反而永久滞留。
+//   - dispatched outbox 臂（T87r，2026-11-01）：acknowledged_at_ms 超过
+//     circuitDispatchedOutboxRetentionMS 的 dispatched 行物理回收，终结
+//     dispatched 行永生无界累积。按 deep-dive DD6-S4 语义不做 event_type
+//     过滤（incident_changed 与 dispatch_revision_changed 同删）：dispatch
+//     的持久事实是 accounts.dispatch_revision（不被任何清理删除），同 tid
+//     dispatch 重试由 CAS stale 臂兜底；incident 臂 dedupe 回放已排除
+//     dispatched 行，incident 行删除后、dedupe 行保留期内的同 tid 重试由
+//     insertIncidentChangedOutbox 冲突重置吸收，dedupe 行也删除后直接走
+//     新行插入——两条路径都不依赖 dispatched 行永生。
+func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (CleanupResult, error) {
 	if nowMS < 0 {
-		return 0, errors.New("nowMs 必须是非负整数")
+		return CleanupResult{}, errors.New("nowMs 必须是非负整数")
 	}
 	incidents := r.table("account_circuit_incidents")
 	outbox := r.table("account_circuit_outbox")
 	accounts := r.table("accounts")
 	noPendingOutbox := "NOT EXISTS (SELECT 1 FROM " + outbox + " o WHERE o.circuit_scope_key=" + incidents + ".circuit_scope_key AND o.status<>'dispatched')"
 	closedCondition := "state='CLOSED' AND retained_until_ms<=? AND projected_ledger_revision>=ledger_revision AND " + noPendingOutbox
-	// 软删/缺行臂不需要水位守卫：账户终态后不会再有任何写方或消费方，
-	// 水位停摆的病态行若沿用 projected>=ledger 条件反而永久滞留。
 	orphanedAccountCondition := "NOT EXISTS (SELECT 1 FROM " + accounts + " a WHERE a.id=" + incidents + ".account_id AND a.deleted_at IS NULL) AND " + noPendingOutbox
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return CleanupResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	out := CleanupResult{}
+	// outbox 臂先于 incident 臂执行（与原 gateway Cleanup 同序）：只删
+	// dispatched 行，不影响 incident 两臂共用的 noPendingOutbox 守卫。
+	ackCutoff := nowMS - circuitDispatchedOutboxRetentionMS
+	if ackCutoff < 0 {
+		ackCutoff = 0
+	}
+	outboxResult, err := tx.ExecContext(ctx, "DELETE FROM "+outbox+" WHERE event_id IN (SELECT event_id FROM "+outbox+" WHERE status='dispatched' AND acknowledged_at_ms<=? ORDER BY acknowledged_at_ms,event_id LIMIT ?)", ackCutoff, circuitIncidentCleanupBatchLimit)
+	if err != nil {
+		return out, err
+	}
+	if out.DeletedOutbox, err = outboxResult.RowsAffected(); err != nil {
+		return out, err
+	}
 	collect := func(condition string, args ...any) ([]string, error) {
 		query := "SELECT circuit_scope_key FROM " + incidents +
 			" WHERE " + condition + " ORDER BY retained_until_ms,updated_at_ms,circuit_scope_key LIMIT ?"
@@ -830,11 +871,11 @@ func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (int64, err
 	}
 	closedKeys, err := collect(closedCondition, nowMS)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
 	orphanedKeys, err := collect(orphanedAccountCondition)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
 	seen := make(map[string]struct{}, len(closedKeys)+len(orphanedKeys))
 	var scopeKeys []string
@@ -848,7 +889,7 @@ func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (int64, err
 		}
 	}
 	if len(scopeKeys) == 0 {
-		return 0, tx.Commit()
+		return out, tx.Commit()
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(scopeKeys)), ",")
 	args := make([]any, len(scopeKeys))
@@ -857,13 +898,12 @@ func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (int64, err
 	}
 	result, err := tx.ExecContext(ctx, "DELETE FROM "+incidents+" WHERE circuit_scope_key IN ("+placeholders+")", args...)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
+	if out.DeletedIncidents, err = result.RowsAffected(); err != nil {
+		return out, err
 	}
-	return deleted, tx.Commit()
+	return out, tx.Commit()
 }
 
 // ListActiveIncidentsPage 是不带 dispatch_revision 围栏的活动行 keyset 分页

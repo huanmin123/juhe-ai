@@ -20,7 +20,7 @@
 # 连接角色须有对应系统表读权限（现有 juhe_app_* 查询可跑即满足）。
 
 juhe_postgres_db_size:
-  # 各库磁盘总大小；排除模板库。库大小含全部 schema（juhe_ai 单库 8 schema 汇总视图）。
+  # 各库磁盘总大小；排除模板库。库大小含全部 schema（juhe_ai 单库 7 schema 汇总视图）。
   query: |
     SELECT datname,
            pg_database_size(datname) AS bytes

@@ -176,7 +176,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	defer server.Close()
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	runtime := &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(context.Context, RunRequest) (Target, error) {
-		return Target{Endpoint: server.URL, TargetName: "Runtime Account", TargetOwnerSystemAccountID: "sys", GroupID: "group-runtime", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", DispatchRevision: 3}, nil
+		return Target{Endpoint: server.URL + "/v1", TargetName: "Runtime Account", TargetOwnerSystemAccountID: "sys", GroupID: "group-runtime", Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", DispatchRevision: 3}, nil
 	}}
 	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", ManualEnforcementEnabled: true, OwnPhysicalAccount: true})
 	if err != nil || result.Status != string(RunCompleted) || result.RunID == "" {
@@ -731,7 +731,10 @@ func TestRuntimeFullRunFormsUniversalEvidenceBothWays(t *testing.T) {
 		case strings.Contains(text, "status"):
 			output = `{"status":"ok","value":7}`
 		}
-		_, _ = w.Write([]byte(`{"model":"` + model + `","output_text":"` + output + `","usage":` + usage + `}`))
+		// output 本身是 JSON 文本（如 {"status":"ok","value":7}），必须转义后才能
+		// 嵌入外层信封；裸拼会产出非法 JSON，被 §1.2 读取完整性判为截断。
+		encoded, _ := json.Marshal(map[string]any{"model": model, "output_text": output, "usage": json.RawMessage(usage)})
+		_, _ = w.Write(encoded)
 	}))
 	defer server.Close()
 	now := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)

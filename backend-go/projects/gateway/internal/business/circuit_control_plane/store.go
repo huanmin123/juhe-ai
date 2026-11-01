@@ -138,7 +138,6 @@ type AccountProjectionGap struct {
 	AccountID                                   string
 	DispatchRevision, ProjectedDispatchRevision int64
 }
-type CleanupResult struct{ DeletedIncidents, DeletedOutbox int64 }
 
 const defaultBusinessSchema = "juhe_business"
 
@@ -858,35 +857,14 @@ func (s *Store) ListProjectionGaps(ctx context.Context, afterAccountID string, a
 	return gaps, nil
 }
 
-func (s *Store) Cleanup(ctx context.Context, nowMS, acknowledgedBeforeMS int64, limit int) (CleanupResult, error) {
-	if err := s.requireOwner(); err != nil {
-		return CleanupResult{}, err
-	}
-	if limit <= 0 || limit > maxBatchLimit {
-		return CleanupResult{}, errors.New("cleanup limit is outside the allowed bounds")
-	}
-	if err := requireNonNegativeMS(nowMS, "nowMs"); err != nil {
-		return CleanupResult{}, err
-	}
-	if err := requireNonNegativeMS(acknowledgedBeforeMS, "acknowledgedBeforeMs"); err != nil {
-		return CleanupResult{}, err
-	}
-	now := nowMS
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return CleanupResult{}, err
-	}
-	defer tx.Rollback()
-	out := CleanupResult{}
-	if out.DeletedOutbox, err = s.deleteLimited(ctx, tx, s.table("account_circuit_outbox"), "event_id", "status='dispatched' AND acknowledged_at_ms<=?", "acknowledged_at_ms,event_id", acknowledgedBeforeMS, limit); err != nil {
-		return out, err
-	}
-	condition := "state='CLOSED' AND retained_until_ms<=? AND projected_ledger_revision>=ledger_revision AND NOT EXISTS (SELECT 1 FROM " + s.table("account_circuit_outbox") + " o WHERE o.circuit_scope_key=" + s.table("account_circuit_incidents") + ".circuit_scope_key AND o.status<>'dispatched')"
-	if out.DeletedIncidents, err = s.deleteLimited(ctx, tx, s.table("account_circuit_incidents"), "circuit_scope_key", condition, "retained_until_ms,updated_at_ms,circuit_scope_key", now, limit); err != nil {
-		return out, err
-	}
-	return out, tx.Commit()
-}
+// Cleanup 职责说明（T87r，2026-11-01）：本 Store 的清理方法已删除。原
+// Store.Cleanup（dispatched outbox 臂 + CLOSED incident 臂）自交付起无任何
+// 生产 caller，dispatched outbox 行因此永生无界累积（T87r）；清理职责已收归
+// jobs 侧周期任务 account-circuit-control-plane-maintenance 尾部的
+// circuitstore.ControlPlaneRepo.Cleanup（三臂：CLOSED incident / 孤儿
+// incident / dispatched outbox ack 保留期回收），gateway 侧不得重复建设第二
+// 份清理实现。dispatched 行保留期内仍被 T87 冲突重置路径依赖（见
+// outboxByDedupe 与 insertIncidentChangedOutbox 注释）。
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
@@ -915,15 +893,16 @@ func (s *Store) incidentByScopeForUpdate(ctx context.Context, q queryer, scope s
 // outboxByDedupe 读取 dedupe 幂等回放行。excludeDispatched 仅 incident 臂
 // 启用（DD3-B5 同构，2026-10-31，契约模板见 jobs
 // internal/circuitstore/controlplane.go CompareAndSetIncident）：dispatched
-// 行是已完成的派发证据，不再作 incident 幂等回放依据——gateway Cleanup 与
-// jobs Cleanup 都只删 outbox 全部 dispatched 的 incident 行（dispatched
-// outbox 行永生），incident 行删除后同 transition_id 重试若命中 dispatched
-// 行会走进幂等臂、读不到 incident 行即 "deduplicated incident receipt has
-// no incident" 硬错误恒败；排除后同 tid 重试落入插入臂（配合
-// insertIncidentChangedOutbox 的冲突重置）。dispatch 推进臂必须保持
-// excludeDispatched=false：dispatch 的持久事实是 accounts.dispatch_revision
-// （不被任何清理删除），dispatched 行作幂等证据恰好正确；若排除，同 tid
-// 重试会再次推进 revision 并重派事件，破坏 dispatch dedupe 幂等契约。
+// 行是已完成的派发证据，不再作 incident 幂等回放依据——清理职责在 jobs 侧
+// ControlPlaneRepo.Cleanup（T87r，2026-11-01 起）：incident 行删除后、dedupe
+// 行 ack 保留期内，同 transition_id 重试若命中 dispatched 行会走进幂等臂、
+// 读不到 incident 行即 "deduplicated incident receipt has no incident" 硬错
+// 误恒败；排除后同 tid 重试落入插入臂（配合 insertIncidentChangedOutbox 的
+// 冲突重置；dedupe 行也超保留期删除后直接走新行插入）。dispatch 推进臂必须
+// 保持 excludeDispatched=false：dispatch 的持久事实是
+// accounts.dispatch_revision（不被任何清理删除），保留期内 dispatched 行作
+// 幂等证据恰好正确；若排除，同 tid 重试会再次推进 revision 并重派事件，
+// 破坏 dispatch dedupe 幂等契约。
 func (s *Store) outboxByDedupe(ctx context.Context, q queryer, dedupe string, excludeDispatched bool) (Outbox, bool, error) {
 	statusFilter := ""
 	if excludeDispatched {
@@ -977,9 +956,10 @@ func (s *Store) insertOutbox(ctx context.Context, tx *sql.Tx, v Outbox) error {
 //
 // DD3-B5 同构（2026-10-31，契约模板 jobs
 // internal/circuitstore/controlplane.go insertIncidentChangedOutbox）：dedupe
-// 幂等回放排除 dispatched 行之后，同 transition_id 重试（incident 行被
-// Cleanup 删除、dispatched outbox 行永生）会落到本插入臂，而永生 dispatched
-// 行仍占据 (projection_key, dedupe_key) 唯一键，纯 INSERT 必撞 23505 硬错误
+// 幂等回放排除 dispatched 行之后，同 transition_id 重试（incident 行被 jobs
+// Cleanup 删除、dedupe 行仍在 ack 保留期内，见 Cleanup 职责说明）会落到本
+// 插入臂，而保留期内 dispatched 行仍占据 (projection_key, dedupe_key) 唯一
+// 键，纯 INSERT 必撞 23505 硬错误
 // （jobs 侧真实 PG 复现）。冲突即重置复用该 dedupe 行：事件载荷按本次 CAS
 // 刷新，status 回 pending、attempt_count 清零、claim 面与 acknowledged_at_ms
 // 清空——重建的 incident 行（ledger revision 重启）需要重新投影，重派事件
@@ -1045,39 +1025,6 @@ func (s *Store) upsertIncident(ctx context.Context, tx *sql.Tx, v Incident) erro
 		return ErrCAS
 	}
 	return nil
-}
-func (s *Store) deleteLimited(ctx context.Context, tx *sql.Tx, table, id, condition, order string, arg any, limit int) (int64, error) {
-	q := "SELECT " + id + " FROM " + table + " WHERE " + condition + " ORDER BY " + order + " LIMIT ?"
-	rows, err := tx.QueryContext(ctx, s.bind(q), arg, limit)
-	if err != nil {
-		return 0, err
-	}
-	var ids []string
-	for rows.Next() {
-		var v string
-		if err = rows.Scan(&v); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		ids = append(ids, v)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	if err = rows.Close(); err != nil || len(ids) == 0 {
-		return 0, err
-	}
-	ph := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
-	values := make([]any, len(ids))
-	for i := range ids {
-		values[i] = ids[i]
-	}
-	res, err := tx.ExecContext(ctx, s.bind("DELETE FROM "+table+" WHERE "+id+" IN ("+ph+")"), values...)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
 }
 
 const incidentColumns = "circuit_scope_key,account_id,account_runtime_key,scope_kind,key_fingerprint,protocol_code,request_lane,model_family,client_model,capability_hash,credential_source_account_id,client_endpoint_family,final_upstream_model,upstream_endpoint_mode,incident_id,parent_incident_id,child_incident_ids_json,caused_by_terminal_outcome_id,state,failure_scope,generation,dispatch_revision,ledger_revision,projected_ledger_revision,transition_id,cooldown_observation_generation,open_until_ms,next_transition_at_ms,lease_id,lease_purpose,lease_owner_run_id,lease_until_ms,attempt_started_at_ms,attempt_hard_deadline_ms,upstream_attempt_observed,backoff_level,consecutive_failures,confirmation_failures_required,confirmation_failure_evidence_keys_json,recovering_successes,last_failure_class,retained_until_ms,created_at_ms,updated_at_ms"

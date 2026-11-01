@@ -29,7 +29,7 @@ const w9hFixtureNow = "2026-09-06T12:00:00.000Z"
 var w9hBusinessTables = []string{
 	"system_accounts", "system_teams", "vendors", "system_settings", "proxy_profiles",
 	"resource_authorizations", "resource_authorization_grants", "account_connections",
-	"account_endpoint_modes", "accounts", "groups", "group_accounts",
+	"account_endpoint_modes", "accounts", "account_api_key_runtime_states", "groups", "group_accounts",
 	"group_account_stats_dirty",
 	"account_health_jobs_input_versions", "account_health_projection_cursors",
 	"account_health_projection_receipts", "account_circuit_outbox",

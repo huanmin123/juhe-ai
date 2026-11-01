@@ -81,6 +81,18 @@ type Scheduler struct {
 	Kinds          []SchedulerKind
 	Now            func() time.Time
 	ErrorSink      func(SchedulerError)
+	// StaleRuns 是运行期僵尸 run 的周期收尾端口（SweepStaleRuns，见
+	// stale_runs.go）。Host 装配传入共享 Store；nil 时跳过收尾（纯内存
+	// 调度测试桩没有可收尾的持久 run）。
+	StaleRuns StaleRunSweeper
+	// StaleSweepInterval 控制运行期收尾频率，<=0 取默认 10 分钟。收尾阈值
+	// 与启动期一致（staleRunSweepThreshold=30 分钟），sweep 幂等可重复执行。
+	StaleSweepInterval time.Duration
+}
+
+// StaleRunSweeper 是运行期周期收尾的存储端口；*Store 天然满足。
+type StaleRunSweeper interface {
+	SweepStaleRuns(ctx context.Context, now time.Time) (int64, error)
 }
 
 // schedulerMaxConcurrencyDefault is the process-wide default bound for one
@@ -88,6 +100,11 @@ type Scheduler struct {
 // stay well inside a personal deployment's upstream and connection budget
 // while still letting unrelated accounts progress in parallel.
 const schedulerMaxConcurrencyDefault = 4
+
+// schedulerStaleSweepInterval 是运行期僵尸 run 收尾的默认频率。阈值
+// （30 分钟）只决定一个 run 被判僵尸的最小时长，本频率决定遗留 run 的
+// 额外等待；10 分钟使长驻进程的收尾延迟上界约等于阈值+一个周期。
+const schedulerStaleSweepInterval = 10 * time.Minute
 
 // Run executes all configured scheduler kinds in one Gateway owner process.
 // Every cycle claims at most MaxConcurrency tasks per kind (further lowered by
@@ -128,6 +145,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	if s.Now != nil {
 		now = s.Now
 	}
+	staleSweepInterval := s.StaleSweepInterval
+	if staleSweepInterval <= 0 {
+		staleSweepInterval = schedulerStaleSweepInterval
+	}
+	lastStaleSweep := now().UTC()
 	report := func(event SchedulerError) {
 		slog.Error("J3b scheduler task operation failed",
 			"operation", event.Operation,
@@ -159,6 +181,16 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			current := now().UTC()
+			// S-H1 运行期收尾：长驻进程不重启就没有第二次启动期 sweep，错误
+			// 链路遗留的 running run（心跳失租、终态写失败等）只能靠这里的
+			// 周期 sweep 回收。sweep 幂等；失败只记录，不中断调度循环。
+			if s.StaleRuns != nil && current.Sub(lastStaleSweep) >= staleSweepInterval {
+				lastStaleSweep = current
+				if _, err := s.StaleRuns.SweepStaleRuns(ctx, current); err != nil {
+					slog.Error("J3b scheduler stale run sweep failed", "err", err)
+				}
+			}
 			runCycle()
 		}
 	}

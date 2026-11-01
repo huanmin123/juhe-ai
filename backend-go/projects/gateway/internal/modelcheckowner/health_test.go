@@ -67,7 +67,9 @@ type recordingEnforcement struct{ calls int }
 
 func (r *recordingEnforcement) Apply(_ context.Context, enforcement QualityEnforcement) (EnforcementOutcome, error) {
 	r.calls++
-	if enforcement.Action != "quality_isolate" || (enforcement.Score >= enforcement.Threshold && !enforcement.HardQualityFailure) {
+	// 校验口径与 BusinessEnforcementApplier.Apply 保持同一契约：分数达标时
+	// 仅硬失败或超时处罚标记可豁免（W-H2），避免 fake 掩盖真实校验。
+	if enforcement.Action != "quality_isolate" || (enforcement.Score >= enforcement.Threshold && !enforcement.HardQualityFailure && !enforcement.TimeoutPenalty) {
 		return EnforcementOutcome{}, errors.New("invalid enforcement request")
 	}
 	return EnforcementOutcome{EnforcementID: "enf-recording", Generation: 1, BeforeStatus: "active", AfterStatus: "quality_isolated", RecoveryDueAt: "2026-08-27T10:11:00Z"}, nil
@@ -420,7 +422,9 @@ func TestHealthSyncRetryExecutorRequiresRunIDPayload(t *testing.T) {
 }
 
 func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
-	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bHealthHourlyDDL())
+	// S-H6：ListHealthSyncRetries 的 NOT EXISTS 死信排除引用任务表，夹具补入
+	// 生产同型 model_check_scheduler_tasks。
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bSchedulerTasksProdDDL(), j3bHealthHourlyDDL())
 	finished := "2026-08-27T10:15:00Z"
 	if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,status,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		"run-retry", "completed", "acct-1", "sys-1", "openai", "gpt-5.6-sol", "quick", "failure", 30, nil,
@@ -465,7 +469,9 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 // 达标 + 标记为真的失败发布经重试仍执行处罚；无标记的同形态 run 重试后
 // 保持不处罚。
 func TestHealthSyncRetryExecutorRestoresTimeoutPenaltyTriggered(t *testing.T) {
-	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bHealthHourlyDDL())
+	// S-H6：ListHealthSyncRetries 的 NOT EXISTS 死信排除引用任务表，夹具补入
+	// 生产同型 model_check_scheduler_tasks。
+	db := newJ3BPGDatabase(t, j3bRetryRunsFixtureDDL(), j3bSchedulerTasksProdDDL(), j3bHealthHourlyDDL())
 	finished := "2026-08-27T10:15:00Z"
 	insertRun := func(runID, accountID, decision string) {
 		if _, err := db.Exec(j3bQ(`INSERT INTO model_check_runs(id,status,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),

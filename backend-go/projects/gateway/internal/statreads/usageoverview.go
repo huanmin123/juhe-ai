@@ -16,15 +16,21 @@ import (
 // default window.
 
 // parseUsageOverviewQuery mirrors usageOverviewQuerySchema: both bounds are
-// optional YYYY-MM-DD strings (zod trims before the regex).
+// optional YYYY-MM-DD strings (zod trims before the regex). 正则通过但日历
+// 非法的日期（如 2026-02-31、2026-13-01）同样按格式错误回 400：否则
+// normalizeRange 会把它们静默回落成 today（C1-C5）。
 func parseUsageOverviewQuery(values url.Values) (startDate, endDate string, badRequest string) {
 	startDate = strings.TrimSpace(values.Get("startDate"))
 	endDate = strings.TrimSpace(values.Get("endDate"))
-	if startDate != "" && !dateKeyPattern.MatchString(startDate) {
-		return "", "", "开始日期格式应为 YYYY-MM-DD"
+	if startDate != "" {
+		if _, _, _, ok := parseDateKeyParts(startDate); !ok {
+			return "", "", "开始日期格式应为 YYYY-MM-DD"
+		}
 	}
-	if endDate != "" && !dateKeyPattern.MatchString(endDate) {
-		return "", "", "结束日期格式应为 YYYY-MM-DD"
+	if endDate != "" {
+		if _, _, _, ok := parseDateKeyParts(endDate); !ok {
+			return "", "", "结束日期格式应为 YYYY-MM-DD"
+		}
 	}
 	return startDate, endDate, ""
 }

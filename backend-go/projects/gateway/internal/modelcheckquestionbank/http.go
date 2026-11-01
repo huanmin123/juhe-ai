@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
@@ -99,11 +101,17 @@ type OptionsList struct {
 // ManagementScope 系统账户过滤。runner 是提交门禁测试执行器（owner
 // 装配注入）；nil 时 ServeTest 返回 503。
 type HTTPHandlers struct {
-	store     *Store
+	store *Store
+	// auditMu 保护 audit：SetAuditSink 在进程启动期由组合根线程注入，而
+	// J3b 管理监听器可能已先行 Serve 并并发处理写操作——无锁读写是 data
+	// race。注入窗口内写操作读到 nil 时按既有 no-op 契约降级（见 recordAudit）。
+	auditMu   sync.RWMutex
 	audit     authsys.OperationLogSink
 	clock     func() time.Time
 	adminMode bool
 	runner    TestRunner
+	// auditWarnOnce 保证 nil sink 的防御 Warn 每实例只落一次（R7-A I-H4）。
+	auditWarnOnce sync.Once
 }
 
 // NewHTTPHandlers 构造题库 handlers。clock 是显式注入的时钟：当前 JSON
@@ -116,6 +124,29 @@ func NewHTTPHandlers(store *Store, audit authsys.OperationLogSink, clock func() 
 		clock = time.Now
 	}
 	return &HTTPHandlers{store: store, audit: audit, clock: clock, adminMode: adminMode, runner: runner}
+}
+
+// SetAuditSink 在组合根完成 F4 producer 装配后补注审计 sink（两阶段
+// 构造，R7-A I-H4）：J3b 题库 handlers 在 F4 producer 之前构造（main
+// 装配顺序约束，构造点只能传 nil），system API 组合根就绪后由装配点
+// 注入进程内 producer sink，提交/更新/审核/删除/测试写操作随注入恢复
+// 操作日志留痕。生产装配点：cmd/juhe-ai-gateway/main.go compose 之后。
+func (h *HTTPHandlers) SetAuditSink(sink authsys.OperationLogSink) {
+	if h == nil {
+		return
+	}
+	h.auditMu.Lock()
+	h.audit = sink
+	h.auditMu.Unlock()
+}
+
+// auditSink 返回当前注入的审计 sink（并发安全）。注入发生在 J3b 管理监听
+// 器已经 Serve 之后，因此写操作与 SetAuditSink 必须能并发执行；返回 nil 表
+// 示仍处于启动注入窗口，调用方按可选 sink 契约降级。
+func (h *HTTPHandlers) auditSink() authsys.OperationLogSink {
+	h.auditMu.RLock()
+	defer h.auditMu.RUnlock()
+	return h.audit
 }
 
 // ServeList 列出题目。管理员视角返回全部状态并支持 status 筛选；自助
@@ -609,14 +640,29 @@ func testGateMessage(err error) (string, bool) {
 }
 
 func (h *HTTPHandlers) recordAudit(auth *authsys.AuthContext, r *http.Request, action, operationKey, resourceID, resourceTitle, summary string, changes []authsys.OperationLogChange) {
-	if h.audit == nil || auth == nil {
+	if auth == nil {
+		return
+	}
+	sink := h.auditSink()
+	if sink == nil {
+		// nil 分支保留（sink 可选契约，R7-A I-H4 修复前的既有行为），
+		// 但不再静默：组合根应经 SetAuditSink 两阶段补注，仍缺位说明
+		// 写操作审计缺口存在——每实例 Warn 一次防刷屏（防御性可见性）。
+		// 启动注入窗口内（J3b 监听器先 Serve、组合根后注入）命中此分支
+		// 的写操作按既有 no-op 契约不留审计，属已知且可接受的降级。
+		h.auditWarnOnce.Do(func() {
+			slog.Warn("题库写操作审计 sink 未接线，写操作不留操作日志",
+				"event", "question_bank_audit_sink_missing",
+				"adminMode", h.adminMode,
+			)
+		})
 		return
 	}
 	mode := "self"
 	if h.adminMode {
 		mode = "admin"
 	}
-	h.audit.Record(authsys.OperationLogEntry{
+	sink.Record(authsys.OperationLogEntry{
 		ActorSystemAccountID:          auth.SystemAccountID,
 		ActorUsername:                 auth.Username,
 		ActorDisplayName:              auth.DisplayName,

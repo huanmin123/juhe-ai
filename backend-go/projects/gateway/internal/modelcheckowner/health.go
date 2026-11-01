@@ -80,6 +80,12 @@ type QualityEnforcement struct {
 	// HardQualityFailure 表示独立于分数的显式质量硬失败（例如
 	// undeclared_mismatch）。分数达标但硬失败为真时仍是合法处罚输入。
 	HardQualityFailure bool
+	// TimeoutPenalty 表示超时处罚触发标记贯通（runtime 的
+	// timeoutPenaltyTriggered：开关开启且存在超时证据）。unavailable 主场景
+	// 下核心超时截断后剩余探针全对，分数可达标且无硬失败，Apply 输入校验
+	// 必须豁免该组合，否则超时处罚永不生效；低分常规处罚路径不携带该标记，
+	// 校验行为不变。
+	TimeoutPenalty bool
 }
 
 type HealthSyncRetryExecutor struct {
@@ -120,9 +126,47 @@ func (e *HealthSyncRetryExecutor) Execute(ctx context.Context, task ScheduleTask
 		if retry.RunID != payload.RunID {
 			continue
 		}
+		// Trust must be receipt-backed before the health projector may observe a
+		// formed result. Runtime performs ProjectTrust before publishing health
+		// for full profiles; a retry that skipped that gate (for example a process
+		// that died between ProjectOutcome and ProjectTrust) must not publish the
+		// health fact with missing receipts.
+		if err := e.ensureTrustProjection(ctx, retry); err != nil {
+			return err
+		}
 		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, EnforcementAllowed: retry.EnforcementAllowed, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level, HardQualityFailure: retry.HardQualityFailure, TimeoutPenaltyTriggered: retry.TimeoutPenaltyTriggered})
 	}
 	return fmt.Errorf("J3b health retry run %s not found", payload.RunID)
+}
+
+// ensureTrustProjection replays the trust receipt chain before a health retry
+// may publish. Quick diagnostics never write trust projections, so they are
+// skipped; full diagnostics always recorded one at finalize time. ProjectTrust
+// is idempotent (observation receipts use ON CONFLICT DO NOTHING and the latest
+// row/cursor replays compare equal), so replaying when the original projection
+// already succeeded is a no-op. A full run that reports formed trust but has no
+// replayable report is kept failed and never reaches the health projector.
+func (e *HealthSyncRetryExecutor) ensureTrustProjection(ctx context.Context, retry HealthSyncRetry) error {
+	if retry.Profile != "full" {
+		return nil
+	}
+	projection, found, err := e.Projector.Store.LoadHealthRetryTrustProjection(ctx, retry.RunID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("J3b health retry run %s not found", retry.RunID)
+	}
+	if !projection.HasReport {
+		if retry.TrustFormed {
+			return fmt.Errorf("J3b health retry run %s reports formed trust without a replayable report", retry.RunID)
+		}
+		return nil
+	}
+	if err := e.Projector.Store.ProjectTrust(ctx, TrustProjection{RunID: retry.RunID, SystemAccountID: projection.SystemAccountID, AccountID: projection.AccountID, RequestedModel: projection.RequestedModel, Report: projection.Report}); err != nil {
+		return fmt.Errorf("replay J3b trust projection for health retry: %w", err)
+	}
+	return nil
 }
 
 func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate EvidenceAggregate, fact HealthFact) error {
@@ -183,7 +227,7 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 				p.markHealthSyncFailure(ctx, runID)
 				return errors.New("J3b quality enforcement action is invalid")
 			}
-			applied, applyErr := p.Enforcement.Apply(ctx, QualityEnforcement{AccountID: fact.AccountID, SystemAccountID: fact.SystemAccountID, RunID: fact.RunID, ProviderCode: fact.ProviderCode, Model: fact.Model, Profile: fact.Profile, PolicyRevision: fact.PolicyRevision, AccountConfigRevision: fact.AccountConfigRevision, ScheduleID: fact.ScheduleID, Score: fact.Score, Threshold: fact.Threshold, RecoveryIntervalMinutes: fact.RecoveryIntervalMinutes, Action: action, OccurredAt: fact.ObservedAt, Message: fact.ErrorMessage, HardQualityFailure: fact.HardQualityFailure})
+			applied, applyErr := p.Enforcement.Apply(ctx, QualityEnforcement{AccountID: fact.AccountID, SystemAccountID: fact.SystemAccountID, RunID: fact.RunID, ProviderCode: fact.ProviderCode, Model: fact.Model, Profile: fact.Profile, PolicyRevision: fact.PolicyRevision, AccountConfigRevision: fact.AccountConfigRevision, ScheduleID: fact.ScheduleID, Score: fact.Score, Threshold: fact.Threshold, RecoveryIntervalMinutes: fact.RecoveryIntervalMinutes, Action: action, OccurredAt: fact.ObservedAt, Message: fact.ErrorMessage, HardQualityFailure: fact.HardQualityFailure, TimeoutPenalty: timeoutPenaltyEligible})
 			switch {
 			case applyErr == nil && applied.AlreadyEffective:
 				enforcementResult, outcome = "already_effective", applied

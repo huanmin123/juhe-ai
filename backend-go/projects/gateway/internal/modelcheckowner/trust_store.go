@@ -22,6 +22,49 @@ type TrustProjection struct {
 	Report                                            TrustReport
 }
 
+// HealthRetryTrustProjection is the durable run fact set needed to replay a
+// trust projection before a health retry publishes. Report is only set when
+// the run's result summary carries a trustReport object; full-profile runs
+// always write one at finalize time.
+type HealthRetryTrustProjection struct {
+	RunID, SystemAccountID, AccountID, RequestedModel, Profile string
+	Report                                                     TrustReport
+	HasReport                                                  bool
+}
+
+// LoadHealthRetryTrustProjection reads the terminal run scope and the frozen
+// trustReport written by Runtime.finalize. It never infers a missing report:
+// absent or unparseable result summary leaves HasReport false (parse errors are
+// returned) so the caller can fail closed when the run claims formed trust.
+func (s *Store) LoadHealthRetryTrustProjection(ctx context.Context, runID string) (HealthRetryTrustProjection, bool, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(runID) == "" {
+		return HealthRetryTrustProjection{}, false, errors.New("J3b health retry trust projection input is invalid")
+	}
+	var projection HealthRetryTrustProjection
+	var accountID sql.NullString
+	var summary string
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT system_account_id,account_id,model,profile,result_summary_json FROM `+s.table("model_check_runs")+` WHERE id=?`), runID).Scan(&projection.SystemAccountID, &accountID, &projection.RequestedModel, &projection.Profile, &summary)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HealthRetryTrustProjection{}, false, nil
+	}
+	if err != nil {
+		return HealthRetryTrustProjection{}, false, fmt.Errorf("read J3b health retry trust projection: %w", err)
+	}
+	projection.RunID = runID
+	projection.AccountID = accountID.String
+	var parsed struct {
+		TrustReport *TrustReport `json:"trustReport"`
+	}
+	if err := json.Unmarshal([]byte(summary), &parsed); err != nil {
+		return HealthRetryTrustProjection{}, true, fmt.Errorf("parse J3b health retry trust report: %w", err)
+	}
+	if parsed.TrustReport != nil {
+		projection.Report = *parsed.TrustReport
+		projection.HasReport = true
+	}
+	return projection, true, nil
+}
+
 type trustObservation struct {
 	id, createdAt, mappingStatus, protocolStatus string
 }

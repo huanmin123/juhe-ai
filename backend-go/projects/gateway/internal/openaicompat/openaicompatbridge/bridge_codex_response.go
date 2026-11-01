@@ -970,8 +970,18 @@ func TransformChatCompletionsSseBufferToResponsesSse(body []byte, options CodexR
 // 首事件），事件处理与收尾（Finish + completion 通知）语义与 buffer 版本
 // 逐行一致。
 func PumpChatCompletionsSseToResponsesSse(src io.Reader, dst io.Writer, options CodexResponsesChatBridgeTransformOptions) error {
+	_, err := PumpChatCompletionsSseToResponsesSseWithState(src, dst, options)
+	return err
+}
+
+// PumpChatCompletionsSseToResponsesSseWithState 是 PumpChatCompletionsSseTo-
+// ResponsesSse 的状态外露变体（T86 桥接 usage 快照供给）：事件处理与收尾语义
+// 与原泵逐行一致，pump 返回后调用方可读取桥状态终值——Usage 为上游 chat 流
+// 确实携带 usage 对象时经 codexChatUsageToResponsesUsage 重渲染的 responses
+// 形（未携带时保持 nil，调用方不得把 nil 转成零值供给）。
+func PumpChatCompletionsSseToResponsesSseWithState(src io.Reader, dst io.Writer, options CodexResponsesChatBridgeTransformOptions) (*CodexChatToResponsesState, error) {
 	state := NewCodexChatToResponsesState(options)
-	return PumpBridgeSseTransform(src, dst, func(eventText string) []string {
+	err := PumpBridgeSseTransform(src, dst, func(eventText string) []string {
 		rendered := state.ProcessChatSseEvent(eventText)
 		state.NotifyCodexResponsesChatBridgeCompletion()
 		return rendered
@@ -980,6 +990,7 @@ func PumpChatCompletionsSseToResponsesSse(src io.Reader, dst io.Writer, options 
 		state.NotifyCodexResponsesChatBridgeCompletion()
 		return rendered
 	})
+	return state, err
 }
 
 // TransformChatCompletionsSseBufferToResponsesJSON consumes a buffered chat

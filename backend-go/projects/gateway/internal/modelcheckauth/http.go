@@ -4,13 +4,28 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
+
+// SharedLoginGuardDriver 是共享登录守卫驱动契约（R7-A A-H1）：与主面
+// authsys.LoginGuardDriver 同形——Check/Failed 携带错误，错误即
+// fail-closed（Redis 状态存储故障必须回 500，不得读作"未锁定"，D8
+// 裁决同款）。*LoginGuard（进程内内存臂）与主面 authsys.SharedLoginGuard
+// （Redis 运行态）都满足本接口；生产装配注入后者，两次挂载共享同一
+// 实例与同一预算。
+type SharedLoginGuardDriver interface {
+	Check(ip, username string) (blocked bool, retryAfter int, message string, err error)
+	Failed(ip, username string) (blocked bool, retryAfter int, message string, err error)
+	Success(ip, username string)
+}
 
 // HTTPHandler is the Gateway-owned authentication lifecycle for the
 // management listener. It only uses the in-process Authenticator and never
@@ -23,6 +38,17 @@ type HTTPHandler struct {
 	TemporaryAccessIPAllowlist []string
 	Guard                      *LoginGuard
 	guardOnce                  sync.Once
+	// SharedGuard 是与主管理面共享的登录守卫驱动（R7-A A-H1）：nil 时
+	// loginGuard() 惰性回落进程内内存臂（测试兼容、既有语义不变）。
+	SharedGuard SharedLoginGuardDriver
+	// CookieSecure 与主面 cfg.CookieSecure 同源（R7-A A-H3）：J3b 会话
+	// cookie 的 Secure 属性随配置，不再硬编码——同名 cookie 两面互覆盖
+	// 时属性一致。未注入（false）保持既有行为。
+	CookieSecure bool
+	// TrustProxyCount 与主面 kernel 同源（R7-A A-H8）：>0 时 clientIP 按
+	// kernel.ExtractClientIP 从 X-Forwarded-For 解析受信跳位后的真实来源
+	// IP（反代后不再把全员归并为代理 IP）；0/未注入回落 r.RemoteAddr。
+	TrustProxyCount int
 }
 
 type loginRequest struct {
@@ -71,7 +97,7 @@ func (h *HTTPHandler) captcha(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"required": false})
 		return
 	}
-	result, err := h.Captcha.Issue(clientIP(r))
+	result, err := h.Captcha.Issue(h.clientIP(r))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "验证码生成失败")
 		return
@@ -113,16 +139,12 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "临时访问令牌参数无效")
 		return
 	}
-	if !h.temporaryAccessAllowed(clientIP(r)) {
+	if !h.temporaryAccessAllowed(h.clientIP(r)) {
 		writeJSONError(w, http.StatusForbidden, "当前来源不在临时访问令牌白名单中")
 		return
 	}
-	ip := clientIP(r)
-	if blocked, retry, message, _ := h.loginGuard().Check(ip, input.Username); blocked {
-		if retry > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(retry))
-		}
-		writeJSONError(w, http.StatusTooManyRequests, message)
+	ip := h.clientIP(r)
+	if !h.checkLoginAllowed(w, ip, input.Username) {
 		return
 	}
 	verified, ok, err := h.Auth.VerifySystemAccountCredentials(r.Context(), input.Username, input.Password)
@@ -131,11 +153,7 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !ok || (verified.Role != "admin" && verified.Role != "super_admin") {
-		if blocked, retry, message, _ := h.loginGuard().Failed(ip, input.Username); blocked {
-			if retry > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(retry))
-			}
-			writeJSONError(w, http.StatusTooManyRequests, message)
+		if !h.recordLoginFailure(w, ip, input.Username) {
 			return
 		}
 		writeJSONError(w, http.StatusUnauthorized, "账号或密码错误")
@@ -151,11 +169,7 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !issuedOK {
-		if blocked, retry, message, _ := h.loginGuard().Failed(ip, input.Username); blocked {
-			if retry > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(retry))
-			}
-			writeJSONError(w, http.StatusTooManyRequests, message)
+		if !h.recordLoginFailure(w, ip, input.Username) {
 			return
 		}
 		writeJSONError(w, http.StatusUnauthorized, "账号或密码已变更，请重新申请")
@@ -224,6 +238,61 @@ func clientIP(r *http.Request) string {
 	return strings.TrimPrefix(strings.TrimSpace(r.RemoteAddr), "::ffff:")
 }
 
+// clientIP（方法形态）按主面同源契约解析请求来源（R7-A A-H8）：注入
+// TrustProxyCount>0 时与主面 kernel 中间件同款 kernel.ExtractClientIP——
+// XFF 链从右数第 trustProxyCount 个受信条目作答，反代后不再把全员归并
+// 为代理 IP（临时令牌白名单与守卫 byIP 桶因此按真实客户端隔离）；
+// 未注入或 0 回落 RemoteAddr 语义（直连场景与既有行为一致）。
+func (h *HTTPHandler) clientIP(r *http.Request) string {
+	if h != nil && h.TrustProxyCount > 0 {
+		return kernel.ExtractClientIP(r, h.TrustProxyCount)
+	}
+	return clientIP(r)
+}
+
+// checkLoginAllowed 是 fail-closed 的守卫 Check 包装（R7-A A-H1）：驱动
+// 错误按主面 authsys postLogin 同款 500「服务器内部错误」处理（原文仅
+// 入日志）；blocked 时写出 429 + Retry-After。返回 false 表示响应已
+// 写出，调用方直接返回。
+func (h *HTTPHandler) checkLoginAllowed(w http.ResponseWriter, ip, username string) bool {
+	blocked, retry, message, guardErr := h.loginGuard().Check(ip, username)
+	if guardErr != nil {
+		slog.Error("J3b 登录守卫状态存储故障",
+			"event", "j3b_login_guard_error", "op", "check", "error", guardErr.Error())
+		writeJSONError(w, http.StatusInternalServerError, "服务器内部错误")
+		return false
+	}
+	if blocked {
+		if retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+		}
+		writeJSONError(w, http.StatusTooManyRequests, message)
+		return false
+	}
+	return true
+}
+
+// recordLoginFailure 是 fail-closed 的守卫 Failed 包装（R7-A A-H1）：
+// 语义同 checkLoginAllowed；未锁定时返回 true 交由调用方继续既有 401
+// 契约。
+func (h *HTTPHandler) recordLoginFailure(w http.ResponseWriter, ip, username string) bool {
+	blocked, retry, message, guardErr := h.loginGuard().Failed(ip, username)
+	if guardErr != nil {
+		slog.Error("J3b 登录守卫状态存储故障",
+			"event", "j3b_login_guard_error", "op", "failed", "error", guardErr.Error())
+		writeJSONError(w, http.StatusInternalServerError, "服务器内部错误")
+		return false
+	}
+	if blocked {
+		if retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+		}
+		writeJSONError(w, http.StatusTooManyRequests, message)
+		return false
+	}
+	return true
+}
+
 func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 	var input loginRequest
 	if err := decodeJSON(r, h.maxBody(), &input); err != nil || strings.TrimSpace(input.Username) == "" || input.Password == "" || strings.ContainsAny(input.Username, " \t\r\n") || strings.ContainsAny(input.Password, " \t\r\n") {
@@ -236,12 +305,8 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ip := clientIP(r)
-	if blocked, retry, message, _ := h.loginGuard().Check(ip, input.Username); blocked {
-		if retry > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(retry))
-		}
-		writeJSONError(w, http.StatusTooManyRequests, message)
+	ip := h.clientIP(r)
+	if !h.checkLoginAllowed(w, ip, input.Username) {
 		return
 	}
 	ttl := h.TTL
@@ -254,22 +319,26 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if blocked, retry, message, _ := h.loginGuard().Failed(ip, input.Username); blocked {
-			if retry > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(retry))
-			}
-			writeJSONError(w, http.StatusTooManyRequests, message)
+		if !h.recordLoginFailure(w, ip, input.Username) {
 			return
 		}
 		writeJSONError(w, http.StatusUnauthorized, "账号或密码错误")
 		return
 	}
 	h.loginGuard().Success(ip, account.Username)
-	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: session.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(time.Until(session.ExpiresAt).Seconds())})
+	// Secure 随装配注入（R7-A A-H3）：与主面 cfg.CookieSecure 同源，
+	// 同名 cookie 两面互覆盖时属性一致，不再硬编码无 Secure。
+	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: session.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: h.CookieSecure, MaxAge: int(time.Until(session.ExpiresAt).Seconds())})
 	writeJSON(w, http.StatusOK, map[string]any{"id": account.SystemAccountID, "username": account.Username, "displayName": account.DisplayName, "role": account.Role, "mustChangePassword": account.MustChangePassword})
 }
 
-func (h *HTTPHandler) loginGuard() *LoginGuard {
+// loginGuard 返回登录守卫：注入的共享驱动优先（生产为 Redis 运行态，
+// 与主面同预算、fail-closed 生效）；未注入时惰性回落进程内内存臂
+// （测试兼容，单面语义与既有行为一致）。
+func (h *HTTPHandler) loginGuard() SharedLoginGuardDriver {
+	if h.SharedGuard != nil {
+		return h.SharedGuard
+	}
 	h.guardOnce.Do(func() {
 		if h.Guard == nil {
 			h.Guard = NewLoginGuard(nil)
@@ -286,7 +355,7 @@ func (h *HTTPHandler) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: h.CookieSecure, MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]any{"loggedOut": true})
 }
 

@@ -562,11 +562,18 @@ func (b *chainErrorPolicyEffectsBridge) markCooldown(
 }
 
 // markDisabledByFailure 镜像 markAccountDisabledByFailureAsync（plain：
-// markAccountException 'upstream_failure' 语义：error/disabled 短路 + 状态与
+// markAccountException 'upstream_failure' 语义：硬不可用短路 + 状态与
 // config_revision 围栏 + 运行态失败观察围栏）与
-// markAuthorizedAccountBindingDisabledByFailureAsync（绑定变体：无预读，SQL
-// 以 status <> 'disabled' 守卫 + 运行态失败观察围栏）。两者都写
-// status='error' + schedulable=0。
+// markAuthorizedAccountBindingDisabledByFailureAsync（绑定变体：同款预读
+// 短路 + 状态与 config_revision 围栏）。两者都写 status='error' +
+// schedulable=0。
+//
+// B1-3：绑定臂与非绑定臂统一用 isHardUnavailableAccountStatus（disabled /
+// error / pending_test / quality_isolated）短路——error 是人工终态，自动
+// 禁用不得覆盖并重写 last_error_message（保留首次原因）；pending_test /
+// quality_isolated 同理不得被在途请求改写。绑定臂因此增加一次预读，并把
+// 预读到的 status + config_revision 写进 UPDATE 守卫（并发写者已改状态时
+// 整体放弃，不重写终态）。
 func (b *chainErrorPolicyEffectsBridge) markDisabledByFailure(
 	ctx context.Context,
 	account gatewaydispatch.AccountCandidate,
@@ -582,6 +589,13 @@ func (b *chainErrorPolicyEffectsBridge) markDisabledByFailure(
 	var query string
 	var params []any
 	if binding != nil {
+		current, err := b.loadAccountRuntimeRow(ctx, account.ID)
+		if err != nil || current == nil {
+			return false, err
+		}
+		if isHardUnavailableAccountStatus(current.Status) {
+			return false, nil
+		}
 		query = `UPDATE ` + b.table("accounts") + `
 			SET status = 'error',
 			    schedulable = 0,
@@ -600,11 +614,13 @@ func (b *chainErrorPolicyEffectsBridge) markDisabledByFailure(
 			  AND system_account_id = ?
 			  AND authorization_instance_authorization_id = ?
 			  AND deleted_at IS NULL
-			  AND status <> 'disabled'` + runtimeFailureObservationGuardSQL(guard) + b.bindingExistsSQL(binding)
+			  AND status = ?
+			  AND COALESCE(config_revision, 1) = ?` + runtimeFailureObservationGuardSQL(guard) + b.bindingExistsSQL(binding)
 		params = append(params, errorMessage)
 		params = append(params, runtimeFailureUpdatedAtParams(guard, nowISO)...)
 		params = append(params,
-			binding.AccountID, binding.SystemAccountID, binding.AccountAuthorizationID)
+			binding.AccountID, binding.SystemAccountID, binding.AccountAuthorizationID,
+			current.Status, current.ConfigRevision)
 		params = append(params, runtimeFailureObservationGuardParams(guard)...)
 		params = append(params, bindingExistsParams(binding)...)
 	} else {
@@ -612,9 +628,7 @@ func (b *chainErrorPolicyEffectsBridge) markDisabledByFailure(
 		if err != nil || current == nil {
 			return false, err
 		}
-		// Node markAccountExceptionAsync：error 短路，preserveDisabled 使
-		// disabled 也短路。
-		if current.Status == "error" || current.Status == "disabled" {
+		if isHardUnavailableAccountStatus(current.Status) {
 			return false, nil
 		}
 		query = `UPDATE ` + b.table("accounts") + `

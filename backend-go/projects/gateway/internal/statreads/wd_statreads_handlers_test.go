@@ -591,3 +591,87 @@ func TestWdAiPerformanceKeywordPostgresBuilderNeedsPostgres(t *testing.T) {
 
 var _ = context.Background
 var _ = json.Marshal
+
+// TestWdAccountUsageOptionsIncludesAccountAuthorizations pins C1-C6: the
+// options dropdown must use the same caller visibility clause as the list
+// (self ∪ direct account grant ∪ group grant), so an account authorized to the
+// caller is selectable and selectedIds can resolve its name.
+func TestWdAccountUsageOptionsIncludesAccountAuthorizations(t *testing.T) {
+	fixture := newWdFixture(t)
+	fixture.exec(t,
+		`INSERT INTO juhe_business.vendors (code, name) VALUES ('openai', 'OpenAI')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-granted', 'Granted Alpha', 'sys-other', 'api_key', 'openai', 'active')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-stranger', 'Stranger Beta', 'sys-other-2', 'api_key', 'openai', 'active')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sys-other', 'other', 'Other Owner')`,
+		`INSERT INTO juhe_business.system_accounts (id, username, display_name) VALUES ('sys-other-2', 'other2', 'Other Two')`,
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
+			VALUES ('ra-account', 'account', 'acct-granted', 'sys-other', 'sys-f', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+	)
+	handler := fixture.deps.accountUsageOptionsHandler(false)
+
+	recorder := wdGet(t, handler, "/?keyword=Granted&systemAccountId=sys-f&limit=10", adminAuth(""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("options 应 200，实际 %d: %s", recorder.Code, recorder.Body.String())
+	}
+	options := wdDataArray(t, recorder)
+	if len(options) != 1 || options[0].(map[string]any)["id"] != "acct-granted" {
+		t.Fatalf("直接账户授权应出现在下拉中: %#v", options)
+	}
+
+	// 未授权账户仍不可见（可见性只扩大授权面，不扩大到全租户）。
+	recorder = wdGet(t, handler, "/?keyword=Stranger&systemAccountId=sys-f&limit=10", adminAuth(""))
+	if options := wdDataArray(t, recorder); len(options) != 0 {
+		t.Fatalf("未授权账户不得出现在下拉中: %#v", options)
+	}
+
+	// selectedIds 回填走同一可见性：已授权账户可解析出名称。
+	recorder = wdGet(t, handler, "/?selectedIds=acct-granted&systemAccountId=sys-f", adminAuth(""))
+	options = wdDataArray(t, recorder)
+	if len(options) != 1 || options[0].(map[string]any)["id"] != "acct-granted" {
+		t.Fatalf("selectedIds 应回填授权账户: %#v", options)
+	}
+	if name, _ := options[0].(map[string]any)["name"].(string); name != "Granted Alpha" {
+		t.Fatalf("授权账户名称未解析: %#v", options[0])
+	}
+}
+
+// TestWdAccountUsageKeepsRowsForDeletedAccounts pins C1-C7: a stats scope whose
+// business account row is physically gone keeps a placeholder row (stable id,
+// explicit name) instead of being silently dropped, so total/hasMore match the
+// rows actually returned and pagination does not skip data.
+func TestWdAccountUsageKeepsRowsForDeletedAccounts(t *testing.T) {
+	fixture := newWdFixture(t)
+	fixture.exec(t,
+		`INSERT INTO juhe_business.vendors (code, name) VALUES ('openai', 'OpenAI')`,
+		`INSERT INTO juhe_business.accounts (id, name, system_account_id, type, vendor_code, status) VALUES ('acct-live', 'Live Account', 'sys-f', 'api_key', 'openai', 'active')`,
+		`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
+			VALUES ('sys-f', 'caller_account', 'acct-live', '2026-09-04', 5, 50, 25, 0.5)`,
+		`INSERT INTO juhe_stats.usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
+			VALUES ('sys-f', 'caller_account', 'acct-deleted', '2026-09-04', 3, 30, 15, 0.3)`,
+	)
+	handler := fixture.deps.accountUsageHandler(false)
+	recorder := wdGet(t, handler, "/?systemAccountId=sys-f&startDate=2026-09-04&endDate=2026-09-04&pageSize=10", adminAuth(""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("account-usage 应 200，实际 %d: %s", recorder.Code, recorder.Body.String())
+	}
+	data := wdData(t, recorder)
+	rows := wdJSONArray(t, data["rows"], "rows")
+	if len(rows) != 2 {
+		t.Fatalf("物理删除账户的统计行不得被丢弃，期望 2 行，实际 %d: %#v", len(rows), rows)
+	}
+	names := map[string]string{}
+	for _, item := range rows {
+		row := item.(map[string]any)
+		names[row["id"].(string)], _ = row["name"].(string)
+	}
+	if names["acct-live"] != "Live Account" {
+		t.Fatalf("存活账户名称错误: %#v", names)
+	}
+	if names["acct-deleted"] != accountUsageDeletedAccountPlaceholderName {
+		t.Fatalf("删除账户应使用占位名: %#v", names)
+	}
+	total, _ := data["total"].(float64)
+	if total < float64(len(rows)) {
+		t.Fatalf("total 不得小于实际返回行数: total=%v rows=%d", total, len(rows))
+	}
+}

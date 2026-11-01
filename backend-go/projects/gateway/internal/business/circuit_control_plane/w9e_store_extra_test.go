@@ -180,9 +180,6 @@ func TestW9EOwnerGateBlocksEveryMethod(t *testing.T) {
 	if _, err := s.ListProjectionGaps(ctx, "", 0, "", 1); !errors.Is(err, ErrOwnerGate) {
 		t.Fatalf("Gaps = %v", err)
 	}
-	if _, err := s.Cleanup(ctx, 1, 1, 1); !errors.Is(err, ErrOwnerGate) {
-		t.Fatalf("Cleanup = %v", err)
-	}
 }
 
 func TestW9EDedupeReceiptWithoutIncident(t *testing.T) {

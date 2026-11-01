@@ -118,7 +118,7 @@ func TestW1SuiteEnvelopeProfileAndCredentialReachTransport(t *testing.T) {
 			name: "Gemini OpenAI OAuth SSE", profile: "profile_gemini_openai_chat_v1beta", provider: "gemini",
 			endpoint: "https://generativelanguage.googleapis.com/v1beta/openai", mode: modelcheckprofile.EndpointModeChatSSE,
 			credentialType: "google_oauth", headers: http.Header{"Authorization": []string{"Bearer gemini-token"}},
-			response: "data: {\"choices\":[{\"delta\":{\"content\":\"OK-MODEL-CHECK\"}}]}\n\n",
+			response: "data: {\"choices\":[{\"delta\":{\"content\":\"OK-MODEL-CHECK\"}}]}\n\ndata: [DONE]\n\n",
 			wantURL:  "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", wantAccept: "text/event-stream",
 		},
 		{
@@ -128,7 +128,7 @@ func TestW1SuiteEnvelopeProfileAndCredentialReachTransport(t *testing.T) {
 			endpoint: "https://api.anthropic.com", mode: modelcheckprofile.EndpointModeMessagesSSE,
 			credentialType: "oauth", protocol: modelcheckprofile.ProtocolAnthropic,
 			headers:        http.Header{"Authorization": []string{"Bearer anthropic-token"}},
-			response:       "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"OK-MODEL-CHECK\"}}\n\n",
+			response:       "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"OK-MODEL-CHECK\"}}\n\nevent: message_stop\n\n",
 			wantURL:        "https://api.anthropic.com/messages",
 			wantAccept:     "text/event-stream",
 			wantAuthHeader: "Bearer anthropic-token",

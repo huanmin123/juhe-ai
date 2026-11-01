@@ -598,6 +598,22 @@ func (s *Store) patchForOwner(ctx context.Context, id string, input PatchInput, 
 	next.RevokedBy = pointerNullString(nextRevokedBy)
 	next.RevokedAt = pointerNullString(nextRevokedAt)
 	next.UpdatedAt = now
+	// B3-H1：团队来源的授权不得在团队停用后经 PATCH 静默恢复。停用团队只撤
+	// team sources（systemteams Patch 级联），grant 仍保持 active；此处若继续
+	// 同步，syncTeamGrantRuntime 会重新展开成员并 provision 运行时/实例，等于
+	// 绕过停用。校验置于 syncGrantRuntime 之前且覆盖任意补丁字段（含仅改
+	// limits），文案与创建路径 checkGrantee 一致（团队不存在或已停用，400）；
+	// 回收授权仍走既有 revoke 终止接口。
+	if next.GranteeType == "team" && next.GranteeTeamID.Valid && next.GranteeTeamID.String != "" {
+		var teamStatus string
+		err := tx.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("system_teams")+` WHERE id = ?`), next.GranteeTeamID.String).Scan(&teamStatus)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && teamStatus != "active") {
+			return nil, failf("团队不存在或已停用")
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := s.syncGrantRuntime(ctx, tx, &next, actor, now); err != nil {
 		return nil, err
 	}

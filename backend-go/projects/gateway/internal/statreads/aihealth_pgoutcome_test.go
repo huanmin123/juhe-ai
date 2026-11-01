@@ -188,3 +188,88 @@ func indexOf(haystack, needle string) int {
 	}
 	return -1
 }
+
+// TestJ1OutcomeHealthStatusExcludesNonQualityOutcomes pins C1-H1: the AI-health
+// rate only counts quality outcomes. complete_success is the sole positive
+// sample; stale and the five non-quality terminal outcomes only feed
+// diagnostics (docs/functions/模型价格与用量统计口径.md §2) and must map to the
+// "not counted" arm; real account-quality failures keep the failure arm.
+func TestJ1OutcomeHealthStatusExcludesNonQualityOutcomes(t *testing.T) {
+	cases := []struct {
+		outcome string
+		want    string
+	}{
+		{"complete_success", "success"},
+		{"upstream_failure", "failure"},
+		{"probe_task_failure", "failure"},
+		// Attribution-shaped failures are still real account-quality failures.
+		{"account_upstream", "failure"},
+		{"account_dependency", "failure"},
+		{"unexpected_outcome", "failure"},
+		{"stale", ""},
+		{"framing_complete_neutral", ""},
+		{"opaque_upstream", ""},
+		{"gateway_capacity", ""},
+		{"gateway_policy", ""},
+		{"downstream_closed", ""},
+	}
+	for _, tc := range cases {
+		if got := j1OutcomeHealthStatus(j1Outcome{Outcome: tc.outcome}); got != tc.want {
+			t.Fatalf("outcome %q health status = %q, want %q", tc.outcome, got, tc.want)
+		}
+	}
+}
+
+// TestJ1NeutralOutcomesStayOutOfHealthRate proves the merge and aggregation
+// layers agree with the mapping: neutral outcomes produce no hourly row, never
+// become the latest/displayed status, and leave the hour unknown instead of
+// counting it as a failure hour.
+func TestJ1NeutralOutcomesStayOutOfHealthRate(t *testing.T) {
+	location := time.UTC
+	hourBuckets := []string{
+		"2026-09-04T00", "2026-09-04T01", "2026-09-04T02", "2026-09-04T03",
+		"2026-09-04T04", "2026-09-04T05", "2026-09-04T06", "2026-09-04T07",
+	}
+	outcomes := []j1Outcome{
+		{AccountID: "acct-a", Outcome: "complete_success", ObservedAt: "2026-09-04T00:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "upstream_failure", ObservedAt: "2026-09-04T01:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "framing_complete_neutral", ObservedAt: "2026-09-04T02:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "opaque_upstream", ObservedAt: "2026-09-04T03:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "gateway_capacity", ObservedAt: "2026-09-04T04:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "gateway_policy", ObservedAt: "2026-09-04T05:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "downstream_closed", ObservedAt: "2026-09-04T06:30:00.000Z"},
+		{AccountID: "acct-a", Outcome: "stale", ObservedAt: "2026-09-04T07:30:00.000Z"},
+	}
+	rows := j1OutcomeHealthRows(outcomes, hourBuckets, location)
+	if len(rows) != 2 {
+		t.Fatalf("只有 success/failure 两个质量小时可成行: %#v", rows)
+	}
+	result := mapAiHealthList([]aiHealthAccount{{ID: "acct-a"}}, false,
+		aiHealthOptions{Page: 1, PageSize: 20}, rows, hourBuckets, outcomes)
+	if len(result.Items) != 1 {
+		t.Fatalf("账户行数错误: %#v", result.Items)
+	}
+	item := result.Items[0]
+	if item.SuccessHours != 1 || item.FailureHours != 1 {
+		t.Fatalf("neutral/stale 不得计入成功或失败小时: %+v", item)
+	}
+	if item.UnknownHours != 6 {
+		t.Fatalf("非质量终态所在小时应为 unknown: %+v", item)
+	}
+	if item.HealthRate == nil || *item.HealthRate != 50 {
+		t.Fatalf("健康率只按 1 成功 / 1 失败计算: %#v", item.HealthRate)
+	}
+	if item.LatestStatus != "failure" {
+		t.Fatalf("最新状态必须是最后的真实质量终态: %q", item.LatestStatus)
+	}
+	latest := latestJ1OutcomeForAccount(outcomes, "acct-a")
+	if latest == nil || latest.Outcome != "upstream_failure" {
+		t.Fatalf("neutral/stale 不得成为账户最新质量终态: %#v", latest)
+	}
+	if got := newestJ1OutcomeHourRow(outcomes, "2026-09-04T06", location); got != nil {
+		t.Fatalf("小时详情不得把 neutral 终态当作健康结论: %#v", got)
+	}
+	if got := newestJ1OutcomeHourRow(outcomes, "2026-09-04T01", location); got == nil || got.Outcome != "upstream_failure" {
+		t.Fatalf("小时详情应保留真实失败结论: %#v", got)
+	}
+}

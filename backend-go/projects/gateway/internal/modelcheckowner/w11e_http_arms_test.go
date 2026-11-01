@@ -195,8 +195,8 @@ func TestW11EActivateBaselineDefaultErrorArm(t *testing.T) {
 	handler.Authorize = func(context.Context, *http.Request) (string, error) { return "sys-1", nil }
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/token-intercept-baselines/activate", strings.NewReader(`{"cohortKeyHmac":"hmac-sha256-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","requestedModel":"gpt-5.6","tokenizerVersion":"o200k_base@1","probeSetVersion":"probe-v1","baselineVersion":2,"strongThresholdIntercept":128,"calibrationNote":"calibrated"}`)))
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("未知激活错误必须 503: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "w11e-unexpected") {
+		t.Fatalf("未知激活错误属服务端故障，必须 500 统一文案且不透出原文（R7-A I-H1）: %d %s", response.Code, response.Body.String())
 	}
 	// self 挂载禁止激活。
 	self := newTestHTTPHandler()
@@ -270,8 +270,8 @@ func TestW11ERunDetailShapeAndErrorArms(t *testing.T) {
 	handler.Service = &contractRunService{runResult: RunResult{RunID: "run-x"}, detailErr: errors.New("w11e-read-failed")}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
-	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "w11e-read-failed") {
-		t.Fatalf("详情读取失败必须 500: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") || strings.Contains(response.Body.String(), "w11e-read-failed") {
+		t.Fatalf("详情读取失败必须 500 且不透出原文（R7-A I-H1）: %d %s", response.Code, response.Body.String())
 	}
 	// /runs/{id} 查询错误与跨租户 404。
 	handler.Service = &contractRunService{detail: RunView{ID: "run-1", SystemAccountID: "sys-2"}, found: true}
@@ -316,18 +316,19 @@ func TestW11EHandlerDefaultsAndBuildScopeArms(t *testing.T) {
 	admin.BuildScoped = nil
 	response := httptest.NewRecorder()
 	admin.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "全局 scope 尚未接入") {
-		t.Fatalf("全局 scope 无构建器必须 400: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") || strings.Contains(response.Body.String(), "全局 scope 尚未接入") {
+		t.Fatalf("全局 scope 无构建器属服务端故障，必须 500 统一文案（R7-A I-H1）: %d %s", response.Code, response.Body.String())
 	}
-	// 构建器返回普通错误必须 400；RequestError 保持状态码。
+	// 构建器返回普通错误（DB 故障等非 RequestError）必须 500 统一文案且
+	// 不透出原文；RequestError 保持状态码与文案。
 	plain := newTestHTTPHandler()
 	plain.Build = func(context.Context, string, RunCommand) (RunRequest, error) {
 		return RunRequest{}, errors.New("w11e-build-failed")
 	}
 	response = httptest.NewRecorder()
 	plain.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "w11e-build-failed") {
-		t.Fatalf("普通构建错误必须 400: %d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") || strings.Contains(response.Body.String(), "w11e-build-failed") {
+		t.Fatalf("普通构建错误必须 500 统一文案（R7-A I-H1，不再标 400）: %d %s", response.Code, response.Body.String())
 	}
 	invalid := newTestHTTPHandler()
 	invalid.Build = func(context.Context, string, RunCommand) (RunRequest, error) {
@@ -441,30 +442,42 @@ func TestW11EAdaptFrontendProbeItemEventArms(t *testing.T) {
 }
 
 func TestW11EStreamErrorPayloadHelpers(t *testing.T) {
-	if payload := ownerStreamError(nil); payload["message"] != "模型检测失败" {
+	request := httptest.NewRequest(http.MethodPost, "/run", nil)
+	// SSE error 帧：非 RequestError 一律统一文案且不编造状态码（R7-A I-H1）。
+	if payload := ownerStreamError(request, nil); payload["message"] != "服务器内部错误" {
 		t.Fatalf("nil 错误载荷=%v", payload)
 	}
-	if _, present := ownerStreamError(errors.New("x"))["statusCode"]; present {
+	if _, present := ownerStreamError(request, errors.New("internal wrapper: boom"))["statusCode"]; present {
 		t.Fatal("普通错误不得编造状态码")
 	}
-	payload := ownerStreamError(&RequestError{StatusCode: http.StatusNotFound, Message: "目标不存在"})
+	if payload := ownerStreamError(request, errors.New("internal wrapper: boom")); payload["message"] != "服务器内部错误" {
+		t.Fatalf("普通错误必须统一文案: %v", payload)
+	}
+	payload := ownerStreamError(request, &RequestError{StatusCode: http.StatusNotFound, Message: "目标不存在"})
 	if payload["statusCode"] != http.StatusNotFound || payload["message"] != "目标不存在" {
 		t.Fatalf("RequestError 载荷=%v", payload)
 	}
+	// 统一渲染（原 writeRunError 契约位）：非 RequestError（nil/空白/越界
+	// 状态码）一律 500 + 统一文案；RequestError 保留 4xx 语义与文案。
 	response := httptest.NewRecorder()
-	writeRunError(response, nil)
-	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "模型检测失败") {
-		t.Fatalf("nil run 错误必须使用默认消息: %d %s", response.Code, response.Body.String())
+	writeOwnerFailure(request, response, nil)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") {
+		t.Fatalf("nil run 错误必须 500 统一文案: %d %s", response.Code, response.Body.String())
 	}
 	response = httptest.NewRecorder()
-	writeRunError(response, errors.New("   "))
-	if !strings.Contains(response.Body.String(), "模型检测失败") {
-		t.Fatalf("空白错误消息必须回退默认: %s", response.Body.String())
+	writeOwnerFailure(request, response, errors.New("   "))
+	if !strings.Contains(response.Body.String(), "服务器内部错误") {
+		t.Fatalf("空白错误消息必须统一文案: %s", response.Body.String())
 	}
 	response = httptest.NewRecorder()
-	writeRunError(response, &RequestError{StatusCode: 702, Message: "越界状态码"})
-	if response.Code != http.StatusInternalServerError {
-		t.Fatalf("越界状态码必须回退 500: %d", response.Code)
+	writeOwnerFailure(request, response, &RequestError{StatusCode: 702, Message: "越界状态码"})
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") {
+		t.Fatalf("越界状态码必须回退 500 统一文案: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	writeOwnerFailure(request, response, &RequestError{StatusCode: http.StatusBadRequest, Message: "检测目标不可达"})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "检测目标不可达") {
+		t.Fatalf("RequestError 必须保留 4xx 语义与文案: %d %s", response.Code, response.Body.String())
 	}
 }
 

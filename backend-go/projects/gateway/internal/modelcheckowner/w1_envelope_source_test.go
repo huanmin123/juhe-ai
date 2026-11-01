@@ -519,8 +519,10 @@ func TestW1RuntimeFailureFinalizationStorageErrors(t *testing.T) {
 			if err := store.db.QueryRow(`SELECT status FROM model_check_runs`).Scan(&status); err != nil {
 				t.Fatal(err)
 			}
-			if status != string(RunRunning) {
-				t.Fatalf("failed finalization run state=%q; want running", status)
+			// S-H1 修复后，finalize 失败的错误臂不再把 run 留成永久 running：
+			// finishFailure 按 status='running' CAS 就地补终态 failed。
+			if status != string(RunFailed) {
+				t.Fatalf("failed finalization run state=%q; want failed (S-H1 终态收口)", status)
 			}
 			if test.wantCommitted > 0 {
 				var committed int

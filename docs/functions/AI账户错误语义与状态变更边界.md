@@ -14,7 +14,7 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 ## 2. 状态变更授权来源
 
-账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略，或本文件明确的受控系统继承策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。当前唯一系统继承例外是 `system.upstream_insufficient_quota`：仅 HTTP `403` 且命中稳定额度错误码，或结构化错误消息命中高置信余额/额度文本时，才进入额度恢复状态。对支持该语义的 API Key，优先遵守已校验的供应商恢复时间；没有可靠时间时使用账户 `quota_recovery_policy` 的 duration 策略，默认 60 分钟并由账户/Key canonical seed 在恢复间隔的全局窗口内稳定错峰。OAuth / Google OAuth 不消费 API Key reset 字段，默认使用 UTC 每日策略，也可在账户策略中选择受限的 duration、daily 或 weekly 模式和 IANA 时区。系统规则仍优先于账户自定义规则。多 Key 只写失败 fingerprint，通用模式连续确认 30 天后该 Key 进入人工恢复的 `error`。裸 `403`、泛化 `quota`、权限或内容策略语义不得命中。该规则不写入 `credentials.error_handling_rules`、`system_settings` 或静态 system registry；`quota_recovery_policy` 仅保存账户可配置的恢复参数，授权实例只读继承有效投影。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
+账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略，或本文件明确的受控系统继承策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。当前唯一系统继承例外是 `system.upstream_insufficient_quota`：仅 HTTP `402`/`403`（稳定额度错误码或高置信余额/额度文本），或带稳定额度错误码的 HTTP `429` 时，才进入额度恢复状态；429 不读文本、裸 429 与普通频控（`AccountRateLimitExceeded` 等）不得命中。对支持该语义的 API Key，优先遵守已校验的供应商恢复时间；没有可靠时间时使用账户 `quota_recovery_policy` 的 duration 策略，默认 60 分钟并由账户/Key canonical seed 在恢复间隔的全局窗口内稳定错峰。OAuth / Google OAuth 不消费 API Key reset 字段，默认使用 UTC 每日策略，也可在账户策略中选择受限的 duration、daily 或 weekly 模式和 IANA 时区。系统规则仍优先于账户自定义规则。多 Key 只写失败 fingerprint，通用模式连续确认 30 天后该 Key 进入人工恢复的 `error`。Key 级 `error` 与 `disabled` 都是人工终态：任何被动失败写入（Key 冷却失败登记、Key 级系统额度失败登记，含 UPDATE 与 INSERT ... ON CONFLICT 两条写臂）都必须以 `status NOT IN ('disabled','error')` 守卫跳过，不得把 `error` 改写回 `rate_limited`/`temporary_unavailable`；只有人工恢复动作或本文件授权的匹配恢复证据可以改变它。裸 `403`、泛化 `quota`、权限或内容策略语义不得命中。该规则不写入 `credentials.error_handling_rules`、`system_settings` 或静态 system registry；`quota_recovery_policy` 仅保存账户可配置的恢复参数，授权实例只读继承有效投影。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
 
 传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能形成待确认事实；账户级升级必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由独立后台传输探针确认。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
 
@@ -108,7 +108,7 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 下列实现一律视为越界，除非它们位于用户显式策略，或本文件定义的 `system.upstream_insufficient_quota` 严格匹配结果分支中：
 
 - `statusCode === 401/403` 就标记凭据或账户失效；
-- `statusCode === 429` 就标记限流或进入账户冷却；
+- `statusCode === 429` 就标记限流或进入账户冷却；带稳定额度错误码的 429 属于上述受控系统规则分支，不在该禁令内。
 - `statusCode >= 500` 就标记供应商、代理或账户不可用；
 - 根据 `error.code`、`error.type`、正文关键词或流式事件名称推断 Key/账户死亡；
 - generic 请求收到一个业务错误后，把当前 Key 的失败写入跨请求共享运行态；

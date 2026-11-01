@@ -412,6 +412,11 @@ func (s *Store) RecordKeySuccess(ctx context.Context, input accountquality.KeySu
 
 // RecordKeyFailure 实现 accountquality.CooldownMutation（record_account_api_key_failure）。
 func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFailureInput) (accountquality.KeyMutationResult, error) {
+	// error 是人工恢复终态（与 RecordKeySuccess 同口径）：失败观察不得把
+	// 人工置 error 的 Key 改写回 rate_limited/temporary_unavailable。
+	if input.Expected.Status == "error" {
+		return changedFalse("manual_restore_required"), nil
+	}
 	target, fence, err := s.resolveTarget(ctx, input.AccountID, input.KeyFingerprint, input.KeyIndex, input.Expected)
 	if err != nil {
 		return accountquality.KeyMutationResult{}, err
@@ -427,6 +432,9 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 	}
 	if existing != nil && existing.status == "disabled" {
 		return changedFalse("key_disabled"), nil
+	}
+	if existing != nil && existing.status == "error" {
+		return changedFalse("manual_restore_required"), nil
 	}
 	if fence.provided && existing == nil {
 		return changedFalse("stale_probe_state"), nil
@@ -495,7 +503,7 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
           probe_claim_token = NULL, probe_claimed_until = NULL,
           updated_at = ?
       WHERE account_id = ? AND key_fingerprint = ?
-        AND status <> 'disabled'
+        AND status NOT IN ('disabled', 'error')
         AND (last_attempt_at IS NULL OR last_attempt_at < ?)%s%s%s
     `, s.table("account_api_key_runtime_states"), recoverySQL, genericGuard, fence.sql, s.configFenceSQL(input.Expected.AccountConfigRevision))
 		params := []any{
@@ -515,6 +523,20 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 		}
 		return s.keyMutationResultWithDirty(ctx, result, target.accountID, true)
 	}
+	// 插入臂同样需要冲突守卫：读后并发插入的 error/disabled 行不得被失败
+	// 观察改写。冲突分支的恢复窗口语义与上方 UPDATE 臂一致（非配额模式沿用
+	// 既有 recovery_started_at，配额模式/破窗写本次计算值）。
+	conflictRecoverySQL := "excluded.recovery_started_at"
+	if input.QuotaRecoveryMode == "" && !input.BreakQuotaRecoveryWindow {
+		conflictRecoverySQL = "COALESCE(account_api_key_runtime_states.recovery_started_at, excluded.recovery_started_at)"
+	}
+	conflictGenericGuard := `
+      AND NOT (
+        ? = 'generic'
+        AND account_api_key_runtime_states.last_error_code IN (?, ?)
+        AND account_api_key_runtime_states.cooldown_until IS NOT NULL
+        AND account_api_key_runtime_states.cooldown_until::timestamptz > ?::timestamptz
+      )`
 	query := fmt.Sprintf(`
     INSERT INTO %s (
       id, system_account_id, account_id, key_fingerprint, key_index,
@@ -524,11 +546,34 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
       last_trace_id, created_at, updated_at
     )
     VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, s.table("account_api_key_runtime_states"))
-	result, err := s.db.ExecContext(ctx, s.bind(query),
-		"account_api_key_runtime_state_"+randomToken(16), target.systemAccountID, target.accountID, target.keyFingerprint, target.keyIndex,
+    ON CONFLICT(account_id, key_fingerprint) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      key_index = excluded.key_index,
+      status = excluded.status,
+      failure_count = account_api_key_runtime_states.failure_count + 1,
+      consecutive_failures = account_api_key_runtime_states.consecutive_failures + 1,
+      cooldown_until = excluded.cooldown_until,
+      next_probe_at = excluded.next_probe_at,
+      probe_backoff_seconds = excluded.probe_backoff_seconds,
+      recovery_started_at = %s,
+      last_attempt_at = excluded.last_attempt_at,
+      last_failure_at = excluded.last_failure_at,
+      last_error_code = excluded.last_error_code,
+      last_error_message = excluded.last_error_message,
+      last_trace_id = excluded.last_trace_id,
+      probe_claim_token = NULL,
+      probe_claimed_until = NULL,
+      updated_at = excluded.updated_at
+    WHERE account_api_key_runtime_states.status NOT IN ('disabled', 'error')
+      AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at < excluded.last_attempt_at)%s
+  `, s.table("account_api_key_runtime_states"), conflictRecoverySQL, conflictGenericGuard)
+	params := []any{
+		"account_api_key_runtime_state_" + randomToken(16), target.systemAccountID, target.accountID, target.keyFingerprint, target.keyIndex,
 		status, persistedCooldownUntil, nextProbeAt, nextBackoff, recoveryStartedAt,
-		observedAt, observedAt, errorCode, errorMessage, normalizeTraceID(input.TraceID), now, now)
+		observedAt, observedAt, errorCode, errorMessage, normalizeTraceID(input.TraceID), now, now,
+	}
+	params = append(params, genericParams...)
+	result, err := s.db.ExecContext(ctx, s.bind(query), params...)
 	if err != nil {
 		return accountquality.KeyMutationResult{}, err
 	}

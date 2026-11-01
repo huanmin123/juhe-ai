@@ -5,6 +5,7 @@ package modelcheckprobe
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,8 +20,8 @@ type w11eStaticTransport struct {
 	body   string
 }
 
-func (t *w11eStaticTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	return &http.Response{StatusCode: t.status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: http.NoBody}, nil
+func (t *w11eStaticTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: t.status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(t.body)), Request: request}, nil
 }
 
 func TestW11ERunSuiteTerminalShortCircuits(t *testing.T) {

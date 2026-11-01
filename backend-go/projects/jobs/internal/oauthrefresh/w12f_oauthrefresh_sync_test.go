@@ -25,7 +25,7 @@ func TestW12fSyncApiKeyScheduleFlipAndEventIdempotent(t *testing.T) {
 	// 非法 JSON 行 → invalid 计数。
 	seedApiKeyWithSchedule(t, db, "w12f-key-invalid", "{bad", "", "active")
 
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), now.Add(10*time.Hour+30*time.Minute), 10)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), now.Add(10*time.Hour+30*time.Minute), 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestW12fSyncApiKeyScheduleFlipAndEventIdempotent(t *testing.T) {
 		t.Fatalf("扫描结果=%+v", result)
 	}
 	// 第二次同步：事件幂等（ON CONFLICT DO NOTHING 分支）。
-	if _, err := store.SyncApiKeyScheduleStatuses(context.Background(), now.Add(10*time.Hour+30*time.Minute), 10); err != nil {
+	if _, err := store.SyncApiKeyScheduleStatuses(context.Background(), now.Add(10*time.Hour+30*time.Minute), 10, nil); err != nil {
 		t.Fatal(err)
 	}
 }

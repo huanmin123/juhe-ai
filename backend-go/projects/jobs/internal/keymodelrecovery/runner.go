@@ -78,6 +78,9 @@ func NewRunner(store Store, loader InputLoader, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if setter, ok := store.(interface{ SetLogger(*slog.Logger) }); ok {
+		setter.SetLogger(logger)
+	}
 	return &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, scanDelay: schedulejitter.Delay, running: map[string]Running{}, inputLoadWarnedAt: map[string]time.Time{}}
 }
 

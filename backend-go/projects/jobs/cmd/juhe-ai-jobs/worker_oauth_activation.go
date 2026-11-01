@@ -34,3 +34,13 @@ func newAccountScheduleActivationHook(business *accounthealth.ProjectionBusiness
 		return nil
 	})
 }
+
+// newAPIKeyScheduleActivationHook 装配 API Key 排期激活 hook（B3-H11）：激活
+// 翻转时在同一事务重建该 Key 的小时额度窗口作用域绑定，提交后给 statsagg
+// 打脏。与账户 hook 的 best-effort 不同，绑定写失败必须上抛回滚整笔同步：
+// 绑定表是小时窗口的唯一来源，置为 active 却缺少绑定会让小时额度静默
+// fail-open（本缺陷本身）；任务失败可见并可下一轮重试。打脏仍按 gateway
+// 语义在提交后 best-effort 执行（见 oauthrefresh.APIKeyScheduleActivationHook）。
+func newAPIKeyScheduleActivationHook(store *oauthrefresh.Store, logger *slog.Logger) oauthrefresh.APIKeyActivationHook {
+	return store.APIKeyScheduleActivationHook(logger)
+}

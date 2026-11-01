@@ -386,7 +386,7 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	// BusinessDB：授权链查找（resource_authorizations/accounts）与配额小时窗
 	// 绑定表（request_quota_hourly_window_scope_bindings）在 PG 与 stats 同池，
 	// 聚合事务内 juhe_business. 前缀直查。
-	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
+	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB, Logger: a.logger}
 	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
 	settingsSource := jobssettings.NewSource(jobssettings.Options{
 		DB:   settingsDB,
@@ -426,6 +426,7 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			return jobsched.TaskResult{}, err
 		}
 		started := time.Now()
+		skippedBefore := a.aggregator.SkippedRecordCount()
 		processedTotal := 0
 		batches := 0
 		for index := 0; index < maxBatches; index++ {
@@ -444,6 +445,17 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			if processed < batchSize {
 				break
 			}
+		}
+		// C2-M6 留痕：逐行隔离跳过的坏记录在任务运行日志可见（单行 Warn 由
+		// statsagg 逐条输出，此处补本轮增量汇总；累计值另见 /health 载荷）。
+		if skipped := a.aggregator.SkippedRecordCount() - skippedBefore; skipped > 0 {
+			a.logger.Warn("usage 统计聚合存在被逐行隔离跳过的使用记录",
+				"event", "usage_stats_aggregation_rows_skipped",
+				"skippedRecords", skipped,
+				"skippedRecordsTotal", a.aggregator.SkippedRecordCount(),
+				"processed", processedTotal,
+				"batches", batches,
+				"durationMs", time.Since(started).Milliseconds())
 		}
 		a.logStatsRound("usage_stats_aggregation_round_completed",
 			"usage 统计聚合轮执行完成", "usage 统计聚合轮无待聚合记录",
@@ -656,9 +668,14 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 		}
 		return jobsched.TaskResult{}, nil
 	})
+	// B3-H11 修复：API Key 排期激活必须重建小时额度窗口绑定。此前本任务以
+	// 无 hook 调用，只翻状态；绑定表是 statsagg 生成 usage_quota_hourly_windows
+	// 的唯一来源，计划启用的 Key 小时额度因此静默 fail-open。hook 在同步事务
+	// 内重建绑定（写失败回滚整笔同步，失败可见），提交后打脏触发重算。
+	apiKeyActivationHook := newAPIKeyScheduleActivationHook(store, a.logger)
 	a.scheduleWiredJob("api-key-availability-schedule-status-sync", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		started := time.Now()
-		result, err := store.SyncApiKeyScheduleStatuses(taskCtx, time.Now(), 0)
+		result, err := store.SyncApiKeyScheduleStatuses(taskCtx, time.Now(), 0, apiKeyActivationHook)
 		if err != nil {
 			return jobsched.TaskResult{}, err
 		}
@@ -1236,6 +1253,16 @@ func (a *workerAssembly) statusPayload() map[string]any {
 	if a.writer != nil {
 		statusPayload["workerUsageWriterRuntime"] = a.writer.Runtime()
 		statusPayload["workerUsageOverflowReplay"] = a.usageOverflowReplay != nil
+		// C2-H2 观测面：门控实际读取的 ingest 排干快照（死信/丢弃计数与
+		// 三源最旧水位）与 writer 运行态并列进 /health，死信导致的门控阻断
+		// 可被外部巡检直接定位。
+		if status, err := a.ingestDrainProbe()(context.Background()); err == nil && status != nil {
+			statusPayload["workerIngestDrainStatus"] = status
+		}
+	}
+	// C2-M6 观测面：统计聚合逐行隔离跳过的坏记录累计数。
+	if a.aggregator != nil {
+		statusPayload["workerStatsAggregationSkippedRecords"] = a.aggregator.SkippedRecordCount()
 	}
 	return statusPayload
 }

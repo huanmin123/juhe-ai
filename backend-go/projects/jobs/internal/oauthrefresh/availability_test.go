@@ -59,7 +59,7 @@ func TestSyncApiKeyScheduleActivatesAtWindowStart(t *testing.T) {
 	_ = clock
 	seedApiKeyWithSchedule(t, db, "key-1", availabilityScheduleJSON, "", "disabled")
 
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), atStart, 0)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), atStart, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestSyncApiKeyScheduleActivatesAtWindowStart(t *testing.T) {
 	if _, err := db.Exec(`UPDATE juhe_business.api_keys SET availability_schedule_next_check_at = NULL WHERE id = 'key-1'`); err != nil {
 		t.Fatal(err)
 	}
-	replay, err := store.SyncApiKeyScheduleStatuses(context.Background(), atStart, 0)
+	replay, err := store.SyncApiKeyScheduleStatuses(context.Background(), atStart, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSyncApiKeyScheduleDisablesAtWindowEnd(t *testing.T) {
 	store, db, _ := newSweepStore(t)
 	atEnd := time.Date(2026, 9, 7, 18, 0, 0, 0, time.UTC)
 	seedApiKeyWithSchedule(t, db, "key-end", availabilityScheduleJSON, "", "active")
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), atEnd, 0)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), atEnd, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestSyncApiKeyScheduleUnchangedAdvancesNextCheck(t *testing.T) {
 	// Off-boundary minute inside the window: no event, next check advances.
 	inside := time.Date(2026, 9, 7, 10, 30, 0, 0, time.UTC)
 	seedApiKeyWithSchedule(t, db, "key-inside", availabilityScheduleJSON, "", "active")
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), inside, 0)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), inside, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestSyncApiKeyScheduleUnchangedAdvancesNextCheck(t *testing.T) {
 func TestSyncApiKeyScheduleInvalidDisables(t *testing.T) {
 	store, db, _ := newSweepStore(t)
 	seedApiKeyWithSchedule(t, db, "key-invalid", `{"enabled":true,"mode":"bogus"}`, "", "active")
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestSyncApiKeyScheduleInvalidDisables(t *testing.T) {
 	}
 	// An already-disabled row with an invalid schedule only drops the check.
 	seedApiKeyWithSchedule(t, db, "key-invalid-disabled", `{"enabled":true,"mode":"bogus"}`, "", "disabled")
-	result, err = store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0)
+	result, err = store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestSyncApiKeyScheduleDueWindowCoversNullNextCheck(t *testing.T) {
 	// NULL next_check_at is always due, even off-boundary.
 	inside := time.Date(2026, 9, 7, 10, 30, 0, 0, time.UTC)
 	seedApiKeyWithSchedule(t, db, "key-null", availabilityScheduleJSON, "", "active")
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), inside, 0)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), inside, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestSyncApiKeyScheduleDueWindowCoversNullNextCheck(t *testing.T) {
 	}
 	// Future next_check_at beyond the due time is not scanned.
 	seedApiKeyWithSchedule(t, db, "key-future", availabilityScheduleJSON, "2026-09-07T18:00:00.000Z", "active")
-	result, err = store.SyncApiKeyScheduleStatuses(context.Background(), inside, 0)
+	result, err = store.SyncApiKeyScheduleStatuses(context.Background(), inside, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestSyncBatchLimit(t *testing.T) {
 	for i := 0; i < 7; i++ {
 		seedApiKeyWithSchedule(t, db, "batch-"+string(rune('a'+i)), availabilityScheduleJSON, "", "active")
 	}
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC), 5)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC), 5, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

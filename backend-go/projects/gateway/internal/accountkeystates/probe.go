@@ -425,6 +425,11 @@ type FailureInput struct {
 // 按 fence/配额守卫做 CAS 写入；带 fence 走 fenced UPDATE，无 fence 走原子
 // upsert（Node async 变体）。
 func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteResult, error) {
+	// error 是人工恢复终态（与 RecordSuccess 同口径）：失败观察不得把
+	// 人工置 error 的 Key 改写回 rate_limited/temporary_unavailable。
+	if input.Expected.Status == "error" {
+		return WriteResult{SkippedReason: "manual_restore_required"}, nil
+	}
 	target := s.ResolveTarget(input.Account)
 	if target == nil {
 		return WriteResult{SkippedReason: "not_api_key_pool_account"}, nil
@@ -439,6 +444,9 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
 	}
 	if existing != nil && existing.status == "disabled" {
 		return WriteResult{SkippedReason: "key_disabled"}, nil
+	}
+	if existing != nil && existing.status == "error" {
+		return WriteResult{SkippedReason: "manual_restore_required"}, nil
 	}
 	if expectedFence.provided && existing == nil {
 		return WriteResult{SkippedReason: "stale_probe_state"}, nil
@@ -506,7 +514,7 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
           probe_claim_token = NULL, probe_claimed_until = NULL,
           updated_at = ?
       WHERE %s = ? AND %s = ?
-        AND %s <> 'disabled'
+        AND %s NOT IN ('disabled', 'error')
         AND (%s IS NULL OR %s < ?)
         %s
         %s
@@ -571,7 +579,7 @@ func (s *Store) RecordFailure(ctx context.Context, input FailureInput) (WriteRes
       probe_claim_token = NULL,
       probe_claimed_until = NULL,
       updated_at = excluded.updated_at
-    WHERE current_state.status <> 'disabled'
+    WHERE current_state.status NOT IN ('disabled', 'error')
       AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at < excluded.last_attempt_at)
       AND NOT (
         ? = 'generic'

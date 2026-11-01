@@ -81,6 +81,15 @@ func RunQuizDiagnosis(ctx context.Context, input Suite, timeout time.Duration) (
 	if familyTerminal() {
 		return quizDiagnosisRequestFailed(answerResult, latencyMs), nil
 	}
+	if !quizAnswerHopUsable(answerResult) {
+		// 作答跳非终态失败（200 错误信封/空 choices/空 content）与
+		// RunQuizFamily 同口径：错误信封或空文本不得冒充模型作答送裁判，
+		// 沿家族请求失败口径转 verdict=request_failed 正常结果并留证。
+		if strings.TrimSpace(answerResult.ErrorMessage) == "" {
+			answerResult.ErrorMessage = "J3b quiz answer hop produced no usable output"
+		}
+		return quizDiagnosisRequestFailed(answerResult, latencyMs), nil
+	}
 	gradeRequest, gradeErr := input.quizDiagnosisRequest(question, answerResult.Output, upstreamProtocol, upstreamMode, stream)
 	if gradeErr != nil {
 		return QuizDiagnosis{}, gradeErr

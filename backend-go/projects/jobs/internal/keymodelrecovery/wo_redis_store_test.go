@@ -3,7 +3,6 @@ package keymodelrecovery
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -129,15 +128,20 @@ func TestRedisStoreListDueAndValidation(t *testing.T) {
 	if err != nil || len(states) != 2 {
 		t.Fatalf("缺失 state 应跳过: %d %v", len(states), err)
 	}
-	// 状态 JSON 损坏或哈希不一致必须报完整性错误。
+	// 状态 JSON 损坏或哈希不一致：逐项隔离（ZREM due 成员）并继续返回正常项，
+	// 不再让单条脏 state 阻塞整轮扫描（B3-H27）。
 	if err := client.Set(ctx, keys.State("corrupt"), "{broken", 0).Err(); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.ZAdd(ctx, keys.Due(), redis.Z{Score: float64(now.Add(-4 * time.Second).UnixMilli()), Member: "corrupt"}).Err(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ListDue(ctx, now, 10); err == nil || !strings.Contains(err.Error(), "完整性") {
-		t.Fatalf("损坏状态应报完整性错误: %v", err)
+	states, err = store.ListDue(ctx, now, 10)
+	if err != nil || len(states) != 2 {
+		t.Fatalf("损坏状态应被隔离且正常项继续返回: %d %v", len(states), err)
+	}
+	if _, err := client.ZScore(ctx, keys.Due(), "corrupt").Result(); err != redis.Nil {
+		t.Fatalf("损坏 due 成员应被移除: %v", err)
 	}
 }
 

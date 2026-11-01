@@ -6,6 +6,7 @@ package authz
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 )
@@ -382,4 +383,123 @@ func TestTeamMemberJoinCascadeSyncsQuotaHourlyBindings(t *testing.T) {
 	if countTeamBinding(row2.id) != 1 {
 		t.Fatalf("member2 加入后团队额度绑定应立即可见")
 	}
+}
+
+// TestTeamDisabledBlocksGrantPatchAndActiveResync 钉住 B3-H1：团队停用后
+// (a) 对 team-source grant 的仅 limits PATCH 被拒（与创建路径同文案）；
+// (b) active 重展开不再为停用团队成员 provision 运行时/实例；
+// (c) active 团队的重展开行为不变。
+func TestTeamDisabledBlocksGrantPatchAndActiveResync(t *testing.T) {
+	ctx := context.Background()
+	nowText := "2026-02-01T00:00:00.000Z"
+	seedGrant := func(t *testing.T, f *fixture) *CreateResult {
+		t.Helper()
+		f.seedTeamWithMember(t, "team_1", "member1")
+		f.seedGranteeGroup(t, "grp-m1", "member1", "gpt", 1, 1)
+		created, err := f.store.Create(ctx, CreateInput{
+			ResourceType: "account", ResourceID: "acc-src",
+			GranteeType: "team", GranteeID: "team_1",
+		}, "owner")
+		if err != nil {
+			t.Fatalf("团队授权创建失败: %v", err)
+		}
+		return created
+	}
+	setTeamStatus := func(t *testing.T, f *fixture, status string) {
+		t.Helper()
+		if _, err := f.db.Exec(fixtureBind(`UPDATE system_teams SET status = ? WHERE id = ?`), status, "team_1"); err != nil {
+			t.Fatalf("改团队状态: %v", err)
+		}
+	}
+	syncActiveGrant := func(t *testing.T, f *fixture, grantID string) {
+		t.Helper()
+		grant := &grantRow{
+			ID: grantID, ResourceType: "account", ResourceID: "acc-src", OwnerID: "owner",
+			GranteeType: "team", GranteeTeamID: sql.NullString{String: "team_1", Valid: true},
+			Status: StatusActive,
+		}
+		tx := w13g2Tx(t, f)
+		if err := f.store.syncGrantRuntime(ctx, tx, grant, "owner", nowText); err != nil {
+			tx.Rollback()
+			t.Fatalf("active 重展开失败: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memberRuntimeCount := func(t *testing.T, f *fixture, memberID string) int {
+		t.Helper()
+		var count int
+		if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM resource_authorizations
+			WHERE resource_id = 'acc-src' AND grantee_system_account_id = ?`), memberID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	memberInstanceCount := func(t *testing.T, f *fixture, memberID string) int {
+		t.Helper()
+		var count int
+		if err := f.db.QueryRow(fixtureBind(`SELECT COUNT(*) FROM accounts
+			WHERE authorization_instance_source_account_id = 'acc-src' AND system_account_id = ?`), memberID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+
+	t.Run("patch_limits_rejected_after_team_disabled", func(t *testing.T) {
+		f := teamInstanceFixture(t)
+		created := seedGrant(t, f)
+		setTeamStatus(t, f, "disabled")
+
+		limits := `{"hourly":{"enabled":true,"hours":5,"limit":100}}`
+		outcome, err := f.store.Patch(ctx, created.Item.ID,
+			PatchInput{LimitsSet: true, LimitsJSON: &limits}, created.Item.UpdatedAt, "owner")
+		if err == nil || err.Error() != "团队不存在或已停用" {
+			t.Fatalf("停用团队的 PATCH 应被拒：%+v %v", outcome, err)
+		}
+		if outcome != nil {
+			t.Fatalf("被拒 PATCH 不得返回 outcome: %+v", outcome)
+		}
+		var stored sql.NullString
+		if err := f.db.QueryRow(fixtureBind(`SELECT limits_json FROM resource_authorization_grants WHERE id = ?`),
+			created.Item.ID).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored.Valid && stored.String != "" {
+			t.Fatalf("被拒 PATCH 不得写入 limits: %q", stored.String)
+		}
+	})
+
+	t.Run("active_resync_skips_disabled_team_members", func(t *testing.T) {
+		f := teamInstanceFixture(t)
+		created := seedGrant(t, f)
+		f.seedTeamWithMember(t, "team_1", "member2")
+		f.seedGranteeGroup(t, "grp-m2", "member2", "gpt", 1, 1)
+		setTeamStatus(t, f, "disabled")
+
+		syncActiveGrant(t, f, created.Item.ID)
+		if got := memberRuntimeCount(t, f, "member2"); got != 0 {
+			t.Fatalf("停用团队不得重展开成员 runtime：%d", got)
+		}
+		if got := memberInstanceCount(t, f, "member2"); got != 0 {
+			t.Fatalf("停用团队不得 provision 成员实例：%d", got)
+		}
+	})
+
+	t.Run("active_team_resync_still_provisions", func(t *testing.T) {
+		f := teamInstanceFixture(t)
+		created := seedGrant(t, f)
+		f.seedTeamWithMember(t, "team_1", "member2")
+		f.seedGranteeGroup(t, "grp-m2", "member2", "gpt", 1, 1)
+		setTeamStatus(t, f, "active")
+
+		syncActiveGrant(t, f, created.Item.ID)
+		if got := memberRuntimeCount(t, f, "member2"); got != 1 {
+			t.Fatalf("active 团队应重展开成员 runtime：%d", got)
+		}
+		row := f.provisionInstanceByAuthorization(t, "acc-src", "member2")
+		if row.systemAccountID != "member2" || row.status != "active" || row.schedulable != 1 {
+			t.Fatalf("active 团队成员实例：%+v", row)
+		}
+	})
 }

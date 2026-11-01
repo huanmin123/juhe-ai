@@ -559,7 +559,8 @@ func TestWlParseSSEEventOutputProtocols(t *testing.T) {
 			"message": map[string]any{"content": "m", "reasoning_content": "r", "refusal": "f"},
 			"delta":   map[string]any{"content": "d"},
 		}}}
-		if got := strings.TrimSpace(parseSSEEventOutput(modelcheckprofile.ProtocolOpenAIChat, payload)); got != "mrfd" {
+		// reasoning_content 是推理痕迹，不并入判分 Output（R7-A P-H2）。
+		if got := strings.TrimSpace(parseSSEEventOutput(modelcheckprofile.ProtocolOpenAIChat, payload)); got != "mfd" {
 			t.Fatalf("got=%q", got)
 		}
 	})

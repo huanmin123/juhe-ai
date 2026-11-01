@@ -113,7 +113,10 @@ func timezoneLocation(ctx context.Context, source TimezoneSource) (*time.Locatio
 }
 
 // normalizeRange mirrors normalizeAccountUsageStatsRange: calendar clamping to
-// the 31-day window ending today (timezone aware).
+// the 31-day window ending today (timezone aware). 无法解析的日期键按 today
+// 处理，调用方必须在解析层先校验格式与日历（usage-overview / ai-performance
+// 走 parseUsageOverviewQuery，usage-records 走 strictDateQueryValue），不得
+// 把原始参数直接交给本函数后再假定时间过滤生效。
 func normalizeRange(inputStart, inputEnd string, todayKey string) Range {
 	todayY, todayM, todayD, _ := parseDateKeyParts(todayKey)
 	today := time.Date(todayY, time.Month(todayM), todayD, 0, 0, 0, 0, time.UTC)

@@ -408,57 +408,6 @@ func TestListProjectionGapsValidation(t *testing.T) {
 	}
 }
 
-func TestCleanupRemovesAckedAndClosed(t *testing.T) {
-	s, db := wkReadyStore(t)
-	defer db.Close()
-	ctx := context.Background()
-	if _, err := s.AdvanceDispatchRevision(ctx, DispatchRevision{AccountID: "a1", AccountRuntimeKey: "a1", TransitionID: "t-clean", NowMS: 100}); err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := s.ClaimOutbox(ctx, "worker", 100, 60_000, 10)
-	if err != nil || len(claimed) != 1 {
-		t.Fatal(err)
-	}
-	if ok, err := s.AcknowledgeOutbox(ctx, claimed[0].EventID, ProjectionKey, *claimed[0].ClaimToken, 200); err != nil || !ok {
-		t.Fatal(err)
-	}
-	// ack 时间早于清理水位之前 → 0。
-	result, err := s.Cleanup(ctx, 1000, 100, 10)
-	if err != nil || result.DeletedOutbox != 0 {
-		t.Fatalf("early cleanup=%+v err=%v", result, err)
-	}
-	// 到期清理 outbox。
-	result, err = s.Cleanup(ctx, 1000, 200, 10)
-	if err != nil || result.DeletedOutbox != 1 {
-		t.Fatalf("cleanup=%+v err=%v", result, err)
-	}
-	// closed 且已投影且无 pending outbox 的 incident 会被清理。
-	closed := wkBaseIncident("scope-clean", "a1", 2)
-	closed.State = "CLOSED"
-	retained := int64(5000)
-	closed.RetainedUntilMS = &retained
-	closed.UpdatedAtMS = 500
-	if _, err := s.CompareAndSetIncident(ctx, closed); err != nil {
-		t.Fatal(err)
-	}
-	claimed2, err := s.ClaimOutbox(ctx, "worker", 500, 60_000, 10)
-	if err != nil || len(claimed2) == 0 {
-		t.Fatalf("claim2=%+v err=%v", claimed2, err)
-	}
-	if ok, err := s.AcknowledgeOutbox(ctx, claimed2[0].EventID, ProjectionKey, *claimed2[0].ClaimToken, 600); err != nil || !ok {
-		t.Fatal(err)
-	}
-	result, err = s.Cleanup(ctx, 5000, 5000, 10)
-	if err != nil || result.DeletedIncidents != 1 {
-		t.Fatalf("incident cleanup=%+v err=%v", result, err)
-	}
-	// gate 未就绪。
-	blocked, _ := wkStoreLabeled(t, "-blocked", OwnerGate{})
-	if _, err := blocked.Cleanup(ctx, 0, 0, 1); !errors.Is(err, ErrOwnerGate) {
-		t.Fatalf("gate err=%v", err)
-	}
-}
-
 func TestScanIncidentRejectsCorruptRelations(t *testing.T) {
 	valid := func(children, evidence string) *fakeScanner {
 		columns := make([]any, 0, 44)

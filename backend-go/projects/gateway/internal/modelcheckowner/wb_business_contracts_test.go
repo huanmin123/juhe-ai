@@ -516,8 +516,8 @@ func TestWBHTTPServeAccountOptionsQueryContract(t *testing.T) {
 		handler.AccountOptions = &wbAccountOptionsStub{listEr: errors.New("读取失败")}
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/account-options?purpose=run", nil))
-		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "读取失败") {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") || strings.Contains(response.Body.String(), "读取失败") {
+			t.Fatalf("owner 读取错误必须 500 且不透出原文（R7-A I-H1）: %d %s", response.Code, response.Body.String())
 		}
 	})
 }
@@ -538,8 +538,8 @@ func TestWBHTTPServeDetailAndRunErrorPaths(t *testing.T) {
 		handler.Service = contractRunService{detailErr: errors.New("读取失败")}
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/runs/run-1", nil))
-		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "读取失败") {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") || strings.Contains(response.Body.String(), "读取失败") {
+			t.Fatalf("详情读取错误必须 500 且不透出原文（R7-A I-H1）: %d %s", response.Code, response.Body.String())
 		}
 	})
 	t.Run("list read error", func(t *testing.T) {
@@ -547,8 +547,8 @@ func TestWBHTTPServeDetailAndRunErrorPaths(t *testing.T) {
 		handler.Service = errorListService{}
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/runs", nil))
-		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "列表失败") {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") || strings.Contains(response.Body.String(), "列表失败") {
+			t.Fatalf("列表读取错误必须 500 且不透出原文（R7-A I-H1）: %d %s", response.Code, response.Body.String())
 		}
 	})
 	t.Run("run detail scope drift returns 404", func(t *testing.T) {

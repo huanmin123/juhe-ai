@@ -301,6 +301,9 @@ CapabilityKey + requestId + attemptId + dispatchRevision + observedAt + sourceFe
 5. `upstream_not_complete` 将计数清零，回到 `OPEN` 并按固定退避延长 `retryAt`；这表示真实探测失败，不等同于排队超时。
 6. `unknown` 或取消不改变能力结论；仍持有有效 lease 的 owner 释放 lease 后按探测前稳定态返回：原计数为 0 时回到 `OPEN`，原计数大于 0 时回到 `RECOVERING`，两者均设置 `retryAt=now+10 秒` 且不增加 `backoffAttempt`、不修改成功计数或成功时间。失租和 CAS 冲突的 worker 没有写回权，只丢弃本地结果，由当前 owner 的权威 state 决定后续；配置变化的结果标记 `STALE`，旧 generation/revision 不得写回。
 7. 成功只清理同一个 Key-模型，不清理同账户其他 Key、其他模型或账户状态。
+8. `HALF_OPEN` 的探测租约到期（Redis lease 键随 45 秒 TTL 消失）后，该 state 重新进入 due 扫描：新 worker 的 acquire 允许在 `phase=HALF_OPEN` 且租约不存在时接管，生成新 lease 作为新 fence（generation/dispatchRevision 不变）；旧 owner 的 `Settle` 因 lease ID/过期被拒绝，`Commit` 因 lease 键不匹配返回 `stale`。租约仍有效时不得接管。该接管检查与 `SET NX PX` 在同一 Lua 内原子完成，不引入脚本外读-改-写窗口。
+9. 扫描必须逐项隔离坏 state：due 成员对应的 state 缺失、JSON 解析失败或 capabilityHash 不匹配时，对该成员 `ZREM` 并记录仅含 capabilityHash 前缀的告警后继续处理其余项；只有 Redis 基础设施错误（连接、GET/ZREM 失败等）才让整轮扫描返回错误。
+10. 恢复/显式账户装载构建 Key 池时必须排除 `account_api_key_runtime_states.status='disabled'` 的指纹；该账户可用 Key 为空时返回可识别的「无可用 Key（全部 disabled）」错误，不向上游发送任何请求。
 
 `recoveryContinuationGlobalReserve=8` 和 `recoveryContinuationSourceReserve=1` 是从全局 32、来源 2 中划出的可借用保留槽。没有到期 continuation 时，普通 `OPEN` probe 可以借用；一旦 continuation 到期，新的普通 probe 不得再占用该槽，已运行的普通 probe 不强杀，空闲后优先服务最老的 continuation。`recoveryContinuationStartSLO=45 秒` 是到期后的启动目标，不是把排队视为失败的计时器；若到期 continuation 因容量持续超过该目标，只产生 `recovery_continuation_slo_breach` 告警并按最老项优先，不能清零成功计数。该保留吞吐不能覆盖无限恢复积压，生产启用前必须用实际探测耗时验证来源级和全局级队列不会持续超标。
 
@@ -531,7 +534,7 @@ Node 失败意图固定字段为 `intentId`、`requestId`、`attemptId`、`capab
 - 尚未发出上游请求就取消：`unknown`，不改 phase；
 - 已发出但未完整成功：`upstream_not_complete`，按恢复规则处理；
 - worker 失租、revision 变化或 CAS 冲突：旧结果 `stale`，不能覆盖新状态；
-- `disabled` Key 不得由恢复任务自动复活；
+- `disabled` Key 不得由恢复任务自动复活（不进入恢复/显式探针 Key 池，全部 disabled 时按无可用 Key 错误收口，不发上游请求）；
 - 回滚只关闭新 intent、过滤和 model-recovery owner，不改写 `accounts.status`，不与旧路径双写；
 - 新运行态等待 TTL 或 revision 自然失效；清理任务每 5 分钟运行一次，每轮最多清理 1,000 条 CLOSED 记录。
 

@@ -69,9 +69,17 @@ func TestDD6S1RetractOccupationCannotStarveDataConsumption(t *testing.T) {
 		t.Fatal("信封必须在途（撤回 settle 等待挂满的前置）")
 	}
 
-	// 两条撤回命令占满全部撤回 worker：retractOne 停在 DD-D1 settle 等待。
-	producer.Retract(envID)
-	producer.Retract(envID)
+	// 撤回命令数取 >= producerWorkers：修复前共享 worker 池形态下这些撤回会把
+	// 全部数据 worker 占满（DD8-RC1 要求的因果证伪力）；隔离后它们只占撤回面
+	// （2 个撤回 worker 执行 + 其余排队），数据面不受影响。仅派 2 条（=撤回 worker
+	// 数）时修复前仍剩 2 个数据 worker，断言无法证伪隔离契约。
+	retractCommandCount := producerWorkers
+	if retractCommandCount < 2 {
+		retractCommandCount = 2
+	}
+	for index := 0; index < retractCommandCount; index++ {
+		producer.Retract(envID)
+	}
 	time.Sleep(100 * time.Millisecond) // 留出撤回 worker 进入 settle 等待的窗口
 	if got := store.retractions(); len(got) != 0 {
 		t.Fatalf("信封 settle 前撤回不得执行删除（DD-D1）: %v", got)
@@ -104,15 +112,16 @@ func TestDD6S1RetractOccupationCannotStarveDataConsumption(t *testing.T) {
 		t.Fatalf("字节预算残留 = %d, want 信封条目自身 %d（撤回不得占预算、数据条目必须即时释放）", got, wantResidual)
 	}
 
-	// 撤回最终仍送达：信封 settle 后两条撤回命令依次执行（lifecycle 守卫使
-	// 重复撤回无害；此处以两条命令都落账钉住撤回面不因隔离而丢命令）。
+	// 撤回最终仍送达：信封 settle 后全部撤回命令依次执行（lifecycle 守卫使
+	// 重复撤回无害；此处以命令全数落账钉住撤回面不因隔离而丢命令）。
 	releaseGate.Do(func() { close(store.release) })
 	deadline = time.Now().Add(5 * time.Second)
 	for {
 		got := store.retractions()
 		if count := dd6CountRetractions(got, envID); count >= 1 {
-			if count != 2 {
-				t.Fatalf("两条撤回命令都必须最终送达，实际 envID 撤回次数=%d: %v", count, got)
+			if count != retractCommandCount {
+				t.Fatalf("全部 %d 条撤回命令都必须最终送达，实际 envID 撤回次数=%d: %v",
+					retractCommandCount, count, got)
 			}
 			return
 		}

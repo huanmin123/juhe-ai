@@ -5,6 +5,7 @@ package statreads
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 )
@@ -175,30 +176,32 @@ func TestW11GAiPerformanceArms(t *testing.T) {
 
 func TestW11GUsageRecordDateRangeArms(t *testing.T) {
 	fixture := newFixture(t)
-	// 非法日期：保留原值存在但解析为空 → 返回空窗口（触发未过滤 400 或空集）。
+	// 非法日期：显式参数错误（handler 回 400），不再静默丢弃时间过滤或回填对边。
 	request := func(target string) *http.Request {
 		req, _ := http.NewRequest(http.MethodGet, target, nil)
 		return req
 	}
 	values := request("/usage-records?startDate=bad&endDate=bad").URL.Query()
-	start, end, err := fixture.deps.usageRecordDateRange(request("/x").Context(), values)
-	if err != nil || start != "" || end != "" {
-		t.Fatalf("invalid dates = %s/%s err=%v", start, end, err)
+	_, _, err := fixture.deps.usageRecordDateRange(request("/x").Context(), values)
+	if err == nil {
+		t.Fatalf("invalid dates must be a bad request, got no error")
 	}
-	// 单边非法：回填对边。
+	var badRequest *statReadsBadRequest
+	if !errors.As(err, &badRequest) || badRequest.message != "开始日期格式应为 YYYY-MM-DD" {
+		t.Fatalf("invalid dates bad request mismatch: %v", err)
+	}
+	// 单边非法：也不再回填对边。
 	values = request("/usage-records?startDate=bad&endDate=2026-09-02").URL.Query()
-	start, end, err = fixture.deps.usageRecordDateRange(request("/x").Context(), values)
-	if err != nil || start == "" || end == "" {
-		t.Fatalf("one-sided invalid = %s/%s err=%v", start, end, err)
+	if _, _, err = fixture.deps.usageRecordDateRange(request("/x").Context(), values); err == nil {
+		t.Fatalf("one-sided invalid start must be a bad request")
 	}
 	values = request("/usage-records?startDate=2026-09-01&endDate=bad").URL.Query()
-	start, end, err = fixture.deps.usageRecordDateRange(request("/x").Context(), values)
-	if err != nil || start == "" || end == "" {
-		t.Fatalf("one-sided invalid end = %s/%s err=%v", start, end, err)
+	if _, _, err = fixture.deps.usageRecordDateRange(request("/x").Context(), values); !errors.As(err, &badRequest) || badRequest.message != "结束日期格式应为 YYYY-MM-DD" {
+		t.Fatalf("one-sided invalid end mismatch: %v", err)
 	}
 	// 起止交换。
 	values = request("/usage-records?startDate=2026-09-04&endDate=2026-09-01").URL.Query()
-	start, end, err = fixture.deps.usageRecordDateRange(request("/x").Context(), values)
+	start, end, err := fixture.deps.usageRecordDateRange(request("/x").Context(), values)
 	if err != nil || start > end {
 		t.Fatalf("swapped = %s/%s err=%v", start, end, err)
 	}

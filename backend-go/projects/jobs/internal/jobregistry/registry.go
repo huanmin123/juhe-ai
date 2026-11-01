@@ -182,9 +182,9 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "api-key-availability-schedule-status-sync", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"business:api_keys"},
+			Writes:   []string{"business:api_keys", "business:request_quota_hourly_window_scope_bindings", "stats:usage_quota_hourly_window_dirty_scopes"},
 			GoStatus: GoWired, GoPackage: "oauthrefresh",
-			GoBinding: "Store.SyncApiKeyScheduleStatuses",
+			GoBinding: "Store.SyncApiKeyScheduleStatuses（激活 hook 经 internal/quotahourly 在同一事务重建 api_key 小时额度窗口绑定，提交后给 statsagg 打脏，B3-H11）",
 		},
 		{
 			JobName: "account-availability-schedule-status-sync", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",

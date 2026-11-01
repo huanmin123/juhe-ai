@@ -2,12 +2,15 @@ package usagewriter
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // PostgreSQL usage_records 按天分区确保链，对照
@@ -107,6 +110,12 @@ func postgresUsageRecordPartitionBounds(dateKey string) (startDate string, endDa
 // Node owns the Set module-wide; the Go writer owns exactly one
 // PostgresShardStore per process, so a store-scoped memo is the same
 // production behavior while staying testable in isolation.
+//
+// C2-H3：Node 的 Set 永不失效，但 dataretention 的 DETACH/DROP 会删除过期
+// 分区——备忘命中的日期键可能已经不存在。因此备忘必须可校验/可失效：
+// ensure 前由分区存在性查询复核，INSERT 撞 no-partition 时按日期键 forget
+// 后重建（见 store.go）。备忘仅作为"已确认存在"的加速，不再是不可证伪的
+// 真相。
 type ensuredPartitionDateKeys struct {
 	mu   sync.Mutex
 	keys map[string]bool
@@ -132,6 +141,45 @@ func (e *ensuredPartitionDateKeys) ensure(dateKey string, create func() error) e
 	return nil
 }
 
+// forget 移除日期键的备忘（分区被清理/INSERT 撞 no partition 时调用），
+// 下一次 ensure 重新执行 DDL。
+func (e *ensuredPartitionDateKeys) forget(dateKey string) {
+	e.mu.Lock()
+	delete(e.keys, dateKey)
+	e.mu.Unlock()
+}
+
+// markEnsured 记录已确认存在的日期键（存在性查询命中且未备忘时使用），
+// 使后续批次的同键 DDL 继续走备忘加速。
+func (e *ensuredPartitionDateKeys) markEnsured(dateKey string) {
+	e.mu.Lock()
+	if e.keys == nil {
+		e.keys = map[string]bool{}
+	}
+	e.keys[dateKey] = true
+	e.mu.Unlock()
+}
+
+// usageRecordPartitionDateKeys 返回批内 distinct 有效日期键（首次出现序）。
+func usageRecordPartitionDateKeys(createdAts []string) []string {
+	seen := map[string]bool{}
+	var dateKeys []string
+	for _, createdAt := range createdAts {
+		dateKey, ok := usageRecordPartitionDateKeyFromIso(createdAt)
+		if !ok || seen[dateKey] {
+			continue
+		}
+		seen[dateKey] = true
+		dateKeys = append(dateKeys, dateKey)
+	}
+	return dateKeys
+}
+
+// partitionExistenceQuery 查询每日分区是否仍存在（relispartition 校验它是
+// 父表的真实分区，而不是同名普通表）。nil 表示跳过存在性复核（纯 DDL 单测
+// 与旧调用面）。
+type partitionExistenceQuery func(ctx Ctx, partitionName string) (bool, error)
+
 // ensurePostgresUsageRecordPartitions mirrors ensurePostgresUsageRecordPartitions:
 // for each distinct valid createdAt date key (first-appearance order, like
 // the Node Set spread), create the daily partition unless memoized. Invalid
@@ -144,17 +192,20 @@ func ensurePostgresUsageRecordPartitions(
 	ensured *ensuredPartitionDateKeys,
 	createdAts []string,
 ) error {
-	seen := map[string]bool{}
-	var dateKeys []string
-	for _, createdAt := range createdAts {
-		dateKey, ok := usageRecordPartitionDateKeyFromIso(createdAt)
-		if !ok || seen[dateKey] {
-			continue
-		}
-		seen[dateKey] = true
-		dateKeys = append(dateKeys, dateKey)
-	}
-	for _, dateKey := range dateKeys {
+	return ensurePostgresUsageRecordPartitionsChecked(ctx, db, ensured, createdAts, nil)
+}
+
+// ensurePostgresUsageRecordPartitionsChecked 是带存在性复核的 ensure：
+// exists 非 nil 时每个日期键先查分区是否仍存在（清理 job 会 DETACH/DROP
+// 过期分区），缺失则使备忘失效并重新 CREATE；命中则标记备忘加速。
+func ensurePostgresUsageRecordPartitionsChecked(
+	ctx Ctx,
+	db PartitionDDLExecutor,
+	ensured *ensuredPartitionDateKeys,
+	createdAts []string,
+	exists partitionExistenceQuery,
+) error {
+	for _, dateKey := range usageRecordPartitionDateKeys(createdAts) {
 		partitionName, err := postgresUsageRecordPartitionName(dateKey)
 		if err != nil {
 			return err
@@ -168,14 +219,61 @@ func ensurePostgresUsageRecordPartitions(
       PARTITION OF juhe_usage.usage_records
       FOR VALUES FROM ('%s') TO ('%s')
     `, quotePgIdentifier(partitionName), startDate, endDate)
+		if exists != nil {
+			present, queryErr := exists(ctx, partitionName)
+			if queryErr != nil {
+				return queryErr
+			}
+			if present {
+				ensured.markEnsured(dateKey)
+				continue
+			}
+			// 备忘可能仍记着已被 DROP 的分区：清除后强制重建。
+			ensured.forget(dateKey)
+		}
 		if err := ensured.ensure(dateKey, func() error {
 			_, execErr := db.ExecContext(ctx, statement)
+			if execErr != nil && isBenignPartitionDDLConflict(execErr) {
+				// 并发/跨进程同时创建同一分区：IF NOT EXISTS 之外的唯一
+				// 索引竞争（pg_type/pg_class）按"目标已达成"处理。
+				return nil
+			}
 			return execErr
 		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// isBenignPartitionDDLConflict 判定并发建分区时"目标已由其他进程达成"的
+// PostgreSQL 错误：IF NOT EXISTS 覆盖表本身，但 pg_type / pg_class 唯一
+// 索引竞争仍可能以 duplicate_table(42P07)、duplicate_object(42710) 或
+// unique_violation(23505) 形式出现。这些错误不代表本次写入失败。
+func isBenignPartitionDDLConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code {
+	case "42P07", "42710", "23505":
+		return true
+	default:
+		return false
+	}
+}
+
+// isMissingUsageRecordPartition 判定 INSERT 撞上的"no partition of
+// relation ... found for row"（23514 check_violation）：分区在 ensure 之后
+// 被保留策略 DROP，或备忘命中了已被清理的分区。调用方应 forget 相应日期
+// 键后交由上游重试重建，而不是把整批正常记录拖成死信。
+func isMissingUsageRecordPartition(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		return false
+	}
+	return strings.Contains(pgErr.Message, "no partition of relation") &&
+		strings.Contains(pgErr.Message, "found for row")
 }
 
 // quotePgIdentifier mirrors quoteIdentifier: double quotes with doubling.

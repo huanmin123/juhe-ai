@@ -41,6 +41,16 @@ type DrainStatus struct {
 	// SnapshotUsageRecordQueueFlushFailureCount mirrors
 	// status.snapshot.usageRecordQueue.flushFailureCount（缺失按 0）。
 	SnapshotUsageRecordQueueFlushFailureCount int
+	// SnapshotUsageRecordQueueDeadLetterCount 是 Go writer 的死信终态计数
+	// （C2-H2）：重试耗尽的批次已从队列移除、记录不再出现在任何水位里，
+	// 游标若继续推进会永久越过这些丢失记录。>0 时 Check 失败本轮（可观测
+	// 的降级），而不是静默推进统计游标；writer 恢复/重启后计数归零即解除。
+	SnapshotUsageRecordQueueDeadLetterCount int
+	// SnapshotUsageRecordQueueDroppedCount 是 writer 运行态的累计丢弃计数
+	// （溢出落盘失败 / oversize / 死信合计，C2-H2 观测面）。只进载荷与日志，
+	// 不参与 Check 的硬门控：oversize 等终态丢弃不可恢复，按累计值硬阻断
+	// 会让统计聚合永久停摆；死信由 DeadLetterCount 单独阻断。
+	SnapshotUsageRecordQueueDroppedCount int
 	// PendingUsageRecordsOldestCreatedAt mirrors
 	// status.pendingQueues.usageRecords.oldestCreatedAt。Go 单进程承载为
 	// spool 文件段：宿主注入 drain（gateway 交接表 / writer 溢出 spool）仍
@@ -84,6 +94,13 @@ func Check(ctx context.Context, probe Probe, now time.Time) (Safety, error) {
 	}
 	if flushFailureCount > 0 && oldestPendingCreatedAt != "" {
 		return Safety{}, fmt.Errorf("使用记录 ingest 队列已有 %d 次写入失败且仍有待处理记录，本轮跳过统计聚合，等待写入队列恢复", flushFailureCount)
+	}
+	// C2-H2：死信批已从 writer 队列移除，记录不会再出现在任何积压水位中；
+	// 若继续按 safeCreatedBefore 推进游标，这些记录即使日后补写也永久不会
+	// 被聚合。死信 >0 时失败本轮（可观测降级），writer 恢复后计数归零即
+	// 自动解除。
+	if deadLetterCount := status.SnapshotUsageRecordQueueDeadLetterCount; deadLetterCount > 0 {
+		return Safety{}, fmt.Errorf("使用记录 ingest 队列已有 %d 条死信记录（重试耗尽仍未落库），本轮跳过统计聚合，避免统计游标越过丢失记录", deadLetterCount)
 	}
 	safeCreatedBefore, err := safeCreatedBeforeForPendingBacklog(defaultSafeCreatedBefore, oldestPendingCreatedAt)
 	if err != nil {

@@ -706,6 +706,98 @@ func TestW1EEffectsBindingWrites(t *testing.T) {
 // RecordKeyScopedQuotaFailure 守卫与模式映射
 // ---------------------------------------------------------------------------
 
+// TestW1EEffectsDisableHardUnavailableGuard 钉住 B1-3：error_disabled 自动
+// 禁用写面对硬不可用状态（error / pending_test / quality_isolated）短路，
+// 绑定臂与非绑定臂同口径；error→error 保留首次 last_error_message，正常
+// active 账户仍写 error。
+func TestW1EEffectsDisableHardUnavailableGuard(t *testing.T) {
+	fixture := newErrorPolicyEffectsFixture(t)
+	ctx := context.Background()
+	disable := accountErrorPolicyDecision{Action: decisionActionDisable, RuleName: "崩溃禁用", RuleSource: "account"}
+	failure := chainErrorPolicyFailureInput{HasStatusCode: true, StatusCode: 500}
+	const firstReason = "首次失败原因"
+
+	bindRow := func(t *testing.T, id string, status string) {
+		t.Helper()
+		if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET system_account_id = 'sys-bind',
+			authorization_instance_authorization_id = 'authz-bind' WHERE id = ?`), id); err != nil {
+			t.Fatalf("绑定行更新: %v", err)
+		}
+		if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, account_authorization_id)
+			VALUES ('grp-bind', 'sys-bind', ?, 1, 'authz-bind')`), id); err != nil {
+			t.Fatalf("种子 group_accounts: %v", err)
+		}
+	}
+	seedFirstReason := func(t *testing.T, id string) {
+		t.Helper()
+		if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET status = 'error',
+			last_error_code = 'upstream_failure', last_error_message = ? WHERE id = ?`), firstReason, id); err != nil {
+			t.Fatalf("种子首次原因: %v", err)
+		}
+	}
+
+	for _, status := range []string{"pending_test", "quality_isolated", "error"} {
+		plainID := "acc_w1e_hu_plain_" + status
+		fixture.seedAccount(t, plainID, status, 1)
+		if status == "error" {
+			seedFirstReason(t, plainID)
+		}
+		plain := errorPolicyAccount(nil)
+		plain.ID = plainID
+		changed, _, err := fixture.bridge.ApplyAccountErrorPolicyDecision(ctx, plain, disable, failure)
+		if err != nil || changed {
+			t.Fatalf("非绑定 %s 禁用 = %v/%v, want false", status, changed, err)
+		}
+		row := fixture.accountRow(t, plainID)
+		if row["status"] != status || row["config_revision"] != int64(1) {
+			t.Fatalf("非绑定 %s 行被改写：%+v", status, row)
+		}
+		if status == "error" && row["last_error_message"] != firstReason {
+			t.Fatalf("error→error 不得重写 last_error_message：%+v", row)
+		}
+
+		bindID := "acc_w1e_hu_bind_" + status
+		fixture.seedAccount(t, bindID, status, 1)
+		if status == "error" {
+			seedFirstReason(t, bindID)
+		}
+		bindRow(t, bindID, status)
+		changed, _, err = fixture.bridge.ApplyAccountErrorPolicyDecision(ctx, w1eBindingAccount(bindID), disable, failure)
+		if err != nil || changed {
+			t.Fatalf("绑定 %s 禁用 = %v/%v, want false", status, changed, err)
+		}
+		row = fixture.accountRow(t, bindID)
+		if row["status"] != status || row["config_revision"] != int64(1) {
+			t.Fatalf("绑定 %s 行被改写：%+v", status, row)
+		}
+		if status == "error" && row["last_error_message"] != firstReason {
+			t.Fatalf("绑定 error→error 不得重写 last_error_message：%+v", row)
+		}
+	}
+
+	// active：两臂都仍写 error + upstream_failure。
+	fixture.seedAccount(t, "acc_w1e_hu_plain_active", "active", 1)
+	plain := errorPolicyAccount(nil)
+	plain.ID = "acc_w1e_hu_plain_active"
+	changed, status, err := fixture.bridge.ApplyAccountErrorPolicyDecision(ctx, plain, disable, failure)
+	if err != nil || !changed || status != "error" {
+		t.Fatalf("active 非绑定禁用 = %v/%q/%v, want true/error", changed, status, err)
+	}
+	if row := fixture.accountRow(t, "acc_w1e_hu_plain_active"); row["status"] != "error" || row["last_error_code"] != "upstream_failure" {
+		t.Fatalf("active 非绑定行 = %+v", row)
+	}
+
+	fixture.seedAccount(t, "acc_w1e_hu_bind_active", "active", 1)
+	bindRow(t, "acc_w1e_hu_bind_active", "active")
+	changed, status, err = fixture.bridge.ApplyAccountErrorPolicyDecision(ctx, w1eBindingAccount("acc_w1e_hu_bind_active"), disable, failure)
+	if err != nil || !changed || status != "error" {
+		t.Fatalf("active 绑定禁用 = %v/%q/%v, want true/error", changed, status, err)
+	}
+	if row := fixture.accountRow(t, "acc_w1e_hu_bind_active"); row["status"] != "error" || row["last_error_code"] != "upstream_failure" {
+		t.Fatalf("active 绑定行 = %+v", row)
+	}
+}
+
 func TestW1EEffectsKeyScopedArms(t *testing.T) {
 	fixture := newErrorPolicyEffectsFixture(t)
 	ctx := context.Background()

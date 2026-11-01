@@ -850,6 +850,16 @@ func TransformGeminiSseBufferToDownstreamSse(body []byte, protocol GeminiNativeD
 // 逐事件增量变体：按事件边界增量消费 src，渲染事件立即写入 dst，EOF 后补
 // RenderSseDone；事件处理与收尾语义与 buffer 版本逐行一致。
 func PumpGeminiSseToDownstreamSse(src io.Reader, dst io.Writer, protocol GeminiNativeDownstreamProtocol, model string) error {
+	return PumpGeminiSseToDownstreamSseObservingUsage(src, dst, protocol, model, nil)
+}
+
+// PumpGeminiSseToDownstreamSseObservingUsage 是 PumpGeminiSseToDownstreamSse
+// 的 usage 观测变体（T86 桥接 usage 快照供给）：事件处理与收尾语义与原泵逐行
+// 一致；每个携带 usageMetadata 的事件在渲染前回调 onGeminiUsage（值为该事件
+// 的原始 usageMetadata 对象，多事件时最后一个携带者生效）。本方向桥不向下游
+// 渲染 usage（renderResponsesSummary / renderAnthropicSummary 均无 usage 面），
+// 回调是桥内唯一 usage 观测出口；onGeminiUsage 为 nil 时行为与原泵完全一致。
+func PumpGeminiSseToDownstreamSseObservingUsage(src io.Reader, dst io.Writer, protocol GeminiNativeDownstreamProtocol, model string, onGeminiUsage func(usage map[string]any)) error {
 	state := NewGeminiNativeSseRenderState(protocol, model)
 	return PumpBridgeSseTransform(src, dst, func(eventText string) []string {
 		event := ParseBridgeSseEvent(eventText)
@@ -859,7 +869,11 @@ func PumpGeminiSseToDownstreamSse(src io.Reader, dst io.Writer, protocol GeminiN
 		if event.Data == nil {
 			return nil
 		}
-		return state.RenderSseSummary(SummarizeGeminiResponse(event.Data))
+		summary := SummarizeGeminiResponse(event.Data)
+		if onGeminiUsage != nil && summary.Usage != nil {
+			onGeminiUsage(summary.Usage)
+		}
+		return state.RenderSseSummary(summary)
 	}, func() []string {
 		return []string{state.RenderSseDone()}
 	})

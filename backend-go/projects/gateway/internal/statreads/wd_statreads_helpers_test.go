@@ -961,6 +961,20 @@ func TestWdParseUsageOverviewQuery(t *testing.T) {
 	if bad != "开始日期格式应为 YYYY-MM-DD" {
 		t.Fatalf("非法开始日期应报格式错误: %q", bad)
 	}
+	// C1-C5：正则通过但日历非法（含非补零月份/紧凑格式）同样 400，不得回落 today。
+	for _, value := range []string{"2026-2-3", "20260901", "2026-02-31", "2026-13-01"} {
+		if _, _, bad = parseUsageOverviewQuery(url.Values{"startDate": {value}}); bad != "开始日期格式应为 YYYY-MM-DD" {
+			t.Fatalf("非法日历开始日期 %q 应报格式错误: %q", value, bad)
+		}
+		if _, _, bad = parseUsageOverviewQuery(url.Values{"endDate": {value}}); bad != "结束日期格式应为 YYYY-MM-DD" {
+			t.Fatalf("非法日历结束日期 %q 应报格式错误: %q", value, bad)
+		}
+	}
+	// 合法边界（闰年 2 月 29 日、年末）保持通过。
+	start, end, bad = parseUsageOverviewQuery(url.Values{"startDate": {"2024-02-29"}, "endDate": {"2026-12-31"}})
+	if bad != "" || start != "2024-02-29" || end != "2026-12-31" {
+		t.Fatalf("合法边界日期解析错误: %q %q %q", start, end, bad)
+	}
 }
 
 func TestWdRangeWindowKeyAndStatsScope(t *testing.T) {

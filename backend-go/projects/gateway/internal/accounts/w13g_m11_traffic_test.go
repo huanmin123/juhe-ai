@@ -19,6 +19,7 @@ package accounts
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -333,6 +334,98 @@ type w13gFailingMigrator struct{}
 
 func (w13gFailingMigrator) MigrateOpenAIAccountTrafficRuntime(context.Context, TrafficRuntimeMigrationInput) (int, error) {
 	return 0, &trafficMigrationFailure{message: "w13g 运行时端口不可用"}
+}
+
+// TestW13gTrafficMigrationRevisionInvalidationAndCAS 钉住 B1-1a：源状态写
+// （owner 的 disabled/temporary_unavailable 两分支与授权实例分支）递增
+// config_revision、提交后经 CacheInvalidator 失效网关运行时，失效失败不回滚
+// 已提交迁移；迁移后的并发 PATCH 因 revision CAS 冲突被拒。
+func TestW13gTrafficMigrationRevisionInvalidationAndCAS(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	env.seedAccount(t, "acc-b11a-s", adminID, "b11a-s", "active")
+	env.seedAccount(t, "acc-b11a-t", adminID, "b11a-t", "active")
+	now := "2026-01-01T00:00:00Z"
+	for _, id := range []string{"acc-b11a-s", "acc-b11a-t"} {
+		env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?)`, adminID, "grp-default-"+adminID, id, now, now)
+	}
+	invalidator := &fakeBatchInvalidator{}
+	env.store.SetCacheInvalidator(invalidator)
+	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
+
+	// disabled 分支：revision 1 → 2，提交后一条 runtime 失效。
+	result, err := env.store.MigrateTraffic(context.Background(), "acc-b11a-s",
+		TrafficMigrationInput{TargetAccountID: "acc-b11a-t", SourceStatus: trafficSourceDisabled}, scope)
+	if err != nil || result == nil {
+		t.Fatalf("disabled 迁移：%v %v", result, err)
+	}
+	if got := env.queryCell(t, `SELECT config_revision FROM accounts WHERE id = 'acc-b11a-s'`); got != "2" {
+		t.Fatalf("disabled 迁移后 config_revision = %s, want 2", got)
+	}
+	_, reasons := invalidator.snapshot()
+	if len(reasons) != 1 || reasons[0] != accountTrafficMigrationRuntimeInvalidationReason {
+		t.Fatalf("runtime 失效原因 = %v, want [%s]", reasons, accountTrafficMigrationRuntimeInvalidationReason)
+	}
+
+	// 并发 PATCH 的 CAS：持迁移前 revision 提交 → 冲突，且不落名称写。
+	_, err = env.store.Patch(context.Background(), "acc-b11a-s", PatchInput{
+		ExpectedConfigRevision: 1,
+		Name:                   stringPtr("b11a-s-renamed"),
+	}, scope)
+	var conflict *RevisionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("迁移后陈旧 revision PATCH 应冲突：%v", err)
+	}
+	if got := env.queryCell(t, `SELECT name FROM accounts WHERE id = 'acc-b11a-s'`); got == "b11a-s-renamed" {
+		t.Fatal("冲突的 PATCH 不得写入名称")
+	}
+
+	// temporary_unavailable 分支同样递增 revision。
+	env.exec(t, `UPDATE accounts SET status = 'active', cooldown_until = NULL WHERE id = 'acc-b11a-s'`)
+	if _, err := env.store.MigrateTraffic(context.Background(), "acc-b11a-s",
+		TrafficMigrationInput{TargetAccountID: "acc-b11a-t"}, scope); err != nil {
+		t.Fatalf("临时不可用迁移：%v", err)
+	}
+	if got := env.queryCell(t, `SELECT config_revision FROM accounts WHERE id = 'acc-b11a-s'`); got != "3" {
+		t.Fatalf("临时不可用迁移后 config_revision = %s, want 3", got)
+	}
+
+	// 失效失败不回滚：迁移仍成功、revision 仍递增，错误只走 Warn。
+	invalidator.runtimeErr = errors.New("bus down")
+	env.exec(t, `UPDATE accounts SET status = 'active', cooldown_until = NULL WHERE id = 'acc-b11a-s'`)
+	if _, err := env.store.MigrateTraffic(context.Background(), "acc-b11a-s",
+		TrafficMigrationInput{TargetAccountID: "acc-b11a-t", SourceStatus: trafficSourceDisabled}, scope); err != nil {
+		t.Fatalf("失效通道故障不得回滚迁移：%v", err)
+	}
+	if got := env.queryCell(t, `SELECT config_revision FROM accounts WHERE id = 'acc-b11a-s'`); got != "4" {
+		t.Fatalf("失效故障后的迁移 revision = %s, want 4", got)
+	}
+
+	// 授权实例分支：实例行 revision 递增，且同样触发 runtime 失效。
+	authorizedEnv, authzStore, authorizedStore := w13gTrafficAuthorizedEnv(t)
+	ownerID := authorizedEnv.login(t, "tm-b11a-owner", "owner-pass", "user")
+	memberID := authorizedEnv.login(t, "tm-b11a-member", "member-pass", "user")
+	authorizedEnv.seedProviderAndDefaultGroup(t, ownerID)
+	authorizedEnv.seedProviderAndDefaultGroup(t, memberID)
+	authorizedEnv.seedTeamMember(t, "team-w13g-tm", ownerID, memberID)
+	instA := w13gSeedTrafficInstance(t, authorizedEnv, authzStore, ownerID, memberID, "acc-b11a-tmsrc-a", "b11a-a")
+	instB := w13gSeedTrafficInstance(t, authorizedEnv, authzStore, ownerID, memberID, "acc-b11a-tmsrc-b", "b11a-b")
+	authorizedInvalidator := &fakeBatchInvalidator{}
+	authorizedStore.SetCacheInvalidator(authorizedInvalidator)
+	if _, err := authorizedStore.MigrateTraffic(context.Background(), instA,
+		TrafficMigrationInput{TargetAccountID: instB, SourceStatus: trafficSourceDisabled},
+		AccessScope{ViewerID: memberID}); err != nil {
+		t.Fatalf("实例迁移：%v", err)
+	}
+	if got := authorizedEnv.queryCell(t, `SELECT config_revision FROM accounts WHERE id = ?`, instA); got != "2" {
+		t.Fatalf("实例迁移后 config_revision = %s, want 2", got)
+	}
+	_, authorizedReasons := authorizedInvalidator.snapshot()
+	if len(authorizedReasons) != 1 || authorizedReasons[0] != accountTrafficMigrationRuntimeInvalidationReason {
+		t.Fatalf("实例迁移 runtime 失效原因 = %v", authorizedReasons)
+	}
 }
 
 type w13gCountingMigrator struct{ count int }

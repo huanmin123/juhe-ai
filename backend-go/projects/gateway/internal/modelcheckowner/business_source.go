@@ -551,7 +551,25 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 		command.TargetType = "account"
 	}
 	if command.TargetType != "account" || strings.TrimSpace(command.TargetID) == "" || strings.TrimSpace(command.Model) == "" {
-		return RunRequest{}, errors.New("J3b Business request target is incomplete")
+		return RunRequest{}, &RequestError{StatusCode: http.StatusBadRequest, Message: "J3b Business request target is incomplete"}
+	}
+	// 以下两项是纯调用方输入校验（profile 取值、可信对比必须独立账户），
+	// 在任何 DB 读取之前判定：它们属于用户输入问题，必须经 RequestError
+	// 以 400 透出，而不是在 Resolve/策略读取之后才暴露或落入统一 500。
+	// RequestError 同时满足 error，非 HTTP 调用方语义不变（Error() 即文案）。
+	selectedProfile := strings.TrimSpace(command.Profile)
+	if selectedProfile == "" {
+		// Node's manual model-check route defaults to quick independently of a
+		// saved quality-policy profile. The policy remains frozen below for
+		// enforcement metadata, but it must not reject an explicit quick/full
+		// diagnostic request.
+		selectedProfile = "quick"
+	}
+	if selectedProfile != "quick" && selectedProfile != "full" {
+		return RunRequest{}, &RequestError{StatusCode: http.StatusBadRequest, Message: "J3b Business policy profile is invalid"}
+	}
+	if command.TrustedComparison && (strings.TrimSpace(command.TrustedComparisonID) == "" || command.TrustedComparisonID == command.TargetID) {
+		return RunRequest{}, &RequestError{StatusCode: http.StatusBadRequest, Message: "J3b trusted comparison requires a distinct account"}
 	}
 	target, err := s.Resolve(ctx, RunRequest{SystemAccountID: targetSystemAccountID, TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model})
 	if err != nil {
@@ -590,23 +608,9 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 	if currentPolicyProfile != policyProfile || currentRevision != revision || currentManualEnforcementEnabled != manualEnforcementEnabled || currentTimeoutPenaltyEnabled != timeoutPenaltyEnabled || currentThreshold != threshold || currentAction != action || currentRecoveryInterval != recoveryInterval || !sameQualityQuestionIds(currentCustomQuestionIds, policyCustomQuestionIds) {
 		return RunRequest{}, errors.New("J3b Business policy changed while freezing request")
 	}
-	selectedProfile := strings.TrimSpace(command.Profile)
-	if selectedProfile == "" {
-		// Node's manual model-check route defaults to quick independently of a
-		// saved quality-policy profile. The policy remains frozen below for
-		// enforcement metadata, but it must not reject an explicit quick/full
-		// diagnostic request.
-		selectedProfile = "quick"
-	}
-	if selectedProfile != "quick" && selectedProfile != "full" {
-		return RunRequest{}, errors.New("J3b Business policy profile is invalid")
-	}
 	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: targetSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ManualEnforcementEnabled: manualEnforcementEnabled, TimeoutPenaltyEnabled: timeoutPenaltyEnabled, OwnPhysicalAccount: target.OwnPhysicalAccount, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, PolicyRevision: revision, ProbeSetVersion: probeSetForProfile(selectedProfile), IdentityKey: targetSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile + ":actor:" + actorSystemAccountID, SourceEndpointFamily: string(target.SourceEndpointFamily), UpstreamEndpointFamily: string(target.UpstreamEndpointFamily), UpstreamProtocol: string(target.UpstreamProtocol), UpstreamEndpointMode: target.UpstreamEndpointMode, CustomQuestionIds: policyCustomQuestionIds}
 	if !command.TrustedComparison {
 		return request, nil
-	}
-	if strings.TrimSpace(command.TrustedComparisonID) == "" || command.TrustedComparisonID == command.TargetID {
-		return RunRequest{}, errors.New("J3b trusted comparison requires a distinct account")
 	}
 	comparisonSystemAccountID := targetSystemAccountID
 	if allSystemAccounts {

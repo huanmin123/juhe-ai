@@ -111,7 +111,7 @@ func TestWBHTTPDeleteQualityScheduleRouteMapsErrorSemantics(t *testing.T) {
 		{name: "success", path: "/quality-schedules/sch-1", stub: wbQualityStub{deleted: true}, status: http.StatusOK, need: `"deleted":true`},
 		{name: "empty id", path: "/quality-schedules/", status: http.StatusNotFound},
 		{name: "not deleted", path: "/quality-schedules/sch-1", stub: wbQualityStub{deleted: false}, status: http.StatusNotFound},
-		{name: "storage error", path: "/quality-schedules/sch-1", stub: wbQualityStub{deleteErr: errors.New("存储不可用")}, status: http.StatusInternalServerError, need: "存储不可用"},
+		{name: "storage error", path: "/quality-schedules/sch-1", stub: wbQualityStub{deleteErr: errors.New("存储不可用")}, status: http.StatusInternalServerError, need: "服务器内部错误"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

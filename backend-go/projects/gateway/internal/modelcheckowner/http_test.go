@@ -531,6 +531,64 @@ func TestHTTPHandlerBuildPreservesRequestErrorStatusAndEnvelope(t *testing.T) {
 	}
 }
 
+// TestBusinessSourceInputValidationReturnsRequestError 锁定纯输入校验的
+// 错误分类（R7-A 复核缺陷 1）：target incomplete / 非法 profile / 可信对比
+// 自比或缺失账户必须在任何 DB 读取之前返回 *RequestError 400，文案逐字
+// 保持；RequestError 同时满足 error，非 HTTP 调用方语义不变。
+func TestBusinessSourceInputValidationReturnsRequestError(t *testing.T) {
+	source := &BusinessTargetSource{}
+	cases := []struct {
+		name    string
+		command RunCommand
+		want    string
+	}{
+		{"target incomplete", RunCommand{TargetType: "group", TargetID: "acct-1", Model: "gpt-5.6"}, "J3b Business request target is incomplete"},
+		{"profile invalid", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6", Profile: "bogus"}, "J3b Business policy profile is invalid"},
+		{"comparison self", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6", TrustedComparison: true, TrustedComparisonID: "acct-1"}, "J3b trusted comparison requires a distinct account"},
+		{"comparison missing", RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6", TrustedComparison: true}, "J3b trusted comparison requires a distinct account"},
+	}
+	for _, tc := range cases {
+		_, err := source.BuildRequest(context.Background(), "sys-1", tc.command)
+		var requestError *RequestError
+		if !errors.As(err, &requestError) || requestError.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s 必须返回 400 RequestError: %v", tc.name, err)
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s 文案必须保持 %q: %v", tc.name, tc.want, err)
+		}
+	}
+}
+
+// TestHTTPHandlerRunInputValidationIsBadRequest 锁定 serveRun/serveStream
+// 对上述输入错误的状态码：构建阶段失败返回普通 JSON 400 且文案不变，
+// SSE 端点此时尚未写出事件流。
+func TestHTTPHandlerRunInputValidationIsBadRequest(t *testing.T) {
+	source := &BusinessTargetSource{}
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"targetType group", `{"targetType":"group","targetId":"acct-1","model":"gpt-5.6"}`, "J3b Business request target is incomplete"},
+		{"profile bogus", `{"targetType":"account","targetId":"acct-1","model":"gpt-5.6","profile":"bogus"}`, "profile 必须为 quick 或 full"},
+		{"trusted comparison self", `{"targetType":"account","targetId":"acct-1","model":"gpt-5.6","trustedComparison":true,"trustedComparisonAccountId":"acct-1"}`, "J3b trusted comparison requires a distinct account"},
+	}
+	for _, route := range []string{"/run", "/run/stream"} {
+		for _, tc := range cases {
+			handler := newTestHTTPHandler()
+			handler.Build = source.BuildRequest
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(tc.body)))
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), tc.want) {
+				t.Fatalf("%s %s: status=%d body=%s", route, tc.name, response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "event:") {
+				t.Fatalf("%s %s 构建阶段失败不应进入 SSE: %s", route, tc.name, response.Body.String())
+			}
+		}
+	}
+}
+
 func TestHTTPHandlerRejectsBuildScopeDrift(t *testing.T) {
 	handler := newTestHTTPHandler()
 	handler.Build = func(context.Context, string, RunCommand) (RunRequest, error) {

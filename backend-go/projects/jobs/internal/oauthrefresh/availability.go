@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/quotahourly"
 )
 
 // Availability schedule status sync ×2 mirrors
@@ -22,7 +24,10 @@ import (
 const DefaultScheduleSyncBatchLimit = 500
 
 // ScheduleStatusSyncResult mirrors ApiKeyScheduleStatusSyncResult /
-// AccountAvailabilityScheduleStatusSyncResult.
+// AccountAvailabilityScheduleStatusSyncResult. Invalid counts rows whose data
+// could not be applied this round: an unparseable schedule, and for api_keys
+// also a quota document whose hourly window cannot be determined (that row is
+// left at its current status instead of being activated without a binding).
 type ScheduleStatusSyncResult struct {
 	Scanned    int
 	Activated  int
@@ -54,6 +59,33 @@ func (f ActivationHookFunc) OnAccountActivated(ctx context.Context, tx *sql.Tx, 
 	return f(ctx, tx, accountID, nowIso)
 }
 
+// APIKeyActivationHook runs the activation side effects of an api_key schedule
+// sync. The schedule flip itself writes only api_keys.status, but an hourly
+// quota API Key additionally needs its request_quota_hourly_window_scope_bindings
+// row: the binding table is the only source statsagg uses to build
+// usage_quota_hourly_windows, so a key activated without it keeps an hourly
+// quota that silently reads zero cost (B3-H11). gateway internal/apikeys owns
+// the same write for manual create/edit; jobs wires the schedule-side rebuild
+// because it owns the flip transaction.
+//
+// The hook runs inside the sync transaction (same tx as the status flip), so a
+// hook error rolls the flip back instead of leaving an active key without its
+// binding. The returned afterCommit callback runs only after the transaction
+// commits (dirty-scope marking); its failures must be handled by the callback
+// and never fail the committed sync, mirroring gateway's after-commit dirty
+// mark.
+type APIKeyActivationHook interface {
+	OnAPIKeyActivated(ctx context.Context, tx *sql.Tx, apiKeyID string, nowIso string) (afterCommit func(), err error)
+}
+
+// APIKeyActivationHookFunc adapts a function to APIKeyActivationHook.
+type APIKeyActivationHookFunc func(ctx context.Context, tx *sql.Tx, apiKeyID string, nowIso string) (func(), error)
+
+// OnAPIKeyActivated implements APIKeyActivationHook.
+func (f APIKeyActivationHookFunc) OnAPIKeyActivated(ctx context.Context, tx *sql.Tx, apiKeyID, nowIso string) (func(), error) {
+	return f(ctx, tx, apiKeyID, nowIso)
+}
+
 // scheduleSyncUpdate carries one evaluated row (Node
 // ScheduledApiKeyStatusUpdate).
 type scheduleSyncUpdate struct {
@@ -63,8 +95,11 @@ type scheduleSyncUpdate struct {
 	nextCheckAt string
 }
 
-// SyncApiKeyScheduleStatuses mirrors the api_keys sync.
-func (s *Store) SyncApiKeyScheduleStatuses(ctx context.Context, now time.Time, batchLimit int) (ScheduleStatusSyncResult, error) {
+// SyncApiKeyScheduleStatuses mirrors the api_keys sync. hook is required for the
+// production path: every activation flip rebuilds the Key's hourly quota window
+// binding inside the flip transaction (B3-H11); nil keeps the status flip only
+// and is reserved for tests that assert the bare schedule semantics.
+func (s *Store) SyncApiKeyScheduleStatuses(ctx context.Context, now time.Time, batchLimit int, hook APIKeyActivationHook) (ScheduleStatusSyncResult, error) {
 	rows, err := s.listScheduleRows(ctx, s.table("api_keys"), false, batchLimit, isoMillis(now))
 	if err != nil {
 		return ScheduleStatusSyncResult{}, err
@@ -73,7 +108,13 @@ func (s *Store) SyncApiKeyScheduleStatuses(ctx context.Context, now time.Time, b
 	if err != nil {
 		return ScheduleStatusSyncResult{}, err
 	}
-	if err := s.applyScheduleUpdates(ctx, s.table("api_keys"), s.table("api_key_schedule_status_events"), "api_key_id", false, updates, isoMillis(now), &result, nil); err != nil {
+	activation := func(tx *sql.Tx, update scheduleSyncUpdate) (func(), error) {
+		if hook == nil || update.status != "active" {
+			return nil, nil
+		}
+		return hook.OnAPIKeyActivated(ctx, tx, update.id, isoMillis(now))
+	}
+	if err := s.applyScheduleUpdates(ctx, s.table("api_keys"), s.table("api_key_schedule_status_events"), "api_key_id", false, updates, isoMillis(now), &result, activation); err != nil {
 		return ScheduleStatusSyncResult{}, err
 	}
 	return result, nil
@@ -91,11 +132,11 @@ func (s *Store) SyncAccountScheduleStatuses(ctx context.Context, now time.Time, 
 	if err != nil {
 		return ScheduleStatusSyncResult{}, err
 	}
-	activation := func(tx *sql.Tx, update scheduleSyncUpdate) func() error {
+	activation := func(tx *sql.Tx, update scheduleSyncUpdate) (func(), error) {
 		if hook == nil || update.status != "active" {
-			return nil
+			return nil, nil
 		}
-		return func() error { return hook.OnAccountActivated(ctx, tx, update.id, isoMillis(now)) }
+		return nil, hook.OnAccountActivated(ctx, tx, update.id, isoMillis(now))
 	}
 	if err := s.applyScheduleUpdates(ctx, s.table("accounts"), s.table("account_schedule_status_events"), "account_id", true, updates, isoMillis(now), &result, activation); err != nil {
 		return ScheduleStatusSyncResult{}, err
@@ -144,6 +185,18 @@ func (s *Store) evaluateScheduleRows(rows []scheduleRow, now time.Time, accountM
 			result.Unchanged++
 			continue
 		}
+		if !accountMode && event.Status == "active" && row.status != "active" {
+			// B3-H11：非 active → active 的翻转必须能重建小时额度窗口绑定。额度
+			// 文档无法判定小时窗口时不得翻为 active（否则小时额度不可判定），按
+			// 「该行本轮无效」逐项隔离：只推进下次检查、保持当前状态，不影响同批
+			// 其它 Key 的转换。已是 active 的行不在此列（守卫本就拒绝重复翻转）。
+			if _, _, quotaErr := quotahourly.HourlyWindowHours(row.quotaLimitsJSON.String); quotaErr != nil {
+				result.Invalid++
+				result.InvalidIDs = append(result.InvalidIDs, row.id)
+				updates = append(updates, scheduleSyncUpdate{id: row.id, nextCheckAt: nextCheckAt})
+				continue
+			}
+		}
 		updates = append(updates, scheduleSyncUpdate{
 			id:          row.id,
 			eventKey:    row.id + ":" + event.EventKey,
@@ -159,6 +212,9 @@ type scheduleRow struct {
 	status       string
 	scheduleJSON string
 	nextCheckAt  sql.NullString
+	// quotaLimitsJSON 只在 api_keys 同步读取（激活时要重建小时额度窗口绑定，
+	// B3-H11）；accounts 同步留空。
+	quotaLimitsJSON sql.NullString
 }
 
 func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode bool, batchLimit int, dueAt string) ([]scheduleRow, error) {
@@ -166,6 +222,9 @@ func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode 
 		batchLimit = DefaultScheduleSyncBatchLimit
 	}
 	columns := "id, status, availability_schedule_json, availability_schedule_next_check_at"
+	if !accountMode {
+		columns += ", quota_limits_json"
+	}
 	query := `SELECT ` + columns + `
 		FROM ` + table + `
 		WHERE availability_schedule_json IS NOT NULL
@@ -185,7 +244,11 @@ func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode 
 	output := []scheduleRow{}
 	for rows.Next() {
 		var row scheduleRow
-		if err := rows.Scan(&row.id, &row.status, &row.scheduleJSON, &row.nextCheckAt); err != nil {
+		if accountMode {
+			if err := rows.Scan(&row.id, &row.status, &row.scheduleJSON, &row.nextCheckAt); err != nil {
+				return nil, err
+			}
+		} else if err := rows.Scan(&row.id, &row.status, &row.scheduleJSON, &row.nextCheckAt, &row.quotaLimitsJSON); err != nil {
 			return nil, err
 		}
 		output = append(output, row)
@@ -193,7 +256,11 @@ func (s *Store) listScheduleRows(ctx context.Context, table string, accountMode 
 	return output, rows.Err()
 }
 
-// applyScheduleUpdates mirrors the transaction half of both syncs.
+// applyScheduleUpdates mirrors the transaction half of both syncs. activation
+// runs inside the transaction for a successful activation flip and may return
+// an afterCommit callback; callbacks run only after Commit succeeds and are
+// responsible for their own failure handling (the committed sync must not be
+// failed by a tail effect).
 func (s *Store) applyScheduleUpdates(
 	ctx context.Context,
 	table string,
@@ -203,7 +270,7 @@ func (s *Store) applyScheduleUpdates(
 	updates []scheduleSyncUpdate,
 	updatedAt string,
 	result *ScheduleStatusSyncResult,
-	activation func(tx *sql.Tx, update scheduleSyncUpdate) func() error,
+	activation func(tx *sql.Tx, update scheduleSyncUpdate) (afterCommit func(), err error),
 ) error {
 	if len(updates) == 0 {
 		return nil
@@ -213,6 +280,7 @@ func (s *Store) applyScheduleUpdates(
 		return err
 	}
 	defer tx.Rollback()
+	afterCommit := []func(){}
 	for _, update := range updates {
 		if update.status != "" && update.eventKey != "" {
 			inserted, err := s.insertScheduleStatusEvent(ctx, tx, eventsTable, entityColumn, update, updatedAt)
@@ -247,10 +315,12 @@ func (s *Store) applyScheduleUpdates(
 		result.ChangedIDs = append(result.ChangedIDs, update.id)
 		if update.status == "active" {
 			if activation != nil {
-				if apply := activation(tx, update); apply != nil {
-					if err := apply(); err != nil {
-						return err
-					}
+				after, err := activation(tx, update)
+				if err != nil {
+					return err
+				}
+				if after != nil {
+					afterCommit = append(afterCommit, after)
 				}
 			}
 			result.Activated++
@@ -258,7 +328,13 @@ func (s *Store) applyScheduleUpdates(
 			result.Disabled++
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, callback := range afterCommit {
+		callback()
+	}
+	return nil
 }
 
 // insertScheduleStatusEvent mirrors INSERT OR IGNORE /

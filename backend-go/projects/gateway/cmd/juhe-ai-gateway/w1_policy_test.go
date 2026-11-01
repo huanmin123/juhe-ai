@@ -47,6 +47,45 @@ func TestW1SystemInsufficientQuotaRuleMatches(t *testing.T) {
 	}
 }
 
+// TestW1SystemInsufficientQuotaRuleMatches429：429 只认稳定额度错误码精确
+// 命中，普通频控（AccountRateLimitExceeded / rate_limit_exceeded /
+// too_many_requests / rate_limited）与裸 429、仅文本命中一律排除；
+// 402/403 维持既有语义并扩充高置信文案白名单。
+func TestW1SystemInsufficientQuotaRuleMatches429(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		errorCode  string
+		errorType  string
+		text       string
+		want       bool
+	}{
+		{"429 火山方舟稳定额度码", 429, "AccountQuotaExceeded", "", "You have exceeded the 5-hour usage quota. It will reset at 2026-11-01 19:13:27 +0800 CST.", true},
+		{"429 new-api 余额耗尽码", 429, "balance_exhausted", "", "密钥余额已用尽", true},
+		{"429 分组免费额度码", 429, "GROUP_FREEBALANCE_INSUFFICIENT", "", "你已到达该分组免费额度使用上限", true},
+		{"429 既有稳定码", 429, "insufficient_quota", "", "", true},
+		{"429 稳定码经 type 命中", 429, "", "quota_exceeded", "", true},
+		{"429 普通频控码排除", 429, "AccountRateLimitExceeded", "", "", false},
+		{"429 rate_limit_exceeded 排除", 429, "rate_limit_exceeded", "", "", false},
+		{"429 too_many_requests 排除", 429, "too_many_requests", "", "", false},
+		{"429 rate_limited 排除", 429, "rate_limited", "", "", false},
+		{"429 裸响应排除", 429, "", "", "", false},
+		{"429 只认码不认文案", 429, "", "", "You have exceeded the 5-hour usage quota", false},
+		{"429 频控码优先于额度文本", 429, "rate_limit_exceeded", "", "余额已用尽", false},
+		{"403 中转余额不足文案", 403, "billing_error", "", "Insufficient user balance. Please top up your user balance.", true},
+		{"403 billing_error 单独不命中", 403, "billing_error", "", "", false},
+		{"403 免费额度上限文案", 403, "", "", "你已到达该分组免费额度使用上限", true},
+		{"402 balance_exhausted 稳定码", 402, "balance_exhausted", "", "", true},
+		{"402 余额已用尽文案", 402, "", "", "余额已用尽", true},
+		{"500 稳定码也不命中", 500, "AccountQuotaExceeded", "", "", false},
+	}
+	for _, testCase := range cases {
+		if got := systemInsufficientQuotaRuleMatches(testCase.statusCode, testCase.errorCode, testCase.errorType, testCase.text); got != testCase.want {
+			t.Fatalf("%s: systemInsufficientQuotaRuleMatches(%d, %q, %q, %q) = %v, want %v", testCase.name, testCase.statusCode, testCase.errorCode, testCase.errorType, testCase.text, got, testCase.want)
+		}
+	}
+}
+
 func TestW1ParseAbsoluteRecoveryTime(t *testing.T) {
 	// 秒级时间戳（<1e10）。
 	if got := parseAbsoluteRecoveryTime(float64(1_800_000_000)); got == nil || got.Unix() != 1_800_000_000 {

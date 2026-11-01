@@ -869,9 +869,10 @@ func TestW1ErrorPolicyOverridesAndMatches(t *testing.T) {
 	if !accountErrorRuleMatches(accountErrorHandlingRule{}, 200, "x", "y", "z") {
 		t.Fatal("空条件列表必须恒匹配")
 	}
-	// 系统配额规则：quota 关键词 / 402 无码 / 非配额标识排除。
-	if systemInsufficientQuotaRuleMatches(429, "insufficient_quota", "quota_error", "") {
-		t.Fatal("非 402/403 必须直接不匹配")
+	// 系统配额规则：quota 关键词 / 402 无码 / 非配额标识排除；
+	// 429 普通频控码不是余额不足，必须排除。
+	if systemInsufficientQuotaRuleMatches(429, "rate_limit_exceeded", "", "") {
+		t.Fatal("429 普通频控码必须不匹配")
 	}
 	if !systemInsufficientQuotaRuleMatches(402, "insufficient_quota", "", "") {
 		t.Fatal("402 stable code 必须匹配")

@@ -156,7 +156,7 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 			createdAts = append(createdAts, row.CreatedAt)
 		}
 	}
-	if err := ensurePostgresUsageRecordPartitions(ctx, s.config.DB, &s.ensured, createdAts); err != nil {
+	if err := ensurePostgresUsageRecordPartitionsChecked(ctx, s.config.DB, &s.ensured, createdAts, s.usageRecordPartitionExists); err != nil {
 		return 0, err
 	}
 
@@ -215,6 +215,14 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
     `, columnList, strings.Join(rowPlaceholders, ", "))
 		result, err := tx.ExecContext(ctx, insertSQL, args...)
 		if err != nil {
+			if isMissingUsageRecordPartition(err) {
+				// C2-H3：分区在 ensure 之后被保留策略 DROP。清掉批内日期键
+				// 备忘，让上游重试重建分区；否则备忘会一直短路、整批正常
+				// 记录在固定重试预算耗尽后一起进死信。
+				for _, dateKey := range usageRecordPartitionDateKeys(createdAts) {
+					s.ensured.forget(dateKey)
+				}
+			}
 			return 0, err
 		}
 		if affected, err := result.RowsAffected(); err == nil {
@@ -241,6 +249,27 @@ func (s *PostgresShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 	}
 	tx = nil
 	return inserted, nil
+}
+
+// usageRecordPartitionExists 复核日期分区是否仍是 usage_records 的真实分区：
+// dataretention 会 DETACH/DROP 过期分区，进程内备忘因此不能作为不可证伪的
+// 真相（C2-H3）。relispartition 同时排除同名普通表。
+func (s *PostgresShardStore) usageRecordPartitionExists(ctx Ctx, partitionName string) (bool, error) {
+	var exists bool
+	err := s.config.DB.QueryRowContext(ctx, `
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'juhe_usage'
+        AND c.relname = $1
+        AND c.relispartition
+    )
+  `, partitionName).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func sortedAccountIDList(ids map[string]bool) []string {

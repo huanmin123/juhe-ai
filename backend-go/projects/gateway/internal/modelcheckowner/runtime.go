@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -85,6 +86,10 @@ type Runtime struct {
 	// customQuestionIds 时，题库家族仍按 QuizRequested=true 执行并产出
 	// quiz_questions_unavailable 的 skipped 项（不进分母、不扣分）。
 	QuestionBank QuestionBankReader
+	// finalizeTimeout 仅在测试中缩短 finalize 预算；零值使用生产默认
+	// finalizeWriteTimeout。终态兜底写（MarkRunFailedTerminal/MarkHealthSync）
+	// 不使用该预算，见 recoveryWriteContext。
+	finalizeTimeout time.Duration
 }
 
 func (s *Runtime) Run(ctx context.Context, request RunRequest) (RunResult, error) {
@@ -285,6 +290,13 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	claim, err := s.Store.ClaimInput(ctx, input.InputID, newID("claim"), outcomeID, ownerOrDefault(s.OwnerID), lease, now)
 	if err != nil {
+		// S-H1：run 行已落库且停留 running。认领失败后本进程不持有租约，
+		// finishFailure 依赖有效 claim 无法使用——按 running CAS 就地补终态；
+		// 否则唯一收口是周期 sweep，期间该 run 以僵尸 running 形态存活。
+		markErr := s.Store.markRunFailedTerminalRecovery(runID, "model_check_claim_failed", err.Error(), now)
+		if markErr != nil {
+			err = fmt.Errorf("%w; mark J3b run failed: %v", err, markErr)
+		}
 		return RunResult{}, err
 	}
 	// Full probes can outlive the default one-minute claim. Keep the lease
@@ -317,6 +329,13 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 					heartbeatCancel()
 					return
 				}
+				// RenewClaim only advances the claim row. The stale-run sweep
+				// thresholds on model_check_runs.updated_at, so a live long run
+				// must also touch its run row or the sweep would reap it while the
+				// probe is still executing (manual SSE runs have no wall-clock
+				// budget). Best-effort: a transient touch failure is logged and the
+				// sweep threshold keeps headroom for a missed tick.
+				s.touchRunHeartbeat(runID)
 			}
 		}
 	}()
@@ -536,7 +555,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if err := ctx.Err(); err != nil {
 		return s.finishFailure(ctx, runID, input, claim, now, err)
 	}
-	finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), s.finalizeWriteBudget())
 	defer finalizeCancel()
 	finishedAt := time.Now().UTC()
 	if s.Now != nil {
@@ -564,13 +583,24 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	qualityDecision, _ := json.Marshal(qualityDecisionPayload)
 	if err := s.Store.CommitOutcome(finalizeCtx, Outcome{OutcomeID: outcomeID, InputID: input.InputID, InputDigest: input.InputDigest, Payload: resultPayload}, claim, finishedAt); err != nil {
-		return RunResult{}, err
+		// S-H1：outcome 提交失败时 run 仍停留 running。租约仍有效时
+		// finishFailure 以失败 payload 就地重试收口（同 outcomeID 幂等）；
+		// ErrStaleFence 由 finishFailure 记录后原样返回，不强写终态。
+		return s.finishFailure(ctx, runID, input, claim, now, fmt.Errorf("commit J3b outcome: %w", err))
 	}
 	durationMS := finishedAt.Sub(now).Milliseconds()
 	if durationMS < 0 {
 		durationMS = 0
 	}
 	if err := s.Store.ProjectOutcome(finalizeCtx, OutcomeProjection{RunID: runID, Status: status, Level: level, Score: score, MaxScore: 100, Message: message, FinishedAt: finishedAt, DurationMS: &durationMS, Items: itemRecords, ResultSummary: resultPayload, QualityDecision: qualityDecision}); err != nil {
+		// S-H1：outcome 已提交、run 投影失败——finishFailure 的 CommitOutcome
+		// 会与已提交 outcome 冲突（同 outcomeID 不同 payload），按 running CAS
+		// 就地补终态，不让 run 停留 running 等待 sweep。兜底写不复用 finalizeCtx：
+		// ProjectOutcome 失败可能正是 finalize 预算耗尽所致，复用已过期上下文
+		// 会让兜底写必然失败。
+		if markErr := s.Store.markRunFailedTerminalRecovery(runID, "model_check_projection_failed", err.Error(), finishedAt); markErr != nil {
+			err = fmt.Errorf("%w; mark J3b run failed: %v", err, markErr)
+		}
 		return RunResult{}, err
 	}
 	// Quick checks are diagnostic-only. They retain their run-local report but
@@ -582,6 +612,13 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		// deliberately prevents any downstream effect; the durable terminal run
 		// remains available for an idempotent recovery projection.
 		if err := s.Store.ProjectTrust(finalizeCtx, TrustProjection{RunID: runID, SystemAccountID: request.SystemAccountID, AccountID: request.TargetID, RequestedModel: request.Model, Report: trustReport}); err != nil {
+			// S-H5：run 已终态而健康发布尚未开始。quality_health_sync_status
+			// 留空不在重试扫描口径内（只认 'failed'），必须先落入重试链再
+			// 返回，否则该健康样本被永久静默丢弃。兜底写使用新的后台超时
+			// 上下文：ProjectTrust 失败可能源于 finalize 预算耗尽。
+			if markErr := s.Store.markHealthSyncRecovery(runID, "failed"); markErr != nil {
+				err = fmt.Errorf("%w; mark J3b health sync failed: %v", err, markErr)
+			}
 			return RunResult{}, fmt.Errorf("project J3b trust: %w", err)
 		}
 	}
@@ -592,7 +629,8 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if status == RunCompleted && (qualityFailed || qualityUnavailable) && qualityHealthEligible && s.Projector != nil && request.Threshold > 0 && request.ProviderCode != "" {
 		statHour, err := s.Store.formatHealthStatHour(finishedAt)
 		if err != nil {
-			if markErr := s.Store.MarkHealthSync(finalizeCtx, runID, "failed"); markErr != nil {
+			// 兜底写使用新的后台超时上下文，不复用可能已耗尽的 finalizeCtx。
+			if markErr := s.Store.markHealthSyncRecovery(runID, "failed"); markErr != nil {
 				err = fmt.Errorf("%w; mark J3b health sync failed: %v", err, markErr)
 			}
 			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
@@ -884,17 +922,99 @@ func (s *Runtime) finishFailure(ctx context.Context, runID string, input InputRe
 	}
 	payload, _ := json.Marshal(map[string]any{"success": false, "error": message})
 	item := ItemRecord{ID: runID + "-item-0001", RunID: runID, ItemKey: "target.execution", ItemType: "execution", Status: ItemFailed, Score: 0, MaxScore: 100, EvidenceSummary: fmt.Sprintf(`{"message":%q}`, message), ErrorMessage: message}
-	finalizeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	finalizeCtx, cancel := context.WithTimeout(context.Background(), s.finalizeWriteBudget())
 	defer cancel()
 	if err := s.Store.CommitOutcome(finalizeCtx, Outcome{OutcomeID: claim.OutcomeID, InputID: input.InputID, InputDigest: input.InputDigest, ObservedAt: finishNow, StoredAt: finishNow, Payload: payload}, claim, finishNow); err != nil {
-		return RunResult{}, err
+		if errors.Is(err, ErrStaleFence) {
+			// S-H1：租约已失效或被接管方重写——该 run 的终态归接管方负责，
+			// 本进程不强写（强写会与接管方的终态 CAS 竞争），记录后原样返回；
+			// 若无人接管，run 留待周期 sweep 回收。
+			slog.Warn("J3b run finish aborted: claim fence is stale, ownership moved on", "runId", runID, "err", err)
+			return RunResult{}, err
+		}
+		// 提交失败时 run 仍停留 running：按 running CAS 就地补终态；补写
+		// 失败保留原始提交错误（周期 sweep 兜底）。兜底写使用新的后台超时
+		// 上下文：CommitOutcome 失败可能正是 finalize 预算耗尽所致。
+		if markErr := s.Store.markRunFailedTerminalRecovery(runID, "model_check_execution_failed", message, finishNow); markErr != nil {
+			return RunResult{}, fmt.Errorf("%w; mark J3b run failed: %v", err, markErr)
+		}
+		// 终态已就地落库：错误同时保留根因与落盘错误，不丢任一侧诊断信息；
+		// RunResult 保持错误臂空值约定。根因只以文本拼入（不参与 error 链）：
+		// 若根因是 *RequestError，HTTP 层 errors.As 会把这里真实发生的存储
+		// 故障渲染成 4xx/503，掩盖 500。
+		return RunResult{}, terminalFailureError(cause, err)
 	}
 	zeroDuration := int64(0)
 	if err := s.Store.ProjectOutcome(finalizeCtx, OutcomeProjection{RunID: runID, Status: status, Level: "unavailable", Score: 0, MaxScore: 100, Message: message, FinishedAt: finishNow, DurationMS: &zeroDuration, ErrorCode: "model_check_execution_failed", ErrorMessage: message, Items: []ItemRecord{item}, ResultSummary: payload, QualityDecision: []byte(`{}`)}); err != nil {
-		return RunResult{}, err
+		// S-H1：失败 outcome 已提交、run 投影失败——按 running CAS 就地补
+		// 终态，避免 run 与已落库 outcome 状态分叉为永久僵尸；错误处理同上。
+		if markErr := s.Store.markRunFailedTerminalRecovery(runID, "model_check_execution_failed", message, finishNow); markErr != nil {
+			return RunResult{}, fmt.Errorf("%w; mark J3b run failed: %v", err, markErr)
+		}
+		return RunResult{}, terminalFailureError(cause, err)
 	}
 	_ = s.Store.ReleaseClaim(finalizeCtx, claim, finishNow)
 	return RunResult{RunID: runID, Status: string(status), Data: map[string]any{"message": message}}, cause
+}
+
+// finalizeWriteTimeout bounds the normal finalize writes (CommitOutcome,
+// ProjectOutcome, ProjectTrust, Project). A deadline here is expected to be
+// retried through the terminal fallbacks below rather than reported as a
+// persistent running run.
+const finalizeWriteTimeout = 10 * time.Second
+
+// recoveryWriteTimeout bounds terminal fallback writes. It is deliberately
+// independent from finalizeWriteTimeout: the fallback runs precisely when the
+// finalize budget may already be exhausted.
+const recoveryWriteTimeout = 10 * time.Second
+
+// heartbeatTouchTimeout bounds the run-row touch issued alongside a successful
+// lease renewal.
+const heartbeatTouchTimeout = 5 * time.Second
+
+// recoveryWriteContext returns a fresh background context for terminal
+// fallback writes (MarkRunFailedTerminal / MarkHealthSync). These writes must
+// never reuse the finalize context: ProjectOutcome/ProjectTrust may have
+// consumed its whole budget, and an expired context would make the fallback
+// fail and leave the run running until the periodic sweep.
+func recoveryWriteContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), recoveryWriteTimeout)
+}
+
+// finalizeWriteBudget returns the finalize-phase wall-clock budget. Production
+// always uses finalizeWriteTimeout; tests may shorten it through the private
+// finalizeTimeout field to make the exhausted-deadline arms deterministic.
+func (s *Runtime) finalizeWriteBudget() time.Duration {
+	if s != nil && s.finalizeTimeout > 0 {
+		return s.finalizeTimeout
+	}
+	return finalizeWriteTimeout
+}
+
+// touchRunHeartbeat advances the run row's updated_at after a successful lease
+// renewal. RenewClaim only moves model_check_execution_claims.updated_at while
+// the stale-run sweep thresholds on model_check_runs.updated_at; without this
+// write a legitimate long manual run (no wall-clock budget) would be reaped
+// even though its lease is alive. Failure is best-effort: the sweep threshold
+// keeps headroom for a missed tick and a lost claim still aborts the probe.
+func (s *Runtime) touchRunHeartbeat(runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTouchTimeout)
+	defer cancel()
+	if err := s.Store.TouchRun(ctx, runID, time.Now().UTC()); err != nil {
+		slog.Warn("J3b run heartbeat touch failed", "runId", runID, "err", err)
+	}
+}
+
+// terminalFailureError combines the original run cause with the durable
+// terminal-write failure without exposing the cause's typed identity. The
+// write that actually failed here is a storage failure and must reach the HTTP
+// layer as 500; wrapping the cause would let errors.As match its
+// *RequestError and render a 4xx/503 instead.
+func terminalFailureError(cause, failure error) error {
+	if cause == nil {
+		return failure
+	}
+	return fmt.Errorf("%v; %w", cause, failure)
 }
 
 func ownerOrDefault(owner string) string {

@@ -756,6 +756,19 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	} else if pipeResult.UsageTailText != "" {
 		usage = driver.ExtractUsageFromJSONTextFragment(pipeResult.UsageTailText, parsedJsonBody.Status == NonStreamJSONStatusInvalid)
 	}
+	// DD-C6（T86 非流式桥接臂）：跨协议桥接非流式响应的 usage 由桥转换面在缓冲
+	// 变换前从上游协议 JSON 提取并写入本次 attempt 槽（账户协议形态，经
+	// HandleUpstreamResponseInput.BridgeUsage 供给）；结算 driver 按账户协议解
+	// 析的是桥转换后的客户端协议字节，取不到 usage——桥内快照是本次 attempt 的
+	// 权威值，优先于 driver 抽取。ok=false（本次 attempt 非桥接 / 上游未发
+	// usage）时保持既有 driver 抽取与估算兜底路径。失败终态门（流式 DD2-B1/B2
+	// 的非流式对称位）：渲染后的 Responses 失败终态（responsesFailedTerminal）
+	// 不消费快照——失败终态记账不按半程 usage 口径，与流式 Completed 门同哲学。
+	if input.BridgeUsage != nil && !responsesFailedTerminal {
+		if snapshot, ok := input.BridgeUsage(); ok {
+			usage = usageWithObservedModel(snapshot, input.UpstreamResponse.UpstreamResponseModel)
+		}
+	}
 	// M1 同步音频计量注入（契约 §2.8 计量来源表，仅成功转发计量）：
 	//   - TTS speech：上游无 usage 回报，网关按请求 input 字符数自算；
 	//     token 口径模型（gpt-4o-mini-tts / gpt-4o-tts 系）无 token 事实时

@@ -1722,45 +1722,21 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	// 禁用臂连带清理（总开关设计 §4/§7，同事务）：锁死自动解除（generation+1
 	// 使在途锁租约失效）、质量隔离 enforcement 活动行清理（质量处罚语义由
-	// error 状态保留，恢复探针不再运行）、J1 pending outbox 与候选版本行删除
-	// （J1 直读候选 join 依赖版本行，删除即从候选集消失）。
+	// error 状态保留，恢复探针不再运行）。B1-2a：人工 status=disabled 臂与
+	// 后台探测关闭臂同口径执行这两项清理（禁用账户不得残留 ENGAGED 锁死或
+	// active 质量隔离，否则重新启用后被陈旧运行态挡住）；后台探测臂在此之上
+	// 还清 J1 pending outbox 与候选版本行并推进 dispatch fence。
+	manualDisableCleanup := nextStatus == "disabled"
+	if backgroundProbeDisabling || manualDisableCleanup {
+		cleanupNotes, err := s.releaseAccountLockAndQualityEnforcement(ctx, tx, row.id, nowISO)
+		if err != nil {
+			return nil, err
+		}
+		if backgroundProbeDisabling {
+			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes, cleanupNotes...)
+		}
+	}
 	if backgroundProbeDisabling {
-		lockRelease, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_lock_states")+` SET
-			enabled = 0,
-			lock_state = 'UNLOCKED',
-			incident_id = NULL,
-			incident_started_at = NULL,
-			deadline_at = NULL,
-			original_status = NULL,
-			provenance = NULL,
-			next_retry_at_ms = NULL,
-			lease_id = NULL,
-			lease_until_ms = NULL,
-			generation = generation + 1,
-			updated_at = ?
-			WHERE account_id = ? AND enabled = 1`), nowISO, row.id)
-		if err != nil {
-			return nil, err
-		}
-		if released, _ := lockRelease.RowsAffected(); released > 0 {
-			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes,
-				PatchChange{Field: "lockState", Before: "已锁死", After: "已自动解除"})
-		}
-		enforcementClear, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_quality_enforcements")+` SET
-			state = 'cleared',
-			recovery_due_at = NULL,
-			recovery_lease_owner = NULL,
-			recovery_lease_until = NULL,
-			cleared_at = ?,
-			updated_at = ?
-			WHERE account_id = ? AND state = 'active'`), nowISO, nowISO, row.id)
-		if err != nil {
-			return nil, err
-		}
-		if cleared, _ := enforcementClear.RowsAffected(); cleared > 0 {
-			backgroundProbeCleanupNotes = append(backgroundProbeCleanupNotes,
-				PatchChange{Field: "qualityEnforcement", Before: "active", After: "cleared"})
-		}
 		outboxDelete, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_health_jobs_input_outbox")+`
 			WHERE account_id = ? AND status = 'pending'`), row.id)
 		if err != nil {
@@ -1920,34 +1896,86 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Post-commit invalidation (T2 audit; Node
 	// account-management-patch.repository.ts:1877-1896): conditional lookup
 	// flush + gateway runtime invalidation, best-effort.
-	// 禁用臂运行态清理（总开关设计 §4，复审 M1）：latency 降级 / 探针派生
-	// Key 运行态池 / 网关运行时缓存投影在提交后经装配端口清理（circuit 运行
-	// 态由事务内 dispatch fence 事件经 jobs 控制面投影关闭）。端口缺席降级为
-	// 仅数据库侧清理；失败按 best-effort 留痕（禁用已提交，不回滚业务结果），
-	// 明细随 account_background_probe_disabled 审计事件落操作日志。
-	if backgroundProbeDisabling {
+	// 禁用臂运行态清理（总开关设计 §4，复审 M1；B1-2a 人工停用臂同口径）：
+	// latency 降级 / 探针派生 Key 运行态池 / 网关运行时缓存投影在提交后经装配
+	// 端口清理（circuit 运行态由事务内 dispatch fence 事件经 jobs 控制面投影
+	// 关闭）。端口缺席降级为仅数据库侧清理；失败按 best-effort 留痕（禁用已
+	// 提交，不回滚业务结果），明细随 account_background_probe_disabled 审计
+	// 事件落操作日志。
+	if backgroundProbeDisabling || manualDisableCleanup {
 		if cleanup := s.backgroundProbeRuntimeCleanup; cleanup != nil {
 			if _, err := cleanup.ClearDisabledBackgroundProbeRuntime(ctx, BackgroundProbeRuntimeCleanupInput{
 				AccountID:              result.ID,
 				SystemAccountID:        result.OwnerSystemAccountID,
 				ExpectedConfigRevision: result.ConfigRevision,
 			}); err != nil {
-				slog.Warn("后台自动探测已关闭，但网关运行态清理失败",
-					"event", "account_background_probe_disabled_runtime_cleanup_failed",
-					"accountId", result.ID, "error", err)
-				result.BackgroundProbeDetails = append(result.BackgroundProbeDetails,
-					PatchChange{Field: "runtimeCleanup", Before: "待清理", After: "清理失败（错误已留痕）"})
-			} else {
+				if backgroundProbeDisabling {
+					slog.Warn("后台自动探测已关闭，但网关运行态清理失败",
+						"event", "account_background_probe_disabled_runtime_cleanup_failed",
+						"accountId", result.ID, "error", err)
+					result.BackgroundProbeDetails = append(result.BackgroundProbeDetails,
+						PatchChange{Field: "runtimeCleanup", Before: "待清理", After: "清理失败（错误已留痕）"})
+				} else {
+					slog.Warn("账户已停用，但网关运行态清理失败",
+						"event", "account_disabled_runtime_cleanup_failed",
+						"accountId", result.ID, "error", err)
+				}
+			} else if backgroundProbeDisabling {
 				result.BackgroundProbeDetails = append(result.BackgroundProbeDetails,
 					PatchChange{Field: "runtimeCleanup", Before: "待清理", After: "已清理"})
 			}
-		} else {
+		} else if backgroundProbeDisabling {
 			result.BackgroundProbeDetails = append(result.BackgroundProbeDetails,
 				PatchChange{Field: "runtimeCleanup", Before: "待清理", After: "运行态清理端口未装配，仅完成数据库侧清理"})
 		}
 	}
 	s.finishPatchSideEffects(ctx, result)
 	return result, nil
+}
+
+// releaseAccountLockAndQualityEnforcement ends the account's lock state with an
+// explicit terminal write (enabled=0 / UNLOCKED and a generation advance so
+// in-flight leases stop matching) and clears the active quality-enforcement
+// row inside the caller's transaction. Shared by the background-probe disable
+// arm and the manual status=disabled arm (B1-2a) so both carry one SQL shape.
+// Returns the audit notes the background-probe disable event consumes.
+func (s *Store) releaseAccountLockAndQualityEnforcement(ctx context.Context, tx *sql.Tx, accountID, nowISO string) ([]PatchChange, error) {
+	notes := []PatchChange{}
+	lockRelease, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_lock_states")+` SET
+		enabled = 0,
+		lock_state = 'UNLOCKED',
+		incident_id = NULL,
+		incident_started_at = NULL,
+		deadline_at = NULL,
+		original_status = NULL,
+		provenance = NULL,
+		next_retry_at_ms = NULL,
+		lease_id = NULL,
+		lease_until_ms = NULL,
+		generation = generation + 1,
+		updated_at = ?
+		WHERE account_id = ? AND enabled = 1`), nowISO, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if released, _ := lockRelease.RowsAffected(); released > 0 {
+		notes = append(notes, PatchChange{Field: "lockState", Before: "已锁死", After: "已自动解除"})
+	}
+	enforcementClear, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_quality_enforcements")+` SET
+		state = 'cleared',
+		recovery_due_at = NULL,
+		recovery_lease_owner = NULL,
+		recovery_lease_until = NULL,
+		cleared_at = ?,
+		updated_at = ?
+		WHERE account_id = ? AND state = 'active'`), nowISO, nowISO, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if cleared, _ := enforcementClear.RowsAffected(); cleared > 0 {
+		notes = append(notes, PatchChange{Field: "qualityEnforcement", Before: "active", After: "cleared"})
+	}
+	return notes, nil
 }
 
 // propagateProbeSwitchToAuthorizationInstances mirrors the Node

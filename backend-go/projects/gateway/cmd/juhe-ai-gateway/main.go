@@ -239,6 +239,9 @@ func main() {
 	// /model-checks/ 与 /__aisys__/api/{,my-}model-checks/ 四族路由装到任意
 	// mux（3307 兼容别名与主端口根 mux 各装一份）；nil 表示 J3b owner 未装配。
 	var j3bManagementMount func(*http.ServeMux)
+	// R7-A I-H4：题库 handlers 声明提升到 J3b 块外，供 system API 组合根
+	// 就绪后两阶段注入审计 sink（SetAuditSink）；构造仍在 J3b 块内。
+	var questionBankAdmin, questionBankSelf *modelcheckquestionbank.HTTPHandlers
 	var retentionComponent supervisor.Component
 	var retentionEnabled bool
 	var retentionRunning atomic.Bool
@@ -396,10 +399,11 @@ func main() {
 		}
 		// 题库域装配（计划阶段 2/3）：业务库句柄与 BusinessQualityManager
 		// 同源（PostgreSQL 单形态）。store 同时充当质量配置
-		// 写入侧的 approved 存在性校验端口与运行时题目解析端口。审计 sink：
-		// F4 operation-log producer 在本块之后的 system API 装配段才存在，
-		// J3b 管理面（含既有 model-checks 端点）没有进程内审计 sink 可注入，
-		// 题库写操作审计按 handlers 的 nil-sink 契约降级为 no-op。
+		// 写入侧的 approved 存在性校验端口与运行时题目解析端口。审计 sink
+		// （R7-A I-H4）：F4 operation-log producer 在本块之后的 system API
+		// 装配段才存在，构造点只能传 nil；组合根就绪后经 SetAuditSink 两
+		// 阶段补注真实 sink（见下方 composeSystemAPI 成功后的注入点），写
+		// 操作审计自此恢复留痕，不再恒为 no-op。
 		questionBankStore, questionBankErr := modelcheckquestionbank.NewStore(businessConnection.DB)
 		if questionBankErr != nil {
 			fail(fmt.Errorf("create J3b Gateway question bank store: %w", questionBankErr))
@@ -411,8 +415,8 @@ func main() {
 		// 与检测探针链一致，套件侧由 suiteFor 携带 Capability 准入键，
 		// dispatcher 为 nil 时 probe 才回退直连。
 		questionTestRunner := modelcheckowner.NewQuestionTestRunner(businessSource.Resolver(), &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelGate, Circuit: probeCircuit}})
-		questionBankAdmin := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true, questionTestRunner)
-		questionBankSelf := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false, questionTestRunner)
+		questionBankAdmin = modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true, questionTestRunner)
+		questionBankSelf = modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false, questionTestRunner)
 		quality.SetQuestionBankVerifier(questionBankStore)
 		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, OwnerID: j3bConfig.InstanceID}
 		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {
@@ -540,8 +544,33 @@ func main() {
 		if !runtimeCfg.CaptchaDisabled {
 			captchaService = modelcheckauth.NewCaptchaService(time.Now)
 		}
+		// R7-A A-H1：J3b 登录守卫与主面共享 Redis 运行态驱动（复用 compose
+		// 的 RedisStateURL/RedisNamespace 配置——主面 authDeps 的
+		// NewRedisLoginGuard 同源同键）。此前 J3b 面惰性构造独立纯内存守卫：
+		// 重启清零、无 fail-closed 臂、反代后全员共享代理 IP 桶。注入后
+		// 失败计数/锁定预算与主面同库共享，Check/Failed 携带错误的
+		// fail-closed 语义随之生效（状态存储故障回 500 而非读作未锁定）。
+		j3bSharedLoginGuard, j3bSharedLoginGuardClose, j3bGuardErr := authsys.NewRedisLoginGuard(runtimeCfg.RedisStateURL, runtimeCfg.RedisNamespace, time.Now)
+		if j3bGuardErr != nil {
+			fail(fmt.Errorf("create J3b shared login guard: %w", j3bGuardErr))
+		}
+		defer j3bSharedLoginGuardClose()
+		// R7-A A-H1/A-H3/A-H8：J3b /auth/ 面单例构造——两次挂载（3307 兼容
+		// 别名与主端口根 mux）共享同一 handler 实例，即共享同一守卫实例与
+		// 预算、同一 cookie 属性与 clientIP 契约；此前闭包内两次构造会产生
+		// 两个独立内存守卫（双预算）。守卫/cookie/trustProxy 均与主面同源：
+		// SharedGuard 复用主面 Redis 运行态，CookieSecure 取 cfg.CookieSecure，
+		// TrustProxyCount 复用 trustProxyCount(cfg.TrustProxy) 转换。
+		j3bAuthHandler := &modelcheckauth.HTTPHandler{
+			Auth:                       authenticator,
+			Captcha:                    captchaService,
+			TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST")),
+			SharedGuard:                j3bSharedLoginGuard,
+			CookieSecure:               runtimeCfg.CookieSecure,
+			TrustProxyCount:            trustProxyCount(runtimeCfg.TrustProxy),
+		}
 		j3bManagementMount = func(mux *http.ServeMux) {
-			mux.Handle("/auth/", http.StripPrefix("/auth", &modelcheckauth.HTTPHandler{Auth: authenticator, Captcha: captchaService, TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))}))
+			mux.Handle("/auth/", http.StripPrefix("/auth", j3bAuthHandler))
 			if err := j3bHost.MountScoped(mux, "/__aisys__/api/model-checks/", adminAuthorize, true); err != nil {
 				fail(fmt.Errorf("mount J3b Gateway administrator routes: %w", err))
 			}
@@ -837,6 +866,18 @@ func main() {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}
 		defer composed.Shutdown()
+		// R7-A I-H4：题库写操作审计 sink 两阶段注入。handlers 在 J3b owner
+		// 块先于 F4 producer 构造（构造点 nil 降级 no-op），组合根就绪后把
+		// 进程内 producer sink 补注给管理面/自助面两实例；提交/更新/审核/
+		// 删除/测试写操作自此恢复操作日志留痕（3307 兼容别名与主端口根 mux
+		// 共享同一 handler 指针，注入对两次挂载同时生效）。
+		//
+		// 注入必然晚于 J3b 管理 listener 的 Serve（sink 依赖 composeSystemAPI），
+		// 因此启动窗口内到达的写操作会与 SetAuditSink 并发：handlers 内部用
+		// RWMutex 保护 sink 读写（数据竞态已消除），窗口内读到 nil 的写操作按
+		// 既有 no-op 契约不留审计——这是已知的启动期降级，不是数据竞争。
+		questionBankAdmin.SetAuditSink(composed.authDeps.Sink)
+		questionBankSelf.SetAuditSink(composed.authDeps.Sink)
 		// DD-G2：运行期失败出口（failRuntime）经 runtimeDrain 复用同一排空
 		// 链，并在排空后尽力释放 F4 operation lease（runtimeLeaseRelease，见
 		// 上方 F4 组合块）再 exit——错误路径不经过 main 的 defer 链，F3/F4

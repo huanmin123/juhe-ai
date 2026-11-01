@@ -722,7 +722,7 @@ func TestW9HSweepFinalizerErrorAborts(t *testing.T) {
 func TestW9HSyncApiKeyInvalidDisabledAdvancesOnly(t *testing.T) {
 	store, db, _ := newSweepStore(t)
 	seedApiKeyWithSchedule(t, db, "w9h-key-invalid-disabled", `{"enabled":true,"mode":"bogus"}`, "", "disabled")
-	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0)
+	result, err := store.SyncApiKeyScheduleStatuses(context.Background(), defaultNow(), 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -50,7 +50,7 @@ func TestRuntimeRunsCatalogExternalAccountSupportedModel(t *testing.T) {
 	newRuntime := func() *Runtime {
 		return &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(_ context.Context, request RunRequest) (Target, error) {
 			return Target{
-				Endpoint: server.URL, TargetName: "OpenAI Compatible", TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: "group-1",
+				Endpoint: server.URL + "/v1", TargetName: "OpenAI Compatible", TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: "group-1",
 				ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", CredentialType: "api_key",
 				Protocol: modelcheckprofile.ProtocolOpenAIChat, UpstreamProtocol: modelcheckprofile.ProtocolOpenAIChat,
 				EndpointMode: modelcheckprofile.EndpointModeChatJSON, UpstreamEndpointMode: modelcheckprofile.EndpointModeChatJSON,
@@ -302,7 +302,7 @@ func TestRuntimeFullProfileSkipsTokenIntegrityForCatalogExternalModel(t *testing
 	now := time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
 	runtime := &Runtime{Store: store, OwnerID: "gateway-1", Now: func() time.Time { return now }, Resolve: func(_ context.Context, request RunRequest) (Target, error) {
 		return Target{
-			Endpoint: server.URL, TargetName: "OpenAI Compatible", TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: "group-1",
+			Endpoint: server.URL + "/v1", TargetName: "OpenAI Compatible", TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: "group-1",
 			ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", CredentialType: "api_key",
 			Protocol: modelcheckprofile.ProtocolOpenAIResponses, UpstreamProtocol: modelcheckprofile.ProtocolOpenAIResponses,
 			EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, UpstreamEndpointMode: modelcheckprofile.EndpointModeResponsesJSON,

@@ -45,6 +45,15 @@ var insufficientQuotaTextMarkers = []string{
 	"subscription quota insufficient",
 	"credit balance too low",
 	"wallet balance exhausted",
+	// 生产漏配的四类「余额/额度/配额耗尽」高置信文案（402/403 白名单扩充）。
+	"余额已用尽",
+	"余额耗尽",
+	"额度已用尽",
+	"免费额度使用上限",
+	"insufficient user balance",
+	"top up your user balance",
+	"usage quota",
+	"more quota",
 }
 var nonQuota403ErrorIdentifiers = map[string]struct{}{
 	"content_policy_violation": {},
@@ -67,6 +76,12 @@ func init() {
 		"billing_hard_limit_reached",
 		"wallet_balance_exhausted",
 		"pre_consume_token_quota_failed",
+		// 生产漏配的三类稳定额度码（按 normalizeErrorIdentifier 归一后的形态书写）：
+		// 火山方舟 AccountQuotaExceeded / new-api 系 balance_exhausted /
+		// 分组免费额度 GROUP_FREEBALANCE_INSUFFICIENT。
+		"accountquotaexceeded",
+		"balance_exhausted",
+		"group_freebalance_insufficient",
 	} {
 		insufficientQuotaStableCodes[normalizeErrorIdentifier(code)] = struct{}{}
 	}
@@ -92,14 +107,24 @@ func normalizeErrorIdentifier(value string) string {
 }
 
 // SystemInsufficientQuotaRuleMatches 是 systemInsufficientQuotaRuleMatches 的
-// 逐分支移植（HTTP 402/403 的稳定 code / quota code / 文本标记匹配，以及
-// 非 quota 403 标识排除）。
+// 逐分支移植：402/403 维持既有语义（稳定 code / quota code / 文本标记匹配，
+// 以及非 quota 403 标识排除）；429 只认稳定额度错误码精确命中，与 gateway 侧
+// chain_error_policy.go 同一契约 —— 普通频控不是余额不足，不读文本白名单、
+// 不做 contains("quota")，统一按 rate_limited 由探针冷却复测恢复。
 func SystemInsufficientQuotaRuleMatches(statusCode int, errorCode, errorType, searchableText string) bool {
-	if statusCode != 402 && statusCode != 403 {
+	switch statusCode {
+	case 402, 403:
+		return systemQuotaClassicMatch(statusCode, normalizeErrorIdentifier(errorCode), normalizeErrorIdentifier(errorType), searchableText)
+	case 429:
+		return systemQuotaRateLimitedMatch(normalizeErrorIdentifier(errorCode), normalizeErrorIdentifier(errorType), searchableText)
+	default:
 		return false
 	}
-	code := normalizeErrorIdentifier(errorCode)
-	typ := normalizeErrorIdentifier(errorType)
+}
+
+// systemQuotaClassicMatch 承接 402/403 的既有匹配逻辑（稳定码 → contains
+// quota → 非额度标识排除 → 402 空码空类型 → 文本排除 → 白名单文案）。
+func systemQuotaClassicMatch(statusCode int, code, typ, searchableText string) bool {
 	if _, ok := insufficientQuotaStableCodes[code]; ok {
 		return true
 	}
@@ -130,6 +155,48 @@ func SystemInsufficientQuotaRuleMatches(statusCode int, errorCode, errorType, se
 		}
 	}
 	return false
+}
+
+// systemQuotaRateLimitedMatch 承接 429 的新匹配逻辑：429 只认稳定额度码，
+// 普通频控（AccountRateLimitExceeded / rate_limit_exceeded / too_many_requests /
+// rate_limited）不是余额不足 —— 裸 429、频控码、仅文本命中一律 false；
+// 不读文本白名单、不做 contains("quota") 泛匹配。
+func systemQuotaRateLimitedMatch(code, typ, searchableText string) bool {
+	if isRateLimitErrorIdentifier(code) || isRateLimitErrorIdentifier(typ) {
+		return false
+	}
+	if _, ok := insufficientQuotaStableCodes[code]; ok {
+		return true
+	}
+	if _, ok := insufficientQuotaStableCodes[typ]; ok {
+		return true
+	}
+	// 沿用 402/403 的非额度标识排除：命中这些标识（code/typ/文本）说明不是
+	// 额度问题，直接排除。
+	if _, ok := nonQuota403ErrorIdentifiers[code]; ok {
+		return false
+	}
+	if _, ok := nonQuota403ErrorIdentifiers[typ]; ok {
+		return false
+	}
+	text := strings.ToLower(searchableText)
+	for _, identifier := range nonQuota403ErrorIdentifiersRaw {
+		if strings.Contains(text, strings.ReplaceAll(identifier, "_", " ")) || strings.Contains(text, identifier) {
+			return false
+		}
+	}
+	return false
+}
+
+// isRateLimitErrorIdentifier 判断归一化后的错误标识是否为普通频控标识：
+// 压缩下划线后包含 ratelimit 或 toomanyrequests 即命中（用于 429 分支的
+// code/typ 排除）。
+func isRateLimitErrorIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	compact := strings.ReplaceAll(value, "_", "")
+	return strings.Contains(compact, "ratelimit") || strings.Contains(compact, "toomanyrequests")
 }
 
 var nonQuota403ErrorIdentifiersRaw = []string{

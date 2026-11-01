@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -44,6 +46,17 @@ type Aggregator struct {
 	// Now 注入当前时间（测试用）；nil 时取 time.Now。
 	Now                    func() time.Time
 	CacheReadCostEstimator CacheReadCostEstimator
+	// Logger 接收逐行隔离的单行 Warn（nil 时只累计跳过计数，不静默改变
+	// 聚合归属）。坏行只跳过该行、不进入任何统计桶，游标照常推进。
+	Logger *slog.Logger
+	// skippedRecordCount 是进程级累计跳过的坏记录数（逐行隔离的留痕，
+	// 经 SkippedRecordCount 暴露到运行状态；不做静默吞行）。
+	skippedRecordCount atomic.Int64
+}
+
+// SkippedRecordCount 返回进程级累计被逐行隔离跳过的使用记录数。
+func (a *Aggregator) SkippedRecordCount() int64 {
+	return a.skippedRecordCount.Load()
 }
 
 func (a *Aggregator) now() time.Time {
@@ -398,6 +411,14 @@ func (a *Aggregator) aggregateRows(ctx context.Context, tx *sql.Tx, records []Us
 
 	for _, record := range records {
 		row := record
+		// 逐行隔离（C2-M6）：账户质量统计要求的归属字段缺失属于单行坏
+		// 数据，不能作为整批错误抛出——否则本批事务回滚、游标不前进，
+		// 后续所有轮次永久卡在同一行。跳过前先判坏行，保证该行不进入任何
+		// 统计桶（不伪造归属），Warn + 计数留痕，游标照常推进。
+		if reason := usageStatsRowSkipReason(row); reason != "" {
+			a.skipUsageStatsRow(row, reason)
+			continue
+		}
 		if !ShouldAggregateUsageStatsRecord(row) {
 			continue
 		}
@@ -675,6 +696,53 @@ func shouldRecordPostgresAccountQualityStats(row UsageStatsRecordRow) bool {
 	}
 	return row.FailureAttribution != nil &&
 		(*row.FailureAttribution == "account_upstream" || *row.FailureAttribution == "account_dependency")
+}
+
+// usageStatsRowSkipReason 判定一行是否必须整体跳过（空串 = 不跳过）。
+// 判定条件与 postgresAccountQualityStatsSystemAccountID 的错误臂严格同源：
+// 只有会进入账户质量统计（shouldRecordPostgresAccountQualityStats 且
+// account/apiKey 齐备）却缺少 account_access_type / 账户归属字段的行才整体
+// 跳过；其余行保持既有 ShouldAggregateUsageStatsRecord 过滤语义。跳过行不
+// 进入任何统计桶，不做默认归属推断。
+func usageStatsRowSkipReason(row UsageStatsRecordRow) string {
+	if !shouldRecordPostgresAccountQualityStats(row) {
+		return ""
+	}
+	if row.AccountID == nil || *row.AccountID == "" || row.APIKeyID == nil || *row.APIKeyID == "" {
+		return ""
+	}
+	if row.AccountAccessType == nil || *row.AccountAccessType == "" {
+		return "缺少账户访问类型字段 account_access_type"
+	}
+	if *row.AccountAccessType != "account_authorized" &&
+		(row.AccountOwnerSystemAccountID == nil || *row.AccountOwnerSystemAccountID == "") {
+		return "缺少账户归属字段 account_owner_system_account_id"
+	}
+	return ""
+}
+
+// skipUsageStatsRow 记录单行隔离：累计计数 + 结构化 Warn（record id 与
+// scope 标识，不含请求/响应内容）。
+func (a *Aggregator) skipUsageStatsRow(row UsageStatsRecordRow, reason string) {
+	a.skippedRecordCount.Add(1)
+	if a.Logger == nil {
+		return
+	}
+	accountID := ""
+	if row.AccountID != nil {
+		accountID = *row.AccountID
+	}
+	apiKeyID := ""
+	if row.APIKeyID != nil {
+		apiKeyID = *row.APIKeyID
+	}
+	a.Logger.Warn("使用记录缺少账户归属统计字段，已跳过该行统计聚合",
+		"event", "usage_stats_record_skipped",
+		"recordId", row.ID,
+		"systemAccountId", row.SystemAccountID,
+		"accountId", accountID,
+		"apiKeyId", apiKeyID,
+		"reason", reason)
 }
 
 func postgresAccountQualityStatsSystemAccountID(row UsageStatsRecordRow) (string, error) {

@@ -886,6 +886,78 @@ func TestHandlersOptionsEndpoint(t *testing.T) {
 	}
 }
 
+// TestSetAuditSinkRecordsWriteOperations 锁定 R7-A I-H4 两阶段注入契约：
+// 生产装配中 handlers 先以 nil sink 构造（F4 producer 尚未就绪），组合根
+// 经 SetAuditSink 补注后写操作审计恢复留痕——注入前不落审计也不 panic
+// （nil 分支保留），注入后 entry 的 module/action/actor/mode 与挂载面一致。
+func TestSetAuditSinkRecordsWriteOperations(t *testing.T) {
+	h := NewHTTPHandlers(nil, nil, nil, true, nil)
+	if h.auditSink() != nil {
+		t.Fatal("两阶段构造起点必须无 sink")
+	}
+	auth := &authsys.AuthContext{SystemAccountID: "sys-admin", Username: "admin", DisplayName: "管理员", Role: "super_admin"}
+	request := httptest.NewRequest(http.MethodPost, "http://svc/model-checks/question-bank", nil)
+	// 注入前：写操作审计静默降级为 no-op（既有可选契约）。
+	h.recordAudit(auth, request, "create", "model_check_question_bank.create", "q-0", "t", "s", nil)
+	sink := &fakeAuditSink{}
+	h.SetAuditSink(sink)
+	h.recordAudit(auth, request, "create", "model_check_question_bank.create", "q-1", "题目", "提交检测题目：题目",
+		[]authsys.OperationLogChange{{Field: "title", Label: "标题", After: "题目"}})
+	entries := sink.recorded()
+	if len(entries) != 1 {
+		t.Fatalf("注入后写操作必须产生审计记录: %d", len(entries))
+	}
+	entry := entries[0]
+	if entry.Module != "model_check_question_bank" || entry.Action != "create" || entry.ActorSystemAccountID != "sys-admin" || entry.Mode != "admin" || entry.ResourceID != "q-1" {
+		t.Fatalf("审计条目=%+v", entry)
+	}
+	// 自助面实例注入后 mode=self（两实例各自注入、互不串扰）。
+	self := NewHTTPHandlers(nil, nil, nil, false, nil)
+	self.SetAuditSink(sink)
+	self.recordAudit(auth, request, "test", "model_check_question_bank.test", "t-1", "", "s", nil)
+	entries = sink.recorded()
+	if len(entries) != 2 || entries[1].Mode != "self" || entries[1].Action != "test" {
+		t.Fatalf("自助面审计条目=%+v", entries)
+	}
+}
+
+// TestSetAuditSinkConcurrentWithWriteOperations 锁定审计 sink 注入竞态修复：
+// J3b 管理 listener 先于 SetAuditSink Serve，写操作与注入天然并发。该用例在
+// go test -race 下不得报告数据竞争；窗口内写操作按既有 nil 契约降级为 no-op，
+// 注入完成后写操作必须继续留痕。
+func TestSetAuditSinkConcurrentWithWriteOperations(t *testing.T) {
+	h := NewHTTPHandlers(nil, nil, nil, true, nil)
+	auth := &authsys.AuthContext{SystemAccountID: "sys-admin", Username: "admin", DisplayName: "管理员", Role: "super_admin"}
+	request := httptest.NewRequest(http.MethodPost, "http://svc/model-checks/question-bank", nil)
+	var writers sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					h.recordAudit(auth, request, "create", "model_check_question_bank.create", "q", "t", "s", nil)
+				}
+			}
+		}()
+	}
+	sink := &fakeAuditSink{}
+	for i := 0; i < 200; i++ {
+		h.SetAuditSink(sink)
+	}
+	close(stop)
+	writers.Wait()
+	h.recordAudit(auth, request, "create", "model_check_question_bank.create", "q-final", "t", "s", nil)
+	entries := sink.recorded()
+	if len(entries) == 0 || entries[len(entries)-1].ResourceID != "q-final" {
+		t.Fatalf("并发注入后写操作必须留痕: %d", len(entries))
+	}
+}
+
 func TestHandlersInternalErrorsRender500(t *testing.T) {
 	h := newHandlerHarness(t)
 	h.db.Close()

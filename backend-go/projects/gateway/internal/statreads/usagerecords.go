@@ -2,6 +2,7 @@ package statreads
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -48,6 +49,11 @@ func (d *Deps) usageRecordsListHandler(selfOnly bool) http.HandlerFunc {
 		}
 		options, err := d.parseUsageRecordListOptions(r)
 		if err != nil {
+			var badRequest *statReadsBadRequest
+			if errors.As(err, &badRequest) {
+				kernel.WriteBadRequest(w, badRequest.message)
+				return
+			}
 			d.writeReadError(w, err)
 			return
 		}
@@ -126,19 +132,34 @@ func (d *Deps) parseUsageRecordListOptions(r *http.Request) (usageRecordListOpti
 	return options, nil
 }
 
+// statReadsBadRequest 标记查询参数校验失败：handler 必须回 400，而不是把
+// 参数错误当成存储读失败回 500。
+type statReadsBadRequest struct {
+	message string
+}
+
+func (e *statReadsBadRequest) Error() string { return e.message }
+
+func newStatReadsBadRequest(message string) error { return &statReadsBadRequest{message: message} }
+
 // usageRecordDateRange mirrors dateRangeQueryValue: same-day defaults, swapped
 // bounds, [start-of-day, start-of-next-day) instants in the usage timezone.
+// 格式或日历非法的日期不再静默丢弃时间过滤（那会退化成全历史扫描）：直接
+// 返回参数错误，由 handler 回 400。
 func (d *Deps) usageRecordDateRange(ctx context.Context, values url.Values) (string, string, error) {
 	location, err := d.timezoneLocation(ctx)
 	if err != nil {
 		return "", "", err
 	}
-	startDate := dateQueryValue(values.Get("startDate"))
-	endDate := dateQueryValue(values.Get("endDate"))
+	startDate, err := strictDateQueryValue(values.Get("startDate"), "开始日期")
+	if err != nil {
+		return "", "", err
+	}
+	endDate, err := strictDateQueryValue(values.Get("endDate"), "结束日期")
+	if err != nil {
+		return "", "", err
+	}
 	if startDate == "" && endDate == "" {
-		if optionalQueryText(values, "startDate") != "" || optionalQueryText(values, "endDate") != "" {
-			return "", "", nil
-		}
 		todayKey := dateKeyIn(d.Now(), location)
 		startAt := startOfZonedDateKeyIso(todayKey, location)
 		endAt := startOfZonedDateKeyIso(nextCalendarDateKey(todayKey), location)
@@ -150,14 +171,24 @@ func (d *Deps) usageRecordDateRange(ctx context.Context, values url.Values) (str
 	if endDate == "" {
 		endDate = startDate
 	}
-	if startDate == "" || endDate == "" {
-		return "", "", nil
-	}
 	rangeStart, rangeEnd := startDate, endDate
 	if rangeStart > rangeEnd {
 		rangeStart, rangeEnd = rangeEnd, rangeStart
 	}
 	return startOfZonedDateKeyIso(rangeStart, location), startOfZonedDateKeyIso(nextCalendarDateKey(rangeEnd), location), nil
+}
+
+// strictDateQueryValue 把原始参数分类为「缺省」（空串、无错误）或合法日期；
+// 格式 / 日历非法时返回与 usage-overview 同文案的 400 参数错误。
+func strictDateQueryValue(raw, label string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	value := dateQueryValue(raw)
+	if value == "" {
+		return "", newStatReadsBadRequest(label + "格式应为 YYYY-MM-DD")
+	}
+	return value, nil
 }
 
 // dateQueryValue mirrors dateQueryValue: strict YYYY-MM-DD + calendar validity.

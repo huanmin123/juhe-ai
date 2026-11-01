@@ -89,6 +89,9 @@ type DirectInputFailure struct {
 	ConfigRevision   int64
 	DispatchRevision int64
 	Reason           string
+	// cause 保留转换错误身份（不参与持久化/request_id 派生），供 LoadAccount
+	// 把「无可用 Key」这类可识别失败原样返回给恢复探针调用方。
+	cause error
 }
 
 // DirectInputSuppression is jobs-owned retry metadata for a malformed
@@ -189,6 +192,11 @@ func (r *PostgresDirectInputReader) LoadDueWithFailures(ctx context.Context, lim
 func (r *PostgresDirectInputReader) LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error) {
 	result, err := r.LoadAccountWithFailures(ctx, accountID)
 	if err == nil && len(result.Failures) > 0 {
+		for _, failure := range result.Failures {
+			if errors.Is(failure.cause, exactkeyprobe.ErrNoAvailableAPIKey) {
+				return nil, fmt.Errorf("PG direct input account=%s: %w", strings.TrimSpace(accountID), failure.cause)
+			}
+		}
 		return nil, fmt.Errorf("PG direct input account=%s 候选构造失败；请使用 LoadAccountWithFailures 处理隔离结果", strings.TrimSpace(accountID))
 	}
 	return result.Inputs, err
@@ -298,7 +306,17 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 				}
 				candidate.authorization.QuotaEligible = eligible
 			}
-			direct := exactkeyprobe.DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
+			disabledFingerprints := []string(nil)
+			if accountID != "" {
+				// B3-H25：恢复/显式探针不得使用人工置 disabled 的 Key。仅显式
+				// 账户装载（LoadAccount，恢复探针与人工测试入口）接入该查询；
+				// 周期 J1 扫描面维持既有语义。
+				disabledFingerprints, err = loadDisabledKeyFingerprints(ctx, tx, candidate.account.ID)
+				if err != nil {
+					return 0, err
+				}
+			}
+			direct := exactkeyprobe.DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule, DisabledKeyFingerprints: disabledFingerprints}
 			input, failure, err := buildDirectCandidateInput(candidate, direct, r.credentialSecret, now)
 			if err != nil {
 				return 0, err
@@ -343,7 +361,7 @@ func buildDirectCandidateInput(candidate directCandidate, direct exactkeyprobe.D
 		}
 		return input, nil, nil
 	}
-	failure := DirectInputFailure{AccountID: candidate.account.ID, InputVersion: candidate.inputVersion, ConfigRevision: candidate.account.ConfigRevision, DispatchRevision: candidate.account.DispatchRevision, Reason: err.Error()}
+	failure := DirectInputFailure{AccountID: candidate.account.ID, InputVersion: candidate.inputVersion, ConfigRevision: candidate.account.ConfigRevision, DispatchRevision: candidate.account.DispatchRevision, Reason: err.Error(), cause: err}
 	if strings.TrimSpace(failure.AccountID) == "" || failure.InputVersion < 1 || failure.ConfigRevision < 1 || failure.DispatchRevision < 1 {
 		return exactkeyprobe.Input{}, nil, fmt.Errorf("PG direct input 坏候选缺少可持久化的 account/revision fence")
 	}
@@ -563,6 +581,33 @@ ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END,
   CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST,
   a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
 LIMIT $2 OFFSET $5`
+
+// loadDisabledKeyFingerprints 读取业务库中该账户被人工置 disabled 的 Key
+// 指纹（B3-H25）。与凭据解封共用 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET
+// 派生的 HMAC 指纹列，因此可直接与 exactkeyprobe 构建的 Key 池比对。
+func loadDisabledKeyFingerprints(ctx context.Context, tx *sql.Tx, accountID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT key_fingerprint FROM juhe_business.account_api_key_runtime_states WHERE account_id = $1 AND status = 'disabled'`,
+		accountID)
+	if err != nil {
+		return nil, fmt.Errorf("读取 PG direct input disabled Key 指纹失败: %w", err)
+	}
+	defer rows.Close()
+	result := make([]string, 0, 4)
+	for rows.Next() {
+		var fingerprint string
+		if err := rows.Scan(&fingerprint); err != nil {
+			return nil, fmt.Errorf("解码 PG direct input disabled Key 指纹失败: %w", err)
+		}
+		if strings.TrimSpace(fingerprint) != "" {
+			result = append(result, fingerprint)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历 PG direct input disabled Key 指纹失败: %w", err)
+	}
+	return result, nil
+}
 
 func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var result directCandidate

@@ -213,6 +213,36 @@ CREATE TABLE juhe_business.resource_authorization_grants (
 	revoked_at text,
 	updated_at text NOT NULL
 );
+
+CREATE SCHEMA IF NOT EXISTS juhe_stats;
+
+-- B3-H11：排期激活重建的小时额度窗口绑定与提交后打脏（列集对照 maintenance
+-- pg_schema_business_tables.go / pg_schema_stats.go）。
+CREATE TABLE juhe_business.request_quota_hourly_window_scope_bindings (
+	system_account_id text NOT NULL,
+	scope_type text NOT NULL,
+	scope_id text NOT NULL,
+	source_type text NOT NULL,
+	source_id text NOT NULL,
+	window_hours integer NOT NULL,
+	created_at text NOT NULL,
+	updated_at text NOT NULL,
+	CHECK (window_hours BETWEEN 1 AND 720),
+	CHECK (scope_type IN ('api_key', 'account_authorization', 'group_authorization', 'account_authorization_team', 'group_authorization_team')),
+	CHECK (source_type IN ('api_key', 'resource_authorization_grant')),
+	PRIMARY KEY (system_account_id, scope_type, scope_id),
+	UNIQUE (source_type, source_id, system_account_id, scope_type, scope_id)
+);
+
+CREATE TABLE juhe_stats.usage_quota_hourly_window_dirty_scopes (
+	system_account_id text NOT NULL,
+	scope_type text NOT NULL,
+	scope_id text NOT NULL DEFAULT '',
+	generation bigint NOT NULL DEFAULT 1,
+	first_dirty_at text NOT NULL,
+	updated_at text NOT NULL,
+	PRIMARY KEY (system_account_id, scope_type, scope_id)
+);
 `
 
 func seedOpenAIOAuthAccount(t *testing.T, db *sql.DB, id string, credentials map[string]any, now time.Time) {

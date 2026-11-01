@@ -270,46 +270,13 @@ func (d *Deps) accountUsageOverviewPage(r *http.Request, input accountUsagePageI
 	for _, metadata := range metadataRows {
 		metadataByID[metadata.text("id")] = metadata
 	}
-	overviewRows := []accountUsageStatsRow{}
-	for _, row := range sourceRows {
-		metadata, ok := metadataByID[row.text("scope_id")]
-		if !ok {
-			continue
-		}
-		systemAccountID := (*string)(nil)
-		systemAccountName := (*string)(nil)
-		if input.Access.canAccessAll() {
-			id := metadata.text("system_account_id")
-			systemAccountID = &id
-			if value := metadata.nullText("system_account_name"); value != nil {
-				systemAccountName = value
-			}
-		}
-		ownerID := metadata.text("system_account_id")
-		overviewRows = append(overviewRows, accountUsageStatsRow{
-			ID:                     metadata.text("id"),
-			SystemAccountID:        systemAccountID,
-			SystemAccountName:      systemAccountName,
-			OwnerSystemAccountID:   ownerID,
-			OwnerSystemAccountName: metadata.nullText("system_account_name"),
-			ProviderCode:           metadata.text("provider_code"),
-			Name:                   metadata.text("name"),
-			Type:                   metadata.text("type"),
-			Status:                 metadata.text("status"),
-			AccessType:             metadata.text("access_type"),
-			RangeUsage:             mapUsageSummaryAggregate(row),
-			DailyUsage:             []accountUsageDailyPoint{},
-			// Node windows path renders the constant authorization fallback
-			// (account-usage.repository.ts:364-366/:454-456).
-			AuthorizationUsageAvailable: false,
-			AuthorizationCount:          0,
-			AuthorizationTeamCount:      0,
-		})
-	}
+	overviewRows := buildAccountUsageOverviewRows(input.Access, sourceRows, metadataByID)
 	defaultTrendIds, err := d.defaultTrendAccountIds(r, input.Access, overviewRows)
 	if err != nil {
 		return nil, err
 	}
+	// 所有 sourceRows 都进入返回结果（缺 metadata 的行改用占位行，不再丢弃），
+	// 因此按当前页保留行计算的 total 与实际 rows 自洽，翻页不会跳行/空页。
 	upperBound := pagedTotalUpperBound(page, pageSize, len(pageRows), hasMore)
 	alternative := (page-1)*pageSize + len(overviewRows)
 	total := upperBound
@@ -458,22 +425,76 @@ func mergeAccountUsageSourceRows(pageRows, selectedRows []Row) []Row {
 	return merged
 }
 
+// accountUsageDeletedAccountPlaceholderName 是统计行仍在、业务账户已被物理
+// 删除（metadata 缺失）时的稳定占位名。占位行 ID 继续使用 usage_stats 的
+// scope_id，因此同一账户在任意页都得到相同标识。
+const accountUsageDeletedAccountPlaceholderName = "账户已删除"
+
+// buildAccountUsageOverviewRows 把合并后的用量行映射为列表行。业务账户
+// metadata 缺失时不再丢弃该行：保留 scope_id 与用量事实并给占位名，使
+// total/hasMore 与实际返回行数一致，翻页不跳行也不产生空页（C1-C7）。
+func buildAccountUsageOverviewRows(access AccessScope, sourceRows []Row, metadataByID map[string]Row) []accountUsageStatsRow {
+	rows := make([]accountUsageStatsRow, 0, len(sourceRows))
+	for _, row := range sourceRows {
+		scopeID := row.text("scope_id")
+		metadata, ok := metadataByID[scopeID]
+		if !ok {
+			rows = append(rows, accountUsageStatsRow{
+				ID:         scopeID,
+				Name:       accountUsageDeletedAccountPlaceholderName,
+				RangeUsage: mapUsageSummaryAggregate(row),
+				DailyUsage: []accountUsageDailyPoint{},
+			})
+			continue
+		}
+		systemAccountID := (*string)(nil)
+		systemAccountName := (*string)(nil)
+		if access.canAccessAll() {
+			id := metadata.text("system_account_id")
+			systemAccountID = &id
+			if value := metadata.nullText("system_account_name"); value != nil {
+				systemAccountName = value
+			}
+		}
+		ownerID := metadata.text("system_account_id")
+		rows = append(rows, accountUsageStatsRow{
+			ID:                     metadata.text("id"),
+			SystemAccountID:        systemAccountID,
+			SystemAccountName:      systemAccountName,
+			OwnerSystemAccountID:   ownerID,
+			OwnerSystemAccountName: metadata.nullText("system_account_name"),
+			ProviderCode:           metadata.text("provider_code"),
+			Name:                   metadata.text("name"),
+			Type:                   metadata.text("type"),
+			Status:                 metadata.text("status"),
+			AccessType:             metadata.text("access_type"),
+			RangeUsage:             mapUsageSummaryAggregate(row),
+			DailyUsage:             []accountUsageDailyPoint{},
+			// Node windows path renders the constant authorization fallback
+			// (account-usage.repository.ts:364-366/:454-456).
+			AuthorizationUsageAvailable: false,
+			AuthorizationCount:          0,
+			AuthorizationTeamCount:      0,
+		})
+	}
+	return rows
+}
+
 // accountUsageOptions mirrors listAccountUsageOptions: a business-database
 // account option search plus the selected ids window. M3 域筛选：capabilityDomain
 // 非空时候选与已选账户同按域收敛。
 func (d *Deps) accountUsageOptions(r *http.Request, scope AccessScope, keyword string, limit int, hasLimit bool, selectedIds []string, capabilityDomain string) (any, error) {
-	ownerScope := accountUsageOptionScope(scope)
 	safeLimit := 50
 	if hasLimit {
 		safeLimit = clampInt(limit, 1, 50)
 	}
-	searchRows, err := d.queryAccountUsageOptionRows(r, ownerScope, keyword, nil, safeLimit, capabilityDomain)
+	searchRows, err := d.queryAccountUsageOptionRows(r, scope, keyword, nil, safeLimit, capabilityDomain)
 	if err != nil {
 		return nil, err
 	}
 	var selectedRows []Row
 	if len(selectedIds) > 0 {
-		selectedRows, err = d.queryAccountUsageOptionRows(r, ownerScope, "", selectedIds, len(selectedIds), capabilityDomain)
+		selectedRows, err = d.queryAccountUsageOptionRows(r, scope, "", selectedIds, len(selectedIds), capabilityDomain)
 		if err != nil {
 			return nil, err
 		}
@@ -514,7 +535,7 @@ func (d *Deps) accountUsageOptions(r *http.Request, scope AccessScope, keyword s
 	return options, nil
 }
 
-func (d *Deps) queryAccountUsageOptionRows(r *http.Request, ownerSystemAccountID string, keyword string, ids []string, limit int, capabilityDomain string) ([]Row, error) {
+func (d *Deps) queryAccountUsageOptionRows(r *http.Request, scope AccessScope, keyword string, ids []string, limit int, capabilityDomain string) ([]Row, error) {
 	clauses := []string{"accounts.deleted_at IS NULL"}
 	params := []any{}
 	// M3 域筛选（计划 §M3 配套适配）：读自身行 capability_domain（授权实例域
@@ -523,11 +544,21 @@ func (d *Deps) queryAccountUsageOptionRows(r *http.Request, ownerSystemAccountID
 		clauses = append(clauses, capabilityDomainClause("accounts"))
 		params = append(params, capabilityDomain)
 	}
-	if ownerSystemAccountID != "" {
-		clauses = append(clauses, "accounts.system_account_id = ?")
-		params = append(params, ownerSystemAccountID)
-	} else {
+	if accountUsageOptionScope(scope) == "" {
+		// 全局面（管理员未选择系统账户）：只列 owner 账户；授权实例属于
+		// 授权方视角，不在这里重复占位。
 		clauses = append(clauses, "accounts.authorization_instance_authorization_id IS NULL")
+	} else {
+		// scoped 调用方：与列表 / 关键词 / 域筛选共用同一可见性子句（自身行 ∪
+		// 直接账户授权 ∪ 分组授权）。只在候选下拉里复用既有授权 SQL，不新增
+		// 第二套可见性判定，也不把未授权账户带进来。
+		clauses = append(clauses, d.accountUsageCallerVisibilityClause())
+		viewerID := scope.scopedID()
+		if viewerID == "" {
+			viewerID = scope.currentID()
+		}
+		now := rfc3339Millis(d.Now())
+		params = append(params, viewerID, viewerID, now, viewerID, now)
 	}
 	if len(ids) > 0 {
 		clauses = append(clauses, "accounts.id IN ("+placeholders(len(ids))+")")

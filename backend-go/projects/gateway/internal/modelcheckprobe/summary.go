@@ -73,9 +73,14 @@ func SummarizeChecksWithTimeoutPenalty(checks []Evaluation, trustedComparison bo
 	if score < 0 {
 		score = 0
 	}
-	for _, item := range checks {
-		item.Kind = unscopedKind(item.Kind)
-		if item.Evidence != nil && evidenceBool(item.Evidence, "modelMismatch") {
+	// modelMismatch 短路同样只看目标账户自身证据：trusted_comparison. 前缀
+	// 项（对比账户的同名检查）不进入目标短路，与上方评分循环、§16/§17 质量
+	// 短路和终端失败门四处口径一致——对照项异常走 comparison 聚合路径。
+	for index := range checks {
+		if strings.HasPrefix(checks[index].Kind, "trusted_comparison.") {
+			continue
+		}
+		if checks[index].Evidence != nil && evidenceBool(checks[index].Evidence, "modelMismatch") {
 			return SummaryResult{"suspicious", score, 100, "响应模型字段与请求模型不一致，目标链路疑似被替换或降级"}
 		}
 	}

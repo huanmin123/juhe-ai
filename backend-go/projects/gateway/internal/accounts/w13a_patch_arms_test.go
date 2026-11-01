@@ -14,9 +14,32 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// w13aDisabledRuntimeCleanup records the disabled-arm runtime cleanup calls
+// (and can fail them) so the manual status=disabled arm probes the same port
+// the background-probe disable arm uses.
+type w13aDisabledRuntimeCleanup struct {
+	mu    sync.Mutex
+	calls []BackgroundProbeRuntimeCleanupInput
+	err   error
+}
+
+func (c *w13aDisabledRuntimeCleanup) ClearDisabledBackgroundProbeRuntime(_ context.Context, input BackgroundProbeRuntimeCleanupInput) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, input)
+	return 0, c.err
+}
+
+func (c *w13aDisabledRuntimeCleanup) snapshot() []BackgroundProbeRuntimeCleanupInput {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]BackgroundProbeRuntimeCleanupInput{}, c.calls...)
+}
 
 // w13aFakeQueryer 以可插拔探针替换查询：probe 供 QueryRowContext，rows 供
 // QueryContext，execFunc 按调用序供 ExecContext；未注入的通道恒报错。
@@ -527,5 +550,82 @@ func TestW13APatchHelperArms(t *testing.T) {
 		"w13a-cut", "owner-unused", "abcdefg_", "acc")
 	if err != nil || got != "w13a-cut" {
 		t.Fatalf("候选一可用应直接返回：%q %v", got, err)
+	}
+}
+
+// TestPatchManualDisableReleasesLockAndQualityEnforcement 钉住 B1-2a：人工
+// PATCH status=disabled 与后台探测关闭臂同口径结束锁死（显式 UNLOCKED 终态、
+// generation 递增）、清理 active 质量隔离行，并在提交后经既有运行态清理端口
+// 处理 Key 运行态；active 账户的普通编辑不得触碰锁/enforcement。
+func TestPatchManualDisableReleasesLockAndQualityEnforcement(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	seedIsolation := func(accountID string) {
+		t.Helper()
+		env.seedEngagedLock(t, accountID, 300)
+		env.exec(t, `INSERT INTO account_quality_enforcements (account_id, system_account_id,
+			enforcement_id, generation, state, updated_at)
+			VALUES (?, ?, ?, 0, 'active', '2026-09-01T00:00:00.000Z')`,
+			accountID, adminID, "enf-b12-"+accountID)
+	}
+	cleanup := &w13aDisabledRuntimeCleanup{}
+	env.store.SetBackgroundProbeRuntimeCleanup(cleanup)
+
+	// ENGAGED 锁死 + active 质量隔离的账户：PATCH disabled 后两项均结束。
+	env.seedAccount(t, "acc-b12-disable", adminID, "b12-disable", "active")
+	seedIsolation("acc-b12-disable")
+	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-b12-disable",
+		`{"expectedConfigRevision":1,"status":"disabled"}`)
+	if code != http.StatusOK {
+		t.Fatalf("停用 PATCH：%d %v", code, payload)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = 'acc-b12-disable' AND status = 'disabled'`) != 1 {
+		t.Fatal("账户应停用")
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_lock_states WHERE account_id = 'acc-b12-disable'
+		AND enabled = 0 AND lock_state = 'UNLOCKED' AND generation = 4
+		AND incident_id IS NULL AND lease_id IS NULL AND deadline_at IS NULL`) != 1 {
+		t.Fatal("人工停用必须把锁死落到显式 UNLOCKED 终态并递增 generation")
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_quality_enforcements WHERE account_id = 'acc-b12-disable'
+		AND state = 'cleared' AND cleared_at IS NOT NULL AND recovery_due_at IS NULL`) != 1 {
+		t.Fatal("人工停用必须清理 active 质量隔离行")
+	}
+	calls := cleanup.snapshot()
+	if len(calls) != 1 || calls[0].AccountID != "acc-b12-disable" ||
+		calls[0].SystemAccountID != adminID || calls[0].ExpectedConfigRevision != 2 {
+		t.Fatalf("停用应调用运行态清理端口一次并按新 revision：%+v", calls)
+	}
+
+	// 已停用的账户重复提交 disabled（同值）：清理幂等，不重复递增 generation。
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-b12-disable",
+		`{"expectedConfigRevision":2,"status":"disabled","notes":"再次停用"}`)
+	if code != http.StatusOK {
+		t.Fatalf("重复停用 PATCH：%d %v", code, payload)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_lock_states WHERE account_id = 'acc-b12-disable' AND generation = 4`) != 1 {
+		t.Fatal("已 UNLOCKED 的锁行不得被重复递增")
+	}
+	cleanupCallsBeforeActive := len(cleanup.snapshot())
+
+	// active 账户的普通编辑：锁与 enforcement 保持原状，清理端口不触发。
+	env.seedAccount(t, "acc-b12-active", adminID, "b12-active", "active")
+	seedIsolation("acc-b12-active")
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-b12-active",
+		`{"expectedConfigRevision":1,"name":"b12-active-renamed"}`)
+	if code != http.StatusOK {
+		t.Fatalf("active 编辑 PATCH：%d %v", code, payload)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_lock_states WHERE account_id = 'acc-b12-active'
+		AND enabled = 1 AND lock_state = 'ENGAGED' AND generation = 3`) != 1 {
+		t.Fatal("active 账户编辑不得触碰锁死行")
+	}
+	if env.count(t, `SELECT COUNT(*) FROM account_quality_enforcements WHERE account_id = 'acc-b12-active'
+		AND state = 'active'`) != 1 {
+		t.Fatal("active 账户编辑不得清理质量隔离行")
+	}
+	if len(cleanup.snapshot()) != cleanupCallsBeforeActive {
+		t.Fatalf("active 账户编辑不得触发运行态清理：%+v", cleanup.snapshot())
 	}
 }

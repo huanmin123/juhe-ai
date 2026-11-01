@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -32,6 +33,13 @@ const (
 )
 
 const manualTrafficMigrationReason = "手动迁移流量"
+
+// accountTrafficMigrationRuntimeInvalidationReason 是流量迁移源状态写提交后
+// 的 K5 网关运行时失效原因（B1-1a）：迁移改写了源账户的 status/schedulable/
+// 冷却列族，共享运行态投影与 Key 运行态必须丢弃重建；Node 迁移仓库的失效
+// 通道同 patch 的 invalidateGatewayRuntimeAfterBusinessWrite 语义，此处用独立
+// 原因串便于审计区分（Node 归档未记录专用串，沿用同一通道）。
+const accountTrafficMigrationRuntimeInvalidationReason = "account_traffic_migration"
 
 // temporaryUnavailableInitialBackoffSeconds mirrors
 // account-runtime-mutation-helpers.ts.
@@ -156,6 +164,20 @@ func (s *Store) findTrafficSummary(ctx context.Context, accountID string, access
 	return &result.Items[0], nil
 }
 
+// invalidateTrafficMigrationRuntime 是流量迁移源状态写提交后的网关运行时失效
+// （B1-1a）：复用 patch 写面的 CacheInvalidator 通道，best-effort——迁移已经
+// 提交，失效失败只记 Warn，绝不把已提交的迁移回滚或改写成错误响应。
+func (s *Store) invalidateTrafficMigrationRuntime(accountID string) {
+	if s.invalidator == nil {
+		return
+	}
+	if err := s.invalidator.InvalidateGatewayRuntime(accountTrafficMigrationRuntimeInvalidationReason); err != nil {
+		slog.Warn("流量迁移已提交，但网关运行时缓存失效失败",
+			"event", "account_traffic_migration_runtime_invalidation_failed",
+			"accountId", accountID, "error", err)
+	}
+}
+
 func (s *Store) migrateOwnerTraffic(ctx context.Context, sourceAccountID string, input TrafficMigrationInput, access AccessScope) (*TrafficMigrationResult, error) {
 	if sourceAccountID == input.TargetAccountID {
 		return nil, errTrafficSameAccount
@@ -254,6 +276,7 @@ func (s *Store) migrateOwnerTraffic(ctx context.Context, sourceAccountID string,
 				cooldown_retest_last_status_code = NULL,
 				stream_failure_count = 0,
 				stream_failure_window_started_at = NULL,
+				config_revision = COALESCE(config_revision, 0) + 1,
 				updated_at = ?
 			WHERE id = ?
 				AND system_account_id = ?`),
@@ -272,6 +295,7 @@ func (s *Store) migrateOwnerTraffic(ctx context.Context, sourceAccountID string,
 				cooldown_retest_last_status_code = NULL,
 				stream_failure_count = 0,
 				stream_failure_window_started_at = NULL,
+				config_revision = COALESCE(config_revision, 0) + 1,
 				updated_at = ?
 			WHERE id = ?
 				AND system_account_id = ?`),
@@ -288,6 +312,9 @@ func (s *Store) migrateOwnerTraffic(ctx context.Context, sourceAccountID string,
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// 提交后失效（B1-1a）：迁移已提交，失效失败只留痕、不回滚业务结果
+	// （同 patch.go finishPatchSideEffects 的 best-effort 口径）。
+	s.invalidateTrafficMigrationRuntime(sourceRow.id)
 	sourceSummary, err := s.findTrafficSummary(ctx, sourceRow.id, ownerAccess)
 	if err != nil {
 		return nil, err
@@ -387,6 +414,7 @@ func (s *Store) migrateAuthorizedBindingTraffic(ctx context.Context, sourceAccou
 			cooldown_retest_last_status_code = NULL,
 			stream_failure_count = 0,
 			stream_failure_window_started_at = NULL,
+			config_revision = COALESCE(config_revision, 0) + 1,
 			updated_at = ?
 		WHERE id = ?
 			AND system_account_id = ?
@@ -411,6 +439,9 @@ func (s *Store) migrateAuthorizedBindingTraffic(ctx context.Context, sourceAccou
 	if affected, _ := exec.RowsAffected(); affected == 0 {
 		return nil, nil
 	}
+	// 提交后失效（B1-1a）：实例行状态/schedulable/config_revision 已改写，
+	// 共享运行态投影必须丢弃重建；失败只留痕，不回滚已提交迁移。
+	s.invalidateTrafficMigrationRuntime(sourceSummary.ID)
 	nextSource, err := s.findTrafficSummary(ctx, sourceSummary.ID, granteeAccess)
 	if err != nil {
 		return nil, err

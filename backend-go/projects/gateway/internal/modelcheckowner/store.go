@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -473,6 +474,17 @@ func (s *Store) MarkHealthSync(ctx context.Context, runID, state string) error {
 	return nil
 }
 
+// markHealthSyncRecovery marks the health publication retryable with a fresh
+// background timeout. The callers reach this after ProjectTrust or the stat
+// hour formatter failed, both of which run inside the finalize budget; reusing
+// an exhausted finalize context would leave quality_health_sync_status NULL and
+// silently drop the health sample from the retry scan.
+func (s *Store) markHealthSyncRecovery(runID, state string) error {
+	ctx, cancel := recoveryWriteContext()
+	defer cancel()
+	return s.MarkHealthSync(ctx, runID, state)
+}
+
 type HealthSyncRetry struct {
 	RunID, AccountID, SystemAccountID, ProviderCode, Model, Profile, Level, StatHour, ScheduleID string
 	PolicyRevision, AccountConfigRevision, PenaltyAction                                         string
@@ -487,6 +499,10 @@ type HealthSyncRetry struct {
 	EnforcementAllowed      bool
 }
 
+// healthRetryRotateWarnAt 记录 rotateSkipped 最近一次失败告警的 UnixNano 时刻，
+// 用于把持续 DB 故障下的告警限频到 30 秒一次（best-effort 语义不变）。
+var healthRetryRotateWarnAt atomic.Int64
+
 // ListHealthSyncRetries re-discovers Node-equivalent failed health
 // publications from durable completed run facts. Invalid rows intentionally
 // remain in their durable failed state, but are skipped so one malformed row
@@ -500,6 +516,16 @@ type HealthSyncRetry struct {
 // updated_at. The window bounds what used to be an unbounded full scan on
 // every scheduler cycle while still tolerating invalid rows ahead of valid
 // ones (the multiplier keeps the existing malformed-row contract intact).
+//
+// S-H6 窗口防饿死，两项配合：
+//  1. SQL 排除已达 HealthRetryMaxAttempts 的死信 run——死信任务
+//     （health:<runID>，payload attempts>=MaxAttempts）永不再认领，其 run 行的
+//     updated_at 永久冻结在最后一次失败写点；不排除的话它们会按 updated_at ASC
+//     永久占满窗口头部，新健康失败永不进入重试。
+//  2. 被 Go 侧解析/校验跳过的行（截断 JSON、越界快照、无质量失败等）就地把
+//     updated_at 推进到扫描时刻（rotateSkipped），同一饿死形态在扫描层轮转
+//     出窗口头部；行保持 'failed'，仍在后续扫描的窗口尾部被再次发现。窗口
+//     截断的活行不经过该写点，「下次扫描再发现」语义对其保持不变。
 func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthSyncRetry, error) {
 	if s == nil || s.db == nil || limit <= 0 || limit > 10000 {
 		return nil, errors.New("J3b health retry scan input is invalid")
@@ -508,11 +534,29 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 	if window > 10000 {
 		window = 10000
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE status='completed' AND quality_health_sync_status='failed' AND account_id IS NOT NULL AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC LIMIT ?`), window)
+	// 死信排除的 attempts 读取必须对坏 payload 免疫：字符串/小数/缺失/
+	// 非对象的 payload 都曾让 `(payload->>'attempts')::int` 在整条扫描上抛错，
+	// 把一次坏行升级成健康重试链全体停摆。jsonb_typeof 守卫只对 JSON number
+	// 取值（小数为 number，按 numeric 比较，不触发整型强转失败），其余形状
+	// 经 COALESCE 归为 false（不视为死信，保持可重试）。
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE status='completed' AND quality_health_sync_status='failed' AND account_id IS NOT NULL AND finished_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM `+s.schedulerTaskTable()+` dead WHERE dead.id='health:'||model_check_runs.id AND COALESCE((CASE WHEN jsonb_typeof(dead.payload::jsonb->'attempts')='number' THEN (dead.payload::jsonb->>'attempts')::numeric END)>=?,false)) ORDER BY updated_at ASC,id ASC LIMIT ?`), HealthRetryMaxAttempts, window)
 	if err != nil {
 		return nil, fmt.Errorf("list J3b health sync retries: %w", err)
 	}
 	defer rows.Close()
+	// S-H6 轮转写点：跳过行的 updated_at 推进为扫描时刻，使其退出 ASC 窗口
+	// 头部。best-effort：轮转失败不阻塞本次扫描（行仍在，下轮继续轮转），但
+	// 失败必须留痕——静默吞掉会让窗口头部永久滞留同一批坏行而无从排障。
+	// 告警限频（30 秒一次）：扫描周期通常为分钟级，避免持续 DB 故障时刷屏。
+	rotateSkipped := func(runID string) {
+		if _, err := s.db.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_check_runs")+` SET updated_at=? WHERE id=?`), time.Now().UTC().Format(time.RFC3339Nano), runID); err != nil {
+			now := time.Now().UnixNano()
+			if last := healthRetryRotateWarnAt.Load(); now-last >= int64(30*time.Second) {
+				healthRetryRotateWarnAt.Store(now)
+				slog.Warn("J3b health retry skipped-row rotation failed", "runId", runID, "err", err)
+			}
+		}
+	}
 	result := make([]HealthSyncRetry, 0)
 	for rows.Next() {
 		var retry HealthSyncRetry
@@ -522,14 +566,17 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 			return nil, fmt.Errorf("scan J3b health sync retry: %w", err)
 		}
 		if retry.AccountID == "" || retry.SystemAccountID == "" || retry.ProviderCode == "" || retry.Model == "" || retry.Profile == "" {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		var policyFields map[string]any
 		if err := json.Unmarshal([]byte(policy), &policyFields); err != nil {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		threshold, ok := policyFields["threshold"].(float64)
 		if !ok || threshold < 40 || threshold > 100 {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		var decisionFields struct {
@@ -540,6 +587,7 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 			EnforcementAllowed      *bool `json:"enforcementAllowed"`
 		}
 		if err := json.Unmarshal([]byte(decision), &decisionFields); err != nil {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		retry.HardQualityFailure = decisionFields.HardQualityFailure
@@ -553,6 +601,7 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 		// requires formed/trusted evidence, so its retry must not either.
 		quickFailure := retry.Profile == "quick" && retry.Level != "unavailable" && qualityFailure
 		if retry.Level != "unavailable" && !quickFailure && (!decisionFields.EvidenceFormed || !decisionFields.TrustFormed) {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		retry.EvidenceFormed, retry.TrustFormed = decisionFields.EvidenceFormed, decisionFields.TrustFormed
@@ -563,11 +612,13 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 			ManualEnforcementEligible *bool  `json:"manualEnforcementEligible"`
 		}
 		if err := json.Unmarshal([]byte(policy), &policySnapshot); err != nil || strings.TrimSpace(policySnapshot.Revision) == "" {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		retry.PolicyRevision = policySnapshot.Revision
 		retry.PenaltyAction = policySnapshot.Action
 		if retry.PenaltyAction == "" || policySnapshot.RecoveryIntervalMinutes < 10 || policySnapshot.RecoveryIntervalMinutes > 10080 {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		retry.RecoveryIntervalMinutes = policySnapshot.RecoveryIntervalMinutes
@@ -587,18 +638,22 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 			ConfigRevision string `json:"configRevision"`
 		}
 		if err := json.Unmarshal([]byte(requestSummary), &requestSnapshot); err != nil || strings.TrimSpace(requestSnapshot.ConfigRevision) == "" {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		retry.AccountConfigRevision = requestSnapshot.ConfigRevision
 		retry.ObservedAt, err = time.Parse(time.RFC3339Nano, finished)
 		if err != nil {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		retry.StatHour, err = s.formatHealthStatHour(retry.ObservedAt)
 		if err != nil {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		if retry.Score >= retry.Threshold && retry.Level != "unavailable" && !retry.HardQualityFailure {
+			rotateSkipped(retry.RunID)
 			continue
 		}
 		result = append(result, retry)

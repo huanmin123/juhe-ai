@@ -45,7 +45,7 @@ export function systemInheritedErrorPolicyRulesPreview(): AccountErrorPolicyInhe
     enabled: true,
     name: '上游额度不足',
     priority: 1,
-    status_codes: '402, 403',
+    status_codes: '402, 403, 429',
     error_codes: [
       'insufficient_user_quota',
       'insufficient_quota',
@@ -53,17 +53,20 @@ export function systemInheritedErrorPolicyRulesPreview(): AccountErrorPolicyInhe
       'quota_exceeded',
       'quota_exhausted',
       'wallet_balance_exhausted',
-      'pre_consume_token_quota_failed'
+      'pre_consume_token_quota_failed',
+      'AccountQuotaExceeded',
+      'balance_exhausted',
+      'GROUP_FREEBALANCE_INSUFFICIENT'
     ].join(', '),
     error_types: '',
-    keywords: '余额不足, 额度不足, insufficient balance, insufficient quota, credit balance too low, wallet balance exhausted',
+    keywords: '余额不足, 额度不足, insufficient balance, insufficient quota, credit balance too low, wallet balance exhausted, insufficient user balance, top up your user balance, 余额已用尽, 余额耗尽, 额度已用尽, 免费额度使用上限, usage quota, more quota',
     action: 'rate_limited',
     reset_strategy: 'duration',
     duration_hours: 1,
     daily_reset_hour: 0,
     weekly_reset_day: null,
     weekly_reset_hour: null,
-    description: '匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。'
+    description: '匹配 HTTP 402 / 403，或带稳定额度错误码的 429 的明确余额、额度或配额耗尽响应（429 不认文案，普通频控不命中）；默认进入限流，可按普通规则调整恢复策略。'
   }]
 }
 

@@ -563,15 +563,32 @@ func dedupeStrings(values []string) []string {
 	return out
 }
 
+// j1NonQualityOutcomes 是不得计入 AI 健康页健康率的非质量终态
+// （docs/functions/模型价格与用量统计口径.md §2）：它们只进入诊断和通用错误
+// 聚合，不构成 AI 账户近期质量的正样本或负样本。映射回空串与 stale 同臂，
+// 即该小时不计入 successHours/failureHours（无其它观测时页面显示 unknown）。
+var j1NonQualityOutcomes = map[string]bool{
+	"stale":                    true,
+	"framing_complete_neutral": true,
+	"opaque_upstream":          true,
+	"gateway_capacity":         true,
+	"gateway_policy":           true,
+	"downstream_closed":        true,
+}
+
+// j1OutcomeHealthStatus 把 J1 探针终态映射为健康率口径：complete_success 是
+// 唯一正样本；非质量终态返回 ""（不计入）；其余终态（upstream_failure、
+// probe_task_failure，以及带 account_upstream / account_dependency 归因的
+// 真实账号失败）保持 failure。
 func j1OutcomeHealthStatus(outcome j1Outcome) string {
 	switch outcome.Outcome {
-	case "stale":
-		return ""
 	case "complete_success":
 		return "success"
-	default:
-		return "failure"
 	}
+	if j1NonQualityOutcomes[outcome.Outcome] {
+		return ""
+	}
+	return "failure"
 }
 
 // j1OutcomeHealthRows mirrors j1OutcomeHealthRows.

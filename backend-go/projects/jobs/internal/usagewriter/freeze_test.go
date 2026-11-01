@@ -14,6 +14,9 @@ type mockCatalog struct {
 	breakdown      *CostBreakdown
 	breakdownCalls int
 	failModel      bool
+	// lastServiceTier 记录最近一次 BuildBreakdown 入参档位（C3-H3：冻结
+	// 计价档位必须与网关 cost_usd 的回退链一致）。
+	lastServiceTier string
 }
 
 func (m *mockCatalog) ResolvePricingModel(ctx Ctx, providerCode string, systemAccountID string, upstreamModel string, requestedModel string) string {
@@ -23,6 +26,7 @@ func (m *mockCatalog) ResolvePricingModel(ctx Ctx, providerCode string, systemAc
 
 func (m *mockCatalog) BuildBreakdown(ctx Ctx, providerCode string, systemAccountID string, model string, serviceTier string, input UsageRecordInput) *CostBreakdown {
 	m.breakdownCalls++
+	m.lastServiceTier = serviceTier
 	return m.breakdown
 }
 
@@ -152,5 +156,76 @@ func TestPricingSnapshotForWriteCatalogGuard(t *testing.T) {
 	}
 	if catalog.breakdownCalls != 0 {
 		t.Fatalf("catalog consulted on write path: %d", catalog.breakdownCalls)
+	}
+}
+
+// TestC3H3FreezeServiceTierFallbackChain 钉住 C3-H3：冻结快照的计价档位必须
+// 与网关 cost_usd 同源（网关不写 billed_service_tier，实际口径是 reported ??
+// effective ?? requested ?? standard）。修复前传 enriched.BilledServiceTier，
+// 网关链路恒为空 → 快照恒按 standard 计价，与 cost_usd 的分档价分叉。
+func TestC3H3FreezeServiceTierFallbackChain(t *testing.T) {
+	cases := []struct {
+		name            string
+		billed          string
+		reported        string
+		effective       string
+		requested       string
+		wantServiceTier string
+	}{
+		{name: "requested 非空", requested: "priority", wantServiceTier: "priority"},
+		{name: "effective 非空", effective: "flex", requested: "priority", wantServiceTier: "flex"},
+		{name: "reported 非空", reported: "priority", effective: "flex", requested: "priority", wantServiceTier: "priority"},
+		{name: "billed 优先", billed: "batch", reported: "priority", effective: "flex", requested: "priority", wantServiceTier: "batch"},
+		{name: "全部为空回落 standard", wantServiceTier: ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			catalog := &mockCatalog{
+				resolveModel: "gpt-5",
+				breakdown:    &CostBreakdown{Multiplier: 1, ServiceTierPricingSource: TierSourceTierSpecific},
+			}
+			input := UsageRecordInput{
+				TraceID: "t", TrafficSource: TrafficSourceGateway, ProviderCode: "gpt",
+				Model: "gpt-5", InputTokens: intPtr(100), CostUsd: floatPtr(0.2),
+				BilledServiceTier:    testCase.billed,
+				ReportedServiceTier:  testCase.reported,
+				EffectiveServiceTier: testCase.effective,
+				RequestedServiceTier: testCase.requested,
+			}
+			EnrichUsageRecordPricing(context.Background(), input, catalog)
+			if catalog.breakdownCalls != 1 {
+				t.Fatalf("breakdown calls = %d, want 1", catalog.breakdownCalls)
+			}
+			if catalog.lastServiceTier != testCase.wantServiceTier {
+				t.Fatalf("服务档位 = %q, want %q（回退链 billed ?? reported ?? effective ?? requested；空值由目录适配器归一为 standard）",
+					catalog.lastServiceTier, testCase.wantServiceTier)
+			}
+		})
+	}
+}
+
+// TestC3H3FreezeSnapshotUsesTierPricing：同一条记录在快照生成路径上使用
+// reported 档位（网关实际写法），确保冻结快照的档位单价与 cost_usd 一致。
+func TestC3H3FreezeSnapshotUsesTierPricing(t *testing.T) {
+	catalog := &mockCatalog{
+		resolveModel: "gpt-5",
+		breakdown: &CostBreakdown{
+			AccountChargeUsd:         floatPtr(0.42),
+			Multiplier:               1,
+			ServiceTierPricingSource: TierSourceTierSpecific,
+		},
+	}
+	input := UsageRecordInput{
+		TraceID: "t", TrafficSource: TrafficSourceGateway, ProviderCode: "gpt",
+		Model: "gpt-5", InputTokens: intPtr(100),
+		ReportedServiceTier: "priority",
+	}
+	result := FreezeUsageRecordPricingFacts(context.Background(), input, catalog)
+	snapshot, ok := result.PricingSnapshot.(*CostBreakdown)
+	if !ok || snapshot.AccountChargeUsd == nil || *snapshot.AccountChargeUsd != 0.42 {
+		t.Fatalf("frozen snapshot = %+v", result.PricingSnapshot)
+	}
+	if catalog.lastServiceTier != "priority" {
+		t.Fatalf("冻结计价档位 = %q, want priority", catalog.lastServiceTier)
 	}
 }

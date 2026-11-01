@@ -33,7 +33,10 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	}
 	// 硬失败（undeclared_mismatch 等显式质量门）独立于分数触发处罚：仅当
 	// 分数达标且无硬失败时才判定为非法输入，避免"96 分+硬失败"被拒绝。
-	if strings.TrimSpace(input.AccountID) == "" || strings.TrimSpace(input.SystemAccountID) == "" || strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Action) == "" || input.Threshold < 40 || input.Threshold > 100 || (input.Score >= input.Threshold && !input.HardQualityFailure) || input.RecoveryIntervalMinutes < 10 || input.RecoveryIntervalMinutes > 10080 {
+	// 超时处罚标记（TimeoutPenalty，runtime 的 timeoutPenaltyTriggered）同样
+	// 独立于分数：unavailable 主场景核心超时截断后剩余探针全对，分数可达标
+	// 且无硬失败——不豁免该组合会让超时处罚永不生效（W-H2）。
+	if strings.TrimSpace(input.AccountID) == "" || strings.TrimSpace(input.SystemAccountID) == "" || strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Action) == "" || input.Threshold < 40 || input.Threshold > 100 || (input.Score >= input.Threshold && !input.HardQualityFailure && !input.TimeoutPenalty) || input.RecoveryIntervalMinutes < 10 || input.RecoveryIntervalMinutes > 10080 {
 		return EnforcementOutcome{}, errors.New("J3b Business enforcement input is invalid")
 	}
 	if input.Action != "disable" && input.Action != "fallback" && input.Action != "quality_isolate" {

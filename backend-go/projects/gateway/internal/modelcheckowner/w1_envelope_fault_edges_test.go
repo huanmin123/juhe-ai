@@ -466,13 +466,13 @@ func TestW1HTTPRunNowFaultEdges(t *testing.T) {
 		}
 	})
 
-	t.Run("closed Business database exposes original storage error", func(t *testing.T) {
+	t.Run("closed Business database renders unified 500 without storage detail", func(t *testing.T) {
 		db := wbRunNowBusinessFixture(t)
 		handler := wbNewRunNowHTTPHandler(t, wbRunNowServiceForHTTP(t, db, &fakeRunNowRunner{runID: "unused", onStarted: true}))
 		_ = db.Close()
 		response := request(handler, "/quality-schedules/sch/run-now?systemAccountId=sys-1", `{}`)
-		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "database is closed") {
-			t.Fatalf("closed db status=%d body=%s", response.Code, response.Body.String())
+		if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") || strings.Contains(response.Body.String(), "database is closed") {
+			t.Fatalf("closed db 必须 500 统一文案且不透出存储原文（R7-A I-H1）: %d %s", response.Code, response.Body.String())
 		}
 	})
 

@@ -167,9 +167,6 @@ func TestW11CClosedDBErrorPropagation(t *testing.T) {
 	if _, err := s.ListProjectionGaps(ctx, "", 0, "", 10); err == nil {
 		t.Fatalf("gaps on closed db must fail")
 	}
-	if _, err := s.Cleanup(ctx, 1, 1, 10); err == nil {
-		t.Fatalf("cleanup on closed db must fail")
-	}
 	if err := s.CheckContract(ctx); err == nil {
 		t.Fatalf("contract check on closed db must fail")
 	}

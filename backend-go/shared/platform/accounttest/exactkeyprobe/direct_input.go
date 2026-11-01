@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -32,7 +33,15 @@ type DirectInput struct {
 	ExpiresAt     time.Time
 	TLSPolicy     string
 	Schedule      Schedule
+	// DisabledKeyFingerprints 是业务库 account_api_key_runtime_states 中人工
+	// 置 disabled 的 Key 指纹（B3-H25）：恢复/显式探针构建 Key 池时必须排除，
+	// 不得对人工禁用的 Key 发起上游请求。读面由 jobs accounthealth reader 注入。
+	DisabledKeyFingerprints []string
 }
+
+// ErrNoAvailableAPIKey 表示凭据池里的 Key 全部被人工禁用（或池为空），
+// 探针不得发上游请求。错误文件面可被 errors.Is 识别。
+var ErrNoAvailableAPIKey = errors.New("PG direct input 的 API Key pool 无可用 Key")
 
 type DirectAccount struct {
 	ID                                         string
@@ -215,13 +224,20 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		if len(keys) == 0 {
 			return Input{}, fmt.Errorf("PG direct input 的 API Key pool 为空")
 		}
+		disabled := directDisabledFingerprintSet(d.DisabledKeyFingerprints)
 		for index, key := range keys {
+			fingerprint := directKeyFingerprint(secret, key)
+			if _, blocked := disabled[fingerprint]; blocked {
+				continue
+			}
 			ciphertext, err := EncryptV1Envelope(secret, []byte(`{"api_key":`+mustJSON(key)+`}`))
 			if err != nil {
 				return Input{}, err
 			}
-			fingerprint := directKeyFingerprint(secret, key)
 			result.APIKeys = append(result.APIKeys, APIKeyInput{Index: index, Fingerprint: fingerprint, Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: ciphertext}})
+		}
+		if len(result.APIKeys) == 0 {
+			return Input{}, fmt.Errorf("%w（全部 Key 为 disabled）", ErrNoAvailableAPIKey)
 		}
 		result.KeySetFingerprint = directKeySetFingerprint(result.APIKeys)
 		return result, nil
@@ -584,6 +600,20 @@ func decryptJSONObject(secret, encrypted, label string) (map[string]json.RawMess
 		return nil, fmt.Errorf("解析 PG direct input %s失败", label)
 	}
 	return result, nil
+}
+
+func directDisabledFingerprintSet(fingerprints []string) map[string]struct{} {
+	if len(fingerprints) == 0 {
+		return nil
+	}
+	result := make(map[string]struct{}, len(fingerprints))
+	for _, fingerprint := range fingerprints {
+		fingerprint = strings.TrimSpace(fingerprint)
+		if fingerprint != "" {
+			result[fingerprint] = struct{}{}
+		}
+	}
+	return result
 }
 
 func directAPIKeys(credentials map[string]json.RawMessage) []string {

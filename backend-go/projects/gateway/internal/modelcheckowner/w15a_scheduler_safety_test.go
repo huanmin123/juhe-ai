@@ -432,7 +432,8 @@ func TestSQLSchedulerSourceLeavesNonHealthPayloadUntouchedOnFail(t *testing.T) {
 }
 
 func TestListHealthSyncRetriesScanWindowTruncates(t *testing.T) {
-	db := wbOpenPGDB(t, []string{`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`})
+	// S-H6：扫描的 NOT EXISTS 死信排除引用任务表，夹具补入生产同型表。
+	db := wbOpenPGDB(t, []string{`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`, j3bSchedulerTasksProdDDL()})
 	defer db.Close()
 	// 40 invalid head rows sort before the single valid row. They pass the
 	// SQL filters (durable completed failed-sync facts) but are skipped by the

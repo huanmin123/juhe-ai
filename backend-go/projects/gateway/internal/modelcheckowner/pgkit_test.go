@@ -176,6 +176,9 @@ const (
 // committed 列型对齐 maintenance 生产 DDL（j3bmodelcheck/bootstrap.go）。
 // outcomes.payload 按生产 JSONB；需要原始字节摘要回读语义的测试自带 text
 // 变体（见 store_test.go TestLoadInputAndListCommittedOutcomesVerifyDigests）。
+// S-H6 起 ListHealthSyncRetries 以 NOT EXISTS 排除任务表死信，本夹具补入
+// 生产同型 model_check_scheduler_tasks（JSONB payload），健康重试扫描族无需
+// 各自带表。
 func j3bRuntimeFixtureDDLs() []string {
 	s := j3bTestSchema + "."
 	return []string{
@@ -191,6 +194,7 @@ func j3bRuntimeFixtureDDLs() []string {
 		`CREATE TABLE ` + s + `model_trust_latest_dirty_accounts (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, dirty_reason TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
 		`CREATE TABLE ` + s + `model_trust_observation_receipts (observation_id TEXT PRIMARY KEY, observation_created_at TEXT NOT NULL, processed_at TEXT NOT NULL)`,
 		`CREATE TABLE ` + s + `model_trust_aggregation_state (scope_key TEXT PRIMARY KEY, cursor_created_at TEXT, cursor_id TEXT, last_success_at TEXT, updated_at TEXT NOT NULL)`,
+		j3bSchedulerTasksProdDDL(),
 	}
 }
 

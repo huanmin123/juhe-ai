@@ -173,8 +173,8 @@ func TestW14MClaimBeginArm(t *testing.T) {
 // ---- scheduler_store：健康重试物化写入臂 ----
 
 func TestW14MEnsureHealthRetryMaterializeError(t *testing.T) {
-	ddl := append(j3bRuntimeFixtureDDLs(), w14mSchedulerDDL...)
-	db, fp := w14mFailDB(t, ddl)
+	// j3bRuntimeFixtureDDLs 自 S-H6 起已含生产同型任务表，直接复用。
+	db, fp := w14mFailDB(t, j3bRuntimeFixtureDDLs())
 	store := &Store{db: db, schema: j3bTestSchema}
 	statHour, err := NewHealthStatHourFunc("UTC")
 	if err != nil {

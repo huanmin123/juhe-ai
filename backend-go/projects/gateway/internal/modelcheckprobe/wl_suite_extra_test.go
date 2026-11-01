@@ -616,11 +616,24 @@ func TestWlFindSuiteEvaluation(t *testing.T) {
 	}
 }
 
+// wlRepeatingResponseDispatcher 每次派发返回全新可读的响应体。Suite 会连续
+// 执行多个探针，共享同一个 *http.Response 会在首次读取并 Close 后让后续探
+// 针读到空体（零事件空流），从而把 fixture 缺陷误判成上游截断。
+type wlRepeatingResponseDispatcher struct {
+	wlDispatcherPlain
+	status int
+	body   string
+}
+
+func (d *wlRepeatingResponseDispatcher) Dispatch(_ context.Context, request *http.Request, capability keymodelruntime.Capability, attemptID string) (*http.Response, func(bool), error) {
+	d.lastAttempt = attemptID
+	d.lastCap = capability
+	return &http.Response{StatusCode: d.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(d.body)), Request: request}, func(bool) {}, nil
+}
+
 func TestWlRunSuiteWithDispatcherCapability(t *testing.T) {
 	// dispatcher 路径下 suite.execute 必须补齐能力默认值并复用重试策略。
-	dispatcher := &wlDispatcherPlain{}
-	response := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"gpt-test","choices":[{"message":{"content":"OK-MODEL-CHECK"}}]}`))}
-	dispatcher.response = response
+	dispatcher := &wlRepeatingResponseDispatcher{status: http.StatusOK, body: `{"model":"gpt-test","choices":[{"message":{"content":"OK-MODEL-CHECK"}}]}`}
 	items, err := RunSuite(context.Background(), Suite{
 		Endpoint:     "https://example.test",
 		Dispatcher:   dispatcher,

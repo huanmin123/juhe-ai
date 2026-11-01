@@ -321,12 +321,16 @@ func (s *Store) activeTeamGrantRowsTx(ctx context.Context, tx *sql.Tx, teamID st
 
 // activeTeamMemberIDs is the unlimited member-id lookup retained for the
 // sync.go grant→runtime chain (syncTeamGrantRuntime); the cascade paths use
-// the ceiling-guarded activeTeamMemberRowsTx above.
+// the ceiling-guarded activeTeamMemberRowsTx above. B3-H1: the lookup joins
+// system_teams and requires status='active' so a disabled team never expands
+// its members again (the team-disable cascade only revokes sources; a later
+// active re-sync must not re-provision member runtime rows / instances).
 func (s *Store) activeTeamMemberIDs(ctx context.Context, tx *sql.Tx, teamID string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT m.system_account_id
 		FROM `+s.table("system_team_members")+` m
 		INNER JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id
-		WHERE m.team_id = ? AND m.status = 'active' AND a.status = 'active'`), teamID)
+		INNER JOIN `+s.table("system_teams")+` t ON t.id = m.team_id
+		WHERE m.team_id = ? AND m.status = 'active' AND a.status = 'active' AND t.status = 'active'`), teamID)
 	if err != nil {
 		return nil, err
 	}

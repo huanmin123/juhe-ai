@@ -167,7 +167,12 @@ func EnrichUsageRecordPricing(ctx Ctx, input UsageRecordInput, catalog CatalogPr
 	if !HasCostDimension(enriched) {
 		return enriched
 	}
-	pricingSnapshot := catalog.BuildBreakdown(ctx, providerCode, catalogSystemAccountID, costModel, enriched.BilledServiceTier, enriched)
+	// C3-H3：冻结价必须与网关 cost_usd 同档位口径。网关只写
+	// reported/effective/requested（不写 BilledServiceTier），直接传
+	// billed 会让快照恒按 standard 计价、与网关 cost_usd 分叉。走
+	// serviceTierForWrite 回退链（billed ?? reported ?? effective ??
+	// requested）；全部为空时传空串，目录适配器按 standard 档位归一。
+	pricingSnapshot := catalog.BuildBreakdown(ctx, providerCode, catalogSystemAccountID, costModel, serviceTierForWrite(enriched), enriched)
 	if pricingSnapshot == nil {
 		return enriched
 	}

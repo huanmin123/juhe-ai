@@ -52,9 +52,13 @@ func TestW1NormalizeErrorIdentifier(t *testing.T) {
 }
 
 func TestW1SystemQuotaRuleMatcherArms(t *testing.T) {
-	// 非 402/403 一律不命中。
-	if systemInsufficientQuotaRuleMatches(http.StatusTooManyRequests, "insufficient_quota", "", "") {
-		t.Fatal("429 不得命中系统额度规则")
+	// 429 只认稳定额度错误码精确命中。
+	if !systemInsufficientQuotaRuleMatches(http.StatusTooManyRequests, "insufficient_quota", "", "") {
+		t.Fatal("429 稳定额度码必须命中")
+	}
+	// 429 普通频控码不命中（普通频控不是余额不足）。
+	if systemInsufficientQuotaRuleMatches(http.StatusTooManyRequests, "rate_limit_exceeded", "", "") {
+		t.Fatal("429 普通频控不得命中系统额度规则")
 	}
 	// 402 + 无标识：宽匹配命中（Node 语义）。
 	if !systemInsufficientQuotaRuleMatches(http.StatusPaymentRequired, "", "", "") {

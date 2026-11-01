@@ -119,7 +119,8 @@ func TestSystemInsufficientQuotaRuleMatches(t *testing.T) {
 		{"403 文本命中", 403, "", "当前余额不足，请充值", true},
 		{"403 英文文本", 403, "", "You have insufficient balance", true},
 		{"403 排除标识文本", 403, "", "content policy violation: forbidden", false},
-		{"非 402/403", 429, "insufficient_quota", "", false},
+		{"429 稳定额度码命中", 429, "insufficient_quota", "", true},
+		{"429 普通频控码排除", 429, "rate_limit_exceeded", "", false},
 		{"无任何证据", 403, "", "", false},
 	}
 	for _, tc := range cases {

@@ -91,6 +91,16 @@ func RunQuizFamily(ctx context.Context, input Suite, timeout time.Duration) ([]E
 		if familyTerminal() {
 			return appendTerminalQuizItems(items, quizRequestFailureEvaluation(question, weights[index], answerResult)), nil
 		}
+		if !quizAnswerHopUsable(answerResult) {
+			// 作答跳非终态失败（200 错误信封/空 choices/空 content）不是家族
+			// 终态，但错误信封或空文本不得冒充模型作答送裁判：按既有请求失败
+			// 路径留证，不扣分不入分母，家族继续后续题目。
+			if strings.TrimSpace(answerResult.ErrorMessage) == "" {
+				answerResult.ErrorMessage = "J3b quiz answer hop produced no usable output"
+			}
+			items = append(items, quizRequestFailureEvaluation(question, weights[index], answerResult))
+			continue
+		}
 		gradeRequest, gradeErr := input.quizGradingRequest(question, answerResult.Output, upstreamProtocol, upstreamMode, stream)
 		if gradeErr != nil {
 			return nil, gradeErr
@@ -220,6 +230,15 @@ func quizEvaluation(question QuizQuestion, weight int, answer, verdict, judgeRea
 	}
 	evidence["reason"] = reason
 	return Evaluation{Kind: "custom_quiz", Status: status, Score: score, MaxScore: weight, Evidence: evidence}
+}
+
+// quizAnswerHopUsable 判断作答跳结果可否送裁判：要求完整（非 Incomplete）
+// 的成功响应且产出非空作答文本。200 错误信封（Success=false）、传输截断
+// （Incomplete）与空 choices/空 content（Output 为空）均按非终态请求失败
+// 处理，不得把错误信封或空文本冒充模型作答进入裁判（家族终态由调用方的
+// familyTerminal 门先行拦截，此处只收窄非终态失败）。
+func quizAnswerHopUsable(result Result) bool {
+	return result.Success && !result.Incomplete && strings.TrimSpace(result.Output) != ""
 }
 
 // quizRequestFailureEvaluation keeps the request-failure convention for a hop

@@ -71,10 +71,10 @@ func systemAccountErrorHandlingRule() map[string]any {
 		"action":         "rate_limited",
 		"reset_strategy": "duration",
 		"duration_hours": float64(1),
-		"status_codes":   []any{float64(402), float64(403)},
-		"error_codes":    []any{"insufficient_user_quota", "insufficient_quota", "insufficient_balance", "quota_exceeded", "quota_exhausted", "default_group_global_quota_exhausted", "billing_hard_limit_reached", "wallet_balance_exhausted", "pre_consume_token_quota_failed"},
-		"keywords":       []any{"余额不足", "额度不足", "insufficient balance", "insufficient quota", "subscription quota insufficient", "credit balance too low", "wallet balance exhausted"},
-		"description":    "匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。",
+		"status_codes":   []any{float64(402), float64(403), float64(429)},
+		"error_codes":    []any{"insufficient_user_quota", "insufficient_quota", "insufficient_balance", "quota_exceeded", "quota_exhausted", "default_group_global_quota_exhausted", "billing_hard_limit_reached", "wallet_balance_exhausted", "pre_consume_token_quota_failed", "AccountQuotaExceeded", "balance_exhausted", "GROUP_FREEBALANCE_INSUFFICIENT"},
+		"keywords":       []any{"余额不足", "额度不足", "insufficient balance", "insufficient quota", "subscription quota insufficient", "credit balance too low", "wallet balance exhausted", "余额已用尽", "余额耗尽", "额度已用尽", "免费额度使用上限", "insufficient user balance", "top up your user balance", "usage quota", "more quota"},
+		"description":    "匹配 HTTP 402 / 403，或带稳定额度错误码的 429 的明确余额、额度或配额耗尽响应（429 不认文案，普通频控不命中）；默认进入限流，可按普通规则调整恢复策略。",
 	}
 }
 

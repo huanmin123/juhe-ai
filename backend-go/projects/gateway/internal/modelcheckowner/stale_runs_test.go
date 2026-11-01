@@ -8,8 +8,8 @@ import (
 )
 
 // TestStaleRunSweepSQLConstruction 钉死 PG 方言收尾语句的构造：schema 限定表
-// 名、status='running' 条件、两侧 ::timestamptz cast（updated_at 为 text 时间
-// 索引列）以及终态字段写入顺序。
+// 名、status='running' 条件、finished_at 终态完成时刻、两侧 ::timestamptz
+// cast（updated_at 为 text 时间索引列）以及终态字段写入顺序。
 func TestStaleRunSweepSQLConstruction(t *testing.T) {
 	query := staleRunSweepSQL("juhe_j3b.model_check_runs")
 	for _, want := range []string{
@@ -17,6 +17,7 @@ func TestStaleRunSweepSQLConstruction(t *testing.T) {
 		"status='failed'",
 		"error_code=?",
 		"error_message=?",
+		"finished_at=?",
 		"updated_at=?",
 		"WHERE status='running'",
 		"updated_at::timestamptz < ?::timestamptz",
@@ -25,9 +26,10 @@ func TestStaleRunSweepSQLConstruction(t *testing.T) {
 			t.Fatalf("sweep SQL missing %q: %s", want, query)
 		}
 	}
-	// PG 模式下 bind 把占位符转换为 $1..$4，参数序：code、message、now、cutoff。
+	// PG 模式下 bind 把占位符转换为 $1..$5，参数序：code、message、finished_at、
+	// updated_at、cutoff。
 	bound := (&Store{schema: "juhe_j3b"}).bind(query)
-	for _, want := range []string{"error_code=$1", "error_message=$2", "updated_at=$3", "updated_at::timestamptz < $4::timestamptz"} {
+	for _, want := range []string{"error_code=$1", "error_message=$2", "finished_at=$3", "updated_at=$4", "updated_at::timestamptz < $5::timestamptz"} {
 		if !strings.Contains(bound, want) {
 			t.Fatalf("bound sweep SQL missing %q: %s", want, bound)
 		}
@@ -81,10 +83,10 @@ func TestSweepStaleRunsInputGuards(t *testing.T) {
 }
 
 // TestStaleRunSweepThresholdCoversBoundedBudgets 钉死阈值依据（BUG-0265）：
-// run 表 updated_at 在运行期不推进（仅在 CreateRun 与终态写点推进），阈值
-// 必须超过全部代码内 run 预算——run-now 默认 10 分钟、计划/恢复执行
-// ScheduleRunBudget(6 分钟 lease)=5.5 分钟——并对无预算的手动 SSE run 留出
-// 余量，取 30 分钟。
+// run 表 updated_at 在运行期由心跳 TouchRun 持续推进（每次 RenewClaim 成功后
+// 写一次），但阈值仍必须超过全部代码内 run 预算——run-now 默认 10 分钟、
+// 计划/恢复执行 ScheduleRunBudget(6 分钟 lease)=5.5 分钟——并对无预算的手动
+// SSE run 留出余量，取 30 分钟。
 func TestStaleRunSweepThresholdCoversBoundedBudgets(t *testing.T) {
 	runNowDefaultBudget := 10 * time.Minute
 	schedulerBudget := ScheduleRunBudget(6 * time.Minute)

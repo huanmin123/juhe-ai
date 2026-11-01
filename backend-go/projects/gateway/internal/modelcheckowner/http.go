@@ -440,7 +440,9 @@ func (h *HTTPHandler) activateTokenInterceptBaseline(w http.ResponseWriter, r *h
 		default:
 			// A concrete activator is still required to preserve the same
 			// fail-closed service boundary for unexpected storage errors.
-			writeOwnerError(w, http.StatusServiceUnavailable, err.Error())
+			// 哨兵外的存储故障按统一渲染收敛：500 + 统一文案，原文仅入
+			// 日志（R7-A I-H1，不再透出 PG 原文）。
+			writeOwnerFailure(r, w, err)
 		}
 		return
 	}
@@ -481,6 +483,45 @@ func resolveManagementScope(r *http.Request, authenticated string, allowCrossAcc
 	return ManagementScope{ActorSystemAccountID: actor, SelectedSystemAccountID: requested}, nil
 }
 
+// ownerInternalErrorMessage 是 owner 面 5xx 的统一响应文案：DB 故障等
+// 非调用方可见错误不再透出原文（含 PG 详情与 "list J3b runs:" 等内部
+// 包装前缀），原文只进日志（R7-A I-H1，与 modelcheckquestionbank 的
+// writeStoreError、authsys 的 kernel.WriteErrorCause 同口径）。
+const ownerInternalErrorMessage = "服务器内部错误"
+
+// logOwnerInternalError 落 owner 面服务端错误的结构化 Error 日志：日志
+// 不外发、携带原始错误全文供排障；响应侧只给统一文案。
+func logOwnerInternalError(r *http.Request, cause string) {
+	slog.Error("模型检测面服务端错误",
+		"event", "j3b_owner_internal_error",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"error", cause,
+	)
+}
+
+// writeOwnerFailure 是 owner 面的统一错误渲染（R7-A I-H1）：
+//   - *RequestError（状态码在 400..599）保留其语义与文案——这是调用方
+//     可见状态（如目标账户不可达）的唯一契约通道；
+//   - 其余错误一律 500 + 统一文案，原始错误仅入日志。
+func writeOwnerFailure(r *http.Request, w http.ResponseWriter, err error) {
+	var requestError *RequestError
+	if errors.As(err, &requestError) && requestError.StatusCode >= http.StatusBadRequest && requestError.StatusCode <= 599 {
+		message := requestError.Message
+		if strings.TrimSpace(message) == "" {
+			message = "模型检测失败"
+		}
+		writeOwnerError(w, requestError.StatusCode, message)
+		return
+	}
+	cause := ""
+	if err != nil {
+		cause = err.Error()
+	}
+	logOwnerInternalError(r, cause)
+	writeOwnerError(w, http.StatusInternalServerError, ownerInternalErrorMessage)
+}
+
 func (h *HTTPHandler) serveOptions(w http.ResponseWriter) {
 	if h.AccountOptions == nil {
 		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 账户选项 owner 未完成接线")
@@ -507,7 +548,7 @@ func (h *HTTPHandler) serveAccountOptions(w http.ResponseWriter, r *http.Request
 	}
 	items, err := h.AccountOptions.ListAccountOptions(r.Context(), query)
 	if err != nil {
-		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": items})
@@ -579,7 +620,7 @@ func (h *HTTPHandler) serveQualityPolicy(w http.ResponseWriter, r *http.Request,
 			return
 		}
 	}
-	writeOwnerError(w, http.StatusInternalServerError, err.Error())
+	writeOwnerFailure(r, w, err)
 }
 
 func (h *HTTPHandler) serveScopedQualityPolicy(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
@@ -629,7 +670,7 @@ func (h *HTTPHandler) listQualitySchedules(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	writeOwnerError(w, http.StatusInternalServerError, err.Error())
+	writeOwnerFailure(r, w, err)
 }
 
 func (h *HTTPHandler) listScopedQualitySchedules(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
@@ -711,7 +752,7 @@ func (h *HTTPHandler) deleteQualitySchedule(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	writeOwnerError(w, http.StatusInternalServerError, err.Error())
+	writeOwnerFailure(r, w, err)
 }
 
 func (h *HTTPHandler) deleteScopedQualitySchedule(w http.ResponseWriter, r *http.Request, scope ManagementScope, id string) {
@@ -796,7 +837,7 @@ func (h *HTTPHandler) runNowQualitySchedule(w http.ResponseWriter, r *http.Reque
 	}
 	outcome, err := h.RunNow.RunNow(r.Context(), systemID, id, input.Revision, input.RequestID)
 	if err != nil {
-		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	switch outcome.Status {
@@ -847,7 +888,7 @@ func (h *HTTPHandler) runNowQualitySchedulesBatch(w http.ResponseWriter, r *http
 	}
 	outcomes, err := h.RunNow.RunNowBatch(r.Context(), systemID, commands)
 	if err != nil {
-		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	results := make([]map[string]any, 0, len(outcomes))
@@ -934,7 +975,7 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, scope Man
 	}
 	runRequest, err := h.buildRequest(r.Context(), scope, command)
 	if err != nil {
-		writeBuildError(w, err)
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	if err := validateBuiltRequest(scope, command, runRequest); err != nil {
@@ -954,7 +995,7 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, scope Man
 		handle.Update(modelcheckactive.Summary{RunID: result.RunID})
 	}
 	if err != nil {
-		writeRunError(w, err)
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	h.writeRunDetail(w, r, result, scope)
@@ -968,7 +1009,7 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 	}
 	runRequest, err := h.buildRequest(r.Context(), scope, command)
 	if err != nil {
-		writeBuildError(w, err)
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	if err := validateBuiltRequest(scope, command, runRequest); err != nil {
@@ -1068,12 +1109,12 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 			}
 		progressDrained:
 			if outcome.err != nil {
-				_ = writeEvent("error", ownerStreamError(outcome.err))
+				_ = writeEvent("error", ownerStreamError(r, outcome.err))
 				return
 			}
 			detail, detailErr := h.runDetailForStream(r.Context(), outcome.result, scope)
 			if detailErr != nil {
-				_ = writeEvent("error", ownerStreamError(detailErr))
+				_ = writeEvent("error", ownerStreamError(r, detailErr))
 				return
 			}
 			_ = writeEvent("complete", detail)
@@ -1087,7 +1128,7 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 func (h *HTTPHandler) writeRunDetail(w http.ResponseWriter, r *http.Request, result RunResult, scope ManagementScope) {
 	detail, err := h.runDetail(r.Context(), result)
 	if err != nil {
-		writeRunError(w, err)
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	if !scopeAllowsRun(scope, detail) {
@@ -1095,7 +1136,7 @@ func (h *HTTPHandler) writeRunDetail(w http.ResponseWriter, r *http.Request, res
 		return
 	}
 	if detail, err = h.presentRunResult(detail); err != nil {
-		writeRunError(w, err)
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": detail})
@@ -1187,38 +1228,27 @@ func hasCompleteRunDetailShape(value any) bool {
 	return true
 }
 
-func writeRunError(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
+// ownerStreamError 构造 SSE 终止 error 帧载荷（R7-A I-H1 统一渲染）：
+// *RequestError 保留文案与状态码（调用方可见契约）；其余错误一律统一
+// 文案，原始错误仅入日志，不再透出内部包装前缀。帧形态保持
+// {message, statusCode?} 不变。
+func ownerStreamError(r *http.Request, err error) map[string]any {
+	payload := map[string]any{"message": ownerInternalErrorMessage}
 	var requestError *RequestError
 	if errors.As(err, &requestError) && requestError.StatusCode >= http.StatusBadRequest && requestError.StatusCode <= 599 {
-		status = requestError.StatusCode
-	}
-	message := "模型检测失败"
-	if err != nil && strings.TrimSpace(err.Error()) != "" {
-		message = err.Error()
-	}
-	writeOwnerError(w, status, message)
-}
-
-func writeBuildError(w http.ResponseWriter, err error) {
-	var requestError *RequestError
-	if errors.As(err, &requestError) {
-		writeRunError(w, err)
-		return
-	}
-	writeOwnerError(w, http.StatusBadRequest, err.Error())
-}
-
-func ownerStreamError(err error) map[string]any {
-	message := "模型检测失败"
-	if err != nil && strings.TrimSpace(err.Error()) != "" {
-		message = err.Error()
-	}
-	payload := map[string]any{"message": message}
-	var requestError *RequestError
-	if errors.As(err, &requestError) && requestError.StatusCode >= http.StatusBadRequest && requestError.StatusCode <= 599 {
+		message := requestError.Message
+		if strings.TrimSpace(message) == "" {
+			message = "模型检测失败"
+		}
+		payload["message"] = message
 		payload["statusCode"] = requestError.StatusCode
+		return payload
 	}
+	cause := ""
+	if err != nil {
+		cause = err.Error()
+	}
+	logOwnerInternalError(r, cause)
 	return payload
 }
 
@@ -1249,11 +1279,11 @@ func (h *HTTPHandler) serveList(w http.ResponseWriter, r *http.Request, scope Ma
 	query.AllSystemAccounts = scope.AllSystemAccounts
 	result, err := h.Service.ListRuns(r.Context(), query)
 	if err != nil {
-		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	if result, err = h.presentRunResult(result); err != nil {
-		writeRunError(w, err)
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})
@@ -1266,7 +1296,7 @@ func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID 
 	}
 	result, found, err := h.Service.GetRun(r.Context(), runID)
 	if err != nil {
-		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	if !found {
@@ -1278,7 +1308,7 @@ func (h *HTTPHandler) serveDetail(w http.ResponseWriter, r *http.Request, runID 
 		return
 	}
 	if result, err = h.presentRunResult(result); err != nil {
-		writeRunError(w, err)
+		writeOwnerFailure(r, w, err)
 		return
 	}
 	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": result})

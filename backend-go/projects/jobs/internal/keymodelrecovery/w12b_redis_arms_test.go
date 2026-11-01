@@ -71,15 +71,19 @@ func TestW12bRedisStoreErrorArms(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// ListDue：state 完整性校验失败（非法 JSON 与 hash 不匹配走同一错误臂）。
+	// ListDue：state 完整性校验失败（非法 JSON 与 hash 不匹配）按单条隔离：
+	// 从 due 集合移除后继续，不返回错误（B3-H27）。
 	if err := client.Set(ctx, keys.State("w12b-bad"), "not-json", 0).Err(); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.ZAdd(ctx, keys.Due(), redis.Z{Score: 1, Member: "w12b-bad"}).Err(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ListDue(ctx, now, 10); err == nil {
-		t.Fatal("非法 state JSON 应触发完整性错误")
+	if states, err := store.ListDue(ctx, now, 10); err != nil || len(states) != 0 {
+		t.Fatalf("非法 state JSON 应被隔离: %d %v", len(states), err)
+	}
+	if _, err := client.ZScore(ctx, keys.Due(), "w12b-bad").Result(); err != redis.Nil {
+		t.Fatalf("非法 state 的 due 成员应被移除: %v", err)
 	}
 	mismatched := w12bDueCandidate(t, now)
 	mismatched.CapabilityHash = "w12b-other-hash"
@@ -90,8 +94,14 @@ func TestW12bRedisStoreErrorArms(t *testing.T) {
 	if err := client.Set(ctx, keys.State("w12b-bad"), validButMismatched, 0).Err(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ListDue(ctx, now, 10); err == nil {
-		t.Fatal("hash 不匹配应触发完整性错误")
+	if err := client.ZAdd(ctx, keys.Due(), redis.Z{Score: 1, Member: "w12b-bad"}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if states, err := store.ListDue(ctx, now, 10); err != nil || len(states) != 0 {
+		t.Fatalf("hash 不匹配应被隔离: %d %v", len(states), err)
+	}
+	if _, err := client.ZScore(ctx, keys.Due(), "w12b-bad").Result(); err != redis.Nil {
+		t.Fatalf("hash 不匹配的 due 成员应被移除: %v", err)
 	}
 	if err := client.Del(ctx, keys.State("w12b-bad"), keys.Due()).Err(); err != nil {
 		t.Fatal(err)

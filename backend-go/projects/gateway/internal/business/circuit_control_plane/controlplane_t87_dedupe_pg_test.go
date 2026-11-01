@@ -3,9 +3,11 @@ package circuitcontrolplane
 // T87 回归（2026-10-31，R4 登记 A 类即修）：gateway 写侧 circuit dedupe 行永生
 // 毒化，与 jobs 侧 DD3-B5 同构。
 //
-// 缺陷：CompareAndSetIncident 的 outbox dedupe 查询无 status 过滤——gateway
-// Cleanup 与 jobs Cleanup 都只删 outbox 全部 dispatched 的 incident 行
-// （dispatched outbox 行永生、gateway 写侧 Cleanup 无生产 caller），incident
+// 缺陷：CompareAndSetIncident 的 outbox dedupe 查询无 status 过滤——清理只
+// 删 outbox 全部 dispatched 的 incident 行（T87r 前 dispatched outbox 行永生、
+// gateway 写侧 Cleanup 无生产 caller；T87r 后由 jobs 侧
+// circuitstore.ControlPlaneRepo.Cleanup 的 ack 保留期臂回收，gateway 写侧
+// Cleanup 死代码已删），incident
 // 行删除后同 transition_id 重试仍 dedupe 命中 dispatched 行 → 幂等臂读不到
 // incident 行 → "deduplicated incident receipt has no incident" 硬错误恒败；
 // 即使排除 dispatched，插入臂纯 INSERT 也会撞 UNIQUE(projection_key,
@@ -41,8 +43,8 @@ func t87OpenStore(t *testing.T) (*Store, *sql.DB) {
 	return s, db
 }
 
-// t87DispatchOutbox 把指定 dedupe 行置为 dispatched（模拟 Cleanup 只删
-// incident 行后留下的永生 dispatched outbox 行）。
+// t87DispatchOutbox 把指定 dedupe 行置为 dispatched（模拟清理只删 incident
+// 行后、ack 保留期内仍在的 dispatched outbox 行）。
 func t87DispatchOutbox(t *testing.T, db *sql.DB, dedupeKey string) {
 	t.Helper()
 	if _, err := db.Exec(`UPDATE ` + defaultBusinessSchema + `.account_circuit_outbox SET status='dispatched', acknowledged_at_ms=2000 WHERE dedupe_key='` + dedupeKey + `'`); err != nil {
@@ -51,10 +53,11 @@ func t87DispatchOutbox(t *testing.T, db *sql.DB, dedupeKey string) {
 }
 
 // TestT87DispatchedOutboxMissingIncidentRetriesViaInsert 臂钉住毒化场景修复：
-// incident 行被 Cleanup 删除（其 outbox 行已全部 dispatched、行永生）后，同
+// incident 行被清理删除（其 outbox 行已全部 dispatched、dedupe 行仍在 ack
+// 保留期内）后，同
 // transition_id 重试不再命中 dispatched 行作幂等回放证据（修复前恒返回
 // "deduplicated incident receipt has no incident" 硬错误），而是走插入臂
-// applied；插入臂对永生 dispatched 行占据的 (projection_key, dedupe_key)
+// applied；插入臂对保留期内 dispatched 行占据的 (projection_key, dedupe_key)
 // 唯一键冲突重置复用（status 回 pending 重新派发，供重建 incident 行投影；
 // 纯 INSERT 在此撞 23505）。
 func TestT87DispatchedOutboxMissingIncidentRetriesViaInsert(t *testing.T) {

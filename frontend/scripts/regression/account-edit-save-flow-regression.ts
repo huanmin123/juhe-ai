@@ -108,7 +108,7 @@ assert.match(errorPolicyLoaderSource, /loadInheritedErrorPolicyRules\(advanced\.
 assert.match(errorPolicyLoaderSource, /filter\(\(rule\) => rule\.source === 'system' && rule\.inherited === true && rule\.editable === false\)/, '只有不可编辑系统规则可进入继承展示列表')
 assert.match(errorPolicyLoaderSource, /inheritedErrorPolicyRules: systemInheritedErrorPolicyRulesPreview\(\)/, '克隆账户在尚无高级详情 DTO 时也必须展示只读系统规则')
 assert.match(editFormSource, /inheritedErrorPolicyRules\.value = systemInheritedErrorPolicyRulesPreview\(\)/, '新建账户在尚无高级详情 DTO 时也必须展示只读系统规则')
-assert.match(errorPolicyTypesSource, /status_codes: '402, 403'/, '上游额度不足规则前端预览必须使用逗号分隔的 402、403 状态码')
+assert.match(errorPolicyTypesSource, /status_codes: '402, 403, 429'/, '上游额度不足规则前端预览必须使用逗号分隔的 402、403、429 状态码')
 assert.match(editModalSource, /:inherited-error-policy-rules="inheritedErrorPolicyRules"/, '错误策略卡片必须接收独立继承规则列表')
 assert.match(editModalSource, /v-model:error-handling-rule-overrides="form\.errorHandlingRuleOverrides"/, '内置规则覆盖必须通过错误策略卡片传入并保持保存模型')
 assert.doesNotMatch(editModalSource, /AccountQuotaRecoveryPolicyCard|quota-recovery-policy/, '账户编辑弹窗不得保留独立额度恢复策略配置')

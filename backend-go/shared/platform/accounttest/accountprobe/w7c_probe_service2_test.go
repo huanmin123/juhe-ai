@@ -392,12 +392,21 @@ func TestW7CHybridAndLimitedArms(t *testing.T) {
 
 	// Limited diagnostics mask failure messages (the quota-specific wording
 	// depends on accountquality's rule table and is asserted as masked here).
+	// 系统额度规则扩展后 429 只认稳定额度错误码：insufficient_quota 命中显示
+	// 「上游额度不足」，普通频控码仍保持通用脱敏文案。
 	challenge := CreateOutputChallenge()
 	limited := classifyResponse(probeView("https://upstream.example.com"), ProtocolOpenAI, ModeChatJSON,
 		`{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}`,
 		map[string]string{}, http.StatusTooManyRequests, 10, 20, challenge, true)
-	if limited.Result.Success || limited.Result.Message != "上游请求失败" {
+	if limited.Result.Success || limited.Result.Message != "上游额度不足" {
 		t.Fatalf("limited quota message: %+v", limited.Result)
+	}
+	// 429 普通频控不是余额/额度耗尽，仍按通用脱敏文案。
+	rateLimited := classifyResponse(probeView("https://upstream.example.com"), ProtocolOpenAI, ModeChatJSON,
+		`{"error":{"code":"rate_limit_exceeded","message":"Too many requests"}}`,
+		map[string]string{}, http.StatusTooManyRequests, 10, 20, challenge, true)
+	if rateLimited.Result.Success || rateLimited.Result.Message != "上游请求失败" {
+		t.Fatalf("limited rate-limit message: %+v", rateLimited.Result)
 	}
 	// Non-quota failures collapse into the generic masked message.
 	other := classifyResponse(probeView("https://upstream.example.com"), ProtocolOpenAI, ModeChatJSON,

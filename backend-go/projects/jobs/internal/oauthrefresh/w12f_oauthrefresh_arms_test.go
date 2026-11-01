@@ -57,7 +57,7 @@ func TestW12fOauthClosedStoreArms(t *testing.T) {
 	}
 
 	// availability.go 查询链第一错误。
-	if _, err := store.SyncApiKeyScheduleStatuses(ctx, now, 10); err == nil {
+	if _, err := store.SyncApiKeyScheduleStatuses(ctx, now, 10, nil); err == nil {
 		t.Fatal("句柄关闭后 SyncApiKeyScheduleStatuses 必须报错")
 	}
 	if _, err := store.SyncAccountScheduleStatuses(ctx, now, 10, nil); err == nil {
