@@ -24,11 +24,17 @@ import (
 	"strings"
 )
 
-// entryMappingPairTargetModes 是设计 §5.2 固定 endpoint family 矩阵的 17 个
+// entryMappingPairTargetModes 是设计 §5.2 固定 endpoint family 矩阵的 18 个
 // 允许 (source, target) pair 及其全部可执行 target mode 形态（§5.3 唯一选择
 // 函数的写侧输入）。矩阵外的 pair 一律拒绝（§5.2 权威，本包唯一实现）。
 var entryMappingPairTargetModes = map[string][]string{
 	"chat_completions\x00chat_completions":        {"chat_json", "chat_sse"},
+	// §5.2 #18：responses→responses 是同族改名映射（Responses 原生上游的
+	// 客户端模型别名），不是跨协议 bridge；运行时
+	// isOpenAIModelMappingRuntimeConversionSupported 的 source==upstream 分支
+	// 已按同族放行，前端下拉与生产存量（144 行）也按同族配置，写侧矩阵曾漏
+	// 该项导致此类映射保存恒 400。
+	"responses\x00responses":                      {"responses_json", "responses_sse"},
 	"responses\x00chat_completions":               {"chat_sse"},
 	"messages\x00chat_completions":                {"chat_json", "chat_sse"},
 	"generate_content\x00chat_completions":        {"chat_json"},
@@ -54,17 +60,21 @@ var entryMappingPairTargetModes = map[string][]string{
 // modes 交集上可执行（§5.3）：文本目标要求至少一个 source shape 的 target mode
 // 同时落在连接 account_endpoint_modes 与模型 supported_endpoint_modes_json 交
 // 集内；视频目标要求四个 mode 全部落入交集；TTS 目标必须有 audio_speech。
+//
+// 失败文案一律中文：kernel localize 对不含 CJK 的 400 文案会改写为状态默认
+// 「请求参数无效」，英文原文从响应侧不可见（BUG-0337 已定的可归因口径）。
 func validateEntryMappingFamilyLinkage(sourceFamily, targetFamily string, connectionModes, modelModes []string) error {
 	pairModes, ok := entryMappingPairTargetModes[sourceFamily+"\x00"+targetFamily]
 	if !ok {
-		return &ValidationError{Message: fmt.Sprintf("mapping_target_unsupported: family pair %s->%s is not in the §5.2 matrix", sourceFamily, targetFamily)}
+		return &ValidationError{Message: fmt.Sprintf("账号模型别名不支持 %s 到 %s 的上游协议转换，请改用混合供应商账户",
+			accountModelMappingEndpointFamilyLabel(sourceFamily), accountModelMappingEndpointFamilyLabel(targetFamily))}
 	}
 	connectionSet := entryModeSet(connectionModes)
 	modelSet := entryModeSet(modelModes)
 	if targetFamily == "video_generation" {
 		for _, mode := range pairModes {
 			if !connectionSet[mode] || !modelSet[mode] {
-				return &ValidationError{Message: "mapping_target_unsupported: video target requires all four modes declared and enabled, missing " + mode}
+				return &ValidationError{Message: "账号模型别名的视频上游协议要求连接与模型同时启用 " + mode + "（video_create/video_get/video_content/video_cancel 四个形态缺一不可）"}
 			}
 		}
 		return nil
@@ -74,7 +84,8 @@ func validateEntryMappingFamilyLinkage(sourceFamily, targetFamily string, connec
 			return nil
 		}
 	}
-	return &ValidationError{Message: fmt.Sprintf("mapping_target_unsupported: no source shape of %s->%s is executable in connection∩model endpoint modes", sourceFamily, targetFamily)}
+	return &ValidationError{Message: fmt.Sprintf("账号模型别名目标协议 %s 没有可执行的上游形态：目标连接与目标模型的接口能力交集为空，请先启用对应接口能力",
+		accountModelMappingEndpointFamilyLabel(targetFamily))}
 }
 
 func entryModeSet(values []string) map[string]bool {
@@ -120,20 +131,20 @@ func (s *Store) resolveEntryConnectionID(ctx context.Context, q queryer, account
 		case 1:
 			return connections[0].ID, nil
 		case 0:
-			return "", &ValidationError{Message: "mapping_target_unsupported: 账户没有启用的上游连接，无法解析映射目标连接"}
+			return "", &ValidationError{Message: "账号模型别名未配置上游连接：账户没有启用的上游连接，无法解析映射目标连接"}
 		default:
 			candidates := make([]string, 0, len(connections))
 			for _, connection := range connections {
 				candidates = append(candidates, connection.Preset)
 			}
-			return "", &ValidationError{Message: "mapping_target_unsupported: 账户有多个启用的上游连接，映射行必须指定 targetConnectionPresetCode，候选：" + strings.Join(candidates, "、")}
+			return "", &ValidationError{Message: "账号模型别名必须指定上游连接：账户有多个启用的上游连接，映射行必须指定 targetConnectionPresetCode，候选：" + strings.Join(candidates, "、")}
 		}
 	}
 	var connectionID string
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("account_connections")+`
 		WHERE account_id = ? AND connection_preset_code = ? AND enabled = 1`), accountID, preset).Scan(&connectionID)
 	if err != nil {
-		return "", &ValidationError{Message: fmt.Sprintf("mapping_target_unsupported: connection preset %q resolves to no enabled account connection", preset)}
+		return "", &ValidationError{Message: fmt.Sprintf("上游连接预设 %q 不存在或未启用，请检查账号连接配置", preset)}
 	}
 	return connectionID, nil
 }
@@ -149,7 +160,7 @@ func (s *Store) resolveEntryModelID(ctx context.Context, q queryer, vendor, owne
 		ORDER BY CASE scope WHEN 'personal' THEN 0 WHEN 'global' THEN 1 ELSE 2 END, id
 		LIMIT 1`), vendor, model, owner).Scan(&id)
 	if err != nil {
-		return "", &ValidationError{Message: fmt.Sprintf("mapping_target_unsupported: target model %q resolves to no active owner-visible models row", model)}
+		return "", &ValidationError{Message: fmt.Sprintf("目标模型 %q 不在当前供应商模型目录中，或已停用/不可见", model)}
 	}
 	return id, nil
 }

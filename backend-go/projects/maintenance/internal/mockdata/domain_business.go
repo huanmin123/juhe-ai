@@ -339,7 +339,7 @@ const (
 	// 支持模型的回落模型（媒体设计 §4.2 的 OpenAI 视频基准模型）。
 	mockVideoModelFallback = "sora-2"
 	// mockEntrySourceFamily / mockEntryTargetFamily 是 account_entry_mappings
-	// 的 endpoint family 对（设计 §5.2 允许 17 对中的 #1：
+	// 的 endpoint family 对（设计 §5.2 允许 18 对中的 #1：
 	// chat_completions→chat_completions，形态 chat_json/chat_sse）。
 	mockEntrySourceFamily = "chat_completions"
 	mockEntryTargetFamily = "chat_completions"
