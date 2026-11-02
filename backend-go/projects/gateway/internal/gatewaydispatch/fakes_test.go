@@ -295,6 +295,10 @@ func (f *fakeConcurrencyStore) LoadCurrentByLaneAsync(ctx context.Context, accou
 	return map[string]int{}, nil
 }
 
+func (f *fakeConcurrencyStore) LoadCurrentRPMAsync(ctx context.Context, accountIDs []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (f *fakeConcurrencyStore) TryAcquireAsync(ctx context.Context, accountID string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error) {
 	if f.exhausted {
 		return ConcurrencySlot{Acquired: false, Current: f.limit, Limit: f.limit, Lane: options.Lane}, nil

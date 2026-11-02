@@ -287,19 +287,22 @@ func (d *Deps) loadAccountSupportedModels(ctx context.Context, ids []string) (ma
 
 // accountAddBody mirrors accountPushSchema (strict).
 type accountAddBody struct {
-	TargetUsername       string
-	TargetDisplayName    *string
-	TargetGroupName      string
-	ProviderCode         string
-	ProfileID            string
-	Name                 string
-	AccountType          string
-	BaseURL              string
-	APIKey               string
-	SupportedModels      *[]string
-	Status               string
-	HasStatus            bool
-	ConcurrencyLimit     *int
+	TargetUsername    string
+	TargetDisplayName *string
+	TargetGroupName   string
+	ProviderCode      string
+	ProfileID         string
+	Name              string
+	AccountType       string
+	BaseURL           string
+	APIKey            string
+	SupportedModels   *[]string
+	Status            string
+	HasStatus         bool
+	ConcurrencyLimit  *int
+	// RPMLimit 是公开 API 的每分钟请求上限入参（AI账户每分钟请求上限设计 §6.4）：
+	// 0..1000000，0 = 不限制，nil = 未提交（缺省落 0）。
+	RPMLimit             *int
 	Priority             *int
 	AvailabilitySchedule any
 	HasSchedule          bool
@@ -319,7 +322,7 @@ type accountAddBody struct {
 func parseAccountAddBody(body map[string]any) (*accountAddBody, string) {
 	allowed := []string{"targetUsername", "targetDisplayName", "targetGroupName", "providerCode",
 		"providerProtocolProfileId", "name", "type", "baseUrl", "apiKey", "supportedModels",
-		"status", "concurrencyLimit", "priority", "availabilitySchedule", "notes",
+		"status", "concurrencyLimit", "rpmLimit", "priority", "availabilitySchedule", "notes",
 		"connections", "healthCheckConnectionPresetCode", "healthCheckEndpointMode", "healthCheckModel",
 		"backgroundProbeEnabled"}
 	unknown := strictObjectKeys(body, allowed...)
@@ -426,6 +429,15 @@ func parseAccountAddBody(body map[string]any) (*accountAddBody, string) {
 			return nil, issue
 		}
 		parsed.ConcurrencyLimit = &limit
+	}
+	// 每分钟请求上限（设计 §6.4）：0..1000000，0 = 不限制；null 与 add 面其他
+	// 数值字段同语义视为未提供。
+	if bodyHas(body, "rpmLimit") && body["rpmLimit"] != nil {
+		limit, _, issue := bodyOptionalInt(body["rpmLimit"], true, 0, 1000000)
+		if issue != "" {
+			return nil, issue
+		}
+		parsed.RPMLimit = &limit
 	}
 	if bodyHas(body, "priority") && body["priority"] != nil {
 		priority, _, issue := bodyOptionalInt(body["priority"], true, 0, 100000)
@@ -617,6 +629,7 @@ func (d *Deps) addAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	input.BackgroundProbeEnabled = parsed.BackgroundProbeEnabled
 	input.ConcurrencyLimit = parsed.ConcurrencyLimit
+	input.RPMLimit = parsed.RPMLimit
 	input.Priority = parsed.Priority
 	if parsed.HasSchedule {
 		input.AvailabilitySchedule = parsed.AvailabilitySchedule
@@ -716,22 +729,26 @@ type accountUpdateBody struct {
 	BackgroundProbeEnabled *bool
 	ConcurrencyLimit       *int
 	HasConcurrencyLimit    bool
-	Priority               *int
-	HasPriority            bool
-	AvailabilitySchedule   any
-	HasSchedule            bool
-	Notes                  *string
-	HasNotes               bool
+	// RPMLimit 是公开 API 更新面的每分钟请求上限入参（设计 §6.4）：0..1000000，
+	// 0 = 解除限制；经 accounts.PatchInput 走统一校验与授权实例守卫。
+	RPMLimit             *int
+	HasRPMLimit          bool
+	Priority             *int
+	HasPriority          bool
+	AvailabilitySchedule any
+	HasSchedule          bool
+	Notes                *string
+	HasNotes             bool
 }
 
 var accountUpdateMutableFields = []string{"name", "baseUrl", "apiKey", "supportedModels", "status",
 	"backgroundProbeEnabled",
-	"concurrencyLimit", "priority", "availabilitySchedule", "notes"}
+	"concurrencyLimit", "rpmLimit", "priority", "availabilitySchedule", "notes"}
 
 func parseAccountUpdateBody(body map[string]any) (*accountUpdateBody, string) {
 	allowed := []string{"accountId", "targetUsername", "targetGroupName", "providerCode",
 		"providerProtocolProfileId", "name", "type", "baseUrl", "apiKey", "supportedModels",
-		"status", "backgroundProbeEnabled", "concurrencyLimit", "priority", "availabilitySchedule", "notes"}
+		"status", "backgroundProbeEnabled", "concurrencyLimit", "rpmLimit", "priority", "availabilitySchedule", "notes"}
 	unknown := strictObjectKeys(body, allowed...)
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
@@ -859,6 +876,18 @@ func parseAccountUpdateBody(body map[string]any) (*accountUpdateBody, string) {
 			return nil, issue
 		}
 		parsed.ConcurrencyLimit, parsed.HasConcurrencyLimit = &limit, true
+	}
+	// 每分钟请求上限（设计 §6.4）：0..1000000，0 = 解除限制；null 与 update 面
+	// concurrencyLimit 同语义按类型错误拒绝。
+	if bodyHas(body, "rpmLimit") {
+		if body["rpmLimit"] == nil {
+			return nil, zodInvalidType("number", nil)
+		}
+		limit, _, issue := bodyOptionalInt(body["rpmLimit"], true, 0, 1000000)
+		if issue != "" {
+			return nil, issue
+		}
+		parsed.RPMLimit, parsed.HasRPMLimit = &limit, true
 	}
 	if bodyHas(body, "priority") {
 		if body["priority"] == nil {
@@ -1011,6 +1040,9 @@ func (d *Deps) updateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if parsed.HasConcurrencyLimit {
 		input.ConcurrencyLimit = parsed.ConcurrencyLimit
+	}
+	if parsed.HasRPMLimit {
+		input.RPMLimit = parsed.RPMLimit
 	}
 	if parsed.HasPriority {
 		priority := 0

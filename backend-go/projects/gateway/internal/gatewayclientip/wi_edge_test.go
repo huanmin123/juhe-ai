@@ -283,8 +283,8 @@ func TestWIGatewayClientIPKeyHelpers(t *testing.T) {
 	if len(set) != 1 || !set["a"] {
 		t.Fatalf("uniqueAccountIDSet=%v", set)
 	}
-	capacities := buildAccountCapacities([]string{"a", "a", ""}, map[string]int{"a": 5}, GroupSchedulingPolicy{})
-	if len(capacities) != 1 || capacities["a"].hardLimit != 5 || capacities["a"].imageLaneLimit != 5 {
+	capacities := buildAccountCapacities([]string{"a", "a", ""}, map[string]int{"a": 5}, map[string]int{"a": 60}, GroupSchedulingPolicy{})
+	if len(capacities) != 1 || capacities["a"].hardLimit != 5 || capacities["a"].imageLaneLimit != 5 || capacities["a"].rpmLimit != 60 {
 		t.Fatalf("capacities=%v", capacities)
 	}
 	// isActiveClientIPPolicyShape 与 ModelRankByAccountID 非 nil。

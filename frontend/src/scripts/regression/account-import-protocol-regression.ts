@@ -26,6 +26,7 @@ interface ImportTemplateAccount {
   healthCheckConnectionPresetCode?: unknown
   healthCheckModel?: unknown
   healthCheckEndpointMode?: unknown
+  rpmLimit?: unknown
   modelMappings?: Array<{
     sourceModel?: string
     sourceEndpointFamily?: string
@@ -179,6 +180,15 @@ assertTrue(template.accounts?.every((account) => Array.isArray(account.connectio
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckConnectionPresetCode === 'string' && account.healthCheckConnectionPresetCode.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckConnectionPresetCode')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckModel === 'string' && account.healthCheckModel.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckModel')
 assertTrue(template.accounts?.every((account) => typeof account.healthCheckEndpointMode === 'string' && account.healthCheckEndpointMode.trim().length > 0) === true, '导入模板每个账号都必须显式提交 healthCheckEndpointMode')
+
+// ---- rpmLimit（RPM 设计 §6.4）：模板 9 账号统一补 rpmLimit: 0，字段表与规则同步 ----
+
+assertTrue(
+  template.accounts?.every((account) => account.rpmLimit === 0) === true,
+  '导入模板每个账号都必须显式补 rpmLimit: 0（每分钟请求上限，0 表示不限制）'
+)
+assertMatch(accountImportProtocolMarkdown, /\| `rpmLimit` \| 否 \| number \| 每分钟请求上限；非负整数，0 或缺省表示不限制。 \|/, '协议 Markdown 应把 rpmLimit 暴露为导入字段')
+assertMatch(accountImportProtocolMarkdown, /`rpmLimit` 必须是非负整数/, '协议 Markdown 应说明 rpmLimit 非负整数规则')
 
 assertMatch(aiConversionPrompt, /juhe-ai-account-import v1 JSON/, 'AI 提示词应继续要求输出当前导入协议 JSON')
 assertMatch(aiConversionPrompt, /只输出合法 JSON/, 'AI 提示词应继续禁止输出解释或 Markdown')

@@ -66,12 +66,12 @@ func shortenChainWaitBudgets(t *testing.T, fixture *chainFixture) {
 	// [0,3600]，0 表示重试不等待——失败演练里的耗尽/回退语义不依赖该
 	// 等待，此前写 10 使每个 dead-upstream 链路测试空烧 ~20s（2 次重试
 	// ×10s），是整包超出测试超时预算的主因（w14n）。
-	if _, err := fixture.db.Exec(fixtureBind(`UPDATE system_settings SET value_json = '0' WHERE key = ?`),"temporaryUnschedulableRetryIntervalSeconds"); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE system_settings SET value_json = '0' WHERE key = ?`), "temporaryUnschedulableRetryIntervalSeconds"); err != nil {
 		t.Fatalf("shorten %s: %v", "temporaryUnschedulableRetryIntervalSeconds", err)
 	}
 	// 10 是 noAvailableAccountWaitTimeoutSeconds 的校验下限（读侧
 	// numberSetting [10,3600]），只能取到 10。
-	if _, err := fixture.db.Exec(fixtureBind(`UPDATE system_settings SET value_json = '10' WHERE key = ?`),"noAvailableAccountWaitTimeoutSeconds"); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE system_settings SET value_json = '10' WHERE key = ?`), "noAvailableAccountWaitTimeoutSeconds"); err != nil {
 		t.Fatalf("shorten %s: %v", "noAvailableAccountWaitTimeoutSeconds", err)
 	}
 }
@@ -201,7 +201,7 @@ func TestGatewayChainDispatchExhaustedRendersFixedCopy(t *testing.T) {
 	fixture := newChainFixture(t)
 	shortenChainWaitBudgets(t, fixture)
 	dead := newDeadUpstreamAddr(t)
-	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": dead}), fixture.accountID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`), mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": dead}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 	// B4 第一批单连接事实源：上游指向同步改连接行。
@@ -333,6 +333,74 @@ func TestV1DispatchLoopExhaustedAccounts(t *testing.T) {
 
 // TestV1DispatchLoopExhaustedCopyBranches covers the two fixed-copy branches
 // of renderDispatchExhausted plus the unexpected-error contract.
+// TestV1DispatchLoopRPMExhaustedRenders429 covers AI 账户每分钟请求上限设计
+// §5.4 的个人分组终态：最后分类为 account_rpm_exhausted 时 429 + Retry-After
+// （ceil(RetryAfterMs/1000) 收敛 1..60）+ 固定频次文案与网关容量审计；并发耗尽
+// 终态保持既有 503 upstream 契约不变。
+func TestV1DispatchLoopRPMExhaustedRenders429(t *testing.T) {
+	sink := &recordingFailureSink{}
+	loop := newV1TestLoop(t, sink)
+
+	loop.renderDispatchExhausted(context.Background(), &gatewaydispatch.UpstreamAttemptError{
+		Message:          "所有上游账户均失败；最后一次尝试 账户一 rpm:limit 返回 账户每分钟请求数已达到上限 60/60（约 23 秒后重置）",
+		LastAttempt:      &gatewaydispatch.UpstreamAttempt{AccountID: "acc_1", UpstreamURL: "rpm:limit", RetryAfterMs: 23_400},
+		FailedAccountIDs: []string{"acc_1"},
+	})
+	if len(sink.inputs) != 1 {
+		t.Fatalf("inputs=%d", len(sink.inputs))
+	}
+	input := sink.inputs[0]
+	if input.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", input.StatusCode)
+	}
+	if input.ResponsePayload.Error.Message != "上游账户每分钟请求数已达上限，请稍后重试" ||
+		input.ResponsePayload.Error.Type != "rate_limit_exceeded" || input.ResponsePayload.Error.Code != "rate_limit_exceeded" {
+		t.Fatalf("payload wrong: %+v", input.ResponsePayload)
+	}
+	if input.Audit.Outcome != gatewaypreauth.AuditOutcomeGatewayFailed || input.Audit.ErrorCode != "account_rpm_limit" {
+		t.Fatalf("audit wrong: %+v", input.Audit)
+	}
+	if input.FailureScope != "capacity" || input.RecordUsage == nil || *input.RecordUsage {
+		t.Fatalf("failureScope/recordUsage wrong: %+v / %+v", input.FailureScope, input.RecordUsage)
+	}
+	if got := loop.res.Header().Get("Retry-After"); got != "24" {
+		t.Fatalf("Retry-After = %q, want 24（ceil(23400/1000)）", got)
+	}
+
+	// 契约：Retry-After 上限 60 秒封顶。
+	sink.inputs = nil
+	loop2 := newV1TestLoop(t, sink)
+	loop2.renderDispatchExhausted(context.Background(), &gatewaydispatch.UpstreamAttemptError{
+		Message:     "rpm exhausted",
+		LastAttempt: &gatewaydispatch.UpstreamAttempt{AccountID: "acc_1", UpstreamURL: "rpm:limit", RetryAfterMs: 600_000},
+	})
+	if len(sink.inputs) != 1 {
+		t.Fatalf("inputs=%d", len(sink.inputs))
+	}
+	if got := loop2.res.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want 60（封顶）", got)
+	}
+
+	// 契约：并发耗尽终态保持现状（503 upstream），不携带 Retry-After。
+	sink.inputs = nil
+	loop3 := newV1TestLoop(t, sink)
+	loop3.renderDispatchExhausted(context.Background(), &gatewaydispatch.UpstreamAttemptError{
+		Message:     "所有上游账户均失败；最后一次尝试 账户一 concurrency:limit 返回 账户并发已达到上限 4/4",
+		LastAttempt: &gatewaydispatch.UpstreamAttempt{AccountID: "acc_1", UpstreamURL: "concurrency:limit"},
+	})
+	if len(sink.inputs) != 1 {
+		t.Fatalf("inputs=%d", len(sink.inputs))
+	}
+	concurrencyInput := sink.inputs[0]
+	if concurrencyInput.StatusCode != http.StatusServiceUnavailable ||
+		concurrencyInput.ResponsePayload.Error.Message != "上游暂时不可用，请重试" {
+		t.Fatalf("并发耗尽终态被改变: %+v", concurrencyInput)
+	}
+	if got := loop3.res.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("并发耗尽不应携带 Retry-After, got %q", got)
+	}
+}
+
 func TestV1DispatchLoopExhaustedCopyBranches(t *testing.T) {
 	sink := &recordingFailureSink{}
 	loop := newV1TestLoop(t, sink)
@@ -501,7 +569,7 @@ func TestAuditCaptureLifecycleClosesOverChainRequest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-audit","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"审计"},"finish_reason":"stop"}]}`))
 	}))
 	defer upstream.Close()
-	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`),		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+	if _, err := fixture.db.Exec(fixtureBind(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`), mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
 	// B4 第一批单连接事实源：上游指向同步改连接行。

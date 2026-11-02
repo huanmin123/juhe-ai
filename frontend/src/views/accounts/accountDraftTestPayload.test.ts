@@ -23,6 +23,7 @@ function editDetail(credentials: Record<string, unknown>, type: 'api_key' | 'oau
     credentials,
     status: 'active',
     concurrencyLimit: 5,
+    rpmLimit: 0,
     priority: 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,

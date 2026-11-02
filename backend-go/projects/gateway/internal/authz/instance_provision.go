@@ -110,6 +110,7 @@ const sourceAccountColumns = `COALESCE(vendor_code, '') AS vendor_code,
 		COALESCE(name, '') AS name,
 		COALESCE(type, '') AS type,
 		COALESCE(concurrency_limit, 0) AS concurrency_limit,
+		COALESCE(rpm_limit, 0) AS rpm_limit,
 		COALESCE(background_probe_enabled, 1) AS background_probe_enabled,
 		COALESCE(temporary_unavailable_continuous_probe_enabled, 0) AS temporary_unavailable_continuous_probe_enabled,
 		COALESCE(health_check_model, '') AS health_check_model,
@@ -144,6 +145,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		name                    string
 		accountType             string
 		concurrencyLimit        int
+		rpmLimit                int
 		backgroundProbeEnabled  int
 		continuousProbeEnabled  int
 		healthCheckModel        string
@@ -154,6 +156,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), in.SourceAccountID).
 		Scan(&source.vendorCode, &source.connectionDriverCode, &source.protocolCode,
 			&source.protocolVersion, &source.name, &source.accountType, &source.concurrencyLimit,
+			&source.rpmLimit,
 			&source.backgroundProbeEnabled, &source.continuousProbeEnabled, &source.healthCheckModel, &source.healthCheckEndpointMode,
 			&source.capabilityDomain)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -240,7 +243,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("accounts")+`
 		(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
-		 proxy_profile_id, concurrency_limit,
+		 proxy_profile_id, concurrency_limit, rpm_limit,
 		 priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message,
 		 cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
@@ -249,10 +252,10 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		 authorization_instance_source_account_id, authorization_instance_authorization_id,
 		 authorization_instance_owner_system_account_id,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, in.GranteeID, nullableVendorCode(source.vendorCode), source.connectionDriverCode, source.protocolCode,
 		source.protocolVersion, name, source.accountType, instanceEmptyCredentials, "",
-		source.concurrencyLimit, 0, 0, 0,
+		source.concurrencyLimit, source.rpmLimit, 0, 0, 0,
 		source.backgroundProbeEnabled, source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
 		source.capabilityDomain,
 		in.SourceAccountID, in.RuntimeAuthorizationID, in.OwnerID, now, now); err != nil {

@@ -295,33 +295,37 @@ func (s AccountAPIKeyRuntimeSelectionState) Clone() AccountAPIKeyRuntimeSelectio
 // decrypted upstream credentials and therefore never leaves the process:
 // exactly like the Node service, it is only cached process-locally.
 type OpenAIAccountSecret struct {
-	ID                                string                               `json:"id"`
-	ConfigRevision                    *int64                               `json:"configRevision,omitempty"`
-	DispatchRevision                  *int64                               `json:"dispatchRevision,omitempty"`
-	ProviderProtocolProfileID         string                               `json:"providerProtocolProfileId"`
-	ProtocolCode                      string                               `json:"protocolCode"`
-	ProtocolVersion                   string                               `json:"protocolVersion"`
-	SystemAccountID                   string                               `json:"systemAccountId"`
-	AccountOwnerSystemAccountID       string                               `json:"accountOwnerSystemAccountId"`
-	GroupOwnerSystemAccountID         string                               `json:"groupOwnerSystemAccountId"`
-	AccountAccessType                 string                               `json:"accountAccessType"`
-	GroupAccessType                   string                               `json:"groupAccessType"`
-	AccountAuthorizationID            *string                              `json:"accountAuthorizationId,omitempty"`
-	AccountAuthorizationExpiresAt     *string                              `json:"accountAuthorizationExpiresAt,omitempty"`
-	AccountAuthorizationQuotaLimited  *bool                                `json:"accountAuthorizationQuotaLimited,omitempty"`
-	AccountAuthorizationSourceType    *string                              `json:"accountAuthorizationSourceType,omitempty"`
-	AccountAuthorizationSourceTeamID  *string                              `json:"accountAuthorizationSourceTeamId,omitempty"`
-	BindingSystemAccountID            *string                              `json:"bindingSystemAccountId,omitempty"`
-	BoundGroupID                      *string                              `json:"boundGroupId,omitempty"`
-	GroupAuthorizationID              *string                              `json:"groupAuthorizationId,omitempty"`
-	GroupAuthorizationExpiresAt       *string                              `json:"groupAuthorizationExpiresAt,omitempty"`
-	GroupAuthorizationQuotaLimited    *bool                                `json:"groupAuthorizationQuotaLimited,omitempty"`
-	GroupAuthorizationSourceType      *string                              `json:"groupAuthorizationSourceType,omitempty"`
-	GroupAuthorizationSourceTeamID    *string                              `json:"groupAuthorizationSourceTeamId,omitempty"`
-	Name                              string                               `json:"name"`
-	Type                              string                               `json:"type"`
-	Status                            string                               `json:"status"`
-	ConcurrencyLimit                  int                                  `json:"concurrencyLimit"`
+	ID                               string  `json:"id"`
+	ConfigRevision                   *int64  `json:"configRevision,omitempty"`
+	DispatchRevision                 *int64  `json:"dispatchRevision,omitempty"`
+	ProviderProtocolProfileID        string  `json:"providerProtocolProfileId"`
+	ProtocolCode                     string  `json:"protocolCode"`
+	ProtocolVersion                  string  `json:"protocolVersion"`
+	SystemAccountID                  string  `json:"systemAccountId"`
+	AccountOwnerSystemAccountID      string  `json:"accountOwnerSystemAccountId"`
+	GroupOwnerSystemAccountID        string  `json:"groupOwnerSystemAccountId"`
+	AccountAccessType                string  `json:"accountAccessType"`
+	GroupAccessType                  string  `json:"groupAccessType"`
+	AccountAuthorizationID           *string `json:"accountAuthorizationId,omitempty"`
+	AccountAuthorizationExpiresAt    *string `json:"accountAuthorizationExpiresAt,omitempty"`
+	AccountAuthorizationQuotaLimited *bool   `json:"accountAuthorizationQuotaLimited,omitempty"`
+	AccountAuthorizationSourceType   *string `json:"accountAuthorizationSourceType,omitempty"`
+	AccountAuthorizationSourceTeamID *string `json:"accountAuthorizationSourceTeamId,omitempty"`
+	BindingSystemAccountID           *string `json:"bindingSystemAccountId,omitempty"`
+	BoundGroupID                     *string `json:"boundGroupId,omitempty"`
+	GroupAuthorizationID             *string `json:"groupAuthorizationId,omitempty"`
+	GroupAuthorizationExpiresAt      *string `json:"groupAuthorizationExpiresAt,omitempty"`
+	GroupAuthorizationQuotaLimited   *bool   `json:"groupAuthorizationQuotaLimited,omitempty"`
+	GroupAuthorizationSourceType     *string `json:"groupAuthorizationSourceType,omitempty"`
+	GroupAuthorizationSourceTeamID   *string `json:"groupAuthorizationSourceTeamId,omitempty"`
+	Name                             string  `json:"name"`
+	Type                             string  `json:"type"`
+	Status                           string  `json:"status"`
+	ConcurrencyLimit                 int     `json:"concurrencyLimit"`
+	// RPMLimit 是账户每分钟请求上限（AI 账户每分钟请求上限设计 §3，0 视为不
+	// 限制）；授权实例经来源账户 resource_rpm_limit 投影，与 ConcurrencyLimit
+	// 同规则。
+	RPMLimit                          int                                  `json:"rpmLimit"`
 	Priority                          int                                  `json:"priority"`
 	SuperPriorityEnabled              bool                                 `json:"superPriorityEnabled"`
 	FallbackEnabled                   bool                                 `json:"fallbackEnabled"`

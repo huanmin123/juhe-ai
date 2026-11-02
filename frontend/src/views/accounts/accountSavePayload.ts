@@ -72,6 +72,8 @@ export type AccountSavePayload = {
   connections?: AccountConnectionPayload[]
   healthCheckConnectionPresetCode?: string
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §6.3）：0 = 不限制；授权实例载荷不得携带该键。 */
+  rpmLimit: number
   priority: number
   status: AccountFormModel['status']
   superPriorityEnabled: boolean
@@ -116,6 +118,8 @@ export type AccountOAuthCreateCommonPayload = {
   name?: string
   groupId?: string
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §6.3）：0 = 不限制；授权实例载荷不得携带该键。 */
+  rpmLimit: number
   priority: number
   status: AccountFormModel['status']
   superPriorityEnabled: boolean
@@ -369,6 +373,7 @@ export function buildAccountSavePayload(input: {
       ? { connections, healthCheckConnectionPresetCode: connectionPresetCode }
       : {}),
     concurrencyLimit: input.form.concurrencyLimit,
+    rpmLimit: input.form.rpmLimit,
     priority: input.form.priority,
     status: input.form.status,
     superPriorityEnabled: input.form.privilege === 'super_priority',
@@ -405,6 +410,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, statusSel
     // 能在创建时写入，编辑 Base URL 永不生效。
     ...(payload.connections ? { connections: payload.connections } : {}),
     concurrencyLimit: payload.concurrencyLimit,
+    rpmLimit: payload.rpmLimit,
     priority: payload.priority,
     ...(statusSelectionExplicit ? { status: payload.status } : {}),
     superPriorityEnabled: payload.superPriorityEnabled,
@@ -452,6 +458,7 @@ export function buildOAuthCreateCommonPayload(input: {
     ...(input.cloningSourceId && !input.editingId ? { cloneSourceId: input.cloningSourceId } : {}),
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
+    rpmLimit: input.form.rpmLimit,
     priority: input.form.priority,
     status: input.form.status,
     superPriorityEnabled: input.form.privilege === 'super_priority',

@@ -68,8 +68,11 @@ type PatchInput struct {
 	Notes                  *string
 	// Status 是用户状态写入：schedulable 由它派生（T91-3 / B1-10），请求体不再
 	// 携带 schedulable 入参。
-	Status               *string
-	ConcurrencyLimit     *int
+	Status           *string
+	ConcurrencyLimit *int
+	// RPMLimit 是每分钟请求上限（AI账户每分钟请求上限设计 §6.3）：nil = 缺失键
+	// 不改，0 = 显式解除限制；授权实例行提交即 400（与并发同守卫，设计 §3）。
+	RPMLimit             *int
 	Priority             *int
 	SuperPriorityEnabled *bool
 	FallbackEnabled      *bool
@@ -173,6 +176,8 @@ func accountPatchChangeLabel(field string) string {
 		return "运行状态"
 	case "concurrencyLimit":
 		return "并发限制"
+	case "rpmLimit":
+		return "每分钟请求上限"
 	case "priority":
 		return "优先级"
 	case "superPriorityEnabled":
@@ -253,6 +258,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		credentialsEncrypted      string
 		status                    string
 		concurrencyLimit          int
+		rpmLimit                  int
 		priority                  int
 		superPriorityEnabled      int
 		fallbackEnabled           int
@@ -304,6 +310,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.name, accounts.notes, accounts.type,
 			accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
+			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			accounts.schedulable, accounts.availability_schedule_json, accounts.account_expires_at,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
@@ -341,6 +348,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID, &row.name, &row.notes,
 		&row.accountType, &row.credentialsEncrypted, &row.status, &row.concurrencyLimit,
+		&row.rpmLimit,
 		&row.priority, &row.superPriorityEnabled, &row.fallbackEnabled, &row.schedulable,
 		&row.availabilitySchedule, &row.accountExpiresAt, &row.lastErrorCode,
 		&row.lastErrorMessage, &row.lastErrorTraceID, &row.cooldownUntil,
@@ -586,8 +594,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 对实例行写 accounts.* 调度标记违反「实例不写账户级调度标记」契约，且会
 	// 经 BUG-0258 臂把实例 local_* 覆盖成实例 accounts 值，这里统一拒绝。
 	if row.authorizationID.Valid {
-		if input.ConcurrencyLimit != nil || input.Priority != nil || input.SuperPriorityEnabled != nil || input.FallbackEnabled != nil {
-			return nil, &ValidationError{Message: "授权实例的调度配置（并发上限/优先级/超级优先/降级备用）请使用授权实例专用接口修改", Code: "authorized_instance_dispatch_field_rejected"}
+		if input.ConcurrencyLimit != nil || input.RPMLimit != nil || input.Priority != nil || input.SuperPriorityEnabled != nil || input.FallbackEnabled != nil {
+			return nil, &ValidationError{Message: "授权实例的调度配置（并发上限/每分钟请求上限/优先级/超级优先/降级备用）请使用授权实例专用接口修改", Code: "authorized_instance_dispatch_field_rejected"}
 		}
 	}
 	if input.ConcurrencyLimit != nil {
@@ -598,6 +606,18 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			addChange("concurrencyLimit", row.concurrencyLimit, *input.ConcurrencyLimit)
 			sets = append(sets, "concurrency_limit = ?")
 			setArgs = append(setArgs, *input.ConcurrencyLimit)
+		}
+	}
+	// 每分钟请求上限（AI账户每分钟请求上限设计 §6.3）：整数且 >= 0，0 = 解除
+	// 限制；缺失键不改（上方 nil 判定），同值幂等不落变更。
+	if input.RPMLimit != nil {
+		if *input.RPMLimit < 0 {
+			return nil, &ValidationError{Message: "每分钟请求上限必须是大于等于 0 的整数"}
+		}
+		if *input.RPMLimit != row.rpmLimit {
+			addChange("rpmLimit", row.rpmLimit, *input.RPMLimit)
+			sets = append(sets, "rpm_limit = ?")
+			setArgs = append(setArgs, *input.RPMLimit)
 		}
 	}
 	if input.Priority != nil {
@@ -2536,6 +2556,7 @@ func patchHasMixedEditField(input PatchInput) bool {
 		input.Notes != nil ||
 		input.Status != nil ||
 		input.ConcurrencyLimit != nil ||
+		input.RPMLimit != nil ||
 		input.Priority != nil ||
 		input.SuperPriorityEnabled != nil ||
 		input.FallbackEnabled != nil ||

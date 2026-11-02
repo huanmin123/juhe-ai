@@ -32,8 +32,11 @@
       />
     </div>
     <div class="dispatch-config-grid">
-      <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
-        <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
+      <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求（1–9999）。达到上限后，调度会等待或尝试其他可用账号。">
+        <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" :max="9999" style="width: 100%" />
+      </a-form-item>
+      <a-form-item label="每分钟请求上限" tooltip="按真实派发到上游的请求计数，每分钟重置；0 表示不限制（0–9999）。达到上限后会先尝试其他账户，全池耗尽时返回 429。">
+        <a-input-number v-model:value="form.rpmLimit" :disabled="authorizedEditing" :min="0" :max="9999" :precision="0" placeholder="0 = 不限制" style="width: 100%" />
       </a-form-item>
       <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。授权账号这里表示当前使用方本地分组内的调度优先级。">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />

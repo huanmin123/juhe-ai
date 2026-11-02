@@ -30,21 +30,40 @@ type AccountConcurrencySource interface {
 	// CurrentAccountConcurrency mirrors getAccountCurrentConcurrency — the
 	// process-local synchronous read (memory driver only).
 	CurrentAccountConcurrency(accountID string, lane string) int
+	// LoadAccountRPMByID 批量读取账户 RPM 窗口计数（AI 账户每分钟请求上限
+	// 设计 §5.2：高并发分组队列的 ready 判定消费）。
+	LoadAccountRPMByID(ctx context.Context, accountIDs []string) (map[string]AccountRPMState, error)
+	// CurrentAccountRPM 返回单账户 RPM 窗口快照（本地驱动的同步读取，与
+	// CurrentAccountConcurrency 同层；Redis 驱动读 HASH）。
+	CurrentAccountRPM(accountID string) AccountRPMState
 	// SubscribeAccountConcurrencyRelease mirrors
 	// subscribeAccountConcurrencyRelease; the returned func unsubscribes.
 	SubscribeAccountConcurrencyRelease(listener func(AccountConcurrencyReleaseEvent)) func()
 }
 
+// AccountRPMState 是账户 RPM 运行态（每分钟请求数计数）的单账户快照：
+// Used 为本自然分钟窗口内已派发的请求次数，Limit 是账户配置上限（tracker
+// 只承载计数事实，不携带配置，读取面恒为 0，由消费方按 accounts 投影补齐），
+// ResetAtMs 是当前窗口结束时刻（Unix 毫秒）。
+type AccountRPMState struct {
+	Used      int
+	Limit     int
+	ResetAtMs int64
+}
+
 // MemoryAccountConcurrency is the in-process account concurrency tracker
 // behind the seam: acquire/release slots with total + lane counters and
 // release notifications (Node tryAcquire/releaseAccountConcurrency local
-// behavior).
+// behavior). RPM（AI 账户每分钟请求上限设计 §4）与并发共用同一互斥临界区：
+// rpmBucket/rpmCount 按自然分钟固定窗口计数，只随成功占位自增，Release 不回退。
 type MemoryAccountConcurrency struct {
 	clock Clock
 
 	mu        sync.Mutex
 	total     map[string]int
 	byLane    map[string]int
+	rpmBucket map[string]int64
+	rpmCount  map[string]int
 	listeners []*listenerHandle
 }
 
@@ -54,44 +73,105 @@ func NewMemoryAccountConcurrency(clock Clock) *MemoryAccountConcurrency {
 		clock = systemClock()
 	}
 	return &MemoryAccountConcurrency{
-		clock:  clock,
-		total:  map[string]int{},
-		byLane: map[string]int{},
+		clock:     clock,
+		total:     map[string]int{},
+		byLane:    map[string]int{},
+		rpmBucket: map[string]int64{},
+		rpmCount:  map[string]int{},
 	}
 }
 
 // AccountConcurrencyAcquireOutcome 是一次原子占位尝试的观测结果：Acquired
 // 表示是否占位成功；Total 与 LaneCurrent 是本次尝试时刻的账户总量与归一化
 // lane 计数（成功时为占位后的值，拒绝时保持原值、两个计数都不自增）。
+// RPMCurrent/RPMLimit/RPMResetAtMs 是同一时刻的 RPM 窗口观测（设计 §4.3）：
+// 供错误文案、终态 Retry-After 与审计使用，拒绝路径同样回带。
 type AccountConcurrencyAcquireOutcome struct {
-	Acquired    bool
-	Total       int
-	LaneCurrent int
+	Acquired     bool
+	Total        int
+	LaneCurrent  int
+	RPMCurrent   int
+	RPMLimit     int
+	RPMResetAtMs int64
 }
 
-// TryAcquire 在单个互斥临界区内完成“账户总量 + lane”双重校验并占位，恢复
-// Node tryAcquireAccountConcurrency 的拒绝语义（current >= limit ||
-// laneCurrent >= laneLimit 即拒绝）：任一计数达到上限即拒绝且不自增，通过才
-// 同时自增 total 与 lane 并返回成功。totalLimit/laneLimit <= 0 视为不设限
-// （与 dispatch 侧“上限>0 才拒绝”的既有语义一致）；lane 非 image 归入 text。
+// rpmWindowAccountConcurrencyID 是账户 RPM 计数的资源 ID（账户级总量，跨
+// lane 与 API Key 统一）。当前生产调用方（chainConcurrencyStore）已把资源 ID
+// 归一（授权实例落来源账户 ID），tracker 直接按传入键计数。
+func rpmWindowResetAtMs(bucket int64) int64 {
+	return (bucket + 1) * 60_000
+}
+
+// TryAcquire 在单个互斥临界区内完成“账户总量 + lane + RPM”三重校验并占位，
+// 恢复 Node tryAcquireAccountConcurrency 的拒绝语义并叠加 RPM 窗口判定（设计
+// §4.3）：并发检查在前、RPM 在后，任一计数达到上限即拒绝且不自增，通过才
+// 同时自增 total、lane 与 rpmCount 并返回成功。totalLimit/laneLimit/rpmLimit
+// <= 0 视为不设限（与 dispatch 侧“上限>0 才拒绝”的既有语义一致）；lane 非
+// image 归入 text。RPM 是默认不启用的可选限额：rpmLimit <= 0 时观测字段保持
+// 0 值且不触碰 RPM map（未配置账户热路径零开销；消费方按 RPMLimit > 0 判定，
+// 不受影响），仅 rpmLimit > 0 时按 bucket = floor(nowMs/60000) 就地惰性重置。
 // 检查与占用同锁执行，消除“先读后判再 Acquire”两步逻辑的并发超卖窗口。
-func (m *MemoryAccountConcurrency) TryAcquire(accountID string, totalLimit int, lane string, laneLimit int) AccountConcurrencyAcquireOutcome {
+func (m *MemoryAccountConcurrency) TryAcquire(accountID string, totalLimit int, lane string, laneLimit int, rpmLimit int) AccountConcurrencyAcquireOutcome {
 	if lane != AccountConcurrencyLaneImage {
 		lane = AccountConcurrencyLaneText
 	}
+	var rpmBucket int64
+	var rpmCurrent int
+	var rpmResetAtMs int64
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	total := m.total[accountID]
 	laneCurrent := m.byLane[accountID+":"+lane]
+	if rpmLimit > 0 {
+		rpmBucket = m.clock.Now().UnixMilli() / 60_000
+		rpmCurrent = m.normalizeRPMWindowLocked(accountID, rpmBucket)
+		rpmResetAtMs = rpmWindowResetAtMs(rpmBucket)
+	}
 	if totalLimit > 0 && total >= totalLimit {
-		return AccountConcurrencyAcquireOutcome{Total: total, LaneCurrent: laneCurrent}
+		return AccountConcurrencyAcquireOutcome{Total: total, LaneCurrent: laneCurrent, RPMCurrent: rpmCurrent, RPMLimit: rpmLimit, RPMResetAtMs: rpmResetAtMs}
 	}
 	if laneLimit > 0 && laneCurrent >= laneLimit {
-		return AccountConcurrencyAcquireOutcome{Total: total, LaneCurrent: laneCurrent}
+		return AccountConcurrencyAcquireOutcome{Total: total, LaneCurrent: laneCurrent, RPMCurrent: rpmCurrent, RPMLimit: rpmLimit, RPMResetAtMs: rpmResetAtMs}
+	}
+	if rpmLimit > 0 && rpmCurrent >= rpmLimit {
+		return AccountConcurrencyAcquireOutcome{Total: total, LaneCurrent: laneCurrent, RPMCurrent: rpmCurrent, RPMLimit: rpmLimit, RPMResetAtMs: rpmResetAtMs}
 	}
 	m.total[accountID] = total + 1
 	m.byLane[accountID+":"+lane] = laneCurrent + 1
-	return AccountConcurrencyAcquireOutcome{Acquired: true, Total: total + 1, LaneCurrent: laneCurrent + 1}
+	outcomeRPMCurrent := 0
+	if rpmLimit > 0 {
+		m.rpmCount[accountID] = rpmCurrent + 1
+		m.rpmBucket[accountID] = rpmBucket
+		outcomeRPMCurrent = rpmCurrent + 1
+	}
+	return AccountConcurrencyAcquireOutcome{Acquired: true, Total: total + 1, LaneCurrent: laneCurrent + 1, RPMCurrent: outcomeRPMCurrent, RPMLimit: rpmLimit, RPMResetAtMs: rpmResetAtMs}
+}
+
+// normalizeRPMWindowLocked 是判定路径的就地惰性重置（设计 §4.2：判定时发现
+// rpmBucket != 当前 bucket，视为 count = 0 并就地重置；仅在 rpmLimit > 0 时
+// 进入）。持锁调用。
+func (m *MemoryAccountConcurrency) normalizeRPMWindowLocked(accountID string, bucket int64) int {
+	if m.rpmBucket[accountID] != bucket {
+		m.rpmBucket[accountID] = bucket
+		m.rpmCount[accountID] = 0
+	}
+	return m.rpmCount[accountID]
+}
+
+// peekRPMWindowLocked 是读取面的窗口观察（设计 §4.2 读取惰性重置的清理变体）：
+// 无条目直接返回 0 且不写入（未配置账户零开销、map 不随读取增长）；有条目且
+// bucket 过期时删除两个条目并返回 0（惰性清理，避免 map 无限留存）。持锁调用。
+func (m *MemoryAccountConcurrency) peekRPMWindowLocked(accountID string, bucket int64) int {
+	storedBucket, hasEntry := m.rpmBucket[accountID]
+	if !hasEntry {
+		return 0
+	}
+	if storedBucket != bucket {
+		delete(m.rpmBucket, accountID)
+		delete(m.rpmCount, accountID)
+		return 0
+	}
+	return m.rpmCount[accountID]
 }
 
 // Acquire mirrors tryAcquireAccountConcurrency's successful local path.
@@ -171,6 +251,36 @@ func (m *MemoryAccountConcurrency) CurrentAccountConcurrency(accountID string, l
 		return maxInt(0, m.total[accountID])
 	}
 	return maxInt(0, m.byLane[accountID+":"+lane])
+}
+
+// LoadAccountRPMByID 按账户资源 ID 批量读取 RPM 窗口计数（高并发分组队列的
+// 异步 ready 判定与列表运行态 overlay 消费）。无条目按 0 返回且不写入；窗口
+// 已滚动的账户按 0 返回并删除两个条目（读取面惰性清理，设计 §4.2）。
+func (m *MemoryAccountConcurrency) LoadAccountRPMByID(_ context.Context, accountIDs []string) (map[string]AccountRPMState, error) {
+	bucket := m.clock.Now().UnixMilli() / 60_000
+	resetAtMs := rpmWindowResetAtMs(bucket)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make(map[string]AccountRPMState, len(accountIDs))
+	seen := map[string]bool{}
+	for _, accountID := range accountIDs {
+		if accountID == "" || seen[accountID] {
+			continue
+		}
+		seen[accountID] = true
+		result[accountID] = AccountRPMState{Used: m.peekRPMWindowLocked(accountID, bucket), ResetAtMs: resetAtMs}
+	}
+	return result, nil
+}
+
+// CurrentAccountRPM 返回单账户 RPM 窗口快照（本地驱动的同步读取，高并发队列
+// 的 immediate/wake 判定消费）。无条目按 0 返回且不写入；窗口已滚动时按 0
+// 返回并删除两个条目（惰性清理）。
+func (m *MemoryAccountConcurrency) CurrentAccountRPM(accountID string) AccountRPMState {
+	bucket := m.clock.Now().UnixMilli() / 60_000
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return AccountRPMState{Used: m.peekRPMWindowLocked(accountID, bucket), ResetAtMs: rpmWindowResetAtMs(bucket)}
 }
 
 // listenerHandle wraps one subscription so unsubscribe can compare identity.

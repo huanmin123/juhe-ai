@@ -259,7 +259,7 @@ func AdaptSub2APIAccount(value any, index int, state *AdapterState) {
 	}
 	countIgnoredRecordKeys(record, map[string]bool{
 		"name": true, "notes": true, "platform": true, "type": true, "credentials": true,
-		"proxy_key": true, "concurrency": true, "priority": true, "expires_at": true,
+		"proxy_key": true, "concurrency": true, "rpm": true, "priority": true, "expires_at": true,
 		"supportedModels": true, "healthCheckModel": true, "healthCheckEndpointMode": true,
 		"modelMappings": true,
 	}, state)
@@ -287,6 +287,7 @@ func AdaptSub2APIAccount(value any, index int, state *AdapterState) {
 		status:         "active",
 		proxyRef:       proxyRef,
 		concurrency:    positiveInteger(record["concurrency"]),
+		rpm:            positiveInteger(record["rpm"]),
 		priority:       nonNegativeInteger(record["priority"]),
 		notes:          sourceText(record["notes"]),
 		accountExpires: isoDateString(record["expires_at"]),
@@ -414,7 +415,7 @@ func AdaptChannelSource(input any, mode string, state *AdapterState) {
 		}
 		account := buildSourceAPIKeyAccount(apiKeys, baseURL, name,
 			sourceGroupName(record["group"], fmt.Sprintf("%s 导入", SourceLabel(mode))),
-			normalizeChannelStatus(record["status"]), "", 0, -1, "", "")
+			normalizeChannelStatus(record["status"]), "", 0, 0, -1, "", "")
 		// channel 的 models 列表映射为 native 文档的 supportedModels（TrimSpace、
 		// 丢空、首次出现顺序去重）；models 键缺失时不写入；空串、空数组等形态
 		// 合法但归一后为空的输入不写入也不计数，保持回退供应商默认支持模型。
@@ -513,7 +514,7 @@ func AdaptCPAAPIKeyEntry(value any, index int, label, groupName, baseURL string,
 		return
 	}
 	acceptAccount(state, index, buildSourceAPIKeyAccount(apiKeys, resolved,
-		fmt.Sprintf("%s %d", label, index), groupName, "active", "", 0, -1, "", ""))
+		fmt.Sprintf("%s %d", label, index), groupName, "active", "", 0, 0, -1, "", ""))
 }
 
 func AdaptCPACodexAuthFile(root map[string]any, state *AdapterState) {
@@ -559,12 +560,15 @@ func AdaptCPACodexAuthFile(root map[string]any, state *AdapterState) {
 
 // adaptedAccountInput is the shared shape for the sub2api adapters.
 type adaptedAccountInput struct {
-	credentials    map[string]any
-	name           string
-	groupName      string
-	status         string
-	proxyRef       string
-	concurrency    int
+	credentials map[string]any
+	name        string
+	groupName   string
+	status      string
+	proxyRef    string
+	concurrency int
+	// rpm 是来源记录的每分钟请求上限（AI账户每分钟请求上限设计 §6.4）：>0 才写
+	// native 文档的 rpmLimit，0（源无该键）省略，导入缺省落 0。
+	rpm            int
 	priority       int
 	notes          string
 	accountExpires string
@@ -586,7 +590,7 @@ func adaptAPIKeyAccount(input adaptedAccountInput, state *AdapterState) map[stri
 		return nil
 	}
 	return buildSourceAPIKeyAccount(apiKeys, baseURL, input.name, input.groupName, input.status,
-		input.proxyRef, input.concurrency, input.priority, input.notes, input.accountExpires)
+		input.proxyRef, input.concurrency, input.rpm, input.priority, input.notes, input.accountExpires)
 }
 
 func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[string]any {
@@ -609,6 +613,11 @@ func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[strin
 	}
 	if input.concurrency > 0 {
 		account["concurrencyLimit"] = float64(input.concurrency)
+	}
+	// 每分钟请求上限（设计 §6.4）：源记录带 rpm 且 >0 才写 native 文档的
+	// rpmLimit，源无该键（哨兵 0）省略，导入缺省落 0。
+	if input.rpm > 0 {
+		account["rpmLimit"] = float64(input.rpm)
 	}
 	if input.priority >= 0 {
 		account["priority"] = float64(input.priority)
@@ -653,8 +662,9 @@ func applySourceConnections(account map[string]any, baseURL string, oauth bool) 
 }
 
 // buildSourceAPIKeyAccount mirrors buildApiKeyAccount: absent numeric fields
-// use the -1 sentinel and stay out of the document.
-func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status, proxyRef string, concurrency, priority int, notes, accountExpires string) map[string]any {
+// use the -1 sentinel and stay out of the document. rpm 走 0 哨兵（>0 才写
+// rpmLimit，见 AI账户每分钟请求上限设计 §6.4）。
+func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status, proxyRef string, concurrency, rpm, priority int, notes, accountExpires string) map[string]any {
 	account := map[string]any{
 		"name":                      name,
 		"providerCode":              OpenAICompatibleProvider,
@@ -681,6 +691,11 @@ func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status
 	}
 	if concurrency > 0 {
 		account["concurrencyLimit"] = float64(concurrency)
+	}
+	// 每分钟请求上限（设计 §6.4）：来源通道携带 rpm 且 >0 才写 rpmLimit；Channel
+	// /CPA 通道不携带（哨兵 0）省略，导入缺省落 0。
+	if rpm > 0 {
+		account["rpmLimit"] = float64(rpm)
 	}
 	if priority >= 0 {
 		account["priority"] = float64(priority)

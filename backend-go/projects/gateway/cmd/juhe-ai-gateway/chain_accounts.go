@@ -169,6 +169,7 @@ type chainCandidateRow struct {
 	Status                                   string
 	Schedulable                              int
 	ConcurrencyLimit                         int
+	RPMLimit                                 int
 	Priority                                 int
 	SuperPriorityEnabled                     int
 	FallbackEnabled                          int
@@ -209,6 +210,7 @@ type chainCandidateRow struct {
 	ResourceCredentialsEncrypted sql.NullString
 	ResourceProxyProfileID       sql.NullString
 	ResourceConcurrencyLimit     sql.NullInt64
+	ResourceRPMLimit             sql.NullInt64
 	ResourceClientCompatibility  sql.NullString
 
 	QualityScore        *float64
@@ -236,7 +238,7 @@ const chainCandidateColumns = `group_accounts.account_id,
 			group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
 			accounts.id, accounts.system_account_id, accounts.vendor_code, accounts.connection_driver_code,
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status,
-			accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled,
+			accounts.schedulable, accounts.concurrency_limit, accounts.rpm_limit, accounts.priority, accounts.super_priority_enabled,
 			accounts.fallback_enabled,
 			accounts.config_revision, accounts.dispatch_revision, accounts.credentials_encrypted,
 			accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message,
@@ -267,7 +269,8 @@ const chainCandidateColumns = `group_accounts.account_id,
 			source_accounts.last_error_code AS resource_last_error_code,
 			source_accounts.credentials_encrypted AS resource_credentials_encrypted,
 			source_accounts.proxy_profile_id AS resource_proxy_profile_id,
-			source_accounts.concurrency_limit AS resource_concurrency_limit`
+			source_accounts.concurrency_limit AS resource_concurrency_limit,
+			source_accounts.rpm_limit AS resource_rpm_limit`
 
 // chainCandidateModelTail extends the model-candidate window projection.
 const chainCandidateModelTail = `,
@@ -636,7 +639,7 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.LocalPriority, &row.LocalSuperPriority, &row.LocalFallback,
 		&row.ID, &row.SystemAccountID, &row.VendorCode, &row.ConnectionDriverCode,
 		&row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.Status,
-		&row.Schedulable, &row.ConcurrencyLimit, &row.Priority, &row.SuperPriorityEnabled,
+		&row.Schedulable, &row.ConcurrencyLimit, &row.RPMLimit, &row.Priority, &row.SuperPriorityEnabled,
 		&row.FallbackEnabled,
 		&row.ConfigRevision, &row.DispatchRevision, &row.CredentialsEncrypted,
 		&row.ProxyProfileID, &row.CooldownUntil, &row.LastErrorMessage,
@@ -660,6 +663,7 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.ResourceCredentialsEncrypted,
 		&row.ResourceProxyProfileID,
 		&row.ResourceConcurrencyLimit,
+		&row.ResourceRPMLimit,
 	}
 }
 
@@ -1468,6 +1472,16 @@ func (row *chainCandidateRow) resourceConcurrencyLimit() int {
 		return int(row.ResourceConcurrencyLimit.Int64)
 	}
 	return row.ConcurrencyLimit
+}
+
+// resourceRPMLimit 返回模型事实主体的每分钟请求上限（AI 账户每分钟请求上限
+// 设计 §3：授权实例的计数与配置都落在来源账户，来源列存在取来源值，否则本行
+// 值；0 视为不限制，与 resourceConcurrencyLimit 同规则）。
+func (row *chainCandidateRow) resourceRPMLimit() int {
+	if row.ResourceRPMLimit.Valid {
+		return int(row.ResourceRPMLimit.Int64)
+	}
+	return row.RPMLimit
 }
 
 // chainAccountAvailableForSelection mirrors isOpenAIAccountAvailableForSelection

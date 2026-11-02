@@ -131,7 +131,7 @@ defineProps<{
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
   refreshing: boolean
   rowSelection: Record<string, unknown>
-  saveConcurrency: (account: AccountListItem, limit: number) => Promise<boolean>
+  saveConcurrency: (account: AccountListItem, limits: { concurrencyLimit: number; rpmLimit: number }) => Promise<boolean>
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   tableScrollX: number
   tableScrollY: string

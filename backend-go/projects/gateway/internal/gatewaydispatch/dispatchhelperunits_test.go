@@ -380,7 +380,11 @@ func TestRecordAccountCapacityLimitFailure(t *testing.T) {
 	usage := engine.Usage.(*fakeUsage)
 	sink := &fakeAuditSink{}
 	capture := AuditCapture{Context: &frozenAudit{sink: sink}, Sink: sink}
-	err := engine.recordAccountCapacityLimitFailure(context.Background(), testUsageContext(), testAccounts("a-1")[0], "账户并发已达到上限 4/4", capture, 3)
+	err := engine.recordAccountCapacityLimitFailure(context.Background(), testUsageContext(), AccountCapacityLimitFailure{
+		account: testAccounts("a-1")[0],
+		message: "账户并发已达到上限 4/4",
+		kind:    AccountCapacityFailureKindConcurrency,
+	}, capture, 3)
 	if err != nil {
 		t.Fatalf("recordAccountCapacityLimitFailure: %v", err)
 	}
@@ -472,11 +476,11 @@ func TestNextConcurrencyRetryDelayMsExponential(t *testing.T) {
 
 func TestAccountConcurrencyLaneAcquireOptions(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
-	options := engine.accountConcurrencyLaneAcquireOptions(4, gatewayprotoLane("text"), nil)
+	options := engine.accountConcurrencyLaneAcquireOptions(4, 0, gatewayprotoLane("text"), nil)
 	if options.Lane != "text" || options.LaneLimit != nil {
 		t.Fatalf("text lane options = %#v", options)
 	}
-	options = engine.accountConcurrencyLaneAcquireOptions(4, gatewayprotoLane("image"), nil)
+	options = engine.accountConcurrencyLaneAcquireOptions(4, 0, gatewayprotoLane("image"), nil)
 	if options.Lane != "image" || options.LaneLimit == nil || *options.LaneLimit < 1 {
 		t.Fatalf("image lane options = %#v", options)
 	}
@@ -488,7 +492,7 @@ func TestAcquireAccountConcurrencyWithShortRetryExhaustion(t *testing.T) {
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
 	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 4, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 4, 0, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -519,6 +523,10 @@ func (m *countingBusyConcurrencyStore) LoadCurrentAsync(context.Context, []strin
 	return map[string]int{}, nil
 }
 
+func (m *countingBusyConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (m *countingBusyConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }
@@ -536,7 +544,7 @@ func TestAcquireAccountConcurrencyWithShortRetryAbort(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, _, _, err := engine.acquireAccountConcurrencyWithShortRetry(
-		canceled, canceled, "a-1", 4, 10_000, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		canceled, canceled, "a-1", 4, 0, 10_000, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	var aborted *UpstreamRequestAbortedError
 	if !errorsAs(err, &aborted) {
@@ -548,6 +556,10 @@ type errorConcurrencyStore struct{}
 
 func (errorConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
 	return nil, nil
+}
+
+func (errorConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
 }
 
 func (errorConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
@@ -563,7 +575,7 @@ func TestAcquireAccountConcurrencyStoreError(t *testing.T) {
 	engine.Concurrency = errorConcurrencyStore{}
 	coordination := newTestCoordination(t)
 	_, _, _, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 4, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 4, 0, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	if err == nil || err.Error() != "store boom" {
 		t.Fatalf("存储错误应透传, got %v", err)
@@ -576,7 +588,7 @@ func TestAcquireAccountConcurrencyImmediateSuccess(t *testing.T) {
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
 	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
-		context.Background(), context.Background(), "a-1", 4, 1_200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
+		context.Background(), context.Background(), "a-1", 4, 0, 1_200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	if err != nil || !slot.Acquired || waitedMs != 0 {
 		t.Fatalf("首取成功: slot=%+v waited=%d err=%v", slot, waitedMs, err)
@@ -684,7 +696,7 @@ func TestAccountAttemptBuilders(t *testing.T) {
 	if attempt.UpstreamURL != "account:circuit_blocked" || attempt.Message != "账户短电路处于 half_open" {
 		t.Fatalf("circuit blocked attempt = %#v", attempt)
 	}
-	attempt = accountCapacityLimitAttempt(account, "并发上限")
+	attempt = accountCapacityLimitAttempt(account, "concurrency:limit", "并发上限")
 	if attempt.UpstreamURL != "concurrency:limit" || attempt.Message != "并发上限" {
 		t.Fatalf("capacity attempt = %#v", attempt)
 	}
@@ -1055,6 +1067,10 @@ func (errorLoadingConcurrencyStore) LoadCurrentAsync(context.Context, []string) 
 	return nil, errors.New("load boom")
 }
 
+func (errorLoadingConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (errorLoadingConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return nil, nil
 }
@@ -1086,6 +1102,10 @@ type mapBackedConcurrencyStore struct {
 
 func (m *mapBackedConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
 	return m.current, nil
+}
+
+func (m *mapBackedConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
 }
 
 func (m *mapBackedConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
@@ -1135,6 +1155,10 @@ type laneBackedConcurrencyStore struct {
 
 func (m *laneBackedConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
 	return m.current, nil
+}
+
+func (m *laneBackedConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
 }
 
 func (m *laneBackedConcurrencyStore) LoadCurrentByLaneAsync(_ context.Context, _ []string, lane string) (map[string]int, error) {

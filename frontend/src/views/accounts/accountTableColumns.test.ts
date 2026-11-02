@@ -20,7 +20,16 @@ describe('buildAccountTableColumns 基础列', () => {
   })
 
   it('横向滚动宽度按无提示列的基础列基数', () => {
-    expect(accountTableScrollX(true)).toBe(2650 + 32)
-    expect(accountTableScrollX(false)).toBe(2470 + 32)
+    // 「限频」列宽 100→150（RPM 设计 §6.2 单行双数对 + 一体化双输入），总宽同步 +50。
+    expect(accountTableScrollX(true)).toBe(2700 + 32)
+    expect(accountTableScrollX(false)).toBe(2520 + 32)
+  })
+
+  it('限频列放宽到 150（RPM 单行双数对与一体化双输入）', () => {
+    const column = buildAccountTableColumns(false, () => null).find((item) => tableColumnKey(item) === 'concurrency')
+    expect(column).toBeDefined()
+    expect(column?.title).toBe('限频')
+    expect(column?.width).toBe(150)
+    expect(Object.hasOwn(column ?? {}, 'sorter')).toBe(false)
   })
 })

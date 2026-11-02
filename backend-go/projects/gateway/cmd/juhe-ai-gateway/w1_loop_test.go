@@ -269,7 +269,7 @@ func TestW1LoopStateResetsAndBudgets(t *testing.T) {
 	}
 	// speedFirstSlotAcquirer：Concurrency 缺席 → 未获取。
 	loop2, _ := w1LoopWithEngine(t, &w1FakeLocks{})
-	acquirer := loop2.speedFirstSlotAcquirer(loop2.current)
+	acquirer := loop2.speedFirstSlotAcquirer(loop2.current, nil)
 	if _, ok, err := acquirer(context.Background(), "acc_1", 4, gatewayhotquality.AccountConcurrencyAcquireRequest{}); err != nil || ok {
 		t.Fatalf("nil concurrency = %v, %v", ok, err)
 	}

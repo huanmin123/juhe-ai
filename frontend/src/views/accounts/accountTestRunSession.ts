@@ -58,6 +58,8 @@ interface StoredAccountSummary {
   type: AccountListItem['type']
   status: AccountListItem['status']
   concurrencyLimit: number
+  /** RPM 会话快照加法兼容：旧快照缺省读 0（不限制）。 */
+  rpmLimit: number
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -220,6 +222,7 @@ function storeAccountSummary(account: AccountListItem): StoredAccountSummary {
     type: account.type,
     status: account.status,
     concurrencyLimit: account.concurrencyLimit,
+    rpmLimit: account.rpmLimit,
     priority: account.priority,
     superPriorityEnabled: account.superPriorityEnabled,
     fallbackEnabled: account.fallbackEnabled,
@@ -253,6 +256,8 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountListItem | u
     type: value.type,
     status: value.status,
     concurrencyLimit: finiteNumber(value.concurrencyLimit, 1),
+    // 旧会话快照无 rpmLimit 时按 0（不限制）恢复。
+    rpmLimit: finiteNumber(value.rpmLimit, 0),
     currentConcurrency: 0,
     priority: finiteNumber(value.priority, 0),
     superPriorityEnabled: value.superPriorityEnabled === true,

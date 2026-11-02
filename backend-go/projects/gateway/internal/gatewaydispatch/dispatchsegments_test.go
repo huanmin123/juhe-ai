@@ -442,6 +442,10 @@ func (s *queueGatedConcurrencyStore) LoadCurrentAsync(context.Context, []string)
 	return map[string]int{}, nil
 }
 
+func (s *queueGatedConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (s *queueGatedConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }
@@ -841,6 +845,10 @@ type accountGatedConcurrencyStore struct {
 
 func (s *accountGatedConcurrencyStore) LoadCurrentAsync(context.Context, []string) (map[string]int, error) {
 	return map[string]int{}, nil
+}
+
+func (s *accountGatedConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
 }
 
 func (s *accountGatedConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {

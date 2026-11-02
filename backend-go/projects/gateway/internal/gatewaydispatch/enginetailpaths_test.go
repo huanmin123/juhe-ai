@@ -34,6 +34,10 @@ func (f *freeAfterNStore) LoadCurrentAsync(context.Context, []string) (map[strin
 	return map[string]int{}, nil
 }
 
+func (f *freeAfterNStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (f *freeAfterNStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

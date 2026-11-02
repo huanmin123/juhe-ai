@@ -13,11 +13,15 @@ import (
 )
 
 // fakeAccountConcurrencyReader records the requested account ids and serves a
-// fixed concurrency map.
+// fixed concurrency map. rpmStates 承载 RPM 运行态读口（设计 §6.1），rpmRequested
+// 记录 RPM 键请求便于断言来源账户键；rpmErr 单独模拟 RPM 读失败降级。
 type fakeAccountConcurrencyReader struct {
-	requested [][]string
-	currents  map[string]int
-	err       error
+	requested    [][]string
+	currents     map[string]int
+	err          error
+	rpmRequested [][]string
+	rpmStates    map[string]AccountRPMState
+	rpmErr       error
 }
 
 func (f *fakeAccountConcurrencyReader) LoadCurrentConcurrencyByID(_ context.Context, accountIDs []string) (map[string]int, error) {
@@ -26,6 +30,17 @@ func (f *fakeAccountConcurrencyReader) LoadCurrentConcurrencyByID(_ context.Cont
 		return nil, f.err
 	}
 	return f.currents, nil
+}
+
+func (f *fakeAccountConcurrencyReader) LoadCurrentRPMByID(_ context.Context, accountIDs []string) (map[string]AccountRPMState, error) {
+	f.rpmRequested = append(f.rpmRequested, append([]string(nil), accountIDs...))
+	if f.rpmErr != nil {
+		return nil, f.rpmErr
+	}
+	if f.rpmStates == nil {
+		return map[string]AccountRPMState{}, nil
+	}
+	return f.rpmStates, nil
 }
 
 func concurrencyListItems(t *testing.T, env *testEnv) map[string]map[string]any {

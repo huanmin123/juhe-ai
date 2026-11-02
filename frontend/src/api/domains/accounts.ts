@@ -114,6 +114,9 @@ function attachAccountTestOptionsMeta(list: AccountTestOptions, payload: Account
 
 export interface AccountUpdatePayload extends Record<string, unknown> {
   expectedConfigRevision: number
+  // 「限频」行内整体编辑：并发上限与每分钟请求上限可同请求差量提交。
+  concurrencyLimit?: number
+  rpmLimit?: number
   // T94：编辑链显式提供时整集合替换连接域（网关拨号事实源）；与创建链
   // AccountConnectionPayload 同构，类型内联避免 api 层反向依赖 views 层。
   connections?: Array<{

@@ -731,6 +731,7 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
     credentials: {},
     status: 'active',
     concurrencyLimit: 1,
+    rpmLimit: 0,
     currentConcurrency: 0,
     priority: 0,
     superPriorityEnabled: false,

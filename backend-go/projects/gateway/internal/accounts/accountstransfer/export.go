@@ -49,16 +49,20 @@ type ExportConnection struct {
 
 // ExportAccount mirrors AccountExportAccount.
 type ExportAccount struct {
-	Ref                             string             `json:"ref"`
-	Name                            string             `json:"name"`
-	ProviderCode                    string             `json:"providerCode"`
-	ProviderProtocolProfileID       *string            `json:"providerProtocolProfileId,omitempty"`
-	Type                            string             `json:"type"`
-	Status                          string             `json:"status"`
-	GroupID                         *string            `json:"groupId,omitempty"`
-	GroupName                       *string            `json:"groupName,omitempty"`
-	ProxyRef                        *string            `json:"proxyRef,omitempty"`
-	ConcurrencyLimit                *int               `json:"concurrencyLimit,omitempty"`
+	Ref                       string  `json:"ref"`
+	Name                      string  `json:"name"`
+	ProviderCode              string  `json:"providerCode"`
+	ProviderProtocolProfileID *string `json:"providerProtocolProfileId,omitempty"`
+	Type                      string  `json:"type"`
+	Status                    string  `json:"status"`
+	GroupID                   *string `json:"groupId,omitempty"`
+	GroupName                 *string `json:"groupName,omitempty"`
+	ProxyRef                  *string `json:"proxyRef,omitempty"`
+	ConcurrencyLimit          *int    `json:"concurrencyLimit,omitempty"`
+	// RPMLimit 是每分钟请求上限的 wire 字段（AI账户每分钟请求上限设计 §6.4）：
+	// 仅 >0 时输出，缺省落 0（导入侧），旧版导入包兼容规则与 BackgroundProbe
+	// 开关一致按发布说明处理。
+	RPMLimit                        *int               `json:"rpmLimit,omitempty"`
 	Priority                        *int               `json:"priority,omitempty"`
 	SuperPriorityEnabled            *bool              `json:"superPriorityEnabled,omitempty"`
 	FallbackEnabled                 *bool              `json:"fallbackEnabled,omitempty"`
@@ -203,6 +207,7 @@ type ExportAccountRow struct {
 	availabilitySchedule      sql.NullString
 	accountExpiresAt          sql.NullString
 	concurrencyLimit          int
+	rpmLimit                  int
 	priority                  int
 	superPriorityEnabled      bool
 	fallbackEnabled           bool
@@ -233,6 +238,7 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 			accounts.status, accounts.schedulable, accounts.credentials_encrypted,
 			accounts.health_check_model, accounts.health_check_endpoint_mode, accounts.proxy_profile_id,
 			accounts.availability_schedule_json, accounts.account_expires_at, accounts.concurrency_limit,
+			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			accounts.background_probe_enabled,
 			accounts.temporary_unavailable_continuous_probe_enabled,
@@ -260,6 +266,7 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 			&row.notes, &row.accountType, &row.Status, &schedulable, &row.credentialsEncrypted,
 			&row.healthCheckModel, &row.healthCheckEndpointMode, &row.proxyProfileID,
 			&row.availabilitySchedule, &row.accountExpiresAt, &row.concurrencyLimit,
+			&row.rpmLimit,
 			&row.priority, &superPriority, &fallback, &backgroundProbe, &continuousProbe,
 			&authorizationID, &sourceAccountID, &row.boundGroupID, &row.boundGroupName); err != nil {
 			return nil, err
@@ -316,6 +323,11 @@ func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow,
 	if row.concurrencyLimit > 0 {
 		limit := row.concurrencyLimit
 		exported.ConcurrencyLimit = &limit
+	}
+	// rpmLimit 仅在 >0 时输出（设计 §6.4，与 concurrencyLimit 同省略规则）。
+	if row.rpmLimit > 0 {
+		limit := row.rpmLimit
+		exported.RPMLimit = &limit
 	}
 	if row.priority >= 0 {
 		priority := row.priority

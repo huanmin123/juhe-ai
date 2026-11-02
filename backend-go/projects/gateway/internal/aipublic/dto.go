@@ -112,7 +112,10 @@ type PublicAccountSummary struct {
 type PublicAccountListItem struct {
 	PublicAccountSummary
 	ConcurrencyLimit int `json:"concurrencyLimit"`
-	Priority         int `json:"priority"`
+	// RPMLimit 是公开列表的每分钟请求上限投影（AI账户每分钟请求上限设计 §6.4）：
+	// 恒输出，0 = 不限制，与 ConcurrencyLimit 同暴露面。
+	RPMLimit int `json:"rpmLimit"`
+	Priority int `json:"priority"`
 }
 
 func (d *Deps) generatedAt() string {
@@ -284,6 +287,7 @@ func sanitizeAccountItem(item *accounts.ListItem, supportedModels []string) Publ
 	return PublicAccountListItem{
 		PublicAccountSummary: summary,
 		ConcurrencyLimit:     item.ConcurrencyLimit,
+		RPMLimit:             item.RPMLimit,
 		Priority:             item.Priority,
 	}
 }

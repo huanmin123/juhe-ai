@@ -1044,7 +1044,7 @@ func TestW13g3RecordCapacityLimitFailureUnit(t *testing.T) {
 		engine, _, _ := newTestEngine(t)
 		engine.Usage = &w13g3Usage{err: errW13g3}
 		err := engine.recordAccountCapacityLimitFailure(
-			context.Background(), testUsageContext(), testAccounts("a-1")[0], "并发已满",
+			context.Background(), testUsageContext(), AccountCapacityLimitFailure{account: testAccounts("a-1")[0], message: "并发已满", kind: AccountCapacityFailureKindConcurrency},
 			AuditCapture{Sink: &fakeAuditSink{}}, 1)
 		if !errors.Is(err, errW13g3) {
 			t.Fatalf("expected usage error, got %v", err)
@@ -1056,7 +1056,7 @@ func TestW13g3RecordCapacityLimitFailureUnit(t *testing.T) {
 		engine.Usage = usage
 		sink := &fakeAuditSink{}
 		err := engine.recordAccountCapacityLimitFailure(
-			context.Background(), testUsageContext(), testAccounts("a-1")[0], "并发已满",
+			context.Background(), testUsageContext(), AccountCapacityLimitFailure{account: testAccounts("a-1")[0], message: "并发已满", kind: AccountCapacityFailureKindConcurrency},
 			AuditCapture{Sink: sink}, 2)
 		if err != nil {
 			t.Fatalf("record: %v", err)

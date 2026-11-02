@@ -120,11 +120,11 @@ func TestWIRedisAccountConcurrencyStoreContract(t *testing.T) {
 	ctx := context.Background()
 
 	// 契约：AcquireAccountConcurrency 对 account hash 的 lane 字段做 HINCRBY 并续 TTL；
-	// 空 lane 归入 text。上限传 0 表示不设限（纯计数语义）。
-	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000, 0, 0); err != nil {
+	// 空 lane 归入 text。并发上限传 0 表示不设限；RPM 上限传 5 以覆盖窗口计数保留语义。
+	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000, 0, 0, 5); err != nil {
 		t.Fatalf("AcquireAccountConcurrency 失败: %v", err)
 	}
-	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 60_000, 0, 0); err != nil {
+	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 60_000, 0, 0, 5); err != nil {
 		t.Fatalf("AcquireAccountConcurrency(空 lane=text) 失败: %v", err)
 	}
 	key := "juhe-ai:dev:gateway-account-concurrency:account-concurrency:acc-1"
@@ -158,15 +158,23 @@ func TestWIRedisAccountConcurrencyStoreContract(t *testing.T) {
 		t.Fatal("空账号必须直接读 0")
 	}
 
-	// 契约：ReleaseAccountConcurrency 减到 <=0 时删除整个 hash。
+	// 契约：ReleaseAccountConcurrency 减到 <=0 时只删并发字段（total + lane），
+	// 保留 rpm_bucket/rpm_count（RPM 窗口计数不随并发排空丢失，key 由 acquire
+	// 的 PEXPIRE 自然过期）。
 	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", ""); err != nil {
 		t.Fatalf("ReleaseAccountConcurrency 失败: %v", err)
 	}
 	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText); err != nil {
 		t.Fatalf("ReleaseAccountConcurrency 失败: %v", err)
 	}
-	if server.Exists(key) {
-		t.Fatal("计数减到 0 后 hash key 必须被删除")
+	if got := server.HGet(key, "total"); got != "" {
+		t.Fatalf("计数减到 0 后 total 字段必须被删除, got %q", got)
+	}
+	if got := server.HGet(key, AccountConcurrencyLaneText); got != "" {
+		t.Fatalf("计数减到 0 后 lane 字段必须被删除, got %q", got)
+	}
+	if got := server.HGet(key, "rpm_count"); got != "2" {
+		t.Fatalf("RPM 窗口计数必须保留, got %q want 2", got)
 	}
 	if got, err := instance.LoadAccountCurrentConcurrencyByID(ctx, []string{"acc-1"}); err != nil || got["acc-1"] != 0 {
 		t.Fatalf("删除后读取必须为 0 无错: %v %v", got, err)
@@ -236,7 +244,7 @@ func TestWIRedisAccountConcurrencyLoadByLaneAndErrors(t *testing.T) {
 	if _, err := instance.LoadAccountCurrentConcurrencyByLane(ctx, []string{"acc-1"}, "image"); err == nil {
 		t.Fatal("Redis 故障必须透传错误")
 	}
-	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 1_000, 0, 0); err == nil {
+	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 1_000, 0, 0, 0); err == nil {
 		t.Fatal("Redis 故障时 acquire 必须报错")
 	}
 	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", ""); err == nil {

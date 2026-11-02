@@ -275,11 +275,12 @@ type recordingConcurrency struct {
 	released  []AccountConcurrencyReleaseEvent
 	current   map[string]int
 	lane      map[string]int
+	rpm       map[string]int
 	listeners []*listenerHandle
 }
 
 func newRecordingConcurrency() *recordingConcurrency {
-	return &recordingConcurrency{current: map[string]int{}, lane: map[string]int{}}
+	return &recordingConcurrency{current: map[string]int{}, lane: map[string]int{}, rpm: map[string]int{}}
 }
 
 func (r *recordingConcurrency) LoadAccountCurrentConcurrencyByID(_ context.Context, accountIDs []string) (map[string]int, error) {
@@ -309,6 +310,36 @@ func (r *recordingConcurrency) CurrentAccountConcurrency(accountID string, lane 
 		return r.current[accountID]
 	}
 	return r.lane[accountID+":"+lane]
+}
+
+// LoadAccountRPMByID / CurrentAccountRPM 是 RPM 窗口读取 double（setRPM 注入
+// 测试态，固定返回当前时钟窗口边界）。
+func (r *recordingConcurrency) LoadAccountRPMByID(_ context.Context, accountIDs []string) (map[string]AccountRPMState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]AccountRPMState{}
+	for _, id := range accountIDs {
+		out[id] = r.rpmStateLocked(id)
+	}
+	return out, nil
+}
+
+func (r *recordingConcurrency) CurrentAccountRPM(accountID string) AccountRPMState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rpmStateLocked(accountID)
+}
+
+func (r *recordingConcurrency) rpmStateLocked(accountID string) AccountRPMState {
+	bucket := systemClock().Now().UnixMilli() / 60_000
+	return AccountRPMState{Used: r.rpm[accountID], ResetAtMs: (bucket + 1) * 60_000}
+}
+
+// setRPM injects the per-account RPM window counter (test helper).
+func (r *recordingConcurrency) setRPM(accountID string, value int) {
+	r.mu.Lock()
+	r.rpm[accountID] = value
+	r.mu.Unlock()
 }
 
 func (r *recordingConcurrency) SubscribeAccountConcurrencyRelease(listener func(AccountConcurrencyReleaseEvent)) func() {

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
@@ -245,6 +246,21 @@ func (r chainAccountConcurrencyReader) LoadCurrentConcurrencyByID(ctx context.Co
 	return r.tracker.LoadAccountCurrentConcurrencyByID(ctx, accountIDs)
 }
 
+// LoadCurrentRPMByID 把 tracker 的 RPM 窗口计数投影为账户列表 overlay 的
+// accounts.AccountRPMState（AI 账户每分钟请求上限设计 §6.1：rpmCurrent /
+// rpmResetAt 运行态来源）。
+func (r chainAccountConcurrencyReader) LoadCurrentRPMByID(ctx context.Context, accountIDs []string) (map[string]accounts.AccountRPMState, error) {
+	states, err := r.tracker.LoadAccountRPMByID(ctx, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]accounts.AccountRPMState, len(states))
+	for accountID, state := range states {
+		out[accountID] = accounts.AccountRPMState{Used: state.Used, ResetAtMs: state.ResetAtMs}
+	}
+	return out, nil
+}
+
 func (s *chainConcurrencyStore) LoadCurrentAsync(ctx context.Context, accountIDs []string) (map[string]int, error) {
 	return s.tracker.LoadAccountCurrentConcurrencyByID(ctx, accountIDs)
 }
@@ -253,24 +269,43 @@ func (s *chainConcurrencyStore) LoadCurrentByLaneAsync(ctx context.Context, acco
 	return s.tracker.LoadAccountCurrentConcurrencyByLane(ctx, accountIDs, lane)
 }
 
+// LoadCurrentRPMAsync 把 tracker 的 RPM 窗口计数投影为 dispatch 读取面
+// （AI 账户每分钟请求上限设计 §5.2：高并发分组容量模型的 RPM 余量输入）。
+func (s *chainConcurrencyStore) LoadCurrentRPMAsync(ctx context.Context, accountIDs []string) (map[string]gatewaydispatch.AccountRPMState, error) {
+	states, err := s.tracker.LoadAccountRPMByID(ctx, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]gatewaydispatch.AccountRPMState, len(states))
+	for accountID, state := range states {
+		out[accountID] = gatewaydispatch.AccountRPMState{Used: state.Used, Limit: state.Limit, ResetAtMs: state.ResetAtMs}
+	}
+	return out, nil
+}
+
 // TryAcquireAsync acquires one concurrency slot when the account is below
 // its hard limit. 校验与占用由 tracker.TryAcquire 在单个互斥临界区内原子完
 // 成（Node tryAcquireAccountConcurrency：current >= limit ||
 // laneCurrent >= laneLimit 即拒绝），totalLimit 是账户配置的硬并发上限
-// （concurrencyLimit，laneLimit 未配置时 lane 上限同为硬上限）；拒绝时
-// total/lane 计数都不自增，slot 仅携带观测值。
+// （concurrencyLimit，laneLimit 未配置时 lane 上限同为硬上限），rpmLimit 是
+// 账户每分钟请求上限（options.RPMLimit，0 视为不限制；AI 账户每分钟请求上
+// 限设计 §4.3：同一临界区内并发在前、RPM 在后，拒绝不自增，通过才同时 +1）；
+// 拒绝时计数都不自增，slot 仅携带观测值（含 RPM 窗口与重置时刻）。
 func (s *chainConcurrencyStore) TryAcquireAsync(_ context.Context, accountID string, concurrencyLimit int, options gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
 	laneLimit := concurrencyLimit
 	if options.LaneLimit != nil {
 		laneLimit = *options.LaneLimit
 	}
-	outcome := s.tracker.TryAcquire(accountID, concurrencyLimit, options.Lane, laneLimit)
+	outcome := s.tracker.TryAcquire(accountID, concurrencyLimit, options.Lane, laneLimit, options.RPMLimit)
 	slot := gatewaydispatch.ConcurrencySlot{
-		Current:     outcome.Total,
-		Limit:       concurrencyLimit,
-		Lane:        options.Lane,
-		LaneCurrent: outcome.LaneCurrent,
-		LaneLimit:   laneLimit,
+		Current:      outcome.Total,
+		Limit:        concurrencyLimit,
+		Lane:         options.Lane,
+		LaneCurrent:  outcome.LaneCurrent,
+		LaneLimit:    laneLimit,
+		RPMCurrent:   outcome.RPMCurrent,
+		RPMLimit:     outcome.RPMLimit,
+		RPMResetAtMs: outcome.RPMResetAtMs,
 	}
 	if !outcome.Acquired {
 		return slot, nil

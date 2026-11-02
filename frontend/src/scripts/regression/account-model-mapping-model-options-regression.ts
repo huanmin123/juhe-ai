@@ -135,7 +135,7 @@ assertNotIncludes(
     accountEditFormSource.indexOf('function selectAccountType')
   ),
   'loadCurrentProviderModelOptions()',
-  '切换供应商时不得在用户展开模型控件前预加载模型目录'
+  '切换供应商的同步重置逻辑不得内联加载模型目录（目录加载统一由 useAccountEditForm 的供应商 watch 触发）'
 )
 assertIncludes(accountEditFormSource, 'async function loadCurrentProviderModelOptions', '账户表单必须保留模型控件交互时的按需加载入口')
 assertMatch(

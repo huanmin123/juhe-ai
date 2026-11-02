@@ -355,6 +355,19 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       message.warning('并发上限必须是大于 0 的整数')
       return
     }
+    if (concurrencyLimit > 9999) {
+      message.warning('并发上限最大为 9999')
+      return
+    }
+    const rpmLimit = Number(options.form.rpmLimit)
+    if (!Number.isFinite(rpmLimit) || rpmLimit < 0) {
+      message.warning('每分钟请求上限必须是大于等于 0 的整数')
+      return
+    }
+    if (rpmLimit > 9999) {
+      message.warning('每分钟请求上限最大为 9999')
+      return
+    }
     const priority = Number(options.form.priority)
     if (!Number.isFinite(priority) || priority < 0) {
       message.warning('优先级必须是大于等于 0 的整数')

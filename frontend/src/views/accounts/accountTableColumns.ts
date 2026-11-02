@@ -14,7 +14,7 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
     baseColumns.push(sortableColumn({ title: '系统账户', key: 'systemAccount', width: 180 }, 'systemAccount', sortOrder))
   }
   baseColumns.push(
-    { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
+    { title: '限频', key: 'concurrency', width: 150, align: 'center' },
     sortableColumn({ title: '状态', key: 'status', width: 120, align: 'center' }, 'status', sortOrder),
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
     { title: '用量(日)', key: 'usage', width: 180 },
@@ -104,7 +104,8 @@ export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): 
 }
 
 export function accountTableScrollX(isManagementView: boolean): number {
-  return (isManagementView ? 2650 : 2470) + accountSelectionColumnWidth
+  // 「限频」列宽 100→150（RPM 设计 §6.2 单行双数对 + 一体化双输入），总宽同步 +50。
+  return (isManagementView ? 2700 : 2520) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

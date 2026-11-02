@@ -608,6 +608,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       oauth_refresh_token_present integer NOT NULL DEFAULT 0,
       proxy_profile_id text,
       concurrency_limit integer NOT NULL DEFAULT 5000,
+      rpm_limit integer NOT NULL DEFAULT 0,
       priority integer NOT NULL DEFAULT 0,
       super_priority_enabled integer NOT NULL DEFAULT 0,
       fallback_enabled integer NOT NULL DEFAULT 0,
@@ -1580,6 +1581,16 @@ $$`,
 		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1))`,
 	},
 	{
+		// 账户级每分钟请求上限（AI账户每分钟请求上限设计 §3/§7.1）：
+		// accounts rpm_limit 列的存量库守卫，模式与 background_probe_enabled
+		// 一致——CREATE TABLE 只救新库，缺它时存量 PG 库新二进制启动契约校验
+		// 缺列 fail-closed。存量行默认 0（不限制），行为零变化；本列是纯 DDL
+		// 增量，占用 SchemaRevision 14 空号、不入升级账本（账本设计 §6.4）。
+		SchemaName: "juhe_business",
+		Source:     "account-rpm-limit-pg-column",
+		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS rpm_limit integer NOT NULL DEFAULT 0`,
+	},
+	{
 		SchemaName: "juhe_business",
 		Source:     "account-list-projection-pg-trigram-extension",
 		SQL:        `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
@@ -1808,6 +1819,7 @@ BEGIN
     new_accounts.status,
     new_accounts.proxy_profile_id,
     new_accounts.concurrency_limit,
+    new_accounts.rpm_limit,
     new_accounts.priority,
     new_accounts.super_priority_enabled,
     new_accounts.fallback_enabled,
@@ -1860,6 +1872,7 @@ BEGIN
     old_accounts.status,
     old_accounts.proxy_profile_id,
     old_accounts.concurrency_limit,
+    old_accounts.rpm_limit,
     old_accounts.priority,
     old_accounts.super_priority_enabled,
     old_accounts.fallback_enabled,

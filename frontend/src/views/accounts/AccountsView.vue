@@ -785,16 +785,33 @@ async function saveAccountPriority(account: AccountListItem, priority: number): 
   }
 }
 
-async function saveAccountConcurrency(account: AccountListItem, limit: number): Promise<boolean> {
+async function saveAccountConcurrency(
+  account: AccountListItem,
+  limits: { concurrencyLimit: number; rpmLimit: number }
+): Promise<boolean> {
   if (!canEditAccount(account) || isAuthorizedAccount(account)) {
-    message.warning('当前账户无权修改并发上限')
+    message.warning('当前账户无权修改限频')
     return false
   }
-  if (!Number.isInteger(limit) || limit < 1) {
+  if (!Number.isInteger(limits.concurrencyLimit) || limits.concurrencyLimit < 1) {
     message.warning('并发上限必须是大于等于 1 的整数')
     return false
   }
-  if (limit === account.concurrencyLimit) return true
+  if (limits.concurrencyLimit > 9999) {
+    message.warning('并发上限最大为 9999')
+    return false
+  }
+  if (!Number.isInteger(limits.rpmLimit) || limits.rpmLimit < 0) {
+    message.warning('每分钟请求上限必须是大于等于 0 的整数')
+    return false
+  }
+  if (limits.rpmLimit > 9999) {
+    message.warning('每分钟请求上限最大为 9999')
+    return false
+  }
+  const concurrencyChanged = limits.concurrencyLimit !== account.concurrencyLimit
+  const rpmChanged = limits.rpmLimit !== (account.rpmLimit ?? 0)
+  if (!concurrencyChanged && !rpmChanged) return true
   if (concurrencySavingIds.value.has(account.id)) return false
 
   concurrencySavingIds.value = new Set(concurrencySavingIds.value).add(account.id)
@@ -805,14 +822,26 @@ async function saveAccountConcurrency(account: AccountListItem, limit: number): 
       message.warning('账户配置版本缺失，请刷新列表后重试')
       return false
     }
+    // 两个上限是一个整体控件，但 PATCH 只提交实际变化的字段；后端同时支持
+    // concurrencyLimit 与 rpmLimit 的差量更新。
+    const payload: { expectedConfigRevision: number; concurrencyLimit?: number; rpmLimit?: number } = {
+      expectedConfigRevision: configRevision
+    }
+    if (concurrencyChanged) payload.concurrencyLimit = limits.concurrencyLimit
+    if (rpmChanged) payload.rpmLimit = limits.rpmLimit
     const updated = isManagementView.value
-      ? await api.accounts.update(account.id, { concurrencyLimit: limit, expectedConfigRevision: configRevision }, scopeParams)
-      : await api.myAccounts.update(account.id, { concurrencyLimit: limit, expectedConfigRevision: configRevision })
-    updateLoadedAccount({ ...account, concurrencyLimit: limit, configRevision: updated.configRevision })
-    message.success('并发上限已更新')
+      ? await api.accounts.update(account.id, payload, scopeParams)
+      : await api.myAccounts.update(account.id, payload)
+    updateLoadedAccount({
+      ...account,
+      concurrencyLimit: limits.concurrencyLimit,
+      rpmLimit: limits.rpmLimit,
+      configRevision: updated.configRevision
+    })
+    message.success('限频已更新')
     return true
   } catch (error) {
-    message.error(extractApiErrorMessage(error, '更新并发上限失败'))
+    message.error(extractApiErrorMessage(error, '更新限频失败'))
     return false
   } finally {
     const next = new Set(concurrencySavingIds.value)
@@ -1224,7 +1253,8 @@ async function loadProviderAccountCounts() {
 
 watch(modalOpen, (open) => {
   if (open) {
-    void loadCurrentProviderModelOptions()
+    // 模型目录加载已移至 useAccountEditForm 的供应商 watch：此处按上一次表单
+    // 残留的 providerCode 加载，会在编辑既有账户时多发一次错误请求。
     if (!editingId.value) void loadProviderAccountCounts()
     return
   }

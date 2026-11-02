@@ -32,10 +32,13 @@ type HighConcurrencyQueueWaitInput struct {
 	APIKeyID                 string
 	AccountIDs               []string
 	AccountConcurrencyLimits map[string]int
-	Lane                     string
-	Policy                   map[string]any
-	MaxWaitMs                *int64
-	Signal                   context.Context
+	// AccountRPMLimits 是账户资源 ID → RPM 上限（AI 账户每分钟请求上限设计
+	// §5.2：容量模型与并发正交叠加，0 视为不限制）。
+	AccountRPMLimits map[string]int
+	Lane             string
+	Policy           map[string]any
+	MaxWaitMs        *int64
+	Signal           context.Context
 }
 
 // HighConcurrencyQueueWaitResult mirrors the HighConcurrencyQueueWaitResult
@@ -127,6 +130,9 @@ type highConcurrencyQueueItem struct {
 type highConcurrencyAccountCapacity struct {
 	hardLimit      int
 	imageLaneLimit int
+	// rpmLimit 是账户每分钟请求上限（AI 账户每分钟请求上限设计 §5.2，0 视为
+	// 不限制）；ready 判定与硬并发同风格叠加。
+	rpmLimit int
 }
 
 // NewHighConcurrencyGroupQueue builds the queue and subscribes the account
@@ -232,7 +238,7 @@ func (q *HighConcurrencyGroupQueue) waitForLocalHighConcurrencyGroupCapacity(
 ) HighConcurrencyQueueWaitResult {
 	groupKey := highConcurrencyGroupQueueKey(input.SystemAccountID, input.GroupID, lane)
 	apiKeyKey := apiKeyQueueKey(input.APIKeyID)
-	accountCapacities := buildAccountCapacities(input.AccountIDs, input.AccountConcurrencyLimits, policy)
+	accountCapacities := buildAccountCapacities(input.AccountIDs, input.AccountConcurrencyLimits, input.AccountRPMLimits, policy)
 
 	q.mu.Lock()
 	state, ok := q.queues[groupKey]
@@ -435,7 +441,9 @@ func (q *HighConcurrencyGroupQueue) queueItemCanAcquireAfterRelease(item *highCo
 	return q.concurrency.CurrentAccountConcurrency(accountID, AccountConcurrencyLaneImage) < capacity.imageLaneLimit
 }
 
-// hasImmediateAccountCapacity mirrors hasImmediateAccountCapacity.
+// hasImmediateAccountCapacity mirrors hasImmediateAccountCapacity. ready 判定
+// 在硬并发（总量 + lane）之外叠加 RPM 窗口余量（AI 账户每分钟请求上限设计
+// §5.2）：并发有余而 RPM 已满的账户同样视为繁忙。
 func (q *HighConcurrencyGroupQueue) hasImmediateAccountCapacity(accountIDs []string, capacities map[string]highConcurrencyAccountCapacity, lane string) bool {
 	seen := map[string]bool{}
 	for _, accountID := range accountIDs {
@@ -451,7 +459,9 @@ func (q *HighConcurrencyGroupQueue) hasImmediateAccountCapacity(accountIDs []str
 			continue
 		}
 		if lane != AccountConcurrencyLaneImage || q.concurrency.CurrentAccountConcurrency(accountID, AccountConcurrencyLaneImage) < capacity.imageLaneLimit {
-			return true
+			if capacity.rpmLimit <= 0 || q.concurrency.CurrentAccountRPM(accountID).Used < capacity.rpmLimit {
+				return true
+			}
 		}
 	}
 	return false
@@ -573,7 +583,7 @@ func (q *HighConcurrencyGroupQueue) waitForRedisHighConcurrencyGroupCapacity(
 	startedAtMs := q.clock.Now().UnixMilli()
 	groupKey := highConcurrencyGroupQueueKey(input.SystemAccountID, input.GroupID, lane)
 	apiKeyKey := apiKeyQueueKey(input.APIKeyID)
-	capacities := buildAccountCapacities(input.AccountIDs, input.AccountConcurrencyLimits, policy)
+	capacities := buildAccountCapacities(input.AccountIDs, input.AccountConcurrencyLimits, input.AccountRPMLimits, policy)
 	if input.Signal != nil && input.Signal.Err() != nil {
 		return rejectedQueueWait(QueueRejectAborted, 0, 0, 0), nil
 	}
@@ -653,6 +663,8 @@ func (q *HighConcurrencyGroupQueue) waitForRedisHighConcurrencyGroupCapacity(
 }
 
 // hasImmediateAccountCapacityAsync mirrors hasImmediateAccountCapacityAsync.
+// ready 判定在硬并发（总量 + lane）之外叠加 RPM 窗口余量（AI 账户每分钟请求
+// 上限设计 §5.2）：并发有余而 RPM 已满的账户同样视为繁忙。
 func (q *HighConcurrencyGroupQueue) hasImmediateAccountCapacityAsync(ctx context.Context, accountIDs []string, capacities map[string]highConcurrencyAccountCapacity, lane string) (bool, error) {
 	unique := uniqueAccountIDs(accountIDs)
 	currentConcurrency, err := q.concurrency.LoadAccountCurrentConcurrencyByID(ctx, unique)
@@ -666,6 +678,10 @@ func (q *HighConcurrencyGroupQueue) hasImmediateAccountCapacityAsync(ctx context
 			return false, err
 		}
 	}
+	rpmStates, err := q.concurrency.LoadAccountRPMByID(ctx, unique)
+	if err != nil {
+		return false, err
+	}
 	for _, accountID := range unique {
 		capacity, ok := capacities[accountID]
 		if !ok {
@@ -675,7 +691,9 @@ func (q *HighConcurrencyGroupQueue) hasImmediateAccountCapacityAsync(ctx context
 			continue
 		}
 		if lane != AccountConcurrencyLaneImage || imageLaneConcurrency[accountID] < capacity.imageLaneLimit {
-			return true, nil
+			if capacity.rpmLimit <= 0 || rpmStates[accountID].Used < capacity.rpmLimit {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -855,8 +873,9 @@ func uniqueAccountIDSet(accountIDs []string) map[string]bool {
 	return set
 }
 
-// buildAccountCapacities mirrors buildAccountCapacities.
-func buildAccountCapacities(accountIDs []string, accountConcurrencyLimits map[string]int, policy GroupSchedulingPolicy) map[string]highConcurrencyAccountCapacity {
+// buildAccountCapacities mirrors buildAccountCapacities. rpmLimits 携带账户
+// 资源 ID → RPM 上限（0 视为不限制），与硬并发上限同键聚合。
+func buildAccountCapacities(accountIDs []string, accountConcurrencyLimits map[string]int, accountRPMLimits map[string]int, policy GroupSchedulingPolicy) map[string]highConcurrencyAccountCapacity {
 	capacities := map[string]highConcurrencyAccountCapacity{}
 	seen := map[string]bool{}
 	for _, accountID := range accountIDs {
@@ -868,6 +887,7 @@ func buildAccountCapacities(accountIDs []string, accountConcurrencyLimits map[st
 		capacities[accountID] = highConcurrencyAccountCapacity{
 			hardLimit:      hardLimit,
 			imageLaneLimit: EffectiveImageLaneConcurrencyLimit(hardLimit, policy),
+			rpmLimit:       maxInt(0, accountRPMLimits[accountID]),
 		}
 	}
 	return capacities

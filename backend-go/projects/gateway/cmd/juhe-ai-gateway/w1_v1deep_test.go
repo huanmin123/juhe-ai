@@ -117,6 +117,10 @@ func (f *w1FakeConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []strin
 	return map[string]int{}, nil
 }
 
+func (f *w1FakeConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]gatewaydispatch.AccountRPMState, error) {
+	return map[string]gatewaydispatch.AccountRPMState{}, nil
+}
+
 func (f *w1FakeConcurrencyStore) TryAcquireAsync(_ context.Context, accountID string, _ int, _ gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
 	if f.acquireErr != nil {
 		return gatewaydispatch.ConcurrencySlot{}, f.acquireErr
@@ -849,14 +853,14 @@ func TestW1SpeedFirstSlotAcquirerArms(t *testing.T) {
 	// 并发存储错误透传。
 	errStore := &w1FakeConcurrencyStore{acquireErr: errors.New("并发存储不可用")}
 	loop.c.engine.Concurrency = errStore
-	acquire := loop.speedFirstSlotAcquirer(loop.current)
+	acquire := loop.speedFirstSlotAcquirer(loop.current, nil)
 	if _, _, err := acquire(context.Background(), "acc_1", 4, gatewayhotquality.AccountConcurrencyAcquireRequest{}); err == nil {
 		t.Fatal("存储错误必须透传")
 	}
 	// 未获取：返回 (零槽, false, nil)。
 	loop2, _ := w1LoopWithEngine(t, &w1FakeLocks{})
 	loop2.c.engine.Concurrency = &w1FakeConcurrencyStore{failAcquire: true}
-	acquire2 := loop2.speedFirstSlotAcquirer(loop2.current)
+	acquire2 := loop2.speedFirstSlotAcquirer(loop2.current, nil)
 	slot, ok, err := acquire2(context.Background(), "acc_1", 4, gatewayhotquality.AccountConcurrencyAcquireRequest{})
 	if err != nil || ok || slot.Release != nil {
 		t.Fatalf("未获取 = %+v, %v, %v", slot, ok, err)
@@ -865,7 +869,7 @@ func TestW1SpeedFirstSlotAcquirerArms(t *testing.T) {
 	loop3, _ := w1LoopWithEngine(t, &w1FakeLocks{})
 	store3 := &w1FakeConcurrencyStore{}
 	loop3.c.engine.Concurrency = store3
-	acquire3 := loop3.speedFirstSlotAcquirer(loop3.current)
+	acquire3 := loop3.speedFirstSlotAcquirer(loop3.current, nil)
 	imageSlot, imageOK, imageErr := acquire3(context.Background(), "acc_1", 2,
 		gatewayhotquality.AccountConcurrencyAcquireRequest{Lane: gatewayhotquality.AccountConcurrencyLaneImage})
 	if imageErr != nil || !imageOK || imageSlot.Key != "acc_1:image" || imageSlot.Lane != gatewayhotquality.AccountConcurrencyLaneImage {

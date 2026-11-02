@@ -24,6 +24,7 @@ const fixture = (input: Partial<AccountListItem> & Pick<AccountListItem, 'id' | 
   type: input.type ?? 'api_key',
   status: input.status ?? 'active',
   concurrencyLimit: input.concurrencyLimit ?? 20,
+  rpmLimit: input.rpmLimit ?? 0,
   currentConcurrency: input.currentConcurrency ?? 0,
   priority: input.priority ?? 50,
   superPriorityEnabled: input.superPriorityEnabled ?? false,

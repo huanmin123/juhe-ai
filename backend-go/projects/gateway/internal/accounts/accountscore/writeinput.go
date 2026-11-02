@@ -154,8 +154,12 @@ type CreateInput struct {
 	// PreservePendingTest keeps an import's explicit pending_test state. Normal
 	// media creation uses the domain default active; import is the deliberate
 	// exception because imported credentials have not been checked locally.
-	PreservePendingTest  bool
-	ConcurrencyLimit     *int
+	PreservePendingTest bool
+	ConcurrencyLimit    *int
+	// RPMLimit 是账户级每分钟请求上限（AI账户每分钟请求上限设计 §3，camelCase
+	// rpmLimit / DB rpm_limit）：nil = 未提交（缺省 0），0 = 不限制，正整数 =
+	// 自然分钟窗口内的最大成功派发次数。写面校验整数 >= 0，负数 400。
+	RPMLimit             *int
 	Priority             *int
 	SuperPriorityEnabled *bool
 	FallbackEnabled      *bool

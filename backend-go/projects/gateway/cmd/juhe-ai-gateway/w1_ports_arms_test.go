@@ -213,6 +213,10 @@ func (s *w1pFakeConcurrencyStore) LoadCurrentByLaneAsync(_ context.Context, _ []
 	return out, nil
 }
 
+func (s *w1pFakeConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]gatewaydispatch.AccountRPMState, error) {
+	return map[string]gatewaydispatch.AccountRPMState{}, nil
+}
+
 func (s *w1pFakeConcurrencyStore) TryAcquireAsync(context.Context, string, int, gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
 	return gatewaydispatch.ConcurrencySlot{}, nil
 }

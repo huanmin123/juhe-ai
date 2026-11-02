@@ -45,6 +45,7 @@ var accountPatchGatewayRuntimeFields = map[string]bool{
 	"status":                  true,
 	"schedulable":             true,
 	"concurrencyLimit":        true,
+	"rpmLimit":                true,
 	"priority":                true,
 	"superPriorityEnabled":    true,
 	"fallbackEnabled":         true,

@@ -155,6 +155,7 @@ const authzPGFixtureSchema = `
       oauth_refresh_token_present integer DEFAULT 0,
       proxy_profile_id text,
       concurrency_limit integer DEFAULT 5000,
+      rpm_limit integer DEFAULT 0,
       priority integer DEFAULT 0,
       super_priority_enabled integer DEFAULT 0,
       fallback_enabled integer DEFAULT 0,

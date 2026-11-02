@@ -290,6 +290,7 @@ function accountFixture(overrides: Partial<AccountListItem> = {}): AccountListIt
     type: 'api_key',
     status: 'active',
     concurrencyLimit: 1,
+    rpmLimit: 0,
     currentConcurrency: 0,
     priority: 0,
     superPriorityEnabled: false,

@@ -339,17 +339,20 @@ type NormalizedImportAccount struct {
 	proxyRef                  string
 	proxyProfileID            string
 	concurrencyLimit          int
-	priority                  int
-	superPriorityEnabled      *bool
-	fallbackEnabled           *bool
-	supportedModels           []string
-	healthCheckModel          string
-	healthCheckEndpointMode   string
-	modelMappings             []accountscore.ModelMapping
-	tags                      []string
-	accountExpiresAt          string
-	availabilityScheduleRaw   any
-	notes                     string
+	// rpmLimit 是导入包的每分钟请求上限（AI账户每分钟请求上限设计 §6.4）：非负
+	// 整数，0 合法（不限制），-1 哨兵 = 键缺失（落列 0）。
+	rpmLimit                int
+	priority                int
+	superPriorityEnabled    *bool
+	fallbackEnabled         *bool
+	supportedModels         []string
+	healthCheckModel        string
+	healthCheckEndpointMode string
+	modelMappings           []accountscore.ModelMapping
+	tags                    []string
+	accountExpiresAt        string
+	availabilityScheduleRaw any
+	notes                   string
 	// capabilityDomain 是包内账户的推导域（M2 导入严格校验）：随创建负载
 	// 写入 accounts.capability_domain，执行链经 Store.Create 重验 ⊆ allowed。
 	capabilityDomain string
@@ -1074,7 +1077,7 @@ func (s *Service) FindImportProxyByID(ctx context.Context, id string) (*ImportPr
 var importAccountKeys = map[string]bool{
 	"ref": true, "name": true, "providerCode": true, "providerProtocolProfileId": true,
 	"type": true, "status": true, "credentials": true, "groupId": true, "groupName": true,
-	"proxyRef": true, "proxyProfileId": true, "concurrencyLimit": true, "priority": true,
+	"proxyRef": true, "proxyProfileId": true, "concurrencyLimit": true, "rpmLimit": true, "priority": true,
 	"superPriorityEnabled": true, "fallbackEnabled": true, "supportedModels": true,
 	"healthCheckModel": true, "healthCheckEndpointMode": true,
 	"temporaryUnavailableContinuousProbeEnabled": true, "backgroundProbeEnabled": true,
@@ -1138,6 +1141,8 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	source.proxyRef = ImportOptionalTextField(record, "proxyRef", "账户 proxyRef", messages)
 	source.proxyProfileID = ImportOptionalTextField(record, "proxyProfileId", "账户 proxyProfileId", messages)
 	source.concurrencyLimit = ImportOptionalPositiveIntegerField(record, "concurrencyLimit", "账户 concurrencyLimit", messages)
+	// 每分钟请求上限（设计 §6.4 导入协议）：可选非负整数，0 = 不限制，缺失落 0。
+	source.rpmLimit = ImportOptionalNonNegativeIntegerField(record, "rpmLimit", "账户 rpmLimit", messages)
 	source.priority = ImportOptionalNonNegativeIntegerField(record, "priority", "账户 priority", messages)
 	source.superPriorityEnabled = ImportOptionalBooleanField(record, "superPriorityEnabled", "账户 superPriorityEnabled", messages)
 	source.fallbackEnabled = ImportOptionalBooleanField(record, "fallbackEnabled", "账户 fallbackEnabled", messages)
@@ -1428,6 +1433,9 @@ func validateImportProviderAndBasics(source *NormalizedImportAccount, providers 
 	if source.concurrencyLimit != 0 && source.concurrencyLimit < 1 {
 		source.Push("concurrencyLimit 必须大于 0")
 	}
+	// rpmLimit 无独立断言臂（设计 §6.4）：可选非负整数由
+	// ImportOptionalNonNegativeIntegerField 解析即校验（非法形态已按消息上报），
+	// 键缺失保持 -1 哨兵落列 0，与 priority 同款语义。
 	if source.accountExpiresAt != "" {
 		if _, valid := accountscore.CanonicalRFC3339(source.accountExpiresAt); !valid {
 			source.Push("accountExpiresAt 必须是有效时间字符串")
@@ -2068,6 +2076,12 @@ func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID 
 	if source.concurrencyLimit > 0 {
 		limit := source.concurrencyLimit
 		input.ConcurrencyLimit = &limit
+	}
+	// 每分钟请求上限（设计 §6.4）：键存在且 >=0 时随创建负载落列（0 = 不限制），
+	// 键缺失（-1 哨兵）不写指针，Store.Create 缺省落 0。
+	if source.rpmLimit >= 0 {
+		limit := source.rpmLimit
+		input.RPMLimit = &limit
 	}
 	if source.priority >= 0 {
 		priority := source.priority

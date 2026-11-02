@@ -161,6 +161,10 @@ func (s *w16bBusyConcurrency) LoadCurrentByLaneAsync(context.Context, []string, 
 	return s.laneCurrent, nil
 }
 
+func (s *w16bBusyConcurrency) LoadCurrentRPMAsync(context.Context, []string) (map[string]gatewaydispatch.AccountRPMState, error) {
+	return map[string]gatewaydispatch.AccountRPMState{}, nil
+}
+
 func (s *w16bBusyConcurrency) TryAcquireAsync(context.Context, string, int, gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
 	return gatewaydispatch.ConcurrencySlot{}, errors.New("w16b: TryAcquireAsync not expected")
 }

@@ -33,6 +33,10 @@ func (s *perAccountBusyStore) LoadCurrentAsync(context.Context, []string) (map[s
 	return map[string]int{}, nil
 }
 
+func (s *perAccountBusyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (s *perAccountBusyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

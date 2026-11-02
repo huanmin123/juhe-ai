@@ -88,6 +88,7 @@ const context: AccountCloneContext = {
     project_id: 'clone-project-id'
   },
   concurrencyLimit: 12,
+  rpmLimit: 0,
   priority: 3,
   superPriorityEnabled: false,
   fallbackEnabled: true,

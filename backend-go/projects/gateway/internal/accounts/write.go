@@ -795,6 +795,15 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		}
 		concurrencyLimit = *input.ConcurrencyLimit
 	}
+	// 每分钟请求上限（AI账户每分钟请求上限设计 §3）：缺省 0（不限制），不套用
+	// concurrency_limit 的默认值；负数按 400 拒绝（与并发校验同风格）。
+	rpmLimit := 0
+	if input.RPMLimit != nil {
+		if *input.RPMLimit < 0 {
+			return nil, &ValidationError{Message: "每分钟请求上限必须是大于等于 0 的整数"}
+		}
+		rpmLimit = *input.RPMLimit
+	}
 	priority := 0
 	if input.Priority != nil {
 		if *input.Priority < 0 {
@@ -931,6 +940,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		 oauth_type,
 		 oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
+		 rpm_limit,
 		 priority, super_priority_enabled, fallback_enabled, schedulable,
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message,
@@ -939,11 +949,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 expedited_recovery_enabled, capability_domain, vendor_code, connection_driver_code,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, protocol.protocolCode, protocol.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		nullStringForOAuthType(oauthType),
-		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
+		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit, rpmLimit,
 		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), boolInt(schedulable),
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage,

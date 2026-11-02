@@ -699,6 +699,7 @@ var usageFailureReasonByErrorCode = map[string]string{
 	"user_request_limit_exceeded":           "请求超过用户限额",
 	"no_available_upstream_account":         "没有可调度的上游账户",
 	"account_concurrency_limit":             "上游账户并发已满",
+	"account_rpm_limit":                     "上游账户每分钟请求数已满",
 	"normal_route_first_byte_timeout":       "上游未在首段时限内响应",
 	"upstream_retryable_error":              "上游暂时不可用",
 	"unproven_upstream_transport_failure":   "上游传输失败，具体原因未确认",

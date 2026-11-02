@@ -118,8 +118,10 @@ import (
 // 原位加列不另计语句）。679→627：my-chat 会话面退役批（演练场设计 §8）——
 // juhe_chat 组 52 条 DDL 整组移除（pg_schema_chat.go 删除；chat_* 11 表不再
 // 进当前 schema，dev 清库/生产备份后 drop 由维护窗口另行授权）。
+// 627→628：AI 账户每分钟请求上限批（设计 §7.1）——juhe_business +1
+// （account-rpm-limit-pg-column 幂等 ALTER；建表 DDL 原位加列不另计语句）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 627
+const goldenPostgresSchemaStatementCount = 628
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -140,11 +142,12 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// B08 撤除 business 9 条幂等 DROP COLUMN（enabled 1 + provider 维度 8）。
 	// 317→320：models 能力声明三列批（T82 根治）+3（三条幂等 ALTER）。
 	// 320→321：后台自动探测总开关批 +1（account-background-probe-pg-column）。
-	"juhe_business": 321,
+	// 321→322：AI 账户每分钟请求上限批 +1（account-rpm-limit-pg-column）。
+	"juhe_business": 322,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
-	"juhe_dataset":  7,
-	"juhe_usage":    54,
+	"juhe_dataset": 7,
+	"juhe_usage":   54,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
 	// 238→232：2026-10-30 B09 退役 authorization_*_usage_range_windows 两表
 	//（-2 TABLE -6 INDEX +2 DROP TABLE）。
@@ -273,9 +276,10 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 当前 schema 无删列语句）、1 条 CREATE EXTENSION、2 个含
 	// CREATE TRIGGER 的语句块。106→92：my-chat 会话面退役批（演练场设计 §8）
 	// 移除 juhe_chat 组 14 条 ALTER TABLE ADD COLUMN（chat_conversations 绑定
-	// 列 8 + 语义列 2、chat_user_tool_preferences 4）。
-	if alterColumns != 92 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 92", alterColumns)
+	// 列 8 + 语义列 2、chat_user_tool_preferences 4）。92→93：AI 账户每分钟
+	// 请求上限批 +1（account-rpm-limit-pg-column）。
+	if alterColumns != 93 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 93", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。

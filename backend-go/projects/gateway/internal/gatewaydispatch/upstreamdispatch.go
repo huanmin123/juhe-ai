@@ -1118,6 +1118,15 @@ wholePoolRound:
 		pool := activeSegmentsPool(activeSegments)
 		if len(capacityLimitFailures) > 0 && args.GroupSchedulingPolicy != nil {
 			queueWaitStartedAtMs := gatewayupstream.NowMs()
+			// AI 账户每分钟请求上限设计 §5.2：本轮容量失败全部为 RPM 时，队列
+			// 等待封顶到最近 RPM 重置剩余（重置没有槽释放事件，到点由外层
+			// wholePoolRound 重新选号）；混合失败保持既有预算等待。
+			maxQueueWaitMs := serverRetryBudget.RemainingMs(&queueWaitStartedAtMs)
+			if allCapacityLimitFailuresAreRPM(capacityLimitFailures) {
+				if earliestResetMs := earliestRPMResetWaitMs(capacityLimitFailures); earliestResetMs > 0 && earliestResetMs < maxQueueWaitMs {
+					maxQueueWaitMs = earliestResetMs
+				}
+			}
 			serverRetryBudget.BeginNoAvailableWait(&queueWaitStartedAtMs)
 			queueWait, err := func() (QueueWaitResult, error) {
 				defer serverRetryBudget.PauseNoAvailableWait(&queueWaitStartedAtMs)
@@ -1127,9 +1136,10 @@ wholePoolRound:
 					APIKeyID:                 usageContext.APIKeyID,
 					AccountIDs:               gatewaySessionConcurrencyIDs(pool),
 					AccountConcurrencyLimits: GatewayAccountConcurrencyLimitsByAccountID(pool),
+					AccountRPMLimits:         GatewayAccountRPMLimitsByAccountID(pool),
 					Lane:                     requestLane,
 					Policy:                   args.GroupSchedulingPolicy,
-					MaxWaitMs:                serverRetryBudget.RemainingMs(&queueWaitStartedAtMs),
+					MaxWaitMs:                maxQueueWaitMs,
 				})
 			}()
 			if err != nil {
@@ -1179,13 +1189,22 @@ wholePoolRound:
 			}
 			if failure := lastCapacityLimitFailure(capacityLimitFailures); failure != nil {
 				auditAttemptIndex++
-				if err := e.recordAccountCapacityLimitFailure(ctx, usageContext, failure.account, failure.message, auditCapture, auditAttemptIndex); err != nil {
+				if err := e.recordAccountCapacityLimitFailure(ctx, usageContext, *failure, auditCapture, auditAttemptIndex); err != nil {
 					return UpstreamDispatchResult{}, err
 				}
 			}
 		} else if len(capacityLimitFailures) > 0 {
 			if !serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
+				// AI 账户每分钟请求上限设计 §5.3：个人分组本轮容量失败全部为 RPM
+				// 时，单次等待 min(最近重置剩余, 剩余请求预算) 后重跑整池（预算
+				// 不足以覆盖到重置点时由下一轮 handoff 429 收口）；混合失败保持
+				// 既有 500ms 级退避（并发槽可能随时释放，不盲目长等）。
 				retryDelayMs := minInt64(upstreamRetryBackoffCap(e.Config.UpstreamRetryBackoffDelaysMs, 1, 500), serverRetryBudget.RemainingMs(nil))
+				if allCapacityLimitFailuresAreRPM(capacityLimitFailures) {
+					if earliestResetMs := earliestRPMResetWaitMs(capacityLimitFailures); earliestResetMs > 0 {
+						retryDelayMs = minInt64(earliestResetMs, serverRetryBudget.RemainingMs(nil))
+					}
+				}
 				serverRetryBudget.BeginNoAvailableWait(nil)
 				if err := waitForDelayMs(signal, retryDelayMs); err != nil {
 					serverRetryBudget.PauseNoAvailableWait(nil)
@@ -1201,7 +1220,7 @@ wholePoolRound:
 			}
 			if failure := lastCapacityLimitFailure(capacityLimitFailures); failure != nil {
 				auditAttemptIndex++
-				if err := e.recordAccountCapacityLimitFailure(ctx, usageContext, failure.account, failure.message, auditCapture, auditAttemptIndex); err != nil {
+				if err := e.recordAccountCapacityLimitFailure(ctx, usageContext, *failure, auditCapture, auditAttemptIndex); err != nil {
 					return UpstreamDispatchResult{}, err
 				}
 			}
@@ -1475,10 +1494,20 @@ func (e *Engine) waitForAccountLockDelay(
 	return accountLockWaitCompleted, nil
 }
 
-// AccountCapacityLimitFailure mirrors the local type.
+// 本地容量拒绝 attempt 的 upstreamURL 标记（设计 §5.1/§5.5）：分类器
+// classifyGatewayDispatchExhaustion 与审计/usage 投影按标记分流。
+const (
+	capacityLimitUpstreamURLConcurrency = "concurrency:limit"
+	capacityLimitUpstreamURLRPM         = "rpm:limit"
+)
+
+// AccountCapacityLimitFailure mirrors the local type. kind 区分并发与 RPM 归属
+// （设计 §5.1），retryAfterMs 是 RPM 拒绝的重置等待（毫秒，最小 1；并发为 0）。
 type AccountCapacityLimitFailure struct {
-	account AccountCandidate
-	message string
+	account      AccountCandidate
+	message      string
+	kind         string
+	retryAfterMs int64
 }
 
 func lastCapacityLimitFailure(failures []AccountCapacityLimitFailure) *AccountCapacityLimitFailure {
@@ -1488,34 +1517,68 @@ func lastCapacityLimitFailure(failures []AccountCapacityLimitFailure) *AccountCa
 	return &failures[len(failures)-1]
 }
 
+// allCapacityLimitFailuresAreRPM 判定本轮容量失败是否全部为 RPM（设计 §5.2/
+// §5.3：全 RPM 才允许把等待封顶到最近重置点，混合失败保持既有短退避）。
+func allCapacityLimitFailuresAreRPM(failures []AccountCapacityLimitFailure) bool {
+	for _, failure := range failures {
+		if failure.kind != AccountCapacityFailureKindRPM {
+			return false
+		}
+	}
+	return len(failures) > 0
+}
+
+// earliestRPMResetWaitMs 返回本轮 RPM 失败中最小的重置等待（毫秒；无 RPM 失败
+// 返回 0），供高并发分组与个人分组的“等待封顶到最近重置点”消费。
+func earliestRPMResetWaitMs(failures []AccountCapacityLimitFailure) int64 {
+	earliest := int64(0)
+	for _, failure := range failures {
+		if failure.kind != AccountCapacityFailureKindRPM || failure.retryAfterMs <= 0 {
+			continue
+		}
+		if earliest == 0 || failure.retryAfterMs < earliest {
+			earliest = failure.retryAfterMs
+		}
+	}
+	return earliest
+}
+
 // recordAccountCapacityLimitFailure mirrors recordAccountCapacityLimitFailure.
+// 审计/usage 字段按设计 §5.5 分流：RPM 走 errorCode="account_rpm_limit" +
+// upstreamURL="rpm:limit"，并发保持既有 account_concurrency_limit；失败归因
+// 均为 gateway_capacity。
 func (e *Engine) recordAccountCapacityLimitFailure(
 	ctx context.Context,
 	usageContext gatewaypreauth.GatewayFailureUsageContext,
-	account AccountCandidate,
-	message string,
+	failure AccountCapacityLimitFailure,
 	auditCapture AuditCapture,
 	auditAttemptIndex int,
 ) error {
 	attemptStartedAt := gatewayupstream.NowMs()
+	upstreamURL := capacityLimitUpstreamURLConcurrency
+	errorCode := "account_concurrency_limit"
+	if failure.kind == AccountCapacityFailureKindRPM {
+		upstreamURL = capacityLimitUpstreamURLRPM
+		errorCode = "account_rpm_limit"
+	}
 	if e.Usage != nil {
-		if err := e.Usage.RecordFailedUpstreamAttempt(ctx, nil, usageContext, account, FailedAttemptRecord{
-			UpstreamURL:        "concurrency:limit",
+		if err := e.Usage.RecordFailedUpstreamAttempt(ctx, nil, usageContext, failure.account, FailedAttemptRecord{
+			UpstreamURL:        upstreamURL,
 			StartedAt:          attemptStartedAt,
-			ErrorMessage:       message,
+			ErrorMessage:       failure.message,
 			FailureAttribution: "gateway_capacity",
 		}); err != nil {
 			return err
 		}
 	}
 	auditCapture.RecordFailedDispatchAttempt(FailedDispatchAttemptInput{
-		Account:      account,
+		Account:      failure.account,
 		AttemptIndex: auditAttemptIndex,
-		UpstreamURL:  "concurrency:limit",
+		UpstreamURL:  upstreamURL,
 		StartedAtMs:  attemptStartedAt,
 		ErrorPhase:   "dispatch",
-		ErrorCode:    "account_concurrency_limit",
-		ErrorMessage: message,
+		ErrorCode:    errorCode,
+		ErrorMessage: failure.message,
 	})
 	return nil
 }

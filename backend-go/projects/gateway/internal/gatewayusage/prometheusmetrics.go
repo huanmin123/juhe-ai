@@ -122,6 +122,9 @@ type prometheusMetrics struct {
 	requestFastExhausted         prommetrics.CounterVec
 	negativeCacheHits            prommetrics.CounterVec
 	negativeCacheCapacityRejects prommetrics.CounterVec
+	// AI 账户每分钟请求上限设计 §5.5：账户 RPM 拒绝计数（无标签维度，命中
+	// 一次拒绝加 1；空向量不渲染）。
+	accountRPMLimited prommetrics.CounterVec
 
 	auditDropOnce     sync.Once
 	auditDropSlot     atomic.Pointer[func() int64]
@@ -151,6 +154,7 @@ func newPrometheusMetrics() *prometheusMetrics {
 		requestFastExhausted:         prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_fast_exhausted_total", "Request-level fast exhaustion events: one request bucket reached >=3 distinct accounts and >=5 complete non-2xx candidate rejections.", prometheusServiceLabels, nil),
 		negativeCacheHits:            prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_hits_total", "Request negative-cache hits that served the existing dispatch-exhausted exit without further candidate scanning.", prometheusServiceLabels, nil),
 		negativeCacheCapacityRejects: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_request_negative_cache_capacity_rejected_total", "Request negative-cache writes rejected because the bounded in-process store was at capacity.", prometheusServiceLabels, nil),
+		accountRPMLimited:            prommetrics.NewCounterVec(registry, "juhe_ai_gateway_account_rpm_limited_total", "Account per-minute request (RPM) limit rejections at dispatch acquire time.", prometheusServiceLabels, nil),
 	}
 	// The upstream-failure capability gauges keep the D-190 contract
 	// declaration series (client_golang gauges stay resident at their set
@@ -233,6 +237,12 @@ func (m *prometheusMetrics) recordNegativeCacheCapacityRejected() {
 	m.negativeCacheCapacityRejects.WithLabelValues().Inc()
 }
 
+// recordAccountRPMLimited 计一次账户 RPM 拒绝（AI 账户每分钟请求上限设计
+// §5.5：命中一次占位拒绝加 1）。
+func (m *prometheusMetrics) recordAccountRPMLimited() {
+	m.accountRPMLimited.WithLabelValues().Inc()
+}
+
 // recordFirstOutput mirrors recordGatewayFirstOutputMetric.
 func (m *prometheusMetrics) recordFirstOutput(durationMs int64, method string) {
 	if durationMs < 0 {
@@ -284,6 +294,12 @@ func RecordGatewayRequestNegativeCacheHitMetric() {
 // 拒绝写入。
 func RecordGatewayRequestNegativeCacheCapacityRejectedMetric() {
 	prometheusDefault.recordNegativeCacheCapacityRejected()
+}
+
+// RecordGatewayAccountRPMLimitedMetric 计一次账户 RPM 拒绝（AI 账户每分钟
+// 请求上限设计 §5.5，dispatch 占位拒绝路径调用）。
+func RecordGatewayAccountRPMLimitedMetric() {
+	prometheusDefault.recordAccountRPMLimited()
 }
 
 // RecordGatewayFirstOutputMetric mirrors recordGatewayFirstOutputMetric.

@@ -161,6 +161,7 @@ const accountsPGFixtureSchema = `
       oauth_refresh_token_present integer NOT NULL DEFAULT 0,
       proxy_profile_id text,
       concurrency_limit integer NOT NULL DEFAULT 5000,
+      rpm_limit integer NOT NULL DEFAULT 0,
       priority integer NOT NULL DEFAULT 0,
       super_priority_enabled integer NOT NULL DEFAULT 0,
       fallback_enabled integer NOT NULL DEFAULT 0,

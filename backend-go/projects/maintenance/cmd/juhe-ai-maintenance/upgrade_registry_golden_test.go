@@ -50,9 +50,16 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 				i, got.Revision, got.ID, got.ImplVersion, w.revision, w.id, w.implVersion)
 		}
 	}
-	if int64(want[len(want)-1].revision) != contracts.SchemaRevision {
-		t.Fatalf("最高 revision %d 与 contracts.SchemaRevision %d 不一致（§6.4 同一序号空间）",
-			want[len(want)-1].revision, contracts.SchemaRevision)
+	// §6.4（2026-11-03）：revision 14 起出现纯 DDL 空号——accounts.rpm_limit
+	// 加法列占用 SchemaRevision 14，但无数据步骤、不写入 schema_migrations，
+	// 注册表最高 revision 仍为 13。断言从「最高注册 revision ==
+	// SchemaRevision」修正为「所有注册 revision ≤ SchemaRevision」：空号由
+	// SchemaRevision 与 schema DDL golden 共同表达，注册表不再与末位钉死。
+	for _, step := range steps {
+		if step.Revision > contracts.SchemaRevision {
+			t.Fatalf("注册 revision %d（%s）高于 contracts.SchemaRevision %d（§6.4 同一序号空间，且空号不入账本）",
+				step.Revision, step.ID, contracts.SchemaRevision)
+		}
 	}
 	// 破坏性步骤标记与设计 §10 一致。
 	destructive := map[string]bool{}

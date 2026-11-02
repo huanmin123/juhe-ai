@@ -663,13 +663,15 @@ type HighConcurrencyWaiter interface {
 	WaitForCapacity(ctx context.Context, input HighConcurrencyWaitInput) (QueueWaitResult, error)
 }
 
-// HighConcurrencyWaitInput mirrors the wait input.
+// HighConcurrencyWaitInput mirrors the wait input. AccountRPMLimits 是账户
+// 资源 ID → RPM 上限（0 视为不限制），容量模型的 RPM 余量输入（设计 §5.2）。
 type HighConcurrencyWaitInput struct {
 	SystemAccountID          string
 	GroupID                  string
 	APIKeyID                 string
 	AccountIDs               []string
 	AccountConcurrencyLimits map[string]int
+	AccountRPMLimits         map[string]int
 	Lane                     string
 	Policy                   *gatewayruntimecache.GroupSchedulingPolicy
 	MaxWaitMs                int64
@@ -722,7 +724,9 @@ type AuthorizationQuotaChecker interface {
 	CheckBatchAsync(ctx context.Context, groupAccess gatewayruntimecache.GroupUsageAccessMetadata, accounts []AccountCandidate) (map[string]QuotaDecision, error)
 }
 
-// ConcurrencySlot mirrors AccountConcurrencySlot.
+// ConcurrencySlot mirrors AccountConcurrencySlot. RPMCurrent/RPMLimit/
+// RPMResetAtMs 是占位尝试时刻的 RPM 窗口观测（AI 账户每分钟请求上限设计
+// §4.3），供容量失败文案、Kind 归属与终态 Retry-After 使用。
 type ConcurrencySlot struct {
 	Acquired    bool
 	Current     int
@@ -730,6 +734,10 @@ type ConcurrencySlot struct {
 	Lane        string
 	LaneCurrent int
 	LaneLimit   int
+	RPMCurrent  int
+	RPMLimit    int
+	// RPMResetAtMs 是当前 RPM 窗口结束时刻（Unix 毫秒）；未观测到窗口时为 0。
+	RPMResetAtMs int64
 	// Release mirrors slot.release.
 	Release func()
 	// MarkFirstOutput mirrors slot.markFirstOutput (image-lane probe
@@ -738,9 +746,22 @@ type ConcurrencySlot struct {
 }
 
 // AccountConcurrencyAcquireOptions mirrors AccountConcurrencyAcquireOptions.
+// RPMLimit 是账户每分钟请求上限（0 视为不限制）；作为 options 字段携带以保持
+// TryAcquireAsync 方法签名不变。
 type AccountConcurrencyAcquireOptions struct {
 	Lane      string
 	LaneLimit *int
+	RPMLimit  int
+}
+
+// AccountRPMState 是账户 RPM 运行态的单账户快照（网关调度域本地类型，与
+// gatewayclientip tracker / accounts 列表投影同构）：Used 为本自然分钟窗口
+// 已派发次数，Limit 为配置上限（读取面未携带配置时为 0），ResetAtMs 为窗口
+// 结束时刻（Unix 毫秒）。
+type AccountRPMState struct {
+	Used      int
+	Limit     int
+	ResetAtMs int64
 }
 
 // AccountConcurrencyStore mirrors shared/account-concurrency.ts consumed
@@ -750,6 +771,9 @@ type AccountConcurrencyStore interface {
 	LoadCurrentAsync(ctx context.Context, accountIDs []string) (map[string]int, error)
 	// LoadCurrentByLaneAsync mirrors loadAccountCurrentConcurrencyByIdsAsync(ids, lane).
 	LoadCurrentByLaneAsync(ctx context.Context, accountIDs []string, lane string) (map[string]int, error)
+	// LoadCurrentRPMAsync 批量读取账户 RPM 窗口计数（AI 账户每分钟请求上限
+	// 设计 §5.2：高并发分组容量模型的 RPM 余量输入）。
+	LoadCurrentRPMAsync(ctx context.Context, accountIDs []string) (map[string]AccountRPMState, error)
 	// TryAcquireAsync mirrors tryAcquireAccountConcurrencyAsync.
 	TryAcquireAsync(ctx context.Context, accountID string, concurrencyLimit int, options AccountConcurrencyAcquireOptions) (ConcurrencySlot, error)
 }

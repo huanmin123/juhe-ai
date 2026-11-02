@@ -23,6 +23,10 @@ func (f *failAfterFirstStore) LoadCurrentAsync(context.Context, []string) (map[s
 	return map[string]int{}, nil
 }
 
+func (f *failAfterFirstStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (f *failAfterFirstStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

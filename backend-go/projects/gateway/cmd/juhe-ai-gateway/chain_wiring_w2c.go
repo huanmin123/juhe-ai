@@ -249,8 +249,10 @@ func (c *chainHighConcurrencyQueue) WaitForCapacity(ctx context.Context, input g
 		APIKeyID:                 input.APIKeyID,
 		AccountIDs:               input.AccountIDs,
 		AccountConcurrencyLimits: input.AccountConcurrencyLimits,
-		Lane:                     input.Lane,
-		Signal:                   ctx,
+		// RPM 上限随容量模型透传（AI 账户每分钟请求上限设计 §5.2）。
+		AccountRPMLimits: input.AccountRPMLimits,
+		Lane:             input.Lane,
+		Signal:           ctx,
 	}
 	if input.Policy != nil {
 		waitInput.Policy = *input.Policy

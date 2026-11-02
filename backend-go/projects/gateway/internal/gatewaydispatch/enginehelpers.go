@@ -11,6 +11,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // Attempt-loop helpers of the dispatch engine (dispatch/upstream-dispatch.ts
@@ -52,30 +53,57 @@ func (e *Engine) takeReservedSlot(handle *SpeedFirstCutoverReservationHandle, ac
 	return nil
 }
 
+// Account capacity failure kinds (AI 账户每分钟请求上限设计 §5.1)：并发耗尽与
+// RPM 耗尽同属本地容量不可用，Kind 区分终态与等待语义。
+const (
+	AccountCapacityFailureKindConcurrency = "concurrency"
+	AccountCapacityFailureKindRPM         = "rpm"
+)
+
+// accountCapacityFailureKind 归属一次并发占位拒绝（设计 §5.1）：并发（总量与
+// lane）仍有余量而 RPM 窗口计数已满 → rpm；否则归并发（两约束同时满时并发
+// 优先，等待语义按“槽可能随时释放”处理）。
+func accountCapacityFailureKind(slot ConcurrencySlot) string {
+	if slot.RPMLimit > 0 && slot.RPMCurrent >= slot.RPMLimit &&
+		(slot.Limit <= 0 || slot.Current < slot.Limit) &&
+		(slot.LaneLimit <= 0 || slot.LaneCurrent < slot.LaneLimit) {
+		return AccountCapacityFailureKindRPM
+	}
+	return AccountCapacityFailureKindConcurrency
+}
+
 // acquireAccountConcurrencyWithShortRetry mirrors
 // acquireAccountConcurrencyWithShortRetry（upstream-dispatch.ts:2231-2266）。
 // 返回 (slot, waitedMs, remainingWaitBudgetMs, err)：remainingWaitBudgetMs 是
 // 扣除本次短等并经 serverRetryBudget 收窄后的请求级预算余额——调用方把它回写
 // 共享的 concurrencyRetryWaitBudgetMs（Node :793/:866 的预算 carry，BUG-0247
 // 项 2 恢复请求级递减语义；错误路径预算无意义，恒 0）。
+// AI 账户每分钟请求上限设计 §5.1 修正：RPM 窗口计数不随并发释放下降，纯 RPM
+// 拒绝（并发仍有余量）不做并发短等——首拒直接返回（预算原样保留），短等循环
+// 内重取后仍纯 RPM 立即结束（保留已等待时间与预算扣减，随外层候选切换）；
+// 并发拒绝与「并发 + RPM 双满」保持既有短等行为。
 func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 	ctx context.Context,
 	signal context.Context,
 	accountID string,
 	concurrencyLimit int,
+	rpmLimit int,
 	waitBudgetMs int64,
 	lane gatewayproto.RequestLane,
 	policy *gatewayruntimecache.GroupSchedulingPolicy,
 	serverRetryBudget *gatewaypreauth.ServerRetryBudget,
 ) (ConcurrencySlot, int64, int64, error) {
 	remainingWaitBudgetMs := maxInt64(0, waitBudgetMs)
-	acquireOptions := e.accountConcurrencyLaneAcquireOptions(concurrencyLimit, lane, policy)
+	acquireOptions := e.accountConcurrencyLaneAcquireOptions(concurrencyLimit, rpmLimit, lane, policy)
 	slot, err := e.Concurrency.TryAcquireAsync(ctx, accountID, concurrencyLimit, acquireOptions)
 	if err != nil {
 		return slot, 0, 0, err
 	}
 	waitedMs := int64(0)
 	retryCount := int64(0)
+	if !slot.Acquired && accountCapacityFailureKind(slot) == AccountCapacityFailureKindRPM {
+		return slot, waitedMs, remainingWaitBudgetMs, nil
+	}
 	if !slot.Acquired && remainingWaitBudgetMs > 0 {
 		serverRetryBudget.BeginNoAvailableWait(nil)
 		if budgetRemaining := serverRetryBudget.RemainingMs(nil); budgetRemaining < remainingWaitBudgetMs {
@@ -95,6 +123,9 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 			if err != nil {
 				serverRetryBudget.PauseNoAvailableWait(nil)
 				return slot, waitedMs, 0, err
+			}
+			if !slot.Acquired && accountCapacityFailureKind(slot) == AccountCapacityFailureKindRPM {
+				break
 			}
 		}
 		serverRetryBudget.PauseNoAvailableWait(nil)
@@ -117,12 +148,12 @@ func (e *Engine) nextConcurrencyRetryDelayMs(attempt int64, remainingWaitBudgetM
 	return minInt64(delay, remainingWaitBudgetMs)
 }
 
-func (e *Engine) accountConcurrencyLaneAcquireOptions(concurrencyLimit int, lane gatewayproto.RequestLane, policy *gatewayruntimecache.GroupSchedulingPolicy) AccountConcurrencyAcquireOptions {
+func (e *Engine) accountConcurrencyLaneAcquireOptions(concurrencyLimit int, rpmLimit int, lane gatewayproto.RequestLane, policy *gatewayruntimecache.GroupSchedulingPolicy) AccountConcurrencyAcquireOptions {
 	if lane != gatewayproto.LaneImage {
-		return AccountConcurrencyAcquireOptions{Lane: "text"}
+		return AccountConcurrencyAcquireOptions{Lane: "text", RPMLimit: rpmLimit}
 	}
 	laneLimit := gatewayhotqualityEffectiveImageLaneConcurrencyLimit(concurrencyLimit, policy)
-	return AccountConcurrencyAcquireOptions{Lane: "image", LaneLimit: &laneLimit}
+	return AccountConcurrencyAcquireOptions{Lane: "image", LaneLimit: &laneLimit, RPMLimit: rpmLimit}
 }
 
 // recordConfirmedSameAccountApiKeyFailures mirrors
@@ -192,7 +223,9 @@ func accountRuntimeSourceId(account AccountCandidate) string {
 	return account.ID
 }
 
-// accountConcurrencyLimitMessage mirrors accountConcurrencyLimitMessage.
+// accountConcurrencyLimitMessage mirrors accountConcurrencyLimitMessage. RPM
+// 拒绝（并发仍有余量、窗口计数已满）按设计 §5.1 输出频次文案并给出窗口重置
+// 倒计时；其余保持既有并发文案。
 func accountConcurrencyLimitMessage(slot ConcurrencySlot, waitedMs int64) string {
 	suffix := ""
 	if waitedMs > 0 {
@@ -201,6 +234,13 @@ func accountConcurrencyLimitMessage(slot ConcurrencySlot, waitedMs int64) string
 	if slot.Lane == "image" && slot.LaneCurrent >= slot.LaneLimit && slot.Current < slot.Limit {
 		return "账户图像通道并发已达到上限 " + int64ToString(int64(slot.LaneCurrent)) + "/" + int64ToString(int64(slot.LaneLimit)) +
 			"，已为文本通道保留并发槽" + suffix
+	}
+	if accountCapacityFailureKind(slot) == AccountCapacityFailureKindRPM {
+		resetInSeconds := maxInt64(1, (slot.RPMResetAtMs-gatewayupstream.NowMs()+999)/1000)
+		// RPM 没有可释放的并发槽：不追加“短等…仍未释放”后缀，避免把频次
+		// 耗尽误述为等待并发释放。
+		return "账户每分钟请求数已达到上限 " + int64ToString(int64(slot.RPMCurrent)) + "/" + int64ToString(int64(slot.RPMLimit)) +
+			"（约 " + int64ToString(resetInSeconds) + " 秒后重置）"
 	}
 	return "账户并发已达到上限 " + int64ToString(int64(slot.Current)) + "/" + int64ToString(int64(slot.Limit)) + suffix
 }
@@ -244,8 +284,29 @@ func accountCircuitBlockedAttempt(account AccountCandidate, phase string) *Upstr
 	return attemptWithIdentity(account, "account:circuit_blocked", "账户短电路处于 "+phase)
 }
 
-func accountCapacityLimitAttempt(account AccountCandidate, message string) *UpstreamAttempt {
-	return attemptWithIdentity(account, "concurrency:limit", message)
+// accountCapacityLimitAttempt 构造本地容量拒绝 attempt（设计 §5.1）：并发拒绝
+// 落 upstreamURL="concurrency:limit"，RPM 拒绝落 "rpm:limit"。
+func accountCapacityLimitAttempt(account AccountCandidate, upstreamURL string, message string) *UpstreamAttempt {
+	return attemptWithIdentity(account, upstreamURL, message)
+}
+
+// accountCapacityLimitRejection 把一次并发占位拒绝投影为 attempt + 容量失败
+// 记录（AI 账户每分钟请求上限设计 §5.1）：UpstreamURL 与 Kind 按归属分流
+// （concurrency:limit / rpm:limit），RPM 携带 RetryAfterMs = max(1,
+// RPMResetAtMs - now)；命中 RPM 拒绝同步计一次 Prometheus 频次限制计数。
+func accountCapacityLimitRejection(account AccountCandidate, slot ConcurrencySlot, waitedMs int64) (*UpstreamAttempt, AccountCapacityLimitFailure) {
+	kind := accountCapacityFailureKind(slot)
+	message := accountConcurrencyLimitMessage(slot, waitedMs)
+	upstreamURL := capacityLimitUpstreamURLConcurrency
+	failure := AccountCapacityLimitFailure{account: account, message: message, kind: kind}
+	if kind == AccountCapacityFailureKindRPM {
+		upstreamURL = capacityLimitUpstreamURLRPM
+		failure.retryAfterMs = maxInt64(1, slot.RPMResetAtMs-gatewayupstream.NowMs())
+		gatewayusage.RecordGatewayAccountRPMLimitedMetric()
+	}
+	attempt := accountCapacityLimitAttempt(account, upstreamURL, message)
+	attempt.RetryAfterMs = failure.retryAfterMs
+	return attempt, failure
 }
 
 func accountScopedGuidanceAttempt(account AccountCandidate, guidance *gatewaypreauth.GatewayAgentGuidanceResponse) *UpstreamAttempt {

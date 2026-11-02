@@ -422,6 +422,7 @@ const createdOAuthDetail: AccountEditBasicDetail = {
   credentials: { base_url: 'https://api.openai.com/v1' },
   status: 'pending_test',
   concurrencyLimit: 20,
+  rpmLimit: 0,
   priority: 0,
   superPriorityEnabled: false,
   fallbackEnabled: false,

@@ -411,6 +411,10 @@ func (c *w13g3ConcurrencyHC2) LoadCurrentAsync(ctx context.Context, accountIDs [
 	return map[string]int{}, nil
 }
 
+func (c *w13g3ConcurrencyHC2) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 type w13g3AffinityBusy struct {
 	fakeAffinity
 	busyFromNth int

@@ -26,6 +26,9 @@ type UpstreamAttempt struct {
 	// SemanticCommitted 标记该尝试已越过语义提交点（上游响应已开始），
 	// 失败时不可安全重放（设计 §4.2 non_replayable）。
 	SemanticCommitted bool
+	// RetryAfterMs 是本地容量拒绝的建议重试等待毫秒（AI 账户每分钟请求上限
+	// 设计 §5.4：RPM 拒绝携带 RPMResetAtMs-now 最小 1；并发拒绝为 0）。
+	RetryAfterMs int64
 }
 
 // TransportFailureKind values mirror the Node union.

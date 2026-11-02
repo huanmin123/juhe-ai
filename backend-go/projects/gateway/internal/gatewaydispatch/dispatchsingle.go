@@ -145,7 +145,7 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 		// remainingWaitBudgetMs 原样携带 concurrencyRetryWaitBudgetMs）。
 	} else {
 		acquired, waitedMs, remainingWaitBudgetMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
-			ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit,
+			ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit, originalAccount.RPMLimit,
 			*in.concurrencyRetryWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
 			in.coordination.ServerRetryBudget,
 		)
@@ -163,9 +163,9 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 	}
 	if !concurrencySlot.Acquired {
 		_ = releaseHalfOpenLease(ctx, halfOpenLease)
-		message := accountConcurrencyLimitMessage(concurrencySlot, concurrencyAcquireWaitedMs)
-		*in.lastAttempt = accountCapacityLimitAttempt(originalAccount, message)
-		*in.capacityLimitFailures = append(*in.capacityLimitFailures, AccountCapacityLimitFailure{account: originalAccount, message: message})
+		attempt, failure := accountCapacityLimitRejection(originalAccount, concurrencySlot, concurrencyAcquireWaitedMs)
+		*in.lastAttempt = attempt
+		*in.capacityLimitFailures = append(*in.capacityLimitFailures, failure)
 		return dispatchResultContinue, nil, nil
 	}
 	if concurrencySlot.MarkFirstOutput == nil {
@@ -227,7 +227,7 @@ rotationLoop:
 		skipAccount = false
 		if reacquireConcurrencyForNextKey {
 			acquired, waitedMs, remainingWaitBudgetMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
-				ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit,
+				ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit, originalAccount.RPMLimit,
 				*in.concurrencyRetryWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
 				in.coordination.ServerRetryBudget,
 			)
@@ -252,9 +252,9 @@ rotationLoop:
 				concurrencySlot.Release = func() {}
 			}
 			if !concurrencySlot.Acquired {
-				message := accountConcurrencyLimitMessage(concurrencySlot, waitedMs)
-				*in.lastAttempt = accountCapacityLimitAttempt(originalAccount, message)
-				*in.capacityLimitFailures = append(*in.capacityLimitFailures, AccountCapacityLimitFailure{account: originalAccount, message: message})
+				attempt, failure := accountCapacityLimitRejection(originalAccount, concurrencySlot, waitedMs)
+				*in.lastAttempt = attempt
+				*in.capacityLimitFailures = append(*in.capacityLimitFailures, failure)
 				skipAccount = true
 				break rotationLoop
 			}

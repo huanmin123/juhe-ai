@@ -122,6 +122,10 @@ func (c *w13g3ConcurrencyHC) LoadCurrentAsync(ctx context.Context, accountIDs []
 	return map[string]int{}, nil
 }
 
+func (c *w13g3ConcurrencyHC) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (c *w13g3ConcurrencyHC) LoadCurrentByLaneAsync(ctx context.Context, accountIDs []string, lane string) (map[string]int, error) {
 	if c.loadLaneErr != nil {
 		return nil, c.loadLaneErr
@@ -678,6 +682,10 @@ func (c *w13g3ConcurrencyAlwaysBusy) LoadCurrentAsync(ctx context.Context, accou
 		out[id] = 1 << 20
 	}
 	return out, nil
+}
+
+func (c *w13g3ConcurrencyAlwaysBusy) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
 }
 
 func (c *w13g3ConcurrencyAlwaysBusy) LoadCurrentByLaneAsync(ctx context.Context, accountIDs []string, lane string) (map[string]int, error) {

@@ -822,6 +822,10 @@ func (defaultSlotStore) LoadCurrentAsync(context.Context, []string) (map[string]
 	return map[string]int{}, nil
 }
 
+func (defaultSlotStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (defaultSlotStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

@@ -995,7 +995,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 		switch key {
 		case "providerCode", "providerProtocolProfileId", "name", "type", "credentials",
 			"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings",
-			"tags", "status", "skipInitialHealthCheck", "concurrencyLimit", "priority",
+			"tags", "status", "skipInitialHealthCheck", "concurrencyLimit", "rpmLimit", "priority",
 			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId",
 			"groupId", "accountExpiresAt", "availabilitySchedule", "balanceQueryEnabled",
 			"balanceQueryConfig", "temporaryUnavailableContinuousProbeEnabled",
@@ -1132,6 +1132,16 @@ func createBody(body map[string]any) (CreateInput, string) {
 		}
 		limit := int(number)
 		input.ConcurrencyLimit = &limit
+	}
+	// 每分钟请求上限（AI账户每分钟请求上限设计 §6.3）：整数且 >= 0，0 = 不限制；
+	// 浮点/负数由写面按既有风格 400。
+	if value, exists := body["rpmLimit"]; exists && value != nil {
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) {
+			return CreateInput{}, "账户参数无效"
+		}
+		limit := int(number)
+		input.RPMLimit = &limit
 	}
 	if value, exists := body["priority"]; exists && value != nil {
 		number, ok := value.(float64)
@@ -1274,7 +1284,7 @@ func patchBody(body map[string]any) (PatchInput, string) {
 	}
 	for key := range body {
 		switch key {
-		case "expectedConfigRevision", "name", "notes", "status", "concurrencyLimit",
+		case "expectedConfigRevision", "name", "notes", "status", "concurrencyLimit", "rpmLimit",
 			"priority", "superPriorityEnabled", "fallbackEnabled",
 			"credentials", "credentialsPatch", "supportedModels", "healthCheckModel",
 			"healthCheckEndpointMode", "modelMappings", "tags", "accountExpiresAt",
@@ -1322,6 +1332,15 @@ func patchBody(body map[string]any) (PatchInput, string) {
 		}
 		limit := int(number)
 		input.ConcurrencyLimit = &limit
+	}
+	// 每分钟请求上限（AI账户每分钟请求上限设计 §6.3）：整数且 >= 0，0 = 不限制。
+	if value, exists := body["rpmLimit"]; exists && value != nil {
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		limit := int(number)
+		input.RPMLimit = &limit
 	}
 	if value, exists := body["priority"]; exists && value != nil {
 		number, ok := value.(float64)

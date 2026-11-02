@@ -97,6 +97,7 @@
                       v-model:value="form.concurrencyLimit"
                       :disabled="disabled"
                       :min="1"
+                      :max="9999"
                       :precision="0"
                     />
                   </template>
@@ -110,6 +111,21 @@
                       v-model:value="form.priority"
                       :disabled="disabled"
                       :min="0"
+                      :precision="0"
+                    />
+                  </template>
+                </AccountBatchEditField>
+                <AccountBatchEditField
+                  v-model:checked="form.enabled.rpmLimit"
+                  label="每分钟请求上限"
+                  description="按真实派发计数，每分钟重置；0 表示不限制（最大 9999）。"
+                >
+                  <template #default="{ disabled }">
+                    <a-input-number
+                      v-model:value="form.rpmLimit"
+                      :disabled="disabled"
+                      :min="0"
+                      :max="9999"
                       :precision="0"
                     />
                   </template>

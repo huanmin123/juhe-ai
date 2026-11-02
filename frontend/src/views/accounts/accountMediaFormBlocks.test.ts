@@ -334,6 +334,7 @@ describe('buildAccountEditFormLoad 媒体编辑装载（七项落表单）', () 
       credentials: input.credentials,
       status: 'active',
       concurrencyLimit: 4,
+      rpmLimit: 0,
       priority: 3,
       superPriorityEnabled: true,
       fallbackEnabled: false,
@@ -399,6 +400,7 @@ describe('buildAccountEditFormLoad 媒体编辑装载（七项落表单）', () 
     expect(load.patch.priority).toBe(3)
     expect(load.patch.privilege).toBe('super_priority')
     expect(load.patch.concurrencyLimit).toBe(4)
+    expect(load.patch.rpmLimit).toBe(0)
     // ① 能力 modes（编辑装载不裁剪）
     expect(load.patch.supportedEndpointModes).toEqual(VIDEO_GROUP)
     // ② 多 Key 策略与权重

@@ -546,6 +546,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       modelMappings: form.modelMappings,
       tags: form.tags,
       concurrencyLimit: form.concurrencyLimit,
+      rpmLimit: form.rpmLimit,
       priority: form.priority,
       privilege: form.privilege,
       status: form.status,
@@ -745,6 +746,26 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
   }
 
+  // 「上游请求覆盖」按供应商级声明能力显示，判定依赖 providerModelOptions 这份
+  // 当前供应商模型目录；只在点开模型下拉时加载，编辑既有账户会在详情回填改写
+  // providerCode 后永远拿到空目录（scope watch 已清空、无人重新加载），整块隐藏。
+  // 因此弹窗内供应商确定/切换后自动加载该供应商目录。
+  watch(
+    [
+      () => modalOpen.value,
+      () => form.providerCode,
+      () => allProviderModelScopeParams.value?.systemAccountId,
+      () => editingAccountDetail.value
+    ],
+    ([open, providerCode]) => {
+      if (!open || !providerCode) return
+      // 编辑态详情回填前 providerCode 是上一个表单的残留值：跳过这次错误请求，
+      // 等详情回填后由 providerCode/editingAccountDetail 变化触发一次正确加载。
+      if (editingId.value && !editingAccountDetail.value) return
+      void loadCurrentProviderModelOptions()
+    }
+  )
+
   async function loadMappingSourceModelOptions(protocol: 'openai' | 'anthropic' | 'gemini', keyword = ''): Promise<void> {
     const selectedIds = form.modelMappings
       .filter((mapping) => sourceProtocol(mapping.sourceEndpointFamily) === protocol)
@@ -787,6 +808,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
           groupId: form.groupId,
           group: form.group,
           concurrencyLimit: form.concurrencyLimit,
+          rpmLimit: form.rpmLimit,
           priority: form.priority,
           privilege: form.privilege,
           status: form.status,
@@ -1389,6 +1411,7 @@ function authorizedAccountBasicDetail(
     credentials: {},
     status: account.status,
     concurrencyLimit: account.concurrencyLimit,
+    rpmLimit: account.rpmLimit,
     priority: account.priority,
     superPriorityEnabled: account.superPriorityEnabled,
     fallbackEnabled: account.fallbackEnabled,

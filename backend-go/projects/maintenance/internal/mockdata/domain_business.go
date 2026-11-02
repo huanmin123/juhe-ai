@@ -912,6 +912,7 @@ type mockAccountSeed struct {
 	notes       string
 	priority    int
 	concurrency int
+	rpm         int
 	super       bool
 	fallback    bool
 	balance     bool
@@ -1132,7 +1133,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			domain: contracts.DomainChat, baseURL: mockAccountBaseURL},
 		{id: CleanupIDPrefix + "acc_multikey", name: CleanupNamePrefix + "多 API Key 轮换账户", owner: guard.adminID,
 			group: groups["main"], slug: "multi-key-pool", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
-			priority: 18, concurrency: 70, balance: true,
+			priority: 18, concurrency: 70, rpm: 30, balance: true,
 			modelSlots: []int{1, 2}, tags: []string{"多Key", "故障隔离", "余额自动关闭"},
 			keyPool: 4, keyStrategy: "weighted_round_robin",
 			notes: "Mockdata 账户内多 API Key；创建请求携带余额开启状态，最终应自动关闭并保留配置"},
@@ -1152,7 +1153,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			notes: "Mockdata 媒体生成账号（volcengine_ark 主连接 + volcengine_openspeech 音频连接），引用目录 audio/video 分类模型（媒体契约 §3.4），media_jobs 任务行的账户亲和载体"},
 		{id: CleanupIDPrefix + "acc_burst_fast", name: CleanupNamePrefix + "高并发快响账户", owner: guard.adminID,
 			group: groups["high"], slug: "burst-fast", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
-			priority: 2, concurrency: 180, super: true,
+			priority: 2, concurrency: 180, rpm: 60, super: true,
 			modelSlots: []int{0, 1, 2}, tags: []string{"高并发"},
 			notes: "Mockdata 高并发分组快响账号，用于高并发调度策略展示"},
 		{id: CleanupIDPrefix + "acc_burst_image", name: CleanupNamePrefix + "高并发图像账户", owner: guard.adminID,
@@ -1170,7 +1171,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			notes: "Mockdata 备用账号"},
 		{id: CleanupIDPrefix + "acc_oauth", name: CleanupNamePrefix + "OAuth 主力账户", owner: guard.adminID,
 			group: groups["oauth"], slug: "oauth-main", typ: contracts.AccountTypeOAuth, status: mockAccountStatusActive,
-			priority: 5, concurrency: 50, proxy: proxies["socks"],
+			priority: 5, concurrency: 50, rpm: 30, proxy: proxies["socks"],
 			modelSlots: []int{0, 1}, oauth: true, tags: []string{"OAuth"},
 			notes: "Mockdata OAuth 主力账号，带 Codex 额度快照"},
 		{id: CleanupIDPrefix + "acc_oauth_backup", name: CleanupNamePrefix + "OAuth 备用账户", owner: guard.adminID,
@@ -1222,7 +1223,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			notes: "Mockdata 普通管理员自有账号，用于管理员模式资源归属验收"},
 		{id: CleanupIDPrefix + "acc_manager_burst", name: CleanupNamePrefix + "管理员高并发账户",
 			owner: CleanupIDPrefix + "user_admin", group: groups["manager_high"], slug: "manager-burst",
-			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 4, concurrency: 120, super: true,
+			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 4, concurrency: 120, rpm: 60, super: true,
 			schedule: "active", modelSlots: []int{0, 1, 2},
 			tags:  []string{"管理员高并发"},
 			notes: "Mockdata 普通管理员高并发账号，用于管理员角色高并发分组验收"},
@@ -1272,7 +1273,8 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			"status": seed.status, "credentials_encrypted": credentials,
 			"credential_fingerprint": fingerprint, "credential_mask": mask,
 			"oauth_refresh_token_present": 0, "proxy_profile_id": nullString(seed.proxy),
-			"concurrency_limit": seed.concurrency, "priority": seed.priority,
+			"concurrency_limit": seed.concurrency, "rpm_limit": seed.rpm,
+			"priority":               seed.priority,
 			"super_priority_enabled": boolInt(seed.super), "fallback_enabled": boolInt(seed.fallback),
 			"schedulable":                boolInt(!seed.unschedulable),
 			"capability_domain":          plans[0].domain,
@@ -2462,7 +2464,8 @@ func (w *businessWriter) seedAuthorizationInstances(tx *sql.Tx, guard businessGu
 			"name": instanceName, "type": source.typ, "status": mockAccountStatusActive,
 			"credentials_encrypted": sealed, "credential_mask": maskSecret("sk-mockdata-instance-" + userSlug(instance.grantee)),
 			"oauth_refresh_token_present": 0, "concurrency_limit": source.concurrency,
-			"priority": source.priority, "super_priority_enabled": 0, "fallback_enabled": 0,
+			"rpm_limit": source.rpm,
+			"priority":  source.priority, "super_priority_enabled": 0, "fallback_enabled": 0,
 			"schedulable":       1,
 			"capability_domain": contracts.DomainChat,
 			"notes":             "Mockdata 授权账户实例，归属被授权人，用于" + "授权给我的账号" + "视图",

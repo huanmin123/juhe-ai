@@ -52,14 +52,17 @@
         <strong v-else>不使用</strong>
       </div>
       <div class="account-mobile-meta-item">
-        <span>实时并发</span>
+        <span>限频</span>
         <AccountConcurrencyEditor
           :current-concurrency="account.currentConcurrency"
           :editable="canEdit && !isAuthorizedAccount(account)"
           :editing="concurrencyEditing"
           :limit="account.concurrencyLimit"
+          :rpm-current="account.rpmCurrent"
+          :rpm-limit="account.rpmLimit"
+          :rpm-reset-at="account.rpmResetAt"
           mobile
-          :save-limit="(limit) => saveConcurrency(account, limit)"
+          :save-limits="(limits) => saveConcurrency(account, limits)"
           @cancel-edit="$emit('cancel-concurrency-edit', account.id)"
           @start-edit="$emit('start-concurrency-edit', account.id)"
         />
@@ -148,7 +151,7 @@ const props = defineProps<{
   priorityEditing: boolean
   proxy?: ProxyProfileOptionSummary
   concurrencyEditing: boolean
-  saveConcurrency: (account: AccountListItem, limit: number) => Promise<boolean>
+  saveConcurrency: (account: AccountListItem, limits: { concurrencyLimit: number; rpmLimit: number }) => Promise<boolean>
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   selected: boolean
   balanceRefreshing?: boolean

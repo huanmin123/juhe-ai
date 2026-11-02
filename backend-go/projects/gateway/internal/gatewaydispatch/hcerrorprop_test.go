@@ -16,6 +16,10 @@ func (errorLaneConcurrencyStore) LoadCurrentAsync(context.Context, []string) (ma
 	return nil, errPortBoom
 }
 
+func (errorLaneConcurrencyStore) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (errorLaneConcurrencyStore) LoadCurrentByLaneAsync(context.Context, []string, string) (map[string]int, error) {
 	return nil, errPortBoom
 }

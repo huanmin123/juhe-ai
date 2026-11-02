@@ -357,7 +357,7 @@ func (l *v1DispatchLoop) speedFirstDeadlineDecision(
 			Targets:               chainCutoverTargetsOf(remainingAccounts),
 			Lane:                  string(current.RequestLane),
 			GroupSchedulingPolicy: chainSchedulingPolicyValueOf(current.GroupSchedulingPolicy),
-			SlotAcquirer:          l.speedFirstSlotAcquirer(current),
+			SlotAcquirer:          l.speedFirstSlotAcquirer(current, remainingAccounts),
 		})
 		if err != nil {
 			return "", err
@@ -516,13 +516,19 @@ func chainCutoverTargetsOf(accounts []gatewaydispatch.AccountCandidate) []gatewa
 }
 
 // speedFirstSlotAcquirer 把引擎的账户并发存储桥成切号预留的槽获取器
-// （Node tryAcquireAccountConcurrencyAsync 共享实现）。
-func (l *v1DispatchLoop) speedFirstSlotAcquirer(current *gatewaypreauth.DispatchContext) gatewayhotquality.SpeedFirstCutoverSlotAcquirer {
+// （Node tryAcquireAccountConcurrencyAsync 共享实现）。candidates 是本轮切号
+// 目标候选，按并发资源 ID 预解析 RPM 上限（AI 账户每分钟请求上限设计 §4.4：
+// 预留本身即消耗 1 次 RPM，预留槽释放只退并发不退 RPM）。
+func (l *v1DispatchLoop) speedFirstSlotAcquirer(current *gatewaypreauth.DispatchContext, candidates []gatewaydispatch.AccountCandidate) gatewayhotquality.SpeedFirstCutoverSlotAcquirer {
+	rpmLimits := make(map[string]int, len(candidates))
+	for _, candidate := range candidates {
+		rpmLimits[chainConcurrencyAccountIDOf(candidate)] = candidate.RPMLimit
+	}
 	return func(ctx context.Context, accountID string, concurrencyLimit int, request gatewayhotquality.AccountConcurrencyAcquireRequest) (gatewayhotquality.AccountConcurrencySlot, bool, error) {
 		if l.c.engine.Concurrency == nil {
 			return gatewayhotquality.AccountConcurrencySlot{}, false, nil
 		}
-		options := gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: request.Lane}
+		options := gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: request.Lane, RPMLimit: rpmLimits[accountID]}
 		if request.Lane == gatewayhotquality.AccountConcurrencyLaneImage {
 			imageLimit := gatewayhotquality.EffectiveImageLaneConcurrencyLimit(concurrencyLimit, chainSchedulingPolicyValueOf(current.GroupSchedulingPolicy))
 			options.LaneLimit = &imageLimit
@@ -785,7 +791,7 @@ func (l *v1DispatchLoop) speedFirstTotalTimeDeadlineDecision(
 			Targets:               chainCutoverTargetsOf(remainingAccounts),
 			Lane:                  string(current.RequestLane),
 			GroupSchedulingPolicy: chainSchedulingPolicyValueOf(current.GroupSchedulingPolicy),
-			SlotAcquirer:          l.speedFirstSlotAcquirer(current),
+			SlotAcquirer:          l.speedFirstSlotAcquirer(current, remainingAccounts),
 		})
 		if err != nil {
 			return "", err

@@ -355,6 +355,10 @@ func (s *w1bConcurrencyStub) LoadCurrentAsync(ctx context.Context, accountIDs []
 	return s.current, nil
 }
 
+func (s *w1bConcurrencyStub) LoadCurrentRPMAsync(context.Context, []string) (map[string]AccountRPMState, error) {
+	return map[string]AccountRPMState{}, nil
+}
+
 func (s *w1bConcurrencyStub) LoadCurrentByLaneAsync(ctx context.Context, accountIDs []string, lane string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

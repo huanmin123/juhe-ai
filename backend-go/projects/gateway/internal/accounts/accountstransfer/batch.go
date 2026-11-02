@@ -354,6 +354,7 @@ type batchLockedAccount struct {
 	proxyProfileID                     sql.NullString
 	balanceQueryEnabled                bool
 	concurrencyLimit                   int
+	rpmLimit                           int
 	priority                           int
 	superPriorityEnabled               bool
 	fallbackEnabled                    bool
@@ -680,6 +681,7 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			'' AS provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.type, accounts.status, accounts.credentials_encrypted,
 			accounts.proxy_profile_id, accounts.balance_query_enabled, accounts.concurrency_limit,
+			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			'' AS client_compatibility, accounts.schedulable, accounts.availability_schedule_json,
 			accounts.account_expires_at, accounts.notes, accounts.cooldown_until, accounts.last_error_code,
@@ -708,6 +710,7 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			&account.providerCode, &account.providerProtocolProfileID, &account.protocolCode,
 			&account.protocolVersion, &account.accountType, &account.status, &credentialsEncrypted,
 			&account.proxyProfileID, &balanceEnabled, &account.concurrencyLimit,
+			&account.rpmLimit,
 			&account.priority, &superPriority, &fallback,
 			&account.clientCompatibility, &schedulable, &scheduleJSON,
 			&account.accountExpiresAt, &account.notes, &account.cooldownUntil, &account.lastErrorCode,
@@ -1339,6 +1342,18 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		addChange("concurrencyLimit")
 		setColumn("concurrency_limit", nextConcurrency)
 	}
+	// 每分钟请求上限（AI账户每分钟请求上限设计 §6.4 批量编辑）：整数 >= 0 由
+	// ValidateBatchUpdateValue 校验，0 = 不限制；不属于组统计字段（组统计无此列），
+	// 但属于网关运行时缓存字段（见下方 gatewayFields）。
+	nextRPM := account.rpmLimit
+	if hasOwn("rpmLimit") {
+		nextRPM = IntValue(fieldValue("rpmLimit"), account.rpmLimit)
+	}
+	rpmChanged := hasOwn("rpmLimit") && nextRPM != account.rpmLimit
+	if rpmChanged {
+		addChange("rpmLimit")
+		setColumn("rpm_limit", nextRPM)
+	}
 	nextPriority := account.priority
 	if hasOwn("priority") {
 		nextPriority = IntValue(fieldValue("priority"), account.priority)
@@ -1505,9 +1520,10 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	}
 
 	accountscore.SortStrings(result.changedFields)
+	// 组统计无 rpm_limit 列：rpmLimit 刻意不进 groupStatsFields（设计 §6.4）。
 	groupStatsFields := map[string]bool{"status": true, "schedulable": true, "concurrencyLimit": true}
 	gatewayFields := map[string]bool{
-		"status": true, "schedulable": true, "concurrencyLimit": true, "priority": true,
+		"status": true, "schedulable": true, "concurrencyLimit": true, "rpmLimit": true, "priority": true,
 		"superPriorityEnabled": true, "fallbackEnabled": true, "proxyProfileId": true,
 		"supportedModels": true, "modelMappings": true, "healthCheckModel": true,
 		"healthCheckEndpointMode": true, "availabilitySchedule": true, "accountExpiresAt": true,
@@ -1811,7 +1827,7 @@ func BatchUpdateBody(body map[string]any) (BatchUpdateInput, string) {
 }
 
 var BatchUpdateFields = map[string]bool{
-	"tags": true, "proxyProfileId": true, "concurrencyLimit": true, "priority": true,
+	"tags": true, "proxyProfileId": true, "concurrencyLimit": true, "rpmLimit": true, "priority": true,
 	"superPriorityEnabled": true, "fallbackEnabled": true, "accountExpiresAt": true,
 	"availabilitySchedule": true, "notes": true, "errorHandlingRules": true,
 	"responseInspectionRules": true, "supportedModels": true, "healthCheckModel": true,
@@ -1848,6 +1864,12 @@ func ValidateBatchUpdateValue(field string, value any) string {
 	case "concurrencyLimit":
 		number, ok := value.(float64)
 		if !ok || number != float64(int(number)) || number < 1 {
+			return BatchFieldsPrompt
+		}
+	// 每分钟请求上限（设计 §6.4）：整数且 >= 0，0 = 不限制。
+	case "rpmLimit":
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) || number < 0 {
 			return BatchFieldsPrompt
 		}
 	case "priority":

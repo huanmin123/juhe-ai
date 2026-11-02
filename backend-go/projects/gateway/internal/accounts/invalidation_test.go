@@ -121,6 +121,21 @@ func TestPatchInvalidationChannels(t *testing.T) {
 	if len(lookups) != 1 || len(reasons) != 1 {
 		t.Fatalf("no-change patch leaked invalidations: lookups=%v reasons=%v", lookups, reasons)
 	}
+
+	// RPM-only change：rpmLimit 属于 gatewayRuntime 字段（AI账户每分钟请求上限
+	// 设计 §6.3），必须通知运行时缓存，否则新上限要等下一次其他失效才生效。
+	rpmLimit := 60
+	if _, err := env.store.Patch(ctx, "acc-inv-1", PatchInput{
+		ExpectedConfigRevision: 3,
+		RPMLimit:               &rpmLimit,
+	}, scope); err != nil {
+		t.Fatal(err)
+	}
+	lookups, reasons = invalidator.snapshot()
+	if len(lookups) != 1 || len(reasons) != 2 || reasons[1] != "account_management_patch" {
+		t.Fatalf("rpmLimit change invalidation = lookups=%v reasons=%v, want runtime account_management_patch",
+			lookups, reasons)
+	}
 }
 
 // TestDeleteInvalidationChannels mirrors the Node owner-mode delete tail

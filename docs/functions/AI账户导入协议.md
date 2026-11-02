@@ -104,6 +104,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "status": "active",
       "groupName": "默认 OpenAI 兼容分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "tags": ["主力", "OpenAI 兼容"],
       "proxyRef": "proxy-hk-1",
@@ -135,6 +136,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "status": "active",
       "groupName": "默认 GPT 分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "tags": ["OAuth"],
       "credentials": {
@@ -171,6 +173,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "status": "active",
       "groupName": "默认 Anthropic 分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "tags": ["Claude"],
       "credentials": {
@@ -201,6 +204,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "status": "active",
       "groupName": "默认 GLM 分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "credentials": {
         "api_key": "zhipu-api-key-xxx",
@@ -230,6 +234,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "status": "active",
       "groupName": "默认 GLM 分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "credentials": {
         "api_key": "sk-glm-coding-anthropic-xxx",
@@ -259,6 +264,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "providerProtocolProfileId": "profile_deepseek_openai_v1",
       "groupName": "默认 DeepSeek 分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "credentials": {
         "api_key": "sk-xxx",
@@ -288,6 +294,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "status": "active",
       "groupName": "默认 DeepSeek 分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "credentials": {
         "api_key": "sk-deepseek-claude-code-xxx",
@@ -317,6 +324,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
       "status": "active",
       "groupName": "默认混合供应商分组",
       "concurrencyLimit": 3,
+      "rpmLimit": 0,
       "priority": 50,
       "credentials": {
         "api_key": "sk-glm-coding-xxx",
@@ -374,6 +382,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `proxyRef` | 否 | 引用 `proxies[].ref` 或已有代理 ID。 |
 | `proxyProfileId` | 否 | 直接引用已有代理 ID；不能和 `proxyRef` 同时填写。 |
 | `concurrencyLimit` | 否 | 账户并发上限。 |
+| `rpmLimit` | 否 | 每分钟请求上限（RPM）；非负整数，`0` 或缺省表示不限制。按自然分钟固定窗口统计真实向上游派发的次数（含 Key 轮换重试与失败尝试），与并发上限同时生效。 |
 | `priority` | 否 | 调度优先级。 |
 | `superPriorityEnabled` | 否 | 超级优先开关。 |
 | `fallbackEnabled` | 否 | 降级备用开关。 |
@@ -393,7 +402,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 
 - `groupId` 和 `groupName` 同时存在时优先使用 `groupId`。
 - `proxyRef` 和 `proxyProfileId` 不能同时填写。
-- `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
+- `concurrencyLimit` 必须是正整数；`rpmLimit` 必须是非负整数（`0` 表示不限制）；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。
 - 健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode` 在 `native` 导入中必须全部显式提交，缺一整账户失败；三键共同约束为：preset 指向本账户一条 `enabled: true` 连接，检查形态属于该连接 `endpointModes`，检查模型属于 `supportedModels`。
 - `healthCheckModel` 只在账户创建阶段使用默认链补齐；账户落库后后台系统检查严格读取该字段，不动态跟随供应商默认值。

@@ -42,6 +42,10 @@ func (s *releaseGuardConcurrencyStore) LoadCurrentByLaneAsync(ctx context.Contex
 	return s.inner.LoadCurrentByLaneAsync(ctx, accountIDs, lane)
 }
 
+func (s *releaseGuardConcurrencyStore) LoadCurrentRPMAsync(ctx context.Context, accountIDs []string) (map[string]gatewaydispatch.AccountRPMState, error) {
+	return s.inner.LoadCurrentRPMAsync(ctx, accountIDs)
+}
+
 func (s *releaseGuardConcurrencyStore) TryAcquireAsync(ctx context.Context, accountID string, concurrencyLimit int, options gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
 	slot, err := s.inner.TryAcquireAsync(ctx, accountID, concurrencyLimit, options)
 	if err != nil || !slot.Acquired {

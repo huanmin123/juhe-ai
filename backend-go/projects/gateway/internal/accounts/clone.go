@@ -45,27 +45,30 @@ type CloneContext struct {
 	ProtocolVersion           string `json:"protocolVersion"`
 	// CapabilityDomain 是源账户能力域（M2 克隆契约：正式克隆客户端按它锚定
 	// 目标 capabilityDomain；服务端在创建入口断言两者一致）。
-	CapabilityDomain        string                 `json:"capabilityDomain"`
-	Name                    string                 `json:"name"`
-	Notes                   *string                `json:"notes,omitempty"`
-	Type                    string                 `json:"type"`
-	Status                  string                 `json:"status"`
-	CredentialOptions       CloneCredentialOptions `json:"credentialOptions"`
-	ConcurrencyLimit        int                    `json:"concurrencyLimit"`
-	Priority                int                    `json:"priority"`
-	SuperPriorityEnabled    bool                   `json:"superPriorityEnabled"`
-	FallbackEnabled         bool                   `json:"fallbackEnabled"`
-	ClientCompatibility     string                 `json:"clientCompatibility"`
-	SupportedModels         []string               `json:"supportedModels"`
-	Tags                    []TagSummary           `json:"tags"`
-	HealthCheckModel        string                 `json:"healthCheckModel"`
-	HealthCheckEndpointMode string                 `json:"healthCheckEndpointMode"`
-	BoundGroupID            *string                `json:"boundGroupId,omitempty"`
-	BoundGroupName          *string                `json:"boundGroupName,omitempty"`
-	ModelMappings           []ModelMapping         `json:"modelMappings"`
-	ProxyProfileID          *string                `json:"proxyProfileId,omitempty"`
-	AvailabilitySchedule    *AvailabilitySchedule  `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt        *string                `json:"accountExpiresAt,omitempty"`
+	CapabilityDomain  string                 `json:"capabilityDomain"`
+	Name              string                 `json:"name"`
+	Notes             *string                `json:"notes,omitempty"`
+	Type              string                 `json:"type"`
+	Status            string                 `json:"status"`
+	CredentialOptions CloneCredentialOptions `json:"credentialOptions"`
+	ConcurrencyLimit  int                    `json:"concurrencyLimit"`
+	// RPMLimit 是源账户每分钟请求上限配置值（AI账户每分钟请求上限设计 §3 克隆
+	// 契约）：克隆是配置复制，不复制运行态计数。
+	RPMLimit                int                   `json:"rpmLimit"`
+	Priority                int                   `json:"priority"`
+	SuperPriorityEnabled    bool                  `json:"superPriorityEnabled"`
+	FallbackEnabled         bool                  `json:"fallbackEnabled"`
+	ClientCompatibility     string                `json:"clientCompatibility"`
+	SupportedModels         []string              `json:"supportedModels"`
+	Tags                    []TagSummary          `json:"tags"`
+	HealthCheckModel        string                `json:"healthCheckModel"`
+	HealthCheckEndpointMode string                `json:"healthCheckEndpointMode"`
+	BoundGroupID            *string               `json:"boundGroupId,omitempty"`
+	BoundGroupName          *string               `json:"boundGroupName,omitempty"`
+	ModelMappings           []ModelMapping        `json:"modelMappings"`
+	ProxyProfileID          *string               `json:"proxyProfileId,omitempty"`
+	AvailabilitySchedule    *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt        *string               `json:"accountExpiresAt,omitempty"`
 	// BackgroundProbeEnabled 回显源账户后台自动探测总开关（总开关设计 §8 克隆
 	// 语义）：克隆创建载荷缺省时由写面继承源账户值，克隆体与源账户同模式。
 	BackgroundProbeEnabled                     bool           `json:"backgroundProbeEnabled"`
@@ -166,6 +169,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		credentialsEncrypted      string
 		oauthType                 string
 		concurrencyLimit          int
+		rpmLimit                  int
 		priority                  int
 		superPriorityEnabled      int64
 		fallbackEnabled           int64
@@ -202,6 +206,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			accounts.name, accounts.notes,
 			accounts.type, accounts.status, accounts.credentials_encrypted,
 			COALESCE(accounts.oauth_type, '') AS oauth_type, accounts.concurrency_limit,
+			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			'' AS client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.proxy_profile_id, accounts.availability_schedule_json, accounts.account_expires_at,
@@ -222,7 +227,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		&row.protocolCode, &row.protocolVersion, &row.capabilityDomain,
 		&row.name,
 		&row.notes, &row.accountType, &row.status, &row.credentialsEncrypted,
-		&row.oauthType, &row.concurrencyLimit, &row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
+		&row.oauthType, &row.concurrencyLimit, &row.rpmLimit,
+		&row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
 		&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
 		&row.proxyProfileID, &row.availabilitySchedule, &row.accountExpiresAt,
 		&row.backgroundProbeEnabled, &row.continuousProbeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
@@ -373,6 +379,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		Status:                    row.status,
 		CredentialOptions:         projectCloneCredentialOptions(row.oauthType, credentials),
 		ConcurrencyLimit:          row.concurrencyLimit,
+		RPMLimit:                  row.rpmLimit,
 		Priority:                  row.priority,
 		SuperPriorityEnabled:      row.superPriorityEnabled == 1,
 		FallbackEnabled:           row.fallbackEnabled == 1,

@@ -65,6 +65,8 @@ export function defaultAccountForm(
     callbackUrl: '',
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
+    // RPM 默认 0（不限制）——不套用并发默认值，避免对未配置上游配额的账户产生无依据限流（RPM 设计 §3）。
+    rpmLimit: 0,
     priority: 0,
     privilege: 'normal',
     status: 'pending_test',

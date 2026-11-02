@@ -147,6 +147,7 @@ func TestW1DispatchExhaustionClassification(t *testing.T) {
 		{"account:api_key_pool_unavailable", "api_key_pool_unavailable"},
 		{"account:locally_suppressed", "all_accounts_locally_suppressed"},
 		{"concurrency:limit", "account_concurrency_exhausted"},
+		{"rpm:limit", "account_rpm_exhausted"},
 	}
 	for _, testCase := range cases {
 		kind, detail = classifyGatewayDispatchExhaustion(&gatewaydispatch.UpstreamAttempt{UpstreamURL: testCase.url})

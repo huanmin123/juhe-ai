@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
@@ -260,6 +261,53 @@ func GatewayAccountConcurrencyLimitsByAccountID(accounts []AccountCandidate) map
 		}
 		limit := accountHardConcurrencyLimit(account)
 		if existing, ok := result[accountID]; ok && existing < limit {
+			limit = existing
+		}
+		result[accountID] = limit
+	}
+	return result
+}
+
+// EarliestAccountRPMResetWaitMs 返回候选池中已达到 RPM 上限账户的最早重置
+// 等待（毫秒；无满额账户返回 0）。预派发高并发队列等待用它把等待封顶到最近
+// 重置点：RPM 重置没有并发槽释放事件，不封顶会空等整个请求预算
+// （AI账户每分钟请求上限设计 §5.2）。读失败由调用方降级为不封顶，不影响派发。
+func (e *Engine) EarliestAccountRPMResetWaitMs(ctx context.Context, accounts []AccountCandidate) (int64, error) {
+	ids := gatewaySessionConcurrencyIDs(accounts)
+	states, err := e.Concurrency.LoadCurrentRPMAsync(ctx, ids)
+	if err != nil {
+		return 0, err
+	}
+	now := gatewayupstream.NowMs()
+	earliest := int64(0)
+	for _, account := range accounts {
+		if account.RPMLimit <= 0 {
+			continue
+		}
+		state := states[gatewaySessionConcurrencyID(account)]
+		if state.Used < account.RPMLimit || state.ResetAtMs <= now {
+			continue
+		}
+		wait := state.ResetAtMs - now
+		if earliest == 0 || wait < earliest {
+			earliest = wait
+		}
+	}
+	return earliest, nil
+}
+
+// GatewayAccountRPMLimitsByAccountID 按账户资源 ID 聚合候选 RPM 上限（AI 账户
+// 每分钟请求上限设计 §5.2，与并发上限聚合同风格）：同 ID 多候选取较小非零
+// 上限，0 视为不限制、不参与取小；负值归一为 0。
+func GatewayAccountRPMLimitsByAccountID(accounts []AccountCandidate) map[string]int {
+	result := make(map[string]int, len(accounts))
+	for _, account := range accounts {
+		accountID := gatewaySessionConcurrencyID(account)
+		if accountID == "" {
+			continue
+		}
+		limit := max(0, account.RPMLimit)
+		if existing, ok := result[accountID]; ok && existing > 0 && (limit == 0 || existing < limit) {
 			limit = existing
 		}
 		result[accountID] = limit

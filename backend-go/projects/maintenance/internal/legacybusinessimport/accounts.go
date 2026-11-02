@@ -33,6 +33,7 @@ type accountRow struct {
 	OAuthRefresh     int
 	ProxyProfile     sql.NullString
 	ConcurrencyLimit int
+	RPMLimit         int
 	Priority         int
 	SuperPriority    int
 	FallbackEnabled  int
@@ -81,11 +82,23 @@ type accountRow struct {
 // does not know get that model created as a personal row, preserving the
 // relay-style custom names production actually uses.
 func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret string, report *Report) (map[string]struct{}, error) {
+	// rpm_limit 是 2026-11-03 新增列（AI账户每分钟请求上限设计 §7.1）：
+	// provider-era 旧库普遍没有该列，先探测存在性——有列读
+	// COALESCE(rpm_limit, 0)，无列以常量 0 占位同名投影，按 0 回填，
+	// SELECT/Scan 形状在两种旧库下保持一致且幂等。
+	hasRPMLimit, err := legacyAccountsHasRPMLimitColumn(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	rpmProjection := "0 AS rpm_limit"
+	if hasRPMLimit {
+		rpmProjection = "COALESCE(rpm_limit, 0) AS rpm_limit"
+	}
 	rows, err := source.QueryContext(ctx, `
 		SELECT id, config_revision, dispatch_revision, circuit_projection_revision,
 		       system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 		       name, type, status, credentials_encrypted, credential_mask, oauth_access_token_expires_at,
-		       oauth_refresh_token_present, proxy_profile_id, concurrency_limit, priority, super_priority_enabled,
+		       oauth_refresh_token_present, proxy_profile_id, concurrency_limit, `+rpmProjection+`, priority, super_priority_enabled,
 		       fallback_enabled, schedulable, availability_schedule_json, availability_schedule_next_check_at,
 		       notes, account_expires_at, last_used_at, cooldown_until, last_error_code, last_error_message,
 		       last_error_trace_id, cooldown_retest_failure_count, cooldown_retest_observation_started_at,
@@ -110,7 +123,7 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 		if err := rows.Scan(&row.ID, &row.ConfigRevision, &row.DispatchRevision, &row.CircuitRevision,
 			&row.Owner, &row.ProviderCode, &row.ProfileID, &row.ProtocolCode, &row.ProtocolVersion,
 			&row.Name, &row.AccountType, &row.Status, &row.Credential, &row.CredentialMask, &row.OAuthExpires,
-			&row.OAuthRefresh, &row.ProxyProfile, &row.ConcurrencyLimit, &row.Priority, &row.SuperPriority,
+			&row.OAuthRefresh, &row.ProxyProfile, &row.ConcurrencyLimit, &row.RPMLimit, &row.Priority, &row.SuperPriority,
 			&row.FallbackEnabled, &row.Schedulable, &row.AvailabilityJSON, &row.AvailabilityNext,
 			&row.Notes, &row.AccountExpires, &row.LastUsed, &row.CooldownUntil, &row.LastErrorCode,
 			&row.LastErrorMessage, &row.LastErrorTrace, &row.CooldownRetest, &row.CooldownStarted,
@@ -157,7 +170,7 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 			"vendor_code", "connection_driver_code", "oauth_type", "protocol_code", "protocol_version",
 			"name", "type", "status", "credentials_encrypted", "credential_fingerprint", "credential_mask",
 			"oauth_access_token_expires_at", "oauth_refresh_token_present", "proxy_profile_id",
-			"concurrency_limit", "priority", "super_priority_enabled", "fallback_enabled", "schedulable",
+			"concurrency_limit", "rpm_limit", "priority", "super_priority_enabled", "fallback_enabled", "schedulable",
 			"availability_schedule_json", "availability_schedule_next_check_at", "notes", "account_expires_at",
 			"last_used_at", "cooldown_until", "last_error_code", "last_error_message", "last_error_trace_id",
 			"cooldown_retest_failure_count", "cooldown_retest_observation_started_at", "cooldown_retest_generation",
@@ -179,7 +192,7 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 			row.Vendor, row.Driver, nil, row.ProtocolCode, row.ProtocolVersion,
 			row.Name, row.AccountType, row.Status, row.Credential, credentialFingerprint(row.Credential), row.CredentialMask,
 			row.OAuthExpires, row.OAuthRefresh, row.ProxyProfile,
-			row.ConcurrencyLimit, row.Priority, row.SuperPriority, row.FallbackEnabled, row.Schedulable,
+			row.ConcurrencyLimit, row.RPMLimit, row.Priority, row.SuperPriority, row.FallbackEnabled, row.Schedulable,
 			row.AvailabilityJSON, row.AvailabilityNext, row.Notes, row.AccountExpires,
 			row.LastUsed, row.CooldownUntil, row.LastErrorCode, row.LastErrorMessage, row.LastErrorTrace,
 			row.CooldownRetest, row.CooldownStarted, row.CooldownGen,
@@ -245,6 +258,19 @@ func importAccounts(ctx context.Context, source *sql.DB, tx *sql.Tx, secret stri
 		return nil, err
 	}
 	return accountIDs, nil
+}
+
+// legacyAccountsHasRPMLimitColumn 报告旧库 juhe_business.accounts 是否已有
+// rpm_limit 列。该列 2026-11-03 才进入目标形态（AI账户每分钟请求上限设计
+// §7.1），provider-era 旧库普遍没有：无列时账户 RPM 按 0（不限制）回填。
+func legacyAccountsHasRPMLimitColumn(ctx context.Context, db *sql.DB) (bool, error) {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM information_schema.columns
+		 WHERE table_schema = 'juhe_business' AND table_name = 'accounts' AND column_name = 'rpm_limit'`).Scan(&count); err != nil {
+		return false, fmt.Errorf("探测旧库 accounts.rpm_limit 列: %w", err)
+	}
+	return count > 0, nil
 }
 
 // resolveAccountTarget validates the legacy provider/profile pair and fills the

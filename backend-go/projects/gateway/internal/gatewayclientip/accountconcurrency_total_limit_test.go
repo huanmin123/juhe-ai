@@ -20,7 +20,7 @@ func TestMemoryAccountConcurrencyTryAcquireTotalCapAcrossLanes(t *testing.T) {
 
 	// text lane 独占获取至总量硬上限。
 	for index := 0; index < totalLimit; index++ {
-		outcome := tracker.TryAcquire("acc-1", totalLimit, AccountConcurrencyLaneText, totalLimit)
+		outcome := tracker.TryAcquire("acc-1", totalLimit, AccountConcurrencyLaneText, totalLimit, 0)
 		if !outcome.Acquired || outcome.Total != index+1 || outcome.LaneCurrent != index+1 {
 			t.Fatalf("text 第 %d 次获取 = %+v, want 成功且计数同步", index+1, outcome)
 		}
@@ -31,7 +31,7 @@ func TestMemoryAccountConcurrencyTryAcquireTotalCapAcrossLanes(t *testing.T) {
 
 	// 契约：total 达硬上限后，image lane 即使自身 laneLimit 未满也必须被拒
 	// （总量半边生效），且拒绝路径不自增任何计数。
-	outcome := tracker.TryAcquire("acc-1", totalLimit, AccountConcurrencyLaneImage, imageLaneLimit)
+	outcome := tracker.TryAcquire("acc-1", totalLimit, AccountConcurrencyLaneImage, imageLaneLimit, 0)
 	if outcome.Acquired || outcome.Total != totalLimit || outcome.LaneCurrent != 0 {
 		t.Fatalf("混合流量 image 获取 = %+v, want 拒绝且计数不变", outcome)
 	}
@@ -46,19 +46,19 @@ func TestMemoryAccountConcurrencyTryAcquireTotalCapAcrossLanes(t *testing.T) {
 	// 限，由 lane 半边判断）。
 	imageTracker := NewMemoryAccountConcurrency(nil)
 	for index := 0; index < imageLaneLimit; index++ {
-		laneOutcome := imageTracker.TryAcquire("acc-2", totalLimit, AccountConcurrencyLaneImage, imageLaneLimit)
+		laneOutcome := imageTracker.TryAcquire("acc-2", totalLimit, AccountConcurrencyLaneImage, imageLaneLimit, 0)
 		if !laneOutcome.Acquired || laneOutcome.Total != index+1 || laneOutcome.LaneCurrent != index+1 {
 			t.Fatalf("image 第 %d 次获取 = %+v, want 成功", index+1, laneOutcome)
 		}
 	}
 	// image lane 满后拒绝：total 未达硬上限也拒绝（lane 半边生效）。
-	laneFull := imageTracker.TryAcquire("acc-2", totalLimit, AccountConcurrencyLaneImage, imageLaneLimit)
+	laneFull := imageTracker.TryAcquire("acc-2", totalLimit, AccountConcurrencyLaneImage, imageLaneLimit, 0)
 	if laneFull.Acquired || laneFull.Total != imageLaneLimit || laneFull.LaneCurrent != imageLaneLimit {
 		t.Fatalf("image lane 满后获取 = %+v, want 拒绝且计数不变", laneFull)
 	}
 
 	// 上限 <=0 视为不设限：不拒绝、照常自增。
-	unlimited := tracker.TryAcquire("acc-3", 0, AccountConcurrencyLaneText, 0)
+	unlimited := tracker.TryAcquire("acc-3", 0, AccountConcurrencyLaneText, 0, 0)
 	if !unlimited.Acquired || unlimited.Total != 1 {
 		t.Fatalf("不设限获取 = %+v, want 成功", unlimited)
 	}
@@ -77,7 +77,7 @@ func TestMemoryAccountConcurrencyTryAcquireConcurrentContention(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if tracker.TryAcquire("acc-1", totalLimit, AccountConcurrencyLaneText, totalLimit).Acquired {
+			if tracker.TryAcquire("acc-1", totalLimit, AccountConcurrencyLaneText, totalLimit, 0).Acquired {
 				successes <- struct{}{}
 			}
 		}()
@@ -106,12 +106,12 @@ func TestRedisAccountConcurrencyAcquireEnforcesLimits(t *testing.T) {
 
 	// 契约：totalLimit=2 时前两次成功，第三次拒绝且两个计数都不自增。
 	for index := 0; index < 2; index++ {
-		outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000, 2, 2)
+		outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000, 2, 2, 0)
 		if err != nil || !outcome.Acquired || outcome.Total != index+1 {
 			t.Fatalf("第 %d 次 acquire = %+v err %v, want 成功", index+1, outcome, err)
 		}
 	}
-	outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneImage, 60_000, 2, 2)
+	outcome, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneImage, 60_000, 2, 2, 0)
 	if err != nil || outcome.Acquired || outcome.Total != 2 || outcome.LaneCurrent != 0 {
 		t.Fatalf("total 达限后 image acquire = %+v err %v, want 拒绝且不自增", outcome, err)
 	}
@@ -121,11 +121,11 @@ func TestRedisAccountConcurrencyAcquireEnforcesLimits(t *testing.T) {
 
 	// 契约：lane 半边——image laneLimit=1 时首次成功、第二次拒绝（total 未
 	// 达上限）。
-	laneOutcome, err := instance.AcquireAccountConcurrency(ctx, "acc-2", AccountConcurrencyLaneImage, 60_000, 3, 1)
+	laneOutcome, err := instance.AcquireAccountConcurrency(ctx, "acc-2", AccountConcurrencyLaneImage, 60_000, 3, 1, 0)
 	if err != nil || !laneOutcome.Acquired || laneOutcome.LaneCurrent != 1 {
 		t.Fatalf("image 首次 acquire = %+v err %v, want 成功", laneOutcome, err)
 	}
-	laneFull, err := instance.AcquireAccountConcurrency(ctx, "acc-2", AccountConcurrencyLaneImage, 60_000, 3, 1)
+	laneFull, err := instance.AcquireAccountConcurrency(ctx, "acc-2", AccountConcurrencyLaneImage, 60_000, 3, 1, 0)
 	if err != nil || laneFull.Acquired || laneFull.Total != 1 || laneFull.LaneCurrent != 1 {
 		t.Fatalf("image lane 满后 acquire = %+v err %v, want 拒绝", laneFull, err)
 	}

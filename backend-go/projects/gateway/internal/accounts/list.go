@@ -229,10 +229,17 @@ type ListItem struct {
 	// CapabilityDomain 回显 accounts.capability_domain（AI 账户能力域拆分
 	// M1 读通道）：域创建时确定、不可更改（D3），授权实例域恒等于源域，读
 	// 自身行列即可。
-	CapabilityDomain         string                `json:"capabilityDomain"`
-	Status                   string                `json:"status"`
-	ConcurrencyLimit         int                   `json:"concurrencyLimit"`
-	CurrentConcurrency       int                   `json:"currentConcurrency"`
+	CapabilityDomain   string `json:"capabilityDomain"`
+	Status             string `json:"status"`
+	ConcurrencyLimit   int    `json:"concurrencyLimit"`
+	CurrentConcurrency int    `json:"currentConcurrency"`
+	// 每分钟请求上限三字段（AI账户每分钟请求上限设计 §6.1）：RPMLimit 是配置值
+	// （授权实例行取来源账户值，与 ConcurrencyLimit 同规则）；RPMCurrent /
+	// RPMResetAt 由 hydrateCurrentConcurrency 按运行态端口叠加（ResetAt 为当前
+	// 窗口结束时刻 RFC3339，未配置/缺读时省略）。
+	RPMLimit                 int                   `json:"rpmLimit"`
+	RPMCurrent               int                   `json:"rpmCurrent"`
+	RPMResetAt               *string               `json:"rpmResetAt,omitempty"`
 	Priority                 int                   `json:"priority"`
 	SuperPriorityEnabled     bool                  `json:"superPriorityEnabled"`
 	FallbackEnabled          bool                  `json:"fallbackEnabled"`
@@ -330,9 +337,12 @@ type ListPageResult struct {
 // AccountConcurrencyReader is the runtime concurrency read port behind the
 // list currentConcurrency overlay: the gateway process-local tracker (Node
 // standalone semantics — the list request reads the live counter at response
-// time). Nil keeps every row at 0.
+// time). Nil keeps every row at 0. LoadCurrentRPMByID 是同一 tracker 的每分钟
+// 请求计数读口（AI账户每分钟请求上限设计 §6.1）：键与并发读口相同语义由调用方
+// 决定（授权实例行的 RPM 键是来源账户 ID）。
 type AccountConcurrencyReader interface {
 	LoadCurrentConcurrencyByID(ctx context.Context, accountIDs []string) (map[string]int, error)
+	LoadCurrentRPMByID(ctx context.Context, accountIDs []string) (map[string]AccountRPMState, error)
 }
 
 // SetConcurrencyReader wires the runtime concurrency read port
@@ -347,6 +357,9 @@ func (s *Store) SetConcurrencyReader(reader AccountConcurrencyReader) {
 // onto the list rows (Node listAccountManagementItems read-time concurrency).
 // A read failure degrades to 0 for every row and never fails the page — but
 // logs a warn once instead of vanishing silently. Missing ids read as 0.
+// 同一端口叠加 RPM 运行态（设计 §6.1）：并发读键恒为行 ID（历史口径不变），
+// RPM 读键对授权实例行取来源账户 ID（实例与来源共享同一计数），其余行取行
+// ID；RPM 读失败同样降级（Used 0、ResetAt 省略）并 warn 一次。
 func (s *Store) hydrateCurrentConcurrency(ctx context.Context, items []ListItem) {
 	if len(items) == 0 || s.concurrencyReader == nil {
 		return
@@ -364,6 +377,39 @@ func (s *Store) hydrateCurrentConcurrency(ctx context.Context, items []ListItem)
 	}
 	for index := range items {
 		items[index].CurrentConcurrency = currents[items[index].ID]
+	}
+	// RPM overlay：授权实例行按来源账户键读，非授权行按行 ID。键去重保持一次
+	// 批量读；读失败按 0 降级并保留一次 warn（与并发 overlay 同降级语义）。
+	rpmKeys := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	rpmKeyByRow := make([]string, len(items))
+	for index, item := range items {
+		key := item.ID
+		if item.AuthorizationInstanceSourceAccountID != nil && *item.AuthorizationInstanceSourceAccountID != "" {
+			key = *item.AuthorizationInstanceSourceAccountID
+		}
+		rpmKeyByRow[index] = key
+		if !seen[key] {
+			seen[key] = true
+			rpmKeys = append(rpmKeys, key)
+		}
+	}
+	rpmStates, err := s.concurrencyReader.LoadCurrentRPMByID(ctx, rpmKeys)
+	if err != nil {
+		slog.Warn("账户运行时 RPM hydrate 失败，列表回退 0",
+			"event", "account_runtime_rpm_hydrate_failed",
+			"error", err)
+		return
+	}
+	for index := range items {
+		state := rpmStates[rpmKeyByRow[index]]
+		items[index].RPMCurrent = state.Used
+		// 窗口结束时刻与是否已有派发无关：配置了 RPM 的账户在 Used=0 时也应
+		// 返回重置时刻，前端 tooltip 才能给出真实倒计时而不是「约 0 秒」。
+		if state.ResetAtMs > 0 {
+			resetAt := time.UnixMilli(state.ResetAtMs).UTC().Format(time.RFC3339)
+			items[index].RPMResetAt = &resetAt
+		}
 	}
 }
 
@@ -471,6 +517,7 @@ type listRow struct {
 	capabilityDomain          string
 	status                    string
 	concurrencyLimit          int
+	rpmLimit                  int
 	priority                  int
 	superPriorityEnabled      int
 	fallbackEnabled           int
@@ -522,6 +569,7 @@ type listRow struct {
 	sourceAccountType                   sql.NullString
 	sourceProxyProfileID                sql.NullString
 	sourceConcurrencyLimit              sql.NullInt64
+	sourceRPMLimit                      sql.NullInt64
 	sourceClientCompatibility           sql.NullString
 	resolvedSourceProxyProfileID        sql.NullString
 	sourceProxyProfileName              sql.NullString
@@ -567,6 +615,7 @@ func listItemColumns(alias string) []string {
 		alias + ".capability_domain",
 		alias + ".status",
 		alias + ".concurrency_limit",
+		alias + ".rpm_limit",
 		alias + ".priority",
 		alias + ".super_priority_enabled",
 		alias + ".fallback_enabled",
@@ -616,6 +665,9 @@ func listItemColumns(alias string) []string {
 		"source_accounts.type AS source_type",
 		"source_accounts.proxy_profile_id AS source_proxy_profile_id",
 		"source_accounts.concurrency_limit AS source_concurrency_limit",
+		// 每分钟请求上限来源投影（AI账户每分钟请求上限设计 §6.1）：授权实例行的
+		// 配置值取来源账户（与 source_concurrency_limit 同规则）。
+		"source_accounts.rpm_limit AS source_rpm_limit",
 		// client_compatibility 列已退役（设计 §9.11）：来源投影 NULL，显示值
 		// 由 normalizeOpenAIAccountClientCompatibility 按来源 vendor/type 派生。
 		"NULL AS source_client_compatibility",
@@ -691,7 +743,8 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.id, &row.configRevision, &row.systemAccountID, &row.systemAccountName,
 		&row.providerCode, &row.providerName, &row.providerProtocolProfileID,
 		&row.protocolCode, &row.protocolVersion, &row.name, &row.notes,
-		&row.accountType, &row.capabilityDomain, &row.status, &row.concurrencyLimit, &row.priority,
+		&row.accountType, &row.capabilityDomain, &row.status, &row.concurrencyLimit, &row.rpmLimit,
+		&row.priority,
 		&row.superPriorityEnabled, &row.fallbackEnabled, &row.clientCompatibility,
 		&row.schedulable, &row.availabilityScheduleJSON, &row.accountExpiresAt,
 		&row.cooldownUntil, &row.lastErrorCode, &row.lastErrorMessage,
@@ -706,7 +759,8 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.authorizationID, &row.sourceAccountID, &row.authorizationEffectiveSourceType,
 		&row.sourceProviderCode, &row.sourceProviderName, &row.sourceProviderProtocolProfileID,
 		&row.sourceProtocolCode, &row.sourceProtocolVersion, &row.sourceAccountType,
-		&row.sourceProxyProfileID, &row.sourceConcurrencyLimit, &row.sourceClientCompatibility,
+		&row.sourceProxyProfileID, &row.sourceConcurrencyLimit, &row.sourceRPMLimit,
+		&row.sourceClientCompatibility,
 		&row.resolvedSourceProxyProfileID, &row.sourceProxyProfileName,
 		&row.sourceProxyProfileType, &row.sourceProxyProfileEnabled,
 		&row.boundGroupLocalPriority, &row.boundGroupLocalSuperPriorityEnabled,
@@ -1012,6 +1066,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		CapabilityDomain:          row.capabilityDomain,
 		Status:                    row.status,
 		ConcurrencyLimit:          row.concurrencyLimit,
+		RPMLimit:                  row.rpmLimit,
 		Priority:                  row.priority,
 		SuperPriorityEnabled:      row.superPriorityEnabled == 1,
 		FallbackEnabled:           row.fallbackEnabled == 1,
@@ -1064,6 +1119,11 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		}
 		if row.sourceConcurrencyLimit.Valid {
 			item.ConcurrencyLimit = int(row.sourceConcurrencyLimit.Int64)
+		}
+		// 每分钟请求上限跟随来源账户（AI账户每分钟请求上限设计 §3/§6.1）：来源
+		// join 未命中时保留实例行自身值（与 ConcurrencyLimit 同回退规则）。
+		if row.sourceRPMLimit.Valid {
+			item.RPMLimit = int(row.sourceRPMLimit.Int64)
 		}
 		// Node :547-555: the bound group's local scheduling values take over —
 		// priority keeps the instance fallback while the flags render NULL as
@@ -1555,10 +1615,12 @@ type EditBasicDetail struct {
 	Notes                     *string `json:"notes,omitempty"`
 	Type                      string  `json:"type"`
 	// CapabilityDomain 回显 accounts.capability_domain（M1 读通道，域不可变）。
-	CapabilityDomain        string       `json:"capabilityDomain"`
-	Credentials             Credentials  `json:"credentials"`
-	Status                  string       `json:"status"`
-	ConcurrencyLimit        int          `json:"concurrencyLimit"`
+	CapabilityDomain string      `json:"capabilityDomain"`
+	Credentials      Credentials `json:"credentials"`
+	Status           string      `json:"status"`
+	ConcurrencyLimit int         `json:"concurrencyLimit"`
+	// RPMLimit 是每分钟请求上限配置值（AI账户每分钟请求上限设计 §6.3 表单读取）。
+	RPMLimit                int          `json:"rpmLimit"`
 	Priority                int          `json:"priority"`
 	SuperPriorityEnabled    bool         `json:"superPriorityEnabled"`
 	FallbackEnabled         bool         `json:"fallbackEnabled"`
@@ -1625,6 +1687,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		credentialsEncrypted      string
 		status                    string
 		concurrencyLimit          int
+		rpmLimit                  int
 		priority                  int
 		superPriorityEnabled      int
 		fallbackEnabled           int
@@ -1646,6 +1709,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 			'' AS provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.notes,
 			accounts.type, accounts.capability_domain, accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
+			accounts.rpm_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			'' AS client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.health_check_connection_id,
@@ -1681,7 +1745,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		&row.id, &row.configRevision, &row.systemAccountID, &row.providerCode,
 		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion,
 		&row.name, &row.notes, &row.accountType, &row.capabilityDomain, &row.credentialsEncrypted,
-		&row.status, &row.concurrencyLimit, &row.priority, &row.superPriorityEnabled,
+		&row.status, &row.concurrencyLimit, &row.rpmLimit, &row.priority, &row.superPriorityEnabled,
 		&row.fallbackEnabled, &row.clientCompatibility, &row.healthCheckModel,
 		&row.healthCheckEndpointMode, &row.healthCheckConnectionID, &row.currentHealthCheckPreset,
 		&row.authorizationID, &row.sourceAccountID,
@@ -1802,6 +1866,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		Credentials:               projectEditableCredentials(row.accountType, credentials),
 		Status:                    row.status,
 		ConcurrencyLimit:          row.concurrencyLimit,
+		RPMLimit:                  row.rpmLimit,
 		Priority:                  row.priority,
 		SuperPriorityEnabled:      row.superPriorityEnabled == 1,
 		FallbackEnabled:           row.fallbackEnabled == 1,

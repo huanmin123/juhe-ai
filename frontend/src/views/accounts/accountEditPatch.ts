@@ -51,6 +51,8 @@ export function buildAccountBasicEditSnapshot(
   const values = compactRecord({
     name: form.name.trim(),
     concurrencyLimit: Math.trunc(Number(form.concurrencyLimit)),
+    // RPM 基础编辑快照键（RPM 设计 §6.3）：0 = 不限制；授权实例只读，载荷不带该键。
+    rpmLimit: Math.trunc(Number(form.rpmLimit)),
     priority: Math.trunc(Number(form.priority)),
     ...(form.statusSelectionExplicit ? { status: form.status } : {}),
     superPriorityEnabled: form.privilege === 'super_priority',

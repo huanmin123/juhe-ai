@@ -153,6 +153,10 @@ func (s *w1vConcurrencyStub) LoadCurrentByLaneAsync(ctx context.Context, account
 	return map[string]int{}, nil
 }
 
+func (s *w1vConcurrencyStub) LoadCurrentRPMAsync(context.Context, []string) (map[string]gatewaydispatch.AccountRPMState, error) {
+	return map[string]gatewaydispatch.AccountRPMState{}, nil
+}
+
 func (s *w1vConcurrencyStub) TryAcquireAsync(ctx context.Context, accountID string, concurrencyLimit int, options gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
 	copied := options
 	s.lastAccountID = accountID
@@ -897,6 +901,7 @@ func TestW1VClassifyGatewayDispatchExhaustion(t *testing.T) {
 		{"key_pool", &gatewaydispatch.UpstreamAttempt{UpstreamURL: "account:api_key_pool_unavailable"}, "api_key_pool_unavailable", nil},
 		{"suppressed", &gatewaydispatch.UpstreamAttempt{UpstreamURL: "account:locally_suppressed"}, "all_accounts_locally_suppressed", nil},
 		{"concurrency", &gatewaydispatch.UpstreamAttempt{UpstreamURL: "concurrency:limit"}, "account_concurrency_exhausted", nil},
+		{"rpm", &gatewaydispatch.UpstreamAttempt{UpstreamURL: "rpm:limit"}, "account_rpm_exhausted", nil},
 		{"http_error", &gatewaydispatch.UpstreamAttempt{UpstreamURL: "https://upstream", HasStatus: true, Status: 502}, "upstream_http_error", 502},
 		{"transport", &gatewaydispatch.UpstreamAttempt{UpstreamURL: "https://upstream"}, "upstream_transport_error", nil},
 		{"status_zero", &gatewaydispatch.UpstreamAttempt{UpstreamURL: "https://upstream", HasStatus: true}, "upstream_transport_error", nil},
@@ -1081,7 +1086,7 @@ func TestW1VSpeedFirstSlotAcquirer(t *testing.T) {
 	sink := &recordingFailureSink{}
 	loop := newV1TestLoop(t, sink)
 	loop.c.engine = &gatewaydispatch.Engine{}
-	acquirer := loop.speedFirstSlotAcquirer(loop.current)
+	acquirer := loop.speedFirstSlotAcquirer(loop.current, nil)
 	slot, acquired, err := acquirer(context.Background(), "acc_1", 5, gatewayhotquality.AccountConcurrencyAcquireRequest{Lane: gatewayhotquality.AccountConcurrencyLaneText})
 	if err != nil || acquired {
 		t.Fatalf("无并发存储: acquired=%v err=%v", acquired, err)

@@ -1150,12 +1150,18 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			if req.RequestLane != "image" && availableDecisionMs < maxWaitMs {
 				maxWaitMs = availableDecisionMs
 			}
+			// RPM 重置没有并发槽释放事件：预派发等待封顶到最近重置点，避免
+			// 空等整个请求预算后才交给引擎侧（设计 §5.2）。读失败降级为不封顶。
+			if resetWaitMs, resetErr := e.EarliestAccountRPMResetWaitMs(ctx, accounts); resetErr == nil && resetWaitMs > 0 && resetWaitMs < maxWaitMs {
+				maxWaitMs = resetWaitMs
+			}
 			return e.HighConcurrencyQueue.WaitForCapacity(ctx, HighConcurrencyWaitInput{
 				SystemAccountID:          req.SystemAccountID,
 				GroupID:                  req.GroupID,
 				APIKeyID:                 req.APIKeyID,
 				AccountIDs:               gatewaySessionConcurrencyIDs(accounts),
 				AccountConcurrencyLimits: GatewayAccountConcurrencyLimitsByAccountID(accounts),
+				AccountRPMLimits:         GatewayAccountRPMLimitsByAccountID(accounts),
 				Lane:                     req.RequestLane,
 				Policy:                   req.GroupAccess.SchedulingPolicy,
 				MaxWaitMs:                maxWaitMs,

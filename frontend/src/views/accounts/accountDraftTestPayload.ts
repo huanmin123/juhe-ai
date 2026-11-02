@@ -96,6 +96,8 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     credentials: input.draftPayload.credentials,
     status: 'active',
     concurrencyLimit: input.draftPayload.concurrencyLimit,
+    // 草稿测试摘要不承载 RPM 配置（账户尚未落库），按 0（不限制）投影。
+    rpmLimit: input.accountDetail?.rpmLimit ?? 0,
     currentConcurrency: 0,
     priority: input.draftPayload.priority,
     superPriorityEnabled: input.accountDetail?.superPriorityEnabled ?? false,

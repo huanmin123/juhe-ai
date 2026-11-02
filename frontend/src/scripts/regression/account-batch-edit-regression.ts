@@ -49,6 +49,29 @@ assert.deepEqual(result.payload?.updates.healthCheckModel, { enabled: true, valu
 assert.deepEqual(result.payload?.updates.serviceTierOverride, { enabled: true, value: '' }, '空 GPT 覆盖表示明确清除')
 assert.equal(result.payload?.updates.priority, undefined, '未勾选字段不得进入请求')
 
+// ---- rpmLimit 三态字段（RPM 设计 §6.4）：开关 + 数值，0 = 不限制 ----
+
+assert.equal(accountBatchEditFieldLabels.rpmLimit, '每分钟请求上限', '批量字段摘要必须使用每分钟请求上限统一文案')
+const rpmForm = createAccountBatchEditForm()
+assert.equal(rpmForm.rpmLimit, 0, 'RPM 默认值必须为 0（不限制），不套用并发默认值')
+assert.equal(rpmForm.enabled.rpmLimit, false, 'RPM 默认不勾选')
+assert.equal(buildAccountBatchEditRequest(accounts, rpmForm).payload?.updates.rpmLimit, undefined, '未勾选 RPM 不得进入请求')
+rpmForm.enabled.rpmLimit = true
+rpmForm.rpmLimit = 60
+assert.deepEqual(
+  buildAccountBatchEditRequest(accounts, rpmForm).payload?.updates.rpmLimit,
+  { enabled: true, value: 60 },
+  '勾选 RPM 必须按覆盖值进入 updates'
+)
+const invalidRpmForm = createAccountBatchEditForm()
+invalidRpmForm.enabled.rpmLimit = true
+invalidRpmForm.rpmLimit = -1
+assert.equal(
+  buildAccountBatchEditRequest(accounts, invalidRpmForm).message,
+  '每分钟请求上限必须是大于等于 0 的整数',
+  'RPM 必须校验为非负整数'
+)
+
 const invalidHealthForm = createAccountBatchEditForm()
 invalidHealthForm.enabled.supportedModels = true
 invalidHealthForm.supportedModels = ['gpt-5.5']
@@ -145,6 +168,8 @@ assert.match(modalSource, /覆盖账户真实上游支持的接口形态/, '批�
 assert.doesNotMatch(modalSource, /接口能力限制|可承接的请求形态/, '批量编辑不得继续展示旧能力文案')
 assert.equal(accountBatchEditFieldLabels.supportedEndpointModes, '上游接口能力', '批量字段摘要必须使用上游接口能力')
 assert.equal(accountBatchEditFieldLabels.healthCheckEndpointMode, '检查请求形态', '批量确认摘要必须使用检查请求形态')
+assert.match(modalSource, /v-model:checked="form\.enabled\.rpmLimit"[\s\S]*label="每分钟请求上限"/, '批量弹窗必须提供 RPM 开关 + 标签')
+assert.match(modalSource, /v-model:value="form\.rpmLimit"[\s\S]*:min="0"[\s\S]*:precision="0"/, '批量 RPM 数值输入必须 min=0 且整数')
 assert.doesNotMatch(generalTabSource, /form\.enabled\.healthCheckEndpointMode/, '检查请求形态不得继续放在通用配置页签')
 assert.match(
   modelsTabSource,

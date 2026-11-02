@@ -156,6 +156,25 @@ assert.doesNotMatch(batchEditModalSource, /supportedModels: effectiveBatchModels
 // 保存前能力校验删除：值域由后端族集校验负责
 assert.doesNotMatch(accountSavePayloadSource, /validateAccountGptRequestOverrides/, '保存前覆盖能力校验函数必须删除')
 assert.doesNotMatch(accountSavePayloadSource, /所选支持模型中没有模型支持/, '保存前不得再按已选模型拦截覆盖字段')
+// 目录加载时机（2026-11-03 口径）：弹窗内供应商确定/切换自动加载模型目录，
+// 显示判定不再依赖用户是否点开过模型下拉；编辑态详情回填前不按残留供应商加载
+const editFormSource = readFileSync(new URL('../../views/accounts/useAccountEditForm.ts', import.meta.url), 'utf8')
+const accountsViewSource = readFileSync(new URL('../../views/accounts/AccountsView.vue', import.meta.url), 'utf8')
+assert.match(
+  editFormSource,
+  /watch\(\s*\[[\s\S]{0,200}form\.providerCode[\s\S]{0,200}\][\s\S]{0,600}loadCurrentProviderModelOptions\(\)/,
+  '编辑弹窗必须接线供应商 watch 自动加载模型目录：「上游请求覆盖」的声明能力判定依赖这份候选'
+)
+assert.match(
+  editFormSource,
+  /editingId\.value && !editingAccountDetail\.value/,
+  '编辑态详情回填前必须跳过按表单残留供应商发起的目录加载'
+)
+assert.doesNotMatch(
+  accountsViewSource,
+  /watch\(modalOpen,[\s\S]{0,300}loadCurrentProviderModelOptions/,
+  '弹窗打开 watch 不得再按残留 providerCode 直接加载模型目录（职责已移至 useAccountEditForm）'
+)
 assert.equal(isAccountRequestOverrideProviderSupported('gpt'), true, 'GPT 账户必须显示请求覆盖配置区')
 assert.equal(isAccountRequestOverrideProviderSupported('openai'), true, 'OpenAI-compatible 账户必须显示请求覆盖配置区')
 assert.equal(isAccountRequestOverrideProviderSupported('anthropic'), true, 'Anthropic 账户必须显示请求覆盖配置区（服务等级字段按空族集隐藏）')

@@ -43,6 +43,8 @@ export interface AccountFormModel {
   callbackUrl: string
   accountExpiresAt?: Dayjs | null
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §6.3）：0 表示不限制；授权实例只读，载荷不带该键。 */
+  rpmLimit: number
   priority: number
   privilege: 'normal' | 'super_priority' | 'fallback'
   status: 'active' | 'pending_test' | 'disabled'

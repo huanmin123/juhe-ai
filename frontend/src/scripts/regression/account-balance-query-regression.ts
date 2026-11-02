@@ -123,7 +123,7 @@ assert.match(validateAccountBalanceForm({
 
 const advancedPayloadFields = {
   providerCode: 'openai', providerProtocolProfileId: 'openai-chat', name: '账户 A', type: 'api_key',
-  concurrencyLimit: 1, priority: 0, status: 'active', superPriorityEnabled: false,
+  concurrencyLimit: 1, rpmLimit: 0, priority: 0, status: 'active', superPriorityEnabled: false,
   fallbackEnabled: false, supportedModels: ['gpt-4o'], healthCheckModel: 'gpt-4o',
   healthCheckEndpointMode: 'chat_completions', temporaryUnavailableContinuousProbeEnabled: false,
   modelMappings: [], tags: [], proxyProfileId: null, accountExpiresAt: null,

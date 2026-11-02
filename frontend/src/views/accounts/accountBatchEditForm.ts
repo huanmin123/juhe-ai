@@ -39,6 +39,7 @@ export type AccountBatchEditFieldKey =
   | 'tags'
   | 'proxyProfileId'
   | 'concurrencyLimit'
+  | 'rpmLimit'
   | 'priority'
   | 'superPriorityEnabled'
   | 'fallbackEnabled'
@@ -60,6 +61,8 @@ export interface AccountBatchEditForm {
   tags: string[]
   proxyProfileId?: string
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §6.4）：0 表示不限制。 */
+  rpmLimit: number
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -96,6 +99,7 @@ export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, strin
   tags: '账户标签',
   proxyProfileId: '代理',
   concurrencyLimit: '并发上限',
+  rpmLimit: '每分钟请求上限',
   priority: '优先级',
   superPriorityEnabled: '超级优先',
   fallbackEnabled: '降级备用',
@@ -121,6 +125,8 @@ export function createAccountBatchEditForm(): AccountBatchEditForm {
     tags: [],
     proxyProfileId: undefined,
     concurrencyLimit: 1,
+    // RPM 默认 0（不限制），与创建表单同口径（RPM 设计 §6.4）。
+    rpmLimit: 0,
     priority: 0,
     superPriorityEnabled: false,
     fallbackEnabled: false,
@@ -192,6 +198,15 @@ export function buildAccountBatchEditRequest(
   if (form.enabled.concurrencyLimit && (!Number.isInteger(form.concurrencyLimit) || form.concurrencyLimit < 1)) {
     return { message: '并发上限必须是大于 0 的整数' }
   }
+  if (form.enabled.concurrencyLimit && form.concurrencyLimit > 9999) {
+    return { message: '并发上限最大为 9999' }
+  }
+  if (form.enabled.rpmLimit && (!Number.isInteger(form.rpmLimit) || form.rpmLimit < 0)) {
+    return { message: '每分钟请求上限必须是大于等于 0 的整数' }
+  }
+  if (form.enabled.rpmLimit && form.rpmLimit > 9999) {
+    return { message: '每分钟请求上限最大为 9999' }
+  }
   if (form.enabled.priority && (!Number.isInteger(form.priority) || form.priority < 0)) {
     return { message: '优先级必须是大于等于 0 的整数' }
   }
@@ -262,6 +277,7 @@ export function buildAccountBatchEditRequest(
   addUpdate(updates, 'tags', form.enabled.tags, normalizedTextList(form.tags))
   addUpdate(updates, 'proxyProfileId', form.enabled.proxyProfileId, form.proxyProfileId?.trim() || null)
   addUpdate(updates, 'concurrencyLimit', form.enabled.concurrencyLimit, form.concurrencyLimit)
+  addUpdate(updates, 'rpmLimit', form.enabled.rpmLimit, form.rpmLimit)
   addUpdate(updates, 'priority', form.enabled.priority, form.priority)
   addUpdate(updates, 'superPriorityEnabled', form.enabled.superPriorityEnabled, form.superPriorityEnabled)
   addUpdate(updates, 'fallbackEnabled', form.enabled.fallbackEnabled, form.fallbackEnabled)

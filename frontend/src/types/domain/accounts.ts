@@ -396,6 +396,12 @@ export interface AccountSummary {
   status: AccountStatus
   credentials: AccountCredentials
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §6.1）：0 表示不限制；授权实例继承来源账户值。 */
+  rpmLimit: number
+  /** 本分钟已派发次数（授权实例按来源账户读）；读失败降级 0。 */
+  rpmCurrent?: number
+  /** RPM 窗口结束时刻（RFC3339，可空）。 */
+  rpmResetAt?: string
   currentConcurrency: number
   runtimeAvailability?: AccountRuntimeAvailability
   circuitSummary?: {
@@ -502,6 +508,12 @@ export interface AccountListItem {
   status: AccountStatus
   apiKeyRuntime?: AccountApiKeyRuntimePublicSummary
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §6.1）：0 表示不限制；授权实例继承来源账户值。 */
+  rpmLimit: number
+  /** 本分钟已派发次数（授权实例按来源账户读）；读失败降级 0。 */
+  rpmCurrent?: number
+  /** RPM 窗口结束时刻（RFC3339，可空）。 */
+  rpmResetAt?: string
   currentConcurrency: number
   runtimeAvailability?: AccountRuntimeAvailability
   circuitSummary?: AccountSummary['circuitSummary']
@@ -604,6 +616,8 @@ export interface AccountEditBasicDetail {
   credentials: AccountCredentials
   status: AccountStatus
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §6.3）：0 表示不限制。 */
+  rpmLimit: number
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -693,6 +707,8 @@ export interface AccountCloneContext {
   status: AccountStatus
   credentialOptions: AccountCloneCredentialOptions
   concurrencyLimit: number
+  /** 每分钟请求上限（RPM 设计 §3 克隆）：克隆是配置复制，不复制运行态计数。 */
+  rpmLimit: number
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -799,6 +815,7 @@ export interface AccountBatchEditUpdates {
   tags?: AccountBatchEditField<string[]>
   proxyProfileId?: AccountBatchEditField<string | null>
   concurrencyLimit?: AccountBatchEditField<number>
+  rpmLimit?: AccountBatchEditField<number>
   priority?: AccountBatchEditField<number>
   superPriorityEnabled?: AccountBatchEditField<boolean>
   fallbackEnabled?: AccountBatchEditField<boolean>
@@ -1087,6 +1104,8 @@ export interface AccountExportAccount {
   groupName?: string
   proxyRef?: string
   concurrencyLimit?: number
+  /** 每分钟请求上限：仅 >0 时导出（与 concurrencyLimit 同省略规则）；导入缺省落 0。 */
+  rpmLimit?: number
   priority?: number
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean

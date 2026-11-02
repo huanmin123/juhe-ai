@@ -39,7 +39,10 @@
     :editable="canEdit(account) && !isAuthorizedAccount(account)"
     :editing="concurrencyEditing"
     :limit="account.concurrencyLimit"
-    :save-limit="(limit) => saveConcurrency(account, limit)"
+    :rpm-current="account.rpmCurrent"
+    :rpm-limit="account.rpmLimit"
+    :rpm-reset-at="account.rpmResetAt"
+    :save-limits="(limits) => saveConcurrency(account, limits)"
     @cancel-edit="$emit('cancel-concurrency-edit', account.id)"
     @start-edit="$emit('start-concurrency-edit', account.id)"
   />
@@ -148,7 +151,7 @@ const props = defineProps<{
   providerName: (providerCode?: string) => string
   priorityEditing: boolean
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
-  saveConcurrency: (account: AccountListItem, limit: number) => Promise<boolean>
+  saveConcurrency: (account: AccountListItem, limits: { concurrencyLimit: number; rpmLimit: number }) => Promise<boolean>
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   balanceRefreshing?: boolean
   balanceDetails?: AccountBalanceDetails

@@ -39,6 +39,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 GPT 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       proxyRef: 'proxy-hk-1',
       credentials: {
@@ -69,6 +70,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 GPT 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         refresh_token: 'refresh-token-xxx',
@@ -102,6 +104,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 DeepSeek 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         api_key: 'sk-deepseek-xxx',
@@ -131,6 +134,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 DeepSeek 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         api_key: 'sk-deepseek-claude-code-xxx',
@@ -160,6 +164,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 GLM 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         api_key: 'sk-glm-general-xxx',
@@ -189,6 +194,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 GLM 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         api_key: 'sk-glm-coding-xxx',
@@ -218,6 +224,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 GLM 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         api_key: 'sk-glm-coding-anthropic-xxx',
@@ -247,6 +254,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认 Anthropic 分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         api_key: 'sk-ant-xxx',
@@ -276,6 +284,7 @@ export const importTemplate = JSON.stringify({
       status: 'active',
       groupName: '默认混合供应商分组',
       concurrencyLimit: 3,
+      rpmLimit: 0,
       priority: 50,
       credentials: {
         api_key: 'sk-glm-coding-xxx',
@@ -380,6 +389,7 @@ export const accountImportProtocolMarkdown = [
   '| `proxyRef` | 否 | string | 引用 `proxies[].ref` 或已有代理 ID。 |',
   '| `proxyProfileId` | 否 | string | 直接引用已有代理 ID；不能和 `proxyRef` 同时填写。 |',
   '| `concurrencyLimit` | 否 | number | 正整数，并发上限。 |',
+  '| `rpmLimit` | 否 | number | 每分钟请求上限；非负整数，0 或缺省表示不限制。 |',
   '| `priority` | 否 | number | 非负整数，调度优先级。 |',
   '| `superPriorityEnabled` | 否 | boolean | 超级优先开关。 |',
   '| `fallbackEnabled` | 否 | boolean | 降级备用开关。 |',
@@ -411,7 +421,7 @@ export const accountImportProtocolMarkdown = [
   '',
   '- `groupId` 和 `groupName` 同时存在时优先使用 `groupId`。',
   '- `proxyRef` 和 `proxyProfileId` 不能同时填写。',
-  '- `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。',
+  '- `concurrencyLimit` 必须是正整数；`rpmLimit` 必须是非负整数；`priority` 必须是非负整数。',
   '- 导入创建时 `status: "active"` 会转为 `pending_test`，测试通过后才参与调度；明确不希望调度时填 `disabled`。',
   '- `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。',
   '- `healthCheckModel` 只在账户创建阶段按默认链补齐；账户落库后后台检查严格读取该字段，不会动态跟随供应商默认值。native 导入必须显式提交该字段并保证属于 `supportedModels`。',

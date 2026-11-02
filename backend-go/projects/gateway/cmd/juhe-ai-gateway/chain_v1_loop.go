@@ -1315,9 +1315,9 @@ func (l *v1DispatchLoop) renderSuperTargetExhausted(attempt *gatewaydispatch.Ups
 		case attempt.LastAttempt == nil:
 			classification = superTargetNoCandidate
 		default:
-			// 引擎内全部候选因并发上限失败属容量侧（设计 §4.2），与配额拒绝
-			// 同归 capacity_exhausted。
-			if reason, _ := classifyGatewayDispatchExhaustion(attempt.LastAttempt); reason == "account_concurrency_exhausted" {
+			// 引擎内全部候选因并发上限（含 RPM 耗尽，AI 账户每分钟请求上限设计
+			// §5.4）失败属容量侧，与配额拒绝同归 capacity_exhausted。
+			if reason, _ := classifyGatewayDispatchExhaustion(attempt.LastAttempt); reason == "account_concurrency_exhausted" || reason == "account_rpm_exhausted" {
 				classification = superTargetCapacityExhausted
 			}
 		}
@@ -1446,13 +1446,42 @@ func (l *v1DispatchLoop) renderDispatchExhausted(ctx context.Context, attempt *g
 		"expectedFailure": true,
 	}, "expected_failure", stageStartedAt)
 
+	// AI 账户每分钟请求上限设计 §5.4：个人分组最后容量失败为 RPM 时终态改判
+	// 429 —— payload 固定频次文案、type/code=rate_limit_exceeded，Retry-After
+	// 按 ceil(RetryAfterMs/1000) 收敛到 1..60 秒；审计归网关容量侧。其余耗尽
+	// 保持既有 503 upstream 契约（并发耗尽终态不变）。
+	statusCode := http.StatusServiceUnavailable
 	payloadMessage := "上游暂时不可用，请重试"
 	payloadCode := gatewaypreauth.GatewayStreamClientRetryErrorCode
+	auditOutcome := gatewaypreauth.AuditOutcomeUpstreamFailed
+	auditErrorCode := payloadCode
+	failureScope := "upstream"
+	recordUsage := lastAttempt == nil
+	if failureReason == "account_rpm_exhausted" && lastAttempt != nil {
+		statusCode = http.StatusTooManyRequests
+		payloadMessage = "上游账户每分钟请求数已达上限，请稍后重试"
+		payloadCode = "rate_limit_exceeded"
+		auditOutcome = gatewaypreauth.AuditOutcomeGatewayFailed
+		auditErrorCode = "account_rpm_limit"
+		failureScope = "capacity"
+		recordUsage = false
+		if !l.res.HeadersSent() {
+			retryAfterSeconds := (maxInt64(1, lastAttempt.RetryAfterMs) + 999) / 1000
+			if retryAfterSeconds < 1 {
+				retryAfterSeconds = 1
+			}
+			if retryAfterSeconds > 60 {
+				retryAfterSeconds = 60
+			}
+			l.res.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSeconds))
+		}
+	}
 	if lastAttempt == nil {
 		// Node: message === '没有可用的上游账户' — the no-candidate attempt
 		// error carries no last attempt.
 		payloadMessage = "没有可用的上游账户"
 		payloadCode = "no_available_upstream_account"
+		auditErrorCode = payloadCode
 	}
 	// Node routes.ts:2619: the gateway failure response confirms the pending
 	// client-IP account failures first (the dispatch_exhausted_protocol_retry
@@ -1465,17 +1494,26 @@ func (l *v1DispatchLoop) renderDispatchExhausted(ctx context.Context, attempt *g
 		AuditCapture:    l.auditCapture,
 		UsageContext:    l.current.UsageContext,
 		StartedAt:       l.startedAt,
-		StatusCode:      http.StatusServiceUnavailable,
-		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(payloadMessage, "service_unavailable", payloadCode),
+		StatusCode:      statusCode,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(payloadMessage, payloadTypeOf(statusCode), payloadCode),
 		Audit: gatewaypreauth.FailureAudit{
-			Outcome:      gatewaypreauth.AuditOutcomeUpstreamFailed,
+			Outcome:      auditOutcome,
 			ErrorPhase:   "dispatch",
-			ErrorCode:    payloadCode,
+			ErrorCode:    auditErrorCode,
 			ErrorMessage: attempt.Message,
 		},
-		RecordUsage:  boolPtr(lastAttempt == nil),
-		FailureScope: "upstream",
+		RecordUsage:  boolPtr(recordUsage),
+		FailureScope: failureScope,
 	})
+}
+
+// payloadTypeOf 返回耗尽终态 payload 的 type 字段：429 频次终态与既有 503
+// upstream 终态分别使用 rate_limit_exceeded / service_unavailable（设计 §5.4）。
+func payloadTypeOf(statusCode int) string {
+	if statusCode == http.StatusTooManyRequests {
+		return "rate_limit_exceeded"
+	}
+	return "service_unavailable"
 }
 
 // renderUnexpectedDispatchFailure mirrors the Node top-level catch for
@@ -2548,6 +2586,9 @@ func classifyGatewayDispatchExhaustion(lastAttempt *gatewaydispatch.UpstreamAtte
 		return "all_accounts_locally_suppressed", nil
 	case "concurrency:limit":
 		return "account_concurrency_exhausted", nil
+	// AI 账户每分钟请求上限设计 §5.5：RPM 耗尽独立分类，终态 429 + Retry-After。
+	case "rpm:limit":
+		return "account_rpm_exhausted", nil
 	}
 	if lastAttempt.HasStatus && lastAttempt.Status > 0 {
 		return "upstream_http_error", lastAttempt.Status

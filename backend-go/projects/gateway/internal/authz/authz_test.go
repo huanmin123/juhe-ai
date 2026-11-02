@@ -53,6 +53,7 @@ var ddl = []string{
 		credential_mask TEXT NOT NULL DEFAULT '',
 		proxy_profile_id TEXT,
 		concurrency_limit INTEGER NOT NULL DEFAULT 5000,
+		rpm_limit INTEGER NOT NULL DEFAULT 0,
 		priority INTEGER NOT NULL DEFAULT 0,
 		super_priority_enabled INTEGER NOT NULL DEFAULT 0,
 		fallback_enabled INTEGER NOT NULL DEFAULT 0,
@@ -181,7 +182,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) seedAccount(t *testing.T, id, status string) {
 	t.Helper()
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO system_accounts (id, username, display_name, role, status, password_hash, created_at, updated_at)
-		VALUES (?, ?, ?, 'user', ?, 'pbkdf2$sha512$120000$abc$def', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), 		id, id, id, status); err != nil {
+		VALUES (?, ?, ?, 'user', ?, 'pbkdf2$sha512$120000$abc$def', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`), id, id, id, status); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -201,7 +202,7 @@ func (f *fixture) seedTeamWithMember(t *testing.T, teamID, memberID string) {
 
 func (f *fixture) seedGroup(t *testing.T, groupID, ownerID string) {
 	t.Helper()
-	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status) VALUES (?, ?, ?, 'active')`), 		groupID, "Group "+groupID, ownerID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status) VALUES (?, ?, ?, 'active')`), groupID, "Group "+groupID, ownerID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -385,7 +386,7 @@ func TestTeamGrantActiveLimitRejectsTwentyFirstGrant(t *testing.T) {
 		if _, err := f.db.Exec(fixtureBind(`INSERT INTO resource_authorization_grants
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_team_id,
 			 scope, status, created_by, created_at, updated_at)
-			VALUES (?, 'group', ?, 'owner', 'team', 'team_1', 'use', 'active', 'owner', ?, ?)`), 			"grant_limit_"+itoa(i), resourceID, f.now.UTC().Format(time.RFC3339Nano), f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+			VALUES (?, 'group', ?, 'owner', 'team', 'team_1', 'use', 'active', 'owner', ?, ?)`), "grant_limit_"+itoa(i), resourceID, f.now.UTC().Format(time.RFC3339Nano), f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -592,7 +593,7 @@ func TestPatchOptimisticConflictAndExpire(t *testing.T) {
 
 	// Expire sweep: force the grant past expiry, then sweep.
 	future := f.now.Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
-	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ?, status = 'active' WHERE id = ?`), 		future, result.Item.ID); err != nil {
+	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorization_grants SET expires_at = ?, status = 'active' WHERE id = ?`), future, result.Item.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(fixtureBind(`UPDATE resource_authorizations SET expires_at = ?`), future); err != nil {

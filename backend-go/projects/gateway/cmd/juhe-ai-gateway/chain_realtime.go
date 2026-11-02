@@ -52,6 +52,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
@@ -439,9 +440,15 @@ func (c *gatewayChain) dialRealtimeUpstream(ctx context.Context, req *gatewaypre
 			break
 		}
 		// 账户并发槽：占不到视为该候选忙，换下一候选（WS 面不做有界容量
-		// 等待——会话是长连接，等待语义属下一次连接请求）。
-		slot, slotErr := c.engine.Concurrency.TryAcquireAsync(ctx, account.ID, account.ConcurrencyLimit,
-			gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: string(gatewayproto.LaneRealtime)})
+		// 等待——会话是长连接，等待语义属下一次连接请求）。RPM 与并发同一
+		// 临界区判定（AI 账户每分钟请求上限设计 §4.1：realtime 拨号受理前
+		// 占槽即计数）。键位与 /v1 主链路同源：授权实例按来源账户 ID 共享
+		// 并发槽与 RPM 计数（此前直接用 account.ID，授权实例 realtime 会与
+		// 来源账户各记一份）。
+		concurrencyID := gatewaysession.GatewayAccountConcurrencyAccountID(
+			gatewaysession.GatewayAccountConcurrencyIdentityOf(account))
+		slot, slotErr := c.engine.Concurrency.TryAcquireAsync(ctx, concurrencyID, account.ConcurrencyLimit,
+			gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: string(gatewayproto.LaneRealtime), RPMLimit: account.RPMLimit})
 		if slotErr != nil {
 			return nil, &realtimeDialFailure{
 				status: http.StatusServiceUnavailable, code: "concurrency_read_failed",

@@ -40,6 +40,7 @@ AI 账户列表新增“批量编辑”能力。用户选择多个可编辑账�
 - 账户标签。
 - 代理配置。
 - 并发限制。
+- 每分钟请求上限（`rpmLimit`，非负整数，`0` 表示不限制）。
 - 账户优先级。
 - 超级优先。
 - 降级备用。
@@ -154,6 +155,10 @@ POST /__aisys__/api/my-accounts/batch-update
     "concurrencyLimit": {
       "enabled": true,
       "value": 5
+    },
+    "rpmLimit": {
+      "enabled": true,
+      "value": 60
     },
     "proxyProfileId": {
       "enabled": true,
