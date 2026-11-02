@@ -28,7 +28,7 @@ import (
 // 允许 (source, target) pair 及其全部可执行 target mode 形态（§5.3 唯一选择
 // 函数的写侧输入）。矩阵外的 pair 一律拒绝（§5.2 权威，本包唯一实现）。
 var entryMappingPairTargetModes = map[string][]string{
-	"chat_completions\x00chat_completions":        {"chat_json", "chat_sse"},
+	"chat_completions\x00chat_completions": {"chat_json", "chat_sse"},
 	// §5.2 #18：responses→responses 是同族改名映射（Responses 原生上游的
 	// 客户端模型别名），不是跨协议 bridge；运行时
 	// isOpenAIModelMappingRuntimeConversionSupported 的 source==upstream 分支
