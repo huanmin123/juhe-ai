@@ -8,13 +8,18 @@ import {
   type AccountModelMappingModelOption
 } from '../../views/accounts/accountModelMappingModelOptions'
 import {
+  accountModelMappingProtocolRules,
   accountModelMappingProtocolValidationMessage,
   defaultAccountModelMappingSourceEndpointFamily,
   defaultAccountModelMappingUpstreamEndpointFamily,
+  hasAccountModelMappingUpstreamEndpointFamilyCapability,
+  hybridAccountModelMappingProtocolRules,
   isAccountModelMappingProtocolAllowed,
   isAccountModelMappingSourceEndpointFamilyAllowed,
-  shouldResetAccountModelMappingUpstreamEndpointFamily
+  shouldResetAccountModelMappingUpstreamEndpointFamily,
+  type AccountModelMappingUpstreamEndpointFamily
 } from '../../views/accounts/accountModelMappingProtocolMatrix'
+import { accountEndpointModeOptions } from '../../views/accounts/accountEndpointModes'
 
 const accountEditModalSource = readFileSync(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url), 'utf8')
 const accountsViewSource = readFileSync(new URL('../../views/accounts/AccountsView.vue', import.meta.url), 'utf8')
@@ -334,6 +339,74 @@ assertEqual(
   '上游接口能力必须展示在账号模型别名之前'
 )
 
+// T103 / BUG-0342 根因治理：账号模型别名 family pair 合法集合的四方一致性
+// golden 断言。唯一事实源 golden 是
+// backend-go/projects/gateway/internal/accounts/testdata/entry_mapping_pairs.json，
+// Go 侧断言在同目录 entry_mapping_pairs_golden_test.go（写侧矩阵全等 + 运行时
+// admissible 一致）；本段守护前端两条 protocolRules 清单与 golden 的 pair 集合
+// 全等。targetModes 是 pair 级可执行形态（§5.3），前端下拉只到 family 级能力门，
+// 因此 mode 侧断言的可验证子集是：golden 的每个形态都在前端端点模式词表内，
+// 且前端该目标族能力门认可的形态与 golden 交集非空（family 级与 pair 级的粒度
+// 差不是矩阵漂移；mode 级联动校验由后端 §5.3 保存校验承担）。
+type EntryMappingPairsGoldenFile = {
+  pairs: Array<{ pair: string, designDocRow: number, targetModes: string[], frontendRuleSets: string[] }>
+}
+const entryMappingPairsGolden = JSON.parse(
+  readFileSync(
+    new URL('../../../../backend-go/projects/gateway/internal/accounts/testdata/entry_mapping_pairs.json', import.meta.url),
+    'utf8'
+  )
+) as EntryMappingPairsGoldenFile
+
+const goldenPairModes = new Map<string, string[]>()
+for (const item of entryMappingPairsGolden.pairs) {
+  if (goldenPairModes.has(item.pair)) {
+    throw new Error(`golden pair 重复：${item.pair}`)
+  }
+  goldenPairModes.set(item.pair, item.targetModes)
+}
+
+const ordinaryProtocolPairs = new Set(accountModelMappingProtocolRules.map((rule) => `${rule.source} -> ${rule.upstream}`))
+const hybridProtocolPairs = new Set(hybridAccountModelMappingProtocolRules.map((rule) => `${rule.source} -> ${rule.upstream}`))
+assertSetEquals(
+  goldenPairModes,
+  new Set([...ordinaryProtocolPairs, ...hybridProtocolPairs]),
+  '前端协议矩阵（普通+混合清单并集）与 golden 的 pair 集合'
+)
+
+// frontendRuleSets 标注锁定两条清单各自的成员关系：任何一条清单单独增删
+// pair（而不是两份清单与 golden 一起演化）都转红。
+for (const item of entryMappingPairsGolden.pairs) {
+  const expected = [
+    ordinaryProtocolPairs.has(item.pair) ? 'ordinary' : '',
+    hybridProtocolPairs.has(item.pair) ? 'hybrid' : ''
+  ].filter(Boolean).sort()
+  assertDeepEqual(
+    [...item.frontendRuleSets].sort(),
+    expected,
+    `golden pair ${item.pair}（设计 §5.2 #${item.designDocRow}）的 frontendRuleSets 标注与前端两条清单实际成员关系`
+  )
+}
+
+const knownEndpointModes = new Set(accountEndpointModeOptions.map((option) => option.value))
+for (const [pair, modes] of goldenPairModes) {
+  const upstream = pair.split(' -> ')[1] as AccountModelMappingUpstreamEndpointFamily
+  const unknownModes = modes.filter((mode) => !knownEndpointModes.has(mode))
+  if (unknownModes.length > 0) {
+    throw new Error(`golden pair ${pair} 的 targetModes 含前端端点模式词表之外的形态：${unknownModes.join('、')}`)
+  }
+  const frontendFamilyModes = [...knownEndpointModes].filter((mode) => (
+    hasAccountModelMappingUpstreamEndpointFamilyCapability(upstream, [mode])
+  ))
+  const sharedModes = modes.filter((mode) => frontendFamilyModes.includes(mode))
+  if (sharedModes.length === 0) {
+    throw new Error(
+      `前端 ${upstream} 目标族能力门认可的形态（${frontendFamilyModes.join('、') || '无'}）`
+      + `与 golden pair ${pair} 的允许形态（${modes.join('、')}）交集为空`
+    )
+  }
+}
+
 console.log('账号模型别名协议模型选项回归通过')
 
 function values(options: AccountModelMappingModelOption[]): string[] {
@@ -351,6 +424,18 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   const expectedJson = JSON.stringify(expected)
   if (actualJson !== expectedJson) {
     throw new Error(`${message}，实际 ${actualJson}，预期 ${expectedJson}`)
+  }
+}
+
+function assertSetEquals(expected: Map<string, unknown>, actual: Set<string>, label: string): void {
+  const missingInActual = [...expected.keys()].filter((item) => !actual.has(item))
+  const unexpectedInActual = [...actual].filter((item) => !expected.has(item))
+  if (missingInActual.length > 0 || unexpectedInActual.length > 0) {
+    throw new Error(
+      `${label}不一致`
+      + (missingInActual.length > 0 ? `，实际缺失：${missingInActual.join('、')}` : '')
+      + (unexpectedInActual.length > 0 ? `，实际多出：${unexpectedInActual.join('、')}` : '')
+    )
   }
 }
 
