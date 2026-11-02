@@ -318,3 +318,48 @@ describe('connections 编辑差量（T94：仅 Base URL/请求形态变化时进
     expect(payload.healthCheckConnectionPresetCode).toBe('gpt_openai_v1')
   })
 })
+
+// T102：编辑态供应商身份由连接 preset 反查派生，派生仍为空属 fail-closed——
+// 刷新不可解，文案必须可操作；创建态保留选择引导原文案。
+describe('validateAccountSaveForm 编辑态 fail-closed 文案（T102）', () => {
+  function editingFormBase(): AccountFormModel {
+    return defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
+  }
+
+  it('编辑态缺供应商身份：返回可操作文案而非「请先选择供应商」', () => {
+    const form = editingFormBase()
+    form.providerCode = ''
+    form.providerProtocolProfileId = ''
+    expect(validateAccountSaveForm({
+      editingId: 'acc_t102',
+      form,
+      hasAuthSession: false,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })).toBe('该账户没有可编辑的供应商身份（自定义协议连接），暂不支持表单编辑：请重建账户或联系管理员')
+  })
+
+  it('编辑态缺协议档案：返回可操作文案而非「请刷新后重试」', () => {
+    const form = editingFormBase()
+    form.providerProtocolProfileId = ''
+    expect(validateAccountSaveForm({
+      editingId: 'acc_t102',
+      form,
+      hasAuthSession: false,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })).toBe('该账户的连接类型没有可用的协议档案，暂不支持表单编辑：请重建账户或联系管理员')
+  })
+
+  it('创建态文案不回归：仍为选择引导原文案', () => {
+    const form = editingFormBase()
+    form.providerCode = ''
+    form.providerProtocolProfileId = ''
+    expect(validateAccountSaveForm({
+      form,
+      hasAuthSession: false,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })).toBe('请先选择供应商')
+  })
+})

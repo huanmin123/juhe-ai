@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  GPT_OPENAI_V1_PROFILE_ID,
+  HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID,
+  HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  MINIMAX_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  QWEN_OPENAI_V1_PROFILE_ID,
+  VOLCENGINE_OPENAI_V1_PROFILE_ID,
+  VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
+  connectionPresetCodeForProfile,
   defaultProviderProtocolProfileId,
   isAnthropicProtocolProfile,
   isDeepSeekProviderCode,
@@ -17,7 +25,9 @@ import {
   isXaiProviderCode,
   normalizeProviderToken,
   preferredDefaultProvider,
-  preferredDefaultProviderCode
+  preferredDefaultProviderCode,
+  providerIdentityForConnectionPreset,
+  resolveEditAccountProviderIdentity
 } from './providerProtocol'
 import type { ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 
@@ -147,5 +157,137 @@ describe('defaultProviderProtocolProfileId', () => {
 
   it('供应商为空时返回空字符串', () => {
     expect(defaultProviderProtocolProfileId(undefined)).toBe('')
+  })
+})
+
+describe('connectionPresetCodeForProfile 正向导出（T102 openspeech 补条目）', () => {
+  it('volcengine_openspeech 档案正向导出 OpenSpeech 连接 preset', () => {
+    expect(connectionPresetCodeForProfile(VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID)).toBe('volcengine_openspeech')
+  })
+
+  it('既有媒体档案正向导出不回归', () => {
+    expect(connectionPresetCodeForProfile(MINIMAX_OPENAI_V1_PROFILE_ID)).toBe('minimax_media')
+    expect(connectionPresetCodeForProfile(VOLCENGINE_OPENAI_V1_PROFILE_ID)).toBe('volcengine_ark')
+    expect(connectionPresetCodeForProfile(QWEN_OPENAI_V1_PROFILE_ID)).toBe('qwen_dashscope')
+  })
+})
+
+describe('providerIdentityForConnectionPreset 反查（T102 媒体四档 + generic）', () => {
+  it('四个媒体 preset 各自派生出正确的供应商与档案身份', () => {
+    expect(providerIdentityForConnectionPreset('minimax_media')).toEqual({
+      providerCode: 'minimax',
+      providerProtocolProfileId: MINIMAX_OPENAI_V1_PROFILE_ID
+    })
+    expect(providerIdentityForConnectionPreset('volcengine_ark')).toEqual({
+      providerCode: 'volcengine',
+      providerProtocolProfileId: VOLCENGINE_OPENAI_V1_PROFILE_ID
+    })
+    expect(providerIdentityForConnectionPreset('volcengine_openspeech')).toEqual({
+      providerCode: 'volcengine',
+      providerProtocolProfileId: VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID
+    })
+    expect(providerIdentityForConnectionPreset('qwen_dashscope')).toEqual({
+      providerCode: 'qwen',
+      providerProtocolProfileId: QWEN_OPENAI_V1_PROFILE_ID
+    })
+  })
+
+  it('generic_http 账户（generic_openai_v1）派生出非空 openai 兼容身份', () => {
+    expect(providerIdentityForConnectionPreset('generic_openai_v1')).toEqual({
+      providerCode: 'openai',
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+    })
+  })
+
+  it('未知/空白 preset 保持 fail-closed（返回 undefined）', () => {
+    expect(providerIdentityForConnectionPreset('volcengine_imagex')).toBeUndefined()
+    expect(providerIdentityForConnectionPreset('future_preset_v9')).toBeUndefined()
+    expect(providerIdentityForConnectionPreset('')).toBeUndefined()
+    expect(providerIdentityForConnectionPreset(undefined)).toBeUndefined()
+    expect(providerIdentityForConnectionPreset(null)).toBeUndefined()
+  })
+
+  it('反查表内除 hybrid 两条外逐条经正向表往返一致（双射护栏）', () => {
+    // mapping.go legacyProfilePresets 双射逆向：反查 → 档案 → 正向导出必须回到原 preset。
+    // hybrid 两档案（generic_anthropic/generic_gemini 的落地档案）无正向 preset 条目，
+    // 保存链不携带 connections，属登记过的例外。
+    const hybridOnlyProfiles = new Set([HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID, HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID])
+    for (const [preset, identity] of Object.entries({
+      generic_openai_v1: providerIdentityForConnectionPreset('generic_openai_v1'),
+      gpt_openai_v1: providerIdentityForConnectionPreset('gpt_openai_v1'),
+      xai_openai_v1: providerIdentityForConnectionPreset('xai_openai_v1'),
+      deepseek_openai_v1: providerIdentityForConnectionPreset('deepseek_openai_v1'),
+      deepseek_anthropic_v1: providerIdentityForConnectionPreset('deepseek_anthropic_v1'),
+      anthropic_v1: providerIdentityForConnectionPreset('anthropic_v1'),
+      glm_general_openai_v1: providerIdentityForConnectionPreset('glm_general_openai_v1'),
+      glm_coding_openai_v1: providerIdentityForConnectionPreset('glm_coding_openai_v1'),
+      glm_coding_anthropic_v1: providerIdentityForConnectionPreset('glm_coding_anthropic_v1'),
+      gemini_native_v1beta: providerIdentityForConnectionPreset('gemini_native_v1beta'),
+      gemini_openai_chat_v1beta: providerIdentityForConnectionPreset('gemini_openai_chat_v1beta'),
+      minimax_media: providerIdentityForConnectionPreset('minimax_media'),
+      volcengine_ark: providerIdentityForConnectionPreset('volcengine_ark'),
+      volcengine_openspeech: providerIdentityForConnectionPreset('volcengine_openspeech'),
+      qwen_dashscope: providerIdentityForConnectionPreset('qwen_dashscope')
+    })) {
+      expect(identity, preset).toBeDefined()
+      if (!identity) continue
+      if (hybridOnlyProfiles.has(identity.providerProtocolProfileId)) continue
+      expect(connectionPresetCodeForProfile(identity.providerProtocolProfileId), preset).toBe(preset)
+    }
+  })
+})
+
+describe('resolveEditAccountProviderIdentity 编辑装载派生', () => {
+  it('媒体账户：详情档案为空 + 连接 preset 命中 → 按反查表派生', () => {
+    expect(resolveEditAccountProviderIdentity({
+      providerCode: 'minimax',
+      providerProtocolProfileId: '',
+      connectionPresetCode: 'minimax_media'
+    })).toEqual({ providerCode: 'minimax', providerProtocolProfileId: MINIMAX_OPENAI_V1_PROFILE_ID })
+  })
+
+  it('OpenSpeech 音频账户：派生 OpenSpeech 档案（保存链正向导出同 preset，改 Base URL 闭环）', () => {
+    const identity = resolveEditAccountProviderIdentity({
+      providerCode: 'volcengine',
+      providerProtocolProfileId: '',
+      connectionPresetCode: 'volcengine_openspeech'
+    })
+    expect(identity).toEqual({
+      providerCode: 'volcengine',
+      providerProtocolProfileId: VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID
+    })
+    expect(connectionPresetCodeForProfile(identity.providerProtocolProfileId)).toBe('volcengine_openspeech')
+  })
+
+  it('generic_http 账户：探针目录 id（profile_generic_*）经 preset 反查为前端档案且供应商非空', () => {
+    expect(resolveEditAccountProviderIdentity({
+      providerCode: '',
+      providerProtocolProfileId: 'profile_generic_openai_v1',
+      connectionPresetCode: 'generic_openai_v1'
+    })).toEqual({ providerCode: 'openai', providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID })
+  })
+
+  it('详情档案前端可识别时原样保留（不因反查表改写既有身份）', () => {
+    expect(resolveEditAccountProviderIdentity({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      connectionPresetCode: 'gpt_openai_v1'
+    })).toEqual({ providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID })
+  })
+
+  it('未知 preset：账户行 providerCode 直接使用（vendor 账户兜底）', () => {
+    expect(resolveEditAccountProviderIdentity({
+      providerCode: 'minimax',
+      providerProtocolProfileId: '',
+      connectionPresetCode: 'future_preset_v9'
+    })).toEqual({ providerCode: 'minimax', providerProtocolProfileId: '' })
+  })
+
+  it('未知 preset 且无供应商身份：保持 fail-closed（双空，由保存校验给出可操作文案）', () => {
+    expect(resolveEditAccountProviderIdentity({
+      providerCode: '',
+      providerProtocolProfileId: '',
+      connectionPresetCode: 'future_preset_v9'
+    })).toEqual({ providerCode: '', providerProtocolProfileId: '' })
   })
 })

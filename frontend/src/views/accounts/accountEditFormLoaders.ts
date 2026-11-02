@@ -19,6 +19,7 @@ import { loadAccountResponseInspectionRules } from './accountResponseInspectionP
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { asString } from './accountBasicFormatters'
 import { parseStrictDatePickerValue } from './accountFormatters'
+import { resolveEditAccountProviderIdentity } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
 import {
   defaultAccountEndpointModes,
@@ -97,7 +98,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     backgroundProbeEnabled: advanced.backgroundProbeEnabled !== false,
     lockDeathTimeoutSeconds: advanced.lockDeathTimeoutSeconds ?? 300,
     lockRetryIntervalSeconds: advanced.lockRetryIntervalSeconds ?? 5,
-    ...accountGptRequestOverridesForForm(account.providerCode, credentials),
+    // gpt 请求覆盖按派生后的供应商身份取词表（generic_http 账户派生为 openai 兼容）。
+    ...accountGptRequestOverridesForForm(basicPatch.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(advanced.modelMappings),
     availabilitySchedule,
     ...accountBalanceFormFields(advanced),
@@ -120,10 +122,20 @@ export function buildAccountBasicEditFormLoad(input: AccountBasicFormLoadInput):
 
 function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFormModel {
   const { account, credentials, defaults, fallbackGroupId, selectedGroup } = input
+  // T102：详情 providerProtocolProfileId 由后端探针表（13 条）反查派生，媒体四档
+  // preset 返回空、generic_http 账户另因 vendor NULL 投影空 providerCode——原
+  // `?? defaults` 不兜空串，这些账户被保存校验拦死。按连接 preset 前端反查补齐
+  // （shared/providerProtocol），无 preset 时退账户行 providerCode，均缺保持
+  // fail-closed（空值由保存校验给出可操作文案）。
+  const providerIdentity = resolveEditAccountProviderIdentity({
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    connectionPresetCode: account.connectionPresetCode
+  })
   return {
     ...defaults,
-    providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId ?? defaults.providerProtocolProfileId,
+    providerCode: providerIdentity.providerCode,
+    providerProtocolProfileId: providerIdentity.providerProtocolProfileId || defaults.providerProtocolProfileId,
     name: account.name,
     type: account.type,
     concurrencyLimit: account.concurrencyLimit,
@@ -131,7 +143,11 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     privilege: account.superPriorityEnabled ? 'super_priority' : account.fallbackEnabled ? 'fallback' : 'normal',
     status: account.status === 'active' ? 'active' : account.status === 'disabled' ? 'disabled' : 'pending_test',
     clientCompatibility: accountClientCompatibilityForForm(account),
-    supportedEndpointModes: accountEndpointModesForForm(account, credentials),
+    // 接口能力默认集按派生后的供应商身份推导（credentials 缺失时的 fallback 分支）。
+    supportedEndpointModes: accountEndpointModesForForm(
+      { ...account, providerCode: providerIdentity.providerCode, providerProtocolProfileId: providerIdentity.providerProtocolProfileId },
+      credentials
+    ),
     groupId: selectedGroup?.id ?? fallbackGroupId,
     group: selectedGroup,
     apiKey: asString(credentials.api_key) ?? '',
@@ -173,10 +189,18 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     account.availabilitySchedule,
     '克隆来源账户数据结构异常，请清理后再克隆'
   )
+  // T102：克隆上下文与编辑详情同源派生档案（后端 clone.go 同一探针表），媒体四档
+  // 返回空档案。克隆响应暂无连接 preset 字段可反查，退账户行 providerCode（vendor
+  // 账户），档案缺失时由 defaults 落供应商默认档案；generic_http 来源（providerCode
+  // 空）保持 fail-closed，由保存校验给出可操作文案。
+  const providerIdentity = resolveEditAccountProviderIdentity({
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId
+  })
   const patch: AccountFormModel = {
     ...defaults,
-    providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId ?? defaults.providerProtocolProfileId,
+    providerCode: providerIdentity.providerCode,
+    providerProtocolProfileId: providerIdentity.providerProtocolProfileId || defaults.providerProtocolProfileId,
     name: cloneAccountName(account.name),
     type: account.type,
     concurrencyLimit: account.concurrencyLimit,
@@ -185,7 +209,11 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     status: accountCloneStatusForForm(account.status),
     statusSelectionExplicit: true,
     clientCompatibility: accountClientCompatibilityForForm(account),
-    supportedEndpointModes: accountEndpointModesForForm(account, credentials),
+    // 接口能力默认集按派生后的供应商身份推导（credentials 缺失时的 fallback 分支）。
+    supportedEndpointModes: accountEndpointModesForForm(
+      { ...account, providerCode: providerIdentity.providerCode, providerProtocolProfileId: providerIdentity.providerProtocolProfileId },
+      credentials
+    ),
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt,
     groupId: selectedGroup?.id,
@@ -211,7 +239,7 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     // 克隆继承来源账户总开关（总开关设计 §8）；缺省视作开启。
     backgroundProbeEnabled: account.backgroundProbeEnabled !== false,
     healthCheckEndpointMode: account.healthCheckEndpointMode,
-    ...accountGptRequestOverridesForForm(account.providerCode, credentials),
+    ...accountGptRequestOverridesForForm(providerIdentity.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(account.modelMappings),
     tags: accountTagNames(account.tags),
     availabilitySchedule,

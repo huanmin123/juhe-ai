@@ -175,8 +175,19 @@ export function validateAccountSaveForm(input: {
   editingAdvancedBaseline?: AccountSavePayload
 }): string | undefined {
   const { editingId, form } = input
-  if (!form.providerCode) return '请先选择供应商'
-  if (!form.providerProtocolProfileId) return '当前供应商配置不完整，请刷新后重试'
+  // T102：编辑态供应商身份由详情连接 preset 反查派生（shared/providerProtocol），
+  // 派生仍为空说明账户行与连接行都没有可用的供应商/档案身份（fail-closed）——
+  // 刷新不可解，文案必须可操作；创建态保留选择引导原文案。
+  if (!form.providerCode) {
+    return editingId
+      ? '该账户没有可编辑的供应商身份（自定义协议连接），暂不支持表单编辑：请重建账户或联系管理员'
+      : '请先选择供应商'
+  }
+  if (!form.providerProtocolProfileId) {
+    return editingId
+      ? '该账户的连接类型没有可用的协议档案，暂不支持表单编辑：请重建账户或联系管理员'
+      : '当前供应商配置不完整，请刷新后重试'
+  }
   if (!form.type) return '请先选择账户类型'
   // 手动模式二态状态门禁（总开关设计 §4）：后台探测关闭的对话域账户不允许提交
   // 待检查等过程态。仅拦截显式选择：temporary_unavailable/rate_limited/quality_isolated

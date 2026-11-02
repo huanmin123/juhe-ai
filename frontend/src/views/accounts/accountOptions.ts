@@ -44,6 +44,7 @@ import {
   QWEN_OPENAI_V1_PROFILE_ID,
   QWEN_PROVIDER_CODE,
   VOLCENGINE_OPENAI_V1_PROFILE_ID,
+  VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_PROVIDER_CODE
 } from '@/shared/providerProtocol'
 
@@ -457,6 +458,26 @@ const VOLCENGINE_PROVIDER: ProviderDefinition = {
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
         { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' },
+        { code: OPENAI_TTS_FAMILY, name: '语音合成' },
+        { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: '音频转写' }
+      ]
+    },
+    // T102：OpenSpeech 音频连接（registry volcengine_openspeech，契约 §9.2 豆包
+    // TTS + 长转写）的表单档案，供编辑/克隆装载派生与保存链 preset 导出闭环。
+    // accountTypes 留空：不产生创建类型卡片（volcengine 音频域创建入口属 B4
+    // 连接 preset 驱动批），对话/媒体域的既有卡片集合零变化。
+    {
+      id: VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
+      providerCode: VOLCENGINE_PROVIDER_CODE,
+      name: '火山引擎 OpenSpeech / 音频',
+      enabled: true,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION,
+      baseUrl: 'https://openspeech.bytedance.com',
+      defaultHealthCheckModel: 'seed-tts-2.0',
+      accountTypes: [],
+      capabilities: ['audio'],
+      endpointFamilies: [
         { code: OPENAI_TTS_FAMILY, name: '语音合成' },
         { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: '音频转写' }
       ]
