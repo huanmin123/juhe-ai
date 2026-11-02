@@ -46,6 +46,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://api.openai.com/v1',
         supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
       },
+      supportedModels: ['gpt-5.2'],
+      connections: [
+        {
+          connectionPresetCode: 'gpt_openai_v1',
+          baseUrl: 'https://api.openai.com/v1',
+          endpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'gpt_openai_v1',
+      healthCheckModel: 'gpt-5.2',
+      healthCheckEndpointMode: 'responses_sse',
       notes: 'GPT API Key 账号'
     },
     {
@@ -67,6 +79,18 @@ export const importTemplate = JSON.stringify({
         account_id: 'acct_xxx',
         email: 'user@example.com'
       },
+      supportedModels: ['gpt-5.2'],
+      connections: [
+        {
+          connectionPresetCode: 'gpt_openai_v1',
+          baseUrl: 'https://api.openai.com/v1',
+          endpointModes: ['responses_json', 'responses_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'gpt_openai_v1',
+      healthCheckModel: 'gpt-5.2',
+      healthCheckEndpointMode: 'responses_sse',
       notes: 'OAuth 账号'
     },
     {
@@ -84,6 +108,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://api.deepseek.com/v1',
         supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
       },
+      supportedModels: ['deepseek-v4.1-flash'],
+      connections: [
+        {
+          connectionPresetCode: 'deepseek_openai_v1',
+          baseUrl: 'https://api.deepseek.com/v1',
+          endpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'deepseek_openai_v1',
+      healthCheckModel: 'deepseek-v4.1-flash',
+      healthCheckEndpointMode: 'chat_sse',
       notes: 'DeepSeek API Key 账号'
     },
     {
@@ -101,6 +137,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://api.deepseek.com/anthropic/v1',
         supported_endpoint_modes: ['messages_json', 'messages_sse']
       },
+      supportedModels: ['deepseek-v4.1-flash'],
+      connections: [
+        {
+          connectionPresetCode: 'deepseek_anthropic_v1',
+          baseUrl: 'https://api.deepseek.com/anthropic/v1',
+          endpointModes: ['messages_json', 'messages_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'deepseek_anthropic_v1',
+      healthCheckModel: 'deepseek-v4.1-flash',
+      healthCheckEndpointMode: 'messages_sse',
       notes: 'DeepSeek Anthropic v1 / Claude Code 账号'
     },
     {
@@ -118,6 +166,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://open.bigmodel.cn/api/paas/v4',
         supported_endpoint_modes: ['chat_json', 'chat_sse']
       },
+      supportedModels: ['glm-5.2'],
+      connections: [
+        {
+          connectionPresetCode: 'glm_general_openai_v1',
+          baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+          endpointModes: ['chat_json', 'chat_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'glm_general_openai_v1',
+      healthCheckModel: 'glm-5.2',
+      healthCheckEndpointMode: 'chat_sse',
       notes: '智谱通用 GLM API Key 账号'
     },
     {
@@ -135,6 +195,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
         supported_endpoint_modes: ['chat_json', 'chat_sse']
       },
+      supportedModels: ['glm-5.2'],
+      connections: [
+        {
+          connectionPresetCode: 'glm_coding_openai_v1',
+          baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+          endpointModes: ['chat_json', 'chat_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'glm_coding_openai_v1',
+      healthCheckModel: 'glm-5.2',
+      healthCheckEndpointMode: 'chat_sse',
       notes: 'GLM Coding Plan Key 账号'
     },
     {
@@ -152,6 +224,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://open.bigmodel.cn/api/anthropic/v1',
         supported_endpoint_modes: ['messages_json', 'messages_sse']
       },
+      supportedModels: ['glm-5.2'],
+      connections: [
+        {
+          connectionPresetCode: 'glm_coding_anthropic_v1',
+          baseUrl: 'https://open.bigmodel.cn/api/anthropic/v1',
+          endpointModes: ['messages_json', 'messages_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'glm_coding_anthropic_v1',
+      healthCheckModel: 'glm-5.2',
+      healthCheckEndpointMode: 'messages_sse',
       notes: 'GLM Coding Anthropic v1 账号'
     },
     {
@@ -169,6 +253,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://api.anthropic.com/v1',
         supported_endpoint_modes: ['messages_json', 'messages_sse', 'message_token_counting']
       },
+      supportedModels: ['claude-sonnet-4-6'],
+      connections: [
+        {
+          connectionPresetCode: 'anthropic_v1',
+          baseUrl: 'https://api.anthropic.com/v1',
+          endpointModes: ['messages_json', 'messages_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'anthropic_v1',
+      healthCheckModel: 'claude-sonnet-4-6',
+      healthCheckEndpointMode: 'messages_sse',
       notes: 'Anthropic API Key 账号'
     },
     {
@@ -186,6 +282,18 @@ export const importTemplate = JSON.stringify({
         base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
         supported_endpoint_modes: ['chat_json', 'chat_sse']
       },
+      supportedModels: ['glm-5.2'],
+      connections: [
+        {
+          connectionPresetCode: 'generic_openai_v1',
+          baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+          endpointModes: ['chat_json', 'chat_sse'],
+          enabled: true
+        }
+      ],
+      healthCheckConnectionPresetCode: 'generic_openai_v1',
+      healthCheckModel: 'glm-5.2',
+      healthCheckEndpointMode: 'chat_sse',
       modelMappings: [
         {
           sourceModel: 'claude-sonnet-4',
@@ -208,12 +316,13 @@ export const aiConversionPrompt = [
   '2. 只输出合法 JSON，不要输出解释、Markdown 代码块或注释。',
   '3. 顶层 type 固定为 juhe-ai-account-import，version 固定为数字 1。',
   '4. 每个账户必须显式填写 name、providerCode、providerProtocolProfileId、type、status、credentials，以及 groupName 或 groupId。',
-  '5. API Key 账号使用 type: api_key；GPT OAuth 使用 type: oauth；Gemini Google OAuth 使用 type: google_oauth。',
-  '6. providerProtocolProfileId 是协议档案唯一入口；不要根据 base_url、供应商默认值或旧字段猜测档案。',
-  '7. 普通 OpenAI v1 账户可以用 modelMappings 显式填写 Responses -> Chat Completions；其他跨协议映射只能写入 providerCode 为 hybrid 的混合供应商账户。',
-  '8. 不要编造来源数据里不存在的 token、API Key、邮箱、账号 ID、代理密码或模型列表。',
-  '9. 如果有代理，请放到 proxies 数组，并用账号的 proxyRef 引用代理 ref。',
-  '10. 不确定的信息放到 notes；无法判断是否可立即调度时 status 填 pending_test 或 disabled。'
+  '5. 每个账户必须显式提交非空 connections 数组和健康检查三件套：connections 元素包含 connectionPresetCode、baseUrl、非空 endpointModes 和显式 enabled；三件套为 healthCheckConnectionPresetCode（指向该账户一条 enabled 连接的 connectionPresetCode）、healthCheckModel（必须属于 supportedModels）和 healthCheckEndpointMode（必须属于该连接 endpointModes，值如 chat_sse、responses_sse、messages_sse）。',
+  '6. API Key 账号使用 type: api_key；GPT OAuth 使用 type: oauth；Gemini Google OAuth 使用 type: google_oauth。',
+  '7. providerProtocolProfileId 是协议档案唯一入口；不要根据 base_url、供应商默认值或旧字段猜测档案。',
+  '8. 普通 OpenAI v1 账户可以用 modelMappings 显式填写 Responses -> Chat Completions；其他跨协议映射只能写入 providerCode 为 hybrid 的混合供应商账户。',
+  '9. 不要编造来源数据里不存在的 token、API Key、邮箱、账号 ID、代理密码或模型列表。',
+  '10. 如果有代理，请放到 proxies 数组，并用账号的 proxyRef 引用代理 ref。',
+  '11. 不确定的信息放到 notes；无法判断是否可立即调度时 status 填 pending_test 或 disabled。'
 ].join('\n')
 
 export const accountImportProtocolMarkdown = [
@@ -229,6 +338,7 @@ export const accountImportProtocolMarkdown = [
   '- 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。',
   '- 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。',
   '- `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`providerProtocolProfileId`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。',
+  '- 每个账户必须显式提交非空 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；native 导入不做任何缺省补齐，缺一个就整账户失败。',
   '- 当前默认使用 `providerCode: "gpt"`；确需通用 OpenAI-compatible 供应商时才填 `openai`；xAI / Grok 直连填 `xai`；DeepSeek 直连填 `deepseek`；智谱 GLM 直连填 `glm`；官方 Anthropic Claude 直连填 `anthropic`；Google Gemini 直连填 `gemini`；跨协议真实上游账户填 `hybrid`。系统会按供应商和协议档案匹配内部配置；所有账户都必须显式填写 `providerProtocolProfileId`，真实上游协议由账户模型映射的目标协议和上游接口能力表达。',
   '- `providerProtocolProfileId` 是协议档案唯一入口；不要根据 `base_url`、供应商默认值或旧字段猜测档案。',
   '- 账号导入不填写 `clientCompatibility`。下游客户端画像由网关运行时自动识别；OpenAI v1 普通账户可用 `modelMappings` 显式声明 Responses 到 Chat Completions，Anthropic Messages 或 Gemini native 等其他跨协议转换必须通过混合供应商账户配置。',
@@ -273,15 +383,29 @@ export const accountImportProtocolMarkdown = [
   '| `priority` | 否 | number | 非负整数，调度优先级。 |',
   '| `superPriorityEnabled` | 否 | boolean | 超级优先开关。 |',
   '| `fallbackEnabled` | 否 | boolean | 降级备用开关。 |',
-  '| `supportedModels` | 否 | string[] | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。 |',
-  '| `healthCheckModel` | 否 | string | 账户级检查模型；省略时按个人默认、管理员系统默认、协议档案默认的顺序初始化，最终必须属于账户 `supportedModels`。 |',
-  '| `healthCheckEndpointMode` | 否 | string | 后台健康检查精确请求形态；可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`。 |',
+  '| `supportedModels` | 否 | string[] | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。填写 `healthCheckModel` 时建议同时显式给出本字段，便于核对成员关系。 |',
+  '| `connections` | 是 | object[] | 连接集合，非空必填；每个元素描述一条上游连接（见下文 connections 条目字段）。元素 `connectionPresetCode` 在同一账户内不能重复。 |',
+  '| `healthCheckConnectionPresetCode` | 是 | string | 健康检查三件套之一；必须等于本账户 `connections` 中一条 `enabled: true` 连接的 `connectionPresetCode`。 |',
+  '| `healthCheckModel` | 是 | string | 健康检查三件套之一；账户级检查模型，最终必须属于账户 `supportedModels`（含供应商默认回填后的集合）。 |',
+  '| `healthCheckEndpointMode` | 是 | string | 健康检查三件套之一；后台健康检查精确请求形态，可填 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`（另有 `images_json`、`audio_speech`、`audio_transcription_json`、`video_create` 受模型目录与域能力约束），且必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。 |',
   '| `modelMappings` | 否 | object[] | 账号模型映射列表；普通供应商账户只允许当前账号供应商模型目录内的同协议模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge；混合供应商账户允许用该字段声明其他下游模型 / 协议入口到真实上游模型 / 协议的跨协议映射。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |',
   '| `tags` | 否 | string[] | 账户标签名称列表；不存在的标签按当前导入权限创建或报错。 |',
   '| `accountExpiresAt` | 否 | string | ISO 时间字符串。 |',
   '| `availabilitySchedule` | 否 | object | 时间计划；不确定时省略。 |',
   '| `credentials` | 是 | object | 按账户类型填写凭据。 |',
   '| `notes` | 否 | string | 备注；无法确定的信息写这里。 |',
+  '',
+  '## connections 条目字段',
+  '',
+  '每个账户的 `connections` 必须是非空对象数组，元素键固定如下；出现未知键、缺少任一必填键或 `endpointModes` 为空都会导致该账户失败：',
+  '',
+  '| 字段 | 必填 | 类型 | 说明 |',
+  '| --- | --- | --- | --- |',
+  '| `connectionPresetCode` | 是 | string | 连接器注册表预设标识，当前恰好 17 个值：`generic_openai_v1`、`generic_anthropic_v1`、`generic_gemini_v1beta`、`gpt_openai_v1`、`xai_openai_v1`、`deepseek_openai_v1`、`deepseek_anthropic_v1`、`anthropic_v1`、`gemini_openai_chat_v1beta`、`gemini_native_v1beta`、`glm_general_openai_v1`、`glm_coding_openai_v1`、`glm_coding_anthropic_v1`、`minimax_media`、`volcengine_ark`、`volcengine_openspeech`、`qwen_dashscope`。必须与账户 `providerCode` + `providerProtocolProfileId` 的能力组合匹配，同一账户内不能重复。 |',
+  '| `baseUrl` | 是 | string | 包含版本前缀的根地址（如 `/v1`、`/api/v3`），不能带 `/chat/completions`、`/messages` 等具体接口路径；通常与 `credentials.base_url` 相同。 |',
+  '| `endpointModes` | 是 | string[] | 非空字符串数组，无重复；取值必须在该预设与账户组合允许的 mode 集合内（如 `gpt_openai_v1` API Key 允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`，GPT OAuth 只允许 `responses_json`、`responses_sse`，`glm_general_openai_v1` / `glm_coding_openai_v1` 允许 `chat_json`、`chat_sse`，`deepseek_anthropic_v1` / `glm_coding_anthropic_v1` 允许 `messages_json`、`messages_sse`，`anthropic_v1` 允许 `messages_json`、`messages_sse`、`message_token_counting`，`generic_openai_v1` 允许 OpenAI 词表）。 |',
+  '| `enabled` | 是 | boolean | 是否启用；必须显式填写，省略或非布尔即失败。健康检查只能指向 `enabled: true` 的连接。 |',
+  '| `protocolSurfaceCode` | 否 | string | 协议面回显；省略即可，填写时必须与预设注册的协议面一致（`openai_v1`、`anthropic_v1`、`gemini_v1beta`）。 |',
   '',
   '字段规则：',
   '',
@@ -290,8 +414,9 @@ export const accountImportProtocolMarkdown = [
   '- `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。',
   '- 导入创建时 `status: "active"` 会转为 `pending_test`，测试通过后才参与调度；明确不希望调度时填 `disabled`。',
   '- `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。',
-  '- `healthCheckModel` 只在账户创建阶段按默认链补齐；账户落库后后台检查严格读取该字段，不会动态跟随供应商默认值。',
-  '- `healthCheckEndpointMode` 必须是账户已启用的请求形态；省略时按流式优先解析：GPT 官方默认 `responses_sse`、OpenAI-compatible 默认 `chat_sse`、Anthropic 默认 `messages_sse`、Gemini Native 默认 `generate_content_sse`。',
+  '- `healthCheckModel` 只在账户创建阶段按默认链补齐；账户落库后后台检查严格读取该字段，不会动态跟随供应商默认值。native 导入必须显式提交该字段并保证属于 `supportedModels`。',
+  '- 健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode` 在 native 导入中必须全部显式提交，缺一整账户失败；三键共同约束为：preset 指向本账户一条 `enabled: true` 连接，检查形态属于该连接 `endpointModes`，检查模型属于 `supportedModels`。',
+  '- `healthCheckEndpointMode` 必须是账户已启用的请求形态；非原生来源（sub2api 等）省略时按流式优先解析：先取连接 `endpointModes` 中首个可检查 `_sse` 形态，再按声明顺序回退。',
   '- 通用 OpenAI-compatible 上游如需原生处理 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 的上游接口能力中包含 `responses_json` 或 `responses_sse`。',
   '- 普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据。',
   '- 混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝。',
@@ -521,5 +646,9 @@ export const accountImportProtocolMarkdown = [
   '- `proxyRef` 指向的代理不存在、未在 `proxies` 中声明，或普通用户尝试创建新代理。',
   '- 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。',
   '- 账户支持模型不在供应商模型目录中：先在模型目录创建这些自定义模型并配置价格，再重新导入。',
-  '- 账号模型别名（`modelMappings`）的来源 / 目标模型不在当前供应商模型目录中：处理方式与支持模型相同，先在模型目录创建并配置价格，再重新导入。'
+  '- 账号模型别名（`modelMappings`）的来源 / 目标模型不在当前供应商模型目录中：处理方式与支持模型相同，先在模型目录创建并配置价格，再重新导入。',
+  '- 账户 `connections` 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode/baseUrl/endpointModes/enabled）。',
+  '- `healthCheckConnectionPresetCode` 不能为空：健康检查三件套必须显式提交；即使填写，指向的也必须是本账户一条 `enabled: true` 连接。',
+  '- `healthCheckModel` 不能为空：健康检查三件套必须显式提交；填写后仍必须属于 `supportedModels`。',
+  '- `healthCheckEndpointMode` 不能为空：健康检查三件套必须显式提交；填写后必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`。'
 ].join('\n')

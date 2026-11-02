@@ -19,6 +19,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`providerProtocolProfileId`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
+- 每个账户必须显式提交非空 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`；`native` 导入不做缺省补齐，四键缺任一该账户在预览中标记失败（`sub2api` 等非原生来源由适配器按契约补齐三件套，但 `connections` 仍必须由来源包显式携带）。
 - 当前 `providerCode` 可填 `openai`、`gpt`、`xai`、`anthropic`、`glm`、`deepseek`、`gemini` 或 `hybrid`；系统按 `providerCode + providerProtocolProfileId` 校验内部协议档案。`openai` 只支持 `api_key`；`gpt` 支持 `api_key|oauth`；`xai` 支持官方 API Key 与 Responses-only Grok `oauth`；`anthropic` 支持 API Key 与官方 `oauth`；`gemini` native 支持 API Key 与 `google_oauth`，后者必须保存 `code_assist|google_one|ai_studio` 模式，OpenAI Chat 档案只支持 API Key；GLM、DeepSeek 和 hybrid 继续按各自档案与账户类型约束。
 - `providerProtocolProfileId` 是协议档案唯一入口；导入协议不接收旧接入类型别名，也不按 `base_url`、供应商默认值或历史字段猜测档案。
 - `providerCode = hybrid` 时必须使用 API Key 账户，按真实上游协议显式填写混合供应商档案；真实上游目标协议由账户 `modelMappings.upstreamEndpointFamily` 和 `credentials.supported_endpoint_modes` 表达，不再区分多个混合账户类型。
@@ -70,6 +71,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - 如果账户绑定了可用代理，导出文件会同时写入 `proxies` 并通过账户 `proxyRef` 引用，便于再次导入时自动创建或复用代理。
 - 导出会保留账户标签为 `tags` 字符串数组；再次导入时会在目标系统账户维度自动创建缺失标签并绑定到账户。
 - 导出会保留账户级 `healthCheckModel` 和精确 `healthCheckEndpointMode`；再次导入时检查模型必须属于同一账户的 `supportedModels`。文本请求形态必须是账户已启用的 Chat / Responses / Messages / GenerateContent JSON 或 Streaming mode；`images_json` 只允许模型目录证明检查模型支持 `images` 时使用，否则预览失败。导入省略请求形态时按新账户默认规则解析。
+- 导出会为每个账户写出完整 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`，与导入必填键一一对应，导出文件可直接回导。
 - 导出必须为每个账户写出当前 `providerProtocolProfileId`，保证重新导入能还原到同一供应商协议档案；导入不得靠 `credentials.base_url`、供应商默认值或历史接入类型字段猜测档案。
 - 账户当前为 `pending_test` 时导出为 `status: "pending_test"`；账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`。导入时 `active` 会按安全策略落成 `pending_test`，后台激活检查成功后才转为 `active`。
 - 导出的 JSON 文件可以在“导入账户”弹窗中直接粘贴预览，再确认导入。
@@ -110,6 +112,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "base_url": "https://api.openai.com/v1",
         "supported_endpoint_modes": ["chat_json", "chat_sse"]
       },
+      "supportedModels": ["gpt-5.2"],
+      "connections": [
+        {
+          "connectionPresetCode": "generic_openai_v1",
+          "baseUrl": "https://api.openai.com/v1",
+          "endpointModes": ["chat_json", "chat_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "generic_openai_v1",
+      "healthCheckModel": "gpt-5.2",
+      "healthCheckEndpointMode": "chat_sse",
       "notes": "通用 OpenAI-compatible API Key 账号"
     },
     {
@@ -134,6 +148,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "account_id": "acct_xxx",
         "email": "user@example.com"
       },
+      "supportedModels": ["gpt-5.2"],
+      "connections": [
+        {
+          "connectionPresetCode": "gpt_openai_v1",
+          "baseUrl": "https://api.openai.com/v1",
+          "endpointModes": ["responses_json", "responses_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "gpt_openai_v1",
+      "healthCheckModel": "gpt-5.2",
+      "healthCheckEndpointMode": "responses_sse",
       "notes": "OAuth 账号"
     },
     {
@@ -152,6 +178,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "base_url": "https://api.anthropic.com/v1",
         "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"]
       },
+      "supportedModels": ["claude-sonnet-4-6"],
+      "connections": [
+        {
+          "connectionPresetCode": "anthropic_v1",
+          "baseUrl": "https://api.anthropic.com/v1",
+          "endpointModes": ["messages_json", "messages_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "anthropic_v1",
+      "healthCheckModel": "claude-sonnet-4-6",
+      "healthCheckEndpointMode": "messages_sse",
       "notes": "Anthropic 官方 Messages API Key 账号"
     },
     {
@@ -169,6 +207,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
         "supported_endpoint_modes": ["chat_json", "chat_sse"]
       },
+      "supportedModels": ["glm-5.2"],
+      "connections": [
+        {
+          "connectionPresetCode": "glm_coding_openai_v1",
+          "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+          "endpointModes": ["chat_json", "chat_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "glm_coding_openai_v1",
+      "healthCheckModel": "glm-5.2",
+      "healthCheckEndpointMode": "chat_sse",
       "notes": "GLM Coding Plan API Key 账号"
     },
     {
@@ -186,6 +236,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "base_url": "https://open.bigmodel.cn/api/anthropic/v1",
         "supported_endpoint_modes": ["messages_json", "messages_sse"]
       },
+      "supportedModels": ["glm-5.2"],
+      "connections": [
+        {
+          "connectionPresetCode": "glm_coding_anthropic_v1",
+          "baseUrl": "https://open.bigmodel.cn/api/anthropic/v1",
+          "endpointModes": ["messages_json", "messages_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "glm_coding_anthropic_v1",
+      "healthCheckModel": "glm-5.2",
+      "healthCheckEndpointMode": "messages_sse",
       "notes": "GLM Coding Anthropic v1 账号"
     },
     {
@@ -203,6 +265,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "base_url": "https://api.deepseek.com/v1",
         "supported_endpoint_modes": ["chat_json", "chat_sse", "responses_json", "responses_sse"]
       },
+      "supportedModels": ["deepseek-v4.1-flash"],
+      "connections": [
+        {
+          "connectionPresetCode": "deepseek_openai_v1",
+          "baseUrl": "https://api.deepseek.com/v1",
+          "endpointModes": ["chat_json", "chat_sse", "responses_json", "responses_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "deepseek_openai_v1",
+      "healthCheckModel": "deepseek-v4.1-flash",
+      "healthCheckEndpointMode": "chat_sse",
       "notes": "DeepSeek OpenAI-compatible Chat Completions / Responses API Key 账号"
     },
     {
@@ -220,6 +294,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "base_url": "https://api.deepseek.com/anthropic/v1",
         "supported_endpoint_modes": ["messages_json", "messages_sse"]
       },
+      "supportedModels": ["deepseek-v4.1-flash"],
+      "connections": [
+        {
+          "connectionPresetCode": "deepseek_anthropic_v1",
+          "baseUrl": "https://api.deepseek.com/anthropic/v1",
+          "endpointModes": ["messages_json", "messages_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "deepseek_anthropic_v1",
+      "healthCheckModel": "deepseek-v4.1-flash",
+      "healthCheckEndpointMode": "messages_sse",
       "notes": "DeepSeek Anthropic v1 / Claude Code 账号"
     },
     {
@@ -237,6 +323,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
         "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
         "supported_endpoint_modes": ["chat_json", "chat_sse"]
       },
+      "supportedModels": ["glm-5.2"],
+      "connections": [
+        {
+          "connectionPresetCode": "generic_openai_v1",
+          "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+          "endpointModes": ["chat_json", "chat_sse"],
+          "enabled": true
+        }
+      ],
+      "healthCheckConnectionPresetCode": "generic_openai_v1",
+      "healthCheckModel": "glm-5.2",
+      "healthCheckEndpointMode": "chat_sse",
       "modelMappings": [
         {
           "sourceModel": "claude-sonnet-4",
@@ -279,9 +377,11 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `priority` | 否 | 调度优先级。 |
 | `superPriorityEnabled` | 否 | 超级优先开关。 |
 | `fallbackEnabled` | 否 | 降级备用开关。 |
-| `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。 |
-| `healthCheckModel` | 否 | 账户级检查模型；省略时由创建事务在最终支持模型集内解析首个声明该检查形态的模型（无声明时回落首个支持模型），最终必须持久化且属于账户 `supportedModels`。 |
-| `healthCheckEndpointMode` | 否 | 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：GPT 文本模型 `responses_sse`，纯图片模型 `images_json`，OpenAI-compatible `chat_sse`，Anthropic `messages_sse`，Gemini Native `generate_content_sse`；非原生来源先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退。 |
+| `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。填写 `healthCheckModel` 时建议同时显式给出本字段，便于核对成员关系。 |
+| `connections` | 是 | 连接集合，非空必填；每个元素描述一条上游连接（见下文「connections 条目字段」）。元素 `connectionPresetCode` 在同一账户内不能重复。 |
+| `healthCheckConnectionPresetCode` | 是 | 健康检查三件套之一；必须等于本账户 `connections` 中一条 `enabled: true` 连接的 `connectionPresetCode`，落库时同事务解析为 `health_check_connection_id`。 |
+| `healthCheckModel` | 是 | 健康检查三件套之一；账户级检查模型，必须属于账户 `supportedModels`（含供应商默认回填后的集合）。管理面手动创建时才允许省略并由创建事务在最终支持模型集内解析；`native` 导入必须显式提交。 |
+| `healthCheckEndpointMode` | 是 | 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 |
 | `modelMappings` | 否 | 账号模型映射列表；普通供应商账户只允许当前账号供应商模型目录内的同协议模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge；混合供应商账户允许用该字段声明其他下游模型 / 协议入口到真实上游模型 / 协议的跨协议映射。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
@@ -295,6 +395,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - `proxyRef` 和 `proxyProfileId` 不能同时填写。
 - `concurrencyLimit` 必须是正整数；`priority` 必须是非负整数。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。
+- 健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode` 在 `native` 导入中必须全部显式提交，缺一整账户失败；三键共同约束为：preset 指向本账户一条 `enabled: true` 连接，检查形态属于该连接 `endpointModes`，检查模型属于 `supportedModels`。
 - `healthCheckModel` 只在账户创建阶段使用默认链补齐；账户落库后后台系统检查严格读取该字段，不动态跟随供应商默认值。
 - 通用 OpenAI-compatible 上游如需承接 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。
 - 普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据。
@@ -306,6 +407,18 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - `supportedModels` 最终必须非空，限制的是映射右侧 `upstreamModel`，不是左侧 `sourceModel`；映射右侧只能选择账户支持模型。
 - `accountExpiresAt` 使用 ISO 时间字符串，例如 `2027-12-31T00:00:00.000Z`。
 - `pending_test` 表示账户等待后台激活检查，检查成功后才参与调度；这是新建和导入账户的默认安全状态，人工测试不能改变它。
+
+## connections 条目字段
+
+每个账户的 `connections` 必须是非空对象数组，元素键固定如下；出现未知键、缺少任一必填键或 `endpointModes` 为空都会导致该账户失败（与创建链共享 `ParseConnectionInput` 严格解析，不造兼容层）：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `connectionPresetCode` | 是 | 连接器注册表预设标识，当前恰好 17 个值：`generic_openai_v1`、`generic_anthropic_v1`、`generic_gemini_v1beta`、`gpt_openai_v1`、`xai_openai_v1`、`deepseek_openai_v1`、`deepseek_anthropic_v1`、`anthropic_v1`、`gemini_openai_chat_v1beta`、`gemini_native_v1beta`、`glm_general_openai_v1`、`glm_coding_openai_v1`、`glm_coding_anthropic_v1`、`minimax_media`、`volcengine_ark`、`volcengine_openspeech`、`qwen_dashscope`。必须与账户 `providerCode` + `providerProtocolProfileId` 的能力组合匹配，同一账户内不能重复。 |
+| `baseUrl` | 是 | 包含版本前缀的根地址（如 `/v1`、`/api/v3`），不能带 `/chat/completions`、`/messages` 等具体接口路径，必须通过 registry URL 契约校验；通常与 `credentials.base_url` 相同。 |
+| `endpointModes` | 是 | 非空字符串数组，无重复；取值必须在该预设与账户组合允许的 mode 集合内。常用组合：`gpt_openai_v1` API Key 允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；`gpt_openai_v1` 与 `xai_openai_v1` 的 OAuth 收窄为 `responses_json`、`responses_sse`；`glm_general_openai_v1`、`glm_coding_openai_v1` 允许 `chat_json`、`chat_sse`；`deepseek_anthropic_v1`、`glm_coding_anthropic_v1` 允许 `messages_json`、`messages_sse`；`anthropic_v1` 允许 `messages_json`、`messages_sse`、`message_token_counting`；`generic_openai_v1` 按 OpenAI 词表。 |
+| `enabled` | 是 | 是否启用；必须显式填写，省略或非布尔即失败。健康检查只能指向 `enabled: true` 的连接。 |
+| `protocolSurfaceCode` | 否 | 协议面回显；省略即可，填写时必须与预设注册的协议面一致（`openai_v1`、`anthropic_v1`、`gemini_v1beta`）。 |
 
 ## credentials 字段
 
@@ -469,3 +582,7 @@ Grok OAuth 账户：
 - 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。
 - 账户支持模型不在供应商模型目录中：先在「供应商」页或「我的模型」页的模型目录创建这些自定义模型并配置价格，再重新导入。
 - 账号模型别名（`modelMappings`）的来源 / 目标模型不在当前供应商模型目录中：处理方式与支持模型相同，先在模型目录创建并配置价格，再重新导入。
+- 账户 `connections` 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode/baseUrl/endpointModes/enabled）。
+- `healthCheckConnectionPresetCode` 不能为空：健康检查三件套必须显式提交；即使填写，指向的也必须是本账户一条 `enabled: true` 连接（否则执行阶段报 `health_check_connection_conflict`）。
+- `healthCheckModel` 不能为空：健康检查三件套必须显式提交；填写后仍必须属于 `supportedModels`。
+- `healthCheckEndpointMode` 不能为空：健康检查三件套必须显式提交；填写后必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。
