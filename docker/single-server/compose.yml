@@ -253,6 +253,12 @@ services:
     # 与 gateway/jobs 同理：datadir 相对路径按 cwd 解析，一次性容器同样锚定
     # /app/backend，保证维护产物（若有）落在与常驻进程一致的挂载目录。
     working_dir: /app/backend
+    volumes:
+      # 与 jobs 同款挂载：一次性容器（run --rm）没有挂载时，--manifest-out 等
+      # 维护产物写进容器可写层、随容器销毁丢失（2026-11-03 实证）。挂载后
+      # manifest 落宿主机 data/app/data，可事后复核。
+      - ./data/app/data:/app/backend/data
+      - ./data/app/logs:/app/backend/logs
     depends_on:
       postgres:
         condition: service_healthy
