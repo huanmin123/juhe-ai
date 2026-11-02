@@ -487,16 +487,23 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		}
 	}
 
-	// 克隆综合（§2）：克隆载荷不携带连接/健康检查时由源账户连接行与 health
-	// 三字段反解综合（连接按 preset/Base URL/endpoint modes/enabled 原样重建，
-	// health 三字段按 preset 重新解析复制）；源无连接行按显式错误拒绝，不做
-	// 跨形态兼容层。
+	// 克隆综合（§2）：克隆载荷不携带健康检查三件套时由源账户 health 三字段反
+	// 解综合（按 preset 重新解析复制）；源无连接行按显式错误拒绝，不做跨形态
+	// 兼容层。连接集合按 T99（2026-11-02 用户裁决 B 案）条件采纳：调用方显式
+	// 提交非空 connections（克隆表单 Base URL 可编辑，前端从表单构造连接载
+	// 荷）时按表单整集合重建，preset 唯一性等既有 resolveConnectionSet 校验
+	// 照走；未提交/空数组时按源账户连接行原样重建（原克隆综合行为）。源账户
+	// 连接事实仍无条件读取：回落臂需要连接行，health 三字段回落两臂共用。
+	// generic_http 来源 CloneContext 无连接 preset 字段（T102 遗留②），前端
+	// 构造不出连接载荷，恒走回落臂，不受本条件影响。
 	if input.CloneSourceID != nil && strings.TrimSpace(*input.CloneSourceID) != "" {
 		cloneConnections, cloneHealthPreset, cloneHealthMode, cloneHealthModel, err := s.loadAccountConnectionFacts(ctx, tx, strings.TrimSpace(*input.CloneSourceID))
 		if err != nil {
 			return nil, err
 		}
-		input.Connections = cloneConnections
+		if len(input.Connections) == 0 {
+			input.Connections = cloneConnections
+		}
 		if input.HealthCheckConnectionPresetCode == nil || strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
 			preset := cloneHealthPreset
 			input.HealthCheckConnectionPresetCode = &preset
