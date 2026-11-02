@@ -590,6 +590,12 @@ export interface AccountEditBasicDetail {
   ownerSystemAccountId: string
   providerCode: ProviderCode
   providerProtocolProfileId: string
+  /**
+   * 健康检查连接 preset（后端读面 currentHealthCheckPreset 投影，omitempty）。
+   * T102：详情 providerProtocolProfileId 由探针表反查派生，媒体四档 preset 不在
+   * 表内返回空串——前端按本字段经 shared/providerProtocol 反查表补齐供应商身份。
+   */
+  connectionPresetCode?: string
   protocolCode: string
   protocolVersion: string
   name: string
@@ -821,6 +827,8 @@ export interface AccountBatchEditResult {
     id: string
     configRevision: number
     changedFields: string[]
+    /** 逐账户跳过报告（T100）：批量改上游接口能力时多连接/无连接行账户跳过连接行写面（凭据域副本照常写），此处披露原因与动作；其余场景缺省。 */
+    notice?: string
   }>
 }
 

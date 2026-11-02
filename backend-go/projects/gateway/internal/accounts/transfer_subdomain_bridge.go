@@ -147,6 +147,10 @@ func (a transferWriterAdapter) ReplaceTags(ctx context.Context, q accountscore.Q
 	return err
 }
 
+func (a transferWriterAdapter) SyncSingleConnectionEndpointModes(ctx context.Context, q accountscore.Queryer, accountID string, modes []string, nowISO string) error {
+	return a.s.syncSingleConnectionEndpointModes(ctx, q, accountID, modes, nowISO)
+}
+
 // transferPredicateInput projects the accountscore predicate into the facade
 // protocolPredicateInput (field names are identical; visibility differs).
 func transferPredicateInput(predicate accountscore.ProtocolPredicate) protocolPredicateInput {

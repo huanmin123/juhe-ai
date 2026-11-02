@@ -321,6 +321,10 @@ type BatchUpdateItem struct {
 	ID             string   `json:"id"`
 	ConfigRevision int64    `json:"configRevision"`
 	ChangedFields  []string `json:"changedFields"`
+	// Notice 是 T100 连接行同步的逐账户报告：批量改 supportedEndpointModes 时
+	// 多连接/无连接行账户跳过连接行写面（凭据域副本照常写，读面回落兜底），
+	// 此处披露跳过原因与动作；其余场景恒空（omitempty，响应形状不变）。
+	Notice string `json:"notice,omitempty"`
 }
 
 // BatchUpdateResult mirrors the route response payload (the owner scope stays
@@ -367,10 +371,15 @@ type batchLockedAccount struct {
 	cooldownRetestLastStatusCode       sql.NullInt64
 	healthCheckModel                   string
 	healthCheckEndpointMode            string
-	capabilityDomain                   string
-	supportedModels                    []string
-	modelMappings                      []accountscore.ModelMapping
-	tags                               []string
+	// healthCheckConnectionID 是 T100 检查形态解析口径的选定连接判定输入：
+	// 运行时端点模式事实源按「健康检查连接优先，否则 enabled 连接 id 升序
+	// 首个」选定单连接（chain_accounts_secret.go 单连接事实源），多连接账户
+	// 跳过连接行写面时以其现行 modes 为解析基准。
+	healthCheckConnectionID sql.NullString
+	capabilityDomain        string
+	supportedModels         []string
+	modelMappings           []accountscore.ModelMapping
+	tags                    []string
 }
 
 // batchPreparedAccount mirrors AccountBatchUpdatePreparedAccount.
@@ -389,6 +398,18 @@ type batchPreparedAccount struct {
 	dispatchRevisionChanged bool
 	groupStatsAffected      bool
 	gatewayRuntimeAffected  bool
+	// connectionModesSync 非空 = 单连接账户且请求 modes 与连接行现行集合存在
+	// 差异，execute 段经 AccountWriter 端口同事务同步（T100）；nil = 无需写。
+	connectionModesSync *batchConnectionModesSync
+	// connectionModesNotice 是多连接/无连接行账户的逐账户跳过报告（T100）：
+	// 凭据域副本照常写，连接行不动，结果项携带原因与动作。
+	connectionModesNotice string
+}
+
+// batchConnectionModesSync 携带单连接账户待同步的请求 modes（已过凭据域词表
+// 归一化的声明集；registry preset×域词表终裁在门面写端口内执行）。
+type batchConnectionModesSync struct {
+	modes []string
 }
 
 // batchCredentialFieldMap mirrors the Node credentialFieldMap: batch update
@@ -491,7 +512,7 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 			return nil, &BatchVersionConflictError{AccountID: account.accountID}
 		}
 		if len(account.changedFields) == 0 {
-			items = append(items, BatchUpdateItem{ID: account.accountID, ConfigRevision: current.configRevision, ChangedFields: []string{}})
+			items = append(items, BatchUpdateItem{ID: account.accountID, ConfigRevision: current.configRevision, ChangedFields: []string{}, Notice: account.connectionModesNotice})
 			continue
 		}
 		if err := s.executeBatchCasUpdate(ctx, tx, &account, current.systemAccountID, nowISO); err != nil {
@@ -509,6 +530,14 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 		}
 		if account.hasTags {
 			if err := s.deps.Writer.ReplaceTags(ctx, tx, account.accountID, current.systemAccountID, account.tags, nowISO); err != nil {
+				return nil, err
+			}
+		}
+		if account.connectionModesSync != nil {
+			// T100 连接行 modes 同事务同步（单连接账户）：与单账户编辑同一套
+			// 连接写函数；端口写侧终裁连接行数，与准备段决策矛盾即整批回滚
+			// （all-or-nothing）。
+			if err := s.deps.Writer.SyncSingleConnectionEndpointModes(ctx, tx, account.accountID, account.connectionModesSync.modes, nowISO); err != nil {
 				return nil, err
 			}
 		}
@@ -534,7 +563,7 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 				return nil, err
 			}
 		}
-		item := BatchUpdateItem{ID: account.accountID, ConfigRevision: account.expectedConfigRevision + 1, ChangedFields: []string{}}
+		item := BatchUpdateItem{ID: account.accountID, ConfigRevision: account.expectedConfigRevision + 1, ChangedFields: []string{}, Notice: account.connectionModesNotice}
 		for _, field := range account.changedFields {
 			item.ChangedFields = append(item.ChangedFields, field)
 			changedFields[field] = true
@@ -657,7 +686,8 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			accounts.last_error_message, accounts.cooldown_retest_failure_count,
 			accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_last_at,
 			accounts.cooldown_retest_last_status_code, accounts.health_check_model,
-			accounts.health_check_endpoint_mode, accounts.capability_domain
+			accounts.health_check_endpoint_mode, accounts.capability_domain,
+			accounts.health_check_connection_id
 		FROM `+s.store.Table("accounts")+` accounts
 		WHERE accounts.id IN (`+accountscore.Placeholders(len(ids))+`)
 			AND accounts.deleted_at IS NULL
@@ -684,7 +714,8 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			&account.lastErrorMessage, &account.cooldownRetestFailureCount,
 			&account.cooldownRetestObservationStartedAt, &account.cooldownRetestLastAt,
 			&account.cooldownRetestLastStatusCode, &account.healthCheckModel,
-			&account.healthCheckEndpointMode, &account.capabilityDomain); err != nil {
+			&account.healthCheckEndpointMode, &account.capabilityDomain,
+			&account.healthCheckConnectionID); err != nil {
 			return nil, err
 		}
 		account.credentials = accountscore.Credentials{}
@@ -997,6 +1028,110 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		}
 	}
 
+	// T100 连接行同步决策（运行时事实源，设计 §2.1）：批量改
+	// supportedEndpointModes 时，凭据域副本之外的连接行事实源按账户连接行数
+	// 三档处理——单连接在事务内同步（execute 段经 AccountWriter 端口复用单
+	// 账户编辑的同一套连接写函数 resolveConnectionSet +
+	// beginAccountConnectionsReplacement）；多连接与无连接行账户跳过并逐账户
+	// 报告（不做猜默认的隐式行为）；凭据域副本三档照旧写（读面回落兜底）。
+	// 仅凭据副本同值而连接行漂移（本缺陷遗留状态）的再运行同样命中差异臂：
+	// supportedEndpointModes 仍按变更披露，CAS + 运行时失效链照走，漂移自愈。
+	var (
+		connectionModesSync    *batchConnectionModesSync
+		connectionModesNotice  string
+		healthModesOverride    []string
+		connectionModesChanged bool
+	)
+	if hasOwn("supportedEndpointModes") {
+		requestedModes := StoredEndpointModes(nextCredentials["supported_endpoint_modes"])
+		type connectionFact struct {
+			id      string
+			enabled bool
+		}
+		factRows, err := q.QueryContext(ctx, s.store.Bind(`SELECT id, enabled FROM `+s.store.Table("account_connections")+`
+			WHERE account_id = ? ORDER BY id ASC`), account.id)
+		if err != nil {
+			return result, err
+		}
+		facts := []connectionFact{}
+		for factRows.Next() {
+			var fact connectionFact
+			var enabled int64
+			if err := factRows.Scan(&fact.id, &enabled); err != nil {
+				factRows.Close()
+				return result, err
+			}
+			fact.enabled = enabled == 1
+			facts = append(facts, fact)
+		}
+		if err := factRows.Err(); err != nil {
+			factRows.Close()
+			return result, err
+		}
+		factRows.Close()
+		modesByConnection := map[string][]string{}
+		if len(facts) > 0 {
+			modeRows, err := q.QueryContext(ctx, s.store.Bind(`SELECT account_endpoint_modes.connection_id, account_endpoint_modes.endpoint_mode
+				FROM `+s.store.Table("account_endpoint_modes")+` account_endpoint_modes
+				INNER JOIN `+s.store.Table("account_connections")+` account_connections
+					ON account_connections.id = account_endpoint_modes.connection_id
+				WHERE account_connections.account_id = ?
+				ORDER BY account_endpoint_modes.connection_id ASC, account_endpoint_modes.endpoint_mode ASC`), account.id)
+			if err != nil {
+				return result, err
+			}
+			for modeRows.Next() {
+				var connectionID, mode string
+				if err := modeRows.Scan(&connectionID, &mode); err != nil {
+					modeRows.Close()
+					return result, err
+				}
+				modesByConnection[connectionID] = append(modesByConnection[connectionID], mode)
+			}
+			if err := modeRows.Err(); err != nil {
+				modeRows.Close()
+				return result, err
+			}
+			modeRows.Close()
+		}
+		switch {
+		case len(facts) == 1:
+			if !UnorderedStringListEqual(modesByConnection[facts[0].id], requestedModes) {
+				connectionModesChanged = true
+				connectionModesSync = &batchConnectionModesSync{modes: append([]string(nil), requestedModes...)}
+			}
+		case len(facts) == 0:
+			connectionModesNotice = "无连接行，未改能力，请单独编辑"
+		default:
+			connectionModesNotice = "多连接，未改能力，请单独编辑"
+			// 检查形态解析口径切运行时事实源：选定连接（健康检查连接优先，
+			// 否则 enabled 连接 id 升序首个）现行 modes 非空时以其为准——运行时
+			// 桶非空即独占生效（chain_accounts_secret.go 单连接事实源），避免
+			// 按新凭据集放行连接行未声明的检查形态、探针侧 fail closed。modes
+			// 为空（迁移窗口老行）回落凭据集，与运行时回落同口径。
+			selectedID := ""
+			if healthID := strings.TrimSpace(account.healthCheckConnectionID.String); healthID != "" {
+				for _, fact := range facts {
+					if fact.enabled && fact.id == healthID {
+						selectedID = healthID
+						break
+					}
+				}
+			}
+			if selectedID == "" {
+				for _, fact := range facts {
+					if fact.enabled {
+						selectedID = fact.id
+						break
+					}
+				}
+			}
+			if len(modesByConnection[selectedID]) > 0 {
+				healthModesOverride = modesByConnection[selectedID]
+			}
+		}
+	}
+
 	// supportedModels.
 	nextSupportedModels := account.supportedModels
 	supportedModelsChanged := false
@@ -1076,11 +1211,18 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		nextHealthCheckEndpointMode = textString(fieldValue("healthCheckEndpointMode"))
 	}
 	if resolveHealthMode {
+		// T100 解析口径：默认仍以归一化凭据集为源（单连接更新后集合与凭据集
+		// 一致、无连接行运行时本就回落凭据）；多连接跳过臂以选定连接现行
+		// modes 覆写（见上方 T100 决策块）。
+		healthModesSource := StoredEndpointModes(nextCredentials["supported_endpoint_modes"])
+		if len(healthModesOverride) > 0 {
+			healthModesSource = healthModesOverride
+		}
 		resolved, err := s.deps.ResolveHealthCheckEndpointMode(
 			&nextHealthCheckEndpointMode,
 			account.providerCode,
 			account.providerProtocolProfileID,
-			StoredEndpointModes(nextCredentials["supported_endpoint_modes"]),
+			healthModesSource,
 			BoolPtr(account.healthCheckEndpointMode == "images_json"),
 		)
 		if err != nil {
@@ -1345,9 +1487,10 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	}
 
 	// Health check reschedule marker (column exists in the maintenance schema).
+	// T100：连接行 modes 变化同样改变运行时能力面，与凭据域变更同臂清排期。
 	shouldScheduleHealthCheck := proxyChanged || supportedModelsChanged || healthCheckModelChanged ||
 		nextHealthCheckEndpointMode != account.healthCheckEndpointMode || modelMappingsChanged ||
-		(credentialsChanged && hasOwn("supportedEndpointModes"))
+		((credentialsChanged || connectionModesChanged) && hasOwn("supportedEndpointModes"))
 	if shouldScheduleHealthCheck && nextStatus != "disabled" {
 		setColumn("next_health_check_at", nil)
 	}
@@ -1356,7 +1499,7 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	// so changedFields stay sorted with the rest (Node collects into a Set and
 	// sorts at the end).
 	for _, pair := range batchCredentialFieldMap {
-		if credentialsChangedFields[pair[0]] {
+		if credentialsChangedFields[pair[0]] || (pair[0] == "supportedEndpointModes" && connectionModesChanged) {
 			addChange(pair[0])
 		}
 	}
@@ -1379,6 +1522,8 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			result.gatewayRuntimeAffected = true
 		}
 	}
+	result.connectionModesSync = connectionModesSync
+	result.connectionModesNotice = connectionModesNotice
 	return result, nil
 }
 

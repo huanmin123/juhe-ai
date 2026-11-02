@@ -391,6 +391,89 @@ func (s *Store) beginAccountConnectionsReplacement(ctx context.Context, q querye
 	return removed, changed, nil
 }
 
+// syncSingleConnectionEndpointModes 是批量编辑连接行 modes 写面（待办 #T100）：
+// 批量改 supportedEndpointModes 时，单连接账户在同一事务内把请求 modes 同步进
+// account_endpoint_modes，与单账户编辑连接集合臂（PATCH connections）复用同一
+// 套写函数——resolveConnectionSet（registry combo/词表/URL 契约校验，§2.2 不
+// 补齐不裁剪）+ beginAccountConnectionsReplacement（同 preset 保留 DB 行 id，
+// modes 集合差异 DELETE+INSERT，幂等不落写）。registry 判定身份与 PATCH 同源：
+// capability_domain 行内现值、driver 经 accountVendorIdentity 推导、oauth 判定
+// 值经 accountOAuthTypeForRegistry（列优先、凭据回落）。调用方在批量准备段已按
+// 连接行数三档决策；本端口写侧终裁连接行数 ≠ 1 即报错使整批回滚。
+func (s *Store) syncSingleConnectionEndpointModes(ctx context.Context, q queryer, accountID string, modes []string, nowISO string) error {
+	var accountType, providerCode, oauthTypeColumn, domain string
+	if err := q.QueryRowContext(ctx, s.bind(`SELECT type, COALESCE(vendor_code, ''), COALESCE(oauth_type, ''), capability_domain
+		FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&accountType, &providerCode, &oauthTypeColumn, &domain); err != nil {
+		return err
+	}
+	// oauth 判定值的凭据回落（PATCH 连接臂同款 accountOAuthTypeForRegistry）：
+	// 仅 google_oauth 账户携带，列缺失时解密现凭据兜底；其余类型恒空串。
+	oauthType := ""
+	if accountType == contracts.AccountTypeGoogleOAuth {
+		if text := strings.TrimSpace(oauthTypeColumn); text != "" {
+			oauthType = text
+		} else {
+			credentials := Credentials{}
+			var sealed string
+			if err := q.QueryRowContext(ctx, s.bind(`SELECT credentials_encrypted FROM `+s.table("accounts")+`
+				WHERE id = ?`), accountID).Scan(&sealed); err != nil {
+				return err
+			}
+			if strings.TrimSpace(sealed) != "" {
+				if err := DecryptJSON(s.secret, sealed, &credentials); err != nil {
+					return err
+				}
+			}
+			oauthType = accountOAuthTypeForRegistry(accountType, oauthTypeColumn, credentials)
+		}
+	}
+	type connectionRow struct {
+		preset  string
+		baseURL string
+		enabled int64
+	}
+	rows, err := q.QueryContext(ctx, s.bind(`SELECT connection_preset_code, base_url, enabled
+		FROM `+s.table("account_connections")+` WHERE account_id = ? ORDER BY connection_preset_code`), accountID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	connections := []accountscore.ConnectionInput{}
+	for rows.Next() {
+		var row connectionRow
+		if err := rows.Scan(&row.preset, &row.baseURL, &row.enabled); err != nil {
+			return err
+		}
+		connections = append(connections, accountscore.ConnectionInput{
+			ConnectionPresetCode: row.preset,
+			BaseURL:              row.baseURL,
+			EndpointModes:        append([]string(nil), modes...),
+			Enabled:              row.enabled == 1,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(connections) != 1 {
+		return &ValidationError{Message: fmt.Sprintf("批量编辑连接行同步：账户 %s 连接行数 %d ≠ 1，与批量准备决策矛盾", accountID, len(connections))}
+	}
+	_, driver := accountVendorIdentity(providerCode)
+	resolved, err := resolveConnectionSet(domain, driver, accountType, oauthType, connections)
+	if err != nil {
+		return err
+	}
+	removed, _, err := s.beginAccountConnectionsReplacement(ctx, q, accountID, resolved, nowISO)
+	if err != nil {
+		return err
+	}
+	// 单连接账户的唯一 preset 必在保留集，整替换不应产生待删行；非零即行
+	// 为漂移，显式失败而非静默删除连接。
+	if len(removed) != 0 {
+		return &ValidationError{Message: fmt.Sprintf("批量编辑连接行同步：账户 %s 单连接整替换出现待删集合 %d", accountID, len(removed))}
+	}
+	return nil
+}
+
 // finishAccountConnectionsReplacement 是 §8 整替换的第二阶段（映射整替换之后）：
 // 待删除连接若仍被入口映射引用（enabled/disabled 均算，§2.1 RESTRICT）返回
 // connection_mapping_conflict；仍被 health-check 引用且载荷未把它改选到其他

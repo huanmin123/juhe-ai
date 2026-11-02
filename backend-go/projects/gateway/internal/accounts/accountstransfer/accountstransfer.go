@@ -118,6 +118,15 @@ type AccountWriter interface {
 	// ReplaceTags mirrors Store.replaceAccountTags (tags.go); the batch call
 	// site ignores the returned tag summaries.
 	ReplaceTags(ctx context.Context, q accountscore.Queryer, accountID, systemAccountID string, tagNames []string, nowISO string) error
+	// SyncSingleConnectionEndpointModes 是 T100 批量改上游接口能力的连接行写
+	// 端口（待办 #T100）：单连接账户在同一事务内把请求 modes 同步进
+	// account_endpoint_modes，复用单账户编辑连接集合臂的同一套写函数
+	// （resolveConnectionSet registry 校验 + beginAccountConnectionsReplacement
+	// 整替换，同 preset 保留 DB 行 id，幂等不落写）。调用方（batch.go）已在
+	// 准备段按连接行数三档决策；本端口写侧终裁连接行数 ≠ 1 即报错使整批
+	// 回滚（与准备段决策矛盾即并发漂移，all-or-nothing 下显式失败而非静默
+	// 跳过）。
+	SyncSingleConnectionEndpointModes(ctx context.Context, q accountscore.Queryer, accountID string, modes []string, nowISO string) error
 }
 
 // Service carries the import/export & batch-edit subdomain state: the injected
