@@ -43,6 +43,12 @@ type sqlStore struct {
 	schemaMu    sync.Mutex
 	schemaReady bool
 	pool        *pgpool.Handle
+	// orphanMu/orphanCursor 是 FS→DB 孤儿对账清扫（W47）的跨轮游标：记录上一
+	// 轮最后检查过的 canonical 文件相对路径，下一轮从其后继续；走完整棵树后
+	// 归零回卷。进程重启后游标从目录起点重扫（可接受的兜底语义），但同一代
+	// 进程内不会永远卡在同一批文件上。
+	orphanMu     sync.Mutex
+	orphanCursor string
 }
 
 type blobPlan struct {
@@ -52,6 +58,10 @@ type blobPlan struct {
 	root     string
 	tempPath string
 	existing bool
+	// published 标记本进程在 publishBlobPlans 中 rename 成功的文件：这类文件
+	// 发布前不存在、事务又尚未提交，是 Persist 失败臂补偿删除（W47）的唯一
+	// 范围；复用的既有 canonical 文件与并发发布胜出的文件不在此列。
+	published bool
 }
 
 const postgresBlobGCSchema = `
@@ -284,19 +294,23 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 		return PersistResult{}, errors.Join(err, tx.Rollback())
 	}
 	if err := publishBlobPlans(plans); err != nil {
-		return PersistResult{}, errors.Join(err, tx.Rollback())
+		// 部分 plan 可能已 rename 成功，同样需要在持锁期间补偿。
+		return PersistResult{}, errors.Join(err, compensatePublishedBlobs(plans), tx.Rollback())
 	}
 	if err := s.resolveBlobIDs(ctx, tx, plans); err != nil {
-		return PersistResult{}, errors.Join(err, tx.Rollback())
+		// 补偿必须先于 Rollback 求值：pg_advisory_xact_lock 随回滚释放，若先
+		// 回滚再删文件，并发 Persist 可能已在本事务释放锁后 stat 到该文件、
+		// 跳过写入并提交引用行，随后被这里的删除变成「有行无文件」。
+		return PersistResult{}, errors.Join(err, compensatePublishedBlobs(plans), tx.Rollback())
 	}
 	prepared = attachBlobRecords(prepared, plans)
 	if normalizeLifecycle(input.LifecycleStatus) == LifecycleFinalized {
 		if err := s.insertFinalChildren(ctx, tx, input, prepared); err != nil {
-			return PersistResult{}, errors.Join(err, tx.Rollback())
+			return PersistResult{}, errors.Join(err, compensatePublishedBlobs(plans), tx.Rollback())
 		}
 	}
 	if err := s.verifyLeaseBeforeCommit(ctx, tx, lease); err != nil {
-		return PersistResult{}, errors.Join(err, tx.Rollback())
+		return PersistResult{}, errors.Join(err, compensatePublishedBlobs(plans), tx.Rollback())
 	}
 	if err := tx.Commit(); err != nil {
 		// Commit outcome can be unknown. Published blobs are retained and the
@@ -725,6 +739,7 @@ func publishBlobPlans(plans []blobPlan) error {
 		finalPath := filepath.Join(plan.root, filepath.FromSlash(plan.record.storageKey))
 		if err := os.Rename(plan.tempPath, finalPath); err == nil {
 			plan.tempPath = ""
+			plan.published = true
 			if err := syncBlobParent(filepath.Dir(finalPath)); err != nil {
 				return fmt.Errorf("同步 audit blob 父目录失败: %w", err)
 			}
@@ -757,6 +772,27 @@ func syncBlobParent(directory string) error {
 	}
 	defer file.Close()
 	return file.Sync()
+}
+
+// compensatePublishedBlobs 是 Persist 失败臂的写侧补偿（W47）：发布成功之后、
+// 提交之前失败会留下数据库无行的已发布文件，这里只删除本次由本进程 rename
+// 成功（发布前不存在）的文件。commit 返回未知结果时不得调用——事务可能已
+// 成功，文件必须保留；补偿自身失败的错误并入调用方返回值，残留交给孤儿对账
+// 清扫兜底。
+func compensatePublishedBlobs(plans []blobPlan) error {
+	var joined error
+	for index := range plans {
+		plan := &plans[index]
+		if !plan.published {
+			continue
+		}
+		plan.published = false
+		path := filepath.Join(plan.root, filepath.FromSlash(plan.record.storageKey))
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			joined = errors.Join(joined, fmt.Errorf("补偿删除已发布 audit blob 失败: %w", err))
+		}
+	}
+	return joined
 }
 
 func cleanupBlobTemps(plans []blobPlan) error {

@@ -905,22 +905,3 @@ func geminiRotationAccountOAuthType(current *rotationAccount, _ map[string]any) 
 	return ""
 }
 
-// geminiAccountOAuthType mirrors accountOAuthType: infer the stored account's
-// oauth type from its credentials. B01 收口后不再出现在 rotation 读面
-// （geminiRotationAccountOAuthType 只读判定列），仅保留独立启发式矩阵测试。
-func geminiAccountOAuthType(credentials map[string]any) string {
-	if value := normalizeText(credentials["oauth_type"]); value != "" {
-		return normalizeGeminiOAuthType(value)
-	}
-	baseURL := normalizeText(credentials["base_url"])
-	if strings.Contains(baseURL, "generativelanguage.googleapis.com") {
-		return "ai_studio"
-	}
-	if normalizeText(credentials["project_id"]) != "" || strings.Contains(baseURL, "cloudcode-pa.googleapis.com") {
-		return "code_assist"
-	}
-	if clientID := normalizeText(credentials["client_id"]); clientID != "" && clientID != GeminiCLIOAuthClientID {
-		return "ai_studio"
-	}
-	return "code_assist"
-}

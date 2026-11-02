@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -124,6 +125,62 @@ func wgCmdExtractTableDDL(t *testing.T, source string, tables []string) map[stri
 	return statements
 }
 
+// wgCmdKitSeedUpgradeLedger 在夹具库上写升级账本（T89）：组合根子进程用例的
+// schemagate 启动门禁要求 schema_state.schema_revision == 二进制
+// contracts.SchemaRevision 且 schema_migrations 有不超过它的行，否则进程在
+// 启动即被「数据库尚未升级到本版本」拦截，永远进不到被测分支。
+//
+// revision 一律取 contracts.SchemaRevision（不硬编码版本号）：二进制升级后
+// 夹具无需再改。账本 DDL 权威在 maintenance/internal/schema/upgrade_ledger.go，
+// 但 maintenance 是独立 module 且该包为 internal，jobs 不可导入，故此处按同一
+// 形状建表（仅测试库使用）。
+func wgCmdKitSeedUpgradeLedger(ctx context.Context, db *sql.DB) error {
+	revision := contracts.SchemaRevision
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS juhe_business.schema_state (
+  id              smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  schema_revision bigint NOT NULL,
+  schema_digest   text NOT NULL,
+  app_version     text NOT NULL,
+  converged_at    text NOT NULL
+)`,
+		`CREATE TABLE IF NOT EXISTS juhe_business.schema_migrations (
+  revision     bigint PRIMARY KEY,
+  step_id      text NOT NULL UNIQUE,
+  title        text NOT NULL,
+  target       text NOT NULL CHECK (target IN ('primary','j3a','j3b','account_balance')),
+  destructive  boolean NOT NULL DEFAULT false,
+  status       text NOT NULL CHECK (status IN ('running','applied')),
+  checksum     text NOT NULL,
+  impl_version integer NOT NULL DEFAULT 1,
+  adopted      boolean NOT NULL DEFAULT false,
+  started_at   text,
+  applied_at   text,
+  duration_ms  integer,
+  app_version  text,
+  detail_json  text
+)`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("夹具升级账本建表失败: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.schema_migrations
+		(revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, applied_at, app_version)
+		VALUES ($1, 'w16j-ledger-fixture', '夹具账本行（等价已被本二进制收敛）', 'primary', false, 'applied', 'fixture', 1, false, '2026-10-12T08:00:00Z', 'test')
+		ON CONFLICT (revision) DO NOTHING`, revision); err != nil {
+		return fmt.Errorf("夹具写升级账本行失败: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.schema_state
+		(id, schema_revision, schema_digest, app_version, converged_at)
+		VALUES (1, $1, 'fixture', 'test', '2026-10-12T08:00:00Z')
+		ON CONFLICT (id) DO UPDATE SET schema_revision = EXCLUDED.schema_revision`,
+		revision); err != nil {
+		return fmt.Errorf("夹具写升级状态行失败: %w", err)
+	}
+	return nil
+}
+
 // wgCmdKitDB 打开 pgtestkit 隔离 PG 测试库并按上述契约面预置；返回裸连接池
 // （夹具/进程内装配用）与库连接串（子进程 env/ store 构造注入）。测试结束
 // 自动关池并删库。
@@ -160,6 +217,11 @@ func wgCmdKitDB(t *testing.T) (*sql.DB, string) {
 				}
 				return fmt.Errorf("jobs 面种子失败: %w（语句前缀 %.80s）", err, statement)
 			}
+		}
+		// 升级启动门禁（schemagate）夹具契约：账本两表 + 收敛状态行，revision
+		// 由 contracts.SchemaRevision 派生。
+		if err := wgCmdKitSeedUpgradeLedger(ctx, db); err != nil {
+			return err
 		}
 		// fixtures 外键目标：sys_admin 属主、gpt/deepseek 厂商、J1 direct
 		// schedule canonical settings（w12d/w9h/w14q 各测试 seed 同值）。

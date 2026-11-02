@@ -385,7 +385,7 @@ func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease,
 				passStarted := time.Now()
 				result, err := store.CleanupRetention(ctx, lease, effective.RetentionConfigAt(time.Now()))
 				if err == nil {
-					logger.Info("F3 audit retention complete", "event", "audit_retention_completed", "durationMs", time.Since(passStarted).Milliseconds(), "successHotTrimmed", result.SuccessHotTrimmed, "deletedNonPersistedLogs", result.DeletedNonPersistedLogs, "deletedLogs", result.DeletedLogs, "deletedErrorGroups", result.DeletedErrorGroups, "deletedPayloadBlobs", result.DeletedPayloadBlobs, "deletedHotSearchFiles", result.DeletedHotSearchFiles)
+					logger.Info("F3 audit retention complete", "event", "audit_retention_completed", "durationMs", time.Since(passStarted).Milliseconds(), "successHotTrimmed", result.SuccessHotTrimmed, "deletedNonPersistedLogs", result.DeletedNonPersistedLogs, "deletedLogs", result.DeletedLogs, "deletedErrorGroups", result.DeletedErrorGroups, "deletedPayloadBlobs", result.DeletedPayloadBlobs, "deletedHotSearchFiles", result.DeletedHotSearchFiles, "deletedOrphanBlobFiles", result.DeletedOrphanBlobFiles)
 					timer.Reset(schedulejitter.Delay(cfg.RetentionInterval))
 					continue
 				}

@@ -809,3 +809,15 @@ R1 攻击轮核验性结论（不改行为、直接入覆盖矩阵）：DD-C10~C
 | 文档 | T91-5、T93-7 | 明确人工临时状态 TTL 到期由冷却复测恢复（匹配 generation）；额度口径统一为「已结算投影 + 在途预留」 | 两处文档已更新 |
 
 验证汇总：gateway `accounts/authz/accountkeystates/statreads/gatewayquota/pricing/providers/gatewaydispatch/gatewayruntimecache/business/key_model_runtime/cmd` 全绿（cmd 39.0s）；jobs `oauthrefresh 91.9s / keymodelrecovery 12.3s / ingestgate 0.2s / statsverify 11.5s / statsagg 60.4s` 全绿（真 PG）；maintenance 升级链 revision 13 + 归一测试真 PG PASS、cmd 整包 175s 绿；三模块 `go build ./...` 通过。已知既有失败（与本批无关）：`TestOAuthManagedDefaultsCreateWritesConnectionRows/gemini_google_oauth`（URL v2 遗留）、aipublic 夹具列缺失、jobs cmd 18 个夹具缺口（T89）。
+
+## 本地可修项收口（2026-11-02）
+
+| 事项 | 结论 | 证据 |
+| --- | --- | --- |
+| T95 schema 断言漂移 | 已修：`w1g2CoverSchemas` 6→5 删 `juhe_chat`；同源 `w1g2GrantSchemas` 同步（GRANT 不存在 schema 会 3F000）；`w1g2CoverPostgres` 子进程补升级账本种子 | 9 个调用方用例全 PASS，cmd 包 125.6s 绿；独立复验 `TestW2BBalanceRefreshLoadOutcomeArms`/`TestW1G2ComposeSystemAPIPostgresSuccess` 11.1s PASS |
+| T89 jobs cmd 18 个既有失败 | 已修：夹具补 `accounts.background_probe_enabled`（与生产 DDL 同形）、夹具建库统一写 `schema_state`/`schema_migrations`（revision 取 `contracts.SchemaRevision`，不硬编码）、`w14q` 夹具 base_url 补 `/v1` 版本根 | 失败 18→0，`JUHE_AI_TEST_EXTERNAL=1 go test ./cmd/juhe-ai-jobs/` 114.1s / 复验 71.8s 绿 |
+| T94 编辑 Base URL 不写连接域 | **HEAD `3d3ab1e32` 已修复**（`buildAccountUpdatePayload` 已透传 connections，`accountEditPatch` 按档案差量构造），本轮只补差量回归测试 5 例；前端 `test:unit` 94 文件/1172 例绿 | `accountSavePayload.test.ts` 新增用例组；typecheck 无错 |
+| T94 同族审计 | 新登记 T99（克隆无条件覆盖连接，需裁决）、T100（批量改 endpointModes 只写凭据域）、T101（原生导入模板缺 connections/健康三件套）、T102（媒体/自定义协议档案派生缺口致编辑保存不可达） | 逐条含证据/归属/完成判定 |
+| T88 探针 usage 口径 | 未改代码：属文档契约冲突，建议取「不写 usage」，待裁决后回写通用用量文档 | 台账 R7-A P-H4 |
+
+T90（生产存量小时额度回填）与 T94 的生产账户数据修复需生产授权，本轮未执行。

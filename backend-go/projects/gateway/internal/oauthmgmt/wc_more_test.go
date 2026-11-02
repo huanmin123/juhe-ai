@@ -71,29 +71,6 @@ func TestWCSmallZeroFunctions(t *testing.T) {
 	}
 }
 
-// TestWCGeminiAccountOAuthType：凭据推断 oauth 类型矩阵。
-func TestWCGeminiAccountOAuthType(t *testing.T) {
-	cases := []struct {
-		name        string
-		credentials map[string]any
-		want        string
-	}{
-		{"显式 ai_studio", map[string]any{"oauth_type": "ai_studio"}, "ai_studio"},
-		{"显式未知回退", map[string]any{"oauth_type": "bogus"}, "code_assist"},
-		{"AI Studio 域名", map[string]any{"base_url": "https://generativelanguage.googleapis.com"}, "ai_studio"},
-		{"project_id 推断", map[string]any{"project_id": "p"}, "code_assist"},
-		{"CLI 域名推断", map[string]any{"base_url": "https://cloudcode-pa.googleapis.com"}, "code_assist"},
-		{"第三方 client 推断", map[string]any{"client_id": "custom"}, "ai_studio"},
-		{"全缺省", map[string]any{}, "code_assist"},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			if got := geminiAccountOAuthType(testCase.credentials); got != testCase.want {
-				t.Fatalf("得到 %q，期望 %q", got, testCase.want)
-			}
-		})
-	}
-}
 
 // TestB4GeminiRotationAccountOAuthTypeColumnFirst：只读判定列（#B4 ⑨，B01
 // 收口：缺列即数据不完整，返回空串，不再按凭据推断）。

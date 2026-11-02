@@ -130,12 +130,14 @@ docker compose up -d
 
 ```sh
 bash docker/single-server/deploy.sh all          # gateway + jobs + maintenance 一同发布（默认）
-bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / maintenance 同理
+bash docker/single-server/deploy.sh gateway      # 单服务发布仅限 maintenance（见下方同批发布约束）
 ```
 
 脚本固定执行：**前端漏发门禁**（2026-10-08 起，见下）→ **无条件全量重编译**（不信任 `build/bin` 既有产物，防止 shared 模块修复后旧产物上线）→ 上传 → **md5 三点闭环校验**（本地新编译 = 服务器 build/bin = 容器内运行二进制）→ **部署配置同步**（2026-10-14 起：compose.yml / Caddyfile / Dockerfile.runtime 与远端逐文件 md5 比对，漂移即自动 tar 上传并复核——远端 compose 资源契约不再依赖人工记忆补传）→ **迁移前置核验**（2026-10-14 起只读核验；2026-10-30 起判据换 `maintenance upgrade --dry-run`（新版 maintenance 镜像，设计 §11.3）：升级门禁未就绪（库落后/升级中断/需手工步骤）一律 blocked/3 立即中止并指引 `./deploy.sh upgrade`；maintenance 单独发布与 **`upgrade` 模式**除外——前者维护窗口先更镜像、后迁移，后者的唯一工作场景就是库落后，dry-run blocked 属预期，硬核验会让 upgrade 模式入口自死锁）→ `docker compose build` + `up -d`（maintenance 为一次性 CLI 只重建镜像不 up，`up -d` 会等其入口退出而挂起）→ 逐容器等待 healthy → 公网健康检查 → **发布后验证**（`verify-release.sh`，见下；2026-10-14 起含 gateway GOMEMLIMIT/mem_limit 内存限制断言）。任一环节失败立即退出并给出回滚提示——服务器侧 `docker compose build`/`up -d` 失败同样使发布立即中止（远端命令显式 pipefail，构建失败不会继续用旧镜像滚动更新）。**all 含 maintenance（2026-10-03 起）**：schema/seed 变更必须随发版落地——否则发布后 `--ensure-schema` 用旧清单"幂等成功"却漏建新表（2026-10-02 与 10-03 两次同款事故：旧二进制 623/624 语句"一致"掩盖 chat/j3b 迁移未落地，功能静默不可用）；ensure 后应核对 `StatementCount` 与本地清单期望一致。
 
 **maintenance 单独发布（2026-10-12）**：只更新该 CLI 镜像，校验本地二进制、服务器产物与镜像内二进制 MD5 一致。镜像校验通过 `compose run --no-deps --entrypoint md5sum` 完成，不执行 maintenance 业务入口，也不启动 gateway/jobs；此次目标没有常驻进程，因此不执行迁移前置核验（维护窗口的既定顺序就是先更 CLI 镜像、后跑迁移，门禁未就绪属预期）、公网健康检查或 `verify-release.sh`。这允许 jobs 保持停止直到回填完成。恢复新版 gateway/jobs 的发布仍必须通过原有健康与 spool/drain 验证；镜像校验失败立即中止，不启动写者。
+
+**gateway 与 jobs 必须同批发布、同批回滚**：两者二进制源自同一 shared 包构建，发布一律走 `./deploy.sh all`（回滚同样整体回上一版 build/），禁止只发布或只回滚其中之一。账户余额锁语义版本（3d3ab1e32+）落地后尤其如此——「新 gateway + 旧 jobs」混跑期间，旧 jobs 的账户租约接管分支会抢占 gateway 手动刷新在途的账户租约，导致手动刷新 500。
 
 **前端漏发门禁（2026-10-08 起，deploy.sh 第 [0/6] 步；仅当本次发布包含 gateway 时执行）**：前端产物由 `Dockerfile.runtime` 的 `COPY build/frontend-dist` 烤进镜像，而脚本此前只编译上传 Go 二进制——本地 `build/frontend-dist` 未重建时，后端发版会把旧前端再次烤进新镜像（2026-10-07/10-08 多次漏发的成因：使用记录「媒体并入用量列」等已提交的前端改动在生产不可见）。门禁规则：
 

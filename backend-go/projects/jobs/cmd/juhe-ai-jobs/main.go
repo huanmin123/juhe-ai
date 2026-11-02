@@ -838,8 +838,11 @@ func jobsHTTPHandler(deps jobsHTTPDeps) http.Handler {
 	mux := http.NewServeMux()
 	// 健康监听只剩 /health 与 /__aisys__/metrics（健康探测属编排语义，
 	// gateway 蓝绿 readiness 探测与 Prometheus 抓取仍依赖，保留）。
-	// 去跨进程战役第四刀：/account-balance/manual 手动桥已删除（Node 时代
-	// 的手动触发入口，全仓无生产调用方；J2 余额刷新走周期调度与恢复扫描）。
+	// 去跨进程战役第四刀：/account-balance/manual 手动桥已无生产调用方（gateway
+	// 经 BUG-0162 改为进程内装配手动刷新，Node 时代的 HTTP 手动触发入口不再有
+	// 生产调用方，作为兜底保留；J2 余额刷新走周期调度与恢复扫描）。该端点的手动
+	// 刷新仍走全局 owner key（本进程 Service 装配未设 ManualOwnerLeaseKeyPrefix），
+	// 与 gateway 按账户下沉的 key 空间不同。
 	// 去跨进程战役第二刀：/__aiinternal__ 路由整体消失（原账户测试派发与
 	// 账户健康检查派发 handler 已删除；健康检查派发改走 DB outbox 通道，
 	// 见 worker_health_probe_outbox.go）。

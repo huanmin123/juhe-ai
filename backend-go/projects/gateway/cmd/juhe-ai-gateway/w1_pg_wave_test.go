@@ -65,6 +65,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
@@ -129,9 +130,15 @@ func w1pgEnvFile(t *testing.T) map[string]string {
 	return values
 }
 
-// w1g2CoverSchemas 是临时子库的六个业务 schema（重灌时按此清单 DROP CASCADE，
+// w1g2CoverSchemas 是临时子库的五个业务 schema（重灌时按此清单 DROP CASCADE，
 // 绝不触碰清单之外的任何对象）。
-var w1g2CoverSchemas = []string{"juhe_business", "juhe_chat", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage"}
+//
+// juhe_chat 已随 my-chat 会话面退役（e87b15f1d 删除 pg_schema_chat.go；任务
+// 记录里的 d64e51c9b 只是 schema 单文件拆分提交），bootstrap 现在只建五个
+// schema。清单须与 maintenance schema 组一致：maintenance/internal/schema 是
+// internal 包，跨模块不可导入，故此处保持静态清单；bootstrap 的 schema 组
+// 变化时必须同步本清单。
+var w1g2CoverSchemas = []string{"juhe_business", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage"}
 
 // w1g2CoverPostgres 打开 pgtestkit 隔离 PG 测试库并应用 maintenance bootstrap
 // fresh DDL + 种子（原 dev env 手工建临时子库 + 漂移探测/重灌装配已退役），
@@ -153,10 +160,14 @@ func w1g2CoverPostgres(t *testing.T) string {
 	appDB := testDB.DB
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	// 六 schema 存在性核验（bootstrap 契约）。
+	// 五 schema 存在性核验（bootstrap 契约）。
 	if got := w1g2CountCoverSchemas(t, appDB); got != len(w1g2CoverSchemas) {
 		t.Fatalf("隔离测试库 schema 数 = %d, want %d", got, len(w1g2CoverSchemas))
 	}
+	// 升级账本夹具（T89 同源缺口）：bootstrap 只建业务 schema，不写账本；
+	// 子进程启动链的 schemagate 会因 schema_state 缺失（revision=0）拦截。
+	// revision 从 contracts.SchemaRevision 派生，避免每次升级都改夹具。
+	w1g2SeedUpgradeLedger(t, ctx, appDB)
 	// M2 启动阶段门禁夹具契约：补种已封存的 m2_finalized 阶段记录（ON
 	// CONFLICT DO NOTHING 幂等；记录 JSON 经共享包 Record 序列化）。
 	stageRecordJSON, stageRecordErr := json.Marshal(capabilitydomain.Record{
@@ -173,6 +184,61 @@ func w1g2CoverPostgres(t *testing.T) string {
 		t.Fatalf("补种能力域阶段记录失败: %v", stageRecordErr)
 	}
 	return testDB.DSN
+}
+
+// w1g2SeedUpgradeLedger 在隔离测试库上写升级账本两表与收敛状态行（schemagate
+// 判定输入：schema_state.schema_revision 与 schema_migrations 最高 revision）。
+// revision 一律取 contracts.SchemaRevision——夹具不硬编码版本号，二进制升级
+// 后无需再改。maintenance/internal/schema 是 internal 包，跨模块不可导入，故
+// 此处按同一 DDL 形状建表；仅测试库使用，不参与生产。
+func w1g2SeedUpgradeLedger(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	revision := contracts.SchemaRevision
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS juhe_business.schema_state (
+  id              smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  schema_revision bigint NOT NULL,
+  schema_digest   text NOT NULL,
+  app_version     text NOT NULL,
+  converged_at    text NOT NULL
+)`,
+		`CREATE TABLE IF NOT EXISTS juhe_business.schema_migrations (
+  revision     bigint PRIMARY KEY,
+  step_id      text NOT NULL UNIQUE,
+  title        text NOT NULL,
+  target       text NOT NULL CHECK (target IN ('primary','j3a','j3b','account_balance')),
+  destructive  boolean NOT NULL DEFAULT false,
+  status       text NOT NULL CHECK (status IN ('running','applied')),
+  checksum     text NOT NULL,
+  impl_version integer NOT NULL DEFAULT 1,
+  adopted      boolean NOT NULL DEFAULT false,
+  started_at   text,
+  applied_at   text,
+  duration_ms  integer,
+  app_version  text,
+  detail_json  text
+)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("隔离测试库升级账本建表失败: %v", err)
+		}
+	}
+	// 门禁要求 dbRevision == binary 且 stepMax <= dbRevision：状态行与账本行
+	// 同 revision，等价「已被本二进制收敛」。
+	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.schema_migrations
+		(revision, step_id, title, target, destructive, status, checksum, impl_version, adopted, applied_at, app_version)
+		VALUES ($1, 'w1g2-ledger-fixture', '隔离测试库账本夹具', 'primary', false, 'applied', 'fixture', 1, false, '2026-10-12T08:00:00Z', 'test')
+		ON CONFLICT (revision) DO NOTHING`, revision); err != nil {
+		t.Fatalf("隔离测试库写升级账本行失败: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.schema_state
+		(id, schema_revision, schema_digest, app_version, converged_at)
+		VALUES (1, $1, 'fixture', 'test', '2026-10-12T08:00:00Z')
+		ON CONFLICT (id) DO UPDATE SET schema_revision = EXCLUDED.schema_revision`,
+		revision); err != nil {
+		t.Fatalf("隔离测试库写升级状态行失败: %v", err)
+	}
 }
 
 func w1g2CountCoverSchemas(t *testing.T, db *sql.DB) int {

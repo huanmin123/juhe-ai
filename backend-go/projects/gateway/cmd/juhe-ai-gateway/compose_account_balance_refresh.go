@@ -132,8 +132,9 @@ func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeCon
 	return nil
 }
 
-// newGatewayBalanceOwnerID 生成进程内唯一的 owner 身份（owner lease 行全局
-// 单行，互斥由 lease_until 保证；ID 仅用于持有者标识与诊断）。
+// newGatewayBalanceOwnerID 生成进程内唯一的 owner 身份（手动刷新按账户领取
+// 独立租约行 account-balance-owner-manual:<accountID>，同账户互斥由该行的
+// lease_until 保证；周期批次仍为全局单行。ID 仅用于持有者标识与诊断）。
 func newGatewayBalanceOwnerID() string {
 	buf := make([]byte, 6)
 	_, _ = rand.Read(buf)

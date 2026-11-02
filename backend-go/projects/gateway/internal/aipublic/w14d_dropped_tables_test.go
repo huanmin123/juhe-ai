@@ -30,7 +30,9 @@ func w14dSeedAllScopes(t *testing.T, env *aipublicEnv, sourceID, tokenID, token 
 
 func w14dDropTable(t *testing.T, env *aipublicEnv, table string) {
 	t.Helper()
-	if _, err := env.db.Exec(`DROP TABLE ` + table); err != nil {
+	// CASCADE：account_quality_enforcements 等派生表以 FK 引用 accounts，故障
+	// 注入语义是「accounts 表消失」，连带依赖表一并移除。
+	if _, err := env.db.Exec(`DROP TABLE ` + table + ` CASCADE`); err != nil {
 		t.Fatalf("drop %s: %v", table, err)
 	}
 }

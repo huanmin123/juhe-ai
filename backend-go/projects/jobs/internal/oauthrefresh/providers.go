@@ -420,24 +420,6 @@ func CanonicalGeminiTierID(oauthType, raw string) string {
 	}
 }
 
-// GeminiAccountOAuthType mirrors accountOAuthType: infer the stored account's
-// oauth type from its credentials.
-func GeminiAccountOAuthType(credentials map[string]any) string {
-	if value := normalizeText(credentials["oauth_type"]); value != "" {
-		return NormalizeGeminiOAuthType(value)
-	}
-	baseURL := normalizeText(credentials["base_url"])
-	if strings.Contains(baseURL, "generativelanguage.googleapis.com") {
-		return "ai_studio"
-	}
-	if normalizeText(credentials["project_id"]) != "" || strings.Contains(baseURL, "cloudcode-pa.googleapis.com") {
-		return "code_assist"
-	}
-	if clientID := normalizeText(credentials["client_id"]); clientID != "" && clientID != GeminiCLIOAuthClientID {
-		return "ai_studio"
-	}
-	return "code_assist"
-}
 
 // GeminiCredentialFallback mirrors the stored-credential bundle the Node
 // dispatch preparation passes into refreshGeminiAuthToken/buildGeminiOAuth
@@ -454,6 +436,10 @@ type GeminiCredentialFallback struct {
 	BaseURL        string
 	Scope          string
 	ProxyURL       string
+	// SupportedEndpointModes 是旧凭据的迁移窗口影子副本（运行时事实源 =
+	// account_endpoint_modes 连接行）。T96-②：保活重封继承该现值，不再强制
+	// 覆写为固定集，避免凭据域 modes 与连接域/用户定制静默漂移。
+	SupportedEndpointModes []string
 }
 
 // RefreshGeminiToken mirrors refreshGeminiAuthToken minus the retry/backoff and
@@ -846,7 +832,14 @@ func BuildGeminiOAuthCredentials(info *GeminiTokenInfo, fallback *GeminiCredenti
 		credentials["quota_project_id"] = quotaProjectID
 	}
 	if oauthType != "ai_studio" {
-		credentials["supported_endpoint_modes"] = []string{"generate_content_json", "generate_content_sse"}
+		// T96-②：modes 是连接域（account_endpoint_modes）的迁移窗口影子副本
+		// （运行时连接行优先，chain_accounts_secret.go fallback 仅限空值窗口）。
+		// 重封继承旧凭据现值，不再强制覆写为固定集；旧凭据无值时才落缺省集。
+		if fallback != nil && len(fallback.SupportedEndpointModes) > 0 {
+			credentials["supported_endpoint_modes"] = append([]string(nil), fallback.SupportedEndpointModes...)
+		} else {
+			credentials["supported_endpoint_modes"] = []string{"generate_content_json", "generate_content_sse"}
+		}
 	}
 	// Google One / Drive storage metadata (Node: drive_storage_limit,
 	// drive_storage_usage, drive_tier_updated_at).

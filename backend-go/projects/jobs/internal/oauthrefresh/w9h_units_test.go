@@ -20,28 +20,6 @@ import (
 // Gemini OAuth type / tier / client resolution
 // ---------------------------------------------------------------------------
 
-func TestW9HGeminiAccountOAuthTypeInference(t *testing.T) {
-	cases := []struct {
-		name        string
-		credentials map[string]any
-		want        string
-	}{
-		{"explicit oauth_type wins", map[string]any{"oauth_type": "google_one"}, "google_one"},
-		{"explicit unknown normalizes", map[string]any{"oauth_type": "bogus"}, "code_assist"},
-		{"generativelanguage base url", map[string]any{"base_url": "https://generativelanguage.googleapis.com/x"}, "ai_studio"},
-		{"project id", map[string]any{"project_id": "proj"}, "code_assist"},
-		{"cloudcode base url", map[string]any{"base_url": "https://cloudcode-pa.googleapis.com"}, "code_assist"},
-		{"foreign client id", map[string]any{"client_id": "my-client.apps.googleusercontent.com"}, "ai_studio"},
-		{"builtin client id", map[string]any{"client_id": GeminiCLIOAuthClientID}, "code_assist"},
-		{"empty credentials", map[string]any{}, "code_assist"},
-		{"blank oauth type falls through", map[string]any{"oauth_type": "  "}, "code_assist"},
-	}
-	for _, tc := range cases {
-		if got := GeminiAccountOAuthType(tc.credentials); got != tc.want {
-			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
-		}
-	}
-}
 
 func TestW9HCanonicalGeminiTierIDTable(t *testing.T) {
 	cases := []struct {
@@ -1666,10 +1644,16 @@ func TestW9HGeminiFallbackFromCredentials(t *testing.T) {
 		"project_id": "proj", "tier_id": "ai-premium", "quota_project_id": "quota", "base_url": "https://x", "scope": "s",
 	}
 	fallback := geminiFallbackFromCredentials(credentials)
-	if fallback != (GeminiCredentialFallback{
+	// T96-②：SupportedEndpointModes 是 []string（不可比较），逐字段断言。
+	want := GeminiCredentialFallback{
 		RefreshToken: "rt", OAuthType: "google_one", ClientID: "cid", ClientSecret: "sec",
 		ProjectID: "proj", TierID: "ai-premium", QuotaProjectID: "quota", BaseURL: "https://x", Scope: "s",
-	}) {
+	}
+	if fallback.RefreshToken != want.RefreshToken || fallback.OAuthType != want.OAuthType ||
+		fallback.ClientID != want.ClientID || fallback.ClientSecret != want.ClientSecret ||
+		fallback.ProjectID != want.ProjectID || fallback.TierID != want.TierID ||
+		fallback.QuotaProjectID != want.QuotaProjectID || fallback.BaseURL != want.BaseURL ||
+		fallback.Scope != want.Scope || len(fallback.SupportedEndpointModes) != 0 {
 		t.Fatalf("fallback=%+v", fallback)
 	}
 }

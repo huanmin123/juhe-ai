@@ -75,7 +75,7 @@ func auditCleanupFingerprint(r *http.Request) (any, error) {
 	return map[string]any{"operation": "audit_logs.cleanup"}, nil
 }
 
-// cleanupHandler 执行一轮手动清理并回传 6 项计数；lease 丢失或清理失败返回
+// cleanupHandler 执行一轮手动清理并回传清理计数；lease 丢失或清理失败返回
 // 错误原文（lease 丢失 400，其余 500），不重试。
 func (d *Deps) cleanupHandler(w http.ResponseWriter, r *http.Request) {
 	if d.Store == nil || d.Lease == nil {
@@ -112,7 +112,7 @@ func (d *Deps) cleanupHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordCleanupOperation 记录手动清理操作日志（模块 auditlog / 动作 cleanup /
-// 资源 audit_logs；Changes 放 6 项清理计数）。
+// 资源 audit_logs；Changes 放各项清理计数）。
 func (d *Deps) recordCleanupOperation(r *http.Request, result RetentionResult) {
 	auth := authsys.AuthContextFrom(r)
 	d.Sink.Record(authsys.OperationLogEntry{
@@ -136,6 +136,7 @@ func (d *Deps) recordCleanupOperation(r *http.Request, result RetentionResult) {
 			{Field: "deletedLogs", Label: "删除审计日志行数", After: strconv.FormatInt(result.DeletedLogs, 10)},
 			{Field: "deletedErrorGroups", Label: "删除错误分组行数", After: strconv.FormatInt(result.DeletedErrorGroups, 10)},
 			{Field: "deletedPayloadBlobs", Label: "删除正文 blob 数", After: strconv.FormatInt(result.DeletedPayloadBlobs, 10)},
+			{Field: "deletedOrphanBlobFiles", Label: "删除孤儿 blob 文件数", After: strconv.FormatInt(result.DeletedOrphanBlobFiles, 10)},
 			{Field: "deletedHotSearchFiles", Label: "删除热搜索文件数", After: strconv.FormatInt(result.DeletedHotSearchFiles, 10)},
 		},
 	}, r)

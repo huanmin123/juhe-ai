@@ -250,13 +250,22 @@ func TestManualOwnerLeaseKeySameAccountMutex(t *testing.T) {
 		firstDone <- report
 	}()
 	// 第一个 manual 已进入上游查询：此刻它持有 manual key 行与账户租约。
-	<-gate.entered
+	select {
+	case <-gate.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("first manual run did not enter upstream query within 10s (gate.entered not closed)")
+	}
 	second, err := runner.RunManual(ctx, input)
 	if err != nil {
 		t.Fatalf("second manual run: %v", err)
 	}
 	close(gate.release)
-	first := <-firstDone
+	var first RunReport
+	select {
+	case first = <-firstDone:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("first manual run did not finish within 10s after release (no result on firstDone)")
+	}
 	if first.Executed != 1 || len(first.Errors) != 0 {
 		t.Fatalf("first manual must execute, got %#v", first)
 	}
@@ -420,5 +429,47 @@ func TestAccountLeaseHeldWhenHolderOwnerLeaseLostOrExpired(t *testing.T) {
 	defer func() { _ = store.ReleaseOwnerLease(context.Background(), raiderKey2, raiderOwner2) }()
 	if _, acquired, err = store.AcquireAccountLease(ctx, raiderKey2, raiderOwner2, "acct-h-2", time.Minute); !errors.Is(err, ErrAccountLeaseHeld) || acquired {
 		t.Fatalf("live account lease must stay held when holder owner row is expired: acquired=%t err=%v", acquired, err)
+	}
+}
+
+// panicHTTPDoer 是注入 RunnerConfig.HTTPClient 的 panic 桩：Do 一被调用即
+// panic，模拟 ioWorker 上游探测路径（prepareInput→ExecuteAccountBalanceQuery
+// →balanceHTTPClient 返回注入 Client）的内部 panic。
+type panicHTTPDoer struct{}
+
+func (panicHTTPDoer) Do(*http.Request) (*http.Response, error) {
+	panic("balance probe panic injected by test")
+}
+
+// TestRunManualRecordsErrorWhenProbePanics 锁定 ioWorker panic 行为契约：
+// 上游探测 panic 被 safego.Handle 吸收后必须落 report.Errors（原样透传
+// panic 值）且不得计为 Skipped——否则 gateway RefreshManual 在 Executed==0
+// 且 Errors 空时把内部 panic 误判为 lease_busy（409「余额查询正在进行」
+// 误报）。Errors 非空使 RefreshManual 命中 Errors→err 分支返回错误（路由层
+// 500），panic 期间的账户租约留在 prepareInput 内部，由 30s TTL 兜底过期。
+func TestRunManualRecordsErrorWhenProbePanics(t *testing.T) {
+	store := openKitPostgresStore(t)
+	ctx := context.Background()
+	// secret 必须与 kitValidBalanceInput 的 envelope 加密 secret 一致，保证
+	// 解封成功、执行真正到达注入 Client 的 Do（否则测试测到的是解封错误路径）。
+	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: "manual-panic-owner", CredentialSecret: "w7c-balance-secret", ManualOwnerLeaseKeyPrefix: ManualOwnerLeaseKeyPrefix, HTTPClient: panicHTTPDoer{}, MaxConcurrent: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := kitValidBalanceInput("acct-panic-io")
+	input.Trigger = TriggerManual
+	report, err := runner.RunManual(ctx, input)
+	if err != nil {
+		t.Fatalf("panic must be absorbed into report.Errors, not returned as run error: %v", err)
+	}
+	itemErr, ok := report.Errors["acct-panic-io"]
+	if !ok {
+		t.Fatalf("panicked account must appear in report.Errors: %#v", report)
+	}
+	if !strings.Contains(itemErr.Error(), "panic") || !strings.Contains(itemErr.Error(), "balance probe panic injected by test") {
+		t.Fatalf("error must carry the recovered panic value, got %q", itemErr.Error())
+	}
+	if report.Skipped != 0 || report.Executed != 0 {
+		t.Fatalf("panicked input must be neither skipped nor executed (RefreshManual maps Skipped>0||Executed==0 to lease_busy): %#v", report)
 	}
 }

@@ -976,6 +976,22 @@ func (d *Deps) updateAccount(w http.ResponseWriter, r *http.Request) {
 		credentials["base_url"] = baseURL
 		input.Credentials = credentials
 		input.CredentialsPresent = true
+		// T96-①：公开 API 改 baseUrl 必须整集合提交连接行（网关拨号事实源 =
+		// account_connections.base_url）——否则凭据域与连接域分叉，健康检查与
+		// 网关继续拨旧域名（BUG-0341 同型）。preset/modes 沿用账户现有连接行，
+		// 不做缺省派生（避免重置用户定制的请求形态）；仅改 apiKey 时同值幂等。
+		// 无连接行的异常存量账户 fail closed。
+		if basic.ConnectionPresetCode == "" || len(basic.ConnectionEndpointModes) == 0 {
+			kernel.WriteBadRequest(w, "账户缺少连接事实，无法更新 Base URL；请改用管理面编辑或先补建连接")
+			return
+		}
+		input.Connections = []accounts.ConnectionInput{{
+			ConnectionPresetCode: basic.ConnectionPresetCode,
+			BaseURL:              baseURL,
+			EndpointModes:        append([]string(nil), basic.ConnectionEndpointModes...),
+			Enabled:              true,
+		}}
+		input.ConnectionsPresent = true
 	}
 	if parsed.HasSupportedModels {
 		input.SupportedModels = normalizedStringList(*parsed.SupportedModels)

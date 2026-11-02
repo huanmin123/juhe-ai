@@ -286,6 +286,9 @@ type RetentionResult struct {
 	DeletedErrorGroups      int64 `json:"deletedErrorGroups"`
 	DeletedPayloadBlobs     int64 `json:"deletedPayloadBlobs"`
 	DeletedHotSearchFiles   int64 `json:"deletedHotSearchFiles"`
+	// DeletedOrphanBlobFiles 是 FS→DB 孤儿对账清扫（W47）删除的无行 canonical
+	// 文件数，与引用感知 GC 的 DeletedPayloadBlobs 分开计数。
+	DeletedOrphanBlobFiles int64 `json:"deletedOrphanBlobFiles"`
 }
 
 type HotSearchOptions struct {

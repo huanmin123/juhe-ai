@@ -234,7 +234,16 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 		result.Skipped = len(inputs)
 		return result, nil
 	}
-	defer func() { _ = r.store.ReleaseOwnerLease(context.Background(), leaseKey, owner) }()
+	defer func() {
+		if releaseErr := r.store.ReleaseOwnerLease(context.Background(), leaseKey, owner); releaseErr != nil {
+			var accountID string
+			if len(inputs) == 1 {
+				accountID = inputs[0].AccountID
+			}
+			r.logger.Debug("J2 account-balance owner 租约释放失败，等待租约 TTL 兜底过期",
+				"event", "account_balance_owner_lease_release_failed", "leaseKey", leaseKey, "accountId", accountID, "error", releaseErr)
+		}
+	}()
 
 	ioWorkers := r.ioConcurrency
 	if ioWorkers > len(inputs) {
@@ -273,22 +282,39 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 			defer safego.Recover("accountbalance.runner.dbWorker")
 			defer dbWG.Done()
 			for task := range dbQueue {
-				started := time.Now()
-				state, itemErr := r.persistInput(ctx, leaseKey, owner, task.input, task.account, task.query)
-				releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, task.account)
-				if itemErr == nil && releaseErr != nil {
-					itemErr = releaseErr
-				}
-				// persistInput 只返回 executed/executedStale，skipped 分支不可达
-				// （w12h 授权删除）。
-				switch state {
-				case runStateExecuted:
-					executed.Add(1)
-				case runStateExecutedStale:
-					stale.Add(1)
-				}
-				r.logger.Debug("J2 account-balance DB worker 完成", "phase", "db_write", "account_id", task.input.AccountID, "latency_ms", time.Since(started).Milliseconds(), "queue_depth", len(dbQueue), "error", itemErr)
-				recordError(task.input.AccountID, itemErr)
+				// 循环体显式闭包 + safego.Handle：persistInput panic 原先被
+				// Recover 吸收后只打日志——该 task 既无 executed 计数也无
+				// recordError，gateway RefreshManual 在 Executed==0 且 Errors
+				// 空时把内部 panic 误判为 lease_busy（409 误报），且租约滞留
+				// 至 30s TTL。Handle 自身已打 panic 日志，回调只补失败路径；
+				// panic 时正常路径的 record/Release 通常尚未执行，Release 已
+				// 执行后回调二次释放也幂等无害（owner+fence 条件 UPDATE 不
+				// 命中即 no-op），recordError 重复落 map 无害。
+				func() {
+					defer safego.Handle("accountbalance.runner.dbWorker", func(recovered any) {
+						// persistInput panic 时账户租约尚未释放，在此补释放：
+						// fence 保证旧持有者不会覆盖新持有者写入；释放失败由
+						// 30s TTL 兜底过期。
+						_ = r.store.ReleaseAccountLease(context.Background(), owner, task.account)
+						recordError(task.input.AccountID, fmt.Errorf("余额快照写入 panic: %v", recovered))
+					})
+					started := time.Now()
+					state, itemErr := r.persistInput(ctx, leaseKey, owner, task.input, task.account, task.query)
+					releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, task.account)
+					if itemErr == nil && releaseErr != nil {
+						itemErr = releaseErr
+					}
+					// persistInput 只返回 executed/executedStale，skipped 分支不可达
+					// （w12h 授权删除）。
+					switch state {
+					case runStateExecuted:
+						executed.Add(1)
+					case runStateExecutedStale:
+						stale.Add(1)
+					}
+					r.logger.Debug("J2 account-balance DB worker 完成", "phase", "db_write", "account_id", task.input.AccountID, "latency_ms", time.Since(started).Milliseconds(), "queue_depth", len(dbQueue), "error", itemErr)
+					recordError(task.input.AccountID, itemErr)
+				}()
 			}
 		}()
 	}
@@ -298,41 +324,52 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 			defer safego.Recover("accountbalance.runner.ioWorker")
 			defer ioWG.Done()
 			for input := range ioJobs {
-				state, account, query, itemErr := r.prepareInput(ctx, leaseKey, owner, input)
-				if query == nil && state == runStateExecuted {
-					executed.Add(1)
-				}
-				if state == runStateSkipped {
-					skipped.Add(1)
-					// 四种 skipped 形态均伴随 nil query：validate/ctx 失败
-					// （itemErr 非 nil）与 ErrAccountLeaseHeld、!acquired
-					// （itemErr 为 nil）。仅租约未获取两态必须在此短路——
-					// 继续下走会对 nil query 解引用 panic（发布重启窗口上一
-					// 进程账户租约 TTL 未过期时必现，BUG-0299）；validate/ctx
-					// 失败形态 itemErr 非 nil，必须落入下方 recordError 原样
-					// 上抛（RunManual Errors→原样错误契约），不得吞错。
-					if itemErr == nil {
-						continue
+				// 同 dbWorker：prepareInput panic 原先被 Recover 吸收后只打
+				// 日志，RefreshManual 会把内部 panic 误判为 lease_busy（409
+				// 误报）；Handle 化后 panic 落 recordError，RefreshManual 走
+				// Errors→err 分支返回错误。
+				func() {
+					defer safego.Handle("accountbalance.runner.ioWorker", func(recovered any) {
+						// panic 时 prepareInput 内部获取的账户租约未返回到本
+						// 层，无法在此释放，由 30s 账户租约 TTL 兜底过期。
+						recordError(input.AccountID, fmt.Errorf("余额探测 panic: %v", recovered))
+					})
+					state, account, query, itemErr := r.prepareInput(ctx, leaseKey, owner, input)
+					if query == nil && state == runStateExecuted {
+						executed.Add(1)
 					}
-				}
-				if itemErr != nil {
-					recordError(input.AccountID, itemErr)
-					continue
-				}
-				// 此处仅剩 executed 形态：queryErr（nil query+错误，上方已
-				// continue）与正常查询（非 nil query）。
-				task := dbTask{input: input, account: account, query: *query}
-				queuedAt := time.Now()
-				select {
-				case <-ctx.Done():
-					if releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, account); releaseErr != nil {
-						r.logger.Debug("J2 account-balance 账户租约释放失败，等待租约 TTL 兜底过期",
-							"event", "account_balance_lease_release_failed", "accountId", input.AccountID, "error", releaseErr)
+					if state == runStateSkipped {
+						skipped.Add(1)
+						// 四种 skipped 形态均伴随 nil query：validate/ctx 失败
+						// （itemErr 非 nil）与 ErrAccountLeaseHeld、!acquired
+						// （itemErr 为 nil）。仅租约未获取两态必须在此短路——
+						// 继续下走会对 nil query 解引用 panic（发布重启窗口上一
+						// 进程账户租约 TTL 未过期时必现，BUG-0299）；validate/ctx
+						// 失败形态 itemErr 非 nil，必须落入下方 recordError 原样
+						// 上抛（RunManual Errors→原样错误契约），不得吞错。
+						if itemErr == nil {
+							return
+						}
 					}
-					recordError(input.AccountID, ctx.Err())
-				case dbQueue <- task:
-					r.logger.Debug("J2 account-balance DB queue 入队", "phase", "db_queue", "account_id", input.AccountID, "queue_depth", len(dbQueue), "queue_wait_ms", time.Since(queuedAt).Milliseconds())
-				}
+					if itemErr != nil {
+						recordError(input.AccountID, itemErr)
+						return
+					}
+					// 此处仅剩 executed 形态：queryErr（nil query+错误，上方已
+					// continue）与正常查询（非 nil query）。
+					task := dbTask{input: input, account: account, query: *query}
+					queuedAt := time.Now()
+					select {
+					case <-ctx.Done():
+						if releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, account); releaseErr != nil {
+							r.logger.Debug("J2 account-balance 账户租约释放失败，等待租约 TTL 兜底过期",
+								"event", "account_balance_lease_release_failed", "accountId", input.AccountID, "error", releaseErr)
+						}
+						recordError(input.AccountID, ctx.Err())
+					case dbQueue <- task:
+						r.logger.Debug("J2 account-balance DB queue 入队", "phase", "db_queue", "account_id", input.AccountID, "queue_depth", len(dbQueue), "queue_wait_ms", time.Since(queuedAt).Milliseconds())
+					}
+				}()
 			}
 		}()
 	}

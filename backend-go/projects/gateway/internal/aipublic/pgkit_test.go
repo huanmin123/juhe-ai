@@ -551,6 +551,42 @@ const aipublicPGFixtureSchema = `
       lease_until_ms bigint,
       updated_at text NOT NULL
     );
+	CREATE TABLE IF NOT EXISTS juhe_business.account_quality_enforcements (
+      account_id text PRIMARY KEY,
+      system_account_id text NOT NULL,
+      enforcement_id text NOT NULL UNIQUE,
+      generation bigint NOT NULL DEFAULT 1 CHECK (generation >= 1),
+      state text NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'cleared')),
+      action text NOT NULL CHECK (action IN ('disable', 'fallback', 'quality_isolate')),
+      trigger_run_id text NOT NULL,
+      config_source text NOT NULL DEFAULT 'manual' CHECK (config_source IN ('manual', 'schedule')),
+      config_source_id text,
+      policy_revision integer NOT NULL CHECK (policy_revision >= 0),
+      profile text NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      penalty_threshold integer NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      recovery_interval_minutes integer NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      recovery_model text,
+      account_config_revision integer NOT NULL CHECK (account_config_revision >= 1),
+      before_status text NOT NULL,
+      after_status text NOT NULL,
+      fallback_was_enabled integer NOT NULL DEFAULT 0 CHECK (fallback_was_enabled IN (0, 1)),
+      super_priority_was_enabled integer NOT NULL DEFAULT 0 CHECK (super_priority_was_enabled IN (0, 1)),
+      started_at text NOT NULL,
+      recovery_due_at text,
+      recovery_lease_owner text,
+      recovery_lease_until text,
+      last_recovery_run_id text,
+      cleared_at text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      CHECK (
+        (config_source = 'manual' AND config_source_id IS NULL)
+        OR
+        (config_source = 'schedule' AND config_source_id IS NOT NULL AND length(trim(config_source_id)) > 0)
+      ),
+      FOREIGN KEY (system_account_id) REFERENCES juhe_business.system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES juhe_business.accounts(id) ON DELETE CASCADE
+    );
 	CREATE TABLE IF NOT EXISTS juhe_business.account_circuit_outbox (
       event_id text PRIMARY KEY,
       projection_key text NOT NULL,

@@ -1074,8 +1074,26 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			// google_oauth 时非 NULL，三值 = 判定值；读列优先、credentials 回落
 			// 兼容存量行）。变化伴随 credentials 变更项披露，不单列 changedField。
 			nextOAuthType := nullStringForOAuthType(accountOAuthTypeForRegistry(row.accountType, row.oauthType, normalized))
-			sets = append(sets, "credentials_encrypted = ?", "credential_fingerprint = ?", "credential_mask = ?", "oauth_type = ?")
-			setArgs = append(setArgs, sealed, fingerprint, MaskSecret(source), nextOAuthType)
+			// T96-③：重封同步 OAuth 派生列（与 jobs 轮换 store.go、创建
+			// write.go 同口径）——刷新调度按 oauth_access_token_expires_at 列
+			// 扫描（jobs store.go:115-118），缺列使编辑后的新过期时间对调度
+			// 不可见。normalize 管线已把 expires_at 规范化为 canonical RFC3339，
+			// 此处无效值落 NULL 不报错。
+			nextOAuthExpiresAt := sql.NullString{}
+			if value, exists := normalized["expires_at"]; exists {
+				if text, ok := value.(string); ok {
+					if canonical, valid := canonicalRFC3339(strings.TrimSpace(text)); valid {
+						nextOAuthExpiresAt = sql.NullString{String: canonical, Valid: true}
+					}
+				}
+			}
+			nextRefreshTokenPresent := 0
+			if text, ok := normalized["refresh_token"].(string); ok && strings.TrimSpace(text) != "" {
+				nextRefreshTokenPresent = 1
+			}
+			sets = append(sets, "credentials_encrypted = ?", "credential_fingerprint = ?", "credential_mask = ?", "oauth_type = ?",
+				"oauth_access_token_expires_at = ?", "oauth_refresh_token_present = ?")
+			setArgs = append(setArgs, sealed, fingerprint, MaskSecret(source), nextOAuthType, nextOAuthExpiresAt, nextRefreshTokenPresent)
 		}
 	}
 

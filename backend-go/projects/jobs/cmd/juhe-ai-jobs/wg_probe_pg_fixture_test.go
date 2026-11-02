@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"testing"
-
 )
 
 // proberepoStoreHandle 持有 fixture 的底层句柄（proberepo.Store 不导出 db）。
@@ -64,6 +63,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   cooldown_retest_generation TEXT,
   cooldown_retest_last_at TEXT,
   cooldown_retest_last_status_code INTEGER,
+  background_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
   stream_failure_count INTEGER NOT NULL DEFAULT 0,
   stream_failure_window_started_at TEXT,
   deleted_at TEXT,

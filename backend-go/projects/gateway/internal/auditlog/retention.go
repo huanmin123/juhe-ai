@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -151,6 +152,11 @@ func (s *sqlStore) CleanupRetention(ctx context.Context, lease OwnerLease, confi
 	}
 	deletedBlobs, err := s.cleanupScheduledBlobFiles(ctx, lease, config.BatchSize)
 	result.DeletedPayloadBlobs += deletedBlobs
+	if err != nil {
+		return result, err
+	}
+	deletedOrphans, err := s.reconcileOrphanBlobFiles(ctx, lease, config.BatchSize)
+	result.DeletedOrphanBlobFiles = deletedOrphans
 	if err != nil {
 		return result, err
 	}
@@ -492,6 +498,212 @@ func (s *sqlStore) cleanupScheduledBlobFile(ctx context.Context, lease OwnerLeas
 		return false, fmt.Errorf("提交 F3 pending blob GC 事务失败；物理文件已删除，待清理状态将重试: %w", err)
 	}
 	return exists, nil
+}
+
+// orphanBlobSafetyWindow 是 FS→DB 孤儿对账的安全窗口：窗口内的 canonical 文件
+// 可能正处在并发 Persist 的 publish→commit 之间（或 commit 结果未知的等待期），
+// 一律跳过。窗口远大于单次 Persist 的发布间隔与 owner 租约 TTL。
+const orphanBlobSafetyWindow = time.Hour
+
+// orphanBlobCandidate 是一轮对账初筛出的孤儿文件候选：文件名反推的
+// content-addressed blob id（供 per-blob advisory lock 与 Persist 对齐）、
+// slash 形态 storage_key（供反查表行与删除）与磁盘绝对路径。
+type orphanBlobCandidate struct{ blobID, storageKey, path string }
+
+// reconcileOrphanBlobFiles 是读侧周期性孤儿对账（W47）：`Persist` 的
+// 「先发布文件、后提交事务」顺序在失败臂与进程崩溃下留下磁盘有文件、
+// audit_payload_blobs 无行的孤儿，引用感知清理的候选集对它们结构性不可见。
+// 本函数遍历 `<blobDir>/sha256/**` 下的 canonical 文件，按 storage_key 反查
+// 表行；表中无行且 mtime 早于安全窗口的文件逐条走与既有 GC 相同的
+// per-blob advisory lock + 复核路径删除。`.f3-audit-blob-*-*.tmp` 临时文件
+// 不匹配 canonical 文件名，永不进入候选（由 CleanupOwnedBlobTemps/
+// CleanupOrphanedBlobTemps 负责）。
+//
+// 单轮有界：最多检查 limit 个 canonical 文件（含因有行或窗口内被跳过的），
+// 遍历按目录顺序推进，游标记录本轮最后检查的文件，单轮有剩余时下一轮从其后
+// 继续；走完整棵树后游标回卷到起点，保证任何文件都会被周期性重新检查。
+func (s *sqlStore) reconcileOrphanBlobFiles(ctx context.Context, lease OwnerLease, limit int) (int64, error) {
+	s.orphanMu.Lock()
+	defer s.orphanMu.Unlock()
+	cursor := s.orphanCursor
+	cutoff := time.Now().UTC().Add(-orphanBlobSafetyWindow)
+	examined, lastExamined := 0, ""
+	exhausted := true
+	candidates := make([]orphanBlobCandidate, 0, limit)
+	walkErr := filepath.WalkDir(filepath.Join(s.blobDir, "sha256"), func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		digest, contentTypeHash, ok := parseCanonicalBlobFileName(entry.Name())
+		if !ok {
+			return nil
+		}
+		relative, err := filepath.Rel(s.blobDir, path)
+		if err != nil {
+			return err
+		}
+		storageKey := filepath.ToSlash(relative)
+		if storageKey <= cursor {
+			return nil
+		}
+		if examined == limit {
+			exhausted = false
+			return fs.SkipAll
+		}
+		examined++
+		lastExamined = storageKey
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.ModTime().After(cutoff) {
+			return nil
+		}
+		candidates = append(candidates, orphanBlobCandidate{
+			blobID:     "blob:" + digest + ":" + contentTypeHash,
+			storageKey: storageKey,
+			path:       path,
+		})
+		return nil
+	})
+	if errors.Is(walkErr, os.ErrNotExist) {
+		walkErr = nil
+	}
+	if walkErr != nil {
+		return 0, fmt.Errorf("遍历 F3 audit blob 目录失败: %w", walkErr)
+	}
+	if exhausted {
+		s.orphanCursor = ""
+	} else {
+		s.orphanCursor = lastExamined
+	}
+
+	existing := make(map[string]struct{}, len(candidates))
+	if len(candidates) > 0 {
+		keys := make([]string, len(candidates))
+		for index, candidate := range candidates {
+			keys[index] = candidate.storageKey
+		}
+		query := `SELECT storage_key FROM ` + s.table("audit_payload_blobs") + ` WHERE storage_key IN (` + placeholders(len(keys)) + `)`
+		rows, err := s.db.QueryContext(ctx, s.bind(query), stringArgs(keys)...)
+		if err != nil {
+			return 0, fmt.Errorf("反查 F3 孤儿 blob 候选元数据失败: %w", err)
+		}
+		for rows.Next() {
+			var storageKey string
+			if err := rows.Scan(&storageKey); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			existing[storageKey] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("遍历 F3 孤儿 blob 候选元数据失败: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return 0, fmt.Errorf("关闭 F3 孤儿 blob 候选元数据查询失败: %w", err)
+		}
+	}
+
+	var deleted int64
+	for _, candidate := range candidates {
+		if _, ok := existing[candidate.storageKey]; ok {
+			continue
+		}
+		removed, err := s.deleteOrphanBlobFile(ctx, lease, candidate, cutoff)
+		if err != nil {
+			return deleted, err
+		}
+		if removed {
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+// deleteOrphanBlobFile 对单个初筛通过的孤儿候选走与既有 GC 相同的
+// lease-fenced 删除路径：per-blob advisory lock 持有期间复核表中确实无行、
+// 文件仍存在且仍处于安全窗口外，然后删除物理文件。任何一步不满足或失败时
+// 整事务回滚且不计删除，文件留给下一轮对账复核。
+func (s *sqlStore) deleteOrphanBlobFile(ctx context.Context, lease OwnerLease, candidate orphanBlobCandidate, cutoff time.Time) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("开始 F3 孤儿 blob 对账事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.verifyLeaseTx(ctx, tx, lease); err != nil {
+		return false, err
+	}
+	if err := s.lockBlobLifecycleTx(ctx, tx, candidate.blobID); err != nil {
+		return false, err
+	}
+	var exists bool
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT EXISTS (SELECT 1 FROM `+s.table("audit_payload_blobs")+` WHERE storage_key=?)`), candidate.storageKey).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("复核 F3 孤儿 blob 元数据失败: %w", err)
+	}
+	if exists {
+		return false, nil
+	}
+	info, err := os.Stat(candidate.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("复核 F3 孤儿 blob 文件失败: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.ModTime().After(cutoff) {
+		return false, nil
+	}
+	if err := removeBlobFile(s.blobDir, candidate.storageKey); err != nil {
+		return false, err
+	}
+	if err := s.verifyLeaseBeforeCommit(ctx, tx, lease); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("提交 F3 孤儿 blob 对账事务失败: %w", err)
+	}
+	return true, nil
+}
+
+// parseCanonicalBlobFileName 解析 sha256 目录下的 canonical blob 文件名
+// （<64 位 sha256>-<16 位 contentType 短哈希>.blob|.gz），返回反推 blob id
+// 所需的两段十六进制。`.f3-audit-blob-*-*.tmp` 临时文件与其它杂项文件不匹配
+// 该形态，返回 false。
+func parseCanonicalBlobFileName(name string) (digest, contentTypeHash string, ok bool) {
+	base := strings.TrimSuffix(name, ".blob")
+	if base == name {
+		base = strings.TrimSuffix(name, ".gz")
+		if base == name {
+			return "", "", false
+		}
+	}
+	digest, contentTypeHash, found := strings.Cut(base, "-")
+	if !found || len(digest) != 64 || len(contentTypeHash) != 16 || !isHexDigits(digest) || !isHexDigits(contentTypeHash) {
+		return "", "", false
+	}
+	return digest, contentTypeHash, true
+}
+
+func isHexDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		switch {
+		case character >= '0' && character <= '9':
+		case character >= 'a' && character <= 'f':
+		case character >= 'A' && character <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func removeBlobFile(root, storageKey string) error {

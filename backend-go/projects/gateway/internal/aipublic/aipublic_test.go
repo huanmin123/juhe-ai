@@ -749,7 +749,7 @@ func TestAIPublicAccountLifecycle(t *testing.T) {
 
 	// Update rotates the API key and activates the account.
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/update",
-		`{"accountId":"`+accountID+`","apiKey":"sk-b","status":"active","supportedModels":["gpt-4o"," gpt-4o "]}`, token)
+		`{"accountId":"`+accountID+`","apiKey":"sk-b","status":"active","supportedModels":["gpt-4o-mini","gpt-4o"," gpt-4o "]}`, token)
 	if status != 200 {
 		t.Fatalf("account update: %d %v", status, payload)
 	}
@@ -762,7 +762,9 @@ func TestAIPublicAccountLifecycle(t *testing.T) {
 		t.Fatalf("updated account: %v", updatedAccount)
 	}
 	models := updatedAccount["supportedModels"].([]any)
-	if len(models) != 1 || models[0] != "gpt-4o" {
+	// T96-①：连接域同步使健康检查一致性校验生效——支持模型必须保留检查模型
+	// （gpt-4o-mini）；" gpt-4o " 与 gpt-4o 规范化去重后仍为一项。
+	if len(models) != 2 || models[0] != "gpt-4o" || models[1] != "gpt-4o-mini" {
 		t.Fatalf("supported models dedupe: %v", models)
 	}
 

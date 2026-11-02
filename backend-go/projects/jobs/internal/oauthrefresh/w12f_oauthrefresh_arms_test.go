@@ -162,3 +162,23 @@ func TestW12fGeminiBuildCredentialsFallback(t *testing.T) {
 		t.Fatalf("oauth_type=%v", credentials["oauth_type"])
 	}
 }
+
+// T96-②：保活重封继承旧凭据 modes 影子副本，不再强制覆写为固定集；
+// 旧凭据无 modes 时才落缺省集兜底。
+func TestW12fGeminiBuildCredentialsInheritsModes(t *testing.T) {
+	fallback := &GeminiCredentialFallback{
+		OAuthType:              "google_one",
+		BaseURL:                "https://w12f.example",
+		SupportedEndpointModes: []string{"generate_content_json"},
+	}
+	credentials := BuildGeminiOAuthCredentials(&GeminiTokenInfo{AccessToken: "at"}, fallback)
+	modes, ok := credentials["supported_endpoint_modes"].([]string)
+	if !ok || len(modes) != 1 || modes[0] != "generate_content_json" {
+		t.Fatalf("modes 应继承 fallback 现值，得到 %v", credentials["supported_endpoint_modes"])
+	}
+	credentials = BuildGeminiOAuthCredentials(&GeminiTokenInfo{AccessToken: "at"}, &GeminiCredentialFallback{OAuthType: "google_one"})
+	modes, ok = credentials["supported_endpoint_modes"].([]string)
+	if !ok || len(modes) != 2 || modes[0] != "generate_content_json" || modes[1] != "generate_content_sse" {
+		t.Fatalf("无现值时应落缺省集，得到 %v", credentials["supported_endpoint_modes"])
+	}
+}

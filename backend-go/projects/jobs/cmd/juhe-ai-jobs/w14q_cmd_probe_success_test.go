@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
@@ -35,10 +36,13 @@ func w14qProbeAnswer(request *http.Request) string {
 }
 
 // w14qSeedProbeHTTPAccount 在 probe fixture 上补一个指向本地 httptest 上游的
-// chat_json 账户（凭据 base_url 直接写回环地址，探针不出本机）。
+// chat_json 账户（凭据 base_url 直接写回环地址，探针不出本机）。base_url 按
+// 版本根语义携带 `/v1`（e38c6e9f2 起「填啥请求啥」，运行时不再补根），
+// 探针路径因此为 /v1/chat/completions，与生产账户连接 base_url 一致。
 func w14qSeedProbeHTTPAccount(t *testing.T, handle *proberepoStoreHandle, upstream string) string {
 	t.Helper()
-	credentials, err := json.Marshal(map[string]any{"api_key": "sk-w14q", "base_url": upstream})
+	baseURL := strings.TrimSuffix(upstream, "/") + "/v1"
+	credentials, err := json.Marshal(map[string]any{"api_key": "sk-w14q", "base_url": baseURL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +72,8 @@ func w14qSeedProbeHTTPAccount(t *testing.T, handle *proberepoStoreHandle, upstre
 		if index == 3 {
 			_, execErr = handle.db.Exec(statement, envelope)
 		} else if index == 6 {
-			_, execErr = handle.db.Exec(statement, upstream)
+			// 探针上游地址取自连接行 base_url（凭据 JSON 不再承载，设计 §2.1）。
+			_, execErr = handle.db.Exec(statement, baseURL)
 		} else {
 			_, execErr = handle.db.Exec(statement)
 		}

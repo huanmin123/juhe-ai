@@ -399,7 +399,7 @@ func isRefreshableKeepaliveAccount(plan KeepalivePlan, account *RotationAccount)
 }
 
 func geminiFallbackFromCredentials(credentials map[string]any) GeminiCredentialFallback {
-	return GeminiCredentialFallback{
+	fallback := GeminiCredentialFallback{
 		RefreshToken:   stringCredential(credentials, "refresh_token"),
 		OAuthType:      stringCredential(credentials, "oauth_type"),
 		ClientID:       stringCredential(credentials, "client_id"),
@@ -410,6 +410,15 @@ func geminiFallbackFromCredentials(credentials map[string]any) GeminiCredentialF
 		BaseURL:        stringCredential(credentials, "base_url"),
 		Scope:          stringCredential(credentials, "scope"),
 	}
+	// T96-②：透传旧凭据 modes 影子副本，重封时继承现值而非覆写固定集。
+	if rawModes, ok := credentials["supported_endpoint_modes"].([]any); ok {
+		for _, rawMode := range rawModes {
+			if text, ok := rawMode.(string); ok && normalizeText(text) != "" {
+				fallback.SupportedEndpointModes = append(fallback.SupportedEndpointModes, text)
+			}
+		}
+	}
+	return fallback
 }
 
 func providerSourceMissingMessage(provider string) string {

@@ -30,7 +30,7 @@ func TestW14dAccountUpdatePatchSurface(t *testing.T) {
 
 	// The full optional patch surface including notes, schedule and status.
 	update := `{"accountId":"` + accountID + `","targetUsername":"w14d_updater","name":"站点U2",
-		"baseUrl":"https://b.example","apiKey":"sk-b","supportedModels":["gpt-4o"],
+		"baseUrl":"https://b.example","apiKey":"sk-b","supportedModels":["gpt-4o-mini","gpt-4o"],
 		"status":"active","concurrencyLimit":9,"priority":3,
 		"notes":"updated"}`
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/update", update, token)
@@ -39,6 +39,21 @@ func TestW14dAccountUpdatePatchSurface(t *testing.T) {
 	}
 	if payload["data"].(map[string]any)["action"] != "updated" {
 		t.Fatalf("update action: %v", payload)
+	}
+
+	// T96-①：公开 API 改 baseUrl 必须同步连接域（网关拨号事实源）——连接行
+	// base_url 跟随更新、preset/modes 保持创建面值，不得复现「保存成功、拨旧
+	// 域名」的分叉（BUG-0341 同型）。
+	var connBaseURL, connPreset, connModes string
+	if err := env.db.QueryRow(
+		`SELECT ac.base_url, ac.connection_preset_code,
+			COALESCE((SELECT string_agg(account_endpoint_modes.endpoint_mode, ',' ORDER BY account_endpoint_modes.endpoint_mode)
+				FROM account_endpoint_modes WHERE account_endpoint_modes.connection_id = ac.id), '')
+		 FROM juhe_business.account_connections ac WHERE ac.account_id = $1`, accountID).Scan(&connBaseURL, &connPreset, &connModes); err != nil {
+		t.Fatalf("read connection row: %v", err)
+	}
+	if connBaseURL != "https://b.example" || connPreset != "gpt_openai_v1" || connModes != "chat_json,chat_sse" {
+		t.Fatalf("connection row after update: url=%q preset=%q modes=%q", connBaseURL, connPreset, connModes)
 	}
 
 	// A profile change to an unknown profile renders the diagnostics.

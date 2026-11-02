@@ -113,6 +113,13 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
 
     if (options.editingId.value && !options.accountAdvancedDetailLoaded.value) {
+      // T97：媒体账户的代理 / 混合域映射 / 火山语音双值在高级折叠卡外仍可编
+      // 辑，但基础保存快照不含这些键——降级保存会静默丢弃改动。拦死降级态
+      // 强制重试高级加载，不留「提示已更新、实际未生效」的静默分叉。
+      if (capabilityDomainIsMedia(options.form.capabilityDomain)) {
+        message.error('媒体账户高级配置未加载完成，无法安全保存（代理 / 映射 / 语音凭据修改会丢失）；请关闭弹窗稍后重试')
+        return
+      }
       await saveBasicAccountEdit()
       return
     }

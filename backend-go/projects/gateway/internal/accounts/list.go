@@ -1572,6 +1572,12 @@ type EditBasicDetail struct {
 	// BackgroundProbeEnabled 回显后台自动探测总开关（总开关设计 §2 编辑表单
 	// 读取）。恒输出。
 	BackgroundProbeEnabled bool `json:"backgroundProbeEnabled"`
+	// T96-①：连接行事实（健康检查连接的 preset 与 modes）。公开面更新派生
+	// connections 用（外部 API 改 baseUrl 必须整集合提交连接行，否则复现
+	// BUG-0341「保存成功、拨旧域名」）；管理面编辑链不消费该字段（前端连接
+	// 集合由表单同构提交）。
+	ConnectionPresetCode    string   `json:"connectionPresetCode,omitempty"`
+	ConnectionEndpointModes []string `json:"connectionEndpointModes,omitempty"`
 }
 
 // Credentials mirrors AccountCredentials: an open record of credential fields.
@@ -1738,6 +1744,32 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	if err := tagRows.Err(); err != nil {
 		return nil, err
 	}
+	// T96-①：健康检查连接行的 endpoint modes（与 preset 同源），公开面更新
+	// 派生 connections 用；连接行缺失（异常存量）时保持空集由调用方拦截。
+	connectionModes := []string{}
+	if row.healthCheckConnectionID.Valid && strings.TrimSpace(row.healthCheckConnectionID.String) != "" {
+		modeRows, err := s.db.QueryContext(ctx, s.bind(`SELECT account_endpoint_modes.endpoint_mode
+			FROM `+s.table("account_endpoint_modes")+` account_endpoint_modes
+			WHERE account_endpoint_modes.connection_id = ?
+			ORDER BY account_endpoint_modes.endpoint_mode ASC`), row.healthCheckConnectionID.String)
+		if err != nil {
+			return nil, err
+		}
+		for modeRows.Next() {
+			var mode string
+			if err := modeRows.Scan(&mode); err != nil {
+				modeRows.Close()
+				return nil, err
+			}
+			if strings.TrimSpace(mode) != "" {
+				connectionModes = append(connectionModes, mode)
+			}
+		}
+		modeRows.Close()
+		if err := modeRows.Err(); err != nil {
+			return nil, err
+		}
+	}
 	var credentials Credentials
 	if err := DecryptJSON(s.secret, row.credentialsEncrypted, &credentials); err != nil {
 		return nil, err
@@ -1781,6 +1813,8 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		BoundGroupID:              nullPtrString(row.boundGroupID),
 		BoundGroupName:            nullPtrString(row.boundGroupName),
 		BackgroundProbeEnabled:    row.backgroundProbeEnabled == 1,
+		ConnectionPresetCode:      row.currentHealthCheckPreset,
+		ConnectionEndpointModes:   connectionModes,
 	}
 	if access.CanAccessAll() {
 		detail.SystemAccountID = &row.systemAccountID

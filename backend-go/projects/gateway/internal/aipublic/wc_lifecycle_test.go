@@ -577,7 +577,7 @@ func TestWCAccountUpdateDeleteBranches(t *testing.T) {
 	// update：改密钥 + BaseURL + 名称 + 支持模型 + 状态停用。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/update",
 		`{"accountId":"`+accountID+`","name":"站点A2","baseUrl":"https://b.example","apiKey":"sk-new",`+
-			`"supportedModels":["gpt-4o"],"status":"disabled"}`, wcLifeToken)
+			`"supportedModels":["gpt-4o-mini","gpt-4o"],"status":"disabled"}`, wcLifeToken)
 	if status != http.StatusOK {
 		t.Fatalf("update: %d %v", status, payload)
 	}
@@ -589,7 +589,8 @@ func TestWCAccountUpdateDeleteBranches(t *testing.T) {
 	if account["name"] != "站点A2" || account["status"] != "disabled" || account["schedulable"] != false {
 		t.Fatalf("update 投影: %v", account)
 	}
-	if models := account["supportedModels"].([]any); len(models) != 1 || models[0] != "gpt-4o" {
+	// T96-①：连接域同步使健康检查一致性校验生效——支持模型必须保留检查模型。
+	if models := account["supportedModels"].([]any); len(models) != 2 || models[0] != "gpt-4o" || models[1] != "gpt-4o-mini" {
 		t.Fatalf("update 模型: %v", models)
 	}
 	if account["boundGroupName"] != "福利" {

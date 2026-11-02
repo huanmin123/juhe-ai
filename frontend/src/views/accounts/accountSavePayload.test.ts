@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildAccountSavePayload, buildAccountUpdatePayload, validateAccountModelMappings, validateAccountSaveForm } from './accountSavePayload'
+import {
+  buildAccountAdvancedUpdatePatch,
+  buildAccountBasicEditSnapshot,
+  buildAccountBasicUpdatePatch
+} from './accountEditPatch'
 import { defaultAccountForm } from './accountFormDefaults'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
@@ -194,5 +199,122 @@ describe('connections 编辑链透传（T94：编辑 Base URL 必须同步连接
     })
     expect(payload.connections).toBeUndefined()
     expect(buildAccountUpdatePayload(payload)).not.toHaveProperty('connections')
+  })
+})
+
+// T94 差量口径：编辑链真正提交的是 buildAccountAdvancedUpdatePatch /
+// buildAccountBasicUpdatePatch 产出的 PATCH delta，而不是整份 payload。
+// 「只提交相对基线变化的字段」契约要求 baseUrl 未变时不出现 connections，
+// 变化时整集合提交且与凭据域 base_url 同源同值。
+describe('connections 编辑差量（T94：仅 Base URL/请求形态变化时进入 PATCH）', () => {
+  function editForm(): AccountFormModel {
+    const form = defaultAccountForm('gpt', 'api_key')
+    form.name = '连接差量单测账户'
+    form.groupId = 'group-conn-delta'
+    form.apiKey = 'sk-conn-delta'
+    form.apiKeys = ['sk-conn-delta']
+    form.baseUrl = 'https://old.example.com/v1'
+    form.supportedModels = ['gpt-5.4-mini']
+    form.healthCheckModel = 'gpt-5.4-mini'
+    form.healthCheckEndpointMode = 'chat_json'
+    return form
+  }
+
+  function payloadFor(form: AccountFormModel) {
+    return buildAccountSavePayload({
+      accounts: [],
+      form,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+  }
+
+  it('高级编辑 Base URL 变化时 delta 携带同构 connections 且 baseUrl 为新值', () => {
+    const baseline = payloadFor(editForm())
+    const currentForm = editForm()
+    currentForm.baseUrl = 'https://new.example.com/v1'
+    const current = payloadFor(currentForm)
+
+    const delta = buildAccountAdvancedUpdatePatch(current, baseline, 12)
+
+    expect(delta?.expectedConfigRevision).toBe(12)
+    expect(delta?.connections).toEqual([{
+      connectionPresetCode: 'gpt_openai_v1',
+      baseUrl: 'https://new.example.com/v1',
+      endpointModes: currentForm.supportedEndpointModes,
+      enabled: true
+    }])
+    // 凭据域与连接域同源同值：两个副本一起对齐，避免再次分叉。
+    expect(delta?.credentialsPatch?.base_url).toBe('https://new.example.com/v1')
+  })
+
+  it('高级编辑 Base URL 未变时 delta 不含 connections（只提交变化字段）', () => {
+    const baseline = payloadFor(editForm())
+    const currentForm = editForm()
+    currentForm.priority += 3
+    const current = payloadFor(currentForm)
+
+    const delta = buildAccountAdvancedUpdatePatch(current, baseline, 12)
+
+    expect(delta).toEqual({ priority: currentForm.priority, expectedConfigRevision: 12 })
+    expect(delta).not.toHaveProperty('connections')
+  })
+
+  it('仅请求形态变化时 delta 携带 connections（连接域 endpointModes 随编辑同步）', () => {
+    const baselineForm = editForm()
+    baselineForm.supportedEndpointModes = ['chat_json', 'chat_sse']
+    const baseline = payloadFor(baselineForm)
+    const currentForm = editForm()
+    currentForm.supportedEndpointModes = ['chat_json']
+    const current = payloadFor(currentForm)
+
+    const delta = buildAccountAdvancedUpdatePatch(current, baseline, 12)
+
+    expect(delta?.connections).toEqual([{
+      connectionPresetCode: 'gpt_openai_v1',
+      baseUrl: 'https://old.example.com/v1',
+      endpointModes: ['chat_json'],
+      enabled: true
+    }])
+    expect(delta?.credentialsPatch?.supported_endpoint_modes).toEqual(['chat_json'])
+  })
+
+  it('基础编辑 Base URL 变化时 delta 携带 connections；未变时不含 connections', () => {
+    const form = editForm()
+    const baseline = buildAccountBasicEditSnapshot(form, { api_key: 'sk-conn-delta' })
+    const changed = editForm()
+    changed.baseUrl = 'https://basic-new.example.com/v1'
+    const changedSnapshot = buildAccountBasicEditSnapshot(changed, { api_key: 'sk-conn-delta' })
+
+    const changedDelta = buildAccountBasicUpdatePatch(changedSnapshot, baseline, 5)
+    expect(changedDelta?.connections).toEqual([{
+      connectionPresetCode: 'gpt_openai_v1',
+      baseUrl: 'https://basic-new.example.com/v1',
+      endpointModes: changed.supportedEndpointModes,
+      enabled: true
+    }])
+    expect(changedDelta?.credentialsPatch?.base_url).toBe('https://basic-new.example.com/v1')
+
+    const unchanged = editForm()
+    unchanged.priority += 1
+    const unchangedDelta = buildAccountBasicUpdatePatch(
+      buildAccountBasicEditSnapshot(unchanged, { api_key: 'sk-conn-delta' }),
+      baseline,
+      5
+    )
+    expect(unchangedDelta).not.toHaveProperty('connections')
+  })
+
+  it('创建链形状不回归：connections 仍为单条默认连接并与健康检查 preset 一致', () => {
+    const form = editForm()
+    const payload = payloadFor(form)
+
+    expect(payload.connections).toEqual([{
+      connectionPresetCode: 'gpt_openai_v1',
+      baseUrl: 'https://old.example.com/v1',
+      endpointModes: form.supportedEndpointModes,
+      enabled: true
+    }])
+    expect(payload.healthCheckConnectionPresetCode).toBe('gpt_openai_v1')
   })
 })

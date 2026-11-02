@@ -507,8 +507,10 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 }
 
 // w1g2GrantSchemas 是受限连接角色需要授予权限的业务 schema（子进程全启动
-// 在契约校验前会触碰这些域）。
-var w1g2GrantSchemas = []string{"juhe_business", "juhe_chat", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage", "juhe_j3b"}
+// 在契约校验前会触碰这些域）。juhe_chat 已随 my-chat 会话面退役（e87b15f1d），
+// 清单须与 bootstrap 实际创建的 schema 组一致，否则 GRANT 命中不存在的
+// schema（SQLSTATE 3F000）。juhe_j3b 是测试侧补建的专属 schema。
+var w1g2GrantSchemas = []string{"juhe_business", "juhe_codex_context", "juhe_dataset", "juhe_stats", "juhe_usage", "juhe_j3b"}
 
 // w1g2WithLimitedAppRole 在隔离库上创建每测试唯一的受限 LOGIN 角色（原共享
 // 覆盖库形态依赖 admin 建表 / app 角色连接的双角色划分；pgtestkit 单角色
