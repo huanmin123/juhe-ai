@@ -43,8 +43,15 @@ type SegmentStore struct {
 	locks   map[string]*keyWriteLock
 }
 
+// keyWriteLock 是每个 storageKey 的写锁。refs 统计「持有或等待该锁的调用方
+// 数量」，由 SegmentStore.locksMu 保护；降到 0 时锁对象从注册表删除，避免
+// 注册表随「会话 × 小时」键空间无限增长（键形如
+// sessions/<…>/segments/YYYYMMDDHH.json.gz，长期运行会线性累积）。
+// 删除条件必须是 refs==0（而不是「未持有」）：否则等待者仍持有旧对象，
+// 新调用方拿到新对象，同一文件出现两把锁 → 写入失去互斥。
 type keyWriteLock struct {
-	mu sync.Mutex
+	mu   sync.Mutex
+	refs int
 }
 
 // NewSegmentStore builds the store.
@@ -92,7 +99,9 @@ func (s *SegmentStore) WriteSegmentPayload(ctx context.Context, sessionID string
 }
 
 func (s *SegmentStore) appendSegmentBytes(ctx context.Context, storageKey string, data []byte) (int64, error) {
-	lock := s.lockFor(storageKey)
+	lock := s.acquireWriteLock(storageKey)
+	// defer 顺序（LIFO）：先注册的 releaseWriteLock 最后执行，确保 mu 已解锁。
+	defer s.releaseWriteLock(storageKey, lock)
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -120,7 +129,10 @@ func (s *SegmentStore) appendSegmentBytes(ctx context.Context, storageKey string
 	return offset, nil
 }
 
-func (s *SegmentStore) lockFor(storageKey string) *keyWriteLock {
+// acquireWriteLock 取该 storageKey 的写锁并登记一个引用，调用方必须在释放
+// lock.mu 之后调用 releaseWriteLock（defer 顺序：先登记 releaseWriteLock，
+// 再 defer mu.Unlock，LIFO 保证 unlock 先执行）。
+func (s *SegmentStore) acquireWriteLock(storageKey string) *keyWriteLock {
 	s.locksMu.Lock()
 	defer s.locksMu.Unlock()
 	lock, ok := s.locks[storageKey]
@@ -128,7 +140,23 @@ func (s *SegmentStore) lockFor(storageKey string) *keyWriteLock {
 		lock = &keyWriteLock{}
 		s.locks[storageKey] = lock
 	}
+	lock.refs++
 	return lock
+}
+
+// releaseWriteLock 注销引用；最后一个引用释放时删除注册表条目。调用方此刻
+// 必须已经释放 lock.mu（否则新调用方可能拿到已删除对象造成双锁）。
+func (s *SegmentStore) releaseWriteLock(storageKey string, lock *keyWriteLock) {
+	s.locksMu.Lock()
+	defer s.locksMu.Unlock()
+	lock.refs--
+	if lock.refs > 0 {
+		return
+	}
+	// refs==0 表示没有任何调用方持有或等待该键：可以安全移除。
+	if current, ok := s.locks[storageKey]; ok && current == lock {
+		delete(s.locks, storageKey)
+	}
 }
 
 // ReadSegmentPayload mirrors readSegmentPayload: bounded read at the

@@ -331,9 +331,11 @@ func (r *Registry) publishAndScheduleHeartbeat(session *registrySession) {
 	for {
 		r.publish(session)
 		timer := time.NewTimer(registryHeartbeatEvery)
-		defer timer.Stop()
 		select {
 		case <-session.stopCh:
+			// 显式 Stop：循环内 `defer timer.Stop()` 会让 defer 链随运行时长
+			// 线性增长（每 5s 一层，长跑数月达数万层、MB 级栈驻留）。
+			timer.Stop()
 			return
 		case <-timer.C:
 		}
