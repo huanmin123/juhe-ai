@@ -129,3 +129,43 @@ func TestSegmentWriteLockMutualExclusionUnderChurn(t *testing.T) {
 		t.Fatalf("locks remaining=%d want=0", remaining)
 	}
 }
+
+// TestReleaseWriteLockKeepsEntryWhileReferencesRemain 直接钉住 releaseWriteLock
+// 的契约：refs 从 2 降到 1 时条目必须保留（还有等待者），降到 0 才删除。
+// 这是「不能按未持有判删」的最小可验证形式——旧的天真实现会在 refs 仍为 1
+// 时删除，让后续 acquire 拿到新锁对象。
+func TestReleaseWriteLockKeepsEntryWhileReferencesRemain(t *testing.T) {
+	store, err := NewSegmentStore(SegmentStoreConfig{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const storageKey = "session-refs"
+
+	first := store.acquireWriteLock(storageKey)
+	second := store.acquireWriteLock(storageKey)
+	if first != second {
+		t.Fatal("同键必须返回同一把锁")
+	}
+
+	// 释放一个引用：仍有 1 个，条目必须保留且对象不变。
+	store.releaseWriteLock(storageKey, first)
+	store.locksMu.Lock()
+	entry := store.locks[storageKey]
+	store.locksMu.Unlock()
+	if entry != first {
+		t.Fatalf("refs 仍为 1 时条目不得删除/替换：got=%p want=%p", entry, first)
+	}
+
+	// 后续 acquire 必须仍拿到同一把锁。
+	third := store.acquireWriteLock(storageKey)
+	if third != first {
+		t.Fatalf("refs>0 期间 acquire 必须复用同一锁：got=%p want=%p", third, first)
+	}
+
+	// 全部释放后条目清空。
+	store.releaseWriteLock(storageKey, second)
+	store.releaseWriteLock(storageKey, third)
+	if remaining := lockRegistrySize(store); remaining != 0 {
+		t.Fatalf("全部引用释放后 locks remaining=%d want=0", remaining)
+	}
+}
