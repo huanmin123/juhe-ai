@@ -606,6 +606,20 @@ func persistAnthropicUsageHeadersOnGatewayTraffic(
 		gatewaycodex.AnthropicUsageSnapshotSource, dispatcher)
 }
 
+// applyDispatchedEffectiveUsageFacts 把引擎带出的「最终出站体生效档位 /
+// 思考级别」回填到链面 usage 上下文。派发引擎只更新自己的值拷贝
+// （upstreamdispatch.go 的 usageContext := args.UsageContext），成功终局
+// 读的是链面副本；不回填会让 effective_service_tier /
+// effective_reasoning_effort 恒等于客户端请求值（BUG-0343）。
+// 无条件覆盖：空串代表出站体确实没有该字段，不得回落请求值。
+func applyDispatchedEffectiveUsageFacts(context *gatewaypreauth.DispatchContext, dispatched gatewaydispatch.UpstreamDispatchResult) {
+	if context == nil {
+		return
+	}
+	context.UsageContext.EffectiveServiceTier = dispatched.EffectiveServiceTier
+	context.UsageContext.EffectiveReasoningEffort = dispatched.EffectiveReasoningEffort
+}
+
 // handleUpstreamResponse mirrors handleStreamUpstreamResponse /
 // handleNonStreamUpstreamResponse + finalizeHandledUpstreamResponse. It
 // returns the handling result so the dispatch loop can consume a
@@ -626,6 +640,9 @@ func (c *gatewayChain) handleUpstreamResponse(
 	if commitState == nil {
 		commitState = &gatewayresponse.DownstreamCommitState{}
 	}
+	// BUG-0343：生效档位/思考级别回填必须先于任何早退分支（媒体 job、
+	// 错误透传都在本函数内早退），否则对应 usage 记录仍记客户端请求值。
+	applyDispatchedEffectiveUsageFacts(context, dispatched)
 	upstream := dispatched.Response
 	c.recordUpstreamFetchHeadersStage(context, dispatched)
 	// M2 视频创建响应（媒体设计 §4.2/§8.2；M3f 起含长音频任务创建响应）：

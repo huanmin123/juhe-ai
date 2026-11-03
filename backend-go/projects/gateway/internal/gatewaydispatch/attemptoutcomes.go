@@ -127,7 +127,10 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			AuditAttemptID:       c.auditAttemptID,
 			AttemptStartedAt:     c.attemptStartedAt,
 			EffectiveServiceTier: c.loop.effectiveServiceTier,
-			TimeoutProfile:       in.timeoutProfile,
+			// BUG-0343：生效档位/思考级别随结果带出，链面成功终局回填 usage
+			// 上下文（引擎只更新自己的值拷贝，链面读的是原始副本）。
+			EffectiveReasoningEffort: c.loop.effectiveReasoningEffort,
+			TimeoutProfile:           in.timeoutProfile,
 			// BUG-0267：circuit/keyModel 句柄带出——链面 post-verdict 结算块按
 			// body 实际结局分类结算（Node routes.ts:1865-1877）。key-model 准入
 			// 让位路径（dispatchsingle.go 准入互斥）已把 circuit 句柄置 nil 并在
@@ -269,13 +272,15 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		}
 		accountLockLeaseRelease := in.createAccountLockLeaseRelease(false)
 		*c.loop.resultRef = &UpstreamDispatchResult{
-			Account:                          c.account,
-			Response:                         failedResponseResult.Response,
-			RequestBody:                      c.loop.body,
-			UpstreamURL:                      c.upstreamURL,
-			AuditAttemptID:                   c.auditAttemptID,
-			AttemptStartedAt:                 c.attemptStartedAt,
-			EffectiveServiceTier:             c.loop.effectiveServiceTier,
+			Account:              c.account,
+			Response:             failedResponseResult.Response,
+			RequestBody:          c.loop.body,
+			UpstreamURL:          c.upstreamURL,
+			AuditAttemptID:       c.auditAttemptID,
+			AttemptStartedAt:     c.attemptStartedAt,
+			EffectiveServiceTier: c.loop.effectiveServiceTier,
+			// BUG-0343：同成功臂，生效思考级别随结果带出供链面回填。
+			EffectiveReasoningEffort:         c.loop.effectiveReasoningEffort,
 			TimeoutProfile:                   in.timeoutProfile,
 			AttemptIndex:                     *c.attemptIndex,
 			AuditAttemptIndex:                *in.auditAttemptIndex,

@@ -441,6 +441,7 @@ rotationLoop:
 			body:                                 body,
 			upstreamUrls:                         upstreamUrls,
 			effectiveServiceTier:                 effectiveServiceTier,
+			effectiveReasoningEffort:             requestParts.EffectiveReasoningEffort,
 			excludedApiKeyFingerprints:           excludedApiKeyFingerprints,
 			accountApiKeyAttemptCount:            &accountApiKeyAttemptCount,
 			concurrencySlot:                      &concurrencySlot,
@@ -1026,6 +1027,7 @@ type upstreamAttemptLoopContext struct {
 	body                       []byte
 	upstreamUrls               []string
 	effectiveServiceTier       string
+	effectiveReasoningEffort   string
 	excludedApiKeyFingerprints map[string]struct{}
 	accountApiKeyAttemptCount  *int
 	concurrencySlot            *ConcurrencySlot

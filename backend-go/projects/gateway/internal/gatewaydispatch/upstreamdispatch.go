@@ -35,7 +35,14 @@ type UpstreamDispatchResult struct {
 	AuditAttemptID       string
 	AttemptStartedAt     int64
 	EffectiveServiceTier string
-	TimeoutProfile       gatewayrouting.GatewayTimeoutProfile
+	// EffectiveReasoningEffort 是本尝试最终出站体中的实际思考级别
+	// （PreparedRequestParts.EffectiveReasoningEffort 的引擎带出值，见
+	// accountpreparation.go BuildPreparedUpstreamRequestParts 的出站体元数据
+	// 提取）。链面成功终局必须经 applyDispatchedEffectiveUsageFacts 回填
+	// usage 上下文：派发引擎只更新自己的值拷贝，不回填会让用量记录的
+	// effective_reasoning_effort 恒等于客户端请求值（BUG-0343）。
+	EffectiveReasoningEffort string
+	TimeoutProfile           gatewayrouting.GatewayTimeoutProfile
 	// AttemptIndex / AuditAttemptIndex 带出本尝试的引擎索引（构造点
 	// attemptoutcomes.go 的 c.attemptIndex 与 in.auditAttemptIndex 作用域，
 	// 与失败派发器输入同值域：auditAttemptIndex 是该尝试的 1-based 序数）。

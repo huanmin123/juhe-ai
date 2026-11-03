@@ -134,6 +134,36 @@ func TestFetchFirstAvailableUpstreamFirstAccountSuccess(t *testing.T) {
 	}
 }
 
+// TestFetchFirstAvailableUpstreamCarriesEffectiveReasoningEffort 钉住
+// BUG-0343 的引擎带出臂：出站体 reasoning_effort=max 与客户端请求体不同源，
+// 生效思考级别必须从最终出站体元数据提取并经 UpstreamDispatchResult 带出
+// （链面回填是 chain_effective_usage_facts_test.go 的职责）。
+func TestFetchFirstAvailableUpstreamCarriesEffectiveReasoningEffort(t *testing.T) {
+	server := sequentialServer(t, 0, 500)
+	defer server.Close()
+
+	engine, driver, _ := newTestEngine(t)
+	driver.urlByAccount = map[string][]string{
+		"a-1": {server.URL + "/v1/chat/completions"},
+	}
+	driver.partsBody = `{"model":"gpt-test","input":"hi","reasoning_effort":"max"}`
+	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	accounts := testAccounts("a-1")
+	result, err := engine.FetchFirstAvailableUpstream(context.Background(), dispatchArgs(t, req, accounts))
+	if err != nil {
+		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
+	}
+	if !result.Response.OK() {
+		t.Fatalf("status = %d", result.Response.Status())
+	}
+	if result.EffectiveReasoningEffort != "max" {
+		t.Fatalf("effective reasoning effort = %q, want max", result.EffectiveReasoningEffort)
+	}
+	if result.EffectiveServiceTier != "default" {
+		t.Fatalf("service tier = %q", result.EffectiveServiceTier)
+	}
+}
+
 func TestFetchFirstAvailableUpstreamFailoverToSecondAccount(t *testing.T) {
 	// a-1 gets a 500 (dispatcher answers skip_account), a-2 succeeds.
 	engine, driver, dispatcher := newTestEngine(t)
