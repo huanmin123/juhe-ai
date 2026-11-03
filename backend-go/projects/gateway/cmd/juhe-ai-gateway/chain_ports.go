@@ -9,7 +9,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -2583,18 +2582,213 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 	})
 }
 
-// decodeAuditWireInput 执行与退役 wire hop 相同的 Marshal→Unmarshal 类型桥
-// （w2 登记为恒成功的纯 JSON 往返），错误臂由调用方记诊断日志。
+// decodeAuditWireInput 把采集侧审计输入转成 F3 存储侧输入。
+//
+// 历史沿革：退役的 wire hop 曾用 JSON Marshal→Unmarshal 做「类型桥」（采集
+// DTO 与存储 DTO 同名不同型，差异只有 Headers 的 map[string]any →
+// map[string]HeaderValues、三处 *int → *int64 与枚举命名类型）。该往返会把
+// 含 base64 body 的整条记录序列化再解析一遍，生产 pprof 实测占网关 CPU
+// 采样 47.9%（checkValid/appendCompact 大头都在扫 base64 大串），且中间
+// []byte 与 base64 串同时驻留。2026-11-03 改为逐字段直接赋值：
+//   - Headers 的单值/数组判定与 gatewayusage.AuditLogPayloadInput.MarshalJSON
+//     + auditlog.HeaderValues.UnmarshalJSON 的组合语义逐条对齐（见
+//     auditHeadersFromWire）；
+//   - 三处时长 *int → *int64 为无损宽度扩展；
+//   - 枚举 string → 命名类型直接转换；
+//   - Body 的 Present 由 len(Body)>0 派生——与旧往返一致（MarshalJSON 只为
+//     非空 Body 输出 body 键，UnmarshalJSON 的 null/缺失分支给 Present=false）。
+//
+// 等价性由 TestDecodeAuditWireInputMatchesJSONBridge 以「同一输入下新实现产物
+// 与旧 Marshal→Unmarshal 产物再序列化后逐字节相等」固定。
 func decodeAuditWireInput(input gatewayusage.AuditLogInput) (auditlog.AuditLogInput, error) {
-	encoded, err := json.Marshal(input)
+	attempts := auditAttemptsFromWire(input.Attempts)
+	payloads, err := auditPayloadsFromWire(input.Payloads)
 	if err != nil {
 		return auditlog.AuditLogInput{}, err
 	}
-	var decoded auditlog.AuditLogInput
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		return auditlog.AuditLogInput{}, err
+	decoded := auditlog.AuditLogInput{
+		ID:                     input.ID,
+		LifecycleStatus:        auditlog.LifecycleStatus(input.LifecycleStatus),
+		TraceID:                input.TraceID,
+		ConversationKey:        input.ConversationKey,
+		SessionID:              input.SessionID,
+		SessionClientType:      input.SessionClientType,
+		TrafficSource:          auditlog.TrafficSource(input.TrafficSource),
+		SystemAccountID:        input.SystemAccountID,
+		APIKeyID:               input.APIKeyID,
+		GroupID:                input.GroupID,
+		RouteGroupID:           input.RouteGroupID,
+		AccountID:              input.AccountID,
+		ProviderCode:           input.ProviderCode,
+		Method:                 input.Method,
+		Path:                   input.Path,
+		QueryString:            input.QueryString,
+		Model:                  input.Model,
+		UpstreamModel:          input.UpstreamModel,
+		PricingModel:           input.PricingModel,
+		ModelMappingApplied:    input.ModelMappingApplied,
+		ModelMappingSource:     input.ModelMappingSource,
+		SourceEndpointFamily:   input.SourceEndpointFamily,
+		UpstreamEndpointFamily: input.UpstreamEndpointFamily,
+		Stream:                 input.Stream,
+		ClientIP:               input.ClientIP,
+		UserAgent:              input.UserAgent,
+		AuditOutcome:           auditlog.AuditOutcome(input.AuditOutcome),
+		Success:                input.Success,
+		FinalStatusCode:        input.FinalStatusCode,
+		ErrorPhase:             input.ErrorPhase,
+		ErrorCode:              input.ErrorCode,
+		ErrorMessage:           input.ErrorMessage,
+		SampleBucket:           input.SampleBucket,
+		SampleReason:           input.SampleReason,
+		CaptureStatus:          auditlog.AuditCaptureStatus(input.CaptureStatus),
+		StartedAt:              input.StartedAt,
+		EndedAt:                input.EndedAt,
+		DurationMS:             auditDurationMsToInt64(input.DurationMs),
+		HTTPCompletedAt:        input.HTTPCompletedAt,
+		HTTPDurationMS:         auditDurationMsToInt64(input.HTTPDurationMs),
+		FirstTokenMS:           auditDurationMsToInt64(input.FirstTokenMs),
+		Attempts:               attempts,
+		Payloads:               payloads,
+		CreatedAt:              input.CreatedAt,
 	}
 	return decoded, nil
+}
+
+// auditDurationMsToInt64 复现 *int → *int64 的 JSON 往返宽度扩展：nil 保持
+// nil（omitempty 键不存在），非 nil 复制值（不共享指针）。
+func auditDurationMsToInt64(value *int) *int64 {
+	if value == nil {
+		return nil
+	}
+	converted := int64(*value)
+	return &converted
+}
+
+func auditAttemptsFromWire(input []gatewayusage.AuditLogAttemptInput) []auditlog.AuditLogAttemptInput {
+	// 旧往返对空切片与 nil 的输出一致（json:"attempts" 无 omitempty：nil 序列化
+	// 为 null、空切片为 []，二者解码后分别得到 nil 与空切片——保留该区分）。
+	if input == nil {
+		return nil
+	}
+	out := make([]auditlog.AuditLogAttemptInput, len(input))
+	for index := range input {
+		attempt := &input[index]
+		out[index] = auditlog.AuditLogAttemptInput{
+			ID:                          attempt.ID,
+			TempID:                      attempt.TempID,
+			AttemptIndex:                attempt.AttemptIndex,
+			AccountID:                   attempt.AccountID,
+			AccountOwnerSystemAccountID: attempt.AccountOwnerSystemAccountID,
+			GroupID:                     attempt.GroupID,
+			MemberGroupID:               attempt.MemberGroupID,
+			ProxyURL:                    attempt.ProxyURL,
+			ProviderCode:                attempt.ProviderCode,
+			Model:                       attempt.Model,
+			UpstreamModel:               attempt.UpstreamModel,
+			PricingModel:                attempt.PricingModel,
+			ModelMappingApplied:         attempt.ModelMappingApplied,
+			ModelMappingSource:          attempt.ModelMappingSource,
+			SourceEndpointFamily:        attempt.SourceEndpointFamily,
+			UpstreamEndpointFamily:      attempt.UpstreamEndpointFamily,
+			UpstreamMethod:              attempt.UpstreamMethod,
+			UpstreamURL:                 attempt.UpstreamURL,
+			UpstreamStatusCode:          attempt.UpstreamStatusCode,
+			Success:                     attempt.Success,
+			ErrorPhase:                  attempt.ErrorPhase,
+			ErrorCode:                   attempt.ErrorCode,
+			ErrorMessage:                attempt.ErrorMessage,
+			StartedAt:                   attempt.StartedAt,
+			EndedAt:                     attempt.EndedAt,
+			DurationMS:                  auditDurationMsToInt64(attempt.DurationMs),
+		}
+	}
+	return out
+}
+
+func auditPayloadsFromWire(input []gatewayusage.AuditLogPayloadInput) ([]auditlog.AuditLogPayloadInput, error) {
+	if input == nil {
+		return nil, nil
+	}
+	out := make([]auditlog.AuditLogPayloadInput, len(input))
+	for index := range input {
+		payload := &input[index]
+		headers, err := auditHeadersFromWire(payload.Headers)
+		if err != nil {
+			return nil, err
+		}
+		out[index] = auditlog.AuditLogPayloadInput{
+			ID:               payload.ID,
+			AttemptTempID:    payload.AttemptTempID,
+			PartType:         auditlog.PayloadPartType(payload.PartType),
+			SequenceIndex:    payload.SequenceIndex,
+			ContentType:      payload.ContentType,
+			ContentEncoding:  payload.ContentEncoding,
+			Headers:          headers,
+			Body:             auditPayloadBodyFromWire(payload.Body),
+			BodySHA256:       payload.BodySha256,
+			RawBodySizeBytes: auditDurationMsToInt64(payload.RawBodySizeBytes),
+			CaptureStatus:    auditlog.PayloadCaptureStatus(payload.CaptureStatus),
+			DropReason:       auditlog.PayloadDropReason(payload.DropReason),
+			CreatedAt:        payload.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
+// auditPayloadBodyFromWire 复现 Body 的 wire 语义：旧 MarshalJSON 只为非空
+// Body 输出 body 键（空 Body 无键 → UnmarshalJSON 的 null/缺失分支），因此
+// Present 恒等于 len(Body) > 0。
+func auditPayloadBodyFromWire(body []byte) auditlog.PayloadBody {
+	if len(body) == 0 {
+		return auditlog.PayloadBody{}
+	}
+	// 解码侧持有独立字节：旧往返经 base64 编解码产生新切片，不与采集侧共享
+	// 底层数组（避免后续写入互相影响）。
+	return auditlog.PayloadBody{Bytes: append([]byte(nil), body...), Present: true}
+}
+
+// auditHeadersFromWire 把采集侧 map[string]any 还原成存储侧
+// map[string]HeaderValues，语义与「MarshalJSON → HeaderValues.UnmarshalJSON」
+// 的 JSON 往返逐条对齐：
+//
+//   - string           → {Values:[s]}（Array=false，落库为该字符串）
+//   - []string         → {Values:v, Array=true}（落库为数组，nil/空都是 []）
+//   - []any 全字符串   → 同上（JSON 数组解码后走 HeaderValues 的 []string 分支）
+//   - 其他形态         → 返回错误，与旧往返一致地丢弃整条采集。
+//
+// 生产数据面只有 string 与 []string 两种：采集侧 Headers 唯一来源是
+// http.Header（map[string][]string，见 gatewayresponse/finalize.go:23），
+// 以及少量字面量 map[string]any{"content-type": "..."}。其余形态属类型上
+// 可能但数据面不存在的情况，仍保持旧实现「整条丢弃」的失败语义，不做静默
+// 降级（设计规范：不以 fallback 掩盖失败）。
+func auditHeadersFromWire(headers map[string]any) (map[string]auditlog.HeaderValues, error) {
+	if len(headers) == 0 {
+		// 旧往返：nil/空 map 都序列化为省略键（omitempty），解码后得到 nil。
+		return nil, nil
+	}
+	out := make(map[string]auditlog.HeaderValues, len(headers))
+	for name, value := range headers {
+		switch typed := value.(type) {
+		case string:
+			out[name] = auditlog.HeaderValues{Values: []string{typed}}
+		case []string:
+			out[name] = auditlog.HeaderValues{Values: append([]string(nil), typed...), Array: true}
+		case []any:
+			values := make([]string, 0, len(typed))
+			for _, item := range typed {
+				text, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("审计 header %q 含非字符串元素，无法转换为 HeaderValues（与旧 wire 往返同样的失败语义）", name)
+				}
+				values = append(values, text)
+			}
+			out[name] = auditlog.HeaderValues{Values: values, Array: true}
+		default:
+			return nil, fmt.Errorf("审计 header %q 的类型 %T 无法转换为 HeaderValues（与旧 wire 往返同样的失败语义）", name, value)
+		}
+	}
+	return out, nil
 }
 
 // deferredAuditEstimateOf 投影采集侧输入的原始尺寸给
