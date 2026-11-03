@@ -275,11 +275,13 @@ func TestDecodeAuditWireInputBigBodyLossless(t *testing.T) {
 // 旧往返一样返回错误（整条采集丢弃），不静默降级。
 func TestAuditHeadersFromWireRejectsNonString(t *testing.T) {
 	cases := map[string]map[string]any{
-		"int":       {"x-num": 42},
-		"bool":      {"x-bool": true},
-		"nil":       {"x-nil": nil},
-		"obj":       {"x-obj": map[string]any{"a": 1}},
-		"any- mixed": {"x-mixed": []any{"ok", 1}},
+		"int":        {"x-num": 42},
+		"bool":       {"x-bool": true},
+		"float":      {"x-float": 1.5},
+		"obj":        {"x-obj": map[string]any{"a": 1}},
+		"any-int":    {"x-mixed": []any{"ok", 1}},
+		"any-array":  {"x-nested": []any{[]string{"a"}}},
+		"typed-2d":   {"x-typed": [][]string{{"a"}}},
 	}
 	for name, headers := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -288,28 +290,73 @@ func TestAuditHeadersFromWireRejectsNonString(t *testing.T) {
 			}
 		})
 	}
-	// 合法形态必须通过，且单值/数组语义正确。
-	got, err := auditHeadersFromWire(map[string]any{
-		"single": "v",
-		"slice":  []string{"a", "b"},
-		"empty":  []string{},
-		"anys":   []any{"c", "d"},
-	})
-	if err != nil {
-		t.Fatalf("合法 header 不应报错: %v", err)
+}
+
+// TestAuditHeadersFromWireExhaustiveShapes 穷举 header 值形态并与旧 wire 往返
+// 逐结构比对。三种「nil 降级为空串」的形态（裸 nil、[]string(nil)、
+// []any{nil}）在 2026-11-03 复查中发现过实现缺口，这里固定住：旧路径不会
+// 丢弃整条采集，而是把该 header 记成空串（或空串元素）。
+func TestAuditHeadersFromWireExhaustiveShapes(t *testing.T) {
+	shapes := map[string]any{
+		"string":               "v",
+		"empty-string":         "",
+		"numeric-string":       "123",
+		"string-slice-1":       []string{"a"},
+		"string-slice-multi":   []string{"a", "b"},
+		"string-slice-empty":   []string{},
+		"string-slice-nil":     []string(nil),
+		"any-slice-1":          []any{"a"},
+		"any-slice-empty":      []any{},
+		"any-slice-nil":        []any(nil),
+		"any-slice-null-el":    []any{nil},
+		"any-slice-mixed-null": []any{"a", nil, "b"},
+		"bare-nil":             nil,
 	}
-	if header := got["single"]; header.Array || len(header.Values) != 1 || header.Values[0] != "v" {
-		t.Fatalf("单值语义错误: %+v", header)
+	for name, value := range shapes {
+		t.Run(name, func(t *testing.T) {
+			headers := map[string]any{"x": value}
+
+			// oracle：旧 wire 往返。
+			encoded, err := json.Marshal(map[string]any{"headers": headers})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var legacy struct {
+				Headers map[string]auditlog.HeaderValues `json:"headers"`
+			}
+			if err := json.Unmarshal(encoded, &legacy); err != nil {
+				t.Fatalf("legacy unmarshal: %v", err)
+			}
+
+			got, err := auditHeadersFromWire(headers)
+			if err != nil {
+				t.Fatalf("新实现不应报错（旧路径可解码）: %v", err)
+			}
+			// 再序列化比对：HeaderValues 的 MarshalJSON 编码了 Array/Values 语义。
+			legacyJSON, _ := json.Marshal(legacy.Headers["x"])
+			gotJSON, _ := json.Marshal(got["x"])
+			if !bytes.Equal(legacyJSON, gotJSON) {
+				t.Fatalf("形态 %s 不等价：legacy=%s new=%s（legacy=%+v new=%+v）",
+					name, legacyJSON, gotJSON, legacy.Headers["x"], got["x"])
+			}
+			// 结构比对（防止序列化恰好相同但内部表示不同）。
+			if !headerValuesEqual(legacy.Headers["x"], got["x"]) {
+				t.Fatalf("形态 %s 结构不等价：legacy=%+v new=%+v", name, legacy.Headers["x"], got["x"])
+			}
+		})
 	}
-	if header := got["slice"]; !header.Array || len(header.Values) != 2 {
-		t.Fatalf("数组语义错误: %+v", header)
+}
+
+func headerValuesEqual(left, right auditlog.HeaderValues) bool {
+	if left.Array != right.Array || len(left.Values) != len(right.Values) {
+		return false
 	}
-	if header := got["empty"]; !header.Array || len(header.Values) != 0 {
-		t.Fatalf("空数组语义错误: %+v", header)
+	for index := range left.Values {
+		if left.Values[index] != right.Values[index] {
+			return false
+		}
 	}
-	if header := got["anys"]; !header.Array || len(header.Values) != 2 || header.Values[1] != "d" {
-		t.Fatalf("[]any 语义错误: %+v", header)
-	}
+	return true
 }
 
 // TestDecodeAuditWireInputFieldSweep 逐字段扫一遍：对 full fixture 的每个
@@ -446,4 +493,148 @@ func BenchmarkAuditBridgeLegacyVsDirect(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestDecodeAuditWireInputRandomized 随机组合字段做等价性模糊测试：手工
+// fixture 会漏掉「某两个字段同时非零」这类交互，这里用确定性伪随机生成
+// 上千条输入，逐条比对旧往返与新转换的再序列化字节。
+func TestDecodeAuditWireInputRandomized(t *testing.T) {
+	// 固定种子：可复现，不引入 flaky。
+	seed := uint64(0x5eed1e55)
+	next := func() uint64 {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		return seed
+	}
+	pick := func(values ...string) string { return values[next()%uint64(len(values))] }
+	intPtr := func(v int) *int { return &v }
+	boolPtr := func(v bool) *bool { return &v }
+	maybeInt := func() *int {
+		if next()%3 == 0 {
+			return nil
+		}
+		return intPtr(int(next() % 5000))
+	}
+	maybeID := func(prefix string) string {
+		if next()%4 == 0 {
+			return ""
+		}
+		return prefix + "-" + pick("a", "b", "c")
+	}
+	headerSamples := []map[string]any{
+		nil,
+		{},
+		{"content-type": "application/json"},
+		{"x-multi": []string{"a", "b"}},
+		{"x-empty": []string{}},
+		{"x-nil": []string(nil)},
+		{"x-any": []any{"p", "q"}},
+		{"x-null-el": []any{nil}},
+		{"mixed": "s", "arr": []string{"1"}, "empty": []string{}},
+	}
+
+	for iteration := 0; iteration < 2000; iteration++ {
+		attemptCount := int(next() % 4)
+		payloadCount := int(next() % 4)
+		input := gatewayusage.AuditLogInput{
+			ID:                     maybeID("audit"),
+			LifecycleStatus:        pick("finalized", "in_progress", ""),
+			TraceID:                "trace-" + pick("x", "y"),
+			ConversationKey:        maybeID("conv"),
+			SessionID:              maybeID("sess"),
+			SessionClientType:      pick("", "codex", "claude"),
+			TrafficSource:          pick("gateway", "probe", ""),
+			SystemAccountID:        maybeID("sys"),
+			APIKeyID:               maybeID("key"),
+			GroupID:                maybeID("grp"),
+			RouteGroupID:           maybeID("rgrp"),
+			AccountID:              maybeID("acc"),
+			ProviderCode:           pick("", "gpt", "xai"),
+			Method:                 pick("POST", "GET"),
+			Path:                   pick("/v1/chat/completions", "/v1/responses"),
+			QueryString:            pick("", "a=1"),
+			Model:                  pick("", "gpt-5"),
+			UpstreamModel:          pick("", "gpt-5-up"),
+			PricingModel:           pick("", "price-1"),
+			ModelMappingApplied:    func() *bool { if next()%2 == 0 { return nil }; return boolPtr(next()%2 == 0) }(),
+			ModelMappingSource:     pick("", "explicit"),
+			SourceEndpointFamily:   pick("", "chat_completions"),
+			UpstreamEndpointFamily: pick("", "responses"),
+			Stream:                 func() *bool { if next()%2 == 0 { return nil }; return boolPtr(true) }(),
+			ClientIP:               pick("", "10.0.0.1"),
+			UserAgent:              pick("", "ua"),
+			AuditOutcome:           pick("success", "gateway_failed", ""),
+			Success:                next()%2 == 0,
+			FinalStatusCode:        maybeInt(),
+			ErrorPhase:             pick("", "dispatch"),
+			ErrorCode:              pick("", "account_rpm_limit"),
+			ErrorMessage:           pick("", "boom"),
+			SampleBucket:           int(next() % 10),
+			SampleReason:           pick("", "always"),
+			CaptureStatus:          pick("", "complete", "summary_only"),
+			StartedAt:              "2026-11-03T00:00:00.000Z",
+			EndedAt:                "2026-11-03T00:00:01.000Z",
+			DurationMs:             maybeInt(),
+			HTTPCompletedAt:        pick("", "2026-11-03T00:00:02.000Z"),
+			HTTPDurationMs:         maybeInt(),
+			FirstTokenMs:           maybeInt(),
+			CreatedAt:              pick("", "2026-11-03T00:00:00.500Z"),
+		}
+		for index := 0; index < attemptCount; index++ {
+			input.Attempts = append(input.Attempts, gatewayusage.AuditLogAttemptInput{
+				ID:             maybeID("att"),
+				AttemptIndex:   index,
+				AccountID:      maybeID("acc"),
+				UpstreamMethod: pick("POST", "GET"),
+				UpstreamURL:    pick("https://u.invalid/a", "https://u.invalid/b"),
+				ErrorCode:      pick("", "x"),
+				StartedAt:      "2026-11-03T00:00:00.100Z",
+				DurationMs:     maybeInt(),
+			})
+		}
+		for index := 0; index < payloadCount; index++ {
+			var body []byte
+			switch next() % 4 {
+			case 0:
+				body = nil
+			case 1:
+				body = []byte{}
+			case 2:
+				body = []byte(`{"k":"v"}`)
+			default:
+				body = []byte{0x00, 0xff, 0x10}
+			}
+			input.Payloads = append(input.Payloads, gatewayusage.AuditLogPayloadInput{
+				ID:          maybeID("pay"),
+				PartType:    pick("client_request", "upstream_response", "gateway_error"),
+				Headers:     headerSamples[int(next()%uint64(len(headerSamples)))],
+				Body:        body,
+				HasBody:     len(body) > 0,
+				CaptureStatus: pick("", "complete"),
+				DropReason:  pick("", "capacity_limit"),
+			})
+		}
+
+		legacy, legacyErr := legacyDecodeAuditWireInput(input)
+		converted, convertedErr := decodeAuditWireInput(input)
+		if (legacyErr != nil) != (convertedErr != nil) {
+			t.Fatalf("iteration %d 错误臂不一致：legacy=%v new=%v", iteration, legacyErr, convertedErr)
+		}
+		if legacyErr != nil {
+			continue
+		}
+		legacyJSON, err := json.Marshal(legacy)
+		if err != nil {
+			t.Fatalf("iteration %d marshal legacy: %v", iteration, err)
+		}
+		convertedJSON, err := json.Marshal(converted)
+		if err != nil {
+			t.Fatalf("iteration %d marshal new: %v", iteration, err)
+		}
+		if !bytes.Equal(legacyJSON, convertedJSON) {
+			t.Fatalf("iteration %d 不等价\n input=%+v\n legacy=%s\n new   =%s",
+				iteration, input, legacyJSON, convertedJSON)
+		}
+	}
 }

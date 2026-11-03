@@ -2750,18 +2750,25 @@ func auditPayloadBodyFromWire(body []byte) auditlog.PayloadBody {
 
 // auditHeadersFromWire 把采集侧 map[string]any 还原成存储侧
 // map[string]HeaderValues，语义与「MarshalJSON → HeaderValues.UnmarshalJSON」
-// 的 JSON 往返逐条对齐：
+// 的 JSON 往返逐条对齐。**逐形态已用 Go 实测固定**（2026-11-03 复查）：
 //
-//   - string           → {Values:[s]}（Array=false，落库为该字符串）
-//   - []string         → {Values:v, Array=true}（落库为数组，nil/空都是 []）
-//   - []any 全字符串   → 同上（JSON 数组解码后走 HeaderValues 的 []string 分支）
-//   - 其他形态         → 返回错误，与旧往返一致地丢弃整条采集。
+//	输入形态                 wire JSON       解码结果
+//	string                  "v"             {Values:["v"] Array:false}
+//	""                      ""              {Values:[""] Array:false}
+//	[]string{"a"}           ["a"]           {Values:["a"] Array:true}
+//	[]string{}              []              {Values:[] Array:true}
+//	[]string(nil)           null            {Values:[""] Array:false} ← 注意：空串单值
+//	[]any{"a"}              ["a"]           {Values:["a"] Array:true}
+//	[]any{}                 []              {Values:[] Array:true}
+//	[]any{nil}              [null]          {Values:[""] Array:true}   ← 注意：空串元素
+//	nil                     null            {Values:[""] Array:false}  ← 注意：空串单值
+//	int/bool/float/map      …               解码失败 → 整条采集丢弃
+//	[]any{非字符串}          …               解码失败 → 整条采集丢弃
 //
-// 生产数据面只有 string 与 []string 两种：采集侧 Headers 唯一来源是
-// http.Header（map[string][]string，见 gatewayresponse/finalize.go:23），
-// 以及少量字面量 map[string]any{"content-type": "..."}。其余形态属类型上
-// 可能但数据面不存在的情况，仍保持旧实现「整条丢弃」的失败语义，不做静默
-// 降级（设计规范：不以 fallback 掩盖失败）。
+// 生产数据面只有 string 与 []string（http.Header 是 map[string][]string，
+// 见 gatewayresponse/finalize.go:23），但 nil 切片在 Go 里极易出现，且旧
+// 路径把它降级成空串单值而不是丢弃——这里必须一致。其余无法表达为
+// HeaderValues 的形态保持旧实现「整条丢弃」的失败语义，不做静默降级。
 func auditHeadersFromWire(headers map[string]any) (map[string]auditlog.HeaderValues, error) {
 	if len(headers) == 0 {
 		// 旧往返：nil/空 map 都序列化为省略键（omitempty），解码后得到 nil。
@@ -2773,17 +2780,35 @@ func auditHeadersFromWire(headers map[string]any) (map[string]auditlog.HeaderVal
 		case string:
 			out[name] = auditlog.HeaderValues{Values: []string{typed}}
 		case []string:
-			out[name] = auditlog.HeaderValues{Values: append([]string(nil), typed...), Array: true}
+			// nil 切片经 JSON 编码为 null，走 HeaderValues 的字符串分支而不是
+			// 数组分支——旧路径结果是 {Values:[""] Array:false}。
+			if typed == nil {
+				out[name] = auditlog.HeaderValues{Values: []string{""}}
+				continue
+			}
+			out[name] = auditlog.HeaderValues{Values: append([]string{}, typed...), Array: true}
 		case []any:
+			if typed == nil {
+				out[name] = auditlog.HeaderValues{Values: []string{""}}
+				continue
+			}
 			values := make([]string, 0, len(typed))
 			for _, item := range typed {
+				if item == nil {
+					// JSON null 元素解码进 []string 的对应位置为空串。
+					values = append(values, "")
+					continue
+				}
 				text, ok := item.(string)
 				if !ok {
-					return nil, fmt.Errorf("审计 header %q 含非字符串元素，无法转换为 HeaderValues（与旧 wire 往返同样的失败语义）", name)
+					return nil, fmt.Errorf("审计 header %q 含非字符串元素（%T），与旧 wire 往返一样无法解码", name, item)
 				}
 				values = append(values, text)
 			}
 			out[name] = auditlog.HeaderValues{Values: values, Array: true}
+		case nil:
+			// 裸 nil 值经 JSON 编码为 null → HeaderValues 字符串分支得到空串。
+			out[name] = auditlog.HeaderValues{Values: []string{""}}
 		default:
 			return nil, fmt.Errorf("审计 header %q 的类型 %T 无法转换为 HeaderValues（与旧 wire 往返同样的失败语义）", name, value)
 		}
