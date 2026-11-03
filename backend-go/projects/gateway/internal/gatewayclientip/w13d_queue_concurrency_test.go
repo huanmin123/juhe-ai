@@ -268,6 +268,55 @@ func TestW13DQueueWakeCandidateSearch(t *testing.T) {
 	}
 }
 
+func TestW13DQueueWakeCandidateRPMDenied(t *testing.T) {
+	// hardLimit 有余但 RPM 已满 → queueItemCanAcquireAfterRelease false →
+	// release 事件不产生虚假唤醒（设计 §5.2）；RPM 清零后同一事件可唤醒。
+	queue, concurrency, _ := newTestGroupQueue(t, nil)
+	input := groupWaitInput("a1")
+	input.AccountConcurrencyLimits = map[string]int{"a1": 4}
+	input.AccountRPMLimits = map[string]int{"a1": 2}
+	concurrency.setRPM("a1", 2)
+	waiter := make(chan HighConcurrencyQueueWaitResult, 1)
+	go func() {
+		result, err := queue.WaitForHighConcurrencyGroupCapacity(context.Background(), input)
+		if err != nil {
+			t.Error(err)
+			waiter <- HighConcurrencyQueueWaitResult{}
+			return
+		}
+		waiter <- result
+	}()
+	groupKey := highConcurrencyGroupQueueKey("sys", "grp", AccountConcurrencyLaneText)
+	for i := 0; i < 200; i++ {
+		if queue.queueSizeOf(groupKey) == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if queue.queueSizeOf(groupKey) != 1 {
+		t.Fatalf("queue size=%d", queue.queueSizeOf(groupKey))
+	}
+	// 并发有余的 release：RPM 满时不得唤醒（修复前会虚假唤醒后由 TryAcquire
+	// 原子拒绝再队尾重排）。
+	concurrency.emit("a1", AccountConcurrencyLaneText)
+	select {
+	case result := <-waiter:
+		t.Fatalf("rpm-full release should not wake: %+v", result)
+	case <-time.After(120 * time.Millisecond):
+	}
+	// RPM 窗口清零后，同一 release 事件即可唤醒。
+	concurrency.setRPM("a1", 0)
+	concurrency.emit("a1", AccountConcurrencyLaneText)
+	select {
+	case result := <-waiter:
+		if !result.Ready {
+			t.Fatalf("wake after rpm reset=%+v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no wake after rpm reset")
+	}
+}
+
 func TestW13DQueueWakeCandidateSkips(t *testing.T) {
 	queue, concurrency, _ := newTestGroupQueue(t, nil)
 	ctx := context.Background()

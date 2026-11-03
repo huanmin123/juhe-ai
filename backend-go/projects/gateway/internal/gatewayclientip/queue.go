@@ -427,12 +427,18 @@ func (q *HighConcurrencyGroupQueue) findQueueWakeCandidate(accountID string, lan
 }
 
 // queueItemCanAcquireAfterRelease mirrors queueItemCanAcquireAfterRelease.
+// 唤醒判定与 hasImmediateAccountCapacity 同口径叠加 RPM 余量（AI 账户每分钟
+// 请求上限设计 §5.2）：RPM 已满的账户即使并发槽释放也不产生虚假唤醒（真正
+// 的准入仍由 TryAcquire 原子兜底，这里只省掉空转与队尾重排）。
 func (q *HighConcurrencyGroupQueue) queueItemCanAcquireAfterRelease(item *highConcurrencyQueueItem, accountID string) bool {
 	capacity, ok := item.accountCapacities[accountID]
 	if !ok {
 		return true
 	}
 	if q.concurrency.CurrentAccountConcurrency(accountID, "") >= capacity.hardLimit {
+		return false
+	}
+	if capacity.rpmLimit > 0 && q.concurrency.CurrentAccountRPM(accountID).Used >= capacity.rpmLimit {
 		return false
 	}
 	if item.lane != AccountConcurrencyLaneImage {

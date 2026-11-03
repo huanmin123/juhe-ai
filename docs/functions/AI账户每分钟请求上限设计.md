@@ -135,13 +135,14 @@ RPM 耗尽与并发耗尽同属「本地容量不可用」：
 
 - 个人分组：本轮耗尽且最后一个容量失败为 RPM → `429`，`Retry-After: ceil(RetryAfterMs/1000)`（最小 1、最大 60）；payload `message="上游账户每分钟请求数已达上限，请稍后重试"`、`type/code="rate_limit_exceeded"`；审计 `errorCode="account_rpm_limit"`、`outcome=gateway_failed`、`failureScope="capacity"`。
 - 超级分组：RPM 归入 `capacity_exhausted` 聚合分类，沿用现有 429 渲染，不改契约。
+- realtime 面（`chain_realtime.go`）：保持既有 `503 upstream_unavailable` 契约，RPM 拒绝仅计入候选跳过，不单独分类、不带 `Retry-After`（本设计 §5 只覆盖 /v1 链路终态；realtime 频次语义如需对齐另立需求）。
 - 非 RPM 的并发耗尽：保持现状（个人 503、超级分组 429）。
 
 ### 5.5 审计与观测
 
 - 审计 attempt：`errorPhase="dispatch"`、`errorCode="account_rpm_limit"`、`upstreamURL="rpm:limit"`；
 - usage attempt：`failureAttribution="gateway_capacity"`、`upstreamURL="rpm:limit"`；
-- Prometheus 计数器：`juhe_ai_gateway_account_rpm_limited_total`（无标签，命中一次 RPM 拒绝加 1）；
+- Prometheus 计数器：`juhe_ai_gateway_account_rpm_limited_total`（无业务维度标签，仅全仓统一的 `service` 进程标签；命中一次 RPM 拒绝加 1）；
 - `classifyGatewayDispatchExhaustion` 新分类 `account_rpm_exhausted`。
 
 ## 6. 读面与前端展示

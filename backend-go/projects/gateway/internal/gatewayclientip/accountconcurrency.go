@@ -95,9 +95,10 @@ type AccountConcurrencyAcquireOutcome struct {
 	RPMResetAtMs int64
 }
 
-// rpmWindowAccountConcurrencyID 是账户 RPM 计数的资源 ID（账户级总量，跨
-// lane 与 API Key 统一）。当前生产调用方（chainConcurrencyStore）已把资源 ID
-// 归一（授权实例落来源账户 ID），tracker 直接按传入键计数。
+// rpmWindowResetAtMs 返回 RPM 窗口结束时刻（自然分钟固定窗口，设计 §4.2）。
+// 账户 RPM 计数的资源 ID 与并发同键（账户级总量，跨 lane 与 API Key 统一）；
+// 授权实例的资源 ID 归一（落来源账户 ID）由生产调用方 chainConcurrencyStore
+// 完成。
 func rpmWindowResetAtMs(bucket int64) int64 {
 	return (bucket + 1) * 60_000
 }

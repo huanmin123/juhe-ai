@@ -520,10 +520,10 @@ func chainCutoverTargetsOf(accounts []gatewaydispatch.AccountCandidate) []gatewa
 // 目标候选，按并发资源 ID 预解析 RPM 上限（AI 账户每分钟请求上限设计 §4.4：
 // 预留本身即消耗 1 次 RPM，预留槽释放只退并发不退 RPM）。
 func (l *v1DispatchLoop) speedFirstSlotAcquirer(current *gatewaypreauth.DispatchContext, candidates []gatewaydispatch.AccountCandidate) gatewayhotquality.SpeedFirstCutoverSlotAcquirer {
-	rpmLimits := make(map[string]int, len(candidates))
-	for _, candidate := range candidates {
-		rpmLimits[chainConcurrencyAccountIDOf(candidate)] = candidate.RPMLimit
-	}
+	// 与主容量模型同款聚合（gatewaydispatch.GatewayAccountRPMLimitsByAccountID）：
+	// 同资源 ID 多候选取较小非零上限、0 不覆盖，避免缓存瞬时不一致窗口内
+	// 「后写赢」与主路径限额不同（AI 账户每分钟请求上限设计 §5.2）。
+	rpmLimits := gatewaydispatch.GatewayAccountRPMLimitsByAccountID(candidates)
 	return func(ctx context.Context, accountID string, concurrencyLimit int, request gatewayhotquality.AccountConcurrencyAcquireRequest) (gatewayhotquality.AccountConcurrencySlot, bool, error) {
 		if l.c.engine.Concurrency == nil {
 			return gatewayhotquality.AccountConcurrencySlot{}, false, nil
