@@ -13,6 +13,7 @@ const (
 	streamInspectorMaxLineBytes     = 256 * 1024
 	streamInspectorMaxEventBytes    = 512 * 1024
 	streamInspectorUsageTailBytes   = 256 * 1024
+	streamInspectorHintWindowBytes  = 4096
 	streamInspectorRecentEventLimit = 20
 )
 
@@ -42,6 +43,8 @@ type StreamInspector struct {
 	oversizedEvent        bool
 	oversizedEventType    string
 	oversizedEventImage   bool
+	oversizedEventError   bool
+	oversizedEventOutput  bool
 	oversizedEventUsage   gatewayproto.ParsedUsage
 	pendingEventSummaries []gatewayproto.StreamEventSummary
 }
@@ -166,13 +169,19 @@ func (i *StreamInspector) processLine(line string) {
 		return
 	}
 	dataLine := trimStart(line[len("data:"):])
+	firstDataLine := i.dataBytes == 0
 	i.dataBytes += len(dataLine)
 	if i.oversizedEvent {
 		i.rememberOversizedEventType(dataLine)
 		i.rememberOversizedEventUsage(dataLine)
+		i.rememberOversizedEventOutputHint(dataLine)
 		return
 	}
 	i.rememberOversizedEventType(dataLine)
+	if firstDataLine {
+		i.rememberOversizedEventErrorHint(dataLine)
+	}
+	i.rememberOversizedEventOutputHint(dataLine)
 	if i.dataBytes > streamInspectorMaxEventBytes {
 		i.markOversizedEvent(dataLine)
 		return
@@ -185,9 +194,12 @@ func (i *StreamInspector) flushEvent() {
 		i.flushOversizedEvent()
 		return
 	}
+	// oversized 临时状态（type/image/usage）只属于当前 SSE event：普通事件
+	// 收尾必须清理，否则后续超大终止事件会复用上一条事件的类型（BUG-0353）。
 	if len(i.dataLines) == 0 {
 		i.eventName = ""
 		i.dataBytes = 0
+		i.resetOversizedEventState()
 		return
 	}
 	currentEventName := i.eventName
@@ -197,10 +209,12 @@ func (i *StreamInspector) flushEvent() {
 	i.dataLines = nil
 	i.dataBytes = 0
 	if data == "" {
+		i.resetOversizedEventState()
 		return
 	}
 	event := ParseStreamEventData(data, currentEventName, "", currentDataBytes)
 	i.inspectParsedEvent(event, currentDataBytes)
+	i.resetOversizedEventState()
 }
 
 func (i *StreamInspector) inspectParsedEvent(event ParsedStreamEvent, dataBytes int) {
@@ -268,10 +282,7 @@ func (i *StreamInspector) skipParsing(reason string) {
 	i.pendingLineBytes = 0
 	i.pendingLineTail = ""
 	i.pendingLineExceeded = false
-	i.oversizedEvent = false
-	i.oversizedEventType = ""
-	i.oversizedEventImage = false
-	i.oversizedEventUsage = gatewayproto.EmptyUsage()
+	i.resetOversizedEventState()
 	i.inspection.Skipped = true
 	i.inspection.SkipReason = reason
 }
@@ -347,14 +358,17 @@ func (i *StreamInspector) processOversizedLine(linePrefix string, lineBytes int,
 		return
 	}
 	dataPrefix := trimStart(linePrefix[len("data:"):])
+	firstDataLine := i.dataBytes == 0
 	i.dataBytes += maxInt(lineBytes, streamInspectorMaxLineBytes+1)
 	i.markOversizedEvent(dataPrefix)
 	i.rememberOversizedEventImageOutput(lineTail)
 	i.rememberOversizedEventUsage(dataPrefix)
 	i.rememberOversizedEventUsage(lineTail)
-	if i.oversizedEventType == "" && !i.oversizedEventImage && i.eventName == "" {
-		i.skipParsing(reasonLineOverLimit)
+	if firstDataLine {
+		i.rememberOversizedEventErrorHint(dataPrefix)
 	}
+	i.rememberOversizedEventOutputHint(dataPrefix)
+	i.rememberOversizedEventOutputHintTail(lineTail)
 }
 
 func (i *StreamInspector) markOversizedEvent(dataPrefix string) {
@@ -383,20 +397,60 @@ func (i *StreamInspector) rememberOversizedEventUsage(textFragment string) {
 	}
 }
 
+// rememberOversizedEventErrorHint 只对事件首条 data 行做顶层 error 对象探测：
+// 完整 JSON 解析已放弃，但 `{"error":{...}}` 是失败信号的唯一可靠有界提示。
+func (i *StreamInspector) rememberOversizedEventErrorHint(dataPrefix string) {
+	if i.oversizedEventError {
+		return
+	}
+	searchable := dataPrefix
+	if len(searchable) > streamInspectorHintWindowBytes {
+		searchable = searchable[:streamInspectorHintWindowBytes]
+	}
+	if streamTopLevelErrorHintPattern.MatchString(searchable) {
+		i.oversizedEventError = true
+	}
+}
+
+// rememberOversizedEventOutputHint 在 data 前缀前 4096 字节内探测输出类
+// JSON 键；只认精确键名（"output_tokens" 不匹配 "output"）。
+func (i *StreamInspector) rememberOversizedEventOutputHint(dataPrefix string) {
+	if i.oversizedEventOutput || dataPrefix == "" {
+		return
+	}
+	if hasStreamEventOutputKeyHint(hintWindowPrefix(dataPrefix, streamInspectorHintWindowBytes)) {
+		i.oversizedEventOutput = true
+	}
+}
+
+// rememberOversizedEventOutputHintTail 在超大行的滚动尾窗（完整尾窗，
+// 上限 streamInspectorUsageTailBytes）内探测输出类 JSON 键。
+func (i *StreamInspector) rememberOversizedEventOutputHintTail(lineTail string) {
+	if i.oversizedEventOutput || lineTail == "" {
+		return
+	}
+	if hasStreamEventOutputKeyHint(lineTail) {
+		i.oversizedEventOutput = true
+	}
+}
+
 func (i *StreamInspector) flushOversizedEvent() {
 	eventType := orDefault(orDefault(i.oversizedEventType, i.eventName), "message")
 	classification := classifyOversizedStreamEvent(eventType, i.oversizedEventImage)
-	if classification.visibleOutput {
+	failed := classification.failed || i.oversizedEventError
+	terminal := classification.terminal || failed
+	visibleOutput := classification.visibleOutput || i.oversizedEventOutput
+	if visibleOutput {
 		i.inspection.OutputReceived = true
 		i.inspection.OutputEventCount++
 	}
 	if classification.imageOutput {
 		i.inspection.ImageOutputReceived = true
 	}
-	if classification.terminal {
+	if terminal {
 		i.inspection.TerminalReceived = true
 	}
-	if classification.failed {
+	if failed {
 		i.inspection.FailedReceived = true
 	}
 	usageFound := gatewayproto.HasAnyUsageValue(i.oversizedEventUsage)
@@ -406,10 +460,10 @@ func (i *StreamInspector) flushOversizedEvent() {
 	i.recordEventSummary(gatewayproto.StreamEventSummary{
 		Type:         eventType,
 		DataBytes:    i.dataBytes,
-		Terminal:     classification.terminal,
-		CanEndStream: classification.terminal,
-		Failed:       classification.failed,
-		Output:       classification.visibleOutput,
+		Terminal:     terminal,
+		CanEndStream: terminal,
+		Failed:       failed,
+		Output:       visibleOutput,
 		Usage:        usageFound,
 		ParseError:   true,
 	})
@@ -423,6 +477,8 @@ func (i *StreamInspector) resetOversizedEventState() {
 	i.oversizedEvent = false
 	i.oversizedEventType = ""
 	i.oversizedEventImage = false
+	i.oversizedEventError = false
+	i.oversizedEventOutput = false
 	i.oversizedEventUsage = gatewayproto.EmptyUsage()
 }
 
@@ -468,6 +524,22 @@ func extractStreamEventTypeFromJSONPrefix(dataPrefix string) string {
 		return ""
 	}
 	return match[1]
+}
+
+// 顶层 error 对象提示与输出键提示都只在有界窗口内匹配，避免为超大事件
+// 恢复完整 JSON 解析带来无界内存/CPU 开销。
+var streamTopLevelErrorHintPattern = regexp.MustCompile(`^\s*\{\s*"error"\s*:\s*\{`)
+var streamEventOutputKeyHintPattern = regexp.MustCompile(`"(?:choices|delta|text|content|output)"\s*:`)
+
+func hasStreamEventOutputKeyHint(window string) bool {
+	return streamEventOutputKeyHintPattern.MatchString(window)
+}
+
+func hintWindowPrefix(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit]
 }
 
 var imageHintTypePattern = regexp.MustCompile(`"type"\s*:\s*"image_generation_call"`)

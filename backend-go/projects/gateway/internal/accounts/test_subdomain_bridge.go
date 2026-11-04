@@ -56,8 +56,6 @@ type (
 	TestOptionRow = accountstest.TestOptionRow
 	// TestCatalogItem mirrors ProviderModelTestCatalogItem.
 	TestCatalogItem = accountstest.TestCatalogItem
-	// TestCatalogCandidate mirrors one catalog candidate of the merge.
-	TestCatalogCandidate = accountstest.TestCatalogCandidate
 	// ResolvedTestModelMapping mirrors the resolved upstream mapping.
 	ResolvedTestModelMapping = accountstest.ResolvedTestModelMapping
 	// MergedTestOption mirrors the merged option row.
@@ -71,7 +69,6 @@ type (
 	manualTestContextRow     = accountstest.ManualTestContextRow
 	testOptionRow            = accountstest.TestOptionRow
 	testCatalogItem          = accountstest.TestCatalogItem
-	testCatalogCandidate     = accountstest.TestCatalogCandidate
 	manualTestModeSource     = accountstest.ManualTestModeSource
 	resolvedTestModelMapping = accountstest.ResolvedTestModelMapping
 	mergedTestOption         = accountstest.MergedTestOption
@@ -225,10 +222,6 @@ func (s *Store) listCustomTestCatalogOptions(ctx context.Context, providerCodes 
 
 func (s *Store) findTestCatalogItem(ctx context.Context, providerCode, systemAccountID, model string) (*testCatalogItem, error) {
 	return s.testService().FindTestCatalogItem(ctx, providerCode, systemAccountID, model)
-}
-
-func (s *Store) collectTestCatalogCandidates(ctx context.Context, builtInCodes, sourceCodes []string, model, availability string) ([]testCatalogCandidate, error) {
-	return s.testService().CollectTestCatalogCandidates(ctx, builtInCodes, sourceCodes, model, availability)
 }
 
 // ---- Store 方法转发（test-options 面，test_dispatch_routes.go 消费） ----

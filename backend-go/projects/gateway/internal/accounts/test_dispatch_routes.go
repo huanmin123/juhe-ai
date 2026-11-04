@@ -1001,16 +1001,17 @@ func isGatewaySupportedTestProtocol(item ListItem) bool {
 // visible management summary plus the fact-account credential modes and
 // mappings the selection step consumes.
 type AccountForTestView struct {
-	item          ListItem
-	factAccountID string
-	modeSource    manualTestModeSource
+	item                 ListItem
+	factAccountID        string
+	ownerSystemAccountID string
+	modeSource           manualTestModeSource
 }
 
 func (v *AccountForTestView) manualContext() *ManualTestContext {
 	return &ManualTestContext{
 		ID:                        v.item.ID,
 		FactAccountID:             v.factAccountID,
-		OwnerSystemAccountID:      v.item.OwnerSystemAccountID,
+		OwnerSystemAccountID:      v.ownerSystemAccountID,
 		ProviderCode:              v.item.ProviderCode,
 		ProviderProtocolProfileID: v.item.ProviderProtocolProfileID,
 		ProtocolCode:              v.item.ProtocolCode,
@@ -1045,9 +1046,13 @@ func (s *Store) FindAccountForTestView(ctx context.Context, access AccessScope, 
 	view := &AccountForTestView{item: item}
 	if context != nil {
 		view.factAccountID = context.FactAccountID
+		// 授权实例的目录解析必须使用来源账户 owner：实例行 owner 是被授权
+		// 用户（grantee），拿它查 personal 目录会漏掉来源用户的目录归属。
+		view.ownerSystemAccountID = context.OwnerSystemAccountID
 		view.modeSource = context.ModeSource()
 	} else {
 		view.factAccountID = item.ID
+		view.ownerSystemAccountID = item.OwnerSystemAccountID
 		view.modeSource = manualTestModeSource{
 			ProviderCode:              item.ProviderCode,
 			ProviderProtocolProfileID: item.ProviderProtocolProfileID,
@@ -1111,13 +1116,15 @@ func (s *Store) savedAccountDraftTestSnapshot(ctx context.Context, view *Account
 	if input.ProviderCode != account.ProviderCode || input.Type != account.Type {
 		return nil, &ValidationError{Message: "账户测试草稿与当前账户不一致"}
 	}
-	draft, err := s.prepareAccountDraftTestSnapshot(ctx, input, access, account.ID)
+	draft, err := s.prepareAccountDraftTestSnapshotWithOwner(ctx, input, access, account.ID, account.OwnerSystemAccountID)
 	if err != nil {
 		return nil, err
 	}
 	// profile 行已随目标 schema 退役（§9.3）：草稿协议档案不再来自入参，旧的
 	// 「账户测试草稿与当前账户协议档案不一致」pin 比对随 profile 维度一并拆除
 	// ——saved 草稿的一致性契约由上方 providerCode/type 相等断言承载。
+	// owner 已在 prepare 内按账户归属覆盖（含 images_json 目录证据），此处只
+	// 保留 stateTargetAccountId 戳记。
 	stateTarget := account.ID
 	draft.StateTargetAccountID = &stateTarget
 	return draft, nil
@@ -1132,6 +1139,13 @@ type draftTestGroupReference struct {
 // prepareAccountDraftTestSnapshot mirrors
 // prepareAccountDraftTestSnapshotResolvedAsync (message copy verbatim).
 func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *TestDraftAccountInput, access AccessScope, draftAccountID string) (*TestDraftSnapshot, error) {
+	return s.prepareAccountDraftTestSnapshotWithOwner(ctx, input, access, draftAccountID, "")
+}
+
+// prepareAccountDraftTestSnapshotWithOwner 是 prepare 链的实际实现：owner 默认
+// 按 group 归属三级回落；ownerOverride 非空时以其为权威（已保存账户草稿用
+// 账户归属覆盖 group 主，保证 images_json 目录证据也按账户 owner 解析）。
+func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, input *TestDraftAccountInput, access AccessScope, draftAccountID, ownerOverride string) (*TestDraftSnapshot, error) {
 	// Group summary (findGroupSummary): the caller must see the group（组无
 	// provider 维度，设计 §8：owner 可见 + enabled 已足够）。
 	group, err := s.findDraftTestGroup(ctx, access, input.GroupID)
@@ -1155,6 +1169,9 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 	}
 	if ownerSystemAccountID == "" {
 		ownerSystemAccountID = access.ViewerID
+	}
+	if override := strings.TrimSpace(ownerOverride); override != "" {
+		ownerSystemAccountID = override
 	}
 	if ownerSystemAccountID == "" {
 		return nil, &ValidationError{Message: "账户分组缺少归属用户，无法测试"}

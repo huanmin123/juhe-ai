@@ -685,26 +685,47 @@ func TestCatalogBuiltInSourceCodes(providerCode string, sourceCodes []string) []
 	return codes
 }
 
-// ListBuiltInTestCatalogOptions mirrors listBuiltInProviderModelOptionsAsync
-// （原根包私有方法 listBuiltInTestCatalogOptions，根包测试经由 Store 转发访问）.
-// B4 ⑧：provider_model_catalog 并入 models 单表（设计 §4），builtin 臂 =
-// scope='builtin' 按 vendor_code 窗口，mode/supported_api_protocols 经
-// supported_endpoint_modes_json 逆映射派生（与 providers.listBuiltInCatalogModels
-// 同键同谓词，列名 public_model 即目录模型名）。
-func (s *Service) ListBuiltInTestCatalogOptions(ctx context.Context, providerCodes []string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
+// testCatalogOrder 是测试目录 loader 的排序模式（私有枚举，不暴露到 HTTP/JSON）.
+type testCatalogOrder int
+
+const (
+	// testCatalogOrderOptions 供列表/选项合并：selected 置顶、release date 优先.
+	testCatalogOrderOptions testCatalogOrder = iota
+	// testCatalogOrderExact 供单模型解析：保持旧 CollectTestCatalogCandidates
+	// 的行序，FindTestCatalogItem 的 winner 规则依赖该顺序.
+	testCatalogOrderExact
+)
+
+// loadBuiltInTestCatalogRows 是 builtin 臂的唯一数据源：列表选项与单模型解析
+// 共用同一 WHERE/参数拼装，仅排序模式不同。catalog_visible/status/shutdown
+// 可用性过滤由 testCatalogAvailability 承载（与 providers.listBuiltInCatalogModels
+// 同键同谓词；列名 public_model 即目录模型名）。
+func (s *Service) loadBuiltInTestCatalogRows(ctx context.Context, providerCodes []string, exactModel string, order testCatalogOrder, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
 	codes := NormalizeTestProviderCodeList(providerCodes)
 	if len(codes) == 0 {
 		return []TestOptionRow{}, nil
 	}
 	clauses := []string{"scope = 'builtin'", "vendor_code IN (" + accountscore.Placeholders(len(codes)) + ")"}
 	args := append([]any{}, accountscore.AnySlice(codes)...)
+	if trimmed := strings.TrimSpace(exactModel); trimmed != "" {
+		clauses = append(clauses, "public_model = ?")
+		args = append(args, trimmed)
+	}
 	args = s.appendTestOptionTextFilter(&clauses, args, query)
 	args = append(args, selectedOrderArgs(query)...)
+	orderClause := ""
+	if order == testCatalogOrderExact {
+		// 旧 CollectTestCatalogCandidates 的 builtin 行序；exactModel 精确匹配
+		// 后同名字符串一致，lower(public_model) 与旧 public_model 等价。
+		orderClause = "vendor_code ASC, catalog_order ASC, lower(public_model) ASC, id ASC"
+	} else {
+		orderClause = testSelectedOrderClause(query) + `CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
+			release_date DESC, lower(public_model) ASC, vendor_code ASC, id ASC`
+	}
 	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT COALESCE(vendor_code, '') AS provider_code, public_model AS model, supported_endpoint_modes_json, release_date
 		FROM `+s.store.Table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+s.testCatalogAvailability()+`
-		ORDER BY `+testSelectedOrderClause(query)+`CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
-			release_date DESC, lower(public_model) ASC, vendor_code ASC, id ASC`), args...)
+		ORDER BY `+orderClause), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -712,40 +733,74 @@ func (s *Service) ListBuiltInTestCatalogOptions(ctx context.Context, providerCod
 	return scanTestOptionRows(rows, CatalogScopeBuiltIn)
 }
 
-// ListCustomTestCatalogOptions mirrors listCustomProviderModelOptionsAsync
-// （原根包私有方法 listCustomTestCatalogOptions，根包测试经由 Store 转发访问）.
-// B4 ⑧：custom_provider_models 并入 models 单表，global/personal scope 窗口
-// （与 providers.listCustomModelRows 同谓词；custom 臂无 catalog_visible 过滤，
-// 沿旧表语义）。
-func (s *Service) ListCustomTestCatalogOptions(ctx context.Context, providerCodes []string, systemAccountID string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
+// loadCustomTestCatalogRows 是 global/personal 臂的唯一数据源：owner 归属
+// 谓词与 providers.listCustomModelRows 同口径，禁止跨用户 personal 同名行
+// 遮蔽；custom 臂无 catalog_visible 过滤（沿旧 custom_provider_models 语义）。
+func (s *Service) loadCustomTestCatalogRows(ctx context.Context, providerCodes []string, ownerSystemAccountID, exactModel string, order testCatalogOrder, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
 	codes := NormalizeTestProviderCodeList(providerCodes)
 	if len(codes) == 0 {
 		return []TestOptionRow{}, nil
 	}
-	clauses := []string{
-		"scope IN ('global', 'personal')",
-		"vendor_code IN (" + accountscore.Placeholders(len(codes)) + ")",
-	}
+	clauses := []string{"vendor_code IN (" + accountscore.Placeholders(len(codes)) + ")"}
 	args := append([]any{}, accountscore.AnySlice(codes)...)
-	if trimmed := strings.TrimSpace(systemAccountID); trimmed != "" {
+	if owner := strings.TrimSpace(ownerSystemAccountID); owner != "" {
 		clauses = append(clauses, "((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
-		args = append(args, trimmed)
+		args = append(args, owner)
 	} else {
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
+	if trimmed := strings.TrimSpace(exactModel); trimmed != "" {
+		clauses = append(clauses, "public_model = ?")
+		args = append(args, trimmed)
+	}
 	args = s.appendTestOptionTextFilter(&clauses, args, query)
 	args = append(args, selectedOrderArgs(query)...)
+	orderClause := ""
+	if order == testCatalogOrderExact {
+		// 旧 CollectTestCatalogCandidates 的 custom 行序。
+		orderClause = "vendor_code ASC, scope ASC, lower(public_model) ASC, id ASC"
+	} else {
+		orderClause = testSelectedOrderClause(query) + `CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
+			release_date DESC, lower(public_model) ASC, vendor_code ASC, scope ASC, id ASC`
+	}
 	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT COALESCE(vendor_code, '') AS provider_code, public_model AS model, scope, supported_endpoint_modes_json, release_date
 		FROM `+s.store.Table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+` AND status = 'active'
 		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.TestTodayText()+`)
-		ORDER BY `+testSelectedOrderClause(query)+`CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
-			release_date DESC, lower(public_model) ASC, vendor_code ASC, scope ASC, id ASC`), args...)
+		ORDER BY `+orderClause), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanTestOptionRows(rows, "")
+}
+
+// loadTestCatalogRows 是人工测试目录的单一 entry：列表选项与单模型能力解析
+// 共用同一组 owner-scoped loader，先 builtin 后 custom（保持旧 append 顺序）。
+func (s *Service) loadTestCatalogRows(ctx context.Context, builtInCodes, sourceCodes []string, ownerSystemAccountID, exactModel string, order testCatalogOrder, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
+	builtIn, err := s.loadBuiltInTestCatalogRows(ctx, builtInCodes, exactModel, order, query)
+	if err != nil {
+		return nil, err
+	}
+	custom, err := s.loadCustomTestCatalogRows(ctx, sourceCodes, ownerSystemAccountID, exactModel, order, query)
+	if err != nil {
+		return nil, err
+	}
+	return append(builtIn, custom...), nil
+}
+
+// ListBuiltInTestCatalogOptions mirrors listBuiltInProviderModelOptionsAsync
+// （原根包私有方法 listBuiltInTestCatalogOptions，根包测试经由 Store 转发访问）.
+// options 模式薄包装，语义与旧实现一致。
+func (s *Service) ListBuiltInTestCatalogOptions(ctx context.Context, providerCodes []string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
+	return s.loadBuiltInTestCatalogRows(ctx, providerCodes, "", testCatalogOrderOptions, query)
+}
+
+// ListCustomTestCatalogOptions mirrors listCustomProviderModelOptionsAsync
+// （原根包私有方法 listCustomTestCatalogOptions，根包测试经由 Store 转发访问）.
+// options 模式薄包装，owner 归属谓词由 loadCustomTestCatalogRows 统一承载。
+func (s *Service) ListCustomTestCatalogOptions(ctx context.Context, providerCodes []string, systemAccountID string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
+	return s.loadCustomTestCatalogRows(ctx, providerCodes, systemAccountID, "", testCatalogOrderOptions, query)
 }
 
 // ListAccountSupportedTestCatalogOptions 是 generic_http 账户的目录来源：
@@ -859,32 +914,35 @@ func (s *Service) FindTestCatalogItem(ctx context.Context, providerCode, systemA
 		return nil, nil
 	}
 	builtInCodes := TestCatalogBuiltInSourceCodes(providerCode, sourceCodes)
-	availability := s.testCatalogAvailability()
-	candidates, err := s.CollectTestCatalogCandidates(ctx, builtInCodes, sourceCodes, trimmed, availability)
+	rows, err := s.loadTestCatalogRows(ctx, builtInCodes, sourceCodes, systemAccountID, trimmed, testCatalogOrderExact, ManualTestOptionsQuery{})
 	if err != nil {
 		return nil, err
 	}
-	if len(candidates) == 0 {
+	if len(rows) == 0 {
 		return nil, nil
 	}
 	// mergeProviderModelTestCatalogItems: scope priority first, later wins
 	// ties; then compareProviderModelTestCatalogItems (release date desc).
-	winner := candidates[0]
-	for _, item := range candidates {
-		if TestCatalogScopePriority(item.scope) >= TestCatalogScopePriority(winner.scope) {
-			winner = item
+	winner := rows[0]
+	for _, row := range rows {
+		if TestCatalogScopePriority(row.Scope) >= TestCatalogScopePriority(winner.Scope) {
+			winner = row
 		}
 	}
-	for _, item := range candidates {
-		if TestCatalogScopePriority(item.scope) != TestCatalogScopePriority(winner.scope) {
+	for _, row := range rows {
+		if TestCatalogScopePriority(row.Scope) != TestCatalogScopePriority(winner.Scope) {
 			continue
 		}
-		leftDate, rightDate := TestCatalogReleaseDate(item.releaseDate), TestCatalogReleaseDate(winner.releaseDate)
+		leftDate, rightDate := TestCatalogReleaseDate(row.ReleaseDate), TestCatalogReleaseDate(winner.ReleaseDate)
 		if leftDate != "" && rightDate != "" && leftDate != rightDate && leftDate > rightDate {
-			winner = item
+			winner = row
 		}
 	}
-	return &winner.item, nil
+	return &TestCatalogItem{
+		Model:                 winner.Model,
+		Mode:                  winner.Mode,
+		SupportedAPIProtocols: winner.SupportedAPIProtocols,
+	}, nil
 }
 
 // FindAccountSupportedTestCatalogItem 是 generic_http 账户的测试目录校验源：
@@ -920,81 +978,6 @@ func (s *Service) FindAccountSupportedTestCatalogItem(ctx context.Context, accou
 		Mode:                  items[0].Mode,
 		SupportedAPIProtocols: items[0].SupportedAPIProtocols,
 	}, nil
-}
-
-// TestCatalogCandidate mirrors one catalog candidate of the merge
-// （原根包私有类型 testCatalogCandidate，类型随子域化导出）.
-type TestCatalogCandidate struct {
-	item        TestCatalogItem
-	scope       string
-	releaseDate string
-}
-
-// CollectTestCatalogCandidates mirrors the built-in + custom catalog sweep
-// （原根包私有方法 collectTestCatalogCandidates，根包测试经由 Store 转发访问）.
-// B4 ⑧：双臂切 models 单表——builtin 臂 scope='builtin'；custom 臂
-// scope IN ('global','personal') 排除 builtin 行（旧 custom_provider_models 表
-// 天然无 builtin 行），owner 窗口沿旧表语义不加（与 options 臂不同）。
-func (s *Service) CollectTestCatalogCandidates(ctx context.Context, builtInCodes, sourceCodes []string, model, availability string) ([]TestCatalogCandidate, error) {
-	candidates := []TestCatalogCandidate{}
-	if codes := NormalizeTestProviderCodeList(builtInCodes); len(codes) > 0 {
-		rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT public_model AS model, supported_endpoint_modes_json, release_date
-			FROM `+s.store.Table("models")+`
-			WHERE scope = 'builtin' AND vendor_code IN (`+accountscore.Placeholders(len(codes))+`) AND public_model = ?`+availability+`
-			ORDER BY vendor_code ASC, catalog_order ASC, public_model ASC, id ASC`), append(accountscore.AnySlice(codes), model)...)
-		if err != nil {
-			return nil, err
-		}
-		collected, err := scanTestCandidates(rows, CatalogScopeBuiltIn, false)
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-		candidates = append(candidates, collected...)
-	}
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT public_model AS model, supported_endpoint_modes_json, release_date, scope
-		FROM `+s.store.Table("models")+`
-		WHERE scope IN ('global', 'personal') AND vendor_code IN (`+accountscore.Placeholders(len(sourceCodes))+`) AND public_model = ? AND status = 'active'
-		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.TestTodayText()+`)
-		ORDER BY vendor_code ASC, scope ASC, lower(public_model) ASC, id ASC`),
-		append(accountscore.AnySlice(sourceCodes), model)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	collected, err := scanTestCandidates(rows, "", true)
-	if err != nil {
-		return nil, err
-	}
-	return append(candidates, collected...), nil
-}
-
-func scanTestCandidates(rows *sql.Rows, fixedScope string, withScope bool) ([]TestCatalogCandidate, error) {
-	candidates := []TestCatalogCandidate{}
-	for rows.Next() {
-		var (
-			item              TestCatalogItem
-			endpointModesJSON sql.NullString
-			releaseDate       sql.NullString
-			scope             sql.NullString
-		)
-		var err error
-		if withScope {
-			err = rows.Scan(&item.Model, &endpointModesJSON, &releaseDate, &scope)
-		} else {
-			err = rows.Scan(&item.Model, &endpointModesJSON, &releaseDate)
-		}
-		if err != nil {
-			return nil, err
-		}
-		item.Mode, item.SupportedAPIProtocols = providers.DeriveLegacyModeAndProtocols(TestParseJSONArray(endpointModesJSON))
-		entry := TestCatalogCandidate{item: item, releaseDate: releaseDate.String, scope: fixedScope}
-		if withScope {
-			entry.scope = scope.String
-		}
-		candidates = append(candidates, entry)
-	}
-	return candidates, rows.Err()
 }
 
 // TestCatalogScopePriority mirrors the scope priority of the merge
@@ -1049,30 +1032,25 @@ func (s *Service) AccountManualTestOptionsWithTotal(ctx context.Context, account
 		return nil, 0, err
 	}
 	optionQuery := ManualTestOptionsQuery{Keyword: query.Keyword, Limit: query.Limit, SelectedIDs: selectedIDs}
-	builtIn := []TestOptionRow{}
-	custom := []TestOptionRow{}
+	catalogRows := []TestOptionRow{}
 	if len(sourceCodes) == 0 {
 		// generic_http（vendor 为空）：人工测试与会话模型列表同源，按账户
 		// account_supported_models.model_id 取真实 models 行；不得返回空候选
 		// 或按模型名猜 vendor（供应商与上游协议面重构设计 §3/§4）。
-		custom, err = s.ListAccountSupportedTestCatalogOptions(ctx, account.FactAccountID, optionQuery)
+		catalogRows, err = s.ListAccountSupportedTestCatalogOptions(ctx, account.FactAccountID, optionQuery)
 		if err != nil {
 			return nil, 0, err
 		}
 	} else {
 		builtInCodes := TestCatalogBuiltInSourceCodes(account.ProviderCode, sourceCodes)
-		builtIn, err = s.ListBuiltInTestCatalogOptions(ctx, builtInCodes, optionQuery)
-		if err != nil {
-			return nil, 0, err
-		}
-		custom, err = s.ListCustomTestCatalogOptions(ctx, sourceCodes, systemAccountID, optionQuery)
+		catalogRows, err = s.loadTestCatalogRows(ctx, builtInCodes, sourceCodes, systemAccountID, "", testCatalogOrderOptions, optionQuery)
 		if err != nil {
 			return nil, 0, err
 		}
 	}
 	source := account.ModeSource()
 	eligible := []TestOptionRow{}
-	for _, row := range append(builtIn, custom...) {
+	for _, row := range catalogRows {
 		if IsAccountManualTestModel(TestCatalogItem{Model: row.Model, Mode: row.Mode, SupportedAPIProtocols: row.SupportedAPIProtocols}, source) {
 			eligible = append(eligible, row)
 		}

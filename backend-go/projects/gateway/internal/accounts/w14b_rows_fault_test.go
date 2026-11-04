@@ -74,9 +74,6 @@ func TestW14BFaultInjectedRowsArms(t *testing.T) {
 	if _, err := store.listCustomTestCatalogOptions(ctx, []string{"gpt"}, adminID, ManualTestOptionsQuery{}); err == nil {
 		t.Fatal("listCustomTestCatalogOptions rows.Err 应传播")
 	}
-	if _, err := store.collectTestCatalogCandidates(ctx, []string{"gpt"}, []string{"gpt"}, "m", ""); err == nil {
-		t.Fatal("collectTestCatalogCandidates rows.Err 应传播")
-	}
 	if err := store.hydrateTags(ctx, []ListItem{{ID: "acc-w14b-rb"}}, []string{"acc-w14b-rb"}); err == nil {
 		t.Fatal("hydrateTags rows.Err 应传播")
 	}

@@ -83,9 +83,6 @@ func TestW14BFaultInjectedScanArms(t *testing.T) {
 	if _, err := store.loadBalanceSnapshotRecord(ctx, "acc-w14b-scan"); err == nil {
 		t.Fatal("loadBalanceSnapshotRecord scan 应失败")
 	}
-	if _, err := store.collectTestCatalogCandidates(ctx, []string{"gpt"}, []string{"gpt"}, "m", ""); err == nil {
-		t.Fatal("collectTestCatalogCandidates scan 应失败")
-	}
 	if _, err := store.loadTestAccountModelMappings(ctx, store.db, "acc-w14b-scan", ""); err == nil {
 		t.Fatal("loadTestAccountModelMappings scan 应失败")
 	}
